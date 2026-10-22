@@ -1058,6 +1058,9 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
  * NODUS_CLIENT_ERR_TOKEN_FILTER_IGNORED if it holds a coin of another
  * token. (A reply of only the requested token's coins is accepted — from
  * an old node it is the same set a new one would send, up to the cap.)
+ * Every coin entry must carry exactly one "tid" (a 64-byte bstr) and no
+ * repeated key, else NODUS_ERR_PROTOCOL_ERROR (freed): a missing or
+ * mistyped tid would otherwise read as the all-zero native id.
  *
  * @return 0 / the node's error code (a malformed tok is PROTOCOL_ERROR) /
  *         NODUS_CLIENT_ERR_TOKEN_FILTER_IGNORED / NODUS_ERR_PROTOCOL_ERROR

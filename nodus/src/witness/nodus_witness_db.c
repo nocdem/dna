@@ -321,13 +321,21 @@ static int utxo_by_owner_impl(nodus_witness_t *w, const char *owner,
     int rc = sqlite3_prepare_v2(w->db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
 
+    /* A failed bind leaves the parameter NULL: the filter would silently
+     * match nothing (or the LIMIT be unbounded) — every bind is checked
+     * and a fault is an error, never an empty / wrong list. */
     int bi = 1;
-    sqlite3_bind_text(stmt, bi++, owner, -1, SQLITE_STATIC);
-    if (has_dom)
-        sqlite3_bind_int64(stmt, bi++, (sqlite3_int64)DNA_DOMAIN_CORE);
-    if (token_id)
-        sqlite3_bind_blob(stmt, bi++, token_id, 64, SQLITE_STATIC);
-    sqlite3_bind_int(stmt, bi, max_entries);
+    int brc = sqlite3_bind_text(stmt, bi++, owner, -1, SQLITE_STATIC);
+    if (brc == SQLITE_OK && has_dom)
+        brc = sqlite3_bind_int64(stmt, bi++, (sqlite3_int64)DNA_DOMAIN_CORE);
+    if (brc == SQLITE_OK && token_id)
+        brc = sqlite3_bind_blob(stmt, bi++, token_id, 64, SQLITE_STATIC);
+    if (brc == SQLITE_OK)
+        brc = sqlite3_bind_int(stmt, bi, max_entries);
+    if (brc != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
 
     int count = 0;
     while (sqlite3_step(stmt) == SQLITE_ROW && count < max_entries) {

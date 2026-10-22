@@ -84,6 +84,12 @@
  *                    not driven separately (the fault path is the shared
  *                    nodus_witness_utxo_by_owner body, driven by
  *                    t_dnac_utxo_strict without tok).
+ *  t_dnac_utxo_token_strict_tid  hand-built replies to the token call: a
+ *                    repeated tid (B then A for an A request), a missing
+ *                    tid (native request), a 63-byte tid and a text-string
+ *                    tid each give NODUS_ERR_PROTOCOL_ERROR and a freed
+ *                    result; one well-formed tid is accepted; the legacy
+ *                    decode still accepts an entry without a tid.
  *  t_error_mapping   the dispatcher's answer to an unknown dnac_* method
  *                    maps to NODUS_CLIENT_ERR_METHOD_UNSUPPORTED; a
  *                    PROTOCOL_ERROR with other text stays 7; a
@@ -1563,6 +1569,97 @@ static void t_dnac_utxo_token(void)
     fx_close(&f);
 }
 
+/* Reply bytes for the token-filtered call, hand-built so a hostile node's
+ * entry can be shaped: one utxo entry of amount 5 whose token id is carried
+ * per `mode`. The client must read the token id of EVERY entry strictly. */
+enum { TE_GOOD, TE_REPEATED_TID, TE_NO_TID, TE_SHORT_TID, TE_TID_TSTR };
+
+static size_t craft_token_reply(uint8_t *buf, size_t cap, int mode,
+                                const uint8_t first[64],
+                                const uint8_t second[64])
+{
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    cbor_encode_map(&enc, 4);
+    cbor_encode_cstr(&enc, "t"); cbor_encode_uint(&enc, 9);
+    cbor_encode_cstr(&enc, "y"); cbor_encode_cstr(&enc, "r");
+    cbor_encode_cstr(&enc, "q"); cbor_encode_cstr(&enc, "dnac_utxo");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "count"); cbor_encode_uint(&enc, 1);
+    cbor_encode_cstr(&enc, "utxos");
+    cbor_encode_array(&enc, 1);
+    cbor_encode_map(&enc, mode == TE_NO_TID ? 1 :
+                           mode == TE_REPEATED_TID ? 3 : 2);
+    cbor_encode_cstr(&enc, "amount"); cbor_encode_uint(&enc, 5);
+    switch (mode) {
+    case TE_GOOD:
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, first, 64);
+        break;
+    case TE_REPEATED_TID:
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, first, 64);
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, second, 64);
+        break;
+    case TE_SHORT_TID:
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, first, 63);
+        break;
+    case TE_TID_TSTR:
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_tstr(&enc, "x", 1);
+        break;
+    default: break;
+    }
+    return cbor_encoder_len(&enc);
+}
+
+static void t_dnac_utxo_token_strict_tid(void)
+{
+    uint8_t buf[1024], tokA[64], tokB[64], tok0[64];
+    nodus_dnac_utxo_result_t res;
+    size_t n;
+
+    memset(tokA, 0xA1, 64); memset(tokB, 0xB2, 64); memset(tok0, 0, 64);
+
+    /* control: one well-formed entry of the requested token is accepted */
+    n = craft_token_reply(buf, sizeof(buf), TE_GOOD, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res) == 0 &&
+          res.count == 1 && memcmp(res.entries[0].token_id, tokA, 64) == 0,
+          "strict tid: a single 64-byte tid of the requested token is accepted");
+    nodus_client_free_utxo_result(&res);
+
+    /* B then A for an A request: the last-wins reading would pass it */
+    n = craft_token_reply(buf, sizeof(buf), TE_REPEATED_TID, tokB, tokA);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict tid: a repeated tid (B then A) for an A request is refused");
+
+    /* no tid: the entry would read as the all-zero id = native */
+    n = craft_token_reply(buf, sizeof(buf), TE_NO_TID, NULL, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tok0, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict tid: a missing tid for a native request is refused");
+
+    /* 63 bytes: ignored by the lenient reader, leaving the id all-zero */
+    n = craft_token_reply(buf, sizeof(buf), TE_SHORT_TID, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tok0, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict tid: a 63-byte tid is refused");
+
+    /* a tid of the wrong type */
+    n = craft_token_reply(buf, sizeof(buf), TE_TID_TSTR, NULL, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tok0, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL,
+          "strict tid: a text-string tid is refused");
+
+    /* the legacy (unfiltered) decode keeps its lenient behaviour */
+    n = craft_token_reply(buf, sizeof(buf), TE_NO_TID, NULL, NULL);
+    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == 0 && res.count == 1,
+          "legacy dnac_utxo decode: an entry without a tid is still accepted");
+    nodus_client_free_utxo_result(&res);
+}
+
 int main(void)
 {
     printf("=== dnac_msig_utxo / dnac_msig_addr_history (vault member) ===\n");
@@ -1577,6 +1674,7 @@ int main(void)
     t_dnac_utxo_same();
     t_dnac_utxo_strict();
     t_dnac_utxo_token();
+    t_dnac_utxo_token_strict_tid();
     t_error_mapping();
     t_nul();
     t_nul_beyond_page();
