@@ -97,32 +97,46 @@ let activitySession = null, activityBlocked = false, historyWrites = Promise.res
 let quarantinedRows = [];
 // A lock carries the record's own tracking fields that validated (hash,
 // expiryHeight, tokenRow: parseActivity). `releasedQuarantine` holds the locks
-// reconcileQuarantine found certain to be free (BUGS W-24), by their inputs;
-// those rows are left out of every lock set. It is memory only: the record
-// stays in the saved file and is judged again after a reload.
+// reconcileQuarantine found certain to be free (BUGS W-24), as the record
+// objects themselves (two records may list the same inputs; each is judged and
+// released on its own); those rows are left out of every lock set. It is memory
+// only: the record stays in the saved file and is judged again after a reload.
 const releasedQuarantine = new Set();
-const quarantineKey = entry => entry.inputs.join(',');
 const quarantineLocks = held => held.map(entry => ({ chain: NODUS_ASSET.chain, address: entry.address, status: 'pending', inputs: [...entry.inputs], tokenRow: entry.tokenRow === true, ...(entry.hash ? { hash: entry.hash } : {}), ...(entry.expiryHeight ? { expiryHeight: entry.expiryHeight } : {}) }));
-const nodusLockRows = address => [...history.filter(row => row.address === address), ...quarantinedRows.filter(row => row.address === address && !releasedQuarantine.has(quarantineKey(row)))];
+const nodusLockRows = address => [...history.filter(row => row.address === address), ...adapters.nodus.quarantineLockRows(quarantinedRows, releasedQuarantine).filter(row => row.address === address)];
 // Releases the locks of quarantined records whose coins are certainly free
 // (src/adapters/nodus.js quarantineReleasable) from one strict read of the
 // wallet's coins and the chain tip. A failed read releases nothing (the locks
 // stay: today's behaviour). One read at a time.
 // Called from the tracker's updates too, so a read is made at most every
 // QUARANTINE_READ_MS (UI pacing only; nothing decided by it is consensus).
-let quarantineReading = false, quarantineReadAt = 0;
+//
+// The tracker only calls while readable non-terminal rows exist, so a wallet
+// whose only pending records are quarantined would never be re-checked: while an
+// unreleased quarantined record exists (wallet unlocked, client connected) a
+// timer of its own re-runs this, one read at a time; it stops when none is left,
+// on lock and when the client goes away. UI pacing only — no clock value
+// decides a coin.
+let quarantineReading = false, quarantineReadAt = 0, quarantineTimer = 0;
 const QUARANTINE_READ_MS = 15000;
+const stopQuarantineTimer = () => { clearTimeout(quarantineTimer); quarantineTimer = 0; };
+const quarantineActive = () => !!nodusClient && !!wallet && !wallet.locked && quarantinedRows.some(row => !releasedQuarantine.has(row));
+function armQuarantineTimer() {
+  if (quarantineTimer || !quarantineActive()) return;
+  quarantineTimer = setTimeout(() => { quarantineTimer = 0; void reconcileQuarantine(); }, QUARANTINE_READ_MS);
+}
 async function reconcileQuarantine() {
   const client = nodusClient, source = wallet;
-  if (quarantineReading || !client || !source || source.locked || !quarantinedRows.some(row => !releasedQuarantine.has(quarantineKey(row)))) return;
-  if (Date.now() - quarantineReadAt < QUARANTINE_READ_MS) return;
+  if (!quarantineActive()) { stopQuarantineTimer(); return; }
+  if (quarantineReading) return;      // the read in flight re-arms the timer when it ends
+  if (Date.now() - quarantineReadAt < QUARANTINE_READ_MS) { armQuarantineTimer(); return; }
   quarantineReading = true; quarantineReadAt = Date.now();
   try {
     const view = await adapters.nodus.coinView({ client, from: source.addresses.nodus });
     if (client !== nodusClient || source !== wallet || source.locked) return;
-    for (const row of quarantinedRows) if (row.address === source.addresses.nodus && adapters.nodus.quarantineReleasable(row, view)) releasedQuarantine.add(quarantineKey(row));
+    for (const row of quarantinedRows) if (row.address === source.addresses.nodus && adapters.nodus.quarantineReleasable(row, view)) releasedQuarantine.add(row);
   } catch { /* unreadable: the locks stay */ }
-  finally { quarantineReading = false; }
+  finally { quarantineReading = false; armQuarantineTimer(); }
 }
 // True only while the open wallet's words were generated in this tab (the
 // create flow: typed again, or — the user's choice, 0.1.123 — not typed again
@@ -957,6 +971,7 @@ function setNodusReady(ready, { reselect = true, keepRead = false } = {}) {
 function stopNodusSend(options) {
   clearNodusRetry();
   faucetAbort?.abort();
+  stopQuarantineTimer();
   const client = nodusClient; nodusClient = undefined;
   // Extensions on this client (Messages) close first (design rev 5 §1.8).
   if (client) raise('nodusClosing', {});
@@ -1742,7 +1757,7 @@ function lock(event) {
   $('skip-verify-dialog').close(); $('skip-verify').checked = false;
   $('phrase-form').hidden = true; $('wallet-open').hidden = true; $('welcome').hidden = false;
   resetWalletPages({ keepHash: event?.type === 'pagehide' });
-  history.length = 0; quarantinedRows = []; releasedQuarantine.clear(); $('account-explorer').removeAttribute('href');
+  history.length = 0; quarantinedRows = []; releasedQuarantine.clear(); stopQuarantineTimer(); $('account-explorer').removeAttribute('href');
   $('activity').replaceChildren(); setReceiveAddress(''); $('balances').replaceChildren(); $('recipient').value = ''; $('amount').value = '';
   for (const id of ['unlock-password', 'vault-password', 'vault-confirm-password', 'vault-old-password']) $(id).value = '';
   $('vault-risk-confirm').checked = false; $('vault-save-status').textContent = '';

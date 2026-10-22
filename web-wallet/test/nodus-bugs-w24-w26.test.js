@@ -9,7 +9,11 @@
 //         the chain tip is past it; with an input still unspent and no valid
 //         expiry it stays locked; a token record is never released by (a);
 //         coinView refuses an unreadable listing instead of reading it as
-//         "no coins";
+//         "no coins"; each quarantined record is released on its own (two
+//         records with the same inputs: releasing one keeps the other's
+//         inputs locked); the "no input listed" rule applies only to a
+//         COMPLETE listing (coinView complete === true only for
+//         truncated === false), the expiry rule is independent of it;
 //   W-25  a claim-shaped row (inputs [X], hash X) exempts its input from the
 //         coin lock only when it is a real claim of this wallet (NODUS asset,
 //         no tokenId, paying the wallet's own address) — a token row or a
@@ -21,11 +25,12 @@
 // Requires nothing beyond `npm ci` (no special flags or environment). Leaves
 // nothing behind. How it can lie: clock, sleep and fetcher are fakes (the real
 // timers are not exercised); app.js reconcileQuarantine (the DOM / tracker
-// wiring that calls these pure functions) has no seam here.
+// wiring that calls these pure functions, incl. its own re-check timer) has no
+// seam here.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { activityKeyFor, serializeActivity, parseActivity } from '../src/activity-storage.js';
-import { lockedInputs, isClaimRow, quarantineReleasable, coinView, claimTestnetCoins, FAUCET_PENDING_TEXT, FAUCET_POLL_MS, NODUS_TESTNET_CHAIN_ID } from '../src/adapters/nodus.js';
+import { lockedInputs, isClaimRow, quarantineReleasable, quarantineLockRows, coinView, claimTestnetCoins, FAUCET_PENDING_TEXT, FAUCET_POLL_MS, NODUS_TESTNET_CHAIN_ID } from '../src/adapters/nodus.js';
 import { FINGERPRINT, RECIPIENT } from './nodus-mock-module.js';
 
 const phrase = 'abandon '.repeat(23) + 'art';
@@ -39,7 +44,7 @@ async function quarantineOf(rows) {
   const text = await serializeActivity(walletId, [], key, rows.map(raw => ({ raw })));
   return (await parseActivity(text, walletId, { nodus: FINGERPRINT }, key)).quarantined;
 }
-const view = (coins, tip) => ({ coins: new Set(coins), tip });
+const view = (coins, tip, complete = true) => ({ coins: new Set(coins), tip, complete });
 
 // ── W-24 ─────────────────────────────────────────────────────────────────
 test('W-24: a quarantined record keeps its valid hash and expiry; an invalid hash or expiry is left off', async () => {
@@ -82,6 +87,35 @@ test('W-24: coinView reads balance and listing strictly — a failed read (tip 0
   await assert.rejects(coinView({ client: client({ tip: '0', coins: [] }), from: FINGERPRINT }), /could not be read/);
   await assert.rejects(coinView({ client: client({ tip: '500', coins: [] }, { total: '5', spendable: '5' }), from: FINGERPRINT }), /could not be read/);
   await assert.rejects(coinView({ client: client({ tip: '500', coins: [] }), from: hex128(1) }), /does not match/);
+});
+
+test('W-24: two quarantined records with the same inputs are released one at a time', async () => {
+  const [first, second] = await quarantineOf([savedRow(1, { symbol: 'tUSDT', hash: hex128(7), expiryHeight: '1090', inputs: [hex128(500)] }), savedRow(2, { symbol: 'tUSDT', hash: hex128(8), expiryHeight: '5000', inputs: [hex128(500)] })]);
+  assert.deepEqual(first.inputs, second.inputs, 'same inputs, two records');
+  const v = view([hex128(500)], 2000n);
+  assert.equal(quarantineReleasable(first, v), true, 'the earlier one is past its expiry');
+  assert.equal(quarantineReleasable(second, v), false, 'the later one is still includable');
+  const released = new Set([first]);
+  assert.deepEqual(quarantineLockRows([first, second], released), [second], 'only the released record leaves the lock set');
+  assert.deepEqual(quarantineLockRows([first, second], released).flatMap(row => row.inputs), second.inputs, 'its inputs stay locked');
+  assert.deepEqual(quarantineLockRows([first, second], new Set([first, second])), [], 'both released: nothing locked');
+});
+
+test('W-24: a truncated or unflagged listing never releases by absence; expiry still releases', async () => {
+  const [held] = await quarantineOf([savedRow(1, { symbol: 'tUSDT' })]);   // native record, expiryHeight 1090
+  const client = list => ({ state: 'ready', fingerprint: FINGERPRINT, balance: async () => ({ total: '5', spendable: '5' }), list: async () => list });
+  const page = truncated => ({ tip: '500', coins: [{ nullifier: hex128(9), amount: '5' }], ...(truncated === undefined ? {} : { truncated }) });
+  const viewOf = async truncated => coinView({ client: client(page(truncated)), from: FINGERPRINT });
+  assert.equal((await viewOf(false)).complete, true);
+  const open = await viewOf(false);
+  assert.equal(quarantineReleasable(held, open), true, 'complete listing, input absent');
+  for (const truncated of [true, undefined, 0, 'false', null]) {
+    const partial = await viewOf(truncated);
+    assert.equal(partial.complete, false, `truncated=${String(truncated)} is not complete`);
+    assert.equal(quarantineReleasable(held, partial), false, 'an absent input is not proof of spending');
+  }
+  const late = { ...(await viewOf(true)), tip: 1091n };
+  assert.equal(quarantineReleasable(held, late), true, 'the expiry rule does not need a complete listing');
 });
 
 // ── W-25 ─────────────────────────────────────────────────────────────────
