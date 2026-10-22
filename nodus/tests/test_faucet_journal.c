@@ -591,12 +591,16 @@ int main(void) {
         int64_t g_full = gdisk + gwal - 32 * 1024;
         CHECK(gdisk < g_full, "J9b (precondition) the disk size alone is below the ceiling");
         CHECK(faucet_journal_open(hp, (uint64_t)g_full, &h) == 0, "J9b reopen with disk + margin just over the ceiling");
+        /* attempt 1's reservation stays through "expired" (only confirmed
+         * frees reservations); the refused replacement must leave it as is */
+        int64_t gres = q_int(hp, "SELECT COUNT(*) FROM reservations");
+        CHECK(gres == 1, "J9b (precondition) attempt 1's reservation is held");
         mk_attempt(&ga, env1, 35, 1);
         CHECK(faucet_journal_attempt_sign(h, gc.seq, &ga) == -4,
               "J9b a replacement with disk + WAL margin at the ceiling is refused (-4)");
         CHECK(q_int(hp, "SELECT COUNT(*) FROM attempts") == 1 &&
-              q_int(hp, "SELECT COUNT(*) FROM reservations") == 0,
-              "J9b ... nothing was recorded (rolled back)");
+              q_int(hp, "SELECT COUNT(*) FROM reservations") == gres,
+              "J9b ... nothing was recorded and the old reservation is unchanged (rolled back)");
         CHECK(faucet_journal_claim_get(h, gc.claim_id, &tmp) == 0 && !strcmp(tmp.state, "expired"),
               "J9b ... the claim stays expired");
         faucet_journal_close(h);
