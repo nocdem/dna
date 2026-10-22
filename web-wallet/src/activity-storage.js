@@ -302,6 +302,21 @@ export async function parseActivity(text, id, addresses, key) {
   Object.defineProperty(kept, 'quarantined', { value: quarantined, enumerable: false });
   return kept;
 }
+// The saved Activity text with ONLY its quarantined records removed (the
+// "discard" of unreadable records): every readable row of the saved text and
+// of `openRows` (this tab's, same chain:hash key, the tab's winning) is
+// written back with its pending reservation and tracking — a valid
+// outstanding payment is never dropped because a neighbour was malformed.
+// Throws as parseActivity does when the text as a whole cannot be read.
+export async function serializeWithoutQuarantined(text, id, addresses, key, openRows = []) {
+  const saved = await parseActivity(text, id, addresses, key);
+  const merged = new Map([...saved, ...openRows].map(row => [`${row.chain}:${row.hash}`, row]));
+  const rows = [...merged.values()].sort((a, b) => {
+    const time = Date.parse(a.createdAt) - Date.parse(b.createdAt), aKey = `${a.chain}:${a.hash}`, bKey = `${b.chain}:${b.hash}`;
+    return time || (aKey < bKey ? -1 : aKey > bKey ? 1 : 0);
+  });
+  return serializeActivity(id, rows, key, []);
+}
 // The record of a malformed saved NODUS row whose reservation is recoverable
 // (see parseActivity), or null. `raw` is the row exactly as it was read: it
 // came out of this wallet's authenticated, JSON-decoded envelope and is

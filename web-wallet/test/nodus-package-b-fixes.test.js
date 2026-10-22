@@ -29,8 +29,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { claimTestnetCoins, FAUCET_MAX_BODY, FAUCET_LOST_TEXT, FAUCET_PENDING_TEXT, NODUS_TESTNET_CHAIN_ID } from '../src/adapters/nodus.js';
-import { holdingActions } from '../src/portfolio.js';
-import { activityKeyFor, serializeActivity, parseActivity } from '../src/activity-storage.js';
+import { holdingActions, unavailableAssetNote, sameAssetKeys } from '../src/portfolio.js';
+import { activityKeyFor, serializeActivity, serializeWithoutQuarantined, parseActivity } from '../src/activity-storage.js';
 import { lockedInputs } from '../src/adapters/nodus.js';
 import { createNodusClient } from '../src/nodus/client.js';
 import { createMockNodusModule, FINGERPRINT, RECIPIENT, ZERO_TOKEN } from './nodus-mock-module.js';
@@ -204,4 +204,44 @@ test('the module\'s NODUS build refuses a request without the explicit all-zero 
   const built = await client.buildAndSign({ ...request, tokenId: ZERO_TOKEN });
   assert.equal(built.decoded.tokenId, ZERO_TOKEN);
   client.lock();
+});
+
+// ── regressions of the previous fix round (operator 2026-10-22: "Kritikleri
+// düzelt, gerisi BUGS") ──────────────────────────────────────────────────
+// How these can lie: the DOM wiring (the <select> keeping a disabled option,
+// Review disabled, the pin sync inside the portfolio's read) has no unit seam;
+// what is pinned here is the pure rules those handlers call.
+test('selection: an unavailable pinned token has a stated note, keeps the selection (never NODUS), and Send stays off from the CURRENT pins alone', () => {
+  assert.equal(unavailableAssetNote('tUSDT'), 'tUSDT is unavailable right now — choose another asset');
+  // Send is derived from the current pins even when the row's last read still said "ready"
+  const down = { receiveOnly: false, tokens: [{ symbol: 'tUSDT', available: false }] };
+  const up = { receiveOnly: false, tokens: [{ symbol: 'tUSDT', available: true }] };
+  assert.deepEqual(holdingActions(down, { symbol: 'tUSDT', state: 'ready' }, false), ['Receive']);
+  assert.deepEqual(holdingActions(up, { symbol: 'tUSDT', state: 'ready' }, false), ['Send', 'Receive']);
+  assert.deepEqual(holdingActions(down, { symbol: 'NODUS', state: 'ready' }, false), ['Send', 'Receive'], 'NODUS itself is unaffected');
+});
+
+test('pin sync: availability changing keeps the asset keys, so an in-flight read and its balances are kept; a changed key set is not', () => {
+  const key = k => ({ key: k });
+  assert.equal(sameAssetKeys([key('nodus:NODUS'), key('nodus:tUSDT')], [key('nodus:NODUS'), key('nodus:tUSDT')]), true);
+  assert.equal(sameAssetKeys([key('nodus:NODUS')], [key('nodus:NODUS'), key('nodus:tUSDT')]), false);
+  assert.equal(sameAssetKeys([key('a'), key('b')], [key('b'), key('a')]), false);
+});
+
+test('Activity discard: only the quarantined rows (and their locks) go; valid rows, their pending reservations and tracking stay', async () => {
+  const key = await activityKeyFor(phrase, walletId);
+  const bad = savedRow(1, { symbol: 'tUSDT' });
+  const text = await rawFile([savedRow(0), bad, savedRow(2)], key);
+  const addresses = { nodus: FINGERPRINT };
+  const after = await parseActivity(await serializeWithoutQuarantined(text, walletId, addresses, key, []), walletId, addresses, key);
+  assert.deepEqual(after.map(r => r.hash), [hex128(1), hex128(3)], 'valid rows kept');
+  assert.equal(after.quarantined.length, 0, 'the quarantined record is gone');
+  const held = lockedInputs(after);
+  assert.ok(held.has(savedRow(0).inputs[0]) && held.has(savedRow(2).inputs[0]), 'valid pending reservations still lock their coins');
+  assert.ok(!held.has(bad.inputs[0]), 'the discarded record\'s coin is free');
+  assert.deepEqual(after.map(r => r.expiryHeight), ['1090', '1090'], 'tracking fields kept');
+  // a row only this tab holds (not yet saved) is kept too
+  const tab = { ...(await parseActivity(await rawFile([savedRow(5)], key), walletId, addresses, key))[0] };
+  const withTab = await parseActivity(await serializeWithoutQuarantined(text, walletId, addresses, key, [tab]), walletId, addresses, key);
+  assert.deepEqual(withTab.map(r => r.hash), [hex128(1), hex128(3), hex128(6)]);
 });

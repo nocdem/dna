@@ -1,5 +1,5 @@
 import { CHAINS } from './config.js';
-import { ASSETS, chainBalances, holdingActions, readPrices, portfolioSnapshot, groupAssets, usdText, displayAmount } from './portfolio.js';
+import { ASSETS, chainBalances, holdingActions, sameAssetKeys, readPrices, portfolioSnapshot, groupAssets, usdText, displayAmount } from './portfolio.js';
 
 const names = { ETH: 'Ethereum', BNB: 'BNB', SOL: 'Solana', TRX: 'TRON', USDT: 'Tether', USDC: 'USD Coin', DAI: 'Dai', USDD: 'USDD', CPUNK: 'CPUNK' };
 // Asset symbol -> its own icon file. Keyed by symbol, not guessed from it, so an
@@ -396,10 +396,19 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
   // (src/app.js setNodusReady). A network that stops having a balance source
   // has its read cancelled and its rows dropped; one that gains a source is
   // read as soon as setAddress() reports its address.
-  function setNetwork(chain, network) {
+  // `keepRead` (pin availability changes, src/app.js syncNodusPins): when the
+  // network's asset keys are unchanged, an in-flight read and the balances
+  // already held stay — only the definition (token availability, so the
+  // rows' actions, holdingActions) is replaced. It never aborts the very read
+  // whose completion triggered the update.
+  function setNetwork(chain, network, { keepRead = false } = {}) {
     if (!Object.hasOwn(networks, chain) || networks[chain] === network) return;
     const before = assets.filter(a => a.chain === chain);       // incl. the old network's tokens
     networks[chain] = network; flag();
+    if (keepRead && network.balanceUnavailable !== true) {
+      const after = assets.filter(a => a.chain === chain);
+      if (sameAssetKeys(before, after)) { render(); return; }
+    }
     jobs.get(chain)?.abort(); jobs.delete(chain);
     for (const asset of [...before, ...assets.filter(a => a.chain === chain)]) delete balances[asset.key];
     // The address stays (0.1.96): its last read balance (kept) is shown as

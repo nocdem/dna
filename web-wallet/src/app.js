@@ -1,13 +1,13 @@
 import { getAddress } from 'ethers';
 import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, IDENTITY_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
 import { deleteVaultHistory, HistoryDeleteBlocked } from './connect/store.js';
-import { serializeActivity, parseActivity, requireSavedForEvm, activityKeyFor, sentRowsToShow, serializeBalances, parseBalances, balancesKeyFor, serializeHistory, parseHistory, historyKeyFor, serializeAddressBook, parseAddressBook, addressBookKeyFor, serializeIdentity, parseIdentity, identityKeyFor, IDENTITY_PEERS_MAX } from './activity-storage.js';
+import { serializeActivity, serializeWithoutQuarantined, parseActivity, requireSavedForEvm, activityKeyFor, sentRowsToShow, serializeBalances, parseBalances, balancesKeyFor, serializeHistory, parseHistory, historyKeyFor, serializeAddressBook, parseAddressBook, addressBookKeyFor, serializeIdentity, parseIdentity, identityKeyFor, IDENTITY_PEERS_MAX } from './activity-storage.js';
 import { addAddress, updateAddress, removeAddress, addressesFor, findAddress, checkAddress } from './address-book.js';
 import { validateCellframeAddress } from './cpunk-protocol.js';
 import { readHistory, mergeHistory, historySupported, HISTORY_SOURCES, HISTORY_LIMIT } from './history.js';
 import { recordActivity, watchActivity, checkActivity, terminal, submissionStatus, evmActivityText, activitySymbol } from './activity.js';
 import { CHAINS, CELLFRAME, rpcChoiceOffered } from './config.js';
-import { CPUNK_ASSET, displayAmount } from './portfolio.js';
+import { CPUNK_ASSET, displayAmount, unavailableAssetNote } from './portfolio.js';
 // Pure data, referenced only inside `if (import.meta.env.VITE_ENABLE_IXIOS === 'true')`
 // blocks below, so a disabled build tree-shakes the whole module away.
 import { IXIOS_NETWORK, IXIOS_ASSET } from './ixios/network.js';
@@ -914,7 +914,7 @@ $('review-dialog').addEventListener('keydown', event => { if (event.key === 'Ent
 // src/activity.js activitySymbol). They become the NODUS network's `tokens`
 // (the Send panel's asset list and the portfolio's rows).
 let nodusPins = [], nodusPinsKnown = false;
-function setNodusReady(ready, { reselect = true } = {}) {
+function setNodusReady(ready, { reselect = true, keepRead = false } = {}) {
   nodusPins = ready ? pinnedTokens(nodusClient) : [];
   nodusPinsKnown = ready && nodusClient?.tokenable === true;
   const network = nodusNetworkFor(ready, { module: NODUS_HAS_MODULE, tokens: nodusPins });
@@ -922,7 +922,7 @@ function setNodusReady(ready, { reselect = true } = {}) {
   receiveOnlyNetworks[NODUS_ASSET.chain] = network;
   if (!ready && wallet) wallet.nodusClient = undefined;
   if (!ready) { claimCheck++; portfolio.setAction(NODUS_ASSET.chain, undefined); portfolio.setAction(NODUS_ASSET.chain, undefined, 'faucet'); hideStaking(); hideName(); }
-  portfolio.setNetwork(NODUS_ASSET.chain, network);
+  portfolio.setNetwork(NODUS_ASSET.chain, network, { keepRead });
   if (reselect && wallet && $('chain').value === NODUS_ASSET.chain) selectChain();
 }
 // Lock order lives in the client (src/nodus/client.js lock): stop the queue ->
@@ -1977,18 +1977,31 @@ function selectAssetOption(chain, symbol) {
 // latched for it, nodus-send-wasm.c nsw_pins_check), not the snapshot taken
 // when the connection became ready: re-read after every balance read and
 // every prepare, and rebuild the options when a pin's availability changed.
-// The chosen asset stays selected when it is still enabled, else NODUS.
+// The chosen asset stays selected even when it turned unavailable (shown
+// disabled, Review refused, applyAssetGate): the wallet never switches the
+// selection to NODUS by itself — only the user's own choice does.
 function syncNodusPins() {
   if (!wallet || !nodusClient || nodusClient.state !== 'ready') return;
   const next = pinnedTokens(nodusClient);
   if (next.length === nodusPins.length && next.every((pin, i) => pin.tokenId === nodusPins[i].tokenId && pin.available === nodusPins[i].available)) return;
-  setNodusReady(true, { reselect: false });
+  // keepRead: the balance read whose completion calls this must survive it.
+  setNodusReady(true, { reselect: false, keepRead: true });
   if ($('chain').value !== NODUS_ASSET.chain) return;
   const kept = $('asset').value;
   $('asset').replaceChildren(...assetOptions(NODUS_ASSET.chain, networkFor(NODUS_ASSET.chain)));
-  const still = [...$('asset').options].find(o => o.value === kept && !o.disabled);
+  const still = [...$('asset').options].find(o => o.value === kept);
   $('asset').value = still ? still.value : NODUS_TOKEN_ID;
+  applyAssetGate();
 }
+// A selected asset whose option is disabled (an unavailable pinned token)
+// cannot be reviewed: the Review button is off and the status line says why.
+function selectedAssetUnavailable() { return !!$('asset').selectedOptions[0]?.disabled; }
+function applyAssetGate() {
+  const option = $('asset').selectedOptions[0], blocked = !!option?.disabled;
+  $('review-button').disabled = blocked;
+  if (blocked) message(unavailableAssetNote(option.dataset.symbol),{ category: 'send', error: true });
+}
+$('asset').addEventListener('change', applyAssetGate);
 function selectChain() {
   revision++; closeReview(); const chain = $('chain').value; const c = networkFor(chain);
   for (const label of document.querySelectorAll('.selected-network-name')) label.textContent = c.name;
@@ -2004,6 +2017,7 @@ function selectChain() {
   const offered = rpcChoiceOffered(c);
   $('rpc-settings').hidden = !offered; if (offered) populateRpcChoice(chain, c);
   $('asset').replaceChildren(...assetOptions(chain, c));
+  applyAssetGate();
   $('solana-send-hint').hidden = chain !== 'solana';
   const explorers = { ethereum: 'https://etherscan.io/address/', bsc: 'https://bscscan.com/address/', solana: 'https://solscan.io/account/', tron: 'https://tronscan.org/#/address/' };
   if (explorers[chain]) { $('account-explorer').href = explorers[chain] + encodeURIComponent(address); $('account-explorer').hidden = false; }
@@ -2245,7 +2259,10 @@ $('send-form').onsubmit = async event => {
     const blocking = history.find(row => row.chain === $('chain').value && row.address === address && !terminal(row.status));
     if (blocking) { message(`A previous send on this network has no final result yet (tx ${blocking.hash}). Wait for it to resolve, or mark it as abandoned in Activity.`); return; }
   }
-  busy = true; const current = revision, restore = showPreparing($('review-button'));
+  // An unavailable selected asset is never prepared (retry included); the
+  // selection is never replaced by NODUS on the user's behalf.
+  if (selectedAssetUnavailable()) { applyAssetGate(); return; }
+  busy = true; const current = revision, restore = showPreparing($('review-button'), { enabled: () => !selectedAssetUnavailable() });
   message('Preparing transfer and network fee…');
   try {
     const chain = $('chain').value;
@@ -2612,11 +2629,19 @@ $('discard-activity').onclick = async () => {
   const source = wallet, session = activitySession, previous = localStorage.getItem(ACTIVITY_KEY);
   try {
     await withActivityLock(async () => {
-      const encrypted = await serializeActivity(session.id, [], session.key, []);
+      // Only the unreadable part goes. File unreadable as a whole
+      // (activityBlocked): nothing of it can be told apart, all is discarded.
+      // Otherwise (quarantined records only) the readable rows of the saved
+      // file and of this tab — with their pending reservations and tracking —
+      // are written back; only the quarantined records (and their locks) go.
+      const encrypted = activityBlocked ? await serializeActivity(session.id, [], session.key, [])
+        : await serializeWithoutQuarantined(previous, session.id, source.addresses, session.key, history.filter(row => row.address === source.addresses[row.chain]).map(row => ({ ...row })));
       if (wallet !== source || source.locked || activitySession !== session || localStorage.getItem(VAULT_KEY) !== session.vault || localStorage.getItem(ACTIVITY_KEY) !== previous) throw new Error('Wallet or history changed. Unlock again before discarding history.');
-      localStorage.setItem(ACTIVITY_KEY, encrypted); history.length = 0; quarantinedRows = []; activityBlocked = false; $('discard-activity').hidden = true;
+      localStorage.setItem(ACTIVITY_KEY, encrypted);
+      if (activityBlocked) history.length = 0;
+      quarantinedRows = []; activityBlocked = false; $('discard-activity').hidden = true;
     });
-    renderActivity(false); $('vault-status').textContent = 'Unreadable local history discarded. Check the account explorer before resending any previous payment.';
+    renderActivity(false); $('vault-status').textContent = 'Unreadable local history discarded; readable records and their held coins were kept. Check the account explorer before resending any previous payment.';
   } catch (error) { $('vault-status').textContent = error.message; }
 };
 $('vault-delete').onclick = async () => {
