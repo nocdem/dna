@@ -259,7 +259,7 @@ static const char *param_name(uint32_t id) {
     case DNAC_CFG_RULESET_GEN_ROOTS:      return "RULESET_GEN_ROOTS";
     /* HF EVM-ML-DSA (ML-DSA-87 precompile) */
     case DNAC_CFG_MLDSA_ACTIVE:           return "MLDSA_ACTIVE";
-    default:                             return NULL;
+    default:                              return NULL;
     }
 }
 

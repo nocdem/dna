@@ -7,7 +7,7 @@ JSON API. The Nodus Scan frontend (`scan.nodusnetwork.io`) lives in
 `website/scan/` (see `website/deploy/README.md`); the legacy
 `scan.cpunk.io` frontend is no longer in this repository.
 
-**Next build (2026-10-22, HF EVM-ML-DSA; version number set by the merger)**
+**0.2.8 (2026-10-22, HF EVM-ML-DSA)**
 names chain-config param 23 `MLDSA_ACTIVE` in `/api/governance` — the vote
 for the ML-DSA-87 EVM precompile (block 306,182, in force from 306,911); its
 value 7607927450973511004 is above 2^53 and is a decimal string like every
