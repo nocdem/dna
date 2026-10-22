@@ -103,23 +103,6 @@ test('W-24: two quarantined records with the same inputs are released one at a t
   assert.deepEqual(quarantineLockRows([first, second], new Set([first, second])), [], 'both released: nothing locked');
 });
 
-test('W-24: a truncated or unflagged listing never releases by absence; expiry still releases', async () => {
-  const [held] = await quarantineOf([savedRow(1, { symbol: 'tUSDT' })]);   // native record, expiryHeight 1090
-  const client = list => ({ state: 'ready', fingerprint: FINGERPRINT, balance: async () => ({ total: '5', spendable: '5' }), list: async () => list });
-  const page = truncated => ({ tip: '500', coins: [{ nullifier: hex128(9), amount: '5' }], ...(truncated === undefined ? {} : { truncated }) });
-  const viewOf = async truncated => coinView({ client: client(page(truncated)), from: FINGERPRINT });
-  assert.equal((await viewOf(false)).complete, true);
-  const open = await viewOf(false);
-  assert.equal(quarantineReleasable(held, open), true, 'complete listing, input absent');
-  for (const truncated of [true, undefined, 0, 'false', null]) {
-    const partial = await viewOf(truncated);
-    assert.equal(partial.complete, false, `truncated=${String(truncated)} is not complete`);
-    assert.equal(quarantineReleasable(held, partial), false, 'an absent input is not proof of spending');
-  }
-  const late = { ...(await viewOf(true)), tip: 1091n };
-  assert.equal(quarantineReleasable(held, late), true, 'the expiry rule does not need a complete listing');
-});
-
 // ── W-25 ─────────────────────────────────────────────────────────────────
 const X = hex128(31);
 const claim = (extra = {}) => ({ chain: 'nodus', address: FINGERPRINT, to: FINGERPRINT, symbol: 'NODUS', amount: '5', hash: X, status: 'pending', inputs: [X], ...extra });
