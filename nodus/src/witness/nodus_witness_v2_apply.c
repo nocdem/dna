@@ -55,10 +55,12 @@
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_types.h"         /* NODUS_W_BASE_TX_FEE,
                                         * NODUS_W_TOKEN_CREATE_FEE       */
-#ifdef NODUS_EVM_ENABLED
-#include "witness/nodus_witness_rt_evm.h"  /* red-team-1 F6: the per-leg
-                                        * trie batch (exec_evm_leg)      */
-#endif
+/* Unconditional (every build): the ML-DSA-87 switch reader
+ * nodus_rt_evm_mldsa_active_at is a static inline in this header and
+ * env_evm_facts calls it in every build; the per-leg trie batch
+ * (exec_evm_leg, red-team-1 F6) is still called under NODUS_EVM_ENABLED
+ * only. The header needs no EVM type (runtime / chain-config / dnac). */
+#include "witness/nodus_witness_rt_evm.h"
 
 #include "dnac/dnac.h"                 /* DNAC_EPOCH_LENGTH (via apply.h,
                                         * kept explicit here too),
