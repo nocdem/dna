@@ -136,8 +136,11 @@ typedef struct {
  *  fee ceiling (the NODUS pool is shared by FULL and START), READ FROM THE
  *  CACHE the worker keeps — this call never touches the node. A cache older
  *  than FAUCET_STATUS_MAX_AGE_MS (or never filled) is "the node could not
- *  be read". */
-void faucet_api_status(faucet_core_t *c, faucet_status_t *out);
+ *  be read".
+ *  @return 0 `out` is filled / FJ_BUSY the journal could not be taken before
+ *  the request's deadline (`out` is not valid) / -1 a journal fault (`out`
+ *  is not valid). The route answers 503 on the last two. */
+int faucet_api_status(faucet_core_t *c, faucet_status_t *out);
 
 #define FAUCET_STATUS_TTL_MS      10000   /* the worker re-reads after this   */
 #define FAUCET_STATUS_MAX_AGE_MS  30000   /* older = not trusted by /status   */

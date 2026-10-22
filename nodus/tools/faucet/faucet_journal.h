@@ -39,13 +39,16 @@
  * where margin = FJ_WAL_CKPT_PAGES * page_size + FJ_TX_BOUND_BYTES (the WAL
  * growth the next commit and the checkpoint lag can add) and reserve =
  * FJ_CLAIM_RESERVE_BYTES for every open claim and for the new one — AND
- * the on-disk size (page_count * page_size + wal) is still below the
- * ceiling. A ceiling that cannot hold margin + two reserves is refused at
- * open. A REPLACEMENT attempt (the second or
+ * the on-disk size (page_count * page_size + wal) PLUS THE SAME WAL MARGIN
+ * is still below the ceiling (disk + margin < ceiling). journal_size_limit
+ * bounds the -wal file retained after a checkpoint reset, it is not a
+ * write-time quota. A ceiling that cannot hold margin + two reserves is
+ * refused at open. A REPLACEMENT attempt (the second or
  * later of a claim) first frees the claim's earlier, expired envelope
  * payloads — wire id, intent id, inputs, expiry and scan cursor stay as
  * evidence, the paid markers are never touched — and is refused (-4,
- * nothing recorded) when the live bytes are still at the ceiling. The
+ * nothing recorded) when the live bytes are still at the ceiling or the
+ * on-disk size plus the WAL margin has reached it. The
  * envelope payloads of a CONFIRMED claim are freed the same way.
  *
  * Thread safety: one connection, one mutex; every call takes the lock.
@@ -135,6 +138,11 @@ void faucet_journal_close(faucet_journal_t *j);
  *  from now on: claim_create, claim_get, claim_by_address, storage_full and
  *  counts then return FJ_BUSY when it passes (see DEADLINES above). */
 void faucet_journal_thread_deadline(uint64_t deadline_ms);
+
+/** TEST ONLY — production never calls it. `fn` (NULL = none) runs inside
+ *  claim_create right before its pre-commit deadline check, so a test can let
+ *  the deadline pass at that point deterministically. */
+void faucet_journal_test_precommit_hook(void (*fn)(void));
 
 /** The WAL pragmas in force on the journal's connection: journal_size_limit
  *  (bytes) and wal_autocheckpoint (pages). 0 / -1. */

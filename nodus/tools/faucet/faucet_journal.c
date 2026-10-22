@@ -124,6 +124,15 @@ void faucet_journal_thread_deadline(uint64_t deadline_ms) {
     t_deadline_ms = deadline_ms;
 }
 
+/* TEST HOOK (production never sets it): called in claim_create between the
+ * last query and the pre-commit deadline check, so a test can make the
+ * deadline pass at exactly that point without a sleep. */
+static void (*t_precommit_hook)(void) = NULL;
+
+void faucet_journal_test_precommit_hook(void (*fn)(void)) {
+    t_precommit_hook = fn;
+}
+
 static uint64_t mono_now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -392,8 +401,13 @@ static int storage_measure_locked(faucet_journal_t *j, uint64_t *used,
     return 0;
 }
 
-static int storage_used_locked(faucet_journal_t *j, uint64_t *used) {
-    return storage_measure_locked(j, used, NULL, NULL);
+/* The ON-DISK test: the file never shrinks (free pages stay in it), so the
+ * next commit's WAL growth must fit on top of the file as it is now:
+ *     disk + margin  <  ceiling
+ * written without underflow or overflow. 1 = it does NOT fit. */
+static int disk_margin_reaches_ceiling(uint64_t disk, uint64_t margin,
+                                       uint64_t ceiling) {
+    return margin >= ceiling || disk >= ceiling - margin;
 }
 
 /* The ceiling test of NEW CLAIMS. The configured value is a hard DISK
@@ -403,7 +417,17 @@ static int storage_used_locked(faucet_journal_t *j, uint64_t *used) {
  *               (the WAL growth of the next commit and the checkpoint lag)
  *     reserve = FJ_CLAIM_RESERVE_BYTES * (open claims + the one admitted)
  * and, separately, the ON-DISK size (page_count * page_size + wal — the
- * file never shrinks, free pages included) must still be below the ceiling.
+ * file never shrinks, free pages included) plus the SAME WAL margin must
+ * still be below the ceiling (disk + margin < ceiling): with many free pages
+ * the live test alone would pass while the next commit's WAL growth lands on
+ * top of the high-water file.
+ * NOTE: journal_size_limit bounds the -wal file that is RETAINED after a
+ * checkpoint reset; it is not a write-time quota. Between resets the WAL can
+ * grow by a checkpoint window (that is what margin covers). A reader that
+ * holds a read transaction blocks checkpoints and so the reset: this process
+ * has ONE connection and no other reader, so it cannot happen here; an
+ * EXTERNAL reader of the file (an operator's sqlite3 shell, a backup) can,
+ * and is NOT handled.
  * 1 full, 0 room, -1 fault. Lock held. */
 static int storage_full_locked(faucet_journal_t *j) {
     uint64_t used = 0, disk = 0, margin = 0;
@@ -411,7 +435,8 @@ static int storage_full_locked(faucet_journal_t *j) {
     if (storage_measure_locked(j, &used, &disk, &margin) != 0) return -1;
     if (one_int(j, "SELECT COUNT(*) FROM claims WHERE state<>'confirmed'", NULL,
                 &open) != 0 || open < 0) return -1;
-    if (used >= j->ceiling || disk >= j->ceiling) return 1;
+    if (used >= j->ceiling ||
+        disk_margin_reaches_ceiling(disk, margin, j->ceiling)) return 1;
     uint64_t reserve = ((uint64_t)open + 1u) * FJ_CLAIM_RESERVE_BYTES;
     return (margin + reserve >= j->ceiling - used) ? 1 : 0;
 }
@@ -531,6 +556,17 @@ int faucet_journal_claim_create(faucet_journal_t *j, const char *kind,
     }
     if (claim_query(j, "SELECT " CLAIM_COLS " FROM claims WHERE seq=?1", NULL,
                     seq, out) != 0) goto rb;
+    /* The deadline was checked when the lock was taken; the queries above
+     * can have run past it. Re-check IMMEDIATELY before COMMIT: past it, the
+     * transaction is rolled back (no claim, no marker) and the caller gets
+     * FJ_BUSY. A COMMIT that has already started cannot be interrupted and
+     * can still block the poll loop (the journal is not off the loop). */
+    if (t_precommit_hook) t_precommit_hook();
+    if (t_deadline_ms != FJ_NO_DEADLINE && mono_now_ms() >= t_deadline_ms) {
+        rollback(j);
+        ret = FJ_BUSY;
+        goto unlock;
+    }
     if (commit(j) != 0) goto rb;
     ret = FJ_CREATED;
     goto unlock;
@@ -705,9 +741,16 @@ int faucet_journal_attempt_sign(faucet_journal_t *j, int64_t seq,
         s = sqlite3_step(st);
         sqlite3_finalize(st);
         if (s != SQLITE_DONE) goto rb;
-        uint64_t used = 0;
-        if (storage_used_locked(j, &used) != 0) goto rb;
-        if (used >= j->ceiling) { rollback(j); ret = -4; goto unlock; }
+        uint64_t used = 0, disk = 0, margin = 0;
+        if (storage_measure_locked(j, &used, &disk, &margin) != 0) goto rb;
+        /* the live bytes at the ceiling, or the on-disk file plus the WAL
+         * margin of this very commit at it (same disk test as new claims) */
+        if (used >= j->ceiling ||
+            disk_margin_reaches_ceiling(disk, margin, j->ceiling)) {
+            rollback(j);
+            ret = -4;
+            goto unlock;
+        }
     }
 
     /* reservations: this claim's old set goes, the new set comes */
