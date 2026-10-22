@@ -3360,6 +3360,73 @@ int nsw_delegations(void) {
     return nsw_end(0);
 }
 
+/* HF-8 pre-check (decision 2026-10-21-hf8-activation.md and its rev 3
+ * amendment; the rule of nodus-cli's "HF-8 pre-check", nodus/tools/
+ * nodus-cli.c): before anything is signed, ask the node whether
+ * "delegation requires an on-chain name" (chain_config param 17,
+ * dnac_fee_info "delegate_name_required" at tip + 1) is in force, and
+ * refuse a DELEGATE (is_stake 0, `vi` the target row of g_vals) or a
+ * generation-4 STAKE (is_stake 1, `vi` unused) the chain would refuse for
+ * that reason — only when every fact is known: the rule is ON, the actor
+ * is positively NOT exempt, and the node's committed name index has no
+ * name for this wallet. The exemption mirrors the chain's per generation:
+ *   - generation 4 and later (decision 2026-10-09-kurultay-16-hf6-storage-
+ *     summary.md D3): this wallet's fingerprint == the target row's
+ *     owner_fp (a row without one: no pre-check, the node decides — not
+ *     reachable from nsw_stake_build, which refuses such a row earlier);
+ *   - generations 1-3: this wallet's key == the validator's key;
+ *   - a generation-4 STAKE: no exemption (the staker — this wallet, never
+ *     the node's key — is the actor).
+ * UNKNOWN (an older node that does not report the key) is never read as
+ * OFF and never as a refusal: no pre-check, the node decides. A failed
+ * query refuses (a fault is not "rule off"). The name is looked up for
+ * this wallet's own fingerprint g_fp_hex (= SHA3-512 of g_id's key,
+ * nsw_identify_core), as nsw_name_build does. Every wait runs here with
+ * small locals; the caller has already read dnac_fee_info and builds only
+ * after this returns 0. @return 0 = build; -1 = refused (g_error set) or
+ * cancelled. */
+static int nsw_name_precheck(int is_stake, int gen4, int vi) {
+    int dnr = NODUS_DLG_NAME_RULE_UNKNOWN;
+    int rc = nodus_client_dnac_delegate_name_rule(&g_client, &dnr);
+    if (rc != 0)
+        return nsw_fail_rc(rc, "Could not check whether %s needs a chain "
+                           "name (rc=%d). Nothing was built.",
+                           is_stake ? "becoming a witness" : "delegating", rc);
+    if (g_cancel) return -1;
+    if (dnr != NODUS_DLG_NAME_RULE_ON) return 0;  /* OFF, or UNKNOWN: node */
+    if (!is_stake) {
+        if (!nsw_val_ok(vi))
+            return nsw_fail("Invalid staking request.");
+        int exempt;
+        if (gen4) {
+            if (!g_vals.has_v2[vi]) return 0;     /* no owner: node decides */
+            uint8_t owner[64];
+            if (nsw_parse_hex(g_vals.owner_hex[vi], owner, sizeof(owner)) != 0)
+                return nsw_fail("The witness list is invalid. Nothing was "
+                                "built.");
+            exempt = memcmp(owner, g_id.node_id.bytes, sizeof(owner)) == 0;
+        } else {
+            exempt = memcmp(g_vals.pk[vi], g_id.pk.bytes, NSW_PK_LEN) == 0;
+        }
+        if (exempt) return 0;
+    }
+    nodus_dnac_name_result_t r;
+    memset(&r, 0, sizeof(r));
+    rc = nodus_client_dnac_name_of(&g_client, g_fp_hex, &r);
+    if (rc != 0)
+        return nsw_fail_rc(rc, "Could not check whether this wallet has a "
+                           "chain name (rc=%d). Nothing was built.", rc);
+    if (g_cancel) return -1;
+    if (r.found) return 0;
+    if (is_stake)
+        return nsw_fail("Becoming a witness needs a chain name for this "
+                        "wallet. Register a name first, wait until it is in "
+                        "a block, then try again. Nothing was built.");
+    return nsw_fail("Delegating needs a chain name for this wallet. Register "
+                    "a name first, wait until it is in a block, then "
+                    "delegate again. Nothing was built.");
+}
+
 /* Build one staking envelope for review. `op`: 1 STAKE, 2 DELEGATE,
  * 4 UNDELEGATE. `validator_fp_hex`: the target, resolved to its key from
  * the last nsw_validators listing ("" for STAKE) — and, when the node runs
@@ -3451,6 +3518,13 @@ int nsw_stake_build(int op, const char *validator_fp_hex, const char *amount_dec
         return nsw_end(nsw_fail_rc(rc, "The network fee is unknown (rc=%d). "
                                    "Nothing was built.", rc));
     if (g_cancel) return nsw_end(-1);
+    /* HF-8: a DELEGATE needs this wallet's chain name while param 17 is in
+     * force (nsw_name_precheck). UNDELEGATE is never name-gated; a STAKE
+     * here is below generation 4 (a generation-4 STAKE is refused in
+     * nsw_stake_core and built by nsw_hf6_build) and is not gated. */
+    if (op == NODUS_V2_STAKE_OP_DELEGATE &&
+        nsw_name_precheck(0, gen4, vi) != 0)
+        return nsw_end(-1);
     /* the listing may have been replaced only by another export, and none
      * can run while this one does (nsw_begin) — vi still names the row */
     rc = nsw_stake_core(g_id.pk.bytes, g_id.sk.bytes, g_net.chain, g_list.tip,
@@ -3601,6 +3675,12 @@ int nsw_hf6_build(int op, const char *consent_text, const char *target_hex,
     }
     rc = -1;
     if (g_cancel) goto out;
+    /* HF-8 rev 3: a STAKE here is a generation-4 STAKE (nsw_hf6_gen_ok
+     * above) and needs this wallet's chain name while param 17 is in force,
+     * with no exemption (nsw_name_precheck). STORAGE_REGISTER /
+     * STORAGE_EXIT / UNSTAKE are never name-gated. */
+    if (op == NODUS_V2_STAKE_OP_STAKE && nsw_name_precheck(1, 1, -1) != 0)
+        goto out;
     /* the bonds from the same answer as the gas price (BUGS W-20) */
     uint64_t stake_min = 0, storage_bond = 0;
     if (nsw_hf6_bonds_of(fi.stake_min, fi.storage_bond, &stake_min,
