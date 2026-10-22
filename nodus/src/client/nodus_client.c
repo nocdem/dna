@@ -665,6 +665,22 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
         return;
     }
 
+    /* C-04 — a slot takes ONE response. Once ready is set the waiting (or
+     * already-returned) caller reads slot->response / raw_response without
+     * pending_mutex, so a second frame carrying the same txn (a duplicating
+     * or hostile server) must not free or overwrite them. Drop it. */
+    if (atomic_load(&slot->ready)) {
+        pthread_mutex_unlock(&client->pending_mutex);
+        QGP_LOG_WARN(LOG_TAG,
+                     "Duplicate response for txn %u dropped (slot already answered): "
+                     "method=%s type=%c",
+                     tmp.txn_id,
+                     tmp.method[0] ? tmp.method : "(none)",
+                     tmp.type ? tmp.type : '?');
+        nodus_t2_msg_free(&tmp);
+        return;
+    }
+
     /* Save raw payload for DNAC-specific CBOR decoding */
     free(slot->raw_response);
     slot->raw_response = malloc(len);

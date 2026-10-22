@@ -40,9 +40,16 @@
  *       its own entry.
  *   (5) Ids are monotonic, so (3) and (4) cannot be confused by reuse.
  *   (6) NULL / empty-table guards.
+ *   (7) C-04: a second response frame for the same txn, arriving while
+ *       the slot is already answered, is dropped — the first answer's
+ *       raw buffer and decoded message are neither freed nor replaced
+ *       (driven through the real client_on_frame via tcp->on_frame).
  */
 
 #include "nodus/nodus.h"
+#include "transport/nodus_tcp.h"
+#include "protocol/nodus_tier2.h"
+#include "crypto/nodus_identity.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -154,6 +161,56 @@ int main(void) {
         CHECK(nodus_client_pending_find(empty, 1) == NULL);
         free(empty);
         printf("[ok] T6 guards\n");
+    }
+
+    /* ── T7 (C-04): a second response for an answered txn is dropped ─ */
+    {
+        nodus_client_t *dc = calloc(1, sizeof(*dc));
+        nodus_identity_t *id = calloc(1, sizeof(*id));
+        nodus_client_config_t cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.server_count = 1;
+        snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "127.0.0.1");
+        cfg.servers[0].port = 1;
+        CHECK(dc && id);
+        CHECK_EQ(nodus_client_init(dc, &cfg, id), 0);
+
+        /* A request in flight, as alloc_pending leaves it. */
+        nodus_pending_t *slot = &dc->pending[0];
+        slot->txn = 77;
+        slot->response = calloc(1, sizeof(nodus_tier2_msg_t));
+        CHECK(slot->response != NULL);
+        slot->in_use = true;
+
+        nodus_tcp_t *tcp = (nodus_tcp_t *)dc->tcp;
+        CHECK(tcp && tcp->on_frame);
+
+        uint8_t f1[256], f2[256];
+        size_t l1 = 0, l2 = 0;
+        CHECK_EQ(nodus_t2_pong(77, f1, sizeof(f1), &l1), 0);
+        CHECK_EQ(nodus_t2_put_ok(77, f2, sizeof(f2), &l2), 0);
+
+        /* First response: delivered as before. */
+        tcp->on_frame(NULL, f1, l1, tcp->cb_ctx);
+        CHECK(atomic_load(&slot->ready));
+        CHECK(strcmp(((nodus_tier2_msg_t *)slot->response)->method, "pong") == 0);
+        uint8_t *raw1 = slot->raw_response;
+        CHECK(raw1 != NULL);
+        CHECK_EQ(slot->raw_response_len, l1);
+
+        /* Duplicate txn from the server: the slot must keep the first
+         * answer — same raw buffer (not freed/replaced), same method. */
+        tcp->on_frame(NULL, f2, l2, tcp->cb_ctx);
+        CHECK(slot->raw_response == raw1);
+        CHECK_EQ(slot->raw_response_len, l1);
+        CHECK(memcmp(slot->raw_response, f1, l1) == 0);
+        CHECK(strcmp(((nodus_tier2_msg_t *)slot->response)->method, "pong") == 0);
+        CHECK(atomic_load(&slot->ready));
+
+        nodus_client_close(dc);   /* frees the in_use slot */
+        free(dc);
+        free(id);
+        printf("[ok] T7 duplicate response cannot replace an answered slot\n");
     }
 
     free(c);
