@@ -194,6 +194,10 @@ void faucet_api_claim(faucet_core_t *c, const char *address_hex,
 
     faucet_claim_t latest;
     int lr = faucet_journal_claim_by_address(c->journal, address_hex, &latest);
+    if (lr == FJ_BUSY) {
+        ans_set(ans, 503, NULL, "refused", "none", "busy, try again");
+        return;
+    }
     if (lr < 0) {
         ans_set(ans, 503, NULL, "refused", "none", "the faucet journal is unavailable");
         return;
@@ -227,6 +231,12 @@ void faucet_api_claim(faucet_core_t *c, const char *address_hex,
         ans_set(ans, 503, NULL, "refused", "none", "no randomness available");
         return;
     }
+    /* The node reads above may have used the whole request: a claim is not
+     * created for a request that has already run out of time. */
+    if (past_deadline(deadline_ms)) {
+        ans_set(ans, 503, NULL, "refused", "none", "busy, try again");
+        return;
+    }
     faucet_claim_t cl;
     int rc = faucet_journal_claim_create(c->journal, is_full ? "full" : "start",
                                          address_hex, is_full ? v.name : NULL,
@@ -251,6 +261,9 @@ void faucet_api_claim(faucet_core_t *c, const char *address_hex,
         ans_set(ans, 503, NULL, "refused", "none",
                 "the faucet is stopped until the operator resolves an open claim");
         break;
+    case FJ_BUSY:
+        ans_set(ans, 503, NULL, "refused", "none", "busy, try again");
+        break;
     default:
         ans_set(ans, 503, NULL, "refused", "none", "the faucet journal is unavailable");
         break;
@@ -269,7 +282,8 @@ void faucet_api_get_claim(faucet_core_t *c, const char *claim_id,
     }
     faucet_claim_t cl;
     int r = faucet_journal_claim_get(c->journal, claim_id, &cl);
-    if (r < 0) ans_set(ans, 503, NULL, "refused", "none", "the faucet journal is unavailable");
+    if (r == FJ_BUSY) ans_set(ans, 503, NULL, "refused", "none", "busy, try again");
+    else if (r < 0) ans_set(ans, 503, NULL, "refused", "none", "the faucet journal is unavailable");
     else if (r == 1) ans_set(ans, 404, NULL, "refused", "none", "unknown claim");
     else ans_claim(ans, &cl, NULL);
 }
