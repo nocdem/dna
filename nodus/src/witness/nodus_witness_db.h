@@ -118,6 +118,14 @@ int  nodus_witness_utxo_by_owner(nodus_witness_t *w, const char *owner,
                                    nodus_witness_utxo_entry_t *out,
                                    int max_entries, int *count_out);
 
+/* nodus_witness_utxo_by_owner restricted to coins whose token_id equals
+ * `token_id` (64 bytes; all-zero = native). Same order, cap, domain
+ * filter and fail-closed read as the unfiltered query. 0 / -1 (fault). */
+int  nodus_witness_utxo_by_owner_token(nodus_witness_t *w, const char *owner,
+                                       const uint8_t token_id[64],
+                                       nodus_witness_utxo_entry_t *out,
+                                       int max_entries, int *count_out);
+
 /* scan-v3 (decision docs/plans/decisions/2026-09-28-scan-v3-query.md,
  * item 3a) — one owner's TRANSPARENT balance, per token. */
 typedef struct {

@@ -254,9 +254,35 @@ static int utxo_domain_col_present(sqlite3 *db) {
  * idx_utxo_owner (nodus_witness.c), so SQLite reads the owner's rows by
  * that index and sorts them before the LIMIT — linear in that owner's
  * coin count. */
+static int utxo_by_owner_impl(nodus_witness_t *w, const char *owner,
+                              const uint8_t *token_id,
+                              nodus_witness_utxo_entry_t *out,
+                              int max_entries, int *count_out);
+
 int nodus_witness_utxo_by_owner(nodus_witness_t *w, const char *owner,
                                    nodus_witness_utxo_entry_t *out,
                                    int max_entries, int *count_out) {
+    return utxo_by_owner_impl(w, owner, NULL, out, max_entries, count_out);
+}
+
+/* The same listing restricted to ONE token (operator 2026-10-22, decision
+ * 2026-10-22-testnet-test-tokens-faucet-dex.md, answer 3): `token_id` is
+ * exactly 64 bytes, the all-zero id = native. Order, cap, domain filter
+ * and the fail-closed step/reset check are nodus_witness_utxo_by_owner's
+ * (one shared body). Node-local RPC answer only; no apply path calls it. */
+int nodus_witness_utxo_by_owner_token(nodus_witness_t *w, const char *owner,
+                                      const uint8_t token_id[64],
+                                      nodus_witness_utxo_entry_t *out,
+                                      int max_entries, int *count_out) {
+    if (!token_id) return -1;
+    return utxo_by_owner_impl(w, owner, token_id, out, max_entries,
+                              count_out);
+}
+
+static int utxo_by_owner_impl(nodus_witness_t *w, const char *owner,
+                              const uint8_t *token_id,
+                              nodus_witness_utxo_entry_t *out,
+                              int max_entries, int *count_out) {
     if (!w || !w->db || !owner || !out || !count_out || max_entries <= 0)
         return -1;
 
@@ -274,30 +300,34 @@ int nodus_witness_utxo_by_owner(nodus_witness_t *w, const char *owner,
     int has_dom = utxo_domain_col_present(w->db);
     if (has_dom < 0) return -1;
 
-    sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(w->db,
+    /* The statement text is assembled from fixed fragments only (never
+     * from request data); the optional token filter is one more bound
+     * parameter, so a token id can never alter the SQL. */
+    char sql[512];
+    int sn = snprintf(sql, sizeof(sql),
         /* O15B §7: unlock_block is SELECTed so the caller can tell a
          * spendable coin from one still inside its post-UNSTAKE cooldown.
          * Omitting it is what let the wallet build transactions consensus
          * was guaranteed to reject (Rule D, nodus_witness_verify.c:730). */
-        has_dom
-        ? "SELECT nullifier, owner, amount, token_id, tx_hash, output_index, "
-          "block_height, unlock_block "
-          "FROM utxo_set WHERE owner = ? AND domain_id = ? "
-          "ORDER BY amount DESC, nullifier ASC LIMIT ?"
-        : "SELECT nullifier, owner, amount, token_id, tx_hash, output_index, "
-          "block_height, unlock_block "
-          "FROM utxo_set WHERE owner = ? "
-          "ORDER BY amount DESC, nullifier ASC LIMIT ?", -1, &stmt, NULL);
+        "SELECT nullifier, owner, amount, token_id, tx_hash, output_index, "
+        "block_height, unlock_block "
+        "FROM utxo_set WHERE owner = ?%s%s "
+        "ORDER BY amount DESC, nullifier ASC LIMIT ?",
+        has_dom ? " AND domain_id = ?" : "",
+        token_id ? " AND token_id = ?" : "");
+    if (sn < 0 || (size_t)sn >= sizeof(sql)) return -1;
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(w->db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
 
-    sqlite3_bind_text(stmt, 1, owner, -1, SQLITE_STATIC);
-    if (has_dom) {
-        sqlite3_bind_int64(stmt, 2, (sqlite3_int64)DNA_DOMAIN_CORE);
-        sqlite3_bind_int(stmt, 3, max_entries);
-    } else {
-        sqlite3_bind_int(stmt, 2, max_entries);
-    }
+    int bi = 1;
+    sqlite3_bind_text(stmt, bi++, owner, -1, SQLITE_STATIC);
+    if (has_dom)
+        sqlite3_bind_int64(stmt, bi++, (sqlite3_int64)DNA_DOMAIN_CORE);
+    if (token_id)
+        sqlite3_bind_blob(stmt, bi++, token_id, 64, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, bi, max_entries);
 
     int count = 0;
     while (sqlite3_step(stmt) == SQLITE_ROW && count < max_entries) {

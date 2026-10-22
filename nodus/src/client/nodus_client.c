@@ -3523,9 +3523,47 @@ static int dnac_utxo_parse(const uint8_t *raw, size_t raw_len,
                            nodus_dnac_utxo_result_t *result_out,
                            bool *trunc_out, uint64_t *nul_out);
 
+/* After a token-filtered dnac_utxo reply is decoded: refuse it, and free
+ * it, if any coin is of another token. A node that predates "tok" skips
+ * the unknown key and answers every token — this is what catches it. */
+static int dnac_utxo_token_only(nodus_dnac_utxo_result_t *r,
+                                const uint8_t token_id[64]) {
+    for (int i = 0; i < r->count; i++) {
+        if (memcmp(r->entries[i].token_id, token_id, 64) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "dnac_utxo: token-filtered reply holds a "
+                         "coin of another token — node predates \"tok\"");
+            nodus_client_free_utxo_result(r);
+            return NODUS_CLIENT_ERR_TOKEN_FILTER_IGNORED;
+        }
+    }
+    return 0;
+}
+
+static int dnac_utxo_request(nodus_client_t *client, const char *owner,
+                             const uint8_t *token_id, int max_results,
+                             nodus_dnac_utxo_result_t *result_out);
+
 int nodus_client_dnac_utxo(nodus_client_t *client,
                              const char *owner,
                              int max_results,
+                             nodus_dnac_utxo_result_t *result_out) {
+    return dnac_utxo_request(client, owner, NULL, max_results, result_out);
+}
+
+int nodus_client_dnac_utxo_token(nodus_client_t *client,
+                                 const char *owner,
+                                 const uint8_t token_id[64],
+                                 int max_results,
+                                 nodus_dnac_utxo_result_t *result_out) {
+    if (!token_id) return -1;
+    return dnac_utxo_request(client, owner, token_id, max_results,
+                             result_out);
+}
+
+/* token_id NULL = the plain dnac_utxo request (bytes unchanged); non-NULL
+ * adds "tok" (bstr 64) and checks the reply is of that token only. */
+static int dnac_utxo_request(nodus_client_t *client, const char *owner,
+                             const uint8_t *token_id, int max_results,
                              nodus_dnac_utxo_result_t *result_out) {
     if (!nodus_client_is_ready(client) || !owner || !result_out) {
         QGP_LOG_ERROR(LOG_TAG, "dnac_utxo: precondition fail: ready=%d owner=%p result=%p",
@@ -3550,12 +3588,16 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
     nodus_pending_t *req = alloc_pending(client, txn);
     if (!req) { free(buf); return -1; }
 
-    enc_dnac_query(&enc, txn, client->token, "dnac_utxo", 2);
+    enc_dnac_query(&enc, txn, client->token, "dnac_utxo", token_id ? 3 : 2);
 
     cbor_encode_cstr(&enc, "owner");
     cbor_encode_cstr(&enc, owner);
     cbor_encode_cstr(&enc, "max");
     cbor_encode_uint(&enc, (uint64_t)max_results);
+    if (token_id) {
+        cbor_encode_cstr(&enc, "tok");
+        cbor_encode_bstr(&enc, token_id, 64);
+    }
 
     size_t len = cbor_encoder_len(&enc);
     if (len == 0) { free_pending(client, req); free(buf); return -1; }
@@ -3574,8 +3616,27 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
     int prc = dnac_utxo_parse(req->raw_response, req->raw_response_len,
                               result_out, NULL, NULL);
     free_pending(client, req);
+    if (prc == 0 && token_id)
+        prc = dnac_utxo_token_only(result_out, token_id);
     return prc;
 }
+
+#ifdef NODUS_CLIENT_TEST_SEAM
+/* tests/test_dnac_utxo_token.c — decode + the token-only check of
+ * nodus_client_dnac_utxo_token, over raw reply bytes. Bypasses nothing. */
+int nodus_client_test_parse_utxo_token(const uint8_t *raw, size_t raw_len,
+                                       const uint8_t token_id[64],
+                                       nodus_dnac_utxo_result_t *out);
+
+int nodus_client_test_parse_utxo_token(const uint8_t *raw, size_t raw_len,
+                                       const uint8_t token_id[64],
+                                       nodus_dnac_utxo_result_t *out) {
+    memset(out, 0, sizeof(*out));
+    int rc = dnac_utxo_parse(raw, raw_len, out, NULL, NULL);
+    if (rc == 0) rc = dnac_utxo_token_only(out, token_id);
+    return rc;
+}
+#endif /* NODUS_CLIENT_TEST_SEAM */
 
 /* Decode a dnac_utxo reply ("r": {"count", "block_height", "utxos"}).
  * Returns 0, NODUS_ERR_PROTOCOL_ERROR (malformed: missing "r", a repeated

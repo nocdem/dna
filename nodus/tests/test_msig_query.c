@@ -67,6 +67,23 @@
  *                    chain height unreadable (`blocks` dropped) →
  *                    INTERNAL_ERROR for dnac_utxo and dnac_msig_utxo (the
  *                    shared encoder), never block_height 0.
+ *  t_dnac_utxo_token dnac_utxo "tok" (bstr 64; operator 2026-10-22): no tok
+ *                    = all six coins as before (3 "r" keys); tok A = this
+ *                    owner's A coins only (another owner's A coin absent),
+ *                    amount DESC / nullifier ASC, same 3-key shape; the
+ *                    zero id = native only; an unheld token = an empty
+ *                    success; "max" applies to the filtered list; 101 coins
+ *                    of one token → the 100 largest; tok of 63 / 65 bytes,
+ *                    a text string, a uint, a repeated tok → PROTOCOL_ERROR;
+ *                    a foreign owner / no session → NOT_AUTHENTICATED; the
+ *                    client seam (nodus_client_dnac_utxo_token's check)
+ *                    REFUSES an all-token answer (what a node that skips
+ *                    the unknown "tok" sends) with
+ *                    NODUS_CLIENT_ERR_TOKEN_FILTER_IGNORED and frees it,
+ *                    and accepts a filtered one. A store fault with tok is
+ *                    not driven separately (the fault path is the shared
+ *                    nodus_witness_utxo_by_owner body, driven by
+ *                    t_dnac_utxo_strict without tok).
  *  t_error_mapping   the dispatcher's answer to an unknown dnac_* method
  *                    maps to NODUS_CLIENT_ERR_METHOD_UNSUPPORTED; a
  *                    PROTOCOL_ERROR with other text stays 7; a
@@ -168,6 +185,9 @@ int nodus_client_test_parse_msig_utxo(const uint8_t *raw, size_t raw_len,
                                       nodus_dnac_utxo_result_t *out,
                                       bool *trunc_out);
 int nodus_client_test_msig_error_rc(const uint8_t *raw, size_t raw_len);
+int nodus_client_test_parse_utxo_token(const uint8_t *raw, size_t raw_len,
+                                       const uint8_t token_id[64],
+                                       nodus_dnac_utxo_result_t *out);
 int nodus_client_test_parse_msig_utxo_nuls(const uint8_t *raw,
                                            size_t raw_len,
                                            const uint8_t (*nuls)[64],
@@ -1391,6 +1411,158 @@ static void t_nul_beyond_page(void)
     fx_close(&f);
 }
 
+/* dnac_utxo "tok" (operator 2026-10-22, decision 2026-10-22-testnet-test-
+ * tokens-faucet-dex.md answer 3): the token-only listing, its refusals, and
+ * the client's refusal of a mixed answer. */
+static reply_t *utxo_tok(fx_t *f, const char *owner, const void *tok,
+                         size_t tok_len, bool with_max, uint64_t max)
+{
+    arg_t a[3];
+    size_t n = 0;
+    a[n++] = (arg_t)ARG_T("owner", owner, 128);
+    if (with_max) a[n++] = (arg_t)ARG_U("max", max);
+    if (tok) a[n++] = (arg_t)ARG_B("tok", tok, tok_len);
+    return call(f, "dnac_utxo", build_req("dnac_utxo", a, n, false));
+}
+
+static void t_dnac_utxo_token(void)
+{
+    fx_t f;
+    char me[129], other[129];
+    uint8_t raw[64], tokA[64], tokB[64], tokC[64], tok0[64];
+    nodus_dnac_utxo_result_t res;
+    reply_t *r;
+
+    fx_open(&f, "utxotok");
+    fx_session(&f, true, 2);
+    memcpy(raw, f.conn->peer_id.bytes, 64);
+    hex64(raw, me);
+    memset(other, 'f', 128); other[128] = '\0';
+    memset(tokA, 0xA1, 64); memset(tokB, 0xB2, 64);
+    memset(tokC, 0xC3, 64); memset(tok0, 0, 64);
+
+    plant_coin(&f, me, 0x81, 100);                /* native */
+    plant_coin(&f, me, 0x82, 50);                 /* native */
+    plant_coin_tok(&f, me, 0x83, 70, 0xA1);       /* token A */
+    plant_coin_tok(&f, me, 0x84, 70, 0xA1);       /* token A, same amount */
+    plant_coin_tok(&f, me, 0x85, 5, 0xA1);        /* token A */
+    plant_coin_tok(&f, me, 0x86, 999, 0xB2);      /* token B */
+    plant_coin_tok(&f, other, 0x87, 8000, 0xA1);  /* another owner's A */
+
+    /* no "tok": every token, amount DESC then nullifier ASC, 3 keys */
+    r = utxo_tok(&f, me, NULL, 0, false, 0);
+    CHECK(r->type == 'r' && r->rkeys == 3 && !r->has_trunc,
+          "no tok: the unchanged three-key answer");
+    CHECK(nodus_client_test_parse_utxo(r->payload, r->len, &res) == 0 &&
+          res.count == 6 && res.entries[0].amount == 999 &&
+          res.entries[1].amount == 100 && res.entries[2].amount == 70 &&
+          res.entries[3].amount == 70 && res.entries[4].amount == 50 &&
+          res.entries[5].amount == 5 &&
+          res.entries[2].nullifier[0] == 0x83 &&
+          res.entries[3].nullifier[0] == 0x84,
+          "no tok: all six coins of the owner, same order as before");
+    nodus_client_free_utxo_result(&res);
+
+    /* the client refuses that mixed answer when it asked for token A */
+    CHECK(nodus_client_test_parse_utxo_token(r->payload, r->len, tokA, &res)
+          == NODUS_CLIENT_ERR_TOKEN_FILTER_IGNORED &&
+          res.entries == NULL && res.count == 0,
+          "client: a mixed answer to a token request is refused, freed");
+    CHECK(nodus_client_test_parse_utxo_token(r->payload, r->len, tok0, &res)
+          == NODUS_CLIENT_ERR_TOKEN_FILTER_IGNORED && res.entries == NULL,
+          "client: the mixed answer is refused for the native id too");
+
+    /* tok A: only A's three coins, same order, 3 keys */
+    r = utxo_tok(&f, me, tokA, 64, false, 0);
+    CHECK(r->type == 'r' && r->rkeys == 3 && !r->has_trunc,
+          "tok: same three-key response shape");
+    CHECK(nodus_client_test_parse_utxo_token(r->payload, r->len, tokA, &res)
+          == 0 && res.count == 3 && res.entries[0].amount == 70 &&
+          res.entries[1].amount == 70 && res.entries[2].amount == 5 &&
+          res.entries[0].nullifier[0] == 0x83 &&
+          res.entries[1].nullifier[0] == 0x84 &&
+          memcmp(res.entries[0].token_id, tokA, 64) == 0 &&
+          strcmp(res.entries[0].owner, me) == 0,
+          "tok A: this owner's A coins only, amount DESC / nullifier ASC "
+          "(the other owner's 8000 coin is absent)");
+    nodus_client_free_utxo_result(&res);
+    CHECK(nodus_client_test_parse_utxo_token(r->payload, r->len, tokB, &res)
+          == NODUS_CLIENT_ERR_TOKEN_FILTER_IGNORED,
+          "client: an A-only answer is refused for a B request");
+
+    /* the all-zero id = native only */
+    r = utxo_tok(&f, me, tok0, 64, false, 0);
+    CHECK(nodus_client_test_parse_utxo_token(r->payload, r->len, tok0, &res)
+          == 0 && res.count == 2 && res.entries[0].amount == 100 &&
+          res.entries[1].amount == 50,
+          "tok zero: native coins only");
+    nodus_client_free_utxo_result(&res);
+
+    /* tok B, and a token the owner does not hold (success, empty) */
+    r = utxo_tok(&f, me, tokB, 64, false, 0);
+    CHECK(nodus_client_test_parse_utxo(r->payload, r->len, &res) == 0 &&
+          res.count == 1 && res.entries[0].amount == 999, "tok B: one coin");
+    nodus_client_free_utxo_result(&res);
+    r = utxo_tok(&f, me, tokC, 64, false, 0);
+    CHECK(r->type == 'r' && nodus_client_test_parse_utxo_token(
+              r->payload, r->len, tokC, &res) == 0 && res.count == 0,
+          "tok of an unheld token: an empty success");
+
+    /* "max" applies to the filtered list: the first of tok A's order */
+    r = utxo_tok(&f, me, tokA, 64, true, 1);
+    CHECK(nodus_client_test_parse_utxo_token(r->payload, r->len, tokA, &res)
+          == 0 && res.count == 1 && res.entries[0].nullifier[0] == 0x83,
+          "tok A, max 1: the first coin of the filtered order");
+    nodus_client_free_utxo_result(&res);
+
+    /* refusals: never silently ignored */
+    expect_err(utxo_tok(&f, me, tokA, 63, false, 0), NODUS_ERR_PROTOCOL_ERROR,
+               "tok of 63 bytes refused");
+    {
+        uint8_t long_tok[65];
+        memset(long_tok, 0xA1, sizeof(long_tok));
+        expect_err(utxo_tok(&f, me, long_tok, 65, false, 0),
+                   NODUS_ERR_PROTOCOL_ERROR, "tok of 65 bytes refused");
+    }
+    {
+        arg_t a[2] = { ARG_T("owner", me, 128), ARG_T("tok", me, 64) };
+        expect_err(call(&f, "dnac_utxo", build_req("dnac_utxo", a, 2, false)),
+                   NODUS_ERR_PROTOCOL_ERROR, "tok as a text string refused");
+        arg_t b[2] = { ARG_T("owner", me, 128), ARG_U("tok", 7) };
+        expect_err(call(&f, "dnac_utxo", build_req("dnac_utxo", b, 2, false)),
+                   NODUS_ERR_PROTOCOL_ERROR, "tok as a uint refused");
+        arg_t c[3] = { ARG_T("owner", me, 128), ARG_B("tok", tokA, 64),
+                       ARG_B("tok", tokB, 64) };
+        expect_err(call(&f, "dnac_utxo", build_req("dnac_utxo", c, 3, false)),
+                   NODUS_ERR_PROTOCOL_ERROR, "a repeated tok refused");
+    }
+
+    /* the owner == session gate is unchanged with tok */
+    expect_err(utxo_tok(&f, other, tokA, 64, false, 0),
+               NODUS_ERR_NOT_AUTHENTICATED,
+               "tok does not widen C11: a foreign owner is refused");
+    fx_session(&f, false, -1);
+    expect_err(utxo_tok(&f, me, tokA, 64, false, 0),
+               NODUS_ERR_NOT_AUTHENTICATED,
+               "tok without a session is refused");
+    fx_close(&f);
+
+    /* the cap: 101 coins of one token → the 100 largest */
+    fx_open(&f, "utxotokcap");
+    fx_session(&f, true, 2);
+    memcpy(raw, f.conn->peer_id.bytes, 64);
+    hex64(raw, me);
+    for (int c = 1; c <= 101; c++)
+        plant_coin_tok(&f, me, (uint8_t)c, (uint64_t)c, 0xA1);
+    r = utxo_tok(&f, me, tokA, 64, false, 0);
+    CHECK(nodus_client_test_parse_utxo_token(r->payload, r->len, tokA, &res)
+          == 0 && res.count == NODUS_DNAC_MAX_UTXO_RESULTS &&
+          res.entries[0].amount == 101 && res.entries[99].amount == 2,
+          "tok: capped at 100, the largest coins kept");
+    nodus_client_free_utxo_result(&res);
+    fx_close(&f);
+}
+
 int main(void)
 {
     printf("=== dnac_msig_utxo / dnac_msig_addr_history (vault member) ===\n");
@@ -1404,6 +1576,7 @@ int main(void)
     t_builder_gate();
     t_dnac_utxo_same();
     t_dnac_utxo_strict();
+    t_dnac_utxo_token();
     t_error_mapping();
     t_nul();
     t_nul_beyond_page();

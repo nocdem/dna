@@ -560,8 +560,15 @@ static void handle_dnac_fee_info(nodus_witness_t *w,
 /* ════════════════════════════════════════════════════════════════════
  * dnac_utxo — Query UTXOs by owner fingerprint
  *
- * Request:  "a": {"owner": cstr, "max": uint}
+ * Request:  "a": {"owner": cstr, "max": uint [, "tok": bstr(64)]}
  * Response: "r": {"count":N, "utxos":[{...},...]}
+ *
+ * tok (optional, operator 2026-10-22, decision
+ * 2026-10-22-testnet-test-tokens-faucet-dex.md answer 3): exactly 64
+ * bytes = a token id (all-zero = native); only coins of that token are
+ * listed, in the same order, under the same cap. Any other type or
+ * length, or a repeated "tok", is PROTOCOL_ERROR — never ignored. Absent
+ * = the unchanged all-tokens answer. Node-local read, not consensus.
  *
  * owner: exactly 128 lowercase hex, == the session fingerprint (C11,
  * d40b89d1), else PROTOCOL_ERROR / NOT_AUTHENTICATED. A coin-store or
@@ -590,10 +597,21 @@ static void handle_dnac_utxo(nodus_witness_t *w,
 
     char owner[NODUS_KEY_HEX_LEN] = {0};
     int max_results = DNAC_MAX_UTXO_RESULTS;
+    uint8_t tok[64];
+    bool have_tok = false;
 
     for (size_t i = 0; i < args_count; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
-        if (key_match(&key, "owner")) {
+        if (key_match(&key, "tok")) {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (have_tok || val.type != CBOR_ITEM_BSTR || val.bstr.len != 64) {
+                send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                            "tok must be one 64-byte token id");
+                return;
+            }
+            memcpy(tok, val.bstr.ptr, 64);
+            have_tok = true;
+        } else if (key_match(&key, "owner")) {
             cbor_item_t val = cbor_decode_next(&dec);
             /* BUGS.md Z-11: the owner is the canonical utxo_set owner text
              * or it is refused — exactly 128 lowercase hex, the shape
@@ -657,8 +675,11 @@ static void handle_dnac_utxo(nodus_witness_t *w,
     }
 
     int count = 0;
-    if (nodus_witness_utxo_by_owner(w, owner, utxos, max_results,
-                                    &count) != 0) {
+    if ((have_tok
+            ? nodus_witness_utxo_by_owner_token(w, owner, tok, utxos,
+                                                max_results, &count)
+            : nodus_witness_utxo_by_owner(w, owner, utxos, max_results,
+                                          &count)) != 0) {
         /* BUGS.md Z-11: a store fault is never an empty list (it used to
          * be logged and answered as success, count 0) — the same answer
          * dnac_msig_utxo gives. */
