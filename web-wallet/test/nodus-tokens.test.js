@@ -272,12 +272,20 @@ test('Activity: an unknown tokenId keeps the row and its locked inputs, shown "u
   assert.equal(activitySymbol({ chain: 'ethereum', symbol: 'ETH' }, [TUSDT], true), 'ETH');
 });
 
-test('Activity: a malformed tokenId is refused as a row of this wallet\'s own file (all zero, short, wrong symbol, another network)', async () => {
+test('Activity: a malformed tokenId row is QUARANTINED (not shown, inputs recoverable), never a rejection of the other rows (all zero, short, wrong symbol)', async () => {
   for (const bad of [{ tokenId: ZERO_TOKEN, symbol: 'tUSDT' }, { tokenId: 'ab'.repeat(63), symbol: 'tUSDT' }, { tokenId: 'AB'.repeat(64), symbol: 'tUSDT' }, { tokenId: TUSDT_ID, symbol: 'NOT OK' }, { tokenId: TUSDT_ID, symbol: '' }, { tokenId: 7, symbol: 'tUSDT' }]) {
-    await assert.rejects(roundTrip([savedRow(0, bad)]), /Invalid saved activity/, JSON.stringify(bad));
+    const malformed = savedRow(1, bad);
+    const back = await roundTrip([savedRow(0), malformed, savedRow(2)]);
+    assert.deepEqual(back.map(r => r.hash), [hex128(1), hex128(3)], `the valid rows are kept: ${JSON.stringify(bad)}`);
+    assert.equal(back.quarantined.length, 1, 'the malformed row is recorded');
+    assert.match(back.quarantined[0].reason, /Invalid saved activity/);
+    assert.deepEqual(back.quarantined[0].inputs, malformed.inputs, 'its reservation is recoverable');
   }
   // a NODUS row with a token symbol but no tokenId is not a legacy row
-  await assert.rejects(roundTrip([savedRow(0, { symbol: 'tUSDT' })]), /Invalid saved activity/);
+  const back = await roundTrip([savedRow(0, { symbol: 'tUSDT' })]);
+  assert.equal(back.length, 0); assert.equal(back.quarantined.length, 1);
+  // a token id on another network's row cannot be recovered: the file is still refused
+  await assert.rejects(roundTrip([savedRow(0, { chain: 'ethereum', tokenId: TUSDT_ID })]), /Invalid saved activity/);
 });
 
 // ── 8. history ───────────────────────────────────────────────────────────
@@ -371,8 +379,11 @@ test('faucet: only checked answers are trusted; a poll answering for another cla
     assert.throws(() => parseFaucetClaim(bad), /does not understand/, JSON.stringify(bad)?.slice(0, 60));
     await assert.rejects(claimTestnetCoins({ client: testnetClient, address: FINGERPRINT, fetcher: fakeFetch(bad).fetcher, sleep: noSleep }), /does not understand|not available right now/);
   }
-  await assert.rejects(claimTestnetCoins({ client: testnetClient, address: FINGERPRINT, fetcher: fakeFetch(new Error('down')).fetcher, sleep: noSleep }), /could not be reached/);
-  await assert.rejects(claimTestnetCoins({ client: testnetClient, address: FINGERPRINT, fetcher: fakeFetch({ ok: false, json: async () => { throw new Error('<html>'); } }).fetcher, sleep: noSleep }), /not available right now/);
+  // a POST whose answer is lost (network fault, unreadable body) may still pay: "pending", never an error or "failed"
+  for (const lost of [new Error('down'), { ok: false, json: async () => { throw new Error('<html>'); } }]) {
+    const answer = await claimTestnetCoins({ client: testnetClient, address: FINGERPRINT, fetcher: fakeFetch(lost).fetcher, sleep: noSleep });
+    assert.equal(answer.state, 'pending'); assert.match(answer.message, /^Pending — check again later/); assert.doesNotMatch(answer.message, /fail/i);
+  }
   // another claim's answer is not this claim's state
   const { fetcher } = fakeFetch(claimBody('planned'), claimBody('confirmed', { claim_id: 'cd'.repeat(16) }), claimBody('refused'));
   const claim = await claimTestnetCoins({ client: testnetClient, address: FINGERPRINT, fetcher, sleep: noSleep });

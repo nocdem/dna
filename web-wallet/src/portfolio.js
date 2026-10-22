@@ -25,6 +25,12 @@ export function balanceUnits(value, decimals) {
   if (units >= 2n ** 256n) throw new Error('Balance out of range.');
   return units;
 }
+// The buttons of one holding row (src/portfolio-view.js): a receive-only
+// network offers Receive only, and so does an UNAVAILABLE token (its metadata
+// did not equal the pin: never offered for Send); Earn follows `earn`.
+export function holdingActions(network, row, earn = false) {
+  return [...(network.receiveOnly || row.unavailable === true ? ['Receive'] : ['Send', 'Receive']), ...(earn ? ['Earn'] : [])];
+}
 export function chainBalances(chain, rows, observedAt = Date.now(), assets = ASSETS) {
   const expected = assets.filter(a => a.chain === chain);
   if (!Array.isArray(rows) || rows.length > 100) throw new Error('Invalid balance response.');

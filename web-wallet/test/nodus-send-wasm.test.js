@@ -872,3 +872,39 @@ test('token metadata: only a dnac_token_info answer equal to the pin makes tUSDT
   assert.equal(check(TUSDT_ID, 'Test USDT', 'tUSDT', 19), 0, 'decimals above 18');
   assert.equal(check(TUSDT_ID, '', '', 0), 0, 'an unreadable answer (empty fields)');
 });
+
+// ── verifier round on package B (operator 2026-10-22: "Hepsini düzelt") ──
+test('token metadata helper: a NULL pointer is refused, never dereferenced (finding 9)', { skip: skipNameParity }, async () => {
+  const { num } = await loadParity('send-test-node.mjs', true);
+  const call = (...args) => num('nsw_test_pin_info', ['number', 'number', 'number', 'number'], args);
+  const str = text => num('nsw_test_pin_info', ['string', 'string', 'string', 'number'], [text, 'Test USDT', 'tUSDT', 6]);
+  assert.equal(str(TUSDT_ID), 1, 'the well-formed call still verifies');
+  assert.equal(call(0, 0, 0, 6), 0, 'all three pointers NULL');
+  assert.equal(num('nsw_test_pin_info', ['number', 'string', 'string', 'number'], [0, 'Test USDT', 'tUSDT', 6]), 0, 'NULL id');
+  assert.equal(num('nsw_test_pin_info', ['string', 'number', 'string', 'number'], [TUSDT_ID, 0, 'tUSDT', 6]), 0, 'NULL name');
+  assert.equal(num('nsw_test_pin_info', ['string', 'string', 'number', 'number'], [TUSDT_ID, 'Test USDT', 0, 6]), 0, 'NULL symbol');
+});
+
+test('token metadata lifecycle: a pin that failed on this connection stays unavailable when a later build asks again (finding 3)', { skip: skipNameParity }, async () => {
+  const { num } = await loadParity('send-test-node.mjs', true);
+  assert.equal(num('nsw_test_pin_latched', ['number'], [0]), 1, 'latched: answered from the latch, state still 2');
+  assert.equal(num('nsw_pin_available', ['number'], [0]), 0, 'and never available');
+  assert.equal(num('nsw_test_pin_latched', ['number'], [5]), -1, 'out of range');
+});
+
+test('the NODUS hop carries the explicit all-zero token id: the module reads it as the native build (finding 8)', { skip: skipNameParity }, async () => {
+  const to = 'ab'.repeat(64), nul = 'd4'.repeat(64), zero = '0'.repeat(128);
+  const { num, str } = await loadParity('send-test-node.mjs', true);
+  const send = token => num('nsw_token_build_and_sign', ['string', 'string', 'string', 'string'], [to, token, '1', '1090']);
+  // a token coin in the request: the native path refuses it, exactly as nsw_build_and_sign does
+  num('nsw_test_set_listing', ['number', 'number', 'string', 'string'], [1, 0, nul, '5000000']);
+  num('nsw_req_reset');
+  assert.equal(num('nsw_req_add_coin', ['string', 'string'], [nul, '5000000']), 0);
+  assert.equal(send(zero), -1);
+  assert.match(str('nsw_error'), /names a token coin/, 'the all-zero id took the NATIVE build path');
+  // an id that is not 128 lowercase hex is neither native nor a pin
+  assert.equal(send('0'.repeat(127)), -1);
+  assert.match(str('nsw_error'), /not supported by this wallet/);
+  assert.equal(send('0'.repeat(127) + 'G'), -1);
+  assert.match(str('nsw_error'), /not supported by this wallet/);
+});

@@ -30,6 +30,8 @@
 // Amounts and heights cross into C as decimal strings and come back as
 // decimal strings (RT1 L4 F10); nothing here converts them to Number.
 const HEX64 = /^[0-9a-f]{64}$/, HEX128 = /^[0-9a-f]{128}$/, RAW = /^(0|[1-9]\d{0,19})$/;
+// NODUS itself in a send's asset identity: the all-zero token id.
+const NATIVE_TOKEN_ID = '0'.repeat(128);
 const OCTET = '(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)';
 const IPV4 = new RegExp(`^${OCTET}(\\.${OCTET}){3}$`);
 export const NODUS_SEND_MAX_ENDPOINTS = 8;   // nodus/include/nodus/nodus.h NODUS_CLIENT_MAX_SERVERS
@@ -535,11 +537,17 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
       }
       return pins;
     },
-    async buildAndSign({ to, amount, expiryHeight, coins } = {}) {
+    // The NODUS send. `tokenId` is REQUIRED and must be the explicit all-zero
+    // id: no hop defaults to native (design 2026-10-22-connect-native-tokens-
+    // design.md §6 item 1). The id travels to the module's one token entry
+    // point, which reads all zeros as NODUS and builds the unchanged native
+    // envelope (nsw_token_build_and_sign).
+    async buildAndSign({ to, tokenId, amount, expiryHeight, coins } = {}) {
       if (typeof to !== 'string' || !HEX128.test(to)) throw new Error('Enter a Nodus address: 128 characters, 0-9 and a-f.');
+      if (tokenId !== NATIVE_TOKEN_ID) throw new Error('Invalid token.');
       raw(amount, 'amount'); raw(expiryHeight, 'validity height');
       loadCoins(coins);
-      check(await call('nsw_build_and_sign', ['string', 'string', 'string'], [to, amount, expiryHeight]));
+      check(await call('nsw_token_build_and_sign', ['string', 'string', 'string', 'string'], [to, tokenId, amount, expiryHeight]));
       return spendBuilt();
     },
     // A pinned token's send: `tokenId` (128 hex) must be a pinned id, `amount`
@@ -549,7 +557,7 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
     // decoded token id and token change.
     async tokenBuildAndSign({ to, tokenId, amount, expiryHeight, coins } = {}) {
       if (typeof to !== 'string' || !HEX128.test(to)) throw new Error('Enter a Nodus address: 128 characters, 0-9 and a-f.');
-      if (typeof tokenId !== 'string' || !HEX128.test(tokenId)) throw new Error('Invalid token.');
+      if (typeof tokenId !== 'string' || !HEX128.test(tokenId) || tokenId === NATIVE_TOKEN_ID) throw new Error('Invalid token.');
       raw(amount, 'amount'); raw(expiryHeight, 'validity height');
       loadCoins(coins, 2 * MAX_COINS);       // up to one answer of NODUS coins (the fee) + one of the token's
       check(await call('nsw_token_build_and_sign', ['string', 'string', 'string', 'string'], [to, tokenId, amount, expiryHeight]));

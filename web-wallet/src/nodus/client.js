@@ -44,8 +44,11 @@
 //                                `tokenCoins: [{ nullifier, amount, tokenId }]`
 //                                (pinned tokens' coins) and `tokens: [{
 //                                tokenId, listed, truncated }]` (TOKEN_OPS).
-//     buildAndSign({ to, amount, expiryHeight, coins })
-//                                Builds and signs one CORE SPEND envelope from
+//     buildAndSign({ to, tokenId, amount, expiryHeight, coins })
+//                                `tokenId` is REQUIRED: the explicit all-zero
+//                                id (128 zeros) = NODUS; anything else is
+//                                refused (a pinned token goes through
+//                                tokenBuildAndSign). Builds and signs one CORE SPEND envelope from
 //                                the candidate `coins` only (the wallet has
 //                                already removed coins locked by pending sends).
 //                                Resolves { envelope: Uint8Array, intentId: 128

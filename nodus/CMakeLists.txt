@@ -1651,6 +1651,17 @@ target_compile_definitions(test_client_dup_array PRIVATE
                            NODUS_CLIENT_TEST_SEAM=1)
 add_test(NAME test_client_dup_array COMMAND test_client_dup_array)
 
+# dnac_token_info decoder (every field once, name <= 32 / sym <= 8 without a
+# NUL, decimals <= 18 before the narrowing, tid = the one asked) and the
+# dnac_msig_utxo decoder's required per-entry "tid". Same seam as
+# test_client_dup_array. Default build, no environment.
+add_executable(test_token_info_decode tests/test_token_info_decode.c
+               src/client/nodus_client.c)
+target_link_libraries(test_token_info_decode nodus dsa nodus)
+target_compile_definitions(test_token_info_decode PRIVATE
+                           NODUS_CLIENT_TEST_SEAM=1)
+add_test(NAME test_token_info_decode COMMAND test_token_info_decode)
+
 # dnac_validator_list_query reply decoder: the optional per-entry "dlg"
 # (delegator count) — present = known count, absent = unknown (older node),
 # malformed / repeated = refused. Same seam as test_client_dup_array

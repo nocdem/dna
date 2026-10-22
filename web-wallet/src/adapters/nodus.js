@@ -413,7 +413,7 @@ export async function prepare({ client, from, to, amount, tokenId, locked = new 
     }
   }
   const request = { to: recipient, amount: units.toString(), expiryHeight: expiryHeight.toString(), coins: candidates };
-  const decoded = decodeBuilt(await (asset.native ? client.buildAndSign(request) : client.tokenBuildAndSign({ ...request, tokenId: asset.tokenId })));
+  const decoded = decodeBuilt(await (asset.native ? client.buildAndSign({ ...request, tokenId: asset.tokenId }) : client.tokenBuildAndSign({ ...request, tokenId: asset.tokenId })));
   // The signed envelope must be exactly what was requested — the TOKEN too
   // (§6 item 1: prepare() refuses when decoded.token differs from the
   // requested one) — or nothing is shown.
@@ -1276,30 +1276,96 @@ export function parseFaucetClaim(answer) {
   if (typeof claimId !== 'string' || !/^[0-9a-f]{8,128}$/.test(claimId) || !FAUCET_STATES.includes(state) || !FAUCET_KINDS.includes(kind) || typeof message !== 'string' || message.length > 500) throw invalid();
   return { claimId, state, kind, message };
 }
-const faucetJson = async response => {
+// Bounds of one faucet exchange (a request, its body, the whole claim). A
+// stalled request or body, or a faucet that never finishes, ends as
+// "pending — check again later" after these; nothing waits for ever.
+export const FAUCET_REQUEST_MS = 10000;
+export const FAUCET_TOTAL_MS = 90000;
+export const FAUCET_MAX_BODY = 4096;
+// The POST was sent but its answer did not arrive (or was not readable): the
+// faucet may have received it and may still pay, so this is NOT a failure.
+export const FAUCET_LOST_TEXT = 'Pending — check again later. This wallet did not receive the faucet’s answer, so it cannot tell whether the request arrived; if it did, your coins arrive as soon as the faucet finishes.';
+// The body of one answer, read with a size limit BEFORE it is parsed: the
+// declared length, then the bytes actually read (a stream is cancelled at the
+// limit). A response without a stream falls back to its text, then to json().
+async function faucetBody(response) {
+  const declared = Number(response?.headers?.get?.('content-length'));
+  if (Number.isFinite(declared) && declared > FAUCET_MAX_BODY) throw new Error('The faucet is not available right now.');
+  if (response?.body && typeof response.body.getReader === 'function') {
+    const reader = response.body.getReader(), chunks = [];
+    let size = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > FAUCET_MAX_BODY) { try { await reader.cancel(); } catch { /* already closing */ } throw new Error('The faucet is not available right now.'); }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size);
+    let at = 0;
+    for (const chunk of chunks) { bytes.set(chunk, at); at += chunk.byteLength; }
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  }
+  if (typeof response?.text === 'function') {
+    const text = await response.text();
+    if (typeof text !== 'string' || new TextEncoder().encode(text).length > FAUCET_MAX_BODY) throw new Error('The faucet is not available right now.');
+    return text;
+  }
+  return undefined;
+}
+async function faucetJson(response) {
   let answer;
-  try { answer = await response.json(); } catch { throw new Error('The faucet is not available right now.'); }
-  return parseFaucetClaim(answer);
-};
+  try {
+    const text = await faucetBody(response);
+    answer = text === undefined ? await response.json() : JSON.parse(text);
+  } catch { throw new Error('The faucet is not available right now.'); }
+  // an answer that ARRIVED in a shape this wallet does not understand
+  // (`shape`) is told as such; a lost / unreadable one is "pending"
+  try { return parseFaucetClaim(answer); } catch (error) { error.shape = true; throw error; }
+}
 // Asks the faucet for the open wallet's coins and follows the claim.
-// `fetcher` / `sleep` exist for tests. `onState(claim)`: told of every answer
-// read (a status line); `stopped()`: true once the wallet is closed — the
-// polling then ends quietly. Resolves { state, kind, message, claimId } of the
-// last answer, with state 'pending' (and FAUCET_PENDING_TEXT) when the poll
-// bound ran out first; rejects only when no usable first answer came.
-export async function claimTestnetCoins({ client, address, fetcher = (...args) => globalThis.fetch(...args), sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), onState = () => {}, stopped = () => false } = {}) {
+// `fetcher` / `sleep` / `now` exist for tests. `onState(claim)`: told of every
+// answer read (a status line); `stopped()` / `signal`: the wallet is closed —
+// every request in flight is aborted and the polling ends quietly. Every
+// request carries its own deadline (`requestMs`, covering its body too), the
+// whole claim `totalMs`; requests are same-origin only and a redirect is an
+// error (mode 'same-origin', redirect 'error'). Resolves { state, kind,
+// message, claimId } of the last answer, with state 'pending' (and a text that
+// says so) when the poll bound or the total deadline ran out first, or when
+// the POST's answer was lost (timeout, network fault, unreadable body);
+// rejects before anything was sent, and when the first answer ARRIVED in a
+// shape this wallet does not understand.
+export async function claimTestnetCoins({ client, address, fetcher = (...args) => globalThis.fetch(...args), sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), now = () => Date.now(), onState = () => {}, stopped = () => false, signal, requestMs = FAUCET_REQUEST_MS, totalMs = FAUCET_TOTAL_MS } = {}) {
   if (!faucetAvailable(client, address)) throw new Error('Testnet coins are available only on the Nodus testnet while the wallet is connected.');
-  let response;
-  try { response = await fetcher('/faucet/claim', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ address }), cache: 'no-store', credentials: 'omit' }); }
-  catch { throw new Error('The faucet could not be reached. Try again later.'); }
-  let claim = await faucetJson(response);
+  const deadline = now() + totalMs;
+  // One exchange: request + body, under its own AbortController, which the
+  // per-request timer, the total deadline and the caller's signal all abort.
+  // The race also ends a fetcher that ignores its signal.
+  const exchange = async (url, init) => {
+    const left = deadline - now();
+    if (left <= 0 || signal?.aborted) throw new Error('The faucet exchange ran out of time.');
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    const timer = setTimeout(abort, Math.min(requestMs, left));
+    const aborted = new Promise((_, reject) => controller.signal.addEventListener('abort', () => reject(new Error('The faucet exchange was aborted.')), { once: true }));
+    try {
+      return await Promise.race([(async () => faucetJson(await fetcher(url, { ...init, cache: 'no-store', credentials: 'omit', mode: 'same-origin', redirect: 'error', signal: controller.signal })))(), aborted]);
+    } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); controller.abort(); }
+  };
+  let claim;
+  try { claim = await exchange('/faucet/claim', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ address }) }); }
+  catch (error) {
+    if (error?.shape === true) throw error;      // it answered, in a form we cannot read
+    return { claimId: undefined, state: 'pending', kind: 'none', message: FAUCET_LOST_TEXT };
+  }
   onState(claim);
   for (let poll = 0; !FAUCET_FINAL.includes(claim.state); poll++) {
-    if (poll >= FAUCET_MAX_POLLS) return { ...claim, state: 'pending', message: FAUCET_PENDING_TEXT };
+    if (poll >= FAUCET_MAX_POLLS || deadline - now() <= 0) return { ...claim, state: 'pending', message: FAUCET_PENDING_TEXT };
     await sleep(FAUCET_POLL_MS);
-    if (stopped()) return { ...claim, state: 'pending', message: FAUCET_PENDING_TEXT };
+    if (stopped() || signal?.aborted) return { ...claim, state: 'pending', message: FAUCET_PENDING_TEXT };
     try {
-      const next = await faucetJson(await fetcher(`/faucet/claim/${claim.claimId}`, { method: 'GET', cache: 'no-store', credentials: 'omit' }));
+      const next = await exchange(`/faucet/claim/${claim.claimId}`, { method: 'GET' });
       // the answer must be for THIS claim
       if (next.claimId === claim.claimId) { claim = next; onState(claim); }
     } catch { /* a poll that fails counts against the bound; the next one asks again */ }

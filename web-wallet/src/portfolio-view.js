@@ -1,5 +1,5 @@
 import { CHAINS } from './config.js';
-import { ASSETS, chainBalances, readPrices, portfolioSnapshot, groupAssets, usdText, displayAmount } from './portfolio.js';
+import { ASSETS, chainBalances, holdingActions, readPrices, portfolioSnapshot, groupAssets, usdText, displayAmount } from './portfolio.js';
 
 const names = { ETH: 'Ethereum', BNB: 'BNB', SOL: 'Solana', TRX: 'TRON', USDT: 'Tether', USDC: 'USD Coin', DAI: 'Dai', USDD: 'USDD', CPUNK: 'CPUNK' };
 // Asset symbol -> its own icon file. Keyed by symbol, not guessed from it, so an
@@ -195,7 +195,8 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
         value.append(rowAmount,
           el('small', '', row.keptAt !== undefined ? `${row.state === 'error' ? 'Read failed · last read' : 'Last read'} ${readTime(row.keptAt)}` : text(row.priceMissing ? 'Price unavailable' : usdText(row.usd, row.positive))));
         const actions = el('span', 'holding-actions');
-        for (const action of [...(networks[row.chain].receiveOnly ? ['Receive'] : ['Send', 'Receive']), ...(earn[row.chain] ? ['Earn'] : [])]) {
+        // an unavailable token is never offered for Send (holdingActions)
+        for (const action of holdingActions(networks[row.chain], row, !!earn[row.chain])) {
           const button = el('button', 'secondary small', action); button.type = 'button';
           button.setAttribute('aria-label', `${action} ${row.symbol} on ${networks[row.chain].name}`);
           button.onclick = () => selectAsset(row.chain, row.symbol, action.toLowerCase()); actions.append(button);

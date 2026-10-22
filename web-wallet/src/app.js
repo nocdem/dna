@@ -90,6 +90,13 @@ const addressStatus = { nodus: $('nodus-address-status'), cellframe: $('cellfram
 // index.html's #send-disabled-note text is Cellframe's; a network may carry its own `sendNote`.
 const DEFAULT_SEND_DISABLED_NOTE = $('send-disabled-note').textContent;
 let activitySession = null, activityBlocked = false, historyWrites = Promise.resolve(), vaultOperation = 0;
+// Malformed saved NODUS rows whose coin reservations could still be read
+// (src/activity-storage.js parseActivity `quarantined`): not shown, but their
+// inputs stay held against every build, as pending sends' are. They are
+// written back with every save and dropped only by "discard".
+let quarantinedRows = [];
+const quarantineLocks = held => held.map(entry => ({ chain: NODUS_ASSET.chain, address: entry.address, status: 'pending', inputs: [...entry.inputs] }));
+const nodusLockRows = address => [...history.filter(row => row.address === address), ...quarantinedRows.filter(row => row.address === address)];
 // True only while the open wallet's words were generated in this tab (the
 // create flow: typed again, or — the user's choice, 0.1.123 — not typed again
 // after the skip warning); handed to extensions (src/wallet-extensions.js
@@ -167,9 +174,11 @@ function persistActivity({ required = false } = {}) {
       const time = Date.parse(a.createdAt) - Date.parse(b.createdAt), aKey = `${a.chain}:${a.hash}`, bKey = `${b.chain}:${b.hash}`;
       return time || (aKey < bKey ? -1 : aKey > bKey ? 1 : 0);
     });
-    const encrypted = await serializeActivity(session.id, combined, session.key);
+    const aside = saved.quarantined ?? [];
+    const encrypted = await serializeActivity(session.id, combined, session.key, aside);
     if (!current()) return changed();
     localStorage.setItem(ACTIVITY_KEY, encrypted);
+    quarantinedRows = quarantineLocks(aside);
   }));
   return historyWrites;
 }
@@ -564,7 +573,7 @@ const portfolio = createPortfolio({
   readBalances: (chain, address, endpoint, options) => chain === 'cellframe'
     ? cellframeReader(address, endpoint, options)
     : chain === ixiosChain ? ixiosReader(address, endpoint, options)
-    : chain === NODUS_ASSET.chain ? adapters.nodus.balances(chain, address, endpoint, { ...options, client: nodusClient })
+    : chain === NODUS_ASSET.chain ? adapters.nodus.balances(chain, address, endpoint, { ...options, client: nodusClient }).finally(syncNodusPins)
     : adapters[chain].balances(chain, address, endpoint, options),
   // action 'send' / 'receive' (the row's buttons) also moves focus to that block
   // of the Send / Receive panel; 'select' (a click on the row itself) only
@@ -573,7 +582,11 @@ const portfolio = createPortfolio({
   selectAsset(chain, symbol, action) {
     if (!wallet) return;
     if (action !== 'earn') navigateWalletPage(null);
-    $('chain').value = chain; selectChain(); selectAssetOption(chain, symbol);
+    $('chain').value = chain; selectChain();
+    if (!selectAssetOption(chain, symbol) && action === 'send') {
+      message(`${symbol} is unavailable right now. Nothing was started.`, { category: 'send', error: true });
+      return;
+    }
     if (action === 'select') { if (matchMedia(SINGLE_COLUMN_DASHBOARD).matches) $('send-form').scrollIntoView({ block: 'start' }); return; }
     // 'choose' (a network badge, 0.1.108): only the network changes — the
     // TRANSFER NETWORK box below says it — nothing scrolls, nothing opens.
@@ -916,6 +929,7 @@ function setNodusReady(ready, { reselect = true } = {}) {
 // C cancel flag -> close the WebSocket -> zero module memory -> release.
 function stopNodusSend(options) {
   clearNodusRetry();
+  faucetAbort?.abort();
   const client = nodusClient; nodusClient = undefined;
   // Extensions on this client (Messages) close first (design rev 5 §1.8).
   if (client) raise('nodusClosing', {});
@@ -1123,7 +1137,7 @@ async function connectNodus(source, address, client, markReady) {
     // its one-pending reservation (recordEvmActivity / evmPendingRows).
     raise('nodusReady', {
       client, phrase: source.recoveryPhrase, vaultId: activitySession?.id ?? null, fresh: walletFresh,
-      lockedInputs: () => (wallet === source ? adapters.nodus.lockedInputs(history.filter(row => row.address === source.addresses.nodus)) : new Set()),
+      lockedInputs: () => (wallet === source ? adapters.nodus.lockedInputs(nodusLockRows(source.addresses.nodus)) : new Set()),
       evmRecord: (details, what) => recordEvmActivity(source, details, what),
       evmPending: () => evmPendingRows(source),
       // roleRecorder(transfer, title): the HF-6 page's (src/nodus-roles.js)
@@ -1300,7 +1314,7 @@ async function refreshClaim() {
 // arrive as ordinary incoming coins, so the balance is read again once the
 // claim is final. A claim the faucet has not finished within the bounded
 // polling stays "pending — check again later", never "failed".
-let faucetBusy = false;
+let faucetBusy = false, faucetAbort;
 function refreshFaucet() {
   portfolio.setAction(NODUS_ASSET.chain, undefined, 'faucet');
   const client = nodusClient, source = wallet;
@@ -1316,10 +1330,13 @@ async function startFaucet(button) {
   faucetBusy = true;
   const client = nodusClient, source = wallet, restore = showPreparing(button, { text: 'Asking the faucet…' });
   const category = 'wallet';
+  // aborted when the wallet closes (stopNodusSend): every request in flight
+  // ends at once, not at its own deadline
+  const controller = faucetAbort = new AbortController();
   message('Asking the faucet for testnet coins…', { category });
   try {
     const claim = await claimTestnetCoins({
-      client, address: source.addresses.nodus,
+      client, address: source.addresses.nodus, signal: controller.signal,
       onState: answer => { if (source === wallet && !source.locked) message(`Faucet: ${answer.state}. ${answer.message}`.trim(), { category }); },
       stopped: () => source !== wallet || source.locked || client !== nodusClient
     });
@@ -1328,7 +1345,7 @@ async function startFaucet(button) {
     message(`Faucet: ${claim.state}. ${claim.message}`.trim(), { category, error: failed });
     if (claim.state === 'confirmed') portfolio.reread(NODUS_ASSET.chain);
   } catch (error) { if (source === wallet) message(error.message, { category, error: true }); }
-  finally { faucetBusy = false; restore(); }
+  finally { faucetBusy = false; if (faucetAbort === controller) faucetAbort = undefined; restore(); }
 }
 // STAKING (0.1.29): the "Delegate NODUS" panel, shown while the connected
 // module offers staking (src/nodus/client.js stakeable). Every read and
@@ -1525,7 +1542,7 @@ async function startStake(kind, params, button) {
   busy = true; const current = revision, client = nodusClient, restore = showPreparing(button);
   message('Preparing the transaction and network fee…');
   try {
-    const locked = adapters.nodus.lockedInputs(history.filter(row => row.address === wallet.addresses.nodus));
+    const locked = adapters.nodus.lockedInputs(nodusLockRows(wallet.addresses.nodus));
     const transfer = await adapters.nodus.prepareStake({ client, from: wallet.addresses.nodus, kind, locked, ...params });
     if (current !== revision || !wallet || client !== nodusClient) { transfer.cancel(); return; }
     const title = kind === 'delegate' ? 'Review delegation' : kind === 'undelegate' ? 'Review undelegation' : 'Review witness bond';
@@ -1661,7 +1678,7 @@ async function startName() {
   const restore = showPreparing($('name-review'), { enabled: () => nameQuoted !== undefined });
   message('Preparing the name registration and network fee…');
   try {
-    const locked = adapters.nodus.lockedInputs(history.filter(row => row.address === wallet.addresses.nodus));
+    const locked = adapters.nodus.lockedInputs(nodusLockRows(wallet.addresses.nodus));
     const transfer = await adapters.nodus.prepareName({ client, from: wallet.addresses.nodus, name, locked });
     if (current !== revision || !wallet || client !== nodusClient) { transfer.cancel(); return; }
     showReview(transfer, [...transfer.review, ['Review expires', new Date(transfer.expiresAt).toLocaleTimeString()]], 'Review name registration');
@@ -1697,7 +1714,7 @@ function lock(event) {
   $('skip-verify-dialog').close(); $('skip-verify').checked = false;
   $('phrase-form').hidden = true; $('wallet-open').hidden = true; $('welcome').hidden = false;
   resetWalletPages({ keepHash: event?.type === 'pagehide' });
-  history.length = 0; $('account-explorer').removeAttribute('href');
+  history.length = 0; quarantinedRows = []; $('account-explorer').removeAttribute('href');
   $('activity').replaceChildren(); setReceiveAddress(''); $('balances').replaceChildren(); $('recipient').value = ''; $('amount').value = '';
   for (const id of ['unlock-password', 'vault-password', 'vault-confirm-password', 'vault-old-password']) $(id).value = '';
   $('vault-risk-confirm').checked = false; $('vault-save-status').textContent = '';
@@ -1945,10 +1962,32 @@ function assetOptions(chain, c) {
 // The asset a row of the portfolio names, selected in the Send panel: by
 // symbol on every network but NODUS, whose options are token ids (an
 // unavailable token's option is disabled and is never selected).
+// @return false when a NODUS asset was named and no ENABLED option holds it
+// (an unavailable token): the selection then stays where it was (NODUS), and
+// a caller that is about to SEND must stop — never send another asset than
+// the row it was clicked on.
 function selectAssetOption(chain, symbol) {
   const found = [...$('asset').options].find(o => o.dataset.symbol === symbol && !o.disabled);
-  if (found) $('asset').value = found.value;
-  else if (chain !== NODUS_ASSET.chain) $('asset').value = symbol;
+  if (found) { $('asset').value = found.value; return true; }
+  if (chain !== NODUS_ASSET.chain) { $('asset').value = symbol; return true; }
+  return false;
+}
+// The Send panel's NODUS asset options follow the module's CURRENT answer
+// (client.tokenPins(): every connection re-reads the pins and a failure is
+// latched for it, nodus-send-wasm.c nsw_pins_check), not the snapshot taken
+// when the connection became ready: re-read after every balance read and
+// every prepare, and rebuild the options when a pin's availability changed.
+// The chosen asset stays selected when it is still enabled, else NODUS.
+function syncNodusPins() {
+  if (!wallet || !nodusClient || nodusClient.state !== 'ready') return;
+  const next = pinnedTokens(nodusClient);
+  if (next.length === nodusPins.length && next.every((pin, i) => pin.tokenId === nodusPins[i].tokenId && pin.available === nodusPins[i].available)) return;
+  setNodusReady(true, { reselect: false });
+  if ($('chain').value !== NODUS_ASSET.chain) return;
+  const kept = $('asset').value;
+  $('asset').replaceChildren(...assetOptions(NODUS_ASSET.chain, networkFor(NODUS_ASSET.chain)));
+  const still = [...$('asset').options].find(o => o.value === kept && !o.disabled);
+  $('asset').value = still ? still.value : NODUS_TOKEN_ID;
 }
 function selectChain() {
   revision++; closeReview(); const chain = $('chain').value; const c = networkFor(chain);
@@ -2212,7 +2251,7 @@ $('send-form').onsubmit = async event => {
     const chain = $('chain').value;
     // NODUS: coins of this wallet's unresolved NODUS sends are not offered to
     // the builder (G7; src/adapters/nodus.js lockedInputs).
-    const nodusLocked = chain === NODUS_ASSET.chain ? adapters.nodus.lockedInputs(history.filter(row => row.address === wallet.addresses.nodus)) : undefined;
+    const nodusLocked = chain === NODUS_ASSET.chain ? adapters.nodus.lockedInputs(nodusLockRows(wallet.addresses.nodus)) : undefined;
     // NODUS: the asset travels as its token id (the option's value), required
     // by prepareTransfer — never defaulted to native on the way.
     const asset = chain === NODUS_ASSET.chain ? { chain, tokenId: $('asset').value } : undefined;
@@ -2238,7 +2277,7 @@ $('send-form').onsubmit = async event => {
     }
     showReview(transfer, entries, 'Review transfer'); message('Review every transfer detail before confirming.');
   } catch (error) { if (current === revision) message(error.message, { category: 'send', error: true }); }
-  finally { busy = false; restore(); }
+  finally { busy = false; restore(); syncNodusPins(); }
 };
 $('cancel-send').onclick = closeReview;
 $('review-dialog').addEventListener('cancel', event => { if (busy) event.preventDefault(); else closeReview(); });
@@ -2453,7 +2492,10 @@ $('unlock-form').onsubmit = async event => {
     addressBook = keptBook; addressBookNote = bookProblem; addressBookUnreadable = !!bookProblem;
     walletFresh = false; siteLock.start();
     history.length = 0; history.push(...rows);
-    $('discard-activity').hidden = !problem; $('vault-status').textContent = problem || 'Saved activity authenticated.';
+    quarantinedRows = quarantineLocks(rows.quarantined ?? []);
+    const aside = quarantinedRows.length;
+    $('discard-activity').hidden = !problem && !aside;
+    $('vault-status').textContent = problem || (aside ? `Saved activity authenticated. ${aside} saved ${aside === 1 ? 'record' : 'records'} could not be read and ${aside === 1 ? 'is' : 'are'} not shown; the coins ${aside === 1 ? 'it' : 'they'} used stay held. Check the explorer; discarding the unreadable history frees them.` : 'Saved activity authenticated.');
     $('welcome').hidden = true; $('phrase-form').hidden = true; $('wallet-open').hidden = false; updateVaultUI(); selectChain(); activity(); message('Saved wallet unlocked locally.'); focusOpenWallet(kept);
     showKeptIdentity(keptIdentity);      // at once, while the addresses are derived again (0.1.97)
     deriveOwnAddresses();
@@ -2566,13 +2608,13 @@ $('vault-password').addEventListener('input', () => {
   catch (error) { $('password-hint').textContent = error.message; }
 });
 $('discard-activity').onclick = async () => {
-  if (!wallet || !activitySession || !activityBlocked) return;
+  if (!wallet || !activitySession || !(activityBlocked || quarantinedRows.length)) return;
   const source = wallet, session = activitySession, previous = localStorage.getItem(ACTIVITY_KEY);
   try {
     await withActivityLock(async () => {
-      const encrypted = await serializeActivity(session.id, [], session.key);
+      const encrypted = await serializeActivity(session.id, [], session.key, []);
       if (wallet !== source || source.locked || activitySession !== session || localStorage.getItem(VAULT_KEY) !== session.vault || localStorage.getItem(ACTIVITY_KEY) !== previous) throw new Error('Wallet or history changed. Unlock again before discarding history.');
-      localStorage.setItem(ACTIVITY_KEY, encrypted); history.length = 0; activityBlocked = false; $('discard-activity').hidden = true;
+      localStorage.setItem(ACTIVITY_KEY, encrypted); history.length = 0; quarantinedRows = []; activityBlocked = false; $('discard-activity').hidden = true;
     });
     renderActivity(false); $('vault-status').textContent = 'Unreadable local history discarded. Check the account explorer before resending any previous payment.';
   } catch (error) { $('vault-status').textContent = error.message; }

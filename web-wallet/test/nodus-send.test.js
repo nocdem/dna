@@ -276,7 +276,7 @@ test('G1: the review shows what the module decoded from the signed envelope, nev
   assert.equal(review['Valid until block'], '1090'); assert.equal(review['Chain ID'], CHAIN_ID);
   assert.match(review['Address check'], /128 characters/);
   assert.match(review['Fee note'], /may be charged even if the transfer fails/);
-  assert.deepEqual(mock.state.lastBuild, { to: RECIPIENT, amount: '150000000', expiryHeight: '1090', coins: mock.state.coins });
+  assert.deepEqual(mock.state.lastBuild, { to: RECIPIENT, tokenId: '0'.repeat(128), amount: '150000000', expiryHeight: '1090', coins: mock.state.coins }, 'the NODUS hop carries the explicit all-zero token id');
   transfer.cancel();
   // Any mismatch between request and signed envelope stops before review.
   for (const [tamper, pattern] of [

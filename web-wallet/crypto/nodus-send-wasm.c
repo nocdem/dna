@@ -2546,6 +2546,11 @@ static int g_locked;                    /* lock ran: terminal              */
 static volatile int g_cancel;           /* cancel ran: terminal            */
 static int g_busy;                      /* an async export is running      */
 static uint8_t g_checked_server_pk[NODUS_PK_BYTES];
+/* The session token of the connection nsw_check_chain last passed. The
+ * server draws a fresh random token for every authenticated connection
+ * (nodus_auth.c), so a different token = a NEW connection, also one to the
+ * SAME server (whose key g_checked_server_pk cannot tell apart). */
+static uint8_t g_checked_token[NODUS_SESSION_TOKEN_LEN];
 static char g_fp_hex[129];
 static char g_chain_hex[65];
 
@@ -2727,6 +2732,8 @@ static int nsw_end(int rc) {
  *         and does not serve the configured chain, or its key is unknown
  *         (nsw_connect makes that final). Every caller treats both as
  *         failure (`!= 0`); the reason is in nsw_error. */
+static void nsw_pins_check(void);
+
 static int nsw_check_chain(void) {
     bool has = false;
     uint8_t c[DNA_CHAIN_ID_LEN];
@@ -2745,8 +2752,19 @@ static int nsw_check_chain(void) {
         nsw_fail("The Nodus server key is unknown.");
         return -2;
     }
+    /* A connection this function has not passed before (another server, or
+     * a reconnect to the same one: a fresh session token) gets its pins read
+     * afresh HERE, so no caller can record the new connection without them
+     * (nsw_session_ok, nsw_connect_core and the mid-build re-check all come
+     * through this one place). */
+    const int fresh =
+        memcmp(g_client.server_dil_pk.bytes, g_checked_server_pk,
+               sizeof(g_checked_server_pk)) != 0 ||
+        memcmp(g_client.token, g_checked_token, sizeof(g_checked_token)) != 0;
     memcpy(g_checked_server_pk, g_client.server_dil_pk.bytes,
            sizeof(g_checked_server_pk));
+    memcpy(g_checked_token, g_client.token, sizeof(g_checked_token));
+    if (fresh) nsw_pins_check();
     return 0;
 }
 
@@ -2768,10 +2786,15 @@ static int nsw_pin_info_ok(int i, const uint8_t raw[64],
            strcmp(ti->symbol, NSW_PINS[i].symbol) == 0;
 }
 
+/* Re-read pin i on this connection. A failure LATCHES "unavailable" (2) for
+ * the rest of this connection: a later build never turns it back into 1
+ * (only nsw_pins_check, on a new connection, starts from 0 again). A pin
+ * that is verified (1) is read again and drops to 2 on any failure. */
 static int nsw_pin_verify(int i) {
     uint8_t raw[64];
     nodus_dnac_token_info_t ti;
     memset(&ti, 0, sizeof(ti));
+    if (g_pin_state[i] == 2) return 2;
     g_pin_state[i] = 2;
     if (nsw_pin_raw(i, raw) != 0) return 2;
     if (nodus_client_dnac_token_info(&g_client, raw, &ti) != 0) return 2;
@@ -2780,7 +2803,9 @@ static int nsw_pin_verify(int i) {
     return 1;
 }
 
+/* A NEW connection: every pin starts unread and is checked afresh. */
 static void nsw_pins_check(void) {
+    memset(g_pin_state, 0, sizeof(g_pin_state));
     for (int i = 0; i < NSW_PIN_COUNT; i++) (void)nsw_pin_verify(i);
 }
 
@@ -2790,10 +2815,12 @@ static int nsw_session_ok(void) {
         return nsw_fail("Nodus connection is not ready. Try again shortly.");
     if (!g_client.has_server_dil_pk ||
         memcmp(g_client.server_dil_pk.bytes, g_checked_server_pk,
-               sizeof(g_checked_server_pk)) != 0) {
-        int rc = nsw_check_chain();        /* reconnected to another server */
-        if (rc == 0) nsw_pins_check();     /* its answer, not the last one's */
-        return rc;
+               sizeof(g_checked_server_pk)) != 0 ||
+        memcmp(g_client.token, g_checked_token,
+               sizeof(g_checked_token)) != 0) {
+        /* a new connection — another server, or a reconnect to the same
+         * one: the chain id AND the pins are read afresh (nsw_check_chain) */
+        return nsw_check_chain();
     }
     return 0;
 }
@@ -2993,10 +3020,9 @@ static int nsw_connect_core(void) {
         nsw_client_drop();                  /* the reason stays in g_error */
         return rc == -2 ? -2 : -1;
     }
-    /* every connection re-reads the pinned tokens' metadata; a token the
-     * chain does not describe as pinned is unavailable for the session
+    /* nsw_check_chain read the pinned tokens' metadata for this connection;
+     * a token the chain does not describe as pinned is unavailable for it
      * (it never fails the connection) */
-    nsw_pins_check();
     if (g_cancel) return -1;
     g_unlocked = 1;
     return 0;
@@ -3092,13 +3118,22 @@ int nsw_list(void) {
     if (nsw_session_ok() != 0) return nsw_end(-1);
     nodus_dnac_utxo_result_t res;
     memset(&res, 0, sizeof(res));
-    int rc = nodus_client_dnac_utxo(&g_client, g_fp_hex,
-                                    NODUS_DNAC_MAX_UTXO_RESULTS, &res);
+    /* The native list is the STRICT token-filtered call with the all-zero
+     * id (nodus.h dnac_utxo "tok": zero = native): that decode requires a
+     * present 64-byte "tid" on every coin and refuses any coin of another
+     * token (-3, a node that ignores "tok"). The unfiltered call would read
+     * an absent or malformed "tid" as zero = native, and a token coin would
+     * enter the native table. Any failure = no list; never a fallback to the
+     * unfiltered call. */
+    static const uint8_t zero64[64] = {0};
+    int rc = nodus_client_dnac_utxo_token(&g_client, g_fp_hex, zero64,
+                                          NODUS_DNAC_MAX_UTXO_RESULTS, &res);
     if (rc != 0) {
         nodus_client_free_utxo_result(&res);
-        return nsw_end(nsw_fail_rc(rc, "Your coin list could not be read (rc=%d).", rc));
+        return nsw_end(nsw_fail_rc(rc, "Your coin list is unavailable right "
+                                   "now (rc=%d). Nothing was done; try again "
+                                   "later.", rc));
     }
-    static const uint8_t zero64[64] = {0};
     int bad = res.count < 0 || res.count > (int)NODUS_DNAC_MAX_UTXO_RESULTS ||
               (res.count > 0 && !res.entries);
     const uint64_t tip = res.block_height;
@@ -3240,6 +3275,10 @@ static int nsw_build_net(const char *to_hex, int pin, const char *amount_dec,
                                 NSW_PINS[pin].symbol));
     /* signing: re-read the chain id on this session, whatever the cache */
     if (nsw_check_chain() != 0) return nsw_end(-1);
+    /* a reconnect inside the steps above re-read the pins: still verified? */
+    if (pin != NSW_NATIVE && g_pin_state[pin] != 1)
+        return nsw_end(nsw_fail("%s is unavailable right now. Nothing was sent.",
+                                NSW_PINS[pin].symbol));
     /* HF-4: the generation is chosen from the node's answer on THIS call,
      * never from an earlier nsw_ruleset_info */
     nsw_gen_t gen;
@@ -3270,6 +3309,13 @@ int nsw_build_and_sign(const char *to_hex, const char *amount_dec,
  * last listing. */
 int nsw_token_build_and_sign(const char *to_hex, const char *token_hex,
                              const char *amount_dec, const char *expiry_dec) {
+    /* the explicit all-zero id is NODUS itself: the unchanged native build
+     * (the page's NODUS hop carries it, never an absent id) */
+    uint8_t tid[64];
+    static const uint8_t zero64[64] = {0};
+    if (nsw_parse_hex(token_hex, tid, sizeof(tid)) == 0 &&
+        memcmp(tid, zero64, sizeof(tid)) == 0)
+        return nsw_build_net(to_hex, NSW_NATIVE, amount_dec, expiry_dec);
     const int pin = nsw_pin_find(token_hex);
     if (pin < 0) {
         if (nsw_begin() != 0) return -1;
@@ -3314,14 +3360,27 @@ int nsw_test_pin_info(const char *id_hex, const char *name,
     uint8_t raw[64];
     nodus_dnac_token_info_t ti;
     memset(&ti, 0, sizeof(ti));
+    if (!id_hex || !name || !symbol) return 0;      /* NULL: refuse, no crash */
+    const size_t nlen = strnlen(name, sizeof(ti.name));
+    const size_t slen = strnlen(symbol, sizeof(ti.symbol));
     if (nsw_pin_raw(0, raw) != 0 || nsw_parse_hex(id_hex, ti.token_id, 64) != 0 ||
-        strlen(name) >= sizeof(ti.name) || strlen(symbol) >= sizeof(ti.symbol) ||
+        nlen >= sizeof(ti.name) || slen >= sizeof(ti.symbol) ||
         decimals < 0 || decimals > 255)
         return 0;
-    memcpy(ti.name, name, strlen(name));
-    memcpy(ti.symbol, symbol, strlen(symbol));
+    memcpy(ti.name, name, nlen);
+    memcpy(ti.symbol, symbol, slen);
     ti.decimals = (uint8_t)decimals;
     return nsw_pin_info_ok(0, raw, &ti);
+}
+
+/* TEST-only: pin `i` latched "unavailable" stays unavailable when a later
+ * build asks again — nsw_pin_verify answers from the latch and reads
+ * nothing (no node is involved). @return 1 = still 2 (latched) after the
+ * ask, 0 = flipped back, -1 bad index. */
+int nsw_test_pin_latched(int i) {
+    if (i < 0 || i >= NSW_PIN_COUNT) return -1;
+    g_pin_state[i] = 2;
+    return nsw_pin_verify(i) == 2 && g_pin_state[i] == 2 ? 1 : 0;
 }
 #endif
 

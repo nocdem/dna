@@ -134,6 +134,8 @@ export function createMockNodusModule() {
       return { envelope: Uint8Array.of(7, 7, 7, state.builds), intentId: INTENT_ID, decoded: { ...decoded, ...(state.tamper || {}) } };
     }),
     buildAndSign: request => op('buildAndSign', async () => {
+      // the module's rule: the explicit all-zero token id is required
+      if (request.tokenId !== ZERO_TOKEN) throw new Error('Invalid token.');
       state.lastBuild = request;
       const need = BigInt(request.amount) + BigInt(FEE), inputs = [];
       let sum = 0n;

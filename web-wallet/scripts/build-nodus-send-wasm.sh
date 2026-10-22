@@ -522,7 +522,7 @@ exports_test=(nsw_test_random_buf nsw_test_random_load nsw_test_pins_tuple nsw_t
   # pinned-metadata comparison on a made-up dnac_token_info answer.
   # Synchronous, no network.
   nsw_test_req_add_token_coin nsw_test_token_offline_build
-  nsw_test_set_listing nsw_test_pin_info
+  nsw_test_set_listing nsw_test_pin_info nsw_test_pin_latched
   # P1 rules' vector entry (connect/nc_wasm.c, compiled only with
   # NODUS_SEND_TEST_FIXED_RANDOM; test/connect-rules-vectors.test.js).
   # Synchronous, no network, no session.
