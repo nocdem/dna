@@ -364,7 +364,10 @@ uint8_t *nsw_seed_buf(void) { return g_seed; }
  * the testnet in block 305991 (decision 2026-10-22-testnet-test-tokens-
  * faucet-dex.md), name "Test USDT", symbol "tUSDT", 6 decimals. Mainnet has
  * no such token (operator: "hiçbir zaman mainnet'te USDT gibi bir şeyimiz
- * olmayacak"); a mainnet build carries another, empty table. */
+ * olmayacak"). The table is compiled in UNCONDITIONALLY: nothing here picks
+ * a table per chain. Against a chain without this token the metadata check
+ * (nsw_pin_verify) marks tUSDT unavailable — listed, never sendable; dropping
+ * the pin from a mainnet build is NOT done here. */
 typedef struct {
     const char *token_hex;                  /* 128 lowercase hex           */
     const char *name, *symbol;
