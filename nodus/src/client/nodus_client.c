@@ -4063,11 +4063,15 @@ static int dnac_utxo_parse(const uint8_t *raw, size_t raw_len,
         }
     }
 
-    if (dec.error || !have_utxos ||
-        (have_count && count_val != (uint64_t)result_out->count)) {
+    /* "count" is REQUIRED and must equal the list length: every server reply
+     * that uses this decoder sends it (nodus_witness_handlers.c, the shared
+     * dnac_utxo / dnac_msig_utxo encoder), and a reply without it could be a
+     * list cut short with nothing to prove it whole. */
+    if (dec.error || !have_utxos || !have_count ||
+        count_val != (uint64_t)result_out->count) {
         QGP_LOG_WARN(LOG_TAG, "dnac_utxo: reply without a complete \"utxos\" "
-                     "list or with a \"count\" that is not its length — "
-                     "refused");
+                     "list, without \"count\", or with a \"count\" that is "
+                     "not its length — refused");
         nodus_client_free_utxo_result(result_out);
         return NODUS_ERR_PROTOCOL_ERROR;
     }

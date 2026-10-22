@@ -6,6 +6,8 @@
  *     result freed). Before the fix it re-calloc'd entries without resetting
  *     count and wrote at entries[count] — with a 3-entry first array and a
  *     1-entry second one that is a write 3 slots past a 1-slot allocation.
+ *   - C-11: "count" is required: a reply with "utxos" and no "count" is
+ *     refused (and the same list with its "count" decodes).
  *   - Well-formed replies of the shape the node's handler writes
  *     (nodus_witness_handlers.c) still decode with the expected counts.
  * (The dnac_ledger_range and dnac_block cases are deleted with those
@@ -137,6 +139,23 @@ static void test_utxo(void) {
     cbor_encode_cstr(&e, "block_height"); cbor_encode_uint(&e, 2);
     rc = nodus_client_test_parse_utxo(g_frame, cbor_encoder_len(&e), &res);
     CHECK(rc == NODUS_ERR_PROTOCOL_ERROR, "utxo: repeated \"block_height\" refused");
+    nodus_client_free_utxo_result(&res);
+
+    /* C-11: "count" is required. A well-formed "utxos" list with NO "count"
+     * (nothing to prove the list whole) is refused, result freed; the same
+     * list with its "count" decodes (control). */
+    reply_head(&e, "dnac_utxo", 1);
+    enc_utxo_array(&e, 2, 500);
+    rc = nodus_client_test_parse_utxo(g_frame, cbor_encoder_len(&e), &res);
+    CHECK(rc == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL && res.count == 0,
+          "utxo: a reply with \"utxos\" and no \"count\" is refused");
+    nodus_client_free_utxo_result(&res);
+    reply_head(&e, "dnac_utxo", 2);
+    cbor_encode_cstr(&e, "count"); cbor_encode_uint(&e, 2);
+    enc_utxo_array(&e, 2, 500);
+    rc = nodus_client_test_parse_utxo(g_frame, cbor_encoder_len(&e), &res);
+    CHECK(rc == 0 && res.count == 2 && res.entries[0].amount == 500,
+          "utxo: (control) the same list with its \"count\" decodes");
     nodus_client_free_utxo_result(&res);
 
     /* C-11: the unfiltered decode is strict about the token id too. A
