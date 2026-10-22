@@ -19,7 +19,7 @@ import { createNodusClient, isNodusBusy, NODUS_BUSY_TEXT } from '../src/nodus/cl
 import { createNodusSendModule, NODUS_SEND_NETWORK } from '../src/nodus/send-module.js';
 import { createNodusConnectCore } from '../src/connect/core.js';
 import { prepareTransfer } from '../src/wallet.js';
-import { createMockNodusModule, FINGERPRINT, RECIPIENT, BUSY_TEXT, busyError } from './nodus-mock-module.js';
+import { createMockNodusModule, FINGERPRINT, RECIPIENT, BUSY_TEXT, busyError, NODUS_NATIVE } from './nodus-mock-module.js';
 
 const BALANCE_TEXT = 'Balance unavailable (rc=6).';
 
@@ -114,7 +114,7 @@ test('busy, background read: the mark passes the queue, the session stays ready,
 test('busy, user action: Review build shows the busy text, nothing is built or held, the same request succeeds when pressed again', async () => {
   const { mock, client } = await readyClient();
   const wallet = { addresses: { nodus: FINGERPRINT }, nodusClient: client };
-  const request = { wallet, chain: 'nodus', symbol: 'NODUS', to: RECIPIENT, amount: '1' };
+  const request = { wallet, chain: 'nodus', symbol: 'NODUS', asset: NODUS_NATIVE, to: RECIPIENT, amount: '1' };
   mock.state.busy.add('list');
   const error = await prepareTransfer(request).then(() => null, e => e);
   assert.equal(error.message, BUSY_TEXT, 'the user sees the busy text as it is');

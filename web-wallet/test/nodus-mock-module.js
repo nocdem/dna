@@ -10,6 +10,15 @@ export const CHAIN_ID = 'e'.repeat(64);
 export const INTENT_ID = '9'.repeat(128);
 export const FEE = '1000';
 export const coin = (digit, amount) => ({ nullifier: String(digit).repeat(128), amount });
+// The asset identity of a NODUS send (src/wallet.js prepareTransfer `asset`):
+// the all-zero token id is NODUS itself.
+export const ZERO_TOKEN = '0'.repeat(128);
+export const NODUS_NATIVE = { chain: 'nodus', tokenId: ZERO_TOKEN };
+// The pinned test token of the token tests (the module's table, crypto/
+// nodus-send-wasm.c NSW_PINS: tUSDT, 6 decimals) and a made-up coin of it.
+export const TUSDT_ID = '7142460f5dd73ce7123905c423e1eb17fbff36f14b031e24837a4b6d7bedd5677baaa3a3e6015e6d6fc706b0b0d8799a88d7fd63f6d1e7807dbb88577b7c3b50';
+export const TUSDT = { tokenId: TUSDT_ID, name: 'Test USDT', symbol: 'tUSDT', decimals: 6, available: true };
+export const tokenCoin = (digit, amount, tokenId = TUSDT_ID) => ({ nullifier: String(digit).repeat(128), amount, tokenId });
 const SEED_AT = 4096;
 // The module's error for a node's RATE_LIMITED answer (web 0.1.119,
 // src/nodus/send-module.js failure: the text of nsw_fail_rc, `busy` from
@@ -62,7 +71,10 @@ export function createMockNodusModule() {
     // build returns different bytes (a fourth byte counting the builds),
     // as the real module's hedged signature does; off = the fixed three
     // bytes the older tests compare.
-    submissions: [], hedged: false, builds: 0
+    submissions: [], hedged: false, builds: 0,
+    // Tokens: the module's pinned list (tokenPins), and — set by a test —
+    // the balance rows, the pinned tokens' coins and their listing status.
+    pins: [], tokenBalances: null, tokenCoins: null, tokenListing: null, lastTokenBuild: null
   };
   const bytes = () => new Uint8Array(memory.buffer);
   async function op(name, fn) {
@@ -89,9 +101,41 @@ export function createMockNodusModule() {
     // follow the queue and the state gates).
     connect: run => op('connect', async () => run({})),
     connectSync: run => run({}),
-    balance: () => op('balance', async () => ({ total: state.total, spendable: state.spendable })),
-    list: () => op('list', async () => ({ tip: state.tip, coins: state.coins, truncated: state.truncated })),
+    // The token group (src/nodus/client.js TOKEN_OPS): `state.pins` is the
+    // module's pinned list as tokenPins() reports it ([] = none, the default);
+    // `state.tokenBalances` / `state.tokenCoins` / `state.tokenListing` add
+    // the token rows to balance() / list() only when a test sets them, so the
+    // older tests see the exact shapes they always did.
+    tokenPins: () => state.pins.map(pin => ({ ...pin })),
+    balance: () => op('balance', async () => ({ total: state.total, spendable: state.spendable, ...(state.tokenBalances ? { tokens: state.tokenBalances.map(row => ({ ...row })) } : {}) })),
+    list: () => op('list', async () => ({ tip: state.tip, coins: state.coins, truncated: state.truncated, ...(state.tokenCoins ? { tokenCoins: state.tokenCoins.map(c => ({ ...c })), tokens: (state.tokenListing || []).map(t => ({ ...t })) } : {}) })),
+    // The module's token rules, modelled: the token must be pinned and
+    // available, the token coins (the request's coins that the listing holds
+    // as that token's) cover the amount ("Not enough tUSDT."), the NODUS
+    // coins cover the fee ("Not enough NODUS for the network fee."),
+    // largest-first; the read-back is produced from the request (optionally
+    // tampered by a test, state.tamper).
+    tokenBuildAndSign: request => op('tokenBuildAndSign', async () => {
+      state.lastTokenBuild = request;
+      const pin = state.pins.find(p => p.tokenId === request.tokenId);
+      if (!pin) throw new Error('This token is not supported by this wallet.');
+      if (!pin.available) throw new Error(`${pin.symbol} is unavailable right now. Nothing was sent.`);
+      const tokenIds = new Map((state.tokenCoins || []).map(c => [c.nullifier, c.tokenId]));
+      const byAmount = (a, b) => (BigInt(b.amount) > BigInt(a.amount) ? 1 : BigInt(b.amount) < BigInt(a.amount) ? -1 : 0);
+      const tokens = request.coins.filter(c => tokenIds.get(c.nullifier) === request.tokenId).sort(byAmount);
+      const natives = request.coins.filter(c => !tokenIds.has(c.nullifier)).sort(byAmount);
+      const pick = (list, need) => { const inputs = []; let sum = 0n; for (const c of list) { if (sum >= need) break; inputs.push(c.nullifier); sum += BigInt(c.amount); } return { inputs, sum }; };
+      const t = pick(tokens, BigInt(request.amount));
+      if (t.sum < BigInt(request.amount)) throw new Error(`Not enough ${pin.symbol}.`);
+      const n = pick(natives, BigInt(FEE));
+      if (n.sum < BigInt(FEE)) throw new Error('Not enough NODUS for the network fee.');
+      state.builds++;
+      const decoded = { recipient: request.to, amount: request.amount, fee: FEE, change: (n.sum - BigInt(FEE)).toString(), tokenId: request.tokenId, tokenChange: (t.sum - BigInt(request.amount)).toString(), expiryHeight: request.expiryHeight, chainId: state.chainId, inputs: [...t.inputs, ...n.inputs] };
+      return { envelope: Uint8Array.of(7, 7, 7, state.builds), intentId: INTENT_ID, decoded: { ...decoded, ...(state.tamper || {}) } };
+    }),
     buildAndSign: request => op('buildAndSign', async () => {
+      // the module's rule: the explicit all-zero token id is required
+      if (request.tokenId !== ZERO_TOKEN) throw new Error('Invalid token.');
       state.lastBuild = request;
       const need = BigInt(request.amount) + BigInt(FEE), inputs = [];
       let sum = 0n;
@@ -100,7 +144,7 @@ export function createMockNodusModule() {
         inputs.push(c.nullifier); sum += BigInt(c.amount);
       }
       if (sum < need) throw new Error('Insufficient NODUS balance.');
-      const decoded = { recipient: request.to, amount: request.amount, fee: FEE, change: (sum - need).toString(), expiryHeight: request.expiryHeight, chainId: state.chainId, inputs };
+      const decoded = { recipient: request.to, amount: request.amount, fee: FEE, change: (sum - need).toString(), tokenId: ZERO_TOKEN, tokenChange: '0', expiryHeight: request.expiryHeight, chainId: state.chainId, inputs };
       state.builds++;
       return { envelope: state.hedged ? Uint8Array.of(1, 2, 3, state.builds) : Uint8Array.of(1, 2, 3), intentId: INTENT_ID, ...(state.wireId ? { wireId: state.wireId } : {}), decoded: { ...decoded, ...(state.tamper || {}) } };
     }),

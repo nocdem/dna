@@ -147,6 +147,14 @@ mode="${1:-release}"
 # structs are heap, and the JSON is built after the last wait. The
 # validator_id / owner added to nsw_validators are copied into its static
 # cache after each page's wait. Expected to hold, not measured.
+# The token exports (nsw_token_build_and_sign, and the pinned-token reads
+# nsw_balance / nsw_list / the connection's metadata check now make) have
+# the shape of nsw_build_and_sign: every wait (dnac_token_info, the
+# filtered dnac_utxo, chain id, dnac_ruleset_info, dnac_fee_info) runs in
+# the export's own frame (or nsw_pin_verify's / nsw_pins_check's) with
+# scalar locals and address-taken answer structs (C stack); the pin table
+# is const, the token coin tables are static, and the builder's structs run
+# after the last wait. Expected to hold, not measured.
 # There is no ASYNCIFY_ONLY / ASYNCIFY_ADD list: with ASYNCIFY=1 Binaryen
 # instruments every function that can reach emscripten_sleep (directly or,
 # with the default ASYNCIFY_IGNORE_INDIRECT=0, through an indirect call),
@@ -324,6 +332,16 @@ exports_common=(
   nsw_built_change nsw_built_expiry nsw_built_n_in nsw_built_in
   nsw_net_reset nsw_net_set_chain nsw_net_add_endpoint nsw_net_add_pin
   nsw_unlock nsw_identify nsw_connect
+  # TOKENS (design docs/plans/2026-10-22-connect-native-tokens-design.md §6):
+  # the pinned-token table (synchronous getters), the token send
+  # (nsw_token_build_and_sign waits on the network — ccall { async: true }),
+  # what it read back, the pinned tokens' coins of the last nsw_list and
+  # their balances of the last nsw_balance. None of the getters waits.
+  nsw_pin_count nsw_pin_token nsw_pin_name nsw_pin_symbol nsw_pin_decimals
+  nsw_pin_available nsw_token_build_and_sign nsw_built_token
+  nsw_built_token_change nsw_list_tok_count nsw_list_tok_nul
+  nsw_list_tok_amount nsw_list_tok_token nsw_list_pin_listed
+  nsw_list_pin_truncated nsw_bal_pin_total nsw_bal_pin_spendable
   nsw_balance nsw_list nsw_build_and_sign nsw_req_env_alloc
   nsw_submit nsw_scan nsw_tick nsw_cancel nsw_lock
   nsw_fingerprint nsw_chain_hex nsw_bal_total nsw_bal_spendable
@@ -498,6 +516,13 @@ exports_test=(nsw_test_random_buf nsw_test_random_load nsw_test_pins_tuple nsw_t
   # web 0.1.119: nsw_fail_rc on a given rc (the busy mapping without a
   # node; test/nodus-send-wasm.test.js). Synchronous, no network.
   nsw_test_fail_rc
+  # TOKENS: the offline token build (the native vector's `token` mode runs
+  # the same function), an explicit token coin for it, a made-up last
+  # listing (the refusals that run before the first network call) and the
+  # pinned-metadata comparison on a made-up dnac_token_info answer.
+  # Synchronous, no network.
+  nsw_test_req_add_token_coin nsw_test_token_offline_build
+  nsw_test_set_listing nsw_test_pin_info nsw_test_pin_latched
   # P1 rules' vector entry (connect/nc_wasm.c, compiled only with
   # NODUS_SEND_TEST_FIXED_RANDOM; test/connect-rules-vectors.test.js).
   # Synchronous, no network, no session.

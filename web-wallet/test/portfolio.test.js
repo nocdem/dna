@@ -112,7 +112,7 @@ test('IXIOS is an unpriced, receive-only row like CPUNK: no priceId, no PRICE_UR
   assert.equal(snap.complete, true); assert.equal(row.state, 'error'); assert.equal(row.balance, null); assert.equal(row.usd, null);
 });
 test('NODUS is listed first but never read: an unsupported row takes no part in the load state, totals or completeness', () => {
-  assert.deepEqual(NODUS_ASSET, { chain: 'nodus', symbol: 'NODUS', decimals: 8, key: 'nodus:NODUS' });
+  assert.deepEqual(NODUS_ASSET, { chain: 'nodus', symbol: 'NODUS', decimals: 8, key: 'nodus:NODUS', tokenId: '0'.repeat(128) });
   assert.equal(NODUS_NETWORK.symbol, NODUS_ASSET.symbol); assert.equal(NODUS_NETWORK.icon, 'nodus.svg');
   assert.equal(NODUS_NETWORK.receiveOnly, true); assert.equal(NODUS_NETWORK.balanceUnavailable, true);
   assert.equal(NODUS_NETWORK.endpoint, undefined); assert.equal(NODUS_NETWORK.rpcOptions, undefined); assert.deepEqual(NODUS_NETWORK.tokens, []);

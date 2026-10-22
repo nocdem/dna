@@ -30,6 +30,8 @@
 // Amounts and heights cross into C as decimal strings and come back as
 // decimal strings (RT1 L4 F10); nothing here converts them to Number.
 const HEX64 = /^[0-9a-f]{64}$/, HEX128 = /^[0-9a-f]{128}$/, RAW = /^(0|[1-9]\d{0,19})$/;
+// NODUS itself in a send's asset identity: the all-zero token id.
+const NATIVE_TOKEN_ID = '0'.repeat(128);
 const OCTET = '(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)';
 const IPV4 = new RegExp(`^${OCTET}(\\.${OCTET}){3}$`);
 export const NODUS_SEND_MAX_ENDPOINTS = 8;   // nodus/include/nodus/nodus.h NODUS_CLIENT_MAX_SERVERS
@@ -362,13 +364,35 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
       }
     };
   };
-  const loadCoins = coins => {
-    if (!Array.isArray(coins) || coins.length > MAX_COINS) throw new Error('Invalid coin list.');
+  const loadCoins = (coins, max = MAX_COINS) => {
+    if (!Array.isArray(coins) || coins.length > max) throw new Error('Invalid coin list.');
     num('nsw_req_reset');
     for (const coin of coins) {
       if (!coin || typeof coin.nullifier !== 'string' || !HEX128.test(coin.nullifier)) throw new Error('Invalid coin list.');
       check(num('nsw_req_add_coin', ['string', 'string'], [coin.nullifier, raw(coin.amount, 'coin amount')]));
     }
+  };
+  // What the last SPEND build (NODUS or a pinned token) signed, read back from
+  // its bytes by the C side (nsw_build_core): `amount` in the decoded token's
+  // units (`tokenId` all zeros = NODUS), `change` the NATIVE change,
+  // `tokenChange` the token's (0 for a NODUS send) — never echoed from the
+  // request.
+  const spendBuilt = () => {
+    const at = num('nsw_built_env'), length = num('nsw_built_env_len');
+    const inputs = [];
+    for (let i = 0, n = num('nsw_built_n_in'); i < n; i++) inputs.push(str('nsw_built_in', ['number'], [i]));
+    return {
+      envelope: M.HEAPU8.slice(at, at + length),
+      intentId: str('nsw_built_intent'),
+      // the full-wire id (preflight wire_id) — what the node's address
+      // history lists the transaction by (src/adapters/nodus.js builtWire)
+      wireId: str('nsw_built_wire'),
+      decoded: {
+        recipient: str('nsw_built_recipient'), amount: str('nsw_built_amount'), fee: str('nsw_built_fee'),
+        change: str('nsw_built_change'), expiryHeight: str('nsw_built_expiry'), chainId: str('nsw_built_chain'), inputs,
+        tokenId: str('nsw_built_token'), tokenChange: str('nsw_built_token_change')
+      }
+    };
   };
   // Messages bridge (NC-4b): only nc_* entry points; the async form only
   // inside the queue (connect()), never from connectSync().
@@ -469,44 +493,75 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
       if (rc === -2) error.final = true;
       throw error;
     },
+    // The native row (total / spendable, as ever) and one row per PINNED
+    // token (nodus-send-wasm.c nsw_bal_pin_*; design 2026-10-22-connect-
+    // native-tokens-design.md §6 items 2 and 9): [{ tokenId, total,
+    // spendable }], raw decimal strings in the token's units. A node that
+    // refuses the answer (more than 256 token kinds on the address) makes
+    // the call reject — never a zero.
     async balance() {
       check(await call('nsw_balance'));
-      return { total: str('nsw_bal_total'), spendable: str('nsw_bal_spendable') };
+      const tokens = [];
+      for (let i = 0, n = num('nsw_pin_count'); i < n; i++) {
+        tokens.push({ tokenId: str('nsw_pin_token', ['number'], [i]), total: str('nsw_bal_pin_total', ['number'], [i]), spendable: str('nsw_bal_pin_spendable', ['number'], [i]) });
+      }
+      return { total: str('nsw_bal_total'), spendable: str('nsw_bal_spendable'), tokens };
     },
+    // `coins`: the NATIVE coins, exactly as before (every NODUS consumer —
+    // staking, names, HF-6, EVM — reads only these). `tokenCoins`: the
+    // pinned tokens' coins, each with its token id; `tokens`: per pinned
+    // token whether its coins were listed at all (a node that ignores the
+    // token filter, or a failed read, leaves `listed` false — never a mixed
+    // list) and whether the node's 100-coin cap cut it.
     async list() {
       check(await call('nsw_list'));
-      const coins = [];
+      const coins = [], tokenCoins = [], tokens = [];
       for (let i = 0, n = num('nsw_list_count'); i < n; i++) {
         coins.push({ nullifier: str('nsw_list_nul', ['number'], [i]), amount: str('nsw_list_amount', ['number'], [i]) });
       }
-      return { tip: str('nsw_list_tip'), coins, truncated: num('nsw_list_truncated') === 1 };
-    },
-    async buildAndSign({ to, amount, expiryHeight, coins } = {}) {
-      if (typeof to !== 'string' || !HEX128.test(to)) throw new Error('Enter a Nodus address: 128 characters, 0-9 and a-f.');
-      raw(amount, 'amount'); raw(expiryHeight, 'validity height');
-      if (!Array.isArray(coins) || coins.length > MAX_COINS) throw new Error('Invalid coin list.');
-      num('nsw_req_reset');
-      for (const coin of coins) {
-        if (!coin || typeof coin.nullifier !== 'string' || !HEX128.test(coin.nullifier)) throw new Error('Invalid coin list.');
-        check(num('nsw_req_add_coin', ['string', 'string'], [coin.nullifier, raw(coin.amount, 'coin amount')]));
+      for (let i = 0, n = num('nsw_list_tok_count'); i < n; i++) {
+        tokenCoins.push({ nullifier: str('nsw_list_tok_nul', ['number'], [i]), amount: str('nsw_list_tok_amount', ['number'], [i]), tokenId: str('nsw_list_tok_token', ['number'], [i]) });
       }
-      check(await call('nsw_build_and_sign', ['string', 'string', 'string'], [to, amount, expiryHeight]));
-      const at = num('nsw_built_env'), length = num('nsw_built_env_len');
-      const inputs = [];
-      for (let i = 0, n = num('nsw_built_n_in'); i < n; i++) inputs.push(str('nsw_built_in', ['number'], [i]));
-      return {
-        envelope: M.HEAPU8.slice(at, at + length),
-        intentId: str('nsw_built_intent'),
-        // the full-wire id (preflight wire_id) — what the node's address
-        // history lists the transaction by (src/adapters/nodus.js builtWire)
-        wireId: str('nsw_built_wire'),
-        // Read back from the envelope bytes by the C side (nodus_v2_spend_build's
-        // decode, checked in nsw_build_core) — never echoed from the request.
-        decoded: {
-          recipient: str('nsw_built_recipient'), amount: str('nsw_built_amount'), fee: str('nsw_built_fee'),
-          change: str('nsw_built_change'), expiryHeight: str('nsw_built_expiry'), chainId: str('nsw_built_chain'), inputs
-        }
-      };
+      for (let i = 0, n = num('nsw_pin_count'); i < n; i++) {
+        tokens.push({ tokenId: str('nsw_pin_token', ['number'], [i]), listed: num('nsw_list_pin_listed', ['number'], [i]) === 1, truncated: num('nsw_list_pin_truncated', ['number'], [i]) === 1 });
+      }
+      return { tip: str('nsw_list_tip'), coins, tokenCoins, tokens, truncated: num('nsw_list_truncated') === 1 };
+    },
+    // The pinned tokens (nodus-send-wasm.c NSW_PINS — the ONE place they
+    // live) and whether each is usable in this session (its metadata read
+    // from the node equals the pin). Synchronous; reads statics only.
+    tokenPins() {
+      const pins = [];
+      for (let i = 0, n = num('nsw_pin_count'); i < n; i++) {
+        pins.push({ tokenId: str('nsw_pin_token', ['number'], [i]), name: str('nsw_pin_name', ['number'], [i]), symbol: str('nsw_pin_symbol', ['number'], [i]), decimals: num('nsw_pin_decimals', ['number'], [i]), available: num('nsw_pin_available', ['number'], [i]) === 1 });
+      }
+      return pins;
+    },
+    // The NODUS send. `tokenId` is REQUIRED and must be the explicit all-zero
+    // id: no hop defaults to native (design 2026-10-22-connect-native-tokens-
+    // design.md §6 item 1). The id travels to the module's one token entry
+    // point, which reads all zeros as NODUS and builds the unchanged native
+    // envelope (nsw_token_build_and_sign).
+    async buildAndSign({ to, tokenId, amount, expiryHeight, coins } = {}) {
+      if (typeof to !== 'string' || !HEX128.test(to)) throw new Error('Enter a Nodus address: 128 characters, 0-9 and a-f.');
+      if (tokenId !== NATIVE_TOKEN_ID) throw new Error('Invalid token.');
+      raw(amount, 'amount'); raw(expiryHeight, 'validity height');
+      loadCoins(coins);
+      check(await call('nsw_token_build_and_sign', ['string', 'string', 'string', 'string'], [to, tokenId, amount, expiryHeight]));
+      return spendBuilt();
+    },
+    // A pinned token's send: `tokenId` (128 hex) must be a pinned id, `amount`
+    // is in the token's raw units; `coins` are the candidates (native for
+    // the fee + the token's) — each takes its kind from the module's last
+    // listing, never from here. Resolves as buildAndSign does, with the
+    // decoded token id and token change.
+    async tokenBuildAndSign({ to, tokenId, amount, expiryHeight, coins } = {}) {
+      if (typeof to !== 'string' || !HEX128.test(to)) throw new Error('Enter a Nodus address: 128 characters, 0-9 and a-f.');
+      if (typeof tokenId !== 'string' || !HEX128.test(tokenId) || tokenId === NATIVE_TOKEN_ID) throw new Error('Invalid token.');
+      raw(amount, 'amount'); raw(expiryHeight, 'validity height');
+      loadCoins(coins, 2 * MAX_COINS);       // up to one answer of NODUS coins (the fee) + one of the token's
+      check(await call('nsw_token_build_and_sign', ['string', 'string', 'string', 'string'], [to, tokenId, amount, expiryHeight]));
+      return spendBuilt();
     },
     async submit({ envelope } = {}) {
       if (!(envelope instanceof Uint8Array) || envelope.length === 0) throw new Error('Invalid transfer.');

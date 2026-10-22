@@ -1097,6 +1097,13 @@ int nodus_client_dnac_token_list(nodus_client_t *client,
 /**
  * Query single token by token_id.
  *
+ * The reply is decoded strictly: tid / name / sym / dec / supply / creator
+ * must each be present exactly once with its own type, name <= 32 and sym
+ * <= 8 bytes without an embedded NUL (judged on the wire length), dec <= 18
+ * (judged before the narrowing to uint8_t), the returned tid equal to
+ * `token_id`, and nothing truncated. Anything else is
+ * NODUS_ERR_PROTOCOL_ERROR and `result_out` is zeroed.
+ *
  * @param token_id    64-byte token identifier
  * @param result_out  Token info result
  * @return 0 on success, error code on failure
@@ -2360,7 +2367,9 @@ void nodus_client_free_addr_history_result(nodus_dnac_addr_history_result_t *res
  * @return 0 and `result_out` filled; the NODUS_ERR_* code the node
  *         answered; NODUS_CLIENT_ERR_METHOD_UNSUPPORTED for a node
  *         without the method; NODUS_ERR_PROTOCOL_ERROR for a reply the
- *         decoder refuses (incl. a missing / non-bool "trunc");
+ *         decoder refuses (incl. a missing / non-bool "trunc", and an
+ *         entry without a 64-byte "tid" — the node always sends one, and
+ *         a missing id would read as a native coin);
  *         NODUS_ERR_TIMEOUT; -1 on invalid arguments / encode / transport
  *         failure.
  */

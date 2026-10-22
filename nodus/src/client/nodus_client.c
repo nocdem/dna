@@ -3967,7 +3967,11 @@ static int dnac_utxo_parse_ex(const uint8_t *raw, size_t raw_len,
                     nodus_client_free_utxo_result(result_out);
                     return NODUS_ERR_PROTOCOL_ERROR;
                 }
-                if (strict_tid && !tid_ok) {
+                /* a vault listing (trunc_out set: dnac_msig_utxo and its
+                 * "nul" form) needs the id as much as the token-filtered
+                 * call does: the server always sends "tid", and a missing
+                 * one would leave the id zero = a native coin. */
+                if ((strict_tid || trunc_out) && !tid_ok) {
                     QGP_LOG_WARN(LOG_TAG, "dnac_utxo: utxo entry without a "
                                  "64-byte \"tid\" — refused");
                     nodus_client_free_utxo_result(result_out);
@@ -4672,6 +4676,91 @@ int nodus_client_dnac_token_list(nodus_client_t *client,
     return 0;
 }
 
+/* Decode a dnac_token_info reply ("r": {tid, name, sym, dec, supply,
+ * creator}) strictly: every field present exactly once with its own type,
+ * name <= 32 / symbol <= 8 / creator < sizeof(creator_fp) bytes with no
+ * embedded NUL (checked on the WIRE length, before anything is copied),
+ * decimals <= 18 checked BEFORE the narrowing to uint8_t, the returned token
+ * id equal to the one asked, and no decoder error / truncation. Anything else
+ * is NODUS_ERR_PROTOCOL_ERROR and *out is zeroed: a lossy copy ("Test
+ * USDT\0x" -> "Test USDT", decimals 262 -> 6) must never pass as the token
+ * the caller pinned. */
+#define KEY_IS(k, s) \
+    ((k).tstr.len == (sizeof(s) - 1) && \
+     memcmp((k).tstr.ptr, (s), sizeof(s) - 1) == 0)
+
+static int dnac_token_info_decode(const uint8_t *raw, size_t raw_len,
+                                  const uint8_t *queried,
+                                  nodus_dnac_token_info_t *out) {
+    enum { F_TID = 1, F_NAME = 2, F_SYM = 4, F_DEC = 8, F_SUPPLY = 16,
+           F_CREATOR = 32, F_ALL = 63 };
+    cbor_decoder_t dec;
+    size_t mc;
+    unsigned seen = 0;
+    nodus_dnac_token_info_t t;
+    memset(&t, 0, sizeof(t));
+    memset(out, 0, sizeof(*out));
+
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0)
+        return NODUS_ERR_PROTOCOL_ERROR;
+
+    nodus_map_keys_t ks;
+    memset(&ks, 0, sizeof(ks));
+    for (size_t i = 0; i < mc; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (dec.error || key.type != CBOR_ITEM_TSTR)
+            return NODUS_ERR_PROTOCOL_ERROR;
+        if (nodus_map_key_once(&ks, key.tstr.ptr, key.tstr.len) != 0)
+            return NODUS_ERR_PROTOCOL_ERROR;
+
+        cbor_item_t v;
+        if (KEY_IS(key, "tid")) {
+            if (!utxo_strict_want(&dec, CBOR_ITEM_BSTR, &v) ||
+                v.bstr.len != 64) return NODUS_ERR_PROTOCOL_ERROR;
+            memcpy(t.token_id, v.bstr.ptr, 64);
+            seen |= F_TID;
+        } else if (KEY_IS(key, "name")) {
+            if (!utxo_strict_want(&dec, CBOR_ITEM_TSTR, &v) ||
+                v.tstr.len > 32 || memchr(v.tstr.ptr, 0, v.tstr.len))
+                return NODUS_ERR_PROTOCOL_ERROR;
+            memcpy(t.name, v.tstr.ptr, v.tstr.len);
+            seen |= F_NAME;
+        } else if (KEY_IS(key, "sym")) {
+            if (!utxo_strict_want(&dec, CBOR_ITEM_TSTR, &v) ||
+                v.tstr.len > 8 || memchr(v.tstr.ptr, 0, v.tstr.len))
+                return NODUS_ERR_PROTOCOL_ERROR;
+            memcpy(t.symbol, v.tstr.ptr, v.tstr.len);
+            seen |= F_SYM;
+        } else if (KEY_IS(key, "dec")) {
+            if (!utxo_strict_want(&dec, CBOR_ITEM_UINT, &v) ||
+                v.uint_val > 18) return NODUS_ERR_PROTOCOL_ERROR;
+            t.decimals = (uint8_t)v.uint_val;
+            seen |= F_DEC;
+        } else if (KEY_IS(key, "supply")) {
+            if (!utxo_strict_want(&dec, CBOR_ITEM_UINT, &v))
+                return NODUS_ERR_PROTOCOL_ERROR;
+            t.supply = v.uint_val;
+            seen |= F_SUPPLY;
+        } else if (KEY_IS(key, "creator")) {
+            if (!utxo_strict_want(&dec, CBOR_ITEM_TSTR, &v) ||
+                v.tstr.len >= sizeof(t.creator_fp) ||
+                memchr(v.tstr.ptr, 0, v.tstr.len))
+                return NODUS_ERR_PROTOCOL_ERROR;
+            memcpy(t.creator_fp, v.tstr.ptr, v.tstr.len);
+            seen |= F_CREATOR;
+        } else if (!utxo_strict_skip(&dec)) {
+            return NODUS_ERR_PROTOCOL_ERROR;
+        }
+    }
+    if (dec.error || seen != F_ALL ||
+        memcmp(t.token_id, queried, 64) != 0)
+        return NODUS_ERR_PROTOCOL_ERROR;
+
+    *out = t;
+    return 0;
+}
+#undef KEY_IS
+
 int nodus_client_dnac_token_info(nodus_client_t *client,
                                    const uint8_t *token_id,
                                    nodus_dnac_token_info_t *result_out) {
@@ -4704,59 +4793,26 @@ int nodus_client_dnac_token_info(nodus_client_t *client,
         int rc = resp->error_code; free_pending(client, req); return rc;
     }
 
-    cbor_decoder_t dec;
-    size_t mc;
-    if (find_response_map(req->raw_response, req->raw_response_len,
-                           &dec, &mc) != 0) {
-        free_pending(client, req);
-        return NODUS_ERR_PROTOCOL_ERROR;
-    }
-
-    for (size_t i = 0; i < mc; i++) {
-        cbor_item_t key = cbor_decode_next(&dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
-
-        if (key.tstr.len == 3 && memcmp(key.tstr.ptr, "tid", 3) == 0) {
-            cbor_item_t v = cbor_decode_next(&dec);
-            if (v.type == CBOR_ITEM_BSTR && v.bstr.len == 64)
-                memcpy(result_out->token_id, v.bstr.ptr, 64);
-        } else if (key.tstr.len == 4 && memcmp(key.tstr.ptr, "name", 4) == 0) {
-            cbor_item_t v = cbor_decode_next(&dec);
-            if (v.type == CBOR_ITEM_TSTR) {
-                size_t cl = v.tstr.len < sizeof(result_out->name) - 1 ?
-                            v.tstr.len : sizeof(result_out->name) - 1;
-                memcpy(result_out->name, v.tstr.ptr, cl);
-            }
-        } else if (key.tstr.len == 3 && memcmp(key.tstr.ptr, "sym", 3) == 0) {
-            cbor_item_t v = cbor_decode_next(&dec);
-            if (v.type == CBOR_ITEM_TSTR) {
-                size_t cl = v.tstr.len < sizeof(result_out->symbol) - 1 ?
-                            v.tstr.len : sizeof(result_out->symbol) - 1;
-                memcpy(result_out->symbol, v.tstr.ptr, cl);
-            }
-        } else if (key.tstr.len == 3 && memcmp(key.tstr.ptr, "dec", 3) == 0) {
-            cbor_item_t v = cbor_decode_next(&dec);
-            if (v.type == CBOR_ITEM_UINT)
-                result_out->decimals = (uint8_t)v.uint_val;
-        } else if (key.tstr.len == 6 && memcmp(key.tstr.ptr, "supply", 6) == 0) {
-            cbor_item_t v = cbor_decode_next(&dec);
-            if (v.type == CBOR_ITEM_UINT)
-                result_out->supply = v.uint_val;
-        } else if (key.tstr.len == 7 && memcmp(key.tstr.ptr, "creator", 7) == 0) {
-            cbor_item_t v = cbor_decode_next(&dec);
-            if (v.type == CBOR_ITEM_TSTR) {
-                size_t cl = v.tstr.len < sizeof(result_out->creator_fp) - 1 ?
-                            v.tstr.len : sizeof(result_out->creator_fp) - 1;
-                memcpy(result_out->creator_fp, v.tstr.ptr, cl);
-            }
-        } else {
-            cbor_decode_skip(&dec);
-        }
-    }
-
+    int prc = dnac_token_info_decode(req->raw_response, req->raw_response_len,
+                                     token_id, result_out);
     free_pending(client, req);
-    return 0;
+    return prc;
 }
+
+#ifdef NODUS_CLIENT_TEST_SEAM
+/* tests/test_token_info_decode.c — the dnac_token_info decode over raw reply
+ * bytes. Bypasses nothing. */
+int nodus_client_test_parse_token_info(const uint8_t *raw, size_t raw_len,
+                                       const uint8_t token_id[64],
+                                       nodus_dnac_token_info_t *out);
+
+int nodus_client_test_parse_token_info(const uint8_t *raw, size_t raw_len,
+                                       const uint8_t token_id[64],
+                                       nodus_dnac_token_info_t *out) {
+    memset(out, 0, sizeof(*out));
+    return dnac_token_info_decode(raw, raw_len, token_id, out);
+}
+#endif /* NODUS_CLIENT_TEST_SEAM */
 
 void nodus_client_free_token_list_result(nodus_dnac_token_list_result_t *result) {
     if (!result) return;

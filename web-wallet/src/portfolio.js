@@ -25,6 +25,22 @@ export function balanceUnits(value, decimals) {
   if (units >= 2n ** 256n) throw new Error('Balance out of range.');
   return units;
 }
+// The buttons of one holding row (src/portfolio-view.js): a receive-only
+// network offers Receive only, and so does an UNAVAILABLE token (its metadata
+// did not equal the pin: never offered for Send); Earn follows `earn`.
+export function holdingActions(network, row, earn = false) {
+  // The CURRENT pins decide too (network.tokens[].available), not only the
+  // last balance read's flag: a pin that turned unavailable hides Send at once.
+  const pinned = network.tokens?.find(t => t.symbol === row.symbol);
+  return [...(network.receiveOnly || row.unavailable === true || pinned?.available === false ? ['Receive'] : ['Send', 'Receive']), ...(earn ? ['Earn'] : [])];
+}
+// The status line for a selected asset that is unavailable right now
+// (src/app.js applyAssetGate): the selection is kept, Review is refused.
+export function unavailableAssetNote(symbol) { return `${symbol} is unavailable right now — choose another asset`; }
+// True when two asset lists hold the same keys in the same order: a network
+// definition change that keeps them (pin availability) needs no re-read
+// (src/portfolio-view.js setNetwork `keepRead`).
+export function sameAssetKeys(before, after) { return before.length === after.length && after.every((a, i) => a.key === before[i].key); }
 export function chainBalances(chain, rows, observedAt = Date.now(), assets = ASSETS) {
   const expected = assets.filter(a => a.chain === chain);
   if (!Array.isArray(rows) || rows.length > 100) throw new Error('Invalid balance response.');
@@ -34,7 +50,13 @@ export function chainBalances(chain, rows, observedAt = Date.now(), assets = ASS
       if (matches.length !== 1 || matches[0].error) throw new Error();
       const units = balanceUnits(matches[0].balance, asset.decimals);
       return [asset.key, { state: 'ready', units, observedAt }];
-    } catch { return [asset.key, { state: 'error', error: 'Balance unavailable' }]; }
+    } catch {
+      // `unavailable`: the row's reader says the asset itself cannot be used
+      // right now (a pinned token whose chain metadata does not equal the
+      // pin, src/adapters/nodus.js balances) — shown as such, not as a read
+      // failure; never a zero.
+      return [asset.key, { state: 'error', error: 'Balance unavailable', ...(matches.length === 1 && matches[0].unavailable === true ? { unavailable: true } : {}) }];
+    }
   }));
 }
 export function parsePrices(data, now = Date.now()) {

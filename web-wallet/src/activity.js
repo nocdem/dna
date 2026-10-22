@@ -18,12 +18,30 @@ export function validNodusPending({ expiryHeight, fromHeight, inputs }) {
     && Array.isArray(inputs) && inputs.length >= 1 && inputs.length <= 15 && new Set(inputs).size === inputs.length
     && inputs.every(input => typeof input === 'string' && HEX128.test(input));
 }
+// The symbol an Activity row is shown with. A NODUS row with a tokenId is a
+// pinned token's send: while the pinned list is known (`known`: the send
+// module reported it) a tokenId that is not in it — a pin removed in a later
+// build — is shown as "unknown token", its row KEPT and its coins still held
+// (src/adapters/nodus.js lockedInputs is by chain, not by token); while the
+// list is not known the symbol the row was saved with stands. A row without
+// a tokenId is a native row: its own symbol.
+export function activitySymbol(row, tokens = [], known = false) {
+  if (row.chain !== NODUS_CHAIN || typeof row.tokenId !== 'string') return row.symbol;
+  const pin = tokens.find(t => t.tokenId === row.tokenId);
+  return pin ? pin.symbol : known ? 'unknown token' : row.symbol;
+}
 export function recordActivity(transfer, details) {
   if (!validHash(transfer.chain, details.hash)) throw new Error('Invalid transaction identifier.');
   const record = { chain: transfer.chain, address: transfer.from, to: transfer.to, symbol: transfer.symbol, amount: transfer.amount, endpoint: transfer.endpoint, hash: details.hash, lastValidBlockHeight: details.lastValidBlockHeight, expiration: details.expiration, nonce: details.nonce, createdAt: new Date().toISOString(), status: 'pending', note: 'Broadcast outcome pending.' };
   if (transfer.chain === NODUS_CHAIN) {
     if (!validNodusPending(details)) throw new Error('Invalid pending transfer record.');
     Object.assign(record, { expiryHeight: details.expiryHeight, fromHeight: details.fromHeight, inputs: [...details.inputs] });
+    // A pinned token's send (design docs/plans/2026-10-22-connect-native-
+    // tokens-design.md §6 item 7): the token id, kept with the saved row. A
+    // NODUS send — the all-zero id, or none — carries no tokenId: the saved
+    // format of a native row is unchanged, and a row without one is a
+    // native row.
+    if (typeof transfer.tokenId === 'string' && HEX128.test(transfer.tokenId) && transfer.tokenId !== '0'.repeat(128)) record.tokenId = transfer.tokenId;
     // The signed envelope's full-wire id (0.1.78, src/adapters/nodus.js
     // builtWire), when the module gave one: this tab only — the saved
     // Activity format is unchanged (src/activity-storage.js does not write

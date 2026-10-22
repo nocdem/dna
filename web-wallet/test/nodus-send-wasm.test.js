@@ -77,7 +77,14 @@ const ENTRY_POINTS = [
   // account history (0.1.78): one dnac_addr_history page of this wallet's address
   'nsw_addr_history', 'nsw_addr_history_json',
   // 0.1.119: the "network is busy" mark of nsw_error / nc_error (a node's RATE_LIMITED)
-  'nsw_error_busy', 'nc_error_busy'
+  'nsw_error_busy', 'nc_error_busy',
+  // pinned tokens (Connect shows and sends tUSDT): the pin table, the token
+  // send and what it read back, the token coins of the last listing, their
+  // balances
+  'nsw_pin_count', 'nsw_pin_token', 'nsw_pin_name', 'nsw_pin_symbol', 'nsw_pin_decimals', 'nsw_pin_available',
+  'nsw_token_build_and_sign', 'nsw_built_token', 'nsw_built_token_change', 'nsw_list_tok_count', 'nsw_list_tok_nul',
+  'nsw_list_tok_amount', 'nsw_list_tok_token', 'nsw_list_pin_listed', 'nsw_list_pin_truncated', 'nsw_bal_pin_total',
+  'nsw_bal_pin_spendable'
 ];
 
 test('the shipped send.wasm exports the module entry points and no test-only one', () => {
@@ -661,4 +668,243 @@ test('busy: rc 4 gives the busy text and mark; other rcs keep their text, unmark
   assert.equal(num('nsw_error_busy'), 1);
   assert.notEqual(num('nsw_req_add_coin', ['string', 'string'], ['zz', '1']), 0);
   assert.equal(num('nsw_error_busy'), 0);
+});
+
+// ── pinned tokens: Connect shows and sends tUSDT (design docs/plans/
+// 2026-10-22-connect-native-tokens-design.md §6) ───────────────────────────
+// The module's pin table (the ONE place the pins live) is tUSDT, created on
+// the testnet in block 305991 (decision 2026-10-22-testnet-test-tokens-
+// faucet-dex.md): name "Test USDT", symbol "tUSDT", 6 decimals ("6", operator
+// 2026-10-22).
+const TUSDT_ID = '7142460f5dd73ce7123905c423e1eb17fbff36f14b031e24837a4b6d7bedd5677baaa3a3e6015e6d6fc706b0b0d8799a88d7fd63f6d1e7807dbb88577b7c3b50';
+
+test('tokens: the shipped module pins exactly tUSDT (id, name, symbol, 6 decimals) — read from the TEST build of the same C', { skip: skipNameParity }, async () => {
+  const { num, str } = await loadParity('send-test-node.mjs', true);
+  assert.equal(num('nsw_pin_count'), 1);
+  assert.equal(str('nsw_pin_token', ['number'], [0]), TUSDT_ID);
+  assert.equal(str('nsw_pin_name', ['number'], [0]), 'Test USDT');
+  assert.equal(str('nsw_pin_symbol', ['number'], [0]), 'tUSDT');
+  assert.equal(num('nsw_pin_decimals', ['number'], [0]), 6);
+  // out of range: nothing invented
+  assert.equal(str('nsw_pin_token', ['number'], [1]), '');
+  assert.equal(num('nsw_pin_decimals', ['number'], [1]), -1);
+  // before any connection no token is available
+  assert.equal(num('nsw_pin_available', ['number'], [0]), 0);
+});
+
+// SYNTHETIC token send. The token coins cover 2.5 tUSDT with 0.5 tUSDT of
+// token change; one NODUS coin pays the fee with NODUS change. Outputs:
+// recipient token, token change, native change — 3 seeds (96 bytes), and
+// one hedged signature (32 bytes of signing randomness).
+const TOKEN_INPUT = {
+  seed: fill(32, 5), chain: '55'.repeat(32), tip: '2000', gas: '121', to: 'ef'.repeat(64), token: TUSDT_ID, amount: '2500000', expiry: '2090',
+  nativeCoins: [['a7'.repeat(64), '100000000']], tokenCoins: [['b8'.repeat(64), '3000000']],
+  outSeeds: fill(96, 60), signRandom: fill(32, 120)
+};
+function nativeTokenVector(input = TOKEN_INPUT) {
+  const args = ['token', '--seed', hex(input.seed), '--chain', input.chain, '--tip', input.tip, '--gas', input.gas, '--to', input.to,
+    '--token', input.token, '--amount', input.amount, '--expiry', input.expiry, '--out-seeds', hex(input.outSeeds), '--sign-random', hex(input.signRandom)];
+  for (const [nullifier, amount] of input.nativeCoins) args.push('--coin', `${nullifier}:${amount}`);
+  for (const [nullifier, amount] of input.tokenCoins) args.push('--token-coin', `${nullifier}:${amount}`);
+  const out = { input: [] };
+  for (const line of execFileSync(VECTOR_BIN, args, { encoding: 'utf8' }).trim().split('\n')) {
+    const at = line.indexOf('='), key = line.slice(0, at), value = line.slice(at + 1);
+    if (key === 'input') out.input.push(value); else out[key] = value;
+  }
+  return out;
+}
+async function wasmTokenBuild(file, { fixedRandom }, input = TOKEN_INPUT) {
+  const { M, num, str } = await loadParity(file, fixedRandom);
+  M.HEAPU8.set(input.seed, num('nsw_seed_buf'));
+  M.HEAPU8.set(input.outSeeds, num('nsw_out_seed_buf'));
+  assert.equal(num('nsw_out_seed_load', ['number'], [input.outSeeds.length]), 0);
+  if (fixedRandom) {
+    M.HEAPU8.set(input.signRandom, num('nsw_test_random_buf'));
+    assert.equal(num('nsw_test_random_load', ['number'], [input.signRandom.length]), 0);
+  }
+  num('nsw_req_reset');
+  for (const [nullifier, amount] of input.nativeCoins) assert.equal(num('nsw_req_add_coin', ['string', 'string'], [nullifier, amount]), 0, str('nsw_error'));
+  for (const [nullifier, amount] of input.tokenCoins) assert.equal(num('nsw_test_req_add_token_coin', ['string', 'string', 'number'], [nullifier, amount, 0]), 0, str('nsw_error'));
+  const rc = num('nsw_test_token_offline_build', ['string', 'string', 'string', 'string', 'string', 'string', 'string'],
+    [input.chain, input.tip, input.gas, input.to, input.token, input.amount, input.expiry]);
+  assert.equal(rc, 0, str('nsw_error'));
+  const at = num('nsw_built_env'), length = num('nsw_built_env_len');
+  const inputs = [];
+  for (let i = 0; i < num('nsw_built_n_in'); i++) inputs.push(str('nsw_built_in', ['number'], [i]));
+  return {
+    envelope: hex(M.HEAPU8.subarray(at, at + length)), wire_id: str('nsw_built_wire'), intent_id: str('nsw_built_intent'),
+    chain_id: str('nsw_built_chain'), recipient: str('nsw_built_recipient'), amount: str('nsw_built_amount'),
+    fee: str('nsw_built_fee'), change: str('nsw_built_change'), expiry: str('nsw_built_expiry'), token: str('nsw_built_token'),
+    token_change: str('nsw_built_token_change'), input: inputs
+  };
+}
+
+test('token parity: TEST wasm (fixed randomness) and the native vector build the same token send byte for byte', { skip: skipParity }, async () => {
+  const native = nativeTokenVector(), wasm = await wasmTokenBuild('send-test-node.mjs', { fixedRandom: true });
+  assert.deepEqual(wasm, native);
+  assert.equal(native.token, TUSDT_ID, 'the token read back from the bytes is the pin');
+  assert.equal(native.recipient, TOKEN_INPUT.to);
+  assert.equal(native.amount, TOKEN_INPUT.amount, 'in the token\'s units');
+  assert.equal(native.token_change, '500000');
+  assert.equal(BigInt(native.fee) + BigInt(native.change), 100000000n, 'NODUS in = fee + native change');
+  assert.deepEqual([...native.input].sort(), [TOKEN_INPUT.tokenCoins[0][0], TOKEN_INPUT.nativeCoins[0][0]].sort());
+});
+
+// The shipped module has no TEST entry point, so its token build (reached only
+// through the networked nsw_token_build_and_sign, which needs a node) is not
+// run here; what pins it is that the shipped send.wasm is byte-identical to
+// the parity build's send-node.wasm (the native-send parity test above) and
+// exports every token entry point (ENTRY_POINTS).
+
+test('the native build is unchanged by the token code: a NODUS send reads back token id zero and no token change', { skip: skipParity }, async () => {
+  // (the byte-for-byte equality with the native vector is the first parity
+  // test; here only the new read-back fields of the same build)
+  assert.equal(await wasmBuildToken('send-test-node.mjs'), '0'.repeat(128));
+});
+async function wasmBuildToken(file) {
+  const { M, num, str } = await loadParity(file, true);
+  M.HEAPU8.set(INPUT.seed, num('nsw_seed_buf'));
+  M.HEAPU8.set(INPUT.outSeeds, num('nsw_out_seed_buf'));
+  num('nsw_out_seed_load', ['number'], [INPUT.outSeeds.length]);
+  M.HEAPU8.set(INPUT.signRandom, num('nsw_test_random_buf'));
+  num('nsw_test_random_load', ['number'], [INPUT.signRandom.length]);
+  num('nsw_req_reset');
+  for (const [nullifier, amount] of INPUT.coins) num('nsw_req_add_coin', ['string', 'string'], [nullifier, amount]);
+  assert.equal(num('nsw_offline_build', ['string', 'string', 'string', 'string', 'string', 'string'], [INPUT.chain, INPUT.tip, INPUT.gas, INPUT.to, INPUT.amount, INPUT.expiry]), 0, str('nsw_error'));
+  assert.equal(str('nsw_built_token_change'), '0');
+  return str('nsw_built_token');
+}
+
+// The refusals of the module's token code, driven through the TEST build
+// (no node: each one runs before the first network call).
+const TOK = { chain: '66'.repeat(32), to: 'ab'.repeat(64), seed: fill(32, 9), outSeeds: fill(96, 33), signRandom: fill(32, 77) };
+async function offlineToken({ tokenCoins, nativeCoins, token = TUSDT_ID, amount = '1000000' }) {
+  const { M, num, str } = await loadParity('send-test-node.mjs', true);
+  M.HEAPU8.set(TOK.seed, num('nsw_seed_buf'));
+  M.HEAPU8.set(TOK.outSeeds, num('nsw_out_seed_buf'));
+  num('nsw_out_seed_load', ['number'], [TOK.outSeeds.length]);
+  M.HEAPU8.set(TOK.signRandom, num('nsw_test_random_buf'));
+  num('nsw_test_random_load', ['number'], [TOK.signRandom.length]);
+  num('nsw_req_reset');
+  for (const [nullifier, value] of nativeCoins) assert.equal(num('nsw_req_add_coin', ['string', 'string'], [nullifier, value]), 0);
+  for (const [nullifier, value] of tokenCoins) assert.equal(num('nsw_test_req_add_token_coin', ['string', 'string', 'number'], [nullifier, value, 0]), 0);
+  const rc = num('nsw_test_token_offline_build', ['string', 'string', 'string', 'string', 'string', 'string', 'string'], [TOK.chain, '2000', '121', TOK.to, token, amount, '2090']);
+  return { rc, error: str('nsw_error'), num, str, M };
+}
+const NATIVE_OK = [['a1'.repeat(64), '100000000']], TOKEN_OK = [['b2'.repeat(64), '3000000']];
+
+test('token refusals: a token that is not pinned, too little of the token, too little NODUS for the fee', { skip: skipNameParity }, async () => {
+  let r = await offlineToken({ tokenCoins: TOKEN_OK, nativeCoins: NATIVE_OK, token: 'cc'.repeat(64) });
+  assert.equal(r.rc, -1); assert.match(r.error, /not supported by this wallet/);
+  r = await offlineToken({ tokenCoins: TOKEN_OK, nativeCoins: NATIVE_OK, token: '0'.repeat(128) });
+  assert.equal(r.rc, -1); assert.match(r.error, /not supported by this wallet/, 'NODUS is not a pinned token: the native build is nsw_offline_build');
+  r = await offlineToken({ tokenCoins: [['b2'.repeat(64), '999999']], nativeCoins: NATIVE_OK });
+  assert.equal(r.rc, -1); assert.equal(r.error, 'Not enough tUSDT.');
+  r = await offlineToken({ tokenCoins: TOKEN_OK, nativeCoins: [] });
+  assert.equal(r.rc, -1); assert.equal(r.error, 'Not enough NODUS for the network fee.');
+  r = await offlineToken({ tokenCoins: TOKEN_OK, nativeCoins: [['a1'.repeat(64), '1']] });
+  assert.equal(r.rc, -1); assert.equal(r.error, 'Not enough NODUS for the network fee.', 'the planner\'s INSUFFICIENT is the fee\'s once the token side is covered');
+  r = await offlineToken({ tokenCoins: TOKEN_OK, nativeCoins: NATIVE_OK, amount: '0' });
+  assert.equal(r.rc, -1); assert.match(r.error, /amount above zero/);
+});
+
+test('token coins never reach the native build: a token coin in the request refuses nsw_offline_build', { skip: skipNameParity }, async () => {
+  const { num, str } = await loadParity('send-test-node.mjs', true);
+  num('nsw_req_reset');
+  assert.equal(num('nsw_req_add_coin', ['string', 'string'], ['a1'.repeat(64), '100000000']), 0);
+  assert.equal(num('nsw_test_req_add_token_coin', ['string', 'string', 'number'], ['b2'.repeat(64), '3000000', 0]), 0);
+  // the same coin twice, as native and as token, is a duplicate
+  assert.equal(num('nsw_test_req_add_token_coin', ['string', 'string', 'number'], ['a1'.repeat(64), '1', 0]), -1);
+  assert.match(str('nsw_error'), /listed twice/);
+  const rc = num('nsw_offline_build', ['string', 'string', 'string', 'string', 'string', 'string'], ['66'.repeat(32), '2000', '121', 'ab'.repeat(64), '1000000', '2090']);
+  assert.equal(rc, -1);
+  assert.match(str('nsw_error'), /names a token coin/);
+});
+
+test('token send, networked entry: every refusal that runs before the first network call (a made-up last listing)', { skip: skipNameParity }, async () => {
+  const to = 'ab'.repeat(64), nul = 'd4'.repeat(64);
+  const { num, str } = await loadParity('send-test-node.mjs', true);
+  const tokenSend = (token = TUSDT_ID) => num('nsw_token_build_and_sign', ['string', 'string', 'string', 'string'], [to, token, '1000000', '1090']);
+  // a node that ignores the token filter (client rc -3): "coin list unavailable", never a mixed list
+  assert.equal(num('nsw_test_set_listing', ['number', 'number', 'string', 'string'], [0, -3, '', '']), 0);
+  num('nsw_req_reset');
+  assert.equal(tokenSend(), -1);
+  assert.match(str('nsw_error'), /tUSDT coin list is unavailable right now \(rc=-3\)/);
+  assert.equal(num('nsw_error_busy'), 0);
+  // the node was busy: the busy text and mark
+  num('nsw_test_set_listing', ['number', 'number', 'string', 'string'], [0, 4, '', '']);
+  assert.equal(tokenSend(), -1);
+  assert.equal(str('nsw_error'), 'The network is busy right now. Try again in a few seconds.');
+  assert.equal(num('nsw_error_busy'), 1);
+  // a coin the last listing does not hold
+  num('nsw_test_set_listing', ['number', 'number', 'string', 'string'], [1, 0, '', '']);
+  assert.equal(num('nsw_req_add_coin', ['string', 'string'], [nul, '5000000']), 0);
+  assert.equal(tokenSend(), -1);
+  assert.match(str('nsw_error'), /not in your current coin list/);
+  // a token that is not pinned
+  assert.equal(tokenSend('cc'.repeat(64)), -1);
+  assert.match(str('nsw_error'), /not supported by this wallet/);
+  assert.equal(num('nsw_token_build_and_sign', ['string', 'string', 'string', 'string'], [to, 'zz', '1', '1090']), -1);
+  assert.match(str('nsw_error'), /not supported by this wallet/);
+  // a token coin the listing holds, requested on the NATIVE build: refused, not skipped
+  num('nsw_test_set_listing', ['number', 'number', 'string', 'string'], [1, 0, nul, '5000000']);
+  num('nsw_req_reset');
+  assert.equal(num('nsw_req_add_coin', ['string', 'string'], [nul, '5000000']), 0);
+  assert.equal(num('nsw_build_and_sign', ['string', 'string', 'string'], [to, '1', '1090']), -1);
+  assert.match(str('nsw_error'), /names a token coin/);
+  // and a request naming a token coin by a wrong amount is a native coin the listing lacks
+  num('nsw_req_reset');
+  assert.equal(num('nsw_req_add_coin', ['string', 'string'], [nul, '5000001']), 0);
+  assert.equal(num('nsw_build_and_sign', ['string', 'string', 'string'], [to, '1', '1090']), -1);
+  assert.match(str('nsw_error'), /not in your current coin list/);
+});
+
+test('token metadata: only a dnac_token_info answer equal to the pin makes tUSDT available', { skip: skipNameParity }, async () => {
+  const { num } = await loadParity('send-test-node.mjs', true);
+  const check = (id, name, symbol, decimals) => num('nsw_test_pin_info', ['string', 'string', 'string', 'number'], [id, name, symbol, decimals]);
+  assert.equal(check(TUSDT_ID, 'Test USDT', 'tUSDT', 6), 1);
+  assert.equal(check('cc'.repeat(64), 'Test USDT', 'tUSDT', 6), 0, 'another id');
+  assert.equal(check('0'.repeat(128), 'Test USDT', 'tUSDT', 6), 0, 'the all-zero id');
+  assert.equal(check(TUSDT_ID, 'Test USDT ', 'tUSDT', 6), 0, 'another name');
+  assert.equal(check(TUSDT_ID, 'Test USD', 'tUSDT', 6), 0);
+  assert.equal(check(TUSDT_ID, 'Test USDT', 'USDT', 6), 0, 'another symbol');
+  assert.equal(check(TUSDT_ID, 'Test USDT', 'tUSDT', 8), 0, 'another decimals');
+  assert.equal(check(TUSDT_ID, 'Test USDT', 'tUSDT', 19), 0, 'decimals above 18');
+  assert.equal(check(TUSDT_ID, '', '', 0), 0, 'an unreadable answer (empty fields)');
+});
+
+// ── verifier round on package B (operator 2026-10-22: "Hepsini düzelt") ──
+test('token metadata helper: a NULL pointer is refused, never dereferenced (finding 9)', { skip: skipNameParity }, async () => {
+  const { num } = await loadParity('send-test-node.mjs', true);
+  const call = (...args) => num('nsw_test_pin_info', ['number', 'number', 'number', 'number'], args);
+  const str = text => num('nsw_test_pin_info', ['string', 'string', 'string', 'number'], [text, 'Test USDT', 'tUSDT', 6]);
+  assert.equal(str(TUSDT_ID), 1, 'the well-formed call still verifies');
+  assert.equal(call(0, 0, 0, 6), 0, 'all three pointers NULL');
+  assert.equal(num('nsw_test_pin_info', ['number', 'string', 'string', 'number'], [0, 'Test USDT', 'tUSDT', 6]), 0, 'NULL id');
+  assert.equal(num('nsw_test_pin_info', ['string', 'number', 'string', 'number'], [TUSDT_ID, 0, 'tUSDT', 6]), 0, 'NULL name');
+  assert.equal(num('nsw_test_pin_info', ['string', 'string', 'number', 'number'], [TUSDT_ID, 'Test USDT', 0, 6]), 0, 'NULL symbol');
+});
+
+test('token metadata lifecycle: a pin that failed on this connection stays unavailable when a later build asks again (finding 3)', { skip: skipNameParity }, async () => {
+  const { num } = await loadParity('send-test-node.mjs', true);
+  assert.equal(num('nsw_test_pin_latched', ['number'], [0]), 1, 'latched: answered from the latch, state still 2');
+  assert.equal(num('nsw_pin_available', ['number'], [0]), 0, 'and never available');
+  assert.equal(num('nsw_test_pin_latched', ['number'], [5]), -1, 'out of range');
+});
+
+test('the NODUS hop carries the explicit all-zero token id: the module reads it as the native build (finding 8)', { skip: skipNameParity }, async () => {
+  const to = 'ab'.repeat(64), nul = 'd4'.repeat(64), zero = '0'.repeat(128);
+  const { num, str } = await loadParity('send-test-node.mjs', true);
+  const send = token => num('nsw_token_build_and_sign', ['string', 'string', 'string', 'string'], [to, token, '1', '1090']);
+  // a token coin in the request: the native path refuses it, exactly as nsw_build_and_sign does
+  num('nsw_test_set_listing', ['number', 'number', 'string', 'string'], [1, 0, nul, '5000000']);
+  num('nsw_req_reset');
+  assert.equal(num('nsw_req_add_coin', ['string', 'string'], [nul, '5000000']), 0);
+  assert.equal(send(zero), -1);
+  assert.match(str('nsw_error'), /names a token coin/, 'the all-zero id took the NATIVE build path');
+  // an id that is not 128 lowercase hex is neither native nor a pin
+  assert.equal(send('0'.repeat(127)), -1);
+  assert.match(str('nsw_error'), /not supported by this wallet/);
+  assert.equal(send('0'.repeat(127) + 'G'), -1);
+  assert.match(str('nsw_error'), /not supported by this wallet/);
 });

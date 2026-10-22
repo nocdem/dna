@@ -10,7 +10,7 @@ import { prepareTransfer } from '../src/wallet.js';
 import { recordActivity, watchActivity, submissionStatus, terminal } from '../src/activity.js';
 import { serializeActivity, parseActivity, activityKeyFor } from '../src/activity-storage.js';
 import { expiryHeightFor, lockedInputs, resendInputs, balances, checkNodusActivity, nodusRecipient, nodusAmountUnits, NODUS_EXPIRY_AHEAD, claimStatus, prepareClaim, isClaimRow, stakingOverview, prepareStake, HF6_STAKE_CONSENT_TEXT, networkStake } from '../src/adapters/nodus.js';
-import { createMockNodusModule, FINGERPRINT, RECIPIENT, CHAIN_ID, INTENT_ID, FEE, coin } from './nodus-mock-module.js';
+import { createMockNodusModule, FINGERPRINT, RECIPIENT, CHAIN_ID, INTENT_ID, FEE, coin, NODUS_NATIVE } from './nodus-mock-module.js';
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 async function readyClient() {
@@ -41,7 +41,7 @@ test('without a ready send module NODUS stays exactly as before: receive-only, n
   assert.equal(ready.endpoint, undefined); assert.equal(ready.rpcOptions, undefined);
   assert.throws(() => createNodusClient({ factory: null }), /not available/);
   // No client on the wallet: the adapter refuses before any network step.
-  await assert.rejects(prepareTransfer({ wallet: { addresses: { nodus: FINGERPRINT } }, chain: 'nodus', symbol: 'NODUS', to: RECIPIENT, amount: '1' }), /not available right now/);
+  await assert.rejects(prepareTransfer({ wallet: { addresses: { nodus: FINGERPRINT } }, chain: 'nodus', symbol: 'NODUS', asset: NODUS_NATIVE, to: RECIPIENT, amount: '1' }), /not available right now/);
 });
 
 test('unlock checks the module identity, wipes the JS seed and starts a 60 s keepalive', async () => {
@@ -242,16 +242,16 @@ test('expiry = tip + 90; tip 0 or unknown refuses before anything is built', asy
   for (const tip of ['0', undefined]) {
     const { mock, client } = await readyClient();
     mock.state.tip = tip;
-    await assert.rejects(prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', to: RECIPIENT, amount: '1' }), /height is unknown/);
+    await assert.rejects(prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', asset: NODUS_NATIVE, to: RECIPIENT, amount: '1' }), /height is unknown/);
     assert.ok(!mock.log.includes('buildAndSign:start'), `tip ${tip}: nothing built`);
     client.lock();
   }
   const { mock, client } = await readyClient();
   mock.state.tip = '-1';
-  await assert.rejects(prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', to: RECIPIENT, amount: '1' }), /invalid block height/);
+  await assert.rejects(prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', asset: NODUS_NATIVE, to: RECIPIENT, amount: '1' }), /invalid block height/);
   // An empty coin list with a positive spendable balance is a read failure, not "insufficient".
   mock.state.tip = '1000'; mock.state.coins = [];
-  await assert.rejects(prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', to: RECIPIENT, amount: '1' }), /coin list could not be read/);
+  await assert.rejects(prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', asset: NODUS_NATIVE, to: RECIPIENT, amount: '1' }), /coin list could not be read/);
   client.lock();
 });
 
@@ -266,7 +266,7 @@ test('recipient and amount input rules: 128-hex fingerprint, 8 decimals, BigInt 
 
 test('G1: the review shows what the module decoded from the signed envelope, never the form', async () => {
   const { mock, client } = await readyClient();
-  const transfer = await prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', to: RECIPIENT.toUpperCase(), amount: '1.50000000' });
+  const transfer = await prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', asset: NODUS_NATIVE, to: RECIPIENT.toUpperCase(), amount: '1.50000000' });
   assert.equal(transfer.to, RECIPIENT); assert.equal(transfer.amount, '1.5'); assert.equal(transfer.from, FINGERPRINT);
   const review = Object.fromEntries(transfer.review);
   assert.equal(review.To, RECIPIENT); assert.equal(review.Amount, '1.5 NODUS');
@@ -276,7 +276,7 @@ test('G1: the review shows what the module decoded from the signed envelope, nev
   assert.equal(review['Valid until block'], '1090'); assert.equal(review['Chain ID'], CHAIN_ID);
   assert.match(review['Address check'], /128 characters/);
   assert.match(review['Fee note'], /may be charged even if the transfer fails/);
-  assert.deepEqual(mock.state.lastBuild, { to: RECIPIENT, amount: '150000000', expiryHeight: '1090', coins: mock.state.coins });
+  assert.deepEqual(mock.state.lastBuild, { to: RECIPIENT, tokenId: '0'.repeat(128), amount: '150000000', expiryHeight: '1090', coins: mock.state.coins }, 'the NODUS hop carries the explicit all-zero token id');
   transfer.cancel();
   // Any mismatch between request and signed envelope stops before review.
   for (const [tamper, pattern] of [
@@ -285,7 +285,7 @@ test('G1: the review shows what the module decoded from the signed envelope, nev
     [{ inputs: ['7'.repeat(128)] }, /coins it may not use/], [{ fee: '1.5' }, /invalid network fee/], [{ inputs: [] }, /invalid transaction/]
   ]) {
     mock.state.tamper = tamper;
-    await assert.rejects(prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', to: RECIPIENT, amount: '1.5' }), pattern, JSON.stringify(tamper));
+    await assert.rejects(prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', asset: NODUS_NATIVE, to: RECIPIENT, amount: '1.5' }), pattern, JSON.stringify(tamper));
   }
   assert.ok(!mock.log.includes('submit:start'), 'nothing was submitted');
   client.lock();
@@ -293,7 +293,7 @@ test('G1: the review shows what the module decoded from the signed envelope, nev
 
 test('pending send: record is durable before submit, keeps intent_id / expiry / inputs through storage', async () => {
   const { mock, client } = await readyClient();
-  const transfer = await prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', to: RECIPIENT, amount: '1.5' });
+  const transfer = await prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', asset: NODUS_NATIVE, to: RECIPIENT, amount: '1.5' });
   let record;
   const hash = await transfer.confirm(async details => {
     assert.ok(!mock.log.includes('submit:start'), 'record written before the envelope leaves');
@@ -318,7 +318,7 @@ test('pending send: record is durable before submit, keeps intent_id / expiry / 
   assert.throws(() => recordActivity(transfer, { hash: '0x' + 'a'.repeat(64) }), /Invalid transaction identifier/);
   // A rejected submission is reported after the record exists (coins stay held).
   mock.state.accepted = false;
-  const refused = await prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', to: RECIPIENT, amount: '1.5' });
+  const refused = await prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', asset: NODUS_NATIVE, to: RECIPIENT, amount: '1.5' });
   let recorded = false;
   await assert.rejects(refused.confirm(async () => { recorded = true; }), /did not accept/);
   assert.equal(recorded, true);
@@ -336,12 +336,12 @@ test('resend rule: pending coins stay locked until a scan shows the send expired
   // A new send never offers locked coins to the builder.
   const { mock, client } = await readyClient();
   const locked = lockedInputs([pending]);
-  const transfer = await prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', to: RECIPIENT, amount: '1', nodusLocked: locked });
+  const transfer = await prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', asset: NODUS_NATIVE, to: RECIPIENT, amount: '1', nodusLocked: locked });
   assert.deepEqual(mock.state.lastBuild.coins.map(c => c.nullifier), [coin(1, '').nullifier, coin(3, '').nullifier]);
   transfer.cancel();
   // Every coin held by pending sends: refuse with the reason, build nothing.
   const builds = mock.log.filter(entry => entry === 'buildAndSign:start').length;
-  await assert.rejects(prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', to: RECIPIENT, amount: '1', nodusLocked: new Set(mock.state.coins.map(c => c.nullifier)) }), /held by a pending send/);
+  await assert.rejects(prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', asset: NODUS_NATIVE, to: RECIPIENT, amount: '1', nodusLocked: new Set(mock.state.coins.map(c => c.nullifier)) }), /held by a pending send/);
   assert.equal(mock.log.filter(entry => entry === 'buildAndSign:start').length, builds);
   client.lock();
 });

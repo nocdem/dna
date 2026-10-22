@@ -55,6 +55,23 @@
  *   wasm equal on nullifier, output_id, recipient, amount, chain_id,
  *   leaf_index, different claim / claim_id (hedged signature).
  *
+ * TOKEN SEND (Connect shows and sends the pinned test token; design
+ * docs/plans/2026-10-22-connect-native-tokens-design.md §6) — one more mode:
+ *
+ *   nodus-send-native-vector token --seed <64hex> --chain <64hex> --tip <dec>
+ *     --gas <dec> --to <128hex> --token <128hex> --amount <token raw units>
+ *     --expiry <dec> --coin <128hex>:<dec> [--coin ...]
+ *     --token-coin <128hex>:<dec> [--token-coin ...]
+ *     --out-seeds <hex, 32 B per output> --sign-random <hex>
+ *   Builds with nsw_test_token_offline_build — the function the TEST wasm
+ *   build runs: the shared builder's token-only shape (is_native 0). --coin
+ *   are NODUS coins (the fee), --token-coin the pinned token's. --token must
+ *   be the id the module pins (tUSDT) or the build is refused. Output, in
+ *   this order: envelope, wire_id, intent_id, chain_id, recipient, amount
+ *   (token units), fee, change (the NATIVE change), expiry, token (the id
+ *   decoded from the bytes), token_change, then one `input=` per input.
+ *   Compared like the spend: TEST wasm == native line for line.
+ *
  * STAKING (0.1.29) — one more mode:
  *
  *   nodus-send-native-vector stake --op stake|delegate|undelegate
@@ -160,6 +177,15 @@ int nsw_req_add_coin(const char *nullifier_hex, const char *amount_dec);
 int nsw_offline_build(const char *chain_hex, const char *tip_dec,
                       const char *gas_dec, const char *to_hex,
                       const char *amount_dec, const char *expiry_dec);
+int nsw_test_req_add_token_coin(const char *nullifier_hex,
+                                const char *amount_dec, int pin);
+int nsw_test_token_offline_build(const char *chain_hex, const char *tip_dec,
+                                 const char *gas_dec, const char *to_hex,
+                                 const char *token_hex,
+                                 const char *amount_dec,
+                                 const char *expiry_dec);
+const char *nsw_built_token(void);
+const char *nsw_built_token_change(void);
 const char *nsw_error(void);
 const uint8_t *nsw_built_env(void);
 int nsw_built_env_len(void);
@@ -468,6 +494,71 @@ static int main_claim(int argc, char **argv) {
 /* Prints the envelope nsw_built_* holds (the spend and staking modes). */
 static int print_env(void) {
     return hex_line("envelope", nsw_built_env(), (size_t)nsw_built_env_len());
+}
+
+/* TOKEN send (see the usage): nsw_test_token_offline_build, the function
+ * the TEST wasm build runs. The token coins are pin 0's (the module pins one
+ * token; --token must be its id or the build is refused). */
+static int main_token(int argc, char **argv) {
+    const char *seed = NULL, *chain = NULL, *tip = NULL, *gas = NULL,
+               *to = NULL, *token = NULL, *amount = NULL, *expiry = NULL,
+               *out_seeds = NULL, *sign_random = NULL;
+    nsw_req_reset();
+    for (int i = 2; i < argc; i += 2) {
+        const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
+        if (!v) return fail("every option takes a value");
+        if      (!strcmp(a, "--seed"))        seed = v;
+        else if (!strcmp(a, "--chain"))       chain = v;
+        else if (!strcmp(a, "--tip"))         tip = v;
+        else if (!strcmp(a, "--gas"))         gas = v;
+        else if (!strcmp(a, "--to"))          to = v;
+        else if (!strcmp(a, "--token"))       token = v;
+        else if (!strcmp(a, "--amount"))      amount = v;
+        else if (!strcmp(a, "--expiry"))      expiry = v;
+        else if (!strcmp(a, "--out-seeds"))   out_seeds = v;
+        else if (!strcmp(a, "--sign-random")) sign_random = v;
+        else if (!strcmp(a, "--coin") || !strcmp(a, "--token-coin")) {
+            char nul[129];
+            const char *colon = strchr(v, ':');
+            if (!colon || colon - v != 128) return fail("--coin is <128hex>:<amount>");
+            memcpy(nul, v, 128);
+            nul[128] = '\0';
+            int rc = !strcmp(a, "--coin") ? nsw_req_add_coin(nul, colon + 1)
+                                          : nsw_test_req_add_token_coin(nul, colon + 1, 0);
+            if (rc != 0) return fail(nsw_error());
+        } else {
+            return fail("unknown option (see the usage in nodus-send-native-vector.c)");
+        }
+    }
+    if (!seed || !chain || !tip || !gas || !to || !token || !amount || !expiry ||
+        !out_seeds || !sign_random)
+        return fail("token needs --seed --chain --tip --gas --to --token --amount "
+                    "--expiry --out-seeds --sign-random (--coin for NODUS, "
+                    "--token-coin for the token)");
+    size_t n = 0;
+    if (unhex(seed, nsw_seed_buf(), 32, &n) != 0 || n != 32)
+        return fail("--seed is 32 bytes of lowercase hex");
+    if (unhex(out_seeds, nsw_out_seed_buf(), 128, &n) != 0 ||
+        nsw_out_seed_load((int)n) != 0)
+        return fail("--out-seeds is a multiple of 32 bytes (at most 128) of lowercase hex");
+    if (unhex(sign_random, nsw_test_random_buf(), 4096, &n) != 0 ||
+        nsw_test_random_load((int)n) != 0)
+        return fail("--sign-random is at most 4096 bytes of lowercase hex");
+    if (nsw_test_token_offline_build(chain, tip, gas, to, token, amount, expiry) != 0)
+        return fail(nsw_error());
+    if (print_env()) return 1;
+    line("wire_id", nsw_built_wire());
+    line("intent_id", nsw_built_intent());
+    line("chain_id", nsw_built_chain());
+    line("recipient", nsw_built_recipient());
+    line("amount", nsw_built_amount());
+    line("fee", nsw_built_fee());
+    line("change", nsw_built_change());
+    line("expiry", nsw_built_expiry());
+    line("token", nsw_built_token());
+    line("token_change", nsw_built_token_change());
+    for (int i = 0; i < nsw_built_n_in(); i++) line("input", nsw_built_in(i));
+    return 0;
 }
 
 static int main_stake(int argc, char **argv) {
@@ -793,6 +884,7 @@ int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "evm")) return main_evm(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "claim-manifest")) return main_claim_manifest(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "claim")) return main_claim(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "token")) return main_token(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "stake")) return main_stake(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "hf6-consent")) return main_hf6_consent(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "hf6")) return main_hf6(argc, argv);

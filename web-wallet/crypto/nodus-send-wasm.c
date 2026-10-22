@@ -356,31 +356,129 @@ uint8_t *nsw_seed_buf(void) { return g_seed; }
 
 /* ── the candidate coins of the next build ──────────────────────────── */
 
+/* ── the pinned tokens (design 2026-10-22-connect-native-tokens-design.md
+ *    §6 items 2 and 6; operator "Yalnız tUSDT", "6") ──
+ * The wallet shows and sends ONLY the tokens in this table, keyed by token
+ * id (token symbols are not unique on chain, only the id is). It is the ONE
+ * place the pins live: JS reads them through nsw_pin_*. tUSDT: created on
+ * the testnet in block 305991 (decision 2026-10-22-testnet-test-tokens-
+ * faucet-dex.md), name "Test USDT", symbol "tUSDT", 6 decimals. Mainnet has
+ * no such token (operator: "hiçbir zaman mainnet'te USDT gibi bir şeyimiz
+ * olmayacak"). The table is compiled in UNCONDITIONALLY: nothing here picks
+ * a table per chain. Against a chain without this token the metadata check
+ * (nsw_pin_verify) marks tUSDT unavailable — listed, never sendable; dropping
+ * the pin from a mainnet build is NOT done here. */
+typedef struct {
+    const char *token_hex;                  /* 128 lowercase hex           */
+    const char *name, *symbol;
+    unsigned    decimals;
+} nsw_pin_t;
+
+static const nsw_pin_t NSW_PINS[] = {
+    { "7142460f5dd73ce7123905c423e1eb17fbff36f14b031e24837a4b6d7bedd567"
+      "7baaa3a3e6015e6d6fc706b0b0d8799a88d7fd63f6d1e7807dbb88577b7c3b50",
+      "Test USDT", "tUSDT", 6u }
+};
+#define NSW_PIN_COUNT ((int)(sizeof(NSW_PINS) / sizeof(NSW_PINS[0])))
+#define NSW_NATIVE (-1)                     /* "pin index" of NODUS        */
+
+int nsw_pin_count(void) { return NSW_PIN_COUNT; }
+const char *nsw_pin_token(int i)  { return i >= 0 && i < NSW_PIN_COUNT ? NSW_PINS[i].token_hex : ""; }
+const char *nsw_pin_name(int i)   { return i >= 0 && i < NSW_PIN_COUNT ? NSW_PINS[i].name : ""; }
+const char *nsw_pin_symbol(int i) { return i >= 0 && i < NSW_PIN_COUNT ? NSW_PINS[i].symbol : ""; }
+int nsw_pin_decimals(int i)       { return i >= 0 && i < NSW_PIN_COUNT ? (int)NSW_PINS[i].decimals : -1; }
+
+/* The pin whose token id is `token_hex` (128 lowercase hex), or -1. */
+static int nsw_pin_find(const char *token_hex) {
+    if (!token_hex) return -1;
+    for (int i = 0; i < NSW_PIN_COUNT; i++)
+        if (strcmp(token_hex, NSW_PINS[i].token_hex) == 0) return i;
+    return -1;
+}
+
+/* ── the candidate coins of the next build ──────────────────────────── */
+
+/* g_req_coins: native coins (kind 0). g_req_tok: coins of a pinned token,
+ * kept APART so no native-only path (staking, names, HF-6, EVM funding —
+ * each reads g_req_coins and nothing else) can ever see one; only the token
+ * build (nsw_build_core with a pin) reads both. */
 static nodus_v2_coin_t g_req_coins[NSW_MAX_COINS];
 static int g_req_n;
+static nodus_v2_coin_t g_req_tok[NSW_MAX_COINS];
+static int g_req_tok_pin[NSW_MAX_COINS];
+static int g_req_tok_n;
 
 void nsw_req_reset(void) {
     memset(g_req_coins, 0, sizeof(g_req_coins));
     g_req_n = 0;
+    memset(g_req_tok, 0, sizeof(g_req_tok));
+    memset(g_req_tok_pin, 0, sizeof(g_req_tok_pin));
+    g_req_tok_n = 0;
 }
 
-/* One candidate: a native coin (kind 0) the wallet may spend. A duplicate,
- * a zero amount or a full list is refused. */
+/* The pin of a coin in the LAST coin listing (networked build: the token
+ * table of nsw_list; an offline build has no listing), -1 when the coin is
+ * not a listed token coin of that amount (then it is requested as native,
+ * and every networked build refuses a coin its listing does not hold). */
+static int nsw_listed_pin(const uint8_t nul[64], uint64_t amount);
+
+static int nsw_req_dup(const uint8_t nul[64]) {
+    for (int i = 0; i < g_req_n; i++)
+        if (memcmp(g_req_coins[i].nul, nul, 64) == 0) return 1;
+    for (int i = 0; i < g_req_tok_n; i++)
+        if (memcmp(g_req_tok[i].nul, nul, 64) == 0) return 1;
+    return 0;
+}
+
+/* One candidate. JS never names a kind: a coin the last listing holds as a
+ * pinned token's goes to the token requests (kind 1), every other coin is a
+ * native one (kind 0). A duplicate, a zero amount or a full list is
+ * refused. */
 int nsw_req_add_coin(const char *nullifier_hex, const char *amount_dec) {
-    if (g_req_n >= (int)NSW_MAX_COINS)
-        return nsw_fail("Too many coins for one transfer request.");
     nodus_v2_coin_t c;
     memset(&c, 0, sizeof(c));
     if (nsw_parse_hex(nullifier_hex, c.nul, sizeof(c.nul)) != 0 ||
         nsw_parse_u64(amount_dec, &c.amount) != 0 || c.amount == 0)
         return nsw_fail("Invalid coin in the transfer request.");
-    for (int i = 0; i < g_req_n; i++)
-        if (memcmp(g_req_coins[i].nul, c.nul, sizeof(c.nul)) == 0)
-            return nsw_fail("The same coin was listed twice.");
+    if (nsw_req_dup(c.nul))
+        return nsw_fail("The same coin was listed twice.");
+    const int pin = nsw_listed_pin(c.nul, c.amount);
+    if (pin != NSW_NATIVE) {
+        if (g_req_tok_n >= (int)NSW_MAX_COINS)
+            return nsw_fail("Too many coins for one transfer request.");
+        c.kind = 1;
+        g_req_tok[g_req_tok_n] = c;
+        g_req_tok_pin[g_req_tok_n++] = pin;
+        return 0;
+    }
+    if (g_req_n >= (int)NSW_MAX_COINS)
+        return nsw_fail("Too many coins for one transfer request.");
     c.kind = 0;
     g_req_coins[g_req_n++] = c;
     return 0;
 }
+
+#ifdef NODUS_SEND_TEST_FIXED_RANDOM
+/* TEST-only (parity build and the native vector, never shipped — exports_test
+ * in build-nodus-send-wasm.sh): an explicit token coin of pin `pin` for an
+ * OFFLINE token build, which has no listing to take the kind from. */
+int nsw_test_req_add_token_coin(const char *nullifier_hex,
+                                const char *amount_dec, int pin) {
+    nodus_v2_coin_t c;
+    memset(&c, 0, sizeof(c));
+    if (pin < 0 || pin >= NSW_PIN_COUNT ||
+        nsw_parse_hex(nullifier_hex, c.nul, sizeof(c.nul)) != 0 ||
+        nsw_parse_u64(amount_dec, &c.amount) != 0 || c.amount == 0)
+        return nsw_fail("Invalid coin in the transfer request.");
+    if (nsw_req_dup(c.nul)) return nsw_fail("The same coin was listed twice.");
+    if (g_req_tok_n >= (int)NSW_MAX_COINS)
+        return nsw_fail("Too many coins for one transfer request.");
+    c.kind = 1;
+    g_req_tok[g_req_tok_n] = c;
+    g_req_tok_pin[g_req_tok_n++] = pin;
+    return 0;
+}
+#endif
 
 /* ── output seeds for an OFFLINE build (explicit, never drawn) ──────── */
 
@@ -424,6 +522,12 @@ typedef struct {
     char     recipient[129];
     char     amount[NSW_U64_DEC], fee[NSW_U64_DEC], change[NSW_U64_DEC],
              expiry[NSW_U64_DEC];
+    /* A SPEND (nsw_build_core) only: the token out[0] pays, decoded from
+     * the bytes (128 zeros = NODUS; "" for every other envelope), and the
+     * token change output (0 = none; native sends: 0). `amount` is in that
+     * token's units; `change` stays the NATIVE change in every case. */
+    char     token[129];
+    char     token_change[NSW_U64_DEC];
     int      n_in;
     char     in_hex[NODUS_V2_SPEND_MAX_IN][129];
     /* 0 = a SPEND (nsw_build_core); else the staking op (DNA_SYSRULE_*:
@@ -474,6 +578,8 @@ const char *nsw_built_recipient(void) { return g_built.recipient; }
 const char *nsw_built_amount(void)  { return g_built.amount; }
 const char *nsw_built_fee(void)     { return g_built.fee; }
 const char *nsw_built_change(void)  { return g_built.change; }
+const char *nsw_built_token(void)   { return g_built.token; }
+const char *nsw_built_token_change(void) { return g_built.token_change; }
 const char *nsw_built_expiry(void)  { return g_built.expiry; }
 int nsw_built_n_in(void)            { return g_built.n_in; }
 int nsw_built_op(void)              { return g_built.op; }
@@ -655,31 +761,73 @@ static const char *nsw_spend_reason(int rc) {
  * were signed for (self-consistent, design §1.4 / RT1 L4 F7).
  * `g`: the rule-set generation the envelope is built for and its expiry
  * facts (HF-4, nsw_gen_t); `expiry` must equal nsw_expiry_for's value.
+ *
+ * `pin`: NSW_NATIVE (-1) for a NODUS send (exactly the build of every
+ * earlier release — the parity vectors pin its bytes), else the index of a
+ * pinned token (NSW_PINS): the shared builder's token-only shape
+ * (is_native 0, token = the pin; design 2026-10-22-connect-native-tokens-
+ * design.md §6 items 3-4). The coins are then g_req_coins (kind 0, the
+ * fee) and g_req_tok (kind 1, the token); the read-back requires
+ * out[0] = (recipient, amount, the pinned token), every other output owned
+ * by this wallet and either ONE token change or ONE native change, and
+ * per-kind sums: Σ token inputs = amount + token change, Σ native inputs =
+ * fee + native change. `amount` is in the token's units then.
  */
+static int nsw_pin_raw(int pin, uint8_t out[64]) {
+    return nsw_parse_hex(NSW_PINS[pin].token_hex, out, 64);
+}
+
 static int nsw_build_core(const uint8_t *pk, const uint8_t *sk,
                           const uint8_t chain32[DNA_CHAIN_ID_LEN],
                           uint64_t tip, uint64_t gas_price,
-                          const uint8_t to_raw[64], uint64_t amount,
+                          const uint8_t to_raw[64], int pin, uint64_t amount,
                           uint64_t expiry, nodus_v2_rand_fn rand,
                           const nsw_gen_t *g) {
     nsw_built_clear();
     if (nsw_expiry_check(tip, g, expiry) != 0) return -1;
     if (amount == 0) return nsw_fail("Enter an amount above zero.");
-    if (g_req_n < 1) return nsw_fail("Insufficient NODUS balance.");
+    const int tokened = pin != NSW_NATIVE;
+    uint8_t pin_raw[64];
+    int n_tok = 0;
+    if (tokened) {
+        if (pin < 0 || pin >= NSW_PIN_COUNT || nsw_pin_raw(pin, pin_raw) != 0)
+            return nsw_fail("This token is not supported by this wallet.");
+        uint64_t tok_sum = 0;
+        for (int i = 0; i < g_req_tok_n; i++) {
+            if (g_req_tok_pin[i] != pin)
+                return nsw_fail("The transfer request names a coin of another token.");
+            if (g_req_tok[i].amount > UINT64_MAX - tok_sum)
+                return nsw_fail("Amount is out of range.");
+            tok_sum += g_req_tok[i].amount;
+        }
+        /* the planner reports one INSUFFICIENT for either kind: the token
+         * side is decided here, so a later one is the fee's */
+        if (tok_sum < amount) return nsw_fail("Not enough %s.", NSW_PINS[pin].symbol);
+        if (g_req_n < 1) return nsw_fail("Not enough NODUS for the network fee.");
+        n_tok = g_req_tok_n;
+    } else {
+        if (g_req_tok_n > 0)
+            return nsw_fail("The transfer request names a token coin; "
+                            "nothing was built.");
+        if (g_req_n < 1) return nsw_fail("Insufficient NODUS balance.");
+    }
 
     nodus_v2_ruleset_id_t rs;
     dna_meter_policy_t pol;
     if (nsw_ruleset(g->gen, &rs, &pol) != 0) return -1;
 
     /* the planner sorts in place: plan over a copy, the request stays */
-    nodus_v2_coin_t coins[NSW_MAX_COINS];
+    nodus_v2_coin_t coins[2 * NSW_MAX_COINS];
     memcpy(coins, g_req_coins, sizeof(coins[0]) * (size_t)g_req_n);
+    if (n_tok > 0)
+        memcpy(coins + g_req_n, g_req_tok, sizeof(coins[0]) * (size_t)n_tok);
+    const int n_coins = g_req_n + n_tok;
 
     nodus_v2_spend_plan_req_t preq;
     memset(&preq, 0, sizeof(preq));
     preq.rs         = &rs;
     preq.order      = NODUS_V2_SPEND_ORDER_LARGEST_FIRST;
-    preq.is_native  = 1;
+    preq.is_native  = tokened ? 0 : 1;
     preq.amount     = amount;
     preq.fee        = NSW_FEE_FLOOR;
     preq.fee_fixed  = 0;
@@ -689,10 +837,13 @@ static int nsw_build_core(const uint8_t *pk, const uint8_t *sk,
     long count = 0;
     uint64_t fee = 0;
     nodus_v2_spend_err_t err;
-    int rc = nodus_v2_spend_plan(&preq, coins, g_req_n, &plans, &count, &fee,
+    int rc = nodus_v2_spend_plan(&preq, coins, n_coins, &plans, &count, &fee,
                                  &err);
     if (rc != NODUS_V2_SPEND_OK || count != 1 || !plans) {
         free(plans);
+        if (tokened && rc == NODUS_V2_SPEND_ERR_INSUFFICIENT)
+            /* the token side was covered above: this is the fee's */
+            return nsw_fail("Not enough NODUS for the network fee.");
         return nsw_fail("%s (plan rc=%d)", nsw_spend_reason(rc), rc);
     }
 
@@ -705,7 +856,7 @@ static int nsw_build_core(const uint8_t *pk, const uint8_t *sk,
     breq.pk            = pk;
     breq.sk            = sk;
     breq.to_fp         = to_raw;
-    breq.token         = NULL;
+    breq.token         = tokened ? pin_raw : NULL;
     breq.amount        = amount;
     breq.fee           = fee;
     breq.gas_price     = gas_price;
@@ -719,6 +870,7 @@ static int nsw_build_core(const uint8_t *pk, const uint8_t *sk,
     memset(&built, 0, sizeof(built));
     rc = nodus_v2_spend_build(&breq, &built, &err);
     const uint64_t native_in = plans[0].native_in;
+    const uint64_t token_in  = plans[0].token_in;
     free(plans);
     if (rc != NODUS_V2_SPEND_OK) {
         nodus_v2_spend_built_free(&built);
@@ -736,22 +888,37 @@ static int nsw_build_core(const uint8_t *pk, const uint8_t *sk,
         return nsw_fail("The transfer could not be built (hash).");
     }
     nsw_fmt_hex(own_raw, 64, own_hex);
-    uint64_t change = 0;
+    uint64_t change = 0;                    /* the NATIVE change            */
+    uint64_t tchange = 0;                   /* the token change (token send) */
+    int n_nchg = 0, n_tchg = 0;
     int ok = d->n_out >= 1 && d->n_in >= 1 &&
              d->n_in <= (int)NODUS_V2_SPEND_MAX_IN &&
              memcmp(d->out_owner[0], to_hex, 128) == 0 &&
              d->out_amount[0] == amount &&
-             memcmp(d->out_token[0], zero64, 64) == 0 &&
+             memcmp(d->out_token[0], tokened ? pin_raw : zero64, 64) == 0 &&
              d->expiry_height == expiry;
+    /* a token send pays ONE recipient output: no NODUS beside the token */
+    if (ok && tokened && d->n_recipient_out != 1) ok = 0;
     for (int o = 1; ok && o < d->n_out; o++) {
-        if (memcmp(d->out_owner[o], own_hex, 128) != 0 ||
-            memcmp(d->out_token[o], zero64, 64) != 0 ||
-            d->out_amount[o] > UINT64_MAX - change)
+        if (memcmp(d->out_owner[o], own_hex, 128) != 0) {
             ok = 0;
-        else
-            change += d->out_amount[o];
+        } else if (memcmp(d->out_token[o], zero64, 64) == 0) {
+            /* native change: a NODUS send may carry several (as before);
+             * a token send exactly at most one */
+            n_nchg++;
+            if (d->out_amount[o] > UINT64_MAX - change || (tokened && n_nchg > 1))
+                ok = 0;
+            else
+                change += d->out_amount[o];
+        } else if (tokened && memcmp(d->out_token[o], pin_raw, 64) == 0) {
+            n_tchg++;
+            if (n_tchg > 1) ok = 0;
+            else tchange = d->out_amount[o];
+        } else {
+            ok = 0;                         /* another token's output      */
+        }
     }
-    uint64_t in_sum = 0;
+    uint64_t in_sum = 0, tok_in_sum = 0;
     for (int i = 0; ok && i < d->n_in; i++) {
         int found = 0;
         for (int k = 0; k < g_req_n && !found; k++)
@@ -760,11 +927,24 @@ static int nsw_build_core(const uint8_t *pk, const uint8_t *sk,
                 if (g_req_coins[k].amount > UINT64_MAX - in_sum) ok = 0;
                 else in_sum += g_req_coins[k].amount;
             }
+        for (int k = 0; tokened && k < n_tok && !found; k++)
+            if (memcmp(g_req_tok[k].nul, d->in_nul[i], 64) == 0) {
+                found = 1;
+                if (g_req_tok[k].amount > UINT64_MAX - tok_in_sum) ok = 0;
+                else tok_in_sum += g_req_tok[k].amount;
+            }
         if (!found) ok = 0;
     }
-    if (ok && (in_sum != native_in || amount > UINT64_MAX - d->fee ||
-               amount + d->fee > UINT64_MAX - change ||
-               amount + d->fee + change != in_sum))
+    if (ok && !tokened &&
+        (in_sum != native_in || amount > UINT64_MAX - d->fee ||
+         amount + d->fee > UINT64_MAX - change ||
+         amount + d->fee + change != in_sum))
+        ok = 0;
+    if (ok && tokened &&
+        (in_sum != native_in || tok_in_sum != token_in ||
+         amount > UINT64_MAX - tchange || amount + tchange != tok_in_sum ||
+         d->fee > UINT64_MAX - change || d->fee + change != in_sum ||
+         d->native_change != change || d->token_change != tchange))
         ok = 0;
     if (!ok) {
         nodus_v2_spend_built_free(&built);
@@ -785,6 +965,8 @@ static int nsw_build_core(const uint8_t *pk, const uint8_t *sk,
     nsw_fmt_u64(d->out_amount[0], g_built.amount);
     nsw_fmt_u64(d->fee, g_built.fee);
     nsw_fmt_u64(change, g_built.change);
+    nsw_fmt_hex(d->out_token[0], 64, g_built.token);   /* decoded, 0s = NODUS */
+    nsw_fmt_u64(tchange, g_built.token_change);
     nsw_fmt_u64(d->expiry_height, g_built.expiry);
     g_built.n_in = d->n_in;
     for (int i = 0; i < d->n_in; i++)
@@ -805,9 +987,9 @@ static int nsw_build_core(const uint8_t *pk, const uint8_t *sk,
  * is comparable across all builds, wire_id and the envelope bytes only
  * across TEST builds fed the same bytes.
  */
-int nsw_offline_build(const char *chain_hex, const char *tip_dec,
-                      const char *gas_dec, const char *to_hex,
-                      const char *amount_dec, const char *expiry_dec) {
+static int nsw_offline_core(const char *chain_hex, const char *tip_dec,
+                            const char *gas_dec, const char *to_hex, int pin,
+                            const char *amount_dec, const char *expiry_dec) {
     uint8_t chain32[DNA_CHAIN_ID_LEN], to_raw[64];
     uint64_t tip = 0, gas = 0, amount = 0, expiry = 0;
     if (nsw_parse_hex(chain_hex, chain32, sizeof(chain32)) != 0 ||
@@ -828,8 +1010,8 @@ int nsw_offline_build(const char *chain_hex, const char *tip_dec,
          * (nodus/src/crypto/nodus_identity.c) */
         rc = nsw_fail("Key derivation failed.");
     } else {
-        rc = nsw_build_core(pk, sk, chain32, tip, gas, to_raw, amount, expiry,
-                            nsw_rand_explicit, &NSW_GEN_OFFLINE);
+        rc = nsw_build_core(pk, sk, chain32, tip, gas, to_raw, pin, amount,
+                            expiry, nsw_rand_explicit, &NSW_GEN_OFFLINE);
         if (rc == 0 && g_out_seeds_pos != g_out_seeds_len) {
             nsw_built_clear();
             rc = nsw_fail("The build used %u of the %u output seed bytes given.",
@@ -843,6 +1025,34 @@ int nsw_offline_build(const char *chain_hex, const char *tip_dec,
     g_out_seeds_len = g_out_seeds_pos = 0;
     return rc;
 }
+
+int nsw_offline_build(const char *chain_hex, const char *tip_dec,
+                      const char *gas_dec, const char *to_hex,
+                      const char *amount_dec, const char *expiry_dec) {
+    return nsw_offline_core(chain_hex, tip_dec, gas_dec, to_hex, NSW_NATIVE,
+                            amount_dec, expiry_dec);
+}
+
+#ifdef NODUS_SEND_TEST_FIXED_RANDOM
+/* TEST-only (parity build and the native vector, never shipped): the same
+ * offline build for a pinned token — `token_hex` must be a pinned id, the
+ * candidate coins come from nsw_req_add_coin (native, the fee) and
+ * nsw_test_req_add_token_coin (the token). The native vector's `token`
+ * mode and the TEST wasm run this one function. */
+int nsw_test_token_offline_build(const char *chain_hex, const char *tip_dec,
+                                 const char *gas_dec, const char *to_hex,
+                                 const char *token_hex,
+                                 const char *amount_dec,
+                                 const char *expiry_dec) {
+    const int pin = nsw_pin_find(token_hex);
+    if (pin < 0) {
+        nsw_wipe(g_seed, sizeof(g_seed));
+        return nsw_fail("This token is not supported by this wallet.");
+    }
+    return nsw_offline_core(chain_hex, tip_dec, gas_dec, to_hex, pin,
+                            amount_dec, expiry_dec);
+}
+#endif
 
 /* ═══ STAKING (0.1.29): STAKE / DELEGATE / UNDELEGATE ═══════════════════
  *
@@ -2336,6 +2546,11 @@ static int g_locked;                    /* lock ran: terminal              */
 static volatile int g_cancel;           /* cancel ran: terminal            */
 static int g_busy;                      /* an async export is running      */
 static uint8_t g_checked_server_pk[NODUS_PK_BYTES];
+/* The session token of the connection nsw_check_chain last passed. The
+ * server draws a fresh random token for every authenticated connection
+ * (nodus_auth.c), so a different token = a NEW connection, also one to the
+ * SAME server (whose key g_checked_server_pk cannot tell apart). */
+static uint8_t g_checked_token[NODUS_SESSION_TOKEN_LEN];
 static char g_fp_hex[129];
 static char g_chain_hex[65];
 
@@ -2352,7 +2567,48 @@ static struct {
     int      truncated;
 } g_list;
 
+/* the pinned tokens' coins of the last listing (nsw_list): one filtered
+ * dnac_utxo call per pinned token, so the node's 100-coin cap is per token
+ * (design §6 item 3). Kept APART from g_list: nsw_list_count / _nul /
+ * _amount stay the native coins every earlier consumer (staking, names,
+ * HF-6, EVM) reads. `listed[i]` 1 = pin i's coins were read (an empty answer
+ * is a real "no coins"), 0 = they were not (the pin was unavailable, or the
+ * node ignored the token filter / failed): a token send then refuses "coin
+ * list unavailable", never a listing mixed with another token's coins.
+ * `rc[i]` the failing client rc (0 none). */
+static struct {
+    int      n;
+    int      pin[NSW_MAX_COINS * NSW_PIN_COUNT];
+    uint8_t  nul[NSW_MAX_COINS * NSW_PIN_COUNT][64];
+    uint64_t amount[NSW_MAX_COINS * NSW_PIN_COUNT];
+    char     nul_hex[NSW_MAX_COINS * NSW_PIN_COUNT][129];
+    char     amount_dec[NSW_MAX_COINS * NSW_PIN_COUNT][NSW_U64_DEC];
+    int      listed[NSW_PIN_COUNT];
+    int      truncated[NSW_PIN_COUNT];
+    int      rc[NSW_PIN_COUNT];
+} g_list_tok;
+
+/* The pinned tokens' metadata check (design §6 item 6; operator "tUSDT'yi
+ * kapat"): 0 not read yet, 1 verified equal to the pin, 2 unavailable —
+ * unreadable, or id / name / symbol / decimals different, id all zero,
+ * decimals above 18. Set at every connection (nsw_pins_check) and again by
+ * the token build itself. */
+static int g_pin_state[NSW_PIN_COUNT];
+
+static int nsw_listed_pin(const uint8_t nul[64], uint64_t amount) {
+    for (int i = 0; i < g_list_tok.n; i++)
+        if (memcmp(g_list_tok.nul[i], nul, 64) == 0 &&
+            g_list_tok.amount[i] == amount)
+            return g_list_tok.pin[i];
+    return NSW_NATIVE;
+}
+
 static char g_bal_total[NSW_U64_DEC], g_bal_spendable[NSW_U64_DEC];
+/* per pinned token, from the last nsw_balance (an absent row is a real
+ * zero: nodus.h dnac_balance — an empty "tk"); g_bal_pin_ok 0 = not read */
+static char g_bal_pin_total[NSW_PIN_COUNT][NSW_U64_DEC],
+            g_bal_pin_spendable[NSW_PIN_COUNT][NSW_U64_DEC];
+static int  g_bal_pin_ok;
 static char g_scan_tip[NSW_U64_DEC], g_scan_height[NSW_U64_DEC];
 static int  g_scan_found;
 static uint8_t *g_req_env;               /* submit's request bytes         */
@@ -2370,6 +2626,36 @@ const char *nsw_list_nul(int i) {
 }
 const char *nsw_list_amount(int i) {
     return (g_list.valid && i >= 0 && i < g_list.n) ? g_list.amount_dec[i] : "";
+}
+/* The pinned tokens' coins of the last listing; each carries its token (the
+ * pin's id), and the amount is in that token's raw units. */
+int nsw_list_tok_count(void)          { return g_list.valid ? g_list_tok.n : 0; }
+const char *nsw_list_tok_nul(int i) {
+    return (g_list.valid && i >= 0 && i < g_list_tok.n) ? g_list_tok.nul_hex[i] : "";
+}
+const char *nsw_list_tok_amount(int i) {
+    return (g_list.valid && i >= 0 && i < g_list_tok.n) ? g_list_tok.amount_dec[i] : "";
+}
+const char *nsw_list_tok_token(int i) {
+    return (g_list.valid && i >= 0 && i < g_list_tok.n) ? NSW_PINS[g_list_tok.pin[i]].token_hex : "";
+}
+/* 1 = pin i's coins were listed (possibly none), 0 = not (see g_list_tok) */
+int nsw_list_pin_listed(int i) {
+    return g_list.valid && i >= 0 && i < NSW_PIN_COUNT ? g_list_tok.listed[i] : 0;
+}
+int nsw_list_pin_truncated(int i) {
+    return g_list.valid && i >= 0 && i < NSW_PIN_COUNT ? g_list_tok.truncated[i] : 0;
+}
+/* 1 verified, 0 not checked / unavailable (g_pin_state) */
+int nsw_pin_available(int i) {
+    return i >= 0 && i < NSW_PIN_COUNT && g_unlocked && g_pin_state[i] == 1 ? 1 : 0;
+}
+/* The balance of pin i from the last nsw_balance ("" before one ran) */
+const char *nsw_bal_pin_total(int i) {
+    return g_bal_pin_ok && i >= 0 && i < NSW_PIN_COUNT ? g_bal_pin_total[i] : "";
+}
+const char *nsw_bal_pin_spendable(int i) {
+    return g_bal_pin_ok && i >= 0 && i < NSW_PIN_COUNT ? g_bal_pin_spendable[i] : "";
 }
 const char *nsw_scan_tip(void)        { return g_scan_tip; }
 const char *nsw_scan_height(void)     { return g_scan_height; }
@@ -2446,6 +2732,8 @@ static int nsw_end(int rc) {
  *         and does not serve the configured chain, or its key is unknown
  *         (nsw_connect makes that final). Every caller treats both as
  *         failure (`!= 0`); the reason is in nsw_error. */
+static void nsw_pins_check(void);
+
 static int nsw_check_chain(void) {
     bool has = false;
     uint8_t c[DNA_CHAIN_ID_LEN];
@@ -2464,9 +2752,61 @@ static int nsw_check_chain(void) {
         nsw_fail("The Nodus server key is unknown.");
         return -2;
     }
+    /* A connection this function has not passed before (another server, or
+     * a reconnect to the same one: a fresh session token) gets its pins read
+     * afresh HERE, so no caller can record the new connection without them
+     * (nsw_session_ok, nsw_connect_core and the mid-build re-check all come
+     * through this one place). */
+    const int fresh =
+        memcmp(g_client.server_dil_pk.bytes, g_checked_server_pk,
+               sizeof(g_checked_server_pk)) != 0 ||
+        memcmp(g_client.token, g_checked_token, sizeof(g_checked_token)) != 0;
     memcpy(g_checked_server_pk, g_client.server_dil_pk.bytes,
            sizeof(g_checked_server_pk));
+    memcpy(g_checked_token, g_client.token, sizeof(g_checked_token));
+    if (fresh) nsw_pins_check();
     return 0;
+}
+
+/* One pinned token's metadata, read from THIS session's node and compared
+ * with the pin (design §6 item 6; D1-9: every field required, id == the one
+ * asked for, decimals <= 18, id not zero). Any failure — the read itself
+ * included — makes the token unavailable (g_pin_state 2); it never fails the
+ * connection or any other operation. Waits on the network. @return the new
+ * state (1 verified, 2 unavailable). */
+static int nsw_pin_info_ok(int i, const uint8_t raw[64],
+                           const nodus_dnac_token_info_t *ti) {
+    static const uint8_t zero64[64] = {0};
+    return memcmp(raw, zero64, 64) != 0 &&
+           memcmp(ti->token_id, raw, 64) == 0 &&
+           ti->decimals <= 18 && ti->decimals == NSW_PINS[i].decimals &&
+           strnlen(ti->name, sizeof(ti->name)) < sizeof(ti->name) &&
+           strnlen(ti->symbol, sizeof(ti->symbol)) < sizeof(ti->symbol) &&
+           strcmp(ti->name, NSW_PINS[i].name) == 0 &&
+           strcmp(ti->symbol, NSW_PINS[i].symbol) == 0;
+}
+
+/* Re-read pin i on this connection. A failure LATCHES "unavailable" (2) for
+ * the rest of this connection: a later build never turns it back into 1
+ * (only nsw_pins_check, on a new connection, starts from 0 again). A pin
+ * that is verified (1) is read again and drops to 2 on any failure. */
+static int nsw_pin_verify(int i) {
+    uint8_t raw[64];
+    nodus_dnac_token_info_t ti;
+    memset(&ti, 0, sizeof(ti));
+    if (g_pin_state[i] == 2) return 2;
+    g_pin_state[i] = 2;
+    if (nsw_pin_raw(i, raw) != 0) return 2;
+    if (nodus_client_dnac_token_info(&g_client, raw, &ti) != 0) return 2;
+    if (!nsw_pin_info_ok(i, raw, &ti)) return 2;
+    g_pin_state[i] = 1;
+    return 1;
+}
+
+/* A NEW connection: every pin starts unread and is checked afresh. */
+static void nsw_pins_check(void) {
+    memset(g_pin_state, 0, sizeof(g_pin_state));
+    for (int i = 0; i < NSW_PIN_COUNT; i++) (void)nsw_pin_verify(i);
 }
 
 static int nsw_session_ok(void) {
@@ -2475,8 +2815,13 @@ static int nsw_session_ok(void) {
         return nsw_fail("Nodus connection is not ready. Try again shortly.");
     if (!g_client.has_server_dil_pk ||
         memcmp(g_client.server_dil_pk.bytes, g_checked_server_pk,
-               sizeof(g_checked_server_pk)) != 0)
-        return nsw_check_chain();          /* reconnected to another server */
+               sizeof(g_checked_server_pk)) != 0 ||
+        memcmp(g_client.token, g_checked_token,
+               sizeof(g_checked_token)) != 0) {
+        /* a new connection — another server, or a reconnect to the same
+         * one: the chain id AND the pins are read afresh (nsw_check_chain) */
+        return nsw_check_chain();
+    }
     return 0;
 }
 
@@ -2675,6 +3020,10 @@ static int nsw_connect_core(void) {
         nsw_client_drop();                  /* the reason stays in g_error */
         return rc == -2 ? -2 : -1;
     }
+    /* nsw_check_chain read the pinned tokens' metadata for this connection;
+     * a token the chain does not describe as pinned is unavailable for it
+     * (it never fails the connection) */
+    if (g_cancel) return -1;
     g_unlocked = 1;
     return 0;
 }
@@ -2709,10 +3058,16 @@ int nsw_connect(void) {
     return nsw_end(nsw_connect_core());
 }
 
-/* ── balance: dnac_balance, the native row only ── */
+/* ── balance: dnac_balance — the native row (nsw_bal_total / _spendable) and
+ * one row per pinned token (nsw_bal_pin_*) ──
+ * The node refuses the whole answer for an owner holding more than
+ * NODUS_DNAC_BALANCE_MAX_TOKENS (256) token kinds (NODUS_ERR_TOO_LARGE):
+ * that, like every other failure, is "Balance unavailable" — never a zero
+ * (design §6 item 9). */
 
 int nsw_balance(void) {
     if (nsw_begin() != 0) return -1;
+    g_bal_pin_ok = 0;
     if (nsw_session_ok() != 0) return nsw_end(-1);
     nodus_dnac_balance_result_t res;
     memset(&res, 0, sizeof(res));
@@ -2721,15 +3076,32 @@ int nsw_balance(void) {
     static const uint8_t zero64[64] = {0};
     uint64_t total = 0, spendable = 0;      /* an empty "tk" is a real zero
                                              * (nodus.h dnac_balance)       */
-    for (size_t i = 0; i < res.count; i++)
+    uint64_t ptotal[NSW_PIN_COUNT] = {0}, pspend[NSW_PIN_COUNT] = {0};
+    uint8_t praw[NSW_PIN_COUNT][64];
+    int bad = 0;
+    for (int p = 0; p < NSW_PIN_COUNT; p++)
+        if (nsw_pin_raw(p, praw[p]) != 0) bad = 1;
+    for (size_t i = 0; !bad && i < res.count; i++) {
         if (memcmp(res.tokens[i].token_id, zero64, 64) == 0) {
             total = res.tokens[i].total;
             spendable = res.tokens[i].spendable;
         }
+        for (int p = 0; p < NSW_PIN_COUNT; p++)
+            if (memcmp(res.tokens[i].token_id, praw[p], 64) == 0) {
+                ptotal[p] = res.tokens[i].total;
+                pspend[p] = res.tokens[i].spendable;
+                if (pspend[p] > ptotal[p]) bad = 1;
+            }
+    }
     nodus_client_free_balance_result(&res);
-    if (spendable > total) return nsw_end(nsw_fail("Balance unavailable."));
+    if (bad || spendable > total) return nsw_end(nsw_fail("Balance unavailable."));
     nsw_fmt_u64(total, g_bal_total);
     nsw_fmt_u64(spendable, g_bal_spendable);
+    for (int p = 0; p < NSW_PIN_COUNT; p++) {
+        nsw_fmt_u64(ptotal[p], g_bal_pin_total[p]);
+        nsw_fmt_u64(pspend[p], g_bal_pin_spendable[p]);
+    }
+    g_bal_pin_ok = 1;
     return nsw_end(0);
 }
 
@@ -2742,16 +3114,26 @@ int nsw_balance(void) {
 int nsw_list(void) {
     if (nsw_begin() != 0) return -1;
     memset(&g_list, 0, sizeof(g_list));
+    memset(&g_list_tok, 0, sizeof(g_list_tok));
     if (nsw_session_ok() != 0) return nsw_end(-1);
     nodus_dnac_utxo_result_t res;
     memset(&res, 0, sizeof(res));
-    int rc = nodus_client_dnac_utxo(&g_client, g_fp_hex,
-                                    NODUS_DNAC_MAX_UTXO_RESULTS, &res);
+    /* The native list is the STRICT token-filtered call with the all-zero
+     * id (nodus.h dnac_utxo "tok": zero = native): that decode requires a
+     * present 64-byte "tid" on every coin and refuses any coin of another
+     * token (-3, a node that ignores "tok"). The unfiltered call would read
+     * an absent or malformed "tid" as zero = native, and a token coin would
+     * enter the native table. Any failure = no list; never a fallback to the
+     * unfiltered call. */
+    static const uint8_t zero64[64] = {0};
+    int rc = nodus_client_dnac_utxo_token(&g_client, g_fp_hex, zero64,
+                                          NODUS_DNAC_MAX_UTXO_RESULTS, &res);
     if (rc != 0) {
         nodus_client_free_utxo_result(&res);
-        return nsw_end(nsw_fail_rc(rc, "Your coin list could not be read (rc=%d).", rc));
+        return nsw_end(nsw_fail_rc(rc, "Your coin list is unavailable right "
+                                   "now (rc=%d). Nothing was done; try again "
+                                   "later.", rc));
     }
-    static const uint8_t zero64[64] = {0};
     int bad = res.count < 0 || res.count > (int)NODUS_DNAC_MAX_UTXO_RESULTS ||
               (res.count > 0 && !res.entries);
     const uint64_t tip = res.block_height;
@@ -2776,6 +3158,51 @@ int nsw_list(void) {
         memset(&g_list, 0, sizeof(g_list));
         return nsw_end(nsw_fail("The Nodus node returned an invalid coin list."));
     }
+    /* The pinned tokens' coins: ONE filtered call per verified pin (design
+     * §6 item 3). NODUS_CLIENT_ERR_TOKEN_FILTER_IGNORED (-3, a node that
+     * predates "tok" and answered every token) and any other failure leave
+     * that pin NOT listed — its token send then says "coin list
+     * unavailable" — and never touch the native list above. */
+    for (int p = 0; p < NSW_PIN_COUNT; p++) {
+        uint8_t praw[64];
+        if (g_pin_state[p] != 1 || nsw_pin_raw(p, praw) != 0) continue;
+        nodus_dnac_utxo_result_t tres;
+        memset(&tres, 0, sizeof(tres));
+        int trc = nodus_client_dnac_utxo_token(&g_client, g_fp_hex, praw,
+                                               NODUS_DNAC_MAX_UTXO_RESULTS, &tres);
+        if (trc != 0) {
+            nodus_client_free_utxo_result(&tres);
+            g_list_tok.rc[p] = trc;
+            continue;
+        }
+        const int first = g_list_tok.n;
+        int tbad = tres.count < 0 || tres.count > (int)NODUS_DNAC_MAX_UTXO_RESULTS ||
+                   (tres.count > 0 && !tres.entries);
+        for (int i = 0; !tbad && i < tres.count; i++) {
+            const nodus_dnac_utxo_entry_t *e = &tres.entries[i];
+            if (strncmp(e->owner, g_fp_hex, 128) != 0 ||
+                memcmp(e->token_id, praw, 64) != 0) { tbad = 1; break; }
+            for (int k = 0; k < g_list_tok.n; k++)
+                if (memcmp(g_list_tok.nul[k], e->nullifier, 64) == 0) tbad = 1;
+            if (tbad) break;
+            if (e->amount == 0 || e->unlock_block > tres.block_height) continue;
+            const int at = g_list_tok.n++;
+            g_list_tok.pin[at] = p;
+            memcpy(g_list_tok.nul[at], e->nullifier, 64);
+            g_list_tok.amount[at] = e->amount;
+            nsw_fmt_hex(e->nullifier, 64, g_list_tok.nul_hex[at]);
+            nsw_fmt_u64(e->amount, g_list_tok.amount_dec[at]);
+        }
+        const int trunc = tres.count >= (int)NODUS_DNAC_MAX_UTXO_RESULTS;
+        nodus_client_free_utxo_result(&tres);
+        if (tbad) {
+            g_list_tok.n = first;
+            g_list_tok.rc[p] = NODUS_ERR_PROTOCOL_ERROR;
+            continue;
+        }
+        g_list_tok.listed[p] = 1;
+        g_list_tok.truncated[p] = trunc;
+    }
     g_list.tip = tip;
     nsw_fmt_u64(tip, g_list.tip_dec);
     g_list.valid = 1;
@@ -2784,8 +3211,13 @@ int nsw_list(void) {
 
 /* ── buildAndSign: the candidates must come from the LAST listing ── */
 
-int nsw_build_and_sign(const char *to_hex, const char *amount_dec,
-                       const char *expiry_dec) {
+/* The networked build of a NODUS send (`pin` NSW_NATIVE: nsw_build_and_sign)
+ * or of a pinned token's (nsw_token_build_and_sign). The same steps in the
+ * same order; the token send adds: a request of token coins that are the
+ * pin's and in its listing, the pin's coin list actually read, and its
+ * metadata re-read on this session (design §6 items 3 and 6). */
+static int nsw_build_net(const char *to_hex, int pin, const char *amount_dec,
+                         const char *expiry_dec) {
     if (nsw_begin() != 0) return -1;
     nsw_built_clear();
     uint8_t to_raw[64];
@@ -2799,6 +3231,9 @@ int nsw_build_and_sign(const char *to_hex, const char *amount_dec,
     if (!g_list.valid || g_list.tip == 0)
         return nsw_end(nsw_fail("The current Nodus block height is unknown. "
                                 "Nothing was sent; try again later."));
+    if (pin == NSW_NATIVE && g_req_tok_n > 0)
+        return nsw_end(nsw_fail("The transfer request names a token coin; "
+                                "nothing was built."));
     for (int i = 0; i < g_req_n; i++) {
         int found = 0;
         for (int k = 0; k < g_list.n && !found; k++)
@@ -2809,9 +3244,41 @@ int nsw_build_and_sign(const char *to_hex, const char *amount_dec,
             return nsw_end(nsw_fail("The transfer request names a coin that "
                                     "is not in your current coin list."));
     }
+    if (pin != NSW_NATIVE) {
+        if (pin < 0 || pin >= NSW_PIN_COUNT)
+            return nsw_end(nsw_fail("This token is not supported by this wallet."));
+        if (!g_list_tok.listed[pin])
+            /* -3: a node that ignores the token filter; never a mixed list */
+            return nsw_end(nsw_fail_rc(g_list_tok.rc[pin],
+                                       "The %s coin list is unavailable right "
+                                       "now (rc=%d). Nothing was sent; try "
+                                       "again later.", NSW_PINS[pin].symbol,
+                                       g_list_tok.rc[pin]));
+        for (int i = 0; i < g_req_tok_n; i++) {
+            int found = 0;
+            for (int k = 0; k < g_list_tok.n && !found; k++)
+                if (g_list_tok.pin[k] == pin && g_req_tok_pin[i] == pin &&
+                    memcmp(g_list_tok.nul[k], g_req_tok[i].nul, 64) == 0 &&
+                    g_list_tok.amount[k] == g_req_tok[i].amount)
+                    found = 1;
+            if (!found)
+                return nsw_end(nsw_fail("The transfer request names a coin that "
+                                        "is not in your current coin list."));
+        }
+    }
     if (nsw_session_ok() != 0) return nsw_end(-1);
+    /* the token's metadata is read on THIS session too, whatever was cached
+     * at the connection ("tUSDT'yi kapat": a token the chain does not
+     * describe as pinned cannot be sent) */
+    if (pin != NSW_NATIVE && nsw_pin_verify(pin) != 1)
+        return nsw_end(nsw_fail("%s is unavailable right now. Nothing was sent.",
+                                NSW_PINS[pin].symbol));
     /* signing: re-read the chain id on this session, whatever the cache */
     if (nsw_check_chain() != 0) return nsw_end(-1);
+    /* a reconnect inside the steps above re-read the pins: still verified? */
+    if (pin != NSW_NATIVE && g_pin_state[pin] != 1)
+        return nsw_end(nsw_fail("%s is unavailable right now. Nothing was sent.",
+                                NSW_PINS[pin].symbol));
     /* HF-4: the generation is chosen from the node's answer on THIS call,
      * never from an earlier nsw_ruleset_info */
     nsw_gen_t gen;
@@ -2825,10 +3292,97 @@ int nsw_build_and_sign(const char *to_hex, const char *amount_dec,
                                    "Nothing was built.", rc));
     if (g_cancel) return nsw_end(-1);
     rc = nsw_build_core(g_id.pk.bytes, g_id.sk.bytes, g_net.chain, g_list.tip,
-                        fi.gas_price, to_raw, amount, expiry, nsw_rand_csprng,
-                        &gen);
+                        fi.gas_price, to_raw, pin, amount, expiry,
+                        nsw_rand_csprng, &gen);
     return nsw_end(rc);
 }
+
+int nsw_build_and_sign(const char *to_hex, const char *amount_dec,
+                       const char *expiry_dec) {
+    return nsw_build_net(to_hex, NSW_NATIVE, amount_dec, expiry_dec);
+}
+
+/* A pinned token's send: `token_hex` (128 lowercase hex) must be a pinned id,
+ * `amount_dec` is in the token's raw units (the pin's decimals); the fee is
+ * paid in NODUS from the request's native coins. The candidates are
+ * nsw_req_add_coin'd as for a NODUS send — each coin takes its kind from the
+ * last listing. */
+int nsw_token_build_and_sign(const char *to_hex, const char *token_hex,
+                             const char *amount_dec, const char *expiry_dec) {
+    /* the explicit all-zero id is NODUS itself: the unchanged native build
+     * (the page's NODUS hop carries it, never an absent id) */
+    uint8_t tid[64];
+    static const uint8_t zero64[64] = {0};
+    if (nsw_parse_hex(token_hex, tid, sizeof(tid)) == 0 &&
+        memcmp(tid, zero64, sizeof(tid)) == 0)
+        return nsw_build_net(to_hex, NSW_NATIVE, amount_dec, expiry_dec);
+    const int pin = nsw_pin_find(token_hex);
+    if (pin < 0) {
+        if (nsw_begin() != 0) return -1;
+        return nsw_end(nsw_fail("This token is not supported by this wallet."));
+    }
+    return nsw_build_net(to_hex, pin, amount_dec, expiry_dec);
+}
+
+#ifdef NODUS_SEND_TEST_FIXED_RANDOM
+/* TEST-only (parity build, never shipped): a made-up LAST LISTING with tip
+ * 1000 and pin 0's token list in the given state — `listed` 1/0, `rc` the
+ * client rc a failed listing left (-3 = a node that ignores the token
+ * filter) — holding one token coin when `nul_hex` is given. Lets the
+ * refusals of nsw_req_add_coin / nsw_build_and_sign / nsw_token_build_and_sign
+ * be pinned without a node (they all run before the first network call).
+ * @return 0 / -1. */
+int nsw_test_set_listing(int listed, int rc, const char *nul_hex,
+                         const char *amount_dec) {
+    memset(&g_list, 0, sizeof(g_list));
+    memset(&g_list_tok, 0, sizeof(g_list_tok));
+    g_list.valid = 1;
+    g_list.tip = 1000;
+    nsw_fmt_u64(1000, g_list.tip_dec);
+    g_list_tok.listed[0] = listed;
+    g_list_tok.rc[0] = rc;
+    if (nul_hex && nul_hex[0]) {
+        uint64_t amount = 0;
+        if (nsw_parse_hex(nul_hex, g_list_tok.nul[0], 64) != 0 ||
+            nsw_parse_u64(amount_dec, &amount) != 0)
+            return -1;
+        g_list_tok.pin[0] = 0;
+        g_list_tok.amount[0] = amount;
+        g_list_tok.n = 1;
+    }
+    return 0;
+}
+
+/* TEST-only: nsw_pin_info_ok for pin 0 against a made-up dnac_token_info
+ * answer (the id is echoed as given). @return 1 verified / 0 unavailable. */
+int nsw_test_pin_info(const char *id_hex, const char *name,
+                      const char *symbol, int decimals) {
+    uint8_t raw[64];
+    nodus_dnac_token_info_t ti;
+    memset(&ti, 0, sizeof(ti));
+    if (!id_hex || !name || !symbol) return 0;      /* NULL: refuse, no crash */
+    const size_t nlen = strnlen(name, sizeof(ti.name));
+    const size_t slen = strnlen(symbol, sizeof(ti.symbol));
+    if (nsw_pin_raw(0, raw) != 0 || nsw_parse_hex(id_hex, ti.token_id, 64) != 0 ||
+        nlen >= sizeof(ti.name) || slen >= sizeof(ti.symbol) ||
+        decimals < 0 || decimals > 255)
+        return 0;
+    memcpy(ti.name, name, nlen);
+    memcpy(ti.symbol, symbol, slen);
+    ti.decimals = (uint8_t)decimals;
+    return nsw_pin_info_ok(0, raw, &ti);
+}
+
+/* TEST-only: pin `i` latched "unavailable" stays unavailable when a later
+ * build asks again — nsw_pin_verify answers from the latch and reads
+ * nothing (no node is involved). @return 1 = still 2 (latched) after the
+ * ask, 0 = flipped back, -1 bad index. */
+int nsw_test_pin_latched(int i) {
+    if (i < 0 || i >= NSW_PIN_COUNT) return -1;
+    g_pin_state[i] = 2;
+    return nsw_pin_verify(i) == 2 && g_pin_state[i] == 2 ? 1 : 0;
+}
+#endif
 
 /* ── submit: only the envelope this module built last ── */
 
@@ -5951,6 +6505,11 @@ static int nsw_evm_net(dna_evm_call_t *call, const char *units_dec,
     if (!g_list.valid || g_list.tip == 0)
         return nsw_end(nsw_fail("The current Nodus block height is unknown. "
                                 "Nothing was sent; try again later."));
+    /* the EVM funding is NODUS only: a token coin in the request (a coin
+     * the last listing holds as a pinned token's) is refused, not skipped */
+    if (g_req_tok_n > 0)
+        return nsw_end(nsw_fail("The request names a token coin; smart "
+                                "contracts take NODUS only. Nothing was built."));
     for (int i = 0; i < g_req_n; i++) {
         int found = 0;
         for (int k = 0; k < g_list.n && !found; k++)
@@ -6979,6 +7538,9 @@ void nsw_lock(void) {
     nsw_req_env_free();
     nsw_req_reset();
     memset(&g_list, 0, sizeof(g_list));
+    memset(&g_list_tok, 0, sizeof(g_list_tok));
+    memset(g_pin_state, 0, sizeof(g_pin_state));
+    g_bal_pin_ok = 0;
     g_vals.valid = 0; g_vals.n = 0;
     g_dels.valid = 0; g_dels.n = 0;
     memset(&g_ri, 0, sizeof(g_ri));
@@ -7009,3 +7571,14 @@ void nsw_lock(void) {
     g_identified = 0;
 }
 #endif /* !NODUS_SEND_OFFLINE_ONLY */
+
+#ifdef NODUS_SEND_OFFLINE_ONLY
+/* An offline build has no coin listing: every nsw_req_add_coin is a native
+ * coin (the token coins of an offline token build are given explicitly,
+ * nsw_test_req_add_token_coin). */
+static int nsw_listed_pin(const uint8_t nul[64], uint64_t amount) {
+    (void)nul;
+    (void)amount;
+    return NSW_NATIVE;
+}
+#endif

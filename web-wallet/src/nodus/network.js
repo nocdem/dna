@@ -31,9 +31,38 @@ const NODUS_SEND_NETWORK = { ...NODUS_NETWORK, receiveOnly: false, balanceUnavai
 // startNodusSend, RECONNECT), so its note says that instead of "not
 // available in this release".
 const NODUS_CONNECTING_NETWORK = { ...NODUS_NETWORK, sendNote: 'Connecting to the Nodus network… Sending NODUS becomes available as soon as the connection is ready.' };
-export function nodusNetworkFor(ready, { module = false } = {}) {
-  return ready === true ? NODUS_SEND_NETWORK : module === true ? NODUS_CONNECTING_NETWORK : NODUS_NETWORK;
+// `tokens`: the pinned tokens the send module reports while ready
+// (client.tokenPins(): [{ tokenId, name, symbol, decimals, available }],
+// src/app.js setNodusReady) — the ONE source, the module's pin table
+// (design docs/plans/2026-10-22-connect-native-tokens-design.md §6 item 2);
+// network.js carries no token of its own. Each is listed on the NODUS network
+// with the same fields; `available: false` = the node's metadata for it did
+// not equal the pin in this session ("unavailable right now", operator
+// "tUSDT'yi kapat"): shown, never sendable. Anything not shaped like a pin is
+// dropped here (a malformed module answer shows no token).
+const HEX128 = /^[0-9a-f]{128}$/;
+export function nodusTokens(pins) {
+  if (!Array.isArray(pins)) return [];
+  const seen = new Set(), out = [];
+  for (const p of pins) {
+    // A pin is listed once, and only if the WHOLE entry is well-formed (an
+    // entry refused for its symbol never shadows a later valid one).
+    if (!p || typeof p.tokenId !== 'string' || !HEX128.test(p.tokenId) || p.tokenId === NODUS_TOKEN_ID || seen.has(p.tokenId)) continue;
+    if (typeof p.symbol !== 'string' || !/^[A-Za-z0-9]{1,12}$/.test(p.symbol) || p.symbol === 'NODUS' || typeof p.name !== 'string' || p.name === '') continue;
+    if (!Number.isInteger(p.decimals) || p.decimals < 0 || p.decimals > 18) continue;
+    seen.add(p.tokenId);
+    out.push(Object.freeze({ tokenId: p.tokenId, name: p.name, symbol: p.symbol, decimals: p.decimals, available: p.available === true }));
+  }
+  return Object.freeze(out);
 }
+export function nodusNetworkFor(ready, { module = false, tokens = [] } = {}) {
+  if (ready !== true) return module === true ? NODUS_CONNECTING_NETWORK : NODUS_NETWORK;
+  const listed = nodusTokens(tokens);
+  return listed.length ? { ...NODUS_SEND_NETWORK, tokens: listed } : NODUS_SEND_NETWORK;
+}
+// The token id of NODUS itself in a send's asset identity: 128 zeros, the
+// all-zero token id of the chain (a coin of token id 0 is native).
+export const NODUS_TOKEN_ID = '0'.repeat(128);
 // Unpriced like CPUNK_ASSET and IXIOS_ASSET: no priceId, so it never enters
 // PRICE_URL and never counts toward the USD total or its completeness.
-export const NODUS_ASSET = { chain: 'nodus', symbol: 'NODUS', decimals: 8, key: 'nodus:NODUS' };
+export const NODUS_ASSET = { chain: 'nodus', symbol: 'NODUS', decimals: 8, key: 'nodus:NODUS', tokenId: NODUS_TOKEN_ID };
