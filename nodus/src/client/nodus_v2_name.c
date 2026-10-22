@@ -35,6 +35,9 @@
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
+/* shared/crypto/utils/qgp_platform.h:152 (see nodus_v2_spend.c) */
+extern void qgp_secure_memzero(void *ptr, size_t len);
+
 #define V2N_PK_LEN   2592u
 #define V2N_AUTH_LEN (1u + NODUS_RT_AUTH_SIGNER_LEN)   /* count 1 ‖ pk ‖ sig */
 #define V2N_FLOOR    (DNAC_MIN_FEE_RAW > NODUS_W_BASE_TX_FEE \
@@ -506,10 +509,10 @@ done:
     if (rc != NODUS_V2_SPEND_OK) memset(&out->dec, 0, sizeof(out->dec));
     /* a refused signed buffer and the auth blob that held its signature are
      * wiped before they are freed */
-    if (env_bytes) memset(env_bytes, 0, env_len);
+    if (env_bytes) qgp_secure_memzero(env_bytes, env_len);
     free(env_bytes);
     free(pf);
-    if (auth) memset(auth, 0, V2N_AUTH_LEN);
+    if (auth) qgp_secure_memzero(auth, V2N_AUTH_LEN);
     free(auth);
     free(call);
     free(coins);

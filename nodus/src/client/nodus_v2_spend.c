@@ -38,6 +38,11 @@
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
+/* shared/crypto/utils/qgp_platform.h:152 — a wipe the optimizer may not drop
+ * (declared here as nodus_client.c does; the web-wallet wasm build defines it
+ * in nodus-send-wasm.c) */
+extern void qgp_secure_memzero(void *ptr, size_t len);
+
 /* ML-DSA-87 sizes the kind-1 auth blob carries (pk ‖ sig, the
  * NODUS_RT_AUTH_SIGNER_LEN split). */
 #define V2S_PK_LEN   2592u
@@ -304,7 +309,7 @@ static int presign_view_check(const uint8_t *env_bytes, size_t env_len,
     rc = check(scratch, env_len, ctx) == 0 ? NODUS_V2_SPEND_OK
                                            : NODUS_V2_SPEND_ERR_PRESIGN_CHECK;
 done:
-    if (scratch) memset(scratch, 0, env_len);
+    if (scratch) qgp_secure_memzero(scratch, env_len);
     free(scratch);
     free(v);
     return rc;
@@ -395,11 +400,11 @@ int nodus_v2_env_sign_one_key_checked(const dna_env_in_t *env_in,
 fail:
     /* a refused buffer may carry signatures: wipe before free, and the
      * caller's auth blobs that the signing loop wrote into */
-    memset(env_bytes, 0, env_len);
+    qgp_secure_memzero(env_bytes, env_len);
     free(env_bytes);
     if (signing)
         for (uint16_t L = 0; L < env_in->leg_count; L++)
-            memset(auths[L], 0, V2S_AUTH_LEN);
+            qgp_secure_memzero(auths[L], V2S_AUTH_LEN);
     return rc;
 }
 
@@ -774,6 +779,7 @@ int nodus_v2_spend_plan(const nodus_v2_spend_plan_req_t *req,
         if (!plans) { rc = NODUS_V2_SPEND_ERR_ALLOC; goto fail; }
         for (long k = 0; k < count; k++) {
             nodus_v2_spend_plan_t *p = &plans[k];
+            p->n_coins = n_coins;   /* the array this plan's idx refer to */
             int prc = 0;
             if (amount_all) {
                 /* largest unused eligible coin first (the sort order) */
@@ -1032,7 +1038,8 @@ typedef struct {
  *    change) equals the plan's.
  * Every call and header field the builder wrote is compared in both runs;
  * the only thing not judged here is the signature itself (zero pre-sign;
- * verified by the signer's pass-2 preflight post-sign).
+ * post-sign the signer's pass-2 preflight re-derives commitments and
+ * framing only — shared/dnac/env_preflight.c does not verify signatures).
  * @return NODUS_V2_SPEND_OK / _ERR_DECODE (mismatch) / the decoder's code. */
 static int v2s_readback(const v2s_rb_t *rb, const uint8_t *env, size_t len,
                         nodus_v2_spend_decoded_t *dec) {
@@ -1085,6 +1092,11 @@ int nodus_v2_spend_build(const nodus_v2_spend_build_req_t *req,
         req->plan->n_in > (int)NODUS_V2_SPEND_MAX_IN ||
         (req->amount_all && req->token))
         return NODUS_V2_SPEND_ERR_ARG;
+    /* every plan index must point inside the coin array the planner planned
+     * over — checked before the first coin is dereferenced */
+    for (int j = 0; j < req->plan->n_in; j++)
+        if (req->plan->idx[j] < 0 || req->plan->idx[j] >= req->plan->n_coins)
+            return NODUS_V2_SPEND_ERR_ARG;
     /* The mempool lifetime rule (decision 2026-09-25-mempool-policy.md 1,
      * nodus_types.h NODUS_CMT_APP_MAX_EXPIRY_AHEAD): CheckTx refuses expiry
      * 0 and anything past its tip + 100; the preflight refuses expiry below
@@ -1318,10 +1330,10 @@ done:
     if (rc != NODUS_V2_SPEND_OK) memset(&out->dec, 0, sizeof(out->dec));
     /* a refused signed buffer and the auth blob that held its signature are
      * wiped before they are freed */
-    if (env_bytes) memset(env_bytes, 0, env_len);
+    if (env_bytes) qgp_secure_memzero(env_bytes, env_len);
     free(env_bytes);
     free(pf);
-    if (auth) memset(auth, 0, V2S_AUTH_LEN);
+    if (auth) qgp_secure_memzero(auth, V2S_AUTH_LEN);
     free(auth);
     free(call);
     return rc;

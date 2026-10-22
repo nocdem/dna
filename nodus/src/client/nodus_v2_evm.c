@@ -18,6 +18,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* shared/crypto/utils/qgp_platform.h:152 (see nodus_v2_spend.c) */
+extern void qgp_secure_memzero(void *ptr, size_t len);
+
 #define V2E_PK_LEN   2592u
 #define V2E_AUTH_LEN (1u + NODUS_RT_AUTH_SIGNER_LEN)   /* count 1 ‖ pk ‖ sig */
 #define V2E_FEE_FLOOR (DNAC_MIN_FEE_RAW > NODUS_W_BASE_TX_FEE ? \
@@ -669,11 +672,11 @@ done:
     }
     /* a refused signed buffer and the auth blobs that held its signatures
      * are wiped before they are freed */
-    if (env_bytes) memset(env_bytes, 0, env_len);
+    if (env_bytes) qgp_secure_memzero(env_bytes, env_len);
     free(env_bytes);
     free(pf);
-    if (auth0) memset(auth0, 0, V2E_AUTH_LEN);
-    if (auth1) memset(auth1, 0, V2E_AUTH_LEN);
+    if (auth0) qgp_secure_memzero(auth0, V2E_AUTH_LEN);
+    if (auth1) qgp_secure_memzero(auth1, V2E_AUTH_LEN);
     free(auth0);
     free(auth1);
     free(fcall);

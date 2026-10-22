@@ -2894,8 +2894,14 @@ code `nodus-cli v2-envelope spend` used, moved out unchanged in behaviour (desig
   `qgp_dsa87_sign`; a refusal is `NODUS_V2_SPEND_ERR_PRESIGN_CHECK` and signs nothing. The four
   builders (spend, name, stake, evm) pass their own predicate (one static function per builder,
   the same code pre- and post-sign) and keep the post-sign read-back; a refused signed buffer and
-  its auth blobs are wiped before they are freed. Only the signature itself is not compared
-  pre-sign (preflight pass 2 verifies it). The kind-3 stake path never signs and is unchanged.
+  its auth blobs are wiped (`qgp_secure_memzero`) before they are freed. Only the signature itself
+  is not compared pre-sign, and it is not compared post-sign either: preflight pass 2 re-derives
+  framing and commitments and does NOT verify signatures (`shared/dnac/env_preflight.c`). The
+  kind-3 stake path never signs and is unchanged. **Compatibility:** success-path bytes and the
+  signing order are unchanged for callers without a check; on a FAILED signing the caller's auth
+  buffers are now zeroed (they were left as written). `nodus_v2_spend_plan_t.n_coins` records the
+  coin-array length the planner planned over; `nodus_v2_spend_build` refuses (`ERR_ARG`) a plan
+  whose `idx` is outside `[0, n_coins)` before it reads any coin.
   **One spend, two assets (MM-Dex A2, operator "Tek işlem").** `native_amount` on the plan and
   build requests (with a token, default 0): outputs are exactly `[recipient NODUS][recipient
   token][token change if > 0][native change if > 0]` (≤ 4 = `NODUS_V2_SPEND_MAX_OUTS`), ≤ 15

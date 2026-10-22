@@ -125,10 +125,15 @@ typedef struct {
     uint8_t  used;
 } nodus_v2_coin_t;
 
-/** One planned spend: indices into the SORTED coin array. */
+/** One planned spend: indices into the SORTED coin array. `n_coins` is the
+ *  length of the coin array the planner planned over (set by
+ *  nodus_v2_spend_plan); nodus_v2_spend_build refuses a plan whose idx is
+ *  outside [0, n_coins) before it reads any coin. A plan not produced by
+ *  nodus_v2_spend_plan has n_coins 0 and is refused by the builder. */
 typedef struct {
     int      idx[NODUS_V2_SPEND_MAX_IN];
     int      n_in;
+    int      n_coins;
     uint64_t native_in, token_in;
     uint64_t native_change, token_change;
 } nodus_v2_spend_plan_t;
@@ -207,7 +212,10 @@ int nodus_v2_spend_units_for_shape(uint32_t core_ruleset_version,
  *  `sk` 4896 B. On OK *env_out is heap (caller frees) and `pf` holds the
  *  pass-2 commitments. `err` (may be NULL) receives the failing leg.
  *  @return NODUS_V2_SPEND_OK / _ERR_ALLOC / _ERR_ENCODE / _ERR_PREFLIGHT1 /
- *  _ERR_SIGN / _ERR_PREFLIGHT2. */
+ *  _ERR_SIGN / _ERR_PREFLIGHT2. Compatibility: on success the bytes and the
+ *  signing order are exactly as before; on a FAILED signing (_ERR_SIGN /
+ *  _ERR_PREFLIGHT2 / _ERR_ENCODE after signing began) every `auths[L]` is
+ *  now zeroed, where it used to be left holding whatever was written. */
 int nodus_v2_env_sign_one_key(const dna_env_in_t *env_in,
                               uint8_t *const *auths,
                               const dna_env_leg_ctx_t *lctx,
@@ -233,7 +241,11 @@ typedef int (*nodus_v2_presign_check_fn)(const uint8_t *unsigned_env,
  *  A non-zero return of `check` returns NODUS_V2_SPEND_ERR_PRESIGN_CHECK,
  *  signs nothing, leaves every `auths[L]` buffer untouched (all zero as the
  *  caller supplied it) and leaves *env_out NULL. The signed bytes of a pass-2
- *  failure are wiped before they are freed.
+ *  failure are wiped before they are freed; so are the caller's `auths[L]`
+ *  once signing has begun and a later step fails (a refusal by `check`
+ *  happens before any write to them and leaves them untouched). The pass-2
+ *  preflight re-derives the commitments and framing; it does NOT verify
+ *  the signatures (shared/dnac/env_preflight.c has no signature check).
  *  @return as nodus_v2_env_sign_one_key, plus _ERR_PRESIGN_CHECK. */
 int nodus_v2_env_sign_one_key_checked(const dna_env_in_t *env_in,
                                       uint8_t *const *auths,
@@ -442,7 +454,10 @@ typedef struct {
  * (nodus_v2_env_sign_one_key_checked: a mismatch returns
  * NODUS_V2_SPEND_ERR_PRESIGN_CHECK and signs nothing) and AGAIN on the signed
  * bytes (a mismatch returns NODUS_V2_SPEND_ERR_DECODE and the signed buffer
- * is wiped).
+ * is wiped). A plan whose n_in is out of range or whose idx[j] is outside
+ * [0, plan->n_coins) is refused with NODUS_V2_SPEND_ERR_ARG before any coin
+ * is read. Neither check judges the signature itself: preflight pass 2 does
+ * not verify signatures.
  * @return NODUS_V2_SPEND_OK or a refusal (`err` may be NULL).
  */
 int nodus_v2_spend_build(const nodus_v2_spend_build_req_t *req,

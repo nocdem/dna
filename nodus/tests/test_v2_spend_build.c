@@ -1542,6 +1542,28 @@ static int t_two_asset(sb_chain_t *c) {
     r.native_amount = NAT;                 /* token NULL */
     CHECK(nodus_v2_spend_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_ARG,
           "S10 a native_amount without a token is refused");
+    /* a plan index outside the coin array the planner planned over is
+     * refused (ERR_ARG) before any coin is read — the coins array has
+     * exactly 3 entries, so idx 3 / -1 would read out of bounds */
+    CHECK(plan.n_coins == 3, "S10 the planner records the coin-array length");
+    bad = plan;
+    bad.idx[0] = 3;
+    build_req(&r, &tab, c, coins, &bad, fee, 0, &s);
+    r.token = tokid; r.amount = TOK; r.native_amount = NAT;
+    CHECK(nodus_v2_spend_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_ARG &&
+          !b.env, "S10 a plan index == n_coins is refused before any read");
+    bad = plan;
+    bad.idx[plan.n_in - 1] = -1;
+    build_req(&r, &tab, c, coins, &bad, fee, 0, &s);
+    r.token = tokid; r.amount = TOK; r.native_amount = NAT;
+    CHECK(nodus_v2_spend_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_ARG &&
+          !b.env, "S10 a negative plan index is refused before any read");
+    bad = plan;
+    bad.n_coins = 0;                       /* a hand-built plan */
+    build_req(&r, &tab, c, coins, &bad, fee, 0, &s);
+    r.token = tokid; r.amount = TOK; r.native_amount = NAT;
+    CHECK(nodus_v2_spend_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_ARG &&
+          !b.env, "S10 a plan without n_coins is refused");
     nodus_v2_spend_plan_req_t qn = q;
     qn.is_native = 1;
     nodus_v2_spend_plan_t *pn = NULL;
