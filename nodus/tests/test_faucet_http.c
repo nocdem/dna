@@ -24,6 +24,10 @@
  *   R6  the connection's deadline reaches the claim handler (a POST past its
  *       deadline is 503 with no node call; a live deadline is handed to the
  *       node reads); GET status and GET claim make no node call at all;
+ *   R7  the journal wait is bounded by that deadline: with the journal's
+ *       write lock held by another connection a POST answers 503 "busy, try
+ *       again" and no claim exists afterwards; with the lock gone the same
+ *       request creates it;
  *   V*  the real server over 127.0.0.1: answers, a refused oversized request
  *       is answered at once, a slow client gets 408 after the deadline, the
  *       connection cap answers 503 and never grows past the cap; V8: an
@@ -45,6 +49,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <sqlite3.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 
@@ -254,6 +259,37 @@ static void test_routes(void) {
         route(&e, "GET", "/faucet/status", NULL, &status, out, sizeof(out));
         route(&e, "GET", path, NULL, &status, out, sizeof(out));
         CHECK(e.st.node_calls == calls, "R6 GET status and GET claim make no node call");
+    }
+
+    /* R7: the journal wait is bounded by the request's deadline. Another
+     * connection holds the journal's write lock (it is never released while
+     * the request runs), so the claim can only end as "busy" — whatever the
+     * machine's speed — and must leave no claim behind. */
+    {
+        char addr3[129], body3[256];
+        make_addr(addr3, 11);
+        snprintf(body3, sizeof(body3), "{\"address\":\"%s\"}", addr3);
+        faucet_http_req_t r;
+        memset(&r, 0, sizeof(r));
+        snprintf(r.method, sizeof(r.method), "POST");
+        snprintf(r.path, sizeof(r.path), "/faucet/claim");
+        r.body = body3;
+        r.body_len = strlen(body3);
+        sqlite3 *lk = NULL;
+        CHECK(sqlite3_open_v2(e.jpath, &lk, SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK &&
+              sqlite3_exec(lk, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK,
+              "R7 (setup) another connection holds the journal's write lock");
+        faucet_http_route(&e.core, &r, faucet_now_ms() + 200, &status, out, sizeof(out));
+        CHECK(status == 503 && strstr(out, "busy, try again") && strstr(out, "\"state\":\"refused\""),
+              "R7 a claim that cannot take the journal by its deadline answers 503 busy");
+        sqlite3_exec(lk, "ROLLBACK", NULL, NULL, NULL);
+        sqlite3_close(lk);
+        faucet_claim_t none;
+        CHECK(faucet_journal_claim_by_address(e.j, addr3, &none) == 1,
+              "R7 ... and no claim was created");
+        faucet_http_route(&e.core, &r, faucet_now_ms() + 60000, &status, out, sizeof(out));
+        CHECK(status == 200 && strstr(out, "\"state\":\"planned\""),
+              "R7 with the lock gone the same request creates the claim");
     }
     env_close(&e);
 }

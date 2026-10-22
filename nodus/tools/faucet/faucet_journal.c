@@ -7,6 +7,9 @@
  * text that does not fit its field or a blob of the wrong length is a
  * FAULT (-1) of the read, never an empty or zero field.
  */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE                 /* pthread_mutex_clocklock */
+#endif
 #include "faucet_journal.h"
 
 #include <errno.h>
@@ -16,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #include "crypto/utils/qgp_log.h"
 
@@ -109,6 +113,47 @@ static int exec_sql(sqlite3 *db, const char *sql) {
         sqlite3_free(em);
         return -1;
     }
+    return 0;
+}
+
+/* ── locking, bounded by the calling thread's deadline ──────────────── */
+
+static _Thread_local uint64_t t_deadline_ms = FJ_NO_DEADLINE;
+
+void faucet_journal_thread_deadline(uint64_t deadline_ms) {
+    t_deadline_ms = deadline_ms;
+}
+
+static uint64_t mono_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000);
+}
+
+/* Take the journal for a call that has no deadline (the settlement thread):
+ * an unbounded mutex wait and the full SQLite busy timeout (an earlier call
+ * of ANOTHER thread may have lowered it — it is per connection). */
+static void lock_plain(faucet_journal_t *j) {
+    pthread_mutex_lock(&j->mu);
+    sqlite3_busy_timeout(j->db, (int)FJ_BUSY_MS);
+}
+
+/* Take the journal for an HTTP-path call: with a thread deadline the mutex
+ * wait ends at it (CLOCK_MONOTONIC, the faucet_now_ms() clock) and the
+ * SQLite busy timeout is the time left (at most FJ_BUSY_MS). @return 0 held
+ * / FJ_BUSY not held, nothing touched. */
+static int lock_dl(faucet_journal_t *j) {
+    const uint64_t dl = t_deadline_ms;
+    if (dl == FJ_NO_DEADLINE) { lock_plain(j); return 0; }
+    if (mono_now_ms() >= dl) return FJ_BUSY;
+    struct timespec ts;
+    ts.tv_sec = (time_t)(dl / 1000u);
+    ts.tv_nsec = (long)(dl % 1000u) * 1000000L;
+    if (pthread_mutex_clocklock(&j->mu, CLOCK_MONOTONIC, &ts) != 0) return FJ_BUSY;
+    const uint64_t now = mono_now_ms();
+    if (now >= dl) { pthread_mutex_unlock(&j->mu); return FJ_BUSY; }
+    const uint64_t left = dl - now;
+    sqlite3_busy_timeout(j->db, (int)(left < FJ_BUSY_MS ? left : FJ_BUSY_MS));
     return 0;
 }
 
@@ -233,6 +278,13 @@ bad:
 
 /* ── open / close ───────────────────────────────────────────────────── */
 
+/* The WAL growth the next commit and the checkpoint lag can add on top of
+ * the -wal file as it is now: a full autocheckpoint window plus the bound of
+ * one transaction. */
+static uint64_t wal_margin(uint64_t page_size) {
+    return (uint64_t)FJ_WAL_CKPT_PAGES * page_size + FJ_TX_BOUND_BYTES;
+}
+
 int faucet_journal_open(const char *path, uint64_t storage_ceiling,
                         faucet_journal_t **out) {
     if (!path || !out || strlen(path) >= sizeof(((faucet_journal_t *)0)->path))
@@ -249,7 +301,18 @@ int faucet_journal_open(const char *path, uint64_t storage_ceiling,
         QGP_LOG_ERROR(LOG_TAG, "cannot open journal %s", path);
         goto fail;
     }
-    sqlite3_busy_timeout(j->db, 5000);
+    sqlite3_busy_timeout(j->db, (int)FJ_BUSY_MS);
+    int64_t psize = 0;
+    if (one_int(j, "PRAGMA page_size", NULL, &psize) != 0 || psize <= 0) goto fail;
+    /* A ceiling that cannot hold the WAL margin plus two claim reserves can
+     * never admit a claim without breaking the disk bound: refuse it. */
+    if (storage_ceiling <= wal_margin((uint64_t)psize) + 2u * FJ_CLAIM_RESERVE_BYTES) {
+        QGP_LOG_ERROR(LOG_TAG, "storage ceiling %llu is too small: it must exceed "
+                      "the WAL margin %llu plus two claim reserves",
+                      (unsigned long long)storage_ceiling,
+                      (unsigned long long)wal_margin((uint64_t)psize));
+        goto fail;
+    }
     {   /* WAL must really be on: a silent fallback would weaken durability */
         sqlite3_stmt *st = NULL;
         int ok = 0;
@@ -263,6 +326,15 @@ int faucet_journal_open(const char *path, uint64_t storage_ceiling,
         if (!ok) { QGP_LOG_ERROR(LOG_TAG, "WAL mode not available"); goto fail; }
     }
     if (exec_sql(j->db, "PRAGMA synchronous=FULL") != 0) goto fail;
+    {   /* bound the WAL: checkpoint every FJ_WAL_CKPT_PAGES pages and cut the
+         * -wal file back to that size after a checkpoint */
+        char pr[96];
+        snprintf(pr, sizeof(pr), "PRAGMA wal_autocheckpoint=%u", FJ_WAL_CKPT_PAGES);
+        if (exec_sql(j->db, pr) != 0) goto fail;
+        snprintf(pr, sizeof(pr), "PRAGMA journal_size_limit=%llu",
+                 (unsigned long long)FJ_WAL_CKPT_PAGES * (unsigned long long)psize);
+        if (exec_sql(j->db, pr) != 0) goto fail;
+    }
     {
         int64_t ver = 0;
         if (one_int(j, "PRAGMA user_version", NULL, &ver) != 0) goto fail;
@@ -298,41 +370,64 @@ void faucet_journal_close(faucet_journal_t *j) {
  * the file size would stay at its high-water mark after a compaction) plus
  * the -wal file. An absent -wal file is 0; any other stat() failure is a
  * fault. @return 0 / -1. Lock held. */
-static int storage_used_locked(faucet_journal_t *j, uint64_t *used) {
+static int storage_measure_locked(faucet_journal_t *j, uint64_t *used,
+                                  uint64_t *disk, uint64_t *margin) {
     int64_t pages = 0, freep = 0, psize = 0;
     if (one_int(j, "PRAGMA page_count", NULL, &pages) != 0 ||
         one_int(j, "PRAGMA freelist_count", NULL, &freep) != 0 ||
         one_int(j, "PRAGMA page_size", NULL, &psize) != 0 ||
         pages < 0 || freep < 0 || freep > pages || psize <= 0) return -1;
-    uint64_t total = (uint64_t)(pages - freep) * (uint64_t)psize;
+    uint64_t wal = 0;
     char p[560];
     struct stat sb;
     snprintf(p, sizeof(p), "%s-wal", j->path);
-    if (stat(p, &sb) == 0) total += (uint64_t)sb.st_size;
+    if (stat(p, &sb) == 0) wal = (uint64_t)sb.st_size;
     else if (errno != ENOENT) {
         QGP_LOG_ERROR(LOG_TAG, "cannot stat %s: %s", p, strerror(errno));
         return -1;
     }
-    *used = total;
+    *used = (uint64_t)(pages - freep) * (uint64_t)psize + wal;
+    if (disk) *disk = (uint64_t)pages * (uint64_t)psize + wal;
+    if (margin) *margin = wal_margin((uint64_t)psize);
     return 0;
 }
 
-/* The ceiling test of NEW CLAIMS: the live bytes plus a settlement reserve
- * for every open claim and for the one being admitted must stay below the
- * ceiling. 1 full, 0 room, -1 fault. Lock held. */
+static int storage_used_locked(faucet_journal_t *j, uint64_t *used) {
+    return storage_measure_locked(j, used, NULL, NULL);
+}
+
+/* The ceiling test of NEW CLAIMS. The configured value is a hard DISK
+ * ceiling, so admission stops BEFORE the real files can reach it:
+ *     live + wal + margin + reserve  <  ceiling
+ *     margin  = FJ_WAL_CKPT_PAGES * page_size + FJ_TX_BOUND_BYTES
+ *               (the WAL growth of the next commit and the checkpoint lag)
+ *     reserve = FJ_CLAIM_RESERVE_BYTES * (open claims + the one admitted)
+ * and, separately, the ON-DISK size (page_count * page_size + wal — the
+ * file never shrinks, free pages included) must still be below the ceiling.
+ * 1 full, 0 room, -1 fault. Lock held. */
 static int storage_full_locked(faucet_journal_t *j) {
-    uint64_t used = 0;
+    uint64_t used = 0, disk = 0, margin = 0;
     int64_t open = 0;
-    if (storage_used_locked(j, &used) != 0) return -1;
+    if (storage_measure_locked(j, &used, &disk, &margin) != 0) return -1;
     if (one_int(j, "SELECT COUNT(*) FROM claims WHERE state<>'confirmed'", NULL,
                 &open) != 0 || open < 0) return -1;
+    if (used >= j->ceiling || disk >= j->ceiling) return 1;
     uint64_t reserve = ((uint64_t)open + 1u) * FJ_CLAIM_RESERVE_BYTES;
-    return (used >= j->ceiling || reserve >= j->ceiling - used) ? 1 : 0;
+    return (margin + reserve >= j->ceiling - used) ? 1 : 0;
 }
 
 int faucet_journal_storage_full(faucet_journal_t *j) {
-    pthread_mutex_lock(&j->mu);
+    if (lock_dl(j) != 0) return FJ_BUSY;
     int r = storage_full_locked(j);
+    pthread_mutex_unlock(&j->mu);
+    return r;
+}
+
+int faucet_journal_wal_limits(faucet_journal_t *j, int64_t *size_limit,
+                              int64_t *autockpt_pages) {
+    lock_plain(j);
+    int r = (one_int(j, "PRAGMA journal_size_limit", NULL, size_limit) == 0 &&
+             one_int(j, "PRAGMA wal_autocheckpoint", NULL, autockpt_pages) == 0) ? 0 : -1;
     pthread_mutex_unlock(&j->mu);
     return r;
 }
@@ -355,8 +450,13 @@ int faucet_journal_claim_create(faucet_journal_t *j, const char *kind,
     else         snprintf(marker, sizeof(marker), "start:%s", address);
 
     int ret = FJ_ERR;
-    pthread_mutex_lock(&j->mu);
-    if (begin(j) != 0) goto unlock;
+    if (lock_dl(j) != 0) return FJ_BUSY;     /* deadline: nothing was touched */
+    if (begin(j) != 0) {
+        /* the write lock was not free within the time left: busy, and no
+         * transaction was opened, so nothing can be half-created */
+        if (sqlite3_errcode(j->db) == SQLITE_BUSY) ret = FJ_BUSY;
+        goto unlock;
+    }
 
     int64_t seq = 0;
     sqlite3_stmt *st = NULL;
@@ -444,7 +544,7 @@ unlock:
 
 int faucet_journal_claim_get(faucet_journal_t *j, const char *claim_id,
                              faucet_claim_t *out) {
-    pthread_mutex_lock(&j->mu);
+    if (lock_dl(j) != 0) return FJ_BUSY;
     int r = claim_query(j, "SELECT " CLAIM_COLS " FROM claims WHERE claim_id=?1",
                         claim_id, -1, out);
     pthread_mutex_unlock(&j->mu);
@@ -453,7 +553,7 @@ int faucet_journal_claim_get(faucet_journal_t *j, const char *claim_id,
 
 int faucet_journal_claim_by_address(faucet_journal_t *j, const char *address,
                                     faucet_claim_t *out) {
-    pthread_mutex_lock(&j->mu);
+    if (lock_dl(j) != 0) return FJ_BUSY;
     int r = claim_query(j, "SELECT " CLAIM_COLS " FROM claims WHERE address=?1 "
                         "ORDER BY seq DESC LIMIT 1", address, -1, out);
     pthread_mutex_unlock(&j->mu);
@@ -461,7 +561,7 @@ int faucet_journal_claim_by_address(faucet_journal_t *j, const char *address,
 }
 
 int faucet_journal_head(faucet_journal_t *j, faucet_claim_t *out) {
-    pthread_mutex_lock(&j->mu);
+    lock_plain(j);
     int r = claim_query(j, "SELECT " CLAIM_COLS " FROM claims WHERE "
                         "state<>'confirmed' ORDER BY seq LIMIT 1", NULL, -1, out);
     pthread_mutex_unlock(&j->mu);
@@ -522,7 +622,7 @@ int faucet_journal_set_state(faucet_journal_t *j, int64_t seq,
      * through finish */
     if (!strcmp(state, "signed") || !strcmp(state, "confirmed") ||
         !strcmp(state, "expired") || !strcmp(state, "unknown")) return -2;
-    pthread_mutex_lock(&j->mu);
+    lock_plain(j);
     int r = transition_locked(j, seq, state, message, 0);
     pthread_mutex_unlock(&j->mu);
     return r;
@@ -532,7 +632,7 @@ int faucet_journal_finish(faucet_journal_t *j, int64_t seq, const char *state,
                           const char *message) {
     if (strcmp(state, "confirmed") && strcmp(state, "expired") &&
         strcmp(state, "unknown")) return -2;
-    pthread_mutex_lock(&j->mu);
+    lock_plain(j);
     int r = transition_locked(j, seq, state, message,
                               !strcmp(state, "confirmed"));
     pthread_mutex_unlock(&j->mu);
@@ -546,7 +646,7 @@ int faucet_journal_attempt_sign(faucet_journal_t *j, int64_t seq,
     if (!a || !a->env || a->env_len == 0 || a->n_in < 1 ||
         a->n_in > FJ_MAX_INPUTS || a->env_len > 0x7fffffffu) return -1;
     int ret = -1;
-    pthread_mutex_lock(&j->mu);
+    lock_plain(j);
     if (begin(j) != 0) goto unlock;
     char from[FJ_STATE_MAX];
     if (claim_state(j, seq, from, sizeof(from)) != 0) goto rb;
@@ -654,7 +754,7 @@ int faucet_journal_attempt_latest(faucet_journal_t *j, int64_t seq,
                                   faucet_attempt_t *out) {
     memset(out, 0, sizeof(*out));
     int ret = -1;
-    pthread_mutex_lock(&j->mu);
+    lock_plain(j);
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(j->db,
             "SELECT n, env, wire_id, intent_id, inputs, build_tip, expiry,"
@@ -711,7 +811,7 @@ void faucet_attempt_free(faucet_attempt_t *a) {
 int faucet_journal_attempt_submitted(faucet_journal_t *j, int64_t seq,
                                      uint64_t tip) {
     int ret = -1;
-    pthread_mutex_lock(&j->mu);
+    lock_plain(j);
     if (begin(j) != 0) goto unlock;
     char from[FJ_STATE_MAX];
     if (claim_state(j, seq, from, sizeof(from)) != 0) goto rb;
@@ -751,7 +851,7 @@ unlock:
 int faucet_journal_attempt_scanned(faucet_journal_t *j, int64_t seq,
                                    uint64_t scan_next) {
     int ret = -1;
-    pthread_mutex_lock(&j->mu);
+    lock_plain(j);
     if (begin(j) != 0) goto unlock;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(j->db,
@@ -778,7 +878,7 @@ unlock:
 int faucet_journal_reserved_other(faucet_journal_t *j, int64_t except_seq,
                                   uint8_t (*out)[64], int cap) {
     int n = -1;
-    pthread_mutex_lock(&j->mu);
+    lock_plain(j);
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(j->db, "SELECT nul FROM reservations WHERE "
                            "claim_seq<>?1 ORDER BY nul", -1, &st,
@@ -802,7 +902,7 @@ unlock:
 int faucet_journal_counts(faucet_journal_t *j, faucet_jcounts_t *out) {
     memset(out, 0, sizeof(*out));
     int ret = -1;
-    pthread_mutex_lock(&j->mu);
+    if (lock_dl(j) != 0) return FJ_BUSY;
     int64_t v = 0;
     if (one_int(j, "SELECT COUNT(*) FROM claims WHERE state<>'confirmed'", NULL, &v)) goto unlock;
     out->open = (int)v;
