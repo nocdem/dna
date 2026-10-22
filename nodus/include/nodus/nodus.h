@@ -1034,6 +1034,34 @@ int nodus_dnac_fee_info_decode(const uint8_t *raw, size_t raw_len,
                                nodus_dnac_fee_info_t *result_out);
 
 /**
+ * @brief nodus_dnac_fee_info_decode that also reports whether the reply
+ *        CARRIED "gas_price" as an unsigned integer exactly once.
+ *        nodus_dnac_fee_info_t.gas_price reads 0 both for a present 0 ("the
+ *        price rule is off") and for an absent / wrongly typed / repeated
+ *        key (an older server, a malformed reply); a caller that must not
+ *        act on an UNKNOWN price (nodus-faucet) reads the flag. The struct
+ *        itself is unchanged (it lives in nodus_types.h, appended-field
+ *        compatibility with every other caller).
+ * @param has_gas_price_out Set true only for one uint "gas_price" key (a
+ *        present 0 included); false on every other outcome and on error.
+ *        May be NULL (then identical to nodus_dnac_fee_info_decode).
+ * @return Same as nodus_dnac_fee_info_decode.
+ */
+int nodus_dnac_fee_info_decode_ex(const uint8_t *raw, size_t raw_len,
+                                  nodus_dnac_fee_info_t *result_out,
+                                  bool *has_gas_price_out);
+
+/**
+ * @brief nodus_client_dnac_fee_info plus the gas-price presence flag of
+ *        nodus_dnac_fee_info_decode_ex. nodus_client_dnac_fee_info is this
+ *        with has_gas_price_out == NULL — behaviour unchanged.
+ * @return 0 on success, error code on failure (the flag is false then).
+ */
+int nodus_client_dnac_fee_info_ex(nodus_client_t *client,
+                                  nodus_dnac_fee_info_t *result_out,
+                                  bool *has_gas_price_out);
+
+/**
  * Query UTXOs by owner fingerprint.
  * Caller must free result_out->entries when done.
  *

@@ -3421,6 +3421,13 @@ int nodus_client_dnac_chain_id32(nodus_client_t *client, bool *has_out,
 
 int nodus_client_dnac_fee_info(nodus_client_t *client,
                                 nodus_dnac_fee_info_t *result_out) {
+    return nodus_client_dnac_fee_info_ex(client, result_out, NULL);
+}
+
+int nodus_client_dnac_fee_info_ex(nodus_client_t *client,
+                                  nodus_dnac_fee_info_t *result_out,
+                                  bool *has_gas_price_out) {
+    if (has_gas_price_out) *has_gas_price_out = false;
     if (!nodus_client_is_ready(client) || !result_out)
         return -1;
 
@@ -3445,8 +3452,9 @@ int nodus_client_dnac_fee_info(nodus_client_t *client,
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
     if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
-    int drc = nodus_dnac_fee_info_decode(req->raw_response,
-                                         req->raw_response_len, result_out);
+    int drc = nodus_dnac_fee_info_decode_ex(req->raw_response,
+                                            req->raw_response_len, result_out,
+                                            has_gas_price_out);
     free_pending(client, req);
     return drc == 0 ? 0 : NODUS_ERR_PROTOCOL_ERROR;
 }
@@ -3461,8 +3469,93 @@ int nodus_client_dnac_fee_info(nodus_client_t *client,
  * otherwise read as "rule off" / "not reported". */
 int nodus_dnac_fee_info_decode(const uint8_t *raw, size_t raw_len,
                                nodus_dnac_fee_info_t *result_out) {
+    return nodus_dnac_fee_info_decode_ex(raw, raw_len, result_out, NULL);
+}
+
+/* The same decode, additionally reporting whether the reply CARRIED an
+ * unsigned "gas_price" exactly once (nodus.h). The struct field reads 0 for
+ * both "price 0 = rule off" and "key absent / wrong type"; a caller that
+ * must tell them apart (the faucet: an unknown price must stop it, never be
+ * read as zero) takes the flag. */
+/* Read ONE whole value of the result map: a scalar, or a container with all
+ * its children consumed (so the next read is the next key, never a nested
+ * one). false on END / ERROR / a depth or count the decoder refuses. */
+static bool fee_value(cbor_decoder_t *dec, cbor_item_t *item) {
+    cbor_decoder_t save = *dec;
+    *item = cbor_decode_next(dec);
+    if (dec->error || item->type == CBOR_ITEM_ERROR || item->type == CBOR_ITEM_END)
+        return false;
+    if (item->type == CBOR_ITEM_MAP || item->type == CBOR_ITEM_ARRAY) {
+        *dec = save;                       /* re-read it, children included */
+        cbor_decode_skip(dec);
+        if (dec->error || dec->pos == save.pos) return false;
+    }
+    return true;
+}
+
+/* The STRUCTURAL walk behind the presence flag (has_gas_price_out != NULL):
+ * every key must be a text string, every value is consumed whole (a nested
+ * container never leaks its keys into the top level), a repeated known key
+ * refuses the reply, and only the TOP-LEVEL "gas_price" counts. A reply the
+ * walk cannot finish (END / ERROR where a key or value is declared) is -1. */
+static int fee_info_decode_presence(const uint8_t *raw, size_t raw_len,
+                                    nodus_dnac_fee_info_t *result_out,
+                                    bool *has_gas_price_out) {
+    cbor_decoder_t dec;
+    size_t mc;
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0) return -1;
+
+    unsigned seen = 0;
+    bool gas_uint = false;
+    for (size_t i = 0; i < mc; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (dec.error || key.type != CBOR_ITEM_TSTR) return -1;
+        cbor_item_t v;
+        if (!fee_value(&dec, &v)) return -1;
+
+        static const struct { const char *name; size_t len; } known[] = {
+            { "base_fee", 8 }, { "mempool", 7 }, { "min_fee", 7 },
+            { "gas_price", 9 }, { "token_create_fee", 16 },
+            { "stake_min", 9 }, { "storage_bond", 12 }, { "power_cap_bps", 13 },
+        };
+        int k = -1;
+        for (int j = 0; j < 8; j++)
+            if (key.tstr.len == known[j].len &&
+                memcmp(key.tstr.ptr, known[j].name, known[j].len) == 0) { k = j; break; }
+        if (k < 0) continue;                           /* unknown: consumed   */
+        if (seen & (1u << k)) return -1;               /* repeated key        */
+        seen |= 1u << k;
+        if (v.type != CBOR_ITEM_UINT) continue;        /* field stays 0       */
+        switch (k) {
+        case 0: result_out->base_fee = v.uint_val; break;
+        case 1: result_out->mempool_count = v.uint_val; break;
+        case 2: result_out->min_fee = v.uint_val; break;
+        case 3: result_out->gas_price = v.uint_val; gas_uint = true; break;
+        case 4: result_out->token_create_fee = v.uint_val; break;
+        case 5: result_out->stake_min = v.uint_val; break;
+        case 6: result_out->storage_bond = v.uint_val; break;
+        case 7: result_out->power_cap_bps = v.uint_val; break;
+        }
+    }
+    if (dec.error) return -1;
+    *has_gas_price_out = gas_uint;
+    return 0;
+}
+
+int nodus_dnac_fee_info_decode_ex(const uint8_t *raw, size_t raw_len,
+                                  nodus_dnac_fee_info_t *result_out,
+                                  bool *has_gas_price_out) {
+    if (has_gas_price_out) *has_gas_price_out = false;
     if (!raw || !result_out) return -1;
     memset(result_out, 0, sizeof(*result_out));
+    if (has_gas_price_out) {
+        int prc = fee_info_decode_presence(raw, raw_len, result_out, has_gas_price_out);
+        if (prc != 0) {                      /* refused: nothing half-filled */
+            memset(result_out, 0, sizeof(*result_out));
+            *has_gas_price_out = false;
+        }
+        return prc;
+    }
 
     cbor_decoder_t dec;
     size_t mc;

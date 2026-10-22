@@ -3715,6 +3715,52 @@ target_compile_definitions(nodus-cli PRIVATE
     NODUS_CLI_HAS_DNAC=1
     DNAC_TX_BUILDER_ONLY=1)
 
+# nodus-faucet — the testnet faucet service (NODUS + tUSDT). Linux only (it
+# sits below the WIN32 return above). Governing records: docs/plans/decisions/
+# 2026-10-22-testnet-test-tokens-faucet-dex.md, docs/plans/2026-10-22-testnet-
+# faucet-design.md section 6; operation: docs/FAUCET.md.
+#   FAUCET_CORE_SOURCES  every module except main and the SDK-backed node
+#                        adapter (decision rule, journal, state machine,
+#                        HTTP); compiled into the service AND into each test
+#                        (the DNAC_TX_WIRE_SOURCES precedent above — no extra
+#                        library target); the tests run it against a stub node.
+#   nodus-faucet         core + faucet_main.c + faucet_node_real.c (the pinned
+#                        client session).
+set(FAUCET_CORE_SOURCES
+    tools/faucet/faucet_cfg.c
+    tools/faucet/faucet_journal.c
+    tools/faucet/faucet_core.c
+    tools/faucet/faucet_http.c)
+
+add_executable(nodus-faucet
+    tools/faucet/faucet_main.c
+    tools/faucet/faucet_node_real.c
+    ${FAUCET_CORE_SOURCES})
+target_link_libraries(nodus-faucet nodus dsa nodus Threads::Threads)
+target_compile_options(nodus-faucet PRIVATE -Wall -Wextra -Wno-unused-parameter)
+target_include_directories(nodus-faucet PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools/faucet
+    ${MONOREPO_ROOT}/dnac/include
+    ${MONOREPO_ROOT}/messenger/include)
+target_compile_definitions(nodus-faucet PRIVATE DNAC_TX_BUILDER_ONLY=1)
+
+# Faucet tests (decision rule, claim state machine, journal, config, HTTP).
+# All use a stub node behind faucet_node_t; no network beyond a loopback
+# listener on a kernel-chosen port (test_faucet_http); journals live in a
+# per-test mkdtemp directory removed at the end.
+foreach(faucet_test test_faucet_cfg test_faucet_decision test_faucet_journal
+                    test_faucet_state test_faucet_http)
+    add_executable(${faucet_test} tests/${faucet_test}.c ${FAUCET_CORE_SOURCES})
+    target_link_libraries(${faucet_test} nodus dsa nodus Threads::Threads)
+    target_compile_options(${faucet_test} PRIVATE -Wall -Wextra -Wno-unused-parameter)
+    target_include_directories(${faucet_test} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/faucet
+        ${MONOREPO_ROOT}/dnac/include
+        ${MONOREPO_ROOT}/messenger/include)
+    target_compile_definitions(${faucet_test} PRIVATE DNAC_TX_BUILDER_ONLY=1)
+    add_test(NAME ${faucet_test} COMMAND ${faucet_test})
+endforeach()
+
 # stagef_rpc_flood — TEST-ONLY localhost load tool for the Genesis
 # Protocol harness (nodus/tests/integration/stagef). NOT installed, NOT a
 # ctest: a measurement driver the operator/ORCHESTRATOR runs by hand
