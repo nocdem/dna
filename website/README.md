@@ -844,3 +844,13 @@ Connect shows the live value), Connect's row names (`web-wallet/src/nodus-roles.
 `#storage-node` is gone: links in the Wiki "Earn NODUS" list, `tokenomics.html` and its Turkish keys in
 `app.js` (`tok.streamStorageHow`, `tok.rolesPools`) now point to `#node`. `npm run build:portals` and
 `npm run check` run; local headless screenshots at 1280 px and 390 px checked.
+
+2026-10-22, Wiki "Run a node" — packages (nodus 0.26.22 is on the nodes: `nodus-cli package`): the `#node` section
+(EN+TR) gains a short "Change it later" paragraph — a node has two packages, `witness` (the chain; both roles need it)
+and `storage` (the network's messages and records); `sudo nodus-cli package list | add | remove`; data kept; a
+registered node's witness cannot be turned off until the owner leaves in Connect and the block the command names has
+passed; turning storage off is not available yet (BUGS D-23). Facts from the code: `nodus/src/client/nodus_node_package.c`
+(refusal texts, `remove storage` refused), `nodus/docs/STORAGE_NODE.md` (the storage-node role runs in nodus-witness).
+The installer `install-node.sh` changed with that release (host lock): its SHA-256 on the Wiki (`#node-details`, EN+TR)
+is now 5425dd0f7657131eba56e98bff636d3c9f07121f024d415ae7a629bf6a141246 (`sha256sum website/install-node.sh` at
+fff14a181). `npm run build:portals`, `npm run check` run.
