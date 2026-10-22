@@ -95,8 +95,35 @@ let activitySession = null, activityBlocked = false, historyWrites = Promise.res
 // inputs stay held against every build, as pending sends' are. They are
 // written back with every save and dropped only by "discard".
 let quarantinedRows = [];
-const quarantineLocks = held => held.map(entry => ({ chain: NODUS_ASSET.chain, address: entry.address, status: 'pending', inputs: [...entry.inputs] }));
-const nodusLockRows = address => [...history.filter(row => row.address === address), ...quarantinedRows.filter(row => row.address === address)];
+// A lock carries the record's own tracking fields that validated (hash,
+// expiryHeight, tokenRow: parseActivity). `releasedQuarantine` holds the locks
+// reconcileQuarantine found certain to be free (BUGS W-24), by their inputs;
+// those rows are left out of every lock set. It is memory only: the record
+// stays in the saved file and is judged again after a reload.
+const releasedQuarantine = new Set();
+const quarantineKey = entry => entry.inputs.join(',');
+const quarantineLocks = held => held.map(entry => ({ chain: NODUS_ASSET.chain, address: entry.address, status: 'pending', inputs: [...entry.inputs], tokenRow: entry.tokenRow === true, ...(entry.hash ? { hash: entry.hash } : {}), ...(entry.expiryHeight ? { expiryHeight: entry.expiryHeight } : {}) }));
+const nodusLockRows = address => [...history.filter(row => row.address === address), ...quarantinedRows.filter(row => row.address === address && !releasedQuarantine.has(quarantineKey(row)))];
+// Releases the locks of quarantined records whose coins are certainly free
+// (src/adapters/nodus.js quarantineReleasable) from one strict read of the
+// wallet's coins and the chain tip. A failed read releases nothing (the locks
+// stay: today's behaviour). One read at a time.
+// Called from the tracker's updates too, so a read is made at most every
+// QUARANTINE_READ_MS (UI pacing only; nothing decided by it is consensus).
+let quarantineReading = false, quarantineReadAt = 0;
+const QUARANTINE_READ_MS = 15000;
+async function reconcileQuarantine() {
+  const client = nodusClient, source = wallet;
+  if (quarantineReading || !client || !source || source.locked || !quarantinedRows.some(row => !releasedQuarantine.has(quarantineKey(row)))) return;
+  if (Date.now() - quarantineReadAt < QUARANTINE_READ_MS) return;
+  quarantineReading = true; quarantineReadAt = Date.now();
+  try {
+    const view = await adapters.nodus.coinView({ client, from: source.addresses.nodus });
+    if (client !== nodusClient || source !== wallet || source.locked) return;
+    for (const row of quarantinedRows) if (row.address === source.addresses.nodus && adapters.nodus.quarantineReleasable(row, view)) releasedQuarantine.add(quarantineKey(row));
+  } catch { /* unreadable: the locks stay */ }
+  finally { quarantineReading = false; }
+}
 // True only while the open wallet's words were generated in this tab (the
 // create flow: typed again, or — the user's choice, 0.1.123 — not typed again
 // after the skip warning); handed to extensions (src/wallet-extensions.js
@@ -541,7 +568,7 @@ const checkRowStatus = async (row, options) => {
   if (update.status === 'confirmed' && row.status !== 'confirmed') setTimeout(() => { if (wallet && nodusClient) void loadNodusHistory({ force: true }); }, 0);
   return update;
 };
-function trackActivity() { stopTracking(); renderActivity(); if (wallet) stopTracking = watchActivity(visibleActivity, () => { renderActivity(); followSubmission(); }, { check: checkRow }); }
+function trackActivity() { stopTracking(); renderActivity(); if (wallet) stopTracking = watchActivity(visibleActivity, () => { renderActivity(); followSubmission(); void reconcileQuarantine(); }, { check: checkRow }); }
 const endpoints = Object.fromEntries(Object.entries(CHAINS).map(([key, chain]) => [key, chain.endpoint]));
 // Receive-only networks outside CHAINS, in display order (network selector,
 // portfolio filters, badges and asset rows). None can be sent to: src/wallet.js
@@ -1126,6 +1153,7 @@ async function connectNodus(source, address, client, markReady) {
     portfolio.setAddress(NODUS_ASSET.chain, address);
     void refreshUpdateNotice(client);
     void refreshClaim();
+    void reconcileQuarantine();
     refreshFaucet();
     void refreshStaking();
     void refreshName();
@@ -1714,7 +1742,7 @@ function lock(event) {
   $('skip-verify-dialog').close(); $('skip-verify').checked = false;
   $('phrase-form').hidden = true; $('wallet-open').hidden = true; $('welcome').hidden = false;
   resetWalletPages({ keepHash: event?.type === 'pagehide' });
-  history.length = 0; quarantinedRows = []; $('account-explorer').removeAttribute('href');
+  history.length = 0; quarantinedRows = []; releasedQuarantine.clear(); $('account-explorer').removeAttribute('href');
   $('activity').replaceChildren(); setReceiveAddress(''); $('balances').replaceChildren(); $('recipient').value = ''; $('amount').value = '';
   for (const id of ['unlock-password', 'vault-password', 'vault-confirm-password', 'vault-old-password']) $(id).value = '';
   $('vault-risk-confirm').checked = false; $('vault-save-status').textContent = '';
@@ -2509,7 +2537,7 @@ $('unlock-form').onsubmit = async event => {
     addressBook = keptBook; addressBookNote = bookProblem; addressBookUnreadable = !!bookProblem;
     walletFresh = false; siteLock.start();
     history.length = 0; history.push(...rows);
-    quarantinedRows = quarantineLocks(rows.quarantined ?? []);
+    releasedQuarantine.clear(); quarantineReadAt = 0; quarantinedRows = quarantineLocks(rows.quarantined ?? []);
     const aside = quarantinedRows.length;
     $('discard-activity').hidden = !problem && !aside;
     $('vault-status').textContent = problem || (aside ? `Saved activity authenticated. ${aside} saved ${aside === 1 ? 'record' : 'records'} could not be read and ${aside === 1 ? 'is' : 'are'} not shown; the coins ${aside === 1 ? 'it' : 'they'} used stay held. Check the explorer; discarding the unreadable history frees them.` : 'Saved activity authenticated.');
