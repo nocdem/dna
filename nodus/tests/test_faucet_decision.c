@@ -323,8 +323,8 @@ int main(void) {
               "G1 a wrongly typed gas_price is NOT reported");
         n = fee_reply(rb, sizeof(rb), 3, 7);
         has = true;
-        CHECK(nodus_dnac_fee_info_decode_ex(rb, n, &fi, &has) == 0 && !has,
-              "G1 a repeated gas_price is NOT reported");
+        CHECK(nodus_dnac_fee_info_decode_ex(rb, n, &fi, &has) == -1 && !has,
+              "G1 a repeated gas_price refuses the reply and reports nothing");
         n = fee_reply(rb, sizeof(rb), 1, 7);
         has = true;
         CHECK(nodus_dnac_fee_info_decode_ex(rb, n - 3, &fi, &has) == -1 && !has,
