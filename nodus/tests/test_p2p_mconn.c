@@ -1556,10 +1556,12 @@ static void test_e2e(void)
     R->host.ctx = nb;
     R->host.sign = sc_host_sign;
     R->host.verify = sc_host_verify;
-    if (cmt_p2p_sc_init(I->sc, CMT_P2P_SC_ROLE_INITIATOR, &I->host, na->id.pk.bytes,
-                        NULL, NULL, 8u, CHAIN) != CMT_OK ||
-        cmt_p2p_sc_init(R->sc, CMT_P2P_SC_ROLE_RESPONDER, &R->host, nb->id.pk.bytes,
-                        nb->id.mlkem_pk, nb->id.mlkem_sk, 8u, CHAIN) != CMT_OK) {
+    if (cmt_p2p_sc_init_profile(I->sc, CMT_P2P_SC_ROLE_INITIATOR, &I->host,
+                                &CMT_P2P_SC_PROFILE_WITNESS, na->id.pk.bytes,
+                                NULL, NULL, 8u, CHAIN) != CMT_OK ||
+        cmt_p2p_sc_init_profile(R->sc, CMT_P2P_SC_ROLE_RESPONDER, &R->host,
+                                &CMT_P2P_SC_PROFILE_WITNESS, nb->id.pk.bytes,
+                                nb->id.mlkem_pk, nb->id.mlkem_sk, 8u, CHAIN) != CMT_OK) {
         FAIL("sc init");
         goto out;
     }

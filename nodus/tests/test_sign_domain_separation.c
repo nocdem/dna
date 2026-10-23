@@ -24,7 +24,8 @@
  * new in that migration, so no shipped client has ever produced or
  * verified a raw 0x09 signature — see §A below.):
  *
- *   §A the strict set is exactly {0x07, 0x08, 0x09, 0x0A, 0x0B} and nothing else
+ *   §A the strict set is exactly {0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D}
+ *      and nothing else (0x0C / 0x0D: DHT v2 client / node session auth)
  *      (0x09 MLKEM_BIND joined in KEM Faz 1, 2026-09-23 — tier-2, brand new;
  *      0x0A SESSION_AUTH and 0x0B WITNESS_ADDR joined in P2P-PORT F1,
  *      2026-09-26 — brand new)
@@ -332,7 +333,7 @@ static const uint8_t KAT_CHAIN_ID[32] = {
 /* ── §A — the strictness predicate itself ─────────────────────────── */
 
 static void test_strict_set_is_exactly_07_08(void) {
-    TEST("§A strict set is exactly {0x07, 0x08, 0x09, SESSION_AUTH 0x0A, WITNESS_ADDR 0x0B}");
+    TEST("§A strict set is exactly {0x07-0x0D}");
     if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_PREPARED)) {
         FAIL("PREPARED (0x07) must be strict"); return; }
     if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_VIEWOK)) {
@@ -365,7 +366,14 @@ static void test_strict_set_is_exactly_07_08(void) {
         FAIL("CERT (0x05) must NOT be strict"); return; }
     if (nodus_sign_purpose_is_strict(0x00)) { FAIL("0x00 strict"); return; }
     if (nodus_sign_purpose_is_strict(0x06)) { FAIL("0x06 strict"); return; }
-    if (nodus_sign_purpose_is_strict(0x0C)) { FAIL("0x0C strict"); return; }
+    /* DHT v2 sub-package 3a: 0x0C / 0x0D join the strict set (decision
+     * records 2026-10-14-kurultay-21-summary.md, 2026-10-23-kurultay-43-
+     * summary.md); 0x0E is the next free value and is NOT strict. */
+    if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_CLIENT_SESSION_AUTH)) {
+        FAIL("CLIENT_SESSION_AUTH (0x0C) must be strict"); return; }
+    if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_NODE_SESSION_AUTH)) {
+        FAIL("NODE_SESSION_AUTH (0x0D) must be strict"); return; }
+    if (nodus_sign_purpose_is_strict(0x0E)) { FAIL("0x0E strict"); return; }
     PASS();
 }
 

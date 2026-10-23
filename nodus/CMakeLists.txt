@@ -2293,6 +2293,14 @@ add_executable(test_p2p_secret_kat tests/test_p2p_secret_kat.c)
 target_link_libraries(test_p2p_secret_kat nodus dsa kem nodus crypto)
 add_test(NAME test_p2p_secret_kat COMMAND test_p2p_secret_kat)
 
+# DHT v2 sub-package 3a step 2 — session profiles (WITNESS / CLIENT / NODE):
+# matched handshakes, mixed pairs never authenticate, python3 vectors per
+# profile, purposes 0x0A/0x0C/0x0D do not cross-verify, invalid profiles
+# refused at init. Default build, no environment, `ctest -j` safe.
+add_executable(test_p2p_secret_profiles tests/test_p2p_secret_profiles.c)
+target_link_libraries(test_p2p_secret_profiles nodus dsa kem nodus crypto)
+add_test(NAME test_p2p_secret_profiles COMMAND test_p2p_secret_profiles)
+
 # cometbft @709fd12b → C port, fleet P2P-PORT phase F2 —
 # p2p/conn/connection_test.go's single-threaded cases (send/receive over a
 # loopback pair, TrySend on a full queue, unknown channel, long message,
