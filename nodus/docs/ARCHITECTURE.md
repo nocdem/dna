@@ -11805,7 +11805,7 @@ The ORCHESTRATOR's runs before the rebase, at `2f0478bcf`: build 0 warnings;
 `test_dht2_msg` 335 / 0; `test_dht2_ipc` 23 / 0 — counts from those runs, not re-run for
 this document.
 
-### DHT v2 sub-package 3b-1 — the optional SecretConnection layer of `nodus_tcp` (2026-10-23, branch `dna95-dht2-3b1`, not versioned; NOT enabled on any port)
+### DHT v2 sub-package 3b-1 — the optional SecretConnection layer of `nodus_tcp` (2026-10-24, branch `dna95-dht2-3b1`, not versioned; NOT enabled on any port)
 
 What it is: the transport half of DHT v2 sub-package 3b (design
 `docs/plans/2026-10-23-dht-v2-session-package-design.md` rev 1, LOCAL-only). A
