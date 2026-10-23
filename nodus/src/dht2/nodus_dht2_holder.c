@@ -132,14 +132,24 @@ typedef struct {
 /* Take the snapshot and sets of this call and fill the store's context. A
  * missing or block-syncing snapshot leaves ctx.snap NULL (the store answers
  * 15 for it, and so does serve() before asking). */
-static void world_load(const nodus_dht2_holder_t *h, uint64_t now_ms,
-                       world_t *w)
+static void world_load(nodus_dht2_holder_t *h, uint64_t now_ms, world_t *w)
 {
     memset(w, 0, sizeof(*w));
     w->nu.view = &h->view;
     w->nu.now_ms = now_ms;
     w->have_snap = h->view.snap(h->view.user, now_ms, &w->snap) &&
                    w->snap.consensus_up;
+    /* The one chain gate: a snapshot of another chain than this holder's is
+     * no snapshot at all — nothing below reads its h / t, so an answer never
+     * mixes our `c` with a foreign tip. The caller gets the refusal 15. */
+    if (w->have_snap &&
+        memcmp(w->snap.chain_id, h->chain, DHT2_CHAIN_LEN) != 0) {
+        if (!h->chain_warned) {
+            h->chain_warned = true;
+            QGP_LOG_ERROR(LOG_TAG, "the witness snapshot is of another chain");
+        }
+        w->have_snap = false;
+    }
     memcpy(w->ctx.self_fp, h->self_fp, DHT2_FP_LEN);
     w->ctx.name = name_cb;
     w->ctx.name_user = &w->nu;
@@ -223,13 +233,15 @@ static int serve_get(const nodus_dht2_holder_t *h, world_t *w,
 {
     dht2_answer_t *a;
     uint8_t       *rec;
+    dht2_record_t *parsed;
     uint8_t        payload[DHT2_ANSWER_PAYLOAD_MAX];
     size_t         plen = 0, i, rlen = 0;
     int            res = NODUS_DHT2_HOLDER_ERR;
 
     a = (dht2_answer_t *)calloc(1, sizeof(*a));
     rec = (uint8_t *)malloc(DHT2_ENVELOPE_MAX);
-    if (a == NULL || rec == NULL) {
+    parsed = (dht2_record_t *)malloc(sizeof(*parsed));
+    if (a == NULL || rec == NULL || parsed == NULL) {
         goto done;
     }
     memcpy(a->q, rq->nonce, DHT2_NONCE_LEN);
@@ -246,7 +258,20 @@ static int serve_get(const nodus_dht2_holder_t *h, world_t *w,
         rc = nodus_dht2_store_get(h->store, &w->ctx, rq->keys[i], rec,
                                   DHT2_ENVELOPE_MAX, &rlen, x->hash);
         if (rc == NODUS_DHT2_GET_HELD) {
-            x->kind = DHT2_RV_HASH;
+            /* Row 23: inbox-control reads are answered to the inbox OWNER
+             * only. A GET is not owner-signed, so a held class-5 record is
+             * per-key 17 — never its hash. The stored bytes parsed before
+             * (they passed admission); a parse failure now is a fault. */
+            if (dht2_record_parse(rec, rlen, h->chain, NULL, parsed)
+                != DHT2_OK) {
+                x->kind = DHT2_RV_CODE;
+                x->code = DHT2_E_HOLDER_FAULT;
+            } else if (parsed->d.cls == DHT2_CLASS_INBOX_CTL) {
+                x->kind = DHT2_RV_CODE;
+                x->code = DHT2_E_NOT_OWNER;
+            } else {
+                x->kind = DHT2_RV_HASH;
+            }
         } else if (rc == NODUS_DHT2_GET_NOT_HELD) {
             x->kind = DHT2_RV_NULL;
         } else if (rc == DHT2_E_NOT_CAUGHT_UP) {
@@ -265,6 +290,7 @@ static int serve_get(const nodus_dht2_holder_t *h, world_t *w,
 done:
     free(a);
     free(rec);
+    free(parsed);
     return res;
 }
 
@@ -273,14 +299,12 @@ static int serve_put(const nodus_dht2_holder_t *h, world_t *w,
                      size_t *out_len)
 {
     dht2_answer_t *a;
-    dht2_record_t *rec;
     uint8_t        payload[DHT2_ANSWER_PAYLOAD_MAX];
     size_t         plen = 0, i;
     int            res = NODUS_DHT2_HOLDER_ERR;
 
     a = (dht2_answer_t *)calloc(1, sizeof(*a));
-    rec = (dht2_record_t *)malloc(sizeof(*rec));
-    if (a == NULL || rec == NULL) {
+    if (a == NULL) {
         goto done;
     }
     memcpy(a->q, rq->nonce, DHT2_NONCE_LEN);
@@ -294,16 +318,22 @@ static int serve_put(const nodus_dht2_holder_t *h, world_t *w,
         nodus_dht2_put_t pr;
         int              rc;
 
-        /* k = the envelope's address (row 14). An envelope that does not get
-         * as far as an address keeps the all-zero key: the client matches by
-         * position, the array is in request order (row 7). */
-        if (dht2_record_parse(rq->envs[i], rq->env_lens[i],
-                              w->snap.chain_id, NULL, rec) == DHT2_OK) {
-            memcpy(x->key, rec->address, DHT2_HASH_LEN);
-        }
-        rc = nodus_dht2_store_put(h->store, &w->ctx, rq->envs[i],
+        /* ONE parse: the store's admission parses the envelope and hands the
+         * address back. k = that address (row 14). An envelope that does not
+         * get as far as an address keeps the all-zero key and the store's
+         * parse code (1 too-large, 2 bad-encoding, 3 bad-chain, 16 fault);
+         * the client matches by position, the array is in request order
+         * (row 7). A result is never given under a key it does not have. */
+        memset(&pr, 0, sizeof(pr));
+        rc =nodus_dht2_store_put(h->store, &w->ctx, rq->envs[i],
                                   rq->env_lens[i], NULL, &pr);
-        if (rc == 0) {
+        if (pr.has_address) {
+            memcpy(x->key, pr.address, DHT2_HASH_LEN);
+        }
+        if ((rc == 0 || rc == DHT2_E_HANDLED) && !pr.has_address) {
+            x->kind = DHT2_RV_CODE;
+            x->code = DHT2_E_HOLDER_FAULT;
+        } else if (rc == 0) {
             x->kind = DHT2_RV_HASH;
             memcpy(x->hash, pr.hash, DHT2_HASH_LEN);
         } else if (rc == DHT2_E_HANDLED) {
@@ -323,7 +353,6 @@ static int serve_put(const nodus_dht2_holder_t *h, world_t *w,
     res = seal(h, DHT2_PT_RECEIPT, payload, plen, out, cap, out_len);
 done:
     free(a);
-    free(rec);
     return res;
 }
 

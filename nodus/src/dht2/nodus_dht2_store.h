@@ -186,6 +186,11 @@ typedef struct {
     uint8_t                  hash[DHT2_HASH_LEN]; /* SHA3-512 of the canonical
                                                  * envelope stored / held   */
     uint64_t                 through;           /* code 18: the HANDLED cutoff */
+    bool                     has_address;       /* the envelope parsed as far
+                                                 * as its address — set for
+                                                 * ANY code after that point
+                                                 * (also on failure)        */
+    uint8_t                  address[DHT2_HASH_LEN]; /* valid when has_address */
 } nodus_dht2_put_t;
 
 /**

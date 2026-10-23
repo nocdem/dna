@@ -36,7 +36,14 @@
  *   · a name FAULT is code 16 for that key (nothing stored), is asked once,
  *     and the NEXT name request is possible (the fault was consumed): the
  *     same put then succeeds; a PENDING name answer is also 16 for the
- *     call, never "unnamed".
+ *     call, never "unnamed";
+ *   · fix round — an ABANDONED name fault (writer A never asks again) blocks
+ *     writer B only until one poll period has passed, with a fake that
+ *     keeps the real view's single fault slot per fp; a snapshot of another
+ *     chain is refused (15, no h / t) for get, put, owner LIST and
+ *     not-owner LIST alike; a GET of a held inbox-control record is per-key
+ *     17; an envelope above 262,144 B inside a put is per-key code 1 with a
+ *     zero key and its sibling is stored under its address.
  *
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * A default build. No compile flags, no environment variables, no network,
@@ -138,7 +145,16 @@ typedef struct {
     bool                      have_sets;
     uint8_t                   named[4][DHT2_FP_LEN];
     size_t                    nnamed;
-    bool                      fault_next;     /* one FAULT, then consumed */
+    /* The real view's single fault slot (nodus_dht2_wview.c): a name store
+     * error for `err_fp` is read after the request that met it; it blocks
+     * every other fp (PENDING) until its own fp asks again (FAULT, consumed)
+     * or until NODUS_DHT2_WVIEW_FAULT_KEEP_MS has passed (dropped). */
+    bool                      err_armed;      /* the next name request of
+                                               * err_fp meets a store error */
+    uint8_t                   err_fp[DHT2_FP_LEN];
+    bool                      fault_set;
+    uint8_t                   fault_fp[DHT2_FP_LEN];
+    uint64_t                  fault_at_ms;
     bool                      pending_next;   /* one PENDING              */
     int                       name_calls;
 } fv_t;
@@ -169,14 +185,29 @@ static nodus_dht2_wview_name_t fv_name(void *user, uint64_t now_ms,
     fv_t   *v = (fv_t *)user;
     size_t  i;
 
-    (void)now_ms;
     v->name_calls++;
     if (h_out != NULL) {
         *h_out = v->snap.height;
     }
-    if (v->fault_next) {
-        v->fault_next = false;               /* reported once, then asked afresh */
-        return NODUS_DHT2_WVIEW_NAME_FAULT;
+    if (v->fault_set && now_ms >= v->fault_at_ms &&
+        now_ms - v->fault_at_ms >= NODUS_DHT2_WVIEW_FAULT_KEEP_MS) {
+        v->fault_set = false;                /* abandoned: dropped */
+    }
+    if (v->fault_set) {
+        if (memcmp(v->fault_fp, fp, DHT2_FP_LEN) == 0) {
+            v->fault_set = false;            /* reported once, consumed */
+            return NODUS_DHT2_WVIEW_NAME_FAULT;
+        }
+        return NODUS_DHT2_WVIEW_NAME_PENDING;   /* blocked by an unread fault */
+    }
+    if (v->err_armed && memcmp(v->err_fp, fp, DHT2_FP_LEN) == 0) {
+        /* the request goes out, the store answers {err}: the fault is
+         * readable from the next call on */
+        v->err_armed = false;
+        v->fault_set = true;
+        memcpy(v->fault_fp, fp, DHT2_FP_LEN);
+        v->fault_at_ms = now_ms;
+        return NODUS_DHT2_WVIEW_NAME_PENDING;
     }
     if (v->pending_next) {
         v->pending_next = false;
@@ -349,14 +380,21 @@ static int mk_list(env_t *e, uint8_t nb, const uint8_t chain[DHT2_CHAIN_LEN],
 
 /* ── serving and checking answers ───────────────────────────────────── */
 
-static uint8_t g_out[NODUS_DHT2_HOLDER_OUT_MIN];
-static size_t  g_out_n;
+static uint8_t  g_out[NODUS_DHT2_HOLDER_OUT_MIN];
+static size_t   g_out_n;
+static uint64_t g_now = 12345;     /* the caller's monotonic tick, ms */
+
+static int serve_raw(world_t *w, nodus_dht2_holder_kind_t kind,
+                     const uint8_t *req, size_t n)
+{
+    g_out_n = 0;
+    return nodus_dht2_holder_serve(&w->h, kind, g_now, req, n, g_out,
+                                   sizeof(g_out), &g_out_n);
+}
 
 static int serve(world_t *w, nodus_dht2_holder_kind_t kind, const env_t *req)
 {
-    g_out_n = 0;
-    return nodus_dht2_holder_serve(&w->h, kind, 12345, req->b, req->n, g_out,
-                                   sizeof(g_out), &g_out_n);
+    return serve_raw(w, kind, req->b, req->n);
 }
 
 /* Open g_out as an envelope of `pt`, signed by the node, under the answer
@@ -736,21 +774,31 @@ static void test_name_fault(const tkey_t *node, const tkey_t *wr)
     CHECK(mk_put(&req, 0xB1, &rec, 1) == 0, "put request");
 
     /* A name FAULT: code 16, nothing stored, asked once. */
-    w->view.fault_next = true;
+    w->view.err_armed = true;
+    memcpy(w->view.err_fp, wr->fp, DHT2_FP_LEN);
     CHECK(serve(w, NODUS_DHT2_HOLDER_PUT, &req) == NODUS_DHT2_HOLDER_ANSWER &&
               ans_head(w, DHT2_PT_RECEIPT, 0xB1, &a),
-          "put with a name fault answered");
+          "put whose name request met a store error answered");
     CHECK(a.r_count == 1 && a.r[0].kind == DHT2_RV_CODE &&
               a.r[0].code == DHT2_E_HOLDER_FAULT,
+          "request sent (pending): code 16");
+    CHECK(w->view.name_calls == 1 && w->view.fault_set,
+          "asked once; the fault now waits to be read");
+    /* The retry reads the fault: FAULT is code 16, never "unnamed", and the
+     * call consumes it. */
+    CHECK(serve(w, NODUS_DHT2_HOLDER_PUT, &req) == NODUS_DHT2_HOLDER_ANSWER &&
+              ans_head(w, DHT2_PT_RECEIPT, 0xB1, &a) &&
+              a.r[0].kind == DHT2_RV_CODE &&
+              a.r[0].code == DHT2_E_HOLDER_FAULT,
           "name fault: code 16");
-    CHECK(w->view.name_calls == 1, "the name was asked once");
-    CHECK(!w->view.fault_next, "the fault was consumed");
+    CHECK(w->view.name_calls == 2 && !w->view.fault_set,
+          "the fault was consumed by the call that met it");
 
     /* The next name request is possible: the same put now succeeds. */
     CHECK(serve(w, NODUS_DHT2_HOLDER_PUT, &req) == NODUS_DHT2_HOLDER_ANSWER &&
               ans_head(w, DHT2_PT_RECEIPT, 0xB1, &a),
-          "the retry is answered");
-    CHECK(w->view.name_calls == 2, "the next name request was made");
+          "the third try is answered");
+    CHECK(w->view.name_calls == 3, "the next name request was made");
     CHECK(a.r_count == 1 && a.r[0].kind == DHT2_RV_HASH &&
               hash_is(&rec, a.r[0].hash),
           "and the record was stored");
@@ -781,6 +829,179 @@ static void test_name_fault(const tkey_t *node, const tkey_t *wr)
     }
     world_free(w);
     free(w);
+}
+
+/* Fix round, item 2: writer A's name request meets a store error and A never
+ * asks again. The view keeps ONE unread fault; it must not block writer B
+ * past one poll period. The fake consumes per fp the way the real view
+ * does (fv_name). */
+static void test_fault_abandoned(const tkey_t *node, const tkey_t *wa,
+                                 const tkey_t *wb)
+{
+    world_t       *w = (world_t *)calloc(1, sizeof(*w));
+    static env_t   ra, rb, req;
+    uint8_t        addr[DHT2_HASH_LEN];
+    dht2_answer_t  a;
+
+    CHECK(w != NULL && world_init(w, node, 3) == 0, "world");
+    CHECK(mk_owner(&ra, addr, wa, 0x21) == 0 &&
+              mk_owner(&rb, addr, wb, 0x22) == 0, "records");
+    g_now = 50000;
+    w->view.err_armed = true;
+    memcpy(w->view.err_fp, wa->fp, DHT2_FP_LEN);
+
+    CHECK(mk_put(&req, 0xC1, &ra, 1) == 0, "A's put request");
+    CHECK(serve(w, NODUS_DHT2_HOLDER_PUT, &req) == NODUS_DHT2_HOLDER_ANSWER &&
+              ans_head(w, DHT2_PT_RECEIPT, 0xC1, &a) &&
+              a.r[0].kind == DHT2_RV_CODE &&
+              a.r[0].code == DHT2_E_HOLDER_FAULT && w->view.fault_set,
+          "A: code 16, and A never comes back (the fault stays unread)");
+
+    CHECK(mk_put(&req, 0xC2, &rb, 1) == 0, "B's put request");
+    CHECK(serve(w, NODUS_DHT2_HOLDER_PUT, &req) == NODUS_DHT2_HOLDER_ANSWER &&
+              ans_head(w, DHT2_PT_RECEIPT, 0xC2, &a) &&
+              a.r[0].kind == DHT2_RV_CODE &&
+              a.r[0].code == DHT2_E_HOLDER_FAULT,
+          "B at once: blocked by A's unread fault (16, not stored)");
+    g_now += NODUS_DHT2_WVIEW_FAULT_KEEP_MS - 1;
+    CHECK(serve(w, NODUS_DHT2_HOLDER_PUT, &req) == NODUS_DHT2_HOLDER_ANSWER &&
+              ans_head(w, DHT2_PT_RECEIPT, 0xC2, &a) &&
+              a.r[0].kind == DHT2_RV_CODE,
+          "B one ms before the period: still blocked");
+    g_now += 1;
+    CHECK(serve(w, NODUS_DHT2_HOLDER_PUT, &req) == NODUS_DHT2_HOLDER_ANSWER &&
+              ans_head(w, DHT2_PT_RECEIPT, 0xC2, &a) &&
+              a.r[0].kind == DHT2_RV_HASH && hash_is(&rb, a.r[0].hash),
+          "B after one poll period: the abandoned fault is dropped, B stored");
+    CHECK(!w->view.fault_set, "and the slot is free");
+    g_now = 12345;
+    world_free(w);
+    free(w);
+}
+
+/* Fix round, item 1: a snapshot of another chain is no snapshot. */
+static void test_chain_gate(const tkey_t *node, const tkey_t *owner,
+                            const tkey_t *other)
+{
+    world_t       *w = (world_t *)calloc(1, sizeof(*w));
+    static env_t   rec, req, lreq;
+    uint8_t        addr[DHT2_HASH_LEN], keys[1][DHT2_HASH_LEN];
+    uint8_t        inbox[DHT2_ID_LEN];
+
+    CHECK(w != NULL && world_init(w, node, 3) == 0, "world");
+    CHECK(mk_owner(&rec, addr, owner, 0x23) == 0, "record");
+    memcpy(keys[0], addr, DHT2_HASH_LEN);
+    CHECK(dht2_id_inbox(g_chain, owner->fp, inbox) == 0, "inbox id");
+    memcpy(w->view.snap.chain_id, g_other_chain, DHT2_CHAIN_LEN);
+
+    CHECK(mk_get(&req, 0xD1, (const uint8_t (*)[DHT2_HASH_LEN])keys, 1) == 0,
+          "get request");
+    CHECK(serve(w, NODUS_DHT2_HOLDER_GET, &req) == NODUS_DHT2_HOLDER_ANSWER &&
+              refusal_is(w, 0xD1, DHT2_E_NOT_CAUGHT_UP),
+          "foreign-chain snapshot, get: refusal 15 (our c, no h / t)");
+    CHECK(mk_put(&req, 0xD2, &rec, 1) == 0, "put request");
+    CHECK(serve(w, NODUS_DHT2_HOLDER_PUT, &req) == NODUS_DHT2_HOLDER_ANSWER &&
+              refusal_is(w, 0xD2, DHT2_E_NOT_CAUGHT_UP),
+          "put: refusal 15");
+    CHECK(mk_list(&lreq, 0xD3, g_chain, inbox, owner) == 0, "list request");
+    CHECK(serve(w, NODUS_DHT2_HOLDER_LIST, &lreq) == NODUS_DHT2_HOLDER_ANSWER &&
+              refusal_is(w, 0xD3, DHT2_E_NOT_CAUGHT_UP),
+          "owner LIST: refusal 15");
+    CHECK(mk_list(&lreq, 0xD4, g_chain, inbox, other) == 0, "list request");
+    CHECK(serve(w, NODUS_DHT2_HOLDER_LIST, &lreq) == NODUS_DHT2_HOLDER_ANSWER &&
+              refusal_is(w, 0xD4, DHT2_E_NOT_CAUGHT_UP),
+          "not-owner LIST: the same gate, refusal 15 (no 17 with a foreign tip)");
+    world_free(w);
+    free(w);
+}
+
+/* Fix round, item 3: an inbox-control record is never served by GET. */
+static void test_ctl_get(const tkey_t *node, const tkey_t *owner)
+{
+    world_t             *w = (world_t *)calloc(1, sizeof(*w));
+    static env_t         ctl, req;
+    static const uint8_t none[1] = { 0 };
+    dht2_data_t          d;
+    uint8_t              ctl_id[DHT2_ID_LEN], addr[DHT2_HASH_LEN];
+    uint8_t              keys[1][DHT2_HASH_LEN];
+    dht2_answer_t        a;
+
+    CHECK(w != NULL && world_init(w, node, 3) == 0, "world");
+    CHECK(dht2_id_inbox_ctl(g_chain, owner->fp, ctl_id) == 0 &&
+              dht2_address(ctl_id, owner->fp, addr) == 0, "ctl ids");
+    memset(&d, 0, sizeof(d));
+    d.sequence = 1;
+    d.validity_type = DHT2_VT_EOL;
+    d.expiry = T0 + 3600;
+    memcpy(d.id, ctl_id, DHT2_ID_LEN);
+    memcpy(d.chain, g_chain, DHT2_CHAIN_LEN);
+    d.cls = DHT2_CLASS_INBOX_CTL;
+    d.has_data = true;
+    d.data = none;
+    d.data_len = 0;                       /* an empty control list */
+    CHECK(dht2_record_build(&d, owner->sk, owner->pk, ctl.b, sizeof(ctl.b),
+                            &ctl.n) == DHT2_OK, "control record");
+    CHECK(mk_put(&req, 0xE1, &ctl, 1) == 0, "put request");
+    CHECK(serve(w, NODUS_DHT2_HOLDER_PUT, &req) == NODUS_DHT2_HOLDER_ANSWER &&
+              ans_head(w, DHT2_PT_RECEIPT, 0xE1, &a) &&
+              a.r[0].kind == DHT2_RV_HASH && hash_is(&ctl, a.r[0].hash),
+          "the owner's control record is stored");
+
+    memcpy(keys[0], addr, DHT2_HASH_LEN);
+    CHECK(mk_get(&req, 0xE2, (const uint8_t (*)[DHT2_HASH_LEN])keys, 1) == 0,
+          "get request");
+    CHECK(serve(w, NODUS_DHT2_HOLDER_GET, &req) == NODUS_DHT2_HOLDER_ANSWER &&
+              ans_head(w, DHT2_PT_ANSWER, 0xE2, &a),
+          "get of the control address answered");
+    CHECK(a.r_count == 1 && memcmp(a.r[0].key, addr, DHT2_HASH_LEN) == 0 &&
+              a.r[0].kind == DHT2_RV_CODE &&
+              a.r[0].code == DHT2_E_NOT_OWNER,
+          "per-key 17: neither its hash nor its bytes");
+    world_free(w);
+    free(w);
+}
+
+/* Fix round, items 4 and 5: an envelope above 262,144 B inside a put is
+ * per-key code 1 with a zero key; its sibling is still processed. */
+static void test_oversize_put(const tkey_t *node, const tkey_t *wr)
+{
+    world_t       *w = (world_t *)calloc(1, sizeof(*w));
+    static env_t   rec;
+    dht2_req_t     rq;
+    uint8_t       *big = (uint8_t *)calloc(1, DHT2_ENVELOPE_MAX + 1u);
+    uint8_t       *buf = (uint8_t *)malloc(DHT2_ENVELOPE_MAX + 4096u);
+    uint8_t        addr[DHT2_HASH_LEN], zero[DHT2_HASH_LEN] = { 0 };
+    size_t         n = 0;
+    dht2_answer_t  a;
+
+    CHECK(w != NULL && big != NULL && buf != NULL &&
+              world_init(w, node, 3) == 0, "world");
+    CHECK(mk_owner(&rec, addr, wr, 0x24) == 0, "record");
+    memset(&rq, 0, sizeof(rq));
+    rq.kind = DHT2_REQ_PUT;
+    nonce_of(rq.nonce, 0xF1);
+    rq.count = 2;
+    rq.envs[0] = big;
+    rq.env_lens[0] = DHT2_ENVELOPE_MAX + 1u;
+    rq.envs[1] = rec.b;
+    rq.env_lens[1] = rec.n;
+    CHECK(dht2_req_encode(&rq, buf, DHT2_ENVELOPE_MAX + 4096u, &n) == DHT2_OK,
+          "the request encodes");
+    CHECK(serve_raw(w, NODUS_DHT2_HOLDER_PUT, buf, n)
+                  == NODUS_DHT2_HOLDER_ANSWER &&
+              ans_head(w, DHT2_PT_RECEIPT, 0xF1, &a),
+          "the request is not malformed: answered");
+    CHECK(a.r_count == 2 && a.r[0].kind == DHT2_RV_CODE &&
+              a.r[0].code == DHT2_E_TOO_LARGE &&
+              memcmp(a.r[0].key, zero, DHT2_HASH_LEN) == 0,
+          "oversized envelope: code 1, key zeros");
+    CHECK(memcmp(a.r[1].key, addr, DHT2_HASH_LEN) == 0 &&
+              a.r[1].kind == DHT2_RV_HASH && hash_is(&rec, a.r[1].hash),
+          "the sibling is processed and acknowledged under its address");
+    world_free(w);
+    free(w);
+    free(big);
+    free(buf);
 }
 
 /* ══ main ══════════════════════════════════════════════════════════════ */
@@ -834,6 +1055,10 @@ int main(void)
     test_call_level(&keys[0], &keys[1]);
     test_write_precondition(&keys[0], &keys[1]);
     test_name_fault(&keys[0], &keys[1]);
+    test_fault_abandoned(&keys[0], &keys[1], &keys[3]);
+    test_chain_gate(&keys[0], &keys[2], &keys[4]);
+    test_ctl_get(&keys[0], &keys[2]);
+    test_oversize_put(&keys[0], &keys[1]);
     QGP_LOG_INFO(LOG_TAG, "=== Results: %d passed, %d failed ===",
                  g_pass, g_fail);
 

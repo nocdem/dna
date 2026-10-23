@@ -65,6 +65,7 @@ struct nodus_dht2_wview {
     uint8_t           name_fp[64];
     bool              fault_set;         /* an {err} answer not yet reported */
     uint8_t           fault_fp[64];
+    uint64_t          fault_at_ms;       /* the tick that read the {err} */
     wv_name_entry_t   cache[NODUS_DHT2_WVIEW_NAME_CACHE_MAX];
     size_t            victim;            /* round-robin when the cache is full */
 };
@@ -309,6 +310,7 @@ static int wv_on_name(nodus_dht2_wview_t *wv, cbor_decoder_t *dec,
         wv->name_out = false;
         wv->fault_set = true;
         memcpy(wv->fault_fp, wv->name_fp, 64);
+        wv->fault_at_ms = wv->now_ms;
         return 0;
     }
     uint64_t h = 0, n = 0;
@@ -502,6 +504,12 @@ nodus_dht2_wview_name_t nodus_dht2_wview_name(nodus_dht2_wview_t *wv,
                                               const uint8_t fp[64],
                                               uint64_t *h_out) {
     if (!wv || !fp) return NODUS_DHT2_WVIEW_NAME_UNAVAILABLE;
+    /* An unread fault older than one poll period is dropped: its caller
+     * may never come back, and the single slot must not block everyone
+     * else. The fp is then asked afresh below — never answered "unnamed". */
+    if (wv->fault_set && now_ms >= wv->fault_at_ms &&
+        now_ms - wv->fault_at_ms >= NODUS_DHT2_WVIEW_FAULT_KEEP_MS)
+        wv->fault_set = false;
     if (wv->fault_set && memcmp(wv->fault_fp, fp, 64) == 0) {
         wv->fault_set = false;
         return NODUS_DHT2_WVIEW_NAME_FAULT;

@@ -62,6 +62,29 @@
  * queue, and the records that travel beside an answer (the caller fetches a
  * held record by the hash in `r` with nodus_dht2_store_get).
  *
+ * RULES ADDED IN THE FIX ROUND (each pinned by a test):
+ *   · CHAIN GATE (one place, world_load): a snapshot whose chain id is not
+ *     the holder's chain is no snapshot — every request, the LIST not-owner
+ *     branch included, gets the refusal 15 (no h / t), never an answer that
+ *     mixes our `c` with a foreign tip.
+ *   · KEY OF A PUT RESULT: k = the envelope's address, taken from the ONE
+ *     parse inside the store's admission (nodus_dht2_put_t.address). An
+ *     envelope that does not parse as far as an address (the spec has none
+ *     for it) gets k = 64 zero bytes and the store's parse code — 1 too-large
+ *     (also an envelope above 262,144 B: row 7's malformed list does not
+ *     name it, so its siblings are still processed), 2 bad-encoding, 3
+ *     bad-chain, or 16 for an allocation / hashing fault. A result is never
+ *     given under another key. The whole request is bounded at the row-11
+ *     budget (dht2_msg.h DHT2_REQ_MAX_LEN); over that it is malformed.
+ *   · INBOX CONTROL VIA GET (row 23): a GET that resolves to a held class-5
+ *     record answers per-key 17 — never its hash or bytes. Control records
+ *     are read only through the owner-signed LIST path.
+ *   · A LIST whose store read faults gets NO ANSWER: §4.4 says a missing
+ *     answer is "no answer", never "not found", and row 18 lets a LIST
+ *     result carry only a hash or 17.
+ *   · The QGP_LOG_* lines of this module carry a log timestamp read from the
+ *     clock; no answer field depends on it.
+ *
  * NO CALLER YET: nothing in nodus/tools/ or any running loop calls it.
  *
  * @file nodus_dht2_holder.h
@@ -131,6 +154,7 @@ typedef struct {
     uint8_t                   self_fp[DHT2_FP_LEN];
     nodus_dht2_limits_t       limits;      /* §6, set to the defaults        */
     uint32_t                  queued;      /* row 20 counter                 */
+    bool                      chain_warned; /* the foreign-chain log, once   */
 } nodus_dht2_holder_t;
 
 /** Fill `h`: self fp from the identity, limits to the §6 defaults, queue

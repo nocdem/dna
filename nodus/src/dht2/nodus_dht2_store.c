@@ -902,6 +902,10 @@ int nodus_dht2_store_put(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
         code = code_of(rc);
         goto out;
     }
+    /* The address is known from here on, whatever check fails next: the
+     * serving layer names the result by it (one parse, no second one). */
+    memcpy(res->address, w->rec.address, DHT2_HASH_LEN);
+    res->has_address = true;
     /* holder check (5): eligible(placement key) over S(H) and S(H − E). */
     if (dht2_record_placement_key(&w->rec, w->placement) != DHT2_OK) {
         code = CODE_FAULT;
@@ -1065,6 +1069,22 @@ int nodus_dht2_store_list(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
     out->h = ctx->snap->height;
     out->t = ctx->snap->tip_time;
 
+    /* The selected control record's hash travels beside the entries, and its
+     * bytes are part of the page: charge them first, so entries + control
+     * stay within the 2 MiB page budget (row 11). */
+    if (ctl_load_live(s, inbox, ctx->snap->tip_time, &ctl_canon, &ctl_len,
+                      out->ctl, &ctl_present) != 0) {
+        memset(out, 0, sizeof(*out));
+        return CODE_FAULT;
+    }
+    free(ctl_canon);
+    out->has_ctl = ctl_present;
+    if (ctl_present) {
+        bytes = ctl_len;
+    } else {
+        memset(out->ctl, 0, sizeof(out->ctl));
+    }
+
     hashes = (uint8_t *)malloc((size_t)DHT2_LIST_PAGE_MAX * DHT2_HASH_LEN);
     if (hashes == NULL) {
         return CODE_FAULT;
@@ -1139,18 +1159,6 @@ int nodus_dht2_store_list(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
         return CODE_FAULT;
     }
     free(hashes);
-
-    /* The selected control record's hash travels beside the entries. */
-    if (ctl_load_live(s, inbox, ctx->snap->tip_time, &ctl_canon, &ctl_len,
-                      out->ctl, &ctl_present) != 0) {
-        memset(out, 0, sizeof(*out));
-        return CODE_FAULT;
-    }
-    free(ctl_canon);
-    out->has_ctl = ctl_present;
-    if (!ctl_present) {
-        memset(out->ctl, 0, sizeof(out->ctl));
-    }
     return 0;
 }
 
