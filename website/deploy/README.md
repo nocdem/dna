@@ -137,3 +137,28 @@ Public verification confirmed that all 19 changed files match the new package,
 the former tokenomics URL returns 404 in EN/TR, and Scan’s GET API still returns
 data with `Cache-Control: no-store`. Mobile and desktop publication checks and
 the focused language-navigation check are recorded in `../REVIEW.md`.
+
+## Turkish copy revision — 23 October 2026
+
+Published after the operator explicitly approved all three sites. Updated 41
+public files: 18 main-site, 15 Wiki and 8 Scan. The package was
+`/tmp/nodus-sites-3g17xU/`; only the selected public files were installed.
+Existing source/baseline comparisons showed no unexpected concurrent changes.
+
+Prior versions and the before/after SHA-256 manifest are backed up under
+`/var/backups/nodus-turkish-20261023T134902Z/`. The root-only staging directory
+`/var/tmp/nodus-turkish-20261023T134902Z/` contains the installer, manifest and
+selected replacements. Assets were replaced before HTML, atomically per file,
+with existing owner/mode retained. No Nginx reload or service restart was needed.
+To roll back, restore only manifest-listed files from the domain directories
+in this backup to their corresponding public roots, first checking that the
+live hashes still match this deployment so later edits are not overwritten.
+
+Fresh SSH readback and public HTTPS matched all 41 new hashes. JS/CSS were
+requested with the content-version queries referenced by the generated pages;
+HTML/search JSON were checked at their normal URLs. Current public JS/CSS
+responses can be cached for four hours, while HTML/search JSON revalidate.
+Live Chromium checks passed at 390/1440px on all three sites, including language
+switch/reload; Wiki search/navigation and developers at 320px passed as well.
+There were no request, JavaScript or UI errors in these live checks. Review
+artifacts are in `/tmp/nodus-turkish-copy-aw9eXC/` in the operator workspace.

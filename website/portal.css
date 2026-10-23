@@ -60,3 +60,4 @@
 @media(max-width:800px){.table-hint{display:block;color:var(--muted);font-size:10px;margin:-10px 0 15px}}
 @media(max-width:480px){.hash-value{flex-direction:column;gap:8px}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+.wiki-article :not(pre)>code{overflow-wrap:anywhere}

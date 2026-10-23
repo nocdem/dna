@@ -97,14 +97,14 @@
     try {
       const response = await fetch('api' + path, { headers: { Accept: 'application/json' }, signal: controller.signal, cache: 'no-store' });
       if (!response.ok) {
-        const error = new Error(response.status === 404 ? t('Record not found.', 'Kayıt bulunamadı.') : response.status === 400 ? t('Check the identifier and try again.', 'Kimliği kontrol edip tekrar dene.') : t('The chain index is unavailable. Try refreshing shortly.', 'Zincir indeksine erişilemiyor. Biraz sonra yenilemeyi dene.'));
+        const error = new Error(response.status === 404 ? t('Record not found.', 'Kayıt bulunamadı.') : response.status === 400 ? t('Check the identifier and try again.', 'Girdiğin kimliği kontrol edip tekrar dene.') : t('The chain index is unavailable. Try refreshing shortly.', 'Scan verilerine erişilemiyor. Biraz sonra sayfayı yenile.'));
         error.status = response.status; throw error;
       }
       const body = await response.json();
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error(t('Unexpected index response.', 'Beklenmeyen indeks yanıtı.'));
       return body;
     } catch (error) {
-      if (error instanceof TypeError || error.name === 'AbortError' || error instanceof SyntaxError) throw new Error(t('The chain index is unavailable. Try refreshing shortly.', 'Zincir indeksine erişilemiyor. Biraz sonra yenilemeyi dene.'));
+      if (error instanceof TypeError || error.name === 'AbortError' || error instanceof SyntaxError) throw new Error(t('The chain index is unavailable. Try refreshing shortly.', 'Scan verilerine erişilemiyor. Biraz sonra sayfayı yenile.'));
       throw error;
     } finally { clearTimeout(timer); }
   }
@@ -133,7 +133,7 @@
     return grid;
   }
   function moreButton(onClick) {
-    const more = el('button', t('Load more', 'Daha fazla yükle'), 'btn-secondary'); more.id = 'load-more-btn'; more.type = 'button';
+    const more = el('button', t('Load more', 'Daha fazlasını göster'), 'btn-secondary'); more.id = 'load-more-btn'; more.type = 'button';
     more.hidden = nextCursor === null; more.addEventListener('click', onClick);
     const error = el('div'); error.id = 'history-error'; error.setAttribute('role', 'status');
     return [error, more];
@@ -147,29 +147,29 @@
   const payoutRecipient = item => payoutItem(item) && typeof item.address === 'string' && /^[a-fA-F0-9]{128}$/.test(item.address);
   function coverageText(data, pending = false) {
     return pending
-      ? t(`Payout records from block ${data.from_height}; pending rewards at block ${data.at_height}.`, `Ödeme kayıtları ${data.from_height}. bloktan itibaren; bekleyen ödüller ${data.at_height}. blok itibarıyla.`)
-      : t(`Payout records from block ${data.from_height}; source at block ${data.at_height}.`, `Ödeme kayıtları ${data.from_height}. bloktan itibaren; kaynak ${data.at_height}. blok itibarıyla.`);
+      ? t(`Payout records from block ${data.from_height}; pending rewards at block ${data.at_height}.`, `Ödeme geçmişi ${data.from_height}. bloktan başlıyor. Biriken ödüller ${data.at_height}. bloktaki durumu gösteriyor.`)
+      : t(`Payout records from block ${data.from_height}; source at block ${data.at_height}.`, `Ödeme geçmişi ${data.from_height}. bloktan başlıyor. Veriler ${data.at_height}. bloktaki duruma ait.`);
   }
   function releaseCoverageText(data) {
-    return t(`Stake release records from block ${data.from_height}; source at block ${data.at_height}.`, `Stake serbest bırakma kayıtları ${data.from_height}. bloktan itibaren; kaynak ${data.at_height}. blok itibarıyla.`);
+    return t(`Stake release records from block ${data.from_height}; source at block ${data.at_height}.`, `Stake iadesi kayıtları ${data.from_height}. bloktan başlıyor. Veriler ${data.at_height}. bloktaki duruma ait.`);
   }
   // A list's status texts. Payouts are the default; stake releases (returned stake, not a
   // reward — explorer /api/releases and the releases list of /api/rewards) pass their own.
   const payoutTexts = {
     loading: t('Loading payouts…', 'Ödemeler yükleniyor…'),
-    more: t('Load more payouts', 'Daha fazla ödeme yükle'),
+    more: t('Load more payouts', 'Daha fazla ödeme göster'),
     unexpected: t('Unexpected payout response.', 'Beklenmeyen ödeme yanıtı.'),
     changed: t('Payout records changed. Refresh to load current history.', 'Ödeme kayıtları değişti. Güncel geçmişi yüklemek için yenile.'),
-    cursor: t('Unexpected payout cursor.', 'Beklenmeyen ödeme sayfası sınırı.'),
+    cursor: t('Unexpected payout cursor.', 'Ödeme listesinin devamı için geçersiz bir kayıt konumu alındı.'),
     unavailable: t('Payout data unavailable. ', 'Ödeme verisi alınamıyor. ')
   };
   const releaseTexts = {
-    loading: t('Loading stake releases…', 'Serbest bırakılan stake yükleniyor…'),
-    more: t('Load more stake releases', 'Daha fazla serbest bırakılan stake yükle'),
-    unexpected: t('Unexpected stake release response.', 'Beklenmeyen stake serbest bırakma yanıtı.'),
-    changed: t('Stake release records changed. Refresh to load current history.', 'Stake serbest bırakma kayıtları değişti. Güncel geçmişi yüklemek için yenile.'),
-    cursor: t('Unexpected stake release cursor.', 'Beklenmeyen stake serbest bırakma sayfası sınırı.'),
-    unavailable: t('Stake release data unavailable. ', 'Stake serbest bırakma verisi alınamıyor. ')
+    loading: t('Loading stake releases…', 'Stake iadeleri yükleniyor…'),
+    more: t('Load more stake releases', 'Daha fazla stake iadesi göster'),
+    unexpected: t('Unexpected stake release response.', 'Stake iadeleri için beklenmeyen bir yanıt alındı.'),
+    changed: t('Stake release records changed. Refresh to load current history.', 'Stake iadesi kayıtları değişti. Güncel geçmişi görmek için sayfayı yenile.'),
+    cursor: t('Unexpected stake release cursor.', 'Stake iadesi listesinin devamı için geçersiz bir kayıt konumu alındı.'),
+    unavailable: t('Stake release data unavailable. ', 'Stake iadesi verileri alınamıyor. ')
   };
   // Every payout list owns its cursor and in-flight request. Loading block transactions or
   // address transactions cannot alter it, and refreshing invalidates an older page request.
@@ -241,7 +241,7 @@
   function loadAddressRewards(content) {
     const view = payoutSection('address-rewards', t('Rewards', 'Ödüller'), [t('Payout block', 'Ödeme bloğu'), t('Time', 'Zaman'), t('Amount', 'Tutar')]);
     view.summary.replaceChildren(fields([[t('Recorded payouts', 'Kaydedilmiş ödemeler'), '—'], [t('Pending next payout', 'Sonraki ödeme için biriken'), '—']]));
-    view.section.append(el('p', t('Recorded payouts cover the history shown here, not lifetime earnings or the current balance. Paid rewards are already included in your balance while unspent; pending rewards are not spendable yet.', 'Kaydedilmiş ödemeler burada gösterilen geçmişi kapsar; tüm zamanların kazancı veya mevcut bakiye değildir. Ödenen ödüller harcanmadıkları sürece zaten bakiyeye dahildir; biriken ödüller henüz harcanamaz.'), 'scan-explanation'));
+    view.section.append(el('p', t('Recorded payouts cover the history shown here, not lifetime earnings or the current balance. Paid rewards are already included in your balance while unspent; pending rewards are not spendable yet.', 'Bu toplam yalnızca burada gösterilen dönemin ödemelerini kapsar; toplam kazancını veya güncel bakiyeni göstermez. Ödenmiş ve henüz harcanmamış ödüller zaten bakiyene dahildir. Biriken ödülleri ise ödeme yapılana kadar harcayamazsın.'), 'scan-explanation'));
     content.append(view.section);
     return payoutPager({ ...view, columns: 3, empty: t('No payouts for this address in the recorded period.', 'Kayıtlı dönemde bu adres için ödeme yok.'),
       path: before => '/rewards/' + apiValue(identifier) + '?limit=25' + (before === null ? '' : '&before=' + apiValue(before)),
@@ -257,18 +257,18 @@
   // Stake releases (explorer /api/releases/<height>): the validator bonds and delegations the
   // chain returned at an epoch boundary (a multiple of 720 blocks). The node records both under
   // one kind, so the two are not told apart here. Returned stake, not a reward.
-  const releaseNote = () => el('p', t('A stake release returns a witness bond or a delegation to its owner at an epoch boundary. It is the owner’s own stake coming back, not a reward, and is not counted in payouts.', 'Stake serbest bırakma, bir witness teminatını veya bir delegasyonu bir epoch sınırında sahibine geri verir. Sahibin kendi stake’inin geri dönüşüdür; ödül değildir ve ödemelere sayılmaz.'), 'scan-explanation');
+  const releaseNote = () => el('p', t('A stake release returns a witness bond or a delegation to its owner at an epoch boundary. It is the owner’s own stake coming back, not a reward, and is not counted in payouts.', 'Witness stake’i veya delegasyon tutarı, epoch sınırında sahibine iade edilir. Bu, daha önce yatırılan tutarın geri ödenmesidir; ödül değildir ve ödül ödemelerinin toplamına dahil edilmez.'), 'scan-explanation');
   function loadBlockReleases(height, content) {
-    const view = payoutSection('block-releases', t('Stake released', 'Serbest bırakılan stake'), [t('Owner address', 'Sahip adresi'), t('Amount', 'Tutar')], releaseTexts);
+    const view = payoutSection('block-releases', t('Stake released', 'İade edilen stake'), [t('Owner address', 'Sahibinin adresi'), t('Amount', 'Tutar')], releaseTexts);
     view.section.append(releaseNote());
     content.append(view.section);
-    return payoutPager({ ...view, columns: 2, texts: releaseTexts, empty: t('No stake released at this block.', 'Bu blokta serbest bırakılan stake yok.'),
+    return payoutPager({ ...view, columns: 2, texts: releaseTexts, empty: t('No stake released at this block.', 'Bu blokta stake iadesi yok.'),
       path: from => '/releases/' + height + '?limit=100' + (from === null ? '' : '&from=' + apiValue(from)),
       validate: data => rewardCoverage(data) && data.height === height && rawMoney(data.total) && nonnegativeInteger(data.count) && Array.isArray(data.releases) && data.releases.every(payoutRecipient) && (data.next_from === null || nonnegativeInteger(data.next_from)),
       items: data => data.releases, cursor: data => data.next_from,
       render: item => row([hash(item.address, 'address.html?fp=' + encodeURIComponent(item.address)), money(item.amount)]),
       summary: data => {
-        view.summary.replaceChildren(el('p', t(`Stake released: ${data.count}, total ${money(data.total)}`, `Serbest bırakılan stake: ${data.count}, toplam ${money(data.total)}`)));
+        view.summary.replaceChildren(el('p', t(`Stake released: ${data.count}, total ${money(data.total)}`, `${data.count} stake iadesi, toplam ${money(data.total)}`)));
         view.coverage.textContent = releaseCoverageText(data);
       }
     }).load();
@@ -276,17 +276,17 @@
   // The address's stake releases: the releases list of /api/rewards/<fp>, paged by its own
   // release_before cursor, independent of the payout list and of paid_total.
   function loadAddressReleases(content) {
-    const view = payoutSection('address-releases', t('Stake released', 'Serbest bırakılan stake'), [t('Release block', 'Serbest bırakma bloğu'), t('Time', 'Zaman'), t('Amount', 'Tutar')], releaseTexts);
-    view.summary.replaceChildren(fields([[t('Stake released', 'Serbest bırakılan stake'), '—']]));
+    const view = payoutSection('address-releases', t('Stake released', 'İade edilen stake'), [t('Release block', 'İade bloğu'), t('Time', 'Zaman'), t('Amount', 'Tutar')], releaseTexts);
+    view.summary.replaceChildren(fields([[t('Stake released', 'İade edilen stake'), '—']]));
     view.section.append(releaseNote());
     content.append(view.section);
-    return payoutPager({ ...view, columns: 3, texts: releaseTexts, empty: t('No stake released to this address in the recorded period.', 'Kayıtlı dönemde bu adrese serbest bırakılan stake yok.'),
+    return payoutPager({ ...view, columns: 3, texts: releaseTexts, empty: t('No stake released to this address in the recorded period.', 'Gösterilen dönemde bu adrese stake iadesi yapılmamış.'),
       path: before => '/rewards/' + apiValue(identifier) + '?limit=25' + (before === null ? '' : '&release_before=' + apiValue(before)),
       validate: data => rewardCoverage(data) && data.address === identifier && rawMoney(data.released_total) && Array.isArray(data.releases) && data.releases.every(rewardItem) && rewardCursor(data.next_release_before),
       items: data => data.releases, cursor: data => data.next_release_before,
       render: item => row([link('block.html?h=' + encodeURIComponent(item.height), item.height), time(item.time), money(item.amount)]),
       summary: data => {
-        view.summary.replaceChildren(fields([[t('Stake released', 'Serbest bırakılan stake'), money(data.released_total)]]));
+        view.summary.replaceChildren(fields([[t('Stake released', 'İade edilen stake'), money(data.released_total)]]));
         view.coverage.textContent = releaseCoverageText(data);
       }
     }).load();
@@ -356,15 +356,15 @@
     // and burned coins are not itemised here): the rest is stated, not named.
     const listed = parts.every(([, v]) => v !== null) ? parts.reduce((sum, [, v]) => sum + v, 0n) : null;
     const rest = listed !== null && total !== null && total > listed ? share(total - listed, total) : null;
-    $('supply-rest').textContent = rest === null || rest === 0n ? '' : t(`The other ${percent(rest)} of the total supply is not itemised on this page.`, `Toplam arzın kalan ${percent(rest)} kadarı bu sayfada ayrıca gösterilmez.`);
+    $('supply-rest').textContent = rest === null || rest === 0n ? '' : t(`The other ${percent(rest)} of the total supply is not itemised on this page.`, `Toplam arzın bu sayfada ayrıntılandırılmayan payı: ${percent(rest)}.`);
   }
   function displayStats(stats) {
     const indexed = stats.indexed_height, tip = stats.tip_height;
     const known = Number.isSafeInteger(indexed) && Number.isSafeInteger(tip);
     const behind = known && tip > indexed;
     const banner = $('staleness-banner'); banner.classList.toggle('hidden', !behind);
-    banner.textContent = behind ? t(`Index catching up: ${indexed} of ${tip} blocks indexed.`, `İndeks güncelleniyor: ${tip} bloğun ${indexed} adedi indekslendi.`) : '';
-    $('api-status').textContent = known ? (behind ? t('Index catching up', 'İndeks güncelleniyor') : t('Index matches the last reported tip', 'İndeks son bildirilen blokla eşleşiyor')) : t('Index connected · synchronization status unknown', 'İndekse bağlandı · eşitleme durumu bilinmiyor');
+    banner.textContent = behind ? t(`Index catching up: ${indexed} of ${tip} blocks indexed.`, `Scan zincire yetişiyor: ${tip} bloktan ${indexed} tanesi işlendi.`) : '';
+    $('api-status').textContent = known ? (behind ? t('Index catching up', 'Scan verileri güncelleniyor') : t('Index matches the last reported tip', 'Scan, bildirilen son bloğa kadar güncel')) : t('Index connected · synchronization status unknown', 'Bağlantı kuruldu · verilerin güncelliği bilinmiyor');
     if (!$('stats-cards')) return;
     displaySupply(stats);
     displayStaking(stats.staking);
@@ -397,7 +397,7 @@
     if ($('stake-bar')) shareBar($('stake-bar'), [['sw-self', self], ['sw-delegated', delegated]], both);
   }
   function statsUnavailable() {
-    $('api-status').textContent = t('Index unavailable', 'İndekse erişilemiyor');
+    $('api-status').textContent = t('Index unavailable', 'Scan verilerine erişilemiyor');
     $('staleness-banner').classList.add('hidden');
     if ($('stats-cards')) displaySupply({});
     displayStaking(null);
@@ -443,10 +443,10 @@
   // current block pace, counted from the newest indexed block's time.
   function paydayText(p, nowMs) {
     if (!p || !Number.isSafeInteger(p.height)) return '—';
-    if (!Number.isSafeInteger(p.est_ms) || p.est_ms < nowMs) return t(`block ${p.height} — no block pace yet`, `blok ${p.height} — henüz blok hızı yok`);
+    if (!Number.isSafeInteger(p.est_ms) || p.est_ms < nowMs) return t(`block ${p.height} — no block pace yet`, `${p.height}. blok — blok hızı henüz hesaplanamadı`);
     const date = new Date(p.est_ms).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
     const left = duration((p.est_ms - nowMs) / 1000);
-    return t(`block ${p.height} — est. ${date} (≈ ${left})`, `blok ${p.height} — tahmini ${date} (≈ ${left})`);
+    return t(`block ${p.height} — est. ${date} (≈ ${left})`, `${p.height}. blok — tahmini ${date} (≈ ${left})`);
   }
   // Key card (#payday-blocks / #payday-eta): blocks left to the next payday (explorer
   // next_payday.blocks_left) and the same estimate as the Rewards panel. Optional elements.
@@ -457,7 +457,7 @@
     if (!known) { value.textContent = '—'; eta.textContent = '—'; return; }
     const left = groupDigits(String(p.blocks_left));
     value.textContent = t(`${left} ${p.blocks_left === 1 ? 'block' : 'blocks'}`, `${left} blok`);
-    if (!Number.isSafeInteger(p.est_ms) || p.est_ms < nowMs) { eta.textContent = t('No block pace yet', 'Henüz blok hızı yok'); return; }
+    if (!Number.isSafeInteger(p.est_ms) || p.est_ms < nowMs) { eta.textContent = t('No block pace yet', 'Blok hızı henüz hesaplanamadı'); return; }
     const date = new Date(p.est_ms).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
     eta.textContent = t(`est. ${date} (≈ ${duration((p.est_ms - nowMs) / 1000)})`, `tahmini ${date} (≈ ${duration((p.est_ms - nowMs) / 1000)})`);
   }
@@ -467,7 +467,7 @@
   function loadPaydays(automatic) {
     if (!paydayPager) {
       paydayPager = payoutPager({ body: $('paydays-tbody'), button: $('paydays-more'), status: $('paydays-error'), columns: 4,
-        empty: t('No payday yet — the first is at block 17 280.', 'Henüz ödeme günü yok — ilki 17 280. blokta.'),
+        empty: t('No payday yet — the first is at block 17 280.', 'Henüz ödeme yapılmadı. İlk ödeme 17 280. blokta.'),
         path: before => '/paydays?limit=25' + (before === null ? '' : '&before=' + apiValue(before)),
         validate: data => rewardCoverage(data) && Array.isArray(data.paydays) && data.paydays.every(p => p && nonnegativeInteger(p.height) && nonnegativeInteger(p.time) && typeof p.available === 'boolean' && (p.available ? rawMoney(p.total) && nonnegativeInteger(p.recipients) : p.total === null && p.recipients === null)) && (data.next_before === null || nonnegativeInteger(data.next_before)),
         items: data => data.paydays, cursor: data => data.next_before, render: paydayRow,
@@ -544,52 +544,52 @@
     const previous = Number(b.height) > 1 ? link('block.html?h=' + encodeURIComponent(Number(b.height) - 1), short(b.prev_id ?? '—')) : hash(b.prev_id);
     content.replaceChildren(fields([
       [t('Height','Yükseklik'), b.height], [t('Block ID','Blok kimliği'), hash(b.block_id)], [t('Previous block','Önceki blok'), previous],
-      [t('Timestamp','Zaman damgası'), time(b.time)], [t('Proposer','Öneren'), hash(b.proposer)], [t('State root','Durum kökü'), hash(b.global_root)],
+      [t('Timestamp','Zaman damgası'), time(b.time)], [t('Proposer','Bloğu öneren'), hash(b.proposer)], [t('State root','State root'), hash(b.global_root)],
       [t('Applied transactions','Uygulanan işlemler'), b.applied_count], [t('Items in block','Bloktaki kayıtlar'), itemCount(b.n_items)]
     ]));
     const payouts = nonnegativeInteger(b.height) && b.height > 0 && b.height % 17280 === 0 ? loadBlockPayouts(b.height, content) : Promise.resolve();
     // Stake can be released at every epoch boundary (a multiple of 720); a payday block shows both.
     const releases = nonnegativeInteger(b.height) && b.height > 0 && b.height % 720 === 0 ? loadBlockReleases(b.height, content) : Promise.resolve();
-    content.append(el('h2', t('Transactions','İşlemler')), table([t('Position','Konum'),t('Type','Tür'),t('Fee','Ücret'),t('Wire ID','Kablo kimliği')], data.items.map(itemRow), t('No transactions in this block.','Bu blokta işlem yok.'), 'block-items-tbody'));
+    content.append(el('h2', t('Transactions','İşlemler')), table([t('Position','Konum'),t('Type','Tür'),t('Fee','Ücret'),t('Wire ID','Wire ID')], data.items.map(itemRow), t('No transactions in this block.','Bu blokta işlem yok.'), 'block-items-tbody'));
     nextCursor = Number.isSafeInteger(data.next_from) ? data.next_from : null;
     content.append(...moreButton(() => loadMore('/block/' + apiValue(identifier) + '?from=', 'block-items-tbody', 'items', itemRow, d => Number.isSafeInteger(d.next_from) ? d.next_from : null)));
     return Promise.all([payouts, releases]);
   }
-  const recordNames = { stake: t('Stake','Stake'), delegate: t('Delegation','Delegasyon'), unstake: t('Unstake','Stake çözme'), undelegate: t('Undelegation','Delegasyon çözme'), validator_update: t('Witness update','Witness güncellemesi'), chain_config: t('Chain configuration','Zincir yapılandırması') };
+  const recordNames = { stake: t('Stake','Stake'), delegate: t('Delegation','Delegasyon'), unstake: t('Unstake','Stake çekme'), undelegate: t('Undelegation','Delegasyonu geri alma'), validator_update: t('Witness update','Witness güncellemesi'), chain_config: t('Chain configuration','Zincir yapılandırması') };
   function renderRecord(record) {
     const entries = [[t('Record','Kayıt'), recordNames[record.kind] ?? String(record.kind)]];
     const fp = (label, value) => { if (typeof value === 'string') entries.push([label, hash(value, 'address.html?fp=' + encodeURIComponent(value))]); };
     fp(t('Witness','Witness'), record.validator); fp(t('Delegator','Delege eden'), record.delegator); fp(t('Destination','Hedef'), record.destination);
-    if (record.kind === 'chain_config') entries.push([t('Parameter','Parametre'), record.param_id], [t('New value','Yeni değer'), record.new_value], [t('Effective height','Geçerlilik yüksekliği'), record.effective_height]);
+    if (record.kind === 'chain_config') entries.push([t('Parameter','Parametre'), record.param_id], [t('New value','Yeni değer'), record.new_value], [t('Effective height','Devreye girdiği blok'), record.effective_height]);
     else { entries.push([t('Amount','Tutar'), money(record.amount)]); if (record.kind === 'validator_update' || record.kind === 'stake') entries.push([t('Commission','Komisyon'), (Number(record.commission_bps) / 100) + ' %']); }
     return fields(entries);
   }
   // Nodus EVM (explorer /api/tx "evm"): what an applied EVM transaction did, as the node's stored
   // receipt says. A failed one is still applied: its fee is paid and its nonce used.
   const evmAddressLink = a => isEvmAddress(a) ? hash(a, 'address.html?fp=' + encodeURIComponent(a)) : el('span', '—', 'muted');
-  const evmOpNames = { evm_call: t('Contract call','Sözleşme çağrısı'), evm_create: t('Contract creation','Sözleşme oluşturma'), evm_deposit: t('Deposit into the EVM','EVM’e yatırma'), evm_withdraw: t('Withdrawal from the EVM','EVM’den çekme'), evm_redeem: t('Ticket redemption','Bilet bozdurma') };
+  const evmOpNames = { evm_call: t('Contract call','Kontrat çağrısı'), evm_create: t('Contract creation','Kontrat oluşturma'), evm_deposit: t('Deposit into the EVM','EVM’e yatırma'), evm_withdraw: t('Withdrawal from the EVM','EVM’den çekme'), evm_redeem: t('Ticket redemption','Çekim ticket’ını kullanma') };
   function renderEvm(evm, op) {
     const entries = [[t('Action','İşlem'), evmOpNames[op] ?? (typeof op === 'string' ? op : '—')],
       [t('Result','Sonuç'), evm.status === 'success' ? t('Succeeded','Başarılı') : t('Failed — the fee was still paid','Başarısız — ücret yine de ödendi')],
       [t('Gas used','Kullanılan gas'), Number.isSafeInteger(evm.gas_used) ? evm.gas_used : '—'],
       [t('From (EVM address)','Gönderen (EVM adresi)'), evmAddressLink(evm.from)]];
     if (evm.to !== null && evm.to !== undefined) entries.push([t('To (EVM address)','Alıcı (EVM adresi)'), evmAddressLink(evm.to)]);
-    if (evm.created !== null && evm.created !== undefined) entries.push([t('Contract created','Oluşturulan sözleşme'), evmAddressLink(evm.created)]);
-    if (evm.value_wei !== null && evm.value_wei !== undefined) entries.push([t('Value sent','Gönderilen değer'), weiDetail(evm.value_wei)]);
+    if (evm.created !== null && evm.created !== undefined) entries.push([t('Contract created','Oluşturulan kontrat'), evmAddressLink(evm.created)]);
+    if (evm.value_wei !== null && evm.value_wei !== undefined) entries.push([t('Value sent','Gönderilen tutar'), weiDetail(evm.value_wei)]);
     if (typeof evm.recipient === 'string') entries.push([t('Paid out to','Ödendiği adres'), hash(evm.recipient, 'address.html?fp=' + encodeURIComponent(evm.recipient))]);
     if (evm.reserve_in !== null && evm.reserve_in !== undefined) entries.push([t('Moved into the EVM','EVM’e aktarılan'), money(evm.reserve_in)]);
     if (evm.reserve_out !== null && evm.reserve_out !== undefined) entries.push([t('Moved out of the EVM','EVM’den çıkan'), money(evm.reserve_out)]);
     entries.push([t('Events (logs)','Olaylar (log)'), Number.isSafeInteger(evm.logs) ? evm.logs : '—']);
-    if (typeof evm.wei_destroyed === 'string' && evm.wei_destroyed !== '0') entries.push([t('Value lost','Kaybolan değer'), weiDetail(evm.wei_destroyed)]);
+    if (typeof evm.wei_destroyed === 'string' && evm.wei_destroyed !== '0') entries.push([t('Value lost','Kaybedilen tutar'), weiDetail(evm.wei_destroyed)]);
     entries.push([t('Receipt digest','Makbuz özeti'), hash(evm.receipt_digest)]);
     const out = [fields(entries)];
     const tickets = Array.isArray(evm.tickets) ? evm.tickets.filter(x => typeof x === 'string') : [];
     if (tickets.length) {
-      out.push(el('h3', t('Withdrawal tickets opened','Açılan çekim biletleri') + ' (' + tickets.length + (evm.tickets_more === true ? '+' : '') + ')'),
-        table([t('Ticket','Bilet')], tickets.map(x => row([hash(x)])), t('None','Yok')));
-      if (evm.tickets_more === true) out.push(el('p', t('More tickets were opened than are listed here.','Burada listelenenden daha fazla bilet açıldı.'), 'muted'));
+      out.push(el('h3', t('Withdrawal tickets opened','Oluşturulan çekim ticket’ları') + ' (' + tickets.length + (evm.tickets_more === true ? '+' : '') + ')'),
+        table([t('Ticket','Ticket')], tickets.map(x => row([hash(x)])), t('None','Yok')));
+      if (evm.tickets_more === true) out.push(el('p', t('More tickets were opened than are listed here.','Oluşturulan ticket’ların tamamı burada gösterilmiyor.'), 'muted'));
     }
-    out.push(el('p', t('The inputs and outputs below are the NODUS coins that paid for this transaction (and, for a withdrawal, the coin paid out).','Aşağıdaki girdiler ve çıktılar bu işlemi ödeyen NODUS coin’leridir (çekimde ayrıca ödenen coin).'), 'muted'));
+    out.push(el('p', t('The inputs and outputs below are the NODUS coins that paid for this transaction (and, for a withdrawal, the coin paid out).','Aşağıdaki girdiler ve çıktılar, bu işlemde kullanılan NODUS coin’lerini gösterir. Çekim işleminde, hesaba ödenen coin de burada yer alır.'), 'muted'));
     return out;
   }
   function renderTx(data, content) {
@@ -597,7 +597,7 @@
     const tx = data.tx;
     const entries = [[t('Position','Konum'), position(tx)], [t('Block height','Blok yüksekliği'), link('block.html?h=' + encodeURIComponent(tx.height), tx.height)], [t('Timestamp','Zaman damgası'), time(tx.time)],
       [t('Status','Durum'), tx.refused ? t('Refused by the chain (code ','Zincir tarafından reddedildi (kod ') + tx.code + ')' : t('Applied','Uygulandı')],
-      [t('Wire ID','Kablo kimliği'), tx.wire_id ? hash(tx.wire_id) : el('span', t('Not assigned','Atanmadı'), 'muted')], [t('Intent ID','Niyet kimliği'), tx.intent_id ? hash(tx.intent_id) : el('span', '—', 'muted')],
+      [t('Wire ID','Wire ID'), tx.wire_id ? hash(tx.wire_id) : el('span', t('Not assigned','Atanmadı'), 'muted')], [t('Intent ID','Intent ID'), tx.intent_id ? hash(tx.intent_id) : el('span', '—', 'muted')],
       [t('Fee','Ücret'), money(tx.fee)]];
     if (tx.burned !== null && tx.burned !== undefined) entries.push([t('Burned','Yakılan'), money(tx.burned)]);
     // HF-4 name registration (explorer item name / name_price / name_owner): the price goes to
@@ -607,9 +607,9 @@
         [t('Name owner','İsim sahibi'), typeof tx.name_owner === 'string' ? hash(tx.name_owner, 'address.html?fp=' + encodeURIComponent(tx.name_owner)) : el('span', t('Not in the index', 'İndekste yok'), 'muted')]);
     }
     content.replaceChildren(opBadges(tx), fields(entries));
-    if (tx.refused) content.append(el('p', t('A refused transaction stays in the block but changes nothing: no coins are spent or created.', 'Reddedilen işlem blokta kalır ama hiçbir şeyi değiştirmez: coin harcanmaz, oluşturulmaz.'), 'muted'));
+    if (tx.refused) content.append(el('p', t('A refused transaction stays in the block but changes nothing: no coins are spent or created.', 'Reddedilen işlem blokta kayıtlı kalır, ancak zincirin durumunu değiştirmez. Coin harcanmaz veya oluşturulmaz.'), 'muted'));
     if (tx.record) content.append(el('h2', t('Recorded change','Kaydedilen değişiklik')), renderRecord(tx.record));
-    if (data.evm && typeof data.evm === 'object') content.append(el('h2', t('Smart contract (EVM)','Akıllı sözleşme (EVM)')), ...renderEvm(data.evm, tx.op));
+    if (data.evm && typeof data.evm === 'object') content.append(el('h2', t('Smart contract (EVM)','Akıllı kontrat (EVM)')), ...renderEvm(data.evm, tx.op));
     content.append(el('h2', t('Inputs','Girdiler') + ' (' + data.inputs.length + ')'), table([t('Coin','Coin'),t('Address','Adres'),t('Amount','Tutar'),t('Token','Token')], data.inputs.map(inputRow), t('None','Yok')));
     content.append(el('h2', t('Outputs','Çıktılar') + ' (' + data.outputs.length + ')'), table([t('Coin','Coin'),t('Address','Adres'),t('Amount','Tutar'),t('Token','Token'),t('Unlock block','Kilit açılış bloğu')], data.outputs.map(outputRow), t('None','Yok')));
   }
@@ -618,7 +618,7 @@
   // "unavailable" is shown as such — never as a zero.
   const balanceRow = b => row([token(b.token_id), assetAmount({ token_id: b.token_id, amount: b.total }), assetAmount({ token_id: b.token_id, amount: b.spendable }), Number.isSafeInteger(b.coins) ? b.coins : '—']);
   function balanceSummary(data) {
-    if (data.balance_status !== 'ok' || !Array.isArray(data.balances)) return el('span', t('Unavailable right now — the network did not answer. Try refreshing shortly.', 'Şu an alınamıyor — ağ yanıt vermedi. Biraz sonra yenilemeyi dene.'), 'muted');
+    if (data.balance_status !== 'ok' || !Array.isArray(data.balances)) return el('span', t('Unavailable right now — the network did not answer. Try refreshing shortly.', 'Ağ yanıt vermediği için bakiye alınamadı. Biraz sonra sayfayı yenile.'), 'muted');
     const native = data.balances.find(b => b && b.token_id === zeroToken);
     return money(native ? native.total : '0');
   }
@@ -643,12 +643,12 @@
     if (!Array.isArray(data.items)) throw new Error(t('Unexpected address response.', 'Beklenmeyen adres yanıtı.'));
     const acct = data.account_status === 'ok' && data.account && typeof data.account === 'object' ? data.account : null;
     const isContract = (acct && Number(acct.code_size) > 0) || (data.created_by && typeof data.created_by === 'object');
-    const entries = [[t('EVM address','EVM adresi'), hash(identifier)], [t('Kind','Tür'), isContract ? t('Smart contract','Akıllı sözleşme') : t('Account','Hesap')]];
+    const entries = [[t('EVM address','EVM adresi'), hash(identifier)], [t('Kind','Tür'), isContract ? t('Smart contract','Akıllı kontrat') : t('Account','Hesap')]];
     if (acct) {
       entries.push([t('Balance','Bakiye'), weiDetail(acct.balance_wei)], [t('Transactions sent (nonce)','Gönderilen işlem (nonce)'), Number.isSafeInteger(acct.nonce) ? acct.nonce : '—'],
-        [t('Code size','Kod boyutu'), Number.isSafeInteger(acct.code_size) ? acct.code_size + t(' bytes',' bayt') : '—'], [t('As of block','Şu bloğa göre'), Number.isSafeInteger(acct.height) ? acct.height : '—']);
+        [t('Code size','Kod boyutu'), Number.isSafeInteger(acct.code_size) ? acct.code_size + t(' bytes',' bayt') : '—'], [t('As of block','Verilerin ait olduğu blok'), Number.isSafeInteger(acct.height) ? acct.height : '—']);
     } else {
-      entries.push([t('Balance','Bakiye'), el('span', t('Unavailable right now — the network did not answer. Try refreshing shortly.', 'Şu an alınamıyor — ağ yanıt vermedi. Biraz sonra yenilemeyi dene.'), 'muted')]);
+      entries.push([t('Balance','Bakiye'), el('span', t('Unavailable right now — the network did not answer. Try refreshing shortly.', 'Ağ yanıt vermediği için bakiye alınamadı. Biraz sonra sayfayı yenile.'), 'muted')]);
     }
     if (data.created_by && typeof data.created_by === 'object') entries.push([t('Created in','Oluşturulduğu işlem'), link(txHref(data.created_by), position(data.created_by))]);
     content.replaceChildren(fields(entries));
@@ -656,7 +656,7 @@
       const logs = data.logs.items.filter(g => g && typeof g === 'object').slice().reverse();   // newest first
       content.append(el('h2', t('Recent events','Son olaylar')),
         el('p', t(`Events of blocks ${data.logs.from_height}–${data.logs.to_height}` + (data.logs.more === true ? ' (only the first 100 of that span are listed)' : ''), `${data.logs.from_height}–${data.logs.to_height} bloklarındaki olaylar` + (data.logs.more === true ? ' (o aralığın yalnız ilk 100’ü listelenir)' : '')), 'muted'),
-        table([t('Block','Blok'), t('First topic','İlk konu'), t('Data','Veri'), t('Transaction','İşlem')], logs.map(logRow), t('No events in this span.', 'Bu aralıkta olay yok.')));
+        table([t('Block','Blok'), t('First topic','İlk topic'), t('Data','Veri'), t('Transaction','İşlem')], logs.map(logRow), t('No events in this span.', 'Bu aralıkta olay yok.')));
     }
     nextCursor = typeof data.next_before === 'string' ? data.next_before : null;
     content.append(el('h2', t('EVM transactions','EVM işlemleri')), table([t('Position','Konum'),t('Type','Tür'),t('Height','Yükseklik'),t('Time','Zaman'),t('Fee','Ücret')], data.items.map(historyRow), t('No EVM transactions for this address.','Bu adres için EVM işlemi yok.'), 'address-history-tbody'));
@@ -693,21 +693,21 @@
   // so it is a fixed row here. Every other param is an ordinary governance change.
   const hardForks = [
     { fork: 'HF-1', param: 5, genesisValue: '121', name: t('Gas price', 'Gas fiyatı'),
-      rule: t('A transaction with a non-system part pays at least its declared gas units × the gas price, never less than the flat minimum fee.', 'Sistem dışı bir bölümü olan işlem, en az bildirdiği gas birimi × gas fiyatı öder; sabit asgari ücretin altına inmez.') },
+      rule: t('A transaction with a non-system part pays at least its declared gas units × the gas price, never less than the flat minimum fee.', 'Sistem işlemleri dışında bir bölüm içeren işlemin ücreti, en az beyan edilen gas miktarı × gas fiyatı kadardır. Ücret hiçbir durumda sabit alt sınırın altına düşmez.') },
     { fork: 'HF-2', param: 7, name: t('Governance by stake weight', 'Stake ağırlıklı yönetişim'),
-      rule: t('Governance approvals are weighed by witness voting power (more than 2/3), not by seat count; a block that leaves a touched domain unchanged still applies.', 'Yönetişim onayları koltuk sayısıyla değil witness oy gücüyle (2/3’ten fazla) tartılır; dokunduğu alanı değiştirmeyen bir blok yine uygulanır.') },
-    { fork: 'HF-3', param: 8, name: t('Consensus-only block bounds', 'Yalnız konsensüs blok sınırları'),
-      rule: t('Blocks are bounded by the consensus engine’s limits only (the 2 MiB / 2 097 152-unit bound is removed); proposals are checked for gas price, committed replay and units ≤ INT64_MAX.', 'Bloklar yalnız konsensüs motorunun sınırlarıyla sınırlanır (2 MiB / 2 097 152 birim sınırı kalkar); öneriler gas fiyatı, işlenmiş tekrar ve birim ≤ INT64_MAX için denetlenir.') },
+      rule: t('Governance approvals are weighed by witness voting power (more than 2/3), not by seat count; a block that leaves a touched domain unchanged still applies.', 'Yönetişimde onay için witness sayısına değil, toplam oy gücünün 2/3’ünden fazlasına bakılır. Bir blok, işlem yaptığı domain’in durumunu değiştirmese de uygulanabilir.') },
+    { fork: 'HF-3', param: 8, name: t('Consensus-only block bounds', 'Konsensüs motorunun blok sınırları'),
+      rule: t('Blocks are bounded by the consensus engine’s limits only (the 2 MiB / 2 097 152-unit bound is removed); proposals are checked for gas price, committed replay and units ≤ INT64_MAX.', '2 MiB / 2 097 152 birim sınırı kaldırılır; yalnızca konsensüs motorunun blok sınırları geçerli olur. Önerilen bloklarda gas fiyatı, daha önce uygulanmış işlemlerin tekrarı ve birim sayısının INT64_MAX değerini aşmaması kontrol edilir.') },
     { fork: 'HF-4', param: 9, name: t('Rule-set generation 2 + on-chain names', 'Kural seti nesil 2 + zincir üstü isimler'),
-      rule: t('The rule registry switches to generation 2 at the end of the block before activation; on-chain name registration and the name-price parameters 10–13 are in force from activation.', 'Kural kaydı, etkinleşmeden önceki bloğun sonunda 2. nesle geçer; zincir üstü isim kaydı ve 10–13 isim fiyatı parametreleri etkinleşmeden itibaren geçerlidir.') },
+      rule: t('The rule registry switches to generation 2 at the end of the block before activation; on-chain name registration and the name-price parameters 10–13 are in force from activation.', 'Geçiş bloğundan bir önceki bloğun sonunda kural kaydı 2. nesle geçer. Geçiş bloğuyla birlikte zincirde isim kaydı ve isim ücretini belirleyen 10–13 numaralı parametreler devreye girer.') },
     { fork: 'HF-5', param: 14, name: t('Rule-set generation 3 + Nodus EVM', 'Kural seti nesil 3 + Nodus EVM'),
-      rule: t('The rule registry switches to generation 3 at the end of the block before activation and the EVM domain becomes active; smart contracts, the NODUS bridge to EVM accounts and the EVM block gas limit (parameter 15) are in force from activation.', 'Kural kaydı, etkinleşmeden önceki bloğun sonunda 3. nesle geçer ve EVM alanı etkin olur; akıllı kontratlar, EVM hesaplarına NODUS köprüsü ve EVM blok gas sınırı (15. parametre) etkinleşmeden itibaren geçerlidir.') },
+      rule: t('The rule registry switches to generation 3 at the end of the block before activation and the EVM domain becomes active; smart contracts, the NODUS bridge to EVM accounts and the EVM block gas limit (parameter 15) are in force from activation.', 'Geçiş bloğundan bir önceki bloğun sonunda kural kaydı 3. nesle geçer ve EVM domain’i etkinleşir. Geçiş bloğuyla birlikte akıllı kontratlar, EVM hesaplarına NODUS aktarma köprüsü ve blok başına EVM gas sınırı (15. parametre) devreye girer.') },
     { fork: 'HF-6', param: 18, paramName: 'RULESET_GEN_ROLES', name: t('Rule-set generation 4: node owners + storage nodes', 'Kural seti nesil 4: düğüm sahipleri + storage düğümleri'),
-      rule: t('The rule registry switches to generation 4 at the end of the block before activation and the witnesses are migrated (each bond becomes a 2,000,000 NODUS bond plus a self-delegation); from activation a witness or storage node is registered by its owner wallet with the node’s consent, the witness bond is at least 2,000,000 NODUS, voting power per witness is capped (30%), and storage nodes with a 1,000,000 NODUS bond are paid from the Storage pool for keeping the block archive.', 'Kural kaydı, etkinleşmeden önceki bloğun sonunda 4. nesle geçer ve witness’lar taşınır (her bağ 2.000.000 NODUS bağ artı kendine delegasyon olur); etkinleşmeden itibaren bir witness ya da storage düğümü, düğümün onayıyla sahibi olan cüzdan tarafından kaydedilir, witness bağı en az 2.000.000 NODUS’tur, witness başına oy gücüne tavan (%30) konur ve 1.000.000 NODUS bağlı storage düğümleri blok arşivini tuttukları için Storage havuzundan ödenir.') },
+      rule: t('The rule registry switches to generation 4 at the end of the block before activation and the witnesses are migrated (each bond becomes a 2,000,000 NODUS bond plus a self-delegation); from activation a witness or storage node is registered by its owner wallet with the node’s consent, the witness bond is at least 2,000,000 NODUS, voting power per witness is capped (30%), and storage nodes with a 1,000,000 NODUS bond are paid from the Storage pool for keeping the block archive.', 'Geçiş bloğundan bir önceki bloğun sonunda kural kaydı 4. nesle geçer. Mevcut witness stake’lerinin 2.000.000 NODUS’u stake olarak kalır, geri kalanı aynı witness’a delege edilir. Geçişten sonra witness ve storage düğümlerini, düğümün onayıyla sahibinin cüzdanı kaydeder. Witness için en az 2.000.000 NODUS stake gerekir ve oy gücü %30 ile sınırlanır. 1.000.000 NODUS stake yatıran storage düğümleri, blok arşivini sakladıkları için Storage havuzundan ödül alır.') },
     { fork: 'HF-7', param: 22, paramName: 'RULESET_GEN_ROOTS', name: t('Rule-set generation 5: the roots generation (full state root + replay protection)', 'Kural seti nesil 5: roots nesli (tam state root + tekrar koruması)'),
-      rule: t('The rule registry switches to generation 5 at the end of the block before activation; from activation every table a block’s execution reads is covered by the state root, a transaction must carry an expiry no more than 720 blocks ahead, a transaction already applied cannot be applied again while it is unexpired, and transactions signed before activation are no longer valid.', 'Kural kaydı, etkinleşmeden önceki bloğun sonunda 5. nesle geçer; etkinleşmeden itibaren bir bloğun yürütülürken okuduğu her tablo state root kapsamındadır, bir işlem en fazla 720 blok ilerisini gösteren bir expiry taşımalıdır, uygulanmış bir işlem expiry’si dolmadıkça yeniden uygulanamaz ve etkinleşmeden önce imzalanmış işlemler artık geçerli değildir.') },
+      rule: t('The rule registry switches to generation 5 at the end of the block before activation; from activation every table a block’s execution reads is covered by the state root, a transaction must carry an expiry no more than 720 blocks ahead, a transaction already applied cannot be applied again while it is unexpired, and transactions signed before activation are no longer valid.', 'Geçiş bloğundan bir önceki bloğun sonunda kural kaydı 5. nesle geçer. Ardından blok işlenirken okunan tüm tablolar state root kapsamına alınır. Her işlem, en fazla 720 blok ilerisi için bir geçerlilik sınırı taşımalıdır. Daha önce uygulanmış bir işlem, süresi dolmadan yeniden uygulanamaz. Geçişten önce imzalanan işlemler geçerliliğini kaybeder.') },
     { fork: 'HF-8', param: 17, paramName: 'DELEGATE_NAME_REQUIRED', name: t('Delegating needs a chain name', 'Delege etmek için zincir adı gerekir'),
-      rule: t('From activation a new delegation, or adding to one, needs the delegating address to own a chain name, except a witness’s owner delegating to that witness; a witness stake under rule-set generation 4 needs the staker’s chain name too, and a shared vault can register a name, paid from its own coins. Existing delegations and their rewards are not affected.', 'Etkinleşmeden itibaren yeni bir delegasyon ya da mevcut birine ekleme için delege eden adresin bir zincir adı olması gerekir; istisna, bir witness’ın sahibinin o witness’a delege etmesidir. Kural seti nesil 4 altında bir witness stake’i için de stake eden adresin zincir adı gerekir; ortak bir kasa (vault) ad kaydedebilir, ücret kasanın kendi coin’lerinden ödenir. Mevcut delegasyonlar ve ödülleri etkilenmez.') },
+      rule: t('From activation a new delegation, or adding to one, needs the delegating address to own a chain name, except a witness’s owner delegating to that witness; a witness stake under rule-set generation 4 needs the staker’s chain name too, and a shared vault can register a name, paid from its own coins. Existing delegations and their rewards are not affected.', 'Geçişten sonra yeni delegasyon yapmak veya mevcut delegasyona eklemek için adresin zincirde kayıtlı bir ismi olması gerekir. Witness sahibinin kendi witness’ına yaptığı delegasyon bu şarttan muaftır. 4. nesil kural setinde witness stake’i yatıran adresin de kayıtlı ismi olmalıdır. Ortak kasalar (vault) kendi coin’leriyle ücret ödeyerek isim kaydedebilir. Mevcut delegasyonlar ve ödülleri değişmez.') },
     { fork: 'HF EVM-ML-DSA', param: 23, paramName: 'MLDSA_ACTIVE', name: t('ML-DSA-87 signature verification in Nodus EVM', 'Nodus EVM’de ML-DSA-87 imza doğrulaması'),
       rule: t('From activation an EVM call to the precompile’s fixed address verifies an ML-DSA-87 signature (fixed context “nodus.evm.attest.v1”) and returns the signer’s 32-byte address, or empty output if the signature is invalid; gas is 25,000 plus 12 per 32-byte message word, and the message is at most 65,536 bytes. Before activation the address is an ordinary account.', 'Etkinleşmeden itibaren precompile’ın sabit adresine yapılan bir EVM çağrısı bir ML-DSA-87 imzasını (sabit bağlam “nodus.evm.attest.v1”) doğrular ve imzalayanın 32 baytlık adresini döndürür; imza geçersizse çıktı boştur. Gas 25.000 artı mesajın her 32 baytlık sözcüğü için 12’dir; mesaj en fazla 65.536 bayttır. Etkinleşmeden önce bu adres sıradan bir hesaptır.') }
   ];
@@ -727,7 +727,7 @@
     if (!Number.isSafeInteger(tip)) return el('span', t('Unknown — tip not reported', 'Bilinmiyor — son blok bildirilmedi'), 'muted');
     if (tip >= effective) return el('span', t('Active', 'Etkin'), 'badge');
     const left = effective - tip, wrap = el('span');
-    wrap.append(el('span', t('Pending', 'Bekliyor'), 'badge'), document.createTextNode(' ' + left + t(' blocks to go (~', ' blok kaldı (~') + duration(left * idleBlockSeconds) + t(' at ~60 s per idle block — estimate)', ', boş blok başına ~60 sn ile — tahmin)')));
+    wrap.append(el('span', t('Pending', 'Bekliyor'), 'badge'), document.createTextNode(' ' + left + t(' blocks to go (~', ' blok kaldı (~') + duration(left * idleBlockSeconds) + t(' at ~60 s per idle block — estimate)', '; boş bloklar için ~60 sn aralıkla hesaplanan tahmin)')));
     return wrap;
   }
   const recordValue = r => typeof r.new_value === 'string' && /^\d+$/.test(r.new_value) ? r.new_value : '—';
@@ -750,12 +750,12 @@
     }
     const other = records.filter(r => !forkParams.has(r.param_id)).map(r => row([recordParam(r), recordValue(r), voteCell(r), time(r.time), Number.isSafeInteger(r.effective_height) ? r.effective_height : '—', forkStatus(r.effective_height, tip)]));
     content.replaceChildren(
-      el('p', t('Hard forks on Nodus Chain activate at a block height after a witness vote; every node switches at the same block.', 'Nodus Chain’deki hard fork’lar bir witness oylamasından sonra belirli bir blok yüksekliğinde etkinleşir; her düğüm aynı blokta geçiş yapar.'), 'scan-explanation'),
+      el('p', t('Hard forks on Nodus Chain activate at a block height after a witness vote; every node switches at the same block.', 'Nodus Chain’de hard fork’lar witness oylamasıyla kabul edilir ve belirlenen blokta devreye girer. Tüm düğümler aynı blokta yeni kurallara geçer.'), 'scan-explanation'),
       el('p', t('Last reported tip: ', 'Son bildirilen blok: ') + (Number.isSafeInteger(tip) ? tip : '—'), 'muted'),
       el('h2', t('Hard forks', 'Hard fork’lar')),
-      table([t('Fork', 'Fork'), t('What it changes', 'Neyi değiştirir'), t('Parameter', 'Parametre'), t('Voted in block', 'Oylandığı blok'), t('Effective block', 'Geçerlilik bloğu'), t('Status', 'Durum')], forkRows, t('None', 'Yok')),
+      table([t('Fork', 'Fork'), t('What it changes', 'Getirdiği değişiklik'), t('Parameter', 'Parametre'), t('Voted in block', 'Oylandığı blok'), t('Effective block', 'Devreye girdiği blok'), t('Status', 'Durum')], forkRows, t('None', 'Yok')),
       el('h2', t('Other governance changes', 'Diğer yönetişim değişiklikleri')),
-      table([t('Parameter', 'Parametre'), t('New value', 'Yeni değer'), t('Voted in block', 'Oylandığı blok'), t('Time', 'Zaman'), t('Effective block', 'Geçerlilik bloğu'), t('Status', 'Durum')], other, t('No other governance changes.', 'Başka yönetişim değişikliği yok.')));
+      table([t('Parameter', 'Parametre'), t('New value', 'Yeni değer'), t('Voted in block', 'Oylandığı blok'), t('Time', 'Zaman'), t('Effective block', 'Devreye girdiği blok'), t('Status', 'Durum')], other, t('No other governance changes.', 'Başka yönetişim değişikliği yok.')));
     if (data.truncated === true) content.append(el('p', t('Only the first 1000 governance records are shown.', 'Yalnız ilk 1000 yönetişim kaydı gösteriliyor.'), 'muted'));
   }
   async function loadGovernance() {

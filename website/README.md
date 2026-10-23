@@ -255,6 +255,14 @@ API responses `no-store`.
 
 ## Content and naming
 
+Turkish copy is written for Turkish readers, rather than following English sentence
+structure word for word. Use complete, direct sentences, concrete headings, and a
+consistent informal singular voice in product/help text; legal pages retain their
+formal voice. Keep established technical names recognizable (for example witness,
+stake, wire ID and intent ID). Preserve amounts, conditions, links and the distinction
+between available and planned features when rewording. Edit the authored dictionaries
+and guide content, then rebuild the generated Wiki and Scan pages and search index.
+
 The user confirmed **Nodus / NODUS**, to take effect with the testnet transition.
 The chain has been a **testnet** since 30 September 2026 (it was devnet until
 then, and the site's labels were changed from devnet to testnet the same day);
@@ -897,3 +905,21 @@ amounts (Scan's Hard forks page keeps them). Removed TR keys: every old `history
 `.later`. Every `data-i18n` key on the page was checked to have a TR string. `wiki/content.mjs` and the Scan planned list
 (`build-portals.mjs`) are unchanged. `npm run check` and `npm run build:portals` run; the EN and TR pages were rendered
 headless (Chromium) and checked by eye.
+
+2026-10-23: Reworked Turkish copy across the main site, all 12 Wiki guides and
+Scan after feedback that it sounded literally translated. Sentences now follow
+natural Turkish usage; recognizable technical names remain intact. Existing
+roadmap edits are preserved, including the CPUNK airdrop after mainnet. Rebuilt
+Wiki pages/search and Scan pages; added content-versioned main `app.js` references
+so cached scripts do not delay the revised copy. Fixed existing narrow-screen
+overflow from inline hashes in the developers guide without changing code blocks.
+Syntax/build/package checks pass. Browser checks covered 36 pages in EN/TR at
+five widths; the four initial layout failures were the inline-hash overflow,
+and all 130 Wiki cases pass after its correction. Language/reload, Wiki search
+and roadmap filter interactions pass. Parallel Scan checks exceeded the existing
+preview upstream's rate limit (confirmed in Nginx logs); normal stats/hardforks
+loads then completed without errors. Published after explicit operator approval
+on 2026-10-23: 41 affected public files backed up and replaced. Fresh SSH readback
+and public HTTPS checks matched all 41 package hashes. Live mobile/desktop,
+TR/EN switching/reload and Turkish Wiki search/navigation checks passed without
+request or JavaScript errors. Deployment/rollback details are in deploy/README.md.
