@@ -535,7 +535,7 @@ int nodus_tcp_sc_enable(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
     if (tcp == NULL || conn == NULL || cfg == NULL || cfg->id == NULL)
         return -1;
     if (conn->sc != NULL || conn->close_pending || conn->state == NODUS_CONN_CLOSED ||
-        conn->is_unix) {
+        conn->is_unix || conn->channel_crypto.established) {
         QGP_LOG_ERROR(LOG_TAG_SC, "enable refused: connection not eligible (slot %d)", conn->slot);
         return -1;
     }

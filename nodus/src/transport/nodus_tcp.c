@@ -1109,15 +1109,16 @@ static void sc_apply_done(nodus_tcp_t *tcp) {
     while (j != NULL) {
         nodus_sc_job_t *next = j->next;        /* apply frees j */
         nodus_tcp_conn_t *conn = NULL;
-        nodus_sc_apply_t r = nodus_tcp_sc_job_apply(tcp, j, &conn);
+        nodus_sc_apply_t r;
 
-        if (r == NODUS_SC_APPLY_OK) {
-            wl_enter(tcp);
-            int rc = sc_push_out_locked(conn);
-            wl_leave(tcp);
-            if (rc != 0)
-                r = NODUS_SC_APPLY_FAIL;
-        }
+        /* One critical section: applying a result writes the machine (state,
+         * its output queue), which a sender on another thread reads under the
+         * same lock. No callback runs inside. */
+        wl_enter(tcp);
+        r = nodus_tcp_sc_job_apply(tcp, j, &conn);
+        if (r == NODUS_SC_APPLY_OK && sc_push_out_locked(conn) != 0)
+            r = NODUS_SC_APPLY_FAIL;
+        wl_leave(tcp);
         if (r == NODUS_SC_APPLY_FAIL) {
             if (tcp->on_disconnect)
                 tcp->on_disconnect(conn, tcp->cb_ctx);

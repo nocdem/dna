@@ -26,6 +26,12 @@
  *
  * and the reverse on the way out: nodus frame ─▶ seal ─▶ (WS frames) ─▶
  * wbuf. Nodus frames travel UNCHANGED inside the sealed stream (O-1 a).
+ * The sealed stream is cut into WS binary frames of at most
+ * NODUS_TCP_SC_WS_GROUP_FRAMES sealed frames (a whole sealed 5 MiB nodus
+ * frame, 5,346,324 bytes, is more than NODUS_WS_MAX_PAYLOAD, 5,242,887, which
+ * the server enforces per WS frame — close 1009). A client of 3c must cut its
+ * own sealed stream the same way (any cut at or below NODUS_WS_MAX_PAYLOAD is
+ * accepted; the stream is a byte stream).
  *
  * Nothing reaches the nodus frame parser before the machine is
  * AUTHENTICATED. Plaintext the machine already opened (the tail of the
