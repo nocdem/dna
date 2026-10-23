@@ -9,6 +9,7 @@
 
 #include "nodus/nodus.h"
 #include "transport/nodus_tcp.h"
+#include "transport/nodus_tcp_sc.h"   /* the client session: SecretConnection */
 #include "protocol/nodus_tier2.h"
 #include "protocol/nodus_cbor.h"
 #include "protocol/nodus_wire.h"
@@ -741,6 +742,16 @@ static void client_on_connect(nodus_tcp_conn_t *conn, void *ctx) {
 
 /* ── Lifecycle ──────────────────────────────────────────────────── */
 
+_Static_assert(NODUS_CLIENT_CHAIN_ID_SIZE == CMT_P2P_SC_CHAIN_ID_SIZE,
+               "nodus.h's chain id size must equal the SecretConnection's");
+
+/* An all-zero chain id is "not set" (the node side treats it the same way). */
+static bool client_chain_id_is_zero(const uint8_t id[NODUS_CLIENT_CHAIN_ID_SIZE]) {
+    uint8_t acc = 0;
+    for (size_t i = 0; i < NODUS_CLIENT_CHAIN_ID_SIZE; i++) acc |= id[i];
+    return acc == 0;
+}
+
 int nodus_client_init(nodus_client_t *client,
                        const nodus_client_config_t *config,
                        const nodus_identity_t *identity) {
@@ -754,6 +765,19 @@ int nodus_client_init(nodus_client_t *client,
         QGP_LOG_ERROR(LOG_TAG, "init: invalid server pin list (count=%d, list=%s)",
                       config->pinned_server_fp_count,
                       config->pinned_server_fps ? "set" : "NULL");
+        return -1;
+    }
+    /* DHT v2 package 3 (Kurultay #43, mandatory fixes): no unpinned client
+     * and no client without a chain id. A zeroed config used to mean "no
+     * pin, round-3 fallback"; that session no longer exists. */
+    if (config->pinned_server_fp_count <= 0 || !config->pinned_server_fps) {
+        QGP_LOG_ERROR(LOG_TAG, "init: refused — no server pin (pinned_server_fps / "
+                      "pinned_server_fp_count): a session needs a pinned server");
+        return -1;
+    }
+    if (!config->has_expected_chain_id || client_chain_id_is_zero(config->expected_chain_id)) {
+        QGP_LOG_ERROR(LOG_TAG, "init: refused — no chain id (expected_chain_id / "
+                      "has_expected_chain_id): a session is bound to one chain");
         return -1;
     }
 

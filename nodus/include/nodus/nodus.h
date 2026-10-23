@@ -33,6 +33,10 @@ extern "C" {
 #define NODUS_CLIENT_MAX_SERVERS   8
 #define NODUS_CLIENT_MAX_LISTENS  128
 #define NODUS_CLIENT_MAX_CH_SUBS   32
+/** Size of the chain id a client session is bound to (equals
+ *  CMT_P2P_SC_CHAIN_ID_SIZE; asserted in nodus_client.c — this header stays
+ *  free of the secret-connection headers, the browser builds include it). */
+#define NODUS_CLIENT_CHAIN_ID_SIZE 32
 
 /* ── Connection state ───────────────────────────────────────────── */
 
@@ -97,26 +101,37 @@ typedef struct {
     nodus_on_state_change_fn    on_state_change;
     void                       *callback_data;
 
-    /* Server key pin (optional). Fingerprints (SHA3-512 of the server's
-     * Dilithium5 public key — nodus_fingerprint(), the same 64-byte value
-     * as a node id) of the servers this client accepts.
+    /* Server key pin (MANDATORY since the client session moved onto the
+     * SecretConnection layer, DHT v2 package 3 — decisions/2026-10-23-
+     * kurultay-43-summary.md, mandatory fixes). Fingerprints (SHA3-512 of
+     * the server's ML-DSA-87 public key — nodus_fingerprint(), the same
+     * 64-byte value as a node id) of the servers this client accepts.
      *
-     * NULL / 0 (what a zeroed config gives): no pin — the handshake behaves
-     * exactly as before this field existed.
+     * nodus_client_init() REFUSES a config with no pin: pinned_server_fps
+     * NULL or pinned_server_fp_count <= 0 (what a zeroed config gives) —
+     * there is no unpinned client, no round-3 / cached-key / unencrypted
+     * session.
      *
-     * Set (count > 0): the connection FAILS CLOSED unless the server's
-     * AUTH_OK carries a Kyber pubkey + server pubkey + kpk_sig, the
-     * signature verifies, fingerprint(server pubkey) is in this list, and
-     * the AUTH_OK also carries an ML-KEM-1024 pubkey whose mpk_sig
-     * verifies — a pinned session is ML-KEM-1024 only (operator
-     * 2026-09-29). With a pin set there is no unsigned-kpk ("legacy
-     * server"), cached-key, Kyber round-3 or unencrypted session.
+     * Each connect checks the server's CLAIMED public key against this list
+     * BEFORE it encapsulates to it (nodus_tcp_sc.h "PROFILES, PURPOSES, THE
+     * PIN"); a key whose fingerprint is not in the list aborts the handshake.
      *
      * The array is owned by the caller and must outlive the client (it is
      * not copied; same rule as nodus_tcp_t.ws_origins). count > 0 with a
-     * NULL pointer, or count < 0, makes nodus_client_init() fail. */
+     * NULL pointer, or count < 0, also makes nodus_client_init() fail. */
     const nodus_key_t          *pinned_server_fps;
     int                         pinned_server_fp_count;
+
+    /* The chain id the session is bound to (MANDATORY, same rule): the
+     * 32-byte id of the chain this client means to talk to. It travels in
+     * the SecretConnection HELLO of both ends and the handshake fails when
+     * the two differ (a per-network binding: a client of one network cannot
+     * complete a session with a node of another). Set has_expected_chain_id
+     * together with expected_chain_id; nodus_client_init() REFUSES a config
+     * with has_expected_chain_id false (or an all-zero id). The id is copied
+     * into the client. */
+    uint8_t                     expected_chain_id[NODUS_CLIENT_CHAIN_ID_SIZE];
+    bool                        has_expected_chain_id;
 } nodus_client_config_t;
 
 /* ── Concurrent request slot ────────────────────────────────────── */

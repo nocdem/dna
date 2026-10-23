@@ -195,6 +195,18 @@ extern "C" {
   #define NODUS_SC_INLINE 1
 #endif
 
+/* ── Per-port protocol versions (Kurultay #43 O-6) ───────────────────── */
+
+/** Protocol version of the client session (4001 / WebSocket, profile CLIENT,
+ *  purpose 0x0C). Own symbol, never CMT_P2P_PROTOCOL_VERSION (4004's, 8): a
+ *  future change of this number is a flag day for every client (the
+ *  all-at-once rule). decisions/2026-10-23-dht-v2-session-bytes.md addendum
+ *  2026-10-24, operator "İkisi de 1". */
+#define NODUS_CSESS_PROTO_VERSION 1u
+/** Protocol version of the node session (4002, profile NODE, purpose 0x0D);
+ *  same rule, same addendum. */
+#define NODUS_NSESS_PROTO_VERSION 1u
+
 /* ── Constants (NOT in the records: sizes; derivations in the comments) ── */
 
 /** Worker threads. Mirrors NODUS_P2P_WORKERS_DEFAULT (nodus_p2p_host.h:310). */
