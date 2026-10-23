@@ -131,6 +131,12 @@ set(NODUS_SOURCES
 
     # Transport — TCP is cross-platform (epoll on Linux, select on Windows)
     src/transport/nodus_tcp.c
+    # DHT v2 sub-package 3b-1: the optional SecretConnection layer of
+    # nodus_tcp (per-connection machine, bounded handshake-job worker,
+    # sealing). Not enabled on any port yet — 3b-2 / 3c wire it. Compiled with
+    # NODUS_TCP_SC (target_compile_definitions below); the browser / web-wallet
+    # builds that list nodus_tcp.c themselves do not define it.
+    src/transport/nodus_tcp_sc.c
     # Socket readiness + socket shims for the ports 4000-4004 (net-layer
     # design 2026-10-19, package N1): epoll on Linux/Android, select on
     # Windows. Today's user: the 4004 host (nodus_p2p_host.c below).
@@ -1190,6 +1196,12 @@ target_include_directories(nodus PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 # Channel system disabled — heap corruption in ring/replication causes SIGABRT
 target_compile_definitions(nodus PUBLIC NODUS_CHANNELS_DISABLED)
 
+# DHT v2 3b-1: compile the optional SecretConnection layer into nodus_tcp.c.
+# PRIVATE on purpose — only libnodus compiles that file here; the browser and
+# web-wallet builds that list nodus_tcp.c on their own stay without the layer
+# until 3c adds nodus_tcp_sc.c + cmt_p2p_secret.c to them and defines this.
+target_compile_definitions(nodus PRIVATE NODUS_TCP_SC=1)
+
 target_include_directories(nodus PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -1552,6 +1564,16 @@ add_test(NAME test_hashring COMMAND test_hashring)
 add_executable(test_tcp tests/test_tcp.c)
 target_link_libraries(test_tcp nodus dsa nodus)
 add_test(NAME test_tcp COMMAND test_tcp)
+
+# DHT v2 sub-package 3b-1 — the SecretConnection layer of nodus_tcp: loopback
+# pairs on the CLIENT (0x0C) and NODE (0x0D) profiles incl. a 5 MiB frame,
+# mixed profiles, the dial pin, reserve-before-seal on a full queue, (slot,
+# generation) on job completions, the layer on a WebSocket connection, and
+# the unchanged bytes without the layer. Default build; ephemeral loopback
+# ports (no fixed port); heap-only.
+add_executable(test_tcp_sc tests/test_tcp_sc.c)
+target_link_libraries(test_tcp_sc nodus dsa kem nodus crypto)
+add_test(NAME test_tcp_sc COMMAND test_tcp_sc)
 
 # Phase 3: Pending queue / backpressure test
 add_executable(test_pending_queue tests/test_pending_queue.c)

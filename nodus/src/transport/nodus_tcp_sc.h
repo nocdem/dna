@@ -1,0 +1,358 @@
+/**
+ * Nodus — SecretConnection layer of the TCP / WebSocket transport
+ * (DHT v2 sub-package 3b-1: the transport layer only).
+ *
+ * @file nodus_tcp_sc.h
+ *
+ * ═══ STATUS: NOT ENABLED ON ANY PORT ═══════════════════════════════════
+ * Nothing calls nodus_tcp_sc_enable yet. 3b-2 wires it into the 4001 / 4002
+ * server and deletes the hello / auth / key_init / channel-crypto path;
+ * 3c wires the client SDK and the consumers. Until then a connection
+ * without the layer is byte-for-byte what nodus_tcp.c always did.
+ * Governing records: docs/plans/2026-10-23-dht-v2-session-package-design.md
+ * rev 1 (O-1 a, O-3 b), decisions/2026-10-23-kurultay-43-summary.md,
+ * decisions/2026-10-23-dht-v2-session-bytes.md.
+ * ════════════════════════════════════════════════════════════════════════
+ *
+ * ── WHAT IT IS ─────────────────────────────────────────────────────────
+ * An OPTIONAL per-connection cmt_p2p_sc_t (the 4004 secret connection,
+ * shared/dnac/cmt_p2p_secret.h) between the socket and the nodus frame
+ * parser:
+ *
+ *   plain TCP   socket bytes ─▶ machine ─▶ plaintext ─▶ nodus frames
+ *   WebSocket   WS payload   ─▶ machine ─▶ plaintext ─▶ nodus frames
+ *               (the WS layer — Upgrade, ping/pong, close — stays outside
+ *               the sealed stream; session design rev 1 / Kurultay #43)
+ *
+ * and the reverse on the way out: nodus frame ─▶ seal ─▶ (WS frames) ─▶
+ * wbuf. Nodus frames travel UNCHANGED inside the sealed stream (O-1 a).
+ *
+ * Nothing reaches the nodus frame parser before the machine is
+ * AUTHENTICATED. Plaintext the machine already opened (the tail of the
+ * AUTHSIG frame, cmt_p2p_secret.h cmt_p2p_sc_read_pending) is drained even
+ * when no new socket byte arrives. A nodus_tcp_send before AUTHENTICATED is
+ * refused (-1): nothing is queued, nothing is sealed.
+ *
+ * ── PROFILES, PURPOSES, THE PIN ────────────────────────────────────────
+ * The caller names a profile; the layer binds the host's signing purpose to
+ * it (cmt_p2p_secret.h "Obligations for DHT v2 sub-package 3b"):
+ *   &CMT_P2P_SC_PROFILE_CLIENT  ─ purpose 0x0C  (nodus_sign_client_session_auth)
+ *   &CMT_P2P_SC_PROFILE_NODE    ─ purpose 0x0D  (nodus_sign_node_session_auth)
+ * Any other profile (WITNESS included — 4004 owns that one) is refused.
+ * The INITIATOR must carry the exact identity it meant to dial
+ * (cfg.expected_peer, a SHA3-512 fingerprint of the peer's public key, i.e.
+ * its node id; stored in conn->expected_peer_id). The layer compares the
+ * responder's CLAIMED key with it BEFORE the ENCAPS job is run and aborts
+ * on a mismatch (pattern: cmt_p2p_transport.c:205-219, decision
+ * 2026-09-26-witness-port-session.md). An unpinned initiator is refused at
+ * enable.
+ *
+ * ── HANDSHAKE JOBS (O-3 b) ─────────────────────────────────────────────
+ * The machine's asymmetric steps (ENCAPS / DECAPS / SIGN / VERIFY) run on a
+ * worker owned by the nodus_tcp_t, separate from 4004's host:
+ *   · started by the first nodus_tcp_sc_enable, stopped (threads joined,
+ *     queues dropped) by nodus_tcp_close;
+ *   · NODUS_TCP_SC_WORKERS threads, two classes: OUTBOUND (we dialed) is
+ *     served before INBOUND (we accepted);
+ *   · each class is bounded: QUEUED + RUNNING + COMPLETED-NOT-DELIVERED
+ *     jobs together never exceed NODUS_TCP_SC_JOBQ_OUT / _IN; a job that
+ *     does not fit closes its connection (inbound: the handshake is dropped
+ *     under load; outbound: the dial fails);
+ *   · a job is a self-contained COPY of the machine's job (4004 pattern);
+ *     the worker never touches a connection;
+ *   · a result is applied on the poll loop, by (slot, generation): if the
+ *     pool slot no longer holds the connection that generation was given to
+ *     (closed, or reused), the result is discarded and its copy freed.
+ * Browser / single-thread builds (__EMSCRIPTEN__, or NODUS_SC_INLINE) run
+ * every job inline on the loop and apply it at once — no thread, no queue;
+ * the caller yields to the browser between polls as it does today.
+ *
+ * COMPLETION DELIVERY (explicit polling, written down as the record asks):
+ * nodus_tcp has no wake descriptor and this package does not add one. A
+ * finished job is noticed at the START of the next nodus_tcp_poll. While any
+ * job is outstanding on a transport, nodus_tcp_poll never waits longer than
+ * NODUS_TCP_SC_POLL_MS, so a result is applied at most that long after it is
+ * ready (plus the loop's own work); with no job outstanding the caller's
+ * timeout is untouched. Latency bound of one handshake step =
+ * NODUS_TCP_SC_POLL_MS; a handshake has three jobs per side (ENCAPS or
+ * DECAPS, SIGN, VERIFY), so at most 3 * NODUS_TCP_SC_POLL_MS added by the
+ * delivery, on top of the jobs' own run time. The loop that owns the
+ * transport must call nodus_tcp_poll regularly — a caller that stops
+ * polling stops its handshakes.
+ *
+ * ── LIFETIMES (caller's obligations) ───────────────────────────────────
+ * cfg.id (the signing key, and for a responder the ML-KEM key pair) must
+ * outlive nodus_tcp_close: a queued or running job holds a pointer to it
+ * and may run after the connection is gone. The machine's responder KEM key
+ * is NOT copied (cmt_p2p_sc_init), same rule.
+ *
+ * ── BUFFER BOUNDS (derived; see the _Static_asserts below) ─────────────
+ * The largest nodus frame is NODUS_FRAME_HEADER_SIZE + NODUS_MAX_FRAME_TCP
+ * = 5,242,887 bytes = 5,121 sealed frames of 1,044 bytes = 5,346,324 bytes
+ * on the wire (more than today's 5,246,983-byte write buffer). A
+ * connection with the layer therefore may grow its write buffer to
+ * NODUS_TCP_SC_WBUF_MAX = 5,346,324 + the WebSocket frame headers of the
+ * 32-sealed-frame groups (161 groups x 4 bytes) + the same 4096-byte slack
+ * the plain bound carries (101 response / pong / close) = 5,351,064 bytes:
+ * +104,081 bytes (+1.98%) over the plain per-connection worst case. The
+ * pending queue keeps its existing caps (NODUS_PENDING_MAX_FRAMES frames,
+ * NODUS_PENDING_MAX_BYTES bytes) — they now count SEALED bytes. The read
+ * buffer holds plaintext and may grow to NODUS_TCP_SC_RBUF_MAX = 5,246,983 +
+ * 16,384 = 5,263,367 bytes (+0.31%). Per layer-enabled connection
+ * add the machine (sizeof(cmt_p2p_sc_t), about 42 KB, heap) and, only while
+ * a handshake job blocks input, up to NODUS_TCP_SC_RAW_CHUNK (16 KiB) of
+ * held socket bytes. Jobs: at most NODUS_TCP_SC_JOBQ_OUT + _IN copies of
+ * about 17 KB each.
+ *
+ * ── THREADING ──────────────────────────────────────────────────────────
+ * Same model as the rest of nodus_tcp: one thread polls; with a write lock
+ * installed (nodus_tcp_set_write_lock) other threads may send. The machine
+ * is touched under that lock by BOTH sides (reads/feeds, completions, and
+ * seals), so its send half and receive half never race. The worker threads
+ * touch only their private job copies.
+ *
+ * Copyright (c) 2026 nocdem
+ * SPDX-License-Identifier: MIT
+ */
+
+#ifndef NODUS_TCP_SC_H
+#define NODUS_TCP_SC_H
+
+#include "transport/nodus_tcp.h"
+#include "dnac/cmt_p2p_secret.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Inline (threadless) jobs in the browser and in any single-thread build. */
+#if defined(__EMSCRIPTEN__) && !defined(NODUS_SC_INLINE)
+  #define NODUS_SC_INLINE 1
+#endif
+
+/* ── Constants (NOT in the records: sizes; derivations in the comments) ── */
+
+/** Worker threads. Mirrors NODUS_P2P_WORKERS_DEFAULT (nodus_p2p_host.h:310). */
+#define NODUS_TCP_SC_WORKERS     2
+/** Outstanding handshake jobs per class (queued + running + completed and
+ *  not yet delivered). Mirrors NODUS_P2P_JOBQ_DEPTH (nodus_p2p_host.c:882,
+ *  "a size" there too). Each live connection has at most ONE job out, so
+ *  this is also the number of handshakes a class advances at once. */
+#define NODUS_TCP_SC_JOBQ_OUT    64
+#define NODUS_TCP_SC_JOBQ_IN     64
+/** Longest nodus_tcp_poll wait while a job is outstanding (ms). */
+#define NODUS_TCP_SC_POLL_MS     5
+/** Socket bytes read per step of the SC read path; also the capacity of the
+ *  hold buffer. One WS payload run handed to the layer by one read is at
+ *  most this long, so the hold never overflows for an honest peer. */
+#define NODUS_TCP_SC_RAW_CHUNK   16384
+/** Sealed frames per WebSocket frame on a WS connection. 32 * 1044 = 33,408
+ *  bytes: below 65,536, so every WS header is 4 bytes, and well below
+ *  NODUS_WS_MAX_PAYLOAD (a whole sealed 5 MiB frame is not). */
+#define NODUS_TCP_SC_WS_GROUP_FRAMES 32
+
+/* Derived bounds. */
+#define NODUS_TCP_SC_PLAIN_MAX \
+    ((size_t)NODUS_FRAME_HEADER_SIZE + (size_t)NODUS_MAX_FRAME_TCP)
+#define NODUS_TCP_SC_FRAMES_MAX \
+    ((NODUS_TCP_SC_PLAIN_MAX + CMT_P2P_SC_DATA_MAX_SIZE - 1) / CMT_P2P_SC_DATA_MAX_SIZE)
+#define NODUS_TCP_SC_SEALED_MAX \
+    (NODUS_TCP_SC_FRAMES_MAX * (size_t)CMT_P2P_SC_SEALED_FRAME_SIZE)
+#define NODUS_TCP_SC_WS_GROUPS_MAX \
+    ((NODUS_TCP_SC_FRAMES_MAX + NODUS_TCP_SC_WS_GROUP_FRAMES - 1) / NODUS_TCP_SC_WS_GROUP_FRAMES)
+#define NODUS_TCP_SC_WS_HDR 4   /* header of a 126..65535-byte WS payload */
+#define NODUS_TCP_SC_WBUF_SLACK 4096   /* as the plain bound (nodus_tcp.c) */
+#define NODUS_TCP_SC_WBUF_MAX \
+    (NODUS_TCP_SC_SEALED_MAX + NODUS_TCP_SC_WS_GROUPS_MAX * NODUS_TCP_SC_WS_HDR + \
+     NODUS_TCP_SC_WBUF_SLACK)
+/** Read buffer bound: the plain bound (one nodus frame + 4096) + one raw
+ *  chunk of plaintext. A chunk is fed to the machine whole and parsed after,
+ *  and it opens to at most NODUS_TCP_SC_RAW_CHUNK bytes (16 sealed frames:
+ *  a partial one carried over + 15 new), so the bytes of the NEXT frame that
+ *  ride in the chunk that completes this one must fit too. */
+#define NODUS_TCP_SC_RBUF_MAX \
+    ((size_t)NODUS_MAX_FRAME_TCP + NODUS_FRAME_HEADER_SIZE + 4096 + NODUS_TCP_SC_RAW_CHUNK)
+
+_Static_assert(NODUS_TCP_SC_FRAMES_MAX == 5121,
+               "a 5 MiB nodus frame is 5,121 sealed frames (Kurultay #43)");
+_Static_assert(NODUS_TCP_SC_SEALED_MAX == 5346324,
+               "5,121 x 1,044 = 5,346,324 bytes (Kurultay #43)");
+_Static_assert((size_t)NODUS_TCP_SC_WS_GROUP_FRAMES * CMT_P2P_SC_SEALED_FRAME_SIZE <= 65535 &&
+               (size_t)NODUS_TCP_SC_WS_GROUP_FRAMES * CMT_P2P_SC_SEALED_FRAME_SIZE >= 126,
+               "a WS group's header must be the 4-byte form");
+
+/* ── Enable ──────────────────────────────────────────────────────────── */
+
+typedef struct {
+    cmt_p2p_sc_role_t           role;       /* who dialed: INITIATOR / RESPONDER */
+    const cmt_p2p_sc_profile_t *profile;    /* &..._CLIENT or &..._NODE only     */
+    /** Signing key (and, for a RESPONDER, the ML-KEM-1024 pair, so
+     *  id->has_mlkem is required). Must outlive nodus_tcp_close. */
+    const nodus_identity_t     *id;
+    uint32_t                    proto_ver;  /* per-PORT symbol, never 4004's     */
+    uint8_t                     chain_id[CMT_P2P_SC_CHAIN_ID_SIZE];
+    /** INITIATOR: the node id (SHA3-512 of the public key) the caller meant
+     *  to dial — required. RESPONDER: ignored. Copied. */
+    const nodus_key_t          *expected_peer;
+} nodus_tcp_sc_cfg_t;
+
+/**
+ * Turn the SecretConnection on for `conn`. Allowed exactly once, on a
+ * connection that has carried no byte yet in either direction (nothing in
+ * rbuf / wbuf / the auth pending buffer / the pending queue), not closing,
+ * not AF_UNIX:
+ *   · RESPONDER: from on_accept (before the first read) — plain or WS
+ *     (on a WS connection the machine starts after the Upgrade);
+ *   · INITIATOR: right after nodus_tcp_connect returns, or from on_connect.
+ *     Its HELLO is put in the write buffer here (sent as soon as the socket
+ *     is connected).
+ * @return 0; -1 on a bad argument, a refused profile / pin / role, a
+ *         connection that is not clean, or an allocation / worker failure
+ *         (the connection is left exactly as it was).
+ */
+int nodus_tcp_sc_enable(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
+                        const nodus_tcp_sc_cfg_t *cfg);
+
+/** Layer enabled AND the machine is AUTHENTICATED. */
+bool nodus_tcp_sc_authenticated(const nodus_tcp_conn_t *conn);
+
+/** The peer's public key (CMT_P2P_SC_DSA_PK_SIZE bytes) once
+ *  AUTHENTICATED; NULL before that or without the layer. */
+const uint8_t *nodus_tcp_sc_peer_pubkey(const nodus_tcp_conn_t *conn);
+
+/** The machine's send counter (tests: a refused send must not move it);
+ *  0 without the layer. */
+uint64_t nodus_tcp_sc_send_counter(const nodus_tcp_conn_t *conn);
+
+/** The generation this connection's layer was given at enable (0 without the
+ *  layer). Generations are never reused within a transport; with the pool
+ *  slot they identify one connection for the life of a job. */
+uint64_t nodus_tcp_sc_generation(const nodus_tcp_conn_t *conn);
+
+/** Jobs outstanding (queued + running + completed-not-delivered) on this
+ *  transport, both classes; 0 without a worker. */
+int nodus_tcp_sc_outstanding(const nodus_tcp_t *tcp);
+
+/* ═══ transport-internal (used by nodus_tcp.c; tests may call the job
+ * entry points marked so) ═══════════════════════════════════════════════ */
+
+/** One handshake job: a self-contained copy of the machine's job. */
+typedef struct nodus_sc_job {
+    struct nodus_sc_job *next;
+    int                  slot;
+    uint64_t             gen;
+    int                  cls;            /* 0 OUTBOUND, 1 INBOUND */
+    cmt_p2p_sc_job_kind_t kind;
+    int                  rc;             /* cmt_p2p_sc_job_run's result */
+    cmt_p2p_sc_host_t    host;           /* by value: the job outlives its conn */
+    cmt_p2p_sc_job_t     job;            /* pointers into this struct */
+    uint8_t kem_pk[CMT_P2P_SC_KEM_PK_SIZE];
+    uint8_t kem_ct[CMT_P2P_SC_KEM_CT_SIZE];
+    const uint8_t *kem_sk;               /* DECAPS: the responder's key, caller-owned */
+    uint8_t msg[CMT_P2P_SC_CHALLENGE_SIZE];
+    size_t  msg_len;
+    uint8_t dsa_pk[CMT_P2P_SC_DSA_PK_SIZE];
+    uint8_t sig[CMT_P2P_SC_SIG_SIZE];
+    uint8_t kem_ct_out[CMT_P2P_SC_KEM_CT_SIZE];
+    uint8_t kem_ss_out[CMT_P2P_SC_KEM_SS_SIZE];
+    uint8_t sig_out[CMT_P2P_SC_SIG_SIZE];
+} nodus_sc_job_t;
+
+typedef enum {
+    NODUS_SC_APPLY_DISCARDED = 0,  /* stale (slot, generation): job freed, nothing done */
+    NODUS_SC_APPLY_OK,             /* applied; *conn_out is the connection to resume    */
+    NODUS_SC_APPLY_FAIL            /* applied and the connection must close (*conn_out) */
+} nodus_sc_apply_t;
+
+/** Take the finished jobs off the worker, oldest first (caller applies and
+ *  frees each with nodus_tcp_sc_job_apply). NULL when none. */
+nodus_sc_job_t *nodus_tcp_sc_take_done(nodus_tcp_t *tcp);
+
+/**
+ * Apply one finished job by (slot, generation) and FREE it in every case.
+ * `tcp->pool[job->slot]` must still hold the connection whose layer was
+ * given `job->gen`, and that layer must be waiting for exactly this job;
+ * otherwise NODUS_SC_APPLY_DISCARDED. On OK / FAIL the machine has been
+ * advanced (the next job, if any, is already submitted) and *conn_out names
+ * the connection. Callable by tests with a fabricated stale job (it must be
+ * malloc'd).
+ */
+nodus_sc_apply_t nodus_tcp_sc_job_apply(nodus_tcp_t *tcp, nodus_sc_job_t *job,
+                                        nodus_tcp_conn_t **conn_out);
+
+/** The longest wait nodus_tcp_poll may use now (see COMPLETION DELIVERY). */
+int nodus_tcp_sc_poll_timeout(const nodus_tcp_t *tcp, int timeout_ms);
+
+/** True while jobs are outstanding (poll must not return early). */
+bool nodus_tcp_sc_busy(const nodus_tcp_t *tcp);
+
+/** nodus_tcp_close: stop the threads, drop every queued / finished job. */
+void nodus_tcp_sc_worker_stop(nodus_tcp_t *tcp);
+
+/** conn_free: zero and release the machine and the hold buffer. */
+void nodus_tcp_sc_free(nodus_tcp_conn_t *conn);
+
+/**
+ * IMPLEMENTED BY nodus_tcp.c (it owns the buffers): move the machine's
+ * pending output (handshake messages — they are not nodus frames) into the
+ * write buffer, WebSocket-framed on a WS connection, then push what the
+ * socket takes if the connection is connected. Takes the write lock itself.
+ * @return 0; -1 only if the bytes could not be buffered.
+ */
+int nodus_tcp_sc_flush_hs(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
+
+/** Receives plaintext the machine opened. Return 0, or -1 to fail the feed. */
+typedef int (*nodus_tcp_sc_plain_fn)(void *ctx, const uint8_t *data, size_t len);
+
+/**
+ * Hand `n` raw bytes (socket bytes, or the payload of a WS frame) to the
+ * layer — n may be 0: that resumes held input and drains plaintext the
+ * machine already holds (the AUTHSIG-tail hold). Drives the machine as far
+ * as the input allows; plaintext goes to `plain`. Handshake jobs are
+ * submitted here. Bytes the machine cannot take while a job is outstanding
+ * are held (at most NODUS_TCP_SC_RAW_CHUNK).
+ * The caller holds the write lock (if one is installed).
+ * @return 0; -1 = fail the connection (handshake rejected, bad frame,
+ *         pin mismatch, queue full, hold overflow, `plain` refused).
+ */
+int nodus_tcp_sc_feed(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
+                      const uint8_t *raw, size_t n,
+                      nodus_tcp_sc_plain_fn plain, void *plain_ctx);
+
+/** A job is outstanding or socket bytes are held: do not read the socket
+ *  (the held bytes come first; the completion resumes the connection). */
+bool nodus_tcp_sc_blocked(const nodus_tcp_conn_t *conn);
+
+/** The bytes the machine wants written (handshake messages); consume what
+ *  was copied out. */
+const uint8_t *nodus_tcp_sc_out(const nodus_tcp_conn_t *conn, size_t *len);
+void nodus_tcp_sc_out_consume(nodus_tcp_conn_t *conn, size_t n);
+
+/** True ONCE after the machine became AUTHENTICATED (then false again):
+ *  the cue to fire tcp->on_session. */
+bool nodus_tcp_sc_take_ready(nodus_tcp_conn_t *conn);
+
+/** Sealed size of a nodus wire unit of `plain_len` bytes, without any WS
+ *  framing. */
+size_t nodus_tcp_sc_sealed_size(size_t plain_len);
+
+/** Can `nframes` more frames be sealed (authenticated, counter room)? */
+bool nodus_tcp_sc_can_seal(const nodus_tcp_conn_t *conn, size_t nframes);
+
+/**
+ * Seal frames [first, first + nframes) of the logical byte stream `a || b`
+ * into `out` (nframes * CMT_P2P_SC_SEALED_FRAME_SIZE bytes, caller-reserved),
+ * one cmt_p2p_sc_write per frame. The caller checked nodus_tcp_sc_can_seal
+ * for the WHOLE unit first, so a refusal cannot happen half-way.
+ * @return 0; -1 on a cipher failure (the machine is dead — close).
+ */
+int nodus_tcp_sc_seal(nodus_tcp_conn_t *conn,
+                      const uint8_t *a, size_t alen,
+                      const uint8_t *b, size_t blen,
+                      size_t first, size_t nframes, uint8_t *out);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* NODUS_TCP_SC_H */

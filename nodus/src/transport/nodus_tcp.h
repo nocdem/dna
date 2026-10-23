@@ -267,6 +267,13 @@ typedef struct nodus_tcp_conn {
      * cap on accept and clears it at auth success (nodus_server.c,
      * nodus_auth.c). */
     uint32_t               max_payload;
+
+    /* Optional SecretConnection (transport/nodus_tcp_sc.h, DHT v2 3b-1).
+     * NULL = not enabled: every path of this connection is exactly the
+     * plaintext / channel-crypto path above. Set by nodus_tcp_sc_enable,
+     * released by conn_free. Opaque here so this header stays free of the
+     * secret-connection headers (the browser builds include it). */
+    struct nodus_tcp_sc   *sc;
 } nodus_tcp_conn_t;
 
 /* ── Callbacks ───────────────────────────────────────────────────── */
@@ -390,6 +397,21 @@ typedef struct nodus_tcp {
      * realloc under the other thread's write crashed the process. */
     void                    (*write_lock)(void *ctx, bool lock);
     void                     *write_lock_ctx;
+
+    /* SecretConnection layer (transport/nodus_tcp_sc.h, DHT v2 3b-1).
+     * on_session: a connection with the layer enabled has just become
+     *   AUTHENTICATED (both keys proven) — the first moment a nodus frame
+     *   may be sent on it. Runs inside nodus_tcp_poll, never inside a
+     *   socket read callback; may be NULL.
+     * sc_worker: the bounded handshake-job worker of THIS transport,
+     *   started by the first nodus_tcp_sc_enable and stopped by
+     *   nodus_tcp_close; NULL until then.
+     * sc_gen_last: last generation handed out; a handshake job carries
+     *   (slot, generation) and its result is applied only if the pool slot
+     *   still holds the connection that generation was given to. */
+    nodus_tcp_event_fn        on_session;
+    struct nodus_sc_worker   *sc_worker;
+    uint64_t                  sc_gen_last;
 } nodus_tcp_t;
 
 /**

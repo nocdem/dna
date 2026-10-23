@@ -125,6 +125,23 @@
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
+/* DHT v2 3b-1: the optional per-connection SecretConnection
+ * (nodus_tcp_sc.h). NODUS_TCP_SC is defined by nodus/CMakeLists.txt for
+ * libnodus only; a build that compiles this file on its own (the browser and
+ * web-wallet source lists) does not define it, compiles none of the layer and
+ * keeps the plaintext / channel-crypto behaviour it always had. conn->sc is
+ * then always NULL. */
+#ifdef NODUS_TCP_SC
+  #include "transport/nodus_tcp_sc.h"
+  #define SC_POLL_TIMEOUT(tcp, t) nodus_tcp_sc_poll_timeout((tcp), (t))
+  #define SC_POLL_BUSY(tcp)       nodus_tcp_sc_busy(tcp)
+  #define SC_POLL_APPLY(tcp)      sc_apply_done(tcp)
+#else
+  #define SC_POLL_TIMEOUT(tcp, t) (t)
+  #define SC_POLL_BUSY(tcp)       false
+  #define SC_POLL_APPLY(tcp)      ((void)0)
+#endif
+
 /* Three event-loop builds of this file:
  *   Linux/Android  epoll, server + client (plain listener, WebSocket entry,
  *                  Unix socket entry)
@@ -441,6 +458,9 @@ static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
      * struct is freed. Defensive even though the entire struct is about to
      * disappear; key material should never linger on the freelist. */
     nodus_channel_crypto_clear(&conn->channel_crypto);
+#ifdef NODUS_TCP_SC
+    nodus_tcp_sc_free(conn);   /* the machine's key, its buffers, held bytes */
+#endif
 
     conn->state = NODUS_CONN_CLOSED;
     conn->close_pending = true;
@@ -460,15 +480,16 @@ static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 
 /* ── Phase 3: Pending queue ──────────────────────────────────────── */
 
-/* Forward decl so pending_drain_to_wbuf() can grow the buffer. */
+/* Forward decls so pending_drain_to_wbuf() can grow the buffer. */
 static int buf_ensure(uint8_t **buf, size_t *cap, size_t needed);
+static size_t conn_wbuf_max(const nodus_tcp_conn_t *conn);
+static int wbuf_ensure(nodus_tcp_conn_t *conn, size_t needed);
 
-/** Push an already-encoded frame onto the tail of the pending FIFO.
- *  Takes ownership of `encoded` (caller must not free on success). */
-static int pending_push_tail(nodus_tcp_conn_t *conn,
-                              uint8_t *encoded, size_t frame_size) {
-    nodus_pending_frame_t *node = malloc(sizeof(*node));
-    if (!node) return -1;
+/** Link an already-encoded frame (and its node) at the tail of the pending
+ *  FIFO. Cannot fail: the node was allocated by the caller. Takes ownership
+ *  of both. */
+static void pending_link(nodus_tcp_conn_t *conn, nodus_pending_frame_t *node,
+                         uint8_t *encoded, size_t frame_size) {
     node->next = NULL;
     node->encoded = encoded;
     node->frame_size = frame_size;
@@ -483,6 +504,15 @@ static int pending_push_tail(nodus_tcp_conn_t *conn,
     conn->pending_count++;
     conn->pending_bytes += frame_size;
     conn->pending_enqueued_count++;
+}
+
+/** Push an already-encoded frame onto the tail of the pending FIFO.
+ *  Takes ownership of `encoded` (caller must not free on success). */
+static int pending_push_tail(nodus_tcp_conn_t *conn,
+                              uint8_t *encoded, size_t frame_size) {
+    nodus_pending_frame_t *node = malloc(sizeof(*node));
+    if (!node) return -1;
+    pending_link(conn, node, encoded, frame_size);
     return 0;
 }
 
@@ -528,11 +558,11 @@ static void pending_drain_to_wbuf(nodus_tcp_conn_t *conn) {
                 conn->pending_count, conn->pending_bytes);
     }
     int drained = 0;
-    const size_t max_cap = NODUS_MAX_FRAME_TCP + NODUS_FRAME_HEADER_SIZE + 4096;
+    const size_t max_cap = conn_wbuf_max(conn);
     while (drained < NODUS_DRAIN_PER_CALL && conn->pending_head) {
         nodus_pending_frame_t *head = conn->pending_head;
         if (conn->wlen + head->frame_size > max_cap) break;
-        if (buf_ensure(&conn->wbuf, &conn->wcap, conn->wlen + head->frame_size) != 0)
+        if (wbuf_ensure(conn, conn->wlen + head->frame_size) != 0)
             break;
         head = pending_pop_head(conn);
         memcpy(conn->wbuf + conn->wlen, head->encoded, head->frame_size);
@@ -544,9 +574,9 @@ static void pending_drain_to_wbuf(nodus_tcp_conn_t *conn) {
     }
 }
 
-static int buf_ensure(uint8_t **buf, size_t *cap, size_t needed) {
+/* Grow `buf` to hold `needed` bytes, never past `max_cap`. */
+static int buf_ensure_max(uint8_t **buf, size_t *cap, size_t needed, size_t max_cap) {
     if (needed <= *cap) return 0;
-    const size_t max_cap = NODUS_MAX_FRAME_TCP + NODUS_FRAME_HEADER_SIZE + 4096;
     if (needed > max_cap) return -1;
     size_t new_cap = *cap;
     /* A zero cap makes the doubling loop below spin forever — 0 * 2 == 0,
@@ -566,6 +596,29 @@ static int buf_ensure(uint8_t **buf, size_t *cap, size_t needed) {
     return 0;
 }
 
+/* The plain bound of every buffer: one nodus frame plus 4 KiB of slack. */
+static int buf_ensure(uint8_t **buf, size_t *cap, size_t needed) {
+    const size_t max_cap = NODUS_MAX_FRAME_TCP + NODUS_FRAME_HEADER_SIZE + 4096;
+    return buf_ensure_max(buf, cap, needed, max_cap);
+}
+
+/* The largest write buffer THIS connection may grow to. A connection with
+ * the SecretConnection layer holds sealed bytes: a 5 MiB nodus frame is
+ * 5,121 sealed frames (nodus_tcp_sc.h, "BUFFER BOUNDS"). */
+static size_t conn_wbuf_max(const nodus_tcp_conn_t *conn) {
+#ifdef NODUS_TCP_SC
+    if (conn->sc)
+        return NODUS_TCP_SC_WBUF_MAX;
+#else
+    (void)conn;
+#endif
+    return NODUS_MAX_FRAME_TCP + NODUS_FRAME_HEADER_SIZE + 4096;
+}
+
+static int wbuf_ensure(nodus_tcp_conn_t *conn, size_t needed) {
+    return buf_ensure_max(&conn->wbuf, &conn->wcap, needed, conn_wbuf_max(conn));
+}
+
 /* ── Outgoing wire layout: the ONE place a nodus frame is laid out ──
  *
  * Every byte a connection sends as a nodus frame is produced here: the
@@ -575,8 +628,89 @@ static int buf_ensure(uint8_t **buf, size_t *cap, size_t needed) {
  * bytes these produced. On a WebSocket connection each nodus frame becomes
  * the payload of one FIN=1 binary WS frame (server→client frames are never
  * masked, RFC 6455 §5.1); on a plain connection the layout is unchanged. */
+#ifdef NODUS_TCP_SC
+/* A connection with the SecretConnection layer: the "wire" bytes of one
+ * nodus frame are its SEALED bytes — ceil(plain / 1024) sealed frames of
+ * 1044 bytes — and, on a WebSocket connection, those are cut into WS binary
+ * frames of at most NODUS_TCP_SC_WS_GROUP_FRAMES sealed frames each (the WS
+ * layer stays outside the sealed stream; a whole sealed 5 MiB frame would
+ * exceed NODUS_WS_MAX_PAYLOAD, a group does not). */
+static size_t sc_wire_size(const nodus_tcp_conn_t *conn, size_t plain) {
+    size_t nframes = (plain + CMT_P2P_SC_DATA_MAX_SIZE - 1) / CMT_P2P_SC_DATA_MAX_SIZE;
+    size_t n = nframes * (size_t)CMT_P2P_SC_SEALED_FRAME_SIZE;
+#ifdef NODUS_TCP_EPOLL
+    if (conn->is_ws) {
+        for (size_t left = nframes; left > 0; ) {
+            size_t g = left > NODUS_TCP_SC_WS_GROUP_FRAMES ? NODUS_TCP_SC_WS_GROUP_FRAMES : left;
+
+            n += nodus_ws_frame_header_len((uint64_t)g * CMT_P2P_SC_SEALED_FRAME_SIZE);
+            left -= g;
+        }
+    }
+#else
+    (void)conn;
+#endif
+    return n;
+}
+
+/* Seal one nodus frame (header + payload) into dst, group by group. The
+ * caller reserved `cap` bytes from sc_wire_size; the counter room for the
+ * WHOLE frame is checked first, so a refusal can never happen half-way.
+ * Returns the bytes written, 0 on refusal / cipher failure. */
+static size_t sc_wire_encode(nodus_tcp_conn_t *conn, uint8_t *dst, size_t cap,
+                             const uint8_t *payload, size_t send_len) {
+    uint8_t hdr[NODUS_FRAME_HEADER_SIZE];
+    size_t plain = NODUS_FRAME_HEADER_SIZE + send_len;
+    size_t nframes = (plain + CMT_P2P_SC_DATA_MAX_SIZE - 1) / CMT_P2P_SC_DATA_MAX_SIZE;
+    size_t w = 0, done = 0;
+
+    if (send_len > NODUS_MAX_FRAME_TCP || cap < sc_wire_size(conn, plain) ||
+        !nodus_tcp_sc_can_seal(conn, nframes))
+        return 0;
+    /* The 7-byte nodus header, from the one encoder (magic, version), with
+     * the little-endian length of nodus_wire.c:28-32 filled in: the payload
+     * is not copied next to it, it is sealed straight from the caller's
+     * buffer. */
+    if (nodus_frame_encode(hdr, sizeof(hdr), NULL, 0) != NODUS_FRAME_HEADER_SIZE)
+        return 0;
+    hdr[3] = (uint8_t)(send_len);
+    hdr[4] = (uint8_t)(send_len >> 8);
+    hdr[5] = (uint8_t)(send_len >> 16);
+    hdr[6] = (uint8_t)(send_len >> 24);
+
+    while (done < nframes) {
+        size_t g = nframes - done;
+
+#ifdef NODUS_TCP_EPOLL
+        if (conn->is_ws) {
+            size_t h;
+
+            if (g > NODUS_TCP_SC_WS_GROUP_FRAMES)
+                g = NODUS_TCP_SC_WS_GROUP_FRAMES;
+            h = nodus_ws_frame_header(NODUS_WS_OP_BINARY,
+                                      (uint64_t)g * CMT_P2P_SC_SEALED_FRAME_SIZE,
+                                      dst + w, cap - w);
+            if (h == 0)
+                return 0;
+            w += h;
+        }
+#endif
+        if (nodus_tcp_sc_seal(conn, hdr, sizeof(hdr), payload, send_len,
+                              done, g, dst + w) != 0)
+            return 0;
+        w += g * (size_t)CMT_P2P_SC_SEALED_FRAME_SIZE;
+        done += g;
+    }
+    return w;
+}
+#endif /* NODUS_TCP_SC */
+
 static size_t conn_wire_size(const nodus_tcp_conn_t *conn, size_t send_len) {
     size_t n = NODUS_FRAME_HEADER_SIZE + send_len;
+#ifdef NODUS_TCP_SC
+    if (conn->sc)
+        return sc_wire_size(conn, n);
+#endif
 #ifdef NODUS_TCP_EPOLL
     if (conn->is_ws)
         n += nodus_ws_frame_header_len(n);
@@ -586,10 +720,14 @@ static size_t conn_wire_size(const nodus_tcp_conn_t *conn, size_t send_len) {
     return n;
 }
 
-static size_t conn_wire_encode(const nodus_tcp_conn_t *conn,
+static size_t conn_wire_encode(nodus_tcp_conn_t *conn,
                                uint8_t *dst, size_t cap,
                                const uint8_t *payload, size_t send_len) {
     size_t hdr = 0;
+#ifdef NODUS_TCP_SC
+    if (conn->sc)
+        return sc_wire_encode(conn, dst, cap, payload, send_len);
+#endif
 #ifdef NODUS_TCP_EPOLL
     if (conn->is_ws) {
         hdr = nodus_ws_frame_header(NODUS_WS_OP_BINARY,
@@ -646,6 +784,11 @@ typedef enum {
 static parse_rc_t try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
                                    bool budgeted) {
     if (conn->close_pending) return PARSE_CLOSED;
+#ifdef NODUS_TCP_SC
+    /* Nothing reaches the frame parser before the SecretConnection is
+     * AUTHENTICATED (rbuf holds plaintext only, and none exists before). */
+    if (conn->sc && !nodus_tcp_sc_authenticated(conn)) return PARSE_NEED_DATA;
+#endif
     while (conn->rlen >= NODUS_FRAME_HEADER_SIZE) {
         /* Snapshot crypto state before dispatching — if it changes mid-loop
          * (e.g., key_init handler activates crypto), remaining buffered frames
@@ -841,12 +984,239 @@ typedef enum {
 static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
 #endif
 
+#ifdef NODUS_TCP_SC
+
+/* ── SecretConnection glue (DHT v2 3b-1; contract in nodus_tcp_sc.h) ─────
+ *
+ * The machine and the job worker live in nodus_tcp_sc.c; what is here is
+ * what needs this file's buffers: plaintext into rbuf, handshake bytes into
+ * wbuf, the close protocol. Every machine call below runs under the write
+ * lock (wl_enter), so the send half and the receive half of the machine
+ * never run at once when a user installed one. */
+
+static ntcp_io_t conn_flush_wbuf(nodus_tcp_conn_t *conn,
+                                 nodus_tcp_progress_cb progress_cb,
+                                 void *user_data);
+
+/* nodus_tcp_sc_feed's plaintext sink: the nodus frame parser's input. */
+static int sc_plain_to_rbuf(void *ctx, const uint8_t *data, size_t len) {
+    nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)ctx;
+
+    /* NODUS_TCP_SC_RBUF_MAX, not the plain bound: a chunk of sealed bytes
+     * opens to up to a chunk of plaintext, parsed only after it is all in. */
+    if (buf_ensure_max(&conn->rbuf, &conn->rcap, conn->rlen + len,
+                       NODUS_TCP_SC_RBUF_MAX) != 0)
+        return -1;
+    memcpy(conn->rbuf + conn->rlen, data, len);
+    conn->rlen += len;
+    return 0;
+}
+
+/* The machine's pending output (handshake messages, the sealed AUTHSIG) is
+ * not a nodus frame: it goes to wbuf as it is, in one WS binary frame on a
+ * WebSocket connection. Write lock held. -1 if it could not be buffered. */
+static int sc_hs_to_wbuf_locked(nodus_tcp_conn_t *conn) {
+    size_t len = 0;
+    const uint8_t *out = nodus_tcp_sc_out(conn, &len);
+    uint8_t whdr[NODUS_WS_SERVER_HDR_MAX];
+    size_t h = 0;
+
+    if (len == 0)
+        return 0;
+#ifdef NODUS_TCP_EPOLL
+    if (conn->is_ws) {
+        h = nodus_ws_frame_header(NODUS_WS_OP_BINARY, len, whdr, sizeof(whdr));
+        if (h == 0)
+            return -1;
+    }
+#else
+    (void)whdr;
+#endif
+    if (conn->wpos > 0) {
+        size_t remaining = conn->wlen - conn->wpos;
+        if (remaining > 0)
+            memmove(conn->wbuf, conn->wbuf + conn->wpos, remaining);
+        conn->wlen = remaining;
+        conn->wpos = 0;
+    }
+    if (wbuf_ensure(conn, conn->wlen + h + len) != 0)
+        return -1;
+    if (h > 0)
+        memcpy(conn->wbuf + conn->wlen, whdr, h);
+    memcpy(conn->wbuf + conn->wlen + h, out, len);
+    conn->wlen += h + len;
+    nodus_tcp_sc_out_consume(conn, len);
+    return 0;
+}
+
+/* sc_hs_to_wbuf_locked, then push what the socket takes. A socket error is
+ * not handled here (conn_flush_wbuf never frees; the next read or write sees
+ * it, as ws_sink_ping does). Lock held. */
+static int sc_push_out_locked(nodus_tcp_conn_t *conn) {
+    int rc = sc_hs_to_wbuf_locked(conn);
+
+    if (rc == 0 && conn->state == NODUS_CONN_CONNECTED && conn->fd >= 0 &&
+        conn->wpos < conn->wlen) {
+        (void)conn_flush_wbuf(conn, NULL, NULL);
+        if (conn->wpos >= conn->wlen) {
+            conn->wpos = 0;
+            conn->wlen = 0;
+        }
+    }
+    return rc;
+}
+
+int nodus_tcp_sc_flush_hs(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    int rc;
+
+    wl_enter(tcp);
+    rc = sc_push_out_locked(conn);
+    wl_leave(tcp);
+    return rc;
+}
+
+/* Raw bytes (socket, or one WS payload) into the machine, then the output it
+ * produced onto the wire. n may be 0: resume held input. -1 = close. */
+static int sc_feed_locked(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
+                          const uint8_t *raw, size_t n) {
+    int rc;
+
+    wl_enter(tcp);
+    rc = nodus_tcp_sc_feed(tcp, conn, raw, n, sc_plain_to_rbuf, conn);
+    if (rc == 0)
+        rc = sc_push_out_locked(conn);
+    wl_leave(tcp);
+    return rc;
+}
+
+/* The machine became AUTHENTICATED since the last look: tell the owner,
+ * once. Returns true if that closed the connection. Never called from
+ * inside a socket-byte callback (the sinks only feed). */
+static bool sc_notify_ready(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    if (!nodus_tcp_sc_take_ready(conn))
+        return false;
+    if (tcp->on_session)
+        tcp->on_session(conn, tcp->cb_ctx);
+    return conn->close_pending;
+}
+
+/* Results of finished handshake jobs, applied on the loop by (slot,
+ * generation). Called inside nodus_tcp_poll's depth window, so a close made
+ * here is deferred like any other. */
+static void sc_apply_done(nodus_tcp_t *tcp) {
+    nodus_sc_job_t *j = nodus_tcp_sc_take_done(tcp);
+
+    while (j != NULL) {
+        nodus_sc_job_t *next = j->next;        /* apply frees j */
+        nodus_tcp_conn_t *conn = NULL;
+        nodus_sc_apply_t r = nodus_tcp_sc_job_apply(tcp, j, &conn);
+
+        if (r == NODUS_SC_APPLY_OK) {
+            wl_enter(tcp);
+            int rc = sc_push_out_locked(conn);
+            wl_leave(tcp);
+            if (rc != 0)
+                r = NODUS_SC_APPLY_FAIL;
+        }
+        if (r == NODUS_SC_APPLY_FAIL) {
+            if (tcp->on_disconnect)
+                tcp->on_disconnect(conn, tcp->cb_ctx);
+            conn_free(tcp, conn);
+        } else if (r == NODUS_SC_APPLY_OK) {
+            /* Input held while the job ran, and the socket's own bytes
+             * (no new edge will announce them), are read next. */
+            read_pending_add(tcp, conn);
+        }
+        j = next;
+    }
+}
+
+/* The reader of a connection with the layer on a plain socket. Same budget
+ * and close protocol as read_plain; the socket bytes go through the machine
+ * and only its plaintext reaches rbuf. While a handshake job runs the socket
+ * is not read (the machine HOLDs, header N1): the completion puts the
+ * connection back on the pending-read list. */
+static read_rc_t read_plain_sc(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    uint8_t chunk[NODUS_TCP_SC_RAW_CHUNK];
+    parse_rc_t pr;
+    int eintr_left = NTCP_MAX_EINTR_RETRY;
+
+    /* Held socket bytes and plaintext the machine already opened (the tail
+     * of the AUTHSIG frame) are served before any new socket byte — no frame
+     * will arrive to push them out. */
+    if (sc_feed_locked(tcp, conn, NULL, 0) != 0) {
+        if (tcp->on_disconnect)
+            tcp->on_disconnect(conn, tcp->cb_ctx);
+        conn_free(tcp, conn);
+        return READ_CLOSED;
+    }
+    if (sc_notify_ready(tcp, conn))
+        return READ_CLOSED;
+    pr = try_parse_frames(tcp, conn, true);
+    if (pr == PARSE_CLOSED) return READ_CLOSED;
+    if (pr == PARSE_MORE)   return READ_MORE;
+
+    for (;;) {
+        if (nodus_tcp_sc_blocked(conn))
+            return READ_DRAINED;           /* the job's completion resumes us */
+        if (conn->read_bytes_left == 0)
+            return READ_MORE;
+
+        size_t want = sizeof(chunk);
+        if (want > conn->read_bytes_left)
+            want = conn->read_bytes_left;
+        ssize_t n = poll_read(conn->fd, chunk, want);
+        if (n > 0) {
+            conn->read_bytes_left -= (size_t)n;
+            conn->last_activity = nodus_time_now();
+            eintr_left = NTCP_MAX_EINTR_RETRY;
+            if (sc_feed_locked(tcp, conn, chunk, (size_t)n) != 0) {
+                if (tcp->on_disconnect)
+                    tcp->on_disconnect(conn, tcp->cb_ctx);
+                conn_free(tcp, conn);
+                return READ_CLOSED;
+            }
+            if (sc_notify_ready(tcp, conn))
+                return READ_CLOSED;
+            pr = try_parse_frames(tcp, conn, true);
+            if (pr == PARSE_CLOSED) return READ_CLOSED;
+            if (pr == PARSE_MORE)   return READ_MORE;
+            continue;
+        }
+        if (n == 0) {
+            /* Orderly EOF — as read_plain: frames already opened are still
+             * frames; unbudgeted, there is no later call. */
+            if (try_parse_frames(tcp, conn, false) != PARSE_CLOSED) {
+                if (tcp->on_disconnect)
+                    tcp->on_disconnect(conn, tcp->cb_ctx);
+                conn_free(tcp, conn);
+            }
+            return READ_CLOSED;
+        }
+        ntcp_io_t io = ntcp_classify(n);
+        if (io == NTCP_IO_RETRY && eintr_left-- > 0)
+            continue;
+        if (io == NTCP_IO_WOULDBLOCK)
+            return READ_DRAINED;
+        if (tcp->on_disconnect)
+            tcp->on_disconnect(conn, tcp->cb_ctx);
+        conn_free(tcp, conn);
+        return READ_CLOSED;
+    }
+}
+
+#endif /* NODUS_TCP_SC */
+
 /* The plain reader. Invariant: the socket is read only while rbuf holds no
  * complete frame — frames left over from an earlier call are dispatched
  * first, and each chunk read is parsed before the next one. So rbuf never
  * holds more than one incomplete frame plus one chunk, however far the
  * frame budget lags the byte budget. */
 static read_rc_t read_plain(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+#ifdef NODUS_TCP_SC
+    if (conn->sc)
+        return read_plain_sc(tcp, conn);
+#endif
     parse_rc_t pr = try_parse_frames(tcp, conn, true);
     if (pr == PARSE_CLOSED) return READ_CLOSED;
     if (pr == PARSE_MORE)   return READ_MORE;
@@ -1231,7 +1601,7 @@ static int ws_wbuf_append_raw(nodus_tcp_conn_t *conn,
         conn->wlen = remaining;
         conn->wpos = 0;
     }
-    if (buf_ensure(&conn->wbuf, &conn->wcap, conn->wlen + n) != 0)
+    if (wbuf_ensure(conn, conn->wlen + n) != 0)
         return -1;
     memcpy(conn->wbuf + conn->wlen, bytes, n);
     conn->wlen += n;
@@ -1256,6 +1626,14 @@ static void ws_close_now(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
  * ordinary nodus frame decoder (try_parse_frames) finds it (RT1 F4). */
 static int ws_sink_data(void *ctx, const uint8_t *data, size_t len) {
     nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)ctx;
+#ifdef NODUS_TCP_SC
+    /* The layer on: the WS payload is the SecretConnection's byte stream
+     * (WS bytes → SecretConnection → nodus frames); only its plaintext
+     * reaches rbuf. -1 closes the connection through the parser's error
+     * path, like any sink failure. */
+    if (conn->sc)
+        return sc_feed_locked(conn->tcp_parent, conn, data, len);
+#endif
     if (buf_ensure(&conn->rbuf, &conn->rcap, conn->rlen + len) != 0)
         return -1;
     memcpy(conn->rbuf + conn->rlen, data, len);
@@ -1435,6 +1813,20 @@ static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     uint8_t chunk[16384];
     parse_rc_t pr;
 
+#ifdef NODUS_TCP_SC
+    if (conn->ws_open && conn->sc) {
+        /* Held payload bytes and plaintext the machine already opened first
+         * (see read_plain_sc); then, if a job is still running, wait for it. */
+        if (sc_feed_locked(tcp, conn, NULL, 0) != 0) {
+            if (tcp->on_disconnect)
+                tcp->on_disconnect(conn, tcp->cb_ctx);
+            conn_free(tcp, conn);
+            return READ_CLOSED;
+        }
+        if (sc_notify_ready(tcp, conn))
+            return READ_CLOSED;
+    }
+#endif
     if (conn->ws_open) {
         pr = try_parse_frames(tcp, conn, true);
         if (pr == PARSE_CLOSED) return READ_CLOSED;
@@ -1443,6 +1835,10 @@ static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 
     int eintr_left = NTCP_MAX_EINTR_RETRY;
     for (;;) {
+#ifdef NODUS_TCP_SC
+        if (conn->sc && nodus_tcp_sc_blocked(conn))
+            return READ_DRAINED;       /* the job's completion resumes us */
+#endif
         if (conn->read_bytes_left == 0 || conn->read_frames_left <= 0)
             return READ_MORE;
 
@@ -1456,6 +1852,10 @@ static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             eintr_left = NTCP_MAX_EINTR_RETRY;
             if (ws_ingest(tcp, conn, chunk, (size_t)n))
                 return READ_CLOSED;      /* closed — no further work on conn */
+#ifdef NODUS_TCP_SC
+            if (conn->ws_open && conn->sc && sc_notify_ready(tcp, conn))
+                return READ_CLOSED;
+#endif
             if (conn->ws_open) {
                 pr = try_parse_frames(tcp, conn, true);
                 if (pr == PARSE_CLOSED) return READ_CLOSED;
@@ -2273,6 +2673,17 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
 static int pending_queue_append(nodus_tcp_conn_t *conn,
                                  const uint8_t *payload, size_t len) {
     if (conn_ws_not_open(conn)) return -1;
+#ifdef NODUS_TCP_SC
+    /* The auth-gate queue holds unsealed wire frames that pending_flush
+     * would copy into wbuf as they are. With the layer on, the hello / auth
+     * gate is gone (3b-2 rewires it), and this queue must never carry a
+     * frame around the sealing. */
+    if (conn->sc) {
+        QGP_LOG_WARN(LOG_TAG_TCP, "auth pending queue refused on a SecretConnection, slot=%d",
+                     conn->slot);
+        return -1;
+    }
+#endif
     size_t frame_size = conn_wire_size(conn, len);
 
     /* Lazy init */
@@ -2322,7 +2733,7 @@ static int pending_flush_locked(nodus_tcp_conn_t *conn) {
     }
 
     size_t needed = conn->wlen + conn->pending_len;
-    if (buf_ensure(&conn->wbuf, &conn->wcap, needed) != 0) {
+    if (wbuf_ensure(conn, needed) != 0) {
         QGP_LOG_ERROR(LOG_TAG_TCP, "pending flush: buf_ensure failed (needed=%zu)", needed);
         return -1;
     }
@@ -2409,6 +2820,28 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
         QGP_LOG_WARN(LOG_TAG_TCP, "send: ws upgrade not complete, slot=%d", conn->slot);
         return -1;
     }
+#ifdef NODUS_TCP_SC
+    if (conn->sc) {
+        /* Refused BEFORE anything is sealed or queued: not authenticated yet
+         * (nothing may be sealed, and the layer queues nothing for it), or
+         * the send counter cannot take the whole frame (N3). A refusal after
+         * this point can only be a cipher failure. */
+        size_t nframes = (NODUS_FRAME_HEADER_SIZE + len + CMT_P2P_SC_DATA_MAX_SIZE - 1) /
+                         CMT_P2P_SC_DATA_MAX_SIZE;
+        if (!nodus_tcp_sc_can_seal(conn, nframes)) {
+            QGP_LOG_WARN(LOG_TAG_TCP,
+                         "send: session not authenticated (or counter exhausted), slot=%d",
+                         conn->slot);
+            return -1;
+        }
+        /* Handshake bytes still waiting (normally none after AUTHENTICATED)
+         * go out first: they are earlier in the stream. */
+        if (sc_hs_to_wbuf_locked(conn) != 0) {
+            QGP_LOG_ERROR(LOG_TAG_TCP, "send: handshake bytes not buffered, slot=%d", conn->slot);
+            return -1;
+        }
+    }
+#endif
 
     /* Phase 3.2d: log first send per conn — captures (slot, fd, conn ptr,
      * peer, has_crypto) at the moment data is first written. Compare with
@@ -2496,7 +2929,7 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
      * with large gaps during media-repl storms. */
     bool force_pending = (conn->pending_count > 0);
 
-    if (force_pending || buf_ensure(&conn->wbuf, &conn->wcap, needed) != 0) {
+    if (force_pending || wbuf_ensure(conn, needed) != 0) {
         /* Phase 3: wbuf can't absorb this frame right now (or pending
          * already has queued frames we must not reorder). Route to the
          * per-conn pending queue instead of dropping. handle_write will
@@ -2510,11 +2943,34 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
                         (conn->pending_bytes + frame_size <= NODUS_PENDING_MAX_BYTES);
         if (queue_ok) {
             uint8_t *encoded = malloc(frame_size);
+            /* With the SecretConnection the encode below SEALS (the counter
+             * moves), so everything that can fail is reserved first: the
+             * buffer above and the queue node here. Once sealed, linking the
+             * node cannot fail — a sealed frame is never dropped, and a
+             * refused one never moved the counter. */
+            nodus_pending_frame_t *sc_node = NULL;
+#ifdef NODUS_TCP_SC
+            if (conn->sc && encoded) {
+                sc_node = malloc(sizeof(*sc_node));
+                if (!sc_node) {
+                    free(encoded);
+                    encoded = NULL;
+                }
+            }
+#endif
             if (encoded) {
                 size_t written = conn_wire_encode(conn, encoded, frame_size,
                                                   send_payload, send_len);
-                if (written == frame_size &&
-                    pending_push_tail(conn, encoded, frame_size) == 0) {
+                bool queued = false;
+                if (written == frame_size) {
+                    if (sc_node) {
+                        pending_link(conn, sc_node, encoded, frame_size);
+                        queued = true;
+                    } else {
+                        queued = pending_push_tail(conn, encoded, frame_size) == 0;
+                    }
+                }
+                if (queued) {
                     conn->send_ok_count++;
                     conn->send_bytes_total += send_len;
 #ifdef NODUS_TCP_EPOLL
@@ -2530,6 +2986,7 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
                     return 0;
                 }
                 free(encoded);
+                free(sc_node);   /* NULL-safe; reached only if the encode failed */
             }
             /* malloc / encode / push failure — fall through to callback path */
         }
@@ -2657,6 +3114,9 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
      * (see the epoll variant below). */
     if (tcp->read_head)
         timeout_ms = 0;
+    /* SecretConnection: a job outstanding caps the wait (nodus_tcp_sc.h,
+     * COMPLETION DELIVERY). */
+    timeout_ms = SC_POLL_TIMEOUT(tcp, timeout_ms);
 
     struct timeval tv;
     tv.tv_sec = timeout_ms / 1000;
@@ -2665,12 +3125,13 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
     int n = select(max_fd + 1, &rfds, &wfds, &efds,
                    timeout_ms >= 0 ? &tv : NULL);
     if (n < 0) return n;
-    if (n == 0 && !tcp->read_head) return 0;
+    if (n == 0 && !tcp->read_head && !SC_POLL_BUSY(tcp)) return 0;
 
     /* Deferred close: nothing closed during this batch is freed before it
      * ends (see the epoll variant below). */
     tcp->poll_depth++;
     uint64_t saved_gen = poll_gen_enter(tcp);
+    SC_POLL_APPLY(tcp);   /* finished handshake jobs, by (slot, generation) */
 
     int events = 0;
     for (int i = 0; n > 0 && i < NODUS_TCP_MAX_CONNS; i++) {
@@ -2780,7 +3241,7 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
         for (int j = 0; j < k; j++) pfd[j].revents = 0;
         n = 0;
     }
-    if (n == 0 && !tcp->read_head) {
+    if (n == 0 && !tcp->read_head && !SC_POLL_BUSY(tcp)) {
         free(pfd);
         free(pconn);
         return 0;
@@ -2790,6 +3251,7 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
      * ends, so a pconn[] pointer can be compared against the pool safely. */
     tcp->poll_depth++;
     uint64_t saved_gen = poll_gen_enter(tcp);
+    SC_POLL_APPLY(tcp);   /* finished handshake jobs, by (slot, generation) */
 
     int events = 0;
     for (int j = 0; j < k; j++) {
@@ -2848,12 +3310,15 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
      * space or in a socket whose edge was already consumed — do not sleep. */
     if (tcp->read_head)
         timeout_ms = 0;
+    /* SecretConnection: a job outstanding caps the wait (nodus_tcp_sc.h,
+     * COMPLETION DELIVERY). */
+    timeout_ms = SC_POLL_TIMEOUT(tcp, timeout_ms);
 
     struct epoll_event events[MAX_EVENTS];
     int n = epoll_wait(tcp->epoll_fd, events, MAX_EVENTS, timeout_ms);
     if (n < 0) {
         if (errno != EINTR) return -1;
-        if (!tcp->read_head) return 0;
+        if (!tcp->read_head && !SC_POLL_BUSY(tcp)) return 0;
         n = 0;                 /* interrupted: still service the pending reads */
     }
 
@@ -2861,6 +3326,7 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
      * memory is released (conn_free parks it on close_list). */
     tcp->poll_depth++;
     uint64_t saved_gen = poll_gen_enter(tcp);
+    SC_POLL_APPLY(tcp);   /* finished handshake jobs, by (slot, generation) */
 
     for (int i = 0; i < n; i++) {
         nodus_tcp_conn_t *conn = events[i].data.ptr;
@@ -3033,6 +3499,11 @@ void nodus_tcp_close(nodus_tcp_t *tcp) {
      * outermost poll returns, so the transport struct must outlive it. */
     if (tcp->poll_depth == 0)
         conn_release_deferred(tcp);
+
+#ifdef NODUS_TCP_SC
+    /* Every connection is gone: no job result has anywhere to land. */
+    nodus_tcp_sc_worker_stop(tcp);
+#endif
 
     if (tcp->listen_fd >= 0) {
 #ifdef NODUS_TCP_EPOLL
