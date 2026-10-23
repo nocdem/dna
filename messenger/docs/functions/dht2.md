@@ -181,8 +181,10 @@ holder check, quota and store belong to later packages.
 
 Two different things below: a code a function RETURNS (a verdict of this
 codec), and a code a package-2 message CARRIES as data (row-7 `v` in a read
-answer / receipt / LIST answer, or the refusal's `e`). Carried codes are
-listed in §10.1 and are never returned by the codec functions.
+answer / receipt / LIST answer, or the refusal's `e`). Codes 1…13, 16 and
+17 may be carried in a row-7 `v`, 18 only as `[18, through]`, 14 / 15 only
+as a refusal's `e` (§10.1, §10.4); "defined; later package" below means no
+function RETURNS that code yet, not that a message cannot carry it.
 
 | Code | Value | Returned by this package |
 |---|---|---|
@@ -505,6 +507,15 @@ From design §13 row 21's list, as this package carries them:
   text produced here is one boxo also produces; boxo accepts more (§3.1;
   `dht2_time.h:11-14`).
 - The owner-signed LIST request (row 23; `dht2_envelope.h:28`).
+- Package 2 — the request's fresh 32-byte nonce echoed as `q` in every
+  answer / receipt / refusal payload (row 2; `dht2_answer_t.q`,
+  `dht2_refusal_t.q`, `dht2_msg.h:118`, `:173`).
+- Package 2 — the exact `p_want` bit-vector length: exactly ⌈n/8⌉ bytes
+  with every bit ≥ n zero, any other length refused, where Bee allocates
+  ⌊n/8⌋ + 1 bytes (row 12; `want_valid`, `dht2_msg.c:888-899`;
+  `dht2_msg.h:269-271`). Row 21's other pull-sync items (one cursor per
+  source, the shared session, stamps dropped) belong to the exchange
+  (package 7), not to this codec.
 
 Named in the headers / code but NOT in row 21's list:
 
@@ -532,7 +543,8 @@ sections run from `main` (`test_dht2_codec.c:1831-1842`):
 `test_strict_decode`, `test_class_kats`, `test_preimages`, `test_envelope`,
 `test_matrix`, `test_class_max`, `test_validity`, `test_order`,
 `test_placement`, `test_envelopes_and_list`, `test_reader_shortest`,
-`test_hardening`. 194 `CHECK(` sites in the source; 429 checks is the
+`test_hardening`. 194 source lines match `CHECK(`, the macro's own
+`#define` (`:107`) included; 429 checks is the
 ORCHESTRATOR's run count, not re-run for this reference.
 
 - **Proves** (file header `:8-55`): every class's data map encodes to the
@@ -575,7 +587,8 @@ ORCHESTRATOR's run count, not re-run for this reference.
 sections run from `main` (`test_dht2_msg.c:1999-2008`):
 `test_cbor_additions`, `test_requests`, `test_answers`, `test_list`,
 `test_refusal`, `test_seal_and_sizes`, `test_pull`, `test_want`,
-`test_ctl`, `test_ids`. 206 `CHECK(` sites in the source; the
+`test_ctl`, `test_ids`. 206 source lines match `CHECK(`, the macro's own
+`#define` (`:100`) included; the
 ORCHESTRATOR's run at `50053ce72` reported 335 passed / 0 failed (and
 `test_dht2_codec` 429 / 0, the full nodus ctest 304 / 304, the build with 0
 warnings) — counts from that run, not re-run for this reference. The file
