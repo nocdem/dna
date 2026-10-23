@@ -56,7 +56,13 @@
  * (it sends 1 MiB frames until the first refusal, bounded at 300 sends);
  * the assertions are about what happens AT that point, wherever it is. The
  * WS peer (case 9) shares the process with the server and is driven from
- * the same thread. The AUTHSIG-tail drain (plaintext the machine holds when
+ * the same thread. The level-triggered held-input cases (TCP and WS) send
+ * KEYX + AUTHSIG + a data frame in ONE write so the responder holds the
+ * latter two while its DECAPS job runs; a kernel that splits that write
+ * could deliver them in separate reads, in which case nothing is held and
+ * the case proves less (it still passes) — a split loopback write of ~8 KB
+ * has not been observed, and production code has no hook to force it. The
+ * AUTHSIG-tail drain (plaintext the machine holds when
  * no socket byte is waiting) is not driven here: our own sender seals the
  * AUTHSIG alone, so no tail ever exists on these connections. A full
  * handshake-job queue closing its connection is not driven (no way to hold
@@ -121,6 +127,8 @@ typedef struct side {
     bool                send_on_session;     /* send a frame from inside on_session */
     bool                poll_in_disconnect;  /* on_disconnect polls this transport once */
     bool                in_disc;
+    bool                disconnect_again;    /* on_disconnect disconnects the same conn once more */
+    bool                in_disc2;
     int                 frames_at_session;   /* frames delivered when on_session ran */
     int                 frames_at_close;     /* ... and when on_disconnect ran */
     uint8_t            *rx;           /* the last frame delivered */
@@ -163,6 +171,11 @@ static void cb_disconnect(nodus_tcp_conn_t *c, void *ctx)
     s->frames_at_close = s->frames;
     if (s->conn == c)
         s->conn = NULL;
+    if (s->disconnect_again && !s->in_disc2) {    /* another callback closes it too */
+        s->in_disc2 = true;
+        nodus_tcp_disconnect(&s->tcp, c);
+        s->in_disc2 = false;
+    }
     if (s->poll_in_disconnect && !s->in_disc) {   /* a nested poll inside the teardown */
         s->in_disc = true;
         nodus_tcp_poll(&s->tcp, 0);
@@ -1176,18 +1189,180 @@ static void test_level_triggered(void)
     free(big);
 }
 
+/* ══ 15: held input on a level-triggered transport (TCP and WS) ═══════ */
+
+/* Send `p` as the raw peer: as is, or in one masked WS binary frame. */
+static int peer_send(wspeer_t *w, bool ws, const uint8_t *p, size_t n)
+{
+    uint8_t *fr;
+    int rc;
+
+    if (!ws)
+        return send_all(w->fd, p, n);
+    fr = (uint8_t *)malloc(n + 8);
+    if (fr == NULL)
+        return -1;
+    rc = send_all(w->fd, fr, ws_client_frame(fr, 0x82, p, n));
+    free(fr);
+    return rc;
+}
+
+/* Plain-TCP receive: whatever the server wrote goes straight to the machine. */
+static int peer_rx_plain(wspeer_t *w)
+{
+    uint8_t buf[16384];
+    ssize_t r = recv(w->fd, buf, sizeof(buf), MSG_DONTWAIT);
+
+    return r > 0 ? peer_feed(w, buf, (size_t)r) : 0;
+}
+
+/* The responder is level-triggered. The raw peer stops at WAIT_AUTHSIG and
+ * then sends KEYX + its AUTHSIG + one sealed data frame in ONE write: the
+ * responder takes it all in one read, starts DECAPS, and HOLDS the AUTHSIG
+ * and the data frame while its job chain (DECAPS, SIGN, VERIFY) runs — the
+ * held input is forced by the sequence, not by timing luck. After the hold
+ * drained, a SECOND data frame is sent: it only arrives if the connection
+ * was put back in the read set AFTER the drain. */
+static void held_input_case(bool ws)
+{
+    static nodus_ws_origins_t origins;
+    wspeer_t w;
+    char req[512], head[512] = { 0 };
+    size_t hl = 0;
+    uint8_t plain[32], sealed[CMT_P2P_SC_SEALED_FRAME_SIZE];
+    int ok;
+
+    memset(&w, 0, sizeof(w));
+    g_level = true;
+    side_init(&g_srv);
+    g_level = false;
+    cfg_fill(&g_srv.cfg, CMT_P2P_SC_ROLE_RESPONDER, &CMT_P2P_SC_PROFILE_CLIENT, g_a, NULL);
+    g_srv.enable_on_accept = true;
+    g_srv.peer_pk = g_b->pk.bytes;
+    nodus_ws_origins_default(&origins);
+    ok = (ws ? nodus_tcp_ws_listen(&g_srv.tcp, 0, &origins)
+             : nodus_tcp_listen(&g_srv.tcp, "127.0.0.1", 0)) == 0;
+    w.rx = (uint8_t *)malloc(WSRX_CAP);
+    w.plain = (uint8_t *)malloc(WSRX_CAP);
+    w.m = (cmt_p2p_sc_t *)calloc(1, sizeof(*w.m));
+    ok = ok && w.rx && w.plain && w.m;
+    if (ok) {
+        w.host.ctx = &g_b->sk;
+        w.host.sign = peer_sign;
+        w.host.verify = peer_verify;
+        w.fd = raw_connect(ws ? g_srv.tcp.ws_port : g_srv.tcp.port);
+        ok = w.fd >= 0 &&
+             cmt_p2p_sc_init_profile(w.m, CMT_P2P_SC_ROLE_INITIATOR, &w.host,
+                                     &CMT_P2P_SC_PROFILE_CLIENT, g_b->pk.bytes, NULL, NULL,
+                                     PROTO_VER, CHAIN) == CMT_OK;
+    }
+    if (ok && ws) {
+        int n = snprintf(req, sizeof(req),
+            "GET /ws HTTP/1.1\r\nHost: 127.0.0.1:%u\r\nUpgrade: websocket\r\n"
+            "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            "Sec-WebSocket-Version: 13\r\nOrigin: %s\r\n"
+            "Sec-WebSocket-Protocol: binary\r\nX-Forwarded-For: " WS_XFF "\r\n\r\n",
+            (unsigned)g_srv.tcp.ws_port, NODUS_WS_DEFAULT_ORIGIN);
+        ok = n > 0 && (size_t)n < sizeof(req) && send_all(w.fd, req, (size_t)n) == 0;
+        for (int i = 0; ok && i < MAX_ROUNDS; i++) {
+            ssize_t r;
+
+            nodus_tcp_poll(&g_srv.tcp, 1);
+            r = recv(w.fd, head + hl, sizeof(head) - 1 - hl, MSG_DONTWAIT);
+            if (r > 0) hl += (size_t)r;
+            head[hl] = '\0';
+            if (strstr(head, "\r\n\r\n") != NULL) break;
+        }
+        if (ok) {
+            const char *end = strstr(head, "\r\n\r\n");
+
+            ok = end != NULL && strncmp(head, "HTTP/1.1 101", 12) == 0;
+            if (ok) {
+                size_t eoh = (size_t)(end - head) + 4;
+
+                memcpy(w.rx, head + eoh, hl - eoh);
+                w.rx_len = hl - eoh;
+            }
+        }
+    }
+    /* Handshake by hand up to WAIT_AUTHSIG (KEYX + sealed AUTHSIG unsent). */
+    for (int i = 0; ok && i < MAX_ROUNDS; i++) {
+        size_t n = 0;
+        const uint8_t *out;
+
+        nodus_tcp_poll(&g_srv.tcp, 1);
+        if (w.m->state == CMT_P2P_SC_ST_WAIT_AUTHSIG) break;
+        out = cmt_p2p_sc_out(w.m, &n);
+        if (n > 0) {
+            ok = peer_send(&w, ws, out, n) == 0;
+            cmt_p2p_sc_out_consume(w.m, n);
+        }
+        if (ok && (ws ? peer_rx(&w) : peer_rx_plain(&w)) != 0) ok = 0;
+    }
+    ok = ok && w.m->state == CMT_P2P_SC_ST_WAIT_AUTHSIG && w.pin_bad == 0 &&
+         w.m->send_counter == CMT_P2P_SC_AUTHSIG_FRAMES_MAX;
+    if (ok) {                                    /* the single write */
+        size_t n = 0, pl = nodus_frame_encode(plain, sizeof(plain), (const uint8_t *)"held-1", 6);
+        const uint8_t *out = cmt_p2p_sc_out(w.m, &n);
+        uint8_t *flight = (uint8_t *)malloc(n + sizeof(sealed));
+
+        ok = flight != NULL && pl == 13 && n > 0;
+        if (ok) {
+            memcpy(flight, out, n);
+            cmt_p2p_sc_out_consume(w.m, n);
+            ok = seal_by_hand(w.m, w.m->send_counter, plain, pl, flight + n) == 0 &&
+                 peer_send(&w, ws, flight, n + sizeof(sealed)) == 0;
+        }
+        free(flight);
+    }
+    for (int i = 0; ok && i < MAX_ROUNDS && g_srv.frames == 0; i++) {
+        nodus_tcp_poll(&g_srv.tcp, 1);
+        if ((ws ? peer_rx(&w) : peer_rx_plain(&w)) != 0) { ok = 0; break; }
+    }
+    ok = ok && g_srv.frames == 1 && g_srv.rx_len == 6 && memcmp(g_srv.rx, "held-1", 6) == 0 &&
+         g_srv.sessions == 1 && g_srv.frames_at_session == 0;
+    if (ok) {                                    /* new input after the drain */
+        size_t pl = nodus_frame_encode(plain, sizeof(plain), (const uint8_t *)"held-2", 6);
+
+        ok = pl == 13 &&
+             seal_by_hand(w.m, w.m->send_counter + 1, plain, pl, sealed) == 0 &&
+             peer_send(&w, ws, sealed, sizeof(sealed)) == 0;
+    }
+    for (int i = 0; ok && i < MAX_ROUNDS && g_srv.frames < 2; i++)
+        nodus_tcp_poll(&g_srv.tcp, 1);
+    TEST(ws ? "level-triggered WS: held input drains, then NEW input still arrives"
+            : "level-triggered TCP: held input drains, then NEW input still arrives");
+    if (ok && g_srv.frames == 2 && g_srv.rx_len == 6 && memcmp(g_srv.rx, "held-2", 6) == 0 &&
+        g_srv.disconnected == 0) PASS();
+    else FAIL("held frame lost, or the connection never read again");
+
+    if (w.fd > 0) close(w.fd);
+    if (w.m != NULL) cmt_p2p_sc_clear(w.m);
+    free(w.m);
+    free(w.rx);
+    free(w.plain);
+    side_close(&g_srv);
+}
+
+static void test_level_held_input(void)
+{
+    held_input_case(false);
+    held_input_case(true);
+}
+
 /* ══ 14: a marked teardown is claimed once, even if on_disconnect polls ══ */
 
 static void test_teardown_nested_poll(void)
 {
     int ok;
 
-    TEST("marked teardown: on_disconnect runs once although it polls (nested reaper)");
+    TEST("marked teardown: on_disconnect runs once although it polls and re-disconnects");
     ok = pair_up(&CMT_P2P_SC_PROFILE_CLIENT, &CMT_P2P_SC_PROFILE_CLIENT, NULL) == 0 &&
          pump_until(&g_srv.sessions, 1, MAX_ROUNDS) && pump_until(&g_cli.sessions, 1, MAX_ROUNDS);
     if (ok) {
         /* What a failed seal does under the write lock (sc_seal_failed_locked). */
         g_cli.poll_in_disconnect = true;
+        g_cli.disconnect_again = true;     /* ... and a public disconnect of the same conn */
         g_cli.conn->sc_close_req = true;
         g_cli.tcp.sc_close_requests++;
         ok = pump_until(&g_cli.disconnected, 1, MAX_ROUNDS) &&
@@ -1237,6 +1412,7 @@ int main(void)
     test_ws_close_behind_data();
     test_enable_dirty_conn();
     test_level_triggered();
+    test_level_held_input();
     test_teardown_nested_poll();
     test_layer_off_bytes();
 

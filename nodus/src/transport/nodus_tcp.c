@@ -3603,6 +3603,10 @@ void nodus_tcp_disconnect(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
      * and must not run again. (Outside a batch a closed conn is freed, so
      * a caller cannot legitimately hold one there.) */
     if (conn->close_pending) return;
+    /* Claimed for a marked teardown (sc_reap_marked): its on_disconnect is
+     * running or about to, exactly once — a second disconnect issued from
+     * another callback meanwhile must not run it again. */
+    if (conn->sc_closing) return;
     if (tcp->on_disconnect)
         tcp->on_disconnect(conn, tcp->cb_ctx);
     conn_free(tcp, conn);
