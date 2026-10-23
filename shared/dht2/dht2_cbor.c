@@ -86,7 +86,8 @@ static int rd_head(dht2_cbor_rd_t *r, unsigned *mt, uint64_t *arg)
     /* Major type 7 with a 1-byte argument is a "simple value"; with 2/4/8
      * bytes it is a float. dag-cbor's simple values are only false /
      * true / null (:60-61) and no DHT v2 schema of this package carries a
-     * float — refused; `true` is read by dht2_cbor_rd_true alone. */
+     * float — refused; false / true / null are read by dht2_cbor_rd_bool /
+     * _true / _null alone (single byte, no argument). */
     if (*mt == MT_7) {
         return rd_fail(r);
     }
@@ -102,6 +103,19 @@ int dht2_cbor_rd_map(dht2_cbor_rd_t *r, uint64_t *count)
         return -1;
     }
     if (mt != MT_MAP) {
+        return rd_fail(r);
+    }
+    return 0;
+}
+
+int dht2_cbor_rd_array(dht2_cbor_rd_t *r, uint64_t *count)
+{
+    unsigned mt;
+
+    if (rd_head(r, &mt, count) != 0) {
+        return -1;
+    }
+    if (mt != MT_ARRAY) {
         return rd_fail(r);
     }
     return 0;
@@ -188,6 +202,47 @@ int dht2_cbor_rd_true(dht2_cbor_rd_t *r)
     }
     r->pos++;
     return 0;
+}
+
+int dht2_cbor_rd_bool(dht2_cbor_rd_t *r, bool *v)
+{
+    if (r->err || r->pos >= r->len) {
+        return rd_fail(r);
+    }
+    if (r->buf[r->pos] == 0xF4u) {
+        *v = false;
+    } else if (r->buf[r->pos] == 0xF5u) {
+        *v = true;
+    } else {
+        return rd_fail(r);
+    }
+    r->pos++;
+    return 0;
+}
+
+int dht2_cbor_rd_null(dht2_cbor_rd_t *r)
+{
+    if (r->err || r->pos >= r->len) {
+        return rd_fail(r);
+    }
+    if (r->buf[r->pos] != 0xF6u) {
+        return rd_fail(r);
+    }
+    r->pos++;
+    return 0;
+}
+
+int dht2_cbor_rd_peek_mt(const dht2_cbor_rd_t *r)
+{
+    if (r->err || r->pos >= r->len) {
+        return -1;
+    }
+    return (int)(r->buf[r->pos] >> 5);
+}
+
+bool dht2_cbor_rd_peek_null(const dht2_cbor_rd_t *r)
+{
+    return !r->err && r->pos < r->len && r->buf[r->pos] == 0xF6u;
 }
 
 bool dht2_cbor_rd_done(const dht2_cbor_rd_t *r)
@@ -346,4 +401,23 @@ void dht2_cbor_wr_true(dht2_cbor_wr_t *w)
     static const uint8_t t = 0xF5u;
 
     wr_raw(w, &t, 1);
+}
+
+void dht2_cbor_wr_bool(dht2_cbor_wr_t *w, bool v)
+{
+    uint8_t b = v ? 0xF5u : 0xF4u;
+
+    wr_raw(w, &b, 1);
+}
+
+void dht2_cbor_wr_null(dht2_cbor_wr_t *w)
+{
+    static const uint8_t n = 0xF6u;
+
+    wr_raw(w, &n, 1);
+}
+
+void dht2_cbor_wr_array(dht2_cbor_wr_t *w, uint64_t count)
+{
+    wr_head(w, MT_ARRAY, count);
 }

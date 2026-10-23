@@ -242,6 +242,40 @@ int dht2_id_inbox_ctl(const uint8_t chain[DHT2_CHAIN_LEN],
                       const uint8_t recipient_fp[DHT2_FP_LEN],
                       uint8_t out[DHT2_ID_LEN]);
 
+/* Typed client-side `_id` helpers — preimages fixed by the operator
+ * decision docs/plans/decisions/2026-10-23-dht-v2-id-param-bytes.md (every
+ * field fixed length). Holders never compute these (design §13 row 5). */
+
+/** dm topic = SHA3-512(`nodus.dht.dm.v1` ‖ chain ‖ recipient fp ‖ salt 32). */
+int dht2_id_dm(const uint8_t chain[DHT2_CHAIN_LEN],
+               const uint8_t recipient_fp[DHT2_FP_LEN],
+               const uint8_t salt[DHT2_SALT_LEN],
+               uint8_t out[DHT2_ID_LEN]);
+
+/** Group head `_id` = SHA3-512(`nodus.dht.group.head.v1` ‖ chain ‖
+ *  group id 32). No key version. */
+int dht2_id_group_head(const uint8_t chain[DHT2_CHAIN_LEN],
+                       const uint8_t group_id[DHT2_GROUP_ID_LEN],
+                       uint8_t out[DHT2_ID_LEN]);
+
+/** Group record `_id` = SHA3-512(`nodus.dht.group.record.v1` ‖ chain ‖
+ *  group id 32 ‖ key version u32 BE). */
+int dht2_id_group_record(const uint8_t chain[DHT2_CHAIN_LEN],
+                         const uint8_t group_id[DHT2_GROUP_ID_LEN],
+                         uint32_t key_version, uint8_t out[DHT2_ID_LEN]);
+
+/** Group key packet `_id` = SHA3-512(`nodus.dht.group.keys.v1` ‖ chain ‖
+ *  group id 32 ‖ key version u32 BE). */
+int dht2_id_group_keys(const uint8_t chain[DHT2_CHAIN_LEN],
+                       const uint8_t group_id[DHT2_GROUP_ID_LEN],
+                       uint32_t key_version, uint8_t out[DHT2_ID_LEN]);
+
+/** Group feed topic = SHA3-512(`nodus.dht.group.feed.v1` ‖ chain ‖
+ *  group id 32). No key version. */
+int dht2_id_group_feed(const uint8_t chain[DHT2_CHAIN_LEN],
+                       const uint8_t group_id[DHT2_GROUP_ID_LEN],
+                       uint8_t out[DHT2_ID_LEN]);
+
 /** Address = SHA3-512(`_id` ‖ owner fp) (Bee soc.go:199-207). */
 int dht2_address(const uint8_t id[DHT2_ID_LEN],
                  const uint8_t owner_fp[DHT2_FP_LEN],

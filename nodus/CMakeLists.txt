@@ -635,6 +635,7 @@ set(NODUS_SOURCES
     ${SHARED_DIR}/dht2/dht2_record.c
     ${SHARED_DIR}/dht2/dht2_place.c
     ${SHARED_DIR}/dht2/dht2_envelope.c
+    ${SHARED_DIR}/dht2/dht2_msg.c
 
     # Shared crypto (standalone only — messenger tree provides these via dht_lib)
     ${SHARED_CRYPTO_SOURCES}
@@ -2041,6 +2042,14 @@ add_test(NAME test_cmt_pb COMMAND test_cmt_pb)
 add_executable(test_dht2_codec tests/test_dht2_codec.c)
 target_link_libraries(test_dht2_codec nodus dsa nodus crypto)
 add_test(NAME test_dht2_codec COMMAND test_dht2_codec)
+
+# DHT v2 package 2 — the wire messages (requests, answer / receipt /
+# refusal payloads, pull-sync, inbox control, typed `_id` helpers). Default
+# build, no network, no files, no clock; nothing left behind. What it
+# proves / how it can lie: the header of tests/test_dht2_msg.c.
+add_executable(test_dht2_msg tests/test_dht2_msg.c)
+target_link_libraries(test_dht2_msg nodus dsa nodus crypto)
+add_test(NAME test_dht2_msg COMMAND test_dht2_msg)
 
 add_executable(test_cmt_block tests/test_cmt_block.c)
 target_link_libraries(test_cmt_block nodus dsa nodus crypto)

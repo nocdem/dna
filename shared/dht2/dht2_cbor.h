@@ -23,9 +23,13 @@
  *     #21 "Strict decode": "no tags (42 not used)"), so every major type 6
  *     is refused (:52, :57);
  *   · major type 7: the spec allows false / true / null and 64-bit floats
- *     (:60-65); no DHT v2 schema of this package carries a float, false
- *     or null, so the reader offers `true` only (0xf5, `_del`) and every
- *     other major-type-7 item is refused;
+ *     (:60-65); no DHT v2 schema carries a float, so the reader offers
+ *     false / true (0xf4 / 0xf5: `_del`, the LIST answer's `complete`) and
+ *     null (0xf6: row-7 `v`, `ctl`, `p_deliver.v`) and every other
+ *     major-type-7 item is refused;
+ *   · arrays (major type 4): definite and shortest head only; the CALLER
+ *     bounds the element count before it loops (dht2_cbor_rd_array returns
+ *     whatever count the head claims);
  *   · major type 1 (negative integer) refused — design §13 row 6 "major
  *     type 0 only" (named deviation, row 21);
  *   · map keys: text only (spec "Map Keys" :42-44), strictly ascending by
@@ -88,8 +92,27 @@ int dht2_cbor_rd_bytes(dht2_cbor_rd_t *r, const uint8_t **p, size_t *n);
 /** Major type 3, shortest length; pointer into the buffer. 0 / -1. */
 int dht2_cbor_rd_text(dht2_cbor_rd_t *r, const uint8_t **p, size_t *n);
 
+/** Array header (major type 4), definite and shortest. The count is NOT
+ *  checked against the remaining bytes here: the schema bounds it before
+ *  iterating. 0 / -1. */
+int dht2_cbor_rd_array(dht2_cbor_rd_t *r, uint64_t *count);
+
 /** Exactly 0xf5 (true). 0 / -1. */
 int dht2_cbor_rd_true(dht2_cbor_rd_t *r);
+
+/** Exactly 0xf4 (false) or 0xf5 (true). 0 / -1. */
+int dht2_cbor_rd_bool(dht2_cbor_rd_t *r, bool *v);
+
+/** Exactly 0xf6 (null). 0 / -1. */
+int dht2_cbor_rd_null(dht2_cbor_rd_t *r);
+
+/** Major type (0-7) of the next item without consuming it; -1 at the end
+ *  of input or after an error. For schemas whose value is one of several
+ *  types (row-7 `v`). */
+int dht2_cbor_rd_peek_mt(const dht2_cbor_rd_t *r);
+
+/** True when the next byte is exactly 0xf6 (null); nothing consumed. */
+bool dht2_cbor_rd_peek_null(const dht2_cbor_rd_t *r);
 
 /** True when every byte was consumed without error (spec :66). */
 bool dht2_cbor_rd_done(const dht2_cbor_rd_t *r);
@@ -136,6 +159,10 @@ void dht2_cbor_wr_text(dht2_cbor_wr_t *w, const uint8_t *p, size_t n);
 /** A text key given as a C string literal. */
 void dht2_cbor_wr_key(dht2_cbor_wr_t *w, const char *lit);
 void dht2_cbor_wr_true(dht2_cbor_wr_t *w);
+void dht2_cbor_wr_bool(dht2_cbor_wr_t *w, bool v);
+void dht2_cbor_wr_null(dht2_cbor_wr_t *w);
+/** Array header, shortest form; the caller then writes `count` items. */
+void dht2_cbor_wr_array(dht2_cbor_wr_t *w, uint64_t count);
 
 /** Number of bytes the head of an item with argument `v` takes. */
 size_t dht2_cbor_head_size(uint64_t v);

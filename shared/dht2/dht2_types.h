@@ -118,6 +118,62 @@ extern "C" {
 #define DHT2_LABEL_INBOX        "nodus.dht.inbox.v1"
 #define DHT2_LABEL_INBOX_CTL    "nodus.dht.inbox.ctl.v1"
 
+/* ── package 2: message bounds (§13 rows 7, 11, 12, 14, 15) ────────────── */
+
+/** Row 7: > 8 keys is malformed; row 14: get `keys` / put `envs` ≤ 8. */
+#define DHT2_REQ_KEYS_MAX      8u
+/** Row 11: a LIST page lists ≤ 16 entries. */
+#define DHT2_LIST_PAGE_MAX     16u
+/** Row 12: `p_offer` carries ≤ 250 entries (Bee DefaultMaxPage). */
+#define DHT2_PULL_PAGE_MAX     250u
+/** Row 15: control `_data` entry = fp 64 ‖ mark 1 ‖ through 8 (u64 BE),
+ *  ≤ 3,500 entries; mark 1 HANDLED / 2 DENIED. */
+#define DHT2_CTL_ENTRY_LEN     73u
+#define DHT2_CTL_ENTRIES_MAX   3500u
+#define DHT2_CTL_HANDLED       1u
+#define DHT2_CTL_DENIED        2u
+
+/** Decision 2026-10-23-dht-v2-id-param-bytes.md: dm salt 32 B, group id
+ *  32 B, group key version u32 big-endian. */
+#define DHT2_SALT_LEN          32u
+#define DHT2_GROUP_ID_LEN      32u
+#define DHT2_KEY_VERSION_LEN   4u
+
+/* ── row 11: the derived maximum answer MESSAGE ────────────────────────
+ * Record bytes per call: 8 keys × 262,144 B (the records travel beside
+ * the answer, row 18). The answer ENVELOPE (RFC 0002, protobuf, the
+ * tree's proto3 sizes) for 8 keys, every term:
+ *   payload (strict DAG-CBOR, read answer, the largest of the three
+ *   8-key payloads; every uint taken at its 9-byte maximum):
+ *     map head                                   1
+ *     "c"  key 2 + bstr 32  (head 2 + 32)       36
+ *     "h"  key 2 + uint 9                       11
+ *     "n"  key 2 + bstr 64  (head 2 + 64)       68
+ *     "q"  key 2 + bstr 32                      36
+ *     "r"  key 2 + array head 1 + 8 × element 137, where one element is
+ *          map head 1 + "k" 2 + bstr 64 (66) + "v" 2 + the larger of
+ *          bstr 64 (66) and [18, through] (1 + 1 + 9 = 11)
+ *                                            1099
+ *     "t"  key 2 + uint 9                       11
+ *   = 1262 B.
+ *   (A LIST answer's payload is another bound: one `r` element plus
+ *   ≤ 16 {w, d} entries ≈ 2.4 KB, its records ≤ 2 MiB — row 11.)
+ *   envelope field 1, the public key: tag 1 + uvarint(2595) 2 +
+ *     PublicKey message (tag 1 + uvarint(2592) 2 + 2592 key) = 2598
+ *   field 2, payload type: tag 1 + len 1 + 21 ("/nodus/dht/receipt/v1" and
+ *     "/nodus/dht/refusal/v1" are the longest) = 23
+ *   field 3, payload: tag 1 + uvarint(1262) 2 + 1262 = 1265
+ *   field 5, signature: tag 1 + uvarint(4627) 2 + 4627 = 4630.
+ * The `_Static_assert` of the total against NODUS_MAX_FRAME_TCP lives in
+ * nodus/tests/test_dht2_msg.c (shared/ does not include nodus headers). */
+#define DHT2_ANSWER_PAYLOAD_MAX \
+    (1u + 36u + 11u + 68u + 36u + (2u + 1u + 8u * 137u) + 11u)
+#define DHT2_ANSWER_ENV_MAX \
+    ((1u + 2u + (1u + 2u + DHT2_PUBKEY_LEN)) + (1u + 1u + 21u) + \
+     (1u + 2u + DHT2_ANSWER_PAYLOAD_MAX) + (1u + 2u + DHT2_SIG_LEN))
+#define DHT2_ANSWER_MSG_MAX \
+    (DHT2_REQ_KEYS_MAX * DHT2_ENVELOPE_MAX + DHT2_ANSWER_ENV_MAX)
+
 /** §2 / design rev 5: R = 4 holders per record (scope 4f). */
 #define DHT2_R                 4u
 
