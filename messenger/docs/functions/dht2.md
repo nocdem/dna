@@ -1,4 +1,4 @@
-# DHT v2 Record Codec Functions (`shared/dht2/`)
+# DHT v2 Codec Functions (`shared/dht2/`)
 
 DHT v2 package 1: the byte layer of the storage-node DHT for Nodus Connect —
 a strict DAG-CBOR reader / writer, the signed record (IPNS v2 envelope +
@@ -7,17 +7,24 @@ identifiers, the order of versions (Select), placement (`nearest_R` /
 `eligible`), and the libp2p RFC 0002 Signed Envelope with the owner-signed
 LIST request.
 
-**No production caller.** Nothing in a node or a client calls any function
-in this file yet; the only caller is `nodus/tests/test_dht2_codec.c`
-(`nodus/CMakeLists.txt:593-598`: "Pure, no I/O; no caller yet"). Storage,
-pull-sync, the client / node sessions, quotas and the answer / receipt /
-refusal payload maps are LATER packages (`dht2_envelope.h:45-46`;
-`test_dht2_codec.c:80-81`).
+DHT v2 package 2 (§10): the wire messages — get / put requests, the read
+answer / write receipt / LIST answer / refusal payloads with their seal and
+open, the pull-sync messages and the `p_want` bit-vector, the inbox control
+`_data` — plus the strict-CBOR array / false / null additions (§3) and five
+typed client-side `_id` helpers (§5).
 
-**Build.** The five `.c` files are in nodus's common source list
-(`nodus/CMakeLists.txt` `set(NODUS_SOURCES` :114, entries :599-603), outside
+**No production caller.** Nothing in a node or a client calls any function
+in this file yet; the only callers are `nodus/tests/test_dht2_codec.c` and
+`nodus/tests/test_dht2_msg.c` (`nodus/CMakeLists.txt:627-632`: "Pure, no
+I/O; no caller yet"). Storage, the holder check, quotas, the client / node
+sessions and the holder / client logic that sends and checks these messages
+are LATER packages (`dht2_msg.h:39-42`: "no admission, holder or client
+logic").
+
+**Build.** The six `.c` files are in nodus's common source list
+(`nodus/CMakeLists.txt` `set(NODUS_SOURCES` :114, entries :633-638), outside
 the Linux-only list, "so it compiles on Windows (the browser / Connect core
-will use it too)" (:597-598). Include pattern: `#include "dht2/dht2_record.h"`
+will use it too)" (:631-632). Include pattern: `#include "dht2/dht2_record.h"`
 (resolved through `-I shared`). Dependencies: `crypto/sign/qgp_dilithium.h`
 (ML-DSA-87), `crypto/hash/qgp_sha3.h`, `dnac/cmt_pb.h` / `dnac/cmt_pb_wire.h`
 (the tree's proto3 PublicKey codec and reader — `dht2_record.c:16`,
@@ -26,12 +33,23 @@ will use it too)" (:597-598). Include pattern: `#include "dht2/dht2_record.h"`
 **Normative design** (LOCAL-only, not in git — named, not linked):
 `docs/plans/2026-10-14-dht-v2-design.md` rev 5 (FROZEN 2026-10-15) — §2
 (placement, eligibility), §3.1 (encoding, stored form), §3.2 (identifiers),
-§4.1 (admission order), §4.2 (order of versions), §13 rows 1, 3-7, 15, 21-23.
+§4.1 (admission order), §4.2 (order of versions), §4.4 (answers), §4.5
+(pull-sync), §13 rows 1, 3-7, 11, 12, 14, 15, 18, 21-23.
 Governing decision records (also LOCAL-only, `docs/plans/decisions/`):
 `2026-10-14-kurultay-21-summary.md` (the IPNS v2 spine; strict decode;
 ctx labels and `_id` preimages), `2026-10-14-kurultay-22-summary.md`
 (codec code may start; 3C removed), `2026-10-14-kurultay-23-summary.md`
-(§13 wire table; khan decision B = the owner-signed LIST request).
+(§13 wire table; khan decision B = the owner-signed LIST request),
+`2026-10-23-dht-v2-wire-gaps-package2.md` (operator, 2026-10-23: get / put
+requests and pull messages are strict DAG-CBOR maps with text keys; pull
+messages carry no `op` and no `n`; read-repair is sent as `op` "put"; the
+pull-receipt payload keys are `pf`, `sf`, `c`, `g`, `s`, `top`, `e`; the
+LIST answer's `req_cursor` is ABSENT on a first page; the pull-receipt's
+envelope domain stays OPEN), `2026-10-23-dht-v2-id-param-bytes.md`
+(operator, 2026-10-23: dm salt 32 B, group id 32 B, group key version
+8 B unsigned big-endian — amended the same day from a first answer of
+4 B — carried only in the group.record and group.keys `_id`, not in
+group.head or the group feed topic).
 
 Pinned references (`/home/nocdem/refs/`, as the headers cite them): ipfs specs
 `3000be69` (`src/ipns/ipns-record.md`), boxo v0.43.0, ipld `bfd348aa`
@@ -48,9 +66,9 @@ FIPS 204.
 
 | Convention | Functions |
 |---|---|
-| `DHT2_OK` (0) / `DHT2_E_*` (§2) | `dht2_data_encode`, `dht2_data_decode`, `dht2_record_parse`, `dht2_record_check_class`, `dht2_record_check_expiry`, `dht2_record_verify`, `dht2_record_canonical`, `dht2_record_build`, `dht2_record_placement_key`, `dht2_env_seal`, `dht2_env_decode`, `dht2_env_verify`, `dht2_list_payload_encode`, `dht2_list_payload_decode`, `dht2_list_req_build`, `dht2_list_req_open` |
-| plain `0` / `-1` | `dht2_cbor_rd_map/_key/_uint/_bytes/_text/_true`, `dht2_id`, `dht2_id_feed_entry`, `dht2_id_feed_head`, `dht2_id_inbox`, `dht2_id_inbox_ctl`, `dht2_address`, `dht2_fp`, `dht2_validity_parse`, `dht2_validity_format` |
-| other | `dht2_bytes_compare` −1 / 0 / 1; `dht2_record_compare` sign (> 0 / < 0 / 0); `dht2_nearest_r` a count or −1; `dht2_eligible` 1 / 0 / −1; `dht2_cbor_rd_done`, `dht2_cbor_key_is`, `dht2_cbor_wr_ok` `bool`; the `dht2_cbor_wr_*` emitters `void` (errors are sticky in the writer) |
+| `DHT2_OK` (0) / `DHT2_E_*` (§2) | `dht2_data_encode`, `dht2_data_decode`, `dht2_record_parse`, `dht2_record_check_class`, `dht2_record_check_expiry`, `dht2_record_verify`, `dht2_record_canonical`, `dht2_record_build`, `dht2_record_placement_key`, `dht2_env_seal`, `dht2_env_decode`, `dht2_env_verify`, `dht2_list_payload_encode`, `dht2_list_payload_decode`, `dht2_list_req_build`, `dht2_list_req_open`; package 2 (§10): every `*_encode` / `*_decode` of `dht2_msg.h`, `dht2_answer_seal`, `dht2_answer_open`, `dht2_ctl_encode`, `dht2_ctl_check`, `dht2_ctl_at`, `dht2_ctl_lookup` |
+| plain `0` / `-1` | `dht2_cbor_rd_map/_key/_uint/_bytes/_text/_array/_true/_bool/_null`, `dht2_id`, `dht2_id_feed_entry`, `dht2_id_feed_head`, `dht2_id_inbox`, `dht2_id_inbox_ctl`, `dht2_id_dm`, `dht2_id_group_head`, `dht2_id_group_record`, `dht2_id_group_keys`, `dht2_id_group_feed`, `dht2_address`, `dht2_fp`, `dht2_validity_parse`, `dht2_validity_format` |
+| other | `dht2_bytes_compare` −1 / 0 / 1; `dht2_record_compare` sign (> 0 / < 0 / 0); `dht2_nearest_r` a count or −1; `dht2_eligible` 1 / 0 / −1; `dht2_cbor_rd_peek_mt` a major type 0-7 or −1; `dht2_cbor_rd_done`, `dht2_cbor_rd_peek_null`, `dht2_cbor_key_is`, `dht2_cbor_wr_ok`, `dht2_bits_get` `bool`; `dht2_bits_len` `size_t`; the `dht2_cbor_wr_*` emitters and `dht2_bits_set` `void` (writer errors are sticky in the writer) |
 
 `DHT2_E_ARG` (−1) is always the CALLER's bug (a NULL argument, a buffer
 too small) and never a verdict on input bytes (`dht2_types.h:82-84`).
@@ -61,7 +79,12 @@ absence (design §13 row 7).
 ### 1.2 Zero-copy lifetimes
 
 - `dht2_cbor_rd_key` / `_bytes` / `_text` return pointers INTO the reader's
-  buffer (`dht2_cbor.h:78`, `:85-89`).
+  buffer (`dht2_cbor.h:79-82`, `:89-93`).
+- Package 2 (`dht2_msg.h:35-37`): `dht2_req_t.envs[]` (`:99`),
+  `dht2_p_want_t.b` (`:227`) and `dht2_p_deliver_t.v` (`:237`) point INTO the
+  decoded input; every other decoded field of a `dht2_msg.h` struct is copied
+  into a fixed array. The `dht2_env_t` filled by `dht2_answer_open` points
+  into its `in`, as for `dht2_env_decode`.
 - `dht2_data_t.data` / `.prev`: after `dht2_data_decode` they point into the
   decoded bytes, "which must outlive the struct"; for encoding the caller
   sets them (`dht2_record.h:96-98`).
@@ -82,14 +105,27 @@ hedged signing (`dht2_record.h:72-73`). Heap: `dht2_id` allocates its
 preimage and frees it on every path (`dht2_record.h:73-75`); the RFC 0002
 signed buffer is allocated in seal / verify and freed on every path
 (`dht2_envelope.h:42-43`); the CBOR layer and placement use no heap
-(`dht2_cbor.h:43-44`, `dht2_place.h:22`). Because ML-DSA-87 signing is
+(`dht2_cbor.h:47-48`, `dht2_place.h:22`). The package-2 message layer
+"reads no clock, keeps no state, draws no randomness, no heap"
+(`dht2_msg.h:42`) — except that `dht2_answer_seal` / `dht2_answer_open`
+call `dht2_env_seal` / `dht2_env_verify`, which allocate the RFC 0002 signed
+buffer as above (`dht2_msg.c:684-714`). The five typed `_id` helpers
+build their params on the stack and then call `dht2_id` (which allocates as
+above) (`dht2_record.c:160-226`). Because ML-DSA-87 signing is
 hedged, two builds of the same record differ in their signature bytes; a
 retry must resend the stored canonical bytes (design §4.2).
 
 ### 1.4 ⚠ API CONTRACT — signatures
 
-**No function here except `dht2_record_verify`, `dht2_env_verify` and
-`dht2_list_req_open` checks a signature.** `dht2_record_parse`,
+**No function here except `dht2_record_verify`, `dht2_env_verify`,
+`dht2_list_req_open` and `dht2_answer_open` checks a signature.** Every
+package-2 `*_decode` reads a PAYLOAD and checks no signature; an answer /
+receipt / refusal payload is trusted only after `dht2_answer_open` (or
+`dht2_env_verify` under `nodus.dht.answer.v1`) returned `DHT2_OK` on its
+envelope, and even then the client rules of §4.4 (the answering fp = `n`,
+`q` = the request's nonce, `c`, eligibility) are the caller's
+(`dht2_msg.h:192-197`). The pull-receipt payload has NO sealing or opening
+function at all (its envelope domain is not decided). `dht2_record_parse`,
 `dht2_data_decode`, `dht2_record_canonical`, `dht2_record_compare` and
 `dht2_record_placement_key` operate on UNVERIFIED bytes
 (`dht2_record.h:63-70`); `dht2_env_decode` does not verify, and a decoded
@@ -123,8 +159,11 @@ holder check, quota and store belong to later packages.
 | `DHT2_VALIDITY_LEN` | `20u` — `YYYY-MM-DDTHH:MM:SSZ` | `:38` |
 | `DHT2_PUBKEY_LEN` | `QGP_DSA87_PUBLICKEYBYTES` = 2592 | `:39`; `qgp_dilithium.h:12` |
 | `DHT2_SIG_LEN` | `QGP_DSA87_SIGNATURE_BYTES` = 4627 | `:40`; `qgp_dilithium.h:14` |
-| `DHT2_R` | `4u` — holders per record | `:122`; design §2 (scope 4f) |
-| `DHT2_SET_MAX` | `256u` — largest storage set `nearest_R` / `eligible` accept; bounds the O(n²) duplicate scan | `:127`; §13 row 13 |
+| `DHT2_R` | `4u` — holders per record | `:196`; design §2 (scope 4f) |
+| `DHT2_SET_MAX` | `256u` — largest storage set `nearest_R` / `eligible` accept; bounds the O(n²) duplicate scan | `:201`; §13 row 13 |
+| `DHT2_SALT_LEN` | `32u` — dm salt | `:138`; decision `2026-10-23-dht-v2-id-param-bytes.md` |
+| `DHT2_GROUP_ID_LEN` | `32u` — group id | `:139`; same decision |
+| `DHT2_KEY_VERSION_LEN` | `8u` — group key version, u64 big-endian ("as amended") | `:140`; same decision, Amendment |
 | `DHT2_VALIDITY_MAX_SECONDS` | `253402300799ull` = 9999-12-31T23:59:59Z | `dht2_time.h:37` |
 
 ### 2.2 Classes, validity types, class max (§13 rows 5, 6)
@@ -140,29 +179,34 @@ holder check, quota and store belong to later packages.
 
 `0` is not a wire code: it is this codec's "the check passed" (`:59`).
 
+Two different things below: a code a function RETURNS (a verdict of this
+codec), and a code a package-2 message CARRIES as data (row-7 `v` in a read
+answer / receipt / LIST answer, or the refusal's `e`). Carried codes are
+listed in §10.1 and are never returned by the codec functions.
+
 | Code | Value | Returned by this package |
 |---|---|---|
 | `DHT2_OK` | 0 | every `DHT2_*`-convention function on success |
-| `DHT2_E_TOO_LARGE` | 1 | `dht2_record_parse`, `dht2_record_build`, `dht2_env_decode` |
-| `DHT2_E_BAD_ENCODING` | 2 | `dht2_data_encode`, `dht2_data_decode`, `dht2_record_parse`, `dht2_record_build`, `dht2_env_decode` |
+| `DHT2_E_TOO_LARGE` | 1 | `dht2_record_parse`, `dht2_record_build`, `dht2_env_decode`, `dht2_answer_open` (passed through from `dht2_env_decode`) |
+| `DHT2_E_BAD_ENCODING` | 2 | `dht2_data_encode`, `dht2_data_decode`, `dht2_record_parse`, `dht2_record_build`, `dht2_env_decode`; package 2: `dht2_answer_encode/_decode`, `dht2_receipt_encode/_decode`, `dht2_list_answer_encode/_decode`, `dht2_refusal_encode/_decode`, `dht2_p_hello_decode`, `dht2_p_get_decode`, `dht2_p_offer_encode/_decode`, `dht2_p_want_encode/_decode`, `dht2_p_deliver_encode/_decode`, `dht2_pull_receipt_encode/_decode`, `dht2_ctl_encode`, `dht2_ctl_check`, `dht2_ctl_lookup`, `dht2_answer_open` (decode fault or another payload type) |
 | `DHT2_E_BAD_CHAIN` | 3 | `dht2_record_parse`, `dht2_list_req_open` (internal there, see §6.3) |
 | `DHT2_E_BAD_ADDRESS` | 4 | `dht2_record_parse` |
 | `DHT2_E_NOT_HOLDER` | 5 | — (defined; the holder check is a later package) |
 | `DHT2_E_BAD_CLASS` | 6 | `dht2_record_check_class`, `dht2_record_check_expiry` (class out of range) |
 | `DHT2_E_EXPIRED` | 7 | `dht2_record_check_expiry` |
 | `DHT2_E_TOO_LONG` | 8 | `dht2_record_check_expiry` |
-| `DHT2_E_BAD_SIGNATURE` | 9 | `dht2_record_verify`, `dht2_record_canonical`, `dht2_env_verify`, `dht2_list_req_open` (internal there) |
+| `DHT2_E_BAD_SIGNATURE` | 9 | `dht2_record_verify`, `dht2_record_canonical`, `dht2_env_verify`, `dht2_list_req_open` (internal there), `dht2_answer_open` |
 | `DHT2_E_QUOTA` | 10 | — (defined; later package) |
 | `DHT2_E_POOL_FULL` | 11 | — (defined; later package) |
 | `DHT2_E_DENIED` | 12 | — (defined; later package) |
 | `DHT2_E_NODE_FULL` | 13 | — (defined; later package) |
-| `DHT2_E_BUSY` | 14 | — (defined; call-level, row 7 / row 18) |
-| `DHT2_E_NOT_CAUGHT_UP` | 15 | — (defined; call-level, row 7 / row 18) |
-| `DHT2_E_HOLDER_FAULT` | 16 | `dht2_record_parse`, `dht2_record_check_class`, `dht2_record_check_expiry`, `dht2_record_build`, `dht2_record_placement_key`, `dht2_env_seal`, `dht2_env_decode`, `dht2_env_verify`, `dht2_list_req_open` |
-| `DHT2_E_NOT_OWNER` | 17 | `dht2_list_req_open` |
-| `DHT2_E_HANDLED` | 18 | — (defined; later package) |
-| `DHT2_E_MALFORMED_REQ` | −2 | NOT a row-7 code — "a tier-2 protocol error, no signed answer" (`:79-81`): `dht2_list_payload_decode`, `dht2_list_req_open` |
-| `DHT2_E_ARG` | −1 | NOT a row-7 code — a NULL argument / too-small output buffer (`:82-84`): every `DHT2_*`-convention function |
+| `DHT2_E_BUSY` | 14 | — (call-level, row 7 / row 18; CARRIED as a refusal's `e`, §10.4) |
+| `DHT2_E_NOT_CAUGHT_UP` | 15 | — (call-level, row 7 / row 18; CARRIED as a refusal's `e`, §10.4) |
+| `DHT2_E_HOLDER_FAULT` | 16 | `dht2_record_parse`, `dht2_record_check_class`, `dht2_record_check_expiry`, `dht2_record_build`, `dht2_record_placement_key`, `dht2_env_seal`, `dht2_env_decode`, `dht2_env_verify`, `dht2_list_req_open`, `dht2_answer_seal` / `dht2_answer_open` (passed through) |
+| `DHT2_E_NOT_OWNER` | 17 | `dht2_list_req_open` (also CARRIED: the one code a LIST answer's `v` may be, §10.1) |
+| `DHT2_E_HANDLED` | 18 | — (never returned; CARRIED only as `v = [18, through]`, §10.1) |
+| `DHT2_E_MALFORMED_REQ` | −2 | NOT a row-7 code — "a tier-2 protocol error, no signed answer" (`:79-81`): `dht2_list_payload_decode`, `dht2_list_req_open`, `dht2_req_encode`, `dht2_req_decode` |
+| `DHT2_E_ARG` | −1 | NOT a row-7 code — a NULL argument / too-small output buffer (`:82-84`): every `DHT2_*`-convention function; also `dht2_answer_seal` / `dht2_answer_open` given a payload type other than answer / receipt / refusal, and `dht2_ctl_at` with an index out of range |
 
 ### 2.4 Domain strings, payload types, `_id` labels
 
@@ -177,6 +221,42 @@ All ASCII, no NUL (Kurultay #21 "Signature ctx labels and record identifiers").
 | `DHT2_PT_ANSWER` / `_RECEIPT` / `_REFUSAL` / `_PULL_RECEIPT` / `_ADDR` / `_LIST` | `"/nodus/dht/answer/v1"`, `"/nodus/dht/receipt/v1"`, `"/nodus/dht/refusal/v1"`, `"/nodus/dht/pull-receipt/v1"`, `"/nodus/dht/addr/v1"`, `"/nodus/dht/list/v1"` | RFC 0002 payload types (`:101-106`). The leading `/` IS the multicodec "path" code 0x2f (RFC 0002 :50-54), so each payload type is exactly its ASCII path, first byte 0x2f, ONE slash (`:93-100`; design §13 row 1 "Bytes (clarified 2026-10-19)") |
 | `DHT2_LABEL_PROFILE`, `_CONTACTLIST`, `_GROUP_HEAD`, `_GROUP_RECORD`, `_GROUP_KEYS`, `_DM`, `_GROUP_FEED`, `_HEAD`, `_INBOX`, `_INBOX_CTL` | `"nodus.dht.profile.v1"`, `"nodus.dht.contactlist.v1"`, `"nodus.dht.group.head.v1"`, `"nodus.dht.group.record.v1"`, `"nodus.dht.group.keys.v1"`, `"nodus.dht.dm.v1"`, `"nodus.dht.group.feed.v1"`, `"nodus.dht.head.v1"`, `"nodus.dht.inbox.v1"`, `"nodus.dht.inbox.ctl.v1"` | §3.2 `_id` labels (`:110-119`) |
 
+### 2.5 Package 2 message bounds (`:121-134`; §13 rows 7, 11, 12, 14, 15)
+
+| Constant | Value | Source |
+|---|---|---|
+| `DHT2_REQ_KEYS_MAX` | `8u` — get `keys` / put `envs` ≤ 8; also the `r` array of a read answer / receipt | `:124`; row 7 "> 8 keys" is malformed, row 14 |
+| `DHT2_LIST_PAGE_MAX` | `16u` — entries in one LIST page | `:126`; row 11 |
+| `DHT2_PULL_PAGE_MAX` | `250u` — `p_offer` / pull-receipt entries (Bee `DefaultMaxPage`) | `:128`; row 12 |
+| `DHT2_CTL_ENTRY_LEN` | `73u` — control entry = fp 64 ‖ mark 1 ‖ through 8 (u64 BE) | `:131`; row 15 |
+| `DHT2_CTL_ENTRIES_MAX` | `3500u` | `:132`; row 15 |
+| `DHT2_CTL_HANDLED` / `DHT2_CTL_DENIED` | `1u` / `2u` — control marks | `:133-134`; row 15 |
+
+`dht2_record.c:31-32` still carries its own private `CTL_ENTRY_LEN`
+(`DHT2_FP_LEN + 1u + 8u`) and `CTL_ENTRIES_MAX` (`3500u`) for the class-5
+check of package 1; the values are equal to the public ones above.
+
+### 2.6 Row 11: the derived maximum answer message (`:142-193`)
+
+Row 11 pins the largest answer MESSAGE (8 × 262,144 B of records beside one
+signed answer envelope) in code and requires it to fit one frame. The
+header derives every term (`:142-180`, every uint at its 9-byte maximum);
+the macros are:
+
+| Constant | Definition (copied from `dht2_types.h`) | Value |
+|---|---|---|
+| `DHT2_READ_ANSWER_PAYLOAD_MAX` (`:181-182`) | `1u + 36u + 11u + 68u + 36u + (2u + 1u + 8u * 137u) + 11u` — the 8-key read answer (`c`, `h`, `n`, `q`, `r` of 8 elements of 137 B, `t`) | 1,262 B — also measured by `test_dht2_msg.c` `test_seal_and_sizes` (`plen == 1262u`) |
+| `DHT2_LIST_ANSWER_PAYLOAD_MAX` (`:183-185`) | `1u + 36u + 11u + 68u + 36u + 11u + (2u + 1u + 137u) + 70u + (5u + 1u + 16u * 137u) + 73u + 10u + 77u` — 16 `{w, d}` entries, both cursors, hash `ctl` | 2,731 B — measured (`lplen == 2731u`) |
+| `DHT2_ANSWER_PAYLOAD_MAX` (`:186-188`) | the larger of the two (the LIST one; receipt and refusal payloads are smaller than the read answer, `:160-162`) | 2,731 B |
+| `DHT2_ANSWER_ENV_MAX` (`:189-191`) | `(1u + 2u + (1u + 2u + DHT2_PUBKEY_LEN)) + (1u + 1u + 21u) + (1u + 2u + DHT2_ANSWER_PAYLOAD_MAX) + (1u + 2u + DHT2_SIG_LEN)` — RFC 0002 fields 1, 2 (21 B = the longest answer payload type, `/nodus/dht/receipt/v1` / `/nodus/dht/refusal/v1`), 3, 5 | 9,985 B (evaluated from the macro: 2598 + 23 + 2734 + 4630); the test checks the sealed maximal LIST payload under a 21-byte type equals it |
+| `DHT2_ANSWER_MSG_MAX` (`:192-193`) | `DHT2_REQ_KEYS_MAX * DHT2_ENVELOPE_MAX + DHT2_ANSWER_ENV_MAX` | 2,107,137 B (evaluated from the macro: 8 × 262,144 + 9,985) |
+
+The `_Static_assert(DHT2_ANSWER_MSG_MAX < NODUS_MAX_FRAME_TCP, …)` lives in
+`nodus/tests/test_dht2_msg.c:93-95`, because `shared/` does not include nodus
+headers (`dht2_types.h:179-180`). `NODUS_MAX_FRAME_TCP` = `(5 * 1024 * 1024)`
+(`nodus/include/nodus/nodus_types.h:64`). The sealed 8-key read answer
+measures 8,516 B (`test_seal_and_sizes`, `elen == 8516u`).
+
 ---
 
 ## 3. Strict DAG-CBOR (`shared/dht2/dht2_cbor.h`)
@@ -187,39 +267,52 @@ text keys and never build a tree (`dht2_cbor.h:5-8`). Not
 and lengths and does not check map key order (design §13 row 22), and
 `shared/` cannot depend on `nodus/src` (`dht2_cbor.h:10-15`).
 
-**Rules enforced on decode** (`dht2_cbor.h:17-35`, dag-cbor `spec.md`
+**Rules enforced on decode** (`dht2_cbor.h:17-41`, dag-cbor `spec.md`
 "Strictness" :46-66; the relaxed decoding of :68-78 is NOT offered):
 integers and lengths of major types 0, 2-5 in their SHORTEST form; no
 indefinite lengths, no break token; no tags at all (every major type 6 is
 refused — tag 42 is not used by any DHT v2 schema); of major type 7 only
-`true` (0xf5, `_del`) is accepted — floats, `false`, `null` refused; major
-type 1 (negative integer) refused (design §13 row 6, named deviation);
-map keys text only, STRICTLY ascending by their encoded bytes (length
-first, then bytewise), so a duplicate key is refused too; one top-level
-object with no trailing byte (the schema checks `dht2_cbor_rd_done`). The
-schemas ALSO re-encode what they parsed and compare it byte for byte with
-the input (§3.1 "re-encode check"). The writer emits only shortest forms,
-definite lengths, no tags, no floats, and never sorts — each schema writes
-its keys in the fixed canonical order (`:39-41`).
+`false` / `true` / `null` (0xf4 / 0xf5 / 0xf6) are read, each by its own
+single-byte reader — `_del` and the LIST answer's `complete` are booleans,
+row-7 `v`, the LIST answer's `ctl` and `p_deliver.v` may be null — and
+floats and every other simple value are refused (`:25-29`; until package 2
+only `true` was offered); arrays (major type 4) definite and shortest-head
+only, and the CALLER bounds the element count before it loops —
+`dht2_cbor_rd_array` returns whatever count the head claims (`:30-32`);
+major type 1 (negative integer) refused (design §13 row 6, named
+deviation); map keys text only, STRICTLY ascending by their encoded bytes
+(length first, then bytewise), so a duplicate key is refused too; one
+top-level object with no trailing byte (the schema checks
+`dht2_cbor_rd_done`). The schemas ALSO re-encode what they parsed and
+compare it byte for byte with the input (§3.1 "re-encode check"). The
+writer emits only shortest forms, definite lengths, no tags, no floats, and
+never sorts — each schema writes its keys in the fixed canonical order
+(`:43-45`).
 
 | Item | Description |
 |------|-------------|
-| `typedef struct { const uint8_t *buf; size_t len; size_t pos; bool err; } dht2_cbor_rd_t;` (`:63-68`) | Reader. `err` is STICKY: once set, every call fails. |
-| `void dht2_cbor_rd_init(dht2_cbor_rd_t *r, const uint8_t *buf, size_t len)` (`:70`) | Starts a reader; a NULL `buf` reads as length 0 (`dht2_cbor.c`). |
-| `int dht2_cbor_rd_map(dht2_cbor_rd_t *r, uint64_t *count)` (`:73`) | Map header, definite and shortest. 0 / −1. |
-| `int dht2_cbor_rd_key(dht2_cbor_rd_t *r, const uint8_t *prev, size_t prev_len, const uint8_t **key, size_t *key_len)` (`:79`) | A map KEY: text string, shortest length. `prev` / `prev_len` = the previous key of the same map (NULL for the first); the new key must sort strictly after it (length first, then bytewise). Pointer INTO the buffer. 0 / −1. |
-| `int dht2_cbor_rd_uint(dht2_cbor_rd_t *r, uint64_t *v)` (`:83`) | Major type 0, shortest. 0 / −1 (major type 1 is −1). |
-| `int dht2_cbor_rd_bytes(dht2_cbor_rd_t *r, const uint8_t **p, size_t *n)` (`:86`) | Major type 2, shortest length; pointer into the buffer; the length is bounded by the bytes remaining. 0 / −1. |
-| `int dht2_cbor_rd_text(dht2_cbor_rd_t *r, const uint8_t **p, size_t *n)` (`:89`) | Major type 3, same rules. 0 / −1. |
-| `int dht2_cbor_rd_true(dht2_cbor_rd_t *r)` (`:92`) | Exactly 0xf5. 0 / −1. |
-| `bool dht2_cbor_rd_done(const dht2_cbor_rd_t *r)` (`:95`) | True when every byte was consumed without error (spec :66). |
-| `bool dht2_cbor_key_is(const uint8_t *key, size_t key_len, const char *lit)` (`:98`) | Key equality (exact length and bytes). |
-| `typedef enum { DHT2_WR_WRITE = 0, DHT2_WR_COUNT, DHT2_WR_COMPARE } dht2_wr_mode_t;` (`:110-114`) | Three writer modes over ONE emission path, so the bytes counted, written and compared are the same bytes by construction (`:100-108`). WRITE into a caller buffer; COUNT stores nothing and `len` = the size; COMPARE stores nothing and compares every byte with `ref` at the same offset — the §3.1 re-encode identity check without a second buffer. |
-| `typedef struct { dht2_wr_mode_t mode; uint8_t *buf; const uint8_t *ref; size_t cap; size_t len; bool err; } dht2_cbor_wr_t;` (`:116-123`) | Writer. `cap` = buffer size (WRITE) or `ref` length (COMPARE). `err` STICKY: overflow, a COMPARE mismatch, or a NULL pointer with a non-zero length. |
-| `void dht2_cbor_wr_init(dht2_cbor_wr_t *w, uint8_t *buf, size_t cap)`, `void dht2_cbor_wr_init_count(dht2_cbor_wr_t *w)`, `void dht2_cbor_wr_init_compare(dht2_cbor_wr_t *w, const uint8_t *ref, size_t ref_len)` (`:125-128`) | Start WRITE (a NULL `buf` sets `err`), COUNT, or COMPARE. |
-| `bool dht2_cbor_wr_ok(const dht2_cbor_wr_t *w)` (`:131`) | COMPARE: every emitted byte matched AND all of `ref` was emitted. WRITE / COUNT: no error occurred. |
-| `void dht2_cbor_wr_map(dht2_cbor_wr_t *w, uint64_t count)`, `void dht2_cbor_wr_uint(dht2_cbor_wr_t *w, uint64_t v)`, `void dht2_cbor_wr_bytes(dht2_cbor_wr_t *w, const uint8_t *p, size_t n)`, `void dht2_cbor_wr_text(dht2_cbor_wr_t *w, const uint8_t *p, size_t n)`, `void dht2_cbor_wr_key(dht2_cbor_wr_t *w, const char *lit)`, `void dht2_cbor_wr_true(dht2_cbor_wr_t *w)` (`:132-138`) | Emit one item with the shortest head. `wr_key` = a text key from a C string literal. |
-| `size_t dht2_cbor_head_size(uint64_t v)` (`:141`) | Bytes the head of an item with argument `v` takes: 1 / 2 / 3 / 5 / 9. |
+| `typedef struct { const uint8_t *buf; size_t len; size_t pos; bool err; } dht2_cbor_rd_t;` (`:67-72`) | Reader. `err` is STICKY: once set, every call fails. |
+| `void dht2_cbor_rd_init(dht2_cbor_rd_t *r, const uint8_t *buf, size_t len)` (`:74`) | Starts a reader; a NULL `buf` reads as length 0 (`dht2_cbor.c`). |
+| `int dht2_cbor_rd_map(dht2_cbor_rd_t *r, uint64_t *count)` (`:77`) | Map header, definite and shortest. 0 / −1. |
+| `int dht2_cbor_rd_key(dht2_cbor_rd_t *r, const uint8_t *prev, size_t prev_len, const uint8_t **key, size_t *key_len)` (`:83`) | A map KEY: text string, shortest length. `prev` / `prev_len` = the previous key of the same map (NULL for the first); the new key must sort strictly after it (length first, then bytewise). Pointer INTO the buffer. 0 / −1. |
+| `int dht2_cbor_rd_uint(dht2_cbor_rd_t *r, uint64_t *v)` (`:87`) | Major type 0, shortest. 0 / −1 (major type 1 is −1). |
+| `int dht2_cbor_rd_bytes(dht2_cbor_rd_t *r, const uint8_t **p, size_t *n)` (`:90`) | Major type 2, shortest length; pointer into the buffer; the length is bounded by the bytes remaining. 0 / −1. |
+| `int dht2_cbor_rd_text(dht2_cbor_rd_t *r, const uint8_t **p, size_t *n)` (`:93`) | Major type 3, same rules. 0 / −1. |
+| `int dht2_cbor_rd_array(dht2_cbor_rd_t *r, uint64_t *count)` (`:98`) | Package 2. Array header (major type 4), definite and shortest. The count is NOT checked against the remaining bytes — the schema bounds it before iterating (`dht2_msg.c` `rd_array_max`, `:95-104`). Any other major type sets `err`. 0 / −1. |
+| `int dht2_cbor_rd_true(dht2_cbor_rd_t *r)` (`:101`) | Exactly 0xf5. 0 / −1. |
+| `int dht2_cbor_rd_bool(dht2_cbor_rd_t *r, bool *v)` (`:104`) | Package 2. Exactly 0xf4 (`*v` = false) or 0xf5 (`*v` = true); any other byte, or no byte left, sets `err`. 0 / −1. |
+| `int dht2_cbor_rd_null(dht2_cbor_rd_t *r)` (`:107`) | Package 2. Exactly 0xf6. 0 / −1. |
+| `int dht2_cbor_rd_peek_mt(const dht2_cbor_rd_t *r)` (`:112`) | Package 2. The major type (0-7, = the next byte >> 5) of the next item WITHOUT consuming it; −1 at the end of input or after an error. Used where a value may be one of several types (row-7 `v`). |
+| `bool dht2_cbor_rd_peek_null(const dht2_cbor_rd_t *r)` (`:115`) | Package 2. True when the next byte is exactly 0xf6; nothing consumed; false on error or at the end. |
+| `bool dht2_cbor_rd_done(const dht2_cbor_rd_t *r)` (`:118`) | True when every byte was consumed without error (spec :66). |
+| `bool dht2_cbor_key_is(const uint8_t *key, size_t key_len, const char *lit)` (`:121`) | Key equality (exact length and bytes). |
+| `typedef enum { DHT2_WR_WRITE = 0, DHT2_WR_COUNT, DHT2_WR_COMPARE } dht2_wr_mode_t;` (`:133-137`) | Three writer modes over ONE emission path, so the bytes counted, written and compared are the same bytes by construction (`:123-131`). WRITE into a caller buffer; COUNT stores nothing and `len` = the size; COMPARE stores nothing and compares every byte with `ref` at the same offset — the §3.1 re-encode identity check without a second buffer. |
+| `typedef struct { dht2_wr_mode_t mode; uint8_t *buf; const uint8_t *ref; size_t cap; size_t len; bool err; } dht2_cbor_wr_t;` (`:139-146`) | Writer. `cap` = buffer size (WRITE) or `ref` length (COMPARE). `err` STICKY: overflow, a COMPARE mismatch, or a NULL pointer with a non-zero length. |
+| `void dht2_cbor_wr_init(dht2_cbor_wr_t *w, uint8_t *buf, size_t cap)`, `void dht2_cbor_wr_init_count(dht2_cbor_wr_t *w)`, `void dht2_cbor_wr_init_compare(dht2_cbor_wr_t *w, const uint8_t *ref, size_t ref_len)` (`:148-151`) | Start WRITE (a NULL `buf` sets `err`), COUNT, or COMPARE. |
+| `bool dht2_cbor_wr_ok(const dht2_cbor_wr_t *w)` (`:154`) | COMPARE: every emitted byte matched AND all of `ref` was emitted. WRITE / COUNT: no error occurred. |
+| `void dht2_cbor_wr_map(dht2_cbor_wr_t *w, uint64_t count)`, `void dht2_cbor_wr_uint(dht2_cbor_wr_t *w, uint64_t v)`, `void dht2_cbor_wr_bytes(dht2_cbor_wr_t *w, const uint8_t *p, size_t n)`, `void dht2_cbor_wr_text(dht2_cbor_wr_t *w, const uint8_t *p, size_t n)`, `void dht2_cbor_wr_key(dht2_cbor_wr_t *w, const char *lit)`, `void dht2_cbor_wr_true(dht2_cbor_wr_t *w)` (`:155-161`) | Emit one item with the shortest head. `wr_key` = a text key from a C string literal. |
+| `void dht2_cbor_wr_bool(dht2_cbor_wr_t *w, bool v)`, `void dht2_cbor_wr_null(dht2_cbor_wr_t *w)`, `void dht2_cbor_wr_array(dht2_cbor_wr_t *w, uint64_t count)` (`:162-165`) | Package 2. One byte 0xf5 / 0xf4; one byte 0xf6; an array header in shortest form, after which the caller writes `count` items. |
+| `size_t dht2_cbor_head_size(uint64_t v)` (`:168`) | Bytes the head of an item with argument `v` takes: 1 / 2 / 3 / 5 / 9. |
 
 ---
 
@@ -289,9 +382,24 @@ its class's max.
 | `int dht2_id_feed_head(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t topic[DHT2_HASH_LEN], uint8_t out[DHT2_ID_LEN])` (`:230`) | SHA3-512(`nodus.dht.head.v1` ‖ chain ‖ topic) — the design rev 3+ form (§3.2 supersedes Kurultay #21 summary :139's `label ‖ topic`). 0 / −1. |
 | `int dht2_id_inbox(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t recipient_fp[DHT2_FP_LEN], uint8_t out[DHT2_ID_LEN])` (`:235`) | Inbox id = SHA3-512(`nodus.dht.inbox.v1` ‖ chain ‖ recipient fp). 0 / −1. |
 | `int dht2_id_inbox_ctl(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t recipient_fp[DHT2_FP_LEN], uint8_t out[DHT2_ID_LEN])` (`:241`) | Inbox control `_id` = SHA3-512(`nodus.dht.inbox.ctl.v1` ‖ chain ‖ recipient fp). 0 / −1. |
-| `int dht2_address(const uint8_t id[DHT2_ID_LEN], const uint8_t owner_fp[DHT2_FP_LEN], uint8_t out[DHT2_HASH_LEN])` (`:246`) | Address = SHA3-512(`_id` ‖ owner fp), in that order (Bee `soc.go:199-207`). 0 / −1. |
-| `int dht2_fp(const uint8_t pk[DHT2_PUBKEY_LEN], uint8_t out[DHT2_FP_LEN])` (`:252`) | Owner fp = SHA3-512(raw 2592-byte ML-DSA-87 key) — the tree's fingerprint (`nodus/src/crypto/nodus_sign.c:392`). 0 / −1. |
-| `int dht2_bytes_compare(const uint8_t *a, size_t alen, const uint8_t *b, size_t blen)` (`:255`) | Go `bytes.Compare`: −1 / 0 / 1. |
+| `int dht2_id_dm(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t recipient_fp[DHT2_FP_LEN], const uint8_t salt[DHT2_SALT_LEN], uint8_t out[DHT2_ID_LEN])` (`:250`) | Package 2, client side. 1:1 (dm) topic = SHA3-512(`nodus.dht.dm.v1` ‖ chain 32 ‖ recipient fp 64 ‖ salt 32) — via `dht2_id` with params = recipient fp ‖ salt (`dht2_record.c:160-173`). 0 / −1 (NULL `recipient_fp` / `salt`, or `dht2_id`'s −1). |
+| `int dht2_id_group_head(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t group_id[DHT2_GROUP_ID_LEN], uint8_t out[DHT2_ID_LEN])` (`:257`) | Package 2, client side. Group head `_id` = SHA3-512(`nodus.dht.group.head.v1` ‖ chain 32 ‖ group id 32). No key version. 0 / −1. |
+| `int dht2_id_group_record(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t group_id[DHT2_GROUP_ID_LEN], uint64_t key_version, uint8_t out[DHT2_ID_LEN])` (`:263`) | Package 2, client side. Group record `_id` = SHA3-512(`nodus.dht.group.record.v1` ‖ chain 32 ‖ group id 32 ‖ key version as 8-byte unsigned big-endian) (`dht2_record.c:185-210`). 0 / −1 (NULL `group_id`, or `dht2_id`'s −1). |
+| `int dht2_id_group_keys(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t group_id[DHT2_GROUP_ID_LEN], uint64_t key_version, uint8_t out[DHT2_ID_LEN])` (`:269`) | Package 2, client side. Group key-packet `_id` = SHA3-512(`nodus.dht.group.keys.v1` ‖ chain 32 ‖ group id 32 ‖ key version u64 BE, 8 B). 0 / −1. |
+| `int dht2_id_group_feed(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t group_id[DHT2_GROUP_ID_LEN], uint8_t out[DHT2_ID_LEN])` (`:275`) | Package 2, client side. Group feed topic = SHA3-512(`nodus.dht.group.feed.v1` ‖ chain 32 ‖ group id 32). No key version. 0 / −1. |
+| `int dht2_address(const uint8_t id[DHT2_ID_LEN], const uint8_t owner_fp[DHT2_FP_LEN], uint8_t out[DHT2_HASH_LEN])` (`:280`) | Address = SHA3-512(`_id` ‖ owner fp), in that order (Bee `soc.go:199-207`). 0 / −1. |
+| `int dht2_fp(const uint8_t pk[DHT2_PUBKEY_LEN], uint8_t out[DHT2_FP_LEN])` (`:286`) | Owner fp = SHA3-512(raw 2592-byte ML-DSA-87 key) — the tree's fingerprint (`nodus/src/crypto/nodus_sign.c:392`). 0 / −1. |
+| `int dht2_bytes_compare(const uint8_t *a, size_t alen, const uint8_t *b, size_t blen)` (`:289`) | Go `bytes.Compare`: −1 / 0 / 1. |
+
+**The five typed `_id` helpers** (`dht2_record.h:245-247`): their preimages
+are fixed by the operator's decision `2026-10-23-dht-v2-id-param-bytes.md`
+— dm salt 32 B, group id 32 B, group key version 8 B unsigned big-endian
+(the Amendment replaced a first answer of 4 B, because today's Connect group
+ADDRESS preimage hashes the version as 8 bytes), the version present in the
+group.record and group.keys `_id` only. Every field is fixed length, so
+the concatenation is unambiguous. Only clients compute these; holders
+never see the params (design §13 row 5). A later change of any of them is
+a new label plus a migration (same decision, "Consequences").
 
 **Readings this file makes where the design names no code**
 (`dht2_record.h:42-61` — labelled readings reported to the ORCHESTRATOR,
@@ -318,8 +426,9 @@ the embedded PublicKey MERGED — a later field 1 that carries the key
 replaces it, an empty one keeps it (`dht2_envelope.h:11-20`,
 `dht2_envelope.c` decode). The domain is used BOTH in the signed buffer
 AND as the FIPS 204 ctx (§4.4). Only the envelope layer and the LIST
-request live here; the answer / receipt / refusal payload maps (row 18) are
-a later package (`:45-46`).
+request live here; the answer / receipt / refusal payload maps (row 18) and
+their seal / open are package 2, `dht2_msg.h` (§10) — the header's own
+`:45-46` still says "a later package".
 
 ### 6.1 Envelope
 
@@ -415,8 +524,10 @@ Named in the headers / code but NOT in row 21's list:
 
 ## 9. Tests
 
+### 9.1 `test_dht2_codec` (package 1)
+
 `nodus/tests/test_dht2_codec.c` (ctest `test_dht2_codec`,
-`nodus/CMakeLists.txt:1873-1879`, linked `nodus dsa nodus crypto`). Twelve
+`nodus/CMakeLists.txt:2038-2044`, linked `nodus dsa nodus crypto`). Twelve
 sections run from `main` (`test_dht2_codec.c:1831-1842`):
 `test_strict_decode`, `test_class_kats`, `test_preimages`, `test_envelope`,
 `test_matrix`, `test_class_max`, `test_validity`, `test_order`,
@@ -456,3 +567,212 @@ ORCHESTRATOR's run count, not re-run for this reference.
   `DHT2_PT_*` strings and a 0x2f first byte, not another implementation;
   admission order across the holder check, quota, storage and pull-sync
   is not exercised (later packages).
+
+### 9.2 `test_dht2_msg` (package 2)
+
+`nodus/tests/test_dht2_msg.c` (ctest `test_dht2_msg`,
+`nodus/CMakeLists.txt:2046-2052`, linked `nodus dsa nodus crypto`). Ten
+sections run from `main` (`test_dht2_msg.c:1999-2008`):
+`test_cbor_additions`, `test_requests`, `test_answers`, `test_list`,
+`test_refusal`, `test_seal_and_sizes`, `test_pull`, `test_want`,
+`test_ctl`, `test_ids`. 206 `CHECK(` sites in the source; the
+ORCHESTRATOR's run at `50053ce72` reported 335 passed / 0 failed (and
+`test_dht2_codec` 429 / 0, the full nodus ctest 304 / 304, the build with 0
+warnings) — counts from that run, not re-run for this reference. The file
+also holds the row-11 `_Static_assert(DHT2_ANSWER_MSG_MAX <
+NODUS_MAX_FRAME_TCP, …)` (`:93-95`), so a too-large message bound fails the
+build, not a run.
+
+- **Proves** (file header `:9-44`): each message — get / put request, read
+  answer, receipt, LIST answer, refusal, `p_hello`, `p_get`, `p_offer`,
+  `p_want`, `p_deliver` (bytes and null), pull-receipt payload — encodes to
+  EXACTLY bytes assembled by hand (keys length-first-then-bytewise),
+  decodes back to the same struct and re-encodes to the same bytes; per
+  message: a trailing byte, every strict prefix, an unsorted / duplicate /
+  unknown key, a long-form integer and length, a wrong byte-string length
+  and each count bound (9 keys / envs, 17 LIST entries, 251 offer /
+  receipt entries, 3,501 control entries) are refused, incl. an unknown
+  `op` and a 31-byte nonce (`MALFORMED_REQ`); row-7 `v`: a 64-byte hash,
+  null (read answer only), codes 1…13, 16, 17 and `[18, through]` accepted
+  where the context allows, and 0, 14, 15, 19, a bare 18, a 63-byte hash,
+  an array of another shape and a negative integer refused, null refused in
+  a receipt and in a LIST answer; the LIST rules (non-ascending / equal
+  `w`, a cursor ≠ the last `w`, a cursor on an empty page, an empty page
+  with `complete` false refused; a first page without `req_cursor`; `ctl`
+  null and hash); the refusal carries only `e` 14 / 15 and no `h` / `t`;
+  the `p_want` vector for n = 0, 1, 7, 8, 9, 250 (⌈n/8⌉ bytes, LSB-first; a
+  set bit ≥ n, a wrong length and n = 251 refused); the control `_data`
+  (73-byte entries, ascending, marks 1 / 2, ≤ 3,500; lookup finds the entry
+  and its u64 BE `through`); the five `_id` helpers against hand-assembled
+  preimages; seal / open under `nodus.dht.answer.v1`, a tampered payload →
+  `bad-signature`, another payload type refused; the row-11 sizes (8-key
+  payload 1,262 B, envelope 8,516 B; maximal LIST payload 2,731 B); the
+  CBOR additions.
+- **Requires** (`:45-50`): a default build — no compile flags, no
+  environment variables, no network, no files, no clock. One fixed-seed
+  ML-DSA-87 key (`qgp_dsa87_keypair_derand`); signing is hedged, so no
+  signature byte is pinned. Safe under `ctest -j`.
+- **Leaves behind** (`:51-53`): nothing.
+- **Can lie** (`:54-70`): (1) the pinned bytes are assembled by hand from
+  the design rows and the two decisions — self-consistent with the
+  codec's author, not an oracle from another implementation (the design's
+  C ↔ WASM cross-check will ground them); (2) where the text is silent
+  nothing is tested either way — 0 keys in a get, an empty env, offer
+  entry order, which LIST fields accompany code 17, the `through` range,
+  `[18, x]` in a read answer; (3) the prefix sweep proves truncation is
+  refused, not that every malformed message is; (4) the `_id` helpers are
+  compared to preimages hashed by the same SHA3-512, so a wrong label in
+  the decision record itself would pass; (5) the pull-receipt envelope
+  domain is undecided — only its payload is tested.
+
+---
+
+## 10. Wire messages (`shared/dht2/dht2_msg.h`) — package 2
+
+Design rev 5 §4.4, §4.5, §13 rows 7 (results), 11 (sizes), 12 (pull-sync),
+14 (requests), 15 (inbox control), 18 (answer payloads); decision
+`2026-10-23-dht-v2-wire-gaps-package2.md` (`dht2_msg.h:7-14`; its four
+items are cited below as "decision 1-4": 1 strict text-key maps, no `op` /
+`n` in pull messages; 2 read-repair = "put"; 3 the pull-receipt keys; 4
+`req_cursor` absent on a first page). Every
+message is ONE strict DAG-CBOR map, keys in the one canonical order
+(length first, then bytewise), decoded with the strict reader of §3 and
+then RE-ENCODED and compared byte for byte; counts are bounded BEFORE
+iteration (`:16-23`). Each message has one `*_emit` (the one emission path
+for WRITE / COUNT / COMPARE) and one `*_parse` that matches the keys in
+canonical order against fixed literals, so an unknown, missing, repeated
+or unsorted key fails (`dht2_msg.c:6-12`).
+
+**Common behaviour of every `*_encode`** (`dht2_msg.c` `encode_with`,
+`:111-132`; `dht2_msg.h:32-36`): `out` may be NULL — then only `*out_len`
+(the exact size) is produced; NULL message or NULL `out_len`, or `cap`
+smaller than the size → `DHT2_E_ARG`; content the matching decoder would
+refuse → the same code that decoder returns, so nothing is emitted that
+cannot be read back. **Every `*_decode`** (`decode_with`, `:135-154`):
+NULL struct, or NULL `in` with `len` ≠ 0 → `DHT2_E_ARG`; the struct is
+zeroed at entry; parse, require every byte consumed, re-emit in COMPARE
+mode; any fault → the message's code (below).
+
+**Error codes — a READING** (`dht2_msg.h:25-31`; row 7 names none for
+these): requests (get / put) → `DHT2_E_MALFORMED_REQ` (row 7 "Malformed
+request … a tier-2 protocol error, no signed answer"); answer / receipt /
+refusal payloads, pull messages, control `_data` → `DHT2_E_BAD_ENCODING`;
+a NULL argument / too-small buffer → `DHT2_E_ARG`.
+
+### 10.1 Row 7: the per-key result
+
+| Item | Description |
+|------|-------------|
+| `typedef enum { DHT2_RV_HASH = 0, DHT2_RV_NULL, DHT2_RV_CODE, DHT2_RV_HANDLED } dht2_rv_kind_t;` (`:64-69`) | What `v` is: a 64-byte bstr / `null` (not held) / a uint code / the array `[18, through]`. |
+| `typedef enum { DHT2_RCTX_READ = 0, DHT2_RCTX_WRITE, DHT2_RCTX_LIST } dht2_rctx_t;` (`:73-77`) | Which message carries it: read answer (hash, null, code, `[18, through]`); write receipt (as read, NEVER null — row 7 "NEVER a PUT result"); LIST answer's single element (hash or code 17 only — row 18). Internal to the codec: chosen by which encode / decode function is called. |
+| `typedef struct { uint8_t key[DHT2_HASH_LEN]; dht2_rv_kind_t kind; uint8_t hash[DHT2_HASH_LEN]; uint64_t code; uint64_t through; } dht2_result_t;` (`:79-85`) | One `{k, v}` element: `key` = `k`; `hash` for `DHT2_RV_HASH`, `code` for `DHT2_RV_CODE`, `through` for `DHT2_RV_HANDLED`. |
+
+Wire form: `{k: bstr 64, v: …}`, keys `k`, `v` (`dht2_msg.c:183-210`). A
+valid code is 1…13, 16 or 17 (`code_valid`, `:162-165`): 0 is not a wire
+code, 14 / 15 are call-level (a refusal), and 18 only appears as
+`[18, through]` — a bare 18 is refused. `[18, through]` must be an array of
+exactly 2 uints whose first is 18 (`:240-246`). The `v` type is chosen with
+`dht2_cbor_rd_peek_mt` / `_peek_null` (`:224-249`). These codes are DATA
+the message carries; the codec never returns them.
+
+### 10.2 Row 14: get / put requests
+
+| Item | Description |
+|------|-------------|
+| `typedef enum { DHT2_REQ_GET = 0, DHT2_REQ_PUT } dht2_req_kind_t;` (`:89-92`) | `{n, op "get", keys [bstr 64] ≤ 8}` / `{n, op "put", envs [bstr] ≤ 8}`. Read-repair is `op` "put" (decision 2). The LIST request is NOT here — it is package 1's owner-signed envelope (§6.2). |
+| `typedef struct { dht2_req_kind_t kind; uint8_t nonce[DHT2_NONCE_LEN]; size_t count; uint8_t keys[DHT2_REQ_KEYS_MAX][DHT2_HASH_LEN]; const uint8_t *envs[DHT2_REQ_KEYS_MAX]; size_t env_lens[DHT2_REQ_KEYS_MAX]; } dht2_req_t;` (`:94-101`) | `nonce` = `n`; `count` ≤ 8; `keys` for GET (copied); `envs` / `env_lens` for PUT (pointers INTO the input, each ≤ 262,144 B). |
+| `int dht2_req_encode(const dht2_req_t *req, uint8_t *out, size_t cap, size_t *out_len)` (`:106`) | Canonical bytes, key order `n, op, keys` / `n, op, envs` (`dht2_msg.c:261-299`). `DHT2_OK`; `DHT2_E_MALFORMED_REQ` (count > 8, an unknown `kind`, an env longer than `DHT2_ENVELOPE_MAX`, a NULL env with a non-zero length); `DHT2_E_ARG`. |
+| `int dht2_req_decode(const uint8_t *in, size_t len, dht2_req_t *req)` (`:111`) | Strict decode + re-encode check. `DHT2_E_MALFORMED_REQ` for every fault: nonce ≠ 32 B, more than 8 keys / envs, a key ≠ 64 B, an env > 262,144 B, an `op` other than "get" / "put", a `keys` with "put" or `envs` with "get", any strict-CBOR fault, a trailing byte. `DHT2_E_ARG` (NULL). The envelopes inside `envs` are NOT parsed here — each is a record for §4.1 admission. |
+
+### 10.3 Row 18: read answer, write receipt, LIST answer
+
+| Item | Description |
+|------|-------------|
+| `typedef struct { uint8_t q[DHT2_NONCE_LEN]; uint8_t n[DHT2_FP_LEN]; uint8_t c[DHT2_CHAIN_LEN]; uint64_t h; uint64_t t; size_t r_count; dht2_result_t r[DHT2_REQ_KEYS_MAX]; } dht2_answer_t;` (`:117-125`) | Read answer (`/nodus/dht/answer/v1`) and write receipt (`/nodus/dht/receipt/v1`) share one shape: `q` the request's nonce, `n` the holder fp, `c` the chain id, `h` the committed height, `t` the tip block time in seconds, `r` ≤ 8 results. Key order `c, h, n, q, r, t` (`dht2_msg.c:359-391`). |
+| `int dht2_answer_encode(const dht2_answer_t *a, uint8_t *out, size_t cap, size_t *out_len)`, `int dht2_answer_decode(const uint8_t *in, size_t len, dht2_answer_t *a)` (`:128-130`) | Read answer; `v` may be null. `DHT2_OK`; `DHT2_E_BAD_ENCODING` (`r` > 8, a `v` invalid for a read answer, a field of the wrong length, any strict fault); `DHT2_E_ARG`. |
+| `int dht2_receipt_encode(const dht2_answer_t *a, uint8_t *out, size_t cap, size_t *out_len)`, `int dht2_receipt_decode(const uint8_t *in, size_t len, dht2_answer_t *a)` (`:133-135`) | Write receipt; as the read answer except that `v` is NEVER null (row 7). Same codes. |
+| `typedef struct { uint8_t w[DHT2_FP_LEN]; uint8_t d[DHT2_HASH_LEN]; } dht2_list_entry_t;` (`:137-140`) | One LIST entry `{d, w}`: writer fp and entry hash. |
+| `typedef struct { uint8_t q[DHT2_NONCE_LEN]; uint8_t n[DHT2_FP_LEN]; uint8_t c[DHT2_CHAIN_LEN]; uint64_t h; uint64_t t; dht2_result_t r; bool has_ctl; uint8_t ctl[DHT2_HASH_LEN]; size_t list_count; dht2_list_entry_t list[DHT2_LIST_PAGE_MAX]; bool has_cursor; uint8_t cursor[DHT2_FP_LEN]; bool complete; bool has_req_cursor; uint8_t req_cursor[DHT2_FP_LEN]; } dht2_list_answer_t;` (`:147-163`) | LIST answer (`/nodus/dht/answer/v1`): the read answer's keys with `r` = ONE element, plus `ctl` (hash, or null when `has_ctl` is false), `list` ≤ 16, optional `cursor`, `complete`, optional `req_cursor` (absent on a first page — decision 4). Key order `c, h, n, q, r, t, ctl, list, cursor?, complete, req_cursor?` (`dht2_msg.c:476-528`). |
+| `int dht2_list_answer_encode(const dht2_list_answer_t *a, uint8_t *out, size_t cap, size_t *out_len)`, `int dht2_list_answer_decode(const uint8_t *in, size_t len, dht2_list_answer_t *a)` (`:165-168`) | `DHT2_OK`; `DHT2_E_BAD_ENCODING` when any rule below fails or on a strict fault; `DHT2_E_ARG`. |
+
+LIST rules enforced by both directions (`list_rules_ok`,
+`dht2_msg.c:448-474`; row 11, §4.4, decision 4 — "exactly these rules,
+nothing more"): `list` ≤ 16; `r` is a hash or code 17 (§10.1); `w`
+strictly ascending (equal `w` refused); an EMPTY page must be
+`complete` = true with no `cursor`; a `cursor`, when present, equals the
+last `w` listed (EXCLUSIVE cursor, row 11); a `req_cursor`, when present,
+must be strictly below the first `w` listed (the page starts strictly after
+the request's cursor, row 11). Not enforced (the test header's "silent"
+list): whether a non-empty `complete` page may also carry a `cursor`, which
+fields accompany code 17, and that `v` equals the SHA3-512 over the listed
+entry hashes (row 18) — the codec only checks it is 64 bytes.
+
+### 10.4 Row 18: refusal, and the answer envelope
+
+| Item | Description |
+|------|-------------|
+| `typedef struct { uint8_t q[DHT2_NONCE_LEN]; uint8_t n[DHT2_FP_LEN]; uint8_t c[DHT2_CHAIN_LEN]; uint64_t e; } dht2_refusal_t;` (`:172-177`) | Refusal (`/nodus/dht/refusal/v1`) `{c, e, n, q}` — `e` ∈ {14 `busy`, 15 `not-caught-up`}, and NO `h` / `t` (row 7: a refusal never counts as a time sample or a receipt). Key order `c, e, n, q` (`dht2_msg.c:621-639`). |
+| `int dht2_refusal_encode(const dht2_refusal_t *m, uint8_t *out, size_t cap, size_t *out_len)`, `int dht2_refusal_decode(const uint8_t *in, size_t len, dht2_refusal_t *m)` (`:179-181`) | `DHT2_OK`; `DHT2_E_BAD_ENCODING` (`e` ∉ {14, 15}, a strict fault); `DHT2_E_ARG`. |
+| `int dht2_answer_seal(const char *payload_type, const uint8_t *payload, size_t payload_len, const uint8_t *sk, const uint8_t pk[DHT2_PUBKEY_LEN], uint8_t *out, size_t cap, size_t *out_len)` (`:187`) | §4.4: seal an answer / receipt / refusal payload — `dht2_env_seal` with domain = ctx `nodus.dht.answer.v1` (all three share it) and `payload_type` = `DHT2_PT_ANSWER` / `_RECEIPT` / `_REFUSAL` (C string; no NUL on the wire). `out` NULL → size only. Any other payload type (e.g. `/nodus/dht/list/v1`) → `DHT2_E_ARG` (`dht2_msg.c:676-695`); otherwise returns as `dht2_env_seal`. Does not decode or check the payload. |
+| `int dht2_answer_open(const uint8_t *in, size_t len, const char *payload_type, dht2_env_t *env)` (`:198`) | Decode an answer envelope (≤ `DHT2_ENVELOPE_MAX`), require its payload type = `payload_type`, verify under `nodus.dht.answer.v1`. `DHT2_OK` (then `env` points into `in`); `DHT2_E_TOO_LARGE`; `DHT2_E_BAD_ENCODING` (decode fault, or another payload type); `DHT2_E_BAD_SIGNATURE`; `DHT2_E_HOLDER_FAULT`; `DHT2_E_ARG` (NULL `env`, or `payload_type` not answer / receipt / refusal). The §4.4 client rules — fp = `n`, `q` = the request's nonce, `c`, eligibility — come AFTER, in the caller; the payload is then decoded with the matching `*_decode`. |
+
+### 10.5 Row 12: pull-sync messages
+
+Per decision 1 the pull messages carry no `op` and no `n` (the tier-3
+method name `dht2_pull_*` names the message, one exchange in flight per
+pair).
+
+| Item | Description |
+|------|-------------|
+| `typedef struct { uint64_t g; uint64_t top; } dht2_p_hello_t;` (`:203-206`) | `p_hello` `{g, top}`: store generation, global high-water mark. |
+| `typedef struct { uint64_t g; uint64_t s; } dht2_p_get_t;` (`:208-211`) | `p_get` `{g, s}`: `s` = first insertion index wanted. |
+| `typedef struct { uint8_t a[DHT2_HASH_LEN]; uint8_t h[DHT2_HASH_LEN]; uint8_t p[DHT2_HASH_LEN]; } dht2_offer_entry_t;` (`:213-217`) | Offer entry `{a, h, p}`: address, envelope hash, placement-key hint. |
+| `typedef struct { uint64_t g; uint64_t top; size_t e_count; dht2_offer_entry_t e[DHT2_PULL_PAGE_MAX]; } dht2_p_offer_t;` (`:219-224`) | `p_offer` `{e, g, top}`, `e` ≤ 250. ~47 KB — the header says to keep it off small stacks (`:224`). |
+| `typedef struct { const uint8_t *b; size_t b_len; } dht2_p_want_t;` (`:226-229`) | `p_want` `{b}`: `b` points into the input, `b_len` = ⌈n/8⌉. |
+| `typedef struct { uint64_t i; bool has_v; const uint8_t *v; size_t v_len; } dht2_p_deliver_t;` (`:234-239`) | `p_deliver` `{i, v}`: `i` = the offer index; `v` = the canonical envelope (into the input, ≤ 262,144 B) or null (`has_v` false — gone). |
+| `typedef struct { uint8_t a[DHT2_HASH_LEN]; uint8_t h[DHT2_HASH_LEN]; } dht2_receipt_entry_t;` (`:241-244`) | Pull-receipt entry `{a, h}`. |
+| `typedef struct { uint8_t pf[DHT2_FP_LEN]; uint8_t sf[DHT2_FP_LEN]; uint8_t c[DHT2_CHAIN_LEN]; uint64_t g; uint64_t s; uint64_t top; size_t e_count; dht2_receipt_entry_t e[DHT2_PULL_PAGE_MAX]; } dht2_pull_receipt_t;` (`:248-257`) | Pull-receipt PAYLOAD (decision 3: `pf` puller fp, `sf` source fp, `c`, `g`, `s`, `top`, `e: [{a, h}]` ≤ 250); ~32 KB. Its envelope domain is NOT decided — nothing here seals or opens it (`:246-247`). |
+| `int dht2_p_hello_encode(const dht2_p_hello_t *m, uint8_t *out, size_t cap, size_t *out_len)`, `int dht2_p_hello_decode(const uint8_t *in, size_t len, dht2_p_hello_t *m)` (`:259-261`) | Key order `g, top`. Encode returns only `DHT2_OK` / `DHT2_E_ARG`; decode `DHT2_OK` / `DHT2_E_BAD_ENCODING` / `DHT2_E_ARG`. |
+| `int dht2_p_get_encode(const dht2_p_get_t *m, uint8_t *out, size_t cap, size_t *out_len)`, `int dht2_p_get_decode(const uint8_t *in, size_t len, dht2_p_get_t *m)` (`:262-264`) | Key order `g, s`. Codes as `p_hello`. |
+| `int dht2_p_offer_encode(const dht2_p_offer_t *m, uint8_t *out, size_t cap, size_t *out_len)`, `int dht2_p_offer_decode(const uint8_t *in, size_t len, dht2_p_offer_t *m)` (`:265-267`) | Key order `e, g, top`; entry keys `a, h, p`, each 64 B. `DHT2_E_BAD_ENCODING` (`e` > 250, a field ≠ 64 B, a strict fault). Entry order is not checked (the test header lists it as untested). |
+| `int dht2_p_want_encode(const dht2_p_want_t *m, size_t n, uint8_t *out, size_t cap, size_t *out_len)`, `int dht2_p_want_decode(const uint8_t *in, size_t len, size_t n, dht2_p_want_t *m)` (`:272-275`) | `n` = the offer's entry count, passed by the caller. `b` must be EXACTLY ⌈n/8⌉ bytes with every bit ≥ n zero, and n ≤ 250; anything else → `DHT2_E_BAD_ENCODING` (the exchange aborts, row 12) (`want_valid`, `dht2_msg.c:890-899`). A NULL `b` with a non-zero `b_len` on encode → `DHT2_E_BAD_ENCODING`. |
+| `int dht2_p_deliver_encode(const dht2_p_deliver_t *m, uint8_t *out, size_t cap, size_t *out_len)`, `int dht2_p_deliver_decode(const uint8_t *in, size_t len, dht2_p_deliver_t *m)` (`:277-279`) | Key order `i, v`. `DHT2_E_BAD_ENCODING` (`i` ≥ 250, `v` > 262,144 B, on encode a NULL `v` with a non-zero length, a strict fault). The codec refuses `i` ≥ 250; `i` < the actual offer's entry count is the exchange code's check (package 7) (`:231-233`). `v` is not parsed. |
+| `int dht2_pull_receipt_encode(const dht2_pull_receipt_t *m, uint8_t *out, size_t cap, size_t *out_len)`, `int dht2_pull_receipt_decode(const uint8_t *in, size_t len, dht2_pull_receipt_t *m)` (`:281-284`) | Key order `c, e, g, s, pf, sf, top` (length first: the one-letter keys, then `pf`, `sf`, `top`); entry keys `a, h`. `DHT2_E_BAD_ENCODING` (`e` > 250, a wrong field length, a strict fault). |
+| `size_t dht2_bits_len(size_t n)` (`:289`) | ⌈n/8⌉, computed as `n / 8 + (n % 8 != 0)` (no overflow). |
+| `bool dht2_bits_get(const uint8_t *b, size_t i)`, `void dht2_bits_set(uint8_t *b, size_t i)` (`:290-291`) | Bit i = byte ⌊i/8⌋, mask `1 << (i mod 8)` — LSB-first (Bee `bitvector.go`: Get :55-57, Set :61-65). NO bounds check: the caller holds ⌈n/8⌉ bytes and i < n (`:286-288`). |
+
+### 10.6 Row 15: inbox control `_data`
+
+The control record's `_data` (class 5) is a byte string of entries
+`fp 64 ‖ mark 1 ‖ through 8 (u64 BE)`, strictly ascending by fp, mark 1
+HANDLED / 2 DENIED, ≤ 3,500 entries.
+
+| Item | Description |
+|------|-------------|
+| `typedef struct { uint8_t fp[DHT2_FP_LEN]; uint8_t mark; uint64_t through; } dht2_ctl_entry_t;` (`:295-299`) | One entry; `mark` = `DHT2_CTL_HANDLED` / `DHT2_CTL_DENIED`; `through` is u64 BE on the wire. |
+| `int dht2_ctl_encode(const dht2_ctl_entry_t *e, size_t count, uint8_t *out, size_t cap, size_t *out_len)` (`:304`) | Write `count` entries (73 B each). `out` NULL → size only. `DHT2_OK`; `DHT2_E_BAD_ENCODING` (count > 3,500, a mark ∉ {1, 2}, fps not strictly ascending); `DHT2_E_ARG` (NULL `e` with `count` ≠ 0, NULL `out_len`, `cap` too small). |
+| `int dht2_ctl_check(const uint8_t *data, size_t len, size_t *count)` (`:310`) | Validate: `len` a multiple of 73, ≤ 3,500 entries, marks 1 / 2, strictly ascending by fp. `DHT2_OK` (then `*count` = entries; `count` may be NULL, `dht2_msg.c:1165`); `DHT2_E_BAD_ENCODING`; `DHT2_E_ARG` (NULL `data` with `len` ≠ 0). |
+| `int dht2_ctl_at(const uint8_t *data, size_t len, size_t idx, dht2_ctl_entry_t *out)` (`:314`) | Entry `idx` of data that `dht2_ctl_check` ALREADY accepted — it does NOT re-validate. `DHT2_OK`; `DHT2_E_ARG` (NULL, or `idx` ≥ `len / 73`). |
+| `int dht2_ctl_lookup(const uint8_t *data, size_t len, const uint8_t fp[DHT2_FP_LEN], bool *found, dht2_ctl_entry_t *out)` (`:320`) | Runs `dht2_ctl_check` first, then a binary search by fp (`dht2_msg.c:1188-1224`). `DHT2_OK` with `*found` set (and `out` filled when found; `out` may be NULL); `DHT2_E_BAD_ENCODING` (invalid data); `DHT2_E_ARG` (NULL `fp` / `found`). |
+
+Package 1's class-5 record check (`dht2_record_check_class`, §5) applies the
+same shape rules through `dht2_record.c`'s own private constants
+(`:31-32`); it does not call these functions.
+
+### 10.7 Readings and what is NOT here
+
+Readings this package makes where the design names no answer (labelled as
+readings in `dht2_msg.h:25-31` and `test_dht2_msg.c:54-70`, not design
+facts): requests → `DHT2_E_MALFORMED_REQ`, every other message →
+`DHT2_E_BAD_ENCODING`; a LIST answer's `r` is a hash or code 17 only
+(row 18 "v = the SHA3-512 … or 17"); `[18, through]` is accepted in a READ
+answer as well as in a receipt — row 7 is silent on it there; `through` has
+no range check.
+
+NOT here (`dht2_msg.h:39-42`): the LIST request (package 1, §6.2); the
+pull-receipt's envelope domain / FIPS 204 ctx — NOT decided (decision
+`2026-10-23-dht-v2-wire-gaps-package2.md` "Still open": asked before
+package 7), so nothing seals or opens a pull-receipt; the PeerRecord /
+address announcement — moved to the endpoint package (package 6), because
+rev 5 sets its size bounds there; admission, holder and client logic; no
+caller in a node or a client.

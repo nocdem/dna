@@ -237,6 +237,7 @@ nodus/
 │   ├── test_nodus_light.c # nodus-light's start-up / trust-root paths (K25-12/K25-10/K25-2/K25-11) over mock pinned nodes and a real light store
 │   ├── test_light_block_rpc.c # dnac_light_block: the node's answer over a real derived version-3 chain, the client request encoder / reply decoder, the pinned light provider (unpinned refused, error mapping); `/tmp/test_lbrpc_*` per fixture, removed
 │   ├── test_dht2_codec.c      # DHT v2 package 1 (shared/dht2/): pinned data-map bytes per class, canonical envelope, every row-22 strict-decode reject, §3.2 identifiers against hand-assembled preimages, §4.1 code order, row-5 matrix + class max, §4.2 A/B two-arrival order, nearest_R, Validity, the owner-signed LIST request; default build, nothing left behind
+│   ├── test_dht2_msg.c        # DHT v2 package 2 (shared/dht2/dht2_msg.*): hand-assembled bytes for every wire message (get / put, read answer, receipt, LIST answer, refusal, p_hello / p_get / p_offer / p_want / p_deliver, pull-receipt payload), per-message strict rejects and count bounds, row-7 `v` per context, LIST rules, the p_want bit-vector, the control `_data`, the five typed `_id` helpers, answer seal / open, the row-11 sizes + `_Static_assert` against NODUS_MAX_FRAME_TCP; default build, nothing left behind
 │   ├── test_cmt_evidence.c    # cometbft port R1-D: DuplicateVoteEvidence bare bytes / flat hash / canonical order, EvidenceList root
 │   ├── test_cmt_state.c       # cometbft port R1-D: MedianTime (voting-power weights), MakeGenesisState, Copy, MakeBlock
 │   ├── test_cmt_vote_set.c    # cometbft port R2-A: VoteSet — the seven vote_set_test.go scenarios, weight-vs-count, the C-only capacity bounds (128 peers, N+P blocks)
@@ -11148,7 +11149,7 @@ What it is: the byte layer of DHT v2, the storage-node DHT for Nodus Connect
 §4.2, §13 rows 1, 3-7, 15, 21-23; governing records
 `docs/plans/decisions/2026-10-14-kurultay-21-summary.md`, `…-22-summary.md`,
 `…-23-summary.md`; all LOCAL-only). It lives in `shared/dht2/` and is in the
-common `NODUS_SOURCES` list (`nodus/CMakeLists.txt:593-603`, outside the
+common `NODUS_SOURCES` list (`nodus/CMakeLists.txt:627-637`, outside the
 Linux-only list, so it compiles on Windows). **Nothing in a node or a client calls
 it yet** — the only caller is `tests/test_dht2_codec.c`. No wire, port, consensus,
 block or state-root change: the existing DHT (TCP 4001 / 4002, `nodus_value` /
@@ -11157,7 +11158,7 @@ block or state-root change: the existing DHT (TCP 4001 / 4002, `nodus_value` /
 | File | What |
 |---|---|
 | `shared/dht2/dht2_types.h` | sizes (envelope ≤ 262,144 B, R = 4, set ≤ 256), `_class` 1-5, ValidityType 0 / 1, class-max seconds, the row-7 `DHT2_E_*` codes plus `DHT2_E_MALFORMED_REQ` (−2) and `DHT2_E_ARG` (−1), the FIPS 204 ctx / RFC 0002 domains (`nodus.dht.record.v1`, `.answer.v1`, `.addr.v1`, `.list.v1`), the one-slash payload types (`/nodus/dht/…/v1`, first byte 0x2f = the multicodec "path" code), the §3.2 `_id` labels |
-| `shared/dht2/dht2_cbor.{h,c}` | STRICT DAG-CBOR (ipld `dag-cbor/spec.md:46-66`, relaxed decoding not offered): shortest integers and lengths, no indefinite lengths, no tags (42 unused), major type 7 = `true` only, no negative integers, text keys strictly ascending length-first then bytewise, no trailing byte; a writer with WRITE / COUNT / COMPARE modes over one emission path (COMPARE = the re-encode identity check without a second buffer). Not `nodus_cbor.h`, which does not enforce shortest form or key order (§13 row 22) |
+| `shared/dht2/dht2_cbor.{h,c}` | STRICT DAG-CBOR (ipld `dag-cbor/spec.md:46-66`, relaxed decoding not offered): shortest integers and lengths, no indefinite lengths, no tags (42 unused), major type 7 = `true` only (package 2 adds `false`, `null` and arrays — next section), no negative integers, text keys strictly ascending length-first then bytewise, no trailing byte; a writer with WRITE / COUNT / COMPARE modes over one emission path (COMPARE = the re-encode identity check without a second buffer). Not `nodus_cbor.h`, which does not enforce shortest form or key order (§13 row 22) |
 | `shared/dht2/dht2_time.{h,c}` | `Validity` = exactly `YYYY-MM-DDTHH:MM:SSZ` (1970-9999, no fraction, no leap second) ↔ seconds; pure arithmetic, no libc time function |
 | `shared/dht2/dht2_record.{h,c}` | the IPNS v2 record: protobuf envelope `pubKey` 7 (the tree's ML-DSA-87 PublicKey branch) / `signatureV2` 8 / `data` 9; ML-DSA-87 over `data` with ctx `nodus.dht.record.v1`, hedged; strict DAG-CBOR data map (`Sequence` ≥ 1, `TTL` 0, `Validity`, `ValidityType`, `Value` empty, `_chain`, `_id`, `_class`, `_del`, `_data`, `_prev`) re-encoded and compared byte for byte; the row-5 class matrix and class max; the CANONICAL stored envelope (fields 7, 8, 9 only, in order, unknown dropped); `_id` = SHA3-512(label ‖ chain ‖ params), feed entry = SHA3-512(topic ‖ index BE8), address = SHA3-512(`_id` ‖ owner fp); §4.2 Select (Sequence → later expiry → canonical data bytes → signature bytes); the placement key (the inbox id for classes 4 / 5) |
 | `shared/dht2/dht2_place.{h,c}` | `nearest_R` (the R = 4 members nearest a key by raw 512-bit XOR, nearest first; a repeated fp refused) and `eligible` = nearest_R(S(H)) ∪ nearest_R(S(H − E)) |
@@ -11176,9 +11177,12 @@ named deviations: `messenger/docs/functions/dht2.md`.
 `witness.sock` `ipc_dht` snapshot, storage of the canonical form and the journal,
 quotas and pools (§6, rows 8, 16), pull-sync (§4.5, row 12), the client / node
 sessions and requests (§7, rows 13-14), and the answer / receipt / refusal payload
-maps (row 18) (`dht2_envelope.h:45-46`; `test_dht2_codec.c:80-81`).
+maps (row 18) (`dht2_envelope.h:45-46`; `test_dht2_codec.c:80-81`). The CODECS of
+the requests, the row-18 payloads and the pull-sync messages came in package 2
+(next section); the sessions, storage and pull-sync exchange themselves are still
+later.
 
-**Test** — `test_dht2_codec` (`nodus/CMakeLists.txt:1873-1879`; default build, no
+**Test** — `test_dht2_codec` (`nodus/CMakeLists.txt:2038-2044`; default build, no
 flags, no environment, no network, no files, no clock; fixed-seed ML-DSA-87 keys;
 nothing left behind; safe under `ctest -j`): the row-22 vectors — pinned data-map
 bytes per class, canonical-envelope round trip, every strict-decode reject, the §3.2
@@ -11190,6 +11194,71 @@ merge rules, `nearest_R` over a fixed set, Validity round trips, and row 23. Can
 self-consistent, not an independent oracle (the design's C ↔ WASM cross-check will
 ground them); the Validity instants come from one external source; admission across
 the holder check, quota, storage and pull-sync is not exercised.
+
+### DHT v2 package 2 — wire messages codec (no caller yet) (2026-10-23)
+
+What it is: the byte form of every DHT v2 message other than the record and the
+LIST request — the get / put requests, the signed answer payloads, the pull-sync
+messages and the inbox control list — plus the CBOR, constant and `_id` additions
+they need (design `docs/plans/2026-10-14-dht-v2-design.md` rev 5 §4.4, §4.5, §13
+rows 7, 11, 12, 14, 15, 18; LOCAL-only). Two operator decisions of 2026-10-23
+govern it (LOCAL-only files, `docs/plans/decisions/`):
+`2026-10-23-dht-v2-wire-gaps-package2.md` — get / put requests and the pull
+messages are strict DAG-CBOR maps with text keys, the pull messages carry no `op`
+and no `n`, read-repair is sent as `op` "put", the pull-receipt payload keys are
+`pf`, `sf`, `c`, `g`, `s`, `top`, `e`, and the LIST answer's `req_cursor` is absent
+on a first page; `2026-10-23-dht-v2-id-param-bytes.md` — dm salt 32 bytes, group
+id 32 bytes, group key version 8 bytes unsigned big-endian (amended the same day
+from a first answer of 4 bytes), the version only in the group.record and
+group.keys `_id`. Like package 1 it is in the common `NODUS_SOURCES` list
+(`nodus/CMakeLists.txt:638`) and **nothing in a node or a client calls it yet** —
+the only caller is `tests/test_dht2_msg.c`. No wire, port, consensus, block or
+state-root change; the existing DHT on 4001 / 4002 is untouched.
+
+| File | What |
+|---|---|
+| `shared/dht2/dht2_msg.{h,c}` | NEW. One strict DAG-CBOR map per message, decoded and RE-ENCODED byte for byte, counts bounded before iteration: get / put requests `{n, op, keys \| envs}` (≤ 8); the row-7 per-key result `{k, v}` with `v` = 64-byte hash, null (read answers only), a code 1…13 / 16 / 17, or `[18, through]`; read answer and write receipt `{c, h, n, q, r, t}`; LIST answer (adds `ctl` hash \| null, `list` ≤ 16 `{d, w}` with `w` strictly ascending, exclusive `cursor` = the last `w`, `complete`, `req_cursor`); refusal `{c, e, n, q}` with `e` 14 / 15 and no `h` / `t`; `dht2_answer_seal` / `dht2_answer_open` (RFC 0002 under domain = ctx `nodus.dht.answer.v1`, payload type answer / receipt / refusal); `p_hello` {g, top}, `p_get` {g, s}, `p_offer` {e ≤ 250 of {a, h, p}, g, top}, `p_want` {b} of exactly ⌈n/8⌉ bytes LSB-first with bits ≥ n zero, `p_deliver` {i < 250, v \| null}, the pull-receipt PAYLOAD {c, e, g, s, pf, sf, top}; the inbox control `_data` (73-byte entries, strictly ascending fp, marks 1 / 2, ≤ 3,500) with check / at / binary-search lookup. No heap of its own, no clock, no state |
+| `shared/dht2/dht2_cbor.{h,c}` | adds array headers (definite, shortest; the caller bounds the count), `false` / `null` readers and writers, and a non-consuming peek of the next major type / null |
+| `shared/dht2/dht2_types.h` | adds the message bounds (`DHT2_REQ_KEYS_MAX` 8, `DHT2_LIST_PAGE_MAX` 16, `DHT2_PULL_PAGE_MAX` 250, `DHT2_CTL_ENTRY_LEN` 73, `DHT2_CTL_ENTRIES_MAX` 3500, marks 1 / 2), the `_id` param sizes (salt 32, group id 32, key version 8), and the row-11 maxima: read-answer payload 1,262 B, LIST-answer payload 2,731 B (the larger), answer envelope `DHT2_ANSWER_ENV_MAX`, message `DHT2_ANSWER_MSG_MAX` = 8 × 262,144 + the envelope |
+| `shared/dht2/dht2_record.{h,c}` | adds five typed client-side `_id` helpers: `dht2_id_dm` (label ‖ chain ‖ recipient fp ‖ salt 32), `dht2_id_group_head` and `dht2_id_group_feed` (label ‖ chain ‖ group id 32), `dht2_id_group_record` and `dht2_id_group_keys` (label ‖ chain ‖ group id 32 ‖ key version u64 BE) |
+
+**Frame bound (row 11).** One holder answer = up to 8 records of 262,144 B travelling
+beside one signed answer envelope, and it must fit ONE frame: the test file holds
+`_Static_assert(DHT2_ANSWER_MSG_MAX < NODUS_MAX_FRAME_TCP)` (`tests/test_dht2_msg.c:93-95`;
+`NODUS_MAX_FRAME_TCP` = 5 MiB, `nodus_types.h:64`), so a bound that grows past the
+frame fails the build. The assert lives in the test because `shared/` does not
+include nodus headers.
+
+**Deliberate readings** (where the design names no code — labelled as readings in
+`dht2_msg.h:25-31`, not design facts): a malformed get / put request →
+`DHT2_E_MALFORMED_REQ` (row 7's "tier-2 protocol error, no signed answer"); every
+other message's fault → `DHT2_E_BAD_ENCODING`; a LIST answer's `r` element is a hash
+or code 17 only; `[18, through]` is accepted in a READ answer too — the spec is
+silent there. The codec checks shape only: it does not check that a LIST `v` is the
+hash of the listed entries, that `p_deliver.i` is below the actual offer's count
+(the exchange's job, package 7), offer entry order, or the `through` range.
+
+**Not in this package:** the pull-receipt's envelope domain is NOT decided (the
+decision's "Still open", to be asked before package 7) — only its payload is coded,
+nothing seals or opens it; the PeerRecord / address announcement moved to the
+endpoint package (package 6 of the package plan: rev 5 sets its size bounds there);
+no admission, holder or client logic; no caller in a node or a client. Function
+reference, structs, return codes per function: `messenger/docs/functions/dht2.md`
+§10.
+
+**Test** — `test_dht2_msg` (`nodus/CMakeLists.txt:2046-2052`; default build, no
+flags, no environment, no network, no files, no clock; one fixed-seed ML-DSA-87 key;
+nothing left behind; safe under `ctest -j`): every message against bytes assembled by
+hand, decoded back and re-encoded; per-message strict rejects and count bounds; row-7
+`v` per context; the LIST rules; the `p_want` vector for n = 0, 1, 7, 8, 9, 250; the
+control `_data`; the five `_id` helpers against hand-assembled preimages; seal / open,
+a tampered payload → `bad-signature`; the measured row-11 sizes (8-key payload
+1,262 B, its envelope 8,516 B, maximal LIST payload 2,731 B). The ORCHESTRATOR's run
+at `50053ce72`: `test_dht2_msg` 335 passed / 0 failed, `test_dht2_codec` 429 / 0, full
+nodus ctest 304 / 304, build 0 warnings. Can lie (file header): the pinned bytes are
+hand-assembled — self-consistent, not an independent oracle; where the text is silent
+nothing is tested either way; the `_id` checks use the same SHA3-512 and the
+decision's labels; the pull-receipt envelope is not tested (domain undecided).
 
 ### Block retention (pruning) and the SeenCommit cleanup (2026-10-03)
 
