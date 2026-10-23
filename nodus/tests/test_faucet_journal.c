@@ -28,7 +28,33 @@
  *       the ceiling is not judged, a claim is not admitted);
  *   J11 a row that does not read back (a column of the wrong type, a text of
  *       the wrong length or too long for its field, a blob of the wrong
- *       length) fails the read with -1 — never an empty field, never cut.
+ *       length) fails the read with -1 — never an empty field, never cut;
+ *   J12 the WAL is bounded: journal_size_limit = FJ_WAL_CKPT_PAGES pages and
+ *       wal_autocheckpoint = FJ_WAL_CKPT_PAGES are set on the connection;
+ *   J13 the ceiling is a hard DISK ceiling: a claim is refused when live +
+ *       wal + WAL margin + claim reserve reach it even though live + wal
+ *       alone are far below it, and admitted when there is room;
+ *   J13b the on-disk size (free pages included) at the ceiling refuses a
+ *       claim although the LIVE pages would fit; the same file with room
+ *       admits (so the refusal is the disk test);
+ *   J13c the ON-DISK size plus the WAL margin at the ceiling refuses a claim
+ *       although the file alone is below it and live + margin + reserve fit
+ *       (many free pages); the same file with 64 KiB more room admits;
+ *   J9b the replacement check keeps the same margin: refused (-4, nothing
+ *       recorded) when disk + WAL margin reaches the ceiling, recorded with
+ *       room;
+ *   J16 a deadline that passes AFTER the lock and BEFORE the commit (forced
+ *       through the test hook, no sleep) makes claim_create FJ_BUSY, rolled
+ *       back: no claim, no marker; the same call with its deadline intact
+ *       commits;
+ *   J14 a ceiling that cannot hold the WAL margin plus two reserves is
+ *       refused at open (journal NULL); the 1 MiB config minimum opens;
+ *   J15 a thread deadline already passed makes claim_create, claim_get,
+ *       claim_by_address, storage_full and counts return FJ_BUSY with
+ *       NOTHING written; a write lock held by another connection makes
+ *       claim_create return FJ_BUSY at the deadline (bounded, far below the
+ *       5 s default) with no claim and no marker; after the lock and the
+ *       deadline are gone the same call creates the claim.
  * WHAT IT REQUIRES: a default build; one mkdtemp directory under /tmp,
  *   removed at the end; no network.
  * LEAVES BEHIND: nothing (the directory is removed).
@@ -44,9 +70,31 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "faucet_journal.h"
+
+static uint64_t mono_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000);
+}
+
+static int64_t wal_bytes(const char *path) {
+    char w[160];
+    struct stat sb;
+    snprintf(w, sizeof(w), "%s-wal", path);
+    return stat(w, &sb) == 0 ? (int64_t)sb.st_size : 0;
+}
+
+static void rm_journal(const char *path) {
+    char w[160];
+    unlink(path);
+    snprintf(w, sizeof(w), "%s-wal", path); unlink(w);
+    snprintf(w, sizeof(w), "%s-shm", path); unlink(w);
+}
 
 static int g_failures = 0;
 #define CHECK(cond, what)                                                    \
@@ -112,6 +160,12 @@ static void mk_attempt(faucet_attempt_t *a, uint8_t *env, int seed, int n_in) {
     a->build_tip = 100;
     a->expiry = 190;
     a->scan_next = 101;
+}
+
+static int g_hook_calls = 0;
+static void hook_expire_deadline(void) {
+    g_hook_calls++;
+    faucet_journal_thread_deadline(1);        /* long past (monotonic ms) */
 }
 
 int main(void) {
@@ -248,7 +302,11 @@ int main(void) {
 
     /* J7 storage ceiling */
     j = NULL;
-    CHECK(faucet_journal_open(path, 1, &j) == 0, "J7 reopen with a 1-byte ceiling");
+    /* a ceiling below the WAL margin is refused at open (J14), so the
+     * ceiling is reached by FILLING the journal: 3 MB of live pages against
+     * a 2 MiB ceiling */
+    q_exec(path, "CREATE TABLE pad(x BLOB); INSERT INTO pad VALUES(zeroblob(3000000))");
+    CHECK(faucet_journal_open(path, 2ULL << 20, &j) == 0, "J7 reopen with a 2 MiB ceiling over 3 MB of live pages");
     CHECK(faucet_journal_storage_full(j) == 1, "J7 the ceiling is reached");
     char a8[129];
     addr_of(a8, 8);
@@ -304,7 +362,8 @@ int main(void) {
         CHECK(faucet_journal_finish(k, kc.seq, "expired", "e") == 0, "J9 (setup) attempt 5 expired");
         faucet_journal_close(k);
         k = NULL;
-        CHECK(faucet_journal_open(kp, 1, &k) == 0, "J9 reopen with a 1-byte ceiling");
+        q_exec(kp, "CREATE TABLE pad(x BLOB); INSERT INTO pad VALUES(zeroblob(3000000))");
+        CHECK(faucet_journal_open(kp, 2ULL << 20, &k) == 0, "J9 reopen with a 2 MiB ceiling over 3 MB of live pages");
         mk_attempt(&ka, env1, 21, 1);
         ka.env = big;
         ka.env_len = BIG;
@@ -396,6 +455,261 @@ int main(void) {
         snprintf(np, sizeof(np), "%s/n.db-wal", dir); unlink(np);
         snprintf(np, sizeof(np), "%s/n.db-shm", dir); unlink(np);
     }
+
+    /* ── J12 the WAL is bounded ────────────────────────────────────── */
+    char wp[96];
+    snprintf(wp, sizeof(wp), "%s/w.db", dir);
+    {
+        faucet_journal_t *w = NULL;
+        CHECK(faucet_journal_open(wp, 64ULL << 20, &w) == 0, "J12 a fresh journal opens");
+        int64_t lim = -1, pgs = -1;
+        int64_t psz = q_int(wp, "PRAGMA page_size");
+        CHECK(faucet_journal_wal_limits(w, &lim, &pgs) == 0 &&
+              pgs == (int64_t)FJ_WAL_CKPT_PAGES && psz > 0 &&
+              lim == (int64_t)FJ_WAL_CKPT_PAGES * psz,
+              "J12 journal_size_limit and wal_autocheckpoint are set at open");
+        faucet_journal_close(w);
+    }
+
+    /* ── J13 live + wal + margin + reserve against the ceiling ─────── */
+    {
+        char hp[96];
+        snprintf(hp, sizeof(hp), "%s/h.db", dir);
+        faucet_journal_t *h = NULL;
+        CHECK(faucet_journal_open(hp, 64ULL << 20, &h) == 0, "J13 (setup) a fresh journal");
+        faucet_journal_close(h);
+        q_exec(hp, "CREATE TABLE pad(x BLOB); INSERT INTO pad VALUES(zeroblob(1000000))");
+        int64_t psz = q_int(hp, "PRAGMA page_size");
+        int64_t live = (q_int(hp, "PRAGMA page_count") - q_int(hp, "PRAGMA freelist_count")) * psz;
+        int64_t margin = (int64_t)FJ_WAL_CKPT_PAGES * psz + (int64_t)FJ_TX_BOUND_BYTES +
+                         (int64_t)FJ_CLAIM_RESERVE_BYTES;       /* no open claim: one reserve */
+        /* ceiling 32 KiB below live+margin+reserve: live+wal alone are
+         * ~700 KB below it, yet the claim must be refused */
+        int64_t c_full = live + margin - 32 * 1024;
+        CHECK(faucet_journal_open(hp, (uint64_t)c_full, &h) == 0, "J13 reopen just under live + margin + reserve");
+        CHECK(live + wal_bytes(hp) < c_full - 400 * 1024 && wal_bytes(hp) < 32 * 1024,
+              "J13 (precondition) live + wal alone are far below the ceiling");
+        char z1[129];
+        addr_of(z1, 31);
+        rnd16(r, 31);
+        CHECK(faucet_journal_storage_full(h) == 1 &&
+              faucet_journal_claim_create(h, "start", z1, NULL, 4, r, &tmp) == FJ_STORAGE_FULL,
+              "J13 live + wal + WAL margin + reserve at the ceiling refuses a new claim");
+        faucet_journal_close(h);
+        h = NULL;
+        int64_t c_room = live + margin + 32 * 1024;
+        CHECK(faucet_journal_open(hp, (uint64_t)c_room, &h) == 0, "J13 reopen just over live + margin + reserve");
+        CHECK(wal_bytes(hp) < 32 * 1024, "J13 (precondition) the WAL is small");
+        CHECK(faucet_journal_storage_full(h) == 0 &&
+              faucet_journal_claim_create(h, "start", z1, NULL, 4, r, &tmp) == FJ_CREATED,
+              "J13 with room for the margin and the reserve a claim is admitted");
+        faucet_journal_close(h);
+        rm_journal(hp);
+
+        /* J13b: the on-disk size has reached the ceiling although the live
+         * pages fit: grow the file, then free the pages (the file keeps its
+         * high-water size) */
+        snprintf(hp, sizeof(hp), "%s/d.db", dir);
+        h = NULL;
+        CHECK(faucet_journal_open(hp, 64ULL << 20, &h) == 0, "J13b (setup) a fresh journal");
+        faucet_journal_close(h);
+        q_exec(hp, "CREATE TABLE pad(x BLOB); INSERT INTO pad VALUES(zeroblob(3000000))");
+        q_exec(hp, "DELETE FROM pad");
+        int64_t disk = q_int(hp, "PRAGMA page_count") * q_int(hp, "PRAGMA page_size");
+        int64_t dlive = (q_int(hp, "PRAGMA page_count") - q_int(hp, "PRAGMA freelist_count")) *
+                        q_int(hp, "PRAGMA page_size");
+        CHECK(disk > (2LL << 20) && dlive + margin < (2LL << 20),
+              "J13b (precondition) high-water file above 2 MiB, live pages + margin below it");
+        CHECK(faucet_journal_open(hp, 2ULL << 20, &h) == 0, "J13b reopen with a 2 MiB ceiling");
+        addr_of(z1, 32);
+        rnd16(r, 32);
+        CHECK(faucet_journal_storage_full(h) == 1 &&
+              faucet_journal_claim_create(h, "start", z1, NULL, 4, r, &tmp) == FJ_STORAGE_FULL,
+              "J13b the on-disk size at the ceiling refuses a new claim");
+        faucet_journal_close(h);
+        h = NULL;
+        CHECK(faucet_journal_open(hp, 64ULL << 20, &h) == 0 && faucet_journal_storage_full(h) == 0,
+              "J13b (control) the same file with room admits: the refusal was the disk test");
+        faucet_journal_close(h);
+        rm_journal(hp);
+
+        /* J13c: many free pages, the file's disk size BELOW the ceiling but
+         * disk + WAL margin AT it, while live + margin + reserve fits: the
+         * next commit's WAL growth would land on the high-water file, so the
+         * claim is refused. Same file, ceiling 64 KiB higher: admitted. */
+        snprintf(hp, sizeof(hp), "%s/e.db", dir);
+        h = NULL;
+        CHECK(faucet_journal_open(hp, 64ULL << 20, &h) == 0, "J13c (setup) a fresh journal");
+        faucet_journal_close(h);
+        q_exec(hp, "CREATE TABLE pad(x BLOB); INSERT INTO pad VALUES(zeroblob(3000000))");
+        q_exec(hp, "DELETE FROM pad");
+        int64_t epsz = q_int(hp, "PRAGMA page_size");
+        int64_t edisk = q_int(hp, "PRAGMA page_count") * epsz + wal_bytes(hp);
+        int64_t elive = (q_int(hp, "PRAGMA page_count") - q_int(hp, "PRAGMA freelist_count")) * epsz;
+        int64_t ewal = (int64_t)FJ_WAL_CKPT_PAGES * epsz + (int64_t)FJ_TX_BOUND_BYTES;
+        int64_t e_full = edisk + ewal - 32 * 1024;
+        CHECK(edisk < e_full && elive + ewal + (int64_t)FJ_CLAIM_RESERVE_BYTES < e_full,
+              "J13c (precondition) disk alone and live + margin + reserve fit under the ceiling");
+        CHECK(faucet_journal_open(hp, (uint64_t)e_full, &h) == 0, "J13c reopen with disk + margin just over the ceiling");
+        addr_of(z1, 33);
+        rnd16(r, 33);
+        CHECK(faucet_journal_storage_full(h) == 1 &&
+              faucet_journal_claim_create(h, "start", z1, NULL, 4, r, &tmp) == FJ_STORAGE_FULL,
+              "J13c disk + WAL margin at the ceiling refuses a claim although live + margin fits");
+        faucet_journal_close(h);
+        h = NULL;
+        CHECK(faucet_journal_open(hp, (uint64_t)(edisk + ewal + 64 * 1024), &h) == 0,
+              "J13c reopen with disk + margin 64 KiB under the ceiling");
+        CHECK(faucet_journal_storage_full(h) == 0 &&
+              faucet_journal_claim_create(h, "start", z1, NULL, 4, r, &tmp) == FJ_CREATED,
+              "J13c (control) the same file admits: the refusal was the disk + margin test");
+        faucet_journal_close(h);
+        rm_journal(hp);
+
+        /* J9b: the replacement check keeps the same WAL margin against the
+         * on-disk size: refused (-4, nothing recorded) when disk + margin
+         * reaches the ceiling although the live bytes are far below it. */
+        snprintf(hp, sizeof(hp), "%s/g.db", dir);
+        h = NULL;
+        CHECK(faucet_journal_open(hp, 64ULL << 20, &h) == 0, "J9b (setup) a fresh journal");
+        char g1[129];
+        addr_of(g1, 34);
+        rnd16(r, 34);
+        faucet_claim_t gc;
+        faucet_attempt_t ga;
+        CHECK(faucet_journal_claim_create(h, "start", g1, NULL, 4, r, &gc) == FJ_CREATED, "J9b (setup) a claim");
+        mk_attempt(&ga, env1, 34, 1);
+        CHECK(faucet_journal_attempt_sign(h, gc.seq, &ga) == 0, "J9b (setup) attempt 1");
+        CHECK(faucet_journal_finish(h, gc.seq, "expired", "e") == 0, "J9b (setup) attempt 1 expired");
+        faucet_journal_close(h);
+        h = NULL;
+        q_exec(hp, "CREATE TABLE pad(x BLOB); INSERT INTO pad VALUES(zeroblob(3000000))");
+        q_exec(hp, "DELETE FROM pad");
+        int64_t gpsz = q_int(hp, "PRAGMA page_size");
+        int64_t gdisk = q_int(hp, "PRAGMA page_count") * gpsz + wal_bytes(hp);
+        int64_t gwal = (int64_t)FJ_WAL_CKPT_PAGES * gpsz + (int64_t)FJ_TX_BOUND_BYTES;
+        int64_t g_full = gdisk + gwal - 32 * 1024;
+        CHECK(gdisk < g_full, "J9b (precondition) the disk size alone is below the ceiling");
+        CHECK(faucet_journal_open(hp, (uint64_t)g_full, &h) == 0, "J9b reopen with disk + margin just over the ceiling");
+        /* attempt 1's reservation stays through "expired" (only confirmed
+         * frees reservations); the refused replacement must leave it as is */
+        int64_t gres = q_int(hp, "SELECT COUNT(*) FROM reservations");
+        CHECK(gres == 1, "J9b (precondition) attempt 1's reservation is held");
+        mk_attempt(&ga, env1, 35, 1);
+        CHECK(faucet_journal_attempt_sign(h, gc.seq, &ga) == -4,
+              "J9b a replacement with disk + WAL margin at the ceiling is refused (-4)");
+        CHECK(q_int(hp, "SELECT COUNT(*) FROM attempts") == 1 &&
+              q_int(hp, "SELECT COUNT(*) FROM reservations") == gres,
+              "J9b ... nothing was recorded and the old reservation is unchanged (rolled back)");
+        CHECK(faucet_journal_claim_get(h, gc.claim_id, &tmp) == 0 && !strcmp(tmp.state, "expired"),
+              "J9b ... the claim stays expired");
+        faucet_journal_close(h);
+        h = NULL;
+        CHECK(faucet_journal_open(hp, (uint64_t)(gdisk + gwal + 64 * 1024), &h) == 0,
+              "J9b reopen with disk + margin 64 KiB under the ceiling");
+        mk_attempt(&ga, env1, 35, 1);
+        CHECK(faucet_journal_attempt_sign(h, gc.seq, &ga) == 0 && ga.n == 2,
+              "J9b (control) with room the replacement is recorded");
+        faucet_journal_close(h);
+        rm_journal(hp);
+    }
+
+    /* ── J14 a ceiling that cannot hold the margin is refused at open ── */
+    {
+        char tp[96];
+        snprintf(tp, sizeof(tp), "%s/t.db", dir);
+        faucet_journal_t *t = (faucet_journal_t *)(uintptr_t)1;   /* open must reset it to NULL */
+        CHECK(faucet_journal_open(tp, 1, &t) == -1 && t == NULL, "J14 a 1-byte ceiling is refused at open");
+        CHECK(faucet_journal_open(tp, 1000, &t) == -1 && t == NULL, "J14 a 1000-byte ceiling is refused at open");
+        CHECK(faucet_journal_open(tp, (uint64_t)FJ_WAL_CKPT_PAGES * 4096 + FJ_TX_BOUND_BYTES +
+                                      2u * FJ_CLAIM_RESERVE_BYTES, &t) == -1 && t == NULL,
+              "J14 a ceiling of exactly margin + two reserves is refused (it must exceed it)");
+        CHECK(faucet_journal_open(tp, 1ULL << 20, &t) == 0, "J14 the 1 MiB config minimum opens");
+        faucet_journal_close(t);
+        rm_journal(tp);
+    }
+
+    /* ── J15 deadlines: busy, nothing written ─────────────────────── */
+    {
+        char bp[96];
+        snprintf(bp, sizeof(bp), "%s/b.db", dir);
+        faucet_journal_t *b = NULL;
+        CHECK(faucet_journal_open(bp, 64ULL << 20, &b) == 0, "J15 a fresh journal opens");
+        char z2[129];
+        addr_of(z2, 41);
+        rnd16(r, 41);
+        faucet_claim_t bc;
+        faucet_jcounts_t bcnt;
+
+        faucet_journal_thread_deadline(1);                    /* long past (monotonic ms) */
+        CHECK(faucet_journal_claim_create(b, "start", z2, NULL, 4, r, &bc) == FJ_BUSY,
+              "J15 claim_create with a passed deadline is FJ_BUSY");
+        CHECK(faucet_journal_claim_get(b, "00000000000000000000000000000001", &bc) == FJ_BUSY &&
+              faucet_journal_claim_by_address(b, z2, &bc) == FJ_BUSY &&
+              faucet_journal_storage_full(b) == FJ_BUSY &&
+              faucet_journal_counts(b, &bcnt) == FJ_BUSY,
+              "J15 claim_get / claim_by_address / storage_full / counts are FJ_BUSY with a passed deadline");
+        faucet_journal_thread_deadline(FJ_NO_DEADLINE);
+        CHECK(q_int(bp, "SELECT COUNT(*) FROM claims") == 0 && q_int(bp, "SELECT COUNT(*) FROM paid") == 0,
+              "J15 ... and nothing was written");
+
+        /* another connection holds the write lock: the call ends at ITS deadline */
+        sqlite3 *lk = NULL;
+        CHECK(sqlite3_open_v2(bp, &lk, SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK &&
+              sqlite3_exec(lk, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK,
+              "J15 (setup) another connection holds the write lock");
+        uint64_t t0 = mono_ms();
+        faucet_journal_thread_deadline(t0 + 150);
+        int br = faucet_journal_claim_create(b, "start", z2, NULL, 4, r, &bc);
+        uint64_t took = mono_ms() - t0;
+        faucet_journal_thread_deadline(FJ_NO_DEADLINE);
+        CHECK(br == FJ_BUSY, "J15 a held write lock makes claim_create FJ_BUSY at the deadline");
+        CHECK(took < 4000, "J15 ... without the 5 s default busy wait");
+        sqlite3_exec(lk, "ROLLBACK", NULL, NULL, NULL);
+        sqlite3_close(lk);
+        CHECK(q_int(bp, "SELECT COUNT(*) FROM claims") == 0 && q_int(bp, "SELECT COUNT(*) FROM paid") == 0,
+              "J15 ... no claim and no marker was left");
+        faucet_journal_thread_deadline(mono_ms() + 60000);
+        CHECK(faucet_journal_claim_create(b, "start", z2, NULL, 4, r, &bc) == FJ_CREATED &&
+              q_int(bp, "SELECT COUNT(*) FROM claims") == 1,
+              "J15 with the lock gone and time left the same call creates the claim");
+        faucet_journal_thread_deadline(FJ_NO_DEADLINE);
+        faucet_journal_close(b);
+        rm_journal(bp);
+    }
+
+    /* ── J16 the deadline is re-checked right before COMMIT ─────────── */
+    {
+        char qp[96];
+        snprintf(qp, sizeof(qp), "%s/q.db", dir);
+        faucet_journal_t *q = NULL;
+        CHECK(faucet_journal_open(qp, 64ULL << 20, &q) == 0, "J16 a fresh journal opens");
+        char z3[129];
+        addr_of(z3, 51);
+        rnd16(r, 51);
+        faucet_claim_t qc;
+        /* The lock is taken with a live deadline; the hook (called after the
+         * last query, before the pre-commit check) lets the deadline pass —
+         * no sleep, no timing: the same ordering on every machine. */
+        g_hook_calls = 0;
+        faucet_journal_test_precommit_hook(hook_expire_deadline);
+        faucet_journal_thread_deadline(mono_ms() + 60000);
+        int qr = faucet_journal_claim_create(q, "start", z3, NULL, 4, r, &qc);
+        faucet_journal_thread_deadline(FJ_NO_DEADLINE);
+        faucet_journal_test_precommit_hook(NULL);
+        CHECK(g_hook_calls == 1 && qr == FJ_BUSY,
+              "J16 a deadline that passes between the lock and the COMMIT makes claim_create FJ_BUSY");
+        CHECK(q_int(qp, "SELECT COUNT(*) FROM claims") == 0 && q_int(qp, "SELECT COUNT(*) FROM paid") == 0,
+              "J16 ... rolled back: no claim and no marker");
+        faucet_journal_thread_deadline(mono_ms() + 60000);
+        CHECK(faucet_journal_claim_create(q, "start", z3, NULL, 4, r, &qc) == FJ_CREATED &&
+              q_int(qp, "SELECT COUNT(*) FROM claims") == 1 && q_int(qp, "SELECT COUNT(*) FROM paid") == 1,
+              "J16 (control) the same call with its deadline intact commits the claim and its marker");
+        faucet_journal_thread_deadline(FJ_NO_DEADLINE);
+        faucet_journal_close(q);
+        rm_journal(qp);
+    }
+    rm_journal(wp);
 
     char p[128];
     snprintf(p, sizeof(p), "%s/j.db", dir); unlink(p);

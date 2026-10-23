@@ -6,6 +6,8 @@
  *     result freed). Before the fix it re-calloc'd entries without resetting
  *     count and wrote at entries[count] — with a 3-entry first array and a
  *     1-entry second one that is a write 3 slots past a 1-slot allocation.
+ *   - C-11: "count" is required: a reply with "utxos" and no "count" is
+ *     refused (and the same list with its "count" decodes).
  *   - Well-formed replies of the shape the node's handler writes
  *     (nodus_witness_handlers.c) still decode with the expected counts.
  * (The dnac_ledger_range and dnac_block cases are deleted with those
@@ -67,14 +69,42 @@ static void reply_head(cbor_encoder_t *e, const char *method, size_t r_count) {
 
 static void enc_utxo_array(cbor_encoder_t *e, size_t n, uint64_t amount0) {
     uint8_t nul[NODUS_T3_NULLIFIER_LEN];
+    uint8_t tid[64];
+    memset(tid, 0xA1, sizeof(tid));
     cbor_encode_cstr(e, "utxos");
     cbor_encode_array(e, n);
     for (size_t i = 0; i < n; i++) {
         memset(nul, (int)(0x10 + i), sizeof(nul));
-        cbor_encode_map(e, 2);
+        /* every entry carries its "tid": the decoder refuses an entry
+         * without one (C-11), exactly as the server always sends it */
+        cbor_encode_map(e, 3);
         cbor_encode_cstr(e, "n");      cbor_encode_bstr(e, nul, sizeof(nul));
         cbor_encode_cstr(e, "amount"); cbor_encode_uint(e, amount0 + i);
+        cbor_encode_cstr(e, "tid");    cbor_encode_bstr(e, tid, sizeof(tid));
     }
+}
+
+/* One "utxos" list of one entry {"amount": 5, <tid shape>}, wrapped as a
+ * dnac_utxo reply. shape: 0 = no "tid", 1 = 63-byte "tid", 2 = "tid" twice
+ * (64 bytes each), 3 = a good 64-byte "tid". */
+static size_t craft_tid_reply(cbor_encoder_t *e, int shape) {
+    uint8_t tid[64];
+    memset(tid, 0xA1, sizeof(tid));
+    reply_head(e, "dnac_utxo", 2);
+    cbor_encode_cstr(e, "count"); cbor_encode_uint(e, 1);
+    cbor_encode_cstr(e, "utxos");
+    cbor_encode_array(e, 1);
+    cbor_encode_map(e, shape == 0 ? 1 : shape == 2 ? 3 : 2);
+    cbor_encode_cstr(e, "amount"); cbor_encode_uint(e, 5);
+    if (shape == 1) {
+        cbor_encode_cstr(e, "tid"); cbor_encode_bstr(e, tid, 63);
+    } else if (shape >= 2) {
+        cbor_encode_cstr(e, "tid"); cbor_encode_bstr(e, tid, 64);
+        if (shape == 2) {
+            cbor_encode_cstr(e, "tid"); cbor_encode_bstr(e, tid, 64);
+        }
+    }
+    return cbor_encoder_len(e);
 }
 
 static void test_utxo(void) {
@@ -109,6 +139,48 @@ static void test_utxo(void) {
     cbor_encode_cstr(&e, "block_height"); cbor_encode_uint(&e, 2);
     rc = nodus_client_test_parse_utxo(g_frame, cbor_encoder_len(&e), &res);
     CHECK(rc == NODUS_ERR_PROTOCOL_ERROR, "utxo: repeated \"block_height\" refused");
+    nodus_client_free_utxo_result(&res);
+
+    /* C-11: "count" is required. A well-formed "utxos" list with NO "count"
+     * (nothing to prove the list whole) is refused, result freed; the same
+     * list with its "count" decodes (control). */
+    reply_head(&e, "dnac_utxo", 1);
+    enc_utxo_array(&e, 2, 500);
+    rc = nodus_client_test_parse_utxo(g_frame, cbor_encoder_len(&e), &res);
+    CHECK(rc == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL && res.count == 0,
+          "utxo: a reply with \"utxos\" and no \"count\" is refused");
+    nodus_client_free_utxo_result(&res);
+    reply_head(&e, "dnac_utxo", 2);
+    cbor_encode_cstr(&e, "count"); cbor_encode_uint(&e, 2);
+    enc_utxo_array(&e, 2, 500);
+    rc = nodus_client_test_parse_utxo(g_frame, cbor_encoder_len(&e), &res);
+    CHECK(rc == 0 && res.count == 2 && res.entries[0].amount == 500,
+          "utxo: (control) the same list with its \"count\" decodes");
+    nodus_client_free_utxo_result(&res);
+
+    /* C-11: the unfiltered decode is strict about the token id too. A
+     * missing / 63-byte / repeated "tid" used to leave the id zero (= native)
+     * or let the last one win; each is now a protocol error, result freed. */
+    size_t n = craft_tid_reply(&e, 3);
+    rc = nodus_client_test_parse_utxo(g_frame, n, &res);
+    CHECK(rc == 0 && res.count == 1 && res.entries[0].token_id[0] == 0xA1 &&
+          res.entries[0].token_id[63] == 0xA1,
+          "utxo: an entry with one 64-byte tid decodes");
+    nodus_client_free_utxo_result(&res);
+    n = craft_tid_reply(&e, 0);
+    rc = nodus_client_test_parse_utxo(g_frame, n, &res);
+    CHECK(rc == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL && res.count == 0,
+          "utxo: an entry without a tid is refused (no silent native)");
+    nodus_client_free_utxo_result(&res);
+    n = craft_tid_reply(&e, 1);
+    rc = nodus_client_test_parse_utxo(g_frame, n, &res);
+    CHECK(rc == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL && res.count == 0,
+          "utxo: a 63-byte tid is refused");
+    nodus_client_free_utxo_result(&res);
+    n = craft_tid_reply(&e, 2);
+    rc = nodus_client_test_parse_utxo(g_frame, n, &res);
+    CHECK(rc == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL && res.count == 0,
+          "utxo: a repeated tid inside an entry is refused");
     nodus_client_free_utxo_result(&res);
 
     /* no "r" map */

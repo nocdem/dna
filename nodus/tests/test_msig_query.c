@@ -1832,35 +1832,49 @@ static void t_dnac_utxo_token_strict_tid(void)
           res.count == 0,
           "strict: a \"count\" that is not the number of entries is refused");
 
-    /* the legacy (unfiltered) decode of the same malformed bytes is
-     * unchanged: pinned as it behaves today */
+    /* C-11: the unfiltered decode (nodus_client_test_parse_utxo) is the SAME
+     * strict decode now. These checks used to pin the lenient behaviour
+     * ("legacy: ... still accepted / still an empty success"); each of them
+     * is inverted — the same malformed bytes are refused. */
     n = craft_token_reply(buf, sizeof(buf), TE_R_COUNT_MAP, tokA, tokB);
+    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == NODUS_ERR_PROTOCOL_ERROR &&
+          res.entries == NULL && res.count == 0,
+          "unfiltered: the response count-map leak is refused");
+    n = craft_token_reply(buf, sizeof(buf), TE_R_UTXOS_UINT, NULL, NULL);
+    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == NODUS_ERR_PROTOCOL_ERROR &&
+          res.entries == NULL && res.count == 0,
+          "unfiltered: a non-array utxos is refused (no empty success)");
+    n = craft_token_reply(buf, sizeof(buf), TE_R_NO_UTXOS, NULL, NULL);
+    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == NODUS_ERR_PROTOCOL_ERROR &&
+          res.entries == NULL && res.count == 0,
+          "unfiltered: a reply without utxos is refused");
+    n = craft_token_reply(buf, sizeof(buf), TE_R_TRUNC_ENTRY, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == NODUS_ERR_PROTOCOL_ERROR &&
+          res.entries == NULL && res.count == 0,
+          "unfiltered: a truncated entry is refused");
+    n = craft_token_reply(buf, sizeof(buf), TE_R_COUNT_MISMATCH, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == NODUS_ERR_PROTOCOL_ERROR &&
+          res.entries == NULL && res.count == 0,
+          "unfiltered: a count that differs from the list is refused");
+
+    /* the token id of every entry, unfiltered */
+    n = craft_token_reply(buf, sizeof(buf), TE_GOOD, tokA, NULL);
     CHECK(nodus_client_test_parse_utxo(buf, n, &res) == 0 && res.count == 1 &&
           memcmp(res.entries[0].token_id, tokA, 64) == 0,
-          "legacy: the response count-map leak still reads the nested list");
+          "unfiltered: a well-formed entry with its tid decodes");
     nodus_client_free_utxo_result(&res);
-    n = craft_token_reply(buf, sizeof(buf), TE_R_UTXOS_UINT, NULL, NULL);
-    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == 0 && res.count == 0,
-          "legacy: a non-array utxos is still an empty success");
-    nodus_client_free_utxo_result(&res);
-    n = craft_token_reply(buf, sizeof(buf), TE_R_NO_UTXOS, NULL, NULL);
-    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == 0 && res.count == 0,
-          "legacy: a reply without utxos is still an empty success");
-    nodus_client_free_utxo_result(&res);
-    n = craft_token_reply(buf, sizeof(buf), TE_R_TRUNC_ENTRY, tokA, NULL);
-    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == 0 && res.count == 1,
-          "legacy: a truncated entry is still counted");
-    nodus_client_free_utxo_result(&res);
-    n = craft_token_reply(buf, sizeof(buf), TE_R_COUNT_MISMATCH, tokA, NULL);
-    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == 0 && res.count == 1,
-          "legacy: a count that differs from the list is still accepted");
-    nodus_client_free_utxo_result(&res);
-
-    /* the legacy (unfiltered) decode keeps its lenient behaviour */
     n = craft_token_reply(buf, sizeof(buf), TE_NO_TID, NULL, NULL);
-    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == 0 && res.count == 1,
-          "legacy dnac_utxo decode: an entry without a tid is still accepted");
-    nodus_client_free_utxo_result(&res);
+    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == NODUS_ERR_PROTOCOL_ERROR &&
+          res.entries == NULL && res.count == 0,
+          "unfiltered: an entry without a tid is refused (not read as native)");
+    n = craft_token_reply(buf, sizeof(buf), TE_SHORT_TID, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == NODUS_ERR_PROTOCOL_ERROR &&
+          res.entries == NULL && res.count == 0,
+          "unfiltered: a 63-byte tid is refused");
+    n = craft_token_reply(buf, sizeof(buf), TE_REPEATED_TID, tokB, tokA);
+    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == NODUS_ERR_PROTOCOL_ERROR &&
+          res.entries == NULL && res.count == 0,
+          "unfiltered: a repeated tid is refused (last one does not win)");
 }
 
 int main(void)

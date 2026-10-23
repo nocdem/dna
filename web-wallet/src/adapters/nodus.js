@@ -219,12 +219,19 @@ export function parseTip(value) {
 function isNodusRow(row) { return row?.chain === NODUS_ASSET.chain; }
 // A genesis-claim Activity record (0.1.26): `hash` is the coin the claim
 // creates (its output id — the same for every signature variant) and
-// `inputs` is [that same id]. That pair is the marker: after a reload
-// src/activity-storage.js keeps only hash / expiryHeight / fromHeight /
-// inputs of a NODUS row, and a send never lists its own intent id as one of
-// its inputs.
+// `inputs` is [that same id]. That pair is the marker: a send never lists its
+// own intent id as one of its inputs. The marker alone is NOT enough to hold
+// a row out of the coin lock (BUGS W-25: a token row, or any row, shaped
+// inputs:[X] hash:X would free its inputs): a real claim of this wallet is
+// also what prepareClaim records — the NODUS asset (src/activity.js
+// recordActivity: symbol NODUS, no tokenId; a token send always carries its
+// tokenId) paying this wallet's OWN address (`to` = `address`, checked above
+// by prepareClaim: recipient === from). Every one of those fields survives a
+// reload (src/activity-storage.js readActivityRow), so the check is the same
+// before and after it.
 export function isClaimRow(row) {
-  return isNodusRow(row) && Array.isArray(row.inputs) && row.inputs.length === 1 && row.inputs[0] === row.hash;
+  return isNodusRow(row) && Array.isArray(row.inputs) && row.inputs.length === 1 && row.inputs[0] === row.hash
+    && row.tokenId === undefined && row.symbol === NODUS_ASSET.symbol && typeof row.address === 'string' && row.to === row.address;
 }
 // Coins of every NODUS send that is not known to have stayed out of the chain.
 // Only a scan result sets 'expired' (tip past expiry_height and the intent not
@@ -235,6 +242,37 @@ export function lockedInputs(rows) {
   const locked = new Set();
   for (const row of rows) if (isNodusRow(row) && !isClaimRow(row) && row.status !== 'expired') for (const input of row.inputs || []) locked.add(input);
   return locked;
+}
+// The chain tip as the connected node reports it, for releasing the lock of a
+// quarantined Activity record (src/app.js reconcileQuarantine). A tip of 0 (the
+// node's answer to a failed read) or an invalid one is an error, never a tip.
+// -> { tip: BigInt }. A lagging node reports a LOWER tip, never a higher one.
+export async function coinView({ client, from } = {}) {
+  if (!client || client.state !== 'ready') throw new Error('Nodus connection is not ready.');
+  if (from !== client.fingerprint) throw new Error('Nodus address does not match the connected identity.');
+  const tip = parseTip((await client.list()).tip);
+  if (tip <= 0n) throw new Error('The chain height could not be read.');
+  return { tip };
+}
+// The quarantined records that still lock coins: every record object not in
+// `released` (a Set of the record objects themselves — two records may list the
+// same inputs, so a record is never identified by its inputs).
+export function quarantineLockRows(quarantined, released) {
+  return quarantined.filter(row => !released.has(row));
+}
+// Whether the lock of a quarantined record (src/activity-storage.js
+// parseActivity `quarantined`: { inputs, expiryHeight?, tokenRow }) can be
+// released, given a view (coinView). One reason only: its own validated expiry
+// is known and the chain tip is past it, so it can no longer be applied.
+// A coin's absence from the listing is NOT used (operator decision 2026-10-23):
+// a node that lags behind does not list a coin created after its tip, so absence
+// proves nothing — the coin may reappear unspent while the original transaction
+// can still be included. A lagging node only reports a LOWER tip, so this rule
+// can never release early. A record without a valid expiry stays locked until
+// the user discards the unreadable history.
+export function quarantineReleasable(entry, view) {
+  if (!entry || !view || typeof view.tip !== 'bigint' || view.tip <= 0n) return false;
+  return typeof entry.expiryHeight === 'string' && /^[1-9]\d{0,19}$/.test(entry.expiryHeight) && view.tip > BigInt(entry.expiryHeight);
 }
 // Which coins a resend of `row` may use (session-expiry note item 3):
 // - 'confirmed': none, it is already in the chain;
@@ -1323,6 +1361,20 @@ async function faucetJson(response) {
   // (`shape`) is told as such; a lost / unreadable one is "pending"
   try { return parseFaucetClaim(answer); } catch (error) { error.shape = true; throw error; }
 }
+// A wait of `ms` (through `sleep`, injectable) that ends early — resolving, never
+// rejecting — as soon as `signal` aborts or `stopped()` turns true (checked
+// every STOP_CHECK_MS: `stopped` has no event). The caller re-checks both.
+const STOP_CHECK_MS = 100;
+async function cancellableSleep(sleep, ms, signal, stopped) {
+  if (signal?.aborted || stopped()) return;
+  let wake, timer, onAbort;
+  const woken = new Promise(resolve => { wake = resolve; });
+  onAbort = () => wake();
+  signal?.addEventListener('abort', onAbort, { once: true });
+  timer = setInterval(() => { if (stopped()) wake(); }, STOP_CHECK_MS);
+  try { await Promise.race([sleep(ms), woken]); }
+  finally { clearInterval(timer); signal?.removeEventListener('abort', onAbort); }
+}
 // Asks the faucet for the open wallet's coins and follows the claim.
 // `fetcher` / `sleep` / `now` exist for tests. `onState(claim)`: told of every
 // answer read (a status line); `stopped()` / `signal`: the wallet is closed —
@@ -1335,7 +1387,7 @@ async function faucetJson(response) {
 // the POST's answer was lost (timeout, network fault, unreadable body);
 // rejects before anything was sent, and when the first answer ARRIVED in a
 // shape this wallet does not understand.
-export async function claimTestnetCoins({ client, address, fetcher = (...args) => globalThis.fetch(...args), sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), now = () => Date.now(), onState = () => {}, stopped = () => false, signal, requestMs = FAUCET_REQUEST_MS, totalMs = FAUCET_TOTAL_MS } = {}) {
+export async function claimTestnetCoins({ client, address, fetcher = (...args) => globalThis.fetch(...args), sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), now = () => performance.now(), onState = () => {}, stopped = () => false, signal, requestMs = FAUCET_REQUEST_MS, totalMs = FAUCET_TOTAL_MS } = {}) {
   if (!faucetAvailable(client, address)) throw new Error('Testnet coins are available only on the Nodus testnet while the wallet is connected.');
   const deadline = now() + totalMs;
   // One exchange: request + body, under its own AbortController, which the
@@ -1361,8 +1413,10 @@ export async function claimTestnetCoins({ client, address, fetcher = (...args) =
   }
   onState(claim);
   for (let poll = 0; !FAUCET_FINAL.includes(claim.state); poll++) {
-    if (poll >= FAUCET_MAX_POLLS || deadline - now() <= 0) return { ...claim, state: 'pending', message: FAUCET_PENDING_TEXT };
-    await sleep(FAUCET_POLL_MS);
+    if (poll >= FAUCET_MAX_POLLS || deadline - now() <= 0 || stopped() || signal?.aborted) return { ...claim, state: 'pending', message: FAUCET_PENDING_TEXT };
+    // The wait is never longer than the time left (the deadline), and ends at
+    // once when the wallet closes (`signal` abort / `stopped()`).
+    await cancellableSleep(sleep, Math.min(FAUCET_POLL_MS, deadline - now()), signal, stopped);
     if (stopped() || signal?.aborted) return { ...claim, state: 'pending', message: FAUCET_PENDING_TEXT };
     try {
       const next = await exchange(`/faucet/claim/${claim.claimId}`, { method: 'GET' });

@@ -213,9 +213,9 @@ static void answer_json(int http, const char *state, const char *msg,
     if (faucet_json_answer(&a, body, cap) < 0) { *status = 500; body[0] = '\0'; }
 }
 
-void faucet_http_route(faucet_core_t *core, const faucet_http_req_t *req,
-                       uint64_t deadline_ms, int *status, char *body,
-                       size_t cap) {
+static void route_inner(faucet_core_t *core, const faucet_http_req_t *req,
+                        uint64_t deadline_ms, int *status, char *body,
+                        size_t cap) {
     static const char P_CLAIM[] = "/faucet/claim";
     static const char P_CLAIM_ID[] = "/faucet/claim/";
     static const char P_STATUS[] = "/faucet/status";
@@ -247,12 +247,33 @@ void faucet_http_route(faucet_core_t *core, const faucet_http_req_t *req,
     if (!strcmp(req->path, P_STATUS)) {
         if (!is_get) { answer_json(405, "refused", "use GET", status, body, cap); return; }
         faucet_status_t s;
-        faucet_api_status(core, &s);
+        int sr = faucet_api_status(core, &s);
+        if (sr == FJ_BUSY) {
+            answer_json(503, "refused", "busy, try again", status, body, cap);
+            return;
+        }
+        if (sr != 0) {
+            answer_json(503, "refused", "the faucet journal is unavailable",
+                        status, body, cap);
+            return;
+        }
         *status = 200;
         if (faucet_json_status(&s, body, cap) < 0) { *status = 500; body[0] = '\0'; }
         return;
     }
     answer_json(404, "refused", "not found", status, body, cap);
+}
+
+/* The handler runs inside the single poll loop: every journal call of this
+ * request (mutex wait and SQLite busy wait) is bounded by the connection's
+ * deadline, so a slow disk cannot stall the other connections or the
+ * deadline sweep. The thread's deadline is cleared before returning. */
+void faucet_http_route(faucet_core_t *core, const faucet_http_req_t *req,
+                       uint64_t deadline_ms, int *status, char *body,
+                       size_t cap) {
+    faucet_journal_thread_deadline(deadline_ms);
+    route_inner(core, req, deadline_ms, status, body, cap);
+    faucet_journal_thread_deadline(FJ_NO_DEADLINE);
 }
 
 /* ── the server ─────────────────────────────────────────────────────── */
