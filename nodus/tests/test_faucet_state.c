@@ -58,10 +58,30 @@
  * HOW IT CAN LIE: block contents and the tip are scripted; the node's real
  *   mempool, CheckTx and chain are not here. A built envelope is checked by
  *   decoding it, not by executing it on a chain. F13 reaches the ceiling by
- *   reopening the journal with a 1-byte ceiling (the logic, not a real full
- *   disk).
+ *   filling the journal with 3 MB of live pages (a pad table written through
+ *   a second connection) and reopening it with a 2 MiB ceiling — a ceiling
+ *   below the WAL margin is refused at open (BUGS N-03) — the logic, not a
+ *   real full disk.
  */
+#include <sqlite3.h>
+
 #include "test_faucet_stub.c"
+
+/* Setup only: run `sql` on the journal file through a second connection. */
+static void pad_journal(const char *path, const char *sql) {
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) {
+        printf("FATAL: pad open\n");
+        exit(2);
+    }
+    sqlite3_busy_timeout(db, 5000);
+    char *em = NULL;
+    if (sqlite3_exec(db, sql, NULL, NULL, &em) != SQLITE_OK) {
+        printf("FATAL: pad sql: %s\n", em ? em : "?");
+        exit(2);
+    }
+    sqlite3_close(db);
+}
 
 static int step(env_t *e) { return faucet_worker_step(&e->core); }
 
@@ -463,7 +483,9 @@ int main(void) {
     step(&e);                                        /* scans 1001..1064 (64-block bound) */
     step(&e);                                        /* scans 1065..1090: expired */
     CHECK(state_is(&e, "expired"), "F13 (setup) attempt 1 expired");
-    e.cfg.storage_ceiling = 1;                       /* the journal is now at its ceiling */
+    /* the journal is now at its ceiling: 3 MB of live pages, 2 MiB ceiling */
+    pad_journal(e.jpath, "CREATE TABLE pad(x BLOB); INSERT INTO pad VALUES(zeroblob(3000000))");
+    e.cfg.storage_ceiling = 2ULL << 20;
     env_reopen(&e);
     attempt_of(&e, &cl, &at2);
     int att_n = at2.n;

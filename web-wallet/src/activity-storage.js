@@ -326,7 +326,17 @@ function quarantinedRow(row, addresses) {
   if (!(addresses.nodus === undefined ? /^[0-9a-f]{128}$/.test(row.address) : row.address === addresses.nodus)) return null;
   const inputs = row.inputs;
   if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 15 || new Set(inputs).size !== inputs.length || !inputs.every(input => typeof input === 'string' && /^[0-9a-f]{128}$/.test(input))) return null;
-  return { address: row.address, inputs: [...inputs], raw: row };
+  // The tracking fields that validate on their own are kept with it (W-24), so
+  // the app can release the lock once it is certain the coins are free
+  // (src/adapters/nodus.js quarantineReleasable): a well-formed intent id and
+  // an expiry height, judged by the same validators a readable row uses
+  // (validHash; validNodusPending with the expiry as its own fromHeight).
+  // `tokenRow`: the record names a token (its coins are not all in the native
+  // coin list, so "inputs no longer listed" proves nothing for it).
+  const kept = { address: row.address, inputs: [...inputs], tokenRow: row.tokenId !== undefined, raw: row };
+  if (validHash(NODUS_ASSET.chain, row.hash)) kept.hash = row.hash;
+  if (validNodusPending({ expiryHeight: row.expiryHeight, fromHeight: row.expiryHeight, inputs })) kept.expiryHeight = row.expiryHeight;
+  return kept;
 }
 function readActivityRow(row, addresses) {
     // A NODUS row: its address is derived after unlock (src/app.js
