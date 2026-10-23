@@ -11833,8 +11833,8 @@ channel-crypto path it was; the one change on such a connection is that
 source lists: `web-wallet/scripts/build-nodus-send-wasm.sh`,
 `web-wallet/scripts/check-nodus-client-wasm.sh`, `web-wallet/connect/tests/CMakeLists.txt`):
 none of the layer is compiled, `conn->sc` is always NULL, and the `SC_*` hooks in
-`nodus_tcp.c` reduce to the old behaviour (`nodus_tcp.c:128-145`). The new struct
-fields exist in every build.
+`nodus_tcp.c` reduce to the old behaviour (`nodus_tcp.c:127-144`). The new struct
+fields exist in every build (a pending node's `sc_off` is set to 0 and not read).
 
 **Governing decisions** (LOCAL-only files, `docs/plans/decisions/`):
 `2026-10-23-kurultay-43-summary.md` — the khan approved ("Onaylıyorum (Önerilen)")
