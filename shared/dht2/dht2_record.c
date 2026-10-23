@@ -228,7 +228,16 @@ int dht2_id_group_feed(const uint8_t chain[DHT2_CHAIN_LEN],
 /* ══ data map ══════════════════════════════════════════════════════════ */
 
 /* The one emission path: WRITE, COUNT and COMPARE all run through it. */
-static int data_emit(const dht2_data_t *d, dht2_cbor_wr_t *w)
+/* ValidityType ⇔ Validity disagreement (§4.1 puts it among the class
+ * rules): dht2_data_decode does not refuse it, it marks the struct with
+ * this expiry value — beyond DHT2_VALIDITY_MAX_SECONDS, so no real
+ * `Validity` can produce it — and dht2_record_check_class returns
+ * bad-class. The raw `Validity` bytes are used ONLY for the decoder's
+ * re-encode identity check (data_emit's `raw` argument). */
+#define VALIDITY_MISMATCH UINT64_MAX
+
+static int data_emit(const dht2_data_t *d, dht2_cbor_wr_t *w, bool use_raw,
+                     const uint8_t *raw, size_t raw_len)
 {
     uint8_t  vtext[DHT2_VALIDITY_LEN];
     uint64_t nkeys = DATA_KEYS_MIN;
@@ -236,7 +245,7 @@ static int data_emit(const dht2_data_t *d, dht2_cbor_wr_t *w)
     if (d->sequence == 0 || d->validity_type > DHT2_VT_NONE) {
         return DHT2_E_BAD_ENCODING;
     }
-    if (d->validity_type == DHT2_VT_EOL &&
+    if (d->validity_type == DHT2_VT_EOL && !use_raw &&
         dht2_validity_format(d->expiry, vtext) != 0) {
         return DHT2_E_BAD_ENCODING;
     }
@@ -273,7 +282,9 @@ static int data_emit(const dht2_data_t *d, dht2_cbor_wr_t *w)
     dht2_cbor_wr_key(w, K_SEQUENCE);
     dht2_cbor_wr_uint(w, d->sequence);
     dht2_cbor_wr_key(w, K_VALIDITY);
-    if (d->validity_type == DHT2_VT_EOL) {
+    if (use_raw) {
+        dht2_cbor_wr_bytes(w, raw, raw_len);
+    } else if (d->validity_type == DHT2_VT_EOL) {
         dht2_cbor_wr_bytes(w, vtext, DHT2_VALIDITY_LEN);
     } else {
         dht2_cbor_wr_bytes(w, NULL, 0);             /* §3.1: type 1 ⇒ empty */
@@ -301,7 +312,10 @@ int dht2_data_encode(const dht2_data_t *d, uint8_t *out, size_t cap,
     } else {
         dht2_cbor_wr_init(&w, out, cap);
     }
-    rc = data_emit(d, &w);
+    if (d->expiry == VALIDITY_MISMATCH) {
+        return DHT2_E_BAD_ENCODING;     /* decode-only marker, never encoded */
+    }
+    rc = data_emit(d, &w, false, NULL, 0);
     if (rc != DHT2_OK) {
         return rc;
     }
@@ -323,7 +337,7 @@ int dht2_data_decode(const uint8_t *in, size_t len, dht2_data_t *d)
     size_t         validity_len = 0;
     bool seen_ttl = false, seen_id = false, seen_value = false;
     bool seen_chain = false, seen_class = false, seen_seq = false;
-    bool seen_validity = false, seen_vt = false;
+    bool seen_validity = false, seen_vt = false, mismatch = false;
 
     if (d == NULL || (in == NULL && len != 0)) {
         return DHT2_E_ARG;
@@ -424,18 +438,25 @@ int dht2_data_decode(const uint8_t *in, size_t len, dht2_data_t *d)
         return DHT2_E_BAD_ENCODING;
     }
     /* §3.1: ValidityType 0 ⇒ `Validity` present and 20 B; 1 ⇒ empty. */
-    if (d->validity_type == DHT2_VT_EOL) {
+    /* The ⇔ itself is a CLASS rule (§4.1 puts it after chain / address /
+     * holder): a disagreement is only marked here and refused as bad-class
+     * by dht2_record_check_class. A malformed text under type 0 stays a
+     * byte-form fault. */
+    if ((d->validity_type == DHT2_VT_EOL && validity_len == 0) ||
+        (d->validity_type == DHT2_VT_NONE && validity_len != 0)) {
+        d->expiry = VALIDITY_MISMATCH;
+        mismatch = true;
+    } else if (d->validity_type == DHT2_VT_EOL) {
         if (dht2_validity_parse(validity, validity_len, &d->expiry) != 0) {
             return DHT2_E_BAD_ENCODING;
         }
-    } else if (validity_len != 0) {
-        return DHT2_E_BAD_ENCODING;
     }
 
     /* §3.1 "re-encode check": the canonical form of what was parsed must
      * be the input, byte for byte. */
     dht2_cbor_wr_init_compare(&w, in, len);
-    if (data_emit(d, &w) != DHT2_OK || !dht2_cbor_wr_ok(&w)) {
+    if (data_emit(d, &w, mismatch, validity, validity_len) != DHT2_OK ||
+        !dht2_cbor_wr_ok(&w)) {
         return DHT2_E_BAD_ENCODING;
     }
     return DHT2_OK;
@@ -569,6 +590,9 @@ int dht2_record_check_class(const dht2_record_t *rec)
     d = &rec->d;
     if (d->cls < DHT2_CLASS_OWNER || d->cls > DHT2_CLASS_INBOX_CTL) {
         return DHT2_E_BAD_CLASS;                         /* row 5 */
+    }
+    if (d->expiry == VALIDITY_MISMATCH) {
+        return DHT2_E_BAD_CLASS;            /* §4.1: ValidityType ⇔ Validity */
     }
     /* Row 5 matrix. A tombstone: `_del` true, `_data` and `_prev`
      * absent. Otherwise: `_data` required, `_prev` exactly for class 2. */

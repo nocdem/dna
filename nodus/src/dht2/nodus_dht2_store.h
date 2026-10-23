@@ -13,18 +13,38 @@
  * pull-sync delivery, read-repair. `put` runs §4.1 in its order and answers
  * with the row-7 code of the FIRST failing check:
  *
- *   no snapshot / no sets                          15  (call level)
+ *   no snapshot, witness in block sync (cu false),
+ *   no sets for the snapshot's `e`                 15  (call level; the
+ *                       same gate refuses get / list / sweep / scan)
+ *   snapshot of another chain than the store's     16  (G8, recorded at
+ *                       create; open refuses a store of another chain)
  *   size, envelope, strict data, `_chain`, address  1 2 3 4
  *   holder check  eligible(placement key)            5
- *   class rules (incl. the inbox-control signer)     6
+ *   class rules (incl. ValidityType <=> Validity and
+ *   the inbox-control signer)                        6
  *   writer's name status (a fault)                  16
  *   expiry lower / upper bound (class max by name)  7 8
  *   signature                                        9
- *   inbox control: DENIED 12, HANDLED [18, through]
- *   Select (§4.2): equal -> acknowledged, loser -> winner's hash, cost 0
- *   stored-state change, then ONE transaction: inbox pool 11,
- *   per-identity quota 10, node pool 13, store, re-index, apply a control
- *   record to the entries it drops
+ *   inbox control: DENIED 12 (while listed), HANDLED [18, through] — the
+ *   larger of the live control record's cutoff and the memo of cutoffs
+ *   that already dropped this writer's entries (§3.3 "a dropped entry
+ *   cannot come back", whatever the current control record says)
+ *   Select (§4.2): equal -> acknowledged, loser -> winner's hash, cost 0;
+ *   a held row whose expiry has passed counts as ABSENT (kad-dht
+ *   existingForSelect, boxo expired = invalid) and is replaced
+ *   stored-state change, then ONE transaction: a winning control record
+ *   first drops the entries it marks (its freed bytes are credited), then
+ *   inbox pool 11, per-identity quota 10, node pool 13, store, re-index.
+ *   A tombstone is charged to the pool of the record it replaces.
+ *
+ * DEFERRED (not here, on purpose): the |S(H)| ≥ 2 write precondition (the
+ * serving layer, package 6); the per-put SUM cost and the per-inbox
+ * tombstone row bound (measure first); a refusal that leaves an older
+ * version behind (package 7's cursor rule). RESIDUAL, stated: the HANDLED
+ * memo is written only when a WINNING control record drops an entry; a
+ * control record that loses Select changes nothing, so two stores that see
+ * the same control versions in different orders can differ when the later
+ * winner no longer lists the writer.
  *
  * Nothing here reads a clock: chain time is the injected snapshot's `t`.
  * Nothing here is unordered: every query that decides what is stored or
@@ -126,11 +146,14 @@ typedef struct {
 
 typedef struct nodus_dht2_store nodus_dht2_store_t;
 
-/** Open (creating when absent) the store at `path`. The first creation
- *  draws and persists the 64-bit generation g (row 12) and sets the
- *  insertion counter to 0 (the first index handed out is 1). NULL on any
- *  failure. */
-nodus_dht2_store_t *nodus_dht2_store_open(const char *path);
+/** Open (creating when absent) the store at `path` for `chain`. The first
+ *  creation records the chain id, draws and persists the 64-bit generation
+ *  g (row 12) and sets the insertion counter to 0 (the first index handed
+ *  out is 1). NULL on any failure — including a store of another chain,
+ *  incomplete meta, records without a counter, or a counter below the
+ *  highest insertion index (never reset, never opened). */
+nodus_dht2_store_t *nodus_dht2_store_open(const char *path,
+                                          const uint8_t chain[DHT2_CHAIN_LEN]);
 void                nodus_dht2_store_close(nodus_dht2_store_t *s);
 
 /** The store generation g (equality compared only). */
@@ -222,11 +245,13 @@ typedef struct {
  * `*topmost` = the highest index scanned, or the store's top when none.
  * Expired-but-unswept records are listed (§4.5 v: a holder keeps answering
  * pulls for them until they are deleted).
- * @return 0, 16; DHT2_E_ARG for max 0 or > 250.
+ * A `from` above INT64_MAX (never an index) is an empty page with the
+ * current top.
+ * @return 0, 15, 16; DHT2_E_ARG for max 0 or > 250.
  */
-int nodus_dht2_store_scan(nodus_dht2_store_t *s, uint64_t from,
-                          nodus_dht2_scan_entry_t *out, size_t max,
-                          size_t *count, uint64_t *topmost);
+int nodus_dht2_store_scan(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
+                          uint64_t from, nodus_dht2_scan_entry_t *out,
+                          size_t max, size_t *count, uint64_t *topmost);
 
 /* ── hand-over obligation (§4.5 v) — data only ───────────────────────── */
 

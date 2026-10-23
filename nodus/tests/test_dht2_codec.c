@@ -374,7 +374,11 @@ static void test_strict_decode(void)
           "a buffer one byte short is refused, not truncated");
 
     for (v = V_LONG_INT; v < V_COUNT; v++) {
-        int want = (v == V_SEQ_MAX) ? DHT2_OK : DHT2_E_BAD_ENCODING;
+        /* ValidityType ⇔ Validity is a CLASS rule (§4.1): the decoder lets
+         * the disagreement through (still re-encode checked) and
+         * dht2_record_check_class refuses it as bad-class, below. */
+        int want = (v == V_SEQ_MAX || v == V_VT1_TEXT || v == V_VT0_EMPTY)
+                       ? DHT2_OK : DHT2_E_BAD_ENCODING;
 
         kat1(&a, v);
         CHECK(a.err == 0, "assembler variant");
@@ -384,6 +388,20 @@ static void test_strict_decode(void)
         } else {
             g_pass++;
         }
+    }
+    for (v = V_VT1_TEXT; v <= V_VT0_EMPTY; v++) {
+        dht2_record_t *rr = (dht2_record_t *)calloc(1, sizeof(*rr));
+
+        kat1(&a, v);
+        if (rr != NULL && dht2_data_decode(a.b, a.n, &rr->d) == DHT2_OK) {
+            CHECK(dht2_record_check_class(rr) == DHT2_E_BAD_CLASS,
+                  "ValidityType <=> Validity mismatch is bad-class (6)");
+            CHECK(dht2_data_encode(&rr->d, out, sizeof(out), &n)
+                  == DHT2_E_BAD_ENCODING, "the marker is never encoded");
+        } else {
+            CHECK(0, "mismatch variant decodes");
+        }
+        free(rr);
     }
     /* Sequence 2^64−1 decodes and re-encodes (row 6 upper edge). */
     kat1(&a, V_SEQ_MAX);

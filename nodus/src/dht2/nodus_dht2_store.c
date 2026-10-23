@@ -21,20 +21,31 @@
 
 #define CODE_FAULT DHT2_E_HOLDER_FAULT
 
+/* u64 <-> SQLite's signed int64. Every value that is ORDERED or compared in
+ * SQL (insertion index, times) is kept ≤ INT64_MAX and refused beyond it
+ * (fail closed). Sequence / HANDLED cutoffs may use the whole u64 range; they
+ * are stored as the int64 bit pattern and only ever compared in C. Expiry
+ * values come from the 20-byte Validity text (≤ 9999-12-31T23:59:59Z =
+ * 253,402,300,799), far below INT64_MAX; the snapshot time is bounded by
+ * gate(). */
+#define TIME_SLACK_MAX (DHT2_SEC_7D + DHT2_SEC_SLACK_3H)
+
 struct nodus_dht2_store {
     sqlite3 *db;
     uint64_t gen;
+    uint8_t  chain[DHT2_CHAIN_LEN];     /* recorded at create (G8) */
 };
 
 /* One row per ADDRESS (the primary key). `idx` is the insertion index,
  * unique, re-assigned on every stored change (§4.5 i). `named` is the pool
- * the record is charged to (the writer's name status when it was stored);
- * `noexp` is its own flag (ValidityType 1), never encoded in `expiry`.
- * Sequence / expiry are stored as the int64 of the u64 (bit-preserving);
- * decisions on them are made in C on the u64, never in SQL. */
+ * the record is charged to; `noexp` is its own flag (ValidityType 1), never
+ * encoded in `expiry`. dht2_cut remembers, per (inbox, writer), the highest
+ * HANDLED cutoff that dropped an entry, until the latest expiry among the
+ * entries it dropped (§3.3: "a dropped entry cannot come back"). dht2_meta
+ * `v` has no declared type: integers (top, gen) and the chain id blob. */
 static const char SCHEMA_SQL[] =
     "CREATE TABLE IF NOT EXISTS dht2_meta("
-    "  k TEXT PRIMARY KEY, v INTEGER NOT NULL);"
+    "  k TEXT PRIMARY KEY, v NOT NULL);"
     "CREATE TABLE IF NOT EXISTS dht2_rec("
     "  address   BLOB PRIMARY KEY,"
     "  placement BLOB NOT NULL,"
@@ -52,7 +63,13 @@ static const char SCHEMA_SQL[] =
     "  idx       INTEGER NOT NULL UNIQUE);"
     "CREATE INDEX IF NOT EXISTS dht2_rec_owner ON dht2_rec(owner, size);"
     "CREATE INDEX IF NOT EXISTS dht2_rec_pool  ON dht2_rec(named, size);"
-    "CREATE INDEX IF NOT EXISTS dht2_rec_place ON dht2_rec(placement, cls, owner);";
+    "CREATE INDEX IF NOT EXISTS dht2_rec_place ON dht2_rec(placement, cls, owner);"
+    "CREATE TABLE IF NOT EXISTS dht2_cut("
+    "  placement  BLOB NOT NULL,"
+    "  writer     BLOB NOT NULL,"
+    "  through    INTEGER NOT NULL,"
+    "  keep_until INTEGER NOT NULL,"
+    "  PRIMARY KEY(placement, writer));";
 
 /* ══ small SQLite helpers: every error is a fault (-1) ═════════════════ */
 
@@ -79,6 +96,42 @@ static int exec_sql(nodus_dht2_store_t *s, const char *sql)
     return 0;
 }
 
+/* Binders return 0 / -1; a failed bind leaves NULL bound, so the callers
+ * OR the results together and pass them to bound(), which finalizes the
+ * statement on a failure. */
+static int b_blob(sqlite3_stmt *st, int i, const void *p, size_t n)
+{
+    return sqlite3_bind_blob(st, i, p, (int)n, SQLITE_STATIC) == SQLITE_OK
+               ? 0 : -1;
+}
+
+static int b_i64(sqlite3_stmt *st, int i, int64_t v)
+{
+    return sqlite3_bind_int64(st, i, v) == SQLITE_OK ? 0 : -1;
+}
+
+static int b_text(sqlite3_stmt *st, int i, const char *t)
+{
+    return sqlite3_bind_text(st, i, t, -1, SQLITE_STATIC) == SQLITE_OK
+               ? 0 : -1;
+}
+
+static int b_64(sqlite3_stmt *st, int i, const uint8_t *p)
+{
+    return b_blob(st, i, p, DHT2_HASH_LEN);
+}
+
+/* true when every bind succeeded; otherwise logs, finalizes, false. */
+static bool bound(sqlite3_stmt *st, int bad)
+{
+    if (bad != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "bind failed");
+        sqlite3_finalize(st);
+        return false;
+    }
+    return true;
+}
+
 /* Step a statement that must end in SQLITE_DONE, then finalize it. */
 static int step_done(nodus_dht2_store_t *s, sqlite3_stmt *st)
 {
@@ -92,13 +145,8 @@ static int step_done(nodus_dht2_store_t *s, sqlite3_stmt *st)
     return 0;
 }
 
-static void bind_blob64(sqlite3_stmt *st, int i, const uint8_t *p)
-{
-    sqlite3_bind_blob(st, i, p, (int)DHT2_HASH_LEN, SQLITE_STATIC);
-}
-
 /* A single-value u64 query. `blob` (64 B) binds to ?1 when non-NULL, `ival`
- * to ?2 when `use_ival`. SUM / COUNT always return exactly one row. */
+ * to ?2 when `use_ival`. SUM / COUNT / MAX always return exactly one row. */
 static int query_u64(nodus_dht2_store_t *s, const char *sql,
                      const uint8_t *blob, bool use_ival, int64_t ival,
                      uint64_t *out)
@@ -109,11 +157,9 @@ static int query_u64(nodus_dht2_store_t *s, const char *sql,
     if (st == NULL) {
         return -1;
     }
-    if (blob != NULL) {
-        bind_blob64(st, 1, blob);
-    }
-    if (use_ival) {
-        sqlite3_bind_int64(st, 2, ival);
+    if (!bound(st, (blob != NULL ? b_64(st, 1, blob) : 0) |
+                       (use_ival ? b_i64(st, 2, ival) : 0))) {
+        return -1;
     }
     rc = sqlite3_step(st);
     if (rc != SQLITE_ROW) {
@@ -126,8 +172,9 @@ static int query_u64(nodus_dht2_store_t *s, const char *sql,
     return 0;
 }
 
+/* meta: an integer (blob == NULL) or a 32-byte blob (blob != NULL). */
 static int meta_get(nodus_dht2_store_t *s, const char *key, uint64_t *out,
-                    bool *found)
+                    uint8_t *blob, bool *found)
 {
     sqlite3_stmt *st = prep(s, "SELECT v FROM dht2_meta WHERE k = ?1");
     int           rc;
@@ -135,10 +182,27 @@ static int meta_get(nodus_dht2_store_t *s, const char *key, uint64_t *out,
     if (st == NULL) {
         return -1;
     }
-    sqlite3_bind_text(st, 1, key, -1, SQLITE_STATIC);
+    if (!bound(st, b_text(st, 1, key))) {
+        return -1;
+    }
     rc = sqlite3_step(st);
     if (rc == SQLITE_ROW) {
-        *out = (uint64_t)sqlite3_column_int64(st, 0);
+        if (blob != NULL) {
+            if (sqlite3_column_type(st, 0) != SQLITE_BLOB ||
+                sqlite3_column_bytes(st, 0) != (int)DHT2_CHAIN_LEN) {
+                QGP_LOG_ERROR(LOG_TAG, "meta %s malformed", key);
+                sqlite3_finalize(st);
+                return -1;
+            }
+            memcpy(blob, sqlite3_column_blob(st, 0), DHT2_CHAIN_LEN);
+        } else {
+            if (sqlite3_column_type(st, 0) != SQLITE_INTEGER) {
+                QGP_LOG_ERROR(LOG_TAG, "meta %s malformed", key);
+                sqlite3_finalize(st);
+                return -1;
+            }
+            *out = (uint64_t)sqlite3_column_int64(st, 0);
+        }
         *found = true;
     } else if (rc == SQLITE_DONE) {
         *found = false;
@@ -159,8 +223,23 @@ static int meta_set(nodus_dht2_store_t *s, const char *key, uint64_t v)
     if (st == NULL) {
         return -1;
     }
-    sqlite3_bind_text(st, 1, key, -1, SQLITE_STATIC);
-    sqlite3_bind_int64(st, 2, (int64_t)v);
+    if (!bound(st, b_text(st, 1, key) | b_i64(st, 2, (int64_t)v))) {
+        return -1;
+    }
+    return step_done(s, st);
+}
+
+static int meta_set_chain(nodus_dht2_store_t *s, const uint8_t *chain)
+{
+    sqlite3_stmt *st = prep(s, "INSERT OR REPLACE INTO dht2_meta(k, v) "
+                               "VALUES('chain', ?1)");
+
+    if (st == NULL) {
+        return -1;
+    }
+    if (!bound(st, b_blob(st, 1, chain, DHT2_CHAIN_LEN))) {
+        return -1;
+    }
     return step_done(s, st);
 }
 
@@ -177,14 +256,16 @@ void nodus_dht2_limits_default(nodus_dht2_limits_t *out)
     out->pool_named    = NODUS_DHT2_NODE_POOL_DEFAULT;
 }
 
-nodus_dht2_store_t *nodus_dht2_store_open(const char *path)
+nodus_dht2_store_t *nodus_dht2_store_open(const char *path,
+                                          const uint8_t chain[DHT2_CHAIN_LEN])
 {
     nodus_dht2_store_t *s;
-    uint64_t            v = 0;
-    bool                found = false;
+    uint64_t            top = 0, gen = 0, n = 0;
+    uint8_t             have_chain[DHT2_CHAIN_LEN];
+    bool                ft = false, fg = false, fc = false;
     bool                in_txn = false;
 
-    if (path == NULL) {
+    if (path == NULL || chain == NULL) {
         return NULL;
     }
     s = (nodus_dht2_store_t *)calloc(1, sizeof(*s));
@@ -203,37 +284,65 @@ nodus_dht2_store_t *nodus_dht2_store_open(const char *path)
         goto fail;
     }
     in_txn = true;
-    /* Insertion counter: starts at 0, the first index handed out is 1
-     * (row 12: top = 0 <=> empty). */
-    if (meta_get(s, "top", &v, &found) != 0) {
+    if (meta_get(s, "top", &top, NULL, &ft) != 0 ||
+        meta_get(s, "gen", &gen, NULL, &fg) != 0 ||
+        meta_get(s, "chain", &n, have_chain, &fc) != 0) {
         goto fail;
     }
-    if (!found && meta_set(s, "top", 0) != 0) {
-        goto fail;
-    }
-    /* Generation g: drawn when the store is created, persisted with it
-     * (row 12). A node-local token compared for equality only — it never
-     * enters a consensus path, so the platform CSPRNG is the right source. */
-    if (meta_get(s, "gen", &v, &found) != 0) {
-        goto fail;
-    }
-    if (!found) {
-        uint8_t rnd[8];
-        size_t  i;
+    if (!ft && !fg && !fc) {
+        /* The create path — and only when no record exists: a store with
+         * rows but no counter is damaged, never silently restarted. */
+        if (query_u64(s, "SELECT COUNT(*) FROM dht2_rec", NULL, false, 0,
+                      &n) != 0 || n != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "records without counter: refusing to open");
+            goto fail;
+        }
+        /* Insertion counter: starts at 0, the first index handed out is 1
+         * (row 12: top = 0 <=> empty). */
+        if (meta_set(s, "top", 0) != 0 || meta_set_chain(s, chain) != 0) {
+            goto fail;
+        }
+        /* Generation g: drawn when the store is created, persisted with it
+         * (row 12). A node-local token compared for equality only — it
+         * never enters a consensus path, so the platform CSPRNG is the right
+         * source. */
+        {
+            uint8_t rnd[8];
+            size_t  i;
 
-        if (qgp_platform_random(rnd, sizeof(rnd)) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "generation: no randomness");
+            if (qgp_platform_random(rnd, sizeof(rnd)) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "generation: no randomness");
+                goto fail;
+            }
+            gen = 0;
+            for (i = 0; i < sizeof(rnd); i++) {
+                gen = (gen << 8) | rnd[i];
+            }
+        }
+        if (meta_set(s, "gen", gen) != 0) {
             goto fail;
         }
-        v = 0;
-        for (i = 0; i < sizeof(rnd); i++) {
-            v = (v << 8) | rnd[i];
-        }
-        if (meta_set(s, "gen", v) != 0) {
+        memcpy(s->chain, chain, DHT2_CHAIN_LEN);
+    } else {
+        if (!ft || !fg || !fc) {
+            QGP_LOG_ERROR(LOG_TAG, "store meta incomplete: refusing to open");
             goto fail;
         }
+        if (memcmp(have_chain, chain, DHT2_CHAIN_LEN) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "store belongs to another chain");
+            goto fail;
+        }
+        if (top > (uint64_t)INT64_MAX ||
+            query_u64(s, "SELECT COALESCE(MAX(idx), 0) FROM dht2_rec", NULL,
+                      false, 0, &n) != 0 || n > top) {
+            /* A counter behind the highest index would hand out an index
+             * that is already used: never reset it, never open. */
+            QGP_LOG_ERROR(LOG_TAG, "counter behind the records: refusing");
+            goto fail;
+        }
+        memcpy(s->chain, have_chain, DHT2_CHAIN_LEN);
     }
-    s->gen = v;
+    s->gen = gen;
     if (exec_sql(s, "COMMIT") != 0) {
         goto fail;
     }
@@ -278,7 +387,28 @@ int nodus_dht2_store_top(nodus_dht2_store_t *s, uint64_t *top)
     if (s == NULL || top == NULL) {
         return CODE_FAULT;
     }
-    if (meta_get(s, "top", top, &found) != 0 || !found) {
+    if (meta_get(s, "top", top, NULL, &found) != 0 || !found ||
+        *top > (uint64_t)INT64_MAX) {
+        return CODE_FAULT;
+    }
+    return 0;
+}
+
+/* The call-level gate of put / get / list / sweep / scan (§2, §4.1): no
+ * snapshot, or the witness is still in block sync (consensus_up false) ->
+ * 15; a snapshot time no bound below INT64_MAX can hold -> 15 (so every time
+ * threshold below fits SQLite's int64); a snapshot of another chain than the
+ * one this store was created for -> 16 (G8). */
+static int gate(const nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx)
+{
+    if (ctx == NULL || ctx->snap == NULL || !ctx->snap->consensus_up) {
+        return DHT2_E_NOT_CAUGHT_UP;
+    }
+    if (ctx->snap->tip_time > (uint64_t)INT64_MAX - TIME_SLACK_MAX) {
+        return DHT2_E_NOT_CAUGHT_UP;
+    }
+    if (memcmp(ctx->snap->chain_id, s->chain, DHT2_CHAIN_LEN) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "snapshot chain differs from the store's");
         return CODE_FAULT;
     }
     return 0;
@@ -293,6 +423,8 @@ typedef struct {
     uint8_t  hash[DHT2_HASH_LEN];
     int      named;
     int      handover;
+    bool     noexp;
+    uint64_t expiry;
 } held_t;
 
 static void held_free(held_t *h)
@@ -307,12 +439,14 @@ static int held_load(nodus_dht2_store_t *s, const uint8_t *address, held_t *h)
     int           rc;
 
     memset(h, 0, sizeof(*h));
-    st = prep(s, "SELECT canon, hash, named, handover FROM dht2_rec "
-                 "WHERE address = ?1");
+    st = prep(s, "SELECT canon, hash, named, handover, noexp, expiry "
+                 "FROM dht2_rec WHERE address = ?1");
     if (st == NULL) {
         return -1;
     }
-    bind_blob64(st, 1, address);
+    if (!bound(st, b_64(st, 1, address))) {
+        return -1;
+    }
     rc = sqlite3_step(st);
     if (rc == SQLITE_DONE) {
         sqlite3_finalize(st);
@@ -339,6 +473,8 @@ static int held_load(nodus_dht2_store_t *s, const uint8_t *address, held_t *h)
     memcpy(h->hash, sqlite3_column_blob(st, 1), DHT2_HASH_LEN);
     h->named = sqlite3_column_int(st, 2) != 0;
     h->handover = sqlite3_column_int(st, 3) != 0;
+    h->noexp = sqlite3_column_int(st, 4) != 0;
+    h->expiry = (uint64_t)sqlite3_column_int64(st, 5);
     h->found = true;
     sqlite3_finalize(st);
     return 0;
@@ -363,7 +499,9 @@ static int ctl_load_live(nodus_dht2_store_t *s, const uint8_t *inbox,
     if (st == NULL) {
         return -1;
     }
-    bind_blob64(st, 1, inbox);
+    if (!bound(st, b_64(st, 1, inbox))) {
+        return -1;
+    }
     rc = sqlite3_step(st);
     if (rc == SQLITE_DONE) {
         sqlite3_finalize(st);
@@ -399,6 +537,86 @@ static int ctl_load_live(nodus_dht2_store_t *s, const uint8_t *inbox,
     return 0;
 }
 
+/* ══ HANDLED memo: the highest cutoff that dropped an entry ════════════ */
+
+/* The live memo (keep_until > t) of (inbox, writer). 0 / -1. */
+static int cut_get(nodus_dht2_store_t *s, const uint8_t *inbox,
+                   const uint8_t *writer, uint64_t t, bool *found,
+                   uint64_t *through)
+{
+    sqlite3_stmt *st = prep(s, "SELECT through, keep_until FROM dht2_cut "
+                               "WHERE placement = ?1 AND writer = ?2");
+    int           rc;
+
+    *found = false;
+    if (st == NULL) {
+        return -1;
+    }
+    if (!bound(st, b_64(st, 1, inbox) | b_64(st, 2, writer))) {
+        return -1;
+    }
+    rc = sqlite3_step(st);
+    if (rc == SQLITE_ROW) {
+        if ((uint64_t)sqlite3_column_int64(st, 1) > t) {
+            *through = (uint64_t)sqlite3_column_int64(st, 0);
+            *found = true;
+        }
+    } else if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "cut read: %s", sqlite3_errmsg(s->db));
+        sqlite3_finalize(st);
+        return -1;
+    }
+    sqlite3_finalize(st);
+    return 0;
+}
+
+/* Record a drop: the cutoff only grows, the memo lives until the latest
+ * expiry among the entries it dropped. Written whatever the old row says
+ * (an expired memo is overwritten by the max of nothing). */
+static int cut_note(nodus_dht2_store_t *s, const uint8_t *inbox,
+                    const uint8_t *writer, uint64_t through,
+                    uint64_t keep_until)
+{
+    sqlite3_stmt *st = prep(s, "SELECT through, keep_until FROM dht2_cut "
+                               "WHERE placement = ?1 AND writer = ?2");
+    int           rc;
+
+    if (st == NULL) {
+        return -1;
+    }
+    if (!bound(st, b_64(st, 1, inbox) | b_64(st, 2, writer))) {
+        return -1;
+    }
+    rc = sqlite3_step(st);
+    if (rc == SQLITE_ROW) {
+        uint64_t old_t = (uint64_t)sqlite3_column_int64(st, 0);
+        uint64_t old_k = (uint64_t)sqlite3_column_int64(st, 1);
+
+        if (old_t > through) {
+            through = old_t;
+        }
+        if (old_k > keep_until) {
+            keep_until = old_k;
+        }
+    } else if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "cut read: %s", sqlite3_errmsg(s->db));
+        sqlite3_finalize(st);
+        return -1;
+    }
+    sqlite3_finalize(st);
+    st = prep(s, "INSERT OR REPLACE INTO dht2_cut(placement, writer, through, "
+                 "keep_until) VALUES(?1, ?2, ?3, ?4)");
+    if (st == NULL) {
+        return -1;
+    }
+    if (!bound(st, b_64(st, 1, inbox) | b_64(st, 2, writer) |
+                       b_i64(st, 3, (int64_t)through) |
+                       b_i64(st, 4, (int64_t)keep_until))) {
+        return -1;
+    }
+    return step_done(s, st);
+}
+
 /* ══ put ═══════════════════════════════════════════════════════════════ */
 
 typedef struct {
@@ -419,50 +637,67 @@ static int code_of(int rc)
     return (rc >= DHT2_E_TOO_LARGE && rc <= DHT2_E_HANDLED) ? rc : CODE_FAULT;
 }
 
-/* §3.3 / row 15: the selected control record against an inbox entry's
- * writer. 0 = no objection; 12 = DENIED; 18 = HANDLED at or below the
- * cutoff (res->through); 16 = fault. */
+/* §3.3 / row 15: an inbox entry's writer against (a) the selected, LIVE
+ * control record and (b) the memo of cutoffs that already dropped its
+ * entries — a dropped entry cannot come back whatever the current control
+ * record says. 0 = no objection; 12 = DENIED (while listed); 18 = at or
+ * below the HANDLED cutoff, the larger of (a) and (b) in res->through;
+ * 16 = fault. */
 static int ctl_check_entry(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
                            put_work_t *w, nodus_dht2_put_t *res)
 {
     uint8_t         *canon = NULL;
     size_t           len = 0;
     uint8_t          chash[DHT2_HASH_LEN];
-    bool             present = false, found = false;
+    bool             present = false, found = false, memo = false;
+    bool             have_cut = false;
+    uint64_t         cut = 0, mthrough = 0;
     dht2_ctl_entry_t ent;
-    int              code = 0;
 
+    memset(&ent, 0, sizeof(ent));
     if (ctl_load_live(s, w->placement, ctx->snap->tip_time, &canon, &len,
                       chash, &present) != 0) {
         return CODE_FAULT;
     }
-    if (!present) {
-        return 0;
-    }
-    if (dht2_record_parse(canon, len, ctx->snap->chain_id, NULL,
-                          &w->ctl_rec) != DHT2_OK ||
-        dht2_ctl_lookup(w->ctl_rec.d.data, w->ctl_rec.d.data_len,
-                        w->rec.fp, &found, &ent) != DHT2_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "stored control record unreadable");
+    if (present) {
+        if (dht2_record_parse(canon, len, ctx->snap->chain_id, NULL,
+                              &w->ctl_rec) != DHT2_OK ||
+            dht2_ctl_lookup(w->ctl_rec.d.data, w->ctl_rec.d.data_len,
+                            w->rec.fp, &found, &ent) != DHT2_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "stored control record unreadable");
+            free(canon);
+            return CODE_FAULT;
+        }
         free(canon);
-        return CODE_FAULT;
-    }
-    if (found) {
-        if (ent.mark == DHT2_CTL_DENIED) {
-            code = DHT2_E_DENIED;
-        } else if (w->rec.d.sequence <= ent.through) {
-            res->through = ent.through;
-            code = DHT2_E_HANDLED;
+        if (found && ent.mark == DHT2_CTL_DENIED) {
+            return DHT2_E_DENIED;
+        }
+        if (found) {
+            have_cut = true;
+            cut = ent.through;
         }
     }
-    free(canon);
-    return code;
+    if (cut_get(s, w->placement, w->rec.fp, ctx->snap->tip_time, &memo,
+                &mthrough) != 0) {
+        return CODE_FAULT;
+    }
+    if (memo && (!have_cut || mthrough > cut)) {
+        have_cut = true;
+        cut = mthrough;
+    }
+    if (have_cut && w->rec.d.sequence <= cut) {
+        res->through = cut;
+        return DHT2_E_HANDLED;
+    }
+    return 0;
 }
 
-/* Apply a stored control record to the entries at its inbox: HANDLED drops
- * the writer's entry with Sequence ≤ through, DENIED drops it whatever its
- * Sequence (§3.3, row 15). One entry per (inbox, writer) exists (the
- * address binds both), so a second row is corruption. 0 / -1. */
+/* Apply a winning control record to the entries at its inbox: HANDLED drops
+ * the writer's entry with Sequence ≤ through (and remembers the cutoff),
+ * DENIED drops it whatever its Sequence (§3.3, row 15). One entry per
+ * (inbox, writer) exists (the address binds both), so a second row is
+ * corruption. Runs inside the put transaction BEFORE the quota checks, so
+ * the bytes it frees are credited (row 16). 0 / -1. */
 static int ctl_apply(nodus_dht2_store_t *s, const put_work_t *w)
 {
     const dht2_data_t *d = &w->rec.d;
@@ -477,19 +712,21 @@ static int ctl_apply(nodus_dht2_store_t *s, const put_work_t *w)
         sqlite3_stmt    *st;
         uint8_t          addr[DHT2_HASH_LEN];
         bool             drop = false, row = false;
+        uint64_t         keep = 0;
         int              rc;
 
         if (dht2_ctl_at(d->data, d->data_len, i, &ent) != DHT2_OK) {
             return -1;
         }
-        st = prep(s, "SELECT address, seq FROM dht2_rec "
+        st = prep(s, "SELECT address, seq, noexp, expiry FROM dht2_rec "
                      "WHERE placement = ?1 AND cls = 4 AND owner = ?2 "
                      "ORDER BY address");
         if (st == NULL) {
             return -1;
         }
-        bind_blob64(st, 1, w->placement);
-        bind_blob64(st, 2, ent.fp);
+        if (!bound(st, b_64(st, 1, w->placement) | b_64(st, 2, ent.fp))) {
+            return -1;
+        }
         rc = sqlite3_step(st);
         if (rc == SQLITE_ROW) {
             row = true;
@@ -500,6 +737,9 @@ static int ctl_apply(nodus_dht2_store_t *s, const put_work_t *w)
             memcpy(addr, sqlite3_column_blob(st, 0), DHT2_HASH_LEN);
             drop = ent.mark == DHT2_CTL_DENIED ||
                    (uint64_t)sqlite3_column_int64(st, 1) <= ent.through;
+            keep = sqlite3_column_int(st, 2) != 0
+                       ? (uint64_t)INT64_MAX
+                       : (uint64_t)sqlite3_column_int64(st, 3);
             rc = sqlite3_step(st);
         }
         sqlite3_finalize(st);
@@ -512,8 +752,12 @@ static int ctl_apply(nodus_dht2_store_t *s, const put_work_t *w)
             if (st == NULL) {
                 return -1;
             }
-            bind_blob64(st, 1, addr);
-            if (step_done(s, st) != 0) {
+            if (!bound(st, b_64(st, 1, addr)) || step_done(s, st) != 0) {
+                return -1;
+            }
+            /* DENIED is "refused while listed" (rev 5): not remembered. */
+            if (ent.mark == DHT2_CTL_HANDLED &&
+                cut_note(s, w->placement, ent.fp, ent.through, keep) != 0) {
                 return -1;
             }
         }
@@ -522,8 +766,9 @@ static int ctl_apply(nodus_dht2_store_t *s, const put_work_t *w)
 }
 
 /* Everything after the signature, inside one write transaction (row 16):
- * control check, Select, the stored-state change, quota / pool checks and
- * the commit-ready writes. Returns the row-7 code; *res set. */
+ * control check, Select, the stored-state change (including what a control
+ * record drops), quota / pool checks and the writes. Returns the row-7
+ * code; *res set. */
 static int admit_locked(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
                         put_work_t *w, nodus_dht2_put_t *res)
 {
@@ -545,35 +790,56 @@ static int admit_locked(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
         }
     }
 
-    /* Select (§4.2): Validate -> Select -> store, nothing else. */
+    /* Select (§4.2): Validate -> Select -> store, nothing else. A held row
+     * whose expiry has passed is an INVALID existing record and counts as
+     * absent (kad-dht value_store.go existingForSelect; boxo validation.go:73
+     * expired = invalid) — whatever its class — but it is still the row the
+     * incoming version replaces, so its bytes are freed by the replace. */
     if (held_load(s, w->rec.address, &hd) != 0) {
         return CODE_FAULT;
     }
     if (hd.found) {
-        int cmp;
+        bool held_expired = !hd.noexp && hd.expiry <= t;
 
-        if (dht2_record_parse(hd.canon, hd.len, ctx->snap->chain_id, NULL,
-                              &w->held_rec) != DHT2_OK) {
-            QGP_LOG_ERROR(LOG_TAG, "held record unreadable");
-            held_free(&hd);
-            return CODE_FAULT;
-        }
-        cmp = dht2_record_compare(&w->rec, &w->held_rec);
-        if (cmp <= 0) {
-            /* Equal: acknowledged again. Loser: the winner's hash. Both
-             * change nothing and cost 0 (row 16, row 17). */
-            res->outcome = cmp == 0 ? NODUS_DHT2_PUT_EQUAL
-                                    : NODUS_DHT2_PUT_LOST;
-            memcpy(res->hash, hd.hash, DHT2_HASH_LEN);
-            held_free(&hd);
-            return 0;
-        }
         old_size = (uint64_t)hd.len;
         handover = hd.handover;
+        if (!held_expired) {
+            int cmp;
+
+            if (dht2_record_parse(hd.canon, hd.len, ctx->snap->chain_id, NULL,
+                                  &w->held_rec) != DHT2_OK) {
+                QGP_LOG_ERROR(LOG_TAG, "held record unreadable");
+                held_free(&hd);
+                return CODE_FAULT;
+            }
+            cmp = dht2_record_compare(&w->rec, &w->held_rec);
+            if (cmp <= 0) {
+                /* Equal: acknowledged again. Loser: the winner's hash. Both
+                 * change nothing and cost 0 (row 16, row 17). */
+                res->outcome = cmp == 0 ? NODUS_DHT2_PUT_EQUAL
+                                        : NODUS_DHT2_PUT_LOST;
+                memcpy(res->hash, hd.hash, DHT2_HASH_LEN);
+                held_free(&hd);
+                return 0;
+            }
+        }
+        /* A deletion never moves pools: the tombstone is charged where the
+         * record it replaces was (row 16 "a tombstone replacing a larger
+         * record refunds" must not be refusable by a pool check). */
+        if (d->del) {
+            pool = hd.named;
+        }
+    }
+    held_free(&hd);
+
+    /* The incoming version wins. A control record first drops the entries
+     * it marks: the stored-state change it causes counts BEFORE the checks
+     * below (a rollback undoes it when a check refuses). */
+    if (d->cls == DHT2_CLASS_INBOX_CTL && !d->del && ctl_apply(s, w) != 0) {
+        return CODE_FAULT;
     }
 
-    /* The incoming version wins: compute the change and check the quotas.
-     * Order of the refusals is a reading (the text names no order): inbox
+    /* Order of the refusals is a reading (the text names no order): inbox
      * pool 11, identity quota 10, node pool 13. */
     if (d->cls == DHT2_CLASS_INBOX_ENTRY && !d->del) {
         uint64_t slots = 0;
@@ -587,23 +853,21 @@ static int admit_locked(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
                      "AND cls = 4 AND del = 0 AND named = ?2 "
                      "AND (noexp = 1 OR expiry > ?3) AND address <> ?4");
         if (st == NULL) {
-            held_free(&hd);
             return CODE_FAULT;
         }
-        bind_blob64(st, 1, w->placement);
-        sqlite3_bind_int(st, 2, pool);
-        sqlite3_bind_int64(st, 3, (int64_t)t);
-        bind_blob64(st, 4, w->rec.address);
+        if (!bound(st, b_64(st, 1, w->placement) |
+                           b_i64(st, 2, pool) | b_i64(st, 3, (int64_t)t) |
+                           b_64(st, 4, w->rec.address))) {
+            return CODE_FAULT;
+        }
         if (sqlite3_step(st) != SQLITE_ROW) {
             QGP_LOG_ERROR(LOG_TAG, "pool count: %s", sqlite3_errmsg(s->db));
             sqlite3_finalize(st);
-            held_free(&hd);
             return CODE_FAULT;
         }
         slots = (uint64_t)sqlite3_column_int64(st, 0);
         sqlite3_finalize(st);
         if (slots >= cap) {
-            held_free(&hd);
             return DHT2_E_POOL_FULL;
         }
     }
@@ -614,73 +878,94 @@ static int admit_locked(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
     if (query_u64(s, "SELECT COALESCE(SUM(size), 0) FROM dht2_rec "
                      "WHERE owner = ?1", w->rec.fp, false, 0, &used) != 0 ||
         used < old_size) {
-        held_free(&hd);
         return CODE_FAULT;
     }
     if (new_size > old_size && used - old_size + new_size > limit) {
-        held_free(&hd);
         return DHT2_E_QUOTA;
     }
 
-    /* Node pool of the writer's name status. A record that stays in its
-     * pool costs new - old there; one that moves pools costs new in the
-     * new pool (the old pool is refunded by the replace). */
-    limit = w->named ? ctx->limits.pool_named : ctx->limits.pool_unnamed;
+    /* Node pool. A record that stays in its pool costs new - old there; one
+     * that moves pools costs new in the new pool (the old pool is refunded
+     * by the replace). */
+    limit = pool == 1 ? ctx->limits.pool_named : ctx->limits.pool_unnamed;
     if (query_u64(s, "SELECT COALESCE(SUM(size), 0) FROM dht2_rec "
                      "WHERE named = ?2", NULL, true, pool, &used) != 0) {
-        held_free(&hd);
         return CODE_FAULT;
     }
-    if (hd.found && hd.named == pool) {
-        if (used < old_size) {
-            held_free(&hd);
+    {
+        /* old_size is in this pool only when the replaced row was charged
+         * to it: re-read its pool through the replace target. */
+        uint64_t in_pool_old = 0;
+        sqlite3_stmt *os = prep(s, "SELECT size FROM dht2_rec "
+                                   "WHERE address = ?1 AND named = ?2");
+        int           orc;
+
+        if (os == NULL) {
             return CODE_FAULT;
         }
-        if (new_size > old_size && used - old_size + new_size > limit) {
-            held_free(&hd);
+        if (!bound(os, b_64(os, 1, w->rec.address) | b_i64(os, 2, pool))) {
+            return CODE_FAULT;
+        }
+        orc = sqlite3_step(os);
+        if (orc == SQLITE_ROW) {
+            in_pool_old = (uint64_t)sqlite3_column_int64(os, 0);
+        } else if (orc != SQLITE_DONE) {
+            QGP_LOG_ERROR(LOG_TAG, "pool old: %s", sqlite3_errmsg(s->db));
+            sqlite3_finalize(os);
+            return CODE_FAULT;
+        }
+        sqlite3_finalize(os);
+        if (used < in_pool_old) {
+            return CODE_FAULT;
+        }
+        if (in_pool_old != 0) {
+            if (new_size > in_pool_old &&
+                used - in_pool_old + new_size > limit) {
+                return DHT2_E_NODE_FULL;
+            }
+        } else if (used + new_size > limit) {
             return DHT2_E_NODE_FULL;
         }
-    } else if (used + new_size > limit) {
-        held_free(&hd);
-        return DHT2_E_NODE_FULL;
     }
-    held_free(&hd);
 
     /* Store the canonical form, re-indexed at the counter's top; the old
-     * index entry goes with the replaced row (§4.5 i). */
-    if (nodus_dht2_store_top(s, &top) != 0 || top == UINT64_MAX) {
+     * row (same address) is deleted EXPLICITLY and the new one inserted
+     * plainly, so an index clash is a fault, never a silent delete of
+     * another address's row. */
+    if (nodus_dht2_store_top(s, &top) != 0 || top >= (uint64_t)INT64_MAX) {
         return CODE_FAULT;
     }
     top++;
-    st = prep(s, "INSERT OR REPLACE INTO dht2_rec(address, placement, owner, "
+    st = prep(s, "DELETE FROM dht2_rec WHERE address = ?1");
+    if (st == NULL) {
+        return CODE_FAULT;
+    }
+    if (!bound(st, b_64(st, 1, w->rec.address)) || step_done(s, st) != 0) {
+        return CODE_FAULT;
+    }
+    st = prep(s, "INSERT INTO dht2_rec(address, placement, owner, "
                  "cls, seq, noexp, expiry, del, named, handover, size, hash, "
                  "canon, idx) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, "
                  "?11, ?12, ?13, ?14)");
     if (st == NULL) {
         return CODE_FAULT;
     }
-    bind_blob64(st, 1, w->rec.address);
-    bind_blob64(st, 2, w->placement);
-    bind_blob64(st, 3, w->rec.fp);
-    sqlite3_bind_int64(st, 4, (int64_t)d->cls);
-    sqlite3_bind_int64(st, 5, (int64_t)d->sequence);
-    sqlite3_bind_int(st, 6, d->validity_type == DHT2_VT_NONE ? 1 : 0);
-    sqlite3_bind_int64(st, 7, d->validity_type == DHT2_VT_NONE
-                                  ? 0 : (int64_t)d->expiry);
-    sqlite3_bind_int(st, 8, d->del ? 1 : 0);
-    sqlite3_bind_int(st, 9, pool);
-    sqlite3_bind_int(st, 10, handover);
-    sqlite3_bind_int64(st, 11, (int64_t)new_size);
-    bind_blob64(st, 12, w->hash);
-    sqlite3_bind_blob(st, 13, w->canon, (int)w->canon_len, SQLITE_STATIC);
-    sqlite3_bind_int64(st, 14, (int64_t)top);
-    if (step_done(s, st) != 0 || meta_set(s, "top", top) != 0) {
+    if (!bound(st, b_64(st, 1, w->rec.address) | b_64(st, 2, w->placement) |
+                       b_64(st, 3, w->rec.fp) |
+                       b_i64(st, 4, (int64_t)d->cls) |
+                       b_i64(st, 5, (int64_t)d->sequence) |
+                       b_i64(st, 6, d->validity_type == DHT2_VT_NONE ? 1 : 0) |
+                       b_i64(st, 7, d->validity_type == DHT2_VT_NONE
+                                        ? 0 : (int64_t)d->expiry) |
+                       b_i64(st, 8, d->del ? 1 : 0) |
+                       b_i64(st, 9, pool) | b_i64(st, 10, handover) |
+                       b_i64(st, 11, (int64_t)new_size) |
+                       b_64(st, 12, w->hash) |
+                       b_blob(st, 13, w->canon, w->canon_len) |
+                       b_i64(st, 14, (int64_t)top))) {
         return CODE_FAULT;
     }
-    /* A control record drops, at once, the entries it marks (a tombstone
-     * carries no list: the owner's earlier marks no longer apply). */
-    if (d->cls == DHT2_CLASS_INBOX_CTL && !d->del &&
-        ctl_apply(s, w) != 0) {
+    if (step_done(s, st) != 0 || meta_set(s, "top", top) != 0) {
         return CODE_FAULT;
     }
     res->outcome = NODUS_DHT2_PUT_STORED;
@@ -701,8 +986,13 @@ int nodus_dht2_store_put(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
         return DHT2_E_ARG;
     }
     memset(res, 0, sizeof(*res));
-    /* No snapshot / no sets for its `e`: refuse, never guess (§4.1, D2). */
-    if (ctx->snap == NULL || !ctx->have_sets) {
+    /* No snapshot / block sync / no sets for its `e`: refuse, never guess
+     * (§2, §4.1, D2). */
+    rc = gate(s, ctx);
+    if (rc != 0) {
+        return rc;
+    }
+    if (!ctx->have_sets) {
         return DHT2_E_NOT_CAUGHT_UP;
     }
     w = (put_work_t *)calloc(1, sizeof(*w));
@@ -732,7 +1022,7 @@ int nodus_dht2_store_put(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
         code = DHT2_E_NOT_HOLDER;
         goto out;
     }
-    /* class rules (6). */
+    /* class rules (6), incl. ValidityType <=> Validity. */
     rc = dht2_record_check_class(&w->rec);
     if (rc != DHT2_OK) {
         code = code_of(rc);
@@ -811,15 +1101,18 @@ int nodus_dht2_store_get(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
         out_len == NULL || hash == NULL) {
         return DHT2_E_ARG;
     }
-    if (ctx->snap == NULL) {
-        return DHT2_E_NOT_CAUGHT_UP;
+    rc = gate(s, ctx);
+    if (rc != 0) {
+        return rc;
     }
     st = prep(s, "SELECT canon, hash, noexp, expiry FROM dht2_rec "
                  "WHERE address = ?1");
     if (st == NULL) {
         return CODE_FAULT;
     }
-    bind_blob64(st, 1, address);
+    if (!bound(st, b_64(st, 1, address))) {
+        return CODE_FAULT;
+    }
     rc = sqlite3_step(st);
     if (rc == SQLITE_ROW) {
         size_t n = (size_t)sqlite3_column_bytes(st, 0);
@@ -864,8 +1157,9 @@ int nodus_dht2_store_list(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
     if (s == NULL || ctx == NULL || inbox == NULL || out == NULL) {
         return DHT2_E_ARG;
     }
-    if (ctx->snap == NULL) {
-        return DHT2_E_NOT_CAUGHT_UP;
+    rc = gate(s, ctx);
+    if (rc != 0) {
+        return rc;
     }
     memset(out, 0, sizeof(*out));
     memcpy(out->n, ctx->self_fp, DHT2_FP_LEN);
@@ -887,10 +1181,13 @@ int nodus_dht2_store_list(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
         free(hashes);
         return CODE_FAULT;
     }
-    bind_blob64(st, 1, inbox);
-    sqlite3_bind_int64(st, 2, (int64_t)ctx->snap->tip_time);
-    sqlite3_bind_blob(st, 3, cursor != NULL ? cursor : zero_fp,
-                      (int)DHT2_FP_LEN, SQLITE_STATIC);
+    if (!bound(st, b_64(st, 1, inbox) |
+                       b_i64(st, 2, (int64_t)ctx->snap->tip_time) |
+                       b_blob(st, 3, cursor != NULL ? cursor : zero_fp,
+                              DHT2_FP_LEN))) {
+        free(hashes);
+        return CODE_FAULT;
+    }
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
         uint64_t sz = (uint64_t)sqlite3_column_int64(st, 2);
 
@@ -965,13 +1262,15 @@ int nodus_dht2_store_sweep(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
                            uint64_t *deleted)
 {
     sqlite3_stmt *st;
-    uint64_t      t;
+    uint64_t      t, n;
+    int           rc;
 
     if (s == NULL || ctx == NULL) {
         return DHT2_E_ARG;
     }
-    if (ctx->snap == NULL) {
-        return DHT2_E_NOT_CAUGHT_UP;
+    rc = gate(s, ctx);
+    if (rc != 0) {
+        return rc;
     }
     if (deleted != NULL) {
         *deleted = 0;
@@ -980,44 +1279,68 @@ int nodus_dht2_store_sweep(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
     if (t < DHT2_SEC_SLACK_3H) {
         return 0;                       /* nothing can be 3 h past expiry */
     }
-    /* expiry + 3 h ≤ t  <=>  expiry ≤ t − 3 h (t ≥ 3 h here). */
-    st = prep(s, "DELETE FROM dht2_rec WHERE noexp = 0 AND expiry <= ?1");
-    if (st == NULL) {
+    if (exec_sql(s, "BEGIN IMMEDIATE") != 0) {
         return CODE_FAULT;
     }
-    sqlite3_bind_int64(st, 1, (int64_t)(t - DHT2_SEC_SLACK_3H));
-    if (step_done(s, st) != 0) {
+    /* expiry + 3 h ≤ t  <=>  expiry ≤ t − 3 h (t ≥ 3 h here). */
+    st = prep(s, "DELETE FROM dht2_rec WHERE noexp = 0 AND expiry <= ?1");
+    if (st == NULL ||
+        !bound(st, b_i64(st, 1, (int64_t)(t - DHT2_SEC_SLACK_3H))) ||
+        step_done(s, st) != 0) {
+        (void)exec_sql(s, "ROLLBACK");
+        return CODE_FAULT;
+    }
+    n = (uint64_t)sqlite3_changes(s->db);
+    /* The HANDLED memos of entries that are gone for good go with them. */
+    st = prep(s, "DELETE FROM dht2_cut WHERE keep_until <= ?1");
+    if (st == NULL ||
+        !bound(st, b_i64(st, 1, (int64_t)(t - DHT2_SEC_SLACK_3H))) ||
+        step_done(s, st) != 0) {
+        (void)exec_sql(s, "ROLLBACK");
+        return CODE_FAULT;
+    }
+    if (exec_sql(s, "COMMIT") != 0) {
+        (void)exec_sql(s, "ROLLBACK");
         return CODE_FAULT;
     }
     if (deleted != NULL) {
-        *deleted = (uint64_t)sqlite3_changes(s->db);
+        *deleted = n;
     }
     return 0;
 }
 
 /* ══ insertion index scan ══════════════════════════════════════════════ */
 
-int nodus_dht2_store_scan(nodus_dht2_store_t *s, uint64_t from,
-                          nodus_dht2_scan_entry_t *out, size_t max,
-                          size_t *count, uint64_t *topmost)
+int nodus_dht2_store_scan(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
+                          uint64_t from, nodus_dht2_scan_entry_t *out,
+                          size_t max, size_t *count, uint64_t *topmost)
 {
     sqlite3_stmt *st;
     size_t        n = 0;
     uint64_t      last = 0;
     int           rc, code = 0;
 
-    if (s == NULL || out == NULL || count == NULL || topmost == NULL ||
-        max == 0 || max > DHT2_PULL_PAGE_MAX) {
+    if (s == NULL || ctx == NULL || out == NULL || count == NULL ||
+        topmost == NULL || max == 0 || max > DHT2_PULL_PAGE_MAX) {
         return DHT2_E_ARG;
     }
+    rc = gate(s, ctx);
+    if (rc != 0) {
+        return rc;
+    }
     *count = 0;
+    /* An index above INT64_MAX is never handed out: nothing is there. */
+    if (from > (uint64_t)INT64_MAX) {
+        return nodus_dht2_store_top(s, topmost);
+    }
     st = prep(s, "SELECT idx, address, hash, placement FROM dht2_rec "
                  "WHERE idx >= ?1 ORDER BY idx ASC LIMIT ?2");
     if (st == NULL) {
         return CODE_FAULT;
     }
-    sqlite3_bind_int64(st, 1, (int64_t)from);
-    sqlite3_bind_int(st, 2, (int)max);
+    if (!bound(st, b_i64(st, 1, (int64_t)from) | b_i64(st, 2, (int64_t)max))) {
+        return CODE_FAULT;
+    }
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
         if (sqlite3_column_bytes(st, 1) != (int)DHT2_HASH_LEN ||
             sqlite3_column_bytes(st, 2) != (int)DHT2_HASH_LEN ||
@@ -1065,8 +1388,9 @@ int nodus_dht2_store_handover_set(nodus_dht2_store_t *s,
     if (st == NULL) {
         return CODE_FAULT;
     }
-    bind_blob64(st, 1, address);
-    sqlite3_bind_int(st, 2, pending ? 1 : 0);
+    if (!bound(st, b_64(st, 1, address) | b_i64(st, 2, pending ? 1 : 0))) {
+        return CODE_FAULT;
+    }
     if (step_done(s, st) != 0) {
         return CODE_FAULT;
     }

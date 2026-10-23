@@ -44,6 +44,20 @@
  *     an empty interval returns the top; equal / losing writes do not move
  *     the counter; top and the generation g persist across reopen; the
  *     hand-over flag persists and survives a replacement;
+ *   · review round: every call is 15 while the witness is in block sync
+ *     (consensus_up false) or the tip time cannot fit int64, and 16 for a
+ *     snapshot of another chain (open refuses such a store too); a FAILED
+ *     BIND (blob length limit) is 16, never "not held"; an index above
+ *     INT64_MAX is never handed out, a counter behind the records is a
+ *     fault (never a silent row delete) and refuses open; ValidityType <=>
+ *     Validity is code 6, after the chain check (3); a dropped entry stays
+ *     dropped ([18, through]) after the control record is replaced by one
+ *     that no longer lists the writer, and after it expired; DENIED is not
+ *     remembered; v1->v2 and v2->v1 end with the same entries; a control
+ *     record that frees space is accepted at a full pool (a stranger one
+ *     is not); an expired held row is replaced by a fresh lower Sequence;
+ *     a tombstone is never refused by the pool of a writer who gained a
+ *     name;
  *   · a SQLite fault is a fault code (16) on every call — a read-only
  *     connection refuses a put, a dropped table faults get / list / scan /
  *     sweep / put — never "not held" or an empty page.
@@ -306,7 +320,7 @@ static nodus_dht2_store_t *open_store(char *path_out)
     if (path_out != NULL) {
         snprintf(path_out, 128, "%s", path);
     }
-    return nodus_dht2_store_open(path);
+    return nodus_dht2_store_open(path, g_chain);
 }
 
 static int64_t sql_i64(nodus_dht2_store_t *st, const char *sql)
@@ -731,7 +745,8 @@ static void sort_ctl(dht2_ctl_entry_t *e, size_t n)
 }
 
 static int mk_ctl(env_t *e, const tkey_t *signer, const uint8_t ctl_id[64],
-                  uint64_t seq, dht2_ctl_entry_t *ents, size_t n)
+                  uint64_t seq, uint64_t expiry, dht2_ctl_entry_t *ents,
+                  size_t n)
 {
     static uint8_t data[DHT2_CTL_ENTRY_LEN * 8];
     size_t         len = 0;
@@ -741,7 +756,7 @@ static int mk_ctl(env_t *e, const tkey_t *signer, const uint8_t ctl_id[64],
     if (dht2_ctl_encode(ents, n, data, sizeof(data), &len) != DHT2_OK) {
         return -1;
     }
-    dbase(&d, DHT2_CLASS_INBOX_CTL, ctl_id, seq, T0 + 3600);
+    dbase(&d, DHT2_CLASS_INBOX_CTL, ctl_id, seq, expiry);
     d.has_data = true; d.data = data; d.data_len = len;
     return mk(e, &d, signer);
 }
@@ -885,21 +900,21 @@ static void test_inbox(const tkey_t *R, const tkey_t *X)
     memcpy(ents[1].fp, n[0].fp, DHT2_FP_LEN);
     ents[2] = (dht2_ctl_entry_t){ .mark = DHT2_CTL_HANDLED, .through = 0 };
     memcpy(ents[2].fp, u[2].fp, DHT2_FP_LEN);
-    CHECK(mk_ctl(&e, &u[3], ctl_id, 1, ents, 3) == 0 &&
+    CHECK(mk_ctl(&e, &u[3], ctl_id, 1, T0 + 3600, ents, 3) == 0 &&
           P(w, st, &e, &res) == DHT2_E_BAD_CLASS,
           "control signed by a stranger (id of R's inbox) -> 6");
     {
         uint8_t other_ctl[DHT2_ID_LEN];
 
         CHECK(dht2_id_inbox_ctl(g_chain, u[3].fp, other_ctl) == 0 &&
-              mk_ctl(&e, R, other_ctl, 1, ents, 3) == 0 &&
+              mk_ctl(&e, R, other_ctl, 1, T0 + 3600, ents, 3) == 0 &&
               P(w, st, &e, &res) == DHT2_E_BAD_CLASS,
               "control signed by R for another recipient's id -> 6");
     }
     CHECK(total == 100 &&
           sql_i64(st, "SELECT COUNT(*) FROM dht2_rec WHERE cls = 4") == 100,
           "the refused controls dropped nothing");
-    CHECK(mk_ctl(&ctl_env, R, ctl_id, 1, ents, 3) == 0 &&
+    CHECK(mk_ctl(&ctl_env, R, ctl_id, 1, T0 + 3600, ents, 3) == 0 &&
           P(w, st, &ctl_env, &res) == 0 &&
           res.outcome == NODUS_DHT2_PUT_STORED, "control from R admitted");
 
@@ -1077,7 +1092,7 @@ static void test_index(const tkey_t *A)
     addr_of(aa, ida, A);
     addr_of(ab, idb, A);
     CHECK(top_of(st) == 0, "a fresh store: top = 0 (empty)");
-    CHECK(nodus_dht2_store_scan(st, 1, se, 4, &cnt, &top) == 0 && cnt == 0 &&
+    CHECK(nodus_dht2_store_scan(st, &w->ctx,1, se, 4, &cnt, &top) == 0 && cnt == 0 &&
           top == 0, "empty scan returns the top (0)");
     CHECK(mk_owner(&a1, A, ida, 1, T0 + 3600, 4) == 0 &&
           mk_owner(&b1, A, idb, 1, T0 + 3600, 4) == 0 &&
@@ -1088,7 +1103,7 @@ static void test_index(const tkey_t *A)
     CHECK(top_of(st) == 3, "re-indexed at the top");
     CHECK(P0(w, st, &a2) == 0 && P0(w, st, &a1) == 0 && top_of(st) == 3,
           "equal / losing writes leave the counter alone");
-    CHECK(nodus_dht2_store_scan(st, 1, se, 4, &cnt, &top) == 0 && cnt == 2 &&
+    CHECK(nodus_dht2_store_scan(st, &w->ctx,1, se, 4, &cnt, &top) == 0 && cnt == 2 &&
           top == 3, "scan from 1: two entries, topmost 3");
     CHECK(se[0].index == 2 && memcmp(se[0].address, ab, 64) == 0 &&
           se[1].index == 3 && memcmp(se[1].address, aa, 64) == 0,
@@ -1096,14 +1111,14 @@ static void test_index(const tkey_t *A)
     CHECK(hash_is(&b1, se[0].hash) && hash_is(&a2, se[1].hash) &&
           memcmp(se[0].placement, ab, 64) == 0,
           "entries carry the envelope hash and the placement key");
-    CHECK(nodus_dht2_store_scan(st, 3, se, 4, &cnt, &top) == 0 && cnt == 1 &&
+    CHECK(nodus_dht2_store_scan(st, &w->ctx,3, se, 4, &cnt, &top) == 0 && cnt == 1 &&
           se[0].index == 3, "scan from 3");
-    CHECK(nodus_dht2_store_scan(st, 1, se, 1, &cnt, &top) == 0 && cnt == 1 &&
+    CHECK(nodus_dht2_store_scan(st, &w->ctx,1, se, 1, &cnt, &top) == 0 && cnt == 1 &&
           top == 2, "page of 1: topmost is the highest scanned");
-    CHECK(nodus_dht2_store_scan(st, 4, se, 4, &cnt, &top) == 0 && cnt == 0 &&
+    CHECK(nodus_dht2_store_scan(st, &w->ctx,4, se, 4, &cnt, &top) == 0 && cnt == 0 &&
           top == 3, "an empty interval still returns the top");
-    CHECK(nodus_dht2_store_scan(st, 1, se, 251, &cnt, &top) == DHT2_E_ARG &&
-          nodus_dht2_store_scan(st, 1, se, 0, &cnt, &top) == DHT2_E_ARG,
+    CHECK(nodus_dht2_store_scan(st, &w->ctx,1, se, 251, &cnt, &top) == DHT2_E_ARG &&
+          nodus_dht2_store_scan(st, &w->ctx,1, se, 0, &cnt, &top) == DHT2_E_ARG,
           "more than 250 per page is refused");
 
     /* Hand-over flag: data only; survives a replacement. */
@@ -1128,18 +1143,20 @@ static void test_index(const tkey_t *A)
     /* Persistence: g and top across a reopen; the scan too. */
     g1 = nodus_dht2_store_generation(st);
     nodus_dht2_store_close(st);
-    st = nodus_dht2_store_open(path);
+    CHECK(nodus_dht2_store_open(path, g_other_chain) == NULL,
+          "a store of another chain is not opened");
+    st = nodus_dht2_store_open(path, g_chain);
     CHECK(st != NULL, "reopen");
     if (st != NULL) {
         CHECK(nodus_dht2_store_generation(st) == g1, "g persists");
         CHECK(top_of(st) == 4, "top persists");
-        CHECK(nodus_dht2_store_scan(st, 1, se, 4, &cnt, &top) == 0 &&
+        CHECK(nodus_dht2_store_scan(st, &w->ctx,1, se, 4, &cnt, &top) == 0 &&
               cnt == 2 && top == 4, "scan after reopen");
         CHECK(nodus_dht2_store_handover_get(st, aa, &pend, &found) == 0 &&
               pend, "obligation persists");
     }
     nodus_dht2_store_close(st);
-    CHECK(nodus_dht2_store_open("/nonexistent-dir-dht2/x.db") == NULL,
+    CHECK(nodus_dht2_store_open("/nonexistent-dir-dht2/x.db", g_chain) == NULL,
           "an unopenable path is NULL, not a store");
     free(w);
 }
@@ -1184,13 +1201,35 @@ static void test_faults(const tkey_t *A)
     CHECK(P0(w, st, &r2) == 0, "and the store recovers: nothing was half-done");
     CHECK(top_of(st) == 2, "counter consistent after the refused write");
 
+    /* A FAILED BIND is a fault, not "not held" and not success: with the
+     * blob length limit below 64 bytes every key bind returns TOOBIG
+     * (before the fix the statement ran with NULL bound). */
+    {
+        bool found = true, pend2 = false;
+        int  old_lim = sqlite3_limit(nodus_dht2_store_db(st),
+                                     SQLITE_LIMIT_LENGTH, 32);
+
+        CHECK(get_rc(w, st, addr) == DHT2_E_HOLDER_FAULT,
+              "get with a failing bind -> 16, not 'not held'");
+        CHECK(nodus_dht2_store_handover_set(st, addr, true, &found)
+              == DHT2_E_HOLDER_FAULT, "handover update, failing bind -> 16");
+        CHECK(nodus_dht2_store_handover_get(st, addr, &pend2, &found)
+              == DHT2_E_HOLDER_FAULT, "handover read, failing bind -> 16");
+        CHECK(P(w, st, &r, &res) == DHT2_E_HOLDER_FAULT,
+              "put with failing binds -> 16");
+        (void)sqlite3_limit(nodus_dht2_store_db(st), SQLITE_LIMIT_LENGTH,
+                            old_lim);
+        CHECK(get_rc(w, st, addr) == NODUS_DHT2_GET_HELD,
+              "limit restored: the record was never touched");
+    }
+
     /* The table is gone: every call that touches it is a fault. */
     CHECK(sqlite3_exec(nodus_dht2_store_db(st), "DROP TABLE dht2_rec", NULL,
                        NULL, NULL) == SQLITE_OK, "table dropped");
     CHECK(get_rc(w, st, addr) == DHT2_E_HOLDER_FAULT, "get -> 16, not absent");
     CHECK(nodus_dht2_store_list(st, &w->ctx, inbox, NULL, la)
           == DHT2_E_HOLDER_FAULT, "list -> 16, not an empty page");
-    CHECK(nodus_dht2_store_scan(st, 1, se, 2, &cnt, &top)
+    CHECK(nodus_dht2_store_scan(st, &w->ctx,1, se, 2, &cnt, &top)
           == DHT2_E_HOLDER_FAULT, "scan -> 16");
     CHECK(nodus_dht2_store_sweep(st, &w->ctx, &del) == DHT2_E_HOLDER_FAULT,
           "sweep -> 16");
@@ -1203,6 +1242,402 @@ done:
 }
 
 /* ══ main ══════════════════════════════════════════════════════════════ */
+
+/* ══ 8. the review round: gate, precedence, memo, credit, select ══════ */
+
+static int mk_entry(env_t *e, const tkey_t *wr,
+                    const uint8_t inbox[DHT2_ID_LEN], uint64_t seq)
+{
+    static const uint8_t dat[4] = { 9, 8, 7, 6 };
+    dht2_data_t          d;
+
+    dbase(&d, DHT2_CLASS_INBOX_ENTRY, inbox, seq, T0 + 3600);
+    d.has_data = true; d.data = dat; d.data_len = sizeof(dat);
+    return mk(e, &d, wr);
+}
+
+/* A control record with at most one entry (fp NULL = an empty list). */
+static int mk_ctl1(env_t *e, const tkey_t *R, const uint8_t ctl_id[64],
+                   uint64_t seq, uint64_t expiry, const uint8_t *fp,
+                   uint8_t mark, uint64_t through)
+{
+    dht2_ctl_entry_t en;
+
+    memset(&en, 0, sizeof(en));
+    if (fp != NULL) {
+        memcpy(en.fp, fp, DHT2_FP_LEN);
+    }
+    en.mark = mark;
+    en.through = through;
+    return mk_ctl(e, R, ctl_id, seq, expiry, &en, fp != NULL ? 1 : 0);
+}
+
+/* items 2, 6, 9: the call-level gate, the u64 / int64 edges, the chain. */
+static void test_gate(const tkey_t *A)
+{
+    world_t            *w = (world_t *)calloc(1, sizeof(*w));
+    char                path[128];
+    nodus_dht2_store_t *st = open_store(path);
+    static env_t        r, r2, buf;
+    nodus_dht2_put_t    res;
+    dht2_list_answer_t *la = (dht2_list_answer_t *)malloc(sizeof(*la));
+    nodus_dht2_scan_entry_t se[2];
+    uint8_t             id[DHT2_ID_LEN], id2[DHT2_ID_LEN], addr[DHT2_HASH_LEN];
+    uint8_t             h[DHT2_HASH_LEN];
+    uint64_t            del = 0, top = 0;
+    size_t              cnt = 0, n = 0;
+    nodus_witness_dht_snap_t good;
+
+    if (w == NULL || st == NULL || la == NULL) {
+        CHECK(0, "gate: setup");
+        goto done;
+    }
+    world_init(w, A, 3);
+    dfill(id, 0x71);
+    dfill(id2, 0x72);
+    addr_of(addr, id, A);
+    CHECK(mk_owner(&r, A, id, 1, T0 + 3600, 4) == 0 &&
+          mk_owner(&r2, A, id2, 1, T0 + 3600, 4) == 0 &&
+          P0(w, st, &r) == 0, "one record stored");
+    good = w->snap;
+
+    /* item 2: the witness is in block sync -> every call is 15. */
+    w->snap.consensus_up = false;
+    CHECK(P(w, st, &r2, &res) == DHT2_E_NOT_CAUGHT_UP, "put, cu false -> 15");
+    CHECK(nodus_dht2_store_get(st, &w->ctx, addr, buf.b, sizeof(buf.b), &n, h)
+          == DHT2_E_NOT_CAUGHT_UP, "get, cu false -> 15");
+    CHECK(nodus_dht2_store_list(st, &w->ctx, id, NULL, la)
+          == DHT2_E_NOT_CAUGHT_UP, "list, cu false -> 15");
+    CHECK(nodus_dht2_store_sweep(st, &w->ctx, &del) == DHT2_E_NOT_CAUGHT_UP,
+          "sweep, cu false -> 15");
+    CHECK(nodus_dht2_store_scan(st, &w->ctx, 1, se, 2, &cnt, &top)
+          == DHT2_E_NOT_CAUGHT_UP, "scan, cu false -> 15");
+    CHECK(top_of(st) == 1, "nothing stored while behind");
+    w->snap = good;
+    CHECK(P0(w, st, &r2) == 0, "caught up again: admitted");
+
+    /* item 6: a snapshot time no bound fits into SQLite's int64. */
+    w->snap.tip_time = (uint64_t)INT64_MAX;
+    CHECK(P(w, st, &r2, &res) == DHT2_E_NOT_CAUGHT_UP &&
+          nodus_dht2_store_sweep(st, &w->ctx, &del) == DHT2_E_NOT_CAUGHT_UP,
+          "tip time near INT64_MAX -> 15");
+    w->snap = good;
+
+    /* item 9: a snapshot of another chain -> 16 on every call. */
+    memcpy(w->snap.chain_id, g_other_chain, DHT2_CHAIN_LEN);
+    CHECK(P(w, st, &r2, &res) == DHT2_E_HOLDER_FAULT, "put, other chain -> 16");
+    CHECK(nodus_dht2_store_get(st, &w->ctx, addr, buf.b, sizeof(buf.b), &n, h)
+          == DHT2_E_HOLDER_FAULT, "get, other chain -> 16");
+    CHECK(nodus_dht2_store_list(st, &w->ctx, id, NULL, la)
+          == DHT2_E_HOLDER_FAULT, "list, other chain -> 16");
+    CHECK(nodus_dht2_store_sweep(st, &w->ctx, &del) == DHT2_E_HOLDER_FAULT,
+          "sweep, other chain -> 16");
+    CHECK(nodus_dht2_store_scan(st, &w->ctx, 1, se, 2, &cnt, &top)
+          == DHT2_E_HOLDER_FAULT, "scan, other chain -> 16");
+    w->snap = good;
+
+    /* item 6: an index above INT64_MAX is never handed out. */
+    CHECK(nodus_dht2_store_scan(st, &w->ctx, UINT64_MAX, se, 2, &cnt, &top)
+          == 0 && cnt == 0 && top == 2,
+          "scan from above INT64_MAX: empty page, current top");
+    CHECK(sqlite3_exec(nodus_dht2_store_db(st),
+                       "UPDATE dht2_meta SET v = 9223372036854775807 "
+                       "WHERE k = 'top'", NULL, NULL, NULL) == SQLITE_OK,
+          "counter at INT64_MAX");
+    {
+        static env_t r3;
+        uint8_t      id3[DHT2_ID_LEN];
+
+        dfill(id3, 0x73);
+        CHECK(mk_owner(&r3, A, id3, 1, T0 + 3600, 4) == 0 &&
+              P(w, st, &r3, &res) == DHT2_E_HOLDER_FAULT,
+              "no index above INT64_MAX: a fault");
+    }
+
+    /* item 7: a counter BEHIND the highest index makes the clash a fault
+     * and leaves every row where it was. */
+    CHECK(sqlite3_exec(nodus_dht2_store_db(st),
+                       "UPDATE dht2_meta SET v = 1 WHERE k = 'top'", NULL,
+                       NULL, NULL) == SQLITE_OK, "counter behind (1 < 2)");
+    {
+        static env_t r4;
+        uint8_t      id4[DHT2_ID_LEN];
+
+        dfill(id4, 0x74);
+        CHECK(mk_owner(&r4, A, id4, 1, T0 + 3600, 4) == 0 &&
+              P(w, st, &r4, &res) == DHT2_E_HOLDER_FAULT,
+              "index clash: a fault, not a silent delete");
+        CHECK(sql_i64(st, "SELECT COUNT(*) FROM dht2_rec") == 2,
+              "both rows survived");
+    }
+    nodus_dht2_store_close(st);
+    st = nodus_dht2_store_open(path, g_chain);
+    CHECK(st == NULL, "open refuses a counter below the highest index");
+
+    /* item 7: records without a counter / incomplete meta are not opened. */
+    {
+        nodus_dht2_store_t *s2 = open_store(path);
+        nodus_dht2_store_t *s3;
+
+        CHECK(s2 != NULL && P0(w, s2, &r) == 0, "second store, one record");
+        CHECK(s2 != NULL &&
+              sqlite3_exec(nodus_dht2_store_db(s2),
+                           "DELETE FROM dht2_meta WHERE k = 'top'", NULL,
+                           NULL, NULL) == SQLITE_OK, "counter row removed");
+        nodus_dht2_store_close(s2);
+        s3 = nodus_dht2_store_open(path, g_chain);
+        CHECK(s3 == NULL, "records but no counter: not opened, not reset");
+        nodus_dht2_store_close(s3);
+    }
+done:
+    nodus_dht2_store_close(st);
+    free(w);
+    free(la);
+}
+
+/* item 5: ValidityType <=> Validity is a class rule, after chain. */
+static void test_mismatch(const tkey_t *A)
+{
+    world_t            *w = (world_t *)calloc(1, sizeof(*w));
+    nodus_dht2_store_t *st = open_store(NULL);
+    static env_t        e;
+    nodus_dht2_put_t    res;
+    uint8_t             id[DHT2_ID_LEN];
+    dht2_data_t         d;
+
+    if (w == NULL || st == NULL) {
+        CHECK(0, "mismatch: setup");
+        free(w);
+        nodus_dht2_store_close(st);
+        return;
+    }
+    world_init(w, A, 3);
+    dfill(id, 0x75);
+    /* A no-expiry record (ValidityType 1, empty Validity), then its LAST
+     * byte — the data map's last key is ValidityType — flipped to 0: type 0
+     * with an empty Validity. The signature no longer verifies, which is
+     * exactly the point: the verdict must come before the signature. */
+    dbase(&d, DHT2_CLASS_OWNER, id, 1, 0);
+    d.validity_type = DHT2_VT_NONE;
+    d.has_data = true; d.data = (const uint8_t *)"x"; d.data_len = 1;
+    memcpy(d.chain, g_other_chain, DHT2_CHAIN_LEN);
+    CHECK(mk(&e, &d, A) == 0 && e.b[e.n - 1] == 0x01, "other-chain record");
+    e.b[e.n - 1] = 0x00;
+    CHECK(P(w, st, &e, &res) == DHT2_E_BAD_CHAIN,
+          "mismatch + wrong chain -> 3 (chain comes first)");
+    memcpy(d.chain, g_chain, DHT2_CHAIN_LEN);
+    CHECK(mk(&e, &d, A) == 0, "right-chain record");
+    e.b[e.n - 1] = 0x00;
+    CHECK(P(w, st, &e, &res) == DHT2_E_BAD_CLASS,
+          "mismatch on the right chain -> 6 (a class rule)");
+    CHECK(w->names.calls == 0, "refused before the name request");
+    nodus_dht2_store_close(st);
+    free(w);
+}
+
+/* item 3: a dropped entry cannot come back; item 4: a control record's
+ * own deletions are credited. */
+static void test_memo(const tkey_t *R, const tkey_t *X)
+{
+    world_t            *w = (world_t *)calloc(1, sizeof(*w));
+    world_t            *w2 = (world_t *)calloc(1, sizeof(*w2));
+    tkey_t             *k = (tkey_t *)calloc(3, sizeof(tkey_t));
+    nodus_dht2_store_t *s1 = open_store(NULL);
+    nodus_dht2_store_t *s2 = open_store(NULL);
+    nodus_dht2_store_t *sa = open_store(NULL);
+    nodus_dht2_store_t *sb = open_store(NULL);
+    static env_t        e, ctl, ga, gb;
+    nodus_dht2_put_t    res;
+    uint8_t             inbox[DHT2_ID_LEN], ctl_id[DHT2_ID_LEN];
+    uint8_t             a_ctl[DHT2_HASH_LEN];
+    int                 i, ok = 1;
+
+    if (w == NULL || w2 == NULL || k == NULL || s1 == NULL || s2 == NULL ||
+        sa == NULL || sb == NULL) {
+        CHECK(0, "memo: setup");
+        goto done;
+    }
+    for (i = 0; i < 3; i++) {
+        ok &= keygen(&k[i], (uint8_t)(0x90 + i), 0x01) == 0;
+    }
+    CHECK(ok, "writer keys");
+    if (!ok) {
+        goto done;
+    }
+    world_init(w, X, 3);
+    world_init(w2, X, 3);
+    CHECK(dht2_id_inbox(g_chain, R->fp, inbox) == 0 &&
+          dht2_id_inbox_ctl(g_chain, R->fp, ctl_id) == 0, "ids");
+    dht2_address(ctl_id, R->fp, a_ctl);
+
+    /* Case A: v1 marks W HANDLED through 5 and drops E; v2 no longer lists
+     * W. E must not come back. */
+    CHECK(put_entry(w, s1, &k[0], inbox, 1, &res) == 0, "E stored");
+    CHECK(mk_ctl1(&ctl, R, ctl_id, 1, T0 + 3600, k[0].fp, DHT2_CTL_HANDLED, 5)
+          == 0 && P0(w, s1, &ctl) == 0, "control v1 stored");
+    CHECK(sql_i64(s1, "SELECT COUNT(*) FROM dht2_rec WHERE cls = 4") == 0,
+          "E dropped by v1");
+    CHECK(mk_ctl1(&ctl, R, ctl_id, 2, T0 + 3600, NULL, 0, 0) == 0 &&
+          P(w, s1, &ctl, &res) == 0 && res.outcome == NODUS_DHT2_PUT_STORED,
+          "control v2 (W no longer listed) wins");
+    CHECK(put_entry(w, s1, &k[0], inbox, 1, &res) == DHT2_E_HANDLED &&
+          res.through == 5, "E again (repair / re-send) -> [18, 5]");
+    CHECK(put_entry(w, s1, &k[0], inbox, 5, &res) == DHT2_E_HANDLED &&
+          res.through == 5, "Sequence == cutoff -> [18, 5]");
+    CHECK(put_entry(w, s1, &k[0], inbox, 6, &res) == 0,
+          "Sequence above the cutoff is admitted");
+
+    /* Case B: v1 EXPIRES before E would have. */
+    CHECK(put_entry(w2, s2, &k[1], inbox, 1, &res) == 0, "E2 stored");
+    CHECK(mk_ctl1(&ctl, R, ctl_id, 1, T0 + 100, k[1].fp, DHT2_CTL_HANDLED, 5)
+          == 0 && P0(w2, s2, &ctl) == 0, "short-lived control stored");
+    w2->snap.tip_time = T0 + 200;
+    CHECK(put_entry(w2, s2, &k[1], inbox, 1, &res) == DHT2_E_HANDLED &&
+          res.through == 5,
+          "control expired, E2 still live: still [18, 5] (the memo)");
+
+    /* DENIED is not remembered: an un-denied writer may write again. */
+    CHECK(mk_ctl1(&ctl, R, ctl_id, 3, T0 + 3600, k[2].fp, DHT2_CTL_DENIED, 0)
+          == 0 && P0(w, s1, &ctl) == 0 &&
+          put_entry(w, s1, &k[2], inbox, 1, &res) == DHT2_E_DENIED,
+          "DENIED while listed");
+    CHECK(mk_ctl1(&ctl, R, ctl_id, 4, T0 + 3600, NULL, 0, 0) == 0 &&
+          P0(w, s1, &ctl) == 0 &&
+          put_entry(w, s1, &k[2], inbox, 1, &res) == 0,
+          "un-denied: admitted again");
+
+    /* Arrival order: v1 {W 5} then v2 {W 7}, against v2 then v1 (v1 loses
+     * Select and changes nothing): the same entries, the same cutoff. */
+    CHECK(put_entry(w, sa, &k[0], inbox, 1, &res) == 0 &&
+          put_entry(w, sa, &k[1], inbox, 1, &res) == 0 &&
+          put_entry(w, sb, &k[0], inbox, 1, &res) == 0 &&
+          put_entry(w, sb, &k[1], inbox, 1, &res) == 0, "E, F on both");
+    {
+        static env_t v1, v2;
+
+        CHECK(mk_ctl1(&v1, R, ctl_id, 1, T0 + 3600, k[0].fp,
+                      DHT2_CTL_HANDLED, 5) == 0 &&
+              mk_ctl1(&v2, R, ctl_id, 2, T0 + 3600, k[0].fp,
+                      DHT2_CTL_HANDLED, 7) == 0, "v1, v2");
+        CHECK(P0(w, sa, &v1) == 0 && P0(w, sa, &v2) == 0, "A: v1 then v2");
+        CHECK(P0(w, sb, &v2) == 0 && P(w, sb, &v1, &res) == 0 &&
+              res.outcome == NODUS_DHT2_PUT_LOST, "B: v2 then v1 (loses)");
+    }
+    CHECK(sql_i64(sa, "SELECT COUNT(*) FROM dht2_rec WHERE cls = 4") == 1 &&
+          sql_i64(sb, "SELECT COUNT(*) FROM dht2_rec WHERE cls = 4") == 1,
+          "both stores hold only F");
+    CHECK(held(w, sa, a_ctl, &ga) && held(w, sb, a_ctl, &gb) &&
+          ga.n == gb.n && memcmp(ga.b, gb.b, ga.n) == 0,
+          "and the same control record");
+    CHECK(put_entry(w, sa, &k[0], inbox, 6, &res) == DHT2_E_HANDLED &&
+          res.through == 7 &&
+          put_entry(w, sb, &k[0], inbox, 6, &res) == DHT2_E_HANDLED &&
+          res.through == 7, "same verdict on both: [18, 7]");
+
+    /* item 4: a control record that frees space is accepted at a full pool.
+     * Unnamed pool = entry + control - 10 bytes. */
+    {
+        nodus_dht2_store_t *sc = open_store(NULL);
+        static env_t        en, c_free, c_none;
+        uint8_t             stranger[DHT2_FP_LEN];
+
+        memset(stranger, 0x44, sizeof(stranger));
+        CHECK(sc != NULL && mk_entry(&en, &k[0], inbox, 1) == 0 &&
+              mk_ctl1(&c_free, R, ctl_id, 1, T0 + 3600, k[0].fp,
+                      DHT2_CTL_DENIED, 0) == 0 &&
+              mk_ctl1(&c_none, R, ctl_id, 1, T0 + 3600, stranger,
+                      DHT2_CTL_DENIED, 0) == 0, "records");
+        if (sc != NULL) {
+            nodus_dht2_limits_default(&w->ctx.limits);
+            w->ctx.limits.pool_unnamed = en.n + c_free.n - 10;
+            CHECK(P0(w, sc, &en) == 0, "entry fits the pool");
+            CHECK(P0(w, sc, &c_none) == DHT2_E_NODE_FULL,
+                  "a control that frees nothing does not fit -> 13");
+            CHECK(sql_i64(sc, "SELECT COUNT(*) FROM dht2_rec") == 1,
+                  "the refusal rolled back");
+            CHECK(P0(w, sc, &c_free) == 0, "a control that frees the entry's "
+                  "bytes IS accepted at the full pool");
+            CHECK(sql_i64(sc, "SELECT COUNT(*) FROM dht2_rec WHERE cls = 4")
+                  == 0, "and the entry is gone");
+        }
+        nodus_dht2_store_close(sc);
+    }
+    (void)e;
+    (void)gb;
+
+done:
+    nodus_dht2_store_close(s1);
+    nodus_dht2_store_close(s2);
+    nodus_dht2_store_close(sa);
+    nodus_dht2_store_close(sb);
+    free(w);
+    free(w2);
+    free(k);
+}
+
+/* items 8, 10: an expired held row counts as absent; a tombstone never
+ * moves pools. */
+static void test_select_pool(const tkey_t *A)
+{
+    world_t            *w = (world_t *)calloc(1, sizeof(*w));
+    nodus_dht2_store_t *st = open_store(NULL);
+    static env_t        old5, fresh1, big, tomb, again, got;
+    nodus_dht2_put_t    res;
+    uint8_t             id[DHT2_ID_LEN], id2[DHT2_ID_LEN], addr[DHT2_HASH_LEN];
+    uint8_t             addr2[DHT2_HASH_LEN];
+
+    if (w == NULL || st == NULL) {
+        CHECK(0, "select_pool: setup");
+        free(w);
+        nodus_dht2_store_close(st);
+        return;
+    }
+    world_init(w, A, 3);
+    dfill(id, 0x81);
+    dfill(id2, 0x82);
+    addr_of(addr, id, A);
+    addr_of(addr2, id2, A);
+
+    /* item 8: seq 5 expired (unswept) is replaced by a fresh seq 1. */
+    CHECK(mk_owner(&old5, A, id, 5, T0 + 1000, 4) == 0 &&
+          P0(w, st, &old5) == 0, "seq 5 stored");
+    w->snap.tip_time = T0 + 2000;
+    CHECK(mk_owner(&fresh1, A, id, 1, T0 + 4000, 4) == 0 &&
+          P(w, st, &fresh1, &res) == 0 &&
+          res.outcome == NODUS_DHT2_PUT_STORED && hash_is(&fresh1, res.hash),
+          "expired seq 5 counts as absent: seq 1 STORED");
+    CHECK(held(w, st, addr, &got) && got.n == fresh1.n &&
+          memcmp(got.b, fresh1.b, got.n) == 0 && top_of(st) == 2,
+          "the fresh version is served; re-indexed at the top");
+    CHECK(P(w, st, &old5, &res) == DHT2_E_EXPIRED, "the old one is 7 now");
+    w->snap.tip_time = T0;
+
+    /* item 10: A gained a name; the named pool is full; the tombstone
+     * replacing a larger record is still accepted and stays in its pool. */
+    CHECK(mk_owner(&big, A, id2, 1, T0 + 3600, 1000) == 0 &&
+          P0(w, st, &big) == 0, "large unnamed record stored");
+    names_add(&w->names, A->fp);
+    w->ctx.limits.pool_named = 1;
+    CHECK(mk_tomb(&tomb, A, id2, 2, T0 + 3600) == 0 && tomb.n < big.n &&
+          P(w, st, &tomb, &res) == 0 && res.outcome == NODUS_DHT2_PUT_STORED,
+          "tombstone accepted despite the full named pool");
+    {
+        char hex[2 * DHT2_HASH_LEN + 1], sql[256];
+        int  k;
+
+        for (k = 0; k < (int)DHT2_HASH_LEN; k++) {
+            snprintf(hex + 2 * k, 3, "%02x", addr2[k]);
+        }
+        snprintf(sql, sizeof(sql),
+                 "SELECT named FROM dht2_rec WHERE address = x'%s'", hex);
+        CHECK(sql_i64(st, sql) == 0, "charged to the pool it was in");
+    }
+    CHECK(mk_owner(&again, A, id2, 3, T0 + 3600, 10) == 0 &&
+          P0(w, st, &again) == DHT2_E_NODE_FULL,
+          "a live record of the named writer meets the named pool (13)");
+    nodus_dht2_store_close(st);
+    free(w);
+}
 
 static void cleanup(void)
 {
@@ -1252,6 +1687,10 @@ int main(void)
     test_expiry(&keys[0], &keys[2]);
     test_index(&keys[0]);
     test_faults(&keys[0]);
+    test_gate(&keys[0]);
+    test_mismatch(&keys[0]);
+    test_memo(&keys[3], &keys[4]);
+    test_select_pool(&keys[1]);
     QGP_LOG_INFO(LOG_TAG, "=== Results: %d passed, %d failed ===",
                  g_pass, g_fail);
 
