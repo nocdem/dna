@@ -36,7 +36,8 @@
  * link gate, tests/storage_linked.cmake). The witness header it includes
  * carries constants and plain structs.
  *
- * NO CALLER YET: package 5 wires this into nodus-storage; nothing in
+ * NO CALLER YET: the package-5 holder store takes an injected context
+ * (nodus_dht2_store.h); filling it from this view is package 6. Nothing in
  * nodus/tools/ or any running loop calls it today.
  *
  * @file nodus_dht2_wview.h

@@ -191,9 +191,10 @@ typedef struct {
 /**
  * Admit one envelope (§4.1). `expect_address` (64 B, may be NULL) is the
  * address the caller expects (pull-sync checks it; a client PUT has none).
- * @return 0 (outcome + hash in `res`), a row-7 code 1..13 / 16 / 17...18,
+ * @return 0 (outcome + hash in `res`), a row-7 code 1..13 / 16 / 18,
  *         or 15 (no snapshot / sets). 18 carries the cutoff in
- *         res->through. Any SQLite or allocation error is 16.
+ *         res->through. Any SQLite or allocation error is 16. A NULL
+ *         argument is DHT2_E_ARG (-1), as for get / list / sweep / scan.
  */
 int nodus_dht2_store_put(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
                          const uint8_t *env, size_t len,

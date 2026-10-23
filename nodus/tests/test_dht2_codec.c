@@ -15,7 +15,9 @@
  *     verifies, and its canonical envelope (fields 7, 8, 9 only, row 4)
  *     is the built bytes; an envelope with reordered / repeated / unknown
  *     fields canonicalises to the SAME bytes (§3.1 "Stored form");
- *   · every strict-decode reject of row 22 is refused as `bad-encoding`:
+ *   · every strict-decode reject of row 22 is refused as `bad-encoding`
+ *     (the ValidityType ⇔ Validity mismatch is the exception since package
+ *     5: it decodes and dht2_record_check_class refuses it as bad-class 6):
  *     long-form int, long-form length, unsorted keys, duplicate key,
  *     indefinite length (map and string), tag 42, float, trailing byte,
  *     negative int, `_prev` of 63 B, an unknown key — plus the row-6
