@@ -628,8 +628,9 @@ set(NODUS_SOURCES
     # rev 5 §3.1, §3.2, §4.2, §13 rows 1, 3-6, 22, 23): strict DAG-CBOR,
     # the IPNS-v2 signed record + canonical envelope, `_id` / address,
     # Select, nearest_R, RFC 0002 envelopes and the owner-signed LIST
-    # request. Pure, no I/O; no caller yet. In the common list so it
-    # compiles on Windows (the browser / Connect core will use it too).
+    # request. Package 2 (dht2_msg.c): the wire messages of §13 rows 7,
+    # 11, 12, 14, 15, 18. Pure, no I/O; no caller yet. In the common list so
+    # it compiles on Windows (the browser / Connect core will use it too).
     ${SHARED_DIR}/dht2/dht2_cbor.c
     ${SHARED_DIR}/dht2/dht2_time.c
     ${SHARED_DIR}/dht2/dht2_record.c

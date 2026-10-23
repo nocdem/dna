@@ -43,7 +43,7 @@
  * every path.
  *
  * Only the envelope layer and the LIST request live here: the answer /
- * receipt / refusal payload maps (row 18) are a later package.
+ * receipt / refusal payload maps (row 18) are in dht2_msg.h (package 2).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT

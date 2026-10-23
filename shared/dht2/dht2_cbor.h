@@ -3,8 +3,9 @@
  * @brief DHT v2 — strict DAG-CBOR token reader and canonical writer.
  *
  * WHAT: the byte-level layer under every DHT v2 signed map (record data,
- * §3.1; owner-signed LIST payload, §13 row 23). It is a TOKEN reader: the
- * schemas above it (dht2_record.c, dht2_envelope.c) match fixed text keys
+ * §3.1; owner-signed LIST payload, §13 row 23; the package-2 wire messages).
+ * It is a TOKEN reader: the schemas above it (dht2_record.c,
+ * dht2_envelope.c, dht2_msg.c) match fixed text keys
  * and never need a generic tree.
  *
  * WHY NOT nodus/src/protocol/nodus_cbor.h: that decoder accepts long-form
