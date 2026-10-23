@@ -24,10 +24,11 @@
  *               (the WS layer — Upgrade, ping/pong, close — stays outside
  *               the sealed stream; session design rev 1 / Kurultay #43)
  *
- * and the reverse on the way out: nodus frame ─▶ seal ─▶ (WS frames) ─▶
- * wbuf. Nodus frames travel UNCHANGED inside the sealed stream (O-1 a).
- * The sealed stream is cut into WS binary frames of at most
- * NODUS_TCP_SC_WS_GROUP_FRAMES sealed frames (a whole sealed 5 MiB nodus
+ * and the reverse on the way out: nodus frame ─▶ pending FIFO (plaintext) ─▶
+ * drain: seal a portion ─▶ (WS frame) ─▶ wbuf. Nodus frames travel UNCHANGED
+ * inside the sealed stream (O-1 a).
+ * The sealed stream is cut into WS binary frames of one portion each, at most
+ * NODUS_TCP_SC_PORTION_FRAMES sealed frames (a whole sealed 5 MiB nodus
  * frame, 5,346,324 bytes, is more than NODUS_WS_MAX_PAYLOAD, 5,242,887, which
  * the server enforces per WS frame — close 1009). A client of 3c must cut its
  * own sealed stream the same way (any cut at or below NODUS_WS_MAX_PAYLOAD is
@@ -115,11 +116,21 @@
  *    does not discard the input before it: the close is recorded, the job
  *    finishes, the held input is opened and its frames dispatched in order
  *    after on_session, and only then the connection closes.
- *  · DEFERRED (not changed here): sealing a whole message at once into its
- *    reserved space rather than draining it incrementally. The decision's
- *    concern was the buffer bound, which is derived and asserted below;
- *    changing the sealing schedule needs a measurement first (CLAUDE.md:
- *    optimise only with a measurement).
+ *  · INCREMENTAL SEALING (operator, 2026-10-24, "Şimdi artımlı yap" —
+ *    addendum to decisions/2026-10-23-kurultay-43-summary.md): a send does
+ *    not seal. It decides ADMISSION for the whole frame (the pending caps,
+ *    NODUS_PENDING_MAX_FRAMES / _BYTES, counted in PLAINTEXT bytes) and
+ *    queues the PLAINTEXT nodus frame, owned, in the pending FIFO with a
+ *    cursor (nodus_pending_frame_t.sc_off). Only the DRAIN seals — at send
+ *    time and then from nodus_tcp_poll's write handling as the socket takes
+ *    bytes — in portions of NODUS_TCP_SC_PORTION_FRAMES (32) sealed frames,
+ *    each only when its ciphertext fits the write buffer's fill target
+ *    (NODUS_TCP_SC_WBUF_FILL), in FIFO order. So a refused send seals
+ *    nothing and moves no counter; counter order = wire order (one sealer,
+ *    one order); a cipher failure (or an exhausted counter) mid-frame is
+ *    fatal — the connection is marked and the loop closes it, and the
+ *    plaintext is never handed to on_pending_full. Each portion is its own
+ *    WS binary frame on a WS connection.
  *
  * ── LIFETIMES (caller's obligations) ───────────────────────────────────
  * cfg.id (the signing key, and for a responder the ML-KEM key pair) must
@@ -130,14 +141,16 @@
  * ── BUFFER BOUNDS (derived; see the _Static_asserts below) ─────────────
  * The largest nodus frame is NODUS_FRAME_HEADER_SIZE + NODUS_MAX_FRAME_TCP
  * = 5,242,887 bytes = 5,121 sealed frames of 1,044 bytes = 5,346,324 bytes
- * on the wire (more than today's 5,246,983-byte write buffer). A
- * connection with the layer therefore may grow its write buffer to
- * NODUS_TCP_SC_WBUF_MAX = 5,346,324 + the WebSocket frame headers of the
- * 32-sealed-frame groups (161 groups x 4 bytes) + the same 4096-byte slack
- * the plain bound carries (101 response / pong / close) = 5,351,064 bytes:
- * +104,081 bytes (+1.98%) over the plain per-connection worst case. The
- * pending queue keeps its existing caps (NODUS_PENDING_MAX_FRAMES frames,
- * NODUS_PENDING_MAX_BYTES bytes) — they now count SEALED bytes. The read
+ * on the wire (more than today's 5,246,983-byte write buffer) — but it is
+ * sealed in 161 portions, never whole. A portion is at most 32 sealed frames
+ * = 33,408 bytes (+ a 4-byte WS header) = NODUS_TCP_SC_PORTION_WIRE
+ * 33,412; the drain seals a portion only while the write buffer stays at or
+ * below NODUS_TCP_SC_WBUF_FILL = 2 portions = 66,824 bytes; the buffer's
+ * bound NODUS_TCP_SC_WBUF_MAX = 131,072 bytes leaves 64,248 for the
+ * handshake output, a 101, pongs and a close. That is 4.4 times LESS than
+ * the plain bound of 5,246,983. The pending queue keeps its existing caps
+ * (NODUS_PENDING_MAX_FRAMES frames, NODUS_PENDING_MAX_BYTES bytes) — they
+ * count PLAINTEXT bytes (the frames are queued unsealed). The read
  * buffer holds plaintext and may grow to NODUS_TCP_SC_RBUF_MAX = 5,246,983 +
  * 16,384 = 5,263,367 bytes (+0.31%). Per layer-enabled connection
  * add the machine (sizeof(cmt_p2p_sc_t), about 42 KB, heap) and, only while
@@ -198,10 +211,14 @@ extern "C" {
  *  hold buffer. One WS payload run handed to the layer by one read is at
  *  most this long, so the hold never overflows for an honest peer. */
 #define NODUS_TCP_SC_RAW_CHUNK   16384
-/** Sealed frames per WebSocket frame on a WS connection. 32 * 1044 = 33,408
- *  bytes: below 65,536, so every WS header is 4 bytes, and well below
- *  NODUS_WS_MAX_PAYLOAD (a whole sealed 5 MiB frame is not). */
-#define NODUS_TCP_SC_WS_GROUP_FRAMES 32
+/** Sealed frames per PORTION: the unit the drain seals into the write buffer
+ *  at once, and (on a WS connection) the payload of exactly one WS binary
+ *  frame. 32 * 1044 = 33,408 bytes: below 65,536, so every WS header is the
+ *  4-byte form, and far below NODUS_WS_MAX_PAYLOAD. A portion covers 32 KiB of
+ *  plaintext (a multiple of the 1024-byte sealed chunk, so the per-frame
+ *  cursor stays frame-aligned). */
+#define NODUS_TCP_SC_PORTION_FRAMES 32
+#define NODUS_TCP_SC_WS_GROUP_FRAMES NODUS_TCP_SC_PORTION_FRAMES   /* the WS cut = the portion */
 
 /* Derived bounds. */
 #define NODUS_TCP_SC_PLAIN_MAX \
@@ -210,13 +227,25 @@ extern "C" {
     ((NODUS_TCP_SC_PLAIN_MAX + CMT_P2P_SC_DATA_MAX_SIZE - 1) / CMT_P2P_SC_DATA_MAX_SIZE)
 #define NODUS_TCP_SC_SEALED_MAX \
     (NODUS_TCP_SC_FRAMES_MAX * (size_t)CMT_P2P_SC_SEALED_FRAME_SIZE)
-#define NODUS_TCP_SC_WS_GROUPS_MAX \
-    ((NODUS_TCP_SC_FRAMES_MAX + NODUS_TCP_SC_WS_GROUP_FRAMES - 1) / NODUS_TCP_SC_WS_GROUP_FRAMES)
+/** Portions a maximal nodus frame is drained in: ceil(5,121 / 32) = 161. */
+#define NODUS_TCP_SC_PORTIONS_MAX \
+    ((NODUS_TCP_SC_FRAMES_MAX + NODUS_TCP_SC_PORTION_FRAMES - 1) / NODUS_TCP_SC_PORTION_FRAMES)
 #define NODUS_TCP_SC_WS_HDR 4   /* header of a 126..65535-byte WS payload */
-#define NODUS_TCP_SC_WBUF_SLACK 4096   /* as the plain bound (nodus_tcp.c) */
-#define NODUS_TCP_SC_WBUF_MAX \
-    (NODUS_TCP_SC_SEALED_MAX + NODUS_TCP_SC_WS_GROUPS_MAX * NODUS_TCP_SC_WS_HDR + \
-     NODUS_TCP_SC_WBUF_SLACK)
+/** Plaintext of one full portion (32 * 1024). */
+#define NODUS_TCP_SC_PORTION_PLAIN \
+    ((size_t)NODUS_TCP_SC_PORTION_FRAMES * CMT_P2P_SC_DATA_MAX_SIZE)
+/** Write-buffer bytes of one full portion, WS header included. */
+#define NODUS_TCP_SC_PORTION_WIRE \
+    ((size_t)NODUS_TCP_SC_PORTION_FRAMES * CMT_P2P_SC_SEALED_FRAME_SIZE + NODUS_TCP_SC_WS_HDR)
+/** The drain seals a portion only while the write buffer would stay at or
+ *  below this: two portions (the one the socket is taking, the next ready). */
+#define NODUS_TCP_SC_WBUF_FILL (2 * NODUS_TCP_SC_PORTION_WIRE)
+/** The write buffer's bound for a layer connection: 128 KiB. FILL
+ *  (66,824) leaves 64,248 bytes for what is NOT sealed data — the handshake
+ *  output (at most CMT_P2P_SC_OUT_CAP = 13,690 + a WS header), a 101 response,
+ *  pongs and a close frame. (Today's plain bound is 5,246,983: a layer
+ *  connection needs 4.4 times LESS, since a frame is no longer sealed whole.) */
+#define NODUS_TCP_SC_WBUF_MAX (128 * 1024)
 /** Read buffer bound: the plain bound (one nodus frame + 4096) + one raw
  *  chunk of plaintext. A chunk is fed to the machine whole and parsed after,
  *  and it opens to at most NODUS_TCP_SC_RAW_CHUNK bytes (16 sealed frames:
@@ -229,9 +258,18 @@ _Static_assert(NODUS_TCP_SC_FRAMES_MAX == 5121,
                "a 5 MiB nodus frame is 5,121 sealed frames (Kurultay #43)");
 _Static_assert(NODUS_TCP_SC_SEALED_MAX == 5346324,
                "5,121 x 1,044 = 5,346,324 bytes (Kurultay #43)");
-_Static_assert((size_t)NODUS_TCP_SC_WS_GROUP_FRAMES * CMT_P2P_SC_SEALED_FRAME_SIZE <= 65535 &&
-               (size_t)NODUS_TCP_SC_WS_GROUP_FRAMES * CMT_P2P_SC_SEALED_FRAME_SIZE >= 126,
-               "a WS group's header must be the 4-byte form");
+_Static_assert(NODUS_TCP_SC_PORTIONS_MAX == 161, "a 5 MiB frame drains in 161 portions");
+_Static_assert((size_t)NODUS_TCP_SC_PORTION_FRAMES * CMT_P2P_SC_SEALED_FRAME_SIZE <= 65535 &&
+               (size_t)NODUS_TCP_SC_PORTION_FRAMES * CMT_P2P_SC_SEALED_FRAME_SIZE >= 126,
+               "a portion's WS header must be the 4-byte form");
+_Static_assert(NODUS_TCP_SC_PORTION_PLAIN % CMT_P2P_SC_DATA_MAX_SIZE == 0,
+               "the per-frame cursor must stay aligned to the sealed chunk");
+_Static_assert(NODUS_TCP_SC_PORTION_WIRE <= NODUS_WS_MAX_PAYLOAD,
+               "a portion must fit one WS frame");
+_Static_assert(NODUS_TCP_SC_WBUF_FILL >= NODUS_TCP_SC_PORTION_WIRE &&
+               NODUS_TCP_SC_WBUF_FILL + CMT_P2P_SC_OUT_CAP + NODUS_WS_SERVER_HDR_MAX +
+               NODUS_WS_CTRL_MAX * 8 <= NODUS_TCP_SC_WBUF_MAX,
+               "the fill target must leave room for handshake output and WS control frames");
 
 /* ── Enable ──────────────────────────────────────────────────────────── */
 

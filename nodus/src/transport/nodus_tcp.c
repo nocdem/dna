@@ -501,6 +501,7 @@ static void pending_link(nodus_tcp_conn_t *conn, nodus_pending_frame_t *node,
     node->encoded = encoded;
     node->frame_size = frame_size;
     node->enqueued_at = nodus_time_now_ms();
+    node->sc_off = 0;
 
     if (conn->pending_tail) {
         conn->pending_tail->next = node;
@@ -635,89 +636,11 @@ static int wbuf_ensure(nodus_tcp_conn_t *conn, size_t needed) {
  * bytes these produced. On a WebSocket connection each nodus frame becomes
  * the payload of one FIN=1 binary WS frame (server→client frames are never
  * masked, RFC 6455 §5.1); on a plain connection the layout is unchanged. */
-#ifdef NODUS_TCP_SC
-/* A connection with the SecretConnection layer: the "wire" bytes of one
- * nodus frame are its SEALED bytes — ceil(plain / 1024) sealed frames of
- * 1044 bytes — and, on a WebSocket connection, those are cut into WS binary
- * frames of at most NODUS_TCP_SC_WS_GROUP_FRAMES sealed frames each (the WS
- * layer stays outside the sealed stream; a whole sealed 5 MiB frame would
- * exceed NODUS_WS_MAX_PAYLOAD, a group does not). */
-static size_t sc_wire_size(const nodus_tcp_conn_t *conn, size_t plain) {
-    size_t nframes = (plain + CMT_P2P_SC_DATA_MAX_SIZE - 1) / CMT_P2P_SC_DATA_MAX_SIZE;
-    size_t n = nframes * (size_t)CMT_P2P_SC_SEALED_FRAME_SIZE;
-#ifdef NODUS_TCP_EPOLL
-    if (conn->is_ws) {
-        for (size_t left = nframes; left > 0; ) {
-            size_t g = left > NODUS_TCP_SC_WS_GROUP_FRAMES ? NODUS_TCP_SC_WS_GROUP_FRAMES : left;
-
-            n += nodus_ws_frame_header_len((uint64_t)g * CMT_P2P_SC_SEALED_FRAME_SIZE);
-            left -= g;
-        }
-    }
-#else
-    (void)conn;
-#endif
-    return n;
-}
-
-/* Seal one nodus frame (header + payload) into dst, group by group. The
- * caller reserved `cap` bytes from sc_wire_size; the counter room for the
- * WHOLE frame is checked first, so a refusal can never happen half-way.
- * Returns the bytes written, 0 on refusal / cipher failure. */
-static size_t sc_wire_encode(nodus_tcp_conn_t *conn, uint8_t *dst, size_t cap,
-                             const uint8_t *payload, size_t send_len) {
-    uint8_t hdr[NODUS_FRAME_HEADER_SIZE];
-    size_t plain = NODUS_FRAME_HEADER_SIZE + send_len;
-    size_t nframes = (plain + CMT_P2P_SC_DATA_MAX_SIZE - 1) / CMT_P2P_SC_DATA_MAX_SIZE;
-    size_t w = 0, done = 0;
-
-    if (send_len > NODUS_MAX_FRAME_TCP || cap < sc_wire_size(conn, plain) ||
-        !nodus_tcp_sc_can_seal(conn, nframes))
-        return 0;
-    /* The 7-byte nodus header, from the one encoder (magic, version), with
-     * the little-endian length of nodus_wire.c:28-32 filled in: the payload
-     * is not copied next to it, it is sealed straight from the caller's
-     * buffer. */
-    if (nodus_frame_encode(hdr, sizeof(hdr), NULL, 0) != NODUS_FRAME_HEADER_SIZE)
-        return 0;
-    hdr[3] = (uint8_t)(send_len);
-    hdr[4] = (uint8_t)(send_len >> 8);
-    hdr[5] = (uint8_t)(send_len >> 16);
-    hdr[6] = (uint8_t)(send_len >> 24);
-
-    while (done < nframes) {
-        size_t g = nframes - done;
-
-#ifdef NODUS_TCP_EPOLL
-        if (conn->is_ws) {
-            size_t h;
-
-            if (g > NODUS_TCP_SC_WS_GROUP_FRAMES)
-                g = NODUS_TCP_SC_WS_GROUP_FRAMES;
-            h = nodus_ws_frame_header(NODUS_WS_OP_BINARY,
-                                      (uint64_t)g * CMT_P2P_SC_SEALED_FRAME_SIZE,
-                                      dst + w, cap - w);
-            if (h == 0)
-                return 0;
-            w += h;
-        }
-#endif
-        if (nodus_tcp_sc_seal(conn, hdr, sizeof(hdr), payload, send_len,
-                              done, g, dst + w) != 0)
-            return 0;
-        w += g * (size_t)CMT_P2P_SC_SEALED_FRAME_SIZE;
-        done += g;
-    }
-    return w;
-}
-#endif /* NODUS_TCP_SC */
-
+/* (A connection with the SecretConnection layer never comes through here:
+ * its sends queue the PLAINTEXT frame and the drain seals it in portions —
+ * send_sc_locked / sc_drain_locked below.) */
 static size_t conn_wire_size(const nodus_tcp_conn_t *conn, size_t send_len) {
     size_t n = NODUS_FRAME_HEADER_SIZE + send_len;
-#ifdef NODUS_TCP_SC
-    if (conn->sc)
-        return sc_wire_size(conn, n);
-#endif
 #ifdef NODUS_TCP_EPOLL
     if (conn->is_ws)
         n += nodus_ws_frame_header_len(n);
@@ -727,14 +650,10 @@ static size_t conn_wire_size(const nodus_tcp_conn_t *conn, size_t send_len) {
     return n;
 }
 
-static size_t conn_wire_encode(nodus_tcp_conn_t *conn,
+static size_t conn_wire_encode(const nodus_tcp_conn_t *conn,
                                uint8_t *dst, size_t cap,
                                const uint8_t *payload, size_t send_len) {
     size_t hdr = 0;
-#ifdef NODUS_TCP_SC
-    if (conn->sc)
-        return sc_wire_encode(conn, dst, cap, payload, send_len);
-#endif
 #ifdef NODUS_TCP_EPOLL
     if (conn->is_ws) {
         hdr = nodus_ws_frame_header(NODUS_WS_OP_BINARY,
@@ -1132,25 +1051,180 @@ static void sc_epoll_rearm(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 }
 #endif
 
-/* A send found the machine dead (a cipher failure while sealing): mark the
- * connection for the loop to close. The send is inside the write lock and
- * its caller holds `conn`, so it cannot tear the connection down itself
- * (nodus_tcp_send's contract). Write lock held. True if it was marked. */
-static bool sc_seal_failed_locked(nodus_tcp_conn_t *conn) {
+/* Sealing failed for good (a cipher failure, or the send counter ran out —
+ * N3: the session is over): mark the connection for the loop to close. The
+ * sealer runs inside the write lock, in a send or in the drain of a write
+ * event, and cannot tear the connection down itself (nodus_tcp_send's
+ * contract: the caller holds `conn`). Write lock held. */
+static void sc_mark_close_locked(nodus_tcp_conn_t *conn) {
     nodus_tcp_t *tcp = conn->tcp_parent;
 
-    if (!conn->sc || !nodus_tcp_sc_dead(conn))
-        return false;
-    QGP_LOG_ERROR(LOG_TAG_TCP, "send: sealing failed, connection will be closed, slot=%d",
-                  conn->slot);
+    QGP_LOG_ERROR(LOG_TAG_TCP, "sealing failed, connection will be closed, slot=%d", conn->slot);
     if (!conn->sc_close_req && tcp) {
         conn->sc_close_req = true;
         tcp->sc_close_requests++;
     }
-    return true;
 }
 
-/* Close every connection a send marked (sc_seal_failed_locked). Each marked
+/* ── Incremental sealing (nodus_tcp_sc.h, "INCREMENTAL SEALING") ─────────
+ *
+ * The pending FIFO of a layer connection holds PLAINTEXT nodus frames; the
+ * node's sc_off is how many plaintext bytes were already sealed. The drain is
+ * the only sealer and it works head-first, so counter order = wire order.
+ *
+ * Seal portions from the FIFO into wbuf while wbuf stays at or below
+ * NODUS_TCP_SC_WBUF_FILL. A portion is up to NODUS_TCP_SC_PORTION_FRAMES
+ * sealed frames (32 KiB of plaintext), one WS binary frame on a WS
+ * connection. Everything that can fail short of the cipher is checked BEFORE
+ * the portion is sealed (fit, counter room); a cipher failure or an
+ * exhausted counter marks the connection (the plaintext is never handed to
+ * on_pending_full). Compaction of wbuf is the caller's. Write lock held. */
+static void sc_drain_locked(nodus_tcp_conn_t *conn) {
+    while (conn->pending_head) {
+        nodus_pending_frame_t *head = conn->pending_head;
+        size_t rem = head->frame_size - head->sc_off;
+        size_t take = rem < NODUS_TCP_SC_PORTION_PLAIN ? rem : NODUS_TCP_SC_PORTION_PLAIN;
+        size_t nframes = (take + CMT_P2P_SC_DATA_MAX_SIZE - 1) / CMT_P2P_SC_DATA_MAX_SIZE;
+        size_t sealed = nframes * (size_t)CMT_P2P_SC_SEALED_FRAME_SIZE;
+        size_t h = 0;
+
+#ifdef NODUS_TCP_EPOLL
+        if (conn->is_ws)
+            h = nodus_ws_frame_header_len((uint64_t)sealed);
+#endif
+        if (conn->wlen + h + sealed > NODUS_TCP_SC_WBUF_FILL)
+            return;                         /* the buffer is full enough: wait for the socket */
+        if (wbuf_ensure(conn, conn->wlen + h + sealed) != 0) {
+            sc_mark_close_locked(conn);     /* no memory for a portion: the session cannot go on */
+            return;
+        }
+        if (!nodus_tcp_sc_can_seal(conn, nframes)) {
+            sc_mark_close_locked(conn);     /* counter exhausted (N3) or the machine is dead */
+            return;
+        }
+#ifdef NODUS_TCP_EPOLL
+        if (h > 0 && nodus_ws_frame_header(NODUS_WS_OP_BINARY, sealed,
+                                           conn->wbuf + conn->wlen,
+                                           conn->wcap - conn->wlen) != h) {
+            sc_mark_close_locked(conn);
+            return;
+        }
+#endif
+        if (nodus_tcp_sc_seal(conn, head->encoded + head->sc_off, take, NULL, 0, 0, nframes,
+                              conn->wbuf + conn->wlen + h) != 0) {
+            sc_mark_close_locked(conn);     /* cipher failure: fatal, not backpressure */
+            return;
+        }
+        conn->wlen += h + sealed;
+        head->sc_off += take;
+        if (head->sc_off >= head->frame_size) {
+            nodus_pending_frame_t *done = pending_pop_head(conn);
+
+            conn->pending_drained_count++;
+            free(done->encoded);
+            free(done);
+        }
+    }
+}
+
+/* Alternate drain and socket flush until the queue is empty, the socket
+ * would block, or something failed. Returns the last flush's class
+ * (PROGRESS = everything written or nothing left, WOULDBLOCK = the socket is
+ * full: EPOLLOUT continues it) or FATAL (marked, or no progress possible).
+ * Write lock held. */
+static ntcp_io_t sc_drain_flush_locked(nodus_tcp_conn_t *conn,
+                                       nodus_tcp_progress_cb progress_cb, void *user_data) {
+    for (;;) {
+        ntcp_io_t io;
+        size_t before;
+
+        if (conn->wpos > 0) {                       /* reclaim what the socket took */
+            size_t remaining = conn->wlen - conn->wpos;
+
+            if (remaining > 0)
+                memmove(conn->wbuf, conn->wbuf + conn->wpos, remaining);
+            conn->wlen = remaining;
+            conn->wpos = 0;
+        }
+        before = conn->wlen;
+        sc_drain_locked(conn);
+        if (conn->sc_close_req)
+            return NTCP_IO_FATAL;
+        if (conn->wlen == before && conn->pending_head) {
+            /* Nothing could be sealed although the buffer was not at its
+             * fill target: only possible with wlen > 0 (the socket will take
+             * it and EPOLLOUT continues) — otherwise a portion cannot fit an
+             * empty buffer, which is a bug: fail closed rather than stall. */
+            if (conn->wlen == 0) {
+                sc_mark_close_locked(conn);
+                return NTCP_IO_FATAL;
+            }
+        }
+        if (conn->wlen > conn->wpos) {
+            io = conn_flush_wbuf(conn, progress_cb, user_data);
+            if (conn->wpos >= conn->wlen) {
+                conn->wpos = 0;
+                conn->wlen = 0;
+            }
+            if (io != NTCP_IO_PROGRESS)
+                return io;
+        }
+        if (!conn->pending_head)
+            return NTCP_IO_PROGRESS;
+    }
+}
+
+/* nodus_tcp_send on a layer connection (write lock held; the caller made the
+ * common checks and `can_seal` for this frame). ADMISSION is decided here, for
+ * the WHOLE frame, against the pending caps; an admitted frame is queued as
+ * PLAINTEXT (owned) and the drain seals it, so a refused send seals nothing
+ * and moves no counter, and on_pending_full receives the caller's payload,
+ * never sealed bytes. */
+static int send_sc_locked(nodus_tcp_conn_t *conn, const uint8_t *payload, size_t len,
+                          nodus_tcp_progress_cb progress_cb, void *user_data) {
+    size_t plain = NODUS_FRAME_HEADER_SIZE + len;
+    nodus_tcp_t *tcp = conn->tcp_parent;
+    bool queue_ok = (conn->pending_count < NODUS_PENDING_MAX_FRAMES) &&
+                    (conn->pending_bytes + plain <= NODUS_PENDING_MAX_BYTES);
+
+    if (queue_ok) {
+        uint8_t *encoded = malloc(plain);
+        nodus_pending_frame_t *node = malloc(sizeof(*node));
+
+        if (encoded && node && nodus_frame_encode(encoded, plain, payload, (uint32_t)len) == plain) {
+            ntcp_io_t io;
+
+            pending_link(conn, node, encoded, plain);
+            conn->send_ok_count++;
+            conn->send_bytes_total += len;
+            io = sc_drain_flush_locked(conn, progress_cb, user_data);
+            if (io == NTCP_IO_PROGRESS || io == NTCP_IO_WOULDBLOCK)
+                return 0;
+            if (conn->sc_close_req)
+                return -1;                  /* fatal sealing failure, marked */
+            conn->send_error_count++;
+            QGP_LOG_WARN(LOG_TAG_TCP, "send: write failed peer=%s:%u slot=%d class=%d",
+                         conn->ip, (unsigned)conn->port, conn->slot, (int)io);
+            return -1;
+        }
+        free(encoded);
+        free(node);
+        /* allocation failure: treated like a full queue — nothing sealed */
+    }
+    if (tcp && tcp->on_pending_full) {
+        tcp->on_pending_full(conn, payload, len, tcp->pending_full_ctx);
+        conn->pending_hint_fallback_count++;
+        return 0;
+    }
+    QGP_LOG_ERROR(LOG_TAG_TCP,
+                  "send: queue full (frames=%zu bytes=%zu) peer=%s:%u slot=%d payload_len=%zu",
+                  conn->pending_count, conn->pending_bytes, conn->ip,
+                  (unsigned)conn->port, conn->slot, len);
+    conn->send_full_count++;
+    return -1;
+}
+
+/* Close every connection a sealer marked (sc_mark_close_locked). Each marked
  * connection is CLAIMED under the write lock (mark read and cleared, count
  * lowered, sc_closing set) and its callbacks then run with the lock
  * RELEASED: on_disconnect may send, and may poll again — a nested reaper
@@ -1503,6 +1577,18 @@ static bool handle_write_locked(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     /* Phase 3: wbuf made space — promote queued frames if any. We compact
      * first so `wlen` reflects only still-pending bytes, then pull from the
      * pending FIFO as long as they fit. */
+#ifdef NODUS_TCP_SC
+    if (conn->sc && conn->pending_head) {
+        /* Layer connection: the FIFO holds plaintext; seal the next portions
+         * as the socket takes bytes, until it would block (EPOLLOUT stays
+         * armed then) or the queue is empty. A sealing failure is marked, the
+         * loop closes the connection (sc_reap_marked); a dead socket is the
+         * usual teardown. */
+        io = sc_drain_flush_locked(conn, NULL, NULL);
+        if (io != NTCP_IO_PROGRESS && io != NTCP_IO_WOULDBLOCK && !conn->sc_close_req)
+            return false;
+    } else
+#endif
     if (conn->pending_head) {
         if (conn->wpos > 0) {
             size_t remaining = conn->wlen - conn->wpos;
@@ -2967,8 +3053,7 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
     if (conn->sc) {
         /* Refused BEFORE anything is sealed or queued: not authenticated yet
          * (nothing may be sealed, and the layer queues nothing for it), or
-         * the send counter cannot take the whole frame (N3). A refusal after
-         * this point can only be a cipher failure. */
+         * the send counter cannot take this frame (N3). */
         size_t nframes = (NODUS_FRAME_HEADER_SIZE + len + CMT_P2P_SC_DATA_MAX_SIZE - 1) /
                          CMT_P2P_SC_DATA_MAX_SIZE;
         if (!nodus_tcp_sc_can_seal(conn, nframes)) {
@@ -2983,6 +3068,9 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
             QGP_LOG_ERROR(LOG_TAG_TCP, "send: handshake bytes not buffered, slot=%d", conn->slot);
             return -1;
         }
+        /* Admission against the pending caps, then queue the PLAINTEXT frame;
+         * the drain seals it in portions (send_sc_locked). */
+        return send_sc_locked(conn, payload, len, progress_cb, user_data);
     }
 #endif
 
@@ -3086,34 +3174,11 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
                         (conn->pending_bytes + frame_size <= NODUS_PENDING_MAX_BYTES);
         if (queue_ok) {
             uint8_t *encoded = malloc(frame_size);
-            /* With the SecretConnection the encode below SEALS (the counter
-             * moves), so everything that can fail is reserved first: the
-             * buffer above and the queue node here. Once sealed, linking the
-             * node cannot fail — a sealed frame is never dropped, and a
-             * refused one never moved the counter. */
-            nodus_pending_frame_t *sc_node = NULL;
-#ifdef NODUS_TCP_SC
-            if (conn->sc && encoded) {
-                sc_node = malloc(sizeof(*sc_node));
-                if (!sc_node) {
-                    free(encoded);
-                    encoded = NULL;
-                }
-            }
-#endif
             if (encoded) {
                 size_t written = conn_wire_encode(conn, encoded, frame_size,
                                                   send_payload, send_len);
-                bool queued = false;
-                if (written == frame_size) {
-                    if (sc_node) {
-                        pending_link(conn, sc_node, encoded, frame_size);
-                        queued = true;
-                    } else {
-                        queued = pending_push_tail(conn, encoded, frame_size) == 0;
-                    }
-                }
-                if (queued) {
+                if (written == frame_size &&
+                    pending_push_tail(conn, encoded, frame_size) == 0) {
                     conn->send_ok_count++;
                     conn->send_bytes_total += send_len;
 #ifdef NODUS_TCP_EPOLL
@@ -3128,19 +3193,7 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
                     free(enc_buf);
                     return 0;
                 }
-#ifdef NODUS_TCP_SC
-                /* A sealing (cipher) failure is FATAL, not backpressure: the
-                 * machine is dead, the plaintext must not go to the
-                 * pending-full fallback as if the queue were merely full. */
-                if (sc_seal_failed_locked(conn)) {
-                    free(encoded);
-                    free(sc_node);
-                    free(enc_buf);
-                    return -1;
-                }
-#endif
                 free(encoded);
-                free(sc_node);   /* NULL-safe; reached only if the encode failed */
             }
             /* malloc / encode / push failure — fall through to callback path */
         }
@@ -3176,9 +3229,6 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
                                       send_payload, send_len);
     if (written == 0) {
         QGP_LOG_ERROR(LOG_TAG_TCP, "send: frame_encode failed (len=%zu)", send_len);
-#ifdef NODUS_TCP_SC
-        (void)sc_seal_failed_locked(conn);   /* fatal: marks the loop-owned close */
-#endif
         free(enc_buf);
         return -1;
     }

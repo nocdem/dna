@@ -86,6 +86,11 @@ typedef struct nodus_pending_frame {
     uint8_t                    *encoded;      /* malloc'd, owned */
     size_t                      frame_size;   /* encoded bytes including 7-byte header */
     uint64_t                    enqueued_at;  /* monotonic ms for diagnostics */
+    /* SecretConnection layer only (0 otherwise): `encoded` is then the
+     * PLAINTEXT nodus frame and this is the cursor — the plaintext bytes
+     * already sealed into wbuf by the drain. A multiple of 1024 until the
+     * frame completes. */
+    size_t                      sc_off;
 } nodus_pending_frame_t;
 
 typedef struct nodus_tcp_conn {

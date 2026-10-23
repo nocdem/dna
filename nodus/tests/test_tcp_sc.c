@@ -44,13 +44,27 @@
  *      peer reads exactly 4E 44 02 ‖ len LE ‖ payload, and a frame it
  *      writes that way is delivered.
  *
+ *  11. Incremental sealing (operator, "Şimdi artımlı yap"): sends queue the
+ *      PLAINTEXT frame and only the drain seals, in portions of at most 32
+ *      sealed frames. Three 5 MiB frames behind a stalled receiver are not
+ *      sealed at send time (the counter is short of the total, a frame is
+ *      still queued), the counter then advances over several polls, every
+ *      frame arrives in order and byte-exact, the counter ends at exactly
+ *      start + 3 x 5,121, and the write buffer never outgrows
+ *      NODUS_TCP_SC_WBUF_MAX (128 KiB). A send refused at admission while an
+ *      earlier frame is mid-drain moves no counter, no cursor, no queue count
+ *      and no write-buffer byte.
+ *
  * WHAT IT REQUIRES: a default nodus build (no compile flags, no
  * environment). Loopback sockets on ephemeral ports (127.0.0.1:0), threads
  * (the layer's handshake worker). Heap: 5 MiB receive buffers, ~40 MiB peak
  * in case 7.
  * WHAT IT LEAVES BEHIND: nothing (all sockets closed, workers joined).
  *
- * HOW IT CAN LIE: every wait is a ROUND count of nodus_tcp_poll calls on
+ * HOW IT CAN LIE: the incremental case assumes 3 x 5 MiB (about 16 MB of
+ * sealed bytes) exceeds the host's socket buffers plus the 128 KiB write
+ * buffer; a host with socket buffers above ~16 MB would FAIL its first
+ * assertion (it never passes falsely). Every wait is a ROUND count of nodus_tcp_poll calls on
  * both ends, not a timing claim — a stuck handshake FAILs, it never passes
  * by waiting. Case 7's "refused" point depends on the host's socket buffers
  * (it sends 1 MiB frames until the first refusal, bounded at 300 sends);
@@ -1350,6 +1364,92 @@ static void test_level_held_input(void)
     held_input_case(true);
 }
 
+/* ══ 16: incremental sealing — portions, not whole frames ══════════════ */
+
+static void test_incremental_drain(void)
+{
+    enum { NFRAMES = 3 };
+    uint8_t *big = (uint8_t *)malloc(NODUS_MAX_FRAME_TCP);
+    uint64_t c_start = 0, c_sent = 0, prev, cur;
+    int ok, advances = 0;
+
+    TEST("incremental: 3 x 5 MiB behind a stalled receiver are NOT sealed at send time");
+    ok = big != NULL && pair_up(&CMT_P2P_SC_PROFILE_CLIENT, &CMT_P2P_SC_PROFILE_CLIENT, NULL) == 0 &&
+         pump_until(&g_srv.sessions, 1, MAX_ROUNDS) && pump_until(&g_cli.sessions, 1, MAX_ROUNDS);
+    g_srv.seq_mode = true;
+    if (ok) {
+        c_start = nodus_tcp_sc_send_counter(g_cli.conn);
+        for (int i = 0; ok && i < NFRAMES; i++) {
+            fill_seq(big, NODUS_MAX_FRAME_TCP, (uint64_t)i);
+            ok = nodus_tcp_send(g_cli.conn, big, NODUS_MAX_FRAME_TCP) == 0;
+        }
+        c_sent = nodus_tcp_sc_send_counter(g_cli.conn);
+    }
+    /* 3 x 5,121 sealed frames cannot all be in the socket buffers plus the
+     * 128 KiB write buffer: part of the plaintext is still queued, unsealed. */
+    if (ok && c_sent < c_start + 3 * NODUS_TCP_SC_FRAMES_MAX &&
+        g_cli.conn->pending_head != NULL && g_cli.conn->wcap <= NODUS_TCP_SC_WBUF_MAX) PASS();
+    else FAIL("everything was sealed at send time, or the write buffer outgrew its bound");
+
+    TEST("incremental: the counter advances over several polls; all frames arrive in order");
+    prev = c_sent;
+    for (int i = 0; ok && i < BIG_ROUNDS && g_srv.frames < NFRAMES; i++) {
+        poll_both();
+        cur = nodus_tcp_sc_send_counter(g_cli.conn);
+        if (cur != prev) {
+            advances++;
+            prev = cur;
+        }
+    }
+    if (ok && advances >= 3 && g_srv.frames == NFRAMES && g_srv.seq_ok == NFRAMES &&
+        g_srv.seq_bad == 0 && nodus_tcp_sc_send_counter(g_cli.conn) == c_start + 3 * NODUS_TCP_SC_FRAMES_MAX &&
+        g_cli.conn->wcap <= NODUS_TCP_SC_WBUF_MAX && g_cli.disconnected == 0 &&
+        g_srv.disconnected == 0) PASS();
+    else FAIL("not drained in portions, a frame lost / reordered, or the buffer bound broke");
+    pair_down();
+    free(big);
+}
+
+/* ══ 17: a refused send touches nothing while an earlier frame is mid-drain ══ */
+
+static void test_refused_mid_drain(void)
+{
+    uint8_t *buf = (uint8_t *)malloc(Q_FRAME_LEN);
+    int ok, n_ok = 0, refused = -1;
+
+    TEST("refused at admission mid-drain: counter, cursor and queue stay put");
+    ok = buf != NULL && pair_up(&CMT_P2P_SC_PROFILE_CLIENT, &CMT_P2P_SC_PROFILE_CLIENT, NULL) == 0 &&
+         pump_until(&g_srv.sessions, 1, MAX_ROUNDS) && pump_until(&g_cli.sessions, 1, MAX_ROUNDS);
+    g_srv.seq_mode = true;
+    for (int i = 0; ok && i < 300; i++) {          /* receiver stalled */
+        fill_seq(buf, Q_FRAME_LEN, (uint64_t)i);
+        if (nodus_tcp_send(g_cli.conn, buf, Q_FRAME_LEN) != 0) {
+            refused = i;
+            break;
+        }
+        n_ok++;
+    }
+    ok = ok && refused == n_ok && g_cli.conn->pending_head != NULL;
+    for (int k = 0; ok && k < 3; k++) {
+        nodus_pending_frame_t *head = g_cli.conn->pending_head;
+        size_t cursor = head->sc_off, count = g_cli.conn->pending_count;
+        size_t bytes = g_cli.conn->pending_bytes, wlen = g_cli.conn->wlen;
+        uint64_t ctr = nodus_tcp_sc_send_counter(g_cli.conn);
+
+        fill_seq(buf, Q_FRAME_LEN, (uint64_t)refused);
+        ok = nodus_tcp_send(g_cli.conn, buf, Q_FRAME_LEN) == -1 &&
+             g_cli.conn->pending_head == head && head->sc_off == cursor &&
+             head->sc_off < head->frame_size &&           /* the earlier frame is still mid-drain */
+             g_cli.conn->pending_count == count && g_cli.conn->pending_bytes == bytes &&
+             g_cli.conn->wlen == wlen && nodus_tcp_sc_send_counter(g_cli.conn) == ctr;
+    }
+    ok = ok && pump_until(&g_srv.frames, n_ok, BIG_ROUNDS) && g_srv.seq_ok == n_ok &&
+         g_srv.seq_bad == 0 && g_srv.disconnected == 0 && g_cli.disconnected == 0;
+    if (ok) PASS(); else FAIL("a refused send sealed, moved a cursor / counter, or the stream broke");
+    pair_down();
+    free(buf);
+}
+
 /* ══ 14: a marked teardown is claimed once, even if on_disconnect polls ══ */
 
 static void test_teardown_nested_poll(void)
@@ -1413,6 +1513,8 @@ int main(void)
     test_enable_dirty_conn();
     test_level_triggered();
     test_level_held_input();
+    test_incremental_drain();
+    test_refused_mid_drain();
     test_teardown_nested_poll();
     test_layer_off_bytes();
 

@@ -31,8 +31,9 @@ _Static_assert(sizeof(((nodus_sig_t *)0)->bytes) == CMT_P2P_SC_SIG_SIZE,
                "nodus_sig_t must be CMT_P2P_SC_SIG_SIZE bytes");
 _Static_assert(sizeof(((nodus_pubkey_t *)0)->bytes) == CMT_P2P_SC_DSA_PK_SIZE,
                "nodus_pubkey_t must be CMT_P2P_SC_DSA_PK_SIZE bytes");
-_Static_assert(NODUS_TCP_SC_WBUF_MAX == 5351064,
-               "derived write-buffer bound (header comment): 5,346,324 + 161*4 + 4096");
+_Static_assert(NODUS_TCP_SC_WBUF_FILL == 66824 && NODUS_TCP_SC_PORTION_WIRE == 33412 &&
+               NODUS_TCP_SC_WBUF_MAX == 131072,
+               "derived write-buffer bounds (header comment): 2 x (32 x 1044 + 4), 128 KiB");
 
 /* The transport's write lock (nodus_tcp_set_write_lock), NULL = none. Every
  * public query of a connection's machine takes it: the machine is written
