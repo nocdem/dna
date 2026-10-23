@@ -13,18 +13,28 @@ open, the pull-sync messages and the `p_want` bit-vector, the inbox control
 `_data` — plus the strict-CBOR array / false / null additions (§3) and five
 typed client-side `_id` helpers (§5).
 
-**No production caller.** Nothing in a node or a client calls any function
-in this file yet; the only callers are `nodus/tests/test_dht2_codec.c` and
-`nodus/tests/test_dht2_msg.c` (`nodus/CMakeLists.txt:627-632`: "Pure, no
-I/O; no caller yet"). Storage, the holder check, quotas, the client / node
-sessions and the holder / client logic that sends and checks these messages
-are LATER packages (`dht2_msg.h:39-42`: "no admission, holder or client
-logic").
+DHT v2 package 4 (§11): NOT in `shared/dht2/` — `nodus/src/dht/nodus_dht2_wview.{h,c}`,
+the `nodus-storage` process's view of its local witness over the `ipc_dht`
+connection kind of `<data_path>/witness.sock` (snapshot, frozen sets, name
+check). The witness side of that kind (its fill functions, structs and the
+derived frame bound) is in `messenger/docs/functions/ledger.md` §19.
 
-**Build.** The six `.c` files are in nodus's common source list
-(`nodus/CMakeLists.txt` `set(NODUS_SOURCES` :114, entries :633-638), outside
+**No production caller.** Nothing in a node or a client calls any function
+in this file yet; the only callers are `nodus/tests/test_dht2_codec.c`,
+`nodus/tests/test_dht2_msg.c` and `nodus/tests/test_dht2_ipc.c`
+(`nodus/CMakeLists.txt:627-633`: "Pure, no I/O; no caller yet"; `:704-707`
+for the package-4 view: "No caller yet (package 5)"). Storage, the holder
+check, quotas, the client / node sessions and the holder / client logic that
+sends and checks these messages are LATER packages (`dht2_msg.h:39-42`: "no
+admission, holder or client logic").
+
+**Build.** The six `shared/dht2/*.c` files are in nodus's common source list
+(`nodus/CMakeLists.txt` `set(NODUS_SOURCES` :114, entries :634-639), outside
 the Linux-only list, "so it compiles on Windows (the browser / Connect core
-will use it too)" (:631-632). Include pattern: `#include "dht2/dht2_record.h"`
+will use it too)" (:632-633). The package-4 `nodus/src/dht/nodus_dht2_wview.c`
+is NOT: it is in the Linux-only library list (`:704-707`), links the nodus
+transport + `nodus_cbor` and includes `witness/nodus_witness_ipc.h` for
+constants and plain structs only. Include pattern: `#include "dht2/dht2_record.h"`
 (resolved through `-I shared`). Dependencies: `crypto/sign/qgp_dilithium.h`
 (ML-DSA-87), `crypto/hash/qgp_sha3.h`, `dnac/cmt_pb.h` / `dnac/cmt_pb_wire.h`
 (the tree's proto3 PublicKey codec and reader — `dht2_record.c:16`,
@@ -538,7 +548,7 @@ Named in the headers / code but NOT in row 21's list:
 ### 9.1 `test_dht2_codec` (package 1)
 
 `nodus/tests/test_dht2_codec.c` (ctest `test_dht2_codec`,
-`nodus/CMakeLists.txt:2038-2044`, linked `nodus dsa nodus crypto`). Twelve
+`nodus/CMakeLists.txt:2043-2049`, linked `nodus dsa nodus crypto`). Twelve
 sections run from `main` (`test_dht2_codec.c:1831-1842`):
 `test_strict_decode`, `test_class_kats`, `test_preimages`, `test_envelope`,
 `test_matrix`, `test_class_max`, `test_validity`, `test_order`,
@@ -583,7 +593,7 @@ ORCHESTRATOR's run count, not re-run for this reference.
 ### 9.2 `test_dht2_msg` (package 2)
 
 `nodus/tests/test_dht2_msg.c` (ctest `test_dht2_msg`,
-`nodus/CMakeLists.txt:2046-2052`, linked `nodus dsa nodus crypto`). Ten
+`nodus/CMakeLists.txt:2060-2066`, linked `nodus dsa nodus crypto`). Ten
 sections run from `main` (`test_dht2_msg.c:1999-2008`):
 `test_cbor_additions`, `test_requests`, `test_answers`, `test_list`,
 `test_refusal`, `test_seal_and_sizes`, `test_pull`, `test_want`,
@@ -637,6 +647,64 @@ build, not a run.
   compared to preimages hashed by the same SHA3-512, so a wrong label in
   the decision record itself would pass; (5) the pull-receipt envelope
   domain is undecided — only its payload is tested.
+
+### 9.3 `test_dht2_ipc` (package 4)
+
+`nodus/tests/test_dht2_ipc.c` (ctest `test_dht2_ipc`,
+`nodus/CMakeLists.txt:2051-2058`, linked `nodus dsa nodus`). 23 cases, run
+from `main` (`test_dht2_ipc.c:1164-1187`): nine against the REAL witness
+listener (`nodus_witness_ipc_*`) with a raw peer and test handlers —
+`test_snap`, `test_sets`, `test_sets_max`, `test_name`, `test_unserved`,
+`test_nul_in_q`, `test_request_header_cap`, `test_null_handler`,
+`test_status_unchanged` (defined `:355-578`); thirteen against
+`nodus_dht2_wview` and a scripted socket server with INJECTED time —
+`test_c_start`, `test_c_snap_age`, `test_c_late_reply`,
+`test_c_snap_age_from_request`, `test_c_fault_kept`, `test_c_header_cap`,
+`test_c_poll_rate`, `test_c_snap_err`, `test_c_sets`, `test_c_name`,
+`test_c_name_fault`, `test_c_timeout`, `test_c_malformed` (defined
+`:715-1033`); one end to end, `test_end_to_end` (`:1082`). The file repeats
+two of the header's frame-bound `_Static_assert`s (`:110-113`). The ORCHESTRATOR's run at `793a85ef0`:
+`test_dht2_ipc` 23 passed / 0 failed, build 0 warnings; `test_witness_ipc`,
+`test_storage_linked`, `test_split_linked`, `test_dht2_codec`,
+`test_dht2_msg` pass — counts from that run, not re-run for this reference.
+
+- **Proves** (file header `:9-63`): the `ipc_dht` answers are EXACTLY
+  `{q, ci, h, t, cu, e}`, `{q, e, s0, s1, rg:[{f, st}]}`, `{q, fp, h, n}`
+  (bytes pinned by hand-built expectations); a handler fault is `{q, err}`
+  (a name fault keeps `fp`), never empty or partial; the `e = 0` / `e ≤ E` /
+  `e > E` arrays; a sets answer with `DNA_V2_STORAGE_SET_MAX` members in all
+  three lists is EXACTLY `NODUS_WITNESS_IPC_DHT_SETS_DERIVED_MAX` bytes and
+  fits `NODUS_WITNESS_IPC_DHT_FRAME_MAX`; frames the kind does not serve
+  close the connection (`ipc_status`, unknown `q`, extra key, `ipc_name`
+  without / with a short `fp`, malformed map, a request over
+  `CTL_FRAME_MAX`, a dht request on an `ipc_ctl` connection, a NULL
+  handler, a NUL in `q`); `ipc_status` is unchanged byte for byte. The
+  view: preface then snap and sets requests; fresh for 5000 ms, none from
+  5001 ms; a request each 1000 ms, not before; a snapshot `{err}` clears it;
+  sets only with a same-`e` fresh snapshot, one re-request on an `e` change;
+  one outstanding request per type; positive name kept, negative until `h`
+  moved, `{err}` reported once as FAULT and never cached; timeout close at
+  5000 ms and redial only after 250 ms with empty state; malformed (registry
+  status 3, missing key), unsolicited and over-FRAME_MAX answers close; a
+  reply on the wire past its deadline is refused; a snapshot is aged from
+  its request (reply at 3000 to a request at 1000 is fresh until 6000); an
+  unread name fault blocks further name requests; a header declaring more
+  than the cap closes with no payload sent (client: FRAME_MAX, witness:
+  CTL_FRAME_MAX).
+- **Requires** (`:65-67`): a default build; no environment, no network, no
+  ports; `mkdtemp` directories under `/tmp` (unix sockets only). Safe under
+  `ctest -j`.
+- **Leaves behind** (`:69-71`): nothing — sockets closed and unlinked,
+  directories removed, heap fixtures freed.
+- **Can lie** (`:73-86`): (1) the witness FILL functions
+  (`nodus_witness_dht_*_fill`: tip meta, `nodus_witness_storage_set_get`,
+  the registry SQL, the `v2_names` lookup) are NOT exercised — test
+  handlers stand in; the wire and the client are proven, not the chain
+  reads; (2) expected frames are hand-built by the encoder's author —
+  self-consistent, not an independent oracle; (3) "no further request"
+  checks are absences after a fixed number of poll rounds, each backed by a
+  positive check in the same case; (4) time is whatever the test passes —
+  it does not prove the package-5 caller passes a monotonic clock.
 
 ---
 
@@ -789,3 +857,65 @@ package 7), so nothing seals or opens a pull-receipt; the PeerRecord /
 address announcement — moved to the endpoint package (package 6), because
 rev 5 sets its size bounds there; admission, holder and client logic; no
 caller in a node or a client.
+
+---
+
+## 11. The storage side's view of the witness (`nodus/src/dht/nodus_dht2_wview.h`) — package 4
+
+Design rev 5 §2, §6 "Name check", §13 row 13; package plan
+`docs/plans/2026-10-23-dht-v2-package-plan.md` package 4 and §5 (LOCAL-only).
+The `nodus-storage` side of the `ipc_dht` connection kind of
+`<data_path>/witness.sock`: it dials the socket (same euid,
+`NODUS_TCP_UNIX_UID_SELF`), sends `{"q":"ipc_dht"}`, and keeps the snapshot,
+the frozen sets and name answers (`nodus_dht2_wview.h:1-43`). The wire and
+the witness side — `nodus_witness_dht_snap_t` / `_sets_t` / `_name_t`,
+`NODUS_WITNESS_IPC_DHT_FRAME_MAX`, the fill functions — are
+`messenger/docs/functions/ledger.md` §19; the narrative is
+`nodus/docs/ARCHITECTURE.md` §10 "The `ipc_dht` kind (DHT v2 package 4)".
+
+**NO CALLER YET** (`nodus_dht2_wview.h:39-41`): package 5 wires it into
+`nodus-storage`; today only `nodus/tests/test_dht2_ipc.c` calls it.
+
+**Time.** Nothing here reads a clock. Every call that can act on time takes
+`now_ms`, a caller-supplied MONOTONIC millisecond count (the caller's own
+tick clock); it only schedules this node's own polling and ages its own
+cache — never a consensus input. All state is a function of the answers
+received and the `now_ms` values passed in (`:29-33`).
+
+**Transport.** It owns its own `nodus_tcp_t` and one connection, polled
+with a 0 ms wait from `nodus_dht2_wview_tick` (`nodus_dht2_wview.c:5-6`).
+The header says nothing about threads; no lock is taken anywhere in the
+file.
+
+| Item | Description |
+|------|-------------|
+| `NODUS_DHT2_WVIEW_SNAP_EVERY_MS` 1000, `NODUS_DHT2_WVIEW_SNAP_STALE_MS` 5000 (`:58-59`) | Row 13: the snapshot is asked once per second; an answer older than 5 s — counted from the tick that SENT its request — is no snapshot (the caller then refuses writes with `not-caught-up`). |
+| `NODUS_DHT2_WVIEW_REQ_TIMEOUT_MS` 5000 (`:60`) | A request unanswered this long closes the connection. |
+| `NODUS_DHT2_WVIEW_DIAL_BACKOFF_MIN_MS` 250, `NODUS_DHT2_WVIEW_DIAL_BACKOFF_MAX_MS` 5000 (`:61-62`) | A failed dial waits the current backoff, which then doubles up to the max; a successful dial resets it to the min (`nodus_dht2_wview.c:417-432`). |
+| `NODUS_DHT2_WVIEW_NAME_CACHE_MAX` 1024 (`:63`) | Name cache slots. A new answer takes its own slot, else a free one, else the first negative, else round-robin (`nodus_dht2_wview.c:273-294`) — deterministic in the order of answers. |
+| `typedef struct nodus_dht2_wview nodus_dht2_wview_t;` (`:65`) | Opaque. Holds the socket path, the connection, the snapshot, two heap sets structs (live + decode stage, swapped on a good answer) and the name cache. |
+| `typedef enum { NODUS_DHT2_WVIEW_NAME_PENDING = 0, NODUS_DHT2_WVIEW_NAME_NAMED, NODUS_DHT2_WVIEW_NAME_UNNAMED, NODUS_DHT2_WVIEW_NAME_FAULT, NODUS_DHT2_WVIEW_NAME_UNAVAILABLE } nodus_dht2_wview_name_t;` (`:68-76`) | Result of `nodus_dht2_wview_name`: asked / being asked — call again; the key has a name (permanent); no name as of `*h_out`; the witness answered `{err}` — refuse the admission (`holder-fault`), reported once, then asked afresh; no connection to the witness. |
+| `nodus_dht2_wview_t *nodus_dht2_wview_new(const char *sock_path)` (`:81`) | A view of the socket at `sock_path` (copied). Not connected: the first `tick` dials. NULL when `sock_path` is NULL or does not fit `NODUS_TCP_UNIX_PATH_MAX`, on allocation failure, or when `nodus_tcp_init` fails (`nodus_dht2_wview.c:397-415`). |
+| `void nodus_dht2_wview_tick(nodus_dht2_wview_t *wv, uint64_t now_ms)` (`:85`) | One pass, in this order (`nodus_dht2_wview.c:445-483`): dial if down and the backoff has passed (on connect: `max_payload` = `NODUS_WITNESS_IPC_DHT_FRAME_MAX`, all state cleared, sets marked wanted, the `ipc_dht` preface sent); close if any outstanding request is ≥ `REQ_TIMEOUT_MS` old — BEFORE the poll, so a late reply is never accepted; poll the socket (0 ms) and decode what arrived; send `ipc_dht_snap` when none is outstanding and `SNAP_EVERY_MS` has passed since the last one (or none was sent on this connection); send `ipc_dht_sets` when wanted, none is outstanding and any `{err}` retry time has passed. A send that cannot be queued closes the connection. NULL `wv` is a no-op. |
+| `bool nodus_dht2_wview_snap(const nodus_dht2_wview_t *wv, uint64_t now_ms, nodus_witness_dht_snap_t *out)` (`:89-90`) | `true` and `*out` = the snapshot, or `false` when there is none: NULL argument, not connected, never answered, answered `{err}`, or older than `SNAP_STALE_MS` at `now_ms` (age from its request's send tick; a `now_ms` below that tick counts as fresh — `snap_fresh`, `nodus_dht2_wview.c:85-89`). |
+| `const nodus_witness_dht_sets_t *nodus_dht2_wview_sets(const nodus_dht2_wview_t *wv, uint64_t now_ms)` (`:94-95`) | The frozen sets, or NULL unless a fresh snapshot exists AND carries the same `e` as these sets. The pointer is valid until the next tick (a new sets answer swaps the buffers). A snapshot with another `e` makes the next tick request new sets (`nodus_dht2_wview.c:180-181`); a sets `{err}` drops the held sets and delays the next request by `SNAP_EVERY_MS` (`:206-211`). |
+| `nodus_dht2_wview_name_t nodus_dht2_wview_name(nodus_dht2_wview_t *wv, uint64_t now_ms, const uint8_t fp[64], uint64_t *h_out)` (`:100-103`) | The name state of `fp` (64 bytes); `*h_out` (may be NULL) = the answer's tip height for NAMED / UNNAMED. Order (`nodus_dht2_wview.c:500-537`): NULL `wv` / `fp` → UNAVAILABLE; an unreported `{err}` for this `fp` → FAULT (once, then cleared); a cached positive → NAMED; a cached negative while a fresh snapshot's `h` ≤ the answer's `h` → UNNAMED; not connected → UNAVAILABLE; a request outstanding, or an `{err}` for another `fp` not yet reported → PENDING without sending; otherwise sends `ipc_name` and returns PENDING (a send that cannot be queued closes the connection → UNAVAILABLE). The caller asks again on a later tick. |
+| `bool nodus_dht2_wview_connected(const nodus_dht2_wview_t *wv)` (`:106`) | Whether the socket to the witness is up (`false` for NULL). |
+| `void nodus_dht2_wview_free(nodus_dht2_wview_t *wv)` (`:109`) | Close and free. NULL-safe. |
+
+**Answer decoding** (`nodus_dht2_wview.c:115-364`): a map of 2-6 entries, `q`
+first; the snap answer exactly `ci` (32 B), `h`, `t`, `cu` (bool), `e`; the
+sets answer exactly `e`, `s0`, `s1` (arrays of 64-byte strings, ≤
+`DNA_V2_STORAGE_SET_MAX`), `rg` (≤ the cap, each a 2-entry map `f` 64 B and
+`st` ∈ {1, 2}); the name answer `fp` (equal to the outstanding request's)
+then `h`, `n` ∈ {0, 1} — or the single key `err` (text) after `q` / `fp`;
+every key once, no unknown key, no trailing byte. A malformed answer, an
+answer with no such request outstanding, or a frame longer than
+`NODUS_WITNESS_IPC_DHT_FRAME_MAX` closes the connection (`:368-378`). A close
+(any cause) forgets the snapshot, the sets, every outstanding request and an
+unreported fault, and schedules the redial after the current backoff
+(`:380-393`); the name cache survives a reconnect.
+
+**Not here:** the callers (package 5: holder store + admission, which turns
+"no snapshot" into `not-caught-up` and NAME_FAULT into `holder-fault`);
+anything that writes to the chain. Test: §9.3.
