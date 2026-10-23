@@ -25,13 +25,19 @@
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_db.h"          /* nodus_witness_block_height */
 #include "witness/nodus_witness_p2p.h"         /* nodus_witness_p2p_listen_port */
-#include "witness/nodus_witness_v2_apply.h"    /* nodus_witness_v2_committed_global_root (W4-H) */
+#include "witness/nodus_witness_v2_apply.h"    /* nodus_witness_v2_committed_global_root (W4-H),
+                                                * nodus_witness_v2_tip_block_time */
+#include "witness/nodus_witness_v2_produce.h"  /* nodus_witness_v2_tip_height */
+#include "witness/nodus_witness_v2_storage.h"  /* nodus_witness_storage_set_get */
+#include "witness/nodus_witness_cmt_node.h"    /* nodus_cmt_node_t.cs_started */
+#include "dnac/dnac.h"                         /* DNAC_EPOCH_LENGTH, dnac_name_bytes_ok */
 #include "transport/nodus_tcp.h"
 #include "protocol/nodus_cbor.h"
 #include "protocol/nodus_tier2.h"
 #include "crypto/nodus_sign.h"                 /* nodus_fingerprint */
 #include "crypto/utils/qgp_log.h"
 
+#include <sqlite3.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -70,6 +76,150 @@ void nodus_witness_status_fill(nodus_witness_t *w,
     memcpy(info->chain_id, w->chain_id, 32);
 }
 
+/* ── ipc_dht answers (DHT v2 design rev 5 §13 row 13) ────────────── */
+
+/* The last epoch boundary H the committed tip has passed — the boundary
+ * whose frozen storage_set(H) governs the epoch (H, H+E] the tip lies in.
+ * The same expression as handlers.c st_epoch_set (`*H_out = tip − tip %
+ * E`, dnac_storage_status "es"); 0 = no boundary yet. */
+static uint64_t dht_epoch_start(uint64_t tip) {
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    return tip - tip % E;
+}
+
+int nodus_witness_dht_snap_fill(nodus_witness_t *w,
+                                nodus_witness_dht_snap_t *out) {
+    uint64_t tip = 0, secs = 0;
+
+    if (!w || !out || !w->db) return -1;
+    memset(out, 0, sizeof(*out));
+    if (nodus_witness_v2_tip_height(w, &tip) != 0) return -1;
+    /* all-or-error: a tip without readable block meta has no time */
+    if (nodus_witness_v2_tip_block_time(w, tip, &secs) != 0) return -1;
+    memcpy(out->chain_id, w->chain_id, sizeof(out->chain_id));
+    out->height = tip;
+    out->tip_time = secs;
+    /* `cs_started` is set exactly when cmt_cs_start has run (directly at
+     * start, or at the block-sync switch — nodus_witness_cmt_node.h) and
+     * cleared only on release: the row's latch. The same read as
+     * handlers.c duty_sync_read. */
+    out->consensus_up = w->cmt_live && w->cmt_node != NULL &&
+        ((const nodus_cmt_node_t *)w->cmt_node)->cs_started;
+    out->epoch_start = dht_epoch_start(tip);
+    return 0;
+}
+
+/* The registry rows ACTIVE and EXITING, node_fp ASC. @return 0 / -1. */
+static int dht_registry_rows(nodus_witness_t *w,
+                             nodus_witness_dht_sets_t *out) {
+    sqlite3_stmt *st = NULL;
+    int rc, ret = 0;
+
+    out->nrg = 0;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT node_fp, status FROM v2_storage_nodes "
+            "WHERE status IN (?1, ?2) ORDER BY node_fp ASC",
+            -1, &st, NULL) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    if (sqlite3_bind_int(st, 1, DNA_V2_STORAGE_ACTIVE) != SQLITE_OK ||
+        sqlite3_bind_int(st, 2, DNA_V2_STORAGE_EXITING) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        int sv = sqlite3_column_int(st, 1);
+        if (out->nrg >= DNA_V2_STORAGE_SET_MAX ||
+            sqlite3_column_type(st, 0) != SQLITE_BLOB ||
+            sqlite3_column_bytes(st, 0) != 64 ||
+            sqlite3_column_blob(st, 0) == NULL ||
+            (sv != DNA_V2_STORAGE_ACTIVE && sv != DNA_V2_STORAGE_EXITING)) {
+            ret = -1;          /* malformed row / more live rows than the cap */
+            break;
+        }
+        memcpy(out->rg[out->nrg].fp, sqlite3_column_blob(st, 0), 64);
+        out->rg[out->nrg].status = (uint8_t)sv;
+        out->nrg++;
+    }
+    if (ret == 0 && rc != SQLITE_DONE) ret = -1;
+    sqlite3_finalize(st);
+    return ret;
+}
+
+/* S(H) into out_fps. A set that is absent (1) or unreadable / fails its
+ * hash check (-1) is a fault for the caller. */
+static int dht_set_members(nodus_witness_t *w, uint64_t H,
+                           uint8_t fps[][64], uint32_t *n_out) {
+    nodus_storage_set_t *set = calloc(1, sizeof(*set));
+    int ret = -1;
+
+    if (!set) return -1;
+    if (nodus_witness_storage_set_get(w, H, set) == 0 &&
+        set->count <= DNA_V2_STORAGE_SET_MAX) {
+        memcpy(fps, set->fps, (size_t)set->count * 64);
+        *n_out = set->count;
+        ret = 0;
+    }
+    free(set);
+    return ret;
+}
+
+int nodus_witness_dht_sets_fill(nodus_witness_t *w,
+                                nodus_witness_dht_sets_t *out) {
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    uint64_t tip = 0;
+
+    if (!w || !out || !w->db) return -1;
+    memset(out, 0, sizeof(*out));
+    if (nodus_witness_v2_tip_height(w, &tip) != 0) return -1;
+    out->e = dht_epoch_start(tip);
+    if (out->e > 0) {
+        if (dht_set_members(w, out->e, out->s0, &out->n0) != 0) return -1;
+        if (out->e > E &&
+            dht_set_members(w, out->e - E, out->s1, &out->n1) != 0)
+            return -1;
+    }
+    if (dht_registry_rows(w, out) != 0) return -1;
+    return 0;
+}
+
+int nodus_witness_dht_name_fill(nodus_witness_t *w, const uint8_t fp[64],
+                                nodus_witness_dht_name_t *out) {
+    uint64_t tip = 0;
+    sqlite3_stmt *st = NULL;
+    bool named = false;
+    int ok = 0;
+
+    if (!w || !fp || !out || !w->db) return -1;
+    memset(out, 0, sizeof(*out));
+    if (nodus_witness_v2_tip_height(w, &tip) != 0) return -1;
+    /* handle_dnac_name_of's lookup (nodus_witness_handlers.c): no row =
+     * absent; a row that fails the byte rule is a fault, never "absent". */
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT name, registered_height FROM v2_names WHERE owner = ?1",
+            -1, &st, NULL) == SQLITE_OK &&
+        sqlite3_bind_blob(st, 1, fp, 64, SQLITE_TRANSIENT) == SQLITE_OK) {
+        int rc = sqlite3_step(st);
+        if (rc == SQLITE_DONE) {
+            ok = 1;
+        } else if (rc == SQLITE_ROW) {
+            int nl = sqlite3_column_bytes(st, 0);
+            const uint8_t *nm = sqlite3_column_blob(st, 0);
+            if (nm && dnac_name_bytes_ok(nm, (size_t)nl) &&
+                sqlite3_column_int64(st, 1) >= 1) {
+                named = true;
+                ok = 1;
+            }
+        }
+    }
+    sqlite3_finalize(st);
+    if (!ok) return -1;
+    out->height = tip;
+    out->named = named;
+    return 0;
+}
+
 /* ── Handlers bound to a witness ─────────────────────────────────── */
 
 static void witness_h_dispatch_dnac(void *ctx, nodus_tcp_conn_t *conn,
@@ -103,12 +253,28 @@ static void witness_h_status(void *ctx, nodus_witness_ipc_status_t *out) {
     out->listen_port = nodus_witness_p2p_listen_port(w->p2p);
 }
 
+static int witness_h_dht_snap(void *ctx, nodus_witness_dht_snap_t *out) {
+    return nodus_witness_dht_snap_fill((nodus_witness_t *)ctx, out);
+}
+
+static int witness_h_dht_sets(void *ctx, nodus_witness_dht_sets_t *out) {
+    return nodus_witness_dht_sets_fill((nodus_witness_t *)ctx, out);
+}
+
+static int witness_h_dht_name(void *ctx, const uint8_t fp[64],
+                              nodus_witness_dht_name_t *out) {
+    return nodus_witness_dht_name_fill((nodus_witness_t *)ctx, fp, out);
+}
+
 void nodus_witness_ipc_handlers_for(nodus_witness_t *w,
                                     nodus_witness_ipc_handlers_t *out) {
     memset(out, 0, sizeof(*out));
     out->dispatch_dnac = witness_h_dispatch_dnac;
     out->cc_collect    = witness_h_cc_collect;
     out->status        = witness_h_status;
+    out->dht_snap      = witness_h_dht_snap;
+    out->dht_sets      = witness_h_dht_sets;
+    out->dht_name      = witness_h_dht_name;
     out->ctx           = w;
 }
 
@@ -117,7 +283,8 @@ void nodus_witness_ipc_handlers_for(nodus_witness_t *w,
 typedef enum {
     IPC_KIND_NONE = 0,      /* accepted, first frame not seen yet */
     IPC_KIND_SESSION,       /* ipc_hello: one core client session */
-    IPC_KIND_CTL            /* ipc_ctl: core's control connection */
+    IPC_KIND_CTL,           /* ipc_ctl: core's control connection */
+    IPC_KIND_DHT            /* ipc_dht: nodus-storage's chain view (row 13) */
 } ipc_kind_t;
 
 typedef struct {
@@ -233,7 +400,12 @@ static void ipc_on_first_frame(nodus_witness_ipc_t *ipc, ipc_slot_t *s,
         s->kind = IPC_KIND_CTL;
         return;
     }
-    ipc_refuse(ipc, conn, "first frame is neither ipc_hello nor ipc_ctl");
+    if (strcmp(q, NODUS_WITNESS_IPC_Q_DHT) == 0 && !has_pk && !has_tk) {
+        s->kind = IPC_KIND_DHT;
+        return;
+    }
+    ipc_refuse(ipc, conn, "first frame is not ipc_hello, ipc_ctl or "
+               "ipc_dht");
 }
 
 static void ipc_on_session_frame(nodus_witness_ipc_t *ipc, ipc_slot_t *s,
@@ -310,6 +482,188 @@ static void ipc_on_ctl_frame(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn,
     nodus_tcp_send(conn, buf, n);
 }
 
+/* ── The `ipc_dht` kind (row 13) ─────────────────────────────────── */
+
+/* Parse an ipc_dht request: a CBOR map of one entry "q" (text) or, for
+ * ipc_name, two entries "q" and "fp" (a byte string of exactly 64). Any
+ * other key, a repeat, a wrong type or size, or trailing bytes refuse it.
+ * @return 0 and `q` (NUL-terminated), `has_fp`, `fp` set; -1 refused. */
+static int ipc_parse_dht(const uint8_t *p, size_t len, char q[32],
+                         bool *has_fp, uint8_t fp[64]) {
+    cbor_decoder_t dec;
+    cbor_decoder_init(&dec, p, len);
+
+    cbor_item_t m = cbor_decode_next(&dec);
+    if (m.type != CBOR_ITEM_MAP || m.count == 0 || m.count > 2) return -1;
+
+    bool has_q = false;
+    *has_fp = false;
+    for (size_t i = 0; i < m.count; i++) {
+        cbor_item_t k = cbor_decode_next(&dec);
+        if (k.type != CBOR_ITEM_TSTR) return -1;
+        cbor_item_t v = cbor_decode_next(&dec);
+        if (k.tstr.len == 1 && memcmp(k.tstr.ptr, "q", 1) == 0) {
+            if (has_q || v.type != CBOR_ITEM_TSTR || v.tstr.len >= 32)
+                return -1;
+            memcpy(q, v.tstr.ptr, v.tstr.len);
+            q[v.tstr.len] = '\0';
+            has_q = true;
+        } else if (k.tstr.len == 2 && memcmp(k.tstr.ptr, "fp", 2) == 0) {
+            if (*has_fp || v.type != CBOR_ITEM_BSTR || v.bstr.len != 64)
+                return -1;
+            memcpy(fp, v.bstr.ptr, 64);
+            *has_fp = true;
+        } else {
+            return -1;
+        }
+    }
+    if (dec.error || dec.pos != len || !has_q) return -1;
+    return 0;
+}
+
+/* {"q":q,["fp":fp,]"err":why} — the node-local fault answer. */
+static void ipc_dht_send_err(nodus_tcp_conn_t *conn, const char *q,
+                             const uint8_t *fp, const char *why) {
+    uint8_t buf[NODUS_WITNESS_IPC_CTL_FRAME_MAX];
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+    cbor_encode_map(&enc, fp ? 3 : 2);
+    cbor_encode_cstr(&enc, "q");   cbor_encode_cstr(&enc, q);
+    if (fp) { cbor_encode_cstr(&enc, "fp"); cbor_encode_bstr(&enc, fp, 64); }
+    cbor_encode_cstr(&enc, "err"); cbor_encode_cstr(&enc, why);
+    size_t n = cbor_encoder_len(&enc);
+    if (n > 0) nodus_tcp_send(conn, buf, n);
+}
+
+static void ipc_dht_answer_snap(nodus_witness_ipc_t *ipc,
+                                nodus_tcp_conn_t *conn) {
+    nodus_witness_dht_snap_t sn;
+    memset(&sn, 0, sizeof(sn));
+    if (ipc->h.dht_snap(ipc->h.ctx, &sn) != 0) {
+        ipc_dht_send_err(conn, NODUS_WITNESS_IPC_Q_DHT_SNAP, NULL,
+                         "snapshot unavailable");
+        return;
+    }
+    uint8_t buf[NODUS_WITNESS_IPC_CTL_FRAME_MAX];
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+    cbor_encode_map(&enc, 6);
+    cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, NODUS_WITNESS_IPC_Q_DHT_SNAP);
+    cbor_encode_cstr(&enc, "ci"); cbor_encode_bstr(&enc, sn.chain_id,
+                                                   sizeof(sn.chain_id));
+    cbor_encode_cstr(&enc, "h");  cbor_encode_uint(&enc, sn.height);
+    cbor_encode_cstr(&enc, "t");  cbor_encode_uint(&enc, sn.tip_time);
+    cbor_encode_cstr(&enc, "cu"); cbor_encode_bool(&enc, sn.consensus_up);
+    cbor_encode_cstr(&enc, "e");  cbor_encode_uint(&enc, sn.epoch_start);
+    size_t n = cbor_encoder_len(&enc);
+    if (n == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "ipc_dht_snap answer does not fit its "
+                      "buffer");
+        ipc_dht_send_err(conn, NODUS_WITNESS_IPC_Q_DHT_SNAP, NULL,
+                         "snapshot unavailable");
+        return;
+    }
+    nodus_tcp_send(conn, buf, n);
+}
+
+static void ipc_dht_answer_sets(nodus_witness_ipc_t *ipc,
+                                nodus_tcp_conn_t *conn) {
+    nodus_witness_dht_sets_t *sets = calloc(1, sizeof(*sets));
+    uint8_t *buf = malloc(NODUS_WITNESS_IPC_DHT_FRAME_MAX);
+
+    if (!sets || !buf || ipc->h.dht_sets(ipc->h.ctx, sets) != 0 ||
+        sets->n0 > DNA_V2_STORAGE_SET_MAX ||
+        sets->n1 > DNA_V2_STORAGE_SET_MAX ||
+        sets->nrg > DNA_V2_STORAGE_SET_MAX) {
+        ipc_dht_send_err(conn, NODUS_WITNESS_IPC_Q_DHT_SETS, NULL,
+                         "sets unavailable");
+        goto done;
+    }
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, NODUS_WITNESS_IPC_DHT_FRAME_MAX);
+    cbor_encode_map(&enc, 5);
+    cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, NODUS_WITNESS_IPC_Q_DHT_SETS);
+    cbor_encode_cstr(&enc, "e");  cbor_encode_uint(&enc, sets->e);
+    cbor_encode_cstr(&enc, "s0"); cbor_encode_array(&enc, sets->n0);
+    for (uint32_t i = 0; i < sets->n0; i++)
+        cbor_encode_bstr(&enc, sets->s0[i], 64);
+    cbor_encode_cstr(&enc, "s1"); cbor_encode_array(&enc, sets->n1);
+    for (uint32_t i = 0; i < sets->n1; i++)
+        cbor_encode_bstr(&enc, sets->s1[i], 64);
+    cbor_encode_cstr(&enc, "rg"); cbor_encode_array(&enc, sets->nrg);
+    for (uint32_t i = 0; i < sets->nrg; i++) {
+        cbor_encode_map(&enc, 2);
+        cbor_encode_cstr(&enc, "f");  cbor_encode_bstr(&enc, sets->rg[i].fp, 64);
+        cbor_encode_cstr(&enc, "st"); cbor_encode_uint(&enc, sets->rg[i].status);
+    }
+    size_t n = cbor_encoder_len(&enc);
+    if (n == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "ipc_dht_sets answer does not fit "
+                      "NODUS_WITNESS_IPC_DHT_FRAME_MAX");
+        ipc_dht_send_err(conn, NODUS_WITNESS_IPC_Q_DHT_SETS, NULL,
+                         "sets unavailable");
+        goto done;
+    }
+    nodus_tcp_send(conn, buf, n);
+done:
+    free(buf);
+    free(sets);
+}
+
+static void ipc_dht_answer_name(nodus_witness_ipc_t *ipc,
+                                nodus_tcp_conn_t *conn, const uint8_t fp[64]) {
+    nodus_witness_dht_name_t nm;
+    memset(&nm, 0, sizeof(nm));
+    if (ipc->h.dht_name(ipc->h.ctx, fp, &nm) != 0) {
+        ipc_dht_send_err(conn, NODUS_WITNESS_IPC_Q_NAME, fp,
+                         "names store unreadable");
+        return;
+    }
+    uint8_t buf[NODUS_WITNESS_IPC_CTL_FRAME_MAX];
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+    cbor_encode_map(&enc, 4);
+    cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, NODUS_WITNESS_IPC_Q_NAME);
+    cbor_encode_cstr(&enc, "fp"); cbor_encode_bstr(&enc, fp, 64);
+    cbor_encode_cstr(&enc, "h");  cbor_encode_uint(&enc, nm.height);
+    cbor_encode_cstr(&enc, "n");  cbor_encode_uint(&enc, nm.named ? 1u : 0u);
+    size_t n = cbor_encoder_len(&enc);
+    if (n == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "ipc_name answer does not fit its "
+                      "buffer");
+        ipc_dht_send_err(conn, NODUS_WITNESS_IPC_Q_NAME, fp,
+                         "names store unreadable");
+        return;
+    }
+    nodus_tcp_send(conn, buf, n);
+}
+
+static void ipc_on_dht_frame(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn,
+                             const uint8_t *payload, size_t len) {
+    char q[32];
+    bool has_fp = false;
+    uint8_t fp[64];
+
+    if (len > NODUS_WITNESS_IPC_CTL_FRAME_MAX ||
+        ipc_parse_dht(payload, len, q, &has_fp, fp) != 0) {
+        ipc_refuse(ipc, conn, "dht frame is not a well-formed request");
+        return;
+    }
+    if (strcmp(q, NODUS_WITNESS_IPC_Q_DHT_SNAP) == 0 && !has_fp &&
+        ipc->h.dht_snap) {
+        ipc_dht_answer_snap(ipc, conn);
+    } else if (strcmp(q, NODUS_WITNESS_IPC_Q_DHT_SETS) == 0 && !has_fp &&
+               ipc->h.dht_sets) {
+        ipc_dht_answer_sets(ipc, conn);
+    } else if (strcmp(q, NODUS_WITNESS_IPC_Q_NAME) == 0 && has_fp &&
+               ipc->h.dht_name) {
+        ipc_dht_answer_name(ipc, conn, fp);
+    } else {
+        ipc_refuse(ipc, conn, "dht frame is not ipc_dht_snap, "
+                   "ipc_dht_sets or ipc_name");
+    }
+}
+
 static void ipc_on_accept(nodus_tcp_conn_t *conn, void *ctx) {
     ipc_slot_t *s = ipc_slot((nodus_witness_ipc_t *)ctx, conn);
     if (s) ipc_slot_reset(s);
@@ -358,6 +712,9 @@ static void ipc_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
         break;
     case IPC_KIND_CTL:
         ipc_on_ctl_frame(ipc, conn, payload, len);
+        break;
+    case IPC_KIND_DHT:
+        ipc_on_dht_frame(ipc, conn, payload, len);
         break;
     }
 }

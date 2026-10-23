@@ -701,6 +701,10 @@ if(NOT WIN32)
         # but the shared dialer's (tests/storage_linked.cmake).
         src/server/nodus_dht_backend_ipc.c
         src/dht/nodus_dht_ipc.c
+        # DHT v2 package 4 — the storage side's view of the witness
+        # (`ipc_dht` kind of witness.sock). No caller yet (package 5); a
+        # static-library member, so nodus-storage links it only once called.
+        src/dht/nodus_dht2_wview.c
         # Split S5b — the H-10 partial-wipe boot gate in its own object, so
         # nodus-storage runs the same check as core before opening nodus.db.
         src/server/nodus_partial_wipe.c
@@ -2043,6 +2047,15 @@ add_test(NAME test_cmt_pb COMMAND test_cmt_pb)
 add_executable(test_dht2_codec tests/test_dht2_codec.c)
 target_link_libraries(test_dht2_codec nodus dsa nodus crypto)
 add_test(NAME test_dht2_codec COMMAND test_dht2_codec)
+
+# DHT v2 package 4 — `ipc_dht` (witness/nodus_witness_ipc.c) against the
+# storage-side view (dht/nodus_dht2_wview.c) over a real unix socket in a
+# mkdtemp dir; test handlers stand in for the witness. Default build, no
+# ports, injected time. What it proves / how it can lie: the header of
+# tests/test_dht2_ipc.c.
+add_executable(test_dht2_ipc tests/test_dht2_ipc.c)
+target_link_libraries(test_dht2_ipc nodus dsa nodus)
+add_test(NAME test_dht2_ipc COMMAND test_dht2_ipc)
 
 # DHT v2 package 2 — the wire messages (requests, answer / receipt /
 # refusal payloads, pull-sync, inbox control, typed `_id` helpers). Default
