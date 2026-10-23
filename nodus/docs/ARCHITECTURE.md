@@ -11285,11 +11285,12 @@ Governing decisions (LOCAL-only files, `docs/plans/decisions/`):
 `nodus.csess.transcript.v1` / `nodus.csess.keys.v1` and the strict purpose 0x0C, the
 node DHT session `nodus.nsess.transcript.v1` / `nodus.nsess.keys.v1` and the strict
 purpose 0x0D, "the 4004 pattern" (operator "Tamam, senin önerilerine devam edelim");
-`2026-10-23-dht-v2-session-bytes.md` — the operator approved the HKDF info strings
+`2026-10-23-dht-v2-session-bytes.md` — the operator ("İkisini onaylıyorum
+(Önerilen)") approved the HKDF info strings
 `nodus.csess.keys.v1/aead`, `…/challenge`, `nodus.nsess.keys.v1/aead`, `…/challenge`
 (4004's suffixes on the decided prefixes) and, for 0x0C / 0x0D, the same NDS1 tagged
-preimage as 0x0A, strict on sign and verify — FIPS 204 ctx was rejected ("İkisini
-onaylıyorum (Önerilen)"); `2026-10-23-kurultay-43-summary.md` (khan: "Onaylıyorum
+preimage as 0x0A, strict on sign and verify (the record's "Rejected": FIPS 204 ctx,
+a second separation mechanism with no security gain named); `2026-10-23-kurultay-43-summary.md` (khan: "Onaylıyorum
 (Önerilen)") — per-connection immutable profiles, 0x0C / 0x0D in the strict set, the
 4004 byte-identity fixtures captured against today's code and passing BEFORE the
 refactor, no 4004 byte change (O-7), a per-port protocol-version symbol for the new
