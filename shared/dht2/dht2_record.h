@@ -259,16 +259,16 @@ int dht2_id_group_head(const uint8_t chain[DHT2_CHAIN_LEN],
                        uint8_t out[DHT2_ID_LEN]);
 
 /** Group record `_id` = SHA3-512(`nodus.dht.group.record.v1` ‖ chain ‖
- *  group id 32 ‖ key version u32 BE). */
+ *  group id 32 ‖ key version u64 BE, 8 B). */
 int dht2_id_group_record(const uint8_t chain[DHT2_CHAIN_LEN],
                          const uint8_t group_id[DHT2_GROUP_ID_LEN],
-                         uint32_t key_version, uint8_t out[DHT2_ID_LEN]);
+                         uint64_t key_version, uint8_t out[DHT2_ID_LEN]);
 
 /** Group key packet `_id` = SHA3-512(`nodus.dht.group.keys.v1` ‖ chain ‖
- *  group id 32 ‖ key version u32 BE). */
+ *  group id 32 ‖ key version u64 BE, 8 B). */
 int dht2_id_group_keys(const uint8_t chain[DHT2_CHAIN_LEN],
                        const uint8_t group_id[DHT2_GROUP_ID_LEN],
-                       uint32_t key_version, uint8_t out[DHT2_ID_LEN]);
+                       uint64_t key_version, uint8_t out[DHT2_ID_LEN]);
 
 /** Group feed topic = SHA3-512(`nodus.dht.group.feed.v1` ‖ chain ‖
  *  group id 32). No key version. */

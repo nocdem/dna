@@ -180,29 +180,30 @@ int dht2_id_group_head(const uint8_t chain[DHT2_CHAIN_LEN],
                    DHT2_GROUP_ID_LEN, out);
 }
 
-/* group id ‖ key version u32 BE — the params of the record and key-packet
- * ids. */
+/* group id ‖ key version u64 BE (8 B) — the params of the record and
+ * key-packet ids (decision id-param-bytes, Amendment). */
 static int id_group_versioned(const char *label,
                               const uint8_t chain[DHT2_CHAIN_LEN],
                               const uint8_t group_id[DHT2_GROUP_ID_LEN],
-                              uint32_t key_version, uint8_t out[DHT2_ID_LEN])
+                              uint64_t key_version, uint8_t out[DHT2_ID_LEN])
 {
     uint8_t params[DHT2_GROUP_ID_LEN + DHT2_KEY_VERSION_LEN];
+    size_t  k;
 
     if (group_id == NULL) {
         return -1;
     }
     memcpy(params, group_id, DHT2_GROUP_ID_LEN);
-    params[DHT2_GROUP_ID_LEN + 0] = (uint8_t)(key_version >> 24);
-    params[DHT2_GROUP_ID_LEN + 1] = (uint8_t)(key_version >> 16);
-    params[DHT2_GROUP_ID_LEN + 2] = (uint8_t)(key_version >> 8);
-    params[DHT2_GROUP_ID_LEN + 3] = (uint8_t)key_version;
+    for (k = 0; k < DHT2_KEY_VERSION_LEN; k++) {
+        params[DHT2_GROUP_ID_LEN + k] =
+            (uint8_t)(key_version >> (8u * (DHT2_KEY_VERSION_LEN - 1u - k)));
+    }
     return dht2_id(label, chain, params, sizeof(params), out);
 }
 
 int dht2_id_group_record(const uint8_t chain[DHT2_CHAIN_LEN],
                          const uint8_t group_id[DHT2_GROUP_ID_LEN],
-                         uint32_t key_version, uint8_t out[DHT2_ID_LEN])
+                         uint64_t key_version, uint8_t out[DHT2_ID_LEN])
 {
     return id_group_versioned(DHT2_LABEL_GROUP_RECORD, chain, group_id,
                               key_version, out);
@@ -210,7 +211,7 @@ int dht2_id_group_record(const uint8_t chain[DHT2_CHAIN_LEN],
 
 int dht2_id_group_keys(const uint8_t chain[DHT2_CHAIN_LEN],
                        const uint8_t group_id[DHT2_GROUP_ID_LEN],
-                       uint32_t key_version, uint8_t out[DHT2_ID_LEN])
+                       uint64_t key_version, uint8_t out[DHT2_ID_LEN])
 {
     return id_group_versioned(DHT2_LABEL_GROUP_KEYS, chain, group_id,
                               key_version, out);

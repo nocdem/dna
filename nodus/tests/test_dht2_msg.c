@@ -34,7 +34,7 @@
  *     lookup by fp finds the entry and its `through` (u64 BE);
  *   · the five typed `_id` helpers equal SHA3-512 of the preimages
  *     assembled by hand from the decision record (label ‖ chain ‖ params,
- *     key version u32 BE; head and feed take no version);
+ *     key version u64 BE (8 B); head and feed take no version);
  *   · an answer sealed with dht2_answer_seal opens under
  *     `nodus.dht.answer.v1`, a tampered payload is `bad-signature`,
  *     another payload type is refused; the row-11 constants equal the
@@ -1905,28 +1905,72 @@ static void test_ids(void)
               memcmp(got, k->b, 64) == 0, "group feed KAT (independent digest)");
     }
 
-    /* group record / keys: chain ‖ group id ‖ version u32 BE */
+    /* Independent KATs for group record / keys, version 0x0102030405060708
+     * (u64 BE, 8 B — decision id-param-bytes, Amendment); digests computed
+     * OUTSIDE this tree with
+     *   python3 -c "import hashlib; print(hashlib.sha3_512(
+     *       bytes.fromhex('<preimage hex>')).hexdigest())"
+     * chain = 0x22 x 32, group id = 0x60..0x7f. */
+    {
+        /* record: preimage hex (97 B)
+         * 6e6f6475732e6468742e67726f75702e7265636f72642e7631 (label) ‖
+         * 22 x 32 ‖ 606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f
+         * ‖ 0102030405060708 */
+        static const char rec_dig[] =
+            "cc9b44e1d58880380cafe885c712274f878ee958ee061b4b9ba028d617e7ef08"
+            "e19cf2bef83c0a13093221eb3e6dca9efc69bc8e4e1a46b56872beb383999826";
+        /* keys: preimage hex (95 B)
+         * 6e6f6475732e6468742e67726f75702e6b6579732e7631 (label) ‖ 22 x 32 ‖
+         * 606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f
+         * ‖ 0102030405060708 */
+        static const char keys_dig[] =
+            "6f784178281a4a20c7ca190e7f6c5c559460053f8fcd1a494716d1ccf547db75"
+            "80f355e91391191bb5450b440c7c9cf5910477789f4e11eb275f67388d156089";
+        asm_t *k = &g_m;
+
+        a_init(k);
+        a_hex(k, rec_dig);
+        CHECK(!k->err && k->n == 64 &&
+              dht2_id_group_record(chain, gid, 0x0102030405060708ull, got) == 0 &&
+              memcmp(got, k->b, 64) == 0,
+              "group record KAT (independent digest)");
+        a_init(k);
+        a_hex(k, keys_dig);
+        CHECK(!k->err && k->n == 64 &&
+              dht2_id_group_keys(chain, gid, 0x0102030405060708ull, got) == 0 &&
+              memcmp(got, k->b, 64) == 0,
+              "group keys KAT (independent digest)");
+    }
+
+    /* group record / keys: chain ‖ group id ‖ version u64 BE (8 B) */
     a_init(&p);
     a_raw(&p, gid, 32);
-    a_hex(&p, "01020304");
+    a_hex(&p, "0102030405060708");
+    expect_id(want, "nodus.dht.group.record.v1", chain, &p);
+    CHECK(dht2_id_group_record(chain, gid, 0x0102030405060708ull, got) == 0 &&
+          memcmp(got, want, 64) == 0, "group record preimage, 8-byte version");
+    expect_id(want, "nodus.dht.group.keys.v1", chain, &p);
+    CHECK(dht2_id_group_keys(chain, gid, 0x0102030405060708ull, got) == 0 &&
+          memcmp(got, want, 64) == 0, "group keys preimage, 8-byte version");
+    a_init(&p);                       /* a 32-bit value is zero-extended */
+    a_raw(&p, gid, 32);
+    a_hex(&p, "0000000001020304");
     expect_id(want, "nodus.dht.group.record.v1", chain, &p);
     CHECK(dht2_id_group_record(chain, gid, 0x01020304u, got) == 0 &&
-          memcmp(got, want, 64) == 0, "group record preimage, v = 0x01020304");
-    expect_id(want, "nodus.dht.group.keys.v1", chain, &p);
-    CHECK(dht2_id_group_keys(chain, gid, 0x01020304u, got) == 0 &&
-          memcmp(got, want, 64) == 0, "group keys preimage, v = 0x01020304");
+          memcmp(got, want, 64) == 0,
+          "group record, v = 0x01020304 zero-extended to 8 bytes");
     a_init(&p);
     a_raw(&p, gid, 32);
-    a_hex(&p, "00000000");
+    a_hex(&p, "0000000000000000");
     expect_id(want, "nodus.dht.group.record.v1", chain, &p);
     CHECK(dht2_id_group_record(chain, gid, 0, got) == 0 &&
           memcmp(got, want, 64) == 0, "group record, v = 0");
     a_init(&p);
     a_raw(&p, gid, 32);
-    a_hex(&p, "ffffffff");
+    a_hex(&p, "ffffffffffffffff");
     expect_id(want, "nodus.dht.group.keys.v1", chain, &p);
-    CHECK(dht2_id_group_keys(chain, gid, 0xFFFFFFFFu, got) == 0 &&
-          memcmp(got, want, 64) == 0, "group keys, v = 2^32-1");
+    CHECK(dht2_id_group_keys(chain, gid, 0xFFFFFFFFFFFFFFFFull, got) == 0 &&
+          memcmp(got, want, 64) == 0, "group keys, v = 2^64-1");
     {
         uint8_t other[64];
 

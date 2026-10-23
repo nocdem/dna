@@ -134,10 +134,10 @@ extern "C" {
 #define DHT2_CTL_DENIED        2u
 
 /** Decision 2026-10-23-dht-v2-id-param-bytes.md: dm salt 32 B, group id
- *  32 B, group key version u32 big-endian. */
+ *  32 B, group key version u64 big-endian (8 B, as amended). */
 #define DHT2_SALT_LEN          32u
 #define DHT2_GROUP_ID_LEN      32u
-#define DHT2_KEY_VERSION_LEN   4u
+#define DHT2_KEY_VERSION_LEN   8u
 
 /* ── row 11: the derived maximum answer MESSAGE ────────────────────────
  * Record bytes per call: 8 keys × 262,144 B (the records travel beside
