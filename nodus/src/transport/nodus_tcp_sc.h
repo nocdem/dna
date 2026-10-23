@@ -85,6 +85,41 @@
  * delivery, on top of the jobs' own run time. The loop that owns the
  * transport must call nodus_tcp_poll regularly — a caller that stops
  * polling stops its handshakes.
+ * SCOPE OF THE BOUND: the 5 ms cap is TRANSPORT-WIDE (it applies to every
+ * connection of the transport while ANY job is outstanding) and it holds only
+ * for an owner that polls THIS transport alone. An owner that polls several
+ * transports in one loop (nodus_server.c polls tcp, then inter_tcp, with a
+ * 50 ms wait, :3215-3238) must include nodus_tcp_sc_busy() of EVERY transport
+ * in its own wait, or a result on the other transport sits for that wait.
+ * That is a 3b-2 obligation. The same predicate also covers a loop-owned
+ * teardown that is due (a fatal sealing failure, below).
+ *
+ * ── 3b-2 OBLIGATIONS RECORDED HERE ─────────────────────────────────────
+ *  · The existing auth gate: a connection inheriting tcp->auth_required keeps
+ *    auth_state HELLO_SENT/NONE for ever (the hello/auth path is not run on
+ *    it), so nodus_tcp_send would queue into the auth pending buffer, which
+ *    the layer refuses. 3b-2 must open the gate for layer connections
+ *    (auth_required false, or auth_state OK at on_session) when it removes
+ *    the hello / auth / key_init path.
+ *  · nodus_tcp_sc_enable refuses a connection that has carried any byte
+ *    (sticky conn->io_started), has auth_state != NONE, a peer id, an auth
+ *    nonce or a session token: enable at accept / right after connect.
+ *
+ * ── FAILURES ───────────────────────────────────────────────────────────
+ *  · A sealing (cipher) failure is FATAL, not backpressure: the send returns
+ *    -1, on_pending_full is NOT called, the connection is marked, and the
+ *    next nodus_tcp_poll closes it (on_disconnect, free) after the write
+ *    lock is released. Admission refusals (not authenticated, counter
+ *    exhausted, queue full) stay distinct: -1 / on_pending_full as before.
+ *  · A WebSocket Close that arrives while a handshake job is outstanding
+ *    does not discard the input before it: the close is recorded, the job
+ *    finishes, the held input is opened and its frames dispatched in order
+ *    after on_session, and only then the connection closes.
+ *  · DEFERRED (not changed here): sealing a whole message at once into its
+ *    reserved space rather than draining it incrementally. The decision's
+ *    concern was the buffer bound, which is derived and asserted below;
+ *    changing the sealing schedule needs a measurement first (CLAUDE.md:
+ *    optimise only with a measurement).
  *
  * ── LIFETIMES (caller's obligations) ───────────────────────────────────
  * cfg.id (the signing key, and for a responder the ML-KEM key pair) must
@@ -114,8 +149,14 @@
  * Same model as the rest of nodus_tcp: one thread polls; with a write lock
  * installed (nodus_tcp_set_write_lock) other threads may send. The machine
  * is touched under that lock by BOTH sides (reads/feeds, completions, and
- * seals), so its send half and receive half never race. The worker threads
- * touch only their private job copies.
+ * seals), so its send half and receive half never race; enable checks the
+ * connection and publishes conn->sc under it; every PUBLIC query
+ * (nodus_tcp_sc_authenticated, _peer_pubkey, _send_counter, _generation)
+ * takes it and returns a COPY — a pointer into the machine would dangle once
+ * conn_free wipes it. The "transport-internal" functions below that touch the
+ * machine run with the lock held by the caller, except the ones marked
+ * poll-thread-only. on_session is invoked after the lock is released. The
+ * worker threads touch only their private job copies.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -222,9 +263,12 @@ int nodus_tcp_sc_enable(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
 /** Layer enabled AND the machine is AUTHENTICATED. */
 bool nodus_tcp_sc_authenticated(const nodus_tcp_conn_t *conn);
 
-/** The peer's public key (CMT_P2P_SC_DSA_PK_SIZE bytes) once
- *  AUTHENTICATED; NULL before that or without the layer. */
-const uint8_t *nodus_tcp_sc_peer_pubkey(const nodus_tcp_conn_t *conn);
+/** Copy the peer's public key (CMT_P2P_SC_DSA_PK_SIZE bytes) into `out`,
+ *  once AUTHENTICATED. @return 0; -1 before that, without the layer, or on a
+ *  NULL argument (`out` untouched). A copy, never a pointer into the machine
+ *  (conn_free wipes it). */
+int nodus_tcp_sc_peer_pubkey(const nodus_tcp_conn_t *conn,
+                             uint8_t out[CMT_P2P_SC_DSA_PK_SIZE]);
 
 /** The machine's send counter (tests: a refused send must not move it);
  *  0 without the layer. */
@@ -250,7 +294,8 @@ typedef struct nodus_sc_job {
     int                  cls;            /* 0 OUTBOUND, 1 INBOUND */
     cmt_p2p_sc_job_kind_t kind;
     int                  rc;             /* cmt_p2p_sc_job_run's result */
-    cmt_p2p_sc_host_t    host;           /* by value: the job outlives its conn */
+    bool                 charged;        /* counted in the worker's bound until applied */
+    cmt_p2p_sc_host_t    host;          /* by value: the job outlives its conn */
     cmt_p2p_sc_job_t     job;            /* pointers into this struct */
     uint8_t kem_pk[CMT_P2P_SC_KEM_PK_SIZE];
     uint8_t kem_ct[CMT_P2P_SC_KEM_CT_SIZE];
@@ -289,7 +334,11 @@ nodus_sc_apply_t nodus_tcp_sc_job_apply(nodus_tcp_t *tcp, nodus_sc_job_t *job,
 /** The longest wait nodus_tcp_poll may use now (see COMPLETION DELIVERY). */
 int nodus_tcp_sc_poll_timeout(const nodus_tcp_t *tcp, int timeout_ms);
 
-/** True while jobs are outstanding (poll must not return early). */
+/** True while jobs are outstanding (queued + running + finished-not-yet-
+ *  applied) or a loop-owned teardown is due. nodus_tcp_poll must not return
+ *  early then, and an owner polling several transports in one loop must
+ *  include this predicate of EVERY transport in its wait (see COMPLETION
+ *  DELIVERY, "SCOPE OF THE BOUND"). Takes the write lock. */
 bool nodus_tcp_sc_busy(const nodus_tcp_t *tcp);
 
 /** nodus_tcp_close: stop the threads, drop every queued / finished job. */
@@ -326,7 +375,9 @@ int nodus_tcp_sc_feed(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
                       nodus_tcp_sc_plain_fn plain, void *plain_ctx);
 
 /** A job is outstanding or socket bytes are held: do not read the socket
- *  (the held bytes come first; the completion resumes the connection). */
+ *  (the held bytes come first; the completion resumes the connection).
+ *  POLL-THREAD-ONLY, no lock: job_out / the hold are written only by the
+ *  feed and the completion apply, which run on the polling thread. */
 bool nodus_tcp_sc_blocked(const nodus_tcp_conn_t *conn);
 
 /** The bytes the machine wants written (handshake messages); consume what
@@ -342,8 +393,14 @@ bool nodus_tcp_sc_take_ready(nodus_tcp_conn_t *conn);
  *  framing. */
 size_t nodus_tcp_sc_sealed_size(size_t plain_len);
 
-/** Can `nframes` more frames be sealed (authenticated, counter room)? */
+/** Can `nframes` more frames be sealed (authenticated, counter room)?
+ *  Write lock held by the caller. */
 bool nodus_tcp_sc_can_seal(const nodus_tcp_conn_t *conn, size_t nframes);
+
+/** The machine is DEAD (a cipher failure, a reject): sealing failed for good,
+ *  as opposed to a refusal that leaves the session intact. Write lock held
+ *  by the caller. */
+bool nodus_tcp_sc_dead(const nodus_tcp_conn_t *conn);
 
 /**
  * Seal frames [first, first + nframes) of the logical byte stream `a || b`

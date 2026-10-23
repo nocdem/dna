@@ -274,6 +274,26 @@ typedef struct nodus_tcp_conn {
      * released by conn_free. Opaque here so this header stays free of the
      * secret-connection headers (the browser builds include it). */
     struct nodus_tcp_sc   *sc;
+
+    /* Sticky: the first byte read from or written to the socket sets it and
+     * nothing clears it. Empty buffers do not prove a connection unused
+     * (bytes may have been consumed and answered); the SecretConnection
+     * layer is enabled only on a connection where this is still false. */
+    bool                   io_started;
+
+    /* SecretConnection layer, loop-owned teardown: a fatal sealing failure
+     * (cipher error — the machine is dead) cannot close the connection from
+     * inside a send, so the send marks it and the next nodus_tcp_poll closes
+     * it, after the write lock is released. Counted in tcp->sc_close_requests. */
+    bool                   sc_close_req;
+
+    /* WebSocket Close that arrived while a handshake job was outstanding
+     * (layer on): the input preceding it is still held. The close frame to
+     * send is kept here; the connection closes once that input has been
+     * opened and dispatched, in order, after on_session. */
+    bool                   ws_close_wait;
+    uint8_t                ws_close_len;
+    uint8_t                ws_close_frame[4];
 } nodus_tcp_conn_t;
 
 /* ── Callbacks ───────────────────────────────────────────────────── */
@@ -412,6 +432,7 @@ typedef struct nodus_tcp {
     nodus_tcp_event_fn        on_session;
     struct nodus_sc_worker   *sc_worker;
     uint64_t                  sc_gen_last;
+    int                       sc_close_requests;  /* conns with sc_close_req set */
 } nodus_tcp_t;
 
 /**

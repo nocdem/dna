@@ -85,6 +85,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <openssl/evp.h>      /* seal_by_hand: one sealed frame the machine would refuse to write */
+
 #define TEST(name) do { printf("  %-72s", name); fflush(stdout); } while (0)
 #define PASS()     do { printf("PASS\n"); passed++; } while (0)
 #define FAIL(msg)  do { printf("FAIL: %s\n", msg); failed++; } while (0)
@@ -116,6 +118,8 @@ typedef struct side {
     const uint8_t      *peer_pk;      /* what on_session must see */
     nodus_tcp_conn_t   *conn;
     int                 accepted, disconnected, sessions, peer_ok, frames;
+    int                 frames_at_session;   /* frames delivered when on_session ran */
+    int                 frames_at_close;     /* ... and when on_disconnect ran */
     uint8_t            *rx;           /* the last frame delivered */
     size_t              rx_len;
     bool                seq_mode;     /* verify idx-tagged frames in order */
@@ -153,6 +157,7 @@ static void cb_disconnect(nodus_tcp_conn_t *c, void *ctx)
     side_t *s = (side_t *)ctx;
 
     s->disconnected++;
+    s->frames_at_close = s->frames;
     if (s->conn == c)
         s->conn = NULL;
 }
@@ -160,10 +165,12 @@ static void cb_disconnect(nodus_tcp_conn_t *c, void *ctx)
 static void cb_session(nodus_tcp_conn_t *c, void *ctx)
 {
     side_t *s = (side_t *)ctx;
-    const uint8_t *pk = nodus_tcp_sc_peer_pubkey(c);
+    uint8_t pk[NODUS_PK_BYTES];     /* a COPY: the machine's key is never handed out */
 
     s->sessions++;
-    if (pk != NULL && s->peer_pk != NULL && memcmp(pk, s->peer_pk, NODUS_PK_BYTES) == 0)
+    s->frames_at_session = s->frames;
+    if (nodus_tcp_sc_peer_pubkey(c, pk) == 0 && s->peer_pk != NULL &&
+        memcmp(pk, s->peer_pk, NODUS_PK_BYTES) == 0)
         s->peer_ok++;
 }
 
@@ -213,11 +220,14 @@ static void cb_pending_full(nodus_tcp_conn_t *c, const uint8_t *payload, size_t 
     free(exp);
 }
 
+static bool g_level;            /* the next side_init makes a level-triggered transport */
+
 static void side_init(side_t *s)
 {
     memset(s, 0, sizeof(*s));
     s->rx = (uint8_t *)malloc(NODUS_MAX_FRAME_TCP);
     nodus_tcp_init(&s->tcp, -1);
+    s->tcp.level_triggered = g_level;
     s->tcp.on_accept = cb_accept;
     s->tcp.on_disconnect = cb_disconnect;
     s->tcp.on_session = cb_session;
@@ -808,7 +818,7 @@ static void test_websocket(void)
 {
     static nodus_ws_origins_t origins;
     wspeer_t w;
-    char req[512], head[512];
+    char req[512], head[512] = { 0 };     /* initialised: read only after a good setup */
     size_t hl = 0;
     int ok;
 
@@ -853,10 +863,10 @@ static void test_websocket(void)
         head[hl] = '\0';
         if (strstr(head, "\r\n\r\n") != NULL) break;
     }
-    {
+    if (ok) {                              /* a failed setup parses nothing */
         const char *end = strstr(head, "\r\n\r\n");
 
-        ok = ok && end != NULL && strncmp(head, "HTTP/1.1 101", 12) == 0;
+        ok = end != NULL && strncmp(head, "HTTP/1.1 101", 12) == 0;
         if (ok) {
             size_t eoh = (size_t)(end - head) + 4;
 
@@ -936,6 +946,215 @@ static void test_websocket(void)
     side_close(&g_srv);
 }
 
+/* ══ 11: a WS Close behind input a handshake job is holding ═════════ */
+
+/* Seal ONE frame the way the machine's Write does (cmt_p2p_secret.c
+ * sc_seal_frame), by hand, so a peer that is not yet AUTHENTICATED can put
+ * application data into the same TCP segment as its AUTHSIG — which the
+ * machine itself refuses to do. nonce = role ‖ 00 00 00 ‖ counter (u64 BE). */
+static int seal_by_hand(const cmt_p2p_sc_t *m, uint64_t ctr, const uint8_t *chunk,
+                        size_t n, uint8_t out[CMT_P2P_SC_SEALED_FRAME_SIZE])
+{
+    uint8_t frame[CMT_P2P_SC_TOTAL_FRAME_SIZE];
+    uint8_t nonce[CMT_P2P_SC_AEAD_NONCE_SIZE] = { 0 };
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    int len = 0, ok = 0;
+
+    memset(frame, 0, sizeof(frame));
+    frame[0] = (uint8_t)n;
+    frame[1] = (uint8_t)(n >> 8);
+    memcpy(frame + CMT_P2P_SC_DATA_LEN_SIZE, chunk, n);
+    nonce[0] = (uint8_t)m->role;
+    for (int i = 0; i < 8; i++)
+        nonce[4 + i] = (uint8_t)(ctr >> (56 - 8 * i));
+    if (ctx != NULL &&
+        EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) == 1 &&
+        EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, CMT_P2P_SC_AEAD_NONCE_SIZE, NULL) == 1 &&
+        EVP_EncryptInit_ex(ctx, NULL, NULL, m->key, nonce) == 1 &&
+        EVP_EncryptUpdate(ctx, out, &len, frame, (int)sizeof(frame)) == 1 &&
+        EVP_EncryptFinal_ex(ctx, out + len, &len) == 1 &&
+        EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, CMT_P2P_SC_AEAD_OVERHEAD,
+                            out + CMT_P2P_SC_TOTAL_FRAME_SIZE) == 1)
+        ok = 1;
+    EVP_CIPHER_CTX_free(ctx);
+    return ok ? 0 : -1;
+}
+
+static void test_ws_close_behind_data(void)
+{
+    static nodus_ws_origins_t origins;
+    wspeer_t w;
+    char req[512], head[512] = { 0 };
+    size_t hl = 0;
+    int ok;
+
+    TEST("ws: KEYX + AUTHSIG + data + Close in one go: data after on_session, then closed");
+    memset(&w, 0, sizeof(w));
+    side_init(&g_srv);
+    cfg_fill(&g_srv.cfg, CMT_P2P_SC_ROLE_RESPONDER, &CMT_P2P_SC_PROFILE_CLIENT, g_a, NULL);
+    g_srv.enable_on_accept = true;
+    g_srv.peer_pk = g_b->pk.bytes;
+    nodus_ws_origins_default(&origins);
+    ok = nodus_tcp_ws_listen(&g_srv.tcp, 0, &origins) == 0;
+    w.rx = (uint8_t *)malloc(WSRX_CAP);
+    w.plain = (uint8_t *)malloc(WSRX_CAP);
+    w.m = (cmt_p2p_sc_t *)calloc(1, sizeof(*w.m));
+    ok = ok && w.rx && w.plain && w.m;
+    if (ok) {
+        int n;
+
+        w.host.ctx = &g_b->sk;
+        w.host.sign = peer_sign;
+        w.host.verify = peer_verify;
+        w.fd = raw_connect(g_srv.tcp.ws_port);
+        ok = w.fd >= 0 &&
+             cmt_p2p_sc_init_profile(w.m, CMT_P2P_SC_ROLE_INITIATOR, &w.host,
+                                     &CMT_P2P_SC_PROFILE_CLIENT, g_b->pk.bytes, NULL, NULL,
+                                     PROTO_VER, CHAIN) == CMT_OK;
+        n = snprintf(req, sizeof(req),
+            "GET /ws HTTP/1.1\r\nHost: 127.0.0.1:%u\r\nUpgrade: websocket\r\n"
+            "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            "Sec-WebSocket-Version: 13\r\nOrigin: %s\r\n"
+            "Sec-WebSocket-Protocol: binary\r\nX-Forwarded-For: " WS_XFF "\r\n\r\n",
+            (unsigned)g_srv.tcp.ws_port, NODUS_WS_DEFAULT_ORIGIN);
+        ok = ok && n > 0 && (size_t)n < sizeof(req) && send_all(w.fd, req, (size_t)n) == 0;
+    }
+    for (int i = 0; ok && i < MAX_ROUNDS; i++) {      /* the 101 head */
+        ssize_t r;
+
+        nodus_tcp_poll(&g_srv.tcp, 1);
+        r = recv(w.fd, head + hl, sizeof(head) - 1 - hl, MSG_DONTWAIT);
+        if (r > 0) hl += (size_t)r;
+        head[hl] = '\0';
+        if (strstr(head, "\r\n\r\n") != NULL) break;
+    }
+    if (ok) {
+        const char *end = strstr(head, "\r\n\r\n");
+
+        ok = end != NULL && strncmp(head, "HTTP/1.1 101", 12) == 0;
+        if (ok) {
+            size_t eoh = (size_t)(end - head) + 4;
+
+            memcpy(w.rx, head + eoh, hl - eoh);
+            w.rx_len = hl - eoh;
+        }
+    }
+    /* HELLO goes out; HELLO_R comes back; the peer runs ENCAPS and SIGN and
+     * stops at WAIT_AUTHSIG with KEYX + its sealed AUTHSIG still unsent. */
+    for (int i = 0; ok && i < MAX_ROUNDS; i++) {
+        nodus_tcp_poll(&g_srv.tcp, 1);
+        if (w.m->state == CMT_P2P_SC_ST_WAIT_AUTHSIG) break;
+        if (peer_tx(&w) != 0 || peer_rx(&w) != 0) { ok = 0; break; }
+    }
+    ok = ok && w.m->state == CMT_P2P_SC_ST_WAIT_AUTHSIG && w.pin_bad == 0 &&
+         w.m->send_counter == CMT_P2P_SC_AUTHSIG_FRAMES_MAX;
+    if (ok) {
+        size_t n = 0, flight_len;
+        const uint8_t *out = cmt_p2p_sc_out(w.m, &n);
+        uint8_t *flight = (uint8_t *)malloc(n + CMT_P2P_SC_SEALED_FRAME_SIZE + 64);
+        uint8_t *wire = (uint8_t *)malloc(n + CMT_P2P_SC_SEALED_FRAME_SIZE + 128);
+        uint8_t plain[32];
+        size_t pl = nodus_frame_encode(plain, sizeof(plain), (const uint8_t *)"behind-close", 12);
+        static const uint8_t close_body[2] = { 0x03, 0xe8 };    /* 1000 */
+        size_t wl;
+
+        ok = flight != NULL && wire != NULL && n > 0 && pl == 19;
+        if (ok) {
+            memcpy(flight, out, n);
+            cmt_p2p_sc_out_consume(w.m, n);
+            ok = seal_by_hand(w.m, w.m->send_counter, plain, pl, flight + n) == 0;
+            flight_len = n + CMT_P2P_SC_SEALED_FRAME_SIZE;
+            wl = ws_client_frame(wire, 0x82, flight, flight_len);
+            wl += ws_client_frame(wire + wl, 0x88, close_body, sizeof(close_body));
+            /* ONE write: the final AUTHSIG frame, the data frame behind it
+             * and the Close arrive together while VERIFY is outstanding. */
+            ok = ok && send_all(w.fd, wire, wl) == 0;
+        }
+        free(flight);
+        free(wire);
+    }
+    for (int i = 0; ok && i < MAX_ROUNDS && g_srv.disconnected == 0; i++)
+        nodus_tcp_poll(&g_srv.tcp, 1);
+    if (ok && g_srv.sessions == 1 && g_srv.peer_ok == 1 && g_srv.frames == 1 &&
+        g_srv.rx_len == 12 && memcmp(g_srv.rx, "behind-close", 12) == 0 &&
+        g_srv.frames_at_session == 0 &&       /* on_session came BEFORE the frame */
+        g_srv.disconnected == 1 && g_srv.frames_at_close == 1) PASS();
+    else FAIL("data lost, dispatched before on_session, or the connection stayed open");
+
+    if (w.fd > 0) close(w.fd);
+    if (w.m != NULL) cmt_p2p_sc_clear(w.m);
+    free(w.m);
+    free(w.rx);
+    free(w.plain);
+    side_close(&g_srv);
+}
+
+/* ══ 12: enable only on a connection that never carried a byte ═════ */
+
+static void test_enable_dirty_conn(void)
+{
+    nodus_tcp_sc_cfg_t cfg;
+    nodus_tcp_conn_t *c1, *c2;
+    uint8_t x = 7;
+    int ok;
+
+    TEST("enable refused after I/O started, and on leftover auth state");
+    side_init(&g_srv);
+    side_init(&g_cli);
+    cfg_fill(&cfg, CMT_P2P_SC_ROLE_INITIATOR, &CMT_P2P_SC_PROFILE_CLIENT, g_b, &g_a->node_id);
+    nodus_tcp_listen(&g_srv.tcp, "127.0.0.1", 0);
+    c1 = nodus_tcp_connect(&g_cli.tcp, "127.0.0.1", g_srv.tcp.port);
+    for (int i = 0; c1 != NULL && i < MAX_ROUNDS && c1->state != NODUS_CONN_CONNECTED; i++)
+        poll_both();
+    /* Plain bytes written: the (now empty) buffers prove nothing. */
+    ok = c1 != NULL && c1->state == NODUS_CONN_CONNECTED && nodus_tcp_send(c1, &x, 1) == 0;
+    for (int i = 0; ok && i < 50; i++)
+        poll_both();
+    ok = ok && c1->io_started && c1->wlen == 0 && nodus_tcp_sc_enable(&g_cli.tcp, c1, &cfg) == -1;
+
+    c2 = nodus_tcp_connect(&g_cli.tcp, "127.0.0.1", g_srv.tcp.port);
+    ok = ok && c2 != NULL && !c2->io_started;
+    if (ok) {
+        c2->auth_state = NODUS_CONN_AUTH_HELLO_SENT;
+        ok = nodus_tcp_sc_enable(&g_cli.tcp, c2, &cfg) == -1;
+        c2->auth_state = NODUS_CONN_AUTH_NONE;
+        c2->peer_id_set = true;
+        ok = ok && nodus_tcp_sc_enable(&g_cli.tcp, c2, &cfg) == -1;
+        c2->peer_id_set = false;
+        c2->session_token[3] = 1;
+        ok = ok && nodus_tcp_sc_enable(&g_cli.tcp, c2, &cfg) == -1;
+        c2->session_token[3] = 0;
+        /* ... and with all of that cleared the same connection is eligible. */
+        ok = ok && nodus_tcp_sc_enable(&g_cli.tcp, c2, &cfg) == 0;
+    }
+    if (ok) PASS(); else FAIL("a used connection was accepted, or a clean one refused");
+    side_close(&g_cli);
+    side_close(&g_srv);
+}
+
+/* ══ 13: level-triggered transport (a blocked conn leaves the read set) ══ */
+
+static void test_level_triggered(void)
+{
+    uint8_t *big = (uint8_t *)malloc(100000);
+    int ok;
+
+    TEST("level-triggered transports: handshake + frames both ways still complete");
+    g_level = true;
+    ok = big != NULL && pair_up(&CMT_P2P_SC_PROFILE_CLIENT, &CMT_P2P_SC_PROFILE_CLIENT, NULL) == 0 &&
+         pump_until(&g_srv.sessions, 1, MAX_ROUNDS) && pump_until(&g_cli.sessions, 1, MAX_ROUNDS);
+    if (ok) {
+        for (size_t i = 0; i < 100000; i++) big[i] = (uint8_t)(i * 7u + (i >> 8));
+        ok = send_and_check(&g_cli, &g_srv, big, 100000) &&
+             send_and_check(&g_srv, &g_cli, big, 100000) &&
+             g_srv.disconnected == 0 && g_cli.disconnected == 0;
+    }
+    if (ok) PASS(); else FAIL("level-triggered pair did not complete");
+    pair_down();
+    g_level = false;
+    free(big);
+}
+
 /* ══ main ════════════════════════════════════════════════════════════ */
 
 static nodus_identity_t *new_identity(void)
@@ -969,6 +1188,9 @@ int main(void)
     test_full_queue();
     test_stale_completion();
     test_websocket();
+    test_ws_close_behind_data();
+    test_enable_dirty_conn();
+    test_level_triggered();
     test_layer_off_bytes();
 
     free(g_a);

@@ -34,6 +34,16 @@ _Static_assert(sizeof(((nodus_pubkey_t *)0)->bytes) == CMT_P2P_SC_DSA_PK_SIZE,
 _Static_assert(NODUS_TCP_SC_WBUF_MAX == 5351064,
                "derived write-buffer bound (header comment): 5,346,324 + 161*4 + 4096");
 
+/* The transport's write lock (nodus_tcp_set_write_lock), NULL = none. Every
+ * public query of a connection's machine takes it: the machine is written
+ * under it by the feed, the completions and the seals, and freed by
+ * conn_free under it. */
+static void sc_lk(const nodus_tcp_t *tcp, bool lock)
+{
+    if (tcp != NULL && tcp->write_lock != NULL)
+        tcp->write_lock(tcp->write_lock_ctx, lock);
+}
+
 /* ── The per-connection state ─────────────────────────────────────────── */
 
 typedef struct nodus_tcp_sc {
@@ -215,6 +225,7 @@ static int worker_push(nodus_sc_worker_t *w, nodus_sc_job_t *j)
         return -1;
     }
     j->next = NULL;
+    j->charged = true;       /* released by nodus_tcp_sc_job_apply, once */
     if (w->qt[j->cls] != NULL)
         w->qt[j->cls]->next = j;
     else
@@ -224,6 +235,21 @@ static int worker_push(nodus_sc_worker_t *w, nodus_sc_job_t *j)
     pthread_cond_signal(&w->cv);
     pthread_mutex_unlock(&w->mu);
     return 0;
+}
+
+/* Give back the charge of a job the worker accepted. Called when the loop
+ * applies or discards it — never earlier: a batch taken off the worker and
+ * waiting for its turn (a nested poll inside an apply callback) still counts
+ * against the bound. Jobs that were never pushed (tests) carry no charge. */
+static void worker_release(nodus_sc_worker_t *w, nodus_sc_job_t *j)
+{
+    if (w == NULL || !j->charged)
+        return;
+    pthread_mutex_lock(&w->mu);
+    if (w->outstanding[j->cls] > 0)
+        w->outstanding[j->cls]--;
+    pthread_mutex_unlock(&w->mu);
+    j->charged = false;
 }
 
 #endif /* !NODUS_SC_INLINE */
@@ -242,11 +268,8 @@ nodus_sc_job_t *nodus_tcp_sc_take_done(nodus_tcp_t *tcp)
     pthread_mutex_lock(&w->mu);
     list = w->dh;
     w->dh = w->dt = NULL;
-    /* The jobs leave the worker's bound here: from now on they are the
-     * loop's, applied (and freed) before this poll call returns. */
-    for (nodus_sc_job_t *j = list; j != NULL; j = j->next)
-        if (w->outstanding[j->cls] > 0)
-            w->outstanding[j->cls]--;
+    /* Still charged: each job gives its slot back when it is individually
+     * applied or discarded (worker_release in nodus_tcp_sc_job_apply). */
     pthread_mutex_unlock(&w->mu);
     return list;
 #endif
@@ -272,12 +295,21 @@ int nodus_tcp_sc_outstanding(const nodus_tcp_t *tcp)
 
 bool nodus_tcp_sc_busy(const nodus_tcp_t *tcp)
 {
-    return nodus_tcp_sc_outstanding(tcp) > 0;
+    bool closing;
+
+    if (tcp == NULL)
+        return false;
+    if (nodus_tcp_sc_outstanding(tcp) > 0)
+        return true;
+    sc_lk(tcp, true);
+    closing = tcp->sc_close_requests > 0;     /* a loop-owned teardown is due */
+    sc_lk(tcp, false);
+    return closing;
 }
 
 int nodus_tcp_sc_poll_timeout(const nodus_tcp_t *tcp, int timeout_ms)
 {
-    if (nodus_tcp_sc_outstanding(tcp) > 0 &&
+    if (nodus_tcp_sc_busy(tcp) &&
         (timeout_ms < 0 || timeout_ms > NODUS_TCP_SC_POLL_MS))
         return NODUS_TCP_SC_POLL_MS;
     return timeout_ms;
@@ -473,6 +505,10 @@ nodus_sc_apply_t nodus_tcp_sc_job_apply(nodus_tcp_t *tcp, nodus_sc_job_t *job,
         job_free(job);
         return NODUS_SC_APPLY_DISCARDED;
     }
+#ifndef NODUS_SC_INLINE
+    /* Applied or discarded, this job's slot in the bound is free again. */
+    worker_release(tcp->sc_worker, job);
+#endif
     if (job->slot >= 0 && job->slot < NODUS_TCP_MAX_CONNS)
         conn = tcp->pool[job->slot];
     /* (slot, generation): the slot must still hold the connection this job
@@ -523,9 +559,31 @@ nodus_sc_apply_t nodus_tcp_sc_job_apply(nodus_tcp_t *tcp, nodus_sc_job_t *job,
 
 /* ── Enable / queries / free ──────────────────────────────────────────── */
 
+/* A connection the layer may be switched on for: it has carried NO byte in
+ * either direction (the sticky io_started — empty buffers prove nothing:
+ * bytes may have been consumed and answered), holds no leftover state of the
+ * old hello / auth / key_init path, and is not closing. Write lock held. */
+static bool conn_eligible(const nodus_tcp_conn_t *conn)
+{
+    static const uint8_t zero_token[NODUS_SESSION_TOKEN_LEN] = { 0 };
+
+    if (conn->sc != NULL || conn->close_pending || conn->state == NODUS_CONN_CLOSED ||
+        conn->is_unix || conn->channel_crypto.established)
+        return false;
+    if (conn->io_started || conn->rlen != 0 || conn->wlen != 0 ||
+        conn->pending_buf != NULL || conn->pending_count != 0)
+        return false;
+    if (conn->auth_state != NODUS_CONN_AUTH_NONE || conn->peer_id_set ||
+        conn->authenticated || conn->auth_nonce_pending ||
+        memcmp(conn->session_token, zero_token, sizeof(zero_token)) != 0)
+        return false;
+    return true;
+}
+
 int nodus_tcp_sc_enable(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
                         const nodus_tcp_sc_cfg_t *cfg)
 {
+    bool eligible;
     nodus_tcp_sc_t *s;
     const uint8_t *kem_pk = NULL;
     const uint8_t *kem_sk = NULL;
@@ -534,15 +592,11 @@ int nodus_tcp_sc_enable(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
 
     if (tcp == NULL || conn == NULL || cfg == NULL || cfg->id == NULL)
         return -1;
-    if (conn->sc != NULL || conn->close_pending || conn->state == NODUS_CONN_CLOSED ||
-        conn->is_unix || conn->channel_crypto.established) {
+    sc_lk(tcp, true);
+    eligible = conn_eligible(conn);
+    sc_lk(tcp, false);
+    if (!eligible) {
         QGP_LOG_ERROR(LOG_TAG_SC, "enable refused: connection not eligible (slot %d)", conn->slot);
-        return -1;
-    }
-    /* A connection that already carried a byte could have plaintext in it. */
-    if (conn->rlen != 0 || conn->wlen != 0 || conn->pending_buf != NULL ||
-        conn->pending_count != 0) {
-        QGP_LOG_ERROR(LOG_TAG_SC, "enable refused: connection not clean (slot %d)", conn->slot);
         return -1;
     }
     if (cfg->profile == &CMT_P2P_SC_PROFILE_CLIENT) {
@@ -571,14 +625,6 @@ int nodus_tcp_sc_enable(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
         return -1;
     }
 
-#ifndef NODUS_SC_INLINE
-    if (tcp->sc_worker == NULL) {
-        tcp->sc_worker = worker_start();
-        if (tcp->sc_worker == NULL)
-            return -1;
-    }
-#endif
-
     s = (nodus_tcp_sc_t *)calloc(1, sizeof(*s));
     if (s == NULL)
         return -1;
@@ -595,18 +641,42 @@ int nodus_tcp_sc_enable(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
         free(s);
         return -1;
     }
-    s->gen = ++tcp->sc_gen_last;
-    if (cfg->role == CMT_P2P_SC_ROLE_INITIATOR) {
-        conn->expected_peer_id = *cfg->expected_peer;
-        conn->expected_peer_id_set = true;
+    /* Publish under the write lock, re-checking: the checks above ran before
+     * the (slow) machine init, and a sender on another thread may have used
+     * the connection since. */
+    sc_lk(tcp, true);
+    eligible = conn_eligible(conn);
+#ifndef NODUS_SC_INLINE
+    if (eligible && tcp->sc_worker == NULL)
+        tcp->sc_worker = worker_start();
+    if (eligible && tcp->sc_worker == NULL)
+        eligible = false;
+#endif
+    if (eligible) {
+        s->gen = ++tcp->sc_gen_last;
+        if (cfg->role == CMT_P2P_SC_ROLE_INITIATOR) {
+            conn->expected_peer_id = *cfg->expected_peer;
+            conn->expected_peer_id_set = true;
+        }
+        conn->sc = s;
     }
-    conn->sc = s;
+    sc_lk(tcp, false);
+    if (!eligible) {
+        QGP_LOG_ERROR(LOG_TAG_SC, "enable refused: connection changed or no worker (slot %d)",
+                      conn->slot);
+        cmt_p2p_sc_clear(&s->m);
+        qgp_secure_memzero(s, sizeof(*s));
+        free(s);
+        return -1;
+    }
     /* An INITIATOR's HELLO is now in the machine's out queue: move it to the
      * write buffer (nodus_tcp.c owns the buffers). */
     if (nodus_tcp_sc_flush_hs(tcp, conn) != 0) {
         QGP_LOG_ERROR(LOG_TAG_SC, "enable refused: HELLO not buffered (slot %d)", conn->slot);
+        sc_lk(tcp, true);
         nodus_tcp_sc_free(conn);
         conn->expected_peer_id_set = false;
+        sc_lk(tcp, false);
         return -1;
     }
     return 0;
@@ -614,24 +684,69 @@ int nodus_tcp_sc_enable(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
 
 bool nodus_tcp_sc_authenticated(const nodus_tcp_conn_t *conn)
 {
-    return conn != NULL && conn->sc != NULL && cmt_p2p_sc_is_authenticated(&conn->sc->m);
+    nodus_tcp_t *tcp = conn ? conn->tcp_parent : NULL;
+    bool r;
+
+    if (conn == NULL)
+        return false;
+    sc_lk(tcp, true);
+    r = conn->sc != NULL && cmt_p2p_sc_is_authenticated(&conn->sc->m);
+    sc_lk(tcp, false);
+    return r;
 }
 
-const uint8_t *nodus_tcp_sc_peer_pubkey(const nodus_tcp_conn_t *conn)
+int nodus_tcp_sc_peer_pubkey(const nodus_tcp_conn_t *conn,
+                             uint8_t out[CMT_P2P_SC_DSA_PK_SIZE])
 {
-    if (!nodus_tcp_sc_authenticated(conn))
-        return NULL;
-    return cmt_p2p_sc_remote_pubkey(&conn->sc->m);
+    nodus_tcp_t *tcp = conn ? conn->tcp_parent : NULL;
+    int rc = -1;
+
+    if (conn == NULL || out == NULL)
+        return -1;
+    sc_lk(tcp, true);
+    if (conn->sc != NULL && cmt_p2p_sc_is_authenticated(&conn->sc->m)) {
+        const uint8_t *pk = cmt_p2p_sc_remote_pubkey(&conn->sc->m);
+
+        if (pk != NULL) {
+            memcpy(out, pk, CMT_P2P_SC_DSA_PK_SIZE);   /* a COPY: conn_free wipes the machine */
+            rc = 0;
+        }
+    }
+    sc_lk(tcp, false);
+    return rc;
 }
 
 uint64_t nodus_tcp_sc_send_counter(const nodus_tcp_conn_t *conn)
 {
-    return (conn != NULL && conn->sc != NULL) ? conn->sc->m.send_counter : 0;
+    nodus_tcp_t *tcp = conn ? conn->tcp_parent : NULL;
+    uint64_t r = 0;
+
+    if (conn == NULL)
+        return 0;
+    sc_lk(tcp, true);
+    if (conn->sc != NULL)
+        r = conn->sc->m.send_counter;
+    sc_lk(tcp, false);
+    return r;
 }
 
 uint64_t nodus_tcp_sc_generation(const nodus_tcp_conn_t *conn)
 {
-    return (conn != NULL && conn->sc != NULL) ? conn->sc->gen : 0;
+    nodus_tcp_t *tcp = conn ? conn->tcp_parent : NULL;
+    uint64_t r = 0;
+
+    if (conn == NULL)
+        return 0;
+    sc_lk(tcp, true);
+    if (conn->sc != NULL)
+        r = conn->sc->gen;
+    sc_lk(tcp, false);
+    return r;
+}
+
+bool nodus_tcp_sc_dead(const nodus_tcp_conn_t *conn)
+{
+    return conn != NULL && conn->sc != NULL && conn->sc->m.state == CMT_P2P_SC_ST_DEAD;
 }
 
 void nodus_tcp_sc_free(nodus_tcp_conn_t *conn)
@@ -674,14 +789,20 @@ void nodus_tcp_sc_out_consume(nodus_tcp_conn_t *conn, size_t n)
 
 bool nodus_tcp_sc_take_ready(nodus_tcp_conn_t *conn)
 {
-    nodus_tcp_sc_t *s = conn ? conn->sc : NULL;
-    bool r;
+    nodus_tcp_t *tcp = conn ? conn->tcp_parent : NULL;
+    bool r = false;
 
-    if (s == NULL)
+    if (conn == NULL)
         return false;
-    sc_note_ready(s);
-    r = s->ready;
-    s->ready = false;
+    /* The machine is read (and the flag cleared) under the lock; the caller
+     * invokes on_session AFTER this returns, lock released. */
+    sc_lk(tcp, true);
+    if (conn->sc != NULL) {
+        sc_note_ready(conn->sc);
+        r = conn->sc->ready;
+        conn->sc->ready = false;
+    }
+    sc_lk(tcp, false);
     return r;
 }
 

@@ -136,7 +136,9 @@
   #define SC_POLL_TIMEOUT(tcp, t) nodus_tcp_sc_poll_timeout((tcp), (t))
   #define SC_POLL_BUSY(tcp)       nodus_tcp_sc_busy(tcp)
   #define SC_POLL_APPLY(tcp)      sc_apply_done(tcp)
+  #define SC_CONN_BLOCKED(c)      ((c)->sc != NULL && nodus_tcp_sc_blocked(c))
 #else
+  #define SC_CONN_BLOCKED(c)      false
   #define SC_POLL_TIMEOUT(tcp, t) (t)
   #define SC_POLL_BUSY(tcp)       false
   #define SC_POLL_APPLY(tcp)      ((void)0)
@@ -440,6 +442,11 @@ static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     tcp->decrypt_fail_total += conn->decrypt_skip_count;
 
     tcp->count--;
+    if (conn->sc_close_req) {   /* a marked teardown is being done now */
+        conn->sc_close_req = false;
+        if (tcp->sc_close_requests > 0)
+            tcp->sc_close_requests--;
+    }
     read_pending_del(tcp, conn);   /* read budget: never service a closed conn */
     pending_free_all(conn);   /* Phase 3: drop any queued frames */
 
@@ -1100,11 +1107,78 @@ static bool sc_notify_ready(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     return conn->close_pending;
 }
 
+#ifdef NODUS_TCP_EPOLL
+/* Level-triggered epoll (tcp->level_triggered): a connection blocked on a
+ * handshake job leaves unread bytes in its socket, so EPOLLIN would fire on
+ * every epoll_wait and the owner loop would spin until the job is applied.
+ * While blocked it stays out of the read set; sc_apply_done puts it back.
+ * Edge-triggered transports need none of this (no new edge, no wake-up). */
+static uint32_t sc_ev_mask(const nodus_tcp_t *tcp, const nodus_tcp_conn_t *conn,
+                           uint32_t ev) {
+    if (tcp->level_triggered && conn->sc && nodus_tcp_sc_blocked(conn))
+        ev &= ~(uint32_t)(EPOLLIN | EPOLLRDHUP);
+    return ev;
+}
+
+/* Re-register `conn` with the mask applied. Not under the write lock
+ * (conn_has_unsent takes it). */
+static void sc_epoll_rearm(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    uint32_t ev;
+
+    if (!tcp->level_triggered || conn->fd < 0 || conn->close_pending)
+        return;
+    ev = EPOLLIN | EPOLLRDHUP | (conn_has_unsent(tcp, conn) ? EPOLLOUT : 0);
+    epoll_mod(tcp->epoll_fd, conn->fd, sc_ev_mask(tcp, conn, ev), conn);
+}
+#endif
+
+/* A send found the machine dead (a cipher failure while sealing): mark the
+ * connection for the loop to close. The send is inside the write lock and
+ * its caller holds `conn`, so it cannot tear the connection down itself
+ * (nodus_tcp_send's contract). Write lock held. True if it was marked. */
+static bool sc_seal_failed_locked(nodus_tcp_conn_t *conn) {
+    nodus_tcp_t *tcp = conn->tcp_parent;
+
+    if (!conn->sc || !nodus_tcp_sc_dead(conn))
+        return false;
+    QGP_LOG_ERROR(LOG_TAG_TCP, "send: sealing failed, connection will be closed, slot=%d",
+                  conn->slot);
+    if (!conn->sc_close_req && tcp) {
+        conn->sc_close_req = true;
+        tcp->sc_close_requests++;
+    }
+    return true;
+}
+
+/* Close every connection a send marked (sc_seal_failed_locked). Runs in the
+ * poll loop with the write lock RELEASED: on_disconnect may send. */
+static void sc_reap_marked(nodus_tcp_t *tcp) {
+    int pending;
+
+    wl_enter(tcp);
+    pending = tcp->sc_close_requests;
+    wl_leave(tcp);
+    if (pending <= 0)
+        return;
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+        nodus_tcp_conn_t *c = tcp->pool[i];
+
+        if (c && c->sc_close_req && !c->close_pending) {
+            if (tcp->on_disconnect)
+                tcp->on_disconnect(c, tcp->cb_ctx);
+            conn_free(tcp, c);        /* clears the mark and the count */
+        }
+    }
+}
+
 /* Results of finished handshake jobs, applied on the loop by (slot,
  * generation). Called inside nodus_tcp_poll's depth window, so a close made
  * here is deferred like any other. */
 static void sc_apply_done(nodus_tcp_t *tcp) {
-    nodus_sc_job_t *j = nodus_tcp_sc_take_done(tcp);
+    nodus_sc_job_t *j;
+
+    sc_reap_marked(tcp);
+    j = nodus_tcp_sc_take_done(tcp);
 
     while (j != NULL) {
         nodus_sc_job_t *next = j->next;        /* apply frees j */
@@ -1126,6 +1200,10 @@ static void sc_apply_done(nodus_tcp_t *tcp) {
         } else if (r == NODUS_SC_APPLY_OK) {
             /* Input held while the job ran, and the socket's own bytes
              * (no new edge will announce them), are read next. */
+#ifdef NODUS_TCP_EPOLL
+            sc_epoll_rearm(tcp, conn);     /* level-triggered: back in the read set
+                                            * (unless the next job blocks it again) */
+#endif
             read_pending_add(tcp, conn);
         }
         j = next;
@@ -1158,8 +1236,12 @@ static read_rc_t read_plain_sc(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     if (pr == PARSE_MORE)   return READ_MORE;
 
     for (;;) {
-        if (nodus_tcp_sc_blocked(conn))
+        if (nodus_tcp_sc_blocked(conn)) {
+#ifdef NODUS_TCP_EPOLL
+            sc_epoll_rearm(tcp, conn);     /* level-triggered: out of the read set */
+#endif
             return READ_DRAINED;           /* the job's completion resumes us */
+        }
         if (conn->read_bytes_left == 0)
             return READ_MORE;
 
@@ -1168,6 +1250,7 @@ static read_rc_t read_plain_sc(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             want = conn->read_bytes_left;
         ssize_t n = poll_read(conn->fd, chunk, want);
         if (n > 0) {
+            conn->io_started = true;
             conn->read_bytes_left -= (size_t)n;
             conn->last_activity = nodus_time_now();
             eintr_left = NTCP_MAX_EINTR_RETRY;
@@ -1239,6 +1322,7 @@ static read_rc_t read_plain(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             want = conn->read_bytes_left;
         ssize_t n = poll_read(conn->fd, conn->rbuf + conn->rlen, want);
         if (n > 0) {
+            conn->io_started = true;
             conn->rlen += (size_t)n;
             conn->read_bytes_left -= (size_t)n;
             conn->last_activity = nodus_time_now();
@@ -1373,6 +1457,7 @@ static ntcp_io_t conn_flush_wbuf(nodus_tcp_conn_t *conn,
                                conn->wlen - conn->wpos);
         ntcp_io_t io = ntcp_classify(n);
         if (io == NTCP_IO_PROGRESS) {
+            conn->io_started = true;
             conn->wpos += (size_t)n;
             eintr_left = NTCP_MAX_EINTR_RETRY;
             if (progress_cb) progress_cb(conn->wpos, conn->wlen, user_data);
@@ -1424,6 +1509,9 @@ static bool handle_write_locked(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 #ifdef NODUS_TCP_EPOLL
     if (conn->wlen == 0 && conn->pending_head == NULL) {
         uint32_t ev = EPOLLIN | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET);
+#ifdef NODUS_TCP_SC
+        ev = sc_ev_mask(tcp, conn, ev);    /* blocked on a job: stay out of the read set */
+#endif
         epoll_mod(tcp->epoll_fd, conn->fd, ev, conn);
     }
 #else
@@ -1674,6 +1762,24 @@ static bool ws_feed_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
     if (rc == NODUS_WS_FEED_PEER_CLOSE) {
         QGP_LOG_INFO(LOG_TAG_TCP, "ws: peer closed slot=%d ip=%s",
                      conn->slot, conn->ip);
+#ifdef NODUS_TCP_SC
+        if (conn->sc) {
+            if (nodus_tcp_sc_blocked(conn)) {
+                /* A handshake job is outstanding and the input before this
+                 * Close is still held: closing now would discard it. Record
+                 * the terminal close; read_ws finishes it once the job has
+                 * been applied and the held input opened and dispatched. */
+                memcpy(conn->ws_close_frame, cf, cl);
+                conn->ws_close_len = (uint8_t)cl;
+                conn->ws_close_wait = true;
+                return false;
+            }
+            /* on_session precedes any frame of the session (the inline arm
+             * can authenticate inside the sink). */
+            if (sc_notify_ready(tcp, conn))
+                return true;
+        }
+#endif
         /* Frames that arrived before the close are still frames — the
          * same rule as the plain reader's EOF path, and unbudgeted like it:
          * the connection closes right below, there is no later call. */
@@ -1826,6 +1932,19 @@ static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         }
         if (sc_notify_ready(tcp, conn))
             return READ_CLOSED;
+        if (conn->ws_close_wait) {
+            /* A Close arrived behind input a handshake job was holding. */
+            if (nodus_tcp_sc_blocked(conn)) {
+                sc_epoll_rearm(tcp, conn);
+                return READ_DRAINED;
+            }
+            /* The held input is open now: dispatch what preceded the Close,
+             * in order (after on_session, sent above), then close. */
+            if (try_parse_frames(tcp, conn, false) == PARSE_CLOSED)
+                return READ_CLOSED;
+            ws_close_now(tcp, conn, conn->ws_close_frame, conn->ws_close_len);
+            return READ_CLOSED;
+        }
     }
 #endif
     if (conn->ws_open) {
@@ -1837,8 +1956,10 @@ static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     int eintr_left = NTCP_MAX_EINTR_RETRY;
     for (;;) {
 #ifdef NODUS_TCP_SC
-        if (conn->sc && nodus_tcp_sc_blocked(conn))
+        if (conn->sc && nodus_tcp_sc_blocked(conn)) {
+            sc_epoll_rearm(tcp, conn);     /* level-triggered: out of the read set */
             return READ_DRAINED;       /* the job's completion resumes us */
+        }
 #endif
         if (conn->read_bytes_left == 0 || conn->read_frames_left <= 0)
             return READ_MORE;
@@ -1848,6 +1969,7 @@ static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             want = conn->read_bytes_left;
         ssize_t n = poll_read(conn->fd, chunk, want);
         if (n > 0) {
+            conn->io_started = true;
             conn->read_bytes_left -= (size_t)n;
             conn->last_activity = nodus_time_now();
             eintr_left = NTCP_MAX_EINTR_RETRY;
@@ -2986,6 +3108,17 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
                     free(enc_buf);
                     return 0;
                 }
+#ifdef NODUS_TCP_SC
+                /* A sealing (cipher) failure is FATAL, not backpressure: the
+                 * machine is dead, the plaintext must not go to the
+                 * pending-full fallback as if the queue were merely full. */
+                if (sc_seal_failed_locked(conn)) {
+                    free(encoded);
+                    free(sc_node);
+                    free(enc_buf);
+                    return -1;
+                }
+#endif
                 free(encoded);
                 free(sc_node);   /* NULL-safe; reached only if the encode failed */
             }
@@ -3023,6 +3156,9 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
                                       send_payload, send_len);
     if (written == 0) {
         QGP_LOG_ERROR(LOG_TAG_TCP, "send: frame_encode failed (len=%zu)", send_len);
+#ifdef NODUS_TCP_SC
+        (void)sc_seal_failed_locked(conn);   /* fatal: marks the loop-owned close */
+#endif
         free(enc_buf);
         return -1;
     }
@@ -3095,20 +3231,44 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
             FD_SET((SOCKET)c->fd, &wfds);
             FD_SET((SOCKET)c->fd, &efds);
         } else {
-            FD_SET((SOCKET)c->fd, &rfds);
+            /* A connection blocked on a handshake job stays OUT of the read
+             * set: select is level-triggered, its unread socket bytes would
+             * make it return at once and the owner loop spin until the job
+             * is applied. */
+            if (!SC_CONN_BLOCKED(c))
+                FD_SET((SOCKET)c->fd, &rfds);
             if (conn_has_unsent(tcp, c))
                 FD_SET((SOCKET)c->fd, &wfds);
+            else if (SC_CONN_BLOCKED(c))
+                continue;       /* in no set: it must not raise max_fd either */
         }
         if (c->fd > max_fd) max_fd = c->fd;
     }
 
     if (max_fd < 0) {
-        /* No listener and no connections — just sleep. (The pending-read
-         * list holds only pool members, so it is empty here.) Winsock
-         * select() with three empty sets fails with WSAEINVAL, so it is
-         * never called that way. */
-        if (timeout_ms > 0) Sleep(timeout_ms);
-        return 0;
+        /* No listener and nothing to wait on — just sleep. (Without the
+         * SecretConnection layer the pending-read list holds only pool
+         * members, so it is empty here.) Winsock select() with three empty
+         * sets fails with WSAEINVAL, so it is never called that way.
+         * With the layer: finished handshake jobs are applied BEFORE this
+         * return — they stay charged to the worker until they are — and the
+         * sleep is capped while one is outstanding. */
+        int served = 0;
+#ifdef NODUS_TCP_SC
+        if (SC_POLL_BUSY(tcp) || tcp->read_head) {
+            tcp->poll_depth++;
+            uint64_t g0 = poll_gen_enter(tcp);
+            SC_POLL_APPLY(tcp);
+            served = read_pending_service(tcp);
+            poll_gen_leave(tcp, g0);
+            tcp->poll_depth--;
+            if (tcp->poll_depth == 0)
+                conn_release_deferred(tcp);
+        }
+        timeout_ms = SC_POLL_TIMEOUT(tcp, timeout_ms);
+#endif
+        if (served == 0 && timeout_ms > 0) Sleep(timeout_ms);
+        return served;
     }
 
     /* Read budget: leftover input from an earlier call — do not sleep
@@ -3226,7 +3386,8 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
         if (c->state == NODUS_CONN_CONNECTING)
             pfd[k].events = POLLOUT;
         else
-            pfd[k].events = (short)(POLLIN | (conn_has_unsent(tcp, c) ? POLLOUT : 0));
+            pfd[k].events = (short)((SC_CONN_BLOCKED(c) ? 0 : POLLIN) |
+                                    (conn_has_unsent(tcp, c) ? POLLOUT : 0));
         pconn[k] = c;
         k++;
     }
@@ -3303,6 +3464,9 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
         nodus_tcp_conn_t *c = tcp->pool[i];
         if (c && c->state == NODUS_CONN_CONNECTED && conn_has_unsent(tcp, c)) {
             uint32_t ev = EPOLLIN | EPOLLOUT | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET);
+#ifdef NODUS_TCP_SC
+            ev = sc_ev_mask(tcp, c, ev);   /* blocked on a job: stay out of the read set */
+#endif
             epoll_mod(tcp->epoll_fd, c->fd, ev, c);
         }
     }
