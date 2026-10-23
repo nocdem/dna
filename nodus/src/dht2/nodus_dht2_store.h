@@ -27,7 +27,7 @@
  *   signature                                        9
  *   inbox control: DENIED 12 (while listed), HANDLED [18, through] — the
  *   larger of the live control record's cutoff and the memo of cutoffs
- *   that already dropped this writer's entries (§3.3 "a dropped entry
+ *   seen for this writer (§3.3 "a dropped entry
  *   cannot come back", whatever the current control record says)
  *   Select (§4.2): equal -> acknowledged, loser -> winner's hash, cost 0;
  *   a held row whose expiry has passed counts as ABSENT (kad-dht
@@ -40,11 +40,18 @@
  * DEFERRED (not here, on purpose): the |S(H)| ≥ 2 write precondition (the
  * serving layer, package 6); the per-put SUM cost and the per-inbox
  * tombstone row bound (measure first); a refusal that leaves an older
- * version behind (package 7's cursor rule). RESIDUAL, stated: the HANDLED
- * memo is written only when a WINNING control record drops an entry; a
- * control record that loses Select changes nothing, so two stores that see
- * the same control versions in different orders can differ when the later
- * winner no longer lists the writer.
+ * version behind (package 7's cursor rule).
+ *
+ * HANDLED MEMO (closes the arrival-order divergence): the HANDLED cutoffs of
+ * EVERY owner-signed control record that passed the signature and the
+ * recipient binding reach the memo — whether it wins Select, loses it, or
+ * is refused by a quota check — and drop the live entries at or below them
+ * at once. A cutoff is noted whether or not an entry was held; the memo is
+ * the max per (inbox, writer), lives until t + 7 d + 3 h of the sighting
+ * (extended by a later sighting) and is swept 3 h after that. A losing
+ * control record is still NOT stored, applies no DENIED and does not change
+ * the selected control record. Cutoffs only grow, so the memo does not
+ * depend on arrival order.
  *
  * Nothing here reads a clock: chain time is the injected snapshot's `t`.
  * Nothing here is unordered: every query that decides what is stored or

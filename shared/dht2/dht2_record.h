@@ -44,11 +44,14 @@
  *   · class-independent byte-form faults → `bad-encoding` (2): a missing
  *     IPNS key / `_chain` / `_id` / `_class`, a wrong fixed length,
  *     `TTL` ≠ 0, `Value` not empty, `Sequence` 0, `ValidityType` ∉ {0,1},
- *     `ValidityType` ⇔ `Validity` mismatch, `_prev` length ∉ {0, 64},
- *     `_del` ≠ true, a missing / malformed pubKey;
+ *     `_prev` length ∉ {0, 64}, `_del` ≠ true, a missing / malformed
+ *     pubKey, a `Validity` text that is not the 20-byte form;
  *   · per-class faults → `bad-class` (6): `_class` ∉ 1…5 (row 5 says so),
  *     a matrix presence violation, a feed head `_data` ≠ 8 B, a malformed
- *     row-15 control list, an inbox control `_id` ≠ the signer's own;
+ *     row-15 control list, an inbox control `_id` ≠ the signer's own, a
+ *     `ValidityType` ⇔ `Validity` disagreement (type 0 with an empty
+ *     `Validity`, type 1 with a non-empty one — §4.1 lists it among the
+ *     class rules, after chain / address / holder);
  *   · no-expiry (ValidityType 1) where the class max is finite →
  *     `too-long` (8).
  * READINGS of the design's rules (kept as written):
@@ -57,8 +60,10 @@
  *     (ValidityType 1) with a name" read as "the class max is unbounded";
  *   · an empty `_data` (length 0) is valid for classes 1, 2, 4 — row 5
  *     requires the key, not a length;
- *   · a ValidityType ⇔ Validity mismatch is `bad-encoding` (2), not
- *     `bad-class` — it is a byte-form rule of §3.1 / row 6.
+ *   · a ValidityType ⇔ Validity mismatch is `bad-class` (6), not
+ *     `bad-encoding`: dht2_data_decode lets it through (the re-encode
+ *     identity check still covers it) and dht2_record_check_class refuses
+ *     it, so the §4.1 order holds (chain 3 before it).
  *
  * ⚠ API CONTRACT — NO FUNCTION HERE EXCEPT dht2_record_verify CHECKS THE
  * SIGNATURE. dht2_record_parse, dht2_data_decode, dht2_record_canonical,

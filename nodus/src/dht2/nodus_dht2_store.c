@@ -40,8 +40,9 @@ struct nodus_dht2_store {
  * unique, re-assigned on every stored change (§4.5 i). `named` is the pool
  * the record is charged to; `noexp` is its own flag (ValidityType 1), never
  * encoded in `expiry`. dht2_cut remembers, per (inbox, writer), the highest
- * HANDLED cutoff that dropped an entry, until the latest expiry among the
- * entries it dropped (§3.3: "a dropped entry cannot come back"). dht2_meta
+ * HANDLED cutoff of every control record seen (winner or loser), until
+ * t + 7 d + 3 h of the latest sighting (§3.3: "a dropped entry cannot come
+ * back"). dht2_meta
  * `v` has no declared type: integers (top, gen) and the chain id blob. */
 static const char SCHEMA_SQL[] =
     "CREATE TABLE IF NOT EXISTS dht2_meta("
@@ -692,13 +693,26 @@ static int ctl_check_entry(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
     return 0;
 }
 
-/* Apply a winning control record to the entries at its inbox: HANDLED drops
- * the writer's entry with Sequence ≤ through (and remembers the cutoff),
- * DENIED drops it whatever its Sequence (§3.3, row 15). One entry per
- * (inbox, writer) exists (the address binds both), so a second row is
- * corruption. Runs inside the put transaction BEFORE the quota checks, so
- * the bytes it frees are credited (row 16). 0 / -1. */
-static int ctl_apply(nodus_dht2_store_t *s, const put_work_t *w)
+/* Apply the entries of an owner-signed control record that carry `mark`
+ * to the entries at its inbox (§3.3, row 15). One entry per (inbox, writer)
+ * exists (the address binds both), so a second row is corruption. Runs
+ * inside the put transaction BEFORE the quota checks, so the bytes it frees
+ * are credited (row 16).
+ *
+ *   HANDLED — for EVERY control record admission sees, whether it wins
+ *     Select or loses it (a cutoff only ever grows, so the memo is the max
+ *     over all records seen and does not depend on arrival order — D3):
+ *     the memo takes the cutoff whether or not an entry is held, and the
+ *     live entry at or below it is dropped. keep_until = t + 7 d + 3 h at
+ *     the chain time of the sighting: no entry admissible afterwards can
+ *     still be at or below that cutoff (entries expire ≤ t + class max +
+ *     3 h).
+ *   DENIED — only for the record that is STORED (the selected one); the
+ *     entry goes whatever its Sequence, nothing is remembered ("refused
+ *     while listed", rev 5).
+ * 0 / -1. */
+static int ctl_apply(nodus_dht2_store_t *s, const put_work_t *w, uint8_t mark,
+                     uint64_t t)
 {
     const dht2_data_t *d = &w->rec.d;
     size_t             count = 0, i;
@@ -712,13 +726,20 @@ static int ctl_apply(nodus_dht2_store_t *s, const put_work_t *w)
         sqlite3_stmt    *st;
         uint8_t          addr[DHT2_HASH_LEN];
         bool             drop = false, row = false;
-        uint64_t         keep = 0;
         int              rc;
 
         if (dht2_ctl_at(d->data, d->data_len, i, &ent) != DHT2_OK) {
             return -1;
         }
-        st = prep(s, "SELECT address, seq, noexp, expiry FROM dht2_rec "
+        if (ent.mark != mark) {
+            continue;
+        }
+        if (mark == DHT2_CTL_HANDLED &&
+            cut_note(s, w->placement, ent.fp, ent.through,
+                     t + DHT2_SEC_7D + DHT2_SEC_SLACK_3H) != 0) {
+            return -1;
+        }
+        st = prep(s, "SELECT address, seq FROM dht2_rec "
                      "WHERE placement = ?1 AND cls = 4 AND owner = ?2 "
                      "ORDER BY address");
         if (st == NULL) {
@@ -735,11 +756,8 @@ static int ctl_apply(nodus_dht2_store_t *s, const put_work_t *w)
                 return -1;
             }
             memcpy(addr, sqlite3_column_blob(st, 0), DHT2_HASH_LEN);
-            drop = ent.mark == DHT2_CTL_DENIED ||
+            drop = mark == DHT2_CTL_DENIED ||
                    (uint64_t)sqlite3_column_int64(st, 1) <= ent.through;
-            keep = sqlite3_column_int(st, 2) != 0
-                       ? (uint64_t)INT64_MAX
-                       : (uint64_t)sqlite3_column_int64(st, 3);
             rc = sqlite3_step(st);
         }
         sqlite3_finalize(st);
@@ -753,11 +771,6 @@ static int ctl_apply(nodus_dht2_store_t *s, const put_work_t *w)
                 return -1;
             }
             if (!bound(st, b_64(st, 1, addr)) || step_done(s, st) != 0) {
-                return -1;
-            }
-            /* DENIED is "refused while listed" (rev 5): not remembered. */
-            if (ent.mark == DHT2_CTL_HANDLED &&
-                cut_note(s, w->placement, ent.fp, ent.through, keep) != 0) {
                 return -1;
             }
         }
@@ -780,6 +793,16 @@ static int admit_locked(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
     int                pool = w->named ? 1 : 0;
     int                code, handover = 0;
     sqlite3_stmt      *st;
+
+    /* An owner-signed control record (it passed the signature and the
+     * recipient binding): its HANDLED cutoffs reach the memo and drop the
+     * live entries at or below them NOW, whether the record goes on to win
+     * Select, lose it, or be refused by a quota check — cutoffs only grow,
+     * so the memo is the max over every record seen, in any arrival order. */
+    if (d->cls == DHT2_CLASS_INBOX_CTL && !d->del &&
+        ctl_apply(s, w, DHT2_CTL_HANDLED, t) != 0) {
+        return CODE_FAULT;
+    }
 
     /* Inbox entries: DENIED / HANDLED come before Select, so a re-put of
      * an entry the owner has since dropped is refused, not acknowledged. */
@@ -832,11 +855,15 @@ static int admit_locked(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
     }
     held_free(&hd);
 
-    /* The incoming version wins. A control record first drops the entries
-     * it marks: the stored-state change it causes counts BEFORE the checks
-     * below (a rollback undoes it when a check refuses). */
-    if (d->cls == DHT2_CLASS_INBOX_CTL && !d->del && ctl_apply(s, w) != 0) {
-        return CODE_FAULT;
+    /* The incoming version wins. A control record first drops the DENIED
+     * entries it marks: the stored-state change it causes counts BEFORE the
+     * checks below. They run after a savepoint, so a quota refusal can undo
+     * the DENIED drops while keeping the HANDLED cutoffs seen above. */
+    if (d->cls == DHT2_CLASS_INBOX_CTL && !d->del) {
+        if (exec_sql(s, "SAVEPOINT den") != 0 ||
+            ctl_apply(s, w, DHT2_CTL_DENIED, t) != 0) {
+            return CODE_FAULT;
+        }
     }
 
     /* Order of the refusals is a reading (the text names no order): inbox
@@ -1065,7 +1092,23 @@ int nodus_dht2_store_put(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
         goto out;
     }
     code = admit_locked(s, ctx, w, res);
-    if (code == 0 && res->outcome == NODUS_DHT2_PUT_STORED) {
+    /* A control record that is refused by a quota check still leaves the
+     * HANDLED cutoffs it carried (applied before Select): undo only its
+     * DENIED drops, then commit. An equal / losing control record commits
+     * the same cutoffs; every other equal / losing write wrote nothing. */
+    if ((code == DHT2_E_QUOTA || code == DHT2_E_NODE_FULL) &&
+        w->rec.d.cls == DHT2_CLASS_INBOX_CTL && !w->rec.d.del) {
+        if (exec_sql(s, "ROLLBACK TO den") != 0 ||
+            exec_sql(s, "RELEASE den") != 0) {
+            code = CODE_FAULT;
+        } else if (exec_sql(s, "COMMIT") != 0) {
+            (void)exec_sql(s, "ROLLBACK");
+            code = CODE_FAULT;
+        }
+        if (code == CODE_FAULT && exec_sql(s, "ROLLBACK") != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "rollback failed");
+        }
+    } else if (code == 0) {
         if (exec_sql(s, "COMMIT") != 0) {
             (void)exec_sql(s, "ROLLBACK");
             code = CODE_FAULT;
