@@ -229,7 +229,7 @@ const turkish = {
   "history.network.body": "OpenDHT’nin yerine C ile yazdığımız kendi DHT’mizi koyduk. Medya depolama, şifreli aktarım ve zincir düğümü aynı altyapıda bir araya geldi.",
   "history.chain.date": "NİSAN – EYLÜL 2026",
   "history.chain.title": "Zincir şekilleniyor",
-  "history.chain.body": "Staking, delegasyon ve yönetişimi geliştirdik. Ledger V2, CometBFT konsensüs uyarlaması ve Scan blok gezgini de bu dönemde eklendi.",
+  "history.chain.body": "Staking, delegasyon ve yönetişimi geliştirdik; Ledger V2, modüler konsensüs katmanı ve Scan blok gezgini geldi.",
   "history.testnet.date": "30 EYLÜL 2026",
   "history.testnet.title": "Testnet yayında",
   "history.testnet.body": "NODUS coin’inin kullanıldığı herkese açık testnet’i başlattık. Zincir artık sıfırlanmıyor. Kural değişiklikleri, witness oylamasıyla belirlenen blokta hard fork olarak devreye giriyor.",
