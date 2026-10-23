@@ -126,7 +126,8 @@ int nodus_verify(const nodus_sig_t *sig,
  * NODUS_PURPOSE_WITNESS_ADDR (0x0B) (4004 session, decision record
  * 2026-09-26-witness-port-session.md — brand new, strict from their first
  * line, like 0x09), and NODUS_PURPOSE_CLIENT_SESSION_AUTH (0x0C) /
- * NODUS_PURPOSE_NODE_SESSION_AUTH (0x0D) (DHT v2 sessions, same class). MLKEM_BIND is strict DESPITE being a tier-2 client/
+ * NODUS_PURPOSE_NODE_SESSION_AUTH (0x0D) (DHT v2 sessions, same class).
+ * MLKEM_BIND is strict DESPITE being a tier-2 client/
  * inter-node auth-time binding like its non-strict sibling KYBER_BIND
  * (0x02): without the tag, its preimage (mlkem_pk || nonce, 1600 bytes) is
  * byte-shape-identical to KYBER_BIND's (kyber_pk || nonce), so a raw
