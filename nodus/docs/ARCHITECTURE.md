@@ -242,6 +242,8 @@ nodus/
 │   ├── test_dht2_codec.c      # DHT v2 package 1 (shared/dht2/): pinned data-map bytes per class, canonical envelope, every row-22 strict-decode reject, §3.2 identifiers against hand-assembled preimages, §4.1 code order, row-5 matrix + class max, §4.2 A/B two-arrival order, nearest_R, Validity, the owner-signed LIST request; default build, nothing left behind
 │   ├── test_dht2_msg.c        # DHT v2 package 2 (shared/dht2/dht2_msg.*): hand-assembled bytes for every wire message (get / put, read answer, receipt, LIST answer, refusal, p_hello / p_get / p_offer / p_want / p_deliver, pull-receipt payload), per-message strict rejects and count bounds, row-7 `v` per context, LIST rules, the p_want bit-vector, the control `_data`, the five typed `_id` helpers, answer seal / open, the row-11 sizes + `_Static_assert` against NODUS_MAX_FRAME_TCP; default build, nothing left behind
 │   ├── test_dht2_ipc.c        # DHT v2 package 4: the witness listener's `ipc_dht` kind (raw peer + test handlers: snap / sets / name bytes, {err} answers, the SET_MAX sets frame = DERIVED_MAX, every refused frame, ipc_status unchanged) and nodus_dht2_wview against a scripted socket server with INJECTED time (5000 ms stale, 1000 ms poll, sets by `e`, name cache, timeout, backoff, late reply, malformed answers), one end-to-end case; the witness FILL functions are NOT exercised (test handlers stand in); mkdtemp dirs, nothing left behind
+│   ├── test_p2p_secret_kat.c  # DHT v2 sub-package 3a step 1: byte pins of TODAY's 4004 SecretConnection in literal bytes (never through the CMT_P2P_SC_* macros) — fixed-vector T / key / challenge against python3-computed hex, live-handshake recompute on both sides, HELLO / HELLO_R / KEYX framing at literal offsets, sealed-frame nonce role ‖ 00 00 00 ‖ u64 BE counter, AUTHSIG under purpose 0x0A only; must pass on the unchanged base; default build, nothing left behind
+│   ├── test_p2p_secret_profiles.c # DHT v2 sub-package 3a step 2: session profiles WITNESS / CLIENT / NODE — matched handshakes authenticate, mixed pairs never do, python3 vectors per profile, purposes 0x0A / 0x0C / 0x0D do not cross-verify, init refuses every profile but the three consts (by pointer), `cmt_p2p_sc_init` = WITNESS; default build, nothing left behind
 │   ├── test_cmt_evidence.c    # cometbft port R1-D: DuplicateVoteEvidence bare bytes / flat hash / canonical order, EvidenceList root
 │   ├── test_cmt_state.c       # cometbft port R1-D: MedianTime (voting-power weights), MakeGenesisState, Copy, MakeBlock
 │   ├── test_cmt_vote_set.c    # cometbft port R2-A: VoteSet — the seven vote_set_test.go scenarios, weight-vs-count, the C-only capacity bounds (128 peers, N+P blocks)
@@ -10174,7 +10176,10 @@ numbered register row (R-P2P-n) in the local design doc
   merlin/HKDF-SHA256 become: ML-KEM-1024 encapsulation to the responder's
   static key (`nodus.mlkem_*`), one SHA3-512 transcript tagged
   `nodus.wsess.transcript.v1`, two HKDF-SHA3-256 calls (`nodus.wsess.keys.v1/aead`,
-  `/challenge`, `cmt_p2p_secret.h:220-224`), each side signing the challenge
+  `/challenge`, `cmt_p2p_secret.h:227-231`; since DHT v2 sub-package 3a these
+  three strings are the WITNESS session profile `CMT_P2P_SC_PROFILE_WITNESS`,
+  `cmt_p2p_secret.c:41-43`, byte-identical — see "DHT v2 sub-package 3a"
+  below), each side signing the challenge
   with its ML-DSA-87 node key under the STRICT purpose 0x0A. Frames: the
   reference's 1024-byte data frame sealed with AES-256-GCM (R-P2P-1), nonce =
   role ‖ 00 00 00 ‖ u64 BE counter, refused at `UINT64_MAX`. The chain id and
@@ -10276,7 +10281,9 @@ numbered register row (R-P2P-n) in the local design doc
   join the new mesh.
 - **Tests.** ctest `test_p2p_secret`, `test_p2p_mconn`, `test_p2p_switch`,
   `test_p2p_pex`, `test_witness_p2p`, `test_cmt_autofile`, `test_cc_collect`,
-  `test_cmt_host` (`wal_carry_sqlite_*`); harness `test_p2p_seam_faults.sh`
+  `test_cmt_host` (`wal_carry_sqlite_*`), and since DHT v2 sub-package 3a
+  `test_p2p_secret_kat` (literal-byte pins of the 4004 handshake, key schedule
+  and sealed-frame nonce) and `test_p2p_secret_profiles`; harness `test_p2p_seam_faults.sh`
   (in the sweep), `test_p2p_stopall_nowipe.sh` (standalone: OLD → NEW with the
   dangerous signed-at-next-height precondition built and proven, plus an
   opt-in negative control that halts without the carry), `test_v2_grow_7_32.sh`
@@ -11462,6 +11469,120 @@ request" checks are absences after a fixed number of poll rounds; it does not pr
 package-5 caller passes a monotonic clock. The ORCHESTRATOR's run at `793a85ef0`: build
 0 warnings; `test_dht2_ipc` 23 passed / 0 failed; `test_witness_ipc`,
 `test_storage_linked`, `test_split_linked`, `test_dht2_codec`, `test_dht2_msg` pass.
+
+### DHT v2 sub-package 3a — session profiles for the SecretConnection + purposes 0x0C / 0x0D (2026-10-23)
+
+What it is: the first step of DHT v2 package 3 (client / node sessions on the 4004
+SecretConnection, design `docs/plans/2026-10-23-dht-v2-session-package-design.md`
+rev 1, LOCAL-only). The secret connection (`shared/dnac/cmt_p2p_secret.{h,c}`, see
+"The 4004 p2p port" above) learns to run under one of three named **session
+profiles**, and the signing module gets the two strict purposes the DHT v2 sessions
+will sign under. **Nothing on 4001 / 4002 uses them yet** — that is sub-package 3b
+(`cmt_p2p_secret.h:14-15`); the only production caller of the profile API is the
+4004 transport, which passes the WITNESS profile (`cmt_p2p_transport.c:766-769`
+accept, `:863-865` dial). No wire, port, consensus, block or state-root change; the
+4004 bytes are unchanged and pinned by a test that passed on the untouched base.
+
+Governing decisions (LOCAL-only files, `docs/plans/decisions/`):
+`2026-10-14-kurultay-21-summary.md:216-219` — the client session uses the tags
+`nodus.csess.transcript.v1` / `nodus.csess.keys.v1` and the strict purpose 0x0C, the
+node DHT session `nodus.nsess.transcript.v1` / `nodus.nsess.keys.v1` and the strict
+purpose 0x0D, "the 4004 pattern" (operator "Tamam, senin önerilerine devam edelim");
+`2026-10-23-dht-v2-session-bytes.md` — the operator ("İkisini onaylıyorum
+(Önerilen)") approved the HKDF info strings
+`nodus.csess.keys.v1/aead`, `…/challenge`, `nodus.nsess.keys.v1/aead`, `…/challenge`
+(4004's suffixes on the decided prefixes) and, for 0x0C / 0x0D, the same NDS1 tagged
+preimage as 0x0A, strict on sign and verify (the record's "Rejected": FIPS 204 ctx,
+a second separation mechanism with no security gain named); `2026-10-23-kurultay-43-summary.md` (khan: "Onaylıyorum
+(Önerilen)") — per-connection immutable profiles, 0x0C / 0x0D in the strict set, the
+4004 byte-identity fixtures captured against today's code and passing BEFORE the
+refactor, no 4004 byte change (O-7), a per-port protocol-version symbol for the new
+ports, never `CMT_P2P_PROTOCOL_VERSION` (O-6); `2026-09-26-witness-port-session.md:77-78`
+— the sealed-frame nonce `role ‖ 00 00 00 ‖ u64 BE counter` and the handshake message
+encoding `uvarint(len) ‖ kind(1) ‖ fixed fields` (HELLO 0x01, HELLO_R 0x02, KEYX 0x03,
+AUTHSIG 0x04) are operator-approved bytes.
+
+**Profiles.** A profile is the three domain strings that make one secret-connection
+family — `cmt_p2p_sc_profile_t { transcript_tag, info_aead, info_challenge }`
+(`cmt_p2p_secret.h:251-255`); message bytes, key schedule, frame and nonce are the same
+for every profile, so two peers on different profiles derive different keys and never
+authenticate. The three, `const` in `cmt_p2p_secret.c:41-51`:
+
+| Profile | transcript tag | HKDF info (key) | HKDF info (challenge) | host purpose |
+|---|---|---|---|---|
+| `CMT_P2P_SC_PROFILE_WITNESS` (4004) | `nodus.wsess.transcript.v1` | `nodus.wsess.keys.v1/aead` | `nodus.wsess.keys.v1/challenge` | 0x0A |
+| `CMT_P2P_SC_PROFILE_CLIENT` | `nodus.csess.transcript.v1` | `nodus.csess.keys.v1/aead` | `nodus.csess.keys.v1/challenge` | 0x0C |
+| `CMT_P2P_SC_PROFILE_NODE` | `nodus.nsess.transcript.v1` | `nodus.nsess.keys.v1/aead` | `nodus.nsess.keys.v1/challenge` | 0x0D |
+
+WITNESS is built from the existing macros `CMT_P2P_SC_TAG_T` / `_INFO_AEAD` /
+`_INFO_CHALLENGE` (`cmt_p2p_secret.h:227-231`), unchanged. `cmt_p2p_sc_init_profile`
+binds a connection to ONE profile at init, kept by pointer for the machine's life
+(`cmt_p2p_sc_t.profile`); init accepts only the three const profiles, compared BY
+POINTER (`sc_profile_ok`, `cmt_p2p_secret.c:68-76`) — NULL, a copy of a const profile
+and any custom struct are refused with `CMT_FAULT`; each string must also be 1 …
+`CMT_P2P_SC_PROFILE_STR_MAX` (64) bytes (`cmt_p2p_secret.c:54-63`, a second guard).
+`cmt_p2p_sc_init` keeps its signature and is `cmt_p2p_sc_init_profile` with WITNESS
+(`cmt_p2p_secret.c:450-460`). The transcript preimage is now sized from the tag:
+`taglen + SC_T_FIXED_LEN` into a buffer of `CMT_P2P_SC_PROFILE_STR_MAX +
+SC_T_FIXED_LEN`, hashed over exactly the bytes written (`sc_derive`,
+`cmt_p2p_secret.c:31-38`, `:364-408`). The signing purpose is NOT part of the profile:
+it stays the host's binding (`cmt_p2p_sc_host_t.sign / .verify`), and nothing in this
+module checks that a profile is paired with its purpose.
+
+**Strict purposes.** `NODUS_PURPOSE_CLIENT_SESSION_AUTH` 0x0C and
+`NODUS_PURPOSE_NODE_SESSION_AUTH` 0x0D (`nodus_sign.h:84`, `:87`) join
+`nodus_sign_purpose_is_strict` (`nodus_sign.c:116-126`), each with a sign / verify pair
+over the 32-byte challenge that mirrors the 0x0A pair
+(`nodus_{sign,verify}_{client,node}_session_auth`, `nodus_sign.c:310-336`): always the
+NDS1 tagged preimage `"NDS1" ‖ purpose ‖ u32 BE len ‖ message`, no raw fallback either
+direction. The strict set is now exactly {0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D};
+0x0E is the next free value and is not strict (`test_sign_domain_separation.c:27-28`,
+`:369-376`).
+
+**Banners corrected (Kurultay #43 O-7).** The `cmt_p2p_secret.h` file header now says
+the handshake message encoding is OPERATOR-APPROVED (`:97-100`, decision
+`2026-09-26-witness-port-session.md:78`) instead of "NOT GROUNDED", and the `sc_nonce`
+comment cites the operator-approved nonce layout (`cmt_p2p_secret.c:159-160`, decision
+`:77`). The bytes are the operator's, not a reference grounding. One banner was not
+changed: the section line above the message kinds still reads "NOT GROUNDED encoding,
+see file header" (`cmt_p2p_secret.h:288`).
+
+**Not in this sub-package** (`cmt_p2p_secret.h:270-275`, recorded there as 3b
+obligations): pairing CLIENT with 0x0C and NODE with 0x0D in a host; a per-port
+protocol-version symbol for the new sessions; any use on 4001 / 4002.
+
+**Tests** (both default build, no flags, no environment, nothing left behind, safe
+under `ctest -j`):
+
+- `test_p2p_secret_kat` (`nodus/CMakeLists.txt:2292-2294`) — written and committed
+  FIRST, against the unchanged base `179fef5cc`, in literal bytes typed into the test,
+  never through the `CMT_P2P_SC_*` macros. Proves: T / key / challenge over a fixed
+  input vector equal hex computed by python3 (hashlib + hmac); after a real ML-DSA-87 /
+  ML-KEM-1024 handshake both sides' key and challenge equal a recompute from the public
+  fields plus the captured shared secret; HELLO / HELLO_R / KEYX framing at literal
+  offsets; the 5 AUTHSIG frames open under AES-256-GCM with nonce `role ‖ 00 00 00 ‖
+  counter u64 BE` (role 01 I→R, 02 R→I, counters 0..4; the first application frame uses
+  counter 5); each AUTHSIG verifies under purpose 0x0A only (not 0x01..0x0B otherwise,
+  not raw). Can lie (its header): handshake nonces, Encaps coins and hedged signatures
+  are random, so no nonce, ciphertext or signature byte is pinned; the live recompute
+  uses this tree's SHA3-512 / HKDF (only the fixed vector ties them to python3); AES-GCM
+  is the same OpenSSL the code uses; one process, inline jobs, no TCP fragmentation.
+- `test_p2p_secret_profiles` (`nodus/CMakeLists.txt:2300-2302`) — CLIENT (host 0x0C)
+  and NODE (host 0x0D) handshakes authenticate both sides with keys equal to a recompute
+  from the profile's strings typed literally and different from WITNESS's; every mixed
+  pair (WITNESS / CLIENT, CLIENT / NODE, WITNESS / NODE) never authenticates; python3
+  vectors per profile; 0x0A / 0x0C / 0x0D signatures verify only under their own
+  purpose; init refuses NULL, a copy of a const profile, an empty / NULL / 65-byte
+  string and a valid-looking 64-byte custom profile; `cmt_p2p_sc_init` is WITNESS. Can
+  lie: the CLIENT / NODE vectors are self-consistent with the decision, not an external
+  source.
+
+The ORCHESTRATOR's runs at `c2c2ba0c2`: build 0 warnings; `test_p2p_secret_kat` 2
+passed / 0 failed (also passed 3× on the unchanged base `179fef5cc` with only the test
+added; a deliberate mutation of `CMT_P2P_SC_TAG_T` made it fail); `test_p2p_secret_profiles`
+13 / 0; `test_p2p_secret` 36 / 0; `test_sign_domain_separation` 11 / 0. Function
+reference: `messenger/docs/functions/transport.md` "4004 SecretConnection session
+profiles".
 
 ### Block retention (pruning) and the SeenCommit cleanup (2026-10-03)
 

@@ -208,6 +208,46 @@ Net-layer package N3 (decision `docs/plans/decisions/2026-10-19-kurultay-26b-sum
 
 ---
 
+## 4004 SecretConnection session profiles (`shared/dnac/cmt_p2p_secret.h`) and session-auth signing (`nodus/src/crypto/nodus_sign.h`) — DHT v2 sub-package 3a
+
+The secret connection runs under one of three const **session profiles**; the DHT v2 client / node sessions sign their challenge under two new strict purposes. Only the 4004 transport calls the profile API today, with WITNESS (`shared/dnac/cmt_p2p_transport.c:766-769`, `:863-865`); 4001 / 4002 use none of it until sub-package 3b. This section covers the 3a additions and their direct siblings (`cmt_p2p_sc_init`, the 0x0A pair) only — the rest of the `cmt_p2p_secret` API and of `nodus_sign.h` has no entry in this reference yet. Architecture and governing decisions: `nodus/docs/ARCHITECTURE.md` "DHT v2 sub-package 3a".
+
+### Profile type and constants (`cmt_p2p_secret.h`)
+
+| Signature | Description |
+|-----------|-------------|
+| `#define CMT_P2P_SC_PROFILE_STR_MAX 64` (`:237`) | **NEW.** Longest transcript tag / HKDF info string a profile may carry, in bytes. |
+| `typedef struct { const char *transcript_tag; const char *info_aead; const char *info_challenge; } cmt_p2p_sc_profile_t;` (`:251-255`) | **NEW.** The three domain strings of one secret-connection family: row-4 transcript tag, row-5 HKDF info for the AEAD key, rows 5-6 HKDF info for the challenge. Message bytes, key schedule, frame and nonce are the same for every profile; different profiles derive different keys, so a mixed pair never authenticates. The signing purpose is NOT in the profile — it stays the host's `cmt_p2p_sc_host_t.sign / .verify`, and nothing in the module checks the pairing. |
+| `extern const cmt_p2p_sc_profile_t CMT_P2P_SC_PROFILE_WITNESS;` (`:258`; defined `cmt_p2p_secret.c:41-43`) | **NEW.** 4004: `CMT_P2P_SC_TAG_T` `"nodus.wsess.transcript.v1"`, `CMT_P2P_SC_INFO_AEAD` `"nodus.wsess.keys.v1/aead"`, `CMT_P2P_SC_INFO_CHALLENGE` `"nodus.wsess.keys.v1/challenge"` (`:227-231`, unchanged). Host purpose 0x0A. |
+| `extern const cmt_p2p_sc_profile_t CMT_P2P_SC_PROFILE_CLIENT;` (`:265`; defined `cmt_p2p_secret.c:44-47`) | **NEW.** DHT v2 client session: `"nodus.csess.transcript.v1"`, `"nodus.csess.keys.v1/aead"`, `"nodus.csess.keys.v1/challenge"`. Host purpose 0x0C. |
+| `extern const cmt_p2p_sc_profile_t CMT_P2P_SC_PROFILE_NODE;` (`:268`; defined `cmt_p2p_secret.c:48-51`) | **NEW.** DHT v2 node-to-node session: `"nodus.nsess.transcript.v1"`, `"nodus.nsess.keys.v1/aead"`, `"nodus.nsess.keys.v1/challenge"`. Host purpose 0x0D. |
+| `const cmt_p2p_sc_profile_t *profile;` field of `cmt_p2p_sc_t` (`:397`) | **NEW.** The connection's profile, set once at init, immutable; the pointed-to struct and strings must outlive the machine (the three consts do). |
+
+### Init (`cmt_p2p_secret.h`)
+
+| Signature | Description |
+|-----------|-------------|
+| `int cmt_p2p_sc_init_profile(cmt_p2p_sc_t *sc, cmt_p2p_sc_role_t role, const cmt_p2p_sc_host_t *host, const cmt_p2p_sc_profile_t *profile, const uint8_t local_dsa_pk[CMT_P2P_SC_DSA_PK_SIZE], const uint8_t *local_kem_pk, const uint8_t *local_kem_sk, uint32_t proto_ver, const uint8_t chain_id[CMT_P2P_SC_CHAIN_ID_SIZE])` (`:490-498`; `cmt_p2p_secret.c:463`) | **NEW.** `cmt_p2p_sc_init` with an explicit profile. `profile` must be one of the three consts BY POINTER (`sc_profile_ok`, `cmt_p2p_secret.c:68-76`): NULL, a copy of a const profile or any custom struct is refused, and each string must be 1 … `CMT_P2P_SC_PROFILE_STR_MAX` bytes (`sc_profile_str_ok`, `:54-63`). A refused profile returns `CMT_FAULT` with the machine DEAD (zeroed), before anything is generated. Other parameters and returns as `cmt_p2p_sc_init`. The transcript preimage is `tag ‖ fixed fields`, sized from the tag (`sc_derive`, `:364-408`). |
+| `int cmt_p2p_sc_init(cmt_p2p_sc_t *sc, cmt_p2p_sc_role_t role, const cmt_p2p_sc_host_t *host, const uint8_t local_dsa_pk[CMT_P2P_SC_DSA_PK_SIZE], const uint8_t *local_kem_pk, const uint8_t *local_kem_sk, uint32_t proto_ver, const uint8_t chain_id[CMT_P2P_SC_CHAIN_ID_SIZE])` (`:473-479`; `cmt_p2p_secret.c:450-460`) | **CHANGED (body only, signature unchanged).** Now exactly `cmt_p2p_sc_init_profile(…, &CMT_P2P_SC_PROFILE_WITNESS, …)`. Starts a handshake: the INITIATOR queues its HELLO, the RESPONDER waits for one. `local_dsa_pk` copied; `local_kem_pk` / `local_kem_sk` RESPONDER only (the secret key is NOT copied — caller keeps it alive), NULL for the INITIATOR; `proto_ver` / `chain_id` (32 bytes) ride in the transcript. Returns `CMT_OK`; `CMT_FAULT` on a NULL / inconsistent argument or an RNG failure. |
+
+### Session-auth signing purposes (`nodus/src/crypto/nodus_sign.h`)
+
+All four are strict: `nodus_sign_purpose_is_strict` (`nodus_sign.h:146`; `nodus_sign.c:116-126`) is true for exactly {0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D}, so sign and verify always use the NDS1 tagged preimage `"NDS1" ‖ purpose(1) ‖ u32 BE len ‖ challenge` (`NODUS_SIGN_HEADER_LEN` 9), no raw fallback either direction. Each returns 0 on success / valid, -1 otherwise (the `nodus_sign_tagged` / `nodus_verify_tagged` contract they forward to).
+
+| Signature | Description |
+|-----------|-------------|
+| `#define NODUS_PURPOSE_CLIENT_SESSION_AUTH 0x0C` (`:84`) | **NEW.** DHT v2 client session authentication (profile `nodus.csess.*`). Strict. |
+| `#define NODUS_PURPOSE_NODE_SESSION_AUTH 0x0D` (`:87`) | **NEW.** DHT v2 node-to-node session authentication (profile `nodus.nsess.*`). Strict. |
+| `int nodus_sign_client_session_auth(nodus_sig_t *sig_out, const uint8_t *challenge, size_t challenge_len, const nodus_seckey_t *sk)` (`:214-216`; `nodus_sign.c:310`) | **NEW.** ML-DSA-87 signature over the session's 32-byte challenge under 0x0C. |
+| `int nodus_verify_client_session_auth(const nodus_sig_t *sig, const uint8_t *challenge, size_t challenge_len, const nodus_pubkey_t *pk)` (`:217-219`; `nodus_sign.c:317`) | **NEW.** Verify under 0x0C only — a 0x0A or 0x0D signature over the same bytes does not verify. |
+| `int nodus_sign_node_session_auth(nodus_sig_t *sig_out, const uint8_t *challenge, size_t challenge_len, const nodus_seckey_t *sk)` (`:220-222`; `nodus_sign.c:324`) | **NEW.** Same under 0x0D. |
+| `int nodus_verify_node_session_auth(const nodus_sig_t *sig, const uint8_t *challenge, size_t challenge_len, const nodus_pubkey_t *pk)` (`:223-225`; `nodus_sign.c:331`) | **NEW.** Verify under 0x0D only. |
+| `int nodus_sign_session_auth(nodus_sig_t *sig_out, const uint8_t *challenge, size_t challenge_len, const nodus_seckey_t *sk)` / `int nodus_verify_session_auth(const nodus_sig_t *sig, const uint8_t *challenge, size_t challenge_len, const nodus_pubkey_t *pk)` (`:203-208`; `nodus_sign.c:296`, `:303`) | Existing 4004 pair, purpose `NODUS_PURPOSE_SESSION_AUTH` 0x0A (`:73`), unchanged; listed as the sibling the new pairs mirror. |
+
+Tests: `test_p2p_secret_kat` (4004 bytes pinned literally, passed on the unchanged base), `test_p2p_secret_profiles` (profiles, mixed pairs, purpose separation, refused profiles), `test_sign_domain_separation` §A (strict set {0x07-0x0D}, 0x0E not strict).
+
+---
+
 ## Removed Functions
 
 The following functions were removed during the p2p → transport refactoring:

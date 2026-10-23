@@ -11,7 +11,8 @@
  * (cmt_p2p_transport.c:766 responder, :862 initiator), and the transport
  * is built by the p2p host (nodus/src/witness/nodus_witness_p2p.c:3508
  * `cmt_p2p_transport_init`) since P2P-PORT F5 (1e9285922, v0.20.0).
- * 4001/4002 do not use it.
+ * 4001/4002 do not use it (true today; DHT v2 sub-package 3b changes that,
+ * with the CLIENT / NODE profiles below).
  * ════════════════════════════════════════════════════════════════════════
  *
  * Governing records: docs/plans/decisions/2026-09-26-witness-port-session.md
@@ -93,8 +94,11 @@
  * order; a message of the wrong kind or the wrong length for the current
  * step is a REJECT before any KEM work (R8).
  *
- * ⚠ NOT GROUNDED — the message ENCODING (no approved record fixes it):
- * each handshake message is `uvarint(len) ‖ kind(1) ‖ fields`, the
+ * The message ENCODING is OPERATOR-APPROVED (decision
+ * docs/plans/decisions/2026-09-26-witness-port-session.md:78, "P2P
+ * portu bayt/biçim onayları" item 2; the bytes are the operator's, not a
+ * reference grounding): each handshake message is
+ * `uvarint(len) ‖ kind(1) ‖ fields`, the
  * length-delimited framing the reference uses for these messages (protoio
  * delimited writer/reader, :305 / :313 / :411 / :419) with a fixed-layout
  * body instead of a protobuf message (there is no proto for HELLO/HELLO_R/
@@ -225,6 +229,50 @@ _Static_assert(CMT_P2P_SC_KEM_PK_SIZE == 1568 && CMT_P2P_SC_KEM_CT_SIZE == 1568 
 #define CMT_P2P_SC_INFO_AEAD      "nodus.wsess.keys.v1/aead"
 /** Row 5-6 HKDF info for the challenge. */
 #define CMT_P2P_SC_INFO_CHALLENGE "nodus.wsess.keys.v1/challenge"
+/* The three strings above are the WITNESS (4004) profile, see below. */
+
+/* ══ Session profiles (DHT v2 sub-package 3a) ═════════════════════════ */
+
+/** Longest transcript tag / info string a profile may carry (bytes). */
+#define CMT_P2P_SC_PROFILE_STR_MAX 64
+
+/**
+ * The three domain strings that make one secret-connection FAMILY: the
+ * transcript tag and the two HKDF info strings. Everything else — the
+ * message bytes, the key schedule, the frame, the nonce — is identical for
+ * every profile; a different profile therefore derives a different key and
+ * challenge from the same transcript inputs, so two peers on different
+ * profiles never authenticate. IMMUTABLE: a connection is bound to ONE
+ * profile at init, kept by pointer for the machine's life (the pointed-to
+ * struct and strings must outlive it — the three const profiles below do).
+ * The signing purpose is NOT in the profile: it stays the HOST's binding
+ * (`cmt_p2p_sc_host_t.sign / .verify`).
+ */
+typedef struct {
+    const char *transcript_tag;   /* row 4 TAG_T            */
+    const char *info_aead;        /* row 5 HKDF info        */
+    const char *info_challenge;   /* rows 5-6 HKDF info     */
+} cmt_p2p_sc_profile_t;
+
+/** 4004 witness P2P: exactly the strings above. Host purpose 0x0A. */
+extern const cmt_p2p_sc_profile_t CMT_P2P_SC_PROFILE_WITNESS;
+/** DHT v2 client session: nodus.csess.*; host purpose 0x0C.
+ *  Decision 2026-10-14-kurultay-21-summary.md:216-219 names the tags
+ *  `nodus.csess.transcript.v1` / `nodus.csess.keys.v1` "the 4004 pattern";
+ *  the `/aead` and `/challenge` suffixes, and the NDS1 + strict 0x0C/0x0D
+ *  signature separation, are operator-approved in
+ *  docs/plans/decisions/2026-10-23-dht-v2-session-bytes.md. */
+extern const cmt_p2p_sc_profile_t CMT_P2P_SC_PROFILE_CLIENT;
+/** DHT v2 node-to-node session: nodus.nsess.*; host purpose 0x0D. Same
+ *  decision as CLIENT. */
+extern const cmt_p2p_sc_profile_t CMT_P2P_SC_PROFILE_NODE;
+
+/* The signing purpose is the HOST's binding, not the profile's — nothing in
+ * this module checks that a profile is paired with its purpose. Obligations
+ * for DHT v2 sub-package 3b (recorded here, NOT implemented in 3a): pair
+ * CLIENT with 0x0C and NODE with 0x0D in the host; and pass a per-port
+ * protocol-version symbol of its own to init, never
+ * CMT_P2P_PROTOCOL_VERSION (Kurultay #43, O-6). */
 
 /* ══ Direction roles (nonce byte 0) ═══════════════════════════════════ */
 
@@ -237,7 +285,7 @@ typedef enum {
     CMT_P2P_SC_ROLE_RESPONDER = 0x02    /* accepted  */
 } cmt_p2p_sc_role_t;
 
-/* ══ Handshake message kinds (NOT GROUNDED encoding, see file header) ══ */
+/* ══ Handshake message kinds (operator-approved encoding, see file header) ══ */
 
 #define CMT_P2P_SC_MSG_HELLO    0x01
 #define CMT_P2P_SC_MSG_HELLO_R  0x02
@@ -346,6 +394,7 @@ typedef struct {
     cmt_p2p_sc_state_t state;
     cmt_p2p_sc_role_t  role;
     const cmt_p2p_sc_host_t *host;
+    const cmt_p2p_sc_profile_t *profile;   /* immutable, set at init */
 
     /* ── N9 fields, ours ── */
     uint32_t proto_ver;
@@ -428,6 +477,26 @@ int cmt_p2p_sc_init(cmt_p2p_sc_t *sc, cmt_p2p_sc_role_t role,
                     const uint8_t *local_kem_sk,
                     uint32_t proto_ver,
                     const uint8_t chain_id[CMT_P2P_SC_CHAIN_ID_SIZE]);
+
+/**
+ * `cmt_p2p_sc_init` with an explicit profile (above). `cmt_p2p_sc_init`
+ * itself is this call with CMT_P2P_SC_PROFILE_WITNESS: its signature is
+ * unchanged so the 4004 byte-pin test (test_p2p_secret_kat.c) keeps
+ * compiling and pinning the 4004 construction untouched.
+ * @param profile  exactly &CMT_P2P_SC_PROFILE_WITNESS, &…_CLIENT or
+ *                 &…_NODE (compared by pointer); anything else — NULL, a
+ *                 copy, a custom profile — is refused: CMT_FAULT (machine
+ *                 DEAD), before anything is generated. The string bounds
+ *                 (1 … CMT_P2P_SC_PROFILE_STR_MAX) are a second guard.
+ */
+int cmt_p2p_sc_init_profile(cmt_p2p_sc_t *sc, cmt_p2p_sc_role_t role,
+                            const cmt_p2p_sc_host_t *host,
+                            const cmt_p2p_sc_profile_t *profile,
+                            const uint8_t local_dsa_pk[CMT_P2P_SC_DSA_PK_SIZE],
+                            const uint8_t *local_kem_pk,
+                            const uint8_t *local_kem_sk,
+                            uint32_t proto_ver,
+                            const uint8_t chain_id[CMT_P2P_SC_CHAIN_ID_SIZE]);
 
 /**
  * Feed bytes read from the connection during the handshake. Consumes as
