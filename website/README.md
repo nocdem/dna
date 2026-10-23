@@ -879,3 +879,21 @@ genesis; every hard fork on this page is active from mainnet genesis" — no dat
 explorer version bump. Generated pages (`wiki/chain.html`, `wiki/search-index.json`, `scan/hardforks.html` and the re-stamped
 Scan pages) rebuilt with `npm run build:portals`. Not changed here (outside this change's file list): `tokenomics.html` and
 its `tok.plannedDelegateName` TR key still list HF-8 as planned.
+
+2026-10-23, the roadmap made simple (operator: "biraz karisik ve cok fazla detayli bilgi var orda. bence daha sade
+olmali. neler yaptik neler yapicaz road map ne mainnet ne (tarih yok) sonrasinda neler planliyoruz"; compute market kept:
+"Kalsın"). `roadmap.html` now has four groups and five filters — All / Built / Now / Mainnet / After mainnet
+(`data-roadmap-filter` values `all`, `built`, `active`, `mainnet`, `later`; the existing filter code in `app.js` needed no
+change). 35 items became 25, each one or two sentences: the history before the testnet is merged into three items
+(`history.start`, `history.network`, `history.chain`); every hard fork keeps its own item (rule of 2026-10-05), shortened to
+what it does and its effective block; the wallet / Connect / names / vaults / Scan items are one item `history.wallet`;
+"Now" = HF-9, DHT v2, the home storage node, the CPUNK airdrop; "Mainnet" = a new genesis with every hard fork active from
+block 0, the testnet beside it, NO date, and the must list of `docs/plans/2026-10-23-mainnet-roadmap.md` /
+`decisions/2026-10-23-mainnet-scope-over-date.md` in plain words; "After mainnet" = AMM, bandwidth, several devices, the
+storage market, the compute market. Dropped as stale: "a node in separate components — not yet on the live nodes" (all
+live nodes run the split units since 2026-10-09), "pruning switched on node by node", the per-item vote heights and
+amounts (Scan's Hard forks page keeps them). Removed TR keys: every old `history.*` key that no item uses any more and
+`roadmap.filter.planned` / `roadmap.state.planned`; new: `roadmap.filter.mainnet` / `.later`, `roadmap.state.mainnet` /
+`.later`. Every `data-i18n` key on the page was checked to have a TR string. `wiki/content.mjs` and the Scan planned list
+(`build-portals.mjs`) are unchanged. `npm run check` and `npm run build:portals` run; the EN and TR pages were rendered
+headless (Chromium) and checked by eye.
