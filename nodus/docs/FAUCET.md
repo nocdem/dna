@@ -62,7 +62,7 @@ required key = the service does not start). Full commented example:
 | `full_native` / `full_token` / `start_native` | no | 10^13 / 10^8 / 10^9 | raw amounts |
 | `fee_ceiling` | no | 10^7 | raw; above it a claim pauses |
 | `expiry_ahead` | no | 90 | envelope expiry = tip + this (10..90) |
-| `storage_ceiling` | no | 64 MiB | journal bytes (live db pages + wal) the faucet keeps below: new claims stop when the live bytes plus a 64 KiB reserve per open claim (and for the new one) reach it; a replacement attempt that would reach it is not signed (section 6) |
+| `storage_ceiling` | no | 64 MiB | hard disk ceiling for the journal files: new claims stop when live pages + wal + the WAL margin + a 64 KiB reserve per open claim (and for the new one) reach it, or the on-disk size + the WAL margin does; a replacement attempt that would reach it is not signed; a ceiling below the margin plus two reserves is refused at open (section 6) |
 | `queue_cap` | no | 64 | open claims at once |
 | `conn_cap` / `request_timeout_ms` | no | 16 / 5000 | HTTP connections / per-connection deadline (it also bounds the node reads of a claim request) |
 | `poll_ms` | no | 4000 | worker cycle |
@@ -83,7 +83,7 @@ status answer: {"open":bool,"paused":bool,"full_left":n,"start_left":n,"message"
 - Asking again for an address that already has a claim returns THAT claim (de-dup); asking for a name that was already paid returns the paid claim — nothing is paid twice.
 - HTTP codes: 200 for every decision (refusals included); 400 malformed address/body/id; 404 unknown path or claim; 405 wrong method; 411/413/431/501 request bounds; 408 request timeout; 503 the node/journal is unavailable, the request ran out of time, the faucet is stopped, or the connection cap is reached.
 - Bounds (each pinned by `test_faucet_http`): request line ≤ 256 B, header block ≤ 4096 B, ≤ 32 header lines of ≤ 512 B, body ≤ 1024 B (Content-Length only; Transfer-Encoding refused), no query strings, connection cap, one deadline per connection.
-- **Deadlines.** The connection's deadline (`request_timeout_ms`, counted from accept) is handed to the claim handler: every node read of a `POST /faucet/claim` waits on the node session only until that deadline (and never reconnects — only the worker rebuilds a down session); a request that is out of time is `503 refused`, nothing journalled. `GET /faucet/claim/<id>` reads the journal only; `GET /faucet/status` reads the journal and the worker's funds cache only — neither ever waits on the node. The worker's block scan takes the node session per page, not per block, so a slow scan does not hold it against a claim request.
+- **Deadlines.** The connection's deadline (`request_timeout_ms`, counted from accept) is handed to the claim handler: every node read of a `POST /faucet/claim` waits on the node session only until that deadline (and never reconnects — only the worker rebuilds a down session); a request that is out of time is `503 refused`, nothing journalled. `GET /faucet/claim/<id>` reads the journal only; `GET /faucet/status` reads the journal and the worker's funds cache only — neither ever waits on the node. Since nodus 0.26.26 (BUGS N-04) the deadline also bounds the JOURNAL: mutex waits use `pthread_mutex_clocklock(CLOCK_MONOTONIC)` and the SQLite busy timeout is the time left (at most 5 s); a journal call that cannot start or finish in time returns busy with nothing written, answered `503 "busy, try again"` (a journal fault: `503 "the faucet journal is unavailable"`; `/status` answers 200 only on success); the claim handler re-checks the deadline right before creating a claim and right before its COMMIT. Open: a COMMIT already in progress can still hold the poll loop. The settlement thread sets no deadline. The worker's block scan takes the node session per page, not per block, so a slow scan does not hold it against a claim request.
 - **Answers are sent to the end.** An answer is built once into the connection and sent through `POLLOUT` until complete, within the connection's deadline; a peer too slow to take ~1.3 KB inside the deadline is cut (the over-cap 503 and the 408 are best-effort single sends).
 - `full_left` / `start_left` are the capacity of the faucet's own balance at the fee ceiling: FULL = min(NODUS / (10^13 + ceiling), tUSDT / 10^8); START = NODUS / (10^9 + ceiling). The NODUS is ONE pool shared by both. The balance is a cache the WORKER refreshes every cycle (re-read after 10 s); a cache older than 30 s, or one whose last refresh failed, is "the node could not be read" and closes `open`.
 - `open` is false while the faucet is stopped (chain mismatch, a claim in state `unknown`, journal at its ceiling, node unreadable).
@@ -123,16 +123,25 @@ SQLite, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` for every transition. Tables:
 (stored envelope per signing), `reservations`. A second instance is refused by a
 `flock` on `<journal_path>.lock`, taken before the key directory is touched.
 
-**Storage ceiling.** The bytes counted are the database's LIVE pages (SQLite reuses
+**Storage ceiling** (a hard disk ceiling since nodus 0.26.26, BUGS N-03). The bytes counted are the database's LIVE pages (SQLite reuses
 freed pages but never shrinks the file) plus the `-wal` file; an absent `-wal` is 0,
 any other `stat()` failure is a fault (the faucet does not admit a claim on it).
-- New claims are admitted only while live bytes + 64 KiB for every open claim and
-  for the new one stay below `storage_ceiling` (this reserve is what the first
-  signed attempt of an admitted claim lives in).
+At open the journal sets `wal_autocheckpoint` and `journal_size_limit` to 100 pages
+(`FJ_WAL_CKPT_PAGES`), so the `-wal` file is cut back after checkpoints; the WAL
+margin is 100 × page size + 256 KiB (`FJ_TX_BOUND_BYTES`). A `storage_ceiling` that
+cannot hold that margin plus two claim reserves is refused at open.
+- New claims are admitted only while live bytes + `-wal` + the WAL margin + 64 KiB
+  (`FJ_CLAIM_RESERVE_BYTES`) for every open claim and for the new one stay below
+  `storage_ceiling`, AND the on-disk size (all pages, free ones included, + `-wal`)
+  plus the WAL margin stays below it (this reserve is what the first signed attempt
+  of an admitted claim lives in). `journal_size_limit` bounds the retained `-wal`,
+  not a write-time quota; an external reader that blocks checkpoints is not handled
+  (the faucet holds one connection).
 - A replacement attempt (a claim's second or later) first frees the envelope bytes
   of that claim's earlier, expired attempts — their wire id, intent id, inputs,
   expiry and scan cursor stay as evidence, and the paid markers are never touched —
-  and is refused when the live bytes are still at the ceiling: the claim pauses
+  and is refused when the live bytes are still at the ceiling, or the on-disk size
+  plus the WAL margin of that commit reaches it (the same disk test): the claim pauses
   ("the claim history is full; replacement signing is paused for the operator")
   and signs on its own once room returns. The envelope bytes of a `confirmed`
   claim are freed the same way.
