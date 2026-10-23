@@ -228,6 +228,9 @@ typedef struct {
     size_t         b_len;                 /* = ⌈n/8⌉ */
 } dht2_p_want_t;                          /* {b} */
 
+/* `i` indexes the offer's entries (row 12, ≤ 250): the codec refuses
+ * i ≥ 250; i < the actual offer's entry count is the exchange code's check
+ * (package 7). */
 typedef struct {
     uint64_t       i;                     /* offer index */
     bool           has_v;                 /* false ⇒ `v` is null (gone) */
@@ -280,7 +283,7 @@ int dht2_pull_receipt_encode(const dht2_pull_receipt_t *m, uint8_t *out,
 int dht2_pull_receipt_decode(const uint8_t *in, size_t len,
                              dht2_pull_receipt_t *m);
 
-/* ── the `p_want` bit-vector (row 12; Bee bitvector.go:52-61 LSB-first) ─
+/* ── the `p_want` bit-vector (row 12; Bee bitvector.go: Get :55-57, Set :61-65, LSB-first) ─
  * bit i = byte ⌊i/8⌋, mask 1 << (i mod 8). No bounds check: the caller
  * holds ⌈n/8⌉ bytes and i < n. */
 size_t dht2_bits_len(size_t n);                     /* ⌈n/8⌉ */

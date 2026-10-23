@@ -956,7 +956,7 @@ static void fill_list(dht2_list_answer_t *a)
     memset(a->cursor, 0x42, 64);
     a->complete = true;
     a->has_req_cursor = true;
-    memset(a->req_cursor, 0x41, 64);
+    memset(a->req_cursor, 0x40, 64);
 }
 
 static void test_list(void)
@@ -993,7 +993,7 @@ static void test_list(void)
         a_hex(p, KCUR);
         a_bs(p, 0x42, 64);
         a_hex(p, KCOMPL "f5" KREQC);
-        a_bs(p, 0x41, 64);
+        a_bs(p, 0x40, 64);
     }
     CHECK(dht2_list_answer_encode(&a, out, sizeof(out), &n) == DHT2_OK &&
           same(out, n, &g_a), "LIST answer pinned bytes");
@@ -1067,6 +1067,15 @@ static void test_list(void)
     /* Decoder: the LIST rules, on hand-built bytes. */
     list_build(&g_m, 2, w2, 0x42, 1, -1, -1, "11");
     CHECK(d_la(g_m.b, g_m.n) == DHT2_OK, "baseline hand-built LIST page");
+    list_build(&g_m, 2, w2, 0x42, 1, 0x40, -1, "11");
+    CHECK(d_la(g_m.b, g_m.n) == DHT2_OK,
+          "continuation: first w strictly after req_cursor");
+    list_build(&g_m, 2, w2, 0x42, 1, 0x41, -1, "11");
+    CHECK(d_la(g_m.b, g_m.n) == DHT2_E_BAD_ENCODING,
+          "first w equal to req_cursor refused (cursor is exclusive)");
+    list_build(&g_m, 2, w2, 0x42, 1, 0x42, -1, "11");
+    CHECK(d_la(g_m.b, g_m.n) == DHT2_E_BAD_ENCODING,
+          "first w before req_cursor refused");
     {
         static const uint8_t desc[] = { 0x42, 0x41 };
         static const uint8_t eq[] = { 0x41, 0x41 };
@@ -1100,6 +1109,10 @@ static void test_list(void)
     a.list_count = 17;
     CHECK(dht2_list_answer_encode(&a, NULL, 0, &n) == DHT2_E_BAD_ENCODING,
           "encoder: 17 entries refused");
+    fill_list(&a);
+    memset(a.req_cursor, 0x41, 64);
+    CHECK(dht2_list_answer_encode(&a, NULL, 0, &n) == DHT2_E_BAD_ENCODING,
+          "encoder: first w equal to req_cursor refused");
 
     /* `r` rules in the LIST context: hash or 17 only. */
     list_build(&g_m, 0, w2, -1, 1, -1, -1, "f6");
@@ -1230,14 +1243,56 @@ static void test_seal_and_sizes(void)
         a.r[k].kind = DHT2_RV_HASH;
     }
     CHECK(dht2_answer_encode(&a, pay, sizeof(pay), &plen) == DHT2_OK &&
-          plen == DHT2_ANSWER_PAYLOAD_MAX && plen == 1262u,
-          "row 11: the 8-key answer payload is 1,262 B");
+          plen == DHT2_READ_ANSWER_PAYLOAD_MAX && plen == 1262u &&
+          plen <= DHT2_ANSWER_PAYLOAD_MAX,
+          "row 11: the 8-key read answer payload is 1,262 B");
     CHECK(dht2_answer_seal(DHT2_PT_RECEIPT, pay, plen, NULL, g_pk, NULL, 0,
                            &elen) == DHT2_OK &&
-          elen == DHT2_ANSWER_ENV_MAX && elen == 8516u,
-          "row 11: the answer envelope is 8,516 B");
-    CHECK(DHT2_ANSWER_MSG_MAX == 8u * 262144u + 8516u,
-          "row 11: message = 8 x 262,144 + envelope");
+          elen == 8516u && elen <= DHT2_ANSWER_ENV_MAX,
+          "row 11: the read answer envelope is 8,516 B");
+
+    /* The maximal LIST answer: 16 entries, both cursors, hash r and ctl,
+     * 9-byte h / t — the largest payload of the four. */
+    {
+        dht2_list_answer_t la;
+        uint8_t            lpay[DHT2_ANSWER_PAYLOAD_MAX];
+        size_t             lplen = 0, lelen = 0;
+
+        memset(&la, 0, sizeof(la));
+        la.h = UINT64_MAX;
+        la.t = UINT64_MAX;
+        la.r.kind = DHT2_RV_HASH;
+        la.has_ctl = true;
+        la.list_count = DHT2_LIST_PAGE_MAX;
+        for (k = 0; k < DHT2_LIST_PAGE_MAX; k++) {
+            memset(la.list[k].w, (int)(0x41 + k), 64);
+            memset(la.list[k].d, 0x51, 64);
+        }
+        la.has_req_cursor = true;
+        memset(la.req_cursor, 0x40, 64);
+        la.has_cursor = true;
+        memset(la.cursor, (int)(0x41 + DHT2_LIST_PAGE_MAX - 1u), 64);
+        la.complete = true;
+        CHECK(dht2_list_answer_encode(&la, lpay, sizeof(lpay), &lplen) ==
+              DHT2_OK && lplen == DHT2_LIST_ANSWER_PAYLOAD_MAX &&
+              lplen == 2731u && lplen == DHT2_ANSWER_PAYLOAD_MAX,
+              "row 11: the maximal LIST answer payload is 2,731 B");
+        CHECK(dht2_answer_seal(DHT2_PT_ANSWER, lpay, lplen, NULL, g_pk, NULL,
+                               0, &lelen) == DHT2_OK &&
+              lelen <= DHT2_ANSWER_ENV_MAX,
+              "row 11: the maximal LIST envelope fits the constant");
+        /* Payload-type length 21 is the longest: the constant equals the
+         * LIST envelope under the 21-byte types (receipt / refusal). */
+        CHECK(dht2_env_seal(DHT2_DOMAIN_ANSWER,
+                            (const uint8_t *)DHT2_PT_RECEIPT,
+                            strlen(DHT2_PT_RECEIPT), lpay, lplen, NULL,
+                            g_pk, NULL, 0, &lelen) == DHT2_OK &&
+              lelen == DHT2_ANSWER_ENV_MAX,
+              "row 11: the constant is the LIST term under a 21-byte type");
+    }
+    CHECK(DHT2_ANSWER_MSG_MAX ==
+          8u * 262144u + (unsigned)DHT2_ANSWER_ENV_MAX,
+          "row 11: message = 8 x 262,144 + the largest envelope");
 
     /* Seal / open round trip with a fixed-seed key. */
     fill_answer(&a);
@@ -1415,6 +1470,22 @@ static void test_pull(void)
         a_init(&g_m);                                 /* v a uint */
         a_hex(&g_m, "a2" KI "03" KV "01");
         CHECK(d_del(g_m.b, g_m.n) == DHT2_E_BAD_ENCODING, "v must be bstr|null");
+        m.i = 249;
+        m.has_v = false;
+        CHECK(dht2_p_deliver_encode(&m, NULL, 0, &n) == DHT2_OK,
+              "i = 249 encodes (null v)");
+        a_init(&g_m);
+        a_hex(&g_m, "a2" KI "18 f9" KV "f6");
+        CHECK(d_del(g_m.b, g_m.n) == DHT2_OK && g_del.i == 249,
+              "p_deliver: i = 249 accepted");
+        a_init(&g_m);
+        a_hex(&g_m, "a2" KI "18 fa" KV "f6");
+        CHECK(d_del(g_m.b, g_m.n) == DHT2_E_BAD_ENCODING,
+              "p_deliver: i = 250 refused (decode)");
+        m.i = 250;
+        CHECK(dht2_p_deliver_encode(&m, NULL, 0, &n) == DHT2_E_BAD_ENCODING,
+              "p_deliver: i = 250 refused (encode)");
+        m.i = 3;
         m.has_v = true;
         m.v = v;
         m.v_len = DHT2_ENVELOPE_MAX + 1u;
@@ -1790,6 +1861,49 @@ static void test_ids(void)
     expect_id(want, "nodus.dht.group.feed.v1", chain, &p);
     CHECK(dht2_id_group_feed(chain, gid, got) == 0 &&
           memcmp(got, want, 64) == 0, "group feed preimage (no version)");
+
+    /* Independent KATs for the three version-independent helpers: the
+     * digests were computed OUTSIDE this tree (Python hashlib), with
+     *   python3 -c "import hashlib; print(hashlib.sha3_512(
+     *       bytes.fromhex('<preimage hex>')).hexdigest())"
+     * chain = 0x22 x 32, fp = 0xA5 x 64, salt = 0x30..0x4f, group id =
+     * 0x60..0x7f. */
+    {
+        /* dm: preimage hex (143 B)
+         * 6e6f6475732e6468742e646d2e7631 (label) ‖ 22 x 32 ‖ a5 x 64 ‖
+         * 303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f */
+        static const char dm_dig[] =
+            "b3e8741d9dc88c2724c24dfafe04edfb4aa8d14912a42c5c270902f0fd49dae0"
+            "8203e10d59ef70872cac60e86869e2ebbff91fa43764fd8ed2989a787e044818";
+        /* head: preimage hex (87 B)
+         * 6e6f6475732e6468742e67726f75702e686561642e7631 (label) ‖ 22 x 32 ‖
+         * 606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f */
+        static const char head_dig[] =
+            "8fca0170a0fa82e5c13b3b0637884f3fe4761d9068ecab2297db801542dfbf65"
+            "754fbf8c3b3c03ff2a8c092d5e334dd05c1380b46d3ca310ce829eee96fe3062";
+        /* feed: preimage hex (87 B)
+         * 6e6f6475732e6468742e67726f75702e666565642e7631 (label) ‖ 22 x 32 ‖
+         * 606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f */
+        static const char feed_dig[] =
+            "aa0a0a22671ef3bf7d8171851dffd1023c0816c9cd9cf9798693c516bd5b6c7c"
+            "07efa322eb836861b571d7f0b591c881c2a085b26f3f95cb9d449b3ef71cddce";
+        asm_t *k = &g_m;
+
+        a_init(k);
+        a_hex(k, dm_dig);
+        CHECK(!k->err && k->n == 64 && dht2_id_dm(chain, fp, salt, got) == 0 &&
+              memcmp(got, k->b, 64) == 0, "dm topic KAT (independent digest)");
+        a_init(k);
+        a_hex(k, head_dig);
+        CHECK(!k->err && k->n == 64 &&
+              dht2_id_group_head(chain, gid, got) == 0 &&
+              memcmp(got, k->b, 64) == 0, "group head KAT (independent digest)");
+        a_init(k);
+        a_hex(k, feed_dig);
+        CHECK(!k->err && k->n == 64 &&
+              dht2_id_group_feed(chain, gid, got) == 0 &&
+              memcmp(got, k->b, 64) == 0, "group feed KAT (independent digest)");
+    }
 
     /* group record / keys: chain ‖ group id ‖ version u32 BE */
     a_init(&p);

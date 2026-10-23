@@ -156,18 +156,36 @@ extern "C" {
  *                                            1099
  *     "t"  key 2 + uint 9                       11
  *   = 1262 B.
- *   (A LIST answer's payload is another bound: one `r` element plus
- *   ≤ 16 {w, d} entries ≈ 2.4 KB, its records ≤ 2 MiB — row 11.)
+ *   The LIST answer payload (one `r` element, ≤ 16 {w, d} entries, both
+ *   cursors, hash `ctl`, 9-byte h / t) is LARGER, so the envelope maximum
+ *   below uses it (receipt and refusal payloads are smaller than the read
+ *   answer):
+ *     map head (11 keys)                         1
+ *     "c" 36 · "h" 11 · "n" 68 · "q" 36 · "t" 11  162
+ *     "r"  key 2 + array head 1 + 1 element 137  140
+ *     "ctl" key 4 + bstr 64 (66)                  70
+ *     "list" key 5 + array head 1 + 16 × 137 (map head 1 + "d" 2 + 66 +
+ *            "w" 2 + 66 = 137)                  2198
+ *     "cursor" key 7 + bstr 64 (66)               73
+ *     "complete" key 9 + bool 1                   10
+ *     "req_cursor" key 11 + bstr 64 (66)          77
+ *   = 2731 B (its records ≤ 2 MiB — row 11).
  *   envelope field 1, the public key: tag 1 + uvarint(2595) 2 +
  *     PublicKey message (tag 1 + uvarint(2592) 2 + 2592 key) = 2598
  *   field 2, payload type: tag 1 + len 1 + 21 ("/nodus/dht/receipt/v1" and
  *     "/nodus/dht/refusal/v1" are the longest) = 23
- *   field 3, payload: tag 1 + uvarint(1262) 2 + 1262 = 1265
+ *   field 3, payload: tag 1 + uvarint(2731) 2 + 2731 = 2734
  *   field 5, signature: tag 1 + uvarint(4627) 2 + 4627 = 4630.
  * The `_Static_assert` of the total against NODUS_MAX_FRAME_TCP lives in
  * nodus/tests/test_dht2_msg.c (shared/ does not include nodus headers). */
-#define DHT2_ANSWER_PAYLOAD_MAX \
+#define DHT2_READ_ANSWER_PAYLOAD_MAX \
     (1u + 36u + 11u + 68u + 36u + (2u + 1u + 8u * 137u) + 11u)
+#define DHT2_LIST_ANSWER_PAYLOAD_MAX \
+    (1u + 36u + 11u + 68u + 36u + 11u + (2u + 1u + 137u) + 70u + \
+     (5u + 1u + 16u * 137u) + 73u + 10u + 77u)
+#define DHT2_ANSWER_PAYLOAD_MAX \
+    (DHT2_LIST_ANSWER_PAYLOAD_MAX > DHT2_READ_ANSWER_PAYLOAD_MAX \
+         ? DHT2_LIST_ANSWER_PAYLOAD_MAX : DHT2_READ_ANSWER_PAYLOAD_MAX)
 #define DHT2_ANSWER_ENV_MAX \
     ((1u + 2u + (1u + 2u + DHT2_PUBKEY_LEN)) + (1u + 1u + 21u) + \
      (1u + 2u + DHT2_ANSWER_PAYLOAD_MAX) + (1u + 2u + DHT2_SIG_LEN))

@@ -465,6 +465,11 @@ static bool list_rules_ok(const dht2_list_answer_t *a)
         memcmp(a->cursor, a->list[a->list_count - 1].w, DHT2_FP_LEN) != 0) {
         return false;                     /* cursor EXCLUSIVE = last w */
     }
+    if (a->has_req_cursor &&
+        memcmp(a->list[0].w, a->req_cursor, DHT2_FP_LEN) <= 0) {
+        return false;                     /* the page starts strictly after
+                                           * the request's cursor (row 11) */
+    }
     return true;
 }
 
@@ -939,6 +944,9 @@ static int p_deliver_emit(const void *vm, dht2_cbor_wr_t *w, size_t ctx)
     const dht2_p_deliver_t *m = (const dht2_p_deliver_t *)vm;
 
     (void)ctx;
+    if (m->i >= DHT2_PULL_PAGE_MAX) {
+        return -1;                        /* i indexes an offer of ≤ 250 */
+    }
     if (m->has_v && (m->v_len > DHT2_ENVELOPE_MAX ||
                      (m->v == NULL && m->v_len != 0))) {
         return -1;
@@ -963,7 +971,7 @@ static int p_deliver_parse(dht2_cbor_rd_t *r, void *vm, size_t ctx)
     (void)ctx;
     if (map_open(&mp, r) != 0 ||
         map_expect(&mp, "i") != 0 || dht2_cbor_rd_uint(r, &m->i) != 0 ||
-        map_expect(&mp, "v") != 0) {
+        m->i >= DHT2_PULL_PAGE_MAX || map_expect(&mp, "v") != 0) {
         return -1;
     }
     if (dht2_cbor_rd_peek_null(r)) {
