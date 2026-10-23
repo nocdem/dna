@@ -1,34 +1,38 @@
 /**
- * Nodus — the DIALER side of the 4002 inter-node handshake, one shared module
+ * Nodus — the 4002 inter-node session (SecretConnection, NODE profile) and
+ * the outbound 4002 pool, one shared module
  *
- * Decision docs/plans/decisions/2026-10-01-nodus-component-split.md item 28
- * (approved 2026-10-02: "no new handshake, the existing code moves into a
- * shared module"): the dialer half of the 4002 handshake that used to live
- * inline in core's dispatch_inter moves here, unchanged, so core and the
- * S5 storage process link the SAME code — the CRIT-1 identity pin cannot
- * be lost in a copy. The ACCEPTOR half stays in core.
+ * Decision docs/plans/decisions/2026-10-01-nodus-component-split.md items 16,
+ * 28: core and the nodus-storage process link the SAME code, so the dial pin
+ * cannot be lost in a copy.
  *
- * The exchange (dialer's view; every frame is a T2 message):
- *   send  hello(0, pk, node_id)                      nodus_inter_dial_start
- *   recv  challenge(nonce)  → send auth(txn, sign(nonce))
- *   recv  auth_ok(server_pk, kyber_pk, kpk_sig[, mlkem_pk, mpk_sig])
- *         CRIT-1: kpk_sig verifies over (kyber_pk || our challenge nonce)
- *         under server_pk AND fingerprint(server_pk) == the expected peer
- *         identity, or the connection is refused; then KEM-encapsulate
- *         (ML-KEM-1024 when mpk_sig verifies under the same server_pk, else
- *         Kyber round-3) → send key_init(txn, ct, nc, alg)
- *   recv  key_ack(ns)       → channel crypto (INITIATOR) from (ss, nc, ns)
- * A node without a Kyber identity cannot encrypt: at auth_ok it opens the
- * connection in plaintext (established, encrypted = false).
+ * DHT v2 sub-package 3b-2 (decisions/2026-10-23-kurultay-43-summary.md,
+ * 2026-10-23-dht-v2-session-cutover.md, 2026-10-23-dht-v2-session-bytes.md):
+ * the old dialer handshake that lived here — T2 hello → challenge → auth →
+ * auth_ok (kpk_sig, identity pin) → key_init → key_ack → channel crypto, with
+ * its plaintext dial for a node without a Kyber identity — is DELETED. A 4002
+ * connection speaks the 4004 SecretConnection (nodus_tcp_sc.h), profile NODE,
+ * purpose 0x0D, protocol version NODUS_NSESS_PROTO_VERSION:
  *
- * The module knows no server, session or transport type: it works on its
- * own per-connection state (nodus_inter_dial_t) and reaches the
- * connection through the callbacks in nodus_inter_dial_io_t. What it does
- * NOT do (the caller's job, before calling it): the role split (only a
- * connection we dialed may receive challenge / auth_ok / key_ack), the
- * pre-session-key gate, and "error" frames.
+ *   dialer     INITIATOR, pinned to the exact node id it meant to dial (the
+ *              routing / roster node_id recorded at dial time); the layer
+ *              aborts BEFORE the ENCAPS job when the responder's claimed key
+ *              hashes to another id (O-4);
+ *   acceptor   RESPONDER, any identity that proves its key is admitted
+ *              (khan A: per-operation holder authorization comes in packages
+ *              6-7);
+ *   both       nodus frames travel unchanged inside the sealed stream (O-1);
+ *              every send before the session is authenticated waits in the
+ *              connection's DIAL QUEUE (plaintext, pre-framed) and is
+ *              replayed, sealed and in order, when the owner opens the gate
+ *              (nodus_inter_dial_conn_open) at on_session.
  *
- * Single-threaded per connection; no clock, no global state.
+ * The module knows no server or session type. A pool OWNER hands it, through
+ * the pool's `auth_ctx`, a nodus_inter_session_cfg_t (this node's identity
+ * and the way to learn the chain id the sessions are bound to).
+ *
+ * Single-threaded per pool; no global state; the only clock is the caller's
+ * `now` in the sweep.
  *
  * @file nodus_inter_dial.h
  */
@@ -41,114 +45,71 @@
 #include <stdint.h>
 
 #include "nodus/nodus_types.h"
-#include "protocol/nodus_tier2.h"
-#include "crypto/nodus_channel_crypto.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/** Per-connection dialer state. Zero-initialised = a fresh connection. */
+struct nodus_tcp;
+struct nodus_tcp_conn;
+
+/* ── The node session of a 4002 connection ──────────────────────────── */
+
+/**
+ * What a 4002 pool owner provides, through `pool->auth_ctx`. The struct must
+ * outlive the pool; `identity` too (the layer keeps a pointer to its signing
+ * key for the life of the connection).
+ */
 typedef struct {
-    /* CRIT-1: the challenge nonce we received and signed, retained so the
-     * auth_ok handler can rebuild the message the peer signed
-     * (kyber_pk || nonce) and verify its kpk_sig. */
-    uint8_t         challenge_nonce[NODUS_NONCE_LEN];
-    bool            has_challenge_nonce;
-
-    /* Between key_init (sent) and key_ack (received): the KEM shared secret
-     * and our nonce. Zeroed on key_ack. */
-    uint8_t         pending_ss[32];
-    uint8_t         pending_nc[32];
-    bool            pending_kem;
-
-    /* An auth_ok was received (set on receipt, before its checks — exactly
-     * as the inline code did; a refused auth_ok ends the connection). */
-    bool            authenticated;
-
-    /* The peer's identity once auth_ok passed signature + pin. */
-    nodus_key_t     peer_id;
-    nodus_pubkey_t  peer_pk;
-    bool            peer_id_set;
-} nodus_inter_dial_t;
-
-/** What the module needs from the connection, per call. */
-typedef struct {
-    /** This node's identity (signs the challenge; has_kyber decides whether
-     *  the channel is encrypted at all). */
+    /** This node's identity: the signing key; for an ACCEPTED connection
+     *  also the ML-KEM-1024 pair (identity->has_mlkem is required). */
     const nodus_identity_t *identity;
-    /** Who we believe we dialed (the routing / roster node_id recorded at
-     *  dial time); NULL when none was recorded — refused at auth_ok under
-     *  Kyber. Read at each call, not stored: a localhost connect completes
-     *  inside the dial, before the dialer records the pin. */
-    const nodus_key_t      *expected_peer_id;
-    /** The connection's channel crypto, initialised (INITIATOR) at key_ack. */
-    nodus_channel_crypto_t *crypto;
-    /** For log lines only. */
-    const char             *peer_ip;
-    uint16_t                peer_port;
-    int                     slot;
-    /** Write one handshake payload to the peer WITHOUT the send gate (the
-     *  gate stays closed until the session key exists). Its result is not
-     *  acted on, as before the move. */
-    int  (*send_raw)(void *ctx, const uint8_t *payload, size_t len);
-    /** The handshake finished: `encrypted` true at key_ack (channel crypto
-     *  set), false at auth_ok on a node with no Kyber identity (plaintext).
-     *  The caller opens its send gate. */
-    void (*established)(void *ctx, bool encrypted);
-    void                   *ctx;
-} nodus_inter_dial_io_t;
-
-typedef enum {
-    /** Not a frame the dialer handshake consumes in this state (a method
-     *  other than challenge / auth_ok / key_ack, or key_ack with no key
-     *  exchange pending): the caller dispatches it as before. */
-    NODUS_INTER_DIAL_NOT_MINE = 0,
-    /** Consumed (acted on, or dropped with a log line). */
-    NODUS_INTER_DIAL_DONE,
-    /** Fail closed (CRIT-1): the caller marks the connection AUTH_FAILED
-     *  and disconnects it. */
-    NODUS_INTER_DIAL_REFUSED
-} nodus_inter_dial_rc_t;
+    /** Fill out[32] with the chain id the node sessions are bound to; false
+     *  while it is not known (core: no chain open yet, or the witness not
+     *  answering; storage: no fresh snapshot of its witness). Then the dial is
+     *  REFUSED and the accept is closed — fail closed, no session without a
+     *  chain. */
+    bool (*chain_id)(void *ctx, uint8_t out[32]);
+    void *ctx;
+} nodus_inter_session_cfg_t;
 
 /**
- * Start the handshake on a connection we dialed: encode hello(0, this
- * node's pk, node_id) and write it through io->send_raw.
- * @return 0 hello sent (the caller records HELLO_SENT), -1 it could not be
- *         encoded (nothing sent; the caller records AUTH_FAILED).
+ * Turn the node session on for `conn` of `pool` (right after
+ * nodus_tcp_connect for a dial, from on_accept for an accept).
+ *  - the cfg is `pool->auth_ctx`; none, or an unknown chain id → -1;
+ *  - initiator: the conn's pin (conn->expected_peer_id) must be set — an
+ *    unpinned dial is refused (-1), there is no unpinned 4002 dial;
+ *  - on success the conn's send gate is closed until nodus_inter_dial_conn_open
+ *    (conn->auth_required = true; a dialed conn is AUTH_HELLO_SENT so the
+ *    pool sweep's stuck-handshake close applies to it).
+ * @return 0, or -1 with the connection left as it was (the caller closes it).
  */
-int nodus_inter_dial_start(const nodus_inter_dial_io_t *io);
+int nodus_inter_session_enable(struct nodus_tcp *pool, struct nodus_tcp_conn *conn,
+                               bool initiator);
 
 /**
- * Feed one decoded T2 frame received on a connection we dialed.
- * Handles challenge, auth_ok and key_ack (see the file comment); the
- * frames it sends are byte-for-byte those the inline handler sent.
- * REFUSED, with nothing sent, also when a challenge carries no nonce (the
- * decoder leaves an absent nonce all-zero; all-zero is refused), or when
- * signing the challenge or encoding the auth / key_init reply fails — a
- * zero signature or a truncated frame is never written.
+ * The session of `conn` just became AUTHENTICATED (tcp->on_session): copy the
+ * proven peer identity onto the connection — conn->peer_pk, peer_id (the
+ * SHA3-512 fingerprint of that key), peer_id_set, authenticated. A conn we
+ * dialed has its pin re-checked here against the proven key (the layer
+ * already did before ENCAPS; a second look costs a hash).
+ * @return 0, or -1 (no key to read, or the pin differs): close the connection.
  */
-nodus_inter_dial_rc_t nodus_inter_dial_on_frame(nodus_inter_dial_t *d,
-                                                const nodus_inter_dial_io_t *io,
-                                                const nodus_tier2_msg_t *msg);
+int nodus_inter_session_proven(struct nodus_tcp_conn *conn);
 
 /* ── The outbound 4002 pool (split S5b, decision items 16, 28) ─────────
  *
  * The find-or-dial rule, the pre-framed send, the dialed-conn hygiene and
- * the hint filter that core's inter-node pool always used, moved here
- * unchanged so that core (presence, circuits) and the nodus-storage
- * process (replication, republish, hinted handoff) run the SAME code on
- * their own pools. Every function works on the pool it is given and on
- * nothing else; none holds state of its own. Log lines are the ones core
- * printed before the move.
+ * the hint filter that core's inter-node pool always used, so that core
+ * (presence, circuits) and the nodus-storage process (replication, republish,
+ * hinted handoff) run the SAME code on their own pools. Every function works
+ * on the pool it is given and on nothing else; none holds state of its own.
  */
-
-struct nodus_tcp;
-struct nodus_tcp_conn;
 
 /** Idle limit of a 4002 connection in seconds (core's IDLE_TIMEOUT_AUTH). */
 #define NODUS_INTER_POOL_IDLE_SEC        180
-/** A dialed conn still in HELLO_SENT after this many seconds is closed. */
+/** A dialed conn whose session is not authenticated after this many seconds
+ *  is closed (its state is still AUTH_HELLO_SENT). */
 #define NODUS_INTER_POOL_HELLO_TIMEOUT_SEC 10
 
 /**
@@ -164,28 +125,46 @@ struct nodus_tcp_conn *nodus_inter_pool_find(struct nodus_tcp *pool,
 
 /**
  * Find-or-dial: nodus_inter_pool_find, else a new connection marked
- * is_nodus with `expected_node_id` (when non-NULL) recorded as the pin
- * (conn->expected_peer_id) the dialer's auth_ok checks (CRIT-1).
+ * is_nodus with `expected_node_id` recorded as the pin
+ * (conn->expected_peer_id) and the node session enabled on it as INITIATOR
+ * (nodus_inter_session_enable). A dial without a pin, or whose session cannot
+ * be enabled (unknown chain id, no config), is not made: NULL, nothing left
+ * allocated.
  * @return the connection, or NULL if the dial could not be started.
  */
 struct nodus_tcp_conn *nodus_inter_pool_dial(struct nodus_tcp *pool,
                                              const char *ip, uint16_t port,
                                              const nodus_key_t *expected_node_id);
 
+/** Result of nodus_inter_pool_send_framed. */
+typedef enum {
+    /** The dial / write failed, or the pool refused the dial (no pin, chain
+     *  id unknown, session not enable-able): nothing is in memory for this
+     *  frame. The caller decides on a hint. */
+    NODUS_INTER_SEND_FAILED  = -1,
+    /** The frame was handed to an AUTHENTICATED session (sealed into the
+     *  connection's write path). The only result that proves delivery to the
+     *  peer's transport — a hinted-handoff row may be deleted on it. */
+    NODUS_INTER_SEND_WRITTEN = 0,
+    /** The session is not authenticated yet: the frame waits in the
+     *  connection's in-memory dial queue and is lost if the handshake fails.
+     *  NOT a delivery — a durable row must stay (rolling deploy: the peer may
+     *  be an old build that cannot speak the new handshake). */
+    NODUS_INTER_SEND_QUEUED  = 1
+} nodus_inter_send_t;
+
 /**
  * Send one PRE-FRAMED frame (7-byte header + payload) to a peer's 4002:
- * find-or-dial with the pin; while the handshake runs the bytes wait in
- * the conn's auth queue (cap NODUS_TCP_PENDING_MAX); on an encrypted conn
- * the payload goes through nodus_tcp_send_progress; on a plaintext conn
- * the frame is appended to the write buffer. A slow consumer (a failed
- * send, or a write buffer that would pass one maximum frame) is
- * disconnected.
- * @return 0 queued / written, -1 failed (the caller decides on a hint).
+ * find-or-dial with the pin; while the session is not authenticated the bytes
+ * wait in the conn's dial queue (cap NODUS_TCP_PENDING_MAX) and the result is
+ * NODUS_INTER_SEND_QUEUED; on an open session the payload goes through
+ * nodus_tcp_send_progress (sealed) and the result is NODUS_INTER_SEND_WRITTEN.
+ * A failed write (slow consumer) disconnects the connection.
  */
-int nodus_inter_pool_send_framed(struct nodus_tcp *pool, const char *ip,
-                                 uint16_t port,
-                                 const nodus_key_t *expected_node_id,
-                                 const uint8_t *frame, size_t flen);
+nodus_inter_send_t nodus_inter_pool_send_framed(struct nodus_tcp *pool,
+                                                const char *ip, uint16_t port,
+                                                const nodus_key_t *expected_node_id,
+                                                const uint8_t *frame, size_t flen);
 
 /**
  * The pool's half of core's idle sweep, at `now` (seconds,
@@ -205,26 +184,13 @@ void nodus_inter_pool_sweep(struct nodus_tcp *pool, uint64_t now);
 bool nodus_inter_frame_is_replication(const uint8_t *payload, size_t len);
 
 /**
- * The dialer state's outcome copied onto the connection: an auth_ok was
- * received → conn->authenticated; the peer identity proven at auth_ok
- * (signature + pin) → conn->peer_id / peer_pk / peer_id_set (F4: hints key
- * on a real identity).
+ * Open a 4002 conn's send gate when its session is authenticated: auth_state
+ * OK, then every frame of the dial queue (pre-framed plaintext, never written
+ * as it is) is REPLAYED through nodus_tcp_send, in queue order — sealed. A
+ * frame that does not parse ends the replay (the rest is dropped, logged).
+ * Works on any 4002 conn, dialed or accepted.
  */
-void nodus_inter_dial_conn_sync(const nodus_inter_dial_t *d,
-                                struct nodus_tcp_conn *conn);
-
-/**
- * Open a 4002 conn's send gate when the handshake finished
- * (nodus_inter_dial_io_t.established): auth_state OK; plaintext (no Kyber
- * identity) → the auth queue is flushed; encrypted → every frame of the
- * auth queue (pre-framed plaintext, never written as it is) is RE-SENT
- * ENCRYPTED through nodus_tcp_send, in queue order (S5b fix round F2 —
- * it used to be discarded although its senders had been told "queued").
- * Core's ACCEPTING side calls it too (encrypted = true) at key_init, once
- * the channel key is set and only for an authenticated peer (split S5):
- * it works on any 4002 conn, dialed or accepted.
- */
-void nodus_inter_dial_conn_open(struct nodus_tcp_conn *conn, bool encrypted);
+void nodus_inter_dial_conn_open(struct nodus_tcp_conn *conn);
 
 #ifdef __cplusplus
 }

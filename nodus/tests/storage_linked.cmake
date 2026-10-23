@@ -22,7 +22,7 @@ cmake_minimum_required(VERSION 3.10)
 # Other components' entry points — none may be in the storage binary
 # (Fable S5 review (f)1).
 #   nodus_server_init — the server object (sessions, 4001 / 4002 listeners);
-#   nodus_auth_handle_auth — the client-port auth handshake;
+#   nodus_auth_session_start — the client-port session start;
 #   nodus_cluster_init / nodus_cluster_tick — cluster heartbeat (core);
 #   nodus_presence_tick — presence (core);
 #   nodus_witness_init / nodus_witness_p2p_new — the witness and its 4004
@@ -33,7 +33,7 @@ cmake_minimum_required(VERSION 3.10)
 #   nodus_dht_backend_inproc_new — core's in-process door to the DHT.
 set(_FORBIDDEN
     nodus_server_init
-    nodus_auth_handle_auth
+    nodus_auth_session_start
     nodus_cluster_init
     nodus_cluster_tick
     nodus_presence_tick
@@ -48,15 +48,16 @@ set(_FORBIDDEN
 #     handle_t2_media_put — the DHT, its stores, its routing table and the
 #     media TU;
 #   nodus_dht_ipc_new — the storage-side IPC runtime;
-#   nodus_inter_dial_on_frame — the SHARED 4002 dialer (decision item 28):
-#     the process dials with core's handshake code, not a copy.
+#   nodus_inter_session_enable — the SHARED 4002 node session (decision item
+#     28, DHT v2 3b-2): the process dials with core's session code, not a
+#     copy.
 set(_REQUIRED
     nodus_dht_init
     nodus_storage_open
     nodus_routing_try_insert
     handle_t2_media_put
     nodus_dht_ipc_new
-    nodus_inter_dial_on_frame)
+    nodus_inter_session_enable)
 
 find_program(NM_EXE NAMES nm)
 if(NOT NM_EXE)

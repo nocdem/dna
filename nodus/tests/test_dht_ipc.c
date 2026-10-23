@@ -280,7 +280,7 @@ static nodus_value_t *mk_value(const nodus_key_t *key, size_t data_len,
 }
 
 static int open_storage(void) {
-    S = nodus_dht_ipc_new(&g_id, false);
+    S = nodus_dht_ipc_new(&g_id);
     D = calloc(1, sizeof(*D));
     if (!S || !D) return -1;
     nodus_dht_host_t host;
@@ -1244,7 +1244,7 @@ static void case_repush(void) {
     /* (b) The storage runtime restarts (no membership yet); core's
      * membership did not change, and still arrives in full. */
     nodus_dht_ipc_free(S);
-    S = nodus_dht_ipc_new(&g_id, false);
+    S = nodus_dht_ipc_new(&g_id);
     if (!S) { FAIL("restart"); return; }
     nodus_dht_ipc_host(S, &D->host);
     nodus_dht_ipc_attach(S, D);

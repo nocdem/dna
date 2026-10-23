@@ -276,12 +276,26 @@ typedef struct nodus_dht_ipc nodus_dht_ipc_t;
  * outbound 4002 pool (decision item 16: replication, republish, hinted
  * handoff, listen forwarding dial from here, on the shared dialer
  * server/nodus_inter_dial.h, pinned — decision 28). `identity` (read only)
- * must outlive it; `require_peer_auth` is the node's setting, so the
- * dialed conns speak the 4002 handshake exactly when core's would.
+ * must outlive it. Every dialed connection runs the 4002 node session
+ * (SecretConnection, NODE profile, pinned — DHT v2 3b-2); its HELLO carries
+ * the chain id of this process's witness view (nodus_dht_ipc_open_wview).
  * NULL on allocation / transport failure.
  */
-nodus_dht_ipc_t *nodus_dht_ipc_new(const nodus_identity_t *identity,
-                                   bool require_peer_auth);
+nodus_dht_ipc_t *nodus_dht_ipc_new(const nodus_identity_t *identity);
+
+/**
+ * Create this process's view of its witness (dht/nodus_dht2_wview.h) for the
+ * socket at `witness_sock_path` (<data_path>/witness.sock). It is ticked by
+ * nodus_dht_ipc_tick, freed by nodus_dht_ipc_free, and is where the chain id
+ * of every 4002 dial comes from: until its snapshot is fresh a dial is
+ * REFUSED (fail closed; the durable hint row stays the queue). Once only.
+ * @return 0, or -1 (bad argument, already opened, allocation failure).
+ */
+int nodus_dht_ipc_open_wview(nodus_dht_ipc_t *ipc, const char *witness_sock_path);
+
+/** The view (NULL before nodus_dht_ipc_open_wview): kept reachable for the
+ *  package-6 holder store; nothing else uses it today. Owned by `ipc`. */
+struct nodus_dht2_wview *nodus_dht_ipc_wview(nodus_dht_ipc_t *ipc);
 
 /**
  * The DHT's host view in the storage process: send_to_origin writes to the

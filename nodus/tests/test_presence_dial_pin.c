@@ -53,6 +53,7 @@
 #include "server/nodus_presence.h"
 #include "server/nodus_dht_backend.h"
 #include "transport/nodus_tcp.h"
+#include "crypto/nodus_identity.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -115,6 +116,25 @@ static int pool_count(nodus_tcp_t *tcp, const char *ip, uint16_t port) {
     return n;
 }
 
+/* Every 4002 dial runs the node session (DHT v2 3b-2): the pool needs this
+ * node's identity and a chain id, as nodus_server_init gives
+ * srv->inter_tcp (nodus_inter_session_cfg_t in auth_ctx). */
+static nodus_identity_t g_pd_id;
+static bool g_pd_id_ok;
+
+static bool pd_chain(void *ctx, uint8_t out[32]) {
+    (void)ctx;
+    memset(out, 0x66, 32);
+    return true;
+}
+
+static void set_inter_cfg(nodus_server_t *srv) {
+    if (!g_pd_id_ok) g_pd_id_ok = nodus_identity_generate(&g_pd_id) == 0;
+    srv->inter_cfg.identity = &g_pd_id;
+    srv->inter_cfg.chain_id = pd_chain;
+    srv->inter_tcp.auth_ctx = &srv->inter_cfg;
+}
+
 static void test_presence_dial_pinned(void) {
     TEST("presence p_sync dial pins the snapshot's node_id");
     nodus_server_t *srv = calloc(1, sizeof(*srv));
@@ -132,6 +152,7 @@ static void test_presence_dial_pinned(void) {
     CHECK(nodus_tcp_listen(&lst, "127.0.0.1", 0) == 0 && lst.port != 0, "listen");
     CHECK(nodus_tcp_init(&srv->inter_tcp, -1) == 0, "inter_tcp init");
     inter_up = true;
+    set_inter_cfg(srv);
 
     fake.base.ops = &fake_ops;
     fake_peer(&fake, 0, 0xC3, lst.port);
@@ -178,6 +199,7 @@ static void test_inter_dial_semantics(void) {
     CHECK(nodus_tcp_listen(&lst_b, "127.0.0.1", 0) == 0, "listen b");
     CHECK(nodus_tcp_init(&srv->inter_tcp, -1) == 0, "inter_tcp init");
     inter_up = true;
+    set_inter_cfg(srv);
 
     /* A new pinned dial records its identity. */
     c1 = nodus_server_inter_dial(srv, "127.0.0.1", lst_a.port, &id1);
@@ -206,10 +228,18 @@ static void test_inter_dial_semantics(void) {
           nodus_server_inter_find(srv, "127.0.0.1", lst_a.port, &id2) == c2,
           "find does not tell the two pinned conns apart");
 
-    /* A dial with no identity records none (b has nothing pooled yet). */
-    c3 = nodus_server_inter_dial(srv, "127.0.0.1", lst_b.port, NULL);
-    CHECK(c3 != NULL && c3 != c1 && c3 != c2, "dial b");
-    CHECK(!c3->expected_peer_id_set, "a dial without identity recorded one");
+    /* There is no unpinned dial any more (3b-2: the node session is pinned
+     * to one exact identity): a NULL-pin dial with nothing pooled is
+     * refused. */
+    CHECK(nodus_server_inter_dial(srv, "127.0.0.1", lst_b.port, NULL) == NULL,
+          "an unpinned dial was made");
+    /* An unpinned pooled conn (what the old rule could create) is built by
+     * hand, to keep exercising the find rule below. */
+    c3 = nodus_tcp_connect(&srv->inter_tcp, "127.0.0.1", lst_b.port);
+    CHECK(c3 != NULL && c3 != c1 && c3 != c2, "plain conn b");
+    c3->is_nodus = true;
+    c3->auth_initiated_by_us = true;
+    CHECK(!c3->expected_peer_id_set, "a plain conn carries a pin");
 
     /* An unpinned conn is not returned to a pinned call. */
     CHECK(nodus_server_inter_find(srv, "127.0.0.1", lst_b.port, &id3) == NULL,
@@ -358,6 +388,7 @@ static void test_tick_backoff_and_cap(void) {
     }
     CHECK(nodus_tcp_init(&srv->inter_tcp, -1) == 0, "inter_tcp init");
     inter_up = true;
+    set_inter_cfg(srv);
     fake.base.ops = &fake_ops;
     srv->dht = &fake.base;
     nodus_presence_add_local(srv, &client_fp);   /* something to sync */
@@ -391,6 +422,7 @@ static void test_tick_backoff_and_cap(void) {
     memset(&srv->presence.dial_backoff, 0, sizeof(srv->presence.dial_backoff));
     CHECK(nodus_tcp_init(&srv->inter_tcp, -1) == 0, "inter_tcp re-init");
     inter_up = true;
+    set_inter_cfg(srv);
     for (int i = 0; i < FAKE_MAX_PEERS; i++)
         fake_peer(&fake, i, (uint8_t)(0x80 + i), lst[i].port);
     fake.n_peers = FAKE_MAX_PEERS;

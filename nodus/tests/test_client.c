@@ -10,6 +10,7 @@
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_identity.h"
 #include "core/nodus_value.h"
+#include "test_server_session.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -78,6 +79,7 @@ static void *server_thread(void *arg) {
         return NULL;
     }
 
+    ts_server_chain(&server, 0x77);   /* sessions need a chain id (no witness here) */
     server_init_outcome(true);
     nodus_server_run(&server);
     nodus_server_close(&server);
@@ -172,6 +174,7 @@ static void test_init(void) {
     cfg.on_value_changed = on_value_changed;
     cfg.on_ch_post = on_ch_post;
     cfg.on_state_change = on_state_change;
+    ts_client_cfg(&cfg, &server, 0x77);
 
     int rc = nodus_client_init(&client, &cfg, &client_id);
     if (rc == 0 && client.state == NODUS_CLIENT_DISCONNECTED)
@@ -269,6 +272,7 @@ static void test_listen(void) {
     snprintf(cfg2.servers[0].ip, sizeof(cfg2.servers[0].ip), "127.0.0.1");
     cfg2.servers[0].port = 15101;
     cfg2.server_count = 1;
+    ts_client_cfg(&cfg2, &server, 0x77);
     nodus_client_init(&client2, &cfg2, &id2);
     nodus_client_connect(&client2);
 
@@ -452,6 +456,7 @@ static void test_failover_bad_server(void) {
     cfg.servers[1].port = 15101;
     cfg.server_count = 2;
     cfg.connect_timeout_ms = 1000;
+    ts_client_cfg(&cfg, &server, 0x77);
 
     nodus_client_init(&fc, &cfg, &fid);
     int rc = nodus_client_connect(&fc);

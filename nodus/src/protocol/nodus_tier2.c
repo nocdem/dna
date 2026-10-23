@@ -948,66 +948,6 @@ int nodus_t2_auth_ok(uint32_t txn, const uint8_t *token,
     return finish(&enc, out_len);
 }
 
-int nodus_t2_auth_ok_kyber(uint32_t txn, const uint8_t *token,
-                            const uint8_t *kyber_pk,
-                            const nodus_pubkey_t *server_pk,
-                            const nodus_sig_t *kpk_sig,
-                            const uint8_t *mlkem_pk,
-                            const nodus_sig_t *mpk_sig,
-                            uint8_t *buf, size_t cap, size_t *out_len) {
-    bool has_mlkem = (mlkem_pk != NULL && mpk_sig != NULL);
-    cbor_encoder_t enc;
-    cbor_encoder_init(&enc, buf, cap);
-    enc_response_header(&enc, 4, txn, "auth_ok");
-    cbor_encode_cstr(&enc, "r");
-    cbor_encode_map(&enc, has_mlkem ? 6 : 4);
-    cbor_encode_cstr(&enc, "tok");
-    cbor_encode_bstr(&enc, token, NODUS_SESSION_TOKEN_LEN);
-    cbor_encode_cstr(&enc, "kpk");
-    cbor_encode_bstr(&enc, kyber_pk, NODUS_KYBER_PK_BYTES);
-    cbor_encode_cstr(&enc, "spk");
-    cbor_encode_bstr(&enc, server_pk->bytes, NODUS_PK_BYTES);
-    cbor_encode_cstr(&enc, "kpk_sig");
-    cbor_encode_bstr(&enc, kpk_sig->bytes, NODUS_SIG_BYTES);
-    if (has_mlkem) {
-        cbor_encode_cstr(&enc, "mpk");
-        cbor_encode_bstr(&enc, mlkem_pk, NODUS_MLKEM_PK_BYTES);
-        cbor_encode_cstr(&enc, "mpk_sig");
-        cbor_encode_bstr(&enc, mpk_sig->bytes, NODUS_SIG_BYTES);
-    }
-    return finish(&enc, out_len);
-}
-
-int nodus_t2_key_init(uint32_t txn, const uint8_t *kem_ct,
-                       const uint8_t *nonce_c, uint8_t alg,
-                       uint8_t *buf, size_t cap, size_t *out_len) {
-    cbor_encoder_t enc;
-    cbor_encoder_init(&enc, buf, cap);
-    enc_query_header(&enc, 4, txn, "key_init");
-    cbor_encode_cstr(&enc, "a");
-    cbor_encode_map(&enc, (alg == 1) ? 3 : 2);
-    cbor_encode_cstr(&enc, "ct");
-    cbor_encode_bstr(&enc, kem_ct, NODUS_KYBER_CT_BYTES);
-    cbor_encode_cstr(&enc, "nc");
-    cbor_encode_bstr(&enc, nonce_c, NODUS_NONCE_LEN);
-    if (alg == 1) {
-        cbor_encode_cstr(&enc, "alg"); cbor_encode_uint(&enc, alg);
-    }
-    return finish(&enc, out_len);
-}
-
-int nodus_t2_key_ack(uint32_t txn, const uint8_t *nonce_s,
-                      uint8_t *buf, size_t cap, size_t *out_len) {
-    cbor_encoder_t enc;
-    cbor_encoder_init(&enc, buf, cap);
-    enc_response_header(&enc, 4, txn, "key_ack");
-    cbor_encode_cstr(&enc, "r");
-    cbor_encode_map(&enc, 1);
-    cbor_encode_cstr(&enc, "ns");
-    cbor_encode_bstr(&enc, nonce_s, NODUS_NONCE_LEN);
-    return finish(&enc, out_len);
-}
-
 int nodus_t2_result(uint32_t txn, const nodus_value_t *val,
                      uint8_t *buf, size_t cap, size_t *out_len) {
     uint8_t *vbuf = NULL;

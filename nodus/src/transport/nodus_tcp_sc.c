@@ -59,6 +59,8 @@ typedef struct nodus_tcp_sc {
     bool                   ready;       /* ... and on_session is still due   */
     uint8_t               *hold;        /* socket bytes held while a job runs */
     size_t                 hold_len;
+    const nodus_key_t     *pin_set;     /* INITIATOR pin SET (cfg.expected_set), caller-owned */
+    size_t                 pin_set_n;
 } nodus_tcp_sc_t;
 
 /* ── Host bindings: the profile decides the signing purpose ───────────── */
@@ -444,11 +446,21 @@ static int sc_pin_ok(nodus_tcp_conn_t *conn, nodus_tcp_sc_t *s)
     nodus_pubkey_t pk;
     nodus_key_t fp;
 
-    if (rpk == NULL || !conn->expected_peer_id_set)
+    bool ok = false;
+
+    if (rpk == NULL || (!conn->expected_peer_id_set && s->pin_set_n == 0))
         return -1;
     memcpy(pk.bytes, rpk, sizeof(pk.bytes));
-    if (nodus_fingerprint(&pk, &fp) != 0 ||
-        nodus_key_cmp(&fp, &conn->expected_peer_id) != 0) {
+    if (nodus_fingerprint(&pk, &fp) != 0) {
+        QGP_LOG_WARN(LOG_TAG_SC, "dialed identity unreadable (slot %d): aborted before Encaps",
+                     conn->slot);
+        return -1;
+    }
+    if (conn->expected_peer_id_set && nodus_key_cmp(&fp, &conn->expected_peer_id) == 0)
+        ok = true;
+    for (size_t i = 0; !ok && i < s->pin_set_n; i++)
+        ok = nodus_key_cmp(&fp, &s->pin_set[i]) == 0;
+    if (!ok) {
         QGP_LOG_WARN(LOG_TAG_SC, "dialed identity mismatch (slot %d): aborted before Encaps",
                      conn->slot);
         return -1;
@@ -569,7 +581,7 @@ static bool conn_eligible(const nodus_tcp_conn_t *conn)
     static const uint8_t zero_token[NODUS_SESSION_TOKEN_LEN] = { 0 };
 
     if (conn->sc != NULL || conn->close_pending || conn->state == NODUS_CONN_CLOSED ||
-        conn->is_unix || conn->channel_crypto.established)
+        conn->is_unix)
         return false;
     if (atomic_load_explicit(&conn->io_started, memory_order_relaxed) ||
         conn->rlen != 0 || conn->wlen != 0 ||
@@ -612,7 +624,9 @@ int nodus_tcp_sc_enable(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
         return -1;
     }
     if (cfg->role == CMT_P2P_SC_ROLE_INITIATOR) {
-        if (cfg->expected_peer == NULL) {      /* the dial pin is mandatory */
+        /* the dial pin is mandatory: one identity, a set, or both */
+        if (cfg->expected_peer == NULL &&
+            (cfg->expected_set == NULL || cfg->expected_set_n == 0)) {
             QGP_LOG_ERROR(LOG_TAG_SC, "enable refused: initiator without a pin");
             return -1;
         }
@@ -657,8 +671,12 @@ int nodus_tcp_sc_enable(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
     if (eligible) {
         s->gen = ++tcp->sc_gen_last;
         if (cfg->role == CMT_P2P_SC_ROLE_INITIATOR) {
-            conn->expected_peer_id = *cfg->expected_peer;
-            conn->expected_peer_id_set = true;
+            if (cfg->expected_peer != NULL) {
+                conn->expected_peer_id = *cfg->expected_peer;
+                conn->expected_peer_id_set = true;
+            }
+            s->pin_set = cfg->expected_set;
+            s->pin_set_n = cfg->expected_set_n;
         }
         conn->sc = s;
     }
@@ -695,6 +713,38 @@ bool nodus_tcp_sc_authenticated(const nodus_tcp_conn_t *conn)
     r = conn->sc != NULL && cmt_p2p_sc_is_authenticated(&conn->sc->m);
     sc_lk(tcp, false);
     return r;
+}
+
+int nodus_tcp_sc_presession_sweep(nodus_tcp_t *tcp, uint64_t now_mono_ms,
+                                  uint64_t idle_ms, uint64_t abs_ms)
+{
+    int closed = 0;
+
+    if (tcp == NULL)
+        return 0;
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+        nodus_tcp_conn_t *c = tcp->pool[i];
+        bool layer;
+
+        if (c == NULL || c->close_pending || c->auth_initiated_by_us)
+            continue;
+        sc_lk(tcp, true);
+        layer = c->sc != NULL;
+        sc_lk(tcp, false);
+        if (!layer || nodus_tcp_sc_authenticated(c))
+            continue;
+        uint64_t idle_for = now_mono_ms > c->last_activity_mono_ms
+                          ? now_mono_ms - c->last_activity_mono_ms : 0;
+        uint64_t age = now_mono_ms > c->connected_mono_ms
+                     ? now_mono_ms - c->connected_mono_ms : 0;
+        if (idle_for >= idle_ms || age >= abs_ms) {
+            QGP_LOG_WARN(LOG_TAG_SC, "pre-session deadline (slot %d, ip %s): closing",
+                         c->slot, c->ip);
+            nodus_tcp_disconnect(tcp, c);
+            closed++;
+        }
+    }
+    return closed;
 }
 
 int nodus_tcp_sc_peer_pubkey(const nodus_tcp_conn_t *conn,

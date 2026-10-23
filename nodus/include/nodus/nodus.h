@@ -197,6 +197,10 @@ typedef struct nodus_client {
 
     /* Session */
     uint8_t                token[NODUS_SESSION_TOKEN_LEN];
+    /* The SecretConnection of the current connection became AUTHENTICATED
+     * (set by the transport's on_session, cleared at each connect). The
+     * session is READY once this AND the server's token message are in. */
+    _Atomic bool           session_ready;
     _Atomic uint32_t       next_txn;
 
     /* Current server index for failover */

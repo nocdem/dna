@@ -4,11 +4,14 @@
  *
  * @file nodus_tcp_sc.h
  *
- * ═══ STATUS: NOT ENABLED ON ANY PORT ═══════════════════════════════════
- * Nothing calls nodus_tcp_sc_enable yet. 3b-2 wires it into the 4001 / 4002
- * server and deletes the hello / auth / key_init / channel-crypto path;
- * 3c wires the client SDK and the consumers. Until then a connection
- * without the layer is byte-for-byte what nodus_tcp.c always did.
+ * ═══ STATUS (3b-2) ═════════════════════════════════════════════════════
+ * ENABLED on 4001 / WebSocket accept (CLIENT profile, nodus_server.c
+ * on_tcp_accept), on 4002 accept and dial (NODE profile,
+ * server/nodus_inter_dial.c), on the DHT's batch forwards and on the client
+ * SDK's connect (nodus_client.c). The hello / auth / key_init /
+ * channel-crypto session path is deleted. Only the Unix-socket IPC
+ * connections (is_unix) carry no layer. Consumers (nodus-cli, explorer, ...)
+ * and the browser build lists are 3c.
  * Governing records: docs/plans/2026-10-23-dht-v2-session-package-design.md
  * rev 1 (O-1 a, O-3 b), decisions/2026-10-23-kurultay-43-summary.md,
  * decisions/2026-10-23-dht-v2-session-bytes.md.
@@ -95,13 +98,15 @@
  * That is a 3b-2 obligation. The same predicate also covers a loop-owned
  * teardown that is due (a fatal sealing failure, below).
  *
- * ── 3b-2 OBLIGATIONS RECORDED HERE ─────────────────────────────────────
- *  · The existing auth gate: a connection inheriting tcp->auth_required keeps
- *    auth_state HELLO_SENT/NONE for ever (the hello/auth path is not run on
- *    it), so nodus_tcp_send would queue into the auth pending buffer, which
- *    the layer refuses. 3b-2 must open the gate for layer connections
- *    (auth_required false, or auth_state OK at on_session) when it removes
- *    the hello / auth / key_init path.
+ * ── 3b-2 OBLIGATIONS (done) ─────────────────────────────────────────────
+ *  · The auth gate: a 4002 connection (nodus_inter_session_enable) closes the
+ *    send gate (auth_required, auth_state NONE / HELLO_SENT); a send before
+ *    the session is authenticated waits in the DIAL QUEUE (the auth pending
+ *    buffer, plaintext) and nodus_inter_dial_conn_open, at on_session,
+ *    replays it through nodus_tcp_send — sealed, in order. The queue is never
+ *    flushed as bytes (nodus_tcp_pending_flush refuses a layer connection).
+ *  · An owner of several transports includes nodus_tcp_sc_busy() of each in
+ *    its poll wait (nodus_server.c run loop, nodus_dht_ipc_poll).
  *  · nodus_tcp_sc_enable refuses a connection that has carried any byte
  *    (sticky conn->io_started), has auth_state != NONE, a peer id, an auth
  *    nonce or a session token: enable at accept / right after connect.
@@ -295,8 +300,17 @@ typedef struct {
     uint32_t                    proto_ver;  /* per-PORT symbol, never 4004's     */
     uint8_t                     chain_id[CMT_P2P_SC_CHAIN_ID_SIZE];
     /** INITIATOR: the node id (SHA3-512 of the public key) the caller meant
-     *  to dial — required. RESPONDER: ignored. Copied. */
+     *  to dial. RESPONDER: ignored. Copied. */
     const nodus_key_t          *expected_peer;
+    /** INITIATOR: a SET of acceptable node ids (the client SDK's
+     *  pinned_server_fps: a client that may connect to any of several
+     *  servers). The responder's claimed key must hash to expected_peer or to
+     *  one of these, checked before the ENCAPS job. At least one of
+     *  expected_peer / (expected_set, expected_set_n > 0) is required.
+     *  RESPONDER: ignored. NOT copied: caller-owned, must outlive
+     *  nodus_tcp_close (same rule as cfg.id). */
+    const nodus_key_t          *expected_set;
+    size_t                      expected_set_n;
 } nodus_tcp_sc_cfg_t;
 
 /**
@@ -318,6 +332,23 @@ int nodus_tcp_sc_enable(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
 
 /** Layer enabled AND the machine is AUTHENTICATED. */
 bool nodus_tcp_sc_authenticated(const nodus_tcp_conn_t *conn);
+
+/**
+ * The pre-session deadline of an ACCEPTED connection (Kurultay #43 O-5: 15 s
+ * idle / 30 s absolute for 4001 and 4002 accept): close every connection of
+ * `tcp` that carries the layer, was accepted (not dialed by us), is not
+ * AUTHENTICATED yet, and has gone `idle_ms` without a socket byte
+ * (last_activity_mono_ms) or `abs_ms` since it connected
+ * (connected_mono_ms) — whichever comes first — as of `now_mono_ms`.
+ * `now_mono_ms` is on the nodus_time_mono_ms() scale: a monotonic clock, so a
+ * wall-clock step cannot stretch or cut a deadline (the old sweep ran on
+ * CLOCK_REALTIME every 30 s and was effective at 45 / 60 s). Taking the time
+ * as an argument lets a test drive it. Call it from the owner's loop, outside
+ * nodus_tcp_poll, often enough for the deadline to be met (once a second).
+ * An authenticated connection and a connection without the layer are never
+ * touched. @return the number of connections closed. */
+int nodus_tcp_sc_presession_sweep(nodus_tcp_t *tcp, uint64_t now_mono_ms,
+                                  uint64_t idle_ms, uint64_t abs_ms);
 
 /** Copy the peer's public key (CMT_P2P_SC_DSA_PK_SIZE bytes) into `out`,
  *  once AUTHENTICATED. @return 0; -1 before that, without the layer, or on a

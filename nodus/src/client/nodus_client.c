@@ -58,6 +58,7 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                              size_t len, void *ctx);
 static void client_on_disconnect(nodus_tcp_conn_t *conn, void *ctx);
 static void client_on_connect(nodus_tcp_conn_t *conn, void *ctx);
+static void client_on_session(nodus_tcp_conn_t *conn, void *ctx);
 static uint64_t now_ms(void);
 static nodus_pending_t *alloc_pending(nodus_client_t *client, uint32_t txn);
 static void free_pending(nodus_client_t *client, nodus_pending_t *p);
@@ -66,7 +67,7 @@ static int send_request_progress(nodus_client_t *client, const uint8_t *buf, siz
                                   nodus_tcp_progress_cb progress_cb, void *user_data);
 static void set_state(nodus_client_t *client, nodus_client_state_t new_state);
 static int  do_connect_one(nodus_client_t *client, int server_idx);
-static int  do_auth(nodus_client_t *client);
+static int  do_auth(nodus_client_t *client, nodus_pending_t *req);
 static bool wait_response(nodus_client_t *client, nodus_pending_t *req, int timeout_ms);
 static int  send_request(nodus_client_t *client, const uint8_t *payload, size_t len);
 static int  resubscribe_all(nodus_client_t *client);
@@ -740,6 +741,16 @@ static void client_on_connect(nodus_tcp_conn_t *conn, void *ctx) {
     (void)conn; (void)ctx;
 }
 
+/* The SecretConnection became AUTHENTICATED: the server's key was checked
+ * against the pin list and both ends proved their keys. The first moment a
+ * nodus frame may flow; do_auth completes the session when the server's
+ * token message follows. */
+static void client_on_session(nodus_tcp_conn_t *conn, void *ctx) {
+    (void)conn;
+    nodus_client_t *client = (nodus_client_t *)ctx;
+    atomic_store(&client->session_ready, true);
+}
+
 /* ── Lifecycle ──────────────────────────────────────────────────── */
 
 _Static_assert(NODUS_CLIENT_CHAIN_ID_SIZE == CMT_P2P_SC_CHAIN_ID_SIZE,
@@ -831,6 +842,7 @@ int nodus_client_init(nodus_client_t *client,
     tcp->on_frame = client_on_frame;
     tcp->on_disconnect = client_on_disconnect;
     tcp->on_connect = client_on_connect;
+    tcp->on_session = client_on_session;
     tcp->cb_ctx = client;
     /* Callers send on their own thread while the read thread polls: both
      * touch the connection's write buffer, so the transport serialises
@@ -868,13 +880,45 @@ static int do_connect_one(nodus_client_t *client, int server_idx) {
     fprintf(stderr, "[NODUS_CLIENT] Connecting to %s:%d ...\n", ep->ip, ep->port);
     set_state(client, NODUS_CLIENT_CONNECTING);
 
+    /* The pending slot of the session's token message (T2 auth_ok, txn 0 —
+     * next_txn starts at 1, so 0 is never a request's): claimed BEFORE the
+     * connect, so nothing the server sends can arrive unclaimed. */
+    atomic_store(&client->session_ready, false);
+    nodus_pending_t *req = alloc_pending(client, 0);
+    if (!req) return -1;
+
     nodus_tcp_conn_t *conn = nodus_tcp_connect(tcp, ep->ip, ep->port);
     if (!conn) {
         QGP_LOG_ERROR(LOG_TAG, "TCP connect failed to %s:%d (socket error)", ep->ip, ep->port);
         fprintf(stderr, "[NODUS_CLIENT] TCP connect failed to %s:%d (socket error)\n", ep->ip, ep->port);
+        free_pending(client, req);
         return -1;
     }
     client->conn = conn;
+
+    /* The session: SecretConnection, INITIATOR, CLIENT profile (purpose
+     * 0x0C), the client's identity, protocol version NODUS_CSESS_PROTO_VERSION
+     * and the configured chain id. The server's CLAIMED key must hash to one
+     * of the configured pins — checked BEFORE the ENCAPS job; no pin, no
+     * session (nodus_client_init refuses a config without one). There is no
+     * fallback: a failure here ends the connection. The pin array is the
+     * caller's and outlives the client (nodus.h). */
+    nodus_tcp_sc_cfg_t scfg;
+    memset(&scfg, 0, sizeof(scfg));
+    scfg.role           = CMT_P2P_SC_ROLE_INITIATOR;
+    scfg.profile        = &CMT_P2P_SC_PROFILE_CLIENT;
+    scfg.id             = &client->identity;
+    scfg.proto_ver      = NODUS_CSESS_PROTO_VERSION;
+    memcpy(scfg.chain_id, client->config.expected_chain_id, sizeof(scfg.chain_id));
+    scfg.expected_set   = client->config.pinned_server_fps;
+    scfg.expected_set_n = (size_t)client->config.pinned_server_fp_count;
+    if (nodus_tcp_sc_enable(tcp, conn, &scfg) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "session layer not enabled for %s:%d", ep->ip, ep->port);
+        nodus_tcp_disconnect(tcp, conn);
+        client->conn = NULL;
+        free_pending(client, req);
+        return -1;
+    }
 
     /* Wait for TCP connection to establish.
      * Note: nodus_tcp_poll() may free conn via on_disconnect callback
@@ -902,15 +946,17 @@ static int do_connect_one(nodus_client_t *client, int server_idx) {
             nodus_tcp_disconnect(tcp, (nodus_tcp_conn_t *)client->conn);
             client->conn = NULL;
         }
+        free_pending(client, req);
         return -1;
     }
 
     QGP_LOG_INFO(LOG_TAG, "TCP connected to %s:%d, authenticating...", ep->ip, ep->port);
     fprintf(stderr, "[NODUS_CLIENT] TCP connected to %s:%d, authenticating...\n", ep->ip, ep->port);
 
-    /* Authenticate */
+    /* Authenticate: wait for the session (the layer's handshake) and its
+     * token message; do_auth releases `req`. */
     set_state(client, NODUS_CLIENT_AUTHENTICATING);
-    if (do_auth(client) != 0) {
+    if (do_auth(client, req) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Auth failed to %s:%d", ep->ip, ep->port);
         fprintf(stderr, "[NODUS_CLIENT] Auth FAILED to %s:%d\n", ep->ip, ep->port);
         if (client->conn) {
@@ -928,336 +974,52 @@ static int do_connect_one(nodus_client_t *client, int server_idx) {
     return 0;
 }
 
-/* Server key pin (config.pinned_server_fps) — the AUTH_OK checks that run
- * BEFORE the channel-key handling in do_auth, only when a pin is set.
- * Returns 0 when the AUTH_OK may proceed, -1 to refuse the connection.
- *
- * Every weak path of the unpinned handshake is closed here or right after:
- *   - no kpk: unpinned, either an UNENCRYPTED session (has_kpk false) or
- *     the cached-key reconnect branch — the live server signed nothing
- *     this round, so there is no key to hold against the pin → refused;
- *   - kpk without spk/kpk_sig ("legacy server") → refused here;
- *   - fingerprint(spk) not in the pin list → refused here;
- *   - kpk_sig invalid → refused by do_auth (as without a pin);
- *   - no mpk, or mpk without mpk_sig → refused here; mpk_sig invalid →
- *     refused by do_auth instead of the Kyber round-3 fallback.
- * A pinned client therefore speaks ML-KEM-1024 ONLY (operator 2026-09-29,
- * browser wallet "5 evet"; decision 2026-09-25-web-wallet-nodus-send-
- * transport.md addendum): nothing signs the ABSENCE of mpk, so an on-path
- * party could otherwise strip mpk + mpk_sig and force Kyber round-3. The
- * unpinned client keeps the round-3 fallback (decision 2026-09-23-kem-
- * mlkem-migration.md K1 rev 2). */
-static int pin_check_auth_ok(const nodus_client_t *client,
-                              const nodus_tier2_msg_t *resp) {
-    if (!resp->has_kyber_pk) {
-        QGP_LOG_ERROR(LOG_TAG, "Auth: pinned client — server sent no channel key "
-                      "(no unencrypted or cached-key session under a pin)");
-        return -1;
-    }
-    if (!resp->has_kpk_sig || !resp->has_server_pk) {
-        QGP_LOG_ERROR(LOG_TAG, "Auth: pinned client — server key or kpk_sig missing "
-                      "(unsigned channel key refused)");
-        return -1;
-    }
-    if (!resp->has_mlkem_pk || !resp->has_mpk_sig) {
-        QGP_LOG_ERROR(LOG_TAG, "Auth: pinned client — no signed ML-KEM key "
-                      "(ML-KEM-1024 only, no Kyber round-3 session)");
-        return -1;
-    }
-
-    nodus_key_t fp;
-    if (nodus_fingerprint(&resp->server_pk, &fp) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Auth: pinned client — server fingerprint failed");
-        return -1;
-    }
-    for (int i = 0; i < client->config.pinned_server_fp_count; i++) {
-        if (nodus_key_cmp(&fp, &client->config.pinned_server_fps[i]) == 0)
-            return 0;
-    }
-    QGP_LOG_ERROR(LOG_TAG, "Auth: pinned client — server key %02x%02x%02x%02x... "
-                  "is not in the pin list", fp.bytes[0], fp.bytes[1],
-                  fp.bytes[2], fp.bytes[3]);
-    return -1;
-}
-
-static int do_auth(nodus_client_t *client) {
-    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
-    if (!buf) return -1;
-    int result = -1;
-
-    /* Step 1: HELLO */
-    size_t len = 0;
-    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
-    nodus_pending_t *req = alloc_pending(client, txn);
-    if (!req) { free(buf); return -1; }
-
-    nodus_t2_hello(txn, &client->identity.pk, &client->identity.node_id,
-                    buf, CLIENT_BUF_SIZE, &len);
-    if (send_request(client, buf, len) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Auth: HELLO send failed");
-        free_pending(client, req);
-        free(buf);
-        return -1;
-    }
-
+/* The client session is established by the SecretConnection layer (CLIENT
+ * profile, purpose 0x0C, enabled in do_connect_one): by the time a nodus
+ * frame reaches client_on_frame the server's key has been checked against the
+ * pin list and both ends have proven their keys. What is left for this
+ * function is the first frame the server sends: the T2 `auth_ok` (txn 0)
+ * carrying the session token (Kurultay #43 O-2 b — a correlation key, never
+ * an authorization input). The session is READY only after the layer's
+ * authenticated transition (client_on_session) AND that message: waiting for
+ * the token message alone is enough to prove both, since no frame is
+ * dispatched before the transition — the flag is checked all the same.
+ * `req` is the pending slot do_connect_one allocated for txn 0 BEFORE the
+ * connect, so no byte of the exchange can arrive unclaimed. */
+static int do_auth(nodus_client_t *client, nodus_pending_t *req) {
     if (!wait_response(client, req, client->config.connect_timeout_ms)) {
-        QGP_LOG_ERROR(LOG_TAG, "Auth: no response to HELLO (timeout %dms)", client->config.connect_timeout_ms);
+        QGP_LOG_ERROR(LOG_TAG, "Auth: no session (no token message within "
+                      "%dms: the handshake failed or the pin did not match)",
+                      client->config.connect_timeout_ms);
         free_pending(client, req);
-        free(buf);
         return -1;
     }
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
-    if (strcmp(resp->method, "challenge") != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Auth: expected 'challenge', got '%s'", resp->method);
+    if (strcmp(resp->method, "auth_ok") != 0 ||
+        !atomic_load(&client->session_ready)) {
+        QGP_LOG_ERROR(LOG_TAG, "Auth: expected the session's 'auth_ok' token "
+                      "message, got '%s' (session %s)", resp->method,
+                      atomic_load(&client->session_ready) ? "authenticated"
+                                                          : "not authenticated");
         free_pending(client, req);
-        free(buf);
-        return -1;
-    }
-
-    /* Step 2: Sign nonce and send AUTH.
-     * Save nonce for later verification of server's kpk_sig. */
-    uint8_t auth_nonce[NODUS_NONCE_LEN];
-    memcpy(auth_nonce, resp->nonce, NODUS_NONCE_LEN);
-    nodus_sig_t sig;
-    /* C2: domain-tagged AUTH_CHALLENGE sign (client-side, always outbound) */
-    nodus_sign_auth_challenge(&sig, auth_nonce, &client->identity.sk);
-    free_pending(client, req);
-
-    len = 0;
-    txn = atomic_fetch_add(&client->next_txn, 1);
-    req = alloc_pending(client, txn);
-    if (!req) { free(buf); return -1; }
-
-    nodus_t2_auth(txn, &sig, buf, CLIENT_BUF_SIZE, &len);
-    if (send_request(client, buf, len) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Auth: AUTH send failed");
-        free_pending(client, req);
-        free(buf);
-        return -1;
-    }
-
-    if (!wait_response(client, req, client->config.connect_timeout_ms)) {
-        QGP_LOG_ERROR(LOG_TAG, "Auth: no response to AUTH (timeout %dms)", client->config.connect_timeout_ms);
-        free_pending(client, req);
-        free(buf);
-        return -1;
-    }
-
-    resp = (nodus_tier2_msg_t *)req->response;
-    if (strcmp(resp->method, "auth_ok") != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Auth: expected 'auth_ok', got '%s'", resp->method);
-        free_pending(client, req);
-        free(buf);
-        return -1;
-    }
-
-    /* Pinned: every AUTH_OK that passes here reaches the kpk_sig branch
-     * below, which sets server_dil_pk to THIS session's key. Unpinned: the
-     * field keeps its previous (TOFU) semantics — messenger reads it
-     * (nodus_init.c state callback) and its behaviour must not change. */
-    const bool pinned = client->config.pinned_server_fp_count > 0;
-    if (pinned && pin_check_auth_ok(client, resp) != 0) {
-        free_pending(client, req);
-        free(buf);
         return -1;
     }
 
     QGP_LOG_INFO(LOG_TAG, "Auth: success");
     memcpy(client->token, resp->token, NODUS_SESSION_TOKEN_LEN);
-
-    /* Channel encryption: use server Kyber pubkey (from auth_ok or cache),
-     * upgraded to ML-KEM-1024 when the server advertised + signed one
-     * (Faz 1 KEM migration, docs/plans/decisions/2026-09-23-kem-mlkem-
-     * migration.md). */
-    bool has_kpk = resp->has_kyber_pk;
-    uint8_t server_kyber_pk[NODUS_KYBER_PK_BYTES];
-    bool has_mpk = false;
-    uint8_t server_mlkem_pk[NODUS_MLKEM_PK_BYTES];
-    if (has_kpk) {
-        memcpy(server_kyber_pk, resp->kyber_pk, NODUS_KYBER_PK_BYTES);
-
-        /* Verify server's Kyber PK signature (MITM protection).
-         * Server signs (kyber_pk || nonce) with its Dilithium5 key. */
-        if (resp->has_kpk_sig && resp->has_server_pk) {
-            uint8_t sign_data[NODUS_KYBER_PK_BYTES + NODUS_NONCE_LEN];
-            memcpy(sign_data, resp->kyber_pk, NODUS_KYBER_PK_BYTES);
-            memcpy(sign_data + NODUS_KYBER_PK_BYTES, auth_nonce, NODUS_NONCE_LEN);
-
-            /* C2: KYBER_BIND domain verify */
-            if (nodus_verify_kyber_bind(&resp->kpk_sig, sign_data, sizeof(sign_data),
-                                          &resp->server_pk) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "Auth: ⚠ Kyber PK signature INVALID — possible MITM!");
-                free_pending(client, req);
-                free(buf);
-                return -1;
-            }
-            QGP_LOG_INFO(LOG_TAG, "Auth: server Kyber PK signature verified ✓");
-
-            /* Cache server's Dilithium PK for TOFU */
-            client->server_dil_pk = resp->server_pk;
-            client->has_server_dil_pk = true;
-
-            /* Faz 1 KEM migration: if the server ALSO advertised a signed
-             * ML-KEM-1024 pubkey, verify it under MLKEM_BIND against the
-             * SAME server_pk (just trusted above via kpk_sig) and prefer
-             * it over Kyber round-3. Any failure here (missing fields, bad
-             * signature) falls back to Kyber — never fails the connection. */
-            if (resp->has_mlkem_pk && resp->has_mpk_sig) {
-                uint8_t msign_data[NODUS_MLKEM_PK_BYTES + NODUS_NONCE_LEN];
-                memcpy(msign_data, resp->mlkem_pk, NODUS_MLKEM_PK_BYTES);
-                memcpy(msign_data + NODUS_MLKEM_PK_BYTES, auth_nonce, NODUS_NONCE_LEN);
-                if (nodus_verify_mlkem_bind(&resp->mpk_sig, msign_data, sizeof(msign_data),
-                                             &resp->server_pk) == 0) {
-                    memcpy(server_mlkem_pk, resp->mlkem_pk, NODUS_MLKEM_PK_BYTES);
-                    has_mpk = true;
-                    QGP_LOG_INFO(LOG_TAG, "Auth: server ML-KEM PK signature verified ✓");
-                } else if (pinned) {
-                    /* Pinned client: a bad mpk_sig is a failed handshake,
-                     * not a reason to drop to Kyber round-3. */
-                    QGP_LOG_ERROR(LOG_TAG,
-                                  "Auth: server ML-KEM PK signature INVALID — "
-                                  "pinned client refuses the Kyber fallback");
-                    free_pending(client, req);
-                    free(buf);
-                    return -1;
-                } else {
-                    QGP_LOG_WARN(LOG_TAG,
-                                 "Auth: server ML-KEM PK signature INVALID — "
-                                 "falling back to Kyber round-3");
-                }
-            }
-
-            /* D5 (N1 delta 1) — cache hygiene: this AUTH_OK is FRESH
-             * (server sent kpk directly, not read from our own cache) and
-             * SIGNED (kpk_sig just verified above). If it did not also
-             * carry a verified mpk, the live server is the authority here
-             * — clear any stale cached ML-KEM pubkey from a previous
-             * session rather than silently keep using it. Two legitimate
-             * ways to reach this: the server was rolled back to a
-             * pre-Faz-1 build (identity.has_mlkem reverted to false), or
-             * this connection landed on a DIFFERENT cluster server
-             * (server_idx failover) that has not generated an ML-KEM key
-             * yet. The reconnect-only cache branch below
-             * (!resp->has_kyber_pk) is unaffected — it never heard from a
-             * live server this round, so it keeps whatever it cached
-             * last time. */
-            if (!has_mpk) {
-                client->has_cached_server_mlkem = false;
-            }
-        } else {
-            /* Unpinned only — pin_check_auth_ok refused this AUTH_OK. */
-            QGP_LOG_WARN(LOG_TAG, "Auth: server did not sign Kyber PK (legacy server)");
-        }
-    } else if (client->has_cached_server_kyber) {
-        /* Unpinned only — pin_check_auth_ok refuses an AUTH_OK without kpk.
-         * Reconnect: server didn't send kpk (old proto?) but we have cache */
-        memcpy(server_kyber_pk, client->cached_server_kyber_pk, NODUS_KYBER_PK_BYTES);
-        has_kpk = true;
-        QGP_LOG_INFO(LOG_TAG, "Auth: using cached server Kyber pubkey");
-        if (client->has_cached_server_mlkem) {
-            memcpy(server_mlkem_pk, client->cached_server_mlkem_pk, NODUS_MLKEM_PK_BYTES);
-            has_mpk = true;
-            QGP_LOG_INFO(LOG_TAG, "Auth: using cached server ML-KEM pubkey");
-        }
-    }
-
     free_pending(client, req);
 
-    /* has_kpk false = the session stays UNENCRYPTED. Unpinned only: with a
-     * pin set, pin_check_auth_ok guaranteed a signed kpk above. */
-    if (has_kpk) {
-        uint8_t alg = has_mpk ? 1 : 0;
-        QGP_LOG_INFO(LOG_TAG, "Auth: server supports channel encryption, initiating %s handshake",
-                     has_mpk ? "ML-KEM-1024" : "Kyber round-3");
-
-        /* Encapsulate: shared_secret = KEM_encap(ct, server_pk). Ciphertext
-         * and shared-secret sizes are byte-identical between the two KEMs
-         * (NODUS_KYBER_* == NODUS_MLKEM_* today), so one buffer pair
-         * serves both. */
-        uint8_t ct[NODUS_KYBER_CT_BYTES];
-        uint8_t shared_secret[NODUS_KYBER_SS_BYTES];
-        int enc_rc = has_mpk
-            ? qgp_mlkem1024_encapsulate(ct, shared_secret, server_mlkem_pk)
-            : qgp_kem1024_encapsulate(ct, shared_secret, server_kyber_pk);
-        if (enc_rc != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Auth: KEM encapsulation failed");
-            free(buf);
-            return -1;
+    /* The proven server key (messenger reads server_dil_pk). */
+    {
+        uint8_t spk[CMT_P2P_SC_DSA_PK_SIZE];
+        if (client->conn &&
+            nodus_tcp_sc_peer_pubkey((nodus_tcp_conn_t *)client->conn, spk) == 0) {
+            memcpy(client->server_dil_pk.bytes, spk, sizeof(client->server_dil_pk.bytes));
+            client->has_server_dil_pk = true;
         }
-
-        /* Generate client nonce */
-        uint8_t nonce_c[NODUS_NONCE_LEN];
-        nodus_random(nonce_c, NODUS_NONCE_LEN);
-
-        /* Send KEY_INIT */
-        len = 0;
-        txn = atomic_fetch_add(&client->next_txn, 1);
-        req = alloc_pending(client, txn);
-        if (!req) {
-            qgp_secure_memzero(shared_secret, sizeof(shared_secret));
-            free(buf);
-            return -1;
-        }
-
-        nodus_t2_key_init(txn, ct, nonce_c, alg, buf, CLIENT_BUF_SIZE, &len);
-        if (send_request(client, buf, len) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Auth: KEY_INIT send failed");
-            qgp_secure_memzero(shared_secret, sizeof(shared_secret));
-            free_pending(client, req);
-            free(buf);
-            return -1;
-        }
-
-        if (!wait_response(client, req, client->config.connect_timeout_ms)) {
-            QGP_LOG_ERROR(LOG_TAG, "Auth: no response to KEY_INIT");
-            qgp_secure_memzero(shared_secret, sizeof(shared_secret));
-            free_pending(client, req);
-            free(buf);
-            return -1;
-        }
-
-        resp = (nodus_tier2_msg_t *)req->response;
-        if (strcmp(resp->method, "key_ack") != 0 || !resp->has_key_nonce) {
-            QGP_LOG_ERROR(LOG_TAG, "Auth: expected 'key_ack', got '%s'", resp->method);
-            qgp_secure_memzero(shared_secret, sizeof(shared_secret));
-            free_pending(client, req);
-            free(buf);
-            return -1;
-        }
-
-        /* Init channel crypto.
-         * B3 fix — init the per-conn channel_crypto directly; storage is
-         * now owned by the conn struct, no separate alias to attach. */
-        /* We DIALED the server → initiator. */
-        if (nodus_channel_crypto_init(&((nodus_tcp_conn_t *)client->conn)->channel_crypto,
-                                       shared_secret, nonce_c, resp->key_nonce,
-                                       NODUS_CHANNEL_ROLE_INITIATOR) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Auth: channel crypto init failed");
-            qgp_secure_memzero(shared_secret, sizeof(shared_secret));
-            free_pending(client, req);
-            free(buf);
-            return -1;
-        }
-
-        qgp_secure_memzero(shared_secret, sizeof(shared_secret));
-        free_pending(client, req);
-
-        /* Cache server pubkey(s) for reconnect */
-        memcpy(client->cached_server_kyber_pk, server_kyber_pk, NODUS_KYBER_PK_BYTES);
-        client->has_cached_server_kyber = true;
-        if (has_mpk) {
-            memcpy(client->cached_server_mlkem_pk, server_mlkem_pk, NODUS_MLKEM_PK_BYTES);
-            client->has_cached_server_mlkem = true;
-        }
-
-        QGP_LOG_INFO(LOG_TAG, "Auth: channel encrypted (%s+AES-256-GCM)",
-                     has_mpk ? "ML-KEM-1024" : "Kyber1024");
     }
-
-    result = 0;
-    free(buf);
-    return result;
+    return 0;
 }
 
 static int resubscribe_all(nodus_client_t *client) {

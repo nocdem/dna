@@ -17,7 +17,6 @@
 
 #include <stdatomic.h>
 #include "nodus/nodus_types.h"
-#include "crypto/nodus_channel_crypto.h"
 #include "transport/nodus_ws.h"
 
 #ifdef __cplusplus
@@ -156,13 +155,12 @@ typedef struct nodus_tcp_conn {
     uint64_t            last_activity;
     int                 slot;        /* Index in pool */
 
-    /* Channel encryption — owned per-conn (B3 fix). Inline storage
-     * eliminates the pointer-aliasing race that caused production
-     * "Replay detected: counter=N < expected=M" loops when multiple
-     * conns recycled through the same slot shared a session-level cc
-     * struct. Encrypt/decrypt sites read &conn->channel_crypto directly;
-     * established=false (zero-init) until handshake completes. */
-    nodus_channel_crypto_t channel_crypto;
+    /* Monotonic stamps (nodus_time_mono_ms) of the two events above, for
+     * deadlines that must not move with a wall-clock step: the pre-session
+     * deadline of the SecretConnection layer (nodus_tcp_sc_presession_sweep)
+     * reads these, never connected_at / last_activity. Set where those are. */
+    uint64_t            connected_mono_ms;
+    uint64_t            last_activity_mono_ms;
 
     /* Send diagnostics (Phase 1 visibility — no behavior change) */
     uint64_t            send_ok_count;      /* frames accepted into wbuf */
@@ -188,15 +186,6 @@ typedef struct nodus_tcp_conn {
     uint64_t            pending_enqueued_count;      /* lifetime frames queued */
     uint64_t            pending_drained_count;       /* lifetime frames promoted from queue to wbuf */
     uint64_t            pending_hint_fallback_count; /* lifetime frames that spilled to hint table */
-
-    /* Phase 3.2a: crypto-path visibility — decrypt failures are currently
-     * silently logged once and the frame skipped. Counter lets us correlate
-     * these with upstream "T1 decode failed" asymmetry. */
-    uint64_t            decrypt_skip_count;
-
-    /* Phase 3.2b-inv: one-shot flag so we log TX_ENCRYPT_FIRST only once
-     * per conn lifetime (per-frame would flood the journal). */
-    bool                tx_encrypt_logged;
 
     /* Phase 3.2b-inv2: one-shot flag for PENDING_DRAIN log. */
     bool                drain_logged;
@@ -343,16 +332,6 @@ typedef struct nodus_tcp {
 
     nodus_tcp_conn_t   *pool[NODUS_TCP_MAX_CONNS];
     int                 count;
-
-    /* D2.4: cumulative post-established AEAD decrypt failures across ALL conns
-     * on this transport, INCLUDING conns that have since been freed. The
-     * per-conn decrypt_skip_count dies with the conn (conn_free), so a gate that
-     * sums the live pool reads 0 precisely when a failure caused a teardown —
-     * i.e. it is blind to the regression it exists to catch. conn_free folds the
-     * per-conn count in here before freeing. On a healthy cluster this MUST stay
-     * 0: on an ordered TCP stream there is no legitimate post-established
-     * decrypt failure. */
-    uint64_t            decrypt_fail_total;
 
     /* Callbacks */
     nodus_tcp_frame_fn  on_frame;
@@ -625,12 +604,6 @@ bool nodus_tcp_read_pending(const nodus_tcp_t *tcp);
  * further work on it.
  */
 void nodus_tcp_disconnect(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
-
-/** D2.4 gate: cumulative post-established AEAD decrypt failures on this
- *  transport, surviving conn teardown (live conns + all freed ones). MUST be 0
- *  on a healthy cluster — there is no legitimate post-established decrypt
- *  failure on an ordered TCP stream. */
-uint64_t nodus_tcp_decrypt_fail_total(const nodus_tcp_t *tcp);
 
 /** Find connection by peer ID. */
 nodus_tcp_conn_t *nodus_tcp_find_by_id(nodus_tcp_t *tcp,

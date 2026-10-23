@@ -9,11 +9,11 @@
  * What it proves (each would be false if it failed):
  *   1. An Upgrade with an allowed Origin and an X-Forwarded-For gets 101 with
  *      the correct Sec-WebSocket-Accept and the "binary" subprotocol echo.
- *   2. After the Upgrade the connection is an ordinary tier-2 client
- *      connection: a nodus "hello" frame carried in a masked binary WS frame
- *      is answered with a "challenge", itself carried in one unmasked binary
- *      WS frame — i.e. inbound bytes reach the nodus frame decoder and
- *      outbound nodus frames are wrapped.
+ *   2. After the Upgrade the stream is the SecretConnection (DHT v2 3b-2),
+ *      not nodus frames: an OLD plaintext nodus "hello" carried in a masked
+ *      binary WS frame is refused — the server sends no "challenge" and
+ *      closes the connection. (The sealed session over WS is covered at the
+ *      transport level by test_tcp_sc.c.)
  *   3. ping → pong with the same payload.
  *   4. A disallowed Origin gets 403 and the connection is closed.
  *   5. The per-real-IP limit counts WS connections by X-Forwarded-For:
@@ -52,6 +52,7 @@
 #include "protocol/nodus_wire.h"
 #include "protocol/nodus_tier2.h"
 #include "crypto/nodus_identity.h"
+#include "test_server_session.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -290,38 +291,36 @@ static void test_upgrade_and_hello(nodus_identity_t *id) {
         if (found == 1) PASS(); else FAIL("conn->ip is not the XFF address");
     }
 
-    TEST("tier-2 hello in WS frame → challenge in WS frame");
+    /* DHT v2 3b-2: after the Upgrade the stream is the SecretConnection
+     * (nodus_tcp_sc.h), not nodus frames. The server answers ping / close at
+     * the WS layer (below), but a nodus `hello` — what a pre-3b-2 client
+     * sent — is not a SecretConnection message: the machine refuses it, the
+     * server answers NOTHING in plaintext (no `challenge`) and closes. This
+     * runs on a SECOND connection so the ping / close tests keep theirs. */
+    TEST("old plaintext hello in a WS frame → refused, no challenge");
     uint8_t *t2 = malloc(16384);
     uint8_t *nf = malloc(16384 + NODUS_FRAME_HEADER_SIZE);
     uint8_t *wf = malloc(16384 + NODUS_FRAME_HEADER_SIZE + 16);
     ok = 0;
     if (t2 && nf && wf) {
+        rx_t *rx2 = calloc(1, sizeof(*rx2));
+        int got101 = 0;
+        int fd2 = rx2 ? ws_open_conn(XFF_IP, rx2, &got101) : -1;
         size_t t2_len = 0;
-        if (nodus_t2_hello(7, &id->pk, &id->node_id, t2, 16384, &t2_len) == 0) {
+        if (fd2 >= 0 && got101 &&
+            nodus_t2_hello(7, &id->pk, &id->node_id, t2, 16384, &t2_len) == 0) {
             size_t nf_len = nodus_frame_encode(nf, 16384 + NODUS_FRAME_HEADER_SIZE,
                                                t2, (uint32_t)t2_len);
             size_t wf_len = client_frame(wf, 0x82, nf, nf_len);
-            if (nf_len > 0 && send_all(fd, wf, wf_len) == 0) {
-                uint8_t op = 0;
-                const uint8_t *pl = NULL;
-                uint64_t pln = 0;
-                long fl = rx_frame(fd, rx, 0, &op, &pl, &pln);
-                nodus_frame_t fr;
-                if (fl > 0 && op == NODUS_WS_OP_BINARY &&
-                    nodus_frame_decode(pl, (size_t)pln, &fr) == (int)pln) {
-                    nodus_tier2_msg_t msg;
-                    memset(&msg, 0, sizeof(msg));
-                    if (nodus_t2_decode(fr.payload, fr.payload_len, &msg) == 0 &&
-                        strcmp(msg.method, "challenge") == 0 && msg.txn_id == 7)
-                        ok = 1;
-                    nodus_t2_msg_free(&msg);
-                    memmove(rx->buf, rx->buf + fl, rx->len - (size_t)fl);
-                    rx->len -= (size_t)fl;
-                }
-            }
+            if (nf_len > 0 && send_all(fd2, wf, wf_len) == 0 &&
+                rx_until_eof(fd2, rx2) &&
+                !find_seq(rx2->buf, rx2->len, "challenge"))
+                ok = 1;
         }
+        if (fd2 >= 0) close(fd2);
+        free(rx2);
     }
-    if (ok) PASS(); else FAIL("no challenge");
+    if (ok) PASS(); else FAIL("the old hello was not refused (or got a challenge)");
     free(t2); free(nf); free(wf);
 
     TEST("ping → pong with the same payload");
@@ -570,6 +569,10 @@ int main(void) {
         if (system(cmd) != 0) printf("cleanup of %s failed\n", config.data_path);
         return 1;
     }
+
+    /* DHT v2 3b-2: every accepted client connection (WS included) opens a
+     * SecretConnection, which needs the node's chain id — no witness here. */
+    ts_server_chain(&g_srv, 0x77);
 
     TEST("WS entry listens on 127.0.0.1 with the default origin");
     if (g_srv.tcp.ws_listen_fd >= 0 && g_srv.tcp.ws_port == WS_PORT &&

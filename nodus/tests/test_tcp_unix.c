@@ -195,7 +195,7 @@ static void test_roundtrip(void) {
                      strcmp(sc->ip, NODUS_TCP_UNIX_PEER_IP) == 0 &&
                      sc->peer_cred_set && sc->peer_uid == (uint32_t)geteuid() &&
                      sc->peer_pid == (int32_t)getpid() &&
-                     !sc->channel_crypto.established;
+                     sc->sc == NULL;   /* an IPC conn carries no SecretConnection */
 
     bool up_ok = false, down_ok = false;
     if (client_ok && server_ok) {

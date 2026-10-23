@@ -11,6 +11,8 @@
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_identity.h"
 #include "nodus/nodus_types.h"
+#include "transport/nodus_tcp_sc.h"
+#include "test_server_session.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -103,6 +105,7 @@ static void *server_thread(void *arg) {
         return NULL;
     }
 
+    ts_server_chain(&server, 0x77);   /* sessions need a chain id (no witness here) */
     server_init_outcome(true);
     nodus_server_run(&server);
     nodus_server_close(&server);
@@ -214,6 +217,23 @@ static void test_connect(void) {
     client_conn = nodus_tcp_connect(&client_tcp, "127.0.0.1", TS_TCP_PORT);
     if (!client_conn) { FAIL("connect returned NULL"); return; }
 
+    /* The client session: SecretConnection, INITIATOR, CLIENT profile,
+     * pinned to the server's key, bound to the server's chain id. */
+    {
+        nodus_tcp_sc_cfg_t sc;
+        memset(&sc, 0, sizeof(sc));
+        sc.role      = CMT_P2P_SC_ROLE_INITIATOR;
+        sc.profile   = &CMT_P2P_SC_PROFILE_CLIENT;
+        sc.id        = &client_id;
+        sc.proto_ver = NODUS_CSESS_PROTO_VERSION;
+        memset(sc.chain_id, 0x77, sizeof(sc.chain_id));
+        sc.expected_peer = &server.identity.node_id;
+        if (nodus_tcp_sc_enable(&client_tcp, client_conn, &sc) != 0) {
+            FAIL("session layer not enabled");
+            return;
+        }
+    }
+
     /* Wait for connection */
     for (int i = 0; i < 100 && client_conn->state == NODUS_CONN_CONNECTING; i++)
         nodus_tcp_poll(&client_tcp, 10);
@@ -223,29 +243,15 @@ static void test_connect(void) {
 }
 
 static void test_auth(void) {
-    TEST("3-way Dilithium5 auth handshake");
+    TEST("SecretConnection session + token message");
 
-    /* Step 1: HELLO */
-    size_t len = 0;
-    uint32_t txn = next_txn++;
-    nodus_t2_hello(txn, &client_id.pk, &client_id.node_id,
-                    proto_buf, sizeof(proto_buf), &len);
-    nodus_tcp_send(client_conn, proto_buf, len);
-
-    if (!wait_response(5000)) { FAIL("no CHALLENGE response"); return; }
-    if (strcmp(last_resp.method, "challenge") != 0) {
-        FAIL("expected challenge"); return;
+    /* The handshake runs inside the polls; the first frame the server sends
+     * once the session is authenticated is the token message (auth_ok,
+     * txn 0). */
+    if (!wait_response(5000)) { FAIL("no token message"); return; }
+    if (!nodus_tcp_sc_authenticated(client_conn)) {
+        FAIL("a frame arrived on a session that is not authenticated"); return;
     }
-
-    /* Step 2: Sign nonce, send AUTH (C2: domain-tagged) */
-    nodus_sig_t sig;
-    nodus_sign_auth_challenge(&sig, last_resp.nonce, &client_id.sk);
-
-    txn = next_txn++;
-    nodus_t2_auth(txn, &sig, proto_buf, sizeof(proto_buf), &len);
-    nodus_tcp_send(client_conn, proto_buf, len);
-
-    if (!wait_response(5000)) { FAIL("no AUTH_OK response"); return; }
     if (strcmp(last_resp.method, "auth_ok") != 0) {
         char buf[128];
         snprintf(buf, sizeof(buf), "expected auth_ok, got %s", last_resp.method);
