@@ -2285,6 +2285,14 @@ add_executable(test_p2p_secret tests/test_p2p_secret.c)
 target_link_libraries(test_p2p_secret nodus dsa kem nodus crypto)
 add_test(NAME test_p2p_secret COMMAND test_p2p_secret)
 
+# DHT v2 sub-package 3a step 1 — byte pins of today's 4004 SecretConnection
+# (handshake framing, T / key / challenge, sealed-frame nonce, purpose 0x0A),
+# literal bytes + one python3-computed vector. Must pass on the UNCHANGED
+# base commit; default build, no environment, `ctest -j` safe.
+add_executable(test_p2p_secret_kat tests/test_p2p_secret_kat.c)
+target_link_libraries(test_p2p_secret_kat nodus dsa kem nodus crypto)
+add_test(NAME test_p2p_secret_kat COMMAND test_p2p_secret_kat)
+
 # cometbft @709fd12b → C port, fleet P2P-PORT phase F2 —
 # p2p/conn/connection_test.go's single-threaded cases (send/receive over a
 # loopback pair, TrySend on a full queue, unknown channel, long message,
