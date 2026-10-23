@@ -147,8 +147,8 @@
  * 33,412; the drain seals a portion only while the write buffer stays at or
  * below NODUS_TCP_SC_WBUF_FILL = 2 portions = 66,824 bytes; the buffer's
  * bound NODUS_TCP_SC_WBUF_MAX = 131,072 bytes leaves 64,248 for the
- * handshake output, a 101, pongs and a close. That is 4.4 times LESS than
- * the plain bound of 5,246,983. The pending queue keeps its existing caps
+ * handshake output, a 101, pongs and a close. That is about 40 times LESS
+ * than the plain bound of 5,246,983 (5,246,983 / 131,072 = 40.03). The pending queue keeps its existing caps
  * (NODUS_PENDING_MAX_FRAMES frames, NODUS_PENDING_MAX_BYTES bytes) — they
  * count PLAINTEXT bytes (the frames are queued unsealed). The read
  * buffer holds plaintext and may grow to NODUS_TCP_SC_RBUF_MAX = 5,246,983 +
@@ -242,9 +242,10 @@ extern "C" {
 #define NODUS_TCP_SC_WBUF_FILL (2 * NODUS_TCP_SC_PORTION_WIRE)
 /** The write buffer's bound for a layer connection: 128 KiB. FILL
  *  (66,824) leaves 64,248 bytes for what is NOT sealed data — the handshake
- *  output (at most CMT_P2P_SC_OUT_CAP = 13,690 + a WS header), a 101 response,
+ *  output (at most CMT_P2P_SC_OUT_CAP = 13,684 + a WS header), a 101 response,
  *  pongs and a close frame. (Today's plain bound is 5,246,983: a layer
- *  connection needs 4.4 times LESS, since a frame is no longer sealed whole.) */
+ *  connection needs about 40 times LESS, since a frame is no longer sealed
+ *  whole.) */
 #define NODUS_TCP_SC_WBUF_MAX (128 * 1024)
 /** Read buffer bound: the plain bound (one nodus frame + 4096) + one raw
  *  chunk of plaintext. A chunk is fed to the machine whole and parsed after,

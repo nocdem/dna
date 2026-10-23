@@ -55,13 +55,28 @@
  *      earlier frame is mid-drain moves no counter, no cursor, no queue count
  *      and no write-buffer byte.
  *
+ *  12. Write interest: queued plaintext keeps it (a level-triggered sender,
+ *      receiver reading in bursts, no further sends: all 3 x 5 MiB arrive),
+ *      and a send from another thread arms it (the sender's poll thread
+ *      waits in nodus_tcp_poll(…, 1000); the frames complete within a round
+ *      bound far below what that 1000 ms sleep would cost).
+ *
  * WHAT IT REQUIRES: a default nodus build (no compile flags, no
  * environment). Loopback sockets on ephemeral ports (127.0.0.1:0), threads
  * (the layer's handshake worker). Heap: 5 MiB receive buffers, ~40 MiB peak
  * in case 7.
  * WHAT IT LEAVES BEHIND: nothing (all sockets closed, workers joined).
  *
- * HOW IT CAN LIE: the incremental case assumes 3 x 5 MiB (about 16 MB of
+ * HOW IT CAN LIE: the waiting-poll-thread case cannot see INSIDE the thread:
+ * it sleeps 50 ms after the thread announces itself so that the thread is
+ * (very likely) blocked in epoll_wait when the send happens, and it tells
+ * "woken by the send" from "woke by timeout" by a ROUND count of the
+ * receiver's polls (400, against ~1000 idle rounds for a 1000 ms sleep) —
+ * correlated with time, not exact. If the thread is not yet waiting, or the
+ * host's socket buffers swallow all 16 MB at send time, the case passes
+ * while proving less; it never fails falsely. The level-triggered burst case
+ * likewise needs the stall to occur (sender socket full mid-frame). The
+ * incremental case assumes 3 x 5 MiB (about 16 MB of
  * sealed bytes) exceeds the host's socket buffers plus the 128 KiB write
  * buffer; a host with socket buffers above ~16 MB would FAIL its first
  * assertion (it never passes falsely). Every wait is a ROUND count of nodus_tcp_poll calls on
@@ -105,7 +120,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include <openssl/evp.h>      /* seal_by_hand: one sealed frame the machine would refuse to write */
+#include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
+#include <openssl/evp.h>     /* seal_by_hand: one sealed frame the machine would refuse to write */
 
 #define TEST(name) do { printf("  %-72s", name); fflush(stdout); } while (0)
 #define PASS()     do { printf("PASS\n"); passed++; } while (0)
@@ -1410,6 +1428,113 @@ static void test_incremental_drain(void)
     free(big);
 }
 
+/* ══ 18: queued plaintext keeps write interest (level-triggered, bursts) ══ */
+
+/* Three 5 MiB frames are admitted, the sender is never asked to send again,
+ * and the receiver reads in BURSTS (several polls, then none for a while)
+ * while the sender's poll runs in level-triggered mode: whenever the write
+ * buffer empties with plaintext still queued, write interest must survive,
+ * or the remaining portions are never sealed. */
+static void test_level_burst_drain(void)
+{
+    enum { NFRAMES = 3 };
+    uint8_t *big = (uint8_t *)malloc(NODUS_MAX_FRAME_TCP);
+    int ok;
+
+    TEST("level-triggered: an admitted 5 MiB frame drains fully, receiver in bursts, no more sends");
+    g_level = true;
+    ok = big != NULL && pair_up(&CMT_P2P_SC_PROFILE_CLIENT, &CMT_P2P_SC_PROFILE_CLIENT, NULL) == 0 &&
+         pump_until(&g_srv.sessions, 1, MAX_ROUNDS) && pump_until(&g_cli.sessions, 1, MAX_ROUNDS);
+    g_level = false;
+    g_srv.seq_mode = true;
+    for (int i = 0; ok && i < NFRAMES; i++) {
+        fill_seq(big, NODUS_MAX_FRAME_TCP, (uint64_t)i);
+        ok = nodus_tcp_send(g_cli.conn, big, NODUS_MAX_FRAME_TCP) == 0;
+    }
+    for (int i = 0; ok && i < BIG_ROUNDS && g_srv.frames < NFRAMES; i++) {
+        nodus_tcp_poll(&g_cli.tcp, 1);               /* the sender only polls */
+        if ((i % 8) == 0) {                          /* the receiver reads in bursts */
+            for (int b = 0; b < 4; b++)
+                nodus_tcp_poll(&g_srv.tcp, 0);
+        }
+    }
+    if (ok && g_srv.frames == NFRAMES && g_srv.seq_ok == NFRAMES && g_srv.seq_bad == 0 &&
+        g_cli.conn != NULL && g_cli.conn->pending_head == NULL &&
+        g_cli.disconnected == 0 && g_srv.disconnected == 0) PASS();
+    else FAIL("part of an admitted frame was never sealed / sent");
+    pair_down();
+    free(big);
+}
+
+/* ══ 19: a send from another thread wakes a poll thread that is waiting ══ */
+
+static pthread_mutex_t g_wl_mu = PTHREAD_MUTEX_INITIALIZER;
+static atomic_bool g_poll_stop;
+static atomic_bool g_poll_started;
+
+static void test_write_lock(void *ctx, bool lock)
+{
+    (void)ctx;
+    if (lock) pthread_mutex_lock(&g_wl_mu); else pthread_mutex_unlock(&g_wl_mu);
+}
+
+static void *poll_thread_main(void *arg)
+{
+    nodus_tcp_t *tcp = (nodus_tcp_t *)arg;
+
+    atomic_store(&g_poll_started, true);
+    while (!atomic_load(&g_poll_stop))
+        nodus_tcp_poll(tcp, 1000);                   /* a LONG wait */
+    return NULL;
+}
+
+/* The client's poll thread waits in nodus_tcp_poll(…, 1000); the main thread
+ * sends three 5 MiB frames (the receiver is not polled while it sends, so the
+ * socket hits EAGAIN with plaintext still queued). Registering write interest
+ * from the send is what wakes the poll thread when the socket drains; without
+ * it the poll thread sleeps out its 1000 ms. The assertion counts ROUNDS of
+ * the receiver's polls (not seconds): the frames must complete in far fewer
+ * than the ~1000 idle rounds a 1000 ms sleep would cost. */
+static void test_send_wakes_waiting_poll(void)
+{
+    enum { NFRAMES = 3, ROUND_BOUND = 400 };
+    uint8_t *big = (uint8_t *)malloc(NODUS_MAX_FRAME_TCP);
+    pthread_t th;
+    int ok, started = 0;
+
+    TEST("a send from another thread arms write interest: the waiting poll thread completes it");
+    ok = big != NULL && pair_up(&CMT_P2P_SC_PROFILE_CLIENT, &CMT_P2P_SC_PROFILE_CLIENT, NULL) == 0 &&
+         pump_until(&g_srv.sessions, 1, MAX_ROUNDS) && pump_until(&g_cli.sessions, 1, MAX_ROUNDS);
+    g_srv.seq_mode = true;
+    if (ok) {
+        nodus_tcp_set_write_lock(&g_cli.tcp, test_write_lock, NULL);
+        atomic_store(&g_poll_stop, false);
+        atomic_store(&g_poll_started, false);
+        started = pthread_create(&th, NULL, poll_thread_main, &g_cli.tcp) == 0;
+        ok = started;
+    }
+    for (int i = 0; ok && i < 100000 && !atomic_load(&g_poll_started); i++)
+        sched_yield();
+    if (ok)
+        usleep(50000);        /* let the poll thread settle into its epoll_wait (see HOW IT CAN LIE) */
+    for (int i = 0; ok && i < NFRAMES; i++) {
+        fill_seq(big, NODUS_MAX_FRAME_TCP, (uint64_t)i);
+        ok = nodus_tcp_send(g_cli.conn, big, NODUS_MAX_FRAME_TCP) == 0;
+    }
+    for (int i = 0; ok && i < ROUND_BOUND && g_srv.frames < NFRAMES; i++)
+        nodus_tcp_poll(&g_srv.tcp, 1);                /* only the receiver polls here */
+    if (ok && g_srv.frames == NFRAMES && g_srv.seq_ok == NFRAMES && g_srv.seq_bad == 0 &&
+        g_srv.disconnected == 0) PASS();
+    else FAIL("the frames did not complete while the poll thread was waiting");
+    if (started) {
+        atomic_store(&g_poll_stop, true);
+        pthread_join(th, NULL);
+    }
+    nodus_tcp_set_write_lock(&g_cli.tcp, NULL, NULL);
+    pair_down();
+    free(big);
+}
+
 /* ══ 17: a refused send touches nothing while an earlier frame is mid-drain ══ */
 
 static void test_refused_mid_drain(void)
@@ -1514,6 +1639,8 @@ int main(void)
     test_level_triggered();
     test_level_held_input();
     test_incremental_drain();
+    test_level_burst_drain();
+    test_send_wakes_waiting_poll();
     test_refused_mid_drain();
     test_teardown_nested_poll();
     test_layer_off_bytes();

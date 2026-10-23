@@ -387,10 +387,17 @@ static void wl_leave(nodus_tcp_t *tcp) {
 }
 
 /* "Does conn hold unsent bytes?" — the poll side asks it to arm a write
- * event; read under the lock like every other wbuf access. */
+ * event; read under the lock like every other wbuf access. A connection with
+ * the SecretConnection layer also has output that is not in wbuf yet: the
+ * queued PLAINTEXT frames wait in the pending FIFO for the drain to seal them
+ * as the socket takes bytes, so they keep write interest too — otherwise an
+ * emptied wbuf would drop EPOLLOUT / the select write set and the rest of an
+ * admitted frame would never be sealed or sent. (conn->sc is NULL on every
+ * other connection: unchanged for them.) */
 static bool conn_has_unsent(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     wl_enter(tcp);
-    bool unsent = conn->wlen > conn->wpos;
+    bool unsent = conn->wlen > conn->wpos ||
+                  (conn->sc != NULL && conn->pending_head != NULL);
     wl_leave(tcp);
     return unsent;
 }
@@ -1198,8 +1205,21 @@ static int send_sc_locked(nodus_tcp_conn_t *conn, const uint8_t *payload, size_t
             conn->send_ok_count++;
             conn->send_bytes_total += len;
             io = sc_drain_flush_locked(conn, progress_cb, user_data);
-            if (io == NTCP_IO_PROGRESS || io == NTCP_IO_WOULDBLOCK)
+            if (io == NTCP_IO_PROGRESS || io == NTCP_IO_WOULDBLOCK) {
+#ifdef NODUS_TCP_EPOLL
+                /* Output left (buffered or still queued as plaintext): arm
+                 * write interest the way the generic pending path does, so a
+                 * poll thread already waiting on this connection is woken by
+                 * the socket becoming writable. The edge/level mask applies. */
+                if (tcp && tcp->epoll_fd >= 0 && conn->fd >= 0 &&
+                    (conn->wlen > conn->wpos || conn->pending_head)) {
+                    uint32_t et = tcp->level_triggered ? 0 : EPOLLET;
+                    uint32_t ev = EPOLLIN | EPOLLOUT | EPOLLRDHUP | et;
+                    epoll_mod(tcp->epoll_fd, conn->fd, sc_ev_mask(tcp, conn, ev), conn);
+                }
+#endif
                 return 0;
+            }
             if (conn->sc_close_req)
                 return -1;                  /* fatal sealing failure, marked */
             conn->send_error_count++;
