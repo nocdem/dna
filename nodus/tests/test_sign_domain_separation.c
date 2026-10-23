@@ -353,7 +353,7 @@ static void test_strict_set_is_exactly_07_08(void) {
         FAIL("WITNESS_ADDR (0x0B) must be strict"); return; }
     /* The shipped-client bridge must stay EXACTLY as wide as it was:
      * none of 0x01-0x05 may become strict by accident. 0x06 is
-     * reserved-unimplemented, 0x0C unassigned. */
+     * reserved-unimplemented; 0x0C / 0x0D are strict (DHT v2 3a, §A). */
     if (nodus_sign_purpose_is_strict(NODUS_PURPOSE_AUTH_CHALLENGE)) {
         FAIL("AUTH_CHALLENGE (0x01) must NOT be strict"); return; }
     if (nodus_sign_purpose_is_strict(NODUS_PURPOSE_KYBER_BIND)) {

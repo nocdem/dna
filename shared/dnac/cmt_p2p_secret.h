@@ -285,7 +285,7 @@ typedef enum {
     CMT_P2P_SC_ROLE_RESPONDER = 0x02    /* accepted  */
 } cmt_p2p_sc_role_t;
 
-/* ══ Handshake message kinds (NOT GROUNDED encoding, see file header) ══ */
+/* ══ Handshake message kinds (operator-approved encoding, see file header) ══ */
 
 #define CMT_P2P_SC_MSG_HELLO    0x01
 #define CMT_P2P_SC_MSG_HELLO_R  0x02
@@ -483,9 +483,11 @@ int cmt_p2p_sc_init(cmt_p2p_sc_t *sc, cmt_p2p_sc_role_t role,
  * itself is this call with CMT_P2P_SC_PROFILE_WITNESS: its signature is
  * unchanged so the 4004 byte-pin test (test_p2p_secret_kat.c) keeps
  * compiling and pinning the 4004 construction untouched.
- * @param profile  NULL, or a profile with an empty string or a string
- *                 longer than CMT_P2P_SC_PROFILE_STR_MAX, is refused:
- *                 CMT_FAULT (machine DEAD), before anything is generated.
+ * @param profile  exactly &CMT_P2P_SC_PROFILE_WITNESS, &…_CLIENT or
+ *                 &…_NODE (compared by pointer); anything else — NULL, a
+ *                 copy, a custom profile — is refused: CMT_FAULT (machine
+ *                 DEAD), before anything is generated. The string bounds
+ *                 (1 … CMT_P2P_SC_PROFILE_STR_MAX) are a second guard.
  */
 int cmt_p2p_sc_init_profile(cmt_p2p_sc_t *sc, cmt_p2p_sc_role_t role,
                             const cmt_p2p_sc_host_t *host,
