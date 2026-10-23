@@ -1,4 +1,4 @@
-# DHT v2 Codec Functions (`shared/dht2/`)
+# DHT v2 Functions (`shared/dht2/`, `nodus/src/dht/nodus_dht2_wview.*`, `nodus/src/dht2/`)
 
 DHT v2 package 1: the byte layer of the storage-node DHT for Nodus Connect —
 a strict DAG-CBOR reader / writer, the signed record (IPNS v2 envelope +
@@ -19,14 +19,20 @@ connection kind of `<data_path>/witness.sock` (snapshot, frozen sets, name
 check). The witness side of that kind (its fill functions, structs and the
 derived frame bound) is in `messenger/docs/functions/ledger.md` §19.
 
+DHT v2 package 5 (§12): NOT in `shared/dht2/` — `nodus/src/dht2/nodus_dht2_store.{h,c}`,
+the holder store (SQLite, canonical envelopes) and the one §4.1 admission path,
+over an INJECTED context (snapshot, frozen sets, name callback, limits). With it
+the codec's `ValidityType` ⇔ `Validity` check moved from `dht2_data_decode`
+(`bad-encoding` 2) to `dht2_record_check_class` (`bad-class` 6) — §5.
+
 **No production caller.** Nothing in a node or a client calls any function
 in this file yet; the only callers are `nodus/tests/test_dht2_codec.c`,
-`nodus/tests/test_dht2_msg.c` and `nodus/tests/test_dht2_ipc.c`
-(`nodus/CMakeLists.txt:627-633`: "Pure, no I/O; no caller yet"; `:704-707`
-for the package-4 view: "No caller yet (package 5)"). Storage, the holder
-check, quotas, the client / node sessions and the holder / client logic that
-sends and checks these messages are LATER packages (`dht2_msg.h:39-42`: "no
-admission, holder or client logic").
+`nodus/tests/test_dht2_msg.c`, `nodus/tests/test_dht2_ipc.c` and
+`nodus/tests/test_dht2_store.c` — the package-5 store calls the package-1 / 2
+functions, but nothing calls the store (`nodus/CMakeLists.txt:627-633`: "Pure,
+no I/O; no caller yet"; `:704-707` for the package-4 view; `:708-711` for the
+package-5 store: "No caller yet (package 6 serves it)"). The client / node
+sessions, request handling and the pull exchange are LATER packages (6, 7).
 
 **Build.** The six `shared/dht2/*.c` files are in nodus's common source list
 (`nodus/CMakeLists.txt` `set(NODUS_SOURCES` :114, entries :634-639), outside
@@ -34,7 +40,8 @@ the Linux-only list, "so it compiles on Windows (the browser / Connect core
 will use it too)" (:632-633). The package-4 `nodus/src/dht/nodus_dht2_wview.c`
 is NOT: it is in the Linux-only library list (`:704-707`), links the nodus
 transport + `nodus_cbor` and includes `witness/nodus_witness_ipc.h` for
-constants and plain structs only. Include pattern: `#include "dht2/dht2_record.h"`
+constants and plain structs only. The package-5 `nodus/src/dht2/nodus_dht2_store.c`
+is in the same Linux-only list (`:708-712`) and links SQLite. Include pattern: `#include "dht2/dht2_record.h"`
 (resolved through `-I shared`). Dependencies: `crypto/sign/qgp_dilithium.h`
 (ML-DSA-87), `crypto/hash/qgp_sha3.h`, `dnac/cmt_pb.h` / `dnac/cmt_pb_wire.h`
 (the tree's proto3 PublicKey codec and reader — `dht2_record.c:16`,
@@ -59,7 +66,15 @@ envelope domain stays OPEN), `2026-10-23-dht-v2-id-param-bytes.md`
 (operator, 2026-10-23: dm salt 32 B, group id 32 B, group key version
 8 B unsigned big-endian — amended the same day from a first answer of
 4 B — carried only in the group.record and group.keys `_id`, not in
-group.head or the group feed topic).
+group.head or the group feed topic). Package 5 (§12) also follows
+`2026-10-23-dht-v2-k23-three-items.md` (operator, 2026-10-23: the HANDLED
+cutoff as rows 7 / 15 write it — entries with Sequence ≤ N dropped, a later PUT
+at or below N answered 18 with only that writer's N; membership in the frozen
+sets authoritative, registry status not) and
+`2026-10-24-dht-v2-handled-client-rule.md` (operator, 2026-10-24: a HANDLED
+request not coming back is a CLIENT rule — the owner keeps a HANDLED writer
+listed ≤ 7 d + 3 h; holders apply only the selected control record, a losing
+write changes nothing, no holder memory).
 
 Pinned references (`/home/nocdem/refs/`, as the headers cite them): ipfs specs
 `3000be69` (`src/ipns/ipns-record.md`), boxo v0.43.0, ipld `bfd348aa`
@@ -97,9 +112,9 @@ absence (design §13 row 7).
   into its `in`, as for `dht2_env_decode`.
 - `dht2_data_t.data` / `.prev`: after `dht2_data_decode` they point into the
   decoded bytes, "which must outlive the struct"; for encoding the caller
-  sets them (`dht2_record.h:96-98`).
+  sets them (`dht2_record.h:101-103`).
 - `dht2_record_t.sig` / `.data` point into the `in` buffer given to
-  `dht2_record_parse` (`dht2_record.h:135-137`, `:153`), and `rec->d.data` /
+  `dht2_record_parse` (`dht2_record.h:140-142`, `:158`), and `rec->d.data` /
   `rec->d.prev` point into `rec->data`, i.e. also into `in`. A parsed
   record is valid only as long as `in` is.
 - `dht2_env_t.payload_type` / `.payload` / `.sig` point INTO the decoded
@@ -111,8 +126,8 @@ absence (design §13 row 7).
 
 No function reads a clock (chain time is the `chain_now` parameter), keeps
 global state, or draws randomness except inside `qgp_dsa87_sign_ctx`'s
-hedged signing (`dht2_record.h:72-73`). Heap: `dht2_id` allocates its
-preimage and frees it on every path (`dht2_record.h:73-75`); the RFC 0002
+hedged signing (`dht2_record.h:77-78`). Heap: `dht2_id` allocates its
+preimage and frees it on every path (`dht2_record.h:78-80`); the RFC 0002
 signed buffer is allocated in seal / verify and freed on every path
 (`dht2_envelope.h:42-43`); the CBOR layer and placement use no heap
 (`dht2_cbor.h:47-48`, `dht2_place.h:22`). The package-2 message layer
@@ -138,10 +153,10 @@ envelope, and even then the client rules of §4.4 (the answering fp = `n`,
 function at all (its envelope domain is not decided). `dht2_record_parse`,
 `dht2_data_decode`, `dht2_record_canonical`, `dht2_record_compare` and
 `dht2_record_placement_key` operate on UNVERIFIED bytes
-(`dht2_record.h:63-70`); `dht2_env_decode` does not verify, and a decoded
+(`dht2_record.h:68-75`); `dht2_env_decode` does not verify, and a decoded
 envelope's payload and fp are unproven until `dht2_env_verify` returns
 `DHT2_OK` (`dht2_envelope.h:31-35`). On an unverified record the signer fp
-is a CLAIM (`dht2_record.h:209-211`).
+is a CLAIM (`dht2_record.h:214-216`).
 
 Holder admission must run design §4.1's full order: size → envelope decode
 → strict data decode + re-encode → `_chain` = local chain → pubKey → owner
@@ -149,8 +164,9 @@ fp → address → holder check (`eligible`) → class rules → expiry →
 SIGNATURE (`dht2_record_verify`) → Select (§4.2) → quota → store the
 canonical form. A record must never be stored, compared against a held
 version or hashed into a receipt before `dht2_record_verify` returned
-`DHT2_OK` (`dht2_record.h:66-70`). This package provides the steps; the
-holder check, quota and store belong to later packages.
+`DHT2_OK` (`dht2_record.h:71-75`). Packages 1-2 provide the steps; the
+holder check, quota and store are package 5's `nodus_dht2_store_put` (§12),
+which runs this order.
 
 ---
 
@@ -203,22 +219,22 @@ function RETURNS that code yet, not that a message cannot carry it.
 | `DHT2_E_BAD_ENCODING` | 2 | `dht2_data_encode`, `dht2_data_decode`, `dht2_record_parse`, `dht2_record_build`, `dht2_env_decode`; package 2: `dht2_answer_encode/_decode`, `dht2_receipt_encode/_decode`, `dht2_list_answer_encode/_decode`, `dht2_refusal_encode/_decode`, `dht2_p_hello_decode`, `dht2_p_get_decode`, `dht2_p_offer_encode/_decode`, `dht2_p_want_encode/_decode`, `dht2_p_deliver_encode/_decode`, `dht2_pull_receipt_encode/_decode`, `dht2_ctl_encode`, `dht2_ctl_check`, `dht2_ctl_lookup`, `dht2_answer_open` (decode fault or another payload type) |
 | `DHT2_E_BAD_CHAIN` | 3 | `dht2_record_parse`, `dht2_list_req_open` (internal there, see §6.3) |
 | `DHT2_E_BAD_ADDRESS` | 4 | `dht2_record_parse` |
-| `DHT2_E_NOT_HOLDER` | 5 | — (defined; the holder check is a later package) |
-| `DHT2_E_BAD_CLASS` | 6 | `dht2_record_check_class`, `dht2_record_check_expiry` (class out of range) |
+| `DHT2_E_NOT_HOLDER` | 5 | package 5: `nodus_dht2_store_put` (§12) |
+| `DHT2_E_BAD_CLASS` | 6 | `dht2_record_check_class` (incl. a `ValidityType` ⇔ `Validity` disagreement since package 5), `dht2_record_check_expiry` (class out of range) |
 | `DHT2_E_EXPIRED` | 7 | `dht2_record_check_expiry` |
 | `DHT2_E_TOO_LONG` | 8 | `dht2_record_check_expiry` |
 | `DHT2_E_BAD_SIGNATURE` | 9 | `dht2_record_verify`, `dht2_record_canonical`, `dht2_env_verify`, `dht2_list_req_open` (internal there), `dht2_answer_open` |
-| `DHT2_E_QUOTA` | 10 | — (defined; later package) |
-| `DHT2_E_POOL_FULL` | 11 | — (defined; later package) |
-| `DHT2_E_DENIED` | 12 | — (defined; later package) |
-| `DHT2_E_NODE_FULL` | 13 | — (defined; later package) |
+| `DHT2_E_QUOTA` | 10 | package 5: `nodus_dht2_store_put` |
+| `DHT2_E_POOL_FULL` | 11 | package 5: `nodus_dht2_store_put` |
+| `DHT2_E_DENIED` | 12 | package 5: `nodus_dht2_store_put` |
+| `DHT2_E_NODE_FULL` | 13 | package 5: `nodus_dht2_store_put` |
 | `DHT2_E_BUSY` | 14 | — (call-level, row 7 / row 18; CARRIED as a refusal's `e`, §10.4) |
-| `DHT2_E_NOT_CAUGHT_UP` | 15 | — (call-level, row 7 / row 18; CARRIED as a refusal's `e`, §10.4) |
-| `DHT2_E_HOLDER_FAULT` | 16 | `dht2_record_parse`, `dht2_record_check_class`, `dht2_record_check_expiry`, `dht2_record_build`, `dht2_record_placement_key`, `dht2_env_seal`, `dht2_env_decode`, `dht2_env_verify`, `dht2_list_req_open`, `dht2_answer_seal` / `dht2_answer_open` (passed through) |
+| `DHT2_E_NOT_CAUGHT_UP` | 15 | package 5: `nodus_dht2_store_put` / `_get` / `_list` / `_sweep` / `_scan` (the call-level gate; CARRIED as a refusal's `e`, §10.4) |
+| `DHT2_E_HOLDER_FAULT` | 16 | `dht2_record_parse`, `dht2_record_check_class`, `dht2_record_check_expiry`, `dht2_record_build`, `dht2_record_placement_key`, `dht2_env_seal`, `dht2_env_decode`, `dht2_env_verify`, `dht2_list_req_open`, `dht2_answer_seal` / `dht2_answer_open` (passed through); package 5: every `nodus_dht2_store_*` call returning an int (`NODUS_DHT2_STORE_FAULT`) |
 | `DHT2_E_NOT_OWNER` | 17 | `dht2_list_req_open` (also CARRIED: the one code a LIST answer's `v` may be, §10.1) |
-| `DHT2_E_HANDLED` | 18 | — (never returned; CARRIED only as `v = [18, through]`, §10.1) |
+| `DHT2_E_HANDLED` | 18 | package 5: `nodus_dht2_store_put` (the cutoff in `nodus_dht2_put_t.through`); on the wire CARRIED only as `v = [18, through]`, §10.1 |
 | `DHT2_E_MALFORMED_REQ` | −2 | NOT a row-7 code — "a tier-2 protocol error, no signed answer" (`:79-81`): `dht2_list_payload_decode`, `dht2_list_req_open`, `dht2_req_encode`, `dht2_req_decode` |
-| `DHT2_E_ARG` | −1 | NOT a row-7 code — a NULL argument / too-small output buffer (`:82-84`): every `DHT2_*`-convention function; also `dht2_answer_seal` / `dht2_answer_open` given a payload type other than answer / receipt / refusal, and `dht2_ctl_at` with an index out of range |
+| `DHT2_E_ARG` | −1 | NOT a row-7 code — a NULL argument / too-small output buffer (`:82-84`): every `DHT2_*`-convention function; also `dht2_answer_seal` / `dht2_answer_open` given a payload type other than answer / receipt / refusal, and `dht2_ctl_at` with an index out of range; package 5: a NULL argument of `nodus_dht2_store_put` / `_get` / `_list` / `_sweep` / `_scan` / `_handover_set` / `_handover_get` (for `put` also a NULL name callback), and `_scan` with `max` 0 or > 250 |
 
 ### 2.4 Domain strings, payload types, `_id` labels
 
@@ -377,33 +393,33 @@ its class's max.
 
 | Item | Description |
 |------|-------------|
-| `typedef struct { uint64_t sequence; uint64_t validity_type; uint64_t expiry; uint8_t chain[DHT2_CHAIN_LEN]; uint8_t id[DHT2_ID_LEN]; uint64_t cls; bool del; bool has_data; const uint8_t *data; size_t data_len; bool has_prev; const uint8_t *prev; size_t prev_len; } dht2_data_t;` (`:99-113`) | The data map. `expiry` (seconds) is meaningful only when `validity_type` is 0. `data` / `prev` are zero-copy (§1.2). `prev_len` ∈ {0, 64} (row 3: 0 = first feed entry). |
-| `int dht2_data_encode(const dht2_data_t *d, uint8_t *out, size_t cap, size_t *out_len)` (`:122`) | Canonical DAG-CBOR of `d`, keys in the one order strict DAG-CBOR allows: `TTL, _id, _del, Value, _data, _prev, _chain, _class, Sequence, Validity, ValidityType` (each only when present). `out` NULL → only `*out_len`. `DHT2_OK`; `DHT2_E_BAD_ENCODING` (Sequence 0, ValidityType ∉ {0,1}, expiry beyond 9999-12-31T23:59:59Z, `_prev` length ∉ {0,64}); `DHT2_E_ARG` (NULL `d` / `out_len`, a NULL `data` / `prev` with a non-zero length, buffer too small). Does NOT check `_class` range or the row-5 matrix. |
-| `int dht2_data_decode(const uint8_t *in, size_t len, dht2_data_t *d)` (`:128`) | Strict decode (§3) + the re-encode identity check (§3.1, rows 5-6, 22). Refuses (`DHT2_E_BAD_ENCODING`): fewer than 8 or more than 11 keys, an unknown key, unsorted / duplicate keys, `TTL` ≠ 0, `Value` not empty, `_id` ≠ 64 B, `_chain` ≠ 32 B, `_prev` ∉ {0, 64} B, `_del` other than `true`, `Sequence` 0, `ValidityType` ∉ {0, 1}, ValidityType 0 with a `Validity` that does not parse, ValidityType 1 with a non-empty `Validity`, a trailing byte, a missing required key. `DHT2_E_ARG` on NULL `d` or NULL `in` with `len` ≠ 0 (header `@return` lists only OK / BAD_ENCODING). Class rules NOT applied; no signature checked. `*d` is zeroed at entry. |
-| `typedef struct { cmt_pb_public_key_t pk; uint8_t fp[DHT2_FP_LEN]; const uint8_t *sig; size_t sig_len; const uint8_t *data; size_t data_len; dht2_data_t d; uint8_t address[DHT2_HASH_LEN]; } dht2_record_t;` (`:132-141`) | A parsed record: `pk` field 7 decoded (copied); `fp` = SHA3-512(`pk.key`); `sig` field 8 and `data` field 9 point into the input; `d` = parsed field 9; `address` = H(`_id` ‖ fp). |
-| `int dht2_record_parse(const uint8_t *in, size_t len, const uint8_t local_chain[DHT2_CHAIN_LEN], const uint8_t *expect_address, dht2_record_t *rec)` (`:158`) | §4.1 up to and including the address, in its order: `len` > 262,144 → `DHT2_E_TOO_LARGE` (BEFORE any decode); envelope decode fault → `DHT2_E_BAD_ENCODING`; `data` not strict / not re-encoding → `DHT2_E_BAD_ENCODING`; `_chain` ≠ `local_chain` → `DHT2_E_BAD_CHAIN`; pubKey missing or not the ML-DSA-87 branch of exactly 2592 B → `DHT2_E_BAD_ENCODING`; address ≠ a non-NULL `expect_address` → `DHT2_E_BAD_ADDRESS`. Also `DHT2_E_HOLDER_FAULT` (the fp or address hash failed) and `DHT2_E_ARG` (NULL `rec` / `local_chain`, NULL `in` with `len` ≠ 0) — neither is in the header comment. Envelope decode follows the generated Unmarshal: fields in any order, unknown fields (incl. IPNS V1 fields 1-6) skipped by wire type, a repeated field last-one-wins. `rec` points into `in`; `*rec` is zeroed at entry. Does NOT verify the signature (§1.4). |
-| `int dht2_record_check_class(const dht2_record_t *rec)` (`:164`) | Row-5 class rules + row-15 control-list shape + the §3.2 inbox-control binding (above). `DHT2_OK`; `DHT2_E_BAD_CLASS`; also `DHT2_E_HOLDER_FAULT` (the control `_id` recompute failed) and `DHT2_E_ARG` (NULL) — not in the header comment. |
-| `int dht2_record_check_expiry(const dht2_record_t *rec, uint64_t chain_now, bool writer_named)` (`:171`) | §4.1 "expiry > holder chain time and ≤ holder chain time + class max + 3 h", class max by the writer's name status (above). ValidityType 1 where the class max is finite → `DHT2_E_TOO_LONG`; expiry ≤ `chain_now` → `DHT2_E_EXPIRED` (stricter than boxo by one second: boxo accepts eol == now, `dht2_record.c` comment on `validation.go:73`); expiry > bound → `DHT2_E_TOO_LONG`; class out of range → `DHT2_E_BAD_CLASS` (never reached after `check_class`). Also `DHT2_E_HOLDER_FAULT` (checked add overflow) and `DHT2_E_ARG` (NULL) — not in the header comment. `chain_now` is the caller's (the snapshot's chain time, §2). |
-| `int dht2_record_verify(const dht2_record_t *rec)` (`:176`) | ML-DSA-87 verify over the `data` bytes, ctx `nodus.dht.record.v1`. `DHT2_OK`; `DHT2_E_BAD_SIGNATURE` (no key, no signature, signature ≠ 4627 B, or verify fails); `DHT2_E_ARG` (NULL). |
-| `int dht2_record_canonical(const dht2_record_t *rec, uint8_t *out, size_t cap, size_t *out_len)` (`:184`) | The stored form: fields 7, 8, 9 only, in field order, each once, proto3 emission rules (`cmt_pb.h:22`), unknown fields dropped. `out` NULL → only `*out_len`. Does NOT verify the signature, but REFUSES a signature that is not exactly 4627 B (`DHT2_E_BAD_SIGNATURE`) — no canonical form for a record that could never verify. `DHT2_OK`, `DHT2_E_BAD_SIGNATURE`, `DHT2_E_ARG` (NULL, no key, buffer too small). |
-| `int dht2_record_build(const dht2_data_t *d, const uint8_t *sk, const uint8_t pk[DHT2_PUBKEY_LEN], uint8_t *out, size_t cap, size_t *out_len)` (`:193`) | Client side: encode `d`, sign it (hedged, ctx `nodus.dht.record.v1`) with `sk` (4896 B), write the CANONICAL envelope with `pk` (2592 B). `out` NULL → `*out_len` = the exact size, no signing, and `sk` may then be NULL. `DHT2_OK`; `DHT2_E_BAD_ENCODING` (`d` not encodable); `DHT2_E_TOO_LARGE` (> 262,144 B); `DHT2_E_ARG` (NULL, `cap` < size); `DHT2_E_HOLDER_FAULT` (signing failed — the first `total` bytes of `out` are then zeroed). Does not check class rules. |
-| `int dht2_record_compare(const dht2_record_t *a, const dht2_record_t *b)` (`:205`) | §4.2 order of two versions AT THE SAME ADDRESS: larger `Sequence` → later expiry (no expiry above any expiry) → larger canonical `data` bytes → larger signature bytes; "larger bytes" = Go `bytes.Compare` (first differing byte, then the shorter is smaller). A NULL side = "nothing held" and loses to a present one (both NULL → 0). > 0 `a` wins, < 0 `b` wins, 0 the same version. Does NOT verify either signature — both must have passed `dht2_record_verify`. Pure function of the two records: arrival order cannot change the winner (the A/B two-arrival vector, §9). |
-| `int dht2_record_placement_key(const dht2_record_t *rec, uint8_t out[DHT2_HASH_LEN])` (`:212`) | §2 placement key: class 4 → its `_id` (the inbox id); class 5 → SHA3-512(`nodus.dht.inbox.v1` ‖ `_chain` ‖ signer fp) (the inbox its signer owns); otherwise the record's address. `DHT2_OK`, `DHT2_E_ARG`, `DHT2_E_HOLDER_FAULT`. On an unverified record the signer fp is a claim. |
-| `int dht2_id(const char *label, const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t *params, size_t params_len, uint8_t out[DHT2_ID_LEN])` (`:220`) | §3.2: SHA3-512(label ‖ chain_id 32 B ‖ params). `label` = a `DHT2_LABEL_*` string (ASCII, no NUL hashed). `params` may be NULL when `params_len` is 0. Allocates the preimage, freed on every path. 0 / −1. |
-| `int dht2_id_feed_entry(const uint8_t topic[DHT2_HASH_LEN], uint64_t index, uint8_t out[DHT2_ID_LEN])` (`:226`) | Feed entry `_id` = SHA3-512(topic ‖ index as 8-byte big-endian) — no label, no chain (Bee `pkg/feeds/feed.go:70-71`, `sequence/sequence.go:47-51`). 0 / −1. |
-| `int dht2_id_feed_head(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t topic[DHT2_HASH_LEN], uint8_t out[DHT2_ID_LEN])` (`:230`) | SHA3-512(`nodus.dht.head.v1` ‖ chain ‖ topic) — the design rev 3+ form (§3.2 supersedes Kurultay #21 summary :139's `label ‖ topic`). 0 / −1. |
-| `int dht2_id_inbox(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t recipient_fp[DHT2_FP_LEN], uint8_t out[DHT2_ID_LEN])` (`:235`) | Inbox id = SHA3-512(`nodus.dht.inbox.v1` ‖ chain ‖ recipient fp). 0 / −1. |
-| `int dht2_id_inbox_ctl(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t recipient_fp[DHT2_FP_LEN], uint8_t out[DHT2_ID_LEN])` (`:241`) | Inbox control `_id` = SHA3-512(`nodus.dht.inbox.ctl.v1` ‖ chain ‖ recipient fp). 0 / −1. |
-| `int dht2_id_dm(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t recipient_fp[DHT2_FP_LEN], const uint8_t salt[DHT2_SALT_LEN], uint8_t out[DHT2_ID_LEN])` (`:250`) | Package 2, client side. 1:1 (dm) topic = SHA3-512(`nodus.dht.dm.v1` ‖ chain 32 ‖ recipient fp 64 ‖ salt 32) — via `dht2_id` with params = recipient fp ‖ salt (`dht2_record.c:160-173`). 0 / −1 (NULL `recipient_fp` / `salt`, or `dht2_id`'s −1). |
-| `int dht2_id_group_head(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t group_id[DHT2_GROUP_ID_LEN], uint8_t out[DHT2_ID_LEN])` (`:257`) | Package 2, client side. Group head `_id` = SHA3-512(`nodus.dht.group.head.v1` ‖ chain 32 ‖ group id 32). No key version. 0 / −1. |
-| `int dht2_id_group_record(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t group_id[DHT2_GROUP_ID_LEN], uint64_t key_version, uint8_t out[DHT2_ID_LEN])` (`:263`) | Package 2, client side. Group record `_id` = SHA3-512(`nodus.dht.group.record.v1` ‖ chain 32 ‖ group id 32 ‖ key version as 8-byte unsigned big-endian) (`dht2_record.c:185-210`). 0 / −1 (NULL `group_id`, or `dht2_id`'s −1). |
-| `int dht2_id_group_keys(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t group_id[DHT2_GROUP_ID_LEN], uint64_t key_version, uint8_t out[DHT2_ID_LEN])` (`:269`) | Package 2, client side. Group key-packet `_id` = SHA3-512(`nodus.dht.group.keys.v1` ‖ chain 32 ‖ group id 32 ‖ key version u64 BE, 8 B). 0 / −1. |
-| `int dht2_id_group_feed(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t group_id[DHT2_GROUP_ID_LEN], uint8_t out[DHT2_ID_LEN])` (`:275`) | Package 2, client side. Group feed topic = SHA3-512(`nodus.dht.group.feed.v1` ‖ chain 32 ‖ group id 32). No key version. 0 / −1. |
-| `int dht2_address(const uint8_t id[DHT2_ID_LEN], const uint8_t owner_fp[DHT2_FP_LEN], uint8_t out[DHT2_HASH_LEN])` (`:280`) | Address = SHA3-512(`_id` ‖ owner fp), in that order (Bee `soc.go:199-207`). 0 / −1. |
-| `int dht2_fp(const uint8_t pk[DHT2_PUBKEY_LEN], uint8_t out[DHT2_FP_LEN])` (`:286`) | Owner fp = SHA3-512(raw 2592-byte ML-DSA-87 key) — the tree's fingerprint (`nodus/src/crypto/nodus_sign.c:392`). 0 / −1. |
-| `int dht2_bytes_compare(const uint8_t *a, size_t alen, const uint8_t *b, size_t blen)` (`:289`) | Go `bytes.Compare`: −1 / 0 / 1. |
+| `typedef struct { uint64_t sequence; uint64_t validity_type; uint64_t expiry; uint8_t chain[DHT2_CHAIN_LEN]; uint8_t id[DHT2_ID_LEN]; uint64_t cls; bool del; bool has_data; const uint8_t *data; size_t data_len; bool has_prev; const uint8_t *prev; size_t prev_len; } dht2_data_t;` (`:104-118`) | The data map. `expiry` (seconds) is meaningful only when `validity_type` is 0 — except the decode-only MISMATCH marker `UINT64_MAX` below. `data` / `prev` are zero-copy (§1.2). `prev_len` ∈ {0, 64} (row 3: 0 = first feed entry). |
+| `int dht2_data_encode(const dht2_data_t *d, uint8_t *out, size_t cap, size_t *out_len)` (`:127`) | Canonical DAG-CBOR of `d`, keys in the one order strict DAG-CBOR allows: `TTL, _id, _del, Value, _data, _prev, _chain, _class, Sequence, Validity, ValidityType` (each only when present). `out` NULL → only `*out_len`. `DHT2_OK`; `DHT2_E_BAD_ENCODING` (Sequence 0, ValidityType ∉ {0,1}, expiry beyond 9999-12-31T23:59:59Z, `_prev` length ∉ {0,64}, and — since package 5 — `expiry` = the MISMATCH marker `UINT64_MAX`, so a decoded disagreement is never re-emitted, `dht2_record.c:315-317`); `DHT2_E_ARG` (NULL `d` / `out_len`, a NULL `data` / `prev` with a non-zero length, buffer too small). Does NOT check `_class` range or the row-5 matrix. |
+| `int dht2_data_decode(const uint8_t *in, size_t len, dht2_data_t *d)` (`:133`) | Strict decode (§3) + the re-encode identity check (§3.1, rows 5-6, 22). Refuses (`DHT2_E_BAD_ENCODING`): fewer than 8 or more than 11 keys, an unknown key, unsorted / duplicate keys, `TTL` ≠ 0, `Value` not empty, `_id` ≠ 64 B, `_chain` ≠ 32 B, `_prev` ∉ {0, 64} B, `_del` other than `true`, `Sequence` 0, `ValidityType` ∉ {0, 1}, ValidityType 0 with a NON-EMPTY `Validity` that does not parse, a trailing byte, a missing required key. **Since package 5 a `ValidityType` ⇔ `Validity` disagreement (type 0 with an EMPTY `Validity`, type 1 with a NON-EMPTY one) is NOT refused here**: it returns `DHT2_OK` with `d->expiry` = the private marker `VALIDITY_MISMATCH` = `UINT64_MAX` (`dht2_record.c:237`, `:440-453`; above `DHT2_VALIDITY_MAX_SECONDS`, so no real `Validity` produces it), the re-encode identity check still run over the raw `Validity` bytes (`:455-461`); `dht2_record_check_class` then refuses it as `DHT2_E_BAD_CLASS`. A caller that uses decode alone must not read `expiry` as a time without running the class check. `DHT2_E_ARG` on NULL `d` or NULL `in` with `len` ≠ 0 (header `@return` lists only OK / BAD_ENCODING). Class rules NOT applied; no signature checked. `*d` is zeroed at entry. |
+| `typedef struct { cmt_pb_public_key_t pk; uint8_t fp[DHT2_FP_LEN]; const uint8_t *sig; size_t sig_len; const uint8_t *data; size_t data_len; dht2_data_t d; uint8_t address[DHT2_HASH_LEN]; } dht2_record_t;` (`:137-146`) | A parsed record: `pk` field 7 decoded (copied); `fp` = SHA3-512(`pk.key`); `sig` field 8 and `data` field 9 point into the input; `d` = parsed field 9; `address` = H(`_id` ‖ fp). |
+| `int dht2_record_parse(const uint8_t *in, size_t len, const uint8_t local_chain[DHT2_CHAIN_LEN], const uint8_t *expect_address, dht2_record_t *rec)` (`:163`) | §4.1 up to and including the address, in its order: `len` > 262,144 → `DHT2_E_TOO_LARGE` (BEFORE any decode); envelope decode fault → `DHT2_E_BAD_ENCODING`; `data` not strict / not re-encoding → `DHT2_E_BAD_ENCODING`; `_chain` ≠ `local_chain` → `DHT2_E_BAD_CHAIN`; pubKey missing or not the ML-DSA-87 branch of exactly 2592 B → `DHT2_E_BAD_ENCODING`; address ≠ a non-NULL `expect_address` → `DHT2_E_BAD_ADDRESS`. Also `DHT2_E_HOLDER_FAULT` (the fp or address hash failed) and `DHT2_E_ARG` (NULL `rec` / `local_chain`, NULL `in` with `len` ≠ 0) — neither is in the header comment. Envelope decode follows the generated Unmarshal: fields in any order, unknown fields (incl. IPNS V1 fields 1-6) skipped by wire type, a repeated field last-one-wins. `rec` points into `in`; `*rec` is zeroed at entry. Does NOT verify the signature (§1.4). |
+| `int dht2_record_check_class(const dht2_record_t *rec)` (`:169`) | Row-5 class rules + row-15 control-list shape + the §3.2 inbox-control binding (above) + — since package 5 — the §4.1 `ValidityType` ⇔ `Validity` rule: a record `dht2_data_decode` marked as a disagreement (`expiry` = `UINT64_MAX`) is `DHT2_E_BAD_CLASS`, checked right after the `_class` range (`dht2_record.c:594-596`), so a bad `_chain` (3, from `dht2_record_parse`) still comes first as §4.1 orders it. `DHT2_OK`; `DHT2_E_BAD_CLASS`; also `DHT2_E_HOLDER_FAULT` (the control `_id` recompute failed) and `DHT2_E_ARG` (NULL) — not in the header comment. |
+| `int dht2_record_check_expiry(const dht2_record_t *rec, uint64_t chain_now, bool writer_named)` (`:176`) | §4.1 "expiry > holder chain time and ≤ holder chain time + class max + 3 h", class max by the writer's name status (above). ValidityType 1 where the class max is finite → `DHT2_E_TOO_LONG`; expiry ≤ `chain_now` → `DHT2_E_EXPIRED` (stricter than boxo by one second: boxo accepts eol == now, `dht2_record.c` comment on `validation.go:73`); expiry > bound → `DHT2_E_TOO_LONG`; class out of range → `DHT2_E_BAD_CLASS` (never reached after `check_class`). Also `DHT2_E_HOLDER_FAULT` (checked add overflow) and `DHT2_E_ARG` (NULL) — not in the header comment. `chain_now` is the caller's (the snapshot's chain time, §2). |
+| `int dht2_record_verify(const dht2_record_t *rec)` (`:181`) | ML-DSA-87 verify over the `data` bytes, ctx `nodus.dht.record.v1`. `DHT2_OK`; `DHT2_E_BAD_SIGNATURE` (no key, no signature, signature ≠ 4627 B, or verify fails); `DHT2_E_ARG` (NULL). |
+| `int dht2_record_canonical(const dht2_record_t *rec, uint8_t *out, size_t cap, size_t *out_len)` (`:189`) | The stored form: fields 7, 8, 9 only, in field order, each once, proto3 emission rules (`cmt_pb.h:22`), unknown fields dropped. `out` NULL → only `*out_len`. Does NOT verify the signature, but REFUSES a signature that is not exactly 4627 B (`DHT2_E_BAD_SIGNATURE`) — no canonical form for a record that could never verify. `DHT2_OK`, `DHT2_E_BAD_SIGNATURE`, `DHT2_E_ARG` (NULL, no key, buffer too small). |
+| `int dht2_record_build(const dht2_data_t *d, const uint8_t *sk, const uint8_t pk[DHT2_PUBKEY_LEN], uint8_t *out, size_t cap, size_t *out_len)` (`:198`) | Client side: encode `d`, sign it (hedged, ctx `nodus.dht.record.v1`) with `sk` (4896 B), write the CANONICAL envelope with `pk` (2592 B). `out` NULL → `*out_len` = the exact size, no signing, and `sk` may then be NULL. `DHT2_OK`; `DHT2_E_BAD_ENCODING` (`d` not encodable); `DHT2_E_TOO_LARGE` (> 262,144 B); `DHT2_E_ARG` (NULL, `cap` < size); `DHT2_E_HOLDER_FAULT` (signing failed — the first `total` bytes of `out` are then zeroed). Does not check class rules. |
+| `int dht2_record_compare(const dht2_record_t *a, const dht2_record_t *b)` (`:210`) | §4.2 order of two versions AT THE SAME ADDRESS: larger `Sequence` → later expiry (no expiry above any expiry) → larger canonical `data` bytes → larger signature bytes; "larger bytes" = Go `bytes.Compare` (first differing byte, then the shorter is smaller). A NULL side = "nothing held" and loses to a present one (both NULL → 0). > 0 `a` wins, < 0 `b` wins, 0 the same version. Does NOT verify either signature — both must have passed `dht2_record_verify`. Pure function of the two records: arrival order cannot change the winner (the A/B two-arrival vector, §9). |
+| `int dht2_record_placement_key(const dht2_record_t *rec, uint8_t out[DHT2_HASH_LEN])` (`:217`) | §2 placement key: class 4 → its `_id` (the inbox id); class 5 → SHA3-512(`nodus.dht.inbox.v1` ‖ `_chain` ‖ signer fp) (the inbox its signer owns); otherwise the record's address. `DHT2_OK`, `DHT2_E_ARG`, `DHT2_E_HOLDER_FAULT`. On an unverified record the signer fp is a claim. |
+| `int dht2_id(const char *label, const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t *params, size_t params_len, uint8_t out[DHT2_ID_LEN])` (`:225`) | §3.2: SHA3-512(label ‖ chain_id 32 B ‖ params). `label` = a `DHT2_LABEL_*` string (ASCII, no NUL hashed). `params` may be NULL when `params_len` is 0. Allocates the preimage, freed on every path. 0 / −1. |
+| `int dht2_id_feed_entry(const uint8_t topic[DHT2_HASH_LEN], uint64_t index, uint8_t out[DHT2_ID_LEN])` (`:231`) | Feed entry `_id` = SHA3-512(topic ‖ index as 8-byte big-endian) — no label, no chain (Bee `pkg/feeds/feed.go:70-71`, `sequence/sequence.go:47-51`). 0 / −1. |
+| `int dht2_id_feed_head(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t topic[DHT2_HASH_LEN], uint8_t out[DHT2_ID_LEN])` (`:235`) | SHA3-512(`nodus.dht.head.v1` ‖ chain ‖ topic) — the design rev 3+ form (§3.2 supersedes Kurultay #21 summary :139's `label ‖ topic`). 0 / −1. |
+| `int dht2_id_inbox(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t recipient_fp[DHT2_FP_LEN], uint8_t out[DHT2_ID_LEN])` (`:240`) | Inbox id = SHA3-512(`nodus.dht.inbox.v1` ‖ chain ‖ recipient fp). 0 / −1. |
+| `int dht2_id_inbox_ctl(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t recipient_fp[DHT2_FP_LEN], uint8_t out[DHT2_ID_LEN])` (`:246`) | Inbox control `_id` = SHA3-512(`nodus.dht.inbox.ctl.v1` ‖ chain ‖ recipient fp). 0 / −1. |
+| `int dht2_id_dm(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t recipient_fp[DHT2_FP_LEN], const uint8_t salt[DHT2_SALT_LEN], uint8_t out[DHT2_ID_LEN])` (`:255`) | Package 2, client side. 1:1 (dm) topic = SHA3-512(`nodus.dht.dm.v1` ‖ chain 32 ‖ recipient fp 64 ‖ salt 32) — via `dht2_id` with params = recipient fp ‖ salt (`dht2_record.c:160-173`). 0 / −1 (NULL `recipient_fp` / `salt`, or `dht2_id`'s −1). |
+| `int dht2_id_group_head(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t group_id[DHT2_GROUP_ID_LEN], uint8_t out[DHT2_ID_LEN])` (`:262`) | Package 2, client side. Group head `_id` = SHA3-512(`nodus.dht.group.head.v1` ‖ chain 32 ‖ group id 32). No key version. 0 / −1. |
+| `int dht2_id_group_record(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t group_id[DHT2_GROUP_ID_LEN], uint64_t key_version, uint8_t out[DHT2_ID_LEN])` (`:268`) | Package 2, client side. Group record `_id` = SHA3-512(`nodus.dht.group.record.v1` ‖ chain 32 ‖ group id 32 ‖ key version as 8-byte unsigned big-endian) (`dht2_record.c:185-210`). 0 / −1 (NULL `group_id`, or `dht2_id`'s −1). |
+| `int dht2_id_group_keys(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t group_id[DHT2_GROUP_ID_LEN], uint64_t key_version, uint8_t out[DHT2_ID_LEN])` (`:274`) | Package 2, client side. Group key-packet `_id` = SHA3-512(`nodus.dht.group.keys.v1` ‖ chain 32 ‖ group id 32 ‖ key version u64 BE, 8 B). 0 / −1. |
+| `int dht2_id_group_feed(const uint8_t chain[DHT2_CHAIN_LEN], const uint8_t group_id[DHT2_GROUP_ID_LEN], uint8_t out[DHT2_ID_LEN])` (`:280`) | Package 2, client side. Group feed topic = SHA3-512(`nodus.dht.group.feed.v1` ‖ chain 32 ‖ group id 32). No key version. 0 / −1. |
+| `int dht2_address(const uint8_t id[DHT2_ID_LEN], const uint8_t owner_fp[DHT2_FP_LEN], uint8_t out[DHT2_HASH_LEN])` (`:285`) | Address = SHA3-512(`_id` ‖ owner fp), in that order (Bee `soc.go:199-207`). 0 / −1. |
+| `int dht2_fp(const uint8_t pk[DHT2_PUBKEY_LEN], uint8_t out[DHT2_FP_LEN])` (`:291`) | Owner fp = SHA3-512(raw 2592-byte ML-DSA-87 key) — the tree's fingerprint (`nodus/src/crypto/nodus_sign.c:392`). 0 / −1. |
+| `int dht2_bytes_compare(const uint8_t *a, size_t alen, const uint8_t *b, size_t blen)` (`:294`) | Go `bytes.Compare`: −1 / 0 / 1. |
 
-**The five typed `_id` helpers** (`dht2_record.h:245-247`): their preimages
+**The five typed `_id` helpers** (`dht2_record.h:250-252`): their preimages
 are fixed by the operator's decision `2026-10-23-dht-v2-id-param-bytes.md`
 — dm salt 32 B, group id 32 B, group key version 8 B unsigned big-endian
 (the Amendment replaced a first answer of 4 B, because today's Connect group
@@ -414,15 +430,22 @@ never see the params (design §13 row 5). A later change of any of them is
 a new label plus a migration (same decision, "Consequences").
 
 **Readings this file makes where the design names no code**
-(`dht2_record.h:42-61` — labelled readings reported to the ORCHESTRATOR,
+(`dht2_record.h:42-66` — labelled readings reported to the ORCHESTRATOR,
 not design facts): class-independent byte-form faults → `bad-encoding`
-(2); per-class faults (incl. `_class` ∉ 1…5, the feed-head 8-B rule, a
-malformed row-15 list, the inbox-control binding) → `bad-class` (6);
+(2), incl. a `Validity` text that is not the 20-byte form; per-class faults
+(incl. `_class` ∉ 1…5, the feed-head 8-B rule, a malformed row-15 list, the
+inbox-control binding, and since package 5 a `ValidityType` ⇔ `Validity`
+disagreement — §4.1 lists it among the class rules) → `bad-class` (6);
 ValidityType 1 where the class max is finite → `too-long` (8); a NAMED
 writer's class 1 / 3 / 5 record may carry a finite expiry with no upper
 bound (row 5 "no expiry allowed (ValidityType 1) with a name" read as
 "the class max is unbounded"); an empty `_data` is valid for classes 1, 2,
-4; a ValidityType ⇔ Validity mismatch is `bad-encoding`, not `bad-class`.
+4; a ValidityType ⇔ Validity mismatch is `bad-class` (6), not
+`bad-encoding` — decode lets it through (the re-encode identity check still
+covers it) and `dht2_record_check_class` refuses it, so §4.1's order holds
+(chain 3 before it). Until package 5 this reading was the opposite (2, in
+decode), which answered 2 where §4.1 requires 3 for a record with both
+faults.
 
 ---
 
@@ -538,7 +561,7 @@ Named in the headers / code but NOT in row 21's list:
   XOR(sha256(key1), sha256(key2)); here both sides are already SHA3-512
   outputs (`dht2_place.h:10-15`).
 - `expiry == chain time` is `expired` (boxo accepts eol == now) — design
-  §4.1 "expiry > holder chain time" (`dht2_record.c:578-581`,
+  §4.1 "expiry > holder chain time" (`dht2_record.c:670-676`,
   `dht2_record_check_expiry`).
 
 ---
@@ -548,14 +571,19 @@ Named in the headers / code but NOT in row 21's list:
 ### 9.1 `test_dht2_codec` (package 1)
 
 `nodus/tests/test_dht2_codec.c` (ctest `test_dht2_codec`,
-`nodus/CMakeLists.txt:2043-2049`, linked `nodus dsa nodus crypto`). Twelve
-sections run from `main` (`test_dht2_codec.c:1831-1842`):
+`nodus/CMakeLists.txt:2048-2054`, linked `nodus dsa nodus crypto`). Twelve
+sections run from `main` (`test_dht2_codec.c:1849-1860`):
 `test_strict_decode`, `test_class_kats`, `test_preimages`, `test_envelope`,
 `test_matrix`, `test_class_max`, `test_validity`, `test_order`,
 `test_placement`, `test_envelopes_and_list`, `test_reader_shortest`,
-`test_hardening`. 194 source lines match `CHECK(`, the macro's own
-`#define` (`:107`) included; 429 checks is the
-ORCHESTRATOR's run count, not re-run for this reference.
+`test_hardening`. 197 source lines match `CHECK(`, the macro's own
+`#define` (`:107`) included; 433 passed / 0 failed is the ORCHESTRATOR's
+run before the package-5 rebase (at `2f0478bcf`), not re-run for this
+reference. Since package 5 `test_strict_decode` expects the two
+`ValidityType` ⇔ `Validity` variants (`V_VT1_TEXT`, `V_VT0_EMPTY`) to DECODE
+(`DHT2_OK`), then checks `dht2_record_check_class` returns
+`DHT2_E_BAD_CLASS` and `dht2_data_encode` refuses the decoded struct with
+`DHT2_E_BAD_ENCODING` (`test_dht2_codec.c:376-405`).
 
 - **Proves** (file header `:8-55`): every class's data map encodes to the
   exact pinned bytes in the canonical key order; a built record parses,
@@ -593,7 +621,7 @@ ORCHESTRATOR's run count, not re-run for this reference.
 ### 9.2 `test_dht2_msg` (package 2)
 
 `nodus/tests/test_dht2_msg.c` (ctest `test_dht2_msg`,
-`nodus/CMakeLists.txt:2060-2066`, linked `nodus dsa nodus crypto`). Ten
+`nodus/CMakeLists.txt:2065-2071`, linked `nodus dsa nodus crypto`). Ten
 sections run from `main` (`test_dht2_msg.c:1999-2008`):
 `test_cbor_additions`, `test_requests`, `test_answers`, `test_list`,
 `test_refusal`, `test_seal_and_sizes`, `test_pull`, `test_want`,
@@ -651,7 +679,7 @@ build, not a run.
 ### 9.3 `test_dht2_ipc` (package 4)
 
 `nodus/tests/test_dht2_ipc.c` (ctest `test_dht2_ipc`,
-`nodus/CMakeLists.txt:2051-2058`, linked `nodus dsa nodus`). 23 cases, run
+`nodus/CMakeLists.txt:2056-2063`, linked `nodus dsa nodus`). 23 cases, run
 from `main` (`test_dht2_ipc.c:1164-1187`): nine against the REAL witness
 listener (`nodus_witness_ipc_*`) with a raw peer and test handlers —
 `test_snap`, `test_sets`, `test_sets_max`, `test_name`, `test_unserved`,
@@ -704,7 +732,74 @@ two of the header's frame-bound `_Static_assert`s (`:110-113`). The ORCHESTRATOR
   self-consistent, not an independent oracle; (3) "no further request"
   checks are absences after a fixed number of poll rounds, each backed by a
   positive check in the same case; (4) time is whatever the test passes —
-  it does not prove the package-5 caller passes a monotonic clock.
+  it does not prove the later caller (package 6) passes a monotonic clock.
+
+### 9.4 `test_dht2_store` (package 5)
+
+`nodus/tests/test_dht2_store.c` (ctest `test_dht2_store`,
+`nodus/CMakeLists.txt:2073-2080`, linked `nodus dsa nodus crypto`). Eleven
+sections run from `main` (`test_dht2_store.c:1772-1782`): `test_codes`,
+`test_select`, `test_quota`, `test_inbox`, `test_expiry`, `test_index`,
+`test_faults`, `test_gate`, `test_mismatch`, `test_memo`,
+`test_select_pool` (defined `:413-1729`). 251 source lines match `CHECK(`,
+the macro's own `#define` (`:124`) included. The ORCHESTRATOR's runs before
+the rebase, at `2f0478bcf`: `test_dht2_store` 500 passed / 0 failed, three
+runs; build 0 warnings; `test_dht2_codec` 433 / 0, `test_dht2_msg` 335 / 0,
+`test_dht2_ipc` 23 / 0 — counts from those runs, not re-run for this
+reference. (`test_memo`, despite its name, asserts the opposite of a holder
+memo — e.g. "and nothing remembers v1: the holder follows the selected
+record", "control expired: it no longer applies (no memo)", and the
+v2-before-v1 case "E is gone on C and still held on D".)
+
+- **Proves** (file header `:9-66`): `put` answers the row-7 code of the
+  FIRST failing check in §4.1's order — no snapshot / no sets 15; size 1;
+  undecodable 2; chain 3; expected address 4; not-holder 5 (before class
+  rules); class 6 (before expiry and signature); the name fault 16 (before
+  expiry); expired 7 / too-long 8 by the writer's name status, edges exact;
+  signature 9; the name callback is asked exactly once per admission that
+  reaches it and a FAULT is never "no name"; Select (an equal write — also one
+  with an unknown field the canonical form drops — acknowledged again, the
+  stored bytes canonical; a losing write returns the winner's hash, stores
+  nothing and costs 0 even with the quota full; A / B in opposite orders end
+  with the same bytes); quota new − old at the exact limit, a tombstone
+  refunds, the node pools refuse with 13 and are independent; inbox pools 80
+  / 20 (11 when full), no second slot on update, pool move on gaining a name;
+  a control record only from the recipient (6 otherwise), its HANDLED /
+  DENIED drops free slots at once, then DENIED → 12 and HANDLED →
+  `[18, through]`, a Sequence above the cutoff admitted again; LIST pages
+  (ascending fp, exclusive cursor, ≤ 16, `complete`, `r.v`, the control hash,
+  no expired entry); get never serves past expiry; sweep at expiry + 10,799 s
+  nothing, + 10,800 s gone, a no-expiry record never swept; re-indexing,
+  scan ≤ 250 from `s`, empty interval → top, equal / losing writes do not
+  move the counter, top / g / the hand-over flag persist across reopen and
+  the flag survives replacement; every call 15 in block sync or with an
+  unrepresentable tip time, 16 for another chain (and open refuses that
+  store); a failed bind is 16, never "not held"; an index above INT64_MAX is
+  never handed out, a counter behind the records refuses open;
+  ValidityType ⇔ Validity is 6 after the chain check (3); admission follows
+  the SELECTED live control record only; a losing and a quota-refused control
+  record leave entries, counter and bytes unchanged; v2 (writer unlisted)
+  before v1 keeps the entry on that store (documented, accepted); a control
+  record that frees space is accepted at a full pool (one that frees nothing
+  is not); an expired held row is replaced by a fresh lower Sequence; a
+  tombstone is never refused by the pool of a writer who gained a name; a
+  SQLite fault is 16 on every call.
+- **Requires** (`:67-77`): a default build — no compile flags, no
+  environment variables, no network, no clock. Fixed-seed keys
+  (`qgp_dsa87_keypair_derand`), hedged signing, so no signature byte is
+  pinned; chain time injected (`T0` = 1792368000, 2026-10-19T00:00:00Z,
+  `:130`). The one random value is the store generation `g`, only compared
+  with itself across a reopen. Safe under `ctest -j` (own `mkdtemp` dir).
+- **Leaves behind** (`:78-80`): nothing on success; a crash mid-run leaves
+  `/tmp/test_dht2_store_XXXXXX`.
+- **Can lie** (`:82-97`): (1) the context is injected — the real
+  `nodus_dht2_wview` answers are not exercised, so a mis-mapping of
+  PENDING / UNAVAILABLE name answers in the later serving layer is not
+  covered; (2) the holder sets are tiny (3 members; 5 for the not-holder
+  case); (3) the forced SQLite faults come through the store's own handle
+  (`PRAGMA query_only`, `DROP TABLE`), not a real I/O error mid-scan; (4) the
+  3 h slack and the class maxima are constants written by the code's author;
+  (5) nothing runs concurrently.
 
 ---
 
@@ -873,8 +968,12 @@ the witness side — `nodus_witness_dht_snap_t` / `_sets_t` / `_name_t`,
 `messenger/docs/functions/ledger.md` §19; the narrative is
 `nodus/docs/ARCHITECTURE.md` §10 "The `ipc_dht` kind (DHT v2 package 4)".
 
-**NO CALLER YET** (`nodus_dht2_wview.h:39-41`): package 5 wires it into
-`nodus-storage`; today only `nodus/tests/test_dht2_ipc.c` calls it.
+**NO CALLER YET** (`nodus_dht2_wview.h:39-40` still says "package 5 wires
+this into nodus-storage" — that did not happen): today only
+`nodus/tests/test_dht2_ipc.c` calls it. Package 5's store (§12) takes an
+injected `nodus_dht2_ctx_t` that "the serving layer fills … from
+nodus_dht2_wview_snap / _sets / _name" (`nodus_dht2_store.h:133-137`) —
+package 6.
 
 **Time.** Nothing here reads a clock. Every call that can act on time takes
 `now_ms`, a caller-supplied MONOTONIC millisecond count (the caller's own
@@ -916,6 +1015,110 @@ answer with no such request outstanding, or a frame longer than
 unreported fault, and schedules the redial after the current backoff
 (`:380-393`); the name cache survives a reconnect.
 
-**Not here:** the callers (package 5: holder store + admission, which turns
-"no snapshot" into `not-caught-up` and NAME_FAULT into `holder-fault`);
-anything that writes to the chain. Test: §9.3.
+**Not here:** the callers (package 6, the serving layer, filling the
+package-5 context: "no snapshot" / no sets → `not-caught-up`, NAME_FAULT →
+the callback's `NODUS_DHT2_NAME_FAULT` → `holder-fault`; how PENDING /
+UNAVAILABLE map is package 6's and untested — §9.4 "Can lie" 1); anything
+that writes to the chain. Test: §9.3.
+
+---
+
+## 12. The holder store and admission (`nodus/src/dht2/nodus_dht2_store.h`) — package 5
+
+Design rev 5 §3.1 "Stored form", §3.3, §4.1, §4.2, §4.5 (i) / (v), §5, §6, §9
+D3 / D4 / D6, §13 rows 5-8, 12, 15, 16, 18 (`nodus_dht2_store.h:4-9`);
+decisions `2026-10-23-dht-v2-k23-three-items.md` and
+`2026-10-24-dht-v2-handled-client-rule.md` (header above; both LOCAL-only).
+Narrative: `nodus/docs/ARCHITECTURE.md` "DHT v2 package 5". Linux-only
+library list (`nodus/CMakeLists.txt:708-712`); links SQLite.
+
+**NO CALLER YET** (`:69-72`): nothing in `nodus/tools/` or any running loop;
+package 6 is the serving layer, package 7 the pull exchange. The pull
+exchange itself is not here — only its data (index scan, generation,
+hand-over flag).
+
+**Contract** (`:11-67`): a SQLite store of canonical envelopes keyed by
+address and the ONE admission path every ingress uses. Nothing reads a
+clock (chain time = the injected snapshot's `tip_time`); every query that
+decides what is stored or returned has an ORDER BY on a total key; a SQLite
+or allocation error is code 16 (`NODUS_DHT2_STORE_FAULT` for the non-put
+calls) — never absence, never "no change". Single connection, no lock: the
+test header calls it "single-writer by construction" (`test_dht2_store.c:96-97`);
+the header says nothing about threads.
+
+**Control records follow rev 5 literally** (`:43-54`): only the control
+record that WINS Select is stored and applied (its HANDLED and DENIED drops,
+credited before the quota checks in the same transaction); a losing or
+quota-refused one changes nothing (row 16); an inbox entry's admission looks
+only at the selected, live control record. No holder memory of dropped
+entries — keeping a HANDLED request from coming back is the CLIENT rule of
+`2026-10-24-dht-v2-handled-client-rule.md` (the owner keeps a HANDLED writer
+listed, with its cutoff, ≤ 7 d + 3 h). A holder that receives a newer record
+without the writer BEFORE the older one keeps the entry.
+
+**Deferred on purpose** (`:38-41`): the |S(H)| ≥ 2 write precondition (the
+serving layer, package 6); the per-put SUM cost and the per-inbox tombstone
+row bound (measure first); a refusal that leaves an older version behind
+(package 7's cursor rule).
+
+### 12.1 Constants and types
+
+| Item | Description |
+|------|-------------|
+| `NODUS_DHT2_POOL_NAMED` `80u`, `NODUS_DHT2_POOL_UNNAMED` `20u` (`:95-96`) | Row 8: writers per inbox pool (100 per inbox). |
+| `NODUS_DHT2_QUOTA_UNNAMED` `(4ull * 1024ull * 1024ull)`, `NODUS_DHT2_QUOTA_NAMED` `(64ull * 1024ull * 1024ull)` (`:99-100`) | §6: per identity per holder, bytes of the whole canonical envelope. |
+| `NODUS_DHT2_NODE_POOL_DEFAULT` `10000000000ull` (`:102`) | §6 "10 GB each by default", read as decimal 10^10 bytes (the header's reading). |
+| `NODUS_DHT2_LIST_PAGE_BYTES` `(2u * 1024u * 1024u)` (`:105`) | Row 11: a LIST page carries ≤ 2 MiB of envelopes. |
+| `NODUS_DHT2_GET_HELD` `0`, `NODUS_DHT2_GET_NOT_HELD` `1`, `NODUS_DHT2_STORE_FAULT` `DHT2_E_HOLDER_FAULT` (16) (`:108-110`) | Results of get / list / scan / sweep / open that are not a row-7 code. |
+| `typedef struct { uint64_t ident_unnamed; uint64_t ident_named; uint64_t pool_unnamed; uint64_t pool_named; } nodus_dht2_limits_t;` (`:113-118`) | §6 limits, passed per call (so an operator setting can change at run time). |
+| `void nodus_dht2_limits_default(nodus_dht2_limits_t *out)` (`:121`) | Fills the defaults above (4 MiB / 64 MiB, 10^10 / 10^10). NULL `out` is a no-op (`nodus_dht2_store.c:241-250`). |
+| `typedef enum { NODUS_DHT2_NAME_UNNAMED = 0, NODUS_DHT2_NAME_NAMED, NODUS_DHT2_NAME_FAULT } nodus_dht2_name_t;` (`:124-128`) | A writer's name status as admission needs it. FAULT = the witness answered `{err}` → code 16. |
+| `typedef nodus_dht2_name_t (*nodus_dht2_name_fn)(void *user, const uint8_t fp[DHT2_FP_LEN]);` (`:130-131`) | The name callback. |
+| `typedef struct { const nodus_witness_dht_snap_t *snap; bool have_sets; const uint8_t (*s0)[DHT2_FP_LEN]; size_t n0; const uint8_t (*s1)[DHT2_FP_LEN]; size_t n1; uint8_t self_fp[DHT2_FP_LEN]; nodus_dht2_name_fn name; void *name_user; nodus_dht2_limits_t limits; } nodus_dht2_ctx_t;` (`:138-152`) | The injected world; pointers borrowed for the call. `snap` NULL = no fresh snapshot. `s0` / `s1` = S(H) / S(H − E) for the snapshot's `e` (both NULL with counts 0 is a valid empty set); `have_sets` false = the sets for this `e` are not available. `self_fp` = this node's fp (holder check, LIST `n`). `name` required by `put`. `nodus_witness_dht_snap_t` (`nodus_witness_ipc.h:227-236`): `chain_id[32]`, `height`, `tip_time`, `consensus_up`, `epoch_start` — ledger.md §19. |
+| `typedef struct nodus_dht2_store nodus_dht2_store_t;` (`:154`) | Opaque: the SQLite handle, the generation, the chain id recorded at create (`nodus_dht2_store.c:33-37`). |
+| `typedef enum { NODUS_DHT2_PUT_STORED = 1, NODUS_DHT2_PUT_EQUAL, NODUS_DHT2_PUT_LOST } nodus_dht2_put_outcome_t;` (`:178-182`) | Stored; equal to the held version (acknowledged); the held version wins (its hash, cost 0). |
+| `typedef struct { nodus_dht2_put_outcome_t outcome; uint8_t hash[DHT2_HASH_LEN]; uint64_t through; } nodus_dht2_put_t;` (`:184-189`) | `outcome` valid when `put` returned 0; `hash` = SHA3-512 of the canonical envelope stored / held; `through` = the HANDLED cutoff with code 18. On any non-zero code the struct is zeroed except `through` for 18 (`nodus_dht2_store.c:977-983`). |
+| `typedef struct { uint64_t index; uint8_t address[DHT2_HASH_LEN]; uint8_t hash[DHT2_HASH_LEN]; uint8_t placement[DHT2_HASH_LEN]; } nodus_dht2_scan_entry_t;` (`:243-248`) | One insertion-index scan entry: index, address, SHA3-512 of the canonical envelope, placement-key hint — the `p_offer` entry's `{a, h, p}` plus its index. |
+
+### 12.2 The gate (every put / get / list / sweep / scan)
+
+`gate` (`nodus_dht2_store.c:395-408`): `ctx` NULL, `snap` NULL or
+`snap->consensus_up` false → 15 (`DHT2_E_NOT_CAUGHT_UP`); `snap->tip_time` >
+`INT64_MAX − (DHT2_SEC_7D + DHT2_SEC_SLACK_3H)` → 15 (every time threshold
+must fit SQLite's int64); `snap->chain_id` ≠ the chain recorded at create →
+16 (G8). The hand-over calls and `top` / `generation` do not run the gate.
+(For `put`, a NULL `ctx` is caught earlier as `DHT2_E_ARG`.)
+
+### 12.3 Functions
+
+| Item | Description |
+|------|-------------|
+| `nodus_dht2_store_t *nodus_dht2_store_open(const char *path, const uint8_t chain[DHT2_CHAIN_LEN])` (`:162-163`) | Open, creating when absent, the store at `path` for `chain`, inside one `BEGIN IMMEDIATE` (`nodus_dht2_store.c:252-353`). The FIRST creation (no meta and no record rows) records the chain id, draws the 64-bit generation `g` from `qgp_platform_random` (node-local, equality-compared only, never a consensus input — `:298-301`) and sets the counter to 0 (the first index handed out is 1, row 12). NULL on: NULL arguments, allocation / SQLite failure, no randomness, a store of another chain, incomplete meta, records without a counter, a counter above `INT64_MAX` or below the highest stored index (never reset, never opened). |
+| `void nodus_dht2_store_close(nodus_dht2_store_t *s)` (`:164`) | Close and free; NULL-safe. |
+| `uint64_t nodus_dht2_store_generation(const nodus_dht2_store_t *s)` (`:167`) | The generation `g` (equality compared only); 0 for NULL. |
+| `int nodus_dht2_store_top(nodus_dht2_store_t *s, uint64_t *top)` (`:170`) | The insertion counter's top (0 = nothing ever stored). 0, or 16 (NULL argument, missing / non-integer meta, a value above `INT64_MAX`). |
+| `struct sqlite3 *nodus_dht2_store_db(nodus_dht2_store_t *s)` (`:174`) | The SQLite handle, for a test that forces a fault (`PRAGMA query_only`); "production code has no use for it". NULL for NULL. |
+| `int nodus_dht2_store_put(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx, const uint8_t *env, size_t len, const uint8_t *expect_address, nodus_dht2_put_t *res)` (`:198-200`) | Admit one envelope (§4.1). `expect_address` (64 B, may be NULL) = the address the caller expects (pull-sync checks it; a client PUT has none). Order — the code of the FIRST failing check (`nodus_dht2_store.c:871-986`): gate 15 / 16; `have_sets` false → 15; `dht2_record_parse` 1 / 2 / 3 / 4; placement key + `dht2_eligible(key, s0, n0, s1, n1, self_fp)` → 5 (a −1 from it → 16); `dht2_record_check_class` 6; the name callback, asked EXACTLY ONCE here, NAME_FAULT or any value other than NAMED / UNNAMED → 16; `dht2_record_check_expiry(rec, tip_time, named)` 7 / 8; `dht2_record_verify` 9; canonical form + SHA3-512 (failure → 16). Then ONE transaction (`admit_locked`, `:666-869`): an inbox entry (class 4) is checked against the selected LIVE control record of its inbox — writer DENIED → 12, writer's Sequence ≤ its HANDLED `through` → 18 with `res->through` (`ctl_check_entry`, `:557-590`); Select (§4.2, `dht2_record_compare` against the held row unless the held row's expiry ≤ `tip_time`, which counts as absent): equal → 0 / `NODUS_DHT2_PUT_EQUAL`, loser → 0 / `NODUS_DHT2_PUT_LOST`, `res->hash` = the HELD hash; a winning non-tombstone control record (class 5) drops the entries it marks (`ctl_apply`, `:604-660`: HANDLED with Sequence ≤ `through`, DENIED any Sequence), credited before the checks below; inbox pool 11 (live entries of the writer's pool at that inbox, its own row excluded, ≥ 80 / 20); per-identity quota 10 (sum of the owner fp's stored sizes − old + new > limit, only when the record grows); node pool 13 (same rule per pool; a pool move costs the whole new size in the new pool); a tombstone is charged to the pool of the record it replaces; store at index `top + 1` → 0 / `NODUS_DHT2_PUT_STORED`, `res->hash` = the new hash. Only a stored version commits; equal, losing and every refusal roll back (`:963-975`). The order 11 → 10 → 13 is a READING (`:737-738`). Codes: 0, 1-13, 15, 16, 18; `DHT2_E_ARG` (−1) for NULL `s` / `ctx` / `res` / `ctx->name`, or NULL `env` with `len` ≠ 0 (the header lists "17...18"; `put` never returns 17). |
+| `int nodus_dht2_store_get(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx, const uint8_t address[DHT2_HASH_LEN], uint8_t *out, size_t cap, size_t *out_len, uint8_t hash[DHT2_HASH_LEN])` (`:211-214`) | The canonical envelope at `address` and its hash. Never serves a record whose expiry ≤ `tip_time` (§5 — the 3 h slack is for deletion only); tombstones are served until their own expiry; no-expiry records always. `out` needs `DHT2_ENVELOPE_MAX` bytes (a row longer than `cap` → 16). `NODUS_DHT2_GET_HELD` (0), `NODUS_DHT2_GET_NOT_HELD` (1), 15, 16; `DHT2_E_ARG` for a NULL argument (`nodus_dht2_store.c:990-1039`). |
+| `int nodus_dht2_store_list(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx, const uint8_t inbox[DHT2_HASH_LEN], const uint8_t *cursor, dht2_list_answer_t *out)` (`:228-230`) | One LIST page of `inbox` (rows 11, 18): live, non-tombstone class-4 entries placed at `inbox`, ascending writer fp, strictly after `cursor` (NULL = first page; an all-zero fp is used, so an entry whose fp is all zero would never be listed on a first page — not tested), at most 16 and ≤ 2 MiB of envelopes (the first entry always fits). Fills: `n` = `self_fp`, `c` / `h` / `t` from the snapshot, `r` = {k: `inbox`, v: SHA3-512 over the listed hashes concatenated, kind `DHT2_RV_HASH`}, `list`, `cursor` = the last `w` (when non-empty), `complete` = no further row, `req_cursor` = `cursor` when given, `ctl` = the selected live control record's hash (`has_ctl` false when none). `q` is left zero — the request's nonce is the caller's; the owner-signature check is package 6's. 0, 15, 16 (on 16 `*out` is zeroed); `DHT2_E_ARG` for a NULL argument. |
+| `int nodus_dht2_store_sweep(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx, uint64_t *deleted)` (`:238-239`) | §5: in one transaction, delete every record (tombstones included) with an expiry and expiry + 3 h ≤ `tip_time`; nothing when `tip_time` < 3 h. No-expiry records are never swept. Quota is derived from what is stored, so a delete refunds it. 0 (`*deleted` set; may be NULL), 15, 16; `DHT2_E_ARG` for NULL `s` / `ctx`. |
+| `int nodus_dht2_store_scan(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx, uint64_t from, nodus_dht2_scan_entry_t *out, size_t max, size_t *count, uint64_t *topmost)` (`:259-261`) | §4.5 i / row 12: entries with insertion index ≥ `from`, ascending, at most `max` (≤ 250); `*topmost` = the highest index scanned, or the store's top when none (Bee `pullsync.go:251-254`). Expired-but-unswept records ARE listed (a holder keeps answering pulls for them until deleted). `from` > `INT64_MAX` → an empty page with the current top. 0, 15, 16; `DHT2_E_ARG` for a NULL argument or `max` 0 / > 250. |
+| `int nodus_dht2_store_handover_set(nodus_dht2_store_t *s, const uint8_t address[DHT2_HASH_LEN], bool pending, bool *found)` (`:268-270`) | §4.5 v — data only: set / clear the persisted hand-over obligation of the record at `address`; `*found` (may be NULL) false when no such record. Package 7 decides when. A replacement of the record keeps the flag. 0 / 16; `DHT2_E_ARG` for NULL `s` / `address`. No gate. |
+| `int nodus_dht2_store_handover_get(nodus_dht2_store_t *s, const uint8_t address[DHT2_HASH_LEN], bool *pending, bool *found)` (`:271-273`) | Read the flag: `*found`, `*pending` (false when not found). 0 / 16; `DHT2_E_ARG` for any NULL argument. No gate. |
+
+### 12.4 Readings and what is NOT here
+
+Readings (the code's, not design facts): the refusal order inbox pool 11 →
+quota 10 → node pool 13 (`nodus_dht2_store.c:737-738`, "the text names no
+order"); "10 GB" = 10^10 bytes (`nodus_dht2_store.h:101`); an expired held
+row is ABSENT for Select whatever its class (kad-dht `existingForSelect`,
+boxo `validation.go:73`, `:687-691`); the inbox control check (12 / 18) runs
+BEFORE Select, so a re-put of a dropped entry is refused rather than
+acknowledged (`:678-679`). The header's `@return` lists for get / list /
+sweep / put do not name `DHT2_E_ARG`; the code returns it for NULL arguments.
+
+Not here: the serving layer (sessions, request decode, answer sealing, the
+|S(H)| ≥ 2 precondition, filling the context from `nodus_dht2_wview`) —
+package 6; the pull exchange and its cursor rule — package 7; the client
+rule of `2026-10-24-dht-v2-handled-client-rule.md` — the Connect core
+(package 9, per that decision). Test: §9.4.
