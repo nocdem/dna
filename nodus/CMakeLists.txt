@@ -705,6 +705,11 @@ if(NOT WIN32)
         # (`ipc_dht` kind of witness.sock). No caller yet (package 5); a
         # static-library member, so nodus-storage links it only once called.
         src/dht/nodus_dht2_wview.c
+        # DHT v2 package 5 — the holder store and its admission (§4.1): a
+        # SQLite store of canonical envelopes + put / get / list / sweep /
+        # insertion-index scan, over an injected context (snapshot, sets,
+        # name callback, limits). No caller yet (package 6 serves it).
+        src/dht2/nodus_dht2_store.c
         # Split S5b — the H-10 partial-wipe boot gate in its own object, so
         # nodus-storage runs the same check as core before opening nodus.db.
         src/server/nodus_partial_wipe.c
@@ -2064,6 +2069,15 @@ add_test(NAME test_dht2_ipc COMMAND test_dht2_ipc)
 add_executable(test_dht2_msg tests/test_dht2_msg.c)
 target_link_libraries(test_dht2_msg nodus dsa nodus crypto)
 add_test(NAME test_dht2_msg COMMAND test_dht2_msg)
+
+# DHT v2 package 5 — the holder store and admission (dht2/nodus_dht2_store.c)
+# over a temp SQLite file, fixed-seed ML-DSA-87 keys and an injected context
+# (snapshot, sets, name callback). Default build, no network, no clock; the
+# temp directory is removed at the end. What it proves / how it can lie: the
+# header of tests/test_dht2_store.c.
+add_executable(test_dht2_store tests/test_dht2_store.c)
+target_link_libraries(test_dht2_store nodus dsa nodus crypto)
+add_test(NAME test_dht2_store COMMAND test_dht2_store)
 
 add_executable(test_cmt_block tests/test_cmt_block.c)
 target_link_libraries(test_cmt_block nodus dsa nodus crypto)
