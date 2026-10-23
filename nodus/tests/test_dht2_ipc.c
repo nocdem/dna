@@ -48,7 +48,17 @@
  *     retried only after the backoff (250 ms) and the state is empty
  *     again;
  *   · a malformed answer (registry status 3, missing key, unsolicited,
- *     over NODUS_WITNESS_IPC_DHT_FRAME_MAX) closes the connection.
+ *     over NODUS_WITNESS_IPC_DHT_FRAME_MAX) closes the connection;
+ *   · a reply that is on the wire when its 5000 ms deadline passes is
+ *     refused (the connection closes, no snapshot); a snapshot's age runs
+ *     from its request, so a reply at 3000 to a request of 1000 is fresh
+ *     until 6000, not 8000;
+ *   · a name {err} stays readable: no further name request goes out until
+ *     the fault was reported once;
+ *   · a frame header declaring more than the cap closes the connection
+ *     with no payload sent (client: FRAME_MAX; witness dht kind:
+ *     CTL_FRAME_MAX);
+ *   · a "q" containing a NUL byte is not served (witness dht parser).
  *   END TO END: the view against the real listener with test handlers
  *   reads the snapshot, the sets and a name.
  *
@@ -82,6 +92,7 @@
 #include "dht/nodus_dht2_wview.h"
 #include "transport/nodus_tcp.h"
 #include "protocol/nodus_cbor.h"
+#include "protocol/nodus_wire.h"     /* nodus_frame_encode (header-only cases) */
 
 #include <stdio.h>
 #include <string.h>
@@ -513,6 +524,38 @@ static void test_unserved(nodus_witness_ipc_t *ipc, const char *sock) {
     PASS();
 }
 
+static void test_nul_in_q(nodus_witness_ipc_t *ipc, const char *sock) {
+    TEST("a NUL inside the request's q text is refused");
+    uint8_t b[128];
+    static const char q[] = "ipc_dht_snap\0junk";      /* 17 bytes of text */
+    cbor_encoder_t e;
+    cbor_encoder_init(&e, b, sizeof(b));
+    cbor_encode_map(&e, 1);
+    cbor_encode_cstr(&e, "q");
+    cbor_encode_tstr(&e, q, sizeof(q) - 1);
+    size_t n = cbor_encoder_len(&e);
+    g_snap_rc = 0;
+    if (!closes(ipc, sock, g_pre, g_pre_n, b, n)) { FAIL("served as ipc_dht_snap"); return; }
+    PASS();
+}
+
+static void test_request_header_cap(nodus_witness_ipc_t *ipc, const char *sock) {
+    TEST("dht kind: a header declaring > CTL_FRAME_MAX closes at once");
+    if (!raw_open(ipc, sock, g_pre, g_pre_n)) { FAIL("connect"); return; }
+    uint8_t one = 0, h[16];
+    if (nodus_frame_encode(h, sizeof(h), &one, 1) != 8) { FAIL("encode"); raw_end(); return; }
+    uint32_t declared = NODUS_WITNESS_IPC_CTL_FRAME_MAX + 1;   /* no payload follows */
+    h[3] = (uint8_t)declared; h[4] = (uint8_t)(declared >> 8);
+    h[5] = 0; h[6] = 0;
+    bool w = write(g_rc->fd, h, 7) == 7;
+    for (int i = 0; i < POLL_ROUNDS && !g_rclosed; i++) raw_poll(ipc);
+    bool closed = g_rclosed >= 1;
+    raw_end();
+    if (!w) { FAIL("write"); return; }
+    if (!closed) { FAIL("still open waiting for a payload"); return; }
+    PASS();
+}
+
 static void test_null_handler(void) {
     TEST("a dht request whose handler is NULL closes the connection");
     nodus_witness_ipc_handlers_t h = {
@@ -696,8 +739,9 @@ static void test_c_snap_age(const char *sock) {
     bool a = nodus_dht2_wview_snap(wv, 100, &sn) &&
              memcmp(sn.chain_id, ci, 32) == 0 && sn.tip_time == 1700000000ull + 1500 &&
              sn.consensus_up && sn.height == 1500 && sn.epoch_start == 1440;
-    bool b = nodus_dht2_wview_snap(wv, 100 + 5000, &sn);
-    bool c = !nodus_dht2_wview_snap(wv, 100 + 5001, &sn);
+    /* aged from the request (sent at 0), not from the reply (at 100) */
+    bool b = nodus_dht2_wview_snap(wv, 5000, &sn);
+    bool c = !nodus_dht2_wview_snap(wv, 5001, &sn);
     nodus_dht2_wview_free(wv);
     if (!a) { FAIL("fields"); return; }
     if (!b) { FAIL("5000 ms old must still count"); return; }
@@ -883,6 +927,99 @@ static void test_c_timeout(const char *sock) {
     PASS();
 }
 
+static void test_c_late_reply(const char *sock) {
+    TEST("view: a reply after its deadline is refused, not accepted");
+    nodus_dht2_wview_t *wv = wv_start(sock);
+    if (!wv) { FAIL("new"); return; }
+    /* sets answered, so only the snapshot request (sent at 0) is overdue */
+    if (!answer_sets(wv, 0, 1440)) { FAIL("sets"); nodus_dht2_wview_free(wv); return; }
+    pump(wv, 4999, 20);
+    bool up = nodus_dht2_wview_connected(wv);
+    uint8_t b[256];
+    size_t n = enc_snap(b, sizeof(b), 0x60, 1500, 1700001500ull, true, 1440);
+    bool sent = srv_send(b, n);          /* on the wire before the 5000 tick */
+    pump(wv, 5000, 20);
+    nodus_witness_dht_snap_t sn;
+    bool closed = !nodus_dht2_wview_connected(wv);
+    bool none = !nodus_dht2_wview_snap(wv, 5000, &sn);
+    nodus_dht2_wview_free(wv);
+    if (!up) { FAIL("closed early"); return; }
+    if (!sent) { FAIL("send"); return; }
+    if (!closed || !none) { FAIL("the late snapshot was accepted"); return; }
+    PASS();
+}
+
+static void test_c_snap_age_from_request(const char *sock) {
+    TEST("view: a snapshot is aged from its request, not its reply");
+    nodus_dht2_wview_t *wv = wv_start(sock);
+    if (!wv) { FAIL("new"); return; }
+    if (!answer_snap(wv, 0, 1500, 1440)) { FAIL("snap 1"); nodus_dht2_wview_free(wv); return; }
+    pump(wv, 1000, 20);                  /* request #2 sent at 1000 */
+    bool a2 = answer_snap(wv, 3000, 1600, 1440);   /* answered at 3000 */
+    nodus_witness_dht_snap_t sn;
+    bool fresh = nodus_dht2_wview_snap(wv, 6000, &sn) && sn.height == 1600;
+    bool stale = !nodus_dht2_wview_snap(wv, 6001, &sn);
+    nodus_dht2_wview_free(wv);
+    if (!a2) { FAIL("snap 2"); return; }
+    if (!fresh) { FAIL("not fresh 5000 ms after the request"); return; }
+    if (!stale) { FAIL("the reply time extended the freshness"); return; }
+    PASS();
+}
+
+static void test_c_fault_kept(const char *sock) {
+    TEST("view: a second name {err} cannot overwrite an unread fault");
+    nodus_dht2_wview_t *wv = wv_start(sock);
+    if (!wv) { FAIL("new"); return; }
+    uint8_t a[64], b[64], r[256];
+    fp_of(9, 60, a); fp_of(9, 61, b);
+    uint64_t h = 0;
+    nodus_dht2_wview_name(wv, 0, a, &h);
+    pump(wv, 0, 20);
+    size_t n = enc_err(r, sizeof(r), "ipc_name", a, "names store unreadable");
+    srv_send(r, n);
+    pump(wv, 0, 20);
+    /* b is asked for while a's fault is unread: nothing is sent for it */
+    bool b_wait = nodus_dht2_wview_name(wv, 0, b, &h) == NODUS_DHT2_WVIEW_NAME_PENDING;
+    pump(wv, 0, 20);
+    bool b_unsent = srv_count_name(b) == 0;
+    bool a_fault = nodus_dht2_wview_name(wv, 0, a, &h) == NODUS_DHT2_WVIEW_NAME_FAULT;
+    bool b_pend = nodus_dht2_wview_name(wv, 0, b, &h) == NODUS_DHT2_WVIEW_NAME_PENDING;
+    pump(wv, 0, 20);
+    bool b_sent = srv_count_name(b) == 1;
+    nodus_dht2_wview_free(wv);
+    if (!(b_wait && b_unsent)) { FAIL("a request went out over an unread fault"); return; }
+    if (!a_fault) { FAIL("the first caller lost its FAULT"); return; }
+    if (!(b_pend && b_sent)) { FAIL("b not asked after the fault was read"); return; }
+    PASS();
+}
+
+/* Write a 7-byte frame header declaring `declared` payload bytes and no
+ * payload, straight onto the connection's socket. */
+static bool write_header_only(nodus_tcp_conn_t *c, uint32_t declared) {
+    uint8_t one = 0, buf[16];
+    if (!c || nodus_frame_encode(buf, sizeof(buf), &one, 1) != 8) return false;
+    buf[3] = (uint8_t)declared;
+    buf[4] = (uint8_t)(declared >> 8);
+    buf[5] = (uint8_t)(declared >> 16);
+    buf[6] = (uint8_t)(declared >> 24);
+    return write(c->fd, buf, 7) == 7;
+}
+
+static void test_c_header_cap(const char *sock) {
+    TEST("view: a header declaring more than FRAME_MAX closes at once");
+    nodus_dht2_wview_t *wv = wv_start(sock);
+    if (!wv) { FAIL("new"); return; }
+    /* header only, no payload: without the cap the view would wait for
+     * the payload (the transport default is NODUS_MAX_FRAME_TCP) */
+    bool w = write_header_only(g_srv_conn, NODUS_WITNESS_IPC_DHT_FRAME_MAX + 1);
+    pump(wv, 0, 30);
+    bool closed = !nodus_dht2_wview_connected(wv);
+    nodus_dht2_wview_free(wv);
+    if (!w) { FAIL("write"); return; }
+    if (!closed) { FAIL("not closed on the header"); return; }
+    PASS();
+}
+
 static bool closes_on(const char *sock, const uint8_t *ans, size_t n) {
     nodus_dht2_wview_t *wv = wv_start(sock);
     if (!wv) return false;
@@ -1029,11 +1166,17 @@ int main(void) {
     test_sets_max(ipc, wsock, exp, cap);
     test_name(ipc, wsock, exp, cap);
     test_unserved(ipc, wsock);
+    test_nul_in_q(ipc, wsock);
+    test_request_header_cap(ipc, wsock);
     test_null_handler();
     test_status_unchanged(ipc, wsock, exp, cap);
     printf(" storage side\n");
     test_c_start(ssock);
     test_c_snap_age(ssock);
+    test_c_late_reply(ssock);
+    test_c_snap_age_from_request(ssock);
+    test_c_fault_kept(ssock);
+    test_c_header_cap(ssock);
     test_c_poll_rate(ssock);
     test_c_snap_err(ssock);
     test_c_sets(ssock);

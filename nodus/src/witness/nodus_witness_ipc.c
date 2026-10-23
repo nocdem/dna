@@ -402,6 +402,9 @@ static void ipc_on_first_frame(nodus_witness_ipc_t *ipc, ipc_slot_t *s,
     }
     if (strcmp(q, NODUS_WITNESS_IPC_Q_DHT) == 0 && !has_pk && !has_tk) {
         s->kind = IPC_KIND_DHT;
+        /* its requests are tiny: the transport refuses a larger frame
+         * header before buffering any of the payload */
+        conn->max_payload = NODUS_WITNESS_IPC_CTL_FRAME_MAX;
         return;
     }
     ipc_refuse(ipc, conn, "first frame is not ipc_hello, ipc_ctl or "
@@ -503,7 +506,9 @@ static int ipc_parse_dht(const uint8_t *p, size_t len, char q[32],
         if (k.type != CBOR_ITEM_TSTR) return -1;
         cbor_item_t v = cbor_decode_next(&dec);
         if (k.tstr.len == 1 && memcmp(k.tstr.ptr, "q", 1) == 0) {
-            if (has_q || v.type != CBOR_ITEM_TSTR || v.tstr.len >= 32)
+            /* a NUL inside the text would end it early under strcmp */
+            if (has_q || v.type != CBOR_ITEM_TSTR || v.tstr.len >= 32 ||
+                memchr(v.tstr.ptr, '\0', v.tstr.len) != NULL)
                 return -1;
             memcpy(q, v.tstr.ptr, v.tstr.len);
             q[v.tstr.len] = '\0';

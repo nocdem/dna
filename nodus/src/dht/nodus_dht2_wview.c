@@ -46,7 +46,7 @@ struct nodus_dht2_wview {
     bool              snap_asked;        /* snap_last_req_ms is valid */
     uint64_t          snap_last_req_ms;
     bool              snap_have;
-    uint64_t          snap_at_ms;        /* tick that received the answer */
+    uint64_t          snap_at_ms;        /* tick that SENT the request it answers */
     nodus_witness_dht_snap_t snap;
 
     /* sets */
@@ -75,6 +75,11 @@ static bool key_is(const cbor_item_t *k, const char *s) {
     size_t n = strlen(s);
     return k->type == CBOR_ITEM_TSTR && k->tstr.len == n &&
            memcmp(k->tstr.ptr, s, n) == 0;
+}
+
+static bool wv_overdue(uint64_t now_ms, uint64_t sent_ms) {
+    return now_ms > sent_ms &&
+           now_ms - sent_ms >= NODUS_DHT2_WVIEW_REQ_TIMEOUT_MS;
 }
 
 static bool snap_fresh(const nodus_dht2_wview_t *wv, uint64_t now_ms) {
@@ -169,7 +174,9 @@ static int wv_on_snap(nodus_dht2_wview_t *wv, cbor_decoder_t *dec,
     if (seen != K_ALL) return -1;
     wv->snap = sn;
     wv->snap_have = true;
-    wv->snap_at_ms = wv->now_ms;
+    /* aged from when its REQUEST went out: the state it describes is at
+     * most that old, however late within the timeout the reply came */
+    wv->snap_at_ms = wv->snap_sent_ms;
     /* the sets are the frozen sets of one epoch: ask again when it moved */
     if (!wv->sets_have || wv->sets->e != sn.epoch_start) wv->need_sets = true;
     return 0;
@@ -419,6 +426,9 @@ static void wv_dial(nodus_dht2_wview_t *wv) {
         return;
     }
     wv->conn = c;
+    /* the transport refuses a frame header declaring more, before any of
+     * the payload is buffered */
+    c->max_payload = NODUS_WITNESS_IPC_DHT_FRAME_MAX;
     wv->backoff_ms = NODUS_DHT2_WVIEW_DIAL_BACKOFF_MIN_MS;
     wv->snap_out = wv->sets_out = wv->name_out = false;
     wv->snap_have = false;
@@ -437,16 +447,18 @@ void nodus_dht2_wview_tick(nodus_dht2_wview_t *wv, uint64_t now_ms) {
     wv->now_ms = now_ms;
     if (!wv->conn) wv_dial(wv);
     if (!wv->conn) return;
-    nodus_tcp_poll(&wv->tcp, 0);
-    if (!wv->conn) return;
 
-    /* a request unanswered for the timeout closes the connection */
-    if ((wv->snap_out && now_ms - wv->snap_sent_ms >= NODUS_DHT2_WVIEW_REQ_TIMEOUT_MS) ||
-        (wv->sets_out && now_ms - wv->sets_sent_ms >= NODUS_DHT2_WVIEW_REQ_TIMEOUT_MS) ||
-        (wv->name_out && now_ms - wv->name_sent_ms >= NODUS_DHT2_WVIEW_REQ_TIMEOUT_MS)) {
+    /* A request unanswered for the timeout closes the connection. Checked
+     * BEFORE the poll reads anything: a reply that arrives after its
+     * deadline is never accepted. */
+    if ((wv->snap_out && wv_overdue(now_ms, wv->snap_sent_ms)) ||
+        (wv->sets_out && wv_overdue(now_ms, wv->sets_sent_ms)) ||
+        (wv->name_out && wv_overdue(now_ms, wv->name_sent_ms))) {
         wv_close(wv, "a request timed out");
         return;
     }
+    nodus_tcp_poll(&wv->tcp, 0);
+    if (!wv->conn) return;
 
     if (!wv->snap_out && (!wv->snap_asked ||
         now_ms - wv->snap_last_req_ms >= NODUS_DHT2_WVIEW_SNAP_EVERY_MS)) {
@@ -509,7 +521,10 @@ nodus_dht2_wview_name_t nodus_dht2_wview_name(nodus_dht2_wview_t *wv,
         break;
     }
     if (!wv->conn) return NODUS_DHT2_WVIEW_NAME_UNAVAILABLE;
-    if (wv->name_out) return NODUS_DHT2_WVIEW_NAME_PENDING;
+    /* One outstanding request, and none while an {err} answer waits to be
+     * read: the single fault slot must not be overwritten before its
+     * caller has seen NAME_FAULT. */
+    if (wv->name_out || wv->fault_set) return NODUS_DHT2_WVIEW_NAME_PENDING;
     if (wv_send(wv, NODUS_WITNESS_IPC_Q_NAME, fp) != 0) {
         wv->now_ms = now_ms;
         wv_close(wv, "ipc_name could not be queued");

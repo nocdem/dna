@@ -9,7 +9,8 @@
  *
  *   - a SNAPSHOT {chain id, tip height h, tip time t, consensus latch cu,
  *     epoch boundary e}: asked once per NODUS_DHT2_WVIEW_SNAP_EVERY_MS; an
- *     answer older than NODUS_DHT2_WVIEW_SNAP_STALE_MS is no snapshot (the
+ *     answer older than NODUS_DHT2_WVIEW_SNAP_STALE_MS, counted from the
+ *     tick that SENT its request, is no snapshot (the
  *     caller then refuses writes and answers `not-caught-up`);
  *   - the frozen SETS {S(e), S(e − E), registry fp + status}: requested at
  *     connect and whenever a snapshot's `e` differs from the held sets' `e`;
@@ -20,7 +21,9 @@
  *
  * One request outstanding per call type (snap / sets / name). A request
  * that is not answered within NODUS_DHT2_WVIEW_REQ_TIMEOUT_MS closes the
- * connection; so does any malformed, unsolicited or over-long answer. The
+ * connection (checked before any reply is read, so a late reply is never
+ * accepted); a name {err} answer blocks new name requests until it has been
+ * reported as NAME_FAULT; so does any malformed, unsolicited or over-long answer. The
  * dial is re-tried with a bounded backoff.
  *
  * Time: nothing here reads a clock. Every call that can act on time takes
