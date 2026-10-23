@@ -103,6 +103,10 @@ nodus/
 │   │   │                      #   + the AF_UNIX entry nodus_tcp_unix_* — split S2; used by the S3
 │   │   │                      #   witness IPC, both ends; + the plain listener on Windows, select
 │   │   │                      #   loop, 2026-10-16 — the WS and AF_UNIX entries stay Linux-only)
+│   │   ├── nodus_tcp_sc.c/h   # Optional per-connection SecretConnection layer of nodus_tcp (DHT v2
+│   │   │                      #   sub-package 3b-1): CLIENT 0x0C / NODE 0x0D machine, bounded handshake-
+│   │   │                      #   job worker, sealing; libnodus only (NODUS_TCP_SC); NOT enabled on any
+│   │   │                      #   port (§15 "DHT v2 sub-package 3b-1")
 │   │   ├── nodus_ws.c         # WebSocket entry codec (RFC 6455 handshake + frames; no sockets)
 │   │   └── nodus_udp.c        # UDP transport (non-blocking recvfrom)
 │   ├── net/
@@ -212,6 +216,7 @@ nodus/
 │   ├── test_channel_ring.c      # Ring management tests
 │   ├── test_channel_protocol.c  # Channel protocol message tests
 │   ├── test_tcp.c               # TCP transport tests
+│   ├── test_tcp_sc.c          # DHT v2 sub-package 3b-1: the SecretConnection layer of nodus_tcp — CLIENT (0x0C) / NODE (0x0D) loopback pairs incl. a 5 MiB frame both ways, mixed profiles never authenticate, the dial pin, enable refusals (WITNESS, unpinned, second enable, I/O started, old auth state), no frame before AUTHENTICATED, reserve-before-seal on a full queue (counter unmoved, PLAINTEXT to on_pending_full), (slot, generation) on job results, the layer on WebSocket (32-sealed-frame groups, ping outside the stream, Close behind held data), level-triggered held input, one on_disconnect for a marked teardown, unchanged bytes without the layer; default build, no environment, ephemeral loopback ports, nothing left behind; can lie: waits are poll-round counts, the full-queue point depends on socket buffers
 │   ├── test_seg_file_win.c    # Windows-only (no ctest): nodus_fs + the segment reader / build on Windows over a Linux fixture (storage P-B4; exit 2 = not run, not a pass)
 │   ├── test_tcp_listen_portable.c # Plain listener through the public API only (127.0.0.1 port 0 read back, accept, one frame each way, close; NODUS_MAX_CONNS_PER_IP + 1 → one refused); same source meant for the Linux epoll and the mingw select loop
 │   ├── test_client.c          # Client SDK tests
@@ -1339,6 +1344,20 @@ wait in between. Only these two transports are checked.
 `tests/test_tcp_read_budget.c` pins the budget, in-order delivery of the rest across
 later calls, and removal of a pending connection closed inside and outside a poll.
 
+**SecretConnection layer (DHT v2 sub-package 3b-1, not enabled on any port).** A
+`nodus_tcp_conn_t` may carry an optional `cmt_p2p_sc_t` (`conn->sc`, NULL = off)
+switched on by `nodus_tcp_sc_enable` on a connection that has carried no byte
+(`conn->io_started`, an `atomic_bool` on every connection since 3b-1). With it on, the
+socket (or WS payload) bytes go through the machine and only its plaintext reaches
+`rbuf`; nothing is parsed before AUTHENTICATED (`tcp->on_session` then fires); every
+nodus frame is sealed whole after its output space is reserved. Two additions to the
+poll contract: finished handshake jobs are applied at the start of each
+`nodus_tcp_poll`, and while a job is outstanding (`nodus_tcp_sc_busy`) the poll waits
+at most 5 ms. A connection blocked on a job is resumed through the pending-read list
+above (`read_pending_add`). No caller enables it yet; the server loop's two-transport
+wait above does not yet include `nodus_tcp_sc_busy` — a 3b-2 obligation. Full
+contract: §15 "DHT v2 sub-package 3b-1".
+
 **Channel sessions** (TCP 4003) are managed separately by `nodus_channel_server_t`:
 - Client sessions (`nodus_ch_client_session_t`): auth state, channel subscriptions, rate limiting
 - Node sessions (`nodus_ch_node_session_t`): inter-node replication connections
@@ -1482,6 +1501,14 @@ by `test_ws_frame` / `test_ws_upgrade`:
 - *Teardown*: every refusal goes through `ws_close_now` (queue the response or close
   frame, one best-effort flush, `on_disconnect`, `conn_free`) and the caller returns
   "freed" so the read loop never touches the connection again.
+- *SecretConnection layer (DHT v2 sub-package 3b-1, no caller enables it yet)*: on a
+  WS connection with `conn->sc` set, `ws_sink_data` feeds the unmasked payload to the
+  machine instead of `rbuf` (WS bytes → SecretConnection → nodus frames; Upgrade,
+  ping / pong and close stay outside the sealed stream), `conn_wire_encode` seals each
+  nodus frame and cuts the sealed stream into binary WS frames of at most 32 sealed
+  frames (33,408 bytes, under `NODUS_WS_MAX_PAYLOAD`), and a Close that arrives behind
+  input held for a handshake job is applied only after that input has been dispatched.
+  §15 "DHT v2 sub-package 3b-1".
 
 **Limits:**
 
@@ -11777,6 +11804,271 @@ The ORCHESTRATOR's runs before the rebase, at `2f0478bcf`: build 0 warnings;
 `test_dht2_store` 500 passed / 0 failed, three runs; `test_dht2_codec` 433 / 0;
 `test_dht2_msg` 335 / 0; `test_dht2_ipc` 23 / 0 — counts from those runs, not re-run for
 this document.
+
+### DHT v2 sub-package 3b-1 — the optional SecretConnection layer of `nodus_tcp` (2026-10-23, branch `dna95-dht2-3b1`, not versioned; NOT enabled on any port)
+
+What it is: the transport half of DHT v2 sub-package 3b (design
+`docs/plans/2026-10-23-dht-v2-session-package-design.md` rev 1, LOCAL-only). A
+connection of a `nodus_tcp_t` can now carry an OPTIONAL per-connection
+`cmt_p2p_sc_t` — the 4004 secret connection of `shared/dnac/cmt_p2p_secret.h`, run
+under the CLIENT or NODE profile of sub-package 3a — between its socket and the nodus
+frame parser. New files `nodus/src/transport/nodus_tcp_sc.{h,c}` (the machine, the
+bounded handshake-job worker, sealing); the buffers stay in `nodus_tcp.c`, which calls
+the layer's entry points. **Nothing turns it on:** `git grep nodus_tcp_sc_enable` at
+`e0df99bcd` finds the declaration, the definition, two comments in `nodus_tcp.h`
+(`:274`, `:433`) and calls in `nodus/tests/test_tcp_sc.c` only. 3b-2 wires it into
+the 4001 / 4002 server and deletes the hello / auth / key_init / channel-crypto path;
+3c wires the client SDK and the consumers (`nodus_tcp_sc.h:7-11`). No wire, port,
+consensus, block or state-root change.
+
+**Two "layer off" states.** (a) libnodus — `nodus/CMakeLists.txt` lists
+`src/transport/nodus_tcp_sc.c` (`:139`) and defines `NODUS_TCP_SC=1` PRIVATE on the
+`nodus` target (`:1198`) — with `conn->sc == NULL`: every path is the plaintext /
+channel-crypto path it was; the one change on such a connection is that
+`io_started` (below) is now an `atomic_bool` set on the first byte read or written.
+(b) A build that compiles `nodus_tcp.c` on its own without the define (the web-wallet
+source lists: `web-wallet/scripts/build-nodus-send-wasm.sh`,
+`web-wallet/scripts/check-nodus-client-wasm.sh`, `web-wallet/connect/tests/CMakeLists.txt`):
+none of the layer is compiled, `conn->sc` is always NULL, and the `SC_*` hooks in
+`nodus_tcp.c` reduce to the old behaviour (`nodus_tcp.c:128-145`). The new struct
+fields exist in every build.
+
+**Governing decisions** (LOCAL-only files, `docs/plans/decisions/`):
+`2026-10-23-kurultay-43-summary.md` — the khan approved ("Onaylıyorum (Önerilen)")
+that nodus 7-byte frames travel unchanged INSIDE the sealed stream and the old
+hello / auth / key_init / channel crypto is removed (O-1); that the server's handshake
+jobs run on a bounded worker separate from 4004's host, the bound counting queued,
+running AND completed-not-delivered work, every completion checked by (slot,
+generation), and the completion-delivery mechanism (a wake or explicit polling)
+written down (O-3; the record sets no numbers); and the mandatory fix "reserve output
+capacity, then seal" (no seal-before-queue). `2026-10-23-dht-v2-session-cutover.md`
+— the operator chose "all at once": nodes and every client switch in the same
+release, no period in which nodes accept both handshakes (so 3b and 3c ship together;
+3b-1 alone changes nothing on the wire). `2026-10-23-dht-v2-session-bytes.md` — the
+CLIENT / NODE HKDF info strings and the NDS1 separator for 0x0C / 0x0D (sub-package
+3a; 3b-1 binds them to the host, below). Design rev 1 records the browser layering
+"WS bytes → SecretConnection → nodus frames".
+
+**Enable** — `int nodus_tcp_sc_enable(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn, const
+nodus_tcp_sc_cfg_t *cfg)` (`nodus_tcp_sc.h:251-266`, `nodus_tcp_sc.c:584-684`):
+
+- Profile ↔ purpose is bound by the layer, not the caller:
+  `&CMT_P2P_SC_PROFILE_CLIENT` → host sign / verify under 0x0C
+  (`nodus_sign_client_session_auth` / `nodus_verify_client_session_auth`);
+  `&CMT_P2P_SC_PROFILE_NODE` → 0x0D (`nodus_{sign,verify}_node_session_auth`)
+  (`nodus_tcp_sc.c:65-113`, `:603-612`). Any other profile — WITNESS included, 4004
+  owns it — is refused.
+- INITIATOR: `cfg->expected_peer` (the node id = SHA3-512 fingerprint of the peer's
+  public key) is mandatory; an unpinned initiator is refused. It is copied to
+  `conn->expected_peer_id`. Before the ENCAPS job the responder's CLAIMED key is
+  fingerprinted and compared; a mismatch aborts the machine and fails the connection
+  (`sc_pin_ok`, `nodus_tcp_sc.c:440-456`; pattern `cmt_p2p_transport.c:205-219`).
+  The initiator's HELLO is moved into the write buffer at enable.
+- RESPONDER: `cfg->id->has_mlkem` is required (the ML-KEM-1024 pair is the machine's
+  responder key; the secret key is NOT copied).
+- The connection must be clean (`conn_eligible`, `nodus_tcp_sc.c:566-582`): no layer
+  yet, not closing / closed, not AF_UNIX, no channel crypto; **never carried a byte**
+  (`io_started` false — empty buffers prove nothing, bytes may have been consumed and
+  answered), `rlen` / `wlen` 0, no auth pending buffer, no pending queue; no old auth
+  state (`auth_state == NODUS_CONN_AUTH_NONE`, no peer id, not authenticated, no
+  auth nonce pending, all-zero session token). The check runs under the write lock
+  before the machine init and AGAIN when `conn->sc` is published.
+- Use: a responder from `on_accept` (plain or WS; on WS the machine starts after the
+  Upgrade); an initiator right after `nodus_tcp_connect` or from `on_connect`.
+- Returns 0; -1 on a bad argument, a refused profile / pin / role, a connection that
+  is not clean, or an allocation / worker failure, with the connection left as it was.
+- `cfg->id` (the signing key, and the responder's ML-KEM pair) must outlive
+  `nodus_tcp_close`: a queued or running job holds a pointer to it.
+
+**Read path.** Plain TCP: `read_plain` hands a layer connection to `read_plain_sc`
+(`nodus_tcp.c:1227`), which reads the socket in `NODUS_TCP_SC_RAW_CHUNK` (16 KiB)
+pieces into the machine (`sc_feed_locked` → `nodus_tcp_sc_feed`); only the plaintext
+the machine opens reaches `rbuf` (`sc_plain_to_rbuf`, `:1009`). WebSocket: the WS
+layer (Upgrade, ping / pong, close) stays OUTSIDE the sealed stream, and the WS
+payload sink `ws_sink_data` (`:1735`) feeds the machine instead of `rbuf`. Rules:
+
+- Nothing reaches the frame parser before the machine is AUTHENTICATED
+  (`try_parse_frames` returns NEED_DATA for a layer connection until then). A
+  plaintext nodus frame sent to a layer responder fails the handshake and closes it.
+- `on_session` (`nodus_tcp_t.on_session`) fires once, when the machine becomes
+  AUTHENTICATED, inside `nodus_tcp_poll`, never inside a socket-byte callback, and
+  before any frame of the session is dispatched.
+- While a handshake job is outstanding the socket is NOT read: input the machine
+  cannot take is held (at most `NODUS_TCP_SC_RAW_CHUNK` bytes; more fails the
+  connection). Held bytes, and plaintext the machine already opened (the tail of the
+  AUTHSIG frame, `cmt_p2p_sc_read_pending`), are drained on the next read before any
+  new socket byte, even when no new byte arrives. Input left over with no job
+  outstanding fails the connection (it would otherwise stall).
+- A blocked connection stays out of the read set: on the Windows `select` and the
+  browser `poll` loop it is not put in `rfds` / given `POLLIN`; on a level-triggered
+  epoll transport `EPOLLIN | EPOLLRDHUP` are masked (`sc_ev_mask` / `sc_epoll_rearm`,
+  `:1116-1136`) and restored once the resumed feed has drained the hold. Edge-triggered
+  transports need no change.
+- A WebSocket Close that arrives while a job is outstanding does not discard the
+  input before it: the close frame is kept in `conn->ws_close_frame`, the job
+  finishes, the held input is opened and its frames dispatched in order after
+  `on_session`, and only then the connection closes (`ws_feed_frames` / `read_ws`).
+
+**Write path.** For a layer connection `conn_wire_size` / `conn_wire_encode` dispatch
+to `sc_wire_size` / `sc_wire_encode` (`nodus_tcp.c:645`, `:667`): the "wire" bytes of
+one nodus frame are its SEALED bytes, ⌈(7 + len) / 1024⌉ sealed frames of 1,044 bytes;
+the 7-byte header is produced by `nodus_frame_encode` and the payload is sealed
+straight from the caller's buffer.
+
+- A send before AUTHENTICATED, or one the send counter cannot take WHOLE, is refused
+  with -1 before anything is sealed or queued (`nodus_tcp_sc_can_seal`,
+  `send_progress_locked`, `nodus_tcp.c:2974`); the layer queues nothing for a session
+  that is not up. The auth-gate `pending_buf` (`pending_queue_append`, `:2816`) refuses
+  a layer connection outright — it holds unsealed frames that would be copied into
+  `wbuf` as they are.
+- **Reserve, then seal.** Everything that can fail is allocated first — the write
+  buffer space, or on the pending-queue path the encoded buffer AND the queue node
+  (`sc_node`, `:3097`) — and only then is the frame sealed; linking a sealed frame
+  cannot fail (`pending_link`). So a sealed frame is never dropped and a refused one
+  never moved the counter (a gap would fail the receiver's AES-GCM). The pending queue
+  keeps `NODUS_PENDING_MAX_FRAMES` (20) / `NODUS_PENDING_MAX_BYTES` (32 MiB), now
+  counting sealed bytes; when it is full, `on_pending_full` receives the PLAINTEXT
+  payload, as before.
+- **Whole frame sealed at once.** A nodus frame is sealed in one go into its
+  reserved space; the write buffer of a layer connection may therefore grow to
+  `NODUS_TCP_SC_WBUF_MAX` (below). Incremental sealing (drain-as-you-go) is DEFERRED
+  (`nodus_tcp_sc.h:118-122`): the header's reason is that the decision's concern was
+  the buffer bound, which is now derived and `_Static_assert`ed
+  (`nodus_tcp_sc.c:34`), and that changing the sealing schedule needs a measurement
+  first. ⚠ Record vs code: design rev 1 lists "5,121 sealed frames per 5 MiB frame →
+  incremental sealing" among its MANDATORY fixes and Kurultay #43 lists it as a
+  (MEDIUM) risk; the code does not implement it. Whether the derived bound closes that
+  item is not settled by any record.
+- **WebSocket grouping.** On a WS connection the sealed stream is cut into binary WS
+  frames of at most `NODUS_TCP_SC_WS_GROUP_FRAMES` (32) sealed frames = 33,408 bytes
+  (always the 4-byte WS header). A whole sealed 5 MiB frame (5,346,324 bytes) exceeds
+  `NODUS_WS_MAX_PAYLOAD` (5,242,887, `nodus_ws.h:68`), which the server enforces per
+  WS frame (close 1009). Handshake output (not nodus frames) goes out in one WS binary
+  frame per flush (`sc_hs_to_wbuf_locked`, `:1025`). Grouping exists only in the
+  epoll (server) build, the only one with a WS entry.
+
+**Handshake jobs (O-3).** The asymmetric steps (ENCAPS / DECAPS / SIGN / VERIFY) run
+on a worker owned by the `nodus_tcp_t`, separate from 4004's host
+(`nodus_tcp_sc.c:115-355`):
+
+- Started by the first successful enable, stopped by `nodus_tcp_close` (threads
+  joined, every queued / finished job dropped, after the pool is freed).
+- `NODUS_TCP_SC_WORKERS` (2) threads; two classes, OUTBOUND (we dialed) served before
+  INBOUND (we accepted).
+- Each class is bounded: queued + running + completed-not-applied jobs together never
+  exceed `NODUS_TCP_SC_JOBQ_OUT` / `_IN` (64 / 64). A job stays CHARGED until the loop
+  applies or discards it (`worker_release`, `:244-253`) — a finished batch waiting
+  for its turn still counts. A job that does not fit closes its connection (inbound:
+  the handshake is dropped under load; outbound: the dial fails). Each live connection
+  has at most one job out.
+- A job is a self-contained COPY of the machine's job; the worker never touches a
+  connection.
+- A result is applied on the poll loop (`sc_apply_done`, `nodus_tcp.c:1187`) by (slot,
+  generation): if `tcp->pool[slot]` is empty, closing, claimed for teardown, has no
+  layer, carries another generation (`tcp->sc_gen_last` hands out a new one per
+  enable, never reused within a transport), is not waiting for a job, or waits for a
+  job of another kind, the result is discarded and its copy freed
+  (`nodus_tcp_sc_job_apply`, `nodus_tcp_sc.c:494-558`).
+- The sizes 2 / 64 / 64 / 5 ms / 16 KiB / 32 are the implementation's, not the
+  records' (`nodus_tcp_sc.h:185`: "NOT in the records"); 2 and 64 mirror 4004's
+  `NODUS_P2P_WORKERS_DEFAULT` and `NODUS_P2P_JOBQ_DEPTH`.
+- Browser / single-thread builds (`__EMSCRIPTEN__`, or `NODUS_SC_INLINE`) run every job
+  inline on the loop: no thread, no queue.
+
+**Completion delivery: explicit polling** (written down as O-3 asks). `nodus_tcp` has
+no wake descriptor and this package adds none. A finished job is applied at the START
+of the next `nodus_tcp_poll`; while any job is outstanding — or a loop-owned teardown
+is due — `nodus_tcp_poll` waits at most `NODUS_TCP_SC_POLL_MS` (5 ms)
+(`nodus_tcp_sc_poll_timeout`), so one handshake step is delayed by at most 5 ms and a
+handshake (three jobs per side) by at most 15 ms on top of the jobs' own run time. With
+no job outstanding the caller's timeout is untouched. The cap is TRANSPORT-WIDE and
+holds only for an owner that polls THIS transport alone; an owner that stops polling
+stops its handshakes.
+
+**Derived bounds** (`nodus_tcp_sc.h:130-146`, `_Static_assert`s at `:228-234` and
+`nodus_tcp_sc.c:34`):
+
+| Quantity | Value |
+|---|---|
+| Largest nodus frame (`NODUS_TCP_SC_PLAIN_MAX` = header 7 + `NODUS_MAX_FRAME_TCP`) | 5,242,887 bytes |
+| ... sealed (`NODUS_TCP_SC_FRAMES_MAX` × 1,044 = `NODUS_TCP_SC_SEALED_MAX`) | 5,121 frames = 5,346,324 bytes |
+| Write buffer of a layer connection (`NODUS_TCP_SC_WBUF_MAX` = sealed max + 161 WS groups × 4 + 4,096 slack) | 5,351,064 bytes (+104,081, +1.98 % over the plain 5,246,983) |
+| Read buffer (plaintext) of a layer connection (`NODUS_TCP_SC_RBUF_MAX` = plain bound + one 16 KiB chunk) | 5,263,367 bytes (+0.31 %) |
+| Held socket bytes while a job blocks input | ≤ 16 KiB (`NODUS_TCP_SC_RAW_CHUNK`) |
+| Machine per layer connection | `sizeof(cmt_p2p_sc_t)`, about 42 KB, heap |
+| Job copies | at most 64 + 64, about 17 KB each |
+
+**Failures.**
+
+- A sealing (cipher) failure is FATAL, not backpressure: the send returns -1,
+  `on_pending_full` is NOT called, the connection is marked (`conn->sc_close_req`,
+  counted in `tcp->sc_close_requests`; `sc_seal_failed_locked`, `nodus_tcp.c:1139`),
+  and the next `nodus_tcp_poll` closes it after the write lock is released. Admission
+  refusals (not authenticated, counter exhausted, queue full) stay -1 /
+  `on_pending_full` as before.
+- Loop-owned teardown (`sc_reap_marked`, `:1158`): each marked connection is CLAIMED
+  under the write lock (mark cleared, count lowered, `conn->sc_closing` set), then
+  `on_disconnect` and `conn_free` run with the lock released. A claimed connection is
+  skipped by a nested poll (events, reads, writes, job results) and a
+  `nodus_tcp_disconnect` on it is a no-op, so `on_disconnect` runs once even when it
+  polls and disconnects again.
+- `conn_free` zeroes and frees the machine and the hold buffer (`nodus_tcp_sc_free`).
+
+**Threading.** Same model as the rest of `nodus_tcp`: one thread polls; with a write
+lock installed (`nodus_tcp_set_write_lock`) other threads may send. The machine is
+touched under that lock by both sides (feeds, completions, seals), so its send and
+receive halves never race. `enable` checks and publishes `conn->sc` under it; every
+public query (`nodus_tcp_sc_authenticated`, `_peer_pubkey`, `_send_counter`,
+`_generation`) takes it and returns a COPY. `on_session` runs after the lock is
+released. **Callback rule:** the progress callback of `nodus_tcp_send_progress` and
+`tcp->on_pending_full` run UNDER the write lock (`nodus_tcp.h:560-566`); they must not
+call any `nodus_tcp_sc_*` query (non-recursive lock: self-deadlock). The header records
+that no in-tree callback does. The worker threads touch only their private job copies.
+
+**Obligations recorded in the header for the next sub-packages.**
+
+- 3b-2 (`nodus_tcp_sc.h:88-106`): an owner that polls several transports in one loop
+  (`nodus_server_run` polls `tcp`, then `inter_tcp`, with a 50 ms wait — §10 "Event
+  Loop") must include `nodus_tcp_sc_busy()` of EVERY transport in its wait, or a result
+  on the other transport sits for that wait. 3b-2 must also open the old auth gate for
+  layer connections (`auth_required` false, or `auth_state` OK at `on_session`): a
+  connection inheriting `tcp->auth_required` keeps `auth_state` HELLO_SENT / NONE for
+  ever, so `nodus_tcp_send` would queue into the auth pending buffer, which the layer
+  refuses. Enable stays at accept / right after connect.
+- 3c: a client must cut its own sealed stream into WS frames of at most
+  `NODUS_WS_MAX_PAYLOAD` each (any cut at or below it is accepted; it is a byte stream)
+  (`nodus_tcp_sc.h:32-34`); the browser / web-wallet builds that list `nodus_tcp.c`
+  must add `nodus_tcp_sc.c` + `cmt_p2p_secret.c` and define `NODUS_TCP_SC`
+  (`nodus/CMakeLists.txt:1194-1198`).
+
+**Test:** `test_tcp_sc` (`nodus/CMakeLists.txt:1569-1571`; default build, no compile
+flags, no environment; loopback on ephemeral ports, threads, heap only — about 40 MiB
+peak in the full-queue case; nothing left behind). Proves (its header): CLIENT (0x0C)
+and NODE (0x0D) loopback pairs authenticate and exchange a 1-byte and a
+`NODUS_MAX_FRAME_TCP` frame both ways byte-exact; mixed profiles never authenticate; a
+wrong dial pin closes the initiator before any session; a send before AUTHENTICATED is
+refused without moving the counter; enable refuses WITNESS, an unpinned initiator, a
+second enable, a connection that carried I/O and leftover auth state; a plaintext frame
+to a layer responder closes it with no `on_frame`; on a full queue the refused send
+moves no counter, `on_pending_full` gets the PLAINTEXT, every queued frame arrives in
+order and the session continues; stale results (empty slot, wrong generation, not
+waiting, closed, REUSED slot) are discarded; on WebSocket the layer authenticates a raw
+masked-WS initiator, a 100,000-byte frame leaves as 4 WS binary frames and a ping is
+still answered outside the sealed stream; a Close behind held data is processed after
+the data; level-triggered transports (TCP and WS, held input) complete; a marked
+teardown runs `on_disconnect` once; without the layer the bytes are today's `4E 44 02
+‖ len LE ‖ payload`. How it can lie (its header): every wait is a count of poll rounds
+(a stuck handshake fails, it never passes by waiting); the full-queue refusal point
+depends on the host's socket buffers; the WS peer shares the process and thread with
+the server.
+
+The ORCHESTRATOR's runs (before the rebase onto `e0df99bcd`'s base): at `a82c95468`
+build 0 warnings, `test_tcp_sc` 30 passed / 0 failed, ten times; at `98e990a3f`
+`test_tcp` 8 / 0, `test_tcp_listen_portable` 3 / 0, `test_wire` 12 / 0, `test_tier2`
+23 / 0, `test_client` 10 / 10, `test_inter_auth` 6 / 0, `test_p2p_secret_kat` 2 / 0,
+`test_witness_ipc` 9 / 0; clang `-Werror` clean with and without `NODUS_TCP_SC`.
+Function reference: `messenger/docs/functions/transport.md` "SecretConnection layer
+of the TCP / WebSocket transport".
 
 ### Block retention (pruning) and the SeenCommit cleanup (2026-10-03)
 
