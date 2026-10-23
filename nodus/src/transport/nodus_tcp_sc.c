@@ -513,7 +513,7 @@ nodus_sc_apply_t nodus_tcp_sc_job_apply(nodus_tcp_t *tcp, nodus_sc_job_t *job,
         conn = tcp->pool[job->slot];
     /* (slot, generation): the slot must still hold the connection this job
      * was copied for, and its layer must be waiting for exactly this job. */
-    if (conn == NULL || conn->close_pending || conn->sc == NULL ||
+    if (conn == NULL || conn->close_pending || conn->sc_closing || conn->sc == NULL ||
         conn->sc->gen != job->gen || !conn->sc->job_out ||
         conn->sc->job_kind != job->kind) {
         QGP_LOG_DEBUG(LOG_TAG_SC, "stale handshake job (slot %d gen %llu) discarded",
@@ -570,7 +570,8 @@ static bool conn_eligible(const nodus_tcp_conn_t *conn)
     if (conn->sc != NULL || conn->close_pending || conn->state == NODUS_CONN_CLOSED ||
         conn->is_unix || conn->channel_crypto.established)
         return false;
-    if (conn->io_started || conn->rlen != 0 || conn->wlen != 0 ||
+    if (atomic_load_explicit(&conn->io_started, memory_order_relaxed) ||
+        conn->rlen != 0 || conn->wlen != 0 ||
         conn->pending_buf != NULL || conn->pending_count != 0)
         return false;
     if (conn->auth_state != NODUS_CONN_AUTH_NONE || conn->peer_id_set ||

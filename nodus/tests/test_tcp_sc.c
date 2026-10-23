@@ -118,6 +118,9 @@ typedef struct side {
     const uint8_t      *peer_pk;      /* what on_session must see */
     nodus_tcp_conn_t   *conn;
     int                 accepted, disconnected, sessions, peer_ok, frames;
+    bool                send_on_session;     /* send a frame from inside on_session */
+    bool                poll_in_disconnect;  /* on_disconnect polls this transport once */
+    bool                in_disc;
     int                 frames_at_session;   /* frames delivered when on_session ran */
     int                 frames_at_close;     /* ... and when on_disconnect ran */
     uint8_t            *rx;           /* the last frame delivered */
@@ -160,6 +163,11 @@ static void cb_disconnect(nodus_tcp_conn_t *c, void *ctx)
     s->frames_at_close = s->frames;
     if (s->conn == c)
         s->conn = NULL;
+    if (s->poll_in_disconnect && !s->in_disc) {   /* a nested poll inside the teardown */
+        s->in_disc = true;
+        nodus_tcp_poll(&s->tcp, 0);
+        s->in_disc = false;
+    }
 }
 
 static void cb_session(nodus_tcp_conn_t *c, void *ctx)
@@ -169,6 +177,11 @@ static void cb_session(nodus_tcp_conn_t *c, void *ctx)
 
     s->sessions++;
     s->frames_at_session = s->frames;
+    if (s->send_on_session) {
+        static const uint8_t early[3] = { 'e', 'l', 'y' };
+
+        (void)nodus_tcp_send(c, early, sizeof(early));
+    }
     if (nodus_tcp_sc_peer_pubkey(c, pk) == 0 && s->peer_pk != NULL &&
         memcmp(pk, s->peer_pk, NODUS_PK_BYTES) == 0)
         s->peer_ok++;
@@ -1141,8 +1154,16 @@ static void test_level_triggered(void)
 
     TEST("level-triggered transports: handshake + frames both ways still complete");
     g_level = true;
-    ok = big != NULL && pair_up(&CMT_P2P_SC_PROFILE_CLIENT, &CMT_P2P_SC_PROFILE_CLIENT, NULL) == 0 &&
-         pump_until(&g_srv.sessions, 1, MAX_ROUNDS) && pump_until(&g_cli.sessions, 1, MAX_ROUNDS);
+    ok = big != NULL && pair_up(&CMT_P2P_SC_PROFILE_CLIENT, &CMT_P2P_SC_PROFILE_CLIENT, NULL) == 0;
+    /* The client sends from inside its on_session, i.e. right behind its own
+     * AUTHSIG: the responder may still be verifying that AUTHSIG, holding the
+     * frame. It must be read once the hold drains (the read interest is
+     * restored AFTER the drain) with no further job or output to wake it. */
+    g_cli.send_on_session = true;
+    ok = ok && pump_until(&g_srv.sessions, 1, MAX_ROUNDS) &&
+         pump_until(&g_cli.sessions, 1, MAX_ROUNDS) &&
+         pump_until(&g_srv.frames, 1, MAX_ROUNDS) &&
+         g_srv.rx_len == 3 && memcmp(g_srv.rx, "ely", 3) == 0;
     if (ok) {
         for (size_t i = 0; i < 100000; i++) big[i] = (uint8_t)(i * 7u + (i >> 8));
         ok = send_and_check(&g_cli, &g_srv, big, 100000) &&
@@ -1153,6 +1174,31 @@ static void test_level_triggered(void)
     pair_down();
     g_level = false;
     free(big);
+}
+
+/* ══ 14: a marked teardown is claimed once, even if on_disconnect polls ══ */
+
+static void test_teardown_nested_poll(void)
+{
+    int ok;
+
+    TEST("marked teardown: on_disconnect runs once although it polls (nested reaper)");
+    ok = pair_up(&CMT_P2P_SC_PROFILE_CLIENT, &CMT_P2P_SC_PROFILE_CLIENT, NULL) == 0 &&
+         pump_until(&g_srv.sessions, 1, MAX_ROUNDS) && pump_until(&g_cli.sessions, 1, MAX_ROUNDS);
+    if (ok) {
+        /* What a failed seal does under the write lock (sc_seal_failed_locked). */
+        g_cli.poll_in_disconnect = true;
+        g_cli.conn->sc_close_req = true;
+        g_cli.tcp.sc_close_requests++;
+        ok = pump_until(&g_cli.disconnected, 1, MAX_ROUNDS) &&
+             pump_until(&g_srv.disconnected, 1, MAX_ROUNDS);
+        for (int i = 0; i < 100; i++)      /* nothing may close it a second time */
+            poll_both();
+        ok = ok && g_cli.disconnected == 1 && g_srv.disconnected == 1 &&
+             g_cli.tcp.sc_close_requests == 0 && g_cli.tcp.count == 0;
+    }
+    if (ok) PASS(); else FAIL("closed twice, not closed, or the count is off");
+    pair_down();
 }
 
 /* ══ main ════════════════════════════════════════════════════════════ */
@@ -1191,6 +1237,7 @@ int main(void)
     test_ws_close_behind_data();
     test_enable_dirty_conn();
     test_level_triggered();
+    test_teardown_nested_poll();
     test_layer_off_bytes();
 
     free(g_a);

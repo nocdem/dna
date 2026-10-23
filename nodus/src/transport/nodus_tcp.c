@@ -1150,23 +1150,33 @@ static bool sc_seal_failed_locked(nodus_tcp_conn_t *conn) {
     return true;
 }
 
-/* Close every connection a send marked (sc_seal_failed_locked). Runs in the
- * poll loop with the write lock RELEASED: on_disconnect may send. */
+/* Close every connection a send marked (sc_seal_failed_locked). Each marked
+ * connection is CLAIMED under the write lock (mark read and cleared, count
+ * lowered, sc_closing set) and its callbacks then run with the lock
+ * RELEASED: on_disconnect may send, and may poll again — a nested reaper
+ * finds no mark, and a nested poll skips a claimed connection. */
 static void sc_reap_marked(nodus_tcp_t *tcp) {
-    int pending;
-
-    wl_enter(tcp);
-    pending = tcp->sc_close_requests;
-    wl_leave(tcp);
-    if (pending <= 0)
-        return;
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
-        nodus_tcp_conn_t *c = tcp->pool[i];
+        nodus_tcp_conn_t *c;
+        bool claimed = false;
 
-        if (c && c->sc_close_req && !c->close_pending) {
+        wl_enter(tcp);
+        if (tcp->sc_close_requests <= 0) {
+            wl_leave(tcp);
+            return;
+        }
+        c = tcp->pool[i];
+        if (c && c->sc_close_req && !c->close_pending && !c->sc_closing) {
+            c->sc_close_req = false;
+            c->sc_closing = true;
+            tcp->sc_close_requests--;
+            claimed = true;
+        }
+        wl_leave(tcp);
+        if (claimed) {
             if (tcp->on_disconnect)
                 tcp->on_disconnect(c, tcp->cb_ctx);
-            conn_free(tcp, c);        /* clears the mark and the count */
+            conn_free(tcp, c);
         }
     }
 }
@@ -1199,11 +1209,10 @@ static void sc_apply_done(nodus_tcp_t *tcp) {
             conn_free(tcp, conn);
         } else if (r == NODUS_SC_APPLY_OK) {
             /* Input held while the job ran, and the socket's own bytes
-             * (no new edge will announce them), are read next. */
-#ifdef NODUS_TCP_EPOLL
-            sc_epoll_rearm(tcp, conn);     /* level-triggered: back in the read set
-                                            * (unless the next job blocks it again) */
-#endif
+             * (no new edge will announce them), are read next. The read
+             * handler puts a level-triggered connection back in the read set
+             * once its resumed feed has drained the hold (the rearm must see
+             * the blocked state AFTER that, not before). */
             read_pending_add(tcp, conn);
         }
         j = next;
@@ -1231,6 +1240,13 @@ static read_rc_t read_plain_sc(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     }
     if (sc_notify_ready(tcp, conn))
         return READ_CLOSED;
+#ifdef NODUS_TCP_EPOLL
+    /* Level-triggered: the resumed feed above has drained the hold, so the
+     * blocked state is now the true one — back in the read set unless a next
+     * job blocks the connection again. (Not earlier: the apply runs before
+     * the hold is drained.) */
+    sc_epoll_rearm(tcp, conn);
+#endif
     pr = try_parse_frames(tcp, conn, true);
     if (pr == PARSE_CLOSED) return READ_CLOSED;
     if (pr == PARSE_MORE)   return READ_MORE;
@@ -1250,7 +1266,7 @@ static read_rc_t read_plain_sc(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             want = conn->read_bytes_left;
         ssize_t n = poll_read(conn->fd, chunk, want);
         if (n > 0) {
-            conn->io_started = true;
+            atomic_store_explicit(&conn->io_started, true, memory_order_relaxed);
             conn->read_bytes_left -= (size_t)n;
             conn->last_activity = nodus_time_now();
             eintr_left = NTCP_MAX_EINTR_RETRY;
@@ -1322,7 +1338,7 @@ static read_rc_t read_plain(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             want = conn->read_bytes_left;
         ssize_t n = poll_read(conn->fd, conn->rbuf + conn->rlen, want);
         if (n > 0) {
-            conn->io_started = true;
+            atomic_store_explicit(&conn->io_started, true, memory_order_relaxed);
             conn->rlen += (size_t)n;
             conn->read_bytes_left -= (size_t)n;
             conn->last_activity = nodus_time_now();
@@ -1370,7 +1386,8 @@ static read_rc_t read_plain(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
  * inside nodus_tcp_poll (poll_depth > 0), so conn's memory outlives a close
  * made below and read_active can be cleared after it. */
 static void handle_read(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
-    if (conn->close_pending) return;   /* closed by a callback in this batch */
+    if (conn->close_pending || conn->sc_closing)
+        return;   /* closed by a callback in this batch, or claimed for teardown */
 
     /* Already serviced by this poll call, or its read is running further up
      * the stack (a callback polled again): queue it, never skip it — under
@@ -1457,7 +1474,7 @@ static ntcp_io_t conn_flush_wbuf(nodus_tcp_conn_t *conn,
                                conn->wlen - conn->wpos);
         ntcp_io_t io = ntcp_classify(n);
         if (io == NTCP_IO_PROGRESS) {
-            conn->io_started = true;
+            atomic_store_explicit(&conn->io_started, true, memory_order_relaxed);
             conn->wpos += (size_t)n;
             eintr_left = NTCP_MAX_EINTR_RETRY;
             if (progress_cb) progress_cb(conn->wpos, conn->wlen, user_data);
@@ -1521,6 +1538,8 @@ static bool handle_write_locked(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 }
 
 static void handle_write(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    if (conn->sc_closing)
+        return;                 /* claimed for teardown (sc_reap_marked) */
     wl_enter(tcp);
     bool alive = handle_write_locked(tcp, conn);
     wl_leave(tcp);
@@ -1932,10 +1951,11 @@ static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         }
         if (sc_notify_ready(tcp, conn))
             return READ_CLOSED;
+        /* Level-triggered: the hold is drained now — see read_plain_sc. */
+        sc_epoll_rearm(tcp, conn);
         if (conn->ws_close_wait) {
             /* A Close arrived behind input a handshake job was holding. */
             if (nodus_tcp_sc_blocked(conn)) {
-                sc_epoll_rearm(tcp, conn);
                 return READ_DRAINED;
             }
             /* The held input is open now: dispatch what preceded the Close,
@@ -1969,7 +1989,7 @@ static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             want = conn->read_bytes_left;
         ssize_t n = poll_read(conn->fd, chunk, want);
         if (n > 0) {
-            conn->io_started = true;
+            atomic_store_explicit(&conn->io_started, true, memory_order_relaxed);
             conn->read_bytes_left -= (size_t)n;
             conn->last_activity = nodus_time_now();
             eintr_left = NTCP_MAX_EINTR_RETRY;
@@ -3519,8 +3539,8 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
          * pointer is compared against the pool without dereferencing it;
          * it cannot have been handed to a new connection meanwhile, because
          * nothing closed during the batch is freed before it ends. */
-        if (!conn_in_pool(tcp, conn))
-            continue;
+        if (!conn_in_pool(tcp, conn) || conn->sc_closing)
+            continue;       /* gone, or claimed for teardown (sc_reap_marked) */
 
         if (conn->state == NODUS_CONN_CONNECTING) {
             handle_connect_complete(tcp, conn);

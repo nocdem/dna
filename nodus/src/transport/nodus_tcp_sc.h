@@ -155,7 +155,12 @@
  * takes it and returns a COPY — a pointer into the machine would dangle once
  * conn_free wipes it. The "transport-internal" functions below that touch the
  * machine run with the lock held by the caller, except the ones marked
- * poll-thread-only. on_session is invoked after the lock is released. The
+ * poll-thread-only. on_session is invoked after the lock is released.
+ * CALLBACK RULE: the progress callback of nodus_tcp_send_progress and
+ * tcp->on_pending_full run UNDER the write lock (nodus_tcp.h); they must not
+ * call any nodus_tcp_sc_* query (non-recursive lock: self-deadlock). No
+ * in-tree callback does (git grep of the public queries finds only
+ * transport/ and tests/test_tcp_sc.c). All other callbacks run unlocked. The
  * worker threads touch only their private job copies.
  *
  * Copyright (c) 2026 nocdem

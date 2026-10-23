@@ -15,6 +15,7 @@
 #ifndef NODUS_TCP_H
 #define NODUS_TCP_H
 
+#include <stdatomic.h>
 #include "nodus/nodus_types.h"
 #include "crypto/nodus_channel_crypto.h"
 #include "transport/nodus_ws.h"
@@ -279,13 +280,18 @@ typedef struct nodus_tcp_conn {
      * nothing clears it. Empty buffers do not prove a connection unused
      * (bytes may have been consumed and answered); the SecretConnection
      * layer is enabled only on a connection where this is still false. */
-    bool                   io_started;
+    atomic_bool            io_started;   /* relaxed: set by the reader and (under the write lock) the sender */
 
     /* SecretConnection layer, loop-owned teardown: a fatal sealing failure
      * (cipher error — the machine is dead) cannot close the connection from
      * inside a send, so the send marks it and the next nodus_tcp_poll closes
      * it, after the write lock is released. Counted in tcp->sc_close_requests. */
     bool                   sc_close_req;
+    /* The loop has claimed this marked connection and is running its
+     * teardown callbacks (set under the write lock together with clearing
+     * sc_close_req). A nested nodus_tcp_poll started by on_disconnect must
+     * neither reap it again nor process events or job results for it. */
+    bool                   sc_closing;
 
     /* WebSocket Close that arrived while a handshake job was outstanding
      * (layer on): the input preceding it is still held. The close frame to
@@ -555,7 +561,9 @@ int nodus_tcp_send(nodus_tcp_conn_t *conn,
  * Send a framed payload with progress reporting.
  * Same as nodus_tcp_send but calls progress_cb after each partial write.
  * progress_cb (and tcp->on_pending_full) run with the write lock held when
- * one is installed: they must not send on this transport.
+ * one is installed: they must not send on this transport, and must not call
+ * the nodus_tcp_sc_* queries (nodus_tcp_sc.h) — those take the same
+ * non-recursive lock and would self-deadlock.
  */
 int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
                              const uint8_t *payload, size_t len,
