@@ -62,9 +62,16 @@ static bool sc_profile_str_ok(const char *s)
     return n >= 1 && n <= CMT_P2P_SC_PROFILE_STR_MAX;
 }
 
+/** Only the three const profiles of this file are valid (compared by
+ *  pointer: an unknown profile is refused, Kurultay #43); the string bounds
+ *  are a second guard. */
 static bool sc_profile_ok(const cmt_p2p_sc_profile_t *p)
 {
-    return p != NULL && sc_profile_str_ok(p->transcript_tag) &&
+    if (p != &CMT_P2P_SC_PROFILE_WITNESS && p != &CMT_P2P_SC_PROFILE_CLIENT &&
+        p != &CMT_P2P_SC_PROFILE_NODE) {
+        return false;
+    }
+    return sc_profile_str_ok(p->transcript_tag) &&
            sc_profile_str_ok(p->info_aead) && sc_profile_str_ok(p->info_challenge);
 }
 

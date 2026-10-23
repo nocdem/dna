@@ -259,12 +259,20 @@ extern const cmt_p2p_sc_profile_t CMT_P2P_SC_PROFILE_WITNESS;
 /** DHT v2 client session: nodus.csess.*; host purpose 0x0C.
  *  Decision 2026-10-14-kurultay-21-summary.md:216-219 names the tags
  *  `nodus.csess.transcript.v1` / `nodus.csess.keys.v1` "the 4004 pattern";
- *  the `/aead` and `/challenge` suffixes are this reading of that
- *  pattern (4004: `nodus.wsess.keys.v1/aead`, `.../challenge`). */
+ *  the `/aead` and `/challenge` suffixes, and the NDS1 + strict 0x0C/0x0D
+ *  signature separation, are operator-approved in
+ *  docs/plans/decisions/2026-10-23-dht-v2-session-bytes.md. */
 extern const cmt_p2p_sc_profile_t CMT_P2P_SC_PROFILE_CLIENT;
 /** DHT v2 node-to-node session: nodus.nsess.*; host purpose 0x0D. Same
- *  suffix reading as CLIENT. */
+ *  decision as CLIENT. */
 extern const cmt_p2p_sc_profile_t CMT_P2P_SC_PROFILE_NODE;
+
+/* The signing purpose is the HOST's binding, not the profile's — nothing in
+ * this module checks that a profile is paired with its purpose. Obligations
+ * for DHT v2 sub-package 3b (recorded here, NOT implemented in 3a): pair
+ * CLIENT with 0x0C and NODE with 0x0D in the host; and pass a per-port
+ * protocol-version symbol of its own to init, never
+ * CMT_P2P_PROTOCOL_VERSION (Kurultay #43, O-6). */
 
 /* ══ Direction roles (nonce byte 0) ═══════════════════════════════════ */
 

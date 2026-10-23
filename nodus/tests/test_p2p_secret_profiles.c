@@ -23,9 +23,9 @@
  *     hex computed by python3 (command in the comment above the vectors);
  *   · a signature under 0x0C does not verify as 0x0A or 0x0D, 0x0D not as
  *     0x0A or 0x0C, 0x0A not as 0x0C or 0x0D; each verifies under its own;
- *   · a NULL profile, a profile with an empty tag / aead info / challenge
- *     info, a NULL string, or a string of 65 bytes is refused at init
- *     (CMT_FAULT); a 64-byte string is accepted;
+ *   · init accepts ONLY the three const profiles (by pointer): NULL, a copy
+ *     of a const profile, an empty / NULL / 65-byte string and even a
+ *     valid-looking 64-byte custom profile are refused (CMT_FAULT);
  *   · cmt_p2p_sc_init (no profile argument) is the WITNESS profile.
  *
  * WHAT IT REQUIRES: a default nodus build; no flags, no environment. Fixed
@@ -35,9 +35,10 @@
  *
  * HOW IT CAN LIE: the live recompute uses this tree's SHA3-512 / HKDF; only
  * the python3 vectors tie them to an outside tool. The profile strings for
- * CLIENT / NODE are the decision's tags plus the "/aead" and "/challenge"
- * suffixes read from the 4004 pattern — the decision does not spell the
- * suffixes out, so the vectors pin that reading, not an external source.
+ * CLIENT / NODE are the decided tags plus the "/aead" and "/challenge"
+ * suffixes, operator-approved in docs/plans/decisions/2026-10-23-dht-v2-
+ * session-bytes.md (with NDS1 + strict 0x0C/0x0D separation); the vectors
+ * are self-consistent with that decision, not an external source.
  * Both machines run in one process with inline jobs. The 4004 bytes
  * themselves are pinned by test_p2p_secret_kat.c, not here.
  *
@@ -358,18 +359,27 @@ static void drive(side_t *i, side_t *r)
 
 static node_t *g_a, *g_b;
 
-/** One handshake; returns both sides' state through the out params. */
-static void handshake(const cmt_p2p_sc_profile_t *pi, uint8_t purpose_i,
-                      const cmt_p2p_sc_profile_t *pr, uint8_t purpose_r,
-                      side_t *i, side_t *r)
+/**
+ * One handshake; both sides are zeroed first so side_free is always safe.
+ * @return 0 when both sides were set up and driven, -1 on a setup failure
+ *         (the caller reports FAIL and still calls side_free on both).
+ */
+static int handshake(const cmt_p2p_sc_profile_t *pi, uint8_t purpose_i,
+                     const cmt_p2p_sc_profile_t *pr, uint8_t purpose_r,
+                     side_t *i, side_t *r)
 {
+    memset(i, 0, sizeof(*i));
+    memset(r, 0, sizeof(*r));
     g_a->purpose = purpose_i;
     g_b->purpose = purpose_r;
-    if (side_init(i, g_a, CMT_P2P_SC_ROLE_INITIATOR, pi) != CMT_OK ||
-        side_init(r, g_b, CMT_P2P_SC_ROLE_RESPONDER, pr) != CMT_OK) {
-        return;
+    if (side_init(i, g_a, CMT_P2P_SC_ROLE_INITIATOR, pi) != CMT_OK) {
+        return -1;
+    }
+    if (side_init(r, g_b, CMT_P2P_SC_ROLE_RESPONDER, pr) != CMT_OK) {
+        return -1;
     }
     drive(i, r);
+    return 0;
 }
 
 static void test_matched(const char *name, const cmt_p2p_sc_profile_t *p,
@@ -380,7 +390,12 @@ static void test_matched(const char *name, const cmt_p2p_sc_profile_t *p,
     bool ok;
 
     TEST(name);
-    handshake(p, purpose, p, purpose, &i, &r);
+    if (handshake(p, purpose, p, purpose, &i, &r) != 0) {
+        FAIL("setup failed");
+        side_free(&i);
+        side_free(&r);
+        return;
+    }
     ok = i.sc != NULL && r.sc != NULL && cmt_p2p_sc_is_authenticated(i.sc) &&
          cmt_p2p_sc_is_authenticated(r.sc) && i.have_key && r.have_key &&
          memcmp(i.key, r.key, 32) == 0 &&
@@ -407,12 +422,13 @@ static void test_mixed(const char *name, const cmt_p2p_sc_profile_t *pi, uint8_t
     side_t i, r;
 
     TEST(name);
-    handshake(pi, ui, pr, ur, &i, &r);
-    if (i.sc != NULL && r.sc != NULL && !cmt_p2p_sc_is_authenticated(i.sc) &&
-        !cmt_p2p_sc_is_authenticated(r.sc)) {
+    if (handshake(pi, ui, pr, ur, &i, &r) != 0) {
+        FAIL("setup failed");
+    } else if (!cmt_p2p_sc_is_authenticated(i.sc) &&
+               !cmt_p2p_sc_is_authenticated(r.sc)) {
         PASS();
     } else {
-        FAIL("mixed profiles authenticated (or setup failed)");
+        FAIL("mixed profiles authenticated");
     }
     side_free(&i);
     side_free(&r);
@@ -422,13 +438,20 @@ static void test_purposes(void)
 {
     static const uint8_t chl[32] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
                                      17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32 };
-    nodus_sig_t s_a, s_c, s_n;
+    nodus_sig_t s_a, s_c, s_n, s_raw;
     const nodus_pubkey_t *pk = &g_a->id.pk;
     const nodus_seckey_t *sk = &g_a->id.sk;
     bool ok;
 
     TEST("0x0A / 0x0C / 0x0D signatures verify only under their own purpose");
-    ok = nodus_sign_session_auth(&s_a, chl, 32, sk) == 0 &&
+    ok = nodus_sign(&s_raw, chl, 32, sk) == 0 &&
+         /* control: the RAW signature over the challenge is valid raw ... */
+         nodus_verify(&s_raw, chl, 32, pk) == 0 &&
+         /* ... and every strict session purpose refuses it (no raw fallback) */
+         nodus_verify_session_auth(&s_raw, chl, 32, pk) != 0 &&
+         nodus_verify_client_session_auth(&s_raw, chl, 32, pk) != 0 &&
+         nodus_verify_node_session_auth(&s_raw, chl, 32, pk) != 0 &&
+         nodus_sign_session_auth(&s_a, chl, 32, sk) == 0 &&
          nodus_sign_client_session_auth(&s_c, chl, 32, sk) == 0 &&
          nodus_sign_node_session_auth(&s_n, chl, 32, sk) == 0 &&
          nodus_verify_session_auth(&s_a, chl, 32, pk) == 0 &&
@@ -440,7 +463,7 @@ static void test_purposes(void)
          nodus_verify_client_session_auth(&s_n, chl, 32, pk) != 0 &&
          nodus_verify_client_session_auth(&s_a, chl, 32, pk) != 0 &&
          nodus_verify_node_session_auth(&s_a, chl, 32, pk) != 0 &&
-         /* strict: no raw fallback either */
+         /* and a tagged signature is not a valid raw signature */
          nodus_verify(&s_c, chl, 32, pk) != 0 && nodus_verify(&s_n, chl, 32, pk) != 0;
     if (ok) PASS(); else FAIL("purpose separation broken");
 }
@@ -453,7 +476,12 @@ static void test_bad_profiles(void)
     cmt_p2p_sc_profile_t p;
     bool ok;
 
-    TEST("NULL / empty / NULL-string / 65-byte profile refused; 64 accepted");
+    /* Init accepts ONLY the three const profiles, by pointer. Any other
+     * profile — a copy of a const one, an empty / NULL / 65-byte string,
+     * even a valid-looking 64-byte one — is refused. The string-bound check
+     * behind that (sc_profile_ok) is a second guard that no caller outside
+     * cmt_p2p_secret.c can reach any more, so it has no test of its own. */
+    TEST("NULL and every custom profile refused; the three const ones accepted");
     host.ctx = g_a;
     host.sign = host_sign;
     host.verify = host_verify;
@@ -462,20 +490,22 @@ static void test_bad_profiles(void)
 #define INIT(pp) cmt_p2p_sc_init_profile(sc, CMT_P2P_SC_ROLE_INITIATOR, &host, (pp), \
         g_a->id.pk.bytes, NULL, NULL, PROTO_VER, CHAIN_A)
     ok = sc != NULL && INIT(NULL) == CMT_FAULT;
+    p = CMT_P2P_SC_PROFILE_CLIENT;                 /* a byte-identical COPY */
+    ok = ok && INIT(&p) == CMT_FAULT;
     p = CMT_P2P_SC_PROFILE_CLIENT;  p.transcript_tag = "";
     ok = ok && INIT(&p) == CMT_FAULT;
     p = CMT_P2P_SC_PROFILE_CLIENT;  p.info_aead = "";
-    ok = ok && INIT(&p) == CMT_FAULT;
-    p = CMT_P2P_SC_PROFILE_CLIENT;  p.info_challenge = "";
     ok = ok && INIT(&p) == CMT_FAULT;
     p = CMT_P2P_SC_PROFILE_CLIENT;  p.info_challenge = NULL;
     ok = ok && INIT(&p) == CMT_FAULT;
     p = CMT_P2P_SC_PROFILE_CLIENT;  p.transcript_tag = s65;
     ok = ok && INIT(&p) == CMT_FAULT;
-    p = CMT_P2P_SC_PROFILE_CLIENT;  p.info_aead = s65;
+    p = CMT_P2P_SC_PROFILE_CLIENT;  p.transcript_tag = s64;   /* valid-looking */
     ok = ok && INIT(&p) == CMT_FAULT;
-    p = CMT_P2P_SC_PROFILE_CLIENT;  p.transcript_tag = s64;
-    ok = ok && INIT(&p) == CMT_OK;
+    ok = ok && INIT(&CMT_P2P_SC_PROFILE_WITNESS) == CMT_OK &&
+         sc->profile == &CMT_P2P_SC_PROFILE_WITNESS;
+    ok = ok && INIT(&CMT_P2P_SC_PROFILE_CLIENT) == CMT_OK &&
+         sc->profile == &CMT_P2P_SC_PROFILE_CLIENT;
     ok = ok && INIT(&CMT_P2P_SC_PROFILE_NODE) == CMT_OK &&
          sc->profile == &CMT_P2P_SC_PROFILE_NODE;
 #undef INIT
