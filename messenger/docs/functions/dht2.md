@@ -94,6 +94,7 @@ FIPS 204.
 | `DHT2_OK` (0) / `DHT2_E_*` (§2) | `dht2_data_encode`, `dht2_data_decode`, `dht2_record_parse`, `dht2_record_check_class`, `dht2_record_check_expiry`, `dht2_record_verify`, `dht2_record_canonical`, `dht2_record_build`, `dht2_record_placement_key`, `dht2_env_seal`, `dht2_env_decode`, `dht2_env_verify`, `dht2_list_payload_encode`, `dht2_list_payload_decode`, `dht2_list_req_build`, `dht2_list_req_open`; package 2 (§10): every `*_encode` / `*_decode` of `dht2_msg.h`, `dht2_answer_seal`, `dht2_answer_open`, `dht2_ctl_encode`, `dht2_ctl_check`, `dht2_ctl_at`, `dht2_ctl_lookup` |
 | plain `0` / `-1` | `dht2_cbor_rd_map/_key/_uint/_bytes/_text/_array/_true/_bool/_null`, `dht2_id`, `dht2_id_feed_entry`, `dht2_id_feed_head`, `dht2_id_inbox`, `dht2_id_inbox_ctl`, `dht2_id_dm`, `dht2_id_group_head`, `dht2_id_group_record`, `dht2_id_group_keys`, `dht2_id_group_feed`, `dht2_address`, `dht2_fp`, `dht2_validity_parse`, `dht2_validity_format` |
 | other | `dht2_bytes_compare` −1 / 0 / 1; `dht2_record_compare` sign (> 0 / < 0 / 0); `dht2_nearest_r` a count or −1; `dht2_eligible` 1 / 0 / −1; `dht2_cbor_rd_peek_mt` a major type 0-7 or −1; `dht2_cbor_rd_done`, `dht2_cbor_rd_peek_null`, `dht2_cbor_key_is`, `dht2_cbor_wr_ok`, `dht2_bits_get` `bool`; `dht2_bits_len` `size_t`; the `dht2_cbor_wr_*` emitters and `dht2_bits_set` `void` (writer errors are sticky in the writer) |
+| package 5 (§12) | `nodus_dht2_store_put` 0 (outcome in `res`) / a row-7 code / `DHT2_E_ARG`; `nodus_dht2_store_get` `NODUS_DHT2_GET_HELD` 0 / `NODUS_DHT2_GET_NOT_HELD` 1 / 15 / 16 / `DHT2_E_ARG`; `_list`, `_sweep`, `_scan` 0 / 15 / 16 / `DHT2_E_ARG`; `_top`, `_handover_set`, `_handover_get` 0 / 16 (the hand-over calls also `DHT2_E_ARG`); `nodus_dht2_store_open` a pointer or NULL; `_generation` `uint64_t`; `_db` a `sqlite3 *`; `_close`, `nodus_dht2_limits_default` `void`. Package 4's `nodus_dht2_wview_*`: §11 |
 
 `DHT2_E_ARG` (−1) is always the CALLER's bug (a NULL argument, a buffer
 too small) and never a verdict on input bytes (`dht2_types.h:82-84`).
@@ -140,10 +141,23 @@ above) (`dht2_record.c:160-226`). Because ML-DSA-87 signing is
 hedged, two builds of the same record differ in their signature bytes; a
 retry must resend the stored canonical bytes (design §4.2).
 
+The above is packages 1-2. **Package 4** (§11) reads no clock either (the
+caller passes `now_ms`) but keeps per-view state and allocates (§11).
+**Package 5** (§12) still reads no clock (chain time = the injected
+snapshot's `tip_time`) but is stateful (a SQLite database) and draws ONE
+random value: the store generation `g`, from `qgp_platform_random` when a
+store is first created (`nodus_dht2_store.c:298-314`) — node-local,
+compared for equality only, never a consensus input. It allocates per call
+(`put_work_t` in `put`, `:893`; the held row's bytes, `:460`; the control
+record's bytes, `:519`; the LIST hash buffer, `:1068`) and frees on every
+path.
+
 ### 1.4 ⚠ API CONTRACT — signatures
 
 **No function here except `dht2_record_verify`, `dht2_env_verify`,
-`dht2_list_req_open` and `dht2_answer_open` checks a signature.** Every
+`dht2_list_req_open`, `dht2_answer_open` and package 5's
+`nodus_dht2_store_put` (which calls `dht2_record_verify` before Select and
+store, `nodus_dht2_store.c:942-947`) checks a signature.** Every
 package-2 `*_decode` reads a PAYLOAD and checks no signature; an answer /
 receipt / refusal payload is trusted only after `dht2_answer_open` (or
 `dht2_env_verify` under `nodus.dht.answer.v1`) returned `DHT2_OK` on its
@@ -1087,7 +1101,8 @@ row bound (measure first); a refusal that leaves an older version behind
 `INT64_MAX − (DHT2_SEC_7D + DHT2_SEC_SLACK_3H)` → 15 (every time threshold
 must fit SQLite's int64); `snap->chain_id` ≠ the chain recorded at create →
 16 (G8). The hand-over calls and `top` / `generation` do not run the gate.
-(For `put`, a NULL `ctx` is caught earlier as `DHT2_E_ARG`.)
+(For every gated call a NULL `ctx` is caught earlier as `DHT2_E_ARG`,
+`nodus_dht2_store.c:879`, `:998`, `:1055`, `:1166`, `:1213`.)
 
 ### 12.3 Functions
 
