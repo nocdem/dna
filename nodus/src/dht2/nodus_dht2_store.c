@@ -39,10 +39,8 @@ struct nodus_dht2_store {
 /* One row per ADDRESS (the primary key). `idx` is the insertion index,
  * unique, re-assigned on every stored change (§4.5 i). `named` is the pool
  * the record is charged to; `noexp` is its own flag (ValidityType 1), never
- * encoded in `expiry`. dht2_cut remembers, per (inbox, writer), the highest
- * HANDLED cutoff of every control record seen (winner or loser), until
- * t + 7 d + 3 h of the latest sighting (§3.3: "a dropped entry cannot come
- * back"). dht2_meta
+ * encoded in `expiry`. There is NO holder memory of dropped entries
+ * (decision 2026-10-24-dht-v2-handled-client-rule.md). dht2_meta
  * `v` has no declared type: integers (top, gen) and the chain id blob. */
 static const char SCHEMA_SQL[] =
     "CREATE TABLE IF NOT EXISTS dht2_meta("
@@ -64,13 +62,7 @@ static const char SCHEMA_SQL[] =
     "  idx       INTEGER NOT NULL UNIQUE);"
     "CREATE INDEX IF NOT EXISTS dht2_rec_owner ON dht2_rec(owner, size);"
     "CREATE INDEX IF NOT EXISTS dht2_rec_pool  ON dht2_rec(named, size);"
-    "CREATE INDEX IF NOT EXISTS dht2_rec_place ON dht2_rec(placement, cls, owner);"
-    "CREATE TABLE IF NOT EXISTS dht2_cut("
-    "  placement  BLOB NOT NULL,"
-    "  writer     BLOB NOT NULL,"
-    "  through    INTEGER NOT NULL,"
-    "  keep_until INTEGER NOT NULL,"
-    "  PRIMARY KEY(placement, writer));";
+    "CREATE INDEX IF NOT EXISTS dht2_rec_place ON dht2_rec(placement, cls, owner);";
 
 /* ══ small SQLite helpers: every error is a fault (-1) ═════════════════ */
 
@@ -538,86 +530,6 @@ static int ctl_load_live(nodus_dht2_store_t *s, const uint8_t *inbox,
     return 0;
 }
 
-/* ══ HANDLED memo: the highest cutoff that dropped an entry ════════════ */
-
-/* The live memo (keep_until > t) of (inbox, writer). 0 / -1. */
-static int cut_get(nodus_dht2_store_t *s, const uint8_t *inbox,
-                   const uint8_t *writer, uint64_t t, bool *found,
-                   uint64_t *through)
-{
-    sqlite3_stmt *st = prep(s, "SELECT through, keep_until FROM dht2_cut "
-                               "WHERE placement = ?1 AND writer = ?2");
-    int           rc;
-
-    *found = false;
-    if (st == NULL) {
-        return -1;
-    }
-    if (!bound(st, b_64(st, 1, inbox) | b_64(st, 2, writer))) {
-        return -1;
-    }
-    rc = sqlite3_step(st);
-    if (rc == SQLITE_ROW) {
-        if ((uint64_t)sqlite3_column_int64(st, 1) > t) {
-            *through = (uint64_t)sqlite3_column_int64(st, 0);
-            *found = true;
-        }
-    } else if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "cut read: %s", sqlite3_errmsg(s->db));
-        sqlite3_finalize(st);
-        return -1;
-    }
-    sqlite3_finalize(st);
-    return 0;
-}
-
-/* Record a drop: the cutoff only grows, the memo lives until the latest
- * expiry among the entries it dropped. Written whatever the old row says
- * (an expired memo is overwritten by the max of nothing). */
-static int cut_note(nodus_dht2_store_t *s, const uint8_t *inbox,
-                    const uint8_t *writer, uint64_t through,
-                    uint64_t keep_until)
-{
-    sqlite3_stmt *st = prep(s, "SELECT through, keep_until FROM dht2_cut "
-                               "WHERE placement = ?1 AND writer = ?2");
-    int           rc;
-
-    if (st == NULL) {
-        return -1;
-    }
-    if (!bound(st, b_64(st, 1, inbox) | b_64(st, 2, writer))) {
-        return -1;
-    }
-    rc = sqlite3_step(st);
-    if (rc == SQLITE_ROW) {
-        uint64_t old_t = (uint64_t)sqlite3_column_int64(st, 0);
-        uint64_t old_k = (uint64_t)sqlite3_column_int64(st, 1);
-
-        if (old_t > through) {
-            through = old_t;
-        }
-        if (old_k > keep_until) {
-            keep_until = old_k;
-        }
-    } else if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "cut read: %s", sqlite3_errmsg(s->db));
-        sqlite3_finalize(st);
-        return -1;
-    }
-    sqlite3_finalize(st);
-    st = prep(s, "INSERT OR REPLACE INTO dht2_cut(placement, writer, through, "
-                 "keep_until) VALUES(?1, ?2, ?3, ?4)");
-    if (st == NULL) {
-        return -1;
-    }
-    if (!bound(st, b_64(st, 1, inbox) | b_64(st, 2, writer) |
-                       b_i64(st, 3, (int64_t)through) |
-                       b_i64(st, 4, (int64_t)keep_until))) {
-        return -1;
-    }
-    return step_done(s, st);
-}
-
 /* ══ put ═══════════════════════════════════════════════════════════════ */
 
 typedef struct {
@@ -638,21 +550,17 @@ static int code_of(int rc)
     return (rc >= DHT2_E_TOO_LARGE && rc <= DHT2_E_HANDLED) ? rc : CODE_FAULT;
 }
 
-/* §3.3 / row 15: an inbox entry's writer against (a) the selected, LIVE
- * control record and (b) the memo of cutoffs that already dropped its
- * entries — a dropped entry cannot come back whatever the current control
- * record says. 0 = no objection; 12 = DENIED (while listed); 18 = at or
- * below the HANDLED cutoff, the larger of (a) and (b) in res->through;
- * 16 = fault. */
+/* §3.3 / row 15: an inbox entry's writer against the SELECTED, LIVE control
+ * record only. 0 = no objection; 12 = DENIED (while listed); 18 = Sequence
+ * at or below the writer's HANDLED cutoff, which is returned in
+ * res->through; 16 = fault. */
 static int ctl_check_entry(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
                            put_work_t *w, nodus_dht2_put_t *res)
 {
     uint8_t         *canon = NULL;
     size_t           len = 0;
     uint8_t          chash[DHT2_HASH_LEN];
-    bool             present = false, found = false, memo = false;
-    bool             have_cut = false;
-    uint64_t         cut = 0, mthrough = 0;
+    bool             present = false, found = false;
     dht2_ctl_entry_t ent;
 
     memset(&ent, 0, sizeof(ent));
@@ -673,22 +581,10 @@ static int ctl_check_entry(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
         if (found && ent.mark == DHT2_CTL_DENIED) {
             return DHT2_E_DENIED;
         }
-        if (found) {
-            have_cut = true;
-            cut = ent.through;
+        if (found && w->rec.d.sequence <= ent.through) {
+            res->through = ent.through;
+            return DHT2_E_HANDLED;
         }
-    }
-    if (cut_get(s, w->placement, w->rec.fp, ctx->snap->tip_time, &memo,
-                &mthrough) != 0) {
-        return CODE_FAULT;
-    }
-    if (memo && (!have_cut || mthrough > cut)) {
-        have_cut = true;
-        cut = mthrough;
-    }
-    if (have_cut && w->rec.d.sequence <= cut) {
-        res->through = cut;
-        return DHT2_E_HANDLED;
     }
     return 0;
 }
@@ -699,20 +595,13 @@ static int ctl_check_entry(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
  * inside the put transaction BEFORE the quota checks, so the bytes it frees
  * are credited (row 16).
  *
- *   HANDLED — for EVERY control record admission sees, whether it wins
- *     Select or loses it (a cutoff only ever grows, so the memo is the max
- *     over all records seen and does not depend on arrival order — D3):
- *     the memo takes the cutoff whether or not an entry is held, and the
- *     live entry at or below it is dropped. keep_until = t + 7 d + 3 h at
- *     the chain time of the sighting: no entry admissible afterwards can
- *     still be at or below that cutoff (entries expire ≤ t + class max +
- *     3 h).
- *   DENIED — only for the record that is STORED (the selected one); the
- *     entry goes whatever its Sequence, nothing is remembered ("refused
- *     while listed", rev 5).
- * 0 / -1. */
-static int ctl_apply(nodus_dht2_store_t *s, const put_work_t *w, uint8_t mark,
-                     uint64_t t)
+ * Called ONLY for a control record that won Select and is going to be
+ * stored (a losing record changes nothing, row 16). HANDLED drops the
+ * writer's entry with Sequence ≤ through, DENIED drops it whatever its
+ * Sequence. Nothing is remembered: keeping a handled request from coming
+ * back is a CLIENT rule (decision 2026-10-24-dht-v2-handled-client-rule.md:
+ * the owner keeps the writer listed until its entries expired). 0 / -1. */
+static int ctl_apply(nodus_dht2_store_t *s, const put_work_t *w)
 {
     const dht2_data_t *d = &w->rec.d;
     size_t             count = 0, i;
@@ -729,14 +618,6 @@ static int ctl_apply(nodus_dht2_store_t *s, const put_work_t *w, uint8_t mark,
         int              rc;
 
         if (dht2_ctl_at(d->data, d->data_len, i, &ent) != DHT2_OK) {
-            return -1;
-        }
-        if (ent.mark != mark) {
-            continue;
-        }
-        if (mark == DHT2_CTL_HANDLED &&
-            cut_note(s, w->placement, ent.fp, ent.through,
-                     t + DHT2_SEC_7D + DHT2_SEC_SLACK_3H) != 0) {
             return -1;
         }
         st = prep(s, "SELECT address, seq FROM dht2_rec "
@@ -756,7 +637,7 @@ static int ctl_apply(nodus_dht2_store_t *s, const put_work_t *w, uint8_t mark,
                 return -1;
             }
             memcpy(addr, sqlite3_column_blob(st, 0), DHT2_HASH_LEN);
-            drop = mark == DHT2_CTL_DENIED ||
+            drop = ent.mark == DHT2_CTL_DENIED ||
                    (uint64_t)sqlite3_column_int64(st, 1) <= ent.through;
             rc = sqlite3_step(st);
         }
@@ -793,16 +674,6 @@ static int admit_locked(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
     int                pool = w->named ? 1 : 0;
     int                code, handover = 0;
     sqlite3_stmt      *st;
-
-    /* An owner-signed control record (it passed the signature and the
-     * recipient binding): its HANDLED cutoffs reach the memo and drop the
-     * live entries at or below them NOW, whether the record goes on to win
-     * Select, lose it, or be refused by a quota check — cutoffs only grow,
-     * so the memo is the max over every record seen, in any arrival order. */
-    if (d->cls == DHT2_CLASS_INBOX_CTL && !d->del &&
-        ctl_apply(s, w, DHT2_CTL_HANDLED, t) != 0) {
-        return CODE_FAULT;
-    }
 
     /* Inbox entries: DENIED / HANDLED come before Select, so a re-put of
      * an entry the owner has since dropped is refused, not acknowledged. */
@@ -855,15 +726,12 @@ static int admit_locked(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
     }
     held_free(&hd);
 
-    /* The incoming version wins. A control record first drops the DENIED
-     * entries it marks: the stored-state change it causes counts BEFORE the
-     * checks below. They run after a savepoint, so a quota refusal can undo
-     * the DENIED drops while keeping the HANDLED cutoffs seen above. */
-    if (d->cls == DHT2_CLASS_INBOX_CTL && !d->del) {
-        if (exec_sql(s, "SAVEPOINT den") != 0 ||
-            ctl_apply(s, w, DHT2_CTL_DENIED, t) != 0) {
-            return CODE_FAULT;
-        }
+    /* The incoming version wins. A control record first drops the entries
+     * it marks (HANDLED, DENIED): the stored-state change it causes counts
+     * BEFORE the checks below (row 16); a refusal rolls the whole
+     * transaction back, nothing of it stays. */
+    if (d->cls == DHT2_CLASS_INBOX_CTL && !d->del && ctl_apply(s, w) != 0) {
+        return CODE_FAULT;
     }
 
     /* Order of the refusals is a reading (the text names no order): inbox
@@ -1092,23 +960,10 @@ int nodus_dht2_store_put(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
         goto out;
     }
     code = admit_locked(s, ctx, w, res);
-    /* A control record that is refused by a quota check still leaves the
-     * HANDLED cutoffs it carried (applied before Select): undo only its
-     * DENIED drops, then commit. An equal / losing control record commits
-     * the same cutoffs; every other equal / losing write wrote nothing. */
-    if ((code == DHT2_E_QUOTA || code == DHT2_E_NODE_FULL) &&
-        w->rec.d.cls == DHT2_CLASS_INBOX_CTL && !w->rec.d.del) {
-        if (exec_sql(s, "ROLLBACK TO den") != 0 ||
-            exec_sql(s, "RELEASE den") != 0) {
-            code = CODE_FAULT;
-        } else if (exec_sql(s, "COMMIT") != 0) {
-            (void)exec_sql(s, "ROLLBACK");
-            code = CODE_FAULT;
-        }
-        if (code == CODE_FAULT && exec_sql(s, "ROLLBACK") != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "rollback failed");
-        }
-    } else if (code == 0) {
+    /* Only a stored version keeps what the transaction did. An equal or
+     * losing write, and every refusal (a quota-refused control record
+     * included), changes nothing (row 16): full rollback. */
+    if (code == 0 && res->outcome == NODUS_DHT2_PUT_STORED) {
         if (exec_sql(s, "COMMIT") != 0) {
             (void)exec_sql(s, "ROLLBACK");
             code = CODE_FAULT;
@@ -1334,14 +1189,6 @@ int nodus_dht2_store_sweep(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
         return CODE_FAULT;
     }
     n = (uint64_t)sqlite3_changes(s->db);
-    /* The HANDLED memos of entries that are gone for good go with them. */
-    st = prep(s, "DELETE FROM dht2_cut WHERE keep_until <= ?1");
-    if (st == NULL ||
-        !bound(st, b_i64(st, 1, (int64_t)(t - DHT2_SEC_SLACK_3H))) ||
-        step_done(s, st) != 0) {
-        (void)exec_sql(s, "ROLLBACK");
-        return CODE_FAULT;
-    }
     if (exec_sql(s, "COMMIT") != 0) {
         (void)exec_sql(s, "ROLLBACK");
         return CODE_FAULT;

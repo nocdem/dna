@@ -50,11 +50,13 @@
  *     BIND (blob length limit) is 16, never "not held"; an index above
  *     INT64_MAX is never handed out, a counter behind the records is a
  *     fault (never a silent row delete) and refuses open; ValidityType <=>
- *     Validity is code 6, after the chain check (3); a dropped entry stays
- *     dropped ([18, through]) after the control record is replaced by one
- *     that no longer lists the writer, and after it expired; DENIED is not
- *     remembered; v1->v2 and v2->v1 end with the same entries; a control
- *     record that frees space is accepted at a full pool (a stranger one
+ *     Validity is code 6, after the chain check (3); admission follows the
+ *     SELECTED live control record only (no holder memory — the HANDLED
+ *     rule is a client rule, decision 2026-10-24-dht-v2-handled-client-
+ *     rule.md); a losing and a quota-refused control record leave entries,
+ *     counter and bytes unchanged; v2 (writer unlisted) before v1 keeps
+ *     the entry on that store (documented, accepted); a control record
+ *     that frees space is accepted at a full pool (one that frees nothing
  *     is not); an expired held row is replaced by a fresh lower Sequence;
  *     a tombstone is never refused by the pool of a writer who gained a
  *     name;
@@ -1470,33 +1472,36 @@ static void test_memo(const tkey_t *R, const tkey_t *X)
           dht2_id_inbox_ctl(g_chain, R->fp, ctl_id) == 0, "ids");
     dht2_address(ctl_id, R->fp, a_ctl);
 
-    /* Case A: v1 marks W HANDLED through 5 and drops E; v2 no longer lists
-     * W. E must not come back. */
+    /* The selected control record drops E and is the only thing admission
+     * consults: [18, through] while it lists W, nothing once it does not
+     * (no holder memory — the owner keeps W listed, a client rule). */
     CHECK(put_entry(w, s1, &k[0], inbox, 1, &res) == 0, "E stored");
     CHECK(mk_ctl1(&ctl, R, ctl_id, 1, T0 + 3600, k[0].fp, DHT2_CTL_HANDLED, 5)
           == 0 && P0(w, s1, &ctl) == 0, "control v1 stored");
     CHECK(sql_i64(s1, "SELECT COUNT(*) FROM dht2_rec WHERE cls = 4") == 0,
           "E dropped by v1");
-    CHECK(mk_ctl1(&ctl, R, ctl_id, 2, T0 + 3600, NULL, 0, 0) == 0 &&
-          P(w, s1, &ctl, &res) == 0 && res.outcome == NODUS_DHT2_PUT_STORED,
-          "control v2 (W no longer listed) wins");
     CHECK(put_entry(w, s1, &k[0], inbox, 1, &res) == DHT2_E_HANDLED &&
-          res.through == 5, "E again (repair / re-send) -> [18, 5]");
+          res.through == 5, "E again -> [18, 5]");
     CHECK(put_entry(w, s1, &k[0], inbox, 5, &res) == DHT2_E_HANDLED &&
           res.through == 5, "Sequence == cutoff -> [18, 5]");
     CHECK(put_entry(w, s1, &k[0], inbox, 6, &res) == 0,
           "Sequence above the cutoff is admitted");
+    CHECK(mk_ctl1(&ctl, R, ctl_id, 2, T0 + 3600, NULL, 0, 0) == 0 &&
+          P(w, s1, &ctl, &res) == 0 && res.outcome == NODUS_DHT2_PUT_STORED,
+          "control v2 (W no longer listed) wins");
+    CHECK(put_entry(w, s1, &k[0], inbox, 7, &res) == 0 &&
+          res.outcome == NODUS_DHT2_PUT_STORED,
+          "and nothing remembers v1: the holder follows the selected record");
 
-    /* Case B: v1 EXPIRES before E would have. */
+    /* The selected control record expiring ends its effect on admission. */
     CHECK(put_entry(w2, s2, &k[1], inbox, 1, &res) == 0, "E2 stored");
     CHECK(mk_ctl1(&ctl, R, ctl_id, 1, T0 + 100, k[1].fp, DHT2_CTL_HANDLED, 5)
           == 0 && P0(w2, s2, &ctl) == 0, "short-lived control stored");
     w2->snap.tip_time = T0 + 200;
-    CHECK(put_entry(w2, s2, &k[1], inbox, 1, &res) == DHT2_E_HANDLED &&
-          res.through == 5,
-          "control expired, E2 still live: still [18, 5] (the memo)");
+    CHECK(put_entry(w2, s2, &k[1], inbox, 1, &res) == 0,
+          "control expired: it no longer applies (no memo)");
 
-    /* DENIED is not remembered: an un-denied writer may write again. */
+    /* DENIED: refused while listed; an un-listed writer may write again. */
     CHECK(mk_ctl1(&ctl, R, ctl_id, 3, T0 + 3600, k[2].fp, DHT2_CTL_DENIED, 0)
           == 0 && P0(w, s1, &ctl) == 0 &&
           put_entry(w, s1, &k[2], inbox, 1, &res) == DHT2_E_DENIED,
@@ -1534,9 +1539,12 @@ static void test_memo(const tkey_t *R, const tkey_t *X)
           put_entry(w, sb, &k[0], inbox, 6, &res) == DHT2_E_HANDLED &&
           res.through == 7, "same verdict on both: [18, 7]");
 
-    /* D3: the cutoffs of EVERY control record seen reach the memo, winner or
-     * loser, so v1 -> v2 and v2 -> v1 end with E dropped on both, where v2
-     * no longer lists W (v1 = {W HANDLED 5} seq 1, v2 = empty seq 2). */
+    /* ACCEPTED BEHAVIOUR, documented: v1 = {W HANDLED 5} seq 1, v2 = empty
+     * seq 2 (W no longer listed). v1 then v2 drops E; v2 then v1 keeps E
+     * (v1 loses Select and changes nothing — row 16). The operator's CLIENT
+     * rule (decision 2026-10-24-dht-v2-handled-client-rule.md: the owner
+     * keeps W listed until its entries expired) prevents this case in
+     * practice; the holder does not. */
     {
         nodus_dht2_store_t *sc = open_store(NULL);
         nodus_dht2_store_t *sd = open_store(NULL);
@@ -1559,78 +1567,58 @@ static void test_memo(const tkey_t *R, const tkey_t *X)
             CHECK(sql_i64(sc, "SELECT COUNT(*) FROM dht2_rec WHERE cls = 4")
                   == 1 &&
                   sql_i64(sd, "SELECT COUNT(*) FROM dht2_rec WHERE cls = 4")
-                  == 1, "E dropped on BOTH, F kept on both");
+                  == 2, "v1 -> v2: E dropped (1 left); v2 -> v1: E kept (2)");
             {
                 uint8_t ea[DHT2_HASH_LEN];
 
                 dht2_address(inbox, k[0].fp, ea);
                 CHECK(get_rc(w, sc, ea) == NODUS_DHT2_GET_NOT_HELD &&
-                      get_rc(w, sd, ea) == NODUS_DHT2_GET_NOT_HELD,
-                      "E is not held on either");
+                      get_rc(w, sd, ea) == NODUS_DHT2_GET_HELD,
+                      "E is gone on C and still held on D");
             }
             CHECK(held(w, sc, a_ctl, &ha) && held(w, sd, a_ctl, &hb) &&
                   ha.n == hb.n && memcmp(ha.b, hb.b, ha.n) == 0,
                   "the selected control record is v2 on both (the loser "
                   "is not stored)");
-            CHECK(put_entry(w, sc, &k[0], inbox, 1, &res) == DHT2_E_HANDLED &&
-                  res.through == 5 &&
-                  put_entry(w, sd, &k[0], inbox, 1, &res) == DHT2_E_HANDLED &&
-                  res.through == 5, "and E cannot come back on either");
         }
         nodus_dht2_store_close(sc);
         nodus_dht2_store_close(sd);
     }
 
-    /* A cutoff seen BEFORE E arrives refuses E; the memo is swept only
-     * 3 h after keep_until (= t + 7 d + 3 h of the sighting). */
-    {
-        nodus_dht2_store_t *s3 = open_store(NULL);
-        uint64_t            keep = T0 + DHT2_SEC_7D + DHT2_SEC_SLACK_3H;
-        uint64_t            del = 0;
-        static env_t        v1, v2;
-
-        CHECK(s3 != NULL && mk_ctl1(&v1, R, ctl_id, 1, T0 + 3600, k[0].fp,
-                                    DHT2_CTL_HANDLED, 5) == 0 &&
-              mk_ctl1(&v2, R, ctl_id, 2, T0 + 3600, NULL, 0, 0) == 0, "s3");
-        if (s3 != NULL) {
-            CHECK(P0(w, s3, &v1) == 0 && P0(w, s3, &v2) == 0,
-                  "cutoff seen with no entry held, then the writer unlisted");
-            CHECK(put_entry(w, s3, &k[0], inbox, 1, &res) == DHT2_E_HANDLED &&
-                  res.through == 5, "E arriving later -> [18, 5]");
-            CHECK(put_entry(w, s3, &k[0], inbox, 6, &res) == 0,
-                  "above the cutoff: admitted");
-            CHECK(sql_i64(s3, "SELECT COUNT(*) FROM dht2_cut") == 1, "memo");
-            w->snap.tip_time = keep + DHT2_SEC_SLACK_3H - 1;
-            CHECK(nodus_dht2_store_sweep(s3, &w->ctx, &del) == 0 &&
-                  sql_i64(s3, "SELECT COUNT(*) FROM dht2_cut") == 1,
-                  "keep_until + 3 h - 1 s: the memo is still there");
-            w->snap.tip_time = keep + DHT2_SEC_SLACK_3H;
-            CHECK(nodus_dht2_store_sweep(s3, &w->ctx, &del) == 0 &&
-                  sql_i64(s3, "SELECT COUNT(*) FROM dht2_cut") == 0,
-                  "keep_until + 3 h: swept");
-            w->snap.tip_time = T0;
-        }
-        nodus_dht2_store_close(s3);
-    }
-
-    /* A control record refused by a quota check still leaves its cutoffs
-     * (and drops nothing it should not): its own quota is the recipient's. */
+    /* Row 16: a LOSING control record and a QUOTA-REFUSED control record
+     * change nothing — entries, counter and bytes stay exactly as they
+     * were (no HANDLED side effect). */
     {
         nodus_dht2_store_t *sq = open_store(NULL);
-        static env_t        v1;
+        static env_t        v1, v2, v3;
+        int64_t             top0, used0;
+        uint8_t             ea[DHT2_HASH_LEN];
 
+        dht2_address(inbox, k[0].fp, ea);
         CHECK(sq != NULL && mk_ctl1(&v1, R, ctl_id, 1, T0 + 3600, k[0].fp,
                                     DHT2_CTL_HANDLED, 5) == 0 &&
-              put_entry(w, sq, &k[0], inbox, 1, &res) == 0, "sq, E");
+              mk_ctl1(&v2, R, ctl_id, 2, T0 + 3600, NULL, 0, 0) == 0 &&
+              mk_ctl1(&v3, R, ctl_id, 3, T0 + 3600, k[0].fp,
+                      DHT2_CTL_HANDLED, 5) == 0 &&
+              put_entry(w, sq, &k[0], inbox, 1, &res) == 0 &&
+              put_entry(w, sq, &k[1], inbox, 1, &res) == 0 &&
+              P0(w, sq, &v2) == 0, "sq: E, F, control v2 stored");
         if (sq != NULL) {
+            top0 = top_of(sq);
+            used0 = used_bytes(sq);
+            CHECK(P(w, sq, &v1, &res) == 0 &&
+                  res.outcome == NODUS_DHT2_PUT_LOST, "v1 loses Select");
+            CHECK(top_of(sq) == top0 && used_bytes(sq) == used0 &&
+                  sql_i64(sq, "SELECT COUNT(*) FROM dht2_rec WHERE cls = 4")
+                  == 2 && get_rc(w, sq, ea) == NODUS_DHT2_GET_HELD,
+                  "a losing control: entries, counter, bytes unchanged");
             w->ctx.limits.ident_unnamed = 1;
-            CHECK(P0(w, sq, &v1) == DHT2_E_QUOTA, "the control is refused: 10");
+            CHECK(P0(w, sq, &v3) == DHT2_E_QUOTA, "v3 is refused by quota: 10");
             nodus_dht2_limits_default(&w->ctx.limits);
-            CHECK(sql_i64(sq, "SELECT COUNT(*) FROM dht2_rec WHERE cls = 4")
-                  == 0 &&
-                  put_entry(w, sq, &k[0], inbox, 1, &res) == DHT2_E_HANDLED &&
-                  res.through == 5,
-                  "its HANDLED cutoff was seen anyway: E dropped, [18, 5]");
+            CHECK(top_of(sq) == top0 && used_bytes(sq) == used0 &&
+                  sql_i64(sq, "SELECT COUNT(*) FROM dht2_rec WHERE cls = 4")
+                  == 2 && get_rc(w, sq, ea) == NODUS_DHT2_GET_HELD,
+                  "a quota-refused control: full rollback, E not dropped");
         }
         nodus_dht2_store_close(sq);
     }

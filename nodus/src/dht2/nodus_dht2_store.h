@@ -25,10 +25,8 @@
  *   writer's name status (a fault)                  16
  *   expiry lower / upper bound (class max by name)  7 8
  *   signature                                        9
- *   inbox control: DENIED 12 (while listed), HANDLED [18, through] — the
- *   larger of the live control record's cutoff and the memo of cutoffs
- *   seen for this writer (§3.3 "a dropped entry
- *   cannot come back", whatever the current control record says)
+ *   inbox control: DENIED 12 (while listed), HANDLED [18, through] — from the
+ *   SELECTED, live control record only
  *   Select (§4.2): equal -> acknowledged, loser -> winner's hash, cost 0;
  *   a held row whose expiry has passed counts as ABSENT (kad-dht
  *   existingForSelect, boxo expired = invalid) and is replaced
@@ -42,16 +40,18 @@
  * tombstone row bound (measure first); a refusal that leaves an older
  * version behind (package 7's cursor rule).
  *
- * HANDLED MEMO (closes the arrival-order divergence): the HANDLED cutoffs of
- * EVERY owner-signed control record that passed the signature and the
- * recipient binding reach the memo — whether it wins Select, loses it, or
- * is refused by a quota check — and drop the live entries at or below them
- * at once. A cutoff is noted whether or not an entry was held; the memo is
- * the max per (inbox, writer), lives until t + 7 d + 3 h of the sighting
- * (extended by a later sighting) and is swept 3 h after that. A losing
- * control record is still NOT stored, applies no DENIED and does not change
- * the selected control record. Cutoffs only grow, so the memo does not
- * depend on arrival order.
+ * CONTROL RECORDS follow rev 5 literally: only the control record that WINS
+ * Select is stored and applied (HANDLED and DENIED drops, credited before
+ * the quota checks in the same transaction); a losing or quota-refused one
+ * changes nothing (row 16); admission of an inbox entry looks only at the
+ * selected, live control record. There is no holder memory of dropped
+ * entries. Keeping a HANDLED request from coming back is a CLIENT rule
+ * (docs/plans/decisions/2026-10-24-dht-v2-handled-client-rule.md): the
+ * owner keeps a HANDLED writer listed, with its cutoff, until that writer's
+ * dropped entries have expired (≤ 7 d + 3 h), so the newest control record
+ * always carries the mark and arrival order does not change the result.
+ * A holder that receives a newer record without the writer BEFORE the older
+ * one keeps the entry; the client rule prevents that case in practice.
  *
  * Nothing here reads a clock: chain time is the injected snapshot's `t`.
  * Nothing here is unordered: every query that decides what is stored or
