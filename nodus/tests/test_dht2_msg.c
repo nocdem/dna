@@ -696,8 +696,9 @@ static void test_requests(void)
     a_init(&g_m);                                     /* unknown key "x" */
     a_hex(&g_m, "a4" KN);
     a_bs(&g_m, 0x01, 32);
-    a_hex(&g_m, KOP "63 676574" KKEYS "80" "61 78 00");
-    CHECK(d_req(g_m.b, g_m.n) == DHT2_E_MALFORMED_REQ, "unknown key");
+    a_hex(&g_m, KOP "63 676574" KKEYS "80" "64 7a7a7a7a 00");
+    CHECK(d_req(g_m.b, g_m.n) == DHT2_E_MALFORMED_REQ,
+          "unknown key (sorts after keys, so not an ordering fault)");
     a_init(&g_m);                                     /* long-form length */
     a_hex(&g_m, "a3" KN);
     a_bs(&g_m, 0x01, 32);
