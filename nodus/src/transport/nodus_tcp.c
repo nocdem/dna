@@ -618,8 +618,9 @@ static int buf_ensure(uint8_t **buf, size_t *cap, size_t needed) {
 }
 
 /* The largest write buffer THIS connection may grow to. A connection with
- * the SecretConnection layer holds sealed bytes: a 5 MiB nodus frame is
- * 5,121 sealed frames (nodus_tcp_sc.h, "BUFFER BOUNDS"). */
+ * the SecretConnection layer holds only sealed PORTIONS (the drain seals
+ * queued plaintext as the buffer empties), so its bound is
+ * NODUS_TCP_SC_WBUF_MAX (nodus_tcp_sc.h, "BUFFER BOUNDS"). */
 static size_t conn_wbuf_max(const nodus_tcp_conn_t *conn) {
 #ifdef NODUS_TCP_SC
     if (conn->sc)

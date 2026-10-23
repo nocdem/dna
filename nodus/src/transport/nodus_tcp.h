@@ -79,8 +79,10 @@ typedef enum {
 } nodus_conn_auth_state_t;
 
 /* Phase 3: Pending frame queued while wbuf is over the send cap.
- * The frame is already encoded (header + encrypted payload) and ready to
- * blast into wbuf as soon as space becomes available. Stored FIFO. */
+ * Without the SecretConnection layer the frame is already encoded (header +
+ * encrypted payload) and ready to blast into wbuf as soon as space becomes
+ * available; with the layer it is the PLAINTEXT nodus frame, sealed portion
+ * by portion by the drain (`sc_off` = how much is sealed). Stored FIFO. */
 typedef struct nodus_pending_frame {
     struct nodus_pending_frame *next;
     uint8_t                    *encoded;      /* malloc'd, owned */

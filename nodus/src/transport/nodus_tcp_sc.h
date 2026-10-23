@@ -449,8 +449,9 @@ bool nodus_tcp_sc_dead(const nodus_tcp_conn_t *conn);
 /**
  * Seal frames [first, first + nframes) of the logical byte stream `a || b`
  * into `out` (nframes * CMT_P2P_SC_SEALED_FRAME_SIZE bytes, caller-reserved),
- * one cmt_p2p_sc_write per frame. The caller checked nodus_tcp_sc_can_seal
- * for the WHOLE unit first, so a refusal cannot happen half-way.
+ * one cmt_p2p_sc_write per frame. The caller (the drain) checked
+ * nodus_tcp_sc_can_seal for this PORTION first, so a refusal cannot happen
+ * half-way through it.
  * @return 0; -1 on a cipher failure (the machine is dead — close).
  */
 int nodus_tcp_sc_seal(nodus_tcp_conn_t *conn,

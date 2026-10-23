@@ -1585,7 +1585,7 @@ static void test_teardown_nested_poll(void)
     ok = pair_up(&CMT_P2P_SC_PROFILE_CLIENT, &CMT_P2P_SC_PROFILE_CLIENT, NULL) == 0 &&
          pump_until(&g_srv.sessions, 1, MAX_ROUNDS) && pump_until(&g_cli.sessions, 1, MAX_ROUNDS);
     if (ok) {
-        /* What a failed seal does under the write lock (sc_seal_failed_locked). */
+        /* What a failed seal does under the write lock (sc_mark_close_locked). */
         g_cli.poll_in_disconnect = true;
         g_cli.disconnect_again = true;     /* ... and a public disconnect of the same conn */
         g_cli.conn->sc_close_req = true;
