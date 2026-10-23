@@ -969,7 +969,7 @@ static void test_oversize_put(const tkey_t *node, const tkey_t *wr)
     static env_t   rec;
     dht2_req_t     rq;
     uint8_t       *big = (uint8_t *)calloc(1, DHT2_ENVELOPE_MAX + 1u);
-    uint8_t       *buf = (uint8_t *)malloc(DHT2_ENVELOPE_MAX + 4096u);
+    uint8_t       *buf = (uint8_t *)malloc(DHT2_REQ_MAX_LEN);
     uint8_t        addr[DHT2_HASH_LEN], zero[DHT2_HASH_LEN] = { 0 };
     size_t         n = 0;
     dht2_answer_t  a;
@@ -985,7 +985,9 @@ static void test_oversize_put(const tkey_t *node, const tkey_t *wr)
     rq.env_lens[0] = DHT2_ENVELOPE_MAX + 1u;
     rq.envs[1] = rec.b;
     rq.env_lens[1] = rec.n;
-    CHECK(dht2_req_encode(&rq, buf, DHT2_ENVELOPE_MAX + 4096u, &n) == DHT2_OK,
+    /* The record (pk + signature, > 7 KB) rides beside the 262,145 B
+     * envelope: the buffer is the largest legal request. */
+    CHECK(dht2_req_encode(&rq, buf, DHT2_REQ_MAX_LEN, &n) == DHT2_OK,
           "the request encodes");
     CHECK(serve_raw(w, NODUS_DHT2_HOLDER_PUT, buf, n)
                   == NODUS_DHT2_HOLDER_ANSWER &&
