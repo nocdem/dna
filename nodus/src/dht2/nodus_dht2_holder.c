@@ -325,7 +325,7 @@ static int serve_put(const nodus_dht2_holder_t *h, world_t *w,
          * the client matches by position, the array is in request order
          * (row 7). A result is never given under a key it does not have. */
         memset(&pr, 0, sizeof(pr));
-        rc =nodus_dht2_store_put(h->store, &w->ctx, rq->envs[i],
+        rc = nodus_dht2_store_put(h->store, &w->ctx, rq->envs[i],
                                   rq->env_lens[i], NULL, &pr);
         if (pr.has_address) {
             memcpy(x->key, pr.address, DHT2_HASH_LEN);

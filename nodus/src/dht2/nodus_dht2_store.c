@@ -981,9 +981,19 @@ int nodus_dht2_store_put(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
 out:
     if (code != 0) {
         uint64_t through = res->through;
+        bool     has_address = res->has_address;
+        uint8_t  address[DHT2_HASH_LEN];
 
+        /* A refusal keeps the address its envelope had (the serving layer
+         * names the result by it) and, for 18, the cutoff; the success-only
+         * fields (outcome, hash) are cleared. */
+        memcpy(address, res->address, DHT2_HASH_LEN);
         memset(res, 0, sizeof(*res));
         res->through = code == DHT2_E_HANDLED ? through : 0;
+        res->has_address = has_address;
+        if (has_address) {
+            memcpy(res->address, address, DHT2_HASH_LEN);
+        }
     }
     free(w);
     return code;

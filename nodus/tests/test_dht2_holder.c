@@ -1006,6 +1006,94 @@ static void test_oversize_put(const tkey_t *node, const tkey_t *wr)
     free(buf);
 }
 
+/* Second fix round: a refusal after the parse is signed under the envelope's
+ * ADDRESS (not zeros) - an expired record (7) and a real HANDLED cutoff
+ * ([18, through]); the zero key stays for a parse failure. */
+static void test_late_refusal(const tkey_t *node, const tkey_t *owner,
+                              const tkey_t *wr)
+{
+    enum { THROUGH = 5 };
+    world_t             *w = (world_t *)calloc(1, sizeof(*w));
+    static env_t         exp_rec, ctl, ent, req, recs[3];
+    static const uint8_t none[1] = { 0 };
+    dht2_data_t          d;
+    dht2_ctl_entry_t     en;
+    uint8_t              cdata[DHT2_CTL_ENTRY_LEN];
+    size_t               clen = 0;
+    uint8_t              inbox[DHT2_ID_LEN], ctl_id[DHT2_ID_LEN];
+    uint8_t              id[DHT2_ID_LEN], a_exp[DHT2_HASH_LEN];
+    uint8_t              a_ent[DHT2_HASH_LEN], zero[DHT2_HASH_LEN] = { 0 };
+    dht2_answer_t        a;
+
+    CHECK(w != NULL && world_init(w, node, 3) == 0, "world");
+
+    /* late refusal: an expired record, key = its address, v = 7 */
+    memset(id, 0x25, sizeof(id));
+    memset(&d, 0, sizeof(d));
+    d.sequence = 1;
+    d.validity_type = DHT2_VT_EOL;
+    d.expiry = T0 - 1;
+    memcpy(d.id, id, DHT2_ID_LEN);
+    memcpy(d.chain, g_chain, DHT2_CHAIN_LEN);
+    d.cls = DHT2_CLASS_OWNER;
+    d.has_data = true;
+    d.data = none;
+    d.data_len = 1;
+    CHECK(dht2_record_build(&d, wr->sk, wr->pk, exp_rec.b, sizeof(exp_rec.b),
+                            &exp_rec.n) == DHT2_OK &&
+              dht2_address(id, wr->fp, a_exp) == 0, "expired record");
+
+    /* HANDLED: the owner's control record marks the writer through 5 */
+    CHECK(dht2_id_inbox(g_chain, owner->fp, inbox) == 0 &&
+              dht2_id_inbox_ctl(g_chain, owner->fp, ctl_id) == 0, "ids");
+    memset(&en, 0, sizeof(en));
+    memcpy(en.fp, wr->fp, DHT2_FP_LEN);
+    en.mark = DHT2_CTL_HANDLED;
+    en.through = THROUGH;
+    CHECK(dht2_ctl_encode(&en, 1, cdata, sizeof(cdata), &clen) == DHT2_OK,
+          "control data");
+    memset(&d, 0, sizeof(d));
+    d.sequence = 1;
+    d.validity_type = DHT2_VT_EOL;
+    d.expiry = T0 + 3600;
+    memcpy(d.id, ctl_id, DHT2_ID_LEN);
+    memcpy(d.chain, g_chain, DHT2_CHAIN_LEN);
+    d.cls = DHT2_CLASS_INBOX_CTL;
+    d.has_data = true;
+    d.data = cdata;
+    d.data_len = clen;
+    CHECK(dht2_record_build(&d, owner->sk, owner->pk, ctl.b, sizeof(ctl.b),
+                            &ctl.n) == DHT2_OK, "control record");
+    CHECK(mk_inbox_entry(&ent, wr, inbox) == 0 &&
+              dht2_address(inbox, wr->fp, a_ent) == 0, "entry (Sequence 1)");
+
+    CHECK(mk_put(&req, 0xF2, &ctl, 1) == 0, "put request");
+    CHECK(serve(w, NODUS_DHT2_HOLDER_PUT, &req) == NODUS_DHT2_HOLDER_ANSWER &&
+              ans_head(w, DHT2_PT_RECEIPT, 0xF2, &a) &&
+              a.r[0].kind == DHT2_RV_HASH, "control record stored");
+
+    recs[0] = exp_rec;
+    recs[1] = ent;
+    memset(recs[2].b, 0xFF, 10);
+    recs[2].n = 10;
+    CHECK(mk_put(&req, 0xF3, recs, 3) == 0, "put request");
+    CHECK(serve(w, NODUS_DHT2_HOLDER_PUT, &req) == NODUS_DHT2_HOLDER_ANSWER &&
+              ans_head(w, DHT2_PT_RECEIPT, 0xF3, &a) && a.r_count == 3,
+          "three results");
+    CHECK(memcmp(a.r[0].key, a_exp, DHT2_HASH_LEN) == 0 &&
+              a.r[0].kind == DHT2_RV_CODE && a.r[0].code == DHT2_E_EXPIRED,
+          "late refusal: {k: address, v: 7}");
+    CHECK(memcmp(a.r[1].key, a_ent, DHT2_HASH_LEN) == 0 &&
+              a.r[1].kind == DHT2_RV_HANDLED && a.r[1].through == THROUGH,
+          "HANDLED: {k: address, v: [18, through]} with the cutoff");
+    CHECK(memcmp(a.r[2].key, zero, DHT2_HASH_LEN) == 0 &&
+              a.r[2].kind == DHT2_RV_CODE &&
+              a.r[2].code == DHT2_E_BAD_ENCODING,
+          "parse failure: zero key, code 2");
+    world_free(w);
+    free(w);
+}
+
 /* ══ main ══════════════════════════════════════════════════════════════ */
 
 static void cleanup(void)
@@ -1061,6 +1149,7 @@ int main(void)
     test_chain_gate(&keys[0], &keys[2], &keys[4]);
     test_ctl_get(&keys[0], &keys[2]);
     test_oversize_put(&keys[0], &keys[1]);
+    test_late_refusal(&keys[0], &keys[2], &keys[3]);
     QGP_LOG_INFO(LOG_TAG, "=== Results: %d passed, %d failed ===",
                  g_pass, g_fail);
 

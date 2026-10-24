@@ -1728,6 +1728,48 @@ static void test_select_pool(const tkey_t *A)
     free(w);
 }
 
+/* Package 6a second fix round: a refusal that comes AFTER the parse keeps the
+ * envelope's address in the result (the serving layer names the result by
+ * it); one that fails the parse has none. */
+static void test_put_address(const tkey_t *A)
+{
+    world_t            *w = (world_t *)calloc(1, sizeof(*w));
+    nodus_dht2_store_t *st = open_store(NULL);
+    static env_t        e;
+    nodus_dht2_put_t    res;
+    uint8_t             id[DHT2_ID_LEN], want[DHT2_HASH_LEN];
+    int                 rc;
+
+    CHECK(w != NULL && st != NULL, "alloc");
+    if (w == NULL || st == NULL) {
+        free(w);
+        return;
+    }
+    world_init(w, A, 3);
+    dfill(id, 0x5B);
+    CHECK(dht2_address(id, A->fp, want) == 0, "address");
+
+    CHECK(mk_owner(&e, A, id, 1, T0 - 1, 4) == 0, "expired record");
+    rc = P(w, st, &e, &res);
+    CHECK(rc == DHT2_E_EXPIRED, "late refusal: expired (7)");
+    CHECK(res.has_address && memcmp(res.address, want, DHT2_HASH_LEN) == 0,
+          "late refusal keeps the address");
+
+    CHECK(mk_owner(&e, A, id, 1, T0 + 3600, 4) == 0, "good record");
+    rc = P(w, st, &e, &res);
+    CHECK(rc == 0 && res.has_address &&
+              memcmp(res.address, want, DHT2_HASH_LEN) == 0,
+          "success carries the address too");
+
+    memset(e.b, 0xFF, 10);
+    e.n = 10;
+    rc = P(w, st, &e, &res);
+    CHECK(rc == DHT2_E_BAD_ENCODING && !res.has_address,
+          "a parse failure has no address");
+    nodus_dht2_store_close(st);
+    free(w);
+}
+
 /* Package 6a fix round (item 6): the live control record's bytes are part of
  * the 2 MiB LIST page. Eight entries of 262,000 B (2,096,000 B) fit the
  * budget alone, but not beside a control record: the first page lists 7 and
@@ -1858,6 +1900,7 @@ int main(void)
     test_memo(&keys[3], &keys[4]);
     test_select_pool(&keys[1]);
     test_list_ctl_budget(&keys[2]);
+    test_put_address(&keys[0]);
     QGP_LOG_INFO(LOG_TAG, "=== Results: %d passed, %d failed ===",
                  g_pass, g_fail);
 
