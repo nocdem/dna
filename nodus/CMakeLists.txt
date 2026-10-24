@@ -166,6 +166,11 @@ set(NODUS_SOURCES
     # yet; in the common list so it compiles on Windows.
     src/client/nodus_light_provider.c
     src/client/nodus_singleton.c
+    # DHT v2 package 3c: where a native tool gets its server pin and chain
+    # id (the tool network file + --pin / --chain flags; decision
+    # 2026-10-24-dht-v2-tool-network-identity.md). Common list so the
+    # Windows nodus-light compiles it too (flags only without json-c).
+    src/client/nodus_tool_network.c
     src/client/nodus_republish.c
     # Web wallet package (c2): the shared version-3 CORE SPEND builder —
     # plan + build, no I/O; nodus-cli `v2-envelope spend` and the browser
@@ -1453,6 +1458,12 @@ add_test(NAME test_node_status COMMAND test_node_status)
 add_executable(test_node_package tests/test_node_package.c)
 target_link_libraries(test_node_package nodus)
 add_test(NAME test_node_package COMMAND test_node_package)
+
+# DHT v2 package 3c — the tool network file + --pin / --chain resolver
+# (src/client/nodus_tool_network.c). Needs json-c for the file cases.
+add_executable(test_tool_network tests/test_tool_network.c)
+target_link_libraries(test_tool_network nodus)
+add_test(NAME test_tool_network COMMAND test_tool_network)
 
 # deploy/install.sh --dry-run against a fake package and a fake systemctl:
 # preserve-choice on a split host, the combined-layout refusal, core alone.
