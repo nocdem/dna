@@ -22,6 +22,58 @@ npm run dev
 
 Open the localhost URL printed by Vite. For a production bundle, run `npm run build`; `npm run preview` serves `dist` locally. Production hosting must use HTTPS and a restrictive `frame-ancestors 'none'` response header (it cannot be enforced by a CSP meta tag). Dependencies are bundled locally; no third-party script CDN is used.
 
+## Dependency maintenance — 2026-10-25
+
+TronWeb 6.5.1 pins Axios 1.18.0, which matches published security advisories.
+The wallet therefore uses a scoped npm override beneath `tronweb@6.5.1` for
+Axios **1.20.0**, plus a root override for **follow-redirects 1.16.1**. Axios is
+the only consumer of follow-redirects in this dependency graph. Exact versions
+and integrity hashes are retained in `package-lock.json`; TronWeb stays
+unchanged. These versions include the
+[Axios form-serialization fix](https://github.com/axios/axios/security/advisories/GHSA-x97p-jq2g-jp4f)
+and the [follow-redirects sensitive-header fix](https://github.com/follow-redirects/follow-redirects/security/advisories/GHSA-q3jh-wrc6-jgq8).
+
+`src/adapters/tron.js` replaces the SDK provider's `request` method with the
+wallet's bounded JSON transport. That narrows exposure in the existing transfer
+path; it does not establish that every advisory condition is unreachable.
+Updating dependencies and passing tests are not an independent security audit.
+Remove these overrides only after the ordinary TronWeb/Axios dependency
+resolution selects patched versions itself and the resulting installed graph
+and regressions have been checked. Do not use an automatic TronWeb downgrade
+to clear audit output.
+
+Development dependencies are checked too: Vite moves from **7.3.6 to 7.3.7**,
+and a scoped PostCSS override selects **source-map-js 1.2.2** instead of 1.2.1.
+These address the published [Vite development-server advisories](https://github.com/vitejs/vite/security/advisories/GHSA-9jrq-w75r-8gcw)
+and [source-map-js advisory](https://github.com/advisories/GHSA-68fv-2mgg-jv7q).
+Their runtime exposure depends on tooling use, platform and configuration;
+they are not evidence that the deployed static wallet was compromised. Remove
+the PostCSS override after its ordinary dependency resolution selects a patched
+source-map-js version and clean-install/build checks pass. Other direct pins
+and the wallet component version remain unchanged.
+
+From `web-wallet`, verify a clean installation and both browser builds:
+
+```sh
+npm ci --ignore-scripts
+npm ls tronweb axios follow-redirects vite postcss source-map-js
+npm audit --omit=dev
+npm audit
+npm test
+npm run build
+npm run build:connect
+CHROMIUM_PATH=/usr/bin/chromium npm run test:browser
+CHROMIUM_PATH=/usr/bin/chromium npm run test:security
+```
+
+`build:connect` builds Nodus Connect's browser site from the same dependency
+manifest. Existing unit tests exercise TRX/TRC20 signing, transaction validation,
+bounded SDK requests and lock checks before broadcast. Browser suites intercept
+external chain traffic; no real transfer is established by these checks. Test
+prerequisites and optional native/WASM coverage are described under Verification
+and Security regression checks. Dated audit results elsewhere in this document
+remain historical results for their respective revisions.
+
 ## Publish
 
 Run `npm ci`, `npm test` and `npm run build`, then serve only `web-wallet/dist` from `https://wallet.nodusnetwork.io` using the existing HTTPS web server. Node.js is needed for building and local verification, not as a production application service. All blockchain requests go directly from the browser to their HTTPS RPC endpoints.
