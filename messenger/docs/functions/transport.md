@@ -329,6 +329,30 @@ Test: `test_tcp_sc` (`nodus/CMakeLists.txt:1569-1571`, default build).
 
 ---
 
+## Tool network identity (`nodus/src/client/nodus_tool_network.h`) — DHT v2 package 3c
+
+Where a native tool gets the server pin and the chain id that `nodus_client_init` now requires. Governing: `docs/plans/decisions/2026-10-24-dht-v2-tool-network-identity.md` (operator: "Both" — the network file is the default, `--pin` / `--chain` override it), Kurultay #43 O-6 (`decisions/2026-10-23-kurultay-43-summary.md`: the chain id from the tool's network config, missing → fail closed). Compiled into libnodus (common source list; `nodus_tool_network.c`); the file needs json-c (`NODUS_HAS_JSONC`) — without it only the flags work.
+
+File (strict JSON): `{"chain_id": "<64 lowercase hex>", "nodes": [{"ip": "<IPv4 literal>", "port": <1..65535>, "fp": "<128 lowercase hex>"}, ...]}`. Any other key, a wrong-length / upper-case / all-zero hex value, a non-dotted-quad `ip`, a port outside 1..65535, a duplicate ip:port, an empty node list, more than `NODUS_TOOL_NET_MAX_NODES` (= `NODUS_T3_MAX_WITNESSES`, 128) nodes, trailing characters or invalid JSON refuses the whole file; the reason is in `err`. Located by `--network <path>`, else `$NODUS_NETWORK`; there is no default path.
+
+| Declaration | Description |
+|-------------|-------------|
+| `nodus_tool_net_node_t { char ip[16]; uint16_t port; nodus_key_t fp; }` | **NEW.** One file entry. |
+| `nodus_tool_net_t` | **NEW.** The file part (`has_file`, `chain[32]`, `node_count`, `nodes[]`), the flag part (`has_pin_flag` / `pin_flag`, `has_chain_flag` / `chain_flag`) and the pin storage (`pins[]`, `pin_count`) every config filled by `nodus_tool_net_fill*` points into — `nodus_client_init` does not copy `pinned_server_fps`, so the struct must outlive the clients. NOT thread-safe: `fill` writes the pool (a multi-threaded tool serialises it or gives each thread its own copy). |
+| `void nodus_tool_net_init(nodus_tool_net_t *t)` | **NEW.** Zero. |
+| `int nodus_tool_net_parse(nodus_tool_net_t *t, const char *text, size_t len, char *err, size_t err_size)` | **NEW.** Parse + validate file text into the file part (cleared on any refusal). 0 / -1 (`err`, `NODUS_TOOL_NET_ERR_SIZE`). Strict tokener (`JSON_TOKENER_STRICT`, UTF-8 validated); only whitespace may follow the document. A duplicate KEY inside one object is not detected (json-c keeps the last). |
+| `int nodus_tool_net_load_file(nodus_tool_net_t *t, const char *path, char *err, size_t err_size)` | **NEW.** Read `path` (≤ 1 MiB) and parse it; `err` is prefixed `network file <path>:`. |
+| `int nodus_tool_net_set_pin_hex(...)` / `int nodus_tool_net_set_chain_hex(...)` | **NEW.** The `--pin` (128) / `--chain` (64) flags: exact length, lowercase hex, not all zero. |
+| `int nodus_tool_net_open(nodus_tool_net_t *t, const char *network_path, const char *pin_hex, const char *chain_hex, char *err, size_t err_size)` | **NEW.** A tool's whole setup: the file from `network_path` or `$NODUS_NETWORK` (none → no file), then the flags. A named file that is bad refuses even when both flags are given; no file and no flags is NOT an error here (resolve refuses). |
+| `int nodus_tool_net_chain(const nodus_tool_net_t *t, uint8_t chain_out[32], char *err, size_t err_size)` | **NEW.** Chain id: the flag, else the file's; neither → -1. |
+| `int nodus_tool_net_resolve(const nodus_tool_net_t *t, const char *ip, uint16_t port, nodus_key_t *pin_out, uint8_t chain_out[32], char *err, size_t err_size)` | **NEW.** Pin: the `--pin` flag, else the file's entry for exactly that ip:port (string compare; another port or an unlisted ip → -1 "is not in the network file and no --pin was given"); chain id as above. Either output may be NULL. |
+| `int nodus_tool_net_fill(nodus_tool_net_t *t, nodus_client_config_t *cfg, char *err, size_t err_size)` | **NEW.** Complete a config whose `servers[0..server_count)` are set: every server's pin is resolved, the distinct pins become a run in `t->pins` (an identical run is reused) that `pinned_server_fps` / `pinned_server_fp_count` point at, and `expected_chain_id` / `has_expected_chain_id` are set. On -1 neither `cfg` nor `t` changed. |
+| `int nodus_tool_net_fill_all(nodus_tool_net_t *t, nodus_client_config_t *cfg, char *err, size_t err_size)` | **NEW.** For a tool that connects to "any of the nodes": `servers` / `server_count` from the file's node list (file order, at most `NODUS_CLIENT_MAX_SERVERS`), then `fill`. Needs a file. |
+
+Consumers (3c): `nodus-cli` (`cli_client_init` — every `nodus_client_init` of the file; `cli_dial` for the raw `nodus_tcp` commands; global `--network` / `--chain` / `--pin`), `nodus-circ`, `stagef_rpc_flood`, `dna_bench_native.c`, the explorer (`exp_chain_open(..., net)`, per-handle copy). `nodus-light`, the faucet and `nodus_node_package_read_duties` take the chain id from their own configuration instead (`--chain-id` / `chain_id` / the caller). Test: `test_tool_network` (default build with json-c).
+
+---
+
 ## Removed Functions
 
 The following functions were removed during the p2p → transport refactoring:

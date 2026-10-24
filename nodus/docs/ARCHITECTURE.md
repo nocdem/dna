@@ -3274,9 +3274,36 @@ a connection down while another thread is entering `send_request`. Regression:
 `test_client_concurrent_send` (4 threads × 16 × 4 rounds of 192 KB PUTs, each txn
 must reach the fake node exactly once; red 5/5 without the lock).
 
+### Tool network identity (DHT v2 package 3c)
+
+Since the client session is a SecretConnection (3b-2), `nodus_client_init` refuses a config
+without a server pin (`pinned_server_fps`, count >= 1) or without a chain id
+(`has_expected_chain_id` + a non-zero `expected_chain_id`); the "optional pin" text of the next
+section is the pre-3b-2 behaviour. A native tool gets both from `src/client/nodus_tool_network.{h,c}`
+(decision `docs/plans/decisions/2026-10-24-dht-v2-tool-network-identity.md`, operator "Both"; Kurultay
+#43 O-6 — the chain id from the tool's network config, missing → fail closed):
+
+- **The tool network file**, JSON, strict: `{"chain_id": "<64 lowercase hex>", "nodes": [{"ip": "<IPv4
+  literal>", "port": <1..65535>, "fp": "<128 lowercase hex>"}, ...]}`. Each `fp` is bound to its
+  ip:port. Any other key, a bad hex length, an upper-case digit, an all-zero id, a duplicate ip:port,
+  an empty list or more than `NODUS_TOOL_NET_MAX_NODES` (128) nodes refuses the whole file. It
+  mirrors the web wallet's network settings (chain + endpoints + pins), with the pin per endpoint.
+- **Where it is**: `--network <path>`, else the environment variable `NODUS_NETWORK`. No default path.
+- **Flags override**: `--pin <128 hex>` replaces the pin of whatever server is dialed, `--chain <64
+  hex>` the chain id. With both flags no file is needed; with neither file nor flags the tool refuses
+  before it opens a socket. A server (ip:port) that is not in the file and has no `--pin` is refused.
+- **Who uses it**: `nodus-cli` (every `nodus_client_init` through `cli_client_init`, the raw
+  `nodus_tcp` commands through `cli_dial`, global options before the command; `msig sign --pin`
+  keeps its own meaning and is the same fingerprint), `nodus-circ`, `stagef_rpc_flood`,
+  `dna_bench_native.c`, the explorer (`--network` / `--chain` / `--pin`; its server list stays in
+  `--config`, each server's pin comes from the file), the Genesis Protocol harness (writes
+  `$BASE_DIR/tool_network.json` at bring-up, exports `NODUS_NETWORK`). `nodus-light` (`--node
+  host:port:pinfp` + `--chain-id`), the faucet (`node_fp` + `chain_id` of its config) and
+  `nodus-cli package` (the chain id from `--chain` / the file) carry theirs in their own config.
+
 ### Server key pin
 
-`nodus_client_config_t` has an optional pin list:
+`nodus_client_config_t` has an optional pin list (**superseded by 3b-2: mandatory, see above**):
 
 ```c
 const nodus_key_t *pinned_server_fps;     /* caller-owned, must outlive the client */

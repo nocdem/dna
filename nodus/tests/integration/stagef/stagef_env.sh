@@ -1593,6 +1593,93 @@ stagef_write_network_file() {
     mv -f "$tmp" "$out"
 }
 
+# ──────────────────────────────────────────────────────────────────────
+# THE TOOL NETWORK FILE (DHT v2 package 3c; decision 2026-10-24-dht-v2-tool-
+# network-identity.md)
+#
+# Since the client session is a SecretConnection, every nodus-cli call (and
+# nodus-light / nodus-circ / the bench tools) needs the PIN of the node it
+# dials and the CHAIN ID of the chain it dials on, or it refuses before it
+# opens a socket. A tool reads them from a "tool network file", named by
+# the environment variable NODUS_NETWORK:
+#
+#   {"chain_id": "<64 hex>", "nodes": [{"ip": "127.0.0.1", "port": <client
+#    port>, "fp": "<128 hex>"}, ...]}
+#
+# (nodus/src/client/nodus_tool_network.h). The harness writes it at bring-up
+# (stagef_up_v2.sh, after the genesis ceremony has produced the chain id:
+# $BASE_DIR/v2_chain_id, the value the ceremony also pinned into the 4004
+# network file) and exports NODUS_NETWORK for every scenario that sources
+# this file — so the ~230 `nodus-cli -s 127.0.0.1:<port> ...` lines in the
+# scenarios need no flag. A node that does not exist at bring-up (a joiner
+# a scenario creates later) is not in the file, so a client tool dialing it
+# is refused ("not in the network file") — the fail-closed rule, listed in
+# README.md "Tool network file", not papered over here. A scenario that
+# needs such a call passes --pin (the joiner's fingerprint) on that line.
+# ──────────────────────────────────────────────────────────────────────
+
+stagef_tool_network_file() { echo "$BASE_DIR/tool_network.json"; }
+
+# stagef_tool_network_entry IDENTITY_DIR CLIENT_PORT — one JSON node object
+# on stdout: ip 127.0.0.1, the client port, and the identity's fingerprint
+# (identity/nodus.fp, written by the server at first start; 128 lowercase
+# hex = SHA3-512 of the public key, the value a client pins). Refuses
+# (rc 1) anything else.
+stagef_tool_network_entry() {
+    local fp
+    fp=$(tr -d '[:space:]' < "$1/nodus.fp" 2>/dev/null) || fp=""
+    case "$fp" in
+        *[!0-9a-f]*|'') echo "[FAIL] stagef_tool_network_entry: $1/nodus.fp is not lowercase hex" >&2; return 1 ;;
+    esac
+    [ "${#fp}" = 128 ] || { echo "[FAIL] stagef_tool_network_entry: $1/nodus.fp is ${#fp} chars, want 128" >&2; return 1; }
+    printf '{"ip": "127.0.0.1", "port": %s, "fp": "%s"}' "$2" "$fp"
+}
+
+# stagef_write_tool_network CHAIN_ID [DIR_1 PORT_1 DIR_2 PORT_2 ...]
+#   Writes $(stagef_tool_network_file) with the chain id and one node per
+#   (identity dir, client port) pair; with no pairs: nodes 1..
+#   STAGEF_COMMITTEE_SIZE, then the bring-up candidates cand1..cand<K> (K =
+#   STAGEF_V2_CANDIDATES, default 0; their identity dirs exist from
+#   bring-up and their port block is C+3+i, as stagef_up_v2.sh section 1c
+#   and test_v2_grow_7_*.sh node_pidx). Temp file + rename. Refuses (rc 1)
+#   a chain id that is not 64 lowercase hex.
+stagef_write_tool_network() {
+    local chain="$1"; shift
+    local out tmp nodes="" sep="" e n i k
+    case "$chain" in
+        *[!0-9a-f]*|'') echo "[FAIL] stagef_write_tool_network: chain id '$chain' is not lowercase hex" >&2; return 1 ;;
+    esac
+    [ "${#chain}" = 64 ] || { echo "[FAIL] stagef_write_tool_network: chain id is ${#chain} chars, want 64" >&2; return 1; }
+    out="$(stagef_tool_network_file)"
+    tmp="$out.tmp.$$"
+    if [ $# -eq 0 ]; then
+        for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
+            set -- "$@" "$(stagef_node_dir "$n")/identity" "$(stagef_tcp_port "$n")"
+        done
+        k="${STAGEF_V2_CANDIDATES:-0}"
+        for i in $(seq 1 "$k"); do
+            set -- "$@" "$BASE_DIR/cand$i/identity" "$(stagef_tcp_port $(( STAGEF_COMMITTEE_SIZE + 3 + i )))"
+        done
+    fi
+    # every entry first — a failure leaves no half-written file behind
+    while [ $# -ge 2 ]; do
+        e=$(stagef_tool_network_entry "$1" "$2") || return 1
+        nodes="$nodes$sep
+    $e"
+        sep=","
+        shift 2
+    done
+    printf '{\n  "chain_id": "%s",\n  "nodes": [%s\n  ]\n}\n' "$chain" "$nodes" \
+        > "$tmp" || { rm -f "$tmp"; return 1; }
+    mv -f "$tmp" "$out"
+}
+
+# The harness owns NODUS_NETWORK for every scenario run: once bring-up has
+# written the file, every nodus-cli call in this shell picks it up.
+if [ -n "${BASE_DIR:-}" ] && [ -f "$BASE_DIR/tool_network.json" ]; then
+    export NODUS_NETWORK="$BASE_DIR/tool_network.json"
+fi
+
 # stagef_write_nodus_json — $BASE_DIR/nodus.json: the 4002 auth rule the
 # harness always ran with, the network file, and the two harness-only
 # p2p settings above.
