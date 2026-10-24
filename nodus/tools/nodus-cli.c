@@ -208,7 +208,7 @@ static int cli_net_state;               /* 0 not opened, 1 ok, -1 refused */
  * socket is opened. A config that already carries its own pin (msig sign's
  * --pin) keeps it and only gets the chain id. @return 0; -1 (reason
  * printed — fail closed, Kurultay #43 O-6). */
-static int cli_net_fill(nodus_client_config_t *cfg) {
+static int cli_net_ready(void) {
     char err[NODUS_TOOL_NET_ERR_SIZE];
     if (cli_net_state == 0) {
         nodus_tool_net_init(&cli_net);
@@ -217,7 +217,12 @@ static int cli_net_fill(nodus_client_config_t *cfg) {
                                             sizeof(err)) == 0 ? 1 : -1;
         if (cli_net_state < 0) fprintf(stderr, "nodus-cli: %s\n", err);
     }
-    if (cli_net_state < 0) return -1;
+    return cli_net_state > 0 ? 0 : -1;
+}
+
+static int cli_net_fill(nodus_client_config_t *cfg) {
+    char err[NODUS_TOOL_NET_ERR_SIZE];
+    if (cli_net_ready() != 0) return -1;
     if (cfg->pinned_server_fp_count > 0 && cfg->pinned_server_fps) {
         if (cfg->has_expected_chain_id) return 0;
         if (nodus_tool_net_chain(&cli_net, cfg->expected_chain_id, err,
@@ -12409,11 +12414,20 @@ int main(int argc, char **argv) {
         nodus_np_sysd_t sysd;
         nodus_node_package_sysd_default(&sysd);
         char pkg_out[NODUS_NODE_PACKAGE_TEXT_MAX];
+        /* 3c: the registration read (`remove witness` of a running witness)
+         * is a session bound to a chain; the id comes from --chain / the
+         * tool network file. Absent -> NULL, and only that read is refused
+         * ("no chain id"); list / add / the other removes never need it. */
+        uint8_t pkg_chain[NODUS_CLIENT_CHAIN_ID_SIZE];
+        const uint8_t *pkg_chain_p = NULL;
+        if (cli_net_ready() == 0 &&
+            nodus_tool_net_chain(&cli_net, pkg_chain, NULL, 0) == 0)
+            pkg_chain_p = pkg_chain;
         /* the host lock file must belong to root (uid 0) */
         const int pkg_rc = nodus_node_package_main(
             (const char *const *)&argv[optind + 1], argc - optind - 1, &sysd,
             NODUS_NODE_PACKAGE_LOCK_PATH, 0, NODUS_NODE_PACKAGE_CONFIG_PATH,
-            pkg_out, sizeof(pkg_out));
+            pkg_chain_p, pkg_out, sizeof(pkg_out));
         fputs(pkg_out, pkg_rc == 0 ? stdout : stderr);
         return pkg_rc == 0 ? 0 : 1;
     }

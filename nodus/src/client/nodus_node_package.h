@@ -289,12 +289,15 @@ void nodus_node_package_lock_release(int fd);
  * nodus_identity_load_readonly; a session to 127.0.0.1:<tcp_port> that
  * authenticates with that key and is pinned to the same key's id (so the
  * answer can only come from this node); one nodus_client_dnac_node_duties
- * call; close; the key wiped.
+ * call; close; the key wiped. The session is bound to `chain_id` (32
+ * bytes; DHT v2 package 3c — the caller takes it from the tool network
+ * file / --chain), so it only completes with a node of that chain.
  * @return 0 the reply decoded (*out); -1 anything else, the reason in err
  *         (config, key, connection, pin, auth, timeout, decode, "witness
  *         module not enabled", an old node).
  */
 int nodus_node_package_read_duties(const char *config_path,
+                                   const uint8_t chain_id[NODUS_CLIENT_CHAIN_ID_SIZE],
                                    nodus_dnac_node_duties_t *out,
                                    char *err, size_t errcap);
 
@@ -318,6 +321,10 @@ int nodus_node_package_addr_seq(const char *identity_path,
  * `args` / `nargs` are the words AFTER "package" (so args[0] is the
  * subcommand). `sysd`, `lock_path`, `lock_owner` and `config_path` are the
  * test seams; the CLI passes the defaults (lock_owner 0 = root).
+ * `chain_id` (32 bytes, or NULL) is the chain the registration read's
+ * session is bound to; only `remove witness` of a running witness reads
+ * the chain, and with NULL that read is refused ("no chain id") — the
+ * other paths never need it.
  *
  * Writes everything the user must read into `out` (one or more lines,
  * each ending in '\n'); the CLI prints it to stdout on 0 and stderr on 1.
@@ -332,6 +339,7 @@ int nodus_node_package_main(const char *const *args, int nargs,
                             const nodus_np_sysd_t *sysd,
                             const char *lock_path, uid_t lock_owner,
                             const char *config_path,
+                            const uint8_t *chain_id,
                             char *out, size_t outcap);
 
 #ifdef __cplusplus

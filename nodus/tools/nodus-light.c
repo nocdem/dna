@@ -845,6 +845,11 @@ static int net_init_slot(light_net_t *net, size_t i)
     cfg.auto_reconnect         = true;
     cfg.pinned_server_fps      = &nd->pin;   /* item 8 */
     cfg.pinned_server_fp_count = 1;
+    /* DHT v2 package 3c: the session is bound to the chain this light client
+     * follows — the compiled chain or --chain-id (Kurultay #43 O-6: the
+     * tool's own network config; nodus-light's is --node pins + chain id). */
+    cfg.has_expected_chain_id  = true;
+    memcpy(cfg.expected_chain_id, net->chain_id, NODUS_LIGHT_CHAIN_ID_LEN);
     if (nodus_client_init(&net->clients[i], &cfg, net->id) != 0) {
         fprintf(stderr, "%s (%s:%u): client init failed\n", nd->label,
                 nd->host, (unsigned)nd->port);

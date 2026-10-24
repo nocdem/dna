@@ -30,6 +30,7 @@
 #include <stdint.h>
 
 #include "nodus/nodus.h"         /* nodus_dnac_v3_block_result_t */
+#include "client/nodus_tool_network.h" /* nodus_tool_net_t (3c)        */
 
 #ifdef __cplusplus
 extern "C" {
@@ -84,11 +85,19 @@ int exp_chain_config_load(const char *path, exp_server_t *servers, int max, int 
  * `servers` is copied into *c_out; the caller's array need not outlive
  * this call. count must be in [1, EXP_CHAIN_MAX_SERVERS].
  *
+ * `net` (DHT v2 package 3c; decision 2026-10-24-dht-v2-tool-network-
+ * identity.md) is the tool network identity — the network file and/or the
+ * --pin / --chain flags (nodus_tool_network.h). It is copied; every
+ * connection to servers[i] takes that server's pin (the --pin flag, else the
+ * file's entry for exactly host:port) and the chain id from it. A server
+ * with no pin, or no chain id anywhere, is not connected to (-1, no socket).
+ *
  * @return 0 on success (*c_out populated), -1 on failure (*c_out left NULL;
- *         bad params, identity generation failure, or all servers[0]
- *         connect attempt failed)
+ *         bad params, identity generation failure, no pin / chain id for
+ *         servers[0], or the servers[0] connect attempt failed)
  */
-int exp_chain_open(exp_chain_t **c_out, const exp_server_t *servers, int count);
+int exp_chain_open(exp_chain_t **c_out, const exp_server_t *servers, int count,
+                   const nodus_tool_net_t *net);
 
 /* Disconnect + release everything (including the ephemeral identity's
  * secret key material). Safe to call with c == NULL. */
