@@ -11,7 +11,11 @@
  * fake's fingerprint and bound to that chain id, and the fake sends the
  * session's `auth_ok` token message once the layer is authenticated. The fake
  * answers GET / GET_ALL with a reply chosen per case and counts every PUT it
- * receives.
+ * receives. HOW THIS CAN LIE: the fake binds the session to the SAME
+ * g_chain_id on both ends, so this test passes whatever chain id a real node
+ * puts in its HELLO — it does not show that a real node's session chain id
+ * equals the id a client is configured with (3c report: the 3b-2 server takes
+ * it from the witness's 16-byte legacy id padded to 32, not the v3 chain id).
  *
  * What it proves:
  *   F1  timeout (the node never answers)      -> UNREADABLE(timeout)

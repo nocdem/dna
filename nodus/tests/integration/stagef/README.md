@@ -298,10 +298,10 @@ pick it up.
     `test_v2_grow_7_20.sh` / `_32.sh` is read from its database, not dialed;
     no other scenario was found dialing a node outside the file.
   - **Scenarios that run a PRE-cutover (OLD) server cannot pass at all:**
+    the six that read `STAGEF_NODUS_BIN_OLD` (grep of `tests/*.sh`):
     `test_cmt_hf1_gas_upgrade.sh`, `test_cmt_hf2_gov_power.sh`,
     `test_cmt_hf3_block_bounds.sh`, `test_cmt_hf4_names.sh`,
-    `test_cmt_evm.sh`, `test_cmt_mldsa.sh`, `test_cmt_multisig.sh`,
-    `test_hf6_edge.sh` and `test_p2p_stopall_nowipe.sh` roll or compare an OLD
+    `test_cmt_evm.sh` and `test_p2p_stopall_nowipe.sh` roll or compare an OLD
     build against a NEW one. Nodes of the two generations cannot hold a 4002
     session and an OLD node has no SecretConnection on 4001 (decision
     `2026-10-23-dht-v2-session-cutover.md`: all at once, no fallback). Their

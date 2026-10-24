@@ -78,7 +78,7 @@ for src in "${sources[@]}"; do
   obj="$work/obj/$(basename "${src%.c}").o"
   if "$EMCC_BIN" -c -O2 -Wall -Wextra -Wno-unused-parameter -Werror \
        -DNODUS_TCP_SC=1 \
-       -Inodus/include -Inodus/src -Ishared -I"$work/inc" \
+       -Inodus/include -Inodus/src -Ishared -Idnac/include -I"$work/inc" \
        -I"$OPENSSL_WASM_PREFIX/include" \
        "$src" -o "$obj"; then
     echo "OK    $src"

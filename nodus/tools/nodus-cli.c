@@ -12671,6 +12671,11 @@ int main(int argc, char **argv) {
     }
 
     /* Remaining commands: connect to TCP 4001, authenticate */
+    if (!server_ip) {
+        fprintf(stderr, "%s needs -s <server>\n", command);
+        nodus_identity_clear(&identity);
+        return 1;
+    }
     int rc = 1;
 
     /* Connect */

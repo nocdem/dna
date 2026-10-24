@@ -11,7 +11,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <arpa/inet.h>
+#ifdef _WIN32
+  #include <winsock2.h>
+  #include <ws2tcpip.h>      /* inet_pton */
+#else
+  #include <arpa/inet.h>
+#endif
 
 #ifdef NODUS_HAS_JSONC
 #include <json-c/json.h>
@@ -200,7 +205,7 @@ int nodus_tool_net_parse(nodus_tool_net_t *t, const char *text, size_t len,
                            JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8);
     struct json_object *root = json_tokener_parse_ex(tok, text, (int)len);
     enum json_tokener_error jerr = json_tokener_get_error(tok);
-    size_t consumed = (size_t)tok->char_offset;
+    size_t consumed = json_tokener_get_parse_end(tok);
     json_tokener_free(tok);
     if (!root || jerr != json_tokener_success) {
         if (root) json_object_put(root);

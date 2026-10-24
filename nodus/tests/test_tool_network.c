@@ -127,7 +127,10 @@ int main(void) {
 
     /* ── every refusal, whole file ───────────────────────────────── */
     expect_refused("refused: not JSON", "chain_id", "not valid JSON");
-    expect_refused("refused: trailing garbage", GOOD_FILE " x", "not valid JSON");
+    /* json-c's strict tokener reports trailing characters itself; either that
+     * or the module's own trailing-characters check refuses it — both texts
+     * say "JSON". */
+    expect_refused("refused: trailing garbage", GOOD_FILE " x", "JSON");
     expect_refused("refused: root is an array", "[]", "not a JSON object");
     expect_refused("refused: unknown top-level key",
                    "{\"chain_id\":\"" CHAIN_A "\",\"nodes\":[" NODE("10.0.0.1", "4001", FP1)
