@@ -161,6 +161,11 @@ typedef struct nodus_tcp_conn {
      * reads these, never connected_at / last_activity. Set where those are. */
     uint64_t            connected_mono_ms;
     uint64_t            last_activity_mono_ms;
+    /* Monotonic stamp of the dial (nodus_tcp_connect); 0 on an accepted
+     * connection. The bound over connect + handshake of a dialed node
+     * session (nodus_inter_pool_sweep) is measured from it: connected_at is
+     * 0 until the connect completes. */
+    uint64_t            dial_mono_ms;
 
     /* Send diagnostics (Phase 1 visibility — no behavior change) */
     uint64_t            send_ok_count;      /* frames accepted into wbuf */

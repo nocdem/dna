@@ -2768,6 +2768,7 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
     conn->fd = fd;
     conn->state = NODUS_CONN_CONNECTING;
     conn->port = port;
+    conn->dial_mono_ms = nodus_time_mono_ms();
     /* C2 fix: this is an outbound conn — we opened it. Challenge handler will
      * only sign auth responses when this flag is true (closes signing oracle). */
     conn->auth_initiated_by_us = true;

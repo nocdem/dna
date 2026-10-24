@@ -305,6 +305,10 @@ typedef struct nodus_server {
      * refused (fail closed) — nodus_server_chain_id. */
     uint8_t                 chain_id[32];
     bool                    chain_id_known;
+    /* While unknown the backend is asked at most once a second:
+     * nodus_time_mono_ms() of the last ask, and whether there was one. */
+    bool                    chain_id_tried;
+    uint64_t                chain_id_try_mono_ms;
 
     /* Phase 1 visibility: send diagnostics dump timer */
     uint64_t                last_stats_dump;

@@ -13,6 +13,12 @@
  *       peer during a rolling deploy): the row STAYS.
  *   H3  FAILED (nothing queued): the row stays (retry counted, expiry by the
  *       hint TTL / retry cap as before).
+ *   H4  REFUSED (the dial was refused locally — no chain id yet, no pin;
+ *       nothing was attempted): the row stays and NO retry is counted, so a
+ *       witness gap cannot age rows toward deletion unsent.
+ *   H2/H4 also assert retry_count stays 0, H3 that it became 1.
+ *   (The queue-full diversion -> QUEUED conversion is pinned by
+ *   test_send_queue_full, with the real transport.)
  *
  * HOW: one forked child per case, because dht_hinted_retry keeps a
  * function-static "last retry" time (it runs on the first tick only). Each
@@ -53,7 +59,7 @@ static bool stub_hint_wanted(void *ctx, const nodus_key_t *id) {
 }
 
 /* Child: returns the process exit code. */
-static int run_case(int mode, int rows_expected) {
+static int run_case(int mode, int rows_expected, int retries_expected) {
     g_mode = mode;
     static nodus_identity_t id;
     if (nodus_identity_generate(&id) != 0) return 10;
@@ -82,6 +88,17 @@ static int run_case(int mode, int rows_expected) {
 
     if (g_calls < 1) { rc = 24; goto out_close; }          /* the retry never ran */
     rc = nodus_storage_hinted_count(&dht.storage) == rows_expected ? 0 : 25;
+    if (rc == 0 && rows_expected == 1) {
+        /* the row's retry count: a FAILED attempt counts one, a QUEUED or a
+         * locally REFUSED one counts none (nothing was attempted / failed) */
+        nodus_dht_hint_t *e = NULL;
+        size_t n = 0;
+        if (nodus_storage_hinted_get(&dht.storage, &peer, 10, &e, &n) != 0 || n != 1)
+            rc = 27;
+        else if (e[0].retry_count != retries_expected)
+            rc = 28;
+        if (e) nodus_storage_hinted_free(e, n);
+    }
 out_close:
     nodus_dht_close(&dht);
 out:
@@ -92,11 +109,11 @@ out:
     return rc;
 }
 
-static int run_forked(int mode, int rows_expected) {
+static int run_forked(int mode, int rows_expected, int retries_expected) {
     fflush(stdout);
     pid_t pid = fork();
     if (pid < 0) return -1;
-    if (pid == 0) _exit(run_case(mode, rows_expected));
+    if (pid == 0) _exit(run_case(mode, rows_expected, retries_expected));
     int st = 0;
     if (waitpid(pid, &st, 0) < 0) return -1;
     return WIFEXITED(st) ? WEXITSTATUS(st) : -2;
@@ -105,14 +122,15 @@ static int run_forked(int mode, int rows_expected) {
 int main(void) {
     int passed = 0, failed = 0;
     printf("=== hinted-handoff retry vs the send tri-state ===\n");
-    struct { const char *name; int mode; int rows_left; } cases[] = {
-        { "H1 WRITTEN: the row is deleted",       NODUS_INTER_SEND_WRITTEN, 0 },
-        { "H2 QUEUED: the row stays",             NODUS_INTER_SEND_QUEUED,  1 },
-        { "H3 FAILED: the row stays",             NODUS_INTER_SEND_FAILED,  1 },
+    struct { const char *name; int mode; int rows_left; int retries; } cases[] = {
+        { "H1 WRITTEN: the row is deleted",         NODUS_INTER_SEND_WRITTEN, 0, 0 },
+        { "H2 QUEUED: the row stays, no retry",     NODUS_INTER_SEND_QUEUED,  1, 0 },
+        { "H3 FAILED: the row stays, one retry",    NODUS_INTER_SEND_FAILED,  1, 1 },
+        { "H4 REFUSED (local): the row stays, no retry", NODUS_INTER_SEND_REFUSED, 1, 0 },
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         printf("  %-60s", cases[i].name);
-        int rc = run_forked(cases[i].mode, cases[i].rows_left);
+        int rc = run_forked(cases[i].mode, cases[i].rows_left, cases[i].retries);
         if (rc == 0) { printf("PASS\n"); passed++; }
         else { printf("FAIL: child exit %d\n", rc); failed++; }
     }

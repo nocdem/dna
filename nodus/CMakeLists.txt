@@ -1652,6 +1652,17 @@ add_executable(test_hint_tristate tests/test_hint_tristate.c)
 target_link_libraries(test_hint_tristate nodus dsa kem nodus)
 add_test(NAME test_hint_tristate COMMAND test_hint_tristate)
 
+# DHT v2 3b-2 fix round: a REAL forwarded read over the node session (batch
+# forward sends its get_batch after opening the send gate), and a send the
+# transport diverts to its queue-full fallback is not reported WRITTEN.
+add_executable(test_bf_session tests/test_bf_session.c)
+target_link_libraries(test_bf_session nodus dsa kem nodus)
+add_test(NAME test_bf_session COMMAND test_bf_session)
+
+add_executable(test_send_queue_full tests/test_send_queue_full.c)
+target_link_libraries(test_send_queue_full nodus dsa kem nodus)
+add_test(NAME test_send_queue_full COMMAND test_send_queue_full)
+
 # Split S5a item 33: the 4002 pending-full hook parks only DHT replication
 # frames (sv / m_sv) in the hint table; p_sync, ri_*, replies are dropped.
 add_executable(test_pending_full_hint tests/test_pending_full_hint.c)

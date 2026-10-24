@@ -109,13 +109,17 @@ static int dht_udp_send(nodus_dht_t *dht, const uint8_t *payload, size_t len,
 }
 
 /* A pre-framed frame to a peer's 4002 over core's inter-node pool;
- * synchronous (the hinted-handoff decision reads it). Three results
+ * synchronous (the hinted-handoff decision reads it). Results
  * (nodus_inter_send_t): NODUS_INTER_SEND_WRITTEN (0) — handed to an
- * authenticated session; NODUS_INTER_SEND_QUEUED (1) — the session is not
- * authenticated yet, the frame waits in memory and is lost if the handshake
- * fails; NODUS_INTER_SEND_FAILED (-1) — nothing queued. A caller that only
- * asks "was it accepted" tests `>= 0`; a caller that DELETES durable work on
- * success (the hinted-handoff retry) tests `== NODUS_INTER_SEND_WRITTEN`. */
+ * authenticated session and written; NODUS_INTER_SEND_QUEUED (1) — the
+ * session is not authenticated yet (the frame waits in memory and is lost if
+ * the handshake fails) or the transport's queue-full fallback took the frame;
+ * NODUS_INTER_SEND_FAILED (-1) — nothing queued; NODUS_INTER_SEND_REFUSED
+ * (-2) — the dial was refused locally, nothing attempted. A caller that only
+ * asks "was it accepted" tests `>= 0` (QUEUED counts as accepted, as the old
+ * "queued" 0 did; FAILED and REFUSED are failures); a caller that DELETES
+ * durable work on success (the hinted-handoff retry) tests
+ * `== NODUS_INTER_SEND_WRITTEN`. */
 static int dht_inter_send(nodus_dht_t *dht, const char *ip, uint16_t port,
                           const nodus_key_t *expected_node_id,
                           const uint8_t *frame, size_t flen) {
@@ -914,6 +918,13 @@ static void dht_hinted_retry(nodus_dht_t *dht) {
                  * STAYS, no retry is counted (nothing failed yet), and this
                  * peer is left until the next cycle, when the session is
                  * either up (WRITTEN) or the dial failed (FAILED, below). */
+                h_queued++;
+                break;
+            } else if (src == NODUS_INTER_SEND_REFUSED) {
+                /* The dial was refused LOCALLY (no chain id yet, no pin, no
+                 * session config): nothing was attempted against the peer,
+                 * so no retry is counted and the row stays — a witness gap
+                 * must not burn the retries of rows nobody tried to send. */
                 h_queued++;
                 break;
             } else {
@@ -3272,6 +3283,11 @@ static void bf_on_session(nodus_tcp_conn_t *conn, void *ctx) {
      * The token slot of the frame is zero: the responder's 4002 handler
      * reads no token (identity is the connection). */
     if (nodus_inter_session_proven(conn) != 0) { bf_forward_fail(dht, b, c); return; }
+    /* Open the send gate, as the pool and the storage dialer do at their
+     * on_session: nodus_inter_session_enable left auth_state at HELLO_SENT,
+     * so a nodus_tcp_send before this would only append to the dial queue
+     * and nothing would ever replay it (the get_batch was never sent). */
+    nodus_inter_dial_conn_open(conn);
     nodus_t2_read_opts_t fwd_opts = {
         .own   = b->has_own ? &b->own : NULL,
         .page  = b->paged,

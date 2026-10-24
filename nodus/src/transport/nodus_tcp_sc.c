@@ -61,7 +61,44 @@ typedef struct nodus_tcp_sc {
     size_t                 hold_len;
     const nodus_key_t     *pin_set;     /* INITIATOR pin SET (cfg.expected_set), caller-owned */
     size_t                 pin_set_n;
+    /* The pre-AUTHENTICATED input budget (see sc_presession_budget): bytes the
+     * machine consumed so far, the most it may consume, and whether the
+     * session is past it (authenticated: the budget no longer applies). */
+    size_t                 pre_bytes;
+    size_t                 pre_budget;
+    bool                   pre_done;
 } nodus_tcp_sc_t;
+
+/* The sealed-frame budget of one handshake (Kurultay #43 O-5, "a combined
+ * budget (... sealed frames per handshake ...)"): everything a peer may send
+ * BEFORE the session is AUTHENTICATED, derived from the sizes the machine
+ * itself defines (shared/dnac/cmt_p2p_secret.h) — nothing is added to
+ * shared/dnac, 4004 is untouched:
+ *   AUTHSIG on the wire  = uvarint(<=3) + kind(1) + signature(4627) = 4631 B
+ *   sealed chunk         = CMT_P2P_SC_DATA_MAX_SIZE = 1024 B
+ *   sealed frames        = ceil(4631 / 1024) = 5 (4 x 1024 + 535), each
+ *                          CMT_P2P_SC_SEALED_FRAME_SIZE = 1044 B -> 5,220 B
+ * plus the plaintext handshake messages the role RECEIVES (each at most its
+ * uvarint prefix + body):
+ *   RESPONDER  HELLO (3 + 2,661) + KEYX (3 + 1,569) -> 4,236 B
+ *   INITIATOR  HELLO_R (3 + 4,229)                  -> 4,232 B
+ * i.e. at most 5 sealed frames after the plaintext messages. A peer that
+ * pushes more than that without completing the session is closed (the
+ * feed fails). Sealed bytes that ARRIVE together with the AUTHSIG tail but
+ * stay in the hold while the verify job runs are not consumed yet and are
+ * counted when they are — by then the session is authenticated and the
+ * budget has ended. */
+static size_t sc_presession_budget(cmt_p2p_sc_role_t role)
+{
+    size_t plain = role == CMT_P2P_SC_ROLE_INITIATOR
+                 ? (size_t)CMT_P2P_SC_UVARINT_MAX + CMT_P2P_SC_HELLO_R_BODY
+                 : (size_t)CMT_P2P_SC_UVARINT_MAX + CMT_P2P_SC_HELLO_BODY +
+                   (size_t)CMT_P2P_SC_UVARINT_MAX + CMT_P2P_SC_KEYX_BODY;
+    return plain + (size_t)CMT_P2P_SC_AUTHSIG_FRAMES_MAX * CMT_P2P_SC_SEALED_FRAME_SIZE;
+}
+
+_Static_assert(CMT_P2P_SC_AUTHSIG_FRAMES_MAX == 5,
+               "AUTHSIG is five sealed frames (4631 B / 1024 B, rounded up)");
 
 /* ── Host bindings: the profile decides the signing purpose ───────────── */
 
@@ -625,6 +662,10 @@ int nodus_tcp_sc_enable(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
     }
     if (cfg->role == CMT_P2P_SC_ROLE_INITIATOR) {
         /* the dial pin is mandatory: one identity, a set, or both */
+        if ((cfg->expected_set == NULL) != (cfg->expected_set_n == 0)) {
+            QGP_LOG_ERROR(LOG_TAG_SC, "enable refused: pin set pointer and count disagree");
+            return -1;
+        }
         if (cfg->expected_peer == NULL &&
             (cfg->expected_set == NULL || cfg->expected_set_n == 0)) {
             QGP_LOG_ERROR(LOG_TAG_SC, "enable refused: initiator without a pin");
@@ -649,6 +690,7 @@ int nodus_tcp_sc_enable(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
     s->host.verify = do_verify;
     s->kem_sk = kem_sk;
     s->cls = cfg->role == CMT_P2P_SC_ROLE_INITIATOR ? 0 : 1;
+    s->pre_budget = sc_presession_budget(cfg->role);
     if (cmt_p2p_sc_init_profile(&s->m, cfg->role, &s->host, cfg->profile,
                                 cfg->id->pk.bytes, kem_pk, kem_sk,
                                 cfg->proto_ver, cfg->chain_id) != CMT_OK) {
@@ -962,6 +1004,21 @@ int nodus_tcp_sc_feed(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
     }
     if (sc_run(tcp, conn, s, in, inlen, &used, plain, plain_ctx) != 0)
         return -1;
+    /* The pre-session input budget (sc_presession_budget): while the session
+     * is not authenticated, only so many bytes may be consumed. */
+    if (!s->pre_done) {
+        if (cmt_p2p_sc_is_authenticated(&s->m)) {
+            s->pre_done = true;
+        } else {
+            s->pre_bytes += used;
+            if (s->pre_bytes > s->pre_budget) {
+                QGP_LOG_WARN(LOG_TAG_SC, "pre-session input budget exceeded "
+                             "(%zu > %zu bytes, slot %d): closing",
+                             s->pre_bytes, s->pre_budget, conn->slot);
+                return -1;
+            }
+        }
+    }
     left = inlen - used;
     if (left > 0 && !s->job_out) {
         /* The machine stops early only to HOLD for a job. Anything else left

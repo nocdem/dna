@@ -724,6 +724,11 @@ static void client_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
                      ? (unsigned long)(nodus_time_now_ms() - conn->last_activity * 1000)
                      : 0UL);
     client->conn = NULL;
+    /* The session ended with its connection: a later connect starts from
+     * "not authenticated", and the previous server's key is not this
+     * session's. */
+    atomic_store(&client->session_ready, false);
+    client->has_server_dil_pk = false;
 
     if (client->state == NODUS_CLIENT_READY ||
         client->state == NODUS_CLIENT_AUTHENTICATING) {
@@ -995,11 +1000,21 @@ static int do_auth(nodus_client_t *client, nodus_pending_t *req) {
         return -1;
     }
 
+    /* READY needs ALL of: the same live connection, the layer's authenticated
+     * transition, a token message with a token of the right length (the
+     * decoder sets has_token only for exactly NODUS_SESSION_TOKEN_LEN bytes),
+     * and the proven server key readable. Anything less is a failed
+     * connect. */
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
-    if (strcmp(resp->method, "auth_ok") != 0 ||
-        !atomic_load(&client->session_ready)) {
-        QGP_LOG_ERROR(LOG_TAG, "Auth: expected the session's 'auth_ok' token "
-                      "message, got '%s' (session %s)", resp->method,
+    nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)client->conn;
+    uint8_t spk[CMT_P2P_SC_DSA_PK_SIZE];
+    if (strcmp(resp->method, "auth_ok") != 0 || !resp->has_token ||
+        !conn || !atomic_load(&client->session_ready) ||
+        nodus_tcp_sc_peer_pubkey(conn, spk) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Auth: no complete session (method '%s', token %s, "
+                      "connection %s, session %s)", resp->method,
+                      resp->has_token ? "present" : "absent",
+                      conn ? "live" : "closed",
                       atomic_load(&client->session_ready) ? "authenticated"
                                                           : "not authenticated");
         free_pending(client, req);
@@ -1011,14 +1026,8 @@ static int do_auth(nodus_client_t *client, nodus_pending_t *req) {
     free_pending(client, req);
 
     /* The proven server key (messenger reads server_dil_pk). */
-    {
-        uint8_t spk[CMT_P2P_SC_DSA_PK_SIZE];
-        if (client->conn &&
-            nodus_tcp_sc_peer_pubkey((nodus_tcp_conn_t *)client->conn, spk) == 0) {
-            memcpy(client->server_dil_pk.bytes, spk, sizeof(client->server_dil_pk.bytes));
-            client->has_server_dil_pk = true;
-        }
-    }
+    memcpy(client->server_dil_pk.bytes, spk, sizeof(client->server_dil_pk.bytes));
+    client->has_server_dil_pk = true;
     return 0;
 }
 

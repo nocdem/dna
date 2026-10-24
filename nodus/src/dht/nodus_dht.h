@@ -470,8 +470,11 @@ typedef struct {
      *       the frame waits in memory and is lost if the handshake fails
      *       (e.g. the peer is an old build during a rolling deploy). NOT a
      *       delivery: durable work (a hinted-handoff row) must stay;
-     *   -1  NODUS_INTER_SEND_FAILED  — nothing is queued (the dial was refused
-     *       or the write failed).
+     *   -1  NODUS_INTER_SEND_FAILED  — nothing is queued (the connect or the
+     *       write failed);
+     *   -2  NODUS_INTER_SEND_REFUSED — the dial was refused locally (no pin,
+     *       chain id unknown): nothing was attempted, a retry is not counted.
+     *   A write the transport diverted to its queue-full fallback is 1.
      *  The caller decides on hinted handoff from this result in the same
      *  call. */
     int  (*inter_send)(void *ctx, const char *ip, uint16_t port,

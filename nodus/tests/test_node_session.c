@@ -14,9 +14,16 @@
  *       handshake (which is why a hint row must stay on QUEUED).
  *   N3  different chain ids on the two ends: the handshake fails, no frame
  *       arrives.
- *   N4  the dialer does not know its chain id: the dial is refused —
- *       NODUS_INTER_SEND_FAILED, nothing queued; a dial with NO pin is
- *       refused the same way (zero pins).
+ *   N4  the dialer does not know its chain id: the dial is refused LOCALLY —
+ *       NODUS_INTER_SEND_REFUSED, nothing queued, and the chain id is checked
+ *       BEFORE the TCP connect (the acceptor sees no connection at all, no
+ *       session, no frame); a dial with NO pin is refused the same way.
+ *   N4b a NULL pin is refused first even when a pooled connection exists (no
+ *       unpinned reuse through the find).
+ *   N7  the connect + handshake bound of a dialed session (10 s) is measured
+ *       on the monotonic clock from the dial stamp: a young dial whose
+ *       connected_at is still 0 is NOT closed by nodus_inter_pool_sweep, one
+ *       past the bound is.
  *   N5  the acceptor does not know its chain id: it closes the accepted
  *       connection; no session, no frame.
  *   N6  an OLD plaintext hello (a T2 `hello` frame, what a pre-3b-2 dialer
@@ -81,8 +88,11 @@ static bool chain_b(void *ctx, uint8_t out[32]) {
 }
 
 /* The acceptor: what core's on_inter_accept / on_inter_session do. */
+static int g_acc_accepts;                         /* connections the acceptor saw */
+
 static void acc_on_accept(nodus_tcp_conn_t *conn, void *ctx) {
     (void)ctx;
+    g_acc_accepts++;
     conn->is_nodus = true;
     if (nodus_inter_session_enable(&g_acc, conn, false) != 0)
         nodus_tcp_disconnect(&g_acc, conn);
@@ -147,6 +157,7 @@ static bool wait_for(const int *counter, int want) {
 
 static void reset_counters(void) {
     g_acc_frames = 0;
+    g_acc_accepts = 0;
     g_acc_last[0] = '\0';
     g_dial_closed = g_acc_closed = 0;
     g_dial_sessions = g_acc_sessions = 0;
@@ -241,17 +252,67 @@ static void test_wrong_chain(void) {
 }
 
 static void test_dialer_chain_unknown(void) {
-    TEST("N4 dialer without a chain id / without a pin: FAILED, nothing queued");
+    TEST("N4 dialer without a chain id / without a pin: REFUSED, no connect");
     reset_counters();
     g_known_a = false;
     nodus_inter_send_t rc = send_one(&g_id_b.node_id, "no-chain");
     g_known_a = true;
     nodus_inter_send_t rc2 = send_one(NULL, "no-pin");
-    if (rc != NODUS_INTER_SEND_FAILED) { FAIL("a dial with an unknown chain id was not refused"); return; }
-    if (rc2 != NODUS_INTER_SEND_FAILED) { FAIL("an unpinned dial was not refused"); return; }
+    if (rc != NODUS_INTER_SEND_REFUSED) { FAIL("a dial with an unknown chain id was not refused"); return; }
+    if (rc2 != NODUS_INTER_SEND_REFUSED) { FAIL("an unpinned dial was not refused"); return; }
     for (int i = 0; i < 30; i++) poll_both();
-    if (g_acc_closed != 0 || g_acc_frames != 0) { FAIL("a connection was made"); return; }
+    /* what matters: the chain id is checked BEFORE the TCP connect — the
+     * acceptor never saw a connection — and no session or frame was served */
+    if (g_acc_accepts != 0 || g_acc_closed != 0 || g_acc_frames != 0 ||
+        g_acc_sessions != 0 || g_dial_sessions != 0) {
+        FAIL("a connection, session or frame came out of a refused dial");
+        return;
+    }
     PASS();
+}
+
+static void test_null_pin_with_pooled_conn(void) {
+    TEST("N4b a NULL pin is refused even when a pooled conn exists");
+    reset_counters();
+    if (send_one(&g_id_b.node_id, "pooled") != NODUS_INTER_SEND_QUEUED ||
+        !wait_for(&g_acc_frames, 1)) {
+        FAIL("could not establish the pooled connection");
+        return;
+    }
+    /* find with a NULL pin would hand back the pooled conn: the refusal
+     * must come first (no unpinned dial, no unpinned reuse) */
+    nodus_inter_send_t rc = send_one(NULL, "unpinned");
+    for (int i = 0; i < 30; i++) poll_both();
+    if (rc != NODUS_INTER_SEND_REFUSED) { FAIL("a NULL-pin send reused or dialed"); return; }
+    if (g_acc_frames != 1) { FAIL("the unpinned frame was delivered"); return; }
+    PASS();
+    close_all_dials();
+}
+
+static void test_dial_bound(void) {
+    TEST("N7 handshake bound is monotonic from the dial; a young dial stays");
+    reset_counters();
+    if (send_one(&g_id_b.node_id, "slow") != NODUS_INTER_SEND_QUEUED) {
+        FAIL("dial not started");
+        return;
+    }
+    nodus_tcp_conn_t *d = nodus_inter_pool_find(&g_dial, "127.0.0.1", g_acc.port,
+                                                &g_id_b.node_id);
+    if (!d || d->auth_state != NODUS_CONN_AUTH_HELLO_SENT) {
+        FAIL("the dialed conn is not in HELLO_SENT");
+        return;
+    }
+    /* a conn whose connect has not completed has connected_at == 0: the old
+     * sweep (connected_at based) would have closed it at once */
+    d->connected_at = 0;
+    d->dial_mono_ms = nodus_time_mono_ms();
+    nodus_inter_pool_sweep(&g_dial, nodus_time_now());
+    if (g_dial.pool[d->slot] != d) { FAIL("a young dial was closed by the sweep"); return; }
+    d->dial_mono_ms = nodus_time_mono_ms() - 11000;   /* older than the 10 s bound */
+    nodus_inter_pool_sweep(&g_dial, nodus_time_now());
+    if (g_dial.pool[d->slot] == d) { FAIL("a dial past the bound was kept"); return; }
+    PASS();
+    close_all_dials();
 }
 
 static void test_acceptor_chain_unknown(void) {
@@ -318,6 +379,8 @@ int main(void) {
     test_wrong_pin();
     test_wrong_chain();
     test_dialer_chain_unknown();
+    test_null_pin_with_pooled_conn();
+    test_dial_bound();
     test_acceptor_chain_unknown();
     test_plaintext_hello();
 

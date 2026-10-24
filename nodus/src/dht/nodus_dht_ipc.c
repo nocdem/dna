@@ -113,6 +113,8 @@ struct nodus_dht_ipc {
      * (nodus_dht_ipc_wview). NULL until opened: no snapshot, no dial. */
     nodus_inter_session_cfg_t sess_cfg;
     nodus_dht2_wview_t     *wview;
+    uint8_t                 chain_id[32];     /* latched by dipc_chain_id */
+    bool                    chain_known;
 
     /* Core's last membership snapshot (decision item 27). */
     nodus_dht_ipc_member_t  mbr[NODUS_DHT_IPC_MEMBERS_MAX];
@@ -315,16 +317,26 @@ static int dipc_inter_send(void *ctx, const char *ip, uint16_t port,
  * dial is refused. */
 static bool dipc_chain_id(void *ctx, uint8_t out[32]) {
     nodus_dht_ipc_t *ipc = (nodus_dht_ipc_t *)ctx;
-    nodus_witness_dht_snap_t snap;
-    if (!ipc || !ipc->wview ||
-        !nodus_dht2_wview_snap(ipc->wview, nodus_time_mono_ms(), &snap))
-        return false;
-    uint8_t acc = 0;
-    for (size_t i = 0; i < sizeof(snap.chain_id); i++) acc |= snap.chain_id[i];
-    if (acc == 0) return false;
-    _Static_assert(sizeof(((nodus_witness_dht_snap_t *)0)->chain_id) == 32,
-                   "the snapshot's chain id is the session's 32 bytes");
-    memcpy(out, snap.chain_id, sizeof(snap.chain_id));
+    if (!ipc) return false;
+    /* LATCHED, as core's nodus_server_chain_id: a chain id never changes for
+     * the life of the process, so once a fresh snapshot has shown a non-zero
+     * one it is kept. A witness gap longer than the view's staleness bound
+     * then no longer refuses every dial (and no longer ages hinted-handoff
+     * rows toward deletion). Only the FIRST value needs a fresh snapshot. */
+    if (!ipc->chain_known) {
+        nodus_witness_dht_snap_t snap;
+        if (!ipc->wview ||
+            !nodus_dht2_wview_snap(ipc->wview, nodus_time_mono_ms(), &snap))
+            return false;
+        uint8_t acc = 0;
+        for (size_t i = 0; i < sizeof(snap.chain_id); i++) acc |= snap.chain_id[i];
+        if (acc == 0) return false;
+        _Static_assert(sizeof(((nodus_witness_dht_snap_t *)0)->chain_id) == 32,
+                       "the snapshot's chain id is the session's 32 bytes");
+        memcpy(ipc->chain_id, snap.chain_id, sizeof(snap.chain_id));
+        ipc->chain_known = true;
+    }
+    memcpy(out, ipc->chain_id, sizeof(ipc->chain_id));
     return true;
 }
 

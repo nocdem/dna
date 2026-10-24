@@ -271,15 +271,6 @@ int nodus_server_inter_sweep_orphans(nodus_server_t *srv, uint64_t now_ms,
     return freed;
 }
 
-static bool session_check_token(nodus_session_t *sess, const uint8_t *token) {
-    if (!sess->authenticated || !token) return false;
-    /* Constant-time comparison to prevent timing side-channel (HIGH-11) */
-    volatile uint8_t diff = 0;
-    for (size_t i = 0; i < NODUS_SESSION_TOKEN_LEN; i++)
-        diff |= sess->token[i] ^ token[i];
-    return diff == 0;
-}
-
 /* ── Phase 1: Send diagnostics dump ──────────────────────────────── */
 /* Periodic per-peer counter dump so we can correlate buf_ensure failures
  * with throughput and identify slow peers. No behavior change — pure
@@ -1452,15 +1443,12 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
 
-    /* Post-auth: verify session token */
-    if (!msg.has_token || !session_check_token(sess, msg.token)) {
-        size_t rlen = 0;
-        nodus_t2_error(msg.txn_id, NODUS_ERR_NOT_AUTHENTICATED,
-                        "invalid token", resp_buf, sizeof(resp_buf), &rlen);
-        nodus_tcp_send(sess->conn, resp_buf, rlen);
-        nodus_t2_msg_free(&msg);
-        return;
-    }
+    /* The session token is NOT checked here: it is a correlation key only,
+     * never an authorization input (decisions/2026-10-23-kurultay-43-
+     * summary.md, O-2 b). Identity is the connection — this session was
+     * authenticated by the SecretConnection, and every handler below takes
+     * its identity from `sess`. The token is still minted, sent and carried
+     * by clients and by the witness IPC / delayed-reply correlation. */
 
     /* P2P-PORT F5 (witness-port session design §2R R16; p2p-port design
      * §3): the `w_*` witness methods are REFUSED on the client port. The
@@ -1698,6 +1686,16 @@ bool nodus_server_chain_id(nodus_server_t *srv, uint8_t out[32]) {
     if (!srv || !out) return false;
     if (!srv->chain_id_known) {
         if (!srv->chain) return false;
+        /* While unknown, ask the chain backend at most once a second (a
+         * monotonic stamp): its status fill reads the chain database, and
+         * every accept of the boot window would otherwise do that on the
+         * event loop. Fail closed in between. The first call is always
+         * served (stamp 0). */
+        uint64_t now = nodus_time_mono_ms();
+        if (srv->chain_id_tried && now - srv->chain_id_try_mono_ms < 1000)
+            return false;
+        srv->chain_id_tried = true;
+        srv->chain_id_try_mono_ms = now;
         nodus_t2_status_info_t info;
         memset(&info, 0, sizeof(info));
         srv->chain->ops->status(srv->chain, &info);

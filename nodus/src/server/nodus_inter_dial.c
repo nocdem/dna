@@ -139,17 +139,41 @@ nodus_tcp_conn_t *nodus_inter_pool_find(nodus_tcp_t *pool, const char *ip,
     return NULL;
 }
 
-nodus_tcp_conn_t *nodus_inter_pool_dial(nodus_tcp_t *pool, const char *ip,
-                                        uint16_t port,
-                                        const nodus_key_t *expected_node_id) {
-    nodus_tcp_conn_t *conn = nodus_inter_pool_find(pool, ip, port,
-                                                   expected_node_id);
-    if (conn) return conn;
+/* Is this pool able to make a node session now: a config, and a chain id
+ * (fail closed)? Checked BEFORE a TCP connect is made. */
+static bool pool_session_ready(nodus_tcp_t *pool) {
+    const nodus_inter_session_cfg_t *sc =
+        (const nodus_inter_session_cfg_t *)pool->auth_ctx;
+    uint8_t cid[32];
+    return sc && sc->identity && sc->chain_id && sc->chain_id(sc->ctx, cid);
+}
+
+/* find-or-dial; *refused is set when the dial was refused LOCALLY (no pin,
+ * no config, chain id unknown), as opposed to a connect that failed. */
+static nodus_tcp_conn_t *pool_dial_ex(nodus_tcp_t *pool, const char *ip,
+                                      uint16_t port,
+                                      const nodus_key_t *expected_node_id,
+                                      bool *refused) {
+    *refused = false;
+    if (!pool || !ip) return NULL;
     /* No unpinned dial: the SecretConnection layer is pinned to one exact
-     * identity (O-4) and there is no round-3 / plaintext fallback. */
+     * identity (O-4) and there is no round-3 / plaintext fallback. Refused
+     * before anything else — before the find as well. */
     if (!expected_node_id) {
         QGP_LOG_WARN(LOG_TAG, "INTER: dial to %s:%u without an expected peer "
                      "identity — refused", ip, (unsigned)port);
+        *refused = true;
+        return NULL;
+    }
+    nodus_tcp_conn_t *conn = nodus_inter_pool_find(pool, ip, port,
+                                                   expected_node_id);
+    if (conn) return conn;
+    /* No session without a chain id: refuse BEFORE the TCP connect (no
+     * useless connect, nothing to tear down). */
+    if (!pool_session_ready(pool)) {
+        QGP_LOG_WARN(LOG_TAG, "INTER: no node-session config or chain id not "
+                     "known — dial to %s:%u refused", ip, (unsigned)port);
+        *refused = true;
         return NULL;
     }
     /* None usable: a fresh conn. The transport has no duplicate check —
@@ -173,13 +197,20 @@ nodus_tcp_conn_t *nodus_inter_pool_dial(nodus_tcp_t *pool, const char *ip,
     return conn;
 }
 
+nodus_tcp_conn_t *nodus_inter_pool_dial(nodus_tcp_t *pool, const char *ip,
+                                        uint16_t port,
+                                        const nodus_key_t *expected_node_id) {
+    bool refused;
+    return pool_dial_ex(pool, ip, port, expected_node_id, &refused);
+}
+
 nodus_inter_send_t nodus_inter_pool_send_framed(nodus_tcp_t *pool, const char *ip,
                                                 uint16_t port,
                                                 const nodus_key_t *expected_node_id,
                                                 const uint8_t *frame, size_t flen) {
-    nodus_tcp_conn_t *conn = nodus_inter_pool_dial(pool, ip, port,
-                                                   expected_node_id);
-    if (!conn) return NODUS_INTER_SEND_FAILED;
+    bool refused;
+    nodus_tcp_conn_t *conn = pool_dial_ex(pool, ip, port, expected_node_id, &refused);
+    if (!conn) return refused ? NODUS_INTER_SEND_REFUSED : NODUS_INTER_SEND_FAILED;
 
     /* Not authenticated yet: the frame waits in the dial queue. Sent bytes of
      * a queued frame are plaintext in memory only; they are sealed when the
@@ -214,7 +245,16 @@ nodus_inter_send_t nodus_inter_pool_send_framed(nodus_tcp_t *pool, const char *i
     if (flen <= NODUS_FRAME_HEADER_SIZE) return NODUS_INTER_SEND_FAILED;
     const uint8_t *payload = frame + NODUS_FRAME_HEADER_SIZE;
     size_t payload_len = flen - NODUS_FRAME_HEADER_SIZE;
+    /* The transport's queue-full fallback (tcp->on_pending_full) reports a
+     * SUCCESSFUL send (0) although nothing was written: the frame was parked
+     * in the hint table (an INSERT OR IGNORE — against the very row a hinted
+     * retry is delivering, that is a no-op) or dropped. It counts the
+     * diversion in pending_hint_fallback_count; a changed count means "not
+     * written" — QUEUED, so the durable row stays. */
+    uint64_t diverted_before = conn->pending_hint_fallback_count;
     int rc = nodus_tcp_send_progress(conn, payload, payload_len, NULL, NULL);
+    if (rc == 0 && conn->pending_hint_fallback_count != diverted_before)
+        return NODUS_INTER_SEND_QUEUED;
     if (rc != 0) {
         /* Send failed (buffer full / slow consumer) — disconnect so
          * next retry opens a fresh connection instead of hammering
@@ -238,11 +278,16 @@ void nodus_inter_pool_sweep(nodus_tcp_t *pool, uint64_t now) {
     }
 
     /* Auth timeout: dialed connections whose session is still in
-     * HELLO_SENT after NODUS_INTER_POOL_HELLO_TIMEOUT_SEC */
+     * HELLO_SENT NODUS_INTER_POOL_HELLO_TIMEOUT_SEC after the DIAL — one
+     * bound over connect + handshake, on the monotonic clock (connected_at
+     * is 0 while the connect is still in progress, so it cannot serve). */
+    uint64_t now_mono = nodus_time_mono_ms();
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
         nodus_tcp_conn_t *c = pool->pool[i];
         if (!c || c->auth_state != NODUS_CONN_AUTH_HELLO_SENT) continue;
-        if (now - c->connected_at > NODUS_INTER_POOL_HELLO_TIMEOUT_SEC) {
+        if (now_mono > c->dial_mono_ms &&
+            now_mono - c->dial_mono_ms >
+                (uint64_t)NODUS_INTER_POOL_HELLO_TIMEOUT_SEC * 1000) {
             fprintf(stderr, "INTER_AUTH: auth timeout for %s:%d, disconnecting\n",
                     c->ip, c->port);
             c->auth_state = NODUS_CONN_AUTH_FAILED;

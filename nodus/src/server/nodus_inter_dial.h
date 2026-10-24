@@ -127,9 +127,10 @@ struct nodus_tcp_conn *nodus_inter_pool_find(struct nodus_tcp *pool,
  * Find-or-dial: nodus_inter_pool_find, else a new connection marked
  * is_nodus with `expected_node_id` recorded as the pin
  * (conn->expected_peer_id) and the node session enabled on it as INITIATOR
- * (nodus_inter_session_enable). A dial without a pin, or whose session cannot
- * be enabled (unknown chain id, no config), is not made: NULL, nothing left
- * allocated.
+ * (nodus_inter_session_enable). A dial without a pin (refused BEFORE the
+ * find), or whose session cannot be enabled (no config, chain id not known —
+ * checked BEFORE nodus_tcp_connect, so no useless TCP connect is made), is not
+ * made: NULL, nothing left allocated.
  * @return the connection, or NULL if the dial could not be started.
  */
 struct nodus_tcp_conn *nodus_inter_pool_dial(struct nodus_tcp *pool,
@@ -138,13 +139,24 @@ struct nodus_tcp_conn *nodus_inter_pool_dial(struct nodus_tcp *pool,
 
 /** Result of nodus_inter_pool_send_framed. */
 typedef enum {
+    /** The dial was refused LOCALLY, before any connection was made: no pin,
+     *  no node-session config, or the chain id not known (yet). Nothing is
+     *  queued. Unlike FAILED nothing was attempted against the peer, so a
+     *  durable-work retry (the hinted-handoff retry) must NOT count it as a
+     *  failed delivery attempt (retry_count). Every caller that only asks
+     *  "was it accepted" treats it as a failure (`< 0`), as FAILED. */
+    NODUS_INTER_SEND_REFUSED = -2,
     /** The dial / write failed, or the pool refused the dial (no pin, chain
      *  id unknown, session not enable-able): nothing is in memory for this
      *  frame. The caller decides on a hint. */
     NODUS_INTER_SEND_FAILED  = -1,
-    /** The frame was handed to an AUTHENTICATED session (sealed into the
-     *  connection's write path). The only result that proves delivery to the
-     *  peer's transport — a hinted-handoff row may be deleted on it. */
+    /** The frame was handed to an AUTHENTICATED session and sealed into the
+     *  connection's write path — and NOT diverted by the transport's
+     *  queue-full fallback (tcp->on_pending_full: the frame was parked in the
+     *  hint table or dropped instead; the send reports 0 but delivered
+     *  nothing, so that case is QUEUED below). The only result that proves
+     *  delivery to the peer's transport — a hinted-handoff row may be deleted
+     *  on it. */
     NODUS_INTER_SEND_WRITTEN = 0,
     /** The session is not authenticated yet: the frame waits in the
      *  connection's in-memory dial queue and is lost if the handshake fails.
@@ -158,8 +170,13 @@ typedef enum {
  * find-or-dial with the pin; while the session is not authenticated the bytes
  * wait in the conn's dial queue (cap NODUS_TCP_PENDING_MAX) and the result is
  * NODUS_INTER_SEND_QUEUED; on an open session the payload goes through
- * nodus_tcp_send_progress (sealed) and the result is NODUS_INTER_SEND_WRITTEN.
- * A failed write (slow consumer) disconnects the connection.
+ * nodus_tcp_send_progress (sealed) and the result is NODUS_INTER_SEND_WRITTEN
+ * — unless the transport diverted the frame to its queue-full fallback
+ * (tcp->on_pending_full, hint table or drop; the send reports success but
+ * nothing was written): then NODUS_INTER_SEND_QUEUED, so a durable row stays.
+ * A failed write (slow consumer) disconnects the connection (FAILED). A dial
+ * refused locally (no pin, no config, chain id unknown) is
+ * NODUS_INTER_SEND_REFUSED.
  */
 nodus_inter_send_t nodus_inter_pool_send_framed(struct nodus_tcp *pool,
                                                 const char *ip, uint16_t port,
@@ -171,7 +188,10 @@ nodus_inter_send_t nodus_inter_pool_send_framed(struct nodus_tcp *pool,
  * nodus_time_now): a connected conn idle longer than
  * NODUS_INTER_POOL_IDLE_SEC is disconnected; a conn in HELLO_SENT for more
  * than NODUS_INTER_POOL_HELLO_TIMEOUT_SEC is marked AUTH_FAILED and
- * disconnected. The caller decides how often it runs.
+ * disconnected. That bound covers connect + handshake and is measured on the
+ * MONOTONIC clock from the dial (conn->dial_mono_ms); a conn still CONNECTING
+ * is under it too (its connected_at is 0 until the connect completes). The
+ * caller decides how often it runs.
  */
 void nodus_inter_pool_sweep(struct nodus_tcp *pool, uint64_t now);
 
