@@ -240,6 +240,22 @@ int main(void) {
               chain[0] == 0xbb && key_is(&pin, '1'),
           err);
 
+    TEST("chain only: flag over file; none -> refused");
+    {
+        uint8_t c2[NODUS_CLIENT_CHAIN_ID_SIZE];
+        static nodus_tool_net_t t2;
+        nodus_tool_net_init(&t2);
+        int none = nodus_tool_net_chain(&t2, c2, err, sizeof(err));
+        parse(&t2, GOOD_FILE, err);
+        int file = nodus_tool_net_chain(&t2, c2, err, sizeof(err));
+        int fa = c2[0];
+        nodus_tool_net_set_chain_hex(&t2, CHAIN_B, err, sizeof(err));
+        int flag = nodus_tool_net_chain(&t2, c2, err, sizeof(err));
+        CHECK(none == -1 && file == 0 && fa == 0xaa && flag == 0 &&
+                  c2[0] == 0xbb,
+              "chain-only resolution wrong");
+    }
+
     TEST("resolve: flags alone, no file");
     nodus_tool_net_init(&t);
     nodus_tool_net_set_pin_hex(&t, FP1, err, sizeof(err));

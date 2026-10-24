@@ -127,6 +127,14 @@ int nodus_tool_net_open(nodus_tool_net_t *t, const char *network_path,
                         char *err, size_t err_size);
 
 /**
+ * The chain id alone: the `--chain` flag, else the file's. Neither → -1,
+ * err names it. (For a caller that already holds its own server pin.)
+ */
+int nodus_tool_net_chain(const nodus_tool_net_t *t,
+                         uint8_t chain_out[NODUS_CLIENT_CHAIN_ID_SIZE],
+                         char *err, size_t err_size);
+
+/**
  * The pin and chain id for one connection to ip:port. Pin: the `--pin` flag,
  * else the file's entry for exactly that ip:port. Chain id: the `--chain`
  * flag, else the file's. Either missing → -1, err names which and why.

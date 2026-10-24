@@ -302,6 +302,23 @@ int nodus_tool_net_open(nodus_tool_net_t *t, const char *network_path,
     return 0;
 }
 
+int nodus_tool_net_chain(const nodus_tool_net_t *t,
+                         uint8_t chain_out[NODUS_CLIENT_CHAIN_ID_SIZE],
+                         char *err, size_t err_size) {
+    TN_ERR_CLEAR();
+    if (!t || !chain_out) { TN_ERR("bad argument"); return -1; }
+    if (t->has_chain_flag) {
+        memcpy(chain_out, t->chain_flag, NODUS_CLIENT_CHAIN_ID_SIZE);
+    } else if (t->has_file) {
+        memcpy(chain_out, t->chain, NODUS_CLIENT_CHAIN_ID_SIZE);
+    } else {
+        TN_ERR("no chain id: give --chain <hex>, or --network <file> / %s",
+               NODUS_TOOL_NET_ENV);
+        return -1;
+    }
+    return 0;
+}
+
 int nodus_tool_net_resolve(const nodus_tool_net_t *t, const char *ip,
                            uint16_t port, nodus_key_t *pin_out,
                            uint8_t chain_out[NODUS_CLIENT_CHAIN_ID_SIZE],
@@ -333,15 +350,7 @@ int nodus_tool_net_resolve(const nodus_tool_net_t *t, const char *ip,
     }
 
     uint8_t chain[NODUS_CLIENT_CHAIN_ID_SIZE];
-    if (t->has_chain_flag) {
-        memcpy(chain, t->chain_flag, sizeof(chain));
-    } else if (t->has_file) {
-        memcpy(chain, t->chain, sizeof(chain));
-    } else {
-        TN_ERR("no chain id: give --chain <hex>, or --network <file> / %s",
-               NODUS_TOOL_NET_ENV);
-        return -1;
-    }
+    if (nodus_tool_net_chain(t, chain, err, err_size) != 0) return -1;
 
     if (pin_out) *pin_out = pin;
     if (chain_out) memcpy(chain_out, chain, sizeof(chain));
