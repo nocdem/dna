@@ -12,18 +12,21 @@
  *
  * Usage:
  *   nc_live_read <words-file> [<peer fp, 128 lowercase hex>]
- *                --server <IPv4>:<port> [--server-fp <128 hex>]
+ *                --server <IPv4>:<port> --server-fp <128 hex> --chain <64 hex>
  *
  *   <words-file>  the 24 BIP39 words; the file must be a regular file with
  *                 mode exactly 0600. The words are never printed.
  *   --server      a tier-2 TCP endpoint. The native client connects to an
  *                 IPv4 literal only (nodus_tcp.c inet_pton(AF_INET)).
- *   --server-fp   optional server-key pin: the client's own
- *                 pinned_server_fps (nodus.h) — the connection fails closed
- *                 unless the node's AUTH_OK carries a signed channel key
- *                 from a server key with this fingerprint AND a signed
- *                 ML-KEM-1024 key (a pinned session is ML-KEM-1024 only).
- *                 Without it the session trusts the node on first use.
+ *   --server-fp   MANDATORY server-key pin (since the client session moved
+ *                 onto the SecretConnection layer, DHT v2 package 3): the
+ *                 client's own pinned_server_fps (nodus.h) — the handshake
+ *                 aborts unless the node's claimed key hashes to this
+ *                 fingerprint. There is no trust-on-first-use session.
+ *   --chain       MANDATORY chain id (64 lowercase hex): the session is
+ *                 bound to one chain (nodus.h expected_chain_id). Both
+ *                 flags are this probe's network config (Kurultay #43 O-6);
+ *                 missing -> usage error, exit 1, no socket.
  *
  * Reads, in order: own profile (R1), own contact list (R4), own contact
  * request inbox (R2); with a peer: the peer's profile (R1, needed for the
@@ -70,7 +73,25 @@
 
 static void usage(void) {
     printf("usage: nc_live_read <words-file> [<peer fp>] --server <IPv4>:<port> "
-           "[--server-fp <128 hex>]\n");
+           "--server-fp <128 hex> --chain <64 hex>\n");
+}
+
+/* 64 lowercase hex -> 32 bytes, not all zero. 0 / -1. */
+static int parse_chain_id(const char *s, uint8_t out[NODUS_CLIENT_CHAIN_ID_SIZE]) {
+    if (!s || strlen(s) != 2 * NODUS_CLIENT_CHAIN_ID_SIZE) return -1;
+    uint8_t acc = 0;
+    for (size_t i = 0; i < NODUS_CLIENT_CHAIN_ID_SIZE; i++) {
+        int v[2];
+        for (size_t k = 0; k < 2; k++) {
+            char c = s[2 * i + k];
+            if (c >= '0' && c <= '9') v[k] = c - '0';
+            else if (c >= 'a' && c <= 'f') v[k] = c - 'a' + 10;
+            else return -1;
+        }
+        out[i] = (uint8_t)((v[0] << 4) | v[1]);
+        acc |= out[i];
+    }
+    return acc ? 0 : -1;
 }
 
 /* Read the words file (regular, mode 0600) and rebuild the app's canonical
@@ -216,12 +237,14 @@ static bool read_profile(const nc_ctx_t *ctx, const char *record,
 
 int main(int argc, char **argv) {
     const char *words_path = NULL, *peer_fp = NULL, *server = NULL,
-               *server_fp = NULL;
+               *server_fp = NULL, *chain_hex = NULL;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--server") == 0 && i + 1 < argc) {
             server = argv[++i];
         } else if (strcmp(argv[i], "--server-fp") == 0 && i + 1 < argc) {
             server_fp = argv[++i];
+        } else if (strcmp(argv[i], "--chain") == 0 && i + 1 < argc) {
+            chain_hex = argv[++i];
         } else if (argv[i][0] == '-') {
             usage();
             return 1;
@@ -234,7 +257,10 @@ int main(int argc, char **argv) {
             return 1;
         }
     }
-    if (!words_path || !server) { usage(); return 1; }
+    if (!words_path || !server || !server_fp || !chain_hex) {
+        usage();
+        return 1;
+    }
 
     nodus_client_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
@@ -249,14 +275,17 @@ int main(int argc, char **argv) {
     /* The pin array is not copied by the client and must outlive it
      * (nodus.h pinned_server_fps). */
     static nodus_key_t pin;
-    if (server_fp) {
-        if (nc_fp_parse(server_fp, &pin) != 0) {
-            printf("--server-fp: expected 128 lowercase hex\n");
-            return 1;
-        }
-        cfg.pinned_server_fps = &pin;
-        cfg.pinned_server_fp_count = 1;
+    if (nc_fp_parse(server_fp, &pin) != 0) {
+        printf("--server-fp: expected 128 lowercase hex\n");
+        return 1;
     }
+    cfg.pinned_server_fps = &pin;
+    cfg.pinned_server_fp_count = 1;
+    if (parse_chain_id(chain_hex, cfg.expected_chain_id) != 0) {
+        printf("--chain: expected 64 lowercase hex (not all zero)\n");
+        return 1;
+    }
+    cfg.has_expected_chain_id = true;
 
     nodus_key_t peer_key;
     if (peer_fp && nc_fp_parse(peer_fp, &peer_key) != 0) {
@@ -281,7 +310,7 @@ int main(int argc, char **argv) {
     }
     printf("identity fp: %.16s...\n", keys->fp);
     printf("server: %s:%u  pin: %s\n", cfg.servers[0].ip,
-           (unsigned)cfg.servers[0].port, server_fp ? "set" : "none (TOFU)");
+           (unsigned)cfg.servers[0].port, "set");
 
     nodus_client_t *c = calloc(1, sizeof(*c));
     bool inited = c && nodus_client_init(c, &cfg, &keys->id) == 0;

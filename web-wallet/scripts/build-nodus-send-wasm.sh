@@ -246,6 +246,11 @@ sources=(
   # nodus client (package (c1) compile set, scripts/check-nodus-client-wasm.sh)
   $root/nodus/src/client/nodus_client.c
   $root/nodus/src/transport/nodus_tcp.c
+  # DHT v2 package 3c: the client session is a SecretConnection — the layer
+  # (threadless jobs under __EMSCRIPTEN__) and its handshake machine;
+  # nodus_tcp.c needs -DNODUS_TCP_SC=1 (the compile line below)
+  $root/nodus/src/transport/nodus_tcp_sc.c
+  $root/shared/dnac/cmt_p2p_secret.c
   $root/nodus/src/protocol/nodus_tier2.c
   $root/nodus/src/protocol/nodus_cbor.c
   $root/nodus/src/protocol/nodus_wire.c
@@ -563,7 +568,7 @@ build() {
     # file only — shared/ is outside this package.
     case "$src" in */qgp_fingerprint.c) extra=(-Wno-unterminated-string-initialization) ;; esac
     "$EMCC_BIN" -c -O2 -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Werror \
-      "${extra[@]}" -D"$define" \
+      "${extra[@]}" -D"$define" -DNODUS_TCP_SC=1 \
       -I$root/nodus/include -I$root/nodus/src -I$root/shared -I$root/dnac/include \
       -I"$work/inc" -I"$OPENSSL_WASM_PREFIX/include" \
       -I$root/messenger -I$root/messenger/include -Iconnect \
