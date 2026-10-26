@@ -97,7 +97,9 @@ nodus/
 │   │   ├── nodus_cbor.c       # Custom CBOR encoder/decoder
 │   │   ├── nodus_wire.c       # Wire frame format ("ND" + version + length)
 │   │   ├── nodus_tier1.c      # T1 encode/decode (server ↔ server)
-│   │   └── nodus_tier2.c      # T2 encode/decode (client ↔ server)
+│   │   ├── nodus_tier2.c      # T2 encode/decode (client ↔ server)
+│   │   └── nodus_owner_query.c/h # DHT v2 package 3d: the owner-signed chain query `qa` (RFC 0002
+│   │                          #   envelope) — built by the client SDK, verified by the witness handlers
 │   ├── transport/
 │   │   ├── nodus_tcp.c        # TCP transport (epoll, framing, connections; + the WS entry glue;
 │   │   │                      #   + the AF_UNIX entry nodus_tcp_unix_* — split S2; used by the S3
@@ -175,7 +177,8 @@ nodus/
 │   │   │                                #   "witness_external", split S3)
 │   │   └── nodus_auth.c       # Client session start at on_session (identity from the SecretConnection,
 │   │                          #   per-identity limit, presence, the token message) — DHT v2 3b-2; the
-│   │                          #   old Dilithium5 challenge-response handlers are deleted
+│   │                          #   old Dilithium5 challenge-response handlers are deleted; since 3d an
+│   │                          #   ANON (no-login) session gets only the token — no principal
 │   ├── client/
 │   │   ├── nodus_client.c     # Client SDK (connect, auth, DHT, channels, DNAC)
 │   │   ├── nodus_singleton.c  # Thread-safe global client instance
@@ -266,7 +269,10 @@ nodus/
 │   ├── test_dht2_store.c      # DHT v2 package 5 (src/dht2/nodus_dht2_store.*): §4.1 code order through `put` (15, 1-9, 16), the name fault asked once, Select (equal / losing / A-B two arrivals), quota + node pools + inbox pools 80 / 20, inbox control (only the selected live record applies; DENIED 12, HANDLED [18, through]), LIST pages, get / sweep expiry edges, insertion index + generation + hand-over flag across reopen, the readiness gate, chain binding, forced SQLite faults → 16; since package 6a also the LIST page budget counting the control record and the put result's address kept across a refusal; injected context, fixed-seed keys, one mkdtemp dir removed at the end
 │   ├── test_dht2_holder.c     # DHT v2 package 6a (src/dht2/nodus_dht2_holder.*): every answer ONE RFC 0002 envelope under nodus.dht.answer.v1 (answer / receipt / refusal), get / put results in request order, put results keyed by the envelope's address (zero key for a parse failure), malformed requests and bad LIST envelopes → no answer, owner LIST vs not-owner 17, refusal 15 (no snapshot, block sync, another chain, |S(H)| = 1 put) and 14 (64 queued jobs), name FAULT / PENDING → 16, an abandoned name fault dropped after one poll period, GET of an inbox-control record → 17, an envelope > 262,144 B → per-key 1; injected view, fixed-seed keys, one mkdtemp dir removed at the end
 │   ├── test_p2p_secret_kat.c  # DHT v2 sub-package 3a step 1: byte pins of TODAY's 4004 SecretConnection in literal bytes (never through the CMT_P2P_SC_* macros) — fixed-vector T / key / challenge against python3-computed hex, live-handshake recompute on both sides, HELLO / HELLO_R / KEYX framing at literal offsets, sealed-frame nonce role ‖ 00 00 00 ‖ u64 BE counter, AUTHSIG under purpose 0x0A only; must pass on the unchanged base; default build, nothing left behind
-│   ├── test_p2p_secret_profiles.c # DHT v2 sub-package 3a step 2: session profiles WITNESS / CLIENT / NODE — matched handshakes authenticate, mixed pairs never do, python3 vectors per profile, purposes 0x0A / 0x0C / 0x0D do not cross-verify, init refuses every profile but the three consts (by pointer), `cmt_p2p_sc_init` = WITNESS; default build, nothing left behind
+│   ├── test_p2p_secret_profiles.c # DHT v2 sub-package 3a step 2: session profiles WITNESS / CLIENT / NODE — matched handshakes authenticate, mixed pairs never do, python3 vectors per profile, purposes 0x0A / 0x0C / 0x0D do not cross-verify, init refuses every profile but the three consts (by pointer; since 3d also the ANON profile), `cmt_p2p_sc_init` = WITNESS; default build, nothing left behind
+│   ├── test_p2p_secret_anon.c # DHT v2 package 3d: the ANON family in memory — handshake with the KEM-key certificate, wire sizes 70 / 8,858 / 1,571 / 1,044 / 1,044, key and T recomputed from the captured bytes, bad certificate / rejected pin never reach ENCAPS, CONFIRM frame rules, family mismatches, refused kinds 0x05-0x07, fragmented input, 4004 caps unchanged (§15 "DHT v2 package 3d")
+│   ├── test_owner_query.c     # DHT v2 package 3d: the owner-signed query `qa` — accept, every reject by its own result, top-level field lookup, `o` per method and the G8.1 member rule; pure
+│   ├── test_anon_dispatch.c   # DHT v2 package 3d: the ANON allowlist, the session table without a principal, nodus_auth_session_start on a real loopback ANON connection
 │   ├── test_cmt_evidence.c    # cometbft port R1-D: DuplicateVoteEvidence bare bytes / flat hash / canonical order, EvidenceList root
 │   ├── test_cmt_state.c       # cometbft port R1-D: MedianTime (voting-power weights), MakeGenesisState, Copy, MakeBlock
 │   ├── test_cmt_vote_set.c    # cometbft port R2-A: VoteSet — the seven vote_set_test.go scenarios, weight-vs-count, the C-only capacity bounds (128 peers, N+P blocks)
@@ -533,15 +539,24 @@ signature. The client's public key travels in the plaintext HELLO (a known limit
 khan decision C, `docs/plans/decisions/2026-10-23-kurultay-43-summary.md`); there is no
 forward secrecy (static node keys, khan decision B).
 
+The diagram above is the IDENTIFIED session (the client logs in with its key). Since DHT
+v2 package 3d the same port also serves the no-login **ANON** family, which a wallet uses:
+HELLO_ANON (no client key) → HELLO_R_ANON (the node's key, its ML-KEM key and a KEM-key
+certificate under purpose 0x0E) → KEYX → one sealed CONFIRM each way, the node's first; no
+AUTHSIG, no challenge, and the session has no principal. A 4001 / WS responder that holds
+the certificate starts family-unbound and the client's first message selects the family.
+Bytes, binding and what an ANON session may call: §15 "DHT v2 package 3d".
+
 **The token message** (`"q": "auth_ok"`) — the only T2 message of the old handshake that
 remains, encoded by `nodus_t2_auth_ok` (`nodus_tier2.h:391-397`):
 ```
 {"t": 0, "y": "r", "q": "auth_ok", "r": {"tok": <bytes[32]>}}
 ```
 The client SDK claims the pending slot of txn 0 before it connects and is READY only once
-the layer is authenticated AND this message is in (`do_auth`, `nodus_client.c:1005-1047`).
+the layer is authenticated AND this message is in (`do_auth`, `nodus_client.c:1026`). An
+ANON session gets the same token message (`nodus_auth.c:110-122`).
 The token is carried by later requests (`"tok"`) but is a correlation key only — it is
-never checked as authorization (`nodus_server.c:1446-1451`).
+never checked as authorization (`nodus_server.c:1548-1553`).
 
 The old `hello` / `challenge` / `auth` / `auth_ok` (with `kpk`, `spk`, `kpk_sig`, `mpk`,
 `mpk_sig`) / `key_init` / `key_ack` exchange and its AES-256-GCM channel crypto are
@@ -768,9 +783,23 @@ There is no pre-authentication dispatch any more. Before the SecretConnection is
 AUTHENTICATED a connection carries only the layer's own handshake messages, and the layer
 hands no nodus frame to the server before that (`nodus_tcp_sc.h`; §15 "DHT v2 sub-package
 3b-1"). `dispatch_t2` closes a session that is not marked authenticated instead of
-answering it (`nodus_server.c:1439-1444`). The old list (`hello` / `auth` served
+answering it (`nodus_server.c:1524-1529`). The old list (`hello` / `auth` served
 unauthenticated, `NODUS_ERR_NOT_AUTHENTICATED` for the rest) is gone with the old
 handshake.
+
+**No login is not "pre-auth" (DHT v2 package 3d).** A wallet connects WITHOUT logging in:
+it opens the no-login ANON session family, in which only the node proves its key (pin +
+KEM-key certificate) and the client presents none. That session is still AUTHENTICATED
+before any frame flows; it simply has NO principal (`sess->anonymous`, set from the layer
+by `nodus_auth_session_start`, `nodus_auth.c:110`). Its methods are an explicit allowlist,
+checked in `dispatch_t2` right after the authentication check and before every other
+block (`nodus_server.c:1538-1546`, `nodus_server_anon_method_ok`, `:168-174`): `ping`,
+`status`, `servers` and the 29 chain methods of `nodus_chain_anon_method_ok`
+(`witness/nodus_witness_ipc.h:156-173`). Everything else — the legacy DHT verbs, listen,
+presence, circuits, `w_*`, `dnac_cc_collect`, `dnac_node_duties` — answers
+`NODUS_ERR_NOT_AUTHENTICATED` ("this method needs a logged-in session"). The identified
+CLIENT session (the client logs in with its key) never takes that branch and is served as
+before. Full mechanism: §15 "DHT v2 package 3d".
 
 ### Client port front door (2026-10-14, Kurultay #20 package 1, the operator's simple version)
 
@@ -782,9 +811,10 @@ all are in core except the witness IPC read budget, which is a count.
   connection is closed; there is no `auth` message to answer.
 - **Pre-session limits** (replace the pre-auth frame cap `NODUS_PREAUTH_PAYLOAD_MAX`, retired in 3b-2,
   Kurultay #43 O-5): a 15 s idle / 30 s absolute deadline on the monotonic clock
-  (`NODUS_PRESESSION_IDLE_MS` / `_ABS_MS`, `nodus_server.h:649-650`), a sealed-input budget per handshake
-  (`sc_presession_budget`, `nodus_tcp_sc.c:71-96`), and at most 60 new handshakes per minute from one IP
-  (`NODUS_HANDSHAKE_RATE_PER_MIN`, `nodus_server.h:655`; operator 2026-10-24,
+  (`NODUS_PRESESSION_IDLE_MS` / `_ABS_MS`, `nodus_server.h:689-690`), a sealed-input budget per handshake
+  that follows the session family (`sc_presession_budget`, `nodus_tcp_sc.c:96-111`; since DHT v2 package 3d
+  an ANON-bound connection has its own, smaller budget), and at most 60 new handshakes per minute from one IP
+  (`NODUS_HANDSHAKE_RATE_PER_MIN`, `nodus_server.h:695`; operator 2026-10-24,
   `docs/plans/decisions/2026-10-24-dht-v2-handshake-rate.md`). Details: §15 "DHT v2 sub-package 3b-2".
   `conn->max_payload` stays in the transport for the IPC sockets (`nodus_witness_ipc.c:425`,
   `nodus_dht2_wview.c:433`); the client pool no longer sets it.
@@ -943,7 +973,13 @@ NIST Category 5 post-quantum digital signature scheme. Used for:
 - **Value signing** — every DHT value carries a Dilithium5 signature that proves ownership
 - **Session authentication** — both ends of a 4001 / WS (purpose 0x0C) or 4002 (purpose
   0x0D) SecretConnection sign the handshake challenge (AUTHSIG, NDS1-tagged, strict);
-  4004 uses 0x0A (DHT v2 3b-2; the old 3-step challenge-response is deleted)
+  4004 uses 0x0A (DHT v2 3b-2; the old 3-step challenge-response is deleted). The
+  no-login ANON family of 4001 / WS (DHT v2 package 3d) signs nothing per connection: the
+  node's identity key signs its ML-KEM key ONCE as a KEM-key certificate under the strict
+  purpose 0x0E (`NODUS_PURPOSE_KEM_CERT`), and the client verifies it
+- **Owner-signed chain queries** (DHT v2 package 3d) — on an ANON session the five
+  owner-only reads carry a `qa` RFC 0002 envelope signed with the owner's key (domain
+  `nodus.chain.query.v1`), §15 "DHT v2 package 3d"
 - **Channel post signing** — authors sign their posts
 - (The Kyber PK binding `kpk_sig` in AUTH_OK is deleted with the old handshake, 3b-2: the
   session's KEM key is ML-KEM-1024, carried in HELLO_R and bound by the transcript.)
@@ -1252,17 +1288,25 @@ Known open (not in this package): read rate limit; legacy unpaged `get_all` stil
 ### Session Management
 
 Each TCP 4001 (and WebSocket) connection is assigned a **session** (`nodus_session_t`,
-`nodus_server.h:193-223`) with:
+`nodus_server.h:194-231`) with:
 
 - Authentication state (public key, fingerprint, token, `authenticated`, `auth_seq`) —
   filled at `on_session` from the SecretConnection's proven key by
-  `nodus_auth_session_start` (`nodus_auth.c:98-170`, DHT v2 3b-2); the challenge nonce and
+  `nodus_auth_session_start` (`nodus_auth.c:100-194`, DHT v2 3b-2); the challenge nonce and
   the per-session protocol version of the old handshake are gone
+- `anonymous` (DHT v2 package 3d, `nodus_server.h:210`): the session is the no-login ANON
+  family and has NO principal — `client_pk` / `client_fp` stay zero and are never an
+  identity, `conn->peer_id_set` stays false, no presence entry, no per-identity eviction;
+  set by `nodus_auth_session_start` from the layer (`nodus_tcp_sc_is_anonymous`), never
+  from a client byte
 - Circuit table, the chain-method budget window
 
 The SecretConnection layer is enabled on the connection in `on_tcp_accept`
-(`nodus_server.c:1722-1758`); the session is closed there, before any byte is read, when
-this node does not know its chain id yet. Full mechanism: §15 "DHT v2 sub-package 3b-2".
+(`nodus_server.c:1848-1904`); the session is closed there, before any byte is read, when
+this node does not know its chain id yet. Since package 3d the responder is enabled
+family-unbound (CLIENT or ANON, chosen by the client's first message) once the node's
+KEM-key certificate exists. Full mechanism: §15 "DHT v2 sub-package 3b-2" and "DHT v2
+package 3d".
 
 Since split S4 the DHT keeps its own **shadow** of the same slot
 (`nodus_dht_session_t`, `dht/nodus_dht.h:479-489`): an `open` flag, the active DHT
@@ -1386,20 +1430,29 @@ above (`read_pending_add`). Since 3b-2 every 4001 / WS / 4002 connection carries
 TCP frames are dispatched through `dispatch_t2()`:
 
 1. **Decode** the CBOR payload as a T2 message; a payload that does not decode is dropped
-   (no T1 fallback on the client port, `nodus_server.c:1424-1428`)
+   (no T1 fallback on the client port, `nodus_server.c:1509-1513`)
 2. **Session check** (DHT v2 3b-2): every frame here arrived inside an AUTHENTICATED
    SecretConnection session; a session not marked authenticated is closed, never served
-   (`nodus_server.c:1439-1444`). There is no pre-auth method list any more.
-3. **No token verification** (DHT v2 3b-2, O-2 b): the session token is a correlation key,
-   not an authorization input; identity is the connection (`nodus_server.c:1446-1451`).
-   `w_*` methods are refused on the client port (`:1459-1467`).
-4. **Handler dispatch**: method name → handler. Since split S4 the DHT methods (`put`,
-   `get`, `get_all`, `get_batch`, `cnt_batch`, `listen`, `unlisten`, `ch_list`,
-   `ch_search`, `ch_get`, `m_put`, `m_meta`, `m_chunk`) go to the DHT through
-   `srv->dht->ops->client_frame` with the session's slot and authenticated identity
-   (`nodus_server.c:2172-2187`; the DHT's `nodus_dht_client_request` then picks
-   `handle_t2_put`, `handle_t2_get`, …, `nodus_dht_server.c:4264-4304`); `ping`,
-   `servers`, `status` and `circ_*` stay in core (`nodus_server.c:2188-2199`).
+   (`nodus_server.c:1524-1529`). There is no pre-auth method list any more.
+3. **ANON allowlist** (DHT v2 package 3d): a no-login ANON session (`sess->anonymous`) may
+   call only `nodus_server_anon_method_ok`; anything else is answered
+   `NODUS_ERR_NOT_AUTHENTICATED` here, before every later step (`nodus_server.c:1538-1546`).
+   Identified sessions skip this step.
+4. **No token verification** (DHT v2 3b-2, O-2 b): the session token is a correlation key,
+   not an authorization input; identity is the connection (`nodus_server.c:1548-1553`).
+   `w_*` methods are refused on the client port (`:1561-1569`).
+5. **Handler dispatch**: method name → handler. A `dnac_*` / `evm_*` method of an ANON
+   session goes to the chain backend's `dispatch_dnac_anon` with NO key and this node's own
+   copy of the session transcript T (`nodus_tcp_sc_transcript`); a connection whose T
+   cannot be read, or a backend without that op, gets `NODUS_ERR_PROTOCOL_ERROR`
+   `NODUS_CHAIN_NO_WITNESS_MSG` (`nodus_server.c:1624-1643`). Since split S4 the DHT
+   methods (`put`, `get`, `get_all`, `get_batch`, `cnt_batch`, `listen`, `unlisten`,
+   `ch_list`, `ch_search`, `ch_get`, `m_put`, `m_meta`, `m_chunk`) go to the DHT through
+   `srv->dht->ops->client_frame` with the session's slot and authenticated identity — NULL
+   fp / pk for an ANON session, unreachable today because step 3 refuses those methods
+   (`nodus_server.c:1693-1713`; the DHT's `nodus_dht_client_request`, `nodus_dht_server.c:4054-4111`,
+   refuses an identity-less origin and otherwise picks `handle_t2_put`, `handle_t2_get`, …);
+   `ping`, `servers`, `status` and `circ_*` stay in core (`nodus_server.c:1714-1724`).
 
 The T1 fallback (a T1 decode for inter-node `sv` / subscribe / notify frames when the T2
 decode fails) exists only on the inter-node port's `dispatch_inter`
@@ -1424,7 +1477,7 @@ Server configuration via JSON file (default: `/etc/nodus.conf`):
 
 **Ports:**
 - **UDP 4000** — Kademlia peer discovery (Tier 1)
-- **TCP 4001** — Client DHT operations (Tier 2), inside a SecretConnection CLIENT session (DHT v2 3b-2)
+- **TCP 4001** — Client DHT operations (Tier 2), inside a SecretConnection CLIENT session (DHT v2 3b-2) or, for a wallet that does not log in, an ANON session (DHT v2 package 3d)
 - **TCP 4002** — Inter-node replication (Tier 1 TCP), inside a SecretConnection NODE session (3b-2)
 - **TCP 4003** — Channel system: client posts + inter-node replication (dedicated)
 - **TCP `ws_port`, 127.0.0.1 only** — WebSocket entry of the client port (off by
@@ -11723,7 +11776,8 @@ over the 32-byte challenge that mirrors the 0x0A pair
 NDS1 tagged preimage `"NDS1" ‖ purpose ‖ u32 BE len ‖ message`, no raw fallback either
 direction. The strict set is now exactly {0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D};
 0x0E is the next free value and is not strict (`test_sign_domain_separation.c:27-28`,
-`:369-376`).
+`:369-376`). (As of 3a. DHT v2 package 3d takes 0x0E as `NODUS_PURPOSE_KEM_CERT` and adds
+it to the strict set, `nodus_sign.c:119-133` at `4165c5677` — §15 "DHT v2 package 3d".)
 
 **Banners corrected (Kurultay #43 O-7).** The `cmt_p2p_secret.h` file header now says
 the handshake message encoding is OPERATOR-APPROVED (`:97-100`, decision
@@ -12470,7 +12524,7 @@ unchanged.
 
 | Where | Role | Enabled by | Pin | Chain id from |
 |---|---|---|---|---|
-| 4001 / WS accept (`srv->tcp`) | RESPONDER, CLIENT | `on_tcp_accept` (`nodus_server.c:1722-1758`) | — (any client that proves its key) | `nodus_server_chain_id` (`:1747`) |
+| 4001 / WS accept (`srv->tcp`) | RESPONDER, CLIENT — since package 3d family-UNBOUND (CLIENT or ANON by the first message) once the KEM-key certificate exists | `on_tcp_accept` (`nodus_server.c:1848-1904`) | — (any client that proves its key; an ANON client proves none) | `nodus_server_chain_id` (`:1873`) |
 | 4002 accept (`srv->inter_tcp`) | RESPONDER, NODE | `on_inter_accept` → `nodus_inter_session_enable(..., false)` (`nodus_server.c:1295-1296`) | — (khan A: any identity that proves its key; per-operation authorization comes in packages 6-7) | `srv->inter_cfg.chain_id` = `server_inter_chain_id` (`:2424-2427`) |
 | 4002 dial, core (`srv->inter_tcp`) and storage (`ipc->out`) | INITIATOR, NODE | `nodus_inter_pool_dial` → `pool_dial_ex` → `nodus_inter_session_enable(..., true)` (`nodus_inter_dial.c:153-198`) | the exact node id recorded at dial time (`conn->expected_peer_id`, `:191-192`) | core: as above; storage: `dipc_chain_id` (`nodus_dht_ipc.c:318-341`) |
 | batch forward (`dht->bf_state.tcp`) | INITIATOR, NODE | `bf_start_forward` (`nodus_dht_server.c:3389-3453`) | the FIND_NODE peer's node id (`:3434-3435`) | `bf_cfg_chain_id` → `dht->host.chain_id` (`:3239-3242`) |
@@ -12488,28 +12542,29 @@ INITIATOR whose `expected_peer` or any `expected_set` entry is all zero
 **The session token (O-2 b).** When a session becomes AUTHENTICATED the RESPONDER mints a
 fresh 32-byte token and sends it as the FIRST sealed frame: a T2 `auth_ok`, txn 0,
 carrying the token and nothing else (`nodus_t2_auth_ok`, `nodus_tier2.h:391-397`). On 4001
-/ WS: `nodus_auth_session_start` (`nodus_auth.c:98-170`). On 4002: `on_inter_session`
+/ WS: `nodus_auth_session_start` (`nodus_auth.c:100-194`; the ANON branch `:110-122`). On 4002: `on_inter_session`
 (`nodus_server.c:1323-1336`, sent with `nodus_tcp_send_raw` so it goes before the dial
 queue's replay). The token is a correlation key, NEVER an authorization input:
-`dispatch_t2` no longer checks it (`nodus_server.c:1446-1451`), and the witness IPC no
+`dispatch_t2` no longer checks it (`nodus_server.c:1548-1553`), and the witness IPC no
 longer refuses a session frame whose embedded token differs from the preface's
 (`nodus_witness_ipc.c:445-447`; the preface key `s->pk` is the identity). It still keys
-the delayed `dnac_cc_collect` reply (`server_find_session_conn`, `nodus_server.c:2008-2017`)
+the delayed `dnac_cc_collect` reply (`server_find_session_conn`, `nodus_server.c:2163-2180`; an ANON session is never found, `:2173`)
 and the witness IPC session preface. Identity is the connection: every 4001 handler takes
 it from the session, which `nodus_auth_session_start` fills from the SecretConnection's
-authenticated key (`nodus_auth.c:104-107`). On 4002 a dialer consumes the token message and
+authenticated key (`nodus_auth.c:127-130`); an ANON session has none (package 3d). On 4002 a dialer consumes the token message and
 drops it; an ACCEPTED peer that sends one is disconnected (`dispatch_inter`,
 `nodus_server.c:1059-1077`). The batch forward stores it for logs only
 (`bf_on_frame`, `nodus_dht_server.c:3312-3330`).
 
 **What `on_session` re-homes** (formerly done when the AUTH signature verified,
-`nodus_auth_session_start`, `nodus_auth.c:98-170`): `sess->client_pk` / `client_fp`
+`nodus_auth_session_start`, `nodus_auth.c:100-194`; for an identified session — an ANON
+session gets only the token, `auth_seq` and the authenticated marks, package 3d): `sess->client_pk` / `client_fp`
 from the proven key; `conn->peer_id` / `peer_pk` / `peer_id_set` / `authenticated`;
 `sess->auth_seq` from `srv->next_auth_seq`; the per-identity session limit
 (`NODUS_MAX_SESSIONS_PER_IDENTITY`, oldest out); presence (`nodus_presence_add_local`);
 the token message. No frame reaches `dispatch_t2` or `dispatch_inter` before it (the layer
 holds input back); a session that is somehow not marked authenticated is closed, never
-served (`nodus_server.c:1439-1444`, `:1043-1053`).
+served (`nodus_server.c:1524-1529`, `:1127`).
 
 **The chain id of a session.** Both ends put the chain id in their HELLO, and the handshake
 fails when they differ. The node binds every session to the 32-byte **v3** chain id — the
@@ -12569,8 +12624,12 @@ scheduling, never a consensus input.
 - **Sealed-input budget per handshake:** before AUTHENTICATED a peer may feed at most the
   plaintext handshake messages its role receives plus 5 sealed frames (the AUTHSIG:
   4,631 B → 5 × 1,044 B): RESPONDER 4,236 + 5,220 = 9,456 bytes, INITIATOR 4,232 + 5,220
-  = 9,452 bytes (`sc_presession_budget`, `nodus_tcp_sc.c:71-96`; enforced where the
-  machine takes bytes, `:973-984`). Over it the connection is closed.
+  = 9,452 bytes (`sc_presession_budget`, `nodus_tcp_sc.c:96-111`; enforced where the
+  machine takes bytes, `:1138-1153`). Over it the connection is closed. Since package 3d
+  the budget follows the family the machine is BOUND to and is re-read after every
+  consume: an ANON RESPONDER 2,685 bytes, an ANON INITIATOR 9,902 bytes; an unbound
+  responder (no message yet) is held to the CLIENT budget, the larger (§15 "DHT v2
+  package 3d").
 - **Per-IP handshake rate:** at most `NODUS_HANDSHAKE_RATE_PER_MIN` = 60 new accepts per
   minute from one IP on each accepting transport (`nodus_server.h:655`, set as
   `hs_rate_per_min` on `srv->tcp` and `srv->inter_tcp`, `nodus_server.c:2391`, `:2417`).
@@ -12618,7 +12677,9 @@ scheduling, never a consensus input.
   An UNKNOWN set changes nothing — an IPC hiccup must not drop every node's exemption at
   once (backend op `roles_known`).
 - **Unchanged:** 20 plain + 20 WS connections per IP; the handshake worker queues 64 + 64
-  (`NODUS_TCP_SC_JOBQ_OUT` / `_IN`); no one-connection-per-IP rule (NAT, tabs).
+  (`NODUS_TCP_SC_JOBQ_OUT` / `_IN`; since package 3d a share of the inbound 64 is kept
+  for ANON jobs, `NODUS_TCP_SC_JOBQ_IN_ANON_RESERVED`); no one-connection-per-IP rule
+  (NAT, tabs).
 
 **The 4002 send result is tri-state (four values).** `nodus_inter_pool_send_framed`
 (`nodus_inter_dial.c:207-268`) returns `nodus_inter_send_t` (`nodus_inter_dial.h:140-166`):
@@ -12672,7 +12733,8 @@ connection from inside that callback is a no-op (`nodus_tcp.c:3634-3639`), so
 
 **Client SDK.** `nodus_client_init` refuses a config with no pin (`pinned_server_fps` NULL
 or count ≤ 0), an all-zero pin, or no chain id (`has_expected_chain_id` false or an
-all-zero `expected_chain_id`) (`nodus_client.c:771-809`; fields `nodus.h:104-134`). A
+all-zero `expected_chain_id`) (`nodus_client.c:772-812`; fields `nodus.h:104-151`; the
+ANON family of package 3d keeps both requirements). A
 connect claims the pending slot of txn 0 BEFORE the TCP connect, enables the layer
 (INITIATOR, CLIENT, the pin set, the chain id), waits for the connect, then `do_auth` waits
 for the token message; READY needs the same live connection, the layer's authenticated
@@ -12739,6 +12801,272 @@ behind beyond what is noted):
   `nodus_inter_dial_on_frame`).
 
 Function reference: `messenger/docs/functions/transport.md` "DHT v2 sub-package 3b-2".
+
+### DHT v2 package 3d — the no-login (ANON) wallet session (2026-10-26, branch `dna95-dht2-3d`, not versioned)
+
+What it is: a second client-session family on 4001 / WebSocket for a wallet that does NOT
+log in to a node. The node proves its key to the client; the client presents no key at all,
+and the session has no principal. A wallet reads chain data and submits signed
+transactions on it — the transaction's own signature is the authority. The identified
+CLIENT session of 3b-2 stays, unchanged, for identity-bound work (Nodus Connect's old DHT
+writes / listens, `dnac_cc_collect`). Governing records (LOCAL-only files under
+`docs/plans/`): the operator's decision of 2026-10-26 "the wallet does not log in to a
+node" (a wallet reads and submits without any account login; what still needs an identity
+is decided only where the operation itself is identity-bound; limits stay per connection,
+none per account) and the Kurultay #45 summary with khan decisions 1-7 (1: the five
+owner-only reads stay owner-only, proven by a signature carried in the request; 2: a
+separate profile selected from a validated HELLO and bound once; 3: a key confirmation at
+the end of the handshake; 4: legacy v1 DHT reads refused on the no-identity kind; 5: client
+session version stays 1; 7: `dnac_node_duties` stays own-node only). Bytes: design
+`docs/plans/2026-10-26-dht-v2-3d-no-login-design.md` rev 5 (LOCAL-only; bytes approved by
+the operator 2026-10-26). The construction is OUR OWN — not Noise- or pqNK-grounded; the
+shape (server-only authentication, pinned server) has the TLS 1.3 precedent the Kurultay
+summary records (`cmt_p2p_secret.h:93-120`). Line numbers below are those of `4165c5677`.
+
+**Messages** (`cmt_p2p_secret.h:93-120`, `:332-389`; uvarint length prefix, then kind ‖ fields):
+
+| # | Direction | Message | Kind | Fields | Body / wire bytes |
+|---|---|---|---|---|---|
+| 1 | I → R, plaintext | HELLO_ANON | 0x05 | nonce_I (32), proto_ver (4, u32 BE), chain_id (32) | 69 / 70 |
+| 2 | R → I, plaintext | HELLO_R_ANON | 0x07 | R_dsa_pk (2,592), R_mlkem_pk (1,568), kc_sig (4,627), nonce_R (32), proto_ver (4), chain_id (32) | 8,856 / 8,858 |
+| 3 | I → R, plaintext | KEYX | 0x03 (unchanged) | ML-KEM-1024 ct (1,568) | 1,569 / 1,571 |
+| 4 | R → I, sealed | CONFIRM | 0x06 | none — the delimited message `01 06` | one sealed frame, 1,044 |
+| 5 | I → R, sealed | CONFIRM | 0x06 | none — `01 06` | one sealed frame, 1,044 |
+
+Sizes are asserted at compile time (`cmt_p2p_secret.h:384-392`). The kinds 0x05 / 0x06 /
+0x07 are OURS. `proto_ver` is `NODUS_CSESS_PROTO_VERSION` (1, `nodus_tcp_sc.h:238`) and
+`chain_id` the 32-byte v3 chain id, both checked against the receiver's own before any
+KEM work (`sc_on_hello_anon` / `sc_on_hello_r_anon`, `cmt_p2p_secret.c:812-865`).
+
+**Profile `CMT_P2P_SC_PROFILE_ANON`** (`cmt_p2p_secret.h:305`; strings `cmt_p2p_secret.c:64-67`):
+transcript tag `"nodus.asess.transcript.v1"` (25 B), AEAD info `"nodus.asess.keys.v1/aead"`
+(24 B), challenge info `"nodus.asess.keys.v1/challenge"` (29 B — carried because the
+struct needs it; ANON never derives a challenge). The tag differs from the other families'
+at byte 6 (`asess` / `csess` / `nsess` / `wsess`). `cmt_p2p_sc_init_profile` refuses this
+profile; an ANON machine is made only by `cmt_p2p_sc_init_anon` or bound by
+`cmt_p2p_sc_init_responder_unbound`.
+
+**Transcript and keys** (`sc_derive`, `cmt_p2p_secret.c:399-449`): T = SHA3-512 over
+today's preimage WITHOUT `I_dsa_pk` (the initiator has none; no placeholder stands in) —
+tag ‖ R_dsa_pk ‖ R_mlkem_pk ‖ the proto_ver / chain_id / nonce fields ‖ ct, 5,889 bytes
+with the 25-byte tag. Only the AEAD key is derived (HKDF-SHA3-256, salt T, ikm the shared
+secret); there is no challenge and no signature on either side. T is now kept in the
+machine for every family (`cmt_p2p_sc_t.t`) and read with `cmt_p2p_sc_transcript` once
+AUTHENTICATED; it is wiped when the machine dies.
+
+**The KEM-key certificate** (`kc_sig`): the node's ML-DSA-87 identity key signs
+`"nodus.asess.kembind.v1"` (22 B, `CMT_P2P_SC_KC_DOMAIN`) ‖ chain_id (32) ‖ R_mlkem_pk
+(1,568) = 1,622 bytes (`CMT_P2P_SC_KC_MSG_SIZE`, `cmt_p2p_sc_kc_msg`) under the new
+strict signing purpose **0x0E** `NODUS_PURPOSE_KEM_CERT` (`nodus_sign.h:94`;
+`nodus_sign_kem_cert` / `nodus_verify_kem_cert`, `:241-247`; strict, i.e. always the NDS1
+tagged preimage with no raw fallback, `nodus_sign.c:119-133`). The server signs it ONCE
+(`nodus_tcp_sc_kc_sign`, `nodus_tcp_sc.c:187-206`) at the first 4001 / WS accept that knows
+the chain id — and tries again at each later accept until it succeeds — and keeps it in
+`srv->anon_kc_sig` / `anon_kc_ok` (`nodus_server.h:333-334`; `on_tcp_accept`,
+`nodus_server.c:1887-1898`). The layer keeps a POINTER to it, never a copy, and never signs
+per connection. A signing failure leaves ANON off: the connection is CLIENT-bound as
+before and identified clients are served.
+
+**Order on the client (INITIATOR) side.** HELLO_R_ANON accepted → the machine builds the
+certificate message from its OWN chain id and the RECEIVED R_mlkem_pk and issues the job
+`CMT_P2P_SC_JOB_VERIFY_KC` (`cmt_p2p_secret.c:847-865`). The layer checks the pin (the
+fingerprint of R_dsa_pk must be in the client's pin set) BEFORE the job runs — a misdialed
+node costs no ML-DSA verify — and reports it with `cmt_p2p_sc_anon_pin_accepted`
+(`nodus_tcp_sc.c:625-634`); the job verifies through its own host callback `verify_kc`
+(purpose 0x0E only, never the session-auth verify, `host_verify_kc`, `nodus_tcp_sc.c:174-185`).
+The machine issues ENCAPS only when BOTH the certificate verified and the pin was accepted
+(`cmt_p2p_sc_job_done`, `cmt_p2p_secret.c:1359-1370`); either missing kills it. After ENCAPS
+it sends KEYX, derives T and the key, and waits for the node's CONFIRM.
+
+**CONFIRM order.** The node (RESPONDER) sends the FIRST sealed CONFIRM as soon as DECAPS
+completed — proving it holds the KEM secret — and waits for the client's; the client
+answers its own CONFIRM on receiving the node's; either side is AUTHENTICATED once it has
+received the peer's (`cmt_p2p_sc_job_done` DECAPS / ENCAPS arms, `sc_queue_confirm`,
+`sc_recv_confirm`, `cmt_p2p_secret.c:1092-1150`). Exactly one sealed frame is taken:
+chunkLength 2, content `01 06`, nothing else — any other length, content, a tail, or a
+frame that does not open (a wrong ct under implicit rejection surfaces here) is a REJECT.
+The public write stays refused before AUTHENTICATED. New states `CMT_P2P_SC_ST_WAIT_FIRST`
+and `CMT_P2P_SC_ST_WAIT_CONFIRM` (`cmt_p2p_secret.h:471-474`).
+
+**Family binding on 4001 / WS.** `on_tcp_accept` passes the cached certificate as
+`cfg.anon_kc_sig` (`nodus_tcp_sc.h:347`); a RESPONDER with the CLIENT profile and a
+certificate starts family-UNBOUND (`nodus_tcp_sc_enable`, `nodus_tcp_sc.c:755-760`;
+`cmt_p2p_sc_init_responder_unbound`, `cmt_p2p_secret.c:681-724`). The FIRST plaintext
+message binds the family ONCE by its exact (kind, length) (`sc_recv_first`,
+`cmt_p2p_secret.c:962-992`): (0x01 HELLO, 2,661) → CLIENT, today's handshake; (0x05
+HELLO_ANON, 69) → ANON, only when a certificate was supplied; anything else → REJECT. The
+length selects the family before the body is buffered; the kind byte is then checked as for
+a bound machine. After binding, the step's expected message depends on the BOUND family,
+never on a received kind: WITNESS / NODE / CLIENT machines refuse 0x05 / 0x06 / 0x07 as a
+kind-or-length REJECT, and an ANON machine accepts only its own kinds. The pre-session
+timestamps are set at accept and the binding does not reset them (the 15 s idle / 30 s
+absolute deadline runs from accept). A responder without a certificate is bound to its
+profile at enable and behaves exactly as before. `cmt_p2p_sc_is_anon` reports the binding
+(false for a dead machine); `nodus_tcp_sc_is_anonymous` (`nodus_tcp_sc.c:963-975`) is true
+for an ANON-bound RESPONDER — such a connection has NO peer key
+(`nodus_tcp_sc_peer_pubkey` returns -1, `cmt_p2p_sc_remote_pubkey` NULL in every state).
+An ANON INITIATOR carries no local key (`cfg.id` NULL) and a mandatory pin; enable refuses
+an ANON responder profile and a certificate on anything but a CLIENT responder.
+
+**Per-family pre-session budgets** (`sc_presession_budget`, `nodus_tcp_sc.c:96-111`,
+asserted `:115-118`): exactly the bytes the handshake carries — ANON INITIATOR
+HELLO_R_ANON (2 + 8,856) + one CONFIRM (1,044) = **9,902 B**; ANON RESPONDER HELLO_ANON
+(1 + 69) + KEYX (2 + 1,569) + one CONFIRM (1,044) = **2,685 B**. CLIENT and NODE keep their
+3b-2 budgets. The budget follows the BOUND family and is re-read after every consume
+(`:1143-1153`): an unbound responder is held to the CLIENT budget (the larger) until its
+first message binds it.
+
+**Reserved inbound job share.** An identified CLIENT handshake still makes the server sign
+(0x0C); an ANON one makes it sign nothing per connection. So that a flood of identified
+handshakes cannot starve wallet connections, `NODUS_TCP_SC_JOBQ_IN_ANON_RESERVED`
+(`nodus_tcp_sc.h:260-263`) slots of the 64 INBOUND job slots are kept for ANON jobs
+(`worker_push`, `nodus_tcp_sc.c:315-349`): the inbound total, ANON included, never exceeds
+`NODUS_TCP_SC_JOBQ_IN`, and an identified inbound job is admitted only while the
+identified count (ANON excluded) stays below `JOBQ_IN − reserve`. The compiled value is
+**16** (a quarter); the design gives no number, so the value is the implementation's own
+choice and **awaits the operator's confirmation**. A job carries `anon` from
+`cmt_p2p_sc_is_anon` at submit; only a VERIFY_KC job carries the 1,622-byte message, in a
+tail (`ext_len` / `ext[]`) so every other job keeps its size (`sc_submit`, `nodus_tcp_sc.c:476-556`).
+The machine grew to about 55 KB (the ANON buffers `kc_msg`, `anon_hs_buf` have storage of
+their own); `CMT_P2P_SC_HS_MSG_MAX` and `CMT_P2P_SC_OUT_CAP` — which also size the 4004
+pre-auth read / write caps — do not move.
+
+**No principal, end to end.** Absence of identity is explicit at every hop — never a zero
+key, a generated account, the transaction signer or the queried address:
+- **Core.** `nodus_auth_session_start` (`nodus_auth.c:110-122`): for an ANON connection it
+  mints and sends the token (T2 `auth_ok`, txn 0) and sets `sess->anonymous`,
+  `authenticated`, `conn->authenticated` and `auth_seq` — no `client_pk` / `client_fp`,
+  `conn->peer_id_set` stays false, no per-identity eviction, no presence entry, no role
+  exemption. An ANON session is never one identity's session (`session_live_as`,
+  `nodus_auth.c:28`) and is never found by a key (`server_find_session_conn`,
+  `nodus_server.c:2173`). Per-IP / per-session limits, the per-session chain budget and the
+  deadlines are unchanged. Its disconnect line is `CLIENT_DISCONNECT: anon slot=… ip=…`.
+- **Chain backend.** A new op `dispatch_dnac_anon(b, conn, token, t[64], payload, len,
+  method, txn_id)` (`nodus_chain_backend.h:165-170`) takes NO key; `t` is this node's own
+  copy of the session's transcript T (`nodus_tcp_sc_transcript`, never a client value).
+  In-process it calls `nodus_witness_handle_dnac_anon` (`nodus_chain_backend_inproc.c:90-99`).
+- **Witness IPC** (split mode): the session socket's first frame is the NO-IDENTITY form
+  `{"q":"ipc_hello","tk":<token>,"ts":<T, 64 B>}` (`nodus_witness_ipc.h:18-30`; built by
+  `ipc_session_conn`, `nodus_chain_backend_ipc.c:255-326`). The witness installs no principal
+  for it (`conn->peer_id_set` stays false), refuses `dnac_cc_collect` and any non-chain
+  method by closing the socket, and passes the rest to the ANON entry
+  (`ipc_on_first_frame` / `ipc_on_session_frame`, `nodus_witness_ipc.c:434-441`, `:503-516`).
+  An identified hello with an all-zero `pk` is refused (`:449-454`), and `pk` together with
+  `ts` is malformed. The identified form is byte-for-byte what it was; node-local, core and
+  `nodus-witness` deploy together.
+- **Storage IPC** (split mode): the origin preface of an ANON session is the 6-key map
+  `{"q","v","k":0,"s","g","b"}` WITHOUT `fp` and `pk` (`nodus_dht_ipc.h:22-29`, field
+  `no_identity` `:208`; codec `nodus_dht_ipc_wire.c:30-40`, `:305-309`; built when the
+  backend call carries neither, `nodus_dht_backend_ipc.c:239`). `fp` without `pk` (or the
+  reverse), and a no-identity INTER origin, are refused. The storage side then refuses
+  EVERY method of the legacy verb set for that slot with `NODUS_ERR_NOT_AUTHENTICATED`
+  (`nodus_dht_client_request`, `nodus_dht_server.c:4068-4075`) — the identity-bound verbs
+  because there is no identity, and the v1 reads too (khan decision 4). Core's allowlist
+  never routes them there; this is the storage side's own refusal.
+
+**The ANON allowlist** (exact names; ONE chain list tested by core and by the witness, so
+neither hop serves what the other refuses):
+- core only: `ping`, `status`, `servers` (`nodus_server_anon_method_ok`, `nodus_server.c:168-174`);
+- chain (`nodus_chain_anon_method_ok`, `nodus_witness_ipc.h:156-173`), 29 names:
+  `dnac_spend`; `dnac_balance`, `dnac_supply`, `dnac_roster`, `dnac_v3_block`,
+  `dnac_light_block`, `dnac_token_list`, `dnac_token_info`, `dnac_fee_info`,
+  `dnac_ruleset_info`, `dnac_name_lookup`, `dnac_name_of`, `dnac_storage_status`,
+  `dnac_storage_by_owner`, `dnac_committee_query`, `dnac_validator_list_query`; the five
+  owner-only reads `dnac_utxo`, `dnac_addr_history`, `dnac_delegations`, `dnac_msig_utxo`,
+  `dnac_msig_addr_history`; `evm_account`, `evm_code`, `evm_storage`, `evm_call`,
+  `evm_estimate`, `evm_receipt`, `evm_logs`, `evm_ticket`.
+- NOT on it: `dnac_cc_collect`, `dnac_node_duties` (this node's own identity only), every
+  legacy DHT verb, `listen` / `unlisten`, presence, circuits, `w_*`. `dht2_*` are not wired
+  yet (a later package) and are not on it.
+The witness ANON entry refuses a connection that carries a principal and any method off
+the list (`handle_dnac_impl`, `nodus_witness_handlers.c:7150-7166`).
+
+**The owner-signed query `qa`** (`nodus/src/protocol/nodus_owner_query.h`, NEW). The five
+owner-only reads stay owner- or member-only (audit fix C11 / G8.1); on an ANON session the
+authority moves from the session key to a signature carried IN the request. The T2 request
+carries a top-level byte-string field `qa` beside `a` (`{t, y, q, tok, qa, a}`,
+`enc_dnac_query_qa`, `nodus_client.c:3018-3069`); `qa` is an RFC 0002 signed envelope built
+by `dht2_env_seal` — the code of the DHT v2 owner-signed LIST:
+- domain (FIPS 204 ctx) `"nodus.chain.query.v1"` (20 B), payload type
+  `"/nodus/chain/query/v1"` (21 B), both OURS (`nodus_owner_query.h:53-54`); the envelope key
+  is the owner's (for a vault, a member's) ML-DSA-87 key;
+- payload: strict DAG-CBOR map `{c, m, o, s}` in canonical order — `c` chain id (32 B),
+  `m` method name (text, at most 32), `o` 64 B per method, `s` the session's T (64 B);
+  payload at most 256 B, envelope at most 8,192 B (`:56-69`);
+- `o` per method: `dnac_utxo` / `dnac_addr_history` — the hex-decoded `owner` argument;
+  `dnac_delegations` — SHA3-512 of the `pubkey` argument (a zero or wrong-length pubkey is
+  refused), which must also equal the envelope key's fingerprint; `dnac_msig_utxo` /
+  `dnac_msig_addr_history` — the vault address (= `owner`), then the full G8.1 descriptor
+  and membership rule with the `qa` key as the member.
+- Verification order (`nodus_oq_open`, `nodus_owner_query.c:134-170`): size bound, envelope
+  decode, payload type (explicit), signature under the domain, strict payload decode with
+  a re-encode identity check, `c` == this node's v3 chain id, `m` == the dispatched method,
+  `s` == this session's T. A pure function of the envelope, the request and T: no clock, no
+  state. A `qa` copied to another session fails the `s` binding.
+- In the witness (`oq_principal_qa`, `nodus_witness_handlers.c:219-269`), the principal is
+  resolved BEFORE the handler decodes anything: no `qa` → `NODUS_ERR_NOT_AUTHENTICATED`;
+  malformed → `NODUS_ERR_PROTOCOL_ERROR`; a bad signature or a wrong binding →
+  `NODUS_ERR_NOT_AUTHENTICATED` (one message for both); chain id unavailable or a
+  hashing / allocation fault → `NODUS_ERR_INTERNAL_ERROR`. The handler then requires the
+  signed `o` to name its own argument ("qa was signed for another owner") and applies
+  today's C11 / G8.1 rule with the `qa` key in place of the session key — ONE code path for
+  both session kinds (`oq_principal_t`, `:192-198`). Nothing is read without a valid `qa`.
+- Identified sessions send and are checked exactly as before (`qa` absent; the session key
+  is the principal).
+
+**Client SDK.** `nodus_client_config_t.anon_session` (`nodus.h:151`) selects the ANON
+family: profile ANON, `cfg.id` NULL, the pin set and `expected_chain_id` still MANDATORY
+(`do_connect_one`, `nodus_client.c:941-950`). `nodus_client_init` then accepts a NULL
+identity and does not copy one that is passed (`:777`, `:818`).
+`nodus_client_set_owner_key` (`nodus.h:315-317`; `nodus_client.c:878-886`) copies the key
+the five owner-only reads are signed with; `nodus_client_close` wipes it. Without it those
+five calls return -1 before anything is sent. DHT / messaging calls on an ANON client are
+refused by the node (`NODUS_ERR_NOT_AUTHENTICATED`).
+
+**Web wallet.** `web-wallet/crypto/nodus-send-wasm.c`: the wallet's session (`g_client`) is
+the ANON family — no identity is given to the client; the wallet's key only signs the
+`qa` of the owner-only reads. Nodus Connect's identified session (`g_client_c`) is opened
+lazily by `nc_host_session_ok`, only when a Messages export needs the old identity-bound
+DHT; a wallet-only page never opens it. The browser module now also compiles
+`nodus_owner_query.c` and the `shared/dht2` envelope sources
+(`web-wallet/scripts/build-nodus-send-wasm.sh`, `web-wallet/connect/tests/CMakeLists.txt`).
+
+**Unchanged.** 4004: its bytes, `CMT_P2P_SC_HS_MSG_MAX`, `CMT_P2P_SC_OUT_CAP` and the
+pre-auth caps of `cmt_p2p_peer.h`; a WITNESS machine refuses the ANON kinds. 4002 and the
+batch forwards (NODE profile). The identified CLIENT session's bytes, budgets and server
+behaviour. The client session version (1).
+
+**Determinism.** Nothing here is a consensus input: the session decides who may talk, the
+`qa` check is a pure function of request, envelope and T, and no clock is read beyond the
+existing monotonic pre-session deadline.
+
+**Tests** (written by the builder; each header carries what it proves / requires / leaves
+/ how it can lie; all default build, no environment):
+- `test_p2p_secret_anon` (new) — in memory: ANON initiator vs unbound and ANON-bound
+  responders reach AUTHENTICATED with wire sizes 70 / 8,858 / 1,571 / 1,044 / 1,044, key
+  and T recomputed from the captured bytes (5,889-byte preimage); the ANON responder has no
+  peer key; every bad certificate, a rejected pin, or a certificate verified without the
+  pin kills the initiator before any ENCAPS; CONFIRM frame rules on both sides; CLIENT /
+  WITNESS / NODE ↔ ANON mismatches; refused kinds 0x05 / 0x06 / 0x07; fragmented input;
+  the 4004 caps unchanged.
+- `test_owner_query` (new) — accept for each of the five reads; canonical payload; every
+  reject by its own result (domain, payload type, signature, `c`, `m`, `s`, another
+  session's `s`, size); `nodus_oq_find`; `o` per method and the G8.1 member rule. Pure.
+  Does not drive the witness handlers.
+- `test_anon_dispatch` (new) — the allowlist, the session table without a principal, and
+  `nodus_auth_session_start` on a real loopback ANON connection (no principal, no presence,
+  one token). Does not drive `dispatch_t2` (static).
+- Changed: `test_tcp_sc` (case 13: the ANON family at the layer — certificate helper,
+  ANON vs unbound responder over loopback TCP, the unbound responder's CLIENT
+  continuation, wrong pin / forged certificate, enable refusals, raw first messages; it
+  does NOT drive the reserved ANON job share — only its constants are asserted),
+  `test_witness_ipc` (no-identity preface, refusals, raw prefaces, core's preface bytes),
+  `test_dht_ipc` (no-identity origin codec; put and listen refused on the storage side),
+  `test_sign_domain_separation` (strict set {0x07-0x0E}; 0x0E's own domain),
+  `test_p2p_secret_profiles` (ANON refused by `cmt_p2p_sc_init_profile`).
+
+Function reference: `messenger/docs/functions/transport.md` "DHT v2 package 3d" and
+`messenger/docs/functions/ledger.md` §19.
 
 ### Block retention (pruning) and the SeenCommit cleanup (2026-10-03)
 
