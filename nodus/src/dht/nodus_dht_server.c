@@ -3235,6 +3235,12 @@ int nodus_dht_bf_frame_status(const uint8_t *buf, size_t len, size_t cap) {
     return rc > 0 ? 1 : 0;
 }
 
+/* The batch-forward session config's chain-id hook: the DHT's CURRENT host. */
+static bool bf_cfg_chain_id(void *ctx, uint8_t out[32]) {
+    nodus_dht_t *dht = (nodus_dht_t *)ctx;
+    return dht && dht->host.chain_id && dht->host.chain_id(dht->host.ctx, out);
+}
+
 /** Forward error → cleanup + check batch completion */
 static void bf_forward_fail(nodus_dht_t *dht, dht_bf_batch_t *b, dht_bf_conn_t *c) {
     bf_conn_cleanup(dht, c);
@@ -3408,6 +3414,13 @@ static int bf_start_forward(nodus_dht_t *dht, dht_bf_batch_t *b,
     if (!c->batch_keys) goto fail;
     memcpy(c->batch_keys, keys, (size_t)key_count * sizeof(nodus_key_t));
     c->batch_key_count = key_count;
+
+    /* Fail closed BEFORE any connect: no chain id, no session, no socket. */
+    dht->bf_state.cfg.identity = dht->host.identity;
+    {
+        uint8_t cid[32];
+        if (!bf_cfg_chain_id(dht, cid)) goto fail;
+    }
 
     /* Non-blocking connect to peer's INTER-NODE port (4002):
      * UDP port + 2 (convention: 4000→4002) */
@@ -4620,9 +4633,12 @@ int nodus_dht_init(nodus_dht_t *dht, const nodus_dht_host_t *host) {
         return -1;
     }
     dht->bf_state.tcp_up = true;
+    /* The config resolves through the DHT's host at CALL time (the shim,
+     * ctx = the DHT; identity refreshed in bf_start_forward): a copy of
+     * host.ctx would go stale when the host is replaced under a live DHT. */
     dht->bf_state.cfg.identity = dht->host.identity;
-    dht->bf_state.cfg.chain_id = dht->host.chain_id;
-    dht->bf_state.cfg.ctx      = dht->host.ctx;
+    dht->bf_state.cfg.chain_id = bf_cfg_chain_id;
+    dht->bf_state.cfg.ctx      = dht;
     dht->bf_state.tcp.auth_ctx      = &dht->bf_state.cfg;
     dht->bf_state.tcp.on_session    = bf_on_session;
     dht->bf_state.tcp.on_frame      = bf_on_frame;

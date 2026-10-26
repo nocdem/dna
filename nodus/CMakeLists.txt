@@ -1648,6 +1648,13 @@ add_executable(test_presession_deadline tests/test_presession_deadline.c)
 target_link_libraries(test_presession_deadline nodus dsa kem nodus)
 add_test(NAME test_presession_deadline COMMAND test_presession_deadline)
 
+# DHT v2 3b-2 round 4: re-entrant disconnect (D-24 a), central zero-pin
+# refusal in the session layer, force_disconnect state, the batch-forward
+# session config following the DHT's current host.
+add_executable(test_round4_hardening tests/test_round4_hardening.c)
+target_link_libraries(test_round4_hardening nodus dsa kem nodus)
+add_test(NAME test_round4_hardening COMMAND test_round4_hardening)
+
 add_executable(test_hint_tristate tests/test_hint_tristate.c)
 target_link_libraries(test_hint_tristate nodus dsa kem nodus)
 add_test(NAME test_hint_tristate COMMAND test_hint_tristate)

@@ -22,10 +22,15 @@
  *   Monotonic clock:
  *   T1  nodus_time_mono_ms() never goes back and advances at least as far as
  *       a sleep.
- *   T2  a server that accepts TCP and never answers: the connect fails and
- *       at least connect_timeout_ms of MONOTONIC time passed. Lower bound
- *       only — no upper bound is asserted (a timing assertion that fails
- *       under load; CLAUDE.md DETERMINISM).
+ *   T2  a TRULY silent server (a raw listener: the kernel takes the TCP
+ *       handshake, nothing reads or closes): the connect fails and at least
+ *       connect_timeout_ms of MONOTONIC time passed. Lower bound only — no
+ *       upper bound is asserted (a timing assertion that fails under load;
+ *       CLAUDE.md DETERMINISM).
+ *   T3  a server that accepts and closes: the client fails fast — before a
+ *       long (5 s) timeout, which only a disconnect-blind wait would use up.
+ *       (Round 4: T2's old server was not silent; since round 1 the client
+ *       correctly returns at once on a disconnect.)
  *
  * What it requires: default build, nothing else. No environment. Ports: real
  * server 15400-15404 (test-unique, see the parallel-safety note in
@@ -56,6 +61,10 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #define TEST(name) do { printf("  %-70s", name); fflush(stdout); } while (0)
 #define PASS()     do { printf("PASS\n"); passed++; } while (0)
@@ -131,13 +140,43 @@ static void stop_real_server(void) {
 
 /* ── A silent server: accepts TCP, never answers ─────────────────────── */
 
-static nodus_tcp_t g_silent;
-static pthread_t g_silent_tid;
-static _Atomic bool g_silent_stop;
+/* A raw POSIX listener: the kernel completes the TCP handshake into the
+ * backlog and nothing in this process ever reads or answers — truly silent
+ * (the earlier nodus_tcp-based "silent" server read the client's HELLO bytes
+ * and dropped the connection, so it was not silent). */
+static int g_silent_fd = -1;
+static uint16_t g_silent_port;
+/* A second listener that accepts and closes at once. */
+static int g_closing_fd = -1;
+static uint16_t g_closing_port;
+static pthread_t g_closing_tid;
+static _Atomic bool g_closing_stop;
 
-static void *silent_thread(void *arg) {
+static int raw_listen(uint16_t *port_out) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in a;
+    socklen_t al = sizeof(a);
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (fd < 0 || bind(fd, (struct sockaddr *)&a, sizeof(a)) != 0 ||
+        listen(fd, 8) != 0 || getsockname(fd, (struct sockaddr *)&a, &al) != 0) {
+        if (fd >= 0) close(fd);
+        return -1;
+    }
+    *port_out = ntohs(a.sin_port);
+    return fd;
+}
+
+static void *closing_thread(void *arg) {
     (void)arg;
-    while (!atomic_load(&g_silent_stop)) nodus_tcp_poll(&g_silent, 20);
+    while (!atomic_load(&g_closing_stop)) {
+        struct pollfd p = { .fd = g_closing_fd, .events = POLLIN };
+        if (poll(&p, 1, 20) > 0) {
+            int c = accept(g_closing_fd, NULL, NULL);
+            if (c >= 0) close(c);
+        }
+    }
     return NULL;
 }
 
@@ -210,8 +249,18 @@ static void test_init_rejects(void) {
     memset(cfg.expected_chain_id, 0, sizeof(cfg.expected_chain_id));
     if (nodus_client_init(c, &cfg, g_client_id) != 0) PASS(); else FAIL("accepted");
 
-    TEST("P1 control: a complete config is accepted");
+    TEST("P1c init refuses: an all-zero pin entry (central zero-pin refusal)");
     memset(cfg.expected_chain_id, CHAIN_BYTE, sizeof(cfg.expected_chain_id));
+    {
+        nodus_key_t pins2[2];
+        memset(&pins2[0], 0x11, sizeof(pins2[0]));
+        memset(&pins2[1], 0, sizeof(pins2[1]));
+        cfg.pinned_server_fp_count = 2; cfg.pinned_server_fps = pins2;
+        if (nodus_client_init(c, &cfg, g_client_id) != 0) PASS(); else FAIL("accepted");
+        cfg.pinned_server_fp_count = 1; cfg.pinned_server_fps = &pin;
+    }
+
+    TEST("P1 control: a complete config is accepted");
     if (nodus_client_init(c, &cfg, g_client_id) == 0) {
         nodus_client_close(c);
         PASS();
@@ -290,10 +339,24 @@ static void test_timeout_on_mono_clock(void) {
     memset(&pin, 0x33, sizeof(pin));
     const int limit_ms = 400;
     uint64_t t0 = nodus_time_mono_ms();
-    int rc = connect_once(g_silent.port, &pin, 1, CHAIN_BYTE, limit_ms, NULL);
+    int rc = connect_once(g_silent_port, &pin, 1, CHAIN_BYTE, limit_ms, NULL);
     uint64_t spent = nodus_time_mono_ms() - t0;
     if (rc == -1 && spent >= (uint64_t)limit_ms) PASS();
     else FAIL("timed out early, or connected to a silent server");
+}
+
+static void test_server_closes_fails_fast(void) {
+    TEST("T3 a server that closes: the client fails at once, not after the timeout");
+    nodus_key_t pin;
+    memset(&pin, 0x33, sizeof(pin));
+    const int limit_ms = 5000;
+    uint64_t t0 = nodus_time_mono_ms();
+    int rc = connect_once(g_closing_port, &pin, 1, CHAIN_BYTE, limit_ms, NULL);
+    uint64_t spent = nodus_time_mono_ms() - t0;
+    /* Not a timing assertion on a short bound: the failure must come well
+     * before the (long) limit, which a disconnect-blind wait would use up. */
+    if (rc == -1 && spent < (uint64_t)limit_ms) PASS();
+    else FAIL("the client waited out its whole timeout on a closed connection");
 }
 
 int main(void) {
@@ -308,16 +371,19 @@ int main(void) {
     test_mono_clock();
     test_init_rejects();
 
-    if (nodus_tcp_init(&g_silent, -1) != 0 ||
-        nodus_tcp_listen(&g_silent, "127.0.0.1", 0) != 0 ||
-        pthread_create(&g_silent_tid, NULL, silent_thread, NULL) != 0) {
-        printf("FATAL: silent server\n");
+    g_silent_fd = raw_listen(&g_silent_port);
+    g_closing_fd = raw_listen(&g_closing_port);
+    if (g_silent_fd < 0 || g_closing_fd < 0 ||
+        pthread_create(&g_closing_tid, NULL, closing_thread, NULL) != 0) {
+        printf("FATAL: raw servers\n");
         return 1;
     }
     test_timeout_on_mono_clock();
-    atomic_store(&g_silent_stop, true);
-    pthread_join(g_silent_tid, NULL);
-    nodus_tcp_close(&g_silent);
+    test_server_closes_fails_fast();
+    atomic_store(&g_closing_stop, true);
+    pthread_join(g_closing_tid, NULL);
+    close(g_closing_fd);
+    close(g_silent_fd);
 
     if (start_real_server() != 0) {
         printf("FATAL: real server did not start (ports %d-%d)\n",

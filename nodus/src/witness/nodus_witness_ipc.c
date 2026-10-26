@@ -442,12 +442,9 @@ static void ipc_on_session_frame(nodus_witness_ipc_t *ipc, ipc_slot_t *s,
         ipc_refuse(ipc, conn, "session frame does not decode");
         return;
     }
-    if (!msg.has_token ||
-        memcmp(msg.token, s->token, NODUS_SESSION_TOKEN_LEN) != 0) {
-        nodus_t2_msg_free(&msg);
-        ipc_refuse(ipc, conn, "session frame carries another token");
-        return;
-    }
+    /* No token check: the token is a correlation key, never an authorization
+     * input (Kurultay #43 O-2 b). The identity is this IPC session (its
+     * preface, s->pk); s->token stays for correlation (cc_collect below). */
     if (strcmp(msg.method, "dnac_cc_collect") == 0) {
         ipc->h.cc_collect(ipc->h.ctx, conn, s->pk, s->token,
                           payload, len, msg.txn_id);

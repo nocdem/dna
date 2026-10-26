@@ -791,6 +791,17 @@ int nodus_client_init(nodus_client_t *client,
                       "pinned_server_fp_count): a session needs a pinned server");
         return -1;
     }
+    /* An all-zero entry is "no pin" written down (a fill that failed, a
+     * zeroed array slot): refused. */
+    for (int i = 0; i < config->pinned_server_fp_count; i++) {
+        uint8_t acc = 0;
+        for (size_t k = 0; k < sizeof(config->pinned_server_fps[i].bytes); k++)
+            acc |= config->pinned_server_fps[i].bytes[k];
+        if (acc == 0) {
+            QGP_LOG_ERROR(LOG_TAG, "init: refused — server pin %d is all zero", i);
+            return -1;
+        }
+    }
     if (!config->has_expected_chain_id || client_chain_id_is_zero(config->expected_chain_id)) {
         QGP_LOG_ERROR(LOG_TAG, "init: refused — no chain id (expected_chain_id / "
                       "has_expected_chain_id): a session is bound to one chain");
@@ -1209,6 +1220,9 @@ void nodus_client_force_disconnect(nodus_client_t *client) {
         }
         client->conn = NULL;
     }
+    /* This path bypasses client_on_disconnect: clear what it clears. */
+    atomic_store(&client->session_ready, false);
+    client->has_server_dil_pk = false;
     client->state = NODUS_CLIENT_DISCONNECTED;
     /* Now join the read thread (it should exit fast since socket is closed) */
     stop_read_thread(client);

@@ -298,6 +298,10 @@ typedef struct nodus_tcp_conn {
      * sc_close_req). A nested nodus_tcp_poll started by on_disconnect must
      * neither reap it again nor process events or job results for it. */
     bool                   sc_closing;
+    /* A teardown has claimed this connection and its on_disconnect has run or
+     * is running (nodus_tcp.c conn_notify_disconnect): a re-entrant
+     * nodus_tcp_disconnect from that callback is a no-op. */
+    bool                   disc_claimed;
 
     /* WebSocket Close that arrived while a handshake job was outstanding
      * (layer on): the input preceding it is still held. The close frame to

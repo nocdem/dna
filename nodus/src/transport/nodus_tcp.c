@@ -437,6 +437,18 @@ void nodus_tcp_set_write_lock(nodus_tcp_t *tcp,
  * holds it after on_frame returns, and a later accept in the same batch
  * must not be handed the same address while a stale event for it is
  * pending. Freeing any earlier would reintroduce exactly that aliasing. */
+/* The ONE place on_disconnect is invoked (every teardown path calls it, then
+ * conn_free). It CLAIMS the teardown first (disc_claimed): a callback that
+ * disconnects the very connection it was told about meets the claim in
+ * nodus_tcp_disconnect and does nothing, so on_disconnect runs once and the
+ * outer conn_free is the only one that frees (D-24 a). */
+static void conn_notify_disconnect(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    if (conn->disc_claimed) return;
+    conn->disc_claimed = true;
+    if (tcp->on_disconnect)
+        tcp->on_disconnect(conn, tcp->cb_ctx);
+}
+
 static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     if (!conn || conn->close_pending) return;
 
@@ -738,8 +750,7 @@ static parse_rc_t try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
             uint32_t cap = conn->max_payload ? conn->max_payload
                                              : (uint32_t)NODUS_MAX_FRAME_TCP;
             if (declared > cap) {
-                if (tcp->on_disconnect)
-                    tcp->on_disconnect(conn, tcp->cb_ctx);
+                conn_notify_disconnect(tcp, conn);
                 conn_free(tcp, conn);
                 return PARSE_CLOSED;
             }
@@ -751,16 +762,14 @@ static parse_rc_t try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
         if (rc == 0) break;     /* Incomplete — need more data */
         if (rc < 0) {
             /* Bad frame — disconnect */
-            if (tcp->on_disconnect)
-                tcp->on_disconnect(conn, tcp->cb_ctx);
+            conn_notify_disconnect(tcp, conn);
             conn_free(tcp, conn);
             return PARSE_CLOSED;
         }
 
         /* Validate frame size (HIGH-1: TCP path was missing this check) */
         if (!nodus_frame_validate(&frame, false)) {
-            if (tcp->on_disconnect)
-                tcp->on_disconnect(conn, tcp->cb_ctx);
+            conn_notify_disconnect(tcp, conn);
             conn_free(tcp, conn);
             return PARSE_CLOSED;
         }
@@ -938,15 +947,23 @@ static uint32_t sc_ev_mask(const nodus_tcp_t *tcp, const nodus_tcp_conn_t *conn,
     return ev;
 }
 
-/* Re-register `conn` with the mask applied. Not under the write lock
- * (conn_has_unsent takes it). */
+/* Re-register `conn` with the mask applied. Not called under the write lock:
+ * it takes it, and computes the mask AND installs it inside ONE critical
+ * section, so a sender on another thread cannot arm EPOLLOUT between the
+ * computation and the epoll_ctl and have it overwritten (D-24 d). */
 static void sc_epoll_rearm(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     uint32_t ev;
 
-    if (!tcp->level_triggered || conn->fd < 0 || conn->close_pending)
+    if (!tcp->level_triggered)
         return;
-    ev = EPOLLIN | EPOLLRDHUP | (conn_has_unsent(tcp, conn) ? EPOLLOUT : 0);
-    epoll_mod(tcp->epoll_fd, conn->fd, sc_ev_mask(tcp, conn, ev), conn);
+    wl_enter(tcp);
+    if (conn->fd >= 0 && !conn->close_pending) {
+        ev = EPOLLIN | EPOLLRDHUP |
+             ((conn->wlen > conn->wpos || (conn->sc != NULL && conn->pending_head != NULL))
+                  ? EPOLLOUT : 0);
+        epoll_mod(tcp->epoll_fd, conn->fd, sc_ev_mask(tcp, conn, ev), conn);
+    }
+    wl_leave(tcp);
 }
 #endif
 
@@ -962,6 +979,16 @@ static void sc_mark_close_locked(nodus_tcp_conn_t *conn) {
     if (!conn->sc_close_req && tcp) {
         conn->sc_close_req = true;
         tcp->sc_close_requests++;
+#ifdef NODUS_TCP_EPOLL
+        /* Wake the poller: a sleeping epoll_wait would otherwise see neither
+         * a delivery nor the teardown of an idle connection until its own
+         * timeout. Arming write interest raises an event for this fd (D-24 c). */
+        if (tcp->epoll_fd >= 0 && conn->fd >= 0) {
+            uint32_t et = tcp->level_triggered ? 0 : EPOLLET;
+            epoll_mod(tcp->epoll_fd, conn->fd,
+                      EPOLLIN | EPOLLOUT | EPOLLRDHUP | et, conn);
+        }
+#endif
     }
 }
 
@@ -1124,8 +1151,10 @@ static int send_sc_locked(nodus_tcp_conn_t *conn, const uint8_t *payload, size_t
         /* allocation failure: treated like a full queue — nothing sealed */
     }
     if (tcp && tcp->on_pending_full) {
-        tcp->on_pending_full(conn, payload, len, tcp->pending_full_ctx);
+        /* Count BEFORE the callback: it may close this connection, and
+         * nothing of `conn` may be touched after it (D-24 b). */
         conn->pending_hint_fallback_count++;
+        tcp->on_pending_full(conn, payload, len, tcp->pending_full_ctx);
         return 0;
     }
     QGP_LOG_ERROR(LOG_TAG_TCP,
@@ -1160,8 +1189,7 @@ static void sc_reap_marked(nodus_tcp_t *tcp) {
         }
         wl_leave(tcp);
         if (claimed) {
-            if (tcp->on_disconnect)
-                tcp->on_disconnect(c, tcp->cb_ctx);
+            conn_notify_disconnect(tcp, c);
             conn_free(tcp, c);
         }
     }
@@ -1190,8 +1218,7 @@ static void sc_apply_done(nodus_tcp_t *tcp) {
             r = NODUS_SC_APPLY_FAIL;
         wl_leave(tcp);
         if (r == NODUS_SC_APPLY_FAIL) {
-            if (tcp->on_disconnect)
-                tcp->on_disconnect(conn, tcp->cb_ctx);
+            conn_notify_disconnect(tcp, conn);
             conn_free(tcp, conn);
         } else if (r == NODUS_SC_APPLY_OK) {
             /* Input held while the job ran, and the socket's own bytes
@@ -1219,8 +1246,7 @@ static read_rc_t read_plain_sc(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
      * of the AUTHSIG frame) are served before any new socket byte — no frame
      * will arrive to push them out. */
     if (sc_feed_locked(tcp, conn, NULL, 0) != 0) {
-        if (tcp->on_disconnect)
-            tcp->on_disconnect(conn, tcp->cb_ctx);
+        conn_notify_disconnect(tcp, conn);
         conn_free(tcp, conn);
         return READ_CLOSED;
     }
@@ -1257,8 +1283,7 @@ static read_rc_t read_plain_sc(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             conn_stamp_activity(conn);
             eintr_left = NTCP_MAX_EINTR_RETRY;
             if (sc_feed_locked(tcp, conn, chunk, (size_t)n) != 0) {
-                if (tcp->on_disconnect)
-                    tcp->on_disconnect(conn, tcp->cb_ctx);
+                conn_notify_disconnect(tcp, conn);
                 conn_free(tcp, conn);
                 return READ_CLOSED;
             }
@@ -1273,8 +1298,7 @@ static read_rc_t read_plain_sc(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             /* Orderly EOF — as read_plain: frames already opened are still
              * frames; unbudgeted, there is no later call. */
             if (try_parse_frames(tcp, conn, false) != PARSE_CLOSED) {
-                if (tcp->on_disconnect)
-                    tcp->on_disconnect(conn, tcp->cb_ctx);
+                conn_notify_disconnect(tcp, conn);
                 conn_free(tcp, conn);
             }
             return READ_CLOSED;
@@ -1284,8 +1308,7 @@ static read_rc_t read_plain_sc(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             continue;
         if (io == NTCP_IO_WOULDBLOCK)
             return READ_DRAINED;
-        if (tcp->on_disconnect)
-            tcp->on_disconnect(conn, tcp->cb_ctx);
+        conn_notify_disconnect(tcp, conn);
         conn_free(tcp, conn);
         return READ_CLOSED;
     }
@@ -1313,8 +1336,7 @@ static read_rc_t read_plain(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             return READ_MORE;
 
         if (buf_ensure(&conn->rbuf, &conn->rcap, conn->rlen + 4096) != 0) {
-            if (tcp->on_disconnect)
-                tcp->on_disconnect(conn, tcp->cb_ctx);
+            conn_notify_disconnect(tcp, conn);
             conn_free(tcp, conn);
             return READ_CLOSED;
         }
@@ -1342,8 +1364,7 @@ static read_rc_t read_plain(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
              * handled before ntcp_classify.) Unbudgeted: there is no later
              * call for this connection. */
             if (try_parse_frames(tcp, conn, false) != PARSE_CLOSED) {
-                if (tcp->on_disconnect)
-                    tcp->on_disconnect(conn, tcp->cb_ctx);
+                conn_notify_disconnect(tcp, conn);
                 conn_free(tcp, conn);
             }
             return READ_CLOSED;
@@ -1358,8 +1379,7 @@ static read_rc_t read_plain(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
          * receive-side reset is still a disconnect, so the handling is the
          * same — but it is now reached deliberately rather than by falling
          * through from EINTR. */
-        if (tcp->on_disconnect)
-            tcp->on_disconnect(conn, tcp->cb_ctx);
+        conn_notify_disconnect(tcp, conn);
         conn_free(tcp, conn);
         return READ_CLOSED;
     }
@@ -1463,7 +1483,13 @@ static ntcp_io_t conn_flush_wbuf(nodus_tcp_conn_t *conn,
             atomic_store_explicit(&conn->io_started, true, memory_order_relaxed);
             conn->wpos += (size_t)n;
             eintr_left = NTCP_MAX_EINTR_RETRY;
-            if (progress_cb) progress_cb(conn->wpos, conn->wlen, user_data);
+            if (progress_cb) {
+                progress_cb(conn->wpos, conn->wlen, user_data);
+                /* The callback may have closed the connection: read nothing
+                 * of it again (D-24 b). */
+                if (conn->fd < 0 || conn->close_pending)
+                    return NTCP_IO_PEER_GONE;
+            }
             continue;
         }
         if (io == NTCP_IO_RETRY && eintr_left-- > 0)
@@ -1542,8 +1568,7 @@ static void handle_write(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     bool alive = handle_write_locked(tcp, conn);
     wl_leave(tcp);
     if (!alive) {
-        if (tcp->on_disconnect)
-            tcp->on_disconnect(conn, tcp->cb_ctx);
+        conn_notify_disconnect(tcp, conn);
         conn_free(tcp, conn);
     }
 }
@@ -1558,8 +1583,7 @@ static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, (char *)&err, &len);
 
     if (err != 0) {
-        if (tcp->on_disconnect)
-            tcp->on_disconnect(conn, tcp->cb_ctx);
+        conn_notify_disconnect(tcp, conn);
         conn_free(tcp, conn);
         return;
     }
@@ -1601,6 +1625,34 @@ static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
      * same pattern as handle_accept(). */
     handle_read_fwd(tcp, conn);
 #endif
+}
+
+/* Declared in nodus_ws.h; defined here so that every platform's build has it
+ * (nodus_ws.c is not built on Windows, the plain listener's handshake rate
+ * is). */
+int nodus_ws_ip_bucket(const char *ip, nodus_ws_ip_bucket_t *out) {
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+    if (!ip) return -1;
+
+    struct in_addr a4;
+    struct in6_addr a6;
+    if (inet_pton(AF_INET, ip, &a4) == 1) {
+        out->family = 4;
+        memcpy(out->key, &a4.s_addr, 4);
+        return 0;
+    }
+    if (inet_pton(AF_INET6, ip, &a6) == 1) {
+        if (IN6_IS_ADDR_V4MAPPED(&a6)) {
+            out->family = 4;
+            memcpy(out->key, a6.s6_addr + 12, 4);
+        } else {
+            out->family = 6;
+            memcpy(out->key, a6.s6_addr, 8);
+        }
+        return 0;
+    }
+    return -1;
 }
 
 bool nodus_tcp_hs_rate_allow(nodus_tcp_t *tcp, const nodus_ws_ip_bucket_t *who,
@@ -1771,8 +1823,7 @@ static void ws_close_now(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
     if (bytes && n > 0 && ws_wbuf_append_raw(conn, bytes, n) == 0)
         (void)conn_flush_wbuf(conn, NULL, NULL);
     wl_leave(tcp);
-    if (tcp->on_disconnect)
-        tcp->on_disconnect(conn, tcp->cb_ctx);
+    conn_notify_disconnect(tcp, conn);
     conn_free(tcp, conn);
 }
 
@@ -1999,8 +2050,7 @@ static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         /* Held payload bytes and plaintext the machine already opened first
          * (see read_plain_sc); then, if a job is still running, wait for it. */
         if (sc_feed_locked(tcp, conn, NULL, 0) != 0) {
-            if (tcp->on_disconnect)
-                tcp->on_disconnect(conn, tcp->cb_ctx);
+            conn_notify_disconnect(tcp, conn);
             conn_free(tcp, conn);
             return READ_CLOSED;
         }
@@ -2066,8 +2116,7 @@ static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             bool freed = conn->ws_open &&
                          try_parse_frames(tcp, conn, false) == PARSE_CLOSED;
             if (!freed) {
-                if (tcp->on_disconnect)
-                    tcp->on_disconnect(conn, tcp->cb_ctx);
+                conn_notify_disconnect(tcp, conn);
                 conn_free(tcp, conn);
             }
             return READ_CLOSED;
@@ -2077,8 +2126,7 @@ static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             continue;
         if (io == NTCP_IO_WOULDBLOCK)
             return READ_DRAINED;
-        if (tcp->on_disconnect)
-            tcp->on_disconnect(conn, tcp->cb_ctx);
+        conn_notify_disconnect(tcp, conn);
         conn_free(tcp, conn);
         return READ_CLOSED;
     }
@@ -3135,8 +3183,8 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
         /* Queue is full (or allocation failed) — last resort fallback. */
         nodus_tcp_t *tcp = conn->tcp_parent;
         if (tcp && tcp->on_pending_full) {
+            conn->pending_hint_fallback_count++;   /* before: see send_sc_locked */
             tcp->on_pending_full(conn, payload, len, tcp->pending_full_ctx);
-            conn->pending_hint_fallback_count++;
             return 0;
         }
 
@@ -3528,8 +3576,7 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
         }
 
         if (events[i].events & EPOLLERR) {
-            if (tcp->on_disconnect)
-                tcp->on_disconnect(conn, tcp->cb_ctx);
+            conn_notify_disconnect(tcp, conn);
             conn_free(tcp, conn);
             continue;
         }
@@ -3552,8 +3599,7 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
         if (events[i].events & (EPOLLIN | EPOLLRDHUP))
             handle_read(tcp, conn);
         else if (events[i].events & EPOLLHUP) {
-            if (tcp->on_disconnect)
-                tcp->on_disconnect(conn, tcp->cb_ctx);
+            conn_notify_disconnect(tcp, conn);
             conn_free(tcp, conn);
         }
     }
@@ -3587,8 +3633,10 @@ void nodus_tcp_disconnect(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
      * running or about to, exactly once — a second disconnect issued from
      * another callback meanwhile must not run it again. */
     if (conn->sc_closing) return;
-    if (tcp->on_disconnect)
-        tcp->on_disconnect(conn, tcp->cb_ctx);
+    /* Claimed by a teardown whose on_disconnect is running (re-entrant call
+     * from that callback): a no-op — the outer teardown frees (D-24 a). */
+    if (conn->disc_claimed) return;
+    conn_notify_disconnect(tcp, conn);
     conn_free(tcp, conn);
 }
 

@@ -25,6 +25,9 @@
  *   - the control connection's status snapshot round-trips: chain_open,
  *     status (height, state root, chain id) and listen_port report what
  *     the witness answered;
+ *   - (round 4 item 4) a forwarded request carrying a token other than the
+ *     session's is served and the session stays: the token is a
+ *     correlation key, not an authorization input;
  *   - a first frame that is not a preface closes the connection;
  *   - with no witness listening, a dnac_* request is answered at once with
  *     exactly the bytes a witness-less server sends (nodus_t2_error,
@@ -232,6 +235,34 @@ static void test_session_roundtrip(nodus_chain_backend_t *b,
     if (cli_frames != frames_before + 1 || cli_last_len != sizeof(k_reply) ||
         memcmp(cli_last, k_reply, sizeof(k_reply)) != 0) {
         FAIL("reply did not reach the client unchanged");
+        return;
+    }
+    PASS();
+}
+
+/* Round 4 item 4: the token is a correlation key, never an authorization
+ * input (Kurultay #43 O-2 b). A forwarded request whose embedded token is not
+ * the session's is SERVED (identity is the IPC session), and the session
+ * stays open. */
+static void test_token_not_authorization(nodus_chain_backend_t *b,
+                                         nodus_witness_ipc_t *ipc) {
+    TEST("a forwarded frame with another embedded token is served (no gate)");
+    uint8_t frame[256];
+    uint8_t saved[NODUS_SESSION_TOKEN_LEN];
+    memcpy(saved, g_token, sizeof(saved));
+    for (size_t i = 0; i < sizeof(g_token); i++) g_token[i] ^= 0xFF;
+    size_t n = t2_query(9, "dnac_test", frame, sizeof(frame));   /* embeds the OTHER token */
+    memcpy(g_token, saved, sizeof(g_token));                     /* the session's own */
+    if (n == 0) { FAIL("encode"); return; }
+
+    int calls_before = h_dnac_calls;
+    b->ops->dispatch_dnac(b, g_client_conn, g_pk, g_token, frame, n,
+                          "dnac_test", 9);
+    for (int i = 0; i < POLL_ROUNDS && h_dnac_calls == calls_before; i++)
+        poll_all(b, ipc);
+    if (h_dnac_calls != calls_before + 1) { FAIL("the frame was refused for its token"); return; }
+    if (nodus_witness_ipc_find_session_conn(ipc, g_pk, g_token) != h_dnac_conn) {
+        FAIL("the session was closed");
         return;
     }
     PASS();
@@ -575,6 +606,7 @@ int main(void) {
      * dialled (the backend's no-dial-while-down rule). */
     test_status(b, ipc);
     test_session_roundtrip(b, ipc);
+    test_token_not_authorization(b, ipc);
     test_cc_collect(b, ipc);
     test_session_closed(b, ipc);
     test_non_preface(ipc, wsock);

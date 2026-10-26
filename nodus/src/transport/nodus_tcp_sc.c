@@ -62,11 +62,10 @@ typedef struct nodus_tcp_sc {
     const nodus_key_t     *pin_set;     /* INITIATOR pin SET (cfg.expected_set), caller-owned */
     size_t                 pin_set_n;
     /* The pre-AUTHENTICATED input budget (see sc_presession_budget): bytes the
-     * machine consumed so far, the most it may consume, and whether the
-     * session is past it (authenticated: the budget no longer applies). */
+     * machine consumed so far while not authenticated, and the most it may
+     * consume (sc_run enforces it; once authenticated nothing is counted). */
     size_t                 pre_bytes;
     size_t                 pre_budget;
-    bool                   pre_done;
 } nodus_tcp_sc_t;
 
 /* The sealed-frame budget of one handshake (Kurultay #43 O-5, "a combined
@@ -609,6 +608,15 @@ nodus_sc_apply_t nodus_tcp_sc_job_apply(nodus_tcp_t *tcp, nodus_sc_job_t *job,
 
 /* ── Enable / queries / free ──────────────────────────────────────────── */
 
+static bool key_all_zero(const nodus_key_t *k)
+{
+    uint8_t acc = 0;
+
+    for (size_t i = 0; i < sizeof(k->bytes); i++)
+        acc |= k->bytes[i];
+    return acc == 0;
+}
+
 /* A connection the layer may be switched on for: it has carried NO byte in
  * either direction (the sticky io_started — empty buffers prove nothing:
  * bytes may have been consumed and answered), holds no leftover state of the
@@ -670,6 +678,18 @@ int nodus_tcp_sc_enable(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
             (cfg->expected_set == NULL || cfg->expected_set_n == 0)) {
             QGP_LOG_ERROR(LOG_TAG_SC, "enable refused: initiator without a pin");
             return -1;
+        }
+        /* An all-zero pin is "no pin" written down: refuse it, whatever
+         * built the config (central zero-pin refusal). */
+        if (cfg->expected_peer != NULL && key_all_zero(cfg->expected_peer)) {
+            QGP_LOG_ERROR(LOG_TAG_SC, "enable refused: all-zero expected peer");
+            return -1;
+        }
+        for (size_t i = 0; i < cfg->expected_set_n; i++) {
+            if (key_all_zero(&cfg->expected_set[i])) {
+                QGP_LOG_ERROR(LOG_TAG_SC, "enable refused: all-zero pin in the set");
+                return -1;
+            }
         }
     } else if (cfg->role == CMT_P2P_SC_ROLE_RESPONDER) {
         if (!cfg->id->has_mlkem) {
@@ -950,6 +970,19 @@ static int sc_run(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn, nodus_tcp_sc_t *s,
             rc = cmt_p2p_sc_recv(&s->m, p, inlen - off, &consumed);
             off += consumed;
             if (rc != CMT_OK) { ret = -1; break; }
+            /* The pre-session input budget (sc_presession_budget), accounted
+             * HERE, as the machine takes the bytes and before it advances
+             * (an inline build runs the whole handshake inside one call): only
+             * bytes taken while NOT authenticated count, never the
+             * application bytes that follow. */
+            s->pre_bytes += consumed;
+            if (s->pre_bytes > s->pre_budget) {
+                QGP_LOG_WARN(LOG_TAG_SC, "pre-session input budget exceeded "
+                             "(%zu > %zu bytes, slot %d): closing",
+                             s->pre_bytes, s->pre_budget, conn->slot);
+                ret = -1;
+                break;
+            }
             had_job = cmt_p2p_sc_job(&s->m) != NULL;
             if (sc_advance(tcp, conn, s) != 0) { ret = -1; break; }
             if (s->job_out)
@@ -1004,21 +1037,7 @@ int nodus_tcp_sc_feed(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
     }
     if (sc_run(tcp, conn, s, in, inlen, &used, plain, plain_ctx) != 0)
         return -1;
-    /* The pre-session input budget (sc_presession_budget): while the session
-     * is not authenticated, only so many bytes may be consumed. */
-    if (!s->pre_done) {
-        if (cmt_p2p_sc_is_authenticated(&s->m)) {
-            s->pre_done = true;
-        } else {
-            s->pre_bytes += used;
-            if (s->pre_bytes > s->pre_budget) {
-                QGP_LOG_WARN(LOG_TAG_SC, "pre-session input budget exceeded "
-                             "(%zu > %zu bytes, slot %d): closing",
-                             s->pre_bytes, s->pre_budget, conn->slot);
-                return -1;
-            }
-        }
-    }
+    /* (The pre-session input budget is enforced inside sc_run.) */
     left = inlen - used;
     if (left > 0 && !s->job_out) {
         /* The machine stops early only to HOLD for a job. Anything else left

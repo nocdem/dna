@@ -309,8 +309,9 @@ static void test_dial_bound(void) {
     nodus_inter_pool_sweep(&g_dial, nodus_time_now());
     if (g_dial.pool[d->slot] != d) { FAIL("a young dial was closed by the sweep"); return; }
     d->dial_mono_ms = nodus_time_mono_ms() - 11000;   /* older than the 10 s bound */
+    int dslot = d->slot;      /* d is freed by the sweep: read nothing of it after */
     nodus_inter_pool_sweep(&g_dial, nodus_time_now());
-    if (g_dial.pool[d->slot] == d) { FAIL("a dial past the bound was kept"); return; }
+    if (g_dial.pool[dslot] != NULL) { FAIL("a dial past the bound was kept"); return; }
     PASS();
     close_all_dials();
 }

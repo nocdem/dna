@@ -25,8 +25,8 @@
  *      its own identity, and the first conn's pin is unchanged; a pooled
  *      accepted (inbound) conn and a conn proven for another identity are
  *      never returned to a pinned call; a conn we dialed whose proven
- *      peer_id matches IS returned; a NULL-pin call keeps the old rule
- *      (the first pool entry for ip:port, no new dial).
+ *      peer_id matches IS returned; a NULL-pin call is REFUSED (3b-2: no
+ *      unpinned dial, checked before the pool lookup; nothing is opened).
  *   3. Dial backoff (F5), pure: delay 30/60/120/240/480/900/900 s; a
  *      recorded key is held back until exactly next_try; other node_id /
  *      port at the same ip are independent; clear forgets the key; a full
@@ -180,7 +180,7 @@ out:
 }
 
 static void test_inter_dial_semantics(void) {
-    TEST("inter_dial: pinned reuse only for the same id; NULL unchanged");
+    TEST("inter_dial: pinned reuse only for the same id; NULL refused");
     nodus_server_t *srv = calloc(1, sizeof(*srv));
     nodus_tcp_t lst_a, lst_b;
     bool a_up = false, b_up = false, inter_up = false;
@@ -268,18 +268,17 @@ static void test_inter_dial_semantics(void) {
     CHECK(pool_count(&srv->inter_tcp, "127.0.0.1", lst_b.port) == 2,
           "expected the inbound conn and a fresh dial at b");
 
-    /* NULL pin: the old rule — the first pool entry for ip:port, whatever
-     * it is, and no new conn. */
+    /* NULL pin: since 3b-2 (round 1 item 9) the NULL pin is refused BEFORE
+     * the pool lookup — there is no unpinned dial, and a pooled entry is not
+     * handed to an unpinned caller either; no conn is opened. */
     {
         int before = pool_count(&srv->inter_tcp, NULL, 0);
         r = nodus_server_inter_dial(srv, "127.0.0.1", lst_b.port, NULL);
-        CHECK(r == nodus_tcp_find_by_addr(&srv->inter_tcp, "127.0.0.1", lst_b.port),
-              "a NULL-pin dial did not return the first pool entry");
+        CHECK(r == NULL, "a NULL-pin dial returned a conn");
         r = nodus_server_inter_dial(srv, "127.0.0.1", lst_a.port, NULL);
-        CHECK(r == nodus_tcp_find_by_addr(&srv->inter_tcp, "127.0.0.1", lst_a.port),
-              "a NULL-pin dial did not return the first pool entry (a)");
+        CHECK(r == NULL, "a NULL-pin dial returned a conn (a)");
         CHECK(pool_count(&srv->inter_tcp, NULL, 0) == before,
-              "a NULL-pin dial opened a conn although one was pooled");
+              "a NULL-pin dial opened a conn");
     }
     PASS();
 out:
