@@ -115,6 +115,7 @@
 #include "dht/nodus_dht.h"
 #include "dht/nodus_dht_ipc.h"
 #include "transport/nodus_tcp.h"
+#include "protocol/nodus_cbor.h"
 #include "protocol/nodus_tier1.h"
 #include "protocol/nodus_tier2.h"
 #include "core/nodus_value.h"
@@ -613,6 +614,169 @@ static void case_inter_preface(void) {
         }
     }
     if (!ok) { FAIL("subscription never recorded"); return; }
+    PASS();
+}
+
+/* DHT v2 package 3d: the explicit no-identity origin preface of an ANON
+ * (no-login) client session. The codec: the identified form's bytes are what
+ * they were (an independent hand-built map), the no-identity form is the same
+ * map without "fp" and "pk" and round-trips as no_identity, and a half form
+ * (fp without pk, pk without fp) or a no-identity INTER origin is refused. */
+static void case_anon_preface_codec(void) {
+    TEST("5a no-identity origin preface: bytes, round trip, half forms refused");
+    nodus_dht_ipc_preface_t *pf = calloc(1, sizeof(*pf));
+    uint8_t *buf = malloc(NODUS_PK_BYTES + 512);
+    uint8_t *want = malloc(NODUS_PK_BYTES + 512);
+    nodus_dht_ipc_msg_t *msg = calloc(1, sizeof(*msg));
+    if (!pf || !buf || !want || !msg) { FAIL("alloc"); goto out; }
+    pf->origin.kind = NODUS_DHT_ORIGIN_CLIENT;
+    pf->origin.slot = 3;
+    pf->origin.gen = 9;
+    memset(pf->boot, 0x77, sizeof(pf->boot));
+    pf->fp = g_id.node_id;
+    pf->pk = g_id.pk;
+
+    /* identified: map(8) q v k s g b fp pk, in this order */
+    size_t n = nodus_dht_ipc_encode_origin(pf, buf, NODUS_PK_BYTES + 512);
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, want, NODUS_PK_BYTES + 512);
+    cbor_encode_map(&enc, 8);
+    cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, "ds_origin");
+    cbor_encode_cstr(&enc, "v");  cbor_encode_uint(&enc, 1);
+    cbor_encode_cstr(&enc, "k");  cbor_encode_uint(&enc, 0);
+    cbor_encode_cstr(&enc, "s");  cbor_encode_uint(&enc, 3);
+    cbor_encode_cstr(&enc, "g");  cbor_encode_uint(&enc, 9);
+    cbor_encode_cstr(&enc, "b");  cbor_encode_bstr(&enc, pf->boot, NODUS_DHT_IPC_BOOT_LEN);
+    cbor_encode_cstr(&enc, "fp"); cbor_encode_bstr(&enc, g_id.node_id.bytes, NODUS_KEY_BYTES);
+    cbor_encode_cstr(&enc, "pk"); cbor_encode_bstr(&enc, g_id.pk.bytes, NODUS_PK_BYTES);
+    size_t wn = cbor_encoder_len(&enc);
+    int ok = n == wn && n > 0 && memcmp(buf, want, n) == 0;
+    ok = ok && nodus_dht_ipc_decode(buf, n, msg, NULL, 0) == 0 &&
+         msg->type == NODUS_DHT_IPC_MSG_ORIGIN && !msg->preface.no_identity &&
+         memcmp(msg->preface.fp.bytes, g_id.node_id.bytes, NODUS_KEY_BYTES) == 0;
+
+    /* no identity: the same map without fp / pk */
+    pf->no_identity = true;
+    memset(&pf->fp, 0, sizeof(pf->fp));
+    memset(&pf->pk, 0, sizeof(pf->pk));
+    n = nodus_dht_ipc_encode_origin(pf, buf, NODUS_PK_BYTES + 512);
+    cbor_encoder_init(&enc, want, NODUS_PK_BYTES + 512);
+    cbor_encode_map(&enc, 6);
+    cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, "ds_origin");
+    cbor_encode_cstr(&enc, "v");  cbor_encode_uint(&enc, 1);
+    cbor_encode_cstr(&enc, "k");  cbor_encode_uint(&enc, 0);
+    cbor_encode_cstr(&enc, "s");  cbor_encode_uint(&enc, 3);
+    cbor_encode_cstr(&enc, "g");  cbor_encode_uint(&enc, 9);
+    cbor_encode_cstr(&enc, "b");  cbor_encode_bstr(&enc, pf->boot, NODUS_DHT_IPC_BOOT_LEN);
+    wn = cbor_encoder_len(&enc);
+    ok = ok && n == wn && n > 0 && memcmp(buf, want, n) == 0;
+    uint8_t zeros_pk[NODUS_PK_BYTES] = {0};
+    ok = ok && nodus_dht_ipc_decode(buf, n, msg, NULL, 0) == 0 &&
+         msg->type == NODUS_DHT_IPC_MSG_ORIGIN && msg->preface.no_identity &&
+         msg->preface.origin.kind == NODUS_DHT_ORIGIN_CLIENT &&
+         msg->preface.origin.slot == 3 && msg->preface.origin.gen == 9 &&
+         memcmp(msg->preface.pk.bytes, zeros_pk, NODUS_PK_BYTES) == 0;
+
+    /* a half form: fp only / pk only */
+    cbor_encoder_init(&enc, want, NODUS_PK_BYTES + 512);
+    cbor_encode_map(&enc, 7);
+    cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, "ds_origin");
+    cbor_encode_cstr(&enc, "v");  cbor_encode_uint(&enc, 1);
+    cbor_encode_cstr(&enc, "k");  cbor_encode_uint(&enc, 0);
+    cbor_encode_cstr(&enc, "s");  cbor_encode_uint(&enc, 3);
+    cbor_encode_cstr(&enc, "g");  cbor_encode_uint(&enc, 9);
+    cbor_encode_cstr(&enc, "b");  cbor_encode_bstr(&enc, pf->boot, NODUS_DHT_IPC_BOOT_LEN);
+    cbor_encode_cstr(&enc, "fp"); cbor_encode_bstr(&enc, g_id.node_id.bytes, NODUS_KEY_BYTES);
+    ok = ok && nodus_dht_ipc_decode(want, cbor_encoder_len(&enc), msg, NULL, 0) != 0;
+    cbor_encoder_init(&enc, want, NODUS_PK_BYTES + 512);
+    cbor_encode_map(&enc, 7);
+    cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, "ds_origin");
+    cbor_encode_cstr(&enc, "v");  cbor_encode_uint(&enc, 1);
+    cbor_encode_cstr(&enc, "k");  cbor_encode_uint(&enc, 0);
+    cbor_encode_cstr(&enc, "s");  cbor_encode_uint(&enc, 3);
+    cbor_encode_cstr(&enc, "g");  cbor_encode_uint(&enc, 9);
+    cbor_encode_cstr(&enc, "b");  cbor_encode_bstr(&enc, pf->boot, NODUS_DHT_IPC_BOOT_LEN);
+    cbor_encode_cstr(&enc, "pk"); cbor_encode_bstr(&enc, g_id.pk.bytes, NODUS_PK_BYTES);
+    ok = ok && nodus_dht_ipc_decode(want, cbor_encoder_len(&enc), msg, NULL, 0) != 0;
+
+    /* a no-identity INTER origin does not exist */
+    pf->origin.kind = NODUS_DHT_ORIGIN_INTER;
+    snprintf(pf->ip, sizeof(pf->ip), "10.0.0.1");
+    ok = ok && nodus_dht_ipc_encode_origin(pf, buf, NODUS_PK_BYTES + 512) == 0;
+    if (ok) PASS(); else FAIL("the no-identity preface is not the documented form");
+out:
+    free(pf);
+    free(buf);
+    free(want);
+    free(msg);
+}
+
+/* ... and the storage side: a session whose backend call carries no fp / pk
+ * gets the no-identity preface, the DHT refuses every legacy verb for it with
+ * NOT_AUTHENTICATED (put, listen here) — nothing is stored, no listener is
+ * recorded — while its shadow slot is open with the session's generation. */
+static void case_anon_origin(void) {
+    TEST("5b ANON origin: put and listen refused on the storage side");
+    nodus_dht_origin_t o = { NODUS_DHT_ORIGIN_CLIENT, 30, 11 };
+    B->ops->session_opened(B, o);
+
+    nodus_key_t key;
+    rand_key(&key);
+    nodus_value_t *v = mk_value(&key, 100, 1, 1);
+    if (!v) { FAIL("value"); return; }
+    uint8_t buf[8192];
+    size_t n = 0;
+    if (nodus_t2_put(121, g_token, &key, v->data, v->data_len,
+                     NODUS_VALUE_EPHEMERAL, NODUS_DEFAULT_TTL, 1, 1,
+                     &v->signature, buf, sizeof(buf), &n) != 0) {
+        nodus_value_free(v);
+        FAIL("encode put");
+        return;
+    }
+    nodus_value_free(v);
+    nodus_tier2_msg_t m;
+    memset(&m, 0, sizeof(m));
+    nodus_t2_decode(buf, n, &m);
+    B->ops->client_frame(B, 30, NULL, NULL, buf, n, &m);
+    nodus_t2_msg_free(&m);
+
+    const cap_t *c = NULL;
+    for (int i = 0; i < POLL_ROUNDS && !(c = find_cap(121, 0, 30)); i++)
+        pump_once(B);
+    if (!c) { FAIL("no reply at core"); return; }
+    if (c->type != 'e' || c->err_code != NODUS_ERR_NOT_AUTHENTICATED) {
+        FAIL("put on an ANON origin was not refused NOT_AUTHENTICATED");
+        return;
+    }
+    nodus_value_t *got = NULL;
+    if (nodus_storage_get(&D->storage, &key, &got) == 0 && got) {
+        nodus_value_free(got);
+        FAIL("the put was stored for a session with no identity");
+        return;
+    }
+
+    nodus_key_t lkey;
+    rand_key(&lkey);
+    if (nodus_t2_listen(122, g_token, &lkey, buf, sizeof(buf), &n) != 0) {
+        FAIL("encode listen");
+        return;
+    }
+    memset(&m, 0, sizeof(m));
+    nodus_t2_decode(buf, n, &m);
+    B->ops->client_frame(B, 30, NULL, NULL, buf, n, &m);
+    nodus_t2_msg_free(&m);
+    c = NULL;
+    for (int i = 0; i < POLL_ROUNDS && !(c = find_cap(122, 0, 30)); i++)
+        pump_once(B);
+    if (!c || c->type != 'e' || c->err_code != NODUS_ERR_NOT_AUTHENTICATED) {
+        FAIL("listen on an ANON origin was not refused NOT_AUTHENTICATED");
+        return;
+    }
+    if (!D->sessions[30].open || D->sessions[30].gen != 11 ||
+        D->sessions[30].listen_count != 0) {
+        FAIL("the ANON shadow is not open with its generation, or recorded a listener");
+        return;
+    }
     PASS();
 }
 
@@ -1493,6 +1657,8 @@ int main(void) {
     case_client_put();
     case_cross_origin();
     case_inter_preface();
+    case_anon_preface_codec();
+    case_anon_origin();
     case_udp_relay();
     case_decision32();
     case_control_down();

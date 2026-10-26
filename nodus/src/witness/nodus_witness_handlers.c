@@ -772,7 +772,7 @@ static void handle_dnac_utxo(nodus_witness_t *w,
                     "session not authenticated");
         return;
     }
-    if (pr->qa && memcmp(pr->o, owner_raw, NODUS_KEY_BYTES) != 0) {
+    if (pr->qa && !nodus_oq_subject_ok(pr->o, owner_raw)) {
         send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
                     "qa was signed for another owner");
         return;
@@ -1176,7 +1176,7 @@ static int msig_query_open(struct nodus_tcp_conn *conn,
     /* an ANON session: the signed `o` is the vault address this request names
      * (design 2026-10-26-dht-v2-3d-no-login-design.md §3) — then step c below
      * is the full G8.1 rule with the `qa` key as the member */
-    if (pr->qa && memcmp(pr->o, a->owner_raw, sizeof(a->owner_raw)) != 0) {
+    if (pr->qa && !nodus_oq_subject_ok(pr->o, a->owner_raw)) {
         send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
                    NODUS_WITNESS_MSIG_NOT_MEMBER);
         return -1;
@@ -1875,7 +1875,7 @@ static void handle_dnac_addr_history(nodus_witness_t *w,
     if (pr->qa) {
         uint8_t owner_raw[NODUS_KEY_BYTES];
         if (nodus_witness_owner_hex_to_raw(owner, 128, owner_raw) != 0 ||
-            memcmp(pr->o, owner_raw, sizeof(owner_raw)) != 0) {
+            !nodus_oq_subject_ok(pr->o, owner_raw)) {
             send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
                        "qa was signed for another owner");
             return;
@@ -2127,15 +2127,14 @@ static void handle_dnac_delegations(nodus_witness_t *w,
                     "session not authenticated");
         return;
     }
-    if (pr->qa) {
-        /* a zero pubkey names no owner: refused before anything is hashed */
-        uint8_t zacc = 0;
-        for (size_t zi = 0; zi < DNAC_PUBKEY_SIZE; zi++) zacc |= req_pubkey[zi];
-        if (zacc == 0) {
-            send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
-                        "pubkey must not be zero");
-            return;
-        }
+    uint8_t qa_subject[NODUS_OQ_O_LEN] = {0};
+    if (pr->qa &&
+        nodus_oq_delegations_subject(req_pubkey, req_pubkey_len,
+                                     qa_subject) != 0) {
+        /* a zero pubkey names no owner */
+        send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                    "pubkey must not be zero");
+        return;
     }
     {
         uint8_t fp_from_pubkey[QGP_SHA3_512_DIGEST_LENGTH];
@@ -2146,7 +2145,7 @@ static void handle_dnac_delegations(nodus_witness_t *w,
             return;
         }
         /* an ANON session: the signed `o` is SHA3-512 of this pubkey argument */
-        if (pr->qa && memcmp(pr->o, fp_from_pubkey, NODUS_KEY_BYTES) != 0) {
+        if (pr->qa && !nodus_oq_subject_ok(pr->o, qa_subject)) {
             send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
                         "qa was signed for another owner");
             return;

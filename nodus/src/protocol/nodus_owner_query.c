@@ -8,6 +8,7 @@
 #include "dht2/dht2_cbor.h"
 #include "dht2/dht2_envelope.h"
 #include "dht2/dht2_types.h"
+#include "crypto/hash/qgp_sha3.h"
 
 #include <string.h>
 
@@ -195,6 +196,23 @@ int nodus_oq_find(const uint8_t *frame, size_t frame_len,
     }
     if (dec.error) return -1;
     return found ? 0 : 1;
+}
+
+int nodus_oq_delegations_subject(const uint8_t *pubkey, size_t len,
+                                 uint8_t out[NODUS_OQ_O_LEN]) {
+    if (!pubkey || !out || len != NODUS_OQ_PK_LEN) return -1;
+    uint8_t acc = 0;
+    for (size_t i = 0; i < len; i++) acc |= pubkey[i];
+    if (acc == 0) return -1;
+    return qgp_sha3_512(pubkey, len, out) == 0 ? 0 : -1;
+}
+
+bool nodus_oq_subject_ok(const uint8_t o[NODUS_OQ_O_LEN],
+                         const uint8_t subject[NODUS_OQ_O_LEN]) {
+    if (!o || !subject) return false;
+    uint8_t diff = 0;
+    for (size_t i = 0; i < NODUS_OQ_O_LEN; i++) diff |= (uint8_t)(o[i] ^ subject[i]);
+    return diff == 0;
 }
 
 bool nodus_oq_method_takes_qa(const char *method) {

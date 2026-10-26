@@ -118,6 +118,27 @@ static void h_dispatch_dnac(void *ctx, nodus_tcp_conn_t *conn,
     nodus_tcp_send(conn, k_reply, sizeof(k_reply));
 }
 
+/* The ANON entry of the fake witness (DHT v2 package 3d): records what a
+ * no-identity session looks like to the witness. */
+static int               h_anon_calls = 0;
+static char              h_anon_method[64];
+static bool              h_anon_peer_set = true;
+static uint8_t           h_anon_t[NODUS_WITNESS_IPC_T_LEN];
+static nodus_tcp_conn_t *h_anon_conn = NULL;
+
+static void h_dispatch_dnac_anon(void *ctx, nodus_tcp_conn_t *conn,
+                                 const uint8_t t[NODUS_WITNESS_IPC_T_LEN],
+                                 const uint8_t *payload, size_t len,
+                                 const char *method, uint32_t txn_id) {
+    (void)ctx; (void)payload; (void)len; (void)txn_id;
+    h_anon_calls++;
+    snprintf(h_anon_method, sizeof(h_anon_method), "%s", method);
+    h_anon_peer_set = conn->peer_id_set;
+    memcpy(h_anon_t, t, sizeof(h_anon_t));
+    h_anon_conn = conn;
+    nodus_tcp_send(conn, k_reply, sizeof(k_reply));
+}
+
 static void h_cc_collect(void *ctx, nodus_tcp_conn_t *conn,
                          const uint8_t pk[NODUS_PK_BYTES],
                          const uint8_t token[NODUS_SESSION_TOKEN_LEN],
@@ -758,8 +779,259 @@ static void test_read_pending_op(void) {
     PASS();
 }
 
+/* ── DHT v2 package 3d: the no-identity preface ───────────────────── */
+
+static uint8_t g_t[NODUS_WITNESS_IPC_T_LEN];        /* a session transcript T */
+static uint8_t g_token_anon[NODUS_SESSION_TOKEN_LEN];
+
+/* An ANON session's request through core's backend: the witness sees NO
+ * principal (peer_id_set false, no key anywhere), and T and the method come
+ * through; the identified handler is never called; the reply reaches the
+ * client; the witness cannot find the session by any key. */
+static void test_anon_roundtrip(nodus_chain_backend_t *b,
+                                nodus_witness_ipc_t *ipc) {
+    TEST("ANON: no-identity preface; witness sees no principal, T and method");
+    uint8_t frame[256];
+    size_t n = t2_query(31, "dnac_utxo", frame, sizeof(frame));
+    if (n == 0) { FAIL("encode"); return; }
+    int frames_before = cli_frames;
+    int ident_before = h_dnac_calls;
+    int anon_before = h_anon_calls;
+    b->ops->dispatch_dnac_anon(b, g_client_conn, g_token_anon, g_t, frame, n,
+                               "dnac_utxo", 31);
+    for (int i = 0; i < POLL_ROUNDS &&
+                    (h_anon_calls == anon_before || cli_frames <= frames_before); i++)
+        poll_all(b, ipc);
+
+    if (h_anon_calls != anon_before + 1) { FAIL("the ANON handler was not reached"); return; }
+    if (h_dnac_calls != ident_before) { FAIL("the identified handler served an ANON session"); return; }
+    if (strcmp(h_anon_method, "dnac_utxo") != 0) { FAIL("method"); return; }
+    if (h_anon_peer_set) { FAIL("a principal was installed for the ANON connection"); return; }
+    if (memcmp(h_anon_t, g_t, sizeof(g_t)) != 0) { FAIL("T did not arrive intact"); return; }
+    if (cli_frames != frames_before + 1 || cli_last_len != sizeof(k_reply) ||
+        memcmp(cli_last, k_reply, sizeof(k_reply)) != 0) {
+        FAIL("reply did not reach the client unchanged");
+        return;
+    }
+    /* no key finds it: not the zero key, not any key */
+    uint8_t zero_pk[NODUS_PK_BYTES];
+    memset(zero_pk, 0, sizeof(zero_pk));
+    if (nodus_witness_ipc_find_session_conn(ipc, zero_pk, g_token_anon) != NULL ||
+        nodus_witness_ipc_find_session_conn(ipc, g_pk, g_token_anon) != NULL) {
+        FAIL("an ANON session is findable by a key");
+        return;
+    }
+    PASS();
+}
+
+/* An ANON session never reaches cc_collect, and never a method outside
+ * dnac_* / evm_*: the witness closes that session socket and serves nothing;
+ * the next ANON request (a new socket) is served again. */
+static void test_anon_refusals(nodus_chain_backend_t *b,
+                               nodus_witness_ipc_t *ipc) {
+    TEST("ANON: dnac_cc_collect / non-chain method close the socket, serve nothing");
+    uint8_t frame[256];
+    const char *bad[2] = { "dnac_cc_collect", "put" };
+    for (int k = 0; k < 2; k++) {
+        size_t n = t2_query(32 + (uint32_t)k, bad[k], frame, sizeof(frame));
+        if (n == 0) { FAIL("encode"); return; }
+        int anon_before = h_anon_calls, cc_before = h_cc_calls, ident_before = h_dnac_calls;
+        b->ops->dispatch_dnac_anon(b, g_client_conn, g_token_anon, g_t, frame, n,
+                                   bad[k], 32 + (uint32_t)k);
+        for (int i = 0; i < 60; i++) poll_all(b, ipc);
+        if (h_anon_calls != anon_before || h_cc_calls != cc_before ||
+            h_dnac_calls != ident_before) {
+            FAIL("a refused ANON method was served");
+            return;
+        }
+    }
+    int anon_before = h_anon_calls;
+    size_t n = t2_query(34, "dnac_balance", frame, sizeof(frame));
+    b->ops->dispatch_dnac_anon(b, g_client_conn, g_token_anon, g_t, frame, n,
+                               "dnac_balance", 34);
+    for (int i = 0; i < POLL_ROUNDS && h_anon_calls == anon_before; i++)
+        poll_all(b, ipc);
+    if (h_anon_calls != anon_before + 1) { FAIL("the next ANON request was not served"); return; }
+    b->ops->session_closed(b, g_client_conn);
+    for (int i = 0; i < 30; i++) poll_all(b, ipc);
+    PASS();
+}
+
+/* Raw prefaces to the witness's own socket: the no-identity form binds an
+ * ANON session; every malformed or key-less identified form is closed. */
+static size_t raw_hello(uint8_t *buf, size_t cap, bool pk, const uint8_t *pkv,
+                        bool tk, bool ts) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    cbor_encode_map(&enc, 1 + (pk ? 1 : 0) + (tk ? 1 : 0) + (ts ? 1 : 0));
+    cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, NODUS_WITNESS_IPC_Q_HELLO);
+    if (pk) { cbor_encode_cstr(&enc, "pk"); cbor_encode_bstr(&enc, pkv, NODUS_PK_BYTES); }
+    if (tk) { cbor_encode_cstr(&enc, "tk"); cbor_encode_bstr(&enc, g_token_anon, NODUS_SESSION_TOKEN_LEN); }
+    if (ts) { cbor_encode_cstr(&enc, "ts"); cbor_encode_bstr(&enc, g_t, NODUS_WITNESS_IPC_T_LEN); }
+    return cbor_encoder_len(&enc);
+}
+
+static void test_anon_raw_prefaces(nodus_witness_ipc_t *ipc, const char *sock) {
+    TEST("raw prefaces: tk+ts binds ANON; zero pk, pk+ts, tk alone are closed");
+    uint8_t hello[NODUS_PK_BYTES + 256], frame[256], zero_pk[NODUS_PK_BYTES];
+    memset(zero_pk, 0, sizeof(zero_pk));
+    size_t fn = t2_query(35, "dnac_balance", frame, sizeof(frame));
+    struct { bool pk; const uint8_t *pkv; bool tk, ts, accepted; } c[4] = {
+        { false, NULL,    true,  true,  true  },   /* the no-identity form   */
+        { true,  zero_pk, true,  false, false },   /* a zero key stands in   */
+        { true,  g_pk,    true,  true,  false },   /* a key and a transcript */
+        { false, NULL,    true,  false, false },   /* neither                */
+    };
+    for (int k = 0; k < 4; k++) {
+        nodus_tcp_init(&g_raw, -1);
+        g_raw.on_disconnect = raw_on_disconnect;
+        raw_disconnects = 0;
+        nodus_tcp_conn_t *rc = nodus_tcp_unix_connect(&g_raw, sock, NODUS_TCP_UNIX_UID_SELF);
+        size_t hn = raw_hello(hello, sizeof(hello), c[k].pk, c[k].pkv, c[k].tk, c[k].ts);
+        if (!rc || hn == 0 || nodus_tcp_send(rc, hello, hn) != 0 ||
+            nodus_tcp_send(rc, frame, fn) != 0) {
+            nodus_tcp_close(&g_raw);
+            FAIL("raw send");
+            return;
+        }
+        int anon_before = h_anon_calls, ident_before = h_dnac_calls;
+        for (int i = 0; i < 80 &&
+                        !(c[k].accepted ? h_anon_calls > anon_before : raw_disconnects > 0); i++) {
+            nodus_witness_ipc_poll(ipc, 5);
+            nodus_tcp_poll(&g_raw, 5);
+        }
+        bool served_anon = h_anon_calls == anon_before + 1;
+        bool served_ident = h_dnac_calls != ident_before;
+        bool closed = raw_disconnects > 0;
+        nodus_tcp_close(&g_raw);
+        if (served_ident || (c[k].accepted ? (!served_anon || h_anon_peer_set) :
+                                             (served_anon || !closed))) {
+            printf("[case %d] ", k);
+            FAIL("preface handled wrongly");
+            return;
+        }
+    }
+    PASS();
+}
+
+/* What core's backend writes as the session preface: a fake witness socket
+ * captures the first frame of every connection. The identified form is
+ * byte-identical to what it was (an independent encoder here); the ANON form
+ * is exactly {q, tk, ts}; a request with no key and no T dials NOTHING (no
+ * zero key is ever written) and is answered the decision-20 error. */
+static nodus_tcp_t g_fake;
+static uint8_t     g_first[4][NODUS_PK_BYTES + 512];
+static size_t      g_first_len[4];
+static int         g_nfirst = 0;
+static bool        g_seen_slot[NODUS_TCP_MAX_CONNS];
+
+static void fake_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
+                          size_t len, void *ctx) {
+    (void)ctx;
+    if (conn->slot < 0 || conn->slot >= NODUS_TCP_MAX_CONNS || g_seen_slot[conn->slot])
+        return;
+    g_seen_slot[conn->slot] = true;
+    if (g_nfirst < 4 && len <= sizeof(g_first[0])) {
+        memcpy(g_first[g_nfirst], payload, len);
+        g_first_len[g_nfirst++] = len;
+    }
+}
+
+static void fake_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
+    (void)ctx;
+    if (conn->slot >= 0 && conn->slot < NODUS_TCP_MAX_CONNS)
+        g_seen_slot[conn->slot] = false;
+}
+
+static void test_core_prefaces(void) {
+    TEST("core's prefaces: identified bytes unchanged; ANON = {q,tk,ts}; no zero key");
+    char path[NODUS_TCP_UNIX_PATH_MAX];
+    if (nodus_witness_ipc_sock_path(g_dir2, path, sizeof(path)) != 0) { FAIL("path"); return; }
+    nodus_tcp_init(&g_fake, -1);
+    g_fake.on_frame = fake_on_frame;
+    g_fake.on_disconnect = fake_on_disconnect;
+    g_nfirst = 0;
+    memset(g_seen_slot, 0, sizeof(g_seen_slot));
+    if (nodus_tcp_unix_listen(&g_fake, path, NODUS_TCP_UNIX_UID_SELF) != 0) {
+        FAIL("fake witness listen");
+        return;
+    }
+    nodus_chain_backend_t *b2 = NULL;
+    if (nodus_chain_backend_ipc_open(g_dir2, &b2) != 0 || !b2) {
+        nodus_tcp_close(&g_fake);
+        FAIL("backend open");
+        return;
+    }
+    uint8_t frame[256];
+    size_t fn = t2_query(41, "dnac_test", frame, sizeof(frame));
+    /* the control connection first (its first frame is {q: ipc_ctl}) */
+    for (int i = 0; i < POLL_ROUNDS && g_nfirst < 1; i++) {
+        b2->ops->tick(b2);
+        nodus_tcp_poll(&g_fake, 5);
+        nodus_tcp_poll(&g_front, 1);
+        nodus_tcp_poll(&g_cli, 1);
+    }
+    int ok = g_nfirst >= 1;
+    /* identified */
+    b2->ops->dispatch_dnac(b2, g_client_conn, g_pk, g_token, frame, fn, "dnac_test", 41);
+    for (int i = 0; ok && i < POLL_ROUNDS && g_nfirst < 2; i++) {
+        b2->ops->tick(b2);
+        nodus_tcp_poll(&g_fake, 5);
+    }
+    ok = ok && g_nfirst >= 2;
+    /* ANON (the same client slot, another token: the first socket closes) */
+    b2->ops->dispatch_dnac_anon(b2, g_client_conn, g_token_anon, g_t, frame, fn,
+                                "dnac_utxo", 42);
+    for (int i = 0; ok && i < POLL_ROUNDS && g_nfirst < 3; i++) {
+        b2->ops->tick(b2);
+        nodus_tcp_poll(&g_fake, 5);
+    }
+    ok = ok && g_nfirst >= 3;
+    /* no key and no T: nothing is dialled, the client gets the decision-20 error */
+    int dialled = g_nfirst;
+    int frames_before = cli_frames;
+    b2->ops->dispatch_dnac(b2, g_client_conn, NULL, g_token, frame, fn, "dnac_test", 43);
+    for (int i = 0; i < 60; i++) {
+        b2->ops->tick(b2);
+        nodus_tcp_poll(&g_fake, 2);
+        nodus_tcp_poll(&g_front, 2);
+        nodus_tcp_poll(&g_cli, 2);
+    }
+    uint8_t want_err[256];
+    size_t want_len = 0;
+    nodus_t2_error(43, NODUS_ERR_PROTOCOL_ERROR, NODUS_CHAIN_NO_WITNESS_MSG,
+                   want_err, sizeof(want_err), &want_len);
+    ok = ok && g_nfirst == dialled && cli_frames == frames_before + 1 &&
+         cli_last_len == want_len && memcmp(cli_last, want_err, want_len) == 0;
+
+    if (ok) {
+        uint8_t want[NODUS_PK_BYTES + 256];
+        cbor_encoder_t enc;
+        cbor_encoder_init(&enc, want, sizeof(want));
+        cbor_encode_map(&enc, 3);                       /* identified: q, pk, tk */
+        cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, "ipc_hello");
+        cbor_encode_cstr(&enc, "pk"); cbor_encode_bstr(&enc, g_pk, NODUS_PK_BYTES);
+        cbor_encode_cstr(&enc, "tk"); cbor_encode_bstr(&enc, g_token, NODUS_SESSION_TOKEN_LEN);
+        size_t wl = cbor_encoder_len(&enc);
+        ok = wl == g_first_len[1] && memcmp(want, g_first[1], wl) == 0;
+
+        cbor_encoder_init(&enc, want, sizeof(want));
+        cbor_encode_map(&enc, 3);                       /* ANON: q, tk, ts */
+        cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, "ipc_hello");
+        cbor_encode_cstr(&enc, "tk"); cbor_encode_bstr(&enc, g_token_anon, NODUS_SESSION_TOKEN_LEN);
+        cbor_encode_cstr(&enc, "ts"); cbor_encode_bstr(&enc, g_t, NODUS_WITNESS_IPC_T_LEN);
+        wl = cbor_encoder_len(&enc);
+        ok = ok && wl == g_first_len[2] && memcmp(want, g_first[2], wl) == 0;
+    }
+    b2->ops->close(b2);
+    nodus_tcp_close(&g_fake);
+    if (ok) PASS(); else FAIL("a session preface differs from the documented bytes");
+}
+
 int main(void) {
     printf("test_witness_ipc:\n");
+    for (int i = 0; i < NODUS_WITNESS_IPC_T_LEN; i++) g_t[i] = (uint8_t)(0xC3 ^ (i * 5));
+    for (int i = 0; i < NODUS_SESSION_TOKEN_LEN; i++) g_token_anon[i] = (uint8_t)(0xA7 + i);
 
     snprintf(g_dir, sizeof(g_dir), "/tmp/nodus_wipc_XXXXXX");
     snprintf(g_dir2, sizeof(g_dir2), "/tmp/nodus_wipc2_XXXXXX");
@@ -778,6 +1050,7 @@ int main(void) {
     /* The witness side. */
     nodus_witness_ipc_handlers_t h = {
         .dispatch_dnac = h_dispatch_dnac,
+        .dispatch_dnac_anon = h_dispatch_dnac_anon,
         .cc_collect    = h_cc_collect,
         .status        = h_status,
         .roles         = h_roles,
@@ -827,8 +1100,12 @@ int main(void) {
     test_token_not_authorization(b, ipc);
     test_cc_collect(b, ipc);
     test_session_closed(b, ipc);
+    test_anon_roundtrip(b, ipc);
+    test_anon_refusals(b, ipc);
+    test_anon_raw_prefaces(ipc, wsock);
     test_non_preface(ipc, wsock);
     test_session_bound(b, ipc);
+    test_core_prefaces();
 
     b->ops->close(b);
     nodus_witness_ipc_free(ipc);

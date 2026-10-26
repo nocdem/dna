@@ -123,6 +123,19 @@ int nodus_oq_find(const uint8_t *frame, size_t frame_len,
 /** The five owner-only chain reads that take `qa` (exact method names). */
 bool nodus_oq_method_takes_qa(const char *method);
 
+/** The `o` of dnac_delegations: SHA3-512 of the request's `pubkey` argument.
+ *  @return 0 and `out` set; -1 for a pubkey that is not exactly
+ *  NODUS_OQ_PK_LEN bytes or is all zero (a zero key names no owner). */
+int nodus_oq_delegations_subject(const uint8_t *pubkey, size_t len,
+                                 uint8_t out[NODUS_OQ_O_LEN]);
+
+/** A verified `qa`'s `o` names `subject` — the per-method value the request
+ *  itself carries (the hex-decoded `owner` of dnac_utxo / dnac_addr_history,
+ *  the vault address of the two msig reads, nodus_oq_delegations_subject of
+ *  dnac_delegations). Constant-time compare of 64 bytes. */
+bool nodus_oq_subject_ok(const uint8_t o[NODUS_OQ_O_LEN],
+                         const uint8_t subject[NODUS_OQ_O_LEN]);
+
 #ifdef __cplusplus
 }
 #endif

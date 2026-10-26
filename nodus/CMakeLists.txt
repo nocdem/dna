@@ -1944,6 +1944,23 @@ add_executable(test_rpc_front_door tests/test_rpc_front_door.c)
 target_link_libraries(test_rpc_front_door nodus dsa kem nodus)
 add_test(NAME test_rpc_front_door COMMAND test_rpc_front_door)
 
+# DHT v2 package 3d (design 2026-10-26-dht-v2-3d-no-login-design.md): the
+# no-login (ANON) client session on the server — the allowlist
+# (nodus_server_anon_method_ok), the session table's treatment of a session
+# with no principal, and nodus_auth_session_start on a REAL ANON connection
+# (loopback, ephemeral port). Default build, no environment.
+add_executable(test_anon_dispatch tests/test_anon_dispatch.c)
+target_link_libraries(test_anon_dispatch nodus dsa kem nodus crypto pthread)
+add_test(NAME test_anon_dispatch COMMAND test_anon_dispatch)
+
+# DHT v2 package 3d: the owner-signed chain query `qa` (RFC 0002 envelope,
+# nodus/src/protocol/nodus_owner_query.c): accept, every reject by its own
+# result, the top-level field lookup, and the per-method `o` / membership
+# rules. Pure (no sockets, no files). Default build, no environment.
+add_executable(test_owner_query tests/test_owner_query.c)
+target_link_libraries(test_owner_query nodus dsa kem nodus crypto)
+add_test(NAME test_owner_query COMMAND test_owner_query)
+
 # Component split S2: the transport's Unix domain socket entry (decision
 # 2026-10-01-nodus-component-split item 7) — socket file mode 0600, frame
 # round-trip both ways, SO_PEERCRED refusal of a wrong uid (real accept
