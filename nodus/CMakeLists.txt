@@ -1678,6 +1678,14 @@ add_executable(test_chain_id_v3 tests/test_chain_id_v3.c)
 target_link_libraries(test_chain_id_v3 nodus dsa kem nodus)
 add_test(NAME test_chain_id_v3 COMMAND test_chain_id_v3)
 
+# DHT v2 3b-2 round 5: nodes with an active on-chain role are exempt from the
+# per-IP handshake rate (credited back on proof) and the per-IP connection cap;
+# loopback is exempt from the rate (decisions/2026-10-24-dht-v2-handshake-rate.md
+# addendum 2026-10-26).
+add_executable(test_role_exempt tests/test_role_exempt.c)
+target_link_libraries(test_role_exempt nodus dsa kem nodus)
+add_test(NAME test_role_exempt COMMAND test_role_exempt)
+
 # DHT v2 3b-2 fix round: a REAL forwarded read over the node session (batch
 # forward sends its get_batch after opening the send gate), and a send the
 # transport diverts to its queue-full fallback is not reported WRITTEN.

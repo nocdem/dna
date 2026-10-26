@@ -284,9 +284,16 @@ static int witness_h_dht_name(void *ctx, const uint8_t fp[64],
     return nodus_witness_dht_name_fill((nodus_witness_t *)ctx, fp, out);
 }
 
+static int witness_h_roles(void *ctx, uint8_t (*fps)[64], uint32_t max,
+                           uint32_t *n) {
+    nodus_witness_t *w = (nodus_witness_t *)ctx;
+    return w->p2p ? nodus_witness_p2p_roles_fill(w->p2p, fps, max, n) : -1;
+}
+
 void nodus_witness_ipc_handlers_for(nodus_witness_t *w,
                                     nodus_witness_ipc_handlers_t *out) {
     memset(out, 0, sizeof(*out));
+    out->roles         = witness_h_roles;
     out->dispatch_dnac = witness_h_dispatch_dnac;
     out->cc_collect    = witness_h_cc_collect;
     out->status        = witness_h_status;
@@ -461,6 +468,39 @@ static void ipc_on_session_frame(nodus_witness_ipc_t *ipc, ipc_slot_t *s,
     nodus_t2_msg_free(&msg);
 }
 
+/* {"q":"ipc_roles","fp":<n*64 bytes>} or {"q":"ipc_roles","err":why}: the
+ * active-role set for core's per-IP exemption. A handler that is not bound
+ * closes the asker (like the dht_* callbacks). */
+static void ipc_answer_roles(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn) {
+    if (!ipc->h.roles) {
+        ipc_refuse(ipc, conn, "ipc_roles has no handler");
+        return;
+    }
+    uint8_t (*fps)[64] = malloc((size_t)NODUS_WITNESS_IPC_ROLES_MAX * 64);
+    uint32_t n = 0;
+    size_t cap = (size_t)NODUS_WITNESS_IPC_ROLES_MAX * 64 + 64;
+    uint8_t *buf = malloc(cap);
+    if (!fps || !buf) {
+        free(fps);
+        free(buf);
+        return;
+    }
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "q"); cbor_encode_cstr(&enc, NODUS_WITNESS_IPC_Q_ROLES);
+    if (ipc->h.roles(ipc->h.ctx, fps, NODUS_WITNESS_IPC_ROLES_MAX, &n) == 0) {
+        cbor_encode_cstr(&enc, "fp"); cbor_encode_bstr(&enc, (const uint8_t *)fps, (size_t)n * 64);
+    } else {
+        cbor_encode_cstr(&enc, "err"); cbor_encode_cstr(&enc, "roles unavailable");
+    }
+    size_t len = cbor_encoder_len(&enc);
+    if (len > 0)
+        nodus_tcp_send(conn, buf, len);
+    free(fps);
+    free(buf);
+}
+
 static void ipc_on_ctl_frame(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn,
                              const uint8_t *payload, size_t len) {
     char q[32];
@@ -468,9 +508,14 @@ static void ipc_on_ctl_frame(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn,
     uint8_t pk[NODUS_PK_BYTES];
     uint8_t tk[NODUS_SESSION_TOKEN_LEN];
 
+    if (ipc_parse_ctl(payload, len, q, &has_pk, pk, &has_tk, tk) == 0 &&
+        strcmp(q, NODUS_WITNESS_IPC_Q_ROLES) == 0 && !has_pk && !has_tk) {
+        ipc_answer_roles(ipc, conn);
+        return;
+    }
     if (ipc_parse_ctl(payload, len, q, &has_pk, pk, &has_tk, tk) != 0 ||
         strcmp(q, NODUS_WITNESS_IPC_Q_STATUS) != 0 || has_pk || has_tk) {
-        ipc_refuse(ipc, conn, "control frame is not ipc_status");
+        ipc_refuse(ipc, conn, "control frame is not ipc_status or ipc_roles");
         return;
     }
 

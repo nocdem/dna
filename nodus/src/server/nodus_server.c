@@ -66,6 +66,21 @@ static nodus_session_t *session_for_conn(nodus_server_t *srv,
     return &srv->sessions[conn->slot];
 }
 
+/* Operator addendum 2026-10-26 (decisions/2026-10-24-dht-v2-handshake-rate.md):
+ * a node active in ANY role is exempt from the per-IP limits. Called when a
+ * session became AUTHENTICATED, with the key the layer PROVED (conn->peer_id):
+ * if the chain backend says that identity has an active role, its handshake
+ * attempt is credited back and it stops counting toward the connection cap
+ * (nodus_tcp_role_exempt). An unbonded peer cannot claim this — the lookup is
+ * by the proven key. Unknown set / no backend: nothing is credited (the limit
+ * applies as before). */
+static void session_role_exempt(nodus_server_t *srv, nodus_tcp_t *tcp,
+                                nodus_tcp_conn_t *conn) {
+    if (srv->chain && srv->chain->ops->has_role && conn->peer_id_set &&
+        srv->chain->ops->has_role(srv->chain, &conn->peer_id))
+        nodus_tcp_role_exempt(tcp, conn);
+}
+
 static nodus_inter_session_t *inter_session_for_conn(nodus_server_t *srv,
                                                       nodus_tcp_conn_t *conn) {
     if (!conn || conn->slot < 0 || conn->slot >= NODUS_MAX_INTER_SESSIONS)
@@ -1334,6 +1349,7 @@ static void on_inter_session(nodus_tcp_conn_t *conn, void *ctx) {
             return;
         }
     }
+    session_role_exempt(srv, &srv->inter_tcp, conn);
     nodus_inter_dial_conn_open(conn);
 }
 
@@ -1764,8 +1780,11 @@ static void on_tcp_accept(nodus_tcp_conn_t *conn, void *ctx) {
 static void on_tcp_session(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_server_t *srv = (nodus_server_t *)ctx;
     nodus_session_t *sess = session_for_conn(srv, conn);
-    if (!sess || sess->conn != conn || nodus_auth_session_start(srv, sess) != 0)
+    if (!sess || sess->conn != conn || nodus_auth_session_start(srv, sess) != 0) {
         nodus_tcp_disconnect(&srv->tcp, conn);
+        return;
+    }
+    session_role_exempt(srv, &srv->tcp, conn);
 }
 
 static void on_tcp_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,

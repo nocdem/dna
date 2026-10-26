@@ -531,6 +531,84 @@ bool nodus_witness_p2p_bonded_at(nodus_witness_p2p_t *p, int i,
     return true;
 }
 
+/*
+ * ACTIVE-ROLE set (operator decisions 2026-10-24 addendum 2026-10-26: "a node
+ * active in ANY role is exempt from ALL of the per-IP limits" of the 4001 /
+ * WS / 4002 accept). It is the bonded set above (validators ACTIVE or
+ * ELIGIBLE, tip ± 1 committees, the frozen S(H) / S(H − E) members — reused
+ * as it is, not re-derived) UNION the storage registry rows ACTIVE or
+ * EXITING (v2_storage_nodes.status 1 / 2), by node_fp. The registry rows are
+ * added HERE and not to the bonded set because the bonded set is the 4004
+ * admission rule, decided by membership and not by status (a newly ACTIVE
+ * row is not a member until the next boundary — header, BONDED SET), and
+ * 4004 must not change. Output: SHA3-512 fingerprints of the public keys
+ * (node ids), the key a proven session is looked up by. -1 when the set
+ * does not fit `max` or the registry cannot be read (the caller treats the
+ * set as UNKNOWN — nothing is exempted).
+ */
+int nodus_witness_p2p_roles_fill(nodus_witness_p2p_t *p, uint8_t (*fps)[64],
+                                 uint32_t max, uint32_t *n_out)
+{
+    uint32_t n = 0;
+    int i;
+
+    if (p == NULL || fps == NULL || n_out == NULL) {
+        return -1;
+    }
+    for (i = 0; i < p->n_bonded; i++) {
+        nodus_pubkey_t pub;
+        nodus_key_t fp;
+
+        if (n >= max) {
+            return -1;
+        }
+        memcpy(pub.bytes, p->bonded[i].pk, NODUS_PK_BYTES);
+        if (nodus_fingerprint(&pub, &fp) != 0) {
+            return -1;
+        }
+        memcpy(fps[n++], fp.bytes, 64);
+    }
+    if (p->w != NULL && p->w->db != NULL) {
+        sqlite3_stmt *st = NULL;
+        int rc;
+
+        if (sqlite3_prepare_v2(p->w->db,
+                               "SELECT node_fp FROM v2_storage_nodes "
+                               "WHERE status IN (?1, ?2)",
+                               -1, &st, NULL) != SQLITE_OK) {
+            return -1;
+        }
+        sqlite3_bind_int(st, 1, (int)DNA_V2_STORAGE_ACTIVE);
+        sqlite3_bind_int(st, 2, (int)DNA_V2_STORAGE_EXITING);
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            uint32_t j;
+            const uint8_t *f = (const uint8_t *)sqlite3_column_blob(st, 0);
+            bool dup = false;
+
+            if (sqlite3_column_bytes(st, 0) != 64 || f == NULL) {
+                continue;
+            }
+            for (j = 0; j < n && !dup; j++) {
+                dup = memcmp(fps[j], f, 64) == 0;
+            }
+            if (dup) {
+                continue;
+            }
+            if (n >= max) {
+                sqlite3_finalize(st);
+                return -1;
+            }
+            memcpy(fps[n++], f, 64);
+        }
+        sqlite3_finalize(st);
+        if (rc != SQLITE_DONE) {
+            return -1;
+        }
+    }
+    *n_out = n;
+    return 0;
+}
+
 static bool h_is_bonded(void *ctx, const char *id)
 {
     return nodus_witness_p2p_is_bonded((nodus_witness_p2p_t *)ctx, id);

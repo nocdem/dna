@@ -28,6 +28,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "nodus/nodus_types.h"
 #include "protocol/nodus_tier2.h"           /* nodus_t2_status_info_t */
@@ -48,6 +49,30 @@ struct nodus_tcp_conn;
 #define NODUS_CHAIN_NO_WITNESS_MSG  "witness module not enabled"
 
 typedef struct nodus_chain_backend nodus_chain_backend_t;
+
+/* The active-role set a backend keeps (the node ids of every identity with an
+ * active on-chain role). A set older than NODUS_ROLE_SET_STALE_MS is unknown:
+ * nothing is exempted from it (fail safe). */
+#define NODUS_ROLE_SET_MAX       2048u
+#define NODUS_ROLE_SET_STALE_MS  30000u
+#define NODUS_ROLE_SET_EVERY_MS  10000u
+typedef struct {
+    uint8_t (*fps)[64];     /* NODUS_ROLE_SET_MAX entries, heap, owned */
+    uint32_t n;
+    bool     known;
+    uint64_t at_ms;         /* nodus_time_mono_ms() when it was taken */
+} nodus_role_set_t;
+
+/** `node_id` is in a known, fresh `s` as of `now_ms` (monotonic). */
+static inline bool nodus_role_set_has(const nodus_role_set_t *s,
+                                      const nodus_key_t *node_id,
+                                      uint64_t now_ms) {
+    if (!s || !s->known || !s->fps || !node_id) return false;
+    if (now_ms - s->at_ms > NODUS_ROLE_SET_STALE_MS) return false;
+    for (uint32_t i = 0; i < s->n; i++)
+        if (memcmp(s->fps[i], node_id->bytes, 64) == 0) return true;
+    return false;
+}
 
 typedef struct {
     /** One pass of the chain's own work (the 4004 p2p host and the
@@ -100,6 +125,16 @@ typedef struct {
                        const uint8_t token[NODUS_SESSION_TOKEN_LEN],
                        const uint8_t *payload, size_t len,
                        uint32_t txn_id);
+
+    /** true when `node_id` (the SHA3-512 fingerprint of a PROVEN public key)
+     *  has an active on-chain role — the bonded set plus the storage
+     *  registry rows ACTIVE / EXITING (nodus_witness_p2p_roles_fill). Used to
+     *  exempt that node from the per-IP limits of 4001 / WS / 4002
+     *  (decisions/2026-10-24-dht-v2-handshake-rate.md addendum 2026-10-26).
+     *  FAIL SAFE: false whenever the set is not known (no chain, witness not
+     *  answering, set older than NODUS_ROLE_SET_STALE_MS, set over its
+     *  bound). May be NULL (= false). */
+    bool (*has_role)(nodus_chain_backend_t *b, const nodus_key_t *node_id);
 
     /** The client session in `conn`'s slot ended (disconnect, eviction,
      *  idle sweep) or that slot starts a new session — called where the

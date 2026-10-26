@@ -12584,6 +12584,25 @@ scheduling, never a consensus input.
   after `X-Forwarded-For` and after its own concurrency limit (`:1956-1963`). Dials this
   node makes are never counted. `hs_rate_per_min` 0 = off (the default of a bare
   `nodus_tcp_t`).
+- **Exemptions (operator addendum 2026-10-26: "a node active in ANY role is exempt from ALL
+  of these").** (1) Loopback (127.0.0.0/8, ::1, ::ffff:127.x) is never counted by the rate
+  (`nodus_tcp_ip_is_loopback`; the harness runs every node and tool on 127.0.0.1); the
+  concurrent cap still applies to it. (2) Every accept still counts, and the connection
+  remembers its bucket and window (`conn->hs_bucket`, `hs_window_ms`, `hs_counted`). When the
+  session becomes AUTHENTICATED and the PROVEN key (conn->peer_id) has an active on-chain
+  role, the server calls `nodus_tcp_role_exempt`: the attempt is credited back (only into the
+  window it was counted in) and the connection is marked `role_exempt`, which both
+  per-IP accept loops skip — so a role-holding node neither runs out of rate nor counts toward
+  the 20-per-IP cap. The pre-proof limits (15 s / 30 s, sealed-input budget) still apply to
+  its handshake. An unbonded peer cannot claim this: the lookup is by the proven key. (3) The
+  ACTIVE-ROLE set is the 4004 bonded set (validators ACTIVE / ELIGIBLE, tip ± 1 committees,
+  S(H) / S(H − E) members — reused, not re-derived) UNION the storage registry rows ACTIVE /
+  EXITING (`nodus_witness_p2p_roles_fill`; the registry rows are added there and not to the
+  4004 set, which is decided by membership and must not change). Core reads it through the
+  chain backend op `has_role`: in-process from the witness' p2p host (cached 10 s), in the split
+  over the new control query `ipc_roles` (core asks every 10 s; answer `fp` = n × 64-byte node
+  ids, ≤ 2048, or `err`; an internal key — core and nodus-witness deploy together). FAIL SAFE:
+  an unknown, stale (> 30 s) or over-bound set exempts nobody (`nodus_role_set_has`).
 - **Unchanged:** 20 plain + 20 WS connections per IP; the handshake worker queues 64 + 64
   (`NODUS_TCP_SC_JOBQ_OUT` / `_IN`); no one-connection-per-IP rule (NAT, tabs).
 

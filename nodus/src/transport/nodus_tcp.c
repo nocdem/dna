@@ -1655,9 +1655,52 @@ int nodus_ws_ip_bucket(const char *ip, nodus_ws_ip_bucket_t *out) {
     return -1;
 }
 
+static bool hs_rate_check(nodus_tcp_t *tcp, const nodus_ws_ip_bucket_t *who,
+                          uint64_t now_mono_ms, uint64_t *window_out);
+
 bool nodus_tcp_hs_rate_allow(nodus_tcp_t *tcp, const nodus_ws_ip_bucket_t *who,
                              uint64_t now_mono_ms) {
+    return hs_rate_check(tcp, who, now_mono_ms, NULL);
+}
+
+bool nodus_tcp_ip_is_loopback(const char *ip) {
+    if (!ip) return false;
+    return strncmp(ip, "127.", 4) == 0 || strcmp(ip, "::1") == 0 ||
+           strncmp(ip, "::ffff:127.", 11) == 0;
+}
+
+/* Count one accept from `ip` / `who` at `now`: loopback is never counted;
+ * otherwise the rate decides and the conn remembers bucket + window, so a
+ * later proof of an active role can credit it back. false = refuse. */
+static bool hs_count_accept(nodus_tcp_t *tcp, const char *ip,
+                            const nodus_ws_ip_bucket_t *who, uint64_t now,
+                            bool *counted, uint64_t *window) {
+    *counted = false;
+    if (tcp->hs_rate_per_min == 0 || nodus_tcp_ip_is_loopback(ip)) return true;
+    if (!hs_rate_check(tcp, who, now, window)) return false;
+    *counted = true;
+    return true;
+}
+
+void nodus_tcp_role_exempt(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    if (!tcp || !conn || conn->role_exempt) return;
+    conn->role_exempt = true;
+    if (!conn->hs_counted) return;
+    conn->hs_counted = false;
+    for (int i = 0; i < NODUS_TCP_HS_RATE_TABLE; i++) {
+        if (tcp->hs_rate[i].used &&
+            memcmp(&tcp->hs_rate[i].who, &conn->hs_bucket, sizeof(conn->hs_bucket)) == 0) {
+            if (tcp->hs_rate[i].start_ms == conn->hs_window_ms && tcp->hs_rate[i].count > 0)
+                tcp->hs_rate[i].count--;
+            return;
+        }
+    }
+}
+
+static bool hs_rate_check(nodus_tcp_t *tcp, const nodus_ws_ip_bucket_t *who,
+                          uint64_t now_mono_ms, uint64_t *window_out) {
     if (!tcp || !who) return false;
+    if (window_out) *window_out = 0;
     if (tcp->hs_rate_per_min == 0) return true;
 
     int free_slot = -1, oldest = -1;
@@ -1676,6 +1719,7 @@ bool nodus_tcp_hs_rate_allow(nodus_tcp_t *tcp, const nodus_ws_ip_bucket_t *who,
             if (tcp->hs_rate[i].count >= tcp->hs_rate_per_min)
                 return false;
             tcp->hs_rate[i].count++;
+            if (window_out) *window_out = tcp->hs_rate[i].start_ms;
             return true;
         }
         if (oldest < 0 || tcp->hs_rate[i].start_ms < tcp->hs_rate[oldest].start_ms)
@@ -1688,6 +1732,7 @@ bool nodus_tcp_hs_rate_allow(nodus_tcp_t *tcp, const nodus_ws_ip_bucket_t *who,
     tcp->hs_rate[slot].who = *who;
     tcp->hs_rate[slot].start_ms = now_mono_ms;
     tcp->hs_rate[slot].count = 1;
+    if (window_out) *window_out = now_mono_ms;
     return true;
 }
 
@@ -1716,7 +1761,10 @@ static void handle_accept(nodus_tcp_t *tcp) {
     inet_ntop(AF_INET, &addr.sin_addr, new_ip, sizeof(new_ip));
     int ip_count = 0;
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+        /* a role_exempt connection (proven key with an active role,
+         * addendum 2026-10-26) does not count toward the cap */
         if (tcp->pool[i] && !tcp->pool[i]->is_ws && !tcp->pool[i]->is_unix &&
+            !tcp->pool[i]->role_exempt &&
             strcmp(tcp->pool[i]->ip, new_ip) == 0)
             ip_count++;
     }
@@ -1728,10 +1776,14 @@ static void handle_accept(nodus_tcp_t *tcp) {
     /* Per-IP handshake RATE (decision 2026-10-24, 60 / minute on 4001 and
      * 4002 accept): checked after the cheap concurrency count, counted only
      * for a connection that would be admitted. Monotonic clock. */
+    nodus_ws_ip_bucket_t who;
+    bool hs_counted = false;
+    uint64_t hs_window = 0;
+    memset(&who, 0, sizeof(who));
     if (tcp->hs_rate_per_min != 0) {
-        nodus_ws_ip_bucket_t who;
         if (nodus_ws_ip_bucket(new_ip, &who) != 0 ||
-            !nodus_tcp_hs_rate_allow(tcp, &who, nodus_time_mono_ms())) {
+            !hs_count_accept(tcp, new_ip, &who, nodus_time_mono_ms(),
+                             &hs_counted, &hs_window)) {
             QGP_LOG_WARN(LOG_TAG_TCP, "accept: handshake rate %u/min reached for %s — refused",
                          (unsigned)tcp->hs_rate_per_min, new_ip);
             close(fd);
@@ -1751,6 +1803,9 @@ static void handle_accept(nodus_tcp_t *tcp) {
     conn->port = ntohs(addr.sin_port);
     snprintf(conn->ip, sizeof(conn->ip), "%s", new_ip);
     conn_stamp_connected(conn);
+    conn->hs_bucket = who;
+    conn->hs_window_ms = hs_window;
+    conn->hs_counted = hs_counted;
 
     /* Phase 3.2d: bind fd to slot, log it. Match this fd against
      * INTER_FRAME_FIRST and TCP_SEND_FIRST to detect any fd alias. */
@@ -1943,7 +1998,7 @@ static bool ws_try_upgrade(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     int same_ip = 0;
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
         nodus_tcp_conn_t *c = tcp->pool[i];
-        if (c && c != conn && c->is_ws && c->ws_open &&
+        if (c && c != conn && c->is_ws && c->ws_open && !c->role_exempt &&
             memcmp(&c->ws_bucket, &bucket, sizeof(bucket)) == 0)
             same_ip++;
     }
@@ -1956,11 +2011,19 @@ static bool ws_try_upgrade(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     /* Per-IP handshake RATE (decision 2026-10-24): counted per real client
      * address once the Upgrade names it (the socket peer is the local
      * proxy), after the concurrency limit. */
-    if (!nodus_tcp_hs_rate_allow(tcp, &bucket, nodus_time_mono_ms())) {
-        QGP_LOG_WARN(LOG_TAG_TCP, "ws: handshake rate %u/min reached for %s, slot=%d closed",
-                     (unsigned)tcp->hs_rate_per_min, res.real_ip, conn->slot);
-        ws_close_now(tcp, conn, NULL, 0);
-        return true;
+    {
+        bool counted = false;
+        uint64_t win = 0;
+        if (!hs_count_accept(tcp, res.real_ip, &bucket, nodus_time_mono_ms(),
+                             &counted, &win)) {
+            QGP_LOG_WARN(LOG_TAG_TCP, "ws: handshake rate %u/min reached for %s, slot=%d closed",
+                         (unsigned)tcp->hs_rate_per_min, res.real_ip, conn->slot);
+            ws_close_now(tcp, conn, NULL, 0);
+            return true;
+        }
+        conn->hs_bucket = bucket;
+        conn->hs_window_ms = win;
+        conn->hs_counted = counted;
     }
 
     char resp[256];

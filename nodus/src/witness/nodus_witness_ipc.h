@@ -94,6 +94,18 @@ struct nodus_witness;
 #define NODUS_WITNESS_IPC_Q_DHT_SNAP  "ipc_dht_snap"
 #define NODUS_WITNESS_IPC_Q_DHT_SETS  "ipc_dht_sets"
 #define NODUS_WITNESS_IPC_Q_NAME      "ipc_name"
+/** Control-connection query (core -> witness): the ACTIVE-ROLE set, the node
+ *  ids (SHA3-512 of the public key) of every identity with an active on-chain
+ *  role (nodus_witness_p2p_roles_fill). Answer {"q":"ipc_roles","fp": bstr of
+ *  n * 64 bytes} or {"q":"ipc_roles","err": text}. Core uses it to exempt a
+ *  PROVEN node from the per-IP limits of 4001 / WS / 4002 (decision
+ *  2026-10-24-dht-v2-handshake-rate.md, addendum 2026-10-26). An internal key:
+ *  core and nodus-witness are deployed together. */
+#define NODUS_WITNESS_IPC_Q_ROLES     "ipc_roles"
+/** Most identities one ipc_roles answer carries (the set is derived from
+ *  frozen sets of at most 256 members each, the validators and the registry);
+ *  a larger set is answered {err}: core then treats it as unknown. */
+#define NODUS_WITNESS_IPC_ROLES_MAX   2048u
 
 /**
  * The ONE routing rule for client tier-2 methods the chain serves: the
@@ -283,6 +295,9 @@ typedef struct {
     int  (*dht_sets)(void *ctx, nodus_witness_dht_sets_t *out);
     int  (*dht_name)(void *ctx, const uint8_t fp[64],
                      nodus_witness_dht_name_t *out);
+    /** The active-role set: fps[0..*n) node ids; 0, or -1 (unknown). NULL
+     *  closes the connection that asks. */
+    int  (*roles)(void *ctx, uint8_t (*fps)[64], uint32_t max, uint32_t *n);
     void  *ctx;
 } nodus_witness_ipc_handlers_t;
 

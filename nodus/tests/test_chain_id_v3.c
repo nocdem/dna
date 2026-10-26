@@ -23,8 +23,9 @@
  *       refused, another IP is not, the minute's end re-admits, an IPv6 /64 is
  *       one IP, rate 0 is off, the table is bounded (a flood of distinct IPs
  *       neither crashes nor grows it: the oldest window is evicted).
- *   V6  the same limit on a REAL accept: a listener with a limit of 2 admits
- *       two connections from 127.0.0.1 and closes the third before any callback.
+ *   V6  loopback is exempt from the rate on a REAL accept: a listener with a
+ *       limit of 2 admits three connections from 127.0.0.1 (addendum
+ *       2026-10-26).
  *
  * REQUIRES: a default build (libnodus with NODUS_TCP_SC); a loopback
  * interface. No environment, no compile flag beyond the default.
@@ -330,7 +331,7 @@ static void rate_on_accept(nodus_tcp_conn_t *c, void *ctx) {
 }
 
 static void test_v6(void) {
-    TEST("V6 a listener with limit 2 closes the third accept");
+    TEST("V6 loopback is exempt from the rate: a limit of 2 admits all three");
     nodus_tcp_t srv, cli;
     if (nodus_tcp_init(&srv, -1) != 0 || nodus_tcp_init(&cli, -1) != 0) {
         FAIL("init");
@@ -347,7 +348,11 @@ static void test_v6(void) {
     nodus_tcp_close(&cli);
     nodus_tcp_close(&srv);
     if (!c[0] || !c[1] || !c[2]) { FAIL("connect"); return; }
-    if (accepts != 2) { FAIL("the third connection from one IP was admitted"); return; }
+    /* operator addendum 2026-10-26: 127.0.0.0/8 is never counted (the local
+     * machine; the harness runs every node on it) — so a limit of 2 refuses
+     * nothing here. The refusal itself is pinned with injected time (V5) and
+     * in test_role_exempt (a non-loopback bucket). */
+    if (accepts != 3) { FAIL("a loopback connection was refused by the rate"); return; }
     PASS();
 }
 

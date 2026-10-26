@@ -307,21 +307,14 @@ pick it up.
   - **Per-IP handshake rate (3b-2).** Every node admits at most 60 new
     connections per minute from one IP on 4001 + WS and, separately, on 4002
     (`NODUS_HANDSHAKE_RATE_PER_MIN`, `src/server/nodus_server.h:655`; decision
-    `2026-10-24-dht-v2-handshake-rate.md`). In the harness every client tool
-    and every node dials from `127.0.0.1`, and loopback is not exempt
-    (`nodus_tcp_hs_rate_allow`, `src/transport/nodus_tcp.c:1658-1690`). A
-    scenario that opens more than 60 client sessions per minute against ONE
-    node (a loop of `nodus-cli` calls, one session each) gets its extra calls
-    refused at accept until the minute has passed — a FAIL that comes from the
-    harness's single address, not from the code under test. The same holds
-    for 4002 between the harness nodes: every batch forward (a forwarded
-    `get` / `get_all` / `get_batch`) dials a NEW 4002 connection
-    (`bf_start_forward`, `src/dht/nodus_dht_server.c:3428`), so a read-heavy
-    scenario can reach 60 accepts per minute on one node's 4002 from
-    `127.0.0.1`. Which scenarios reach either rate has NOT been checked (no
-    run); a refused accept logs
-    `accept: handshake rate 60/min reached for 127.0.0.1 — refused` in the
-    node's log.
+    `2026-10-24-dht-v2-handshake-rate.md`, addendum 2026-10-26). **Loopback
+    (127.0.0.0/8, ::1) is exempt from the rate** (`nodus_tcp_ip_is_loopback`,
+    never counted), and a peer whose PROVEN key has an active on-chain role
+    (bonded set + storage registry ACTIVE / EXITING) is credited back and does
+    not count toward the per-IP connection cap either. The harness runs every
+    client tool and node on `127.0.0.1`, so it never meets the rate; the
+    concurrent cap of 20 per IP still applies to loopback connections that are
+    not role-exempt. The concurrent cap is the one a harness call burst can hit.
   - A node that does not exist at bring-up (a joiner a scenario creates, a
     candidate beyond `STAGEF_V2_CANDIDATES`) is NOT in the file: a client tool
     dialing it is refused with "is not in the network file and no --pin was

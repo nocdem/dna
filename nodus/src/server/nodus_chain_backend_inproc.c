@@ -12,6 +12,7 @@
 
 #include "server/nodus_chain_backend.h"
 #include "witness/nodus_witness.h"
+#include "transport/nodus_tcp.h"               /* nodus_time_mono_ms */
 #include "witness/nodus_witness_ipc.h"         /* nodus_witness_status_fill */
 #include "witness/nodus_witness_p2p.h"         /* the 4004 listen port (log) */
 #include "witness/nodus_witness_network_file.h" /* nodus_witness_check_chain_pin */
@@ -25,6 +26,9 @@ typedef struct {
      * the witness that points at it (nodus_witness_t.host). */
     nodus_witness_host_t    host;
     nodus_witness_t        *w;
+    /* The active-role set, refilled from the witness' 4004 host at most
+     * every NODUS_ROLE_SET_EVERY_MS (a SQLite read) — has_role below. */
+    nodus_role_set_t        roles;
 } inproc_backend_t;
 
 static nodus_witness_t *inproc_w(nodus_chain_backend_t *b) {
@@ -99,9 +103,33 @@ static void inproc_session_closed(nodus_chain_backend_t *b,
     (void)conn;
 }
 
+/* Active on-chain role of a PROVEN key (operator addendum 2026-10-26): the
+ * witness' own derivation (nodus_witness_p2p_roles_fill — the bonded set plus
+ * the registry's ACTIVE / EXITING rows), cached for NODUS_ROLE_SET_EVERY_MS so
+ * an accept burst does not read SQLite per session. Fail safe: a failed fill
+ * leaves the set unknown (false). */
+static bool inproc_has_role(nodus_chain_backend_t *b, const nodus_key_t *node_id) {
+    inproc_backend_t *ib = (inproc_backend_t *)b;
+    uint64_t now = nodus_time_mono_ms();
+    if (!ib->w->p2p) return false;
+    if (!ib->roles.fps) {
+        ib->roles.fps = malloc((size_t)NODUS_ROLE_SET_MAX * 64);
+        if (!ib->roles.fps) return false;
+    }
+    if (!ib->roles.at_ms || now - ib->roles.at_ms >= NODUS_ROLE_SET_EVERY_MS) {
+        uint32_t n = 0;
+        ib->roles.known = nodus_witness_p2p_roles_fill(ib->w->p2p, ib->roles.fps,
+                                                      NODUS_ROLE_SET_MAX, &n) == 0;
+        ib->roles.n = ib->roles.known ? n : 0;
+        ib->roles.at_ms = now;
+    }
+    return nodus_role_set_has(&ib->roles, node_id, now);
+}
+
 static void inproc_close(nodus_chain_backend_t *b) {
     inproc_backend_t *ib = (inproc_backend_t *)b;
 
+    free(ib->roles.fps);
     nodus_witness_close(ib->w);
     free(ib->w);
     free(ib);
@@ -112,6 +140,7 @@ static const nodus_chain_backend_ops_t inproc_ops = {
     .read_pending  = inproc_read_pending,
     .status        = inproc_status,
     .chain_id_v3   = inproc_chain_id_v3,
+    .has_role      = inproc_has_role,
     .chain_open    = inproc_chain_open,
     .listen_port   = inproc_listen_port,
     .dispatch_dnac = inproc_dispatch_dnac,

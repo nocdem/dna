@@ -95,7 +95,16 @@ typedef struct {
     bool                        snap_have;
     uint64_t                    snap_at_ms;
     nodus_witness_ipc_status_t  snap;
+
+    /* The active-role set the witness last answered (ipc_roles), asked at
+     * connect and every NODUS_ROLE_SET_EVERY_MS. Lost with the control
+     * connection; an {err} answer or a stale one is "unknown" (fail safe). */
+    nodus_role_set_t            roles;
+    uint64_t                    roles_asked_ms;
 } ipc_backend_t;
+
+_Static_assert(NODUS_ROLE_SET_MAX == NODUS_WITNESS_IPC_ROLES_MAX,
+               "core's role set holds what the witness may answer");
 
 static ipc_backend_t *ipc_be(nodus_chain_backend_t *b) {
     return (ipc_backend_t *)b;
@@ -217,12 +226,18 @@ static void ipc_ctl_tick(ipc_backend_t *ib) {
                      ib->path);
         ipc_ctl_send_q(ib, NODUS_WITNESS_IPC_Q_CTL);
         ipc_ctl_send_q(ib, NODUS_WITNESS_IPC_Q_STATUS);
+        ipc_ctl_send_q(ib, NODUS_WITNESS_IPC_Q_ROLES);
         ib->ctl_last_query_ms = now;
+        ib->roles_asked_ms = now;
         return;
     }
     if (now - ib->ctl_last_query_ms >= IPC_STATUS_EVERY_MS) {
         ipc_ctl_send_q(ib, NODUS_WITNESS_IPC_Q_STATUS);
         ib->ctl_last_query_ms = now;
+    }
+    if (now - ib->roles_asked_ms >= NODUS_ROLE_SET_EVERY_MS) {
+        ipc_ctl_send_q(ib, NODUS_WITNESS_IPC_Q_ROLES);
+        ib->roles_asked_ms = now;
     }
 }
 
@@ -332,6 +347,51 @@ static void ipc_forward(ipc_backend_t *ib, nodus_tcp_conn_t *client,
 
 /* ── Transport callbacks ─────────────────────────────────────────── */
 
+/* An ipc_roles answer: {"q":"ipc_roles","fp":bstr(n*64)} fills the role set;
+ * {"q":"ipc_roles","err":text} makes it unknown. Strict like the status
+ * decoder: exactly two keys, each once, right types, n <= NODUS_ROLE_SET_MAX,
+ * no trailing bytes.
+ * @return 0 handled; -2 not an ipc_roles answer (the caller decodes it as a
+ *         status); -1 malformed (close the control connection). */
+static int ipc_roles_answer(ipc_backend_t *ib, const uint8_t *p, size_t len) {
+    cbor_decoder_t dec;
+    cbor_decoder_init(&dec, p, len);
+    cbor_item_t m = cbor_decode_next(&dec);
+    if (m.type != CBOR_ITEM_MAP || m.count != 2) return -2;
+    cbor_item_t k = cbor_decode_next(&dec);
+    if (k.type != CBOR_ITEM_TSTR || k.tstr.len != 1 || k.tstr.ptr[0] != 'q') return -2;
+    cbor_item_t v = cbor_decode_next(&dec);
+    if (v.type != CBOR_ITEM_TSTR ||
+        v.tstr.len != strlen(NODUS_WITNESS_IPC_Q_ROLES) ||
+        memcmp(v.tstr.ptr, NODUS_WITNESS_IPC_Q_ROLES, v.tstr.len) != 0)
+        return -2;
+    k = cbor_decode_next(&dec);
+    if (k.type != CBOR_ITEM_TSTR) return -1;
+    v = cbor_decode_next(&dec);
+    if (dec.error) return -1;
+    if (k.tstr.len == 2 && memcmp(k.tstr.ptr, "fp", 2) == 0) {
+        if (v.type != CBOR_ITEM_BSTR || v.bstr.len % 64 != 0 ||
+            v.bstr.len / 64 > NODUS_ROLE_SET_MAX || dec.pos != len)
+            return -1;
+        if (!ib->roles.fps) {
+            ib->roles.fps = malloc((size_t)NODUS_ROLE_SET_MAX * 64);
+            if (!ib->roles.fps) return 0;       /* stays unknown */
+        }
+        ib->roles.n = (uint32_t)(v.bstr.len / 64);
+        if (v.bstr.len) memcpy(ib->roles.fps, v.bstr.ptr, v.bstr.len);
+        ib->roles.known = true;
+        ib->roles.at_ms = nodus_time_mono_ms();
+        return 0;
+    }
+    if (k.tstr.len == 3 && memcmp(k.tstr.ptr, "err", 3) == 0 &&
+        v.type == CBOR_ITEM_TSTR && dec.pos == len) {
+        ib->roles.known = false;
+        ib->roles.n = 0;
+        return 0;
+    }
+    return -1;
+}
+
 static void ipc_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                          size_t len, void *ctx) {
     ipc_backend_t *ib = (ipc_backend_t *)ctx;
@@ -339,6 +399,14 @@ static void ipc_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
     int cs = ib->by_ipc_slot[conn->slot];
 
     if (cs == IPC_SLOT_CTL && conn == ib->ctl) {
+        int rr = ipc_roles_answer(ib, payload, len);
+        if (rr == 0) return;                      /* an ipc_roles answer */
+        if (rr == -1) {
+            QGP_LOG_WARN(LOG_TAG, "%s", "malformed ipc_roles answer — "
+                         "closing the control connection");
+            nodus_tcp_disconnect(&ib->tcp, conn);
+            return;
+        }
         nodus_witness_ipc_status_t st;
         if (ipc_status_decode(payload, len, &st) != 0) {
             QGP_LOG_WARN(LOG_TAG, "%s", "malformed ipc_status answer — "
@@ -366,6 +434,7 @@ static void ipc_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
     if (cs == IPC_SLOT_CTL && conn == ib->ctl) {
         ib->ctl = NULL;
         ib->snap_have = false;
+        ib->roles.known = false;
         ib->ctl_next_dial_ms = nodus_time_mono_ms() + ib->ctl_backoff_ms;
         QGP_LOG_WARN(LOG_TAG, "control connection to the witness lost (%s) "
                      "— chain status unavailable until it is back", ib->path);
@@ -449,8 +518,13 @@ static void ipcb_session_closed(nodus_chain_backend_t *b,
     ipc_session_close(ib, &ib->sess[conn->slot]);
 }
 
+static bool ipcb_has_role(nodus_chain_backend_t *b, const nodus_key_t *node_id) {
+    return nodus_role_set_has(&ipc_be(b)->roles, node_id, nodus_time_mono_ms());
+}
+
 static void ipcb_close(nodus_chain_backend_t *b) {
     ipc_backend_t *ib = ipc_be(b);
+    free(ib->roles.fps);
     /* nodus_tcp_close frees the connections without on_disconnect; the
      * tables go with `ib`. */
     nodus_tcp_close(&ib->tcp);
@@ -462,6 +536,7 @@ static const nodus_chain_backend_ops_t ipc_ops = {
     .read_pending   = ipcb_read_pending,
     .status         = ipcb_status,
     .chain_id_v3    = ipcb_chain_id_v3,
+    .has_role       = ipcb_has_role,
     .chain_open     = ipcb_chain_open,
     .listen_port    = ipcb_listen_port,
     .dispatch_dnac  = ipcb_dispatch_dnac,

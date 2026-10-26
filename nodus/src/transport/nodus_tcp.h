@@ -307,6 +307,19 @@ typedef struct nodus_tcp_conn {
      * (layer on): the input preceding it is still held. The close frame to
      * send is kept here; the connection closes once that input has been
      * opened and dispatched, in order, after on_session. */
+    /* Per-IP limits of the accepting side (decision 2026-10-24 + addendum
+     * 2026-10-26): the IP bucket this accept was counted under, the window
+     * it was counted in (nodus_time_mono_ms scale), and whether it WAS
+     * counted (hs_counted; loopback is never counted). role_exempt: the
+     * session's PROVEN key has an active on-chain role — set by
+     * nodus_tcp_role_exempt at on_session; such a connection no longer
+     * counts toward the per-IP connection cap (the accept loops skip it) and
+     * its rate attempt has been credited back. */
+    nodus_ws_ip_bucket_t   hs_bucket;
+    uint64_t               hs_window_ms;
+    bool                   hs_counted;
+    bool                   role_exempt;
+
     bool                   ws_close_wait;
     uint8_t                ws_close_len;
     uint8_t                ws_close_frame[4];
@@ -473,6 +486,23 @@ typedef struct nodus_tcp {
  */
 bool nodus_tcp_hs_rate_allow(nodus_tcp_t *tcp, const nodus_ws_ip_bucket_t *who,
                              uint64_t now_mono_ms);
+
+/**
+ * Operator addendum 2026-10-26 ("a node active in ANY role is exempt from
+ * ALL of these limits"): the PROVEN identity of `conn` has an active
+ * on-chain role. Credits the connection's handshake attempt back to its IP
+ * bucket (only while the window it was counted in is still the bucket's
+ * window — a credit never lands in a later minute) and marks the connection
+ * role_exempt, so the per-IP connection cap no longer counts it. Idempotent;
+ * a connection that was never counted (loopback, rate off) is only marked.
+ * Never called for an unproven key: the caller decides from the key the
+ * SecretConnection proved. Exposed for the owner's on_session and for tests.
+ */
+void nodus_tcp_role_exempt(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
+
+/** Loopback (127.0.0.0/8, ::1, ::ffff:127.x): the local machine, exempt from
+ *  the handshake rate entirely (counted nowhere). */
+bool nodus_tcp_ip_is_loopback(const char *ip);
 
 /**
  * Initialize TCP transport.

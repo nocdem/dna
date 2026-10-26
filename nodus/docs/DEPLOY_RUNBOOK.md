@@ -2102,7 +2102,11 @@ no chain at all (witness disabled, no genesis) serves no client and no 4002 sess
 15 s idle / 30 s absolute before the session is authenticated; at most 60 new handshakes per
 minute from one IP per port (WS: per real client address after `X-Forwarded-For`) — decision
 `docs/plans/decisions/2026-10-24-dht-v2-handshake-rate.md`. Many clients behind one address
-(the explorer host, a bench run, a NAT) share that 60.
+(the explorer host, a bench run, a NAT) share that 60. Exempt (operator addendum 2026-10-26): loopback, and any peer
+whose proven key has an active on-chain role (witness ACTIVE / ELIGIBLE, storage registry ACTIVE / EXITING, S(H) /
+S(H − E) members) — its attempt is credited back at proof and it does not count toward the 20-per-IP cap. In the
+split deployment core learns that set from nodus-witness (`ipc_roles`, every 10 s): until the first answer arrives
+nobody is exempt.
 
 **Release list — everything below must ship in the same release window as the nodes.** Each
 item is a client that dials 4001 / WS; one built before the release cannot connect after it.
