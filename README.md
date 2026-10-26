@@ -202,7 +202,7 @@ Source identifiers keep their older `dna` / `dnac` names (`libdna`,
 
 | Component | Version | Version file |
 |-----------|---------|--------------|
-| Nodus | v0.26.31 | `nodus/include/nodus/nodus_types.h` |
+| Nodus | v0.27.0 | `nodus/include/nodus/nodus_types.h` |
 | Nodus Chain client (DNAC) | v0.22.2 | `dnac/include/dnac/version.h` |
 | C library (libdna) | v0.11.35 | `messenger/include/dna/version.h` |
 | Nodus Web Wallet | v0.1.132 | `web-wallet/package.json` |
