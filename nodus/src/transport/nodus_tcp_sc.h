@@ -4,11 +4,14 @@
  *
  * @file nodus_tcp_sc.h
  *
- * ═══ STATUS: NOT ENABLED ON ANY PORT ═══════════════════════════════════
- * Nothing calls nodus_tcp_sc_enable yet. 3b-2 wires it into the 4001 / 4002
- * server and deletes the hello / auth / key_init / channel-crypto path;
- * 3c wires the client SDK and the consumers. Until then a connection
- * without the layer is byte-for-byte what nodus_tcp.c always did.
+ * ═══ STATUS (3b-2) ═════════════════════════════════════════════════════
+ * ENABLED on 4001 / WebSocket accept (CLIENT profile, nodus_server.c
+ * on_tcp_accept), on 4002 accept and dial (NODE profile,
+ * server/nodus_inter_dial.c), on the DHT's batch forwards and on the client
+ * SDK's connect (nodus_client.c). The hello / auth / key_init /
+ * channel-crypto session path is deleted. Only the Unix-socket IPC
+ * connections (is_unix) carry no layer. Consumers (nodus-cli, explorer, ...)
+ * and the browser build lists are 3c.
  * Governing records: docs/plans/2026-10-23-dht-v2-session-package-design.md
  * rev 1 (O-1 a, O-3 b), decisions/2026-10-23-kurultay-43-summary.md,
  * decisions/2026-10-23-dht-v2-session-bytes.md.
@@ -54,6 +57,33 @@
  * 2026-09-26-witness-port-session.md). An unpinned initiator is refused at
  * enable.
  *
+ * ── THE ANON FAMILY (DHT v2 package 3d, session layer only) ─────────────
+ * Design: docs/plans/2026-10-26-dht-v2-3d-no-login-design.md rev 5 §1, §2
+ * (layer bullet), §4 (4004 gate); governing records
+ * decisions/2026-10-26-wallet-no-node-login.md, 2026-10-26-kurultay-45-summary.md.
+ *  · A RESPONDER whose cfg carries `anon_kc_sig` (profile CLIENT) starts
+ *    family-UNBOUND: the first plaintext message binds it once by its exact
+ *    (kind, length) — (0x01, 2661) CLIENT, (0x05, 69) ANON, else close. The
+ *    pre-session timestamps are set at accept and the binding does not reset
+ *    them; the sealed-input budget follows the bound family (ANON responder
+ *    2,685 B, ANON initiator 9,902 B; CLIENT / NODE unchanged). A responder
+ *    without `anon_kc_sig` is bound to its profile at enable and behaves
+ *    exactly as before. nodus_tcp_sc_is_anonymous() says whether a connection
+ *    is an ANON-bound responder; such a connection has NO peer key
+ *    (nodus_tcp_sc_peer_pubkey returns -1) and its transcript T is read with
+ *    nodus_tcp_sc_transcript() once authenticated.
+ *  · An INITIATOR with profile ANON carries no local key (cfg.id is not used
+ *    and may be NULL) and a mandatory pin. Before it may encapsulate, the
+ *    layer runs the KEM-key certificate job (host callback dedicated to the
+ *    strict purpose 0x0E) and the pin check; the machine issues no ENCAPS
+ *    until both passed (cmt_p2p_secret.h).
+ *  · The responder's certificate is computed ONCE by the caller
+ *    (nodus_tcp_sc_kc_sign) and handed in by pointer; it is never signed
+ *    per connection.
+ *  · Worker admission: a share of the INBOUND job budget is reserved for ANON
+ *    jobs (NODUS_TCP_SC_JOBQ_IN_ANON_RESERVED), so a flood of identified
+ *    CLIENT handshakes (which make the server sign) cannot starve them.
+ *
  * ── HANDSHAKE JOBS (O-3 b) ─────────────────────────────────────────────
  * The machine's asymmetric steps (ENCAPS / DECAPS / SIGN / VERIFY) run on a
  * worker owned by the nodus_tcp_t, separate from 4004's host:
@@ -95,13 +125,15 @@
  * That is a 3b-2 obligation. The same predicate also covers a loop-owned
  * teardown that is due (a fatal sealing failure, below).
  *
- * ── 3b-2 OBLIGATIONS RECORDED HERE ─────────────────────────────────────
- *  · The existing auth gate: a connection inheriting tcp->auth_required keeps
- *    auth_state HELLO_SENT/NONE for ever (the hello/auth path is not run on
- *    it), so nodus_tcp_send would queue into the auth pending buffer, which
- *    the layer refuses. 3b-2 must open the gate for layer connections
- *    (auth_required false, or auth_state OK at on_session) when it removes
- *    the hello / auth / key_init path.
+ * ── 3b-2 OBLIGATIONS (done) ─────────────────────────────────────────────
+ *  · The auth gate: a 4002 connection (nodus_inter_session_enable) closes the
+ *    send gate (auth_required, auth_state NONE / HELLO_SENT); a send before
+ *    the session is authenticated waits in the DIAL QUEUE (the auth pending
+ *    buffer, plaintext) and nodus_inter_dial_conn_open, at on_session,
+ *    replays it through nodus_tcp_send — sealed, in order. The queue is never
+ *    flushed as bytes (nodus_tcp_pending_flush refuses a layer connection).
+ *  · An owner of several transports includes nodus_tcp_sc_busy() of each in
+ *    its poll wait (nodus_server.c run loop, nodus_dht_ipc_poll).
  *  · nodus_tcp_sc_enable refuses a connection that has carried any byte
  *    (sticky conn->io_started), has auth_state != NONE, a peer id, an auth
  *    nonce or a session token: enable at accept / right after connect.
@@ -153,10 +185,11 @@
  * count PLAINTEXT bytes (the frames are queued unsealed). The read
  * buffer holds plaintext and may grow to NODUS_TCP_SC_RBUF_MAX = 5,246,983 +
  * 16,384 = 5,263,367 bytes (+0.31%). Per layer-enabled connection
- * add the machine (sizeof(cmt_p2p_sc_t), about 42 KB, heap) and, only while
+ * add the machine (sizeof(cmt_p2p_sc_t), about 55 KB since package 3d added
+ * the ANON family's own buffers, heap) and, only while
  * a handshake job blocks input, up to NODUS_TCP_SC_RAW_CHUNK (16 KiB) of
  * held socket bytes. Jobs: at most NODUS_TCP_SC_JOBQ_OUT + _IN copies of
- * about 17 KB each.
+ * about 17 KB each (a KC VERIFY job, ANON path only, 1,622 bytes more).
  *
  * ── THREADING ──────────────────────────────────────────────────────────
  * Same model as the rest of nodus_tcp: one thread polls; with a write lock
@@ -195,6 +228,18 @@ extern "C" {
   #define NODUS_SC_INLINE 1
 #endif
 
+/* ── Per-port protocol versions (Kurultay #43 O-6) ───────────────────── */
+
+/** Protocol version of the client session (4001 / WebSocket, profile CLIENT,
+ *  purpose 0x0C). Own symbol, never CMT_P2P_PROTOCOL_VERSION (4004's, 8): a
+ *  future change of this number is a flag day for every client (the
+ *  all-at-once rule). decisions/2026-10-23-dht-v2-session-bytes.md addendum
+ *  2026-10-24, operator "İkisi de 1". */
+#define NODUS_CSESS_PROTO_VERSION 1u
+/** Protocol version of the node session (4002, profile NODE, purpose 0x0D);
+ *  same rule, same addendum. */
+#define NODUS_NSESS_PROTO_VERSION 1u
+
 /* ── Constants (NOT in the records: sizes; derivations in the comments) ── */
 
 /** Worker threads. Mirrors NODUS_P2P_WORKERS_DEFAULT (nodus_p2p_host.h:310). */
@@ -205,6 +250,17 @@ extern "C" {
  *  this is also the number of handshakes a class advances at once. */
 #define NODUS_TCP_SC_JOBQ_OUT    64
 #define NODUS_TCP_SC_JOBQ_IN     64
+/** Of the INBOUND budget, the slots ANON jobs keep to themselves (design
+ *  §1.6, Sol M3). Two bounds hold together: the inbound total (ANON included)
+ *  never exceeds JOBQ_IN, and identified (non-ANON) inbound jobs are admitted
+ *  only while their own count, ANON jobs excluded, stays below JOBQ_IN - this
+ *  — so at least this many slots are always free for ANON jobs, whatever the
+ *  identified CLIENT handshakes do. A size, OURS (the design gives no number):
+ *  a quarter of the inbound budget. */
+#define NODUS_TCP_SC_JOBQ_IN_ANON_RESERVED 16
+_Static_assert(NODUS_TCP_SC_JOBQ_IN_ANON_RESERVED > 0 &&
+               NODUS_TCP_SC_JOBQ_IN_ANON_RESERVED < NODUS_TCP_SC_JOBQ_IN,
+               "the ANON share must leave room for identified CLIENT handshakes too");
 /** Longest nodus_tcp_poll wait while a job is outstanding (ms). */
 #define NODUS_TCP_SC_POLL_MS     5
 /** Socket bytes read per step of the SC read path; also the capacity of the
@@ -276,15 +332,33 @@ _Static_assert(NODUS_TCP_SC_WBUF_FILL >= NODUS_TCP_SC_PORTION_WIRE &&
 
 typedef struct {
     cmt_p2p_sc_role_t           role;       /* who dialed: INITIATOR / RESPONDER */
-    const cmt_p2p_sc_profile_t *profile;    /* &..._CLIENT or &..._NODE only     */
+    /** &..._CLIENT or &..._NODE; additionally &..._ANON for an INITIATOR
+     *  only (a responder reaches ANON through the unbound form below). */
+    const cmt_p2p_sc_profile_t *profile;
     /** Signing key (and, for a RESPONDER, the ML-KEM-1024 pair, so
-     *  id->has_mlkem is required). Must outlive nodus_tcp_close. */
+     *  id->has_mlkem is required). Must outlive nodus_tcp_close. NULL only
+     *  for an ANON INITIATOR (no local key; an id passed there is not used). */
     const nodus_identity_t     *id;
+    /** RESPONDER, profile CLIENT only: the cached KEM-key certificate
+     *  (CMT_P2P_SC_SIG_SIZE bytes, from nodus_tcp_sc_kc_sign over this id's
+     *  KEM key and this chain id). Non-NULL = start family-UNBOUND (CLIENT or
+     *  ANON by the first message); NULL = bound to CLIENT, as before. NOT
+     *  copied: caller-owned, must outlive nodus_tcp_close (same rule as id). */
+    const uint8_t              *anon_kc_sig;
     uint32_t                    proto_ver;  /* per-PORT symbol, never 4004's     */
     uint8_t                     chain_id[CMT_P2P_SC_CHAIN_ID_SIZE];
     /** INITIATOR: the node id (SHA3-512 of the public key) the caller meant
-     *  to dial — required. RESPONDER: ignored. Copied. */
+     *  to dial. RESPONDER: ignored. Copied. */
     const nodus_key_t          *expected_peer;
+    /** INITIATOR: a SET of acceptable node ids (the client SDK's
+     *  pinned_server_fps: a client that may connect to any of several
+     *  servers). The responder's claimed key must hash to expected_peer or to
+     *  one of these, checked before the ENCAPS job. At least one of
+     *  expected_peer / (expected_set, expected_set_n > 0) is required.
+     *  RESPONDER: ignored. NOT copied: caller-owned, must outlive
+     *  nodus_tcp_close (same rule as cfg.id). */
+    const nodus_key_t          *expected_set;
+    size_t                      expected_set_n;
 } nodus_tcp_sc_cfg_t;
 
 /**
@@ -304,13 +378,56 @@ typedef struct {
 int nodus_tcp_sc_enable(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
                         const nodus_tcp_sc_cfg_t *cfg);
 
+/**
+ * The responder's KEM-key certificate (design §1.3): sign "nodus.asess.kembind.v1"
+ * ‖ chain_id ‖ id->mlkem_pk with the identity key under the strict purpose
+ * 0x0E. Call it ONCE at start (and again only if the KEM key ever changes) and
+ * keep the bytes for cfg.anon_kc_sig.
+ * @return 0; -1 on a NULL argument, an identity without an ML-KEM key, or a
+ *         signing failure (`sig_out` is then zeroed).
+ */
+int nodus_tcp_sc_kc_sign(const nodus_identity_t *id,
+                         const uint8_t chain_id[CMT_P2P_SC_CHAIN_ID_SIZE],
+                         uint8_t sig_out[CMT_P2P_SC_SIG_SIZE]);
+
 /** Layer enabled AND the machine is AUTHENTICATED. */
 bool nodus_tcp_sc_authenticated(const nodus_tcp_conn_t *conn);
 
+/** The layer is bound to the ANON family AND this side is the RESPONDER: the
+ *  connection has no principal (nodus_tcp_sc_peer_pubkey returns -1). True from
+ *  the moment the first message bound the family, authenticated or not — check
+ *  nodus_tcp_sc_authenticated separately. False without the layer, for an
+ *  unbound responder and for every non-ANON connection. A copy under the write
+ *  lock. */
+bool nodus_tcp_sc_is_anonymous(const nodus_tcp_conn_t *conn);
+
+/** Copy the handshake transcript T (CMT_P2P_SC_T_SIZE bytes) into `out`, once
+ *  AUTHENTICATED (any family). @return 0; -1 before that, without the layer, or
+ *  on a NULL argument (`out` untouched). */
+int nodus_tcp_sc_transcript(const nodus_tcp_conn_t *conn,
+                            uint8_t out[CMT_P2P_SC_T_SIZE]);
+
+/**
+ * The pre-session deadline of an ACCEPTED connection (Kurultay #43 O-5: 15 s
+ * idle / 30 s absolute for 4001 and 4002 accept): close every connection of
+ * `tcp` that carries the layer, was accepted (not dialed by us), is not
+ * AUTHENTICATED yet, and has gone `idle_ms` without a socket byte
+ * (last_activity_mono_ms) or `abs_ms` since it connected
+ * (connected_mono_ms) — whichever comes first — as of `now_mono_ms`.
+ * `now_mono_ms` is on the nodus_time_mono_ms() scale: a monotonic clock, so a
+ * wall-clock step cannot stretch or cut a deadline (the old sweep ran on
+ * CLOCK_REALTIME every 30 s and was effective at 45 / 60 s). Taking the time
+ * as an argument lets a test drive it. Call it from the owner's loop, outside
+ * nodus_tcp_poll, often enough for the deadline to be met (once a second).
+ * An authenticated connection and a connection without the layer are never
+ * touched. @return the number of connections closed. */
+int nodus_tcp_sc_presession_sweep(nodus_tcp_t *tcp, uint64_t now_mono_ms,
+                                  uint64_t idle_ms, uint64_t abs_ms);
+
 /** Copy the peer's public key (CMT_P2P_SC_DSA_PK_SIZE bytes) into `out`,
- *  once AUTHENTICATED. @return 0; -1 before that, without the layer, or on a
- *  NULL argument (`out` untouched). A copy, never a pointer into the machine
- *  (conn_free wipes it). */
+ *  once AUTHENTICATED. @return 0; -1 before that, without the layer, on an
+ *  ANON-bound responder (no peer key exists), or on a NULL argument (`out`
+ *  untouched). A copy, never a pointer into the machine (conn_free wipes it). */
 int nodus_tcp_sc_peer_pubkey(const nodus_tcp_conn_t *conn,
                              uint8_t out[CMT_P2P_SC_DSA_PK_SIZE]);
 
@@ -336,6 +453,7 @@ typedef struct nodus_sc_job {
     int                  slot;
     uint64_t             gen;
     int                  cls;            /* 0 OUTBOUND, 1 INBOUND */
+    bool                 anon;           /* an ANON-family job: counts against the reserved inbound share */
     cmt_p2p_sc_job_kind_t kind;
     int                  rc;             /* cmt_p2p_sc_job_run's result */
     bool                 charged;        /* counted in the worker's bound until applied */
@@ -351,6 +469,13 @@ typedef struct nodus_sc_job {
     uint8_t kem_ct_out[CMT_P2P_SC_KEM_CT_SIZE];
     uint8_t kem_ss_out[CMT_P2P_SC_KEM_SS_SIZE];
     uint8_t sig_out[CMT_P2P_SC_SIG_SIZE];
+    /** Bytes of `ext` allocated after this struct (0 for every kind but
+     *  VERIFY_KC). The KC VERIFY message is CMT_P2P_SC_KC_MSG_SIZE (1,622) bytes,
+     *  far more than `msg` above (32): only that ANON-path job carries the
+     *  extra room, so every other job keeps today's size (design §1.6). A job
+     *  made by hand (tests) has ext_len 0 and nothing after the struct. */
+    size_t  ext_len;
+    uint8_t ext[];
 } nodus_sc_job_t;
 
 typedef enum {

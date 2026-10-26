@@ -235,6 +235,105 @@ needs a nodus-cli that prints `P2P ID:` — `STAGEF_NODUSCLI_BIN`, or
 `test_p2p_stopall_nowipe.sh`'s OLD bring-ups) gets none and meshes through
 its `-s` seeds exactly as before.
 
+## DHT v2 package 3c — the tool network file (`NODUS_NETWORK`)
+
+Since the client port (4001) is a SecretConnection (3b-2), every client
+session is bound to the server's key (a PIN: SHA3-512 of its ML-DSA-87 public
+key) and to a CHAIN ID; `nodus_client_init` refuses a config without either,
+and the tools refuse before they open a socket. The ~230 `nodus-cli -s
+127.0.0.1:<port> …` lines of the scenarios are not edited. Instead
+`stagef_up_v2.sh` writes **`$BASE_DIR/tool_network.json`** right after the
+genesis ceremony (section 3 → the line after `v2_genesis_pin` is persisted)
+and `stagef_env.sh` exports **`NODUS_NETWORK=$BASE_DIR/tool_network.json`**
+in every shell that sources it once the file exists — so `nodus-cli`,
+`stagef_rpc_flood` and the other tools of `nodus/src/client/nodus_tool_network.h`
+pick it up.
+
+```json
+{ "chain_id": "<64 hex = $BASE_DIR/v2_chain_id>",
+  "nodes": [ {"ip": "127.0.0.1", "port": <stagef_tcp_port N>, "fp": "<node N's identity/nodus.fp>"}, ... ] }
+```
+
+- **Where each value comes from.** `chain_id`: `CHAIN_ID`, the value every
+  node's `--derive-v2-genesis` printed (`chain-id`, asserted identical on all
+  seven) — the same 32 bytes the ceremony wrote into the 4004 network file's
+  `v2_genesis_pin` (`nodus_network_file_write_pin`), asserted equal. `fp` and
+  the order: `identity/nodus.fp` of nodes 1..7 (the 128-hex fingerprint the
+  server writes at first start; `stagef_tool_network_entry`), then the
+  bring-up candidates `cand1..cand<STAGEF_V2_CANDIDATES>` (client port block
+  `C+3+i`, the `node_pidx` rule of `test_v2_grow_7_*.sh`). Helpers:
+  `stagef_tool_network_file`, `stagef_tool_network_entry`,
+  `stagef_write_tool_network`.
+- **What it requires.** Compile flags: none beyond a default build WITH json-c
+  (the tools read the file with json-c; a build without it takes `--pin` /
+  `--chain` only). Environment: nothing to export — the bring-up does it. A
+  scenario run from a shell that never sourced `stagef_env.sh` after bring-up
+  must `export NODUS_NETWORK=$(cat /tmp/stagef_current)/tool_network.json`.
+  Flags override the file per call: `--pin <fp128>` (all servers) and `--chain
+  <hex64>`, BEFORE the command (`nodus-cli --pin … -s … whoami`), except
+  `msig sign --pin`, which keeps its own meaning (the same fingerprint).
+- **What it leaves behind.** `$BASE_DIR/tool_network.json` (replaced, never
+  appended: written to a temp file and renamed); `NODUS_NETWORK` in the
+  environment of the bring-up script's own children and of every later sourced
+  shell. A stale `NODUS_NETWORK` from an earlier run is overwritten as soon as
+  `stagef_env.sh` is sourced with a `BASE_DIR` that holds the file.
+- **How it can lie.**
+  - The file proves only that the harness TOLD the tools which key and chain
+    to expect. A green scenario shows the session handshake agreed with those
+    values; it does not show the file was right for a node the scenario
+    started later.
+  - `chain_id` is the ceremony's 32-byte chain id. The session compares the
+    chain id the node puts in its SecretConnection HELLO. If those two are not
+    the same 32 bytes, EVERY client call fails at the handshake (no frame is
+    ever exchanged) — a systematic failure of the whole suite, not a flaky
+    one. Since 3b-2 round 3 both come from ONE derivation, the hash of the
+    stored genesis document (paths below are under `nodus/`): the ceremony prints `chain-id` from
+    `nodus_witness_read_chain_id` (`src/witness/nodus_witness_network_file.c:37`,
+    `:49` → `nodus_witness_v2_gen_stored_chain_id`), and the node binds its
+    sessions to the chain backend's `chain_id_v3` (`nodus_server_chain_id`,
+    `src/server/nodus_server.c:1685-1714`) = `nodus_witness_dht_chain_id`
+    (`src/witness/nodus_witness_ipc.c:97-101`) = `nodus_witness_v2_chain_id`,
+    which returns the same `nodus_witness_v2_gen_stored_chain_id` (cached after
+    the post-open gate, `src/witness/nodus_witness_v2_claims.c:192-235`) — in a
+    split node through the `c3` key of `ipc_status`
+    (`src/server/nodus_chain_backend_ipc.c:405-412`). It is NOT the legacy
+    16-byte id padded to 32 any more (that one is only what the T2 `status`
+    RPC reports). Still check the first `nodus-cli` call of a bring-up before
+    reading any scenario's result: a mismatch would still fail every call, and
+    there is a second cause that looks the same — a node serves NO 4001 / 4002
+    session until it knows its chain id (no chain open yet, or in a split node
+    `nodus-witness` not answering `ipc_status`), so a call made in that boot
+    window is refused at accept (fail closed, `nodus_server.c:1747-1751`).
+  - **Per-IP handshake rate (3b-2).** Every node admits at most 60 new
+    connections per minute from one IP on 4001 + WS and, separately, on 4002
+    (`NODUS_HANDSHAKE_RATE_PER_MIN`, `src/server/nodus_server.h:655`; decision
+    `2026-10-24-dht-v2-handshake-rate.md`, addendum 2026-10-26). **Loopback
+    (127.0.0.0/8, ::1) is exempt from the rate** (`nodus_tcp_ip_is_loopback`,
+    never counted), and a peer whose PROVEN key has an active on-chain role
+    (bonded set + storage registry ACTIVE / EXITING) is credited back and does
+    not count toward the per-IP connection cap either. The harness runs every
+    client tool and node on `127.0.0.1`, so it never meets the rate; the
+    concurrent cap of 20 per IP still applies to loopback connections that are
+    not role-exempt. The concurrent cap is the one a harness call burst can hit.
+  - A node that does not exist at bring-up (a joiner a scenario creates, a
+    candidate beyond `STAGEF_V2_CANDIDATES`) is NOT in the file: a client tool
+    dialing it is refused with "is not in the network file and no --pin was
+    given" (fail closed, by design — not papered over); give that call
+    `--pin <that node's fingerprint>`. Found by grep, not by a run:
+    `test_v2_join.sh` makes no nodus-cli call, and the STEP-9 joiner of
+    `test_v2_grow_7_20.sh` / `_32.sh` is read from its database, not dialed;
+    no other scenario was found dialing a node outside the file.
+  - **Scenarios that run a PRE-cutover (OLD) server cannot pass at all:**
+    the six that read `STAGEF_NODUS_BIN_OLD` (grep of `tests/*.sh`):
+    `test_cmt_hf1_gas_upgrade.sh`, `test_cmt_hf2_gov_power.sh`,
+    `test_cmt_hf3_block_bounds.sh`, `test_cmt_hf4_names.sh`,
+    `test_cmt_evm.sh` and `test_p2p_stopall_nowipe.sh` roll or compare an OLD
+    build against a NEW one. Nodes of the two generations cannot hold a 4002
+    session and an OLD node has no SecretConnection on 4001 (decision
+    `2026-10-23-dht-v2-session-cutover.md`: all at once, no fallback). Their
+    OLD/NEW pairs must both be post-cutover builds; until then they report
+    FAIL or SKIP and neither is a pass.
+
 ## `genesis_protocol_v2.sh` — the runner
 
 Single entry point. Assertion method: **exit code only**.
@@ -375,6 +474,7 @@ or not. (`test_cmt_env_flood.sh` used to be the one scenario with no marks
 | `STAGEF_NODUSWITNESS_BIN` | `nodus/build/nodus-witness` (same directory as the default `STAGEF_NODUS_BIN`) | — | The external witness binary, read only in `splitw` / `mixedw` (bring-up refuses a split mode when it is not executable; prints a `[warn]` when it is not in the same directory as `STAGEF_NODUS_BIN`). A scenario must see the SAME value as the bring-up: `stagef_node_witness_pid` finds a node's witness by its `/proc/<pid>/exe`. |
 | `STAGEF_NODUSSTORAGE_BIN` | `nodus/build/nodus-storage` (same directory as the default `STAGEF_NODUS_BIN`) | — | Split S5b: the external storage binary, read only in `splits` / `mixeds` (bring-up refuses a storage-split mode when it is not executable; `[warn]` when it is not beside `STAGEF_NODUS_BIN`). `stagef_node_storage_pid` finds a node's storage process by its `/proc/<pid>/exe` — a scenario must see the bring-up's value. |
 | `STAGEF_P2PID_CLI` | `STAGEF_NODUSCLI_BIN` | — | P2P-PORT F6: the nodus-cli whose `whoami` prints `P2P ID:` (`stagef_p2p_id`, used to write the network file). Set it only when `STAGEF_NODUSCLI_BIN` is an older CLI but the server is p2p-aware. |
+| `NODUS_NETWORK` | set by the harness: `$BASE_DIR/tool_network.json` (`stagef_up_v2.sh`, exported by `stagef_env.sh` once the file exists) | a default build with json-c | DHT v2 3c: the tool network file every client tool (`nodus-cli`, `stagef_rpc_flood`, …) reads for the node pin and the chain id — see "DHT v2 package 3c — the tool network file" above. Do not export your own value before running the harness: it is overwritten once a bring-up's file exists. |
 | `STAGEF_HF1_NEGATIVE` | 0 | — | `1` runs `test_cmt_hf1_gas_upgrade.sh`'s NEGATIVE arm (D4: vote with one node still on OLD) instead of the positive one — its own fresh bring-up. |
 | `STAGEF_STOPALL_NEGATIVE` | 0 | — | P2P-FIX-1 E2: `1` runs `test_p2p_stopall_nowipe.sh`'s negative control of the consensus-WAL carry-over (the 4 signers' `cmt_wal` rows deleted before NEW; the chain must HALT at H) instead of its items 4-6 — its own bring-up; leaves the chain halted. |
 | `STAGEF_EVM_UPGRADE_MODE` | **`voted-after`** (unset = `voted-after`) | — (read by `test_cmt_evm.sh` only; the bring-up ignores it) | `voted-after` = `test_cmt_evm.sh`'s original path (roll OLD → NEW, then vote EVM_ACTIVE with the NEW CLI; OLD must be a pre-EVM build). `voted-before` = the live HF-5 order: EVM_ACTIVE voted on the 7/7 OLD fleet with the OLD CLI, the fleet rolled OLD → NEW one node at a time BEFORE H−1, H crossed on NEW — needs the `voted-before` OLD/NEW pair (row above). Any other value FAILs the scenario at once (never silently the default). The scenario prints `[info] STAGEF_EVM_UPGRADE_MODE=<mode> …` before its SKIP gates (after the split-mode SKIP), and the mode again in its `[PASS]` block when it is `voted-before`. Its own fresh bring-up, like the default. |

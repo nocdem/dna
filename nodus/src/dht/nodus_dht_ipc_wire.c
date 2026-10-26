@@ -26,15 +26,18 @@ size_t nodus_dht_ipc_encode_origin(const nodus_dht_ipc_preface_t *pf,
     if (!pf || !buf) return 0;
     bool client = pf->origin.kind == NODUS_DHT_ORIGIN_CLIENT;
     if (pf->origin.slot < 0) return 0;
+    /* the no-identity form belongs to a CLIENT origin only */
+    if (pf->no_identity && !client) return 0;
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, cap);
-    cbor_encode_map(&enc, 8);
+    cbor_encode_map(&enc, pf->no_identity ? 6 : 8);
     cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, NODUS_DHT_IPC_Q_ORIGIN);
     cbor_encode_cstr(&enc, "v");  cbor_encode_uint(&enc, NODUS_DHT_IPC_VERSION);
     cbor_encode_cstr(&enc, "k");  cbor_encode_uint(&enc, client ? 0 : 1);
     cbor_encode_cstr(&enc, "s");  cbor_encode_uint(&enc, (uint64_t)pf->origin.slot);
     cbor_encode_cstr(&enc, "g");  cbor_encode_uint(&enc, pf->origin.gen);
     cbor_encode_cstr(&enc, "b");  cbor_encode_bstr(&enc, pf->boot, NODUS_DHT_IPC_BOOT_LEN);
+    if (pf->no_identity) return enc_done(&enc);     /* no fp, no pk */
     cbor_encode_cstr(&enc, "fp"); cbor_encode_bstr(&enc, pf->fp.bytes, NODUS_KEY_BYTES);
     if (client) {
         cbor_encode_cstr(&enc, "pk");
@@ -299,7 +302,11 @@ int nodus_dht_ipc_decode(const uint8_t *p, size_t len, nodus_dht_ipc_msg_t *out,
         unsigned common = K_Q | K_V | K_K | K_S | K_G | K_B | K_FP;
         if (v_ver != NODUS_DHT_IPC_VERSION) return -1;
         if (v_kind == 0) {
-            if (seen != (common | K_PK)) return -1;
+            /* identified: fp and pk; NO-IDENTITY (an ANON session): neither */
+            if (seen == (common & ~(unsigned)K_FP))
+                tmp.preface.no_identity = true;
+            else if (seen != (common | K_PK))
+                return -1;
             tmp.preface.origin.kind = NODUS_DHT_ORIGIN_CLIENT;
             if (v_slot >= NODUS_MAX_SESSIONS) return -1;
         } else if (v_kind == 1) {

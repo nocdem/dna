@@ -172,30 +172,9 @@ int nodus_ws_real_ip(const char *sock_ip, const char *xff, size_t xff_len,
     return -1;
 }
 
-int nodus_ws_ip_bucket(const char *ip, nodus_ws_ip_bucket_t *out) {
-    if (!out) return -1;
-    memset(out, 0, sizeof(*out));
-    if (!ip) return -1;
-
-    struct in_addr a4;
-    struct in6_addr a6;
-    if (inet_pton(AF_INET, ip, &a4) == 1) {
-        out->family = 4;
-        memcpy(out->key, &a4.s_addr, 4);
-        return 0;
-    }
-    if (inet_pton(AF_INET6, ip, &a6) == 1) {
-        if (IN6_IS_ADDR_V4MAPPED(&a6)) {
-            out->family = 4;
-            memcpy(out->key, a6.s6_addr + 12, 4);
-        } else {
-            out->family = 6;
-            memcpy(out->key, a6.s6_addr, 8);
-        }
-        return 0;
-    }
-    return -1;
-}
+/* nodus_ws_ip_bucket lives in nodus_tcp.c: the per-IP handshake rate of the
+ * plain listener (built on every platform) needs it, and this file is built
+ * only where the WebSocket entry exists (not Windows). */
 
 /* ── UTF-8 (RFC 3629 §4) ─────────────────────────────────────────── */
 

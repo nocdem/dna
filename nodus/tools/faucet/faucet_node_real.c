@@ -311,6 +311,12 @@ int faucet_node_real_open(const faucet_cfg_t *cfg, const nodus_identity_t *id,
     n->ccfg.request_timeout_ms = RPC_TIMEOUT_MS;
     n->ccfg.pinned_server_fps = &n->pin;
     n->ccfg.pinned_server_fp_count = 1;
+    /* DHT v2 package 3c: the session is bound to the faucet's configured
+     * chain (cfg->chain_id, "the only chain this faucet serves") — the
+     * faucet's own config is its network config (Kurultay #43 O-6). */
+    memcpy(n->ccfg.expected_chain_id, cfg->chain_id,
+           sizeof(n->ccfg.expected_chain_id));
+    n->ccfg.has_expected_chain_id = true;
     uint8_t raw[64];
     if (qgp_sha3_512(id->pk.bytes, NODUS_PK_BYTES, raw) != 0) {
         pthread_mutex_destroy(&n->mu);

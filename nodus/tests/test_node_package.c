@@ -1061,7 +1061,12 @@ static int run_main(const char *a0, const char *a1, const nodus_np_sysd_t *s,
     if (a0) args[n++] = a0;
     if (a1) args[n++] = a1;
     /* the lock file is owned by the test user, not root */
-    return nodus_node_package_main(args, n, s, lock, geteuid(), cfg, out, cap);
+    /* DHT v2 3c: the registration read's session is bound to a chain id; the
+     * fixtures have no running witness, so the read fails either way and the
+     * id is only a well-formed one. */
+    static const uint8_t chain[32] = { 1 };
+    return nodus_node_package_main(args, n, s, lock, geteuid(), cfg, chain,
+                                   out, cap);
 }
 
 static void test_main(void) {

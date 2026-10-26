@@ -28,9 +28,7 @@
 #include "protocol/nodus_tier2.h"
 #include "protocol/nodus_wire.h"
 #include "crypto/nodus_sign.h"
-#include "crypto/nodus_channel_crypto.h"
-#include "crypto/enc/qgp_kyber.h"
-#include "crypto/enc/qgp_mlkem.h"
+#include "transport/nodus_tcp_sc.h"    /* nodus_tcp_sc_busy (batch-forward transport) */
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
 
@@ -111,7 +109,17 @@ static int dht_udp_send(nodus_dht_t *dht, const uint8_t *payload, size_t len,
 }
 
 /* A pre-framed frame to a peer's 4002 over core's inter-node pool;
- * 0 / -1, synchronous (the hinted-handoff decision reads it). */
+ * synchronous (the hinted-handoff decision reads it). Results
+ * (nodus_inter_send_t): NODUS_INTER_SEND_WRITTEN (0) — handed to an
+ * authenticated session and written; NODUS_INTER_SEND_QUEUED (1) — the
+ * session is not authenticated yet (the frame waits in memory and is lost if
+ * the handshake fails) or the transport's queue-full fallback took the frame;
+ * NODUS_INTER_SEND_FAILED (-1) — nothing queued; NODUS_INTER_SEND_REFUSED
+ * (-2) — the dial was refused locally, nothing attempted. A caller that only
+ * asks "was it accepted" tests `>= 0` (QUEUED counts as accepted, as the old
+ * "queued" 0 did; FAILED and REFUSED are failures); a caller that DELETES
+ * durable work on success (the hinted-handoff retry) tests
+ * `== NODUS_INTER_SEND_WRITTEN`. */
 static int dht_inter_send(nodus_dht_t *dht, const char *ip, uint16_t port,
                           const nodus_key_t *expected_node_id,
                           const uint8_t *frame, size_t flen) {
@@ -443,7 +451,7 @@ static void subscription_notify(nodus_dht_t *dht, const nodus_key_t *key,
         if (nodus_key_cmp(&e->subscriber_node_id, &dht->host.identity->node_id) == 0) continue;
         if (!e->subscriber_ip[0]) continue;
         if (dht_inter_send(dht, e->subscriber_ip, e->subscriber_port,
-                           &e->subscriber_node_id, frame, flen) == 0) {
+                           &e->subscriber_node_id, frame, flen) >= 0) {
             sent++;
         }
     }
@@ -556,7 +564,7 @@ static void do_replicate_store_frame(nodus_dht_t *dht,
                     "MEDIA-REPL-SEND: hash=%s peer=%s:%d rc=%d flen=%zu\n",
                     kh, closest[i].ip, closest[i].tcp_port, send_rc, flen);
         }
-        if (send_rc != 0) {
+        if (send_rc < 0) {   /* QUEUED counts as accepted, as it always did */
             if (failed < NODUS_K) fail_indices[failed] = i;
             failed++;
             QGP_LOG_DEBUG(LOG_TAG, "%s: key=%s... SEND_FAIL to %s:%d",
@@ -677,7 +685,7 @@ static void put_replication_complete(nodus_dht_t *dht,
         if (nodus_key_cmp(&closest[i].node_id, &dht->host.identity->node_id) == 0) continue;
         if (dht_inter_send(dht, closest[i].ip, closest[i].tcp_port,
                            &closest[i].node_id,
-                           ctx->frame, ctx->flen) == 0) {
+                           ctx->frame, ctx->flen) >= 0) {
             sent++;
         } else {
             if (failed < NODUS_K) fail_indices[failed] = i;
@@ -804,7 +812,7 @@ static void media_replication_complete(nodus_dht_t *dht,
         if (nodus_key_cmp(&closest[i].node_id, &dht->host.identity->node_id) == 0) continue;
         if (dht_inter_send(dht, closest[i].ip, closest[i].tcp_port,
                            &closest[i].node_id,
-                           ctx->frame, ctx->flen) == 0) {
+                           ctx->frame, ctx->flen) >= 0) {
             sent++;
         } else {
             if (failed < NODUS_K) fail_indices[failed] = i;
@@ -891,14 +899,34 @@ static void dht_hinted_retry(nodus_dht_t *dht) {
             tcp_port = entries[0].peer_port;
         }
 
-        int h_sent = 0, h_bumped = 0, h_expired = 0;
+        int h_sent = 0, h_bumped = 0, h_expired = 0, h_queued = 0;
         for (size_t j = 0; j < count; j++) {
-            if (dht_inter_send(dht, ip, tcp_port,
-                               &node_id,
-                               entries[j].frame_data,
-                               entries[j].frame_len) == 0) {
+            int src = dht_inter_send(dht, ip, tcp_port,
+                                     &node_id,
+                                     entries[j].frame_data,
+                                     entries[j].frame_len);
+            if (src == NODUS_INTER_SEND_WRITTEN) {
+                /* Written to an AUTHENTICATED session: the only result on
+                 * which the durable row may go (Kurultay #43, mandatory
+                 * fix "no hint-row deletion on queued"). */
                 nodus_storage_hinted_delete(&dht->storage, entries[j].id);
                 h_sent++;
+            } else if (src == NODUS_INTER_SEND_QUEUED) {
+                /* The session is not authenticated yet — the frame sits in
+                 * a memory queue that dies with a failed handshake (a
+                 * rolling deploy: the peer may be an old build). The row
+                 * STAYS, no retry is counted (nothing failed yet), and this
+                 * peer is left until the next cycle, when the session is
+                 * either up (WRITTEN) or the dial failed (FAILED, below). */
+                h_queued++;
+                break;
+            } else if (src == NODUS_INTER_SEND_REFUSED) {
+                /* The dial was refused LOCALLY (no chain id yet, no pin, no
+                 * session config): nothing was attempted against the peer,
+                 * so no retry is counted and the row stays — a witness gap
+                 * must not burn the retries of rows nobody tried to send. */
+                h_queued++;
+                break;
             } else {
                 /* Send failed — TCP buffer likely full. Bump retry count,
                  * delete if max retries reached, then STOP trying this
@@ -914,8 +942,9 @@ static void dht_hinted_retry(nodus_dht_t *dht) {
                 break;  /* Back off — don't flood this peer's TCP buffer */
             }
         }
-        fprintf(stderr, "HINT-RETRY: peer=%s:%d batch=%zu delivered=%d bumped=%d maxretry=%d\n",
-                ip, tcp_port, count, h_sent, h_bumped, h_expired);
+        fprintf(stderr, "HINT-RETRY: peer=%s:%d batch=%zu delivered=%d bumped=%d maxretry=%d "
+                "queued=%d\n",
+                ip, tcp_port, count, h_sent, h_bumped, h_expired, h_queued);
 
         nodus_storage_hinted_free(entries, count);
     }
@@ -1146,7 +1175,7 @@ static void dht_republish(nodus_dht_t *dht) {
                                     &closest[j].node_id, frame, flen);
             /* Item 9: hints only for cluster members (seen recently); the
              * next republish cycle covers any other peer. */
-            if (rc != 0 && dht_hint_wanted(dht, &closest[j].node_id)) {
+            if (rc < 0 && dht_hint_wanted(dht, &closest[j].node_id)) {
                 nodus_storage_hinted_insert(&dht->storage,
                                              &closest[j].node_id,
                                              closest[j].ip, closest[j].tcp_port,
@@ -2993,37 +3022,31 @@ static void handle_t2_get_all(nodus_dht_t *dht, int slot,
 
 /* ── Batch Forward (BF) ─── get_batch miss → forward to closest peer ── */
 
+/* Release a forward: disconnect its connection (if any) and free what it
+ * holds. The connection is detached first (conn = NULL, user_data = NULL),
+ * so the transport's on_disconnect that nodus_tcp_disconnect runs finds no
+ * forward and does nothing. `dht` is not needed — the connection names its
+ * transport — and may be NULL (tests). */
 static void bf_conn_cleanup(nodus_dht_t *dht, dht_bf_conn_t *c) {
-    if (c->fd >= 0) {
-        /* Phase 3.2e: log BF close so we can correlate close(fd) → recycle. */
-        fprintf(stderr, "BF_CLOSE: fd=%d state=%d encrypted=%d\n",
-                c->fd, (int)c->state, c->encrypted ? 1 : 0);
-        epoll_ctl(dht->bf_state.bf_epoll_fd, EPOLL_CTL_DEL, c->fd, NULL);
-        if (c->fd < NODUS_BF_FD_TABLE_SIZE) {
-            dht->bf_fd_table[c->fd].batch_idx = -1;
-            dht->bf_fd_table[c->fd].forward_idx = -1;
-        }
-        close(c->fd);
+    (void)dht;
+    if (c->conn) {
+        nodus_tcp_conn_t *k = (nodus_tcp_conn_t *)c->conn;
+        /* Phase 3.2e: log BF close so we can correlate close → recycle. */
+        fprintf(stderr, "BF_CLOSE: slot=%d state=%d\n", k->slot, (int)c->state);
+        c->conn = NULL;
+        k->user_data = NULL;
+        nodus_tcp_disconnect(k->tcp_parent, k);
     }
-    c->fd = -1;
-    free(c->send_buf); c->send_buf = NULL;
-    free(c->recv_buf); c->recv_buf = NULL;
     free(c->key_indices); c->key_indices = NULL;
     free(c->batch_keys); c->batch_keys = NULL;
-    if (c->encrypted) nodus_channel_crypto_clear(&c->crypto);
-    c->encrypted = false;
-    qgp_secure_memzero(&c->dial, sizeof(c->dial));
     c->state = BF_DONE;
 }
 
 static void bf_batch_cleanup(nodus_dht_t *dht, dht_bf_batch_t *b) {
     for (int i = 0; i < NODUS_BF_MAX_FORWARDS; i++) {
-        /* Phase 3.2e FIX: was `fd >= 0` which treated zero-initialized
-         * uninitialized forwards (.bss start, or post-memset state below)
-         * as valid fds, calling close(0) on each batch cleanup pass and
-         * stomping stdin. Use `> 0` so only real socket fds (>= 3 in
-         * practice) are cleaned. */
-        if (b->forwards[i].fd > 0) bf_conn_cleanup(dht, &b->forwards[i]);
+        /* A forward is live when it holds a connection (a zeroed one, as
+         * after the memset below, is not). */
+        if (b->forwards[i].conn) bf_conn_cleanup(dht, &b->forwards[i]);
     }
     if (b->sets) {
         for (int i = 0; i < b->key_count; i++) nodus_dht_keyset_clear(&b->sets[i]);
@@ -3031,9 +3054,6 @@ static void bf_batch_cleanup(nodus_dht_t *dht, dht_bf_batch_t *b) {
     }
     free(b->keys);
     memset(b, 0, sizeof(*b));
-    /* Phase 3.2e FIX: after memset all forwards' fd are 0 — re-init to -1
-     * so any later cleanup pass treats them as inactive, not as stdin. */
-    for (int i = 0; i < NODUS_BF_MAX_FORWARDS; i++) b->forwards[i].fd = -1;
 }
 
 void nodus_dht_bf_batch_cleanup(nodus_dht_t *dht, dht_bf_batch_t *b) {
@@ -3043,14 +3063,12 @@ void nodus_dht_bf_batch_cleanup(nodus_dht_t *dht, dht_bf_batch_t *b) {
 int nodus_dht_bf_batch_setup(dht_bf_batch_t *b, const nodus_key_t *keys, int n) {
     if (!b || !keys || n < 1) return -1;
     memset(b, 0, sizeof(*b));
-    for (int i = 0; i < NODUS_BF_MAX_FORWARDS; i++) b->forwards[i].fd = -1;
     b->keys = malloc((size_t)n * sizeof(nodus_key_t));
     b->sets = calloc((size_t)n, sizeof(nodus_dht_keyset_t));
     if (!b->keys || !b->sets) {
         free(b->keys);
         free(b->sets);
         memset(b, 0, sizeof(*b));
-        for (int i = 0; i < NODUS_BF_MAX_FORWARDS; i++) b->forwards[i].fd = -1;
         return -1;
     }
     memcpy(b->keys, keys, (size_t)n * sizeof(nodus_key_t));
@@ -3193,10 +3211,6 @@ int nodus_dht_bf_absorb_reply(dht_bf_batch_t *b, const dht_bf_conn_t *c,
     return 0;
 }
 
-/** Build a framed CBOR message into malloc'd buffer. Returns 0 on success. */
-static int bf_build_frame(uint8_t **buf_out, size_t *len_out,
-                            const uint8_t *cbor, size_t cbor_len);
-
 int nodus_dht_bf_frame_status(const uint8_t *buf, size_t len, size_t cap) {
     if (!buf) return -1;
     if (len < NODUS_FRAME_HEADER_SIZE) return 0;  /* need more */
@@ -3221,33 +3235,10 @@ int nodus_dht_bf_frame_status(const uint8_t *buf, size_t len, size_t cap) {
     return rc > 0 ? 1 : 0;
 }
 
-/** Try to receive a complete nodus frame. Returns 1 if complete, 0 if need more, -1 on error. */
-static int bf_recv_frame(dht_bf_conn_t *c, int fd) {
-    ssize_t n = recv(fd, c->recv_buf + c->recv_len,
-                     c->recv_cap - c->recv_len, 0);
-    if (n <= 0) return -1;  /* closed or error */
-    c->recv_len += (size_t)n;
-
-    return nodus_dht_bf_frame_status(c->recv_buf, c->recv_len, c->recv_cap);
-}
-
-/** Reset send/recv buffers for next round-trip */
-static void bf_reset_buffers(dht_bf_conn_t *c) {
-    free(c->send_buf); c->send_buf = NULL;
-    c->send_len = 0; c->send_pos = 0;
-    c->recv_len = 0;  /* keep recv_buf allocated */
-}
-
-/** Switch epoll to EPOLLOUT for sending */
-static void bf_switch_to_send(nodus_dht_t *dht, dht_bf_conn_t *c) {
-    struct epoll_event ev = { .events = EPOLLOUT | EPOLLERR | EPOLLHUP, .data.fd = c->fd };
-    epoll_ctl(dht->bf_state.bf_epoll_fd, EPOLL_CTL_MOD, c->fd, &ev);
-}
-
-/** Switch epoll to EPOLLIN for receiving */
-static void bf_switch_to_recv(nodus_dht_t *dht, dht_bf_conn_t *c) {
-    struct epoll_event ev = { .events = EPOLLIN | EPOLLERR | EPOLLHUP, .data.fd = c->fd };
-    epoll_ctl(dht->bf_state.bf_epoll_fd, EPOLL_CTL_MOD, c->fd, &ev);
+/* The batch-forward session config's chain-id hook: the DHT's CURRENT host. */
+static bool bf_cfg_chain_id(void *ctx, uint8_t out[32]) {
+    nodus_dht_t *dht = (nodus_dht_t *)ctx;
+    return dht && dht->host.chain_id && dht->host.chain_id(dht->host.ctx, out);
 }
 
 /** Forward error → cleanup + check batch completion */
@@ -3256,291 +3247,114 @@ static void bf_forward_fail(nodus_dht_t *dht, dht_bf_batch_t *b, dht_bf_conn_t *
     if (--b->pending_forwards <= 0) nodus_dht_bf_send_result(dht, b);
 }
 
-/* ── The batch-forward dialer on the shared 4002 dialer module ──────
+/* ── The batch forwards on the 4002 node session ─────────────────────
  *
- * Split S5b, decision 2026-10-01-nodus-component-split item 28 ("no copy"):
- * the handshake BF used to carry its own copy of (challenge → auth,
- * auth_ok → CRIT-1 kpk_sig + identity pin → KEM → key_init, key_ack →
- * channel crypto) now runs through server/nodus_inter_dial.c, the code
- * core's dialer runs. BF keeps its own socket and its own send / receive
- * state machine; the module's send_raw hands each handshake payload to
- * that state machine (framed into send_buf), and its `established` says
- * the channel key exists. */
-typedef struct {
-    dht_bf_conn_t *c;
-    bool           sent;          /* send_raw framed a payload into send_buf */
-    bool           build_failed;  /* framing it failed */
-    bool           established;   /* the module reported the handshake done */
-    bool           encrypted;     /* ... with channel crypto */
-} bf_dial_ctx_t;
+ * A forward is a nodus_tcp connection of the DHT's own dial-only transport
+ * (dht_bf_state_t.tcp) carrying the node session — the SecretConnection,
+ * NODE profile, pinned to the FIND_NODE peer it dials (nodus_inter_dial.h,
+ * the code the node's pool runs; DHT v2 3b-2). The hello / auth / key_init
+ * state machine, its raw socket, its frame parser and its channel crypto are
+ * gone. Three callbacks of the transport drive a forward:
+ *   on_session     the session is authenticated: send the get_batch;
+ *   on_frame       the responder's token message (auth_ok, txn 0), then the
+ *                  reply to absorb;
+ *   on_disconnect  the connection ended (a refused handshake, a pin
+ *                  mismatch, a reset): the forward fails.
+ * conn->user_data names the forward (dht_bf_conn_t, stable inside its
+ * batch), cb_ctx the DHT; (bi, fi) give the batch. */
 
-static int bf_dial_send_raw(void *ctx, const uint8_t *payload, size_t len) {
-    bf_dial_ctx_t *x = (bf_dial_ctx_t *)ctx;
-    free(x->c->send_buf);
-    x->c->send_buf = NULL;
-    x->c->send_len = 0;
-    if (bf_build_frame(&x->c->send_buf, &x->c->send_len, payload, len) != 0) {
-        x->build_failed = true;
-        return -1;
+static dht_bf_conn_t *bf_of_conn(nodus_dht_t *dht, nodus_tcp_conn_t *conn,
+                                 dht_bf_batch_t **b_out) {
+    dht_bf_conn_t *c = (dht_bf_conn_t *)conn->user_data;
+    if (!c || c->conn != conn) return NULL;
+    if (c->bi < 0 || c->bi >= NODUS_BF_MAX_BATCHES ||
+        c->fi < 0 || c->fi >= NODUS_BF_MAX_FORWARDS)
+        return NULL;
+    dht_bf_batch_t *b = &dht->bf_state.batches[c->bi];
+    if (!b->active || &b->forwards[c->fi] != c) return NULL;
+    *b_out = b;
+    return c;
+}
+
+static void bf_on_session(nodus_tcp_conn_t *conn, void *ctx) {
+    nodus_dht_t *dht = (nodus_dht_t *)ctx;
+    dht_bf_batch_t *b = NULL;
+    dht_bf_conn_t *c = bf_of_conn(dht, conn, &b);
+    if (!c || c->state != BF_CONNECTING) return;
+
+    /* The session is authenticated (the layer pinned the responder before
+     * ENCAPS and nodus_inter_session_proven re-checks): send the get_batch.
+     * S2/S3: forward the owner filter and paging args (an old peer skips
+     * them; the merge re-applies both). No args → the pre-Package-A frame.
+     * The token slot of the frame is zero: the responder's 4002 handler
+     * reads no token (identity is the connection). */
+    if (nodus_inter_session_proven(conn) != 0) { bf_forward_fail(dht, b, c); return; }
+    /* Open the send gate, as the pool and the storage dialer do at their
+     * on_session: nodus_inter_session_enable left auth_state at HELLO_SENT,
+     * so a nodus_tcp_send before this would only append to the dial queue
+     * and nothing would ever replay it (the get_batch was never sent). */
+    nodus_inter_dial_conn_open(conn);
+    nodus_t2_read_opts_t fwd_opts = {
+        .own   = b->has_own ? &b->own : NULL,
+        .page  = b->paged,
+        .after = b->has_after ? &b->after : NULL,
+    };
+    uint8_t cbor[4096];
+    size_t clen = 0;
+    if (nodus_t2_get_batch_ex(3, c->token, c->batch_keys, c->batch_key_count,
+                               &fwd_opts, cbor, sizeof(cbor), &clen) != 0) {
+        bf_forward_fail(dht, b, c); return;
     }
-    x->sent = true;
-    return 0;
+    if (nodus_tcp_send(conn, cbor, clen) != 0) { bf_forward_fail(dht, b, c); return; }
+    c->state = BF_RECV_RESULT;
 }
 
-static void bf_dial_established(void *ctx, bool encrypted) {
-    bf_dial_ctx_t *x = (bf_dial_ctx_t *)ctx;
-    x->established = true;
-    x->encrypted = encrypted;
-}
+static void bf_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
+                        size_t len, void *ctx) {
+    nodus_dht_t *dht = (nodus_dht_t *)ctx;
+    dht_bf_batch_t *b = NULL;
+    dht_bf_conn_t *c = bf_of_conn(dht, conn, &b);
+    if (!c) return;
 
-static void bf_dial_io(nodus_dht_t *dht, dht_bf_conn_t *c, bf_dial_ctx_t *x,
-                       nodus_inter_dial_io_t *io) {
-    memset(x, 0, sizeof(*x));
-    x->c = c;
-    memset(io, 0, sizeof(*io));
-    io->identity = dht->host.identity;
-    io->expected_peer_id = c->has_expected_node_id ? &c->expected_node_id : NULL;
-    io->crypto = &c->crypto;
-    io->peer_ip = c->ip;
-    io->peer_port = c->port;
-    io->slot = c->fd;          /* log lines only: BF has no pool slot */
-    io->send_raw = bf_dial_send_raw;
-    io->established = bf_dial_established;
-    io->ctx = x;
-}
-
-/* Decode the frame in c->recv_buf and run it through the dialer module.
- * @return the module's answer; NODUS_INTER_DIAL_REFUSED as well when the
- *         frame does not decode or is an error reply. `msg_token` (may be
- *         NULL) receives the frame's session token (auth_ok). */
-static nodus_inter_dial_rc_t bf_dial_feed(nodus_dht_t *dht, dht_bf_conn_t *c,
-                                          bf_dial_ctx_t *x,
-                                          uint8_t *msg_token) {
-    nodus_inter_dial_io_t io;
-    bf_dial_io(dht, c, x, &io);
+    /* The responder's token message comes first (O-2 b): note it and wait
+     * for the reply. Anything that is not T2 is an answer to absorb (it
+     * absorbs nothing — S6 — and the forward ends). */
     nodus_tier2_msg_t msg;
     memset(&msg, 0, sizeof(msg));
-    if (nodus_t2_decode(c->recv_buf + NODUS_FRAME_HEADER_SIZE,
-                        c->recv_len - NODUS_FRAME_HEADER_SIZE, &msg) != 0 ||
-        msg.type == 'e') {
+    if (nodus_t2_decode(payload, len, &msg) == 0 && msg.type != 'e' &&
+        strcmp(msg.method, "auth_ok") == 0) {
+        memcpy(c->token, msg.token, NODUS_SESSION_TOKEN_LEN);
         nodus_t2_msg_free(&msg);
-        return NODUS_INTER_DIAL_REFUSED;
+        return;
     }
-    if (msg_token)
-        memcpy(msg_token, msg.token, NODUS_SESSION_TOKEN_LEN);
-    nodus_inter_dial_rc_t rc = nodus_inter_dial_on_frame(&c->dial, &io, &msg);
     nodus_t2_msg_free(&msg);
-    return rc;
+    if (c->state != BF_RECV_RESULT) { bf_forward_fail(dht, b, c); return; }
+
+    /* An error frame / garbage absorbs nothing: the keys of this forward
+     * stay unanswered (S6). */
+    (void)nodus_dht_bf_absorb_reply(b, c, payload, len);
+    bf_conn_cleanup(dht, c);
+    if (--b->pending_forwards <= 0) nodus_dht_bf_send_result(dht, b);
 }
 
-/** Handle epoll events for batch forward fds — full auth state machine */
-static void bf_handle_event(nodus_dht_t *dht, int fd, uint32_t events) {
-    /* Phase 3.2e: log every BF event with fd. Captures BF subsystem activity
-     * we previously had no visibility into. */
-    fprintf(stderr, "BF_EVENT: fd=%d events=0x%x\n", fd, events);
-    if (fd < 0 || fd >= NODUS_BF_FD_TABLE_SIZE) return;
-    int bi = dht->bf_fd_table[fd].batch_idx;
-    int fi = dht->bf_fd_table[fd].forward_idx;
-    if (bi < 0 || bi >= NODUS_BF_MAX_BATCHES) return;
-    if (fi < 0 || fi >= NODUS_BF_MAX_FORWARDS) return;
-    dht_bf_batch_t *b = &dht->bf_state.batches[bi];
-    if (!b->active) return;
-    dht_bf_conn_t *c = &b->forwards[fi];
-    if (c->fd < 0) return;
-
-    if (events & (EPOLLERR | EPOLLHUP)) {
-        bf_forward_fail(dht, b, c);
-        return;
-    }
-
-    /* ── State 0: Connecting → send HELLO ── */
-    if (c->state == BF_CONNECTING && (events & EPOLLOUT)) {
-        c->state = BF_SEND_HELLO;
-        /* send_buf already has HELLO frame from bf_start_forward */
-    }
-
-    /* ── Send states (HELLO / AUTH / KEY_INIT / BATCH) ── */
-    if ((c->state == BF_SEND_HELLO || c->state == BF_SEND_AUTH ||
-         c->state == BF_SEND_KEY_INIT || c->state == BF_SEND_BATCH) &&
-        (events & EPOLLOUT)) {
-        if (!c->send_buf) { bf_forward_fail(dht, b, c); return; }
-        /* Phase 3.2e: log BF send target fd + state. If fd ever points at a
-         * recycled stale value, this log will reveal the mismatch. */
-        fprintf(stderr,
-                "BF_SEND: fd=%d c_fd=%d state=%d peer=%s:%u send_pos=%zu "
-                "send_len=%zu encrypted=%d bi=%d fi=%d\n",
-                fd, c->fd, (int)c->state, c->ip, (unsigned)c->port,
-                c->send_pos, c->send_len, c->encrypted ? 1 : 0, bi, fi);
-        ssize_t n = send(fd, c->send_buf + c->send_pos,
-                         c->send_len - c->send_pos, MSG_NOSIGNAL);
-        if (n < 0) { bf_forward_fail(dht, b, c); return; }
-        if (n > 0) c->send_pos += (size_t)n;
-        if (c->send_pos >= c->send_len) {
-            /* Send complete → switch to recv for response */
-            if (c->state == BF_SEND_HELLO)      c->state = BF_RECV_CHALL;
-            else if (c->state == BF_SEND_AUTH)   c->state = BF_RECV_AUTHOK;
-            else if (c->state == BF_SEND_KEY_INIT) c->state = BF_RECV_KEY_ACK;
-            else if (c->state == BF_SEND_BATCH)  c->state = BF_RECV_RESULT;
-            bf_reset_buffers(c);
-            bf_switch_to_recv(dht, c);
-        }
-        return;
-    }
-
-    /* ── State 2: Recv CHALLENGE → sign nonce → send AUTH ── */
-    if (c->state == BF_RECV_CHALL && (events & EPOLLIN)) {
-        int rc = bf_recv_frame(c, fd);
-        if (rc < 0) { bf_forward_fail(dht, b, c); return; }
-        if (rc == 0) return;  /* need more data */
-
-        /* challenge → auth, in the shared dialer module: it signs the
-         * nonce (C2 domain tag) and retains it for the CRIT-1 kpk_sig
-         * check at auth_ok; it refuses an absent (all-zero) nonce and
-         * never signs a second challenge. Anything but a signed auth
-         * framed for sending fails the forward. */
-        bf_dial_ctx_t x;
-        nodus_inter_dial_rc_t drc = bf_dial_feed(dht, c, &x, NULL);
-        if (drc != NODUS_INTER_DIAL_DONE || !x.sent || x.build_failed) {
-            bf_forward_fail(dht, b, c); return;
-        }
-        c->send_pos = 0;
-        c->recv_len = 0;
-        c->state = BF_SEND_AUTH;
-        bf_switch_to_send(dht, c);
-        return;
-    }
-
-    /* ── State 4: Recv AUTH_OK → Kyber key_init → key exchange ── */
-    if (c->state == BF_RECV_AUTHOK && (events & EPOLLIN)) {
-        int rc = bf_recv_frame(c, fd);
-        if (rc < 0) { bf_forward_fail(dht, b, c); return; }
-        if (rc == 0) return;
-
-        /* auth_ok → (CRIT-1) → key_init, in the shared dialer module: the
-         * peer's kpk_sig over (kyber_pk || our challenge nonce) must verify
-         * under server_pk AND fingerprint(server_pk) must be the FIND_NODE
-         * peer we dialed (expected_node_id), or the module refuses; then
-         * ML-KEM-1024 when the peer's mpk_sig verifies under the same
-         * server_pk, else Kyber round-3. All paths fail closed. The
-         * forward needs the channel key: a key exchange that did not start
-         * (the module swallows an encapsulation failure, and a node
-         * without a Kyber identity would go plaintext) fails it too. The
-         * auth_ok's session token goes into the get_batch, as before. */
-        bf_dial_ctx_t x;
-        nodus_inter_dial_rc_t drc = bf_dial_feed(dht, c, &x, c->token);
-        if (drc != NODUS_INTER_DIAL_DONE || !c->dial.pending_kem ||
-            !x.sent || x.build_failed) {
-            bf_forward_fail(dht, b, c); return;
-        }
-        c->send_pos = 0;
-        c->recv_len = 0;
-        c->state = BF_SEND_KEY_INIT;
-        bf_switch_to_send(dht, c);
-        return;
-    }
-
-    /* ── State 5: Send KEY_INIT (handled by generic send block above) ── */
-
-    /* ── State 6: Recv KEY_ACK → init crypto → send encrypted batch ── */
-    if (c->state == BF_RECV_KEY_ACK && (events & EPOLLIN)) {
-        int rc = bf_recv_frame(c, fd);
-        if (rc < 0) { bf_forward_fail(dht, b, c); return; }
-        if (rc == 0) return;
-
-        /* key_ack → AES-256-GCM session key (we DIALED → initiator), in the
-         * shared dialer module; it zeroes the pending secret. A key_ack
-         * without the server nonce, or any other frame, leaves the channel
-         * without a key and fails the forward. */
-        bf_dial_ctx_t x;
-        nodus_inter_dial_rc_t drc = bf_dial_feed(dht, c, &x, NULL);
-        if (drc != NODUS_INTER_DIAL_DONE || !x.established || !x.encrypted) {
-            bf_forward_fail(dht, b, c); return;
-        }
-        c->encrypted = true;
-
-        /* Build get_batch CBOR, encrypt, frame, send. S2/S3: forward the
-         * owner filter and paging args (an old peer skips them; the merge
-         * re-applies both). No args → the pre-Package-A frame. */
-        nodus_t2_read_opts_t fwd_opts = {
-            .own   = b->has_own ? &b->own : NULL,
-            .page  = b->paged,
-            .after = b->has_after ? &b->after : NULL,
-        };
-        uint8_t cbor[4096];
-        size_t clen = 0;
-        if (nodus_t2_get_batch_ex(3, c->token, c->batch_keys, c->batch_key_count,
-                                   &fwd_opts, cbor, sizeof(cbor), &clen) != 0) {
-            bf_forward_fail(dht, b, c); return;
-        }
-        /* Encrypt the CBOR payload */
-        size_t enc_cap = clen + NODUS_CHANNEL_OVERHEAD;
-        uint8_t *enc_buf = malloc(enc_cap);
-        if (!enc_buf) { bf_forward_fail(dht, b, c); return; }
-        size_t enc_len = 0;
-        if (nodus_channel_encrypt(&c->crypto, cbor, clen,
-                                    enc_buf, enc_cap, &enc_len) != 0) {
-            free(enc_buf);
-            bf_forward_fail(dht, b, c); return;
-        }
-        /* Frame the encrypted payload */
-        if (bf_build_frame(&c->send_buf, &c->send_len, enc_buf, enc_len) != 0) {
-            free(enc_buf);
-            bf_forward_fail(dht, b, c); return;
-        }
-        free(enc_buf);
-        c->send_pos = 0;
-        c->recv_len = 0;
-        c->state = BF_SEND_BATCH;
-        bf_switch_to_send(dht, c);
-        return;
-    }
-
-    /* ── State 8: Recv batch result → decrypt if needed → merge → done ── */
-    if (c->state == BF_RECV_RESULT && (events & EPOLLIN)) {
-        int rc = bf_recv_frame(c, fd);
-        if (rc < 0) goto merge_and_done;
-        if (rc == 0) return;
-
-    merge_and_done:
-        /* Parse batch response from peer (decrypt if Kyber session active) */
-        if (c->recv_len > 7) {
-            const uint8_t *payload = c->recv_buf + 7;
-            size_t payload_len = c->recv_len - 7;
-
-            /* Decrypt if encrypted */
-            uint8_t *dec_buf = NULL;
-            if (c->encrypted) {
-                size_t dec_cap = payload_len;  /* decrypted is smaller */
-                dec_buf = malloc(dec_cap);
-                if (!dec_buf) { bf_forward_fail(dht, b, c); return; }
-                size_t dec_len = 0;
-                if (nodus_channel_decrypt(&c->crypto, payload, payload_len,
-                                            dec_buf, dec_cap, &dec_len) != 0) {
-                    free(dec_buf);
-                    bf_forward_fail(dht, b, c); return;
-                }
-                payload = dec_buf;
-                payload_len = dec_len;
-            }
-
-            /* An error frame / garbage absorbs nothing: the keys of this
-             * forward stay unanswered (S6). */
-            (void)nodus_dht_bf_absorb_reply(b, c, payload, payload_len);
-            free(dec_buf);  /* NULL-safe */
-        }
-        bf_conn_cleanup(dht, c);
-        if (--b->pending_forwards <= 0) nodus_dht_bf_send_result(dht, b);
-    }
+static void bf_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
+    nodus_dht_t *dht = (nodus_dht_t *)ctx;
+    dht_bf_batch_t *b = NULL;
+    dht_bf_conn_t *c = bf_of_conn(dht, conn, &b);
+    if (!c) return;      /* detached by bf_conn_cleanup, or not ours */
+    /* the connection is already going away: do not disconnect it again */
+    c->conn = NULL;
+    conn->user_data = NULL;
+    bf_forward_fail(dht, b, c);
 }
 
-/** Tick: advance all batch forwards (called from main event loop) */
+/** Tick: advance all batch forwards (called from main event loop): poll the
+ *  batch-forward transport without waiting (handshake jobs are applied, the
+ *  three callbacks above run), then the timeouts. */
 static void bf_tick(nodus_dht_t *dht) {
-    if (dht->bf_state.bf_epoll_fd < 0) return;
+    if (!dht->bf_state.tcp_up) return;
 
-    struct epoll_event events[32];
-    int n = epoll_wait(dht->bf_state.bf_epoll_fd, events, 32, 0);
-    for (int i = 0; i < n; i++)
-        bf_handle_event(dht, events[i].data.fd, events[i].events);
+    nodus_tcp_poll(&dht->bf_state.tcp, 0);
 
     /* Check timeouts */
     uint64_t now = nodus_time_now_ms();
@@ -3557,32 +3371,18 @@ static void bf_tick(nodus_dht_t *dht) {
             /* Timeout: clean up remaining forwards, send what we have.
              * A peer that did not answer leaves the result (or the S3
              * page) incomplete; with no row and no answer at all the
-             * reply is UNAVAILABLE (S6, bf_send_result).
-             * Phase 3.2e FIX: `> 0` not `>= 0` — see bf_batch_cleanup. */
+             * reply is UNAVAILABLE (S6, bf_send_result). */
             fprintf(stderr, "BF: txn=%u timeout — %d forward(s) unanswered%s\n",
                     (unsigned)b->txn_id, b->pending_forwards,
                     b->paged ? " (page may be incomplete)" : "");
             for (int fi = 0; fi < NODUS_BF_MAX_FORWARDS; fi++) {
-                if (b->forwards[fi].fd > 0) {
+                if (b->forwards[fi].conn) {
                     bf_conn_cleanup(dht, &b->forwards[fi]);
                 }
             }
             nodus_dht_bf_send_result(dht, b);
         }
     }
-}
-
-/** Build a framed CBOR message into malloc'd buffer. Returns 0 on success. */
-static int bf_build_frame(uint8_t **buf_out, size_t *len_out,
-                            const uint8_t *cbor, size_t cbor_len) {
-    uint8_t tmp[8192];
-    size_t flen = nodus_frame_encode(tmp, sizeof(tmp), cbor, (uint32_t)cbor_len);
-    if (flen == 0) return -1;
-    *buf_out = malloc(flen);
-    if (!*buf_out) return -1;
-    memcpy(*buf_out, tmp, flen);
-    *len_out = flen;
-    return 0;
 }
 
 /** Start a batch forward to a peer node */
@@ -3592,16 +3392,16 @@ static int bf_start_forward(nodus_dht_t *dht, dht_bf_batch_t *b,
                               int key_count) {
     dht_bf_conn_t *c = &b->forwards[fi];
     memset(c, 0, sizeof(*c));
-    c->fd = -1;
+    c->bi = (int)(b - dht->bf_state.batches);
+    c->fi = fi;
 
-    /* CRIT-1: record WHO we are dialing (the FIND_NODE-closest peer, NOT the
-     * leader — pinning against a leader_id here would self-partition every
-     * non-leader GET). The auth_ok handler pins fingerprint(server_pk) against
-     * this before Kyber-encapsulating. */
-    if (peer) {
-        c->expected_node_id = peer->node_id;
-        c->has_expected_node_id = true;
-    }
+    /* No peer, no dial: the node session is pinned to one exact identity
+     * (fail closed; there is no unpinned forward). CRIT-1: WHO we are
+     * dialing is the FIND_NODE-closest peer, NOT the leader — pinning
+     * against a leader_id here would self-partition every non-leader GET. */
+    if (!peer || !dht->bf_state.tcp_up) return -1;
+    c->expected_node_id = peer->node_id;
+    c->has_expected_node_id = true;
 
     /* Copy key indices */
     c->key_indices = malloc((size_t)key_count * sizeof(int));
@@ -3609,66 +3409,47 @@ static int bf_start_forward(nodus_dht_t *dht, dht_bf_batch_t *b,
     memcpy(c->key_indices, key_indices, (size_t)key_count * sizeof(int));
     c->key_count = key_count;
 
-    /* Store batch keys for later (sent after auth completes) */
+    /* Store batch keys for later (sent once the session is up) */
     c->batch_keys = malloc((size_t)key_count * sizeof(nodus_key_t));
     if (!c->batch_keys) goto fail;
     memcpy(c->batch_keys, keys, (size_t)key_count * sizeof(nodus_key_t));
     c->batch_key_count = key_count;
 
-    /* Build HELLO frame (first message in auth handshake) — the shared
-     * dialer module's hello (split S5b, decision item 28). */
+    /* Fail closed BEFORE any connect: no chain id, no session, no socket. */
+    dht->bf_state.cfg.identity = dht->host.identity;
     {
-        bf_dial_ctx_t x;
-        nodus_inter_dial_io_t io;
-        bf_dial_io(dht, c, &x, &io);
-        if (nodus_inter_dial_start(&io) != 0 || !x.sent || x.build_failed)
-            goto fail;
+        uint8_t cid[32];
+        if (!bf_cfg_chain_id(dht, cid)) goto fail;
     }
 
-    c->recv_cap = RESP_BUF_SIZE;
-    c->recv_buf = malloc(c->recv_cap);
-    if (!c->recv_buf) goto fail;
-
-    /* Non-blocking connect to peer's INTER-NODE port (4002) */
-    int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
-    if (fd < 0) goto fail;
-    /* Phase 3.2e: log BF socket allocation. fd value tells us if BF is
-     * grabbing low fds (e.g. fd=0 from closed stdin). */
-    fprintf(stderr, "BF_SOCK: fd=%d peer=%s\n", fd, peer->ip);
-    if (fd >= NODUS_BF_FD_TABLE_SIZE) { close(fd); goto fail; }
-
-    /* Inter-node port = UDP port + 2 (convention: 4000→4002) */
+    /* Non-blocking connect to peer's INTER-NODE port (4002):
+     * UDP port + 2 (convention: 4000→4002) */
     uint16_t inter_port = peer->udp_port ? (peer->udp_port + 2) : 4002;
+    nodus_tcp_conn_t *k = nodus_tcp_connect(&dht->bf_state.tcp, peer->ip, inter_port);
+    if (!k) goto fail;
+    /* Phase 3.2e: log BF connection allocation. */
+    fprintf(stderr, "BF_CONN: slot=%d peer=%s:%u\n", k->slot, peer->ip,
+            (unsigned)inter_port);
+    k->is_nodus = true;
+    k->expected_peer_id = peer->node_id;       /* the pin, before the layer */
+    k->expected_peer_id_set = true;
+    /* The node session, INITIATOR: refused (and the forward not started)
+     * when the chain id is not known or the layer cannot be enabled. */
+    if (nodus_inter_session_enable(&dht->bf_state.tcp, k, true) != 0) {
+        nodus_tcp_disconnect(&dht->bf_state.tcp, k);
+        goto fail;
+    }
 
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(inter_port);
-    inet_pton(AF_INET, peer->ip, &addr.sin_addr);
-
-    int rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
-    if (rc < 0 && errno != EINPROGRESS) { close(fd); goto fail; }
-
-    c->fd = fd;
+    k->user_data = c;
+    c->conn = k;
     c->state = BF_CONNECTING;
     c->started_at = nodus_time_now_ms();
     snprintf(c->ip, sizeof(c->ip), "%s", peer->ip);
     c->port = inter_port;
-
-    /* Register with batch forward epoll */
-    int bi = (int)(b - dht->bf_state.batches);
-    dht->bf_fd_table[fd].batch_idx = bi;
-    dht->bf_fd_table[fd].forward_idx = fi;
-
-    struct epoll_event ev = { .events = EPOLLOUT | EPOLLERR | EPOLLHUP, .data.fd = fd };
-    epoll_ctl(dht->bf_state.bf_epoll_fd, EPOLL_CTL_ADD, fd, &ev);
-
     return 0;
 
 fail:
     free(c->key_indices); c->key_indices = NULL;
-    free(c->send_buf); c->send_buf = NULL;
-    free(c->recv_buf); c->recv_buf = NULL;
     free(c->batch_keys); c->batch_keys = NULL;
     return -1;
 }
@@ -3944,7 +3725,7 @@ static void listen_fwd_complete(nodus_dht_t *dht,
     for (int i = 0; i < count; i++) {
         if (nodus_key_cmp(&closest[i].node_id, &dht->host.identity->node_id) == 0) continue;
         if (dht_inter_send(dht, closest[i].ip, closest[i].tcp_port,
-                           &closest[i].node_id, frame, flen) == 0) {
+                           &closest[i].node_id, frame, flen) >= 0) {
             sent++;
         }
     }
@@ -4275,6 +4056,23 @@ void nodus_dht_client_request(nodus_dht_t *dht, int slot,
                               const nodus_pubkey_t *client_pk,
                               nodus_tier2_msg_t *msg) {
     if (!dht || !msg || slot < 0 || slot >= NODUS_MAX_SESSIONS) return;
+
+    /* DHT v2 package 3d: a session with NO principal (the no-login ANON
+     * family: core passes no fp / pk, the storage IPC's no-identity origin)
+     * is refused every method of this legacy verb set — the identity-bound
+     * ones (put, m_put, listen, cnt_batch) because there is no identity, and
+     * the v1 reads too (khan decision 4, 2026-10-26: legacy v1 DHT reads are
+     * refused on ANON). Core's allowlist never routes them here; this is the
+     * storage side's own refusal. Both pointers are given together or not at
+     * all. */
+    if (!client_fp || !client_pk) {
+        size_t nlen = 0;
+        nodus_t2_error(msg->txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                        "this method needs a logged-in session",
+                        resp_buf, sizeof(resp_buf), &nlen);
+        dht_send_client(dht, slot, resp_buf, nlen);
+        return;
+    }
 
     if (strcmp(msg->method, "put") == 0)
         handle_t2_put(dht, slot, client_fp, client_pk, msg);
@@ -4822,15 +4620,8 @@ int nodus_dht_init(nodus_dht_t *dht, const nodus_dht_host_t *host) {
     memset(dht, 0, sizeof(*dht));
     dht->host = *host;
 
-    /* Phase 3.2e FIX: bf_state.batches[].forwards[].fd starts at 0 from
-     * memset above, but 0 is a VALID stdio fd (stdin). Cleanup paths use
-     * fd >= 0 as "active" check, so uninitialized forwards trigger
-     * close(0) and stomp stdin. Initialize all forward fds to -1. */
-    for (int bi = 0; bi < NODUS_BF_MAX_BATCHES; bi++) {
-        for (int fi = 0; fi < NODUS_BF_MAX_FORWARDS; fi++) {
-            dht->bf_state.batches[bi].forwards[fi].fd = -1;
-        }
-    }
+    /* (A zeroed forward holds no connection: bf_state.batches[].forwards[]
+     * .conn == NULL is "unused".) */
 
     /* Jitter republish start to avoid thundering herd across cluster.
      * Each node delays its first republish cycle by a random offset
@@ -4850,17 +4641,36 @@ int nodus_dht_init(nodus_dht_t *dht, const nodus_dht_host_t *host) {
      * All active lookups live in dht->lookup_state (already zeroed by memset). */
     dht->lookup_state.next_txn = 1;
 
-    /* Create batch forward epoll fd */
-    dht->bf_state.bf_epoll_fd = epoll_create1(EPOLL_CLOEXEC);
-    if (dht->bf_state.bf_epoll_fd < 0) {
-        fprintf(stderr, "Failed to create BF epoll fd\n");
+    /* The batch forwards' own transport (dial-only nodus_tcp, own epoll).
+     * Its node-session config is this DHT's host view: the node's identity
+     * and the chain id the host gives; the callbacks are the bf_on_* above,
+     * their context is the DHT. */
+    if (nodus_tcp_init(&dht->bf_state.tcp, -1) != 0) {
+        fprintf(stderr, "Failed to create the batch-forward transport\n");
         return -1;
     }
-    for (int i = 0; i < NODUS_BF_FD_TABLE_SIZE; i++) {
-        dht->bf_fd_table[i].batch_idx = -1;
-        dht->bf_fd_table[i].forward_idx = -1;
-    }
+    dht->bf_state.tcp_up = true;
+    /* The config resolves through the DHT's host at CALL time (the shim,
+     * ctx = the DHT; identity refreshed in bf_start_forward): a copy of
+     * host.ctx would go stale when the host is replaced under a live DHT. */
+    dht->bf_state.cfg.identity = dht->host.identity;
+    dht->bf_state.cfg.chain_id = bf_cfg_chain_id;
+    dht->bf_state.cfg.ctx      = dht;
+    dht->bf_state.tcp.auth_ctx      = &dht->bf_state.cfg;
+    dht->bf_state.tcp.on_session    = bf_on_session;
+    dht->bf_state.tcp.on_frame      = bf_on_frame;
+    dht->bf_state.tcp.on_disconnect = bf_on_disconnect;
+    dht->bf_state.tcp.cb_ctx        = dht;
     return 0;
+}
+
+/* Close the batch-forward transport (idempotent): joins its handshake
+ * workers and frees its connections without on_disconnect (every forward
+ * was cleaned up first). */
+static void bf_transport_close(nodus_dht_t *dht) {
+    if (!dht->bf_state.tcp_up) return;
+    nodus_tcp_close(&dht->bf_state.tcp);
+    dht->bf_state.tcp_up = false;
 }
 
 int nodus_dht_open(nodus_dht_t *dht, const char *data_path,
@@ -4927,10 +4737,11 @@ void nodus_dht_stop(nodus_dht_t *dht) {
         if (dht->bf_state.batches[i].active)
             bf_batch_cleanup(dht, &dht->bf_state.batches[i]);
     }
-    if (dht->bf_state.bf_epoll_fd >= 0) {
-        close(dht->bf_state.bf_epoll_fd);
-        dht->bf_state.bf_epoll_fd = -1;
-    }
+    bf_transport_close(dht);
+}
+
+bool nodus_dht_sc_busy(const nodus_dht_t *dht) {
+    return dht && dht->bf_state.tcp_up && nodus_tcp_sc_busy(&dht->bf_state.tcp);
 }
 
 void nodus_dht_cancel_deferred(nodus_dht_t *dht) {
@@ -4965,8 +4776,5 @@ void nodus_dht_close(nodus_dht_t *dht) {
     if (dht->storage_open) nodus_storage_close(&dht->storage);
     if (dht->ch_open) nodus_channel_store_close(&dht->ch_store);
     dht->media_open = dht->storage_open = dht->ch_open = false;
-    if (dht->bf_state.bf_epoll_fd >= 0) {
-        close(dht->bf_state.bf_epoll_fd);
-        dht->bf_state.bf_epoll_fd = -1;
-    }
+    bf_transport_close(dht);
 }

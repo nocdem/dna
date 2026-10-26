@@ -681,9 +681,10 @@ void nodus_node_package_lock_release(int fd) {
 /* ── registration read ───────────────────────────────────────────── */
 
 int nodus_node_package_read_duties(const char *config_path,
+                                   const uint8_t chain_id[NODUS_CLIENT_CHAIN_ID_SIZE],
                                    nodus_dnac_node_duties_t *out,
                                    char *err, size_t errcap) {
-    if (!config_path || !out) return -1;
+    if (!config_path || !chain_id || !out) return -1;
     memset(out, 0, sizeof(*out));
     char identity_path[512];
     uint16_t port = NODUS_DEFAULT_TCP_PORT;
@@ -719,6 +720,10 @@ int nodus_node_package_read_duties(const char *config_path,
     cfg.request_timeout_ms     = 10000;
     cfg.pinned_server_fps      = &pin;
     cfg.pinned_server_fp_count = 1;
+    /* DHT v2 package 3c: the session is bound to the chain the caller named
+     * (nodus-cli: --chain / the tool network file) — Kurultay #43 O-6. */
+    memcpy(cfg.expected_chain_id, chain_id, sizeof(cfg.expected_chain_id));
+    cfg.has_expected_chain_id  = true;
 
     int rc = -1;
     if (nodus_client_init(&client, &cfg, &id) != 0) {
@@ -872,6 +877,7 @@ int nodus_node_package_main(const char *const *args, int nargs,
                             const nodus_np_sysd_t *sysd,
                             const char *lock_path, uid_t lock_owner,
                             const char *config_path,
+                            const uint8_t *chain_id,
                             char *out, size_t outcap) {
     if (!out || outcap == 0) return 1;
     out[0] = '\0';
@@ -940,8 +946,13 @@ int nodus_node_package_main(const char *const *args, int nargs,
     if (v.outcome == NODUS_NP_OUT_REFUSE && v.reason == NODUS_NP_R_NOT_READ) {
         nodus_dnac_node_duties_t d;
         char rerr[256] = "";
-        if (nodus_node_package_read_duties(config_path, &d, rerr,
-                                           sizeof(rerr)) == 0)
+        if (!chain_id) {
+            /* the session is bound to a chain (3c, O-6): no chain id, no read */
+            snprintf(rerr, sizeof(rerr), "no chain id: give --chain <hex64>, "
+                     "or --network <file> / NODUS_NETWORK");
+            nodus_node_package_verdict(&units, action, pkg, NULL, rerr, &v);
+        } else if (nodus_node_package_read_duties(config_path, chain_id, &d,
+                                                  rerr, sizeof(rerr)) == 0)
             nodus_node_package_verdict(&units, action, pkg, &d, NULL, &v);
         else
             nodus_node_package_verdict(&units, action, pkg, NULL, rerr, &v);

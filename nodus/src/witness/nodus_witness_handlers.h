@@ -52,6 +52,29 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
                                 const char *method, uint32_t txn_id);
 
 /**
+ * The same dispatch for a no-login ANON client session (DHT v2 package 3d,
+ * design 2026-10-26-dht-v2-3d-no-login-design.md §2 / §3). `conn` carries NO
+ * principal (peer_id_set false — a connection that has one is refused: this
+ * entry never mixes the two states); `t` is the node's own copy of the
+ * session's handshake transcript T (64 bytes; never client-supplied).
+ *
+ *   - only the ANON allowlist (nodus_chain_anon_method_ok) is served, else
+ *     NOT_AUTHENTICATED;
+ *   - dnac_utxo, dnac_addr_history, dnac_delegations, dnac_msig_utxo and
+ *     dnac_msig_addr_history REQUIRE a valid owner-signed `qa`
+ *     (nodus_owner_query.h) bound to `t` and to the chain id; the `qa` key
+ *     stands in for the session key in today's C11 / G8.1 rule, and its `o`
+ *     must equal the method's own argument. Without a valid `qa` the answer is
+ *     NOT_AUTHENTICATED and nothing is read;
+ *   - every other allowed method reads no principal.
+ */
+void nodus_witness_handle_dnac_anon(nodus_witness_t *w,
+                                    struct nodus_tcp_conn *conn,
+                                    const uint8_t t[64],
+                                    const uint8_t *payload, size_t len,
+                                    const char *method, uint32_t txn_id);
+
+/**
  * scan-v3 — the `dnac_v3_block` answer WITHOUT its send (the handler adds
  * only the argument decode, the store/limits lookup on w->cmt_node and
  * the send; tests call this directly, test_v3_block_query.c). Wire:

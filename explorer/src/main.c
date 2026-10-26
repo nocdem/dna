@@ -3,6 +3,15 @@
  * CLI:
  *   --config PATH    witness server list, "host port" per line (default
  *                     /etc/dna-explorer.conf; see exp_chain_config_load)
+ *   --network PATH   tool network file (JSON: chain id + each node's ip, port
+ *                     and fingerprint pin; nodus_tool_network.h). Else the
+ *                     environment variable NODUS_NETWORK. Every server of
+ *                     --config must be listed in it with its exact host and
+ *                     port, or be covered by --pin.
+ *   --chain HEX64    chain id; overrides the file's
+ *   --pin HEX128     server pin for EVERY configured server; overrides the
+ *                     file's. No pin or no chain id -> the daemon refuses
+ *                     to start (DHT v2 package 3c).
  *   --db PATH        sqlite index db path (default /var/lib/dna-explorer/index.db)
  *   --rewards-db PATH optional co-located Nodus DB (read-only payout source)
  *   --port N         JSON API listen port (default 8390), 127.0.0.1 only
@@ -47,7 +56,8 @@ static void handle_stop_signal(int sig) {
 
 static void print_usage(const char *prog) {
     fprintf(stderr,
-        "Usage: %s [--config PATH] [--db PATH] [--rewards-db PATH] [--port N] [--once] [--verify-index] [--version]\n",
+        "Usage: %s [--config PATH] [--network PATH] [--chain HEX64] [--pin HEX128] [--db PATH]\n"
+        "          [--rewards-db PATH] [--port N] [--once] [--verify-index] [--version]\n",
         prog);
 }
 
@@ -58,6 +68,7 @@ int main(int argc, char **argv) {
     int port = EXPLORERD_DEFAULT_PORT;
     int once = 0;
     int verify_index = 0;
+    const char *net_file = NULL, *net_pin = NULL, *net_chain = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--version") == 0) {
@@ -68,6 +79,12 @@ int main(int argc, char **argv) {
             return 0;
         } else if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
             config_path = argv[++i];
+        } else if (strcmp(argv[i], "--network") == 0 && i + 1 < argc) {
+            net_file = argv[++i];
+        } else if (strcmp(argv[i], "--chain") == 0 && i + 1 < argc) {
+            net_chain = argv[++i];
+        } else if (strcmp(argv[i], "--pin") == 0 && i + 1 < argc) {
+            net_pin = argv[++i];
         } else if (strcmp(argv[i], "--db") == 0 && i + 1 < argc) {
             db_path = argv[++i];
         } else if (strcmp(argv[i], "--rewards-db") == 0 && i + 1 < argc) {
@@ -107,8 +124,21 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* DHT v2 package 3c: the pins and the chain id the sessions are bound to
+     * (nodus_tool_network.h). A bad file, or none and no flags, stops the
+     * daemon here — before any socket. Static: the struct is ~12 KB, and
+     * each exp_chain_open copies it. */
+    static nodus_tool_net_t net;
+    char net_err[NODUS_TOOL_NET_ERR_SIZE];
+    nodus_tool_net_init(&net);
+    if (nodus_tool_net_open(&net, net_file, net_pin, net_chain, net_err,
+                            sizeof(net_err)) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "network identity: %s", net_err);
+        return 1;
+    }
+
     exp_chain_t *chain = NULL;
-    if (exp_chain_open(&chain, servers, server_count) != 0) {
+    if (exp_chain_open(&chain, servers, server_count, &net) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "failed to connect to any configured witness server");
         return 1;
     }
@@ -170,7 +200,7 @@ int main(int argc, char **argv) {
     exp_chain_t *http_chain = NULL;
     exp_balance_chain_t *balance_chain = NULL;
     exp_evm_chain_t *evm_chain = NULL;     /* Nodus EVM: /api/evm accounts, same handle */
-    if (exp_chain_open(&http_chain, servers, server_count) != 0 ||
+    if (exp_chain_open(&http_chain, servers, server_count, &net) != 0 ||
         exp_balance_chain_open(&balance_chain, http_chain) != 0 ||
         exp_evm_chain_open(&evm_chain, http_chain) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "failed to open the HTTP thread's chain handle");

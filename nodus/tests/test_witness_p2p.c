@@ -1579,6 +1579,80 @@ out:
     return rc;
 }
 
+/* (2a'''') — the ROLE EXPORT (nodus_witness_p2p_roles_fill, the exemption's
+ * set) refuses what 4004 tolerates. Inside ONE transaction, rolled back:
+ *   - baseline: the export succeeds and lists the bonded set;
+ *   - the validators table cannot be read (renamed): the bonded refresh
+ *     fails its derivation (4004 keeps building from what it can) and the
+ *     export returns -1 — never an old set exported as fresh;
+ *   - rolled back and refreshed: the export succeeds again;
+ *   - a registry row whose node_fp is not 64 bytes (if the schema lets one
+ *     in): the export returns -1, the row is not skipped silently. */
+static int part2_roles(gfx_t *g, nodus_witness_p2p_t *B) {
+    int rc = 0;
+    bool in_tx = false;
+    static uint8_t fps[256][64];
+    uint32_t n = 0;
+    sqlite3 *db = g->w->db;
+
+    nodus_witness_p2p_refresh_bonded(B);
+    CHECK(nodus_witness_p2p_roles_fill(B, fps, 256, &n) == 0 && n > 0,
+          "(2a'''') baseline: the role export lists the bonded set");
+
+    CHECK(sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK,
+          "(2a'''') begin");
+    in_tx = true;
+    CHECK(sqlite3_exec(db, "ALTER TABLE validators RENAME TO validators_gone",
+                       NULL, NULL, NULL) == SQLITE_OK,
+          "(2a'''') validators table made unreadable");
+    nodus_witness_p2p_refresh_bonded(B);
+    CHECK(nodus_witness_p2p_roles_fill(B, fps, 256, &n) == -1,
+          "(2a'''') a failed derivation is NOT exported");
+    CHECK(sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL) == SQLITE_OK,
+          "(2a'''') rollback");
+    in_tx = false;
+    nodus_witness_p2p_refresh_bonded(B);
+    CHECK(nodus_witness_p2p_roles_fill(B, fps, 256, &n) == 0 && n > 0,
+          "(2a'''') rolled back: the export succeeds again");
+
+    /* B1 round 5d: the height check ALONE fails while a valid cached set
+     * exists (v2_blocks unreadable). 4004 keeps its cached set; the export,
+     * which calls the lazy refresh and gets no fresh height, must return -1,
+     * and succeed again once the table is back (the retry re-derives). */
+    CHECK(sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK,
+          "(2a'''') begin (height check)");
+    in_tx = true;
+    CHECK(sqlite3_exec(db, "ALTER TABLE v2_blocks RENAME TO v2_blocks_gone",
+                       NULL, NULL, NULL) == SQLITE_OK,
+          "(2a'''') v2_blocks made unreadable");
+    CHECK(nodus_witness_p2p_roles_fill(B, fps, 256, &n) == -1,
+          "(2a'''') a failed HEIGHT check on a valid cached set is NOT exported");
+    CHECK(sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL) == SQLITE_OK,
+          "(2a'''') rollback (height check)");
+    in_tx = false;
+    CHECK(nodus_witness_p2p_roles_fill(B, fps, 256, &n) == 0 && n > 0,
+          "(2a'''') height readable again: the export succeeds");
+
+    CHECK(sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK,
+          "(2a'''') begin (malformed row)");
+    in_tx = true;
+    if (sqlite3_exec(db,
+            "INSERT INTO v2_storage_nodes (node_fp, node_pk, payee_fp, bond, "
+            "status, registered_height, exit_height, fail_streak, grace_until) "
+            "VALUES (zeroblob(10), zeroblob(10), zeroblob(64), 1000000, 1, 1, 0, 0, 0)",
+            NULL, NULL, NULL) == SQLITE_OK) {
+        CHECK(nodus_witness_p2p_roles_fill(B, fps, 256, &n) == -1,
+              "(2a'''') a malformed registry row is an export error");
+    }
+    CHECK(sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL) == SQLITE_OK,
+          "(2a'''') rollback (malformed row)");
+    in_tx = false;
+    nodus_witness_p2p_refresh_bonded(B);
+out:
+    if (in_tx) (void)sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    return rc;
+}
+
 static int part2(void) {
     int rc = 0;
     gfx_t g;
@@ -1659,6 +1733,8 @@ static int part2(void) {
     /* (2a''') frozen storage-set members are bonded (part2_storage) */
     CHECK(part2_storage(&g, B, nodus_witness_p2p_bonded_count(B)) == 0,
           "(2a''') S(H) / S(H - E) members bonded");
+    /* (2a'''') the role export refuses a failed derivation (part2_roles) */
+    CHECK(part2_roles(&g, B) == 0, "(2a'''') role export fail-safe");
 
     cfg_local(&cfgX);
     /* A is seat key 0 WITH a witness on the same chain (a second

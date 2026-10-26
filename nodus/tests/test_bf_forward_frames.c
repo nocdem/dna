@@ -86,8 +86,7 @@ static nodus_value_t *mk(const nodus_identity_t *id, const nodus_key_t *key,
 /* One fake forward asking the batch indices idx[0..n) (its own batch has
  * n keys — the responder's page budget is split over n). */
 static void fwd(const int *idx, int n) {
-    memset(&C, 0, sizeof(C));
-    C.fd = -1;
+    memset(&C, 0, sizeof(C));   /* no connection: C.conn == NULL */
     memcpy(C_idx, idx, (size_t)n * sizeof(int));
     C.key_indices = C_idx;
     C.key_count = n;
@@ -545,7 +544,6 @@ int main(void) {
     if (nodus_identity_from_seed(seed, &id_b) != 0) { printf("FATAL: id_b\n"); return 1; }
     nodus_hash((const uint8_t *)"pkg-a:frames-k", 14, &key_k);
     nodus_hash((const uint8_t *)"pkg-a:frames-l", 14, &key_l);
-    for (int i = 0; i < NODUS_BF_MAX_FORWARDS; i++) B.forwards[i].fd = -1;
 
     test_forged_newer_frames();
     test_own_get_merges_local();

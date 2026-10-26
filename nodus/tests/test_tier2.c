@@ -113,154 +113,14 @@ static void test_auth_ok_roundtrip(void) {
     nodus_t2_msg_free(&msg);
 }
 
-/* ── Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-mlkem-
- * migration.md) — N3/N6: optional mpk/mpk_sig/alg fields, and the
- * byte-identity requirement for legacy (no-mlkem) senders. The hand-built
- * reference maps below use the raw public CBOR encoder (nodus_cbor.h)
- * directly, reproducing exactly what nodus_t2_auth_ok_kyber()/
- * nodus_t2_key_init() emitted BEFORE this migration (mirrored from their
- * current source — enc_response_header/enc_query_header are file-static,
- * not exported, so this is the only way to pin the pre-migration shape). */
-
-static void test_auth_ok_kyber_legacy_byte_identical(void) {
-    TEST("auth_ok_kyber: no mlkem -> byte-identical to pre-Faz-1 4-key map");
-
-    uint8_t token[NODUS_SESSION_TOKEN_LEN];
-    memset(token, 0x33, sizeof(token));
-    uint8_t kyber_pk[NODUS_KYBER_PK_BYTES];
-    memset(kyber_pk, 0x44, sizeof(kyber_pk));
-    nodus_sig_t kpk_sig;
-    memset(&kpk_sig, 0x55, sizeof(kpk_sig));
-
-    size_t len = 0;
-    int rc = nodus_t2_auth_ok_kyber(9, token, kyber_pk, &test_id.pk, &kpk_sig,
-                                     NULL, NULL, msgbuf, sizeof(msgbuf), &len);
-    if (rc != 0) { FAIL("encode"); return; }
-
-    static uint8_t refbuf[16384];
-    cbor_encoder_t enc;
-    cbor_encoder_init(&enc, refbuf, sizeof(refbuf));
-    cbor_encode_map(&enc, 4);
-    cbor_encode_cstr(&enc, "t");  cbor_encode_uint(&enc, 9);
-    cbor_encode_cstr(&enc, "y");  cbor_encode_cstr(&enc, "r");
-    cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, "auth_ok");
-    cbor_encode_cstr(&enc, "r");
-    cbor_encode_map(&enc, 4);
-    cbor_encode_cstr(&enc, "tok");
-    cbor_encode_bstr(&enc, token, NODUS_SESSION_TOKEN_LEN);
-    cbor_encode_cstr(&enc, "kpk");
-    cbor_encode_bstr(&enc, kyber_pk, NODUS_KYBER_PK_BYTES);
-    cbor_encode_cstr(&enc, "spk");
-    cbor_encode_bstr(&enc, test_id.pk.bytes, NODUS_PK_BYTES);
-    cbor_encode_cstr(&enc, "kpk_sig");
-    cbor_encode_bstr(&enc, kpk_sig.bytes, NODUS_SIG_BYTES);
-    size_t reflen = cbor_encoder_len(&enc);
-
-    if (reflen == len && memcmp(refbuf, msgbuf, len) == 0) {
-        PASS();
-    } else {
-        FAIL("legacy auth_ok_kyber encoding changed shape/bytes");
-    }
-}
-
-static void test_auth_ok_kyber_mlkem_roundtrip(void) {
-    TEST("auth_ok_kyber: mpk/mpk_sig present -> decode roundtrip");
-
-    uint8_t token[NODUS_SESSION_TOKEN_LEN];
-    memset(token, 0x33, sizeof(token));
-    uint8_t kyber_pk[NODUS_KYBER_PK_BYTES];
-    memset(kyber_pk, 0x44, sizeof(kyber_pk));
-    nodus_sig_t kpk_sig;
-    memset(&kpk_sig, 0x55, sizeof(kpk_sig));
-    uint8_t mlkem_pk[NODUS_MLKEM_PK_BYTES];
-    memset(mlkem_pk, 0x66, sizeof(mlkem_pk));
-    nodus_sig_t mpk_sig;
-    memset(&mpk_sig, 0x77, sizeof(mpk_sig));
-
-    size_t len = 0;
-    int rc = nodus_t2_auth_ok_kyber(9, token, kyber_pk, &test_id.pk, &kpk_sig,
-                                     mlkem_pk, &mpk_sig,
-                                     msgbuf, sizeof(msgbuf), &len);
-    if (rc != 0) { FAIL("encode"); return; }
-
-    nodus_tier2_msg_t msg;
-    rc = nodus_t2_decode(msgbuf, len, &msg);
-    if (rc == 0 &&
-        msg.has_kyber_pk && memcmp(msg.kyber_pk, kyber_pk, NODUS_KYBER_PK_BYTES) == 0 &&
-        msg.has_kpk_sig && memcmp(msg.kpk_sig.bytes, kpk_sig.bytes, NODUS_SIG_BYTES) == 0 &&
-        msg.has_mlkem_pk && memcmp(msg.mlkem_pk, mlkem_pk, NODUS_MLKEM_PK_BYTES) == 0 &&
-        msg.has_mpk_sig && memcmp(msg.mpk_sig.bytes, mpk_sig.bytes, NODUS_SIG_BYTES) == 0) {
-        PASS();
-    } else {
-        FAIL("decode mismatch");
-    }
-    nodus_t2_msg_free(&msg);
-}
-
-static void test_key_init_legacy_byte_identical(void) {
-    TEST("key_init: alg=0 -> byte-identical to pre-Faz-1 2-key map");
-
-    uint8_t ct[NODUS_KYBER_CT_BYTES];
-    memset(ct, 0x88, sizeof(ct));
-    uint8_t nc[NODUS_NONCE_LEN];
-    memset(nc, 0x99, sizeof(nc));
-
-    size_t len = 0;
-    int rc = nodus_t2_key_init(11, ct, nc, 0, msgbuf, sizeof(msgbuf), &len);
-    if (rc != 0) { FAIL("encode"); return; }
-
-    static uint8_t refbuf[8192];
-    cbor_encoder_t enc;
-    cbor_encoder_init(&enc, refbuf, sizeof(refbuf));
-    cbor_encode_map(&enc, 4);
-    cbor_encode_cstr(&enc, "t");  cbor_encode_uint(&enc, 11);
-    cbor_encode_cstr(&enc, "y");  cbor_encode_cstr(&enc, "q");
-    cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, "key_init");
-    cbor_encode_cstr(&enc, "a");
-    cbor_encode_map(&enc, 2);
-    cbor_encode_cstr(&enc, "ct");
-    cbor_encode_bstr(&enc, ct, NODUS_KYBER_CT_BYTES);
-    cbor_encode_cstr(&enc, "nc");
-    cbor_encode_bstr(&enc, nc, NODUS_NONCE_LEN);
-    size_t reflen = cbor_encoder_len(&enc);
-
-    if (reflen == len && memcmp(refbuf, msgbuf, len) == 0) {
-        PASS();
-    } else {
-        FAIL("legacy key_init encoding changed shape/bytes");
-    }
-}
-
-static void test_key_init_mlkem_roundtrip(void) {
-    TEST("key_init: alg=1 -> key_alg decodes as 1");
-
-    uint8_t ct[NODUS_MLKEM_CT_BYTES];
-    memset(ct, 0xAA, sizeof(ct));
-    uint8_t nc[NODUS_NONCE_LEN];
-    memset(nc, 0xBB, sizeof(nc));
-
-    size_t len = 0;
-    int rc = nodus_t2_key_init(12, ct, nc, 1, msgbuf, sizeof(msgbuf), &len);
-    if (rc != 0) { FAIL("encode"); return; }
-
-    nodus_tier2_msg_t msg;
-    rc = nodus_t2_decode(msgbuf, len, &msg);
-    if (rc == 0 && msg.has_kyber_ct && msg.key_alg == 1 &&
-        memcmp(msg.kyber_ct, ct, NODUS_MLKEM_CT_BYTES) == 0 &&
-        msg.has_key_nonce && memcmp(msg.key_nonce, nc, NODUS_NONCE_LEN) == 0) {
-        PASS();
-    } else {
-        FAIL("decode mismatch");
-    }
-    nodus_t2_msg_free(&msg);
-}
+/* (The auth_ok_kyber / key_init / key_ack ENCODERS and their byte-identity
+ * tests were deleted with the old session protocol, DHT v2 3b-2; the T2
+ * DECODER still reads those fields, and the cases below pin it.) */
 
 /* D6 (N1 delta 1): the decoder must not truncate an out-of-range "alg"
  * value into an accidental 1 — (uint8_t)257 == 1, which the FIRST version
  * of this handler would have accepted as ML-KEM. Hand-built via the raw
- * CBOR encoder because nodus_t2_key_init()'s public API takes alg as a
- * uint8_t and only ever emits the literal value 1, so it cannot produce
- * these wire bytes itself. */
+ * CBOR encoder, which is the only way to produce these wire bytes. */
 static void test_key_init_alg_out_of_range_decodes_as_zero(void) {
     TEST("key_init: alg=257 and alg=2 both decode as key_alg=0");
 
@@ -702,10 +562,6 @@ int main(void) {
     test_challenge_roundtrip();
     test_auth_roundtrip();
     test_auth_ok_roundtrip();
-    test_auth_ok_kyber_legacy_byte_identical();
-    test_auth_ok_kyber_mlkem_roundtrip();
-    test_key_init_legacy_byte_identical();
-    test_key_init_mlkem_roundtrip();
     test_key_init_alg_out_of_range_decodes_as_zero();
     test_circ_open_e2e_legacy_default_alg();
     test_circ_open_e2e_mlkem_roundtrip();

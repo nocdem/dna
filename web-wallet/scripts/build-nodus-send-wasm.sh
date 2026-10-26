@@ -7,11 +7,14 @@
 # nodus/include/nodus/nodus_ruleset_pins.h) and crypto/nodus-send-wasm.c,
 # the entry points src/nodus/send-module.js calls. Since NC-4b the SAME
 # module also carries the Nodus Connect thin core (web-wallet/connect/, JSON
-# exports connect/nc_wasm.c) on the one session of this module — the
-# wallet's one module of design docs/plans/2026-09-24-web-connect-design.md
-# rev 5 §1.1 (two sessions of one identity evict each other on a node,
-# nodus_auth.c:95-116). src/connect/core.js drives it through the wallet's
-# queue (src/nodus/client.js).
+# exports connect/nc_wasm.c). Since DHT v2 package 3d the module holds TWO
+# sessions: the wallet's own no-login session (g_client, no identity) and
+# Connect's identified session (g_client_c), opened only when a Messages
+# export needs the old identity-bound DHT — so the one-identity-one-session
+# rule of design docs/plans/2026-09-24-web-connect-design.md rev 5 §1.1
+# (two sessions of one identity evict each other on a node) still holds:
+# only one of the two carries the identity. src/connect/core.js drives
+# Connect through the wallet's queue (src/nodus/client.js).
 #
 # Usage:
 #   build-nodus-send-wasm.sh            the SHIPPED module (-DNODUS_SEND_RELEASE)
@@ -246,7 +249,21 @@ sources=(
   # nodus client (package (c1) compile set, scripts/check-nodus-client-wasm.sh)
   $root/nodus/src/client/nodus_client.c
   $root/nodus/src/transport/nodus_tcp.c
+  # DHT v2 package 3c: the client session is a SecretConnection — the layer
+  # (threadless jobs under __EMSCRIPTEN__) and its handshake machine;
+  # nodus_tcp.c needs -DNODUS_TCP_SC=1 (the compile line below)
+  $root/nodus/src/transport/nodus_tcp_sc.c
+  $root/shared/dnac/cmt_p2p_secret.c
   $root/nodus/src/protocol/nodus_tier2.c
+  # DHT v2 package 3d: the owner-signed query `qa` the no-login (ANON) wallet
+  # session attaches to the five owner-only reads — the RFC 0002 envelope
+  # code of the owner-signed LIST (shared/dht2) and what it calls
+  $root/nodus/src/protocol/nodus_owner_query.c
+  $root/shared/dht2/dht2_cbor.c
+  $root/shared/dht2/dht2_envelope.c
+  $root/shared/dht2/dht2_record.c
+  $root/shared/dht2/dht2_time.c
+  $root/shared/dnac/cmt_pb.c
   $root/nodus/src/protocol/nodus_cbor.c
   $root/nodus/src/protocol/nodus_wire.c
   $root/nodus/src/core/nodus_value.c
@@ -563,7 +580,7 @@ build() {
     # file only — shared/ is outside this package.
     case "$src" in */qgp_fingerprint.c) extra=(-Wno-unterminated-string-initialization) ;; esac
     "$EMCC_BIN" -c -O2 -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Werror \
-      "${extra[@]}" -D"$define" \
+      "${extra[@]}" -D"$define" -DNODUS_TCP_SC=1 \
       -I$root/nodus/include -I$root/nodus/src -I$root/shared -I$root/dnac/include \
       -I"$work/inc" -I"$OPENSSL_WASM_PREFIX/include" \
       -I$root/messenger -I$root/messenger/include -Iconnect \

@@ -15,6 +15,8 @@
  */
 
 #include "transport/nodus_tcp.h"
+#include "transport/nodus_tcp_sc.h"         /* raw sessions: SecretConnection */
+#include "client/nodus_tool_network.h"      /* pin + chain id (3c)         */
 #include "protocol/nodus_tier2.h"
 #include "protocol/nodus_wire.h"
 #include "crypto/nodus_sign.h"
@@ -30,6 +32,7 @@
                                              * voting-power unit          */
 
 #include <errno.h>
+#include <getopt.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -188,37 +191,112 @@ static bool wait_response(int timeout_ms) {
     return response_ready;
 }
 
+/* DHT v2 package 3c — the tool network identity. Where this tool gets the
+ * server pin and the chain id: the network file (--network / NODUS_NETWORK)
+ * with the --pin / --chain flags over it (nodus_tool_network.h; decision
+ * 2026-10-24-dht-v2-tool-network-identity.md). Set in main(). It also holds
+ * the pin lists the clients below point into (nodus_client_init does not
+ * copy them), so it lives for the process. */
+static nodus_tool_net_t cli_net;
+/* The three global options as typed (main); read on the first command that
+ * needs a session, so an offline command is never blocked by a bad
+ * NODUS_NETWORK. */
+static const char *cli_net_file, *cli_net_pin, *cli_net_chain;
+static int cli_net_state;               /* 0 not opened, 1 ok, -1 refused */
+
+/* Complete a client config's pin list and chain id from cli_net BEFORE any
+ * socket is opened. A config that already carries its own pin (msig sign's
+ * --pin) keeps it and only gets the chain id. @return 0; -1 (reason
+ * printed — fail closed, Kurultay #43 O-6). */
+static int cli_net_ready(void) {
+    char err[NODUS_TOOL_NET_ERR_SIZE];
+    if (cli_net_state == 0) {
+        nodus_tool_net_init(&cli_net);
+        cli_net_state = nodus_tool_net_open(&cli_net, cli_net_file,
+                                            cli_net_pin, cli_net_chain, err,
+                                            sizeof(err)) == 0 ? 1 : -1;
+        if (cli_net_state < 0) fprintf(stderr, "nodus-cli: %s\n", err);
+    }
+    return cli_net_state > 0 ? 0 : -1;
+}
+
+static int cli_net_fill(nodus_client_config_t *cfg) {
+    char err[NODUS_TOOL_NET_ERR_SIZE];
+    if (cli_net_ready() != 0) return -1;
+    if (cfg->pinned_server_fp_count > 0 && cfg->pinned_server_fps) {
+        if (cfg->has_expected_chain_id) return 0;
+        if (nodus_tool_net_chain(&cli_net, cfg->expected_chain_id, err,
+                                 sizeof(err)) != 0) {
+            fprintf(stderr, "nodus-cli: %s\n", err);
+            return -1;
+        }
+        cfg->has_expected_chain_id = true;
+        return 0;
+    }
+    if (nodus_tool_net_fill(&cli_net, cfg, err, sizeof(err)) != 0) {
+        fprintf(stderr, "nodus-cli: %s\n", err);
+        return -1;
+    }
+    return 0;
+}
+
+/* nodus_client_init with the tool network identity filled in. Every
+ * nodus_client_init in this file goes through it (the #define below the
+ * function): the sites build a one-server config and call init; the pin and
+ * chain id come from here. */
+static int cli_client_init(nodus_client_t *client, nodus_client_config_t *cfg,
+                           const nodus_identity_t *id) {
+    if (cli_net_fill(cfg) != 0) return -1;
+    return nodus_client_init(client, cfg, id);
+}
+#define nodus_client_init(client, cfg, id) cli_client_init((client), (cfg), (id))
+
+/* The raw (nodus_tcp) sessions of this tool — ping, put, get, listen,
+ * servers, presence, hold, cluster-status — run on the same SecretConnection
+ * layer as nodus_client (nodus_client.c do_connect_one): CLIENT profile, this
+ * identity, the pin and chain id of cli_net. Identity is resolved BEFORE the
+ * dial: no pin or no chain id and no socket is opened. The caller then waits
+ * for the connection and calls do_auth(), which now waits for the session's
+ * token message. @return the connection; NULL (reason printed). */
+static nodus_tcp_conn_t *cli_dial(const char *host, uint16_t port) {
+    nodus_client_config_t cc;
+    memset(&cc, 0, sizeof(cc));
+    snprintf(cc.servers[0].ip, sizeof(cc.servers[0].ip), "%s", host);
+    cc.servers[0].port = port;
+    cc.server_count    = 1;
+    if (cli_net_fill(&cc) != 0) return NULL;
+
+    nodus_tcp_conn_t *conn = nodus_tcp_connect(&transport, host, port);
+    if (!conn) return NULL;
+    nodus_tcp_sc_cfg_t sc;
+    memset(&sc, 0, sizeof(sc));
+    sc.role           = CMT_P2P_SC_ROLE_INITIATOR;
+    sc.profile        = &CMT_P2P_SC_PROFILE_CLIENT;
+    sc.id             = &identity;
+    sc.proto_ver      = NODUS_CSESS_PROTO_VERSION;
+    memcpy(sc.chain_id, cc.expected_chain_id, sizeof(sc.chain_id));
+    sc.expected_set   = cc.pinned_server_fps;     /* points into cli_net */
+    sc.expected_set_n = (size_t)cc.pinned_server_fp_count;
+    if (nodus_tcp_sc_enable(&transport, conn, &sc) != 0) {
+        fprintf(stderr, "nodus-cli: the session layer could not be enabled "
+                "for %s:%u\n", host, (unsigned)port);
+        nodus_tcp_disconnect(&transport, conn);
+        return NULL;
+    }
+    return conn;
+}
+
+/* The session is established by the SecretConnection layer (cli_dial): no
+ * frame reaches on_frame before the server's key matched the pin and both
+ * ends proved theirs. What is left is the first frame the server sends, the
+ * T2 `auth_ok` carrying the session token (nodus_client.c do_auth). A wrong
+ * pin or chain id ends the handshake and no frame ever arrives. */
 static int do_auth(void) {
-    /* Step 1: HELLO */
-    size_t len = 0;
-    uint32_t txn = next_txn++;
-    nodus_t2_hello(txn, &identity.pk, &identity.node_id,
-                    proto_buf, sizeof(proto_buf), &len);
-    nodus_tcp_send(server_conn, proto_buf, len);
-
     if (!wait_response(5000)) {
-        fprintf(stderr, "No response to HELLO\n");
+        fprintf(stderr, "No session (no token message: the handshake failed "
+                "or the pin / chain id did not match)\n");
         return -1;
     }
-
-    if (strcmp(last_response.method, "challenge") != 0) {
-        fprintf(stderr, "Expected challenge, got: %s\n", last_response.method);
-        return -1;
-    }
-
-    /* Step 2: Sign nonce and send AUTH (C2: domain-tagged AUTH_CHALLENGE) */
-    nodus_sig_t sig;
-    nodus_sign_auth_challenge(&sig, last_response.nonce, &identity.sk);
-
-    txn = next_txn++;
-    nodus_t2_auth(txn, &sig, proto_buf, sizeof(proto_buf), &len);
-    nodus_tcp_send(server_conn, proto_buf, len);
-
-    if (!wait_response(5000)) {
-        fprintf(stderr, "No response to AUTH\n");
-        return -1;
-    }
-
     if (strcmp(last_response.method, "auth_ok") != 0) {
         if (last_response.type == 'e')
             fprintf(stderr, "Auth failed: %s\n", last_response.error_msg);
@@ -742,10 +820,12 @@ static int cluster_status_query_one(const char *host, uint16_t port,
     transport.on_disconnect = on_disconnect;
     transport.on_connect = on_connect;
 
-    server_conn = nodus_tcp_connect(&transport, host, port);
+    server_conn = cli_dial(host, port);
     if (!server_conn) goto done;
 
-    for (int i = 0; i < 60 && server_conn->state == NODUS_CONN_CONNECTING; i++)
+    /* on_disconnect sets server_conn = NULL inside the poll: re-check */
+    for (int i = 0; i < 60 && server_conn &&
+                    server_conn->state == NODUS_CONN_CONNECTING; i++)
         nodus_tcp_poll(&transport, 50);
     if (!server_conn || server_conn->state != NODUS_CONN_CONNECTED) goto done;
 
@@ -2939,8 +3019,11 @@ static int cmd_v2_envelope(const char *server_ip, uint16_t server_port,
         cfg.servers[0].port = server_port;
         cfg.server_count    = 1;
         cfg.auto_reconnect  = false;
-        if (nodus_client_init(&client, &cfg, &identity) != 0 ||
-            cli_client_connect(&client) != 0) {
+        if (nodus_client_init(&client, &cfg, &identity) != 0) {
+            fprintf(stderr, "client_init failed\n");
+            goto done;                  /* never initialized: no close */
+        }
+        if (cli_client_connect(&client) != 0) {
             fprintf(stderr, "client connect failed\n");
             nodus_client_close(&client);
             goto done;
@@ -3464,8 +3547,11 @@ static int cmd_v2_claim(const char *server_ip, uint16_t server_port,
         scfg.servers[0].port = sport;
         scfg.server_count    = 1;
         scfg.auto_reconnect  = false;
-        if (nodus_client_init(&sclient, &scfg, &keys[0]) != 0 ||
-            cli_client_connect(&sclient) != 0) {
+        if (nodus_client_init(&sclient, &scfg, &keys[0]) != 0) {
+            fprintf(stderr, "client_init failed\n");
+            goto done;                  /* never initialized: no close */
+        }
+        if (cli_client_connect(&sclient) != 0) {
             fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
             nodus_client_close(&sclient);
             goto done;
@@ -10125,9 +10211,10 @@ static int cmd_msig_sign(const char *server_ip, uint16_t server_port,
         return 1;
     }
     nodus_key_t pin;
-    if (t6_hex_exact(pin_hex, pin.bytes, sizeof(pin.bytes)) != 0) {
-        fprintf(stderr, "--pin must be exactly 128 lowercase hex chars (your "
-                "node's fingerprint) — nothing signed\n");
+    if (t6_hex_exact(pin_hex, pin.bytes, sizeof(pin.bytes)) != 0 ||
+        nodus_key_is_zero(&pin)) {
+        fprintf(stderr, "--pin must be exactly 128 lowercase hex chars, not "
+                "all zero (your node's fingerprint) — nothing signed\n");
         return 1;
     }
     int rc = 1;
@@ -12070,7 +12157,20 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
 
 static void usage(const char *prog) {
     fprintf(stderr, "Nodus CLI v%s\n", NODUS_VERSION_STRING);
-    fprintf(stderr, "Usage: %s -s <server> [-p <port>] [-i <identity_dir>] <command> [args]\n", prog);
+    fprintf(stderr, "Usage: %s [-s <server>] [-p <port>] [-i <identity_dir>]\n", prog);
+    fprintf(stderr, "          [--network <file>] [--chain <hex64>] [--pin <hex128>] <command> [args]\n");
+    fprintf(stderr, "\nNetwork identity (every command that talks to a node needs both):\n");
+    fprintf(stderr, "  A session is bound to one node key and one chain. They come from the tool\n");
+    fprintf(stderr, "  network file, a JSON file named by --network <file> or the environment\n");
+    fprintf(stderr, "  variable NODUS_NETWORK (there is no default path):\n");
+    fprintf(stderr, "    {\"chain_id\": \"<64 hex>\", \"nodes\": [{\"ip\": \"<IPv4>\", \"port\": <n>,\n");
+    fprintf(stderr, "                                     \"fp\": \"<128 hex>\"}, ...]}\n");
+    fprintf(stderr, "  The node you dial (-s ip:port, --submit ip:port) must be listed with that\n");
+    fprintf(stderr, "  exact ip and port. Flags override the file: --pin <fingerprint of the node,\n");
+    fprintf(stderr, "  `whoami` on it> and --chain <chain id>; with both flags no file is needed.\n");
+    fprintf(stderr, "  Missing either one -> the command refuses before opening a socket.\n");
+    fprintf(stderr, "  Hex is lowercase. The options go BEFORE the command (msig sign has its own\n");
+    fprintf(stderr, "  --pin after the command, which keeps working).\n");
     fprintf(stderr, "\nCommands:\n");
     fprintf(stderr, "  whoami           Show identity\n");
     fprintf(stderr, "  ping             Ping server\n");
@@ -12199,9 +12299,20 @@ int main(int argc, char **argv) {
 
     /* Leading "+" makes getopt stop at the first non-option argument so
      * sub-command long options (e.g. `chain-config propose --param ...`)
-     * are not consumed here and instead reach the command handler. */
-    while ((opt = getopt(argc, argv, "+s:p:i:h")) != -1) {
+     * are not consumed here and instead reach the command handler. The
+     * three global long options (3c tool network identity) are only
+     * recognised BEFORE the command. */
+    static const struct option longopts[] = {
+        { "network", required_argument, NULL, 'N' },
+        { "chain",   required_argument, NULL, 'C' },
+        { "pin",     required_argument, NULL, 'P' },
+        { NULL, 0, NULL, 0 }
+    };
+    while ((opt = getopt_long(argc, argv, "+s:p:i:h", longopts, NULL)) != -1) {
         switch (opt) {
+        case 'N': cli_net_file  = optarg; break;
+        case 'C': cli_net_chain = optarg; break;
+        case 'P': cli_net_pin   = optarg; break;
         case 's': {
             /* Support host:port format. The host ends up in
              * nodus_server_endpoint_t.ip (64 bytes): a longer one is
@@ -12312,11 +12423,20 @@ int main(int argc, char **argv) {
         nodus_np_sysd_t sysd;
         nodus_node_package_sysd_default(&sysd);
         char pkg_out[NODUS_NODE_PACKAGE_TEXT_MAX];
+        /* 3c: the registration read (`remove witness` of a running witness)
+         * is a session bound to a chain; the id comes from --chain / the
+         * tool network file. Absent -> NULL, and only that read is refused
+         * ("no chain id"); list / add / the other removes never need it. */
+        uint8_t pkg_chain[NODUS_CLIENT_CHAIN_ID_SIZE];
+        const uint8_t *pkg_chain_p = NULL;
+        if (cli_net_ready() == 0 &&
+            nodus_tool_net_chain(&cli_net, pkg_chain, NULL, 0) == 0)
+            pkg_chain_p = pkg_chain;
         /* the host lock file must belong to root (uid 0) */
         const int pkg_rc = nodus_node_package_main(
             (const char *const *)&argv[optind + 1], argc - optind - 1, &sysd,
             NODUS_NODE_PACKAGE_LOCK_PATH, 0, NODUS_NODE_PACKAGE_CONFIG_PATH,
-            pkg_out, sizeof(pkg_out));
+            pkg_chain_p, pkg_out, sizeof(pkg_out));
         fputs(pkg_out, pkg_rc == 0 ? stdout : stderr);
         return pkg_rc == 0 ? 0 : 1;
     }
@@ -12560,6 +12680,11 @@ int main(int argc, char **argv) {
     }
 
     /* Remaining commands: connect to TCP 4001, authenticate */
+    if (!server_ip) {
+        fprintf(stderr, "%s needs -s <server>\n", command);
+        nodus_identity_clear(&identity);
+        return 1;
+    }
     int rc = 1;
 
     /* Connect */
@@ -12570,14 +12695,16 @@ int main(int argc, char **argv) {
 
     printf("Connecting to %s:%u...\n", server_ip, server_port);
     fflush(stdout);
-    server_conn = nodus_tcp_connect(&transport, server_ip, server_port);
+    server_conn = cli_dial(server_ip, server_port);
     if (!server_conn) {
         fprintf(stderr, "Failed to connect\n");
         goto cleanup;
     }
 
     /* Wait for connection */
-    for (int i = 0; i < 100 && server_conn->state == NODUS_CONN_CONNECTING; i++)
+    /* on_disconnect sets server_conn = NULL inside the poll: re-check */
+    for (int i = 0; i < 100 && server_conn &&
+                    server_conn->state == NODUS_CONN_CONNECTING; i++)
         nodus_tcp_poll(&transport, 50);
 
     if (!server_conn || server_conn->state != NODUS_CONN_CONNECTED) {

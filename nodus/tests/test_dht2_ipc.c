@@ -580,7 +580,7 @@ static void test_null_handler(void) {
 
 static void test_status_unchanged(nodus_witness_ipc_t *ipc, const char *sock,
                                   uint8_t *exp, size_t cap) {
-    TEST("ipc_ctl / ipc_status answer is the unchanged seven-key map");
+    TEST("ipc_ctl / ipc_status answer: the seven keys unchanged + c3");
     uint8_t ctl[32], rq[32];
     size_t cn = enc_q1(ctl, sizeof(ctl), "ipc_ctl");
     size_t rn = enc_q1(rq, sizeof(rq), "ipc_status");
@@ -588,17 +588,19 @@ static void test_status_unchanged(nodus_witness_ipc_t *ipc, const char *sock,
     raw_ask(ipc, rq, rn);
     raw_end();
 
-    uint8_t sr[64], ci[32];
+    uint8_t sr[64], ci[32], c3[32];
     for (int i = 0; i < 64; i++) sr[i] = (uint8_t)(0xA0 + i);
     for (int i = 0; i < 32; i++) ci[i] = (uint8_t)(0x10 + i);
+    memset(c3, 0, sizeof(c3));   /* h_status leaves the v3 chain id zero */
     cbor_encoder_t e;
-    cbor_encoder_init(&e, exp, cap);         /* the pre-package layout */
-    cbor_encode_map(&e, 7);
+    cbor_encoder_init(&e, exp, cap);         /* the pre-package layout + c3 */
+    cbor_encode_map(&e, 8);
     cbor_encode_cstr(&e, "q");  cbor_encode_cstr(&e, "ipc_status");
     cbor_encode_cstr(&e, "co"); cbor_encode_bool(&e, true);
     cbor_encode_cstr(&e, "h");  cbor_encode_uint(&e, 4242);
     cbor_encode_cstr(&e, "sr"); cbor_encode_bstr(&e, sr, 64);
     cbor_encode_cstr(&e, "ci"); cbor_encode_bstr(&e, ci, 32);
+    cbor_encode_cstr(&e, "c3"); cbor_encode_bstr(&e, c3, 32);   /* DHT v2 3b-2: the v3 chain id */
     cbor_encode_cstr(&e, "po"); cbor_encode_bool(&e, true);
     cbor_encode_cstr(&e, "lp"); cbor_encode_uint(&e, 14004);
     if (g_rframes != 1 || !raw_got(exp, cbor_encoder_len(&e))) {

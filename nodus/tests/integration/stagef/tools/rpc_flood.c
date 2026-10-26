@@ -107,6 +107,7 @@
 #include "dnac/ledger_ids.h"                /* DNA_DOMAIN_*, DNA_CHAIN_ID_LEN*/
 #include "dnac/dnac.h"                       /* DNAC_MIN_FEE_RAW, PUBKEY_SIZE*/
 #include "transport/nodus_tcp.h"             /* nodus_tcp_send (pipeline mode)*/
+#include "client/nodus_tool_network.h"       /* pin + chain id (3c)           */
 #include "protocol/nodus_cbor.h"             /* cbor_encode_* (pipeline mode) */
 
 /* Output-seed randomness for the shared builder — never a global RNG; the
@@ -477,6 +478,10 @@ static void usage(void) {
       "                        [--rate R (pipeline frames/s per session,\n"
       "                           default 2000)]\n"
       "                        [--stats-file PATH]\n"
+      "                        [--network FILE] [--chain HEX64] [--pin HEX128]\n"
+      "  The node's pin and the chain id come from the tool network file\n"
+      "  (--network, else $NODUS_NETWORK; nodus_tool_network.h) with --pin /\n"
+      "  --chain over it; neither -> refused before any socket.\n"
       "  TEST-ONLY localhost load. Asserts no threshold; it MEASURES.\n");
 }
 
@@ -495,6 +500,7 @@ int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     const char *host = "127.0.0.1";
     const char *mode_s = NULL, *owner_hex = NULL, *stats_path = NULL;
+    const char *net_file = NULL, *net_pin = NULL, *net_chain = NULL;
     uint64_t port = 0, sessions = 19, threads = 32, seconds = 20, height = 0;
     uint64_t pipeline = 0, rate = 2000;
     int have_height = 0;
@@ -512,6 +518,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--pipeline") && i + 1 < argc) { if (parse_u64(argv[++i], &pipeline)) { usage(); return 1; } }
         else if (!strcmp(a, "--rate")     && i + 1 < argc) { if (parse_u64(argv[++i], &rate))     { usage(); return 1; } }
         else if (!strcmp(a, "--stats-file") && i + 1 < argc) stats_path = argv[++i];
+        else if (!strcmp(a, "--network")  && i + 1 < argc) net_file = argv[++i];
+        else if (!strcmp(a, "--chain")    && i + 1 < argc) net_chain = argv[++i];
+        else if (!strcmp(a, "--pin")      && i + 1 < argc) net_pin = argv[++i];
         else { fprintf(stderr, "unknown or incomplete argument: %s\n", a); usage(); return 1; }
     }
 
@@ -540,6 +549,20 @@ int main(int argc, char **argv) {
 
     const uint64_t S = sessions, T = threads;
     const uint64_t n_ident = (S + 3) / 4;   /* ceil(S/4): <= 4 sessions each */
+
+    /* DHT v2 package 3c: the node's pin and the chain id (refused here, before
+     * any identity or socket). Static: the pin list every client config
+     * points into lives in it for the whole run. */
+    static nodus_tool_net_t net;
+    char net_err[NODUS_TOOL_NET_ERR_SIZE];
+    nodus_tool_net_init(&net);
+    if (nodus_tool_net_open(&net, net_file, net_pin, net_chain, net_err,
+                            sizeof(net_err)) != 0 ||
+        nodus_tool_net_resolve(&net, host, (uint16_t)port, NULL, NULL,
+                               net_err, sizeof(net_err)) != 0) {
+        fprintf(stderr, "network identity: %s\n", net_err);
+        return 1;
+    }
 
     /* ── ephemeral identities (in memory only) ───────────────────────── */
     nodus_identity_t *ids = calloc(n_ident, sizeof(*ids));
@@ -577,6 +600,10 @@ int main(int argc, char **argv) {
         cfg.servers[0].port = (uint16_t)port;
         cfg.server_count    = 1;
         cfg.auto_reconnect  = false;
+        if (nodus_tool_net_fill(&net, &cfg, net_err, sizeof(net_err)) != 0) {
+            fprintf(stderr, "session %" PRIu64 ": %s\n", s, net_err);
+            goto cleanup;
+        }
         const nodus_identity_t *id = &ids[s / 4];   /* <= 4 sessions / id */
         if (nodus_client_init(&clients[s], &cfg, id) != 0) {
             fprintf(stderr, "session %" PRIu64 ": client_init failed\n", s);

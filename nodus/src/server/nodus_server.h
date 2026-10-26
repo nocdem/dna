@@ -29,6 +29,7 @@
 #include "witness/nodus_witness_host.h"     /* the witness's host view (S1) */
 #include "witness/nodus_witness_network_file.h" /* nodus_network_file_target_t */
 #include "server/nodus_chain_backend.h"     /* srv->chain */
+#include "dnac/cmt_p2p_secret.h"            /* CMT_P2P_SC_SIG_SIZE (anon_kc_sig) */
 #include "server/nodus_presence.h"
 #include "server/nodus_inter_dial.h"       /* the 4002 dialer handshake (S5a) */
 #include "server/nodus_partial_wipe.h"     /* the H-10 boot gate (S5b) */
@@ -62,11 +63,14 @@ typedef struct {
     /* Witness module (optional DNAC BFT consensus) */
     nodus_witness_config_t  witness;
 
-    /* C-01: Require Dilithium5 auth on the inter-node port (4002).
-     * Default false for backward compat. Set true once all nodes are
-     * updated. P2P-PORT F5: the witness port 4004 no longer consults it —
-     * every 4004 connection runs the secret-connection handshake
-     * unconditionally (witness-port session design §2R R13). */
+    /* RETIRED (DHT v2 3b-2, Kurultay #43 mandatory fixes: "the 4002
+     * require_peer_auth gate deleted"). Every 4002 connection runs the node
+     * session (SecretConnection, NODE profile) unconditionally, as every
+     * 4004 connection runs the witness one; nothing reads this field. It
+     * stays in the struct only so that existing node configs that set it
+     * ("require_peer_auth": false) still parse — setting it false no
+     * longer opens a plaintext 4002 (tools/nodus_node_config.c is not
+     * touched by this package). */
     bool        require_peer_auth;
 
     /* P2P-PORT F5 — the witness port 4004's p2p section (reference
@@ -156,7 +160,8 @@ typedef struct {
     bool                storage_external;
 } nodus_server_config_t;
 
-/* ── Inter-node session (lightweight — rate limiting only, no auth) ── */
+/* ── Inter-node session (rate limiting + the peer identity the node
+ *    session proved) ── */
 
 typedef struct {
     nodus_tcp_conn_t   *conn;
@@ -165,11 +170,13 @@ typedef struct {
      * conn is set (connect / accept); 0 once cleared. */
     uint64_t            dht_gen;
 
-    /* C-01/C-02: Dilithium5 authentication (same as client sessions) */
+    /* The PEER's identity as the node session proved it (DHT v2 3b-2:
+     * set at on_session from the SecretConnection's authenticated key, on a
+     * dialed conn as well as on an accepted one — nodus_inter_session_proven).
+     * `authenticated` is true exactly from then on; no 4002 frame is
+     * dispatched before (the layer holds the input back). */
     nodus_key_t         client_fp;
     nodus_pubkey_t      client_pk;
-    uint8_t             nonce[NODUS_NONCE_LEN];
-    bool                nonce_pending;
     bool                authenticated;
 
     /* Per-session rate limiting (the DHT methods' sv / fv windows are the
@@ -180,18 +187,6 @@ typedef struct {
     int                 cr_count;
     uint64_t            w_window_start;
     int                 w_count;
-
-    /* Peer protocol version (from hello) */
-    uint32_t            proto_version;
-
-    /* The DIALER side of the handshake on a conn we opened (split S5a,
-     * decision item 28: server/nodus_inter_dial.h — challenge nonce, the
-     * pending KEM secret between key_init and key_ack, the proven peer
-     * identity). Channel crypto itself lives on the conn (B3 fix:
-     * sess->conn->channel_crypto). On a dialed conn, `authenticated` above
-     * and dial.authenticated are carried both ways around each call
-     * (dispatch_inter). Unused on an accepted conn. */
-    nodus_inter_dial_t  dial;
 } nodus_inter_session_t;
 
 /* ── Client session ──────────────────────────────────────────────── */
@@ -206,17 +201,21 @@ typedef struct {
     nodus_pubkey_t      client_pk;
     uint8_t             token[NODUS_SESSION_TOKEN_LEN];
     bool                authenticated;
+    /* DHT v2 package 3d: the session is the no-login ANON family — NO
+     * principal. client_pk / client_fp stay zero and are never an identity
+     * (nodus_sessions_* skip such a session, there is no presence entry, the
+     * connection's peer_id_set stays false). Set by nodus_auth_session_start
+     * from the layer (nodus_tcp_sc_is_anonymous), never by a client byte.
+     * Such a session calls only the ANON allowlist (nodus_server_anon_method_ok). */
+    bool                anonymous;
     bool                is_nodus;
     /* Order of this session's authentication on this server: a fresh value
-     * from srv->next_auth_seq when the AUTH signature verifies; 0 = never
-     * authenticated (session_clear zeroes it). Names "oldest" for the
-     * per-identity session limit and "newest" for the circuit target —
-     * a counter, not a clock, so two auths in one tick never tie. */
+     * from srv->next_auth_seq when the SecretConnection becomes
+     * authenticated; 0 = never authenticated (session_clear zeroes it).
+     * Names "oldest" for the per-identity session limit and "newest" for
+     * the circuit target — a counter, not a clock, so two auths in one tick
+     * never tie. */
     uint64_t            auth_seq;
-
-    /* Pending auth challenge */
-    uint8_t             nonce[NODUS_NONCE_LEN];
-    bool                nonce_pending;
 
     /* The session's LISTEN keys and put-rate window are the DHT's
      * (nodus_dht_session_t, same slot). */
@@ -224,18 +223,11 @@ typedef struct {
     /* Circuit table (VPN mesh Faz 1) */
     nodus_circuit_table_t   circuits;
 
-    /* Client protocol version (0=legacy, 2=channel encryption support) */
-    uint32_t                proto_version;
-
     /* Chain-method budget (nodus_session_chain_charge): start of the
      * current window on nodus_time_mono_ms() and the units spent in it.
      * session_clear zeroes both. */
     uint64_t                chain_window_start_ms;
     uint32_t                chain_units_used;
-
-    /* Channel encryption (Kyber handshake).
-     * B3 fix — channel_crypto storage moved to nodus_tcp_conn_t.
-     * Read via sess->conn->channel_crypto. */
 } nodus_session_t;
 
 /* ── Server ──────────────────────────────────────────────────────── */
@@ -301,6 +293,45 @@ typedef struct nodus_server {
 
     /* CRIT-4: TCP idle connection sweep (every 30s) */
     uint64_t                last_idle_sweep;
+
+    /* The pre-session deadline (Kurultay #43 O-5) of the two accepting
+     * transports is looked at once a second on the monotonic clock: the
+     * nodus_time_mono_ms() of the last look. */
+    uint64_t                last_presession_mono_ms;
+    /* nodus_time_mono_ms of the last role_exempt revalidation (every
+     * NODUS_ROLE_SET_EVERY_MS, with the role set's own refresh). */
+    uint64_t                last_role_revalidate_ms;
+
+    /* The node-session config of the 4002 pool (srv->inter_tcp.auth_ctx
+     * points here): this node's identity and where the chain id comes from
+     * (the chain backend; zero until a chain is open — then no 4001 / 4002
+     * session is made). */
+    nodus_inter_session_cfg_t inter_cfg;
+
+    /* The chain id every session of this node is bound to (the HELLO of
+     * 4001 / WebSocket and of 4002): the 32-byte v3 chain id, learned from the
+     * chain backend's chain_id_v3 op (in-process witness, or the `c3` of
+     * nodus-witness' ipc_status — NOT the legacy padded `ci`) at the
+     * first accept / dial that finds it non-zero, then kept: a chain id never
+     * changes for the life of the process. Until it is known, sessions are
+     * refused (fail closed) — nodus_server_chain_id. */
+    uint8_t                 chain_id[32];
+    bool                    chain_id_known;
+    /* While unknown the backend is asked at most once a second:
+     * nodus_time_mono_ms() of the last ask, and whether there was one. */
+    bool                    chain_id_tried;
+    uint64_t                chain_id_try_mono_ms;
+
+    /* DHT v2 package 3d: this node's KEM-key certificate for the ANON client
+     * session (design 2026-10-26-dht-v2-3d-no-login-design.md §1.3):
+     * nodus_tcp_sc_kc_sign over this identity's ML-KEM key and chain_id,
+     * computed ONCE — at the first accept that finds the chain id known (the
+     * id is only learned lazily, nodus_server_chain_id) — and handed to every
+     * 4001 / WebSocket responder as cfg.anon_kc_sig. The layer keeps the
+     * POINTER, so the bytes live as long as the server (server-owned
+     * lifetime); never signed per connection. */
+    uint8_t                 anon_kc_sig[CMT_P2P_SC_SIG_SIZE];
+    bool                    anon_kc_ok;
 
     /* Phase 1 visibility: send diagnostics dump timer */
     uint64_t                last_stats_dump;
@@ -536,6 +567,18 @@ void nodus_server_close(nodus_server_t *srv);
 void nodus_server_dht_host(nodus_server_t *srv, nodus_dht_host_t *out);
 
 /**
+ * The chain id this node's sessions are bound to (DHT v2 3b-2): the 32-byte
+ * v3 chain id from the chain backend's `chain_id_v3` op (the in-process
+ * witness, or nodus-witness over its ipc in the split) — NOT `status`'s legacy
+ * 16-byte id padded with zeros — the first time it is non-zero, then kept in
+ * the server. @return true and `out` filled; false while it is not known (no chain
+ * backend, no chain open, the witness not answering): every session, 4001 /
+ * WebSocket and 4002, accept and dial alike, is then REFUSED — fail closed,
+ * there is no session without a chain.
+ */
+bool nodus_server_chain_id(nodus_server_t *srv, uint8_t out[32]);
+
+/**
  * Core's outbound 4002 dial — find-or-dial on `srv->inter_tcp`, shared by
  * every outbound site core has: the DHT host's inter_send (replication,
  * republish, hinted retry), presence p_sync and circuits (decision
@@ -573,22 +616,45 @@ nodus_tcp_conn_t *nodus_server_inter_find(nodus_server_t *srv, const char *ip,
                                           uint16_t port,
                                           const nodus_key_t *expected_node_id);
 
-/* ── Auth helpers (used by server) ───────────────────────────────── */
+/* ── Client session start (used by server) ───────────────────────── */
 
 /**
- * Handle HELLO message from a client/nodus.
- * Verifies fingerprint, generates challenge nonce.
+ * The client session of `sess` just became AUTHENTICATED (4001 / WebSocket;
+ * the transport's on_session): what the T2 hello → challenge → auth → auth_ok
+ * handler used to do when the AUTH signature verified (DHT v2 3b-2, Kurultay
+ * #43 O-1 / O-2 b), re-homed here:
+ *   - the client identity: sess->client_pk from the SecretConnection's
+ *     authenticated key, client_fp its fingerprint; conn->peer_id / peer_pk;
+ *   - sess->authenticated, sess->auth_seq (srv->next_auth_seq);
+ *   - the per-identity session limit (NODUS_MAX_SESSIONS_PER_IDENTITY): the
+ *     oldest sessions of the same identity are disconnected;
+ *   - presence (nodus_presence_add_local);
+ *   - a fresh session token, sent as the FIRST sealed frame: the T2 `auth_ok`
+ *     message (txn 0) carrying the token and nothing else. The token is a
+ *     correlation key only — identity is the connection (O-2 b).
+ * No payload cap is lifted here: the cap (NODUS_PREAUTH_PAYLOAD_MAX) is
+ * retired with the hello / auth path — before authentication no nodus frame
+ * exists on the connection, only the layer's handshake messages.
+ * ANON (DHT v2 package 3d, design 2026-10-26-dht-v2-3d-no-login-design.md §2):
+ * when the layer reports the connection as the ANON family
+ * (nodus_tcp_sc_is_anonymous) there is NO principal: no client_pk /
+ * client_fp, conn->peer_id_set stays false, no per-identity eviction, no
+ * presence entry, no role exemption; sess->anonymous is set. The token is
+ * still minted and sent. Per-IP / per-session limits and the deadlines are
+ * unchanged.
+ * @return 0; -1 when the peer key cannot be read (the caller disconnects).
  */
-int nodus_auth_handle_hello(nodus_server_t *srv, nodus_session_t *sess,
-                             const nodus_pubkey_t *pk, const nodus_key_t *fp,
-                             uint32_t txn_id);
+int nodus_auth_session_start(nodus_server_t *srv, nodus_session_t *sess);
 
 /**
- * Handle AUTH message (signed nonce).
- * Verifies signature, creates session token.
+ * The ANON allowlist (design §2, exact method names): the T2 methods a
+ * no-login session may call. Everything else on an ANON session is
+ * NOT_AUTHENTICATED. The five owner-only reads are on the list but are served
+ * only with a valid owner-signed `qa` (nodus_owner_query.h), checked by the
+ * witness handler. `dht2_*` are not wired yet (a later package) and are not
+ * on it.
  */
-int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
-                            const nodus_sig_t *sig, uint32_t txn_id);
+bool nodus_server_anon_method_ok(const char *method);
 
 /* ── Sessions of one identity (client port 4001) ────────────────────
  *
@@ -610,21 +676,23 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
 /* ── Client port front door (decision 2026-10-14-kurultay-20-summary.md;
  *    operator's simple version, rpc-front-door design) ────────────────
  *
- * Pre-auth frame cap (conn->max_payload, set on accept, cleared at auth
- * success). Before authentication a client may send only `hello` (pk
- * NODUS_PK_BYTES 2592 + fp NODUS_KEY_BYTES 64 + a small CBOR map) and
- * `auth` (sig NODUS_SIG_BYTES 4627 + a small CBOR map), nodus_tier2.c
- * nodus_t2_hello / nodus_t2_auth. The cap is the sum of all three byte
- * strings plus 1 KiB for the CBOR envelope and method strings — above
- * either message with room to spare; key_init is post-auth and is not
- * covered. */
-#define NODUS_PREAUTH_PAYLOAD_MAX \
-    ((uint32_t)(NODUS_SIG_BYTES + NODUS_PK_BYTES + NODUS_KEY_BYTES + 1024))
-_Static_assert(NODUS_PREAUTH_PAYLOAD_MAX >=
-               NODUS_SIG_BYTES + NODUS_PK_BYTES + 1024,
-               "pre-auth cap must hold hello and auth with CBOR overhead");
-_Static_assert(NODUS_PREAUTH_PAYLOAD_MAX <= 16384,
-               "pre-auth cap must stay small");
+ * (The pre-auth frame cap NODUS_PREAUTH_PAYLOAD_MAX is RETIRED, Kurultay
+ * #43 O-5: before the session is authenticated the connection carries only
+ * the SecretConnection's own handshake messages, bounded by that layer, and
+ * the 15 s / 30 s pre-session deadline — nodus_tcp_sc_presession_sweep.) */
+
+/* The pre-session deadline of the accepting transports (4001 / WebSocket and
+ * 4002), Kurultay #43 O-5, on the monotonic clock: a connection that is not
+ * authenticated is closed NODUS_PRESESSION_IDLE_MS after its last socket byte
+ * and NODUS_PRESESSION_ABS_MS after it connected, whichever comes first. The
+ * per-IP caps (NODUS_MAX_CONNS_PER_IP, 20 + 20) are unchanged. */
+#define NODUS_PRESESSION_IDLE_MS   15000u
+#define NODUS_PRESESSION_ABS_MS    30000u
+/* New handshakes one IP may start per minute on each accepting port (4001 +
+ * WebSocket, 4002): operator decision 2026-10-24, "60/min per IP"
+ * (decisions/2026-10-24-dht-v2-handshake-rate.md). Set as
+ * nodus_tcp_t.hs_rate_per_min on both transports; monotonic clock. */
+#define NODUS_HANDSHAKE_RATE_PER_MIN 60u
 
 /* Per-session budget for chain methods (every request for which
  * nodus_chain_method_routed() is true): a fixed window of
@@ -675,25 +743,6 @@ int nodus_sessions_evict_plan(const nodus_session_t *sessions, int n,
                               int max_per_identity,
                               int *slots_out, int cap);
 
-/**
- * Handle KEY_INIT message (Kyber ciphertext + client nonce).
- * Decapsulates, derives AES key, sends KEY_ACK.
- */
-int nodus_auth_handle_key_init(nodus_server_t *srv, nodus_session_t *sess,
-                                const uint8_t *kyber_ct, const uint8_t *nonce_c,
-                                uint32_t txn_id);
-
-/**
- * Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-mlkem-
- * migration.md) — algorithm-aware KEY_INIT handler. key_alg: 0 = round-3
- * Kyber (delegates to nodus_auth_handle_key_init() above, byte-identical
- * to pre-Faz-1 behaviour), 1 = ML-KEM-1024. D11, N1 delta 1.
- */
-int nodus_auth_handle_key_init_alg(nodus_server_t *srv, nodus_session_t *sess,
-                                    uint8_t key_alg,
-                                    const uint8_t *ct, const uint8_t *nonce_c,
-                                    uint32_t txn_id);
-
 /* ════════════════════════════════════════════════════════════════════
  * INTERNAL — exposed ONLY so unit tests can drive them in-process
  * (tests/test_inter_circuit_uaf.c, test_inter_preauth_gate.c,
@@ -714,7 +763,22 @@ void nodus_server_inter_conn_closed(nodus_server_t *srv,
 int nodus_server_inter_sweep_orphans(nodus_server_t *srv, uint64_t now_ms,
                                      uint64_t max_age_ms);
 
-/** The 4002 frame dispatcher (F2/F3 gates), for in-process gate tests. */
+/** The pre-session deadline (Kurultay #43 O-5) of the two accepting
+ *  transports as of `now_mono_ms` (nodus_time_mono_ms scale): close every
+ *  unauthenticated layer connection idle NODUS_PRESESSION_IDLE_MS or older
+ *  than NODUS_PRESESSION_ABS_MS. The run loop calls it once a second; tests
+ *  call it with a time they choose. @return connections closed. */
+int nodus_server_presession_sweep(nodus_server_t *srv, uint64_t now_mono_ms);
+
+/** Clear role_exempt on every live connection (4001 / WS and 4002) whose
+ *  proven key is no longer in the backend's role set — only against a KNOWN
+ *  set; an unknown one changes nothing (fail safe). The run loop calls it
+ *  every NODUS_ROLE_SET_EVERY_MS; tests call it directly. @return the number
+ *  of connections cleared. */
+int nodus_server_role_revalidate(nodus_server_t *srv);
+
+/** The 4002 frame dispatcher (the node session's gate), for in-process
+ *  tests. */
 void nodus_server_dispatch_inter_frame(nodus_server_t *srv,
                                        nodus_inter_session_t *sess,
                                        const uint8_t *payload, size_t len);

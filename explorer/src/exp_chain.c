@@ -19,6 +19,7 @@
 #include "nodus/nodus.h"
 #include "dnac/validator.h"            /* DNAC_VALIDATOR_ACTIVE, DNAC_MAX_VALIDATORS (dnac.h) */
 #include "crypto/nodus_identity.h"
+#include "client/nodus_tool_network.h" /* pin + chain id per server (3c)    */
 
 #include "crypto/utils/qgp_log.h"
 #define LOG_TAG "EXP_CHAIN"
@@ -27,6 +28,11 @@ struct exp_chain {
     exp_server_t     servers[EXP_CHAIN_MAX_SERVERS];
     int              count;
     int              current;
+    /* This handle's own copy of the tool network identity. The pin list a
+     * nodus_client_t holds points INTO it (nodus_client_init does not copy
+     * it), and the sync thread's handle and the HTTP thread's handle each
+     * own one, so neither ever writes the other's pin storage. */
+    nodus_tool_net_t net;
     nodus_identity_t identity;
     nodus_client_t  *nc;      /* heap-allocated — multi-MB struct, never stack */
     int              nc_live; /* 1 iff c->nc currently holds a successfully
@@ -62,6 +68,16 @@ static int chain_connect(exp_chain_t *c, int idx) {
      * loop racing against that would be undiagnosable non-determinism. */
 
     c->current = idx;
+
+    /* DHT v2 package 3c: this server's pin and the chain id, from the tool
+     * network identity (file / flags). Missing -> refuse, no socket. */
+    char nerr[NODUS_TOOL_NET_ERR_SIZE];
+    if (nodus_tool_net_fill(&c->net, &cfg, nerr, sizeof(nerr)) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "no pin / chain id for %s:%u: %s",
+                      c->servers[idx].host, (unsigned)c->servers[idx].port,
+                      nerr);
+        return -1;
+    }
 
     if (nodus_client_init(c->nc, &cfg, &c->identity) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "nodus_client_init failed for %s:%u",
@@ -147,11 +163,12 @@ int exp_chain_config_load(const char *path, exp_server_t *servers, int max, int 
     return 0;
 }
 
-int exp_chain_open(exp_chain_t **c_out, const exp_server_t *servers, int count) {
+int exp_chain_open(exp_chain_t **c_out, const exp_server_t *servers, int count,
+                   const nodus_tool_net_t *net) {
     if (!c_out) return -1;
     *c_out = NULL;
 
-    if (!servers || count <= 0 || count > EXP_CHAIN_MAX_SERVERS) return -1;
+    if (!servers || count <= 0 || count > EXP_CHAIN_MAX_SERVERS || !net) return -1;
 
     exp_chain_t *c = calloc(1, sizeof(*c));
     if (!c) return -1;
@@ -159,6 +176,8 @@ int exp_chain_open(exp_chain_t **c_out, const exp_server_t *servers, int count) 
     memcpy(c->servers, servers, sizeof(exp_server_t) * (size_t)count);
     c->count = count;
     c->current = 0;
+    c->net = *net;
+    c->net.pin_count = 0;   /* a fresh pin pool: the copy owns its storage */
 
     if (nodus_identity_generate(&c->identity) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "exp_chain_open: identity generation failed");

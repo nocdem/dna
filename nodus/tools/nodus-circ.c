@@ -19,6 +19,7 @@
 
 #include "nodus/nodus.h"
 #include "crypto/nodus_identity.h"
+#include "client/nodus_tool_network.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -106,6 +107,9 @@ static int cmp_double(const void *a, const void *b)
 
 /* ── setup ── */
 
+/* The tool network identity (pins live here for the process). */
+static nodus_tool_net_t g_net;
+
 static int connect_ready(nodus_client_t *client, const char *ip, uint16_t port,
                          const nodus_identity_t *id)
 {
@@ -115,18 +119,37 @@ static int connect_ready(nodus_client_t *client, const char *ip, uint16_t port,
     cfg.servers[0].port = port;
     cfg.server_count = 1;
 
+    /* DHT v2 package 3c: pin + chain id from the tool network file / flags
+     * (nodus_tool_network.h); none -> refuse before any socket. */
+    char nerr[NODUS_TOOL_NET_ERR_SIZE];
+    if (nodus_tool_net_fill(&g_net, &cfg, nerr, sizeof(nerr)) != 0) {
+        fprintf(stderr, "nodus-circ: %s\n", nerr);
+        return -1;
+    }
     if (nodus_client_init(client, &cfg, id) != 0) { fprintf(stderr, "client_init failed\n"); return -1; }
-    if (nodus_client_connect(client) != 0) { fprintf(stderr, "connect failed (%s:%u)\n", ip, port); return -1; }
+    if (nodus_client_connect(client) != 0) {
+        fprintf(stderr, "connect failed (%s:%u)\n", ip, port);
+        nodus_client_close(client);         /* init succeeded: close owed */
+        return -1;
+    }
 
     for (int i = 0; i < 100 && !nodus_client_is_ready(client); i++)
         nodus_client_poll(client, 100);
-    if (!nodus_client_is_ready(client)) { fprintf(stderr, "not ready after 10s\n"); return -1; }
+    if (!nodus_client_is_ready(client)) {
+        fprintf(stderr, "not ready after 10s\n");
+        nodus_client_close(client);
+        return -1;
+    }
     return 0;
 }
 
 static void usage(const char *p)
 {
-    fprintf(stderr, "Usage: %s -s <server[:port]> {listen | call} [-n count]\n", p);
+    fprintf(stderr, "Usage: %s -s <server[:port]> [--network <file>] [--chain <hex64>] "
+            "[--pin <hex128>] {listen | call} [-n count]\n", p);
+    fprintf(stderr, "  The node's pin and the chain id come from the tool network file "
+            "(--network or NODUS_NETWORK;\n  see nodus-cli --help) with --pin / --chain "
+            "over it. Neither -> refused before any socket.\n");
 }
 
 int main(int argc, char **argv)
@@ -134,9 +157,19 @@ int main(int argc, char **argv)
     const char *server = NULL;
     uint16_t port = 4001;
     int count = 50;
+    const char *net_file = NULL, *net_pin = NULL, *net_chain = NULL;
     int opt;
-    while ((opt = getopt(argc, argv, "+s:n:kh")) != -1) {
+    static const struct option longopts[] = {
+        { "network", required_argument, NULL, 'N' },
+        { "chain",   required_argument, NULL, 'C' },
+        { "pin",     required_argument, NULL, 'P' },
+        { NULL, 0, NULL, 0 }
+    };
+    while ((opt = getopt_long(argc, argv, "+s:n:kh", longopts, NULL)) != -1) {
         switch (opt) {
+        case 'N': net_file = optarg; break;
+        case 'C': net_chain = optarg; break;
+        case 'P': net_pin = optarg; break;
         case 'k': g_keyed = 1; break;
         case 's': {
             char *c = strchr(optarg, ':');
@@ -152,6 +185,15 @@ int main(int argc, char **argv)
     }
     const char *mode = (optind < argc) ? argv[optind] : NULL;
     if (!server || !mode) { usage(argv[0]); return 1; }
+    {
+        char nerr[NODUS_TOOL_NET_ERR_SIZE];
+        nodus_tool_net_init(&g_net);
+        if (nodus_tool_net_open(&g_net, net_file, net_pin, net_chain, nerr,
+                                sizeof(nerr)) != 0) {
+            fprintf(stderr, "nodus-circ: %s\n", nerr);
+            return 1;
+        }
+    }
 
     nodus_identity_t id_caller, id_callee;
     if (nodus_identity_from_seed(SEED_CALLER, &id_caller) != 0 ||

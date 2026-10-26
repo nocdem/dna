@@ -17,7 +17,6 @@
 
 #include <stdatomic.h>
 #include "nodus/nodus_types.h"
-#include "crypto/nodus_channel_crypto.h"
 #include "transport/nodus_ws.h"
 
 #ifdef __cplusplus
@@ -28,6 +27,11 @@ extern "C" {
 /* CRIT-5: plain-listener connections per peer IP (handle_accept; WebSocket
  * and Unix-socket connections are not counted). Same on Linux and Windows. */
 #define NODUS_MAX_CONNS_PER_IP  20
+/* Entries of the per-IP handshake-rate table (nodus_tcp_t.hs_rate): the IPs
+ * whose current minute is remembered. 512 x ~32 bytes. */
+#define NODUS_TCP_HS_RATE_TABLE 512
+/* The window of the handshake rate, ms (decision 2026-10-24: "per minute"). */
+#define NODUS_TCP_HS_RATE_WINDOW_MS 60000u
 #define NODUS_TCP_BUF_INIT    (64 * 1024)    /* Initial read/write buffer */
 #define NODUS_TCP_PENDING_MAX  (5 * 1024 * 1024)   /* 5MB auth pending queue cap */
 
@@ -156,13 +160,17 @@ typedef struct nodus_tcp_conn {
     uint64_t            last_activity;
     int                 slot;        /* Index in pool */
 
-    /* Channel encryption — owned per-conn (B3 fix). Inline storage
-     * eliminates the pointer-aliasing race that caused production
-     * "Replay detected: counter=N < expected=M" loops when multiple
-     * conns recycled through the same slot shared a session-level cc
-     * struct. Encrypt/decrypt sites read &conn->channel_crypto directly;
-     * established=false (zero-init) until handshake completes. */
-    nodus_channel_crypto_t channel_crypto;
+    /* Monotonic stamps (nodus_time_mono_ms) of the two events above, for
+     * deadlines that must not move with a wall-clock step: the pre-session
+     * deadline of the SecretConnection layer (nodus_tcp_sc_presession_sweep)
+     * reads these, never connected_at / last_activity. Set where those are. */
+    uint64_t            connected_mono_ms;
+    uint64_t            last_activity_mono_ms;
+    /* Monotonic stamp of the dial (nodus_tcp_connect); 0 on an accepted
+     * connection. The bound over connect + handshake of a dialed node
+     * session (nodus_inter_pool_sweep) is measured from it: connected_at is
+     * 0 until the connect completes. */
+    uint64_t            dial_mono_ms;
 
     /* Send diagnostics (Phase 1 visibility — no behavior change) */
     uint64_t            send_ok_count;      /* frames accepted into wbuf */
@@ -188,15 +196,6 @@ typedef struct nodus_tcp_conn {
     uint64_t            pending_enqueued_count;      /* lifetime frames queued */
     uint64_t            pending_drained_count;       /* lifetime frames promoted from queue to wbuf */
     uint64_t            pending_hint_fallback_count; /* lifetime frames that spilled to hint table */
-
-    /* Phase 3.2a: crypto-path visibility — decrypt failures are currently
-     * silently logged once and the frame skipped. Counter lets us correlate
-     * these with upstream "T1 decode failed" asymmetry. */
-    uint64_t            decrypt_skip_count;
-
-    /* Phase 3.2b-inv: one-shot flag so we log TX_ENCRYPT_FIRST only once
-     * per conn lifetime (per-frame would flood the journal). */
-    bool                tx_encrypt_logged;
 
     /* Phase 3.2b-inv2: one-shot flag for PENDING_DRAIN log. */
     bool                drain_logged;
@@ -299,11 +298,30 @@ typedef struct nodus_tcp_conn {
      * sc_close_req). A nested nodus_tcp_poll started by on_disconnect must
      * neither reap it again nor process events or job results for it. */
     bool                   sc_closing;
+    /* A teardown has claimed this connection and its on_disconnect has run or
+     * is running (nodus_tcp.c conn_notify_disconnect): a re-entrant
+     * nodus_tcp_disconnect from that callback is a no-op. */
+    bool                   disc_claimed;
 
     /* WebSocket Close that arrived while a handshake job was outstanding
      * (layer on): the input preceding it is still held. The close frame to
      * send is kept here; the connection closes once that input has been
      * opened and dispatched, in order, after on_session. */
+    /* Per-IP limits of the accepting side (decision 2026-10-24 + addendum
+     * 2026-10-26): the IP bucket this accept was counted under, the
+     * GENERATION of the bucket incarnation / window it was counted in (a
+     * counter, unique per window — a start time can repeat after an
+     * eviction), and whether it WAS
+     * counted (hs_counted; loopback is never counted). role_exempt: the
+     * session's PROVEN key has an active on-chain role — set by
+     * nodus_tcp_role_exempt at on_session; such a connection no longer
+     * counts toward the per-IP connection cap (the accept loops skip it) and
+     * its rate attempt has been credited back. */
+    nodus_ws_ip_bucket_t   hs_bucket;
+    uint64_t               hs_gen;      /* generation of the bucket window it was counted in */
+    bool                   hs_counted;
+    bool                   role_exempt;
+
     bool                   ws_close_wait;
     uint8_t                ws_close_len;
     uint8_t                ws_close_frame[4];
@@ -344,16 +362,6 @@ typedef struct nodus_tcp {
     nodus_tcp_conn_t   *pool[NODUS_TCP_MAX_CONNS];
     int                 count;
 
-    /* D2.4: cumulative post-established AEAD decrypt failures across ALL conns
-     * on this transport, INCLUDING conns that have since been freed. The
-     * per-conn decrypt_skip_count dies with the conn (conn_free), so a gate that
-     * sums the live pool reads 0 precisely when a failure caused a teardown —
-     * i.e. it is blind to the regression it exists to catch. conn_free folds the
-     * per-conn count in here before freeing. On a healthy cluster this MUST stay
-     * 0: on an ordered TCP stream there is no legitimate post-established
-     * decrypt failure. */
-    uint64_t            decrypt_fail_total;
-
     /* Callbacks */
     nodus_tcp_frame_fn  on_frame;
     nodus_tcp_event_fn  on_accept;
@@ -365,7 +373,9 @@ typedef struct nodus_tcp {
     bool                level_triggered; /* disable EPOLLET when true */
 
     bool                auth_required;     /* New conns inherit this */
-    void               *auth_ctx;          /* nodus_identity_t* for hello/sign */
+    void               *auth_ctx;          /* a 4002 pool's nodus_inter_session_cfg_t*
+                                          * (server/nodus_inter_dial.h); NULL
+                                          * elsewhere */
 
     /* Phase 3: pending-full fallback hook. May be NULL (legacy drop). */
     nodus_tcp_pending_full_fn on_pending_full;
@@ -446,7 +456,67 @@ typedef struct nodus_tcp {
     struct nodus_sc_worker   *sc_worker;
     uint64_t                  sc_gen_last;
     int                       sc_close_requests;  /* conns with sc_close_req set */
+
+    /* Per-IP handshake RATE of the accepting side (operator decision
+     * 2026-10-24, decisions/2026-10-24-dht-v2-handshake-rate.md): at most
+     * hs_rate_per_min new connections per minute from one IP (IPv6 by /64,
+     * nodus_ws_ip_bucket); above that an accept is refused until the minute
+     * has passed. 0 = off (the default; the owner of the 4001 / 4002
+     * transports sets 60). Fixed window per IP on the MONOTONIC clock; the
+     * table is bounded — see nodus_tcp_hs_rate_allow. Counts accepts only:
+     * connections this node dials never pass here. */
+    uint32_t                  hs_rate_per_min;
+    uint64_t                  hs_gen_last;    /* last window generation handed out */
+    struct {
+        bool                  used;
+        nodus_ws_ip_bucket_t  who;
+        uint64_t              start_ms;   /* window start, nodus_time_mono_ms scale */
+        uint64_t              gen;        /* unique per window (hs_gen_last) */
+        uint32_t              count;      /* accepts in the window so far */
+    } hs_rate[NODUS_TCP_HS_RATE_TABLE];
 } nodus_tcp_t;
+
+/**
+ * The handshake-rate decision for one accepted connection from `who` at
+ * `now_mono_ms` (nodus_time_mono_ms scale — a parameter so a test can drive
+ * it): true = admit and count it; false = refuse (the window of `who` already
+ * holds hs_rate_per_min accepts and 60 s have not passed since it opened).
+ * Always true when hs_rate_per_min is 0. Memory is bounded by
+ * NODUS_TCP_HS_RATE_TABLE entries: a full table reuses an entry whose window
+ * has expired, else evicts the entry with the OLDEST window (its IP is then
+ * counted afresh — a bounded loss of memory under a many-IP flood, never
+ * unbounded growth). Called by the transport's accept paths (plain accept,
+ * WebSocket upgrade); exposed for tests.
+ */
+bool nodus_tcp_hs_rate_allow(nodus_tcp_t *tcp, const nodus_ws_ip_bucket_t *who,
+                             uint64_t now_mono_ms);
+
+/**
+ * Operator addendum 2026-10-26 ("a node active in ANY role is exempt from
+ * ALL of these limits"): the PROVEN identity of `conn` has an active
+ * on-chain role. Credits the connection's handshake attempt back to its IP
+ * bucket (only while the window generation it was counted in is still the
+ * bucket's — a credit never lands in a later minute or a recreated
+ * bucket) and marks the connection
+ * role_exempt, so the per-IP connection cap no longer counts it. Idempotent;
+ * a connection that was never counted (loopback, rate off) is only marked.
+ * Never called for an unproven key: the caller decides from the key the
+ * SecretConnection proved. Exposed for the owner's on_session and for tests.
+ */
+void nodus_tcp_role_exempt(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
+
+/**
+ * The role of `conn`'s proven key has ended (the owner revalidated the live
+ * connection against a refreshed role set): clear role_exempt, so the
+ * connection counts toward the per-IP connection cap again at the next
+ * accept. The rate attempt credited earlier is NOT taken back and is never
+ * credited a second time (hs_counted stays false). Idempotent.
+ */
+void nodus_tcp_role_revoke(nodus_tcp_conn_t *conn);
+
+/** Loopback (127.0.0.0/8, ::1, ::ffff:127.x): the local machine, exempt from
+ *  the handshake rate entirely (counted nowhere). */
+bool nodus_tcp_ip_is_loopback(const char *ip);
 
 /**
  * Initialize TCP transport.
@@ -625,12 +695,6 @@ bool nodus_tcp_read_pending(const nodus_tcp_t *tcp);
  * further work on it.
  */
 void nodus_tcp_disconnect(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
-
-/** D2.4 gate: cumulative post-established AEAD decrypt failures on this
- *  transport, surviving conn teardown (live conns + all freed ones). MUST be 0
- *  on a healthy cluster — there is no legitimate post-established decrypt
- *  failure on an ordered TCP stream. */
-uint64_t nodus_tcp_decrypt_fail_total(const nodus_tcp_t *tcp);
 
 /** Find connection by peer ID. */
 nodus_tcp_conn_t *nodus_tcp_find_by_id(nodus_tcp_t *tcp,

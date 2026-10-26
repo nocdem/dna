@@ -193,9 +193,8 @@ typedef struct {
  * up to 4 strict reads per user (nodus_client_get_all_page_strict_many).
  * Cost: 16 x sizeof(dht_bf_batch_t) static in nodus_dht_t, and up to
  * 16 x NODUS_BF_MAX_FORWARDS = 128 forward sockets, each with a
- * RESP_BUF_SIZE receive buffer (nodus_dht_server.c bf_start_forward); every
- * forward socket's fd NUMBER must stay below NODUS_BF_FD_TABLE_SIZE or that
- * forward does not start. Not consensus, no wire change. */
+ * receive buffer on the batch-forward transport's pool (nodus_tcp, up to
+ * NODUS_TCP_MAX_CONNS). Not consensus, no wire change. */
 #define NODUS_BF_MAX_BATCHES    16
 #define NODUS_BF_TIMEOUT_MS     5000 /* Per-forward timeout */
 
@@ -312,48 +311,36 @@ typedef enum {
 
 /** Batch forward connection states */
 enum {
-    BF_CONNECTING      = 0,
-    BF_SEND_HELLO      = 1,
-    BF_RECV_CHALL      = 2,
-    BF_SEND_AUTH       = 3,
-    BF_RECV_AUTHOK     = 4,
-    BF_SEND_KEY_INIT   = 5,
-    BF_RECV_KEY_ACK    = 6,
-    BF_SEND_BATCH      = 7,
-    BF_RECV_RESULT     = 8,
-    BF_DONE            = 9,
+    BF_CONNECTING      = 0,  /**< dialed; the node session (SecretConnection)
+                              *   is being established                       */
+    BF_RECV_RESULT     = 1,  /**< session up, get_batch sent, reply awaited   */
+    BF_DONE            = 2,
 };
 
-/** One outgoing batch forward connection to a peer */
+/** One outgoing batch forward connection to a peer. The connection is a
+ *  nodus_tcp connection of the DHT's own batch-forward transport
+ *  (dht_bf_state_t.tcp) carrying the 4002 node session — the same
+ *  SecretConnection, pinned dial and fail-closed rules as the node's pool
+ *  (server/nodus_inter_dial.h); there is no socket, handshake or frame
+ *  parser of its own any more. */
 typedef struct {
-    int         fd;              /**< Non-blocking socket (-1 if unused) */
+    struct nodus_tcp_conn *conn;  /**< The connection (NULL if unused). Its
+                                   *   user_data points back to this struct. */
+    int         bi, fi;          /**< Which batch / forward slot this is
+                                   *   (set by bf_start_forward) */
     int         state;           /**< BF_CONNECTING..BF_DONE */
     char        ip[64];
     uint16_t    port;
     uint64_t    started_at;
-    uint8_t    *send_buf;        /**< Current send frame (reused for hello/auth/batch) */
-    size_t      send_len;
-    size_t      send_pos;
-    uint8_t    *recv_buf;        /**< Response buffer */
-    size_t      recv_cap;
-    size_t      recv_len;
-    /* Auth state */
-    uint8_t     token[NODUS_SESSION_TOKEN_LEN]; /**< Session token from auth_ok */
-    /* Kyber handshake state */
-    nodus_channel_crypto_t crypto;  /**< AES-256-GCM session (after Kyber handshake) */
-    bool        encrypted;          /**< true after successful Kyber key exchange */
-    /* The 4002 dialer handshake — the SHARED module core uses too
-     * (server/nodus_inter_dial.h; decision 2026-10-01-nodus-component-split
-     * item 28, split S5b): the retained challenge nonce the CRIT-1 kpk_sig
-     * check needs, the pending KEM secret between key_init and key_ack
-     * (zeroed at key_ack and at cleanup), the proven peer identity. */
-    nodus_inter_dial_t dial;
+    /* The session token message (auth_ok, txn 0), the first frame the
+     * responder sends; the 4002 handlers never read it, kept for logs. */
+    uint8_t     token[NODUS_SESSION_TOKEN_LEN];
     /* CRIT-1: the EXPECTED peer identity — the FIND_NODE peer
-     * bf_start_forward dialed; the module pins fingerprint(server_pk)
-     * against it before Kyber-encapsulating. */
+     * bf_start_forward dialed; the node session is pinned to it (the layer
+     * aborts before the ENCAPS job when the responder's key is another's). */
     nodus_key_t expected_node_id;
     bool        has_expected_node_id;
-    /* Batch keys (stored for sending after auth) */
+    /* Batch keys (sent once the session is up) */
     nodus_key_t *batch_keys;     /**< Keys to query (heap, freed on cleanup) */
     int         batch_key_count;
     /* Which keys this forward carries (indices into parent batch) */
@@ -400,16 +387,16 @@ typedef struct {
 /** Batch forward state (part of nodus_dht_t) */
 typedef struct {
     dht_bf_batch_t  batches[NODUS_BF_MAX_BATCHES];
-    int             bf_epoll_fd;     /**< Separate epoll for batch forward fds */
+    /** The batch forwards' own transport: dial-only nodus_tcp, polled with a
+     *  0 ms wait by bf_tick, every connection a node session (CLIENT-free:
+     *  NODE profile, pinned). Initialised by nodus_dht_init (`tcp_up`),
+     *  closed by nodus_dht_stop / nodus_dht_close. */
+    nodus_tcp_t     tcp;
+    bool            tcp_up;
+    /** Its node-session config (identity + chain id source), the transport's
+     *  auth_ctx (server/nodus_inter_dial.h). */
+    nodus_inter_session_cfg_t cfg;
 } dht_bf_state_t;
-
-/** bf fd→batch index mapping */
-typedef struct {
-    int batch_idx;
-    int forward_idx;
-} dht_bf_fd_entry_t;
-
-#define NODUS_BF_FD_TABLE_SIZE  256
 
 /** Pending eviction entry for ping-before-evict (Kademlia spec) */
 #define NODUS_MAX_PENDING_EVICTIONS 32
@@ -476,12 +463,30 @@ typedef struct {
     /** HOT (every put × R, every republished value, every remote listener
      *  notify) — send one PRE-FRAMED frame to a peer's 4002 over the node's
      *  persistent inter-node pool, dialing it (and pinning
-     *  `expected_peer_id`) when there is no connection. SYNCHRONOUS: 0
-     *  queued / written, -1 failed — the caller decides on hinted handoff
-     *  from this result in the same call. */
+     *  `expected_peer_id`) when there is no connection. SYNCHRONOUS, three
+     *  results (nodus_inter_send_t, server/nodus_inter_dial.h):
+     *    0  NODUS_INTER_SEND_WRITTEN — handed to an AUTHENTICATED session;
+     *    1  NODUS_INTER_SEND_QUEUED  — the session is not authenticated yet:
+     *       the frame waits in memory and is lost if the handshake fails
+     *       (e.g. the peer is an old build during a rolling deploy). NOT a
+     *       delivery: durable work (a hinted-handoff row) must stay;
+     *   -1  NODUS_INTER_SEND_FAILED  — nothing is queued (the connect or the
+     *       write failed);
+     *   -2  NODUS_INTER_SEND_REFUSED — the dial was refused locally (no pin,
+     *       chain id unknown): nothing was attempted, a retry is not counted.
+     *   A write the transport diverted to its queue-full fallback is 1.
+     *  The caller decides on hinted handoff from this result in the same
+     *  call. */
     int  (*inter_send)(void *ctx, const char *ip, uint16_t port,
                        const nodus_key_t *expected_peer_id,
                        const uint8_t *frame, size_t flen);
+
+    /** COLD (once per batch-forward dial) — fill out[32] with the chain id
+     *  the node sessions of this process are bound to (core: the chain
+     *  backend's; nodus-storage: its witness view's fresh snapshot). false
+     *  while it is not known: the batch forward is then not dialed (fail
+     *  closed — the keys are answered from what is local, S6). */
+    bool (*chain_id)(void *ctx, uint8_t out[32]);
 
     /** COLD (after a failed send only) — true when a failed send to
      *  `node_id` is worth a hint: a member of this node's cluster (DHT
@@ -599,7 +604,6 @@ typedef struct nodus_dht {
 
     /* Batch forward state machine (get_batch miss → forward to closest peer) */
     dht_bf_state_t          bf_state;
-    dht_bf_fd_entry_t       bf_fd_table[NODUS_BF_FD_TABLE_SIZE];
 
     /* Periodic republish */
     dht_republish_state_t   republish;
@@ -618,12 +622,19 @@ typedef struct nodus_dht {
 /**
  * Phase one, run where nodus_server_init set this state up before the
  * split (BEFORE the identity is loaded): zero `dht`, copy `host`, every
- * batch-forward fd to -1, jitter the first republish cycles, start the
- * lookup txn counter, create the batch-forward epoll, clear its fd table.
- * @return 0, or -1 when the epoll cannot be created (logged; nothing is
+ * batch-forward connection to none, jitter the first republish cycles, start
+ * the lookup txn counter, start the batch-forward transport (a dial-only
+ * nodus_tcp, its node-session config from `host`).
+ * @return 0, or -1 when the transport cannot be created (logged; nothing is
  *         left open).
  */
 int nodus_dht_init(nodus_dht_t *dht, const nodus_dht_host_t *host);
+
+/** true while a SecretConnection handshake job of the batch-forward
+ *  transport is outstanding (nodus_tcp_sc_busy): the loop that ticks this DHT
+ *  must cap its poll wait at NODUS_TCP_SC_POLL_MS then (nodus_tcp_sc.h
+ *  COMPLETION DELIVERY, "SCOPE OF THE BOUND"). false for a NULL dht. */
+bool nodus_dht_sc_busy(const nodus_dht_t *dht);
 
 /**
  * Phase two, AFTER the identity is loaded (routing is keyed by node_id):
@@ -638,11 +649,12 @@ int nodus_dht_open(nodus_dht_t *dht, const char *data_path,
                    const char *self_ip, uint16_t self_peer_port);
 
 /** Abandon every in-flight lookup (its cb_data freed) and every batch
- *  forward, close the batch-forward epoll. First step of a shutdown. */
+ *  forward, close the batch-forward transport (joins its handshake
+ *  workers). First step of a shutdown. */
 void nodus_dht_stop(nodus_dht_t *dht);
 
 /** Close the databases nodus_dht_open opened (media, values, channels) and
- *  the batch-forward epoll when nodus_dht_stop has not. */
+ *  the batch-forward transport when nodus_dht_stop has not. */
 void nodus_dht_close(nodus_dht_t *dht);
 
 /** Split S5b (F5): drop every deferred reply — every lookup that would

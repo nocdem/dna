@@ -32,14 +32,18 @@
  *  - The outbound 4002 pool (decision items 16, 28): replication,
  *    republish, hinted retry and listen forwarding go out on it through the
  *    shared find-or-dial + pre-framed send (server/nodus_inter_dial.h), the
- *    dialer handshake is the shared module (CRIT-1 pin), a pending-full
- *    replication frame is parked in the hint table directly. Any frame on a
- *    dialed connection that is not a handshake reply is dropped with a
- *    WARN: this process serves no 4002 request (core's listener does, with
- *    its F2/F3 gates). Hygiene that core's presence tick and idle sweep did
- *    for the shared pool before the split: the idle / auth-timeout sweep
- *    every 30 s and, every 30 s, the close of dialed connections to IPs that
- *    left the routing table.
+ *    session is the shared module's (SecretConnection, NODE profile, pinned
+ *    to the exact node id dialed — DHT v2 3b-2), a pending-full replication
+ *    frame is parked in the hint table directly. The chain id the HELLO
+ *    carries comes from this process's view of its witness
+ *    (dht/nodus_dht2_wview.h, ticked here): with no fresh snapshot a dial
+ *    is REFUSED and the frame is not queued — the durable hint row is the
+ *    queue (fail closed). Any frame on a dialed connection but the
+ *    responder's token message is dropped with a WARN: this process serves
+ *    no 4002 request (core's listener does). Hygiene that core's presence
+ *    tick and idle sweep did for the shared pool before the split: the
+ *    idle / auth-timeout sweep every 30 s and, every 30 s, the close of
+ *    dialed connections to IPs that left the routing table.
  *
  * Clock: nodus_time_mono_ms / nodus_time_now only schedule this node's own
  * pushes and sweeps and age its membership snapshot; nothing here is a
@@ -52,9 +56,11 @@
  */
 
 #include "dht/nodus_dht_ipc.h"
+#include "dht/nodus_dht2_wview.h"        /* the witness view: the chain id (3b-2) */
 #include "server/nodus_inter_dial.h"
 #include "server/nodus_partial_wipe.h"   /* the H-10 boot gate (decision 9) */
 #include "transport/nodus_tcp.h"
+#include "transport/nodus_tcp_sc.h"      /* nodus_tcp_sc_busy */
 #include "protocol/nodus_tier1.h"
 #include "protocol/nodus_tier2.h"
 #include "protocol/nodus_wire.h"
@@ -100,8 +106,15 @@ struct nodus_dht_ipc {
     uint8_t                 ctl_boot[NODUS_DHT_IPC_BOOT_LEN];
     bool                    boot_have;   /* ctl_boot is set (dipc_boot_seen) */
 
-    /* The dialer state of each outbound connection (out pool slot). */
-    nodus_inter_dial_t      dial[NODUS_TCP_MAX_CONNS];
+    /* The node-session config of the outbound pool (out.auth_ctx points
+     * here): this process's identity and the chain id from its witness view.
+     * The view is created by nodus_dht_ipc_open_wview, ticked by
+     * nodus_dht_ipc_tick, owned (freed) here, and handed out for package 6
+     * (nodus_dht_ipc_wview). NULL until opened: no snapshot, no dial. */
+    nodus_inter_session_cfg_t sess_cfg;
+    nodus_dht2_wview_t     *wview;
+    uint8_t                 chain_id[32];     /* latched by dipc_chain_id */
+    bool                    chain_known;
 
     /* Core's last membership snapshot (decision item 27). */
     nodus_dht_ipc_member_t  mbr[NODUS_DHT_IPC_MEMBERS_MAX];
@@ -288,12 +301,43 @@ static int dipc_udp_send(void *ctx, const uint8_t *payload, size_t len,
     return dipc_ctl_send(ipc, buf, n);
 }
 
+/* The tri-state of nodus_inter_pool_send_framed, unchanged (0 written to an
+ * authenticated session, 1 queued behind the handshake, -1 failed). */
 static int dipc_inter_send(void *ctx, const char *ip, uint16_t port,
                            const nodus_key_t *expected_peer_id,
                            const uint8_t *frame, size_t flen) {
     nodus_dht_ipc_t *ipc = (nodus_dht_ipc_t *)ctx;
-    return nodus_inter_pool_send_framed(&ipc->out, ip, port,
-                                        expected_peer_id, frame, flen);
+    return (int)nodus_inter_pool_send_framed(&ipc->out, ip, port,
+                                             expected_peer_id, frame, flen);
+}
+
+/* The chain id of this process's node sessions: the fresh snapshot of its
+ * witness (nodus_dht2_wview). No snapshot (never connected, answered {err},
+ * older than the view's staleness bound) or an all-zero id → false: the
+ * dial is refused. */
+static bool dipc_chain_id(void *ctx, uint8_t out[32]) {
+    nodus_dht_ipc_t *ipc = (nodus_dht_ipc_t *)ctx;
+    if (!ipc) return false;
+    /* LATCHED, as core's nodus_server_chain_id: a chain id never changes for
+     * the life of the process, so once a fresh snapshot has shown a non-zero
+     * one it is kept. A witness gap longer than the view's staleness bound
+     * then no longer refuses every dial (and no longer ages hinted-handoff
+     * rows toward deletion). Only the FIRST value needs a fresh snapshot. */
+    if (!ipc->chain_known) {
+        nodus_witness_dht_snap_t snap;
+        if (!ipc->wview ||
+            !nodus_dht2_wview_snap(ipc->wview, nodus_time_mono_ms(), &snap))
+            return false;
+        uint8_t acc = 0;
+        for (size_t i = 0; i < sizeof(snap.chain_id); i++) acc |= snap.chain_id[i];
+        if (acc == 0) return false;
+        _Static_assert(sizeof(((nodus_witness_dht_snap_t *)0)->chain_id) == 32,
+                       "the snapshot's chain id is the session's 32 bytes");
+        memcpy(ipc->chain_id, snap.chain_id, sizeof(snap.chain_id));
+        ipc->chain_known = true;
+    }
+    memcpy(out, ipc->chain_id, sizeof(ipc->chain_id));
+    return true;
 }
 
 static const nodus_dht_ipc_member_t *dipc_member(const nodus_dht_ipc_t *ipc,
@@ -325,6 +369,7 @@ void nodus_dht_ipc_host(nodus_dht_ipc_t *ipc, nodus_dht_host_t *out) {
     out->send_to_origin = dipc_send_to_origin;
     out->udp_send       = dipc_udp_send;
     out->inter_send     = dipc_inter_send;
+    out->chain_id       = dipc_chain_id;
     out->hint_wanted    = dipc_hint_wanted;
 }
 
@@ -423,8 +468,11 @@ static void dipc_on_origin_frame(nodus_dht_ipc_t *ipc, nodus_tcp_conn_t *conn,
             dipc_refuse(ipc, conn, "client origin frame does not decode");
             return;
         }
-        nodus_dht_client_request(ipc->dht, s->pf.origin.slot, &s->pf.fp,
-                                 &s->pf.pk, &msg);
+        /* A no-identity origin (an ANON session) passes NO identity: the DHT
+         * refuses every identity-bound verb for it (nodus_dht_client_request). */
+        nodus_dht_client_request(ipc->dht, s->pf.origin.slot,
+                                 s->pf.no_identity ? NULL : &s->pf.fp,
+                                 s->pf.no_identity ? NULL : &s->pf.pk, &msg);
         nodus_t2_msg_free(&msg);
         return;
     }
@@ -556,98 +604,44 @@ static void dipc_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
 
 /* ── The outbound 4002 pool ──────────────────────────────────────── */
 
-static int dipc_out_send_raw(void *ctx, const uint8_t *payload, size_t len) {
-    return nodus_tcp_send_raw((nodus_tcp_conn_t *)ctx, payload, len);
-}
+/* The session of a dialed connection is enabled by the dial itself
+ * (nodus_inter_pool_dial, right after nodus_tcp_connect and the pin): there
+ * is no on_connect work left — the hello of the old handshake is gone. */
 
-typedef struct {
-    nodus_dht_ipc_t  *ipc;
-    nodus_tcp_conn_t *conn;
-} dipc_out_ctx_t;
-
-static int dipc_out_send_raw_x(void *ctx, const uint8_t *payload, size_t len) {
-    return nodus_tcp_send_raw(((dipc_out_ctx_t *)ctx)->conn, payload, len);
-}
-
-static void dipc_out_established(void *ctx, bool encrypted) {
-    dipc_out_ctx_t *x = (dipc_out_ctx_t *)ctx;
-    nodus_inter_dial_conn_sync(&x->ipc->dial[x->conn->slot], x->conn);
-    nodus_inter_dial_conn_open(x->conn, encrypted);
-}
-
-static void dipc_out_on_connect(nodus_tcp_conn_t *conn, void *ctx) {
+/* The node session is AUTHENTICATED (tcp->on_session): copy the proven peer
+ * identity onto the conn, open the send gate and replay the dial queue
+ * sealed. This process serves no 4002 request, so it is a dialer only. */
+static void dipc_out_on_session(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_dht_ipc_t *ipc = (nodus_dht_ipc_t *)ctx;
-    if (conn->slot >= 0 && conn->slot < NODUS_TCP_MAX_CONNS)
-        memset(&ipc->dial[conn->slot], 0, sizeof(ipc->dial[0]));
-    conn->is_nodus = true;
-    conn->auth_required = ipc->out.auth_required;
-    if (conn->auth_required) {
-        /* The dialer module's hello (core's on_inter_connect does the same). */
-        nodus_inter_dial_io_t io;
-        memset(&io, 0, sizeof(io));
-        io.identity = ipc->identity;
-        io.send_raw = dipc_out_send_raw;
-        io.ctx = conn;
-        conn->auth_state = nodus_inter_dial_start(&io) == 0
-                         ? NODUS_CONN_AUTH_HELLO_SENT : NODUS_CONN_AUTH_FAILED;
-    } else {
-        conn->auth_state = NODUS_CONN_AUTH_OK;
+    if (nodus_inter_session_proven(conn) != 0) {
+        nodus_tcp_disconnect(&ipc->out, conn);
+        return;
     }
+    nodus_inter_dial_conn_open(conn);
 }
 
 static void dipc_out_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                               size_t len, void *ctx) {
-    nodus_dht_ipc_t *ipc = (nodus_dht_ipc_t *)ctx;
+    (void)ctx;
     if (conn->slot < 0 || conn->slot >= NODUS_TCP_MAX_CONNS) return;
 
     nodus_tier2_msg_t msg;
     memset(&msg, 0, sizeof(msg));
     if (nodus_t2_decode(payload, len, &msg) != 0) {
         nodus_t2_msg_free(&msg);
-        QGP_LOG_WARN(LOG_TAG, "dialed 4002 conn %s:%u: a frame that is not a "
-                     "handshake reply (len=%zu) — dropped",
+        QGP_LOG_WARN(LOG_TAG, "dialed 4002 conn %s:%u: a frame that is not the "
+                     "session's token message (len=%zu) — dropped",
                      conn->ip, (unsigned)conn->port, len);
         return;
     }
-    if (strcmp(msg.method, "challenge") == 0 ||
-        strcmp(msg.method, "auth_ok") == 0 ||
-        strcmp(msg.method, "key_ack") == 0) {
-        nodus_inter_dial_t *d = &ipc->dial[conn->slot];
-        dipc_out_ctx_t x = { ipc, conn };
-        nodus_inter_dial_io_t io;
-        memset(&io, 0, sizeof(io));
-        io.identity = ipc->identity;
-        /* CRIT-1: the pin recorded at dial (nodus_inter_pool_dial). */
-        io.expected_peer_id = conn->expected_peer_id_set
-                            ? &conn->expected_peer_id : NULL;
-        io.crypto = &conn->channel_crypto;
-        io.peer_ip = conn->ip;
-        io.peer_port = conn->port;
-        io.slot = conn->slot;
-        io.send_raw = dipc_out_send_raw_x;
-        io.established = dipc_out_established;
-        io.ctx = &x;
-        nodus_inter_dial_rc_t rc = nodus_inter_dial_on_frame(d, &io, &msg);
-        nodus_inter_dial_conn_sync(d, conn);
-        nodus_t2_msg_free(&msg);
-        if (rc == NODUS_INTER_DIAL_REFUSED) {
-            conn->auth_state = NODUS_CONN_AUTH_FAILED;
-            nodus_tcp_disconnect(&ipc->out, conn);
-        }
-        return;
-    }
-    if (strcmp(msg.method, "error") != 0)
-        QGP_LOG_WARN(LOG_TAG, "dialed 4002 conn %s:%u: \"%s\" is not a "
-                     "handshake reply — dropped (this process serves no "
-                     "4002 request)", conn->ip, (unsigned)conn->port,
+    /* The responder's token message (auth_ok, txn 0) is the one frame it
+     * sends unasked; this process has no use for the token. */
+    if (strcmp(msg.method, "auth_ok") != 0 && strcmp(msg.method, "error") != 0)
+        QGP_LOG_WARN(LOG_TAG, "dialed 4002 conn %s:%u: \"%s\" is not the "
+                     "session's token message — dropped (this process serves "
+                     "no 4002 request)", conn->ip, (unsigned)conn->port,
                      msg.method);
     nodus_t2_msg_free(&msg);
-}
-
-static void dipc_out_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
-    nodus_dht_ipc_t *ipc = (nodus_dht_ipc_t *)ctx;
-    if (conn->slot >= 0 && conn->slot < NODUS_TCP_MAX_CONNS)
-        memset(&ipc->dial[conn->slot], 0, sizeof(ipc->dial[0]));
 }
 
 /* The pending-full hook of the outbound pool — core's
@@ -795,6 +789,12 @@ void nodus_dht_ipc_tick(nodus_dht_ipc_t *ipc) {
 
     dipc_routing_tick(ipc, nodus_time_mono_ms());
 
+    /* The view of this process's witness (chain id of the node sessions;
+     * package 6 reads it through nodus_dht_ipc_wview): monotonic time only,
+     * it schedules this node's own polling. */
+    if (ipc->wview)
+        nodus_dht2_wview_tick(ipc->wview, nodus_time_mono_ms());
+
     uint64_t now = nodus_time_now();
     if (now - ipc->last_sweep >= DIPC_SWEEP_SEC) {
         ipc->last_sweep = now;
@@ -808,8 +808,7 @@ void nodus_dht_ipc_tick(nodus_dht_ipc_t *ipc) {
 
 /* ── Lifecycle ───────────────────────────────────────────────────── */
 
-nodus_dht_ipc_t *nodus_dht_ipc_new(const nodus_identity_t *identity,
-                                   bool require_peer_auth) {
+nodus_dht_ipc_t *nodus_dht_ipc_new(const nodus_identity_t *identity) {
     if (!identity) return NULL;
     nodus_dht_ipc_t *ipc = calloc(1, sizeof(*ipc));
     if (!ipc) return NULL;
@@ -836,12 +835,16 @@ nodus_dht_ipc_t *nodus_dht_ipc_new(const nodus_identity_t *identity,
     ipc->tcp.on_pending_full  = dipc_on_pending_full;
     ipc->tcp.pending_full_ctx = ipc;
 
-    ipc->out.on_connect       = dipc_out_on_connect;
+    /* The node session of the dialed connections: identity + the chain id of
+     * this process's witness view (dipc_chain_id). Every 4002 dial runs it —
+     * there is no require_peer_auth. */
+    ipc->sess_cfg.identity = identity;
+    ipc->sess_cfg.chain_id = dipc_chain_id;
+    ipc->sess_cfg.ctx      = ipc;
+    ipc->out.on_session       = dipc_out_on_session;
     ipc->out.on_frame         = dipc_out_on_frame;
-    ipc->out.on_disconnect    = dipc_out_on_disconnect;
     ipc->out.cb_ctx           = ipc;
-    ipc->out.auth_required    = require_peer_auth;
-    ipc->out.auth_ctx         = (void *)identity;
+    ipc->out.auth_ctx         = &ipc->sess_cfg;
     ipc->out.on_pending_full  = dipc_out_on_pending_full;
     ipc->out.pending_full_ctx = ipc;
     ipc->last_sweep = nodus_time_now();
@@ -877,8 +880,26 @@ int nodus_dht_ipc_listen(nodus_dht_ipc_t *ipc, const char *path) {
 void nodus_dht_ipc_poll(nodus_dht_ipc_t *ipc, int timeout_ms) {
     if (!ipc) return;
     int ms = nodus_dht_ipc_read_pending(ipc) ? 0 : timeout_ms;
+    /* Handshake jobs of the dialed connections (and of the DHT's batch
+     * forwards) are noticed at the start of a poll of THEIR transport; the
+     * blocking wait is on the storage socket, so it is capped while any is
+     * outstanding (nodus_tcp_sc.h COMPLETION DELIVERY, "SCOPE OF THE
+     * BOUND"). */
+    if ((nodus_tcp_sc_busy(&ipc->out) || nodus_dht_sc_busy(ipc->dht)) &&
+        (ms < 0 || ms > NODUS_TCP_SC_POLL_MS))
+        ms = NODUS_TCP_SC_POLL_MS;
     nodus_tcp_poll(&ipc->tcp, ms);
     nodus_tcp_poll(&ipc->out, 0);
+}
+
+int nodus_dht_ipc_open_wview(nodus_dht_ipc_t *ipc, const char *witness_sock_path) {
+    if (!ipc || !witness_sock_path || ipc->wview) return -1;
+    ipc->wview = nodus_dht2_wview_new(witness_sock_path);
+    return ipc->wview ? 0 : -1;
+}
+
+nodus_dht2_wview_t *nodus_dht_ipc_wview(nodus_dht_ipc_t *ipc) {
+    return ipc ? ipc->wview : NULL;
 }
 
 bool nodus_dht_ipc_read_pending(const nodus_dht_ipc_t *ipc) {
@@ -891,6 +912,7 @@ void nodus_dht_ipc_free(nodus_dht_ipc_t *ipc) {
     /* nodus_tcp_close frees the connections without on_disconnect. */
     nodus_tcp_close(&ipc->out);
     nodus_tcp_close(&ipc->tcp);
+    nodus_dht2_wview_free(ipc->wview);
     free(ipc->rt_last);
     free(ipc->rt_scratch);
     free(ipc->rt_buf);

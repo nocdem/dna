@@ -9,6 +9,7 @@
 #include "nodus/nodus.h"
 #include "nodus/nodus_types.h"
 #include "crypto/nodus_identity.h"
+#include "test_server_session.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -79,6 +80,7 @@ static void *server_thread(void *arg) {
         server_init_outcome(false);
         return NULL;
     }
+    ts_server_chain(&server, 0x77);   /* sessions need a chain id (no witness here) */
     server_init_outcome(true);
     nodus_server_run(&server);
     nodus_server_close(&server);
@@ -174,6 +176,7 @@ int main(void) {
     cfg.servers[0].port = 15001;
     cfg.server_count = 1;
     cfg.request_timeout_ms = 5000;
+    ts_client_cfg(&cfg, &server, 0x77);
 
     nodus_client_t client_u1, client_u2;
     memset(&client_u1, 0, sizeof(client_u1));

@@ -128,6 +128,10 @@ set(NODUS_SOURCES
     src/protocol/nodus_tier1.c
     src/protocol/nodus_tier2.c
     src/protocol/nodus_tier3.c
+    # DHT v2 package 3d: the owner-signed chain query `qa` (RFC 0002
+    # envelope, design 2026-10-26-dht-v2-3d-no-login-design.md §3) — built by
+    # the client SDK / wallet, verified by the witness handlers.
+    src/protocol/nodus_owner_query.c
 
     # Transport — TCP is cross-platform (epoll on Linux, select on Windows)
     src/transport/nodus_tcp.c
@@ -166,6 +170,11 @@ set(NODUS_SOURCES
     # yet; in the common list so it compiles on Windows.
     src/client/nodus_light_provider.c
     src/client/nodus_singleton.c
+    # DHT v2 package 3c: where a native tool gets its server pin and chain
+    # id (the tool network file + --pin / --chain flags; decision
+    # 2026-10-24-dht-v2-tool-network-identity.md). Common list so the
+    # Windows nodus-light compiles it too (flags only without json-c).
+    src/client/nodus_tool_network.c
     src/client/nodus_republish.c
     # Web wallet package (c2): the shared version-3 CORE SPEND builder —
     # plan + build, no I/O; nodus-cli `v2-envelope spend` and the browser
@@ -1454,6 +1463,12 @@ add_executable(test_node_package tests/test_node_package.c)
 target_link_libraries(test_node_package nodus)
 add_test(NAME test_node_package COMMAND test_node_package)
 
+# DHT v2 package 3c — the tool network file + --pin / --chain resolver
+# (src/client/nodus_tool_network.c). Needs json-c for the file cases.
+add_executable(test_tool_network tests/test_tool_network.c)
+target_link_libraries(test_tool_network nodus)
+add_test(NAME test_tool_network COMMAND test_tool_network)
+
 # deploy/install.sh --dry-run against a fake package and a fake systemctl:
 # preserve-choice on a split host, the combined-layout refusal, core alone.
 # Exit 77 = skipped (the host has nodus drop-ins or /etc/nodus.conf that the
@@ -1587,11 +1602,6 @@ add_executable(test_pending_queue tests/test_pending_queue.c)
 target_link_libraries(test_pending_queue nodus dsa nodus)
 add_test(NAME test_pending_queue COMMAND test_pending_queue)
 
-# Inter-node auth state machine test
-add_executable(test_inter_auth tests/test_inter_auth.c)
-target_link_libraries(test_inter_auth nodus dsa nodus)
-add_test(NAME test_inter_auth COMMAND test_inter_auth)
-
 # Tier 1 protocol test
 add_executable(test_tier1 tests/test_tier1.c)
 target_link_libraries(test_tier1 nodus dsa nodus)
@@ -1638,11 +1648,58 @@ add_test(NAME test_session_limit COMMAND test_session_limit)
 # Split S5a item 30: core's outbound 4002 dials (presence p_sync, circuits,
 # the DHT's inter_send) pin the expected peer identity; the routing
 # snapshot carries node_id. One loopback listener, no event loop run.
-# Split S5a item 28: the shared 4002 dialer handshake module against an
-# in-memory peer (correct pin, wrong / missing pin, bad kpk_sig, downgrade).
-add_executable(test_inter_dial tests/test_inter_dial.c)
-target_link_libraries(test_inter_dial nodus dsa kem nodus)
-add_test(NAME test_inter_dial COMMAND test_inter_dial)
+# DHT v2 3b-2: the 4002 node session (SecretConnection, NODE profile) of the
+# shared module nodus/src/server/nodus_inter_dial.c, two loopback pools in one
+# thread: right pin, wrong pin, wrong chain id, unknown chain id, an old
+# plaintext hello, the tri-state send result.
+add_executable(test_node_session tests/test_node_session.c)
+target_link_libraries(test_node_session nodus dsa kem nodus)
+add_test(NAME test_node_session COMMAND test_node_session)
+
+# DHT v2 3b-2: the pre-session deadline (15 s idle / 30 s absolute, monotonic
+# clock, injected time) of the accepting transports, and the hinted-handoff
+# retry that deletes a durable row ONLY on an authenticated write.
+add_executable(test_presession_deadline tests/test_presession_deadline.c)
+target_link_libraries(test_presession_deadline nodus dsa kem nodus)
+add_test(NAME test_presession_deadline COMMAND test_presession_deadline)
+
+# DHT v2 3b-2 round 4: re-entrant disconnect (D-24 a), central zero-pin
+# refusal in the session layer, force_disconnect state, the batch-forward
+# session config following the DHT's current host.
+add_executable(test_round4_hardening tests/test_round4_hardening.c)
+target_link_libraries(test_round4_hardening nodus dsa kem nodus)
+add_test(NAME test_round4_hardening COMMAND test_round4_hardening)
+
+add_executable(test_hint_tristate tests/test_hint_tristate.c)
+target_link_libraries(test_hint_tristate nodus dsa kem nodus)
+add_test(NAME test_hint_tristate COMMAND test_hint_tristate)
+
+# DHT v2 3b-2 round 3: the sessions' chain id is the v3 chain id (not the
+# legacy padded one) on the server side and in the witness helper that fills
+# the DHT snapshot / status c3; the per-IP handshake rate (60/min, injected
+# monotonic time, bounded table, one real accept).
+add_executable(test_chain_id_v3 tests/test_chain_id_v3.c)
+target_link_libraries(test_chain_id_v3 nodus dsa kem nodus)
+add_test(NAME test_chain_id_v3 COMMAND test_chain_id_v3)
+
+# DHT v2 3b-2 round 5: nodes with an active on-chain role are exempt from the
+# per-IP handshake rate (credited back on proof) and the per-IP connection cap;
+# loopback is exempt from the rate (decisions/2026-10-24-dht-v2-handshake-rate.md
+# addendum 2026-10-26).
+add_executable(test_role_exempt tests/test_role_exempt.c)
+target_link_libraries(test_role_exempt nodus dsa kem nodus)
+add_test(NAME test_role_exempt COMMAND test_role_exempt)
+
+# DHT v2 3b-2 fix round: a REAL forwarded read over the node session (batch
+# forward sends its get_batch after opening the send gate), and a send the
+# transport diverts to its queue-full fallback is not reported WRITTEN.
+add_executable(test_bf_session tests/test_bf_session.c)
+target_link_libraries(test_bf_session nodus dsa kem nodus)
+add_test(NAME test_bf_session COMMAND test_bf_session)
+
+add_executable(test_send_queue_full tests/test_send_queue_full.c)
+target_link_libraries(test_send_queue_full nodus dsa kem nodus)
+add_test(NAME test_send_queue_full COMMAND test_send_queue_full)
 
 # Split S5a item 33: the 4002 pending-full hook parks only DHT replication
 # frames (sv / m_sv) in the hint table; p_sync, ri_*, replies are dropped.
@@ -1658,20 +1715,12 @@ add_executable(test_inter_circuit_uaf tests/test_inter_circuit_uaf.c)
 target_link_libraries(test_inter_circuit_uaf nodus dsa kem nodus)
 add_test(NAME test_inter_circuit_uaf COMMAND test_inter_circuit_uaf)
 
-add_executable(test_inter_preauth_gate tests/test_inter_preauth_gate.c)
-target_link_libraries(test_inter_preauth_gate nodus dsa kem nodus)
-add_test(NAME test_inter_preauth_gate COMMAND test_inter_preauth_gate)
-
 # DHT Package A rev 2: forward path driven with crafted 4002 reply frames
 # (items 11-16, responder storage fault) and the 4002 handshake role split
 # (item 7). In-process, no sockets; the frames test uses the storage fixture.
 add_executable(test_bf_forward_frames tests/test_bf_forward_frames.c ${NODUS_TEST_STORAGE_HELPER})
 target_link_libraries(test_bf_forward_frames nodus dsa kem nodus)
 add_test(NAME test_bf_forward_frames COMMAND test_bf_forward_frames)
-
-add_executable(test_inter_role_split tests/test_inter_role_split.c)
-target_link_libraries(test_inter_role_split nodus dsa kem nodus)
-add_test(NAME test_inter_role_split COMMAND test_inter_role_split)
 
 # DHT Package A (A3): the batch-forward receive reads the frame header
 # little-endian like the wire, checks version, bounds length by the buffer.
@@ -1895,6 +1944,23 @@ add_executable(test_rpc_front_door tests/test_rpc_front_door.c)
 target_link_libraries(test_rpc_front_door nodus dsa kem nodus)
 add_test(NAME test_rpc_front_door COMMAND test_rpc_front_door)
 
+# DHT v2 package 3d (design 2026-10-26-dht-v2-3d-no-login-design.md): the
+# no-login (ANON) client session on the server — the allowlist
+# (nodus_server_anon_method_ok), the session table's treatment of a session
+# with no principal, and nodus_auth_session_start on a REAL ANON connection
+# (loopback, ephemeral port). Default build, no environment.
+add_executable(test_anon_dispatch tests/test_anon_dispatch.c)
+target_link_libraries(test_anon_dispatch nodus dsa kem nodus crypto pthread)
+add_test(NAME test_anon_dispatch COMMAND test_anon_dispatch)
+
+# DHT v2 package 3d: the owner-signed chain query `qa` (RFC 0002 envelope,
+# nodus/src/protocol/nodus_owner_query.c): accept, every reject by its own
+# result, the top-level field lookup, and the per-method `o` / membership
+# rules. Pure (no sockets, no files). Default build, no environment.
+add_executable(test_owner_query tests/test_owner_query.c)
+target_link_libraries(test_owner_query nodus dsa kem nodus crypto)
+add_test(NAME test_owner_query COMMAND test_owner_query)
+
 # Component split S2: the transport's Unix domain socket entry (decision
 # 2026-10-01-nodus-component-split item 7) — socket file mode 0600, frame
 # round-trip both ways, SO_PEERCRED refusal of a wrong uid (real accept
@@ -1930,13 +1996,6 @@ add_test(NAME test_witness_ipc COMMAND test_witness_ipc)
 add_executable(test_dht_ipc tests/test_dht_ipc.c)
 target_link_libraries(test_dht_ipc nodus dsa nodus)
 add_test(NAME test_dht_ipc COMMAND test_dht_ipc)
-
-# Split S5b fix round F2: frames queued in a 4002 dial's auth queue are
-# re-sent ENCRYPTED, in order, when the channel key is set
-# (nodus_inter_dial_conn_open) — two loopback transports, ephemeral port.
-add_executable(test_inter_pending_replay tests/test_inter_pending_replay.c)
-target_link_libraries(test_inter_pending_replay nodus dsa nodus)
-add_test(NAME test_inter_pending_replay COMMAND test_inter_pending_replay)
 
 # 2026-07-21 parallel-safety: every server-spawning test now uses a FULLY
 # explicit, test-unique port set (test_server 140xx, test_circuit_live
@@ -2365,6 +2424,17 @@ add_test(NAME test_p2p_secret_kat COMMAND test_p2p_secret_kat)
 add_executable(test_p2p_secret_profiles tests/test_p2p_secret_profiles.c)
 target_link_libraries(test_p2p_secret_profiles nodus dsa kem nodus crypto)
 add_test(NAME test_p2p_secret_profiles COMMAND test_p2p_secret_profiles)
+
+# DHT v2 package 3d (session layer) — the ANON family of cmt_p2p_secret: the
+# no-login handshake with a KEM-key certificate, in memory. Happy path with the
+# wire sizes and T / key recomputed from the captured bytes; a bad certificate
+# or a rejected pin never reaches ENCAPS; the CONFIRM frame rules; CLIENT /
+# WITNESS / NODE <-> ANON mismatches and the refused kinds 0x05 / 0x06 / 0x07;
+# fragmented input; the 4004 caps (HS_MSG_MAX, OUT_CAP, cmt_p2p_peer.h) unchanged.
+# Default build, no environment, `ctest -j` safe.
+add_executable(test_p2p_secret_anon tests/test_p2p_secret_anon.c)
+target_link_libraries(test_p2p_secret_anon nodus dsa kem nodus crypto)
+add_test(NAME test_p2p_secret_anon COMMAND test_p2p_secret_anon)
 
 # cometbft @709fd12b → C port, fleet P2P-PORT phase F2 —
 # p2p/conn/connection_test.go's single-threaded cases (send/receive over a
@@ -3784,37 +3854,12 @@ add_executable(test_channel_crypto tests/test_channel_crypto.c)
 target_link_libraries(test_channel_crypto nodus dsa kem nodus)
 add_test(NAME test_channel_crypto COMMAND test_channel_crypto)
 
-# Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-mlkem-migration.md)
-# — three real-handler drives: new<->new (ML-KEM), legacy-wire<->new server
-# (round-3), new client<->server-without-mlkem (Kyber fallback).
-add_executable(test_mlkem_handshake tests/test_mlkem_handshake.c)
-target_link_libraries(test_mlkem_handshake nodus dsa kem nodus)
-add_test(NAME test_mlkem_handshake COMMAND test_mlkem_handshake)
-
 # Concurrent sends on one client vs its read thread's write drain: every
 # request reaches the node exactly once (transport write lock,
 # nodus_tcp_set_write_lock). Fake node on loopback; default build, no env.
 add_executable(test_client_concurrent_send tests/test_client_concurrent_send.c)
 target_link_libraries(test_client_concurrent_send nodus dsa kem nodus)
 add_test(NAME test_client_concurrent_send COMMAND test_client_concurrent_send)
-
-# CRIT-3 — AEAD completeness boundary regression test.
-# Pins '>= NODUS_CHANNEL_OVERHEAD -> decrypt' / '< OVERHEAD -> fail-closed drop':
-# a 28-byte empty AEAD frame is legitimate and MUST decrypt (so "drop <=28" is
-# wrong), while anything shorter MUST be rejected. Guards the fix that stops
-# short frames from being dispatched raw/unauthenticated on an established
-# channel (nodus_tcp.c on_frame, nodus_client.c circ_data).
-add_executable(test_channel_crypto_aead_complete tests/test_channel_crypto_aead_complete.c)
-target_link_libraries(test_channel_crypto_aead_complete nodus dsa kem nodus)
-add_test(NAME test_channel_crypto_aead_complete COMMAND test_channel_crypto_aead_complete)
-
-# B3 fix — per-conn channel_crypto isolation regression test.
-# Asserts that two nodus_tcp_conn_t structs have separate inline
-# channel_crypto storage (no pointer aliasing), independent counters,
-# and clean recycle after conn_free + zero-init.
-add_executable(test_inter_conn_crypto_isolation tests/test_inter_conn_crypto_isolation.c)
-target_link_libraries(test_inter_conn_crypto_isolation nodus dsa kem nodus)
-add_test(NAME test_inter_conn_crypto_isolation COMMAND test_inter_conn_crypto_isolation)
 
 # ── Tools ────────────────────────────────────────────────────────────
 #

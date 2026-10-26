@@ -4,10 +4,18 @@
  * decision S3 + Q1 + the EXCLUSIVE profile-write decision).
  *
  * The REAL nodus client (compiled from the same sources as the wasm build)
- * talks to a fake node built the way nodus/tests/test_client_spend_status.c
- * builds its fake (nodus_tcp_t + nodus_t2_* encoders, plain auth_ok,
- * unencrypted session). The fake answers GET / GET_ALL with a reply chosen
- * per case and counts every PUT it receives.
+ * talks to a fake node (nodus_tcp_t + nodus_t2_* encoders). Since the client
+ * session moved onto the SecretConnection layer (DHT v2 package 3), the fake
+ * is a real RESPONDER of that layer (nodus_tcp_sc_enable, CLIENT profile, its
+ * own generated identity, a fixed chain id); the client is pinned to the
+ * fake's fingerprint and bound to that chain id, and the fake sends the
+ * session's `auth_ok` token message once the layer is authenticated. The fake
+ * answers GET / GET_ALL with a reply chosen per case and counts every PUT it
+ * receives. HOW THIS CAN LIE: the fake binds the session to the SAME
+ * g_chain_id on both ends, so this test passes whatever chain id a real node
+ * puts in its HELLO — it does not show that a real node's session chain id
+ * equals the id a client is configured with (3c report: the 3b-2 server takes
+ * it from the witness's 16-byte legacy id padded to 32, not the v3 chain id).
  *
  * What it proves:
  *   F1  timeout (the node never answers)      -> UNREADABLE(timeout)
@@ -120,6 +128,7 @@
 #include "nc_core.h"
 #include "codec/salt_agreement_codec.h"
 #include "transport/nodus_tcp.h"
+#include "transport/nodus_tcp_sc.h"
 #include "protocol/nodus_tier2.h"
 #include "protocol/nodus_cbor.h"
 #include "core/nodus_value.h"
@@ -183,6 +192,11 @@ typedef struct {
 
 #define FAKE_BUF (1024 * 1024)
 static fake_t g_fake;
+/* The fake node's own identity (its fingerprint is the client's pin) and the
+ * chain id both ends bind the session to. Static: nodus_tcp_sc_enable keeps
+ * the identity pointer for the connection's life. */
+static nodus_identity_t g_fake_id;
+static uint8_t g_chain_id[NODUS_CLIENT_CHAIN_ID_SIZE];
 static nc_keys_t *g_keys;
 static nc_keys_t *g_peer_keys;
 static nodus_key_t g_own_fp;            /* g_keys->fp as a key */
@@ -422,17 +436,7 @@ static void on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
     memset(&msg, 0, sizeof(msg));
     if (nodus_t2_decode(payload, len, &msg) != 0) { nodus_t2_msg_free(&msg); return; }
     size_t out = 0;
-    if (strcmp(msg.method, "hello") == 0) {
-        uint8_t nonce[NODUS_NONCE_LEN];
-        nodus_random(nonce, NODUS_NONCE_LEN);
-        if (nodus_t2_challenge(msg.txn_id, nonce, g_fake.buf, FAKE_BUF, &out) == 0)
-            nodus_tcp_send(conn, g_fake.buf, out);
-    } else if (strcmp(msg.method, "auth") == 0) {
-        uint8_t token[NODUS_SESSION_TOKEN_LEN];
-        memset(token, 0x5a, sizeof(token));
-        if (nodus_t2_auth_ok(msg.txn_id, token, g_fake.buf, FAKE_BUF, &out) == 0)
-            nodus_tcp_send(conn, g_fake.buf, out);
-    } else if (strcmp(msg.method, "get") == 0 || strcmp(msg.method, "get_all") == 0) {
+    if (strcmp(msg.method, "get") == 0 || strcmp(msg.method, "get_all") == 0) {
         bool all = strcmp(msg.method, "get_all") == 0;
         if (all && (msg.page || msg.has_after)) {
             atomic_fetch_add(&g_fake.page_reqs, 1);
@@ -464,6 +468,32 @@ static void on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
     nodus_t2_msg_free(&msg);
 }
 
+/* A client connected: the session layer, RESPONDER, CLIENT profile, before
+ * the first byte is read (what nodus_server.c on_tcp_accept does). */
+static void fake_on_accept(nodus_tcp_conn_t *conn, void *ctx) {
+    (void)ctx;
+    nodus_tcp_sc_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.role      = CMT_P2P_SC_ROLE_RESPONDER;
+    cfg.profile   = &CMT_P2P_SC_PROFILE_CLIENT;
+    cfg.id        = &g_fake_id;
+    cfg.proto_ver = NODUS_CSESS_PROTO_VERSION;
+    memcpy(cfg.chain_id, g_chain_id, sizeof(cfg.chain_id));
+    if (nodus_tcp_sc_enable(g_fake.tcp, conn, &cfg) != 0)
+        nodus_tcp_disconnect(g_fake.tcp, conn);
+}
+
+/* The layer authenticated the client: the first frame is the session's
+ * `auth_ok` token message (txn 0), as nodus_auth_session_start sends it. */
+static void fake_on_session(nodus_tcp_conn_t *conn, void *ctx) {
+    (void)ctx;
+    uint8_t token[NODUS_SESSION_TOKEN_LEN];
+    size_t out = 0;
+    memset(token, 0x5a, sizeof(token));
+    if (nodus_t2_auth_ok(0, token, g_fake.buf, FAKE_BUF, &out) == 0)
+        nodus_tcp_send(conn, g_fake.buf, out);
+}
+
 static void *fake_thread(void *arg) {
     (void)arg;
     while (!atomic_load(&g_fake.stop)) nodus_tcp_poll(g_fake.tcp, 20);
@@ -477,7 +507,11 @@ static int fake_start(void) {
     g_fake.buf = malloc(FAKE_BUF);
     if (!g_fake.tcp || !g_fake.buf) return -1;
     if (nodus_tcp_init(g_fake.tcp, -1) != 0) return -1;
+    if (nodus_identity_generate(&g_fake_id) != 0) return -1;
+    memset(g_chain_id, 0xc3, sizeof(g_chain_id));
     g_fake.tcp->on_frame = on_frame;
+    g_fake.tcp->on_accept = fake_on_accept;
+    g_fake.tcp->on_session = fake_on_session;
     if (nodus_tcp_listen(g_fake.tcp, "127.0.0.1", 0) != 0) return -1;
     return pthread_create(&g_fake.tid, NULL, fake_thread, NULL) == 0 ? 0 : -1;
 }
@@ -976,6 +1010,11 @@ int main(void) {
     cfg.server_count = 1;
     cfg.connect_timeout_ms = 3000;
     cfg.request_timeout_ms = 1500;
+    /* pinned to the fake's key, bound to its chain id (nodus.h) */
+    cfg.pinned_server_fps = &g_fake_id.node_id;
+    cfg.pinned_server_fp_count = 1;
+    memcpy(cfg.expected_chain_id, g_chain_id, sizeof(cfg.expected_chain_id));
+    cfg.has_expected_chain_id = true;
     if (!c || nodus_client_init(c, &cfg, &g_keys->id) != 0 ||
         nodus_client_connect(c) != 0 || !nodus_client_is_ready(c)) {
         printf("FATAL: client did not connect to the fake node\n");
