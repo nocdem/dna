@@ -218,7 +218,13 @@ typedef struct {
     bool     chain_open;                 /* a chain database is open      */
     uint64_t height;                     /* status block_height           */
     uint8_t  state_root[64];             /* status state_root             */
-    uint8_t  chain_id[32];               /* status chain_id               */
+    uint8_t  chain_id[32];               /* status chain_id (LEGACY: 16
+                                          * bytes padded with zeros — the
+                                          * T2 status RPC reports it)      */
+    uint8_t  chain_id_v3[32];            /* c3 — the 32-byte v3 chain id
+                                          * (nodus_witness_dht_chain_id),
+                                          * all zero when there is none;
+                                          * the session's chain id         */
     bool     p2p_opened;                 /* the 4004 p2p host exists      */
     uint16_t listen_port;                /* its bound port (0 = none)     */
 } nodus_witness_ipc_status_t;
@@ -310,6 +316,12 @@ void nodus_witness_status_fill(struct nodus_witness *w,
  *        named = false; present and valid → named = true; present but
  *        malformed, or the store unreadable → -1.
  */
+/** The chain id the node sessions and the DHT v2 readers use: the 32-byte v3
+ *  chain id (nodus_witness_v2_chain_id), NOT the legacy 16-byte id padded to
+ *  32 that `status` reports. 0 and `out` filled; -1 when there is no open
+ *  chain or no v3 id (never a zero id). The `ci` of ipc_dht_snap and the `c3`
+ *  of ipc_status carry it. */
+int nodus_witness_dht_chain_id(struct nodus_witness *w, uint8_t out[32]);
 int nodus_witness_dht_snap_fill(struct nodus_witness *w,
                                 nodus_witness_dht_snap_t *out);
 int nodus_witness_dht_sets_fill(struct nodus_witness *w,

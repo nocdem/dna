@@ -67,6 +67,15 @@ typedef struct {
      *  state_root, chain_id); untouched when no chain is open. */
     void (*status)(nodus_chain_backend_t *b, nodus_t2_status_info_t *info);
 
+    /** The 32-byte v3 chain id the node's sessions (4001 / WS / 4002) are
+     *  bound to — the id 4004's HELLO carries and every client knows — NOT
+     *  the legacy 16-byte id padded with zeros that `status` reports (the T2
+     *  `status` RPC keeps reporting that one, unchanged). true with `out`
+     *  filled; false while there is none (no chain open, no genesis document
+     *  yet, the witness not answering): sessions are then refused. May be NULL
+     *  (= false). */
+    bool (*chain_id_v3)(nodus_chain_backend_t *b, uint8_t out[32]);
+
     /** true when a chain database is open (arms the partial-wipe gate). */
     bool (*chain_open)(nodus_chain_backend_t *b);
 

@@ -129,6 +129,8 @@ static void fill_status(nodus_witness_ipc_status_t *st) {
     st->height = 4242;
     for (int i = 0; i < 64; i++) st->state_root[i] = (uint8_t)(0xA0 + i);
     for (int i = 0; i < 32; i++) st->chain_id[i] = (uint8_t)(0x10 + i);
+    /* the v3 id differs from the legacy one in every byte */
+    for (int i = 0; i < 32; i++) st->chain_id_v3[i] = (uint8_t)(0xC0 + i);
     st->p2p_opened = true;
     st->listen_port = 14004;
 }
@@ -279,6 +281,15 @@ static void test_status(nodus_chain_backend_t *b, nodus_witness_ipc_t *ipc) {
     }
     if (!opened || port != want.listen_port) {
         FAIL("listen_port differs from the witness's answer");
+        return;
+    }
+    /* DHT v2 3b-2: the session's chain id is the v3 id (`c3`), the T2 status
+     * keeps the legacy `ci` */
+    uint8_t v3[32];
+    if (!b->ops->chain_id_v3 || !b->ops->chain_id_v3(b, v3) ||
+        memcmp(v3, want.chain_id_v3, 32) != 0 ||
+        memcmp(v3, info.chain_id, 32) == 0) {
+        FAIL("chain_id_v3 is not the witness's c3 (or equals the legacy id)");
         return;
     }
     PASS();

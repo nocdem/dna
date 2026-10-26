@@ -1696,15 +1696,17 @@ bool nodus_server_chain_id(nodus_server_t *srv, uint8_t out[32]) {
             return false;
         srv->chain_id_tried = true;
         srv->chain_id_try_mono_ms = now;
-        nodus_t2_status_info_t info;
-        memset(&info, 0, sizeof(info));
-        srv->chain->ops->status(srv->chain, &info);
+        /* The v3 chain id (32 bytes, what 4004 and every client use), NOT
+         * `status`'s legacy 16-byte id padded with zeros — that one stays
+         * what the T2 status RPC reports. */
+        uint8_t id[32];
+        if (!srv->chain->ops->chain_id_v3 ||
+            !srv->chain->ops->chain_id_v3(srv->chain, id))
+            return false;      /* no chain / no genesis yet / witness not answering */
         uint8_t acc = 0;
-        for (size_t i = 0; i < sizeof(info.chain_id); i++) acc |= info.chain_id[i];
-        if (acc == 0) return false;      /* no chain open / witness not answering */
-        _Static_assert(sizeof(((nodus_t2_status_info_t *)0)->chain_id) == 32,
-                       "the status chain id is the session's 32 bytes");
-        memcpy(srv->chain_id, info.chain_id, sizeof(srv->chain_id));
+        for (size_t i = 0; i < sizeof(id); i++) acc |= id[i];
+        if (acc == 0) return false;
+        memcpy(srv->chain_id, id, sizeof(srv->chain_id));
         srv->chain_id_known = true;
     }
     memcpy(out, srv->chain_id, sizeof(srv->chain_id));
@@ -2386,6 +2388,7 @@ int nodus_server_init_ex(nodus_server_t *srv, const nodus_server_config_t *confi
     have_tcp = true;
     srv->tcp.on_accept = on_tcp_accept;
     srv->tcp.on_session = on_tcp_session;
+    srv->tcp.hs_rate_per_min = NODUS_HANDSHAKE_RATE_PER_MIN;
     srv->tcp.on_frame = on_tcp_frame;
     srv->tcp.on_disconnect = on_tcp_disconnect;
     srv->tcp.cb_ctx = srv;
@@ -2411,6 +2414,7 @@ int nodus_server_init_ex(nodus_server_t *srv, const nodus_server_config_t *confi
     srv->inter_tcp.on_accept     = on_inter_accept;
     srv->inter_tcp.on_connect    = on_inter_connect;
     srv->inter_tcp.on_session    = on_inter_session;
+    srv->inter_tcp.hs_rate_per_min = NODUS_HANDSHAKE_RATE_PER_MIN;
     srv->inter_tcp.on_frame      = on_inter_frame;
     srv->inter_tcp.on_disconnect = on_inter_disconnect;
     srv->inter_tcp.cb_ctx        = srv;

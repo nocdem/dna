@@ -50,6 +50,13 @@ static void inproc_status(nodus_chain_backend_t *b,
     nodus_witness_status_fill(inproc_w(b), info);
 }
 
+/* The v3 chain id (witness/nodus_witness_ipc.c nodus_witness_dht_chain_id:
+ * nodus_witness_v2_chain_id, served from the witness's cache once the post-
+ * open gate has derived it). */
+static bool inproc_chain_id_v3(nodus_chain_backend_t *b, uint8_t out[32]) {
+    return nodus_witness_dht_chain_id(inproc_w(b), out) == 0;
+}
+
 static bool inproc_chain_open(nodus_chain_backend_t *b) {
     return inproc_w(b)->db != NULL;
 }
@@ -104,6 +111,7 @@ static const nodus_chain_backend_ops_t inproc_ops = {
     .tick          = inproc_tick,
     .read_pending  = inproc_read_pending,
     .status        = inproc_status,
+    .chain_id_v3   = inproc_chain_id_v3,
     .chain_open    = inproc_chain_open,
     .listen_port   = inproc_listen_port,
     .dispatch_dnac = inproc_dispatch_dnac,

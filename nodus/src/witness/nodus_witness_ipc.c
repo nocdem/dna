@@ -30,6 +30,7 @@
 #include "witness/nodus_witness_v2_produce.h"  /* nodus_witness_v2_tip_height */
 #include "witness/nodus_witness_v2_storage.h"  /* nodus_witness_storage_set_get */
 #include "witness/nodus_witness_cmt_node.h"    /* nodus_cmt_node_t.cs_started */
+#include "witness/nodus_witness_v2_claims.h"   /* nodus_witness_v2_chain_id */
 #include "dnac/dnac.h"                         /* DNAC_EPOCH_LENGTH, dnac_name_bytes_ok */
 #include "transport/nodus_tcp.h"
 #include "protocol/nodus_cbor.h"
@@ -87,6 +88,18 @@ static uint64_t dht_epoch_start(uint64_t tip) {
     return tip - tip % E;
 }
 
+/* The chain id every DHT v2 reader and every session compares: the 32-byte
+ * v3 chain id (the hash of the stored genesis document,
+ * nodus_witness_v2_chain_id — what 4004's HELLO carries and what every
+ * client / ceremony / explorer knows), NOT `w->chain_id`, the legacy 16-byte
+ * id padded with zeros that the T2 `status` RPC reports. No v3 id yet (no
+ * open chain, no stored genesis document) is an error, never a zero id. */
+int nodus_witness_dht_chain_id(nodus_witness_t *w, uint8_t out[32]) {
+    _Static_assert(DNA_CHAIN_ID_LEN == 32, "the session's chain id is 32 bytes");
+    if (!w || !out || !w->db) return -1;
+    return nodus_witness_v2_chain_id(w, out) == 0 ? 0 : -1;
+}
+
 int nodus_witness_dht_snap_fill(nodus_witness_t *w,
                                 nodus_witness_dht_snap_t *out) {
     uint64_t tip = 0, secs = 0;
@@ -96,7 +109,10 @@ int nodus_witness_dht_snap_fill(nodus_witness_t *w,
     if (nodus_witness_v2_tip_height(w, &tip) != 0) return -1;
     /* all-or-error: a tip without readable block meta has no time */
     if (nodus_witness_v2_tip_block_time(w, tip, &secs) != 0) return -1;
-    memcpy(out->chain_id, w->chain_id, sizeof(out->chain_id));
+    if (nodus_witness_dht_chain_id(w, out->chain_id) != 0) {
+        memset(out, 0, sizeof(*out));
+        return -1;
+    }
     out->height = tip;
     out->tip_time = secs;
     /* `cs_started` is set exactly when cmt_cs_start has run (directly at
@@ -249,6 +265,8 @@ static void witness_h_status(void *ctx, nodus_witness_ipc_status_t *out) {
     out->height = info.block_height;
     memcpy(out->state_root, info.state_root, sizeof(out->state_root));
     memcpy(out->chain_id, info.chain_id, sizeof(out->chain_id));
+    if (nodus_witness_dht_chain_id(w, out->chain_id_v3) != 0)
+        memset(out->chain_id_v3, 0, sizeof(out->chain_id_v3));
     out->p2p_opened = w->p2p != NULL;
     out->listen_port = nodus_witness_p2p_listen_port(w->p2p);
 }
@@ -466,7 +484,7 @@ static void ipc_on_ctl_frame(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn,
     uint8_t buf[NODUS_WITNESS_IPC_CTL_FRAME_MAX];
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, sizeof(buf));
-    cbor_encode_map(&enc, 7);
+    cbor_encode_map(&enc, 8);
     cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, NODUS_WITNESS_IPC_Q_STATUS);
     cbor_encode_cstr(&enc, "co"); cbor_encode_bool(&enc, st.chain_open);
     cbor_encode_cstr(&enc, "h");  cbor_encode_uint(&enc, st.height);
@@ -474,6 +492,8 @@ static void ipc_on_ctl_frame(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn,
                                                    sizeof(st.state_root));
     cbor_encode_cstr(&enc, "ci"); cbor_encode_bstr(&enc, st.chain_id,
                                                    sizeof(st.chain_id));
+    cbor_encode_cstr(&enc, "c3"); cbor_encode_bstr(&enc, st.chain_id_v3,
+                                                   sizeof(st.chain_id_v3));
     cbor_encode_cstr(&enc, "po"); cbor_encode_bool(&enc, st.p2p_opened);
     cbor_encode_cstr(&enc, "lp"); cbor_encode_uint(&enc, st.listen_port);
     size_t n = cbor_encoder_len(&enc);

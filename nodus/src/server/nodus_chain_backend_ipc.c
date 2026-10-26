@@ -108,12 +108,12 @@ static ipc_backend_t *ipc_be(nodus_chain_backend_t *b) {
 static int ipc_status_decode(const uint8_t *p, size_t len,
                              nodus_witness_ipc_status_t *out) {
     enum { K_Q = 1, K_CO = 2, K_H = 4, K_SR = 8, K_CI = 16, K_PO = 32,
-           K_LP = 64, K_ALL = 127 };
+           K_LP = 64, K_C3 = 128, K_ALL = 255 };
     cbor_decoder_t dec;
     cbor_decoder_init(&dec, p, len);
 
     cbor_item_t m = cbor_decode_next(&dec);
-    if (m.type != CBOR_ITEM_MAP || m.count != 7) return -1;
+    if (m.type != CBOR_ITEM_MAP || m.count != 8) return -1;
 
     unsigned seen = 0;
     memset(out, 0, sizeof(*out));
@@ -149,6 +149,12 @@ static int ipc_status_decode(const uint8_t *p, size_t len,
                 return -1;
             memcpy(out->chain_id, v.bstr.ptr, sizeof(out->chain_id));
             bit = K_CI;
+        } else if (k.tstr.len == 2 && memcmp(k.tstr.ptr, "c3", 2) == 0) {
+            if (v.type != CBOR_ITEM_BSTR ||
+                v.bstr.len != sizeof(out->chain_id_v3))
+                return -1;
+            memcpy(out->chain_id_v3, v.bstr.ptr, sizeof(out->chain_id_v3));
+            bit = K_C3;
         } else if (k.tstr.len == 2 && memcmp(k.tstr.ptr, "po", 2) == 0) {
             if (v.type != CBOR_ITEM_BOOL) return -1;
             out->p2p_opened = v.bool_val;
@@ -394,6 +400,18 @@ static void ipcb_status(nodus_chain_backend_t *b, nodus_t2_status_info_t *info) 
     memcpy(info->chain_id, st->chain_id, sizeof(info->chain_id));
 }
 
+/* The v3 chain id from the witness's fresh status snapshot (`c3`); all zero
+ * there = the witness has none yet. */
+static bool ipcb_chain_id_v3(nodus_chain_backend_t *b, uint8_t out[32]) {
+    const nodus_witness_ipc_status_t *st = ipc_snap(ipc_be(b));
+    if (!st || !st->chain_open) return false;
+    uint8_t acc = 0;
+    for (size_t i = 0; i < sizeof(st->chain_id_v3); i++) acc |= st->chain_id_v3[i];
+    if (acc == 0) return false;
+    memcpy(out, st->chain_id_v3, sizeof(st->chain_id_v3));
+    return true;
+}
+
 static bool ipcb_chain_open(nodus_chain_backend_t *b) {
     const nodus_witness_ipc_status_t *st = ipc_snap(ipc_be(b));
     return st && st->chain_open;
@@ -443,6 +461,7 @@ static const nodus_chain_backend_ops_t ipc_ops = {
     .tick           = ipcb_tick,
     .read_pending   = ipcb_read_pending,
     .status         = ipcb_status,
+    .chain_id_v3    = ipcb_chain_id_v3,
     .chain_open     = ipcb_chain_open,
     .listen_port    = ipcb_listen_port,
     .dispatch_dnac  = ipcb_dispatch_dnac,

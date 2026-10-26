@@ -27,6 +27,11 @@ extern "C" {
 /* CRIT-5: plain-listener connections per peer IP (handle_accept; WebSocket
  * and Unix-socket connections are not counted). Same on Linux and Windows. */
 #define NODUS_MAX_CONNS_PER_IP  20
+/* Entries of the per-IP handshake-rate table (nodus_tcp_t.hs_rate): the IPs
+ * whose current minute is remembered. 512 x ~32 bytes. */
+#define NODUS_TCP_HS_RATE_TABLE 512
+/* The window of the handshake rate, ms (decision 2026-10-24: "per minute"). */
+#define NODUS_TCP_HS_RATE_WINDOW_MS 60000u
 #define NODUS_TCP_BUF_INIT    (64 * 1024)    /* Initial read/write buffer */
 #define NODUS_TCP_PENDING_MAX  (5 * 1024 * 1024)   /* 5MB auth pending queue cap */
 
@@ -430,7 +435,38 @@ typedef struct nodus_tcp {
     struct nodus_sc_worker   *sc_worker;
     uint64_t                  sc_gen_last;
     int                       sc_close_requests;  /* conns with sc_close_req set */
+
+    /* Per-IP handshake RATE of the accepting side (operator decision
+     * 2026-10-24, decisions/2026-10-24-dht-v2-handshake-rate.md): at most
+     * hs_rate_per_min new connections per minute from one IP (IPv6 by /64,
+     * nodus_ws_ip_bucket); above that an accept is refused until the minute
+     * has passed. 0 = off (the default; the owner of the 4001 / 4002
+     * transports sets 60). Fixed window per IP on the MONOTONIC clock; the
+     * table is bounded — see nodus_tcp_hs_rate_allow. Counts accepts only:
+     * connections this node dials never pass here. */
+    uint32_t                  hs_rate_per_min;
+    struct {
+        bool                  used;
+        nodus_ws_ip_bucket_t  who;
+        uint64_t              start_ms;   /* window start, nodus_time_mono_ms scale */
+        uint32_t              count;      /* accepts in the window so far */
+    } hs_rate[NODUS_TCP_HS_RATE_TABLE];
 } nodus_tcp_t;
+
+/**
+ * The handshake-rate decision for one accepted connection from `who` at
+ * `now_mono_ms` (nodus_time_mono_ms scale — a parameter so a test can drive
+ * it): true = admit and count it; false = refuse (the window of `who` already
+ * holds hs_rate_per_min accepts and 60 s have not passed since it opened).
+ * Always true when hs_rate_per_min is 0. Memory is bounded by
+ * NODUS_TCP_HS_RATE_TABLE entries: a full table reuses an entry whose window
+ * has expired, else evicts the entry with the OLDEST window (its IP is then
+ * counted afresh — a bounded loss of memory under a many-IP flood, never
+ * unbounded growth). Called by the transport's accept paths (plain accept,
+ * WebSocket upgrade); exposed for tests.
+ */
+bool nodus_tcp_hs_rate_allow(nodus_tcp_t *tcp, const nodus_ws_ip_bucket_t *who,
+                             uint64_t now_mono_ms);
 
 /**
  * Initialize TCP transport.

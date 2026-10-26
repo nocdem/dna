@@ -298,8 +298,9 @@ typedef struct nodus_server {
     nodus_inter_session_cfg_t inter_cfg;
 
     /* The chain id every session of this node is bound to (the HELLO of
-     * 4001 / WebSocket and of 4002). Learned from the chain backend's status
-     * (in-process witness, or the `ci` of nodus-witness' ipc_status) at the
+     * 4001 / WebSocket and of 4002): the 32-byte v3 chain id, learned from the
+     * chain backend's chain_id_v3 op (in-process witness, or the `c3` of
+     * nodus-witness' ipc_status — NOT the legacy padded `ci`) at the
      * first accept / dial that finds it non-zero, then kept: a chain id never
      * changes for the life of the process. Until it is known, sessions are
      * refused (fail closed) — nodus_server_chain_id. */
@@ -647,6 +648,11 @@ int nodus_auth_session_start(nodus_server_t *srv, nodus_session_t *sess);
  * per-IP caps (NODUS_MAX_CONNS_PER_IP, 20 + 20) are unchanged. */
 #define NODUS_PRESESSION_IDLE_MS   15000u
 #define NODUS_PRESESSION_ABS_MS    30000u
+/* New handshakes one IP may start per minute on each accepting port (4001 +
+ * WebSocket, 4002): operator decision 2026-10-24, "60/min per IP"
+ * (decisions/2026-10-24-dht-v2-handshake-rate.md). Set as
+ * nodus_tcp_t.hs_rate_per_min on both transports; monotonic clock. */
+#define NODUS_HANDSHAKE_RATE_PER_MIN 60u
 
 /* Per-session budget for chain methods (every request for which
  * nodus_chain_method_routed() is true): a fixed window of

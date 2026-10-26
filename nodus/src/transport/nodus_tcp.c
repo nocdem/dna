@@ -1603,6 +1603,42 @@ static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 #endif
 }
 
+bool nodus_tcp_hs_rate_allow(nodus_tcp_t *tcp, const nodus_ws_ip_bucket_t *who,
+                             uint64_t now_mono_ms) {
+    if (!tcp || !who) return false;
+    if (tcp->hs_rate_per_min == 0) return true;
+
+    int free_slot = -1, oldest = -1;
+    for (int i = 0; i < NODUS_TCP_HS_RATE_TABLE; i++) {
+        if (!tcp->hs_rate[i].used) {
+            if (free_slot < 0) free_slot = i;
+            continue;
+        }
+        if (memcmp(&tcp->hs_rate[i].who, who, sizeof(*who)) == 0) {
+            uint64_t age = now_mono_ms > tcp->hs_rate[i].start_ms
+                         ? now_mono_ms - tcp->hs_rate[i].start_ms : 0;
+            if (age >= NODUS_TCP_HS_RATE_WINDOW_MS) {   /* a new minute */
+                tcp->hs_rate[i].start_ms = now_mono_ms;
+                tcp->hs_rate[i].count = 0;
+            }
+            if (tcp->hs_rate[i].count >= tcp->hs_rate_per_min)
+                return false;
+            tcp->hs_rate[i].count++;
+            return true;
+        }
+        if (oldest < 0 || tcp->hs_rate[i].start_ms < tcp->hs_rate[oldest].start_ms)
+            oldest = i;
+    }
+    /* Not in the table: a free entry, else the entry with the oldest window
+     * (an expired one first, being the oldest) — bounded memory. */
+    int slot = free_slot >= 0 ? free_slot : oldest;
+    tcp->hs_rate[slot].used = true;
+    tcp->hs_rate[slot].who = *who;
+    tcp->hs_rate[slot].start_ms = now_mono_ms;
+    tcp->hs_rate[slot].count = 1;
+    return true;
+}
+
 #ifdef NODUS_TCP_LISTEN
 
 /* The plain listener's accept: the same code on Linux/Android (one call per
@@ -1635,6 +1671,20 @@ static void handle_accept(nodus_tcp_t *tcp) {
     if (ip_count >= NODUS_MAX_CONNS_PER_IP) {
         close(fd);
         return;
+    }
+
+    /* Per-IP handshake RATE (decision 2026-10-24, 60 / minute on 4001 and
+     * 4002 accept): checked after the cheap concurrency count, counted only
+     * for a connection that would be admitted. Monotonic clock. */
+    if (tcp->hs_rate_per_min != 0) {
+        nodus_ws_ip_bucket_t who;
+        if (nodus_ws_ip_bucket(new_ip, &who) != 0 ||
+            !nodus_tcp_hs_rate_allow(tcp, &who, nodus_time_mono_ms())) {
+            QGP_LOG_WARN(LOG_TAG_TCP, "accept: handshake rate %u/min reached for %s — refused",
+                         (unsigned)tcp->hs_rate_per_min, new_ip);
+            close(fd);
+            return;
+        }
     }
 
     set_nonblocking(fd);
@@ -1849,6 +1899,15 @@ static bool ws_try_upgrade(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     if (same_ip >= NODUS_WS_MAX_CONNS_PER_IP) {
         QGP_LOG_WARN(LOG_TAG_TCP, "ws: per-IP limit %d reached for %s, slot=%d closed",
                      NODUS_WS_MAX_CONNS_PER_IP, res.real_ip, conn->slot);
+        ws_close_now(tcp, conn, NULL, 0);
+        return true;
+    }
+    /* Per-IP handshake RATE (decision 2026-10-24): counted per real client
+     * address once the Upgrade names it (the socket peer is the local
+     * proxy), after the concurrency limit. */
+    if (!nodus_tcp_hs_rate_allow(tcp, &bucket, nodus_time_mono_ms())) {
+        QGP_LOG_WARN(LOG_TAG_TCP, "ws: handshake rate %u/min reached for %s, slot=%d closed",
+                     (unsigned)tcp->hs_rate_per_min, res.real_ip, conn->slot);
         ws_close_now(tcp, conn, NULL, 0);
         return true;
     }

@@ -1652,6 +1652,14 @@ add_executable(test_hint_tristate tests/test_hint_tristate.c)
 target_link_libraries(test_hint_tristate nodus dsa kem nodus)
 add_test(NAME test_hint_tristate COMMAND test_hint_tristate)
 
+# DHT v2 3b-2 round 3: the sessions' chain id is the v3 chain id (not the
+# legacy padded one) on the server side and in the witness helper that fills
+# the DHT snapshot / status c3; the per-IP handshake rate (60/min, injected
+# monotonic time, bounded table, one real accept).
+add_executable(test_chain_id_v3 tests/test_chain_id_v3.c)
+target_link_libraries(test_chain_id_v3 nodus dsa kem nodus)
+add_test(NAME test_chain_id_v3 COMMAND test_chain_id_v3)
+
 # DHT v2 3b-2 fix round: a REAL forwarded read over the node session (batch
 # forward sends its get_batch after opening the send gate), and a send the
 # transport diverts to its queue-full fallback is not reported WRITTEN.
