@@ -12903,8 +12903,12 @@ certificate starts family-UNBOUND (`nodus_tcp_sc_enable`, `nodus_tcp_sc.c:755-76
 message binds the family ONCE by its exact (kind, length) (`sc_recv_first`,
 `cmt_p2p_secret.c:962-992`): (0x01 HELLO, 2,661) → CLIENT, today's handshake; (0x05
 HELLO_ANON, 69) → ANON, only when a certificate was supplied; anything else → REJECT. The
-length selects the family before the body is buffered; the kind byte is then checked as for
-a bound machine. After binding, the step's expected message depends on the BOUND family,
+length prefix only selects which message may follow; the machine stays unbound (state
+`WAIT_FIRST`, `profile` NULL) until that whole message has arrived and its kind byte
+matched, and only then does its handler (`sc_on_hello` / `sc_on_hello_anon`) bind the
+family — the PAIR binds, never the prefix alone (fix `ed168abc1`, after the independent
+verification found the first version binding on the prefix). After binding, the step's
+expected message depends on the BOUND family,
 never on a received kind: WITNESS / NODE / CLIENT machines refuse 0x05 / 0x06 / 0x07 as a
 kind-or-length REJECT, and an ANON machine accepts only its own kinds. The pre-session
 timestamps are set at accept and the binding does not reset them (the 15 s idle / 30 s
@@ -13028,7 +13032,11 @@ family: profile ANON, `cfg.id` NULL, the pin set and `expected_chain_id` still M
 identity and does not copy one that is passed (`:777`, `:818`).
 `nodus_client_set_owner_key` (`nodus.h:315-317`; `nodus_client.c:878-886`) copies the key
 the five owner-only reads are signed with; `nodus_client_close` wipes it. Without it those
-five calls return -1 before anything is sent. DHT / messaging calls on an ANON client are
+five calls return -1 before anything is sent. The `s` of each `qa` is the connection's T,
+copied into the client (`has_session_t` / `session_t`, `nodus.h`) by `client_on_session` —
+the transport calls it with its lock released and the connection alive — and cleared at
+each connect; building a `qa` reads that copy under `wbuf_mutex` and never touches the
+connection, which the read thread may free on a disconnect (fix `ed168abc1`). DHT / messaging calls on an ANON client are
 refused by the node (`NODUS_ERR_NOT_AUTHENTICATED`).
 
 **Web wallet.** `web-wallet/crypto/nodus-send-wasm.c`: the wallet's session (`g_client`) is

@@ -7,11 +7,14 @@
 # nodus/include/nodus/nodus_ruleset_pins.h) and crypto/nodus-send-wasm.c,
 # the entry points src/nodus/send-module.js calls. Since NC-4b the SAME
 # module also carries the Nodus Connect thin core (web-wallet/connect/, JSON
-# exports connect/nc_wasm.c) on the one session of this module — the
-# wallet's one module of design docs/plans/2026-09-24-web-connect-design.md
-# rev 5 §1.1 (two sessions of one identity evict each other on a node,
-# nodus_auth.c:95-116). src/connect/core.js drives it through the wallet's
-# queue (src/nodus/client.js).
+# exports connect/nc_wasm.c). Since DHT v2 package 3d the module holds TWO
+# sessions: the wallet's own no-login session (g_client, no identity) and
+# Connect's identified session (g_client_c), opened only when a Messages
+# export needs the old identity-bound DHT — so the one-identity-one-session
+# rule of design docs/plans/2026-09-24-web-connect-design.md rev 5 §1.1
+# (two sessions of one identity evict each other on a node) still holds:
+# only one of the two carries the identity. src/connect/core.js drives
+# Connect through the wallet's queue (src/nodus/client.js).
 #
 # Usage:
 #   build-nodus-send-wasm.sh            the SHIPPED module (-DNODUS_SEND_RELEASE)
