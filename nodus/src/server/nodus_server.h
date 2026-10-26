@@ -29,6 +29,7 @@
 #include "witness/nodus_witness_host.h"     /* the witness's host view (S1) */
 #include "witness/nodus_witness_network_file.h" /* nodus_network_file_target_t */
 #include "server/nodus_chain_backend.h"     /* srv->chain */
+#include "dnac/cmt_p2p_secret.h"            /* CMT_P2P_SC_SIG_SIZE (anon_kc_sig) */
 #include "server/nodus_presence.h"
 #include "server/nodus_inter_dial.h"       /* the 4002 dialer handshake (S5a) */
 #include "server/nodus_partial_wipe.h"     /* the H-10 boot gate (S5b) */
@@ -200,6 +201,13 @@ typedef struct {
     nodus_pubkey_t      client_pk;
     uint8_t             token[NODUS_SESSION_TOKEN_LEN];
     bool                authenticated;
+    /* DHT v2 package 3d: the session is the no-login ANON family — NO
+     * principal. client_pk / client_fp stay zero and are never an identity
+     * (nodus_sessions_* skip such a session, there is no presence entry, the
+     * connection's peer_id_set stays false). Set by nodus_auth_session_start
+     * from the layer (nodus_tcp_sc_is_anonymous), never by a client byte.
+     * Such a session calls only the ANON allowlist (nodus_server_anon_method_ok). */
+    bool                anonymous;
     bool                is_nodus;
     /* Order of this session's authentication on this server: a fresh value
      * from srv->next_auth_seq when the SecretConnection becomes
@@ -313,6 +321,17 @@ typedef struct nodus_server {
      * nodus_time_mono_ms() of the last ask, and whether there was one. */
     bool                    chain_id_tried;
     uint64_t                chain_id_try_mono_ms;
+
+    /* DHT v2 package 3d: this node's KEM-key certificate for the ANON client
+     * session (design 2026-10-26-dht-v2-3d-no-login-design.md §1.3):
+     * nodus_tcp_sc_kc_sign over this identity's ML-KEM key and chain_id,
+     * computed ONCE — at the first accept that finds the chain id known (the
+     * id is only learned lazily, nodus_server_chain_id) — and handed to every
+     * 4001 / WebSocket responder as cfg.anon_kc_sig. The layer keeps the
+     * POINTER, so the bytes live as long as the server (server-owned
+     * lifetime); never signed per connection. */
+    uint8_t                 anon_kc_sig[CMT_P2P_SC_SIG_SIZE];
+    bool                    anon_kc_ok;
 
     /* Phase 1 visibility: send diagnostics dump timer */
     uint64_t                last_stats_dump;
@@ -616,9 +635,26 @@ nodus_tcp_conn_t *nodus_server_inter_find(nodus_server_t *srv, const char *ip,
  * No payload cap is lifted here: the cap (NODUS_PREAUTH_PAYLOAD_MAX) is
  * retired with the hello / auth path — before authentication no nodus frame
  * exists on the connection, only the layer's handshake messages.
+ * ANON (DHT v2 package 3d, design 2026-10-26-dht-v2-3d-no-login-design.md §2):
+ * when the layer reports the connection as the ANON family
+ * (nodus_tcp_sc_is_anonymous) there is NO principal: no client_pk /
+ * client_fp, conn->peer_id_set stays false, no per-identity eviction, no
+ * presence entry, no role exemption; sess->anonymous is set. The token is
+ * still minted and sent. Per-IP / per-session limits and the deadlines are
+ * unchanged.
  * @return 0; -1 when the peer key cannot be read (the caller disconnects).
  */
 int nodus_auth_session_start(nodus_server_t *srv, nodus_session_t *sess);
+
+/**
+ * The ANON allowlist (design §2, exact method names): the T2 methods a
+ * no-login session may call. Everything else on an ANON session is
+ * NOT_AUTHENTICATED. The five owner-only reads are on the list but are served
+ * only with a valid owner-signed `qa` (nodus_owner_query.h), checked by the
+ * witness handler. `dht2_*` are not wired yet (a later package) and are not
+ * on it.
+ */
+bool nodus_server_anon_method_ok(const char *method);
 
 /* ── Sessions of one identity (client port 4001) ────────────────────
  *

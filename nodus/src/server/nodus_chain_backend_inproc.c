@@ -12,6 +12,7 @@
 
 #include "server/nodus_chain_backend.h"
 #include "witness/nodus_witness.h"
+#include "witness/nodus_witness_handlers.h"    /* nodus_witness_handle_dnac_anon */
 #include "transport/nodus_tcp.h"               /* nodus_time_mono_ms */
 #include "witness/nodus_witness_ipc.h"         /* nodus_witness_status_fill */
 #include "witness/nodus_witness_p2p.h"         /* the 4004 listen port (log) */
@@ -82,6 +83,19 @@ static void inproc_dispatch_dnac(nodus_chain_backend_t *b,
     (void)token;
     nodus_witness_dispatch_dnac(inproc_w(b), conn, payload, len,
                                 method, txn_id);
+}
+
+/* An ANON session's method: the witness reads "no principal" from `conn`
+ * (core never sets peer_id_set on it) and the session's T from here. */
+static void inproc_dispatch_dnac_anon(nodus_chain_backend_t *b,
+                                      struct nodus_tcp_conn *conn,
+                                      const uint8_t token[NODUS_SESSION_TOKEN_LEN],
+                                      const uint8_t t[64],
+                                      const uint8_t *payload, size_t len,
+                                      const char *method, uint32_t txn_id) {
+    (void)token;
+    nodus_witness_handle_dnac_anon(inproc_w(b), conn, t, payload, len,
+                                   method, txn_id);
 }
 
 static void inproc_cc_collect(nodus_chain_backend_t *b,
@@ -159,6 +173,7 @@ static const nodus_chain_backend_ops_t inproc_ops = {
     .chain_open    = inproc_chain_open,
     .listen_port   = inproc_listen_port,
     .dispatch_dnac = inproc_dispatch_dnac,
+    .dispatch_dnac_anon = inproc_dispatch_dnac_anon,
     .cc_collect    = inproc_cc_collect,
     .session_closed = inproc_session_closed,
     .close         = inproc_close,

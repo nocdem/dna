@@ -4057,6 +4057,23 @@ void nodus_dht_client_request(nodus_dht_t *dht, int slot,
                               nodus_tier2_msg_t *msg) {
     if (!dht || !msg || slot < 0 || slot >= NODUS_MAX_SESSIONS) return;
 
+    /* DHT v2 package 3d: a session with NO principal (the no-login ANON
+     * family: core passes no fp / pk, the storage IPC's no-identity origin)
+     * is refused every method of this legacy verb set — the identity-bound
+     * ones (put, m_put, listen, cnt_batch) because there is no identity, and
+     * the v1 reads too (khan decision 4, 2026-10-26: legacy v1 DHT reads are
+     * refused on ANON). Core's allowlist never routes them here; this is the
+     * storage side's own refusal. Both pointers are given together or not at
+     * all. */
+    if (!client_fp || !client_pk) {
+        size_t nlen = 0;
+        nodus_t2_error(msg->txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                        "this method needs a logged-in session",
+                        resp_buf, sizeof(resp_buf), &nlen);
+        dht_send_client(dht, slot, resp_buf, nlen);
+        return;
+    }
+
     if (strcmp(msg->method, "put") == 0)
         handle_t2_put(dht, slot, client_fp, client_pk, msg);
     else if (strcmp(msg->method, "get") == 0)

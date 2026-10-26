@@ -255,8 +255,14 @@ static void ipc_session_close(ipc_backend_t *ib, ipc_session_t *s) {
 static nodus_tcp_conn_t *ipc_session_conn(ipc_backend_t *ib,
                                           nodus_tcp_conn_t *client,
                                           const uint8_t pk[NODUS_PK_BYTES],
-                                          const uint8_t token[NODUS_SESSION_TOKEN_LEN]) {
-    if (!client || client->slot < 0 || client->slot >= NODUS_TCP_MAX_CONNS)
+                                          const uint8_t token[NODUS_SESSION_TOKEN_LEN],
+                                          const uint8_t t[NODUS_WITNESS_IPC_T_LEN]) {
+    /* `pk` NULL = an ANON session: the preface is the explicit no-identity
+     * form {"q":"ipc_hello","tk":..,"ts":T} (witness/nodus_witness_ipc.h) — no
+     * key of any kind, and the witness never installs one for it. Exactly one
+     * of `pk` / `t` is given. */
+    if (!client || client->slot < 0 || client->slot >= NODUS_TCP_MAX_CONNS ||
+        (pk == NULL) == (t == NULL))
         return NULL;
     ipc_session_t *s = &ib->sess[client->slot];
 
@@ -294,9 +300,17 @@ static nodus_tcp_conn_t *ipc_session_conn(ipc_backend_t *ib,
     cbor_encoder_init(&enc, buf, sizeof(buf));
     cbor_encode_map(&enc, 3);
     cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, NODUS_WITNESS_IPC_Q_HELLO);
-    cbor_encode_cstr(&enc, "pk"); cbor_encode_bstr(&enc, pk, NODUS_PK_BYTES);
-    cbor_encode_cstr(&enc, "tk"); cbor_encode_bstr(&enc, token,
-                                                   NODUS_SESSION_TOKEN_LEN);
+    if (pk) {
+        /* the identified form: bytes unchanged */
+        cbor_encode_cstr(&enc, "pk"); cbor_encode_bstr(&enc, pk, NODUS_PK_BYTES);
+        cbor_encode_cstr(&enc, "tk"); cbor_encode_bstr(&enc, token,
+                                                       NODUS_SESSION_TOKEN_LEN);
+    } else {
+        cbor_encode_cstr(&enc, "tk"); cbor_encode_bstr(&enc, token,
+                                                       NODUS_SESSION_TOKEN_LEN);
+        cbor_encode_cstr(&enc, "ts"); cbor_encode_bstr(&enc, t,
+                                                       NODUS_WITNESS_IPC_T_LEN);
+    }
     size_t n = cbor_encoder_len(&enc);
     if (n == 0 || nodus_tcp_send(c, buf, n) != 0) {
         nodus_tcp_disconnect(&ib->tcp, c);
@@ -323,8 +337,9 @@ static void ipc_no_witness(nodus_tcp_conn_t *client, uint32_t txn_id) {
 static void ipc_forward(ipc_backend_t *ib, nodus_tcp_conn_t *client,
                         const uint8_t pk[NODUS_PK_BYTES],
                         const uint8_t token[NODUS_SESSION_TOKEN_LEN],
+                        const uint8_t t[NODUS_WITNESS_IPC_T_LEN],
                         const uint8_t *payload, size_t len, uint32_t txn_id) {
-    nodus_tcp_conn_t *c = ipc_session_conn(ib, client, pk, token);
+    nodus_tcp_conn_t *c = ipc_session_conn(ib, client, pk, token, t);
     if (!c) {
         ipc_no_witness(client, txn_id);
         return;
@@ -500,7 +515,18 @@ static void ipcb_dispatch_dnac(nodus_chain_backend_t *b,
                                const uint8_t *payload, size_t len,
                                const char *method, uint32_t txn_id) {
     (void)method;   /* the witness re-decodes the payload */
-    ipc_forward(ipc_be(b), conn, client_pk, token, payload, len, txn_id);
+    ipc_forward(ipc_be(b), conn, client_pk, token, NULL, payload, len, txn_id);
+}
+
+/* An ANON session's method: the no-identity preface, with the session's T. */
+static void ipcb_dispatch_dnac_anon(nodus_chain_backend_t *b,
+                                    nodus_tcp_conn_t *conn,
+                                    const uint8_t token[NODUS_SESSION_TOKEN_LEN],
+                                    const uint8_t t[NODUS_WITNESS_IPC_T_LEN],
+                                    const uint8_t *payload, size_t len,
+                                    const char *method, uint32_t txn_id) {
+    (void)method;   /* the witness re-decodes the payload */
+    ipc_forward(ipc_be(b), conn, NULL, token, t, payload, len, txn_id);
 }
 
 static void ipcb_cc_collect(nodus_chain_backend_t *b,
@@ -509,7 +535,7 @@ static void ipcb_cc_collect(nodus_chain_backend_t *b,
                             const uint8_t token[NODUS_SESSION_TOKEN_LEN],
                             const uint8_t *payload, size_t len,
                             uint32_t txn_id) {
-    ipc_forward(ipc_be(b), conn, client_pk, token, payload, len, txn_id);
+    ipc_forward(ipc_be(b), conn, client_pk, token, NULL, payload, len, txn_id);
 }
 
 static void ipcb_session_closed(nodus_chain_backend_t *b,
@@ -553,6 +579,7 @@ static const nodus_chain_backend_ops_t ipc_ops = {
     .chain_open     = ipcb_chain_open,
     .listen_port    = ipcb_listen_port,
     .dispatch_dnac  = ipcb_dispatch_dnac,
+    .dispatch_dnac_anon = ipcb_dispatch_dnac_anon,
     .cc_collect     = ipcb_cc_collect,
     .session_closed = ipcb_session_closed,
     .close          = ipcb_close,

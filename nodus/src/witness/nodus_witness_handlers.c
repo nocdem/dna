@@ -31,6 +31,8 @@
 #include "protocol/nodus_cbor.h"
 #include "protocol/nodus_tier2.h"
 #include "protocol/nodus_tier3.h"   /* nodus_t3_tx_size_limit (was via peer.h) */
+#include "protocol/nodus_owner_query.h"   /* the owner-signed `qa` (package 3d) */
+#include "witness/nodus_witness_ipc.h"    /* nodus_witness_dht_chain_id, the ANON allowlist */
 #include "transport/nodus_tcp.h"
 #include "witness/nodus_witness_host.h"
 #include "crypto/nodus_sign.h"
@@ -174,6 +176,114 @@ static bool key_match(const cbor_item_t *key, const char *name) {
     return key->type == CBOR_ITEM_TSTR &&
            key->tstr.len == nlen &&
            memcmp(key->tstr.ptr, name, nlen) == 0;
+}
+
+/* ── The principal of an owner-only read (DHT v2 package 3d) ─────────
+ *
+ * dnac_utxo, dnac_addr_history, dnac_delegations, dnac_msig_utxo and
+ * dnac_msig_addr_history are owner- or member-only (C11 / G8.1). Their
+ * authority is a KEY: on an identified CLIENT session the session key
+ * (conn->peer_id / peer_pk, exactly as before); on a no-login ANON session an
+ * owner-signed `qa` envelope (nodus_owner_query.h) bound to the session's
+ * transcript T. oq_principal_t is that key, whichever way it was proven;
+ * `qa` is set only for the second. A handler compares its own argument with
+ * it, so the C11 / G8.1 rule is ONE code path with the key in place of the
+ * session key. */
+typedef struct {
+    bool    set;                         /* a principal exists            */
+    bool    qa;                          /* proven by a verified `qa`     */
+    uint8_t fp[NODUS_KEY_BYTES];
+    uint8_t pk[NODUS_PK_BYTES];          /* identified: peer_pk; qa: the envelope key */
+    uint8_t o[NODUS_OQ_O_LEN];           /* qa only: the signed `o`       */
+} oq_principal_t;
+
+_Static_assert(NODUS_PK_BYTES == NODUS_OQ_PK_LEN,
+               "a session key and a qa envelope key are the same ML-DSA-87 width");
+_Static_assert(NODUS_KEY_BYTES == NODUS_OQ_FP_LEN && NODUS_KEY_BYTES == NODUS_OQ_O_LEN,
+               "a fingerprint and the qa `o` are 64 bytes");
+
+/* The identified session's principal: what the connection proved. */
+static void oq_principal_conn(const struct nodus_tcp_conn *conn,
+                              oq_principal_t *p) {
+    memset(p, 0, sizeof(*p));
+    if (!conn->peer_id_set) return;
+    p->set = true;
+    memcpy(p->fp, conn->peer_id.bytes, sizeof(p->fp));
+    memcpy(p->pk, conn->peer_pk.bytes, sizeof(p->pk));
+}
+
+/* An ANON session's principal: the verified `qa` of this request, in the
+ * order of the design §3 (nodus_oq_open), with `c` this node's chain id and
+ * `s` the session's T. The CALLER checks `o` against its argument.
+ * @return 0 with *p set; -1 the error was SENT (nothing was read). */
+static int oq_principal_qa(nodus_witness_t *w, struct nodus_tcp_conn *conn,
+                           const uint8_t t[NODUS_OQ_T_LEN],
+                           const uint8_t *payload, size_t len,
+                           const char *method, uint32_t txn_id,
+                           oq_principal_t *p) {
+    memset(p, 0, sizeof(*p));
+    const uint8_t *env = NULL;
+    size_t env_len = 0;
+    int fr = nodus_oq_find(payload, len, &env, &env_len);
+    if (fr == 1) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                   "this read needs an owner-signed query (qa) on a "
+                   "no-login session");
+        return -1;
+    }
+    if (fr != 0) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "malformed qa field");
+        return -1;
+    }
+    uint8_t chain[NODUS_OQ_CHAIN_LEN];
+    if (nodus_witness_dht_chain_id(w, chain) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "chain id unavailable");
+        return -1;
+    }
+    nodus_oq_proof_t proof;
+    int rc = nodus_oq_open(env, env_len, chain, method, t, &proof);
+    if (rc == NODUS_OQ_E_MALFORMED) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "malformed qa field");
+        return -1;
+    }
+    if (rc == NODUS_OQ_E_FAULT) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "qa could not be checked");
+        return -1;
+    }
+    if (rc != NODUS_OQ_OK) {
+        /* one message for a bad signature and a wrong binding alike */
+        send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                   "qa does not authorize this request");
+        return -1;
+    }
+    p->set = true;
+    p->qa = true;
+    memcpy(p->fp, proof.fp, sizeof(p->fp));
+    memcpy(p->pk, proof.pk, sizeof(p->pk));
+    memcpy(p->o, proof.o, sizeof(p->o));
+    return 0;
+}
+
+/* The `session` of a dispatch: NULL = an identified CLIENT session (or a
+ * caller that knows no other kind); non-NULL = an ANON session, its T. */
+typedef struct {
+    const uint8_t *t;
+} oq_session_t;
+
+static int oq_principal(nodus_witness_t *w, struct nodus_tcp_conn *conn,
+                        const oq_session_t *sess,
+                        const uint8_t *payload, size_t len,
+                        const char *method, uint32_t txn_id,
+                        oq_principal_t *p) {
+    if (!sess) {
+        oq_principal_conn(conn, p);
+        return 0;
+    }
+    return oq_principal_qa(w, conn, sess->t, payload, len, method, txn_id, p);
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -591,6 +701,7 @@ static void dnac_utxo_answer_send(nodus_witness_t *w,
 
 static void handle_dnac_utxo(nodus_witness_t *w,
                                struct nodus_tcp_conn *conn,
+                               const oq_principal_t *pr,
                                const uint8_t *payload, size_t len,
                                uint32_t txn_id) {
     cbor_decoder_t dec;
@@ -602,6 +713,7 @@ static void handle_dnac_utxo(nodus_witness_t *w,
     }
 
     char owner[NODUS_KEY_HEX_LEN] = {0};
+    uint8_t owner_raw[NODUS_KEY_BYTES] = {0};   /* the decoded `owner` */
     int max_results = DNAC_MAX_UTXO_RESULTS;
     uint8_t tok[64];
     bool have_tok = false;
@@ -623,7 +735,6 @@ static void handle_dnac_utxo(nodus_witness_t *w,
              * or it is refused — exactly 128 lowercase hex, the shape
              * dnac_msig_utxo and dnac_addr_history already demand. It used
              * to be copied unchecked and cut at 255 bytes. */
-            uint8_t owner_raw[NODUS_KEY_BYTES];
             if (val.type != CBOR_ITEM_TSTR ||
                 val.tstr.len != NODUS_KEY_HEX_LEN - 1 ||
                 nodus_witness_owner_hex_to_raw(val.tstr.ptr, val.tstr.len,
@@ -653,17 +764,24 @@ static void handle_dnac_utxo(nodus_witness_t *w,
         return;
     }
 
-    /* C11 fix: require owner == authenticated session fingerprint */
-    if (!conn->peer_id_set) {
+    /* C11 fix: require owner == authenticated session fingerprint (an ANON
+     * session: the fingerprint of the verified `qa` key, whose signed `o`
+     * must name this very owner) */
+    if (!pr->set) {
         send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
                     "session not authenticated");
+        return;
+    }
+    if (pr->qa && memcmp(pr->o, owner_raw, NODUS_KEY_BYTES) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                    "qa was signed for another owner");
         return;
     }
     {
         char session_hex[NODUS_KEY_HEX_LEN];
         for (int i = 0; i < NODUS_KEY_BYTES; i++)
             snprintf(session_hex + i * 2, NODUS_KEY_HEX_LEN - i * 2, "%02x",
-                     conn->peer_id.bytes[i]);
+                     pr->fp[i]);
         session_hex[128] = '\0';
         if (strcmp(owner, session_hex) != 0) {
             send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
@@ -918,6 +1036,7 @@ typedef struct {
  * unknown key (skipped). @return 0 = `a` filled and the session is a
  * member; -1 = the error was SENT. */
 static int msig_query_open(struct nodus_tcp_conn *conn,
+                           const oq_principal_t *pr,
                            const uint8_t *payload, size_t len,
                            uint32_t txn_id, bool history,
                            msig_query_args_t *a) {
@@ -926,7 +1045,7 @@ static int msig_query_open(struct nodus_tcp_conn *conn,
     bool           have_owner = false, have_msig = false;
 
     memset(a, 0, sizeof(*a));
-    if (!conn->peer_id_set) {
+    if (!pr->set) {
         send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
                    "session not authenticated");
         return -1;
@@ -1054,8 +1173,16 @@ static int msig_query_open(struct nodus_tcp_conn *conn,
         return -1;
     }
 
+    /* an ANON session: the signed `o` is the vault address this request names
+     * (design 2026-10-26-dht-v2-3d-no-login-design.md §3) — then step c below
+     * is the full G8.1 rule with the `qa` key as the member */
+    if (pr->qa && memcmp(pr->o, a->owner_raw, sizeof(a->owner_raw)) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                   NODUS_WITNESS_MSIG_NOT_MEMBER);
+        return -1;
+    }
     /* step c — the same test the history builder runs itself */
-    if (!nodus_witness_msig_member_ok(conn->peer_pk.bytes, a->owner_raw,
+    if (!nodus_witness_msig_member_ok(pr->pk, a->owner_raw,
                                       a->msig, a->msig_len)) {
         send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
                    NODUS_WITNESS_MSIG_NOT_MEMBER);
@@ -1155,10 +1282,11 @@ done:
 
 static void handle_dnac_msig_utxo(nodus_witness_t *w,
                                   struct nodus_tcp_conn *conn,
+                                  const oq_principal_t *pr,
                                   const uint8_t *payload, size_t len,
                                   uint32_t txn_id) {
     msig_query_args_t a;
-    if (msig_query_open(conn, payload, len, txn_id, false, &a) != 0)
+    if (msig_query_open(conn, pr, payload, len, txn_id, false, &a) != 0)
         return;
 
     if (a.have_nul) {
@@ -1217,10 +1345,11 @@ static void handle_dnac_msig_utxo(nodus_witness_t *w,
 
 static void handle_dnac_msig_addr_history(nodus_witness_t *w,
                                           struct nodus_tcp_conn *conn,
+                                          const oq_principal_t *pr,
                                           const uint8_t *payload,
                                           size_t len, uint32_t txn_id) {
     msig_query_args_t a;
-    if (msig_query_open(conn, payload, len, txn_id, true, &a) != 0)
+    if (msig_query_open(conn, pr, payload, len, txn_id, true, &a) != 0)
         return;
 
     nodus_witness_addr_cursor_t cur;
@@ -1233,7 +1362,7 @@ static void handle_dnac_msig_addr_history(nodus_witness_t *w,
     int      ecode = 0;
     char     emsg[128];
     if (nodus_witness_msig_addr_history_build(
-            w, txn_id, conn->peer_pk.bytes, a.msig, a.msig_len, a.owner,
+            w, txn_id, pr->pk, a.msig, a.msig_len, a.owner,
             a.have_before ? &cur : NULL,
             (uint32_t)a.limit, &frame, &frame_len, &ecode, emsg,
             sizeof(emsg)) != 0) {
@@ -1663,6 +1792,7 @@ static void handle_dnac_roster(nodus_witness_t *w,
 
 static void handle_dnac_addr_history(nodus_witness_t *w,
                                      struct nodus_tcp_conn *conn,
+                                     const oq_principal_t *pr,
                                      const uint8_t *payload, size_t len,
                                      uint32_t txn_id)
 {
@@ -1739,12 +1869,25 @@ static void handle_dnac_addr_history(nodus_witness_t *w,
     cur.i = (uint32_t)bi;
     cur.q = (uint32_t)bq;
 
+    /* an ANON session: the signed `o` must name this request's owner (design
+     * 2026-10-26-dht-v2-3d-no-login-design.md §3); the builder's own C11
+     * check then compares that owner with the `qa` key's fingerprint */
+    if (pr->qa) {
+        uint8_t owner_raw[NODUS_KEY_BYTES];
+        if (nodus_witness_owner_hex_to_raw(owner, 128, owner_raw) != 0 ||
+            memcmp(pr->o, owner_raw, sizeof(owner_raw)) != 0) {
+            send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                       "qa was signed for another owner");
+            return;
+        }
+    }
+
     uint8_t *frame = NULL;
     size_t   frame_len = 0;
     int      ecode = 0;
     char     emsg[128];
     if (nodus_witness_addr_history_build(
-            w, txn_id, conn->peer_id_set ? conn->peer_id.bytes : NULL,
+            w, txn_id, pr->set ? pr->fp : NULL,
             owner, have_before ? &cur : NULL, (uint32_t)limit, &frame,
             &frame_len, &ecode, emsg, sizeof(emsg)) != 0) {
         send_error(conn, txn_id, ecode ? ecode : NODUS_ERR_INTERNAL_ERROR,
@@ -1935,6 +2078,7 @@ static void dlg_v2_reply(nodus_witness_t *w, struct nodus_tcp_conn *conn,
 
 static void handle_dnac_delegations(nodus_witness_t *w,
                                       struct nodus_tcp_conn *conn,
+                                      const oq_principal_t *pr,
                                       const uint8_t *payload, size_t len,
                                       uint32_t txn_id) {
     cbor_decoder_t dec;
@@ -1976,11 +2120,22 @@ static void handle_dnac_delegations(nodus_witness_t *w,
         return;
     }
 
-    /* C11: require SHA3-512(pubkey) == authenticated session fingerprint */
-    if (!conn->peer_id_set) {
+    /* C11: require SHA3-512(pubkey) == authenticated session fingerprint
+     * (an ANON session: the fingerprint of the verified `qa` key) */
+    if (!pr->set) {
         send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
                     "session not authenticated");
         return;
+    }
+    if (pr->qa) {
+        /* a zero pubkey names no owner: refused before anything is hashed */
+        uint8_t zacc = 0;
+        for (size_t zi = 0; zi < DNAC_PUBKEY_SIZE; zi++) zacc |= req_pubkey[zi];
+        if (zacc == 0) {
+            send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                        "pubkey must not be zero");
+            return;
+        }
     }
     {
         uint8_t fp_from_pubkey[QGP_SHA3_512_DIGEST_LENGTH];
@@ -1990,8 +2145,13 @@ static void handle_dnac_delegations(nodus_witness_t *w,
                         "fp hash failed");
             return;
         }
-        if (memcmp(fp_from_pubkey, conn->peer_id.bytes,
-                    NODUS_KEY_BYTES) != 0) {
+        /* an ANON session: the signed `o` is SHA3-512 of this pubkey argument */
+        if (pr->qa && memcmp(pr->o, fp_from_pubkey, NODUS_KEY_BYTES) != 0) {
+            send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                        "qa was signed for another owner");
+            return;
+        }
+        if (memcmp(fp_from_pubkey, pr->fp, NODUS_KEY_BYTES) != 0) {
             send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
                         "pubkey does not match authenticated session fingerprint");
             return;
@@ -6984,20 +7144,42 @@ static int evm_dispatch(nodus_witness_t *w, struct nodus_tcp_conn *conn,
  * Dispatch router
  * ════════════════════════════════════════════════════════════════════ */
 
-void nodus_witness_handle_dnac(nodus_witness_t *w,
-                                struct nodus_tcp_conn *conn,
-                                const uint8_t *payload, size_t len,
-                                const char *method, uint32_t txn_id) {
-    if (!w || !conn || !payload || !method) return;
+/* The one dispatcher. `sess` NULL = an identified CLIENT session (today's
+ * behaviour, byte for byte: the five owner-only reads take the session key
+ * from `conn`); non-NULL = an ANON session (nodus_witness_handle_dnac_anon),
+ * whose five owner-only reads take their principal from a verified `qa`. */
+static void handle_dnac_impl(nodus_witness_t *w, struct nodus_tcp_conn *conn,
+                             const oq_session_t *sess,
+                             const uint8_t *payload, size_t len,
+                             const char *method, uint32_t txn_id) {
+    oq_principal_t pr;
+    memset(&pr, 0, sizeof(pr));        /* no principal until one is resolved */
+
+    if (sess) {
+        /* The ANON entry never serves a connection that carries a principal
+         * (the two states are not mixed), and serves only the allowlist: the
+         * witness tests the same list core does (IPC: core is not the only
+         * possible peer of this function). */
+        if (conn->peer_id_set || !nodus_chain_anon_method_ok(method)) {
+            send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                       "this method needs a logged-in session");
+            return;
+        }
+    }
+    /* The principal of the five owner-only reads, resolved BEFORE the handler
+     * decodes anything: on an ANON session that is the verified `qa`. */
+    if (nodus_oq_method_takes_qa(method) &&
+        oq_principal(w, conn, sess, payload, len, method, txn_id, &pr) != 0)
+        return;
 
     if (strcmp(method, "dnac_spend") == 0) {
         handle_dnac_spend(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_supply") == 0) {
         handle_dnac_supply(w, conn, txn_id);
     } else if (strcmp(method, "dnac_utxo") == 0) {
-        handle_dnac_utxo(w, conn, payload, len, txn_id);
+        handle_dnac_utxo(w, conn, &pr, payload, len, txn_id);
     } else if (strcmp(method, "dnac_msig_utxo") == 0) {
-        handle_dnac_msig_utxo(w, conn, payload, len, txn_id);
+        handle_dnac_msig_utxo(w, conn, &pr, payload, len, txn_id);
     } else if (strcmp(method, "dnac_balance") == 0) {
         handle_dnac_balance(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_roster") == 0) {
@@ -7007,11 +7189,11 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
     } else if (strcmp(method, "dnac_light_block") == 0) {
         handle_dnac_light_block(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_addr_history") == 0) {
-        handle_dnac_addr_history(w, conn, payload, len, txn_id);
+        handle_dnac_addr_history(w, conn, &pr, payload, len, txn_id);
     } else if (strcmp(method, "dnac_msig_addr_history") == 0) {
-        handle_dnac_msig_addr_history(w, conn, payload, len, txn_id);
+        handle_dnac_msig_addr_history(w, conn, &pr, payload, len, txn_id);
     } else if (strcmp(method, "dnac_delegations") == 0) {
-        handle_dnac_delegations(w, conn, payload, len, txn_id);
+        handle_dnac_delegations(w, conn, &pr, payload, len, txn_id);
     } else if (strcmp(method, "dnac_token_list") == 0) {
         handle_dnac_token_list(w, conn, txn_id);
     } else if (strcmp(method, "dnac_token_info") == 0) {
@@ -7050,4 +7232,22 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
                     NODUS_DNAC_UNKNOWN_METHOD_MSG);
     }
+}
+
+void nodus_witness_handle_dnac(nodus_witness_t *w,
+                                struct nodus_tcp_conn *conn,
+                                const uint8_t *payload, size_t len,
+                                const char *method, uint32_t txn_id) {
+    if (!w || !conn || !payload || !method) return;
+    handle_dnac_impl(w, conn, NULL, payload, len, method, txn_id);
+}
+
+void nodus_witness_handle_dnac_anon(nodus_witness_t *w,
+                                    struct nodus_tcp_conn *conn,
+                                    const uint8_t t[64],
+                                    const uint8_t *payload, size_t len,
+                                    const char *method, uint32_t txn_id) {
+    if (!w || !conn || !t || !payload || !method) return;
+    oq_session_t sess = { t };
+    handle_dnac_impl(w, conn, &sess, payload, len, method, txn_id);
 }

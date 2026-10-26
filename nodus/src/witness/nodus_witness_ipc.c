@@ -23,6 +23,7 @@
 
 #include "witness/nodus_witness_ipc.h"
 #include "witness/nodus_witness.h"
+#include "witness/nodus_witness_handlers.h"    /* nodus_witness_handle_dnac_anon */
 #include "witness/nodus_witness_db.h"          /* nodus_witness_block_height */
 #include "witness/nodus_witness_p2p.h"         /* nodus_witness_p2p_listen_port */
 #include "witness/nodus_witness_v2_apply.h"    /* nodus_witness_v2_committed_global_root (W4-H),
@@ -245,6 +246,14 @@ static void witness_h_dispatch_dnac(void *ctx, nodus_tcp_conn_t *conn,
                                 method, txn_id);
 }
 
+static void witness_h_dispatch_dnac_anon(void *ctx, nodus_tcp_conn_t *conn,
+                                         const uint8_t t[NODUS_WITNESS_IPC_T_LEN],
+                                         const uint8_t *payload, size_t len,
+                                         const char *method, uint32_t txn_id) {
+    nodus_witness_handle_dnac_anon((nodus_witness_t *)ctx, conn, t, payload,
+                                   len, method, txn_id);
+}
+
 static void witness_h_cc_collect(void *ctx, nodus_tcp_conn_t *conn,
                                  const uint8_t client_pk[NODUS_PK_BYTES],
                                  const uint8_t token[NODUS_SESSION_TOKEN_LEN],
@@ -295,6 +304,7 @@ void nodus_witness_ipc_handlers_for(nodus_witness_t *w,
     memset(out, 0, sizeof(*out));
     out->roles         = witness_h_roles;
     out->dispatch_dnac = witness_h_dispatch_dnac;
+    out->dispatch_dnac_anon = witness_h_dispatch_dnac_anon;
     out->cc_collect    = witness_h_cc_collect;
     out->status        = witness_h_status;
     out->dht_snap      = witness_h_dht_snap;
@@ -316,6 +326,11 @@ typedef struct {
     ipc_kind_t  kind;
     uint8_t     token[NODUS_SESSION_TOKEN_LEN];
     uint8_t     pk[NODUS_PK_BYTES];
+    /* IPC_KIND_SESSION of an ANON client session (the no-identity hello):
+     * NO principal — `pk` stays zero and is never read (conn->peer_id_set is
+     * false) — and `t` is core's copy of the session's handshake transcript. */
+    bool        anon;
+    uint8_t     t[NODUS_WITNESS_IPC_T_LEN];
 } ipc_slot_t;
 
 struct nodus_witness_ipc {
@@ -337,13 +352,15 @@ static void ipc_slot_reset(ipc_slot_t *s) {
 
 /* Parse a control-plane frame: a CBOR map of at most three entries with
  * "q" (text) and, for ipc_hello, "pk" and "tk" (byte strings of exactly
- * their sizes). Any other key, a repeated key, a wrong type or size, or
+ * their sizes) or, in the no-identity form, "tk" and "ts" (the session's
+ * transcript T). Any other key, a repeated key, a wrong type or size, or
  * trailing bytes refuse the frame.
  * @return 0 and `q` (NUL-terminated) set; -1 refused. */
 static int ipc_parse_ctl(const uint8_t *p, size_t len,
                          char q[32], bool *has_pk, uint8_t pk[NODUS_PK_BYTES],
                          bool *has_tk,
-                         uint8_t tk[NODUS_SESSION_TOKEN_LEN]) {
+                         uint8_t tk[NODUS_SESSION_TOKEN_LEN],
+                         bool *has_ts, uint8_t ts[NODUS_WITNESS_IPC_T_LEN]) {
     cbor_decoder_t dec;
     cbor_decoder_init(&dec, p, len);
 
@@ -353,6 +370,7 @@ static int ipc_parse_ctl(const uint8_t *p, size_t len,
     bool has_q = false;
     *has_pk = false;
     *has_tk = false;
+    *has_ts = false;
     for (size_t i = 0; i < m.count; i++) {
         cbor_item_t k = cbor_decode_next(&dec);
         if (k.type != CBOR_ITEM_TSTR) return -1;
@@ -375,6 +393,12 @@ static int ipc_parse_ctl(const uint8_t *p, size_t len,
                 return -1;
             memcpy(tk, v.bstr.ptr, NODUS_SESSION_TOKEN_LEN);
             *has_tk = true;
+        } else if (k.tstr.len == 2 && memcmp(k.tstr.ptr, "ts", 2) == 0) {
+            if (*has_ts || v.type != CBOR_ITEM_BSTR ||
+                v.bstr.len != NODUS_WITNESS_IPC_T_LEN)
+                return -1;
+            memcpy(ts, v.bstr.ptr, NODUS_WITNESS_IPC_T_LEN);
+            *has_ts = true;
         } else {
             return -1;
         }
@@ -394,18 +418,40 @@ static void ipc_on_first_frame(nodus_witness_ipc_t *ipc, ipc_slot_t *s,
                                nodus_tcp_conn_t *conn,
                                const uint8_t *payload, size_t len) {
     char q[32];
-    bool has_pk = false, has_tk = false;
+    bool has_pk = false, has_tk = false, has_ts = false;
     uint8_t pk[NODUS_PK_BYTES];
     uint8_t tk[NODUS_SESSION_TOKEN_LEN];
+    uint8_t ts[NODUS_WITNESS_IPC_T_LEN];
 
-    if (ipc_parse_ctl(payload, len, q, &has_pk, pk, &has_tk, tk) != 0) {
+    if (ipc_parse_ctl(payload, len, q, &has_pk, pk, &has_tk, tk,
+                      &has_ts, ts) != 0) {
         ipc_refuse(ipc, conn, "first frame is not an IPC preface");
         return;
     }
-    if (strcmp(q, NODUS_WITNESS_IPC_Q_HELLO) == 0 && has_pk && has_tk) {
+    /* The explicit NO-IDENTITY form (an ANON client session): token and
+     * transcript, no key. NO principal is installed — conn->peer_id_set stays
+     * false and no key, zero or otherwise, is written anywhere. */
+    if (strcmp(q, NODUS_WITNESS_IPC_Q_HELLO) == 0 && !has_pk && has_tk &&
+        has_ts) {
+        s->kind = IPC_KIND_SESSION;
+        s->anon = true;
+        memcpy(s->token, tk, NODUS_SESSION_TOKEN_LEN);
+        memcpy(s->t, ts, NODUS_WITNESS_IPC_T_LEN);
+        return;
+    }
+    if (strcmp(q, NODUS_WITNESS_IPC_Q_HELLO) == 0 && has_pk && has_tk &&
+        !has_ts) {
         nodus_pubkey_t pub;
         nodus_key_t fp;
 
+        /* An identified hello never carries "no key" written as zeros: the
+         * zero key is not an identity (G4, no zero key stands in). */
+        uint8_t zacc = 0;
+        for (size_t zi = 0; zi < NODUS_PK_BYTES; zi++) zacc |= pk[zi];
+        if (zacc == 0) {
+            ipc_refuse(ipc, conn, "preface key is all zero");
+            return;
+        }
         memcpy(pub.bytes, pk, NODUS_PK_BYTES);
         if (nodus_fingerprint(&pub, &fp) != 0) {
             ipc_refuse(ipc, conn, "preface key has no fingerprint");
@@ -421,11 +467,13 @@ static void ipc_on_first_frame(nodus_witness_ipc_t *ipc, ipc_slot_t *s,
         conn->peer_id_set = true;
         return;
     }
-    if (strcmp(q, NODUS_WITNESS_IPC_Q_CTL) == 0 && !has_pk && !has_tk) {
+    if (strcmp(q, NODUS_WITNESS_IPC_Q_CTL) == 0 && !has_pk && !has_tk &&
+        !has_ts) {
         s->kind = IPC_KIND_CTL;
         return;
     }
-    if (strcmp(q, NODUS_WITNESS_IPC_Q_DHT) == 0 && !has_pk && !has_tk) {
+    if (strcmp(q, NODUS_WITNESS_IPC_Q_DHT) == 0 && !has_pk && !has_tk &&
+        !has_ts) {
         s->kind = IPC_KIND_DHT;
         /* its requests are tiny: the transport refuses a larger frame
          * header before buffering any of the payload */
@@ -452,7 +500,21 @@ static void ipc_on_session_frame(nodus_witness_ipc_t *ipc, ipc_slot_t *s,
     /* No token check: the token is a correlation key, never an authorization
      * input (Kurultay #43 O-2 b). The identity is this IPC session (its
      * preface, s->pk); s->token stays for correlation (cc_collect below). */
-    if (strcmp(msg.method, "dnac_cc_collect") == 0) {
+    if (s->anon) {
+        /* An ANON session: no principal, so never dnac_cc_collect (this
+         * node's own identity only) and never an identity-bound method; the
+         * witness's ANON entry decides the rest (its own allowlist). */
+        if (strcmp(msg.method, "dnac_cc_collect") == 0 ||
+            !nodus_chain_method_routed(msg.method) ||
+            !ipc->h.dispatch_dnac_anon) {
+            nodus_t2_msg_free(&msg);
+            ipc_refuse(ipc, conn, "an ANON session frame is not a served "
+                       "dnac_* / evm_* method");
+            return;
+        }
+        ipc->h.dispatch_dnac_anon(ipc->h.ctx, conn, s->t, payload, len,
+                                  msg.method, msg.txn_id);
+    } else if (strcmp(msg.method, "dnac_cc_collect") == 0) {
         ipc->h.cc_collect(ipc->h.ctx, conn, s->pk, s->token,
                           payload, len, msg.txn_id);
     } else if (nodus_chain_method_routed(msg.method)) {
@@ -517,17 +579,22 @@ static void ipc_answer_roles(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn) {
 static void ipc_on_ctl_frame(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn,
                              const uint8_t *payload, size_t len) {
     char q[32];
-    bool has_pk = false, has_tk = false;
+    bool has_pk = false, has_tk = false, has_ts = false;
     uint8_t pk[NODUS_PK_BYTES];
     uint8_t tk[NODUS_SESSION_TOKEN_LEN];
+    uint8_t ts[NODUS_WITNESS_IPC_T_LEN];
 
-    if (ipc_parse_ctl(payload, len, q, &has_pk, pk, &has_tk, tk) == 0 &&
-        strcmp(q, NODUS_WITNESS_IPC_Q_ROLES) == 0 && !has_pk && !has_tk) {
+    if (ipc_parse_ctl(payload, len, q, &has_pk, pk, &has_tk, tk,
+                      &has_ts, ts) == 0 &&
+        strcmp(q, NODUS_WITNESS_IPC_Q_ROLES) == 0 && !has_pk && !has_tk &&
+        !has_ts) {
         ipc_answer_roles(ipc, conn);
         return;
     }
-    if (ipc_parse_ctl(payload, len, q, &has_pk, pk, &has_tk, tk) != 0 ||
-        strcmp(q, NODUS_WITNESS_IPC_Q_STATUS) != 0 || has_pk || has_tk) {
+    if (ipc_parse_ctl(payload, len, q, &has_pk, pk, &has_tk, tk,
+                      &has_ts, ts) != 0 ||
+        strcmp(q, NODUS_WITNESS_IPC_Q_STATUS) != 0 || has_pk || has_tk ||
+        has_ts) {
         ipc_refuse(ipc, conn, "control frame is not ipc_status or ipc_roles");
         return;
     }
@@ -836,7 +903,10 @@ nodus_tcp_conn_t *nodus_witness_ipc_find_session_conn(
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
         const ipc_slot_t *s = &ipc->slots[i];
         nodus_tcp_conn_t *c = ipc->tcp.pool[i];
-        if (s->kind == IPC_KIND_SESSION && c != NULL && !c->close_pending &&
+        /* an ANON session has no key to be found by (s->pk is zero, not an
+         * identity) */
+        if (s->kind == IPC_KIND_SESSION && !s->anon && c != NULL &&
+            !c->close_pending &&
             memcmp(s->token, token, NODUS_SESSION_TOKEN_LEN) == 0 &&
             memcmp(s->pk, pk, NODUS_PK_BYTES) == 0) {
             return c;

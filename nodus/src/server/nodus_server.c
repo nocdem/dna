@@ -149,6 +149,21 @@ static void session_clear(nodus_session_t *sess) {
     nodus_circuit_table_init(&sess->circuits);
 }
 
+/* ── The ANON allowlist (nodus_server.h) ─────────────────────────── */
+
+/* Design 2026-10-26-dht-v2-3d-no-login-design.md §2, exact names: the three
+ * core methods below and the chain methods of the ONE shared list
+ * (nodus_chain_anon_method_ok, witness/nodus_witness_ipc.h — the witness
+ * tests the same list). The five owner-only reads are on it and are gated by
+ * their `qa` in the witness. */
+bool nodus_server_anon_method_ok(const char *method) {
+    if (!method) return false;
+    if (strcmp(method, "ping") == 0 || strcmp(method, "status") == 0 ||
+        strcmp(method, "servers") == 0)
+        return true;
+    return nodus_chain_anon_method_ok(method);
+}
+
 /* ── Chain-method budget (nodus_server.h) ────────────────────────── */
 
 uint32_t nodus_chain_spend_units(size_t len) {
@@ -1504,6 +1519,23 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
 
+    /* DHT v2 package 3d (design 2026-10-26-dht-v2-3d-no-login-design.md §2):
+     * a no-login ANON session has no principal and calls an EXPLICIT allowlist
+     * (nodus_server_anon_method_ok). Everything else — the legacy DHT verbs,
+     * listen, presence, circuits, w_*, dnac_cc_collect, dnac_node_duties —
+     * is NOT_AUTHENTICATED, before any other block of this function runs.
+     * Identified CLIENT sessions never take this branch: they behave exactly
+     * as before. */
+    if (sess->anonymous && !nodus_server_anon_method_ok(msg.method)) {
+        size_t rlen = 0;
+        nodus_t2_error(msg.txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                        "this method needs a logged-in session",
+                        resp_buf, sizeof(resp_buf), &rlen);
+        nodus_tcp_send(sess->conn, resp_buf, rlen);
+        nodus_t2_msg_free(&msg);
+        return;
+    }
+
     /* The session token is NOT checked here: it is a correlation key only,
      * never an authorization input (decisions/2026-10-23-kurultay-43-
      * summary.md, O-2 b). Identity is the connection — this session was
@@ -1580,7 +1612,27 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
      * requires witness module) — the one routing predicate,
      * witness/nodus_witness_ipc.h nodus_chain_method_routed */
     if (nodus_chain_method_routed(msg.method)) {
-        if (srv->chain) {
+        if (srv->chain && sess->anonymous) {
+            /* No principal: the witness gets no key. It gets the node's own
+             * copy of this session's transcript T (the `s` an owner-signed
+             * `qa` must carry) — read from the layer, never from the client.
+             * A connection whose T cannot be read, or a backend without the
+             * ANON entry point, serves nothing. */
+            uint8_t t[CMT_P2P_SC_T_SIZE];
+            if (srv->chain->ops->dispatch_dnac_anon &&
+                nodus_tcp_sc_transcript(sess->conn, t) == 0) {
+                srv->chain->ops->dispatch_dnac_anon(srv->chain, sess->conn,
+                                                    sess->token, t,
+                                                    payload, len,
+                                                    msg.method, msg.txn_id);
+            } else {
+                size_t rlen = 0;
+                nodus_t2_error(msg.txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                                NODUS_CHAIN_NO_WITNESS_MSG,
+                                resp_buf, sizeof(resp_buf), &rlen);
+                nodus_tcp_send(sess->conn, resp_buf, rlen);
+            }
+        } else if (srv->chain) {
             srv->chain->ops->dispatch_dnac(srv->chain, sess->conn,
                                            sess->client_pk.bytes, sess->token,
                                            payload, len,
@@ -1642,8 +1694,12 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         strcmp(msg.method, "m_put") == 0 ||
         strcmp(msg.method, "m_meta") == 0 ||
         strcmp(msg.method, "m_chunk") == 0)
+        /* An ANON session (unreachable today: the allowlist refuses these
+         * methods above) passes NO identity — the DHT sees the explicit
+         * no-identity origin, never a zero key. */
         srv->dht->ops->client_frame(srv->dht, (int)(sess - srv->sessions),
-                                    &sess->client_fp, &sess->client_pk,
+                                    sess->anonymous ? NULL : &sess->client_fp,
+                                    sess->anonymous ? NULL : &sess->client_pk,
                                     payload, len, &msg);
     else if (strcmp(msg.method, "ping") == 0)
         handle_t2_ping(srv, sess, &msg);
@@ -1811,6 +1867,26 @@ static void on_tcp_accept(nodus_tcp_conn_t *conn, void *ctx) {
         nodus_tcp_disconnect(&srv->tcp, conn);
         return;
     }
+    /* DHT v2 package 3d: the responder starts family-UNBOUND (CLIENT or ANON
+     * by the first message) when it is given the KEM-key certificate
+     * (design 2026-10-26-dht-v2-3d-no-login-design.md §1.3, §1.5). The
+     * certificate is signed ONCE, here at the first accept that knows the
+     * chain id (it is learned lazily, nodus_server_chain_id), and kept in the
+     * server: the layer holds the POINTER, never a copy. A signing fault
+     * leaves ANON off (the connection is CLIENT-bound as before) — identified
+     * clients are unaffected. */
+    if (!srv->anon_kc_ok) {
+        if (nodus_tcp_sc_kc_sign(&srv->identity, cfg.chain_id,
+                                 srv->anon_kc_sig) == 0) {
+            srv->anon_kc_ok = true;
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "ANON session: the KEM-key certificate could "
+                         "not be signed — no-login sessions are refused, "
+                         "identified clients are served");
+        }
+    }
+    if (srv->anon_kc_ok)
+        cfg.anon_kc_sig = srv->anon_kc_sig;
     if (nodus_tcp_sc_enable(&srv->tcp, conn, &cfg) != 0) {
         QGP_LOG_WARN(LOG_TAG, "CLIENT_ACCEPT: slot=%d ip=%s — session layer "
                      "not enabled, connection refused", conn->slot, conn->ip);
@@ -1846,7 +1922,13 @@ static void on_tcp_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_session_t *sess = session_for_conn(srv, conn);
     if (sess) {
         char fp_hex[33] = {0};
-        if (sess->authenticated) {
+        if (sess->authenticated && sess->anonymous) {
+            /* No principal: no identity to print, and no presence entry was
+             * made for it, so none is removed. */
+            fprintf(stderr, "CLIENT_DISCONNECT: anon slot=%d ip=%s idle=%lus\n",
+                    conn->slot, conn->ip,
+                    (unsigned long)(nodus_time_now() - conn->last_activity));
+        } else if (sess->authenticated) {
             for (int i = 0; i < 16; i++)
                 snprintf(fp_hex + i*2, sizeof(fp_hex) - i*2, "%02x", sess->client_fp.bytes[i]);
             fprintf(stderr, "CLIENT_DISCONNECT: %s slot=%d ip=%s auth=yes idle=%lus reason=",
@@ -2077,7 +2159,9 @@ static struct nodus_tcp_conn *server_find_session_conn(
     if (!srv) return NULL;
     for (int i = 0; i < NODUS_MAX_SESSIONS; i++) {
         const nodus_session_t *s = &srv->sessions[i];
-        if (s->authenticated && s->conn != NULL &&
+        /* an ANON session has no key (client_pk is zero, not an identity):
+         * it is never found by one */
+        if (s->authenticated && !s->anonymous && s->conn != NULL &&
             memcmp(s->token, token, NODUS_SESSION_TOKEN_LEN) == 0 &&
             memcmp(s->client_pk.bytes, pk, NODUS_PK_BYTES) == 0) {
             return s->conn;

@@ -128,6 +128,10 @@ set(NODUS_SOURCES
     src/protocol/nodus_tier1.c
     src/protocol/nodus_tier2.c
     src/protocol/nodus_tier3.c
+    # DHT v2 package 3d: the owner-signed chain query `qa` (RFC 0002
+    # envelope, design 2026-10-26-dht-v2-3d-no-login-design.md §3) — built by
+    # the client SDK / wallet, verified by the witness handlers.
+    src/protocol/nodus_owner_query.c
 
     # Transport — TCP is cross-platform (epoll on Linux, select on Windows)
     src/transport/nodus_tcp.c

@@ -153,6 +153,22 @@ typedef struct {
                           const uint8_t *payload, size_t len,
                           const char *method, uint32_t txn_id);
 
+    /** A `dnac_*` / `evm_*` client method of an ANON (no-login) session
+     *  (DHT v2 package 3d, design 2026-10-26-dht-v2-3d-no-login-design.md §2):
+     *  the session has NO principal, so no key is passed — there is no zero
+     *  key standing in. `t` is this node's own copy of the session's handshake
+     *  transcript T (nodus_tcp_sc_transcript, CMT_P2P_SC_T_SIZE = 64 bytes):
+     *  the `s` an owner-signed `qa` must carry. In-process: the witness reads
+     *  "no principal" from `conn` (peer_id_set false) and T from here. IPC:
+     *  the session socket's preface is the no-identity form carrying `t` and
+     *  the token. May be NULL (= the backend serves no ANON session). */
+    void (*dispatch_dnac_anon)(nodus_chain_backend_t *b,
+                               struct nodus_tcp_conn *conn,
+                               const uint8_t token[NODUS_SESSION_TOKEN_LEN],
+                               const uint8_t t[64],
+                               const uint8_t *payload, size_t len,
+                               const char *method, uint32_t txn_id);
+
     /** `dnac_cc_collect`, with the requesting session's identity. */
     void (*cc_collect)(nodus_chain_backend_t *b,
                        struct nodus_tcp_conn *conn,

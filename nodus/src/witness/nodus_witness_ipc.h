@@ -15,6 +15,19 @@
  *     first frame  {"q":"ipc_hello","pk":<bstr NODUS_PK_BYTES>,
  *                   "tk":<bstr NODUS_SESSION_TOKEN_LEN>}
  *                  — the client session's key and session token;
+ *     NO-IDENTITY form (DHT v2 package 3d, an ANON no-login client session;
+ *     design 2026-10-26-dht-v2-3d-no-login-design.md §2):
+ *                  {"q":"ipc_hello","tk":<bstr NODUS_SESSION_TOKEN_LEN>,
+ *                   "ts":<bstr NODUS_WITNESS_IPC_T_LEN>}
+ *                  — NO key of any kind: the witness installs no principal
+ *                  for the connection (peer_id_set stays false, never a zero
+ *                  key), refuses `dnac_cc_collect` on it, and serves only
+ *                  its ANON methods; "ts" is core's own copy of the
+ *                  session's handshake transcript T (the `s` of an owner-
+ *                  signed `qa`, nodus_owner_query.h). An identified hello
+ *                  with an all-zero `pk` is refused, and `pk` together with
+ *                  `ts` is malformed. Node-local, deployed with core: the
+ *                  identified form above is byte-for-byte what it was;
  *     then         the client's tier-2 `dnac_*` payloads, unchanged; each
  *                  is decoded with nodus_t2_decode (the decoder the
  *                  server's dispatch_t2 uses) and handed to the witness
@@ -71,6 +84,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "nodus/nodus_types.h"
 #include "protocol/nodus_tier2.h"           /* nodus_t2_status_info_t */
@@ -82,6 +96,10 @@ extern "C" {
 
 struct nodus_tcp_conn;
 struct nodus_witness;
+
+/** Bytes of a session's handshake transcript T (cmt_p2p_secret.h
+ *  CMT_P2P_SC_T_SIZE, SHA3-512); the "ts" of the no-identity hello. */
+#define NODUS_WITNESS_IPC_T_LEN       64
 
 /** The socket file, under the node's data_path. */
 #define NODUS_WITNESS_IPC_SOCK_NAME   "witness.sock"
@@ -122,6 +140,36 @@ static inline bool nodus_chain_method_routed(const char *method) {
             method[3] == 'c' && method[4] == '_') ||
            (method[0] == 'e' && method[1] == 'v' && method[2] == 'm' &&
             method[3] == '_');
+}
+
+/**
+ * The chain methods a no-login ANON client session may call (DHT v2 package
+ * 3d, design 2026-10-26-dht-v2-3d-no-login-design.md §2, exact names) — the
+ * ONE list, tested by the core server (nodus_server_anon_method_ok) and by the
+ * witness (nodus_witness_handle_dnac_anon), so neither hop serves what the
+ * other refuses. Every name is a `dnac_*` / `evm_*` method of
+ * nodus_chain_method_routed; `dnac_cc_collect` and `dnac_node_duties` are NOT
+ * on it (this node's own identity only — khan decision 7). The five
+ * owner-only reads are on it and are served only with a valid owner-signed
+ * `qa` (nodus_owner_query.h).
+ */
+static inline bool nodus_chain_anon_method_ok(const char *method) {
+    static const char *const names[] = {
+        "dnac_spend",
+        "dnac_balance", "dnac_supply", "dnac_roster", "dnac_v3_block",
+        "dnac_light_block", "dnac_token_list", "dnac_token_info",
+        "dnac_fee_info", "dnac_ruleset_info", "dnac_name_lookup",
+        "dnac_name_of", "dnac_storage_status", "dnac_storage_by_owner",
+        "dnac_committee_query", "dnac_validator_list_query",
+        "dnac_utxo", "dnac_addr_history", "dnac_delegations",
+        "dnac_msig_utxo", "dnac_msig_addr_history",
+        "evm_account", "evm_code", "evm_storage", "evm_call", "evm_estimate",
+        "evm_receipt", "evm_logs", "evm_ticket",
+    };
+    if (!method) return false;
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+        if (strcmp(method, names[i]) == 0) return true;
+    return false;
 }
 
 /** Largest control frame either side builds (status answer ≈ 150 B). */
@@ -285,6 +333,14 @@ typedef struct {
     void (*dispatch_dnac)(void *ctx, struct nodus_tcp_conn *conn,
                           const uint8_t *payload, size_t len,
                           const char *method, uint32_t txn_id);
+    /** A `dnac_*` / `evm_*` method of an ANON session (the no-identity hello):
+     *  `conn` carries NO principal; `t` is the session's T from the hello.
+     *  NULL = this binding serves no ANON session (the connection is closed
+     *  on its first request). */
+    void (*dispatch_dnac_anon)(void *ctx, struct nodus_tcp_conn *conn,
+                               const uint8_t t[NODUS_WITNESS_IPC_T_LEN],
+                               const uint8_t *payload, size_t len,
+                               const char *method, uint32_t txn_id);
     void (*cc_collect)(void *ctx, struct nodus_tcp_conn *conn,
                        const uint8_t client_pk[NODUS_PK_BYTES],
                        const uint8_t token[NODUS_SESSION_TOKEN_LEN],

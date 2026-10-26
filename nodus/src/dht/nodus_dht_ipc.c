@@ -468,8 +468,11 @@ static void dipc_on_origin_frame(nodus_dht_ipc_t *ipc, nodus_tcp_conn_t *conn,
             dipc_refuse(ipc, conn, "client origin frame does not decode");
             return;
         }
-        nodus_dht_client_request(ipc->dht, s->pf.origin.slot, &s->pf.fp,
-                                 &s->pf.pk, &msg);
+        /* A no-identity origin (an ANON session) passes NO identity: the DHT
+         * refuses every identity-bound verb for it (nodus_dht_client_request). */
+        nodus_dht_client_request(ipc->dht, s->pf.origin.slot,
+                                 s->pf.no_identity ? NULL : &s->pf.fp,
+                                 s->pf.no_identity ? NULL : &s->pf.pk, &msg);
         nodus_t2_msg_free(&msg);
         return;
     }

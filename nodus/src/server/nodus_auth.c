@@ -23,7 +23,9 @@
 /* ── Sessions of one identity (nodus_server.h) ───────────────────── */
 
 static bool session_live_as(const nodus_session_t *s, const nodus_key_t *fp) {
-    return s->authenticated && s->conn != NULL &&
+    /* An ANON session has no identity (its client_fp is zero, not "the zero
+     * identity"): it is never one of any identity's sessions. */
+    return s->authenticated && !s->anonymous && s->conn != NULL &&
            nodus_key_cmp(&s->client_fp, fp) == 0;
 }
 
@@ -97,6 +99,27 @@ _Static_assert(sizeof(((nodus_pubkey_t *)0)->bytes) == CMT_P2P_SC_DSA_PK_SIZE,
 
 int nodus_auth_session_start(nodus_server_t *srv, nodus_session_t *sess) {
     if (!srv || !sess || !sess->conn) return -1;
+
+    /* ANON (no-login wallet session, design 2026-10-26-dht-v2-3d-no-login-
+     * design.md §2): the layer proved the SERVER to the client, not the client
+     * to the server — there is no client key (nodus_tcp_sc_peer_pubkey would
+     * fail) and so no principal. No client_pk / client_fp, peer_id_set stays
+     * false (the witness reads "no principal" from it), no per-identity
+     * eviction, no presence, no role exemption (the caller's has_role needs
+     * peer_id_set). The token is still minted and sent. */
+    if (nodus_tcp_sc_is_anonymous(sess->conn)) {
+        nodus_random(sess->token, NODUS_SESSION_TOKEN_LEN);
+        sess->anonymous = true;
+        sess->authenticated = true;
+        sess->conn->authenticated = true;
+        sess->auth_seq = ++srv->next_auth_seq;
+
+        uint8_t abuf[256];
+        size_t alen = 0;
+        if (nodus_t2_auth_ok(0, sess->token, abuf, sizeof(abuf), &alen) != 0)
+            return -1;
+        return nodus_tcp_send(sess->conn, abuf, alen) == 0 ? 0 : -1;
+    }
 
     /* The identity the layer proved. A copy of the key (the layer's own
      * storage is wiped with the machine), its fingerprint is the node-local

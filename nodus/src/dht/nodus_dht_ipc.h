@@ -19,6 +19,14 @@
  *                   "b":bstr 8 core boot id,"fp":bstr 64,
  *                   CLIENT (k 0): "pk":bstr NODUS_PK_BYTES,
  *                   INTER  (k 1): "ip":tstr peer address}
+ *                  NO-IDENTITY form (CLIENT, k 0, an ANON no-login session,
+ *                  DHT v2 package 3d): the same map WITHOUT "fp" and "pk" —
+ *                  {"q","v","k":0,"s","g","b"} — and nothing in their place;
+ *                  "fp" without "pk" (or the reverse) is refused. The storage
+ *                  side keeps no identity for the slot and refuses every
+ *                  identity-bound DHT verb on it (legacy put, m_put, listen…:
+ *                  nodus_dht_client_request). The identified form is
+ *                  byte-for-byte what it was;
  *                  — THIS is "session opened": the storage process opens
  *                  the slot's shadow (nodus_dht_session_opened) with that
  *                  generation;
@@ -192,6 +200,12 @@ typedef struct {
                                  * INTER: the peer's (zero when none) */
     nodus_pubkey_t     pk;      /* CLIENT only */
     char               ip[64];  /* INTER only: the peer conn's address */
+    /** CLIENT only (DHT v2 package 3d, design 2026-10-26-dht-v2-3d-no-login-
+     *  design.md §2): the origin is a no-login ANON session — NO principal.
+     *  The preface then carries no `fp` and no `pk` (the explicit no-identity
+     *  form), `fp` / `pk` above stay zero and are never an identity, and the
+     *  storage side refuses every identity-bound DHT verb on it. */
+    bool               no_identity;
 } nodus_dht_ipc_preface_t;
 
 typedef enum {
