@@ -763,6 +763,11 @@ static int sc_on_hello(cmt_p2p_sc_t *sc, const uint8_t *body)
     const uint8_t *p = body + 1;
     size_t o;
 
+    if (sc->state == CMT_P2P_SC_ST_WAIT_FIRST) {
+        /* Unbound responder: the whole (0x01, 2661) message is in — bind
+         * CLIENT now (design §1.5 step 2). */
+        sc->profile = &CMT_P2P_SC_PROFILE_CLIENT;
+    }
     memcpy(sc->i_dsa_pk, p, CMT_P2P_SC_DSA_PK_SIZE);         p += CMT_P2P_SC_DSA_PK_SIZE;
     memcpy(sc->nonce_i, p, CMT_P2P_SC_NONCE_SIZE);           p += CMT_P2P_SC_NONCE_SIZE;
     memcpy(sc->i_proto_ver, p, CMT_P2P_SC_PROTO_VER_SIZE);   p += CMT_P2P_SC_PROTO_VER_SIZE;
@@ -815,6 +820,11 @@ static int sc_on_hello_anon(cmt_p2p_sc_t *sc, const uint8_t *body)
     const uint8_t *p = body + 1;
     size_t o;
 
+    if (sc->state == CMT_P2P_SC_ST_WAIT_FIRST) {
+        /* Unbound responder: the whole (0x05, 69) message is in — bind ANON
+         * now (design §1.5 step 2). */
+        sc->profile = &CMT_P2P_SC_PROFILE_ANON;
+    }
     memcpy(sc->nonce_i, p, CMT_P2P_SC_NONCE_SIZE);           p += CMT_P2P_SC_NONCE_SIZE;
     memcpy(sc->i_proto_ver, p, CMT_P2P_SC_PROTO_VER_SIZE);   p += CMT_P2P_SC_PROTO_VER_SIZE;
     memcpy(sc->i_chain_id, p, CMT_P2P_SC_CHAIN_ID_SIZE);
@@ -954,8 +964,9 @@ static int sc_recv_step(cmt_p2p_sc_t *sc, const uint8_t *in, size_t in_len,
  *   (HELLO 0x01, 2661)      → CLIENT, today's handshake;
  *   (HELLO_ANON 0x05, 69)   → ANON, only when a KC was supplied;
  *   anything else           → REJECT.
- * The length selects the family here, before the body is buffered; the kind
- * byte is then checked by sc_recv_hs_msg exactly as for a bound machine.
+ * The length selects the one message that may follow; sc_recv_hs_msg buffers
+ * it and checks its kind exactly as for a bound machine, and only then does
+ * its handler bind the family (the pair, not the prefix, binds).
  * Nothing in the machine's timestamps lives here — the caller's pre-session
  * deadline runs from accept and is not reset by the binding.
  */
@@ -974,19 +985,21 @@ static int sc_recv_first(cmt_p2p_sc_t *sc, const uint8_t *in, size_t in_len,
                 continue;
             }
         }
+        /* The length names the ONLY message that can follow; the family is
+         * bound when that whole message has arrived with its kind — in
+         * sc_on_hello / sc_on_hello_anon — never from the prefix alone.
+         * Until then the machine stays WAIT_FIRST and unbound. */
         if (u > 0 && v == CMT_P2P_SC_HELLO_BODY) {
-            sc->profile = &CMT_P2P_SC_PROFILE_CLIENT;
-        } else if (u > 0 && v == CMT_P2P_SC_HELLO_ANON_BODY && sc->local_kc_sig != NULL) {
-            sc->profile = &CMT_P2P_SC_PROFILE_ANON;
-        } else {
-            QGP_LOG_ERROR(LOG_TAG, "first handshake message length %llu selects no family",
-                          (unsigned long long)v);
-            return sc_die(sc, CMT_REJECT);
+            return sc_recv_step(sc, in, in_len, consumed,
+                                CMT_P2P_SC_MSG_HELLO, CMT_P2P_SC_HELLO_BODY);
         }
-        sc->state = CMT_P2P_SC_ST_WAIT_HELLO;
-        return sc_recv_step(sc, in, in_len, consumed,
-                            sc_is_anon(sc) ? CMT_P2P_SC_MSG_HELLO_ANON : CMT_P2P_SC_MSG_HELLO,
-                            sc_is_anon(sc) ? CMT_P2P_SC_HELLO_ANON_BODY : CMT_P2P_SC_HELLO_BODY);
+        if (u > 0 && v == CMT_P2P_SC_HELLO_ANON_BODY && sc->local_kc_sig != NULL) {
+            return sc_recv_step(sc, in, in_len, consumed,
+                                CMT_P2P_SC_MSG_HELLO_ANON, CMT_P2P_SC_HELLO_ANON_BODY);
+        }
+        QGP_LOG_ERROR(LOG_TAG, "first handshake message length %llu selects no family",
+                      (unsigned long long)v);
+        return sc_die(sc, CMT_REJECT);
     }
     return CMT_OK;
 }

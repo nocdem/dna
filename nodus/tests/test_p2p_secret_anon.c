@@ -1073,7 +1073,9 @@ static void test_fragmented_first_prefix(void)
     side_free(&i);
     side_free(&r);
 
-    TEST("unbound responder: a CLIENT HELLO split across reads binds CLIENT");
+    /* The PAIR binds, not the prefix (Sol F2, 2026-10-26): the machine stays
+     * unbound until the whole first message has arrived with its kind. */
+    TEST("unbound responder: a CLIENT HELLO split across reads binds CLIENT only when complete");
     ok = init_bound(&i, g_b, CMT_P2P_SC_ROLE_INITIATOR, &CMT_P2P_SC_PROFILE_CLIENT) == CMT_OK &&
          init_unbound_r(&r, g_a, g_a->kc) == CMT_OK;
     if (ok) {
@@ -1084,11 +1086,34 @@ static void test_fragmented_first_prefix(void)
              cmt_p2p_sc_recv(r.sc, o, 1, &c) == CMT_OK && c == 1 && !cmt_p2p_sc_is_anon(r.sc) &&
              r.sc->state == CMT_P2P_SC_ST_WAIT_FIRST &&
              cmt_p2p_sc_recv(r.sc, o + 1, 1, &c) == CMT_OK && c == 1 &&
+             r.sc->profile == NULL && r.sc->state == CMT_P2P_SC_ST_WAIT_FIRST &&
+             cmt_p2p_sc_recv(r.sc, o + 2, n - 3, &c) == CMT_OK && c == n - 3 &&
+             r.sc->profile == NULL && r.sc->state == CMT_P2P_SC_ST_WAIT_FIRST &&
+             cmt_p2p_sc_recv(r.sc, o + n - 1, 1, &c) == CMT_OK && c == 1 &&
              r.sc->profile == &CMT_P2P_SC_PROFILE_CLIENT &&
-             r.sc->state == CMT_P2P_SC_ST_WAIT_HELLO;
+             r.sc->state == CMT_P2P_SC_ST_WAIT_KEYX;
     }
-    if (ok) PASS(); else FAIL("2-byte prefix of a CLIENT HELLO");
+    if (ok) PASS(); else FAIL("prefix-only or partial CLIENT HELLO bound a family");
     side_free(&i);
+    side_free(&r);
+
+    TEST("unbound responder: the ANON length byte alone binds nothing; a wrong kind dies unbound");
+    ok = init_unbound_r(&r, g_a, g_a->kc) == CMT_OK;
+    if (ok) {
+        uint8_t bad[2 + CMT_P2P_SC_HELLO_ANON_BODY];
+        size_t c = 0;
+
+        memset(bad, 0, sizeof(bad));
+        bad[0] = (uint8_t)CMT_P2P_SC_HELLO_ANON_BODY;    /* 0x45 */
+        bad[1] = CMT_P2P_SC_MSG_HELLO;                   /* wrong kind for that length */
+        ok = cmt_p2p_sc_recv(r.sc, bad, 1, &c) == CMT_OK && c == 1 &&
+             !cmt_p2p_sc_is_anon(r.sc) && r.sc->profile == NULL &&
+             r.sc->state == CMT_P2P_SC_ST_WAIT_FIRST &&
+             cmt_p2p_sc_recv(r.sc, bad + 1, sizeof(bad) - 1, &c) == CMT_REJECT &&
+             r.sc->state == CMT_P2P_SC_ST_DEAD && r.sc->profile == NULL &&
+             !cmt_p2p_sc_is_anon(r.sc);
+    }
+    if (ok) PASS(); else FAIL("ANON bound from its length prefix");
     side_free(&r);
 }
 

@@ -751,9 +751,22 @@ static void client_on_connect(nodus_tcp_conn_t *conn, void *ctx) {
  * against the pin list and both ends proved their keys. The first moment a
  * nodus frame may flow; do_auth completes the session when the server's
  * token message follows. */
+_Static_assert(sizeof(((nodus_client_t *)0)->session_t) == NODUS_OQ_T_LEN,
+               "the client's copy of T is the transcript size");
+
 static void client_on_session(nodus_tcp_conn_t *conn, void *ctx) {
-    (void)conn;
     nodus_client_t *client = (nodus_client_t *)ctx;
+    if (client->config.anon_session) {
+        /* The transport calls on_session with its lock released and `conn`
+         * alive: the one safe moment to copy T for later `qa` requests. */
+        uint8_t t[NODUS_OQ_T_LEN];
+        bool ok = nodus_tcp_sc_transcript(conn, t) == 0;
+        pthread_mutex_lock(&client->wbuf_mutex);
+        if (ok) memcpy(client->session_t, t, sizeof(client->session_t));
+        client->has_session_t = ok;
+        pthread_mutex_unlock(&client->wbuf_mutex);
+        qgp_secure_memzero(t, sizeof(t));
+    }
     atomic_store(&client->session_ready, true);
 }
 
@@ -916,6 +929,10 @@ static int do_connect_one(nodus_client_t *client, int server_idx) {
      * next_txn starts at 1, so 0 is never a request's): claimed BEFORE the
      * connect, so nothing the server sends can arrive unclaimed. */
     atomic_store(&client->session_ready, false);
+    pthread_mutex_lock(&client->wbuf_mutex);       /* a new connection, a new T */
+    client->has_session_t = false;
+    qgp_secure_memzero(client->session_t, sizeof(client->session_t));
+    pthread_mutex_unlock(&client->wbuf_mutex);
     nodus_pending_t *req = alloc_pending(client, 0);
     if (!req) return -1;
 
@@ -3042,8 +3059,12 @@ static int enc_dnac_query_qa(nodus_client_t *client, cbor_encoder_t *enc,
         return -1;
     }
     uint8_t t[NODUS_OQ_T_LEN];
-    if (!client->has_owner_key || !client->conn ||
-        nodus_tcp_sc_transcript((const nodus_tcp_conn_t *)client->conn, t) != 0) {
+    bool have_t;
+    pthread_mutex_lock(&client->wbuf_mutex);   /* the copy taken at on_session */
+    have_t = client->has_session_t;
+    if (have_t) memcpy(t, client->session_t, sizeof(t));
+    pthread_mutex_unlock(&client->wbuf_mutex);
+    if (!client->has_owner_key || !have_t) {
         QGP_LOG_ERROR(LOG_TAG, "%s: an ANON session needs the owner key "
                       "(nodus_client_set_owner_key) and an authenticated "
                       "connection", method);

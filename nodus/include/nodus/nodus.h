@@ -287,6 +287,14 @@ typedef struct nodus_client {
     nodus_seckey_t             owner_sk;
     nodus_pubkey_t             owner_pk;
 
+    /* ANON session only: the current connection's handshake transcript T
+     * (64 bytes), copied when the session becomes AUTHENTICATED (the
+     * connection is alive there) and cleared at each connect. Read and
+     * written under wbuf_mutex, so building a `qa` never dereferences a
+     * connection the read thread may be freeing. */
+    bool                       has_session_t;
+    uint8_t                    session_t[64];
+
 } nodus_client_t;
 
 /* ── Lifecycle ──────────────────────────────────────────────────── */
