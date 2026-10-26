@@ -62,7 +62,13 @@
  *     name;
  *   · a SQLite fault is a fault code (16) on every call — a read-only
  *     connection refuses a put, a dropped table faults get / list / scan /
- *     sweep / put — never "not held" or an empty page.
+ *     sweep / put — never "not held" or an empty page;
+ *   · package 6a fix rounds: test_put_address — a refusal after the parse
+ *     (expired, 7) keeps the envelope's address in the put result, a success
+ *     carries it, a parse failure (2) has none; test_list_ctl_budget — the
+ *     live control record's bytes are charged to the 2 MiB LIST page first
+ *     (eight 262,000 B entries: 7 on page 1, not complete, the eighth on
+ *     page 2).
  *
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * A default build. No compile flags, no environment variables, no network,
@@ -1728,6 +1734,125 @@ static void test_select_pool(const tkey_t *A)
     free(w);
 }
 
+/* Package 6a second fix round: a refusal that comes AFTER the parse keeps the
+ * envelope's address in the result (the serving layer names the result by
+ * it); one that fails the parse has none. */
+static void test_put_address(const tkey_t *A)
+{
+    world_t            *w = (world_t *)calloc(1, sizeof(*w));
+    nodus_dht2_store_t *st = open_store(NULL);
+    static env_t        e;
+    nodus_dht2_put_t    res;
+    uint8_t             id[DHT2_ID_LEN], want[DHT2_HASH_LEN];
+    int                 rc;
+
+    CHECK(w != NULL && st != NULL, "alloc");
+    if (w == NULL || st == NULL) {
+        free(w);
+        return;
+    }
+    world_init(w, A, 3);
+    dfill(id, 0x5B);
+    CHECK(dht2_address(id, A->fp, want) == 0, "address");
+
+    CHECK(mk_owner(&e, A, id, 1, T0 - 1, 4) == 0, "expired record");
+    rc = P(w, st, &e, &res);
+    CHECK(rc == DHT2_E_EXPIRED, "late refusal: expired (7)");
+    CHECK(res.has_address && memcmp(res.address, want, DHT2_HASH_LEN) == 0,
+          "late refusal keeps the address");
+
+    CHECK(mk_owner(&e, A, id, 1, T0 + 3600, 4) == 0, "good record");
+    rc = P(w, st, &e, &res);
+    CHECK(rc == 0 && res.has_address &&
+              memcmp(res.address, want, DHT2_HASH_LEN) == 0,
+          "success carries the address too");
+
+    memset(e.b, 0xFF, 10);
+    e.n = 10;
+    rc = P(w, st, &e, &res);
+    CHECK(rc == DHT2_E_BAD_ENCODING && !res.has_address,
+          "a parse failure has no address");
+    nodus_dht2_store_close(st);
+    free(w);
+}
+
+/* Package 6a fix round (item 6): the live control record's bytes are part of
+ * the 2 MiB LIST page. Eight entries of 262,000 B (2,096,000 B) fit the
+ * budget alone, but not beside a control record: the first page lists 7 and
+ * is not complete; the next page lists the eighth. */
+static void test_list_ctl_budget(const tkey_t *R)
+{
+    enum { NW = 8, ENTRY_TARGET = 262000 };
+    world_t            *w = (world_t *)calloc(1, sizeof(*w));
+    nodus_dht2_store_t *st = open_store(NULL);
+    static uint8_t      big[262144];
+    static uint8_t      payload[262144];
+    static env_t        ctl;
+    tkey_t             *wr = (tkey_t *)calloc(NW, sizeof(*wr));
+    dht2_list_answer_t *la = (dht2_list_answer_t *)malloc(sizeof(*la));
+    uint8_t             inbox[DHT2_ID_LEN], ctl_id[DHT2_ID_LEN];
+    size_t              blen = 0, overhead = 0, dlen = 0;
+    int                 i;
+    bool                all_ok = true;
+
+    CHECK(w != NULL && st != NULL && wr != NULL && la != NULL, "alloc");
+    if (w == NULL || st == NULL || wr == NULL || la == NULL) {
+        goto done;
+    }
+    world_init(w, R, 3);
+    CHECK(dht2_id_inbox(g_chain, R->fp, inbox) == 0 &&
+              dht2_id_inbox_ctl(g_chain, R->fp, ctl_id) == 0, "ids");
+    memset(payload, 0xCD, sizeof(payload));
+    CHECK(mk_ctl1(&ctl, R, ctl_id, 1, T0 + 3600, NULL, 0, 0) == 0 &&
+              P0(w, st, &ctl) == 0, "control record stored");
+
+    for (i = 0; i < NW; i++) {
+        dht2_data_t d;
+        nodus_dht2_put_t res;
+
+        all_ok = all_ok && keygen(&wr[i], (uint8_t)(0x40 + i), 7) == 0;
+        dbase(&d, DHT2_CLASS_INBOX_ENTRY, inbox, 1, T0 + 3600);
+        d.has_data = true;
+        d.data = payload;
+        /* The first build measures the envelope overhead; the data length
+         * then makes every entry ENTRY_TARGET bytes. */
+        d.data_len = dlen == 0 ? 200000 : dlen;
+        all_ok = all_ok &&
+                 dht2_record_build(&d, wr[i].sk, wr[i].pk, big, sizeof(big),
+                                   &blen) == DHT2_OK;
+        if (dlen == 0 && all_ok) {
+            overhead = blen - 200000;
+            dlen = (size_t)ENTRY_TARGET - overhead;
+            d.data_len = dlen;
+            all_ok = dht2_record_build(&d, wr[i].sk, wr[i].pk, big,
+                                       sizeof(big), &blen) == DHT2_OK;
+        }
+        all_ok = all_ok && blen == (size_t)ENTRY_TARGET &&
+                 nodus_dht2_store_put(st, &w->ctx, big, blen, NULL, &res) == 0;
+    }
+    CHECK(all_ok, "eight 262,000 B entries built and stored");
+
+    CHECK(nodus_dht2_store_list(st, &w->ctx, inbox, NULL, la) == 0, "page 1");
+    CHECK(la->has_ctl, "the control record is beside the page");
+    CHECK(la->list_count == 7 && !la->complete,
+          "entries + control stay within 2 MiB: 7 entries, not complete");
+    {
+        uint8_t cur[DHT2_FP_LEN];
+
+        memcpy(cur, la->cursor, DHT2_FP_LEN);
+        CHECK(nodus_dht2_store_list(st, &w->ctx, inbox, cur, la) == 0 &&
+                  la->list_count == 1 && la->complete,
+              "page 2: the eighth entry, complete");
+    }
+done:
+    if (st != NULL) {
+        nodus_dht2_store_close(st);
+    }
+    free(w);
+    free(wr);
+    free(la);
+}
+
 static void cleanup(void)
 {
     char path[160];
@@ -1780,6 +1905,8 @@ int main(void)
     test_mismatch(&keys[0]);
     test_memo(&keys[3], &keys[4]);
     test_select_pool(&keys[1]);
+    test_list_ctl_budget(&keys[2]);
+    test_put_address(&keys[0]);
     QGP_LOG_INFO(LOG_TAG, "=== Results: %d passed, %d failed ===",
                  g_pass, g_fail);
 

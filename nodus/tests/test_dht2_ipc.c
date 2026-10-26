@@ -54,7 +54,9 @@
  *     from its request, so a reply at 3000 to a request of 1000 is fresh
  *     until 6000, not 8000;
  *   · a name {err} stays readable: no further name request goes out until
- *     the fault was reported once;
+ *     the fault was reported once — or is 1000 ms old (an abandoned fault
+ *     is dropped, the next writer is asked, the dropped fp is never
+ *     answered "unnamed");
  *   · a frame header declaring more than the cap closes the connection
  *     with no payload sent (client: FRAME_MAX; witness dht kind:
  *     CTL_FRAME_MAX);
@@ -83,7 +85,8 @@
  *     poll rounds, each backed by a positive check in the same case that
  *     the previous request did arrive.
  *  4. Time is whatever the test passes in; it does not prove the callers
- *     (package 5) pass a monotonic clock.
+ *     (the serving loop, package 6b; the holder of package 6a only hands
+ *     on the `now_ms` it is given) pass a monotonic clock.
  */
 
 #define _DEFAULT_SOURCE 1   /* mkdtemp under -std=c11 */
@@ -993,6 +996,35 @@ static void test_c_fault_kept(const char *sock) {
     PASS();
 }
 
+static void test_c_fault_abandoned(const char *sock) {
+    TEST("view: an abandoned name {err} is dropped after one poll period");
+    nodus_dht2_wview_t *wv = wv_start(sock);
+    if (!wv) { FAIL("new"); return; }
+    uint8_t a[64], b[64], r[256];
+    fp_of(9, 70, a); fp_of(9, 71, b);
+    uint64_t h = 0;
+    nodus_dht2_wview_name(wv, 0, a, &h);
+    pump(wv, 0, 20);
+    size_t n = enc_err(r, sizeof(r), "ipc_name", a, "names store unreadable");
+    srv_send(r, n);
+    pump(wv, 0, 20);                      /* the fault is read at tick 0 */
+    /* before one period: still held, b waits and nothing is sent for it */
+    bool early = nodus_dht2_wview_name(wv, 999, b, &h) == NODUS_DHT2_WVIEW_NAME_PENDING;
+    pump(wv, 999, 20);
+    bool early_unsent = srv_count_name(b) == 0;
+    /* at one period: dropped, b is asked, a is not reported as FAULT and
+     * never as unnamed */
+    bool b_pend = nodus_dht2_wview_name(wv, 1000, b, &h) == NODUS_DHT2_WVIEW_NAME_PENDING;
+    pump(wv, 1000, 20);
+    bool b_sent = srv_count_name(b) == 1;
+    nodus_dht2_wview_name_t ra = nodus_dht2_wview_name(wv, 1000, a, &h);
+    nodus_dht2_wview_free(wv);
+    if (!(early && early_unsent)) { FAIL("fault dropped before one period"); return; }
+    if (!(b_pend && b_sent)) { FAIL("b still blocked by an abandoned fault"); return; }
+    if (ra != NODUS_DHT2_WVIEW_NAME_PENDING) { FAIL("a dropped fault became FAULT/unnamed"); return; }
+    PASS();
+}
+
 /* Write a 7-byte frame header declaring `declared` payload bytes and no
  * payload, straight onto the connection's socket. */
 static bool write_header_only(nodus_tcp_conn_t *c, uint32_t declared) {
@@ -1176,6 +1208,7 @@ int main(void) {
     test_c_late_reply(ssock);
     test_c_snap_age_from_request(ssock);
     test_c_fault_kept(ssock);
+    test_c_fault_abandoned(ssock);
     test_c_header_cap(ssock);
     test_c_poll_rate(ssock);
     test_c_snap_err(ssock);

@@ -708,14 +708,21 @@ if(NOT WIN32)
         src/server/nodus_dht_backend_ipc.c
         src/dht/nodus_dht_ipc.c
         # DHT v2 package 4 — the storage side's view of the witness
-        # (`ipc_dht` kind of witness.sock). No caller yet (package 5); a
-        # static-library member, so nodus-storage links it only once called.
+        # (`ipc_dht` kind of witness.sock). Used by the package 6a holder
+        # (dht2/nodus_dht2_holder.c); no running loop calls either yet
+        # (package 6b). A static-library member, so nodus-storage links it
+        # only once called.
         src/dht/nodus_dht2_wview.c
         # DHT v2 package 5 — the holder store and its admission (§4.1): a
         # SQLite store of canonical envelopes + put / get / list / sweep /
         # insertion-index scan, over an injected context (snapshot, sets,
         # name callback, limits). No caller yet (package 6 serves it).
         src/dht2/nodus_dht2_store.c
+        # DHT v2 package 6a — the holder service: one request's bytes in,
+        # one signed answer envelope (or none) out, over the store and an
+        # injected view of the witness. Transport-free. No caller yet
+        # (package 6b serves it).
+        src/dht2/nodus_dht2_holder.c
         # Split S5b — the H-10 partial-wipe boot gate in its own object, so
         # nodus-storage runs the same check as core before opening nodus.db.
         src/server/nodus_partial_wipe.c
@@ -2100,6 +2107,15 @@ add_test(NAME test_dht2_msg COMMAND test_dht2_msg)
 add_executable(test_dht2_store tests/test_dht2_store.c)
 target_link_libraries(test_dht2_store nodus dsa nodus crypto)
 add_test(NAME test_dht2_store COMMAND test_dht2_store)
+
+# DHT v2 package 6a — the holder service (dht2/nodus_dht2_holder.c) over a
+# temp store, fixed-seed keys and an injected view (snapshot, sets, name
+# answers). Default build, no network, no clock; the temp directory is
+# removed at the end. What it proves / how it can lie: the header of
+# tests/test_dht2_holder.c.
+add_executable(test_dht2_holder tests/test_dht2_holder.c)
+target_link_libraries(test_dht2_holder nodus dsa nodus crypto)
+add_test(NAME test_dht2_holder COMMAND test_dht2_holder)
 
 add_executable(test_cmt_block tests/test_cmt_block.c)
 target_link_libraries(test_cmt_block nodus dsa nodus crypto)
