@@ -61,6 +61,7 @@ One node at a time for a rolling deploy; all nodes at once for a stop-all.
 | HF-5 Nodus EVM (nodus 0.24.1 — 0.24.0 was never deployed and votes a different D; param 14 `EVM_ACTIVE`, rule-set generation 3) — a release that also migrates the witness DB to schema **S17** at its first open | **Rolling**, one node at a time, but every node through **§4.1** (stop it, copy its data directory, only then start the new binary — the previous binary cannot open an S17 database). The `EVM_ACTIVE` vote is a §2.2 procedure, ONLY after 7/7 run the new binary |
 | HF-6 validator owner/node roles + storage (nodus 0.26.0; param 18 `RULESET_GEN_ROLES`, rule-set generation 4 — in force since 176100) — a binary that carries witness schema **S18** (the `v2_validator_roles` table the generation-4 edge requires) | **Rolling**, one node at a time, every node through **§4.1** as for HF-5 (S18 is a schema migration). The `RULESET_GEN_ROLES` vote is a §2.2 procedure, ONLY after 7/7 run the new binary, their startup D4 lines are identical and `chain_config_history` on 7/7 holds no param-16 row; **param 16 is never proposed** (an old binary accepts it, a new one refuses it — a split; a committed one blocks HF-6 for good) |
 | HF-7 the roots generation (nodus 0.26.17; param 22 `RULESET_GEN_ROOTS`, rule-set generation 5 — **in force since 282684**, voted in 281957) — a binary that carries witness schema **S19** (`v2_replay` + `v2_domain_heads.last_upd_hash`; the generation-5 edge refuses any other schema) | Expected: **Rolling**, one node at a time, every node through **§4.1** as for HF-5 / HF-6 (S19 is a schema migration). The `RULESET_GEN_ROOTS` vote is a §2.2 procedure, ONLY after 7/7 run the new binary and their D5 startup lines are identical: `HF-7 rule-set generation 5 vote D5 0x6f4c60640dd57094 (param 22 RULESET_GEN_ROOTS, switch spec v1), built from git commit …` (printed after the HF-6 D4 line by `nodus_witness.c`; an EVM-enabled build re-derives D5 at start and refuses to start on a mismatch) |
+| DHT v2 sessions on 4001 / WS / 4002 (sub-packages 3b-2 + 3c; not released yet) — no chain change, but old and new nodes and clients cannot talk | **All at once** (operator decision 2026-10-23): nodes AND every client in one release window; a node roll pauses 4002 replication between generations until it is complete; the three units of a node on one build. §2.9 |
 | Logging, metrics, non-consensus tooling | Rolling, one node at a time |
 
 **Why stop-all for validity changes:** during a rolling window the cluster runs mixed
@@ -2033,6 +2034,98 @@ serves has no force-command in this version (FAUCET.md section 7). A claim pause
 the journal reached `storage_ceiling`: new claims have stopped too; free room by raising the ceiling (restart) — never by
 deleting journal rows. The key sits on a witness host: a root compromise reaches both keys
 (accepted by the operator, design section 6.10); the faucet process alone does not reach the witness key.
+
+---
+
+## 2.9 DHT v2 session cut-over — 4001 / WS / 4002 on the SecretConnection (sub-packages 3b-2 + 3c) — ALL AT ONCE, no chain impact
+
+**Not yet released** (branch `dna95-dht2-3c`, no version). This section is what the release
+must do; the commands that the code does not show are marked "command: to be written at
+release".
+
+**What changes.** Every connection on 4001, the WebSocket entry and 4002 runs the
+SecretConnection (the 4004 handshake, CLIENT profile on 4001 / WS, NODE profile on 4002);
+the old `hello` / `challenge` / `auth` / `key_init` handshake and its channel crypto are
+deleted, with no fallback (`docs/ARCHITECTURE.md` §15 "DHT v2 sub-package 3b-2"). Every
+client must carry the node's fingerprint (pin) and the chain id (3c). 4004, consensus,
+blocks and the state root are unchanged — this is not a hard fork and needs no vote.
+
+**Decision: all at once** (operator 2026-10-23,
+`docs/plans/decisions/2026-10-23-dht-v2-session-cutover.md`): nodes and every client switch
+in the same release; no period in which a node accepts both handshakes. Consequences named
+in the decision, and what the code does about them:
+
+- **Old and new cannot talk on 4001 / WS / 4002.** An old client gets nothing from a new
+  node and a new client nothing from an old node. An open old web-wallet tab cannot connect
+  until it is reloaded.
+- **During a rolling node deploy, 4002 between the two generations stops**, so DHT
+  replication between an upgraded node and a not-yet-upgraded one pauses until the roll is
+  complete. 4004 consensus is not affected.
+  - Durable hinted-handoff rows survive the pause: the retry deletes a row only on
+    `NODUS_INTER_SEND_WRITTEN` (an authenticated session took the frame); on QUEUED (the
+    session is not up — e.g. the peer is of the other generation) and on REFUSED (no chain id
+    yet) the row stays and no retry is counted (`nodus/src/dht/nodus_dht_server.c:904-930`;
+    tests `test_hint_tristate`, `test_node_session` N2). A peer whose TCP connect fails
+    outright (the node is down while it restarts) is FAILED as before: one retry counted per
+    cycle (`NODUS_HINTED_RETRY_SEC` 60 s), the row deleted after `NODUS_HINT_MAX_RETRIES` (3)
+    or the 24 h TTL (`nodus/include/nodus/nodus_types.h:134-136`) — keep each node's restart
+    short.
+  - A live replication frame (a put, a republish, a listen notify) sent to a peer of the
+    other generation is QUEUED behind a handshake that will fail and is lost; no hint row is
+    written for it, because those callers count QUEUED as accepted
+    (`nodus_dht_server.c:111-122`, `:567`). The periodic republish (`NODUS_REPUBLISH_SEC`,
+    600 s, `nodus_types.h:151`) sends values again after the roll.
+
+**The three units of a node MUST be the same build.** `nodus-core` reads the session chain id
+from `nodus-witness`'s `ipc_status`, which now carries an eighth key `c3`; core's decoder is
+strict and requires exactly 8 keys (`nodus/src/server/nodus_chain_backend_ipc.c:111`, `:116`),
+so a new core refuses an old witness's 7-key answer, and an old core's decoder (7 keys
+exactly) refuses a new witness's 8-key answer. Either mix leaves core with no chain id —
+it then serves no 4001 / WS / 4002 session at all (below). `nodus-storage` takes its 4002
+chain id from the witness's `ipc_dht_snap` `ci`, which now carries the 32-byte v3 chain id
+(`nodus/src/witness/nodus_witness_ipc.c:112-115`); an old witness sends the legacy padded id
+there, and a new storage process would bind its dials to the wrong chain id. The update
+scripts already stop, install and start the three units together (§0 "Three-process node":
+`tools/nodus-update.sh` / `deploy/build-nodus.sh` install all five binaries); do not
+restart one unit of a split node on a different build.
+
+**Fail closed without a chain id.** A node serves no 4001 / WS / 4002 session until it knows
+its v3 chain id: an accept is closed (`nodus_server.c:1747-1751` client port,
+`:1295-1296` 4002), a dial is refused before the TCP connect (`nodus_inter_dial.c:144-149`,
+`:171-178`). Core asks the chain backend at most once a second and keeps the first non-zero
+answer (`nodus_server.c:1685-1714`); nodus-storage keeps the first fresh non-zero snapshot of
+its witness view (`nodus_dht_ipc.c:318-341`). So right after a start, until the witness has
+opened its chain, clients get no session from that node — expected, not a fault. A node with
+no chain at all (witness disabled, no genesis) serves no client and no 4002 session.
+
+**Pre-session limits now in force** on 4001 / WS / 4002 accept (node-local, monotonic):
+15 s idle / 30 s absolute before the session is authenticated; at most 60 new handshakes per
+minute from one IP per port (WS: per real client address after `X-Forwarded-For`) — decision
+`docs/plans/decisions/2026-10-24-dht-v2-handshake-rate.md`. Many clients behind one address
+(the explorer host, a bench run, a NAT) share that 60.
+
+**Release list — everything below must ship in the same release window as the nodes.** Each
+item is a client that dials 4001 / WS; one built before the release cannot connect after it.
+
+| Item | What it needs | Command |
+|---|---|---|
+| Node: `nodus-core` + `nodus-witness` + `nodus-storage` (+ `nodus-server`, `nodus-cli`) | one build, all three units restarted together (above) | the §0 update procedure; the ORDER of nodes and clients on the day: command: to be written at release |
+| Tool network file on every host that runs a native tool — the explorer host, the bench host, the faucet host, any operator host running `nodus-cli` | an operator-written JSON file `{"chain_id": "<64 hex>", "nodes": [{"ip", "port", "fp"}, ...]}` (`nodus/src/client/nodus_tool_network.h`; `docs/ARCHITECTURE.md` §11 "Tool network identity"); named by `--network <path>` or `NODUS_NETWORK`. `chain_id` = the chain's v3 id (the ceremony's `chain-id`); `fp` = each node's `identity/nodus.fp` / `nodus-cli whoami` "Fingerprint:". The faucet takes `node_fp` + `chain_id` from its own config instead. | command: to be written at release (where the file lives on each host, who writes it) |
+| Explorer (`dna-explorerd`) | its service must pass the file: `explorer/deploy/dna-explorerd.service` `ExecStart` carries no `--network` yet (`explorer/README.md` "Network identity (DHT v2 package 3c)") — without it the daemon exits 1 at start | command: to be written at release |
+| Web wallet | `send.wasm` / `send.js` rebuilt with the session layer (`web-wallet/scripts/build-nodus-send-wasm.sh`) and deployed; its built-in network carries pins + the v3 chain id | command: to be written at release |
+| Developer starter (`sdk/starter/`) | the archive rebuilt with the new release WASM and its download replaced | command: to be written at release |
+| `nodus-light` | its compiled-in chain id + pinned node list must match the network, or users pass a network file / `--pin` / `--chain` (decision `2026-10-24-dht-v2-tool-network-identity.md`, addendum 2026-10-26) | command: to be written at release |
+
+**DNA Connect (EOL) stops working**: messenger's client zeroes its config
+(`messenger/dht/shared/nodus_init.c:941-942`) and `nodus_client_init` now refuses a config
+with no pin and no chain id (`nodus/src/client/nodus_client.c:779-809`). Under the EOL
+decision (`docs/plans/decisions/2026-10-01-dna-connect-eol.md`) that is not a blocker.
+
+**Verify after the roll** (all nodes on the new build): a `nodus-cli` call with the tool
+network file against each node's 4001 returns (the first call proves the pin and the chain
+id agree); 4002 replication resumes (`HINT-RETRY: … delivered=` counts in the node log,
+`nodus_dht_server.c` `dht_hinted_retry`); the web wallet connects after a reload. Rollback
+is the whole release back (nodes AND clients), never one side.
 
 ---
 

@@ -286,9 +286,42 @@ pick it up.
     chain id the node puts in its SecretConnection HELLO. If those two are not
     the same 32 bytes, EVERY client call fails at the handshake (no frame is
     ever exchanged) — a systematic failure of the whole suite, not a flaky
-    one. Check the first `nodus-cli` call of a bring-up before reading any
-    scenario's result (see the 3c report: the server side takes it from the
-    witness's legacy 16-byte id padded to 32).
+    one. Since 3b-2 round 3 both come from ONE derivation, the hash of the
+    stored genesis document (paths below are under `nodus/`): the ceremony prints `chain-id` from
+    `nodus_witness_read_chain_id` (`src/witness/nodus_witness_network_file.c:37`,
+    `:49` → `nodus_witness_v2_gen_stored_chain_id`), and the node binds its
+    sessions to the chain backend's `chain_id_v3` (`nodus_server_chain_id`,
+    `src/server/nodus_server.c:1685-1714`) = `nodus_witness_dht_chain_id`
+    (`src/witness/nodus_witness_ipc.c:97-101`) = `nodus_witness_v2_chain_id`,
+    which returns the same `nodus_witness_v2_gen_stored_chain_id` (cached after
+    the post-open gate, `src/witness/nodus_witness_v2_claims.c:192-235`) — in a
+    split node through the `c3` key of `ipc_status`
+    (`src/server/nodus_chain_backend_ipc.c:405-412`). It is NOT the legacy
+    16-byte id padded to 32 any more (that one is only what the T2 `status`
+    RPC reports). Still check the first `nodus-cli` call of a bring-up before
+    reading any scenario's result: a mismatch would still fail every call, and
+    there is a second cause that looks the same — a node serves NO 4001 / 4002
+    session until it knows its chain id (no chain open yet, or in a split node
+    `nodus-witness` not answering `ipc_status`), so a call made in that boot
+    window is refused at accept (fail closed, `nodus_server.c:1747-1751`).
+  - **Per-IP handshake rate (3b-2).** Every node admits at most 60 new
+    connections per minute from one IP on 4001 + WS and, separately, on 4002
+    (`NODUS_HANDSHAKE_RATE_PER_MIN`, `src/server/nodus_server.h:655`; decision
+    `2026-10-24-dht-v2-handshake-rate.md`). In the harness every client tool
+    and every node dials from `127.0.0.1`, and loopback is not exempt
+    (`nodus_tcp_hs_rate_allow`, `src/transport/nodus_tcp.c:1658-1690`). A
+    scenario that opens more than 60 client sessions per minute against ONE
+    node (a loop of `nodus-cli` calls, one session each) gets its extra calls
+    refused at accept until the minute has passed — a FAIL that comes from the
+    harness's single address, not from the code under test. The same holds
+    for 4002 between the harness nodes: every batch forward (a forwarded
+    `get` / `get_all` / `get_batch`) dials a NEW 4002 connection
+    (`bf_start_forward`, `src/dht/nodus_dht_server.c:3428`), so a read-heavy
+    scenario can reach 60 accepts per minute on one node's 4002 from
+    `127.0.0.1`. Which scenarios reach either rate has NOT been checked (no
+    run); a refused accept logs
+    `accept: handshake rate 60/min reached for 127.0.0.1 — refused` in the
+    node's log.
   - A node that does not exist at bring-up (a joiner a scenario creates, a
     candidate beyond `STAGEF_V2_CANDIDATES`) is NOT in the file: a client tool
     dialing it is refused with "is not in the network file and no --pin was

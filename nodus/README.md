@@ -1,13 +1,13 @@
 # Nodus — Post-Quantum DHT and Chain Node
 
 <p align="center">
-  <strong>Pure C Kademlia DHT and Nodus Chain validator — Dilithium5 signatures, ML-KEM-1024 / Kyber1024 key exchange</strong>
+  <strong>Pure C Kademlia DHT and Nodus Chain validator — Dilithium5 signatures, ML-KEM-1024 key exchange</strong>
 </p>
 
 <p align="center">
   <a href="#license"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="Apache 2.0"></a>
   <a href="#witness-system-nodus-chain"><img src="https://img.shields.io/badge/Status-Testnet%20v0.24.1-orange" alt="Testnet"></a>
-  <a href="#channel-encryption-kyber-round-3--ml-kem-1024"><img src="https://img.shields.io/badge/Crypto-Post--quantum-red" alt="Post-quantum cryptography"></a>
+  <a href="#session-encryption-secretconnection-ml-kem-1024"><img src="https://img.shields.io/badge/Crypto-Post--quantum-red" alt="Post-quantum cryptography"></a>
 </p>
 
 ---
@@ -18,7 +18,7 @@
 
 - **C** — written in C. One exception: the standalone non-Windows build (`cd nodus/build && cmake ..`) compiles the Nodus EVM engine, whose bn254 precompiles use the vendored C++ library mcl behind its C API, so `nodus-server` links `libstdc++` (`nodus/CMakeLists.txt`, `NODUS_EVM_ENABLED`). The messenger tree's libnodus and a Windows build stay C-only and carry no EVM
 - **Dilithium5 signatures** — All stored values cryptographically signed using the ML-DSA-87 algorithm profile; no validation or certification claim
-- **ML-KEM-1024 / Kyber round-3 channel encryption** — All client connections encrypted (AES-256-GCM after a KEM key exchange). A node uses ML-KEM-1024 (FIPS 203) whenever its peer advertises a signed ML-KEM key and falls back to Kyber round-3 otherwise. This two-path state is permanent: no forced update removes the Kyber path (decision `2026-09-23-kem-mlkem-migration.md`, K1 rev 2) — see `shared/crypto/enc/qgp_kyber.h` (legacy) and `shared/crypto/enc/qgp_mlkem.h` (FIPS 203).
+- **ML-KEM-1024 session encryption** — Every client (4001, WebSocket) and inter-node (4002) connection is a SecretConnection session — the same handshake as the chain p2p port 4004: ML-KEM-1024 (FIPS 203) key exchange, ML-DSA-87 signatures from both ends, AES-256-GCM sealed frames; the client pins the node's key and both ends bind the session to the chain id (DHT v2 sub-package 3b-2, not released yet — see "Session Encryption" below). The old Kyber round-3 / ML-KEM channel handshake of 4001 / 4002 is deleted; `shared/crypto/enc/qgp_kyber.h` (legacy) stays in the tree.
 - **Cluster management** — Heartbeat-based health monitoring with Kademlia replication
 - **512-bit keyspace** — Kademlia routing with k=8 buckets
 - **7-day TTL** — Values persist across restarts with SQLite storage
@@ -52,7 +52,7 @@
 │          │ media    │          │                   │                 │
 │          │ dnac_*   │          │                   │                 │
 ├──────────┴──────────┴──────────┼───────────────────┴─────────────────┤
-│  KEM + AES-256-GCM on 4001/4002│  Nodus Chain validator              │
+│  SecretConnection on 4001/4002 │  Nodus Chain validator              │
 ├─────────────────────┬──────────┴──────────┬──────────────────────────┤
 │  Kademlia Routing   │  Cluster Management │  Ledger V2 engine        │
 │  512-bit keyspace   │  Heartbeat health   │  CometBFT v0.38.26 port  │
@@ -86,8 +86,9 @@ TCP 4003 is the planned RELAY port of the bandwidth role (`docs/plans/decisions/
 ```
 nodus/
 ├── src/
-│   ├── server/      # Server event loop (epoll), nodus_server.c — core: auth, sessions, presence,
-│   │                #   circuits, 4002 handshake, cluster heartbeat; the DHT backend door (split S4)
+│   ├── server/      # Server event loop (epoll), nodus_server.c — core: sessions (SecretConnection,
+│   │                #   nodus_auth.c session start), presence, circuits, the 4002 node session and
+│   │                #   pool (nodus_inter_dial.c), cluster heartbeat; the DHT backend door (split S4)
 │   ├── dht/         # The DHT / storage half: nodus_dht.h (state + seam), nodus_dht_server.c
 │   │                #   (DHT handlers, lookups, replication, republish), nodus_dht_media.c (split S4)
 │   ├── client/      # Client SDK, nodus_client.c
@@ -284,11 +285,11 @@ ctest --output-on-failure    # count: see `ctest -N` (and `ctest -N -L bench`). 
 | Core Kademlia | `test_routing`, `test_bucket_refresh`, `test_storage`, `test_value`, `test_hashring` |
 | Client SDK | `test_client`, `test_tier2`, `test_tcp`, `test_fetch_batch` |
 | Protocol | `test_tier1`, `test_tier3`, `test_wire`, `test_cbor` |
-| Auth | `test_inter_auth`, `test_identity` (+ the read-only loader, split S2), `test_sign_domain_separation` |
+| Auth / sessions | `test_identity` (+ the read-only loader, split S2), `test_sign_domain_separation`, `test_client_pin`, and since DHT v2 3b-2 `test_node_session`, `test_presession_deadline`, `test_chain_id_v3`, `test_hint_tristate`, `test_send_queue_full`, `test_bf_session`, `test_round4_hardening` (`test_inter_auth` was deleted with the old 4002 handshake) |
 | Component split S2 — local IPC | `test_tcp_unix` (Unix domain socket entry: mode 0600, frames both ways, `SO_PEERCRED` refusal, stale / live / regular-file path handling, unlink on close) |
 | Component split S3 — `nodus-witness` + IPC chain backend | `test_witness_ipc` (core's IPC chain backend against the witness IPC listener over a real socket, test handlers in place of the witness: preface key/token reach the handler and `find_session_conn`, reply relayed unchanged, `dnac_cc_collect` routing, `session_closed` → no session, status snapshot round-trip, non-preface first frame closed, no witness / control connection down → the "witness module not enabled" error and no session dial, the per-session queue bound, `read_pending`); `test_split_linked` (an `nm` gate: the linked `nodus-witness` carries no `nodus_server_init` / `nodus_cluster_init` / `nodus_storage_open` / `nodus_presence_tick`, and does carry the witness's own entry points) |
-| Component split S6 — `nodus-core` | `test_core_linked` (an `nm` gate on the linked `nodus-core`: no `nodus_storage_open` / `nodus_routing_try_insert` / `nodus_witness_init` / `nodus_dht_backend_inproc_new` / `nodus_chain_backend_inproc_open`; carries `nodus_auth_handle_auth` / `nodus_presence_tick` / `nodus_cluster_tick` / `nodus_inter_circuit_table_init` / `nodus_dht_backend_ipc_open` / `nodus_chain_backend_ipc_open`) |
-| Component split S4 — core/DHT seam | `test_dht_linked` (an `nm` gate on the never-run `dht_link_probe`, which references only the core → DHT entry points of `dht/nodus_dht.h`: the DHT objects must reach no `nodus_server_init` / `nodus_server_dht_host` / `nodus_auth_handle_auth` / `nodus_presence_tick` / `nodus_cluster_init` / `nodus_cluster_tick` / `nodus_dht_backend_inproc_new`, and must carry `nodus_dht_init` / `nodus_dht_client_request` / `nodus_dht_tick` / `handle_t2_media_put` / `nodus_storage_open` / `nodus_routing_try_insert`); `test_bf_forward_frames` and `test_bf_recv_frame` call the renamed `nodus_dht_bf_*`; `test_bf_forward_frames`, `test_inter_preauth_gate`, `test_circuit_cross_live` (and `circuit_latency_probe`) reach the DHT state through `nodus_dht_backend_inproc_state` |
+| Component split S6 — `nodus-core` | `test_core_linked` (an `nm` gate on the linked `nodus-core`: no `nodus_storage_open` / `nodus_routing_try_insert` / `nodus_witness_init` / `nodus_dht_backend_inproc_new` / `nodus_chain_backend_inproc_open`; carries `nodus_auth_session_start` (was `nodus_auth_handle_auth` before DHT v2 3b-2) / `nodus_presence_tick` / `nodus_cluster_tick` / `nodus_inter_circuit_table_init` / `nodus_dht_backend_ipc_open` / `nodus_chain_backend_ipc_open`) |
+| Component split S4 — core/DHT seam | `test_dht_linked` (an `nm` gate on the never-run `dht_link_probe`, which references only the core → DHT entry points of `dht/nodus_dht.h`: the DHT objects must reach no `nodus_server_init` / `nodus_server_dht_host` / `nodus_auth_session_start` (was `nodus_auth_handle_auth`) / `nodus_presence_tick` / `nodus_cluster_init` / `nodus_cluster_tick` / `nodus_dht_backend_inproc_new`, and must carry `nodus_dht_init` / `nodus_dht_client_request` / `nodus_dht_tick` / `handle_t2_media_put` / `nodus_storage_open` / `nodus_routing_try_insert`); `test_bf_forward_frames` and `test_bf_recv_frame` call the renamed `nodus_dht_bf_*`; `test_bf_forward_frames`, `test_inter_preauth_gate`, `test_circuit_cross_live` (and `circuit_latency_probe`) reach the DHT state through `nodus_dht_backend_inproc_state` |
 | Channels | `test_channel_*` (channel system currently disabled in production) |
 | Circuits (VPN mesh) | `test_circuit_wire`, `test_circuit_table`, `test_circuit_live` |
 | Media / DHT features | `test_media_storage`, `test_media_tier2`, `test_put_if_newer`, `test_hinted_handoff` |
@@ -374,7 +375,7 @@ in full first.
 }
 ```
 
-A `seed_nodes` entry `"ip:udp_port"` seeds the DHT. Written as `"id@ip:udp_port"` it also makes that node a persistent peer of the chain p2p layer on `udp_port + 4` — the 4004 layer never dials a peer whose ID is not pinned. Other keys the loader reads: `ws_port`, `ws_origins`, `require_peer_auth`, `addr_history_index`, `witness_external` / `storage_external` (booleans, default false — see "Build" above), `network_file`, `ch_port`, and the p2p tuning keys (`moniker`, `send_rate`, `recv_rate`, `dial_timeout`, `handshake_timeout`, …).
+A `seed_nodes` entry `"ip:udp_port"` seeds the DHT. Written as `"id@ip:udp_port"` it also makes that node a persistent peer of the chain p2p layer on `udp_port + 4` — the 4004 layer never dials a peer whose ID is not pinned. Other keys the loader reads: `ws_port`, `ws_origins`, `require_peer_auth` (still parsed, no longer read by the server since DHT v2 3b-2 — every 4002 connection runs the node session), `addr_history_index`, `witness_external` / `storage_external` (booleans, default false — see "Build" above), `network_file`, `ch_port`, and the p2p tuning keys (`moniker`, `send_rate`, `recv_rate`, `dial_timeout`, `handshake_timeout`, …).
 
 **WebSocket entry (browsers — web wallet / Nodus Connect), off by default.**
 `"ws_port": 4005` opens a plain WebSocket listener of the client port on
@@ -428,7 +429,7 @@ rollback: `docs/DEPLOY_RUNBOOK.md` "tar.gz installer".
 
 ## Client SDK
 
-The Nodus client SDK (`include/nodus/nodus.h`) is how applications reach the network: `libdna` uses it, and so does the web wallet's browser build. All connections are encrypted with AES-256-GCM after a KEM key exchange — ML-KEM-1024 when the server advertises a signed ML-KEM key, otherwise the legacy Kyber1024 round-3 (see "Channel Encryption" below). This protects connection content; it does not hide network metadata.
+The Nodus client SDK (`include/nodus/nodus.h`) is how applications reach the network: `libdna` uses it, and so does the web wallet's browser build. Every connection is a SecretConnection session — ML-KEM-1024 key exchange, both ends prove their ML-DSA-87 key, AES-256-GCM sealed frames (see "Session Encryption" below). Since DHT v2 sub-package 3b-2 the config MUST carry the server pin(s) and the chain id: `nodus_client_init` refuses a config without them (a zeroed config included). Native tools take both from the tool network file (`src/client/nodus_tool_network.h`, `docs/ARCHITECTURE.md` §11 "Tool network identity"). This protects connection content; it does not hide network metadata, and the client's public key is visible in the plaintext HELLO.
 
 Calls are synchronous; the signatures below are copied from `include/nodus/nodus.h`.
 
@@ -437,8 +438,12 @@ Calls are synchronous; the signatures below are copied from `include/nodus/nodus
 
 nodus_client_t client;
 nodus_client_config_t cfg = { .servers = {{"203.0.113.10", 4001}}, .server_count = 1 };
+cfg.pinned_server_fps      = pins;              /* the node's fingerprint(s); caller-owned */
+cfg.pinned_server_fp_count = 1;
+memcpy(cfg.expected_chain_id, chain_id, NODUS_CLIENT_CHAIN_ID_SIZE);  /* 32-byte v3 chain id */
+cfg.has_expected_chain_id  = true;
 nodus_client_init(&client, &cfg, &identity);   /* identity: the caller's nodus_identity_t */
-nodus_client_connect(&client);                  /* KEM handshake + AES-256-GCM */
+nodus_client_connect(&client);                  /* SecretConnection session (pin + chain id) */
 
 /* Store a value — the caller signs it with Dilithium5 */
 nodus_client_put(&client, &key, data, data_len, type, ttl, vid, seq, &sig);
@@ -467,11 +472,11 @@ nodus_client_close(&client);
 
 ---
 
-## Channel Encryption (Kyber round-3 / ML-KEM-1024)
+## Session Encryption (SecretConnection, ML-KEM-1024)
 
-Client and inter-node TCP connections (ports 4001 and 4002) are encrypted with a KEM key exchange followed by AES-256-GCM symmetric encryption. The handshake occurs immediately after TCP connection, before any protocol messages are exchanged. This ensures all client operations, inter-node replication, and circuit relay traffic are protected against quantum adversaries. The chain p2p port 4004 has its own session: the ported CometBFT secret connection, ML-KEM-1024 only (decision `2026-09-26-witness-port-session.md`).
+Since DHT v2 sub-package 3b-2 (not released yet; the release is "all at once", `docs/DEPLOY_RUNBOOK.md` §2.9) client (4001 and the WebSocket entry) and inter-node (4002) connections run the same session as the chain p2p port 4004: the ported CometBFT secret connection (`shared/dnac/cmt_p2p_secret.h`, decision `2026-09-26-witness-port-session.md`) — HELLO / HELLO_R / KEYX with an ML-KEM-1024 key exchange, a SHA3-512 transcript and HKDF-SHA3-256 keys, then each end signs the handshake challenge with its ML-DSA-87 key inside AES-256-GCM sealed frames. Nodus frames travel unchanged inside the sealed stream; nothing is exchanged before the session is authenticated. Each port has its own profile, signing purpose and protocol version (4001 / WS: CLIENT, 0x0C; 4002: NODE, 0x0D; both version 1 — decision `2026-10-23-dht-v2-session-bytes.md`). The dialer checks the responder's claimed key against its pin before it encapsulates; both ends put the 32-byte v3 chain id in their HELLO, so a session to a node of another chain fails. Known and accepted (Kurultay #43, `docs/plans/decisions/2026-10-23-kurultay-43-summary.md`): no forward secrecy (static node keys), and the client's public key travels in the plaintext HELLO.
 
-**KEM state** (`docs/plans/decisions/2026-09-23-kem-mlkem-migration.md`, rolling-compatible, no wire version bump): a node that has generated an ML-KEM-1024 (FIPS 203) keypair signs and advertises its public key (`mpk`/`mpk_sig`) in AUTH_OK, alongside the existing Kyber round-3 `kpk`/`kpk_sig` — unconditional, unchanged. A peer uses ML-KEM-1024 (`alg=1` on KEY_INIT) only when it has verified the OTHER side's signed `mpk`; a node never sends an ML-KEM ciphertext to a peer that did not itself advertise one. Every peer without an ML-KEM keypair still talks Kyber round-3 (NIST Level 5). This two-path state is the final one: the decision (K1 rev 2) publishes no forced update, so the Kyber round-3 fallback stays. The divergences from FIPS 203 in that legacy path are documented in `shared/crypto/enc/qgp_kyber.h` (the wrapper API; the underlying implementation is `shared/crypto/enc/kyber_r3_legacy.h`); the FIPS 203 implementation is `shared/crypto/enc/qgp_mlkem.h`. The `mpk`/`mpk_sig` binding uses a new purpose byte, `NODUS_PURPOSE_MLKEM_BIND` (0x09) — the first **tier-2** purpose to be STRICT (no raw-signature fallback either side), because its preimage is the same shape as `KYBER_BIND`'s and a non-strict signature here would be swappable with a `kpk_sig`. Circuits (VPN mesh) carry the same optional `alg`, but `alg=1` must not be used until every relay on the path forwards the tag, or an old relay silently drops it and the far end decapsulates with the wrong algorithm. An inbound E2E circuit whose `alg` this client cannot decapsulate is refused outright, never accepted with encryption silently disabled. See `docs/ARCHITECTURE.md` §5 for the wire format and the four handshake sites' exact fallback rule.
+The old 4001 / 4002 handshake — `hello` / `challenge` / `auth` / `auth_ok` with Kyber round-3 `kpk` / ML-KEM `mpk` / `key_init` / `key_ack`, and its per-connection channel crypto — is deleted, with no fallback. Circuits (VPN mesh) keep their own end-to-end encryption with its optional `alg` tag (`alg=1` = ML-KEM-1024 only once every relay forwards the tag; an inbound E2E circuit this client cannot decapsulate is refused). The legacy Kyber round-3 code stays in `shared/crypto/enc/qgp_kyber.h` (implementation `shared/crypto/enc/kyber_r3_legacy.h`); the FIPS 203 implementation is `shared/crypto/enc/qgp_mlkem.h`. Wire and mechanism: `docs/ARCHITECTURE.md` §5 "Session" and §15 "DHT v2 sub-package 3b-2".
 
 ---
 

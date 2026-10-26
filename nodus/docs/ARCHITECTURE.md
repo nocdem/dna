@@ -103,10 +103,11 @@ nodus/
 │   │   │                      #   + the AF_UNIX entry nodus_tcp_unix_* — split S2; used by the S3
 │   │   │                      #   witness IPC, both ends; + the plain listener on Windows, select
 │   │   │                      #   loop, 2026-10-16 — the WS and AF_UNIX entries stay Linux-only)
-│   │   ├── nodus_tcp_sc.c/h   # Optional per-connection SecretConnection layer of nodus_tcp (DHT v2
-│   │   │                      #   sub-package 3b-1): CLIENT 0x0C / NODE 0x0D machine, bounded handshake-
-│   │   │                      #   job worker, sealing; libnodus only (NODUS_TCP_SC); NOT enabled on any
-│   │   │                      #   port (§15 "DHT v2 sub-package 3b-1")
+│   │   ├── nodus_tcp_sc.c/h   # Per-connection SecretConnection layer of nodus_tcp (DHT v2 sub-package
+│   │   │                      #   3b-1): CLIENT 0x0C / NODE 0x0D machine, bounded handshake-job worker,
+│   │   │                      #   sealing, the pre-session deadline sweep; libnodus only (NODUS_TCP_SC).
+│   │   │                      #   ENABLED since 3b-2 on 4001 / WS / 4002, the batch forwards and the
+│   │   │                      #   client SDK (§15 "DHT v2 sub-package 3b-1" and "… 3b-2")
 │   │   ├── nodus_ws.c         # WebSocket entry codec (RFC 6455 handshake + frames; no sockets)
 │   │   └── nodus_udp.c        # UDP transport (non-blocking recvfrom)
 │   ├── net/
@@ -172,7 +173,9 @@ nodus/
 │   │   ├── nodus_chain_backend_inproc.c # its in-process implementation (combined nodus-server)
 │   │   ├── nodus_chain_backend_ipc.c    # its IPC implementation (core side of <data_path>/witness.sock;
 │   │   │                                #   "witness_external", split S3)
-│   │   └── nodus_auth.c       # Dilithium5 challenge-response auth
+│   │   └── nodus_auth.c       # Client session start at on_session (identity from the SecretConnection,
+│   │                          #   per-identity limit, presence, the token message) — DHT v2 3b-2; the
+│   │                          #   old Dilithium5 challenge-response handlers are deleted
 │   ├── client/
 │   │   ├── nodus_client.c     # Client SDK (connect, auth, DHT, channels, DNAC)
 │   │   ├── nodus_singleton.c  # Thread-safe global client instance
@@ -222,7 +225,14 @@ nodus/
 │   ├── test_seg_file_win.c    # Windows-only (no ctest): nodus_fs + the segment reader / build on Windows over a Linux fixture (storage P-B4; exit 2 = not run, not a pass)
 │   ├── test_tcp_listen_portable.c # Plain listener through the public API only (127.0.0.1 port 0 read back, accept, one frame each way, close; NODUS_MAX_CONNS_PER_IP + 1 → one refused); same source meant for the Linux epoll and the mingw select loop
 │   ├── test_client.c          # Client SDK tests
-│   ├── test_client_pin.c      # Client server-key pin (fail-closed matrix, ML-KEM only) + monotonic timeouts
+│   ├── test_client_pin.c      # Client server-key pin on the SecretConnection session (3b-2: init refuses no pin / no chain id, a wrong pin never completes) + monotonic timeouts
+│   ├── test_node_session.c    # DHT v2 3b-2: the 4002 node session (pin, chain id, QUEUED → replayed sealed, REFUSED before connect, 10 s dial bound, old plaintext hello closed) — §15 "DHT v2 sub-package 3b-2"
+│   ├── test_presession_deadline.c # DHT v2 3b-2: 15 s idle / 30 s absolute pre-session deadline on the monotonic clock
+│   ├── test_chain_id_v3.c     # DHT v2 3b-2: sessions bound to the v3 chain id, fail closed without it; the 60/min per-IP handshake rate
+│   ├── test_hint_tristate.c   # DHT v2 3b-2: a hint row is deleted only on WRITTEN (QUEUED / FAILED / REFUSED keep it)
+│   ├── test_send_queue_full.c # DHT v2 3b-2: a queue-full diversion reports QUEUED, never WRITTEN
+│   ├── test_bf_session.c      # DHT v2 3b-2: a real batch forward over the pinned node session
+│   ├── test_round4_hardening.c # DHT v2 3b-2: re-entrant disconnect once, zero-pin refusal, force_disconnect state, BF config follows the host
 │   ├── test_client_spend_status.c # dnac_spend reply without a uint "status" -> PROTOCOL_ERROR, never APPROVED
 │   ├── test_v2_spend_build.c  # Shared SPEND builder vs the CheckTx dry run (package c2)
 │   ├── test_v2_stake_build.c  # Shared STAKE / DELEGATE / UNDELEGATE builder vs the CheckTx dry run
@@ -366,8 +376,8 @@ All messages share a common CBOR map structure:
     "q":   <string>     # Method name
     "a":   {…}          # Arguments (queries)
     "r":   {…}          # Results (responses)
-    "tok": <bytes[32]>  # Session token (T2 authenticated requests)
-}
+    "tok": <bytes[32]>  # Session token (T2 requests) — a correlation key, never checked
+}                       #   as authorization since DHT v2 3b-2 (§5 "Session")
 ```
 
 ### Duplicate map keys are refused
@@ -488,88 +498,65 @@ by the new peer.
 
 ## 5. Tier 2 Protocol — Client-to-Server
 
-Tier 2 handles all client-facing operations over TCP. Every T2 session begins with a
-Dilithium5 challenge-response authentication handshake.
+Tier 2 handles all client-facing operations over TCP (4001) and the WebSocket entry.
+Since DHT v2 sub-package 3b-2 every T2 connection is a **SecretConnection session** —
+the 4004 handshake of `shared/dnac/cmt_p2p_secret.h` under the CLIENT profile — and T2
+frames flow only inside its sealed stream. Full mechanism: §15 "DHT v2 sub-package 3b-2".
 
-### Authentication Handshake
+### Session (SecretConnection, CLIENT profile)
 
 ```
-Client                              Server
-  │                                    │
-  │─── HELLO(pk, fp, v=2) ───────────►│  1. Client sends Dilithium5 public key,
-  │                                    │     fingerprint (SHA3-512 of pk), proto version
-  │                                    │     Server verifies fp == SHA3-512(pk)
-  │◄── CHALLENGE(nonce) ──────────────│  2. Server generates 32-byte random nonce
-  │                                    │
-  │─── AUTH(SIGN(nonce, sk)) ─────────►│  3. Client signs nonce with secret key
-  │                                    │     Server verifies signature with pk
-  │◄─ AUTH_OK(token,kpk,spk,sig,      │  4. Server returns:
-  │           [mpk,mpk_sig]) ─────────│     - 32-byte session token
-  │                                    │     - Kyber round-3 public key (kpk)
-  │                                    │     - Server Dilithium5 public key (spk)
-  │                                    │     - Dilithium5 sign(kpk || nonce) (kpk_sig)
-  │                                    │     - OPTIONAL: ML-KEM-1024 pubkey (mpk) +
-  │                                    │       Dilithium5 sign(mpk || nonce) (mpk_sig),
-  │                                    │       present only if the server has one
-  │                                    │     Client verifies sig with spk (MITM protection)
-  │─── KEY_INIT(ct,nonce_c,[alg]) ───►│  5. Client encapsulates to server's KEM pubkey —
-  │                                    │     ML-KEM-1024 (alg=1) if mpk/mpk_sig verified,
-  │                                    │     else Kyber round-3 (alg absent/0, default)
-  │◄── KEY_ACK(nonce_s) ──────────────│  6. Shared secret established (either algorithm
-  │                                    │     yields the same 32-byte secret shape)
-  │    ═══ AES-256-GCM channel ═══    │     All subsequent traffic encrypted
+Client (INITIATOR)                  Server (RESPONDER)
+  │─── HELLO {I_dsa_pk, nonce_I,     ─►│  plaintext, uvarint(len) ‖ kind ‖ fields
+  │          proto_ver, chain_id}      │  proto_ver = NODUS_CSESS_PROTO_VERSION (1);
+  │◄── HELLO_R {R_dsa_pk, R_mlkem_pk, ─│  chain_id = the 32-byte v3 chain id. Each side
+  │          nonce_R, proto_ver,       │  checks the peer's proto_ver and chain_id
+  │          chain_id}                 │  against its own BEFORE any KEM work.
+  │   client: fingerprint(R_dsa_pk) must be in pinned_server_fps — checked BEFORE
+  │   the ENCAPS job; otherwise the handshake is aborted (no pin, no session)
+  │─── KEYX {ML-KEM-1024 ct} ────────►│  T = SHA3-512(transcript), key / challenge =
+  │                                    │  HKDF-SHA3-256 (csess info strings)
+  │◄══ AUTHSIG (5 sealed frames) ═════►│  each side signs the challenge, purpose 0x0C
+  │                                    │  (NDS1 tagged); the peer verifies
+  │◄══ auth_ok {tok} (txn 0) ═════════│  the server's FIRST sealed frame: the token
+  │    ═══ AES-256-GCM sealed stream, nodus 7-byte frames inside ═══
 ```
 
-**HELLO** (`"q": "hello"`):
-```
-{"t": txn, "y": "q", "q": "hello", "a": {"pk": <bytes[2592]>, "fp": <bytes[64]>}}
-```
+The handshake rows, the sealed frame (1,028 bytes plaintext, 1,044 sealed) and the pin
+rule are in `cmt_p2p_secret.h:51-92`, `:112-116` (rows written for the WITNESS profile;
+the CLIENT profile changes only the tags and the purpose); the CLIENT profile's
+transcript tag / HKDF info strings and the 0x0C NDS1 preimage are fixed by
+`docs/plans/decisions/2026-10-23-dht-v2-session-bytes.md` (operator) and implemented by
+sub-package 3a (`CMT_P2P_SC_PROFILE_CLIENT`, `cmt_p2p_secret.c:44`). The client proves its own key in AUTHSIG
+AFTER it has checked the server's pin, so a refused server never sees a client
+signature. The client's public key travels in the plaintext HELLO (a known limitation,
+khan decision C, `docs/plans/decisions/2026-10-23-kurultay-43-summary.md`); there is no
+forward secrecy (static node keys, khan decision B).
 
-**CHALLENGE** (`"q": "challenge"`):
+**The token message** (`"q": "auth_ok"`) — the only T2 message of the old handshake that
+remains, encoded by `nodus_t2_auth_ok` (`nodus_tier2.h:391-397`):
 ```
-{"t": txn, "y": "r", "q": "challenge", "r": {"nonce": <bytes[32]>}}
+{"t": 0, "y": "r", "q": "auth_ok", "r": {"tok": <bytes[32]>}}
 ```
+The client SDK claims the pending slot of txn 0 before it connects and is READY only once
+the layer is authenticated AND this message is in (`do_auth`, `nodus_client.c:1005-1047`).
+The token is carried by later requests (`"tok"`) but is a correlation key only — it is
+never checked as authorization (`nodus_server.c:1446-1451`).
 
-**AUTH** (`"q": "auth"`):
-```
-{"t": txn, "y": "q", "q": "auth", "a": {"sig": <bytes[4627]>}}
-```
-
-**AUTH_OK** (`"q": "auth_ok"`):
-```
-{"t": txn, "y": "r", "q": "auth_ok", "r": {
-    "tok": <bytes[32]>,
-    "kpk": <bytes[1568]>,       // Server's Kyber round-3 public key
-    "spk": <bytes[2592]>,       // Server's Dilithium5 public key
-    "kpk_sig": <bytes[4627]>,   // Dilithium5 sign(kpk || nonce, server_sk)
-    "mpk": <bytes[1568]>,       // OPTIONAL (Faz 1 KEM migration): server's ML-KEM-1024
-                                //   public key, present only when the server has one
-    "mpk_sig": <bytes[4627]>    // OPTIONAL: Dilithium5 sign(mpk || nonce, server_sk) under
-                                //   the STRICT MLKEM_BIND purpose (NDS1-tagged, no raw
-                                //   fallback either side) — unlike kpk_sig/KYBER_BIND, which
-                                //   is non-strict; see "Faz 1 KEM migration" below
-}}
-```
-The `kpk_sig` binds the Kyber public key to this auth session via the challenge nonce,
-preventing MITM key substitution. Client MUST verify this signature before encapsulating.
-Legacy servers (proto < v0.10.10) omit `spk` and `kpk_sig` — an unpinned client logs a
-warning and uses the unsigned `kpk`; a client with a server-key pin
-(`nodus_client_config_t.pinned_server_fps`, "Server key pin" in the Client SDK section)
-refuses the connection.
-
-**KEY_INIT** (`"q": "key_init"`):
-```
-{"t": txn, "y": "q", "q": "key_init", "a": {
-    "ct": <bytes[1568]>,        // KEM ciphertext (round-3 or ML-KEM-1024)
-    "nc": <bytes[32]>,          // Client nonce
-    "alg": 1                    // OPTIONAL (Faz 1 KEM migration): 1 = ML-KEM-1024.
-                                 //   Omitted entirely (not just 0) when alg=0 — an
-                                 //   alg=0 KEY_INIT is byte-identical to every
-                                 //   KEY_INIT ever sent before this migration.
-}}
-```
+The old `hello` / `challenge` / `auth` / `auth_ok` (with `kpk`, `spk`, `kpk_sig`, `mpk`,
+`mpk_sig`) / `key_init` / `key_ack` exchange and its AES-256-GCM channel crypto are
+DELETED from 4001, WS and 4002 (3b-2, operator decision "all at once",
+`docs/plans/decisions/2026-10-23-dht-v2-session-cutover.md`). A pre-3b-2 client cannot
+connect to a 3b-2 node and vice versa. (`nodus_t2_hello` / `nodus_t2_auth` stay only for
+the channel-connection client, whose server is compiled out.)
 
 #### Faz 1 KEM migration (ML-KEM-1024, rolling-compatible)
+
+> **Superseded on 4001 / WS / 4002 by DHT v2 sub-package 3b-2** (§15): the four handshake
+> sites below no longer exist — the session's KEM is ML-KEM-1024 only, inside the
+> SecretConnection. What still holds from this subsection: the circuit `alg` tag and the
+> fail-closed inbound E2E rule, `NODUS_PURPOSE_MLKEM_BIND` (0x09) as a purpose byte, and the
+> node's ML-KEM seed derivation. Kept as the record of the migration.
 
 Governing decision: `docs/plans/decisions/2026-09-23-kem-mlkem-migration.md` (K1-K6);
 design: `docs/plans/2026-09-23-mlkem-fips203-migration-design.md` §5.8-§5.10.
@@ -665,7 +652,9 @@ wire version bump:
 
 ### Authenticated DHT Operations
 
-All operations below require a valid session token (`"tok"` field).
+All operations below run inside an authenticated session (the SecretConnection, "Session"
+above). Requests carry the session token (`"tok"` field) as a correlation key; the server
+does not check it (`nodus_server.c:1446-1451`, DHT v2 3b-2) — identity is the connection.
 
 | Method | Direction | Description |
 |--------|-----------|-------------|
@@ -773,30 +762,32 @@ Response:
 }}
 ```
 
-### Pre-Auth Dispatch
+### Pre-Auth Dispatch — none (DHT v2 3b-2)
 
-The server allows certain messages without authentication:
-
-- `hello` / `auth` — the handshake itself
-- `sv` — inter-node DHT value replication (verified by value signature)
-- `ch_rep` — inter-node channel post replication
-
-All other methods return `NODUS_ERR_NOT_AUTHENTICATED` (code 1) if the session is not
-authenticated.
+There is no pre-authentication dispatch any more. Before the SecretConnection is
+AUTHENTICATED a connection carries only the layer's own handshake messages, and the layer
+hands no nodus frame to the server before that (`nodus_tcp_sc.h`; §15 "DHT v2 sub-package
+3b-1"). `dispatch_t2` closes a session that is not marked authenticated instead of
+answering it (`nodus_server.c:1439-1444`). The old list (`hello` / `auth` served
+unauthenticated, `NODUS_ERR_NOT_AUTHENTICATED` for the rest) is gone with the old
+handshake.
 
 ### Client port front door (2026-10-14, Kurultay #20 package 1, the operator's simple version)
 
 Four node-local limits on the client port (4001 and the WebSocket entry). None touches a consensus input;
 all are in core except the witness IPC read budget, which is a count.
 
-- **Failed auth closes.** An `auth` whose signature does not verify, or an `auth` with no pending challenge,
-  is answered with its error and the connection is closed (`dispatch_t2`; the deferred close is safe inside
-  the client poll).
-- **Pre-auth frame cap.** Every connection carries `max_payload` (0 = `NODUS_MAX_FRAME_TCP`).
-  `try_parse_frames` checks the length a frame header declares as soon as the 7-byte header is in and closes
-  the connection when it is over the cap — before the payload is buffered. The client pool sets
-  `NODUS_PREAUTH_PAYLOAD_MAX` (sig 4627 + pk 2592 + fp 64 + 1024 = 8307 bytes) on accept; auth success clears
-  it. Other pools keep `NODUS_MAX_FRAME_TCP`.
+- **Failed session closes.** (Was "failed auth closes"; since DHT v2 3b-2.) A handshake that fails — wrong
+  chain id, wrong protocol version, a bad signature, a malformed message — fails the layer's feed and the
+  connection is closed; there is no `auth` message to answer.
+- **Pre-session limits** (replace the pre-auth frame cap `NODUS_PREAUTH_PAYLOAD_MAX`, retired in 3b-2,
+  Kurultay #43 O-5): a 15 s idle / 30 s absolute deadline on the monotonic clock
+  (`NODUS_PRESESSION_IDLE_MS` / `_ABS_MS`, `nodus_server.h:649-650`), a sealed-input budget per handshake
+  (`sc_presession_budget`, `nodus_tcp_sc.c:71-96`), and at most 60 new handshakes per minute from one IP
+  (`NODUS_HANDSHAKE_RATE_PER_MIN`, `nodus_server.h:655`; operator 2026-10-24,
+  `docs/plans/decisions/2026-10-24-dht-v2-handshake-rate.md`). Details: §15 "DHT v2 sub-package 3b-2".
+  `conn->max_payload` stays in the transport for the IPC sockets (`nodus_witness_ipc.c:425`,
+  `nodus_dht2_wview.c:433`); the client pool no longer sets it.
 - **Per-session chain budget.** Every request routed to the chain (`dnac_*`, `evm_*`) is charged to the
   session: a fixed 10 s window on core's monotonic clock, 300 units per window (`NODUS_CHAIN_RATE_*`,
   `nodus_server.h`; a JUDGMENT value). `dnac_spend` costs ⌈T2 payload bytes / 4627⌉ (one unit per
@@ -950,9 +941,12 @@ All cryptographic operations use post-quantum algorithms from the `shared/crypto
 NIST Category 5 post-quantum digital signature scheme. Used for:
 
 - **Value signing** — every DHT value carries a Dilithium5 signature that proves ownership
-- **Client authentication** — 3-step challenge-response handshake
+- **Session authentication** — both ends of a 4001 / WS (purpose 0x0C) or 4002 (purpose
+  0x0D) SecretConnection sign the handshake challenge (AUTHSIG, NDS1-tagged, strict);
+  4004 uses 0x0A (DHT v2 3b-2; the old 3-step challenge-response is deleted)
 - **Channel post signing** — authors sign their posts
-- **Kyber PK binding** — server signs its Kyber public key in AUTH_OK to prevent MITM
+- (The Kyber PK binding `kpk_sig` in AUTH_OK is deleted with the old handshake, 3b-2: the
+  session's KEM key is ML-KEM-1024, carried in HELLO_R and bound by the transcript.)
 
 | Parameter | Size |
 |-----------|------|
@@ -1190,11 +1184,15 @@ The server uses a single-threaded, event-driven architecture based on Linux `epo
 (edge-triggered):
 
 ```c
-/* nodus_server_run (nodus_server.c:3212-3318), the channel server lines omitted */
+/* nodus_server_run (nodus_server.c:2780-2960 at DHT v2 3b-2), the channel server lines omitted */
 while (srv->running && !srv->stop_requested) {
+    /* poll_ms: 50, 0 with queued input, capped at NODUS_TCP_SC_POLL_MS (5) while a
+     * SecretConnection handshake job is outstanding on srv->tcp, srv->inter_tcp or
+     * the DHT's batch-forward transport (dht->ops->sc_busy) — :2844-2848, :2867-2871 */
     nodus_tcp_poll(&srv->tcp, poll_ms);          // TCP 4001 + WebSocket entry
     nodus_tcp_ws_sweep(&srv->tcp, now);          // only when the WS entry is enabled
     nodus_tcp_poll(&srv->inter_tcp, poll_ms);    // TCP 4002
+    presession_tick(srv);                        // pre-session deadline, once a second (3b-2)
     nodus_udp_poll(&srv->udp);                   // UDP 4000 (budgeted, non-blocking)
     nodus_cluster_tick(&srv->cluster);           // heartbeats + health checks
     srv->dht->ops->evict_tick(srv->dht);         // DHT: ping-before-evict sweep (split S4)
@@ -1216,7 +1214,7 @@ body; their order relative to each other and to the core ticks is unchanged.
 > Read budgets as of 2026-09-30 (P2 hardening, branch `p2-dht-fix`):
 > - **TCP:** each `nodus_tcp_poll` waits 50 ms, or 0 ms when either TCP transport or the UDP socket still has queued input (`nodus_tcp_read_pending`, `nodus_udp_read_pending`) — or, since split S3, when the chain backend's own transport does (`srv->chain->ops->read_pending`), or, since split S4, the DHT backend's (`srv->dht->ops->read_pending`) — `nodus_server.c:3225-3230` and `:3242-3247`. Both in-process backends always answer false, so the combined binary's timings are unchanged; the IPC chain backend answers for its Unix-socket transport ("Component split", S3).
 > - **UDP 4000:** the socket is not in any epoll the loop waits on; `nodus_udp_poll` runs once per iteration and reads at most `NODUS_UDP_POLL_BUDGET` (64) datagrams. When it stops at the budget it sets `budget_hit`, so the next iteration does not block its TCP polls — the cap bounds one call's work without a throughput ceiling.
-> - **Unauthenticated client connections** (4001 / WebSocket) are closed by `idle_timeout_sweep` either after 15 s idle or 30 s after `connected_at` (`IDLE_ABSOLUTE_UNAUTH`), whichever comes first; the sweep runs every 30 s.
+> - **Unauthenticated connections** (4001 / WebSocket, and since 3b-2 also 4002 accept) are closed 15 s after their last socket byte or 30 s after connect, whichever comes first, on the MONOTONIC clock, looked at once a second (`presession_tick` → `nodus_server_presession_sweep` → `nodus_tcp_sc_presession_sweep`, `nodus_server.c:960-977`; DHT v2 3b-2). (Until 3b-2: `idle_timeout_sweep` every 30 s on the wall clock with `IDLE_ABSOLUTE_UNAUTH` — effective ≈ 45 / 60 s; that name no longer exists, and `idle_timeout_sweep` now covers authenticated sessions only.)
 > - **Media `m_put`** refuses a chunk index ≥ the request's chunk count, a non-first chunk with no stored metadata or with an index ≥ the STORED chunk count, and `ttl == 0` (media rate limit intentionally not added — operator 2026-09-30). The `m_sv` replication receive path does not apply these checks yet.
 > - **get_all / get_batch** answer an explicit error frame when the reply cannot be encoded (previously no reply, and the client waited for its timeout).
 > - **Value decode** refuses a value whose unsigned `created_at + ttl` would overflow (it would otherwise wrap to `expires_at == 0`, "never expires").
@@ -1237,7 +1235,8 @@ Design `docs/plans/2026-10-01-dht-ownership-root-fix-design.md` §10 (local) and
 - "Could not look" (no forward slot, nothing answered, storage fault) answers `NODUS_ERR_UNAVAILABLE` (21) instead of an empty result; client `get_batch` replies mark such keys per entry with `"u": true`.
 - **Batch forward was dead before this package:** `bf_recv_frame` read the frame length big-endian while the wire is little-endian, so every forward (handshake included) waited for its 5 s timeout. It now uses `nodus_frame_decode` + `nodus_frame_validate` and refuses a declared length larger than its buffer.
 
-**4002 session**
+**4002 session** (the role split and `require_peer_auth` items are superseded by DHT v2 3b-2, §15: the
+4002 handshake is the SecretConnection NODE session and `require_peer_auth` is no longer read)
 - Role split: a conn we dialed accepts only challenge / auth_ok / key_ack / error during the handshake, an accepted conn only hello / auth / key_init / error; a wrong-role frame disconnects. The accepting side becomes AUTH_OK only after key_init (no plaintext sends before the session key). Until the session key exists only handshake frames are processed (T2 and T1); a second key_init is refused.
 - Inter-circuits are released when their 4002 conn disconnects or is orphaned, and found by pointer, not by cid; `ri_*` frames act only on circuits of their own conn; a client circuit id that could collide moves the server generator past it (cid 0 and ≥ 2^63 refused).
 - `require_peer_auth` defaults to true in `nodus-server` (the JSON can still set false).
@@ -1246,17 +1245,24 @@ Design `docs/plans/2026-10-01-dht-ownership-root-fix-design.md` §10 (local) and
 
 **Pipelined strict page reads (2026-10-07, web wallet 0.1.73).** `nodus_client_get_all_page_strict_many(client, reqs, n)` (`nodus.h`, `n` ≤ `NODUS_CLIENT_PAGE_PIPELINE_MAX` = 8) sends the strict paged `get_all` frame of every item (`client_page_send`, the frame `nodus_client_get_all_page_strict` sends) before it awaits the first reply, then awaits each and runs the same reply handler (`client_page_reply` → `client_page_result_impl`, strict) per item. It is NOT a batch request: each key keeps its own node-side read and forwarded lookup, unlike `get_batch`, which forwards only keys with no local row, to one peer. Replies are matched by txn (`client_on_frame` → `nodus_client_pending_find`), never by position: natively the read thread stores each reply in its pending slot; in the browser build (no read thread) `wait_response` polls the transport, which dispatches every complete frame to its own slot. Per item: rc / rows / `more` / cursor / `legacy` / undecodable exactly as the single strict call, `NODUS_ERR_TIMEOUT` measured from that item's own send. Caller today: the Nodus Connect thin core (`web-wallet/connect/nc_read.c` `nc_read_owner_many`, 4 in flight at once). Test: `test_client_pipeline` (fake node answering in reverse order only once it holds every request).
 
-**Forwarded-read slots.** `NODUS_BF_MAX_BATCHES` (`dht/nodus_dht.h`) — concurrent batch-forward batches for the WHOLE node, all clients together — is 16 (was 4). A `get` / `get_all` / `get_batch` that finds no free slot is answered from the local row only (or `NODUS_ERR_UNAVAILABLE` with none). Cost: `dht_bf_state_t` 99,944 → 399,752 bytes inside `nodus_dht_t` (x86-64, compile-time `sizeof`), and up to 16 × `NODUS_BF_MAX_FORWARDS` (8) = 128 forward sockets, each with a `RESP_BUF_SIZE` (`NODUS_MAX_VALUE_SIZE` + 64 KiB) receive buffer allocated per forward. A forward socket whose fd NUMBER is ≥ `NODUS_BF_FD_TABLE_SIZE` (256) is closed and that forward does not start (`bf_start_forward`). Not consensus, no wire change.
+**Forwarded-read slots.** `NODUS_BF_MAX_BATCHES` (`dht/nodus_dht.h`) — concurrent batch-forward batches for the WHOLE node, all clients together — is 16 (was 4). A `get` / `get_all` / `get_batch` that finds no free slot is answered from the local row only (or `NODUS_ERR_UNAVAILABLE` with none). Cost: `dht_bf_state_t` 99,944 → 399,752 bytes inside `nodus_dht_t` (x86-64, compile-time `sizeof`), and up to 16 × `NODUS_BF_MAX_FORWARDS` (8) = 128 forward sockets, each with a `RESP_BUF_SIZE` (`NODUS_MAX_VALUE_SIZE` + 64 KiB) receive buffer allocated per forward. A forward socket whose fd NUMBER is ≥ `NODUS_BF_FD_TABLE_SIZE` (256) is closed and that forward does not start (`bf_start_forward`). Not consensus, no wire change. (Since DHT v2 3b-2 the forwards are connections of the DHT's own `nodus_tcp` transport — up to `NODUS_TCP_MAX_CONNS`, each with that transport's receive buffer; the per-forward buffer and the fd table are gone, `nodus_dht.h:194-197`; the `sizeof` figures above predate it; §15 "DHT v2 sub-package 3b-2".)
 
 Known open (not in this package): read rate limit; legacy unpaged `get_all` still reports a storage fault as empty; the cluster node id used by the hint gate is learned from unsigned UDP; presence `p_sync` and `circ_open` dials set no expected peer id (refused when 4002 auth is on).
 
 ### Session Management
 
-Each TCP 4001 connection is assigned a **session** (`nodus_session_t`,
-`nodus_server.h:199-233`) with:
+Each TCP 4001 (and WebSocket) connection is assigned a **session** (`nodus_session_t`,
+`nodus_server.h:193-223`) with:
 
-- Authentication state (nonce, public key, fingerprint, token, `auth_seq`)
-- Circuit table, protocol version
+- Authentication state (public key, fingerprint, token, `authenticated`, `auth_seq`) —
+  filled at `on_session` from the SecretConnection's proven key by
+  `nodus_auth_session_start` (`nodus_auth.c:98-170`, DHT v2 3b-2); the challenge nonce and
+  the per-session protocol version of the old handshake are gone
+- Circuit table, the chain-method budget window
+
+The SecretConnection layer is enabled on the connection in `on_tcp_accept`
+(`nodus_server.c:1722-1758`); the session is closed there, before any byte is read, when
+this node does not know its chain id yet. Full mechanism: §15 "DHT v2 sub-package 3b-2".
 
 Since split S4 the DHT keeps its own **shadow** of the same slot
 (`nodus_dht_session_t`, `dht/nodus_dht.h:479-489`): an `open` flag, the active DHT
@@ -1309,8 +1315,9 @@ detaches the connection at once: epoll removal, `close(fd)`, pool slot emptied,
 `fd = -1`, `state = NODUS_CONN_CLOSED`, `close_pending = true`. The memory is
 released at once only when no `nodus_tcp_poll()` is running on that transport. While
 one is (`nodus_tcp_t.poll_depth > 0`: every frame, accept, connect and disconnect
-callback, including the session eviction in `nodus_auth.c` and the `!bind_ok`
-branch of `dispatch_inter`), the struct is parked on `nodus_tcp_t.close_list` and freed
+callback, including the session eviction in `nodus_auth.c` and the closes in
+`on_tcp_accept` / `on_inter_accept` / `dispatch_inter`), the struct is parked on
+`nodus_tcp_t.close_list` and freed
 when the outermost poll returns. Until then the transport does no more work on it:
 the event loop skips any `data.ptr` no longer in `tcp->pool`, `try_parse_frames`
 stops after the `on_frame` that closed its connection, and a second
@@ -1319,6 +1326,11 @@ point on purpose — freeing earlier would let an accept later in the same batch
 the same address while a stale event for the old connection is still queued.
 `tests/test_tcp_deferred_close.c` pins both callback shapes (build it with
 `-fsanitize=address` to turn a use-after-free into a hard failure).
+**Re-entrant disconnect (D-24 a, DHT v2 3b-2).** Every teardown path invokes
+`on_disconnect` through one function, `conn_notify_disconnect` (`nodus_tcp.c:445-450`),
+which first sets `conn->disc_claimed`; a `nodus_tcp_disconnect` of the same connection
+issued from inside that `on_disconnect` returns at once (`nodus_tcp.c:3634-3639`), so the
+callback runs once and only the outer teardown frees. Test: `test_round4_hardening` R1.
 
 **Read budget (fairness between connections).** One `nodus_tcp_poll()` call reads a
 connection at most once and within `NODUS_TCP_READ_BUDGET_FRAMES` (256: nodus frames
@@ -1347,8 +1359,8 @@ wait in between. Only these two transports are checked.
 `tests/test_tcp_read_budget.c` pins the budget, in-order delivery of the rest across
 later calls, and removal of a pending connection closed inside and outside a poll.
 
-**SecretConnection layer (DHT v2 sub-package 3b-1, not enabled on any port).** A
-`nodus_tcp_conn_t` may carry an optional `cmt_p2p_sc_t` (`conn->sc`, NULL = off)
+**SecretConnection layer (DHT v2 sub-package 3b-1; enabled on 4001 / WS / 4002 since
+3b-2).** A `nodus_tcp_conn_t` may carry a `cmt_p2p_sc_t` (`conn->sc`, NULL = off)
 switched on by `nodus_tcp_sc_enable` on a connection that has carried no byte
 (`conn->io_started`, an `atomic_bool` on every connection since 3b-1). With it on, the
 socket (or WS payload) bytes go through the machine and only its plaintext reaches
@@ -1359,9 +1371,10 @@ sealing; a non-empty queue keeps write interest). Two additions to the
 poll contract: finished handshake jobs are applied at the start of each
 `nodus_tcp_poll`, and while a job is outstanding (`nodus_tcp_sc_busy`) the poll waits
 at most 5 ms. A connection blocked on a job is resumed through the pending-read list
-above (`read_pending_add`). No caller enables it yet; the server loop's two-transport
-wait above does not yet include `nodus_tcp_sc_busy` — a 3b-2 obligation. Full
-contract: §15 "DHT v2 sub-package 3b-1".
+above (`read_pending_add`). Since 3b-2 every 4001 / WS / 4002 connection carries it
+(only the Unix-socket IPC connections do not), and the server loop's wait includes
+`nodus_tcp_sc_busy` of both transports and of the DHT's batch-forward transport
+("Event Loop" above). Full contract: §15 "DHT v2 sub-package 3b-1" and "3b-2".
 
 **Channel sessions** (TCP 4003) are managed separately by `nodus_channel_server_t`:
 - Client sessions (`nodus_ch_client_session_t`): auth state, channel subscriptions, rate limiting
@@ -1372,11 +1385,14 @@ contract: §15 "DHT v2 sub-package 3b-1".
 
 TCP frames are dispatched through `dispatch_t2()`:
 
-1. **Decode** the CBOR payload as a T2 message
-2. **Pre-auth check**: if session is not authenticated, only `hello`, `auth`, `sv`
-   (inter-node store, rate-limited: 200/s), and `fv` (inter-node FIND_VALUE, rate-limited: 100/s)
-   are allowed. Channel operations (`ch_rep`, `ch_post`, etc.) go through TCP 4003, not 4001.
-3. **Token verification**: authenticated requests must carry a valid session token
+1. **Decode** the CBOR payload as a T2 message; a payload that does not decode is dropped
+   (no T1 fallback on the client port, `nodus_server.c:1424-1428`)
+2. **Session check** (DHT v2 3b-2): every frame here arrived inside an AUTHENTICATED
+   SecretConnection session; a session not marked authenticated is closed, never served
+   (`nodus_server.c:1439-1444`). There is no pre-auth method list any more.
+3. **No token verification** (DHT v2 3b-2, O-2 b): the session token is a correlation key,
+   not an authorization input; identity is the connection (`nodus_server.c:1446-1451`).
+   `w_*` methods are refused on the client port (`:1459-1467`).
 4. **Handler dispatch**: method name → handler. Since split S4 the DHT methods (`put`,
    `get`, `get_all`, `get_batch`, `cnt_batch`, `listen`, `unlisten`, `ch_list`,
    `ch_search`, `ch_get`, `m_put`, `m_meta`, `m_chunk`) go to the DHT through
@@ -1385,8 +1401,9 @@ TCP frames are dispatched through `dispatch_t2()`:
    `handle_t2_put`, `handle_t2_get`, …, `nodus_dht_server.c:4264-4304`); `ping`,
    `servers`, `status` and `circ_*` stay in core (`nodus_server.c:2188-2199`).
 
-If T2 decode fails, a fallback T1 decode is attempted for inter-node `sv` (STORE_VALUE)
-messages that arrive on the TCP port.
+The T1 fallback (a T1 decode for inter-node `sv` / subscribe / notify frames when the T2
+decode fails) exists only on the inter-node port's `dispatch_inter`
+(`nodus_server.c:1175-1195`), inside the authenticated node session — not on 4001.
 
 ### Configuration
 
@@ -1407,8 +1424,8 @@ Server configuration via JSON file (default: `/etc/nodus.conf`):
 
 **Ports:**
 - **UDP 4000** — Kademlia peer discovery (Tier 1)
-- **TCP 4001** — Client DHT operations + auth (Tier 2)
-- **TCP 4002** — Inter-node replication (Tier 1 TCP)
+- **TCP 4001** — Client DHT operations (Tier 2), inside a SecretConnection CLIENT session (DHT v2 3b-2)
+- **TCP 4002** — Inter-node replication (Tier 1 TCP), inside a SecretConnection NODE session (3b-2)
 - **TCP 4003** — Channel system: client posts + inter-node replication (dedicated)
 - **TCP `ws_port`, 127.0.0.1 only** — WebSocket entry of the client port (off by
   default; see below)
@@ -1506,8 +1523,9 @@ by `test_ws_frame` / `test_ws_upgrade`:
 - *Teardown*: every refusal goes through `ws_close_now` (queue the response or close
   frame, one best-effort flush, `on_disconnect`, `conn_free`) and the caller returns
   "freed" so the read loop never touches the connection again.
-- *SecretConnection layer (DHT v2 sub-package 3b-1, no caller enables it yet)*: on a
-  WS connection with `conn->sc` set, `ws_sink_data` feeds the unmasked payload to the
+- *SecretConnection layer (DHT v2 sub-package 3b-1; every WS connection carries it since
+  3b-2 — `on_tcp_accept` enables it on the plain and the WS accept alike, and on WS the
+  machine starts after the Upgrade)*: on a WS connection with `conn->sc` set, `ws_sink_data` feeds the unmasked payload to the
   machine instead of `rbuf` (WS bytes → SecretConnection → nodus frames; Upgrade,
   ping / pong and close stay outside the sealed stream), the incremental-sealing drain
   (`sc_drain_locked`) puts each portion of at most 32 sealed frames (33,408 bytes, under
@@ -1524,12 +1542,13 @@ by `test_ws_frame` / `test_ws_upgrade`:
 | Upgrades in progress | 64 (`NODUS_WS_MAX_HANDSHAKING`) | `handle_accept_ws` |
 | Upgrade deadline | 10 s from accept (`NODUS_WS_HANDSHAKE_TIMEOUT_S`) | `nodus_tcp_ws_sweep`, called every loop iteration |
 | Per real IP | 20 open WebSocket connections (`NODUS_WS_MAX_CONNS_PER_IP`), counted after `X-Forwarded-For`. IPv4 by the whole address; IPv6 by its /64 prefix (one host owns a /64); an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) as the IPv4 it carries — `nodus_ws_ip_bucket`, stored per connection in `conn->ws_bucket`; `conn->ip` keeps the full normalised address for the logs. Plain TCP connections are counted separately (the 4001 CRIT-5 count skips `is_ws`) | `ws_try_upgrade`, `handle_accept` |
-| After the Upgrade | the ordinary client limits: 15 s unauthenticated / 180 s authenticated idle sweep, session rules | `idle_timeout_sweep` |
+| Handshake rate per real IP (DHT v2 3b-2) | 60 new connections per minute per real client address (IPv6 by /64), checked after the per-IP concurrency limit; above it the connection is closed (operator 2026-10-24) | `ws_try_upgrade` → `nodus_tcp_hs_rate_allow` (`nodus_tcp.c:1956-1963`) |
+| After the Upgrade | the ordinary client limits: the 15 s idle / 30 s absolute pre-session deadline (monotonic, 3b-2), the sealed-input budget of the handshake, 180 s authenticated idle sweep, session rules | `nodus_tcp_sc_presession_sweep`, `idle_timeout_sweep` |
 
-After the Upgrade the connection is an ordinary tier-2 client connection: `hello` /
-`auth` / `key_init`, `dnac_*`, put/get — the same code; no tier-2 or consensus
-behaviour differs. The sweep only schedules this node's own connection housekeeping;
-nothing in it reaches block content, votes or state.
+After the Upgrade the connection is an ordinary client connection: the SecretConnection
+CLIENT session (§5 "Session"), then `dnac_*`, put/get — the same code; no tier-2 or
+consensus behaviour differs. The sweeps only schedule this node's own connection
+housekeeping; nothing in them reaches block content, votes or state.
 
 **Logs** (tag `NODUS_TCP`, one line per event, never echoing request bytes):
 `ws: upgrade ok slot=… ip=…`, `ws: upgrade refused slot=… status=…: <check>`,
@@ -1538,7 +1557,9 @@ connection refused`, `ws: N upgrades pending, new connection refused`, `ws: upgr
 <reason>`, `ws: peer closed`.
 
 End-to-end coverage: `test_ws_server` (real server with `ws_port`, loopback client:
-Upgrade, tier-2 `hello` → `challenge` inside WebSocket frames, ping/pong, 403, the
+Upgrade; since DHT v2 3b-2 an OLD plaintext tier-2 `hello` inside a WebSocket frame is
+refused — no `challenge`, the connection closed — the sealed session over WS being
+covered by `test_tcp_sc`; ping/pong, 403, the
 21st connection from one `X-Forwarded-For` address, the 21st address in one IPv6 /64
 while another /64 is served, the sweep with a supplied clock, text frame → close
 1003, and the 257th WebSocket connection refused at accept with 256 in the pool).
@@ -1548,7 +1569,38 @@ in a header line, repeated Host / Origin / Version, the /64 bucket) and
 3000/4999 echoed, a 125-byte ping answered, invalid-UTF-8 close reason → 1007, every
 branch of the UTF-8 check).
 
-### Inter-node dialer authentication (TCP 4002, v0.18.11)
+### Inter-node session (TCP 4002) — the NODE SecretConnection (DHT v2 3b-2)
+
+Since DHT v2 sub-package 3b-2 every 4002 connection — accepted by core, dialed by core's
+pool, by `nodus-storage`'s pool and by the batch forwards — runs the SecretConnection under
+the NODE profile (purpose 0x0D, `NODUS_NSESS_PROTO_VERSION` 1), through the one shared
+module `server/nodus_inter_dial.c`:
+- **Dialer = INITIATOR, pinned.** `nodus_inter_pool_dial` refuses a dial with no expected
+  node id before anything else, refuses BEFORE the TCP connect when the pool has no
+  session config or the chain id is unknown, records the pin on the connection
+  (`conn->expected_peer_id`) and enables the session (`nodus_inter_dial.c:153-198`). The
+  layer aborts the handshake BEFORE its ENCAPS job when the responder's claimed key does
+  not hash to that node id; `nodus_inter_session_proven` re-checks the proven key at
+  `on_session` (`:83-103`). The pin reference is still the routing-table / roster node
+  id; on mismatch the dial fails closed and is not re-resolved (unsigned FIND_NODE data).
+  There is no unpinned dial and no plaintext dial (the no-Kyber plaintext path and the
+  `require_peer_auth` gate are deleted, Kurultay #43 mandatory fixes).
+- **Acceptor = RESPONDER, any proven identity** (khan decision A,
+  `docs/plans/decisions/2026-10-23-kurultay-43-summary.md`): `on_inter_accept` enables the
+  session or closes the connection (`nodus_server.c:1274-1297`); per-operation holder
+  authorization comes in packages 6-7.
+- **Both:** until the session is authenticated a send waits in the connection's dial queue
+  (plaintext, in memory only) and the result is `NODUS_INTER_SEND_QUEUED`; at `on_session`
+  the gate opens and the queue is replayed sealed in order (`nodus_inter_dial_conn_open`,
+  `:336-380`). The acceptor sends the token message first (`on_inter_session`,
+  `nodus_server.c:1305-1338`). A dialed connection not authenticated 10 s after the dial is
+  closed (monotonic, `nodus_inter_pool_sweep`, `:270-297`).
+- **Fail closed without a chain id** — accept closed, dial refused (`NODUS_INTER_SEND_REFUSED`).
+
+Full mechanism, tri-state send table and tests: §15 "DHT v2 sub-package 3b-2". The text
+below is the pre-3b-2 handshake, kept as history.
+
+#### Before 3b-2 — the dialer authentication of the old 4002 handshake (v0.18.11; DELETED)
 
 The acceptor authenticates the dialer via a Dilithium5 challenge/response. The
 **dialer** in turn authenticates the acceptor's Kyber public key before
@@ -1594,6 +1646,8 @@ never against an unpinned identity. A dialer never sends an ML-KEM ciphertext to
 acceptor that did not itself advertise a signed `mpk` (see the Faz 1 KEM migration
 subsection under Tier 2, §5 above, for the full four-site rule and the governing
 decision record).
+
+#### Data files (current)
 
 Data is stored in:
 - `<data_path>/nodus.db` — DHT value storage (SQLite)
@@ -1953,8 +2007,10 @@ read RPC) to `dispatch_dnac`, and **any other method closes the connection**
 (`:433-445`). A first frame that is not a valid preface (`:376-378`, `:410-411`), a control
 frame that is not `ipc_status` (`:456-459`), a session frame that does not decode or
 carries another token — each closes the connection with a WARN `closing IPC connection
-slot=<n>: <why>`. No IPC frame reaches the server's `dispatch_t2` or its `key_init`
-handshake handlers: the core backend's `on_frame` only relays a session frame to its
+slot=<n>: <why>`. (Since DHT v2 3b-2 a session frame carrying another token is NO LONGER
+refused: the token is a correlation key, never an authorization input, and the IPC
+session's identity is its preface key — `nodus_witness_ipc.c:445-447`.) No IPC frame
+reaches the server's `dispatch_t2` (and, until 3b-2, its `key_init` handshake handlers): the core backend's `on_frame` only relays a session frame to its
 client or decodes an `ipc_status` answer (`nodus_chain_backend_ipc.c:329-352`).
 `nodus_witness_ipc_find_session_conn` (`:755-771`) returns the session connection whose
 preface named `pk` and `token` and that is not closing — the witness's
@@ -2346,10 +2402,11 @@ process fills the same members itself (`nodus_dht_ipc_host`, S5b below):
 
 | Member | HOT/COLD | Core implementation |
 |---|---|---|
-| `const nodus_identity_t *identity` | configuration, not a crossing (`nodus_dht.h:443-447`) | `&srv->identity` — read for `node_id` (routing, self-skips) and `pk` / `sk` (the BF dialer's hello and auth signature, since S5b through the shared dialer module, `nodus_dht_server.c` `bf_dial_io` `:3293`) |
+| `const nodus_identity_t *identity` | configuration, not a crossing (`nodus_dht.h:443-447`) | `&srv->identity` — read for `node_id` (routing, self-skips) and, since DHT v2 3b-2, as the signing identity of the batch forwards' node session (`dht->bf_state.cfg.identity`, refreshed per forward in `bf_start_forward`, `nodus_dht_server.c:3419`; until 3b-2: the BF dialer's hello and auth signature through `bf_dial_io`) |
 | `send_to_origin(ctx, origin, frame, len)` | HOT | `server_dht_send_to_origin` (`:2446-2460`): `nodus_tcp_send(srv->sessions[slot].conn \| srv->inter_sessions[slot].conn, …)` when that session's `dht_gen` equals `origin.gen`; -1 for a slot out of range or another generation |
 | `udp_send(ctx, payload, len, ip, port)` | HOT in a large cluster, COLD at 7 nodes | `server_dht_udp_send` (`:2463-2467`): `nodus_udp_send(&srv->udp, …)` — T1 replies must leave from port 4000 |
-| `inter_send(ctx, ip, port, expected_peer_id, frame, flen)` | HOT (every put × R, every republished value, every remote listener notify) | `server_dht_inter_send` (`:2470-2475`) → `dht_republish_send` (`:434-440`) → `nodus_inter_pool_send_framed` on `srv->inter_tcp` (since S5b in the shared `server/nodus_inter_dial.c:355`, the same code nodus-storage runs on its own pool): find-or-dial (`expected_peer_id` pinned on a new conn, CRIT-1), pre-auth pending buffer. **Synchronous** 0 / -1 — the caller decides on a hint from it in the same call (`nodus_dht.h:463-471`) |
+| `inter_send(ctx, ip, port, expected_peer_id, frame, flen)` | HOT (every put × R, every republished value, every remote listener notify) | `server_dht_inter_send` (`:2470-2475`) → `dht_republish_send` (`:434-440`) → `nodus_inter_pool_send_framed` on `srv->inter_tcp` (since S5b in the shared `server/nodus_inter_dial.c:355`, the same code nodus-storage runs on its own pool): find-or-dial (`expected_peer_id` pinned on a new conn, CRIT-1), pre-auth pending buffer. **Synchronous** — the caller decides on a hint from it in the same call. Since DHT v2 3b-2 the result is `nodus_inter_send_t`: 0 WRITTEN / 1 QUEUED / -1 FAILED / -2 REFUSED (`nodus_inter_dial.h:140-166`, `nodus_dht.h` `inter_send`; §15 "DHT v2 sub-package 3b-2") — was 0 / -1 |
+| `chain_id(ctx, out[32])` (NEW, DHT v2 3b-2) | COLD (once per batch-forward dial) | `server_dht_chain_id` (`nodus_server.c:2084-2086`) → `nodus_server_chain_id`; nodus-storage: `dipc_chain_id` (`nodus_dht_ipc.c:318-341`). false = not known → the forward is not dialed |
 | `hint_wanted(ctx, node_id)` | COLD (after a failed send) | `server_dht_hint_wanted` (`:2480-2485`): a cluster member (`cluster_knows_peer`) last seen less than `NODUS_HINT_OFFLINE_SKIP_SEC` ago — reads `srv->cluster` synchronously |
 
 **Where each crossing of the S4 plan went.** The rev 2 plan (`tasks/split-fable-plan-rev2.md`
@@ -2415,7 +2472,7 @@ takes the address of every core → DHT entry point in `nodus_dht.h` (`nodus_dht
 the linker pulls exactly the closure of the DHT objects out of `libnodus`.
 `dht_linked.cmake` runs `nm --defined-only` on it and matches global text symbols
 (`" T <name>"` at a line end): **forbidden** `nodus_server_init`, `nodus_server_dht_host`,
-`nodus_auth_handle_auth`, `nodus_presence_tick`, `nodus_cluster_init`,
+`nodus_auth_session_start` (was `nodus_auth_handle_auth` until DHT v2 3b-2), `nodus_presence_tick`, `nodus_cluster_init`,
 `nodus_cluster_tick`, `nodus_dht_backend_inproc_new` (`:34-41`); **required**
 `nodus_dht_init`, `nodus_dht_client_request`, `nodus_dht_tick`, `handle_t2_media_put`,
 `nodus_storage_open`, `nodus_routing_try_insert` (`:47-53`, so a pass cannot come from
@@ -2462,6 +2519,15 @@ core sessions):
   What these become when the DHT is another process is not decided.
 
 #### S5a — 4002 connection fixes before the storage process (decision items 28, 30, 33)
+
+> **Superseded by DHT v2 sub-package 3b-2** (§15): the dialer handshake module described
+> here (`nodus_inter_dial_start` / `_on_frame` / `_conn_sync`, `nodus_inter_dial_t`, the
+> challenge → auth → auth_ok → key_init → key_ack exchange, the role split, the
+> pre-session-key gate) and the tests of the old 4002 handshake (`test_inter_dial`, `test_inter_role_split`,
+> `test_inter_preauth_gate`, `test_inter_pending_replay`, `test_inter_auth`,
+> `test_inter_conn_crypto_isolation`) are DELETED. The module file now holds the NODE
+> session (`nodus_inter_session_enable` / `_proven`) and the outbound pool. Kept as the
+> record of S5a.
 
 (`nodus_server.c` line numbers in this S5a part are those of commit `f1d48425`. S5b
 moved the find-or-dial bodies, `dht_republish_send`'s body, `pending_full_is_replication`
@@ -2667,6 +2733,13 @@ format or crypto change):
   S5b batch forward does — the module is no core object, so the gate is unaffected).
 
 #### S5b — the `nodus-storage` process + the IPC DHT backend (decision items 7, 16, 17, 19, 27, 28, 29, 31, 32, 34)
+
+> **Partly superseded by DHT v2 sub-package 3b-2** (§15): `nodus_dht_ipc_new` no longer
+> takes `require_peer_auth`; every dial of the storage process's outbound pool runs the
+> NODE SecretConnection, its chain id from the process's view of its witness
+> (`nodus_dht_ipc_open_wview`, latched by `dipc_chain_id`); the pool's `on_connect` hello
+> and its `challenge` / `auth_ok` / `key_ack` handling below are replaced by
+> `dipc_out_on_session` (`nodus_dht_ipc.c:611-618`); the pool send is tri-state.
 
 The DHT / storage half can run as its own process, `nodus-storage`
 (`tools/nodus-storage.c`), beside a `nodus-server` started with **`storage_external`**
@@ -2919,7 +2992,7 @@ that writes `identity/`). The network-file pin check is nodus-witness's in this 
 `nm --defined-only` on the linked nodus-core, global text symbols only. FORBIDDEN
 `nodus_storage_open`, `nodus_routing_try_insert`, `nodus_witness_init`,
 `nodus_dht_backend_inproc_new`, `nodus_chain_backend_inproc_open`; REQUIRED
-`nodus_auth_handle_auth`, `nodus_presence_tick`, `nodus_cluster_tick`,
+`nodus_auth_session_start` (was `nodus_auth_handle_auth` until DHT v2 3b-2), `nodus_presence_tick`, `nodus_cluster_tick`,
 `nodus_inter_circuit_table_init`, `nodus_dht_backend_ipc_open`,
 `nodus_chain_backend_ipc_open` (so a pass cannot come from an empty table or the wrong file).
 
@@ -3278,8 +3351,8 @@ must reach the fake node exactly once; red 5/5 without the lock).
 
 Since the client session is a SecretConnection (3b-2), `nodus_client_init` refuses a config
 without a server pin (`pinned_server_fps`, count >= 1) or without a chain id
-(`has_expected_chain_id` + a non-zero `expected_chain_id`); the "optional pin" text of the next
-section is the pre-3b-2 behaviour. A native tool gets both from `src/client/nodus_tool_network.{h,c}`
+(`has_expected_chain_id` + a non-zero `expected_chain_id`) — the next section, "Server key pin",
+describes the rule. A native tool gets both from `src/client/nodus_tool_network.{h,c}`
 (decision `docs/plans/decisions/2026-10-24-dht-v2-tool-network-identity.md`, operator "Both"; Kurultay
 #43 O-6 — the chain id from the tool's network config, missing → fail closed):
 
@@ -3307,53 +3380,50 @@ section is the pre-3b-2 behaviour. A native tool gets both from `src/client/nodu
 
 ### Server key pin
 
-`nodus_client_config_t` has an optional pin list (**superseded by 3b-2: mandatory, see above**):
+Since DHT v2 sub-package 3b-2 the pin list and the chain id are MANDATORY
+(`nodus.h:104-134`; Kurultay #43 mandatory fixes,
+`docs/plans/decisions/2026-10-23-kurultay-43-summary.md`):
 
 ```c
 const nodus_key_t *pinned_server_fps;     /* caller-owned, must outlive the client */
 int                pinned_server_fp_count;
+uint8_t            expected_chain_id[NODUS_CLIENT_CHAIN_ID_SIZE];   /* 32, copied */
+bool               has_expected_chain_id;
 ```
 
-Each entry is a server fingerprint — SHA3-512 of its Dilithium5 public key
-(`nodus_fingerprint()`, the same value as a node id). The AUTH_OK carries the full
-key (`spk`); the client fingerprints it and looks it up, so the pin list stays
-64 bytes per server.
+Each pin entry is a server fingerprint — SHA3-512 of its ML-DSA-87 public key
+(`nodus_fingerprint()`, the same value as a node id). The list is a SET: the session
+accepts a server whose claimed key hashes to ANY entry (`expected_set`,
+`nodus_tcp_sc.h:305-313`, filled at `nodus_client.c:929-930`).
 
-- **NULL / 0 (a zeroed config): no pin — the handshake is unchanged.** Every existing
-  caller (messenger `nodus_init.c`, dnac `client.c`, explorer `exp_chain.c`,
-  nodus-cli, nodus-circ, the tests) zeroes its config.
-- `count > 0` with a NULL list, or `count < 0`: `nodus_client_init()` fails.
-- With a pin set, `do_auth()` fails closed on every weak path (`pin_check_auth_ok()`
-  plus the `mpk_sig` branch):
+`nodus_client_init()` returns -1 (`nodus_client.c:771-809`) for:
+- `count < 0`, or `count > 0` with a NULL list (a broken pin);
+- NO pin — `pinned_server_fps` NULL or `count == 0`, which is what a zeroed config gives:
+  there is no unpinned client any more;
+- an entry of 64 zero bytes;
+- `has_expected_chain_id` false, or an all-zero `expected_chain_id`.
 
-| AUTH_OK shape | Unpinned (unchanged) | Pinned |
-|---|---|---|
-| no `kpk` | session stays unencrypted | refused |
-| no `kpk`, client holds a cached Kyber key | encrypts to the cached key | refused |
-| `kpk` without `spk`/`kpk_sig` | warns "legacy server", uses it | refused |
-| `kpk_sig` does not verify | refused | refused |
-| fingerprint(`spk`) not in the list | — (no list) | refused |
-| `mpk` without `mpk_sig` | Kyber round-3 | refused |
-| `mpk_sig` does not verify | Kyber round-3 | refused |
-| no `mpk` at all, signed `kpk`, pinned key | Kyber round-3 | refused |
-| signed `kpk` + valid `mpk_sig`, pinned key | ML-KEM-1024 | ML-KEM-1024 |
+The check happens inside the handshake: the server's CLAIMED key (in HELLO_R) must hash to
+a listed fingerprint BEFORE the client runs its ENCAPS job, else the handshake is aborted
+(`cmt_p2p_secret.h:85-92`; the layer refuses an all-zero pin itself too,
+`nodus_tcp_sc.c:684-692`). Because the client signs its AUTHSIG only after that, a
+refused server never sees a client signature — the old note that "the pin is checked
+AFTER the client has signed the server's challenge" no longer holds. There is no
+Kyber round-3, cached-key, unsigned-key or unencrypted session: the session KEM is
+ML-KEM-1024 only. A server on another chain fails at HELLO (chain id mismatch).
 
-A pinned session is **ML-KEM-1024 only** (operator 2026-09-29, browser wallet):
-`kpk_sig` covers `kpk ‖ nonce` and `mpk_sig` covers `mpk ‖ nonce`, but nothing signs
-the ABSENCE of `mpk` — an on-path party could strip `mpk`/`mpk_sig` and force
-Kyber round-3. The unpinned client keeps that fallback (KEM decision K1 rev 2).
+After a successful connect `client->server_dil_pk` / `has_server_dil_pk` hold the proven
+server key, read from the session (`nodus_tcp_sc_peer_pubkey`) in `do_auth`
+(`nodus_client.c:1005-1047`); `nodus_client_force_disconnect` clears it
+(`:1223-1225`).
 
-The pin is checked AFTER the client has signed the server's challenge with its own
-key (the tier-2 AUTH order is unchanged); a refused server has seen that signature.
-Changing the order is a protocol change for every client (web wallet NODUS send
-design §5 item 14).
-
-After a successful pinned connect `client->server_dil_pk` / `has_server_dil_pk` hold
-the current server's key (a pinned connect only succeeds through the verified-`kpk_sig`
-path that sets them). Unpinned, the field keeps its TOFU behaviour (not cleared by an
-unsigned AUTH_OK) — messenger's `nodus_init.c` state callback reads it. Test:
-`tests/test_client_pin.c`. Design: `docs/plans/2026-09-25-web-wallet-nodus-send-design.md`
-rev 2 package (c1).
+Callers that still zero their config are now refused at init — e.g. messenger's
+`nodus_init.c` (`memset(&nconfig, 0, …)`, `messenger/dht/shared/nodus_init.c:941-942`;
+DNA Connect, EOL). Native tools take pin + chain id from the tool network file (previous
+section). Test: `tests/test_client_pin.c` (P1 / P1b init refusals, P2 / P2b the pin set,
+P3 wrong pins and P4 wrong chain id never READY, P5 a request over the session). Design
+of the original pin: `docs/plans/2026-09-25-web-wallet-nodus-send-design.md` rev 2
+package (c1); the session: §15 "DHT v2 sub-package 3b-2".
 
 ### Windows build — the plain TCP listener (2026-10-16)
 
@@ -8421,8 +8491,8 @@ re-pins in its own session.
 `cmd_msig_sign2` / `msig_inputs_verify`):
 - **`--pin <fp128hex>` is required** — the fingerprint of the node the co-signer runs himself (`whoami`
   "Fingerprint:" / `identity/nodus.fp`). The session to `-s` sets `pinned_server_fps`, so
-  `nodus_client.c` `pin_check_auth_ok` refuses an unsigned or foreign channel key and the session is
-  ML-KEM-1024 only. No pin / a malformed pin / a mismatch → nothing is signed.
+  the session refuses a foreign server key (since DHT v2 3b-2 inside the SecretConnection handshake,
+  before the ENCAPS job; until then `pin_check_auth_ok`, deleted) and is ML-KEM-1024 only. No pin / a malformed pin / a mismatch → nothing is signed.
 - **Named-coin query.** `dnac_msig_utxo` gains an optional `"nul"` argument (1..`NODUS_DNAC_MSIG_MAX_NULS`
   = 15 strictly ascending 64-byte nullifiers — the chain's per-leg input ceiling, `_Static_assert`ed
   against `NODUS_V2_SPEND_MAX_IN`; exclusive with `"max"`). The node (`nodus_witness_handlers.c`
@@ -12355,6 +12425,286 @@ After incremental sealing, at `5400aeaeb`: build 0 warnings; `test_tcp_sc` 35 pa
 30 to 35).
 Function reference: `messenger/docs/functions/transport.md` "SecretConnection layer
 of the TCP / WebSocket transport".
+
+**Since 3b-2 (next section) the layer is ENABLED** on 4001 / WebSocket accept, 4002
+accept and dial, the batch forwards and the client SDK; the obligations above are done
+(`nodus_tcp_sc.h:7-14`, `:101-109`).
+
+### DHT v2 sub-package 3b-2 — 4001 / WebSocket / 4002 sessions on the SecretConnection layer (2026-10-24 .. 26, branch `dna95-dht2-3c`, not versioned)
+
+What it is: the server half of DHT v2 sub-package 3b (design
+`docs/plans/2026-10-23-dht-v2-session-package-design.md` rev 1, LOCAL-only; Kurultay #43
+and the khan's decisions, `docs/plans/decisions/2026-10-23-kurultay-43-summary.md`). Every
+client port connection (4001 and the WebSocket entry), every inter-node connection (4002,
+accepted and dialed, in `nodus-core` and in `nodus-storage`), every batch forward and every
+client SDK connection runs the 4004 SecretConnection (`shared/dnac/cmt_p2p_secret.h`)
+through the layer of 3b-1 (`nodus_tcp_sc.h:7-14`). Only the Unix-socket IPC connections
+(`is_unix`) carry no layer. Nodus 7-byte frames travel unchanged inside the sealed stream
+(O-1). The old session path is deleted: the T2 `hello` → `challenge` → `auth` → `auth_ok`
+(with `kpk` / `spk` / `kpk_sig` / `mpk` / `mpk_sig`) → `key_init` → `key_ack` exchange,
+the per-connection AES-256-GCM channel crypto of 4001 / 4002, the 4002 dialer handshake
+module (`nodus_inter_dial_start` / `_on_frame` / `_conn_sync`), the batch forward's own
+socket / handshake / frame parser, the `nodus_t2_auth_ok_kyber` / `nodus_t2_key_init` /
+`nodus_t2_key_ack` encoders, the server's `nodus_auth_handle_hello` / `_auth` /
+`_key_init` / `_key_init_alg`, the client's `pin_check_auth_ok`, the transport's
+`decrypt_fail_total` counter, `NODUS_PREAUTH_PAYLOAD_MAX`, and the 4002
+`require_peer_auth` gate (the config field still parses and nothing reads it,
+`nodus_server.h:63-73`). What is NOT deleted: the `nodus_t2_hello` / `nodus_t2_auth`
+encoders (`nodus_tier2.h:93`, `:97`) — the channel-connection client still sends them
+(`nodus_client.c:8418`, `:8452`) to the channel server, which stays compiled out —
+and `nodus_channel_crypto`, which the circuit end-to-end encryption still uses
+(`nodus_client.c:506`, `:8973`).
+
+Cut-over: all at once — nodes and every client switch in the same release, no period in
+which a node accepts both handshakes (operator 2026-10-23,
+`docs/plans/decisions/2026-10-23-dht-v2-session-cutover.md`). An old node and a new node
+cannot talk on 4001 / WS / 4002. Deploy steps: `DEPLOY_RUNBOOK.md` §2.9.
+
+**Profiles, purposes, versions.** 4001 / WS = CLIENT profile, signing purpose 0x0C,
+`NODUS_CSESS_PROTO_VERSION` 1; 4002 and the batch forwards = NODE profile, purpose 0x0D,
+`NODUS_NSESS_PROTO_VERSION` 1 (`nodus_tcp_sc.h:203-213`; operator "İkisi de 1",
+`decisions/2026-10-23-dht-v2-session-bytes.md` addendum 2026-10-24). The HKDF info strings
+and the NDS1 tagged signature preimage are the ones that record fixes (3a). 4004 is
+unchanged.
+
+| Where | Role | Enabled by | Pin | Chain id from |
+|---|---|---|---|---|
+| 4001 / WS accept (`srv->tcp`) | RESPONDER, CLIENT | `on_tcp_accept` (`nodus_server.c:1722-1758`) | — (any client that proves its key) | `nodus_server_chain_id` (`:1747`) |
+| 4002 accept (`srv->inter_tcp`) | RESPONDER, NODE | `on_inter_accept` → `nodus_inter_session_enable(..., false)` (`nodus_server.c:1295-1296`) | — (khan A: any identity that proves its key; per-operation authorization comes in packages 6-7) | `srv->inter_cfg.chain_id` = `server_inter_chain_id` (`:2424-2427`) |
+| 4002 dial, core (`srv->inter_tcp`) and storage (`ipc->out`) | INITIATOR, NODE | `nodus_inter_pool_dial` → `pool_dial_ex` → `nodus_inter_session_enable(..., true)` (`nodus_inter_dial.c:153-198`) | the exact node id recorded at dial time (`conn->expected_peer_id`, `:191-192`) | core: as above; storage: `dipc_chain_id` (`nodus_dht_ipc.c:318-341`) |
+| batch forward (`dht->bf_state.tcp`) | INITIATOR, NODE | `bf_start_forward` (`nodus_dht_server.c:3389-3453`) | the FIND_NODE peer's node id (`:3434-3435`) | `bf_cfg_chain_id` → `dht->host.chain_id` (`:3239-3242`) |
+| client SDK | INITIATOR, CLIENT | `do_connect_one` (`nodus_client.c:891-939`) | the SET `config.pinned_server_fps` (`:929-930`) | `config.expected_chain_id` (`:928`) |
+
+The pin is checked BEFORE the ENCAPS job: the responder's claimed key must hash to
+`expected_peer` or to one entry of `expected_set` (`nodus_tcp_sc.h:303-313`), else the
+machine is aborted. `nodus_inter_session_proven` re-checks a dialed pin against the
+proven key at `on_session` (`nodus_inter_dial.c:91-97`). A pin of all zero bytes is
+refused centrally, whoever built the config: `nodus_tcp_sc_enable` refuses an
+INITIATOR whose `expected_peer` or any `expected_set` entry is all zero
+(`nodus_tcp_sc.c:684-692`), and `nodus_client_init` refuses an all-zero entry
+(`nodus_client.c:796-803`).
+
+**The session token (O-2 b).** When a session becomes AUTHENTICATED the RESPONDER mints a
+fresh 32-byte token and sends it as the FIRST sealed frame: a T2 `auth_ok`, txn 0,
+carrying the token and nothing else (`nodus_t2_auth_ok`, `nodus_tier2.h:391-397`). On 4001
+/ WS: `nodus_auth_session_start` (`nodus_auth.c:98-170`). On 4002: `on_inter_session`
+(`nodus_server.c:1323-1336`, sent with `nodus_tcp_send_raw` so it goes before the dial
+queue's replay). The token is a correlation key, NEVER an authorization input:
+`dispatch_t2` no longer checks it (`nodus_server.c:1446-1451`), and the witness IPC no
+longer refuses a session frame whose embedded token differs from the preface's
+(`nodus_witness_ipc.c:445-447`; the preface key `s->pk` is the identity). It still keys
+the delayed `dnac_cc_collect` reply (`server_find_session_conn`, `nodus_server.c:2008-2017`)
+and the witness IPC session preface. Identity is the connection: every 4001 handler takes
+it from the session, which `nodus_auth_session_start` fills from the SecretConnection's
+authenticated key (`nodus_auth.c:104-107`). On 4002 a dialer consumes the token message and
+drops it; an ACCEPTED peer that sends one is disconnected (`dispatch_inter`,
+`nodus_server.c:1059-1077`). The batch forward stores it for logs only
+(`bf_on_frame`, `nodus_dht_server.c:3312-3330`).
+
+**What `on_session` re-homes** (formerly done when the AUTH signature verified,
+`nodus_auth_session_start`, `nodus_auth.c:98-170`): `sess->client_pk` / `client_fp`
+from the proven key; `conn->peer_id` / `peer_pk` / `peer_id_set` / `authenticated`;
+`sess->auth_seq` from `srv->next_auth_seq`; the per-identity session limit
+(`NODUS_MAX_SESSIONS_PER_IDENTITY`, oldest out); presence (`nodus_presence_add_local`);
+the token message. No frame reaches `dispatch_t2` or `dispatch_inter` before it (the layer
+holds input back); a session that is somehow not marked authenticated is closed, never
+served (`nodus_server.c:1439-1444`, `:1043-1053`).
+
+**The chain id of a session.** Both ends put the chain id in their HELLO, and the handshake
+fails when they differ. The node binds every session to the 32-byte **v3** chain id — the
+hash of the stored genesis document, the same id 4004's HELLO carries and every client
+knows (`nodus_witness_v2_chain_id`, `nodus_witness_v2_claims.c:192-235`) — and NOT to the
+legacy 16-byte id padded with zeros that `w->chain_id` holds and the T2 `status` RPC keeps
+reporting (unchanged, `ipcb_status`, `nodus_chain_backend_ipc.c:400`).
+- The witness answers it through `nodus_witness_dht_chain_id` (`nodus_witness_ipc.c:97-101`):
+  0 with the id, or -1 when no chain is open or there is no v3 id — never a zero id.
+- The chain backend has a new op `chain_id_v3` (`nodus_chain_backend.h:70-77`):
+  in-process `inproc_chain_id_v3` (`nodus_chain_backend_inproc.c:56-58`); over IPC
+  `ipcb_chain_id_v3` reads the `c3` key of `ipc_status` (`nodus_chain_backend_ipc.c:405-412`;
+  false while the snapshot says no chain is open or `c3` is all zero).
+- `ipc_status` is now an 8-key map: `q`, `co`, `h`, `sr`, `ci` (legacy), **`c3`** (v3),
+  `po`, `lp` (`nodus_witness_ipc.c:484-494`). The core's decoder is STRICT: it requires
+  exactly 8 keys, every key once (`nodus_chain_backend_ipc.c:111`, `:116`), so a 7-key map
+  from an older `nodus-witness` is refused — `nodus-core` and `nodus-witness` must be the
+  same build (runbook §2.9).
+- The `ci` of `ipc_dht_snap` (the storage process's witness view) now carries the v3 id:
+  `nodus_witness_dht_snap_fill` takes it from `nodus_witness_dht_chain_id` and fails the
+  snapshot without one (`nodus_witness_ipc.c:112-115`).
+- **Core** learns it in `nodus_server_chain_id` (`nodus_server.c:1685-1714`): while
+  unknown, the backend is asked at most once a second (monotonic stamp), an all-zero
+  answer counts as unknown, and the first non-zero answer is kept for the life of the
+  process. **Storage** latches it the same way in `dipc_chain_id`
+  (`nodus_dht_ipc.c:318-341`): the first fresh, non-zero snapshot of its witness view
+  (`nodus_dht_ipc_open_wview`, opened by `tools/nodus-storage.c:191-207`, which exits 1
+  when the view object cannot be created) sets it; a later witness gap longer than the
+  view's 5 s staleness bound (`NODUS_DHT2_WVIEW_SNAP_STALE_MS`, `nodus_dht2_wview.h:62`)
+  no longer refuses dials once it is latched.
+- **Fail closed.** While the id is not known no session is made: a 4001 / WS accept is
+  closed (`nodus_server.c:1747-1751`), a 4002 accept is closed (`:1295-1296` via
+  `nodus_inter_dial.c:57-62`), a 4002 dial is refused BEFORE the TCP connect
+  (`pool_session_ready`, `nodus_inter_dial.c:144-149`, `:171-178`), a batch forward is
+  not started (`nodus_dht_server.c:3418-3423`). The boot window of a node (no chain
+  open yet, `nodus-witness` not answering) therefore serves no 4001 / 4002 session.
+
+**The pre-session policy (Kurultay #43 O-5; rate: operator 2026-10-24,
+`decisions/2026-10-24-dht-v2-handshake-rate.md`).** Applies to the ACCEPTING side of 4001 /
+WS and 4002; all clocks below are `nodus_time_mono_ms()` (monotonic), node-local work
+scheduling, never a consensus input.
+- **Deadline:** an accepted layer connection that is not AUTHENTICATED is closed
+  `NODUS_PRESESSION_IDLE_MS` (15,000) after its last socket byte or
+  `NODUS_PRESESSION_ABS_MS` (30,000) after it connected, whichever comes first
+  (`nodus_server.h:649-650`; `nodus_tcp_sc_presession_sweep`, `nodus_tcp_sc.c:780-808`,
+  reading `conn->last_activity_mono_ms` / `connected_mono_ms`, `nodus_tcp.h:167-168`).
+  The server loop looks once a second (`presession_tick`, `nodus_server.c:971-977`,
+  called at `:2876`; `nodus_server_presession_sweep`, `:960-969`, sweeps `srv->tcp` and
+  `srv->inter_tcp`). Dialed connections are skipped (`c->auth_initiated_by_us`); an
+  authenticated one is never touched. The old 30 s wall-clock sweep of unauthenticated
+  connections (effective ≈ 45 / 60 s) is gone: `idle_timeout_sweep` now covers
+  authenticated client sessions only (`nodus_server.c:985-1003`).
+- **Dialed 4002 bound:** a dialed connection whose session is not authenticated
+  `NODUS_INTER_POOL_HELLO_TIMEOUT_SEC` (10) after the DIAL is closed; measured from
+  `conn->dial_mono_ms` (`nodus_tcp.h:173`), so a connection still connecting is covered
+  (`nodus_inter_pool_sweep`, `nodus_inter_dial.c:280-296`).
+- **Sealed-input budget per handshake:** before AUTHENTICATED a peer may feed at most the
+  plaintext handshake messages its role receives plus 5 sealed frames (the AUTHSIG:
+  4,631 B → 5 × 1,044 B): RESPONDER 4,236 + 5,220 = 9,456 bytes, INITIATOR 4,232 + 5,220
+  = 9,452 bytes (`sc_presession_budget`, `nodus_tcp_sc.c:71-96`; enforced where the
+  machine takes bytes, `:973-984`). Over it the connection is closed.
+- **Per-IP handshake rate:** at most `NODUS_HANDSHAKE_RATE_PER_MIN` = 60 new accepts per
+  minute from one IP on each accepting transport (`nodus_server.h:655`, set as
+  `hs_rate_per_min` on `srv->tcp` and `srv->inter_tcp`, `nodus_server.c:2391`, `:2417`).
+  Fixed window of `NODUS_TCP_HS_RATE_WINDOW_MS` (60,000) per IP; IPv4 by address, IPv6 by
+  /64 (`nodus_ws_ip_bucket`, now defined in `nodus_tcp.c:1633-1656` so the Windows build,
+  which does not build `nodus_ws.c`, has it). The table holds `NODUS_TCP_HS_RATE_TABLE` =
+  512 IPs; when full it reuses the entry with the oldest window (an IP evicted under a
+  many-IP flood is counted afresh — bounded memory, never growth) (`nodus_tcp_hs_rate_allow`,
+  `nodus_tcp.c:1658-1690`). The plain listener checks it after the 20-per-IP concurrency
+  count (`nodus_tcp.c:1728-1738`); the WebSocket entry checks it per REAL client address
+  after `X-Forwarded-For` and after its own concurrency limit (`:1956-1963`). Dials this
+  node makes are never counted. `hs_rate_per_min` 0 = off (the default of a bare
+  `nodus_tcp_t`).
+- **Unchanged:** 20 plain + 20 WS connections per IP; the handshake worker queues 64 + 64
+  (`NODUS_TCP_SC_JOBQ_OUT` / `_IN`); no one-connection-per-IP rule (NAT, tabs).
+
+**The 4002 send result is tri-state (four values).** `nodus_inter_pool_send_framed`
+(`nodus_inter_dial.c:207-268`) returns `nodus_inter_send_t` (`nodus_inter_dial.h:140-166`):
+
+| Value | Meaning | Durable hint row |
+|---|---|---|
+| `NODUS_INTER_SEND_WRITTEN` 0 | handed to an AUTHENTICATED session and sealed into its write path, and NOT diverted by the queue-full fallback | may be deleted — the only such result |
+| `NODUS_INTER_SEND_QUEUED` 1 | the session is not authenticated yet: the frame waits in the connection's in-memory dial queue and dies with a failed handshake (a rolling deploy: the peer may be an old build). ALSO returned when `tcp->on_pending_full` diverted the frame (the send reported 0 but `pending_hint_fallback_count` moved, `:254-257`) | stays; no retry counted; this peer is left until the next cycle |
+| `NODUS_INTER_SEND_FAILED` -1 | the connect or the write failed (a slow consumer is disconnected), or the dial queue is full | stays; retry counted, expiry by the retry cap / TTL as before |
+| `NODUS_INTER_SEND_REFUSED` -2 | the dial was refused LOCALLY before any connection: no pin, no node-session config, chain id unknown | stays; NO retry counted (a witness gap must not age rows toward deletion unsent) |
+
+The hinted-handoff retry deletes a row only on WRITTEN (`dht_hinted_retry`,
+`nodus_dht_server.c:904-939`). Callers that only ask "was it accepted" (replication on put,
+republish, listen forwarding) test `>= 0` (`nodus_dht_server.c:111-122`). The dial queue is
+plaintext in memory only; `nodus_inter_dial_conn_open` replays it through `nodus_tcp_send`,
+sealed and in order, when the gate opens at `on_session` — it is never flushed as bytes
+(`nodus_inter_dial.c:336-380`). This closes the Kurultay #43 mandatory fix "no hint-row
+deletion on queued".
+
+**Batch forwards on their own dial-only transport.** The DHT owns `dht->bf_state.tcp`, a
+`nodus_tcp_t` created by `nodus_dht_init` (`nodus_dht_server.c:4631-4647`) and closed by
+`nodus_dht_stop` / `nodus_dht_close` (`bf_transport_close`, `:4653-4657`). Each forward is
+one connection of it carrying the NODE session, pinned to the FIND_NODE peer; three
+callbacks drive it: `bf_on_session` (session up → `nodus_inter_session_proven`, open the
+gate with `nodus_inter_dial_conn_open`, send `get_batch`), `bf_on_frame` (the token
+message, then the reply to absorb), `bf_on_disconnect` (the forward fails)
+(`:3279-3350`). `bf_tick` polls it with a 0 ms wait (`:3354-3358`). The session config
+resolves through the DHT's CURRENT host at call time: `cfg.chain_id = bf_cfg_chain_id`
+with `ctx = dht`, which calls `dht->host.chain_id(dht->host.ctx, …)`
+(`:3239-3242`, `:4639-4641`) — a copy of `host.ctx` taken at init would go stale when the
+host is replaced under a live DHT. The `nodus_dht_host_t` gains `chain_id`
+(`nodus_dht.h`, "COLD (once per batch-forward dial)"; core: `server_dht_chain_id`,
+`nodus_server.c:2084-2086`; storage: `dipc_chain_id`). The old per-forward socket, epoll,
+fd table (`NODUS_BF_FD_TABLE_SIZE`), receive buffer and state machine
+(`BF_SEND_HELLO` … `BF_RECV_KEY_ACK`) are gone; `BF_CONNECTING` 0 / `BF_RECV_RESULT` 1 /
+`BF_DONE` 2 remain.
+
+**Polling with outstanding handshake jobs.** A loop that polls several transports caps its
+wait at `NODUS_TCP_SC_POLL_MS` while ANY has a job outstanding: `nodus_server_run` checks
+`srv->tcp`, `srv->inter_tcp` and the DHT backend's new `sc_busy` op
+(`nodus_server.c:2844-2847`, `:2867-2870`; `nodus_dht_backend.h:124-131`; in-process
+`inproc_sc_busy` → `nodus_dht_sc_busy`, the IPC backend NULL = false);
+`nodus_dht_ipc_poll` checks `ipc->out` and the DHT's batch-forward transport
+(`nodus_dht_ipc.c:877-890`).
+
+**Transport teardown (D-24 a).** `on_disconnect` is invoked in ONE place,
+`conn_notify_disconnect` (`nodus_tcp.c:445-450`), which first claims the teardown
+(`conn->disc_claimed`, `nodus_tcp.h:301-304`); a `nodus_tcp_disconnect` issued on the same
+connection from inside that callback is a no-op (`nodus_tcp.c:3634-3639`), so
+`on_disconnect` runs once and only the outer `conn_free` frees.
+
+**Client SDK.** `nodus_client_init` refuses a config with no pin (`pinned_server_fps` NULL
+or count ≤ 0), an all-zero pin, or no chain id (`has_expected_chain_id` false or an
+all-zero `expected_chain_id`) (`nodus_client.c:771-809`; fields `nodus.h:104-134`). A
+connect claims the pending slot of txn 0 BEFORE the TCP connect, enables the layer
+(INITIATOR, CLIENT, the pin set, the chain id), waits for the connect, then `do_auth` waits
+for the token message; READY needs the same live connection, the layer's authenticated
+transition (`session_ready`, set by `client_on_session`, `nodus.h:200-203`,
+`nodus_client.c:753-757`), a token of the right length and a readable proven server key,
+which becomes `server_dil_pk` (`nodus_client.c:1005-1047`). `nodus_client_force_disconnect`
+clears `session_ready` and `has_server_dil_pk` (`:1223-1225`). Consumers (native tools,
+explorer, web wallet, starter) are sub-package 3c (§11 "Tool network identity").
+
+**Recorded consequences (khan decisions B and C, Kurultay #43).** No forward secrecy on 4001
+/ 4002: the static node keys are reused as approved 2026-10-14; if a node's keys are stolen
+later, recorded past client traffic (which records / inboxes a wallet read; contents stay
+end-to-end encrypted) can be decrypted; browser traffic additionally runs inside WSS. The
+client's identity key travels in the plaintext HELLO: an observer of raw 4001 traffic sees
+which wallet identity connects to which node — a known limitation, as before.
+
+**Determinism.** Nothing here is a consensus input: sessions decide who may talk, not what
+is valid. The clocks read are monotonic and schedule this node's own connection work. No
+4004 byte changes (the per-port protocol-version symbols keep `CMT_P2P_PROTOCOL_VERSION`
+for 4004 only).
+
+**Tests** (each header carries what it proves / requires / leaves / how it can lie; all:
+default build — libnodus with `NODUS_TCP_SC` — loopback, no environment, nothing left
+behind beyond what is noted):
+- `test_node_session` — the 4002 node session over two real pools: a pinned dial reaches
+  AUTHENTICATED, its first send is QUEUED and replayed sealed exactly once, the next is
+  WRITTEN, both ends carry the proven identity; a wrong pin never authenticates and a
+  QUEUED frame is lost with it; different chain ids fail; a dialer with no chain id or no
+  pin is REFUSED before any TCP connect; the 10 s dial bound is measured from the dial
+  stamp; an acceptor with no chain id closes; an old plaintext `hello` is closed with
+  nothing dispatched. Can lie: it pins the wiring, not the cryptography; the acceptor's
+  token message is not exercised.
+- `test_presession_deadline` — 15 s idle / 30 s absolute with injected monotonic time;
+  an authenticated session is never closed; moving the wall-clock fields changes nothing.
+  Can lie: it does not prove the server loop calls the sweep once a second.
+- `test_chain_id_v3` — `nodus_server_chain_id` returns `chain_id_v3`, not the legacy
+  padded `status` id; fail closed without one; over a real node session a dialer with the
+  legacy id is refused and one with the v3 id authenticates; `nodus_witness_dht_chain_id`
+  picks the v3 id and errors without one; the 60/min rate with injected time (per IP, IPv6
+  /64, rate 0 off, bounded table) and on a real accept (limit 2, third closed). Can lie:
+  the witness case uses a scratch witness with the cached id set by hand.
+- `test_hint_tristate` — the hint row is deleted only on WRITTEN; QUEUED and REFUSED keep
+  it with no retry counted, FAILED keeps it with one retry (one forked child per case,
+  `/tmp`).
+- `test_send_queue_full` — a send diverted to `on_pending_full` reports QUEUED, never
+  WRITTEN, and no send FAILs on the way. Can lie: if the kernel buffers all 120 MB offered
+  it FAILs ("queue never filled").
+- `test_bf_session` — a real forwarded `get_batch` over the pinned node session: the
+  responder receives exactly one sealed `get_batch`, the token message is not taken for
+  the reply, the client origin gets its result (`/tmp`). Can lie: the reply is an empty
+  answer, no merge logic.
+- `test_round4_hardening` — re-entrant disconnect runs `on_disconnect` once; enable refuses
+  an all-zero pin and an all-zero set entry; `nodus_client_force_disconnect` clears
+  `session_ready` / `has_server_dil_pk`; the batch-forward config follows a replaced host.
+  Can lie: a double free shows only under a sanitiser.
+- Changed: `test_client_pin`, `test_server`, `test_tier2`, `test_ws_server`,
+  `test_witness_ipc`, `test_dht_ipc`, `test_presence_dial_pin` and the client tests
+  (`test_session_helper.h`, `test_server_session.h` give them a session). Deleted with the
+  old path: `test_mlkem_handshake`, `test_inter_auth`, `test_inter_dial`,
+  `test_inter_pending_replay`, `test_inter_preauth_gate`, `test_inter_role_split`,
+  `test_inter_conn_crypto_isolation`, `test_channel_crypto_aead_complete`. The `nm` gates
+  `core_linked` / `dht_linked` / `storage_linked` name `nodus_auth_session_start` (was
+  `nodus_auth_handle_auth`) and `storage_linked` requires `nodus_inter_session_enable` (was
+  `nodus_inter_dial_on_frame`).
+
+Function reference: `messenger/docs/functions/transport.md` "DHT v2 sub-package 3b-2".
 
 ### Block retention (pruning) and the SeenCommit cleanup (2026-10-03)
 
