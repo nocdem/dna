@@ -831,6 +831,37 @@ static int handover_quorum(nodus_dht2_pull_t *p, const nodus_dht2_world_t *w,
     return 0;
 }
 
+/* One pending record, at a receipt or at the epoch check. §4.5 (v) covers
+ * permanent records this node NO LONGER holds: if it is eligible again the
+ * obligation simply ends (flag and acknowledgements cleared, nothing
+ * dropped); otherwise the record is dropped once the quorum is met.
+ * @return 0, -1 (fault). */
+static int handover_settle(nodus_dht2_pull_t *p, const nodus_dht2_world_t *w,
+                           const uint8_t address[DHT2_HASH_LEN],
+                           const uint8_t place[DHT2_HASH_LEN],
+                           const uint8_t hash[DHT2_HASH_LEN])
+{
+    bool met = false;
+    int  el = dht2_eligible(place, w->ctx.s0, w->ctx.n0, w->ctx.s1, w->ctx.n1,
+                            p->holder.self_fp);
+
+    if (el < 0) {
+        return -1;
+    }
+    if (el == 1) {
+        return nodus_dht2_store_handover_set(p->holder.store, address, false,
+                                             NULL) == 0 ? 0 : -1;
+    }
+    if (handover_quorum(p, w, address, place, &met) != 0) {
+        return -1;
+    }
+    if (met && nodus_dht2_store_handover_drop(p->holder.store, address, hash,
+                                              NULL) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 int nodus_dht2_pull_epoch_check(nodus_dht2_pull_t *p, uint64_t now_ms)
 {
     nodus_dht2_world_t       w;
@@ -899,13 +930,8 @@ int nodus_dht2_pull_epoch_check(nodus_dht2_pull_t *p, uint64_t now_ms)
         }
         for (i = 0; i < cnt && rc == 0; i++) {
             if (page[i].pending) {
-                bool met = false;
-
-                if (handover_quorum(p, &w, page[i].address, page[i].placement,
-                                    &met) != 0 ||
-                    (met && nodus_dht2_store_handover_drop(
-                                p->holder.store, page[i].address,
-                                page[i].hash, NULL) != 0)) {
+                if (handover_settle(p, &w, page[i].address,
+                                    page[i].placement, page[i].hash) != 0) {
                     rc = -1;
                 }
                 continue;
@@ -1176,7 +1202,6 @@ static int serve_receipt(nodus_dht2_pull_t *p, uint64_t now_ms,
         uint8_t held[DHT2_HASH_LEN], place[DHT2_HASH_LEN];
         size_t  idx[DHT2_R];
         int     cnt, k, member = 0;
-        bool    met = false;
 
         if (nodus_dht2_store_handover_info(p->holder.store, r->e[i].a, &found,
                                            &pending, held, place) != 0) {
@@ -1209,9 +1234,7 @@ static int serve_receipt(nodus_dht2_pull_t *p, uint64_t now_ms,
         }
         /* Decision 2026-10-27-dht-v2-handover-one-receipt.md: the obligation
          * ends — the record is DROPPED — when the quorum is met. */
-        if (handover_quorum(p, &w, r->e[i].a, place, &met) != 0 ||
-            (met && nodus_dht2_store_handover_drop(p->holder.store, r->e[i].a,
-                                                   held, NULL) != 0)) {
+        if (handover_settle(p, &w, r->e[i].a, place, held) != 0) {
             rc = -1;
             break;
         }

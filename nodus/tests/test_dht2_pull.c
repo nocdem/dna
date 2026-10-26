@@ -934,11 +934,25 @@ static bool acked_by(node_t *n, const uint8_t addr[DHT2_HASH_LEN],
 }
 
 /* The record `r` is stored again at A (after a drop: a NEW row). */
+/* Store `r` at A again after a drop. The holder admits a write only when it
+ * is in eligible(placement key) (§4.1), and under S6 A is not — so the put
+ * runs under S(H) = {A, B} and A's sets are restored afterwards. */
 static bool reput_at_a(const env_t *r)
 {
-    nodus_dht2_put_t pr;
+    nodus_dht2_put_t          pr;
+    nodus_witness_dht_sets_t *save = malloc(sizeof(*save));
+    bool                      ok;
 
-    return put_at(&g_n[0], r, &pr) == 0 && pr.outcome == NODUS_DHT2_PUT_STORED;
+    if (save == NULL) {
+        return false;
+    }
+    memcpy(save, g_n[0].view.sets, sizeof(*save));
+    set_pair(&g_n[0]);
+    ok = put_at(&g_n[0], r, &pr) == 0 && pr.outcome == NODUS_DHT2_PUT_STORED;
+    memcpy(g_n[0].view.sets, save, sizeof(*save));
+    g_n[0].view.snap.epoch_start = save->e;
+    free(save);
+    return ok;
 }
 
 /* A's pull_serve of a valid receipt that `signer` sends for (addr, h) with
