@@ -90,18 +90,30 @@ static void session_role_exempt(nodus_server_t *srv, nodus_tcp_t *tcp,
  * stay as they are, so that an IPC hiccup does not drop every node's
  * exemption at once; the next known set decides. @return flags cleared. */
 int nodus_server_role_revalidate(nodus_server_t *srv) {
-    if (!srv || !srv->chain || !srv->chain->ops->has_role ||
+    if (!srv || !srv->chain || !srv->chain->ops->role_state ||
         !srv->chain->ops->roles_known ||
         !srv->chain->ops->roles_known(srv->chain))
         return 0;
+    /* ONE instant for the whole walk: roles_known above refreshed the set;
+     * every lookup below is evaluated against that set at this `now`, so a
+     * snapshot that expires mid-walk (the backends read the clock on their
+     * own) cannot turn an active peer into "absent". Revoke only on ABSENT;
+     * UNKNOWN keeps the flag (same fail-safe as an unknown set above).
+     * Cost: at most 2 transports x NODUS_TCP_MAX_CONNS (1024) connections,
+     * each a binary search of at most NODUS_ROLE_SET_MAX (2048) sorted
+     * entries = 11 comparisons of 64 bytes: about 22.5 thousand per walk,
+     * once per NODUS_ROLE_SET_EVERY_MS (10 s). */
+    const uint64_t now = nodus_time_mono_ms();
     int cleared = 0;
     nodus_tcp_t *tcps[2] = { &srv->tcp, &srv->inter_tcp };
     for (int t = 0; t < 2; t++) {
         for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
             nodus_tcp_conn_t *c = tcps[t]->pool[i];
             if (!c || c->close_pending || !c->role_exempt) continue;
-            if (!c->peer_id_set ||
-                !srv->chain->ops->has_role(srv->chain, &c->peer_id)) {
+            nodus_role_state_t st = c->peer_id_set
+                ? srv->chain->ops->role_state(srv->chain, &c->peer_id, now)
+                : NODUS_ROLE_ABSENT;
+            if (st == NODUS_ROLE_ABSENT) {
                 nodus_tcp_role_revoke(c);
                 cleared++;
             }

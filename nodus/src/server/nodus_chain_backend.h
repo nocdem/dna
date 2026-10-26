@@ -28,6 +28,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "nodus/nodus_types.h"
@@ -68,15 +69,44 @@ static inline bool nodus_role_set_known(const nodus_role_set_t *s, uint64_t now_
     return s && s->known && s->fps && now_ms - s->at_ms <= NODUS_ROLE_SET_STALE_MS;
 }
 
+static inline int nodus_role_fp_cmp(const void *a, const void *b) {
+    return memcmp(a, b, 64);
+}
+
+/** Sort the entries once, when the set is built (each refresh): every lookup
+ *  is then a binary search. The caller sets n first. */
+static inline void nodus_role_set_sort(nodus_role_set_t *s) {
+    if (s && s->fps && s->n > 1)
+        qsort(s->fps, s->n, 64, nodus_role_fp_cmp);
+}
+
+/** A lookup in a role set, evaluated at ONE instant. */
+typedef enum {
+    NODUS_ROLE_ABSENT  = 0,   /* the set is known and fresh and lacks the id */
+    NODUS_ROLE_PRESENT = 1,   /* the set is known and fresh and has it       */
+    NODUS_ROLE_UNKNOWN = 2    /* no known, fresh set at that instant         */
+} nodus_role_state_t;
+
+/** `node_id` against `s` as of `now_ms` (monotonic): PRESENT / ABSENT, or
+ *  UNKNOWN when the set is missing, not known, or older than
+ *  NODUS_ROLE_SET_STALE_MS at `now_ms`. Binary search over the sorted set:
+ *  at most NODUS_ROLE_SET_MAX = 2048 entries → at most 11 comparisons of 64
+ *  bytes per lookup. */
+static inline nodus_role_state_t nodus_role_set_state(const nodus_role_set_t *s,
+                                                      const nodus_key_t *node_id,
+                                                      uint64_t now_ms) {
+    if (!s || !s->known || !s->fps || !node_id) return NODUS_ROLE_UNKNOWN;
+    if (now_ms - s->at_ms > NODUS_ROLE_SET_STALE_MS) return NODUS_ROLE_UNKNOWN;
+    return (s->n > 0 &&
+            bsearch(node_id->bytes, s->fps, s->n, 64, nodus_role_fp_cmp))
+               ? NODUS_ROLE_PRESENT : NODUS_ROLE_ABSENT;
+}
+
 /** `node_id` is in a known, fresh `s` as of `now_ms` (monotonic). */
 static inline bool nodus_role_set_has(const nodus_role_set_t *s,
                                       const nodus_key_t *node_id,
                                       uint64_t now_ms) {
-    if (!s || !s->known || !s->fps || !node_id) return false;
-    if (now_ms - s->at_ms > NODUS_ROLE_SET_STALE_MS) return false;
-    for (uint32_t i = 0; i < s->n; i++)
-        if (memcmp(s->fps[i], node_id->bytes, 64) == 0) return true;
-    return false;
+    return nodus_role_set_state(s, node_id, now_ms) == NODUS_ROLE_PRESENT;
 }
 
 typedef struct {
@@ -147,6 +177,15 @@ typedef struct {
      *  exemptions of live connections only against a known set, so an IPC
      *  hiccup does not drop every node at once. May be NULL (= false). */
     bool (*roles_known)(nodus_chain_backend_t *b);
+
+    /** The tri-state lookup of `node_id` against the CURRENT set, evaluated
+     *  at the caller's instant `now_ms` (nodus_time_mono_ms scale) and never
+     *  refreshing it: a caller that walks many connections takes `now_ms`
+     *  once (after roles_known has refreshed the set), so a snapshot that
+     *  expires mid-walk cannot turn PRESENT into "absent". May be NULL. */
+    nodus_role_state_t (*role_state)(nodus_chain_backend_t *b,
+                                     const nodus_key_t *node_id,
+                                     uint64_t now_ms);
 
     /** The client session in `conn`'s slot ended (disconnect, eviction,
      *  idle sweep) or that slot starts a new session — called where the

@@ -234,12 +234,14 @@ static const p2p_bonded_t *bonded_find(const nodus_witness_p2p_t *p,
  * both a storage-set member and a validator / committee member is a validator
  * whatever the add order. */
 static void bonded_add(p2p_bonded_t **set, int *n, int *cap,
-                       const uint8_t pk[NODUS_PK_BYTES], bool validator)
+                       const uint8_t pk[NODUS_PK_BYTES], bool validator,
+                       bool *ok)
 {
     char id[CMT_P2P_ID_CAP];
     int i;
 
     if (cmt_p2p_pubkey_to_id(pk, id) != CMT_OK) {
+        *ok = false;            /* a derivation fault: the role export stops */
         return;
     }
     for (i = 0; i < *n; i++) {
@@ -253,6 +255,7 @@ static void bonded_add(p2p_bonded_t **set, int *n, int *cap,
         p2p_bonded_t *nb = (p2p_bonded_t *)realloc(*set, (size_t)ncap * sizeof(*nb));
 
         if (nb == NULL) {
+            *ok = false;
             return;
         }
         *set = nb;
@@ -267,15 +270,17 @@ static void bonded_add(p2p_bonded_t **set, int *n, int *cap,
 /* N5: the committee a height resolves to (the deleted B1 gate's reads,
  * nodus_witness_peer.c:696-720 before F5). */
 static void bonded_add_committee(nodus_witness_p2p_t *p, p2p_bonded_t **set,
-                                 int *n, int *cap, uint64_t height)
+                                 int *n, int *cap, uint64_t height, bool *ok)
 {
     nodus_committee_member_t *cm = NULL;
     int k = 0, i;
 
     if (nodus_committee_get_for_block_alloc(p->w, height, &cm, &k) == 0) {
         for (i = 0; i < k; i++) {
-            bonded_add(set, n, cap, cm[i].pubkey, true);
+            bonded_add(set, n, cap, cm[i].pubkey, true, ok);
         }
+    } else {
+        *ok = false;            /* lookup / allocation error (header: -1) */
     }
     free(cm);
 }
@@ -292,18 +297,24 @@ static void bonded_add_committee(nodus_witness_p2p_t *p, p2p_bonded_t **set,
  * that set. A member with no registry row (a committed set never has
  * one) is skipped and logged once per process. */
 static void bonded_add_storage_set(nodus_witness_p2p_t *p, p2p_bonded_t **set,
-                                   int *n, int *cap, uint64_t epoch_start)
+                                   int *n, int *cap, uint64_t epoch_start,
+                                   bool *ok)
 {
     nodus_storage_set_t *ss;
     sqlite3_stmt *st = NULL;
     uint32_t i;
+    int src;
 
     ss = (nodus_storage_set_t *)calloc(1, sizeof(*ss));
     if (ss == NULL) {
+        *ok = false;
         return;
     }
-    if (nodus_witness_storage_set_get(p->w, epoch_start, ss) != 0 ||
-        ss->count == 0) {
+    src = nodus_witness_storage_set_get(p->w, epoch_start, ss);
+    if (src != 0 || ss->count == 0) {
+        if (src < 0) {
+            *ok = false;        /* rc -1 = fault; rc 1 (no such set) is not */
+        }
         free(ss);
         return;
     }
@@ -312,6 +323,7 @@ static void bonded_add_storage_set(nodus_witness_p2p_t *p, p2p_bonded_t **set,
                            -1, &st, NULL) != SQLITE_OK) {
         QGP_LOG_WARN(LOG_TAG, "v2_storage_nodes table unreadable: %s",
                      sqlite3_errmsg(p->w->db));
+        *ok = false;
         free(ss);
         return;
     }
@@ -320,13 +332,16 @@ static void bonded_add_storage_set(nodus_witness_p2p_t *p, p2p_bonded_t **set,
 
         sqlite3_reset(st);
         if (sqlite3_bind_blob(st, 1, ss->fps[i], 64, SQLITE_STATIC) != SQLITE_OK) {
+            *ok = false;
             break;
         }
         rc = sqlite3_step(st);
         if (rc == SQLITE_ROW) {
             if (sqlite3_column_bytes(st, 0) == NODUS_PK_BYTES) {
                 bonded_add(set, n, cap,
-                           (const uint8_t *)sqlite3_column_blob(st, 0), false);
+                           (const uint8_t *)sqlite3_column_blob(st, 0), false, ok);
+            } else {
+                *ok = false;    /* a malformed registry row */
             }
         } else if (rc == SQLITE_DONE) {
             if (!p->storage_orphan_warned) {
@@ -338,6 +353,7 @@ static void bonded_add_storage_set(nodus_witness_p2p_t *p, p2p_bonded_t **set,
         } else {
             QGP_LOG_WARN(LOG_TAG, "v2_storage_nodes read failed: %s",
                          sqlite3_errmsg(p->w->db));
+            *ok = false;
             break;
         }
     }
@@ -405,6 +421,7 @@ void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p)
     p2p_bonded_t *nb = NULL;
     int n_new = 0, cap_new = 0;
     bool derive_ok = true;
+    int vrc = SQLITE_DONE;
 
     if (p == NULL) {
         return;
@@ -429,11 +446,19 @@ void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p)
                            "ORDER BY pubkey_hash", -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_int(st, 1, (int)DNAC_VALIDATOR_ACTIVE);
         sqlite3_bind_int(st, 2, (int)DNAC_VALIDATOR_ELIGIBLE);
-        while (sqlite3_step(st) == SQLITE_ROW) {
+        while ((vrc = sqlite3_step(st)) == SQLITE_ROW) {
             if (sqlite3_column_bytes(st, 0) == NODUS_PK_BYTES) {
                 bonded_add(&nb, &n_new, &cap_new,
-                           (const uint8_t *)sqlite3_column_blob(st, 0), true);
+                           (const uint8_t *)sqlite3_column_blob(st, 0), true,
+                           &derive_ok);
+            } else {
+                derive_ok = false;      /* a malformed validator row */
             }
+        }
+        if (vrc != SQLITE_DONE) {       /* the scan did not run to its end */
+            derive_ok = false;
+            QGP_LOG_WARN(LOG_TAG, "validators read failed: %s",
+                         sqlite3_errmsg(p->w->db));
         }
         sqlite3_finalize(st);
     } else {
@@ -464,17 +489,19 @@ void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p)
         const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
         uint64_t v2_tip = 0, H = 0;
 
-        if (nodus_witness_v2_tip_height(p->w, &v2_tip) == 0 &&
-            nodus_stprobe_epoch_for_tip(v2_tip, E, &H) == 0) {
-            bonded_add_storage_set(p, &nb, &n_new, &cap_new, H);
+        if (nodus_witness_v2_tip_height(p->w, &v2_tip) != 0) {
+            derive_ok = false;          /* tip unreadable: storage sets unknown */
+        } else if (nodus_stprobe_epoch_for_tip(v2_tip, E, &H) == 0) {
+            bonded_add_storage_set(p, &nb, &n_new, &cap_new, H, &derive_ok);
             if (H > E) {
-                bonded_add_storage_set(p, &nb, &n_new, &cap_new, H - E);
+                bonded_add_storage_set(p, &nb, &n_new, &cap_new, H - E,
+                                       &derive_ok);
             }
         }
     }
-    bonded_add_committee(p, &nb, &n_new, &cap_new, tip + 1);
+    bonded_add_committee(p, &nb, &n_new, &cap_new, tip + 1, &derive_ok);
     if (tip >= 1) {
-        bonded_add_committee(p, &nb, &n_new, &cap_new, tip - 1);
+        bonded_add_committee(p, &nb, &n_new, &cap_new, tip - 1, &derive_ok);
     }
     if (n_new > 1) {
         qsort(nb, (size_t)n_new, sizeof(*nb), bonded_cmp);
@@ -503,8 +530,17 @@ static void bonded_maybe_refresh(nodus_witness_p2p_t *p)
         }
         return;
     }
-    if (!p->bonded_valid ||
-        (nodus_witness_block_height_checked(p->w, &tip) == 0 && tip != p->bonded_tip)) {
+    if (!p->bonded_valid) {
+        nodus_witness_p2p_refresh_bonded(p);
+        return;
+    }
+    if (nodus_witness_block_height_checked(p->w, &tip) != 0) {
+        /* 4004 keeps the cached set (unchanged), but the role export must not
+         * treat it as current: a failed height check is a derivation fault. */
+        p->bonded_derive_ok = false;
+        return;
+    }
+    if (tip != p->bonded_tip) {
         nodus_witness_p2p_refresh_bonded(p);
     }
 }

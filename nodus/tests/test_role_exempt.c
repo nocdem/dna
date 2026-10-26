@@ -33,6 +33,13 @@
  *       longer holds the proven key, role_exempt is cleared on live
  *       connections of both transports; with an UNKNOWN set nothing changes;
  *       a still-member keeps the flag; a never-exempt connection is untouched.
+ *   E9  (round 5d N1) the lookup is tri-state against ONE instant: when the
+ *       snapshot expires in the middle of the walk the remaining lookups are
+ *       UNKNOWN and nobody is revoked; a real ABSENT still revokes.
+ *   E10 (round 5d) the role set is sorted once and looked up by binary search:
+ *       every member of a scrambled 300-entry set is found, a stranger is
+ *       ABSENT, a set older than NODUS_ROLE_SET_STALE_MS at the caller's
+ *       instant (or not known) is UNKNOWN.
  *
  * REQUIRES: a default build (libnodus); a loopback interface. No environment
  * and no compile flag beyond the default.
@@ -49,7 +56,9 @@
  * loop skips role_exempt connections, not that on_session marks them. E8 uses
  * a fake backend (two function pointers) and hand-placed pool entries: it
  * proves the walk and the fail-safe rule, not that the real backends' sets
- * refresh or that the run loop calls the walk on time.
+ * refresh or that the run loop calls the walk on time. E9's "expiry" is a
+ * counter in the fake, not a real clock crossing the stale bound; E10 tests the
+ * set helpers with injected instants, not a backend's refresh.
  */
 
 #include "transport/nodus_tcp.h"
@@ -277,9 +286,19 @@ static void test_e7(void) {
 
 /* ── E8: revalidation of live exemptions against a refreshed role set ── */
 static bool g_known, g_member;
+static int g_expire_after = -1;          /* N1: lookups answered before expiry */
+static int g_lookups;
 static bool fake_known(nodus_chain_backend_t *b) { (void)b; return g_known; }
-static bool fake_has_role(nodus_chain_backend_t *b, const nodus_key_t *id) {
-    (void)b; (void)id; return g_known && g_member;
+/* The tri-state lookup; with g_expire_after >= 0 the snapshot "expires" after
+ * that many lookups (what a backend reading its clock on its own can do in the
+ * middle of a walk): the answer becomes UNKNOWN, as the real ones give. */
+static nodus_role_state_t fake_state(nodus_chain_backend_t *b,
+                                     const nodus_key_t *id, uint64_t now) {
+    (void)b; (void)id; (void)now;
+    if (!g_known) return NODUS_ROLE_UNKNOWN;
+    if (g_expire_after >= 0 && g_lookups++ >= g_expire_after)
+        return NODUS_ROLE_UNKNOWN;
+    return g_member ? NODUS_ROLE_PRESENT : NODUS_ROLE_ABSENT;
 }
 
 static void test_e8(void) {
@@ -288,8 +307,9 @@ static void test_e8(void) {
     nodus_chain_backend_ops_t ops;
     memset(&srv, 0, sizeof(srv));
     memset(&ops, 0, sizeof(ops));
-    ops.has_role = fake_has_role;
+    ops.role_state = fake_state;
     ops.roles_known = fake_known;
+    g_expire_after = -1;
     nodus_chain_backend_t be = { &ops };
     srv.chain = &be;
     nodus_tcp_conn_t *c1 = calloc(1, sizeof(*c1));   /* on the client transport */
@@ -318,6 +338,90 @@ static void test_e8(void) {
     PASS();
 }
 
+/* ── E9: the snapshot expires in the middle of the walk ── */
+static void test_e9(void) {
+    TEST("E9 snapshot expiring mid-walk revokes nobody (UNKNOWN, not ABSENT)");
+    static nodus_server_t srv;
+    nodus_chain_backend_ops_t ops;
+    memset(&srv, 0, sizeof(srv));
+    memset(&ops, 0, sizeof(ops));
+    ops.role_state = fake_state;
+    ops.roles_known = fake_known;
+    nodus_chain_backend_t be = { &ops };
+    srv.chain = &be;
+    nodus_tcp_conn_t *c[4];
+    for (int i = 0; i < 4; i++) {
+        c[i] = calloc(1, sizeof(*c[i]));
+        if (!c[i]) { FAIL("alloc"); return; }
+        c[i]->role_exempt = true;
+        c[i]->peer_id_set = true;
+        srv.tcp.pool[i] = c[i];
+    }
+    g_known = true; g_member = true;
+    g_lookups = 0; g_expire_after = 2;       /* the 3rd and 4th lookups: UNKNOWN */
+    int n = nodus_server_role_revalidate(&srv);
+    bool all = true;
+    for (int i = 0; i < 4; i++) all = all && c[i]->role_exempt;
+    g_expire_after = -1;
+    /* and a real ABSENT still revokes, so the test cannot pass by never revoking */
+    g_member = false;
+    int n2 = nodus_server_role_revalidate(&srv);
+    bool none = true;
+    for (int i = 0; i < 4; i++) none = none && !c[i]->role_exempt;
+    for (int i = 0; i < 4; i++) free(c[i]);
+    if (n != 0 || !all) { FAIL("an active peer was revoked when the snapshot expired mid-walk"); return; }
+    if (n2 != 4 || !none) { FAIL("ABSENT no longer revokes"); return; }
+    PASS();
+}
+
+/* ── E10: sorted set, binary search, tri-state at one instant ── */
+static void test_e10(void) {
+    TEST("E10 role set: sorted lookup finds every member; tri-state at one instant");
+    enum { N = 300 };
+    nodus_role_set_t s;
+    memset(&s, 0, sizeof(s));
+    s.fps = malloc((size_t)NODUS_ROLE_SET_MAX * 64);
+    if (!s.fps) { FAIL("alloc"); return; }
+    /* members in a scrambled order: fp i = i * 7919 mod 65521 in the first bytes */
+    for (int i = 0; i < N; i++) {
+        memset(s.fps[i], 0, 64);
+        uint32_t v = ((uint32_t)i * 7919u) % 65521u;
+        s.fps[i][0] = (uint8_t)(v >> 8);
+        s.fps[i][1] = (uint8_t)v;
+        s.fps[i][2] = 0x5a;
+    }
+    s.n = N;
+    uint8_t first[64];
+    memcpy(first, s.fps[0], 64);
+    nodus_role_set_sort(&s);
+    s.known = true;
+    s.at_ms = 1000;
+    bool ok = true;
+    for (int i = 1; i < N; i++)
+        ok = ok && memcmp(s.fps[i - 1], s.fps[i], 64) < 0;     /* strictly sorted */
+    nodus_key_t k;
+    for (int i = 0; i < N && ok; i++) {
+        memset(&k, 0, sizeof(k));
+        uint32_t v = ((uint32_t)i * 7919u) % 65521u;
+        k.bytes[0] = (uint8_t)(v >> 8); k.bytes[1] = (uint8_t)v; k.bytes[2] = 0x5a;
+        ok = nodus_role_set_state(&s, &k, 1500) == NODUS_ROLE_PRESENT;
+    }
+    memset(&k, 0, sizeof(k));
+    k.bytes[0] = 0xff; k.bytes[1] = 0xff;                       /* not a member */
+    bool absent = nodus_role_set_state(&s, &k, 1500) == NODUS_ROLE_ABSENT;
+    memcpy(k.bytes, first, 64);
+    bool stale = nodus_role_set_state(&s, &k, 1000 + NODUS_ROLE_SET_STALE_MS + 1)
+                 == NODUS_ROLE_UNKNOWN;                         /* expired: UNKNOWN */
+    bool fresh = nodus_role_set_state(&s, &k, 1000 + NODUS_ROLE_SET_STALE_MS)
+                 == NODUS_ROLE_PRESENT;
+    s.known = false;
+    bool unknown = nodus_role_set_state(&s, &k, 1500) == NODUS_ROLE_UNKNOWN;
+    free(s.fps);
+    if (!ok) { FAIL("sorted lookup lost a member (or the set is not sorted)"); return; }
+    if (!absent || !stale || !fresh || !unknown) { FAIL("tri-state wrong"); return; }
+    PASS();
+}
+
 int main(void) {
     printf("=== per-IP limits: nodes with an active role are exempt ===\n");
     test_e1_e6();
@@ -327,6 +431,8 @@ int main(void) {
     test_e5();
     test_e7();
     test_e8();
+    test_e9();
+    test_e10();
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;
 }

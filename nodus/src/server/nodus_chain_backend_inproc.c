@@ -121,6 +121,7 @@ static bool inproc_roles_known(nodus_chain_backend_t *b) {
         ib->roles.known = nodus_witness_p2p_roles_fill(ib->w->p2p, ib->roles.fps,
                                                       NODUS_ROLE_SET_MAX, &n) == 0;
         ib->roles.n = ib->roles.known ? n : 0;
+        nodus_role_set_sort(&ib->roles);
         ib->roles.at_ms = now;
     }
     return nodus_role_set_known(&ib->roles, now);
@@ -130,6 +131,12 @@ static bool inproc_has_role(nodus_chain_backend_t *b, const nodus_key_t *node_id
     inproc_backend_t *ib = (inproc_backend_t *)b;
     return inproc_roles_known(b) &&
            nodus_role_set_has(&ib->roles, node_id, nodus_time_mono_ms());
+}
+
+static nodus_role_state_t inproc_role_state(nodus_chain_backend_t *b,
+                                            const nodus_key_t *node_id,
+                                            uint64_t now_ms) {
+    return nodus_role_set_state(&((inproc_backend_t *)b)->roles, node_id, now_ms);
 }
 
 static void inproc_close(nodus_chain_backend_t *b) {
@@ -148,6 +155,7 @@ static const nodus_chain_backend_ops_t inproc_ops = {
     .chain_id_v3   = inproc_chain_id_v3,
     .has_role      = inproc_has_role,
     .roles_known   = inproc_roles_known,
+    .role_state    = inproc_role_state,
     .chain_open    = inproc_chain_open,
     .listen_port   = inproc_listen_port,
     .dispatch_dnac = inproc_dispatch_dnac,

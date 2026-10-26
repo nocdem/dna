@@ -1615,6 +1615,24 @@ static int part2_roles(gfx_t *g, nodus_witness_p2p_t *B) {
     CHECK(nodus_witness_p2p_roles_fill(B, fps, 256, &n) == 0 && n > 0,
           "(2a'''') rolled back: the export succeeds again");
 
+    /* B1 round 5d: the height check ALONE fails while a valid cached set
+     * exists (v2_blocks unreadable). 4004 keeps its cached set; the export,
+     * which calls the lazy refresh and gets no fresh height, must return -1,
+     * and succeed again once the table is back (the retry re-derives). */
+    CHECK(sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK,
+          "(2a'''') begin (height check)");
+    in_tx = true;
+    CHECK(sqlite3_exec(db, "ALTER TABLE v2_blocks RENAME TO v2_blocks_gone",
+                       NULL, NULL, NULL) == SQLITE_OK,
+          "(2a'''') v2_blocks made unreadable");
+    CHECK(nodus_witness_p2p_roles_fill(B, fps, 256, &n) == -1,
+          "(2a'''') a failed HEIGHT check on a valid cached set is NOT exported");
+    CHECK(sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL) == SQLITE_OK,
+          "(2a'''') rollback (height check)");
+    in_tx = false;
+    CHECK(nodus_witness_p2p_roles_fill(B, fps, 256, &n) == 0 && n > 0,
+          "(2a'''') height readable again: the export succeeds");
+
     CHECK(sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK,
           "(2a'''') begin (malformed row)");
     in_tx = true;

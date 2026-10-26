@@ -379,6 +379,7 @@ static int ipc_roles_answer(ipc_backend_t *ib, const uint8_t *p, size_t len) {
         }
         ib->roles.n = (uint32_t)(v.bstr.len / 64);
         if (v.bstr.len) memcpy(ib->roles.fps, v.bstr.ptr, v.bstr.len);
+        nodus_role_set_sort(&ib->roles);        /* once per refresh */
         ib->roles.known = true;
         ib->roles.at_ms = nodus_time_mono_ms();
         return 0;
@@ -526,6 +527,12 @@ static bool ipcb_roles_known(nodus_chain_backend_t *b) {
     return nodus_role_set_known(&ipc_be(b)->roles, nodus_time_mono_ms());
 }
 
+static nodus_role_state_t ipcb_role_state(nodus_chain_backend_t *b,
+                                          const nodus_key_t *node_id,
+                                          uint64_t now_ms) {
+    return nodus_role_set_state(&ipc_be(b)->roles, node_id, now_ms);
+}
+
 static void ipcb_close(nodus_chain_backend_t *b) {
     ipc_backend_t *ib = ipc_be(b);
     free(ib->roles.fps);
@@ -542,6 +549,7 @@ static const nodus_chain_backend_ops_t ipc_ops = {
     .chain_id_v3    = ipcb_chain_id_v3,
     .has_role       = ipcb_has_role,
     .roles_known    = ipcb_roles_known,
+    .role_state     = ipcb_role_state,
     .chain_open     = ipcb_chain_open,
     .listen_port    = ipcb_listen_port,
     .dispatch_dnac  = ipcb_dispatch_dnac,
