@@ -326,7 +326,10 @@ static int worker_push(nodus_sc_worker_t *w, nodus_sc_job_t *j)
                            : w->outstanding[j->cls];
     cap = identified_in ? sc_class_cap[SC_Q_INBOUND] - NODUS_TCP_SC_JOBQ_IN_ANON_RESERVED
                         : sc_class_cap[j->cls];
-    if (w->stop || in_use >= cap) {
+    /* Both bounds: identified inbound jobs stay below cap - reserve (so the
+     * reserve is always free for ANON), and nobody takes the class past its
+     * whole cap (queued + running + finished-not-applied <= JOBQ_IN). */
+    if (w->stop || in_use >= cap || w->outstanding[j->cls] >= sc_class_cap[j->cls]) {
         pthread_mutex_unlock(&w->mu);
         return -1;
     }

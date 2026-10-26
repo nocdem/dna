@@ -1467,7 +1467,10 @@ int cmt_p2p_sc_anon_pin_accepted(cmt_p2p_sc_t *sc)
 
 bool cmt_p2p_sc_is_anon(const cmt_p2p_sc_t *sc)
 {
-    return sc != NULL && sc_is_anon(sc);
+    /* A dead machine reports false: a first message whose length bound the
+     * ANON family but whose kind then contradicted it is REJECTed, and the
+     * dead machine must not look like an ANON session. */
+    return sc != NULL && sc->state != CMT_P2P_SC_ST_DEAD && sc_is_anon(sc);
 }
 
 const uint8_t *cmt_p2p_sc_transcript(const cmt_p2p_sc_t *sc)

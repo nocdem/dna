@@ -164,6 +164,10 @@ typedef struct {
 
 #define PIPE_CAP 32768
 
+/* A side whose init was never reached (a short-circuited `&&`) must still be
+ * safe to side_free: zero both before the first init. */
+#define SIDES_ZERO(a, b) do { memset(&(a), 0, sizeof(a)); memset(&(b), 0, sizeof(b)); } while (0)
+
 static int host_sign(void *ctx, const uint8_t *msg, size_t msg_len, uint8_t sig_out[4627])
 {
     side_t *s = (side_t *)ctx;
@@ -500,7 +504,7 @@ static int reach_confirm(side_t *i, side_t *r)
 
 static void test_happy(const char *name, bool bound_responder, size_t chunk)
 {
-    side_t i, r;
+    side_t i, r; SIDES_ZERO(i, r);
     uint8_t T[64], key[32];
     uint8_t buf[64], got[64];
     size_t n = 0, c = 0, g = 0, wl = 0;
@@ -564,6 +568,9 @@ static void test_t_differs_per_session(void)
     side_t i1, r1, i2, r2;
     bool ok;
 
+    SIDES_ZERO(i1, r1);
+    SIDES_ZERO(i2, r2);
+
     TEST("two ANON sessions of the same pair have different T and keys");
     ok = init_anon_i(&i1, g_a->id.pk.bytes, PIN_OK) == CMT_OK &&
          init_unbound_r(&r1, g_a, g_a->kc) == CMT_OK &&
@@ -583,7 +590,7 @@ static void test_t_differs_per_session(void)
 /** A certificate variant the initiator must refuse, BEFORE any ENCAPS. */
 static void test_bad_kc(const char *name, const uint8_t *kc)
 {
-    side_t i, r;
+    side_t i, r; SIDES_ZERO(i, r);
     bool ok;
 
     TEST(name);
@@ -643,7 +650,7 @@ static void test_kc_variants(void)
 
 static void test_pin(void)
 {
-    side_t i, r;
+    side_t i, r; SIDES_ZERO(i, r);
     bool ok;
 
     TEST("pin rejected by the caller: aborted, no KC verify, no ENCAPS, no KEYX");
@@ -680,7 +687,7 @@ static void test_pin(void)
 
 static void test_job_kc_guard(void)
 {
-    side_t i, r;
+    side_t i, r; SIDES_ZERO(i, r);
     cmt_p2p_sc_job_t j;
     bool ok;
 
@@ -728,7 +735,7 @@ typedef struct {
 
 static void run_confirm_case(const confirm_case_t *cc, bool to_initiator)
 {
-    side_t i, r;
+    side_t i, r; SIDES_ZERO(i, r);
     side_t *target, *sender;
     uint8_t frame[CMT_P2P_SC_SEALED_FRAME_SIZE];
     uint8_t role;
@@ -806,7 +813,7 @@ static void test_confirm_cases(void)
     }
 
     {
-        side_t i, r;
+        side_t i, r; SIDES_ZERO(i, r);
         bool ok;
 
         TEST("a CONFIRM that never arrives: neither side is authenticated");
@@ -833,7 +840,7 @@ static void test_mismatch(const char *name, int ikind, const cmt_p2p_sc_profile_
 {
     /* kinds: 0 = ANON initiator, 1 = ANON-bound responder, 2 = bound-profile
      * machine (ip / rp), 3 = unbound responder with a KC, 4 = unbound without */
-    side_t i, r;
+    side_t i, r; SIDES_ZERO(i, r);
     bool ok;
 
     TEST(name);
@@ -870,7 +877,7 @@ static void test_mismatches(void)
     test_mismatch("WITNESS initiator vs unbound responder", 2, &CMT_P2P_SC_PROFILE_WITNESS, 3, NULL);
 
     {
-        side_t i, r;
+        side_t i, r; SIDES_ZERO(i, r);
         bool ok;
 
         /* CONTROL: a CLIENT initiator and an unbound responder do authenticate
@@ -1013,7 +1020,7 @@ static void test_refused_kinds(void)
             if (ok) {
                 /* a full identified handshake up to WAIT_AUTHSIG, then a sealed
                  * `01 06` frame where the AUTHSIG must be: refused */
-                side_t i, r;
+                side_t i, r; SIDES_ZERO(i, r);
                 uint8_t frame[CMT_P2P_SC_SEALED_FRAME_SIZE];
                 size_t c = 0;
 
@@ -1044,7 +1051,7 @@ static void test_refused_kinds(void)
 
 static void test_fragmented_first_prefix(void)
 {
-    side_t i, r;
+    side_t i, r; SIDES_ZERO(i, r);
     bool ok;
     size_t k;
 

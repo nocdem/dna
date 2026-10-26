@@ -251,9 +251,12 @@ extern "C" {
 #define NODUS_TCP_SC_JOBQ_OUT    64
 #define NODUS_TCP_SC_JOBQ_IN     64
 /** Of the INBOUND budget, the slots ANON jobs keep to themselves (design
- *  §1.6, Sol M3): non-ANON inbound jobs are admitted only while the inbound
- *  total, ANON jobs excluded, stays below JOBQ_IN - this. A size, OURS (the
- *  design gives no number): a quarter of the inbound budget. */
+ *  §1.6, Sol M3). Two bounds hold together: the inbound total (ANON included)
+ *  never exceeds JOBQ_IN, and identified (non-ANON) inbound jobs are admitted
+ *  only while their own count, ANON jobs excluded, stays below JOBQ_IN - this
+ *  — so at least this many slots are always free for ANON jobs, whatever the
+ *  identified CLIENT handshakes do. A size, OURS (the design gives no number):
+ *  a quarter of the inbound budget. */
 #define NODUS_TCP_SC_JOBQ_IN_ANON_RESERVED 16
 _Static_assert(NODUS_TCP_SC_JOBQ_IN_ANON_RESERVED > 0 &&
                NODUS_TCP_SC_JOBQ_IN_ANON_RESERVED < NODUS_TCP_SC_JOBQ_IN,
