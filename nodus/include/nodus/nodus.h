@@ -132,6 +132,23 @@ typedef struct {
      * into the client. */
     uint8_t                     expected_chain_id[NODUS_CLIENT_CHAIN_ID_SIZE];
     bool                        has_expected_chain_id;
+
+    /* NO-LOGIN (ANON) session (DHT v2 package 3d, design docs/plans/
+     * 2026-10-26-dht-v2-3d-no-login-design.md; decision 2026-10-26-wallet-no-
+     * node-login.md). true = the client opens the ANON session family: it
+     * presents NO key and no login — the node proves itself to the client
+     * (pin + KEM-key certificate, still MANDATORY: pinned_server_fps and
+     * expected_chain_id as above) and the client is bound to no identity.
+     * nodus_client_init() then takes `identity` as NULL (an identity passed
+     * is NOT copied and never used), and the session may call only the node's
+     * ANON allowlist: the chain reads, dnac_spend and the evm_* reads. The five
+     * owner-only reads (dnac_utxo, dnac_addr_history, dnac_delegations,
+     * dnac_msig_utxo, dnac_msig_addr_history) then carry an owner-signed query
+     * `qa` signed with the key given to nodus_client_set_owner_key(); without
+     * that key they fail (-1) before anything is sent. The DHT / messaging
+     * calls are refused by the node (NOT_AUTHENTICATED). false (the zeroed
+     * default) = the identified session, unchanged. */
+    bool                        anon_session;
 } nodus_client_config_t;
 
 /* ── Concurrent request slot ────────────────────────────────────── */
@@ -263,6 +280,13 @@ typedef struct nodus_client {
     nodus_pubkey_t             server_dil_pk;
     bool                       has_server_dil_pk;
 
+    /* ANON session only (config.anon_session): the caller's own ML-DSA-87 key
+     * the five owner-only reads are signed with (nodus_client_set_owner_key).
+     * A copy, wiped by nodus_client_close. */
+    bool                       has_owner_key;
+    nodus_seckey_t             owner_sk;
+    nodus_pubkey_t             owner_pk;
+
 } nodus_client_t;
 
 /* ── Lifecycle ──────────────────────────────────────────────────── */
@@ -270,10 +294,27 @@ typedef struct nodus_client {
 /**
  * Initialize client with config and identity.
  * Does NOT connect — call nodus_client_connect() after.
+ *
+ * With config->anon_session set (the no-login session, see the config field),
+ * `identity` may be NULL: it is not copied and never used, so the client holds
+ * no account key at all.
  */
 int nodus_client_init(nodus_client_t *client,
                        const nodus_client_config_t *config,
                        const nodus_identity_t *identity);
+
+/**
+ * ANON session (config.anon_session): the ML-DSA-87 key the five owner-only
+ * reads are signed with — the wallet's own key (for a multisig vault read, a
+ * member's key). `qa`, the owner-signed query bound to this session's
+ * handshake transcript, is built per request with it
+ * (nodus_owner_query.h). The pair is COPIED into the client and wiped by
+ * nodus_client_close. @return 0; -1 on a NULL argument or a client that is not
+ * an ANON client (an identified session signs nothing extra).
+ */
+int nodus_client_set_owner_key(nodus_client_t *client,
+                               const nodus_seckey_t *sk,
+                               const nodus_pubkey_t *pk);
 
 /**
  * Connect to the first available server and authenticate.

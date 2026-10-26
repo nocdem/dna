@@ -14,6 +14,7 @@
 #include "protocol/nodus_cbor.h"
 #include "protocol/nodus_wire.h"
 #include "protocol/nodus_tier3.h"     /* NODUS_T3_CC_APPR_E_MAX (dnac_cc_collect) */
+#include "protocol/nodus_owner_query.h"   /* the owner-signed `qa` (package 3d) */
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_channel_crypto.h"
 #include "crypto/enc/qgp_kyber.h"
@@ -771,7 +772,9 @@ static bool client_chain_id_is_zero(const uint8_t id[NODUS_CLIENT_CHAIN_ID_SIZE]
 int nodus_client_init(nodus_client_t *client,
                        const nodus_client_config_t *config,
                        const nodus_identity_t *identity) {
-    if (!client || !config || !identity) return -1;
+    /* An identified client needs its identity; the no-login ANON client takes
+     * none (config->anon_session). */
+    if (!client || !config || (!identity && !config->anon_session)) return -1;
     if (config->server_count <= 0 || config->server_count > NODUS_CLIENT_MAX_SERVERS)
         return -1;
     /* Server key pin: a count without a list, or a negative count, is a
@@ -810,7 +813,10 @@ int nodus_client_init(nodus_client_t *client,
 
     memset(client, 0, sizeof(*client));
     client->config = *config;
-    client->identity = *identity;
+    /* An ANON client holds NO account key: the identity is not copied (the
+     * struct stays zero) even when the caller passed one. */
+    if (!config->anon_session)
+        client->identity = *identity;
     client->state = NODUS_CLIENT_DISCONNECTED;
     atomic_store(&client->next_txn, 1);
     client->server_idx = 0;
@@ -869,6 +875,16 @@ int nodus_client_init(nodus_client_t *client,
     return 0;
 }
 
+int nodus_client_set_owner_key(nodus_client_t *client,
+                               const nodus_seckey_t *sk,
+                               const nodus_pubkey_t *pk) {
+    if (!client || !sk || !pk || !client->config.anon_session) return -1;
+    memcpy(&client->owner_sk, sk, sizeof(client->owner_sk));
+    memcpy(&client->owner_pk, pk, sizeof(client->owner_pk));
+    client->has_owner_key = true;
+    return 0;
+}
+
 int nodus_client_connect(nodus_client_t *client) {
     if (!client || !client->tcp) return -1;
 
@@ -922,8 +938,13 @@ static int do_connect_one(nodus_client_t *client, int server_idx) {
     nodus_tcp_sc_cfg_t scfg;
     memset(&scfg, 0, sizeof(scfg));
     scfg.role           = CMT_P2P_SC_ROLE_INITIATOR;
-    scfg.profile        = &CMT_P2P_SC_PROFILE_CLIENT;
-    scfg.id             = &client->identity;
+    /* The no-login ANON family (config.anon_session; design 2026-10-26-dht-v2-
+     * 3d-no-login-design.md): profile ANON, no local key (cfg.id NULL). The
+     * pin is still mandatory and is checked, with the KEM-key certificate,
+     * before the layer encapsulates. */
+    scfg.profile        = client->config.anon_session ? &CMT_P2P_SC_PROFILE_ANON
+                                                      : &CMT_P2P_SC_PROFILE_CLIENT;
+    scfg.id             = client->config.anon_session ? NULL : &client->identity;
     scfg.proto_ver      = NODUS_CSESS_PROTO_VERSION;
     memcpy(scfg.chain_id, client->config.expected_chain_id, sizeof(scfg.chain_id));
     scfg.expected_set   = client->config.pinned_server_fps;
@@ -1269,6 +1290,10 @@ void nodus_client_close(nodus_client_t *client) {
     client->listen_count = 0;
     client->ch_sub_count = 0;
     nodus_identity_clear(&client->identity);
+    /* the ANON client's owner key (a copy of the caller's secret key) */
+    qgp_secure_memzero(&client->owner_sk, sizeof(client->owner_sk));
+    qgp_secure_memzero(&client->owner_pk, sizeof(client->owner_pk));
+    client->has_owner_key = false;
 }
 
 /* ── DHT Operations ─────────────────────────────────────────────── */
@@ -2978,6 +3003,68 @@ static void enc_dnac_query(cbor_encoder_t *enc, uint32_t txn,
     cbor_encode_cstr(enc, "a");   cbor_encode_map(enc, args_count);
 }
 
+/* The header of one of the five OWNER-ONLY reads (dnac_utxo, dnac_addr_history,
+ * dnac_delegations, dnac_msig_utxo, dnac_msig_addr_history), followed by the
+ * args map start. An identified session: exactly enc_dnac_query (bytes
+ * unchanged). An ANON session (config.anon_session): the request also carries
+ * the owner-signed query `qa` — an RFC 0002 envelope signed with the key given
+ * to nodus_client_set_owner_key, bound to this session's handshake transcript T
+ * and to the expected chain id (design 2026-10-26-dht-v2-3d-no-login-design.md
+ * §3) — as a top-level field beside `a`. `o` is the method's owner value: the
+ * hex-decoded `owner_hex` (utxo / addr_history / the msig vault address), or,
+ * when `owner_hex` is NULL, SHA3-512(`pubkey`) (delegations).
+ * @return 0; -1 when the ANON client has no owner key, the session has no T
+ * yet, or the envelope could not be built — nothing is encoded then. */
+static int enc_dnac_query_qa(nodus_client_t *client, cbor_encoder_t *enc,
+                             uint32_t txn, const char *method,
+                             size_t args_count, const char *owner_hex,
+                             const uint8_t *pubkey, size_t pubkey_len) {
+    if (!client->config.anon_session) {
+        enc_dnac_query(enc, txn, client->token, method, args_count);
+        return 0;
+    }
+    uint8_t o[NODUS_OQ_O_LEN];
+    if (owner_hex) {
+        /* exactly 128 lowercase hex (the node refuses anything else too) */
+        if (strnlen(owner_hex, 2 * NODUS_OQ_O_LEN + 1) != 2 * NODUS_OQ_O_LEN)
+            return -1;
+        for (size_t i = 0; i < NODUS_OQ_O_LEN; i++) {
+            int hi = owner_hex[2 * i], lo = owner_hex[2 * i + 1];
+            hi = hi >= 'a' ? hi - 'a' + 10 : hi - '0';
+            lo = lo >= 'a' ? lo - 'a' + 10 : lo - '0';
+            if (hi < 0 || hi > 15 || lo < 0 || lo > 15) return -1;
+            o[i] = (uint8_t)(hi << 4 | lo);
+        }
+    } else if (!pubkey || qgp_sha3_512(pubkey, pubkey_len, o) != 0) {
+        return -1;
+    }
+    uint8_t t[NODUS_OQ_T_LEN];
+    if (!client->has_owner_key || !client->conn ||
+        nodus_tcp_sc_transcript((const nodus_tcp_conn_t *)client->conn, t) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s: an ANON session needs the owner key "
+                      "(nodus_client_set_owner_key) and an authenticated "
+                      "connection", method);
+        return -1;
+    }
+    uint8_t *qa = malloc(NODUS_OQ_ENV_MAX);
+    if (!qa) return -1;
+    size_t qa_len = 0;
+    int brc = nodus_oq_build(client->config.expected_chain_id, method, o, t,
+                             client->owner_sk.bytes, client->owner_pk.bytes,
+                             qa, NODUS_OQ_ENV_MAX, &qa_len);
+    qgp_secure_memzero(t, sizeof(t));
+    if (brc != 0) { free(qa); return -1; }
+    cbor_encode_map(enc, 6);  /* t, y, q, tok, qa, a */
+    cbor_encode_cstr(enc, "t");   cbor_encode_uint(enc, txn);
+    cbor_encode_cstr(enc, "y");   cbor_encode_cstr(enc, "q");
+    cbor_encode_cstr(enc, "q");   cbor_encode_cstr(enc, method);
+    cbor_encode_cstr(enc, "tok"); cbor_encode_bstr(enc, client->token, NODUS_SESSION_TOKEN_LEN);
+    cbor_encode_cstr(enc, "qa");  cbor_encode_bstr(enc, qa, qa_len);
+    cbor_encode_cstr(enc, "a");   cbor_encode_map(enc, args_count);
+    free(qa);
+    return 0;
+}
+
 int nodus_client_dnac_spend(nodus_client_t *client,
                               const uint8_t *tx_hash,
                               const uint8_t *tx_data, uint32_t tx_len,
@@ -3493,7 +3580,10 @@ static int dnac_utxo_request(nodus_client_t *client, const char *owner,
     nodus_pending_t *req = alloc_pending(client, txn);
     if (!req) { free(buf); return -1; }
 
-    enc_dnac_query(&enc, txn, client->token, "dnac_utxo", token_id ? 3 : 2);
+    if (enc_dnac_query_qa(client, &enc, txn, "dnac_utxo", token_id ? 3 : 2,
+                          owner, NULL, 0) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
 
     cbor_encode_cstr(&enc, "owner");
     cbor_encode_cstr(&enc, owner);
@@ -3956,7 +4046,10 @@ int nodus_client_dnac_msig_utxo(nodus_client_t *client,
     nodus_pending_t *req = alloc_pending(client, txn);
     if (!req) { free(buf); return -1; }
 
-    enc_dnac_query(&enc, txn, client->token, "dnac_msig_utxo", 3);
+    if (enc_dnac_query_qa(client, &enc, txn, "dnac_msig_utxo", 3,
+                          owner_hex, NULL, 0) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
     cbor_encode_cstr(&enc, "owner");
     cbor_encode_tstr(&enc, owner_hex, 128);
     cbor_encode_cstr(&enc, "msig");
@@ -4037,7 +4130,10 @@ int nodus_client_dnac_msig_utxo_nuls(nodus_client_t *client,
     nodus_pending_t *req = alloc_pending(client, txn);
     if (!req) { free(buf); return -1; }
 
-    enc_dnac_query(&enc, txn, client->token, "dnac_msig_utxo", 3);
+    if (enc_dnac_query_qa(client, &enc, txn, "dnac_msig_utxo", 3,
+                          owner_hex, NULL, 0) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
     cbor_encode_cstr(&enc, "owner");
     cbor_encode_tstr(&enc, owner_hex, 128);
     cbor_encode_cstr(&enc, "msig");
@@ -4098,8 +4194,10 @@ int nodus_client_dnac_msig_addr_history(nodus_client_t *client,
     nodus_pending_t *req = alloc_pending(client, txn);
     if (!req) { free(buf); return -1; }
 
-    enc_dnac_query(&enc, txn, client->token, "dnac_msig_addr_history",
-                   before ? 6 : 3);
+    if (enc_dnac_query_qa(client, &enc, txn, "dnac_msig_addr_history",
+                          before ? 6 : 3, owner_hex, NULL, 0) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
     cbor_encode_cstr(&enc, "owner");
     cbor_encode_tstr(&enc, owner_hex, 128);
     cbor_encode_cstr(&enc, "msig");
@@ -4302,7 +4400,10 @@ int nodus_client_dnac_delegations(nodus_client_t *client,
     nodus_pending_t *req = alloc_pending(client, txn);
     if (!req) { free(buf); return -1; }
 
-    enc_dnac_query(&enc, txn, client->token, "dnac_delegations", 2);
+    if (enc_dnac_query_qa(client, &enc, txn, "dnac_delegations", 2, NULL,
+                          delegator_pubkey, pubkey_len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
 
     cbor_encode_cstr(&enc, "pubkey");
     cbor_encode_bstr(&enc, delegator_pubkey, pubkey_len);
@@ -6976,8 +7077,10 @@ int nodus_client_dnac_addr_history(nodus_client_t *client,
     nodus_pending_t *req = alloc_pending(client, txn);
     if (!req) { free(buf); return -1; }
 
-    enc_dnac_query(&enc, txn, client->token, "dnac_addr_history",
-                   before ? 5 : 2);
+    if (enc_dnac_query_qa(client, &enc, txn, "dnac_addr_history",
+                          before ? 5 : 2, owner_hex, NULL, 0) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
     cbor_encode_cstr(&enc, "owner");
     cbor_encode_cstr(&enc, owner_hex);
     cbor_encode_cstr(&enc, "limit");

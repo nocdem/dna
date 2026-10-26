@@ -252,6 +252,15 @@ sources=(
   $root/nodus/src/transport/nodus_tcp_sc.c
   $root/shared/dnac/cmt_p2p_secret.c
   $root/nodus/src/protocol/nodus_tier2.c
+  # DHT v2 package 3d: the owner-signed query `qa` the no-login (ANON) wallet
+  # session attaches to the five owner-only reads — the RFC 0002 envelope
+  # code of the owner-signed LIST (shared/dht2) and what it calls
+  $root/nodus/src/protocol/nodus_owner_query.c
+  $root/shared/dht2/dht2_cbor.c
+  $root/shared/dht2/dht2_envelope.c
+  $root/shared/dht2/dht2_record.c
+  $root/shared/dht2/dht2_time.c
+  $root/shared/dnac/cmt_pb.c
   $root/nodus/src/protocol/nodus_cbor.c
   $root/nodus/src/protocol/nodus_wire.c
   $root/nodus/src/core/nodus_value.c

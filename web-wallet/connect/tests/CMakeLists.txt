@@ -140,6 +140,14 @@ set(NC_SOURCES
   ${ROOT}/nodus/src/transport/nodus_tcp_sc.c
   ${ROOT}/shared/dnac/cmt_p2p_secret.c
   ${ROOT}/nodus/src/protocol/nodus_tier2.c
+  # DHT v2 package 3d: nodus_client.c builds the owner-signed query `qa` for
+  # the no-login session — the RFC 0002 envelope code (shared/dht2) and what
+  # it calls
+  ${ROOT}/nodus/src/protocol/nodus_owner_query.c
+  ${ROOT}/shared/dht2/dht2_cbor.c
+  ${ROOT}/shared/dht2/dht2_envelope.c
+  ${ROOT}/shared/dht2/dht2_record.c
+  ${ROOT}/shared/dht2/dht2_time.c
   ${ROOT}/nodus/src/protocol/nodus_cbor.c
   ${ROOT}/nodus/src/protocol/nodus_wire.c
   ${ROOT}/nodus/src/core/nodus_value.c
