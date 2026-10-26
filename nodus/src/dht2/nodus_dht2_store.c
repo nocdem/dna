@@ -1097,6 +1097,7 @@ int nodus_dht2_store_list(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
 
     hashes = (uint8_t *)malloc((size_t)DHT2_LIST_PAGE_MAX * DHT2_HASH_LEN);
     if (hashes == NULL) {
+        memset(out, 0, sizeof(*out));
         return CODE_FAULT;
     }
     /* Live entries only: a tombstone is a deleted entry, an expired one is

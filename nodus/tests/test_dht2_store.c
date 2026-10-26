@@ -62,7 +62,13 @@
  *     name;
  *   · a SQLite fault is a fault code (16) on every call — a read-only
  *     connection refuses a put, a dropped table faults get / list / scan /
- *     sweep / put — never "not held" or an empty page.
+ *     sweep / put — never "not held" or an empty page;
+ *   · package 6a fix rounds: test_put_address — a refusal after the parse
+ *     (expired, 7) keeps the envelope's address in the put result, a success
+ *     carries it, a parse failure (2) has none; test_list_ctl_budget — the
+ *     live control record's bytes are charged to the 2 MiB LIST page first
+ *     (eight 262,000 B entries: 7 on page 1, not complete, the eighth on
+ *     page 2).
  *
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * A default build. No compile flags, no environment variables, no network,

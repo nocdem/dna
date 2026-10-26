@@ -85,7 +85,8 @@
  *     poll rounds, each backed by a positive check in the same case that
  *     the previous request did arrive.
  *  4. Time is whatever the test passes in; it does not prove the callers
- *     (package 5) pass a monotonic clock.
+ *     (the serving loop, package 6b; the holder of package 6a only hands
+ *     on the `now_ms` it is given) pass a monotonic clock.
  */
 
 #define _DEFAULT_SOURCE 1   /* mkdtemp under -std=c11 */

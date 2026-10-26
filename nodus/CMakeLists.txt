@@ -708,8 +708,10 @@ if(NOT WIN32)
         src/server/nodus_dht_backend_ipc.c
         src/dht/nodus_dht_ipc.c
         # DHT v2 package 4 — the storage side's view of the witness
-        # (`ipc_dht` kind of witness.sock). No caller yet (package 5); a
-        # static-library member, so nodus-storage links it only once called.
+        # (`ipc_dht` kind of witness.sock). Used by the package 6a holder
+        # (dht2/nodus_dht2_holder.c); no running loop calls either yet
+        # (package 6b). A static-library member, so nodus-storage links it
+        # only once called.
         src/dht/nodus_dht2_wview.c
         # DHT v2 package 5 — the holder store and its admission (§4.1): a
         # SQLite store of canonical envelopes + put / get / list / sweep /
