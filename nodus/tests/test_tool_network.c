@@ -190,17 +190,29 @@ int main(void) {
     TEST("refused: more than the node cap");
     {
         /* NODUS_TOOL_NET_MAX_NODES + 1 distinct ip:port nodes */
-        size_t cap = 64 + (size_t)(NODUS_TOOL_NET_MAX_NODES + 1) * 160;
+        /* one entry is ~170 bytes (36 + 128 hex + closers + comma): 200 each */
+        size_t cap = 64 + (size_t)(NODUS_TOOL_NET_MAX_NODES + 1) * 200;
         char *big = malloc(cap);
-        size_t n = (size_t)snprintf(big, cap, "{\"chain_id\":\"" CHAIN_A "\",\"nodes\":[");
-        for (int i = 0; i < NODUS_TOOL_NET_MAX_NODES + 1; i++)
-            n += (size_t)snprintf(big + n, cap - n,
-                                  "%s{\"ip\":\"10.0.%d.%d\",\"port\":4001,\"fp\":\"" FP1 "\"}",
-                                  i ? "," : "", i / 250, i % 250 + 1);
-        snprintf(big + n, cap - n, "]}");
-        int rc = parse(&t, big, err);
+        int trunc = big == NULL;
+        size_t n = 0;
+        if (big) {
+            n = (size_t)snprintf(big, cap, "{\"chain_id\":\"" CHAIN_A "\",\"nodes\":[");
+            for (int i = 0; i < NODUS_TOOL_NET_MAX_NODES + 1; i++) {
+                int w = snprintf(big + n, cap - n,
+                                 "%s{\"ip\":\"10.0.%d.%d\",\"port\":4001,\"fp\":\"" FP1 "\"}",
+                                 i ? "," : "", i / 250, i % 250 + 1);
+                if (w < 0 || (size_t)w >= cap - n) { trunc = 1; break; }
+                n += (size_t)w;
+            }
+            if (!trunc) {
+                int w = snprintf(big + n, cap - n, "]}");
+                if (w < 0 || (size_t)w >= cap - n) trunc = 1;
+            }
+        }
+        int rc = trunc ? 0 : parse(&t, big, err);
         free(big);
-        CHECK(rc == -1 && strstr(err, "more than") != NULL, err);
+        CHECK(!trunc && rc == -1 && strstr(err, "more than") != NULL,
+              trunc ? "test buffer truncated" : err);
     }
 
     /* ── resolve ─────────────────────────────────────────────────── */
