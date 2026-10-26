@@ -481,6 +481,18 @@ static void ipc_answer_roles(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn) {
     size_t cap = (size_t)NODUS_WITNESS_IPC_ROLES_MAX * 64 + 64;
     uint8_t *buf = malloc(cap);
     if ((ipc->h.roles && !fps) || !buf) {
+        /* No room for the answer: the small {"q","err"} one still goes out
+         * (a stack buffer), so core drops a set it held instead of keeping
+         * it until it expires. */
+        uint8_t small[96];
+        cbor_encoder_t se;
+        cbor_encoder_init(&se, small, sizeof(small));
+        cbor_encode_map(&se, 2);
+        cbor_encode_cstr(&se, "q"); cbor_encode_cstr(&se, NODUS_WITNESS_IPC_Q_ROLES);
+        cbor_encode_cstr(&se, "err"); cbor_encode_cstr(&se, "roles unavailable");
+        size_t sl = cbor_encoder_len(&se);
+        if (sl > 0)
+            nodus_tcp_send(conn, small, sl);
         free(fps);
         free(buf);
         return;

@@ -63,6 +63,11 @@ typedef struct {
     uint64_t at_ms;         /* nodus_time_mono_ms() when it was taken */
 } nodus_role_set_t;
 
+/** `s` is a known, fresh set as of `now_ms` (monotonic). */
+static inline bool nodus_role_set_known(const nodus_role_set_t *s, uint64_t now_ms) {
+    return s && s->known && s->fps && now_ms - s->at_ms <= NODUS_ROLE_SET_STALE_MS;
+}
+
 /** `node_id` is in a known, fresh `s` as of `now_ms` (monotonic). */
 static inline bool nodus_role_set_has(const nodus_role_set_t *s,
                                       const nodus_key_t *node_id,
@@ -136,6 +141,13 @@ typedef struct {
      *  bound). May be NULL (= false). */
     bool (*has_role)(nodus_chain_backend_t *b, const nodus_key_t *node_id);
 
+    /** true when the role set is KNOWN and fresh right now (the same
+     *  condition has_role answers from). Lets the caller tell "this identity
+     *  has no role" from "the set is unknown": core revalidates the
+     *  exemptions of live connections only against a known set, so an IPC
+     *  hiccup does not drop every node at once. May be NULL (= false). */
+    bool (*roles_known)(nodus_chain_backend_t *b);
+
     /** The client session in `conn`'s slot ended (disconnect, eviction,
      *  idle sweep) or that slot starts a new session — called where the
      *  server clears a session. Requests the witness answers later
@@ -205,6 +217,11 @@ int nodus_chain_backend_inproc_open(const nodus_witness_host_t *host,
  */
 int nodus_chain_backend_ipc_open(const char *data_path,
                                  nodus_chain_backend_t **out);
+
+/** TEST SEAM (not an API): send an ipc_roles query on the control connection
+ *  now, instead of waiting NODUS_ROLE_SET_EVERY_MS. No-op without a control
+ *  connection. */
+void nodus_chain_backend_ipc_test_ask_roles(nodus_chain_backend_t *b);
 
 #ifdef __cplusplus
 }

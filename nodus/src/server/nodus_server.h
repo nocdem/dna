@@ -290,6 +290,9 @@ typedef struct nodus_server {
      * transports is looked at once a second on the monotonic clock: the
      * nodus_time_mono_ms() of the last look. */
     uint64_t                last_presession_mono_ms;
+    /* nodus_time_mono_ms of the last role_exempt revalidation (every
+     * NODUS_ROLE_SET_EVERY_MS, with the role set's own refresh). */
+    uint64_t                last_role_revalidate_ms;
 
     /* The node-session config of the 4002 pool (srv->inter_tcp.auth_ctx
      * points here): this node's identity and where the chain id comes from
@@ -730,6 +733,13 @@ int nodus_server_inter_sweep_orphans(nodus_server_t *srv, uint64_t now_ms,
  *  than NODUS_PRESESSION_ABS_MS. The run loop calls it once a second; tests
  *  call it with a time they choose. @return connections closed. */
 int nodus_server_presession_sweep(nodus_server_t *srv, uint64_t now_mono_ms);
+
+/** Clear role_exempt on every live connection (4001 / WS and 4002) whose
+ *  proven key is no longer in the backend's role set — only against a KNOWN
+ *  set; an unknown one changes nothing (fail safe). The run loop calls it
+ *  every NODUS_ROLE_SET_EVERY_MS; tests call it directly. @return the number
+ *  of connections cleared. */
+int nodus_server_role_revalidate(nodus_server_t *srv);
 
 /** The 4002 frame dispatcher (the node session's gate), for in-process
  *  tests. */

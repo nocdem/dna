@@ -136,6 +136,12 @@ struct nodus_witness_p2p {
     int                         n_bonded, cap_bonded;
     bool                        bonded_valid;
     uint64_t                    bonded_tip;
+    /* Whether the LAST derivation of the set ran to the end (the tip read
+     * and the validators read both succeeded). 4004 keeps its last good set
+     * when a refresh fails (admission must not flap); the ROLE EXPORT must
+     * not: an old set exported as fresh would keep exempting an identity
+     * whose role ended (nodus_witness_p2p_roles_fill refuses while false). */
+    bool                        bonded_derive_ok;
     /* IDs that JOINED the set, summed over every refresh (the purge's
      * input, bonded_purge_new) — nodus_witness_p2p_bonded_joined_total */
     uint64_t                    bonded_joined_total;
@@ -398,6 +404,7 @@ void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p)
     bool was_self;
     p2p_bonded_t *nb = NULL;
     int n_new = 0, cap_new = 0;
+    bool derive_ok = true;
 
     if (p == NULL) {
         return;
@@ -406,12 +413,14 @@ void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p)
     if (p->w == NULL || p->w->db == NULL) {
         p->n_bonded = 0;
         p->bonded_valid = true;
+        p->bonded_derive_ok = true;
         p->bonded_tip = 0;
         p->host.self_bonded = false;
         return;
     }
     if (nodus_witness_block_height_checked(p->w, &tip) != 0) {
-        return;                                /* keep the last good set */
+        p->bonded_derive_ok = false;           /* the role export stops ... */
+        return;                                /* ... 4004 keeps the last good set */
     }
     /* The new set is built beside the old one, so the two can be
      * compared (bonded_purge_new) before the old one is replaced. */
@@ -428,6 +437,7 @@ void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p)
         }
         sqlite3_finalize(st);
     } else {
+        derive_ok = false;
         QGP_LOG_WARN(LOG_TAG, "validators table unreadable: %s",
                      sqlite3_errmsg(p->w->db));
     }
@@ -475,6 +485,7 @@ void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p)
     p->n_bonded = n_new;
     p->cap_bonded = cap_new;
     p->bonded_valid = true;
+    p->bonded_derive_ok = derive_ok;
     p->bonded_tip = tip;
     p->host.self_bonded = bonded_find(p, p->host.self_id) != NULL;
     if (p->host.self_bonded && !was_self && p->host.pex != NULL) {
@@ -555,6 +566,17 @@ int nodus_witness_p2p_roles_fill(nodus_witness_p2p_t *p, uint8_t (*fps)[64],
     if (p == NULL || fps == NULL || n_out == NULL) {
         return -1;
     }
+    /* The bonded part must come from a derivation that ran to the end at
+     * the current tip: never an old set kept by 4004 after a failed read
+     * (the caches would stamp it fresh). */
+    if (p->bonded_valid && !p->bonded_derive_ok) {
+        nodus_witness_p2p_refresh_bonded(p);   /* retry the failed derivation */
+    } else {
+        bonded_maybe_refresh(p);      /* bring it to the current tip first */
+    }
+    if (!p->bonded_valid || !p->bonded_derive_ok) {
+        return -1;
+    }
     for (i = 0; i < p->n_bonded; i++) {
         nodus_pubkey_t pub;
         nodus_key_t fp;
@@ -586,7 +608,10 @@ int nodus_witness_p2p_roles_fill(nodus_witness_p2p_t *p, uint8_t (*fps)[64],
             bool dup = false;
 
             if (sqlite3_column_bytes(st, 0) != 64 || f == NULL) {
-                continue;
+                /* a malformed registry row is an export error, not a row
+                 * to skip: the set would silently lose a member */
+                sqlite3_finalize(st);
+                return -1;
             }
             for (j = 0; j < n && !dup; j++) {
                 dup = memcmp(fps[j], f, 64) == 0;

@@ -522,6 +522,10 @@ static bool ipcb_has_role(nodus_chain_backend_t *b, const nodus_key_t *node_id) 
     return nodus_role_set_has(&ipc_be(b)->roles, node_id, nodus_time_mono_ms());
 }
 
+static bool ipcb_roles_known(nodus_chain_backend_t *b) {
+    return nodus_role_set_known(&ipc_be(b)->roles, nodus_time_mono_ms());
+}
+
 static void ipcb_close(nodus_chain_backend_t *b) {
     ipc_backend_t *ib = ipc_be(b);
     free(ib->roles.fps);
@@ -537,6 +541,7 @@ static const nodus_chain_backend_ops_t ipc_ops = {
     .status         = ipcb_status,
     .chain_id_v3    = ipcb_chain_id_v3,
     .has_role       = ipcb_has_role,
+    .roles_known    = ipcb_roles_known,
     .chain_open     = ipcb_chain_open,
     .listen_port    = ipcb_listen_port,
     .dispatch_dnac  = ipcb_dispatch_dnac,
@@ -544,6 +549,11 @@ static const nodus_chain_backend_ops_t ipc_ops = {
     .session_closed = ipcb_session_closed,
     .close          = ipcb_close,
 };
+
+void nodus_chain_backend_ipc_test_ask_roles(nodus_chain_backend_t *b) {
+    ipc_backend_t *ib = ipc_be(b);
+    if (ib->ctl) ipc_ctl_send_q(ib, NODUS_WITNESS_IPC_Q_ROLES);
+}
 
 int nodus_chain_backend_ipc_open(const char *data_path,
                                  nodus_chain_backend_t **out) {

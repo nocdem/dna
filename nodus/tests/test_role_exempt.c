@@ -26,6 +26,13 @@
  *       "set unknown" path of the server, which then never calls
  *       nodus_tcp_role_exempt), the limit applies exactly as before (61st
  *       refused) — the same as E1's unbonded half.
+ *   E7  generation: a credit recorded against an evicted bucket incarnation
+ *       does not reduce the count of the recreated bucket, even when both
+ *       windows start at the same millisecond.
+ *   E8  revalidation (nodus_server_role_revalidate): with a KNOWN set that no
+ *       longer holds the proven key, role_exempt is cleared on live
+ *       connections of both transports; with an UNKNOWN set nothing changes;
+ *       a still-member keeps the flag; a never-exempt connection is untouched.
  *
  * REQUIRES: a default build (libnodus); a loopback interface. No environment
  * and no compile flag beyond the default.
@@ -39,11 +46,15 @@
  * test_witness_ipc covers the answer, not the chain contents) are not run here.
  * E3/E4 use real sockets and the wall clock only for "a few polls". E4 marks
  * the accepted connections by hand (what on_session does): it proves the cap
- * loop skips role_exempt connections, not that on_session marks them.
+ * loop skips role_exempt connections, not that on_session marks them. E8 uses
+ * a fake backend (two function pointers) and hand-placed pool entries: it
+ * proves the walk and the fail-safe rule, not that the real backends' sets
+ * refresh or that the run loop calls the walk on time.
  */
 
 #include "transport/nodus_tcp.h"
 #include "server/nodus_chain_backend.h"
+#include "server/nodus_server.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,6 +70,15 @@ static nodus_ws_ip_bucket_t bucket_of(const char *ip) {
     memset(&b, 0, sizeof(b));
     (void)nodus_ws_ip_bucket(ip, &b);
     return b;
+}
+
+/* The generation of the live window of `who` (what the accept path records in
+ * conn->hs_gen). */
+static uint64_t gen_of(const nodus_tcp_t *t, const nodus_ws_ip_bucket_t *who) {
+    for (int i = 0; i < NODUS_TCP_HS_RATE_TABLE; i++)
+        if (t->hs_rate[i].used && memcmp(&t->hs_rate[i].who, who, sizeof(*who)) == 0)
+            return t->hs_rate[i].gen;
+    return 0;
 }
 
 static void test_e1_e6(void) {
@@ -77,7 +97,7 @@ static void test_e1_e6(void) {
         /* ... and the proven bonded key credits it back */
         memset(c, 0, sizeof(*c));
         c->hs_bucket = a;
-        c->hs_window_ms = t0;       /* the window the first attempt opened */
+        c->hs_gen = gen_of(t, &a);  /* the window generation the attempt was counted in */
         c->hs_counted = true;
         nodus_tcp_role_exempt(t, c);
         if (!c->role_exempt || c->hs_counted) bonded_ok = false;
@@ -116,7 +136,7 @@ static void test_e2(void) {
     const uint64_t t0 = 9000000;
     (void)nodus_tcp_hs_rate_allow(t, &a, t0);            /* window opens at t0 */
     c->hs_bucket = a;
-    c->hs_window_ms = t0;
+    c->hs_gen = gen_of(t, &a);
     c->hs_counted = true;
     /* a new minute: 3 attempts in the new window */
     for (int i = 0; i < 3; i++)
@@ -222,6 +242,82 @@ static void test_e5(void) {
     PASS();
 }
 
+static void test_e7(void) {
+    TEST("E7 a credit never lands in a recreated bucket (same start time)");
+    nodus_tcp_t *t = calloc(1, sizeof(*t));
+    nodus_tcp_conn_t *c = calloc(1, sizeof(*c));
+    if (!t || !c) { FAIL("alloc"); free(t); free(c); return; }
+    t->hs_rate_per_min = 5;
+    nodus_ws_ip_bucket_t a = bucket_of("198.51.100.4");
+    const uint64_t t0 = 4000000;
+    (void)nodus_tcp_hs_rate_allow(t, &a, t0);
+    c->hs_bucket = a;
+    c->hs_gen = gen_of(t, &a);
+    c->hs_counted = true;
+    /* fill the table with other IPs (later windows): a, the oldest, is evicted */
+    for (int i = 0; i < NODUS_TCP_HS_RATE_TABLE; i++) {
+        char ip[32];
+        snprintf(ip, sizeof(ip), "10.%d.%d.1", i / 250, i % 250);
+        nodus_ws_ip_bucket_t o = bucket_of(ip);
+        (void)nodus_tcp_hs_rate_allow(t, &o, t0 + 1 + (uint64_t)i);
+    }
+    /* a comes back at the SAME start time: a new incarnation, count 1 */
+    (void)nodus_tcp_hs_rate_allow(t, &a, t0);
+    nodus_tcp_role_exempt(t, c);                 /* the OLD attempt's credit */
+    int more = 0;
+    for (int i = 0; i < 6; i++)
+        if (nodus_tcp_hs_rate_allow(t, &a, t0 + 5)) more++;
+    free(t);
+    free(c);
+    /* count was 1 (the new incarnation): 4 more are admitted; a wrongly landed
+     * credit would have left room for 5 */
+    if (more != 4) { FAIL("the old attempt's credit reduced the recreated bucket"); return; }
+    PASS();
+}
+
+/* ── E8: revalidation of live exemptions against a refreshed role set ── */
+static bool g_known, g_member;
+static bool fake_known(nodus_chain_backend_t *b) { (void)b; return g_known; }
+static bool fake_has_role(nodus_chain_backend_t *b, const nodus_key_t *id) {
+    (void)b; (void)id; return g_known && g_member;
+}
+
+static void test_e8(void) {
+    TEST("E8 revalidation: a role that ended clears the flag; unknown keeps it");
+    static nodus_server_t srv;           /* big: static, zero-initialised */
+    nodus_chain_backend_ops_t ops;
+    memset(&srv, 0, sizeof(srv));
+    memset(&ops, 0, sizeof(ops));
+    ops.has_role = fake_has_role;
+    ops.roles_known = fake_known;
+    nodus_chain_backend_t be = { &ops };
+    srv.chain = &be;
+    nodus_tcp_conn_t *c1 = calloc(1, sizeof(*c1));   /* on the client transport */
+    nodus_tcp_conn_t *c2 = calloc(1, sizeof(*c2));   /* on 4002 */
+    nodus_tcp_conn_t *c3 = calloc(1, sizeof(*c3));   /* never exempt */
+    if (!c1 || !c2 || !c3) { FAIL("alloc"); free(c1); free(c2); free(c3); return; }
+    c1->role_exempt = c2->role_exempt = true;
+    c1->peer_id_set = c2->peer_id_set = c3->peer_id_set = true;
+    srv.tcp.pool[0] = c1;
+    srv.inter_tcp.pool[0] = c2;
+    srv.tcp.pool[1] = c3;
+
+    g_known = false; g_member = false;           /* UNKNOWN set: nothing changes */
+    int n_unknown = nodus_server_role_revalidate(&srv);
+    bool kept = c1->role_exempt && c2->role_exempt;
+    g_known = true; g_member = true;             /* still a member: kept */
+    int n_member = nodus_server_role_revalidate(&srv);
+    bool still = c1->role_exempt && c2->role_exempt;
+    g_member = false;                            /* the role ended */
+    int n_gone = nodus_server_role_revalidate(&srv);
+    bool cleared = !c1->role_exempt && !c2->role_exempt && !c3->role_exempt;
+    free(c1); free(c2); free(c3);
+    if (n_unknown != 0 || !kept) { FAIL("an unknown set changed the flags"); return; }
+    if (n_member != 0 || !still) { FAIL("a member lost the flag"); return; }
+    if (n_gone != 2 || !cleared) { FAIL("the flag survived the end of the role"); return; }
+    PASS();
+}
+
 int main(void) {
     printf("=== per-IP limits: nodes with an active role are exempt ===\n");
     test_e1_e6();
@@ -229,6 +325,8 @@ int main(void) {
     test_e3();
     test_e4();
     test_e5();
+    test_e7();
+    test_e8();
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;
 }

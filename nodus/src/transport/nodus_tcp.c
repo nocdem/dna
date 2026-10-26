@@ -1690,11 +1690,15 @@ void nodus_tcp_role_exempt(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     for (int i = 0; i < NODUS_TCP_HS_RATE_TABLE; i++) {
         if (tcp->hs_rate[i].used &&
             memcmp(&tcp->hs_rate[i].who, &conn->hs_bucket, sizeof(conn->hs_bucket)) == 0) {
-            if (tcp->hs_rate[i].start_ms == conn->hs_window_ms && tcp->hs_rate[i].count > 0)
+            if (tcp->hs_rate[i].gen == conn->hs_gen && tcp->hs_rate[i].count > 0)
                 tcp->hs_rate[i].count--;
             return;
         }
     }
+}
+
+void nodus_tcp_role_revoke(nodus_tcp_conn_t *conn) {
+    if (conn) conn->role_exempt = false;
 }
 
 static bool hs_rate_check(nodus_tcp_t *tcp, const nodus_ws_ip_bucket_t *who,
@@ -1715,11 +1719,12 @@ static bool hs_rate_check(nodus_tcp_t *tcp, const nodus_ws_ip_bucket_t *who,
             if (age >= NODUS_TCP_HS_RATE_WINDOW_MS) {   /* a new minute */
                 tcp->hs_rate[i].start_ms = now_mono_ms;
                 tcp->hs_rate[i].count = 0;
+                tcp->hs_rate[i].gen = ++tcp->hs_gen_last;
             }
             if (tcp->hs_rate[i].count >= tcp->hs_rate_per_min)
                 return false;
             tcp->hs_rate[i].count++;
-            if (window_out) *window_out = tcp->hs_rate[i].start_ms;
+            if (window_out) *window_out = tcp->hs_rate[i].gen;
             return true;
         }
         if (oldest < 0 || tcp->hs_rate[i].start_ms < tcp->hs_rate[oldest].start_ms)
@@ -1732,7 +1737,8 @@ static bool hs_rate_check(nodus_tcp_t *tcp, const nodus_ws_ip_bucket_t *who,
     tcp->hs_rate[slot].who = *who;
     tcp->hs_rate[slot].start_ms = now_mono_ms;
     tcp->hs_rate[slot].count = 1;
-    if (window_out) *window_out = now_mono_ms;
+    tcp->hs_rate[slot].gen = ++tcp->hs_gen_last;
+    if (window_out) *window_out = tcp->hs_rate[slot].gen;
     return true;
 }
 
@@ -1804,7 +1810,7 @@ static void handle_accept(nodus_tcp_t *tcp) {
     snprintf(conn->ip, sizeof(conn->ip), "%s", new_ip);
     conn_stamp_connected(conn);
     conn->hs_bucket = who;
-    conn->hs_window_ms = hs_window;
+    conn->hs_gen = hs_window;
     conn->hs_counted = hs_counted;
 
     /* Phase 3.2d: bind fd to slot, log it. Match this fd against
@@ -2022,7 +2028,7 @@ static bool ws_try_upgrade(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             return true;
         }
         conn->hs_bucket = bucket;
-        conn->hs_window_ms = win;
+        conn->hs_gen = win;
         conn->hs_counted = counted;
     }
 

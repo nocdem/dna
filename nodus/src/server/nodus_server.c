@@ -81,6 +81,35 @@ static void session_role_exempt(nodus_server_t *srv, nodus_tcp_t *tcp,
         nodus_tcp_role_exempt(tcp, conn);
 }
 
+/* The addendum grants the exemption to a node whose role is active TODAY, not
+ * for ever: when the role set refreshes, walk the live connections of both
+ * accepting transports and clear role_exempt on any whose proven peer_id is
+ * no longer in it (nodus_tcp_role_revoke: it counts toward the per-IP cap at
+ * the next accept; the rate credit is not repeated). FAIL SAFE: an UNKNOWN
+ * set (no backend, witness not answering, stale) changes nothing — the flags
+ * stay as they are, so that an IPC hiccup does not drop every node's
+ * exemption at once; the next known set decides. @return flags cleared. */
+int nodus_server_role_revalidate(nodus_server_t *srv) {
+    if (!srv || !srv->chain || !srv->chain->ops->has_role ||
+        !srv->chain->ops->roles_known ||
+        !srv->chain->ops->roles_known(srv->chain))
+        return 0;
+    int cleared = 0;
+    nodus_tcp_t *tcps[2] = { &srv->tcp, &srv->inter_tcp };
+    for (int t = 0; t < 2; t++) {
+        for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+            nodus_tcp_conn_t *c = tcps[t]->pool[i];
+            if (!c || c->close_pending || !c->role_exempt) continue;
+            if (!c->peer_id_set ||
+                !srv->chain->ops->has_role(srv->chain, &c->peer_id)) {
+                nodus_tcp_role_revoke(c);
+                cleared++;
+            }
+        }
+    }
+    return cleared;
+}
+
 static nodus_inter_session_t *inter_session_for_conn(nodus_server_t *srv,
                                                       nodus_tcp_conn_t *conn) {
     if (!conn || conn->slot < 0 || conn->slot >= NODUS_MAX_INTER_SESSIONS)
@@ -989,6 +1018,10 @@ static void presession_tick(nodus_server_t *srv) {
         return;
     srv->last_presession_mono_ms = now;
     nodus_server_presession_sweep(srv, now);
+    if (now - srv->last_role_revalidate_ms >= NODUS_ROLE_SET_EVERY_MS) {
+        srv->last_role_revalidate_ms = now;
+        nodus_server_role_revalidate(srv);
+    }
 }
 
 static void idle_timeout_sweep(nodus_server_t *srv) {

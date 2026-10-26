@@ -108,7 +108,7 @@ static void inproc_session_closed(nodus_chain_backend_t *b,
  * the registry's ACTIVE / EXITING rows), cached for NODUS_ROLE_SET_EVERY_MS so
  * an accept burst does not read SQLite per session. Fail safe: a failed fill
  * leaves the set unknown (false). */
-static bool inproc_has_role(nodus_chain_backend_t *b, const nodus_key_t *node_id) {
+static bool inproc_roles_known(nodus_chain_backend_t *b) {
     inproc_backend_t *ib = (inproc_backend_t *)b;
     uint64_t now = nodus_time_mono_ms();
     if (!ib->w->p2p) return false;
@@ -123,7 +123,13 @@ static bool inproc_has_role(nodus_chain_backend_t *b, const nodus_key_t *node_id
         ib->roles.n = ib->roles.known ? n : 0;
         ib->roles.at_ms = now;
     }
-    return nodus_role_set_has(&ib->roles, node_id, now);
+    return nodus_role_set_known(&ib->roles, now);
+}
+
+static bool inproc_has_role(nodus_chain_backend_t *b, const nodus_key_t *node_id) {
+    inproc_backend_t *ib = (inproc_backend_t *)b;
+    return inproc_roles_known(b) &&
+           nodus_role_set_has(&ib->roles, node_id, nodus_time_mono_ms());
 }
 
 static void inproc_close(nodus_chain_backend_t *b) {
@@ -141,6 +147,7 @@ static const nodus_chain_backend_ops_t inproc_ops = {
     .status        = inproc_status,
     .chain_id_v3   = inproc_chain_id_v3,
     .has_role      = inproc_has_role,
+    .roles_known   = inproc_roles_known,
     .chain_open    = inproc_chain_open,
     .listen_port   = inproc_listen_port,
     .dispatch_dnac = inproc_dispatch_dnac,

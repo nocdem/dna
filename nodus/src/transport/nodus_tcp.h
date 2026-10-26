@@ -308,15 +308,17 @@ typedef struct nodus_tcp_conn {
      * send is kept here; the connection closes once that input has been
      * opened and dispatched, in order, after on_session. */
     /* Per-IP limits of the accepting side (decision 2026-10-24 + addendum
-     * 2026-10-26): the IP bucket this accept was counted under, the window
-     * it was counted in (nodus_time_mono_ms scale), and whether it WAS
+     * 2026-10-26): the IP bucket this accept was counted under, the
+     * GENERATION of the bucket incarnation / window it was counted in (a
+     * counter, unique per window — a start time can repeat after an
+     * eviction), and whether it WAS
      * counted (hs_counted; loopback is never counted). role_exempt: the
      * session's PROVEN key has an active on-chain role — set by
      * nodus_tcp_role_exempt at on_session; such a connection no longer
      * counts toward the per-IP connection cap (the accept loops skip it) and
      * its rate attempt has been credited back. */
     nodus_ws_ip_bucket_t   hs_bucket;
-    uint64_t               hs_window_ms;
+    uint64_t               hs_gen;      /* generation of the bucket window it was counted in */
     bool                   hs_counted;
     bool                   role_exempt;
 
@@ -464,10 +466,12 @@ typedef struct nodus_tcp {
      * table is bounded — see nodus_tcp_hs_rate_allow. Counts accepts only:
      * connections this node dials never pass here. */
     uint32_t                  hs_rate_per_min;
+    uint64_t                  hs_gen_last;    /* last window generation handed out */
     struct {
         bool                  used;
         nodus_ws_ip_bucket_t  who;
         uint64_t              start_ms;   /* window start, nodus_time_mono_ms scale */
+        uint64_t              gen;        /* unique per window (hs_gen_last) */
         uint32_t              count;      /* accepts in the window so far */
     } hs_rate[NODUS_TCP_HS_RATE_TABLE];
 } nodus_tcp_t;
@@ -491,14 +495,24 @@ bool nodus_tcp_hs_rate_allow(nodus_tcp_t *tcp, const nodus_ws_ip_bucket_t *who,
  * Operator addendum 2026-10-26 ("a node active in ANY role is exempt from
  * ALL of these limits"): the PROVEN identity of `conn` has an active
  * on-chain role. Credits the connection's handshake attempt back to its IP
- * bucket (only while the window it was counted in is still the bucket's
- * window — a credit never lands in a later minute) and marks the connection
+ * bucket (only while the window generation it was counted in is still the
+ * bucket's — a credit never lands in a later minute or a recreated
+ * bucket) and marks the connection
  * role_exempt, so the per-IP connection cap no longer counts it. Idempotent;
  * a connection that was never counted (loopback, rate off) is only marked.
  * Never called for an unproven key: the caller decides from the key the
  * SecretConnection proved. Exposed for the owner's on_session and for tests.
  */
 void nodus_tcp_role_exempt(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
+
+/**
+ * The role of `conn`'s proven key has ended (the owner revalidated the live
+ * connection against a refreshed role set): clear role_exempt, so the
+ * connection counts toward the per-IP connection cap again at the next
+ * accept. The rate attempt credited earlier is NOT taken back and is never
+ * credited a second time (hs_counted stays false). Idempotent.
+ */
+void nodus_tcp_role_revoke(nodus_tcp_conn_t *conn);
 
 /** Loopback (127.0.0.0/8, ::1, ::ffff:127.x): the local machine, exempt from
  *  the handshake rate entirely (counted nowhere). */

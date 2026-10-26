@@ -12588,7 +12588,9 @@ scheduling, never a consensus input.
   of these").** (1) Loopback (127.0.0.0/8, ::1, ::ffff:127.x) is never counted by the rate
   (`nodus_tcp_ip_is_loopback`; the harness runs every node and tool on 127.0.0.1); the
   concurrent cap still applies to it. (2) Every accept still counts, and the connection
-  remembers its bucket and window (`conn->hs_bucket`, `hs_window_ms`, `hs_counted`). When the
+  remembers its bucket and the GENERATION of that bucket window (`conn->hs_bucket`, `hs_gen`,
+  `hs_counted`; a counter unique per window, so a bucket evicted and recreated at the same
+  millisecond cannot take another attempt's credit). When the
   session becomes AUTHENTICATED and the PROVEN key (conn->peer_id) has an active on-chain
   role, the server calls `nodus_tcp_role_exempt`: the attempt is credited back (only into the
   window it was counted in) and the connection is marked `role_exempt`, which both
@@ -12602,7 +12604,19 @@ scheduling, never a consensus input.
   chain backend op `has_role`: in-process from the witness' p2p host (cached 10 s), in the split
   over the new control query `ipc_roles` (core asks every 10 s; answer `fp` = n × 64-byte node
   ids, ≤ 2048, or `err`; an internal key — core and nodus-witness deploy together). FAIL SAFE:
-  an unknown, stale (> 30 s) or over-bound set exempts nobody (`nodus_role_set_has`).
+  an unknown, stale (> 30 s) or over-bound set exempts nobody (`nodus_role_set_has`). The
+  witness exports the set only from a bonded-set derivation that ran to the end at the current
+  tip (`bonded_derive_ok`): 4004 keeps its last good set when a refresh fails, but the role
+  export then answers `err` (never an old set as fresh), and a registry row whose `node_fp`
+  is not 64 bytes is an export error. A roles query the witness cannot answer (no handler,
+  handler failure, no room — the small `err` frame is sent from the stack) is answered `err`
+  and the control connection stays up (it also carries `ipc_status`). (4) The exemption is
+  for a role active NOW: every `NODUS_ROLE_SET_EVERY_MS` the server walks the live
+  connections of both accepting transports (`nodus_server_role_revalidate`) and clears
+  `role_exempt` (`nodus_tcp_role_revoke`) on any whose proven peer_id left a KNOWN set; the
+  connection then counts toward the per-IP cap again, and is never credited a second time.
+  An UNKNOWN set changes nothing — an IPC hiccup must not drop every node's exemption at
+  once (backend op `roles_known`).
 - **Unchanged:** 20 plain + 20 WS connections per IP; the handshake worker queues 64 + 64
   (`NODUS_TCP_SC_JOBQ_OUT` / `_IN`); no one-connection-per-IP rule (NAT, tabs).
 

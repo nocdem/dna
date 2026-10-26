@@ -30,7 +30,9 @@
  *     correlation key, not an authorization input;
  *   - (round 5) the ipc_roles set round-trips (has_role), and a witness with
  *     NO roles handler answers {err}: the control connection stays up,
- *     status still round-trips and no role is known (fail safe);
+ *     status still round-trips and no role is known (fail safe); a raw
+ *     control client receives the EXACT err frame and then a status answer
+ *     on the same connection; an err answer clears a previously known set;
  *   - a first frame that is not a preface closes the connection;
  *   - with no witness listening, a dnac_* request is answered at once with
  *     exactly the bytes a witness-less server sends (nodus_t2_error,
@@ -359,6 +361,141 @@ static void test_roles(nodus_chain_backend_t *b, nodus_witness_ipc_t *ipc) {
     PASS();
 }
 
+/* A raw control client: collects the frames the witness answers. */
+static uint8_t g_raw_frames[4][512];
+static size_t  g_raw_lens[4];
+static int     g_raw_n;
+static void raw_on_frame(nodus_tcp_conn_t *c, const uint8_t *p, size_t len, void *ctx) {
+    (void)c; (void)ctx;
+    if (g_raw_n < 4 && len <= sizeof(g_raw_frames[0])) {
+        memcpy(g_raw_frames[g_raw_n], p, len);
+        g_raw_lens[g_raw_n++] = len;
+    }
+}
+
+static void raw_send_q(nodus_tcp_conn_t *c, const char *q) {
+    uint8_t buf[64];
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "q");
+    cbor_encode_cstr(&enc, q);
+    nodus_tcp_send(c, buf, cbor_encoder_len(&enc));
+}
+
+/* The exact answer a witness without a roles handler gives. */
+static size_t roles_err_bytes(uint8_t *buf, size_t cap) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "q"); cbor_encode_cstr(&enc, NODUS_WITNESS_IPC_Q_ROLES);
+    cbor_encode_cstr(&enc, "err"); cbor_encode_cstr(&enc, "roles unavailable");
+    return cbor_encoder_len(&enc);
+}
+
+/* B5: the exact error frame ARRIVES on a raw control connection, and then a
+ * status query on the SAME connection is answered (the connection survived). */
+static void test_roles_err_exact(void) {
+    TEST("no roles handler: the exact err frame arrives, status answers after it");
+    char d[64], sock[NODUS_TCP_UNIX_PATH_MAX];
+    snprintf(d, sizeof(d), "/tmp/nodus_wipc4_XXXXXX");
+    if (!mkdtemp(d)) { FAIL("mkdtemp"); return; }
+    nodus_witness_ipc_sock_path(d, sock, sizeof(sock));
+    nodus_witness_ipc_handlers_t h = {
+        .dispatch_dnac = h_dispatch_dnac, .cc_collect = h_cc_collect,
+        .status = h_status, .ctx = NULL,
+    };
+    nodus_witness_ipc_t *ipc = nodus_witness_ipc_new(&h);
+    nodus_tcp_t rc;
+    if (!ipc || nodus_witness_ipc_listen(ipc, sock) != 0 || nodus_tcp_init(&rc, -1) != 0) {
+        FAIL("setup");
+        if (ipc) nodus_witness_ipc_free(ipc);
+        rmdir(d);
+        return;
+    }
+    rc.on_frame = raw_on_frame;
+    g_raw_n = 0;
+    nodus_tcp_conn_t *c = nodus_tcp_unix_connect(&rc, sock, NODUS_TCP_UNIX_UID_SELF);
+    bool ok = c != NULL;
+    if (ok) {
+        raw_send_q(c, NODUS_WITNESS_IPC_Q_CTL);
+        raw_send_q(c, NODUS_WITNESS_IPC_Q_ROLES);
+        for (int i = 0; i < POLL_ROUNDS && g_raw_n < 1; i++) {
+            nodus_witness_ipc_poll(ipc, 5);
+            nodus_tcp_poll(&rc, 5);
+        }
+    }
+    uint8_t want[96];
+    size_t wl = roles_err_bytes(want, sizeof(want));
+    bool exact = ok && g_raw_n >= 1 && g_raw_lens[0] == wl &&
+                 memcmp(g_raw_frames[0], want, wl) == 0;
+    int before = g_raw_n;
+    if (exact) {
+        raw_send_q(c, NODUS_WITNESS_IPC_Q_STATUS);
+        for (int i = 0; i < POLL_ROUNDS && g_raw_n < before + 1; i++) {
+            nodus_witness_ipc_poll(ipc, 5);
+            nodus_tcp_poll(&rc, 5);
+        }
+    }
+    bool status_after = exact && g_raw_n > before && g_raw_lens[before] > 0 &&
+                        !(g_raw_lens[before] == wl &&
+                          memcmp(g_raw_frames[before], want, wl) == 0);
+    nodus_tcp_close(&rc);
+    nodus_witness_ipc_free(ipc);
+    rmdir(d);
+    if (!exact) { FAIL("the exact roles err frame did not arrive"); return; }
+    if (!status_after) { FAIL("no status answer on the same connection after the err"); return; }
+    PASS();
+}
+
+/* B5: an err answer CLEARS a set core held (fail safe). The roles handler
+ * answers once, then fails; the second query (test seam) must leave no role. */
+static volatile int g_roles_fail;
+static int h_roles_flaky(void *ctx, uint8_t (*fps)[64], uint32_t max, uint32_t *n) {
+    if (g_roles_fail) return -1;
+    return h_roles(ctx, fps, max, n);
+}
+
+static void test_roles_err_clears(void) {
+    TEST("an err answer clears a previously known role set");
+    char d[64], sock[NODUS_TCP_UNIX_PATH_MAX];
+    snprintf(d, sizeof(d), "/tmp/nodus_wipc5_XXXXXX");
+    if (!mkdtemp(d)) { FAIL("mkdtemp"); return; }
+    nodus_witness_ipc_sock_path(d, sock, sizeof(sock));
+    nodus_witness_ipc_handlers_t h = {
+        .dispatch_dnac = h_dispatch_dnac, .cc_collect = h_cc_collect,
+        .status = h_status, .roles = h_roles_flaky, .ctx = NULL,
+    };
+    g_roles_fail = 0;
+    nodus_witness_ipc_t *ipc = nodus_witness_ipc_new(&h);
+    nodus_chain_backend_t *b = NULL;
+    if (!ipc || nodus_witness_ipc_listen(ipc, sock) != 0 ||
+        nodus_chain_backend_ipc_open(d, &b) != 0 || !b) {
+        FAIL("setup");
+        if (ipc) nodus_witness_ipc_free(ipc);
+        rmdir(d);
+        return;
+    }
+    nodus_key_t k0;
+    role_fp(0, k0.bytes);
+    for (int i = 0; i < POLL_ROUNDS && !b->ops->has_role(b, &k0); i++)
+        poll_all(b, ipc);
+    bool known = b->ops->has_role(b, &k0);
+    g_roles_fail = 1;
+    nodus_chain_backend_ipc_test_ask_roles(b);
+    for (int i = 0; i < POLL_ROUNDS && b->ops->has_role(b, &k0); i++)
+        poll_all(b, ipc);
+    bool gone = !b->ops->has_role(b, &k0) && !b->ops->roles_known(b);
+    bool status_ok = b->ops->chain_open(b);
+    b->ops->close(b);
+    nodus_witness_ipc_free(ipc);
+    rmdir(d);
+    if (!known) { FAIL("the set never became known"); return; }
+    if (!gone) { FAIL("an err answer did not clear the known set"); return; }
+    if (!status_ok) { FAIL("the control connection / status did not survive the err"); return; }
+    PASS();
+}
+
 /* A witness with NO roles handler answers {err} and keeps the control
  * connection: status still round-trips, no role is known (fail safe). */
 static void test_roles_handler_absent(void) {
@@ -684,6 +821,8 @@ int main(void) {
     test_status(b, ipc);
     test_roles(b, ipc);
     test_roles_handler_absent();
+    test_roles_err_exact();
+    test_roles_err_clears();
     test_session_roundtrip(b, ipc);
     test_token_not_authorization(b, ipc);
     test_cc_collect(b, ipc);
