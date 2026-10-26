@@ -219,7 +219,11 @@ static void cli_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload, size_t 
 static void test_anon_session_start(void) {
     TEST("ANON connection: nodus_auth_session_start makes a principal-less session");
     g_srv = calloc(1, sizeof(*g_srv));
-    if (!g_srv || nodus_identity_generate(&g_node) != 0) { FAIL("setup"); return; }
+    /* the responder's KEM key: the certificate (nodus_tcp_sc_kc_sign) needs it */
+    if (!g_srv || nodus_identity_generate(&g_node) != 0 || !g_node.has_mlkem) {
+        FAIL("setup");
+        return;
+    }
     memset(g_chain, 0x42, sizeof(g_chain));
     if (nodus_tcp_sc_kc_sign(&g_node, g_chain, g_kc) != 0) { FAIL("kc sign"); return; }
 

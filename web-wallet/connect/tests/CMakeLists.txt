@@ -148,6 +148,7 @@ set(NC_SOURCES
   ${ROOT}/shared/dht2/dht2_envelope.c
   ${ROOT}/shared/dht2/dht2_record.c
   ${ROOT}/shared/dht2/dht2_time.c
+  ${ROOT}/shared/dnac/cmt_pb.c
   ${ROOT}/nodus/src/protocol/nodus_cbor.c
   ${ROOT}/nodus/src/protocol/nodus_wire.c
   ${ROOT}/nodus/src/core/nodus_value.c

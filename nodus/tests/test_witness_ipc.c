@@ -1025,6 +1025,7 @@ static void test_core_prefaces(void) {
     }
     b2->ops->close(b2);
     nodus_tcp_close(&g_fake);
+    unlink(path);               /* the fake witness's socket file (g_dir2 is removed at the end) */
     if (ok) PASS(); else FAIL("a session preface differs from the documented bytes");
 }
 

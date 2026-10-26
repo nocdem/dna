@@ -20,12 +20,21 @@
 #include "protocol/nodus_tier2.h"
 #include "protocol/nodus_wire.h"
 #include "protocol/nodus_cbor.h"
+#include "protocol/nodus_owner_query.h"     /* NODUS_OQ_T_LEN (package 3d) */
 #include "crypto/nodus_sign.h"
 #include "transport/nodus_tcp_sc.h"         /* the client / node sessions (3b-2) */
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "NODUS_SRV"
+
+/* The session transcript T crosses three layers as a bare 64: the layer's
+ * (nodus_tcp_sc_transcript), the chain backend / witness IPC (`t[64]`,
+ * NODUS_WITNESS_IPC_T_LEN) and the owner-signed query's `s` (NODUS_OQ_T_LEN).
+ * One size, pinned here where all three are visible. */
+_Static_assert(CMT_P2P_SC_T_SIZE == 64 && NODUS_WITNESS_IPC_T_LEN == CMT_P2P_SC_T_SIZE &&
+               NODUS_OQ_T_LEN == CMT_P2P_SC_T_SIZE,
+               "the transcript T is 64 bytes in every layer that carries it");
 
 extern void qgp_secure_memzero(void *ptr, size_t len);
 

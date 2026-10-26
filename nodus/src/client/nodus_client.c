@@ -3029,11 +3029,14 @@ static int enc_dnac_query_qa(nodus_client_t *client, cbor_encoder_t *enc,
         if (strnlen(owner_hex, 2 * NODUS_OQ_O_LEN + 1) != 2 * NODUS_OQ_O_LEN)
             return -1;
         for (size_t i = 0; i < NODUS_OQ_O_LEN; i++) {
-            int hi = owner_hex[2 * i], lo = owner_hex[2 * i + 1];
-            hi = hi >= 'a' ? hi - 'a' + 10 : hi - '0';
-            lo = lo >= 'a' ? lo - 'a' + 10 : lo - '0';
-            if (hi < 0 || hi > 15 || lo < 0 || lo > 15) return -1;
-            o[i] = (uint8_t)(hi << 4 | lo);
+            int nib[2];
+            for (int k = 0; k < 2; k++) {
+                char ch = owner_hex[2 * i + (size_t)k];
+                if (ch >= '0' && ch <= '9') nib[k] = ch - '0';
+                else if (ch >= 'a' && ch <= 'f') nib[k] = ch - 'a' + 10;
+                else return -1;
+            }
+            o[i] = (uint8_t)(nib[0] << 4 | nib[1]);
         }
     } else if (!pubkey || qgp_sha3_512(pubkey, pubkey_len, o) != 0) {
         return -1;
