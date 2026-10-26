@@ -617,11 +617,24 @@ static int on_deliver(nodus_dht2_pull_t *p, uint64_t now_ms, ex_t *ex,
         /* PS:364-370 validity check of the chunk → row 12: "the puller
          * recomputes address and placement key from v, a mismatch with e[i]
          * = source fault (logged, nothing stored)". */
-        if (dht2_record_parse(d.v, d.v_len, p->holder.chain, e->a, rec)
-                != DHT2_OK ||
-            dht2_record_placement_key(rec, pk) != DHT2_OK ||
-            memcmp(pk, e->p, DHT2_HASH_LEN) != 0) {
-            source_fault = true;
+        {
+            int prc = dht2_record_parse(d.v, d.v_len, p->holder.chain, e->a,
+                                        rec);
+
+            if (prc == DHT2_OK) {
+                prc = dht2_record_placement_key(rec, pk);
+            }
+            if (prc == DHT2_E_HOLDER_FAULT) {
+                /* A LOCAL failure (allocation / hashing) is not the source's
+                 * fault: the entry was not checked, so the cursor is kept
+                 * (row 12 "a transient local failure keeps the cursor"). */
+                free(rec);
+                return abort_ex(p, ex, "local fault checking a delivery "
+                                       "(cursor kept)");
+            }
+            if (prc != DHT2_OK || memcmp(pk, e->p, DHT2_HASH_LEN) != 0) {
+                source_fault = true;
+            }
         }
         free(rec);
         if (source_fault) {
