@@ -41,6 +41,11 @@
 
 #define LOG_TAG "DHT2_PULL"
 
+/* The p_hello REQUEST: Bee's empty `Syn` (pullsync.go:528-529) as strict
+ * DAG-CBOR — the empty map, major type 5, length 0. The REPLY is p_hello
+ * {g, top} (row 12). */
+static const uint8_t PULL_SYN[1] = { 0xa0 };
+
 _Static_assert(NODUS_PK_BYTES == DHT2_PUBKEY_LEN,
                "node identity key is the ML-DSA-87 key the envelope carries");
 /* ceil(250 / 8): the p_want bit-vector of a full page (row 12). */
@@ -347,10 +352,8 @@ static int abort_ex(nodus_dht2_pull_t *p, ex_t *ex, const char *why)
 int nodus_dht2_pull_start(nodus_dht2_pull_t *p, uint64_t now_ms,
                           const uint8_t source_fp[DHT2_FP_LEN])
 {
-    dht2_p_hello_t m;
     ex_t          *ex, **grown;
-    size_t         len = 0;
-    uint64_t       top;
+    size_t         len = sizeof(PULL_SYN);
 
     (void)now_ms;
     if (p == NULL || source_fp == NULL ||
@@ -360,18 +363,9 @@ int nodus_dht2_pull_start(nodus_dht2_pull_t *p, uint64_t now_ms,
     if (ex_find(p, source_fp) != NULL) {
         return NODUS_DHT2_PULL_BUSY;      /* row 12: one exchange per pair */
     }
-    /* PS:529 `Syn`: Bee's request is an empty message; the codec has only
-     * p_hello {g, top}, so the request carries this node's own {g, top}
-     * (GAP reading; the source ignores its content). */
-    if (nodus_dht2_store_top(p->holder.store, &top) != 0) {
-        return NODUS_DHT2_PULL_ERR;
-    }
-    m.g = nodus_dht2_store_generation(p->holder.store);
-    m.top = top;
-    if (dht2_p_hello_encode(&m, p->buf, NODUS_DHT2_PULL_MSG_MAX, &len)
-        != DHT2_OK) {
-        return NODUS_DHT2_PULL_ERR;
-    }
+    /* PS:528-529 `syn := &pb.Syn{}`: Bee's request is an EMPTY message; in
+     * our strict DAG-CBOR (wire-gaps decision 1) that is the empty map. */
+    memcpy(p->buf, PULL_SYN, sizeof(PULL_SYN));
     ex = (ex_t *)calloc(1, sizeof(*ex));
     grown = (ex_t **)realloc(p->ex, (p->nex + 1) * sizeof(*grown));
     if (ex == NULL || grown == NULL) {
@@ -863,12 +857,14 @@ int nodus_dht2_pull_epoch_check(nodus_dht2_pull_t *p, uint64_t now_ms)
 static int serve_hello(nodus_dht2_pull_t *p, const uint8_t peer[DHT2_FP_LEN],
                        const uint8_t *msg, size_t len)
 {
-    dht2_p_hello_t req, rep;
+    dht2_p_hello_t rep;
     uint64_t       top;
     size_t         olen = 0;
 
-    if (dht2_p_hello_decode(msg, len, &req) != DHT2_OK) {   /* PS:553 */
-        QGP_LOG_WARN(LOG_TAG, "p_hello undecodable");
+    /* PS:552-555 the request is the empty Syn; anything else is refused. */
+    if (len != sizeof(PULL_SYN) || msg == NULL ||
+        memcmp(msg, PULL_SYN, sizeof(PULL_SYN)) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "p_hello request is not the empty Syn");
         return -1;
     }
     if (nodus_dht2_store_top(p->holder.store, &top) != 0) {

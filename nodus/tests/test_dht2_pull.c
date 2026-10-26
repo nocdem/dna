@@ -839,8 +839,13 @@ static void build_s6(void)
 
     memcpy(g_s6[0], g_n[0].key.fp, DHT2_FP_LEN);
     memcpy(g_s6[1], g_n[1].key.fp, DHT2_FP_LEN);
+    /* The four others spread over the keyspace (0x20, 0x60, 0xA0, 0xE0 …).
+     * With all four at 0xE2-0xE5 (the first version) A (fp 0x64…) and B
+     * (0x43…) share the top bit against all of them, so no key can put B in
+     * nearest_R while leaving A out — the hand-over fixture search could
+     * never succeed (found by the ORCHESTRATOR's run, 2026-10-27). */
     for (k = 2; k < 6; k++) {
-        memset(g_s6[k], 0xE0 + k, DHT2_FP_LEN);
+        memset(g_s6[k], 0x20 + 0x40 * (k - 2), DHT2_FP_LEN);
     }
 }
 
