@@ -61,6 +61,14 @@
  *      waits in nodus_tcp_poll(…, 1000); the frames complete within a round
  *      bound far below what that 1000 ms sleep would cost).
  *
+ *  13. The ANON family at the layer (DHT v2 package 3d): the KEM-key
+ *      certificate helper, an ANON initiator against an unbound responder
+ *      (no principal, T equal, frames both ways), the unbound responder's
+ *      CLIENT continuation, wrong pin / forged certificate / CLIENT-only
+ *      responder, enable refusals, and the raw bytes of the first messages.
+ *      The section comment before test_anon_kc_sign lists what they cannot
+ *      show (the reserved ANON share of the job budget is not driven).
+ *
  * WHAT IT REQUIRES: a default nodus build (no compile flags, no
  * environment). Loopback sockets on ephemeral ports (127.0.0.1:0), threads
  * (the layer's handshake worker). Heap: 5 MiB receive buffers, ~40 MiB peak
@@ -529,6 +537,301 @@ static void test_plain_frame_before_session(void)
         nodus_tcp_poll(&g_srv.tcp, 1);
     if (ok && g_srv.enable_rc == 0 && g_srv.disconnected == 1 && g_srv.frames == 0) PASS();
     else FAIL("frame reached the parser, or the connection stayed open");
+    if (fd >= 0) close(fd);
+    side_close(&g_srv);
+}
+
+/* ══ 13: the ANON family at the layer (DHT v2 package 3d) ═════════════
+ *
+ * Design docs/plans/2026-10-26-dht-v2-3d-no-login-design.md rev 5 §1, §2
+ * (layer bullet), §1.6 (budgets). WHAT THESE PROVE:
+ *   · nodus_tcp_sc_kc_sign makes a certificate that verifies under purpose
+ *     0x0E over "nodus.asess.kembind.v1" ‖ chain ‖ mlkem_pk, and refuses an
+ *     identity without a KEM key;
+ *   · an ANON initiator (no id, pinned) and a responder carrying the cached
+ *     certificate authenticate over real loopback TCP: the responder has NO
+ *     principal (nodus_tcp_sc_peer_pubkey -1 and the output left untouched,
+ *     nodus_tcp_sc_is_anonymous true), the initiator sees the node's key, T
+ *     is equal on both ends, frames flow both ways. The ANON initiator reads
+ *     9,902 bytes before AUTHENTICATED — more than a CLIENT initiator's budget
+ *     (9,455), so this also proves the budget follows the BOUND family;
+ *   · the same responder (unbound) authenticates an ordinary CLIENT initiator
+ *     exactly as before, with a principal;
+ *   · a wrong pin, a certificate by another key, and an ANON initiator against
+ *     a CLIENT-only responder never form a session;
+ *   · enable refuses ANON on a responder, a certificate on any but a CLIENT
+ *     responder, an unpinned ANON initiator, a keyless CLIENT initiator;
+ *   · a raw peer sending the exact (0x05, 69) HELLO_ANON gets exactly the
+ *     8,858-byte HELLO_R_ANON; a first message whose length selects no family,
+ *     or whose kind contradicts its length, closes the connection.
+ * HOW THEY CAN LIE: the layer's worker admission (the reserved ANON share of
+ * the inbound job budget) is NOT driven here — it needs a held worker, and
+ * production code has no hook for one; only its constants are pinned by
+ * static assertions in nodus_tcp_sc.h. The runtime pre-session budget is
+ * exercised only on the protocol-exact path (an over-budget peer cannot be
+ * built without being rejected earlier by the exact-length rule). */
+
+static uint8_t g_kc[CMT_P2P_SC_SIG_SIZE];     /* g_a's certificate, signed ONCE */
+
+static int pair_up_anon(const uint8_t *kc, const nodus_key_t *pin, bool client_anon,
+                        const cmt_p2p_sc_profile_t *srv_prof)
+{
+    side_init(&g_srv);
+    side_init(&g_cli);
+    cfg_fill(&g_srv.cfg, CMT_P2P_SC_ROLE_RESPONDER, srv_prof, g_a, NULL);
+    g_srv.cfg.anon_kc_sig = kc;
+    g_srv.enable_on_accept = true;
+    g_srv.peer_pk = g_b->pk.bytes;
+    g_cli.peer_pk = g_a->pk.bytes;
+    if (nodus_tcp_listen(&g_srv.tcp, "127.0.0.1", 0) != 0)
+        return -1;
+    g_cli.conn = nodus_tcp_connect(&g_cli.tcp, "127.0.0.1", g_srv.tcp.port);
+    if (g_cli.conn == NULL)
+        return -1;
+    if (client_anon)
+        cfg_fill(&g_cli.cfg, CMT_P2P_SC_ROLE_INITIATOR, &CMT_P2P_SC_PROFILE_ANON, NULL,
+                 pin != NULL ? pin : &g_a->node_id);
+    else
+        cfg_fill(&g_cli.cfg, CMT_P2P_SC_ROLE_INITIATOR, &CMT_P2P_SC_PROFILE_CLIENT, g_b,
+                 pin != NULL ? pin : &g_a->node_id);
+    g_cli.enable_rc = nodus_tcp_sc_enable(&g_cli.tcp, g_cli.conn, &g_cli.cfg);
+    return g_cli.enable_rc;
+}
+
+static void test_anon_kc_sign(void)
+{
+    uint8_t msg[CMT_P2P_SC_KC_MSG_SIZE];
+    uint8_t out[CMT_P2P_SC_SIG_SIZE];
+    nodus_sig_t sig;
+    nodus_identity_t nokem;
+    int ok;
+
+    TEST("nodus_tcp_sc_kc_sign: a 0x0E certificate over domain ‖ chain ‖ mlkem_pk");
+    ok = nodus_tcp_sc_kc_sign(g_a, CHAIN, g_kc) == 0;
+    cmt_p2p_sc_kc_msg(CHAIN, g_a->mlkem_pk, msg);
+    if (ok) {
+        memcpy(sig.bytes, g_kc, sizeof(sig.bytes));
+        ok = nodus_verify_kem_cert(&sig, msg, sizeof(msg), &g_a->pk) == 0 &&
+             memcmp(msg, "nodus.asess.kembind.v1", 22) == 0 &&
+             /* not a session signature, not under another key, not over another chain */
+             nodus_verify_client_session_auth(&sig, msg, sizeof(msg), &g_a->pk) != 0 &&
+             nodus_verify_kem_cert(&sig, msg, sizeof(msg), &g_b->pk) != 0;
+        msg[22] ^= 1;
+        ok = ok && nodus_verify_kem_cert(&sig, msg, sizeof(msg), &g_a->pk) != 0;
+    }
+    nokem = *g_a;
+    nokem.has_mlkem = false;
+    memset(out, 0xEE, sizeof(out));
+    ok = ok && nodus_tcp_sc_kc_sign(&nokem, CHAIN, out) == -1 && out[0] == 0 && out[4626] == 0 &&
+         nodus_tcp_sc_kc_sign(NULL, CHAIN, out) == -1 &&
+         nodus_tcp_sc_kc_sign(g_a, NULL, out) == -1 &&
+         nodus_tcp_sc_kc_sign(g_a, CHAIN, NULL) == -1;
+    if (ok) PASS(); else FAIL("certificate helper");
+}
+
+static void test_anon_pair(void)
+{
+    uint8_t pk[NODUS_PK_BYTES];
+    uint8_t t_srv[CMT_P2P_SC_T_SIZE], t_cli[CMT_P2P_SC_T_SIZE];
+    uint8_t one = 0x5a;
+    uint8_t *big = (uint8_t *)malloc(100000);
+    int ok;
+
+    TEST("ANON initiator vs responder with a KC: session, responder has NO principal");
+    ok = big != NULL && pair_up_anon(g_kc, NULL, true, &CMT_P2P_SC_PROFILE_CLIENT) == 0 &&
+         nodus_tcp_sc_transcript(g_cli.conn, t_cli) == -1 &&      /* not authenticated yet */
+         pump_until(&g_srv.sessions, 1, MAX_ROUNDS) &&
+         pump_until(&g_cli.sessions, 1, MAX_ROUNDS) &&
+         nodus_tcp_sc_authenticated(g_srv.conn) && nodus_tcp_sc_authenticated(g_cli.conn);
+    memset(pk, 0xEE, sizeof(pk));
+    ok = ok && nodus_tcp_sc_is_anonymous(g_srv.conn) && !nodus_tcp_sc_is_anonymous(g_cli.conn) &&
+         nodus_tcp_sc_peer_pubkey(g_srv.conn, pk) == -1 && pk[0] == 0xEE &&   /* untouched */
+         g_srv.peer_ok == 0 &&                      /* on_session saw no peer key ... */
+         g_cli.peer_ok == 1 &&                      /* ... the initiator saw the node's */
+         nodus_tcp_sc_peer_pubkey(g_cli.conn, pk) == 0 &&
+         memcmp(pk, g_a->pk.bytes, NODUS_PK_BYTES) == 0 &&
+         nodus_tcp_sc_transcript(g_srv.conn, t_srv) == 0 &&
+         nodus_tcp_sc_transcript(g_cli.conn, t_cli) == 0 &&
+         memcmp(t_srv, t_cli, sizeof(t_srv)) == 0 &&
+         nodus_tcp_sc_transcript(g_cli.conn, NULL) == -1 &&
+         nodus_tcp_sc_is_anonymous(NULL) == false;
+    if (ok) PASS(); else FAIL("no ANON session, a principal appeared, or T differs");
+
+    if (ok) {
+        TEST("ANON session: nodus frames flow both ways (1 byte, 100,000 bytes)");
+        for (size_t i = 0; i < 100000; i++)
+            big[i] = (uint8_t)(i * 31u + 3u);
+        if (send_and_check(&g_cli, &g_srv, &one, 1) && send_and_check(&g_srv, &g_cli, &one, 1) &&
+            send_and_check(&g_cli, &g_srv, big, 100000) &&
+            send_and_check(&g_srv, &g_cli, big, 100000) &&
+            g_srv.disconnected == 0 && g_cli.disconnected == 0)
+            PASS();
+        else FAIL("frame lost, altered, or a connection closed");
+    }
+    pair_down();
+    free(big);
+}
+
+static void test_anon_unbound_client(void)
+{
+    uint8_t pk[NODUS_PK_BYTES];
+    uint8_t t_srv[CMT_P2P_SC_T_SIZE], t_cli[CMT_P2P_SC_T_SIZE];
+    int ok;
+
+    TEST("responder WITH a KC still authenticates an ordinary CLIENT initiator (principal)");
+    ok = pair_up_anon(g_kc, NULL, false, &CMT_P2P_SC_PROFILE_CLIENT) == 0 &&
+         pump_until(&g_srv.sessions, 1, MAX_ROUNDS) && pump_until(&g_cli.sessions, 1, MAX_ROUNDS) &&
+         g_srv.peer_ok == 1 && g_cli.peer_ok == 1 &&
+         !nodus_tcp_sc_is_anonymous(g_srv.conn) &&
+         nodus_tcp_sc_peer_pubkey(g_srv.conn, pk) == 0 &&
+         memcmp(pk, g_b->pk.bytes, NODUS_PK_BYTES) == 0 &&
+         nodus_tcp_sc_transcript(g_srv.conn, t_srv) == 0 &&
+         nodus_tcp_sc_transcript(g_cli.conn, t_cli) == 0 &&
+         memcmp(t_srv, t_cli, sizeof(t_srv)) == 0;
+    if (ok) PASS(); else FAIL("the CLIENT continuation of the unbound responder is not today's");
+    pair_down();
+}
+
+static void test_anon_refusals_at_session(void)
+{
+    uint8_t other_kc[CMT_P2P_SC_SIG_SIZE];
+    uint8_t msg[CMT_P2P_SC_KC_MSG_SIZE];
+    nodus_sig_t sig;
+    int ok;
+
+    TEST("ANON wrong dial pin: the initiator closes, no session either side");
+    ok = pair_up_anon(g_kc, &g_c->node_id, true, &CMT_P2P_SC_PROFILE_CLIENT) == 0 &&
+         pump_until(&g_cli.disconnected, 1, MAX_ROUNDS) &&
+         pump_until(&g_srv.disconnected, 1, MAX_ROUNDS);
+    if (ok && g_cli.sessions == 0 && g_srv.sessions == 0 && g_srv.frames == 0) PASS();
+    else FAIL("a session formed against the wrong pin");
+    pair_down();
+
+    TEST("ANON: a certificate signed by another key never forms a session");
+    cmt_p2p_sc_kc_msg(CHAIN, g_a->mlkem_pk, msg);
+    ok = nodus_sign_kem_cert(&sig, msg, sizeof(msg), &g_c->sk) == 0;
+    memcpy(other_kc, sig.bytes, sizeof(other_kc));
+    ok = ok && pair_up_anon(other_kc, NULL, true, &CMT_P2P_SC_PROFILE_CLIENT) == 0 &&
+         pump_until(&g_cli.disconnected, 1, MAX_ROUNDS) &&
+         pump_until(&g_srv.disconnected, 1, MAX_ROUNDS);
+    if (ok && g_cli.sessions == 0 && g_srv.sessions == 0 && g_srv.frames == 0) PASS();
+    else FAIL("a session formed on a forged certificate");
+    pair_down();
+
+    TEST("ANON initiator vs a CLIENT-only responder (no KC): both close, no session");
+    ok = pair_up_anon(NULL, NULL, true, &CMT_P2P_SC_PROFILE_CLIENT) == 0 &&
+         pump_until(&g_cli.disconnected, 1, MAX_ROUNDS) &&
+         pump_until(&g_srv.disconnected, 1, MAX_ROUNDS);
+    if (ok && g_cli.sessions == 0 && g_srv.sessions == 0) PASS();
+    else FAIL("a CLIENT-only responder accepted ANON");
+    pair_down();
+}
+
+static void test_anon_enable_refusals(void)
+{
+    nodus_tcp_sc_cfg_t cfg;
+    nodus_tcp_conn_t *c;
+    int ok;
+
+    side_init(&g_srv);
+    side_init(&g_cli);
+    nodus_tcp_listen(&g_srv.tcp, "127.0.0.1", 0);
+    c = nodus_tcp_connect(&g_cli.tcp, "127.0.0.1", g_srv.tcp.port);
+
+    TEST("enable refuses: ANON responder, KC on NODE / initiator, unpinned ANON, keyless CLIENT");
+    cfg_fill(&cfg, CMT_P2P_SC_ROLE_RESPONDER, &CMT_P2P_SC_PROFILE_ANON, g_a, NULL);
+    ok = c != NULL && nodus_tcp_sc_enable(&g_cli.tcp, c, &cfg) == -1;            /* ANON is not a responder profile */
+    cfg_fill(&cfg, CMT_P2P_SC_ROLE_RESPONDER, &CMT_P2P_SC_PROFILE_NODE, g_a, NULL);
+    cfg.anon_kc_sig = g_kc;
+    ok = ok && nodus_tcp_sc_enable(&g_cli.tcp, c, &cfg) == -1;                    /* a KC only for CLIENT */
+    cfg_fill(&cfg, CMT_P2P_SC_ROLE_INITIATOR, &CMT_P2P_SC_PROFILE_ANON, NULL, &g_a->node_id);
+    cfg.anon_kc_sig = g_kc;
+    ok = ok && nodus_tcp_sc_enable(&g_cli.tcp, c, &cfg) == -1;                    /* ... not an initiator */
+    cfg_fill(&cfg, CMT_P2P_SC_ROLE_INITIATOR, &CMT_P2P_SC_PROFILE_ANON, NULL, NULL);
+    ok = ok && nodus_tcp_sc_enable(&g_cli.tcp, c, &cfg) == -1;                    /* unpinned */
+    cfg_fill(&cfg, CMT_P2P_SC_ROLE_INITIATOR, &CMT_P2P_SC_PROFILE_CLIENT, NULL, &g_a->node_id);
+    ok = ok && nodus_tcp_sc_enable(&g_cli.tcp, c, &cfg) == -1;                    /* no local key */
+    cfg_fill(&cfg, CMT_P2P_SC_ROLE_INITIATOR, &CMT_P2P_SC_PROFILE_ANON, NULL, &g_a->node_id);
+    ok = ok && nodus_tcp_sc_enable(&g_cli.tcp, c, &cfg) == 0;     /* control: the valid ANON initiator enables */
+    if (ok) PASS(); else FAIL("a bad ANON enable was accepted (or the control was refused)");
+
+    side_close(&g_cli);
+    side_close(&g_srv);
+}
+
+static void test_anon_raw_first_message(void)
+{
+    /* uvarint(len) ‖ kind ‖ zero fill */
+    struct { const char *name; size_t body; uint8_t kind; } bad[] = {
+        { "first message length selects no family (100)", 100, 0x05 },
+        { "(0x01, 69): HELLO_ANON's length, HELLO's kind", 69, 0x01 },
+        { "(0x05, 2661): HELLO's length, HELLO_ANON's kind", 2661, 0x05 },
+    };
+    uint8_t m[2 + 2661];
+    uint8_t reply[9000];
+    size_t got = 0;
+    int fd, ok;
+
+    for (size_t k = 0; k < sizeof(bad) / sizeof(bad[0]); k++) {
+        char name[128];
+        size_t o = 0;
+
+        snprintf(name, sizeof(name), "raw peer, unbound responder: %s closes", bad[k].name);
+        TEST(name);
+        side_init(&g_srv);
+        cfg_fill(&g_srv.cfg, CMT_P2P_SC_ROLE_RESPONDER, &CMT_P2P_SC_PROFILE_CLIENT, g_a, NULL);
+        g_srv.cfg.anon_kc_sig = g_kc;
+        g_srv.enable_on_accept = true;
+        nodus_tcp_listen(&g_srv.tcp, "127.0.0.1", 0);
+        fd = raw_connect(g_srv.tcp.port);
+        memset(m, 0, sizeof(m));
+        if (bad[k].body >= 128) {
+            m[o++] = (uint8_t)(bad[k].body | 0x80);
+            m[o++] = (uint8_t)(bad[k].body >> 7);
+        } else {
+            m[o++] = (uint8_t)bad[k].body;
+        }
+        m[o] = bad[k].kind;
+        ok = fd >= 0 && send_all(fd, m, o + bad[k].body) == 0;
+        for (int i = 0; ok && i < MAX_ROUNDS && g_srv.disconnected == 0; i++)
+            nodus_tcp_poll(&g_srv.tcp, 1);
+        if (ok && g_srv.enable_rc == 0 && g_srv.disconnected == 1 && g_srv.sessions == 0) PASS();
+        else FAIL("the connection was not closed");
+        if (fd >= 0) close(fd);
+        side_close(&g_srv);
+    }
+
+    TEST("raw peer, unbound responder: exact (0x05, 69) HELLO_ANON gets 8,858 bytes of HELLO_R_ANON");
+    side_init(&g_srv);
+    cfg_fill(&g_srv.cfg, CMT_P2P_SC_ROLE_RESPONDER, &CMT_P2P_SC_PROFILE_CLIENT, g_a, NULL);
+    g_srv.cfg.anon_kc_sig = g_kc;
+    g_srv.enable_on_accept = true;
+    nodus_tcp_listen(&g_srv.tcp, "127.0.0.1", 0);
+    fd = raw_connect(g_srv.tcp.port);
+    memset(m, 0, sizeof(m));
+    m[0] = 69;
+    m[1] = CMT_P2P_SC_MSG_HELLO_ANON;
+    m[2 + 32 + 0] = (uint8_t)(PROTO_VER >> 24);                     /* proto_ver, BE */
+    m[2 + 32 + 1] = (uint8_t)(PROTO_VER >> 16);
+    m[2 + 32 + 2] = (uint8_t)(PROTO_VER >> 8);
+    m[2 + 32 + 3] = (uint8_t)PROTO_VER;
+    memcpy(m + 2 + 32 + 4, CHAIN, 32);                              /* chain_id      */
+    ok = fd >= 0 && send_all(fd, m, 70) == 0;
+    for (int i = 0; ok && i < MAX_ROUNDS && got < 8858; i++) {
+        ssize_t r;
+
+        nodus_tcp_poll(&g_srv.tcp, 1);
+        r = recv(fd, reply + got, sizeof(reply) - got, MSG_DONTWAIT);
+        if (r > 0)
+            got += (size_t)r;
+    }
+    ok = ok && got == 8858 && reply[0] == (0x80 | (8856 & 0x7f)) && reply[1] == (8856 >> 7) &&
+         reply[2] == CMT_P2P_SC_MSG_HELLO_R_ANON &&
+         memcmp(reply + 3, g_a->pk.bytes, NODUS_PK_BYTES) == 0 &&           /* R_dsa_pk   */
+         memcmp(reply + 3 + 2592, g_a->mlkem_pk, 1568) == 0 &&              /* R_mlkem_pk */
+         memcmp(reply + 3 + 2592 + 1568, g_kc, CMT_P2P_SC_SIG_SIZE) == 0 && /* the cached KC */
+         g_srv.disconnected == 0;
+    if (ok) PASS(); else FAIL("HELLO_R_ANON is not the 8,858 bytes of design §1.2");
     if (fd >= 0) close(fd);
     side_close(&g_srv);
 }
@@ -1631,6 +1934,12 @@ int main(void)
     test_wrong_pin();
     test_enable_refusals();
     test_plain_frame_before_session();
+    test_anon_kc_sign();
+    test_anon_pair();
+    test_anon_unbound_client();
+    test_anon_refusals_at_session();
+    test_anon_enable_refusals();
+    test_anon_raw_first_message();
     test_full_queue();
     test_stale_completion();
     test_websocket();

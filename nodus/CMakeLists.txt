@@ -2404,6 +2404,17 @@ add_executable(test_p2p_secret_profiles tests/test_p2p_secret_profiles.c)
 target_link_libraries(test_p2p_secret_profiles nodus dsa kem nodus crypto)
 add_test(NAME test_p2p_secret_profiles COMMAND test_p2p_secret_profiles)
 
+# DHT v2 package 3d (session layer) — the ANON family of cmt_p2p_secret: the
+# no-login handshake with a KEM-key certificate, in memory. Happy path with the
+# wire sizes and T / key recomputed from the captured bytes; a bad certificate
+# or a rejected pin never reaches ENCAPS; the CONFIRM frame rules; CLIENT /
+# WITNESS / NODE <-> ANON mismatches and the refused kinds 0x05 / 0x06 / 0x07;
+# fragmented input; the 4004 caps (HS_MSG_MAX, OUT_CAP, cmt_p2p_peer.h) unchanged.
+# Default build, no environment, `ctest -j` safe.
+add_executable(test_p2p_secret_anon tests/test_p2p_secret_anon.c)
+target_link_libraries(test_p2p_secret_anon nodus dsa kem nodus crypto)
+add_test(NAME test_p2p_secret_anon COMMAND test_p2p_secret_anon)
+
 # cometbft @709fd12b → C port, fleet P2P-PORT phase F2 —
 # p2p/conn/connection_test.go's single-threaded cases (send/receive over a
 # loopback pair, TrySend on a full queue, unknown channel, long message,

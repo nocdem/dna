@@ -85,6 +85,13 @@ extern "C" {
 /** DHT v2 node-to-node session authentication (same records; profile
  *  nodus.nsess.*). STRICT, same class as 0x0A. */
 #define NODUS_PURPOSE_NODE_SESSION_AUTH   0x0D
+/** DHT v2 package 3d — the KEM-key certificate of the ANON client session
+ *  (docs/plans/2026-10-26-dht-v2-3d-no-login-design.md §1.1, §1.3): the node's
+ *  ML-DSA-87 identity key signs its ML-KEM-1024 public key ONCE over
+ *  "nodus.asess.kembind.v1" ‖ chain_id ‖ mlkem_pk. STRICT, same class as 0x0A:
+ *  brand new, and the NDS1 tag is what keeps a certificate from verifying as
+ *  anything else (and the reverse). 0x0E is the next free value after 0x0D. */
+#define NODUS_PURPOSE_KEM_CERT            0x0E
 
 /** Tagged preimage layout:
  *    MAGIC (4) || purpose (1) || data_len_be (4) || data (data_len)
@@ -126,7 +133,9 @@ int nodus_verify(const nodus_sig_t *sig,
  * NODUS_PURPOSE_WITNESS_ADDR (0x0B) (4004 session, decision record
  * 2026-09-26-witness-port-session.md — brand new, strict from their first
  * line, like 0x09), and NODUS_PURPOSE_CLIENT_SESSION_AUTH (0x0C) /
- * NODUS_PURPOSE_NODE_SESSION_AUTH (0x0D) (DHT v2 sessions, same class).
+ * NODUS_PURPOSE_NODE_SESSION_AUTH (0x0D) (DHT v2 sessions, same class), and
+ * NODUS_PURPOSE_KEM_CERT (0x0E) (the ANON session's KEM-key certificate,
+ * package 3d, same class).
  * MLKEM_BIND is strict DESPITE being a tier-2 client/
  * inter-node auth-time binding like its non-strict sibling KYBER_BIND
  * (0x02): without the tag, its preimage (mlkem_pk || nonce, 1600 bytes) is
@@ -223,6 +232,18 @@ int nodus_sign_node_session_auth(nodus_sig_t *sig_out,
 int nodus_verify_node_session_auth(const nodus_sig_t *sig,
                                    const uint8_t *challenge, size_t challenge_len,
                                    const nodus_pubkey_t *pk);
+
+/** KEM_CERT (0x0E) — the ANON session's KEM-key certificate. `msg` is the
+ *  1,622-byte "nodus.asess.kembind.v1" ‖ chain_id ‖ mlkem_pk (built by
+ *  cmt_p2p_sc_kc_msg, shared/dnac/cmt_p2p_secret.h). IS in
+ *  nodus_sign_purpose_is_strict(): always the NDS1-tagged preimage, no raw
+ *  fallback either direction. */
+int nodus_sign_kem_cert(nodus_sig_t *sig_out,
+                        const uint8_t *msg, size_t msg_len,
+                        const nodus_seckey_t *sk);
+int nodus_verify_kem_cert(const nodus_sig_t *sig,
+                          const uint8_t *msg, size_t msg_len,
+                          const nodus_pubkey_t *pk);
 
 /** WITNESS_ADDR domain (signed ADDR record, session design §2R3 N7 FINAL
  *  bytes; consumer: PEX, phase F4). IS in nodus_sign_purpose_is_strict():
