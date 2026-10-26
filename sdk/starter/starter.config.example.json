@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "maxFeeRaw": "100000000",
+  "vault": {
+    "address": "REPLACE_AFTER_DEPLOY_WITH_0x_AND_64_HEX",
+    "owners": ["REPLACE_WITH_OWNER_A_EVM_ADDRESS", "REPLACE_WITH_OWNER_B_EVM_ADDRESS", "REPLACE_WITH_OWNER_C_EVM_ADDRESS"],
+    "threshold": "2"
+  },
+  "escrow": {
+    "address": "REPLACE_AFTER_DEPLOY_WITH_0x_AND_64_HEX",
+    "payer": "REPLACE_WITH_PAYER_EVM_ADDRESS",
+    "payee": "REPLACE_WITH_PAYEE_EVM_ADDRESS",
+    "arbiter": "REPLACE_WITH_ARBITER_EVM_ADDRESS",
+    "amountsWei": ["1000000000000000000", "2000000000000000000"],
+    "deadline": "REPLACE_WITH_FUTURE_UNIX_SECONDS"
+  }
+}

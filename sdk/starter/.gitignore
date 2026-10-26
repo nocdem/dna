@@ -1,0 +1,7 @@
+node_modules/
+dist/
+build/
+starter.config.json
+.env
+.env.*
+*.log

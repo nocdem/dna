@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "libraryVersion": "0.2.0",
+  "compiler": {
+    "version": "Version: 0.8.30+nodus.addr256.commit.73712a01.Linux.g++",
+    "platform": "linux-x86_64",
+    "archiveSha256": "a09d6486c944a795009f08dbc8210ce2eee2785248f9f5f7edc2aaa9c6934649",
+    "flags": ["--evm-version", "prague", "--bin", "--bin-runtime", "--abi"]
+  },
+  "templates": {
+    "vault": {
+      "contract": "MultisigVault",
+      "source": "templates/library/src/vaults/MultisigVault.sol",
+      "abi": "templates/library/out/MultisigVault.abi.json",
+      "bytecode": "templates/library/out/default/MultisigVault.creation.hex",
+      "runtimeBytecode": "templates/library/out/default/MultisigVault.runtime.hex"
+    },
+    "escrow": {
+      "contract": "MilestoneEscrow",
+      "source": "templates/library/src/payments/MilestoneEscrow.sol",
+      "abi": "templates/library/out/MilestoneEscrow.abi.json",
+      "bytecode": "templates/library/out/default/MilestoneEscrow.creation.hex",
+      "runtimeBytecode": "templates/library/out/default/MilestoneEscrow.runtime.hex"
+    }
+  }
+}

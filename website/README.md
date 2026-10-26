@@ -221,7 +221,8 @@ files outside that allowlist. This server is for local previews.
   linked from every footer, not from the top navigation.
 - `roadmap.html`: implementation history and status filters, displayed by month
   and year (or month ranges), followed by undated future plans.
-- `docs.html`: developer reference, security scope, source and contribution links.
+- `docs.html`: developer starter download and Quickstart link, developer reference,
+  security scope, source and contribution links.
 - `styles.css`: responsive design and locally served Inter fonts.
 - `app.js`: English/Turkish switching, mobile navigation, header menu groups,
   FAQ, and roadmap filters.
@@ -298,6 +299,66 @@ use its HTTPS origin. Navigation and assets remain relative for local previews.
 Existing GitHub links intentionally still point at the current repository.
 The installed Nginx configurations and DNS instructions are in
 [deploy/README.md](deploy/README.md).
+
+## Developer starter download
+
+`docs.html#starter` offers the **Nodus developer starter v0.1.0**, with an EN/TR
+Quickstart in the existing Wiki guide at `developers.html#starter`. Author the
+main page's English copy in `docs.html`, its Turkish strings in `app.js`, and
+both Wiki languages in `wiki/content.mjs`; regenerate Wiki output with
+`npm run build:portals`. The source and full actor workflows are included in
+the archive. Do not advertise an unpublished GitHub `sdk/starter/` path or an
+npm package.
+
+The two immutable release assets belong in `website/downloads/`:
+
+- `nodus-developer-starter-0.1.0-linux-x86_64.tar.gz`
+- `nodus-developer-starter-0.1.0-linux-x86_64.tar.gz.sha256`
+
+The archive SHA-256 is
+`9db10eb290448bd3285adcf61859511825efb455a400b8ca0c6421a5518b4f8c`.
+Publication copies the already-verified release files; it does not rebuild
+the starter while updating the website. A changed archive needs an explicitly
+reviewed release/version/hash update in both authored pages. The initial
+`files` map in `public-files.mjs` lists only these two downloads, with
+`application/gzip` and `text/plain; charset=utf-8`, respectively; that initial
+map also feeds the main site's `siteFiles` package allowlist. Do not expose the
+whole download directory, staging directories, SDK worktree or operational logs.
+
+The starter requires Linux x86-64 (glibc 2.34+ and the bundled compiler's
+documented system libraries), npm, and Node.js 22.23.4+ within 22.x or 24.22.1+
+within 24.x. These are starter requirements, separate from the website's static
+preview/generator requirements. Keep public copy aligned with the archive's
+README and the current security policy; a minimum version is not a perpetual
+security guarantee. Testnet preview, lack of external contract audit and absence
+of live end-to-end workflow validation must remain explicit.
+
+For a download/content update, read the Validation section below, then run:
+
+```bash
+npm run build:portals
+node --check wiki/content.mjs
+npm run check
+npm run package
+```
+
+Also verify the archive/checksum in the packaged main-site directory, extract
+it into a fresh directory outside the repository, and follow the Wiki's
+`npm ci --ignore-scripts`, `npm run doctor`, config-copy and both compile
+commands. Those checks need no recovery phrase or chain connection; they do
+not establish live contract execution. Check main Developers and Wiki
+Quickstart in both languages at desktop/mobile widths: links and anchors,
+download MIME types, the complete checksum without overflow, language
+persistence and code-block scrolling. The main download links use the HTML
+`download` attribute; the Wiki also documents downloading both files with curl
+because cross-origin download attributes are not reliable. New main-page
+translations require updating that page's `app.js?v=` reference to the first
+12 hex characters of the script's SHA-256.
+
+These are verification instructions, not a claim that a particular publication
+has passed them. The orchestrator records actual build/browser/download results
+and live hash checks separately. Keep backups and deployment records outside
+public roots, and upload verified assets before the HTML that links to them.
 
 ## Validation
 

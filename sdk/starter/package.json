@@ -1,0 +1,21 @@
+{
+  "name": "@nodus/developer-starter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Nodus Node.js starter with pinned SDK, compiler and contract templates",
+  "license": "Apache-2.0",
+  "engines": { "node": "^22.23.4 || ^24.22.1" },
+  "scripts": {
+    "doctor": "node bin/nodus-starter.mjs doctor",
+    "start": "node bin/nodus-starter.mjs",
+    "test": "node --test test/policy.test.mjs test/journal.test.mjs test/session.test.mjs test/artifacts.test.mjs test/commands.test.mjs",
+    "test:package": "node --test test/package.smoke.mjs",
+    "build": "node scripts/build.mjs"
+  },
+  "dependencies": {
+    "@noble/hashes": "1.8.0",
+    "ethers": "6.17.0",
+    "ws": "8.21.0"
+  }
+}
