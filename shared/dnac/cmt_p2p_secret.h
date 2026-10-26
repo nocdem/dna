@@ -485,7 +485,10 @@ typedef struct {
     cmt_p2p_sc_state_t state;
     cmt_p2p_sc_role_t  role;
     const cmt_p2p_sc_host_t *host;
-    const cmt_p2p_sc_profile_t *profile;   /* immutable, set at init */
+    const cmt_p2p_sc_profile_t *profile;   /* set once: at init, or — an unbound
+                                            * responder — when its whole first
+                                            * message binds the family; never
+                                            * changed after */
 
     /* ── N9 fields, ours ── */
     uint32_t proto_ver;

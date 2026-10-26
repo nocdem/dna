@@ -554,7 +554,8 @@ static void test_plain_frame_before_session(void)
  *     nodus_tcp_sc_is_anonymous true), the initiator sees the node's key, T
  *     is equal on both ends, frames flow both ways. The ANON initiator reads
  *     9,902 bytes before AUTHENTICATED — more than a CLIENT initiator's budget
- *     (9,455), so this also proves the budget follows the BOUND family;
+ *     (3 + 4,229 + 5 × 1,044 = 9,452), so this also proves the budget follows
+ *     the BOUND family;
  *   · the same responder (unbound) authenticates an ordinary CLIENT initiator
  *     exactly as before, with a principal;
  *   · a wrong pin, a certificate by another key, and an ANON initiator against
