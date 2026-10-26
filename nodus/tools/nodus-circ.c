@@ -127,11 +127,19 @@ static int connect_ready(nodus_client_t *client, const char *ip, uint16_t port,
         return -1;
     }
     if (nodus_client_init(client, &cfg, id) != 0) { fprintf(stderr, "client_init failed\n"); return -1; }
-    if (nodus_client_connect(client) != 0) { fprintf(stderr, "connect failed (%s:%u)\n", ip, port); return -1; }
+    if (nodus_client_connect(client) != 0) {
+        fprintf(stderr, "connect failed (%s:%u)\n", ip, port);
+        nodus_client_close(client);         /* init succeeded: close owed */
+        return -1;
+    }
 
     for (int i = 0; i < 100 && !nodus_client_is_ready(client); i++)
         nodus_client_poll(client, 100);
-    if (!nodus_client_is_ready(client)) { fprintf(stderr, "not ready after 10s\n"); return -1; }
+    if (!nodus_client_is_ready(client)) {
+        fprintf(stderr, "not ready after 10s\n");
+        nodus_client_close(client);
+        return -1;
+    }
     return 0;
 }
 

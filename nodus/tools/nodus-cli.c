@@ -823,7 +823,9 @@ static int cluster_status_query_one(const char *host, uint16_t port,
     server_conn = cli_dial(host, port);
     if (!server_conn) goto done;
 
-    for (int i = 0; i < 60 && server_conn->state == NODUS_CONN_CONNECTING; i++)
+    /* on_disconnect sets server_conn = NULL inside the poll: re-check */
+    for (int i = 0; i < 60 && server_conn &&
+                    server_conn->state == NODUS_CONN_CONNECTING; i++)
         nodus_tcp_poll(&transport, 50);
     if (!server_conn || server_conn->state != NODUS_CONN_CONNECTED) goto done;
 
@@ -3017,8 +3019,11 @@ static int cmd_v2_envelope(const char *server_ip, uint16_t server_port,
         cfg.servers[0].port = server_port;
         cfg.server_count    = 1;
         cfg.auto_reconnect  = false;
-        if (nodus_client_init(&client, &cfg, &identity) != 0 ||
-            cli_client_connect(&client) != 0) {
+        if (nodus_client_init(&client, &cfg, &identity) != 0) {
+            fprintf(stderr, "client_init failed\n");
+            goto done;                  /* never initialized: no close */
+        }
+        if (cli_client_connect(&client) != 0) {
             fprintf(stderr, "client connect failed\n");
             nodus_client_close(&client);
             goto done;
@@ -3542,8 +3547,11 @@ static int cmd_v2_claim(const char *server_ip, uint16_t server_port,
         scfg.servers[0].port = sport;
         scfg.server_count    = 1;
         scfg.auto_reconnect  = false;
-        if (nodus_client_init(&sclient, &scfg, &keys[0]) != 0 ||
-            cli_client_connect(&sclient) != 0) {
+        if (nodus_client_init(&sclient, &scfg, &keys[0]) != 0) {
+            fprintf(stderr, "client_init failed\n");
+            goto done;                  /* never initialized: no close */
+        }
+        if (cli_client_connect(&sclient) != 0) {
             fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
             nodus_client_close(&sclient);
             goto done;
@@ -10203,9 +10211,10 @@ static int cmd_msig_sign(const char *server_ip, uint16_t server_port,
         return 1;
     }
     nodus_key_t pin;
-    if (t6_hex_exact(pin_hex, pin.bytes, sizeof(pin.bytes)) != 0) {
-        fprintf(stderr, "--pin must be exactly 128 lowercase hex chars (your "
-                "node's fingerprint) — nothing signed\n");
+    if (t6_hex_exact(pin_hex, pin.bytes, sizeof(pin.bytes)) != 0 ||
+        nodus_key_is_zero(&pin)) {
+        fprintf(stderr, "--pin must be exactly 128 lowercase hex chars, not "
+                "all zero (your node's fingerprint) — nothing signed\n");
         return 1;
     }
     int rc = 1;
@@ -12693,7 +12702,9 @@ int main(int argc, char **argv) {
     }
 
     /* Wait for connection */
-    for (int i = 0; i < 100 && server_conn->state == NODUS_CONN_CONNECTING; i++)
+    /* on_disconnect sets server_conn = NULL inside the poll: re-check */
+    for (int i = 0; i < 100 && server_conn &&
+                    server_conn->state == NODUS_CONN_CONNECTING; i++)
         nodus_tcp_poll(&transport, 50);
 
     if (!server_conn || server_conn->state != NODUS_CONN_CONNECTED) {

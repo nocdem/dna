@@ -3299,8 +3299,10 @@ section is the pre-3b-2 behaviour. A native tool gets both from `src/client/nodu
   keeps its own meaning and is the same fingerprint), `nodus-circ`, `stagef_rpc_flood`,
   `dna_bench_native.c`, the explorer (`--network` / `--chain` / `--pin`; its server list stays in
   `--config`, each server's pin comes from the file), the Genesis Protocol harness (writes
-  `$BASE_DIR/tool_network.json` at bring-up, exports `NODUS_NETWORK`). `nodus-light` (`--node
-  host:port:pinfp` + `--chain-id`), the faucet (`node_fp` + `chain_id` of its config) and
+  `$BASE_DIR/tool_network.json` at bring-up, exports `NODUS_NETWORK`). `nodus-light` (the ONE exception to "no file and no flag → refuse", operator 2026-10-26: it keeps
+  its compiled chain id and pinned node list as the default; `--network` / `$NODUS_NETWORK`
+  replaces both with the file's, `--pin` / `--chain` override; `--node host:port:pinfp` +
+  `--chain-id` still win), the faucet (`node_fp` + `chain_id` of its config) and
   `nodus-cli package` (the chain id from `--chain` / the file) carry theirs in their own config.
 
 ### Server key pin

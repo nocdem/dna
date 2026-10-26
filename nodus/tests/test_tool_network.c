@@ -24,8 +24,13 @@
  *   - a named but bad network file refuses even when both flags are given.
  *
  * REQUIRES
- *   - Compile flags: a build with json-c (NODUS_HAS_JSONC). Without it the
- *     file cases FAIL (they do not skip). Nothing else.
+ *   - Compile flags: none. The flag-only cases (--pin / --chain resolve and
+ *     fill, all-zero flags refused, a named missing file refused, nothing
+ *     configured refused) run in every build. The file cases (everything
+ *     above that reads JSON, the \u0000 refusal, "a refusal clears the
+ *     previous file state") are compiled ONLY with NODUS_HAS_JSONC; a build
+ *     without json-c reads no file by design and does not run them — that
+ *     is absent coverage, not a pass.
  *   - Environment: none; the test sets and unsets NODUS_NETWORK itself and
  *     writes one temp file under /tmp.
  *
@@ -107,12 +112,56 @@ int main(void) {
     printf("test_tool_network\n");
     unsetenv(NODUS_TOOL_NET_ENV);
 
-#ifndef NODUS_HAS_JSONC
-    TEST("built with json-c");
-    FAIL("NODUS_HAS_JSONC is not defined: the file cases cannot run");
-    printf("\n%d passed, %d failed\n", passed, failed);
-    return 1;
-#else
+    /* ── flag-only cases: run in EVERY build (with or without json-c) ── */
+    {
+        nodus_key_t fpin;
+        uint8_t fchain[NODUS_CLIENT_CHAIN_ID_SIZE];
+        nodus_client_config_t fcfg;
+
+        TEST("flags only: pin + chain resolve for any ip:port");
+        nodus_tool_net_init(&t);
+        CHECK(nodus_tool_net_open(&t, NULL, FP1, CHAIN_B, err, sizeof(err)) == 0 &&
+                  nodus_tool_net_resolve(&t, "192.0.2.9", 9, &fpin, fchain, err,
+                                         sizeof(err)) == 0 &&
+                  key_is(&fpin, '1') && fchain[0] == 0xbb,
+              err);
+
+        TEST("flags only: fill sets one pin and the chain id");
+        cfg_one(&fcfg, "192.0.2.9", 9);
+        CHECK(nodus_tool_net_fill(&t, &fcfg, err, sizeof(err)) == 0 &&
+                  fcfg.pinned_server_fp_count == 1 &&
+                  key_is(&fcfg.pinned_server_fps[0], '1') &&
+                  fcfg.has_expected_chain_id && fcfg.expected_chain_id[0] == 0xbb,
+              err);
+
+        TEST("flags only: neither file nor flags -> refused");
+        nodus_tool_net_init(&t);
+        CHECK(nodus_tool_net_open(&t, NULL, NULL, NULL, err, sizeof(err)) == 0 &&
+                  nodus_tool_net_resolve(&t, "192.0.2.9", 9, &fpin, fchain, err,
+                                         sizeof(err)) == -1,
+              "resolved with nothing configured");
+
+        TEST("flags only: all-zero --pin and --chain refused");
+        {
+            char z128[129], z64[65];
+            memset(z128, '0', 128); z128[128] = '\0';
+            memset(z64, '0', 64);   z64[64] = '\0';
+            nodus_tool_net_init(&t);
+            CHECK(nodus_tool_net_set_pin_hex(&t, z128, err, sizeof(err)) == -1 &&
+                      nodus_tool_net_set_chain_hex(&t, z64, err, sizeof(err)) == -1 &&
+                      !t.has_pin_flag && !t.has_chain_flag,
+                  "accepted an all-zero flag");
+        }
+
+        TEST("flags only: a named missing file refuses even with both flags");
+        nodus_tool_net_init(&t);
+        CHECK(nodus_tool_net_open(&t, "/nonexistent/none.json", FP1, CHAIN_A, err,
+                                  sizeof(err)) == -1,
+              "accepted a missing named file");
+    }
+
+#ifdef NODUS_HAS_JSONC
+    /* ── file cases: only with json-c (a build without it reads no file) ── */
     /* ── a good file ─────────────────────────────────────────────── */
     TEST("good file: chain id and both nodes");
     CHECK(parse(&t, GOOD_FILE, err) == 0 && t.has_file && t.node_count == 2 &&
@@ -392,7 +441,34 @@ int main(void) {
               !t.has_file && !t.has_pin_flag && !t.has_chain_flag,
           err);
 
+    /* ── \u0000 in a key, and refusal leaves no previous state ───── */
+    expect_refused("refused: the escape \\u0000 anywhere in the text",
+                   "{\"chain_id\":\"" CHAIN_A "\",\"nodes\":[" NODE("10.0.0.1", "4001", FP1)
+                   "],\"no\\u0000de\":1}", "\\u0000");
+
+    TEST("a refused parse clears the previous good file state");
+    parse(&t, GOOD_FILE, err);
+    CHECK(t.has_file &&
+              nodus_tool_net_parse(&t, "{}", 2, err, sizeof(err)) == -1 &&
+              !t.has_file && t.node_count == 0,
+          "previous file state survived a refusal");
+
+    TEST("a failed load (missing file) clears the previous file state");
+    parse(&t, GOOD_FILE, err);
+    CHECK(t.has_file &&
+              nodus_tool_net_load_file(&t, "/nonexistent/none.json", err,
+                                       sizeof(err)) == -1 &&
+              !t.has_file && t.node_count == 0,
+          "previous file state survived a failed load");
+
+    TEST("a NULL text clears the previous file state");
+    parse(&t, GOOD_FILE, err);
+    CHECK(t.has_file &&
+              nodus_tool_net_parse(&t, NULL, 0, err, sizeof(err)) == -1 &&
+              !t.has_file,
+          "previous file state survived a NULL text");
+#endif /* NODUS_HAS_JSONC */
+
     printf("\n%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
-#endif
 }

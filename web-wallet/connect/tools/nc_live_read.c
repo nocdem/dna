@@ -275,8 +275,8 @@ int main(int argc, char **argv) {
     /* The pin array is not copied by the client and must outlive it
      * (nodus.h pinned_server_fps). */
     static nodus_key_t pin;
-    if (nc_fp_parse(server_fp, &pin) != 0) {
-        printf("--server-fp: expected 128 lowercase hex\n");
+    if (nc_fp_parse(server_fp, &pin) != 0 || nodus_key_is_zero(&pin)) {
+        printf("--server-fp: expected 128 lowercase hex, not all zero\n");
         return 1;
     }
     cfg.pinned_server_fps = &pin;

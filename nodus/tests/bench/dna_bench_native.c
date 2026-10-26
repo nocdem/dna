@@ -320,6 +320,9 @@ static int wallet_client_connect(struct bench_wallet *w) {
     }
     if (nodus_client_connect(&w->client) != 0) {
         fprintf(stderr, "[w%02d] nodus_client_connect failed\n", w->idx);
+        nodus_client_close(&w->client);     /* init succeeded: close owed;
+                                             * client_ready stays false so the
+                                             * cleanup does not close it twice */
         return -1;
     }
     w->client_ready = true;

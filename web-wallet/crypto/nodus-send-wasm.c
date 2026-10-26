@@ -2669,8 +2669,16 @@ int nsw_net_reset(void) {
 
 int nsw_net_set_chain(const char *chain_hex) {
     if (g_used) return nsw_fail("The network is fixed once the wallet connects.");
-    if (nsw_parse_hex(chain_hex, g_net.chain, sizeof(g_net.chain)) != 0)
+    /* decode into temporary storage: a refused value leaves the previous
+     * chain id (and has_chain) untouched */
+    uint8_t tmp[sizeof(g_net.chain)];
+    uint8_t acc = 0;
+    if (nsw_parse_hex(chain_hex, tmp, sizeof(tmp)) != 0)
         return nsw_fail("Invalid chain id in the network settings.");
+    for (size_t i = 0; i < sizeof(tmp); i++) acc |= tmp[i];
+    if (acc == 0)                    /* the client session refuses it anyway */
+        return nsw_fail("Invalid chain id in the network settings.");
+    memcpy(g_net.chain, tmp, sizeof(tmp));
     g_net.has_chain = 1;
     return 0;
 }
@@ -2698,7 +2706,7 @@ int nsw_net_add_pin(const char *fp_hex) {
     if (g_net.n_pins >= NSW_MAX_PINS)
         return nsw_fail("Too many server keys in the network settings.");
     nodus_key_t k;
-    if (qgp_fp_hex_to_raw(fp_hex, k.bytes) != 0)
+    if (qgp_fp_hex_to_raw(fp_hex, k.bytes) != 0 || nodus_key_is_zero(&k))
         return nsw_fail("Invalid server key in the network settings.");
     for (int i = 0; i < g_net.n_pins; i++)
         if (memcmp(g_net.pins[i].bytes, k.bytes, NODUS_KEY_BYTES) == 0)

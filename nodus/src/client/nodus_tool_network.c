@@ -192,12 +192,21 @@ static int tn_validate(struct json_object *root, nodus_tool_net_t *t,
 int nodus_tool_net_parse(nodus_tool_net_t *t, const char *text, size_t len,
                          char *err, size_t err_size) {
     TN_ERR_CLEAR();
+    if (t) tn_clear_file(t);        /* every refusal leaves no previous state */
     if (!t || !text) { TN_ERR("bad argument"); return -1; }
-    tn_clear_file(t);
 #ifdef NODUS_HAS_JSONC
     if (len == 0 || len > TN_FILE_MAX) {
         TN_ERR("network file is empty or too large");
         return -1;
+    }
+    /* json-c turns object keys into C strings: a key with an embedded NUL
+     * (the escape \u0000) would be cut short and could read as an allowed
+     * key. No legitimate file needs the escape — refuse it before parsing. */
+    for (size_t i = 0; i + 6 <= len; i++) {
+        if (memcmp(text + i, "\\u0000", 6) == 0) {
+            TN_ERR("the escape \\u0000 is not allowed");
+            return -1;
+        }
     }
     struct json_tokener *tok = json_tokener_new();
     if (!tok) { TN_ERR("out of memory"); return -1; }
@@ -237,6 +246,7 @@ int nodus_tool_net_parse(nodus_tool_net_t *t, const char *text, size_t len,
 int nodus_tool_net_load_file(nodus_tool_net_t *t, const char *path,
                              char *err, size_t err_size) {
     TN_ERR_CLEAR();
+    if (t) tn_clear_file(t);        /* open / read / size refusals too */
     if (!t || !path || !path[0]) { TN_ERR("bad argument"); return -1; }
     FILE *f = fopen(path, "rb");
     if (!f) { TN_ERR("cannot open network file %s", path); return -1; }
