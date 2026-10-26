@@ -2998,6 +2998,11 @@ static int nsw_connect_core(void) {
                                           * reconnect, nodus_client_tick */
     cfg.pinned_server_fps      = g_net.pins;
     cfg.pinned_server_fp_count = g_net.n_pins;
+    /* DHT v2 package 3c: the session is bound to the chain id the wallet is
+     * configured with — the 32-byte v3 id, the same bytes nsw_check_chain
+     * compares with dnac_chain_id32 (Kurultay #43 O-6). */
+    memcpy(cfg.expected_chain_id, g_net.chain, sizeof(cfg.expected_chain_id));
+    cfg.has_expected_chain_id  = true;
     if (nodus_client_init(&g_client, &cfg, &g_id) != 0) {
         /* init copies the identity into the client before an allocation
          * that can fail (nodus_client.c nodus_client_init); with

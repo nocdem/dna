@@ -3284,8 +3284,10 @@ section is the pre-3b-2 behaviour. A native tool gets both from `src/client/nodu
 #43 O-6 — the chain id from the tool's network config, missing → fail closed):
 
 - **The tool network file**, JSON, strict: `{"chain_id": "<64 lowercase hex>", "nodes": [{"ip": "<IPv4
-  literal>", "port": <1..65535>, "fp": "<128 lowercase hex>"}, ...]}`. Each `fp` is bound to its
-  ip:port. Any other key, a bad hex length, an upper-case digit, an all-zero id, a duplicate ip:port,
+  literal>", "port": <1..65535>, "fp": "<128 lowercase hex>"}, ...]}`. Each `fp` sits beside its
+  ip:port; a single-target resolve is bound per endpoint, but a multi-server config
+  (`fill_all`, explorer rotation excluded — it fills one server per handle) hands the client one
+  pin SET, so any listed node's key is accepted on any listed endpoint (as the web wallet does). Any other key, a bad hex length, an upper-case digit, an all-zero id, a duplicate ip:port,
   an empty list or more than `NODUS_TOOL_NET_MAX_NODES` (128) nodes refuses the whole file. It
   mirrors the web wallet's network settings (chain + endpoints + pins), with the pin per endpoint.
 - **Where it is**: `--network <path>`, else the environment variable `NODUS_NETWORK`. No default path.

@@ -22,8 +22,13 @@
  *               "fp": "<128 lowercase hex>"}, ...]}
  *
  * It mirrors the web wallet's network settings (chain + endpoints + pins,
- * web-wallet/src/nodus/send-module.js) but each fingerprint is BOUND to its
- * ip:port. The fingerprint is SHA3-512 of the node's ML-DSA-87 public key
+ * web-wallet/src/nodus/send-module.js) but each fingerprint is written next to
+ * its ip:port. WHAT THE BINDING IS: nodus_tool_net_resolve() and a
+ * single-server nodus_tool_net_fill() give the client exactly that endpoint's
+ * pin. nodus_client holds ONE pin SET per config, though: with more than one
+ * server (nodus_tool_net_fill with server_count > 1, nodus_tool_net_fill_all)
+ * a listed node's key is accepted on ANY listed endpoint, as in the web
+ * wallet — a redirect can only land on another listed node. The fingerprint is SHA3-512 of the node's ML-DSA-87 public key
  * (nodus_fingerprint(); the same 64 bytes as a node id).
  *
  * Strict: any other key, a chain id / fp that is not exactly 64 / 128
@@ -158,7 +163,11 @@ int nodus_tool_net_fill(nodus_tool_net_t *t, nodus_client_config_t *cfg,
  * For a tool that connects to "any of the nodes": set cfg->servers /
  * server_count from the file's node list (in file order, at most
  * NODUS_CLIENT_MAX_SERVERS — the client's own cap), then
- * nodus_tool_net_fill(). Needs a file.
+ * nodus_tool_net_fill(). Needs a file. The resulting pin list is a SET: any
+ * listed node's key is accepted on any listed endpoint (not per-endpoint).
+ * Keeping the per-endpoint binding would need a per-server pin in
+ * nodus_client_config_t / the connect loop (nodus_client.c, not 3c's), or
+ * one single-server client per node.
  */
 int nodus_tool_net_fill_all(nodus_tool_net_t *t, nodus_client_config_t *cfg,
                             char *err, size_t err_size);
