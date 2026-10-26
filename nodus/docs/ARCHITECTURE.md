@@ -1991,8 +1991,8 @@ handshake method (`nodus_witness_ipc.h:9-10`). Each side runs the IPC on its OWN
 | Connection | First frame | Then |
 |---|---|---|
 | session — one per core client session that has sent a `dnac_*` (item 19) | `{"q":"ipc_hello","pk":<bstr NODUS_PK_BYTES>,"tk":<bstr NODUS_SESSION_TOKEN_LEN>}` — the client session's key and session token | the client's tier-2 `dnac_*` payloads, unchanged; the witness's replies on the same socket, relayed to the client unchanged |
-| control — one per core | `{"q":"ipc_ctl"}` | `{"q":"ipc_status"}` queries, each answered `{"q":"ipc_status","co":bool chain open,"h":uint height,"sr":bstr 64 state root,"ci":bstr 32 chain id,"po":bool p2p host exists,"lp":uint 4004 port}` |
-| dht — one per `nodus-storage` (DHT v2 package 4, design rev 5 §13 row 13; NO dialler yet — below) | `{"q":"ipc_dht"}` | three requests `{"q":"ipc_dht_snap"}`, `{"q":"ipc_dht_sets"}`, `{"q":"ipc_name","fp":bstr 64}`, each answered with a frame echoing its `q` (shapes below) |
+| control — one per core | `{"q":"ipc_ctl"}` | `{"q":"ipc_status"}` queries, each answered `{"q":"ipc_status","co":bool chain open,"h":uint height,"sr":bstr 64 state root,"ci":bstr 32 chain id (legacy: 16 bytes padded with zeros, what the T2 `status` RPC reports),"c3":bstr 32 the v3 chain id (all zero when there is none — the session chain id, DHT v2 3b-2),"po":bool p2p host exists,"lp":uint 4004 port}` — eight keys (`nodus_witness_ipc.c:484-494`) |
+| dht — one per `nodus-storage` (DHT v2 package 4, design rev 5 §13 row 13; the dialler is the storage process's view, opened by `tools/nodus-storage.c:191-207` through `nodus_dht_ipc_open_wview` since DHT v2 3b-2 — below) | `{"q":"ipc_dht"}` | three requests `{"q":"ipc_dht_snap"}`, `{"q":"ipc_dht_sets"}`, `{"q":"ipc_name","fp":bstr 64}`, each answered with a frame echoing its `q` (shapes below) |
 
 Witness side (`nodus_witness_ipc.c`): control-plane frames are parsed strictly — a CBOR
 map of 1-3 entries, only `q` / `pk` / `tk`, exact sizes, no repeated key, no trailing
@@ -2156,8 +2156,9 @@ opens no socket):
   backoff `IPC_DIAL_BACKOFF_MIN` 250 ms doubling to `IPC_DIAL_BACKOFF_MAX` 5000 ms
   (`:65-66`, `:193-221`). On connect it sends `ipc_ctl` + `ipc_status` and logs INFO
   `control connection to the witness up (<path>)`; then an `ipc_status` query every
-  `IPC_STATUS_EVERY_MS` 1000 ms (`:63`). The answer is decoded strictly (all seven keys,
-  once each, exact types/sizes, `:108-169`); a malformed answer closes the control
+  `IPC_STATUS_EVERY_MS` 1000 ms (`:63`). The answer is decoded strictly (since DHT v2 3b-2 all EIGHT keys — `c3`
+  added, so a 7-key answer from an older `nodus-witness` is refused —, once each, exact
+  types/sizes, `nodus_chain_backend_ipc.c:108-175` at `fb18e50ea`); a malformed answer closes the control
   connection (WARN `malformed ipc_status answer — closing the control connection`).
   Losing it logs WARN `control connection to the witness lost (<path>) — chain status
   unavailable until it is back` (`:364-365`).

@@ -409,9 +409,13 @@ trusted Nodus cluster. Known limitations:
 - **E2E is opt-in.** Circuits opened via `nodus_circuit_open_e2e` are end-to-end
   encrypted (Kyber1024 + AES-256-GCM, § 3.3) and the relay sees only ciphertext.
   Circuits opened via plain `nodus_circuit_open` carry cleartext payloads at the
-  relay. Transport hops are additionally encrypted since v0.10.2+: the client↔server
-  TCP 4001 tunnel and inter-node TCP 4002 both run Kyber1024 channel encryption
-  (commits `b0881f1a`, `3e858320`), with Dilithium5 mutual auth on 4002.
+  relay. Transport hops are additionally encrypted: since DHT v2 sub-package 3b-2
+  the client↔server TCP 4001 tunnel and inter-node TCP 4002 run the SecretConnection
+  session (`shared/dnac/cmt_p2p_secret.h`, the 4004 handshake: ML-KEM-1024 key
+  exchange, ML-DSA-87 signatures from both ends, AES-256-GCM sealed frames; CLIENT
+  profile on 4001, NODE profile on 4002 — `nodus/docs/ARCHITECTURE.md` §15
+  "DHT v2 sub-package 3b-2"). (From v0.10.2 until 3b-2 they ran Kyber1024 channel
+  encryption, commits `b0881f1a`, `3e858320`, with Dilithium5 mutual auth on 4002.)
 - **No forward secrecy.** E2E encapsulates to the peer's long-lived static Kyber
   key; compromising it retroactively exposes recorded circuit traffic. Per-circuit
   ephemeral keys are future work.

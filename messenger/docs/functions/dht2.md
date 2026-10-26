@@ -765,7 +765,10 @@ two of the header's frame-bound `_Static_assert`s (`:112-115`). The ORCHESTRATOR
   close the connection (`ipc_status`, unknown `q`, extra key, `ipc_name`
   without / with a short `fp`, malformed map, a request over
   `CTL_FRAME_MAX`, a dht request on an `ipc_ctl` connection, a NULL
-  handler, a NUL in `q`); `ipc_status` is unchanged byte for byte. The
+  handler, a NUL in `q`); `ipc_status` is unchanged byte for byte (true at
+  package 4; since DHT v2 3b-2 `ipc_status` is an 8-key map with `c3`, the
+  v3 chain id — `nodus_witness_ipc.c:484-494` — and the `ci` of
+  `ipc_dht_snap` carries the v3 id, `:112-115`). The
   view: preface then snap and sets requests; fresh for 5000 ms, none from
   5001 ms; a request each 1000 ms, not before; a snapshot `{err}` clears it;
   sets only with a same-`e` fresh snapshot, one re-request on an `e` change;
