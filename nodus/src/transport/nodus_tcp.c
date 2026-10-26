@@ -1669,9 +1669,12 @@ bool nodus_tcp_ip_is_loopback(const char *ip) {
            strncmp(ip, "::ffff:127.", 11) == 0;
 }
 
+#ifdef NODUS_TCP_LISTEN
 /* Count one accept from `ip` / `who` at `now`: loopback is never counted;
  * otherwise the rate decides and the conn remembers bucket + window, so a
- * later proof of an active role can credit it back. false = refuse. */
+ * later proof of an active role can credit it back. false = refuse.
+ * Only the accept paths call it, so it exists only where they do (the
+ * browser build has none: an unused static is a -Werror there). */
 static bool hs_count_accept(nodus_tcp_t *tcp, const char *ip,
                             const nodus_ws_ip_bucket_t *who, uint64_t now,
                             bool *counted, uint64_t *window) {
@@ -1681,6 +1684,7 @@ static bool hs_count_accept(nodus_tcp_t *tcp, const char *ip,
     *counted = true;
     return true;
 }
+#endif /* NODUS_TCP_LISTEN */
 
 void nodus_tcp_role_exempt(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     if (!tcp || !conn || conn->role_exempt) return;
