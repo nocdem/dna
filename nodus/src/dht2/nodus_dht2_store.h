@@ -269,9 +269,12 @@ int nodus_dht2_store_scan(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
 
 /* ── hand-over obligation (§4.5 v) — data only ───────────────────────── */
 
-/** Mark / clear the persisted hand-over obligation of the record at
- *  `address` (package 7 decides when). *`found` false when no such record.
- *  Replacement of the record keeps the flag. Either way (set or clear) the
+/** Mark (`pending` true) or RETIRE (`pending` false) the persisted hand-over
+ *  obligation of the record at `address` (package 7 decides when). A retired
+ *  record is not offered to the epoch check's flagging again
+ *  (nodus_dht2_store_permanent_scan returns rows with no obligation only).
+ *  *`found` false when no such record. Replacement of the record keeps a
+ *  pending flag. Either way (set or retire) the
  *  acknowledgements recorded for the address below are deleted. @return
  *  0 / 16. */
 int nodus_dht2_store_handover_set(nodus_dht2_store_t *s,
@@ -335,6 +338,12 @@ int nodus_dht2_store_pull_set(nodus_dht2_store_t *s,
                               uint64_t cursor);
 /** Every source's cursor := 0 (a re-scan from 0 at the next exchange). */
 int nodus_dht2_store_pull_reset(nodus_dht2_store_t *s);
+/** The epoch the pull cursors were last checked against (meta "pull_e");
+ *  *found false before the first check. @return 0 / 16. */
+int nodus_dht2_store_pull_epoch_get(nodus_dht2_store_t *s, bool *found,
+                                    uint64_t *e);
+/** Persist it (e ≤ INT64_MAX). @return 0 / 16. */
+int nodus_dht2_store_pull_epoch_set(nodus_dht2_store_t *s, uint64_t e);
 
 #ifdef __cplusplus
 }

@@ -42,6 +42,14 @@ struct nodus_dht2_store {
  * encoded in `expiry`. There is NO holder memory of dropped entries
  * (decision 2026-10-24-dht-v2-handled-client-rule.md). dht2_meta
  * `v` has no declared type: integers (top, gen) and the chain id blob. */
+/* dht2_rec.handover (§4.5 v): 0 no obligation, 1 pending, 2 retired — the
+ * obligation ended on its receipts (decision 2026-10-27-dht-v2-handover-
+ * one-receipt.md). permanent_scan offers only 0 rows to the epoch check, so
+ * a retired record is not flagged again at the next boundary. A replacement
+ * of the record carries only a PENDING flag over (held_load reads == 1). */
+#define HANDOVER_PENDING 1
+#define HANDOVER_RETIRED 2
+
 static const char SCHEMA_SQL[] =
     "CREATE TABLE IF NOT EXISTS dht2_meta("
     "  k TEXT PRIMARY KEY, v NOT NULL);"
@@ -481,7 +489,7 @@ static int held_load(nodus_dht2_store_t *s, const uint8_t *address, held_t *h)
     memcpy(h->canon, sqlite3_column_blob(st, 0), h->len);
     memcpy(h->hash, sqlite3_column_blob(st, 1), DHT2_HASH_LEN);
     h->named = sqlite3_column_int(st, 2) != 0;
-    h->handover = sqlite3_column_int(st, 3) != 0;
+    h->handover = sqlite3_column_int(st, 3) == HANDOVER_PENDING;
     h->noexp = sqlite3_column_int(st, 4) != 0;
     h->expiry = (uint64_t)sqlite3_column_int64(st, 5);
     h->found = true;
@@ -1322,7 +1330,8 @@ int nodus_dht2_store_handover_set(nodus_dht2_store_t *s,
     if (st == NULL) {
         return CODE_FAULT;
     }
-    if (!bound(st, b_64(st, 1, address) | b_i64(st, 2, pending ? 1 : 0))) {
+    if (!bound(st, b_64(st, 1, address) |
+                   b_i64(st, 2, pending ? HANDOVER_PENDING : HANDOVER_RETIRED))) {
         return CODE_FAULT;
     }
     if (step_done(s, st) != 0) {
@@ -1434,7 +1443,7 @@ int nodus_dht2_store_handover_info(nodus_dht2_store_t *s,
         }
         memcpy(hash, sqlite3_column_blob(st, 0), DHT2_HASH_LEN);
         memcpy(placement, sqlite3_column_blob(st, 1), DHT2_HASH_LEN);
-        *pending = sqlite3_column_int(st, 2) != 0;
+        *pending = sqlite3_column_int(st, 2) == HANDOVER_PENDING;
         *found = true;
     } else if (rc != SQLITE_DONE) {
         QGP_LOG_ERROR(LOG_TAG, "handover info: %s", sqlite3_errmsg(s->db));
@@ -1566,4 +1575,26 @@ int nodus_dht2_store_pull_reset(nodus_dht2_store_t *s)
     }
     return exec_sql(s, "UPDATE dht2_pull_src SET cursor = 0") == 0
                ? 0 : CODE_FAULT;
+}
+
+/* The epoch whose sets the pull cursors were last checked against (§4.5:
+ * "re-scan when responsibility grows"; "otherwise cursors persist across
+ * restarts"), meta key "pull_e". */
+int nodus_dht2_store_pull_epoch_get(nodus_dht2_store_t *s, bool *found,
+                                    uint64_t *e)
+{
+    if (s == NULL || found == NULL || e == NULL) {
+        return DHT2_E_ARG;
+    }
+    *found = false;
+    *e = 0;
+    return meta_get(s, "pull_e", e, NULL, found) == 0 ? 0 : CODE_FAULT;
+}
+
+int nodus_dht2_store_pull_epoch_set(nodus_dht2_store_t *s, uint64_t e)
+{
+    if (s == NULL || e > (uint64_t)INT64_MAX) {
+        return DHT2_E_ARG;
+    }
+    return meta_set(s, "pull_e", e) == 0 ? 0 : CODE_FAULT;
 }

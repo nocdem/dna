@@ -106,6 +106,7 @@
 #include "dht2/dht2_place.h"
 #include "dht2/dht2_record.h"
 #include "dht2/dht2_types.h"
+#include "dnac/dnac.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -1224,9 +1225,14 @@ static void test_handover_quorum(const tkey_t *ka, const tkey_t *kb,
         memcpy(one[0], g_n[1].key.fp, DHT2_FP_LEN);
         set_members(&g_n[0], 2160, 1, (const uint8_t (*)[DHT2_FP_LEN])one, 0,
                     NULL);
+        /* A retired obligation is not flagged again at the next boundary
+         * (dht2_rec.handover 2 = retired, permanent_scan offers only 0). */
         CHECK(nodus_dht2_pull_epoch_check(g_n[0].pull, NOW) == 0 &&
-                  pending_at(&g_n[0], addr),
-              "S(H) = {B}: A is not eligible, flagged again");
+                  !pending_at(&g_n[0], addr),
+              "S(H) = {B}: the retired record is not flagged again");
+        CHECK(nodus_dht2_store_handover_set(g_n[0].st, addr, true, &f) == 0 &&
+                  f && pending_at(&g_n[0], addr),
+              "a new obligation set by hand");
         CHECK(receipt_from(kb, gen, addr, hash) == 0 &&
                   !pending_at(&g_n[0], addr),
               "|nearest_R| = 1: one receipt retires");
@@ -1272,6 +1278,70 @@ static void test_offer_send_fail(const tkey_t *ka, const tkey_t *kb,
               nodus_dht2_pull_serve(g_n[0].pull, NOW, g_n[1].key.fp,
                                     NODUS_DHT2_PULL_WANT, wb, wl) == 0,
           "control: with a working send the p_want finds its offer");
+    net_down();
+}
+
+/* §4.5 "re-scan when responsibility grows" / "otherwise cursors persist
+ * across restarts", with the checked epoch persisted (Sol 7a finding 2):
+ * a restart within the checked epoch keeps the cursors; a node that missed
+ * one or more boundaries re-scans from 0 even when S(H) and S(H − E) are
+ * equal at its next check. E = DNAC_EPOCH_LENGTH (design §2). */
+static void test_epoch_persisted(const tkey_t *ka, const tkey_t *kb)
+{
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    uint8_t        s0[2][DHT2_FP_LEN];
+    bool           found = false;
+    uint64_t       gen = 0, cur = 0, gb;
+
+    CHECK(net_up(ka, kb) == 0, "two nodes");
+    memcpy(s0[0], g_n[0].key.fp, DHT2_FP_LEN);
+    memcpy(s0[1], g_n[1].key.fp, DHT2_FP_LEN);
+    gb = nodus_dht2_store_generation(g_n[1].st);
+
+    /* Epoch 2E, S(H) = S(H − E) = {A, B}: the first check (no epoch kept). */
+    set_members(&g_n[0], 2 * E, 2, (const uint8_t (*)[DHT2_FP_LEN])s0, 2,
+                (const uint8_t (*)[DHT2_FP_LEN])s0);
+    CHECK(nodus_dht2_pull_epoch_check(g_n[0].pull, NOW) == 0,
+          "first check at 2E");
+    CHECK(nodus_dht2_store_pull_set(g_n[0].st, g_n[1].key.fp, gb, 7) == 0,
+          "a cursor 7 for source B");
+
+    /* Same epoch, then a restart in the same epoch: the cursor stays. */
+    CHECK(nodus_dht2_pull_epoch_check(g_n[0].pull, NOW) == 0 &&
+              nodus_dht2_store_pull_get(g_n[0].st, g_n[1].key.fp, &found,
+                                        &gen, &cur) == 0 &&
+              found && cur == 7,
+          "same epoch: cursor kept");
+    node_close(&g_n[0]);
+    CHECK(node_open(&g_n[0]) == 0, "A reopened");
+    set_members(&g_n[0], 2 * E, 2, (const uint8_t (*)[DHT2_FP_LEN])s0, 2,
+                (const uint8_t (*)[DHT2_FP_LEN])s0);
+    CHECK(nodus_dht2_pull_epoch_check(g_n[0].pull, NOW) == 0 &&
+              nodus_dht2_store_pull_get(g_n[0].st, g_n[1].key.fp, &found,
+                                        &gen, &cur) == 0 &&
+              found && cur == 7,
+          "restart within the checked epoch: cursor kept");
+
+    /* The next boundary, nothing grew: the cursor stays. */
+    set_members(&g_n[0], 3 * E, 2, (const uint8_t (*)[DHT2_FP_LEN])s0, 2,
+                (const uint8_t (*)[DHT2_FP_LEN])s0);
+    CHECK(nodus_dht2_pull_epoch_check(g_n[0].pull, NOW) == 0 &&
+              nodus_dht2_store_pull_get(g_n[0].st, g_n[1].key.fp, &found,
+                                        &gen, &cur) == 0 &&
+              found && cur == 7,
+          "next boundary, equal sets: cursor kept");
+
+    /* Down across 4E; back at 5E with equal sets: a boundary was missed, so
+     * the cursor is reset although S(H) == S(H − E) now. */
+    node_close(&g_n[0]);
+    CHECK(node_open(&g_n[0]) == 0, "A reopened after missing a boundary");
+    set_members(&g_n[0], 5 * E, 2, (const uint8_t (*)[DHT2_FP_LEN])s0, 2,
+                (const uint8_t (*)[DHT2_FP_LEN])s0);
+    CHECK(nodus_dht2_pull_epoch_check(g_n[0].pull, NOW) == 0 &&
+              nodus_dht2_store_pull_get(g_n[0].st, g_n[1].key.fp, &found,
+                                        &gen, &cur) == 0 &&
+              found && cur == 0,
+          "missed boundary: cursor reset to 0");
     net_down();
 }
 
@@ -1581,6 +1651,7 @@ int main(void)
     test_handover(&keys[0], &keys[1], &keys[2], &keys[3]);
     test_handover_quorum(&keys[0], &keys[1], &keys[2]);
     test_offer_send_fail(&keys[0], &keys[1], &keys[2]);
+    test_epoch_persisted(&keys[0], &keys[1]);
     test_epoch_sets(&keys[0], &keys[1], &keys[2]);
     test_want_length(&keys[0], &keys[1], &keys[2]);
     test_cursor_rules(&keys[0], &keys[1], &keys[2]);

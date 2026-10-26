@@ -35,6 +35,7 @@
 #include "dht2/dht2_msg.h"
 #include "dht2/dht2_place.h"
 #include "dht2/dht2_record.h"
+#include "dnac/dnac.h"                  /* DNAC_EPOCH_LENGTH (design §2: E) */
 
 #include <stdlib.h>
 #include <string.h>
@@ -90,8 +91,6 @@ struct nodus_dht2_pull {
     size_t                   nex;
     offered_t              **off;
     size_t                   noff;
-    bool                     have_e;     /* last epoch seen, in memory    */
-    uint64_t                 last_e;
     uint8_t                 *buf;        /* outgoing message scratch      */
     uint8_t                 *rec;        /* one envelope scratch          */
 };
@@ -813,11 +812,35 @@ int nodus_dht2_pull_epoch_check(nodus_dht2_pull_t *p, uint64_t now_ms)
     if (world(p, now_ms, &w) != 0) {
         return 1;
     }
-    if (p->have_e && p->last_e == w.sets->e) {
-        return 0;
+    /* The cursors were accumulated under the epoch persisted as "pull_e".
+     * Same epoch: nothing to do. The boundary right before it (e − E,
+     * E = DNAC_EPOCH_LENGTH everywhere in the design, §2): the growth test
+     * over S(H) vs S(H − E). No checked epoch yet, or one or more boundaries
+     * missed (the node was down): the cursors' responsibility is unknown, so
+     * re-scan from 0 (§4.5 "re-scan when responsibility grows"; Sol 7a
+     * finding 2). */
+    bool reset;
+    {
+        const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+        const uint64_t cur = w.sets->e;
+        bool           have = false;
+        uint64_t       last = 0;
+
+        if (nodus_dht2_store_pull_epoch_get(p->holder.store, &have, &last)
+            != 0) {
+            return -1;
+        }
+        if (have && last == cur) {
+            return 0;
+        }
+        if (have && cur >= E && last == cur - E) {
+            reset = responsibility_grew(p->holder.self_fp, w.ctx.s0, w.ctx.n0,
+                                        w.ctx.s1, w.ctx.n1);
+        } else {
+            reset = true;
+        }
     }
-    if (responsibility_grew(p->holder.self_fp, w.ctx.s0, w.ctx.n0, w.ctx.s1,
-                            w.ctx.n1)) {
+    if (reset) {
         /* PU:181-186: disconnect every peer, reset every interval. */
         while (p->nex > 0) {
             ex_drop(p, p->ex[0]);
@@ -857,9 +880,9 @@ int nodus_dht2_pull_epoch_check(nodus_dht2_pull_t *p, uint64_t now_ms)
         from = next;
     }
     free(page);
-    if (rc == 0) {
-        p->have_e = true;
-        p->last_e = w.sets->e;
+    if (rc == 0 &&
+        nodus_dht2_store_pull_epoch_set(p->holder.store, w.sets->e) != 0) {
+        rc = -1;
     }
     return rc;
 }
