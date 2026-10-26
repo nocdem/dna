@@ -35,11 +35,17 @@
  *     longer holds (not in eligible(p)) gets the persisted hand-over flag at
  *     the epoch check; with the pull-receipt lost, the flag survives a
  *     store reopen and the source still offers the record; the repeated
- *     exchange's receipt retires the flag;
+ *     exchange's receipt of ONE member leaves the flag (operator decision
+ *     2026-10-27-dht-v2-handover-one-receipt.md: TWO receipts);
  *   · the receipt is refused (flag stays) with a wrong payload type, a wrong
- *     domain, a signer that is not the sending peer; it retires nothing
+ *     domain, a signer that is not the sending peer; it counts for nothing
  *     when the signer is not in nearest_R(S(H)) of the record or the hash is
- *     not the held one; the right receipt retires;
+ *     not the held one; the same member twice counts once; a second DISTINCT
+ *     member retires the flag; with |nearest_R| = 1 one receipt retires; the
+ *     acknowledging fps survive a store reopen; an acknowledger that left
+ *     nearest_R does not count at retirement time;
+ *   · a failed send of a non-empty p_offer leaves no offer kept at the
+ *     source (a p_want afterwards is "without an offer");
  *   · row 22 "epoch-boundary sets": when the responsibility GREW (S(H) lost
  *     members relative to S(H − E)) every cursor is reset to 0 and an
  *     exchange in flight is aborted; when the sets are equal, when S(H)
@@ -264,6 +270,7 @@ static int     g_puller = 1;          /* who pulls: routes HELLO */
 static int     g_sent[6];             /* messages sent, per kind */
 static int     g_done, g_aborted, g_serve_fail;
 static bool    g_drop_receipts;
+static bool    g_fail_offer;          /* the send of a p_offer fails */
 static const env_t *g_tamper0;        /* replaces delivery i == 0 */
 static uint8_t g_last_offer[NODUS_DHT2_PULL_MSG_MAX];
 static size_t  g_last_offer_n;
@@ -280,6 +287,9 @@ static int send_cb(void *user, const uint8_t peer_fp[64],
     uint8_t *copy;
 
     g_sent[kind]++;
+    if (kind == NODUS_DHT2_PULL_OFFER && g_fail_offer) {
+        return -1;                          /* the peer is not reachable */
+    }
     if (kind == NODUS_DHT2_PULL_OFFER) {
         memcpy(g_last_offer, msg, len);
         g_last_offer_n = len;
@@ -482,6 +492,7 @@ static int net_up(const tkey_t *ka, const tkey_t *kb)
     q_clear();
     counters_reset();
     g_drop_receipts = false;
+    g_fail_offer = false;
     g_tamper0 = NULL;
     g_puller = 1;
     if (node_init(a, 0, ka) != 0 || node_init(b, 1, kb) != 0) {
@@ -830,22 +841,24 @@ static void test_generation(const tkey_t *ka, const tkey_t *kb, const tkey_t *kw
     net_down();
 }
 
-/* The six-member set of the hand-over tests: A, B and four fakes. */
+/* The six-member set of the hand-over tests: A, B, the writer W (a real key,
+ * so it can sign the second receipt) and three fakes. */
 static uint8_t g_s6[6][DHT2_FP_LEN];
 
-static void build_s6(void)
+static void build_s6(const tkey_t *w)
 {
     int k;
 
     memcpy(g_s6[0], g_n[0].key.fp, DHT2_FP_LEN);
     memcpy(g_s6[1], g_n[1].key.fp, DHT2_FP_LEN);
-    /* The four others spread over the keyspace (0x20, 0x60, 0xA0, 0xE0 …).
+    memcpy(g_s6[2], w->fp, DHT2_FP_LEN);
+    /* The fakes spread over the keyspace (0x20, 0x60, 0xA0).
      * With all four at 0xE2-0xE5 (the first version) A (fp 0x64…) and B
      * (0x43…) share the top bit against all of them, so no key can put B in
      * nearest_R while leaving A out — the hand-over fixture search could
      * never succeed (found by the ORCHESTRATOR's run, 2026-10-27). */
-    for (k = 2; k < 6; k++) {
-        memset(g_s6[k], 0x20 + 0x40 * (k - 2), DHT2_FP_LEN);
+    for (k = 3; k < 6; k++) {
+        memset(g_s6[k], 0x20 + 0x40 * (k - 3), DHT2_FP_LEN);
     }
 }
 
@@ -904,6 +917,25 @@ static bool pending_at(node_t *n, const uint8_t addr[DHT2_HASH_LEN])
     return found && pending;
 }
 
+/* A's pull_serve of a valid receipt that `signer` sends for (addr, h) with
+ * generation g. Returns the serve result, or -2 when the receipt could not
+ * be built. */
+static int receipt_from(const tkey_t *signer, uint64_t g,
+                        const uint8_t addr[DHT2_HASH_LEN],
+                        const uint8_t h[DHT2_HASH_LEN])
+{
+    static uint8_t rb[16384];
+    size_t         rl = 0;
+
+    if (mk_receipt(rb, sizeof(rb), &rl, DHT2_DOMAIN_ANSWER,
+                   DHT2_PT_PULL_RECEIPT, signer, signer->fp, g_n[0].key.fp, g,
+                   addr, h) != 0) {
+        return -2;
+    }
+    return nodus_dht2_pull_serve(g_n[0].pull, NOW, signer->fp,
+                                 NODUS_DHT2_PULL_RECEIPT, rb, rl);
+}
+
 static void test_handover(const tkey_t *ka, const tkey_t *kb, const tkey_t *kw,
                           const tkey_t *kc)
 {
@@ -918,11 +950,12 @@ static void test_handover(const tkey_t *ka, const tkey_t *kb, const tkey_t *kw,
     size_t           rl = 0;
 
     CHECK(net_up(ka, kb) == 0, "two nodes");
-    build_s6();
+    build_s6(kw);
     g_n[0].view.named_all = true;      /* permanent records need a name */
     g_n[1].view.named_all = true;
 
-    /* A record B is responsible for and A is not eligible for, under S6. */
+    /* A record B and W are responsible for and A is not eligible for, under
+     * S6 (two real members in nearest_R: the two receipts come from them). */
     for (idn = 0; idn < 5000; idn++) {
         fill_id(wid, idn);
         if (dht2_address(wid, kw->fp, addr) != 0) {
@@ -930,11 +963,12 @@ static void test_handover(const tkey_t *ka, const tkey_t *kb, const tkey_t *kw,
         }
         if (dht2_eligible(addr, (const uint8_t (*)[DHT2_FP_LEN])g_s6, 6, NULL,
                           0, g_n[0].key.fp) == 0 &&
-            in_nr(addr, g_n[1].key.fp)) {
+            in_nr(addr, g_n[1].key.fp) && in_nr(addr, kw->fp)) {
             break;
         }
     }
-    CHECK(idn < 5000, "a record with A not eligible and B responsible exists");
+    CHECK(idn < 5000,
+          "a record with A not eligible, B and W responsible exists");
     CHECK(mk_rec(&p, addr, kw, idn, 1, true) == 0 &&
               put_at(&g_n[0], &p, &pr) == 0,
           "permanent record stored at A while S(H) = {A, B}");
@@ -972,8 +1006,13 @@ static void test_handover(const tkey_t *ka, const tkey_t *kb, const tkey_t *kw,
     CHECK(g_done == 1 && g_sent[NODUS_DHT2_PULL_DELIVER] == 0 &&
               g_sent[NODUS_DHT2_PULL_RECEIPT] == 1,
           "A offered the flagged record again; B held it: no delivery, a receipt");
-    CHECK(g_serve_fail == 0 && !pending_at(&g_n[0], addr),
-          "the receipt of a member of nearest_R(S(H)) retired the flag");
+    CHECK(g_serve_fail == 0 && pending_at(&g_n[0], addr),
+          "ONE member's receipt (B) leaves the flag: two are needed");
+    CHECK(get_at(&g_n[0], addr, hash) == NODUS_DHT2_GET_HELD,
+          "A still holds it");
+    CHECK(receipt_from(kw, nodus_dht2_store_generation(g_n[0].st), addr, hash)
+              == 0 && !pending_at(&g_n[0], addr),
+          "the receipt of a second DISTINCT member (W) retired the flag");
 
     /* Receipts that must not retire. */
     CHECK(get_at(&g_n[0], addr, hash) == NODUS_DHT2_GET_HELD, "A still holds it");
@@ -1033,20 +1072,25 @@ static void test_handover(const tkey_t *ka, const tkey_t *kb, const tkey_t *kw,
                   "receipt naming another hash: handled");
             break;
         }
-        default:  /* the right one */
-            CHECK(mk_receipt(rb, sizeof(rb), &rl, DHT2_DOMAIN_ANSWER,
-                             DHT2_PT_PULL_RECEIPT, kb, g_n[1].key.fp,
-                             g_n[0].key.fp, gen_before, addr, hash) == 0 &&
-                      nodus_dht2_pull_serve(g_n[0].pull, NOW, g_n[1].key.fp,
-                                            NODUS_DHT2_PULL_RECEIPT, rb, rl)
-                          == 0,
-                  "the right receipt: handled");
+        default:  /* the right ones: two DISTINCT members */
+            CHECK(receipt_from(kb, gen_before, addr, hash) == 0,
+                  "the right receipt of B: handled");
+            CHECK(pending_at(&g_n[0], addr), "one receipt: the flag stays");
+            CHECK(receipt_from(kb, gen_before, addr, hash) == 0 &&
+                      pending_at(&g_n[0], addr),
+                  "the same member twice counts once: the flag stays");
+            CHECK(receipt_from(kc, gen_before, addr, hash) == 0 &&
+                      pending_at(&g_n[0], addr),
+                  "a signer outside nearest_R after B's: still not retired");
+            CHECK(receipt_from(kw, gen_before, addr, hash) == 0,
+                  "the right receipt of W: handled");
             break;
         }
         if (k < 5) {
             CHECK(pending_at(&g_n[0], addr), "the flag stays");
         } else {
-            CHECK(!pending_at(&g_n[0], addr), "the right receipt retires");
+            CHECK(!pending_at(&g_n[0], addr),
+                  "a second distinct member's receipt retires");
         }
     }
 
@@ -1092,6 +1136,142 @@ static void test_handover(const tkey_t *ka, const tkey_t *kb, const tkey_t *kw,
 
     (void)cur;
     (void)found;
+    net_down();
+}
+
+/* The two-receipt rule's remaining arms: the acknowledging fps persist, an
+ * acknowledger that left nearest_R does not count at retirement time, and
+ * with |nearest_R| = 1 one receipt retires. */
+static void test_handover_quorum(const tkey_t *ka, const tkey_t *kb,
+                                 const tkey_t *kw)
+{
+    env_t            p;
+    uint8_t          addr[DHT2_HASH_LEN], hash[DHT2_HASH_LEN], wid[DHT2_ID_LEN];
+    uint8_t          alt[6][DHT2_FP_LEN];
+    nodus_dht2_put_t pr;
+    uint32_t         idn;
+    uint64_t         gen;
+    bool             f;
+    size_t           idx[DHT2_R];
+    int              cnt, i;
+
+    CHECK(net_up(ka, kb) == 0, "two nodes");
+    build_s6(kw);
+    /* alt = S6 with B's slot taken by a fake: B has left the set. */
+    memcpy(alt, g_s6, sizeof(alt));
+    memset(alt[1], 0xE0, DHT2_FP_LEN);
+    g_n[0].view.named_all = true;
+    g_n[1].view.named_all = true;
+
+    /* A not eligible under S6; B and W in nearest_R under S6; and W still in
+     * nearest_R under alt (so W's receipt is valid there while B's ack is
+     * not counted). */
+    for (idn = 0; idn < 5000; idn++) {
+        fill_id(wid, idn);
+        if (dht2_address(wid, kw->fp, addr) != 0) {
+            continue;
+        }
+        cnt = dht2_nearest_r(addr, (const uint8_t (*)[DHT2_FP_LEN])alt, 6, idx);
+        if (dht2_eligible(addr, (const uint8_t (*)[DHT2_FP_LEN])g_s6, 6, NULL,
+                          0, g_n[0].key.fp) == 0 &&
+            in_nr(addr, g_n[1].key.fp) && in_nr(addr, kw->fp) && cnt > 0) {
+            bool w_in = false;
+
+            for (i = 0; i < cnt; i++) {
+                if (memcmp(alt[idx[i]], kw->fp, DHT2_FP_LEN) == 0) {
+                    w_in = true;
+                }
+            }
+            if (w_in) {
+                break;
+            }
+        }
+    }
+    CHECK(idn < 5000, "a record for the quorum fixtures exists");
+    CHECK(mk_rec(&p, addr, kw, idn, 1, true) == 0 &&
+              put_at(&g_n[0], &p, &pr) == 0, "permanent record at A");
+    set_members(&g_n[0], 1440, 6, (const uint8_t (*)[DHT2_FP_LEN])g_s6, 0, NULL);
+    CHECK(nodus_dht2_pull_epoch_check(g_n[0].pull, NOW) == 0 &&
+              pending_at(&g_n[0], addr), "flagged at the epoch check");
+    CHECK(get_at(&g_n[0], addr, hash) == NODUS_DHT2_GET_HELD, "A holds it");
+    gen = nodus_dht2_store_generation(g_n[0].st);
+
+    /* The acknowledgement persists: B's receipt, A restarts, W's receipt. */
+    CHECK(receipt_from(kb, gen, addr, hash) == 0 && pending_at(&g_n[0], addr),
+          "B's receipt: the flag stays");
+    node_close(&g_n[0]);
+    CHECK(node_open(&g_n[0]) == 0, "A reopened");
+    CHECK(pending_at(&g_n[0], addr), "still pending after the reopen");
+    CHECK(receipt_from(kw, gen, addr, hash) == 0 && !pending_at(&g_n[0], addr),
+          "B's acknowledgement survived the reopen: W's receipt retires");
+
+    /* An acknowledger that left nearest_R does not count. */
+    CHECK(nodus_dht2_store_handover_set(g_n[0].st, addr, true, &f) == 0 && f,
+          "obligation again (the old acknowledgements are gone)");
+    CHECK(receipt_from(kb, gen, addr, hash) == 0 && pending_at(&g_n[0], addr),
+          "B's receipt: the flag stays");
+    set_members(&g_n[0], 1440, 6, (const uint8_t (*)[DHT2_FP_LEN])alt, 0, NULL);
+    CHECK(receipt_from(kw, gen, addr, hash) == 0 && pending_at(&g_n[0], addr),
+          "B is no longer in nearest_R: its acknowledgement does not count");
+    set_members(&g_n[0], 1440, 6, (const uint8_t (*)[DHT2_FP_LEN])g_s6, 0, NULL);
+    CHECK(receipt_from(kw, gen, addr, hash) == 0 && !pending_at(&g_n[0], addr),
+          "back in nearest_R, B counts again: retired");
+
+    /* |nearest_R| = 1: S(H) = {B}. */
+    {
+        uint8_t one[1][DHT2_FP_LEN];
+
+        memcpy(one[0], g_n[1].key.fp, DHT2_FP_LEN);
+        set_members(&g_n[0], 2160, 1, (const uint8_t (*)[DHT2_FP_LEN])one, 0,
+                    NULL);
+        CHECK(nodus_dht2_pull_epoch_check(g_n[0].pull, NOW) == 0 &&
+                  pending_at(&g_n[0], addr),
+              "S(H) = {B}: A is not eligible, flagged again");
+        CHECK(receipt_from(kb, gen, addr, hash) == 0 &&
+                  !pending_at(&g_n[0], addr),
+              "|nearest_R| = 1: one receipt retires");
+    }
+    net_down();
+}
+
+/* A failed send of a non-empty p_offer leaves no offer kept. */
+static void test_offer_send_fail(const tkey_t *ka, const tkey_t *kb,
+                                 const tkey_t *kw)
+{
+    env_t            r;
+    uint8_t          addr[DHT2_HASH_LEN], mb[64], wb[64];
+    nodus_dht2_put_t pr;
+    dht2_p_get_t     gm;
+    dht2_p_want_t    wm;
+    uint8_t          none[1] = { 0 };
+    size_t           ml = 0, wl = 0;
+
+    CHECK(net_up(ka, kb) == 0, "two nodes");
+    CHECK(mk_rec(&r, addr, kw, 1, 1, false) == 0 &&
+              put_at(&g_n[0], &r, &pr) == 0, "a record at A");
+    gm.g = nodus_dht2_store_generation(g_n[0].st);
+    gm.s = 0;
+    CHECK(dht2_p_get_encode(&gm, mb, sizeof(mb), &ml) == DHT2_OK, "p_get");
+    wm.b = none;
+    wm.b_len = 1;
+    CHECK(dht2_p_want_encode(&wm, 1, wb, sizeof(wb), &wl) == DHT2_OK,
+          "p_want over one entry, no bit set");
+
+    g_fail_offer = true;
+    CHECK(nodus_dht2_pull_serve(g_n[0].pull, NOW, g_n[1].key.fp,
+                                NODUS_DHT2_PULL_GET, mb, ml) == -1,
+          "the offer's send failed: the p_get is dropped");
+    g_fail_offer = false;
+    CHECK(nodus_dht2_pull_serve(g_n[0].pull, NOW, g_n[1].key.fp,
+                                NODUS_DHT2_PULL_WANT, wb, wl) == -1,
+          "a p_want afterwards is without an offer");
+
+    /* Control: the same sequence with a working send keeps the offer. */
+    CHECK(nodus_dht2_pull_serve(g_n[0].pull, NOW, g_n[1].key.fp,
+                                NODUS_DHT2_PULL_GET, mb, ml) == 0 &&
+              nodus_dht2_pull_serve(g_n[0].pull, NOW, g_n[1].key.fp,
+                                    NODUS_DHT2_PULL_WANT, wb, wl) == 0,
+          "control: with a working send the p_want finds its offer");
     net_down();
 }
 
@@ -1399,6 +1579,8 @@ int main(void)
     test_replacement(&keys[0], &keys[1], &keys[2]);
     test_generation(&keys[0], &keys[1], &keys[2]);
     test_handover(&keys[0], &keys[1], &keys[2], &keys[3]);
+    test_handover_quorum(&keys[0], &keys[1], &keys[2]);
+    test_offer_send_fail(&keys[0], &keys[1], &keys[2]);
     test_epoch_sets(&keys[0], &keys[1], &keys[2]);
     test_want_length(&keys[0], &keys[1], &keys[2]);
     test_cursor_rules(&keys[0], &keys[1], &keys[2]);

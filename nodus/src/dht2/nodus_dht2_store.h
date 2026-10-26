@@ -271,10 +271,25 @@ int nodus_dht2_store_scan(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
 
 /** Mark / clear the persisted hand-over obligation of the record at
  *  `address` (package 7 decides when). *`found` false when no such record.
- *  Replacement of the record keeps the flag. @return 0 / 16. */
+ *  Replacement of the record keeps the flag. Either way (set or clear) the
+ *  acknowledgements recorded for the address below are deleted. @return
+ *  0 / 16. */
 int nodus_dht2_store_handover_set(nodus_dht2_store_t *s,
                                   const uint8_t address[DHT2_HASH_LEN],
                                   bool pending, bool *found);
+
+/** Decision 2026-10-27-dht-v2-handover-one-receipt.md: the fps that sent a
+ *  valid pull-receipt for the pending record at `address`, persisted one row
+ *  per (address, fp) — adding a fp twice keeps one. The rows are deleted when
+ *  the record row is deleted or REPLACED (the receipts named its old hash),
+ *  and by every handover_set. Whether a fp counts (member of the current
+ *  nearest_R) is the caller's to decide. @return 0 / 16. */
+int nodus_dht2_store_handover_ack_add(nodus_dht2_store_t *s,
+                                      const uint8_t address[DHT2_HASH_LEN],
+                                      const uint8_t fp[DHT2_FP_LEN]);
+int nodus_dht2_store_handover_ack_has(nodus_dht2_store_t *s,
+                                      const uint8_t address[DHT2_HASH_LEN],
+                                      const uint8_t fp[DHT2_FP_LEN], bool *has);
 int nodus_dht2_store_handover_get(nodus_dht2_store_t *s,
                                   const uint8_t address[DHT2_HASH_LEN],
                                   bool *pending, bool *found);

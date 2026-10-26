@@ -971,6 +971,9 @@ static int serve_get(nodus_dht2_pull_t *p, uint64_t now_ms,
         keep = NULL;                 /* owned by p now */
     }
     rc = send_msg(p, peer, NODUS_DHT2_PULL_OFFER, p->buf, olen);
+    if (rc != 0 && o->e_count != 0) {
+        off_drop(p, peer);           /* the offer never left: keep none */
+    }
 done:
     free(ents);
     free(o);
@@ -1045,8 +1048,11 @@ static int serve_want(nodus_dht2_pull_t *p, uint64_t now_ms,
     return rc;
 }
 
-/* Row 12 "Handover acknowledgement": a valid pull-receipt from a member of
- * the record's nearest_R(S(H)) retires its hand-over obligation. */
+/* Row 12 "Handover acknowledgement", as the operator decision
+ * 2026-10-27-dht-v2-handover-one-receipt.md revised it: a valid pull-receipt
+ * from a member of the record's nearest_R(S(H)) is RECORDED (persisted, one
+ * per fp); the obligation ends when min(2, |nearest_R|) distinct members of
+ * the current nearest_R have acknowledged. */
 static int serve_receipt(nodus_dht2_pull_t *p, uint64_t now_ms,
                          const uint8_t peer[DHT2_FP_LEN], const uint8_t *msg,
                          size_t len)
@@ -1095,7 +1101,9 @@ static int serve_receipt(nodus_dht2_pull_t *p, uint64_t now_ms,
     for (i = 0; i < r->e_count; i++) {
         bool    found = false, pending = false;
         uint8_t held[DHT2_HASH_LEN], place[DHT2_HASH_LEN];
-        int     member;
+        size_t  idx[DHT2_R];
+        int     cnt, k, member = 0;
+        int     acked = 0, need;
 
         if (nodus_dht2_store_handover_info(p->holder.store, r->e[i].a, &found,
                                            &pending, held, place) != 0) {
@@ -1108,12 +1116,45 @@ static int serve_receipt(nodus_dht2_pull_t *p, uint64_t now_ms,
             memcmp(held, r->e[i].h, DHT2_HASH_LEN) != 0) {
             continue;
         }
-        member = in_nearest_r(place, w.ctx.s0, w.ctx.n0, r->pf);
-        if (member < 0) {
+        cnt = dht2_nearest_r(place, w.ctx.s0, w.ctx.n0, idx);
+        if (cnt < 0) {
             rc = -1;
             break;
         }
-        if (member == 1 &&
+        for (k = 0; k < cnt; k++) {
+            if (memcmp(w.ctx.s0[idx[k]], r->pf, DHT2_FP_LEN) == 0) {
+                member = 1;
+            }
+        }
+        if (member == 0) {
+            continue;                /* a signer outside nearest_R: no count */
+        }
+        if (nodus_dht2_store_handover_ack_add(p->holder.store, r->e[i].a,
+                                              r->pf) != 0) {
+            rc = -1;
+            break;
+        }
+        /* Decision 2026-10-27-dht-v2-handover-one-receipt.md: retired when
+         * min(2, |nearest_R|) DISTINCT members of the CURRENT nearest_R have
+         * acknowledged; an acknowledger that left nearest_R does not count. */
+        for (k = 0; k < cnt; k++) {
+            bool has = false;
+
+            if (nodus_dht2_store_handover_ack_has(p->holder.store, r->e[i].a,
+                                                  w.ctx.s0[idx[k]], &has)
+                != 0) {
+                rc = -1;
+                break;
+            }
+            if (has) {
+                acked++;
+            }
+        }
+        if (rc != 0) {
+            break;
+        }
+        need = cnt < 2 ? cnt : 2;
+        if (acked >= need &&
             nodus_dht2_store_handover_set(p->holder.store, r->e[i].a, false,
                                           NULL) != 0) {
             rc = -1;

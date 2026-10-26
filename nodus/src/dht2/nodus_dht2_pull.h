@@ -56,17 +56,21 @@
  *     caller decides when to call nodus_dht2_pull_start again.
  *
  * READINGS (in neither Bee nor the design as a sentence — reported as gaps):
- *   · p_hello is sent both ways: the puller's request carries its own
- *     {g, top} (Bee's Syn is empty, pullsync.go:529; row 12 does not say who
- *     sends p_hello). The module cannot tell a hello request from a reply;
+ *   · p_hello is sent both ways: the puller's REQUEST is Bee's empty Syn
+ *     (pullsync.go:528-529) as the empty DAG-CBOR map (0xa0), the REPLY is
+ *     p_hello {g, top}. The module cannot tell a hello request from a reply;
  *     the framing must (serve vs on_reply);
  *   · "responsibility grew" (puller.go:178-189, a scalar radius in Bee) is
  *     decided by a DP over XOR bit positions (responsibility_grew in the .c,
  *     argument there) — JUDGMENT, no reference oracle;
  *   · hand-over retirement: §4.5 (v) says every member of nearest_R(S(H))
  *     must acknowledge, row 12 says a receipt "from a member" retires. Built
- *     to row 12 with the store's one flag; the source verifies only "the
- *     same version" (receipt hash = held hash), not "or newer";
+ *     to the operator decision 2026-10-27-dht-v2-handover-one-receipt.md
+ *     (revised: TWO receipts): the flag ends when min(2, |nearest_R|)
+ *     distinct members of the record's current nearest_R have sent a valid
+ *     receipt naming it; the acknowledging fps are persisted per record
+ *     (store dht2_ack). The source verifies only "the same version"
+ *     (receipt hash = held hash), not "or newer";
  *   · §4.5 (v) "then it may drop them": the flag is cleared, nothing is
  *     deleted;
  *   · "transient local failure" (cursor kept) = admission codes 15 / 16 /
@@ -97,7 +101,8 @@ extern "C" {
 /** The pull messages (row 12). RECEIPT carries a sealed RFC 0002 envelope;
  *  every other kind a strict DAG-CBOR map (dht2_msg.h). */
 typedef enum {
-    NODUS_DHT2_PULL_HELLO = 0,   /* p_hello {g, top}: request and reply */
+    NODUS_DHT2_PULL_HELLO = 0,   /* p_hello: request = empty Syn (0xa0),
+                                  * reply = {g, top}                    */
     NODUS_DHT2_PULL_GET,         /* p_get   {g, s}                      */
     NODUS_DHT2_PULL_OFFER,       /* p_offer {g, top, e}                 */
     NODUS_DHT2_PULL_WANT,        /* p_want  {b}                         */
@@ -143,7 +148,8 @@ int nodus_dht2_pull_sources(nodus_dht2_pull_t *p, uint64_t now_ms,
 #define NODUS_DHT2_PULL_BUSY      1    /* one exchange per source in flight */
 #define NODUS_DHT2_PULL_ERR     (-1)
 
-/** Begin one exchange with `source_fp`: sends p_hello. */
+/** Begin one exchange with `source_fp`: sends the p_hello request (the empty
+ *  Syn, 0xa0). */
 int nodus_dht2_pull_start(nodus_dht2_pull_t *p, uint64_t now_ms,
                           const uint8_t source_fp[DHT2_FP_LEN]);
 
@@ -153,8 +159,9 @@ int nodus_dht2_pull_start(nodus_dht2_pull_t *p, uint64_t now_ms,
                                         * this page was not advanced        */
 
 /** A reply (HELLO, OFFER, DELIVER) from `source_fp`. A reply for no
- *  exchange, or of the wrong kind for its state, aborts nothing and returns
- *  NODUS_DHT2_PULL_ABORTED. */
+ *  exchange returns NODUS_DHT2_PULL_ABORTED (there is nothing to drop); a
+ *  reply of the wrong kind for the exchange's state drops that exchange and
+ *  returns NODUS_DHT2_PULL_ABORTED. */
 int nodus_dht2_pull_on_reply(nodus_dht2_pull_t *p, uint64_t now_ms,
                              const uint8_t source_fp[DHT2_FP_LEN],
                              nodus_dht2_pull_msg_t kind, const uint8_t *msg,

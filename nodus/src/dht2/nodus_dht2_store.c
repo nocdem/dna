@@ -68,7 +68,17 @@ static const char SCHEMA_SQL[] =
     "CREATE TABLE IF NOT EXISTS dht2_pull_src("
     "  fp     BLOB PRIMARY KEY,"
     "  gen    INTEGER NOT NULL,"
-    "  cursor INTEGER NOT NULL);";
+    "  cursor INTEGER NOT NULL);"
+    /* §4.5 (v) / decision 2026-10-27-dht-v2-handover-one-receipt.md: the fps
+     * that acknowledged a pending permanent record (one row per address and
+     * fp, so a repeat counts once). The rows go when the record row goes
+     * (replace, drop, expiry: the trigger) and whenever the flag is set. */
+    "CREATE TABLE IF NOT EXISTS dht2_ack("
+    "  address BLOB NOT NULL,"
+    "  fp      BLOB NOT NULL,"
+    "  PRIMARY KEY(address, fp));"
+    "CREATE TRIGGER IF NOT EXISTS dht2_ack_gc AFTER DELETE ON dht2_rec "
+    "BEGIN DELETE FROM dht2_ack WHERE address = OLD.address; END;";
 
 /* ══ small SQLite helpers: every error is a fault (-1) ═════════════════ */
 
@@ -1299,6 +1309,15 @@ int nodus_dht2_store_handover_set(nodus_dht2_store_t *s,
     if (s == NULL || address == NULL) {
         return DHT2_E_ARG;
     }
+    /* The obligation starts or ends here: the acknowledgements of the past
+     * one never count for the next. */
+    st = prep(s, "DELETE FROM dht2_ack WHERE address = ?1");
+    if (st == NULL) {
+        return CODE_FAULT;
+    }
+    if (!bound(st, b_64(st, 1, address)) || step_done(s, st) != 0) {
+        return CODE_FAULT;
+    }
     st = prep(s, "UPDATE dht2_rec SET handover = ?2 WHERE address = ?1");
     if (st == NULL) {
         return CODE_FAULT;
@@ -1330,6 +1349,53 @@ int nodus_dht2_store_handover_get(nodus_dht2_store_t *s,
     *found = h.found;
     *pending = h.found && h.handover != 0;
     held_free(&h);
+    return 0;
+}
+
+int nodus_dht2_store_handover_ack_add(nodus_dht2_store_t *s,
+                                      const uint8_t address[DHT2_HASH_LEN],
+                                      const uint8_t fp[DHT2_FP_LEN])
+{
+    sqlite3_stmt *st;
+
+    if (s == NULL || address == NULL || fp == NULL) {
+        return DHT2_E_ARG;
+    }
+    st = prep(s, "INSERT OR IGNORE INTO dht2_ack(address, fp) VALUES(?1, ?2)");
+    if (st == NULL) {
+        return CODE_FAULT;
+    }
+    if (!bound(st, b_64(st, 1, address) | b_blob(st, 2, fp, DHT2_FP_LEN))) {
+        return CODE_FAULT;
+    }
+    return step_done(s, st) == 0 ? 0 : CODE_FAULT;
+}
+
+int nodus_dht2_store_handover_ack_has(nodus_dht2_store_t *s,
+                                      const uint8_t address[DHT2_HASH_LEN],
+                                      const uint8_t fp[DHT2_FP_LEN], bool *has)
+{
+    sqlite3_stmt *st;
+    int           rc;
+
+    if (s == NULL || address == NULL || fp == NULL || has == NULL) {
+        return DHT2_E_ARG;
+    }
+    st = prep(s, "SELECT 1 FROM dht2_ack WHERE address = ?1 AND fp = ?2");
+    if (st == NULL) {
+        return CODE_FAULT;
+    }
+    if (!bound(st, b_64(st, 1, address) | b_blob(st, 2, fp, DHT2_FP_LEN))) {
+        return CODE_FAULT;
+    }
+    rc = sqlite3_step(st);
+    if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "ack read: %s", sqlite3_errmsg(s->db));
+        sqlite3_finalize(st);
+        return CODE_FAULT;
+    }
+    *has = rc == SQLITE_ROW;
+    sqlite3_finalize(st);
     return 0;
 }
 
