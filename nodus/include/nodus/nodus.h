@@ -242,11 +242,9 @@ typedef struct nodus_client {
     _Atomic uint32_t          next_client_cid;
     pthread_mutex_t           circuits_mutex;
 
-    /* Channel encryption (Kyber handshake result).
-     * B3 fix — channel_crypto storage moved to nodus_tcp_conn_t.
-     * Read via client->conn->channel_crypto. Eliminates the pointer
-     * aliasing race that caused "Replay detected" loops on
-     * disconnect+reconnect. */
+    /* No channel-encryption state here: the client session is a
+     * SecretConnection (nodus_tcp_sc.h) since DHT v2 3b-2; the old per-
+     * connection channel_crypto no longer exists. */
 
     /* Cached server Kyber pubkey (survives reconnect, prep for anonymous hello) */
     uint8_t                   cached_server_kyber_pk[1568];

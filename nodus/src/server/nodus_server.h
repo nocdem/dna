@@ -545,10 +545,11 @@ void nodus_server_close(nodus_server_t *srv);
 void nodus_server_dht_host(nodus_server_t *srv, nodus_dht_host_t *out);
 
 /**
- * The chain id this node's sessions are bound to (DHT v2 3b-2): from the chain
- * backend's status — the in-process witness, or the `ci` of nodus-witness'
- * ipc_status in the split — the first time it is non-zero, then kept in the
- * server. @return true and `out` filled; false while it is not known (no chain
+ * The chain id this node's sessions are bound to (DHT v2 3b-2): the 32-byte
+ * v3 chain id from the chain backend's `chain_id_v3` op (the in-process
+ * witness, or nodus-witness over its ipc in the split) — NOT `status`'s legacy
+ * 16-byte id padded with zeros — the first time it is non-zero, then kept in
+ * the server. @return true and `out` filled; false while it is not known (no chain
  * backend, no chain open, the witness not answering): every session, 4001 /
  * WebSocket and 4002, accept and dial alike, is then REFUSED — fail closed,
  * there is no session without a chain.

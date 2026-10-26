@@ -358,7 +358,9 @@ typedef struct nodus_tcp {
     bool                level_triggered; /* disable EPOLLET when true */
 
     bool                auth_required;     /* New conns inherit this */
-    void               *auth_ctx;          /* nodus_identity_t* for hello/sign */
+    void               *auth_ctx;          /* a 4002 pool's nodus_inter_session_cfg_t*
+                                          * (server/nodus_inter_dial.h); NULL
+                                          * elsewhere */
 
     /* Phase 3: pending-full fallback hook. May be NULL (legacy drop). */
     nodus_tcp_pending_full_fn on_pending_full;
