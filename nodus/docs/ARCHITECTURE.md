@@ -156,11 +156,13 @@ nodus/
 │   │   │                      #   (moved out of nodus_server.c by split S4)
 │   │   ├── nodus_dht_media.c/h # m_put / m_meta / m_chunk handlers (was server/nodus_media_handler.c/h)
 │   │   └── nodus_dht2_wview.c/h # DHT v2 package 4: the storage process's view of its witness (the
-│   │                          #   `ipc_dht` kind of witness.sock); NO caller yet (the serving layer,
-│   │                          #   package 6, is to fill the package-5 store's context from it)
+│   │                          #   `ipc_dht` kind of witness.sock); NO caller yet (package 6a's holder
+│   │                          #   service binds it; nothing calls that either — package 6b)
 │   ├── dht2/                  # DHT v2 holder side (Linux-only library list)
-│   │   └── nodus_dht2_store.c/h # DHT v2 package 5: the holder store (SQLite, canonical envelopes)
-│   │                          #   and §4.1 admission over an injected context; NO caller yet
+│   │   ├── nodus_dht2_store.c/h # DHT v2 package 5: the holder store (SQLite, canonical envelopes)
+│   │   │                      #   and §4.1 admission over an injected context
+│   │   └── nodus_dht2_holder.c/h # DHT v2 package 6a: the holder service — one get / put / list
+│   │                          #   request in, ONE signed answer (or none) out; transport-free; NO caller yet
 │   ├── server/
 │   │   ├── nodus_server.c     # Server event loop, auth, sessions, presence, circuits, 4002
 │   │   │                      #   handshake, cluster heartbeat, status; the host side of the DHT seam
@@ -251,7 +253,8 @@ nodus/
 │   ├── test_dht2_codec.c      # DHT v2 package 1 (shared/dht2/): pinned data-map bytes per class, canonical envelope, every row-22 strict-decode reject, §3.2 identifiers against hand-assembled preimages, §4.1 code order, row-5 matrix + class max, §4.2 A/B two-arrival order, nearest_R, Validity, the owner-signed LIST request; default build, nothing left behind
 │   ├── test_dht2_msg.c        # DHT v2 package 2 (shared/dht2/dht2_msg.*): hand-assembled bytes for every wire message (get / put, read answer, receipt, LIST answer, refusal, p_hello / p_get / p_offer / p_want / p_deliver, pull-receipt payload), per-message strict rejects and count bounds, row-7 `v` per context, LIST rules, the p_want bit-vector, the control `_data`, the five typed `_id` helpers, answer seal / open, the row-11 sizes + `_Static_assert` against NODUS_MAX_FRAME_TCP; default build, nothing left behind
 │   ├── test_dht2_ipc.c        # DHT v2 package 4: the witness listener's `ipc_dht` kind (raw peer + test handlers: snap / sets / name bytes, {err} answers, the SET_MAX sets frame = DERIVED_MAX, every refused frame, ipc_status unchanged) and nodus_dht2_wview against a scripted socket server with INJECTED time (5000 ms stale, 1000 ms poll, sets by `e`, name cache, timeout, backoff, late reply, malformed answers), one end-to-end case; the witness FILL functions are NOT exercised (test handlers stand in); mkdtemp dirs, nothing left behind
-│   ├── test_dht2_store.c      # DHT v2 package 5 (src/dht2/nodus_dht2_store.*): §4.1 code order through `put` (15, 1-9, 16), the name fault asked once, Select (equal / losing / A-B two arrivals), quota + node pools + inbox pools 80 / 20, inbox control (only the selected live record applies; DENIED 12, HANDLED [18, through]), LIST pages, get / sweep expiry edges, insertion index + generation + hand-over flag across reopen, the readiness gate, chain binding, forced SQLite faults → 16; injected context, fixed-seed keys, one mkdtemp dir removed at the end
+│   ├── test_dht2_store.c      # DHT v2 package 5 (src/dht2/nodus_dht2_store.*): §4.1 code order through `put` (15, 1-9, 16), the name fault asked once, Select (equal / losing / A-B two arrivals), quota + node pools + inbox pools 80 / 20, inbox control (only the selected live record applies; DENIED 12, HANDLED [18, through]), LIST pages, get / sweep expiry edges, insertion index + generation + hand-over flag across reopen, the readiness gate, chain binding, forced SQLite faults → 16; since package 6a also the LIST page budget counting the control record and the put result's address kept across a refusal; injected context, fixed-seed keys, one mkdtemp dir removed at the end
+│   ├── test_dht2_holder.c     # DHT v2 package 6a (src/dht2/nodus_dht2_holder.*): every answer ONE RFC 0002 envelope under nodus.dht.answer.v1 (answer / receipt / refusal), get / put results in request order, put results keyed by the envelope's address (zero key for a parse failure), malformed requests and bad LIST envelopes → no answer, owner LIST vs not-owner 17, refusal 15 (no snapshot, block sync, another chain, |S(H)| = 1 put) and 14 (64 queued jobs), name FAULT / PENDING → 16, an abandoned name fault dropped after one poll period, GET of an inbox-control record → 17, an envelope > 262,144 B → per-key 1; injected view, fixed-seed keys, one mkdtemp dir removed at the end
 │   ├── test_p2p_secret_kat.c  # DHT v2 sub-package 3a step 1: byte pins of TODAY's 4004 SecretConnection in literal bytes (never through the CMT_P2P_SC_* macros) — fixed-vector T / key / challenge against python3-computed hex, live-handshake recompute on both sides, HELLO / HELLO_R / KEYX framing at literal offsets, sealed-frame nonce role ‖ 00 00 00 ‖ u64 BE counter, AUTHSIG under purpose 0x0A only; must pass on the unchanged base; default build, nothing left behind
 │   ├── test_p2p_secret_profiles.c # DHT v2 sub-package 3a step 2: session profiles WITNESS / CLIENT / NODE — matched handshakes authenticate, mixed pairs never do, python3 vectors per profile, purposes 0x0A / 0x0C / 0x0D do not cross-verify, init refuses every profile but the three consts (by pointer), `cmt_p2p_sc_init` = WITNESS; default build, nothing left behind
 │   ├── test_cmt_evidence.c    # cometbft port R1-D: DuplicateVoteEvidence bare bytes / flat hash / canonical order, EvidenceList root
@@ -2036,47 +2039,53 @@ in this tree. The witness builds the sets answer in a heap buffer of FRAME_MAX
 **The dialler — `nodus_dht2_wview` (`nodus/src/dht/nodus_dht2_wview.{h,c}`).** The
 `nodus-storage` side: its own `nodus_tcp_t`, one connection, dials `witness.sock` with
 `NODUS_TCP_UNIX_UID_SELF`, sends `{"q":"ipc_dht"}` and sets the connection's
-`max_payload` to `NODUS_WITNESS_IPC_DHT_FRAME_MAX` (`nodus_dht2_wview.c:417-443`). It
+`max_payload` to `NODUS_WITNESS_IPC_DHT_FRAME_MAX` (`nodus_dht2_wview.c:419-445`). It
 reads no clock: every call that acts on time takes `now_ms`, a caller-supplied
 MONOTONIC millisecond count that schedules only this node's own polling and ages its own
-cache (`nodus_dht2_wview.h:29-33`). Rules (constants `nodus_dht2_wview.h:58-63`):
+cache (`nodus_dht2_wview.h:31-35`). Rules (constants `nodus_dht2_wview.h:61-68`):
 
 - snapshot asked once per `NODUS_DHT2_WVIEW_SNAP_EVERY_MS` (1000); served while it is no
   older than `NODUS_DHT2_WVIEW_SNAP_STALE_MS` (5000), age counted from the tick that SENT
-  its request (`nodus_dht2_wview.c:85-89`, `:177-179`; the bullets below cite the same
+  its request (`nodus_dht2_wview.c:86-90`, `:178-180`; the bullets below cite the same
   file); an `{err}` answer clears it;
 - sets requested at connect and whenever a snapshot's `e` differs from the held sets'
-  `e`; handed out only while a fresh snapshot carries the same `e` (`:180-181`,
-  `:492-498`); an `{err}` answer drops them and the next request waits one
-  SNAP_EVERY_MS (`:206-211`);
+  `e`; handed out only while a fresh snapshot carries the same `e` (`:181-182`,
+  `:494-500`); an `{err}` answer drops them and the next request waits one
+  SNAP_EVERY_MS (`:207-212`);
 - one request outstanding per call type; a request unanswered for
   `NODUS_DHT2_WVIEW_REQ_TIMEOUT_MS` (5000) closes the connection, checked BEFORE the poll
-  reads anything, so a late reply is never accepted (`:451-459`);
+  reads anything, so a late reply is never accepted (`:453-461`);
 - name answers: positives cached for good (names are permanent, HF-4), negatives until
   the fresh snapshot's `h` moves past the answer's `h`; `NODUS_DHT2_WVIEW_NAME_CACHE_MAX`
-  (1024) slots, eviction free → negative → round-robin (`:273-294`); a name `{err}` is
+  (1024) slots, eviction free → negative → round-robin (`:274-295`); a name `{err}` is
   reported ONCE as `NODUS_DHT2_WVIEW_NAME_FAULT` (the caller refuses the admission,
   `holder-fault`) and never cached, and no new name request goes out until it was
-  reported (`:524-527`);
+  reported (`:532-535`) — or, since DHT v2 package 6a, until it is
+  `NODUS_DHT2_WVIEW_FAULT_KEEP_MS` (= SNAP_EVERY_MS, 1000) old, counted from the tick
+  that read the `{err}` (`fault_at_ms`, `:68`, `:313`): then it is dropped unreported,
+  because "its caller may never come back, and the single slot must not block everyone
+  else"; the dropped fp is asked afresh, never answered "unnamed" (`:507-512`);
 - answers decoded strictly (each key once, `q` first, exact types / sizes, registry
   status 1 or 2 only, no trailing byte); a malformed, unsolicited or over-FRAME_MAX
   answer closes the connection; the dial is retried with backoff
   `NODUS_DHT2_WVIEW_DIAL_BACKOFF_MIN_MS` 250 doubling to `_MAX_MS` 5000, and a close
-  forgets every snapshot, set and pending request (`:380-393`, `:417-427`).
+  forgets every snapshot, set and pending request (`:382-395`, `:419-429`).
 
 It links transport + CBOR only and includes `nodus_witness_ipc.h` for constants and
 plain structs; it is a static-library member in the Linux-only source list
-(`nodus/CMakeLists.txt:704-707`), so `nodus-storage` links it only once something calls
+(`nodus/CMakeLists.txt:710-713`), so `nodus-storage` links it only once something calls
 it. Function reference: `messenger/docs/functions/dht2.md` §11 (dialler) and
 `messenger/docs/functions/ledger.md` §19 (witness side).
 
 **Not done in package 4:** NOTHING dials the kind yet — `nodus_dht2_wview_*` has no
-caller outside its own file and `tests/test_dht2_ipc.c`. Package 5 (the holder store,
-"DHT v2 package 5" below) did NOT wire it: the store takes an INJECTED context
-(`nodus_dht2_ctx_t`) that "the serving layer fills … from nodus_dht2_wview_snap / _sets /
-_name" (`nodus_dht2_store.h:133-137`) — package 6. (The view's own header still says
-"package 5 wires this into nodus-storage", `nodus_dht2_wview.h:39-40`; that source
-comment is now stale.) The witness side IS reachable: `nodus-witness` binds the production
+caller outside its own file, `tests/test_dht2_ipc.c` and the package-6a binding below.
+Package 5 (the holder store, "DHT v2 package 5" below) did NOT wire it: the store takes
+an INJECTED context (`nodus_dht2_ctx_t`) that "the serving layer fills … from
+nodus_dht2_wview_snap / _sets / _name" (`nodus_dht2_store.h:133-137`). Package 6a ("DHT
+v2 package 6a" below) provides that binding — `nodus_dht2_holder_view_wview`
+(`nodus_dht2_holder.c:45-55`) — but nothing calls the holder service either (package
+6b). The view's own header now says so: "filling it from this view is package 6. Nothing
+in nodus/tools/ or any running loop calls it today" (`nodus_dht2_wview.h:41-43`). The witness side IS reachable: `nodus-witness` binds the production
 handlers (`tools/nodus-witness.c:307`, `nodus_witness_ipc_handlers_for`), so a
 `nodus-witness` built from this tree answers a same-euid peer that sends `ipc_dht`. The
 combined `nodus-server` has no `witness.sock`; the fill functions are plain so an
@@ -2180,7 +2189,7 @@ the witness (it proves the IPC, not the chain) — preface key/token reach the h
 non-preface first frame is closed; no witness → the exact item-20 error bytes and no
 chain; control connection not up → the error and NO session dial; the per-session
 bound; `read_pending` (file header `tests/test_witness_ipc.c:1-59`). `test_dht2_ipc`
-(`nodus/CMakeLists.txt:2056-2063`): the `ipc_dht` kind and its dialler — see "DHT v2
+(`nodus/CMakeLists.txt:2083-2090`): the `ipc_dht` kind and its dialler — see "DHT v2
 package 4" below. `test_split_linked` above. Harness: `STAGEF_MODE=splitw` / `mixedw` (`tests/integration/stagef/README.md`
 "Harness modes").
 
@@ -11323,7 +11332,7 @@ What it is: the byte layer of DHT v2, the storage-node DHT for Nodus Connect
 §4.2, §13 rows 1, 3-7, 15, 21-23; governing records
 `docs/plans/decisions/2026-10-14-kurultay-21-summary.md`, `…-22-summary.md`,
 `…-23-summary.md`; all LOCAL-only). It lives in `shared/dht2/` and is in the
-common `NODUS_SOURCES` list (`nodus/CMakeLists.txt:627-638`, outside the
+common `NODUS_SOURCES` list (`nodus/CMakeLists.txt:633-645`, outside the
 Linux-only list, so it compiles on Windows). **Nothing in a node or a client calls
 it yet** — the only caller is `tests/test_dht2_codec.c`. No wire, port, consensus,
 block or state-root change: the existing DHT (TCP 4001 / 4002, `nodus_value` /
@@ -11370,10 +11379,11 @@ maps (row 18) (`dht2_envelope.h:45-46`; `test_dht2_codec.c:80-81`). The CODECS o
 the requests, the row-18 payloads and the pull-sync messages came in package 2
 (next section); the `witness.sock` `ipc_dht` snapshot / sets / name view came in
 package 4 (the section after it), not yet called; the holder check, storage, quotas
-and pools came in package 5 ("DHT v2 package 5" below), not yet called; the sessions
-and the pull-sync exchange themselves are still later.
+and pools came in package 5 ("DHT v2 package 5" below), not yet called; the signed
+answers (request handling, sealing) came in package 6a ("DHT v2 package 6a" below), not
+yet called; the sessions and the pull-sync exchange themselves are still later.
 
-**Test** — `test_dht2_codec` (`nodus/CMakeLists.txt:2048-2054`; default build, no
+**Test** — `test_dht2_codec` (`nodus/CMakeLists.txt:2075-2081`; default build, no
 flags, no environment, no network, no files, no clock; fixed-seed ML-DSA-87 keys;
 nothing left behind; safe under `ctest -j`): the row-22 vectors — pinned data-map
 bytes per class, canonical-envelope round trip, every strict-decode reject, the §3.2
@@ -11404,8 +11414,9 @@ on a first page; `2026-10-23-dht-v2-id-param-bytes.md` — dm salt 32 bytes, gro
 id 32 bytes, group key version 8 bytes unsigned big-endian (amended the same day
 from a first answer of 4 bytes), the version only in the group.record and
 group.keys `_id`. Like package 1 it is in the common `NODUS_SOURCES` list
-(`nodus/CMakeLists.txt:639`) and **nothing in a node or a client calls it yet** —
-the only caller is `tests/test_dht2_msg.c`. No wire, port, consensus, block or
+(`nodus/CMakeLists.txt:645`) and **nothing in a node calls it yet** — its callers
+are `tests/test_dht2_msg.c` and, since package 6a, the holder service (itself not
+called, "DHT v2 package 6a" below). No wire, port, consensus, block or
 state-root change; the existing DHT on 4001 / 4002 is untouched.
 
 | File | What |
@@ -11417,7 +11428,7 @@ state-root change; the existing DHT on 4001 / 4002 is untouched.
 
 **Frame bound (row 11).** One holder answer = up to 8 records of 262,144 B travelling
 beside one signed answer envelope, and it must fit ONE frame: the test file holds
-`_Static_assert(DHT2_ANSWER_MSG_MAX < NODUS_MAX_FRAME_TCP)` (`tests/test_dht2_msg.c:93-95`;
+`_Static_assert(DHT2_ANSWER_MSG_MAX < NODUS_MAX_FRAME_TCP)` (`tests/test_dht2_msg.c:96-98`;
 `NODUS_MAX_FRAME_TCP` = 5 MiB, `nodus_types.h:64`), so a bound that grows past the
 frame fails the build. The assert lives in the test because `shared/` does not
 include nodus headers.
@@ -11431,6 +11442,16 @@ silent there. The codec checks shape only: it does not check that a LIST `v` is 
 hash of the listed entries, that `p_deliver.i` is below the actual offer's count
 (the exchange's job, package 7), offer entry order, or the `through` range.
 
+**Changed in package 6a — the request bound.** Until package 6a one envelope above
+262,144 B made a put request malformed. Row 7's malformed list (nonce, key count, key
+length, operation, cursor) does not name it, so now the request decodes and the holder
+answers that key `too-large` (1) while the other keys are processed; only the whole
+request is bounded, at row 11's record budget: `DHT2_REQ_BUDGET` = 8 × 262,144 B
+(the envelopes' total, checked on encode and through the decoder's re-encode) and
+`DHT2_REQ_MAX_LEN` = the budget + 128 B (checked on decode BEFORE any parse)
+(`shared/dht2/dht2_msg.h:103-110`, `dht2_msg.c:271-286`, `:357-362`). A reading of the
+code, not a design fact.
+
 **Not in this package:** the pull-receipt's envelope domain is NOT decided (the
 decision's "Still open", to be asked before package 7) — only its payload is coded,
 nothing seals or opens it; the PeerRecord / address announcement moved to the
@@ -11439,7 +11460,7 @@ no admission, holder or client logic; no caller in a node or a client. Function
 reference, structs, return codes per function: `messenger/docs/functions/dht2.md`
 §10.
 
-**Test** — `test_dht2_msg` (`nodus/CMakeLists.txt:2065-2071`; default build, no
+**Test** — `test_dht2_msg` (`nodus/CMakeLists.txt:2092-2098`; default build, no
 flags, no environment, no network, no files, no clock; one fixed-seed ML-DSA-87 key;
 nothing left behind; safe under `ctest -j`): every message against bytes assembled by
 hand, decoded back and re-encoded; per-message strict rejects and count bounds; row-7
@@ -11473,7 +11494,7 @@ no consensus, block or state-root change; nothing is written to the chain.
 | `nodus/src/witness/nodus_witness_ipc.c` | the fill functions (`:79-221`), their production handler wrappers bound by `nodus_witness_ipc_handlers_for` (`:256-279`), `IPC_KIND_DHT` (`:287`), the first-frame branch (`:403-409`), the strict request parser, the `{err}` writer, the three answer builders and the per-kind frame handler (`:488-670`) |
 | `nodus/src/dht/nodus_dht2_wview.{h,c}` | NEW. The dialler on the `nodus-storage` side: snapshot polling and aging, sets by epoch, the name cache, timeouts, dial backoff; strict answer decoding. No clock — the caller passes a monotonic `now_ms`. **No caller yet** |
 | `nodus/tests/test_dht2_ipc.c` | NEW. 23 cases, below |
-| `nodus/CMakeLists.txt` | `src/dht/nodus_dht2_wview.c` in the Linux-only library list (`:704-707`); `test_dht2_ipc` (`:2056-2063`) |
+| `nodus/CMakeLists.txt` | `src/dht/nodus_dht2_wview.c` in the Linux-only library list (`:710-713`); `test_dht2_ipc` (`:2083-2090`) |
 
 The wire, the field definitions, the request rules, the frame-bound arithmetic and the
 dialler's timing rules are written once, in §10 "Component split" → "The `ipc_dht` kind
@@ -11494,16 +11515,22 @@ dialler then has no sets and asks again after one second.
 **Not done yet:** no caller of `nodus_dht2_wview_*`. Package 5 (holder store +
 admission, below) turns "no snapshot / no sets" into `not-caught-up` (15) and a name
 FAULT into `holder-fault` (16), but over an INJECTED context — filling that context
-from this view is the serving layer's (package 6); the witness side is live in any `nodus-witness` built
+from this view is the serving layer's (package 6; package 6a's
+`nodus_dht2_holder_view_wview` binds it, and package 6a added the
+`NODUS_DHT2_WVIEW_FAULT_KEEP_MS` drop of an abandoned name fault — §10 "The dialler"
+above; nothing calls the holder service yet, package 6b); the witness side is live in any `nodus-witness` built
 from this tree (it binds the handlers, `tools/nodus-witness.c:307`) but nothing dials it;
 the fill functions run in no test (they need an open witness database); HF-9's
 `DNA_V2_STORAGE_SET_MAX` = 1 024 is not in this tree (today 256, so the bound is
 128 KiB).
 
-**Test** — `test_dht2_ipc` (`nodus/CMakeLists.txt:2056-2063`; default build, no flags,
+**Test** — `test_dht2_ipc` (`nodus/CMakeLists.txt:2083-2090`; default build, no flags,
 no environment, no network, no ports; unix sockets in `mkdtemp` dirs under `/tmp`;
 injected time, no sleep; nothing left behind — sockets closed and unlinked, dirs removed;
-safe under `ctest -j`). 23 cases (`tests/test_dht2_ipc.c`): nine against the real
+safe under `ctest -j`). 24 cases since package 6a added `test_c_fault_abandoned` (an
+unread name `{err}` read at tick 0 still blocks another writer at 999 ms; at 1000 ms it
+is dropped, the other writer's request goes out, and the faulted fp gets PENDING — never
+FAULT or UNNAMED; `tests/test_dht2_ipc.c:998-1025`); before it 23 (`tests/test_dht2_ipc.c`): nine against the real
 listener with a raw peer and test handlers — the snap / sets / name answer bytes against
 hand-built expectations; the `e = 0`, `e ≤ E`, `e > E` sets and the `{err}` answers (a name
 fault keeps `fp`); a sets answer with `DNA_V2_STORAGE_SET_MAX` members in all three lists
@@ -11523,8 +11550,8 @@ real listener). Can lie (file header): the witness FILL functions are not exerci
 the wire and the client are proven, not the chain reads; expected frames are hand-built
 by the encoder's author (self-consistent, not an independent oracle); "no further
 request" checks are absences after a fixed number of poll rounds; it does not prove the
-package-5 caller passes a monotonic clock. The ORCHESTRATOR's run at `793a85ef0`: build
-0 warnings; `test_dht2_ipc` 23 passed / 0 failed; `test_witness_ipc`,
+package-5 caller passes a monotonic clock. The ORCHESTRATOR's run at `793a85ef0` (before
+package 6a): build 0 warnings; `test_dht2_ipc` 23 passed / 0 failed; `test_witness_ipc`,
 `test_storage_linked`, `test_split_linked`, `test_dht2_codec`, `test_dht2_msg` pass.
 
 ### DHT v2 sub-package 3a — session profiles for the SecretConnection + purposes 0x0C / 0x0D (2026-10-23)
@@ -11650,9 +11677,10 @@ sweep, the insertion-index scan and the hand-over flag that the later serving la
 pull exchange need (design `docs/plans/2026-10-14-dht-v2-design.md` rev 5, FROZEN —
 §3.1 "Stored form", §3.3, §4.1, §4.2, §4.5 (i) / (v), §5, §6, §9 D3 / D4 / D6, §13 rows
 5-8, 12, 15, 16, 18; all LOCAL-only; header `nodus_dht2_store.h:1-75`). **Nothing in a
-node calls it** — the only caller is `tests/test_dht2_store.c` (`nodus_dht2_store.h:69-72`:
-package 6 is the serving layer, package 7 the pull exchange). It is in the Linux-only
-library list (`nodus/CMakeLists.txt:708-712`). No wire, port, consensus, block or
+node calls it** — its callers are `tests/test_dht2_store.c` and, since package 6a, the
+holder service, which nothing calls yet (`nodus_dht2_store.h:69-72`: package 6 is the
+serving layer, package 7 the pull exchange). It is in the Linux-only library list
+(`nodus/CMakeLists.txt:714-718`). No wire, port, consensus, block or
 state-root change; the existing DHT on 4001 / 4002 is untouched; nothing is written to
 the chain.
 
@@ -11677,10 +11705,10 @@ Governing records (LOCAL-only, `docs/plans/decisions/`):
 | File | What |
 |---|---|
 | `nodus/src/dht2/nodus_dht2_store.h` | NEW. The contract: limits (`nodus_dht2_limits_t`, §6 defaults), the name status and its callback, the injected context `nodus_dht2_ctx_t` (snapshot, S(H) / S(H − E), this node's fp, name callback, limits), open / close / generation / top, `put` with its outcome, get, list, sweep, scan, hand-over set / get |
-| `nodus/src/dht2/nodus_dht2_store.c` | NEW. Schema (`:45-65`), open (`:252-353`), the gate (`:395-408`), the selected control record (`:481-531`), put (`:557-986`), get (`:990-1039`), list (`:1043-1155`), sweep (`:1159-1200`), scan (`:1204-1264`), hand-over (`:1268-1309`) |
+| `nodus/src/dht2/nodus_dht2_store.c` | NEW. Schema (`:45-65`), open (`:252-353`), the gate (`:395-408`), the selected control record (`:481-531`), put (`:557-1000`), get (`:1004-1053`), list (`:1057-1173`), sweep (`:1177-1218`), scan (`:1222-1282`), hand-over (`:1286-1327`) — line numbers as of package 6a |
 | `shared/dht2/dht2_record.{h,c}` | ValidityType ⇔ Validity moved from decode (`bad-encoding` 2) to `dht2_record_check_class` (`bad-class` 6) — "DHT v2 package 1" above |
 | `nodus/tests/test_dht2_store.c` | NEW, below; `nodus/tests/test_dht2_codec.c` adjusted for the 2 → 6 move |
-| `nodus/CMakeLists.txt` | `src/dht2/nodus_dht2_store.c` in the Linux-only library list (`:708-712`); `test_dht2_store` (`:2073-2080`) |
+| `nodus/CMakeLists.txt` | `src/dht2/nodus_dht2_store.c` in the Linux-only library list (`:714-718`); `test_dht2_store` (`:2100-2107`) |
 
 **Stored form.** One row per ADDRESS (`dht2_rec`, `nodus_dht2_store.c:45-65`): placement
 key, owner fp, class, Sequence, a no-expiry flag (ValidityType 1, never encoded in
@@ -11703,15 +11731,17 @@ the witness still in block sync (`consensus_up` false), or a tip time above
 store's → `holder-fault` (16, G8). `put` also answers 15 when the sets for the
 snapshot's `e` are missing (`have_sets` false, `:890-892`).
 
-**Admission order** (`nodus_dht2_store_put`, `:871-986`; header table `:16-36`) — the
+**Admission order** (`nodus_dht2_store_put`, `:871-1000`; header table `:16-36`) — the
 row-7 code of the FIRST failing check: gate 15 / 16 · size, envelope, strict data,
 `_chain`, address 1 / 2 / 3 / 4 (`dht2_record_parse`) · holder check 5 (`dht2_eligible`
 on the placement key over S(H) ∪ S(H − E)) · class rules 6 (incl. ValidityType ⇔
 Validity and the inbox-control signer) · the writer's name status — asked through the
 callback exactly ONCE per admission that gets this far, a FAULT answer (or any other
 non-NAMED / non-UNNAMED value) is 16, so the fault is consumed by the call that met it
-(`:926-935`; header `:63-67`) · expiry 7 / 8 with the class max by that name status ·
-signature 9. Then the canonical form is computed and hashed, and the rest runs inside
+(`:930-938`; header `:63-67`) · expiry 7 / 8 with the class max by that name status ·
+signature 9. From the successful parse on, `res->has_address` / `res->address` hold the
+envelope's address and keep it across any later refusal (package 6a, `:905-908`,
+`:981-997`; the holder service keys each put result by it). Then the canonical form is computed and hashed, and the rest runs inside
 ONE `BEGIN IMMEDIATE` transaction (`admit_locked`, `:666-869`):
 
 1. **Inbox entry vs the selected live control record** (`:678-685`, `ctl_check_entry`
@@ -11737,23 +11767,27 @@ ONE `BEGIN IMMEDIATE` transaction (`admit_locked`, `:666-869`):
    deletion is never refused by the pool of a writer who gained a name (`:720-725`).
 5. **Store**: the old row deleted explicitly, the new one inserted at index `top + 1`,
    `top` persisted; `NODUS_DHT2_PUT_STORED`. Only a stored version commits; an equal or
-   losing write and every refusal roll the transaction back (`:963-975`).
+   losing write and every refusal roll the transaction back (`:967-979`).
 
 Any SQLite or allocation error is 16 on every call — never absence, never "no change"
 (`nodus_dht2_store.h:58-61`).
 
 **Lifetime** (§5). `get` never serves a record whose expiry ≤ the snapshot's tip time
-(tombstones are served until their own expiry, `:1018-1022`); LIST lists live,
+(tombstones are served until their own expiry, `:1032-1036`); LIST lists live,
 non-tombstone inbox entries only; `sweep` deletes every record (tombstones included)
 whose expiry + 3 h ≤ the tip time, in one transaction; a no-expiry record is never swept
-(`:1183-1186`). Quota is derived from what is stored, so a delete refunds it.
+(`:1201-1204`). Quota is derived from what is stored, so a delete refunds it.
 
-**LIST page** (row 11 / 18, `:1043-1155`): live entries in ascending writer fp strictly
+**LIST page** (row 11 / 18, `:1057-1173`): live entries in ascending writer fp strictly
 after the cursor, ≤ 16 and ≤ `NODUS_DHT2_LIST_PAGE_BYTES` (2 MiB; the first entry always
 fits), `complete` when no row is left, `r` = {k: inbox, v: SHA3-512 over the listed
 hashes concatenated}, `ctl` = the hash of the selected live control record or null;
-`n`, `c`, `h`, `t` from the context; `q` left zero for the caller. The owner-signature
-check of the request is package 6's.
+`n`, `c`, `h`, `t` from the context; `q` left zero for the caller. Since package 6a the
+live control record's bytes are charged to the 2 MiB FIRST, because its bytes are part
+of the page ("entries + control stay within the 2 MiB page budget", `:1082-1096`): eight
+262,000-byte entries fit alone but a page beside a control record lists 7
+(`test_list_ctl_budget`). The owner-signature check of the request is the caller's
+(package 6a's holder service, below).
 
 **Pull data only** (§4.5 i / v, row 12): `scan` returns entries with index ≥ `from`,
 ascending, ≤ 250, and the highest index scanned — or the store's top for an empty
@@ -11768,22 +11802,25 @@ records, so arrival order does not change the winner (the A/B case is tested). T
 random value is the generation `g`, node-local. Nothing reaches consensus.
 
 **Deferred on purpose** (`nodus_dht2_store.h:38-41`): the |S(H)| ≥ 2 write precondition
-→ the serving layer, package 6; the per-put SUM cost and a per-inbox tombstone row bound
-→ measure first; a state-dependent refusal that leaves an older version behind →
-package 7's cursor rule.
+→ the serving layer, package 6 (done in package 6a's holder service, below — not in the
+store); the per-put SUM cost and a per-inbox tombstone row bound → measure first; a
+state-dependent refusal that leaves an older version behind → package 7's cursor rule.
 
-**Not done yet:** no caller; the context is not yet filled from `nodus_dht2_wview` (package
-6); the sessions, request handling and answer sealing (package 6) and the pull exchange
-(package 7). Function reference, every type and return code:
-`messenger/docs/functions/dht2.md` §12.
+**Not done yet:** no caller in a node. Request handling, answer sealing and filling the
+context from `nodus_dht2_wview` came in package 6a (below), which nothing calls yet; the
+sessions and forwarding are package 6b, the pull exchange package 7. Function
+reference, every type and return code: `messenger/docs/functions/dht2.md` §12.
 
-**Test** — `test_dht2_store` (`nodus/CMakeLists.txt:2073-2080`; default build, no flags,
+**Test** — `test_dht2_store` (`nodus/CMakeLists.txt:2100-2107`; default build, no flags,
 no environment, no network, no clock; fixed-seed ML-DSA-87 keys, hedged signing so no
 signature byte is pinned; injected chain time; its own `mkdtemp` directory under `/tmp`,
 removed at the end — a crash leaves `/tmp/test_dht2_store_XXXXXX`; safe under
-`ctest -j`). Eleven sections from `main` (`tests/test_dht2_store.c:1772-1782`):
+`ctest -j`). Thirteen sections from `main` (`tests/test_dht2_store.c:1891-1903`):
 `test_codes`, `test_select`, `test_quota`, `test_inbox`, `test_expiry`, `test_index`,
-`test_faults`, `test_gate`, `test_mismatch`, `test_memo`, `test_select_pool`. Proves
+`test_faults`, `test_gate`, `test_mismatch`, `test_memo`, `test_select_pool`, and two
+added with package 6a — `test_list_ctl_budget` (the control record counts toward the
+2 MiB page) and `test_put_address` (a refusal after the parse keeps the address, a
+parse failure has none). Proves
 (file header `:9-66`): the §4.1 code order through `put`; the name fault asked exactly
 once and never read as "no name"; Select (equal, losing at cost 0 even with the quota
 full, the A/B two-arrival case ending in the same bytes); quota new − old at the exact
@@ -11802,10 +11839,145 @@ sets are tiny; the forced SQLite faults are made through the store's own handle
 (`PRAGMA query_only`, `DROP TABLE`), not a real I/O error mid-scan; the 3 h slack and
 class maxima are constants written by the code's author; nothing runs concurrently.
 
-The ORCHESTRATOR's runs before the rebase, at `2f0478bcf`: build 0 warnings;
-`test_dht2_store` 500 passed / 0 failed, three runs; `test_dht2_codec` 433 / 0;
-`test_dht2_msg` 335 / 0; `test_dht2_ipc` 23 / 0 — counts from those runs, not re-run for
-this document.
+The ORCHESTRATOR's runs before the rebase, at `2f0478bcf` (before package 6a, eleven
+sections): build 0 warnings; `test_dht2_store` 500 passed / 0 failed, three runs;
+`test_dht2_codec` 433 / 0; `test_dht2_msg` 335 / 0; `test_dht2_ipc` 23 / 0 — counts from
+those runs, not re-run for this document.
+
+### DHT v2 package 6a — the holder service (no caller yet) (2026-10-24, branch `dna95-dht2-6a`, not versioned)
+
+What it is: the holder's answer half of DHT v2 — ONE transport-free function,
+`nodus_dht2_holder_serve`, that takes the bytes of ONE request from one session (a "get",
+a "put" — also read-repair — or the owner-signed "list" envelope), runs it against the
+package-5 store and returns the bytes of ONE signed answer envelope, or "no answer"
+(design `docs/plans/2026-10-14-dht-v2-design.md` rev 5, FROZEN — §2 "Precondition",
+§4.4 signed answers and receipts, §13 rows 7, 11, 14, 18, 20, 23; request format per
+`docs/plans/decisions/2026-10-23-dht-v2-wire-gaps-package2.md`; all LOCAL-only; header
+`nodus/src/dht2/nodus_dht2_holder.h:1-91`). Package 6a has no decision record of its
+own. Commits `0ddbbfa8f` (the service), `02c009118` (review round: chain gate, abandoned
+name fault, control GET, one parse, oversize envelope, LIST page budget), `64c718200`
+(test buffer), `73cf87191` (the put result keeps its address across a refusal).
+
+**Where it sits.** It is a library function in the Linux-only list
+(`nodus/CMakeLists.txt:719-723`), between the package-5 store below it and the sessions
+above it. **Nothing calls it** — not `nodus/tools/`, not any running loop
+(`nodus_dht2_holder.h:88`); the only caller is `tests/test_dht2_holder.c`. Package 6b is
+to call it: the sessions, the 16 outstanding calls / 8 MiB per session, forwarding and
+its fan-out of 8, the 10 s deadline, the repair queue, and the records that travel
+beside an answer (the caller fetches a held record by the hash in `r` with
+`nodus_dht2_store_get`) are NOT here (`:60-63`). No wire, port, consensus, block or
+state-root change; the existing DHT on 4001 / 4002 is untouched; nothing is written to
+the chain.
+
+| File | What |
+|---|---|
+| `nodus/src/dht2/nodus_dht2_holder.h` | NEW. The contract (`:1-91`): the view (`nodus_dht2_holder_view_t`, three function pointers + `user`), the holder (`nodus_dht2_holder_t`), `NODUS_DHT2_HOLDER_QUEUE_MAX` 64, `NODUS_DHT2_HOLDER_WRITE_MIN_SET` 2, `NODUS_DHT2_HOLDER_WRITE_REFUSAL` 15, `NODUS_DHT2_HOLDER_OUT_MIN` = `DHT2_ANSWER_ENV_MAX`, results ANSWER 0 / NO_ANSWER 1 / ERR −1; `nodus_dht2_holder_view_wview`, `_init`, `_job_enter` / `_job_leave`, `_serve` |
+| `nodus/src/dht2/nodus_dht2_holder.c` | NEW. The wview binding (`:28-55`), init / queue (`:59-95`), the name mapping (`:105-122`), the call's world and the chain gate (`:135-169`), sealing and the refusal (`:173-205`), call-level states (`:209-218`), get / put (`:230-357`), list (`:361-437`), the entry point (`:441-494`) |
+| `nodus/src/dht2/nodus_dht2_store.{h,c}` | `nodus_dht2_put_t` gains `has_address` / `address`, kept across a refusal; the LIST page budget charges the control record first ("DHT v2 package 5" above) |
+| `nodus/src/dht/nodus_dht2_wview.{h,c}` | `NODUS_DHT2_WVIEW_FAULT_KEEP_MS`: an unread name fault is dropped after one poll period (§10 "The dialler") |
+| `shared/dht2/dht2_msg.{h,c}` | `DHT2_REQ_BUDGET` / `DHT2_REQ_MAX_LEN`; an envelope above 262,144 B inside a put is no longer malformed ("DHT v2 package 2" above) |
+| `nodus/tests/test_dht2_holder.c` | NEW, below; `test_dht2_store.c`, `test_dht2_msg.c`, `test_dht2_ipc.c` extended |
+| `nodus/CMakeLists.txt` | `src/dht2/nodus_dht2_holder.c` in the Linux-only library list (`:719-723`); `test_dht2_holder` (`:2109-2116`) |
+
+**Answers.** Every answer is one RFC 0002 envelope sealed by `dht2_answer_seal` with the
+node identity, domain / ctx `nodus.dht.answer.v1` (§4.4): a get →
+`/nodus/dht/answer/v1` `{q, n, c, h, t, r}`, `r` per key = hash, null (not held), code
+or `[18, through]`; a put → `/nodus/dht/receipt/v1`, same shape, never null; a list →
+`/nodus/dht/answer/v1` with the row-18 LIST payload; a refusal →
+`/nodus/dht/refusal/v1` `{q, n, c, e}` with `e` = 14 (busy) or 15 (not-caught-up) and NO
+`h` / `t` (row 18). `q` is the request's own nonce, `n` this node's fp
+(`nodus_dht2_holder.h:9-23`).
+
+**One call, in order** (`nodus_dht2_holder_serve`, `nodus_dht2_holder.c:441-494`):
+
+1. A get / put request is decoded (`dht2_req_decode`); a malformed one, or one whose
+   `op` is not the method it arrived on, gets NO answer (row 7, "a tier-2 protocol
+   error, no signed answer").
+2. The view gives the snapshot (fresh only with `consensus_up`) and the frozen sets.
+   **The chain gate** (`:142-152`): a snapshot whose chain id is not the holder's chain
+   is treated as NO snapshot, so every request — the not-owner LIST included — gets the
+   refusal 15 without `h` / `t`, never an answer that mixes our `c` with a foreign tip.
+3. Call-level states: the row-20 signing queue full (64 jobs) → refusal 14; no fresh
+   snapshot → refusal 15 (`:209-218`). The caller, not `serve`, takes and releases the
+   queue slots (`nodus_dht2_holder_job_enter` / `_leave`).
+4. **Write precondition** (§2, `:481-484`): while the current S(H) has fewer than 2
+   members (`NODUS_DHT2_HOLDER_WRITE_MIN_SET`), every put — read-repair included — is
+   refused with `NODUS_DHT2_HOLDER_WRITE_REFUSAL` = 15. Reads are still served. **This
+   code is an ORCHESTRATOR reading awaiting the operator** (`nodus_dht2_holder.h:48-53`):
+   the design says writes are refused but names no code; 15 ("the client uses another
+   node", row 7) was chosen, one constant so it can change, `_Static_assert`ed to 14 or
+   15 because a refusal payload carries only those (`nodus_dht2_holder.c:22-24`).
+5. **get**: per key, the store's answer — hash, null, or 16 for a store fault ("never
+   absence"); a held inbox-control (class 5) record is per-key 17, never its hash or
+   bytes — row 23 answers control reads to the inbox OWNER only and a get is not
+   owner-signed (`:260-274`). **put**: per envelope, `nodus_dht2_store_put` (the ONE
+   §4.1 admission path, with its ONE parse); the result's key is the envelope's address
+   from that parse, or 64 zero bytes when the envelope did not parse as far as an
+   address (codes 1 / 2 / 3, or 16 for an allocation / hashing fault); `v` = the stored
+   or winning hash, `[18, through]`, or the row-7 code 1 … 13 / 16 (`:321-348`). An
+   envelope above 262,144 B is per-key 1 and its siblings are still processed. A store
+   15 on either path turns the whole call into the refusal 15.
+6. **list**: the owner-signed envelope is opened FIRST (`dht2_list_req_open`): signed by
+   another key → answered with `r.v` = 17, nothing listed, `complete` = true; malformed,
+   another chain, or a bad signature → NO answer. Then the call-level states, then
+   `nodus_dht2_store_list` (`:361-437`).
+
+**What has no answer** (`nodus_dht2_holder.h:25-32`, `:82-84`): a malformed request (row 7:
+nonce, key count, key length, unknown op, a request whose op is not its method, any
+strict-CBOR fault, a LIST envelope that does not decode); a LIST of another chain or
+whose signature does not verify — a READING, row 23 names only code 17: the signer is
+not proven, so no signed answer is spent on it; and a LIST whose store read faults —
+§4.4 says a missing answer is "no answer", never "not found", and row 18 lets a LIST
+result carry only a hash or 17, so there is no way to say 16 in it. Separately,
+`NODUS_DHT2_HOLDER_ERR` means no answer could be made at all (a NULL or too-small
+buffer, an allocation or signing failure).
+
+**Name answers** (`:105-122`; header `:40-46`): the view's NAMED / UNNAMED pass through;
+FAULT goes to the store, which answers 16 for that key and so consumes it; PENDING and
+UNAVAILABLE are also FAULT for this call ("the request has been sent; the client
+retries"). A name answer is always consumed by the call that met it and never read as
+"no name". The view drops an ABANDONED fault after `NODUS_DHT2_WVIEW_FAULT_KEEP_MS` (§10
+"The dialler"), so one writer that never asks again cannot block the others.
+
+**Clock and determinism.** Nothing here reads a clock: `now_ms`, the caller's monotonic
+tick count, is only handed on to the view, and chain time is the snapshot's `t`
+(`nodus_dht2_holder.h:34-38`). The module's QGP_LOG_* lines carry a log timestamp read
+from the clock; no answer field depends on it (`:85-86`). The signatures are hedged
+ML-DSA-87, so two answers to the same request differ in their signature bytes. Nothing
+here reaches consensus.
+
+**Not done yet:** no caller (package 6b: sessions, forwarding, deadlines, the repair
+queue, records beside the answer); the real `nodus_dht2_wview` binding
+(`nodus_dht2_holder_view_wview`) runs in no test; the client rules of §4.4 (package 8);
+the operator's word on the write-precondition code. Function reference, every type,
+constant and result: `messenger/docs/functions/dht2.md` §13.
+
+**Test** — `test_dht2_holder` (`nodus/CMakeLists.txt:2109-2116`; default build, no
+flags, no environment, no network, no clock; fixed-seed ML-DSA-87 keys, hedged signing
+so signatures are verified, never compared to a constant; injected chain time; its own
+`mkdtemp` directory under `/tmp`, removed at the end — a crash leaves
+`/tmp/test_dht2_holder_XXXXXX`; safe under `ctest -j`). Eleven sections from `main`
+(`tests/test_dht2_holder.c:1142-1152`): `test_get_put`, `test_malformed`, `test_list`,
+`test_call_level`, `test_write_precondition`, `test_name_fault`,
+`test_fault_abandoned`, `test_chain_gate`, `test_ctl_get`, `test_oversize_put`,
+`test_late_refusal`. Proves (file header `:8-47`; `test_late_refusal` by its own comment
+`:1009-1011`): every answer opens under its kind's payload type and verifies under
+`nodus.dht.answer.v1` only, with `q`, `n`, `c`, `h`, `t` as above (none of `h` / `t` in
+a refusal); get / put results in request order; malformed requests and bad LIST
+envelopes get no answer; owner LIST vs not-owner 17; refusal 15 for no snapshot, block
+sync, another chain (get, put, owner and not-owner LIST) and a put at |S(H)| = 1 (a get
+is still answered; at |S(H)| = 3 the put is stored); refusal 14 at 64 queued jobs; a
+name FAULT and a PENDING answer are 16 and the fault is consumed; an abandoned fault
+stops blocking another writer after one poll period; a GET of a held control record is
+17; an envelope above 262,144 B is per-key 1 with a zero key while its sibling is
+stored; in one receipt an expired record is `{k: its address, v: 7}`, a HANDLED entry
+`{k: its address, v: [18, through]}`, a parse failure `{k: zero, v: 2}`. Can lie
+(`:59-75`): the view is injected — the real binding is not exercised and the PENDING /
+FAULT fakes follow the view's documented behaviour; the holder sets are tiny (1 or 3),
+so eligibility is not exercised; whether a CLIENT accepts the answers is package 8's;
+hedged signatures differ run to run; the write-precondition code 15 is pinned by the
+test, which therefore cannot notice the operator choosing another. Nothing was built or
+run for this document; no run of this test is cited here.
 
 ### DHT v2 sub-package 3b-1 — the optional SecretConnection layer of `nodus_tcp` (2026-10-24, branch `dna95-dht2-3b1`, not versioned; NOT enabled on any port)
 
