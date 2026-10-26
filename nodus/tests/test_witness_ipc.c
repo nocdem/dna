@@ -28,6 +28,9 @@
  *   - (round 4 item 4) a forwarded request carrying a token other than the
  *     session's is served and the session stays: the token is a
  *     correlation key, not an authorization input;
+ *   - (round 5) the ipc_roles set round-trips (has_role), and a witness with
+ *     NO roles handler answers {err}: the control connection stays up,
+ *     status still round-trips and no role is known (fail safe);
  *   - a first frame that is not a preface closes the connection;
  *   - with no witness listening, a dnac_* request is answered at once with
  *     exactly the bytes a witness-less server sends (nodus_t2_error,
@@ -141,6 +144,20 @@ static void fill_status(nodus_witness_ipc_status_t *st) {
 static void h_status(void *ctx, nodus_witness_ipc_status_t *out) {
     (void)ctx;
     fill_status(out);
+}
+
+/* The roles handler of the fake witness: two active-role node ids. */
+static void role_fp(int which, uint8_t out[64]) {
+    for (int i = 0; i < 64; i++) out[i] = (uint8_t)(0x30 * (which + 1) + i);
+}
+
+static int h_roles(void *ctx, uint8_t (*fps)[64], uint32_t max, uint32_t *n) {
+    (void)ctx;
+    if (max < 2) return -1;
+    role_fp(0, fps[0]);
+    role_fp(1, fps[1]);
+    *n = 2;
+    return 0;
 }
 
 /* ── The client stand-in ──────────────────────────────────────────── */
@@ -323,6 +340,65 @@ static void test_status(nodus_chain_backend_t *b, nodus_witness_ipc_t *ipc) {
         FAIL("chain_id_v3 is not the witness's c3 (or equals the legacy id)");
         return;
     }
+    PASS();
+}
+
+static void test_roles(nodus_chain_backend_t *b, nodus_witness_ipc_t *ipc) {
+    TEST("ipc_roles: the witness's role set reaches core");
+    nodus_key_t k0, k1, other;
+    role_fp(0, k0.bytes);
+    role_fp(1, k1.bytes);
+    memset(&other, 0x99, sizeof(other));
+    for (int i = 0; i < POLL_ROUNDS && !b->ops->has_role(b, &k0); i++)
+        poll_all(b, ipc);
+    if (!b->ops->has_role(b, &k0) || !b->ops->has_role(b, &k1)) {
+        FAIL("an active-role node id is not reported");
+        return;
+    }
+    if (b->ops->has_role(b, &other)) { FAIL("a stranger is reported as a role"); return; }
+    PASS();
+}
+
+/* A witness with NO roles handler answers {err} and keeps the control
+ * connection: status still round-trips, no role is known (fail safe). */
+static void test_roles_handler_absent(void) {
+    TEST("no roles handler: err answer, control connection and status stay");
+    char d[64], sock[NODUS_TCP_UNIX_PATH_MAX];
+    snprintf(d, sizeof(d), "/tmp/nodus_wipc3_XXXXXX");
+    if (!mkdtemp(d)) { FAIL("mkdtemp"); return; }
+    nodus_witness_ipc_sock_path(d, sock, sizeof(sock));
+    nodus_witness_ipc_handlers_t h = {
+        .dispatch_dnac = h_dispatch_dnac,
+        .cc_collect    = h_cc_collect,
+        .status        = h_status,
+        .ctx           = NULL,
+        /* .roles deliberately NULL */
+    };
+    nodus_witness_ipc_t *ipc = nodus_witness_ipc_new(&h);
+    nodus_chain_backend_t *b = NULL;
+    if (!ipc || nodus_witness_ipc_listen(ipc, sock) != 0 ||
+        nodus_chain_backend_ipc_open(d, &b) != 0 || !b) {
+        FAIL("setup");
+        if (ipc) nodus_witness_ipc_free(ipc);
+        rmdir(d);
+        return;
+    }
+    bool ok = false;
+    for (int i = 0; i < POLL_ROUNDS && !ok; i++) {
+        poll_all(b, ipc);
+        ok = b->ops->chain_open(b);
+    }
+    /* let the roles query (sent with the first status) be answered too */
+    for (int i = 0; i < 40; i++) poll_all(b, ipc);
+    nodus_key_t any;
+    role_fp(0, any.bytes);
+    bool still = b->ops->chain_open(b);
+    bool role = b->ops->has_role(b, &any);
+    b->ops->close(b);
+    nodus_witness_ipc_free(ipc);
+    rmdir(d);
+    if (!ok || !still) { FAIL("the control connection / status did not survive"); return; }
+    if (role) { FAIL("a role is known without a roles answer"); return; }
     PASS();
 }
 
@@ -567,6 +643,7 @@ int main(void) {
         .dispatch_dnac = h_dispatch_dnac,
         .cc_collect    = h_cc_collect,
         .status        = h_status,
+        .roles         = h_roles,
         .ctx           = NULL,
     };
     nodus_witness_ipc_t *ipc = nodus_witness_ipc_new(&h);
@@ -605,6 +682,8 @@ int main(void) {
     /* The control connection first: without it no session socket is
      * dialled (the backend's no-dial-while-down rule). */
     test_status(b, ipc);
+    test_roles(b, ipc);
+    test_roles_handler_absent();
     test_session_roundtrip(b, ipc);
     test_token_not_authorization(b, ipc);
     test_cc_collect(b, ipc);

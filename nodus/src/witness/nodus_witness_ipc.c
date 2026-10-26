@@ -469,18 +469,18 @@ static void ipc_on_session_frame(nodus_witness_ipc_t *ipc, ipc_slot_t *s,
 }
 
 /* {"q":"ipc_roles","fp":<n*64 bytes>} or {"q":"ipc_roles","err":why}: the
- * active-role set for core's per-IP exemption. A handler that is not bound
- * closes the asker (like the dht_* callbacks). */
+ * active-role set for core's per-IP exemption. A roles query this witness
+ * cannot answer (no handler bound, or the handler fails) is answered with
+ * "err" and the control connection STAYS: it also carries ipc_status, and an
+ * unanswerable roles query must not take status and the snapshot down with
+ * it. Core reads "err" as "no set known" (fail safe: nothing is credited). */
 static void ipc_answer_roles(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn) {
-    if (!ipc->h.roles) {
-        ipc_refuse(ipc, conn, "ipc_roles has no handler");
-        return;
-    }
-    uint8_t (*fps)[64] = malloc((size_t)NODUS_WITNESS_IPC_ROLES_MAX * 64);
+    uint8_t (*fps)[64] = ipc->h.roles
+        ? malloc((size_t)NODUS_WITNESS_IPC_ROLES_MAX * 64) : NULL;
     uint32_t n = 0;
     size_t cap = (size_t)NODUS_WITNESS_IPC_ROLES_MAX * 64 + 64;
     uint8_t *buf = malloc(cap);
-    if (!fps || !buf) {
+    if ((ipc->h.roles && !fps) || !buf) {
         free(fps);
         free(buf);
         return;
@@ -489,7 +489,8 @@ static void ipc_answer_roles(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn) {
     cbor_encoder_init(&enc, buf, cap);
     cbor_encode_map(&enc, 2);
     cbor_encode_cstr(&enc, "q"); cbor_encode_cstr(&enc, NODUS_WITNESS_IPC_Q_ROLES);
-    if (ipc->h.roles(ipc->h.ctx, fps, NODUS_WITNESS_IPC_ROLES_MAX, &n) == 0) {
+    if (ipc->h.roles &&
+        ipc->h.roles(ipc->h.ctx, fps, NODUS_WITNESS_IPC_ROLES_MAX, &n) == 0) {
         cbor_encode_cstr(&enc, "fp"); cbor_encode_bstr(&enc, (const uint8_t *)fps, (size_t)n * 64);
     } else {
         cbor_encode_cstr(&enc, "err"); cbor_encode_cstr(&enc, "roles unavailable");
