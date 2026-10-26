@@ -71,8 +71,11 @@
  *     receipt naming it; the acknowledging fps are persisted per record
  *     (store dht2_ack). The source verifies only "the same version"
  *     (receipt hash = held hash), not "or newer";
- *   · §4.5 (v) "then it may drop them": the flag is cleared, nothing is
- *     deleted;
+ *   · §4.5 (v) "then it may drop them": when the quorum is met the record
+ *     row is DELETED (its acknowledgements with it), in one transaction, only
+ *     if it is still pending with the hash the receipts named. A dropped
+ *     record returns only through a normal pull, if the node becomes
+ *     responsible for it again;
  *   · "transient local failure" (cursor kept) = admission codes 15 / 16 /
  *     negative; "definitively refused" (cursor advances) = codes 1-13, 18.
  *
@@ -174,15 +177,23 @@ void nodus_dht2_pull_disconnect(nodus_dht2_pull_t *p,
 
 /**
  * Epoch driver (call it when the snapshot's epoch may have changed; it is
- * cheap when the epoch is unchanged since the last call of this process).
- * At an epoch that differs from the last one seen:
- *   · Bee puller.go:178-189 — if this node's RESPONSIBILITY GREW (a key
- *     exists that is in nearest_R(S(H)) of this node and was not in
+ * cheap when the epoch is unchanged since the last check). The epoch the
+ * cursors were last checked against is PERSISTED (store meta "pull_e"), so a
+ * restart does not forget it. At an epoch that differs from the persisted one:
+ *   · Bee puller.go:178-189 — if the persisted epoch is exactly the previous
+ *     boundary (e − DNAC_EPOCH_LENGTH) and this node's RESPONSIBILITY GREW (a
+ *     key exists that is in nearest_R(S(H)) of this node and was not in
  *     nearest_R(S(H − E))), abort every exchange and reset every cursor to
  *     0, so each source is re-scanned from 0;
+ *   · with NO persisted epoch, or one that is not the previous boundary (a
+ *     boundary was missed), the responsibility of the cursors is unknown:
+ *     the same reset, unconditionally;
  *   · §4.5 (v) — every permanent record this node no longer holds
  *     (this node not in eligible(placement key)) gets the persisted
- *     hand-over flag.
+ *     hand-over flag; every permanent record already flagged is re-counted
+ *     against the CURRENT nearest_R and DROPPED when its quorum is met
+ *     (a membership change alone can meet it).
+ * The new epoch is persisted last, after the reset and the scan completed.
  * @return 0 (nothing to do or done), 1 (no fresh snapshot / sets: try
  *         again later), -1 (store fault; the epoch is NOT recorded).
  */

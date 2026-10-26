@@ -41,9 +41,14 @@
  *     domain, a signer that is not the sending peer; it counts for nothing
  *     when the signer is not in nearest_R(S(H)) of the record or the hash is
  *     not the held one; the same member twice counts once; a second DISTINCT
- *     member retires the flag; with |nearest_R| = 1 one receipt retires; the
- *     acknowledging fps survive a store reopen; an acknowledger that left
- *     nearest_R does not count at retirement time;
+ *     member ends the obligation: the record is DROPPED at the source (not
+ *     held, its acknowledgements gone, a later receipt does nothing); with
+ *     |nearest_R| = 1 one receipt drops it; the acknowledging fps survive a
+ *     store reopen; an acknowledger that left nearest_R does not count at
+ *     drop time; a pending record whose nearest_R shrinks to the member that
+ *     already acknowledged is dropped at the next epoch check with no new
+ *     receipt, and one whose quorum is still not met stays pending with its
+ *     acknowledgements;
  *   · a failed send of a non-empty p_offer leaves no offer kept at the
  *     source (a p_want afterwards is "without an offer");
  *   · row 22 "epoch-boundary sets": when the responsibility GREW (S(H) lost
@@ -918,6 +923,24 @@ static bool pending_at(node_t *n, const uint8_t addr[DHT2_HASH_LEN])
     return found && pending;
 }
 
+/* An acknowledgement of `fp` is stored at A for `addr`. */
+static bool acked_by(node_t *n, const uint8_t addr[DHT2_HASH_LEN],
+                     const uint8_t fp[DHT2_FP_LEN])
+{
+    bool has = false;
+
+    (void)nodus_dht2_store_handover_ack_has(n->st, addr, fp, &has);
+    return has;
+}
+
+/* The record `r` is stored again at A (after a drop: a NEW row). */
+static bool reput_at_a(const env_t *r)
+{
+    nodus_dht2_put_t pr;
+
+    return put_at(&g_n[0], r, &pr) == 0 && pr.outcome == NODUS_DHT2_PUT_STORED;
+}
+
 /* A's pull_serve of a valid receipt that `signer` sends for (addr, h) with
  * generation g. Returns the serve result, or -2 when the receipt could not
  * be built. */
@@ -1011,12 +1034,22 @@ static void test_handover(const tkey_t *ka, const tkey_t *kb, const tkey_t *kw,
           "ONE member's receipt (B) leaves the flag: two are needed");
     CHECK(get_at(&g_n[0], addr, hash) == NODUS_DHT2_GET_HELD,
           "A still holds it");
+    CHECK(acked_by(&g_n[0], addr, g_n[1].key.fp), "B's acknowledgement stored");
     CHECK(receipt_from(kw, nodus_dht2_store_generation(g_n[0].st), addr, hash)
-              == 0 && !pending_at(&g_n[0], addr),
-          "the receipt of a second DISTINCT member (W) retired the flag");
+              == 0 && not_held(&g_n[0], addr),
+          "the receipt of a second DISTINCT member (W) ended the obligation: "
+          "the record is DROPPED at the source");
+    CHECK(!acked_by(&g_n[0], addr, g_n[1].key.fp) &&
+              !acked_by(&g_n[0], addr, kw->fp),
+          "its acknowledgements went with the row");
+    CHECK(receipt_from(kb, nodus_dht2_store_generation(g_n[0].st), addr, hash)
+              == 0 && not_held(&g_n[0], addr) &&
+              !acked_by(&g_n[0], addr, g_n[1].key.fp),
+          "a receipt after the drop does nothing (no row, no new ack)");
 
-    /* Receipts that must not retire. */
-    CHECK(get_at(&g_n[0], addr, hash) == NODUS_DHT2_GET_HELD, "A still holds it");
+    /* Receipts that must not retire: the record is stored again. */
+    CHECK(reput_at_a(&p), "the record is stored again at A");
+    CHECK(get_at(&g_n[0], addr, hash) == NODUS_DHT2_GET_HELD, "A holds it");
     gen_before = nodus_dht2_store_generation(g_n[0].st);
     for (k = 0; k < 6; k++) {
         bool f;
@@ -1090,10 +1123,11 @@ static void test_handover(const tkey_t *ka, const tkey_t *kb, const tkey_t *kw,
         if (k < 5) {
             CHECK(pending_at(&g_n[0], addr), "the flag stays");
         } else {
-            CHECK(!pending_at(&g_n[0], addr),
-                  "a second distinct member's receipt retires");
+            CHECK(not_held(&g_n[0], addr),
+                  "a second distinct member's receipt drops the record");
         }
     }
+    CHECK(reput_at_a(&p), "the record is stored again for the offer checks");
 
     /* Eligibility of the puller (row 12 "only to a puller in eligible(p)"). */
     {
@@ -1141,8 +1175,9 @@ static void test_handover(const tkey_t *ka, const tkey_t *kb, const tkey_t *kw,
 }
 
 /* The two-receipt rule's remaining arms: the acknowledging fps persist, an
- * acknowledger that left nearest_R does not count at retirement time, and
- * with |nearest_R| = 1 one receipt retires. */
+ * acknowledger that left nearest_R does not count at drop time, a membership
+ * change alone meets the quorum at the epoch check, and with |nearest_R| = 1
+ * one receipt drops the record. */
 static void test_handover_quorum(const tkey_t *ka, const tkey_t *kb,
                                  const tkey_t *kw)
 {
@@ -1203,39 +1238,66 @@ static void test_handover_quorum(const tkey_t *ka, const tkey_t *kb,
     node_close(&g_n[0]);
     CHECK(node_open(&g_n[0]) == 0, "A reopened");
     CHECK(pending_at(&g_n[0], addr), "still pending after the reopen");
-    CHECK(receipt_from(kw, gen, addr, hash) == 0 && !pending_at(&g_n[0], addr),
-          "B's acknowledgement survived the reopen: W's receipt retires");
+    CHECK(receipt_from(kw, gen, addr, hash) == 0 && not_held(&g_n[0], addr),
+          "B's acknowledgement survived the reopen: W's receipt drops the "
+          "record");
 
     /* An acknowledger that left nearest_R does not count. */
-    CHECK(nodus_dht2_store_handover_set(g_n[0].st, addr, true, &f) == 0 && f,
-          "obligation again (the old acknowledgements are gone)");
+    CHECK(reput_at_a(&p) &&
+              nodus_dht2_store_handover_set(g_n[0].st, addr, true, &f) == 0 &&
+              f, "stored again, obligation again (a new row: no old acks)");
+    CHECK(!acked_by(&g_n[0], addr, g_n[1].key.fp) &&
+              !acked_by(&g_n[0], addr, kw->fp),
+          "no acknowledgement survived the drop");
     CHECK(receipt_from(kb, gen, addr, hash) == 0 && pending_at(&g_n[0], addr),
           "B's receipt: the flag stays");
     set_members(&g_n[0], 1440, 6, (const uint8_t (*)[DHT2_FP_LEN])alt, 0, NULL);
     CHECK(receipt_from(kw, gen, addr, hash) == 0 && pending_at(&g_n[0], addr),
           "B is no longer in nearest_R: its acknowledgement does not count");
     set_members(&g_n[0], 1440, 6, (const uint8_t (*)[DHT2_FP_LEN])g_s6, 0, NULL);
-    CHECK(receipt_from(kw, gen, addr, hash) == 0 && !pending_at(&g_n[0], addr),
-          "back in nearest_R, B counts again: retired");
+    CHECK(receipt_from(kw, gen, addr, hash) == 0 && not_held(&g_n[0], addr),
+          "back in nearest_R, B counts again: the record is dropped");
 
-    /* |nearest_R| = 1: S(H) = {B}. */
+    /* Membership alone meets the quorum (no new receipt): the record is
+     * pending with B's acknowledgement stored, then S(H) shrinks to {B}. */
     {
         uint8_t one[1][DHT2_FP_LEN];
 
         memcpy(one[0], g_n[1].key.fp, DHT2_FP_LEN);
-        set_members(&g_n[0], 2160, 1, (const uint8_t (*)[DHT2_FP_LEN])one, 0,
-                    NULL);
-        /* A retired obligation is not flagged again at the next boundary
-         * (dht2_rec.handover 2 = retired, permanent_scan offers only 0). */
-        CHECK(nodus_dht2_pull_epoch_check(g_n[0].pull, NOW) == 0 &&
-                  !pending_at(&g_n[0], addr),
-              "S(H) = {B}: the retired record is not flagged again");
-        CHECK(nodus_dht2_store_handover_set(g_n[0].st, addr, true, &f) == 0 &&
-                  f && pending_at(&g_n[0], addr),
-              "a new obligation set by hand");
+        CHECK(reput_at_a(&p) &&
+                  nodus_dht2_store_handover_set(g_n[0].st, addr, true, &f) == 0
+                  && f, "stored again, obligation again");
         CHECK(receipt_from(kb, gen, addr, hash) == 0 &&
-                  !pending_at(&g_n[0], addr),
-              "|nearest_R| = 1: one receipt retires");
+                  pending_at(&g_n[0], addr) &&
+                  acked_by(&g_n[0], addr, g_n[1].key.fp),
+              "B's receipt under S6: stored, the flag stays (two are needed)");
+
+        /* The quorum is NOT met at the epoch check: still pending, the
+         * acknowledgement kept. */
+        set_members(&g_n[0], 2160, 6, (const uint8_t (*)[DHT2_FP_LEN])g_s6, 0,
+                    NULL);
+        CHECK(nodus_dht2_pull_epoch_check(g_n[0].pull, NOW) == 0 &&
+                  pending_at(&g_n[0], addr) &&
+                  acked_by(&g_n[0], addr, g_n[1].key.fp) &&
+                  get_at(&g_n[0], addr, hash) == NODUS_DHT2_GET_HELD,
+              "epoch check, quorum not met: still pending, ack kept, held");
+
+        /* S(H) = {B}: |nearest_R| = 1, B's stored acknowledgement meets it. */
+        set_members(&g_n[0], 2880, 1, (const uint8_t (*)[DHT2_FP_LEN])one, 0,
+                    NULL);
+        CHECK(nodus_dht2_pull_epoch_check(g_n[0].pull, NOW) == 0 &&
+                  not_held(&g_n[0], addr) &&
+                  !acked_by(&g_n[0], addr, g_n[1].key.fp),
+              "S(H) = {B}: dropped at the epoch check with no new receipt");
+
+        /* |nearest_R| = 1 and a fresh receipt: one receipt drops. */
+        CHECK(reput_at_a(&p) &&
+                  nodus_dht2_store_handover_set(g_n[0].st, addr, true, &f) == 0
+                  && f && pending_at(&g_n[0], addr),
+              "stored again, a new obligation set by hand");
+        CHECK(receipt_from(kb, gen, addr, hash) == 0 &&
+                  not_held(&g_n[0], addr),
+              "|nearest_R| = 1: one receipt drops the record");
     }
     net_down();
 }

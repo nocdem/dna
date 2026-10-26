@@ -269,17 +269,25 @@ int nodus_dht2_store_scan(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
 
 /* ── hand-over obligation (§4.5 v) — data only ───────────────────────── */
 
-/** Mark (`pending` true) or RETIRE (`pending` false) the persisted hand-over
- *  obligation of the record at `address` (package 7 decides when). A retired
- *  record is not offered to the epoch check's flagging again
- *  (nodus_dht2_store_permanent_scan returns rows with no obligation only).
- *  *`found` false when no such record. Replacement of the record keeps a
- *  pending flag. Either way (set or retire) the
- *  acknowledgements recorded for the address below are deleted. @return
- *  0 / 16. */
+/** Set the persisted hand-over flag of the record at `address` (package 7
+ *  decides when): `pending` true = obligation, false = none. *`found` false
+ *  when no such record. Replacement of the record keeps a pending flag. The
+ *  acknowledgements recorded for the address below are deleted in the SAME
+ *  transaction as the flag change (all or nothing). The obligation ENDS by
+ *  nodus_dht2_store_handover_drop, not by this. @return 0 / 16. */
 int nodus_dht2_store_handover_set(nodus_dht2_store_t *s,
                                   const uint8_t address[DHT2_HASH_LEN],
                                   bool pending, bool *found);
+
+/** The end of an obligation (§4.5 v "then it may drop them"): DELETE the
+ *  record row at `address` — its acknowledgements go with it (trigger) —
+ *  in one transaction, and only when the row is still pending and its hash
+ *  is `hash` (the version the receipts named). *`dropped` tells whether a
+ *  row was deleted. @return 0 / 16. */
+int nodus_dht2_store_handover_drop(nodus_dht2_store_t *s,
+                                   const uint8_t address[DHT2_HASH_LEN],
+                                   const uint8_t hash[DHT2_HASH_LEN],
+                                   bool *dropped);
 
 /** Decision 2026-10-27-dht-v2-handover-one-receipt.md: the fps that sent a
  *  valid pull-receipt for the pending record at `address`, persisted one row
@@ -310,12 +318,14 @@ typedef struct {
     uint64_t index;                              /* insertion index         */
     uint8_t  address[DHT2_HASH_LEN];
     uint8_t  placement[DHT2_HASH_LEN];
+    uint8_t  hash[DHT2_HASH_LEN];                /* envelope hash           */
+    bool     pending;                            /* hand-over flag set      */
 } nodus_dht2_perm_entry_t;
 
 /**
  * §4.5 (v): the PERMANENT records (stored with no expiry, ValidityType 1,
- * tombstones included, §5) that carry no hand-over flag yet, insertion
- * index ≥ `from`, ascending, at most `max` (≤ 250). `*next` = the index to
+ * tombstones included, §5), with or without a hand-over flag (`pending`),
+ * insertion index ≥ `from`, ascending, at most `max` (≤ 250). `*next` = the index to
  * continue from (last index + 1; `from` when the page is empty). A page
  * shorter than `max` is the end. @return 0, 16; DHT2_E_ARG.
  */
