@@ -36,8 +36,9 @@
  *   A tombstone is charged to the pool of the record it replaces.
  *
  * DEFERRED (not here, on purpose): the per-put SUM cost and the per-inbox
- * tombstone row bound (measure first); a refusal that leaves an older
- * version behind (package 7's cursor rule).
+ * tombstone row bound (measure first). A refusal that leaves an older
+ * version behind is handled by the puller's cursor rule (row 12:
+ * nodus_dht2_pull.c, package 7).
  *
  * CONTROL RECORDS follow rev 5 literally: only the control record that WINS
  * Select is stored and applied (HANDLED and DENIED drops, credited before
@@ -66,9 +67,10 @@
  * so the fault is always consumed by the call that met it.
  *
  * NO CALLER YET: nothing in nodus/tools/ or any running loop calls it
- * (package 6 is the serving layer, package 7 the pull exchange). The pull
- * exchange is NOT here: only its data (insertion index scan, store
- * generation, hand-over flag).
+ * (package 6 is the serving layer; the pull exchange is
+ * nodus_dht2_pull.{c,h}). The exchange is NOT here: only its data
+ * (insertion index scan, store generation, hand-over flag and its reads,
+ * the pull cursor per source).
  *
  * @file nodus_dht2_store.h
  */

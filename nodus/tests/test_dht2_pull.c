@@ -1268,8 +1268,9 @@ static void test_cursor_rules(const tkey_t *ka, const tkey_t *kb,
     g_n[1].view.have_snap = false;      /* B loses its snapshot */
     pump();
     cur = cursor_of(&g_n[1], &g_n[0], &found, NULL);
-    /* (the second delivery meets no exchange and is counted as aborted too) */
-    CHECK(g_aborted >= 1 && g_done == 0,
+    /* exactly 2: the first delivery aborts the exchange, the second one
+     * meets no exchange (a reply for no exchange is also "aborted") */
+    CHECK(g_aborted == 2 && g_done == 0,
           "no snapshot at B during the delivery: the exchange aborts");
     CHECK(found && cur == 0, "the cursor was kept");
     g_n[1].view.have_snap = true;
@@ -1280,6 +1281,32 @@ static void test_cursor_rules(const tkey_t *ka, const tkey_t *kb,
     cur = cursor_of(&g_n[1], &g_n[0], &found, NULL);
     CHECK(g_done == 1 && cur == 3 && holds(&g_n[1], addr[0], &r[0]) &&
               holds(&g_n[1], addr[1], &r[1]), "the retry completes");
+    net_down();
+
+    /* a source-side failure is never "gone": A loses its snapshot between
+     * its offer and the want — no delivery, B's cursor does not move. */
+    CHECK(net_up(ka, kb) == 0, "two nodes");
+    CHECK(mk_rec(&r[0], addr[0], kw, 1, 1, false) == 0 &&
+              mk_rec(&r[1], addr[1], kw, 2, 1, false) == 0 &&
+              put_at(&g_n[0], &r[0], &pr) == 0 &&
+              put_at(&g_n[0], &r[1], &pr) == 0, "two records at A");
+    CHECK(nodus_dht2_pull_start(g_n[1].pull, NOW, g_n[0].key.fp) ==
+              NODUS_DHT2_PULL_STARTED, "started");
+    step(); step(); step(); step();     /* hello x2, get, offer at B */
+    g_n[0].view.have_snap = false;
+    pump();
+    cur = cursor_of(&g_n[1], &g_n[0], &found, NULL);
+    CHECK(g_serve_fail == 1 && g_sent[NODUS_DHT2_PULL_DELIVER] == 0,
+          "A without a snapshot: the p_want is dropped, nothing sent as gone");
+    CHECK(found && cur == 0 && not_held(&g_n[1], addr[0]),
+          "B's cursor did not move, nothing stored");
+    g_n[0].view.have_snap = true;
+    nodus_dht2_pull_disconnect(g_n[1].pull, g_n[0].key.fp);   /* stream gone */
+    counters_reset();
+    pull_all();
+    cur = cursor_of(&g_n[1], &g_n[0], &found, NULL);
+    CHECK(g_done == 1 && cur == 3 && holds(&g_n[1], addr[1], &r[1]),
+          "after the disconnect a new exchange completes");
     net_down();
 
     /* definitive refusal: code 7 (expired at B) advances the cursor. */

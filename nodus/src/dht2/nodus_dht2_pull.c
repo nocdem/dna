@@ -991,7 +991,14 @@ static int serve_want(nodus_dht2_pull_t *p, uint64_t now_ms,
         off_drop(p, peer);
         return -1;
     }
-    nodus_dht2_holder_world_load(&p->holder, now_ms, &w);
+    /* No snapshot / sets: no delivery at all. Nothing is sent as "gone" for
+     * a failure of ours — the puller's cursor only moves when a page
+     * completes, so the aborted exchange loses nothing. */
+    if (world(p, now_ms, &w) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "p_want: no snapshot / sets: exchange aborted");
+        off_drop(p, peer);
+        return -1;
+    }
     for (i = 0; i < of->n; i++) {
         dht2_p_deliver_t d;
         uint8_t          hash[DHT2_HASH_LEN];
@@ -1002,18 +1009,22 @@ static int serve_want(nodus_dht2_pull_t *p, uint64_t now_ms,
             continue;
         }
         /* PS:497-505 ReserveGet: the entry NOW held (it may differ from the
-         * offered hash — Select decides); any failure is the zero-address
-         * chunk, i.e. `v` null (row 12 "gone"). */
+         * offered hash — Select decides); not held = the zero-address chunk,
+         * i.e. `v` null (row 12 "gone"). DEVIATION from Bee (PS:501-505
+         * sends the zero chunk for ANY error): a store fault is never
+         * absence (nodus_dht2_store.h), so it aborts the exchange. */
         g = nodus_dht2_store_get(p->holder.store, &w.ctx, of->e[i].a, p->rec,
                                  DHT2_ENVELOPE_MAX, &vl, hash);
+        if (g != NODUS_DHT2_GET_HELD && g != NODUS_DHT2_GET_NOT_HELD) {
+            QGP_LOG_WARN(LOG_TAG, "delivery %zu: local read failed (%d): "
+                                  "exchange aborted", i, g);
+            rc = -1;
+            break;
+        }
         d.i = i;
         d.has_v = g == NODUS_DHT2_GET_HELD;
         d.v = d.has_v ? p->rec : NULL;
         d.v_len = d.has_v ? vl : 0;
-        if (g != NODUS_DHT2_GET_HELD && g != NODUS_DHT2_GET_NOT_HELD) {
-            QGP_LOG_WARN(LOG_TAG, "delivery %zu: local read failed (%d): "
-                                  "sent as gone", i, g);
-        }
         if (dht2_p_deliver_encode(&d, p->buf, NODUS_DHT2_PULL_MSG_MAX, &ml)
                 != DHT2_OK ||
             send_msg(p, peer, NODUS_DHT2_PULL_DELIVER, p->buf, ml) != 0) {

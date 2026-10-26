@@ -55,6 +55,23 @@
  *   · live pulling (re-asking when a source stores a new entry) — the
  *     caller decides when to call nodus_dht2_pull_start again.
  *
+ * READINGS (in neither Bee nor the design as a sentence — reported as gaps):
+ *   · p_hello is sent both ways: the puller's request carries its own
+ *     {g, top} (Bee's Syn is empty, pullsync.go:529; row 12 does not say who
+ *     sends p_hello). The module cannot tell a hello request from a reply;
+ *     the framing must (serve vs on_reply);
+ *   · "responsibility grew" (puller.go:178-189, a scalar radius in Bee) is
+ *     decided by a DP over XOR bit positions (responsibility_grew in the .c,
+ *     argument there) — JUDGMENT, no reference oracle;
+ *   · hand-over retirement: §4.5 (v) says every member of nearest_R(S(H))
+ *     must acknowledge, row 12 says a receipt "from a member" retires. Built
+ *     to row 12 with the store's one flag; the source verifies only "the
+ *     same version" (receipt hash = held hash), not "or newer";
+ *   · §4.5 (v) "then it may drop them": the flag is cleared, nothing is
+ *     deleted;
+ *   · "transient local failure" (cursor kept) = admission codes 15 / 16 /
+ *     negative; "definitively refused" (cursor advances) = codes 1-13, 18.
+ *
  * Nothing here is unordered: sources are sorted by fp, entries follow the
  * insertion index, deliveries ascend by offer index.
  *
