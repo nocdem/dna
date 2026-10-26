@@ -100,5 +100,9 @@ CLAUDE.md
 sdk/js/wasm/
 sdk/js/node_modules/
 
+# Developer starter release archives (built by sdk/starter/scripts/build.mjs,
+# published to nodusnetwork.io/downloads; the source is tracked, not the 8 MB tarball)
+website/downloads/
+
 # Python bytecode left by the shared/dnac/tests oracles
 __pycache__/

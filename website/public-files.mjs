@@ -4,6 +4,8 @@ export const files = new Map([
   ['/robots.txt', ['robots.txt', 'text/plain; charset=utf-8']],
   ['/sitemap.xml', ['sitemap.xml', 'application/xml; charset=utf-8']],
   ['/install-node.sh', ['install-node.sh', 'text/plain; charset=utf-8']],
+  ['/downloads/nodus-developer-starter-0.1.0-linux-x86_64.tar.gz', ['downloads/nodus-developer-starter-0.1.0-linux-x86_64.tar.gz', 'application/gzip']],
+  ['/downloads/nodus-developer-starter-0.1.0-linux-x86_64.tar.gz.sha256', ['downloads/nodus-developer-starter-0.1.0-linux-x86_64.tar.gz.sha256', 'text/plain; charset=utf-8']],
   ['/assets/artwork/nodus-share-v1.jpg', ['assets/artwork/nodus-share-v1.jpg', 'image/jpeg']],
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/index.html', ['index.html', 'text/html; charset=utf-8']],

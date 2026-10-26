@@ -11,6 +11,13 @@ reviewed fee.
 publication is a later, separate decision). Use it from a checkout of this
 repository.
 
+For a relocatable project with a pinned compiler, ready release WASM,
+MultisigVault/MilestoneEscrow examples and a durable transaction journal, see
+the [developer starter](../starter/README.md). Its runtime floor is stricter
+than this SDK's historical engine minimum: Node 22.23.4+ in 22.x or 24.22.1+
+in 24.x (21 October 2026 security release). It remains private; no npm
+publication is implied.
+
 It is the web wallet's code, not a re-implementation: identity derivation,
 addresses, the ABI codec, units, the read-reply checks, the review /
 one-pending queue (`web-wallet/src/evm/*`, `web-wallet/src/nodus/*`) are
@@ -130,6 +137,7 @@ does the same derivation without loading the module.
 | `evm.withdraw(amountRaw, { dest?, ...options })` | EVM balance → NODUS at `dest` (128-hex Nodus address; default this identity). Whole raw units only; a remainder below 10¹⁰ wei stays in the EVM |
 | `evm.deploy({ bytecode, abi?, args?, valueWei?, gasLimit? }, options)` | `bytecode` = the creation hex (Nodus solc `--bin`), constructor arguments ABI-encoded from `abi`. The result's `address` is the new contract when the receipt's `created` equals the address computed from the signed transaction (`createdCheck: 'match'`), else `null` |
 | `evm.send({ to, abi, fn, args?, valueWei?, gasLimit? }, options)` | a state-changing call (`fn` = name, or the full signature for an overloaded name) |
+| `evm.transfer({ to, valueWei, gasLimit? }, options)` | positive EVM value with **empty calldata**, for an account or payable `receive()`. `to` is a full 32-byte address; `valueWei` is a positive BigInt below 2²⁵⁶. Uses the same estimate, fee, confirmation and pending gates as `send`; it is not a native-NODUS transfer |
 
 Every write:
 
@@ -295,6 +303,10 @@ send only when you type `yes`; without a terminal nothing is sent.
   pinned upstream constants; `test/module.test.js` loads the real release
   module but never connects. None of them shows that a node accepts
   anything.
+- `review.test.js` also checks plain EVM transfers: all 32 address bytes,
+  positive BigInt value, empty calldata, fee/confirmation/persistence refusal,
+  record-before-submit ordering and restored unresolved records blocking a
+  new build. These are mock-module checks, not live transfers.
 - **The offline build test uses synthetic coins, tip and gas price.**
   `test/module.test.js` builds an offline DEPOSIT and CALL through the
   release module and checks the fields read back from the signed bytes and

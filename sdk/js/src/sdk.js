@@ -376,6 +376,17 @@ export class NodusEvm {
     const contract = this.contract(to, abi);
     return this.#write(() => contract.prepareSend(fn, args, { valueWei, gasLimit }), options);
   }
+  // Positive EVM value with empty calldata (an account transfer, or a
+  // payable receive()). The same fee/review/pending gates as send().
+  transfer({ to, valueWei, gasLimit }, options) {
+    const address = parseAddress(to);
+    if (typeof valueWei !== 'bigint' || valueWei <= 0n || valueWei >= 2n ** 256n) {
+      throw new Error('The value is a positive BigInt of EVM wei, smaller than 2^256.');
+    }
+    return this.#write(() => this.#account.prepare({
+      op: 'call', to: address, valueWei, gasLimit, data: new Uint8Array(0), title: 'Transfer EVM value'
+    }), options);
+  }
 }
 
 // A log ({ topics: [64 hex], data: hex }, as logs() / a receipt returns it)
