@@ -12520,7 +12520,8 @@ cannot talk on 4001 / WS / 4002. Deploy steps: `DEPLOY_RUNBOOK.md` §2.9.
 `sc_presession_budget` and `nodus_client_init`, which were re-read at `4165c5677` (package
 3d). Package 3d inserted lines into `nodus_server.c`, `nodus_client.c`, `nodus_tcp.c`,
 `nodus_tcp_sc.c`, `nodus_witness_ipc.c` and `nodus_dht_ipc.c`, so the other citations into
-those files may be off by a few lines at `4165c5677`; the code they name is unchanged.
+those files may be off by a few lines at `4165c5677` and were not re-read; what 3d changed
+in them is in §15 "DHT v2 package 3d".
 
 **Profiles, purposes, versions.** 4001 / WS = CLIENT profile, signing purpose 0x0C,
 `NODUS_CSESS_PROTO_VERSION` 1; 4002 and the batch forwards = NODE profile, purpose 0x0D,
