@@ -540,13 +540,17 @@ static void usage(void)
         "                    port, fp; also $NODUS_NETWORK): its nodes replace\n"
         "                    the compiled list and its chain id the compiled id\n"
         "                    (explicit --node / --chain-id still win)\n"
-        "  --pin HEX         one 128-hex server key pin used for EVERY node of\n"
-        "                    the list in force (compiled, file or --node)\n"
+        "  --pin HEX         one 128-hex server key pin for EVERY node of the\n"
+        "                    compiled or file list (explicit --node pins win)\n"
+        "  Precedence: --node pins and --chain-id, then --pin / --chain, then the\n"
+        "  network file, then the built-in list. A file with more than %u nodes\n"
+        "  is refused.\n"
         "  EXCEPTION to the tools' rule: with no file and no flag nodus-light\n"
         "  does not refuse — it uses its compiled chain id and node list (operator\n"
         "  2026-10-26, decisions/2026-10-24-dht-v2-tool-network-identity.md).\n",
         (unsigned)NODUS_LIGHT_DEFAULT_NODE_COUNT,
-        (unsigned)NODUS_LIGHT_DEFAULT_INTERVAL_S);
+        (unsigned)NODUS_LIGHT_DEFAULT_INTERVAL_S,
+        (unsigned)NODUS_LIGHT_MAX_NODES);
 }
 
 static int parse_args(int argc, char **argv, int first, bool allow_trust,
@@ -554,7 +558,11 @@ static int parse_args(int argc, char **argv, int first, bool allow_trust,
                       light_args_t *a)
 {
     const char *net_file = NULL, *pin_hex = NULL;
-    bool chain_given = false;
+    /* Precedence (operator 2026-10-26 + review): explicit --chain-id / --node
+     * pins win over the generic --chain / --pin, which win over the network
+     * file, which wins over the built-in list. Each is tracked on its own,
+     * so the order of the options on the line does not matter. */
+    const char *chain_explicit = NULL, *chain_flag = NULL;
 
     memset(a, 0, sizeof(*a));
     a->interval_s   = NODUS_LIGHT_DEFAULT_INTERVAL_S;
@@ -566,9 +574,10 @@ static int parse_args(int argc, char **argv, int first, bool allow_trust,
 
         if (strcmp(opt, "--data") == 0 && val) {
             a->data_dir = val; i++;
-        } else if ((strcmp(opt, "--chain-id") == 0 ||
-                    strcmp(opt, "--chain") == 0) && val) {
-            a->chain_id_hex = val; chain_given = true; i++;
+        } else if (strcmp(opt, "--chain-id") == 0 && val) {
+            chain_explicit = val; i++;
+        } else if (strcmp(opt, "--chain") == 0 && val) {
+            chain_flag = val; i++;
         } else if (strcmp(opt, "--network") == 0 && val) {
             net_file = val; i++;
         } else if (strcmp(opt, "--pin") == 0 && val) {
@@ -618,6 +627,8 @@ static int parse_args(int argc, char **argv, int first, bool allow_trust,
         fprintf(stderr, "--trust-height and --trust-hash go together\n");
         return -1;
     }
+    const size_t n_explicit = a->n_nodes;     /* the --node entries */
+
     /* The tool network file (--network, else $NODUS_NETWORK) overrides the
      * compiled network; with no file and no flag nodus-light keeps its
      * compiled chain id and node list (operator exception 2026-10-26). */
@@ -631,7 +642,7 @@ static int parse_args(int argc, char **argv, int first, bool allow_trust,
             fprintf(stderr, "network file: %s\n", nerr);
             return -1;
         }
-        if (tn.has_file && !chain_given) {
+        if (tn.has_file && chain_explicit == NULL && chain_flag == NULL) {
             static const char hd[] = "0123456789abcdef";
             for (size_t i = 0; i < NODUS_LIGHT_CHAIN_ID_LEN; i++) {
                 a->chain_buf[2 * i]     = hd[tn.chain[i] >> 4];
@@ -641,8 +652,13 @@ static int parse_args(int argc, char **argv, int first, bool allow_trust,
             a->chain_id_hex = a->chain_buf;
         }
         if (allow_nodes && a->n_nodes == 0 && tn.has_file) {
-            for (int i = 0; i < tn.node_count &&
-                            a->n_nodes < NODUS_LIGHT_MAX_NODES; i++) {
+            if ((size_t)tn.node_count > NODUS_LIGHT_MAX_NODES) {
+                fprintf(stderr, "network file: %d nodes, nodus-light holds at "
+                        "most %u — shorten the file (nothing is cut silently)\n",
+                        tn.node_count, (unsigned)NODUS_LIGHT_MAX_NODES);
+                return -1;
+            }
+            for (int i = 0; i < tn.node_count; i++) {
                 light_node_t *o = &a->nodes[a->n_nodes];
                 memset(o, 0, sizeof(*o));
                 snprintf(o->label, sizeof(o->label), "node%u",
@@ -658,18 +674,24 @@ static int parse_args(int argc, char **argv, int first, bool allow_trust,
             }
         }
     }
+    /* the generic --chain, then the explicit --chain-id, over the file's */
+    if (chain_flag != NULL)     a->chain_id_hex = chain_flag;
+    if (chain_explicit != NULL) a->chain_id_hex = chain_explicit;
     if (allow_nodes && a->n_nodes == 0 &&
         load_default_nodes(a->nodes, NODUS_LIGHT_MAX_NODES, &a->n_nodes) != 0) {
         return -1;
     }
-    if (pin_hex != NULL) {            /* one pin for every node in force */
+    /* --pin: one pin for the file's or the built-in nodes; the explicit
+     * --node pins are never overwritten */
+    if (pin_hex != NULL) {
         nodus_key_t p;
         if (hex_decode_exact(pin_hex, p.bytes, sizeof(p.bytes)) != 0 ||
             nodus_key_is_zero(&p)) {
             fprintf(stderr, "--pin: 128 hex characters, not all zero\n");
             return -1;
         }
-        for (size_t i = 0; i < a->n_nodes; i++) a->nodes[i].pin = p;
+        if (n_explicit == 0)
+            for (size_t i = 0; i < a->n_nodes; i++) a->nodes[i].pin = p;
     }
     if (allow_nodes && a->n_nodes < NODUS_LIGHT_MIN_NODES) {
         fprintf(stderr, "at least %u nodes are needed (a primary and a "
