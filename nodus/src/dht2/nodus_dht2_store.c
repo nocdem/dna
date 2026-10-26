@@ -62,7 +62,13 @@ static const char SCHEMA_SQL[] =
     "  idx       INTEGER NOT NULL UNIQUE);"
     "CREATE INDEX IF NOT EXISTS dht2_rec_owner ON dht2_rec(owner, size);"
     "CREATE INDEX IF NOT EXISTS dht2_rec_pool  ON dht2_rec(named, size);"
-    "CREATE INDEX IF NOT EXISTS dht2_rec_place ON dht2_rec(placement, cls, owner);";
+    "CREATE INDEX IF NOT EXISTS dht2_rec_place ON dht2_rec(placement, cls, owner);"
+    /* §4.5 (iii) / row 12: the puller's persisted state per source — the
+     * cursor (= top + 1) and the source's store generation g last seen. */
+    "CREATE TABLE IF NOT EXISTS dht2_pull_src("
+    "  fp     BLOB PRIMARY KEY,"
+    "  gen    INTEGER NOT NULL,"
+    "  cursor INTEGER NOT NULL);";
 
 /* ══ small SQLite helpers: every error is a fault (-1) ═════════════════ */
 
@@ -1325,4 +1331,173 @@ int nodus_dht2_store_handover_get(nodus_dht2_store_t *s,
     *pending = h.found && h.handover != 0;
     held_free(&h);
     return 0;
+}
+
+/* ══ hand-over: what package 7 needs to read ═══════════════════════════ */
+
+int nodus_dht2_store_handover_info(nodus_dht2_store_t *s,
+                                   const uint8_t address[DHT2_HASH_LEN],
+                                   bool *found, bool *pending,
+                                   uint8_t hash[DHT2_HASH_LEN],
+                                   uint8_t placement[DHT2_HASH_LEN])
+{
+    sqlite3_stmt *st;
+    int           rc;
+
+    if (s == NULL || address == NULL || found == NULL || pending == NULL ||
+        hash == NULL || placement == NULL) {
+        return DHT2_E_ARG;
+    }
+    *found = false;
+    *pending = false;
+    st = prep(s, "SELECT hash, placement, handover FROM dht2_rec "
+                 "WHERE address = ?1");
+    if (st == NULL) {
+        return CODE_FAULT;
+    }
+    if (!bound(st, b_64(st, 1, address))) {
+        return CODE_FAULT;
+    }
+    rc = sqlite3_step(st);
+    if (rc == SQLITE_ROW) {
+        if (sqlite3_column_bytes(st, 0) != (int)DHT2_HASH_LEN ||
+            sqlite3_column_bytes(st, 1) != (int)DHT2_HASH_LEN) {
+            QGP_LOG_ERROR(LOG_TAG, "handover info: row malformed");
+            sqlite3_finalize(st);
+            return CODE_FAULT;
+        }
+        memcpy(hash, sqlite3_column_blob(st, 0), DHT2_HASH_LEN);
+        memcpy(placement, sqlite3_column_blob(st, 1), DHT2_HASH_LEN);
+        *pending = sqlite3_column_int(st, 2) != 0;
+        *found = true;
+    } else if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "handover info: %s", sqlite3_errmsg(s->db));
+        sqlite3_finalize(st);
+        return CODE_FAULT;
+    }
+    sqlite3_finalize(st);
+    return 0;
+}
+
+int nodus_dht2_store_permanent_scan(nodus_dht2_store_t *s, uint64_t from,
+                                    nodus_dht2_perm_entry_t *out, size_t max,
+                                    size_t *count, uint64_t *next)
+{
+    sqlite3_stmt *st;
+    size_t        n = 0;
+    uint64_t      last = 0;
+    int           rc, code = 0;
+
+    if (s == NULL || out == NULL || count == NULL || next == NULL ||
+        max == 0 || max > DHT2_PULL_PAGE_MAX) {
+        return DHT2_E_ARG;
+    }
+    *count = 0;
+    *next = from;
+    if (from > (uint64_t)INT64_MAX) {
+        return 0;
+    }
+    st = prep(s, "SELECT idx, address, placement FROM dht2_rec "
+                 "WHERE idx >= ?1 AND noexp = 1 AND handover = 0 "
+                 "ORDER BY idx ASC LIMIT ?2");
+    if (st == NULL) {
+        return CODE_FAULT;
+    }
+    if (!bound(st, b_i64(st, 1, (int64_t)from) | b_i64(st, 2, (int64_t)max))) {
+        return CODE_FAULT;
+    }
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        if (sqlite3_column_bytes(st, 1) != (int)DHT2_HASH_LEN ||
+            sqlite3_column_bytes(st, 2) != (int)DHT2_HASH_LEN) {
+            QGP_LOG_ERROR(LOG_TAG, "permanent scan: row malformed");
+            code = CODE_FAULT;
+            break;
+        }
+        last = (uint64_t)sqlite3_column_int64(st, 0);
+        out[n].index = last;
+        memcpy(out[n].address, sqlite3_column_blob(st, 1), DHT2_HASH_LEN);
+        memcpy(out[n].placement, sqlite3_column_blob(st, 2), DHT2_HASH_LEN);
+        n++;
+    }
+    if (code == 0 && rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "permanent scan: %s", sqlite3_errmsg(s->db));
+        code = CODE_FAULT;
+    }
+    sqlite3_finalize(st);
+    if (code != 0) {
+        return code;
+    }
+    *count = n;
+    *next = n > 0 ? last + 1 : from;
+    return 0;
+}
+
+/* ══ pull cursors (§4.5 iii, row 12) ═══════════════════════════════════ */
+
+int nodus_dht2_store_pull_get(nodus_dht2_store_t *s,
+                              const uint8_t fp[DHT2_FP_LEN], bool *found,
+                              uint64_t *gen, uint64_t *cursor)
+{
+    sqlite3_stmt *st;
+    int           rc;
+
+    if (s == NULL || fp == NULL || found == NULL || gen == NULL ||
+        cursor == NULL) {
+        return DHT2_E_ARG;
+    }
+    *found = false;
+    st = prep(s, "SELECT gen, cursor FROM dht2_pull_src WHERE fp = ?1");
+    if (st == NULL) {
+        return CODE_FAULT;
+    }
+    if (!bound(st, b_64(st, 1, fp))) {
+        return CODE_FAULT;
+    }
+    rc = sqlite3_step(st);
+    if (rc == SQLITE_ROW) {
+        *gen = (uint64_t)sqlite3_column_int64(st, 0);
+        *cursor = (uint64_t)sqlite3_column_int64(st, 1);
+        if (*cursor > (uint64_t)INT64_MAX) {
+            QGP_LOG_ERROR(LOG_TAG, "pull cursor row malformed");
+            sqlite3_finalize(st);
+            return CODE_FAULT;
+        }
+        *found = true;
+    } else if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "pull get: %s", sqlite3_errmsg(s->db));
+        sqlite3_finalize(st);
+        return CODE_FAULT;
+    }
+    sqlite3_finalize(st);
+    return 0;
+}
+
+int nodus_dht2_store_pull_set(nodus_dht2_store_t *s,
+                              const uint8_t fp[DHT2_FP_LEN], uint64_t gen,
+                              uint64_t cursor)
+{
+    sqlite3_stmt *st;
+
+    if (s == NULL || fp == NULL || cursor > (uint64_t)INT64_MAX) {
+        return DHT2_E_ARG;
+    }
+    st = prep(s, "INSERT OR REPLACE INTO dht2_pull_src(fp, gen, cursor) "
+                 "VALUES(?1, ?2, ?3)");
+    if (st == NULL) {
+        return CODE_FAULT;
+    }
+    if (!bound(st, b_64(st, 1, fp) | b_i64(st, 2, (int64_t)gen) |
+                       b_i64(st, 3, (int64_t)cursor))) {
+        return CODE_FAULT;
+    }
+    return step_done(s, st) == 0 ? 0 : CODE_FAULT;
+}
+
+int nodus_dht2_store_pull_reset(nodus_dht2_store_t *s)
+{
+    if (s == NULL) {
+        return DHT2_E_ARG;
+    }
+    return exec_sql(s, "UPDATE dht2_pull_src SET cursor = 0") == 0
+               ? 0 : CODE_FAULT;
 }

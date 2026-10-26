@@ -732,6 +732,9 @@ if(NOT WIN32)
         # injected view of the witness. Transport-free. No caller yet
         # (package 6b serves it).
         src/dht2/nodus_dht2_holder.c
+        # DHT v2 package 7 (core) — pull-sync (§4.5, row 12): the source and
+        # puller roles over the store, transport-free. No caller yet.
+        src/dht2/nodus_dht2_pull.c
         # Split S5b — the H-10 partial-wipe boot gate in its own object, so
         # nodus-storage runs the same check as core before opening nodus.db.
         src/server/nodus_partial_wipe.c
@@ -2175,6 +2178,13 @@ add_test(NAME test_dht2_store COMMAND test_dht2_store)
 add_executable(test_dht2_holder tests/test_dht2_holder.c)
 target_link_libraries(test_dht2_holder nodus dsa nodus crypto)
 add_test(NAME test_dht2_holder COMMAND test_dht2_holder)
+
+# DHT v2 package 7 (core) — pull-sync (dht2/nodus_dht2_pull.c): two in-memory
+# stores wired through the injected send function. A default build; what it
+# proves / how it can lie: the header of tests/test_dht2_pull.c.
+add_executable(test_dht2_pull tests/test_dht2_pull.c)
+target_link_libraries(test_dht2_pull nodus dsa nodus crypto)
+add_test(NAME test_dht2_pull COMMAND test_dht2_pull)
 
 add_executable(test_cmt_block tests/test_cmt_block.c)
 target_link_libraries(test_cmt_block nodus dsa nodus crypto)

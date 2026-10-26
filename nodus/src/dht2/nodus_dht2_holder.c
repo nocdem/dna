@@ -19,9 +19,6 @@
 
 _Static_assert(NODUS_PK_BYTES == DHT2_PUBKEY_LEN,
                "node identity key is the ML-DSA-87 key the envelope carries");
-_Static_assert(NODUS_DHT2_HOLDER_WRITE_REFUSAL == DHT2_E_BUSY ||
-               NODUS_DHT2_HOLDER_WRITE_REFUSAL == DHT2_E_NOT_CAUGHT_UP,
-               "a refusal payload carries 14 or 15 only");
 
 /* ══ the real view ═════════════════════════════════════════════════════ */
 
@@ -96,11 +93,7 @@ void nodus_dht2_holder_job_leave(nodus_dht2_holder_t *h)
 
 /* ══ the call's world ══════════════════════════════════════════════════ */
 
-/* The store's name callback `user`: the view and this call's tick. */
-typedef struct {
-    const nodus_dht2_holder_view_t *view;
-    uint64_t                        now_ms;
-} name_user_t;
+typedef nodus_dht2_name_user_t name_user_t;
 
 /* PENDING / UNAVAILABLE are FAULT for this call; FAULT is passed on so the
  * store consumes it as code 16 (header, NAME RULE). */
@@ -121,18 +114,14 @@ static nodus_dht2_name_t name_cb(void *user, const uint8_t fp[DHT2_FP_LEN])
     }
 }
 
-typedef struct {
-    nodus_witness_dht_snap_t         snap;
-    bool                             have_snap;   /* fresh snapshot, cu true */
-    const nodus_witness_dht_sets_t  *sets;        /* NULL = not available    */
-    name_user_t                      nu;
-    nodus_dht2_ctx_t                 ctx;
-} world_t;
+typedef nodus_dht2_world_t world_t;
 
 /* Take the snapshot and sets of this call and fill the store's context. A
  * missing or block-syncing snapshot leaves ctx.snap NULL (the store answers
- * 15 for it, and so does serve() before asking). */
-static void world_load(nodus_dht2_holder_t *h, uint64_t now_ms, world_t *w)
+ * 15 for it, and so does serve() before asking). Exported so the pull-sync
+ * module (nodus_dht2_pull.c) loads its world through the same code. */
+void nodus_dht2_holder_world_load(nodus_dht2_holder_t *h, uint64_t now_ms,
+                                  nodus_dht2_world_t *w)
 {
     memset(w, 0, sizeof(*w));
     w->nu.view = &h->view;
@@ -386,7 +375,7 @@ static int serve_list(nodus_dht2_holder_t *h, uint64_t now_ms,
     if (w == NULL || la == NULL) {
         goto done;
     }
-    world_load(h, now_ms, w);
+    nodus_dht2_holder_world_load(h, now_ms, w);
     e = call_state(h, w);
     if (e != 0) {
         res = refuse(h, lr.nonce, e, out, cap, out_len);
@@ -476,12 +465,8 @@ int nodus_dht2_holder_serve(nodus_dht2_holder_t *h,
     if (w == NULL) {
         return NODUS_DHT2_HOLDER_ERR;
     }
-    world_load(h, now_ms, w);
+    nodus_dht2_holder_world_load(h, now_ms, w);
     e = call_state(h, w);
-    if (e == 0 && kind == NODUS_DHT2_HOLDER_PUT && w->sets != NULL &&
-        w->sets->n0 < NODUS_DHT2_HOLDER_WRITE_MIN_SET) {
-        e = NODUS_DHT2_HOLDER_WRITE_REFUSAL;   /* §2 precondition */
-    }
     if (e != 0) {
         res = refuse(h, rq.nonce, e, out, cap, out_len);
     } else if (kind == NODUS_DHT2_HOLDER_GET) {

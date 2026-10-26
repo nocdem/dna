@@ -2,8 +2,9 @@
  * Nodus — DHT v2 package 6a: the holder service
  * (nodus/src/dht2/nodus_dht2_holder.{c,h}).
  *
- * Design: docs/plans/2026-10-14-dht-v2-design.md rev 5 (FROZEN) — §2
- * "Precondition", §4.4, §13 rows 7, 14, 18, 20, 23.
+ * Design: docs/plans/2026-10-14-dht-v2-design.md rev 5 (FROZEN) — §4.4,
+ * §13 rows 7, 14, 18, 20, 23; decisions/2026-10-26-dht-v2-no-single-node-
+ * write-refusal.md.
  *
  * ── WHAT IT PROVES ─────────────────────────────────────────────────────
  * If this file failed, one of these would be false:
@@ -29,10 +30,9 @@
  *   · consensus_up false, and no snapshot at all, answer the refusal 15 for
  *     get, put and list; a full signing queue (64 jobs) answers the refusal
  *     14, and a slot given back lets the next call through;
- *   · §2 precondition: with |S(H)| = 1 a put is refused with the call-level
- *     refusal NODUS_DHT2_HOLDER_WRITE_REFUSAL (15) and stores nothing, while
- *     a get on the same view is answered; with |S(H)| = 3 the same put is
- *     stored;
+ *   · decision 2026-10-26-dht-v2-no-single-node-write-refusal.md: with
+ *     |S(H)| = 1 a put is NOT refused — it is answered with a receipt naming
+ *     the stored hash, and a later get returns that same hash;
  *   · a name FAULT is code 16 for that key (nothing stored), is asked once,
  *     and the NEXT name request is possible (the fault was consumed): the
  *     same put then succeeds; a PENDING name answer is also 16 for the
@@ -69,10 +69,6 @@
  *     accepts them (§4.4 client rules) is package 8's.
  *  4. Hedged signatures differ from run to run; the test never depends on
  *     two answers being byte-equal.
- *  5. The reading "write precondition = refusal 15" is the ORCHESTRATOR's,
- *     not the design's: this test pins the constant, so it cannot detect
- *     that the operator later chooses another code.
- *
  * @file test_dht2_holder.c
  */
 
@@ -724,7 +720,10 @@ static void test_call_level(const tkey_t *node, const tkey_t *wr)
     free(w);
 }
 
-static void test_write_precondition(const tkey_t *node, const tkey_t *wr)
+/* Decision 2026-10-26-dht-v2-no-single-node-write-refusal.md: a holder never
+ * refuses a write because the storage set is small — one storage node stores. */
+static void test_single_storage_node_stores(const tkey_t *node,
+                                            const tkey_t *wr)
 {
     world_t       *w = (world_t *)calloc(1, sizeof(*w));
     static env_t   rec, req;
@@ -737,26 +736,19 @@ static void test_write_precondition(const tkey_t *node, const tkey_t *wr)
 
     CHECK(mk_put(&req, 0xA1, &rec, 1) == 0, "put request");
     CHECK(serve(w, NODUS_DHT2_HOLDER_PUT, &req) == NODUS_DHT2_HOLDER_ANSWER &&
-              refusal_is(w, 0xA1, NODUS_DHT2_HOLDER_WRITE_REFUSAL),
-          "|S(H)| = 1: put refused");
+              ans_head(w, DHT2_PT_RECEIPT, 0xA1, &a),
+          "|S(H)| = 1: put answered with a receipt, not a refusal");
+    CHECK(a.r_count == 1 && a.r[0].kind == DHT2_RV_HASH &&
+              hash_is(&rec, a.r[0].hash),
+          "|S(H)| = 1: the put stored the record");
     CHECK(mk_get(&req, 0xA2, (const uint8_t (*)[DHT2_HASH_LEN])keys, 1) == 0,
           "get request");
     CHECK(serve(w, NODUS_DHT2_HOLDER_GET, &req) == NODUS_DHT2_HOLDER_ANSWER &&
               ans_head(w, DHT2_PT_ANSWER, 0xA2, &a),
           "|S(H)| = 1: get answered");
-    CHECK(a.r_count == 1 && a.r[0].kind == DHT2_RV_NULL,
-          "and nothing was stored by the refused put");
-
-    /* Two members are enough. */
-    w->view.sets->n0 = 2;
-    memset(w->view.sets->s0[1], 0xE1, DHT2_FP_LEN);
-    CHECK(mk_put(&req, 0xA3, &rec, 1) == 0, "put request");
-    CHECK(serve(w, NODUS_DHT2_HOLDER_PUT, &req) == NODUS_DHT2_HOLDER_ANSWER &&
-              ans_head(w, DHT2_PT_RECEIPT, 0xA3, &a),
-          "|S(H)| = 2: put answered with a receipt");
     CHECK(a.r_count == 1 && a.r[0].kind == DHT2_RV_HASH &&
               hash_is(&rec, a.r[0].hash),
-          "and stored");
+          "and the get returns the stored hash");
     world_free(w);
     free(w);
 }
@@ -1143,7 +1135,7 @@ int main(void)
     test_malformed(&keys[0], &keys[1]);
     test_list(&keys[0], &keys[2], &keys[3], &keys[4]);
     test_call_level(&keys[0], &keys[1]);
-    test_write_precondition(&keys[0], &keys[1]);
+    test_single_storage_node_stores(&keys[0], &keys[1]);
     test_name_fault(&keys[0], &keys[1]);
     test_fault_abandoned(&keys[0], &keys[1], &keys[3]);
     test_chain_gate(&keys[0], &keys[2], &keys[4]);

@@ -35,8 +35,7 @@
  *   inbox pool 11, per-identity quota 10, node pool 13, store, re-index.
  *   A tombstone is charged to the pool of the record it replaces.
  *
- * DEFERRED (not here, on purpose): the |S(H)| ≥ 2 write precondition (the
- * serving layer, package 6); the per-put SUM cost and the per-inbox
+ * DEFERRED (not here, on purpose): the per-put SUM cost and the per-inbox
  * tombstone row bound (measure first); a refusal that leaves an older
  * version behind (package 7's cursor rule).
  *
@@ -277,6 +276,48 @@ int nodus_dht2_store_handover_set(nodus_dht2_store_t *s,
 int nodus_dht2_store_handover_get(nodus_dht2_store_t *s,
                                   const uint8_t address[DHT2_HASH_LEN],
                                   bool *pending, bool *found);
+
+/** The row of `address` as the hand-over needs it: whether it is held,
+ *  its flag, the hash of the canonical envelope and its placement key.
+ *  An expired-but-unswept row is read like any other. @return 0 / 16. */
+int nodus_dht2_store_handover_info(nodus_dht2_store_t *s,
+                                   const uint8_t address[DHT2_HASH_LEN],
+                                   bool *found, bool *pending,
+                                   uint8_t hash[DHT2_HASH_LEN],
+                                   uint8_t placement[DHT2_HASH_LEN]);
+
+typedef struct {
+    uint64_t index;                              /* insertion index         */
+    uint8_t  address[DHT2_HASH_LEN];
+    uint8_t  placement[DHT2_HASH_LEN];
+} nodus_dht2_perm_entry_t;
+
+/**
+ * §4.5 (v): the PERMANENT records (stored with no expiry, ValidityType 1,
+ * tombstones included, §5) that carry no hand-over flag yet, insertion
+ * index ≥ `from`, ascending, at most `max` (≤ 250). `*next` = the index to
+ * continue from (last index + 1; `from` when the page is empty). A page
+ * shorter than `max` is the end. @return 0, 16; DHT2_E_ARG.
+ */
+int nodus_dht2_store_permanent_scan(nodus_dht2_store_t *s, uint64_t from,
+                                    nodus_dht2_perm_entry_t *out, size_t max,
+                                    size_t *count, uint64_t *next);
+
+/* ── pull cursors (§4.5 iii, row 12) — data only ─────────────────────── */
+
+/** The persisted state of the pull from source `fp`: the source's store
+ *  generation g last seen and the cursor (the next insertion index to ask
+ *  for = top + 1). `*found` false when the source was never pulled from.
+ *  @return 0 / 16. */
+int nodus_dht2_store_pull_get(nodus_dht2_store_t *s,
+                              const uint8_t fp[DHT2_FP_LEN], bool *found,
+                              uint64_t *gen, uint64_t *cursor);
+/** Persist (insert or replace) it. `cursor` ≤ INT64_MAX. @return 0 / 16. */
+int nodus_dht2_store_pull_set(nodus_dht2_store_t *s,
+                              const uint8_t fp[DHT2_FP_LEN], uint64_t gen,
+                              uint64_t cursor);
+/** Every source's cursor := 0 (a re-scan from 0 at the next exchange). */
+int nodus_dht2_store_pull_reset(nodus_dht2_store_t *s);
 
 #ifdef __cplusplus
 }

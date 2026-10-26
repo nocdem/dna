@@ -1,9 +1,8 @@
 /**
  * Nodus — DHT v2: the holder service (package 6a).
  *
- * Design docs/plans/2026-10-14-dht-v2-design.md rev 5 (FROZEN): §2
- * "Precondition", §4.4 signed answers and receipts, §13 rows 7, 14, 18, 20,
- * 23. Request format: docs/plans/decisions/2026-10-23-dht-v2-wire-gaps-
+ * Design docs/plans/2026-10-14-dht-v2-design.md rev 5 (FROZEN): §4.4 signed
+ * answers and receipts, §13 rows 7, 14, 18, 20, 23. Request format: docs/plans/decisions/2026-10-23-dht-v2-wire-gaps-
  * package2.md (strict DAG-CBOR requests).
  *
  * WHAT IT IS: one transport-free function. It takes the bytes of ONE request
@@ -45,12 +44,10 @@
  * client retries). A name answer is therefore always consumed by the call
  * that met it.
  *
- * WRITE PRECONDITION (§2): while the current S(H) has fewer than 2 members
- * (NODUS_DHT2_HOLDER_WRITE_MIN_SET) every "put" — read-repair included — is
- * refused with the call-level refusal NODUS_DHT2_HOLDER_WRITE_REFUSAL. ORCHESTRATOR
- * reading, to be confirmed by the operator: the design names no code for it;
- * 15 (not-caught-up, "the client uses another node") was chosen. One constant
- * so it can change. Reads are still served.
+ * NO WRITE REFUSAL FOR A SMALL STORAGE SET: the former §2 precondition
+ * (|S(H)| >= 2) is INVALID, replaced by docs/plans/decisions/2026-10-26-
+ * dht-v2-no-single-node-write-refusal.md. A holder never refuses a put
+ * because S(H) is small; a network with one storage node stores records.
  *
  * WORK LIMIT (row 20): at most NODUS_DHT2_HOLDER_QUEUE_MAX (64) queued
  * signing jobs per holder. The caller brackets each answer it has queued
@@ -109,13 +106,6 @@ extern "C" {
 /** Row 20: per holder ≤ 64 queued signing jobs. */
 #define NODUS_DHT2_HOLDER_QUEUE_MAX     64u
 
-/** §2: fewer members of S(H) than this refuse every put. */
-#define NODUS_DHT2_HOLDER_WRITE_MIN_SET 2u
-
-/** The refusal code of that write precondition (ORCHESTRATOR reading, to be
- *  confirmed by the operator — see the file header). Must be 14 or 15. */
-#define NODUS_DHT2_HOLDER_WRITE_REFUSAL DHT2_E_NOT_CAUGHT_UP
-
 /** `out` of serve() must hold at least this many bytes. */
 #define NODUS_DHT2_HOLDER_OUT_MIN       DHT2_ANSWER_ENV_MAX
 
@@ -164,6 +154,30 @@ int nodus_dht2_holder_init(nodus_dht2_holder_t *h, nodus_dht2_store_t *store,
                            const nodus_identity_t *id,
                            const uint8_t chain[DHT2_CHAIN_LEN],
                            const nodus_dht2_holder_view_t *view);
+
+/** The store's name callback `user`: the view and this call's tick. */
+typedef struct {
+    const nodus_dht2_holder_view_t *view;
+    uint64_t                        now_ms;
+} nodus_dht2_name_user_t;
+
+/** One call's world: the snapshot, the frozen sets and the store context
+ *  built from them (see nodus_dht2_holder_world_load). */
+typedef struct {
+    nodus_witness_dht_snap_t         snap;
+    bool                             have_snap;   /* fresh snapshot, cu true */
+    const nodus_witness_dht_sets_t  *sets;        /* NULL = not available    */
+    nodus_dht2_name_user_t           nu;
+    nodus_dht2_ctx_t                 ctx;
+} nodus_dht2_world_t;
+
+/** Take the snapshot and sets of one call from `h`'s view and fill `w`,
+ *  including the store context (`w->ctx`). A missing, block-syncing or
+ *  foreign-chain snapshot leaves `w->have_snap` false and `w->ctx.snap`
+ *  NULL. `w` must stay where it is while `w->ctx` is used (the name
+ *  callback points into it). The pull-sync module loads its world here. */
+void nodus_dht2_holder_world_load(nodus_dht2_holder_t *h, uint64_t now_ms,
+                                  nodus_dht2_world_t *w);
 
 /** Row 20: take / release one signing-job slot. enter returns false (and
  *  takes nothing) at the limit; leave of an empty queue is a no-op. */
