@@ -1324,20 +1324,16 @@ browsers `wss://<validator IP>:443` (no domain name).
 
 ```json
 {
-    "ws_port": 4005,
-    "ws_origins": ["https://wallet.nodusnetwork.io", "https://connect.nodusnetwork.io"]
+    "ws_port": 4005
 }
 ```
 
-`ws_origins` may be left out: the default is
-`["https://wallet.nodusnetwork.io", "https://connect.nodusnetwork.io"]` (the
-Connect site since 0.23.8, decision 2026-10-01-connect-own-origin). A node
-that sets the list explicitly must name both, or the Connect site cannot
-reach it.
-A malformed `ws_port` (not an integer 0..65535) or `ws_origins` entry (not a
-string, empty, containing a space or control character, over 255 bytes, more than
-8 entries) refuses the start. A `ws_port` equal to `tcp_port`, `peer_port`,
-`witness_port` or `ch_port` refuses the start.
+There is no Origin setting: the entry does not read the browser `Origin`, so any
+site, the wallet extension or a program can connect. A `"ws_origins"` key left
+from an older config is ignored (until 2026-10-27 it was an allow-list that
+answered 403 to every other Origin; see `docs/ARCHITECTURE.md` §10).
+A malformed `ws_port` (not an integer 0..65535) refuses the start. A `ws_port`
+equal to `tcp_port`, `peer_port`, `witness_port` or `ch_port` refuses the start.
 
 **2. Caddy** — reverse proxy only. **Proven on EU-5, 2026-09-30** (Debian 13, Caddy
 2.11.2 from `trixie-backports`; the `trixie` main package is 2.6.2 — not tried).
@@ -1397,7 +1393,7 @@ the wallet); an entry there needs an nginx stream/location design, not Caddy.
 **3. Verify on the node** (after restart):
 
 ```bash
-journalctl -u nodus | grep 'WebSocket entry listening'     # 127.0.0.1:4005, 1 allowed origin(s)
+journalctl -u nodus | grep 'WebSocket entry listening'     # 127.0.0.1:4005
 ss -ltn | grep ':4005'                                     # must show 127.0.0.1:4005, never 0.0.0.0
 curl -si -N --max-time 3 http://127.0.0.1:4005/ \
   -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
@@ -1409,7 +1405,8 @@ curl -si -N --max-time 3 http://127.0.0.1:4005/ \
 #         Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=   (RFC 6455 §1.3 vector)
 ```
 
-Same request with `Origin: https://example.com` must answer `403`; without the
+Same request with `Origin: chrome-extension://<id>` (the wallet extension) or
+`Origin: https://example.com` must also answer `101`; without the
 `X-Forwarded-For` line it must answer `400`. From another machine, the same request
 against `https://<node IP>/` with `curl --http1.1` (without the `X-Forwarded-For`
 line — Caddy adds it) must answer `101` (EU-5, 2026-09-30: 101, correct accept key), and the nodus log must show `ws: upgrade ok slot=… ip=<that

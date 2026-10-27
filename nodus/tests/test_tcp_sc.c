@@ -874,7 +874,6 @@ static int peer_tx(wspeer_t *w)
 
 static void test_websocket(void)
 {
-    static nodus_ws_origins_t origins;
     wspeer_t w;
     char req[512], head[512] = { 0 };     /* initialised: read only after a good setup */
     size_t hl = 0;
@@ -886,8 +885,7 @@ static void test_websocket(void)
     cfg_fill(&g_srv.cfg, CMT_P2P_SC_ROLE_RESPONDER, &CMT_P2P_SC_PROFILE_CLIENT, g_a, NULL);
     g_srv.enable_on_accept = true;
     g_srv.peer_pk = g_b->pk.bytes;
-    nodus_ws_origins_default(&origins);
-    ok = nodus_tcp_ws_listen(&g_srv.tcp, 0, &origins) == 0;
+    ok = nodus_tcp_ws_listen(&g_srv.tcp, 0) == 0;
     w.rx = (uint8_t *)malloc(WSRX_CAP);
     w.plain = (uint8_t *)malloc(WSRX_CAP);
     w.m = (cmt_p2p_sc_t *)calloc(1, sizeof(*w.m));
@@ -906,9 +904,9 @@ static void test_websocket(void)
         int n = snprintf(req, sizeof(req),
             "GET /ws HTTP/1.1\r\nHost: 127.0.0.1:%u\r\nUpgrade: websocket\r\n"
             "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-            "Sec-WebSocket-Version: 13\r\nOrigin: %s\r\n"
+            "Sec-WebSocket-Version: 13\r\nOrigin: https://wallet.nodusnetwork.io\r\n"
             "Sec-WebSocket-Protocol: binary\r\nX-Forwarded-For: " WS_XFF "\r\n\r\n",
-            (unsigned)g_srv.tcp.ws_port, NODUS_WS_DEFAULT_ORIGIN);
+            (unsigned)g_srv.tcp.ws_port);
         ok = n > 0 && (size_t)n < sizeof(req) && send_all(w.fd, req, (size_t)n) == 0;
     }
     /* Read the 101 head; anything after it is WS data. */
@@ -1040,7 +1038,6 @@ static int seal_by_hand(const cmt_p2p_sc_t *m, uint64_t ctr, const uint8_t *chun
 
 static void test_ws_close_behind_data(void)
 {
-    static nodus_ws_origins_t origins;
     wspeer_t w;
     char req[512], head[512] = { 0 };
     size_t hl = 0;
@@ -1052,8 +1049,7 @@ static void test_ws_close_behind_data(void)
     cfg_fill(&g_srv.cfg, CMT_P2P_SC_ROLE_RESPONDER, &CMT_P2P_SC_PROFILE_CLIENT, g_a, NULL);
     g_srv.enable_on_accept = true;
     g_srv.peer_pk = g_b->pk.bytes;
-    nodus_ws_origins_default(&origins);
-    ok = nodus_tcp_ws_listen(&g_srv.tcp, 0, &origins) == 0;
+    ok = nodus_tcp_ws_listen(&g_srv.tcp, 0) == 0;
     w.rx = (uint8_t *)malloc(WSRX_CAP);
     w.plain = (uint8_t *)malloc(WSRX_CAP);
     w.m = (cmt_p2p_sc_t *)calloc(1, sizeof(*w.m));
@@ -1072,9 +1068,9 @@ static void test_ws_close_behind_data(void)
         n = snprintf(req, sizeof(req),
             "GET /ws HTTP/1.1\r\nHost: 127.0.0.1:%u\r\nUpgrade: websocket\r\n"
             "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-            "Sec-WebSocket-Version: 13\r\nOrigin: %s\r\n"
+            "Sec-WebSocket-Version: 13\r\nOrigin: https://wallet.nodusnetwork.io\r\n"
             "Sec-WebSocket-Protocol: binary\r\nX-Forwarded-For: " WS_XFF "\r\n\r\n",
-            (unsigned)g_srv.tcp.ws_port, NODUS_WS_DEFAULT_ORIGIN);
+            (unsigned)g_srv.tcp.ws_port);
         ok = ok && n > 0 && (size_t)n < sizeof(req) && send_all(w.fd, req, (size_t)n) == 0;
     }
     for (int i = 0; ok && i < MAX_ROUNDS; i++) {      /* the 101 head */
@@ -1257,7 +1253,6 @@ static int peer_rx_plain(wspeer_t *w)
  * was put back in the read set AFTER the drain. */
 static void held_input_case(bool ws)
 {
-    static nodus_ws_origins_t origins;
     wspeer_t w;
     char req[512], head[512] = { 0 };
     size_t hl = 0;
@@ -1271,8 +1266,7 @@ static void held_input_case(bool ws)
     cfg_fill(&g_srv.cfg, CMT_P2P_SC_ROLE_RESPONDER, &CMT_P2P_SC_PROFILE_CLIENT, g_a, NULL);
     g_srv.enable_on_accept = true;
     g_srv.peer_pk = g_b->pk.bytes;
-    nodus_ws_origins_default(&origins);
-    ok = (ws ? nodus_tcp_ws_listen(&g_srv.tcp, 0, &origins)
+    ok = (ws ? nodus_tcp_ws_listen(&g_srv.tcp, 0)
              : nodus_tcp_listen(&g_srv.tcp, "127.0.0.1", 0)) == 0;
     w.rx = (uint8_t *)malloc(WSRX_CAP);
     w.plain = (uint8_t *)malloc(WSRX_CAP);
@@ -1292,9 +1286,9 @@ static void held_input_case(bool ws)
         int n = snprintf(req, sizeof(req),
             "GET /ws HTTP/1.1\r\nHost: 127.0.0.1:%u\r\nUpgrade: websocket\r\n"
             "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-            "Sec-WebSocket-Version: 13\r\nOrigin: %s\r\n"
+            "Sec-WebSocket-Version: 13\r\nOrigin: https://wallet.nodusnetwork.io\r\n"
             "Sec-WebSocket-Protocol: binary\r\nX-Forwarded-For: " WS_XFF "\r\n\r\n",
-            (unsigned)g_srv.tcp.ws_port, NODUS_WS_DEFAULT_ORIGIN);
+            (unsigned)g_srv.tcp.ws_port);
         ok = n > 0 && (size_t)n < sizeof(req) && send_all(w.fd, req, (size_t)n) == 0;
         for (int i = 0; ok && i < MAX_ROUNDS; i++) {
             ssize_t r;

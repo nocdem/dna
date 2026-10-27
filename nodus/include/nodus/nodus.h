@@ -113,8 +113,8 @@ typedef struct {
      * server"), cached-key, Kyber round-3 or unencrypted session.
      *
      * The array is owned by the caller and must outlive the client (it is
-     * not copied; same rule as nodus_tcp_t.ws_origins). count > 0 with a
-     * NULL pointer, or count < 0, makes nodus_client_init() fail. */
+     * not copied). count > 0 with a NULL pointer, or count < 0, makes
+     * nodus_client_init() fail. */
     const nodus_key_t          *pinned_server_fps;
     int                         pinned_server_fp_count;
 } nodus_client_config_t;

@@ -2842,19 +2842,13 @@ int nodus_server_init_ex(nodus_server_t *srv, const nodus_server_config_t *confi
                           (unsigned)config->ch_port);
             goto fail;
         }
-        /* The list the transport reads lives in srv->config (stable for
-         * the server's lifetime); fill the default there. */
-        if (srv->config.ws_origins.count <= 0)
-            nodus_ws_origins_default(&srv->config.ws_origins);
-        if (nodus_tcp_ws_listen(&srv->tcp, ws_port, &srv->config.ws_origins) != 0) {
+        if (nodus_tcp_ws_listen(&srv->tcp, ws_port) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to listen on WebSocket entry 127.0.0.1:%u (%s)",
                           (unsigned)ws_port, strerror(errno));
             goto fail;
         }
-        QGP_LOG_INFO(LOG_TAG, "WebSocket entry listening on 127.0.0.1:%u, %d allowed origin(s)",
-                     (unsigned)srv->tcp.ws_port, srv->config.ws_origins.count);
-        for (int i = 0; i < srv->config.ws_origins.count; i++)
-            QGP_LOG_INFO(LOG_TAG, "  ws origin: %s", srv->config.ws_origins.origin[i]);
+        QGP_LOG_INFO(LOG_TAG, "WebSocket entry listening on 127.0.0.1:%u",
+                     (unsigned)srv->tcp.ws_port);
     }
 
     /* Channel server (TCP 4003) — DISABLED: heap corruption in ring/replication.

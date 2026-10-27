@@ -77,15 +77,6 @@ extern "C" {
 /** base64(SHA-1) = 28 characters. */
 #define NODUS_WS_ACCEPT_LEN          28
 
-#define NODUS_WS_MAX_ORIGINS         8
-#define NODUS_WS_ORIGIN_MAX          256
-
-/** Default allowed Origins when the configuration names none: the web
- *  wallet and the Nodus Connect site (decision
- *  2026-10-01-connect-own-origin.md — same client code on two sites). */
-#define NODUS_WS_DEFAULT_ORIGIN      "https://wallet.nodusnetwork.io"
-#define NODUS_WS_CONNECT_ORIGIN      "https://connect.nodusnetwork.io"
-
 /* ── Opcodes (§5.2) and close codes (§7.4.1) ─────────────────────── */
 
 #define NODUS_WS_OP_CONT     0x0
@@ -107,20 +98,6 @@ extern "C" {
 #define NODUS_WS_CLOSE_TOO_BIG       1009
 #define NODUS_WS_CLOSE_INTERNAL      1011
 
-/* ── Allowed origins ─────────────────────────────────────────────── */
-
-typedef struct {
-    char origin[NODUS_WS_MAX_ORIGINS][NODUS_WS_ORIGIN_MAX];
-    int  count;
-} nodus_ws_origins_t;
-
-/** Append one origin. -1 when the list is full, the string is empty, too
- *  long, or carries a control character / space. */
-int nodus_ws_origins_add(nodus_ws_origins_t *o, const char *origin);
-
-/** Reset to the single default origin (NODUS_WS_DEFAULT_ORIGIN). */
-void nodus_ws_origins_default(nodus_ws_origins_t *o);
-
 /* ── Opening handshake (§4.2.1 / §4.2.2) ─────────────────────────── */
 
 #define NODUS_WS_HS_NEED_MORE   0
@@ -128,7 +105,7 @@ void nodus_ws_origins_default(nodus_ws_origins_t *o);
 #define NODUS_WS_HS_REJECT    (-1)
 
 typedef struct {
-    /** On REJECT: the HTTP status to answer with (400 / 403 / 426), or 0 to
+    /** On REJECT: the HTTP status to answer with (400 / 426), or 0 to
      *  close without any response (oversized head). */
     int         status;
     /** On REJECT: fixed text naming the failed check, for the log line.
@@ -150,14 +127,16 @@ typedef struct {
 /**
  * Parse an Upgrade request head from buf[0..len).
  *
+ * The Origin header is not read: any site, extension or program may open
+ * the entry. (An Origin allow-list was removed 2026-10-27: no decision
+ * stated it, and it refused every site but two and the wallet extension.)
+ *
  * @param sock_ip   the TCP peer address of the connection (dotted IPv4).
- * @param origins   allowed Origin values (exact byte match).
  * @return NODUS_WS_HS_NEED_MORE (head incomplete, still under the limit),
  *         NODUS_WS_HS_OK, or NODUS_WS_HS_REJECT (res->status/reason set).
  */
 int nodus_ws_handshake_parse(const uint8_t *buf, size_t len,
                              const char *sock_ip,
-                             const nodus_ws_origins_t *origins,
                              nodus_ws_hs_result_t *res);
 
 /** Write the "101 Switching Protocols" response for an OK result.
@@ -165,7 +144,7 @@ int nodus_ws_handshake_parse(const uint8_t *buf, size_t len,
 size_t nodus_ws_handshake_response(const nodus_ws_hs_result_t *res,
                                    char *out, size_t cap);
 
-/** Write a refusal response for a REJECT status (400/403/426).
+/** Write a refusal response for a REJECT status (400/426).
  *  Returns the byte count, 0 for status 0 or if cap is too small. */
 size_t nodus_ws_reject_response(int status, char *out, size_t cap);
 
