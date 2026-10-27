@@ -289,6 +289,26 @@ int nodus_dht2_store_handover_drop(nodus_dht2_store_t *s,
                                    const uint8_t hash[DHT2_HASH_LEN],
                                    bool *dropped);
 
+/** Decision 2026-10-27-dht-v2-handover-one-receipt.md, "What happens when the
+ *  obligation ends" (operator: a 48-epoch wait, "evet"): schedule the drop of
+ *  the record at `address` for the epoch `drop_e`, persisted one row per
+ *  address (store dht2_retire), only when the row is PERMANENT, pending and
+ *  its hash is `hash`. A schedule already there is KEPT (the first met epoch
+ *  counts); *`set` (may be NULL) tells whether a new one was written. The
+ *  schedule goes when the record row is deleted or REPLACED (trigger) and by
+ *  every handover_set. @return 0 / 16. */
+int nodus_dht2_store_handover_retire(nodus_dht2_store_t *s,
+                                     const uint8_t address[DHT2_HASH_LEN],
+                                     const uint8_t hash[DHT2_HASH_LEN],
+                                     uint64_t drop_e, bool *set);
+
+/** The schedule of `address`: *`found` false when none; else `drop_e` and the
+ *  hash it was scheduled for. @return 0 / 16. */
+int nodus_dht2_store_handover_retire_get(nodus_dht2_store_t *s,
+                                         const uint8_t address[DHT2_HASH_LEN],
+                                         bool *found, uint64_t *drop_e,
+                                         uint8_t hash[DHT2_HASH_LEN]);
+
 /** Decision 2026-10-27-dht-v2-handover-one-receipt.md: the fps that sent a
  *  valid pull-receipt for the pending record at `address`, persisted one row
  *  per (address, fp) — adding a fp twice keeps one. The rows are deleted when

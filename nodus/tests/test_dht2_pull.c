@@ -41,16 +41,20 @@
  *     domain, a signer that is not the sending peer; it counts for nothing
  *     when the signer is not in nearest_R(S(H)) of the record or the hash is
  *     not the held one; the same member twice counts once; a second DISTINCT
- *     member ends the obligation: the record is DROPPED at the source (not
- *     held, its acknowledgements gone, a later receipt does nothing); with
- *     |nearest_R| = 1 one receipt drops it; the acknowledging fps survive a
- *     store reopen; an acknowledger that left nearest_R does not count at
- *     drop time; a pending record whose nearest_R shrinks to the member that
- *     already acknowledged is dropped at the next epoch check with no new
- *     receipt, and one whose quorum is still not met stays pending with its
- *     acknowledgements; eligible again at the epoch check: flag and acks
- *     cleared, record kept; an EXPIRING replacement of a pending record
- *     carries no flag, so receipts naming it drop nothing;
+ *     member meets the quorum: the drop is SCHEDULED 48 epochs on (operator
+ *     decision, same record) — still held one epoch before, DROPPED at the
+ *     due epoch check (acknowledgements gone, a later receipt does nothing);
+ *     with |nearest_R| = 1 one receipt meets it; the acknowledging fps
+ *     survive a store reopen; an acknowledger that left nearest_R does not
+ *     count; at the due epoch the quorum is re-counted (not met → not
+ *     dropped; met at a later check → dropped); a pending record whose
+ *     nearest_R shrinks to the member that already acknowledged is scheduled
+ *     at the next epoch check with no new receipt, and one whose quorum is
+ *     still not met stays pending with its acknowledgements; eligible again
+ *     at the epoch check: flag, acks and schedule cleared, record kept past
+ *     the old due epoch; a new permanent version: pending, no acks, no
+ *     schedule; an EXPIRING replacement of a pending record carries no flag,
+ *     so receipts naming it schedule and drop nothing;
  *   · a failed send of a non-empty p_offer leaves no offer kept at the
  *     source (a p_want afterwards is "without an offer");
  *   · row 22 "epoch-boundary sets": when the responsibility GREW (S(H) lost
@@ -957,6 +961,32 @@ static bool reput_at_a(const env_t *r)
     return ok;
 }
 
+/* The 48-epoch wait (decision 2026-10-27-dht-v2-handover-one-receipt.md,
+ * operator "evet"): the drop is due WAIT_E blocks after the epoch the quorum
+ * was met. epoch_at_a moves A's sets to epoch `e` (members unchanged) and
+ * runs its epoch check. */
+#define WAIT_E ((uint64_t)NODUS_DHT2_PULL_DROP_WAIT_EPOCHS * \
+                (uint64_t)DNAC_EPOCH_LENGTH)
+
+static bool epoch_at_a(uint64_t e)
+{
+    g_n[0].view.sets->e = e;
+    g_n[0].view.snap.epoch_start = e;
+    return nodus_dht2_pull_epoch_check(g_n[0].pull, NOW) == 0;
+}
+
+/* The drop of `addr` is scheduled at A for epoch `due`. */
+static bool due_at(const uint8_t addr[DHT2_HASH_LEN], uint64_t due)
+{
+    bool     found = false;
+    uint64_t de = 0;
+    uint8_t  h[DHT2_HASH_LEN];
+
+    return nodus_dht2_store_handover_retire_get(g_n[0].st, addr, &found, &de,
+                                                h) == 0 &&
+           found && de == due;
+}
+
 /* A's pull_serve of a valid receipt that `signer` sends for (addr, h) with
  * generation g. Returns the serve result, or -2 when the receipt could not
  * be built. */
@@ -1052,9 +1082,15 @@ static void test_handover(const tkey_t *ka, const tkey_t *kb, const tkey_t *kw,
           "A still holds it");
     CHECK(acked_by(&g_n[0], addr, g_n[1].key.fp), "B's acknowledgement stored");
     CHECK(receipt_from(kw, nodus_dht2_store_generation(g_n[0].st), addr, hash)
-              == 0 && not_held(&g_n[0], addr),
-          "the receipt of a second DISTINCT member (W) ended the obligation: "
-          "the record is DROPPED at the source");
+              == 0 && get_at(&g_n[0], addr, hash) == NODUS_DHT2_GET_HELD &&
+              due_at(addr, 1440 + WAIT_E),
+          "the receipt of a second DISTINCT member (W) met the quorum: the "
+          "drop is scheduled 48 epochs on, the record still held");
+    CHECK(epoch_at_a(1440 + WAIT_E - (uint64_t)DNAC_EPOCH_LENGTH) &&
+              get_at(&g_n[0], addr, hash) == NODUS_DHT2_GET_HELD,
+          "one epoch before the due epoch: still held");
+    CHECK(epoch_at_a(1440 + WAIT_E) && not_held(&g_n[0], addr),
+          "at the due epoch the record is DROPPED at the source");
     CHECK(!acked_by(&g_n[0], addr, g_n[1].key.fp) &&
               !acked_by(&g_n[0], addr, kw->fp),
           "its acknowledgements went with the row");
@@ -1139,8 +1175,13 @@ static void test_handover(const tkey_t *ka, const tkey_t *kb, const tkey_t *kw,
         if (k < 5) {
             CHECK(pending_at(&g_n[0], addr), "the flag stays");
         } else {
-            CHECK(not_held(&g_n[0], addr),
-                  "a second distinct member's receipt drops the record");
+            const uint64_t cur_e = g_n[0].view.sets->e;
+
+            CHECK(due_at(addr, cur_e + WAIT_E) &&
+                      get_at(&g_n[0], addr, hash) == NODUS_DHT2_GET_HELD,
+                  "a second distinct member's receipt schedules the drop");
+            CHECK(epoch_at_a(cur_e + WAIT_E) && not_held(&g_n[0], addr),
+                  "dropped at the due epoch");
         }
     }
     CHECK(reput_at_a(&p), "the record is stored again for the offer checks");
@@ -1254,9 +1295,12 @@ static void test_handover_quorum(const tkey_t *ka, const tkey_t *kb,
     node_close(&g_n[0]);
     CHECK(node_open(&g_n[0]) == 0, "A reopened");
     CHECK(pending_at(&g_n[0], addr), "still pending after the reopen");
-    CHECK(receipt_from(kw, gen, addr, hash) == 0 && not_held(&g_n[0], addr),
-          "B's acknowledgement survived the reopen: W's receipt drops the "
-          "record");
+    CHECK(receipt_from(kw, gen, addr, hash) == 0 &&
+              due_at(addr, 1440 + WAIT_E),
+          "B's acknowledgement survived the reopen: W's receipt meets the "
+          "quorum, the drop is scheduled");
+    CHECK(epoch_at_a(1440 + WAIT_E) && not_held(&g_n[0], addr),
+          "dropped at the due epoch");
 
     /* An acknowledger that left nearest_R does not count. */
     CHECK(reput_at_a(&p) &&
@@ -1271,8 +1315,34 @@ static void test_handover_quorum(const tkey_t *ka, const tkey_t *kb,
     CHECK(receipt_from(kw, gen, addr, hash) == 0 && pending_at(&g_n[0], addr),
           "B is no longer in nearest_R: its acknowledgement does not count");
     set_members(&g_n[0], 1440, 6, (const uint8_t (*)[DHT2_FP_LEN])g_s6, 0, NULL);
-    CHECK(receipt_from(kw, gen, addr, hash) == 0 && not_held(&g_n[0], addr),
-          "back in nearest_R, B counts again: the record is dropped");
+    CHECK(receipt_from(kw, gen, addr, hash) == 0 &&
+              due_at(addr, 1440 + WAIT_E) &&
+              get_at(&g_n[0], addr, hash) == NODUS_DHT2_GET_HELD,
+          "back in nearest_R, B counts again: the drop is scheduled");
+
+    /* At the due epoch the quorum is re-counted: S(H) without A and B (A is
+     * not eligible, B's acknowledgement no longer counts) → NOT dropped;
+     * back to S6 one epoch later → dropped. */
+    {
+        uint8_t noab[5][DHT2_FP_LEN];
+
+        memcpy(noab[0], alt[1], DHT2_FP_LEN);       /* the fake in B's slot */
+        memcpy(noab[1], kw->fp, DHT2_FP_LEN);
+        memcpy(noab[2], g_s6[3], DHT2_FP_LEN);
+        memcpy(noab[3], g_s6[4], DHT2_FP_LEN);
+        memcpy(noab[4], g_s6[5], DHT2_FP_LEN);
+        set_members(&g_n[0], 1440 + WAIT_E, 5,
+                    (const uint8_t (*)[DHT2_FP_LEN])noab, 0, NULL);
+        CHECK(nodus_dht2_pull_epoch_check(g_n[0].pull, NOW) == 0 &&
+                  get_at(&g_n[0], addr, hash) == NODUS_DHT2_GET_HELD &&
+                  pending_at(&g_n[0], addr),
+              "due, but the quorum is no longer met: NOT dropped");
+        set_members(&g_n[0], 1440 + WAIT_E + (uint64_t)DNAC_EPOCH_LENGTH, 6,
+                    (const uint8_t (*)[DHT2_FP_LEN])g_s6, 0, NULL);
+        CHECK(nodus_dht2_pull_epoch_check(g_n[0].pull, NOW) == 0 &&
+                  not_held(&g_n[0], addr),
+              "met again after the due epoch: dropped");
+    }
 
     /* Membership alone meets the quorum (no new receipt): the record is
      * pending with B's acknowledgement stored, then S(H) shrinks to {B}. */
@@ -1302,31 +1372,38 @@ static void test_handover_quorum(const tkey_t *ka, const tkey_t *kb,
         set_members(&g_n[0], 2880, 1, (const uint8_t (*)[DHT2_FP_LEN])one, 0,
                     NULL);
         CHECK(nodus_dht2_pull_epoch_check(g_n[0].pull, NOW) == 0 &&
-                  not_held(&g_n[0], addr) &&
+                  get_at(&g_n[0], addr, hash) == NODUS_DHT2_GET_HELD &&
+                  due_at(addr, 2880 + WAIT_E),
+              "S(H) = {B}: the quorum is met at the epoch check with no new "
+              "receipt, the drop is scheduled");
+        CHECK(epoch_at_a(2880 + WAIT_E) && not_held(&g_n[0], addr) &&
                   !acked_by(&g_n[0], addr, g_n[1].key.fp),
-              "S(H) = {B}: dropped at the epoch check with no new receipt");
+              "dropped at the due epoch, its acknowledgements with it");
 
-        /* |nearest_R| = 1 and a fresh receipt: one receipt drops. */
+        /* |nearest_R| = 1 and a fresh receipt: one receipt meets it. */
         CHECK(reput_at_a(&p) &&
                   nodus_dht2_store_handover_set(g_n[0].st, addr, true, &f) == 0
                   && f && pending_at(&g_n[0], addr),
               "stored again, a new obligation set by hand");
         CHECK(receipt_from(kb, gen, addr, hash) == 0 &&
-                  not_held(&g_n[0], addr),
-              "|nearest_R| = 1: one receipt drops the record");
+                  due_at(addr, 2880 + 2 * WAIT_E) &&
+                  epoch_at_a(2880 + 2 * WAIT_E) && not_held(&g_n[0], addr),
+              "|nearest_R| = 1: one receipt schedules the drop; dropped when due");
     }
 
-    /* Eligible again: a pending record with one acknowledgement, then S(H)
-     * = {A, B} (A eligible for every key). The epoch check ends the
-     * obligation WITHOUT a drop: held, not pending, the ack gone. */
+    /* Eligible again: a pending record whose drop is SCHEDULED (two
+     * acknowledgements), then S(H) = {A, B} (A eligible for every key). The
+     * epoch check ends the obligation WITHOUT a drop: held, not pending, the
+     * acks and the schedule gone; still held at the old due epoch. */
     set_members(&g_n[0], 2880, 6, (const uint8_t (*)[DHT2_FP_LEN])g_s6, 0,
                 NULL);
     CHECK(reput_at_a(&p) &&
               nodus_dht2_store_handover_set(g_n[0].st, addr, true, &f) == 0 &&
               f, "stored again, obligation again");
-    CHECK(receipt_from(kb, gen, addr, hash) == 0 && pending_at(&g_n[0], addr) &&
-              acked_by(&g_n[0], addr, g_n[1].key.fp),
-          "B's receipt under S6: pending, acknowledged once");
+    CHECK(receipt_from(kb, gen, addr, hash) == 0 &&
+              receipt_from(kw, gen, addr, hash) == 0 &&
+              pending_at(&g_n[0], addr) && due_at(addr, 2880 + WAIT_E),
+          "B's and W's receipts under S6: the drop is scheduled");
     {
         uint8_t ab[2][DHT2_FP_LEN];
 
@@ -1338,8 +1415,41 @@ static void test_handover_quorum(const tkey_t *ka, const tkey_t *kb,
     CHECK(nodus_dht2_pull_epoch_check(g_n[0].pull, NOW) == 0 &&
               !pending_at(&g_n[0], addr) &&
               !acked_by(&g_n[0], addr, g_n[1].key.fp) &&
+              !due_at(addr, 2880 + WAIT_E) &&
               get_at(&g_n[0], addr, hash) == NODUS_DHT2_GET_HELD,
-          "eligible again: obligation cleared, the record kept");
+          "eligible again: obligation and schedule cleared, the record kept");
+    CHECK(epoch_at_a(2880 + WAIT_E) &&
+              get_at(&g_n[0], addr, hash) == NODUS_DHT2_GET_HELD,
+          "still held at the cancelled due epoch");
+
+    /* A NEW permanent version cancels the schedule: it carries the pending
+     * flag but no acknowledgement and no schedule (it needs its own
+     * receipts), so it is still held at the old due epoch. */
+    {
+        static env_t     v3;
+        uint8_t          a3[DHT2_HASH_LEN], h3[DHT2_HASH_LEN];
+        const uint64_t   e0 = 2880 + 2 * WAIT_E;
+
+        set_members(&g_n[0], e0, 6, (const uint8_t (*)[DHT2_FP_LEN])g_s6, 0,
+                    NULL);
+        CHECK(nodus_dht2_store_handover_set(g_n[0].st, addr, true, &f) == 0 &&
+                  f && receipt_from(kb, gen, addr, hash) == 0 &&
+                  receipt_from(kw, gen, addr, hash) == 0 &&
+                  due_at(addr, e0 + WAIT_E),
+              "pending, two receipts: the drop is scheduled");
+        CHECK(mk_rec(&v3, a3, kw, idn, 3, true) == 0 &&
+                  memcmp(a3, addr, DHT2_HASH_LEN) == 0 && reput_at_a(&v3) &&
+                  get_at(&g_n[0], addr, h3) == NODUS_DHT2_GET_HELD &&
+                  memcmp(h3, hash, DHT2_HASH_LEN) != 0,
+              "a permanent version 3 replaces it at A");
+        CHECK(pending_at(&g_n[0], addr) && !due_at(addr, e0 + WAIT_E) &&
+                  !acked_by(&g_n[0], addr, g_n[1].key.fp) &&
+                  !acked_by(&g_n[0], addr, kw->fp),
+              "version 3: pending, no acknowledgement, no schedule");
+        CHECK(epoch_at_a(e0 + WAIT_E) &&
+                  get_at(&g_n[0], addr, h3) == NODUS_DHT2_GET_HELD,
+              "version 3 still held at the old due epoch");
+    }
 
     /* An EXPIRING replacement of a pending permanent record carries no
      * obligation (§4.5 v covers permanent records only; Sol 7a final
@@ -1347,26 +1457,26 @@ static void test_handover_quorum(const tkey_t *ka, const tkey_t *kb,
     {
         static env_t     q;
         uint8_t          qaddr[DHT2_HASH_LEN], qhash[DHT2_HASH_LEN];
-        nodus_dht2_put_t qr;
 
         CHECK(nodus_dht2_store_handover_set(g_n[0].st, addr, true, &f) == 0 &&
                   f && pending_at(&g_n[0], addr),
               "permanent record pending again");
-        CHECK(mk_rec(&q, qaddr, kw, idn, 2, false) == 0 &&
-                  memcmp(qaddr, addr, DHT2_HASH_LEN) == 0 &&
-                  put_at(&g_n[0], &q, &qr) == 0 &&
-                  qr.outcome == NODUS_DHT2_PUT_STORED,
-              "an expiring version 2 replaces it at A (A eligible)");
+        CHECK(mk_rec(&q, qaddr, kw, idn, 4, false) == 0 &&
+                  memcmp(qaddr, addr, DHT2_HASH_LEN) == 0 && reput_at_a(&q),
+              "an expiring version 4 replaces it at A (put under {A, B})");
         CHECK(!pending_at(&g_n[0], addr),
               "the expiring replacement is not pending");
         CHECK(get_at(&g_n[0], addr, qhash) == NODUS_DHT2_GET_HELD,
-              "version 2 held");
+              "version 4 held");
         set_members(&g_n[0], 3600, 6, (const uint8_t (*)[DHT2_FP_LEN])g_s6, 0,
                     NULL);
         CHECK(receipt_from(kb, gen, addr, qhash) == 0 &&
                   receipt_from(kw, gen, addr, qhash) == 0 &&
+                  !due_at(addr, 3600 + WAIT_E) &&
+                  epoch_at_a(3600 + WAIT_E) &&
                   get_at(&g_n[0], addr, qhash) == NODUS_DHT2_GET_HELD,
-              "two receipts naming version 2: nothing dropped");
+              "two receipts naming version 4: no schedule, nothing dropped "
+              "48 epochs on");
     }
     net_down();
 }

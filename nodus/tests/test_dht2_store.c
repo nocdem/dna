@@ -44,6 +44,9 @@
  *     an empty interval returns the top; equal / losing writes keep the
  *     counter; top and g persist across reopen; the hand-over flag persists,
  *     survives a PERMANENT replacement only, an expiring row is never dropped;
+ *     the drop schedule (dht2_retire) is written only for a pending permanent
+ *     row with that hash, keeps the first epoch and all 64 bits, and goes
+ *     with handover_set and with a replacement;
  *   · review round: every call is 15 while the witness is in block sync
  *     (consensus_up false) or the tip time cannot fit int64, and 16 for a
  *     snapshot of another chain (open refuses such a store too); a FAILED
@@ -1167,6 +1170,54 @@ static void test_index(const tkey_t *A)
               found && P0(w, st, &a4) == 0 &&
               nodus_dht2_store_handover_get(st, aa, &pend, &found) == 0 &&
               pend, "a permanent replacement keeps the obligation");
+        {
+            /* The drop schedule (operator: 48-epoch wait): only for a
+             * pending permanent row with that hash; the first schedule is
+             * kept; handover_set and a replacement remove it. */
+            uint8_t  h4[DHT2_HASH_LEN], pl4[DHT2_HASH_LEN], hx[DHT2_HASH_LEN];
+            uint8_t  wrong[DHT2_HASH_LEN];
+            bool     f4 = false, p4 = false, set = false, has = false;
+            uint64_t de = 0;
+            static env_t a5;
+
+            memset(wrong, 0x5A, sizeof(wrong));
+            CHECK(nodus_dht2_store_handover_info(st, aa, &f4, &p4, h4,
+                                                 pl4) == 0 && f4 && p4,
+                  "a4 pending");
+            CHECK(nodus_dht2_store_handover_retire(st, aa, wrong, 100, &set)
+                      == 0 && !set &&
+                  nodus_dht2_store_handover_retire_get(st, aa, &has, &de, hx)
+                      == 0 && !has,
+                  "another hash: no schedule");
+            CHECK(nodus_dht2_store_handover_retire(st, aa, h4, 100, &set)
+                      == 0 && set &&
+                  nodus_dht2_store_handover_retire(st, aa, h4, 200, &set)
+                      == 0 && !set &&
+                  nodus_dht2_store_handover_retire_get(st, aa, &has, &de, hx)
+                      == 0 && has && de == 100 &&
+                  memcmp(hx, h4, DHT2_HASH_LEN) == 0,
+                  "scheduled at 100; a second schedule keeps the first");
+            CHECK(nodus_dht2_store_handover_retire(st, aa, h4, UINT64_MAX,
+                                                   &set) == 0 && !set,
+                  "still the first");
+            CHECK(nodus_dht2_store_handover_set(st, aa, true, &found) == 0 &&
+                  found &&
+                  nodus_dht2_store_handover_retire_get(st, aa, &has, &de, hx)
+                      == 0 && !has,
+                  "handover_set removes the schedule");
+            CHECK(nodus_dht2_store_handover_retire(st, aa, h4, UINT64_MAX,
+                                                   &set) == 0 && set &&
+                  nodus_dht2_store_handover_retire_get(st, aa, &has, &de, hx)
+                      == 0 && has && de == UINT64_MAX,
+                  "drop_e keeps all 64 bits");
+            dbase(&d, DHT2_CLASS_OWNER, ida, 5, 0);
+            d.validity_type = DHT2_VT_NONE;
+            d.has_data = true; d.data = (const uint8_t *)"z"; d.data_len = 1;
+            CHECK(mk(&a5, &d, A) == 0 && P0(w, st, &a5) == 0 &&
+                  nodus_dht2_store_handover_retire_get(st, aa, &has, &de, hx)
+                      == 0 && !has,
+                  "a replacement removes the schedule (trigger)");
+        }
         CHECK(nodus_dht2_store_handover_set(st, unknown, true, &found) == 0 &&
               !found, "no such record");
     }
@@ -1180,9 +1231,9 @@ static void test_index(const tkey_t *A)
     CHECK(st != NULL, "reopen");
     if (st != NULL) {
         CHECK(nodus_dht2_store_generation(st) == g1, "g persists");
-        CHECK(top_of(st) == 5, "top persists");
+        CHECK(top_of(st) == 6, "top persists");
         CHECK(nodus_dht2_store_scan(st, &w->ctx,1, se, 4, &cnt, &top) == 0 &&
-              cnt == 2 && top == 5, "scan after reopen");
+              cnt == 2 && top == 6, "scan after reopen");
         CHECK(nodus_dht2_store_handover_get(st, aa, &pend, &found) == 0 &&
               pend, "obligation persists");
     }

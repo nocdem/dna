@@ -833,17 +833,27 @@ static int handover_quorum(nodus_dht2_pull_t *p, const nodus_dht2_world_t *w,
 
 /* One pending record, at a receipt or at the epoch check. §4.5 (v) covers
  * permanent records this node NO LONGER holds: if it is eligible again the
- * obligation simply ends (flag and acknowledgements cleared, nothing
- * dropped); otherwise the record is dropped once the quorum is met.
+ * obligation simply ends (flag, acknowledgements and schedule cleared,
+ * nothing dropped). Otherwise, with the quorum met, the drop is SCHEDULED
+ * for this epoch + NODUS_DHT2_PULL_DROP_WAIT_EPOCHS × E (decision 2026-10-27-
+ * dht-v2-handover-one-receipt.md, operator: 48 epochs, "evet"; an existing
+ * schedule is kept) and, at the epoch check (`at_check`) once that epoch is
+ * reached, the record is DROPPED — only while the quorum is met at that
+ * check, so a drop never happens on acknowledgements that no longer count.
  * @return 0, -1 (fault). */
 static int handover_settle(nodus_dht2_pull_t *p, const nodus_dht2_world_t *w,
                            const uint8_t address[DHT2_HASH_LEN],
                            const uint8_t place[DHT2_HASH_LEN],
-                           const uint8_t hash[DHT2_HASH_LEN])
+                           const uint8_t hash[DHT2_HASH_LEN], bool at_check)
 {
-    bool met = false;
-    int  el = dht2_eligible(place, w->ctx.s0, w->ctx.n0, w->ctx.s1, w->ctx.n1,
-                            p->holder.self_fp);
+    const uint64_t wait = (uint64_t)NODUS_DHT2_PULL_DROP_WAIT_EPOCHS *
+                          (uint64_t)DNAC_EPOCH_LENGTH;
+    const uint64_t cur = w->sets->e;
+    uint64_t       due = 0;
+    uint8_t        sh[DHT2_HASH_LEN];
+    bool           met = false, sched = false;
+    int            el = dht2_eligible(place, w->ctx.s0, w->ctx.n0, w->ctx.s1,
+                                      w->ctx.n1, p->holder.self_fp);
 
     if (el < 0) {
         return -1;
@@ -855,8 +865,22 @@ static int handover_settle(nodus_dht2_pull_t *p, const nodus_dht2_world_t *w,
     if (handover_quorum(p, w, address, place, &met) != 0) {
         return -1;
     }
-    if (met && nodus_dht2_store_handover_drop(p->holder.store, address, hash,
-                                              NULL) != 0) {
+    if (!met) {
+        return 0;
+    }
+    /* Saturating: an epoch near UINT64_MAX schedules "never". */
+    if (nodus_dht2_store_handover_retire(p->holder.store, address, hash,
+                                         cur > UINT64_MAX - wait
+                                             ? UINT64_MAX : cur + wait,
+                                         NULL) != 0 ||
+        nodus_dht2_store_handover_retire_get(p->holder.store, address, &sched,
+                                             &due, sh) != 0) {
+        return -1;
+    }
+    if (at_check && sched && cur >= due &&
+        memcmp(sh, hash, DHT2_HASH_LEN) == 0 &&
+        nodus_dht2_store_handover_drop(p->holder.store, address, hash,
+                                       NULL) != 0) {
         return -1;
     }
     return 0;
@@ -931,7 +955,8 @@ int nodus_dht2_pull_epoch_check(nodus_dht2_pull_t *p, uint64_t now_ms)
         for (i = 0; i < cnt && rc == 0; i++) {
             if (page[i].pending) {
                 if (handover_settle(p, &w, page[i].address,
-                                    page[i].placement, page[i].hash) != 0) {
+                                    page[i].placement, page[i].hash,
+                                    true) != 0) {
                     rc = -1;
                 }
                 continue;
@@ -1232,9 +1257,9 @@ static int serve_receipt(nodus_dht2_pull_t *p, uint64_t now_ms,
             rc = -1;
             break;
         }
-        /* Decision 2026-10-27-dht-v2-handover-one-receipt.md: the obligation
-         * ends — the record is DROPPED — when the quorum is met. */
-        if (handover_settle(p, &w, r->e[i].a, place, held) != 0) {
+        /* Decision 2026-10-27-dht-v2-handover-one-receipt.md: when the quorum
+         * is met the drop is SCHEDULED (48 epochs); the epoch check drops. */
+        if (handover_settle(p, &w, r->e[i].a, place, held, false) != 0) {
             rc = -1;
             break;
         }
