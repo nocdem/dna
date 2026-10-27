@@ -10,8 +10,8 @@
  * nodus.dht.answer.v1, payload type /nodus/dht/pull-receipt/v1).
  *
  * ── WHAT IT PROVES ─────────────────────────────────────────────────────
- * If this file failed, one of these would be false (two in-memory stores, A
- * the source and B the puller, wired through the injected send function):
+ * If this file failed, one of these would be false (two SQLite stores in the
+ * run's mkdtemp dir, A the source and B the puller, wired by the send fn):
  *   · a full exchange (p_hello, p_get, p_offer, p_want, p_deliver) copies
  *     every record with the SAME canonical hash; the cursor persisted for
  *     the source is top + 1 with the source's generation; a second exchange

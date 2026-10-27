@@ -281,8 +281,8 @@ int nodus_dht2_store_handover_set(nodus_dht2_store_t *s,
 
 /** The end of an obligation (§4.5 v "then it may drop them"): DELETE the
  *  record row at `address` — its acknowledgements go with it (trigger) —
- *  in one transaction, and only when the row is still pending and its hash
- *  is `hash` (the version the receipts named). *`dropped` tells whether a
+ *  in one transaction, only when the row is PERMANENT, still pending and its
+ *  hash is `hash` (the version the receipts named). *`dropped` tells whether a
  *  row was deleted. @return 0 / 16. */
 int nodus_dht2_store_handover_drop(nodus_dht2_store_t *s,
                                    const uint8_t address[DHT2_HASH_LEN],

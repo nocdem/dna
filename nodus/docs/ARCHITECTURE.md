@@ -271,7 +271,7 @@ nodus/
 │   ├── test_dht2_ipc.c        # DHT v2 package 4: the witness listener's `ipc_dht` kind (raw peer + test handlers: snap / sets / name bytes, {err} answers, the SET_MAX sets frame = DERIVED_MAX, every refused frame, ipc_status unchanged) and nodus_dht2_wview against a scripted socket server with INJECTED time (5000 ms stale, 1000 ms poll, sets by `e`, name cache, timeout, backoff, late reply, malformed answers), one end-to-end case; the witness FILL functions are NOT exercised (test handlers stand in); mkdtemp dirs, nothing left behind
 │   ├── test_dht2_store.c      # DHT v2 package 5 (src/dht2/nodus_dht2_store.*): §4.1 code order through `put` (15, 1-9, 16), the name fault asked once, Select (equal / losing / A-B two arrivals), quota + node pools + inbox pools 80 / 20, inbox control (only the selected live record applies; DENIED 12, HANDLED [18, through]), LIST pages, get / sweep expiry edges, insertion index + generation + hand-over flag across reopen, the readiness gate, chain binding, forced SQLite faults → 16; since package 6a also the LIST page budget counting the control record and the put result's address kept across a refusal; injected context, fixed-seed keys, one mkdtemp dir removed at the end
 │   ├── test_dht2_holder.c     # DHT v2 package 6a (src/dht2/nodus_dht2_holder.*): every answer ONE RFC 0002 envelope under nodus.dht.answer.v1 (answer / receipt / refusal), get / put results in request order, put results keyed by the envelope's address (zero key for a parse failure), malformed requests and bad LIST envelopes → no answer, owner LIST vs not-owner 17, refusal 15 (no snapshot, block sync, another chain) and 14 (64 queued jobs), a put at |S(H)| = 1 stored and receipted, NOT refused (since package 7a, decision 2026-10-26-dht-v2-no-single-node-write-refusal.md), name FAULT / PENDING → 16, an abandoned name fault dropped after one poll period, GET of an inbox-control record → 17, an envelope > 262,144 B → per-key 1; injected view, fixed-seed keys, one mkdtemp dir removed at the end
-│   ├── test_dht2_pull.c       # DHT v2 package 7a (src/dht2/nodus_dht2_pull.*): two in-memory stores (A source, B puller) wired through the injected send function — a full exchange copies every record with the same hash and persists cursor top + 1; one exchange per source; the pull-receipt envelope (payload type /nodus/dht/pull-receipt/v1 under nodus.dht.answer.v1, signed by B); row 22 > 250 entries, replacement during delivery, generation reset, interrupted handover, epoch-boundary sets, non-eligible puller, wrong bit-vector length; the hand-over quorum (two distinct nearest_R members, or one when |nearest_R| = 1) then the record DROPPED; the cursor kept on a transient local failure, advanced on a definitive refusal; can lie: one in-order queue (no concurrency, no real disconnect), HELLO routed by sender, sets ≤ 6 members, DP pinned only for fixed sets, injected view, no rate limit / pageTimeout / live pulling / framing; default build, mkdtemp dir, nothing left on success
+│   ├── test_dht2_pull.c       # DHT v2 package 7a (src/dht2/nodus_dht2_pull.*): two SQLite stores in the run's mkdtemp dir (A source, B puller) wired through the injected send function — a full exchange copies every record with the same hash and persists cursor top + 1; one exchange per source; the pull-receipt envelope (payload type /nodus/dht/pull-receipt/v1 under nodus.dht.answer.v1, signed by B); row 22 > 250 entries, replacement during delivery, generation reset, interrupted handover, epoch-boundary sets, non-eligible puller, wrong bit-vector length; the hand-over quorum (two distinct nearest_R members, or one when |nearest_R| = 1) then the record DROPPED; the cursor kept on a transient local failure, advanced on a definitive refusal; can lie: one in-order queue (no concurrency, no real disconnect), HELLO routed by sender, sets ≤ 6 members, DP pinned only for fixed sets, injected view, no rate limit / pageTimeout / live pulling / framing; default build, mkdtemp dir, nothing left on success
 │   ├── test_p2p_secret_kat.c  # DHT v2 sub-package 3a step 1: byte pins of TODAY's 4004 SecretConnection in literal bytes (never through the CMT_P2P_SC_* macros) — fixed-vector T / key / challenge against python3-computed hex, live-handshake recompute on both sides, HELLO / HELLO_R / KEYX framing at literal offsets, sealed-frame nonce role ‖ 00 00 00 ‖ u64 BE counter, AUTHSIG under purpose 0x0A only; must pass on the unchanged base; default build, nothing left behind
 │   ├── test_p2p_secret_profiles.c # DHT v2 sub-package 3a step 2: session profiles WITNESS / CLIENT / NODE — matched handshakes authenticate, mixed pairs never do, python3 vectors per profile, purposes 0x0A / 0x0C / 0x0D do not cross-verify, init refuses every profile but the three consts (by pointer; since 3d also the ANON profile), `cmt_p2p_sc_init` = WITNESS; default build, nothing left behind
 │   ├── test_p2p_secret_anon.c # DHT v2 package 3d: the ANON family in memory — handshake with the KEM-key certificate, wire sizes 70 / 8,858 / 1,571 / 1,044 / 1,044, key and T recomputed from the captured bytes, bad certificate / rejected pin never reach ENCAPS, CONFIRM frame rules, family mismatches, refused kinds 0x05-0x07, fragmented input, 4004 caps unchanged (§15 "DHT v2 package 3d")
@@ -11983,7 +11983,7 @@ sessions and forwarding are package 6b; the pull exchange's core came in package
 no environment, no network, no clock; fixed-seed ML-DSA-87 keys, hedged signing so no
 signature byte is pinned; injected chain time; its own `mkdtemp` directory under `/tmp`,
 removed at the end — a crash leaves `/tmp/test_dht2_store_XXXXXX`; safe under
-`ctest -j`). Thirteen sections from `main` (`tests/test_dht2_store.c:1908-1920`):
+`ctest -j`). Thirteen sections from `main` (`tests/test_dht2_store.c:1920-1932`):
 `test_codes`, `test_select`, `test_quota`, `test_inbox`, `test_expiry`, `test_index`,
 `test_faults`, `test_gate`, `test_mismatch`, `test_memo`, `test_select_pool`, and two
 added with package 6a — `test_list_ctl_budget` (the control record counts toward the
@@ -13214,8 +13214,8 @@ the receipts named; its acknowledgements go with it). Deleting the row is the co
 reading of §4.5 (v) "then it may drop them" (`nodus_dht2_pull.h:74-78`); a dropped
 record returns through admission (a pull, a client write, read-repair) once this node is
 eligible for it again. An EXPIRING replacement of a pending permanent record is stored
-without the flag (§4.5 v obliges permanent records only), so receipts never delete a record
-before its expiry. A node that is `eligible` for a pending record
+without the flag (§4.5 v obliges permanent records only), and the drop itself deletes only a
+PERMANENT row (`AND noexp = 1`), so receipts never delete an expiring record before its expiry. A node that is `eligible` for a pending record
 again only clears the flag and the acknowledgements — nothing is dropped
 (`nodus_dht2_pull.c:834-863`; this case is stated in the .c, not in the header or the
 decision record).
@@ -13238,8 +13238,8 @@ compared; its own `mkdtemp` directory — a crash leaves `/tmp/test_dht2_pull_XX
 under `ctest -j`). Eleven sections from `main` (`tests/test_dht2_pull.c:1778-1788`):
 `test_basic`, `test_more_than_250`, `test_replacement`, `test_generation`,
 `test_handover`, `test_handover_quorum`, `test_offer_send_fail`, `test_epoch_persisted`,
-`test_epoch_sets`, `test_want_length`, `test_cursor_rules`. Two in-memory stores, A the
-source and B the puller, wired through the injected send function. Proves (file header
+`test_epoch_sets`, `test_want_length`, `test_cursor_rules`. Two stores (SQLite files in the
+run's `mkdtemp` directory), A the source and B the puller, wired through the injected send function. Proves (file header
 `:12-72`): a full exchange copies every record with the same canonical hash and persists
 cursor top + 1 with the source's generation; a second start is BUSY; the pull-receipt
 envelope (payload type, domain, signer, fields, entries in offer order); row 22 "> 250
@@ -13259,8 +13259,9 @@ routed by "sent by the puller" (the framing is a gap); sets ≤ 4 make every mem
 eligible, the 6-member sets pick their records with `dht2_nearest_r` itself; the growth
 DP is pinned only for fixed fp patterns; the view is injected; the rate limit,
 `pageTimeout`, live pulling, framing, source addresses and the "newer version" half of a
-receipt are not covered. The "eligible again" branch is the last block of
-`test_handover_quorum` (record kept, flag and acknowledgement cleared).
+receipt are not covered. The last two blocks of `test_handover_quorum`: "eligible again"
+(record kept, flag and acknowledgement cleared) and an expiring replacement of a pending
+record (no flag; two receipts naming it drop nothing).
 Nothing was built or run for this document; no run of this test is cited here.
 
 ### Block retention (pruning) and the SeenCommit cleanup (2026-10-03)

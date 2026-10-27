@@ -1368,7 +1368,7 @@ int nodus_dht2_store_handover_drop(nodus_dht2_store_t *s,
         return CODE_FAULT;
     }
     st = prep(s, "DELETE FROM dht2_rec WHERE address = ?1 AND hash = ?2 "
-                 "AND handover = ?3");
+                 "AND handover = ?3 AND noexp = 1"); /* §4.5 v: permanent */
     if (st == NULL ||
         !bound(st, b_64(st, 1, address) | b_64(st, 2, hash) |
                        b_i64(st, 3, HANDOVER_PENDING)) ||

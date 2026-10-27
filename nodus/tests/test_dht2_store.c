@@ -41,9 +41,9 @@
  *     later it is gone) and a record without expiry is never swept;
  *   · every stored change is re-indexed at the counter's top and the old
  *     index entry is gone; the scan is ascending from `s`, bounded by 250,
- *     an empty interval returns the top; equal / losing writes do not move
- *     the counter; top and the generation g persist across reopen; the
- *     hand-over flag persists and survives a PERMANENT replacement only;
+ *     an empty interval returns the top; equal / losing writes keep the
+ *     counter; top and g persist across reopen; the hand-over flag persists,
+ *     survives a PERMANENT replacement only, an expiring row is never dropped;
  *   · review round: every call is 15 while the witness is in block sync
  *     (consensus_up false) or the tip time cannot fit int64, and 16 for a
  *     snapshot of another chain (open refuses such a store too); a FAILED
@@ -1146,6 +1146,18 @@ static void test_index(const tkey_t *A)
               P0(w, st, &a3) == 0 &&
               nodus_dht2_store_handover_get(st, aa, &pend, &found) == 0 &&
               !pend, "an expiring replacement carries no obligation");
+        {
+            uint8_t h3[DHT2_HASH_LEN], pl3[DHT2_HASH_LEN];
+            bool    f3 = false, p3 = false, dropped = true;
+
+            CHECK(nodus_dht2_store_handover_set(st, aa, true, &found) == 0 &&
+                  found &&
+                  nodus_dht2_store_handover_info(st, aa, &f3, &p3, h3,
+                                                 pl3) == 0 && f3 && p3 &&
+                  nodus_dht2_store_handover_drop(st, aa, h3, &dropped) == 0 &&
+                  !dropped && get_rc(w, st, aa) == NODUS_DHT2_GET_HELD,
+                  "a flagged EXPIRING row is never dropped (expiry decides)");
+        }
         names_add(&w->names, A->fp);
         dbase(&d, DHT2_CLASS_OWNER, ida, 4, 0);
         d.validity_type = DHT2_VT_NONE;
