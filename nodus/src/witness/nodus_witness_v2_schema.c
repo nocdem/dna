@@ -2518,8 +2518,7 @@ static const struct { const char *table; const char *ddl; } V2_S20_TREE[] = {
     { "v2_tree_nodes",
       "CREATE TABLE IF NOT EXISTS v2_tree_nodes ("
       "digest BLOB PRIMARY KEY CHECK(typeof(digest)='blob' AND "
-      "length(digest)=64), rlp BLOB NOT NULL, "
-      "refs INTEGER NOT NULL CHECK(refs >= 0)) WITHOUT ROWID" },
+      "length(digest)=64), rlp BLOB NOT NULL) WITHOUT ROWID" },
     { "v2_tree_roots",
       "CREATE TABLE IF NOT EXISTS v2_tree_roots ("
       "scope INTEGER, leg INTEGER, sub INTEGER, domain INTEGER, "
@@ -2529,11 +2528,7 @@ static const struct { const char *table; const char *ddl; } V2_S20_TREE[] = {
       "CREATE TABLE IF NOT EXISTS v2_tree_compwit ("
       "height INTEGER, kind INTEGER, domain INTEGER, slot INTEGER, "
       "data BLOB NOT NULL, "
-      "PRIMARY KEY(height, kind, domain, slot)) WITHOUT ROWID" },
-    { "v2_tree_gc",
-      "CREATE TABLE IF NOT EXISTS v2_tree_gc ("
-      "id INTEGER PRIMARY KEY CHECK(id=1), gc_enabled INTEGER NOT NULL, "
-      "gc_disabled_reason TEXT)" }
+      "PRIMARY KEY(height, kind, domain, slot)) WITHOUT ROWID" }
 };
 
 /* One dirty table per trie of spec §3 (JUDGMENT, spec names no table

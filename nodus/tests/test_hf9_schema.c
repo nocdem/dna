@@ -6,7 +6,8 @@
  *
  * WHAT IT PROVES (each would be false if its group failed):
  *   1. a fresh database climbs to user_version 20 and carries v2_tree_ctx,
- *      v2_tree_nodes, v2_tree_roots, v2_tree_compwit, v2_tree_gc, the 19
+ *      v2_tree_nodes (exactly digest + rlp), v2_tree_roots,
+ *      v2_tree_compwit (and no v2_tree_gc table), the 19
  *      v2_tree_dirty_<trie> tables and the 21 v2_tree_shadow_<table>
  *      tables (each shadow = height, op + EVERY column of its live source
  *      table, in order); the storage tables carry exactly the S20 text of
@@ -465,20 +466,22 @@ static int test_fresh(void) {
     CHECK(has_table(fx.w->db, "v2_tree_ctx") == 1 &&
           has_table(fx.w->db, "v2_tree_nodes") == 1 &&
           has_table(fx.w->db, "v2_tree_roots") == 1 &&
-          has_table(fx.w->db, "v2_tree_compwit") == 1 &&
-          has_table(fx.w->db, "v2_tree_gc") == 1,
-          "the five fixed tree tables"); OK();
+          has_table(fx.w->db, "v2_tree_compwit") == 1,
+          "the four fixed tree tables"); OK();
+    CHECK(has_table(fx.w->db, "v2_tree_gc") == 0,
+          "no v2_tree_gc table (HF-9 keeps every committed node)"); OK();
     CHECK(has_col(fx.w->db, "v2_tree_ctx", "height") == 1 &&
           has_col(fx.w->db, "v2_tree_nodes", "digest") == 1 &&
           has_col(fx.w->db, "v2_tree_nodes", "rlp") == 1 &&
-          has_col(fx.w->db, "v2_tree_nodes", "refs") == 1 &&
           has_col(fx.w->db, "v2_tree_roots", "domain") == 1 &&
           has_col(fx.w->db, "v2_tree_roots", "root") == 1 &&
           has_col(fx.w->db, "v2_tree_compwit", "slot") == 1 &&
-          has_col(fx.w->db, "v2_tree_compwit", "data") == 1 &&
-          has_col(fx.w->db, "v2_tree_gc", "gc_enabled") == 1 &&
-          has_col(fx.w->db, "v2_tree_gc", "gc_disabled_reason") == 1,
+          has_col(fx.w->db, "v2_tree_compwit", "data") == 1,
           "the fixed tables' columns"); OK();
+    CHECK(q1(fx.w->db, "SELECT COUNT(*) FROM pragma_table_info("
+                       "'v2_tree_nodes')") == 2 &&
+          has_col(fx.w->db, "v2_tree_nodes", "refs") == 0,
+          "v2_tree_nodes has exactly digest and rlp (no refs column)"); OK();
 
     for (size_t i = 0; i < N_DIRTY; i++) {
         char t[96];
@@ -532,8 +535,7 @@ static int test_fresh(void) {
     /* idempotent, and the node-local tables stay empty */
     CHECK(nodus_witness_db_migrate_v2s20(fx.w) == 0, "second run"); OK();
     CHECK(q1(fx.w->db, "SELECT COUNT(*) FROM v2_tree_nodes") == 0 &&
-          q1(fx.w->db, "SELECT COUNT(*) FROM v2_tree_ctx") == 0 &&
-          q1(fx.w->db, "SELECT COUNT(*) FROM v2_tree_gc") == 0,
+          q1(fx.w->db, "SELECT COUNT(*) FROM v2_tree_ctx") == 0,
           "no tree row is written by the rung"); OK();
     /* no trigger anywhere: capture is the HF-9 edge's */
     CHECK(q1(fx.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
@@ -700,7 +702,7 @@ static int test_rollback_and_refusal(void) {
         fixture_t fx;
         CHECK(make_s19_db(&fx) == 0, "the S19 database with rows");
         CHECK(run_sql(fx.w->db, "CREATE TABLE v2_tree_nodes (digest BLOB "
-                                "PRIMARY KEY, rlp BLOB, refs INTEGER)") == 0,
+                                "PRIMARY KEY, rlp BLOB)") == 0,
               "plant a look-alike");
         CHECK(nodus_witness_db_migrate_v2s20(fx.w) == -1,
               "the look-alike is refused"); OK();
@@ -788,9 +790,10 @@ static int test_s20_open_drift(void) {
         "CREATE TABLE v2_tree_dirty_pools (domain_id INTEGER, "
         "pool_id INTEGER)",
         "DROP TABLE v2_tree_shadow_v2_pools",
-        "DROP TABLE v2_tree_gc;"
-        "CREATE TABLE v2_tree_gc (id INTEGER PRIMARY KEY, "
-        "gc_enabled INTEGER, gc_disabled_reason TEXT)",
+        "DROP TABLE v2_tree_nodes;"
+        "CREATE TABLE v2_tree_nodes (digest BLOB PRIMARY KEY CHECK("
+        "typeof(digest)='blob' AND length(digest)=64), rlp BLOB NOT NULL, "
+        "refs INTEGER NOT NULL CHECK(refs >= 0)) WITHOUT ROWID",
         "DROP TABLE v2_tree_compwit"
     };
     v2x_chain_t c;

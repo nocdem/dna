@@ -990,8 +990,8 @@ int nodus_witness_db_migrate_v2s19_ex(nodus_witness_t *w,
  *
  * ONE transaction creates, EMPTY and node-local (never in the genesis
  * bundle or the snapshot stream):
- *   v2_tree_ctx, v2_tree_nodes, v2_tree_roots, v2_tree_compwit,
- *   v2_tree_gc                    the DDL of spec §8, verbatim;
+ *   v2_tree_ctx, v2_tree_nodes, v2_tree_roots, v2_tree_compwit
+ *                                 the DDL of spec §8, verbatim;
  *   v2_tree_dirty_<trie>          one per trie of spec §3 (19): the trie's
  *                                 key columns (spec §4; + the domain for
  *                                 pools and claims), PRIMARY KEY = those
