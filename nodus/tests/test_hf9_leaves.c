@@ -237,6 +237,11 @@ static int test_report_v2(void) {
     r.bitmap_len = 0;
     CHECK(dna_v2_storage_report_leaf_hash_v2(&r, 0, NULL, out) == 0,
           "count 0 without addresses");
+    r.bitmap_len = 1;                       /* valid length for count 1 */
+    memset(r.bitmap, 0, sizeof(r.bitmap));
+    CHECK(dna_v2_storage_report_leaf_hash_v2(
+              &r, 1, (const uint8_t (*)[4])g_ip, out) == 0,
+          "count 1 with addresses accepted");
     CHECK(dna_v2_storage_report_leaf_hash_v2(&r, 1, NULL, out) == -1,
           "count 1 without addresses");
     CHECK(dna_v2_storage_report_leaf_hash_v2(NULL, 0, NULL, out) == -1,
@@ -405,6 +410,7 @@ static uint8_t g_pl[1025];
 static size_t hrw_ref(const uint8_t key[64], size_t n, uint32_t R,
                       size_t out[16]) {
     ref_t *e = malloc(n * sizeof(*e));
+    if (!e) { fprintf(stderr, "test setup: malloc failed\n"); exit(2); }
     size_t m = 0;
     for (size_t i = 0; i < n; i++) {
         if (!g_pl[i]) continue;
@@ -553,8 +559,12 @@ static int test_keys(void) {
     static const uint8_t cc[16] = {0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,
                                    0x21,0x22,0x23,0x24,0x25,0x26,0x27,0x28};
     CHECK(memcmp(k, cc, 16) == 0, "chain_config = param_id ‖ effective");
-    dna_v2_trie_key_reports(0x1112131415161718ull, 0x2122232425262728ull, k);
-    CHECK(memcmp(k, cc, 16) == 0, "reports = epoch ‖ seat");
+    memset(k, 0xA5, sizeof(k));                  /* poison: no stale match */
+    dna_v2_trie_key_reports(0x3132333435363738ull, 0x4142434445464748ull, k);
+    static const uint8_t rk[16] = {0x31,0x32,0x33,0x34,0x35,0x36,0x37,0x38,
+                                   0x41,0x42,0x43,0x44,0x45,0x46,0x47,0x48};
+    CHECK(memcmp(k, rk, 16) == 0, "reports = epoch ‖ seat");
+    CHECK(k[16] == 0xA5, "reports writes exactly 16 bytes");
     OK();
 
     CHECK(dna_v2_trie_key_stmem(0x0102030405060708ull, a, k) == 0, "stmem");
