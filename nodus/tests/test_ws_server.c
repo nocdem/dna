@@ -363,10 +363,18 @@ static void test_extension_origin_accepted(void) {
              rx_http_head(fd, rx) == 0 &&
              rx->len >= 12 && memcmp(rx->buf, "HTTP/1.1 101", 12) == 0;
     if (ok) PASS(); else FAIL("not accepted");
+    /* Present in the pool as an open WS connection before the close, so the
+     * "leaves" check below cannot pass for a connection that never got in. */
+    int present = 0;
+    for (int i = 0; ok && i < NODUS_TCP_MAX_CONNS; i++) {
+        nodus_tcp_conn_t *c = g_srv.tcp.pool[i];
+        if (c && c->is_ws && c->ws_open && strcmp(c->ip, "198.51.100.8") == 0) present++;
+    }
     if (fd >= 0) close(fd);
     free(rx);
 
     TEST("the closed extension connection leaves the pool");
+    if (present != 1) { FAIL("not in the pool after the 101"); return; }
     int gone = 0;
     for (int r = 0; r < MAX_ROUNDS && !gone; r++) {
         pump_once();
