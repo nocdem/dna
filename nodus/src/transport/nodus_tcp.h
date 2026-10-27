@@ -15,7 +15,6 @@
 #ifndef NODUS_TCP_H
 #define NODUS_TCP_H
 
-#include <stdatomic.h>
 #include "nodus/nodus_types.h"
 #include "crypto/nodus_channel_crypto.h"
 #include "transport/nodus_ws.h"
@@ -79,20 +78,13 @@ typedef enum {
 } nodus_conn_auth_state_t;
 
 /* Phase 3: Pending frame queued while wbuf is over the send cap.
- * Without the SecretConnection layer the frame is already encoded (header +
- * encrypted payload) and ready to blast into wbuf as soon as space becomes
- * available; with the layer it is the PLAINTEXT nodus frame, sealed portion
- * by portion by the drain (`sc_off` = how much is sealed). Stored FIFO. */
+ * The frame is already encoded (header + encrypted payload) and ready to
+ * blast into wbuf as soon as space becomes available. Stored FIFO. */
 typedef struct nodus_pending_frame {
     struct nodus_pending_frame *next;
     uint8_t                    *encoded;      /* malloc'd, owned */
     size_t                      frame_size;   /* encoded bytes including 7-byte header */
     uint64_t                    enqueued_at;  /* monotonic ms for diagnostics */
-    /* SecretConnection layer only (0 otherwise): `encoded` is then the
-     * PLAINTEXT nodus frame and this is the cursor — the plaintext bytes
-     * already sealed into wbuf by the drain. A multiple of 1024 until the
-     * frame completes. */
-    size_t                      sc_off;
 } nodus_pending_frame_t;
 
 typedef struct nodus_tcp_conn {
@@ -275,38 +267,6 @@ typedef struct nodus_tcp_conn {
      * cap on accept and clears it at auth success (nodus_server.c,
      * nodus_auth.c). */
     uint32_t               max_payload;
-
-    /* Optional SecretConnection (transport/nodus_tcp_sc.h, DHT v2 3b-1).
-     * NULL = not enabled: every path of this connection is exactly the
-     * plaintext / channel-crypto path above. Set by nodus_tcp_sc_enable,
-     * released by conn_free. Opaque here so this header stays free of the
-     * secret-connection headers (the browser builds include it). */
-    struct nodus_tcp_sc   *sc;
-
-    /* Sticky: the first byte read from or written to the socket sets it and
-     * nothing clears it. Empty buffers do not prove a connection unused
-     * (bytes may have been consumed and answered); the SecretConnection
-     * layer is enabled only on a connection where this is still false. */
-    atomic_bool            io_started;   /* relaxed: set by the reader and (under the write lock) the sender */
-
-    /* SecretConnection layer, loop-owned teardown: a fatal sealing failure
-     * (cipher error — the machine is dead) cannot close the connection from
-     * inside a send, so the send marks it and the next nodus_tcp_poll closes
-     * it, after the write lock is released. Counted in tcp->sc_close_requests. */
-    bool                   sc_close_req;
-    /* The loop has claimed this marked connection and is running its
-     * teardown callbacks (set under the write lock together with clearing
-     * sc_close_req). A nested nodus_tcp_poll started by on_disconnect must
-     * neither reap it again nor process events or job results for it. */
-    bool                   sc_closing;
-
-    /* WebSocket Close that arrived while a handshake job was outstanding
-     * (layer on): the input preceding it is still held. The close frame to
-     * send is kept here; the connection closes once that input has been
-     * opened and dispatched, in order, after on_session. */
-    bool                   ws_close_wait;
-    uint8_t                ws_close_len;
-    uint8_t                ws_close_frame[4];
 } nodus_tcp_conn_t;
 
 /* ── Callbacks ───────────────────────────────────────────────────── */
@@ -429,22 +389,6 @@ typedef struct nodus_tcp {
      * realloc under the other thread's write crashed the process. */
     void                    (*write_lock)(void *ctx, bool lock);
     void                     *write_lock_ctx;
-
-    /* SecretConnection layer (transport/nodus_tcp_sc.h, DHT v2 3b-1).
-     * on_session: a connection with the layer enabled has just become
-     *   AUTHENTICATED (both keys proven) — the first moment a nodus frame
-     *   may be sent on it. Runs inside nodus_tcp_poll, never inside a
-     *   socket read callback; may be NULL.
-     * sc_worker: the bounded handshake-job worker of THIS transport,
-     *   started by the first nodus_tcp_sc_enable and stopped by
-     *   nodus_tcp_close; NULL until then.
-     * sc_gen_last: last generation handed out; a handshake job carries
-     *   (slot, generation) and its result is applied only if the pool slot
-     *   still holds the connection that generation was given to. */
-    nodus_tcp_event_fn        on_session;
-    struct nodus_sc_worker   *sc_worker;
-    uint64_t                  sc_gen_last;
-    int                       sc_close_requests;  /* conns with sc_close_req set */
 } nodus_tcp_t;
 
 /**
@@ -565,9 +509,7 @@ int nodus_tcp_send(nodus_tcp_conn_t *conn,
  * Send a framed payload with progress reporting.
  * Same as nodus_tcp_send but calls progress_cb after each partial write.
  * progress_cb (and tcp->on_pending_full) run with the write lock held when
- * one is installed: they must not send on this transport, and must not call
- * the nodus_tcp_sc_* queries (nodus_tcp_sc.h) — those take the same
- * non-recursive lock and would self-deadlock.
+ * one is installed: they must not send on this transport.
  */
 int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
                              const uint8_t *payload, size_t len,

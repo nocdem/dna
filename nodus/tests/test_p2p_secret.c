@@ -232,9 +232,8 @@ static int side_init(side_t *s, node_t *node, cmt_p2p_sc_role_t role,
             kem_sk = node->id.mlkem_sk;
         }
     }
-    return cmt_p2p_sc_init_profile(s->sc, role, &s->host,
-                                   &CMT_P2P_SC_PROFILE_WITNESS, node->id.pk.bytes,
-                                   kem_pk, kem_sk, proto_ver, chain);
+    return cmt_p2p_sc_init(s->sc, role, &s->host, node->id.pk.bytes,
+                           kem_pk, kem_sk, proto_ver, chain);
 }
 
 static void side_free(side_t *s)

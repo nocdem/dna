@@ -26,54 +26,14 @@
 
 #define LOG_TAG "CMT_P2P_SC"
 
-/* The transcript preimage (row 4): the profile's tag (1..PROFILE_STR_MAX
- * bytes, checked at init) followed by all-fixed-length fields. */
-#define SC_T_FIXED_LEN (CMT_P2P_SC_DSA_PK_SIZE * 2 +                        \
-                        CMT_P2P_SC_KEM_PK_SIZE +                            \
-                        (CMT_P2P_SC_PROTO_VER_SIZE +                        \
-                         CMT_P2P_SC_CHAIN_ID_SIZE) * 2 +                    \
-                        CMT_P2P_SC_NONCE_SIZE * 2 +                         \
-                        CMT_P2P_SC_KEM_CT_SIZE)
-#define SC_T_PREIMAGE_MAX (CMT_P2P_SC_PROFILE_STR_MAX + SC_T_FIXED_LEN)
-
-/* ══ session profiles ════════════════════════════════════════════════ */
-
-const cmt_p2p_sc_profile_t CMT_P2P_SC_PROFILE_WITNESS = {
-    CMT_P2P_SC_TAG_T, CMT_P2P_SC_INFO_AEAD, CMT_P2P_SC_INFO_CHALLENGE
-};
-const cmt_p2p_sc_profile_t CMT_P2P_SC_PROFILE_CLIENT = {
-    "nodus.csess.transcript.v1", "nodus.csess.keys.v1/aead",
-    "nodus.csess.keys.v1/challenge"
-};
-const cmt_p2p_sc_profile_t CMT_P2P_SC_PROFILE_NODE = {
-    "nodus.nsess.transcript.v1", "nodus.nsess.keys.v1/aead",
-    "nodus.nsess.keys.v1/challenge"
-};
-
-/** 1..CMT_P2P_SC_PROFILE_STR_MAX bytes before the NUL. */
-static bool sc_profile_str_ok(const char *s)
-{
-    size_t n;
-
-    if (s == NULL) {
-        return false;
-    }
-    n = strnlen(s, CMT_P2P_SC_PROFILE_STR_MAX + 1);
-    return n >= 1 && n <= CMT_P2P_SC_PROFILE_STR_MAX;
-}
-
-/** Only the three const profiles of this file are valid (compared by
- *  pointer: an unknown profile is refused, Kurultay #43); the string bounds
- *  are a second guard. */
-static bool sc_profile_ok(const cmt_p2p_sc_profile_t *p)
-{
-    if (p != &CMT_P2P_SC_PROFILE_WITNESS && p != &CMT_P2P_SC_PROFILE_CLIENT &&
-        p != &CMT_P2P_SC_PROFILE_NODE) {
-        return false;
-    }
-    return sc_profile_str_ok(p->transcript_tag) &&
-           sc_profile_str_ok(p->info_aead) && sc_profile_str_ok(p->info_challenge);
-}
+/* The transcript preimage (row 4), all fixed-length fields. */
+#define SC_T_PREIMAGE_LEN (sizeof(CMT_P2P_SC_TAG_T) - 1 +                  \
+                           CMT_P2P_SC_DSA_PK_SIZE * 2 +                     \
+                           CMT_P2P_SC_KEM_PK_SIZE +                         \
+                           (CMT_P2P_SC_PROTO_VER_SIZE +                     \
+                            CMT_P2P_SC_CHAIN_ID_SIZE) * 2 +                 \
+                           CMT_P2P_SC_NONCE_SIZE * 2 +                      \
+                           CMT_P2P_SC_KEM_CT_SIZE)
 
 /* ══ small helpers ═══════════════════════════════════════════════════ */
 
@@ -363,19 +323,13 @@ static bool sc_fill_sealed(cmt_p2p_sc_t *sc, const uint8_t *in, size_t in_len,
  */
 static int sc_derive(cmt_p2p_sc_t *sc)
 {
-    uint8_t pre[SC_T_PREIMAGE_MAX];
+    uint8_t pre[SC_T_PREIMAGE_LEN];
     uint8_t t[CMT_P2P_SC_T_SIZE];
-    const cmt_p2p_sc_profile_t *pf = sc->profile;
-    size_t taglen = strlen(pf->transcript_tag);     /* 1..STR_MAX, init */
-    size_t want = taglen + SC_T_FIXED_LEN;
     size_t o = 0;
     int rc = CMT_OK;
 
-    if (taglen == 0 || taglen > CMT_P2P_SC_PROFILE_STR_MAX) {
-        return CMT_FAULT;                           /* init refused these */
-    }
 #define SC_APPEND(src, n) do { memcpy(pre + o, (src), (n)); o += (n); } while (0)
-    SC_APPEND(pf->transcript_tag, taglen);
+    SC_APPEND(CMT_P2P_SC_TAG_T, sizeof(CMT_P2P_SC_TAG_T) - 1);
     SC_APPEND(sc->i_dsa_pk, CMT_P2P_SC_DSA_PK_SIZE);
     SC_APPEND(sc->r_dsa_pk, CMT_P2P_SC_DSA_PK_SIZE);
     SC_APPEND(sc->r_kem_pk, CMT_P2P_SC_KEM_PK_SIZE);
@@ -388,16 +342,16 @@ static int sc_derive(cmt_p2p_sc_t *sc)
     SC_APPEND(sc->ct, CMT_P2P_SC_KEM_CT_SIZE);
 #undef SC_APPEND
 
-    if (o != want || o > sizeof(pre) || qgp_sha3_512(pre, o, t) != 0) {
+    if (o != sizeof(pre) || qgp_sha3_512(pre, sizeof(pre), t) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "transcript hash failed");
         rc = CMT_FAULT;
     } else if (hkdf_sha3_256(t, sizeof(t), sc->ss, sizeof(sc->ss),
-                             (const uint8_t *)pf->info_aead,
-                             strlen(pf->info_aead),
+                             (const uint8_t *)CMT_P2P_SC_INFO_AEAD,
+                             strlen(CMT_P2P_SC_INFO_AEAD),
                              sc->key, sizeof(sc->key)) != 0 ||
                hkdf_sha3_256(t, sizeof(t), sc->ss, sizeof(sc->ss),
-                             (const uint8_t *)pf->info_challenge,
-                             strlen(pf->info_challenge),
+                             (const uint8_t *)CMT_P2P_SC_INFO_CHALLENGE,
+                             strlen(CMT_P2P_SC_INFO_CHALLENGE),
                              sc->challenge, sizeof(sc->challenge)) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "HKDF-SHA3-256 failed");
         rc = CMT_FAULT;
@@ -455,20 +409,6 @@ int cmt_p2p_sc_init(cmt_p2p_sc_t *sc, cmt_p2p_sc_role_t role,
                     uint32_t proto_ver,
                     const uint8_t chain_id[CMT_P2P_SC_CHAIN_ID_SIZE])
 {
-    return cmt_p2p_sc_init_profile(sc, role, host, &CMT_P2P_SC_PROFILE_WITNESS,
-                                   local_dsa_pk, local_kem_pk, local_kem_sk,
-                                   proto_ver, chain_id);
-}
-
-int cmt_p2p_sc_init_profile(cmt_p2p_sc_t *sc, cmt_p2p_sc_role_t role,
-                            const cmt_p2p_sc_host_t *host,
-                            const cmt_p2p_sc_profile_t *profile,
-                            const uint8_t local_dsa_pk[CMT_P2P_SC_DSA_PK_SIZE],
-                            const uint8_t *local_kem_pk,
-                            const uint8_t *local_kem_sk,
-                            uint32_t proto_ver,
-                            const uint8_t chain_id[CMT_P2P_SC_CHAIN_ID_SIZE])
-{
     uint8_t msg[CMT_P2P_SC_HS_MSG_MAX];
     size_t o;
 
@@ -476,10 +416,6 @@ int cmt_p2p_sc_init_profile(cmt_p2p_sc_t *sc, cmt_p2p_sc_role_t role,
         return CMT_FAULT;
     }
     memset(sc, 0, sizeof(*sc));             /* state = DEAD until the end */
-    if (!sc_profile_ok(profile)) {
-        QGP_LOG_ERROR(LOG_TAG, "invalid session profile");
-        return CMT_FAULT;
-    }
     if (host == NULL || host->sign == NULL || host->verify == NULL ||
         local_dsa_pk == NULL || chain_id == NULL) {
         return CMT_FAULT;
@@ -498,7 +434,6 @@ int cmt_p2p_sc_init_profile(cmt_p2p_sc_t *sc, cmt_p2p_sc_role_t role,
 
     sc->role = role;
     sc->host = host;
-    sc->profile = profile;
     sc->proto_ver = proto_ver;
     memcpy(sc->chain_id, chain_id, CMT_P2P_SC_CHAIN_ID_SIZE);
 

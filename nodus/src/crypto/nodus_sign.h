@@ -77,14 +77,6 @@ extern "C" {
  *  seq, gossiped by PEX (phase F4). STRICT, same class as 0x0A: brand new,
  *  no compat to keep. 0x0B is the next free value after SESSION_AUTH. */
 #define NODUS_PURPOSE_WITNESS_ADDR   0x0B
-/** DHT v2 client session authentication (decision record docs/plans/
- *  decisions/2026-10-14-kurultay-21-summary.md "Session tags / purposes";
- *  2026-10-23-kurultay-43-summary.md) — the 32-byte challenge of a client
- *  session (profile nodus.csess.*). STRICT, same class as 0x0A. */
-#define NODUS_PURPOSE_CLIENT_SESSION_AUTH 0x0C
-/** DHT v2 node-to-node session authentication (same records; profile
- *  nodus.nsess.*). STRICT, same class as 0x0A. */
-#define NODUS_PURPOSE_NODE_SESSION_AUTH   0x0D
 
 /** Tagged preimage layout:
  *    MAGIC (4) || purpose (1) || data_len_be (4) || data (data_len)
@@ -125,9 +117,7 @@ int nodus_verify(const nodus_sig_t *sig,
  * — N1 delta 1, D2), NODUS_PURPOSE_SESSION_AUTH (0x0A) and
  * NODUS_PURPOSE_WITNESS_ADDR (0x0B) (4004 session, decision record
  * 2026-09-26-witness-port-session.md — brand new, strict from their first
- * line, like 0x09), and NODUS_PURPOSE_CLIENT_SESSION_AUTH (0x0C) /
- * NODUS_PURPOSE_NODE_SESSION_AUTH (0x0D) (DHT v2 sessions, same class).
- * MLKEM_BIND is strict DESPITE being a tier-2 client/
+ * line, like 0x09). MLKEM_BIND is strict DESPITE being a tier-2 client/
  * inter-node auth-time binding like its non-strict sibling KYBER_BIND
  * (0x02): without the tag, its preimage (mlkem_pk || nonce, 1600 bytes) is
  * byte-shape-identical to KYBER_BIND's (kyber_pk || nonce), so a raw
@@ -206,23 +196,6 @@ int nodus_sign_session_auth(nodus_sig_t *sig_out,
 int nodus_verify_session_auth(const nodus_sig_t *sig,
                               const uint8_t *challenge, size_t challenge_len,
                               const nodus_pubkey_t *pk);
-
-/** CLIENT_SESSION_AUTH (0x0C) and NODE_SESSION_AUTH (0x0D) — the 32-byte
- *  challenge of a DHT v2 client / node session. Both ARE in
- *  nodus_sign_purpose_is_strict(): always the NDS1-tagged preimage, no raw
- *  fallback either direction. Mirrors the 0x0A pair above. */
-int nodus_sign_client_session_auth(nodus_sig_t *sig_out,
-                                   const uint8_t *challenge, size_t challenge_len,
-                                   const nodus_seckey_t *sk);
-int nodus_verify_client_session_auth(const nodus_sig_t *sig,
-                                     const uint8_t *challenge, size_t challenge_len,
-                                     const nodus_pubkey_t *pk);
-int nodus_sign_node_session_auth(nodus_sig_t *sig_out,
-                                 const uint8_t *challenge, size_t challenge_len,
-                                 const nodus_seckey_t *sk);
-int nodus_verify_node_session_auth(const nodus_sig_t *sig,
-                                   const uint8_t *challenge, size_t challenge_len,
-                                   const nodus_pubkey_t *pk);
 
 /** WITNESS_ADDR domain (signed ADDR record, session design §2R3 N7 FINAL
  *  bytes; consumer: PEX, phase F4). IS in nodus_sign_purpose_is_strict():

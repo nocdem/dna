@@ -1475,9 +1475,8 @@ static void test_wrong_p2p_version(void)
     memset(&h, 0, sizeof(h));
     h.sign = sc_sign;
     h.verify = sc_verify;
-    CHECK(cmt_p2p_sc_init_profile(sc, CMT_P2P_SC_ROLE_INITIATOR, &h,
-                                  &CMT_P2P_SC_PROFILE_WITNESS, rid->pk.bytes, NULL,
-                                  NULL, 7u, CHAIN_A) == CMT_OK);
+    CHECK(cmt_p2p_sc_init(sc, CMT_P2P_SC_ROLE_INITIATOR, &h, rid->pk.bytes, NULL,
+                          NULL, 7u, CHAIN_A) == CMT_OK);
     (void)cmt_p2p_ip_parse("10.0.0.9", 8, &rip);
     CHECK(cmt_p2p_transport_accept(&B->t, &rip, 5555, 0, &slot, &gen) ==
           CMT_P2P_ERR_NONE);
@@ -1859,8 +1858,7 @@ static raw_t *raw_new(cmt_p2p_sc_role_t role)
     r->host.ctx = r->holder;
     r->host.sign = sc_sign;
     r->host.verify = sc_verify;
-    if (cmt_p2p_sc_init_profile(r->sc, role, &r->host, &CMT_P2P_SC_PROFILE_WITNESS,
-                        r->holder->id.pk.bytes,
+    if (cmt_p2p_sc_init(r->sc, role, &r->host, r->holder->id.pk.bytes,
                         role == CMT_P2P_SC_ROLE_RESPONDER ? r->holder->id.mlkem_pk : NULL,
                         role == CMT_P2P_SC_ROLE_RESPONDER ? r->holder->id.mlkem_sk : NULL,
                         CMT_P2P_PROTOCOL_VERSION, CHAIN_A) != CMT_OK) {

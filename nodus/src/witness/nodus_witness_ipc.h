@@ -9,7 +9,7 @@
  * nodus_tcp_unix_connect). Frames are ordinary nodus wire frames (the
  * transport's 7-byte header), plaintext; no handshake method exists here.
  *
- * Three kinds of connection, told apart by their FIRST frame:
+ * Two kinds of connection, told apart by their FIRST frame:
  *
  *   session (one per core client session that has sent a `dnac_*`):
  *     first frame  {"q":"ipc_hello","pk":<bstr NODUS_PK_BYTES>,
@@ -32,27 +32,6 @@
  *                   "sr":bstr 64 state root,"ci":bstr 32 chain id,
  *                   "po":bool p2p host exists,"lp":uint 4004 port}.
  *
- * A THIRD kind (DHT v2, docs/plans/2026-10-14-dht-v2-design.md rev 5 §13
- * row 13), the nodus-storage process's read-only view of the chain:
- *
- *   dht (one per nodus-storage, same euid):
- *     first frame  {"q":"ipc_dht"}
- *     then         three requests, each answered with a frame that echoes
- *                  the request's "q" (so the asker can tell the answers
- *                  apart) and, on a node-local fault, {"q":…,"err":tstr}
- *                  instead of the fields below (a name answer keeps "fp"):
- *       {"q":"ipc_dht_snap"} →
- *           {"q","ci":bstr 32 chain id,"h":uint committed tip,
- *            "t":uint tip block time (seconds),"cu":bool consensus latch,
- *            "e":uint last epoch boundary the tip has passed}
- *       {"q":"ipc_dht_sets"} →
- *           {"q","e":uint,"s0":[bstr 64 …] S(e),"s1":[bstr 64 …] S(e−E),
- *            "rg":[{"f":bstr 64,"st":uint 1|2} …] registry fp + status}
- *       {"q":"ipc_name","fp":bstr 64} →
- *           {"q","fp":bstr 64,"h":uint committed tip,"n":uint 0|1}
- *     Frames of this kind other than those three close the connection,
- *     as does a request frame longer than NODUS_WITNESS_IPC_CTL_FRAME_MAX.
- *
  * Anything else as a first frame — or a frame a connection's kind does not
  * serve — closes that connection. So does any frame that arrives while
  * that connection's own queue toward core is at
@@ -74,7 +53,6 @@
 
 #include "nodus/nodus_types.h"
 #include "protocol/nodus_tier2.h"           /* nodus_t2_status_info_t */
-#include "dnac/ledger_roots_v2.h"           /* DNA_V2_STORAGE_SET_MAX */
 
 #ifdef __cplusplus
 extern "C" {
@@ -90,10 +68,6 @@ struct nodus_witness;
 #define NODUS_WITNESS_IPC_Q_HELLO     "ipc_hello"
 #define NODUS_WITNESS_IPC_Q_CTL       "ipc_ctl"
 #define NODUS_WITNESS_IPC_Q_STATUS    "ipc_status"
-#define NODUS_WITNESS_IPC_Q_DHT       "ipc_dht"
-#define NODUS_WITNESS_IPC_Q_DHT_SNAP  "ipc_dht_snap"
-#define NODUS_WITNESS_IPC_Q_DHT_SETS  "ipc_dht_sets"
-#define NODUS_WITNESS_IPC_Q_NAME      "ipc_name"
 
 /**
  * The ONE routing rule for client tier-2 methods the chain serves: the
@@ -114,45 +88,6 @@ static inline bool nodus_chain_method_routed(const char *method) {
 
 /** Largest control frame either side builds (status answer ≈ 150 B). */
 #define NODUS_WITNESS_IPC_CTL_FRAME_MAX  512
-
-/*
- * Largest frame of the `ipc_dht` kind: the `ipc_dht_sets` answer, built with
- * N = DNA_V2_STORAGE_SET_MAX members in S(e), S(e − E) and the registry
- * (never a literal 256 — the cap moves with the chain, decision
- * 2026-10-22-storage-cap-1024-in-hf9.md). Bytes of the CBOR encoding:
- *
- *   map(5) header                                   1
- *   "q"  key 2 + tstr "ipc_dht_sets" 1 + 12        15
- *   "e"  key 2 + uint, 8-byte form 1 + 8           11
- *   "s0" key 3 + array header ≤ 65535 members 3     6
- *   "s1" key 3 + array header 3                     6
- *   "rg" key 3 + array header 3                     6
- *                                           fixed  45
- *   per member: s0 entry bstr(64) = 2 + 64         66
- *               s1 entry                           66
- *               rg row map(2) 1 + "f" 2 + bstr 66
- *                     + "st" 3 + uint 1..23 → 1    73
- *                                           total 205 per member
- *
- * DERIVED = 45 + 205·N  (N = 256: 52 525 B, the "≈ 52 KB" of row 13).
- * The bound is twice DERIVED rounded up to a whole 64 KiB — at N = 256
- * that is 128 KiB, row 13's figure; at N = 1024 it is 448 KiB. The
- * assertions below keep it ≥ DERIVED and inside the transport's frame cap.
- * The snap and name answers are far smaller (≈ 150 B) and fit it too.
- */
-#define NODUS_WITNESS_IPC_DHT_SETS_DERIVED_MAX \
-    ((size_t)45 + (size_t)205 * (size_t)DNA_V2_STORAGE_SET_MAX)
-#define NODUS_WITNESS_IPC_DHT_FRAME_MAX \
-    ((((size_t)2 * NODUS_WITNESS_IPC_DHT_SETS_DERIVED_MAX + 65535u) / 65536u) \
-     * 65536u)
-
-_Static_assert(DNA_V2_STORAGE_SET_MAX <= 65535u,
-               "array headers above are the 3-byte form");
-_Static_assert(NODUS_WITNESS_IPC_DHT_FRAME_MAX >=
-                   NODUS_WITNESS_IPC_DHT_SETS_DERIVED_MAX,
-               "the ipc_dht frame bound is below the derived maximum");
-_Static_assert(NODUS_WITNESS_IPC_DHT_FRAME_MAX <= NODUS_MAX_FRAME_TCP,
-               "the ipc_dht frame bound exceeds the transport's frame cap");
 
 /*
  * Per-connection queue bounds. "Queued" = the bytes one IPC connection
@@ -223,46 +158,8 @@ typedef struct {
     uint16_t listen_port;                /* its bound port (0 = none)     */
 } nodus_witness_ipc_status_t;
 
-/** `ipc_dht_snap` (row 13). */
-typedef struct {
-    uint8_t  chain_id[32];               /* ci                            */
-    uint64_t height;                     /* h  — committed tip            */
-    uint64_t tip_time;                   /* t  — tip block time, seconds  */
-    bool     consensus_up;               /* cu — latch: the witness
-                                          * switched to consensus (or
-                                          * started in it)                */
-    uint64_t epoch_start;                /* e  — last boundary H the tip
-                                          * has passed (tip − tip mod E)  */
-} nodus_witness_dht_snap_t;
-
-/** One registry row of `ipc_dht_sets` `rg`: fp + status, no public key. */
-typedef struct {
-    uint8_t fp[64];
-    uint8_t status;                      /* DNA_V2_STORAGE_ACTIVE / _EXITING */
-} nodus_witness_dht_row_t;
-
-/** `ipc_dht_sets` (row 13). ~200 KB at 1024 members: heap-allocate it. */
-typedef struct {
-    uint64_t                e;
-    uint32_t                n0;          /* members of s0                 */
-    uint32_t                n1;          /* members of s1                 */
-    uint32_t                nrg;         /* rows of rg                    */
-    uint8_t                 s0[DNA_V2_STORAGE_SET_MAX][64];  /* S(e)     */
-    uint8_t                 s1[DNA_V2_STORAGE_SET_MAX][64];  /* S(e − E) */
-    nodus_witness_dht_row_t rg[DNA_V2_STORAGE_SET_MAX];
-} nodus_witness_dht_sets_t;
-
-/** `ipc_name` answer. */
-typedef struct {
-    uint64_t height;                     /* h — committed tip             */
-    bool     named;                      /* n — the key has a name        */
-} nodus_witness_dht_name_t;
-
 /** Where the IPC listener hands its work. Production binds them to a
- *  witness (nodus_witness_ipc_handlers_for); tests bind their own. The
- *  three dht_* callbacks return 0 (answer filled) or -1 (node-local fault:
- *  the asker gets {err}); one left NULL closes the connection that sends
- *  that request. */
+ *  witness (nodus_witness_ipc_handlers_for); tests bind their own. */
 typedef struct {
     void (*dispatch_dnac)(void *ctx, struct nodus_tcp_conn *conn,
                           const uint8_t *payload, size_t len,
@@ -273,10 +170,6 @@ typedef struct {
                        const uint8_t *payload, size_t len,
                        uint32_t txn_id);
     void (*status)(void *ctx, nodus_witness_ipc_status_t *out);
-    int  (*dht_snap)(void *ctx, nodus_witness_dht_snap_t *out);
-    int  (*dht_sets)(void *ctx, nodus_witness_dht_sets_t *out);
-    int  (*dht_name)(void *ctx, const uint8_t fp[64],
-                     nodus_witness_dht_name_t *out);
     void  *ctx;
 } nodus_witness_ipc_handlers_t;
 
@@ -290,32 +183,6 @@ typedef struct nodus_witness_ipc nodus_witness_ipc_t;
  */
 void nodus_witness_status_fill(struct nodus_witness *w,
                                nodus_t2_status_info_t *info);
-
-/**
- * The witness-side answers of the `ipc_dht` kind, as plain functions: the
- * IPC handlers call them, and so can an in-process caller (the combined
- * nodus-server has no witness.sock — compare nodus_witness_status_fill).
- * Each returns 0 (`out` filled) or -1 (no chain open, or a store fault:
- * never a partial answer). Reads only the committed tables; no clock.
- *
- *  snap: tip height, tip block time (nodus_witness_v2_tip_block_time),
- *        `cu` = the consensus node's cs_started (set exactly when
- *        cmt_cs_start has run, never cleared before release), `e` = tip −
- *        tip mod DNAC_EPOCH_LENGTH.
- *  sets: e as above; e = 0 → no members; e ≤ E → s1 empty; else S(e) and,
- *        for e > E, S(e − E) via nodus_witness_storage_set_get (absent or
- *        failing its hash check = -1); rg = registry rows ACTIVE and
- *        EXITING, node_fp ascending.
- *  name: the v2_names row of `fp` (handle_dnac_name_of's lookup): absent →
- *        named = false; present and valid → named = true; present but
- *        malformed, or the store unreadable → -1.
- */
-int nodus_witness_dht_snap_fill(struct nodus_witness *w,
-                                nodus_witness_dht_snap_t *out);
-int nodus_witness_dht_sets_fill(struct nodus_witness *w,
-                                nodus_witness_dht_sets_t *out);
-int nodus_witness_dht_name_fill(struct nodus_witness *w, const uint8_t fp[64],
-                                nodus_witness_dht_name_t *out);
 
 /** Handlers that serve witness `w` (it need not be initialised yet;
  *  it must be by the first nodus_witness_ipc_poll). */

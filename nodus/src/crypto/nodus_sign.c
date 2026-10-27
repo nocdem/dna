@@ -118,12 +118,7 @@ bool nodus_sign_purpose_is_strict(uint8_t purpose) {
            purpose == NODUS_PURPOSE_VIEWOK ||
            purpose == NODUS_PURPOSE_MLKEM_BIND ||
            purpose == NODUS_PURPOSE_SESSION_AUTH ||
-           purpose == NODUS_PURPOSE_WITNESS_ADDR ||
-           /* 0x0C / 0x0D: DHT v2 client / node session auth (decision
-            * records 2026-10-14-kurultay-21-summary.md, 2026-10-23-
-            * kurultay-43-summary.md) — brand new, same reason as 0x0A. */
-           purpose == NODUS_PURPOSE_CLIENT_SESSION_AUTH ||
-           purpose == NODUS_PURPOSE_NODE_SESSION_AUTH;
+           purpose == NODUS_PURPOSE_WITNESS_ADDR;
 }
 
 /* ───── Tagged sign/verify (internal engine) ────────────────────────── */
@@ -304,34 +299,6 @@ int nodus_verify_session_auth(const nodus_sig_t *sig,
                               const uint8_t *challenge, size_t challenge_len,
                               const nodus_pubkey_t *pk) {
     return nodus_verify_tagged(sig, NODUS_PURPOSE_SESSION_AUTH,
-                                challenge, challenge_len, pk);
-}
-
-int nodus_sign_client_session_auth(nodus_sig_t *sig_out,
-                                   const uint8_t *challenge, size_t challenge_len,
-                                   const nodus_seckey_t *sk) {
-    return nodus_sign_tagged(sig_out, NODUS_PURPOSE_CLIENT_SESSION_AUTH,
-                              challenge, challenge_len, sk);
-}
-
-int nodus_verify_client_session_auth(const nodus_sig_t *sig,
-                                     const uint8_t *challenge, size_t challenge_len,
-                                     const nodus_pubkey_t *pk) {
-    return nodus_verify_tagged(sig, NODUS_PURPOSE_CLIENT_SESSION_AUTH,
-                                challenge, challenge_len, pk);
-}
-
-int nodus_sign_node_session_auth(nodus_sig_t *sig_out,
-                                 const uint8_t *challenge, size_t challenge_len,
-                                 const nodus_seckey_t *sk) {
-    return nodus_sign_tagged(sig_out, NODUS_PURPOSE_NODE_SESSION_AUTH,
-                              challenge, challenge_len, sk);
-}
-
-int nodus_verify_node_session_auth(const nodus_sig_t *sig,
-                                   const uint8_t *challenge, size_t challenge_len,
-                                   const nodus_pubkey_t *pk) {
-    return nodus_verify_tagged(sig, NODUS_PURPOSE_NODE_SESSION_AUTH,
                                 challenge, challenge_len, pk);
 }
 

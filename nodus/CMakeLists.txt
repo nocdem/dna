@@ -131,12 +131,6 @@ set(NODUS_SOURCES
 
     # Transport — TCP is cross-platform (epoll on Linux, select on Windows)
     src/transport/nodus_tcp.c
-    # DHT v2 sub-package 3b-1: the optional SecretConnection layer of
-    # nodus_tcp (per-connection machine, bounded handshake-job worker,
-    # sealing). Not enabled on any port yet — 3b-2 / 3c wire it. Compiled with
-    # NODUS_TCP_SC (target_compile_definitions below); the browser / web-wallet
-    # builds that list nodus_tcp.c themselves do not define it.
-    src/transport/nodus_tcp_sc.c
     # Socket readiness + socket shims for the ports 4000-4004 (net-layer
     # design 2026-10-19, package N1): epoll on Linux/Android, select on
     # Windows. Today's user: the 4004 host (nodus_p2p_host.c below).
@@ -630,20 +624,6 @@ set(NODUS_SOURCES
     # same ownership pattern as ledger_roots_v2.c.
     ${SHARED_DIR}/dnac/domain_wire.c
 
-    # DHT v2 package 1 — the record codec (design 2026-10-14-dht-v2-design.md
-    # rev 5 §3.1, §3.2, §4.2, §13 rows 1, 3-6, 22, 23): strict DAG-CBOR,
-    # the IPNS-v2 signed record + canonical envelope, `_id` / address,
-    # Select, nearest_R, RFC 0002 envelopes and the owner-signed LIST
-    # request. Package 2 (dht2_msg.c): the wire messages of §13 rows 7,
-    # 11, 12, 14, 15, 18. Pure, no I/O; no caller yet. In the common list so
-    # it compiles on Windows (the browser / Connect core will use it too).
-    ${SHARED_DIR}/dht2/dht2_cbor.c
-    ${SHARED_DIR}/dht2/dht2_time.c
-    ${SHARED_DIR}/dht2/dht2_record.c
-    ${SHARED_DIR}/dht2/dht2_place.c
-    ${SHARED_DIR}/dht2/dht2_envelope.c
-    ${SHARED_DIR}/dht2/dht2_msg.c
-
     # Shared crypto (standalone only — messenger tree provides these via dht_lib)
     ${SHARED_CRYPTO_SOURCES}
 )
@@ -707,15 +687,6 @@ if(NOT WIN32)
         # but the shared dialer's (tests/storage_linked.cmake).
         src/server/nodus_dht_backend_ipc.c
         src/dht/nodus_dht_ipc.c
-        # DHT v2 package 4 — the storage side's view of the witness
-        # (`ipc_dht` kind of witness.sock). No caller yet (package 5); a
-        # static-library member, so nodus-storage links it only once called.
-        src/dht/nodus_dht2_wview.c
-        # DHT v2 package 5 — the holder store and its admission (§4.1): a
-        # SQLite store of canonical envelopes + put / get / list / sweep /
-        # insertion-index scan, over an injected context (snapshot, sets,
-        # name callback, limits). No caller yet (package 6 serves it).
-        src/dht2/nodus_dht2_store.c
         # Split S5b — the H-10 partial-wipe boot gate in its own object, so
         # nodus-storage runs the same check as core before opening nodus.db.
         src/server/nodus_partial_wipe.c
@@ -1196,12 +1167,6 @@ target_include_directories(nodus PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 # Channel system disabled — heap corruption in ring/replication causes SIGABRT
 target_compile_definitions(nodus PUBLIC NODUS_CHANNELS_DISABLED)
 
-# DHT v2 3b-1: compile the optional SecretConnection layer into nodus_tcp.c.
-# PRIVATE on purpose — only libnodus compiles that file here; the browser and
-# web-wallet builds that list nodus_tcp.c on their own stay without the layer
-# until 3c adds nodus_tcp_sc.c + cmt_p2p_secret.c to them and defines this.
-target_compile_definitions(nodus PRIVATE NODUS_TCP_SC=1)
-
 target_include_directories(nodus PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -1564,16 +1529,6 @@ add_test(NAME test_hashring COMMAND test_hashring)
 add_executable(test_tcp tests/test_tcp.c)
 target_link_libraries(test_tcp nodus dsa nodus)
 add_test(NAME test_tcp COMMAND test_tcp)
-
-# DHT v2 sub-package 3b-1 — the SecretConnection layer of nodus_tcp: loopback
-# pairs on the CLIENT (0x0C) and NODE (0x0D) profiles incl. a 5 MiB frame,
-# mixed profiles, the dial pin, reserve-before-seal on a full queue, (slot,
-# generation) on job completions, the layer on a WebSocket connection, and
-# the unchanged bytes without the layer. Default build; ephemeral loopback
-# ports (no fixed port); heap-only.
-add_executable(test_tcp_sc tests/test_tcp_sc.c)
-target_link_libraries(test_tcp_sc nodus dsa kem nodus crypto)
-add_test(NAME test_tcp_sc COMMAND test_tcp_sc)
 
 # Phase 3: Pending queue / backpressure test
 add_executable(test_pending_queue tests/test_pending_queue.c)
@@ -2067,40 +2022,6 @@ add_executable(test_cmt_pb tests/test_cmt_pb.c)
 target_link_libraries(test_cmt_pb nodus dsa nodus crypto)
 add_test(NAME test_cmt_pb COMMAND test_cmt_pb)
 
-# DHT v2 package 1 — the record codec's row-22 vectors (design
-# 2026-10-14-dht-v2-design.md rev 5). Default build, no network, no files,
-# no clock; nothing left behind. What it proves / how it can lie: the
-# header of tests/test_dht2_codec.c.
-add_executable(test_dht2_codec tests/test_dht2_codec.c)
-target_link_libraries(test_dht2_codec nodus dsa nodus crypto)
-add_test(NAME test_dht2_codec COMMAND test_dht2_codec)
-
-# DHT v2 package 4 — `ipc_dht` (witness/nodus_witness_ipc.c) against the
-# storage-side view (dht/nodus_dht2_wview.c) over a real unix socket in a
-# mkdtemp dir; test handlers stand in for the witness. Default build, no
-# ports, injected time. What it proves / how it can lie: the header of
-# tests/test_dht2_ipc.c.
-add_executable(test_dht2_ipc tests/test_dht2_ipc.c)
-target_link_libraries(test_dht2_ipc nodus dsa nodus)
-add_test(NAME test_dht2_ipc COMMAND test_dht2_ipc)
-
-# DHT v2 package 2 — the wire messages (requests, answer / receipt /
-# refusal payloads, pull-sync, inbox control, typed `_id` helpers). Default
-# build, no network, no files, no clock; nothing left behind. What it
-# proves / how it can lie: the header of tests/test_dht2_msg.c.
-add_executable(test_dht2_msg tests/test_dht2_msg.c)
-target_link_libraries(test_dht2_msg nodus dsa nodus crypto)
-add_test(NAME test_dht2_msg COMMAND test_dht2_msg)
-
-# DHT v2 package 5 — the holder store and admission (dht2/nodus_dht2_store.c)
-# over a temp SQLite file, fixed-seed ML-DSA-87 keys and an injected context
-# (snapshot, sets, name callback). Default build, no network, no clock; the
-# temp directory is removed at the end. What it proves / how it can lie: the
-# header of tests/test_dht2_store.c.
-add_executable(test_dht2_store tests/test_dht2_store.c)
-target_link_libraries(test_dht2_store nodus dsa nodus crypto)
-add_test(NAME test_dht2_store COMMAND test_dht2_store)
-
 add_executable(test_cmt_block tests/test_cmt_block.c)
 target_link_libraries(test_cmt_block nodus dsa nodus crypto)
 add_test(NAME test_cmt_block COMMAND test_cmt_block)
@@ -2341,14 +2262,6 @@ add_test(NAME test_p2p_secret COMMAND test_p2p_secret)
 add_executable(test_p2p_secret_kat tests/test_p2p_secret_kat.c)
 target_link_libraries(test_p2p_secret_kat nodus dsa kem nodus crypto)
 add_test(NAME test_p2p_secret_kat COMMAND test_p2p_secret_kat)
-
-# DHT v2 sub-package 3a step 2 — session profiles (WITNESS / CLIENT / NODE):
-# matched handshakes, mixed pairs never authenticate, python3 vectors per
-# profile, purposes 0x0A/0x0C/0x0D do not cross-verify, invalid profiles
-# refused at init. Default build, no environment, `ctest -j` safe.
-add_executable(test_p2p_secret_profiles tests/test_p2p_secret_profiles.c)
-target_link_libraries(test_p2p_secret_profiles nodus dsa kem nodus crypto)
-add_test(NAME test_p2p_secret_profiles COMMAND test_p2p_secret_profiles)
 
 # cometbft @709fd12b → C port, fleet P2P-PORT phase F2 —
 # p2p/conn/connection_test.go's single-threaded cases (send/receive over a
