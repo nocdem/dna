@@ -386,7 +386,6 @@ typedef struct nodus_tcp {
      * data.ptr is &ws_listen_fd (the plain listener uses NULL). */
     int                       ws_listen_fd;
     uint16_t                  ws_port;
-    const nodus_ws_origins_t *ws_origins;   /* owned by the caller; outlives tcp */
 
     /* Unix domain socket entry: a THIRD listening socket of this transport
      * (nodus_tcp_unix_listen). -1 = off. Its epoll data.ptr is
@@ -541,11 +540,9 @@ int nodus_tcp_listen(nodus_tcp_t *tcp, const char *bind_ip, uint16_t port);
  * bound to 127.0.0.1:port (never any other address — TLS and the public
  * side belong to the local proxy). Accepted connections share the pool,
  * callbacks and slot space with the plain listener and carry is_ws.
- * @param origins  allowed Origin list; must outlive the transport.
  * Linux only (returns -1 on Windows).
  */
-int nodus_tcp_ws_listen(nodus_tcp_t *tcp, uint16_t port,
-                        const nodus_ws_origins_t *origins);
+int nodus_tcp_ws_listen(nodus_tcp_t *tcp, uint16_t port);
 
 /**
  * Close WebSocket connections whose Upgrade has not completed within
