@@ -2723,6 +2723,13 @@ register_witness_test(test_domreg)
 # ownership backfill, unknown-version fail-close, no CPUNK.
 register_witness_test(test_v2_schema)
 
+# HF-9 H2 — schema S20 (docs/plans/2026-10-23-hf9-byte-spec.md rev 3 §8,
+# §13): the node-local tree tables, the four storage-table rebuilds, the
+# S19 -> S20 migration keeping every row, the open-time shape check
+# (S19 text only below S20), per-stage rollback, unknown-version
+# fail-close. Temp dirs under /tmp only; no environment, no network.
+register_witness_test(test_hf9_schema)
+
 # HF-6 sub-slice 3a — the v2 validator / delegation row access over the
 # S18 side table v2_validator_roles (INERT, no production caller yet):
 # v2 get / get_by_pubkey / update round trip, absent (1) vs fault (-1)

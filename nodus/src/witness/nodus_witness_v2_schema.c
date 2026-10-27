@@ -10,6 +10,7 @@
 
 #include <sqlite3.h>
 #include <limits.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2153,12 +2154,14 @@ int nodus_witness_db_ensure_v2s17_indexes(nodus_witness_t *w) {
     if (!w || !w->db) return -1;
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
-    /* S17, S18 or S19 (HF-6 3a: S18 = S17 + v2_validator_roles; HF-7
-     * P1b: S19 = S18 + v2_replay, its index and one column; the at-open
-     * rung reaches S19 before this step runs — header) */
+    /* S17, S18, S19 or S20 (HF-6 3a: S18 = S17 + v2_validator_roles; HF-7
+     * P1b: S19 = S18 + v2_replay, its index and one column; HF-9 H2: S20
+     * = S19 + the tree tables and the storage-table rebuilds; the at-open
+     * rung reaches S20 before this step runs — header) */
     if (ver != NODUS_V2_SCHEMA_VERSION_S17 &&
         ver != NODUS_V2_SCHEMA_VERSION_S18 &&
-        ver != NODUS_V2_SCHEMA_VERSION_S19) return 0;   /* not this rung */
+        ver != NODUS_V2_SCHEMA_VERSION_S19 &&
+        ver != NODUS_V2_SCHEMA_VERSION_S20) return 0;   /* not this rung */
     int have = s17_log_indexes_ok(w);
     if (have < 0) return -1;
     if (have == 1) return 0;                            /* idempotent    */
@@ -2498,6 +2501,385 @@ int nodus_witness_db_migrate_v2s19_ex(nodus_witness_t *w,
 
 int nodus_witness_db_migrate_v2s19(nodus_witness_t *w) {
     return nodus_witness_db_migrate_v2s19_ex(w, V2S19MIG_FAIL_NONE);
+}
+
+/* ── S20 migration: HF-9 H2, the node-local tree tables + the four
+ *    storage-table rebuilds ───────────────────────────────────────────────
+ * Contract: nodus_witness_v2_schema.h. Spec: docs/plans/2026-10-23-hf9-
+ * byte-spec.md rev 3 §8 (tables, rebuilds), §9 (the source tables of the
+ * shadow), §4 (the dirty tables' key columns). Everything is created
+ * EMPTY; nothing reads or writes it before HF-9 H3. */
+
+/* The fixed tree tables, spec §8 verbatim. */
+static const struct { const char *table; const char *ddl; } V2_S20_TREE[] = {
+    { "v2_tree_ctx",
+      "CREATE TABLE IF NOT EXISTS v2_tree_ctx ("
+      "id INTEGER PRIMARY KEY CHECK(id=1), height INTEGER NOT NULL)" },
+    { "v2_tree_nodes",
+      "CREATE TABLE IF NOT EXISTS v2_tree_nodes ("
+      "digest BLOB PRIMARY KEY CHECK(typeof(digest)='blob' AND "
+      "length(digest)=64), rlp BLOB NOT NULL, "
+      "refs INTEGER NOT NULL CHECK(refs >= 0)) WITHOUT ROWID" },
+    { "v2_tree_roots",
+      "CREATE TABLE IF NOT EXISTS v2_tree_roots ("
+      "scope INTEGER, leg INTEGER, sub INTEGER, domain INTEGER, "
+      "height INTEGER, root BLOB NOT NULL CHECK(length(root)=64), "
+      "PRIMARY KEY(scope, leg, sub, domain, height)) WITHOUT ROWID" },
+    { "v2_tree_compwit",
+      "CREATE TABLE IF NOT EXISTS v2_tree_compwit ("
+      "height INTEGER, kind INTEGER, domain INTEGER, slot INTEGER, "
+      "data BLOB NOT NULL, "
+      "PRIMARY KEY(height, kind, domain, slot)) WITHOUT ROWID" },
+    { "v2_tree_gc",
+      "CREATE TABLE IF NOT EXISTS v2_tree_gc ("
+      "id INTEGER PRIMARY KEY CHECK(id=1), gc_enabled INTEGER NOT NULL, "
+      "gc_disabled_reason TEXT)" }
+};
+
+/* One dirty table per trie of spec §3 (JUDGMENT, spec names no table
+ * names: v2_tree_dirty_<trie> with the storage tries spelled st_*). The
+ * columns are the key columns of spec §4 under the SOURCE table's column
+ * names (the H3 triggers copy OLD/NEW straight across), + the domain for
+ * pools and claims; PK = those columns. */
+static const struct {
+    const char *trie;
+    const char *cols;
+    const char *pk;
+} V2_S20_DIRTY[] = {
+    { "utxo",        "nullifier BLOB NOT NULL", "nullifier" },
+    { "token",       "token_id BLOB NOT NULL", "token_id" },
+    { "pools",       "domain_id INTEGER NOT NULL, pool_id INTEGER NOT NULL",
+                     "domain_id, pool_id" },
+    { "claims",      "target_domain_id INTEGER NOT NULL, "
+                     "nullifier BLOB NOT NULL",
+                     "target_domain_id, nullifier" },
+    { "names",       "name BLOB NOT NULL", "name" },
+    { "accrual",     "owner_fp BLOB NOT NULL", "owner_fp" },
+    { "validator",   "pubkey_hash BLOB NOT NULL", "pubkey_hash" },
+    { "delegation",  "delegator_hash BLOB NOT NULL, "
+                     "validator_hash BLOB NOT NULL",
+                     "delegator_hash, validator_hash" },
+    { "chain_config", "param_id INTEGER NOT NULL, "
+                     "effective_block INTEGER NOT NULL",
+                     "param_id, effective_block" },
+    { "vset",        "epoch_start INTEGER NOT NULL", "epoch_start" },
+    { "manifest",    "manifest_hash BLOB NOT NULL", "manifest_hash" },
+    { "attendance",  "epoch_start INTEGER NOT NULL", "epoch_start" },
+    { "st_registry", "node_fp BLOB NOT NULL", "node_fp" },
+    { "st_sets",     "epoch_start INTEGER NOT NULL", "epoch_start" },
+    { "st_reports",  "epoch_start INTEGER NOT NULL, seat INTEGER NOT NULL",
+                     "epoch_start, seat" },
+    { "st_segments", "k INTEGER NOT NULL", "k" },
+    { "bcopy",       "epoch_start INTEGER NOT NULL, "
+                     "validator_fp BLOB NOT NULL, owner_fp BLOB NOT NULL, "
+                     "kind INTEGER NOT NULL",
+                     "epoch_start, validator_fp, owner_fp, kind" },
+    { "stmem",       "epoch_start INTEGER NOT NULL, node_fp BLOB NOT NULL",
+                     "epoch_start, node_fp" },
+    { "replay",      "tx_id BLOB NOT NULL", "tx_id" }
+};
+
+/* One shadow table per SOURCE table of the spec §9 dependency matrix. */
+static const char *const V2_S20_SHADOW_SRC[] = {
+    "utxo_set", "tokens", "v2_pools", "v2_pool_roots", "v2_claims_spent",
+    "v2_names", "v2_reward_accrual", "chain_config_history",
+    "validator_set_snapshots", "v2_manifests", "v2_attendance_epoch",
+    "v2_storage_reports", "v2_storage_segments", "v2_balance_copy",
+    "v2_replay", "validators", "v2_validator_roles", "delegations",
+    "v2_storage_sets", "v2_storage_set_members", "v2_storage_nodes"
+};
+
+#define S20_DDL_MAX 4096u
+#define S20_PK_MAX  8u
+#define S20_COL_MAX 64u
+
+/* Append printf-formatted text to buf[0..cap), tracking *len. 0 ok,
+ * -1 = it does not fit (never truncated). */
+static int s20_cat(char *buf, size_t cap, size_t *len, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf + *len, cap - *len, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= cap - *len) return -1;
+    *len += (size_t)n;
+    return 0;
+}
+
+/* The shadow table's DDL for `src`, read from the LIVE source table (spec
+ * §9: "the source table's full column list"): height, op, then every
+ * source column in table order under its declared type, NO constraint
+ * (op = 0 rows carry NULLs), PRIMARY KEY (height, <source PK in key
+ * order>), WITHOUT ROWID. 0 ok, -1 = the source is absent / has no PK /
+ * a column would collide with height or op / the text does not fit /
+ * a SQLite fault. */
+static int s20_shadow_ddl(nodus_witness_t *w, const char *src,
+                          char *out, size_t cap) {
+    char sql[128];
+    snprintf(sql, sizeof(sql), "PRAGMA table_info(\"%s\")", src);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    char pk[S20_PK_MAX][S20_COL_MAX];
+    size_t n_pk = 0, n_cols = 0, len = 0;
+    int bad = 0, rc;
+    memset(pk, 0, sizeof(pk));
+    if (s20_cat(out, cap, &len, "CREATE TABLE IF NOT EXISTS "
+                "v2_tree_shadow_%s (height INTEGER NOT NULL, "
+                "op INTEGER NOT NULL CHECK(op IN (0, 1))", src) != 0)
+        bad = 1;
+    while (!bad && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const char *nm = (const char *)sqlite3_column_text(st, 1);
+        const char *ty = (const char *)sqlite3_column_text(st, 2);
+        int pki = sqlite3_column_int(st, 5);
+        if (!nm || !ty || strchr(nm, '"') || strlen(nm) >= S20_COL_MAX ||
+            strcmp(nm, "height") == 0 || strcmp(nm, "op") == 0 ||
+            pki < 0 || (size_t)pki > S20_PK_MAX) {
+            bad = 1;
+            break;
+        }
+        if (pki > 0) {
+            if (pk[pki - 1][0] != '\0') { bad = 1; break; }
+            snprintf(pk[pki - 1], S20_COL_MAX, "%s", nm);
+            if ((size_t)pki > n_pk) n_pk = (size_t)pki;
+        }
+        if (s20_cat(out, cap, &len, ", \"%s\" %s", nm, ty) != 0) {
+            bad = 1;
+            break;
+        }
+        n_cols++;
+    }
+    if (!bad && rc != SQLITE_DONE) bad = 1;
+    sqlite3_finalize(st);
+    if (bad || n_cols == 0 || n_pk == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "S20: cannot derive the shadow table of %s "
+                      "(absent, no primary key or an unusable column)",
+                      src);
+        return -1;
+    }
+    if (s20_cat(out, cap, &len, ", PRIMARY KEY (height") != 0) return -1;
+    for (size_t i = 0; i < n_pk; i++) {
+        if (pk[i][0] == '\0' ||                /* a gap in the key order */
+            s20_cat(out, cap, &len, ", \"%s\"", pk[i]) != 0)
+            return -1;
+    }
+    if (s20_cat(out, cap, &len, ")) WITHOUT ROWID") != 0) return -1;
+    return 0;
+}
+
+/* Create `ddl` (CREATE TABLE IF NOT EXISTS) and require the table that
+ * now exists to carry EXACTLY that stored text: a pre-existing table of
+ * the same name and another shape is refused, not read through. */
+static int s20_make_table(nodus_witness_t *w, const char *table,
+                          const char *ddl) {
+    if (exec_sql(w, ddl) != 0) return -1;
+    if (table_ddl_exact(w, table, ddl) != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "S20: %s exists with another shape — "
+                      "refusing", table);
+        return -1;
+    }
+    return 0;
+}
+
+typedef struct {
+    const char *table;
+    const char *s19_ddl;     /* the text a database below S20 stores   */
+    const char *s20_ddl;     /* the text it must carry from S20 on     */
+    const char *copy_cols;   /* the columns both texts share           */
+} s20_rebuild_t;
+
+/* The four storage tables of spec §8. Bound to the macros of
+ * nodus_witness.h, which the open-time shape check uses too. */
+static const s20_rebuild_t V2_S20_REBUILD[] = {
+    { "v2_storage_sets",        NODUS_V2_STSETS_S19_DDL, NODUS_V2_STSETS_DDL,
+      "epoch_start, set_hash, member_count" },
+    { "v2_storage_reports",     NODUS_V2_STREPS_S19_DDL, NODUS_V2_STREPS_DDL,
+      "epoch_start, seat, set_hash, bitmap" },
+    { "v2_storage_set_members", NODUS_V2_STMEMB_S19_DDL, NODUS_V2_STMEMB_DDL,
+      "epoch_start, node_fp, fail_streak, grace_until" },
+    { "v2_storage_nodes",       NODUS_V2_STORAGE_S19_DDL,
+      NODUS_V2_STORAGE_DDL,
+      "node_fp, node_pk, payee_fp, bond, status, registered_height, "
+      "exit_height, fail_streak, grace_until" }
+};
+
+/* COUNT(*) of `table`; -1 on a fault. */
+static int64_t s20_count(nodus_witness_t *w, const char *table) {
+    char sql[128];
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM \"%s\"", table);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    int64_t n = -1;
+    if (sqlite3_step(st) == SQLITE_ROW) n = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return n;
+}
+
+/* Bring one storage table to its S20 text. Already in the S20 text (a
+ * database the new base schema created, or a re-entry): nothing. In the
+ * S19 text: rename it away, create the S20 table under the real name by
+ * the exact statement the shape check executes, copy every row (the new
+ * columns take their DEFAULTs), require the same row count, drop the
+ * old one. In neither text: refuse. Inside the caller's transaction. */
+static int s20_rebuild_table(nodus_witness_t *w, const s20_rebuild_t *r) {
+    int cur = table_ddl_exact(w, r->table, r->s20_ddl);
+    if (cur < 0) return -1;
+    if (cur == 1) return 0;
+    if (table_ddl_exact(w, r->table, r->s19_ddl) != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "S20: %s is in neither the S19 nor the S20 "
+                      "text — refusing", r->table);
+        return -1;
+    }
+    int64_t before = s20_count(w, r->table);
+    if (before < 0) return -1;
+
+    char sql[1024];
+    snprintf(sql, sizeof(sql), "ALTER TABLE \"%s\" RENAME TO "
+             "\"%s_s19old\"", r->table, r->table);
+    if (exec_sql(w, sql) != 0) return -1;
+    if (exec_sql(w, r->s20_ddl) != 0) return -1;
+    int n = snprintf(sql, sizeof(sql), "INSERT INTO \"%s\" (%s) SELECT %s "
+                     "FROM \"%s_s19old\"", r->table, r->copy_cols,
+                     r->copy_cols, r->table);
+    if (n < 0 || (size_t)n >= sizeof(sql) || exec_sql(w, sql) != 0)
+        return -1;
+    if (s20_count(w, r->table) != before) {
+        QGP_LOG_ERROR(LOG_TAG, "S20: %s lost rows in the rebuild — "
+                      "refusing", r->table);
+        return -1;
+    }
+    snprintf(sql, sizeof(sql), "DROP TABLE \"%s_s19old\"", r->table);
+    if (exec_sql(w, sql) != 0) return -1;
+    if (table_ddl_exact(w, r->table, r->s20_ddl) != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "S20: the rebuilt %s does not carry the S20 "
+                      "text — refusing", r->table);
+        return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_db_migrate_v2s20_ex(nodus_witness_t *w,
+                                      nodus_v2s20_mig_fail_t fail_at) {
+    if (!w || !w->db) return -1;
+
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
+    if (ver == NODUS_V2_SCHEMA_VERSION_S20) return 0;    /* idempotent    */
+    if (ver != NODUS_V2_SCHEMA_VERSION_S19) {
+        /* the S9…S19 chain; an unknown version (21+) fails closed there */
+        if (nodus_witness_db_migrate_v2s19(w) != 0) return -1;
+        ver = NODUS_V2_SCHEMA_VERSION_S19;
+    }
+
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) return -1;
+
+    int ok = 0;
+    int already = 0;
+    do {
+        if (fail_at == V2S20MIG_FAIL_AFTER_BEGIN) break;
+
+        /* O15B discipline: the pre-BEGIN read decided nothing. */
+        int rv = mig_revalidate_version(w, NODUS_V2_SCHEMA_VERSION_S19,
+                                        NODUS_V2_SCHEMA_VERSION_S20, "S20");
+        if (rv < 0) break;
+        if (rv == 0) { already = 1; break; }
+        if (fail_at == V2S20MIG_FAIL_AFTER_REVALIDATE) break;
+
+        int fail = 0;
+        /* the four storage tables first: the shadows below read their NEW
+         * column lists */
+        for (size_t i = 0; !fail && i < sizeof(V2_S20_REBUILD) /
+                                         sizeof(V2_S20_REBUILD[0]); i++)
+            if (s20_rebuild_table(w, &V2_S20_REBUILD[i]) != 0) fail = 1;
+        /* the rebuild dropped the registry's payee index with the old
+         * table (it moves with a rename): back, idempotent otherwise */
+        if (!fail && exec_sql(w, "CREATE INDEX IF NOT EXISTS "
+                                 "idx_v2_storage_nodes_payee ON "
+                                 "v2_storage_nodes(payee_fp)") != 0)
+            fail = 1;
+        /* the fixed tree tables */
+        for (size_t i = 0; !fail && i < sizeof(V2_S20_TREE) /
+                                         sizeof(V2_S20_TREE[0]); i++)
+            if (s20_make_table(w, V2_S20_TREE[i].table,
+                               V2_S20_TREE[i].ddl) != 0)
+                fail = 1;
+        /* the dirty tables */
+        for (size_t i = 0; !fail && i < sizeof(V2_S20_DIRTY) /
+                                         sizeof(V2_S20_DIRTY[0]); i++) {
+            char name[96], ddl[S20_DDL_MAX];
+            int a = snprintf(name, sizeof(name), "v2_tree_dirty_%s",
+                             V2_S20_DIRTY[i].trie);
+            int b = snprintf(ddl, sizeof(ddl), "CREATE TABLE IF NOT EXISTS "
+                             "%s (%s, PRIMARY KEY (%s)) WITHOUT ROWID",
+                             name, V2_S20_DIRTY[i].cols, V2_S20_DIRTY[i].pk);
+            if (a < 0 || (size_t)a >= sizeof(name) || b < 0 ||
+                (size_t)b >= sizeof(ddl) ||
+                s20_make_table(w, name, ddl) != 0)
+                fail = 1;
+        }
+        /* the shadow tables, from the live source tables */
+        for (size_t i = 0; !fail && i < sizeof(V2_S20_SHADOW_SRC) /
+                                         sizeof(V2_S20_SHADOW_SRC[0]); i++) {
+            char name[96], ddl[S20_DDL_MAX];
+            int a = snprintf(name, sizeof(name), "v2_tree_shadow_%s",
+                             V2_S20_SHADOW_SRC[i]);
+            if (a < 0 || (size_t)a >= sizeof(name) ||
+                s20_shadow_ddl(w, V2_S20_SHADOW_SRC[i], ddl,
+                               sizeof(ddl)) != 0 ||
+                s20_make_table(w, name, ddl) != 0)
+                fail = 1;
+        }
+        if (fail) break;
+        if (fail_at == V2S20MIG_FAIL_AFTER_TABLES) break;
+
+        /* Verify what the rebuild promised: every storage table in the
+         * S20 text (the segments table is untouched and checked too), the
+         * payee index on exactly payee_fp. */
+        {
+            static const char *const ix_cols[] = { "payee_fp" };
+            int v = 1;
+            for (size_t i = 0; i < sizeof(V2_S20_REBUILD) /
+                                   sizeof(V2_S20_REBUILD[0]); i++)
+                if (table_ddl_exact(w, V2_S20_REBUILD[i].table,
+                                    V2_S20_REBUILD[i].s20_ddl) != 1)
+                    v = 0;
+            if (table_ddl_exact(w, "v2_storage_segments",
+                                NODUS_V2_STSEGS_DDL) != 1 ||
+                index_cols_exact(w, "idx_v2_storage_nodes_payee",
+                                 "v2_storage_nodes", ix_cols, 1) != 1)
+                v = 0;
+            if (!v) {
+                QGP_LOG_ERROR(LOG_TAG, "%s",
+                              "S20 storage-table schema shape drift — "
+                              "refusing");
+                break;
+            }
+        }
+        if (fail_at == V2S20MIG_FAIL_AFTER_VERIFY) break;
+
+        if (exec_sql(w, "PRAGMA user_version = 20") != 0) break;
+        if (fail_at == V2S20MIG_FAIL_BEFORE_COMMIT) break;
+
+        ok = 1;
+    } while (0);
+
+    if (already) {
+        (void)exec_sql(w, "ROLLBACK");
+        return 0;
+    }
+    if (!ok) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    if (exec_sql(w, "COMMIT") != 0) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_db_migrate_v2s20(nodus_witness_t *w) {
+    return nodus_witness_db_migrate_v2s20_ex(w, V2S20MIG_FAIL_NONE);
 }
 
 /* ── the §18 evm_logs cursor scan (red-team 1 F4) ──────────────────────
