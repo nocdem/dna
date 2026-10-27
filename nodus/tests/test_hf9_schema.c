@@ -41,9 +41,13 @@
  * macros of nodus_witness.h (group 2-4), so it proves the rung against
  * those texts, not against a database a previous binary wrote — a
  * mistake in the macros themselves (they are meant to be the previous
- * build's text byte for byte) is invisible here. The fixture chain is a
- * bare pre-genesis database: the at-open rung (nodus_witness.c) needs a
- * version-3 chain and is NOT exercised here; the rung is called directly.
+ * build's text byte for byte) is invisible here. Groups 1-3 use a bare
+ * pre-genesis database and call the rung directly (it can never be
+ * REOPENED: the role gate refuses the S14 stores without a stored genesis
+ * document). Everything that reopens (groups 4 and 6, and the at-open
+ * rung climbing a chain put back to S19) uses a REAL derived version-3
+ * chain (v2_genesis_fixture.h TIER A); each refusal there is preceded by
+ * the same chain reopening untampered.
  * No row is replayed from genesis here (that is the existing
  * version-3 fixtures' job, which reach S20 through the at-open rung).
  *
@@ -55,6 +59,21 @@
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_v2_schema.h"
+#include "witness/nodus_witness_v2_apply.h"
+#include "witness/nodus_witness_v2_claims.h"
+#include "witness/nodus_witness_domreg.h"
+#include "witness/nodus_witness_roots_v2.h"
+#include "witness/nodus_witness_runtime.h"
+#include "witness/nodus_witness_vset.h"
+#include "witness/nodus_witness_v2_epoch.h"
+#include "nodus/nodus_chain_config.h"
+
+#include "crypto/hash/qgp_sha3.h"
+#include "crypto/sign/qgp_dilithium.h"
+#include "dnac/dnac.h"
+#include "dnac/manifest_wire.h"
+#include "dnac/vset_wire.h"
+#include "dnac/block_v2.h"
 
 #include <dirent.h>
 #include <stdint.h>
@@ -65,6 +84,9 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#include "v2_genesis_fixture.h"   /* TIER A: a REAL version-3 chain with a
+                                   * stored genesis document (it reopens) */
 
 /* Distinct fixture values as SQL expressions: BL(n) a 64-byte blob (n as
  * zero-padded digits), PK(n) a 2592-byte blob, BM(len, n) a len-byte
@@ -127,12 +149,6 @@ static int fx_open(fixture_t *fx) {
         return -1;
     }
     return 0;
-}
-
-static int fx_reopen(fixture_t *fx) {
-    sqlite3_close(fx->w->db);
-    fx->w->db = NULL;
-    return nodus_witness_create_chain_db(fx->w, fx->chain_id16);
 }
 
 static void fx_close(fixture_t *fx) {
@@ -321,10 +337,8 @@ static int shadow_ok(sqlite3 *db, const char *src) {
 /* The S19 shape, rebuilt BY HAND: a fresh fixture, the S19 rung, then the
  * four storage tables replaced by their S19 text and filled with rows
  * (explicit column lists, so the rows are valid under the S19 CHECKs). */
-static int make_s19_db(fixture_t *fx) {
-    if (fx_open(fx) != 0) return -1;
-    if (nodus_witness_db_migrate_v2s19(fx->w) != 0) return -1;
-    if (run_sql(fx->w->db,
+static int s19_shape(sqlite3 *db) {
+    if (run_sql(db,
             "DROP TABLE v2_storage_sets;"
             "DROP TABLE v2_storage_set_members;"
             "DROP TABLE v2_storage_reports;"
@@ -355,7 +369,37 @@ static int make_s19_db(fixture_t *fx) {
             "(" BL(12) ", " PK(22) ", " BL(912) ", 5, 2, 4, 9, 2, 11), "
             "(" BL(13) ", " PK(23) ", " BL(913) ", 6, 3, 8, 12, 4, 13)") != 0)
         return -1;
-    return dump_old(fx->w->db, g_old_dump, sizeof(g_old_dump));
+    return dump_old(db, g_old_dump, sizeof(g_old_dump));
+}
+
+/* bare pre-genesis fixture at S19 in the S19 shape (direct-rung tests
+ * only: it has no stored genesis document and so cannot be REOPENED —
+ * the role gate refuses a database with the S14 stores and no document) */
+static int make_s19_db(fixture_t *fx) {
+    if (fx_open(fx) != 0) return -1;
+    if (nodus_witness_db_migrate_v2s19(fx->w) != 0) return -1;
+    return s19_shape(fx->w->db);
+}
+
+/* a REAL version-3 chain (derivation + production open: stored genesis
+ * document, so it reopens) and its reopen. After v2x_chain_open the
+ * chain is at S20 — the derivation stops at S19 and the production open
+ * climbs it. */
+static int chain_reopen(v2x_chain_t *c) {
+    if (c->w->db) sqlite3_close(c->w->db);
+    c->w->db = NULL;
+    return nodus_witness_create_chain_db(c->w, c->chain32);
+}
+
+static int chain_open_s20(v2x_chain_t *c, const char *tag) {
+    uint32_t ver = 0;
+    if (v2x_chain_open(c, tag, 1) != 0) return -1;
+    if (nodus_witness_db_schema_version(c->w, &ver) != 0 ||
+        ver != NODUS_V2_SCHEMA_VERSION_S20) {
+        v2x_chain_close(c);
+        return -1;
+    }
+    return 0;
 }
 
 /* Every old column of every row of the four tables, ordered by primary
@@ -496,10 +540,10 @@ static int test_fresh(void) {
                        "type='trigger'") == 0, "no trigger before the edge");
     OK();
 
-    /* the open-time shape check accepts the migrated database */
-    CHECK(fx_reopen(&fx) == 0, "reopen the S20 database"); OK();
-    CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 20u,
-          "still S20 after the reopen"); OK();
+    /* (a bare pre-genesis fixture cannot be reopened — the role gate
+     * refuses the S14 stores without a stored genesis document; the
+     * reopen of a migrated database is shown on a real chain in
+     * test_open_shape_check / test_s20_open_drift) */
     fx_close(&fx);
     return 0;
 }
@@ -592,8 +636,6 @@ static int test_s19_to_s20(void) {
     CHECK(sql_refused(db, "UPDATE v2_storage_nodes SET ipv4_since = -1 "
                           "WHERE bond = 777"), "negative ipv4_since"); OK();
 
-    /* the open-time shape check accepts the migrated database */
-    CHECK(fx_reopen(&fx) == 0, "reopen the migrated database"); OK();
     fx_close(&fx);
     return 0;
 }
@@ -683,44 +725,56 @@ static int test_rollback_and_refusal(void) {
     return 0;
 }
 
+/* The open-time checks, on REAL version-3 chains (a stored genesis
+ * document: a bare pre-genesis fixture is refused at every open by the
+ * role gate whatever its shape, which would make a "refused" assertion
+ * vacuous). Every refusal is preceded by the CONTROL: the same chain
+ * reopens before the tampering. */
 static int test_open_shape_check(void) {
-    fixture_t fx;
+    v2x_chain_t c;
     uint32_t ver = 0;
 
-    /* below S20 the S19 text is a valid shape at open */
-    CHECK(make_s19_db(&fx) == 0, "the S19 database with rows"); OK();
-    CHECK(fx_reopen(&fx) == 0, "the S19 text opens at user_version 19");
+    /* (1) the real upgrade path: a chain put back to the S19 shape (rows,
+     * S19 text, user_version 19) reopens — the open check accepts the S19
+     * text below S20, the at-open rung climbs and rebuilds, no row lost */
+    CHECK(chain_open_s20(&c, "hf9shape") == 0, "a real chain at S20"); OK();
+    CHECK(chain_reopen(&c) == 0, "control: the S20 chain reopens"); OK();
+    CHECK(s19_shape(c.w->db) == 0 &&
+          run_sql(c.w->db, "PRAGMA user_version = 19") == 0, "back to S19");
+    CHECK(nodus_witness_db_schema_version(c.w, &ver) == 0 && ver == 19u &&
+          all_s19_text(c.w->db) && s19_rows_intact(c.w->db),
+          "the S19 shape with rows"); OK();
+    CHECK(chain_reopen(&c) == 0,
+          "the S19 text opens at user_version 19 (and the rung climbs)");
     OK();
-    CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 19u &&
-          all_s19_text(fx.w->db) && s19_rows_intact(fx.w->db),
-          "the open changed nothing"); OK();
+    CHECK(nodus_witness_db_schema_version(c.w, &ver) == 0 && ver == 20u &&
+          all_s20_text(c.w->db) && s19_rows_intact(c.w->db) &&
+          nodus_witness_db_verify_v2s20_shape(c.w) == 0,
+          "...to S20, every old tuple kept"); OK();
 
-    /* from S20 on it is not: the same text, the version raised */
-    CHECK(run_sql(fx.w->db, "PRAGMA user_version = 20") == 0, "set 20");
-    CHECK(fx_reopen(&fx) != 0,
-          "the S19 text is refused at user_version 20"); OK();
-    CHECK(fx.w->db == NULL, "the refused open left no handle"); OK();
-    fx_close(&fx);
-
-    /* a migrated database with ONE table put back to the S19 text */
-    CHECK(fx_open(&fx) == 0, "fresh fixture");
-    CHECK(nodus_witness_db_migrate_v2s20(fx.w) == 0, "0 -> 20");
-    CHECK(run_sql(fx.w->db, "DROP TABLE v2_storage_reports;"
-                            NODUS_V2_STREPS_S19_DDL) == 0,
+    /* (2) from S20 on the S19 text is not a shape: ONE table put back */
+    CHECK(chain_reopen(&c) == 0, "control: still reopens"); OK();
+    CHECK(run_sql(c.w->db, "DROP TABLE v2_storage_reports;"
+                           NODUS_V2_STREPS_S19_DDL) == 0,
           "put v2_storage_reports back to the S19 text");
-    CHECK(fx_reopen(&fx) != 0, "an S20 database with an S19 table is refused");
-    OK();
-    fx_close(&fx);
+    CHECK(nodus_witness_db_verify_v2s20_shape(c.w) == -1,
+          "the S20 verifier sees it"); OK();
+    CHECK(chain_reopen(&c) != 0 && c.w->db == NULL,
+          "an S20 database with an S19 table is refused, no handle"); OK();
+    v2x_chain_close(&c);
 
-    /* a shape in neither text is refused at any version */
-    CHECK(fx_open(&fx) == 0, "fresh fixture");
-    CHECK(nodus_witness_db_migrate_v2s19(fx.w) == 0, "0 -> 19");
-    CHECK(run_sql(fx.w->db,
+    /* (3) a shape in neither text is refused below S20 too */
+    CHECK(chain_open_s20(&c, "hf9shape3") == 0, "a real chain at S20");
+    CHECK(run_sql(c.w->db, "PRAGMA user_version = 19") == 0, "set 19");
+    CHECK(chain_reopen(&c) == 0, "control: reopens at user_version 19");
+    CHECK(run_sql(c.w->db, "PRAGMA user_version = 19") == 0, "set 19");
+    CHECK(run_sql(c.w->db,
             "DROP TABLE v2_storage_segments;"
             "CREATE TABLE v2_storage_segments (k INTEGER PRIMARY KEY, "
             "root BLOB, published_height INTEGER)") == 0, "tamper segments");
-    CHECK(fx_reopen(&fx) != 0, "a tampered table is refused at S19"); OK();
-    fx_close(&fx);
+    CHECK(chain_reopen(&c) != 0 && c.w->db == NULL,
+          "a tampered table is refused at user_version 19"); OK();
+    v2x_chain_close(&c);
     return 0;
 }
 
@@ -739,40 +793,42 @@ static int test_s20_open_drift(void) {
         "gc_enabled INTEGER, gc_disabled_reason TEXT)",
         "DROP TABLE v2_tree_compwit"
     };
+    v2x_chain_t c;
     fixture_t fx;
 
-    /* healthy S20, and not-S20, hold */
+    /* a database below S20 has nothing to hold (bare fixture, no reopen) */
     CHECK(fx_open(&fx) == 0, "fresh fixture");
     CHECK(nodus_witness_db_verify_v2s20_shape(fx.w) == 0,
           "a database below S20 has nothing to hold"); OK();
-    CHECK(nodus_witness_db_migrate_v2s20(fx.w) == 0, "0 -> 20");
-    CHECK(nodus_witness_db_verify_v2s20_shape(fx.w) == 0,
-          "a migrated database holds"); OK();
-    CHECK(fx_reopen(&fx) == 0, "and opens"); OK();
     fx_close(&fx);
 
-    /* every post-migration tampering is refused at open */
+    /* every post-migration tampering, on a REAL chain (stored genesis
+     * document, so the only thing that can refuse its open is the
+     * tampering): CONTROL first — the untampered chain holds and
+     * reopens — then the drift: the S20 verifier answers -1 on exactly
+     * that state, and the open is refused with no handle left */
     for (size_t i = 0; i < sizeof(drift) / sizeof(drift[0]); i++) {
-        CHECK(fx_open(&fx) == 0, "fresh fixture");
-        CHECK(nodus_witness_db_migrate_v2s20(fx.w) == 0, "0 -> 20");
-        CHECK(run_sql(fx.w->db, drift[i]) == 0, "tamper");
-        CHECK(nodus_witness_db_verify_v2s20_shape(fx.w) == -1,
-              "the verifier sees the drift");
-        CHECK(fx_reopen(&fx) != 0, "the open refuses the drift");
-        CHECK(fx.w->db == NULL, "...leaving no handle");
-        fx_close(&fx);
+        CHECK(chain_open_s20(&c, "hf9drift") == 0, "a real chain at S20");
+        CHECK(nodus_witness_db_verify_v2s20_shape(c.w) == 0,
+              "control: the untampered chain holds");
+        CHECK(chain_reopen(&c) == 0, "control: and reopens");
+        CHECK(run_sql(c.w->db, drift[i]) == 0, "tamper");
+        CHECK(nodus_witness_db_verify_v2s20_shape(c.w) == -1,
+              "the S20 verifier sees the drift");
+        CHECK(chain_reopen(&c) != 0, "the open refuses the drift");
+        CHECK(c.w->db == NULL, "...leaving no handle");
+        v2x_chain_close(&c);
     }
     OK();
 
-    /* the payee index is part of the shape (the open itself re-creates
-     * it, so only the verifier is asked) */
-    CHECK(fx_open(&fx) == 0, "fresh fixture");
-    CHECK(nodus_witness_db_migrate_v2s20(fx.w) == 0, "0 -> 20");
-    CHECK(run_sql(fx.w->db, "DROP INDEX idx_v2_storage_nodes_payee") == 0,
+    /* the payee index is part of the shape (every open re-creates it —
+     * nodus_witness.c — so only the verifier is asked) */
+    CHECK(chain_open_s20(&c, "hf9drift") == 0, "a real chain at S20");
+    CHECK(run_sql(c.w->db, "DROP INDEX idx_v2_storage_nodes_payee") == 0,
           "drop the index");
-    CHECK(nodus_witness_db_verify_v2s20_shape(fx.w) == -1,
+    CHECK(nodus_witness_db_verify_v2s20_shape(c.w) == -1,
           "a missing payee index is drift"); OK();
-    fx_close(&fx);
+    v2x_chain_close(&c);
     return 0;
 }
 
