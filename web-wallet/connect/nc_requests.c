@@ -10,10 +10,10 @@
  * both call dht_contact_request_signing_preimage
  * (messenger/codec/contact_request_codec.h); nc_request_build signs the
  * bytes that function returns — the app's own preimage, not a
- * reconstruction. It then still runs the codec's deserialize + verify on
- * the final bytes, the check the frozen app applies on receipt
- * (dht_fetch_contact_requests); a request that does not pass it is never
- * returned.
+ * reconstruction. It checks the final bytes with the codec's deserialize
+ * and the codec verify's steps except the expiry comparison, which reads
+ * the wall clock: the builder set expiry = now + TTL itself. The inbox
+ * read still runs dht_verify_contact_request.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -23,6 +23,7 @@
 
 #include "dht/shared/dht_contact_request.h"
 #include "codec/contact_request_codec.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
 
 #include <stdlib.h>
@@ -60,6 +61,8 @@ int nc_request_build(const nc_keys_t *keys, const char *recipient_fp,
     dht_contact_request_t *chk = calloc(1, sizeof(*chk));
     uint8_t *pre = NULL;
     size_t pre_len = 0;
+    uint8_t *chk_pre = NULL;
+    size_t chk_pre_len = 0;
     int rc = NC_ERR_INTERNAL;
     if (!req || !chk) goto done;
 
@@ -92,9 +95,21 @@ int nc_request_build(const nc_keys_t *keys, const char *recipient_fp,
     req->signature_len = sig_len;
     if (dht_serialize_contact_request(req, out, out_len) != 0) goto done;
 
-    /* The receiver's check, on the bytes that would be published. */
+    /* Check the final bytes with the codec's deserialize and verify steps,
+     * except the expiry comparison, which reads the wall clock: this builder
+     * set expiry = now + TTL itself. The inbox read still runs
+     * dht_verify_contact_request. */
+    char fp[NC_FP_HEX_LEN + 1];
     if (dht_deserialize_contact_request(*out, *out_len, chk) != 0 ||
-        dht_verify_contact_request(chk) != 0 ||
+        chk->magic != DHT_CONTACT_REQUEST_MAGIC ||
+        chk->version < DHT_CONTACT_REQUEST_VERSION ||
+        chk->version > DHT_CONTACT_REQUEST_VERSION_SALT ||
+        qgp_sha3_512_fingerprint(chk->sender_dilithium_pubkey,
+                                 DHT_DILITHIUM5_PUBKEY_SIZE, fp) != 0 ||
+        strcmp(fp, chk->sender_fingerprint) != 0 ||
+        dht_contact_request_signing_preimage(chk, &chk_pre, &chk_pre_len) != 0 ||
+        qgp_dsa87_verify(chk->signature, chk->signature_len,
+                         chk_pre, chk_pre_len, chk->sender_dilithium_pubkey) != 0 ||
         strcmp(chk->sender_fingerprint, keys->fp) != 0 ||
         chk->version != req->version ||
         strcmp(chk->message, req->message) != 0 ||
@@ -109,6 +124,7 @@ int nc_request_build(const nc_keys_t *keys, const char *recipient_fp,
     rc = NC_OK;
 
 done:
+    free(chk_pre);
     free(pre);
     free(req);
     free(chk);

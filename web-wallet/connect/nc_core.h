@@ -436,10 +436,10 @@ int nc_profile_publish(const nc_ctx_t *ctx, const char *patch_json,
  * the caller's; 0 -> NC_ERR_ARG), expiry = now +
  * DHT_CONTACT_REQUEST_DEFAULT_TTL, sender_name empty (the web registers no
  * name), message (<= 255 bytes, NULL = empty), ML-DSA-87 over the signing
- * preimage. The serialised bytes are checked with the codec's own
- * dht_deserialize_contact_request + dht_verify_contact_request (what the
- * frozen app runs on receipt, dht_contact_request.c:298-308) before they are
- * returned; a request that would not verify is never returned.
+ * preimage. Before return, the final bytes are checked with the codec's
+ * dht_deserialize_contact_request and the codec verify's steps except the
+ * expiry comparison, which reads the wall clock: the builder set expiry =
+ * now + TTL itself. The inbox read still runs dht_verify_contact_request.
  */
 int nc_request_build(const nc_keys_t *keys, const char *recipient_fp,
                      const char *message, const uint8_t *salt, uint64_t now,

@@ -14,8 +14,9 @@
 #
 # Tests (what each proves is in its file header):
 #   test_nc_classify     R0 classifier matrix + server list + salt choice (pure)
-#   test_nc_wire         request / acceptance / cancel bytes vs the codec's
-#                        own verify and signing preimage; outbox blob decrypt
+#   test_nc_wire         request / acceptance / cancel bytes: deserialize +
+#                        fingerprint + signature over the codec's signing
+#                        preimage; outbox blob decrypt
 #                        + authorship; alg selection; salt packet v1;
 #                        contact-list blob read as the app's fetch does; ACK
 #                        value; key derivation (pure, no network)

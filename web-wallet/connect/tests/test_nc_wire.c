@@ -9,10 +9,12 @@
  *       D1 needs an expected fingerprint produced by the NATIVE app binary
  *       and stored in a file, which this package does not have.
  *   Q1  A v2 request (with salt) built by nc_request_build passes the
- *       codec's own dht_deserialize_contact_request + dht_verify_contact_request
- *       — the check the frozen app runs on receipt — with sender, version,
- *       message and salt intact.
- *   Q2  Without salt the request is v1 and still verifies.
+ *       codec's dht_deserialize_contact_request plus mirrored fingerprint
+ *       and ML-DSA-87 signature checks over
+ *       dht_contact_request_signing_preimage, with sender, version, message
+ *       and salt intact. Q1-Q3/Q5 do not call dht_verify_contact_request:
+ *       its expiry check reads the wall clock (W-33).
+ *   Q2  Without salt the request is v1 and passes the same checks.
  *   Q3  The ACCEPT (F3) carries exactly "Contact request accepted" and the
  *       echoed salt (dna_engine_contacts.c CONTACT_ACCEPTED_MSG / approve).
  *   Q4  A message longer than 255 bytes or a malformed recipient is refused
@@ -50,12 +52,20 @@
  *   L9  Its authorship under B's key fails.
  *   A1  The ACK value is the codec's 8-byte big-endian encoding.
  *
+ * The requests built for Q1, Q2, Q3 and Q5 pass the builder's self-check
+ * without a clock read (Q2b and Q4 are refused before any request exists).
+ *
  * What it requires: the native build of web-wallet/connect/tests; no
  * environment, no port.
  * What it leaves behind: nothing.
- * How it can lie: every check runs the SAME C as the web build, so it
- * proves the web core and the codecs agree with each other, not that the
- * frozen app (an older binary) reads these bytes — that is NC-3's test
+ * How it can lie: Q1-Q3/Q5 do not call dht_verify_contact_request, whose
+ * expiry check reads the wall clock (W-33). decode_verify mirrors its
+ * magic and version-range checks as well as its fingerprint and ML-DSA-87
+ * signature steps over dht_contact_request_signing_preimage, so they can
+ * falsely pass if the verifier gains or changes a check this test does not
+ * mirror. Expiry is not checked here at all. The shared C
+ * paths prove the web core and the codecs agree with each other, not that
+ * the frozen app (an older binary) reads these bytes — that is NC-3's test
  * against real app records. S7-S11 check the pure per-packet function; the
  * DHT replay itself (P re-publishing the bytes under its own owner at
  * key(A,P)) is not modelled — nc_salt_read feeds every value that passed
@@ -125,8 +135,23 @@ static void test_keys(void) {
 
 static int decode_verify(const uint8_t *b, size_t n, dht_contact_request_t *out) {
     memset(out, 0, sizeof(*out));
-    return dht_deserialize_contact_request(b, n, out) == 0 &&
-           dht_verify_contact_request(out) == 0 ? 0 : -1;
+    if (dht_deserialize_contact_request(b, n, out) != 0 ||
+        out->magic != DHT_CONTACT_REQUEST_MAGIC ||
+        out->version < DHT_CONTACT_REQUEST_VERSION ||
+        out->version > DHT_CONTACT_REQUEST_VERSION_SALT) {
+        return -1;
+    }
+    char fp[NC_FP_HEX_LEN + 1];
+    uint8_t *pre = NULL;
+    size_t pre_len = 0;
+    int ok = qgp_sha3_512_fingerprint(out->sender_dilithium_pubkey,
+                                     QGP_DSA87_PUBLICKEYBYTES, fp) == 0 &&
+             strcmp(fp, out->sender_fingerprint) == 0 &&
+             dht_contact_request_signing_preimage(out, &pre, &pre_len) == 0 &&
+             qgp_dsa87_verify(out->signature, out->signature_len, pre, pre_len,
+                              out->sender_dilithium_pubkey) == 0;
+    free(pre);
+    return ok ? 0 : -1;
 }
 
 static void test_requests(void) {
@@ -136,8 +161,9 @@ static void test_requests(void) {
     uint8_t *bytes = NULL;
     size_t len = 0;
 
-    /* The caller's time (nc_ctx_t now, Kurultay #17 item 5): the library
-     * reads no clock; 0 is refused. */
+    /* The builder takes the caller's time (nc_ctx_t now, Kurultay #17
+     * item 5); 0 is refused. The codec verify reads the wall clock and
+     * is not called here (W-33). */
     const uint64_t NOW = 1791500000u;
     int rc = nc_request_build(A, B->fp, "hi there", salt, NOW, &bytes, &len);
     CHECK(rc == 0 && decode_verify(bytes, len, r) == 0 &&
@@ -146,7 +172,7 @@ static void test_requests(void) {
           r->version == DHT_CONTACT_REQUEST_VERSION_SALT && r->has_dht_salt &&
           memcmp(r->dht_salt, salt, NC_SALT_LEN) == 0 &&
           strcmp(r->message, "hi there") == 0 && r->sender_name[0] == '\0',
-          "Q1 v2 request passes the codec's deserialize + verify");
+          "Q1 v2 request passes the codec's deserialize + fingerprint + signature check");
     free(bytes); bytes = NULL;
 
     rc = nc_request_build(A, B->fp, NULL, NULL, NOW, &bytes, &len);
