@@ -24,7 +24,13 @@
  *      succeeds;
  *   4. the open-time shape check accepts the S19 storage text only while
  *      user_version < 20 and refuses it at 20;
- *   5. an unknown newer version (21) fails closed, nothing changes.
+ *   5. an unknown newer version (21) fails closed, nothing changes;
+ *   6. a database ALREADY at S20 is held to the S20 shape at every open:
+ *      a dropped or loosened tree table, a dropped shadow / dirty table or
+ *      a missing payee index is refused (verify_v2s20_shape and the open).
+ *   Group 2 compares the COMPLETE old-column tuple of every row of the
+ *   four tables (hex of every blob, distinct values per row) before and
+ *   after; group 1 compares each shadow's complete primary-key sequence.
  *
  * WHAT IT REQUIRES: a default build (nothing from the environment, no
  * fault-injection flag, no epoch constant). Temp directories under /tmp.
@@ -60,10 +66,16 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-/* A second 64-byte key (63 zero bytes, then 0x01) as a hex BLOB literal —
- * SQLite's || on two blobs yields TEXT, so it cannot build one. */
-#define H16 "0000000000000000"
-#define FP1 "x'" H16 H16 H16 H16 H16 H16 H16 "00000000000000" "01'"
+/* Distinct fixture values as SQL expressions: BL(n) a 64-byte blob (n as
+ * zero-padded digits), PK(n) a 2592-byte blob, BM(len, n) a len-byte
+ * blob. (SQLite's || on two blobs yields TEXT, so printf + CAST.) */
+#define BL(n)     "CAST(printf('%064d', " #n ") AS BLOB)"
+#define PK(n)     "CAST(printf('%02592d', " #n ") AS BLOB)"
+#define BM(len, n) "CAST(printf('%0" #len "d', " #n ") AS BLOB)"
+
+/* the old-column dump make_s19_db took (one fixture alive at a time) */
+static char g_old_dump[64 * 1024];
+static int dump_old(sqlite3 *db, char *out, size_t cap);
 
 #define CHECK(cond, msg) do { \
     if (!(cond)) { \
@@ -159,18 +171,25 @@ static int64_t q1(sqlite3 *db, const char *sql) {
     return v;
 }
 
+/* a fault stays a fault (-1): an absence check (== 0) must never pass
+ * after a failed query */
+static int q1_int(sqlite3 *db, const char *sql) {
+    int64_t v = q1(db, sql);
+    return v == Q_FAULT ? -1 : (int)v;
+}
+
 static int has_table(sqlite3 *db, const char *name) {
     char sql[256];
     snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM sqlite_master WHERE "
              "type='table' AND name='%s'", name);
-    return (int)q1(db, sql);
+    return q1_int(db, sql);
 }
 
 static int has_col(sqlite3 *db, const char *table, const char *col) {
     char sql[256];
     snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM pragma_table_info('%s') "
              "WHERE name='%s'", table, col);
-    return (int)q1(db, sql);
+    return q1_int(db, sql);
 }
 
 /* 1 = `table`'s stored sqlite_master.sql equals what this build's SQLite
@@ -245,41 +264,58 @@ static const char *const SHADOW_SRC[] = {
 #define N_DIRTY  (sizeof(DIRTY) / sizeof(DIRTY[0]))
 #define N_SHADOW (sizeof(SHADOW_SRC) / sizeof(SHADOW_SRC[0]))
 
-/* 1 = v2_tree_shadow_<src> is (height, op, <every column of src, in
- * order>) and its key starts with height; 0 = not; -1 = fault. */
-static int shadow_ok(sqlite3 *db, const char *src) {
-    char sql[256], sh[96];
-    snprintf(sh, sizeof(sh), "v2_tree_shadow_%s", src);
-    snprintf(sql, sizeof(sql), "SELECT name FROM pragma_table_info('%s') "
-             "ORDER BY cid", src);
-    sqlite3_stmt *a = NULL, *b = NULL;
-    if (sqlite3_prepare_v2(db, sql, -1, &a, NULL) != SQLITE_OK) return -1;
+#define COLS_MAX 64
+
+/* Read (name, pk) of every column of `table`, in cid order, to the END of
+ * the scan (SQLITE_DONE required). Returns the column count, -1 = fault /
+ * more than COLS_MAX columns / a scan that did not end in SQLITE_DONE. */
+static int read_cols(sqlite3 *db, const char *table,
+                     char names[][64], int pk[]) {
+    char sql[256];
     snprintf(sql, sizeof(sql), "SELECT name, pk FROM pragma_table_info('%s') "
-             "ORDER BY cid", sh);
-    if (sqlite3_prepare_v2(db, sql, -1, &b, NULL) != SQLITE_OK) {
-        sqlite3_finalize(a);
-        return -1;
-    }
-    int ok = 1, n = 0;
-    /* the shadow's first two columns */
-    for (int i = 0; i < 2 && ok; i++) {
-        if (sqlite3_step(b) != SQLITE_ROW) { ok = 0; break; }
-        const char *nm = (const char *)sqlite3_column_text(b, 0);
-        if (!nm || strcmp(nm, i == 0 ? "height" : "op") != 0) ok = 0;
-        if (i == 0 && sqlite3_column_int(b, 1) != 1) ok = 0;
-    }
-    int ra;
-    while (ok && (ra = sqlite3_step(a)) == SQLITE_ROW) {
-        if (sqlite3_step(b) != SQLITE_ROW) { ok = 0; break; }
-        const char *na = (const char *)sqlite3_column_text(a, 0);
-        const char *nb = (const char *)sqlite3_column_text(b, 0);
-        if (!na || !nb || strcmp(na, nb) != 0) ok = 0;
+             "ORDER BY cid", table);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return -1;
+    int n = 0, rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const char *nm = (const char *)sqlite3_column_text(st, 0);
+        if (!nm || n >= COLS_MAX || strlen(nm) >= 64) {
+            sqlite3_finalize(st);
+            return -1;
+        }
+        snprintf(names[n], 64, "%s", nm);
+        pk[n] = sqlite3_column_int(st, 1);
         n++;
     }
-    if (ok && sqlite3_step(b) != SQLITE_DONE) ok = 0;   /* no extra col */
-    sqlite3_finalize(a);
-    sqlite3_finalize(b);
-    return (ok && n > 0) ? 1 : 0;
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE ? n : -1;
+}
+
+/* 1 = v2_tree_shadow_<src> is (height, op, <every column of src, in
+ * order>) and its primary key is EXACTLY (height, <the source's key
+ * columns in key order>) — the complete pk sequence, not only its first
+ * member; both scans ran to SQLITE_DONE. 0 = not; -1 = fault. */
+static int shadow_ok(sqlite3 *db, const char *src) {
+    char sh[96];
+    char sn[COLS_MAX][64], hn[COLS_MAX][64];
+    int spk[COLS_MAX], hpk[COLS_MAX];
+    snprintf(sh, sizeof(sh), "v2_tree_shadow_%s", src);
+    int ns = read_cols(db, src, sn, spk);
+    int nh = read_cols(db, sh, hn, hpk);
+    if (ns < 0 || nh < 0) return -1;
+    if (ns == 0 || nh != ns + 2) return 0;
+    if (strcmp(hn[0], "height") != 0 || hpk[0] != 1 ||
+        strcmp(hn[1], "op") != 0 || hpk[1] != 0)
+        return 0;
+    int n_key = 0;
+    for (int i = 0; i < ns; i++) {
+        if (strcmp(sn[i], hn[i + 2]) != 0) return 0;
+        /* a source key column of position k is position k + 1 in the
+         * shadow key (height is position 1); a non-key stays 0 */
+        if (hpk[i + 2] != (spk[i] > 0 ? spk[i] + 1 : 0)) return 0;
+        if (spk[i] > 0) n_key++;
+    }
+    return n_key > 0 ? 1 : 0;
 }
 
 /* The S19 shape, rebuilt BY HAND: a fresh fixture, the S19 rung, then the
@@ -299,43 +335,76 @@ static int make_s19_db(fixture_t *fx) {
             NODUS_V2_STORAGE_S19_DDL ";"
             "CREATE INDEX idx_v2_storage_nodes_payee ON "
             "v2_storage_nodes(payee_fp);"
+            /* every key / blob value is DISTINCT (BL / PK build a
+             * different 64 / 2592-byte value per number), so a copy that
+             * crossed rows or columns shows in the tuple comparison */
             "INSERT INTO v2_storage_sets (epoch_start, set_hash, "
-            "member_count) VALUES (15, zeroblob(64), 200), "
-            "(30, zeroblob(64), 0), (45, zeroblob(64), 256);"
+            "member_count) VALUES (15, " BL(115) ", 200), "
+            "(30, " BL(130) ", 0), (45, " BL(145) ", 256);"
             "INSERT INTO v2_storage_set_members (epoch_start, node_fp, "
             "fail_streak, grace_until) VALUES "
-            "(15, zeroblob(64), 1, 20), "
-            "(15, " FP1 ", 2, 0);"
+            "(15, " BL(1) ", 1, 20), (15, " BL(2) ", 2, 0), "
+            "(45, " BL(3) ", 3, 77);"
             "INSERT INTO v2_storage_reports (epoch_start, seat, set_hash, "
-            "bitmap) VALUES (15, 0, zeroblob(64), zeroblob(32)), "
-            "(15, 1, zeroblob(64), x'');"
+            "bitmap) VALUES (15, 0, " BL(215) ", " BM(32, 7) "), "
+            "(15, 1, " BL(216) ", x''), (45, 9, " BL(245) ", " BM(5, 8) ");"
             "INSERT INTO v2_storage_nodes (node_fp, node_pk, payee_fp, "
             "bond, status, registered_height, exit_height, fail_streak, "
             "grace_until) VALUES "
-            "(zeroblob(64), zeroblob(2592), zeroblob(64), 777, 1, 3, 0, 0, "
-            "0), "
-            "(" FP1 ", zeroblob(2592), zeroblob(64), 5, 2, 4, "
-            "9, 2, 11)") != 0)
+            "(" BL(11) ", " PK(21) ", " BL(911) ", 777, 1, 3, 0, 0, 0), "
+            "(" BL(12) ", " PK(22) ", " BL(912) ", 5, 2, 4, 9, 2, 11), "
+            "(" BL(13) ", " PK(23) ", " BL(913) ", 6, 3, 8, 12, 4, 13)") != 0)
         return -1;
+    return dump_old(fx->w->db, g_old_dump, sizeof(g_old_dump));
+}
+
+/* Every old column of every row of the four tables, ordered by primary
+ * key, as text (hex for blobs), appended to out. */
+static int dump_old(sqlite3 *db, char *out, size_t cap) {
+    static const char *const q[] = {
+        "SELECT epoch_start || ':' || hex(set_hash) || ':' || member_count "
+        "FROM v2_storage_sets ORDER BY epoch_start",
+        "SELECT epoch_start || ':' || hex(node_fp) || ':' || fail_streak "
+        "|| ':' || grace_until FROM v2_storage_set_members "
+        "ORDER BY epoch_start, node_fp",
+        "SELECT epoch_start || ':' || seat || ':' || hex(set_hash) || ':' "
+        "|| hex(bitmap) FROM v2_storage_reports ORDER BY epoch_start, seat",
+        "SELECT hex(node_fp) || ':' || hex(node_pk) || ':' || hex(payee_fp) "
+        "|| ':' || bond || ':' || status || ':' || registered_height || ':' "
+        "|| exit_height || ':' || fail_streak || ':' || grace_until "
+        "FROM v2_storage_nodes ORDER BY node_fp"
+    };
+    size_t len = 0;
+    out[0] = '\0';
+    for (size_t i = 0; i < sizeof(q) / sizeof(q[0]); i++) {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(db, q[i], -1, &st, NULL) != SQLITE_OK)
+            return -1;
+        int rc;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            const char *t = (const char *)sqlite3_column_text(st, 0);
+            size_t n = t ? strlen(t) : 0;
+            if (!t || len + n + 2 >= cap) { sqlite3_finalize(st); return -1; }
+            memcpy(out + len, t, n);
+            out[len + n] = '\n';
+            out[len + n + 1] = '\0';
+            len += n + 1;
+        }
+        sqlite3_finalize(st);
+        if (rc != SQLITE_DONE) return -1;
+        if (len + 2 >= cap) return -1;
+        out[len++] = '#';                 /* table separator */
+        out[len] = '\0';
+    }
     return 0;
 }
 
+/* 1 = the complete old-column tuple of EVERY row, by primary key, equals
+ * what make_s19_db wrote (g_old_dump taken right after the inserts). */
 static int s19_rows_intact(sqlite3 *db) {
-    return q1(db, "SELECT COUNT(*) FROM v2_storage_sets") == 3 &&
-           q1(db, "SELECT SUM(member_count) FROM v2_storage_sets") == 456 &&
-           q1(db, "SELECT COUNT(*) FROM v2_storage_set_members") == 2 &&
-           q1(db, "SELECT SUM(fail_streak * 100 + grace_until) FROM "
-                  "v2_storage_set_members") == 320 &&
-           q1(db, "SELECT COUNT(*) FROM v2_storage_reports") == 2 &&
-           q1(db, "SELECT SUM(length(bitmap)) FROM v2_storage_reports") ==
-               32 &&
-           q1(db, "SELECT COUNT(*) FROM v2_storage_nodes") == 2 &&
-           q1(db, "SELECT SUM(bond) FROM v2_storage_nodes") == 782 &&
-           q1(db, "SELECT SUM(length(node_pk)) FROM v2_storage_nodes") ==
-               5184 &&
-           q1(db, "SELECT SUM(registered_height * 1000 + exit_height * 10 + "
-                  "fail_streak + grace_until) FROM v2_storage_nodes") ==
-               3000 + (4000 + 90 + 2 + 11);
+    static char now[sizeof(g_old_dump)];
+    if (dump_old(db, now, sizeof(now)) != 0) return 0;
+    return g_old_dump[0] != '\0' && strcmp(now, g_old_dump) == 0;
 }
 
 static int test_fresh(void) {
@@ -458,13 +527,13 @@ static int test_s19_to_s20(void) {
     CHECK(q1(fx.w->db, "SELECT COUNT(*) FROM v2_storage_sets "
                        "WHERE copies = 3") == 3, "copies default 3"); OK();
     CHECK(q1(fx.w->db, "SELECT COUNT(*) FROM v2_storage_set_members "
-                       "WHERE placeable = 0") == 2, "placeable default 0");
+                       "WHERE placeable = 0") == 3, "placeable default 0");
     OK();
     CHECK(q1(fx.w->db, "SELECT COUNT(*) FROM v2_storage_reports "
                        "WHERE typeof(ipv4s) = 'blob' AND length(ipv4s) = 0") ==
-              2, "ipv4s default empty blob"); OK();
+              3, "ipv4s default empty blob"); OK();
     CHECK(q1(fx.w->db, "SELECT COUNT(*) FROM v2_storage_nodes "
-                       "WHERE ipv4 = 0 AND ipv4_since = 0") == 2,
+                       "WHERE ipv4 = 0 AND ipv4_since = 0") == 3,
           "ipv4 / ipv4_since default 0"); OK();
     CHECK(q1(fx.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
                        "type='index' AND name='idx_v2_storage_nodes_payee' "
@@ -513,7 +582,7 @@ static int test_s19_to_s20(void) {
           "placeable 1 is valid"); OK();
     CHECK(sql_refused(db, "INSERT INTO v2_storage_set_members (epoch_start, "
                           "node_fp, fail_streak, grace_until, placeable) "
-                          "VALUES (30, " FP1 ", 0, 0, 2)"),
+                          "VALUES (30, " BL(99) ", 0, 0, 2)"),
           "placeable 2"); OK();
     CHECK(!sql_refused(db, "UPDATE v2_storage_nodes SET ipv4 = 4294967295, "
                            "ipv4_since = 7 WHERE bond = 777"),
@@ -655,11 +724,64 @@ static int test_open_shape_check(void) {
     return 0;
 }
 
+/* A database ALREADY at S20 skips the rung, so its tree / storage tables
+ * are held to the S20 shape by the open-time verifier
+ * (nodus_witness_db_verify_v2s20_shape, called from the post-open gate). */
+static int test_s20_open_drift(void) {
+    static const char *const drift[] = {
+        "DROP TABLE v2_tree_nodes",
+        "DROP TABLE v2_tree_dirty_pools;"
+        "CREATE TABLE v2_tree_dirty_pools (domain_id INTEGER, "
+        "pool_id INTEGER)",
+        "DROP TABLE v2_tree_shadow_v2_pools",
+        "DROP TABLE v2_tree_gc;"
+        "CREATE TABLE v2_tree_gc (id INTEGER PRIMARY KEY, "
+        "gc_enabled INTEGER, gc_disabled_reason TEXT)",
+        "DROP TABLE v2_tree_compwit"
+    };
+    fixture_t fx;
+
+    /* healthy S20, and not-S20, hold */
+    CHECK(fx_open(&fx) == 0, "fresh fixture");
+    CHECK(nodus_witness_db_verify_v2s20_shape(fx.w) == 0,
+          "a database below S20 has nothing to hold"); OK();
+    CHECK(nodus_witness_db_migrate_v2s20(fx.w) == 0, "0 -> 20");
+    CHECK(nodus_witness_db_verify_v2s20_shape(fx.w) == 0,
+          "a migrated database holds"); OK();
+    CHECK(fx_reopen(&fx) == 0, "and opens"); OK();
+    fx_close(&fx);
+
+    /* every post-migration tampering is refused at open */
+    for (size_t i = 0; i < sizeof(drift) / sizeof(drift[0]); i++) {
+        CHECK(fx_open(&fx) == 0, "fresh fixture");
+        CHECK(nodus_witness_db_migrate_v2s20(fx.w) == 0, "0 -> 20");
+        CHECK(run_sql(fx.w->db, drift[i]) == 0, "tamper");
+        CHECK(nodus_witness_db_verify_v2s20_shape(fx.w) == -1,
+              "the verifier sees the drift");
+        CHECK(fx_reopen(&fx) != 0, "the open refuses the drift");
+        CHECK(fx.w->db == NULL, "...leaving no handle");
+        fx_close(&fx);
+    }
+    OK();
+
+    /* the payee index is part of the shape (the open itself re-creates
+     * it, so only the verifier is asked) */
+    CHECK(fx_open(&fx) == 0, "fresh fixture");
+    CHECK(nodus_witness_db_migrate_v2s20(fx.w) == 0, "0 -> 20");
+    CHECK(run_sql(fx.w->db, "DROP INDEX idx_v2_storage_nodes_payee") == 0,
+          "drop the index");
+    CHECK(nodus_witness_db_verify_v2s20_shape(fx.w) == -1,
+          "a missing payee index is drift"); OK();
+    fx_close(&fx);
+    return 0;
+}
+
 int main(void) {
     if (test_fresh() != 0) return 1;
     if (test_s19_to_s20() != 0) return 1;
     if (test_rollback_and_refusal() != 0) return 1;
     if (test_open_shape_check() != 0) return 1;
+    if (test_s20_open_drift() != 0) return 1;
     printf("test_hf9_schema: ALL %d checks passed\n", g_checks);
     return 0;
 }

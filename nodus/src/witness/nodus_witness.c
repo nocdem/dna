@@ -1117,6 +1117,16 @@ static int witness_post_open_gate(nodus_witness_t *witness,
         witness->db = NULL;
         return -1;
     }
+    /* HF-9 H2: a database ALREADY at S20 skips the rung above (nothing to
+     * migrate), so its tree / storage tables are held to the S20 shape
+     * here, on every open — drift refuses the database. */
+    if (nodus_witness_db_verify_v2s20_shape(witness) != 0) {
+        fprintf(stderr, "%s: the S20 schema shape check FAILED for %s — "
+                "refusing the database (fail closed)\n", LOG_TAG, db_path);
+        sqlite3_close(witness->db);
+        witness->db = NULL;
+        return -1;
+    }
     /* Nodus EVM red-team 1 F4: a database that reached S17 before the §18
      * evm_logs scan indexes existed gets them here — indexes only, no
      * shape or version change, nothing a root reads (any version but S17,

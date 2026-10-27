@@ -2670,8 +2670,8 @@ static int s20_shadow_ddl(nodus_witness_t *w, const char *src,
  * now exists to carry EXACTLY that stored text: a pre-existing table of
  * the same name and another shape is refused, not read through. */
 static int s20_make_table(nodus_witness_t *w, const char *table,
-                          const char *ddl) {
-    if (exec_sql(w, ddl) != 0) return -1;
+                          const char *ddl, int create) {
+    if (create && exec_sql(w, ddl) != 0) return -1;
     if (table_ddl_exact(w, table, ddl) != 1) {
         QGP_LOG_ERROR(LOG_TAG, "S20: %s exists with another shape — "
                       "refusing", table);
@@ -2758,6 +2758,65 @@ static int s20_rebuild_table(nodus_witness_t *w, const s20_rebuild_t *r) {
     return 0;
 }
 
+/* The fixed, dirty and shadow tables, each required to carry EXACTLY its
+ * S20 text. create = 1: created first (the rung); create = 0: read-only,
+ * a missing or drifted table is refused (the open-time verifier). 0 ok,
+ * -1 refused / fault. */
+static int s20_tree_tables(nodus_witness_t *w, int create) {
+    for (size_t i = 0; i < sizeof(V2_S20_TREE) / sizeof(V2_S20_TREE[0]); i++)
+        if (s20_make_table(w, V2_S20_TREE[i].table, V2_S20_TREE[i].ddl,
+                           create) != 0)
+            return -1;
+    for (size_t i = 0; i < sizeof(V2_S20_DIRTY) / sizeof(V2_S20_DIRTY[0]);
+         i++) {
+        char name[96], ddl[S20_DDL_MAX];
+        int a = snprintf(name, sizeof(name), "v2_tree_dirty_%s",
+                         V2_S20_DIRTY[i].trie);
+        int b = snprintf(ddl, sizeof(ddl), "CREATE TABLE IF NOT EXISTS "
+                         "%s (%s, PRIMARY KEY (%s)) WITHOUT ROWID",
+                         name, V2_S20_DIRTY[i].cols, V2_S20_DIRTY[i].pk);
+        if (a < 0 || (size_t)a >= sizeof(name) || b < 0 ||
+            (size_t)b >= sizeof(ddl) ||
+            s20_make_table(w, name, ddl, create) != 0)
+            return -1;
+    }
+    /* the shadow tables, from the live source tables */
+    for (size_t i = 0; i < sizeof(V2_S20_SHADOW_SRC) /
+                           sizeof(V2_S20_SHADOW_SRC[0]); i++) {
+        char name[96], ddl[S20_DDL_MAX];
+        int a = snprintf(name, sizeof(name), "v2_tree_shadow_%s",
+                         V2_S20_SHADOW_SRC[i]);
+        if (a < 0 || (size_t)a >= sizeof(name) ||
+            s20_shadow_ddl(w, V2_S20_SHADOW_SRC[i], ddl, sizeof(ddl)) != 0 ||
+            s20_make_table(w, name, ddl, create) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+/* Every storage table in the S20 text (the segments table is untouched by
+ * the rung and held too) and the payee index on exactly payee_fp. 0 ok,
+ * -1 drift / fault (logged). Read-only. */
+static int s20_storage_verify(nodus_witness_t *w) {
+    static const char *const ix_cols[] = { "payee_fp" };
+    int v = 1;
+    for (size_t i = 0; i < sizeof(V2_S20_REBUILD) /
+                           sizeof(V2_S20_REBUILD[0]); i++)
+        if (table_ddl_exact(w, V2_S20_REBUILD[i].table,
+                            V2_S20_REBUILD[i].s20_ddl) != 1)
+            v = 0;
+    if (table_ddl_exact(w, "v2_storage_segments", NODUS_V2_STSEGS_DDL) != 1 ||
+        index_cols_exact(w, "idx_v2_storage_nodes_payee",
+                         "v2_storage_nodes", ix_cols, 1) != 1)
+        v = 0;
+    if (!v) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "S20 storage-table schema shape drift "
+                      "— refusing");
+        return -1;
+    }
+    return 0;
+}
+
 int nodus_witness_db_migrate_v2s20_ex(nodus_witness_t *w,
                                       nodus_v2s20_mig_fail_t fail_at) {
     if (!w || !w->db) return -1;
@@ -2791,70 +2850,27 @@ int nodus_witness_db_migrate_v2s20_ex(nodus_witness_t *w,
         for (size_t i = 0; !fail && i < sizeof(V2_S20_REBUILD) /
                                          sizeof(V2_S20_REBUILD[0]); i++)
             if (s20_rebuild_table(w, &V2_S20_REBUILD[i]) != 0) fail = 1;
-        /* the rebuild dropped the registry's payee index with the old
-         * table (it moves with a rename): back, idempotent otherwise */
+        /* A rebuild drops every index of the old table with it (an index
+         * moves with a rename and goes with the DROP). Recreated here:
+         * every index the REPOSITORY defines on the four rebuilt tables —
+         * a grep of the whole tree found exactly one, the registry's
+         * payee index (nodus_witness.c, every open). Only
+         * repository-defined indexes are guaranteed: an index someone
+         * added by hand to a rebuilt table is not carried over. Idempotent
+         * where the table was not rebuilt. */
         if (!fail && exec_sql(w, "CREATE INDEX IF NOT EXISTS "
                                  "idx_v2_storage_nodes_payee ON "
                                  "v2_storage_nodes(payee_fp)") != 0)
             fail = 1;
-        /* the fixed tree tables */
-        for (size_t i = 0; !fail && i < sizeof(V2_S20_TREE) /
-                                         sizeof(V2_S20_TREE[0]); i++)
-            if (s20_make_table(w, V2_S20_TREE[i].table,
-                               V2_S20_TREE[i].ddl) != 0)
-                fail = 1;
-        /* the dirty tables */
-        for (size_t i = 0; !fail && i < sizeof(V2_S20_DIRTY) /
-                                         sizeof(V2_S20_DIRTY[0]); i++) {
-            char name[96], ddl[S20_DDL_MAX];
-            int a = snprintf(name, sizeof(name), "v2_tree_dirty_%s",
-                             V2_S20_DIRTY[i].trie);
-            int b = snprintf(ddl, sizeof(ddl), "CREATE TABLE IF NOT EXISTS "
-                             "%s (%s, PRIMARY KEY (%s)) WITHOUT ROWID",
-                             name, V2_S20_DIRTY[i].cols, V2_S20_DIRTY[i].pk);
-            if (a < 0 || (size_t)a >= sizeof(name) || b < 0 ||
-                (size_t)b >= sizeof(ddl) ||
-                s20_make_table(w, name, ddl) != 0)
-                fail = 1;
-        }
-        /* the shadow tables, from the live source tables */
-        for (size_t i = 0; !fail && i < sizeof(V2_S20_SHADOW_SRC) /
-                                         sizeof(V2_S20_SHADOW_SRC[0]); i++) {
-            char name[96], ddl[S20_DDL_MAX];
-            int a = snprintf(name, sizeof(name), "v2_tree_shadow_%s",
-                             V2_S20_SHADOW_SRC[i]);
-            if (a < 0 || (size_t)a >= sizeof(name) ||
-                s20_shadow_ddl(w, V2_S20_SHADOW_SRC[i], ddl,
-                               sizeof(ddl)) != 0 ||
-                s20_make_table(w, name, ddl) != 0)
-                fail = 1;
-        }
+        /* the fixed, dirty and shadow tables */
+        if (!fail && s20_tree_tables(w, 1) != 0) fail = 1;
         if (fail) break;
         if (fail_at == V2S20MIG_FAIL_AFTER_TABLES) break;
 
         /* Verify what the rebuild promised: every storage table in the
          * S20 text (the segments table is untouched and checked too), the
          * payee index on exactly payee_fp. */
-        {
-            static const char *const ix_cols[] = { "payee_fp" };
-            int v = 1;
-            for (size_t i = 0; i < sizeof(V2_S20_REBUILD) /
-                                   sizeof(V2_S20_REBUILD[0]); i++)
-                if (table_ddl_exact(w, V2_S20_REBUILD[i].table,
-                                    V2_S20_REBUILD[i].s20_ddl) != 1)
-                    v = 0;
-            if (table_ddl_exact(w, "v2_storage_segments",
-                                NODUS_V2_STSEGS_DDL) != 1 ||
-                index_cols_exact(w, "idx_v2_storage_nodes_payee",
-                                 "v2_storage_nodes", ix_cols, 1) != 1)
-                v = 0;
-            if (!v) {
-                QGP_LOG_ERROR(LOG_TAG, "%s",
-                              "S20 storage-table schema shape drift — "
-                              "refusing");
-                break;
-            }
-        }
+        if (s20_storage_verify(w) != 0) break;
         if (fail_at == V2S20MIG_FAIL_AFTER_VERIFY) break;
 
         if (exec_sql(w, "PRAGMA user_version = 20") != 0) break;
@@ -2864,8 +2880,9 @@ int nodus_witness_db_migrate_v2s20_ex(nodus_witness_t *w,
     } while (0);
 
     if (already) {
-        (void)exec_sql(w, "ROLLBACK");
-        return 0;
+        /* nothing was written; a rollback that FAILS leaves a transaction
+         * open on the handle — an error, not an idempotent success */
+        return exec_sql(w, "ROLLBACK") == 0 ? 0 : -1;
     }
     if (!ok) {
         (void)exec_sql(w, "ROLLBACK");
@@ -2880,6 +2897,20 @@ int nodus_witness_db_migrate_v2s20_ex(nodus_witness_t *w,
 
 int nodus_witness_db_migrate_v2s20(nodus_witness_t *w) {
     return nodus_witness_db_migrate_v2s20_ex(w, V2S20MIG_FAIL_NONE);
+}
+
+int nodus_witness_db_verify_v2s20_shape(nodus_witness_t *w) {
+    if (!w || !w->db) return -1;
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
+    if (ver != NODUS_V2_SCHEMA_VERSION_S20) return 0;   /* nothing to hold */
+    if (s20_tree_tables(w, 0) != 0 || s20_storage_verify(w) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s",
+                      "S20 database whose tree / storage tables drifted "
+                      "from the S20 shape — refusing");
+        return -1;
+    }
+    return 0;
 }
 
 /* ── the §18 evm_logs cursor scan (red-team 1 F4) ──────────────────────

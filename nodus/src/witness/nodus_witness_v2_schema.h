@@ -1050,6 +1050,15 @@ int nodus_witness_db_migrate_v2s20(nodus_witness_t *w);
 int nodus_witness_db_migrate_v2s20_ex(nodus_witness_t *w,
                                       nodus_v2s20_mig_fail_t fail_at);
 
+/** Read-only S20 shape verifier, run at EVERY open (nodus_witness.c post-
+ *  open gate): on a database at user_version 20 every tree / dirty /
+ *  shadow table and every storage table must carry exactly its S20 text
+ *  and the registry's payee index must exist (the same comparison the
+ *  rung makes). Nothing is written. @return 0 shape held, or the database
+ *  is not at S20 (nothing to hold); -1 drift or fault — refuse the
+ *  database (fail closed). */
+int nodus_witness_db_verify_v2s20_shape(nodus_witness_t *w);
+
 /* ── the §18 evm_logs CURSOR SCAN (Nodus EVM red-team 1 F4) ─────────────────
  *
  * ORDER: (global_height, item_index, log_index) — the block's own order.
