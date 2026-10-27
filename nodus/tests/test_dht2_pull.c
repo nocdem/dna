@@ -48,7 +48,9 @@
  *     drop time; a pending record whose nearest_R shrinks to the member that
  *     already acknowledged is dropped at the next epoch check with no new
  *     receipt, and one whose quorum is still not met stays pending with its
- *     acknowledgements;
+ *     acknowledgements; a pending record whose node is eligible again at the
+ *     epoch check keeps the record — flag and acknowledgements cleared,
+ *     nothing dropped;
  *   · a failed send of a non-empty p_offer leaves no offer kept at the
  *     source (a p_want afterwards is "without an offer");
  *   · row 22 "epoch-boundary sets": when the responsibility GREW (S(H) lost
@@ -1313,6 +1315,31 @@ static void test_handover_quorum(const tkey_t *ka, const tkey_t *kb,
                   not_held(&g_n[0], addr),
               "|nearest_R| = 1: one receipt drops the record");
     }
+
+    /* Eligible again: a pending record with one acknowledgement, then S(H)
+     * = {A, B} (A eligible for every key). The epoch check ends the
+     * obligation WITHOUT a drop: held, not pending, the ack gone. */
+    set_members(&g_n[0], 2880, 6, (const uint8_t (*)[DHT2_FP_LEN])g_s6, 0,
+                NULL);
+    CHECK(reput_at_a(&p) &&
+              nodus_dht2_store_handover_set(g_n[0].st, addr, true, &f) == 0 &&
+              f, "stored again, obligation again");
+    CHECK(receipt_from(kb, gen, addr, hash) == 0 && pending_at(&g_n[0], addr) &&
+              acked_by(&g_n[0], addr, g_n[1].key.fp),
+          "B's receipt under S6: pending, acknowledged once");
+    {
+        uint8_t ab[2][DHT2_FP_LEN];
+
+        memcpy(ab[0], g_n[0].key.fp, DHT2_FP_LEN);
+        memcpy(ab[1], g_n[1].key.fp, DHT2_FP_LEN);
+        set_members(&g_n[0], 3600, 2, (const uint8_t (*)[DHT2_FP_LEN])ab, 0,
+                    NULL);
+    }
+    CHECK(nodus_dht2_pull_epoch_check(g_n[0].pull, NOW) == 0 &&
+              !pending_at(&g_n[0], addr) &&
+              !acked_by(&g_n[0], addr, g_n[1].key.fp) &&
+              get_at(&g_n[0], addr, hash) == NODUS_DHT2_GET_HELD,
+          "eligible again: obligation cleared, the record kept");
     net_down();
 }
 

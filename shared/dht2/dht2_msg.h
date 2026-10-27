@@ -36,10 +36,10 @@
  * produced. Decoded byte pointers point INTO the input (zero copy) or are
  * copied into fixed arrays, as each struct says.
  *
- * NOT here: the LIST request (dht2_envelope.h, package 1); the pull-
- * receipt's envelope domain (not decided — see the decision's "Still
- * open"); no sealing of the pull-receipt; no admission, holder or client
- * logic. Reads no clock, keeps no state, draws no randomness, no heap.
+ * NOT here: the LIST request (dht2_envelope.h, package 1); sealing the pull-
+ * receipt (nodus.dht.answer.v1 + DHT2_PT_PULL_RECEIPT, decision's "Addendum
+ * 2026-10-26"; nodus_dht2_pull.c seals / verifies it); no admission, holder
+ * or client logic. Reads no clock, keeps no state, draws no randomness, no heap.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -253,8 +253,8 @@ typedef struct {
     uint8_t h[DHT2_HASH_LEN];
 } dht2_receipt_entry_t;
 
-/** Pull-receipt PAYLOAD {c, e, g, s, pf, sf, top}. Its envelope domain is
- *  NOT decided: nothing here seals or opens it. */
+/** Pull-receipt PAYLOAD {c, e, g, s, pf, sf, top}. Nothing here seals or
+ *  opens it (nodus_dht2_pull.c does: nodus.dht.answer.v1). */
 typedef struct {
     uint8_t              pf[DHT2_FP_LEN];  /* puller fp */
     uint8_t              sf[DHT2_FP_LEN];  /* source fp */

@@ -164,8 +164,11 @@ nodus/
 │   ├── dht2/                  # DHT v2 holder side (Linux-only library list)
 │   │   ├── nodus_dht2_store.c/h # DHT v2 package 5: the holder store (SQLite, canonical envelopes)
 │   │   │                      #   and §4.1 admission over an injected context
-│   │   └── nodus_dht2_holder.c/h # DHT v2 package 6a: the holder service — one get / put / list
-│   │                          #   request in, ONE signed answer (or none) out; transport-free; NO caller yet
+│   │   ├── nodus_dht2_holder.c/h # DHT v2 package 6a: the holder service — one get / put / list
+│   │   │                      #   request in, ONE signed answer (or none) out; transport-free; NO caller yet
+│   │   └── nodus_dht2_pull.c/h # DHT v2 package 7a: pull-sync core — the source and puller roles over
+│   │                          #   the store (Bee pullsync / puller translated), cursors, the epoch check,
+│   │                          #   the hand-over obligation; transport-free; NO caller yet
 │   ├── server/
 │   │   ├── nodus_server.c     # Server event loop, auth, sessions, presence, circuits, 4002
 │   │   │                      #   handshake, cluster heartbeat, status; the host side of the DHT seam
@@ -267,7 +270,8 @@ nodus/
 │   ├── test_dht2_msg.c        # DHT v2 package 2 (shared/dht2/dht2_msg.*): hand-assembled bytes for every wire message (get / put, read answer, receipt, LIST answer, refusal, p_hello / p_get / p_offer / p_want / p_deliver, pull-receipt payload), per-message strict rejects and count bounds, row-7 `v` per context, LIST rules, the p_want bit-vector, the control `_data`, the five typed `_id` helpers, answer seal / open, the row-11 sizes + `_Static_assert` against NODUS_MAX_FRAME_TCP; default build, nothing left behind
 │   ├── test_dht2_ipc.c        # DHT v2 package 4: the witness listener's `ipc_dht` kind (raw peer + test handlers: snap / sets / name bytes, {err} answers, the SET_MAX sets frame = DERIVED_MAX, every refused frame, ipc_status unchanged) and nodus_dht2_wview against a scripted socket server with INJECTED time (5000 ms stale, 1000 ms poll, sets by `e`, name cache, timeout, backoff, late reply, malformed answers), one end-to-end case; the witness FILL functions are NOT exercised (test handlers stand in); mkdtemp dirs, nothing left behind
 │   ├── test_dht2_store.c      # DHT v2 package 5 (src/dht2/nodus_dht2_store.*): §4.1 code order through `put` (15, 1-9, 16), the name fault asked once, Select (equal / losing / A-B two arrivals), quota + node pools + inbox pools 80 / 20, inbox control (only the selected live record applies; DENIED 12, HANDLED [18, through]), LIST pages, get / sweep expiry edges, insertion index + generation + hand-over flag across reopen, the readiness gate, chain binding, forced SQLite faults → 16; since package 6a also the LIST page budget counting the control record and the put result's address kept across a refusal; injected context, fixed-seed keys, one mkdtemp dir removed at the end
-│   ├── test_dht2_holder.c     # DHT v2 package 6a (src/dht2/nodus_dht2_holder.*): every answer ONE RFC 0002 envelope under nodus.dht.answer.v1 (answer / receipt / refusal), get / put results in request order, put results keyed by the envelope's address (zero key for a parse failure), malformed requests and bad LIST envelopes → no answer, owner LIST vs not-owner 17, refusal 15 (no snapshot, block sync, another chain, |S(H)| = 1 put) and 14 (64 queued jobs), name FAULT / PENDING → 16, an abandoned name fault dropped after one poll period, GET of an inbox-control record → 17, an envelope > 262,144 B → per-key 1; injected view, fixed-seed keys, one mkdtemp dir removed at the end
+│   ├── test_dht2_holder.c     # DHT v2 package 6a (src/dht2/nodus_dht2_holder.*): every answer ONE RFC 0002 envelope under nodus.dht.answer.v1 (answer / receipt / refusal), get / put results in request order, put results keyed by the envelope's address (zero key for a parse failure), malformed requests and bad LIST envelopes → no answer, owner LIST vs not-owner 17, refusal 15 (no snapshot, block sync, another chain) and 14 (64 queued jobs), a put at |S(H)| = 1 stored and receipted, NOT refused (since package 7a, decision 2026-10-26-dht-v2-no-single-node-write-refusal.md), name FAULT / PENDING → 16, an abandoned name fault dropped after one poll period, GET of an inbox-control record → 17, an envelope > 262,144 B → per-key 1; injected view, fixed-seed keys, one mkdtemp dir removed at the end
+│   ├── test_dht2_pull.c       # DHT v2 package 7a (src/dht2/nodus_dht2_pull.*): two in-memory stores (A source, B puller) wired through the injected send function — a full exchange copies every record with the same hash and persists cursor top + 1; one exchange per source; the pull-receipt envelope (payload type /nodus/dht/pull-receipt/v1 under nodus.dht.answer.v1, signed by B); row 22 > 250 entries, replacement during delivery, generation reset, interrupted handover, epoch-boundary sets, non-eligible puller, wrong bit-vector length; the hand-over quorum (two distinct nearest_R members, or one when |nearest_R| = 1) then the record DROPPED; the cursor kept on a transient local failure, advanced on a definitive refusal; can lie: one in-order queue (no concurrency, no real disconnect), HELLO routed by sender, sets ≤ 6 members, DP pinned only for fixed sets, injected view, no rate limit / pageTimeout / live pulling / framing; default build, mkdtemp dir, nothing left on success
 │   ├── test_p2p_secret_kat.c  # DHT v2 sub-package 3a step 1: byte pins of TODAY's 4004 SecretConnection in literal bytes (never through the CMT_P2P_SC_* macros) — fixed-vector T / key / challenge against python3-computed hex, live-handshake recompute on both sides, HELLO / HELLO_R / KEYX framing at literal offsets, sealed-frame nonce role ‖ 00 00 00 ‖ u64 BE counter, AUTHSIG under purpose 0x0A only; must pass on the unchanged base; default build, nothing left behind
 │   ├── test_p2p_secret_profiles.c # DHT v2 sub-package 3a step 2: session profiles WITNESS / CLIENT / NODE — matched handshakes authenticate, mixed pairs never do, python3 vectors per profile, purposes 0x0A / 0x0C / 0x0D do not cross-verify, init refuses every profile but the three consts (by pointer; since 3d also the ANON profile), `cmt_p2p_sc_init` = WITNESS; default build, nothing left behind
 │   ├── test_p2p_secret_anon.c # DHT v2 package 3d: the ANON family in memory — handshake with the KEM-key certificate, wire sizes 70 / 8,858 / 1,571 / 1,044 / 1,044, key and T recomputed from the captured bytes, bad certificate / rejected pin never reach ENCAPS, CONFIRM frame rules, family mismatches, refused kinds 0x05-0x07, fragmented input, 4004 caps unchanged (§15 "DHT v2 package 3d")
@@ -11608,7 +11612,8 @@ request is bounded, at row 11's record budget: `DHT2_REQ_BUDGET` = 8 × 262,144 
 code, not a design fact.
 
 **Not in this package:** the pull-receipt's envelope domain is NOT decided (the
-decision's "Still open", to be asked before package 7) — only its payload is coded,
+decision's "Still open", to be asked before package 7; decided later — the decision's
+"Addendum 2026-10-26", sealed in package 7a below) — only its payload is coded,
 nothing seals or opens it; the PeerRecord / address announcement moved to the
 endpoint package (package 6 of the package plan: rev 5 sets its size bounds there);
 no admission, holder or client logic; no caller in a node or a client. Function
@@ -11834,8 +11839,9 @@ pull exchange need (design `docs/plans/2026-10-14-dht-v2-design.md` rev 5, FROZE
 §3.1 "Stored form", §3.3, §4.1, §4.2, §4.5 (i) / (v), §5, §6, §9 D3 / D4 / D6, §13 rows
 5-8, 12, 15, 16, 18; all LOCAL-only; header `nodus_dht2_store.h:1-75`). **Nothing in a
 node calls it** — its callers are `tests/test_dht2_store.c` and, since package 6a, the
-holder service, which nothing calls yet (`nodus_dht2_store.h:69-72`: package 6 is the
-serving layer, package 7 the pull exchange). It is in the Linux-only library list
+holder service, which nothing calls yet (`nodus_dht2_store.h:69-72` at package 5: package
+6 is the serving layer, package 7 the pull exchange; since package 7a the header names
+`nodus_dht2_pull.{c,h}`, which nothing calls either). It is in the Linux-only library list
 (`nodus/CMakeLists.txt:714-718`). No wire, port, consensus, block or
 state-root change; the existing DHT on 4001 / 4002 is untouched; nothing is written to
 the chain.
@@ -11950,22 +11956,27 @@ ascending, ≤ 250, and the highest index scanned — or the store's top for an 
 interval (Bee `pullsync.go:251-254`); expired-but-unswept records are listed. Every
 stored change re-indexes the row; equal / losing writes do not move the counter. The
 hand-over flag is persisted per record and survives a replacement; package 7 decides
-when to set it.
+when to set it (package 7a: at the epoch check, and the obligation ends by dropping the
+record — "DHT v2 package 7a" below, which also added the pull cursors, `pull_e` and the
+acknowledgement table to this store).
 
 **Determinism.** Nothing here reads a clock: chain time is the injected snapshot's `t`
 (`nodus_dht2_store.h:56`). Select is `dht2_record_compare`, a pure function of the two
 records, so arrival order does not change the winner (the A/B case is tested). The one
 random value is the generation `g`, node-local. Nothing reaches consensus.
 
-**Deferred on purpose** (`nodus_dht2_store.h:38-41`): the |S(H)| ≥ 2 write precondition
-→ the serving layer, package 6 (done in package 6a's holder service, below — not in the
-store); the per-put SUM cost and a per-inbox tombstone row bound → measure first; a
-state-dependent refusal that leaves an older version behind → package 7's cursor rule.
+**Deferred on purpose** (`nodus_dht2_store.h:38-41` as of package 5): the |S(H)| ≥ 2
+write precondition → the serving layer, package 6 (done in package 6a's holder service,
+below — not in the store — and REMOVED in package 7a under decision
+`2026-10-26-dht-v2-no-single-node-write-refusal.md`); the per-put SUM cost and a
+per-inbox tombstone row bound → measure first; a state-dependent refusal that leaves an
+older version behind → package 7's cursor rule (built in package 7a, below).
 
 **Not done yet:** no caller in a node. Request handling, answer sealing and filling the
 context from `nodus_dht2_wview` came in package 6a (below), which nothing calls yet; the
-sessions and forwarding are package 6b, the pull exchange package 7. Function
-reference, every type and return code: `messenger/docs/functions/dht2.md` §12.
+sessions and forwarding are package 6b; the pull exchange's core came in package 7a
+(below), which nothing calls yet either. Function reference, every type and return code:
+`messenger/docs/functions/dht2.md` §12.
 
 **Test** — `test_dht2_store` (`nodus/CMakeLists.txt:2100-2107`; default build, no flags,
 no environment, no network, no clock; fixed-seed ML-DSA-87 keys, hedged signing so no
@@ -12006,7 +12017,9 @@ What it is: the holder's answer half of DHT v2 — ONE transport-free function,
 `nodus_dht2_holder_serve`, that takes the bytes of ONE request from one session (a "get",
 a "put" — also read-repair — or the owner-signed "list" envelope), runs it against the
 package-5 store and returns the bytes of ONE signed answer envelope, or "no answer"
-(design `docs/plans/2026-10-14-dht-v2-design.md` rev 5, FROZEN — §2 "Precondition",
+(design `docs/plans/2026-10-14-dht-v2-design.md` rev 5, FROZEN — §2 "Precondition"
+(INVALID since decision `2026-10-26-dht-v2-no-single-node-write-refusal.md`; the
+precondition was removed in package 7a, below),
 §4.4 signed answers and receipts, §13 rows 7, 11, 14, 18, 20, 23; request format per
 `docs/plans/decisions/2026-10-23-dht-v2-wire-gaps-package2.md`; all LOCAL-only; header
 `nodus/src/dht2/nodus_dht2_holder.h:1-91`). Package 6a has no decision record of its
@@ -12027,7 +12040,7 @@ the chain.
 
 | File | What |
 |---|---|
-| `nodus/src/dht2/nodus_dht2_holder.h` | NEW. The contract (`:1-91`): the view (`nodus_dht2_holder_view_t`, three function pointers + `user`), the holder (`nodus_dht2_holder_t`), `NODUS_DHT2_HOLDER_QUEUE_MAX` 64, `NODUS_DHT2_HOLDER_WRITE_MIN_SET` 2, `NODUS_DHT2_HOLDER_WRITE_REFUSAL` 15, `NODUS_DHT2_HOLDER_OUT_MIN` = `DHT2_ANSWER_ENV_MAX`, results ANSWER 0 / NO_ANSWER 1 / ERR −1; `nodus_dht2_holder_view_wview`, `_init`, `_job_enter` / `_job_leave`, `_serve` |
+| `nodus/src/dht2/nodus_dht2_holder.h` | NEW. The contract (`:1-91`, line numbers in this table as of package 6a): the view (`nodus_dht2_holder_view_t`, three function pointers + `user`), the holder (`nodus_dht2_holder_t`), `NODUS_DHT2_HOLDER_QUEUE_MAX` 64, `NODUS_DHT2_HOLDER_WRITE_MIN_SET` 2 and `NODUS_DHT2_HOLDER_WRITE_REFUSAL` 15 (both REMOVED in package 7a), `NODUS_DHT2_HOLDER_OUT_MIN` = `DHT2_ANSWER_ENV_MAX`, results ANSWER 0 / NO_ANSWER 1 / ERR −1; `nodus_dht2_holder_view_wview`, `_init`, `_job_enter` / `_job_leave`, `_serve` |
 | `nodus/src/dht2/nodus_dht2_holder.c` | NEW. The wview binding (`:28-55`), init / queue (`:59-95`), the name mapping (`:105-122`), the call's world and the chain gate (`:135-169`), sealing and the refusal (`:173-205`), call-level states (`:209-218`), get / put (`:230-357`), list (`:361-437`), the entry point (`:441-494`) |
 | `nodus/src/dht2/nodus_dht2_store.{h,c}` | `nodus_dht2_put_t` gains `has_address` / `address`, kept across a refusal; the LIST page budget charges the control record first ("DHT v2 package 5" above) |
 | `nodus/src/dht/nodus_dht2_wview.{h,c}` | `NODUS_DHT2_WVIEW_FAULT_KEEP_MS`: an unread name fault is dropped after one poll period (§10 "The dialler") |
@@ -12056,13 +12069,15 @@ or `[18, through]`; a put → `/nodus/dht/receipt/v1`, same shape, never null; a
 3. Call-level states: the row-20 signing queue full (64 jobs) → refusal 14; no fresh
    snapshot → refusal 15 (`:209-218`). The caller, not `serve`, takes and releases the
    queue slots (`nodus_dht2_holder_job_enter` / `_leave`).
-4. **Write precondition** (§2, `:481-484`): while the current S(H) has fewer than 2
-   members (`NODUS_DHT2_HOLDER_WRITE_MIN_SET`), every put — read-repair included — is
-   refused with `NODUS_DHT2_HOLDER_WRITE_REFUSAL` = 15. Reads are still served. **This
-   code is an ORCHESTRATOR reading awaiting the operator** (`nodus_dht2_holder.h:48-53`):
-   the design says writes are refused but names no code; 15 ("the client uses another
-   node", row 7) was chosen, one constant so it can change, `_Static_assert`ed to 14 or
-   15 because a refusal payload carries only those (`nodus_dht2_holder.c:22-24`).
+4. **Write precondition — REMOVED in package 7a.** As built in 6a (§2, `:481-484` at
+   6a): while the current S(H) had fewer than 2 members
+   (`NODUS_DHT2_HOLDER_WRITE_MIN_SET`), every put — read-repair included — was refused
+   with `NODUS_DHT2_HOLDER_WRITE_REFUSAL` = 15. The operator ruled the rule was never
+   theirs and that it would stop the first mainnet storage node; decision
+   `2026-10-26-dht-v2-no-single-node-write-refusal.md`: "A holder never refuses a write
+   because the storage set is small." Since package 7a a holder never refuses a put
+   because S(H) is small; a network with one storage node stores records
+   (`nodus_dht2_holder.h:47-50` at `0707fff49`).
 5. **get**: per key, the store's answer — hash, null, or 16 for a store fault ("never
    absence"); a held inbox-control (class 5) record is per-key 17, never its hash or
    bytes — row 23 answers control reads to the inbox OWNER only and a get is not
@@ -12104,36 +12119,39 @@ here reaches consensus.
 
 **Not done yet:** no caller (package 6b: sessions, forwarding, deadlines, the repair
 queue, records beside the answer); the real `nodus_dht2_wview` binding
-(`nodus_dht2_holder_view_wview`) runs in no test; the client rules of §4.4 (package 8);
-the operator's word on the write-precondition code. Function reference, every type,
-constant and result: `messenger/docs/functions/dht2.md` §13.
+(`nodus_dht2_holder_view_wview`) runs in no test; the client rules of §4.4 (package 8).
+(The operator's word on the write-precondition code, listed here at 6a, became the
+removal of the precondition — step 4.) Function reference, every type, constant and
+result: `messenger/docs/functions/dht2.md` §13.
 
 **Test** — `test_dht2_holder` (`nodus/CMakeLists.txt:2109-2116`; default build, no
 flags, no environment, no network, no clock; fixed-seed ML-DSA-87 keys, hedged signing
 so signatures are verified, never compared to a constant; injected chain time; its own
 `mkdtemp` directory under `/tmp`, removed at the end — a crash leaves
 `/tmp/test_dht2_holder_XXXXXX`; safe under `ctest -j`). Eleven sections from `main`
-(`tests/test_dht2_holder.c:1142-1152`): `test_get_put`, `test_malformed`, `test_list`,
-`test_call_level`, `test_write_precondition`, `test_name_fault`,
+(`tests/test_dht2_holder.c:1134-1144` at `0707fff49`): `test_get_put`, `test_malformed`,
+`test_list`, `test_call_level`, `test_single_storage_node_stores` (package 7a; it
+replaced 6a's `test_write_precondition`), `test_name_fault`,
 `test_fault_abandoned`, `test_chain_gate`, `test_ctl_get`, `test_oversize_put`,
-`test_late_refusal`. Proves (file header `:8-47`; `test_late_refusal` by its own comment
-`:1009-1011`): every answer opens under its kind's payload type and verifies under
+`test_late_refusal`. Proves (file header `:9-46`; `test_late_refusal` by its own comment
+`:1001-1003`): every answer opens under its kind's payload type and verifies under
 `nodus.dht.answer.v1` only, with `q`, `n`, `c`, `h`, `t` as above (none of `h` / `t` in
 a refusal); get / put results in request order; malformed requests and bad LIST
 envelopes get no answer; owner LIST vs not-owner 17; refusal 15 for no snapshot, block
-sync, another chain (get, put, owner and not-owner LIST) and a put at |S(H)| = 1 (a get
-is still answered; at |S(H)| = 3 the put is stored); refusal 14 at 64 queued jobs; a
+sync and another chain (get, put, owner and not-owner LIST); since package 7a a put
+at |S(H)| = 1 is NOT refused — it is answered with a receipt naming the stored hash and a
+later get returns that hash (at 6a this case pinned the refusal 15); refusal 14 at 64 queued jobs; a
 name FAULT and a PENDING answer are 16 and the fault is consumed; an abandoned fault
 stops blocking another writer after one poll period; a GET of a held control record is
 17; an envelope above 262,144 B is per-key 1 with a zero key while its sibling is
 stored; in one receipt an expired record is `{k: its address, v: 7}`, a HANDLED entry
 `{k: its address, v: [18, through]}`, a parse failure `{k: zero, v: 2}`. Can lie
-(`:59-75`): the view is injected — the real binding is not exercised and the PENDING /
+(`:59-71`): the view is injected — the real binding is not exercised and the PENDING /
 FAULT fakes follow the view's documented behaviour; the holder sets are tiny (1 or 3),
 so eligibility is not exercised; whether a CLIENT accepts the answers is package 8's;
-hedged signatures differ run to run; the write-precondition code 15 is pinned by the
-test, which therefore cannot notice the operator choosing another. Nothing was built or
-run for this document; no run of this test is cited here.
+hedged signatures differ run to run. (6a's fifth item — the pinned write-precondition
+code 15 — was removed with the precondition in package 7a.) Nothing was built or run for
+this document; no run of this test is cited here.
 
 ### DHT v2 sub-package 3b-1 — the optional SecretConnection layer of `nodus_tcp` (2026-10-24, branch `dna95-dht2-3b1`, not versioned; NOT enabled on any port)
 
@@ -13083,6 +13101,163 @@ existing monotonic pre-session deadline.
 
 Function reference: `messenger/docs/functions/transport.md` "DHT v2 package 3d" and
 `messenger/docs/functions/ledger.md` §19.
+
+### DHT v2 package 7a — pull-sync core (no caller yet) (2026-10-27, branch `dna95-dht2-7`, not versioned)
+
+What it is: the core of DHT v2 pull-sync — how records follow the holder set (design
+`docs/plans/2026-10-14-dht-v2-design.md` rev 5, FROZEN — §4.5 "Records follow the holder
+set", §13 row 12 "Bee pkg/pullsync translated", rows 20, 22; all LOCAL-only; header
+`nodus/src/dht2/nodus_dht2_pull.h:1-86`). ONE transport-free module,
+`nodus/src/dht2/nodus_dht2_pull.{h,c}`, with both roles: the SOURCE answers a puller
+(`nodus_dht2_pull_serve`: HELLO, GET, WANT, RECEIPT), the PULLER runs one exchange per
+source (`nodus_dht2_pull_start`, then `nodus_dht2_pull_on_reply`: HELLO, OFFER,
+DELIVER). "It never opens a socket and never reads a clock" (`:19-20`): the caller
+supplies a send function, the injected view of the witness (package 6a's view type), the
+store, the node identity and the chain, and feeds every received message back in. There
+is no timer — "Bee's puller sets none (puller.go has no exchange timeout)" (`:41-44`).
+Pinned reference: Bee v2.8.2 `pkg/pullsync/pullsync.go` and `pkg/puller/puller.go`;
+"every function and check in nodus_dht2_pull.c names the Bee file:line it translates.
+Where the design names a deviation (row 12), the design wins and the row is cited"
+(`:14-17`). Commits `22f2c7683` (the module; the single-storage-node write refusal
+dropped), `2146310df`, `2e47ae725`, `262891726`, `8842ec0ca`, `330c0f942`, `659b489dd`,
+`0707fff49` (review and fix rounds).
+
+Governing records (LOCAL-only, `docs/plans/decisions/`):
+- `2026-10-23-dht-v2-wire-gaps-package2.md`, "Addendum 2026-10-26" (operator): the
+  pull-receipt is signed under `nodus.dht.answer.v1` with payload type
+  `/nodus/dht/pull-receipt/v1`, sealed with `dht2_env_seal`; the verifier checks the
+  payload type as well as the domain.
+- `2026-10-27-dht-v2-handover-one-receipt.md` (operator, 2026-10-27, revised the same day
+  after the loss case was stated — "Kayıt kaybı gibi bir şey yaşayamamıza imkan yok.
+  Tamam, iki olur."): a hand-over obligation ends when min(2, |nearest_R(S(H))|) DISTINCT
+  members of the record's current `nearest_R(S(H))` have sent valid pull-receipts for it;
+  the store keeps the acknowledging fps per pending record. The first answer of that day
+  ("one receipt") is superseded and kept in the file as history.
+- `2026-10-26-dht-v2-no-single-node-write-refusal.md` (operator, 2026-10-26): a holder
+  never refuses a write because the storage set is small; a network with one storage
+  node stores records. Design §2 "Precondition" is INVALID. Package 7a removes the
+  package-6a precondition, its two constants and its test.
+
+**Where it sits.** A library file in the Linux-only list (`nodus/CMakeLists.txt:735-737`:
+"the source and puller roles over the store, transport-free. No caller yet"). It embeds a
+package-6a holder for its view, store, identity and chain and loads each call's world
+through the holder's `nodus_dht2_holder_world_load` (`nodus_dht2_pull.c:86-96`,
+`:176-180`). **Nothing calls it** — the only caller is `tests/test_dht2_pull.c`. Not here
+("GAPS", `nodus_dht2_pull.h:46-56`): how a node learns a source's network address, the
+4002 framing of the messages and any caller / event loop, Bee's `pageTimeout` wait, Bee's
+250 chunks / s limiters, live pulling. No wire, port, consensus, block or state-root
+change; the existing DHT on 4001 / 4002 is untouched; nothing is written to the chain.
+
+| File | What |
+|---|---|
+| `nodus/src/dht2/nodus_dht2_pull.h` | NEW. The contract (`:1-86`): the message kinds `nodus_dht2_pull_msg_t`, `NODUS_DHT2_PULL_MSG_MAX`, the send function type, `_new` / `_free` / `_self_fp`, the puller (`_sources`, `_start`, `_on_reply`, `_disconnect`, `_epoch_check`) and the source (`_serve`); GAPS and READINGS |
+| `nodus/src/dht2/nodus_dht2_pull.c` | NEW. What it leaves out of Bee and why (`:10-26`), setup (`:215-287`), sources (`:291-340`), start / page completion / hello / offer / deliver / dispatch (`:351-703`), responsibility growth (`:716-799`), hand-over quorum and settle (`:801-863`), the epoch check (`:865-963`), the source's hello / get / want / receipt and dispatch (`:968-1268`) |
+| `nodus/src/dht2/nodus_dht2_store.{h,c}` | Tables `dht2_pull_src` (cursor per source) and `dht2_ack` (acknowledging fps) with the trigger `dht2_ack_gc` (`nodus_dht2_store.c:54-90`); `handover_set` deletes the acknowledgements in the same transaction; NEW `handover_drop`, `handover_ack_add` / `_has`, `handover_info`, `permanent_scan`, `pull_get` / `_set` / `_reset`, `pull_epoch_get` / `_set` (meta `pull_e`) (`nodus_dht2_store.h:270-356`) |
+| `nodus/src/dht2/nodus_dht2_holder.{h,c}` | The §2 write precondition removed (`NODUS_DHT2_HOLDER_WRITE_MIN_SET`, `NODUS_DHT2_HOLDER_WRITE_REFUSAL`, its `_Static_assert` and its check in `nodus_dht2_holder_serve`); the call's world exported as `nodus_dht2_name_user_t`, `nodus_dht2_world_t`, `nodus_dht2_holder_world_load` (`nodus_dht2_holder.h:158-180`) |
+| `nodus/tests/test_dht2_pull.c` | NEW, below |
+| `nodus/tests/test_dht2_holder.c` | `test_write_precondition` replaced by `test_single_storage_node_stores` (a put with ONE member in S(H) is stored and receipted); header item "can lie 5" removed |
+| `nodus/CMakeLists.txt` | `src/dht2/nodus_dht2_pull.c` in the Linux-only library list (`:735-737`); `test_dht2_pull` (`:2182-2187`) |
+
+**One exchange** (`nodus_dht2_pull.c:351-703`, source side `:968-1147`):
+
+1. The puller sends the p_hello REQUEST — Bee's empty `Syn` (`pullsync.go:528-529`) as the
+   empty DAG-CBOR map `0xa0`; the source accepts nothing else and replies `p_hello {g,
+   top}` (its store generation and top). The module cannot tell a hello request from a
+   reply; the framing must (header READING).
+2. The puller reads its persisted cursor for that source; a source never pulled from, or
+   one whose generation `g` changed, is re-scanned from 0 (`puller.go:266-283`). A cursor
+   above `top` means caught up: no p_get. Otherwise `p_get {g, s = cursor}`.
+3. The source scans ≤ 250 entries from `s` and offers `{e, g, top}`, each entry ONLY when
+   the puller is in `eligible(p)` (row 12); a non-empty offer is kept per peer until its
+   want arrives.
+4. The puller wants the entries whose placement key puts it in `nearest_R(S(H))` and that
+   it lacks or holds in another version — `p_want` of exactly ⌈n/8⌉ bytes; the source
+   answers one `p_deliver {i, v}` per set bit, ascending, with the version it holds NOW
+   (`v` null = gone). A store fault at the source aborts — never "gone" (a named
+   deviation from Bee `pullsync.go:501-505`).
+5. The puller recomputes address and placement key from each `v` (a mismatch = source
+   fault, nothing stored) and admits it through `nodus_dht2_store_put` — the ONE §4.1
+   admission path — with the offered address as the expected one.
+6. **Cursor rule** (row 12): the cursor `top + 1` is persisted ONLY when every wanted
+   entry was admitted or definitively refused (codes 1-13, 18). A transient LOCAL failure
+   — admission 15 / 16 / negative, no snapshot, a local read fault, a local fault while
+   checking a delivery — aborts the exchange and keeps the cursor. A wrong kind for the
+   exchange's state, a changed `g`, or a malformed message aborts it too.
+7. For a non-empty page the puller sends ONE pull-receipt `{pf, sf, c, g, s, top, e:
+   [{a, h}]}` naming every entry it holds after the page, sealed with `dht2_env_seal`
+   under `nodus.dht.answer.v1`, payload type `/nodus/dht/pull-receipt/v1`.
+
+**The epoch check** (`nodus_dht2_pull_epoch_check`, `nodus_dht2_pull.c:865-963`). The
+epoch the cursors were last checked against is PERSISTED (store meta `pull_e`), so a
+restart does not forget it. Same epoch → nothing. The previous boundary exactly (`e − E`,
+E = `DNAC_EPOCH_LENGTH`) → if this node's responsibility GREW (a key in its
+`nearest_R(S(H))` that was not in its `nearest_R(S(H − E))`, decided by a DP over XOR bit
+positions — a READING, "JUDGMENT, no reference oracle", `nodus_dht2_pull.h:63-65`),
+every exchange is aborted and every cursor reset to 0 (`puller.go:178-189`). No `pull_e`,
+or a boundary missed → the same reset, unconditionally. Then the hand-over scan below;
+`pull_e` is persisted LAST, only when everything succeeded.
+
+**The hand-over obligation** (§4.5 v). At the epoch check every permanent record (no
+expiry) this node is no longer `eligible` for gets the persisted hand-over flag; while
+pending it is still offered and delivered. A pull-receipt counts for a record only when
+the envelope verifies (payload type, domain, signer = the sending peer, `sf` = this node,
+this chain, this generation), the record is held and pending with the hash the receipt
+names ("the same version", not "or newer" — header READING), and the signer is in the
+record's `nearest_R(S(H))`; the acknowledging fp is persisted (`dht2_ack`, one row per
+fp). The obligation ends when min(2, |nearest_R(S(H))|) DISTINCT members of the CURRENT
+`nearest_R(S(H))` have acknowledged — re-counted at every receipt and at every epoch
+check, so a membership change alone can meet it; an acknowledger that left `nearest_R`
+does not count; an empty `nearest_R` is never met. Then the record row is DROPPED
+(`nodus_dht2_store_handover_drop`: one transaction, only if still pending with the hash
+the receipts named; its acknowledgements go with it). Deleting the row is the code's
+reading of §4.5 (v) "then it may drop them" (`nodus_dht2_pull.h:74-78`); a dropped
+record returns only through a normal pull. A node that is `eligible` for a pending record
+again only clears the flag and the acknowledgements — nothing is dropped
+(`nodus_dht2_pull.c:834-863`; this case is stated in the .c, not in the header or the
+decision record).
+
+**Determinism.** "Nothing here is unordered: sources are sorted by fp, entries follow the
+insertion index, deliveries ascend by offer index" (`nodus_dht2_pull.h:82-83`). No clock,
+no timer. The store generation `g` (node-local, package 5) is compared for equality only.
+Nothing reaches consensus.
+
+**Not done yet:** no caller (the 4002 framing, the event loop that starts exchanges and
+the epoch check, source addresses); Bee's rate limits and `pageTimeout` wait; live
+pulling; the "or newer" half of a receipt. Function reference, every type, constant and
+result: `messenger/docs/functions/dht2.md` §14 (the store additions §12, the holder
+changes §13).
+
+**Test** — `test_dht2_pull` (`nodus/CMakeLists.txt:2182-2187`; default build, no flags, no
+environment, no network, no clock — chain time and the caller's tick are injected
+constants; fixed-seed ML-DSA-87 keys, hedged signing so signatures are verified, never
+compared; its own `mkdtemp` directory — a crash leaves `/tmp/test_dht2_pull_XXXXXX`; safe
+under `ctest -j`). Eleven sections from `main` (`tests/test_dht2_pull.c:1750-1760`):
+`test_basic`, `test_more_than_250`, `test_replacement`, `test_generation`,
+`test_handover`, `test_handover_quorum`, `test_offer_send_fail`, `test_epoch_persisted`,
+`test_epoch_sets`, `test_want_length`, `test_cursor_rules`. Two in-memory stores, A the
+source and B the puller, wired through the injected send function. Proves (file header
+`:12-72`): a full exchange copies every record with the same canonical hash and persists
+cursor top + 1 with the source's generation; a second start is BUSY; the pull-receipt
+envelope (payload type, domain, signer, fields, entries in offer order); row 22 "> 250
+pull entries" (cursor 251, then 301), "replacement during delivery", "generation reset",
+"interrupted handover" (flag set at the epoch check, survives a reopen, ONE member's
+receipt leaves it), "epoch-boundary sets" (growth resets cursors and aborts an exchange;
+equal sets, a grown S(H) or the same epoch keep them), "non-eligible puller gets no
+offer", "wrong bit-vector length aborts"; the receipt refusals (wrong payload type,
+wrong domain, signer ≠ peer; non-member or wrong hash counts for nothing; the same member
+twice counts once); a second DISTINCT member drops the record; |nearest_R| = 1 drops on
+one receipt; acknowledgements survive a reopen; an acknowledger that left `nearest_R`
+does not count; a shrunken `nearest_R` already met drops at the next epoch check; a
+failed p_offer send keeps no offer; the cursor kept on a transient local failure,
+advanced on a definitive refusal, a mismatching delivery stored nothing. Can lie
+(`:84-101`): one in-order queue — no concurrent exchanges, no real disconnect; HELLO
+routed by "sent by the puller" (the framing is a gap); sets ≤ 4 make every member
+eligible, the 6-member sets pick their records with `dht2_nearest_r` itself; the growth
+DP is pinned only for fixed fp patterns; the view is injected; the rate limit,
+`pageTimeout`, live pulling, framing, source addresses and the "newer version" half of a
+receipt are not covered. The "eligible again" branch is the last block of
+`test_handover_quorum` (record kept, flag and acknowledgement cleared).
+Nothing was built or run for this document; no run of this test is cited here.
 
 ### Block retention (pruning) and the SeenCommit cleanup (2026-10-03)
 
