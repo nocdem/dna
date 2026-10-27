@@ -1433,6 +1433,37 @@ int nodus_dht2_store_handover_retire(nodus_dht2_store_t *s,
     return 0;
 }
 
+int nodus_dht2_store_handover_ack_retire(nodus_dht2_store_t *s,
+                                         const uint8_t address[DHT2_HASH_LEN],
+                                         const uint8_t fp[DHT2_FP_LEN],
+                                         const uint8_t hash[DHT2_HASH_LEN],
+                                         uint64_t drop_e)
+{
+    sqlite3_stmt *st;
+
+    if (s == NULL || address == NULL || fp == NULL || hash == NULL) {
+        return DHT2_E_ARG;
+    }
+    if (exec_sql(s, "BEGIN IMMEDIATE") != 0) {
+        return CODE_FAULT;
+    }
+    st = prep(s, "INSERT OR IGNORE INTO dht2_ack(address, fp) VALUES(?1, ?2)");
+    if (st == NULL ||
+        !bound(st, b_64(st, 1, address) | b_blob(st, 2, fp, DHT2_FP_LEN)) ||
+        step_done(s, st) != 0 ||
+        nodus_dht2_store_handover_retire(s, address, hash, drop_e, NULL)
+            != 0) {
+        goto rollback;
+    }
+    if (exec_sql(s, "COMMIT") != 0) {
+        goto rollback;
+    }
+    return 0;
+rollback:
+    (void)exec_sql(s, "ROLLBACK");
+    return CODE_FAULT;
+}
+
 int nodus_dht2_store_handover_retire_get(nodus_dht2_store_t *s,
                                          const uint8_t address[DHT2_HASH_LEN],
                                          bool *found, uint64_t *drop_e,

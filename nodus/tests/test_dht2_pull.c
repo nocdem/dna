@@ -1320,9 +1320,11 @@ static void test_handover_quorum(const tkey_t *ka, const tkey_t *kb,
               get_at(&g_n[0], addr, hash) == NODUS_DHT2_GET_HELD,
           "back in nearest_R, B counts again: the drop is scheduled");
 
-    /* At the due epoch the quorum is re-counted: S(H) without A and B (A is
-     * not eligible, B's acknowledgement no longer counts) → NOT dropped;
-     * back to S6 one epoch later → dropped. */
+    /* After the due epoch the quorum is re-counted: S(H) without A and B (A
+     * is not eligible, B's acknowledgement no longer counts) → NOT dropped;
+     * back to S6 one epoch later → dropped. The epochs are past 1440 +
+     * WAIT_E, the pull_e the earlier drop persisted, so each check scans
+     * (Sol 7b finding 2: an equal pull_e returns before the scan). */
     {
         uint8_t noab[5][DHT2_FP_LEN];
 
@@ -1331,14 +1333,14 @@ static void test_handover_quorum(const tkey_t *ka, const tkey_t *kb,
         memcpy(noab[2], g_s6[3], DHT2_FP_LEN);
         memcpy(noab[3], g_s6[4], DHT2_FP_LEN);
         memcpy(noab[4], g_s6[5], DHT2_FP_LEN);
-        set_members(&g_n[0], 1440 + WAIT_E, 5,
+        set_members(&g_n[0], 1440 + WAIT_E + (uint64_t)DNAC_EPOCH_LENGTH, 5,
                     (const uint8_t (*)[DHT2_FP_LEN])noab, 0, NULL);
         CHECK(nodus_dht2_pull_epoch_check(g_n[0].pull, NOW) == 0 &&
                   get_at(&g_n[0], addr, hash) == NODUS_DHT2_GET_HELD &&
                   pending_at(&g_n[0], addr),
               "due, but the quorum is no longer met: NOT dropped");
-        set_members(&g_n[0], 1440 + WAIT_E + (uint64_t)DNAC_EPOCH_LENGTH, 6,
-                    (const uint8_t (*)[DHT2_FP_LEN])g_s6, 0, NULL);
+        set_members(&g_n[0], 1440 + WAIT_E + 2 * (uint64_t)DNAC_EPOCH_LENGTH,
+                    6, (const uint8_t (*)[DHT2_FP_LEN])g_s6, 0, NULL);
         CHECK(nodus_dht2_pull_epoch_check(g_n[0].pull, NOW) == 0 &&
                   not_held(&g_n[0], addr),
               "met again after the due epoch: dropped");
