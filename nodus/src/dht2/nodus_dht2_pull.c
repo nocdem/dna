@@ -803,10 +803,13 @@ static bool responsibility_grew(const uint8_t self[DHT2_FP_LEN],
  * min(2, |nearest_R(S(H))|) DISTINCT members of the CURRENT nearest_R of
  * `place` have an acknowledgement stored for `address`; an acknowledger that
  * left nearest_R does not count. An empty nearest_R is never met: nobody holds a
- * copy, a drop = loss (decision: "Kayıt kaybı ... imkan yok"). @return 0, -1. */
+ * copy, a drop = loss (decision: "Kayıt kaybı ... imkan yok"). `extra` (may
+ * be NULL) counts as acknowledged too: the receipt being handled, before it
+ * is written. @return 0, -1. */
 static int handover_quorum(nodus_dht2_pull_t *p, const nodus_dht2_world_t *w,
                            const uint8_t address[DHT2_HASH_LEN],
-                           const uint8_t place[DHT2_HASH_LEN], bool *met)
+                           const uint8_t place[DHT2_HASH_LEN],
+                           const uint8_t *extra, bool *met)
 {
     size_t idx[DHT2_R];
     int    cnt, k, acked = 0;
@@ -817,9 +820,11 @@ static int handover_quorum(nodus_dht2_pull_t *p, const nodus_dht2_world_t *w,
         return -1;
     }
     for (k = 0; k < cnt; k++) {
-        bool has = false;
+        bool has = extra != NULL &&
+                   memcmp(w->ctx.s0[idx[k]], extra, DHT2_FP_LEN) == 0;
 
-        if (nodus_dht2_store_handover_ack_has(p->holder.store, address,
+        if (!has &&
+            nodus_dht2_store_handover_ack_has(p->holder.store, address,
                                               w->ctx.s0[idx[k]], &has) != 0) {
             return -1;
         }
@@ -833,17 +838,31 @@ static int handover_quorum(nodus_dht2_pull_t *p, const nodus_dht2_world_t *w,
 
 /* One pending record, at a receipt or at the epoch check. §4.5 (v) covers
  * permanent records this node NO LONGER holds: if it is eligible again the
- * obligation simply ends (flag and acknowledgements cleared, nothing
- * dropped); otherwise the record is dropped once the quorum is met.
+ * obligation simply ends (flag, acknowledgements and schedule cleared,
+ * nothing dropped). Otherwise, with the quorum met, the drop is SCHEDULED
+ * for this epoch + NODUS_DHT2_PULL_DROP_WAIT_EPOCHS × E (decision 2026-10-27-
+ * dht-v2-handover-one-receipt.md, operator: 48 epochs, "evet"; an existing
+ * schedule is kept) and, at the epoch check (`at_check`) once that epoch is
+ * reached, the record is DROPPED — only while the quorum is met at that
+ * check, so a drop never happens on acknowledgements that no longer count.
+ * `ack` (a receipt's signer, already checked to be in nearest_R; NULL at the
+ * epoch check) is written here: with the schedule in ONE transaction when it
+ * meets the quorum, alone otherwise (Sol 7b finding 1).
  * @return 0, -1 (fault). */
 static int handover_settle(nodus_dht2_pull_t *p, const nodus_dht2_world_t *w,
                            const uint8_t address[DHT2_HASH_LEN],
                            const uint8_t place[DHT2_HASH_LEN],
-                           const uint8_t hash[DHT2_HASH_LEN])
+                           const uint8_t hash[DHT2_HASH_LEN],
+                           const uint8_t *ack, bool at_check)
 {
-    bool met = false;
-    int  el = dht2_eligible(place, w->ctx.s0, w->ctx.n0, w->ctx.s1, w->ctx.n1,
-                            p->holder.self_fp);
+    const uint64_t wait = (uint64_t)NODUS_DHT2_PULL_DROP_WAIT_EPOCHS *
+                          (uint64_t)DNAC_EPOCH_LENGTH;
+    const uint64_t cur = w->sets->e;
+    uint64_t       due = 0;
+    uint8_t        sh[DHT2_HASH_LEN];
+    bool           met = false, sched = false;
+    int            el = dht2_eligible(place, w->ctx.s0, w->ctx.n0, w->ctx.s1,
+                                      w->ctx.n1, p->holder.self_fp);
 
     if (el < 0) {
         return -1;
@@ -852,11 +871,29 @@ static int handover_settle(nodus_dht2_pull_t *p, const nodus_dht2_world_t *w,
         return nodus_dht2_store_handover_set(p->holder.store, address, false,
                                              NULL) == 0 ? 0 : -1;
     }
-    if (handover_quorum(p, w, address, place, &met) != 0) {
+    if (handover_quorum(p, w, address, place, ack, &met) != 0) {
         return -1;
     }
-    if (met && nodus_dht2_store_handover_drop(p->holder.store, address, hash,
-                                              NULL) != 0) {
+    if (!met) {
+        return ack == NULL ||
+               nodus_dht2_store_handover_ack_add(p->holder.store, address,
+                                                 ack) == 0 ? 0 : -1;
+    }
+    /* Saturating: an epoch near UINT64_MAX schedules "never". */
+    due = cur > UINT64_MAX - wait ? UINT64_MAX : cur + wait;
+    if ((ack != NULL
+             ? nodus_dht2_store_handover_ack_retire(p->holder.store, address,
+                                                    ack, hash, due)
+             : nodus_dht2_store_handover_retire(p->holder.store, address, hash,
+                                                due, NULL)) != 0 ||
+        nodus_dht2_store_handover_retire_get(p->holder.store, address, &sched,
+                                             &due, sh) != 0) {
+        return -1;
+    }
+    if (at_check && sched && cur >= due &&
+        memcmp(sh, hash, DHT2_HASH_LEN) == 0 &&
+        nodus_dht2_store_handover_drop(p->holder.store, address, hash,
+                                       NULL) != 0) {
         return -1;
     }
     return 0;
@@ -915,7 +952,8 @@ int nodus_dht2_pull_epoch_check(nodus_dht2_pull_t *p, uint64_t now_ms)
     }
     /* §4.5 (v): permanent records this node no longer holds get the flag; a
      * record already pending is re-counted against the CURRENT nearest_R (a
-     * membership change alone can satisfy the quorum) and dropped when met. */
+     * membership change alone can satisfy the quorum): met → scheduled, and
+     * dropped once its due epoch is reached (handover_settle). */
     page =(nodus_dht2_perm_entry_t *)malloc(DHT2_PULL_PAGE_MAX *
                                              sizeof(*page));
     if (page == NULL) {
@@ -931,7 +969,8 @@ int nodus_dht2_pull_epoch_check(nodus_dht2_pull_t *p, uint64_t now_ms)
         for (i = 0; i < cnt && rc == 0; i++) {
             if (page[i].pending) {
                 if (handover_settle(p, &w, page[i].address,
-                                    page[i].placement, page[i].hash) != 0) {
+                                    page[i].placement, page[i].hash, NULL,
+                                    true) != 0) {
                     rc = -1;
                 }
                 continue;
@@ -1149,9 +1188,9 @@ static int serve_want(nodus_dht2_pull_t *p, uint64_t now_ms,
 /* Row 12 "Handover acknowledgement", as the operator decision
  * 2026-10-27-dht-v2-handover-one-receipt.md revised it: a valid pull-receipt
  * from a member of the record's nearest_R(S(H)) is RECORDED (persisted, one
- * per fp); the obligation ends — the record is DROPPED (§4.5 v "then it may
- * drop them") — when min(2, |nearest_R|) distinct members of the current
- * nearest_R have acknowledged. */
+ * per fp); when min(2, |nearest_R|) distinct members of the current
+ * nearest_R have acknowledged, the drop (§4.5 v "then it may drop them") is
+ * SCHEDULED 48 epochs on — the epoch check drops (handover_settle). */
 static int serve_receipt(nodus_dht2_pull_t *p, uint64_t now_ms,
                          const uint8_t peer[DHT2_FP_LEN], const uint8_t *msg,
                          size_t len)
@@ -1227,14 +1266,11 @@ static int serve_receipt(nodus_dht2_pull_t *p, uint64_t now_ms,
         if (member == 0) {
             continue;                /* a signer outside nearest_R: no count */
         }
-        if (nodus_dht2_store_handover_ack_add(p->holder.store, r->e[i].a,
-                                              r->pf) != 0) {
-            rc = -1;
-            break;
-        }
-        /* Decision 2026-10-27-dht-v2-handover-one-receipt.md: the obligation
-         * ends — the record is DROPPED — when the quorum is met. */
-        if (handover_settle(p, &w, r->e[i].a, place, held) != 0) {
+        /* Decision 2026-10-27-dht-v2-handover-one-receipt.md: the ack is
+         * stored; when it meets the quorum the drop is SCHEDULED (48 epochs)
+         * in the same transaction; the epoch check drops. */
+        if (handover_settle(p, &w, r->e[i].a, place, held, r->pf, false)
+            != 0) {
             rc = -1;
             break;
         }

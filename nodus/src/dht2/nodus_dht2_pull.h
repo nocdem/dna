@@ -71,11 +71,15 @@
  *     receipt naming it; the acknowledging fps are persisted per record
  *     (store dht2_ack). The source verifies only "the same version"
  *     (receipt hash = held hash), not "or newer";
- *   · §4.5 (v) "then it may drop them": when the quorum is met the record
- *     row is DELETED (its acknowledgements with it), in one transaction, only
- *     if it is still pending with the hash the receipts named. A dropped
- *     record returns through admission (a pull, a client write, read-repair)
- *     when this node is eligible for it again;
+ *   · §4.5 (v) "then it may drop them": operator decision (same record,
+ *     "What happens when the obligation ends"): when the quorum is met the
+ *     drop is SCHEDULED for that epoch + NODUS_DHT2_PULL_DROP_WAIT_EPOCHS × E;
+ *     at the first epoch check at or after it, with the quorum still met, the
+ *     row is DELETED (acknowledgements and schedule with it), in one
+ *     transaction, only if still PERMANENT and pending with the hash the
+ *     receipts named. Eligible again or a new version cancels the schedule.
+ *     A dropped record returns through admission (a pull, a client write,
+ *     read-repair) when this node is eligible for it again;
  *   · "transient local failure" (cursor kept) = admission codes 15 / 16 /
  *     negative; "definitively refused" (cursor advances) = codes 1-13, 18.
  *
@@ -116,6 +120,11 @@ typedef enum {
 /** Largest message the module may hand to the send function (a p_deliver
  *  with a 262,144 B envelope, and the pull-receipt envelope, are below). */
 #define NODUS_DHT2_PULL_MSG_MAX  (DHT2_ENVELOPE_MAX + 64u)
+
+/** Epochs between the hand-over quorum and the drop of the record (decision
+ *  2026-10-27-dht-v2-handover-one-receipt.md: operator, "Bekleme 48 epoch
+ *  olsun mu?" — "evet"). Node-local; Bee has no such wait. */
+#define NODUS_DHT2_PULL_DROP_WAIT_EPOCHS 48u
 
 /** Send `len` bytes of `kind` to the node `peer_fp`. @return 0 sent, other
  *  = the peer is not reachable (the exchange is aborted). */
@@ -191,8 +200,11 @@ void nodus_dht2_pull_disconnect(nodus_dht2_pull_t *p,
  *   · §4.5 (v) — every permanent record this node no longer holds
  *     (this node not in eligible(placement key)) gets the persisted
  *     hand-over flag; every permanent record already flagged is re-counted
- *     against the CURRENT nearest_R and DROPPED when its quorum is met
- *     (a membership change alone can meet it).
+ *     against the CURRENT nearest_R (a membership change alone can meet the
+ *     quorum): met → its drop is scheduled for this epoch +
+ *     NODUS_DHT2_PULL_DROP_WAIT_EPOCHS × E; DROPPED at the first check at or
+ *     after that epoch while the quorum is still met; eligible again →
+ *     flag, acknowledgements and schedule cleared, nothing dropped.
  * The new epoch is persisted last, after the reset and the scan completed.
  * @return 0 (nothing to do or done), 1 (no fresh snapshot / sets: try
  *         again later), -1 (store fault; the epoch is NOT recorded).

@@ -44,7 +44,8 @@ struct nodus_dht2_store {
  * `v` has no declared type: integers (top, gen) and the chain id blob. */
 /* dht2_rec.handover (§4.5 v): 0 no obligation, 1 pending. The obligation
  * ends on its receipts (decision 2026-10-27-dht-v2-handover-one-receipt.md)
- * by DROPPING the record (nodus_dht2_store_handover_drop): §4.5 (v) "kept
+ * by DROPPING the record 48 epochs later (dht2_retire, then
+ * nodus_dht2_store_handover_drop; operator: "evet"): §4.5 (v) "kept
  * until … acknowledged … (a persisted hand-over obligation — then it may
  * drop them)"; Bee's reserve likewise deletes the chunks outside its radius
  * (reserve.go:329-385 EvictBatchBin). A PERMANENT replacement carries the
@@ -87,7 +88,17 @@ static const char SCHEMA_SQL[] =
     "  fp      BLOB NOT NULL,"
     "  PRIMARY KEY(address, fp));"
     "CREATE TRIGGER IF NOT EXISTS dht2_ack_gc AFTER DELETE ON dht2_rec "
-    "BEGIN DELETE FROM dht2_ack WHERE address = OLD.address; END;";
+    "BEGIN DELETE FROM dht2_ack WHERE address = OLD.address; END;"
+    /* The same decision, "What happens when the obligation ends" (operator,
+     * 2026-10-27: a 48-epoch wait): the drop scheduled for epoch drop_e once
+     * the quorum is met. Goes with the record row (replace, drop, expiry: the
+     * trigger) and whenever the flag is set. drop_e keeps the u64 bits. */
+    "CREATE TABLE IF NOT EXISTS dht2_retire("
+    "  address BLOB PRIMARY KEY,"
+    "  hash    BLOB NOT NULL,"
+    "  drop_e  INTEGER NOT NULL);"
+    "CREATE TRIGGER IF NOT EXISTS dht2_retire_gc AFTER DELETE ON dht2_rec "
+    "BEGIN DELETE FROM dht2_retire WHERE address = OLD.address; END;";
 
 /* ══ small SQLite helpers: every error is a fault (-1) ═════════════════ */
 
@@ -1331,6 +1342,11 @@ int nodus_dht2_store_handover_set(nodus_dht2_store_t *s,
         step_done(s, st) != 0) {
         goto rollback;
     }
+    st = prep(s, "DELETE FROM dht2_retire WHERE address = ?1");
+    if (st == NULL || !bound(st, b_64(st, 1, address)) ||
+        step_done(s, st) != 0) {
+        goto rollback;
+    }
     st = prep(s, "UPDATE dht2_rec SET handover = ?2 WHERE address = ?1");
     if (st == NULL ||
         !bound(st, b_64(st, 1, address) |
@@ -1386,6 +1402,105 @@ int nodus_dht2_store_handover_drop(nodus_dht2_store_t *s,
 rollback:
     (void)exec_sql(s, "ROLLBACK");
     return CODE_FAULT;
+}
+
+int nodus_dht2_store_handover_retire(nodus_dht2_store_t *s,
+                                     const uint8_t address[DHT2_HASH_LEN],
+                                     const uint8_t hash[DHT2_HASH_LEN],
+                                     uint64_t drop_e, bool *set)
+{
+    sqlite3_stmt *st;
+
+    if (s == NULL || address == NULL || hash == NULL) {
+        return DHT2_E_ARG;
+    }
+    /* One statement: written only for a PERMANENT row still pending with
+     * that hash; an existing schedule is kept (OR IGNORE). */
+    st = prep(s, "INSERT OR IGNORE INTO dht2_retire(address, hash, drop_e) "
+                 "SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM dht2_rec "
+                 "WHERE address = ?1 AND hash = ?2 AND handover = ?4 "
+                 "AND noexp = 1)");
+    if (st == NULL ||
+        !bound(st, b_64(st, 1, address) | b_64(st, 2, hash) |
+                       b_i64(st, 3, (int64_t)drop_e) |
+                       b_i64(st, 4, HANDOVER_PENDING)) ||
+        step_done(s, st) != 0) {
+        return CODE_FAULT;
+    }
+    if (set != NULL) {
+        *set = sqlite3_changes(s->db) > 0;
+    }
+    return 0;
+}
+
+int nodus_dht2_store_handover_ack_retire(nodus_dht2_store_t *s,
+                                         const uint8_t address[DHT2_HASH_LEN],
+                                         const uint8_t fp[DHT2_FP_LEN],
+                                         const uint8_t hash[DHT2_HASH_LEN],
+                                         uint64_t drop_e)
+{
+    sqlite3_stmt *st;
+
+    if (s == NULL || address == NULL || fp == NULL || hash == NULL) {
+        return DHT2_E_ARG;
+    }
+    if (exec_sql(s, "BEGIN IMMEDIATE") != 0) {
+        return CODE_FAULT;
+    }
+    st = prep(s, "INSERT OR IGNORE INTO dht2_ack(address, fp) VALUES(?1, ?2)");
+    if (st == NULL ||
+        !bound(st, b_64(st, 1, address) | b_blob(st, 2, fp, DHT2_FP_LEN)) ||
+        step_done(s, st) != 0 ||
+        nodus_dht2_store_handover_retire(s, address, hash, drop_e, NULL)
+            != 0) {
+        goto rollback;
+    }
+    if (exec_sql(s, "COMMIT") != 0) {
+        goto rollback;
+    }
+    return 0;
+rollback:
+    (void)exec_sql(s, "ROLLBACK");
+    return CODE_FAULT;
+}
+
+int nodus_dht2_store_handover_retire_get(nodus_dht2_store_t *s,
+                                         const uint8_t address[DHT2_HASH_LEN],
+                                         bool *found, uint64_t *drop_e,
+                                         uint8_t hash[DHT2_HASH_LEN])
+{
+    sqlite3_stmt *st;
+    int           rc;
+
+    if (s == NULL || address == NULL || found == NULL || drop_e == NULL ||
+        hash == NULL) {
+        return DHT2_E_ARG;
+    }
+    *found = false;
+    *drop_e = 0;
+    st = prep(s, "SELECT hash, drop_e FROM dht2_retire WHERE address = ?1");
+    if (st == NULL || !bound(st, b_64(st, 1, address))) {
+        return CODE_FAULT;
+    }
+    rc = sqlite3_step(st);
+    if (rc == SQLITE_ROW) {
+        if (sqlite3_column_type(st, 0) != SQLITE_BLOB ||
+            sqlite3_column_bytes(st, 0) != (int)DHT2_HASH_LEN ||
+            sqlite3_column_type(st, 1) != SQLITE_INTEGER) {
+            QGP_LOG_ERROR(LOG_TAG, "retire row malformed");
+            sqlite3_finalize(st);
+            return CODE_FAULT;
+        }
+        memcpy(hash, sqlite3_column_blob(st, 0), DHT2_HASH_LEN);
+        *drop_e = (uint64_t)sqlite3_column_int64(st, 1);
+        *found = true;
+    } else if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "retire read: %s", sqlite3_errmsg(s->db));
+        sqlite3_finalize(st);
+        return CODE_FAULT;
+    }
+    sqlite3_finalize(st);
+    return 0;
 }
 
 int nodus_dht2_store_handover_get(nodus_dht2_store_t *s,

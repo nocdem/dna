@@ -269,9 +269,9 @@ nodus/
 │   ├── test_dht2_codec.c      # DHT v2 package 1 (shared/dht2/): pinned data-map bytes per class, canonical envelope, every row-22 strict-decode reject, §3.2 identifiers against hand-assembled preimages, §4.1 code order, row-5 matrix + class max, §4.2 A/B two-arrival order, nearest_R, Validity, the owner-signed LIST request; default build, nothing left behind
 │   ├── test_dht2_msg.c        # DHT v2 package 2 (shared/dht2/dht2_msg.*): hand-assembled bytes for every wire message (get / put, read answer, receipt, LIST answer, refusal, p_hello / p_get / p_offer / p_want / p_deliver, pull-receipt payload), per-message strict rejects and count bounds, row-7 `v` per context, LIST rules, the p_want bit-vector, the control `_data`, the five typed `_id` helpers, answer seal / open, the row-11 sizes + `_Static_assert` against NODUS_MAX_FRAME_TCP; default build, nothing left behind
 │   ├── test_dht2_ipc.c        # DHT v2 package 4: the witness listener's `ipc_dht` kind (raw peer + test handlers: snap / sets / name bytes, {err} answers, the SET_MAX sets frame = DERIVED_MAX, every refused frame, ipc_status unchanged) and nodus_dht2_wview against a scripted socket server with INJECTED time (5000 ms stale, 1000 ms poll, sets by `e`, name cache, timeout, backoff, late reply, malformed answers), one end-to-end case; the witness FILL functions are NOT exercised (test handlers stand in); mkdtemp dirs, nothing left behind
-│   ├── test_dht2_store.c      # DHT v2 package 5 (src/dht2/nodus_dht2_store.*): §4.1 code order through `put` (15, 1-9, 16), the name fault asked once, Select (equal / losing / A-B two arrivals), quota + node pools + inbox pools 80 / 20, inbox control (only the selected live record applies; DENIED 12, HANDLED [18, through]), LIST pages, get / sweep expiry edges, insertion index + generation + hand-over flag across reopen, the readiness gate, chain binding, forced SQLite faults → 16; since package 6a also the LIST page budget counting the control record and the put result's address kept across a refusal; injected context, fixed-seed keys, one mkdtemp dir removed at the end
+│   ├── test_dht2_store.c      # DHT v2 package 5 (src/dht2/nodus_dht2_store.*): §4.1 code order through `put` (15, 1-9, 16), the name fault asked once, Select (equal / losing / A-B two arrivals), quota + node pools + inbox pools 80 / 20, inbox control (only the selected live record applies; DENIED 12, HANDLED [18, through]), LIST pages, get / sweep expiry edges, insertion index + generation + hand-over flag across reopen, the readiness gate, chain binding, forced SQLite faults → 16; since package 6a also the LIST page budget counting the control record and the put result's address kept across a refusal; since package 7b the hand-over drop schedule (`dht2_retire`: only for a pending permanent row with that hash, first schedule kept, 64-bit `drop_e`, removed by handover_set and by a replacement); injected context, fixed-seed keys, one mkdtemp dir removed at the end
 │   ├── test_dht2_holder.c     # DHT v2 package 6a (src/dht2/nodus_dht2_holder.*): every answer ONE RFC 0002 envelope under nodus.dht.answer.v1 (answer / receipt / refusal), get / put results in request order, put results keyed by the envelope's address (zero key for a parse failure), malformed requests and bad LIST envelopes → no answer, owner LIST vs not-owner 17, refusal 15 (no snapshot, block sync, another chain) and 14 (64 queued jobs), a put at |S(H)| = 1 stored and receipted, NOT refused (since package 7a, decision 2026-10-26-dht-v2-no-single-node-write-refusal.md), name FAULT / PENDING → 16, an abandoned name fault dropped after one poll period, GET of an inbox-control record → 17, an envelope > 262,144 B → per-key 1; injected view, fixed-seed keys, one mkdtemp dir removed at the end
-│   ├── test_dht2_pull.c       # DHT v2 package 7a (src/dht2/nodus_dht2_pull.*): two SQLite stores in the run's mkdtemp dir (A source, B puller) wired through the injected send function — a full exchange copies every record with the same hash and persists cursor top + 1; one exchange per source; the pull-receipt envelope (payload type /nodus/dht/pull-receipt/v1 under nodus.dht.answer.v1, signed by B); row 22 > 250 entries, replacement during delivery, generation reset, interrupted handover, epoch-boundary sets, non-eligible puller, wrong bit-vector length; the hand-over quorum (two distinct nearest_R members, or one when |nearest_R| = 1) then the record DROPPED; the cursor kept on a transient local failure, advanced on a definitive refusal; can lie: one in-order queue (no concurrency, no real disconnect), HELLO routed by sender, sets ≤ 6 members, DP pinned only for fixed sets, injected view, no rate limit / pageTimeout / live pulling / framing; default build, mkdtemp dir, nothing left on success
+│   ├── test_dht2_pull.c       # DHT v2 package 7a (src/dht2/nodus_dht2_pull.*): two SQLite stores in the run's mkdtemp dir (A source, B puller) wired through the injected send function — a full exchange copies every record with the same hash and persists cursor top + 1; one exchange per source; the pull-receipt envelope (payload type /nodus/dht/pull-receipt/v1 under nodus.dht.answer.v1, signed by B); row 22 > 250 entries, replacement during delivery, generation reset, interrupted handover, epoch-boundary sets, non-eligible puller, wrong bit-vector length; the hand-over quorum (two distinct nearest_R members, or one when |nearest_R| = 1) then — since package 7b — the drop SCHEDULED 48 epochs on and done at the due epoch check only while the quorum is still met, cancelled by eligibility again or a new version; the cursor kept on a transient local failure, advanced on a definitive refusal; can lie: one in-order queue (no concurrency, no real disconnect), HELLO routed by sender, sets ≤ 6 members, DP pinned only for fixed sets, injected view, no rate limit / pageTimeout / live pulling / framing; default build, mkdtemp dir, nothing left on success
 │   ├── test_p2p_secret_kat.c  # DHT v2 sub-package 3a step 1: byte pins of TODAY's 4004 SecretConnection in literal bytes (never through the CMT_P2P_SC_* macros) — fixed-vector T / key / challenge against python3-computed hex, live-handshake recompute on both sides, HELLO / HELLO_R / KEYX framing at literal offsets, sealed-frame nonce role ‖ 00 00 00 ‖ u64 BE counter, AUTHSIG under purpose 0x0A only; must pass on the unchanged base; default build, nothing left behind
 │   ├── test_p2p_secret_profiles.c # DHT v2 sub-package 3a step 2: session profiles WITNESS / CLIENT / NODE — matched handshakes authenticate, mixed pairs never do, python3 vectors per profile, purposes 0x0A / 0x0C / 0x0D do not cross-verify, init refuses every profile but the three consts (by pointer; since 3d also the ANON profile), `cmt_p2p_sc_init` = WITNESS; default build, nothing left behind
 │   ├── test_p2p_secret_anon.c # DHT v2 package 3d: the ANON family in memory — handshake with the KEM-key certificate, wire sizes 70 / 8,858 / 1,571 / 1,044 / 1,044, key and T recomputed from the captured bytes, bad certificate / rejected pin never reach ENCAPS, CONFIRM frame rules, family mismatches, refused kinds 0x05-0x07, fragmented input, 4004 caps unchanged (§15 "DHT v2 package 3d")
@@ -11964,8 +11964,9 @@ stored change re-indexes the row; equal / losing writes do not move the counter.
 hand-over flag is persisted per record and survives a replacement (since package 7a a
 PERMANENT replacement only — an expiring one is stored without it); package 7 decides
 when to set it (package 7a: at the epoch check, and the obligation ends by dropping the
-record — "DHT v2 package 7a" below, which also added the pull cursors, `pull_e` and the
-acknowledgement table to this store).
+record — since package 7b 48 epochs after the receipt quorum, through the schedule table
+`dht2_retire` — "DHT v2 package 7a" below, which also added the pull cursors, `pull_e` and
+the acknowledgement table to this store).
 
 **Determinism.** Nothing here reads a clock: chain time is the injected snapshot's `t`
 (`nodus_dht2_store.h:56`). Select is `dht2_record_compare`, a pure function of the two
@@ -13114,7 +13115,7 @@ Function reference: `messenger/docs/functions/transport.md` "DHT v2 package 3d" 
 What it is: the core of DHT v2 pull-sync — how records follow the holder set (design
 `docs/plans/2026-10-14-dht-v2-design.md` rev 5, FROZEN — §4.5 "Records follow the holder
 set", §13 row 12 "Bee pkg/pullsync translated", rows 20, 22; all LOCAL-only; header
-`nodus/src/dht2/nodus_dht2_pull.h:1-86`). ONE transport-free module,
+`nodus/src/dht2/nodus_dht2_pull.h:1-90`). ONE transport-free module,
 `nodus/src/dht2/nodus_dht2_pull.{h,c}`, with both roles: the SOURCE answers a puller
 (`nodus_dht2_pull_serve`: HELLO, GET, WANT, RECEIPT), the PULLER runs one exchange per
 source (`nodus_dht2_pull_start`, then `nodus_dht2_pull_on_reply`: HELLO, OFFER,
@@ -13129,6 +13130,15 @@ Where the design names a deviation (row 12), the design wins and the row is cite
 dropped), `2146310df`, `2e47ae725`, `262891726`, `8842ec0ca`, `330c0f942`, `659b489dd`,
 `0707fff49` (review and fix rounds).
 
+**Package 7b** (2026-10-27, branch `dna95-dht2-7b`, commit `07480f47b`, not versioned)
+changed only the END of a hand-over: the record is no longer dropped as soon as the receipt
+quorum is met; its drop is SCHEDULED for that epoch + `NODUS_DHT2_PULL_DROP_WAIT_EPOCHS`
+(48) × E and carried out by a later epoch check ("The hand-over obligation" below).
+Commit `f29133f43` (same branch) writes the acknowledgement that meets the quorum and
+the schedule in ONE transaction (new `nodus_dht2_store_handover_ack_retire`; "Sol 7b
+finding 1") and moves the re-count test to epochs past the persisted `pull_e` ("Sol 7b
+finding 2"). No wire, chain or consensus change; still no caller.
+
 Governing records (LOCAL-only, `docs/plans/decisions/`):
 - `2026-10-23-dht-v2-wire-gaps-package2.md`, "Addendum 2026-10-26" (operator): the
   pull-receipt is signed under `nodus.dht.answer.v1` with payload type
@@ -13139,7 +13149,19 @@ Governing records (LOCAL-only, `docs/plans/decisions/`):
   Tamam, iki olur."): a hand-over obligation ends when min(2, |nearest_R(S(H))|) DISTINCT
   members of the record's current `nearest_R(S(H))` have sent valid pull-receipts for it;
   the store keeps the acknowledging fps per pending record. The first answer of that day
-  ("one receipt") is superseded and kept in the file as history.
+  ("one receipt") is superseded and kept in the file as history. Its paragraph "What
+  happens when the obligation ends" (operator, 2026-10-27, package 7b): asked "Devir
+  tamamlanınca eski düğüm kaydı silsin mi?", answered "silinsin de bir timer
+  koysak . ornek 48 epoc gibi ? ne kadar komplex olur", then "evet" to "Bekleme 48 epoch
+  olsun mu?" — the record is dropped at the first epoch check at or after met epoch + 48 ×
+  E; becoming eligible again cancels the drop; a new version cancels it and needs its own
+  receipts; a node-local constant (no chain value, no vote); Bee has no such wait. Its
+  paragraph "Re-count at the drop epoch — DECIDED 2026-10-27 (operator)": asked "Silme
+  zamanında bu yeniden sayma kalsın mı?", told the example (B and C acknowledged at epoch
+  100; at 148 A checks whether B and C are still responsible; if not, A keeps the record
+  until the new responsible nodes acknowledge), answered "evet" — at the due epoch the
+  quorum is counted again over the CURRENT `nearest_R`; not met → no drop, the record is
+  kept until it is met again.
 - `2026-10-26-dht-v2-no-single-node-write-refusal.md` (operator, 2026-10-26): a holder
   never refuses a write because the storage set is small; a network with one storage
   node stores records. Design §2 "Precondition" is INVALID. Package 7a removes the
@@ -13157,15 +13179,16 @@ change; the existing DHT on 4001 / 4002 is untouched; nothing is written to the 
 
 | File | What |
 |---|---|
-| `nodus/src/dht2/nodus_dht2_pull.h` | NEW. The contract (`:1-86`): the message kinds `nodus_dht2_pull_msg_t`, `NODUS_DHT2_PULL_MSG_MAX`, the send function type, `_new` / `_free` / `_self_fp`, the puller (`_sources`, `_start`, `_on_reply`, `_disconnect`, `_epoch_check`) and the source (`_serve`); GAPS and READINGS |
-| `nodus/src/dht2/nodus_dht2_pull.c` | NEW. What it leaves out of Bee and why (`:10-26`), setup (`:215-287`), sources (`:291-340`), start / page completion / hello / offer / deliver / dispatch (`:351-703`), responsibility growth (`:716-799`), hand-over quorum and settle (`:801-863`), the epoch check (`:865-963`), the source's hello / get / want / receipt and dispatch (`:968-1268`) |
-| `nodus/src/dht2/nodus_dht2_store.{h,c}` | Tables `dht2_pull_src` (cursor per source) and `dht2_ack` (acknowledging fps) with the trigger `dht2_ack_gc` (`nodus_dht2_store.c:54-90`); `handover_set` deletes the acknowledgements in the same transaction; NEW `handover_drop`, `handover_ack_add` / `_has`, `handover_info`, `permanent_scan`, `pull_get` / `_set` / `_reset`, `pull_epoch_get` / `_set` (meta `pull_e`) (`nodus_dht2_store.h:270-356`) |
+| `nodus/src/dht2/nodus_dht2_pull.h` | NEW. The contract (`:1-90`): the message kinds `nodus_dht2_pull_msg_t`, `NODUS_DHT2_PULL_MSG_MAX`, since 7b `NODUS_DHT2_PULL_DROP_WAIT_EPOCHS` 48u (`:124-127`), the send function type, `_new` / `_free` / `_self_fp`, the puller (`_sources`, `_start`, `_on_reply`, `_disconnect`, `_epoch_check`) and the source (`_serve`); GAPS and READINGS |
+| `nodus/src/dht2/nodus_dht2_pull.c` | NEW. What it leaves out of Bee and why (`:10-26`), setup (`:215-287`), sources (`:291-340`), start / page completion / hello / offer / deliver / dispatch (`:351-703`), responsibility growth (`:716-799`), hand-over quorum and settle (`:801-900`; since 7b the settle writes a receipt's acknowledgement, schedules and, at the epoch check only, drops), the epoch check (`:902-1002`), the source's hello / get / want / receipt and dispatch (`:1007-1304`) |
+| `nodus/src/dht2/nodus_dht2_store.{h,c}` | Tables `dht2_pull_src` (cursor per source) and `dht2_ack` (acknowledging fps) with the trigger `dht2_ack_gc`, and since 7b `dht2_retire` (address, hash, `drop_e` — the scheduled drop) with the trigger `dht2_retire_gc` (`nodus_dht2_store.c:55-101`); `handover_set` deletes the acknowledgements and (7b) the schedule in the same transaction; NEW `handover_drop`, `handover_ack_add` / `_has`, `handover_info`, `permanent_scan`, `pull_get` / `_set` / `_reset`, `pull_epoch_get` / `_set` (meta `pull_e`), and in 7b `handover_retire`, `handover_ack_retire` (acknowledgement + schedule in one transaction, `f29133f43`) and `handover_retire_get` (`nodus_dht2_store.h:270-387`) |
 | `nodus/src/dht2/nodus_dht2_holder.{h,c}` | The §2 write precondition removed (`NODUS_DHT2_HOLDER_WRITE_MIN_SET`, `NODUS_DHT2_HOLDER_WRITE_REFUSAL`, its `_Static_assert` and its check in `nodus_dht2_holder_serve`); the call's world exported as `nodus_dht2_name_user_t`, `nodus_dht2_world_t`, `nodus_dht2_holder_world_load` (`nodus_dht2_holder.h:158-180`) |
-| `nodus/tests/test_dht2_pull.c` | NEW, below |
+| `nodus/tests/test_dht2_pull.c` | NEW, below (7b: the drop checks now expect the schedule and the due epoch) |
+| `nodus/tests/test_dht2_store.c` | 7b: `test_index` checks the schedule calls — written only for a pending permanent row with that hash, the first schedule kept, all 64 bits of `drop_e`, removed by `handover_set` and by a replacement (`:1173-1220`) |
 | `nodus/tests/test_dht2_holder.c` | `test_write_precondition` replaced by `test_single_storage_node_stores` (a put with ONE member in S(H) is stored and receipted); header item "can lie 5" removed |
 | `nodus/CMakeLists.txt` | `src/dht2/nodus_dht2_pull.c` in the Linux-only library list (`:735-737`); `test_dht2_pull` (`:2182-2187`) |
 
-**One exchange** (`nodus_dht2_pull.c:351-703`, source side `:968-1147`):
+**One exchange** (`nodus_dht2_pull.c:351-703`, source side `:1007-1186`):
 
 1. The puller sends the p_hello REQUEST — Bee's empty `Syn` (`pullsync.go:528-529`) as the
    empty DAG-CBOR map `0xa0`; the source accepts nothing else and replies `p_hello {g,
@@ -13194,7 +13217,7 @@ change; the existing DHT on 4001 / 4002 is untouched; nothing is written to the 
    [{a, h}]}` naming every entry it holds after the page, sealed with `dht2_env_seal`
    under `nodus.dht.answer.v1`, payload type `/nodus/dht/pull-receipt/v1`.
 
-**The epoch check** (`nodus_dht2_pull_epoch_check`, `nodus_dht2_pull.c:865-963`). The
+**The epoch check** (`nodus_dht2_pull_epoch_check`, `nodus_dht2_pull.c:902-1002`). The
 epoch the cursors were last checked against is PERSISTED (store meta `pull_e`), so a
 restart does not forget it. Same epoch → nothing. The previous boundary exactly (`e − E`,
 E = `DNAC_EPOCH_LENGTH`) → if this node's responsibility GREW (a key in its
@@ -13212,23 +13235,47 @@ this chain, this generation), the record is held and pending with the hash the r
 names ("the same version", not "or newer" — header READING), and the signer is in the
 record's `nearest_R(S(H))`; the acknowledging fp is persisted (`dht2_ack`, one row per
 fp). The obligation ends when min(2, |nearest_R(S(H))|) DISTINCT members of the CURRENT
-`nearest_R(S(H))` have acknowledged — re-counted at every receipt and at every epoch
+`nearest_R(S(H))` have acknowledged — re-counted at every receipt (the receipt being
+handled counts before it is written: `handover_quorum`'s `extra`) and at every epoch
 check, so a membership change alone can meet it; an acknowledger that left `nearest_R`
-does not count; an empty `nearest_R` is never met. Then the record row is DROPPED
-(`nodus_dht2_store_handover_drop`: one transaction, only if still pending with the hash
-the receipts named; its acknowledgements go with it). Deleting the row is the code's
-reading of §4.5 (v) "then it may drop them" (`nodus_dht2_pull.h:74-78`); a dropped
-record returns through admission (a pull, a client write, read-repair) once this node is
-eligible for it again. An EXPIRING replacement of a pending permanent record is stored
-without the flag (§4.5 v obliges permanent records only), and the drop itself deletes only a
-PERMANENT row (`AND noexp = 1`), so receipts never delete an expiring record before its expiry. A node that is `eligible` for a pending record
-again only clears the flag and the acknowledgements — nothing is dropped
-(`nodus_dht2_pull.c:834-863`; this case is stated in the .c, not in the header or the
-decision record).
+does not count; an empty `nearest_R` is never met. Since package 7b the record is then
+NOT dropped at once: its drop is SCHEDULED (table `dht2_retire`, one row per record with
+the hash it was scheduled for) for the current sets epoch +
+`NODUS_DHT2_PULL_DROP_WAIT_EPOCHS` × `DNAC_EPOCH_LENGTH` (48 epochs; saturating at
+`UINT64_MAX` = "never"); a schedule already there is kept, so the first met epoch counts
+(`nodus_dht2_pull.c:852-900`). Since `f29133f43` `serve_receipt` no longer writes the
+acknowledgement itself: `handover_settle` gets it as `ack` and writes it alone
+(`nodus_dht2_store_handover_ack_add`) when the quorum is not met, or together with the
+schedule in ONE transaction (`nodus_dht2_store_handover_ack_retire`) when it is, so a
+fault never leaves the quorum's acknowledgements without the schedule of the epoch that
+met it; at the epoch check (`ack` NULL) `nodus_dht2_store_handover_retire` schedules
+alone. A receipt only schedules; the record row is
+DROPPED only by an epoch check at or after the due epoch, and only when at that check
+the quorum is still met and the scheduled hash is still the row's hash
+(`nodus_dht2_store_handover_drop`: one transaction, only a PERMANENT row still pending with
+that hash; its acknowledgements and schedule go with it through the triggers). The
+re-count at the due epoch is the operator's decision ("Re-count at the drop epoch",
+above) — "so a drop never happens on acknowledgements that no longer count"
+(`nodus_dht2_pull.c:846-847`); a check where it is not met leaves the record pending and
+scheduled. Until the drop the record stays held, offered and delivered.
+Deleting the row is the code's reading of §4.5 (v) "then it may drop them", and since 7b
+the decision's "What happens when the obligation ends" (`nodus_dht2_pull.h:74-82`); a
+dropped record returns through admission (a pull, a client write, read-repair) once this
+node is eligible for it again. Any replacement of the row removes its acknowledgements and
+its schedule (triggers `dht2_ack_gc`, `dht2_retire_gc`): a new PERMANENT version stays
+pending and needs its own receipts; an EXPIRING replacement of a pending permanent record
+is stored without the flag (§4.5 v obliges permanent records only), so receipts naming it
+schedule nothing, and the drop itself deletes only a PERMANENT row (`AND noexp = 1`), so
+receipts never delete an expiring record before its expiry. A node that is `eligible` for
+a pending record again only clears the flag, the acknowledgements and (7b) the schedule —
+nothing is dropped (`nodus_dht2_pull.c:839-842`, `:870-872`; until 7b this case was stated only in the
+.c; since 7b the header, `nodus_dht2_pull.h:80`, `:206-207`, the store header,
+`nodus_dht2_store.h:277-278`, and the decision record state it too).
 
 **Determinism.** "Nothing here is unordered: sources are sorted by fp, entries follow the
-insertion index, deliveries ascend by offer index" (`nodus_dht2_pull.h:82-83`). No clock,
-no timer. The store generation `g` (node-local, package 5) is compared for equality only.
+insertion index, deliveries ascend by offer index" (`nodus_dht2_pull.h:86-87`). No clock,
+no timer — the 48-epoch wait of 7b is counted in the snapshot's sets epochs and persisted
+as `drop_e`. The store generation `g` (node-local, package 5) is compared for equality only.
 Nothing reaches consensus.
 
 **Not done yet:** no caller (the 4002 framing, the event loop that starts exchanges and
@@ -13241,12 +13288,12 @@ changes §13).
 environment, no network, no clock — chain time and the caller's tick are injected
 constants; fixed-seed ML-DSA-87 keys, hedged signing so signatures are verified, never
 compared; its own `mkdtemp` directory — a crash leaves `/tmp/test_dht2_pull_XXXXXX`; safe
-under `ctest -j`). Eleven sections from `main` (`tests/test_dht2_pull.c:1778-1788`):
+under `ctest -j`). Eleven sections from `main` (`tests/test_dht2_pull.c:1890-1900`):
 `test_basic`, `test_more_than_250`, `test_replacement`, `test_generation`,
 `test_handover`, `test_handover_quorum`, `test_offer_send_fail`, `test_epoch_persisted`,
 `test_epoch_sets`, `test_want_length`, `test_cursor_rules`. Two stores (SQLite files in the
 run's `mkdtemp` directory), A the source and B the puller, wired through the injected send function. Proves (file header
-`:12-72`): a full exchange copies every record with the same canonical hash and persists
+`:12-76`): a full exchange copies every record with the same canonical hash and persists
 cursor top + 1 with the source's generation; a second start is BUSY; the pull-receipt
 envelope (payload type, domain, signer, fields, entries in offer order); row 22 "> 250
 pull entries" (cursor 251, then 301), "replacement during delivery", "generation reset",
@@ -13255,19 +13302,28 @@ receipt leaves it), "epoch-boundary sets" (growth resets cursors and aborts an e
 equal sets, a grown S(H) or the same epoch keep them), "non-eligible puller gets no
 offer", "wrong bit-vector length aborts"; the receipt refusals (wrong payload type,
 wrong domain, signer ≠ peer; non-member or wrong hash counts for nothing; the same member
-twice counts once); a second DISTINCT member drops the record; |nearest_R| = 1 drops on
-one receipt; acknowledgements survive a reopen; an acknowledger that left `nearest_R`
-does not count; a shrunken `nearest_R` already met drops at the next epoch check; a
+twice counts once); since 7b (helpers `WAIT_E`, `epoch_at_a`, `due_at`, `:964-988`) a
+second DISTINCT member schedules the drop 48 epochs on — still held one epoch before the
+due epoch, dropped at the due epoch check; |nearest_R| = 1 schedules on one receipt, dropped
+when due; acknowledgements survive a reopen; an acknowledger that left `nearest_R` does not
+count; after the due epoch the quorum is re-counted (`:1323-1347`: at 1440 + `WAIT_E` +
+E not met → not dropped; at 1440 + `WAIT_E` + 2E met → dropped — epochs past the
+persisted `pull_e` so each check scans, "Sol 7b finding 2"); a shrunken `nearest_R` already met schedules the drop at the next epoch
+check (dropped when due); a
 failed p_offer send keeps no offer; the cursor kept on a transient local failure,
 advanced on a definitive refusal, a mismatching delivery stored nothing. Can lie
-(`:84-101`): one in-order queue — no concurrent exchanges, no real disconnect; HELLO
+(`:88-105`): one in-order queue — no concurrent exchanges, no real disconnect; HELLO
 routed by "sent by the puller" (the framing is a gap); sets ≤ 4 make every member
 eligible, the 6-member sets pick their records with `dht2_nearest_r` itself; the growth
 DP is pinned only for fixed fp patterns; the view is injected; the rate limit,
 `pageTimeout`, live pulling, framing, source addresses and the "newer version" half of a
-receipt are not covered. The last two blocks of `test_handover_quorum`: "eligible again"
-(record kept, flag and acknowledgement cleared) and an expiring replacement of a pending
-record (no flag; two receipts naming it drop nothing).
+receipt are not covered. The last three blocks of `test_handover_quorum` (`:1396-1482`):
+"eligible again" with the drop already scheduled (record kept, flag, acknowledgements and
+schedule cleared, still held at the cancelled due epoch); a new permanent version of a
+scheduled record (pending, no acknowledgement, no schedule, still held at the old due
+epoch); an expiring replacement of a pending record (no flag; two receipts naming it
+schedule and drop nothing). The 7b part of `test_dht2_store` is in the file table above
+(`dht2.md` §9.4).
 Nothing was built or run for this document; no run of this test is cited here.
 
 ### Block retention (pruning) and the SeenCommit cleanup (2026-10-03)

@@ -272,9 +272,10 @@ int nodus_dht2_store_scan(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
 /** Set the persisted hand-over flag of the record at `address` (package 7
  *  decides when): `pending` true = obligation, false = none. *`found` false
  *  when no such record. A PERMANENT replacement keeps a pending flag, an
- *  expiring one gets none. The acks recorded for the address are deleted in the SAME
- *  transaction as the flag change (all or nothing). The obligation ENDS by
- *  nodus_dht2_store_handover_drop, not by this. @return 0 / 16. */
+ *  expiring one gets none. The acks and the drop schedule (dht2_retire) of the
+ *  address are deleted in the SAME transaction as the flag change (all or
+ *  nothing). The obligation ENDS by nodus_dht2_store_handover_drop, or by
+ *  this with `pending` false when the node is eligible again. @return 0 / 16. */
 int nodus_dht2_store_handover_set(nodus_dht2_store_t *s,
                                   const uint8_t address[DHT2_HASH_LEN],
                                   bool pending, bool *found);
@@ -288,6 +289,36 @@ int nodus_dht2_store_handover_drop(nodus_dht2_store_t *s,
                                    const uint8_t address[DHT2_HASH_LEN],
                                    const uint8_t hash[DHT2_HASH_LEN],
                                    bool *dropped);
+
+/** Decision 2026-10-27-dht-v2-handover-one-receipt.md, "What happens when the
+ *  obligation ends" (operator: a 48-epoch wait, "evet"): schedule the drop of
+ *  the record at `address` for the epoch `drop_e`, persisted one row per
+ *  address (store dht2_retire), only when the row is PERMANENT, pending and
+ *  its hash is `hash`. A schedule already there is KEPT (the first met epoch
+ *  counts); *`set` (may be NULL) tells whether a new one was written. The
+ *  schedule goes when the record row is deleted or REPLACED (trigger) and by
+ *  every handover_set. @return 0 / 16. */
+int nodus_dht2_store_handover_retire(nodus_dht2_store_t *s,
+                                     const uint8_t address[DHT2_HASH_LEN],
+                                     const uint8_t hash[DHT2_HASH_LEN],
+                                     uint64_t drop_e, bool *set);
+
+/** The receipt that MEETS the quorum: add the acknowledgement of `fp` AND
+ *  schedule the drop (as nodus_dht2_store_handover_retire) in ONE
+ *  transaction, so a fault never leaves the quorum's acknowledgements without
+ *  the schedule of the epoch that met it (Sol 7b finding 1). @return 0 / 16. */
+int nodus_dht2_store_handover_ack_retire(nodus_dht2_store_t *s,
+                                         const uint8_t address[DHT2_HASH_LEN],
+                                         const uint8_t fp[DHT2_FP_LEN],
+                                         const uint8_t hash[DHT2_HASH_LEN],
+                                         uint64_t drop_e);
+
+/** The schedule of `address`: *`found` false when none; else `drop_e` and the
+ *  hash it was scheduled for. @return 0 / 16. */
+int nodus_dht2_store_handover_retire_get(nodus_dht2_store_t *s,
+                                         const uint8_t address[DHT2_HASH_LEN],
+                                         bool *found, uint64_t *drop_e,
+                                         uint8_t hash[DHT2_HASH_LEN]);
 
 /** Decision 2026-10-27-dht-v2-handover-one-receipt.md: the fps that sent a
  *  valid pull-receipt for the pending record at `address`, persisted one row
