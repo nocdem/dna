@@ -4961,20 +4961,16 @@ static int phase_6b_evm_activation(nodus_witness_t *w, nodus_v2_block_t *blk,
 #else
     {
         uint32_t ver = 0;
-        /* S17, S18, S19 or S20: a node replaying from genesis on this
-         * build is at S20 (the at-open rung) when it reaches the EVM edge;
+        /* S17, S18 or S19: a node replaying from genesis on this build
+         * is at S19 (the at-open rung) when it reaches the EVM edge;
          * HF-7 P1b: S19 = S18 + the inert v2_replay, its index and
-         * v2_domain_heads.last_upd_hash — nothing this edge touches;
-         * HF-9 H2: S20 = S19 + the node-local tree tables and the
-         * defaulted storage columns — nothing this edge touches either */
+         * v2_domain_heads.last_upd_hash — nothing this edge touches */
         if (nodus_witness_db_schema_version(w, &ver) != 0 ||
             (ver != NODUS_V2_SCHEMA_VERSION_S17 &&
              ver != NODUS_V2_SCHEMA_VERSION_S18 &&
-             ver != NODUS_V2_SCHEMA_VERSION_S19 &&
-             ver != NODUS_V2_SCHEMA_VERSION_S20)) {
-            V2AP_FAULT("phase 6b'': the EVM edge needs schema S17, S18, "
-                       "S19 or S20; this node's database is at %u",
-                       (unsigned)ver);
+             ver != NODUS_V2_SCHEMA_VERSION_S19)) {
+            V2AP_FAULT("phase 6b'': the EVM edge needs schema S17, S18 or "
+                       "S19; this node's database is at %u", (unsigned)ver);
             return -2;
         }
     }
@@ -5124,18 +5120,15 @@ static int phase_6b_gen4_edge(nodus_witness_t *w, nodus_v2_block_t *blk,
 #else
     {
         uint32_t ver = 0;
-        /* S18, S19 or S20 (HF-7 P1b, HF-9 H2): a node replaying from
-         * genesis on this build is at S20 (the at-open rung) when it
-         * reaches the HF-6 edge; S19 = S18 + the inert v2_replay, its
-         * index and v2_domain_heads.last_upd_hash, S20 = S19 + the
-         * node-local tree tables and the defaulted storage columns —
-         * nothing this edge touches */
+        /* S18 or S19 (HF-7 P1b): a node replaying from genesis on this
+         * build is at S19 (the at-open rung) when it reaches the HF-6
+         * edge; S19 = S18 + the inert v2_replay, its index and
+         * v2_domain_heads.last_upd_hash — nothing this edge touches */
         if (nodus_witness_db_schema_version(w, &ver) != 0 ||
             (ver != NODUS_V2_SCHEMA_VERSION_S18 &&
-             ver != NODUS_V2_SCHEMA_VERSION_S19 &&
-             ver != NODUS_V2_SCHEMA_VERSION_S20)) {
+             ver != NODUS_V2_SCHEMA_VERSION_S19)) {
             V2AP_FAULT("phase 6b''': the generation-4 edge needs schema "
-                       "S18, S19 or S20; this node's database is at %u",
+                       "S18 or S19; this node's database is at %u",
                        (unsigned)ver);
             return -2;
         }
@@ -5226,7 +5219,7 @@ _Static_assert(NODUS_RT_GEN5_VOTE_EXPIRY_WINDOW ==
  *   1. the row's value must be this build's D5 (the scalar rules admit
  *      nothing else; another value is this node's storage) and this build
  *      must carry generation 5 (NODUS_EVM_ENABLED) — else FAULT;
- *   2. the schema must be S19 or S20 (HF-9 H2) (v2_replay and
+ *   2. the schema must be EXACTLY S19 (v2_replay and
  *      v2_domain_heads.last_upd_hash exist) — a node-local shape, so
  *      FAULT, never a verdict;
  *   3. SYSTEM and CORE switch from NODUS_RT_GEN_ROOTS_BASE (4) to
@@ -5324,16 +5317,12 @@ static int phase_6b_gen5_edge(nodus_witness_t *w, nodus_v2_block_t *blk,
 #else
     {
         uint32_t ver = 0;
-        /* S19 or S20 (HF-9 H2: S20 = S19 + the node-local tree tables
-         * and the defaulted storage columns, nothing this edge touches):
-         * v2_replay (the generation-5 replay relation) and
+        /* EXACTLY S19: v2_replay (the generation-5 replay relation) and
          * v2_domain_heads.last_upd_hash (the column step 4 seeds) */
         if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-            (ver != NODUS_V2_SCHEMA_VERSION_S19 &&
-             ver != NODUS_V2_SCHEMA_VERSION_S20)) {
+            ver != NODUS_V2_SCHEMA_VERSION_S19) {
             V2AP_FAULT("phase 6b'''': the generation-5 edge needs schema "
-                       "S19 or S20; this node's database is at %u",
-                       (unsigned)ver);
+                       "S19; this node's database is at %u", (unsigned)ver);
             return -2;
         }
     }
@@ -5455,27 +5444,21 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
          * same rows at 16, 17 or 18. HF-7 P1b: S19 = S18 + the inert
          * v2_replay, its index and v2_domain_heads.last_upd_hash (nothing
          * writes or reads them before HF-7 P1c) is the live rung; the
-         * lane writes the same rows at 16, 17, 18 or 19. HF-9 H2: S20 =
-         * S19 + the node-local tree tables (empty, no trigger before the
-         * HF-9 edge) and the defaulted storage columns, which the
-         * generation-5 writers leave at their DEFAULT; the lane writes
-         * the same rows at 16, 17, 18, 19 or 20. */
+         * lane writes the same rows at 16, 17, 18 or 19. */
         if (nodus_witness_db_schema_version(w, &ver) != 0 ||
             (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
              ver != NODUS_V2_SCHEMA_VERSION_S17 &&
              ver != NODUS_V2_SCHEMA_VERSION_S18 &&
-             ver != NODUS_V2_SCHEMA_VERSION_S19 &&
-             ver != NODUS_V2_SCHEMA_VERSION_S20)) {
+             ver != NODUS_V2_SCHEMA_VERSION_S19)) {
             V2AP_FAULT("cometbft lane: this node's schema version is %u, "
-                       "not %u, %u, %u, %u or %u - the Comet block row "
-                       "cannot be written here; nothing about the block "
-                       "was judged",
+                       "not %u, %u, %u or %u - the Comet block row cannot "
+                       "be written here; nothing about the block was "
+                       "judged",
                        (unsigned)ver,
                        (unsigned)NODUS_V2_SCHEMA_VERSION_S16,
                        (unsigned)NODUS_V2_SCHEMA_VERSION_S17,
                        (unsigned)NODUS_V2_SCHEMA_VERSION_S18,
-                       (unsigned)NODUS_V2_SCHEMA_VERSION_S19,
-                       (unsigned)NODUS_V2_SCHEMA_VERSION_S20);
+                       (unsigned)NODUS_V2_SCHEMA_VERSION_S19);
             return -2;
         }
         /* The HOST owns the transaction (D-23 rev 5 (5)): this entry
@@ -7802,19 +7785,15 @@ int nodus_witness_v2_genesis_cmt(nodus_witness_t *w,
      * the gate accepts S18 too. HF-7 P1b: every live builder migrates to
      * S19 first (S18 + the empty v2_replay, its index and the NULL
      * v2_domain_heads.last_upd_hash — no genesis step writes or reads
-     * them), so the gate accepts S19 too. HF-9 H2: a node replaying from
-     * genesis is at S20 (S19 + the node-local tree tables and the
-     * defaulted storage columns, which no genesis step writes or reads),
-     * so the gate accepts S20 too. */
+     * them), so the gate accepts S19 too. */
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
         (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
          ver != NODUS_V2_SCHEMA_VERSION_S17 &&
          ver != NODUS_V2_SCHEMA_VERSION_S18 &&
-         ver != NODUS_V2_SCHEMA_VERSION_S19 &&
-         ver != NODUS_V2_SCHEMA_VERSION_S20)) {
+         ver != NODUS_V2_SCHEMA_VERSION_S19)) {
         QGP_LOG_ERROR(LOG_TAG, "cometbft genesis needs schema S16, S17, "
-                      "S18, S19 or S20, the database is at %u — refusing",
+                      "S18 or S19, the database is at %u — refusing",
                       (unsigned)ver);
         return -1;
     }

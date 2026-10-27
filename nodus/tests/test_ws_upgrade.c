@@ -7,12 +7,10 @@
  *     "Sec-WebSocket-Protocol: binary" only when the client offered it;
  *   - an incomplete head asks for more (every prefix of a valid request);
  *   - missing / wrong Upgrade, Connection, Version (426), Key, Host,
- *     method, HTTP version, bare-LF line ends, a bare CR inside a header
- *     line → refused;
- *   - a repeated Host (400), Sec-WebSocket-Version (426) or
+ *     Origin (403), method, HTTP version, bare-LF line ends, a bare CR
+ *     inside a header line → refused;
+ *   - a repeated Host (400), Origin (403), Sec-WebSocket-Version (426) or
  *     Sec-WebSocket-Key (400) is refused even when both values are valid;
- *   - the Origin header is not read: none, any site, an extension origin
- *     or a repeated Origin all parse OK (403 is no longer answered);
  *   - a head over 8 KiB without its end → refused with no response, and so
  *     is a COMPLETE head of 8193 bytes (a head of exactly 8192 parses);
  *   - the real client IP is the LAST X-Forwarded-For value when the socket
@@ -38,6 +36,8 @@
 
 static int passed = 0;
 static int failed = 0;
+
+static nodus_ws_origins_t g_origins;
 
 #define ORIGIN_OK  "https://wallet.nodusnetwork.io"
 #define KEY_RFC    "dGhlIHNhbXBsZSBub25jZQ=="
@@ -88,7 +88,8 @@ static int parse(const req_t *r, const char *sock_ip, nodus_ws_hs_result_t *res)
     char buf[4096];
     size_t n = req_build(r, buf, sizeof(buf));
     memset(res, 0, sizeof(*res));
-    return nodus_ws_handshake_parse((const uint8_t *)buf, n, sock_ip, res);
+    return nodus_ws_handshake_parse((const uint8_t *)buf, n, sock_ip,
+                                    &g_origins, res);
 }
 
 static void expect_reject(const char *name, const req_t *r, const char *sock_ip,
@@ -112,7 +113,8 @@ static void test_valid(void) {
     char buf[4096];
     size_t n = req_build(&r, buf, sizeof(buf));
     memset(&res, 0, sizeof(res));
-    int rc = nodus_ws_handshake_parse((const uint8_t *)buf, n, "127.0.0.1", &res);
+    int rc = nodus_ws_handshake_parse((const uint8_t *)buf, n, "127.0.0.1",
+                                      &g_origins, &res);
     if (rc == NODUS_WS_HS_OK && res.consumed == n &&
         strcmp(res.accept, ACCEPT_RFC) == 0 && !res.proto_binary &&
         strcmp(res.real_ip, "198.51.100.23") == 0)
@@ -154,7 +156,8 @@ static void test_valid(void) {
         "SEC-WEBSOCKET-VERSION: 13\r\norigin: %s\r\n"
         "x-forwarded-for: 192.0.2.9\r\n\r\n", KEY_RFC, ORIGIN_OK);
     memset(&res, 0, sizeof(res));
-    rc = nodus_ws_handshake_parse((const uint8_t *)raw, (size_t)w, "127.0.0.1", &res);
+    rc = nodus_ws_handshake_parse((const uint8_t *)raw, (size_t)w, "127.0.0.1",
+                                  &g_origins, &res);
     if (rc == NODUS_WS_HS_OK && strcmp(res.real_ip, "192.0.2.9") == 0)
         PASS();
     else
@@ -164,7 +167,8 @@ static void test_valid(void) {
     n = req_build(&r, buf, sizeof(buf));
     memcpy(buf + n, "\x82\x80", 2);
     memset(&res, 0, sizeof(res));
-    rc = nodus_ws_handshake_parse((const uint8_t *)buf, n + 2, "127.0.0.1", &res);
+    rc = nodus_ws_handshake_parse((const uint8_t *)buf, n + 2, "127.0.0.1",
+                                  &g_origins, &res);
     if (rc == NODUS_WS_HS_OK && res.consumed == n) PASS();
     else FAIL("consumed");
 }
@@ -178,7 +182,8 @@ static void test_need_more(void) {
     for (size_t i = 0; i < n && !bad; i++) {
         nodus_ws_hs_result_t res;
         memset(&res, 0, sizeof(res));
-        int rc = nodus_ws_handshake_parse((const uint8_t *)buf, i, "127.0.0.1", &res);
+        int rc = nodus_ws_handshake_parse((const uint8_t *)buf, i, "127.0.0.1",
+                                          &g_origins, &res);
         if (rc != NODUS_WS_HS_NEED_MORE) bad = 1;
     }
     if (!bad) PASS(); else FAIL("prefix not NEED_MORE");
@@ -201,6 +206,14 @@ static void test_rejects(void) {
     r = req_default();
     r.extra = "Sec-WebSocket-Key: " KEY_RFC "\r\n";
     expect_reject("duplicate Sec-WebSocket-Key → 400", &r, "127.0.0.1", 400);
+
+    r = req_default(); r.origin = NULL;
+    expect_reject("missing Origin → 403", &r, "127.0.0.1", 403);
+    r = req_default(); r.origin = "https://evil.example";
+    expect_reject("Origin not in list → 403", &r, "127.0.0.1", 403);
+    r = req_default(); r.origin = ORIGIN_OK "/";
+    expect_reject("Origin with trailing slash → 403 (exact match)", &r,
+                  "127.0.0.1", 403);
 
     r = req_default(); r.upgrade = NULL;
     expect_reject("missing Upgrade → 400", &r, "127.0.0.1", 400);
@@ -232,6 +245,8 @@ static void test_rejects(void) {
      * failed check answers with. */
     r = req_default(); r.extra = "Host: 203.0.113.2\r\n";
     expect_reject("duplicate Host → 400", &r, "127.0.0.1", 400);
+    r = req_default(); r.extra = "Origin: " ORIGIN_OK "\r\n";
+    expect_reject("duplicate Origin (same value) → 403", &r, "127.0.0.1", 403);
     r = req_default(); r.extra = "Sec-WebSocket-Version: 13\r\n";
     expect_reject("duplicate Sec-WebSocket-Version (13) → 426", &r,
                   "127.0.0.1", 426);
@@ -245,7 +260,8 @@ static void test_rejects(void) {
         p[6] = '\0';
         nodus_ws_hs_result_t res;
         memset(&res, 0, sizeof(res));
-        int rc = nodus_ws_handshake_parse((const uint8_t *)buf, n, "127.0.0.1", &res);
+        int rc = nodus_ws_handshake_parse((const uint8_t *)buf, n, "127.0.0.1",
+                                          &g_origins, &res);
         if (rc == NODUS_WS_HS_REJECT && res.status == 400) PASS();
         else FAIL("NUL accepted");
     }
@@ -260,7 +276,8 @@ static void test_oversize(void) {
     memset(buf + w, 'a', n - (size_t)w);
     nodus_ws_hs_result_t res;
     memset(&res, 0, sizeof(res));
-    int rc = nodus_ws_handshake_parse((const uint8_t *)buf, n, "127.0.0.1", &res);
+    int rc = nodus_ws_handshake_parse((const uint8_t *)buf, n, "127.0.0.1",
+                                      &g_origins, &res);
     char out[256];
     if (rc == NODUS_WS_HS_REJECT && res.status == 0 &&
         nodus_ws_reject_response(res.status, out, sizeof(out)) == 0)
@@ -284,7 +301,8 @@ static void test_oversize(void) {
     r.extra = extra;
     n = req_build(&r, buf, NODUS_WS_HS_MAX + 1);
     memset(&res, 0, sizeof(res));
-    rc = nodus_ws_handshake_parse((const uint8_t *)buf, n, "127.0.0.1", &res);
+    rc = nodus_ws_handshake_parse((const uint8_t *)buf, n, "127.0.0.1",
+                                  &g_origins, &res);
     if (n == NODUS_WS_HS_MAX && rc == NODUS_WS_HS_OK) PASS();
     else FAIL("8 KiB head refused");
     free(extra);
@@ -303,7 +321,8 @@ static void test_oversize(void) {
     r.extra = extra;
     n = req_build(&r, buf, NODUS_WS_HS_MAX + 2);
     memset(&res, 0, sizeof(res));
-    rc = nodus_ws_handshake_parse((const uint8_t *)buf, n, "127.0.0.1", &res);
+    rc = nodus_ws_handshake_parse((const uint8_t *)buf, n, "127.0.0.1",
+                                  &g_origins, &res);
     if (n == NODUS_WS_HS_MAX + 1 &&
         memcmp(buf + n - 4, "\r\n\r\n", 4) == 0 &&
         rc == NODUS_WS_HS_REJECT && res.status == 0 &&
@@ -425,11 +444,12 @@ static void test_real_ip(void) {
 }
 
 static void test_reject_responses(void) {
-    TEST("reject responses: 400 / 426 (+Version: 13); 403 no longer");
+    TEST("reject responses: 400 / 403 / 426 (+Version: 13)");
     char out[256];
     size_t a = nodus_ws_reject_response(400, out, sizeof(out));
     int ok = a > 0 && strncmp(out, "HTTP/1.1 400 ", 13) == 0;
-    ok = ok && nodus_ws_reject_response(403, out, sizeof(out)) == 0;
+    size_t b = nodus_ws_reject_response(403, out, sizeof(out));
+    ok = ok && b > 0 && strncmp(out, "HTTP/1.1 403 ", 13) == 0;
     size_t c = nodus_ws_reject_response(426, out, sizeof(out));
     out[c < sizeof(out) ? c : sizeof(out) - 1] = '\0';
     ok = ok && c > 0 && strncmp(out, "HTTP/1.1 426 ", 13) == 0 &&
@@ -437,38 +457,47 @@ static void test_reject_responses(void) {
     if (ok) PASS(); else FAIL("responses");
 }
 
-/* The entry does not read Origin (nodus_ws.h): a browser extension, any
- * site, a program sending none, and a repeated header all get through. */
-static void expect_ok(const char *name, const req_t *r) {
-    TEST(name);
+/* Decision 2026-10-01-connect-own-origin: the default list carries the
+ * Nodus Connect site next to the wallet; any other subdomain stays out. */
+static void test_connect_origin(void) {
+    TEST("default origins accept connect.nodusnetwork.io, refuse other subdomains");
+    req_t r = req_default();
+    r.origin = NODUS_WS_CONNECT_ORIGIN;
     nodus_ws_hs_result_t res;
-    int rc = parse(r, "127.0.0.1", &res);
-    if (rc == NODUS_WS_HS_OK && strcmp(res.real_ip, "198.51.100.23") == 0)
-        PASS();
-    else {
-        char msg[96];
-        snprintf(msg, sizeof(msg), "rc=%d status=%d", rc, res.status);
-        FAIL(msg);
-    }
+    char buf[4096];
+    size_t n = req_build(&r, buf, sizeof(buf));
+    memset(&res, 0, sizeof(res));
+    int ok = nodus_ws_handshake_parse((const uint8_t *)buf, n, "127.0.0.1",
+                                      &g_origins, &res) == NODUS_WS_HS_OK;
+    r = req_default();
+    r.origin = "https://scan.nodusnetwork.io";
+    n = req_build(&r, buf, sizeof(buf));
+    memset(&res, 0, sizeof(res));
+    ok = ok && nodus_ws_handshake_parse((const uint8_t *)buf, n, "127.0.0.1",
+                                        &g_origins, &res) == NODUS_WS_HS_REJECT &&
+         res.status == 403;
+    if (ok) PASS(); else FAIL("connect origin");
 }
 
-static void test_origin_not_read(void) {
-    req_t r;
-
-    r = req_default(); r.origin = NULL;
-    expect_ok("no Origin → OK", &r);
-    r = req_default(); r.origin = "chrome-extension://kengijpmabcdefghijklmnopabcdefgh";
-    expect_ok("extension Origin → OK", &r);
-    r = req_default(); r.origin = "https://dex.example";
-    expect_ok("any other site → OK", &r);
-    r = req_default(); r.origin = "null";
-    expect_ok("opaque Origin \"null\" → OK", &r);
-    r = req_default(); r.extra = "Origin: https://other.example\r\n";
-    expect_ok("repeated Origin → OK", &r);
+static void test_origins_api(void) {
+    TEST("origins: default, add, refuse bad entries");
+    nodus_ws_origins_t o;
+    nodus_ws_origins_default(&o);
+    int ok = o.count == 2 && strcmp(o.origin[0], NODUS_WS_DEFAULT_ORIGIN) == 0 &&
+             strcmp(o.origin[1], NODUS_WS_CONNECT_ORIGIN) == 0;
+    ok = ok && nodus_ws_origins_add(&o, "http://localhost:8080") == 0 && o.count == 3;
+    ok = ok && nodus_ws_origins_add(&o, "") == -1;
+    ok = ok && nodus_ws_origins_add(&o, "https://a b") == -1;
+    ok = ok && nodus_ws_origins_add(&o, "https://x\r\n") == -1;
+    for (int i = o.count; i < NODUS_WS_MAX_ORIGINS; i++)
+        ok = ok && nodus_ws_origins_add(&o, "https://fill.example") == 0;
+    ok = ok && nodus_ws_origins_add(&o, "https://overflow.example") == -1;
+    if (ok) PASS(); else FAIL("origins");
 }
 
 int main(void) {
     printf("nodus WebSocket upgrade tests\n");
+    nodus_ws_origins_default(&g_origins);
     test_valid();
     test_need_more();
     test_rejects();
@@ -476,7 +505,8 @@ int main(void) {
     test_real_ip();
     test_ip_bucket();
     test_reject_responses();
-    test_origin_not_read();
+    test_connect_origin();
+    test_origins_api();
     printf("\n%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

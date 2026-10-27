@@ -269,19 +269,11 @@ static int req_emit(const void *vm, dht2_cbor_wr_t *w, size_t ctx)
         return -1;
     }
     if (q->kind == DHT2_REQ_PUT) {
-        size_t total = 0;
-
-        /* Row 11: the record budget of a call is 8 × 262,144 B. One
-         * envelope over 262,144 B is NOT malformed (row 7's list does not
-         * name it): it is the per-key code 1, answered by the holder. */
         for (i = 0; i < q->count; i++) {
-            if (q->envs[i] == NULL && q->env_lens[i] != 0) {
+            if (q->env_lens[i] > DHT2_ENVELOPE_MAX ||
+                (q->envs[i] == NULL && q->env_lens[i] != 0)) {
                 return -1;
             }
-            if (q->env_lens[i] > DHT2_REQ_BUDGET - total) {
-                return -1;
-            }
-            total += q->env_lens[i];
         }
     }
     dht2_cbor_wr_map(w, 3);
@@ -337,7 +329,8 @@ static int req_parse(dht2_cbor_rd_t *r, void *vm, size_t ctx)
             return -1;
         }
         for (i = 0; i < q->count; i++) {
-            if (dht2_cbor_rd_bytes(r, &q->envs[i], &q->env_lens[i]) != 0) {
+            if (dht2_cbor_rd_bytes(r, &q->envs[i], &q->env_lens[i]) != 0 ||
+                q->env_lens[i] > DHT2_ENVELOPE_MAX) {
                 return -1;
             }
         }
@@ -356,10 +349,6 @@ int dht2_req_encode(const dht2_req_t *req, uint8_t *out, size_t cap,
 
 int dht2_req_decode(const uint8_t *in, size_t len, dht2_req_t *req)
 {
-    /* The whole request is bounded BEFORE any parse (row 11). */
-    if (len > DHT2_REQ_MAX_LEN) {
-        return req == NULL ? DHT2_E_ARG : DHT2_E_MALFORMED_REQ;
-    }
     return decode_with(req_parse, req_emit, 0, DHT2_E_MALFORMED_REQ, in, len,
                        req, sizeof(*req));
 }

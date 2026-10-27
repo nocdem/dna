@@ -15,19 +15,6 @@
  *     first frame  {"q":"ipc_hello","pk":<bstr NODUS_PK_BYTES>,
  *                   "tk":<bstr NODUS_SESSION_TOKEN_LEN>}
  *                  — the client session's key and session token;
- *     NO-IDENTITY form (DHT v2 package 3d, an ANON no-login client session;
- *     design 2026-10-26-dht-v2-3d-no-login-design.md §2):
- *                  {"q":"ipc_hello","tk":<bstr NODUS_SESSION_TOKEN_LEN>,
- *                   "ts":<bstr NODUS_WITNESS_IPC_T_LEN>}
- *                  — NO key of any kind: the witness installs no principal
- *                  for the connection (peer_id_set stays false, never a zero
- *                  key), refuses `dnac_cc_collect` on it, and serves only
- *                  its ANON methods; "ts" is core's own copy of the
- *                  session's handshake transcript T (the `s` of an owner-
- *                  signed `qa`, nodus_owner_query.h). An identified hello
- *                  with an all-zero `pk` is refused, and `pk` together with
- *                  `ts` is malformed. Node-local, deployed with core: the
- *                  identified form above is byte-for-byte what it was;
  *     then         the client's tier-2 `dnac_*` payloads, unchanged; each
  *                  is decoded with nodus_t2_decode (the decoder the
  *                  server's dispatch_t2 uses) and handed to the witness
@@ -84,7 +71,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 
 #include "nodus/nodus_types.h"
 #include "protocol/nodus_tier2.h"           /* nodus_t2_status_info_t */
@@ -97,10 +83,6 @@ extern "C" {
 struct nodus_tcp_conn;
 struct nodus_witness;
 
-/** Bytes of a session's handshake transcript T (cmt_p2p_secret.h
- *  CMT_P2P_SC_T_SIZE, SHA3-512); the "ts" of the no-identity hello. */
-#define NODUS_WITNESS_IPC_T_LEN       64
-
 /** The socket file, under the node's data_path. */
 #define NODUS_WITNESS_IPC_SOCK_NAME   "witness.sock"
 
@@ -112,18 +94,6 @@ struct nodus_witness;
 #define NODUS_WITNESS_IPC_Q_DHT_SNAP  "ipc_dht_snap"
 #define NODUS_WITNESS_IPC_Q_DHT_SETS  "ipc_dht_sets"
 #define NODUS_WITNESS_IPC_Q_NAME      "ipc_name"
-/** Control-connection query (core -> witness): the ACTIVE-ROLE set, the node
- *  ids (SHA3-512 of the public key) of every identity with an active on-chain
- *  role (nodus_witness_p2p_roles_fill). Answer {"q":"ipc_roles","fp": bstr of
- *  n * 64 bytes} or {"q":"ipc_roles","err": text}. Core uses it to exempt a
- *  PROVEN node from the per-IP limits of 4001 / WS / 4002 (decision
- *  2026-10-24-dht-v2-handshake-rate.md, addendum 2026-10-26). An internal key:
- *  core and nodus-witness are deployed together. */
-#define NODUS_WITNESS_IPC_Q_ROLES     "ipc_roles"
-/** Most identities one ipc_roles answer carries (the set is derived from
- *  frozen sets of at most 256 members each, the validators and the registry);
- *  a larger set is answered {err}: core then treats it as unknown. */
-#define NODUS_WITNESS_IPC_ROLES_MAX   2048u
 
 /**
  * The ONE routing rule for client tier-2 methods the chain serves: the
@@ -140,36 +110,6 @@ static inline bool nodus_chain_method_routed(const char *method) {
             method[3] == 'c' && method[4] == '_') ||
            (method[0] == 'e' && method[1] == 'v' && method[2] == 'm' &&
             method[3] == '_');
-}
-
-/**
- * The chain methods a no-login ANON client session may call (DHT v2 package
- * 3d, design 2026-10-26-dht-v2-3d-no-login-design.md §2, exact names) — the
- * ONE list, tested by the core server (nodus_server_anon_method_ok) and by the
- * witness (nodus_witness_handle_dnac_anon), so neither hop serves what the
- * other refuses. Every name is a `dnac_*` / `evm_*` method of
- * nodus_chain_method_routed; `dnac_cc_collect` and `dnac_node_duties` are NOT
- * on it (this node's own identity only — khan decision 7). The five
- * owner-only reads are on it and are served only with a valid owner-signed
- * `qa` (nodus_owner_query.h).
- */
-static inline bool nodus_chain_anon_method_ok(const char *method) {
-    static const char *const names[] = {
-        "dnac_spend",
-        "dnac_balance", "dnac_supply", "dnac_roster", "dnac_v3_block",
-        "dnac_light_block", "dnac_token_list", "dnac_token_info",
-        "dnac_fee_info", "dnac_ruleset_info", "dnac_name_lookup",
-        "dnac_name_of", "dnac_storage_status", "dnac_storage_by_owner",
-        "dnac_committee_query", "dnac_validator_list_query",
-        "dnac_utxo", "dnac_addr_history", "dnac_delegations",
-        "dnac_msig_utxo", "dnac_msig_addr_history",
-        "evm_account", "evm_code", "evm_storage", "evm_call", "evm_estimate",
-        "evm_receipt", "evm_logs", "evm_ticket",
-    };
-    if (!method) return false;
-    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
-        if (strcmp(method, names[i]) == 0) return true;
-    return false;
 }
 
 /** Largest control frame either side builds (status answer ≈ 150 B). */
@@ -278,13 +218,7 @@ typedef struct {
     bool     chain_open;                 /* a chain database is open      */
     uint64_t height;                     /* status block_height           */
     uint8_t  state_root[64];             /* status state_root             */
-    uint8_t  chain_id[32];               /* status chain_id (LEGACY: 16
-                                          * bytes padded with zeros — the
-                                          * T2 status RPC reports it)      */
-    uint8_t  chain_id_v3[32];            /* c3 — the 32-byte v3 chain id
-                                          * (nodus_witness_dht_chain_id),
-                                          * all zero when there is none;
-                                          * the session's chain id         */
+    uint8_t  chain_id[32];               /* status chain_id               */
     bool     p2p_opened;                 /* the 4004 p2p host exists      */
     uint16_t listen_port;                /* its bound port (0 = none)     */
 } nodus_witness_ipc_status_t;
@@ -333,14 +267,6 @@ typedef struct {
     void (*dispatch_dnac)(void *ctx, struct nodus_tcp_conn *conn,
                           const uint8_t *payload, size_t len,
                           const char *method, uint32_t txn_id);
-    /** A `dnac_*` / `evm_*` method of an ANON session (the no-identity hello):
-     *  `conn` carries NO principal; `t` is the session's T from the hello.
-     *  NULL = this binding serves no ANON session (the connection is closed
-     *  on its first request). */
-    void (*dispatch_dnac_anon)(void *ctx, struct nodus_tcp_conn *conn,
-                               const uint8_t t[NODUS_WITNESS_IPC_T_LEN],
-                               const uint8_t *payload, size_t len,
-                               const char *method, uint32_t txn_id);
     void (*cc_collect)(void *ctx, struct nodus_tcp_conn *conn,
                        const uint8_t client_pk[NODUS_PK_BYTES],
                        const uint8_t token[NODUS_SESSION_TOKEN_LEN],
@@ -351,9 +277,6 @@ typedef struct {
     int  (*dht_sets)(void *ctx, nodus_witness_dht_sets_t *out);
     int  (*dht_name)(void *ctx, const uint8_t fp[64],
                      nodus_witness_dht_name_t *out);
-    /** The active-role set: fps[0..*n) node ids; 0, or -1 (unknown). NULL
-     *  closes the connection that asks. */
-    int  (*roles)(void *ctx, uint8_t (*fps)[64], uint32_t max, uint32_t *n);
     void  *ctx;
 } nodus_witness_ipc_handlers_t;
 
@@ -387,12 +310,6 @@ void nodus_witness_status_fill(struct nodus_witness *w,
  *        named = false; present and valid → named = true; present but
  *        malformed, or the store unreadable → -1.
  */
-/** The chain id the node sessions and the DHT v2 readers use: the 32-byte v3
- *  chain id (nodus_witness_v2_chain_id), NOT the legacy 16-byte id padded to
- *  32 that `status` reports. 0 and `out` filled; -1 when there is no open
- *  chain or no v3 id (never a zero id). The `ci` of ipc_dht_snap and the `c3`
- *  of ipc_status carry it. */
-int nodus_witness_dht_chain_id(struct nodus_witness *w, uint8_t out[32]);
 int nodus_witness_dht_snap_fill(struct nodus_witness *w,
                                 nodus_witness_dht_snap_t *out);
 int nodus_witness_dht_sets_fill(struct nodus_witness *w,

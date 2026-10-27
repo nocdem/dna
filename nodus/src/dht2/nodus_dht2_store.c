@@ -42,16 +42,6 @@ struct nodus_dht2_store {
  * encoded in `expiry`. There is NO holder memory of dropped entries
  * (decision 2026-10-24-dht-v2-handled-client-rule.md). dht2_meta
  * `v` has no declared type: integers (top, gen) and the chain id blob. */
-/* dht2_rec.handover (§4.5 v): 0 no obligation, 1 pending. The obligation
- * ends on its receipts (decision 2026-10-27-dht-v2-handover-one-receipt.md)
- * by DROPPING the record 48 epochs later (dht2_retire, then
- * nodus_dht2_store_handover_drop; operator: "evet"): §4.5 (v) "kept
- * until … acknowledged … (a persisted hand-over obligation — then it may
- * drop them)"; Bee's reserve likewise deletes the chunks outside its radius
- * (reserve.go:329-385 EvictBatchBin). A PERMANENT replacement carries the
- * flag over; an expiring one is stored without it. */
-#define HANDOVER_PENDING 1
-
 static const char SCHEMA_SQL[] =
     "CREATE TABLE IF NOT EXISTS dht2_meta("
     "  k TEXT PRIMARY KEY, v NOT NULL);"
@@ -72,33 +62,7 @@ static const char SCHEMA_SQL[] =
     "  idx       INTEGER NOT NULL UNIQUE);"
     "CREATE INDEX IF NOT EXISTS dht2_rec_owner ON dht2_rec(owner, size);"
     "CREATE INDEX IF NOT EXISTS dht2_rec_pool  ON dht2_rec(named, size);"
-    "CREATE INDEX IF NOT EXISTS dht2_rec_place ON dht2_rec(placement, cls, owner);"
-    /* §4.5 (iii) / row 12: the puller's persisted state per source — the
-     * cursor (= top + 1) and the source's store generation g last seen. */
-    "CREATE TABLE IF NOT EXISTS dht2_pull_src("
-    "  fp     BLOB PRIMARY KEY,"
-    "  gen    INTEGER NOT NULL,"
-    "  cursor INTEGER NOT NULL);"
-    /* §4.5 (v) / decision 2026-10-27-dht-v2-handover-one-receipt.md: the fps
-     * that acknowledged a pending permanent record (one row per address and
-     * fp, so a repeat counts once). The rows go when the record row goes
-     * (replace, drop, expiry: the trigger) and whenever the flag is set. */
-    "CREATE TABLE IF NOT EXISTS dht2_ack("
-    "  address BLOB NOT NULL,"
-    "  fp      BLOB NOT NULL,"
-    "  PRIMARY KEY(address, fp));"
-    "CREATE TRIGGER IF NOT EXISTS dht2_ack_gc AFTER DELETE ON dht2_rec "
-    "BEGIN DELETE FROM dht2_ack WHERE address = OLD.address; END;"
-    /* The same decision, "What happens when the obligation ends" (operator,
-     * 2026-10-27: a 48-epoch wait): the drop scheduled for epoch drop_e once
-     * the quorum is met. Goes with the record row (replace, drop, expiry: the
-     * trigger) and whenever the flag is set. drop_e keeps the u64 bits. */
-    "CREATE TABLE IF NOT EXISTS dht2_retire("
-    "  address BLOB PRIMARY KEY,"
-    "  hash    BLOB NOT NULL,"
-    "  drop_e  INTEGER NOT NULL);"
-    "CREATE TRIGGER IF NOT EXISTS dht2_retire_gc AFTER DELETE ON dht2_rec "
-    "BEGIN DELETE FROM dht2_retire WHERE address = OLD.address; END;";
+    "CREATE INDEX IF NOT EXISTS dht2_rec_place ON dht2_rec(placement, cls, owner);";
 
 /* ══ small SQLite helpers: every error is a fault (-1) ═════════════════ */
 
@@ -501,7 +465,7 @@ static int held_load(nodus_dht2_store_t *s, const uint8_t *address, held_t *h)
     memcpy(h->canon, sqlite3_column_blob(st, 0), h->len);
     memcpy(h->hash, sqlite3_column_blob(st, 1), DHT2_HASH_LEN);
     h->named = sqlite3_column_int(st, 2) != 0;
-    h->handover = sqlite3_column_int(st, 3) == HANDOVER_PENDING;
+    h->handover = sqlite3_column_int(st, 3) != 0;
     h->noexp = sqlite3_column_int(st, 4) != 0;
     h->expiry = (uint64_t)sqlite3_column_int64(st, 5);
     h->found = true;
@@ -732,7 +696,7 @@ static int admit_locked(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
         bool held_expired = !hd.noexp && hd.expiry <= t;
 
         old_size = (uint64_t)hd.len;
-        handover = d->validity_type == DHT2_VT_NONE ? hd.handover : 0; /* §4.5 v */
+        handover = hd.handover;
         if (!held_expired) {
             int cmp;
 
@@ -938,10 +902,6 @@ int nodus_dht2_store_put(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
         code = code_of(rc);
         goto out;
     }
-    /* The address is known from here on, whatever check fails next: the
-     * serving layer names the result by it (one parse, no second one). */
-    memcpy(res->address, w->rec.address, DHT2_HASH_LEN);
-    res->has_address = true;
     /* holder check (5): eligible(placement key) over S(H) and S(H − E). */
     if (dht2_record_placement_key(&w->rec, w->placement) != DHT2_OK) {
         code = CODE_FAULT;
@@ -1017,19 +977,9 @@ int nodus_dht2_store_put(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
 out:
     if (code != 0) {
         uint64_t through = res->through;
-        bool     has_address = res->has_address;
-        uint8_t  address[DHT2_HASH_LEN];
 
-        /* A refusal keeps the address its envelope had (the serving layer
-         * names the result by it) and, for 18, the cutoff; the success-only
-         * fields (outcome, hash) are cleared. */
-        memcpy(address, res->address, DHT2_HASH_LEN);
         memset(res, 0, sizeof(*res));
         res->through = code == DHT2_E_HANDLED ? through : 0;
-        res->has_address = has_address;
-        if (has_address) {
-            memcpy(res->address, address, DHT2_HASH_LEN);
-        }
     }
     free(w);
     return code;
@@ -1115,25 +1065,8 @@ int nodus_dht2_store_list(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
     out->h = ctx->snap->height;
     out->t = ctx->snap->tip_time;
 
-    /* The selected control record's hash travels beside the entries, and its
-     * bytes are part of the page: charge them first, so entries + control
-     * stay within the 2 MiB page budget (row 11). */
-    if (ctl_load_live(s, inbox, ctx->snap->tip_time, &ctl_canon, &ctl_len,
-                      out->ctl, &ctl_present) != 0) {
-        memset(out, 0, sizeof(*out));
-        return CODE_FAULT;
-    }
-    free(ctl_canon);
-    out->has_ctl = ctl_present;
-    if (ctl_present) {
-        bytes = ctl_len;
-    } else {
-        memset(out->ctl, 0, sizeof(out->ctl));
-    }
-
     hashes = (uint8_t *)malloc((size_t)DHT2_LIST_PAGE_MAX * DHT2_HASH_LEN);
     if (hashes == NULL) {
-        memset(out, 0, sizeof(*out));
         return CODE_FAULT;
     }
     /* Live entries only: a tombstone is a deleted entry, an expired one is
@@ -1206,6 +1139,18 @@ int nodus_dht2_store_list(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
         return CODE_FAULT;
     }
     free(hashes);
+
+    /* The selected control record's hash travels beside the entries. */
+    if (ctl_load_live(s, inbox, ctx->snap->tip_time, &ctl_canon, &ctl_len,
+                      out->ctl, &ctl_present) != 0) {
+        memset(out, 0, sizeof(*out));
+        return CODE_FAULT;
+    }
+    free(ctl_canon);
+    out->has_ctl = ctl_present;
+    if (!ctl_present) {
+        memset(out->ctl, 0, sizeof(out->ctl));
+    }
     return 0;
 }
 
@@ -1325,181 +1270,23 @@ int nodus_dht2_store_handover_set(nodus_dht2_store_t *s,
                                   bool pending, bool *found)
 {
     sqlite3_stmt *st;
-    bool          hit;
 
     if (s == NULL || address == NULL) {
         return DHT2_E_ARG;
     }
-    /* The obligation starts or ends here: the acknowledgements of the past
-     * one never count for the next. The delete and the flag change are ONE
-     * transaction: a fault between them cannot leave a flag without the
-     * acknowledgements the receipts already delivered. */
-    if (exec_sql(s, "BEGIN IMMEDIATE") != 0) {
+    st = prep(s, "UPDATE dht2_rec SET handover = ?2 WHERE address = ?1");
+    if (st == NULL) {
         return CODE_FAULT;
     }
-    st = prep(s, "DELETE FROM dht2_ack WHERE address = ?1");
-    if (st == NULL || !bound(st, b_64(st, 1, address)) ||
-        step_done(s, st) != 0) {
-        goto rollback;
+    if (!bound(st, b_64(st, 1, address) | b_i64(st, 2, pending ? 1 : 0))) {
+        return CODE_FAULT;
     }
-    st = prep(s, "DELETE FROM dht2_retire WHERE address = ?1");
-    if (st == NULL || !bound(st, b_64(st, 1, address)) ||
-        step_done(s, st) != 0) {
-        goto rollback;
-    }
-    st = prep(s, "UPDATE dht2_rec SET handover = ?2 WHERE address = ?1");
-    if (st == NULL ||
-        !bound(st, b_64(st, 1, address) |
-                       b_i64(st, 2, pending ? HANDOVER_PENDING : 0)) ||
-        step_done(s, st) != 0) {
-        goto rollback;
-    }
-    hit = sqlite3_changes(s->db) > 0;
-    if (exec_sql(s, "COMMIT") != 0) {
-        goto rollback;
+    if (step_done(s, st) != 0) {
+        return CODE_FAULT;
     }
     if (found != NULL) {
-        *found = hit;
+        *found = sqlite3_changes(s->db) > 0;
     }
-    return 0;
-rollback:
-    (void)exec_sql(s, "ROLLBACK");
-    return CODE_FAULT;
-}
-
-int nodus_dht2_store_handover_drop(nodus_dht2_store_t *s,
-                                   const uint8_t address[DHT2_HASH_LEN],
-                                   const uint8_t hash[DHT2_HASH_LEN],
-                                   bool *dropped)
-{
-    sqlite3_stmt *st;
-    bool          hit;
-
-    if (s == NULL || address == NULL || hash == NULL) {
-        return DHT2_E_ARG;
-    }
-    /* One transaction; only a row that is STILL pending with the very hash
-     * the receipts named. The ack trigger clears its acknowledgements. */
-    if (exec_sql(s, "BEGIN IMMEDIATE") != 0) {
-        return CODE_FAULT;
-    }
-    st = prep(s, "DELETE FROM dht2_rec WHERE address = ?1 AND hash = ?2 "
-                 "AND handover = ?3 AND noexp = 1"); /* §4.5 v: permanent */
-    if (st == NULL ||
-        !bound(st, b_64(st, 1, address) | b_64(st, 2, hash) |
-                       b_i64(st, 3, HANDOVER_PENDING)) ||
-        step_done(s, st) != 0) {
-        goto rollback;
-    }
-    hit = sqlite3_changes(s->db) > 0;
-    if (exec_sql(s, "COMMIT") != 0) {
-        goto rollback;
-    }
-    if (dropped != NULL) {
-        *dropped = hit;
-    }
-    return 0;
-rollback:
-    (void)exec_sql(s, "ROLLBACK");
-    return CODE_FAULT;
-}
-
-int nodus_dht2_store_handover_retire(nodus_dht2_store_t *s,
-                                     const uint8_t address[DHT2_HASH_LEN],
-                                     const uint8_t hash[DHT2_HASH_LEN],
-                                     uint64_t drop_e, bool *set)
-{
-    sqlite3_stmt *st;
-
-    if (s == NULL || address == NULL || hash == NULL) {
-        return DHT2_E_ARG;
-    }
-    /* One statement: written only for a PERMANENT row still pending with
-     * that hash; an existing schedule is kept (OR IGNORE). */
-    st = prep(s, "INSERT OR IGNORE INTO dht2_retire(address, hash, drop_e) "
-                 "SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM dht2_rec "
-                 "WHERE address = ?1 AND hash = ?2 AND handover = ?4 "
-                 "AND noexp = 1)");
-    if (st == NULL ||
-        !bound(st, b_64(st, 1, address) | b_64(st, 2, hash) |
-                       b_i64(st, 3, (int64_t)drop_e) |
-                       b_i64(st, 4, HANDOVER_PENDING)) ||
-        step_done(s, st) != 0) {
-        return CODE_FAULT;
-    }
-    if (set != NULL) {
-        *set = sqlite3_changes(s->db) > 0;
-    }
-    return 0;
-}
-
-int nodus_dht2_store_handover_ack_retire(nodus_dht2_store_t *s,
-                                         const uint8_t address[DHT2_HASH_LEN],
-                                         const uint8_t fp[DHT2_FP_LEN],
-                                         const uint8_t hash[DHT2_HASH_LEN],
-                                         uint64_t drop_e)
-{
-    sqlite3_stmt *st;
-
-    if (s == NULL || address == NULL || fp == NULL || hash == NULL) {
-        return DHT2_E_ARG;
-    }
-    if (exec_sql(s, "BEGIN IMMEDIATE") != 0) {
-        return CODE_FAULT;
-    }
-    st = prep(s, "INSERT OR IGNORE INTO dht2_ack(address, fp) VALUES(?1, ?2)");
-    if (st == NULL ||
-        !bound(st, b_64(st, 1, address) | b_blob(st, 2, fp, DHT2_FP_LEN)) ||
-        step_done(s, st) != 0 ||
-        nodus_dht2_store_handover_retire(s, address, hash, drop_e, NULL)
-            != 0) {
-        goto rollback;
-    }
-    if (exec_sql(s, "COMMIT") != 0) {
-        goto rollback;
-    }
-    return 0;
-rollback:
-    (void)exec_sql(s, "ROLLBACK");
-    return CODE_FAULT;
-}
-
-int nodus_dht2_store_handover_retire_get(nodus_dht2_store_t *s,
-                                         const uint8_t address[DHT2_HASH_LEN],
-                                         bool *found, uint64_t *drop_e,
-                                         uint8_t hash[DHT2_HASH_LEN])
-{
-    sqlite3_stmt *st;
-    int           rc;
-
-    if (s == NULL || address == NULL || found == NULL || drop_e == NULL ||
-        hash == NULL) {
-        return DHT2_E_ARG;
-    }
-    *found = false;
-    *drop_e = 0;
-    st = prep(s, "SELECT hash, drop_e FROM dht2_retire WHERE address = ?1");
-    if (st == NULL || !bound(st, b_64(st, 1, address))) {
-        return CODE_FAULT;
-    }
-    rc = sqlite3_step(st);
-    if (rc == SQLITE_ROW) {
-        if (sqlite3_column_type(st, 0) != SQLITE_BLOB ||
-            sqlite3_column_bytes(st, 0) != (int)DHT2_HASH_LEN ||
-            sqlite3_column_type(st, 1) != SQLITE_INTEGER) {
-            QGP_LOG_ERROR(LOG_TAG, "retire row malformed");
-            sqlite3_finalize(st);
-            return CODE_FAULT;
-        }
-        memcpy(hash, sqlite3_column_blob(st, 0), DHT2_HASH_LEN);
-        *drop_e = (uint64_t)sqlite3_column_int64(st, 1);
-        *found = true;
-    } else if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "retire read: %s", sqlite3_errmsg(s->db));
-        sqlite3_finalize(st);
-        return CODE_FAULT;
-    }
-    sqlite3_finalize(st);
     return 0;
 }
 
@@ -1519,245 +1306,4 @@ int nodus_dht2_store_handover_get(nodus_dht2_store_t *s,
     *pending = h.found && h.handover != 0;
     held_free(&h);
     return 0;
-}
-
-int nodus_dht2_store_handover_ack_add(nodus_dht2_store_t *s,
-                                      const uint8_t address[DHT2_HASH_LEN],
-                                      const uint8_t fp[DHT2_FP_LEN])
-{
-    sqlite3_stmt *st;
-
-    if (s == NULL || address == NULL || fp == NULL) {
-        return DHT2_E_ARG;
-    }
-    st = prep(s, "INSERT OR IGNORE INTO dht2_ack(address, fp) VALUES(?1, ?2)");
-    if (st == NULL) {
-        return CODE_FAULT;
-    }
-    if (!bound(st, b_64(st, 1, address) | b_blob(st, 2, fp, DHT2_FP_LEN))) {
-        return CODE_FAULT;
-    }
-    return step_done(s, st) == 0 ? 0 : CODE_FAULT;
-}
-
-int nodus_dht2_store_handover_ack_has(nodus_dht2_store_t *s,
-                                      const uint8_t address[DHT2_HASH_LEN],
-                                      const uint8_t fp[DHT2_FP_LEN], bool *has)
-{
-    sqlite3_stmt *st;
-    int           rc;
-
-    if (s == NULL || address == NULL || fp == NULL || has == NULL) {
-        return DHT2_E_ARG;
-    }
-    st = prep(s, "SELECT 1 FROM dht2_ack WHERE address = ?1 AND fp = ?2");
-    if (st == NULL) {
-        return CODE_FAULT;
-    }
-    if (!bound(st, b_64(st, 1, address) | b_blob(st, 2, fp, DHT2_FP_LEN))) {
-        return CODE_FAULT;
-    }
-    rc = sqlite3_step(st);
-    if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "ack read: %s", sqlite3_errmsg(s->db));
-        sqlite3_finalize(st);
-        return CODE_FAULT;
-    }
-    *has = rc == SQLITE_ROW;
-    sqlite3_finalize(st);
-    return 0;
-}
-
-/* ══ hand-over: what package 7 needs to read ═══════════════════════════ */
-
-int nodus_dht2_store_handover_info(nodus_dht2_store_t *s,
-                                   const uint8_t address[DHT2_HASH_LEN],
-                                   bool *found, bool *pending,
-                                   uint8_t hash[DHT2_HASH_LEN],
-                                   uint8_t placement[DHT2_HASH_LEN])
-{
-    sqlite3_stmt *st;
-    int           rc;
-
-    if (s == NULL || address == NULL || found == NULL || pending == NULL ||
-        hash == NULL || placement == NULL) {
-        return DHT2_E_ARG;
-    }
-    *found = false;
-    *pending = false;
-    st = prep(s, "SELECT hash, placement, handover FROM dht2_rec "
-                 "WHERE address = ?1");
-    if (st == NULL) {
-        return CODE_FAULT;
-    }
-    if (!bound(st, b_64(st, 1, address))) {
-        return CODE_FAULT;
-    }
-    rc = sqlite3_step(st);
-    if (rc == SQLITE_ROW) {
-        if (sqlite3_column_bytes(st, 0) != (int)DHT2_HASH_LEN ||
-            sqlite3_column_bytes(st, 1) != (int)DHT2_HASH_LEN) {
-            QGP_LOG_ERROR(LOG_TAG, "handover info: row malformed");
-            sqlite3_finalize(st);
-            return CODE_FAULT;
-        }
-        memcpy(hash, sqlite3_column_blob(st, 0), DHT2_HASH_LEN);
-        memcpy(placement, sqlite3_column_blob(st, 1), DHT2_HASH_LEN);
-        *pending = sqlite3_column_int(st, 2) == HANDOVER_PENDING;
-        *found = true;
-    } else if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "handover info: %s", sqlite3_errmsg(s->db));
-        sqlite3_finalize(st);
-        return CODE_FAULT;
-    }
-    sqlite3_finalize(st);
-    return 0;
-}
-
-int nodus_dht2_store_permanent_scan(nodus_dht2_store_t *s, uint64_t from,
-                                    nodus_dht2_perm_entry_t *out, size_t max,
-                                    size_t *count, uint64_t *next)
-{
-    sqlite3_stmt *st;
-    size_t        n = 0;
-    uint64_t      last = 0;
-    int           rc, code = 0;
-
-    if (s == NULL || out == NULL || count == NULL || next == NULL ||
-        max == 0 || max > DHT2_PULL_PAGE_MAX) {
-        return DHT2_E_ARG;
-    }
-    *count = 0;
-    *next = from;
-    if (from > (uint64_t)INT64_MAX) {
-        return 0;
-    }
-    st = prep(s, "SELECT idx, address, placement, hash, handover "
-                 "FROM dht2_rec WHERE idx >= ?1 AND noexp = 1 "
-                 "ORDER BY idx ASC LIMIT ?2");
-    if (st == NULL) {
-        return CODE_FAULT;
-    }
-    if (!bound(st, b_i64(st, 1, (int64_t)from) | b_i64(st, 2, (int64_t)max))) {
-        return CODE_FAULT;
-    }
-    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
-        if (sqlite3_column_bytes(st, 1) != (int)DHT2_HASH_LEN ||
-            sqlite3_column_bytes(st, 2) != (int)DHT2_HASH_LEN ||
-            sqlite3_column_bytes(st, 3) != (int)DHT2_HASH_LEN) {
-            QGP_LOG_ERROR(LOG_TAG, "permanent scan: row malformed");
-            code = CODE_FAULT;
-            break;
-        }
-        last = (uint64_t)sqlite3_column_int64(st, 0);
-        out[n].index = last;
-        memcpy(out[n].address, sqlite3_column_blob(st, 1), DHT2_HASH_LEN);
-        memcpy(out[n].placement, sqlite3_column_blob(st, 2), DHT2_HASH_LEN);
-        memcpy(out[n].hash, sqlite3_column_blob(st, 3), DHT2_HASH_LEN);
-        out[n].pending = sqlite3_column_int(st, 4) == HANDOVER_PENDING;
-        n++;
-    }
-    if (code == 0 && rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "permanent scan: %s", sqlite3_errmsg(s->db));
-        code = CODE_FAULT;
-    }
-    sqlite3_finalize(st);
-    if (code != 0) {
-        return code;
-    }
-    *count = n;
-    *next = n > 0 ? last + 1 : from;
-    return 0;
-}
-
-/* ══ pull cursors (§4.5 iii, row 12) ═══════════════════════════════════ */
-
-int nodus_dht2_store_pull_get(nodus_dht2_store_t *s,
-                              const uint8_t fp[DHT2_FP_LEN], bool *found,
-                              uint64_t *gen, uint64_t *cursor)
-{
-    sqlite3_stmt *st;
-    int           rc;
-
-    if (s == NULL || fp == NULL || found == NULL || gen == NULL ||
-        cursor == NULL) {
-        return DHT2_E_ARG;
-    }
-    *found = false;
-    st = prep(s, "SELECT gen, cursor FROM dht2_pull_src WHERE fp = ?1");
-    if (st == NULL) {
-        return CODE_FAULT;
-    }
-    if (!bound(st, b_64(st, 1, fp))) {
-        return CODE_FAULT;
-    }
-    rc = sqlite3_step(st);
-    if (rc == SQLITE_ROW) {
-        *gen = (uint64_t)sqlite3_column_int64(st, 0);
-        *cursor = (uint64_t)sqlite3_column_int64(st, 1);
-        if (*cursor > (uint64_t)INT64_MAX) {
-            QGP_LOG_ERROR(LOG_TAG, "pull cursor row malformed");
-            sqlite3_finalize(st);
-            return CODE_FAULT;
-        }
-        *found = true;
-    } else if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "pull get: %s", sqlite3_errmsg(s->db));
-        sqlite3_finalize(st);
-        return CODE_FAULT;
-    }
-    sqlite3_finalize(st);
-    return 0;
-}
-
-int nodus_dht2_store_pull_set(nodus_dht2_store_t *s,
-                              const uint8_t fp[DHT2_FP_LEN], uint64_t gen,
-                              uint64_t cursor)
-{
-    sqlite3_stmt *st;
-
-    if (s == NULL || fp == NULL || cursor > (uint64_t)INT64_MAX) {
-        return DHT2_E_ARG;
-    }
-    st = prep(s, "INSERT OR REPLACE INTO dht2_pull_src(fp, gen, cursor) "
-                 "VALUES(?1, ?2, ?3)");
-    if (st == NULL) {
-        return CODE_FAULT;
-    }
-    if (!bound(st, b_64(st, 1, fp) | b_i64(st, 2, (int64_t)gen) |
-                       b_i64(st, 3, (int64_t)cursor))) {
-        return CODE_FAULT;
-    }
-    return step_done(s, st) == 0 ? 0 : CODE_FAULT;
-}
-
-int nodus_dht2_store_pull_reset(nodus_dht2_store_t *s)
-{
-    if (s == NULL) {
-        return DHT2_E_ARG;
-    }
-    return exec_sql(s, "UPDATE dht2_pull_src SET cursor = 0") == 0
-               ? 0 : CODE_FAULT;
-}
-
-/* The epoch whose sets the pull cursors were last checked against (§4.5:
- * "re-scan when responsibility grows"; "otherwise cursors persist across
- * restarts"), meta key "pull_e". */
-int nodus_dht2_store_pull_epoch_get(nodus_dht2_store_t *s, bool *found,
-                                    uint64_t *e)
-{
-    if (s == NULL || found == NULL || e == NULL) {
-        return DHT2_E_ARG;
-    }
-    *found = false;
-    *e = 0;
-    return meta_get(s, "pull_e", e, NULL, found) == 0 ? 0 : CODE_FAULT;
-}
-
-int nodus_dht2_store_pull_epoch_set(nodus_dht2_store_t *s, uint64_t e)
-{
-    if (s == NULL) {        /* any u64 (row 6): meta_set / meta_get are bit-exact */
-        return DHT2_E_ARG;
-    }
-    return meta_set(s, "pull_e", e) == 0 ? 0 : CODE_FAULT;
 }

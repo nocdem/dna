@@ -13,10 +13,7 @@
  *     with the shared pinned dialer (items 16, 28); it listens on no
  *     network port;
  *   - identity files are only READ here and a missing one refuses the
- *     start (item 10); the 4002 node session signs with the identity's key,
- *     and its HELLO carries the chain id of this process's view of its
- *     witness (<data_path>/witness.sock, dht/nodus_dht2_wview.h, DHT v2
- *     3b-2): with no fresh snapshot no 4002 dial is made;
+ *     start (item 10); the 4002 handshake signs with the identity's key;
  *   - the partial-wipe gate runs in core (item 9), in nodus-witness
  *     (operator ruling 2026-10-08) and here — this process runs
  *     the SAME check (server/nodus_partial_wipe.c) before it opens
@@ -27,6 +24,7 @@
  * (nodus_node_config.c, item 18 — nodus_node_config_load_storage: the 4004
  * p2p keys and the network file are not read, --derive-v2-genesis is
  * refused). Read here: data_path, identity_path,
+ * require_peer_auth (the 4002 handshake of the dialed connections),
  * external_ip / bind_ip and peer_port (this node's own entry in the hash
  * ring, as nodus_server_init gives the in-process DHT). Everything else is
  * read and not used.
@@ -56,7 +54,6 @@
 #include "server/nodus_server.h"          /* nodus_server_config_t (type) */
 #include "dht/nodus_dht.h"
 #include "dht/nodus_dht_ipc.h"
-#include "witness/nodus_witness_ipc.h"    /* nodus_witness_ipc_sock_path (constants only) */
 #include "crypto/nodus_identity.h"
 #include "crypto/utils/qgp_log.h"
 
@@ -177,7 +174,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    nodus_dht_ipc_t *ipc = nodus_dht_ipc_new(&identity);
+    nodus_dht_ipc_t *ipc = nodus_dht_ipc_new(&identity,
+                                             config.require_peer_auth);
     nodus_dht_t *dht = calloc(1, sizeof(*dht));
     if (!ipc || !dht) {
         fprintf(stderr, "NODUS_STORAGE: failed to allocate the storage "
@@ -186,24 +184,6 @@ int main(int argc, char **argv) {
         free(dht);
         nodus_identity_clear(&identity);
         return 1;
-    }
-
-    /* The view of this node's witness (<data_path>/witness.sock, the
-     * `ipc_dht` connection kind): the chain id of every 4002 dial comes from
-     * its snapshot. Ticked by nodus_dht_ipc_tick; kept reachable through
-     * nodus_dht_ipc_wview for package 6, which uses it for nothing else
-     * yet. */
-    {
-        char wsock[NODUS_TCP_UNIX_PATH_MAX];
-        if (nodus_witness_ipc_sock_path(config.data_path, wsock, sizeof(wsock)) != 0 ||
-            nodus_dht_ipc_open_wview(ipc, wsock) != 0) {
-            fprintf(stderr, "NODUS_STORAGE: cannot open the view of the witness "
-                    "socket under \"%s\" — not starting\n", config.data_path);
-            nodus_dht_ipc_free(ipc);
-            free(dht);
-            nodus_identity_clear(&identity);
-            return 1;
-        }
     }
 
     /* The DHT, with this process's host view (dht/nodus_dht_ipc.h): phase
@@ -262,8 +242,8 @@ int main(int argc, char **argv) {
     fprintf(stderr, "  Data: %s\n", config.data_path[0] ? config.data_path
                                                          : "/tmp");
     fprintf(stderr, "  IPC socket: %s\n", sock_path);
-    fprintf(stderr, "  4002 dials: node session (SecretConnection), chain id "
-            "from the witness view\n");
+    fprintf(stderr, "  4002 dials: %s\n", config.require_peer_auth
+            ? "authenticated (require_peer_auth)" : "plaintext");
 
     while (!g_stop) {
         nodus_dht_ipc_poll(ipc, 50);

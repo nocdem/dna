@@ -5,9 +5,6 @@ tasks/
 # GSD planning docs (local-only)
 .planning/
 
-# Codex entrypoint rules file (local-only, Kurultay #44)
-/AGENTS.md
-
 # Security audit files (private, never commit)
 *SECURITY_AUDIT*
 *COMPREHENSIVE_AUDIT*

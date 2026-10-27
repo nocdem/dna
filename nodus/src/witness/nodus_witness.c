@@ -655,8 +655,8 @@ static int witness_db_open_fail(nodus_witness_t *witness) {
  * (table name, its DDL) so `v2_storage_nodes` (NODUS_V2_STORAGE_DDL) gets
  * the SAME per-open check; for v2_names the comparison is the former one
  * (the same reference statement, the table name now a bound parameter). */
-static int witness_ddl_shape_cmp(sqlite3 *db, const char *table,
-                                 const char *ddl, int *equal) {
+static int witness_ddl_shape_check(sqlite3 *db, const char *table,
+                                   const char *ddl) {
     static const char *const q =
         "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1";
     sqlite3 *mem = NULL;
@@ -688,53 +688,18 @@ static int witness_ddl_shape_cmp(sqlite3 *db, const char *table,
             const unsigned char *sb = sqlite3_column_text(b, 0);
             int la = sqlite3_column_bytes(a, 0);
             int lb = sqlite3_column_bytes(b, 0);
-            *equal = (sa && sb && la == lb &&
-                      memcmp(sa, sb, (size_t)la) == 0) ? 1 : 0;
+            if (!sa || !sb || la != lb || memcmp(sa, sb, (size_t)la) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "%s exists with a shape this build "
+                              "did not create (sqlite_master.sql differs) — "
+                              "refusing to open this database", table);
+                rc = SQLITE_CORRUPT;
+            }
         }
     }
     sqlite3_finalize(a);
     sqlite3_finalize(b);
     sqlite3_close(mem);
     return rc;
-}
-
-static int witness_ddl_shape_check(sqlite3 *db, const char *table,
-                                   const char *ddl) {
-    int equal = 0;
-    int rc = witness_ddl_shape_cmp(db, table, ddl, &equal);
-    if (rc == SQLITE_OK && !equal) {
-        QGP_LOG_ERROR(LOG_TAG, "%s exists with a shape this build "
-                      "did not create (sqlite_master.sql differs) — "
-                      "refusing to open this database", table);
-        rc = SQLITE_CORRUPT;
-    }
-    return rc;
-}
-
-/* HF-9 H2: the same check for a table the S20 rung rebuilds
- * (nodus_witness_v2_schema.c; spec §8). It runs on EVERY open, BEFORE the
- * post-open gate climbs a database to S20, so a database below S20 still
- * stores the S19 text: that text (`s19_ddl`) is accepted while
- * user_version < 20 and never after — the rung rewrites the table, and
- * from S20 on only the S20 text `ddl` is a valid shape. A fresh database
- * (user_version 0, created by the base schema above) already carries the
- * S20 text. Same return convention as witness_ddl_shape_check. */
-static int witness_ddl_shape_check_s20(nodus_witness_t *w, const char *table,
-                                       const char *ddl, const char *s19_ddl) {
-    int equal = 0;
-    int rc = witness_ddl_shape_cmp(w->db, table, ddl, &equal);
-    if (rc != SQLITE_OK || equal) return rc;
-    uint32_t ver = 0;
-    if (nodus_witness_db_schema_version(w, &ver) != 0)
-        return SQLITE_CORRUPT;          /* unreadable: fail closed        */
-    if (ver < NODUS_V2_SCHEMA_VERSION_S20) {
-        rc = witness_ddl_shape_cmp(w->db, table, s19_ddl, &equal);
-        if (rc != SQLITE_OK || equal) return rc;
-    }
-    QGP_LOG_ERROR(LOG_TAG, "%s exists with a shape this build did not "
-                  "create (sqlite_master.sql differs) — refusing to open "
-                  "this database", table);
-    return SQLITE_CORRUPT;
 }
 
 /* ONE attempt at bringing `db_path` to a usable handle. Returns SQLITE_OK
@@ -829,12 +794,8 @@ static int witness_db_open_attempt(nodus_witness_t *witness,
     }
     /* storage reward v1: the exact shape of v2_storage_nodes, the same
      * per-open check */
-    /* HF-9 H2 (S20): the registry and three of the four storage-leg tables
-     * are REBUILT by the S20 rung — their S20 text, or the S19 text while
-     * the database is below S20 (witness_ddl_shape_check_s20) */
-    rc = witness_ddl_shape_check_s20(witness, "v2_storage_nodes",
-                                     NODUS_V2_STORAGE_DDL,
-                                     NODUS_V2_STORAGE_S19_DDL);
+    rc = witness_ddl_shape_check(witness->db, "v2_storage_nodes",
+                                 NODUS_V2_STORAGE_DDL);
     if (rc != SQLITE_OK) {
         witness_db_open_fail(witness);
         return rc;
@@ -842,25 +803,14 @@ static int witness_db_open_attempt(nodus_witness_t *witness,
     /* archive reward: the four storage-leg tables, the same check, in a
      * fixed order */
     {
-        static const struct {
-            const char *t;
-            const char *ddl;
-            const char *s19_ddl;        /* NULL = unchanged by S20 */
-        } ST[] = {
-            { "v2_storage_sets",        NODUS_V2_STSETS_DDL,
-              NODUS_V2_STSETS_S19_DDL },
-            { "v2_storage_set_members", NODUS_V2_STMEMB_DDL,
-              NODUS_V2_STMEMB_S19_DDL },
-            { "v2_storage_reports",     NODUS_V2_STREPS_DDL,
-              NODUS_V2_STREPS_S19_DDL },
-            { "v2_storage_segments",    NODUS_V2_STSEGS_DDL, NULL }
+        static const struct { const char *t; const char *ddl; } ST[] = {
+            { "v2_storage_sets",        NODUS_V2_STSETS_DDL },
+            { "v2_storage_set_members", NODUS_V2_STMEMB_DDL },
+            { "v2_storage_reports",     NODUS_V2_STREPS_DDL },
+            { "v2_storage_segments",    NODUS_V2_STSEGS_DDL }
         };
         for (size_t i = 0; i < sizeof(ST) / sizeof(ST[0]); i++) {
-            rc = ST[i].s19_ddl
-                     ? witness_ddl_shape_check_s20(witness, ST[i].t,
-                                                   ST[i].ddl, ST[i].s19_ddl)
-                     : witness_ddl_shape_check(witness->db, ST[i].t,
-                                               ST[i].ddl);
+            rc = witness_ddl_shape_check(witness->db, ST[i].t, ST[i].ddl);
             if (rc != SQLITE_OK) {
                 witness_db_open_fail(witness);
                 return rc;
@@ -1051,17 +1001,8 @@ static int witness_gate_table_has_rows(sqlite3 *db, const char *count_sql) {
  * S18 — the S19 rung cascades through S18 and S17. S19 is a no-op;
  * anything else is the gates' to refuse. No root moves (nothing reads or
  * writes the new objects before HF-7 P1c).
- *
- * HF-9 H2 (spec docs/plans/2026-10-23-hf9-byte-spec.md rev 3 §8, §13): the
- * at-open rung is now S20 (S19 + the empty node-local tree tables and the
- * rebuild of four storage tables into their S20 text,
- * nodus_witness_v2_schema.h) and runs on a version-3 chain at S16, S17,
- * S18 OR S19 — the S20 rung cascades through the lower ones. S20 is a
- * no-op; anything else is the gates' to refuse. No root moves (the
- * generation-5 leaves ignore the new columns; no trigger exists before the
- * HF-9 edge).
  * @return 0 (migrated, or nothing to do) / -1 refuse the database. */
-static int witness_open_migrate_s20(nodus_witness_t *witness,
+static int witness_open_migrate_s19(nodus_witness_t *witness,
                                     const char *db_path) {
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(witness, &ver) != 0) {
@@ -1071,8 +1012,7 @@ static int witness_open_migrate_s20(nodus_witness_t *witness,
     }
     if (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
         ver != NODUS_V2_SCHEMA_VERSION_S17 &&
-        ver != NODUS_V2_SCHEMA_VERSION_S18 &&
-        ver != NODUS_V2_SCHEMA_VERSION_S19) return 0;
+        ver != NODUS_V2_SCHEMA_VERSION_S18) return 0;
     int st = witness_gate_table_exists(witness->db,
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cmt_state'");
     int bs = witness_gate_table_exists(witness->db,
@@ -1089,40 +1029,26 @@ static int witness_open_migrate_s20(nodus_witness_t *witness,
     if (nodus_witness_v2_gen_stored_chain_id(witness, id) != 0)
         return 0;                       /* no stored document: the role
                                          * gate below refuses it         */
-    if (nodus_witness_db_migrate_v2s20(witness) != 0) {
-        fprintf(stderr, "%s: the S%u -> S20 migration (Nodus EVM empty EVM "
+    if (nodus_witness_db_migrate_v2s19(witness) != 0) {
+        fprintf(stderr, "%s: the S%u -> S19 migration (Nodus EVM empty EVM "
                 "tables when below S17; HF-6 empty v2_validator_roles when "
                 "below S18; HF-7 empty v2_replay + nullable "
-                "v2_domain_heads.last_upd_hash when below S19; HF-9 empty "
-                "node-local tree tables + the four storage-table "
-                "rebuilds) FAILED for %s — rolled back, refusing the "
-                "database (fail closed)\n", LOG_TAG, (unsigned)ver,
-                db_path);
+                "v2_domain_heads.last_upd_hash) FAILED for %s — rolled "
+                "back, refusing the database (fail closed)\n", LOG_TAG,
+                (unsigned)ver, db_path);
         return -1;
     }
-    fprintf(stderr, "%s: schema S%u -> S20 (empty tables and defaulted "
-            "columns only; no root moves) for %s\n", LOG_TAG,
-            (unsigned)ver, db_path);
+    fprintf(stderr, "%s: schema S%u -> S19 (empty tables only; no root "
+            "moves) for %s\n", LOG_TAG, (unsigned)ver, db_path);
     return 0;
 }
 
 static int witness_post_open_gate(nodus_witness_t *witness,
                                   const char *db_path) {
-    /* The at-open rung (witness_open_migrate_s20 above; Nodus EVM added
-     * it for S16 -> S17, HF-6 3a moved it to S18, HF-7 P1b to S19, HF-9
-     * H2 to S20), FIRST — the S7 check and every later gate see the live
-     * rung. */
-    if (witness_open_migrate_s20(witness, db_path) != 0) {
-        sqlite3_close(witness->db);
-        witness->db = NULL;
-        return -1;
-    }
-    /* HF-9 H2: a database ALREADY at S20 skips the rung above (nothing to
-     * migrate), so its tree / storage tables are held to the S20 shape
-     * here, on every open — drift refuses the database. */
-    if (nodus_witness_db_verify_v2s20_shape(witness) != 0) {
-        fprintf(stderr, "%s: the S20 schema shape check FAILED for %s — "
-                "refusing the database (fail closed)\n", LOG_TAG, db_path);
+    /* The at-open rung (witness_open_migrate_s19 above; Nodus EVM added
+     * it for S16 -> S17, HF-6 3a moved it to S18, HF-7 P1b to S19),
+     * FIRST — the S7 check and every later gate see the live rung. */
+    if (witness_open_migrate_s19(witness, db_path) != 0) {
         sqlite3_close(witness->db);
         witness->db = NULL;
         return -1;

@@ -19,14 +19,6 @@
  *                   "b":bstr 8 core boot id,"fp":bstr 64,
  *                   CLIENT (k 0): "pk":bstr NODUS_PK_BYTES,
  *                   INTER  (k 1): "ip":tstr peer address}
- *                  NO-IDENTITY form (CLIENT, k 0, an ANON no-login session,
- *                  DHT v2 package 3d): the same map WITHOUT "fp" and "pk" —
- *                  {"q","v","k":0,"s","g","b"} — and nothing in their place;
- *                  "fp" without "pk" (or the reverse) is refused. The storage
- *                  side keeps no identity for the slot and refuses every
- *                  identity-bound DHT verb on it (legacy put, m_put, listen…:
- *                  nodus_dht_client_request). The identified form is
- *                  byte-for-byte what it was;
  *                  — THIS is "session opened": the storage process opens
  *                  the slot's shadow (nodus_dht_session_opened) with that
  *                  generation;
@@ -200,12 +192,6 @@ typedef struct {
                                  * INTER: the peer's (zero when none) */
     nodus_pubkey_t     pk;      /* CLIENT only */
     char               ip[64];  /* INTER only: the peer conn's address */
-    /** CLIENT only (DHT v2 package 3d, design 2026-10-26-dht-v2-3d-no-login-
-     *  design.md §2): the origin is a no-login ANON session — NO principal.
-     *  The preface then carries no `fp` and no `pk` (the explicit no-identity
-     *  form), `fp` / `pk` above stay zero and are never an identity, and the
-     *  storage side refuses every identity-bound DHT verb on it. */
-    bool               no_identity;
 } nodus_dht_ipc_preface_t;
 
 typedef enum {
@@ -290,26 +276,12 @@ typedef struct nodus_dht_ipc nodus_dht_ipc_t;
  * outbound 4002 pool (decision item 16: replication, republish, hinted
  * handoff, listen forwarding dial from here, on the shared dialer
  * server/nodus_inter_dial.h, pinned — decision 28). `identity` (read only)
- * must outlive it. Every dialed connection runs the 4002 node session
- * (SecretConnection, NODE profile, pinned — DHT v2 3b-2); its HELLO carries
- * the chain id of this process's witness view (nodus_dht_ipc_open_wview).
+ * must outlive it; `require_peer_auth` is the node's setting, so the
+ * dialed conns speak the 4002 handshake exactly when core's would.
  * NULL on allocation / transport failure.
  */
-nodus_dht_ipc_t *nodus_dht_ipc_new(const nodus_identity_t *identity);
-
-/**
- * Create this process's view of its witness (dht/nodus_dht2_wview.h) for the
- * socket at `witness_sock_path` (<data_path>/witness.sock). It is ticked by
- * nodus_dht_ipc_tick, freed by nodus_dht_ipc_free, and is where the chain id
- * of every 4002 dial comes from: until its snapshot is fresh a dial is
- * REFUSED (fail closed; the durable hint row stays the queue). Once only.
- * @return 0, or -1 (bad argument, already opened, allocation failure).
- */
-int nodus_dht_ipc_open_wview(nodus_dht_ipc_t *ipc, const char *witness_sock_path);
-
-/** The view (NULL before nodus_dht_ipc_open_wview): kept reachable for the
- *  package-6 holder store; nothing else uses it today. Owned by `ipc`. */
-struct nodus_dht2_wview *nodus_dht_ipc_wview(nodus_dht_ipc_t *ipc);
+nodus_dht_ipc_t *nodus_dht_ipc_new(const nodus_identity_t *identity,
+                                   bool require_peer_auth);
 
 /**
  * The DHT's host view in the storage process: send_to_origin writes to the

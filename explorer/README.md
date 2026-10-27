@@ -304,13 +304,9 @@ nonzero exit is a failure and no group has a skip path.
 ## Running
 
 ```
-Usage: dna-explorerd [--config PATH] [--network PATH] [--chain HEX64] [--pin HEX128] [--db PATH]
-                     [--rewards-db PATH] [--port N] [--once] [--verify-index] [--version]
+Usage: dna-explorerd [--config PATH] [--db PATH] [--rewards-db PATH] [--port N] [--once] [--verify-index] [--version]
 
   --config PATH    witness server list, "host port" per line (default /etc/dna-explorer.conf)
-  --network PATH   tool network file (below); else the environment variable NODUS_NETWORK
-  --chain HEX64    chain id (64 lowercase hex); overrides the file's
-  --pin HEX128     server pin (128 lowercase hex) used for EVERY configured server; overrides the file's
   --db PATH        sqlite index db path (default /var/lib/dna-explorer/index.db)
   --rewards-db PATH optional co-located Nodus database, opened read-only per request
   --port N         JSON API listen port (default 8390), 127.0.0.1 only
@@ -323,29 +319,6 @@ Usage: dna-explorerd [--config PATH] [--network PATH] [--chain HEX64] [--pin HEX
                     belongs to an applied item; no refused item has effects.
   --version        print version and exit
 ```
-
-### Network identity (DHT v2 package 3c) — REQUIRED
-
-Since the client session is a SecretConnection, every connection is bound to the
-server's key (pin) and to a chain id (`nodus_client_init` refuses a config
-without either). The explorer takes them from the **tool network file**
-(`nodus/src/client/nodus_tool_network.h`), named by `--network PATH` or the
-environment variable `NODUS_NETWORK` (no default path):
-
-```
-{"chain_id": "<64 lowercase hex>",
- "nodes": [{"ip": "203.0.113.10", "port": 4001, "fp": "<128 lowercase hex>"}, ...]}
-```
-
-`fp` is the node's fingerprint (SHA3-512 of its ML-DSA-87 public key — `nodus-cli
--i <identity dir> whoami` prints it). The server list stays in `--config`
-(below); each of its servers must appear in the file with exactly the same
-host (an IPv4 literal) and port, or `--pin` must cover it — a server with no pin
-is not connected to. `--chain` / `--pin` override the file's chain id / pin.
-With no file and no flags (or a malformed file) the daemon exits 1 at start,
-before any socket. The ExecStart of `deploy/dna-explorerd.service` carries no
-`--network` yet: add `--network /etc/dna-explorer-network.json` (or an
-`Environment=NODUS_NETWORK=…`) when deploying a build that has this change.
 
 ### Config file format
 

@@ -99,11 +99,6 @@ static bool inproc_read_pending(nodus_dht_backend_t *b) {
     return false;
 }
 
-/* The batch-forward transport's handshake jobs (nodus_dht_sc_busy). */
-static bool inproc_sc_busy(nodus_dht_backend_t *b) {
-    return nodus_dht_sc_busy(inproc_dht(b));
-}
-
 static void inproc_evict_tick(nodus_dht_backend_t *b) {
     nodus_dht_evict_tick(inproc_dht(b));
 }
@@ -133,7 +128,6 @@ static const nodus_dht_backend_ops_t inproc_ops = {
     .hint_store       = inproc_hint_store,
     .routing_snapshot = inproc_routing_snapshot,
     .read_pending     = inproc_read_pending,
-    .sc_busy          = inproc_sc_busy,
     .evict_tick       = inproc_evict_tick,
     .tick             = inproc_tick,
     .stop             = inproc_stop,

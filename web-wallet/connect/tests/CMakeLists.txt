@@ -134,21 +134,7 @@ set(NC_SOURCES
   # native nodus_tcp.c also carries the server's WebSocket entry (the
   # __EMSCRIPTEN__ branch does not); its codec lives here
   ${ROOT}/nodus/src/transport/nodus_ws.c
-  # DHT v2 package 3c: the client session is a SecretConnection — the layer
-  # (worker-thread jobs natively, threadless under emcc) and its handshake
-  # machine; nodus_tcp.c needs NODUS_TCP_SC (target_compile_definitions below)
-  ${ROOT}/nodus/src/transport/nodus_tcp_sc.c
-  ${ROOT}/shared/dnac/cmt_p2p_secret.c
   ${ROOT}/nodus/src/protocol/nodus_tier2.c
-  # DHT v2 package 3d: nodus_client.c builds the owner-signed query `qa` for
-  # the no-login session — the RFC 0002 envelope code (shared/dht2) and what
-  # it calls
-  ${ROOT}/nodus/src/protocol/nodus_owner_query.c
-  ${ROOT}/shared/dht2/dht2_cbor.c
-  ${ROOT}/shared/dht2/dht2_envelope.c
-  ${ROOT}/shared/dht2/dht2_record.c
-  ${ROOT}/shared/dht2/dht2_time.c
-  ${ROOT}/shared/dnac/cmt_pb.c
   ${ROOT}/nodus/src/protocol/nodus_cbor.c
   ${ROOT}/nodus/src/protocol/nodus_wire.c
   ${ROOT}/nodus/src/core/nodus_value.c
@@ -193,7 +179,6 @@ set(NC_SOURCES
 )
 
 add_library(nc_core STATIC ${NC_SOURCES})
-target_compile_definitions(nc_core PRIVATE NODUS_TCP_SC=1)
 # wasm-ld drops unreferenced functions by default (--gc-sections); dna_api.c
 # carries key-file helpers (qgp_key_load, ...) nothing here calls. The same
 # section GC is applied natively so both builds link the same live code.

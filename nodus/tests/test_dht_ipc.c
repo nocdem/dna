@@ -87,14 +87,6 @@
  *  F6 (a control connection counts as up only after storage's first frame)
  *  is what b_ready / raw_ctl wait for; a case that needs it waits for it.
  *
- *  13b a batch forward needs a chain id (3b-2 round 4 item 9): with the
- *      host's chain_id hook absent no forward starts and no TCP connection
- *      reaches the peer's listener. The fixture gives the DHT a fixed
- *      non-zero chain id (fixture_host) because this storage ipc has no
- *      witness view; it resolves through dht->host at call time, so case
- *      12's host rewrite keeps it. (Lie path: if the hook were ignored the
- *      forward of case 13 would also not start — 13 pairs it.)
- *
  * Requires: a default build; no environment. Uses three mkdtemp
  * directories under /tmp and removes them; binds one loopback TCP listener
  * on an ephemeral port (case 13); no fixed port.
@@ -115,7 +107,6 @@
 #include "dht/nodus_dht.h"
 #include "dht/nodus_dht_ipc.h"
 #include "transport/nodus_tcp.h"
-#include "protocol/nodus_cbor.h"
 #include "protocol/nodus_tier1.h"
 #include "protocol/nodus_tier2.h"
 #include "core/nodus_value.h"
@@ -288,29 +279,12 @@ static nodus_value_t *mk_value(const nodus_key_t *key, size_t data_len,
     return v;
 }
 
-/* The fixture's chain id: the storage ipc here has no witness view (no
- * snapshot, so dipc_chain_id is false), and a batch forward is dialed only
- * with a known chain id (fail closed, 3b-2 round 4 item 9). The host's
- * chain_id hook answers a fixed non-zero id; the DHT resolves it through
- * dht->host at call time, so rewriting D->host (case 12) keeps it. */
-static bool fixture_chain_id(void *ctx, uint8_t out[32]) {
-    (void)ctx;
-    memset(out, 0x5A, 32);
-    return true;
-}
-
-/* nodus_dht_ipc_host plus the fixture chain id. */
-static void fixture_host(nodus_dht_ipc_t *ipc, nodus_dht_host_t *h) {
-    nodus_dht_ipc_host(ipc, h);
-    h->chain_id = fixture_chain_id;
-}
-
 static int open_storage(void) {
-    S = nodus_dht_ipc_new(&g_id);
+    S = nodus_dht_ipc_new(&g_id, false);
     D = calloc(1, sizeof(*D));
     if (!S || !D) return -1;
     nodus_dht_host_t host;
-    fixture_host(S, &host);
+    nodus_dht_ipc_host(S, &host);
     if (nodus_dht_init(D, &host) != 0) return -1;
     if (nodus_dht_open(D, g_dir, "127.0.0.1", 4002) != 0) return -1;
     nodus_dht_ipc_attach(S, D);
@@ -614,169 +588,6 @@ static void case_inter_preface(void) {
         }
     }
     if (!ok) { FAIL("subscription never recorded"); return; }
-    PASS();
-}
-
-/* DHT v2 package 3d: the explicit no-identity origin preface of an ANON
- * (no-login) client session. The codec: the identified form's bytes are what
- * they were (an independent hand-built map), the no-identity form is the same
- * map without "fp" and "pk" and round-trips as no_identity, and a half form
- * (fp without pk, pk without fp) or a no-identity INTER origin is refused. */
-static void case_anon_preface_codec(void) {
-    TEST("5a no-identity origin preface: bytes, round trip, half forms refused");
-    nodus_dht_ipc_preface_t *pf = calloc(1, sizeof(*pf));
-    uint8_t *buf = malloc(NODUS_PK_BYTES + 512);
-    uint8_t *want = malloc(NODUS_PK_BYTES + 512);
-    nodus_dht_ipc_msg_t *msg = calloc(1, sizeof(*msg));
-    if (!pf || !buf || !want || !msg) { FAIL("alloc"); goto out; }
-    pf->origin.kind = NODUS_DHT_ORIGIN_CLIENT;
-    pf->origin.slot = 3;
-    pf->origin.gen = 9;
-    memset(pf->boot, 0x77, sizeof(pf->boot));
-    pf->fp = g_id.node_id;
-    pf->pk = g_id.pk;
-
-    /* identified: map(8) q v k s g b fp pk, in this order */
-    size_t n = nodus_dht_ipc_encode_origin(pf, buf, NODUS_PK_BYTES + 512);
-    cbor_encoder_t enc;
-    cbor_encoder_init(&enc, want, NODUS_PK_BYTES + 512);
-    cbor_encode_map(&enc, 8);
-    cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, "ds_origin");
-    cbor_encode_cstr(&enc, "v");  cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "k");  cbor_encode_uint(&enc, 0);
-    cbor_encode_cstr(&enc, "s");  cbor_encode_uint(&enc, 3);
-    cbor_encode_cstr(&enc, "g");  cbor_encode_uint(&enc, 9);
-    cbor_encode_cstr(&enc, "b");  cbor_encode_bstr(&enc, pf->boot, NODUS_DHT_IPC_BOOT_LEN);
-    cbor_encode_cstr(&enc, "fp"); cbor_encode_bstr(&enc, g_id.node_id.bytes, NODUS_KEY_BYTES);
-    cbor_encode_cstr(&enc, "pk"); cbor_encode_bstr(&enc, g_id.pk.bytes, NODUS_PK_BYTES);
-    size_t wn = cbor_encoder_len(&enc);
-    int ok = n == wn && n > 0 && memcmp(buf, want, n) == 0;
-    ok = ok && nodus_dht_ipc_decode(buf, n, msg, NULL, 0) == 0 &&
-         msg->type == NODUS_DHT_IPC_MSG_ORIGIN && !msg->preface.no_identity &&
-         memcmp(msg->preface.fp.bytes, g_id.node_id.bytes, NODUS_KEY_BYTES) == 0;
-
-    /* no identity: the same map without fp / pk */
-    pf->no_identity = true;
-    memset(&pf->fp, 0, sizeof(pf->fp));
-    memset(&pf->pk, 0, sizeof(pf->pk));
-    n = nodus_dht_ipc_encode_origin(pf, buf, NODUS_PK_BYTES + 512);
-    cbor_encoder_init(&enc, want, NODUS_PK_BYTES + 512);
-    cbor_encode_map(&enc, 6);
-    cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, "ds_origin");
-    cbor_encode_cstr(&enc, "v");  cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "k");  cbor_encode_uint(&enc, 0);
-    cbor_encode_cstr(&enc, "s");  cbor_encode_uint(&enc, 3);
-    cbor_encode_cstr(&enc, "g");  cbor_encode_uint(&enc, 9);
-    cbor_encode_cstr(&enc, "b");  cbor_encode_bstr(&enc, pf->boot, NODUS_DHT_IPC_BOOT_LEN);
-    wn = cbor_encoder_len(&enc);
-    ok = ok && n == wn && n > 0 && memcmp(buf, want, n) == 0;
-    uint8_t zeros_pk[NODUS_PK_BYTES] = {0};
-    ok = ok && nodus_dht_ipc_decode(buf, n, msg, NULL, 0) == 0 &&
-         msg->type == NODUS_DHT_IPC_MSG_ORIGIN && msg->preface.no_identity &&
-         msg->preface.origin.kind == NODUS_DHT_ORIGIN_CLIENT &&
-         msg->preface.origin.slot == 3 && msg->preface.origin.gen == 9 &&
-         memcmp(msg->preface.pk.bytes, zeros_pk, NODUS_PK_BYTES) == 0;
-
-    /* a half form: fp only / pk only */
-    cbor_encoder_init(&enc, want, NODUS_PK_BYTES + 512);
-    cbor_encode_map(&enc, 7);
-    cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, "ds_origin");
-    cbor_encode_cstr(&enc, "v");  cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "k");  cbor_encode_uint(&enc, 0);
-    cbor_encode_cstr(&enc, "s");  cbor_encode_uint(&enc, 3);
-    cbor_encode_cstr(&enc, "g");  cbor_encode_uint(&enc, 9);
-    cbor_encode_cstr(&enc, "b");  cbor_encode_bstr(&enc, pf->boot, NODUS_DHT_IPC_BOOT_LEN);
-    cbor_encode_cstr(&enc, "fp"); cbor_encode_bstr(&enc, g_id.node_id.bytes, NODUS_KEY_BYTES);
-    ok = ok && nodus_dht_ipc_decode(want, cbor_encoder_len(&enc), msg, NULL, 0) != 0;
-    cbor_encoder_init(&enc, want, NODUS_PK_BYTES + 512);
-    cbor_encode_map(&enc, 7);
-    cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, "ds_origin");
-    cbor_encode_cstr(&enc, "v");  cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "k");  cbor_encode_uint(&enc, 0);
-    cbor_encode_cstr(&enc, "s");  cbor_encode_uint(&enc, 3);
-    cbor_encode_cstr(&enc, "g");  cbor_encode_uint(&enc, 9);
-    cbor_encode_cstr(&enc, "b");  cbor_encode_bstr(&enc, pf->boot, NODUS_DHT_IPC_BOOT_LEN);
-    cbor_encode_cstr(&enc, "pk"); cbor_encode_bstr(&enc, g_id.pk.bytes, NODUS_PK_BYTES);
-    ok = ok && nodus_dht_ipc_decode(want, cbor_encoder_len(&enc), msg, NULL, 0) != 0;
-
-    /* a no-identity INTER origin does not exist */
-    pf->origin.kind = NODUS_DHT_ORIGIN_INTER;
-    snprintf(pf->ip, sizeof(pf->ip), "10.0.0.1");
-    ok = ok && nodus_dht_ipc_encode_origin(pf, buf, NODUS_PK_BYTES + 512) == 0;
-    if (ok) PASS(); else FAIL("the no-identity preface is not the documented form");
-out:
-    free(pf);
-    free(buf);
-    free(want);
-    free(msg);
-}
-
-/* ... and the storage side: a session whose backend call carries no fp / pk
- * gets the no-identity preface, the DHT refuses every legacy verb for it with
- * NOT_AUTHENTICATED (put, listen here) — nothing is stored, no listener is
- * recorded — while its shadow slot is open with the session's generation. */
-static void case_anon_origin(void) {
-    TEST("5b ANON origin: put and listen refused on the storage side");
-    nodus_dht_origin_t o = { NODUS_DHT_ORIGIN_CLIENT, 30, 11 };
-    B->ops->session_opened(B, o);
-
-    nodus_key_t key;
-    rand_key(&key);
-    nodus_value_t *v = mk_value(&key, 100, 1, 1);
-    if (!v) { FAIL("value"); return; }
-    uint8_t buf[8192];
-    size_t n = 0;
-    if (nodus_t2_put(121, g_token, &key, v->data, v->data_len,
-                     NODUS_VALUE_EPHEMERAL, NODUS_DEFAULT_TTL, 1, 1,
-                     &v->signature, buf, sizeof(buf), &n) != 0) {
-        nodus_value_free(v);
-        FAIL("encode put");
-        return;
-    }
-    nodus_value_free(v);
-    nodus_tier2_msg_t m;
-    memset(&m, 0, sizeof(m));
-    nodus_t2_decode(buf, n, &m);
-    B->ops->client_frame(B, 30, NULL, NULL, buf, n, &m);
-    nodus_t2_msg_free(&m);
-
-    const cap_t *c = NULL;
-    for (int i = 0; i < POLL_ROUNDS && !(c = find_cap(121, 0, 30)); i++)
-        pump_once(B);
-    if (!c) { FAIL("no reply at core"); return; }
-    if (c->type != 'e' || c->err_code != NODUS_ERR_NOT_AUTHENTICATED) {
-        FAIL("put on an ANON origin was not refused NOT_AUTHENTICATED");
-        return;
-    }
-    nodus_value_t *got = NULL;
-    if (nodus_storage_get(&D->storage, &key, &got) == 0 && got) {
-        nodus_value_free(got);
-        FAIL("the put was stored for a session with no identity");
-        return;
-    }
-
-    nodus_key_t lkey;
-    rand_key(&lkey);
-    if (nodus_t2_listen(122, g_token, &lkey, buf, sizeof(buf), &n) != 0) {
-        FAIL("encode listen");
-        return;
-    }
-    memset(&m, 0, sizeof(m));
-    nodus_t2_decode(buf, n, &m);
-    B->ops->client_frame(B, 30, NULL, NULL, buf, n, &m);
-    nodus_t2_msg_free(&m);
-    c = NULL;
-    for (int i = 0; i < POLL_ROUNDS && !(c = find_cap(122, 0, 30)); i++)
-        pump_once(B);
-    if (!c || c->type != 'e' || c->err_code != NODUS_ERR_NOT_AUTHENTICATED) {
-        FAIL("listen on an ANON origin was not refused NOT_AUTHENTICATED");
-        return;
-    }
-    if (!D->sessions[30].open || D->sessions[30].gen != 11 ||
-        D->sessions[30].listen_count != 0) {
-        FAIL("the ANON shadow is not open with its generation, or recorded a listener");
-        return;
-    }
     PASS();
 }
 
@@ -1433,9 +1244,9 @@ static void case_repush(void) {
     /* (b) The storage runtime restarts (no membership yet); core's
      * membership did not change, and still arrives in full. */
     nodus_dht_ipc_free(S);
-    S = nodus_dht_ipc_new(&g_id);
+    S = nodus_dht_ipc_new(&g_id, false);
     if (!S) { FAIL("restart"); return; }
-    fixture_host(S, &D->host);
+    nodus_dht_ipc_host(S, &D->host);
     nodus_dht_ipc_attach(S, D);
     if (nodus_dht_ipc_listen(S, g_sock) != 0) { FAIL("relisten"); return; }
     nodus_dht_host_t h;
@@ -1538,68 +1349,6 @@ static void case_origin_gen(void) {
     PASS();
 }
 
-static void case_bf_needs_chain_id(void) {
-    TEST("13b no chain id -> no batch forward and no connection");
-    if (!b_ready()) { FAIL("core's control connection never confirmed"); return; }
-    /* A listener that would see the forward's TCP connect. */
-    int lfd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
-    struct sockaddr_in a;
-    memset(&a, 0, sizeof(a));
-    a.sin_family = AF_INET;
-    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    socklen_t al = sizeof(a);
-    if (lfd < 0 || bind(lfd, (struct sockaddr *)&a, sizeof(a)) != 0 ||
-        listen(lfd, 8) != 0 ||
-        getsockname(lfd, (struct sockaddr *)&a, &al) != 0) {
-        if (lfd >= 0) close(lfd);
-        FAIL("listener");
-        return;
-    }
-    uint16_t tport = ntohs(a.sin_port);
-    nodus_key_t idR;
-    rand_key(&idR);
-    nodus_dht_peer_dead(D, &idP);
-    nodus_dht_peer_seen(D, NODUS_DHT_PEER_ALIVE, &idR, "127.0.0.1",
-                        (uint16_t)(tport - 2), tport);
-
-    /* The host answers no chain id (what a storage process without a fresh
-     * witness snapshot is). */
-    bool (*saved)(void *, uint8_t *) = D->host.chain_id;
-    D->host.chain_id = NULL;
-
-    const int slot = 12;
-    nodus_dht_origin_t o = { NODUS_DHT_ORIGIN_CLIENT, slot, 400 };
-    B->ops->session_opened(B, o);
-    nodus_key_t kx;
-    rand_key(&kx);
-    uint8_t buf[512];
-    size_t n = 0;
-    nodus_t2_get(1400, g_token, &kx, buf, sizeof(buf), &n);
-    nodus_tier2_msg_t m;
-    memset(&m, 0, sizeof(m));
-    nodus_t2_decode(buf, n, &m);
-    B->ops->client_frame(B, slot, &g_id.node_id, &g_id.pk, buf, n, &m);
-    nodus_t2_msg_free(&m);
-
-    bool bf = false, connected = false;
-    for (int i = 0; i < POLL_ROUNDS; i++) {
-        pump_once(B);
-        nodus_dht_tick(D);
-        for (int k = 0; k < NODUS_BF_MAX_BATCHES; k++)
-            if (D->bf_state.batches[k].active && D->bf_state.batches[k].origin.gen == 400)
-                bf = true;
-        int cfd = accept(lfd, NULL, NULL);
-        if (cfd >= 0) { connected = true; close(cfd); }
-    }
-    D->host.chain_id = saved;
-    close(lfd);
-    nodus_dht_peer_dead(D, &idR);
-    B->ops->session_closed(B, o);
-    if (bf) { FAIL("a batch forward started without a chain id"); return; }
-    if (connected) { FAIL("a socket was opened without a chain id"); return; }
-    PASS();
-}
-
 static void case_marker_rule(void) {
     TEST("14 marker rule: storage_external waits for both DHT databases");
     char dir[64];
@@ -1657,15 +1406,12 @@ int main(void) {
     case_client_put();
     case_cross_origin();
     case_inter_preface();
-    case_anon_preface_codec();
-    case_anon_origin();
     case_udp_relay();
     case_decision32();
     case_control_down();
     case_core_bound();
     case_repush();
     case_origin_gen();
-    case_bf_needs_chain_id();
     /* The raw-core cases replace B's control connection (one per storage;
      * the storage side then drops B's sessions as the old core's) — they
      * run after every case that uses B's sessions. */

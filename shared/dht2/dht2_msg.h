@@ -36,10 +36,10 @@
  * produced. Decoded byte pointers point INTO the input (zero copy) or are
  * copied into fixed arrays, as each struct says.
  *
- * NOT here: the LIST request (dht2_envelope.h, package 1); sealing the pull-
- * receipt (nodus.dht.answer.v1 + DHT2_PT_PULL_RECEIPT, decision's "Addendum
- * 2026-10-26"; nodus_dht2_pull.c seals / verifies it); no admission, holder
- * or client logic. Reads no clock, keeps no state, draws no randomness, no heap.
+ * NOT here: the LIST request (dht2_envelope.h, package 1); the pull-
+ * receipt's envelope domain (not decided — see the decision's "Still
+ * open"); no sealing of the pull-receipt; no admission, holder or client
+ * logic. Reads no clock, keeps no state, draws no randomness, no heap.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -97,27 +97,17 @@ typedef struct {
     size_t          count;                                  /* ≤ 8 */
     uint8_t         keys[DHT2_REQ_KEYS_MAX][DHT2_HASH_LEN]; /* GET */
     const uint8_t  *envs[DHT2_REQ_KEYS_MAX];                /* PUT, into input */
-    size_t          env_lens[DHT2_REQ_KEYS_MAX];            /* sum ≤ DHT2_REQ_BUDGET */
+    size_t          env_lens[DHT2_REQ_KEYS_MAX];            /* each ≤ 262,144 */
 } dht2_req_t;
 
-/** Row 11: the record budget of one call, 8 × 262,144 B, and the largest
- *  request (budget + the map, nonce, op and 8 byte-string heads, at most 90
- *  B; 128 taken). An envelope above DHT2_ENVELOPE_MAX inside a put is NOT
- *  malformed (row 7's list does not name it): the request decodes and the
- *  holder answers that key with code 1. Only the whole request over the
- *  budget is malformed. */
-#define DHT2_REQ_BUDGET   (DHT2_REQ_KEYS_MAX * DHT2_ENVELOPE_MAX)
-#define DHT2_REQ_MAX_LEN  (DHT2_REQ_BUDGET + 128u)
-
 /** Canonical bytes of a get / put request. @return DHT2_OK,
- *  DHT2_E_MALFORMED_REQ (count > 8, the envelopes' total above
- *  DHT2_REQ_BUDGET), DHT2_E_ARG. */
+ *  DHT2_E_MALFORMED_REQ (count > 8, an env longer than DHT2_ENVELOPE_MAX),
+ *  DHT2_E_ARG. */
 int dht2_req_encode(const dht2_req_t *req, uint8_t *out, size_t cap,
                     size_t *out_len);
 
 /** Strict decode + re-encode check. Row 7: nonce ≠ 32 B, > 8 keys, a key
- *  ≠ 64 B, an unknown `op`, any strict-CBOR fault, a request over
- *  DHT2_REQ_MAX_LEN → DHT2_E_MALFORMED_REQ. */
+ *  ≠ 64 B, an unknown `op`, any strict-CBOR fault → DHT2_E_MALFORMED_REQ. */
 int dht2_req_decode(const uint8_t *in, size_t len, dht2_req_t *req);
 
 /* ══ row 18: answer payloads ═══════════════════════════════════════════ */
@@ -253,8 +243,8 @@ typedef struct {
     uint8_t h[DHT2_HASH_LEN];
 } dht2_receipt_entry_t;
 
-/** Pull-receipt PAYLOAD {c, e, g, s, pf, sf, top}. Nothing here seals or
- *  opens it (nodus_dht2_pull.c does: nodus.dht.answer.v1). */
+/** Pull-receipt PAYLOAD {c, e, g, s, pf, sf, top}. Its envelope domain is
+ *  NOT decided: nothing here seals or opens it. */
 typedef struct {
     uint8_t              pf[DHT2_FP_LEN];  /* puller fp */
     uint8_t              sf[DHT2_FP_LEN];  /* source fp */

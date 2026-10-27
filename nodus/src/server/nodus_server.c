@@ -20,21 +20,14 @@
 #include "protocol/nodus_tier2.h"
 #include "protocol/nodus_wire.h"
 #include "protocol/nodus_cbor.h"
-#include "protocol/nodus_owner_query.h"     /* NODUS_OQ_T_LEN (package 3d) */
 #include "crypto/nodus_sign.h"
-#include "transport/nodus_tcp_sc.h"         /* the client / node sessions (3b-2) */
+#include "crypto/nodus_channel_crypto.h"
+#include "crypto/enc/qgp_kyber.h"
+#include "crypto/enc/qgp_mlkem.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "NODUS_SRV"
-
-/* The session transcript T crosses three layers as a bare 64: the layer's
- * (nodus_tcp_sc_transcript), the chain backend / witness IPC (`t[64]`,
- * NODUS_WITNESS_IPC_T_LEN) and the owner-signed query's `s` (NODUS_OQ_T_LEN).
- * One size, pinned here where all three are visible. */
-_Static_assert(CMT_P2P_SC_T_SIZE == 64 && NODUS_WITNESS_IPC_T_LEN == CMT_P2P_SC_T_SIZE &&
-               NODUS_OQ_T_LEN == CMT_P2P_SC_T_SIZE,
-               "the transcript T is 64 bytes in every layer that carries it");
 
 extern void qgp_secure_memzero(void *ptr, size_t len);
 
@@ -75,62 +68,6 @@ static nodus_session_t *session_for_conn(nodus_server_t *srv,
     return &srv->sessions[conn->slot];
 }
 
-/* Operator addendum 2026-10-26 (decisions/2026-10-24-dht-v2-handshake-rate.md):
- * a node active in ANY role is exempt from the per-IP limits. Called when a
- * session became AUTHENTICATED, with the key the layer PROVED (conn->peer_id):
- * if the chain backend says that identity has an active role, its handshake
- * attempt is credited back and it stops counting toward the connection cap
- * (nodus_tcp_role_exempt). An unbonded peer cannot claim this — the lookup is
- * by the proven key. Unknown set / no backend: nothing is credited (the limit
- * applies as before). */
-static void session_role_exempt(nodus_server_t *srv, nodus_tcp_t *tcp,
-                                nodus_tcp_conn_t *conn) {
-    if (srv->chain && srv->chain->ops->has_role && conn->peer_id_set &&
-        srv->chain->ops->has_role(srv->chain, &conn->peer_id))
-        nodus_tcp_role_exempt(tcp, conn);
-}
-
-/* The addendum grants the exemption to a node whose role is active TODAY, not
- * for ever: when the role set refreshes, walk the live connections of both
- * accepting transports and clear role_exempt on any whose proven peer_id is
- * no longer in it (nodus_tcp_role_revoke: it counts toward the per-IP cap at
- * the next accept; the rate credit is not repeated). FAIL SAFE: an UNKNOWN
- * set (no backend, witness not answering, stale) changes nothing — the flags
- * stay as they are, so that an IPC hiccup does not drop every node's
- * exemption at once; the next known set decides. @return flags cleared. */
-int nodus_server_role_revalidate(nodus_server_t *srv) {
-    if (!srv || !srv->chain || !srv->chain->ops->role_state ||
-        !srv->chain->ops->roles_known ||
-        !srv->chain->ops->roles_known(srv->chain))
-        return 0;
-    /* ONE instant for the whole walk: roles_known above refreshed the set;
-     * every lookup below is evaluated against that set at this `now`, so a
-     * snapshot that expires mid-walk (the backends read the clock on their
-     * own) cannot turn an active peer into "absent". Revoke only on ABSENT;
-     * UNKNOWN keeps the flag (same fail-safe as an unknown set above).
-     * Cost: at most 2 transports x NODUS_TCP_MAX_CONNS (1024) connections,
-     * each a binary search of at most NODUS_ROLE_SET_MAX (2048) sorted
-     * entries = 11 comparisons of 64 bytes: about 22.5 thousand per walk,
-     * once per NODUS_ROLE_SET_EVERY_MS (10 s). */
-    const uint64_t now = nodus_time_mono_ms();
-    int cleared = 0;
-    nodus_tcp_t *tcps[2] = { &srv->tcp, &srv->inter_tcp };
-    for (int t = 0; t < 2; t++) {
-        for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
-            nodus_tcp_conn_t *c = tcps[t]->pool[i];
-            if (!c || c->close_pending || !c->role_exempt) continue;
-            nodus_role_state_t st = c->peer_id_set
-                ? srv->chain->ops->role_state(srv->chain, &c->peer_id, now)
-                : NODUS_ROLE_ABSENT;
-            if (st == NODUS_ROLE_ABSENT) {
-                nodus_tcp_role_revoke(c);
-                cleared++;
-            }
-        }
-    }
-    return cleared;
-}
-
 static nodus_inter_session_t *inter_session_for_conn(nodus_server_t *srv,
                                                       nodus_tcp_conn_t *conn) {
     if (!conn || conn->slot < 0 || conn->slot >= NODUS_MAX_INTER_SESSIONS)
@@ -147,30 +84,28 @@ static int inter_origin_slot(const nodus_inter_session_t *sess) {
 static void inter_session_clear(nodus_inter_session_t *sess,
                                  int slot, const char *caller) {
     /* Phase 3.2c: log every clear so we can correlate session resets with
-     * downstream T1 decode failures. */
-    fprintf(stderr, "SESS_CLEAR: slot=%d caller=%s prev_conn=%p prev_authed=%d\n",
-            slot, caller, (void *)sess->conn, sess->authenticated ? 1 : 0);
+     * downstream T1 decode failures.
+     * B3 fix — channel_crypto storage now lives on the conn struct, not
+     * inline in this session. Read counters via sess->conn (NULL-guarded
+     * because the conn may already be freed by the time we get here). */
+    void *prev_conn = sess->conn;
+    int prev_established = 0;
+    unsigned long long prev_tx = 0, prev_rx = 0;
+    if (sess->conn) {
+        prev_established = sess->conn->channel_crypto.established ? 1 : 0;
+        prev_tx = (unsigned long long)sess->conn->channel_crypto.tx_counter;
+        prev_rx = (unsigned long long)sess->conn->channel_crypto.rx_counter;
+    }
+    fprintf(stderr,
+            "SESS_CLEAR: slot=%d caller=%s prev_conn=%p prev_established=%d "
+            "prev_tx=%llu prev_rx=%llu\n",
+            slot, caller, prev_conn, prev_established, prev_tx, prev_rx);
     memset(sess, 0, sizeof(*sess));
 }
 
 static void session_clear(nodus_session_t *sess) {
     memset(sess, 0, sizeof(*sess));   /* also resets the chain budget */
     nodus_circuit_table_init(&sess->circuits);
-}
-
-/* ── The ANON allowlist (nodus_server.h) ─────────────────────────── */
-
-/* Design 2026-10-26-dht-v2-3d-no-login-design.md §2, exact names: the three
- * core methods below and the chain methods of the ONE shared list
- * (nodus_chain_anon_method_ok, witness/nodus_witness_ipc.h — the witness
- * tests the same list). The five owner-only reads are on it and are gated by
- * their `qa` in the witness. */
-bool nodus_server_anon_method_ok(const char *method) {
-    if (!method) return false;
-    if (strcmp(method, "ping") == 0 || strcmp(method, "status") == 0 ||
-        strcmp(method, "servers") == 0)
-        return true;
-    return nodus_chain_anon_method_ok(method);
 }
 
 /* ── Chain-method budget (nodus_server.h) ────────────────────────── */
@@ -351,6 +286,15 @@ int nodus_server_inter_sweep_orphans(nodus_server_t *srv, uint64_t now_ms,
     return freed;
 }
 
+static bool session_check_token(nodus_session_t *sess, const uint8_t *token) {
+    if (!sess->authenticated || !token) return false;
+    /* Constant-time comparison to prevent timing side-channel (HIGH-11) */
+    volatile uint8_t diff = 0;
+    for (size_t i = 0; i < NODUS_SESSION_TOKEN_LEN; i++)
+        diff |= sess->token[i] ^ token[i];
+    return diff == 0;
+}
+
 /* ── Phase 1: Send diagnostics dump ──────────────────────────────── */
 /* Periodic per-peer counter dump so we can correlate buf_ensure failures
  * with throughput and identify slow peers. No behavior change — pure
@@ -364,13 +308,18 @@ static void dht_send_stats_dump(nodus_server_t *srv) {
         nodus_tcp_conn_t *c = srv->inter_tcp.pool[i];
         if (!c || c->state != NODUS_CONN_CONNECTED) continue;
         if (c->send_ok_count == 0 && c->send_full_count == 0 &&
-            c->pending_enqueued_count == 0) continue;
+            c->pending_enqueued_count == 0 && c->decrypt_skip_count == 0) continue;
+
+        /* Phase 3.2a: crypto state tag for asymmetry diagnosis.
+         * B3 fix — read inline channel_crypto field directly. */
+        const char *crypto_state = c->channel_crypto.established ? "est" : "none";
 
         fprintf(stderr,
-                "SEND_STATS: peer=%s:%u slot=%d authed=%d ok=%llu full=%llu "
+                "SEND_STATS: peer=%s:%u slot=%d crypto=%s ok=%llu full=%llu "
                 "bytes=%llu wlen=%zu wcap=%zu "
-                "pending_now=%zu pending_bytes=%zu enq=%llu drain=%llu hint=%llu\n",
-                c->ip, (unsigned)c->port, c->slot, c->authenticated ? 1 : 0,
+                "pending_now=%zu pending_bytes=%zu enq=%llu drain=%llu hint=%llu "
+                "decrypt_skip=%llu\n",
+                c->ip, (unsigned)c->port, c->slot, crypto_state,
                 (unsigned long long)c->send_ok_count,
                 (unsigned long long)c->send_full_count,
                 (unsigned long long)c->send_bytes_total,
@@ -378,7 +327,8 @@ static void dht_send_stats_dump(nodus_server_t *srv) {
                 c->pending_count, c->pending_bytes,
                 (unsigned long long)c->pending_enqueued_count,
                 (unsigned long long)c->pending_drained_count,
-                (unsigned long long)c->pending_hint_fallback_count);
+                (unsigned long long)c->pending_hint_fallback_count,
+                (unsigned long long)c->decrypt_skip_count);
     }
 }
 
@@ -501,16 +451,13 @@ nodus_tcp_conn_t *nodus_server_inter_dial(nodus_server_t *srv, const char *ip,
 
 /** Send a pre-framed replication payload via persistent inter_tcp pool
  *  (nodus_inter_pool_send_framed — shared with nodus-storage's own pool).
- *  Returns the pool's tri-state (nodus_inter_send_t): WRITTEN (0) to an
- *  authenticated session, QUEUED (1) while the session is not authenticated
- *  yet, FAILED (-1) — the caller decides on hinted handoff; only a caller
- *  that deletes durable work may treat QUEUED as delivered: none may. */
+ *  Returns 0 on success, -1 on failure (caller should use hinted handoff). */
 static int dht_republish_send(nodus_server_t *srv, const char *ip,
                                uint16_t port,
                                const nodus_key_t *expected_node_id,
                                const uint8_t *frame, size_t flen) {
-    return (int)nodus_inter_pool_send_framed(&srv->inter_tcp, ip, port,
-                                             expected_node_id, frame, flen);
+    return nodus_inter_pool_send_framed(&srv->inter_tcp, ip, port,
+                                        expected_node_id, frame, flen);
 }
 
 /* ── Circuit handlers (VPN mesh Faz 1) ────────────────────────────── */
@@ -1029,36 +976,9 @@ static void handle_t2_servers(nodus_server_t *srv, nodus_session_t *sess,
 
 #define IDLE_SWEEP_INTERVAL   30   /* seconds between sweeps */
 #define IDLE_TIMEOUT_AUTH    180   /* seconds for authenticated connections (client pings every 60s) */
-
-/* The pre-session deadline of the two accepting transports (Kurultay #43
- * O-5): an unauthenticated 4001 / WebSocket / 4002 connection is closed 15 s
- * after its last socket byte and 30 s after it connected, on the MONOTONIC
- * clock (nodus_tcp_sc_presession_sweep). The wall-clock sweep below no
- * longer covers unauthenticated connections (it ran every 30 s on
- * CLOCK_REALTIME: effective 45 / 60 s). Looked at once a second; the time is
- * a parameter so a test can drive it. @return connections closed. */
-int nodus_server_presession_sweep(nodus_server_t *srv, uint64_t now_mono_ms) {
-    if (!srv) return 0;
-    int n = nodus_tcp_sc_presession_sweep(&srv->tcp, now_mono_ms,
-                                          NODUS_PRESESSION_IDLE_MS,
-                                          NODUS_PRESESSION_ABS_MS);
-    n += nodus_tcp_sc_presession_sweep(&srv->inter_tcp, now_mono_ms,
-                                       NODUS_PRESESSION_IDLE_MS,
-                                       NODUS_PRESESSION_ABS_MS);
-    return n;
-}
-
-static void presession_tick(nodus_server_t *srv) {
-    uint64_t now = nodus_time_mono_ms();
-    if (now - srv->last_presession_mono_ms < 1000)
-        return;
-    srv->last_presession_mono_ms = now;
-    nodus_server_presession_sweep(srv, now);
-    if (now - srv->last_role_revalidate_ms >= NODUS_ROLE_SET_EVERY_MS) {
-        srv->last_role_revalidate_ms = now;
-        nodus_server_role_revalidate(srv);
-    }
-}
+#define IDLE_TIMEOUT_UNAUTH   15   /* seconds for unauthenticated connections */
+#define IDLE_ABSOLUTE_UNAUTH  30   /* absolute bound from connected_at while unauthenticated:
+                                    * a slow trickle resets last_activity but not this */
 
 static void idle_timeout_sweep(nodus_server_t *srv) {
     uint64_t now = nodus_time_now();
@@ -1066,30 +986,31 @@ static void idle_timeout_sweep(nodus_server_t *srv) {
         return;
     srv->last_idle_sweep = now;
 
-    /* Sweep client TCP pool: authenticated sessions only (an
-     * unauthenticated one has its own, monotonic deadline above). */
+    /* Sweep client TCP pool */
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
         nodus_tcp_conn_t *c = srv->tcp.pool[i];
         if (!c || c->state != NODUS_CONN_CONNECTED) continue;
         uint64_t idle = now - c->last_activity;
         bool authed = srv->sessions[c->slot].authenticated;
-        if (!authed) continue;
-        if (idle > IDLE_TIMEOUT_AUTH) {
+        uint64_t timeout = authed ? IDLE_TIMEOUT_AUTH : IDLE_TIMEOUT_UNAUTH;
+        bool abs_expired = !authed &&
+                           now - c->connected_at > IDLE_ABSOLUTE_UNAUTH;
+        if (idle > timeout || abs_expired) {
             char fp_hex[33] = {0};
-            for (int j = 0; j < 16; j++)
-                snprintf(fp_hex + j*2, sizeof(fp_hex) - j*2, "%02x", srv->sessions[c->slot].client_fp.bytes[j]);
-            fprintf(stderr, "IDLE_SWEEP: slot=%d ip=%s idle=%lus timeout=%lus auth=yes fp=%s\n",
+            if (authed)
+                for (int j = 0; j < 16; j++)
+                    snprintf(fp_hex + j*2, sizeof(fp_hex) - j*2, "%02x", srv->sessions[c->slot].client_fp.bytes[j]);
+            fprintf(stderr, "IDLE_SWEEP: slot=%d ip=%s idle=%lus timeout=%lus auth=%s fp=%s\n",
                     c->slot, c->ip,
-                    (unsigned long)idle, (unsigned long)IDLE_TIMEOUT_AUTH,
-                    fp_hex);
+                    (unsigned long)idle, (unsigned long)timeout,
+                    authed ? "yes" : "no", fp_hex);
             nodus_tcp_disconnect(&srv->tcp, c);
         }
     }
 
-    /* Sweep inter-node TCP pool: idle conns (IDLE_TIMEOUT_AUTH) and dialed
-     * conns whose session is still not authenticated after 10 s — the shared
-     * pool sweep (split S5b; nodus-storage runs the same on its own outbound
-     * pool). */
+    /* Sweep inter-node TCP pool: idle conns (IDLE_TIMEOUT_AUTH) and conns
+     * stuck in HELLO_SENT for >10s — the shared pool sweep (split S5b;
+     * nodus-storage runs the same on its own outbound pool). */
     _Static_assert(NODUS_INTER_POOL_IDLE_SEC == IDLE_TIMEOUT_AUTH,
                    "the 4002 pool's idle limit is the authenticated one");
     nodus_inter_pool_sweep(&srv->inter_tcp, now);
@@ -1103,63 +1024,464 @@ static void idle_timeout_sweep(nodus_server_t *srv) {
     nodus_server_inter_sweep_orphans(srv, nodus_time_now_ms(), 10000);
 }
 
+/* Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-mlkem-
+ * migration.md): sign this identity's ML-KEM-1024 pubkey under MLKEM_BIND
+ * (N2) — nodus_sign_mlkem_bind() routes through the SAME nodus_sign_tagged()
+ * engine kpk_sig uses, but MLKEM_BIND is in the strict set
+ * (nodus_sign_purpose_is_strict(), N1 delta 1 D2) so it always signs the
+ * NDS1-tagged preimage, never raw — unlike kpk_sig/KYBER_BIND, whose
+ * (kyber_pk || nonce) preimage has the same length/shape and would
+ * otherwise be swappable with this one. Returns false (leaves
+ * *mpk_sig_out untouched) when the identity has no ML-KEM keypair yet, or
+ * signing fails — callers then omit mpk from the AUTH_OK they send,
+ * falling back to Kyber-only exactly as before this migration. Used by
+ * the nodus_t2_auth_ok_kyber sender in dispatch_inter below (the second
+ * one, the 4004 T2 auth handler, is deleted with that path, P2P-PORT
+ * F5) — nodus_auth.c's client-facing
+ * sender (port 4001) has its own copy since it lives in a different
+ * translation unit. */
+static bool sign_mlkem_bind_for_auth_ok(const nodus_identity_t *identity,
+                                          const uint8_t *nonce,
+                                          nodus_sig_t *mpk_sig_out) {
+    if (!identity->has_mlkem) return false;
+    uint8_t sign_data[NODUS_MLKEM_PK_BYTES + NODUS_NONCE_LEN];
+    memcpy(sign_data, identity->mlkem_pk, NODUS_MLKEM_PK_BYTES);
+    memcpy(sign_data + NODUS_MLKEM_PK_BYTES, nonce, NODUS_NONCE_LEN);
+    return nodus_sign_mlkem_bind(mpk_sig_out, sign_data, sizeof(sign_data),
+                                  &identity->sk) == 0;
+}
+
 /* ── Inter-node frame dispatch (peer port) ──────────────────────── */
 
-/* The 4002 session's token message: the RESPONDER sends, as the first sealed
- * frame, a T2 `auth_ok` (txn 0) carrying a fresh session token (O-2 b,
- * on_inter_session). No 4002 handler reads a token (identity is the
- * connection), so the dialer has no use for it: it is consumed here and
- * dropped — not passed on to the T1 fallback below, which would log it as a
- * malformed frame. */
-static bool inter_token_message(const nodus_tier2_msg_t *msg) {
-    return strcmp(msg->method, "auth_ok") == 0;
+/* F3: peer auth is required and this node can encrypt, but the session
+ * key of this conn does not exist yet. */
+static bool inter_pre_established(const nodus_server_t *srv,
+                                  const nodus_inter_session_t *sess) {
+    return srv->config.require_peer_auth && srv->identity.has_kyber &&
+           !(sess->conn && sess->conn->channel_crypto.established);
+}
+
+/* F3: the frames a 4002 handshake consists of (either role). */
+static bool inter_handshake_method(const char *method) {
+    return strcmp(method, "hello") == 0 || strcmp(method, "challenge") == 0 ||
+           strcmp(method, "auth") == 0 || strcmp(method, "auth_ok") == 0 ||
+           strcmp(method, "key_init") == 0 || strcmp(method, "key_ack") == 0 ||
+           strcmp(method, "error") == 0;
+}
+
+/* Rev 2 item 7: which side of a 4002 conn may RECEIVE a handshake frame.
+ * The dialing side (conn->auth_initiated_by_us) sends hello / auth /
+ * key_init and receives challenge / auth_ok / key_ack; the accepting side
+ * the reverse. "error" is valid on both. */
+typedef enum {
+    INTER_HS_NONE = 0,     /* not a handshake frame */
+    INTER_HS_TO_DIALER,    /* challenge, auth_ok, key_ack */
+    INTER_HS_TO_ACCEPTOR,  /* hello, auth, key_init */
+    INTER_HS_EITHER        /* error */
+} inter_hs_role_t;
+
+static inter_hs_role_t inter_handshake_role(const char *method) {
+    if (strcmp(method, "challenge") == 0 || strcmp(method, "auth_ok") == 0 ||
+        strcmp(method, "key_ack") == 0)
+        return INTER_HS_TO_DIALER;
+    if (strcmp(method, "hello") == 0 || strcmp(method, "auth") == 0 ||
+        strcmp(method, "key_init") == 0)
+        return INTER_HS_TO_ACCEPTOR;
+    if (strcmp(method, "error") == 0)
+        return INTER_HS_EITHER;
+    return INTER_HS_NONE;
+}
+
+/* ── The dialer handshake's host side (split S5a, decision item 28) ── */
+
+/* On a conn we dialed, core's session flag and the dialer module's are the
+ * same fact: an auth_ok was received. Core's gates (F2/F3, "authenticate
+ * first") read sess->authenticated, the module reads d->authenticated —
+ * carried into the module before each call, and back out (with the proven
+ * peer identity, F4) to the session and the conn after it. */
+static void inter_dial_sync_out(nodus_inter_session_t *sess) {
+    if (sess->dial.authenticated)
+        sess->authenticated = true;
+    /* conn->authenticated and the proven peer identity (F4) — shared with
+     * nodus-storage's dialer (nodus_inter_dial_conn_sync). */
+    nodus_inter_dial_conn_sync(&sess->dial, sess->conn);
+}
+
+static int inter_dial_send_raw(void *ctx, const uint8_t *payload, size_t len) {
+    nodus_inter_session_t *sess = (nodus_inter_session_t *)ctx;
+    return nodus_tcp_send_raw(sess->conn, payload, len);
+}
+
+/* The hello's send (on_inter_connect): ctx is the conn itself. */
+static int inter_dial_send_raw_conn(void *ctx, const uint8_t *payload, size_t len) {
+    return nodus_tcp_send_raw((nodus_tcp_conn_t *)ctx, payload, len);
+}
+
+static void inter_dial_established(void *ctx, bool encrypted) {
+    nodus_inter_session_t *sess = (nodus_inter_session_t *)ctx;
+    inter_dial_sync_out(sess);
+    /* auth_state OK; plaintext → flush the auth queue, encrypted → re-send
+     * it encrypted, in order (shared with nodus-storage's dialer and with
+     * the accepting side's key_init). */
+    nodus_inter_dial_conn_open(sess->conn, encrypted);
+}
+
+static void inter_dial_io(nodus_server_t *srv, nodus_inter_session_t *sess,
+                          nodus_inter_dial_io_t *io) {
+    nodus_tcp_conn_t *conn = sess->conn;
+    memset(io, 0, sizeof(*io));
+    io->identity = &srv->identity;
+    /* CRIT-1: the pin recorded at dial time (nodus_server_inter_dial),
+     * read from the conn now — never cached in the session. */
+    io->expected_peer_id = conn->expected_peer_id_set ? &conn->expected_peer_id
+                                                      : NULL;
+    io->crypto = &conn->channel_crypto;
+    io->peer_ip = conn->ip;
+    io->peer_port = conn->port;
+    io->slot = conn->slot;
+    io->send_raw = inter_dial_send_raw;
+    io->established = inter_dial_established;
+    io->ctx = sess;
+}
+
+/* One received T2 frame through the dialer module, on a conn we DIALED
+ * (sess->conn non-NULL, auth_initiated_by_us). On an accepted conn the
+ * role split above has already disconnected any challenge / auth_ok /
+ * key_ack, so the module is not consulted there. */
+static nodus_inter_dial_rc_t inter_dial_frame(nodus_server_t *srv,
+                                              nodus_inter_session_t *sess,
+                                              const nodus_tier2_msg_t *msg) {
+    nodus_inter_dial_io_t io;
+    inter_dial_io(srv, sess, &io);
+    if (sess->authenticated) sess->dial.authenticated = true;
+    nodus_inter_dial_rc_t rc = nodus_inter_dial_on_frame(&sess->dial, &io, msg);
+    inter_dial_sync_out(sess);
+    return rc;
 }
 
 static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                             const uint8_t *payload, size_t len) {
-    /* Every frame that reaches this function arrived inside an
-     * AUTHENTICATED node session (the layer holds the input back until
-     * then), so there is no "authenticate first" state left to gate: the
-     * hello / challenge / auth / auth_ok / key_init / key_ack exchange, its
-     * role split and its pre-session-key gates are gone (DHT v2 3b-2). A
-     * session that is somehow not marked authenticated is closed — never
-     * served (defence in depth). */
-    if (!sess->authenticated) {
-        fprintf(stderr,
-                "INTER_GATE: slot=%d peer=%s:%u frame len=%zu before the node "
-                "session is authenticated — closing\n",
-                sess->conn ? sess->conn->slot : -1,
-                sess->conn ? sess->conn->ip : "?",
-                sess->conn ? (unsigned)sess->conn->port : 0, len);
-        if (sess->conn)
-            nodus_tcp_disconnect(&srv->inter_tcp, sess->conn);
-        return;
+    /* DBG: trace dispatch entries on encrypted conns (v0.18.1) */
+    if (sess->conn && sess->conn->channel_crypto.established) {
+        fprintf(stderr, "DBG_DISP_ENC: slot=%d peer=%s:%u len=%zu\n",
+                sess->conn->slot, sess->conn->ip,
+                (unsigned)sess->conn->port, len);
     }
 
     nodus_tier2_msg_t msg;
     memset(&msg, 0, sizeof(msg));
 
+    /* C-01: Dilithium5 authentication on inter-node port.
+     * Pre-auth: only hello and auth messages allowed.
+     * Enforcement controlled by require_peer_auth config flag. */
     if (nodus_t2_decode(payload, len, &msg) == 0) {
-        /* The token message of the session (inter_token_message): a dialer
-         * receives it once, as its first frame; an accepted peer has no
-         * business sending one — a protocol violation. */
-        if (inter_token_message(&msg)) {
-            bool dialer = sess->conn && sess->conn->auth_initiated_by_us;
-            if (!dialer) {
+        /* Phase 3.2c: log every t2 method received per (slot, method)
+         * one-shot. Tells us which handshake messages are actually arriving
+         * vs missing on each conn. Bits: 0=hello 1=challenge 2=auth
+         * 3=auth_ok 4=key_init 5=key_ack. */
+        if (sess->conn) {
+            int bit = -1;
+            if      (strcmp(msg.method, "hello")     == 0) bit = 0;
+            else if (strcmp(msg.method, "challenge") == 0) bit = 1;
+            else if (strcmp(msg.method, "auth")      == 0) bit = 2;
+            else if (strcmp(msg.method, "auth_ok")   == 0) bit = 3;
+            else if (strcmp(msg.method, "key_init")  == 0) bit = 4;
+            else if (strcmp(msg.method, "key_ack")   == 0) bit = 5;
+            if (bit >= 0 && !(sess->conn->dispatch_logged_mask & (1u << bit))) {
+                sess->conn->dispatch_logged_mask |= (1u << bit);
+                fprintf(stderr,
+                        "INTER_DISPATCH: slot=%d peer=%s:%u method=%s "
+                        "auth_state=%d authed=%d has_crypto=%d\n",
+                        sess->conn->slot, sess->conn->ip,
+                        (unsigned)sess->conn->port, msg.method,
+                        (int)sess->conn->auth_state,
+                        sess->conn->authenticated ? 1 : 0,
+                        sess->conn->channel_crypto.established ? 1 : 0);
+            }
+        }
+
+        /* Rev 2 item 7: role split. A handshake frame that only the OTHER
+         * side of this conn may receive (an inbound peer sending auth_ok /
+         * challenge / key_ack, or the node we dialed sending hello / auth /
+         * key_init) is a protocol violation: log and disconnect. Applies
+         * whatever require_peer_auth says — before this, an inbound
+         * "auth_ok" marked the session authenticated. No honest peer sends
+         * one: the dialer's on_inter_connect sends hello and its handlers
+         * answer challenge → auth, auth_ok → key_init; the acceptor answers
+         * hello → challenge, auth → auth_ok, key_init → key_ack; the batch-
+         * forward dialer (bf_handle_event) speaks the dialer's side. */
+        if (sess->conn) {
+            inter_hs_role_t role = inter_handshake_role(msg.method);
+            bool dialer = sess->conn->auth_initiated_by_us;
+            if ((role == INTER_HS_TO_DIALER && !dialer) ||
+                (role == INTER_HS_TO_ACCEPTOR && dialer)) {
                 nodus_tcp_conn_t *bad = sess->conn;
-                QGP_LOG_WARN(LOG_TAG, "INTER_ROLE: slot=%d peer=%s:%u sent a token "
-                             "message on a conn we accepted — disconnecting",
-                             bad ? bad->slot : -1, bad ? bad->ip : "?",
-                             bad ? (unsigned)bad->port : 0);
+                QGP_LOG_WARN(LOG_TAG, "INTER_ROLE: slot=%d peer=%s:%u sent %s on a "
+                             "conn %s — disconnecting",
+                             bad->slot, bad->ip, (unsigned)bad->port, msg.method,
+                             dialer ? "we dialed" : "we accepted");
                 nodus_t2_msg_free(&msg);
+                bad->auth_state = NODUS_CONN_AUTH_FAILED;
                 /* on_inter_disconnect clears *sess: nothing below may touch it. */
-                if (bad) nodus_tcp_disconnect(&srv->inter_tcp, bad);
+                nodus_tcp_disconnect(&srv->inter_tcp, bad);
                 return;
+            }
+        }
+
+        /* F3 (DHT Package A): role-neutral pre-established gate. While this
+         * node requires peer auth and can encrypt (has_kyber) but the
+         * session key does not exist yet, only the handshake frames are
+         * processed — on BOTH sides: the accepting side between auth and
+         * key_init, the dialing side between auth_ok and key_ack. The
+         * no-Kyber branch (auth_ok below) never sets `established`; this
+         * gate is off for it (has_kyber false). */
+        if (inter_pre_established(srv, sess) &&
+            !inter_handshake_method(msg.method)) {
+            fprintf(stderr,
+                    "INTER_GATE: slot=%d peer=%s:%u method=%s before session key "
+                    "— dropped (F3)\n",
+                    sess->conn ? sess->conn->slot : -1,
+                    sess->conn ? sess->conn->ip : "?",
+                    sess->conn ? (unsigned)sess->conn->port : 0, msg.method);
+            nodus_t2_msg_free(&msg);
+            return;
+        }
+
+        /* Handle auth RESPONSES for outgoing inter-node connections (this
+         * node opened the conn, sent hello, now receives challenge /
+         * auth_ok / key_ack): the shared dialer module (split S5a, decision
+         * item 28 — server/nodus_inter_dial.h, the code that was inline
+         * here). These must be handled regardless of require_peer_auth —
+         * they complete auth initiated by us.
+         *
+         * C2 fix: enforce outbound-only gate — now the role split above: a
+         * challenge on an inbound conn disconnects before this point, so
+         * this node never signs a nonce an accepted peer chose (closes the
+         * Dilithium5 oracle). */
+        if (sess->conn && sess->conn->auth_initiated_by_us) {
+            nodus_inter_dial_rc_t drc = inter_dial_frame(srv, sess, &msg);
+            if (drc == NODUS_INTER_DIAL_REFUSED) {
+                /* CRIT-1 fail-closed (the module logged why). */
+                sess->conn->auth_state = NODUS_CONN_AUTH_FAILED;
+                nodus_t2_msg_free(&msg);
+                nodus_tcp_disconnect(&srv->inter_tcp, sess->conn);
+                return;
+            }
+            if (drc == NODUS_INTER_DIAL_DONE) {
+                nodus_t2_msg_free(&msg);
+                return;
+            }
+        }
+        if (strcmp(msg.method, "error") == 0) {
+            nodus_t2_msg_free(&msg);
+            return;
+        }
+
+        if (srv->config.require_peer_auth && !sess->authenticated) {
+            if (strcmp(msg.method, "hello") == 0) {
+                /* Reuse client auth handler — same Dilithium5 challenge-response.
+                 * We cast to nodus_session_t-compatible struct for auth fields. */
+                nodus_key_t computed_fp;
+                nodus_fingerprint(&msg.pk, &computed_fp);
+                if (nodus_key_cmp(&computed_fp, &msg.fp) != 0) {
+                    size_t rlen = 0;
+                    nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
+                                    "fingerprint mismatch", resp_buf, sizeof(resp_buf), &rlen);
+                    nodus_tcp_send_raw(sess->conn, resp_buf, rlen);
+                } else if (srv->identity.has_kyber && msg.proto_version < 2) {
+                    /* C1/G3: inter-node proto_version floor. `proto_version`
+                     * arrives in the PLAINTEXT pre-auth hello and is not covered
+                     * by any signature (nodus_sign_auth_challenge signs only the
+                     * 32-byte nonce), so an active MITM could advertise v<2 to
+                     * push this link onto the no-Kyber branch — i.e. force
+                     * CLEARTEXT inter-node replication and open frame injection.
+                     * Every node hardcodes v=2, so a v<2 peer on 4002 is either
+                     * an attacker or a build that predates channel encryption;
+                     * refuse it. (4002 is operator-only — unlike the 4001 client
+                     * port there is no legacy-app population to preserve.) */
+                    fprintf(stderr,
+                            "INTER: rejecting peer %s:%u — proto_version=%u < 2 "
+                            "(downgrade attempt or pre-encryption build)\n",
+                            sess->conn->ip, (unsigned)sess->conn->port,
+                            (unsigned)msg.proto_version);
+                    size_t rlen = 0;
+                    nodus_t2_error(msg.txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                                    "inter-node requires proto_version >= 2",
+                                    resp_buf, sizeof(resp_buf), &rlen);
+                    nodus_tcp_send_raw(sess->conn, resp_buf, rlen);
+                    sess->conn->auth_state = NODUS_CONN_AUTH_FAILED;
+                } else {
+                    sess->client_pk = msg.pk;
+                    sess->client_fp = msg.fp;
+                    sess->proto_version = msg.proto_version;
+                    nodus_random(sess->nonce, NODUS_NONCE_LEN);
+                    sess->nonce_pending = true;
+                    size_t rlen = 0;
+                    nodus_t2_challenge(msg.txn_id, sess->nonce,
+                                        resp_buf, sizeof(resp_buf), &rlen);
+                    nodus_tcp_send_raw(sess->conn, resp_buf, rlen);
+                }
+            } else if (strcmp(msg.method, "auth") == 0 && sess->nonce_pending) {
+                /* C2: domain-tagged AUTH_CHALLENGE verify */
+                int rc = nodus_verify_auth_challenge(&msg.sig, sess->nonce, &sess->client_pk);
+                if (rc != 0) {
+                    size_t rlen = 0;
+                    nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
+                                    "auth failed", resp_buf, sizeof(resp_buf), &rlen);
+                    nodus_tcp_send_raw(sess->conn, resp_buf, rlen);
+                } else {
+                    sess->authenticated = true;
+                    /* Rev 2 item 7: with Kyber the send gate stays CLOSED
+                     * until key_init has produced the session key (opened
+                     * in the key_init branch below) — nodus_tcp_send queues
+                     * instead of writing plaintext. The handshake replies
+                     * use nodus_tcp_send_raw. Without Kyber no session key
+                     * will ever exist: open now, as before. */
+                    if (!srv->identity.has_kyber)
+                        sess->conn->auth_state = NODUS_CONN_AUTH_OK;
+                    sess->nonce_pending = false;
+                    sess->conn->peer_id = sess->client_fp;
+                    sess->conn->peer_pk = sess->client_pk;
+                    sess->conn->peer_id_set = true;
+                    uint8_t token[NODUS_SESSION_TOKEN_LEN];
+                    nodus_random(token, NODUS_SESSION_TOKEN_LEN);
+                    size_t rlen = 0;
+                    if (srv->identity.has_kyber && sess->proto_version >= 2) {
+                        uint8_t sign_data[NODUS_KYBER_PK_BYTES + NODUS_NONCE_LEN];
+                        memcpy(sign_data, srv->identity.kyber_pk, NODUS_KYBER_PK_BYTES);
+                        memcpy(sign_data + NODUS_KYBER_PK_BYTES, sess->nonce, NODUS_NONCE_LEN);
+                        nodus_sig_t kpk_sig;
+                        /* C2: KYBER_BIND domain */
+                        if (nodus_sign_kyber_bind(&kpk_sig, sign_data, sizeof(sign_data), &srv->identity.sk) == 0) {
+                            /* Faz 1 KEM migration: also bind mlkem_pk, if
+                             * this identity has one (N2 MLKEM_BIND). */
+                            nodus_sig_t mpk_sig;
+                            bool have_mpk = sign_mlkem_bind_for_auth_ok(&srv->identity,
+                                                                         sess->nonce, &mpk_sig);
+                            nodus_t2_auth_ok_kyber(msg.txn_id, token, srv->identity.kyber_pk,
+                                                    &srv->identity.pk, &kpk_sig,
+                                                    have_mpk ? srv->identity.mlkem_pk : NULL,
+                                                    have_mpk ? &mpk_sig : NULL,
+                                                    resp_buf, sizeof(resp_buf), &rlen);
+                        } else {
+                            nodus_t2_auth_ok(msg.txn_id, token,
+                                              resp_buf, sizeof(resp_buf), &rlen);
+                        }
+                    } else {
+                        nodus_t2_auth_ok(msg.txn_id, token,
+                                          resp_buf, sizeof(resp_buf), &rlen);
+                    }
+                    nodus_tcp_send_raw(sess->conn, resp_buf, rlen);
+                    char fp_hex[33];
+                    for (int k = 0; k < 16; k++)
+                        snprintf(fp_hex + k*2, sizeof(fp_hex) - k*2, "%02x", sess->client_fp.bytes[k]);
+                    fp_hex[32] = '\0';
+                    fprintf(stderr, "INTER_AUTH_OK: node %s... authenticated on port 4002 (v=%u)\n",
+                            fp_hex, sess->proto_version);
+                }
+            } else {
+                size_t rlen = 0;
+                nodus_t2_error(msg.txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                                "authenticate first", resp_buf, sizeof(resp_buf), &rlen);
+                nodus_tcp_send_raw(sess->conn, resp_buf, rlen);
             }
             nodus_t2_msg_free(&msg);
             return;
         }
-        if (strcmp(msg.method, "error") == 0) {
+
+        /* Inter-node key_init: accepting side KEM handshake. key_alg (Faz
+         * 1 KEM migration) selects round-3 (0, default) vs ML-KEM-1024 (1)
+         * — set by whichever algorithm the encapsulating side chose above. */
+        if (strcmp(msg.method, "key_init") == 0 &&
+            sess->conn && sess->conn->channel_crypto.established) {
+            /* F3: one key exchange per conn — a second key_init would
+             * re-key a live session on the peer's word alone. */
+            fprintf(stderr,
+                    "INTER_GATE: slot=%d peer=%s:%u key_init on an established "
+                    "session — refused (F3)\n",
+                    sess->conn->slot, sess->conn->ip, (unsigned)sess->conn->port);
+            nodus_t2_msg_free(&msg);
+            return;
+        }
+        if (strcmp(msg.method, "key_init") == 0 && msg.has_kyber_ct && msg.has_key_nonce) {
+            bool use_mlkem = (msg.key_alg == 1);
+            bool have_key = use_mlkem ? srv->identity.has_mlkem : srv->identity.has_kyber;
+            /* Phase 3.2b-inv: KEY_INIT receive visibility */
+            fprintf(stderr,
+                    "CRYPTO: KEY_INIT_RX slot=%d peer=%s:%u alg=%u have_key=%d "
+                    "sess=%p sess_conn=%p\n",
+                    sess->conn ? sess->conn->slot : -1,
+                    sess->conn ? sess->conn->ip : "?",
+                    sess->conn ? (unsigned)sess->conn->port : 0,
+                    (unsigned)msg.key_alg, have_key ? 1 : 0,
+                    (void *)sess, (void *)(sess->conn));
+            if (have_key) {
+                uint8_t ss_buf[NODUS_KYBER_SS_BYTES];
+                int dec_rc = use_mlkem
+                    ? qgp_mlkem1024_decapsulate(ss_buf, msg.kyber_ct, srv->identity.mlkem_sk)
+                    : qgp_kem1024_decapsulate(ss_buf, msg.kyber_ct, srv->identity.kyber_sk);
+                if (dec_rc == 0) {
+                    uint8_t ns[NODUS_NONCE_LEN];
+                    nodus_random(ns, NODUS_NONCE_LEN);
+                    uint8_t ka_buf[4096];
+                    size_t ka_len = 0;
+                    nodus_t2_key_ack(msg.txn_id, ns, ka_buf, sizeof(ka_buf), &ka_len);
+                    nodus_tcp_send_raw(sess->conn, ka_buf, ka_len);
+                    /* B3 fix — init per-conn channel_crypto directly.
+                     * We ACCEPTED this inter-node conn → responder. */
+                    int cc_rc = nodus_channel_crypto_init(&sess->conn->channel_crypto,
+                                                          ss_buf, msg.key_nonce, ns,
+                                                          NODUS_CHANNEL_ROLE_RESPONDER);
+                    qgp_secure_memzero(ss_buf, sizeof(ss_buf));
+                    if (cc_rc != 0) {
+                        /* No session key: the gate stays closed — opening
+                         * it would let the queue out in plaintext. */
+                        fprintf(stderr,
+                                "CRYPTO: CHANNEL_INIT_FAIL slot=%d peer=%s:%u "
+                                "(send gate stays closed)\n",
+                                sess->conn->slot, sess->conn->ip,
+                                (unsigned)sess->conn->port);
+                        nodus_t2_msg_free(&msg);
+                        return;
+                    }
+                    /* Rev 2 item 7: open the send gate only now (and only
+                     * for an authenticated peer). The auth queue holds
+                     * pre-framed plaintext; split S5 (as the dialing side
+                     * since S5b fix round F2): every queued frame is
+                     * RE-SENT ENCRYPTED, in queue order, by the same code
+                     * the dialer runs at key_ack — its senders were told
+                     * "queued". key_ack above went out raw before the key;
+                     * the replay goes through the same write buffer after
+                     * it, so the peer installs its key first. An
+                     * unauthenticated peer: gate closed, queue kept. */
+                    if (sess->authenticated)
+                        nodus_inter_dial_conn_open(sess->conn, true);
+                    fprintf(stderr,
+                            "CRYPTO: SET_INCOMING slot=%d peer=%s:%u (inter-node encrypted)\n",
+                            sess->conn->slot, sess->conn->ip, (unsigned)sess->conn->port);
+                } else {
+                    /* Phase 3.2b-inv: decap failure was SILENT — log it now. */
+                    fprintf(stderr,
+                            "CRYPTO: DECAP_FAIL slot=%d peer=%s:%u kyber_ct_len=%zu\n",
+                            sess->conn ? sess->conn->slot : -1,
+                            sess->conn ? sess->conn->ip : "?",
+                            sess->conn ? (unsigned)sess->conn->port : 0,
+                            (size_t)NODUS_KYBER_CT_BYTES);
+                }
+            } else {
+                /* Phase 3.2b-inv: identity missing kyber keys was SILENT.
+                 * E4 (N1 delta 2): name the algorithm ACTUALLY missing —
+                 * before this fix the text always said "no kyber key" even
+                 * when use_mlkem was true and the real gap was ML-KEM.
+                 * Text/label only, no wire change, no new error code. */
+                fprintf(stderr,
+                        "CRYPTO: NO_KEY slot=%d peer=%s:%u (identity has no "
+                        "%s key)\n",
+                        sess->conn ? sess->conn->slot : -1,
+                        sess->conn ? sess->conn->ip : "?",
+                        sess->conn ? (unsigned)sess->conn->port : 0,
+                        use_mlkem ? "ML-KEM-1024" : "Kyber round-3");
+            }
             nodus_t2_msg_free(&msg);
             return;
         }
@@ -1250,6 +1572,22 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
         nodus_t2_msg_free(&msg);
     }
 
+    /* F2 (DHT Package A): the T1 dispatch below is reached by a frame the
+     * T2 decoder refused, so the T2 auth gate above never saw it. One
+     * check here, before any T1 parsing: nothing on 4002 is processed from
+     * an unauthenticated peer, nor (F3) before the session key exists. No
+     * T1 method is a handshake frame. */
+    if (srv->config.require_peer_auth &&
+        (!sess->authenticated || inter_pre_established(srv, sess))) {
+        fprintf(stderr,
+                "INTER_GATE: slot=%d peer=%s:%u T1 frame len=%zu %s — dropped (F2)\n",
+                sess->conn ? sess->conn->slot : -1,
+                sess->conn ? sess->conn->ip : "?",
+                sess->conn ? (unsigned)sess->conn->port : 0, len,
+                !sess->authenticated ? "unauthenticated" : "before session key");
+        return;
+    }
+
     /* Decode once, dispatch by T1 method (FIX-C6).
      * Prior code decoded twice and silently dropped non-sv T1 methods
      * (sub/unsub/ntf) because the second branch only triggered on decode
@@ -1257,6 +1595,15 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
     nodus_tier1_msg_t t1msg;
     memset(&t1msg, 0, sizeof(t1msg));
     if (nodus_t1_decode(payload, len, &t1msg) == 0) {
+        /* DBG: T1 decode success on encrypted conn (v0.18.1) */
+        if (sess->conn && sess->conn->channel_crypto.established) {
+            fprintf(stderr,
+                    "DBG_T1_OK: slot=%d method=%s has_value=%d\n",
+                    sess->conn->slot,
+                    t1msg.method[0] ? t1msg.method : "(empty)",
+                    t1msg.value ? 1 : 0);
+        }
+
         if ((strcmp(t1msg.method, "sv") == 0 && t1msg.value) ||
             strcmp(t1msg.method, "sub") == 0 ||
             strcmp(t1msg.method, "unsub") == 0 ||
@@ -1278,24 +1625,61 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
         return;
     }
 
-    /* T1 decode failed — unknown frame on inter-node port. */
+    /* T1 decode failed — unknown frame on inter-node port.
+     * Phase 3.2a: crypto state. Phase 3.2b-inv: authenticated + peer_id_set
+     * + sess session pointer for root cause correlation. */
     {
         char hexdump[65] = {0};
         size_t dumplen = len < 32 ? len : 32;
         for (size_t i = 0; i < dumplen; i++)
             snprintf(hexdump + i * 2, 3, "%02x", payload[i]);
 
+        /* B3 fix — channel_crypto storage now lives on the conn struct.
+         * Read counters/state from there directly; no alias to validate. */
+        const char *crypto_state = "none";
+        uint64_t tx_ctr = 0, rx_ctr = 0;
+        if (sess->conn) {
+            nodus_channel_crypto_t *cc = &sess->conn->channel_crypto;
+            /* C1: rx_counter is now per-role. For this forensic summary report
+             * the PEER's stream — i.e. the role opposite ours; a legacy peer's
+             * frames land in the LEGACY slot, so take the max of the two we can
+             * legitimately receive (we never accept our own role). */
+            uint64_t rx_peer = cc->rx_counter[NODUS_CHANNEL_ROLE_LEGACY];
+            for (uint8_t r = NODUS_CHANNEL_ROLE_INITIATOR;
+                 r < NODUS_CHANNEL_ROLE_COUNT; r++) {
+                if (r != cc->my_role && cc->rx_counter[r] > rx_peer)
+                    rx_peer = cc->rx_counter[r];
+            }
+            crypto_state = cc->established ? "established" :
+                           (cc->tx_counter || rx_peer ? "pending" : "none");
+            tx_ctr = cc->tx_counter;
+            rx_ctr = rx_peer;
+        }
         int authed = (sess->conn && sess->conn->authenticated) ? 1 : 0;
         int peer_id_set = (sess->conn && sess->conn->peer_id_set) ? 1 : 0;
+        /* B3 — sess_cc_est and sess_aliases_conn fields are obsolete; the
+         * Phase 3.2c forensic logic was diagnosing the very pointer-alias
+         * race that B3 eliminates by removing the alias entirely. Keep the
+         * field names with constant values for log-format compatibility
+         * with downstream parsers; they will always read 1 / 1 now. */
+        int sess_cc_est = (sess->conn) ? sess->conn->channel_crypto.established : 0;
+        int sess_aliases_conn = 1;  /* always — storage IS the conn now */
         fprintf(stderr,
                 "REPL_TCP: T1 decode failed (len=%zu) slot=%d src=%s:%u "
-                "head=%s authed=%d peer_id_set=%d auth_state=%d "
+                "head=%s crypto=%s tx=%llu rx=%llu authed=%d peer_id_set=%d "
+                "auth_state=%d dispatch_mask=0x%02x decrypt_skip=%llu "
+                "sess_cc_est=%d sess_alias=%d "
                 "sess=%p sess_conn=%p\n",
                 len, sess->conn ? sess->conn->slot : -1,
                 sess->conn ? sess->conn->ip : "?",
                 sess->conn ? (unsigned)sess->conn->port : 0,
-                hexdump, authed, peer_id_set,
+                hexdump, crypto_state,
+                (unsigned long long)tx_ctr, (unsigned long long)rx_ctr,
+                authed, peer_id_set,
                 sess->conn ? (int)sess->conn->auth_state : -1,
+                sess->conn ? (unsigned)sess->conn->dispatch_logged_mask : 0,
+                sess->conn ? (unsigned long long)sess->conn->decrypt_skip_count : 0ULL,
+                sess_cc_est, sess_aliases_conn,
                 (void *)sess, (void *)(sess->conn));
     }
     nodus_t1_msg_free(&t1msg);
@@ -1343,16 +1727,28 @@ static void on_inter_connect(nodus_tcp_conn_t *conn, void *ctx) {
     }
 
     conn->is_nodus = true;
+    conn->auth_required = srv->inter_tcp.auth_required;
 
     /* Phase 3.2b-inv: conn lifecycle visibility */
     fprintf(stderr, "INTER_CONN: CONNECT slot=%d peer=%s:%u sess=%p\n",
             conn->slot, conn->ip, (unsigned)conn->port, (void *)sess);
 
-    /* The node session of a conn WE dialed is enabled by the dial itself
-     * (nodus_inter_pool_dial → nodus_inter_session_enable, right after
-     * nodus_tcp_connect returns and the pin is recorded): this callback can
-     * run INSIDE nodus_tcp_connect on an immediate (localhost) connect,
-     * before the pin exists, so it must not touch the conn's auth state. */
+    if (conn->auth_required) {
+        /* Auto-send hello to initiate auth — the dialer module's first
+         * frame (split S5a, decision item 28). The hello needs only this
+         * node's identity and the conn. */
+        nodus_inter_dial_io_t io;
+        memset(&io, 0, sizeof(io));
+        io.identity = &srv->identity;
+        io.send_raw = inter_dial_send_raw_conn;
+        io.ctx = conn;
+        if (nodus_inter_dial_start(&io) == 0)
+            conn->auth_state = NODUS_CONN_AUTH_HELLO_SENT;
+        else
+            conn->auth_state = NODUS_CONN_AUTH_FAILED;
+    } else {
+        conn->auth_state = NODUS_CONN_AUTH_OK;
+    }
 }
 
 static void on_inter_accept(nodus_tcp_conn_t *conn, void *ctx) {
@@ -1365,61 +1761,11 @@ static void on_inter_accept(nodus_tcp_conn_t *conn, void *ctx) {
         inter_session_dht(srv, conn, sess->dht_gen, true);
     }
     conn->is_nodus = true;
+    conn->auth_required = srv->inter_tcp.auth_required;
 
     /* Phase 3.2b-inv: conn lifecycle visibility */
     fprintf(stderr, "INTER_CONN: ACCEPT slot=%d peer=%s:%u sess=%p\n",
             conn->slot, conn->ip, (unsigned)conn->port, (void *)sess);
-
-    /* The node session, RESPONDER: any identity that proves its key is
-     * admitted (khan A, Kurultay #43 O-4). Fail closed: when this node does
-     * not know its chain id yet (the boot window; the witness not answering)
-     * or the layer cannot be enabled, the connection is closed — no 4002
-     * byte is served without a session. nodus_tcp_disconnect from inside
-     * on_accept is safe (the memory is parked until the poll returns). */
-    if (nodus_inter_session_enable(&srv->inter_tcp, conn, false) != 0)
-        nodus_tcp_disconnect(&srv->inter_tcp, conn);
-}
-
-/* The node session of a 4002 conn just became AUTHENTICATED (tcp->on_session;
- * inside nodus_tcp_poll, never inside a socket read callback). Both roles:
- * copy the proven identity onto the conn and the session, open the send gate
- * and replay the dial queue sealed. The RESPONDER also sends the token
- * message (O-2 b): a T2 `auth_ok` (txn 0) with a fresh token as the first
- * sealed frame. */
-static void on_inter_session(nodus_tcp_conn_t *conn, void *ctx) {
-    nodus_server_t *srv = (nodus_server_t *)ctx;
-    nodus_inter_session_t *sess = inter_session_for_conn(srv, conn);
-    if (!sess || sess->conn != conn || nodus_inter_session_proven(conn) != 0) {
-        nodus_tcp_disconnect(&srv->inter_tcp, conn);
-        return;
-    }
-    sess->client_pk = conn->peer_pk;
-    sess->client_fp = conn->peer_id;
-    sess->authenticated = true;
-
-    char fp_hex[33];
-    for (int k = 0; k < 16; k++)
-        snprintf(fp_hex + k*2, sizeof(fp_hex) - k*2, "%02x", sess->client_fp.bytes[k]);
-    fp_hex[32] = '\0';
-    fprintf(stderr, "INTER_AUTH_OK: node %s... authenticated on port 4002 (%s)\n",
-            fp_hex, conn->auth_initiated_by_us ? "dialed" : "accepted");
-
-    if (!conn->auth_initiated_by_us) {
-        uint8_t token[NODUS_SESSION_TOKEN_LEN];
-        uint8_t buf[256];
-        size_t len = 0;
-        nodus_random(token, NODUS_SESSION_TOKEN_LEN);
-        /* The gate is closed (auth_state is not OK yet): the token goes
-         * first, before the replay of anything queued. nodus_tcp_send_raw
-         * bypasses the auth gate only; the layer still seals it. */
-        if (nodus_t2_auth_ok(0, token, buf, sizeof(buf), &len) != 0 ||
-            nodus_tcp_send_raw(conn, buf, len) != 0) {
-            nodus_tcp_disconnect(&srv->inter_tcp, conn);
-            return;
-        }
-    }
-    session_role_exempt(srv, &srv->inter_tcp, conn);
-    nodus_inter_dial_conn_open(conn);
 }
 
 static void on_inter_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
@@ -1428,19 +1774,29 @@ static void on_inter_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
     nodus_inter_session_t *sess = inter_session_for_conn(srv, conn);
     if (!sess) return;
 
+    /* DBG: trace encrypted frames for replication diagnosis (v0.18.1) */
+    if (conn->channel_crypto.established) {
+        fprintf(stderr,
+                "DBG_RX_ENC: slot=%d peer=%s:%u len=%zu auth_state=%d\n",
+                conn->slot, conn->ip, (unsigned)conn->port, len,
+                (int)conn->auth_state);
+    }
+
     /* Phase 3.2c: log first frame seen on this conn — tells us whether
      * an INBOUND ACCEPT ever made it past the TCP handshake into actual
      * data exchange. If conns drop with first_frame_logged=0, the peer
      * never sent anything (TCP-only churn). */
     if (!conn->first_frame_logged) {
         conn->first_frame_logged = true;
+        /* B3 fix — read inline channel_crypto state. */
+        int has_crypto = conn->channel_crypto.established ? 1 : 0;
         /* Phase 3.2d: include fd so we can detect any cross-conn fd alias
          * by matching against TCP_CONN: FD_SET and TCP_SEND_FIRST logs. */
         fprintf(stderr,
                 "INTER_FRAME_FIRST: slot=%d fd=%d peer=%s:%u len=%zu auth_state=%d "
-                "sess=%p sess_conn=%p conn=%p match=%d\n",
+                "has_crypto=%d sess=%p sess_conn=%p conn=%p match=%d\n",
                 conn->slot, conn->fd, conn->ip, (unsigned)conn->port, len,
-                (int)conn->auth_state,
+                (int)conn->auth_state, has_crypto,
                 (void *)sess, (void *)sess->conn, (void *)conn,
                 (sess->conn == conn) ? 1 : 0);
     }
@@ -1467,15 +1823,19 @@ void nodus_server_inter_disconnected(nodus_server_t *srv, nodus_tcp_conn_t *conn
     if (!srv || !conn) return;
     nodus_inter_session_t *sess = inter_session_for_conn(srv, conn);
 
-    /* Phase 3.2b-inv: conn lifecycle visibility. Phase 3.2c: include
-     * auth_state at disconnect — tells us how far the session got before the
-     * conn died. An INBOUND conn that drops with auth_state=NONE never
-     * completed the SecretConnection handshake. */
+    /* Phase 3.2b-inv: conn lifecycle visibility — capture crypto state
+     * before we clear the session.
+     * B3 fix — read inline channel_crypto state directly. */
+    int had_crypto = conn->channel_crypto.established ? 1 : 0;
+    int established = had_crypto;
+    /* Phase 3.2c: include auth_state at disconnect — tells us how far the
+     * handshake got before the conn died. INBOUND conn that drops with
+     * auth_state=NONE means peer never even sent hello. */
     fprintf(stderr,
-            "INTER_CONN: DISCONNECT slot=%d peer=%s:%u "
+            "INTER_CONN: DISCONNECT slot=%d peer=%s:%u had_crypto=%d established=%d "
             "auth_state=%d authed=%d peer_id_set=%d frames_seen=%d "
             "sess=%p sess_conn=%p conn=%p\n",
-            conn->slot, conn->ip, (unsigned)conn->port,
+            conn->slot, conn->ip, (unsigned)conn->port, had_crypto, established,
             (int)conn->auth_state, conn->authenticated ? 1 : 0,
             conn->peer_id_set ? 1 : 0, conn->first_frame_logged ? 1 : 0,
             (void *)sess, sess ? (void *)sess->conn : NULL, (void *)conn);
@@ -1512,45 +1872,51 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
 
-    /* Every frame that reaches this function arrived inside an
-     * AUTHENTICATED client session (the layer holds the input back until
-     * then; on_tcp_session marks the session). The hello / auth / key_init
-     * exchange and its pre-auth gate are gone (DHT v2 3b-2). A session that
-     * is not marked authenticated is closed — never served (defence in
-     * depth). Safe to disconnect here: dispatch_t2 runs from on_frame
-     * inside nodus_tcp_poll (poll_depth > 0), so conn_free only parks the
-     * conn and rbuf (which `payload` points into) lives until the poll
-     * returns; try_parse_frames stops on close_pending. */
+    /* Pre-auth: ONLY hello and auth allowed on client port */
     if (!sess->authenticated) {
+        if (strcmp(msg.method, "hello") == 0) {
+            sess->proto_version = msg.proto_version;
+            nodus_auth_handle_hello(srv, sess, &msg.pk, &msg.fp, msg.txn_id);
+        } else if (strcmp(msg.method, "auth") == 0) {
+            /* D-18: an invalid signature, or `auth` with no pending
+             * challenge, is answered (inside the handler) and then closes
+             * the connection. Safe here: dispatch_t2 runs from on_frame
+             * inside nodus_tcp_poll (poll_depth > 0), so conn_free only
+             * parks the conn and rbuf (which `payload` points into) lives
+             * until the poll returns; try_parse_frames stops on
+             * close_pending. The disconnect clears `sess` (session_clear);
+             * after it only the stack-local `msg` is touched. */
+            if (nodus_auth_handle_auth(srv, sess, &msg.sig, msg.txn_id) != 0 &&
+                sess->conn)
+                nodus_tcp_disconnect(&srv->tcp, sess->conn);
+        } else {
+            size_t rlen = 0;
+            nodus_t2_error(msg.txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                            "authenticate first", resp_buf, sizeof(resp_buf), &rlen);
+            nodus_tcp_send(sess->conn, resp_buf, rlen);
+        }
         nodus_t2_msg_free(&msg);
-        if (sess->conn)
-            nodus_tcp_disconnect(&srv->tcp, sess->conn);
         return;
     }
 
-    /* DHT v2 package 3d (design 2026-10-26-dht-v2-3d-no-login-design.md §2):
-     * a no-login ANON session has no principal and calls an EXPLICIT allowlist
-     * (nodus_server_anon_method_ok). Everything else — the legacy DHT verbs,
-     * listen, presence, circuits, w_*, dnac_cc_collect, dnac_node_duties —
-     * is NOT_AUTHENTICATED, before any other block of this function runs.
-     * Identified CLIENT sessions never take this branch: they behave exactly
-     * as before. */
-    if (sess->anonymous && !nodus_server_anon_method_ok(msg.method)) {
+    /* Post-auth key exchange: key_init has no token (transition message).
+     * Faz 1 KEM migration: dispatch by msg.key_alg (0 = round-3 default). */
+    if (strcmp(msg.method, "key_init") == 0 && msg.has_kyber_ct && msg.has_key_nonce) {
+        nodus_auth_handle_key_init_alg(srv, sess, msg.key_alg,
+                                        msg.kyber_ct, msg.key_nonce, msg.txn_id);
+        nodus_t2_msg_free(&msg);
+        return;
+    }
+
+    /* Post-auth: verify session token */
+    if (!msg.has_token || !session_check_token(sess, msg.token)) {
         size_t rlen = 0;
         nodus_t2_error(msg.txn_id, NODUS_ERR_NOT_AUTHENTICATED,
-                        "this method needs a logged-in session",
-                        resp_buf, sizeof(resp_buf), &rlen);
+                        "invalid token", resp_buf, sizeof(resp_buf), &rlen);
         nodus_tcp_send(sess->conn, resp_buf, rlen);
         nodus_t2_msg_free(&msg);
         return;
     }
-
-    /* The session token is NOT checked here: it is a correlation key only,
-     * never an authorization input (decisions/2026-10-23-kurultay-43-
-     * summary.md, O-2 b). Identity is the connection — this session was
-     * authenticated by the SecretConnection, and every handler below takes
-     * its identity from `sess`. The token is still minted, sent and carried
-     * by clients and by the witness IPC / delayed-reply correlation. */
 
     /* P2P-PORT F5 (witness-port session design §2R R16; p2p-port design
      * §3): the `w_*` witness methods are REFUSED on the client port. The
@@ -1621,27 +1987,7 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
      * requires witness module) — the one routing predicate,
      * witness/nodus_witness_ipc.h nodus_chain_method_routed */
     if (nodus_chain_method_routed(msg.method)) {
-        if (srv->chain && sess->anonymous) {
-            /* No principal: the witness gets no key. It gets the node's own
-             * copy of this session's transcript T (the `s` an owner-signed
-             * `qa` must carry) — read from the layer, never from the client.
-             * A connection whose T cannot be read, or a backend without the
-             * ANON entry point, serves nothing. */
-            uint8_t t[CMT_P2P_SC_T_SIZE];
-            if (srv->chain->ops->dispatch_dnac_anon &&
-                nodus_tcp_sc_transcript(sess->conn, t) == 0) {
-                srv->chain->ops->dispatch_dnac_anon(srv->chain, sess->conn,
-                                                    sess->token, t,
-                                                    payload, len,
-                                                    msg.method, msg.txn_id);
-            } else {
-                size_t rlen = 0;
-                nodus_t2_error(msg.txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                                NODUS_CHAIN_NO_WITNESS_MSG,
-                                resp_buf, sizeof(resp_buf), &rlen);
-                nodus_tcp_send(sess->conn, resp_buf, rlen);
-            }
-        } else if (srv->chain) {
+        if (srv->chain) {
             srv->chain->ops->dispatch_dnac(srv->chain, sess->conn,
                                            sess->client_pk.bytes, sess->token,
                                            payload, len,
@@ -1703,12 +2049,8 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         strcmp(msg.method, "m_put") == 0 ||
         strcmp(msg.method, "m_meta") == 0 ||
         strcmp(msg.method, "m_chunk") == 0)
-        /* An ANON session (unreachable today: the allowlist refuses these
-         * methods above) passes NO identity — the DHT sees the explicit
-         * no-identity origin, never a zero key. */
         srv->dht->ops->client_frame(srv->dht, (int)(sess - srv->sessions),
-                                    sess->anonymous ? NULL : &sess->client_fp,
-                                    sess->anonymous ? NULL : &sess->client_pk,
+                                    &sess->client_fp, &sess->client_pk,
                                     payload, len, &msg);
     else if (strcmp(msg.method, "ping") == 0)
         handle_t2_ping(srv, sess, &msg);
@@ -1808,45 +2150,12 @@ static void session_dht_closed(nodus_server_t *srv, nodus_tcp_conn_t *conn,
     srv->dht->ops->session_closed(srv->dht, o);
 }
 
-bool nodus_server_chain_id(nodus_server_t *srv, uint8_t out[32]) {
-    if (!srv || !out) return false;
-    if (!srv->chain_id_known) {
-        if (!srv->chain) return false;
-        /* While unknown, ask the chain backend at most once a second (a
-         * monotonic stamp): its status fill reads the chain database, and
-         * every accept of the boot window would otherwise do that on the
-         * event loop. Fail closed in between. The first call is always
-         * served (stamp 0). */
-        uint64_t now = nodus_time_mono_ms();
-        if (srv->chain_id_tried && now - srv->chain_id_try_mono_ms < 1000)
-            return false;
-        srv->chain_id_tried = true;
-        srv->chain_id_try_mono_ms = now;
-        /* The v3 chain id (32 bytes, what 4004 and every client use), NOT
-         * `status`'s legacy 16-byte id padded with zeros — that one stays
-         * what the T2 status RPC reports. */
-        uint8_t id[32];
-        if (!srv->chain->ops->chain_id_v3 ||
-            !srv->chain->ops->chain_id_v3(srv->chain, id))
-            return false;      /* no chain / no genesis yet / witness not answering */
-        uint8_t acc = 0;
-        for (size_t i = 0; i < sizeof(id); i++) acc |= id[i];
-        if (acc == 0) return false;
-        memcpy(srv->chain_id, id, sizeof(srv->chain_id));
-        srv->chain_id_known = true;
-    }
-    memcpy(out, srv->chain_id, sizeof(srv->chain_id));
-    return true;
-}
-
-/* The pool-config hook of the 4002 node session: the chain id (ctx = the
- * server). */
-static bool server_inter_chain_id(void *ctx, uint8_t out[32]) {
-    return nodus_server_chain_id((nodus_server_t *)ctx, out);
-}
-
 static void on_tcp_accept(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_server_t *srv = (nodus_server_t *)ctx;
+    /* D-20: until auth succeeds only hello / auth may arrive; a frame
+     * declaring more than NODUS_PREAUTH_PAYLOAD_MAX closes the connection
+     * at its header. nodus_auth_handle_auth clears the cap (0). */
+    conn->max_payload = NODUS_PREAUTH_PAYLOAD_MAX;
     nodus_session_t *sess = session_for_conn(srv, conn);
     if (sess) {
         session_chain_closed(srv, conn);
@@ -1855,66 +2164,6 @@ static void on_tcp_accept(nodus_tcp_conn_t *conn, void *ctx) {
         sess->dht_gen = session_gen_next(srv);
         session_dht_opened(srv, conn, sess->dht_gen);
     }
-
-    /* The client session (4001 and the WebSocket entry alike), RESPONDER,
-     * CLIENT profile (purpose 0x0C): the layer is enabled before the first
-     * byte is read. FAIL CLOSED when this node does not know its chain id yet
-     * (the boot window: no chain open, or nodus-witness not answering), or
-     * the layer cannot be enabled (the identity has no ML-KEM key): the
-     * connection is closed, nothing is served. nodus_tcp_disconnect from
-     * inside on_accept is safe — the memory is parked until the poll
-     * returns, and on_tcp_disconnect clears the session just opened. */
-    nodus_tcp_sc_cfg_t cfg;
-    memset(&cfg, 0, sizeof(cfg));
-    cfg.role      = CMT_P2P_SC_ROLE_RESPONDER;
-    cfg.profile   = &CMT_P2P_SC_PROFILE_CLIENT;
-    cfg.id        = &srv->identity;
-    cfg.proto_ver = NODUS_CSESS_PROTO_VERSION;
-    if (!nodus_server_chain_id(srv, cfg.chain_id)) {
-        QGP_LOG_WARN(LOG_TAG, "CLIENT_ACCEPT: slot=%d ip=%s — chain id not known, "
-                     "connection refused (fail closed)", conn->slot, conn->ip);
-        nodus_tcp_disconnect(&srv->tcp, conn);
-        return;
-    }
-    /* DHT v2 package 3d: the responder starts family-UNBOUND (CLIENT or ANON
-     * by the first message) when it is given the KEM-key certificate
-     * (design 2026-10-26-dht-v2-3d-no-login-design.md §1.3, §1.5). The
-     * certificate is signed ONCE, here at the first accept that knows the
-     * chain id (it is learned lazily, nodus_server_chain_id), and kept in the
-     * server: the layer holds the POINTER, never a copy. A signing fault
-     * leaves ANON off (the connection is CLIENT-bound as before) — identified
-     * clients are unaffected. */
-    if (!srv->anon_kc_ok) {
-        if (nodus_tcp_sc_kc_sign(&srv->identity, cfg.chain_id,
-                                 srv->anon_kc_sig) == 0) {
-            srv->anon_kc_ok = true;
-        } else {
-            QGP_LOG_WARN(LOG_TAG, "ANON session: the KEM-key certificate could "
-                         "not be signed — no-login sessions are refused, "
-                         "identified clients are served");
-        }
-    }
-    if (srv->anon_kc_ok)
-        cfg.anon_kc_sig = srv->anon_kc_sig;
-    if (nodus_tcp_sc_enable(&srv->tcp, conn, &cfg) != 0) {
-        QGP_LOG_WARN(LOG_TAG, "CLIENT_ACCEPT: slot=%d ip=%s — session layer "
-                     "not enabled, connection refused", conn->slot, conn->ip);
-        nodus_tcp_disconnect(&srv->tcp, conn);
-    }
-}
-
-/* The client session just became AUTHENTICATED (tcp->on_session; inside
- * nodus_tcp_poll, never inside a socket read callback): the identity, the
- * per-identity session limit, presence and the token message
- * (nodus_auth_session_start). */
-static void on_tcp_session(nodus_tcp_conn_t *conn, void *ctx) {
-    nodus_server_t *srv = (nodus_server_t *)ctx;
-    nodus_session_t *sess = session_for_conn(srv, conn);
-    if (!sess || sess->conn != conn || nodus_auth_session_start(srv, sess) != 0) {
-        nodus_tcp_disconnect(&srv->tcp, conn);
-        return;
-    }
-    session_role_exempt(srv, &srv->tcp, conn);
 }
 
 static void on_tcp_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
@@ -1931,13 +2180,7 @@ static void on_tcp_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_session_t *sess = session_for_conn(srv, conn);
     if (sess) {
         char fp_hex[33] = {0};
-        if (sess->authenticated && sess->anonymous) {
-            /* No principal: no identity to print, and no presence entry was
-             * made for it, so none is removed. */
-            fprintf(stderr, "CLIENT_DISCONNECT: anon slot=%d ip=%s idle=%lus\n",
-                    conn->slot, conn->ip,
-                    (unsigned long)(nodus_time_now() - conn->last_activity));
-        } else if (sess->authenticated) {
+        if (sess->authenticated) {
             for (int i = 0; i < 16; i++)
                 snprintf(fp_hex + i*2, sizeof(fp_hex) - i*2, "%02x", sess->client_fp.bytes[i]);
             fprintf(stderr, "CLIENT_DISCONNECT: %s slot=%d ip=%s auth=yes idle=%lus reason=",
@@ -2168,9 +2411,7 @@ static struct nodus_tcp_conn *server_find_session_conn(
     if (!srv) return NULL;
     for (int i = 0; i < NODUS_MAX_SESSIONS; i++) {
         const nodus_session_t *s = &srv->sessions[i];
-        /* an ANON session has no key (client_pk is zero, not an identity):
-         * it is never found by one */
-        if (s->authenticated && !s->anonymous && s->conn != NULL &&
+        if (s->authenticated && s->conn != NULL &&
             memcmp(s->token, token, NODUS_SESSION_TOKEN_LEN) == 0 &&
             memcmp(s->client_pk.bytes, pk, NODUS_PK_BYTES) == 0) {
             return s->conn;
@@ -2237,11 +2478,6 @@ static bool server_dht_hint_wanted(void *ctx, const nodus_key_t *node_id) {
            NODUS_HINT_OFFLINE_SKIP_SEC;
 }
 
-/* The chain id of the DHT's batch-forward sessions: this node's. */
-static bool server_dht_chain_id(void *ctx, uint8_t out[32]) {
-    return nodus_server_chain_id((nodus_server_t *)ctx, out);
-}
-
 void nodus_server_dht_host(nodus_server_t *srv, nodus_dht_host_t *out) {
     memset(out, 0, sizeof(*out));
     out->identity       = &srv->identity;
@@ -2249,7 +2485,6 @@ void nodus_server_dht_host(nodus_server_t *srv, nodus_dht_host_t *out) {
     out->send_to_origin = server_dht_send_to_origin;
     out->udp_send       = server_dht_udp_send;
     out->inter_send     = server_dht_inter_send;
-    out->chain_id       = server_dht_chain_id;
     out->hint_wanted    = server_dht_hint_wanted;
 }
 
@@ -2544,8 +2779,6 @@ int nodus_server_init_ex(nodus_server_t *srv, const nodus_server_config_t *confi
         goto fail;
     have_tcp = true;
     srv->tcp.on_accept = on_tcp_accept;
-    srv->tcp.on_session = on_tcp_session;
-    srv->tcp.hs_rate_per_min = NODUS_HANDSHAKE_RATE_PER_MIN;
     srv->tcp.on_frame = on_tcp_frame;
     srv->tcp.on_disconnect = on_tcp_disconnect;
     srv->tcp.cb_ctx = srv;
@@ -2570,18 +2803,11 @@ int nodus_server_init_ex(nodus_server_t *srv, const nodus_server_config_t *confi
     have_inter = true;
     srv->inter_tcp.on_accept     = on_inter_accept;
     srv->inter_tcp.on_connect    = on_inter_connect;
-    srv->inter_tcp.on_session    = on_inter_session;
-    srv->inter_tcp.hs_rate_per_min = NODUS_HANDSHAKE_RATE_PER_MIN;
     srv->inter_tcp.on_frame      = on_inter_frame;
     srv->inter_tcp.on_disconnect = on_inter_disconnect;
     srv->inter_tcp.cb_ctx        = srv;
-    /* The node session's config (nodus_inter_dial.h): this node's identity
-     * and where the chain id comes from. No require_peer_auth: every 4002
-     * connection runs the session. */
-    srv->inter_cfg.identity = &srv->identity;
-    srv->inter_cfg.chain_id = server_inter_chain_id;
-    srv->inter_cfg.ctx      = srv;
-    srv->inter_tcp.auth_ctx = &srv->inter_cfg;
+    srv->inter_tcp.auth_required = srv->config.require_peer_auth;
+    srv->inter_tcp.auth_ctx      = &srv->identity;
     /* Phase 3: hint-table fallback when pending queue is saturated. */
     srv->inter_tcp.on_pending_full   = nodus_server_on_pending_full;
     srv->inter_tcp.pending_full_ctx  = srv;
@@ -2616,13 +2842,19 @@ int nodus_server_init_ex(nodus_server_t *srv, const nodus_server_config_t *confi
                           (unsigned)config->ch_port);
             goto fail;
         }
-        if (nodus_tcp_ws_listen(&srv->tcp, ws_port) != 0) {
+        /* The list the transport reads lives in srv->config (stable for
+         * the server's lifetime); fill the default there. */
+        if (srv->config.ws_origins.count <= 0)
+            nodus_ws_origins_default(&srv->config.ws_origins);
+        if (nodus_tcp_ws_listen(&srv->tcp, ws_port, &srv->config.ws_origins) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to listen on WebSocket entry 127.0.0.1:%u (%s)",
                           (unsigned)ws_port, strerror(errno));
             goto fail;
         }
-        QGP_LOG_INFO(LOG_TAG, "WebSocket entry listening on 127.0.0.1:%u",
-                     (unsigned)srv->tcp.ws_port);
+        QGP_LOG_INFO(LOG_TAG, "WebSocket entry listening on 127.0.0.1:%u, %d allowed origin(s)",
+                     (unsigned)srv->tcp.ws_port, srv->config.ws_origins.count);
+        for (int i = 0; i < srv->config.ws_origins.count; i++)
+            QGP_LOG_INFO(LOG_TAG, "  ws origin: %s", srv->config.ws_origins.origin[i]);
     }
 
     /* Channel server (TCP 4003) — DISABLED: heap corruption in ring/replication.
@@ -2986,17 +3218,6 @@ int nodus_server_run(nodus_server_t *srv) {
                        srv->dht->ops->read_pending(srv->dht) ||
                        (srv->chain &&
                         srv->chain->ops->read_pending(srv->chain))) ? 0 : 50;
-        /* SecretConnection handshake jobs (nodus_tcp_sc.h COMPLETION
-         * DELIVERY, "SCOPE OF THE BOUND"): a result is noticed at the start
-         * of its transport's next poll, so with a job outstanding on ANY
-         * transport this loop owns — the client port, 4002, the DHT's
-         * batch-forward transport — neither poll may wait longer than
-         * NODUS_TCP_SC_POLL_MS, or a finished job sits for the full wait. */
-        bool sc_busy = nodus_tcp_sc_busy(&srv->tcp) ||
-                       nodus_tcp_sc_busy(&srv->inter_tcp) ||
-                       (srv->dht->ops->sc_busy && srv->dht->ops->sc_busy(srv->dht));
-        if (sc_busy && poll_ms > NODUS_TCP_SC_POLL_MS)
-            poll_ms = NODUS_TCP_SC_POLL_MS;
 
         /* Poll client TCP events (plain port and, when enabled, the
          * WebSocket entry — same transport) */
@@ -3014,17 +3235,7 @@ int nodus_server_run(nodus_server_t *srv) {
                    srv->dht->ops->read_pending(srv->dht) ||
                    (srv->chain &&
                     srv->chain->ops->read_pending(srv->chain))) ? 0 : 50;
-        /* the first poll may have started a job on the other transport */
-        sc_busy = nodus_tcp_sc_busy(&srv->tcp) ||
-                  nodus_tcp_sc_busy(&srv->inter_tcp) ||
-                  (srv->dht->ops->sc_busy && srv->dht->ops->sc_busy(srv->dht));
-        if (sc_busy && poll_ms > NODUS_TCP_SC_POLL_MS)
-            poll_ms = NODUS_TCP_SC_POLL_MS;
         nodus_tcp_poll(&srv->inter_tcp, poll_ms);
-
-        /* The pre-session deadline (O-5) of the two accepting transports,
-         * monotonic clock, once a second. */
-        presession_tick(srv);
 
         /* The witness port 4004 (the p2p host) is polled inside
          * nodus_witness_tick() */

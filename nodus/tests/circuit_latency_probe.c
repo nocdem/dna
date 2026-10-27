@@ -27,7 +27,6 @@
 #include "crypto/nodus_identity.h"
 #include "consensus/nodus_cluster.h"
 #include "core/nodus_routing.h"
-#include "test_server_session.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -89,7 +88,6 @@ static void *srv_a_thread(void *arg) {
         srv_init_outcome(&srv_a_done, &srv_a_ready, false);
         return NULL;
     }
-    ts_server_chain(&srv_a, 0x77);   /* sessions (4001 and 4002) need a chain id */
     srv_init_outcome(&srv_a_done, &srv_a_ready, true);
     nodus_server_run(&srv_a);
     nodus_server_close(&srv_a);
@@ -109,7 +107,6 @@ static void *srv_b_thread(void *arg) {
         srv_init_outcome(&srv_b_done, &srv_b_ready, false);
         return NULL;
     }
-    ts_server_chain(&srv_b, 0x77);
     srv_init_outcome(&srv_b_done, &srv_b_ready, true);
     nodus_server_run(&srv_b);
     nodus_server_close(&srv_b);
@@ -207,8 +204,6 @@ int main(void) {
     strncpy(cfg_a.servers[0].ip, "127.0.0.1", 63);
     cfg_a.servers[0].port = 16001; cfg_a.server_count = 1; cfg_a.request_timeout_ms = 8000;
     memcpy(&cfg_b, &cfg_a, sizeof(cfg_a)); cfg_b.servers[0].port = 17001;
-    ts_client_cfg(&cfg_a, &srv_a, 0x77);   /* each client pins ITS server */
-    ts_client_cfg(&cfg_b, &srv_b, 0x77);
 
     nodus_client_t cl_u1, cl_u2; memset(&cl_u1, 0, sizeof(cl_u1)); memset(&cl_u2, 0, sizeof(cl_u2));
     int rc = 3;

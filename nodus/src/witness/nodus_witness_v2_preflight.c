@@ -136,15 +136,11 @@ int nodus_witness_v2_preflight(nodus_witness_t *w,
      * index and v2_domain_heads.last_upd_hash); S16-S18 stay accepted for
      * the same reason. v2_replay is NOT added to the required-table list
      * below — mirroring v2_validator_roles, which S18 did not add: a
-     * database at an accepted lower rung legitimately lacks it.
-     * HF-9 H2: the live rung is S20 (S19 + the node-local tree tables and
-     * the defaulted storage columns); S16-S19 stay accepted for the same
-     * reason. The v2_tree_* tables are likewise not required below. */
+     * database at an accepted lower rung legitimately lacks it. */
     if (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
         ver != NODUS_V2_SCHEMA_VERSION_S17 &&
         ver != NODUS_V2_SCHEMA_VERSION_S18 &&
-        ver != NODUS_V2_SCHEMA_VERSION_S19 &&
-        ver != NODUS_V2_SCHEMA_VERSION_S20)
+        ver != NODUS_V2_SCHEMA_VERSION_S19)
         pf_add(out, NODUS_V2_PF_SCHEMA_UNSUPPORTED);
 
     /* ── 2. REQUIRED TABLES ───────────────────────────────────────── */

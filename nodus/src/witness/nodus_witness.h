@@ -290,40 +290,9 @@ typedef struct {
     "exit_height)='integer' AND exit_height >= 0), fail_streak INTEGER "  \
     "NOT NULL CHECK(typeof(fail_streak)='integer' AND fail_streak "       \
     "BETWEEN 0 AND 4294967295), grace_until INTEGER NOT NULL CHECK("      \
-    "typeof(grace_until)='integer' AND grace_until >= 0), ipv4 INTEGER "   \
-    "NOT NULL DEFAULT 0 CHECK(typeof(ipv4)='integer' AND ipv4 BETWEEN 0 " \
-    "AND 4294967295), ipv4_since INTEGER NOT NULL DEFAULT 0 CHECK("       \
-    "typeof(ipv4_since)='integer' AND ipv4_since >= 0)) WITHOUT ROWID"
+    "typeof(grace_until)='integer' AND grace_until >= 0)) WITHOUT ROWID"
 #define NODUS_V2_STORAGE_DDL                                              \
     "CREATE TABLE IF NOT EXISTS " NODUS_V2_STORAGE_DDL_BODY
-
-/* HF-9 schema S20 (docs/plans/2026-10-23-hf9-byte-spec.md rev 3 §8,
- * §12a.3): the registry gains ipv4 (u32, 0 = none) and ipv4_since (u64,
- * 0 with ipv4 0), both DEFAULT 0; the generation-5 writers name their
- * columns and leave them at the default, the generation-5 leaf ignores
- * them. The SAME applies to the three tables below (sets: member cap
- * 1024 + copies; set_members: placeable; reports: bitmap cap 128 +
- * ipv4s). Each carries a *_S19_* twin: the text a database below S20
- * stores. The S20 rung (nodus_witness_v2_schema.c) recognises a table by
- * it, rebuilds it into the text above (a CHECK of a WITHOUT ROWID table
- * cannot be altered) and the open-time shape check accepts it only while
- * user_version < 20 (nodus_witness.c witness_ddl_shape_check_s20). */
-#define NODUS_V2_STORAGE_S19_DDL_BODY                                    \
-    "v2_storage_nodes(node_fp BLOB NOT NULL PRIMARY KEY CHECK("           \
-    "typeof(node_fp)='blob' AND length(node_fp)=64), node_pk BLOB NOT "   \
-    "NULL CHECK(typeof(node_pk)='blob' AND length(node_pk)=2592), "       \
-    "payee_fp BLOB NOT NULL CHECK(typeof(payee_fp)='blob' AND "           \
-    "length(payee_fp)=64), bond INTEGER NOT NULL CHECK(typeof(bond)="     \
-    "'integer' AND bond >= 0), status INTEGER NOT NULL CHECK(typeof("     \
-    "status)='integer' AND status IN (1, 2, 3)), registered_height "      \
-    "INTEGER NOT NULL CHECK(typeof(registered_height)='integer' AND "     \
-    "registered_height >= 1), exit_height INTEGER NOT NULL CHECK(typeof(" \
-    "exit_height)='integer' AND exit_height >= 0), fail_streak INTEGER "  \
-    "NOT NULL CHECK(typeof(fail_streak)='integer' AND fail_streak "       \
-    "BETWEEN 0 AND 4294967295), grace_until INTEGER NOT NULL CHECK("      \
-    "typeof(grace_until)='integer' AND grace_until >= 0)) WITHOUT ROWID"
-#define NODUS_V2_STORAGE_S19_DDL                                          \
-    "CREATE TABLE IF NOT EXISTS " NODUS_V2_STORAGE_S19_DDL_BODY
 
 /* Archive reward (decision docs/plans/decisions/2026-10-05-archive-
  * reward-bytes-approved.md; design docs/plans/2026-10-05-archive-reward-
@@ -341,28 +310,15 @@ typedef struct {
  *   epoch_start   the boundary H the set was frozen at
  *   set_hash      S(H) as frozen; the sets_root loader re-derives it from
  *                 the member rows and fails on any difference
- *   member_count  |storage_set(H)|, 0..1024 (S20; 0..256 below it)
- *   copies        S20 (spec §8, §12b): the copy count R frozen into the
- *                 set, 3..16; 3 = an XOR set (every set below the
- *                 HF-9 switch) */
+ *   member_count  |storage_set(H)|, 0..256 */
 #define NODUS_V2_STSETS_DDL_BODY                                          \
     "v2_storage_sets(epoch_start INTEGER NOT NULL PRIMARY KEY CHECK("     \
     "typeof(epoch_start)='integer' AND epoch_start >= 1), set_hash BLOB " \
     "NOT NULL CHECK(typeof(set_hash)='blob' AND length(set_hash)=64), "   \
     "member_count INTEGER NOT NULL CHECK(typeof(member_count)='integer' " \
-    "AND member_count BETWEEN 0 AND 1024), copies INTEGER NOT NULL "      \
-    "DEFAULT 3 CHECK(typeof(copies)='integer' AND copies BETWEEN 3 AND "  \
-    "16)) WITHOUT ROWID"
+    "AND member_count BETWEEN 0 AND 256)) WITHOUT ROWID"
 #define NODUS_V2_STSETS_DDL                                               \
     "CREATE TABLE IF NOT EXISTS " NODUS_V2_STSETS_DDL_BODY
-#define NODUS_V2_STSETS_S19_DDL_BODY                                      \
-    "v2_storage_sets(epoch_start INTEGER NOT NULL PRIMARY KEY CHECK("     \
-    "typeof(epoch_start)='integer' AND epoch_start >= 1), set_hash BLOB " \
-    "NOT NULL CHECK(typeof(set_hash)='blob' AND length(set_hash)=64), "   \
-    "member_count INTEGER NOT NULL CHECK(typeof(member_count)='integer' " \
-    "AND member_count BETWEEN 0 AND 256)) WITHOUT ROWID"
-#define NODUS_V2_STSETS_S19_DDL                                           \
-    "CREATE TABLE IF NOT EXISTS " NODUS_V2_STSETS_S19_DDL_BODY
 
 /* v2_storage_set_members — the members of each frozen set, node_fp ASC
  * is the bitmap order (bit i = member i):
@@ -381,10 +337,7 @@ typedef struct {
  *                         boundary) — the epoch (H, H+E] is in grace for
  *                         this member iff H < grace_until (nodus_witness_
  *                         v2_storage.h "ELIGIBILITY"). Same copy class
- *                         as fail_streak, not hashed by S(H).
- *   placeable             S20 (spec §8, §12a.4): 1 = the member may hold
- *                         data in an HRW set; 0 on every row frozen
- *                         before the HF-9 edge */
+ *                         as fail_streak, not hashed by S(H). */
 #define NODUS_V2_STMEMB_DDL_BODY                                          \
     "v2_storage_set_members(epoch_start INTEGER NOT NULL CHECK(typeof("   \
     "epoch_start)='integer' AND epoch_start >= 1), node_fp BLOB NOT NULL "\
@@ -392,44 +345,17 @@ typedef struct {
     "INTEGER NOT NULL CHECK(typeof(fail_streak)='integer' AND "           \
     "fail_streak BETWEEN 0 AND 4294967295), grace_until INTEGER NOT "     \
     "NULL CHECK(typeof(grace_until)='integer' AND grace_until >= 0), "    \
-    "placeable INTEGER NOT NULL DEFAULT 0 CHECK(typeof(placeable)="       \
-    "'integer' AND placeable IN (0, 1)), "                                \
     "PRIMARY KEY (epoch_start, node_fp)) WITHOUT ROWID"
 #define NODUS_V2_STMEMB_DDL                                               \
     "CREATE TABLE IF NOT EXISTS " NODUS_V2_STMEMB_DDL_BODY
-#define NODUS_V2_STMEMB_S19_DDL_BODY                                      \
-    "v2_storage_set_members(epoch_start INTEGER NOT NULL CHECK(typeof("   \
-    "epoch_start)='integer' AND epoch_start >= 1), node_fp BLOB NOT NULL "\
-    "CHECK(typeof(node_fp)='blob' AND length(node_fp)=64), fail_streak "  \
-    "INTEGER NOT NULL CHECK(typeof(fail_streak)='integer' AND "           \
-    "fail_streak BETWEEN 0 AND 4294967295), grace_until INTEGER NOT "     \
-    "NULL CHECK(typeof(grace_until)='integer' AND grace_until >= 0), "    \
-    "PRIMARY KEY (epoch_start, node_fp)) WITHOUT ROWID"
-#define NODUS_V2_STMEMB_S19_DDL                                           \
-    "CREATE TABLE IF NOT EXISTS " NODUS_V2_STMEMB_S19_DDL_BODY
 
 /* v2_storage_reports — the committed STORAGE_REPORTs (rev 2.2 §4, bytes
  * 2026-10-04 item 3), first applied (epoch_start, seat) wins:
  *   epoch_start, seat  the key (seat = index in snapshot(epoch_start))
  *   set_hash           S(H) the report was made against (== the frozen)
- *   bitmap             bitmap_len = ceil(count/8) bytes, 0..128 (S20; 0..32
- *                      below it) (LSB-first bit i = member i)
- *   ipv4s              S20 (spec §8, §12a.1): 4 bytes per member, the
- *                      reporter's observed IPv4 of each member in S(H)
- *                      order; empty = a generation-5 (v1) report */
+ *   bitmap             bitmap_len = ceil(count/8) bytes, 0..32 (LSB-first
+ *                      bit i = member i) */
 #define NODUS_V2_STREPS_DDL_BODY                                          \
-    "v2_storage_reports(epoch_start INTEGER NOT NULL CHECK(typeof("       \
-    "epoch_start)='integer' AND epoch_start >= 1), seat INTEGER NOT NULL "\
-    "CHECK(typeof(seat)='integer' AND seat BETWEEN 0 AND 4294967295), "   \
-    "set_hash BLOB NOT NULL CHECK(typeof(set_hash)='blob' AND "           \
-    "length(set_hash)=64), bitmap BLOB NOT NULL CHECK(typeof(bitmap)="    \
-    "'blob' AND length(bitmap) <= 128), ipv4s BLOB NOT NULL DEFAULT x'' " \
-    "CHECK(typeof(ipv4s)='blob' AND length(ipv4s) % 4 = 0 AND "           \
-    "length(ipv4s) <= 4096), PRIMARY KEY (epoch_start, seat)) "           \
-    "WITHOUT ROWID"
-#define NODUS_V2_STREPS_DDL                                               \
-    "CREATE TABLE IF NOT EXISTS " NODUS_V2_STREPS_DDL_BODY
-#define NODUS_V2_STREPS_S19_DDL_BODY                                      \
     "v2_storage_reports(epoch_start INTEGER NOT NULL CHECK(typeof("       \
     "epoch_start)='integer' AND epoch_start >= 1), seat INTEGER NOT NULL "\
     "CHECK(typeof(seat)='integer' AND seat BETWEEN 0 AND 4294967295), "   \
@@ -437,8 +363,8 @@ typedef struct {
     "length(set_hash)=64), bitmap BLOB NOT NULL CHECK(typeof(bitmap)="    \
     "'blob' AND length(bitmap) <= 32), PRIMARY KEY (epoch_start, seat)) " \
     "WITHOUT ROWID"
-#define NODUS_V2_STREPS_S19_DDL                                           \
-    "CREATE TABLE IF NOT EXISTS " NODUS_V2_STREPS_S19_DDL_BODY
+#define NODUS_V2_STREPS_DDL                                               \
+    "CREATE TABLE IF NOT EXISTS " NODUS_V2_STREPS_DDL_BODY
 
 /* v2_storage_segments — the published segment list (archive bytes items
  * 1-2), never pruned:

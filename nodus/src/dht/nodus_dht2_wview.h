@@ -23,9 +23,7 @@
  * that is not answered within NODUS_DHT2_WVIEW_REQ_TIMEOUT_MS closes the
  * connection (checked before any reply is read, so a late reply is never
  * accepted); a name {err} answer blocks new name requests until it has been
- * reported as NAME_FAULT or is NODUS_DHT2_WVIEW_FAULT_KEEP_MS old (an
- * abandoned fault must not block other writers; it is dropped, never
- * reported as "unnamed", and its fp is asked afresh); so does any malformed, unsolicited or over-long answer. The
+ * reported as NAME_FAULT; so does any malformed, unsolicited or over-long answer. The
  * dial is re-tried with a bounded backoff.
  *
  * Time: nothing here reads a clock. Every call that can act on time takes
@@ -64,8 +62,6 @@ extern "C" {
 #define NODUS_DHT2_WVIEW_DIAL_BACKOFF_MIN_MS   250
 #define NODUS_DHT2_WVIEW_DIAL_BACKOFF_MAX_MS  5000
 #define NODUS_DHT2_WVIEW_NAME_CACHE_MAX  1024
-/** An unread name fault is dropped after one snapshot poll period. */
-#define NODUS_DHT2_WVIEW_FAULT_KEEP_MS   NODUS_DHT2_WVIEW_SNAP_EVERY_MS
 
 typedef struct nodus_dht2_wview nodus_dht2_wview_t;
 

@@ -1107,118 +1107,6 @@ out:
     return ret;
 }
 
-/* ══ 9. parse_args — network file / --pin / --chain precedence ════════ */
-
-/* Proves (DHT v2 3c round 3): (1) a --network file with more nodes than
- * nodus-light holds (NODUS_LIGHT_MAX_NODES) is REFUSED, not cut; (2) the
- * precedence — explicit --chain-id over --chain over the file's chain id,
- * whatever the order of the options; the file's nodes over the built-in
- * list; --pin over the file's pins; explicit --node pins over --pin (and a
- * --node list replaces the file's nodes). REQUIRES: json-c (NODUS_HAS_JSONC,
- * the default build). The file is one mkstemp file under /tmp, removed. HOW
- * IT CAN LIE: it drives parse_args only — nothing here connects, so it says
- * nothing about what a session does with the chosen pins and chain id. */
-#ifdef NODUS_HAS_JSONC
-static int write_net_file(char *path, size_t n_nodes)
-{
-    static const char fp3[] =
-        "3333333333333333333333333333333333333333333333333333333333333333"
-        "3333333333333333333333333333333333333333333333333333333333333333";
-    int   fd = mkstemp(path);
-    FILE *f  = fd >= 0 ? fdopen(fd, "w") : NULL;
-
-    if (f == NULL) return -1;
-    fprintf(f, "{\"chain_id\":\"%s\",\"nodes\":[",
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-    for (size_t i = 0; i < n_nodes; i++)
-        fprintf(f, "%s{\"ip\":\"10.0.0.%zu\",\"port\":4001,\"fp\":\"%s\"}",
-                i ? "," : "", i + 1, fp3);
-    fprintf(f, "]}");
-    return fclose(f);
-}
-
-static int t_args_precedence(void)
-{
-    static const char C_FILE[] =
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    static const char C_FLAG[] =
-        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-    static const char C_EXPL[] =
-        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-    static const char P_GEN[] =
-        "2222222222222222222222222222222222222222222222222222222222222222"
-        "2222222222222222222222222222222222222222222222222222222222222222";
-    static const char NODE_A[] =
-        "h1:4001:1111111111111111111111111111111111111111111111111111111111111111"
-        "1111111111111111111111111111111111111111111111111111111111111111";
-    static const char NODE_B[] =
-        "h2:4001:1111111111111111111111111111111111111111111111111111111111111111"
-        "1111111111111111111111111111111111111111111111111111111111111111";
-    char          big[] = "/tmp/test_nodus_light_big_XXXXXX";
-    char          two[] = "/tmp/test_nodus_light_two_XXXXXX";
-    light_args_t *a = (light_args_t *)malloc(sizeof(*a));
-    int           ret = 1;
-
-    T(a != NULL, "args: allocation");
-    T(write_net_file(big, NODUS_LIGHT_MAX_NODES + 1) == 0, "args: write big file");
-    T(write_net_file(two, 2) == 0, "args: write two-node file");
-
-    {   /* 1: too many nodes -> refused, not cut */
-        char *v[] = { "x", "run", "--data", "d", "--network", big };
-        T(parse_args(6, v, 2, true, true, true, a) == -1,
-          "args: a file with more nodes than nodus-light holds is refused");
-    }
-    {   /* file alone: its chain id and its 2 nodes */
-        char *v[] = { "x", "run", "--data", "d", "--network", two };
-        T(parse_args(6, v, 2, true, true, true, a) == 0 && a->n_nodes == 2 &&
-          strcmp(a->chain_id_hex, C_FILE) == 0 &&
-          strcmp(a->nodes[0].host, "10.0.0.1") == 0 &&
-          a->nodes[0].pin.bytes[0] == 0x33,
-          "args: the file's nodes and chain id replace the built-in ones");
-    }
-    {   /* --chain over the file */
-        char *v[] = { "x", "run", "--data", "d", "--network", two,
-                      "--chain", (char *)C_FLAG };
-        T(parse_args(8, v, 2, true, true, true, a) == 0 &&
-          strcmp(a->chain_id_hex, C_FLAG) == 0, "args: --chain over the file");
-    }
-    {   /* --chain-id over --chain, in both option orders */
-        char *v1[] = { "x", "run", "--data", "d", "--network", two,
-                       "--chain-id", (char *)C_EXPL, "--chain", (char *)C_FLAG };
-        char *v2[] = { "x", "run", "--data", "d", "--network", two,
-                       "--chain", (char *)C_FLAG, "--chain-id", (char *)C_EXPL };
-        T(parse_args(10, v1, 2, true, true, true, a) == 0 &&
-          strcmp(a->chain_id_hex, C_EXPL) == 0,
-          "args: --chain-id wins over a later --chain");
-        T(parse_args(10, v2, 2, true, true, true, a) == 0 &&
-          strcmp(a->chain_id_hex, C_EXPL) == 0,
-          "args: --chain-id wins over an earlier --chain");
-    }
-    {   /* --pin over the file's pins */
-        char *v[] = { "x", "run", "--data", "d", "--network", two,
-                      "--pin", (char *)P_GEN };
-        T(parse_args(8, v, 2, true, true, true, a) == 0 && a->n_nodes == 2 &&
-          a->nodes[0].pin.bytes[0] == 0x22 && a->nodes[1].pin.bytes[0] == 0x22,
-          "args: --pin over the file's pins");
-    }
-    {   /* explicit --node pins over --pin; the --node list replaces the file's */
-        char *v[] = { "x", "run", "--data", "d", "--network", two,
-                      "--pin", (char *)P_GEN, "--node", (char *)NODE_A,
-                      "--node", (char *)NODE_B };
-        T(parse_args(12, v, 2, true, true, true, a) == 0 && a->n_nodes == 2 &&
-          strcmp(a->nodes[0].host, "h1") == 0 &&
-          a->nodes[0].pin.bytes[0] == 0x11 && a->nodes[1].pin.bytes[0] == 0x11,
-          "args: explicit --node pins are never overwritten by --pin");
-    }
-    ret = 0;
-out:
-    unlink(big);
-    unlink(two);
-    free(a);
-    return ret;
-}
-#endif /* NODUS_HAS_JSONC */
-
 /* The program's functions this test does not call, referenced so the
  * included source builds without unused-function warnings. */
 static void keep_program_functions(void)
@@ -1254,9 +1142,6 @@ int main(void)
     if (t_pinned_only() != 0) goto out;
     if (t_retryable() != 0) goto out;
     if (t_compat_judge() != 0) goto out;
-#ifdef NODUS_HAS_JSONC
-    if (t_args_precedence() != 0) goto out;
-#endif
 
     printf("test_nodus_light: %d checks OK\n", g_checks);
     rc = 0;

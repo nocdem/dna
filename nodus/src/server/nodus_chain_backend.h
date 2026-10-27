@@ -28,8 +28,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
 
 #include "nodus/nodus_types.h"
 #include "protocol/nodus_tier2.h"           /* nodus_t2_status_info_t */
@@ -51,64 +49,6 @@ struct nodus_tcp_conn;
 
 typedef struct nodus_chain_backend nodus_chain_backend_t;
 
-/* The active-role set a backend keeps (the node ids of every identity with an
- * active on-chain role). A set older than NODUS_ROLE_SET_STALE_MS is unknown:
- * nothing is exempted from it (fail safe). */
-#define NODUS_ROLE_SET_MAX       2048u
-#define NODUS_ROLE_SET_STALE_MS  30000u
-#define NODUS_ROLE_SET_EVERY_MS  10000u
-typedef struct {
-    uint8_t (*fps)[64];     /* NODUS_ROLE_SET_MAX entries, heap, owned */
-    uint32_t n;
-    bool     known;
-    uint64_t at_ms;         /* nodus_time_mono_ms() when it was taken */
-} nodus_role_set_t;
-
-/** `s` is a known, fresh set as of `now_ms` (monotonic). */
-static inline bool nodus_role_set_known(const nodus_role_set_t *s, uint64_t now_ms) {
-    return s && s->known && s->fps && now_ms - s->at_ms <= NODUS_ROLE_SET_STALE_MS;
-}
-
-static inline int nodus_role_fp_cmp(const void *a, const void *b) {
-    return memcmp(a, b, 64);
-}
-
-/** Sort the entries once, when the set is built (each refresh): every lookup
- *  is then a binary search. The caller sets n first. */
-static inline void nodus_role_set_sort(nodus_role_set_t *s) {
-    if (s && s->fps && s->n > 1)
-        qsort(s->fps, s->n, 64, nodus_role_fp_cmp);
-}
-
-/** A lookup in a role set, evaluated at ONE instant. */
-typedef enum {
-    NODUS_ROLE_ABSENT  = 0,   /* the set is known and fresh and lacks the id */
-    NODUS_ROLE_PRESENT = 1,   /* the set is known and fresh and has it       */
-    NODUS_ROLE_UNKNOWN = 2    /* no known, fresh set at that instant         */
-} nodus_role_state_t;
-
-/** `node_id` against `s` as of `now_ms` (monotonic): PRESENT / ABSENT, or
- *  UNKNOWN when the set is missing, not known, or older than
- *  NODUS_ROLE_SET_STALE_MS at `now_ms`. Binary search over the sorted set:
- *  at most NODUS_ROLE_SET_MAX = 2048 entries → at most 11 comparisons of 64
- *  bytes per lookup. */
-static inline nodus_role_state_t nodus_role_set_state(const nodus_role_set_t *s,
-                                                      const nodus_key_t *node_id,
-                                                      uint64_t now_ms) {
-    if (!s || !s->known || !s->fps || !node_id) return NODUS_ROLE_UNKNOWN;
-    if (now_ms - s->at_ms > NODUS_ROLE_SET_STALE_MS) return NODUS_ROLE_UNKNOWN;
-    return (s->n > 0 &&
-            bsearch(node_id->bytes, s->fps, s->n, 64, nodus_role_fp_cmp))
-               ? NODUS_ROLE_PRESENT : NODUS_ROLE_ABSENT;
-}
-
-/** `node_id` is in a known, fresh `s` as of `now_ms` (monotonic). */
-static inline bool nodus_role_set_has(const nodus_role_set_t *s,
-                                      const nodus_key_t *node_id,
-                                      uint64_t now_ms) {
-    return nodus_role_set_state(s, node_id, now_ms) == NODUS_ROLE_PRESENT;
-}
-
 typedef struct {
     /** One pass of the chain's own work (the 4004 p2p host and the
      *  consensus lane) — once per server loop iteration. */
@@ -127,15 +67,6 @@ typedef struct {
      *  state_root, chain_id); untouched when no chain is open. */
     void (*status)(nodus_chain_backend_t *b, nodus_t2_status_info_t *info);
 
-    /** The 32-byte v3 chain id the node's sessions (4001 / WS / 4002) are
-     *  bound to — the id 4004's HELLO carries and every client knows — NOT
-     *  the legacy 16-byte id padded with zeros that `status` reports (the T2
-     *  `status` RPC keeps reporting that one, unchanged). true with `out`
-     *  filled; false while there is none (no chain open, no genesis document
-     *  yet, the witness not answering): sessions are then refused. May be NULL
-     *  (= false). */
-    bool (*chain_id_v3)(nodus_chain_backend_t *b, uint8_t out[32]);
-
     /** true when a chain database is open (arms the partial-wipe gate). */
     bool (*chain_open)(nodus_chain_backend_t *b);
 
@@ -153,22 +84,6 @@ typedef struct {
                           const uint8_t *payload, size_t len,
                           const char *method, uint32_t txn_id);
 
-    /** A `dnac_*` / `evm_*` client method of an ANON (no-login) session
-     *  (DHT v2 package 3d, design 2026-10-26-dht-v2-3d-no-login-design.md §2):
-     *  the session has NO principal, so no key is passed — there is no zero
-     *  key standing in. `t` is this node's own copy of the session's handshake
-     *  transcript T (nodus_tcp_sc_transcript, CMT_P2P_SC_T_SIZE = 64 bytes):
-     *  the `s` an owner-signed `qa` must carry. In-process: the witness reads
-     *  "no principal" from `conn` (peer_id_set false) and T from here. IPC:
-     *  the session socket's preface is the no-identity form carrying `t` and
-     *  the token. May be NULL (= the backend serves no ANON session). */
-    void (*dispatch_dnac_anon)(nodus_chain_backend_t *b,
-                               struct nodus_tcp_conn *conn,
-                               const uint8_t token[NODUS_SESSION_TOKEN_LEN],
-                               const uint8_t t[64],
-                               const uint8_t *payload, size_t len,
-                               const char *method, uint32_t txn_id);
-
     /** `dnac_cc_collect`, with the requesting session's identity. */
     void (*cc_collect)(nodus_chain_backend_t *b,
                        struct nodus_tcp_conn *conn,
@@ -176,32 +91,6 @@ typedef struct {
                        const uint8_t token[NODUS_SESSION_TOKEN_LEN],
                        const uint8_t *payload, size_t len,
                        uint32_t txn_id);
-
-    /** true when `node_id` (the SHA3-512 fingerprint of a PROVEN public key)
-     *  has an active on-chain role — the bonded set plus the storage
-     *  registry rows ACTIVE / EXITING (nodus_witness_p2p_roles_fill). Used to
-     *  exempt that node from the per-IP limits of 4001 / WS / 4002
-     *  (decisions/2026-10-24-dht-v2-handshake-rate.md addendum 2026-10-26).
-     *  FAIL SAFE: false whenever the set is not known (no chain, witness not
-     *  answering, set older than NODUS_ROLE_SET_STALE_MS, set over its
-     *  bound). May be NULL (= false). */
-    bool (*has_role)(nodus_chain_backend_t *b, const nodus_key_t *node_id);
-
-    /** true when the role set is KNOWN and fresh right now (the same
-     *  condition has_role answers from). Lets the caller tell "this identity
-     *  has no role" from "the set is unknown": core revalidates the
-     *  exemptions of live connections only against a known set, so an IPC
-     *  hiccup does not drop every node at once. May be NULL (= false). */
-    bool (*roles_known)(nodus_chain_backend_t *b);
-
-    /** The tri-state lookup of `node_id` against the CURRENT set, evaluated
-     *  at the caller's instant `now_ms` (nodus_time_mono_ms scale) and never
-     *  refreshing it: a caller that walks many connections takes `now_ms`
-     *  once (after roles_known has refreshed the set), so a snapshot that
-     *  expires mid-walk cannot turn PRESENT into "absent". May be NULL. */
-    nodus_role_state_t (*role_state)(nodus_chain_backend_t *b,
-                                     const nodus_key_t *node_id,
-                                     uint64_t now_ms);
 
     /** The client session in `conn`'s slot ended (disconnect, eviction,
      *  idle sweep) or that slot starts a new session — called where the
@@ -272,11 +161,6 @@ int nodus_chain_backend_inproc_open(const nodus_witness_host_t *host,
  */
 int nodus_chain_backend_ipc_open(const char *data_path,
                                  nodus_chain_backend_t **out);
-
-/** TEST SEAM (not an API): send an ipc_roles query on the control connection
- *  now, instead of waiting NODUS_ROLE_SET_EVERY_MS. No-op without a control
- *  connection. */
-void nodus_chain_backend_ipc_test_ask_roles(nodus_chain_backend_t *b);
 
 #ifdef __cplusplus
 }

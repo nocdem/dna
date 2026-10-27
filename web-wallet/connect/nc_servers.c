@@ -89,7 +89,7 @@ int nc_servers_parse(const char *json, nc_servers_t *out,
         }
         const char *pin = str_field(e, "pin");
         nodus_key_t k;
-        if (!pin || nc_fp_parse(pin, &k) != 0 || nodus_key_is_zero(&k)) {
+        if (!pin || nc_fp_parse(pin, &k) != 0) {
             fail(why, why_len, "a validator entry has no valid pin");
             goto done;
         }

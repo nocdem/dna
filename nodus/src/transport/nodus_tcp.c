@@ -33,6 +33,7 @@
 
 #include "transport/nodus_tcp.h"
 #include "protocol/nodus_wire.h"
+#include "crypto/nodus_channel_crypto.h"
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG_TCP "NODUS_TCP"
@@ -124,26 +125,12 @@
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
-/* The connection's two time stamps, wall-clock (idle sweeps, logs) and
- * monotonic (the SecretConnection layer's pre-session deadline). */
-static inline void conn_stamp_connected(nodus_tcp_conn_t *conn) {
-    conn->connected_at = nodus_time_now();
-    conn->last_activity = conn->connected_at;
-    conn->connected_mono_ms = nodus_time_mono_ms();
-    conn->last_activity_mono_ms = conn->connected_mono_ms;
-}
-
-static inline void conn_stamp_activity(nodus_tcp_conn_t *conn) {
-    conn->last_activity = nodus_time_now();
-    conn->last_activity_mono_ms = nodus_time_mono_ms();
-}
-
 /* DHT v2 3b-1: the optional per-connection SecretConnection
  * (nodus_tcp_sc.h). NODUS_TCP_SC is defined by nodus/CMakeLists.txt for
  * libnodus only; a build that compiles this file on its own (the browser and
- * web-wallet source lists) does not define it and compiles none of the layer
- * (conn->sc is then always NULL: such a build has no session at all until its
- * list adds nodus_tcp_sc.c and defines NODUS_TCP_SC — 3c). */
+ * web-wallet source lists) does not define it, compiles none of the layer and
+ * keeps the plaintext / channel-crypto behaviour it always had. conn->sc is
+ * then always NULL. */
 #ifdef NODUS_TCP_SC
   #include "transport/nodus_tcp_sc.h"
   #define SC_POLL_TIMEOUT(tcp, t) nodus_tcp_sc_poll_timeout((tcp), (t))
@@ -437,18 +424,6 @@ void nodus_tcp_set_write_lock(nodus_tcp_t *tcp,
  * holds it after on_frame returns, and a later accept in the same batch
  * must not be handed the same address while a stale event for it is
  * pending. Freeing any earlier would reintroduce exactly that aliasing. */
-/* The ONE place on_disconnect is invoked (every teardown path calls it, then
- * conn_free). It CLAIMS the teardown first (disc_claimed): a callback that
- * disconnects the very connection it was told about meets the claim in
- * nodus_tcp_disconnect and does nothing, so on_disconnect runs once and the
- * outer conn_free is the only one that frees (D-24 a). */
-static void conn_notify_disconnect(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
-    if (conn->disc_claimed) return;
-    conn->disc_claimed = true;
-    if (tcp->on_disconnect)
-        tcp->on_disconnect(conn, tcp->cb_ctx);
-}
-
 static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     if (!conn || conn->close_pending) return;
 
@@ -469,6 +444,10 @@ static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         tcp->pool[conn->slot] == conn)
         tcp->pool[conn->slot] = NULL;
 
+    /* D2.4: preserve this conn's decrypt-failure count before the struct dies,
+     * so the harness gate can still see it after a teardown. */
+    tcp->decrypt_fail_total += conn->decrypt_skip_count;
+
     tcp->count--;
     if (conn->sc_close_req) {   /* a marked teardown is being done now */
         conn->sc_close_req = false;
@@ -478,15 +457,21 @@ static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     read_pending_del(tcp, conn);   /* read budget: never service a closed conn */
     pending_free_all(conn);   /* Phase 3: drop any queued frames */
 
-    /* Phase 3.2b-inv: conn lifecycle visibility at TCP layer. */
+    /* Phase 3.2b-inv: conn lifecycle visibility at TCP layer.
+     * B3 fix — read crypto state from inline channel_crypto field. */
+    int had_crypto = conn->channel_crypto.established ? 1 : 0;
     fprintf(stderr,
-            "TCP_CONN: FREE slot=%d peer=%s:%u sc=%d "
+            "TCP_CONN: FREE slot=%d peer=%s:%u had_crypto=%d "
             "send_ok=%llu send_full=%llu pending=%zu\n",
-            conn->slot, conn->ip, (unsigned)conn->port, conn->sc ? 1 : 0,
+            conn->slot, conn->ip, (unsigned)conn->port, had_crypto,
             (unsigned long long)conn->send_ok_count,
             (unsigned long long)conn->send_full_count,
             conn->pending_count);
 
+    /* B3 fix — secure-zero the per-conn AES-GCM key + counters before the
+     * struct is freed. Defensive even though the entire struct is about to
+     * disappear; key material should never linger on the freelist. */
+    nodus_channel_crypto_clear(&conn->channel_crypto);
 #ifdef NODUS_TCP_SC
     nodus_tcp_sc_free(conn);   /* the machine's key, its buffers, held bytes */
 #endif
@@ -715,7 +700,7 @@ static void epoll_mod(int epoll_fd, int fd, uint32_t events, void *ptr) {
 typedef enum {
     PARSE_NEED_DATA = 0,  /* no complete frame left in rbuf                  */
     PARSE_MORE,           /* complete frames may remain: the frame budget ran
-                           * out                                             */
+                           * out, or the channel crypto state flipped        */
     PARSE_CLOSED          /* conn is closed — do no further work on it       */
 } parse_rc_t;
 
@@ -739,6 +724,14 @@ static parse_rc_t try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
     if (conn->sc && !nodus_tcp_sc_authenticated(conn)) return PARSE_NEED_DATA;
 #endif
     while (conn->rlen >= NODUS_FRAME_HEADER_SIZE) {
+        /* Snapshot crypto state before dispatching — if it changes mid-loop
+         * (e.g., key_init handler activates crypto), remaining buffered frames
+         * are plaintext but crypto would try to decrypt them. Break and let
+         * the next poll iteration handle them correctly.
+         * B3 fix — no pointer alias to snapshot; track the established flag
+         * which is the actual gate (false → true on init). */
+        bool established_before = conn->channel_crypto.established;
+
         /* Declared length against this connection's cap, as soon as the
          * header is in — before any of the payload is buffered. Same bytes
          * nodus_frame_decode reads (little-endian, offset 3). */
@@ -750,7 +743,8 @@ static parse_rc_t try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
             uint32_t cap = conn->max_payload ? conn->max_payload
                                              : (uint32_t)NODUS_MAX_FRAME_TCP;
             if (declared > cap) {
-                conn_notify_disconnect(tcp, conn);
+                if (tcp->on_disconnect)
+                    tcp->on_disconnect(conn, tcp->cb_ctx);
                 conn_free(tcp, conn);
                 return PARSE_CLOSED;
             }
@@ -762,14 +756,16 @@ static parse_rc_t try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
         if (rc == 0) break;     /* Incomplete — need more data */
         if (rc < 0) {
             /* Bad frame — disconnect */
-            conn_notify_disconnect(tcp, conn);
+            if (tcp->on_disconnect)
+                tcp->on_disconnect(conn, tcp->cb_ctx);
             conn_free(tcp, conn);
             return PARSE_CLOSED;
         }
 
         /* Validate frame size (HIGH-1: TCP path was missing this check) */
         if (!nodus_frame_validate(&frame, false)) {
-            conn_notify_disconnect(tcp, conn);
+            if (tcp->on_disconnect)
+                tcp->on_disconnect(conn, tcp->cb_ctx);
             conn_free(tcp, conn);
             return PARSE_CLOSED;
         }
@@ -780,13 +776,102 @@ static parse_rc_t try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
             return PARSE_MORE;
         conn->read_frames_left--;
 
-        /* Valid frame. A frame is never encrypted at this layer: on a
-         * SecretConnection connection rbuf already holds the opened
-         * plaintext (the old per-frame channel crypto is gone, DHT v2 3b-2). */
+        /* Valid frame — decrypt if channel crypto active.
+         * B3 fix — read inline channel_crypto directly; no pointer alias. */
         size_t consumed = (size_t)rc;
+        const uint8_t *dispatch_payload = frame.payload;
+        size_t dispatch_len = frame.payload_len;
+        uint8_t *dec_buf = NULL;
+
+        nodus_channel_crypto_t *cc = &conn->channel_crypto;
+        if (cc->established) {
+            /* CRIT-3 — AEAD completeness. Once the channel is established,
+             * EVERY frame must be authenticated. Previously this gated on
+             * 'payload_len > NODUS_CHANNEL_OVERHEAD', so a <=28-byte payload
+             * skipped the decrypt block entirely and fell through to the raw
+             * on_frame() dispatch below — unauthenticated, with rx_counter
+             * untouched (indefinitely replayable). On the inter-node channel
+             * that reached the post-auth method dispatcher, letting an on-path
+             * attacker inject authenticated-peer messages with no key at all.
+             * A short frame or an allocation failure must now DROP the frame,
+             * never dispatch it raw.
+             *
+             * Boundary is '>= NODUS_CHANNEL_OVERHEAD': a 28-byte frame is a
+             * valid EMPTY-plaintext AEAD frame (nonce12+tag16) which the module
+             * explicitly supports, so dropping it would break legitimate empty
+             * frames. Only '< OVERHEAD' is impossible-to-authenticate.
+             * See tests/test_channel_crypto_aead_complete.c. */
+            bool drop_frame = false;
+
+            if (frame.payload_len < NODUS_CHANNEL_OVERHEAD) {
+                conn->decrypt_skip_count++;
+                QGP_LOG_WARN(LOG_TAG_TCP,
+                             "short frame dropped: conn=%s:%d slot=%d frame_len=%u < overhead=%u (unauthenticatable)",
+                             conn->ip, conn->port, conn->slot,
+                             (unsigned)frame.payload_len,
+                             (unsigned)NODUS_CHANNEL_OVERHEAD);
+                drop_frame = true;
+            } else {
+                /* Safe: payload_len >= NODUS_CHANNEL_OVERHEAD checked above,
+                 * so the subtraction cannot underflow. */
+                size_t pt_max = frame.payload_len - NODUS_CHANNEL_OVERHEAD;
+                dec_buf = malloc(pt_max > 0 ? pt_max : 1);
+                if (!dec_buf) {
+                    QGP_LOG_ERROR(LOG_TAG_TCP,
+                                  "decrypt alloc failed, frame dropped: conn=%s:%d slot=%d frame_len=%u",
+                                  conn->ip, conn->port, conn->slot,
+                                  (unsigned)frame.payload_len);
+                    drop_frame = true;   /* fail closed — never dispatch ciphertext raw */
+                } else {
+                    size_t pt_len = 0;
+                    if (nodus_channel_decrypt(cc, frame.payload, frame.payload_len,
+                                              dec_buf, pt_max, &pt_len) == 0) {
+                        dispatch_payload = dec_buf;
+                        dispatch_len = pt_len;
+                    } else {
+                        /* Decrypt failed — drop the frame, do NOT reset
+                         * rx_counter. A reset opens a silent replay window:
+                         * later legitimate out-of-order frames would be
+                         * (mis)accepted or (mis)rejected against a stale
+                         * baseline. If this is truly an in-flight plaintext
+                         * leftover it is rare and self-heals; if it is a
+                         * real replay/attack we want rx_counter to stay
+                         * strictly monotonic. */
+                        /* D2.3: this is an AEAD FAILURE, not a benign event. On
+                         * an ordered TCP stream there is no legitimate
+                         * post-established plaintext frame (the established flip
+                         * re-processes buffered bytes as encrypted), so any hit
+                         * here means tampering, a key/role mismatch, or a real
+                         * bug. The old "(in-flight plaintext)" text asserted a
+                         * benign cause and would have masked exactly that. */
+                        conn->decrypt_skip_count++;
+                        QGP_LOG_WARN(LOG_TAG_TCP,
+                                     "AEAD DECRYPT FAILED: conn=%s:%d slot=%d cc=%p frame_len=%u fail_count=%u "
+                                     "(frame dropped; tamper/key-mismatch — NOT expected on an ordered stream)",
+                                     conn->ip, conn->port, conn->slot,
+                                     (void *)cc,
+                                     (unsigned)frame.payload_len,
+                                     (unsigned)conn->decrypt_skip_count);
+                        free(dec_buf);
+                        dec_buf = NULL;
+                        drop_frame = true;
+                    }
+                }
+            }
+
+            if (drop_frame) {
+                /* Skip this frame, continue processing */
+                size_t remaining = conn->rlen - consumed;
+                if (remaining > 0)
+                    memmove(conn->rbuf, conn->rbuf + consumed, remaining);
+                conn->rlen = remaining;
+                continue;
+            }
+        }
 
         if (tcp->on_frame)
-            tcp->on_frame(conn, frame.payload, frame.payload_len, tcp->cb_ctx);
+            tcp->on_frame(conn, dispatch_payload, dispatch_len, tcp->cb_ctx);
+        free(dec_buf);
 
         /* The callback closed this connection (nodus_tcp_disconnect from
          * inside on_frame). on_frame always runs inside nodus_tcp_poll, so
@@ -794,6 +879,21 @@ static parse_rc_t try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
          * no further frame of it may be dispatched. */
         if (conn->close_pending)
             return PARSE_CLOSED;
+
+        /* If crypto state changed during dispatch (Kyber handshake completed),
+         * stop processing — remaining frames in rbuf need different handling.
+         * B3 fix — compare established flag (false → true on init).
+         * PARSE_MORE puts the connection on the pending-read list, so the
+         * "next poll iteration" really does handle them; before, under
+         * EPOLLET, that happened only when more bytes arrived. */
+        if (conn->channel_crypto.established != established_before) {
+            size_t remaining = conn->rlen - consumed;
+            if (remaining > 0)
+                memmove(conn->rbuf, conn->rbuf + consumed, remaining);
+            conn->rlen = remaining;
+            return remaining >= NODUS_FRAME_HEADER_SIZE ? PARSE_MORE
+                                                        : PARSE_NEED_DATA;
+        }
 
         /* Shift remaining data */
         size_t remaining = conn->rlen - consumed;
@@ -947,23 +1047,15 @@ static uint32_t sc_ev_mask(const nodus_tcp_t *tcp, const nodus_tcp_conn_t *conn,
     return ev;
 }
 
-/* Re-register `conn` with the mask applied. Not called under the write lock:
- * it takes it, and computes the mask AND installs it inside ONE critical
- * section, so a sender on another thread cannot arm EPOLLOUT between the
- * computation and the epoll_ctl and have it overwritten (D-24 d). */
+/* Re-register `conn` with the mask applied. Not under the write lock
+ * (conn_has_unsent takes it). */
 static void sc_epoll_rearm(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     uint32_t ev;
 
-    if (!tcp->level_triggered)
+    if (!tcp->level_triggered || conn->fd < 0 || conn->close_pending)
         return;
-    wl_enter(tcp);
-    if (conn->fd >= 0 && !conn->close_pending) {
-        ev = EPOLLIN | EPOLLRDHUP |
-             ((conn->wlen > conn->wpos || (conn->sc != NULL && conn->pending_head != NULL))
-                  ? EPOLLOUT : 0);
-        epoll_mod(tcp->epoll_fd, conn->fd, sc_ev_mask(tcp, conn, ev), conn);
-    }
-    wl_leave(tcp);
+    ev = EPOLLIN | EPOLLRDHUP | (conn_has_unsent(tcp, conn) ? EPOLLOUT : 0);
+    epoll_mod(tcp->epoll_fd, conn->fd, sc_ev_mask(tcp, conn, ev), conn);
 }
 #endif
 
@@ -979,16 +1071,6 @@ static void sc_mark_close_locked(nodus_tcp_conn_t *conn) {
     if (!conn->sc_close_req && tcp) {
         conn->sc_close_req = true;
         tcp->sc_close_requests++;
-#ifdef NODUS_TCP_EPOLL
-        /* Wake the poller: a sleeping epoll_wait would otherwise see neither
-         * a delivery nor the teardown of an idle connection until its own
-         * timeout. Arming write interest raises an event for this fd (D-24 c). */
-        if (tcp->epoll_fd >= 0 && conn->fd >= 0) {
-            uint32_t et = tcp->level_triggered ? 0 : EPOLLET;
-            epoll_mod(tcp->epoll_fd, conn->fd,
-                      EPOLLIN | EPOLLOUT | EPOLLRDHUP | et, conn);
-        }
-#endif
     }
 }
 
@@ -1151,10 +1233,8 @@ static int send_sc_locked(nodus_tcp_conn_t *conn, const uint8_t *payload, size_t
         /* allocation failure: treated like a full queue — nothing sealed */
     }
     if (tcp && tcp->on_pending_full) {
-        /* Count BEFORE the callback: it may close this connection, and
-         * nothing of `conn` may be touched after it (D-24 b). */
-        conn->pending_hint_fallback_count++;
         tcp->on_pending_full(conn, payload, len, tcp->pending_full_ctx);
+        conn->pending_hint_fallback_count++;
         return 0;
     }
     QGP_LOG_ERROR(LOG_TAG_TCP,
@@ -1189,7 +1269,8 @@ static void sc_reap_marked(nodus_tcp_t *tcp) {
         }
         wl_leave(tcp);
         if (claimed) {
-            conn_notify_disconnect(tcp, c);
+            if (tcp->on_disconnect)
+                tcp->on_disconnect(c, tcp->cb_ctx);
             conn_free(tcp, c);
         }
     }
@@ -1218,7 +1299,8 @@ static void sc_apply_done(nodus_tcp_t *tcp) {
             r = NODUS_SC_APPLY_FAIL;
         wl_leave(tcp);
         if (r == NODUS_SC_APPLY_FAIL) {
-            conn_notify_disconnect(tcp, conn);
+            if (tcp->on_disconnect)
+                tcp->on_disconnect(conn, tcp->cb_ctx);
             conn_free(tcp, conn);
         } else if (r == NODUS_SC_APPLY_OK) {
             /* Input held while the job ran, and the socket's own bytes
@@ -1246,7 +1328,8 @@ static read_rc_t read_plain_sc(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
      * of the AUTHSIG frame) are served before any new socket byte — no frame
      * will arrive to push them out. */
     if (sc_feed_locked(tcp, conn, NULL, 0) != 0) {
-        conn_notify_disconnect(tcp, conn);
+        if (tcp->on_disconnect)
+            tcp->on_disconnect(conn, tcp->cb_ctx);
         conn_free(tcp, conn);
         return READ_CLOSED;
     }
@@ -1280,10 +1363,11 @@ static read_rc_t read_plain_sc(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         if (n > 0) {
             atomic_store_explicit(&conn->io_started, true, memory_order_relaxed);
             conn->read_bytes_left -= (size_t)n;
-            conn_stamp_activity(conn);
+            conn->last_activity = nodus_time_now();
             eintr_left = NTCP_MAX_EINTR_RETRY;
             if (sc_feed_locked(tcp, conn, chunk, (size_t)n) != 0) {
-                conn_notify_disconnect(tcp, conn);
+                if (tcp->on_disconnect)
+                    tcp->on_disconnect(conn, tcp->cb_ctx);
                 conn_free(tcp, conn);
                 return READ_CLOSED;
             }
@@ -1298,7 +1382,8 @@ static read_rc_t read_plain_sc(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             /* Orderly EOF — as read_plain: frames already opened are still
              * frames; unbudgeted, there is no later call. */
             if (try_parse_frames(tcp, conn, false) != PARSE_CLOSED) {
-                conn_notify_disconnect(tcp, conn);
+                if (tcp->on_disconnect)
+                    tcp->on_disconnect(conn, tcp->cb_ctx);
                 conn_free(tcp, conn);
             }
             return READ_CLOSED;
@@ -1308,7 +1393,8 @@ static read_rc_t read_plain_sc(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             continue;
         if (io == NTCP_IO_WOULDBLOCK)
             return READ_DRAINED;
-        conn_notify_disconnect(tcp, conn);
+        if (tcp->on_disconnect)
+            tcp->on_disconnect(conn, tcp->cb_ctx);
         conn_free(tcp, conn);
         return READ_CLOSED;
     }
@@ -1336,7 +1422,8 @@ static read_rc_t read_plain(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             return READ_MORE;
 
         if (buf_ensure(&conn->rbuf, &conn->rcap, conn->rlen + 4096) != 0) {
-            conn_notify_disconnect(tcp, conn);
+            if (tcp->on_disconnect)
+                tcp->on_disconnect(conn, tcp->cb_ctx);
             conn_free(tcp, conn);
             return READ_CLOSED;
         }
@@ -1349,7 +1436,7 @@ static read_rc_t read_plain(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             atomic_store_explicit(&conn->io_started, true, memory_order_relaxed);
             conn->rlen += (size_t)n;
             conn->read_bytes_left -= (size_t)n;
-            conn_stamp_activity(conn);
+            conn->last_activity = nodus_time_now();
             eintr_left = NTCP_MAX_EINTR_RETRY;   /* progress resets the budget */
             pr = try_parse_frames(tcp, conn, true);
             if (pr == PARSE_CLOSED) return READ_CLOSED;
@@ -1364,7 +1451,8 @@ static read_rc_t read_plain(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
              * handled before ntcp_classify.) Unbudgeted: there is no later
              * call for this connection. */
             if (try_parse_frames(tcp, conn, false) != PARSE_CLOSED) {
-                conn_notify_disconnect(tcp, conn);
+                if (tcp->on_disconnect)
+                    tcp->on_disconnect(conn, tcp->cb_ctx);
                 conn_free(tcp, conn);
             }
             return READ_CLOSED;
@@ -1379,7 +1467,8 @@ static read_rc_t read_plain(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
          * receive-side reset is still a disconnect, so the handling is the
          * same — but it is now reached deliberately rather than by falling
          * through from EINTR. */
-        conn_notify_disconnect(tcp, conn);
+        if (tcp->on_disconnect)
+            tcp->on_disconnect(conn, tcp->cb_ctx);
         conn_free(tcp, conn);
         return READ_CLOSED;
     }
@@ -1483,13 +1572,7 @@ static ntcp_io_t conn_flush_wbuf(nodus_tcp_conn_t *conn,
             atomic_store_explicit(&conn->io_started, true, memory_order_relaxed);
             conn->wpos += (size_t)n;
             eintr_left = NTCP_MAX_EINTR_RETRY;
-            if (progress_cb) {
-                progress_cb(conn->wpos, conn->wlen, user_data);
-                /* The callback may have closed the connection: read nothing
-                 * of it again (D-24 b). */
-                if (conn->fd < 0 || conn->close_pending)
-                    return NTCP_IO_PEER_GONE;
-            }
+            if (progress_cb) progress_cb(conn->wpos, conn->wlen, user_data);
             continue;
         }
         if (io == NTCP_IO_RETRY && eintr_left-- > 0)
@@ -1568,7 +1651,8 @@ static void handle_write(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     bool alive = handle_write_locked(tcp, conn);
     wl_leave(tcp);
     if (!alive) {
-        conn_notify_disconnect(tcp, conn);
+        if (tcp->on_disconnect)
+            tcp->on_disconnect(conn, tcp->cb_ctx);
         conn_free(tcp, conn);
     }
 }
@@ -1583,13 +1667,15 @@ static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, (char *)&err, &len);
 
     if (err != 0) {
-        conn_notify_disconnect(tcp, conn);
+        if (tcp->on_disconnect)
+            tcp->on_disconnect(conn, tcp->cb_ctx);
         conn_free(tcp, conn);
         return;
     }
 
     conn->state = NODUS_CONN_CONNECTED;
-    conn_stamp_connected(conn);
+    conn->connected_at = nodus_time_now();
+    conn->last_activity = conn->connected_at;
     if (!conn->is_unix) {   /* TCP options; an AF_UNIX conn never connects async anyway */
         set_keepalive(conn->fd);
         set_nodelay(conn->fd);
@@ -1627,125 +1713,6 @@ static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 #endif
 }
 
-/* Declared in nodus_ws.h; defined here so that every platform's build has it
- * (nodus_ws.c is not built on Windows, the plain listener's handshake rate
- * is). */
-int nodus_ws_ip_bucket(const char *ip, nodus_ws_ip_bucket_t *out) {
-    if (!out) return -1;
-    memset(out, 0, sizeof(*out));
-    if (!ip) return -1;
-
-    struct in_addr a4;
-    struct in6_addr a6;
-    if (inet_pton(AF_INET, ip, &a4) == 1) {
-        out->family = 4;
-        memcpy(out->key, &a4.s_addr, 4);
-        return 0;
-    }
-    if (inet_pton(AF_INET6, ip, &a6) == 1) {
-        if (IN6_IS_ADDR_V4MAPPED(&a6)) {
-            out->family = 4;
-            memcpy(out->key, a6.s6_addr + 12, 4);
-        } else {
-            out->family = 6;
-            memcpy(out->key, a6.s6_addr, 8);
-        }
-        return 0;
-    }
-    return -1;
-}
-
-static bool hs_rate_check(nodus_tcp_t *tcp, const nodus_ws_ip_bucket_t *who,
-                          uint64_t now_mono_ms, uint64_t *window_out);
-
-bool nodus_tcp_hs_rate_allow(nodus_tcp_t *tcp, const nodus_ws_ip_bucket_t *who,
-                             uint64_t now_mono_ms) {
-    return hs_rate_check(tcp, who, now_mono_ms, NULL);
-}
-
-bool nodus_tcp_ip_is_loopback(const char *ip) {
-    if (!ip) return false;
-    return strncmp(ip, "127.", 4) == 0 || strcmp(ip, "::1") == 0 ||
-           strncmp(ip, "::ffff:127.", 11) == 0;
-}
-
-#ifdef NODUS_TCP_LISTEN
-/* Count one accept from `ip` / `who` at `now`: loopback is never counted;
- * otherwise the rate decides and the conn remembers bucket + window, so a
- * later proof of an active role can credit it back. false = refuse.
- * Only the accept paths call it, so it exists only where they do (the
- * browser build has none: an unused static is a -Werror there). */
-static bool hs_count_accept(nodus_tcp_t *tcp, const char *ip,
-                            const nodus_ws_ip_bucket_t *who, uint64_t now,
-                            bool *counted, uint64_t *window) {
-    *counted = false;
-    if (tcp->hs_rate_per_min == 0 || nodus_tcp_ip_is_loopback(ip)) return true;
-    if (!hs_rate_check(tcp, who, now, window)) return false;
-    *counted = true;
-    return true;
-}
-#endif /* NODUS_TCP_LISTEN */
-
-void nodus_tcp_role_exempt(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
-    if (!tcp || !conn || conn->role_exempt) return;
-    conn->role_exempt = true;
-    if (!conn->hs_counted) return;
-    conn->hs_counted = false;
-    for (int i = 0; i < NODUS_TCP_HS_RATE_TABLE; i++) {
-        if (tcp->hs_rate[i].used &&
-            memcmp(&tcp->hs_rate[i].who, &conn->hs_bucket, sizeof(conn->hs_bucket)) == 0) {
-            if (tcp->hs_rate[i].gen == conn->hs_gen && tcp->hs_rate[i].count > 0)
-                tcp->hs_rate[i].count--;
-            return;
-        }
-    }
-}
-
-void nodus_tcp_role_revoke(nodus_tcp_conn_t *conn) {
-    if (conn) conn->role_exempt = false;
-}
-
-static bool hs_rate_check(nodus_tcp_t *tcp, const nodus_ws_ip_bucket_t *who,
-                          uint64_t now_mono_ms, uint64_t *window_out) {
-    if (!tcp || !who) return false;
-    if (window_out) *window_out = 0;
-    if (tcp->hs_rate_per_min == 0) return true;
-
-    int free_slot = -1, oldest = -1;
-    for (int i = 0; i < NODUS_TCP_HS_RATE_TABLE; i++) {
-        if (!tcp->hs_rate[i].used) {
-            if (free_slot < 0) free_slot = i;
-            continue;
-        }
-        if (memcmp(&tcp->hs_rate[i].who, who, sizeof(*who)) == 0) {
-            uint64_t age = now_mono_ms > tcp->hs_rate[i].start_ms
-                         ? now_mono_ms - tcp->hs_rate[i].start_ms : 0;
-            if (age >= NODUS_TCP_HS_RATE_WINDOW_MS) {   /* a new minute */
-                tcp->hs_rate[i].start_ms = now_mono_ms;
-                tcp->hs_rate[i].count = 0;
-                tcp->hs_rate[i].gen = ++tcp->hs_gen_last;
-            }
-            if (tcp->hs_rate[i].count >= tcp->hs_rate_per_min)
-                return false;
-            tcp->hs_rate[i].count++;
-            if (window_out) *window_out = tcp->hs_rate[i].gen;
-            return true;
-        }
-        if (oldest < 0 || tcp->hs_rate[i].start_ms < tcp->hs_rate[oldest].start_ms)
-            oldest = i;
-    }
-    /* Not in the table: a free entry, else the entry with the oldest window
-     * (an expired one first, being the oldest) — bounded memory. */
-    int slot = free_slot >= 0 ? free_slot : oldest;
-    tcp->hs_rate[slot].used = true;
-    tcp->hs_rate[slot].who = *who;
-    tcp->hs_rate[slot].start_ms = now_mono_ms;
-    tcp->hs_rate[slot].count = 1;
-    tcp->hs_rate[slot].gen = ++tcp->hs_gen_last;
-    if (window_out) *window_out = tcp->hs_rate[slot].gen;
-    return true;
-}
-
 #ifdef NODUS_TCP_LISTEN
 
 /* The plain listener's accept: the same code on Linux/Android (one call per
@@ -1771,34 +1738,13 @@ static void handle_accept(nodus_tcp_t *tcp) {
     inet_ntop(AF_INET, &addr.sin_addr, new_ip, sizeof(new_ip));
     int ip_count = 0;
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
-        /* a role_exempt connection (proven key with an active role,
-         * addendum 2026-10-26) does not count toward the cap */
         if (tcp->pool[i] && !tcp->pool[i]->is_ws && !tcp->pool[i]->is_unix &&
-            !tcp->pool[i]->role_exempt &&
             strcmp(tcp->pool[i]->ip, new_ip) == 0)
             ip_count++;
     }
     if (ip_count >= NODUS_MAX_CONNS_PER_IP) {
         close(fd);
         return;
-    }
-
-    /* Per-IP handshake RATE (decision 2026-10-24, 60 / minute on 4001 and
-     * 4002 accept): checked after the cheap concurrency count, counted only
-     * for a connection that would be admitted. Monotonic clock. */
-    nodus_ws_ip_bucket_t who;
-    bool hs_counted = false;
-    uint64_t hs_window = 0;
-    memset(&who, 0, sizeof(who));
-    if (tcp->hs_rate_per_min != 0) {
-        if (nodus_ws_ip_bucket(new_ip, &who) != 0 ||
-            !hs_count_accept(tcp, new_ip, &who, nodus_time_mono_ms(),
-                             &hs_counted, &hs_window)) {
-            QGP_LOG_WARN(LOG_TAG_TCP, "accept: handshake rate %u/min reached for %s — refused",
-                         (unsigned)tcp->hs_rate_per_min, new_ip);
-            close(fd);
-            return;
-        }
     }
 
     set_nonblocking(fd);
@@ -1812,10 +1758,8 @@ static void handle_accept(nodus_tcp_t *tcp) {
     conn->state = NODUS_CONN_CONNECTED;
     conn->port = ntohs(addr.sin_port);
     snprintf(conn->ip, sizeof(conn->ip), "%s", new_ip);
-    conn_stamp_connected(conn);
-    conn->hs_bucket = who;
-    conn->hs_gen = hs_window;
-    conn->hs_counted = hs_counted;
+    conn->connected_at = nodus_time_now();
+    conn->last_activity = conn->connected_at;
 
     /* Phase 3.2d: bind fd to slot, log it. Match this fd against
      * INTER_FRAME_FIRST and TCP_SEND_FIRST to detect any fd alias. */
@@ -1888,7 +1832,8 @@ static void ws_close_now(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
     if (bytes && n > 0 && ws_wbuf_append_raw(conn, bytes, n) == 0)
         (void)conn_flush_wbuf(conn, NULL, NULL);
     wl_leave(tcp);
-    conn_notify_disconnect(tcp, conn);
+    if (tcp->on_disconnect)
+        tcp->on_disconnect(conn, tcp->cb_ctx);
     conn_free(tcp, conn);
 }
 
@@ -1979,7 +1924,8 @@ static bool ws_feed_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
  * Returns true if conn was closed. */
 static bool ws_try_upgrade(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     nodus_ws_hs_result_t res;
-    int rc = nodus_ws_handshake_parse(conn->rbuf, conn->rlen, conn->ip, &res);
+    int rc = nodus_ws_handshake_parse(conn->rbuf, conn->rlen, conn->ip,
+                                      tcp->ws_origins, &res);
     if (rc == NODUS_WS_HS_NEED_MORE)
         return false;
 
@@ -2007,7 +1953,7 @@ static bool ws_try_upgrade(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     int same_ip = 0;
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
         nodus_tcp_conn_t *c = tcp->pool[i];
-        if (c && c != conn && c->is_ws && c->ws_open && !c->role_exempt &&
+        if (c && c != conn && c->is_ws && c->ws_open &&
             memcmp(&c->ws_bucket, &bucket, sizeof(bucket)) == 0)
             same_ip++;
     }
@@ -2016,23 +1962,6 @@ static bool ws_try_upgrade(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
                      NODUS_WS_MAX_CONNS_PER_IP, res.real_ip, conn->slot);
         ws_close_now(tcp, conn, NULL, 0);
         return true;
-    }
-    /* Per-IP handshake RATE (decision 2026-10-24): counted per real client
-     * address once the Upgrade names it (the socket peer is the local
-     * proxy), after the concurrency limit. */
-    {
-        bool counted = false;
-        uint64_t win = 0;
-        if (!hs_count_accept(tcp, res.real_ip, &bucket, nodus_time_mono_ms(),
-                             &counted, &win)) {
-            QGP_LOG_WARN(LOG_TAG_TCP, "ws: handshake rate %u/min reached for %s, slot=%d closed",
-                         (unsigned)tcp->hs_rate_per_min, res.real_ip, conn->slot);
-            ws_close_now(tcp, conn, NULL, 0);
-            return true;
-        }
-        conn->hs_bucket = bucket;
-        conn->hs_gen = win;
-        conn->hs_counted = counted;
     }
 
     char resp[256];
@@ -2122,7 +2051,8 @@ static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         /* Held payload bytes and plaintext the machine already opened first
          * (see read_plain_sc); then, if a job is still running, wait for it. */
         if (sc_feed_locked(tcp, conn, NULL, 0) != 0) {
-            conn_notify_disconnect(tcp, conn);
+            if (tcp->on_disconnect)
+                tcp->on_disconnect(conn, tcp->cb_ctx);
             conn_free(tcp, conn);
             return READ_CLOSED;
         }
@@ -2168,7 +2098,7 @@ static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         if (n > 0) {
             atomic_store_explicit(&conn->io_started, true, memory_order_relaxed);
             conn->read_bytes_left -= (size_t)n;
-            conn_stamp_activity(conn);
+            conn->last_activity = nodus_time_now();
             eintr_left = NTCP_MAX_EINTR_RETRY;
             if (ws_ingest(tcp, conn, chunk, (size_t)n))
                 return READ_CLOSED;      /* closed — no further work on conn */
@@ -2188,7 +2118,8 @@ static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             bool freed = conn->ws_open &&
                          try_parse_frames(tcp, conn, false) == PARSE_CLOSED;
             if (!freed) {
-                conn_notify_disconnect(tcp, conn);
+                if (tcp->on_disconnect)
+                    tcp->on_disconnect(conn, tcp->cb_ctx);
                 conn_free(tcp, conn);
             }
             return READ_CLOSED;
@@ -2198,7 +2129,8 @@ static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             continue;
         if (io == NTCP_IO_WOULDBLOCK)
             return READ_DRAINED;
-        conn_notify_disconnect(tcp, conn);
+        if (tcp->on_disconnect)
+            tcp->on_disconnect(conn, tcp->cb_ctx);
         conn_free(tcp, conn);
         return READ_CLOSED;
     }
@@ -2253,7 +2185,8 @@ static void handle_accept_ws(nodus_tcp_t *tcp) {
     conn->port = ntohs(addr.sin_port);
     if (!inet_ntop(AF_INET, &addr.sin_addr, conn->ip, sizeof(conn->ip)))
         conn->ip[0] = '\0';
-    conn_stamp_connected(conn);
+    conn->connected_at = nodus_time_now();
+    conn->last_activity = conn->connected_at;
     conn->is_ws = true;
     conn->ws_open = false;
     nodus_ws_parser_init(&conn->ws);
@@ -2360,7 +2293,8 @@ static bool accept_one_unix(nodus_tcp_t *tcp) {
     conn->peer_pid = (int32_t)cr.pid;
     conn->port = 0;
     snprintf(conn->ip, sizeof(conn->ip), "%s", NODUS_TCP_UNIX_PEER_IP);
-    conn_stamp_connected(conn);
+    conn->connected_at = nodus_time_now();
+    conn->last_activity = conn->connected_at;
 
     QGP_LOG_DEBUG(LOG_TAG_TCP, "unix: accepted slot=%d fd=%d peer uid=%u pid=%d",
                   conn->slot, fd, (unsigned)conn->peer_uid, (int)conn->peer_pid);
@@ -2615,12 +2549,13 @@ int nodus_tcp_listen(nodus_tcp_t *tcp, const char *bind_ip, uint16_t port) {
 #endif
 }
 
-int nodus_tcp_ws_listen(nodus_tcp_t *tcp, uint16_t port) {
+int nodus_tcp_ws_listen(nodus_tcp_t *tcp, uint16_t port,
+                        const nodus_ws_origins_t *origins) {
 #ifndef NODUS_TCP_EPOLL
-    (void)tcp; (void)port;
+    (void)tcp; (void)port; (void)origins;
     return -1;  /* Server is Linux-only (not Windows, not the browser) */
 #else
-    if (!tcp || tcp->ws_listen_fd >= 0)
+    if (!tcp || !origins || origins->count <= 0 || tcp->ws_listen_fd >= 0)
         return -1;
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -2660,6 +2595,7 @@ int nodus_tcp_ws_listen(nodus_tcp_t *tcp, uint16_t port) {
 
     tcp->ws_listen_fd = fd;
     tcp->ws_port = ntohs(addr.sin_port);
+    tcp->ws_origins = origins;
     return 0;
 #endif
 }
@@ -2817,7 +2753,8 @@ int nodus_tcp_ws_sweep(nodus_tcp_t *tcp, uint64_t now) {
  * AF_UNIX connect always completes at once). */
 static bool conn_connected_now(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     conn->state = NODUS_CONN_CONNECTED;
-    conn_stamp_connected(conn);
+    conn->connected_at = nodus_time_now();
+    conn->last_activity = conn->connected_at;
     if (!conn->is_unix) {   /* TCP options; meaningless on AF_UNIX */
         set_keepalive(conn->fd);
         set_nodelay(conn->fd);
@@ -2945,7 +2882,6 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
     conn->fd = fd;
     conn->state = NODUS_CONN_CONNECTING;
     conn->port = port;
-    conn->dial_mono_ms = nodus_time_mono_ms();
     /* C2 fix: this is an outbound conn — we opened it. Challenge handler will
      * only sign auth responses when this flag is true (closes signing oracle). */
     conn->auth_initiated_by_us = true;
@@ -2988,15 +2924,12 @@ static int pending_queue_append(nodus_tcp_conn_t *conn,
                                  const uint8_t *payload, size_t len) {
     if (conn_ws_not_open(conn)) return -1;
 #ifdef NODUS_TCP_SC
-    /* The auth-gate queue holds unsealed wire frames. On a SecretConnection
-     * connection it is the DIAL queue: frames offered before the session is
-     * authenticated wait here as plaintext and are replayed through
-     * nodus_tcp_send (so they are sealed, in order) when the owner opens the
-     * gate at on_session (nodus_inter_dial_conn_open). It must never reach the
-     * socket any other way: nodus_tcp_pending_flush refuses a layer
-     * connection. A dead machine takes nothing. */
-    if (conn->sc && nodus_tcp_sc_dead(conn)) {
-        QGP_LOG_WARN(LOG_TAG_TCP, "auth pending queue refused on a dead SecretConnection, slot=%d",
+    /* The auth-gate queue holds unsealed wire frames that pending_flush
+     * would copy into wbuf as they are. With the layer on, the hello / auth
+     * gate is gone (3b-2 rewires it), and this queue must never carry a
+     * frame around the sealing. */
+    if (conn->sc) {
+        QGP_LOG_WARN(LOG_TAG_TCP, "auth pending queue refused on a SecretConnection, slot=%d",
                      conn->slot);
         return -1;
     }
@@ -3040,16 +2973,6 @@ static int pending_queue_append(nodus_tcp_conn_t *conn,
 
 static int pending_flush_locked(nodus_tcp_conn_t *conn) {
     if (!conn->pending_buf || conn->pending_len == 0) return 0;
-#ifdef NODUS_TCP_SC
-    /* The queue holds plaintext frames: copying it into wbuf would put
-     * them on the socket around the sealing. A layer connection replays it
-     * through nodus_tcp_send instead (nodus_inter_dial_conn_open). */
-    if (conn->sc) {
-        QGP_LOG_ERROR(LOG_TAG_TCP, "pending flush refused on a SecretConnection, slot=%d",
-                      conn->slot);
-        return -1;
-    }
-#endif
 
     if (conn->wpos > 0) {
         size_t remaining = conn->wlen - conn->wpos;
@@ -3173,23 +3096,68 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
 #endif
 
     /* Phase 3.2d: log first send per conn — captures (slot, fd, conn ptr,
-     * peer) at the moment data is first written. Compare with
+     * peer, has_crypto) at the moment data is first written. Compare with
      * INTER_FRAME_FIRST to detect any cross-conn fd alias. */
     if (!conn->first_send_logged) {
         conn->first_send_logged = true;
+        /* B3 fix — read inline channel_crypto state. */
+        int established = conn->channel_crypto.established ? 1 : 0;
+        int has_crypto = established;
         fprintf(stderr,
                 "TCP_SEND_FIRST: slot=%d fd=%d peer=%s:%u len=%zu "
-                "state=%d auth_state=%d tcp=%p conn=%p\n",
+                "has_crypto=%d est=%d state=%d auth_state=%d "
+                "tcp=%p conn=%p\n",
                 conn->slot, conn->fd, conn->ip, (unsigned)conn->port, len,
-                (int)conn->state, (int)conn->auth_state,
+                has_crypto, established, (int)conn->state,
+                (int)conn->auth_state,
                 (void *)conn->tcp_parent, (void *)conn);
     }
 
-    /* A connection without the SecretConnection layer (the Unix-socket IPC)
-     * is plaintext: its local-only traffic is protected by the 0600 socket
-     * file and SO_PEERCRED (nodus_tcp_conn_t.is_unix). */
+    /* Encrypt payload if channel crypto is established.
+     * B3 fix — read inline channel_crypto, no pointer alias. */
+    uint8_t *enc_buf = NULL;
     const uint8_t *send_payload = payload;
     size_t send_len = len;
+
+    {
+        nodus_channel_crypto_t *cc = &conn->channel_crypto;
+        if (cc->established) {
+            /* Phase 3.2b-inv: log the first encrypted send on this conn
+             * so we can correlate "sender established crypto" with the
+             * matching receiver's conn state at the same moment. */
+            if (!conn->tx_encrypt_logged) {
+                conn->tx_encrypt_logged = true;
+                fprintf(stderr,
+                        "TX_ENCRYPT_FIRST slot=%d peer=%s:%u tx_counter=%llu len=%zu\n",
+                        conn->slot, conn->ip, (unsigned)conn->port,
+                        (unsigned long long)cc->tx_counter, len);
+            }
+            /* Phase 3.2b-inv2+inv3: milestone encrypt log. First 3 catch
+             * fresh handshake; 100/500/1000/2000k milestones catch long-lived
+             * conns so we can correlate high tx_counter T1 fails with the
+             * actual sender state. */
+            if (cc->tx_counter < 3 ||
+                cc->tx_counter == 100 || cc->tx_counter == 500 ||
+                cc->tx_counter == 1000 || (cc->tx_counter % 2000) == 0) {
+                fprintf(stderr,
+                        "ENCRYPT_CALL slot=%d peer=%s:%u tx_counter=%llu "
+                        "cc=%p conn_crypto=%p len=%zu\n",
+                        conn->slot, conn->ip, (unsigned)conn->port,
+                        (unsigned long long)cc->tx_counter,
+                        (void *)cc, (void *)cc, len);
+            }
+            size_t enc_needed = len + NODUS_CHANNEL_OVERHEAD;
+            enc_buf = malloc(enc_needed);
+            if (!enc_buf) return -1;
+            size_t enc_out = 0;
+            if (nodus_channel_encrypt(cc, payload, len, enc_buf, enc_needed, &enc_out) != 0) {
+                free(enc_buf);
+                return -1;
+            }
+            send_payload = enc_buf;
+            send_len = enc_out;
+        }
+    }
 
     size_t frame_size = conn_wire_size(conn, send_len);
 
@@ -3243,6 +3211,7 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
                         epoll_mod(tcp->epoll_fd, conn->fd, ev, conn);
                     }
 #endif
+                    free(enc_buf);
                     return 0;
                 }
                 free(encoded);
@@ -3253,8 +3222,9 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
         /* Queue is full (or allocation failed) — last resort fallback. */
         nodus_tcp_t *tcp = conn->tcp_parent;
         if (tcp && tcp->on_pending_full) {
-            conn->pending_hint_fallback_count++;   /* before: see send_sc_locked */
             tcp->on_pending_full(conn, payload, len, tcp->pending_full_ctx);
+            conn->pending_hint_fallback_count++;
+            free(enc_buf);
             return 0;
         }
 
@@ -3270,6 +3240,7 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
                       conn->ip, (unsigned)conn->port, conn->slot, len, head,
                       conn->pending_count, conn->pending_bytes);
         conn->send_full_count++;
+        free(enc_buf);
         return -1;
     }
 
@@ -3279,11 +3250,13 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
                                       send_payload, send_len);
     if (written == 0) {
         QGP_LOG_ERROR(LOG_TAG_TCP, "send: frame_encode failed (len=%zu)", send_len);
+        free(enc_buf);
         return -1;
     }
     conn->wlen += written;
     conn->send_ok_count++;
     conn->send_bytes_total += send_len;
+    free(enc_buf);  /* NULL-safe */
 
     /* Try immediate send.
      *
@@ -3646,7 +3619,8 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
         }
 
         if (events[i].events & EPOLLERR) {
-            conn_notify_disconnect(tcp, conn);
+            if (tcp->on_disconnect)
+                tcp->on_disconnect(conn, tcp->cb_ctx);
             conn_free(tcp, conn);
             continue;
         }
@@ -3669,7 +3643,8 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
         if (events[i].events & (EPOLLIN | EPOLLRDHUP))
             handle_read(tcp, conn);
         else if (events[i].events & EPOLLHUP) {
-            conn_notify_disconnect(tcp, conn);
+            if (tcp->on_disconnect)
+                tcp->on_disconnect(conn, tcp->cb_ctx);
             conn_free(tcp, conn);
         }
     }
@@ -3703,10 +3678,8 @@ void nodus_tcp_disconnect(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
      * running or about to, exactly once — a second disconnect issued from
      * another callback meanwhile must not run it again. */
     if (conn->sc_closing) return;
-    /* Claimed by a teardown whose on_disconnect is running (re-entrant call
-     * from that callback): a no-op — the outer teardown frees (D-24 a). */
-    if (conn->disc_claimed) return;
-    conn_notify_disconnect(tcp, conn);
+    if (tcp->on_disconnect)
+        tcp->on_disconnect(conn, tcp->cb_ctx);
     conn_free(tcp, conn);
 }
 
@@ -3723,6 +3696,16 @@ nodus_tcp_conn_t *nodus_tcp_find_by_id(nodus_tcp_t *tcp,
 
 bool nodus_tcp_read_pending(const nodus_tcp_t *tcp) {
     return tcp && tcp->read_head != NULL;
+}
+
+uint64_t nodus_tcp_decrypt_fail_total(const nodus_tcp_t *tcp) {
+    if (!tcp) return 0;
+    /* Freed conns already folded their count into decrypt_fail_total (conn_free);
+     * add what the still-live conns are carrying. */
+    uint64_t total = tcp->decrypt_fail_total;
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++)
+        if (tcp->pool[i]) total += tcp->pool[i]->decrypt_skip_count;
+    return total;
 }
 
 nodus_tcp_conn_t *nodus_tcp_find_by_addr(nodus_tcp_t *tcp,

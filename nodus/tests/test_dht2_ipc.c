@@ -54,9 +54,7 @@
  *     from its request, so a reply at 3000 to a request of 1000 is fresh
  *     until 6000, not 8000;
  *   · a name {err} stays readable: no further name request goes out until
- *     the fault was reported once — or is 1000 ms old (an abandoned fault
- *     is dropped, the next writer is asked, the dropped fp is never
- *     answered "unnamed");
+ *     the fault was reported once;
  *   · a frame header declaring more than the cap closes the connection
  *     with no payload sent (client: FRAME_MAX; witness dht kind:
  *     CTL_FRAME_MAX);
@@ -85,8 +83,7 @@
  *     poll rounds, each backed by a positive check in the same case that
  *     the previous request did arrive.
  *  4. Time is whatever the test passes in; it does not prove the callers
- *     (the serving loop, package 6b; the holder of package 6a only hands
- *     on the `now_ms` it is given) pass a monotonic clock.
+ *     (package 5) pass a monotonic clock.
  */
 
 #define _DEFAULT_SOURCE 1   /* mkdtemp under -std=c11 */
@@ -580,7 +577,7 @@ static void test_null_handler(void) {
 
 static void test_status_unchanged(nodus_witness_ipc_t *ipc, const char *sock,
                                   uint8_t *exp, size_t cap) {
-    TEST("ipc_ctl / ipc_status answer: the seven keys unchanged + c3");
+    TEST("ipc_ctl / ipc_status answer is the unchanged seven-key map");
     uint8_t ctl[32], rq[32];
     size_t cn = enc_q1(ctl, sizeof(ctl), "ipc_ctl");
     size_t rn = enc_q1(rq, sizeof(rq), "ipc_status");
@@ -588,19 +585,17 @@ static void test_status_unchanged(nodus_witness_ipc_t *ipc, const char *sock,
     raw_ask(ipc, rq, rn);
     raw_end();
 
-    uint8_t sr[64], ci[32], c3[32];
+    uint8_t sr[64], ci[32];
     for (int i = 0; i < 64; i++) sr[i] = (uint8_t)(0xA0 + i);
     for (int i = 0; i < 32; i++) ci[i] = (uint8_t)(0x10 + i);
-    memset(c3, 0, sizeof(c3));   /* h_status leaves the v3 chain id zero */
     cbor_encoder_t e;
-    cbor_encoder_init(&e, exp, cap);         /* the pre-package layout + c3 */
-    cbor_encode_map(&e, 8);
+    cbor_encoder_init(&e, exp, cap);         /* the pre-package layout */
+    cbor_encode_map(&e, 7);
     cbor_encode_cstr(&e, "q");  cbor_encode_cstr(&e, "ipc_status");
     cbor_encode_cstr(&e, "co"); cbor_encode_bool(&e, true);
     cbor_encode_cstr(&e, "h");  cbor_encode_uint(&e, 4242);
     cbor_encode_cstr(&e, "sr"); cbor_encode_bstr(&e, sr, 64);
     cbor_encode_cstr(&e, "ci"); cbor_encode_bstr(&e, ci, 32);
-    cbor_encode_cstr(&e, "c3"); cbor_encode_bstr(&e, c3, 32);   /* DHT v2 3b-2: the v3 chain id */
     cbor_encode_cstr(&e, "po"); cbor_encode_bool(&e, true);
     cbor_encode_cstr(&e, "lp"); cbor_encode_uint(&e, 14004);
     if (g_rframes != 1 || !raw_got(exp, cbor_encoder_len(&e))) {
@@ -998,35 +993,6 @@ static void test_c_fault_kept(const char *sock) {
     PASS();
 }
 
-static void test_c_fault_abandoned(const char *sock) {
-    TEST("view: an abandoned name {err} is dropped after one poll period");
-    nodus_dht2_wview_t *wv = wv_start(sock);
-    if (!wv) { FAIL("new"); return; }
-    uint8_t a[64], b[64], r[256];
-    fp_of(9, 70, a); fp_of(9, 71, b);
-    uint64_t h = 0;
-    nodus_dht2_wview_name(wv, 0, a, &h);
-    pump(wv, 0, 20);
-    size_t n = enc_err(r, sizeof(r), "ipc_name", a, "names store unreadable");
-    srv_send(r, n);
-    pump(wv, 0, 20);                      /* the fault is read at tick 0 */
-    /* before one period: still held, b waits and nothing is sent for it */
-    bool early = nodus_dht2_wview_name(wv, 999, b, &h) == NODUS_DHT2_WVIEW_NAME_PENDING;
-    pump(wv, 999, 20);
-    bool early_unsent = srv_count_name(b) == 0;
-    /* at one period: dropped, b is asked, a is not reported as FAULT and
-     * never as unnamed */
-    bool b_pend = nodus_dht2_wview_name(wv, 1000, b, &h) == NODUS_DHT2_WVIEW_NAME_PENDING;
-    pump(wv, 1000, 20);
-    bool b_sent = srv_count_name(b) == 1;
-    nodus_dht2_wview_name_t ra = nodus_dht2_wview_name(wv, 1000, a, &h);
-    nodus_dht2_wview_free(wv);
-    if (!(early && early_unsent)) { FAIL("fault dropped before one period"); return; }
-    if (!(b_pend && b_sent)) { FAIL("b still blocked by an abandoned fault"); return; }
-    if (ra != NODUS_DHT2_WVIEW_NAME_PENDING) { FAIL("a dropped fault became FAULT/unnamed"); return; }
-    PASS();
-}
-
 /* Write a 7-byte frame header declaring `declared` payload bytes and no
  * payload, straight onto the connection's socket. */
 static bool write_header_only(nodus_tcp_conn_t *c, uint32_t declared) {
@@ -1210,7 +1176,6 @@ int main(void) {
     test_c_late_reply(ssock);
     test_c_snap_age_from_request(ssock);
     test_c_fault_kept(ssock);
-    test_c_fault_abandoned(ssock);
     test_c_header_cap(ssock);
     test_c_poll_rate(ssock);
     test_c_snap_err(ssock);

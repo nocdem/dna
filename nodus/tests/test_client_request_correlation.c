@@ -172,14 +172,6 @@ int main(void) {
         cfg.server_count = 1;
         snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "127.0.0.1");
         cfg.servers[0].port = 1;
-        /* a session needs a pin and a chain id (nodus_client_init refuses
-         * without); nothing here ever connects */
-        static nodus_key_t pin;
-        memset(&pin, 0x11, sizeof(pin));
-        cfg.pinned_server_fps = &pin;
-        cfg.pinned_server_fp_count = 1;
-        memset(cfg.expected_chain_id, 0x22, sizeof(cfg.expected_chain_id));
-        cfg.has_expected_chain_id = true;
         CHECK(dc && id);
         CHECK_EQ(nodus_client_init(dc, &cfg, id), 0);
 

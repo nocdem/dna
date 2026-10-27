@@ -24,10 +24,8 @@
  * new in that migration, so no shipped client has ever produced or
  * verified a raw 0x09 signature — see §A below.):
  *
- *   §A the strict set is exactly {0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D,
- *      0x0E} and nothing else (0x0C / 0x0D: DHT v2 client / node session
- *      auth; 0x0E: the ANON session's KEM-key certificate, package 3d; §A2
- *      pins 0x0E's own domain)
+ *   §A the strict set is exactly {0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D}
+ *      and nothing else (0x0C / 0x0D: DHT v2 client / node session auth)
  *      (0x09 MLKEM_BIND joined in KEM Faz 1, 2026-09-23 — tier-2, brand new;
  *      0x0A SESSION_AUTH and 0x0B WITNESS_ADDR joined in P2P-PORT F1,
  *      2026-09-26 — brand new)
@@ -335,7 +333,7 @@ static const uint8_t KAT_CHAIN_ID[32] = {
 /* ── §A — the strictness predicate itself ─────────────────────────── */
 
 static void test_strict_set_is_exactly_07_08(void) {
-    TEST("§A strict set is exactly {0x07-0x0E}");
+    TEST("§A strict set is exactly {0x07-0x0D}");
     if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_PREPARED)) {
         FAIL("PREPARED (0x07) must be strict"); return; }
     if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_VIEWOK)) {
@@ -370,50 +368,12 @@ static void test_strict_set_is_exactly_07_08(void) {
     if (nodus_sign_purpose_is_strict(0x06)) { FAIL("0x06 strict"); return; }
     /* DHT v2 sub-package 3a: 0x0C / 0x0D join the strict set (decision
      * records 2026-10-14-kurultay-21-summary.md, 2026-10-23-kurultay-43-
-     * summary.md). Package 3d adds 0x0E (the ANON session's KEM-key
-     * certificate, design 2026-10-26-dht-v2-3d-no-login-design.md §1.1);
-     * 0x0F is the next free value and is NOT strict. */
+     * summary.md); 0x0E is the next free value and is NOT strict. */
     if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_CLIENT_SESSION_AUTH)) {
         FAIL("CLIENT_SESSION_AUTH (0x0C) must be strict"); return; }
     if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_NODE_SESSION_AUTH)) {
         FAIL("NODE_SESSION_AUTH (0x0D) must be strict"); return; }
-    if (NODUS_PURPOSE_KEM_CERT != 0x0E) { FAIL("KEM_CERT is not 0x0E"); return; }
-    if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_KEM_CERT)) {
-        FAIL("KEM_CERT (0x0E) must be strict"); return; }
-    if (nodus_sign_purpose_is_strict(0x0F)) { FAIL("0x0F strict"); return; }
-    PASS();
-}
-
-/* ── §A2 — the KEM-key certificate domain (0x0E) ──────────────────── */
-
-static void test_kem_cert_domain(void) {
-    TEST("§A2 KEM_CERT (0x0E): own domain, no raw fallback");
-    uint8_t msg[1622];
-    nodus_random(msg, sizeof(msg));
-    nodus_sig_t cert, raw, other;
-
-    if (nodus_sign_kem_cert(&cert, msg, sizeof(msg), &g_sk) != 0) {
-        FAIL("sign"); return; }
-    if (nodus_verify_kem_cert(&cert, msg, sizeof(msg), &g_pk) != 0) {
-        FAIL("verify"); return; }
-    /* a raw signature over the same bytes is refused (strict: no fallback) */
-    if (nodus_sign(&raw, msg, sizeof(msg), &g_sk) != 0) { FAIL("raw sign"); return; }
-    if (nodus_verify_kem_cert(&raw, msg, sizeof(msg), &g_pk) == 0) {
-        FAIL("raw signature verified as KEM_CERT"); return; }
-    /* the certificate is not valid under the sibling session purposes ... */
-    if (nodus_verify_client_session_auth(&cert, msg, sizeof(msg), &g_pk) == 0 ||
-        nodus_verify_node_session_auth(&cert, msg, sizeof(msg), &g_pk) == 0 ||
-        nodus_verify_session_auth(&cert, msg, sizeof(msg), &g_pk) == 0) {
-        FAIL("KEM_CERT verified under a session purpose"); return; }
-    /* ... and a session signature over the same bytes is not a certificate */
-    if (nodus_sign_client_session_auth(&other, msg, sizeof(msg), &g_sk) != 0) {
-        FAIL("client sign"); return; }
-    if (nodus_verify_kem_cert(&other, msg, sizeof(msg), &g_pk) == 0) {
-        FAIL("session signature verified as KEM_CERT"); return; }
-    /* a changed byte fails */
-    msg[1621] ^= 1;
-    if (nodus_verify_kem_cert(&cert, msg, sizeof(msg), &g_pk) == 0) {
-        FAIL("modified message verified"); return; }
+    if (nodus_sign_purpose_is_strict(0x0E)) { FAIL("0x0E strict"); return; }
     PASS();
 }
 
@@ -659,7 +619,6 @@ int main(void) {
     printf("\nO15N Faz 2A — strict domains (PREPARED 0x07, VIEWOK 0x08)\n");
     printf("---------------------------------------------------------\n");
     test_strict_set_is_exactly_07_08();
-    test_kem_cert_domain();
     test_prepared_preimage_kat();
     test_strict_cross_domain_rejects();
     test_strict_raw_signature_refused();

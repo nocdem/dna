@@ -54,13 +54,6 @@ static int hex_exact(const char *s, uint8_t *out, size_t n) {
     return 0;
 }
 
-/* An all-zero node pin / chain id matches nothing (the client refuses it). */
-static int all_zero(const uint8_t *b, size_t n) {
-    uint8_t acc = 0;
-    for (size_t i = 0; i < n; i++) acc |= b[i];
-    return acc == 0;
-}
-
 static int u64_strict(const char *s, uint64_t *out) {
     if (!*s || *s == '-' || *s == '+') return -1;
     for (const char *p = s; *p; p++)
@@ -121,11 +114,9 @@ int faucet_cfg_parse(const char *text, faucet_cfg_t *cfg, char *err,
             ok = u64_strict(val, &u) == 0 && u >= 1 && u <= 65535;
             if (ok) cfg->node_port = (uint16_t)u;
         } else if (!strcmp(key, "node_fp")) {
-            req = REQ_NODE_FP; ok = hex_exact(val, cfg->node_fp, 64) == 0 &&
-                                    !all_zero(cfg->node_fp, 64);
+            req = REQ_NODE_FP; ok = hex_exact(val, cfg->node_fp, 64) == 0;
         } else if (!strcmp(key, "chain_id")) {
-            req = REQ_CHAIN_ID; ok = hex_exact(val, cfg->chain_id, 32) == 0 &&
-                                     !all_zero(cfg->chain_id, 32);
+            req = REQ_CHAIN_ID; ok = hex_exact(val, cfg->chain_id, 32) == 0;
         } else if (!strcmp(key, "key_dir")) {
             req = REQ_KEY_DIR;
             ok = *val && strlen(val) < sizeof(cfg->key_dir);

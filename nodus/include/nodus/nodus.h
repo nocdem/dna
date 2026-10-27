@@ -33,10 +33,6 @@ extern "C" {
 #define NODUS_CLIENT_MAX_SERVERS   8
 #define NODUS_CLIENT_MAX_LISTENS  128
 #define NODUS_CLIENT_MAX_CH_SUBS   32
-/** Size of the chain id a client session is bound to (equals
- *  CMT_P2P_SC_CHAIN_ID_SIZE; asserted in nodus_client.c — this header stays
- *  free of the secret-connection headers, the browser builds include it). */
-#define NODUS_CLIENT_CHAIN_ID_SIZE 32
 
 /* ── Connection state ───────────────────────────────────────────── */
 
@@ -101,54 +97,26 @@ typedef struct {
     nodus_on_state_change_fn    on_state_change;
     void                       *callback_data;
 
-    /* Server key pin (MANDATORY since the client session moved onto the
-     * SecretConnection layer, DHT v2 package 3 — decisions/2026-10-23-
-     * kurultay-43-summary.md, mandatory fixes). Fingerprints (SHA3-512 of
-     * the server's ML-DSA-87 public key — nodus_fingerprint(), the same
-     * 64-byte value as a node id) of the servers this client accepts.
+    /* Server key pin (optional). Fingerprints (SHA3-512 of the server's
+     * Dilithium5 public key — nodus_fingerprint(), the same 64-byte value
+     * as a node id) of the servers this client accepts.
      *
-     * nodus_client_init() REFUSES a config with no pin: pinned_server_fps
-     * NULL or pinned_server_fp_count <= 0 (what a zeroed config gives) —
-     * there is no unpinned client, no round-3 / cached-key / unencrypted
-     * session.
+     * NULL / 0 (what a zeroed config gives): no pin — the handshake behaves
+     * exactly as before this field existed.
      *
-     * Each connect checks the server's CLAIMED public key against this list
-     * BEFORE it encapsulates to it (nodus_tcp_sc.h "PROFILES, PURPOSES, THE
-     * PIN"); a key whose fingerprint is not in the list aborts the handshake.
+     * Set (count > 0): the connection FAILS CLOSED unless the server's
+     * AUTH_OK carries a Kyber pubkey + server pubkey + kpk_sig, the
+     * signature verifies, fingerprint(server pubkey) is in this list, and
+     * the AUTH_OK also carries an ML-KEM-1024 pubkey whose mpk_sig
+     * verifies — a pinned session is ML-KEM-1024 only (operator
+     * 2026-09-29). With a pin set there is no unsigned-kpk ("legacy
+     * server"), cached-key, Kyber round-3 or unencrypted session.
      *
      * The array is owned by the caller and must outlive the client (it is
-     * not copied). count > 0 with a
-     * NULL pointer, or count < 0, also makes nodus_client_init() fail. */
+     * not copied; same rule as nodus_tcp_t.ws_origins). count > 0 with a
+     * NULL pointer, or count < 0, makes nodus_client_init() fail. */
     const nodus_key_t          *pinned_server_fps;
     int                         pinned_server_fp_count;
-
-    /* The chain id the session is bound to (MANDATORY, same rule): the
-     * 32-byte id of the chain this client means to talk to. It travels in
-     * the SecretConnection HELLO of both ends and the handshake fails when
-     * the two differ (a per-network binding: a client of one network cannot
-     * complete a session with a node of another). Set has_expected_chain_id
-     * together with expected_chain_id; nodus_client_init() REFUSES a config
-     * with has_expected_chain_id false (or an all-zero id). The id is copied
-     * into the client. */
-    uint8_t                     expected_chain_id[NODUS_CLIENT_CHAIN_ID_SIZE];
-    bool                        has_expected_chain_id;
-
-    /* NO-LOGIN (ANON) session (DHT v2 package 3d, design docs/plans/
-     * 2026-10-26-dht-v2-3d-no-login-design.md; decision 2026-10-26-wallet-no-
-     * node-login.md). true = the client opens the ANON session family: it
-     * presents NO key and no login — the node proves itself to the client
-     * (pin + KEM-key certificate, still MANDATORY: pinned_server_fps and
-     * expected_chain_id as above) and the client is bound to no identity.
-     * nodus_client_init() then takes `identity` as NULL (an identity passed
-     * is NOT copied and never used), and the session may call only the node's
-     * ANON allowlist: the chain reads, dnac_spend and the evm_* reads. The five
-     * owner-only reads (dnac_utxo, dnac_addr_history, dnac_delegations,
-     * dnac_msig_utxo, dnac_msig_addr_history) then carry an owner-signed query
-     * `qa` signed with the key given to nodus_client_set_owner_key(); without
-     * that key they fail (-1) before anything is sent. The DHT / messaging
-     * calls are refused by the node (NOT_AUTHENTICATED). false (the zeroed
-     * default) = the identified session, unchanged. */
-    bool                        anon_session;
 } nodus_client_config_t;
 
 /* ── Concurrent request slot ────────────────────────────────────── */
@@ -214,10 +182,6 @@ typedef struct nodus_client {
 
     /* Session */
     uint8_t                token[NODUS_SESSION_TOKEN_LEN];
-    /* The SecretConnection of the current connection became AUTHENTICATED
-     * (set by the transport's on_session, cleared at each connect). The
-     * session is READY once this AND the server's token message are in. */
-    _Atomic bool           session_ready;
     _Atomic uint32_t       next_txn;
 
     /* Current server index for failover */
@@ -259,9 +223,11 @@ typedef struct nodus_client {
     _Atomic uint32_t          next_client_cid;
     pthread_mutex_t           circuits_mutex;
 
-    /* No channel-encryption state here: the client session is a
-     * SecretConnection (nodus_tcp_sc.h) since DHT v2 3b-2; the old per-
-     * connection channel_crypto no longer exists. */
+    /* Channel encryption (Kyber handshake result).
+     * B3 fix — channel_crypto storage moved to nodus_tcp_conn_t.
+     * Read via client->conn->channel_crypto. Eliminates the pointer
+     * aliasing race that caused "Replay detected" loops on
+     * disconnect+reconnect. */
 
     /* Cached server Kyber pubkey (survives reconnect, prep for anonymous hello) */
     uint8_t                   cached_server_kyber_pk[1568];
@@ -280,21 +246,6 @@ typedef struct nodus_client {
     nodus_pubkey_t             server_dil_pk;
     bool                       has_server_dil_pk;
 
-    /* ANON session only (config.anon_session): the caller's own ML-DSA-87 key
-     * the five owner-only reads are signed with (nodus_client_set_owner_key).
-     * A copy, wiped by nodus_client_close. */
-    bool                       has_owner_key;
-    nodus_seckey_t             owner_sk;
-    nodus_pubkey_t             owner_pk;
-
-    /* ANON session only: the current connection's handshake transcript T
-     * (64 bytes), copied when the session becomes AUTHENTICATED (the
-     * connection is alive there) and cleared at each connect. Read and
-     * written under wbuf_mutex, so building a `qa` never dereferences a
-     * connection the read thread may be freeing. */
-    bool                       has_session_t;
-    uint8_t                    session_t[64];
-
 } nodus_client_t;
 
 /* ── Lifecycle ──────────────────────────────────────────────────── */
@@ -302,27 +253,10 @@ typedef struct nodus_client {
 /**
  * Initialize client with config and identity.
  * Does NOT connect — call nodus_client_connect() after.
- *
- * With config->anon_session set (the no-login session, see the config field),
- * `identity` may be NULL: it is not copied and never used, so the client holds
- * no account key at all.
  */
 int nodus_client_init(nodus_client_t *client,
                        const nodus_client_config_t *config,
                        const nodus_identity_t *identity);
-
-/**
- * ANON session (config.anon_session): the ML-DSA-87 key the five owner-only
- * reads are signed with — the wallet's own key (for a multisig vault read, a
- * member's key). `qa`, the owner-signed query bound to this session's
- * handshake transcript, is built per request with it
- * (nodus_owner_query.h). The pair is COPIED into the client and wiped by
- * nodus_client_close. @return 0; -1 on a NULL argument or a client that is not
- * an ANON client (an identified session signs nothing extra).
- */
-int nodus_client_set_owner_key(nodus_client_t *client,
-                               const nodus_seckey_t *sk,
-                               const nodus_pubkey_t *pk);
 
 /**
  * Connect to the first available server and authenticate.

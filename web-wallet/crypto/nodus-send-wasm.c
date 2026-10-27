@@ -2532,25 +2532,9 @@ static struct {
     int                     n_pins;
 } g_net;
 
-/* ── session state ──
- *
- * TWO sessions, by purpose (DHT v2 package 3d; decisions/2026-10-26-wallet-no-
- * node-login.md "wallet != messaging"):
- *   g_client    the WALLET's session — the no-login ANON family: no account
- *               login, the node never learns a key. Balance, coin / history /
- *               delegation reads, spends and the EVM reads all use it; the
- *               owner-only reads carry a `qa` signed with g_id (the wallet's
- *               own key, nodus_client_set_owner_key).
- *   g_client_c  the Nodus Connect thin core's IDENTIFIED session (nc_wasm.c):
- *               the old DHT (get / put / listen) is identity-bound and stays so
- *               until Connect's own DHT v2 move. Opened lazily, only when a
- *               Messages export needs it (nc_host_session_ok) — a wallet-only
- *               page never opens it, so the wallet never logs in. */
+/* ── session state ── */
 static nodus_client_t   g_client;       /* static: large, and the pending
                                          * slots must outlive any wait     */
-static nodus_client_t   g_client_c;     /* the Connect core's identified session */
-static int g_client_c_inited;           /* nodus_client_init succeeded (g_client_c) */
-static uint8_t g_checked_c_token[NODUS_SESSION_TOKEN_LEN]; /* nsw_check_chain_c */
 static nodus_identity_t g_id;
 static int g_client_inited;             /* nodus_client_init succeeded     */
 static int g_used;                      /* identify ran once (success or not)*/
@@ -2685,16 +2669,8 @@ int nsw_net_reset(void) {
 
 int nsw_net_set_chain(const char *chain_hex) {
     if (g_used) return nsw_fail("The network is fixed once the wallet connects.");
-    /* decode into temporary storage: a refused value leaves the previous
-     * chain id (and has_chain) untouched */
-    uint8_t tmp[sizeof(g_net.chain)];
-    uint8_t acc = 0;
-    if (nsw_parse_hex(chain_hex, tmp, sizeof(tmp)) != 0)
+    if (nsw_parse_hex(chain_hex, g_net.chain, sizeof(g_net.chain)) != 0)
         return nsw_fail("Invalid chain id in the network settings.");
-    for (size_t i = 0; i < sizeof(tmp); i++) acc |= tmp[i];
-    if (acc == 0)                    /* the client session refuses it anyway */
-        return nsw_fail("Invalid chain id in the network settings.");
-    memcpy(g_net.chain, tmp, sizeof(tmp));
     g_net.has_chain = 1;
     return 0;
 }
@@ -2722,7 +2698,7 @@ int nsw_net_add_pin(const char *fp_hex) {
     if (g_net.n_pins >= NSW_MAX_PINS)
         return nsw_fail("Too many server keys in the network settings.");
     nodus_key_t k;
-    if (qgp_fp_hex_to_raw(fp_hex, k.bytes) != 0 || nodus_key_is_zero(&k))
+    if (qgp_fp_hex_to_raw(fp_hex, k.bytes) != 0)
         return nsw_fail("Invalid server key in the network settings.");
     for (int i = 0; i < g_net.n_pins; i++)
         if (memcmp(g_net.pins[i].bytes, k.bytes, NODUS_KEY_BYTES) == 0)
@@ -3013,38 +2989,24 @@ static void nsw_client_drop(void) {
 /* The pinned session + the chain check. Inside the op bracket, identified.
  * @return 0 connected; -1 failed, nsw_connect may try again; -2 refused
  *         (final: g_refused). */
-/* The client config both sessions share: the pinned servers and the chain id
- * the session is bound to. `anon` selects the no-login ANON family. */
-static void nsw_client_cfg(nodus_client_config_t *cfg, int anon) {
-    memset(cfg, 0, sizeof(*cfg));
-    memcpy(cfg->servers, g_net.servers, sizeof(cfg->servers));
-    cfg->server_count           = g_net.n_servers;
-    cfg->auto_reconnect         = true;   /* tick() runs the (pinned)
-                                           * reconnect, nodus_client_tick */
-    cfg->pinned_server_fps      = g_net.pins;
-    cfg->pinned_server_fp_count = g_net.n_pins;
-    /* DHT v2 package 3c: the session is bound to the chain id the wallet is
-     * configured with — the 32-byte v3 id, the same bytes nsw_check_chain
-     * compares with dnac_chain_id32 (Kurultay #43 O-6). */
-    memcpy(cfg->expected_chain_id, g_net.chain, sizeof(cfg->expected_chain_id));
-    cfg->has_expected_chain_id  = true;
-    cfg->anon_session           = anon != 0;
-}
-
 static int nsw_connect_core(void) {
     nodus_client_config_t cfg;
-    nsw_client_cfg(&cfg, 1);
-    /* The wallet's session is the no-login ANON family: NO identity is given
-     * to the client (nothing to wipe on a failed init), and the wallet's own
-     * key is only the signer of the owner-only reads' `qa`
-     * (nodus_client_set_owner_key — a copy nodus_client_close wipes). */
-    if (nodus_client_init(&g_client, &cfg, NULL) != 0)
-        return nsw_fail("Nodus client setup failed.");
-    g_client_inited = 1;
-    if (nodus_client_set_owner_key(&g_client, &g_id.sk, &g_id.pk) != 0) {
-        nsw_client_drop();
+    memset(&cfg, 0, sizeof(cfg));
+    memcpy(cfg.servers, g_net.servers, sizeof(cfg.servers));
+    cfg.server_count           = g_net.n_servers;
+    cfg.auto_reconnect         = true;   /* tick() runs the (pinned)
+                                          * reconnect, nodus_client_tick */
+    cfg.pinned_server_fps      = g_net.pins;
+    cfg.pinned_server_fp_count = g_net.n_pins;
+    if (nodus_client_init(&g_client, &cfg, &g_id) != 0) {
+        /* init copies the identity into the client before an allocation
+         * that can fail (nodus_client.c nodus_client_init); with
+         * g_client_inited still 0 neither nsw_client_drop nor nsw_lock
+         * would wipe that copy */
+        nsw_wipe(&g_client.identity, sizeof(g_client.identity));
         return nsw_fail("Nodus client setup failed.");
     }
+    g_client_inited = 1;
     if (g_cancel) return -1;
     if (nodus_client_connect(&g_client) != 0) {
         nsw_client_drop();
@@ -3094,63 +3056,6 @@ int nsw_connect(void) {
     }
     if (g_unlocked) return nsw_end(0);
     return nsw_end(nsw_connect_core());
-}
-
-/* ── the Connect core's IDENTIFIED session (g_client_c) ──
- *
- * Nodus Connect still reads and writes the old, identity-bound DHT until its
- * own DHT v2 move (decision 2026-10-26-wallet-no-node-login.md items 2-3), so
- * its client logs in with the account key — in a session of its own, opened
- * ONLY when a Messages export needs it (nc_host_session_ok), never by the
- * wallet. Same pins, same chain id (both ends bind it in the handshake). */
-
-/* The chain id of this node must be the configured one — nsw_check_chain's
- * test, for g_client_c. Inside the op bracket. */
-static int nsw_check_chain_c(void) {
-    bool has = false;
-    uint8_t c[DNA_CHAIN_ID_LEN];
-    int rc = nodus_client_dnac_chain_id32(&g_client_c, &has, c);
-    if (rc != 0)
-        return nsw_fail_rc(rc, "Could not read the Nodus chain id (rc=%d).", rc);
-    if (!has || memcmp(c, g_net.chain, sizeof(c)) != 0)
-        return nsw_fail("This Nodus node is on a different chain. Nothing was done.");
-    memcpy(g_checked_c_token, g_client_c.token, sizeof(g_checked_c_token));
-    return 0;
-}
-
-static void nsw_client_c_drop(void) {
-    if (!g_client_c_inited || g_locked || g_cancel) return;
-    nodus_client_close(&g_client_c);
-    nsw_wipe(&g_client_c.identity, sizeof(g_client_c.identity));
-    g_client_c_inited = 0;
-}
-
-/* Open the Connect core's session (identified; needs g_identified). Inside
- * the op bracket; may wait on the network. 0, or -1 with the reason in
- * g_error. */
-static int nsw_connect_c_core(void) {
-    nodus_client_config_t cfg;
-    if (!g_identified) return nsw_fail("The wallet identity is not ready.");
-    nsw_client_cfg(&cfg, 0);
-    if (nodus_client_init(&g_client_c, &cfg, &g_id) != 0) {
-        /* init copies the identity into the client before an allocation that
-         * can fail: with g_client_c_inited still 0 nothing else would wipe it */
-        nsw_wipe(&g_client_c.identity, sizeof(g_client_c.identity));
-        return nsw_fail("Nodus client setup failed.");
-    }
-    g_client_c_inited = 1;
-    if (g_cancel) return -1;
-    if (nodus_client_connect(&g_client_c) != 0) {
-        nsw_client_c_drop();
-        return nsw_fail("Could not open a verified connection to any "
-                        "Nodus node.");
-    }
-    if (g_cancel) return -1;
-    if (nsw_check_chain_c() != 0) {
-        nsw_client_c_drop();
-        return -1;
-    }
-    return 0;
 }
 
 /* ── balance: dnac_balance — the native row (nsw_bal_total / _spendable) and
@@ -7558,12 +7463,9 @@ done:
 
 /* ── Messages host (package NC-4b; nc_core.h "Host") ──
  * The Messages exports (web-wallet/connect/nc_wasm.c, linked into this
- * module) run inside THIS op bracket, stopped by THIS cancel flag, one
- * Asyncify suspension at a time. They never create a client: the module opens
- * the Connect core's IDENTIFIED session (g_client_c) for them, lazily, in
- * nc_host_session_ok — the wallet's own session (g_client) is the no-login
- * ANON family and cannot carry the identity-bound old DHT (DHT v2 package 3d,
- * "wallet != messaging"). */
+ * module) run on THIS session, inside THIS op bracket, stopped by THIS
+ * cancel flag: one session per identity (nodus_auth.c:95-116), one Asyncify
+ * suspension at a time. They never create a client. */
 
 int nc_host_begin(void)            { return nsw_begin(); }
 int nc_host_end(void)              { g_busy = 0; return (g_locked || g_cancel) ? 1 : 0; }
@@ -7572,32 +7474,22 @@ const char *nc_host_error(void)    { return g_error; }
  * reason with its busy mark (declared there, next to its use — nc_core.h
  * is outside this change). */
 int nc_host_error_busy(void)       { return g_error_busy; }
-/* The Connect core's identified client, only once its session was opened and
- * its chain checked (nc_host_session_ok). Not the wallet's ANON client. */
+/* The client only once CONNECTED (session open, chain checked). */
 nodus_client_t *nc_host_client(void) {
-    return (g_client_c_inited && !g_locked && !g_cancel) ? &g_client_c : NULL;
+    return (g_unlocked && !g_locked && !g_cancel) ? &g_client : NULL;
 }
 /* The identity already once IDENTIFIED (nsw_identify): the Messages keys,
  * the history key and the kept-profile checks need no network. */
 const nodus_identity_t *nc_host_identity(void) {
     return (g_identified && !g_locked && !g_cancel) ? &g_id : NULL;
 }
-/* The session check for a Messages export about to send: the Connect core's
- * identified session is OPENED here on first use (needs the identity, not a
- * connected wallet), the client must be ready, and — after a reconnect (a
- * fresh session token) — the node's chain id is checked again. Inside the op
- * bracket (nc_begin); may wait on the network. 0, or -1 with the reason in
- * nc_host_error(). Declared in nc_core.h. */
+/* The wallet's own session check for a Messages export about to send:
+ * connected, the client ready, and — after a reconnect to another pinned
+ * server — that server's chain id checked again (nsw_session_ok). Inside
+ * the op bracket (nc_begin); may wait on the network. 0, or -1 with the
+ * reason in nc_host_error(). Declared in nc_core.h. */
 int nc_host_session_ok(void) {
-    if (g_locked || g_cancel) return nsw_fail("Wallet is locked.");
-    if (!g_client_c_inited)
-        return nsw_connect_c_core() == 0 ? 0 : -1;
-    if (!nodus_client_is_ready(&g_client_c))
-        return nsw_fail("Nodus connection is not ready. Try again shortly.");
-    if (memcmp(g_client_c.token, g_checked_c_token,
-               sizeof(g_checked_c_token)) != 0)
-        return nsw_check_chain_c() == 0 ? 0 : -1;   /* a new connection */
-    return 0;
+    return nsw_session_ok() == 0 ? 0 : -1;
 }
 volatile const int *nc_host_cancel(void) { return &g_cancel; }
 
@@ -7605,13 +7497,7 @@ volatile const int *nc_host_cancel(void) { return &g_cancel; }
 
 int nsw_tick(void) {
     if (nsw_begin() != 0) return -1;
-    if (!g_unlocked && !g_client_c_inited)
-        return nsw_end(nsw_fail("Nodus connection is not ready."));
-    /* The Connect core's identified session (if one was opened) keeps its own
-     * keepalive and pinned reconnect; its state is judged by the Messages
-     * export that uses it (nc_host_session_ok), never by the wallet's tick. */
-    if (g_client_c_inited) nodus_client_tick(&g_client_c);
-    if (!g_unlocked) return nsw_end(0);
+    if (!g_unlocked) return nsw_end(nsw_fail("Nodus connection is not ready."));
     nodus_client_tick(&g_client);
     nodus_client_state_t st = nodus_client_state(&g_client);
     /* RECONNECTING: the drop was seen and the next tick retries; the
@@ -7644,20 +7530,6 @@ void nsw_lock(void) {
             g_client_inited = 0;
         }
         nsw_wipe(&g_client.identity, sizeof(g_client.identity));
-        /* the ANON client's copy of the signing key (nodus_client_close wipes
-         * it too; force_disconnect, taken while an export is suspended, does
-         * not) */
-        nsw_wipe(&g_client.owner_sk, sizeof(g_client.owner_sk));
-        nsw_wipe(&g_client.owner_pk, sizeof(g_client.owner_pk));
-    }
-    if (g_client_c_inited) {                /* the Connect core's session   */
-        if (g_busy) {
-            nodus_client_force_disconnect(&g_client_c);
-        } else {
-            nodus_client_close(&g_client_c);
-            g_client_c_inited = 0;
-        }
-        nsw_wipe(&g_client_c.identity, sizeof(g_client_c.identity));
     }
     nsw_wipe(&g_id, sizeof(g_id));
     nsw_wipe(g_seed, sizeof(g_seed));

@@ -388,12 +388,39 @@ int nodus_t2_result_count_batch(uint32_t txn,
 int nodus_t2_challenge(uint32_t txn, const uint8_t *nonce,
                         uint8_t *buf, size_t cap, size_t *out_len);
 
-/** The session's TOKEN MESSAGE (DHT v2 3b-2, Kurultay #43 O-2 b): the first
- *  frame a server sends inside the sealed stream once the SecretConnection is
- *  authenticated — `auth_ok` with the session token and nothing else, txn 0.
- *  (The old auth_ok with KEM keys, key_init and key_ack encoders are deleted
- *  with the hello / auth / key_init session protocol.) */
 int nodus_t2_auth_ok(uint32_t txn, const uint8_t *token,
+                      uint8_t *buf, size_t cap, size_t *out_len);
+
+/** auth_ok with Kyber pubkey for channel encryption handshake.
+ *  Includes server's Dilithium5 pubkey and signature over (kyber_pk || nonce)
+ *  so the client can verify the server's identity and detect MITM.
+ *
+ *  Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-mlkem-
+ *  migration.md): mlkem_pk/mpk_sig are OPTIONAL — pass NULL for both when
+ *  this identity has no ML-KEM keypair yet (has_mlkem == false), which
+ *  produces the byte-identical legacy 4-key map (map count 4). When both
+ *  are non-NULL the map gains "mpk" + "mpk_sig" (map count 6). kpk/kpk_sig
+ *  are UNCHANGED either way — this never removes the Kyber path, only adds
+ *  to it, so a pre-Faz-1 decoder (which skips unknown keys) sees exactly
+ *  what it saw before. */
+int nodus_t2_auth_ok_kyber(uint32_t txn, const uint8_t *token,
+                            const uint8_t *kyber_pk,
+                            const nodus_pubkey_t *server_pk,
+                            const nodus_sig_t *kpk_sig,
+                            const uint8_t *mlkem_pk,
+                            const nodus_sig_t *mpk_sig,
+                            uint8_t *buf, size_t cap, size_t *out_len);
+
+/** Client → Nodus: initiate channel encryption after auth_ok.
+ *  alg: 0 = Kyber round-3 (legacy), 1 = ML-KEM-1024. Emitted as optional
+ *  CBOR key "alg" ONLY when alg == 1 — an alg=0 caller produces the
+ *  byte-identical legacy frame an old server must still be able to decode. */
+int nodus_t2_key_init(uint32_t txn, const uint8_t *kem_ct,
+                       const uint8_t *nonce_c, uint8_t alg,
+                       uint8_t *buf, size_t cap, size_t *out_len);
+
+/** Nodus → Client: acknowledge channel encryption setup */
+int nodus_t2_key_ack(uint32_t txn, const uint8_t *nonce_s,
                       uint8_t *buf, size_t cap, size_t *out_len);
 
 int nodus_t2_result(uint32_t txn, const nodus_value_t *val,

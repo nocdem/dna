@@ -57,12 +57,6 @@ cp "$SQLITE3_H" "$work/inc/sqlite3.h"
 sources=(
   nodus/src/client/nodus_client.c
   nodus/src/transport/nodus_tcp.c
-  # DHT v2 package 3c: the client session is a SecretConnection (nodus_client.c
-  # do_connect_one). The layer (threadless jobs under __EMSCRIPTEN__,
-  # NODUS_SC_INLINE) and the handshake machine it drives; compiled with
-  # -DNODUS_TCP_SC=1 below, as nodus/CMakeLists.txt compiles nodus_tcp.c.
-  nodus/src/transport/nodus_tcp_sc.c
-  shared/dnac/cmt_p2p_secret.c
   nodus/src/protocol/nodus_tier2.c
   nodus/src/protocol/nodus_cbor.c
   nodus/src/protocol/nodus_wire.c
@@ -77,8 +71,7 @@ fail=0
 for src in "${sources[@]}"; do
   obj="$work/obj/$(basename "${src%.c}").o"
   if "$EMCC_BIN" -c -O2 -Wall -Wextra -Wno-unused-parameter -Werror \
-       -DNODUS_TCP_SC=1 \
-       -Inodus/include -Inodus/src -Ishared -Idnac/include -I"$work/inc" \
+       -Inodus/include -Inodus/src -Ishared -I"$work/inc" \
        -I"$OPENSSL_WASM_PREFIX/include" \
        "$src" -o "$obj"; then
     echo "OK    $src"

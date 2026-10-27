@@ -53,7 +53,6 @@
 #include "core/nodus_value.h"
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_identity.h"
-#include "test_session_helper.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -88,7 +87,6 @@ typedef struct {
 #define FAKE_BUF_SIZE 65536
 
 static fake_server_t g_fake;
-static th_node_t g_node;
 static uint8_t  *g_good_val;         /* serialized valid value */
 static size_t    g_good_len;
 
@@ -161,8 +159,19 @@ static void fake_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
         return;
     }
     size_t out = 0;
-    (void)out;
-    if (strcmp(msg.method, "get") == 0 ||
+    if (strcmp(msg.method, "hello") == 0) {
+        uint8_t nonce[NODUS_NONCE_LEN];
+        nodus_random(nonce, NODUS_NONCE_LEN);
+        if (nodus_t2_challenge(msg.txn_id, nonce,
+                                g_fake.buf, FAKE_BUF_SIZE, &out) == 0)
+            nodus_tcp_send(conn, g_fake.buf, out);
+    } else if (strcmp(msg.method, "auth") == 0) {
+        uint8_t token[NODUS_SESSION_TOKEN_LEN];
+        memset(token, 0x5a, sizeof(token));
+        if (nodus_t2_auth_ok(msg.txn_id, token,
+                              g_fake.buf, FAKE_BUF_SIZE, &out) == 0)
+            nodus_tcp_send(conn, g_fake.buf, out);
+    } else if (strcmp(msg.method, "get") == 0 ||
                strcmp(msg.method, "get_all") == 0) {
         fake_send_result(conn, msg.txn_id);
     }
@@ -183,8 +192,6 @@ static int start_fake_server(void) {
     if (!g_fake.tcp || !g_fake.buf) return -1;
     if (nodus_tcp_init(g_fake.tcp, -1) != 0) return -1;
     g_fake.tcp->on_frame = fake_on_frame;
-    if (th_node_init(&g_node, 0x34) != 0) return -1;
-    th_node_attach(g_fake.tcp, &g_node);   /* the client session */
     if (nodus_tcp_listen(g_fake.tcp, "127.0.0.1", 0) != 0) return -1;
     atomic_store(&g_fake.mode, MODE_EMPTY);
     atomic_store(&g_fake.stop, false);
@@ -397,7 +404,6 @@ int main(void) {
     cfg.servers[0].port = g_fake.tcp->port;
     cfg.server_count = 1;
     cfg.connect_timeout_ms = 3000;
-    th_client_cfg(&cfg, &g_node);
 
     if (nodus_client_init(c, &cfg, client_id) != 0) {
         printf("FATAL: client init\n");

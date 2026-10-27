@@ -25,14 +25,6 @@
  *   - the control connection's status snapshot round-trips: chain_open,
  *     status (height, state root, chain id) and listen_port report what
  *     the witness answered;
- *   - (round 4 item 4) a forwarded request carrying a token other than the
- *     session's is served and the session stays: the token is a
- *     correlation key, not an authorization input;
- *   - (round 5) the ipc_roles set round-trips (has_role), and a witness with
- *     NO roles handler answers {err}: the control connection stays up,
- *     status still round-trips and no role is known (fail safe); a raw
- *     control client receives the EXACT err frame and then a status answer
- *     on the same connection; an err answer clears a previously known set;
  *   - a first frame that is not a preface closes the connection;
  *   - with no witness listening, a dnac_* request is answered at once with
  *     exactly the bytes a witness-less server sends (nodus_t2_error,
@@ -118,27 +110,6 @@ static void h_dispatch_dnac(void *ctx, nodus_tcp_conn_t *conn,
     nodus_tcp_send(conn, k_reply, sizeof(k_reply));
 }
 
-/* The ANON entry of the fake witness (DHT v2 package 3d): records what a
- * no-identity session looks like to the witness. */
-static int               h_anon_calls = 0;
-static char              h_anon_method[64];
-static bool              h_anon_peer_set = true;
-static uint8_t           h_anon_t[NODUS_WITNESS_IPC_T_LEN];
-static nodus_tcp_conn_t *h_anon_conn = NULL;
-
-static void h_dispatch_dnac_anon(void *ctx, nodus_tcp_conn_t *conn,
-                                 const uint8_t t[NODUS_WITNESS_IPC_T_LEN],
-                                 const uint8_t *payload, size_t len,
-                                 const char *method, uint32_t txn_id) {
-    (void)ctx; (void)payload; (void)len; (void)txn_id;
-    h_anon_calls++;
-    snprintf(h_anon_method, sizeof(h_anon_method), "%s", method);
-    h_anon_peer_set = conn->peer_id_set;
-    memcpy(h_anon_t, t, sizeof(h_anon_t));
-    h_anon_conn = conn;
-    nodus_tcp_send(conn, k_reply, sizeof(k_reply));
-}
-
 static void h_cc_collect(void *ctx, nodus_tcp_conn_t *conn,
                          const uint8_t pk[NODUS_PK_BYTES],
                          const uint8_t token[NODUS_SESSION_TOKEN_LEN],
@@ -158,8 +129,6 @@ static void fill_status(nodus_witness_ipc_status_t *st) {
     st->height = 4242;
     for (int i = 0; i < 64; i++) st->state_root[i] = (uint8_t)(0xA0 + i);
     for (int i = 0; i < 32; i++) st->chain_id[i] = (uint8_t)(0x10 + i);
-    /* the v3 id differs from the legacy one in every byte */
-    for (int i = 0; i < 32; i++) st->chain_id_v3[i] = (uint8_t)(0xC0 + i);
     st->p2p_opened = true;
     st->listen_port = 14004;
 }
@@ -167,20 +136,6 @@ static void fill_status(nodus_witness_ipc_status_t *st) {
 static void h_status(void *ctx, nodus_witness_ipc_status_t *out) {
     (void)ctx;
     fill_status(out);
-}
-
-/* The roles handler of the fake witness: two active-role node ids. */
-static void role_fp(int which, uint8_t out[64]) {
-    for (int i = 0; i < 64; i++) out[i] = (uint8_t)(0x30 * (which + 1) + i);
-}
-
-static int h_roles(void *ctx, uint8_t (*fps)[64], uint32_t max, uint32_t *n) {
-    (void)ctx;
-    if (max < 2) return -1;
-    role_fp(0, fps[0]);
-    role_fp(1, fps[1]);
-    *n = 2;
-    return 0;
 }
 
 /* ── The client stand-in ──────────────────────────────────────────── */
@@ -280,34 +235,6 @@ static void test_session_roundtrip(nodus_chain_backend_t *b,
     PASS();
 }
 
-/* Round 4 item 4: the token is a correlation key, never an authorization
- * input (Kurultay #43 O-2 b). A forwarded request whose embedded token is not
- * the session's is SERVED (identity is the IPC session), and the session
- * stays open. */
-static void test_token_not_authorization(nodus_chain_backend_t *b,
-                                         nodus_witness_ipc_t *ipc) {
-    TEST("a forwarded frame with another embedded token is served (no gate)");
-    uint8_t frame[256];
-    uint8_t saved[NODUS_SESSION_TOKEN_LEN];
-    memcpy(saved, g_token, sizeof(saved));
-    for (size_t i = 0; i < sizeof(g_token); i++) g_token[i] ^= 0xFF;
-    size_t n = t2_query(9, "dnac_test", frame, sizeof(frame));   /* embeds the OTHER token */
-    memcpy(g_token, saved, sizeof(g_token));                     /* the session's own */
-    if (n == 0) { FAIL("encode"); return; }
-
-    int calls_before = h_dnac_calls;
-    b->ops->dispatch_dnac(b, g_client_conn, g_pk, g_token, frame, n,
-                          "dnac_test", 9);
-    for (int i = 0; i < POLL_ROUNDS && h_dnac_calls == calls_before; i++)
-        poll_all(b, ipc);
-    if (h_dnac_calls != calls_before + 1) { FAIL("the frame was refused for its token"); return; }
-    if (nodus_witness_ipc_find_session_conn(ipc, g_pk, g_token) != h_dnac_conn) {
-        FAIL("the session was closed");
-        return;
-    }
-    PASS();
-}
-
 static void test_cc_collect(nodus_chain_backend_t *b, nodus_witness_ipc_t *ipc) {
     TEST("dnac_cc_collect reaches cc_collect with the session's pk/token");
     uint8_t frame[256];
@@ -354,209 +281,6 @@ static void test_status(nodus_chain_backend_t *b, nodus_witness_ipc_t *ipc) {
         FAIL("listen_port differs from the witness's answer");
         return;
     }
-    /* DHT v2 3b-2: the session's chain id is the v3 id (`c3`), the T2 status
-     * keeps the legacy `ci` */
-    uint8_t v3[32];
-    if (!b->ops->chain_id_v3 || !b->ops->chain_id_v3(b, v3) ||
-        memcmp(v3, want.chain_id_v3, 32) != 0 ||
-        memcmp(v3, info.chain_id, 32) == 0) {
-        FAIL("chain_id_v3 is not the witness's c3 (or equals the legacy id)");
-        return;
-    }
-    PASS();
-}
-
-static void test_roles(nodus_chain_backend_t *b, nodus_witness_ipc_t *ipc) {
-    TEST("ipc_roles: the witness's role set reaches core");
-    nodus_key_t k0, k1, other;
-    role_fp(0, k0.bytes);
-    role_fp(1, k1.bytes);
-    memset(&other, 0x99, sizeof(other));
-    for (int i = 0; i < POLL_ROUNDS && !b->ops->has_role(b, &k0); i++)
-        poll_all(b, ipc);
-    if (!b->ops->has_role(b, &k0) || !b->ops->has_role(b, &k1)) {
-        FAIL("an active-role node id is not reported");
-        return;
-    }
-    if (b->ops->has_role(b, &other)) { FAIL("a stranger is reported as a role"); return; }
-    PASS();
-}
-
-/* A raw control client: collects the frames the witness answers. */
-static uint8_t g_raw_frames[4][512];
-static size_t  g_raw_lens[4];
-static int     g_raw_n;
-static void raw_on_frame(nodus_tcp_conn_t *c, const uint8_t *p, size_t len, void *ctx) {
-    (void)c; (void)ctx;
-    if (g_raw_n < 4 && len <= sizeof(g_raw_frames[0])) {
-        memcpy(g_raw_frames[g_raw_n], p, len);
-        g_raw_lens[g_raw_n++] = len;
-    }
-}
-
-static void raw_send_q(nodus_tcp_conn_t *c, const char *q) {
-    uint8_t buf[64];
-    cbor_encoder_t enc;
-    cbor_encoder_init(&enc, buf, sizeof(buf));
-    cbor_encode_map(&enc, 1);
-    cbor_encode_cstr(&enc, "q");
-    cbor_encode_cstr(&enc, q);
-    nodus_tcp_send(c, buf, cbor_encoder_len(&enc));
-}
-
-/* The exact answer a witness without a roles handler gives. */
-static size_t roles_err_bytes(uint8_t *buf, size_t cap) {
-    cbor_encoder_t enc;
-    cbor_encoder_init(&enc, buf, cap);
-    cbor_encode_map(&enc, 2);
-    cbor_encode_cstr(&enc, "q"); cbor_encode_cstr(&enc, NODUS_WITNESS_IPC_Q_ROLES);
-    cbor_encode_cstr(&enc, "err"); cbor_encode_cstr(&enc, "roles unavailable");
-    return cbor_encoder_len(&enc);
-}
-
-/* B5: the exact error frame ARRIVES on a raw control connection, and then a
- * status query on the SAME connection is answered (the connection survived). */
-static void test_roles_err_exact(void) {
-    TEST("no roles handler: the exact err frame arrives, status answers after it");
-    char d[64], sock[NODUS_TCP_UNIX_PATH_MAX];
-    snprintf(d, sizeof(d), "/tmp/nodus_wipc4_XXXXXX");
-    if (!mkdtemp(d)) { FAIL("mkdtemp"); return; }
-    nodus_witness_ipc_sock_path(d, sock, sizeof(sock));
-    nodus_witness_ipc_handlers_t h = {
-        .dispatch_dnac = h_dispatch_dnac, .cc_collect = h_cc_collect,
-        .status = h_status, .ctx = NULL,
-    };
-    nodus_witness_ipc_t *ipc = nodus_witness_ipc_new(&h);
-    nodus_tcp_t rc;
-    if (!ipc || nodus_witness_ipc_listen(ipc, sock) != 0 || nodus_tcp_init(&rc, -1) != 0) {
-        FAIL("setup");
-        if (ipc) nodus_witness_ipc_free(ipc);
-        rmdir(d);
-        return;
-    }
-    rc.on_frame = raw_on_frame;
-    g_raw_n = 0;
-    nodus_tcp_conn_t *c = nodus_tcp_unix_connect(&rc, sock, NODUS_TCP_UNIX_UID_SELF);
-    bool ok = c != NULL;
-    if (ok) {
-        raw_send_q(c, NODUS_WITNESS_IPC_Q_CTL);
-        raw_send_q(c, NODUS_WITNESS_IPC_Q_ROLES);
-        for (int i = 0; i < POLL_ROUNDS && g_raw_n < 1; i++) {
-            nodus_witness_ipc_poll(ipc, 5);
-            nodus_tcp_poll(&rc, 5);
-        }
-    }
-    uint8_t want[96];
-    size_t wl = roles_err_bytes(want, sizeof(want));
-    bool exact = ok && g_raw_n >= 1 && g_raw_lens[0] == wl &&
-                 memcmp(g_raw_frames[0], want, wl) == 0;
-    int before = g_raw_n;
-    if (exact) {
-        raw_send_q(c, NODUS_WITNESS_IPC_Q_STATUS);
-        for (int i = 0; i < POLL_ROUNDS && g_raw_n < before + 1; i++) {
-            nodus_witness_ipc_poll(ipc, 5);
-            nodus_tcp_poll(&rc, 5);
-        }
-    }
-    bool status_after = exact && g_raw_n > before && g_raw_lens[before] > 0 &&
-                        !(g_raw_lens[before] == wl &&
-                          memcmp(g_raw_frames[before], want, wl) == 0);
-    nodus_tcp_close(&rc);
-    nodus_witness_ipc_free(ipc);
-    rmdir(d);
-    if (!exact) { FAIL("the exact roles err frame did not arrive"); return; }
-    if (!status_after) { FAIL("no status answer on the same connection after the err"); return; }
-    PASS();
-}
-
-/* B5: an err answer CLEARS a set core held (fail safe). The roles handler
- * answers once, then fails; the second query (test seam) must leave no role. */
-static volatile int g_roles_fail;
-static int h_roles_flaky(void *ctx, uint8_t (*fps)[64], uint32_t max, uint32_t *n) {
-    if (g_roles_fail) return -1;
-    return h_roles(ctx, fps, max, n);
-}
-
-static void test_roles_err_clears(void) {
-    TEST("an err answer clears a previously known role set");
-    char d[64], sock[NODUS_TCP_UNIX_PATH_MAX];
-    snprintf(d, sizeof(d), "/tmp/nodus_wipc5_XXXXXX");
-    if (!mkdtemp(d)) { FAIL("mkdtemp"); return; }
-    nodus_witness_ipc_sock_path(d, sock, sizeof(sock));
-    nodus_witness_ipc_handlers_t h = {
-        .dispatch_dnac = h_dispatch_dnac, .cc_collect = h_cc_collect,
-        .status = h_status, .roles = h_roles_flaky, .ctx = NULL,
-    };
-    g_roles_fail = 0;
-    nodus_witness_ipc_t *ipc = nodus_witness_ipc_new(&h);
-    nodus_chain_backend_t *b = NULL;
-    if (!ipc || nodus_witness_ipc_listen(ipc, sock) != 0 ||
-        nodus_chain_backend_ipc_open(d, &b) != 0 || !b) {
-        FAIL("setup");
-        if (ipc) nodus_witness_ipc_free(ipc);
-        rmdir(d);
-        return;
-    }
-    nodus_key_t k0;
-    role_fp(0, k0.bytes);
-    for (int i = 0; i < POLL_ROUNDS && !b->ops->has_role(b, &k0); i++)
-        poll_all(b, ipc);
-    bool known = b->ops->has_role(b, &k0);
-    g_roles_fail = 1;
-    nodus_chain_backend_ipc_test_ask_roles(b);
-    for (int i = 0; i < POLL_ROUNDS && b->ops->has_role(b, &k0); i++)
-        poll_all(b, ipc);
-    bool gone = !b->ops->has_role(b, &k0) && !b->ops->roles_known(b);
-    bool status_ok = b->ops->chain_open(b);
-    b->ops->close(b);
-    nodus_witness_ipc_free(ipc);
-    rmdir(d);
-    if (!known) { FAIL("the set never became known"); return; }
-    if (!gone) { FAIL("an err answer did not clear the known set"); return; }
-    if (!status_ok) { FAIL("the control connection / status did not survive the err"); return; }
-    PASS();
-}
-
-/* A witness with NO roles handler answers {err} and keeps the control
- * connection: status still round-trips, no role is known (fail safe). */
-static void test_roles_handler_absent(void) {
-    TEST("no roles handler: err answer, control connection and status stay");
-    char d[64], sock[NODUS_TCP_UNIX_PATH_MAX];
-    snprintf(d, sizeof(d), "/tmp/nodus_wipc3_XXXXXX");
-    if (!mkdtemp(d)) { FAIL("mkdtemp"); return; }
-    nodus_witness_ipc_sock_path(d, sock, sizeof(sock));
-    nodus_witness_ipc_handlers_t h = {
-        .dispatch_dnac = h_dispatch_dnac,
-        .cc_collect    = h_cc_collect,
-        .status        = h_status,
-        .ctx           = NULL,
-        /* .roles deliberately NULL */
-    };
-    nodus_witness_ipc_t *ipc = nodus_witness_ipc_new(&h);
-    nodus_chain_backend_t *b = NULL;
-    if (!ipc || nodus_witness_ipc_listen(ipc, sock) != 0 ||
-        nodus_chain_backend_ipc_open(d, &b) != 0 || !b) {
-        FAIL("setup");
-        if (ipc) nodus_witness_ipc_free(ipc);
-        rmdir(d);
-        return;
-    }
-    bool ok = false;
-    for (int i = 0; i < POLL_ROUNDS && !ok; i++) {
-        poll_all(b, ipc);
-        ok = b->ops->chain_open(b);
-    }
-    /* let the roles query (sent with the first status) be answered too */
-    for (int i = 0; i < 40; i++) poll_all(b, ipc);
-    nodus_key_t any;
-    role_fp(0, any.bytes);
-    bool still = b->ops->chain_open(b);
-    bool role = b->ops->has_role(b, &any);
-    b->ops->close(b);
-    nodus_witness_ipc_free(ipc);
-    rmdir(d);
-    if (!ok || !still) { FAIL("the control connection / status did not survive"); return; }
-    if (role) { FAIL("a role is known without a roles answer"); return; }
     PASS();
 }
 
@@ -779,260 +503,8 @@ static void test_read_pending_op(void) {
     PASS();
 }
 
-/* ── DHT v2 package 3d: the no-identity preface ───────────────────── */
-
-static uint8_t g_t[NODUS_WITNESS_IPC_T_LEN];        /* a session transcript T */
-static uint8_t g_token_anon[NODUS_SESSION_TOKEN_LEN];
-
-/* An ANON session's request through core's backend: the witness sees NO
- * principal (peer_id_set false, no key anywhere), and T and the method come
- * through; the identified handler is never called; the reply reaches the
- * client; the witness cannot find the session by any key. */
-static void test_anon_roundtrip(nodus_chain_backend_t *b,
-                                nodus_witness_ipc_t *ipc) {
-    TEST("ANON: no-identity preface; witness sees no principal, T and method");
-    uint8_t frame[256];
-    size_t n = t2_query(31, "dnac_utxo", frame, sizeof(frame));
-    if (n == 0) { FAIL("encode"); return; }
-    int frames_before = cli_frames;
-    int ident_before = h_dnac_calls;
-    int anon_before = h_anon_calls;
-    b->ops->dispatch_dnac_anon(b, g_client_conn, g_token_anon, g_t, frame, n,
-                               "dnac_utxo", 31);
-    for (int i = 0; i < POLL_ROUNDS &&
-                    (h_anon_calls == anon_before || cli_frames <= frames_before); i++)
-        poll_all(b, ipc);
-
-    if (h_anon_calls != anon_before + 1) { FAIL("the ANON handler was not reached"); return; }
-    if (h_dnac_calls != ident_before) { FAIL("the identified handler served an ANON session"); return; }
-    if (strcmp(h_anon_method, "dnac_utxo") != 0) { FAIL("method"); return; }
-    if (h_anon_peer_set) { FAIL("a principal was installed for the ANON connection"); return; }
-    if (memcmp(h_anon_t, g_t, sizeof(g_t)) != 0) { FAIL("T did not arrive intact"); return; }
-    if (cli_frames != frames_before + 1 || cli_last_len != sizeof(k_reply) ||
-        memcmp(cli_last, k_reply, sizeof(k_reply)) != 0) {
-        FAIL("reply did not reach the client unchanged");
-        return;
-    }
-    /* no key finds it: not the zero key, not any key */
-    uint8_t zero_pk[NODUS_PK_BYTES];
-    memset(zero_pk, 0, sizeof(zero_pk));
-    if (nodus_witness_ipc_find_session_conn(ipc, zero_pk, g_token_anon) != NULL ||
-        nodus_witness_ipc_find_session_conn(ipc, g_pk, g_token_anon) != NULL) {
-        FAIL("an ANON session is findable by a key");
-        return;
-    }
-    PASS();
-}
-
-/* An ANON session never reaches cc_collect, and never a method outside
- * dnac_* / evm_*: the witness closes that session socket and serves nothing;
- * the next ANON request (a new socket) is served again. */
-static void test_anon_refusals(nodus_chain_backend_t *b,
-                               nodus_witness_ipc_t *ipc) {
-    TEST("ANON: dnac_cc_collect / non-chain method close the socket, serve nothing");
-    uint8_t frame[256];
-    const char *bad[2] = { "dnac_cc_collect", "put" };
-    for (int k = 0; k < 2; k++) {
-        size_t n = t2_query(32 + (uint32_t)k, bad[k], frame, sizeof(frame));
-        if (n == 0) { FAIL("encode"); return; }
-        int anon_before = h_anon_calls, cc_before = h_cc_calls, ident_before = h_dnac_calls;
-        b->ops->dispatch_dnac_anon(b, g_client_conn, g_token_anon, g_t, frame, n,
-                                   bad[k], 32 + (uint32_t)k);
-        for (int i = 0; i < 60; i++) poll_all(b, ipc);
-        if (h_anon_calls != anon_before || h_cc_calls != cc_before ||
-            h_dnac_calls != ident_before) {
-            FAIL("a refused ANON method was served");
-            return;
-        }
-    }
-    int anon_before = h_anon_calls;
-    size_t n = t2_query(34, "dnac_balance", frame, sizeof(frame));
-    b->ops->dispatch_dnac_anon(b, g_client_conn, g_token_anon, g_t, frame, n,
-                               "dnac_balance", 34);
-    for (int i = 0; i < POLL_ROUNDS && h_anon_calls == anon_before; i++)
-        poll_all(b, ipc);
-    if (h_anon_calls != anon_before + 1) { FAIL("the next ANON request was not served"); return; }
-    b->ops->session_closed(b, g_client_conn);
-    for (int i = 0; i < 30; i++) poll_all(b, ipc);
-    PASS();
-}
-
-/* Raw prefaces to the witness's own socket: the no-identity form binds an
- * ANON session; every malformed or key-less identified form is closed. */
-static size_t raw_hello(uint8_t *buf, size_t cap, bool pk, const uint8_t *pkv,
-                        bool tk, bool ts) {
-    cbor_encoder_t enc;
-    cbor_encoder_init(&enc, buf, cap);
-    cbor_encode_map(&enc, 1 + (pk ? 1 : 0) + (tk ? 1 : 0) + (ts ? 1 : 0));
-    cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, NODUS_WITNESS_IPC_Q_HELLO);
-    if (pk) { cbor_encode_cstr(&enc, "pk"); cbor_encode_bstr(&enc, pkv, NODUS_PK_BYTES); }
-    if (tk) { cbor_encode_cstr(&enc, "tk"); cbor_encode_bstr(&enc, g_token_anon, NODUS_SESSION_TOKEN_LEN); }
-    if (ts) { cbor_encode_cstr(&enc, "ts"); cbor_encode_bstr(&enc, g_t, NODUS_WITNESS_IPC_T_LEN); }
-    return cbor_encoder_len(&enc);
-}
-
-static void test_anon_raw_prefaces(nodus_witness_ipc_t *ipc, const char *sock) {
-    TEST("raw prefaces: tk+ts binds ANON; zero pk, pk+ts, tk alone are closed");
-    uint8_t hello[NODUS_PK_BYTES + 256], frame[256], zero_pk[NODUS_PK_BYTES];
-    memset(zero_pk, 0, sizeof(zero_pk));
-    size_t fn = t2_query(35, "dnac_balance", frame, sizeof(frame));
-    struct { bool pk; const uint8_t *pkv; bool tk, ts, accepted; } c[4] = {
-        { false, NULL,    true,  true,  true  },   /* the no-identity form   */
-        { true,  zero_pk, true,  false, false },   /* a zero key stands in   */
-        { true,  g_pk,    true,  true,  false },   /* a key and a transcript */
-        { false, NULL,    true,  false, false },   /* neither                */
-    };
-    for (int k = 0; k < 4; k++) {
-        nodus_tcp_init(&g_raw, -1);
-        g_raw.on_disconnect = raw_on_disconnect;
-        raw_disconnects = 0;
-        nodus_tcp_conn_t *rc = nodus_tcp_unix_connect(&g_raw, sock, NODUS_TCP_UNIX_UID_SELF);
-        size_t hn = raw_hello(hello, sizeof(hello), c[k].pk, c[k].pkv, c[k].tk, c[k].ts);
-        if (!rc || hn == 0 || nodus_tcp_send(rc, hello, hn) != 0 ||
-            nodus_tcp_send(rc, frame, fn) != 0) {
-            nodus_tcp_close(&g_raw);
-            FAIL("raw send");
-            return;
-        }
-        int anon_before = h_anon_calls, ident_before = h_dnac_calls;
-        for (int i = 0; i < 80 &&
-                        !(c[k].accepted ? h_anon_calls > anon_before : raw_disconnects > 0); i++) {
-            nodus_witness_ipc_poll(ipc, 5);
-            nodus_tcp_poll(&g_raw, 5);
-        }
-        bool served_anon = h_anon_calls == anon_before + 1;
-        bool served_ident = h_dnac_calls != ident_before;
-        bool closed = raw_disconnects > 0;
-        nodus_tcp_close(&g_raw);
-        if (served_ident || (c[k].accepted ? (!served_anon || h_anon_peer_set) :
-                                             (served_anon || !closed))) {
-            printf("[case %d] ", k);
-            FAIL("preface handled wrongly");
-            return;
-        }
-    }
-    PASS();
-}
-
-/* What core's backend writes as the session preface: a fake witness socket
- * captures the first frame of every connection. The identified form is
- * byte-identical to what it was (an independent encoder here); the ANON form
- * is exactly {q, tk, ts}; a request with no key and no T dials NOTHING (no
- * zero key is ever written) and is answered the decision-20 error. */
-static nodus_tcp_t g_fake;
-static uint8_t     g_first[4][NODUS_PK_BYTES + 512];
-static size_t      g_first_len[4];
-static int         g_nfirst = 0;
-static bool        g_seen_slot[NODUS_TCP_MAX_CONNS];
-
-static void fake_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
-                          size_t len, void *ctx) {
-    (void)ctx;
-    if (conn->slot < 0 || conn->slot >= NODUS_TCP_MAX_CONNS || g_seen_slot[conn->slot])
-        return;
-    g_seen_slot[conn->slot] = true;
-    if (g_nfirst < 4 && len <= sizeof(g_first[0])) {
-        memcpy(g_first[g_nfirst], payload, len);
-        g_first_len[g_nfirst++] = len;
-    }
-}
-
-static void fake_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
-    (void)ctx;
-    if (conn->slot >= 0 && conn->slot < NODUS_TCP_MAX_CONNS)
-        g_seen_slot[conn->slot] = false;
-}
-
-static void test_core_prefaces(void) {
-    TEST("core's prefaces: identified bytes unchanged; ANON = {q,tk,ts}; no zero key");
-    char path[NODUS_TCP_UNIX_PATH_MAX];
-    if (nodus_witness_ipc_sock_path(g_dir2, path, sizeof(path)) != 0) { FAIL("path"); return; }
-    nodus_tcp_init(&g_fake, -1);
-    g_fake.on_frame = fake_on_frame;
-    g_fake.on_disconnect = fake_on_disconnect;
-    g_nfirst = 0;
-    memset(g_seen_slot, 0, sizeof(g_seen_slot));
-    if (nodus_tcp_unix_listen(&g_fake, path, NODUS_TCP_UNIX_UID_SELF) != 0) {
-        FAIL("fake witness listen");
-        return;
-    }
-    nodus_chain_backend_t *b2 = NULL;
-    if (nodus_chain_backend_ipc_open(g_dir2, &b2) != 0 || !b2) {
-        nodus_tcp_close(&g_fake);
-        FAIL("backend open");
-        return;
-    }
-    uint8_t frame[256];
-    size_t fn = t2_query(41, "dnac_test", frame, sizeof(frame));
-    /* the control connection first (its first frame is {q: ipc_ctl}) */
-    for (int i = 0; i < POLL_ROUNDS && g_nfirst < 1; i++) {
-        b2->ops->tick(b2);
-        nodus_tcp_poll(&g_fake, 5);
-        nodus_tcp_poll(&g_front, 1);
-        nodus_tcp_poll(&g_cli, 1);
-    }
-    int ok = g_nfirst >= 1;
-    /* identified */
-    b2->ops->dispatch_dnac(b2, g_client_conn, g_pk, g_token, frame, fn, "dnac_test", 41);
-    for (int i = 0; ok && i < POLL_ROUNDS && g_nfirst < 2; i++) {
-        b2->ops->tick(b2);
-        nodus_tcp_poll(&g_fake, 5);
-    }
-    ok = ok && g_nfirst >= 2;
-    /* ANON (the same client slot, another token: the first socket closes) */
-    b2->ops->dispatch_dnac_anon(b2, g_client_conn, g_token_anon, g_t, frame, fn,
-                                "dnac_utxo", 42);
-    for (int i = 0; ok && i < POLL_ROUNDS && g_nfirst < 3; i++) {
-        b2->ops->tick(b2);
-        nodus_tcp_poll(&g_fake, 5);
-    }
-    ok = ok && g_nfirst >= 3;
-    /* no key and no T: nothing is dialled, the client gets the decision-20 error */
-    int dialled = g_nfirst;
-    int frames_before = cli_frames;
-    b2->ops->dispatch_dnac(b2, g_client_conn, NULL, g_token, frame, fn, "dnac_test", 43);
-    for (int i = 0; i < 60; i++) {
-        b2->ops->tick(b2);
-        nodus_tcp_poll(&g_fake, 2);
-        nodus_tcp_poll(&g_front, 2);
-        nodus_tcp_poll(&g_cli, 2);
-    }
-    uint8_t want_err[256];
-    size_t want_len = 0;
-    nodus_t2_error(43, NODUS_ERR_PROTOCOL_ERROR, NODUS_CHAIN_NO_WITNESS_MSG,
-                   want_err, sizeof(want_err), &want_len);
-    ok = ok && g_nfirst == dialled && cli_frames == frames_before + 1 &&
-         cli_last_len == want_len && memcmp(cli_last, want_err, want_len) == 0;
-
-    if (ok) {
-        uint8_t want[NODUS_PK_BYTES + 256];
-        cbor_encoder_t enc;
-        cbor_encoder_init(&enc, want, sizeof(want));
-        cbor_encode_map(&enc, 3);                       /* identified: q, pk, tk */
-        cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, "ipc_hello");
-        cbor_encode_cstr(&enc, "pk"); cbor_encode_bstr(&enc, g_pk, NODUS_PK_BYTES);
-        cbor_encode_cstr(&enc, "tk"); cbor_encode_bstr(&enc, g_token, NODUS_SESSION_TOKEN_LEN);
-        size_t wl = cbor_encoder_len(&enc);
-        ok = wl == g_first_len[1] && memcmp(want, g_first[1], wl) == 0;
-
-        cbor_encoder_init(&enc, want, sizeof(want));
-        cbor_encode_map(&enc, 3);                       /* ANON: q, tk, ts */
-        cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, "ipc_hello");
-        cbor_encode_cstr(&enc, "tk"); cbor_encode_bstr(&enc, g_token_anon, NODUS_SESSION_TOKEN_LEN);
-        cbor_encode_cstr(&enc, "ts"); cbor_encode_bstr(&enc, g_t, NODUS_WITNESS_IPC_T_LEN);
-        wl = cbor_encoder_len(&enc);
-        ok = ok && wl == g_first_len[2] && memcmp(want, g_first[2], wl) == 0;
-    }
-    b2->ops->close(b2);
-    nodus_tcp_close(&g_fake);
-    unlink(path);               /* the fake witness's socket file (g_dir2 is removed at the end) */
-    if (ok) PASS(); else FAIL("a session preface differs from the documented bytes");
-}
-
 int main(void) {
     printf("test_witness_ipc:\n");
-    for (int i = 0; i < NODUS_WITNESS_IPC_T_LEN; i++) g_t[i] = (uint8_t)(0xC3 ^ (i * 5));
-    for (int i = 0; i < NODUS_SESSION_TOKEN_LEN; i++) g_token_anon[i] = (uint8_t)(0xA7 + i);
 
     snprintf(g_dir, sizeof(g_dir), "/tmp/nodus_wipc_XXXXXX");
     snprintf(g_dir2, sizeof(g_dir2), "/tmp/nodus_wipc2_XXXXXX");
@@ -1051,10 +523,8 @@ int main(void) {
     /* The witness side. */
     nodus_witness_ipc_handlers_t h = {
         .dispatch_dnac = h_dispatch_dnac,
-        .dispatch_dnac_anon = h_dispatch_dnac_anon,
         .cc_collect    = h_cc_collect,
         .status        = h_status,
-        .roles         = h_roles,
         .ctx           = NULL,
     };
     nodus_witness_ipc_t *ipc = nodus_witness_ipc_new(&h);
@@ -1093,20 +563,11 @@ int main(void) {
     /* The control connection first: without it no session socket is
      * dialled (the backend's no-dial-while-down rule). */
     test_status(b, ipc);
-    test_roles(b, ipc);
-    test_roles_handler_absent();
-    test_roles_err_exact();
-    test_roles_err_clears();
     test_session_roundtrip(b, ipc);
-    test_token_not_authorization(b, ipc);
     test_cc_collect(b, ipc);
     test_session_closed(b, ipc);
-    test_anon_roundtrip(b, ipc);
-    test_anon_refusals(b, ipc);
-    test_anon_raw_prefaces(ipc, wsock);
     test_non_preface(ipc, wsock);
     test_session_bound(b, ipc);
-    test_core_prefaces();
 
     b->ops->close(b);
     nodus_witness_ipc_free(ipc);

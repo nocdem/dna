@@ -7,17 +7,15 @@
  * the event loop. A plain C client connects over loopback.
  *
  * What it proves (each would be false if it failed):
- *   1. An Upgrade with the wallet site's Origin and an X-Forwarded-For gets 101 with
+ *   1. An Upgrade with an allowed Origin and an X-Forwarded-For gets 101 with
  *      the correct Sec-WebSocket-Accept and the "binary" subprotocol echo.
- *   2. After the Upgrade the stream is the SecretConnection (DHT v2 3b-2),
- *      not nodus frames: an OLD plaintext nodus "hello" carried in a masked
- *      binary WS frame is refused — the server sends no "challenge" and
- *      closes the connection. (The sealed session over WS is covered at the
- *      transport level by test_tcp_sc.c.)
+ *   2. After the Upgrade the connection is an ordinary tier-2 client
+ *      connection: a nodus "hello" frame carried in a masked binary WS frame
+ *      is answered with a "challenge", itself carried in one unmasked binary
+ *      WS frame — i.e. inbound bytes reach the nodus frame decoder and
+ *      outbound nodus frames are wrapped.
  *   3. ping → pong with the same payload.
- *   4. The Origin is not read: the wallet extension's origin
- *      (chrome-extension://…) also gets 101, and the connection leaves
- *      the pool once the client closes it.
+ *   4. A disallowed Origin gets 403 and the connection is closed.
  *   5. The per-real-IP limit counts WS connections by X-Forwarded-For:
  *      20 open connections with one XFF address are served, the 21st is
  *      closed without a 101.
@@ -54,7 +52,6 @@
 #include "protocol/nodus_wire.h"
 #include "protocol/nodus_tier2.h"
 #include "crypto/nodus_identity.h"
-#include "test_server_session.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -77,7 +74,6 @@ static int failed = 0;
 #define KEY_RFC      "dGhlIHNhbXBsZSBub25jZQ=="
 #define ACCEPT_RFC   "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
 #define XFF_IP       "198.51.100.7"
-#define WALLET_ORIGIN "https://wallet.nodusnetwork.io"
 /* Upper bound on nodus_tcp_poll rounds per wait. A liveness bound only:
  * every wait below returns as soon as its condition holds. */
 #define MAX_ROUNDS   400
@@ -245,7 +241,7 @@ static int ws_open_conn(const char *xff, rx_t *rx, int *got_101) {
     int fd = client_connect();
     if (fd < 0) return -1;
     char req[1024];
-    size_t n = upgrade_request(req, sizeof(req), WALLET_ORIGIN,xff, 1);
+    size_t n = upgrade_request(req, sizeof(req), NODUS_WS_DEFAULT_ORIGIN, xff, 1);
     memset(rx, 0, sizeof(*rx));
     if (n == 0 || send_all(fd, req, n) != 0 || rx_http_head(fd, rx) != 0)
         return fd;
@@ -271,7 +267,7 @@ static void test_upgrade_and_hello(nodus_identity_t *id) {
     TEST("Upgrade → 101, RFC accept, binary echoed");
     int fd = client_connect();
     char req[1024];
-    size_t n = upgrade_request(req, sizeof(req), WALLET_ORIGIN,XFF_IP, 1);
+    size_t n = upgrade_request(req, sizeof(req), NODUS_WS_DEFAULT_ORIGIN, XFF_IP, 1);
     int ok = fd >= 0 && n > 0 && send_all(fd, req, n) == 0 &&
              rx_http_head(fd, rx) == 0 &&
              rx->len >= 12 && memcmp(rx->buf, "HTTP/1.1 101", 12) == 0 &&
@@ -294,36 +290,38 @@ static void test_upgrade_and_hello(nodus_identity_t *id) {
         if (found == 1) PASS(); else FAIL("conn->ip is not the XFF address");
     }
 
-    /* DHT v2 3b-2: after the Upgrade the stream is the SecretConnection
-     * (nodus_tcp_sc.h), not nodus frames. The server answers ping / close at
-     * the WS layer (below), but a nodus `hello` — what a pre-3b-2 client
-     * sent — is not a SecretConnection message: the machine refuses it, the
-     * server answers NOTHING in plaintext (no `challenge`) and closes. This
-     * runs on a SECOND connection so the ping / close tests keep theirs. */
-    TEST("old plaintext hello in a WS frame → refused, no challenge");
+    TEST("tier-2 hello in WS frame → challenge in WS frame");
     uint8_t *t2 = malloc(16384);
     uint8_t *nf = malloc(16384 + NODUS_FRAME_HEADER_SIZE);
     uint8_t *wf = malloc(16384 + NODUS_FRAME_HEADER_SIZE + 16);
     ok = 0;
     if (t2 && nf && wf) {
-        rx_t *rx2 = calloc(1, sizeof(*rx2));
-        int got101 = 0;
-        int fd2 = rx2 ? ws_open_conn(XFF_IP, rx2, &got101) : -1;
         size_t t2_len = 0;
-        if (fd2 >= 0 && got101 &&
-            nodus_t2_hello(7, &id->pk, &id->node_id, t2, 16384, &t2_len) == 0) {
+        if (nodus_t2_hello(7, &id->pk, &id->node_id, t2, 16384, &t2_len) == 0) {
             size_t nf_len = nodus_frame_encode(nf, 16384 + NODUS_FRAME_HEADER_SIZE,
                                                t2, (uint32_t)t2_len);
             size_t wf_len = client_frame(wf, 0x82, nf, nf_len);
-            if (nf_len > 0 && send_all(fd2, wf, wf_len) == 0 &&
-                rx_until_eof(fd2, rx2) &&
-                !find_seq(rx2->buf, rx2->len, "challenge"))
-                ok = 1;
+            if (nf_len > 0 && send_all(fd, wf, wf_len) == 0) {
+                uint8_t op = 0;
+                const uint8_t *pl = NULL;
+                uint64_t pln = 0;
+                long fl = rx_frame(fd, rx, 0, &op, &pl, &pln);
+                nodus_frame_t fr;
+                if (fl > 0 && op == NODUS_WS_OP_BINARY &&
+                    nodus_frame_decode(pl, (size_t)pln, &fr) == (int)pln) {
+                    nodus_tier2_msg_t msg;
+                    memset(&msg, 0, sizeof(msg));
+                    if (nodus_t2_decode(fr.payload, fr.payload_len, &msg) == 0 &&
+                        strcmp(msg.method, "challenge") == 0 && msg.txn_id == 7)
+                        ok = 1;
+                    nodus_t2_msg_free(&msg);
+                    memmove(rx->buf, rx->buf + fl, rx->len - (size_t)fl);
+                    rx->len -= (size_t)fl;
+                }
+            }
         }
-        if (fd2 >= 0) close(fd2);
-        free(rx2);
     }
-    if (ok) PASS(); else FAIL("the old hello was not refused (or got a challenge)");
+    if (ok) PASS(); else FAIL("no challenge");
     free(t2); free(nf); free(wf);
 
     TEST("ping → pong with the same payload");
@@ -348,43 +346,19 @@ static void test_upgrade_and_hello(nodus_identity_t *id) {
     free(rx);
 }
 
-/* The entry does not read Origin: the wallet extension's origin gets the
- * same 101 as the wallet site. Its own XFF address, and the connection is
- * gone from the pool before the per-IP and total-cap tests run. */
-static void test_extension_origin_accepted(void) {
-    TEST("extension Origin → 101 (Origin not read)");
+static void test_origin_refused(void) {
+    TEST("disallowed Origin → 403 and close");
     rx_t *rx = calloc(1, sizeof(*rx));
     int fd = client_connect();
     char req[1024];
-    size_t n = upgrade_request(req, sizeof(req),
-                               "chrome-extension://kengijpmabcdefghijklmnopabcdefgh",
-                               "198.51.100.8", 1);
+    size_t n = upgrade_request(req, sizeof(req), "https://evil.example", XFF_IP, 0);
     int ok = rx && fd >= 0 && n > 0 && send_all(fd, req, n) == 0 &&
              rx_http_head(fd, rx) == 0 &&
-             rx->len >= 12 && memcmp(rx->buf, "HTTP/1.1 101", 12) == 0;
-    if (ok) PASS(); else FAIL("not accepted");
-    /* Present in the pool as an open WS connection before the close, so the
-     * "leaves" check below cannot pass for a connection that never got in. */
-    int present = 0;
-    for (int i = 0; ok && i < NODUS_TCP_MAX_CONNS; i++) {
-        nodus_tcp_conn_t *c = g_srv.tcp.pool[i];
-        if (c && c->is_ws && c->ws_open && strcmp(c->ip, "198.51.100.8") == 0) present++;
-    }
+             rx->len >= 12 && memcmp(rx->buf, "HTTP/1.1 403", 12) == 0 &&
+             rx_until_eof(fd, rx) == 1;
+    if (ok) PASS(); else FAIL("not refused");
     if (fd >= 0) close(fd);
     free(rx);
-
-    TEST("the closed extension connection leaves the pool");
-    if (present != 1) { FAIL("not in the pool after the 101"); return; }
-    int gone = 0;
-    for (int r = 0; r < MAX_ROUNDS && !gone; r++) {
-        pump_once();
-        gone = 1;
-        for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
-            nodus_tcp_conn_t *c = g_srv.tcp.pool[i];
-            if (c && c->is_ws && strcmp(c->ip, "198.51.100.8") == 0) gone = 0;
-        }
-    }
-    if (gone) PASS(); else FAIL("still in the pool");
 }
 
 static void test_per_ip_limit(void) {
@@ -578,7 +552,7 @@ int main(void) {
     config.peer_port    = 15302;
     config.ch_port      = 15303;
     config.witness_port = 15304;
-    config.ws_port      = WS_PORT;
+    config.ws_port      = WS_PORT;      /* origins left empty → default */
     snprintf(config.data_path, sizeof(config.data_path),
              "/tmp/nodus_ws_server_test_%d", (int)getpid());
 
@@ -597,15 +571,14 @@ int main(void) {
         return 1;
     }
 
-    /* DHT v2 3b-2: every accepted client connection (WS included) opens a
-     * SecretConnection, which needs the node's chain id — no witness here. */
-    ts_server_chain(&g_srv, 0x77);
-
-    TEST("WS entry listens on 127.0.0.1");
-    if (g_srv.tcp.ws_listen_fd >= 0 && g_srv.tcp.ws_port == WS_PORT)
+    TEST("WS entry listens on 127.0.0.1 with the default origin");
+    if (g_srv.tcp.ws_listen_fd >= 0 && g_srv.tcp.ws_port == WS_PORT &&
+        g_srv.config.ws_origins.count == 2 &&
+        strcmp(g_srv.config.ws_origins.origin[0], NODUS_WS_DEFAULT_ORIGIN) == 0 &&
+        strcmp(g_srv.config.ws_origins.origin[1], NODUS_WS_CONNECT_ORIGIN) == 0)
         PASS();
     else
-        FAIL("listener");
+        FAIL("listener / default origin");
 
     nodus_identity_t *id = calloc(1, sizeof(*id));
     if (!id || nodus_identity_generate(id) != 0) {
@@ -613,7 +586,7 @@ int main(void) {
         failed++;
     } else {
         test_upgrade_and_hello(id);
-        test_extension_origin_accepted();
+        test_origin_refused();
         test_per_ip_limit();
         test_ipv6_prefix_limit();
         test_handshake_timeout();

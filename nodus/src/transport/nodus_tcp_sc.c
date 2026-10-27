@@ -59,63 +59,7 @@ typedef struct nodus_tcp_sc {
     bool                   ready;       /* ... and on_session is still due   */
     uint8_t               *hold;        /* socket bytes held while a job runs */
     size_t                 hold_len;
-    const nodus_key_t     *pin_set;     /* INITIATOR pin SET (cfg.expected_set), caller-owned */
-    size_t                 pin_set_n;
-    /* The pre-AUTHENTICATED input budget (see sc_presession_budget): bytes the
-     * machine consumed so far while not authenticated, and the most it may
-     * consume (sc_run enforces it; once authenticated nothing is counted). */
-    size_t                 pre_bytes;
-    size_t                 pre_budget;
 } nodus_tcp_sc_t;
-
-/* The sealed-frame budget of one handshake (Kurultay #43 O-5, "a combined
- * budget (... sealed frames per handshake ...)"): everything a peer may send
- * BEFORE the session is AUTHENTICATED, derived from the sizes the machine
- * itself defines (shared/dnac/cmt_p2p_secret.h) — nothing is added to
- * shared/dnac, 4004 is untouched:
- *   AUTHSIG on the wire  = uvarint(<=3) + kind(1) + signature(4627) = 4631 B
- *   sealed chunk         = CMT_P2P_SC_DATA_MAX_SIZE = 1024 B
- *   sealed frames        = ceil(4631 / 1024) = 5 (4 x 1024 + 535), each
- *                          CMT_P2P_SC_SEALED_FRAME_SIZE = 1044 B -> 5,220 B
- * plus the plaintext handshake messages the role RECEIVES (each at most its
- * uvarint prefix + body):
- *   RESPONDER  HELLO (3 + 2,661) + KEYX (3 + 1,569) -> 4,236 B
- *   INITIATOR  HELLO_R (3 + 4,229)                  -> 4,232 B
- * i.e. at most 5 sealed frames after the plaintext messages. A peer that
- * pushes more than that without completing the session is closed (the
- * feed fails). Sealed bytes that ARRIVE together with the AUTHSIG tail but
- * stay in the hold while the verify job runs are not consumed yet and are
- * counted when they are — by then the session is authenticated and the
- * budget has ended. */
-/* DHT v2 package 3d (design §1.6): the ANON family has its own budget, exactly
- * the bytes its handshake carries — no AUTHSIG, one sealed CONFIRM frame:
- *   ANON initiator  HELLO_R_ANON (2 + 8,856) + CONFIRM (1,044)          = 9,902 B
- *   ANON responder  HELLO_ANON (1 + 69) + KEYX (2 + 1,569) + CONFIRM    = 2,685 B
- * It follows the family the machine is BOUND to: an UNBOUND responder (no
- * message seen yet) is held to the CLIENT budget, which is the larger. */
-static size_t sc_presession_budget(const cmt_p2p_sc_t *m)
-{
-    if (cmt_p2p_sc_is_anon(m)) {
-        return m->role == CMT_P2P_SC_ROLE_INITIATOR
-             ? (size_t)CMT_P2P_SC_HELLO_R_ANON_WIRE + CMT_P2P_SC_SEALED_FRAME_SIZE
-             : (size_t)CMT_P2P_SC_HELLO_ANON_WIRE + CMT_P2P_SC_KEYX_WIRE +
-               CMT_P2P_SC_SEALED_FRAME_SIZE;
-    }
-    {
-        size_t plain = m->role == CMT_P2P_SC_ROLE_INITIATOR
-                     ? (size_t)CMT_P2P_SC_UVARINT_MAX + CMT_P2P_SC_HELLO_R_BODY
-                     : (size_t)CMT_P2P_SC_UVARINT_MAX + CMT_P2P_SC_HELLO_BODY +
-                       (size_t)CMT_P2P_SC_UVARINT_MAX + CMT_P2P_SC_KEYX_BODY;
-        return plain + (size_t)CMT_P2P_SC_AUTHSIG_FRAMES_MAX * CMT_P2P_SC_SEALED_FRAME_SIZE;
-    }
-}
-
-_Static_assert(CMT_P2P_SC_AUTHSIG_FRAMES_MAX == 5,
-               "AUTHSIG is five sealed frames (4631 B / 1024 B, rounded up)");
-_Static_assert((size_t)CMT_P2P_SC_HELLO_R_ANON_WIRE + CMT_P2P_SC_SEALED_FRAME_SIZE == 9902 &&
-               (size_t)CMT_P2P_SC_HELLO_ANON_WIRE + CMT_P2P_SC_KEYX_WIRE +
-               CMT_P2P_SC_SEALED_FRAME_SIZE == 2685,
-               "ANON pre-session budgets: design §1.6 (9,902 B initiator, 2,685 B responder)");
 
 /* ── Host bindings: the profile decides the signing purpose ───────────── */
 
@@ -169,42 +113,6 @@ static int host_verify_node(void *ctx, const uint8_t sig_in[CMT_P2P_SC_SIG_SIZE]
     return nodus_verify_node_session_auth(&sig, msg, msg_len, &pk);
 }
 
-/* ANON initiator: the KEM-key certificate, verified under the strict purpose
- * 0x0E through its OWN callback (never the session-auth verify). */
-static int host_verify_kc(void *ctx, const uint8_t sig_in[CMT_P2P_SC_SIG_SIZE],
-                          const uint8_t *msg, size_t msg_len,
-                          const uint8_t pk_in[CMT_P2P_SC_DSA_PK_SIZE])
-{
-    nodus_sig_t sig;
-    nodus_pubkey_t pk;
-
-    (void)ctx;
-    memcpy(sig.bytes, sig_in, CMT_P2P_SC_SIG_SIZE);
-    memcpy(pk.bytes, pk_in, CMT_P2P_SC_DSA_PK_SIZE);
-    return nodus_verify_kem_cert(&sig, msg, msg_len, &pk);
-}
-
-int nodus_tcp_sc_kc_sign(const nodus_identity_t *id,
-                         const uint8_t chain_id[CMT_P2P_SC_CHAIN_ID_SIZE],
-                         uint8_t sig_out[CMT_P2P_SC_SIG_SIZE])
-{
-    uint8_t msg[CMT_P2P_SC_KC_MSG_SIZE];
-    nodus_sig_t sig;
-    int rc;
-
-    if (sig_out == NULL)
-        return -1;
-    memset(sig_out, 0, CMT_P2P_SC_SIG_SIZE);
-    if (id == NULL || chain_id == NULL || !id->has_mlkem)
-        return -1;
-    cmt_p2p_sc_kc_msg(chain_id, id->mlkem_pk, msg);
-    rc = nodus_sign_kem_cert(&sig, msg, sizeof(msg), &id->sk);
-    if (rc == 0)
-        memcpy(sig_out, sig.bytes, CMT_P2P_SC_SIG_SIZE);
-    qgp_secure_memzero(&sig, sizeof(sig));
-    return rc == 0 ? 0 : -1;
-}
-
 /* ── The worker ───────────────────────────────────────────────────────── */
 
 #ifndef NODUS_SC_INLINE
@@ -218,7 +126,6 @@ typedef struct nodus_sc_worker {
     nodus_sc_job_t  *qt[SC_Q_N];
     nodus_sc_job_t  *dh, *dt;           /* finished, not yet taken by the loop */
     int              outstanding[SC_Q_N]; /* queued + running + finished-not-taken */
-    int              anon_in;             /* ... of INBOUND, those that are ANON jobs */
     bool             stop;
     pthread_t        th[NODUS_TCP_SC_WORKERS];
     int              n_th;
@@ -231,8 +138,7 @@ static const int sc_class_cap[SC_Q_N] = { NODUS_TCP_SC_JOBQ_OUT, NODUS_TCP_SC_JO
 static void job_free(nodus_sc_job_t *job)
 {
     if (job != NULL) {
-        /* shared secret, signature; the VERIFY_KC message tail too */
-        qgp_secure_memzero(job, sizeof(*job) + job->ext_len);
+        qgp_secure_memzero(job, sizeof(*job));   /* shared secret, signature */
         free(job);
     }
 }
@@ -314,29 +220,13 @@ static nodus_sc_worker_t *worker_start(void)
  * -1 when this class is full or the worker is stopping: the caller frees. */
 static int worker_push(nodus_sc_worker_t *w, nodus_sc_job_t *j)
 {
-    const bool anon_in = j->anon && j->cls == SC_Q_INBOUND;
-    /* INBOUND and not ANON: the ANON share is not theirs to take (design
-     * §1.6), so they are counted WITHOUT the ANON jobs against the cap lowered
-     * by the reserve. ANON jobs and OUTBOUND ones see the whole class cap. */
-    const bool identified_in = j->cls == SC_Q_INBOUND && !j->anon;
-    int in_use, cap;
-
     pthread_mutex_lock(&w->mu);
-    in_use = identified_in ? w->outstanding[SC_Q_INBOUND] - w->anon_in
-                           : w->outstanding[j->cls];
-    cap = identified_in ? sc_class_cap[SC_Q_INBOUND] - NODUS_TCP_SC_JOBQ_IN_ANON_RESERVED
-                        : sc_class_cap[j->cls];
-    /* Both bounds: identified inbound jobs stay below cap - reserve (so the
-     * reserve is always free for ANON), and nobody takes the class past its
-     * whole cap (queued + running + finished-not-applied <= JOBQ_IN). */
-    if (w->stop || in_use >= cap || w->outstanding[j->cls] >= sc_class_cap[j->cls]) {
+    if (w->stop || w->outstanding[j->cls] >= sc_class_cap[j->cls]) {
         pthread_mutex_unlock(&w->mu);
         return -1;
     }
     j->next = NULL;
     j->charged = true;       /* released by nodus_tcp_sc_job_apply, once */
-    if (anon_in)
-        w->anon_in++;
     if (w->qt[j->cls] != NULL)
         w->qt[j->cls]->next = j;
     else
@@ -359,8 +249,6 @@ static void worker_release(nodus_sc_worker_t *w, nodus_sc_job_t *j)
     pthread_mutex_lock(&w->mu);
     if (w->outstanding[j->cls] > 0)
         w->outstanding[j->cls]--;
-    if (j->anon && j->cls == SC_Q_INBOUND && w->anon_in > 0)
-        w->anon_in--;
     pthread_mutex_unlock(&w->mu);
     j->charged = false;
 }
@@ -477,19 +365,15 @@ static int sc_submit(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn, nodus_tcp_sc_t *s
                      const cmt_p2p_sc_job_t *sj)
 {
     nodus_sc_job_t *j;
-    /* Only the KC VERIFY carries the 1,622-byte message (design §1.6). */
-    const size_t extra = sj->kind == CMT_P2P_SC_JOB_VERIFY_KC ? CMT_P2P_SC_KC_MSG_SIZE : 0;
 
     if (tcp->sc_worker == NULL)
         return -1;
-    j = (nodus_sc_job_t *)calloc(1, sizeof(*j) + extra);
+    j = (nodus_sc_job_t *)calloc(1, sizeof(*j));
     if (j == NULL)
         return -1;
-    j->ext_len = extra;
     j->slot = conn->slot;
     j->gen = s->gen;
     j->cls = s->cls;
-    j->anon = cmt_p2p_sc_is_anon(&s->m);
     j->kind = sj->kind;
     j->host = s->host;
     j->job.kind = sj->kind;
@@ -526,20 +410,6 @@ static int sc_submit(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn, nodus_tcp_sc_t *s
             j->job.sig = j->sig;
         }
         break;
-    case CMT_P2P_SC_JOB_VERIFY_KC:
-        if (sj->msg_len != CMT_P2P_SC_KC_MSG_SIZE || sj->msg == NULL) {
-            job_free(j);
-            return -1;
-        }
-        memcpy(j->ext, sj->msg, sj->msg_len);
-        j->msg_len = sj->msg_len;
-        j->job.msg = j->ext;
-        j->job.msg_len = j->msg_len;
-        memcpy(j->dsa_pk, sj->dsa_pk, sizeof(j->dsa_pk));
-        memcpy(j->sig, sj->sig, sizeof(j->sig));
-        j->job.dsa_pk = j->dsa_pk;
-        j->job.sig = j->sig;
-        break;
     default:
         job_free(j);
         return -1;
@@ -574,21 +444,11 @@ static int sc_pin_ok(nodus_tcp_conn_t *conn, nodus_tcp_sc_t *s)
     nodus_pubkey_t pk;
     nodus_key_t fp;
 
-    bool ok = false;
-
-    if (rpk == NULL || (!conn->expected_peer_id_set && s->pin_set_n == 0))
+    if (rpk == NULL || !conn->expected_peer_id_set)
         return -1;
     memcpy(pk.bytes, rpk, sizeof(pk.bytes));
-    if (nodus_fingerprint(&pk, &fp) != 0) {
-        QGP_LOG_WARN(LOG_TAG_SC, "dialed identity unreadable (slot %d): aborted before Encaps",
-                     conn->slot);
-        return -1;
-    }
-    if (conn->expected_peer_id_set && nodus_key_cmp(&fp, &conn->expected_peer_id) == 0)
-        ok = true;
-    for (size_t i = 0; !ok && i < s->pin_set_n; i++)
-        ok = nodus_key_cmp(&fp, &s->pin_set[i]) == 0;
-    if (!ok) {
+    if (nodus_fingerprint(&pk, &fp) != 0 ||
+        nodus_key_cmp(&fp, &conn->expected_peer_id) != 0) {
         QGP_LOG_WARN(LOG_TAG_SC, "dialed identity mismatch (slot %d): aborted before Encaps",
                      conn->slot);
         return -1;
@@ -615,16 +475,6 @@ static int sc_advance(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn, nodus_tcp_sc_t *
             return 0;
         if (sj->kind == CMT_P2P_SC_JOB_ENCAPS &&
             s->m.role == CMT_P2P_SC_ROLE_INITIATOR && sc_pin_ok(conn, s) != 0) {
-            cmt_p2p_sc_abort(&s->m);
-            return -1;
-        }
-        /* ANON initiator (design §1.5 step 2): the pin is checked here, before
-         * the certificate job is even run (a misdialed node costs no ML-DSA
-         * verify), and accepted into the machine — which issues no ENCAPS
-         * until this AND a valid certificate are both in. */
-        if (sj->kind == CMT_P2P_SC_JOB_VERIFY_KC &&
-            (sc_pin_ok(conn, s) != 0 ||
-             cmt_p2p_sc_anon_pin_accepted(&s->m) != CMT_OK)) {
             cmt_p2p_sc_abort(&s->m);
             return -1;
         }
@@ -710,15 +560,6 @@ nodus_sc_apply_t nodus_tcp_sc_job_apply(nodus_tcp_t *tcp, nodus_sc_job_t *job,
 
 /* ── Enable / queries / free ──────────────────────────────────────────── */
 
-static bool key_all_zero(const nodus_key_t *k)
-{
-    uint8_t acc = 0;
-
-    for (size_t i = 0; i < sizeof(k->bytes); i++)
-        acc |= k->bytes[i];
-    return acc == 0;
-}
-
 /* A connection the layer may be switched on for: it has carried NO byte in
  * either direction (the sticky io_started — empty buffers prove nothing:
  * bytes may have been consumed and answered), holds no leftover state of the
@@ -728,7 +569,7 @@ static bool conn_eligible(const nodus_tcp_conn_t *conn)
     static const uint8_t zero_token[NODUS_SESSION_TOKEN_LEN] = { 0 };
 
     if (conn->sc != NULL || conn->close_pending || conn->state == NODUS_CONN_CLOSED ||
-        conn->is_unix)
+        conn->is_unix || conn->channel_crypto.established)
         return false;
     if (atomic_load_explicit(&conn->io_started, memory_order_relaxed) ||
         conn->rlen != 0 || conn->wlen != 0 ||
@@ -748,18 +589,10 @@ int nodus_tcp_sc_enable(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
     nodus_tcp_sc_t *s;
     const uint8_t *kem_pk = NULL;
     const uint8_t *kem_sk = NULL;
-    int init_rc;
     int (*do_sign)(void *, const uint8_t *, size_t, uint8_t *) = NULL;
     int (*do_verify)(void *, const uint8_t *, const uint8_t *, size_t, const uint8_t *) = NULL;
-    /* ANON INITIATOR: no local key at all, so no id (DHT v2 package 3d). */
-    const bool anon_init = cfg != NULL && cfg->profile == &CMT_P2P_SC_PROFILE_ANON &&
-                           cfg->role == CMT_P2P_SC_ROLE_INITIATOR;
-    /* RESPONDER with a cached KC: start family-UNBOUND (CLIENT or ANON). */
-    const bool unbound = cfg != NULL && cfg->role == CMT_P2P_SC_ROLE_RESPONDER &&
-                         cfg->profile == &CMT_P2P_SC_PROFILE_CLIENT &&
-                         cfg->anon_kc_sig != NULL;
 
-    if (tcp == NULL || conn == NULL || cfg == NULL || (cfg->id == NULL && !anon_init))
+    if (tcp == NULL || conn == NULL || cfg == NULL || cfg->id == NULL)
         return -1;
     sc_lk(tcp, true);
     eligible = conn_eligible(conn);
@@ -768,45 +601,20 @@ int nodus_tcp_sc_enable(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
         QGP_LOG_ERROR(LOG_TAG_SC, "enable refused: connection not eligible (slot %d)", conn->slot);
         return -1;
     }
-    if (cfg->anon_kc_sig != NULL && !unbound) {
-        QGP_LOG_ERROR(LOG_TAG_SC, "enable refused: a KC is only for a CLIENT-profile responder");
-        return -1;
-    }
     if (cfg->profile == &CMT_P2P_SC_PROFILE_CLIENT) {
         do_sign = host_sign_client;
         do_verify = host_verify_client;
     } else if (cfg->profile == &CMT_P2P_SC_PROFILE_NODE) {
         do_sign = host_sign_node;
         do_verify = host_verify_node;
-    } else if (!anon_init) {
-        /* ANON is an INITIATOR profile here; a responder reaches it only by
-         * the unbound form (cfg.anon_kc_sig). */
-        QGP_LOG_ERROR(LOG_TAG_SC, "enable refused: profile is not CLIENT or NODE "
-                      "(ANON: initiator only)");
+    } else {
+        QGP_LOG_ERROR(LOG_TAG_SC, "enable refused: profile is not CLIENT or NODE");
         return -1;
     }
     if (cfg->role == CMT_P2P_SC_ROLE_INITIATOR) {
-        /* the dial pin is mandatory: one identity, a set, or both */
-        if ((cfg->expected_set == NULL) != (cfg->expected_set_n == 0)) {
-            QGP_LOG_ERROR(LOG_TAG_SC, "enable refused: pin set pointer and count disagree");
-            return -1;
-        }
-        if (cfg->expected_peer == NULL &&
-            (cfg->expected_set == NULL || cfg->expected_set_n == 0)) {
+        if (cfg->expected_peer == NULL) {      /* the dial pin is mandatory */
             QGP_LOG_ERROR(LOG_TAG_SC, "enable refused: initiator without a pin");
             return -1;
-        }
-        /* An all-zero pin is "no pin" written down: refuse it, whatever
-         * built the config (central zero-pin refusal). */
-        if (cfg->expected_peer != NULL && key_all_zero(cfg->expected_peer)) {
-            QGP_LOG_ERROR(LOG_TAG_SC, "enable refused: all-zero expected peer");
-            return -1;
-        }
-        for (size_t i = 0; i < cfg->expected_set_n; i++) {
-            if (key_all_zero(&cfg->expected_set[i])) {
-                QGP_LOG_ERROR(LOG_TAG_SC, "enable refused: all-zero pin in the set");
-                return -1;
-            }
         }
     } else if (cfg->role == CMT_P2P_SC_ROLE_RESPONDER) {
         if (!cfg->id->has_mlkem) {
@@ -822,26 +630,14 @@ int nodus_tcp_sc_enable(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
     s = (nodus_tcp_sc_t *)calloc(1, sizeof(*s));
     if (s == NULL)
         return -1;
-    s->host.ctx = anon_init ? NULL : (void *)&cfg->id->sk;
+    s->host.ctx = (void *)&cfg->id->sk;
     s->host.sign = do_sign;
     s->host.verify = do_verify;
-    s->host.verify_kc = anon_init ? host_verify_kc : NULL;
     s->kem_sk = kem_sk;
     s->cls = cfg->role == CMT_P2P_SC_ROLE_INITIATOR ? 0 : 1;
-    if (anon_init) {
-        init_rc = cmt_p2p_sc_init_anon(&s->m, cfg->role, &s->host, NULL, NULL, NULL,
-                                       NULL, cfg->proto_ver, cfg->chain_id);
-    } else if (unbound) {
-        init_rc = cmt_p2p_sc_init_responder_unbound(&s->m, &s->host, cfg->id->pk.bytes,
-                                                    kem_pk, kem_sk, cfg->anon_kc_sig,
-                                                    cfg->proto_ver, cfg->chain_id);
-    } else {
-        init_rc = cmt_p2p_sc_init_profile(&s->m, cfg->role, &s->host, cfg->profile,
-                                          cfg->id->pk.bytes, kem_pk, kem_sk,
-                                          cfg->proto_ver, cfg->chain_id);
-    }
-    s->pre_budget = sc_presession_budget(&s->m);
-    if (init_rc != CMT_OK) {
+    if (cmt_p2p_sc_init_profile(&s->m, cfg->role, &s->host, cfg->profile,
+                                cfg->id->pk.bytes, kem_pk, kem_sk,
+                                cfg->proto_ver, cfg->chain_id) != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG_SC, "enable refused: secret connection init failed");
         qgp_secure_memzero(s, sizeof(*s));
         free(s);
@@ -861,12 +657,8 @@ int nodus_tcp_sc_enable(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
     if (eligible) {
         s->gen = ++tcp->sc_gen_last;
         if (cfg->role == CMT_P2P_SC_ROLE_INITIATOR) {
-            if (cfg->expected_peer != NULL) {
-                conn->expected_peer_id = *cfg->expected_peer;
-                conn->expected_peer_id_set = true;
-            }
-            s->pin_set = cfg->expected_set;
-            s->pin_set_n = cfg->expected_set_n;
+            conn->expected_peer_id = *cfg->expected_peer;
+            conn->expected_peer_id_set = true;
         }
         conn->sc = s;
     }
@@ -905,38 +697,6 @@ bool nodus_tcp_sc_authenticated(const nodus_tcp_conn_t *conn)
     return r;
 }
 
-int nodus_tcp_sc_presession_sweep(nodus_tcp_t *tcp, uint64_t now_mono_ms,
-                                  uint64_t idle_ms, uint64_t abs_ms)
-{
-    int closed = 0;
-
-    if (tcp == NULL)
-        return 0;
-    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
-        nodus_tcp_conn_t *c = tcp->pool[i];
-        bool layer;
-
-        if (c == NULL || c->close_pending || c->auth_initiated_by_us)
-            continue;
-        sc_lk(tcp, true);
-        layer = c->sc != NULL;
-        sc_lk(tcp, false);
-        if (!layer || nodus_tcp_sc_authenticated(c))
-            continue;
-        uint64_t idle_for = now_mono_ms > c->last_activity_mono_ms
-                          ? now_mono_ms - c->last_activity_mono_ms : 0;
-        uint64_t age = now_mono_ms > c->connected_mono_ms
-                     ? now_mono_ms - c->connected_mono_ms : 0;
-        if (idle_for >= idle_ms || age >= abs_ms) {
-            QGP_LOG_WARN(LOG_TAG_SC, "pre-session deadline (slot %d, ip %s): closing",
-                         c->slot, c->ip);
-            nodus_tcp_disconnect(tcp, c);
-            closed++;
-        }
-    }
-    return closed;
-}
-
 int nodus_tcp_sc_peer_pubkey(const nodus_tcp_conn_t *conn,
                              uint8_t out[CMT_P2P_SC_DSA_PK_SIZE])
 {
@@ -947,47 +707,10 @@ int nodus_tcp_sc_peer_pubkey(const nodus_tcp_conn_t *conn,
         return -1;
     sc_lk(tcp, true);
     if (conn->sc != NULL && cmt_p2p_sc_is_authenticated(&conn->sc->m)) {
-        /* An ANON-bound responder has no peer key: the machine returns NULL
-         * (design §2); never a zero key in its place. */
         const uint8_t *pk = cmt_p2p_sc_remote_pubkey(&conn->sc->m);
 
         if (pk != NULL) {
             memcpy(out, pk, CMT_P2P_SC_DSA_PK_SIZE);   /* a COPY: conn_free wipes the machine */
-            rc = 0;
-        }
-    }
-    sc_lk(tcp, false);
-    return rc;
-}
-
-bool nodus_tcp_sc_is_anonymous(const nodus_tcp_conn_t *conn)
-{
-    nodus_tcp_t *tcp = conn ? conn->tcp_parent : NULL;
-    bool r;
-
-    if (conn == NULL)
-        return false;
-    sc_lk(tcp, true);
-    r = conn->sc != NULL && cmt_p2p_sc_is_anon(&conn->sc->m) &&
-        conn->sc->m.role == CMT_P2P_SC_ROLE_RESPONDER;
-    sc_lk(tcp, false);
-    return r;
-}
-
-int nodus_tcp_sc_transcript(const nodus_tcp_conn_t *conn,
-                            uint8_t out[CMT_P2P_SC_T_SIZE])
-{
-    nodus_tcp_t *tcp = conn ? conn->tcp_parent : NULL;
-    int rc = -1;
-
-    if (conn == NULL || out == NULL)
-        return -1;
-    sc_lk(tcp, true);
-    if (conn->sc != NULL) {
-        const uint8_t *t = cmt_p2p_sc_transcript(&conn->sc->m);
-
-        if (t != NULL) {
-            memcpy(out, t, CMT_P2P_SC_T_SIZE);          /* a COPY, as the key above */
             rc = 0;
         }
     }
@@ -1135,22 +858,6 @@ static int sc_run(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn, nodus_tcp_sc_t *s,
             rc = cmt_p2p_sc_recv(&s->m, p, inlen - off, &consumed);
             off += consumed;
             if (rc != CMT_OK) { ret = -1; break; }
-            /* The pre-session input budget (sc_presession_budget), accounted
-             * HERE, as the machine takes the bytes and before it advances
-             * (an inline build runs the whole handshake inside one call): only
-             * bytes taken while NOT authenticated count, never the
-             * application bytes that follow. */
-            s->pre_bytes += consumed;
-            /* The budget follows the BOUND family: an unbound responder's
-             * first message may have just bound it to ANON (design §1.6). */
-            s->pre_budget = sc_presession_budget(&s->m);
-            if (s->pre_bytes > s->pre_budget) {
-                QGP_LOG_WARN(LOG_TAG_SC, "pre-session input budget exceeded "
-                             "(%zu > %zu bytes, slot %d): closing",
-                             s->pre_bytes, s->pre_budget, conn->slot);
-                ret = -1;
-                break;
-            }
             had_job = cmt_p2p_sc_job(&s->m) != NULL;
             if (sc_advance(tcp, conn, s) != 0) { ret = -1; break; }
             if (s->job_out)
@@ -1205,7 +912,6 @@ int nodus_tcp_sc_feed(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
     }
     if (sc_run(tcp, conn, s, in, inlen, &used, plain, plain_ctx) != 0)
         return -1;
-    /* (The pre-session input budget is enforced inside sc_run.) */
     left = inlen - used;
     if (left > 0 && !s->job_out) {
         /* The machine stops early only to HOLD for a job. Anything else left

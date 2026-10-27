@@ -112,10 +112,7 @@ static size_t build_tagged_preimage(uint8_t *buf, size_t buf_cap,
  * identical to AUTH_CHALLENGE's (0x01) 32-byte nonce, whose raw fallback
  * stays open — a session signature and an auth-challenge signature would
  * verify against each other's bytes. 0x0B is the session design's
- * "same strict class as 0x0A" (§2R3 N7 FINAL). 0x0C / 0x0D (DHT v2 client /
- * node session) and 0x0E (the ANON session's KEM-key certificate, package 3d)
- * are strict for the same reason: brand new, no shipped binary has produced
- * or checked them. */
+ * "same strict class as 0x0A" (§2R3 N7 FINAL). */
 bool nodus_sign_purpose_is_strict(uint8_t purpose) {
     return purpose == NODUS_PURPOSE_PREPARED ||
            purpose == NODUS_PURPOSE_VIEWOK ||
@@ -126,10 +123,7 @@ bool nodus_sign_purpose_is_strict(uint8_t purpose) {
             * records 2026-10-14-kurultay-21-summary.md, 2026-10-23-
             * kurultay-43-summary.md) — brand new, same reason as 0x0A. */
            purpose == NODUS_PURPOSE_CLIENT_SESSION_AUTH ||
-           purpose == NODUS_PURPOSE_NODE_SESSION_AUTH ||
-           /* 0x0E: the ANON session's KEM-key certificate (DHT v2 package
-            * 3d design §1.1) — brand new, strict from its first byte. */
-           purpose == NODUS_PURPOSE_KEM_CERT;
+           purpose == NODUS_PURPOSE_NODE_SESSION_AUTH;
 }
 
 /* ───── Tagged sign/verify (internal engine) ────────────────────────── */
@@ -339,20 +333,6 @@ int nodus_verify_node_session_auth(const nodus_sig_t *sig,
                                    const nodus_pubkey_t *pk) {
     return nodus_verify_tagged(sig, NODUS_PURPOSE_NODE_SESSION_AUTH,
                                 challenge, challenge_len, pk);
-}
-
-int nodus_sign_kem_cert(nodus_sig_t *sig_out,
-                        const uint8_t *msg, size_t msg_len,
-                        const nodus_seckey_t *sk) {
-    return nodus_sign_tagged(sig_out, NODUS_PURPOSE_KEM_CERT,
-                              msg, msg_len, sk);
-}
-
-int nodus_verify_kem_cert(const nodus_sig_t *sig,
-                          const uint8_t *msg, size_t msg_len,
-                          const nodus_pubkey_t *pk) {
-    return nodus_verify_tagged(sig, NODUS_PURPOSE_KEM_CERT,
-                                msg, msg_len, pk);
 }
 
 int nodus_sign_witness_addr(nodus_sig_t *sig_out,

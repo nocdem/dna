@@ -105,16 +105,7 @@ else()
         dna_bench_observe.c
         dna_bench_output.c
         dna_bench_native.c
-        # DHT v2 3c: the tool network module. libdna.so carries only the
-        # libnodus.a objects something else references, so it does not hold
-        # this one; compiled in directly (needs json-c for the file).
-        ${CMAKE_SOURCE_DIR}/src/client/nodus_tool_network.c
     )
-    if(JSONC_FOUND)
-        target_compile_definitions(dna_bench PRIVATE NODUS_HAS_JSONC)
-        target_include_directories(dna_bench PRIVATE ${JSONC_INCLUDE_DIRS})
-        target_link_libraries(dna_bench ${JSONC_LIBRARIES})
-    endif()
     target_include_directories(dna_bench PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${DNA_INCLUDE_DIR}

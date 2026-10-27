@@ -88,6 +88,38 @@ static bool key_valid(const char *k, size_t n) {
     return (b64_val((unsigned char)k[21]) & 0x0F) == 0;
 }
 
+/* ── Origins ─────────────────────────────────────────────────────── */
+
+int nodus_ws_origins_add(nodus_ws_origins_t *o, const char *origin) {
+    if (!o || !origin) return -1;
+    if (o->count < 0 || o->count >= NODUS_WS_MAX_ORIGINS) return -1;
+    size_t n = strlen(origin);
+    if (n == 0 || n >= NODUS_WS_ORIGIN_MAX) return -1;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)origin[i];
+        if (c <= 0x20 || c == 0x7F) return -1;
+    }
+    memcpy(o->origin[o->count], origin, n + 1);
+    o->count++;
+    return 0;
+}
+
+void nodus_ws_origins_default(nodus_ws_origins_t *o) {
+    if (!o) return;
+    memset(o, 0, sizeof(*o));
+    (void)nodus_ws_origins_add(o, NODUS_WS_DEFAULT_ORIGIN);
+    (void)nodus_ws_origins_add(o, NODUS_WS_CONNECT_ORIGIN);
+}
+
+static bool origin_allowed(const nodus_ws_origins_t *o, const char *v, size_t n) {
+    if (!o) return false;
+    for (int i = 0; i < o->count && i < NODUS_WS_MAX_ORIGINS; i++) {
+        size_t l = strlen(o->origin[i]);
+        if (l == n && memcmp(o->origin[i], v, n) == 0) return true;
+    }
+    return false;
+}
+
 /* ── Accept key / real IP ────────────────────────────────────────── */
 
 int nodus_ws_accept_key(const char *key, size_t key_len,
@@ -140,9 +172,30 @@ int nodus_ws_real_ip(const char *sock_ip, const char *xff, size_t xff_len,
     return -1;
 }
 
-/* nodus_ws_ip_bucket lives in nodus_tcp.c: the per-IP handshake rate of the
- * plain listener (built on every platform) needs it, and this file is built
- * only where the WebSocket entry exists (not Windows). */
+int nodus_ws_ip_bucket(const char *ip, nodus_ws_ip_bucket_t *out) {
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+    if (!ip) return -1;
+
+    struct in_addr a4;
+    struct in6_addr a6;
+    if (inet_pton(AF_INET, ip, &a4) == 1) {
+        out->family = 4;
+        memcpy(out->key, &a4.s_addr, 4);
+        return 0;
+    }
+    if (inet_pton(AF_INET6, ip, &a6) == 1) {
+        if (IN6_IS_ADDR_V4MAPPED(&a6)) {
+            out->family = 4;
+            memcpy(out->key, a6.s6_addr + 12, 4);
+        } else {
+            out->family = 6;
+            memcpy(out->key, a6.s6_addr, 8);
+        }
+        return 0;
+    }
+    return -1;
+}
 
 /* ── UTF-8 (RFC 3629 §4) ─────────────────────────────────────────── */
 
@@ -192,6 +245,7 @@ static int hs_reject(nodus_ws_hs_result_t *res, int status, const char *reason) 
 
 int nodus_ws_handshake_parse(const uint8_t *buf, size_t len,
                              const char *sock_ip,
+                             const nodus_ws_origins_t *origins,
                              nodus_ws_hs_result_t *res) {
     if (!res) return NODUS_WS_HS_REJECT;
     memset(res, 0, sizeof(*res));
@@ -253,10 +307,10 @@ int nodus_ws_handshake_parse(const uint8_t *buf, size_t len,
     pos = eol + 2;
 
     /* 4. Header fields. */
-    int n_host = 0, n_key = 0, n_ver = 0;
+    int n_host = 0, n_key = 0, n_ver = 0, n_origin = 0;
     bool upgrade_ok = false, conn_ok = false, proto_binary = false;
-    const char *key = NULL, *ver = NULL, *xff = NULL;
-    size_t key_n = 0, ver_n = 0, xff_n = 0;
+    const char *key = NULL, *ver = NULL, *org = NULL, *xff = NULL;
+    size_t key_n = 0, ver_n = 0, org_n = 0, xff_n = 0;
     bool host_empty = false;
 
     while (pos + 1 < head_len) {
@@ -291,6 +345,8 @@ int nodus_ws_handshake_parse(const uint8_t *buf, size_t len,
             n_key++; key = v; key_n = vn;
         } else if (ci_eq(l, nl, "sec-websocket-version")) {
             n_ver++; ver = v; ver_n = vn;
+        } else if (ci_eq(l, nl, "origin")) {
+            n_origin++; org = v; org_n = vn;
         } else if (ci_eq(l, nl, "sec-websocket-protocol")) {
             if (list_has(v, vn, "binary", false)) proto_binary = true;
         } else if (ci_eq(l, nl, "x-forwarded-for")) {
@@ -309,6 +365,8 @@ int nodus_ws_handshake_parse(const uint8_t *buf, size_t len,
         return hs_reject(res, 426, "Sec-WebSocket-Version is not 13");
     if (n_key != 1 || !key_valid(key, key_n))
         return hs_reject(res, 400, "Sec-WebSocket-Key missing or invalid");
+    if (n_origin != 1 || !origin_allowed(origins, org, org_n))
+        return hs_reject(res, 403, "Origin missing or not allowed");
     if (nodus_ws_real_ip(sock_ip, xff, xff_n, res->real_ip) != 0)
         return hs_reject(res, 400, "X-Forwarded-For missing or malformed");
     if (nodus_ws_accept_key(key, key_n, res->accept) != 0)
@@ -341,6 +399,7 @@ size_t nodus_ws_reject_response(int status, char *out, size_t cap) {
     const char *extra = "";
     switch (status) {
     case 400: line = "400 Bad Request"; break;
+    case 403: line = "403 Forbidden"; break;
     case 426: line = "426 Upgrade Required";
               extra = "Sec-WebSocket-Version: 13\r\n"; break;
     default:  return 0;

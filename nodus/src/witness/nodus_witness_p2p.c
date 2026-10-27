@@ -136,12 +136,6 @@ struct nodus_witness_p2p {
     int                         n_bonded, cap_bonded;
     bool                        bonded_valid;
     uint64_t                    bonded_tip;
-    /* Whether the LAST derivation of the set ran to the end (the tip read
-     * and the validators read both succeeded). 4004 keeps its last good set
-     * when a refresh fails (admission must not flap); the ROLE EXPORT must
-     * not: an old set exported as fresh would keep exempting an identity
-     * whose role ended (nodus_witness_p2p_roles_fill refuses while false). */
-    bool                        bonded_derive_ok;
     /* IDs that JOINED the set, summed over every refresh (the purge's
      * input, bonded_purge_new) — nodus_witness_p2p_bonded_joined_total */
     uint64_t                    bonded_joined_total;
@@ -234,14 +228,12 @@ static const p2p_bonded_t *bonded_find(const nodus_witness_p2p_t *p,
  * both a storage-set member and a validator / committee member is a validator
  * whatever the add order. */
 static void bonded_add(p2p_bonded_t **set, int *n, int *cap,
-                       const uint8_t pk[NODUS_PK_BYTES], bool validator,
-                       bool *ok)
+                       const uint8_t pk[NODUS_PK_BYTES], bool validator)
 {
     char id[CMT_P2P_ID_CAP];
     int i;
 
     if (cmt_p2p_pubkey_to_id(pk, id) != CMT_OK) {
-        *ok = false;            /* a derivation fault: the role export stops */
         return;
     }
     for (i = 0; i < *n; i++) {
@@ -255,7 +247,6 @@ static void bonded_add(p2p_bonded_t **set, int *n, int *cap,
         p2p_bonded_t *nb = (p2p_bonded_t *)realloc(*set, (size_t)ncap * sizeof(*nb));
 
         if (nb == NULL) {
-            *ok = false;
             return;
         }
         *set = nb;
@@ -270,17 +261,15 @@ static void bonded_add(p2p_bonded_t **set, int *n, int *cap,
 /* N5: the committee a height resolves to (the deleted B1 gate's reads,
  * nodus_witness_peer.c:696-720 before F5). */
 static void bonded_add_committee(nodus_witness_p2p_t *p, p2p_bonded_t **set,
-                                 int *n, int *cap, uint64_t height, bool *ok)
+                                 int *n, int *cap, uint64_t height)
 {
     nodus_committee_member_t *cm = NULL;
     int k = 0, i;
 
     if (nodus_committee_get_for_block_alloc(p->w, height, &cm, &k) == 0) {
         for (i = 0; i < k; i++) {
-            bonded_add(set, n, cap, cm[i].pubkey, true, ok);
+            bonded_add(set, n, cap, cm[i].pubkey, true);
         }
-    } else {
-        *ok = false;            /* lookup / allocation error (header: -1) */
     }
     free(cm);
 }
@@ -297,24 +286,18 @@ static void bonded_add_committee(nodus_witness_p2p_t *p, p2p_bonded_t **set,
  * that set. A member with no registry row (a committed set never has
  * one) is skipped and logged once per process. */
 static void bonded_add_storage_set(nodus_witness_p2p_t *p, p2p_bonded_t **set,
-                                   int *n, int *cap, uint64_t epoch_start,
-                                   bool *ok)
+                                   int *n, int *cap, uint64_t epoch_start)
 {
     nodus_storage_set_t *ss;
     sqlite3_stmt *st = NULL;
     uint32_t i;
-    int src;
 
     ss = (nodus_storage_set_t *)calloc(1, sizeof(*ss));
     if (ss == NULL) {
-        *ok = false;
         return;
     }
-    src = nodus_witness_storage_set_get(p->w, epoch_start, ss);
-    if (src != 0 || ss->count == 0) {
-        if (src < 0) {
-            *ok = false;        /* rc -1 = fault; rc 1 (no such set) is not */
-        }
+    if (nodus_witness_storage_set_get(p->w, epoch_start, ss) != 0 ||
+        ss->count == 0) {
         free(ss);
         return;
     }
@@ -323,7 +306,6 @@ static void bonded_add_storage_set(nodus_witness_p2p_t *p, p2p_bonded_t **set,
                            -1, &st, NULL) != SQLITE_OK) {
         QGP_LOG_WARN(LOG_TAG, "v2_storage_nodes table unreadable: %s",
                      sqlite3_errmsg(p->w->db));
-        *ok = false;
         free(ss);
         return;
     }
@@ -332,16 +314,13 @@ static void bonded_add_storage_set(nodus_witness_p2p_t *p, p2p_bonded_t **set,
 
         sqlite3_reset(st);
         if (sqlite3_bind_blob(st, 1, ss->fps[i], 64, SQLITE_STATIC) != SQLITE_OK) {
-            *ok = false;
             break;
         }
         rc = sqlite3_step(st);
         if (rc == SQLITE_ROW) {
             if (sqlite3_column_bytes(st, 0) == NODUS_PK_BYTES) {
                 bonded_add(set, n, cap,
-                           (const uint8_t *)sqlite3_column_blob(st, 0), false, ok);
-            } else {
-                *ok = false;    /* a malformed registry row */
+                           (const uint8_t *)sqlite3_column_blob(st, 0), false);
             }
         } else if (rc == SQLITE_DONE) {
             if (!p->storage_orphan_warned) {
@@ -353,7 +332,6 @@ static void bonded_add_storage_set(nodus_witness_p2p_t *p, p2p_bonded_t **set,
         } else {
             QGP_LOG_WARN(LOG_TAG, "v2_storage_nodes read failed: %s",
                          sqlite3_errmsg(p->w->db));
-            *ok = false;
             break;
         }
     }
@@ -420,8 +398,6 @@ void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p)
     bool was_self;
     p2p_bonded_t *nb = NULL;
     int n_new = 0, cap_new = 0;
-    bool derive_ok = true;
-    int vrc = SQLITE_DONE;
 
     if (p == NULL) {
         return;
@@ -430,14 +406,12 @@ void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p)
     if (p->w == NULL || p->w->db == NULL) {
         p->n_bonded = 0;
         p->bonded_valid = true;
-        p->bonded_derive_ok = true;
         p->bonded_tip = 0;
         p->host.self_bonded = false;
         return;
     }
     if (nodus_witness_block_height_checked(p->w, &tip) != 0) {
-        p->bonded_derive_ok = false;           /* the role export stops ... */
-        return;                                /* ... 4004 keeps the last good set */
+        return;                                /* keep the last good set */
     }
     /* The new set is built beside the old one, so the two can be
      * compared (bonded_purge_new) before the old one is replaced. */
@@ -446,23 +420,14 @@ void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p)
                            "ORDER BY pubkey_hash", -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_int(st, 1, (int)DNAC_VALIDATOR_ACTIVE);
         sqlite3_bind_int(st, 2, (int)DNAC_VALIDATOR_ELIGIBLE);
-        while ((vrc = sqlite3_step(st)) == SQLITE_ROW) {
+        while (sqlite3_step(st) == SQLITE_ROW) {
             if (sqlite3_column_bytes(st, 0) == NODUS_PK_BYTES) {
                 bonded_add(&nb, &n_new, &cap_new,
-                           (const uint8_t *)sqlite3_column_blob(st, 0), true,
-                           &derive_ok);
-            } else {
-                derive_ok = false;      /* a malformed validator row */
+                           (const uint8_t *)sqlite3_column_blob(st, 0), true);
             }
-        }
-        if (vrc != SQLITE_DONE) {       /* the scan did not run to its end */
-            derive_ok = false;
-            QGP_LOG_WARN(LOG_TAG, "validators read failed: %s",
-                         sqlite3_errmsg(p->w->db));
         }
         sqlite3_finalize(st);
     } else {
-        derive_ok = false;
         QGP_LOG_WARN(LOG_TAG, "validators table unreadable: %s",
                      sqlite3_errmsg(p->w->db));
     }
@@ -489,19 +454,17 @@ void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p)
         const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
         uint64_t v2_tip = 0, H = 0;
 
-        if (nodus_witness_v2_tip_height(p->w, &v2_tip) != 0) {
-            derive_ok = false;          /* tip unreadable: storage sets unknown */
-        } else if (nodus_stprobe_epoch_for_tip(v2_tip, E, &H) == 0) {
-            bonded_add_storage_set(p, &nb, &n_new, &cap_new, H, &derive_ok);
+        if (nodus_witness_v2_tip_height(p->w, &v2_tip) == 0 &&
+            nodus_stprobe_epoch_for_tip(v2_tip, E, &H) == 0) {
+            bonded_add_storage_set(p, &nb, &n_new, &cap_new, H);
             if (H > E) {
-                bonded_add_storage_set(p, &nb, &n_new, &cap_new, H - E,
-                                       &derive_ok);
+                bonded_add_storage_set(p, &nb, &n_new, &cap_new, H - E);
             }
         }
     }
-    bonded_add_committee(p, &nb, &n_new, &cap_new, tip + 1, &derive_ok);
+    bonded_add_committee(p, &nb, &n_new, &cap_new, tip + 1);
     if (tip >= 1) {
-        bonded_add_committee(p, &nb, &n_new, &cap_new, tip - 1, &derive_ok);
+        bonded_add_committee(p, &nb, &n_new, &cap_new, tip - 1);
     }
     if (n_new > 1) {
         qsort(nb, (size_t)n_new, sizeof(*nb), bonded_cmp);
@@ -512,7 +475,6 @@ void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p)
     p->n_bonded = n_new;
     p->cap_bonded = cap_new;
     p->bonded_valid = true;
-    p->bonded_derive_ok = derive_ok;
     p->bonded_tip = tip;
     p->host.self_bonded = bonded_find(p, p->host.self_id) != NULL;
     if (p->host.self_bonded && !was_self && p->host.pex != NULL) {
@@ -530,17 +492,8 @@ static void bonded_maybe_refresh(nodus_witness_p2p_t *p)
         }
         return;
     }
-    if (!p->bonded_valid) {
-        nodus_witness_p2p_refresh_bonded(p);
-        return;
-    }
-    if (nodus_witness_block_height_checked(p->w, &tip) != 0) {
-        /* 4004 keeps the cached set (unchanged), but the role export must not
-         * treat it as current: a failed height check is a derivation fault. */
-        p->bonded_derive_ok = false;
-        return;
-    }
-    if (tip != p->bonded_tip) {
+    if (!p->bonded_valid ||
+        (nodus_witness_block_height_checked(p->w, &tip) == 0 && tip != p->bonded_tip)) {
         nodus_witness_p2p_refresh_bonded(p);
     }
 }
@@ -576,98 +529,6 @@ bool nodus_witness_p2p_bonded_at(nodus_witness_p2p_t *p, int i,
         memcpy(pk, p->bonded[i].pk, NODUS_PK_BYTES);
     }
     return true;
-}
-
-/*
- * ACTIVE-ROLE set (operator decisions 2026-10-24 addendum 2026-10-26: "a node
- * active in ANY role is exempt from ALL of the per-IP limits" of the 4001 /
- * WS / 4002 accept). It is the bonded set above (validators ACTIVE or
- * ELIGIBLE, tip ± 1 committees, the frozen S(H) / S(H − E) members — reused
- * as it is, not re-derived) UNION the storage registry rows ACTIVE or
- * EXITING (v2_storage_nodes.status 1 / 2), by node_fp. The registry rows are
- * added HERE and not to the bonded set because the bonded set is the 4004
- * admission rule, decided by membership and not by status (a newly ACTIVE
- * row is not a member until the next boundary — header, BONDED SET), and
- * 4004 must not change. Output: SHA3-512 fingerprints of the public keys
- * (node ids), the key a proven session is looked up by. -1 when the set
- * does not fit `max` or the registry cannot be read (the caller treats the
- * set as UNKNOWN — nothing is exempted).
- */
-int nodus_witness_p2p_roles_fill(nodus_witness_p2p_t *p, uint8_t (*fps)[64],
-                                 uint32_t max, uint32_t *n_out)
-{
-    uint32_t n = 0;
-    int i;
-
-    if (p == NULL || fps == NULL || n_out == NULL) {
-        return -1;
-    }
-    /* The bonded part must come from a derivation that ran to the end at
-     * the current tip: never an old set kept by 4004 after a failed read
-     * (the caches would stamp it fresh). */
-    if (p->bonded_valid && !p->bonded_derive_ok) {
-        nodus_witness_p2p_refresh_bonded(p);   /* retry the failed derivation */
-    } else {
-        bonded_maybe_refresh(p);      /* bring it to the current tip first */
-    }
-    if (!p->bonded_valid || !p->bonded_derive_ok) {
-        return -1;
-    }
-    for (i = 0; i < p->n_bonded; i++) {
-        nodus_pubkey_t pub;
-        nodus_key_t fp;
-
-        if (n >= max) {
-            return -1;
-        }
-        memcpy(pub.bytes, p->bonded[i].pk, NODUS_PK_BYTES);
-        if (nodus_fingerprint(&pub, &fp) != 0) {
-            return -1;
-        }
-        memcpy(fps[n++], fp.bytes, 64);
-    }
-    if (p->w != NULL && p->w->db != NULL) {
-        sqlite3_stmt *st = NULL;
-        int rc;
-
-        if (sqlite3_prepare_v2(p->w->db,
-                               "SELECT node_fp FROM v2_storage_nodes "
-                               "WHERE status IN (?1, ?2)",
-                               -1, &st, NULL) != SQLITE_OK) {
-            return -1;
-        }
-        sqlite3_bind_int(st, 1, (int)DNA_V2_STORAGE_ACTIVE);
-        sqlite3_bind_int(st, 2, (int)DNA_V2_STORAGE_EXITING);
-        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
-            uint32_t j;
-            const uint8_t *f = (const uint8_t *)sqlite3_column_blob(st, 0);
-            bool dup = false;
-
-            if (sqlite3_column_bytes(st, 0) != 64 || f == NULL) {
-                /* a malformed registry row is an export error, not a row
-                 * to skip: the set would silently lose a member */
-                sqlite3_finalize(st);
-                return -1;
-            }
-            for (j = 0; j < n && !dup; j++) {
-                dup = memcmp(fps[j], f, 64) == 0;
-            }
-            if (dup) {
-                continue;
-            }
-            if (n >= max) {
-                sqlite3_finalize(st);
-                return -1;
-            }
-            memcpy(fps[n++], f, 64);
-        }
-        sqlite3_finalize(st);
-        if (rc != SQLITE_DONE) {
-            return -1;
-        }
-    }
-    *n_out = n;
-    return 0;
 }
 
 static bool h_is_bonded(void *ctx, const char *id)

@@ -140,14 +140,6 @@
 #   = false) and, on a p2p-aware server, $BASE_DIR/network.json (pin + the
 #   seven "id@127.0.0.1:<witness port>" peers) — every restart in this
 #   harness passes -c nodus.json and so re-reads both.
-#   DHT v2 package 3c: $BASE_DIR/tool_network.json — the chain id (the
-#   ceremony's, = v2_chain_id) and every node's client ip:port + identity
-#   fingerprint (nodes 1..7 and the bring-up candidates), written right after
-#   the ceremony, with NODUS_NETWORK exported to it: every client tool
-#   (nodus-cli, stagef_rpc_flood, …) needs a server pin and a chain id and
-#   refuses without them (README.md "DHT v2 package 3c"). Requires a build
-#   with json-c for the tools to read it. CAN LIE: it proves what the harness
-#   told the tools, not that the node's session chain id equals it.
 #   A full 7-node cluster running under $BASE_DIR, its path in
 #   /tmp/stagef_current, pids in $BASE_DIR/pids.txt — the same contract
 #   the now-deleted stagef_up.sh left, so stagef_down.sh tears this down
@@ -986,19 +978,6 @@ fi
 # and a scenario is supposed to check the fleet's, not form its own.
 printf '%s\n' "$CHAIN_ID"    > "$BASE_DIR/v2_chain_id"
 printf '%s\n' "$GENESIS_PIN" > "$BASE_DIR/v2_genesis_pin"
-
-# DHT v2 package 3c — the TOOL NETWORK FILE. A client session is bound to a
-# server pin and a chain id; every nodus-cli / bench call of the scenarios
-# reads them from this file (stagef_env.sh "THE TOOL NETWORK FILE"). The
-# chain id exists only now, after the ceremony: it is the value the ceremony
-# printed ($CHAIN_ID, also the 4004 network file's pin, asserted above). The
-# nodes are the ones this script starts (client port + identity
-# fingerprint) and the bring-up candidates. NODUS_NETWORK is exported here
-# for the rest of THIS script's spawns and persists for every scenario by
-# stagef_env.sh (which exports it when the file exists).
-stagef_write_tool_network "$CHAIN_ID" || { echo "[FAIL] could not write the tool network file" >&2; exit 4; }
-export NODUS_NETWORK="$(stagef_tool_network_file)"
-echo "[ok] tool network file: $NODUS_NETWORK (chain $CHAIN_ID, $C nodes + ${STAGEF_V2_CANDIDATES:-0} candidates)"
 
 # ── 4. spawn ────────────────────────────────────────────────────────
 # The -s seeds form the DHT cluster (4000/4002); without an "id@" prefix

@@ -35,10 +35,10 @@
  *   inbox pool 11, per-identity quota 10, node pool 13, store, re-index.
  *   A tombstone is charged to the pool of the record it replaces.
  *
- * DEFERRED (not here, on purpose): the per-put SUM cost and the per-inbox
- * tombstone row bound (measure first). A refusal that leaves an older
- * version behind is handled by the puller's cursor rule (row 12:
- * nodus_dht2_pull.c, package 7).
+ * DEFERRED (not here, on purpose): the |S(H)| ≥ 2 write precondition (the
+ * serving layer, package 6); the per-put SUM cost and the per-inbox
+ * tombstone row bound (measure first); a refusal that leaves an older
+ * version behind (package 7's cursor rule).
  *
  * CONTROL RECORDS follow rev 5 literally: only the control record that WINS
  * Select is stored and applied (HANDLED and DENIED drops, credited before
@@ -67,10 +67,9 @@
  * so the fault is always consumed by the call that met it.
  *
  * NO CALLER YET: nothing in nodus/tools/ or any running loop calls it
- * (package 6 is the serving layer; the pull exchange is
- * nodus_dht2_pull.{c,h}). The exchange is NOT here: only its data
- * (insertion index scan, store generation, hand-over flag and its reads,
- * the pull cursor per source).
+ * (package 6 is the serving layer, package 7 the pull exchange). The pull
+ * exchange is NOT here: only its data (insertion index scan, store
+ * generation, hand-over flag).
  *
  * @file nodus_dht2_store.h
  */
@@ -187,11 +186,6 @@ typedef struct {
     uint8_t                  hash[DHT2_HASH_LEN]; /* SHA3-512 of the canonical
                                                  * envelope stored / held   */
     uint64_t                 through;           /* code 18: the HANDLED cutoff */
-    bool                     has_address;       /* the envelope parsed as far
-                                                 * as its address — set for
-                                                 * ANY code after that point
-                                                 * (also on failure)        */
-    uint8_t                  address[DHT2_HASH_LEN]; /* valid when has_address */
 } nodus_dht2_put_t;
 
 /**
@@ -269,122 +263,15 @@ int nodus_dht2_store_scan(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
 
 /* ── hand-over obligation (§4.5 v) — data only ───────────────────────── */
 
-/** Set the persisted hand-over flag of the record at `address` (package 7
- *  decides when): `pending` true = obligation, false = none. *`found` false
- *  when no such record. A PERMANENT replacement keeps a pending flag, an
- *  expiring one gets none. The acks and the drop schedule (dht2_retire) of the
- *  address are deleted in the SAME transaction as the flag change (all or
- *  nothing). The obligation ENDS by nodus_dht2_store_handover_drop, or by
- *  this with `pending` false when the node is eligible again. @return 0 / 16. */
+/** Mark / clear the persisted hand-over obligation of the record at
+ *  `address` (package 7 decides when). *`found` false when no such record.
+ *  Replacement of the record keeps the flag. @return 0 / 16. */
 int nodus_dht2_store_handover_set(nodus_dht2_store_t *s,
                                   const uint8_t address[DHT2_HASH_LEN],
                                   bool pending, bool *found);
-
-/** The end of an obligation (§4.5 v "then it may drop them"): DELETE the
- *  record row at `address` — its acknowledgements go with it (trigger) —
- *  in one transaction, only when the row is PERMANENT, still pending and its
- *  hash is `hash` (the version the receipts named). *`dropped` tells whether a
- *  row was deleted. @return 0 / 16. */
-int nodus_dht2_store_handover_drop(nodus_dht2_store_t *s,
-                                   const uint8_t address[DHT2_HASH_LEN],
-                                   const uint8_t hash[DHT2_HASH_LEN],
-                                   bool *dropped);
-
-/** Decision 2026-10-27-dht-v2-handover-one-receipt.md, "What happens when the
- *  obligation ends" (operator: a 48-epoch wait, "evet"): schedule the drop of
- *  the record at `address` for the epoch `drop_e`, persisted one row per
- *  address (store dht2_retire), only when the row is PERMANENT, pending and
- *  its hash is `hash`. A schedule already there is KEPT (the first met epoch
- *  counts); *`set` (may be NULL) tells whether a new one was written. The
- *  schedule goes when the record row is deleted or REPLACED (trigger) and by
- *  every handover_set. @return 0 / 16. */
-int nodus_dht2_store_handover_retire(nodus_dht2_store_t *s,
-                                     const uint8_t address[DHT2_HASH_LEN],
-                                     const uint8_t hash[DHT2_HASH_LEN],
-                                     uint64_t drop_e, bool *set);
-
-/** The receipt that MEETS the quorum: add the acknowledgement of `fp` AND
- *  schedule the drop (as nodus_dht2_store_handover_retire) in ONE
- *  transaction, so a fault never leaves the quorum's acknowledgements without
- *  the schedule of the epoch that met it (Sol 7b finding 1). @return 0 / 16. */
-int nodus_dht2_store_handover_ack_retire(nodus_dht2_store_t *s,
-                                         const uint8_t address[DHT2_HASH_LEN],
-                                         const uint8_t fp[DHT2_FP_LEN],
-                                         const uint8_t hash[DHT2_HASH_LEN],
-                                         uint64_t drop_e);
-
-/** The schedule of `address`: *`found` false when none; else `drop_e` and the
- *  hash it was scheduled for. @return 0 / 16. */
-int nodus_dht2_store_handover_retire_get(nodus_dht2_store_t *s,
-                                         const uint8_t address[DHT2_HASH_LEN],
-                                         bool *found, uint64_t *drop_e,
-                                         uint8_t hash[DHT2_HASH_LEN]);
-
-/** Decision 2026-10-27-dht-v2-handover-one-receipt.md: the fps that sent a
- *  valid pull-receipt for the pending record at `address`, persisted one row
- *  per (address, fp) — adding a fp twice keeps one. The rows are deleted when
- *  the record row is deleted or REPLACED (the receipts named its old hash),
- *  and by every handover_set. Whether a fp counts (member of the current
- *  nearest_R) is the caller's to decide. @return 0 / 16. */
-int nodus_dht2_store_handover_ack_add(nodus_dht2_store_t *s,
-                                      const uint8_t address[DHT2_HASH_LEN],
-                                      const uint8_t fp[DHT2_FP_LEN]);
-int nodus_dht2_store_handover_ack_has(nodus_dht2_store_t *s,
-                                      const uint8_t address[DHT2_HASH_LEN],
-                                      const uint8_t fp[DHT2_FP_LEN], bool *has);
 int nodus_dht2_store_handover_get(nodus_dht2_store_t *s,
                                   const uint8_t address[DHT2_HASH_LEN],
                                   bool *pending, bool *found);
-
-/** The row of `address` as the hand-over needs it: whether it is held,
- *  its flag, the hash of the canonical envelope and its placement key.
- *  An expired-but-unswept row is read like any other. @return 0 / 16. */
-int nodus_dht2_store_handover_info(nodus_dht2_store_t *s,
-                                   const uint8_t address[DHT2_HASH_LEN],
-                                   bool *found, bool *pending,
-                                   uint8_t hash[DHT2_HASH_LEN],
-                                   uint8_t placement[DHT2_HASH_LEN]);
-
-typedef struct {
-    uint64_t index;                              /* insertion index         */
-    uint8_t  address[DHT2_HASH_LEN];
-    uint8_t  placement[DHT2_HASH_LEN];
-    uint8_t  hash[DHT2_HASH_LEN];                /* envelope hash           */
-    bool     pending;                            /* hand-over flag set      */
-} nodus_dht2_perm_entry_t;
-
-/**
- * §4.5 (v): the PERMANENT records (stored with no expiry, ValidityType 1,
- * tombstones included, §5), with or without a hand-over flag (`pending`),
- * insertion index ≥ `from`, ascending, at most `max` (≤ 250). `*next` = the index to
- * continue from (last index + 1; `from` when the page is empty). A page
- * shorter than `max` is the end. @return 0, 16; DHT2_E_ARG.
- */
-int nodus_dht2_store_permanent_scan(nodus_dht2_store_t *s, uint64_t from,
-                                    nodus_dht2_perm_entry_t *out, size_t max,
-                                    size_t *count, uint64_t *next);
-
-/* ── pull cursors (§4.5 iii, row 12) — data only ─────────────────────── */
-
-/** The persisted state of the pull from source `fp`: the source's store
- *  generation g last seen and the cursor (the next insertion index to ask
- *  for = top + 1). `*found` false when the source was never pulled from.
- *  @return 0 / 16. */
-int nodus_dht2_store_pull_get(nodus_dht2_store_t *s,
-                              const uint8_t fp[DHT2_FP_LEN], bool *found,
-                              uint64_t *gen, uint64_t *cursor);
-/** Persist (insert or replace) it. `cursor` ≤ INT64_MAX. @return 0 / 16. */
-int nodus_dht2_store_pull_set(nodus_dht2_store_t *s,
-                              const uint8_t fp[DHT2_FP_LEN], uint64_t gen,
-                              uint64_t cursor);
-/** Every source's cursor := 0 (a re-scan from 0 at the next exchange). */
-int nodus_dht2_store_pull_reset(nodus_dht2_store_t *s);
-/** The epoch the pull cursors were last checked against (meta "pull_e");
- *  *found false before the first check. @return 0 / 16. */
-int nodus_dht2_store_pull_epoch_get(nodus_dht2_store_t *s, bool *found,
-                                    uint64_t *e);
-/** Persist it (any u64; stored bit-exact). @return 0 / 16. */
-int nodus_dht2_store_pull_epoch_set(nodus_dht2_store_t *s, uint64_t e);
 
 #ifdef __cplusplus
 }

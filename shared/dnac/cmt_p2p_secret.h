@@ -90,35 +90,6 @@
  *        job — row 10's "BEFORE step 3". An unpinned dial (session design
  *        R11) just runs the job.
  *
- * ── THE ANON FAMILY (DHT v2 package 3d, no-login wallet) ────────────────
- * A second, IMMUTABLE profile CMT_P2P_SC_PROFILE_ANON (nodus.asess.*) for a
- * client that presents NO key. Bytes: docs/plans/2026-10-26-dht-v2-3d-no-
- * login-design.md rev 5 §1 (operator-approved 2026-10-26, "olur"); governing
- * records docs/plans/decisions/2026-10-26-wallet-no-node-login.md and
- * 2026-10-26-kurultay-45-summary.md. OUR OWN construction, not Noise- or
- * pqNK-grounded (design §6):
- *   1  I→R HELLO_ANON   0x05 { nonce_I, proto_ver, chain_id }          69 B
- *   2  R→I HELLO_R_ANON 0x07 { R_dsa_pk, R_mlkem_pk, kc_sig, nonce_R,
- *                              proto_ver, chain_id }               8,856 B
- *   3  I→R KEYX         0x03 (unchanged)
- *   4  R→I sealed CONFIRM 0x06 (one frame: chunk `01 06`)
- *   5  I→R sealed CONFIRM 0x06, then both sides are AUTHENTICATED
- * kc_sig is the node's KEM-key certificate: its ML-DSA-87 key signs
- * "nodus.asess.kembind.v1" ‖ chain_id ‖ R_mlkem_pk once (strict purpose 0x0E,
- * host callback `verify_kc`; the responder is handed the cached signature).
- * The initiator verifies it (job VERIFY_KC, over its OWN chain_id and the
- * RECEIVED R_mlkem_pk) and the caller accepts the pin
- * (`cmt_p2p_sc_anon_pin_accepted`) BEFORE any ENCAPS is issued. T is today's
- * preimage without I_dsa_pk; there is no challenge and no signature on
- * either side. A responder may start UNBOUND
- * (`cmt_p2p_sc_init_responder_unbound`): the first plaintext message selects
- * the family by its exact (kind, length) — (0x01, 2661) CLIENT, (0x05, 69)
- * ANON, anything else REJECT — and the family is bound once. WITNESS / NODE /
- * CLIENT machines refuse the kinds 0x05 / 0x06 / 0x07 (a kind or length the
- * step does not expect is a REJECT); 4004's bytes and buffer caps do not move
- * (CMT_P2P_SC_HS_MSG_MAX and CMT_P2P_SC_OUT_CAP are untouched; the ANON
- * messages have storage of their own).
- *
  * Every plaintext handshake message is ONE message accepted ONCE, in
  * order; a message of the wrong kind or the wrong length for the current
  * step is a REJECT before any KEM work (R8).
@@ -272,8 +243,7 @@ _Static_assert(CMT_P2P_SC_KEM_PK_SIZE == 1568 && CMT_P2P_SC_KEM_CT_SIZE == 1568 
  * every profile; a different profile therefore derives a different key and
  * challenge from the same transcript inputs, so two peers on different
  * profiles never authenticate. IMMUTABLE: a connection is bound to ONE
- * profile at init (an UNBOUND responder: once, at its first message, see
- * "THE ANON FAMILY"), kept by pointer for the machine's life (the pointed-to
+ * profile at init, kept by pointer for the machine's life (the pointed-to
  * struct and strings must outlive it — the three const profiles below do).
  * The signing purpose is NOT in the profile: it stays the HOST's binding
  * (`cmt_p2p_sc_host_t.sign / .verify`).
@@ -296,13 +266,6 @@ extern const cmt_p2p_sc_profile_t CMT_P2P_SC_PROFILE_CLIENT;
 /** DHT v2 node-to-node session: nodus.nsess.*; host purpose 0x0D. Same
  *  decision as CLIENT. */
 extern const cmt_p2p_sc_profile_t CMT_P2P_SC_PROFILE_NODE;
-
-/** DHT v2 package 3d, the no-login client session: nodus.asess.*. Transcript
- *  tag, AEAD info and challenge info are the design §1.1 strings (the
- *  challenge info is carried because the struct needs it; ANON never derives
- *  a challenge). NOT accepted by cmt_p2p_sc_init_profile: an ANON machine is
- *  made only by cmt_p2p_sc_init_anon / cmt_p2p_sc_init_responder_unbound. */
-extern const cmt_p2p_sc_profile_t CMT_P2P_SC_PROFILE_ANON;
 
 /* The signing purpose is the HOST's binding, not the profile's — nothing in
  * this module checks that a profile is paired with its purpose. Obligations
@@ -328,10 +291,6 @@ typedef enum {
 #define CMT_P2P_SC_MSG_HELLO_R  0x02
 #define CMT_P2P_SC_MSG_KEYX     0x03
 #define CMT_P2P_SC_MSG_AUTHSIG  0x04
-/* DHT v2 package 3d, ANON family (design §1.2; OURS). KEYX (0x03) is shared. */
-#define CMT_P2P_SC_MSG_HELLO_ANON   0x05
-#define CMT_P2P_SC_MSG_CONFIRM      0x06
-#define CMT_P2P_SC_MSG_HELLO_R_ANON 0x07
 
 /** Body sizes (kind byte + fields), the uvarint length each must carry. */
 #define CMT_P2P_SC_HELLO_BODY   (1 + CMT_P2P_SC_DSA_PK_SIZE + CMT_P2P_SC_NONCE_SIZE + \
@@ -356,41 +315,6 @@ typedef enum {
 #define CMT_P2P_SC_OUT_CAP      (2 * CMT_P2P_SC_HS_MSG_MAX + \
                                  CMT_P2P_SC_AUTHSIG_FRAMES_MAX * CMT_P2P_SC_SEALED_FRAME_SIZE)
 
-/* ── ANON family (design §1.2, §1.6) ──
- * Their sizes are NOT folded into CMT_P2P_SC_HS_MSG_MAX / _OUT_CAP above:
- * those also size the 4004 pre-auth read and write caps (cmt_p2p_peer.h
- * CMT_P2P_CONN_RBUF_PRE_AUTH_CAP, CMT_P2P_CONN_WBUF_CAP) and must not move. */
-#define CMT_P2P_SC_HELLO_ANON_BODY   (1 + CMT_P2P_SC_NONCE_SIZE + \
-                                      CMT_P2P_SC_PROTO_VER_SIZE + CMT_P2P_SC_CHAIN_ID_SIZE)
-#define CMT_P2P_SC_HELLO_R_ANON_BODY (1 + CMT_P2P_SC_DSA_PK_SIZE + CMT_P2P_SC_KEM_PK_SIZE + \
-                                      CMT_P2P_SC_SIG_SIZE + CMT_P2P_SC_NONCE_SIZE + \
-                                      CMT_P2P_SC_PROTO_VER_SIZE + CMT_P2P_SC_CHAIN_ID_SIZE)
-#define CMT_P2P_SC_CONFIRM_BODY      1
-/** The delimited CONFIRM as written into the sealed stream: `01 06`. */
-#define CMT_P2P_SC_CONFIRM_WIRE      2
-/** Wire sizes (uvarint prefix: 1 byte below 128, 2 bytes below 16384). */
-#define CMT_P2P_SC_HELLO_ANON_WIRE   (1 + CMT_P2P_SC_HELLO_ANON_BODY)          /* 70    */
-#define CMT_P2P_SC_HELLO_R_ANON_WIRE (2 + CMT_P2P_SC_HELLO_R_ANON_BODY)        /* 8,858 */
-#define CMT_P2P_SC_KEYX_WIRE         (2 + CMT_P2P_SC_KEYX_BODY)                /* 1,571 */
-/** Storage for the largest ANON plaintext message (initiator side), prefix
- *  bound CMT_P2P_SC_UVARINT_MAX like the existing buffers. */
-#define CMT_P2P_SC_ANON_HS_BUF       (CMT_P2P_SC_UVARINT_MAX + CMT_P2P_SC_HELLO_R_ANON_BODY)
-/** The KC message "nodus.asess.kembind.v1" ‖ chain_id ‖ R_mlkem_pk. */
-#define CMT_P2P_SC_KC_DOMAIN         "nodus.asess.kembind.v1"
-#define CMT_P2P_SC_KC_DOMAIN_LEN     22
-#define CMT_P2P_SC_KC_MSG_SIZE       (CMT_P2P_SC_KC_DOMAIN_LEN + CMT_P2P_SC_CHAIN_ID_SIZE + \
-                                      CMT_P2P_SC_KEM_PK_SIZE)                  /* 1,622 */
-
-_Static_assert(CMT_P2P_SC_HELLO_ANON_BODY == 69 && CMT_P2P_SC_HELLO_R_ANON_BODY == 8856 &&
-               CMT_P2P_SC_HELLO_ANON_WIRE == 70 && CMT_P2P_SC_HELLO_R_ANON_WIRE == 8858 &&
-               CMT_P2P_SC_KEYX_WIRE == 1571 && CMT_P2P_SC_KC_MSG_SIZE == 1622,
-               "ANON message sizes: design 2026-10-26-dht-v2-3d-no-login-design.md §1.2, §1.3");
-_Static_assert(CMT_P2P_SC_HELLO_R_ANON_BODY >= 128 && CMT_P2P_SC_HELLO_R_ANON_BODY < 16384 &&
-               CMT_P2P_SC_KEYX_BODY >= 128 && CMT_P2P_SC_KEYX_BODY < 16384,
-               "ANON length prefixes are the 2-byte uvarint form");
-_Static_assert(CMT_P2P_SC_OUT_CAP >= CMT_P2P_SC_HELLO_R_ANON_WIRE + CMT_P2P_SC_SEALED_FRAME_SIZE,
-               "the responder's HELLO_R_ANON and sealed CONFIRM fit the output queue");
-
 /* ══ The host (signing / verifying live outside shared/dnac) ══════════ */
 
 /**
@@ -413,14 +337,6 @@ typedef struct {
     int (*verify)(void *ctx, const uint8_t sig[CMT_P2P_SC_SIG_SIZE],
                   const uint8_t *msg, size_t msg_len,
                   const uint8_t pk[CMT_P2P_SC_DSA_PK_SIZE]);
-    /** ANON family only (package 3d, appended so existing initialisers keep
-     *  compiling): verify the node's KEM-key certificate `sig` over `msg`
-     *  (CMT_P2P_SC_KC_MSG_SIZE bytes) under the strict purpose 0x0E. Used by
-     *  an ANON INITIATOR (job VERIFY_KC), which is the only machine that
-     *  needs it; NULL elsewhere. @return 0 if valid, non-zero otherwise. */
-    int (*verify_kc)(void *ctx, const uint8_t sig[CMT_P2P_SC_SIG_SIZE],
-                     const uint8_t *msg, size_t msg_len,
-                     const uint8_t pk[CMT_P2P_SC_DSA_PK_SIZE]);
 } cmt_p2p_sc_host_t;
 
 /* ══ The asymmetric job (R-P2P-8) ═════════════════════════════════════ */
@@ -430,10 +346,7 @@ typedef enum {
     CMT_P2P_SC_JOB_ENCAPS,   /* I, row 3: (ct, ss) = Encaps(R_mlkem_pk)   */
     CMT_P2P_SC_JOB_DECAPS,   /* R, row 3: ss = Decaps(ct, R_mlkem_sk)     */
     CMT_P2P_SC_JOB_SIGN,     /* both, row 7                               */
-    CMT_P2P_SC_JOB_VERIFY,   /* both, row 9                               */
-    CMT_P2P_SC_JOB_VERIFY_KC /* ANON initiator: the KEM-key certificate; its
-                              * msg is CMT_P2P_SC_KC_MSG_SIZE bytes, its
-                              * dsa_pk R's key, its sig the received kc_sig */
+    CMT_P2P_SC_JOB_VERIFY    /* both, row 9                               */
 } cmt_p2p_sc_job_kind_t;
 
 /**
@@ -467,16 +380,12 @@ typedef enum {
     CMT_P2P_SC_ST_WAIT_KEYX,         /* R: HELLO_R sent, expecting KEYX    */
     CMT_P2P_SC_ST_JOB,               /* an asymmetric job is outstanding   */
     CMT_P2P_SC_ST_WAIT_AUTHSIG,      /* own AUTHSIG sent, reading the peer's */
-    CMT_P2P_SC_ST_AUTHENTICATED,     /* row 9 passed: Read/Write open      */
-    CMT_P2P_SC_ST_WAIT_FIRST,        /* R, family UNBOUND: expecting the first
-                                      * message, whose (kind, length) binds it */
-    CMT_P2P_SC_ST_WAIT_CONFIRM       /* ANON: keys derived, expecting the
-                                      * peer's one sealed CONFIRM            */
+    CMT_P2P_SC_ST_AUTHENTICATED      /* row 9 passed: Read/Write open      */
 } cmt_p2p_sc_state_t;
 
 /**
  * secret_connection.go:62-88 `SecretConnection` + the handshake's locals.
- * Large (≈ 55 KB since package 3d): allocate on the heap or statically, never on a stack.
+ * Large (≈ 40 KB): allocate on the heap or statically, never on a stack.
  * The two mutexes (:78, :84) are dropped — one event loop owns the
  * machine; only `cmt_p2p_sc_job_run` may run elsewhere, and it touches
  * the job's buffers only.
@@ -485,10 +394,7 @@ typedef struct {
     cmt_p2p_sc_state_t state;
     cmt_p2p_sc_role_t  role;
     const cmt_p2p_sc_host_t *host;
-    const cmt_p2p_sc_profile_t *profile;   /* set once: at init, or — an unbound
-                                            * responder — when its whole first
-                                            * message binds the family; never
-                                            * changed after */
+    const cmt_p2p_sc_profile_t *profile;   /* immutable, set at init */
 
     /* ── N9 fields, ours ── */
     uint32_t proto_ver;
@@ -544,18 +450,6 @@ typedef struct {
     uint8_t  out[CMT_P2P_SC_OUT_CAP];
     size_t   out_off;
     size_t   out_len;
-
-    /* ── package 3d (appended): the transcript, retained, and the ANON
-     *    family's own storage (CMT_P2P_SC_HS_MSG_MAX does not move) ── */
-    uint8_t  t[CMT_P2P_SC_T_SIZE];   /* T; read through cmt_p2p_sc_transcript,
-                                      * only once AUTHENTICATED            */
-    const uint8_t *local_kc_sig;     /* R only; caller-owned cached kc_sig,
-                                      * NULL = ANON not offered            */
-    bool     anon_pin_ok;            /* I, ANON: the caller accepted the pin */
-    uint8_t  kc_msg[CMT_P2P_SC_KC_MSG_SIZE];     /* I, ANON: the VERIFY_KC message */
-    uint8_t  anon_hs_buf[CMT_P2P_SC_ANON_HS_BUF]; /* I, ANON: HELLO_R_ANON assembly */
-    /* The ANON initiator keeps the received kc_sig in `remote_sig` (ANON has
-     * no AUTHSIG, so that buffer is free). */
 } cmt_p2p_sc_t;
 
 /* ══ secret_connection.go:95-186 — MakeSecretConnection as a machine ══ */
@@ -591,10 +485,9 @@ int cmt_p2p_sc_init(cmt_p2p_sc_t *sc, cmt_p2p_sc_role_t role,
  * compiling and pinning the 4004 construction untouched.
  * @param profile  exactly &CMT_P2P_SC_PROFILE_WITNESS, &…_CLIENT or
  *                 &…_NODE (compared by pointer); anything else — NULL, a
- *                 copy, a custom profile, and &CMT_P2P_SC_PROFILE_ANON (which
- *                 has its own entry points below) — is refused: CMT_FAULT
- *                 (machine DEAD), before anything is generated. The string
- *                 bounds (1 … CMT_P2P_SC_PROFILE_STR_MAX) are a second guard.
+ *                 copy, a custom profile — is refused: CMT_FAULT (machine
+ *                 DEAD), before anything is generated. The string bounds
+ *                 (1 … CMT_P2P_SC_PROFILE_STR_MAX) are a second guard.
  */
 int cmt_p2p_sc_init_profile(cmt_p2p_sc_t *sc, cmt_p2p_sc_role_t role,
                             const cmt_p2p_sc_host_t *host,
@@ -604,76 +497,6 @@ int cmt_p2p_sc_init_profile(cmt_p2p_sc_t *sc, cmt_p2p_sc_role_t role,
                             const uint8_t *local_kem_sk,
                             uint32_t proto_ver,
                             const uint8_t chain_id[CMT_P2P_SC_CHAIN_ID_SIZE]);
-
-/**
- * Start an ANON-family handshake (profile CMT_P2P_SC_PROFILE_ANON, bound at
- * init).
- *   INITIATOR: queues HELLO_ANON. `local_dsa_pk`, `local_kem_pk`,
- *              `local_kem_sk` and `local_kc_sig` must be NULL (it presents
- *              no key); `host->verify_kc` is required.
- *   RESPONDER: `local_dsa_pk` (R's identity key), `local_kem_pk`,
- *              `local_kem_sk` (not copied, as in cmt_p2p_sc_init_profile) and
- *              `local_kc_sig` (R's KEM-key certificate over chain_id ‖
- *              local_kem_pk, computed once by the caller; CMT_P2P_SC_SIG_SIZE
- *              bytes, NOT copied, caller-owned for the machine's life) are
- *              all required. `host` is required but never called by a
- *              responder (no signature, no verification).
- * @return CMT_OK; CMT_FAULT on a NULL / inconsistent argument or an RNG
- *         failure (machine DEAD).
- */
-int cmt_p2p_sc_init_anon(cmt_p2p_sc_t *sc, cmt_p2p_sc_role_t role,
-                         const cmt_p2p_sc_host_t *host,
-                         const uint8_t *local_dsa_pk,
-                         const uint8_t *local_kem_pk,
-                         const uint8_t *local_kem_sk,
-                         const uint8_t *local_kc_sig,
-                         uint32_t proto_ver,
-                         const uint8_t chain_id[CMT_P2P_SC_CHAIN_ID_SIZE]);
-
-/**
- * Start a RESPONDER whose family is UNBOUND (4001 / WebSocket accept). The
- * first plaintext message binds it once, by its exact (kind, length):
- * (HELLO 0x01, 2661) → CLIENT profile (today's handshake, `host` signs and
- * verifies with the CLIENT purpose); (HELLO_ANON 0x05, 69) → ANON, only when
- * `local_kc_sig` is non-NULL (NULL: ANON is not offered and 0x05 is a REJECT);
- * anything else → REJECT. Arguments as cmt_p2p_sc_init_profile's RESPONDER
- * (host with sign and verify, local_dsa_pk, local_kem_pk, local_kem_sk) plus
- * the optional cached `local_kc_sig` (see cmt_p2p_sc_init_anon).
- * @return CMT_OK; CMT_FAULT.
- */
-int cmt_p2p_sc_init_responder_unbound(cmt_p2p_sc_t *sc,
-                                      const cmt_p2p_sc_host_t *host,
-                                      const uint8_t local_dsa_pk[CMT_P2P_SC_DSA_PK_SIZE],
-                                      const uint8_t *local_kem_pk,
-                                      const uint8_t *local_kem_sk,
-                                      const uint8_t *local_kc_sig,
-                                      uint32_t proto_ver,
-                                      const uint8_t chain_id[CMT_P2P_SC_CHAIN_ID_SIZE]);
-
-/** Build the KEM-key certificate message (design §1.3): "nodus.asess.kembind.v1"
- *  ‖ chain_id ‖ kem_pk into `out` (CMT_P2P_SC_KC_MSG_SIZE bytes). The responder's
- *  host signs it once (purpose 0x0E); the initiator's machine builds the same
- *  bytes from its OWN chain_id and the RECEIVED R_mlkem_pk. */
-void cmt_p2p_sc_kc_msg(const uint8_t chain_id[CMT_P2P_SC_CHAIN_ID_SIZE],
-                       const uint8_t kem_pk[CMT_P2P_SC_KEM_PK_SIZE],
-                       uint8_t out[CMT_P2P_SC_KC_MSG_SIZE]);
-
-/**
- * ANON INITIATOR: the caller's pin accepted R's claimed key (the key
- * `cmt_p2p_sc_remote_pubkey` returns while the VERIFY_KC job is outstanding).
- * The machine issues ENCAPS only after BOTH this and a valid certificate —
- * a VERIFY_KC completion without it kills the machine.
- * @return CMT_OK; CMT_FAULT unless an ANON initiator is holding the VERIFY_KC job.
- */
-int cmt_p2p_sc_anon_pin_accepted(cmt_p2p_sc_t *sc);
-
-/** True once the machine is bound to the ANON family (an UNBOUND responder
- *  that has not seen its first message yet: false). */
-bool cmt_p2p_sc_is_anon(const cmt_p2p_sc_t *sc);
-
-/** The transcript T (CMT_P2P_SC_T_SIZE bytes) of the handshake, read-only,
- *  valid for the machine's life: NULL until AUTHENTICATED (and after it dies). */
-const uint8_t *cmt_p2p_sc_transcript(const cmt_p2p_sc_t *sc);
 
 /**
  * Feed bytes read from the connection during the handshake. Consumes as
@@ -722,9 +545,7 @@ void cmt_p2p_sc_out_consume(cmt_p2p_sc_t *sc, size_t n);
 bool cmt_p2p_sc_is_authenticated(const cmt_p2p_sc_t *sc);
 /** :187-190 RemotePubKey. Once HELLO / HELLO_R has been accepted this is
  *  the peer's CLAIMED key (what went into T); it is AUTHENTICATED only
- *  when `cmt_p2p_sc_is_authenticated`. NULL before that message.
- *  An ANON-bound RESPONDER has no peer key at all: NULL in every state (the
- *  error return — design §2). An ANON INITIATOR gets R's key as above. */
+ *  when `cmt_p2p_sc_is_authenticated`. NULL before that message. */
 const uint8_t *cmt_p2p_sc_remote_pubkey(const cmt_p2p_sc_t *sc);
 
 /* ══ secret_connection.go:192-273 — Write / Read ══════════════════════ */

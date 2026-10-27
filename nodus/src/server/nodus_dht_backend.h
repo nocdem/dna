@@ -121,15 +121,6 @@ typedef struct {
      *  combined binary's poll timings are unchanged. */
     bool (*read_pending)(nodus_dht_backend_t *b);
 
-    /** true while a SecretConnection handshake job of the backend's own
-     *  dialing transport is outstanding (nodus_tcp_sc_busy): the server
-     *  loop must cap its poll waits at NODUS_TCP_SC_POLL_MS then, or a job
-     *  result sits for the loop's 50 ms wait (nodus_tcp_sc.h COMPLETION
-     *  DELIVERY, "SCOPE OF THE BOUND"). In-process: the batch-forward
-     *  transport of the DHT; the IPC backend: always false (the DHT runs in
-     *  nodus-storage, which caps its own waits). May be NULL (= false). */
-    bool (*sc_busy)(nodus_dht_backend_t *b);
-
     /** Ping-before-evict sweep — the loop runs it right after the cluster
      *  tick (nodus_dht_evict_tick). */
     void (*evict_tick)(nodus_dht_backend_t *b);

@@ -462,12 +462,11 @@ static int run_s12_apply_matrix(void) {
         uint32_t sv = 0;
         /* Nodus EVM F3-C2 made S17 (empty EVM tables) the live rung;
          * HF-6 3a moved it to S18 (+ the empty v2_validator_roles); HF-7
-         * P1b to S19 (+ the empty v2_replay and last_upd_hash); HF-9 H2 to
-         * S20 (+ the node-local tree tables). S20 still carries the S12
-         * claim tables this section checks. */
+         * P1b to S19 (+ the empty v2_replay and last_upd_hash). S19
+         * still carries the S12 claim tables this section checks. */
         CHECK(nodus_witness_db_schema_version(fx.w, &sv) == 0 &&
-              sv == NODUS_V2_SCHEMA_VERSION_S20,
-              "fixture DB at the live rung S20"); OK();
+              sv == NODUS_V2_SCHEMA_VERSION_S19,
+              "fixture DB at the live rung S19"); OK();
         CHECK(has_table(fx.w->db, "v2_claim_bytes") == 1 &&
               has_table(fx.w->db, "v2_claim_counts") == 1,
               "S12 claim tables present"); OK();

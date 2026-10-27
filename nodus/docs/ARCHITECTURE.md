@@ -97,19 +97,16 @@ nodus/
 │   │   ├── nodus_cbor.c       # Custom CBOR encoder/decoder
 │   │   ├── nodus_wire.c       # Wire frame format ("ND" + version + length)
 │   │   ├── nodus_tier1.c      # T1 encode/decode (server ↔ server)
-│   │   ├── nodus_tier2.c      # T2 encode/decode (client ↔ server)
-│   │   └── nodus_owner_query.c/h # DHT v2 package 3d: the owner-signed chain query `qa` (RFC 0002
-│   │                          #   envelope) — built by the client SDK, verified by the witness handlers
+│   │   └── nodus_tier2.c      # T2 encode/decode (client ↔ server)
 │   ├── transport/
 │   │   ├── nodus_tcp.c        # TCP transport (epoll, framing, connections; + the WS entry glue;
 │   │   │                      #   + the AF_UNIX entry nodus_tcp_unix_* — split S2; used by the S3
 │   │   │                      #   witness IPC, both ends; + the plain listener on Windows, select
 │   │   │                      #   loop, 2026-10-16 — the WS and AF_UNIX entries stay Linux-only)
-│   │   ├── nodus_tcp_sc.c/h   # Per-connection SecretConnection layer of nodus_tcp (DHT v2 sub-package
-│   │   │                      #   3b-1): CLIENT 0x0C / NODE 0x0D machine, bounded handshake-job worker,
-│   │   │                      #   sealing, the pre-session deadline sweep; libnodus only (NODUS_TCP_SC).
-│   │   │                      #   ENABLED since 3b-2 on 4001 / WS / 4002, the batch forwards and the
-│   │   │                      #   client SDK (§15 "DHT v2 sub-package 3b-1" and "… 3b-2")
+│   │   ├── nodus_tcp_sc.c/h   # Optional per-connection SecretConnection layer of nodus_tcp (DHT v2
+│   │   │                      #   sub-package 3b-1): CLIENT 0x0C / NODE 0x0D machine, bounded handshake-
+│   │   │                      #   job worker, sealing; libnodus only (NODUS_TCP_SC); NOT enabled on any
+│   │   │                      #   port (§15 "DHT v2 sub-package 3b-1")
 │   │   ├── nodus_ws.c         # WebSocket entry codec (RFC 6455 handshake + frames; no sockets)
 │   │   └── nodus_udp.c        # UDP transport (non-blocking recvfrom)
 │   ├── net/
@@ -159,16 +156,11 @@ nodus/
 │   │   │                      #   (moved out of nodus_server.c by split S4)
 │   │   ├── nodus_dht_media.c/h # m_put / m_meta / m_chunk handlers (was server/nodus_media_handler.c/h)
 │   │   └── nodus_dht2_wview.c/h # DHT v2 package 4: the storage process's view of its witness (the
-│   │                          #   `ipc_dht` kind of witness.sock); NO caller yet (package 6a's holder
-│   │                          #   service binds it; nothing calls that either — package 6b)
+│   │                          #   `ipc_dht` kind of witness.sock); NO caller yet (the serving layer,
+│   │                          #   package 6, is to fill the package-5 store's context from it)
 │   ├── dht2/                  # DHT v2 holder side (Linux-only library list)
-│   │   ├── nodus_dht2_store.c/h # DHT v2 package 5: the holder store (SQLite, canonical envelopes)
-│   │   │                      #   and §4.1 admission over an injected context
-│   │   ├── nodus_dht2_holder.c/h # DHT v2 package 6a: the holder service — one get / put / list
-│   │   │                      #   request in, ONE signed answer (or none) out; transport-free; NO caller yet
-│   │   └── nodus_dht2_pull.c/h # DHT v2 package 7a: pull-sync core — the source and puller roles over
-│   │                          #   the store (Bee pullsync / puller translated), cursors, the epoch check,
-│   │                          #   the hand-over obligation; transport-free; NO caller yet
+│   │   └── nodus_dht2_store.c/h # DHT v2 package 5: the holder store (SQLite, canonical envelopes)
+│   │                          #   and §4.1 admission over an injected context; NO caller yet
 │   ├── server/
 │   │   ├── nodus_server.c     # Server event loop, auth, sessions, presence, circuits, 4002
 │   │   │                      #   handshake, cluster heartbeat, status; the host side of the DHT seam
@@ -178,10 +170,7 @@ nodus/
 │   │   ├── nodus_chain_backend_inproc.c # its in-process implementation (combined nodus-server)
 │   │   ├── nodus_chain_backend_ipc.c    # its IPC implementation (core side of <data_path>/witness.sock;
 │   │   │                                #   "witness_external", split S3)
-│   │   └── nodus_auth.c       # Client session start at on_session (identity from the SecretConnection,
-│   │                          #   per-identity limit, presence, the token message) — DHT v2 3b-2; the
-│   │                          #   old Dilithium5 challenge-response handlers are deleted; since 3d an
-│   │                          #   ANON (no-login) session gets only the token — no principal
+│   │   └── nodus_auth.c       # Dilithium5 challenge-response auth
 │   ├── client/
 │   │   ├── nodus_client.c     # Client SDK (connect, auth, DHT, channels, DNAC)
 │   │   ├── nodus_singleton.c  # Thread-safe global client instance
@@ -231,14 +220,7 @@ nodus/
 │   ├── test_seg_file_win.c    # Windows-only (no ctest): nodus_fs + the segment reader / build on Windows over a Linux fixture (storage P-B4; exit 2 = not run, not a pass)
 │   ├── test_tcp_listen_portable.c # Plain listener through the public API only (127.0.0.1 port 0 read back, accept, one frame each way, close; NODUS_MAX_CONNS_PER_IP + 1 → one refused); same source meant for the Linux epoll and the mingw select loop
 │   ├── test_client.c          # Client SDK tests
-│   ├── test_client_pin.c      # Client server-key pin on the SecretConnection session (3b-2: init refuses no pin / no chain id, a wrong pin never completes) + monotonic timeouts
-│   ├── test_node_session.c    # DHT v2 3b-2: the 4002 node session (pin, chain id, QUEUED → replayed sealed, REFUSED before connect, 10 s dial bound, old plaintext hello closed) — §15 "DHT v2 sub-package 3b-2"
-│   ├── test_presession_deadline.c # DHT v2 3b-2: 15 s idle / 30 s absolute pre-session deadline on the monotonic clock
-│   ├── test_chain_id_v3.c     # DHT v2 3b-2: sessions bound to the v3 chain id, fail closed without it; the 60/min per-IP handshake rate
-│   ├── test_hint_tristate.c   # DHT v2 3b-2: a hint row is deleted only on WRITTEN (QUEUED / FAILED / REFUSED keep it)
-│   ├── test_send_queue_full.c # DHT v2 3b-2: a queue-full diversion reports QUEUED, never WRITTEN
-│   ├── test_bf_session.c      # DHT v2 3b-2: a real batch forward over the pinned node session
-│   ├── test_round4_hardening.c # DHT v2 3b-2: re-entrant disconnect once, zero-pin refusal, force_disconnect state, BF config follows the host
+│   ├── test_client_pin.c      # Client server-key pin (fail-closed matrix, ML-KEM only) + monotonic timeouts
 │   ├── test_client_spend_status.c # dnac_spend reply without a uint "status" -> PROTOCOL_ERROR, never APPROVED
 │   ├── test_v2_spend_build.c  # Shared SPEND builder vs the CheckTx dry run (package c2)
 │   ├── test_v2_stake_build.c  # Shared STAKE / DELEGATE / UNDELEGATE builder vs the CheckTx dry run
@@ -269,14 +251,9 @@ nodus/
 │   ├── test_dht2_codec.c      # DHT v2 package 1 (shared/dht2/): pinned data-map bytes per class, canonical envelope, every row-22 strict-decode reject, §3.2 identifiers against hand-assembled preimages, §4.1 code order, row-5 matrix + class max, §4.2 A/B two-arrival order, nearest_R, Validity, the owner-signed LIST request; default build, nothing left behind
 │   ├── test_dht2_msg.c        # DHT v2 package 2 (shared/dht2/dht2_msg.*): hand-assembled bytes for every wire message (get / put, read answer, receipt, LIST answer, refusal, p_hello / p_get / p_offer / p_want / p_deliver, pull-receipt payload), per-message strict rejects and count bounds, row-7 `v` per context, LIST rules, the p_want bit-vector, the control `_data`, the five typed `_id` helpers, answer seal / open, the row-11 sizes + `_Static_assert` against NODUS_MAX_FRAME_TCP; default build, nothing left behind
 │   ├── test_dht2_ipc.c        # DHT v2 package 4: the witness listener's `ipc_dht` kind (raw peer + test handlers: snap / sets / name bytes, {err} answers, the SET_MAX sets frame = DERIVED_MAX, every refused frame, ipc_status unchanged) and nodus_dht2_wview against a scripted socket server with INJECTED time (5000 ms stale, 1000 ms poll, sets by `e`, name cache, timeout, backoff, late reply, malformed answers), one end-to-end case; the witness FILL functions are NOT exercised (test handlers stand in); mkdtemp dirs, nothing left behind
-│   ├── test_dht2_store.c      # DHT v2 package 5 (src/dht2/nodus_dht2_store.*): §4.1 code order through `put` (15, 1-9, 16), the name fault asked once, Select (equal / losing / A-B two arrivals), quota + node pools + inbox pools 80 / 20, inbox control (only the selected live record applies; DENIED 12, HANDLED [18, through]), LIST pages, get / sweep expiry edges, insertion index + generation + hand-over flag across reopen, the readiness gate, chain binding, forced SQLite faults → 16; since package 6a also the LIST page budget counting the control record and the put result's address kept across a refusal; since package 7b the hand-over drop schedule (`dht2_retire`: only for a pending permanent row with that hash, first schedule kept, 64-bit `drop_e`, removed by handover_set and by a replacement); injected context, fixed-seed keys, one mkdtemp dir removed at the end
-│   ├── test_dht2_holder.c     # DHT v2 package 6a (src/dht2/nodus_dht2_holder.*): every answer ONE RFC 0002 envelope under nodus.dht.answer.v1 (answer / receipt / refusal), get / put results in request order, put results keyed by the envelope's address (zero key for a parse failure), malformed requests and bad LIST envelopes → no answer, owner LIST vs not-owner 17, refusal 15 (no snapshot, block sync, another chain) and 14 (64 queued jobs), a put at |S(H)| = 1 stored and receipted, NOT refused (since package 7a, decision 2026-10-26-dht-v2-no-single-node-write-refusal.md), name FAULT / PENDING → 16, an abandoned name fault dropped after one poll period, GET of an inbox-control record → 17, an envelope > 262,144 B → per-key 1; injected view, fixed-seed keys, one mkdtemp dir removed at the end
-│   ├── test_dht2_pull.c       # DHT v2 package 7a (src/dht2/nodus_dht2_pull.*): two SQLite stores in the run's mkdtemp dir (A source, B puller) wired through the injected send function — a full exchange copies every record with the same hash and persists cursor top + 1; one exchange per source; the pull-receipt envelope (payload type /nodus/dht/pull-receipt/v1 under nodus.dht.answer.v1, signed by B); row 22 > 250 entries, replacement during delivery, generation reset, interrupted handover, epoch-boundary sets, non-eligible puller, wrong bit-vector length; the hand-over quorum (two distinct nearest_R members, or one when |nearest_R| = 1) then — since package 7b — the drop SCHEDULED 48 epochs on and done at the due epoch check only while the quorum is still met, cancelled by eligibility again or a new version; the cursor kept on a transient local failure, advanced on a definitive refusal; can lie: one in-order queue (no concurrency, no real disconnect), HELLO routed by sender, sets ≤ 6 members, DP pinned only for fixed sets, injected view, no rate limit / pageTimeout / live pulling / framing; default build, mkdtemp dir, nothing left on success
+│   ├── test_dht2_store.c      # DHT v2 package 5 (src/dht2/nodus_dht2_store.*): §4.1 code order through `put` (15, 1-9, 16), the name fault asked once, Select (equal / losing / A-B two arrivals), quota + node pools + inbox pools 80 / 20, inbox control (only the selected live record applies; DENIED 12, HANDLED [18, through]), LIST pages, get / sweep expiry edges, insertion index + generation + hand-over flag across reopen, the readiness gate, chain binding, forced SQLite faults → 16; injected context, fixed-seed keys, one mkdtemp dir removed at the end
 │   ├── test_p2p_secret_kat.c  # DHT v2 sub-package 3a step 1: byte pins of TODAY's 4004 SecretConnection in literal bytes (never through the CMT_P2P_SC_* macros) — fixed-vector T / key / challenge against python3-computed hex, live-handshake recompute on both sides, HELLO / HELLO_R / KEYX framing at literal offsets, sealed-frame nonce role ‖ 00 00 00 ‖ u64 BE counter, AUTHSIG under purpose 0x0A only; must pass on the unchanged base; default build, nothing left behind
-│   ├── test_p2p_secret_profiles.c # DHT v2 sub-package 3a step 2: session profiles WITNESS / CLIENT / NODE — matched handshakes authenticate, mixed pairs never do, python3 vectors per profile, purposes 0x0A / 0x0C / 0x0D do not cross-verify, init refuses every profile but the three consts (by pointer; since 3d also the ANON profile), `cmt_p2p_sc_init` = WITNESS; default build, nothing left behind
-│   ├── test_p2p_secret_anon.c # DHT v2 package 3d: the ANON family in memory — handshake with the KEM-key certificate, wire sizes 70 / 8,858 / 1,571 / 1,044 / 1,044, key and T recomputed from the captured bytes, bad certificate / rejected pin never reach ENCAPS, CONFIRM frame rules, family mismatches, refused kinds 0x05-0x07, fragmented input, 4004 caps unchanged (§15 "DHT v2 package 3d")
-│   ├── test_owner_query.c     # DHT v2 package 3d: the owner-signed query `qa` — accept, every reject by its own result, top-level field lookup, `o` per method and the G8.1 member rule; pure
-│   ├── test_anon_dispatch.c   # DHT v2 package 3d: the ANON allowlist, the session table without a principal, nodus_auth_session_start on a real loopback ANON connection
+│   ├── test_p2p_secret_profiles.c # DHT v2 sub-package 3a step 2: session profiles WITNESS / CLIENT / NODE — matched handshakes authenticate, mixed pairs never do, python3 vectors per profile, purposes 0x0A / 0x0C / 0x0D do not cross-verify, init refuses every profile but the three consts (by pointer), `cmt_p2p_sc_init` = WITNESS; default build, nothing left behind
 │   ├── test_cmt_evidence.c    # cometbft port R1-D: DuplicateVoteEvidence bare bytes / flat hash / canonical order, EvidenceList root
 │   ├── test_cmt_state.c       # cometbft port R1-D: MedianTime (voting-power weights), MakeGenesisState, Copy, MakeBlock
 │   ├── test_cmt_vote_set.c    # cometbft port R2-A: VoteSet — the seven vote_set_test.go scenarios, weight-vs-count, the C-only capacity bounds (128 peers, N+P blocks)
@@ -386,8 +363,8 @@ All messages share a common CBOR map structure:
     "q":   <string>     # Method name
     "a":   {…}          # Arguments (queries)
     "r":   {…}          # Results (responses)
-    "tok": <bytes[32]>  # Session token (T2 requests) — a correlation key, never checked
-}                       #   as authorization since DHT v2 3b-2 (§5 "Session")
+    "tok": <bytes[32]>  # Session token (T2 authenticated requests)
+}
 ```
 
 ### Duplicate map keys are refused
@@ -508,74 +485,88 @@ by the new peer.
 
 ## 5. Tier 2 Protocol — Client-to-Server
 
-Tier 2 handles all client-facing operations over TCP (4001) and the WebSocket entry.
-Since DHT v2 sub-package 3b-2 every T2 connection is a **SecretConnection session** —
-the 4004 handshake of `shared/dnac/cmt_p2p_secret.h` under the CLIENT profile — and T2
-frames flow only inside its sealed stream. Full mechanism: §15 "DHT v2 sub-package 3b-2".
+Tier 2 handles all client-facing operations over TCP. Every T2 session begins with a
+Dilithium5 challenge-response authentication handshake.
 
-### Session (SecretConnection, CLIENT profile)
+### Authentication Handshake
 
 ```
-Client (INITIATOR)                  Server (RESPONDER)
-  │─── HELLO {I_dsa_pk, nonce_I,     ─►│  plaintext, uvarint(len) ‖ kind ‖ fields
-  │          proto_ver, chain_id}      │  proto_ver = NODUS_CSESS_PROTO_VERSION (1);
-  │◄── HELLO_R {R_dsa_pk, R_mlkem_pk, ─│  chain_id = the 32-byte v3 chain id. Each side
-  │          nonce_R, proto_ver,       │  checks the peer's proto_ver and chain_id
-  │          chain_id}                 │  against its own BEFORE any KEM work.
-  │   client: fingerprint(R_dsa_pk) must be in pinned_server_fps — checked BEFORE
-  │   the ENCAPS job; otherwise the handshake is aborted (no pin, no session)
-  │─── KEYX {ML-KEM-1024 ct} ────────►│  T = SHA3-512(transcript), key / challenge =
-  │                                    │  HKDF-SHA3-256 (csess info strings)
-  │◄══ AUTHSIG (5 sealed frames) ═════►│  each side signs the challenge, purpose 0x0C
-  │                                    │  (NDS1 tagged); the peer verifies
-  │◄══ auth_ok {tok} (txn 0) ═════════│  the server's FIRST sealed frame: the token
-  │    ═══ AES-256-GCM sealed stream, nodus 7-byte frames inside ═══
+Client                              Server
+  │                                    │
+  │─── HELLO(pk, fp, v=2) ───────────►│  1. Client sends Dilithium5 public key,
+  │                                    │     fingerprint (SHA3-512 of pk), proto version
+  │                                    │     Server verifies fp == SHA3-512(pk)
+  │◄── CHALLENGE(nonce) ──────────────│  2. Server generates 32-byte random nonce
+  │                                    │
+  │─── AUTH(SIGN(nonce, sk)) ─────────►│  3. Client signs nonce with secret key
+  │                                    │     Server verifies signature with pk
+  │◄─ AUTH_OK(token,kpk,spk,sig,      │  4. Server returns:
+  │           [mpk,mpk_sig]) ─────────│     - 32-byte session token
+  │                                    │     - Kyber round-3 public key (kpk)
+  │                                    │     - Server Dilithium5 public key (spk)
+  │                                    │     - Dilithium5 sign(kpk || nonce) (kpk_sig)
+  │                                    │     - OPTIONAL: ML-KEM-1024 pubkey (mpk) +
+  │                                    │       Dilithium5 sign(mpk || nonce) (mpk_sig),
+  │                                    │       present only if the server has one
+  │                                    │     Client verifies sig with spk (MITM protection)
+  │─── KEY_INIT(ct,nonce_c,[alg]) ───►│  5. Client encapsulates to server's KEM pubkey —
+  │                                    │     ML-KEM-1024 (alg=1) if mpk/mpk_sig verified,
+  │                                    │     else Kyber round-3 (alg absent/0, default)
+  │◄── KEY_ACK(nonce_s) ──────────────│  6. Shared secret established (either algorithm
+  │                                    │     yields the same 32-byte secret shape)
+  │    ═══ AES-256-GCM channel ═══    │     All subsequent traffic encrypted
 ```
 
-The handshake rows, the sealed frame (1,028 bytes plaintext, 1,044 sealed) and the pin
-rule are in `cmt_p2p_secret.h:51-92`, `:112-116` (rows written for the WITNESS profile;
-the CLIENT profile changes only the tags and the purpose); the CLIENT profile's
-transcript tag / HKDF info strings and the 0x0C NDS1 preimage are fixed by
-`docs/plans/decisions/2026-10-23-dht-v2-session-bytes.md` (operator) and implemented by
-sub-package 3a (`CMT_P2P_SC_PROFILE_CLIENT`, `cmt_p2p_secret.c:44`). The client proves its own key in AUTHSIG
-AFTER it has checked the server's pin, so a refused server never sees a client
-signature. The client's public key travels in the plaintext HELLO (a known limitation,
-khan decision C, `docs/plans/decisions/2026-10-23-kurultay-43-summary.md`); there is no
-forward secrecy (static node keys, khan decision B).
-
-The diagram above is the IDENTIFIED session (the client logs in with its key). Since DHT
-v2 package 3d the same port also serves the no-login **ANON** family, which a wallet uses:
-HELLO_ANON (no client key) → HELLO_R_ANON (the node's key, its ML-KEM key and a KEM-key
-certificate under purpose 0x0E) → KEYX → one sealed CONFIRM each way, the node's first; no
-AUTHSIG, no challenge, and the session has no principal. A 4001 / WS responder that holds
-the certificate starts family-unbound and the client's first message selects the family.
-Bytes, binding and what an ANON session may call: §15 "DHT v2 package 3d".
-
-**The token message** (`"q": "auth_ok"`) — the only T2 message of the old handshake that
-remains, encoded by `nodus_t2_auth_ok` (`nodus_tier2.h:391-397`):
+**HELLO** (`"q": "hello"`):
 ```
-{"t": 0, "y": "r", "q": "auth_ok", "r": {"tok": <bytes[32]>}}
+{"t": txn, "y": "q", "q": "hello", "a": {"pk": <bytes[2592]>, "fp": <bytes[64]>}}
 ```
-The client SDK claims the pending slot of txn 0 before it connects and is READY only once
-the layer is authenticated AND this message is in (`do_auth`, `nodus_client.c:1026`). An
-ANON session gets the same token message (`nodus_auth.c:110-122`).
-The token is carried by later requests (`"tok"`) but is a correlation key only — it is
-never checked as authorization (`nodus_server.c:1548-1553`).
 
-The old `hello` / `challenge` / `auth` / `auth_ok` (with `kpk`, `spk`, `kpk_sig`, `mpk`,
-`mpk_sig`) / `key_init` / `key_ack` exchange and its AES-256-GCM channel crypto are
-DELETED from 4001, WS and 4002 (3b-2, operator decision "all at once",
-`docs/plans/decisions/2026-10-23-dht-v2-session-cutover.md`). A pre-3b-2 client cannot
-connect to a 3b-2 node and vice versa. (`nodus_t2_hello` / `nodus_t2_auth` stay only for
-the channel-connection client, whose server is compiled out.)
+**CHALLENGE** (`"q": "challenge"`):
+```
+{"t": txn, "y": "r", "q": "challenge", "r": {"nonce": <bytes[32]>}}
+```
+
+**AUTH** (`"q": "auth"`):
+```
+{"t": txn, "y": "q", "q": "auth", "a": {"sig": <bytes[4627]>}}
+```
+
+**AUTH_OK** (`"q": "auth_ok"`):
+```
+{"t": txn, "y": "r", "q": "auth_ok", "r": {
+    "tok": <bytes[32]>,
+    "kpk": <bytes[1568]>,       // Server's Kyber round-3 public key
+    "spk": <bytes[2592]>,       // Server's Dilithium5 public key
+    "kpk_sig": <bytes[4627]>,   // Dilithium5 sign(kpk || nonce, server_sk)
+    "mpk": <bytes[1568]>,       // OPTIONAL (Faz 1 KEM migration): server's ML-KEM-1024
+                                //   public key, present only when the server has one
+    "mpk_sig": <bytes[4627]>    // OPTIONAL: Dilithium5 sign(mpk || nonce, server_sk) under
+                                //   the STRICT MLKEM_BIND purpose (NDS1-tagged, no raw
+                                //   fallback either side) — unlike kpk_sig/KYBER_BIND, which
+                                //   is non-strict; see "Faz 1 KEM migration" below
+}}
+```
+The `kpk_sig` binds the Kyber public key to this auth session via the challenge nonce,
+preventing MITM key substitution. Client MUST verify this signature before encapsulating.
+Legacy servers (proto < v0.10.10) omit `spk` and `kpk_sig` — an unpinned client logs a
+warning and uses the unsigned `kpk`; a client with a server-key pin
+(`nodus_client_config_t.pinned_server_fps`, "Server key pin" in the Client SDK section)
+refuses the connection.
+
+**KEY_INIT** (`"q": "key_init"`):
+```
+{"t": txn, "y": "q", "q": "key_init", "a": {
+    "ct": <bytes[1568]>,        // KEM ciphertext (round-3 or ML-KEM-1024)
+    "nc": <bytes[32]>,          // Client nonce
+    "alg": 1                    // OPTIONAL (Faz 1 KEM migration): 1 = ML-KEM-1024.
+                                 //   Omitted entirely (not just 0) when alg=0 — an
+                                 //   alg=0 KEY_INIT is byte-identical to every
+                                 //   KEY_INIT ever sent before this migration.
+}}
+```
 
 #### Faz 1 KEM migration (ML-KEM-1024, rolling-compatible)
-
-> **Superseded on 4001 / WS / 4002 by DHT v2 sub-package 3b-2** (§15): the four handshake
-> sites below no longer exist — the session's KEM is ML-KEM-1024 only, inside the
-> SecretConnection. What still holds from this subsection: the circuit `alg` tag and the
-> fail-closed inbound E2E rule, `NODUS_PURPOSE_MLKEM_BIND` (0x09) as a purpose byte, and the
-> node's ML-KEM seed derivation. Kept as the record of the migration.
 
 Governing decision: `docs/plans/decisions/2026-09-23-kem-mlkem-migration.md` (K1-K6);
 design: `docs/plans/2026-09-23-mlkem-fips203-migration-design.md` §5.8-§5.10.
@@ -671,9 +662,7 @@ wire version bump:
 
 ### Authenticated DHT Operations
 
-All operations below run inside an authenticated session (the SecretConnection, "Session"
-above). Requests carry the session token (`"tok"` field) as a correlation key; the server
-does not check it (`nodus_server.c:1446-1451`, DHT v2 3b-2) — identity is the connection.
+All operations below require a valid session token (`"tok"` field).
 
 | Method | Direction | Description |
 |--------|-----------|-------------|
@@ -781,47 +770,30 @@ Response:
 }}
 ```
 
-### Pre-Auth Dispatch — none (DHT v2 3b-2)
+### Pre-Auth Dispatch
 
-There is no pre-authentication dispatch any more. Before the SecretConnection is
-AUTHENTICATED a connection carries only the layer's own handshake messages, and the layer
-hands no nodus frame to the server before that (`nodus_tcp_sc.h`; §15 "DHT v2 sub-package
-3b-1"). `dispatch_t2` closes a session that is not marked authenticated instead of
-answering it (`nodus_server.c:1524-1529`). The old list (`hello` / `auth` served
-unauthenticated, `NODUS_ERR_NOT_AUTHENTICATED` for the rest) is gone with the old
-handshake.
+The server allows certain messages without authentication:
 
-**No login is not "pre-auth" (DHT v2 package 3d).** A wallet connects WITHOUT logging in:
-it opens the no-login ANON session family, in which only the node proves its key (pin +
-KEM-key certificate) and the client presents none. That session is still AUTHENTICATED
-before any frame flows; it simply has NO principal (`sess->anonymous`, set from the layer
-by `nodus_auth_session_start`, `nodus_auth.c:110`). Its methods are an explicit allowlist,
-checked in `dispatch_t2` right after the authentication check and before every other
-block (`nodus_server.c:1538-1546`, `nodus_server_anon_method_ok`, `:168-174`): `ping`,
-`status`, `servers` and the 29 chain methods of `nodus_chain_anon_method_ok`
-(`witness/nodus_witness_ipc.h:156-173`). Everything else — the legacy DHT verbs, listen,
-presence, circuits, `w_*`, `dnac_cc_collect`, `dnac_node_duties` — answers
-`NODUS_ERR_NOT_AUTHENTICATED` ("this method needs a logged-in session"). The identified
-CLIENT session (the client logs in with its key) never takes that branch and is served as
-before. Full mechanism: §15 "DHT v2 package 3d".
+- `hello` / `auth` — the handshake itself
+- `sv` — inter-node DHT value replication (verified by value signature)
+- `ch_rep` — inter-node channel post replication
+
+All other methods return `NODUS_ERR_NOT_AUTHENTICATED` (code 1) if the session is not
+authenticated.
 
 ### Client port front door (2026-10-14, Kurultay #20 package 1, the operator's simple version)
 
 Four node-local limits on the client port (4001 and the WebSocket entry). None touches a consensus input;
 all are in core except the witness IPC read budget, which is a count.
 
-- **Failed session closes.** (Was "failed auth closes"; since DHT v2 3b-2.) A handshake that fails — wrong
-  chain id, wrong protocol version, a bad signature, a malformed message — fails the layer's feed and the
-  connection is closed; there is no `auth` message to answer.
-- **Pre-session limits** (replace the pre-auth frame cap `NODUS_PREAUTH_PAYLOAD_MAX`, retired in 3b-2,
-  Kurultay #43 O-5): a 15 s idle / 30 s absolute deadline on the monotonic clock
-  (`NODUS_PRESESSION_IDLE_MS` / `_ABS_MS`, `nodus_server.h:689-690`), a sealed-input budget per handshake
-  that follows the session family (`sc_presession_budget`, `nodus_tcp_sc.c:96-111`; since DHT v2 package 3d
-  an ANON-bound connection has its own, smaller budget), and at most 60 new handshakes per minute from one IP
-  (`NODUS_HANDSHAKE_RATE_PER_MIN`, `nodus_server.h:695`; operator 2026-10-24,
-  `docs/plans/decisions/2026-10-24-dht-v2-handshake-rate.md`). Details: §15 "DHT v2 sub-package 3b-2".
-  `conn->max_payload` stays in the transport for the IPC sockets (`nodus_witness_ipc.c:425`,
-  `nodus_dht2_wview.c:433`); the client pool no longer sets it.
+- **Failed auth closes.** An `auth` whose signature does not verify, or an `auth` with no pending challenge,
+  is answered with its error and the connection is closed (`dispatch_t2`; the deferred close is safe inside
+  the client poll).
+- **Pre-auth frame cap.** Every connection carries `max_payload` (0 = `NODUS_MAX_FRAME_TCP`).
+  `try_parse_frames` checks the length a frame header declares as soon as the 7-byte header is in and closes
+  the connection when it is over the cap — before the payload is buffered. The client pool sets
+  `NODUS_PREAUTH_PAYLOAD_MAX` (sig 4627 + pk 2592 + fp 64 + 1024 = 8307 bytes) on accept; auth success clears
+  it. Other pools keep `NODUS_MAX_FRAME_TCP`.
 - **Per-session chain budget.** Every request routed to the chain (`dnac_*`, `evm_*`) is charged to the
   session: a fixed 10 s window on core's monotonic clock, 300 units per window (`NODUS_CHAIN_RATE_*`,
   `nodus_server.h`; a JUDGMENT value). `dnac_spend` costs ⌈T2 payload bytes / 4627⌉ (one unit per
@@ -975,18 +947,9 @@ All cryptographic operations use post-quantum algorithms from the `shared/crypto
 NIST Category 5 post-quantum digital signature scheme. Used for:
 
 - **Value signing** — every DHT value carries a Dilithium5 signature that proves ownership
-- **Session authentication** — both ends of a 4001 / WS (purpose 0x0C) or 4002 (purpose
-  0x0D) SecretConnection sign the handshake challenge (AUTHSIG, NDS1-tagged, strict);
-  4004 uses 0x0A (DHT v2 3b-2; the old 3-step challenge-response is deleted). The
-  no-login ANON family of 4001 / WS (DHT v2 package 3d) signs nothing per connection: the
-  node's identity key signs its ML-KEM key ONCE as a KEM-key certificate under the strict
-  purpose 0x0E (`NODUS_PURPOSE_KEM_CERT`), and the client verifies it
-- **Owner-signed chain queries** (DHT v2 package 3d) — on an ANON session the five
-  owner-only reads carry a `qa` RFC 0002 envelope signed with the owner's key (domain
-  `nodus.chain.query.v1`), §15 "DHT v2 package 3d"
+- **Client authentication** — 3-step challenge-response handshake
 - **Channel post signing** — authors sign their posts
-- (The Kyber PK binding `kpk_sig` in AUTH_OK is deleted with the old handshake, 3b-2: the
-  session's KEM key is ML-KEM-1024, carried in HELLO_R and bound by the transcript.)
+- **Kyber PK binding** — server signs its Kyber public key in AUTH_OK to prevent MITM
 
 | Parameter | Size |
 |-----------|------|
@@ -1224,15 +1187,11 @@ The server uses a single-threaded, event-driven architecture based on Linux `epo
 (edge-triggered):
 
 ```c
-/* nodus_server_run (nodus_server.c:2780-2960 at DHT v2 3b-2), the channel server lines omitted */
+/* nodus_server_run (nodus_server.c:3212-3318), the channel server lines omitted */
 while (srv->running && !srv->stop_requested) {
-    /* poll_ms: 50, 0 with queued input, capped at NODUS_TCP_SC_POLL_MS (5) while a
-     * SecretConnection handshake job is outstanding on srv->tcp, srv->inter_tcp or
-     * the DHT's batch-forward transport (dht->ops->sc_busy) — :2844-2848, :2867-2871 */
     nodus_tcp_poll(&srv->tcp, poll_ms);          // TCP 4001 + WebSocket entry
     nodus_tcp_ws_sweep(&srv->tcp, now);          // only when the WS entry is enabled
     nodus_tcp_poll(&srv->inter_tcp, poll_ms);    // TCP 4002
-    presession_tick(srv);                        // pre-session deadline, once a second (3b-2)
     nodus_udp_poll(&srv->udp);                   // UDP 4000 (budgeted, non-blocking)
     nodus_cluster_tick(&srv->cluster);           // heartbeats + health checks
     srv->dht->ops->evict_tick(srv->dht);         // DHT: ping-before-evict sweep (split S4)
@@ -1254,7 +1213,7 @@ body; their order relative to each other and to the core ticks is unchanged.
 > Read budgets as of 2026-09-30 (P2 hardening, branch `p2-dht-fix`):
 > - **TCP:** each `nodus_tcp_poll` waits 50 ms, or 0 ms when either TCP transport or the UDP socket still has queued input (`nodus_tcp_read_pending`, `nodus_udp_read_pending`) — or, since split S3, when the chain backend's own transport does (`srv->chain->ops->read_pending`), or, since split S4, the DHT backend's (`srv->dht->ops->read_pending`) — `nodus_server.c:3225-3230` and `:3242-3247`. Both in-process backends always answer false, so the combined binary's timings are unchanged; the IPC chain backend answers for its Unix-socket transport ("Component split", S3).
 > - **UDP 4000:** the socket is not in any epoll the loop waits on; `nodus_udp_poll` runs once per iteration and reads at most `NODUS_UDP_POLL_BUDGET` (64) datagrams. When it stops at the budget it sets `budget_hit`, so the next iteration does not block its TCP polls — the cap bounds one call's work without a throughput ceiling.
-> - **Unauthenticated connections** (4001 / WebSocket, and since 3b-2 also 4002 accept) are closed 15 s after their last socket byte or 30 s after connect, whichever comes first, on the MONOTONIC clock, looked at once a second (`presession_tick` → `nodus_server_presession_sweep` → `nodus_tcp_sc_presession_sweep`, `nodus_server.c:960-977`; DHT v2 3b-2). (Until 3b-2: `idle_timeout_sweep` every 30 s on the wall clock with `IDLE_ABSOLUTE_UNAUTH` — effective ≈ 45 / 60 s; that name no longer exists, and `idle_timeout_sweep` now covers authenticated sessions only.)
+> - **Unauthenticated client connections** (4001 / WebSocket) are closed by `idle_timeout_sweep` either after 15 s idle or 30 s after `connected_at` (`IDLE_ABSOLUTE_UNAUTH`), whichever comes first; the sweep runs every 30 s.
 > - **Media `m_put`** refuses a chunk index ≥ the request's chunk count, a non-first chunk with no stored metadata or with an index ≥ the STORED chunk count, and `ttl == 0` (media rate limit intentionally not added — operator 2026-09-30). The `m_sv` replication receive path does not apply these checks yet.
 > - **get_all / get_batch** answer an explicit error frame when the reply cannot be encoded (previously no reply, and the client waited for its timeout).
 > - **Value decode** refuses a value whose unsigned `created_at + ttl` would overflow (it would otherwise wrap to `expires_at == 0`, "never expires").
@@ -1275,8 +1234,7 @@ Design `docs/plans/2026-10-01-dht-ownership-root-fix-design.md` §10 (local) and
 - "Could not look" (no forward slot, nothing answered, storage fault) answers `NODUS_ERR_UNAVAILABLE` (21) instead of an empty result; client `get_batch` replies mark such keys per entry with `"u": true`.
 - **Batch forward was dead before this package:** `bf_recv_frame` read the frame length big-endian while the wire is little-endian, so every forward (handshake included) waited for its 5 s timeout. It now uses `nodus_frame_decode` + `nodus_frame_validate` and refuses a declared length larger than its buffer.
 
-**4002 session** (the role split and `require_peer_auth` items are superseded by DHT v2 3b-2, §15: the
-4002 handshake is the SecretConnection NODE session and `require_peer_auth` is no longer read)
+**4002 session**
 - Role split: a conn we dialed accepts only challenge / auth_ok / key_ack / error during the handshake, an accepted conn only hello / auth / key_init / error; a wrong-role frame disconnects. The accepting side becomes AUTH_OK only after key_init (no plaintext sends before the session key). Until the session key exists only handshake frames are processed (T2 and T1); a second key_init is refused.
 - Inter-circuits are released when their 4002 conn disconnects or is orphaned, and found by pointer, not by cid; `ri_*` frames act only on circuits of their own conn; a client circuit id that could collide moves the server generator past it (cid 0 and ≥ 2^63 refused).
 - `require_peer_auth` defaults to true in `nodus-server` (the JSON can still set false).
@@ -1285,32 +1243,17 @@ Design `docs/plans/2026-10-01-dht-ownership-root-fix-design.md` §10 (local) and
 
 **Pipelined strict page reads (2026-10-07, web wallet 0.1.73).** `nodus_client_get_all_page_strict_many(client, reqs, n)` (`nodus.h`, `n` ≤ `NODUS_CLIENT_PAGE_PIPELINE_MAX` = 8) sends the strict paged `get_all` frame of every item (`client_page_send`, the frame `nodus_client_get_all_page_strict` sends) before it awaits the first reply, then awaits each and runs the same reply handler (`client_page_reply` → `client_page_result_impl`, strict) per item. It is NOT a batch request: each key keeps its own node-side read and forwarded lookup, unlike `get_batch`, which forwards only keys with no local row, to one peer. Replies are matched by txn (`client_on_frame` → `nodus_client_pending_find`), never by position: natively the read thread stores each reply in its pending slot; in the browser build (no read thread) `wait_response` polls the transport, which dispatches every complete frame to its own slot. Per item: rc / rows / `more` / cursor / `legacy` / undecodable exactly as the single strict call, `NODUS_ERR_TIMEOUT` measured from that item's own send. Caller today: the Nodus Connect thin core (`web-wallet/connect/nc_read.c` `nc_read_owner_many`, 4 in flight at once). Test: `test_client_pipeline` (fake node answering in reverse order only once it holds every request).
 
-**Forwarded-read slots.** `NODUS_BF_MAX_BATCHES` (`dht/nodus_dht.h`) — concurrent batch-forward batches for the WHOLE node, all clients together — is 16 (was 4). A `get` / `get_all` / `get_batch` that finds no free slot is answered from the local row only (or `NODUS_ERR_UNAVAILABLE` with none). Cost: `dht_bf_state_t` 99,944 → 399,752 bytes inside `nodus_dht_t` (x86-64, compile-time `sizeof`), and up to 16 × `NODUS_BF_MAX_FORWARDS` (8) = 128 forward sockets, each with a `RESP_BUF_SIZE` (`NODUS_MAX_VALUE_SIZE` + 64 KiB) receive buffer allocated per forward. A forward socket whose fd NUMBER is ≥ `NODUS_BF_FD_TABLE_SIZE` (256) is closed and that forward does not start (`bf_start_forward`). Not consensus, no wire change. (Since DHT v2 3b-2 the forwards are connections of the DHT's own `nodus_tcp` transport — up to `NODUS_TCP_MAX_CONNS`, each with that transport's receive buffer; the per-forward buffer and the fd table are gone, `nodus_dht.h:194-197`; the `sizeof` figures above predate it; §15 "DHT v2 sub-package 3b-2".)
+**Forwarded-read slots.** `NODUS_BF_MAX_BATCHES` (`dht/nodus_dht.h`) — concurrent batch-forward batches for the WHOLE node, all clients together — is 16 (was 4). A `get` / `get_all` / `get_batch` that finds no free slot is answered from the local row only (or `NODUS_ERR_UNAVAILABLE` with none). Cost: `dht_bf_state_t` 99,944 → 399,752 bytes inside `nodus_dht_t` (x86-64, compile-time `sizeof`), and up to 16 × `NODUS_BF_MAX_FORWARDS` (8) = 128 forward sockets, each with a `RESP_BUF_SIZE` (`NODUS_MAX_VALUE_SIZE` + 64 KiB) receive buffer allocated per forward. A forward socket whose fd NUMBER is ≥ `NODUS_BF_FD_TABLE_SIZE` (256) is closed and that forward does not start (`bf_start_forward`). Not consensus, no wire change.
 
 Known open (not in this package): read rate limit; legacy unpaged `get_all` still reports a storage fault as empty; the cluster node id used by the hint gate is learned from unsigned UDP; presence `p_sync` and `circ_open` dials set no expected peer id (refused when 4002 auth is on).
 
 ### Session Management
 
-Each TCP 4001 (and WebSocket) connection is assigned a **session** (`nodus_session_t`,
-`nodus_server.h:194-231`) with:
+Each TCP 4001 connection is assigned a **session** (`nodus_session_t`,
+`nodus_server.h:199-233`) with:
 
-- Authentication state (public key, fingerprint, token, `authenticated`, `auth_seq`) —
-  filled at `on_session` from the SecretConnection's proven key by
-  `nodus_auth_session_start` (`nodus_auth.c:100-194`, DHT v2 3b-2); the challenge nonce and
-  the per-session protocol version of the old handshake are gone
-- `anonymous` (DHT v2 package 3d, `nodus_server.h:210`): the session is the no-login ANON
-  family and has NO principal — `client_pk` / `client_fp` stay zero and are never an
-  identity, `conn->peer_id_set` stays false, no presence entry, no per-identity eviction;
-  set by `nodus_auth_session_start` from the layer (`nodus_tcp_sc_is_anonymous`), never
-  from a client byte
-- Circuit table, the chain-method budget window
-
-The SecretConnection layer is enabled on the connection in `on_tcp_accept`
-(`nodus_server.c:1848-1904`); the session is closed there, before any byte is read, when
-this node does not know its chain id yet. Since package 3d the responder is enabled
-family-unbound (CLIENT or ANON, chosen by the client's first message) once the node's
-KEM-key certificate exists. Full mechanism: §15 "DHT v2 sub-package 3b-2" and "DHT v2
-package 3d".
+- Authentication state (nonce, public key, fingerprint, token, `auth_seq`)
+- Circuit table, protocol version
 
 Since split S4 the DHT keeps its own **shadow** of the same slot
 (`nodus_dht_session_t`, `dht/nodus_dht.h:479-489`): an `open` flag, the active DHT
@@ -1363,9 +1306,8 @@ detaches the connection at once: epoll removal, `close(fd)`, pool slot emptied,
 `fd = -1`, `state = NODUS_CONN_CLOSED`, `close_pending = true`. The memory is
 released at once only when no `nodus_tcp_poll()` is running on that transport. While
 one is (`nodus_tcp_t.poll_depth > 0`: every frame, accept, connect and disconnect
-callback, including the session eviction in `nodus_auth.c` and the closes in
-`on_tcp_accept` / `on_inter_accept` / `dispatch_inter`), the struct is parked on
-`nodus_tcp_t.close_list` and freed
+callback, including the session eviction in `nodus_auth.c` and the `!bind_ok`
+branch of `dispatch_inter`), the struct is parked on `nodus_tcp_t.close_list` and freed
 when the outermost poll returns. Until then the transport does no more work on it:
 the event loop skips any `data.ptr` no longer in `tcp->pool`, `try_parse_frames`
 stops after the `on_frame` that closed its connection, and a second
@@ -1374,11 +1316,6 @@ point on purpose — freeing earlier would let an accept later in the same batch
 the same address while a stale event for the old connection is still queued.
 `tests/test_tcp_deferred_close.c` pins both callback shapes (build it with
 `-fsanitize=address` to turn a use-after-free into a hard failure).
-**Re-entrant disconnect (D-24 a, DHT v2 3b-2).** Every teardown path invokes
-`on_disconnect` through one function, `conn_notify_disconnect` (`nodus_tcp.c:445-450`),
-which first sets `conn->disc_claimed`; a `nodus_tcp_disconnect` of the same connection
-issued from inside that `on_disconnect` returns at once (`nodus_tcp.c:3634-3639`), so the
-callback runs once and only the outer teardown frees. Test: `test_round4_hardening` R1.
 
 **Read budget (fairness between connections).** One `nodus_tcp_poll()` call reads a
 connection at most once and within `NODUS_TCP_READ_BUDGET_FRAMES` (256: nodus frames
@@ -1407,8 +1344,8 @@ wait in between. Only these two transports are checked.
 `tests/test_tcp_read_budget.c` pins the budget, in-order delivery of the rest across
 later calls, and removal of a pending connection closed inside and outside a poll.
 
-**SecretConnection layer (DHT v2 sub-package 3b-1; enabled on 4001 / WS / 4002 since
-3b-2).** A `nodus_tcp_conn_t` may carry a `cmt_p2p_sc_t` (`conn->sc`, NULL = off)
+**SecretConnection layer (DHT v2 sub-package 3b-1, not enabled on any port).** A
+`nodus_tcp_conn_t` may carry an optional `cmt_p2p_sc_t` (`conn->sc`, NULL = off)
 switched on by `nodus_tcp_sc_enable` on a connection that has carried no byte
 (`conn->io_started`, an `atomic_bool` on every connection since 3b-1). With it on, the
 socket (or WS payload) bytes go through the machine and only its plaintext reaches
@@ -1419,10 +1356,9 @@ sealing; a non-empty queue keeps write interest). Two additions to the
 poll contract: finished handshake jobs are applied at the start of each
 `nodus_tcp_poll`, and while a job is outstanding (`nodus_tcp_sc_busy`) the poll waits
 at most 5 ms. A connection blocked on a job is resumed through the pending-read list
-above (`read_pending_add`). Since 3b-2 every 4001 / WS / 4002 connection carries it
-(only the Unix-socket IPC connections do not), and the server loop's wait includes
-`nodus_tcp_sc_busy` of both transports and of the DHT's batch-forward transport
-("Event Loop" above). Full contract: §15 "DHT v2 sub-package 3b-1" and "3b-2".
+above (`read_pending_add`). No caller enables it yet; the server loop's two-transport
+wait above does not yet include `nodus_tcp_sc_busy` — a 3b-2 obligation. Full
+contract: §15 "DHT v2 sub-package 3b-1".
 
 **Channel sessions** (TCP 4003) are managed separately by `nodus_channel_server_t`:
 - Client sessions (`nodus_ch_client_session_t`): auth state, channel subscriptions, rate limiting
@@ -1433,34 +1369,21 @@ above (`read_pending_add`). Since 3b-2 every 4001 / WS / 4002 connection carries
 
 TCP frames are dispatched through `dispatch_t2()`:
 
-1. **Decode** the CBOR payload as a T2 message; a payload that does not decode is dropped
-   (no T1 fallback on the client port, `nodus_server.c:1509-1513`)
-2. **Session check** (DHT v2 3b-2): every frame here arrived inside an AUTHENTICATED
-   SecretConnection session; a session not marked authenticated is closed, never served
-   (`nodus_server.c:1524-1529`). There is no pre-auth method list any more.
-3. **ANON allowlist** (DHT v2 package 3d): a no-login ANON session (`sess->anonymous`) may
-   call only `nodus_server_anon_method_ok`; anything else is answered
-   `NODUS_ERR_NOT_AUTHENTICATED` here, before every later step (`nodus_server.c:1538-1546`).
-   Identified sessions skip this step.
-4. **No token verification** (DHT v2 3b-2, O-2 b): the session token is a correlation key,
-   not an authorization input; identity is the connection (`nodus_server.c:1548-1553`).
-   `w_*` methods are refused on the client port (`:1561-1569`).
-5. **Handler dispatch**: method name → handler. A `dnac_*` / `evm_*` method of an ANON
-   session goes to the chain backend's `dispatch_dnac_anon` with NO key and this node's own
-   copy of the session transcript T (`nodus_tcp_sc_transcript`); a connection whose T
-   cannot be read, or a backend without that op, gets `NODUS_ERR_PROTOCOL_ERROR`
-   `NODUS_CHAIN_NO_WITNESS_MSG` (`nodus_server.c:1624-1643`). Since split S4 the DHT
-   methods (`put`, `get`, `get_all`, `get_batch`, `cnt_batch`, `listen`, `unlisten`,
-   `ch_list`, `ch_search`, `ch_get`, `m_put`, `m_meta`, `m_chunk`) go to the DHT through
-   `srv->dht->ops->client_frame` with the session's slot and authenticated identity — NULL
-   fp / pk for an ANON session, unreachable today because step 3 refuses those methods
-   (`nodus_server.c:1693-1713`; the DHT's `nodus_dht_client_request`, `nodus_dht_server.c:4054-4111`,
-   refuses an identity-less origin and otherwise picks `handle_t2_put`, `handle_t2_get`, …);
-   `ping`, `servers`, `status` and `circ_*` stay in core (`nodus_server.c:1714-1724`).
+1. **Decode** the CBOR payload as a T2 message
+2. **Pre-auth check**: if session is not authenticated, only `hello`, `auth`, `sv`
+   (inter-node store, rate-limited: 200/s), and `fv` (inter-node FIND_VALUE, rate-limited: 100/s)
+   are allowed. Channel operations (`ch_rep`, `ch_post`, etc.) go through TCP 4003, not 4001.
+3. **Token verification**: authenticated requests must carry a valid session token
+4. **Handler dispatch**: method name → handler. Since split S4 the DHT methods (`put`,
+   `get`, `get_all`, `get_batch`, `cnt_batch`, `listen`, `unlisten`, `ch_list`,
+   `ch_search`, `ch_get`, `m_put`, `m_meta`, `m_chunk`) go to the DHT through
+   `srv->dht->ops->client_frame` with the session's slot and authenticated identity
+   (`nodus_server.c:2172-2187`; the DHT's `nodus_dht_client_request` then picks
+   `handle_t2_put`, `handle_t2_get`, …, `nodus_dht_server.c:4264-4304`); `ping`,
+   `servers`, `status` and `circ_*` stay in core (`nodus_server.c:2188-2199`).
 
-The T1 fallback (a T1 decode for inter-node `sv` / subscribe / notify frames when the T2
-decode fails) exists only on the inter-node port's `dispatch_inter`
-(`nodus_server.c:1175-1195`), inside the authenticated node session — not on 4001.
+If T2 decode fails, a fallback T1 decode is attempted for inter-node `sv` (STORE_VALUE)
+messages that arrive on the TCP port.
 
 ### Configuration
 
@@ -1481,8 +1404,8 @@ Server configuration via JSON file (default: `/etc/nodus.conf`):
 
 **Ports:**
 - **UDP 4000** — Kademlia peer discovery (Tier 1)
-- **TCP 4001** — Client DHT operations (Tier 2), inside a SecretConnection CLIENT session (DHT v2 3b-2) or, for a wallet that does not log in, an ANON session (DHT v2 package 3d)
-- **TCP 4002** — Inter-node replication (Tier 1 TCP), inside a SecretConnection NODE session (3b-2)
+- **TCP 4001** — Client DHT operations + auth (Tier 2)
+- **TCP 4002** — Inter-node replication (Tier 1 TCP)
 - **TCP 4003** — Channel system: client posts + inter-node replication (dedicated)
 - **TCP `ws_port`, 127.0.0.1 only** — WebSocket entry of the client port (off by
   default; see below)
@@ -1514,14 +1437,10 @@ browser ──wss://<node IP>:443──► Caddy (TLS, X-Forwarded-For) ──ws
 | Key | Default | Meaning |
 |---|---|---|
 | `ws_port` | `0` = off | TCP port of the entry. The address is ALWAYS `127.0.0.1` (`nodus_tcp_ws_listen`); there is no key for it. Must differ from `tcp_port`, `peer_port`, `witness_port`, `ch_port` (checked in `nodus_server_init`). |
-There is no Origin setting. The entry does not read the browser `Origin` header, so any
-site, the wallet browser extension (`chrome-extension://<id>`) or a non-browser program
-can open it. Until 2026-10-27 a `ws_origins` list (default: the wallet and Connect sites)
-answered 403 to every other Origin. No decision record stated that list, and it refused
-the wallet extension and every other site. An old `"ws_origins"` key in `nodus.json` is
-now ignored.
+| `ws_origins` | `["https://wallet.nodusnetwork.io", "https://connect.nodusnetwork.io"]` (Connect since 0.23.8) | Allowed browser `Origin` values, exact byte match, at most 8 × 255 bytes. An empty or absent list means the default. |
 
-Startup logs `WebSocket entry listening on 127.0.0.1:<port>`.
+Startup logs `WebSocket entry listening on 127.0.0.1:<port>, <n> allowed origin(s)`
+and one line per origin.
 
 **One transport, two listening sockets.** The entry is NOT a second `nodus_tcp_t`.
 `srv->tcp` owns a second listening socket (`ws_listen_fd`, epoll marker
@@ -1540,8 +1459,8 @@ by `test_ws_frame` / `test_ws_upgrade`:
   `GET <origin-form> HTTP/1.1`; exactly one `Host`; `Upgrade` list contains
   `websocket` and `Connection` list contains `Upgrade` (case-insensitive);
   `Sec-WebSocket-Version: 13` (else 426 with `Sec-WebSocket-Version: 13`); exactly one
-  `Sec-WebSocket-Key` that is canonical base64 of 16 bytes (else 400). `Origin` is not
-  read. `Sec-WebSocket-Protocol` containing `binary`
+  `Sec-WebSocket-Key` that is canonical base64 of 16 bytes (else 400); exactly one
+  `Origin`, in `ws_origins` (else 403). `Sec-WebSocket-Protocol` containing `binary`
   (what Emscripten sends) is echoed. `Sec-WebSocket-Accept` = base64(SHA-1(key ‖
   `258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)) through OpenSSL `EVP_sha1` (§1.3 vector
   pinned in the tests).
@@ -1584,9 +1503,8 @@ by `test_ws_frame` / `test_ws_upgrade`:
 - *Teardown*: every refusal goes through `ws_close_now` (queue the response or close
   frame, one best-effort flush, `on_disconnect`, `conn_free`) and the caller returns
   "freed" so the read loop never touches the connection again.
-- *SecretConnection layer (DHT v2 sub-package 3b-1; every WS connection carries it since
-  3b-2 — `on_tcp_accept` enables it on the plain and the WS accept alike, and on WS the
-  machine starts after the Upgrade)*: on a WS connection with `conn->sc` set, `ws_sink_data` feeds the unmasked payload to the
+- *SecretConnection layer (DHT v2 sub-package 3b-1, no caller enables it yet)*: on a
+  WS connection with `conn->sc` set, `ws_sink_data` feeds the unmasked payload to the
   machine instead of `rbuf` (WS bytes → SecretConnection → nodus frames; Upgrade,
   ping / pong and close stay outside the sealed stream), the incremental-sealing drain
   (`sc_drain_locked`) puts each portion of at most 32 sealed frames (33,408 bytes, under
@@ -1603,13 +1521,12 @@ by `test_ws_frame` / `test_ws_upgrade`:
 | Upgrades in progress | 64 (`NODUS_WS_MAX_HANDSHAKING`) | `handle_accept_ws` |
 | Upgrade deadline | 10 s from accept (`NODUS_WS_HANDSHAKE_TIMEOUT_S`) | `nodus_tcp_ws_sweep`, called every loop iteration |
 | Per real IP | 20 open WebSocket connections (`NODUS_WS_MAX_CONNS_PER_IP`), counted after `X-Forwarded-For`. IPv4 by the whole address; IPv6 by its /64 prefix (one host owns a /64); an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) as the IPv4 it carries — `nodus_ws_ip_bucket`, stored per connection in `conn->ws_bucket`; `conn->ip` keeps the full normalised address for the logs. Plain TCP connections are counted separately (the 4001 CRIT-5 count skips `is_ws`) | `ws_try_upgrade`, `handle_accept` |
-| Handshake rate per real IP (DHT v2 3b-2) | 60 new connections per minute per real client address (IPv6 by /64), checked after the per-IP concurrency limit; above it the connection is closed (operator 2026-10-24) | `ws_try_upgrade` → `nodus_tcp_hs_rate_allow` (`nodus_tcp.c:1956-1963`) |
-| After the Upgrade | the ordinary client limits: the 15 s idle / 30 s absolute pre-session deadline (monotonic, 3b-2), the sealed-input budget of the handshake, 180 s authenticated idle sweep, session rules | `nodus_tcp_sc_presession_sweep`, `idle_timeout_sweep` |
+| After the Upgrade | the ordinary client limits: 15 s unauthenticated / 180 s authenticated idle sweep, session rules | `idle_timeout_sweep` |
 
-After the Upgrade the connection is an ordinary client connection: the SecretConnection
-CLIENT session (§5 "Session"), then `dnac_*`, put/get — the same code; no tier-2 or
-consensus behaviour differs. The sweeps only schedule this node's own connection
-housekeeping; nothing in them reaches block content, votes or state.
+After the Upgrade the connection is an ordinary tier-2 client connection: `hello` /
+`auth` / `key_init`, `dnac_*`, put/get — the same code; no tier-2 or consensus
+behaviour differs. The sweep only schedules this node's own connection housekeeping;
+nothing in it reaches block content, votes or state.
 
 **Logs** (tag `NODUS_TCP`, one line per event, never echoing request bytes):
 `ws: upgrade ok slot=… ip=…`, `ws: upgrade refused slot=… status=…: <check>`,
@@ -1618,52 +1535,17 @@ connection refused`, `ws: N upgrades pending, new connection refused`, `ws: upgr
 <reason>`, `ws: peer closed`.
 
 End-to-end coverage: `test_ws_server` (real server with `ws_port`, loopback client:
-Upgrade; since DHT v2 3b-2 an OLD plaintext tier-2 `hello` inside a WebSocket frame is
-refused — no `challenge`, the connection closed — the sealed session over WS being
-covered by `test_tcp_sc`; ping/pong, an extension Origin (`chrome-extension://…`)
-answered 101 and its connection leaving the pool after the client closes, the
+Upgrade, tier-2 `hello` → `challenge` inside WebSocket frames, ping/pong, 403, the
 21st connection from one `X-Forwarded-For` address, the 21st address in one IPv6 /64
 while another /64 is served, the sweep with a supplied clock, text frame → close
 1003, and the 257th WebSocket connection refused at accept with 256 in the pool).
 Codec coverage: `test_ws_upgrade` (incl. a complete 8193-byte head refused, a bare CR
-in a header line, repeated Host / Version, an absent, foreign, extension, opaque or
-repeated Origin all accepted, the /64 bucket) and
+in a header line, repeated Host / Origin / Version, the /64 bucket) and
 `test_ws_frame` (incl. close codes 999/1004/1005/1006/1015/2999/5000 refused and
 3000/4999 echoed, a 125-byte ping answered, invalid-UTF-8 close reason → 1007, every
 branch of the UTF-8 check).
 
-### Inter-node session (TCP 4002) — the NODE SecretConnection (DHT v2 3b-2)
-
-Since DHT v2 sub-package 3b-2 every 4002 connection — accepted by core, dialed by core's
-pool, by `nodus-storage`'s pool and by the batch forwards — runs the SecretConnection under
-the NODE profile (purpose 0x0D, `NODUS_NSESS_PROTO_VERSION` 1), through the one shared
-module `server/nodus_inter_dial.c`:
-- **Dialer = INITIATOR, pinned.** `nodus_inter_pool_dial` refuses a dial with no expected
-  node id before anything else, refuses BEFORE the TCP connect when the pool has no
-  session config or the chain id is unknown, records the pin on the connection
-  (`conn->expected_peer_id`) and enables the session (`nodus_inter_dial.c:153-198`). The
-  layer aborts the handshake BEFORE its ENCAPS job when the responder's claimed key does
-  not hash to that node id; `nodus_inter_session_proven` re-checks the proven key at
-  `on_session` (`:83-103`). The pin reference is still the routing-table / roster node
-  id; on mismatch the dial fails closed and is not re-resolved (unsigned FIND_NODE data).
-  There is no unpinned dial and no plaintext dial (the no-Kyber plaintext path and the
-  `require_peer_auth` gate are deleted, Kurultay #43 mandatory fixes).
-- **Acceptor = RESPONDER, any proven identity** (khan decision A,
-  `docs/plans/decisions/2026-10-23-kurultay-43-summary.md`): `on_inter_accept` enables the
-  session or closes the connection (`nodus_server.c:1274-1297`); per-operation holder
-  authorization comes in packages 6-7.
-- **Both:** until the session is authenticated a send waits in the connection's dial queue
-  (plaintext, in memory only) and the result is `NODUS_INTER_SEND_QUEUED`; at `on_session`
-  the gate opens and the queue is replayed sealed in order (`nodus_inter_dial_conn_open`,
-  `:336-380`). The acceptor sends the token message first (`on_inter_session`,
-  `nodus_server.c:1305-1338`). A dialed connection not authenticated 10 s after the dial is
-  closed (monotonic, `nodus_inter_pool_sweep`, `:270-297`).
-- **Fail closed without a chain id** — accept closed, dial refused (`NODUS_INTER_SEND_REFUSED`).
-
-Full mechanism, tri-state send table and tests: §15 "DHT v2 sub-package 3b-2". The text
-below is the pre-3b-2 handshake, kept as history.
-
-#### Before 3b-2 — the dialer authentication of the old 4002 handshake (v0.18.11; DELETED)
+### Inter-node dialer authentication (TCP 4002, v0.18.11)
 
 The acceptor authenticates the dialer via a Dilithium5 challenge/response. The
 **dialer** in turn authenticates the acceptor's Kyber public key before
@@ -1709,8 +1591,6 @@ never against an unpinned identity. A dialer never sends an ML-KEM ciphertext to
 acceptor that did not itself advertise a signed `mpk` (see the Faz 1 KEM migration
 subsection under Tier 2, §5 above, for the full four-site rule and the governing
 decision record).
-
-#### Data files (current)
 
 Data is stored in:
 - `<data_path>/nodus.db` — DHT value storage (SQLite)
@@ -2054,8 +1934,8 @@ handshake method (`nodus_witness_ipc.h:9-10`). Each side runs the IPC on its OWN
 | Connection | First frame | Then |
 |---|---|---|
 | session — one per core client session that has sent a `dnac_*` (item 19) | `{"q":"ipc_hello","pk":<bstr NODUS_PK_BYTES>,"tk":<bstr NODUS_SESSION_TOKEN_LEN>}` — the client session's key and session token | the client's tier-2 `dnac_*` payloads, unchanged; the witness's replies on the same socket, relayed to the client unchanged |
-| control — one per core | `{"q":"ipc_ctl"}` | `{"q":"ipc_status"}` queries, each answered `{"q":"ipc_status","co":bool chain open,"h":uint height,"sr":bstr 64 state root,"ci":bstr 32 chain id (legacy: 16 bytes padded with zeros, what the T2 `status` RPC reports),"c3":bstr 32 the v3 chain id (all zero when there is none — the session chain id, DHT v2 3b-2),"po":bool p2p host exists,"lp":uint 4004 port}` — eight keys (`nodus_witness_ipc.c:484-494`) |
-| dht — one per `nodus-storage` (DHT v2 package 4, design rev 5 §13 row 13; the dialler is the storage process's view, opened by `tools/nodus-storage.c:191-207` through `nodus_dht_ipc_open_wview` since DHT v2 3b-2 — below) | `{"q":"ipc_dht"}` | three requests `{"q":"ipc_dht_snap"}`, `{"q":"ipc_dht_sets"}`, `{"q":"ipc_name","fp":bstr 64}`, each answered with a frame echoing its `q` (shapes below) |
+| control — one per core | `{"q":"ipc_ctl"}` | `{"q":"ipc_status"}` queries, each answered `{"q":"ipc_status","co":bool chain open,"h":uint height,"sr":bstr 64 state root,"ci":bstr 32 chain id,"po":bool p2p host exists,"lp":uint 4004 port}` |
+| dht — one per `nodus-storage` (DHT v2 package 4, design rev 5 §13 row 13; NO dialler yet — below) | `{"q":"ipc_dht"}` | three requests `{"q":"ipc_dht_snap"}`, `{"q":"ipc_dht_sets"}`, `{"q":"ipc_name","fp":bstr 64}`, each answered with a frame echoing its `q` (shapes below) |
 
 Witness side (`nodus_witness_ipc.c`): control-plane frames are parsed strictly — a CBOR
 map of 1-3 entries, only `q` / `pk` / `tk`, exact sizes, no repeated key, no trailing
@@ -2070,10 +1950,8 @@ read RPC) to `dispatch_dnac`, and **any other method closes the connection**
 (`:433-445`). A first frame that is not a valid preface (`:376-378`, `:410-411`), a control
 frame that is not `ipc_status` (`:456-459`), a session frame that does not decode or
 carries another token — each closes the connection with a WARN `closing IPC connection
-slot=<n>: <why>`. (Since DHT v2 3b-2 a session frame carrying another token is NO LONGER
-refused: the token is a correlation key, never an authorization input, and the IPC
-session's identity is its preface key — `nodus_witness_ipc.c:445-447`.) No IPC frame
-reaches the server's `dispatch_t2` (and, until 3b-2, its `key_init` handshake handlers): the core backend's `on_frame` only relays a session frame to its
+slot=<n>: <why>`. No IPC frame reaches the server's `dispatch_t2` or its `key_init`
+handshake handlers: the core backend's `on_frame` only relays a session frame to its
 client or decodes an `ipc_status` answer (`nodus_chain_backend_ipc.c:329-352`).
 `nodus_witness_ipc_find_session_conn` (`:755-771`) returns the session connection whose
 preface named `pk` and `token` and that is not closing — the witness's
@@ -2158,53 +2036,47 @@ in this tree. The witness builds the sets answer in a heap buffer of FRAME_MAX
 **The dialler — `nodus_dht2_wview` (`nodus/src/dht/nodus_dht2_wview.{h,c}`).** The
 `nodus-storage` side: its own `nodus_tcp_t`, one connection, dials `witness.sock` with
 `NODUS_TCP_UNIX_UID_SELF`, sends `{"q":"ipc_dht"}` and sets the connection's
-`max_payload` to `NODUS_WITNESS_IPC_DHT_FRAME_MAX` (`nodus_dht2_wview.c:419-445`). It
+`max_payload` to `NODUS_WITNESS_IPC_DHT_FRAME_MAX` (`nodus_dht2_wview.c:417-443`). It
 reads no clock: every call that acts on time takes `now_ms`, a caller-supplied
 MONOTONIC millisecond count that schedules only this node's own polling and ages its own
-cache (`nodus_dht2_wview.h:31-35`). Rules (constants `nodus_dht2_wview.h:61-68`):
+cache (`nodus_dht2_wview.h:29-33`). Rules (constants `nodus_dht2_wview.h:58-63`):
 
 - snapshot asked once per `NODUS_DHT2_WVIEW_SNAP_EVERY_MS` (1000); served while it is no
   older than `NODUS_DHT2_WVIEW_SNAP_STALE_MS` (5000), age counted from the tick that SENT
-  its request (`nodus_dht2_wview.c:86-90`, `:178-180`; the bullets below cite the same
+  its request (`nodus_dht2_wview.c:85-89`, `:177-179`; the bullets below cite the same
   file); an `{err}` answer clears it;
 - sets requested at connect and whenever a snapshot's `e` differs from the held sets'
-  `e`; handed out only while a fresh snapshot carries the same `e` (`:181-182`,
-  `:494-500`); an `{err}` answer drops them and the next request waits one
-  SNAP_EVERY_MS (`:207-212`);
+  `e`; handed out only while a fresh snapshot carries the same `e` (`:180-181`,
+  `:492-498`); an `{err}` answer drops them and the next request waits one
+  SNAP_EVERY_MS (`:206-211`);
 - one request outstanding per call type; a request unanswered for
   `NODUS_DHT2_WVIEW_REQ_TIMEOUT_MS` (5000) closes the connection, checked BEFORE the poll
-  reads anything, so a late reply is never accepted (`:453-461`);
+  reads anything, so a late reply is never accepted (`:451-459`);
 - name answers: positives cached for good (names are permanent, HF-4), negatives until
   the fresh snapshot's `h` moves past the answer's `h`; `NODUS_DHT2_WVIEW_NAME_CACHE_MAX`
-  (1024) slots, eviction free → negative → round-robin (`:274-295`); a name `{err}` is
+  (1024) slots, eviction free → negative → round-robin (`:273-294`); a name `{err}` is
   reported ONCE as `NODUS_DHT2_WVIEW_NAME_FAULT` (the caller refuses the admission,
   `holder-fault`) and never cached, and no new name request goes out until it was
-  reported (`:532-535`) — or, since DHT v2 package 6a, until it is
-  `NODUS_DHT2_WVIEW_FAULT_KEEP_MS` (= SNAP_EVERY_MS, 1000) old, counted from the tick
-  that read the `{err}` (`fault_at_ms`, `:68`, `:313`): then it is dropped unreported,
-  because "its caller may never come back, and the single slot must not block everyone
-  else"; the dropped fp is asked afresh, never answered "unnamed" (`:507-512`);
+  reported (`:524-527`);
 - answers decoded strictly (each key once, `q` first, exact types / sizes, registry
   status 1 or 2 only, no trailing byte); a malformed, unsolicited or over-FRAME_MAX
   answer closes the connection; the dial is retried with backoff
   `NODUS_DHT2_WVIEW_DIAL_BACKOFF_MIN_MS` 250 doubling to `_MAX_MS` 5000, and a close
-  forgets every snapshot, set and pending request (`:382-395`, `:419-429`).
+  forgets every snapshot, set and pending request (`:380-393`, `:417-427`).
 
 It links transport + CBOR only and includes `nodus_witness_ipc.h` for constants and
 plain structs; it is a static-library member in the Linux-only source list
-(`nodus/CMakeLists.txt:710-713`), so `nodus-storage` links it only once something calls
+(`nodus/CMakeLists.txt:704-707`), so `nodus-storage` links it only once something calls
 it. Function reference: `messenger/docs/functions/dht2.md` §11 (dialler) and
 `messenger/docs/functions/ledger.md` §19 (witness side).
 
 **Not done in package 4:** NOTHING dials the kind yet — `nodus_dht2_wview_*` has no
-caller outside its own file, `tests/test_dht2_ipc.c` and the package-6a binding below.
-Package 5 (the holder store, "DHT v2 package 5" below) did NOT wire it: the store takes
-an INJECTED context (`nodus_dht2_ctx_t`) that "the serving layer fills … from
-nodus_dht2_wview_snap / _sets / _name" (`nodus_dht2_store.h:133-137`). Package 6a ("DHT
-v2 package 6a" below) provides that binding — `nodus_dht2_holder_view_wview`
-(`nodus_dht2_holder.c:45-55`) — but nothing calls the holder service either (package
-6b). The view's own header now says so: "filling it from this view is package 6. Nothing
-in nodus/tools/ or any running loop calls it today" (`nodus_dht2_wview.h:41-43`). The witness side IS reachable: `nodus-witness` binds the production
+caller outside its own file and `tests/test_dht2_ipc.c`. Package 5 (the holder store,
+"DHT v2 package 5" below) did NOT wire it: the store takes an INJECTED context
+(`nodus_dht2_ctx_t`) that "the serving layer fills … from nodus_dht2_wview_snap / _sets /
+_name" (`nodus_dht2_store.h:133-137`) — package 6. (The view's own header still says
+"package 5 wires this into nodus-storage", `nodus_dht2_wview.h:39-40`; that source
+comment is now stale.) The witness side IS reachable: `nodus-witness` binds the production
 handlers (`tools/nodus-witness.c:307`, `nodus_witness_ipc_handlers_for`), so a
 `nodus-witness` built from this tree answers a same-euid peer that sends `ipc_dht`. The
 combined `nodus-server` has no `witness.sock`; the fill functions are plain so an
@@ -2219,9 +2091,8 @@ opens no socket):
   backoff `IPC_DIAL_BACKOFF_MIN` 250 ms doubling to `IPC_DIAL_BACKOFF_MAX` 5000 ms
   (`:65-66`, `:193-221`). On connect it sends `ipc_ctl` + `ipc_status` and logs INFO
   `control connection to the witness up (<path>)`; then an `ipc_status` query every
-  `IPC_STATUS_EVERY_MS` 1000 ms (`:63`). The answer is decoded strictly (since DHT v2 3b-2 all EIGHT keys — `c3`
-  added, so a 7-key answer from an older `nodus-witness` is refused —, once each, exact
-  types/sizes, `nodus_chain_backend_ipc.c:108-175` at `fb18e50ea`); a malformed answer closes the control
+  `IPC_STATUS_EVERY_MS` 1000 ms (`:63`). The answer is decoded strictly (all seven keys,
+  once each, exact types/sizes, `:108-169`); a malformed answer closes the control
   connection (WARN `malformed ipc_status answer — closing the control connection`).
   Losing it logs WARN `control connection to the witness lost (<path>) — chain status
   unavailable until it is back` (`:364-365`).
@@ -2309,7 +2180,7 @@ the witness (it proves the IPC, not the chain) — preface key/token reach the h
 non-preface first frame is closed; no witness → the exact item-20 error bytes and no
 chain; control connection not up → the error and NO session dial; the per-session
 bound; `read_pending` (file header `tests/test_witness_ipc.c:1-59`). `test_dht2_ipc`
-(`nodus/CMakeLists.txt:2083-2090`): the `ipc_dht` kind and its dialler — see "DHT v2
+(`nodus/CMakeLists.txt:2056-2063`): the `ipc_dht` kind and its dialler — see "DHT v2
 package 4" below. `test_split_linked` above. Harness: `STAGEF_MODE=splitw` / `mixedw` (`tests/integration/stagef/README.md`
 "Harness modes").
 
@@ -2466,11 +2337,10 @@ process fills the same members itself (`nodus_dht_ipc_host`, S5b below):
 
 | Member | HOT/COLD | Core implementation |
 |---|---|---|
-| `const nodus_identity_t *identity` | configuration, not a crossing (`nodus_dht.h:443-447`) | `&srv->identity` — read for `node_id` (routing, self-skips) and, since DHT v2 3b-2, as the signing identity of the batch forwards' node session (`dht->bf_state.cfg.identity`, refreshed per forward in `bf_start_forward`, `nodus_dht_server.c:3419`; until 3b-2: the BF dialer's hello and auth signature through `bf_dial_io`) |
+| `const nodus_identity_t *identity` | configuration, not a crossing (`nodus_dht.h:443-447`) | `&srv->identity` — read for `node_id` (routing, self-skips) and `pk` / `sk` (the BF dialer's hello and auth signature, since S5b through the shared dialer module, `nodus_dht_server.c` `bf_dial_io` `:3293`) |
 | `send_to_origin(ctx, origin, frame, len)` | HOT | `server_dht_send_to_origin` (`:2446-2460`): `nodus_tcp_send(srv->sessions[slot].conn \| srv->inter_sessions[slot].conn, …)` when that session's `dht_gen` equals `origin.gen`; -1 for a slot out of range or another generation |
 | `udp_send(ctx, payload, len, ip, port)` | HOT in a large cluster, COLD at 7 nodes | `server_dht_udp_send` (`:2463-2467`): `nodus_udp_send(&srv->udp, …)` — T1 replies must leave from port 4000 |
-| `inter_send(ctx, ip, port, expected_peer_id, frame, flen)` | HOT (every put × R, every republished value, every remote listener notify) | `server_dht_inter_send` (`:2470-2475`) → `dht_republish_send` (`:434-440`) → `nodus_inter_pool_send_framed` on `srv->inter_tcp` (since S5b in the shared `server/nodus_inter_dial.c:355`, the same code nodus-storage runs on its own pool): find-or-dial (`expected_peer_id` pinned on a new conn, CRIT-1), pre-auth pending buffer. **Synchronous** — the caller decides on a hint from it in the same call. Since DHT v2 3b-2 the result is `nodus_inter_send_t`: 0 WRITTEN / 1 QUEUED / -1 FAILED / -2 REFUSED (`nodus_inter_dial.h:140-166`, `nodus_dht.h` `inter_send`; §15 "DHT v2 sub-package 3b-2") — was 0 / -1 |
-| `chain_id(ctx, out[32])` (NEW, DHT v2 3b-2) | COLD (once per batch-forward dial) | `server_dht_chain_id` (`nodus_server.c:2084-2086`) → `nodus_server_chain_id`; nodus-storage: `dipc_chain_id` (`nodus_dht_ipc.c:318-341`). false = not known → the forward is not dialed |
+| `inter_send(ctx, ip, port, expected_peer_id, frame, flen)` | HOT (every put × R, every republished value, every remote listener notify) | `server_dht_inter_send` (`:2470-2475`) → `dht_republish_send` (`:434-440`) → `nodus_inter_pool_send_framed` on `srv->inter_tcp` (since S5b in the shared `server/nodus_inter_dial.c:355`, the same code nodus-storage runs on its own pool): find-or-dial (`expected_peer_id` pinned on a new conn, CRIT-1), pre-auth pending buffer. **Synchronous** 0 / -1 — the caller decides on a hint from it in the same call (`nodus_dht.h:463-471`) |
 | `hint_wanted(ctx, node_id)` | COLD (after a failed send) | `server_dht_hint_wanted` (`:2480-2485`): a cluster member (`cluster_knows_peer`) last seen less than `NODUS_HINT_OFFLINE_SKIP_SEC` ago — reads `srv->cluster` synchronously |
 
 **Where each crossing of the S4 plan went.** The rev 2 plan (`tasks/split-fable-plan-rev2.md`
@@ -2536,7 +2406,7 @@ takes the address of every core → DHT entry point in `nodus_dht.h` (`nodus_dht
 the linker pulls exactly the closure of the DHT objects out of `libnodus`.
 `dht_linked.cmake` runs `nm --defined-only` on it and matches global text symbols
 (`" T <name>"` at a line end): **forbidden** `nodus_server_init`, `nodus_server_dht_host`,
-`nodus_auth_session_start` (was `nodus_auth_handle_auth` until DHT v2 3b-2), `nodus_presence_tick`, `nodus_cluster_init`,
+`nodus_auth_handle_auth`, `nodus_presence_tick`, `nodus_cluster_init`,
 `nodus_cluster_tick`, `nodus_dht_backend_inproc_new` (`:34-41`); **required**
 `nodus_dht_init`, `nodus_dht_client_request`, `nodus_dht_tick`, `handle_t2_media_put`,
 `nodus_storage_open`, `nodus_routing_try_insert` (`:47-53`, so a pass cannot come from
@@ -2583,15 +2453,6 @@ core sessions):
   What these become when the DHT is another process is not decided.
 
 #### S5a — 4002 connection fixes before the storage process (decision items 28, 30, 33)
-
-> **Superseded by DHT v2 sub-package 3b-2** (§15): the dialer handshake module described
-> here (`nodus_inter_dial_start` / `_on_frame` / `_conn_sync`, `nodus_inter_dial_t`, the
-> challenge → auth → auth_ok → key_init → key_ack exchange, the role split, the
-> pre-session-key gate) and the tests of the old 4002 handshake (`test_inter_dial`, `test_inter_role_split`,
-> `test_inter_preauth_gate`, `test_inter_pending_replay`, `test_inter_auth`,
-> `test_inter_conn_crypto_isolation`) are DELETED. The module file now holds the NODE
-> session (`nodus_inter_session_enable` / `_proven`) and the outbound pool. Kept as the
-> record of S5a.
 
 (`nodus_server.c` line numbers in this S5a part are those of commit `f1d48425`. S5b
 moved the find-or-dial bodies, `dht_republish_send`'s body, `pending_full_is_replication`
@@ -2797,13 +2658,6 @@ format or crypto change):
   S5b batch forward does — the module is no core object, so the gate is unaffected).
 
 #### S5b — the `nodus-storage` process + the IPC DHT backend (decision items 7, 16, 17, 19, 27, 28, 29, 31, 32, 34)
-
-> **Partly superseded by DHT v2 sub-package 3b-2** (§15): `nodus_dht_ipc_new` no longer
-> takes `require_peer_auth`; every dial of the storage process's outbound pool runs the
-> NODE SecretConnection, its chain id from the process's view of its witness
-> (`nodus_dht_ipc_open_wview`, latched by `dipc_chain_id`); the pool's `on_connect` hello
-> and its `challenge` / `auth_ok` / `key_ack` handling below are replaced by
-> `dipc_out_on_session` (`nodus_dht_ipc.c:611-618`); the pool send is tri-state.
 
 The DHT / storage half can run as its own process, `nodus-storage`
 (`tools/nodus-storage.c`), beside a `nodus-server` started with **`storage_external`**
@@ -3056,7 +2910,7 @@ that writes `identity/`). The network-file pin check is nodus-witness's in this 
 `nm --defined-only` on the linked nodus-core, global text symbols only. FORBIDDEN
 `nodus_storage_open`, `nodus_routing_try_insert`, `nodus_witness_init`,
 `nodus_dht_backend_inproc_new`, `nodus_chain_backend_inproc_open`; REQUIRED
-`nodus_auth_session_start` (was `nodus_auth_handle_auth` until DHT v2 3b-2), `nodus_presence_tick`, `nodus_cluster_tick`,
+`nodus_auth_handle_auth`, `nodus_presence_tick`, `nodus_cluster_tick`,
 `nodus_inter_circuit_table_init`, `nodus_dht_backend_ipc_open`,
 `nodus_chain_backend_ipc_open` (so a pass cannot come from an empty table or the wrong file).
 
@@ -3411,83 +3265,55 @@ a connection down while another thread is entering `send_request`. Regression:
 `test_client_concurrent_send` (4 threads × 16 × 4 rounds of 192 KB PUTs, each txn
 must reach the fake node exactly once; red 5/5 without the lock).
 
-### Tool network identity (DHT v2 package 3c)
-
-Since the client session is a SecretConnection (3b-2), `nodus_client_init` refuses a config
-without a server pin (`pinned_server_fps`, count >= 1) or without a chain id
-(`has_expected_chain_id` + a non-zero `expected_chain_id`) — the next section, "Server key pin",
-describes the rule. A native tool gets both from `src/client/nodus_tool_network.{h,c}`
-(decision `docs/plans/decisions/2026-10-24-dht-v2-tool-network-identity.md`, operator "Both"; Kurultay
-#43 O-6 — the chain id from the tool's network config, missing → fail closed):
-
-- **The tool network file**, JSON, strict: `{"chain_id": "<64 lowercase hex>", "nodes": [{"ip": "<IPv4
-  literal>", "port": <1..65535>, "fp": "<128 lowercase hex>"}, ...]}`. Each `fp` sits beside its
-  ip:port; a single-target resolve is bound per endpoint, but a multi-server config
-  (`fill_all`, explorer rotation excluded — it fills one server per handle) hands the client one
-  pin SET, so any listed node's key is accepted on any listed endpoint (as the web wallet does). Any other key, a bad hex length, an upper-case digit, an all-zero id, a duplicate ip:port,
-  an empty list or more than `NODUS_TOOL_NET_MAX_NODES` (128) nodes refuses the whole file. It
-  mirrors the web wallet's network settings (chain + endpoints + pins), with the pin per endpoint.
-- **Where it is**: `--network <path>`, else the environment variable `NODUS_NETWORK`. No default path.
-- **Flags override**: `--pin <128 hex>` replaces the pin of whatever server is dialed, `--chain <64
-  hex>` the chain id. With both flags no file is needed; with neither file nor flags the tool refuses
-  before it opens a socket. A server (ip:port) that is not in the file and has no `--pin` is refused.
-- **Who uses it**: `nodus-cli` (every `nodus_client_init` through `cli_client_init`, the raw
-  `nodus_tcp` commands through `cli_dial`, global options before the command; `msig sign --pin`
-  keeps its own meaning and is the same fingerprint), `nodus-circ`, `stagef_rpc_flood`,
-  `dna_bench_native.c`, the explorer (`--network` / `--chain` / `--pin`; its server list stays in
-  `--config`, each server's pin comes from the file), the Genesis Protocol harness (writes
-  `$BASE_DIR/tool_network.json` at bring-up, exports `NODUS_NETWORK`). `nodus-light` (the ONE exception to "no file and no flag → refuse", operator 2026-10-26: it keeps
-  its compiled chain id and pinned node list as the default; `--network` / `$NODUS_NETWORK`
-  replaces both with the file's, `--pin` / `--chain` override; `--node host:port:pinfp` +
-  `--chain-id` still win), the faucet (`node_fp` + `chain_id` of its config) and
-  `nodus-cli package` (the chain id from `--chain` / the file) carry theirs in their own config.
-
 ### Server key pin
 
-Since DHT v2 sub-package 3b-2 the pin list and the chain id are MANDATORY
-(`nodus.h:104-134`; Kurultay #43 mandatory fixes,
-`docs/plans/decisions/2026-10-23-kurultay-43-summary.md`):
+`nodus_client_config_t` has an optional pin list:
 
 ```c
 const nodus_key_t *pinned_server_fps;     /* caller-owned, must outlive the client */
 int                pinned_server_fp_count;
-uint8_t            expected_chain_id[NODUS_CLIENT_CHAIN_ID_SIZE];   /* 32, copied */
-bool               has_expected_chain_id;
 ```
 
-Each pin entry is a server fingerprint — SHA3-512 of its ML-DSA-87 public key
-(`nodus_fingerprint()`, the same value as a node id). The list is a SET: the session
-accepts a server whose claimed key hashes to ANY entry (`expected_set`,
-`nodus_tcp_sc.h:305-313`, filled at `nodus_client.c:929-930`).
+Each entry is a server fingerprint — SHA3-512 of its Dilithium5 public key
+(`nodus_fingerprint()`, the same value as a node id). The AUTH_OK carries the full
+key (`spk`); the client fingerprints it and looks it up, so the pin list stays
+64 bytes per server.
 
-`nodus_client_init()` returns -1 (`nodus_client.c:771-809`) for:
-- `count < 0`, or `count > 0` with a NULL list (a broken pin);
-- NO pin — `pinned_server_fps` NULL or `count == 0`, which is what a zeroed config gives:
-  there is no unpinned client any more;
-- an entry of 64 zero bytes;
-- `has_expected_chain_id` false, or an all-zero `expected_chain_id`.
+- **NULL / 0 (a zeroed config): no pin — the handshake is unchanged.** Every existing
+  caller (messenger `nodus_init.c`, dnac `client.c`, explorer `exp_chain.c`,
+  nodus-cli, nodus-circ, the tests) zeroes its config.
+- `count > 0` with a NULL list, or `count < 0`: `nodus_client_init()` fails.
+- With a pin set, `do_auth()` fails closed on every weak path (`pin_check_auth_ok()`
+  plus the `mpk_sig` branch):
 
-The check happens inside the handshake: the server's CLAIMED key (in HELLO_R) must hash to
-a listed fingerprint BEFORE the client runs its ENCAPS job, else the handshake is aborted
-(`cmt_p2p_secret.h:85-92`; the layer refuses an all-zero pin itself too,
-`nodus_tcp_sc.c:684-692`). Because the client signs its AUTHSIG only after that, a
-refused server never sees a client signature — the old note that "the pin is checked
-AFTER the client has signed the server's challenge" no longer holds. There is no
-Kyber round-3, cached-key, unsigned-key or unencrypted session: the session KEM is
-ML-KEM-1024 only. A server on another chain fails at HELLO (chain id mismatch).
+| AUTH_OK shape | Unpinned (unchanged) | Pinned |
+|---|---|---|
+| no `kpk` | session stays unencrypted | refused |
+| no `kpk`, client holds a cached Kyber key | encrypts to the cached key | refused |
+| `kpk` without `spk`/`kpk_sig` | warns "legacy server", uses it | refused |
+| `kpk_sig` does not verify | refused | refused |
+| fingerprint(`spk`) not in the list | — (no list) | refused |
+| `mpk` without `mpk_sig` | Kyber round-3 | refused |
+| `mpk_sig` does not verify | Kyber round-3 | refused |
+| no `mpk` at all, signed `kpk`, pinned key | Kyber round-3 | refused |
+| signed `kpk` + valid `mpk_sig`, pinned key | ML-KEM-1024 | ML-KEM-1024 |
 
-After a successful connect `client->server_dil_pk` / `has_server_dil_pk` hold the proven
-server key, read from the session (`nodus_tcp_sc_peer_pubkey`) in `do_auth`
-(`nodus_client.c:1005-1047`); `nodus_client_force_disconnect` clears it
-(`:1223-1225`).
+A pinned session is **ML-KEM-1024 only** (operator 2026-09-29, browser wallet):
+`kpk_sig` covers `kpk ‖ nonce` and `mpk_sig` covers `mpk ‖ nonce`, but nothing signs
+the ABSENCE of `mpk` — an on-path party could strip `mpk`/`mpk_sig` and force
+Kyber round-3. The unpinned client keeps that fallback (KEM decision K1 rev 2).
 
-Callers that still zero their config are now refused at init — e.g. messenger's
-`nodus_init.c` (`memset(&nconfig, 0, …)`, `messenger/dht/shared/nodus_init.c:941-942`;
-DNA Connect, EOL). Native tools take pin + chain id from the tool network file (previous
-section). Test: `tests/test_client_pin.c` (P1 / P1b init refusals, P2 / P2b the pin set,
-P3 wrong pins and P4 wrong chain id never READY, P5 a request over the session). Design
-of the original pin: `docs/plans/2026-09-25-web-wallet-nodus-send-design.md` rev 2
-package (c1); the session: §15 "DHT v2 sub-package 3b-2".
+The pin is checked AFTER the client has signed the server's challenge with its own
+key (the tier-2 AUTH order is unchanged); a refused server has seen that signature.
+Changing the order is a protocol change for every client (web wallet NODUS send
+design §5 item 14).
+
+After a successful pinned connect `client->server_dil_pk` / `has_server_dil_pk` hold
+the current server's key (a pinned connect only succeeds through the verified-`kpk_sig`
+path that sets them). Unpinned, the field keeps its TOFU behaviour (not cleared by an
+unsigned AUTH_OK) — messenger's `nodus_init.c` state callback reads it. Test:
+`tests/test_client_pin.c`. Design: `docs/plans/2026-09-25-web-wallet-nodus-send-design.md`
+rev 2 package (c1).
 
 ### Windows build — the plain TCP listener (2026-10-16)
 
@@ -8555,8 +8381,8 @@ re-pins in its own session.
 `cmd_msig_sign2` / `msig_inputs_verify`):
 - **`--pin <fp128hex>` is required** — the fingerprint of the node the co-signer runs himself (`whoami`
   "Fingerprint:" / `identity/nodus.fp`). The session to `-s` sets `pinned_server_fps`, so
-  the session refuses a foreign server key (since DHT v2 3b-2 inside the SecretConnection handshake,
-  before the ENCAPS job; until then `pin_check_auth_ok`, deleted) and is ML-KEM-1024 only. No pin / a malformed pin / a mismatch → nothing is signed.
+  `nodus_client.c` `pin_check_auth_ok` refuses an unsigned or foreign channel key and the session is
+  ML-KEM-1024 only. No pin / a malformed pin / a mismatch → nothing is signed.
 - **Named-coin query.** `dnac_msig_utxo` gains an optional `"nul"` argument (1..`NODUS_DNAC_MSIG_MAX_NULS`
   = 15 strictly ascending 64-byte nullifiers — the chain's per-leg input ceiling, `_Static_assert`ed
   against `NODUS_V2_SPEND_MAX_IN`; exclusive with `"max"`). The node (`nodus_witness_handlers.c`
@@ -11497,7 +11323,7 @@ What it is: the byte layer of DHT v2, the storage-node DHT for Nodus Connect
 §4.2, §13 rows 1, 3-7, 15, 21-23; governing records
 `docs/plans/decisions/2026-10-14-kurultay-21-summary.md`, `…-22-summary.md`,
 `…-23-summary.md`; all LOCAL-only). It lives in `shared/dht2/` and is in the
-common `NODUS_SOURCES` list (`nodus/CMakeLists.txt:633-645`, outside the
+common `NODUS_SOURCES` list (`nodus/CMakeLists.txt:627-638`, outside the
 Linux-only list, so it compiles on Windows). **Nothing in a node or a client calls
 it yet** — the only caller is `tests/test_dht2_codec.c`. No wire, port, consensus,
 block or state-root change: the existing DHT (TCP 4001 / 4002, `nodus_value` /
@@ -11544,11 +11370,10 @@ maps (row 18) (`dht2_envelope.h:45-46`; `test_dht2_codec.c:80-81`). The CODECS o
 the requests, the row-18 payloads and the pull-sync messages came in package 2
 (next section); the `witness.sock` `ipc_dht` snapshot / sets / name view came in
 package 4 (the section after it), not yet called; the holder check, storage, quotas
-and pools came in package 5 ("DHT v2 package 5" below), not yet called; the signed
-answers (request handling, sealing) came in package 6a ("DHT v2 package 6a" below), not
-yet called; the sessions and the pull-sync exchange themselves are still later.
+and pools came in package 5 ("DHT v2 package 5" below), not yet called; the sessions
+and the pull-sync exchange themselves are still later.
 
-**Test** — `test_dht2_codec` (`nodus/CMakeLists.txt:2075-2081`; default build, no
+**Test** — `test_dht2_codec` (`nodus/CMakeLists.txt:2048-2054`; default build, no
 flags, no environment, no network, no files, no clock; fixed-seed ML-DSA-87 keys;
 nothing left behind; safe under `ctest -j`): the row-22 vectors — pinned data-map
 bytes per class, canonical-envelope round trip, every strict-decode reject, the §3.2
@@ -11579,9 +11404,8 @@ on a first page; `2026-10-23-dht-v2-id-param-bytes.md` — dm salt 32 bytes, gro
 id 32 bytes, group key version 8 bytes unsigned big-endian (amended the same day
 from a first answer of 4 bytes), the version only in the group.record and
 group.keys `_id`. Like package 1 it is in the common `NODUS_SOURCES` list
-(`nodus/CMakeLists.txt:645`) and **nothing in a node calls it yet** — its callers
-are `tests/test_dht2_msg.c` and, since package 6a, the holder service (itself not
-called, "DHT v2 package 6a" below). No wire, port, consensus, block or
+(`nodus/CMakeLists.txt:639`) and **nothing in a node or a client calls it yet** —
+the only caller is `tests/test_dht2_msg.c`. No wire, port, consensus, block or
 state-root change; the existing DHT on 4001 / 4002 is untouched.
 
 | File | What |
@@ -11593,7 +11417,7 @@ state-root change; the existing DHT on 4001 / 4002 is untouched.
 
 **Frame bound (row 11).** One holder answer = up to 8 records of 262,144 B travelling
 beside one signed answer envelope, and it must fit ONE frame: the test file holds
-`_Static_assert(DHT2_ANSWER_MSG_MAX < NODUS_MAX_FRAME_TCP)` (`tests/test_dht2_msg.c:96-98`;
+`_Static_assert(DHT2_ANSWER_MSG_MAX < NODUS_MAX_FRAME_TCP)` (`tests/test_dht2_msg.c:93-95`;
 `NODUS_MAX_FRAME_TCP` = 5 MiB, `nodus_types.h:64`), so a bound that grows past the
 frame fails the build. The assert lives in the test because `shared/` does not
 include nodus headers.
@@ -11607,26 +11431,15 @@ silent there. The codec checks shape only: it does not check that a LIST `v` is 
 hash of the listed entries, that `p_deliver.i` is below the actual offer's count
 (the exchange's job, package 7), offer entry order, or the `through` range.
 
-**Changed in package 6a — the request bound.** Until package 6a one envelope above
-262,144 B made a put request malformed. Row 7's malformed list (nonce, key count, key
-length, operation, cursor) does not name it, so now the request decodes and the holder
-answers that key `too-large` (1) while the other keys are processed; only the whole
-request is bounded, at row 11's record budget: `DHT2_REQ_BUDGET` = 8 × 262,144 B
-(the envelopes' total, checked on encode and through the decoder's re-encode) and
-`DHT2_REQ_MAX_LEN` = the budget + 128 B (checked on decode BEFORE any parse)
-(`shared/dht2/dht2_msg.h:103-110`, `dht2_msg.c:271-286`, `:357-362`). A reading of the
-code, not a design fact.
-
 **Not in this package:** the pull-receipt's envelope domain is NOT decided (the
-decision's "Still open", to be asked before package 7; decided later — the decision's
-"Addendum 2026-10-26", sealed in package 7a below) — only its payload is coded,
+decision's "Still open", to be asked before package 7) — only its payload is coded,
 nothing seals or opens it; the PeerRecord / address announcement moved to the
 endpoint package (package 6 of the package plan: rev 5 sets its size bounds there);
 no admission, holder or client logic; no caller in a node or a client. Function
 reference, structs, return codes per function: `messenger/docs/functions/dht2.md`
 §10.
 
-**Test** — `test_dht2_msg` (`nodus/CMakeLists.txt:2092-2098`; default build, no
+**Test** — `test_dht2_msg` (`nodus/CMakeLists.txt:2065-2071`; default build, no
 flags, no environment, no network, no files, no clock; one fixed-seed ML-DSA-87 key;
 nothing left behind; safe under `ctest -j`): every message against bytes assembled by
 hand, decoded back and re-encoded; per-message strict rejects and count bounds; row-7
@@ -11660,7 +11473,7 @@ no consensus, block or state-root change; nothing is written to the chain.
 | `nodus/src/witness/nodus_witness_ipc.c` | the fill functions (`:79-221`), their production handler wrappers bound by `nodus_witness_ipc_handlers_for` (`:256-279`), `IPC_KIND_DHT` (`:287`), the first-frame branch (`:403-409`), the strict request parser, the `{err}` writer, the three answer builders and the per-kind frame handler (`:488-670`) |
 | `nodus/src/dht/nodus_dht2_wview.{h,c}` | NEW. The dialler on the `nodus-storage` side: snapshot polling and aging, sets by epoch, the name cache, timeouts, dial backoff; strict answer decoding. No clock — the caller passes a monotonic `now_ms`. **No caller yet** |
 | `nodus/tests/test_dht2_ipc.c` | NEW. 23 cases, below |
-| `nodus/CMakeLists.txt` | `src/dht/nodus_dht2_wview.c` in the Linux-only library list (`:710-713`); `test_dht2_ipc` (`:2083-2090`) |
+| `nodus/CMakeLists.txt` | `src/dht/nodus_dht2_wview.c` in the Linux-only library list (`:704-707`); `test_dht2_ipc` (`:2056-2063`) |
 
 The wire, the field definitions, the request rules, the frame-bound arithmetic and the
 dialler's timing rules are written once, in §10 "Component split" → "The `ipc_dht` kind
@@ -11681,22 +11494,16 @@ dialler then has no sets and asks again after one second.
 **Not done yet:** no caller of `nodus_dht2_wview_*`. Package 5 (holder store +
 admission, below) turns "no snapshot / no sets" into `not-caught-up` (15) and a name
 FAULT into `holder-fault` (16), but over an INJECTED context — filling that context
-from this view is the serving layer's (package 6; package 6a's
-`nodus_dht2_holder_view_wview` binds it, and package 6a added the
-`NODUS_DHT2_WVIEW_FAULT_KEEP_MS` drop of an abandoned name fault — §10 "The dialler"
-above; nothing calls the holder service yet, package 6b); the witness side is live in any `nodus-witness` built
+from this view is the serving layer's (package 6); the witness side is live in any `nodus-witness` built
 from this tree (it binds the handlers, `tools/nodus-witness.c:307`) but nothing dials it;
 the fill functions run in no test (they need an open witness database); HF-9's
 `DNA_V2_STORAGE_SET_MAX` = 1 024 is not in this tree (today 256, so the bound is
 128 KiB).
 
-**Test** — `test_dht2_ipc` (`nodus/CMakeLists.txt:2083-2090`; default build, no flags,
+**Test** — `test_dht2_ipc` (`nodus/CMakeLists.txt:2056-2063`; default build, no flags,
 no environment, no network, no ports; unix sockets in `mkdtemp` dirs under `/tmp`;
 injected time, no sleep; nothing left behind — sockets closed and unlinked, dirs removed;
-safe under `ctest -j`). 24 cases since package 6a added `test_c_fault_abandoned` (an
-unread name `{err}` read at tick 0 still blocks another writer at 999 ms; at 1000 ms it
-is dropped, the other writer's request goes out, and the faulted fp gets PENDING — never
-FAULT or UNNAMED; `tests/test_dht2_ipc.c:998-1025`); before it 23 (`tests/test_dht2_ipc.c`): nine against the real
+safe under `ctest -j`). 23 cases (`tests/test_dht2_ipc.c`): nine against the real
 listener with a raw peer and test handlers — the snap / sets / name answer bytes against
 hand-built expectations; the `e = 0`, `e ≤ E`, `e > E` sets and the `{err}` answers (a name
 fault keeps `fp`); a sets answer with `DNA_V2_STORAGE_SET_MAX` members in all three lists
@@ -11716,8 +11523,8 @@ real listener). Can lie (file header): the witness FILL functions are not exerci
 the wire and the client are proven, not the chain reads; expected frames are hand-built
 by the encoder's author (self-consistent, not an independent oracle); "no further
 request" checks are absences after a fixed number of poll rounds; it does not prove the
-package-5 caller passes a monotonic clock. The ORCHESTRATOR's run at `793a85ef0` (before
-package 6a): build 0 warnings; `test_dht2_ipc` 23 passed / 0 failed; `test_witness_ipc`,
+package-5 caller passes a monotonic clock. The ORCHESTRATOR's run at `793a85ef0`: build
+0 warnings; `test_dht2_ipc` 23 passed / 0 failed; `test_witness_ipc`,
 `test_storage_linked`, `test_split_linked`, `test_dht2_codec`, `test_dht2_msg` pass.
 
 ### DHT v2 sub-package 3a — session profiles for the SecretConnection + purposes 0x0C / 0x0D (2026-10-23)
@@ -11787,8 +11594,7 @@ over the 32-byte challenge that mirrors the 0x0A pair
 NDS1 tagged preimage `"NDS1" ‖ purpose ‖ u32 BE len ‖ message`, no raw fallback either
 direction. The strict set is now exactly {0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D};
 0x0E is the next free value and is not strict (`test_sign_domain_separation.c:27-28`,
-`:369-376`). (As of 3a. DHT v2 package 3d takes 0x0E as `NODUS_PURPOSE_KEM_CERT` and adds
-it to the strict set, `nodus_sign.c:119-133` at `4165c5677` — §15 "DHT v2 package 3d".)
+`:369-376`).
 
 **Banners corrected (Kurultay #43 O-7).** The `cmt_p2p_secret.h` file header now says
 the handshake message encoding is OPERATOR-APPROVED (`:97-100`, decision
@@ -11844,11 +11650,9 @@ sweep, the insertion-index scan and the hand-over flag that the later serving la
 pull exchange need (design `docs/plans/2026-10-14-dht-v2-design.md` rev 5, FROZEN —
 §3.1 "Stored form", §3.3, §4.1, §4.2, §4.5 (i) / (v), §5, §6, §9 D3 / D4 / D6, §13 rows
 5-8, 12, 15, 16, 18; all LOCAL-only; header `nodus_dht2_store.h:1-75`). **Nothing in a
-node calls it** — its callers are `tests/test_dht2_store.c` and, since package 6a, the
-holder service, which nothing calls yet (`nodus_dht2_store.h:69-72` at package 5: package
-6 is the serving layer, package 7 the pull exchange; since package 7a the header names
-`nodus_dht2_pull.{c,h}`, which nothing calls either). It is in the Linux-only library list
-(`nodus/CMakeLists.txt:714-718`). No wire, port, consensus, block or
+node calls it** — the only caller is `tests/test_dht2_store.c` (`nodus_dht2_store.h:69-72`:
+package 6 is the serving layer, package 7 the pull exchange). It is in the Linux-only
+library list (`nodus/CMakeLists.txt:708-712`). No wire, port, consensus, block or
 state-root change; the existing DHT on 4001 / 4002 is untouched; nothing is written to
 the chain.
 
@@ -11873,10 +11677,10 @@ Governing records (LOCAL-only, `docs/plans/decisions/`):
 | File | What |
 |---|---|
 | `nodus/src/dht2/nodus_dht2_store.h` | NEW. The contract: limits (`nodus_dht2_limits_t`, §6 defaults), the name status and its callback, the injected context `nodus_dht2_ctx_t` (snapshot, S(H) / S(H − E), this node's fp, name callback, limits), open / close / generation / top, `put` with its outcome, get, list, sweep, scan, hand-over set / get |
-| `nodus/src/dht2/nodus_dht2_store.c` | NEW. Schema (`:45-65`), open (`:252-353`), the gate (`:395-408`), the selected control record (`:481-531`), put (`:557-1000`), get (`:1004-1053`), list (`:1057-1173`), sweep (`:1177-1218`), scan (`:1222-1282`), hand-over (`:1286-1327`) — line numbers as of package 6a |
+| `nodus/src/dht2/nodus_dht2_store.c` | NEW. Schema (`:45-65`), open (`:252-353`), the gate (`:395-408`), the selected control record (`:481-531`), put (`:557-986`), get (`:990-1039`), list (`:1043-1155`), sweep (`:1159-1200`), scan (`:1204-1264`), hand-over (`:1268-1309`) |
 | `shared/dht2/dht2_record.{h,c}` | ValidityType ⇔ Validity moved from decode (`bad-encoding` 2) to `dht2_record_check_class` (`bad-class` 6) — "DHT v2 package 1" above |
 | `nodus/tests/test_dht2_store.c` | NEW, below; `nodus/tests/test_dht2_codec.c` adjusted for the 2 → 6 move |
-| `nodus/CMakeLists.txt` | `src/dht2/nodus_dht2_store.c` in the Linux-only library list (`:714-718`); `test_dht2_store` (`:2100-2107`) |
+| `nodus/CMakeLists.txt` | `src/dht2/nodus_dht2_store.c` in the Linux-only library list (`:708-712`); `test_dht2_store` (`:2073-2080`) |
 
 **Stored form.** One row per ADDRESS (`dht2_rec`, `nodus_dht2_store.c:45-65`): placement
 key, owner fp, class, Sequence, a no-expiry flag (ValidityType 1, never encoded in
@@ -11899,17 +11703,15 @@ the witness still in block sync (`consensus_up` false), or a tip time above
 store's → `holder-fault` (16, G8). `put` also answers 15 when the sets for the
 snapshot's `e` are missing (`have_sets` false, `:890-892`).
 
-**Admission order** (`nodus_dht2_store_put`, `:871-1000`; header table `:16-36`) — the
+**Admission order** (`nodus_dht2_store_put`, `:871-986`; header table `:16-36`) — the
 row-7 code of the FIRST failing check: gate 15 / 16 · size, envelope, strict data,
 `_chain`, address 1 / 2 / 3 / 4 (`dht2_record_parse`) · holder check 5 (`dht2_eligible`
 on the placement key over S(H) ∪ S(H − E)) · class rules 6 (incl. ValidityType ⇔
 Validity and the inbox-control signer) · the writer's name status — asked through the
 callback exactly ONCE per admission that gets this far, a FAULT answer (or any other
 non-NAMED / non-UNNAMED value) is 16, so the fault is consumed by the call that met it
-(`:930-938`; header `:63-67`) · expiry 7 / 8 with the class max by that name status ·
-signature 9. From the successful parse on, `res->has_address` / `res->address` hold the
-envelope's address and keep it across any later refusal (package 6a, `:905-908`,
-`:981-997`; the holder service keys each put result by it). Then the canonical form is computed and hashed, and the rest runs inside
+(`:926-935`; header `:63-67`) · expiry 7 / 8 with the class max by that name status ·
+signature 9. Then the canonical form is computed and hashed, and the rest runs inside
 ONE `BEGIN IMMEDIATE` transaction (`admit_locked`, `:666-869`):
 
 1. **Inbox entry vs the selected live control record** (`:678-685`, `ctl_check_entry`
@@ -11935,67 +11737,53 @@ ONE `BEGIN IMMEDIATE` transaction (`admit_locked`, `:666-869`):
    deletion is never refused by the pool of a writer who gained a name (`:720-725`).
 5. **Store**: the old row deleted explicitly, the new one inserted at index `top + 1`,
    `top` persisted; `NODUS_DHT2_PUT_STORED`. Only a stored version commits; an equal or
-   losing write and every refusal roll the transaction back (`:967-979`).
+   losing write and every refusal roll the transaction back (`:963-975`).
 
 Any SQLite or allocation error is 16 on every call — never absence, never "no change"
 (`nodus_dht2_store.h:58-61`).
 
 **Lifetime** (§5). `get` never serves a record whose expiry ≤ the snapshot's tip time
-(tombstones are served until their own expiry, `:1032-1036`); LIST lists live,
+(tombstones are served until their own expiry, `:1018-1022`); LIST lists live,
 non-tombstone inbox entries only; `sweep` deletes every record (tombstones included)
 whose expiry + 3 h ≤ the tip time, in one transaction; a no-expiry record is never swept
-(`:1201-1204`). Quota is derived from what is stored, so a delete refunds it.
+(`:1183-1186`). Quota is derived from what is stored, so a delete refunds it.
 
-**LIST page** (row 11 / 18, `:1057-1173`): live entries in ascending writer fp strictly
+**LIST page** (row 11 / 18, `:1043-1155`): live entries in ascending writer fp strictly
 after the cursor, ≤ 16 and ≤ `NODUS_DHT2_LIST_PAGE_BYTES` (2 MiB; the first entry always
 fits), `complete` when no row is left, `r` = {k: inbox, v: SHA3-512 over the listed
 hashes concatenated}, `ctl` = the hash of the selected live control record or null;
-`n`, `c`, `h`, `t` from the context; `q` left zero for the caller. Since package 6a the
-live control record's bytes are charged to the 2 MiB FIRST, because its bytes are part
-of the page ("entries + control stay within the 2 MiB page budget", `:1082-1096`): eight
-262,000-byte entries fit alone but a page beside a control record lists 7
-(`test_list_ctl_budget`). The owner-signature check of the request is the caller's
-(package 6a's holder service, below).
+`n`, `c`, `h`, `t` from the context; `q` left zero for the caller. The owner-signature
+check of the request is package 6's.
 
 **Pull data only** (§4.5 i / v, row 12): `scan` returns entries with index ≥ `from`,
 ascending, ≤ 250, and the highest index scanned — or the store's top for an empty
 interval (Bee `pullsync.go:251-254`); expired-but-unswept records are listed. Every
 stored change re-indexes the row; equal / losing writes do not move the counter. The
-hand-over flag is persisted per record and survives a replacement (since package 7a a
-PERMANENT replacement only — an expiring one is stored without it); package 7 decides
-when to set it (package 7a: at the epoch check, and the obligation ends by dropping the
-record — since package 7b 48 epochs after the receipt quorum, through the schedule table
-`dht2_retire` — "DHT v2 package 7a" below, which also added the pull cursors, `pull_e` and
-the acknowledgement table to this store).
+hand-over flag is persisted per record and survives a replacement; package 7 decides
+when to set it.
 
 **Determinism.** Nothing here reads a clock: chain time is the injected snapshot's `t`
 (`nodus_dht2_store.h:56`). Select is `dht2_record_compare`, a pure function of the two
 records, so arrival order does not change the winner (the A/B case is tested). The one
 random value is the generation `g`, node-local. Nothing reaches consensus.
 
-**Deferred on purpose** (`nodus_dht2_store.h:38-41` as of package 5): the |S(H)| ≥ 2
-write precondition → the serving layer, package 6 (done in package 6a's holder service,
-below — not in the store — and REMOVED in package 7a under decision
-`2026-10-26-dht-v2-no-single-node-write-refusal.md`); the per-put SUM cost and a
-per-inbox tombstone row bound → measure first; a state-dependent refusal that leaves an
-older version behind → package 7's cursor rule (built in package 7a, below).
+**Deferred on purpose** (`nodus_dht2_store.h:38-41`): the |S(H)| ≥ 2 write precondition
+→ the serving layer, package 6; the per-put SUM cost and a per-inbox tombstone row bound
+→ measure first; a state-dependent refusal that leaves an older version behind →
+package 7's cursor rule.
 
-**Not done yet:** no caller in a node. Request handling, answer sealing and filling the
-context from `nodus_dht2_wview` came in package 6a (below), which nothing calls yet; the
-sessions and forwarding are package 6b; the pull exchange's core came in package 7a
-(below), which nothing calls yet either. Function reference, every type and return code:
+**Not done yet:** no caller; the context is not yet filled from `nodus_dht2_wview` (package
+6); the sessions, request handling and answer sealing (package 6) and the pull exchange
+(package 7). Function reference, every type and return code:
 `messenger/docs/functions/dht2.md` §12.
 
-**Test** — `test_dht2_store` (`nodus/CMakeLists.txt:2100-2107`; default build, no flags,
+**Test** — `test_dht2_store` (`nodus/CMakeLists.txt:2073-2080`; default build, no flags,
 no environment, no network, no clock; fixed-seed ML-DSA-87 keys, hedged signing so no
 signature byte is pinned; injected chain time; its own `mkdtemp` directory under `/tmp`,
 removed at the end — a crash leaves `/tmp/test_dht2_store_XXXXXX`; safe under
-`ctest -j`). Thirteen sections from `main` (`tests/test_dht2_store.c:1920-1932`):
+`ctest -j`). Eleven sections from `main` (`tests/test_dht2_store.c:1772-1782`):
 `test_codes`, `test_select`, `test_quota`, `test_inbox`, `test_expiry`, `test_index`,
-`test_faults`, `test_gate`, `test_mismatch`, `test_memo`, `test_select_pool`, and two
-added with package 6a — `test_list_ctl_budget` (the control record counts toward the
-2 MiB page) and `test_put_address` (a refusal after the parse keeps the address, a
-parse failure has none). Proves
+`test_faults`, `test_gate`, `test_mismatch`, `test_memo`, `test_select_pool`. Proves
 (file header `:9-66`): the §4.1 code order through `put`; the name fault asked exactly
 once and never read as "no name"; Select (equal, losing at cost 0 even with the quota
 full, the A/B two-arrival case ending in the same bytes); quota new − old at the exact
@@ -12014,152 +11802,10 @@ sets are tiny; the forced SQLite faults are made through the store's own handle
 (`PRAGMA query_only`, `DROP TABLE`), not a real I/O error mid-scan; the 3 h slack and
 class maxima are constants written by the code's author; nothing runs concurrently.
 
-The ORCHESTRATOR's runs before the rebase, at `2f0478bcf` (before package 6a, eleven
-sections): build 0 warnings; `test_dht2_store` 500 passed / 0 failed, three runs;
-`test_dht2_codec` 433 / 0; `test_dht2_msg` 335 / 0; `test_dht2_ipc` 23 / 0 — counts from
-those runs, not re-run for this document.
-
-### DHT v2 package 6a — the holder service (no caller yet) (2026-10-24, branch `dna95-dht2-6a`, not versioned)
-
-What it is: the holder's answer half of DHT v2 — ONE transport-free function,
-`nodus_dht2_holder_serve`, that takes the bytes of ONE request from one session (a "get",
-a "put" — also read-repair — or the owner-signed "list" envelope), runs it against the
-package-5 store and returns the bytes of ONE signed answer envelope, or "no answer"
-(design `docs/plans/2026-10-14-dht-v2-design.md` rev 5, FROZEN — §2 "Precondition"
-(INVALID since decision `2026-10-26-dht-v2-no-single-node-write-refusal.md`; the
-precondition was removed in package 7a, below),
-§4.4 signed answers and receipts, §13 rows 7, 11, 14, 18, 20, 23; request format per
-`docs/plans/decisions/2026-10-23-dht-v2-wire-gaps-package2.md`; all LOCAL-only; header
-`nodus/src/dht2/nodus_dht2_holder.h:1-91`). Package 6a has no decision record of its
-own. Commits `0ddbbfa8f` (the service), `02c009118` (review round: chain gate, abandoned
-name fault, control GET, one parse, oversize envelope, LIST page budget), `64c718200`
-(test buffer), `73cf87191` (the put result keeps its address across a refusal).
-
-**Where it sits.** It is a library function in the Linux-only list
-(`nodus/CMakeLists.txt:719-723`), between the package-5 store below it and the sessions
-above it. **Nothing calls it** — not `nodus/tools/`, not any running loop
-(`nodus_dht2_holder.h:88`); the only caller is `tests/test_dht2_holder.c`. Package 6b is
-to call it: the sessions, the 16 outstanding calls / 8 MiB per session, forwarding and
-its fan-out of 8, the 10 s deadline, the repair queue, and the records that travel
-beside an answer (the caller fetches a held record by the hash in `r` with
-`nodus_dht2_store_get`) are NOT here (`:60-63`). No wire, port, consensus, block or
-state-root change; the existing DHT on 4001 / 4002 is untouched; nothing is written to
-the chain.
-
-| File | What |
-|---|---|
-| `nodus/src/dht2/nodus_dht2_holder.h` | NEW. The contract (`:1-91`, line numbers in this table as of package 6a): the view (`nodus_dht2_holder_view_t`, three function pointers + `user`), the holder (`nodus_dht2_holder_t`), `NODUS_DHT2_HOLDER_QUEUE_MAX` 64, `NODUS_DHT2_HOLDER_WRITE_MIN_SET` 2 and `NODUS_DHT2_HOLDER_WRITE_REFUSAL` 15 (both REMOVED in package 7a), `NODUS_DHT2_HOLDER_OUT_MIN` = `DHT2_ANSWER_ENV_MAX`, results ANSWER 0 / NO_ANSWER 1 / ERR −1; `nodus_dht2_holder_view_wview`, `_init`, `_job_enter` / `_job_leave`, `_serve` |
-| `nodus/src/dht2/nodus_dht2_holder.c` | NEW. The wview binding (`:28-55`), init / queue (`:59-95`), the name mapping (`:105-122`), the call's world and the chain gate (`:135-169`), sealing and the refusal (`:173-205`), call-level states (`:209-218`), get / put (`:230-357`), list (`:361-437`), the entry point (`:441-494`) |
-| `nodus/src/dht2/nodus_dht2_store.{h,c}` | `nodus_dht2_put_t` gains `has_address` / `address`, kept across a refusal; the LIST page budget charges the control record first ("DHT v2 package 5" above) |
-| `nodus/src/dht/nodus_dht2_wview.{h,c}` | `NODUS_DHT2_WVIEW_FAULT_KEEP_MS`: an unread name fault is dropped after one poll period (§10 "The dialler") |
-| `shared/dht2/dht2_msg.{h,c}` | `DHT2_REQ_BUDGET` / `DHT2_REQ_MAX_LEN`; an envelope above 262,144 B inside a put is no longer malformed ("DHT v2 package 2" above) |
-| `nodus/tests/test_dht2_holder.c` | NEW, below; `test_dht2_store.c`, `test_dht2_msg.c`, `test_dht2_ipc.c` extended |
-| `nodus/CMakeLists.txt` | `src/dht2/nodus_dht2_holder.c` in the Linux-only library list (`:719-723`); `test_dht2_holder` (`:2109-2116`) |
-
-**Answers.** Every answer is one RFC 0002 envelope sealed by `dht2_answer_seal` with the
-node identity, domain / ctx `nodus.dht.answer.v1` (§4.4): a get →
-`/nodus/dht/answer/v1` `{q, n, c, h, t, r}`, `r` per key = hash, null (not held), code
-or `[18, through]`; a put → `/nodus/dht/receipt/v1`, same shape, never null; a list →
-`/nodus/dht/answer/v1` with the row-18 LIST payload; a refusal →
-`/nodus/dht/refusal/v1` `{q, n, c, e}` with `e` = 14 (busy) or 15 (not-caught-up) and NO
-`h` / `t` (row 18). `q` is the request's own nonce, `n` this node's fp
-(`nodus_dht2_holder.h:9-23`).
-
-**One call, in order** (`nodus_dht2_holder_serve`, `nodus_dht2_holder.c:441-494`):
-
-1. A get / put request is decoded (`dht2_req_decode`); a malformed one, or one whose
-   `op` is not the method it arrived on, gets NO answer (row 7, "a tier-2 protocol
-   error, no signed answer").
-2. The view gives the snapshot (fresh only with `consensus_up`) and the frozen sets.
-   **The chain gate** (`:142-152`): a snapshot whose chain id is not the holder's chain
-   is treated as NO snapshot, so every request — the not-owner LIST included — gets the
-   refusal 15 without `h` / `t`, never an answer that mixes our `c` with a foreign tip.
-3. Call-level states: the row-20 signing queue full (64 jobs) → refusal 14; no fresh
-   snapshot → refusal 15 (`:209-218`). The caller, not `serve`, takes and releases the
-   queue slots (`nodus_dht2_holder_job_enter` / `_leave`).
-4. **Write precondition — REMOVED in package 7a.** As built in 6a (§2, `:481-484` at
-   6a): while the current S(H) had fewer than 2 members
-   (`NODUS_DHT2_HOLDER_WRITE_MIN_SET`), every put — read-repair included — was refused
-   with `NODUS_DHT2_HOLDER_WRITE_REFUSAL` = 15. The operator ruled the rule was never
-   theirs and that it would stop the first mainnet storage node; decision
-   `2026-10-26-dht-v2-no-single-node-write-refusal.md`: "A holder never refuses a write
-   because the storage set is small." Since package 7a a holder never refuses a put
-   because S(H) is small; a network with one storage node stores records
-   (`nodus_dht2_holder.h:47-50` at `0707fff49`).
-5. **get**: per key, the store's answer — hash, null, or 16 for a store fault ("never
-   absence"); a held inbox-control (class 5) record is per-key 17, never its hash or
-   bytes — row 23 answers control reads to the inbox OWNER only and a get is not
-   owner-signed (`:260-274`). **put**: per envelope, `nodus_dht2_store_put` (the ONE
-   §4.1 admission path, with its ONE parse); the result's key is the envelope's address
-   from that parse, or 64 zero bytes when the envelope did not parse as far as an
-   address (codes 1 / 2 / 3, or 16 for an allocation / hashing fault); `v` = the stored
-   or winning hash, `[18, through]`, or the row-7 code 1 … 13 / 16 (`:321-348`). An
-   envelope above 262,144 B is per-key 1 and its siblings are still processed. A store
-   15 on either path turns the whole call into the refusal 15.
-6. **list**: the owner-signed envelope is opened FIRST (`dht2_list_req_open`): signed by
-   another key → answered with `r.v` = 17, nothing listed, `complete` = true; malformed,
-   another chain, or a bad signature → NO answer. Then the call-level states, then
-   `nodus_dht2_store_list` (`:361-437`).
-
-**What has no answer** (`nodus_dht2_holder.h:25-32`, `:82-84`): a malformed request (row 7:
-nonce, key count, key length, unknown op, a request whose op is not its method, any
-strict-CBOR fault, a LIST envelope that does not decode); a LIST of another chain or
-whose signature does not verify — a READING, row 23 names only code 17: the signer is
-not proven, so no signed answer is spent on it; and a LIST whose store read faults —
-§4.4 says a missing answer is "no answer", never "not found", and row 18 lets a LIST
-result carry only a hash or 17, so there is no way to say 16 in it. Separately,
-`NODUS_DHT2_HOLDER_ERR` means no answer could be made at all (a NULL or too-small
-buffer, an allocation or signing failure).
-
-**Name answers** (`:105-122`; header `:40-46`): the view's NAMED / UNNAMED pass through;
-FAULT goes to the store, which answers 16 for that key and so consumes it; PENDING and
-UNAVAILABLE are also FAULT for this call ("the request has been sent; the client
-retries"). A name answer is always consumed by the call that met it and never read as
-"no name". The view drops an ABANDONED fault after `NODUS_DHT2_WVIEW_FAULT_KEEP_MS` (§10
-"The dialler"), so one writer that never asks again cannot block the others.
-
-**Clock and determinism.** Nothing here reads a clock: `now_ms`, the caller's monotonic
-tick count, is only handed on to the view, and chain time is the snapshot's `t`
-(`nodus_dht2_holder.h:34-38`). The module's QGP_LOG_* lines carry a log timestamp read
-from the clock; no answer field depends on it (`:85-86`). The signatures are hedged
-ML-DSA-87, so two answers to the same request differ in their signature bytes. Nothing
-here reaches consensus.
-
-**Not done yet:** no caller (package 6b: sessions, forwarding, deadlines, the repair
-queue, records beside the answer); the real `nodus_dht2_wview` binding
-(`nodus_dht2_holder_view_wview`) runs in no test; the client rules of §4.4 (package 8).
-(The operator's word on the write-precondition code, listed here at 6a, became the
-removal of the precondition — step 4.) Function reference, every type, constant and
-result: `messenger/docs/functions/dht2.md` §13.
-
-**Test** — `test_dht2_holder` (`nodus/CMakeLists.txt:2109-2116`; default build, no
-flags, no environment, no network, no clock; fixed-seed ML-DSA-87 keys, hedged signing
-so signatures are verified, never compared to a constant; injected chain time; its own
-`mkdtemp` directory under `/tmp`, removed at the end — a crash leaves
-`/tmp/test_dht2_holder_XXXXXX`; safe under `ctest -j`). Eleven sections from `main`
-(`tests/test_dht2_holder.c:1134-1144` at `0707fff49`): `test_get_put`, `test_malformed`,
-`test_list`, `test_call_level`, `test_single_storage_node_stores` (package 7a; it
-replaced 6a's `test_write_precondition`), `test_name_fault`,
-`test_fault_abandoned`, `test_chain_gate`, `test_ctl_get`, `test_oversize_put`,
-`test_late_refusal`. Proves (file header `:9-46`; `test_late_refusal` by its own comment
-`:1001-1003`): every answer opens under its kind's payload type and verifies under
-`nodus.dht.answer.v1` only, with `q`, `n`, `c`, `h`, `t` as above (none of `h` / `t` in
-a refusal); get / put results in request order; malformed requests and bad LIST
-envelopes get no answer; owner LIST vs not-owner 17; refusal 15 for no snapshot, block
-sync and another chain (get, put, owner and not-owner LIST); since package 7a a put
-at |S(H)| = 1 is NOT refused — it is answered with a receipt naming the stored hash and a
-later get returns that hash (at 6a this case pinned the refusal 15); refusal 14 at 64 queued jobs; a
-name FAULT and a PENDING answer are 16 and the fault is consumed; an abandoned fault
-stops blocking another writer after one poll period; a GET of a held control record is
-17; an envelope above 262,144 B is per-key 1 with a zero key while its sibling is
-stored; in one receipt an expired record is `{k: its address, v: 7}`, a HANDLED entry
-`{k: its address, v: [18, through]}`, a parse failure `{k: zero, v: 2}`. Can lie
-(`:59-71`): the view is injected — the real binding is not exercised and the PENDING /
-FAULT fakes follow the view's documented behaviour; the holder sets are tiny (1 or 3),
-so eligibility is not exercised; whether a CLIENT accepts the answers is package 8's;
-hedged signatures differ run to run. (6a's fifth item — the pinned write-precondition
-code 15 — was removed with the precondition in package 7a.) Nothing was built or run for
-this document; no run of this test is cited here.
+The ORCHESTRATOR's runs before the rebase, at `2f0478bcf`: build 0 warnings;
+`test_dht2_store` 500 passed / 0 failed, three runs; `test_dht2_codec` 433 / 0;
+`test_dht2_msg` 335 / 0; `test_dht2_ipc` 23 / 0 — counts from those runs, not re-run for
+this document.
 
 ### DHT v2 sub-package 3b-1 — the optional SecretConnection layer of `nodus_tcp` (2026-10-24, branch `dna95-dht2-3b1`, not versioned; NOT enabled on any port)
 
@@ -12506,825 +12152,6 @@ After incremental sealing, at `5400aeaeb`: build 0 warnings; `test_tcp_sc` 35 pa
 30 to 35).
 Function reference: `messenger/docs/functions/transport.md` "SecretConnection layer
 of the TCP / WebSocket transport".
-
-**Since 3b-2 (next section) the layer is ENABLED** on 4001 / WebSocket accept, 4002
-accept and dial, the batch forwards and the client SDK; the obligations above are done
-(`nodus_tcp_sc.h:7-14`, `:101-109`).
-
-### DHT v2 sub-package 3b-2 — 4001 / WebSocket / 4002 sessions on the SecretConnection layer (2026-10-24 .. 26, branch `dna95-dht2-3c`, not versioned)
-
-What it is: the server half of DHT v2 sub-package 3b (design
-`docs/plans/2026-10-23-dht-v2-session-package-design.md` rev 1, LOCAL-only; Kurultay #43
-and the khan's decisions, `docs/plans/decisions/2026-10-23-kurultay-43-summary.md`). Every
-client port connection (4001 and the WebSocket entry), every inter-node connection (4002,
-accepted and dialed, in `nodus-core` and in `nodus-storage`), every batch forward and every
-client SDK connection runs the 4004 SecretConnection (`shared/dnac/cmt_p2p_secret.h`)
-through the layer of 3b-1 (`nodus_tcp_sc.h:7-14`). Only the Unix-socket IPC connections
-(`is_unix`) carry no layer. Nodus 7-byte frames travel unchanged inside the sealed stream
-(O-1). The old session path is deleted: the T2 `hello` → `challenge` → `auth` → `auth_ok`
-(with `kpk` / `spk` / `kpk_sig` / `mpk` / `mpk_sig`) → `key_init` → `key_ack` exchange,
-the per-connection AES-256-GCM channel crypto of 4001 / 4002, the 4002 dialer handshake
-module (`nodus_inter_dial_start` / `_on_frame` / `_conn_sync`), the batch forward's own
-socket / handshake / frame parser, the `nodus_t2_auth_ok_kyber` / `nodus_t2_key_init` /
-`nodus_t2_key_ack` encoders, the server's `nodus_auth_handle_hello` / `_auth` /
-`_key_init` / `_key_init_alg`, the client's `pin_check_auth_ok`, the transport's
-`decrypt_fail_total` counter, `NODUS_PREAUTH_PAYLOAD_MAX`, and the 4002
-`require_peer_auth` gate (the config field still parses and nothing reads it,
-`nodus_server.h:63-73`). What is NOT deleted: the `nodus_t2_hello` / `nodus_t2_auth`
-encoders (`nodus_tier2.h:93`, `:97`) — the channel-connection client still sends them
-(`nodus_client.c:8418`, `:8452`) to the channel server, which stays compiled out —
-and `nodus_channel_crypto`, which the circuit end-to-end encryption still uses
-(`nodus_client.c:506`, `:8973`).
-
-Cut-over: all at once — nodes and every client switch in the same release, no period in
-which a node accepts both handshakes (operator 2026-10-23,
-`docs/plans/decisions/2026-10-23-dht-v2-session-cutover.md`). An old node and a new node
-cannot talk on 4001 / WS / 4002. Deploy steps: `DEPLOY_RUNBOOK.md` §2.9.
-
-*Line numbers in this section* are those of the 3b-2 code, except the citations of
-`on_tcp_accept`, `dispatch_t2`, `nodus_auth_session_start`, `server_find_session_conn`,
-`sc_presession_budget` and `nodus_client_init`, which were re-read at `4165c5677` (package
-3d). Package 3d inserted lines into `nodus_server.c`, `nodus_client.c`, `nodus_tcp.c`,
-`nodus_tcp_sc.c`, `nodus_witness_ipc.c` and `nodus_dht_ipc.c`, so the other citations into
-those files may be off by a few lines at `4165c5677` and were not re-read; what 3d changed
-in them is in §15 "DHT v2 package 3d".
-
-**Profiles, purposes, versions.** 4001 / WS = CLIENT profile, signing purpose 0x0C,
-`NODUS_CSESS_PROTO_VERSION` 1; 4002 and the batch forwards = NODE profile, purpose 0x0D,
-`NODUS_NSESS_PROTO_VERSION` 1 (`nodus_tcp_sc.h:203-213`; operator "İkisi de 1",
-`decisions/2026-10-23-dht-v2-session-bytes.md` addendum 2026-10-24). The HKDF info strings
-and the NDS1 tagged signature preimage are the ones that record fixes (3a). 4004 is
-unchanged.
-
-| Where | Role | Enabled by | Pin | Chain id from |
-|---|---|---|---|---|
-| 4001 / WS accept (`srv->tcp`) | RESPONDER, CLIENT — since package 3d family-UNBOUND (CLIENT or ANON by the first message) once the KEM-key certificate exists | `on_tcp_accept` (`nodus_server.c:1848-1904`) | — (any client that proves its key; an ANON client proves none) | `nodus_server_chain_id` (`:1873`) |
-| 4002 accept (`srv->inter_tcp`) | RESPONDER, NODE | `on_inter_accept` → `nodus_inter_session_enable(..., false)` (`nodus_server.c:1295-1296`) | — (khan A: any identity that proves its key; per-operation authorization comes in packages 6-7) | `srv->inter_cfg.chain_id` = `server_inter_chain_id` (`:2424-2427`) |
-| 4002 dial, core (`srv->inter_tcp`) and storage (`ipc->out`) | INITIATOR, NODE | `nodus_inter_pool_dial` → `pool_dial_ex` → `nodus_inter_session_enable(..., true)` (`nodus_inter_dial.c:153-198`) | the exact node id recorded at dial time (`conn->expected_peer_id`, `:191-192`) | core: as above; storage: `dipc_chain_id` (`nodus_dht_ipc.c:318-341`) |
-| batch forward (`dht->bf_state.tcp`) | INITIATOR, NODE | `bf_start_forward` (`nodus_dht_server.c:3389-3453`) | the FIND_NODE peer's node id (`:3434-3435`) | `bf_cfg_chain_id` → `dht->host.chain_id` (`:3239-3242`) |
-| client SDK | INITIATOR, CLIENT | `do_connect_one` (`nodus_client.c:891-939`) | the SET `config.pinned_server_fps` (`:929-930`) | `config.expected_chain_id` (`:928`) |
-
-The pin is checked BEFORE the ENCAPS job: the responder's claimed key must hash to
-`expected_peer` or to one entry of `expected_set` (`nodus_tcp_sc.h:303-313`), else the
-machine is aborted. `nodus_inter_session_proven` re-checks a dialed pin against the
-proven key at `on_session` (`nodus_inter_dial.c:91-97`). A pin of all zero bytes is
-refused centrally, whoever built the config: `nodus_tcp_sc_enable` refuses an
-INITIATOR whose `expected_peer` or any `expected_set` entry is all zero
-(`nodus_tcp_sc.c:684-692`), and `nodus_client_init` refuses an all-zero entry
-(`nodus_client.c:796-803`).
-
-**The session token (O-2 b).** When a session becomes AUTHENTICATED the RESPONDER mints a
-fresh 32-byte token and sends it as the FIRST sealed frame: a T2 `auth_ok`, txn 0,
-carrying the token and nothing else (`nodus_t2_auth_ok`, `nodus_tier2.h:391-397`). On 4001
-/ WS: `nodus_auth_session_start` (`nodus_auth.c:100-194`; the ANON branch `:110-122`). On 4002: `on_inter_session`
-(`nodus_server.c:1323-1336`, sent with `nodus_tcp_send_raw` so it goes before the dial
-queue's replay). The token is a correlation key, NEVER an authorization input:
-`dispatch_t2` no longer checks it (`nodus_server.c:1548-1553`), and the witness IPC no
-longer refuses a session frame whose embedded token differs from the preface's
-(`nodus_witness_ipc.c:445-447`; the preface key `s->pk` is the identity). It still keys
-the delayed `dnac_cc_collect` reply (`server_find_session_conn`, `nodus_server.c:2163-2180`; an ANON session is never found, `:2173`)
-and the witness IPC session preface. Identity is the connection: every 4001 handler takes
-it from the session, which `nodus_auth_session_start` fills from the SecretConnection's
-authenticated key (`nodus_auth.c:127-130`); an ANON session has none (package 3d). On 4002 a dialer consumes the token message and
-drops it; an ACCEPTED peer that sends one is disconnected (`dispatch_inter`,
-`nodus_server.c:1059-1077`). The batch forward stores it for logs only
-(`bf_on_frame`, `nodus_dht_server.c:3312-3330`).
-
-**What `on_session` re-homes** (formerly done when the AUTH signature verified,
-`nodus_auth_session_start`, `nodus_auth.c:100-194`; for an identified session — an ANON
-session gets only the token, `auth_seq` and the authenticated marks, package 3d): `sess->client_pk` / `client_fp`
-from the proven key; `conn->peer_id` / `peer_pk` / `peer_id_set` / `authenticated`;
-`sess->auth_seq` from `srv->next_auth_seq`; the per-identity session limit
-(`NODUS_MAX_SESSIONS_PER_IDENTITY`, oldest out); presence (`nodus_presence_add_local`);
-the token message. No frame reaches `dispatch_t2` or `dispatch_inter` before it (the layer
-holds input back); a session that is somehow not marked authenticated is closed, never
-served (`nodus_server.c:1524-1529`, `:1127`).
-
-**The chain id of a session.** Both ends put the chain id in their HELLO, and the handshake
-fails when they differ. The node binds every session to the 32-byte **v3** chain id — the
-hash of the stored genesis document, the same id 4004's HELLO carries and every client
-knows (`nodus_witness_v2_chain_id`, `nodus_witness_v2_claims.c:192-235`) — and NOT to the
-legacy 16-byte id padded with zeros that `w->chain_id` holds and the T2 `status` RPC keeps
-reporting (unchanged, `ipcb_status`, `nodus_chain_backend_ipc.c:400`).
-- The witness answers it through `nodus_witness_dht_chain_id` (`nodus_witness_ipc.c:97-101`):
-  0 with the id, or -1 when no chain is open or there is no v3 id — never a zero id.
-- The chain backend has a new op `chain_id_v3` (`nodus_chain_backend.h:70-77`):
-  in-process `inproc_chain_id_v3` (`nodus_chain_backend_inproc.c:56-58`); over IPC
-  `ipcb_chain_id_v3` reads the `c3` key of `ipc_status` (`nodus_chain_backend_ipc.c:405-412`;
-  false while the snapshot says no chain is open or `c3` is all zero).
-- `ipc_status` is now an 8-key map: `q`, `co`, `h`, `sr`, `ci` (legacy), **`c3`** (v3),
-  `po`, `lp` (`nodus_witness_ipc.c:484-494`). The core's decoder is STRICT: it requires
-  exactly 8 keys, every key once (`nodus_chain_backend_ipc.c:111`, `:116`), so a 7-key map
-  from an older `nodus-witness` is refused — `nodus-core` and `nodus-witness` must be the
-  same build (runbook §2.9).
-- The `ci` of `ipc_dht_snap` (the storage process's witness view) now carries the v3 id:
-  `nodus_witness_dht_snap_fill` takes it from `nodus_witness_dht_chain_id` and fails the
-  snapshot without one (`nodus_witness_ipc.c:112-115`).
-- **Core** learns it in `nodus_server_chain_id` (`nodus_server.c:1685-1714`): while
-  unknown, the backend is asked at most once a second (monotonic stamp), an all-zero
-  answer counts as unknown, and the first non-zero answer is kept for the life of the
-  process. **Storage** latches it the same way in `dipc_chain_id`
-  (`nodus_dht_ipc.c:318-341`): the first fresh, non-zero snapshot of its witness view
-  (`nodus_dht_ipc_open_wview`, opened by `tools/nodus-storage.c:191-207`, which exits 1
-  when the view object cannot be created) sets it; a later witness gap longer than the
-  view's 5 s staleness bound (`NODUS_DHT2_WVIEW_SNAP_STALE_MS`, `nodus_dht2_wview.h:62`)
-  no longer refuses dials once it is latched.
-- **Fail closed.** While the id is not known no session is made: a 4001 / WS accept is
-  closed (`nodus_server.c:1747-1751`), a 4002 accept is closed (`:1295-1296` via
-  `nodus_inter_dial.c:57-62`), a 4002 dial is refused BEFORE the TCP connect
-  (`pool_session_ready`, `nodus_inter_dial.c:144-149`, `:171-178`), a batch forward is
-  not started (`nodus_dht_server.c:3418-3423`). The boot window of a node (no chain
-  open yet, `nodus-witness` not answering) therefore serves no 4001 / 4002 session.
-
-**The pre-session policy (Kurultay #43 O-5; rate: operator 2026-10-24,
-`decisions/2026-10-24-dht-v2-handshake-rate.md`).** Applies to the ACCEPTING side of 4001 /
-WS and 4002; all clocks below are `nodus_time_mono_ms()` (monotonic), node-local work
-scheduling, never a consensus input.
-- **Deadline:** an accepted layer connection that is not AUTHENTICATED is closed
-  `NODUS_PRESESSION_IDLE_MS` (15,000) after its last socket byte or
-  `NODUS_PRESESSION_ABS_MS` (30,000) after it connected, whichever comes first
-  (`nodus_server.h:649-650`; `nodus_tcp_sc_presession_sweep`, `nodus_tcp_sc.c:780-808`,
-  reading `conn->last_activity_mono_ms` / `connected_mono_ms`, `nodus_tcp.h:167-168`).
-  The server loop looks once a second (`presession_tick`, `nodus_server.c:971-977`,
-  called at `:2876`; `nodus_server_presession_sweep`, `:960-969`, sweeps `srv->tcp` and
-  `srv->inter_tcp`). Dialed connections are skipped (`c->auth_initiated_by_us`); an
-  authenticated one is never touched. The old 30 s wall-clock sweep of unauthenticated
-  connections (effective ≈ 45 / 60 s) is gone: `idle_timeout_sweep` now covers
-  authenticated client sessions only (`nodus_server.c:985-1003`).
-- **Dialed 4002 bound:** a dialed connection whose session is not authenticated
-  `NODUS_INTER_POOL_HELLO_TIMEOUT_SEC` (10) after the DIAL is closed; measured from
-  `conn->dial_mono_ms` (`nodus_tcp.h:173`), so a connection still connecting is covered
-  (`nodus_inter_pool_sweep`, `nodus_inter_dial.c:280-296`).
-- **Sealed-input budget per handshake:** before AUTHENTICATED a peer may feed at most the
-  plaintext handshake messages its role receives plus 5 sealed frames (the AUTHSIG:
-  4,631 B → 5 × 1,044 B): RESPONDER 4,236 + 5,220 = 9,456 bytes, INITIATOR 4,232 + 5,220
-  = 9,452 bytes (`sc_presession_budget`, `nodus_tcp_sc.c:96-111`; enforced where the
-  machine takes bytes, `:1138-1153`). Over it the connection is closed. Since package 3d
-  the budget follows the family the machine is BOUND to and is re-read after every
-  consume: an ANON RESPONDER 2,685 bytes, an ANON INITIATOR 9,902 bytes; an unbound
-  responder (no message yet) is held to the CLIENT budget, the larger (§15 "DHT v2
-  package 3d").
-- **Per-IP handshake rate:** at most `NODUS_HANDSHAKE_RATE_PER_MIN` = 60 new accepts per
-  minute from one IP on each accepting transport (`nodus_server.h:655`, set as
-  `hs_rate_per_min` on `srv->tcp` and `srv->inter_tcp`, `nodus_server.c:2391`, `:2417`).
-  Fixed window of `NODUS_TCP_HS_RATE_WINDOW_MS` (60,000) per IP; IPv4 by address, IPv6 by
-  /64 (`nodus_ws_ip_bucket`, now defined in `nodus_tcp.c:1633-1656` so the Windows build,
-  which does not build `nodus_ws.c`, has it). The table holds `NODUS_TCP_HS_RATE_TABLE` =
-  512 IPs; when full it reuses the entry with the oldest window (an IP evicted under a
-  many-IP flood is counted afresh — bounded memory, never growth) (`nodus_tcp_hs_rate_allow`,
-  `nodus_tcp.c:1658-1690`). The plain listener checks it after the 20-per-IP concurrency
-  count (`nodus_tcp.c:1728-1738`); the WebSocket entry checks it per REAL client address
-  after `X-Forwarded-For` and after its own concurrency limit (`:1956-1963`). Dials this
-  node makes are never counted. `hs_rate_per_min` 0 = off (the default of a bare
-  `nodus_tcp_t`).
-- **Exemptions (operator addendum 2026-10-26: "a node active in ANY role is exempt from ALL
-  of these").** (1) Loopback (127.0.0.0/8, ::1, ::ffff:127.x) is never counted by the rate
-  (`nodus_tcp_ip_is_loopback`; the harness runs every node and tool on 127.0.0.1); the
-  concurrent cap still applies to it. (2) Every accept still counts, and the connection
-  remembers its bucket and the GENERATION of that bucket window (`conn->hs_bucket`, `hs_gen`,
-  `hs_counted`; a counter unique per window, so a bucket evicted and recreated at the same
-  millisecond cannot take another attempt's credit). When the
-  session becomes AUTHENTICATED and the PROVEN key (conn->peer_id) has an active on-chain
-  role, the server calls `nodus_tcp_role_exempt`: the attempt is credited back (only into the
-  window it was counted in) and the connection is marked `role_exempt`, which both
-  per-IP accept loops skip — so a role-holding node neither runs out of rate nor counts toward
-  the 20-per-IP cap. The pre-proof limits (15 s / 30 s, sealed-input budget) still apply to
-  its handshake. An unbonded peer cannot claim this: the lookup is by the proven key. (3) The
-  ACTIVE-ROLE set is the 4004 bonded set (validators ACTIVE / ELIGIBLE, tip ± 1 committees,
-  S(H) / S(H − E) members — reused, not re-derived) UNION the storage registry rows ACTIVE /
-  EXITING (`nodus_witness_p2p_roles_fill`; the registry rows are added there and not to the
-  4004 set, which is decided by membership and must not change). Core reads it through the
-  chain backend op `has_role`: in-process from the witness' p2p host (cached 10 s), in the split
-  over the new control query `ipc_roles` (core asks every 10 s; answer `fp` = n × 64-byte node
-  ids, ≤ 2048, or `err`; an internal key — core and nodus-witness deploy together). FAIL SAFE:
-  an unknown, stale (> 30 s) or over-bound set exempts nobody (`nodus_role_set_has`). The
-  witness exports the set only from a bonded-set derivation that ran to the end at the current
-  tip (`bonded_derive_ok`): 4004 keeps its last good set when a refresh fails, but the role
-  export then answers `err` (never an old set as fresh), and a registry row whose `node_fp`
-  is not 64 bytes is an export error. A roles query the witness cannot answer (no handler,
-  handler failure, no room — the small `err` frame is sent from the stack) is answered `err`
-  and the control connection stays up (it also carries `ipc_status`). (4) The exemption is
-  for a role active NOW: every `NODUS_ROLE_SET_EVERY_MS` the server walks the live
-  connections of both accepting transports (`nodus_server_role_revalidate`) and clears
-  `role_exempt` (`nodus_tcp_role_revoke`) on any whose proven peer_id left a KNOWN set; the
-  connection then counts toward the per-IP cap again, and is never credited a second time.
-  An UNKNOWN set changes nothing — an IPC hiccup must not drop every node's exemption at
-  once (backend op `roles_known`).
-- **Unchanged:** 20 plain + 20 WS connections per IP; the handshake worker queues 64 + 64
-  (`NODUS_TCP_SC_JOBQ_OUT` / `_IN`; since package 3d a share of the inbound 64 is kept
-  for ANON jobs, `NODUS_TCP_SC_JOBQ_IN_ANON_RESERVED`); no one-connection-per-IP rule
-  (NAT, tabs).
-
-**The 4002 send result is tri-state (four values).** `nodus_inter_pool_send_framed`
-(`nodus_inter_dial.c:207-268`) returns `nodus_inter_send_t` (`nodus_inter_dial.h:140-166`):
-
-| Value | Meaning | Durable hint row |
-|---|---|---|
-| `NODUS_INTER_SEND_WRITTEN` 0 | handed to an AUTHENTICATED session and sealed into its write path, and NOT diverted by the queue-full fallback | may be deleted — the only such result |
-| `NODUS_INTER_SEND_QUEUED` 1 | the session is not authenticated yet: the frame waits in the connection's in-memory dial queue and dies with a failed handshake (a rolling deploy: the peer may be an old build). ALSO returned when `tcp->on_pending_full` diverted the frame (the send reported 0 but `pending_hint_fallback_count` moved, `:254-257`) | stays; no retry counted; this peer is left until the next cycle |
-| `NODUS_INTER_SEND_FAILED` -1 | the connect or the write failed (a slow consumer is disconnected), or the dial queue is full | stays; retry counted, expiry by the retry cap / TTL as before |
-| `NODUS_INTER_SEND_REFUSED` -2 | the dial was refused LOCALLY before any connection: no pin, no node-session config, chain id unknown | stays; NO retry counted (a witness gap must not age rows toward deletion unsent) |
-
-The hinted-handoff retry deletes a row only on WRITTEN (`dht_hinted_retry`,
-`nodus_dht_server.c:904-939`). Callers that only ask "was it accepted" (replication on put,
-republish, listen forwarding) test `>= 0` (`nodus_dht_server.c:111-122`). The dial queue is
-plaintext in memory only; `nodus_inter_dial_conn_open` replays it through `nodus_tcp_send`,
-sealed and in order, when the gate opens at `on_session` — it is never flushed as bytes
-(`nodus_inter_dial.c:336-380`). This closes the Kurultay #43 mandatory fix "no hint-row
-deletion on queued".
-
-**Batch forwards on their own dial-only transport.** The DHT owns `dht->bf_state.tcp`, a
-`nodus_tcp_t` created by `nodus_dht_init` (`nodus_dht_server.c:4631-4647`) and closed by
-`nodus_dht_stop` / `nodus_dht_close` (`bf_transport_close`, `:4653-4657`). Each forward is
-one connection of it carrying the NODE session, pinned to the FIND_NODE peer; three
-callbacks drive it: `bf_on_session` (session up → `nodus_inter_session_proven`, open the
-gate with `nodus_inter_dial_conn_open`, send `get_batch`), `bf_on_frame` (the token
-message, then the reply to absorb), `bf_on_disconnect` (the forward fails)
-(`:3279-3350`). `bf_tick` polls it with a 0 ms wait (`:3354-3358`). The session config
-resolves through the DHT's CURRENT host at call time: `cfg.chain_id = bf_cfg_chain_id`
-with `ctx = dht`, which calls `dht->host.chain_id(dht->host.ctx, …)`
-(`:3239-3242`, `:4639-4641`) — a copy of `host.ctx` taken at init would go stale when the
-host is replaced under a live DHT. The `nodus_dht_host_t` gains `chain_id`
-(`nodus_dht.h`, "COLD (once per batch-forward dial)"; core: `server_dht_chain_id`,
-`nodus_server.c:2084-2086`; storage: `dipc_chain_id`). The old per-forward socket, epoll,
-fd table (`NODUS_BF_FD_TABLE_SIZE`), receive buffer and state machine
-(`BF_SEND_HELLO` … `BF_RECV_KEY_ACK`) are gone; `BF_CONNECTING` 0 / `BF_RECV_RESULT` 1 /
-`BF_DONE` 2 remain.
-
-**Polling with outstanding handshake jobs.** A loop that polls several transports caps its
-wait at `NODUS_TCP_SC_POLL_MS` while ANY has a job outstanding: `nodus_server_run` checks
-`srv->tcp`, `srv->inter_tcp` and the DHT backend's new `sc_busy` op
-(`nodus_server.c:2844-2847`, `:2867-2870`; `nodus_dht_backend.h:124-131`; in-process
-`inproc_sc_busy` → `nodus_dht_sc_busy`, the IPC backend NULL = false);
-`nodus_dht_ipc_poll` checks `ipc->out` and the DHT's batch-forward transport
-(`nodus_dht_ipc.c:877-890`).
-
-**Transport teardown (D-24 a).** `on_disconnect` is invoked in ONE place,
-`conn_notify_disconnect` (`nodus_tcp.c:445-450`), which first claims the teardown
-(`conn->disc_claimed`, `nodus_tcp.h:301-304`); a `nodus_tcp_disconnect` issued on the same
-connection from inside that callback is a no-op (`nodus_tcp.c:3634-3639`), so
-`on_disconnect` runs once and only the outer `conn_free` frees.
-
-**Client SDK.** `nodus_client_init` refuses a config with no pin (`pinned_server_fps` NULL
-or count ≤ 0), an all-zero pin, or no chain id (`has_expected_chain_id` false or an
-all-zero `expected_chain_id`) (`nodus_client.c:772-812`; fields `nodus.h:104-151`; the
-ANON family of package 3d keeps both requirements). A
-connect claims the pending slot of txn 0 BEFORE the TCP connect, enables the layer
-(INITIATOR, CLIENT, the pin set, the chain id), waits for the connect, then `do_auth` waits
-for the token message; READY needs the same live connection, the layer's authenticated
-transition (`session_ready`, set by `client_on_session`, `nodus.h:200-203`,
-`nodus_client.c:753-757`), a token of the right length and a readable proven server key,
-which becomes `server_dil_pk` (`nodus_client.c:1005-1047`). `nodus_client_force_disconnect`
-clears `session_ready` and `has_server_dil_pk` (`:1223-1225`). Consumers (native tools,
-explorer, web wallet, starter) are sub-package 3c (§11 "Tool network identity").
-
-**Recorded consequences (khan decisions B and C, Kurultay #43).** No forward secrecy on 4001
-/ 4002: the static node keys are reused as approved 2026-10-14; if a node's keys are stolen
-later, recorded past client traffic (which records / inboxes a wallet read; contents stay
-end-to-end encrypted) can be decrypted; browser traffic additionally runs inside WSS. The
-client's identity key travels in the plaintext HELLO: an observer of raw 4001 traffic sees
-which wallet identity connects to which node — a known limitation, as before.
-
-**Determinism.** Nothing here is a consensus input: sessions decide who may talk, not what
-is valid. The clocks read are monotonic and schedule this node's own connection work. No
-4004 byte changes (the per-port protocol-version symbols keep `CMT_P2P_PROTOCOL_VERSION`
-for 4004 only).
-
-**Tests** (each header carries what it proves / requires / leaves / how it can lie; all:
-default build — libnodus with `NODUS_TCP_SC` — loopback, no environment, nothing left
-behind beyond what is noted):
-- `test_node_session` — the 4002 node session over two real pools: a pinned dial reaches
-  AUTHENTICATED, its first send is QUEUED and replayed sealed exactly once, the next is
-  WRITTEN, both ends carry the proven identity; a wrong pin never authenticates and a
-  QUEUED frame is lost with it; different chain ids fail; a dialer with no chain id or no
-  pin is REFUSED before any TCP connect; the 10 s dial bound is measured from the dial
-  stamp; an acceptor with no chain id closes; an old plaintext `hello` is closed with
-  nothing dispatched. Can lie: it pins the wiring, not the cryptography; the acceptor's
-  token message is not exercised.
-- `test_presession_deadline` — 15 s idle / 30 s absolute with injected monotonic time;
-  an authenticated session is never closed; moving the wall-clock fields changes nothing.
-  Can lie: it does not prove the server loop calls the sweep once a second.
-- `test_chain_id_v3` — `nodus_server_chain_id` returns `chain_id_v3`, not the legacy
-  padded `status` id; fail closed without one; over a real node session a dialer with the
-  legacy id is refused and one with the v3 id authenticates; `nodus_witness_dht_chain_id`
-  picks the v3 id and errors without one; the 60/min rate with injected time (per IP, IPv6
-  /64, rate 0 off, bounded table) and on a real accept (limit 2, third closed). Can lie:
-  the witness case uses a scratch witness with the cached id set by hand.
-- `test_hint_tristate` — the hint row is deleted only on WRITTEN; QUEUED and REFUSED keep
-  it with no retry counted, FAILED keeps it with one retry (one forked child per case,
-  `/tmp`).
-- `test_send_queue_full` — a send diverted to `on_pending_full` reports QUEUED, never
-  WRITTEN, and no send FAILs on the way. Can lie: if the kernel buffers all 120 MB offered
-  it FAILs ("queue never filled").
-- `test_bf_session` — a real forwarded `get_batch` over the pinned node session: the
-  responder receives exactly one sealed `get_batch`, the token message is not taken for
-  the reply, the client origin gets its result (`/tmp`). Can lie: the reply is an empty
-  answer, no merge logic.
-- `test_round4_hardening` — re-entrant disconnect runs `on_disconnect` once; enable refuses
-  an all-zero pin and an all-zero set entry; `nodus_client_force_disconnect` clears
-  `session_ready` / `has_server_dil_pk`; the batch-forward config follows a replaced host.
-  Can lie: a double free shows only under a sanitiser.
-- Changed: `test_client_pin`, `test_server`, `test_tier2`, `test_ws_server`,
-  `test_witness_ipc`, `test_dht_ipc`, `test_presence_dial_pin` and the client tests
-  (`test_session_helper.h`, `test_server_session.h` give them a session). Deleted with the
-  old path: `test_mlkem_handshake`, `test_inter_auth`, `test_inter_dial`,
-  `test_inter_pending_replay`, `test_inter_preauth_gate`, `test_inter_role_split`,
-  `test_inter_conn_crypto_isolation`, `test_channel_crypto_aead_complete`. The `nm` gates
-  `core_linked` / `dht_linked` / `storage_linked` name `nodus_auth_session_start` (was
-  `nodus_auth_handle_auth`) and `storage_linked` requires `nodus_inter_session_enable` (was
-  `nodus_inter_dial_on_frame`).
-
-Function reference: `messenger/docs/functions/transport.md` "DHT v2 sub-package 3b-2".
-
-### DHT v2 package 3d — the no-login (ANON) wallet session (2026-10-26, branch `dna95-dht2-3d`, not versioned)
-
-What it is: a second client-session family on 4001 / WebSocket for a wallet that does NOT
-log in to a node. The node proves its key to the client; the client presents no key at all,
-and the session has no principal. A wallet reads chain data and submits signed
-transactions on it — the transaction's own signature is the authority. The identified
-CLIENT session of 3b-2 stays, unchanged, for identity-bound work (Nodus Connect's old DHT
-writes / listens, `dnac_cc_collect`). Governing records (LOCAL-only files under
-`docs/plans/`): the operator's decision of 2026-10-26 "the wallet does not log in to a
-node" (a wallet reads and submits without any account login; what still needs an identity
-is decided only where the operation itself is identity-bound; limits stay per connection,
-none per account) and the Kurultay #45 summary with khan decisions 1-7 (1: the five
-owner-only reads stay owner-only, proven by a signature carried in the request; 2: a
-separate profile selected from a validated HELLO and bound once; 3: a key confirmation at
-the end of the handshake; 4: legacy v1 DHT reads refused on the no-identity kind; 5: client
-session version stays 1; 7: `dnac_node_duties` stays own-node only). Bytes: design
-`docs/plans/2026-10-26-dht-v2-3d-no-login-design.md` rev 5 (LOCAL-only; bytes approved by
-the operator 2026-10-26). The construction is OUR OWN — not Noise- or pqNK-grounded; the
-shape (server-only authentication, pinned server) has the TLS 1.3 precedent the Kurultay
-summary records (`cmt_p2p_secret.h:93-120`). Line numbers below are those of `4165c5677`.
-
-**Messages** (`cmt_p2p_secret.h:93-120`, `:332-389`; uvarint length prefix, then kind ‖ fields):
-
-| # | Direction | Message | Kind | Fields | Body / wire bytes |
-|---|---|---|---|---|---|
-| 1 | I → R, plaintext | HELLO_ANON | 0x05 | nonce_I (32), proto_ver (4, u32 BE), chain_id (32) | 69 / 70 |
-| 2 | R → I, plaintext | HELLO_R_ANON | 0x07 | R_dsa_pk (2,592), R_mlkem_pk (1,568), kc_sig (4,627), nonce_R (32), proto_ver (4), chain_id (32) | 8,856 / 8,858 |
-| 3 | I → R, plaintext | KEYX | 0x03 (unchanged) | ML-KEM-1024 ct (1,568) | 1,569 / 1,571 |
-| 4 | R → I, sealed | CONFIRM | 0x06 | none — the delimited message `01 06` | one sealed frame, 1,044 |
-| 5 | I → R, sealed | CONFIRM | 0x06 | none — `01 06` | one sealed frame, 1,044 |
-
-Sizes are asserted at compile time (`cmt_p2p_secret.h:384-392`). The kinds 0x05 / 0x06 /
-0x07 are OURS. `proto_ver` is `NODUS_CSESS_PROTO_VERSION` (1, `nodus_tcp_sc.h:238`) and
-`chain_id` the 32-byte v3 chain id, both checked against the receiver's own before any
-KEM work (`sc_on_hello_anon` / `sc_on_hello_r_anon`, `cmt_p2p_secret.c:812-865`).
-
-**Profile `CMT_P2P_SC_PROFILE_ANON`** (`cmt_p2p_secret.h:305`; strings `cmt_p2p_secret.c:64-67`):
-transcript tag `"nodus.asess.transcript.v1"` (25 B), AEAD info `"nodus.asess.keys.v1/aead"`
-(24 B), challenge info `"nodus.asess.keys.v1/challenge"` (29 B — carried because the
-struct needs it; ANON never derives a challenge). The tag differs from the other families'
-at byte 6 (`asess` / `csess` / `nsess` / `wsess`). `cmt_p2p_sc_init_profile` refuses this
-profile; an ANON machine is made only by `cmt_p2p_sc_init_anon` or bound by
-`cmt_p2p_sc_init_responder_unbound`.
-
-**Transcript and keys** (`sc_derive`, `cmt_p2p_secret.c:399-449`): T = SHA3-512 over
-today's preimage WITHOUT `I_dsa_pk` (the initiator has none; no placeholder stands in) —
-tag ‖ R_dsa_pk ‖ R_mlkem_pk ‖ the proto_ver / chain_id / nonce fields ‖ ct, 5,889 bytes
-with the 25-byte tag. Only the AEAD key is derived (HKDF-SHA3-256, salt T, ikm the shared
-secret); there is no challenge and no signature on either side. T is now kept in the
-machine for every family (`cmt_p2p_sc_t.t`) and read with `cmt_p2p_sc_transcript` once
-AUTHENTICATED; it is wiped when the machine dies.
-
-**The KEM-key certificate** (`kc_sig`): the node's ML-DSA-87 identity key signs
-`"nodus.asess.kembind.v1"` (22 B, `CMT_P2P_SC_KC_DOMAIN`) ‖ chain_id (32) ‖ R_mlkem_pk
-(1,568) = 1,622 bytes (`CMT_P2P_SC_KC_MSG_SIZE`, `cmt_p2p_sc_kc_msg`) under the new
-strict signing purpose **0x0E** `NODUS_PURPOSE_KEM_CERT` (`nodus_sign.h:94`;
-`nodus_sign_kem_cert` / `nodus_verify_kem_cert`, `:241-247`; strict, i.e. always the NDS1
-tagged preimage with no raw fallback, `nodus_sign.c:119-133`). The server signs it ONCE
-(`nodus_tcp_sc_kc_sign`, `nodus_tcp_sc.c:187-206`) at the first 4001 / WS accept that knows
-the chain id — and tries again at each later accept until it succeeds — and keeps it in
-`srv->anon_kc_sig` / `anon_kc_ok` (`nodus_server.h:333-334`; `on_tcp_accept`,
-`nodus_server.c:1887-1898`). The layer keeps a POINTER to it, never a copy, and never signs
-per connection. A signing failure leaves ANON off: the connection is CLIENT-bound as
-before and identified clients are served.
-
-**Order on the client (INITIATOR) side.** HELLO_R_ANON accepted → the machine builds the
-certificate message from its OWN chain id and the RECEIVED R_mlkem_pk and issues the job
-`CMT_P2P_SC_JOB_VERIFY_KC` (`cmt_p2p_secret.c:847-865`). The layer checks the pin (the
-fingerprint of R_dsa_pk must be in the client's pin set) BEFORE the job runs — a misdialed
-node costs no ML-DSA verify — and reports it with `cmt_p2p_sc_anon_pin_accepted`
-(`nodus_tcp_sc.c:625-634`); the job verifies through its own host callback `verify_kc`
-(purpose 0x0E only, never the session-auth verify, `host_verify_kc`, `nodus_tcp_sc.c:174-185`).
-The machine issues ENCAPS only when BOTH the certificate verified and the pin was accepted
-(`cmt_p2p_sc_job_done`, `cmt_p2p_secret.c:1359-1370`); either missing kills it. After ENCAPS
-it sends KEYX, derives T and the key, and waits for the node's CONFIRM.
-
-**CONFIRM order.** The node (RESPONDER) sends the FIRST sealed CONFIRM as soon as DECAPS
-completed — proving it holds the KEM secret — and waits for the client's; the client
-answers its own CONFIRM on receiving the node's; either side is AUTHENTICATED once it has
-received the peer's (`cmt_p2p_sc_job_done` DECAPS / ENCAPS arms, `sc_queue_confirm`,
-`sc_recv_confirm`, `cmt_p2p_secret.c:1092-1150`). Exactly one sealed frame is taken:
-chunkLength 2, content `01 06`, nothing else — any other length, content, a tail, or a
-frame that does not open (a wrong ct under implicit rejection surfaces here) is a REJECT.
-The public write stays refused before AUTHENTICATED. New states `CMT_P2P_SC_ST_WAIT_FIRST`
-and `CMT_P2P_SC_ST_WAIT_CONFIRM` (`cmt_p2p_secret.h:471-474`).
-
-**Family binding on 4001 / WS.** `on_tcp_accept` passes the cached certificate as
-`cfg.anon_kc_sig` (`nodus_tcp_sc.h:347`); a RESPONDER with the CLIENT profile and a
-certificate starts family-UNBOUND (`nodus_tcp_sc_enable`, `nodus_tcp_sc.c:755-760`;
-`cmt_p2p_sc_init_responder_unbound`, `cmt_p2p_secret.c:681-724`). The FIRST plaintext
-message binds the family ONCE by its exact (kind, length) (`sc_recv_first`,
-`cmt_p2p_secret.c:962-992`): (0x01 HELLO, 2,661) → CLIENT, today's handshake; (0x05
-HELLO_ANON, 69) → ANON, only when a certificate was supplied; anything else → REJECT. The
-length prefix only selects which message may follow; the machine stays unbound (state
-`WAIT_FIRST`, `profile` NULL) until that whole message has arrived and its kind byte
-matched, and only then does its handler (`sc_on_hello` / `sc_on_hello_anon`) bind the
-family — the PAIR binds, never the prefix alone (fix `ed168abc1`, after the independent
-verification found the first version binding on the prefix). After binding, the step's
-expected message depends on the BOUND family,
-never on a received kind: WITNESS / NODE / CLIENT machines refuse 0x05 / 0x06 / 0x07 as a
-kind-or-length REJECT, and an ANON machine accepts only its own kinds. The pre-session
-timestamps are set at accept and the binding does not reset them (the 15 s idle / 30 s
-absolute deadline runs from accept). A responder without a certificate is bound to its
-profile at enable and behaves exactly as before. `cmt_p2p_sc_is_anon` reports the binding
-(false for a dead machine); `nodus_tcp_sc_is_anonymous` (`nodus_tcp_sc.c:963-975`) is true
-for an ANON-bound RESPONDER — such a connection has NO peer key
-(`nodus_tcp_sc_peer_pubkey` returns -1, `cmt_p2p_sc_remote_pubkey` NULL in every state).
-An ANON INITIATOR carries no local key (`cfg.id` NULL) and a mandatory pin; enable refuses
-an ANON responder profile and a certificate on anything but a CLIENT responder.
-
-**Per-family pre-session budgets** (`sc_presession_budget`, `nodus_tcp_sc.c:96-111`,
-asserted `:115-118`): exactly the bytes the handshake carries — ANON INITIATOR
-HELLO_R_ANON (2 + 8,856) + one CONFIRM (1,044) = **9,902 B**; ANON RESPONDER HELLO_ANON
-(1 + 69) + KEYX (2 + 1,569) + one CONFIRM (1,044) = **2,685 B**. CLIENT and NODE keep their
-3b-2 budgets. The budget follows the BOUND family and is re-read after every consume
-(`:1143-1153`): an unbound responder is held to the CLIENT budget (the larger) until its
-first message binds it.
-
-**Reserved inbound job share.** An identified CLIENT handshake still makes the server sign
-(0x0C); an ANON one makes it sign nothing per connection. So that a flood of identified
-handshakes cannot starve wallet connections, `NODUS_TCP_SC_JOBQ_IN_ANON_RESERVED`
-(`nodus_tcp_sc.h:260-263`) slots of the 64 INBOUND job slots are kept for ANON jobs
-(`worker_push`, `nodus_tcp_sc.c:315-349`): the inbound total, ANON included, never exceeds
-`NODUS_TCP_SC_JOBQ_IN`, and an identified inbound job is admitted only while the
-identified count (ANON excluded) stays below `JOBQ_IN − reserve`. The compiled value is
-**16** (a quarter); the design gives no number, so the value is the implementation's own
-choice and **awaits the operator's confirmation**. A job carries `anon` from
-`cmt_p2p_sc_is_anon` at submit; only a VERIFY_KC job carries the 1,622-byte message, in a
-tail (`ext_len` / `ext[]`) so every other job keeps its size (`sc_submit`, `nodus_tcp_sc.c:476-556`).
-The machine grew to about 55 KB (the ANON buffers `kc_msg`, `anon_hs_buf` have storage of
-their own); `CMT_P2P_SC_HS_MSG_MAX` and `CMT_P2P_SC_OUT_CAP` — which also size the 4004
-pre-auth read / write caps — do not move.
-
-**No principal, end to end.** Absence of identity is explicit at every hop — never a zero
-key, a generated account, the transaction signer or the queried address:
-- **Core.** `nodus_auth_session_start` (`nodus_auth.c:110-122`): for an ANON connection it
-  mints and sends the token (T2 `auth_ok`, txn 0) and sets `sess->anonymous`,
-  `authenticated`, `conn->authenticated` and `auth_seq` — no `client_pk` / `client_fp`,
-  `conn->peer_id_set` stays false, no per-identity eviction, no presence entry, no role
-  exemption. An ANON session is never one identity's session (`session_live_as`,
-  `nodus_auth.c:28`) and is never found by a key (`server_find_session_conn`,
-  `nodus_server.c:2173`). Per-IP / per-session limits, the per-session chain budget and the
-  deadlines are unchanged. Its disconnect line is `CLIENT_DISCONNECT: anon slot=… ip=…`.
-- **Chain backend.** A new op `dispatch_dnac_anon(b, conn, token, t[64], payload, len,
-  method, txn_id)` (`nodus_chain_backend.h:165-170`) takes NO key; `t` is this node's own
-  copy of the session's transcript T (`nodus_tcp_sc_transcript`, never a client value).
-  In-process it calls `nodus_witness_handle_dnac_anon` (`nodus_chain_backend_inproc.c:90-99`).
-- **Witness IPC** (split mode): the session socket's first frame is the NO-IDENTITY form
-  `{"q":"ipc_hello","tk":<token>,"ts":<T, 64 B>}` (`nodus_witness_ipc.h:18-30`; built by
-  `ipc_session_conn`, `nodus_chain_backend_ipc.c:255-326`). The witness installs no principal
-  for it (`conn->peer_id_set` stays false), refuses `dnac_cc_collect` and any non-chain
-  method by closing the socket, and passes the rest to the ANON entry
-  (`ipc_on_first_frame` / `ipc_on_session_frame`, `nodus_witness_ipc.c:434-441`, `:503-516`).
-  An identified hello with an all-zero `pk` is refused (`:449-454`), and `pk` together with
-  `ts` is malformed. The identified form is byte-for-byte what it was; node-local, core and
-  `nodus-witness` deploy together.
-- **Storage IPC** (split mode): the origin preface of an ANON session is the 6-key map
-  `{"q","v","k":0,"s","g","b"}` WITHOUT `fp` and `pk` (`nodus_dht_ipc.h:22-29`, field
-  `no_identity` `:208`; codec `nodus_dht_ipc_wire.c:30-40`, `:305-309`; built when the
-  backend call carries neither, `nodus_dht_backend_ipc.c:239`). `fp` without `pk` (or the
-  reverse), and a no-identity INTER origin, are refused. The storage side then refuses
-  EVERY method of the legacy verb set for that slot with `NODUS_ERR_NOT_AUTHENTICATED`
-  (`nodus_dht_client_request`, `nodus_dht_server.c:4068-4075`) — the identity-bound verbs
-  because there is no identity, and the v1 reads too (khan decision 4). Core's allowlist
-  never routes them there; this is the storage side's own refusal.
-
-**The ANON allowlist** (exact names; ONE chain list tested by core and by the witness, so
-neither hop serves what the other refuses):
-- core only: `ping`, `status`, `servers` (`nodus_server_anon_method_ok`, `nodus_server.c:168-174`);
-- chain (`nodus_chain_anon_method_ok`, `nodus_witness_ipc.h:156-173`), 29 names:
-  `dnac_spend`; `dnac_balance`, `dnac_supply`, `dnac_roster`, `dnac_v3_block`,
-  `dnac_light_block`, `dnac_token_list`, `dnac_token_info`, `dnac_fee_info`,
-  `dnac_ruleset_info`, `dnac_name_lookup`, `dnac_name_of`, `dnac_storage_status`,
-  `dnac_storage_by_owner`, `dnac_committee_query`, `dnac_validator_list_query`; the five
-  owner-only reads `dnac_utxo`, `dnac_addr_history`, `dnac_delegations`, `dnac_msig_utxo`,
-  `dnac_msig_addr_history`; `evm_account`, `evm_code`, `evm_storage`, `evm_call`,
-  `evm_estimate`, `evm_receipt`, `evm_logs`, `evm_ticket`.
-- NOT on it: `dnac_cc_collect`, `dnac_node_duties` (this node's own identity only), every
-  legacy DHT verb, `listen` / `unlisten`, presence, circuits, `w_*`. `dht2_*` are not wired
-  yet (a later package) and are not on it.
-The witness ANON entry refuses a connection that carries a principal and any method off
-the list (`handle_dnac_impl`, `nodus_witness_handlers.c:7150-7166`).
-
-**The owner-signed query `qa`** (`nodus/src/protocol/nodus_owner_query.h`, NEW). The five
-owner-only reads stay owner- or member-only (audit fix C11 / G8.1); on an ANON session the
-authority moves from the session key to a signature carried IN the request. The T2 request
-carries a top-level byte-string field `qa` beside `a` (`{t, y, q, tok, qa, a}`,
-`enc_dnac_query_qa`, `nodus_client.c:3018-3069`); `qa` is an RFC 0002 signed envelope built
-by `dht2_env_seal` — the code of the DHT v2 owner-signed LIST:
-- domain (FIPS 204 ctx) `"nodus.chain.query.v1"` (20 B), payload type
-  `"/nodus/chain/query/v1"` (21 B), both OURS (`nodus_owner_query.h:53-54`); the envelope key
-  is the owner's (for a vault, a member's) ML-DSA-87 key;
-- payload: strict DAG-CBOR map `{c, m, o, s}` in canonical order — `c` chain id (32 B),
-  `m` method name (text, at most 32), `o` 64 B per method, `s` the session's T (64 B);
-  payload at most 256 B, envelope at most 8,192 B (`:56-69`);
-- `o` per method: `dnac_utxo` / `dnac_addr_history` — the hex-decoded `owner` argument;
-  `dnac_delegations` — SHA3-512 of the `pubkey` argument (a zero or wrong-length pubkey is
-  refused), which must also equal the envelope key's fingerprint; `dnac_msig_utxo` /
-  `dnac_msig_addr_history` — the vault address (= `owner`), then the full G8.1 descriptor
-  and membership rule with the `qa` key as the member.
-- Verification order (`nodus_oq_open`, `nodus_owner_query.c:134-170`): size bound, envelope
-  decode, payload type (explicit), signature under the domain, strict payload decode with
-  a re-encode identity check, `c` == this node's v3 chain id, `m` == the dispatched method,
-  `s` == this session's T. A pure function of the envelope, the request and T: no clock, no
-  state. A `qa` copied to another session fails the `s` binding.
-- In the witness (`oq_principal_qa`, `nodus_witness_handlers.c:219-269`), the principal is
-  resolved BEFORE the handler decodes anything: no `qa` → `NODUS_ERR_NOT_AUTHENTICATED`;
-  malformed → `NODUS_ERR_PROTOCOL_ERROR`; a bad signature or a wrong binding →
-  `NODUS_ERR_NOT_AUTHENTICATED` (one message for both); chain id unavailable or a
-  hashing / allocation fault → `NODUS_ERR_INTERNAL_ERROR`. The handler then requires the
-  signed `o` to name its own argument ("qa was signed for another owner") and applies
-  today's C11 / G8.1 rule with the `qa` key in place of the session key — ONE code path for
-  both session kinds (`oq_principal_t`, `:192-198`). Nothing is read without a valid `qa`.
-- Identified sessions send and are checked exactly as before (`qa` absent; the session key
-  is the principal).
-
-**Client SDK.** `nodus_client_config_t.anon_session` (`nodus.h:151`) selects the ANON
-family: profile ANON, `cfg.id` NULL, the pin set and `expected_chain_id` still MANDATORY
-(`do_connect_one`, `nodus_client.c:941-950`). `nodus_client_init` then accepts a NULL
-identity and does not copy one that is passed (`:777`, `:818`).
-`nodus_client_set_owner_key` (`nodus.h:315-317`; `nodus_client.c:878-886`) copies the key
-the five owner-only reads are signed with; `nodus_client_close` wipes it. Without it those
-five calls return -1 before anything is sent. The `s` of each `qa` is the connection's T,
-copied into the client (`has_session_t` / `session_t`, `nodus.h`) by `client_on_session` —
-the transport calls it with its lock released and the connection alive — and cleared at
-each connect; building a `qa` reads that copy under `wbuf_mutex` and never touches the
-connection, which the read thread may free on a disconnect (fix `ed168abc1`). DHT / messaging calls on an ANON client are
-refused by the node (`NODUS_ERR_NOT_AUTHENTICATED`).
-
-**Web wallet.** `web-wallet/crypto/nodus-send-wasm.c`: the wallet's session (`g_client`) is
-the ANON family — no identity is given to the client; the wallet's key only signs the
-`qa` of the owner-only reads. Nodus Connect's identified session (`g_client_c`) is opened
-lazily by `nc_host_session_ok`, only when a Messages export needs the old identity-bound
-DHT; a wallet-only page never opens it. The browser module now also compiles
-`nodus_owner_query.c` and the `shared/dht2` envelope sources
-(`web-wallet/scripts/build-nodus-send-wasm.sh`, `web-wallet/connect/tests/CMakeLists.txt`).
-
-**Unchanged.** 4004: its bytes, `CMT_P2P_SC_HS_MSG_MAX`, `CMT_P2P_SC_OUT_CAP` and the
-pre-auth caps of `cmt_p2p_peer.h`; a WITNESS machine refuses the ANON kinds. 4002 and the
-batch forwards (NODE profile). The identified CLIENT session's bytes, budgets and server
-behaviour. The client session version (1).
-
-**Determinism.** Nothing here is a consensus input: the session decides who may talk, the
-`qa` check is a pure function of request, envelope and T, and no clock is read beyond the
-existing monotonic pre-session deadline.
-
-**Tests** (written by the builder; each header carries what it proves / requires / leaves
-/ how it can lie; all default build, no environment):
-- `test_p2p_secret_anon` (new) — in memory: ANON initiator vs unbound and ANON-bound
-  responders reach AUTHENTICATED with wire sizes 70 / 8,858 / 1,571 / 1,044 / 1,044, key
-  and T recomputed from the captured bytes (5,889-byte preimage); the ANON responder has no
-  peer key; every bad certificate, a rejected pin, or a certificate verified without the
-  pin kills the initiator before any ENCAPS; CONFIRM frame rules on both sides; CLIENT /
-  WITNESS / NODE ↔ ANON mismatches; refused kinds 0x05 / 0x06 / 0x07; fragmented input;
-  the 4004 caps unchanged.
-- `test_owner_query` (new) — accept for each of the five reads; canonical payload; every
-  reject by its own result (domain, payload type, signature, `c`, `m`, `s`, another
-  session's `s`, size); `nodus_oq_find`; `o` per method and the G8.1 member rule. Pure.
-  Does not drive the witness handlers.
-- `test_anon_dispatch` (new) — the allowlist, the session table without a principal, and
-  `nodus_auth_session_start` on a real loopback ANON connection (no principal, no presence,
-  one token). Does not drive `dispatch_t2` (static).
-- Changed: `test_tcp_sc` (case 13: the ANON family at the layer — certificate helper,
-  ANON vs unbound responder over loopback TCP, the unbound responder's CLIENT
-  continuation, wrong pin / forged certificate, enable refusals, raw first messages; it
-  does NOT drive the reserved ANON job share — only its constants are asserted),
-  `test_witness_ipc` (no-identity preface, refusals, raw prefaces, core's preface bytes),
-  `test_dht_ipc` (no-identity origin codec; put and listen refused on the storage side),
-  `test_sign_domain_separation` (strict set {0x07-0x0E}; 0x0E's own domain),
-  `test_p2p_secret_profiles` (ANON refused by `cmt_p2p_sc_init_profile`).
-
-Function reference: `messenger/docs/functions/transport.md` "DHT v2 package 3d" and
-`messenger/docs/functions/ledger.md` §19.
-
-### DHT v2 package 7a — pull-sync core (no caller yet) (2026-10-27, branch `dna95-dht2-7`, not versioned)
-
-What it is: the core of DHT v2 pull-sync — how records follow the holder set (design
-`docs/plans/2026-10-14-dht-v2-design.md` rev 5, FROZEN — §4.5 "Records follow the holder
-set", §13 row 12 "Bee pkg/pullsync translated", rows 20, 22; all LOCAL-only; header
-`nodus/src/dht2/nodus_dht2_pull.h:1-90`). ONE transport-free module,
-`nodus/src/dht2/nodus_dht2_pull.{h,c}`, with both roles: the SOURCE answers a puller
-(`nodus_dht2_pull_serve`: HELLO, GET, WANT, RECEIPT), the PULLER runs one exchange per
-source (`nodus_dht2_pull_start`, then `nodus_dht2_pull_on_reply`: HELLO, OFFER,
-DELIVER). "It never opens a socket and never reads a clock" (`:19-20`): the caller
-supplies a send function, the injected view of the witness (package 6a's view type), the
-store, the node identity and the chain, and feeds every received message back in. There
-is no timer — "Bee's puller sets none (puller.go has no exchange timeout)" (`:41-44`).
-Pinned reference: Bee v2.8.2 `pkg/pullsync/pullsync.go` and `pkg/puller/puller.go`;
-"every function and check in nodus_dht2_pull.c names the Bee file:line it translates.
-Where the design names a deviation (row 12), the design wins and the row is cited"
-(`:14-17`). Commits `22f2c7683` (the module; the single-storage-node write refusal
-dropped), `2146310df`, `2e47ae725`, `262891726`, `8842ec0ca`, `330c0f942`, `659b489dd`,
-`0707fff49` (review and fix rounds).
-
-**Package 7b** (2026-10-27, branch `dna95-dht2-7b`, commit `07480f47b`, not versioned)
-changed only the END of a hand-over: the record is no longer dropped as soon as the receipt
-quorum is met; its drop is SCHEDULED for that epoch + `NODUS_DHT2_PULL_DROP_WAIT_EPOCHS`
-(48) × E and carried out by a later epoch check ("The hand-over obligation" below).
-Commit `f29133f43` (same branch) writes the acknowledgement that meets the quorum and
-the schedule in ONE transaction (new `nodus_dht2_store_handover_ack_retire`; "Sol 7b
-finding 1") and moves the re-count test to epochs past the persisted `pull_e` ("Sol 7b
-finding 2"). No wire, chain or consensus change; still no caller.
-
-Governing records (LOCAL-only, `docs/plans/decisions/`):
-- `2026-10-23-dht-v2-wire-gaps-package2.md`, "Addendum 2026-10-26" (operator): the
-  pull-receipt is signed under `nodus.dht.answer.v1` with payload type
-  `/nodus/dht/pull-receipt/v1`, sealed with `dht2_env_seal`; the verifier checks the
-  payload type as well as the domain.
-- `2026-10-27-dht-v2-handover-one-receipt.md` (operator, 2026-10-27, revised the same day
-  after the loss case was stated — "Kayıt kaybı gibi bir şey yaşayamamıza imkan yok.
-  Tamam, iki olur."): a hand-over obligation ends when min(2, |nearest_R(S(H))|) DISTINCT
-  members of the record's current `nearest_R(S(H))` have sent valid pull-receipts for it;
-  the store keeps the acknowledging fps per pending record. The first answer of that day
-  ("one receipt") is superseded and kept in the file as history. Its paragraph "What
-  happens when the obligation ends" (operator, 2026-10-27, package 7b): asked "Devir
-  tamamlanınca eski düğüm kaydı silsin mi?", answered "silinsin de bir timer
-  koysak . ornek 48 epoc gibi ? ne kadar komplex olur", then "evet" to "Bekleme 48 epoch
-  olsun mu?" — the record is dropped at the first epoch check at or after met epoch + 48 ×
-  E; becoming eligible again cancels the drop; a new version cancels it and needs its own
-  receipts; a node-local constant (no chain value, no vote); Bee has no such wait. Its
-  paragraph "Re-count at the drop epoch — DECIDED 2026-10-27 (operator)": asked "Silme
-  zamanında bu yeniden sayma kalsın mı?", told the example (B and C acknowledged at epoch
-  100; at 148 A checks whether B and C are still responsible; if not, A keeps the record
-  until the new responsible nodes acknowledge), answered "evet" — at the due epoch the
-  quorum is counted again over the CURRENT `nearest_R`; not met → no drop, the record is
-  kept until it is met again.
-- `2026-10-26-dht-v2-no-single-node-write-refusal.md` (operator, 2026-10-26): a holder
-  never refuses a write because the storage set is small; a network with one storage
-  node stores records. Design §2 "Precondition" is INVALID. Package 7a removes the
-  package-6a precondition, its two constants and its test.
-
-**Where it sits.** A library file in the Linux-only list (`nodus/CMakeLists.txt:735-737`:
-"the source and puller roles over the store, transport-free. No caller yet"). It embeds a
-package-6a holder for its view, store, identity and chain and loads each call's world
-through the holder's `nodus_dht2_holder_world_load` (`nodus_dht2_pull.c:86-96`,
-`:176-180`). **Nothing calls it** — the only caller is `tests/test_dht2_pull.c`. Not here
-("GAPS", `nodus_dht2_pull.h:46-56`): how a node learns a source's network address, the
-4002 framing of the messages and any caller / event loop, Bee's `pageTimeout` wait, Bee's
-250 chunks / s limiters, live pulling. No wire, port, consensus, block or state-root
-change; the existing DHT on 4001 / 4002 is untouched; nothing is written to the chain.
-
-| File | What |
-|---|---|
-| `nodus/src/dht2/nodus_dht2_pull.h` | NEW. The contract (`:1-90`): the message kinds `nodus_dht2_pull_msg_t`, `NODUS_DHT2_PULL_MSG_MAX`, since 7b `NODUS_DHT2_PULL_DROP_WAIT_EPOCHS` 48u (`:124-127`), the send function type, `_new` / `_free` / `_self_fp`, the puller (`_sources`, `_start`, `_on_reply`, `_disconnect`, `_epoch_check`) and the source (`_serve`); GAPS and READINGS |
-| `nodus/src/dht2/nodus_dht2_pull.c` | NEW. What it leaves out of Bee and why (`:10-26`), setup (`:215-287`), sources (`:291-340`), start / page completion / hello / offer / deliver / dispatch (`:351-703`), responsibility growth (`:716-799`), hand-over quorum and settle (`:801-900`; since 7b the settle writes a receipt's acknowledgement, schedules and, at the epoch check only, drops), the epoch check (`:902-1002`), the source's hello / get / want / receipt and dispatch (`:1007-1304`) |
-| `nodus/src/dht2/nodus_dht2_store.{h,c}` | Tables `dht2_pull_src` (cursor per source) and `dht2_ack` (acknowledging fps) with the trigger `dht2_ack_gc`, and since 7b `dht2_retire` (address, hash, `drop_e` — the scheduled drop) with the trigger `dht2_retire_gc` (`nodus_dht2_store.c:55-101`); `handover_set` deletes the acknowledgements and (7b) the schedule in the same transaction; NEW `handover_drop`, `handover_ack_add` / `_has`, `handover_info`, `permanent_scan`, `pull_get` / `_set` / `_reset`, `pull_epoch_get` / `_set` (meta `pull_e`), and in 7b `handover_retire`, `handover_ack_retire` (acknowledgement + schedule in one transaction, `f29133f43`) and `handover_retire_get` (`nodus_dht2_store.h:270-387`) |
-| `nodus/src/dht2/nodus_dht2_holder.{h,c}` | The §2 write precondition removed (`NODUS_DHT2_HOLDER_WRITE_MIN_SET`, `NODUS_DHT2_HOLDER_WRITE_REFUSAL`, its `_Static_assert` and its check in `nodus_dht2_holder_serve`); the call's world exported as `nodus_dht2_name_user_t`, `nodus_dht2_world_t`, `nodus_dht2_holder_world_load` (`nodus_dht2_holder.h:158-180`) |
-| `nodus/tests/test_dht2_pull.c` | NEW, below (7b: the drop checks now expect the schedule and the due epoch) |
-| `nodus/tests/test_dht2_store.c` | 7b: `test_index` checks the schedule calls — written only for a pending permanent row with that hash, the first schedule kept, all 64 bits of `drop_e`, removed by `handover_set` and by a replacement (`:1173-1220`) |
-| `nodus/tests/test_dht2_holder.c` | `test_write_precondition` replaced by `test_single_storage_node_stores` (a put with ONE member in S(H) is stored and receipted); header item "can lie 5" removed |
-| `nodus/CMakeLists.txt` | `src/dht2/nodus_dht2_pull.c` in the Linux-only library list (`:735-737`); `test_dht2_pull` (`:2182-2187`) |
-
-**One exchange** (`nodus_dht2_pull.c:351-703`, source side `:1007-1186`):
-
-1. The puller sends the p_hello REQUEST — Bee's empty `Syn` (`pullsync.go:528-529`) as the
-   empty DAG-CBOR map `0xa0`; the source accepts nothing else and replies `p_hello {g,
-   top}` (its store generation and top). The module cannot tell a hello request from a
-   reply; the framing must (header READING).
-2. The puller reads its persisted cursor for that source; a source never pulled from, or
-   one whose generation `g` changed, is re-scanned from 0 (`puller.go:266-283`). A cursor
-   above `top` means caught up: no p_get. Otherwise `p_get {g, s = cursor}`.
-3. The source scans ≤ 250 entries from `s` and offers `{e, g, top}`, each entry ONLY when
-   the puller is in `eligible(p)` (row 12); a non-empty offer is kept per peer until its
-   want arrives.
-4. The puller wants the entries whose placement key puts it in `nearest_R(S(H))` and that
-   it lacks or holds in another version — `p_want` of exactly ⌈n/8⌉ bytes; the source
-   answers one `p_deliver {i, v}` per set bit, ascending, with the version it holds NOW
-   (`v` null = gone). A store fault at the source aborts — never "gone" (a named
-   deviation from Bee `pullsync.go:501-505`).
-5. The puller recomputes address and placement key from each `v` (a mismatch = source
-   fault, nothing stored) and admits it through `nodus_dht2_store_put` — the ONE §4.1
-   admission path — with the offered address as the expected one.
-6. **Cursor rule** (row 12): the cursor `top + 1` is persisted ONLY when every wanted
-   entry was admitted or definitively refused (codes 1-13, 18). A transient LOCAL failure
-   — admission 15 / 16 / negative, no snapshot, a local read fault, a local fault while
-   checking a delivery — aborts the exchange and keeps the cursor. A wrong kind for the
-   exchange's state, a changed `g`, or a malformed message aborts it too.
-7. For a non-empty page the puller sends ONE pull-receipt `{pf, sf, c, g, s, top, e:
-   [{a, h}]}` naming every entry it holds after the page, sealed with `dht2_env_seal`
-   under `nodus.dht.answer.v1`, payload type `/nodus/dht/pull-receipt/v1`.
-
-**The epoch check** (`nodus_dht2_pull_epoch_check`, `nodus_dht2_pull.c:902-1002`). The
-epoch the cursors were last checked against is PERSISTED (store meta `pull_e`), so a
-restart does not forget it. Same epoch → nothing. The previous boundary exactly (`e − E`,
-E = `DNAC_EPOCH_LENGTH`) → if this node's responsibility GREW (a key in its
-`nearest_R(S(H))` that was not in its `nearest_R(S(H − E))`, decided by a DP over XOR bit
-positions — a READING, "JUDGMENT, no reference oracle", `nodus_dht2_pull.h:63-65`),
-every exchange is aborted and every cursor reset to 0 (`puller.go:178-189`). No `pull_e`,
-or a boundary missed → the same reset, unconditionally. Then the hand-over scan below;
-`pull_e` is persisted LAST, only when everything succeeded.
-
-**The hand-over obligation** (§4.5 v). At the epoch check every permanent record (no
-expiry) this node is no longer `eligible` for gets the persisted hand-over flag; while
-pending it is still offered and delivered. A pull-receipt counts for a record only when
-the envelope verifies (payload type, domain, signer = the sending peer, `sf` = this node,
-this chain, this generation), the record is held and pending with the hash the receipt
-names ("the same version", not "or newer" — header READING), and the signer is in the
-record's `nearest_R(S(H))`; the acknowledging fp is persisted (`dht2_ack`, one row per
-fp). The obligation ends when min(2, |nearest_R(S(H))|) DISTINCT members of the CURRENT
-`nearest_R(S(H))` have acknowledged — re-counted at every receipt (the receipt being
-handled counts before it is written: `handover_quorum`'s `extra`) and at every epoch
-check, so a membership change alone can meet it; an acknowledger that left `nearest_R`
-does not count; an empty `nearest_R` is never met. Since package 7b the record is then
-NOT dropped at once: its drop is SCHEDULED (table `dht2_retire`, one row per record with
-the hash it was scheduled for) for the current sets epoch +
-`NODUS_DHT2_PULL_DROP_WAIT_EPOCHS` × `DNAC_EPOCH_LENGTH` (48 epochs; saturating at
-`UINT64_MAX` = "never"); a schedule already there is kept, so the first met epoch counts
-(`nodus_dht2_pull.c:852-900`). Since `f29133f43` `serve_receipt` no longer writes the
-acknowledgement itself: `handover_settle` gets it as `ack` and writes it alone
-(`nodus_dht2_store_handover_ack_add`) when the quorum is not met, or together with the
-schedule in ONE transaction (`nodus_dht2_store_handover_ack_retire`) when it is, so a
-fault never leaves the quorum's acknowledgements without the schedule of the epoch that
-met it; at the epoch check (`ack` NULL) `nodus_dht2_store_handover_retire` schedules
-alone. A receipt only schedules; the record row is
-DROPPED only by an epoch check at or after the due epoch, and only when at that check
-the quorum is still met and the scheduled hash is still the row's hash
-(`nodus_dht2_store_handover_drop`: one transaction, only a PERMANENT row still pending with
-that hash; its acknowledgements and schedule go with it through the triggers). The
-re-count at the due epoch is the operator's decision ("Re-count at the drop epoch",
-above) — "so a drop never happens on acknowledgements that no longer count"
-(`nodus_dht2_pull.c:846-847`); a check where it is not met leaves the record pending and
-scheduled. Until the drop the record stays held, offered and delivered.
-Deleting the row is the code's reading of §4.5 (v) "then it may drop them", and since 7b
-the decision's "What happens when the obligation ends" (`nodus_dht2_pull.h:74-82`); a
-dropped record returns through admission (a pull, a client write, read-repair) once this
-node is eligible for it again. Any replacement of the row removes its acknowledgements and
-its schedule (triggers `dht2_ack_gc`, `dht2_retire_gc`): a new PERMANENT version stays
-pending and needs its own receipts; an EXPIRING replacement of a pending permanent record
-is stored without the flag (§4.5 v obliges permanent records only), so receipts naming it
-schedule nothing, and the drop itself deletes only a PERMANENT row (`AND noexp = 1`), so
-receipts never delete an expiring record before its expiry. A node that is `eligible` for
-a pending record again only clears the flag, the acknowledgements and (7b) the schedule —
-nothing is dropped (`nodus_dht2_pull.c:839-842`, `:870-872`; until 7b this case was stated only in the
-.c; since 7b the header, `nodus_dht2_pull.h:80`, `:206-207`, the store header,
-`nodus_dht2_store.h:277-278`, and the decision record state it too).
-
-**Determinism.** "Nothing here is unordered: sources are sorted by fp, entries follow the
-insertion index, deliveries ascend by offer index" (`nodus_dht2_pull.h:86-87`). No clock,
-no timer — the 48-epoch wait of 7b is counted in the snapshot's sets epochs and persisted
-as `drop_e`. The store generation `g` (node-local, package 5) is compared for equality only.
-Nothing reaches consensus.
-
-**Not done yet:** no caller (the 4002 framing, the event loop that starts exchanges and
-the epoch check, source addresses); Bee's rate limits and `pageTimeout` wait; live
-pulling; the "or newer" half of a receipt. Function reference, every type, constant and
-result: `messenger/docs/functions/dht2.md` §14 (the store additions §12, the holder
-changes §13).
-
-**Test** — `test_dht2_pull` (`nodus/CMakeLists.txt:2182-2187`; default build, no flags, no
-environment, no network, no clock — chain time and the caller's tick are injected
-constants; fixed-seed ML-DSA-87 keys, hedged signing so signatures are verified, never
-compared; its own `mkdtemp` directory — a crash leaves `/tmp/test_dht2_pull_XXXXXX`; safe
-under `ctest -j`). Eleven sections from `main` (`tests/test_dht2_pull.c:1890-1900`):
-`test_basic`, `test_more_than_250`, `test_replacement`, `test_generation`,
-`test_handover`, `test_handover_quorum`, `test_offer_send_fail`, `test_epoch_persisted`,
-`test_epoch_sets`, `test_want_length`, `test_cursor_rules`. Two stores (SQLite files in the
-run's `mkdtemp` directory), A the source and B the puller, wired through the injected send function. Proves (file header
-`:12-76`): a full exchange copies every record with the same canonical hash and persists
-cursor top + 1 with the source's generation; a second start is BUSY; the pull-receipt
-envelope (payload type, domain, signer, fields, entries in offer order); row 22 "> 250
-pull entries" (cursor 251, then 301), "replacement during delivery", "generation reset",
-"interrupted handover" (flag set at the epoch check, survives a reopen, ONE member's
-receipt leaves it), "epoch-boundary sets" (growth resets cursors and aborts an exchange;
-equal sets, a grown S(H) or the same epoch keep them), "non-eligible puller gets no
-offer", "wrong bit-vector length aborts"; the receipt refusals (wrong payload type,
-wrong domain, signer ≠ peer; non-member or wrong hash counts for nothing; the same member
-twice counts once); since 7b (helpers `WAIT_E`, `epoch_at_a`, `due_at`, `:964-988`) a
-second DISTINCT member schedules the drop 48 epochs on — still held one epoch before the
-due epoch, dropped at the due epoch check; |nearest_R| = 1 schedules on one receipt, dropped
-when due; acknowledgements survive a reopen; an acknowledger that left `nearest_R` does not
-count; after the due epoch the quorum is re-counted (`:1323-1347`: at 1440 + `WAIT_E` +
-E not met → not dropped; at 1440 + `WAIT_E` + 2E met → dropped — epochs past the
-persisted `pull_e` so each check scans, "Sol 7b finding 2"); a shrunken `nearest_R` already met schedules the drop at the next epoch
-check (dropped when due); a
-failed p_offer send keeps no offer; the cursor kept on a transient local failure,
-advanced on a definitive refusal, a mismatching delivery stored nothing. Can lie
-(`:88-105`): one in-order queue — no concurrent exchanges, no real disconnect; HELLO
-routed by "sent by the puller" (the framing is a gap); sets ≤ 4 make every member
-eligible, the 6-member sets pick their records with `dht2_nearest_r` itself; the growth
-DP is pinned only for fixed fp patterns; the view is injected; the rate limit,
-`pageTimeout`, live pulling, framing, source addresses and the "newer version" half of a
-receipt are not covered. The last three blocks of `test_handover_quorum` (`:1396-1482`):
-"eligible again" with the drop already scheduled (record kept, flag, acknowledgements and
-schedule cleared, still held at the cancelled due epoch); a new permanent version of a
-scheduled record (pending, no acknowledgement, no schedule, still held at the old due
-epoch); an expiring replacement of a pending record (no flag; two receipts naming it
-schedule and drop nothing). The 7b part of `test_dht2_store` is in the file table above
-(`dht2.md` §9.4).
-Nothing was built or run for this document; no run of this test is cited here.
 
 ### Block retention (pruning) and the SeenCommit cleanup (2026-10-03)
 

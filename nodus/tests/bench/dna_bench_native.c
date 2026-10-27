@@ -21,7 +21,6 @@
 #include <nodus/nodus.h>
 #include <nodus/nodus_types.h>
 #include "crypto/nodus_identity.h"   /* nodus_identity_import/clear */
-#include "client/nodus_tool_network.h" /* pin + chain id of the cluster (3c) */
 
 #include "crypto/sign/qgp_dilithium.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -269,47 +268,37 @@ static int wallet_init(struct bench_wallet *w, int idx, const char *wallet_dir,
 
 extern int nodus_messenger_get_known_servers(char addrs[][64], int max);
 
-/* DHT v2 package 3c: the cluster to bench is named by the TOOL NETWORK FILE
- * ($NODUS_NETWORK; nodus_tool_network.h) — its nodes are the servers, each
- * with its pin, and its chain id binds the sessions. The hard-coded
- * production node list this function carried had no pins and no chain id,
- * which a client session now requires. No file -> every wallet fails to
- * connect (the reason is printed once). The wallets connect in parallel
- * threads; the shared network identity (it also holds the pin lists the
- * clients point into) is opened once and filled under a mutex. */
-static pthread_mutex_t g_net_mu = PTHREAD_MUTEX_INITIALIZER;
-static nodus_tool_net_t g_net;
-static int g_net_state;                 /* 0 not opened, 1 ok, -1 refused */
-
 static int wallet_client_connect(struct bench_wallet *w) {
-    nodus_client_config_t cfg = {0};
-    char nerr[NODUS_TOOL_NET_ERR_SIZE];
+    /* Hard-coded production node list (see operational_reference). */
+    static const char *PROD_NODES[] = {
+        "154.38.182.161:4001",
+        "164.68.105.227:4001",
+        "164.68.116.180:4001",
+        "161.97.85.25:4001",
+        "156.67.24.125:4001",
+        "156.67.25.251:4001",
+        "75.119.141.51:4001",
+        NULL
+    };
 
-    pthread_mutex_lock(&g_net_mu);
-    if (g_net_state == 0) {
-        nodus_tool_net_init(&g_net);
-        g_net_state = nodus_tool_net_open(&g_net, NULL, NULL, NULL, nerr,
-                                          sizeof(nerr)) == 0 ? 1 : -1;
-        if (g_net_state < 0)
-            fprintf(stderr, "[dna-bench] network identity: %s\n", nerr);
+    nodus_client_config_t cfg = {0};
+    /* Spread wallets across nodes by index for connection diversity. */
+    int n_nodes = 0;
+    for (int i = 0; PROD_NODES[i]; i++) n_nodes++;
+    int start = w->idx % n_nodes;
+    int j = 0;
+    for (int i = 0; i < n_nodes && j < (int)(sizeof(cfg.servers)/sizeof(cfg.servers[0])); i++) {
+        const char *addr = PROD_NODES[(start + i) % n_nodes];
+        const char *colon = strchr(addr, ':');
+        if (!colon) continue;
+        size_t hostlen = (size_t)(colon - addr);
+        if (hostlen >= sizeof(cfg.servers[0].ip)) continue;
+        memcpy(cfg.servers[j].ip, addr, hostlen);
+        cfg.servers[j].ip[hostlen] = '\0';
+        cfg.servers[j].port = (uint16_t)atoi(colon + 1);
+        j++;
     }
-    int fill_rc = g_net_state > 0
-        ? nodus_tool_net_fill_all(&g_net, &cfg, nerr, sizeof(nerr)) : -1;
-    pthread_mutex_unlock(&g_net_mu);
-    if (fill_rc != 0) {
-        if (g_net_state > 0)
-            fprintf(stderr, "[w%02d] network identity: %s\n", w->idx, nerr);
-        return -1;
-    }
-    /* Spread wallets across nodes by index for connection diversity: rotate
-     * the server order (the pin list is the same set whatever the order). */
-    if (cfg.server_count > 1) {
-        nodus_server_endpoint_t rot[NODUS_CLIENT_MAX_SERVERS];
-        int start = w->idx % cfg.server_count;
-        for (int i = 0; i < cfg.server_count; i++)
-            rot[i] = cfg.servers[(start + i) % cfg.server_count];
-        memcpy(cfg.servers, rot, sizeof(rot[0]) * (size_t)cfg.server_count);
-    }
+    cfg.server_count = j;
     cfg.connect_timeout_ms = 5000;
     cfg.request_timeout_ms = 60000;
     cfg.auto_reconnect = true;
@@ -320,9 +309,6 @@ static int wallet_client_connect(struct bench_wallet *w) {
     }
     if (nodus_client_connect(&w->client) != 0) {
         fprintf(stderr, "[w%02d] nodus_client_connect failed\n", w->idx);
-        nodus_client_close(&w->client);     /* init succeeded: close owed;
-                                             * client_ready stays false so the
-                                             * cleanup does not close it twice */
         return -1;
     }
     w->client_ready = true;

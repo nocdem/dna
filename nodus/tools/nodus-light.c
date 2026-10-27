@@ -13,12 +13,6 @@
  *   nodus-light clear-attack --data <dir> [--node host:port:pinfp]... [--chain-id HEX]
  *   (--chain-id: 64 hex; default the compiled testnet chain — another chain,
  *    e.g. a local harness or a new genesis, passes its id with its --node list)
- *   DHT v2 3c (operator 2026-10-26, decisions/2026-10-24-dht-v2-tool-network-
- *   identity.md addendum): nodus-light is the ONE tool that does not refuse
- *   without a network file / flags — it keeps its compiled chain id and node
- *   list. [--network FILE] (or $NODUS_NETWORK) replaces both with the file's
- *   nodes and chain id; [--pin HEX] sets one pin for every node; --chain is
- *   --chain-id. Explicit --node / --chain-id still win over the file.
  *   --trust-height / --trust-hash are an operator's own root (K25-1); an
  *   ordinary user never types them (K25-12, THE TRUST ROOT below).
  *
@@ -169,7 +163,6 @@
 #include "nodus/nodus_types.h"
 #include "crypto/nodus_identity.h"
 #include "client/nodus_light_provider.h"
-#include "client/nodus_tool_network.h"      /* --network / NODUS_NETWORK   */
 #include "transport/nodus_tcp.h"            /* nodus_time_mono_ms          */
 #include "witness/nodus_witness_runtime.h"  /* NODUS_RT_GEN_* (macros only) */
 #include "dnac/cmt_block.h"                 /* CMT_BLOCK_PROTOCOL,
@@ -461,8 +454,7 @@ static int parse_node_arg(const char *arg, light_node_t *out)
     if (parse_u64(port_buf, 65535u, &port) != 0 || port == 0) return -1;
     out->port = (uint16_t)port;
     if (hex_decode_exact(pin_sep + 1, out->pin.bytes,
-                         sizeof(out->pin.bytes)) != 0 ||
-        nodus_key_is_zero(&out->pin)) {      /* an all-zero pin matches nothing */
+                         sizeof(out->pin.bytes)) != 0) {
         return -1;
     }
     snprintf(out->label, sizeof(out->label), "node");
@@ -497,9 +489,7 @@ typedef struct {
     bool         have_trust_height;
     uint64_t     trust_height;
     const char  *trust_hash_hex;
-    const char  *chain_id_hex;     /* --chain-id, else the network file's, else
-                                    * the compiled testnet id */
-    char         chain_buf[2 * NODUS_LIGHT_CHAIN_ID_LEN + 1]; /* file's id, hex */
+    const char  *chain_id_hex;     /* --chain-id, else the compiled testnet id */
     light_node_t nodes[NODUS_LIGHT_MAX_NODES];
     size_t       n_nodes;
     uint64_t     interval_s;
@@ -519,7 +509,6 @@ static void usage(void)
         "  nodus-light status --data <dir> [--chain-id HEX]\n"
         "  nodus-light clear-attack --data <dir> [--node host:port:pinfp]...\n"
         "                           [--chain-id HEX]\n"
-        "  every command also takes [--network FILE] [--pin HEX] (below)\n"
         "\n"
         "  run           follow the chain as a light client (Ctrl-C stops)\n"
         "  status        the last trusted block, the lock, the attack records\n"
@@ -534,36 +523,15 @@ static void usage(void)
         "                    repeat; default: the %u compiled testnet nodes on 4001\n"
         "  --interval S      seconds between updates (default %u)\n"
         "  --chain-id HEX    the chain id (64 hex); default: the compiled testnet\n"
-        "                    chain. Pass the matching --node list with it.\n"
-        "                    (--chain is the same option)\n"
-        "  --network FILE    a tool network file (JSON chain_id + nodes with ip,\n"
-        "                    port, fp; also $NODUS_NETWORK): its nodes replace\n"
-        "                    the compiled list and its chain id the compiled id\n"
-        "                    (explicit --node / --chain-id still win)\n"
-        "  --pin HEX         one 128-hex server key pin for EVERY node of the\n"
-        "                    compiled or file list (explicit --node pins win)\n"
-        "  Precedence: --node pins and --chain-id, then --pin / --chain, then the\n"
-        "  network file, then the built-in list. A file with more than %u nodes\n"
-        "  is refused.\n"
-        "  EXCEPTION to the tools' rule: with no file and no flag nodus-light\n"
-        "  does not refuse — it uses its compiled chain id and node list (operator\n"
-        "  2026-10-26, decisions/2026-10-24-dht-v2-tool-network-identity.md).\n",
+        "                    chain. Pass the matching --node list with it.\n",
         (unsigned)NODUS_LIGHT_DEFAULT_NODE_COUNT,
-        (unsigned)NODUS_LIGHT_DEFAULT_INTERVAL_S,
-        (unsigned)NODUS_LIGHT_MAX_NODES);
+        (unsigned)NODUS_LIGHT_DEFAULT_INTERVAL_S);
 }
 
 static int parse_args(int argc, char **argv, int first, bool allow_trust,
                       bool allow_nodes, bool allow_interval,
                       light_args_t *a)
 {
-    const char *net_file = NULL, *pin_hex = NULL;
-    /* Precedence (operator 2026-10-26 + review): explicit --chain-id / --node
-     * pins win over the generic --chain / --pin, which win over the network
-     * file, which wins over the built-in list. Each is tracked on its own,
-     * so the order of the options on the line does not matter. */
-    const char *chain_explicit = NULL, *chain_flag = NULL;
-
     memset(a, 0, sizeof(*a));
     a->interval_s   = NODUS_LIGHT_DEFAULT_INTERVAL_S;
     a->chain_id_hex = NODUS_LIGHT_CHAIN_ID_HEX;
@@ -575,13 +543,7 @@ static int parse_args(int argc, char **argv, int first, bool allow_trust,
         if (strcmp(opt, "--data") == 0 && val) {
             a->data_dir = val; i++;
         } else if (strcmp(opt, "--chain-id") == 0 && val) {
-            chain_explicit = val; i++;
-        } else if (strcmp(opt, "--chain") == 0 && val) {
-            chain_flag = val; i++;
-        } else if (strcmp(opt, "--network") == 0 && val) {
-            net_file = val; i++;
-        } else if (strcmp(opt, "--pin") == 0 && val) {
-            pin_hex = val; i++;
+            a->chain_id_hex = val; i++;
         } else if (allow_trust && strcmp(opt, "--trust-height") == 0 && val) {
             if (parse_u64(val, (uint64_t)INT64_MAX, &a->trust_height) != 0 ||
                 a->trust_height == 0) {
@@ -627,71 +589,9 @@ static int parse_args(int argc, char **argv, int first, bool allow_trust,
         fprintf(stderr, "--trust-height and --trust-hash go together\n");
         return -1;
     }
-    const size_t n_explicit = a->n_nodes;     /* the --node entries */
-
-    /* The tool network file (--network, else $NODUS_NETWORK) overrides the
-     * compiled network; with no file and no flag nodus-light keeps its
-     * compiled chain id and node list (operator exception 2026-10-26). */
-    {
-        static nodus_tool_net_t tn;       /* ~12 KB: not on the stack */
-        char nerr[NODUS_TOOL_NET_ERR_SIZE];
-
-        nodus_tool_net_init(&tn);
-        if (nodus_tool_net_open(&tn, net_file, NULL, NULL, nerr,
-                                sizeof(nerr)) != 0) {
-            fprintf(stderr, "network file: %s\n", nerr);
-            return -1;
-        }
-        if (tn.has_file && chain_explicit == NULL && chain_flag == NULL) {
-            static const char hd[] = "0123456789abcdef";
-            for (size_t i = 0; i < NODUS_LIGHT_CHAIN_ID_LEN; i++) {
-                a->chain_buf[2 * i]     = hd[tn.chain[i] >> 4];
-                a->chain_buf[2 * i + 1] = hd[tn.chain[i] & 0x0F];
-            }
-            a->chain_buf[2 * NODUS_LIGHT_CHAIN_ID_LEN] = '\0';
-            a->chain_id_hex = a->chain_buf;
-        }
-        if (allow_nodes && a->n_nodes == 0 && tn.has_file) {
-            if ((size_t)tn.node_count > NODUS_LIGHT_MAX_NODES) {
-                fprintf(stderr, "network file: %d nodes, nodus-light holds at "
-                        "most %u — shorten the file (nothing is cut silently)\n",
-                        tn.node_count, (unsigned)NODUS_LIGHT_MAX_NODES);
-                return -1;
-            }
-            for (int i = 0; i < tn.node_count; i++) {
-                light_node_t *o = &a->nodes[a->n_nodes];
-                memset(o, 0, sizeof(*o));
-                snprintf(o->label, sizeof(o->label), "node%u",
-                         (unsigned)(a->n_nodes + 1));
-                if (strlen(tn.nodes[i].ip) >= sizeof(o->host)) {
-                    fprintf(stderr, "network file: node %d host too long\n", i);
-                    return -1;
-                }
-                snprintf(o->host, sizeof(o->host), "%s", tn.nodes[i].ip);
-                o->port = tn.nodes[i].port;
-                o->pin  = tn.nodes[i].fp;
-                a->n_nodes++;
-            }
-        }
-    }
-    /* the generic --chain, then the explicit --chain-id, over the file's */
-    if (chain_flag != NULL)     a->chain_id_hex = chain_flag;
-    if (chain_explicit != NULL) a->chain_id_hex = chain_explicit;
     if (allow_nodes && a->n_nodes == 0 &&
         load_default_nodes(a->nodes, NODUS_LIGHT_MAX_NODES, &a->n_nodes) != 0) {
         return -1;
-    }
-    /* --pin: one pin for the file's or the built-in nodes; the explicit
-     * --node pins are never overwritten */
-    if (pin_hex != NULL) {
-        nodus_key_t p;
-        if (hex_decode_exact(pin_hex, p.bytes, sizeof(p.bytes)) != 0 ||
-            nodus_key_is_zero(&p)) {
-            fprintf(stderr, "--pin: 128 hex characters, not all zero\n");
-            return -1;
-        }
-        if (n_explicit == 0)
-            for (size_t i = 0; i < a->n_nodes; i++) a->nodes[i].pin = p;
     }
     if (allow_nodes && a->n_nodes < NODUS_LIGHT_MIN_NODES) {
         fprintf(stderr, "at least %u nodes are needed (a primary and a "
@@ -945,11 +845,6 @@ static int net_init_slot(light_net_t *net, size_t i)
     cfg.auto_reconnect         = true;
     cfg.pinned_server_fps      = &nd->pin;   /* item 8 */
     cfg.pinned_server_fp_count = 1;
-    /* DHT v2 package 3c: the session is bound to the chain this light client
-     * follows — the compiled chain or --chain-id (Kurultay #43 O-6: the
-     * tool's own network config; nodus-light's is --node pins + chain id). */
-    cfg.has_expected_chain_id  = true;
-    memcpy(cfg.expected_chain_id, net->chain_id, NODUS_LIGHT_CHAIN_ID_LEN);
     if (nodus_client_init(&net->clients[i], &cfg, net->id) != 0) {
         fprintf(stderr, "%s (%s:%u): client init failed\n", nd->label,
                 nd->host, (unsigned)nd->port);

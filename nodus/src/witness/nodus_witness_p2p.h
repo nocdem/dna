@@ -416,14 +416,6 @@ bool nodus_witness_p2p_signed_addr(nodus_witness_p2p_t *p,
                                    const uint8_t pk[NODUS_PK_BYTES],
                                    char *out, size_t cap);
 
-/** The ACTIVE-ROLE set (nodus_witness_p2p.c, above h_is_bonded): the bonded
- *  set plus the storage registry rows ACTIVE / EXITING, as the 64-byte node
- *  ids (SHA3-512 of the public key) — what exempts a node from the 4001 /
- *  WS / 4002 per-IP limits. Fills fps[0..*n_out); 0, or -1 when it does not
- *  fit `max` or cannot be read (treat as unknown). */
-int nodus_witness_p2p_roles_fill(nodus_witness_p2p_t *p, uint8_t (*fps)[64],
-                                 uint32_t max, uint32_t *n_out);
-
 /** Recompute the bonded set now (the tip moved; a chain was adopted).
  *  Only the IDs that JOINED the set since the last refresh are handed to
  *  the address book's purge (cmt_p2p_addrbook_purge_bonded_ids; RT2

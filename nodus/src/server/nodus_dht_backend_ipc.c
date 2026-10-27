@@ -233,10 +233,6 @@ static nodus_tcp_conn_t *ob_origin_conn(ipc_be_t *ib,
     if (fp) pf->fp = *fp;
     if (kind == NODUS_DHT_ORIGIN_CLIENT) {
         if (pk) pf->pk = *pk;
-        /* A CLIENT origin with neither fp nor pk is a no-login ANON session:
-         * the preface is the explicit no-identity form — no zero key stands
-         * in (design 2026-10-26-dht-v2-3d-no-login-design.md §2). */
-        if (!fp && !pk) pf->no_identity = true;
     } else {
         snprintf(pf->ip, sizeof(pf->ip), "%s", ip ? ip : "");
     }

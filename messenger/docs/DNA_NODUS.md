@@ -205,7 +205,7 @@ The messenger CMake configuration links against the Nodus client library. No sep
 ├── src/
 │   ├── server/
 │   │   ├── nodus_server.c    # Server event loop (epoll, all 4 ports)
-│   │   ├── nodus_auth.c      # Client session start once the SecretConnection is authenticated (DHT v2 3b-2)
+│   │   ├── nodus_auth.c      # Dilithium5 challenge-response auth
 │   │   └── nodus_presence.c  # Native presence tracking
 │   ├── client/
 │   │   └── nodus_client.c    # Client SDK (DHT + channel connections)

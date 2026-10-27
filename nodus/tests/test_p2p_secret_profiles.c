@@ -481,7 +481,7 @@ static void test_bad_profiles(void)
      * even a valid-looking 64-byte one — is refused. The string-bound check
      * behind that (sc_profile_ok) is a second guard that no caller outside
      * cmt_p2p_secret.c can reach any more, so it has no test of its own. */
-    TEST("NULL, every custom profile and ANON refused; the three const ones accepted");
+    TEST("NULL and every custom profile refused; the three const ones accepted");
     host.ctx = g_a;
     host.sign = host_sign;
     host.verify = host_verify;
@@ -502,12 +502,6 @@ static void test_bad_profiles(void)
     ok = ok && INIT(&p) == CMT_FAULT;
     p = CMT_P2P_SC_PROFILE_CLIENT;  p.transcript_tag = s64;   /* valid-looking */
     ok = ok && INIT(&p) == CMT_FAULT;
-    /* DHT v2 package 3d: the ANON profile exists but is NOT one of the three
-     * this entry point accepts — an ANON machine is made only by
-     * cmt_p2p_sc_init_anon / cmt_p2p_sc_init_responder_unbound (their own
-     * cases live in test_p2p_secret_anon.c). */
-    ok = ok && INIT(&CMT_P2P_SC_PROFILE_ANON) == CMT_FAULT &&
-         strcmp(CMT_P2P_SC_PROFILE_ANON.transcript_tag, "nodus.asess.transcript.v1") == 0;
     ok = ok && INIT(&CMT_P2P_SC_PROFILE_WITNESS) == CMT_OK &&
          sc->profile == &CMT_P2P_SC_PROFILE_WITNESS;
     ok = ok && INIT(&CMT_P2P_SC_PROFILE_CLIENT) == CMT_OK &&

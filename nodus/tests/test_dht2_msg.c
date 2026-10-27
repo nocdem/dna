@@ -18,9 +18,6 @@
  *     length, wrong byte-string length, and each count bound (9 keys /
  *     envs, 17 LIST entries, 251 offer / receipt entries, 3,501 control
  *     entries), incl. an unknown op and a nonce of 31 B (MALFORMED_REQ);
- *     an envelope above 262,144 B inside a put is NOT malformed (per-key
- *     code 1, holder side); the envelopes' total above 8 x 262,144 B, and a
- *     request over DHT2_REQ_MAX_LEN, are;
  *   · row 7 `v`: a 64 B hash, null (read answer only), codes 1…13, 16, 17,
  *     [18, through] are accepted where the context allows; 0, 14, 15, 19,
  *     a bare 18, a 63 B hash, an array of another shape, a negative int
@@ -727,31 +724,11 @@ static void test_requests(void)
         q.count = 1;
         q.envs[0] = big;
         q.env_lens[0] = DHT2_ENVELOPE_MAX + 1u;
-        /* Package 6a fix round: an env above 262,144 B is NOT malformed
-         * (row 7's list does not name it; the holder answers code 1). Only
-         * the whole request is bounded, at the row-11 record budget. */
-        CHECK(dht2_req_encode(&q, NULL, 0, &n) == DHT2_OK,
-              "encoder accepts an env > 262,144 B (per-key code 1 later)");
+        CHECK(dht2_req_encode(&q, NULL, 0, &n) == DHT2_E_MALFORMED_REQ,
+              "encoder refuses an env > 262,144 B");
         q.env_lens[0] = DHT2_ENVELOPE_MAX;
         CHECK(dht2_req_encode(&q, NULL, 0, &n) == DHT2_OK,
               "an env of exactly 262,144 B is encodable");
-        {
-            size_t j;
-
-            q.count = 8;
-            for (j = 0; j < 8; j++) {
-                q.envs[j] = big;
-                q.env_lens[j] = DHT2_ENVELOPE_MAX;
-            }
-            CHECK(dht2_req_encode(&q, NULL, 0, &n) == DHT2_OK &&
-                      n <= DHT2_REQ_MAX_LEN,
-                  "8 x 262,144 B is the budget: encodable, within the cap");
-            q.env_lens[7] = DHT2_ENVELOPE_MAX + 1u;
-            CHECK(dht2_req_encode(&q, NULL, 0, &n) == DHT2_E_MALFORMED_REQ,
-                  "encoder refuses envelopes totalling over the budget");
-            q.count = 1;
-            q.env_lens[0] = DHT2_ENVELOPE_MAX;
-        }
         if (buf != NULL) {
             size_t   o = 0;
             uint8_t  hdr[] = { 0xa3, 0x61, 0x6e, 0x58, 0x20 };
@@ -772,50 +749,9 @@ static void test_requests(void)
             }
             memset(buf + o, 0x5a, DHT2_ENVELOPE_MAX + 1u);
             o += DHT2_ENVELOPE_MAX + 1u;
-            CHECK(d_req(buf, o) == DHT2_OK && g_req.count == 1 &&
-                      g_req.env_lens[0] == DHT2_ENVELOPE_MAX + 1u,
-                  "decoder accepts an env of 262,145 B (not malformed)");
+            CHECK(d_req(buf, o) == DHT2_E_MALFORMED_REQ,
+                  "decoder refuses an env of 262,145 B");
             free(buf);
-        }
-        /* One env of budget + 1 B (inside the 128 B overhead allowance:
-         * refused by the re-encode budget check) and of budget + 200 B
-         * (the whole request is over DHT2_REQ_MAX_LEN, refused first). */
-        {
-            static const uint8_t pre[] = {
-                0xa3, 0x61, 0x6e, 0x58, 0x20
-            };
-            static const uint8_t mid[] = {
-                0x62, 0x6f, 0x70, 0x63, 0x70, 0x75, 0x74,
-                0x64, 0x65, 0x6e, 0x76, 0x73, 0x81, 0x5a
-            };
-            size_t extra[2] = { 1u, 200u };
-            size_t k2;
-
-            for (k2 = 0; k2 < 2; k2++) {
-                size_t   L = (size_t)DHT2_REQ_BUDGET + extra[k2];
-                uint8_t *b2 = (uint8_t *)malloc(L + 64u);
-                size_t   o2 = 0;
-
-                if (b2 == NULL) {
-                    continue;
-                }
-                memcpy(b2 + o2, pre, sizeof(pre));
-                o2 += sizeof(pre);
-                memset(b2 + o2, 0x01, 32);
-                o2 += 32;
-                memcpy(b2 + o2, mid, sizeof(mid));
-                o2 += sizeof(mid);
-                b2[o2++] = (uint8_t)(L >> 24);
-                b2[o2++] = (uint8_t)(L >> 16);
-                b2[o2++] = (uint8_t)(L >> 8);
-                b2[o2++] = (uint8_t)L;
-                memset(b2 + o2, 0x5a, L);
-                o2 += L;
-                CHECK(d_req(b2, o2) == DHT2_E_MALFORMED_REQ,
-                      k2 == 0 ? "env of budget + 1 B: over the budget"
-                              : "request over DHT2_REQ_MAX_LEN");
-                free(b2);
-            }
         }
         free(big);
     }

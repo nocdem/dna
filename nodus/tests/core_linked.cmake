@@ -31,7 +31,7 @@ set(_FORBIDDEN
 # Core's own and the two IPC doors — present, so a pass cannot come from an
 # empty symbol table, the wrong file, or an `nm` that silently failed.
 set(_REQUIRED
-    nodus_auth_session_start
+    nodus_auth_handle_auth
     nodus_presence_tick
     nodus_cluster_tick
     nodus_inter_circuit_table_init
