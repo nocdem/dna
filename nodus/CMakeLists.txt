@@ -2079,6 +2079,15 @@ add_executable(test_roots_hf7 tests/test_roots_hf7.c)
 target_link_libraries(test_roots_hf7 nodus dsa nodus crypto)
 add_test(NAME test_roots_hf7 COMMAND test_roots_hf7)
 
+# HF-9 package H1 — the generation-6 leaves (STLEAF.v3, STREP.v2, SMLEAF.v2,
+# STSLEAF.v2), compositions, trie key encoders and the shared HRW selector
+# (shared/dnac/ledger_roots_v2.c) against preimages assembled in the test
+# from the byte spec rev 3. Default build, no network, no clock, no files.
+# What it proves / how it can lie: the header of tests/test_hf9_leaves.c.
+add_executable(test_hf9_leaves tests/test_hf9_leaves.c)
+target_link_libraries(test_hf9_leaves nodus dsa nodus crypto)
+add_test(NAME test_hf9_leaves COMMAND test_hf9_leaves)
+
 # Ledger V2 S2 — BlockHeader V2 codec: oracle-pinned KATs, mutation sweep,
 # strict negatives, deterministic fuzz.
 add_executable(test_block_v2 tests/test_block_v2.c)
