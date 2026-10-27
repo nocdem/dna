@@ -271,8 +271,8 @@ int nodus_dht2_store_scan(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
 
 /** Set the persisted hand-over flag of the record at `address` (package 7
  *  decides when): `pending` true = obligation, false = none. *`found` false
- *  when no such record. Replacement of the record keeps a pending flag. The
- *  acknowledgements recorded for the address below are deleted in the SAME
+ *  when no such record. A PERMANENT replacement keeps a pending flag, an
+ *  expiring one gets none. The acks recorded for the address are deleted in the SAME
  *  transaction as the flag change (all or nothing). The obligation ENDS by
  *  nodus_dht2_store_handover_drop, not by this. @return 0 / 16. */
 int nodus_dht2_store_handover_set(nodus_dht2_store_t *s,
@@ -352,7 +352,7 @@ int nodus_dht2_store_pull_reset(nodus_dht2_store_t *s);
  *  *found false before the first check. @return 0 / 16. */
 int nodus_dht2_store_pull_epoch_get(nodus_dht2_store_t *s, bool *found,
                                     uint64_t *e);
-/** Persist it (e ≤ INT64_MAX). @return 0 / 16. */
+/** Persist it (any u64; stored bit-exact). @return 0 / 16. */
 int nodus_dht2_store_pull_epoch_set(nodus_dht2_store_t *s, uint64_t e);
 
 #ifdef __cplusplus

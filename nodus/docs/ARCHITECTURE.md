@@ -11955,7 +11955,8 @@ of the page ("entries + control stay within the 2 MiB page budget", `:1082-1096`
 ascending, ≤ 250, and the highest index scanned — or the store's top for an empty
 interval (Bee `pullsync.go:251-254`); expired-but-unswept records are listed. Every
 stored change re-indexes the row; equal / losing writes do not move the counter. The
-hand-over flag is persisted per record and survives a replacement; package 7 decides
+hand-over flag is persisted per record and survives a replacement (since package 7a a
+PERMANENT replacement only — an expiring one is stored without it); package 7 decides
 when to set it (package 7a: at the epoch check, and the obligation ends by dropping the
 record — "DHT v2 package 7a" below, which also added the pull cursors, `pull_e` and the
 acknowledgement table to this store).
@@ -11982,7 +11983,7 @@ sessions and forwarding are package 6b; the pull exchange's core came in package
 no environment, no network, no clock; fixed-seed ML-DSA-87 keys, hedged signing so no
 signature byte is pinned; injected chain time; its own `mkdtemp` directory under `/tmp`,
 removed at the end — a crash leaves `/tmp/test_dht2_store_XXXXXX`; safe under
-`ctest -j`). Thirteen sections from `main` (`tests/test_dht2_store.c:1891-1903`):
+`ctest -j`). Thirteen sections from `main` (`tests/test_dht2_store.c:1908-1920`):
 `test_codes`, `test_select`, `test_quota`, `test_inbox`, `test_expiry`, `test_index`,
 `test_faults`, `test_gate`, `test_mismatch`, `test_memo`, `test_select_pool`, and two
 added with package 6a — `test_list_ctl_budget` (the control record counts toward the
@@ -13211,7 +13212,10 @@ does not count; an empty `nearest_R` is never met. Then the record row is DROPPE
 (`nodus_dht2_store_handover_drop`: one transaction, only if still pending with the hash
 the receipts named; its acknowledgements go with it). Deleting the row is the code's
 reading of §4.5 (v) "then it may drop them" (`nodus_dht2_pull.h:74-78`); a dropped
-record returns only through a normal pull. A node that is `eligible` for a pending record
+record returns through admission (a pull, a client write, read-repair) once this node is
+eligible for it again. An EXPIRING replacement of a pending permanent record is stored
+without the flag (§4.5 v obliges permanent records only), so receipts never delete a record
+before its expiry. A node that is `eligible` for a pending record
 again only clears the flag and the acknowledgements — nothing is dropped
 (`nodus_dht2_pull.c:834-863`; this case is stated in the .c, not in the header or the
 decision record).
@@ -13231,7 +13235,7 @@ changes §13).
 environment, no network, no clock — chain time and the caller's tick are injected
 constants; fixed-seed ML-DSA-87 keys, hedged signing so signatures are verified, never
 compared; its own `mkdtemp` directory — a crash leaves `/tmp/test_dht2_pull_XXXXXX`; safe
-under `ctest -j`). Eleven sections from `main` (`tests/test_dht2_pull.c:1750-1760`):
+under `ctest -j`). Eleven sections from `main` (`tests/test_dht2_pull.c:1778-1788`):
 `test_basic`, `test_more_than_250`, `test_replacement`, `test_generation`,
 `test_handover`, `test_handover_quorum`, `test_offer_send_fail`, `test_epoch_persisted`,
 `test_epoch_sets`, `test_want_length`, `test_cursor_rules`. Two in-memory stores, A the

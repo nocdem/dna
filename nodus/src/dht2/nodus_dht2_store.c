@@ -47,8 +47,8 @@ struct nodus_dht2_store {
  * by DROPPING the record (nodus_dht2_store_handover_drop): §4.5 (v) "kept
  * until … acknowledged … (a persisted hand-over obligation — then it may
  * drop them)"; Bee's reserve likewise deletes the chunks outside its radius
- * (reserve.go:329-385 EvictBatchBin). A replacement of the record carries
- * the flag over. */
+ * (reserve.go:329-385 EvictBatchBin). A PERMANENT replacement carries the
+ * flag over; an expiring one is stored without it. */
 #define HANDOVER_PENDING 1
 
 static const char SCHEMA_SQL[] =
@@ -721,7 +721,7 @@ static int admit_locked(nodus_dht2_store_t *s, const nodus_dht2_ctx_t *ctx,
         bool held_expired = !hd.noexp && hd.expiry <= t;
 
         old_size = (uint64_t)hd.len;
-        handover = hd.handover;
+        handover = d->validity_type == DHT2_VT_NONE ? hd.handover : 0; /* §4.5 v */
         if (!held_expired) {
             int cmp;
 
@@ -1641,7 +1641,7 @@ int nodus_dht2_store_pull_epoch_get(nodus_dht2_store_t *s, bool *found,
 
 int nodus_dht2_store_pull_epoch_set(nodus_dht2_store_t *s, uint64_t e)
 {
-    if (s == NULL || e > (uint64_t)INT64_MAX) {
+    if (s == NULL) {        /* any u64 (row 6): meta_set / meta_get are bit-exact */
         return DHT2_E_ARG;
     }
     return meta_set(s, "pull_e", e) == 0 ? 0 : CODE_FAULT;

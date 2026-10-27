@@ -74,8 +74,8 @@
  *   · §4.5 (v) "then it may drop them": when the quorum is met the record
  *     row is DELETED (its acknowledgements with it), in one transaction, only
  *     if it is still pending with the hash the receipts named. A dropped
- *     record returns only through a normal pull, if the node becomes
- *     responsible for it again;
+ *     record returns through admission (a pull, a client write, read-repair)
+ *     when this node is eligible for it again;
  *   · "transient local failure" (cursor kept) = admission codes 15 / 16 /
  *     negative; "definitively refused" (cursor advances) = codes 1-13, 18.
  *

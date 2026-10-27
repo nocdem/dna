@@ -43,7 +43,7 @@
  *     index entry is gone; the scan is ascending from `s`, bounded by 250,
  *     an empty interval returns the top; equal / losing writes do not move
  *     the counter; top and the generation g persist across reopen; the
- *     hand-over flag persists and survives a replacement;
+ *     hand-over flag persists and survives a PERMANENT replacement only;
  *   · review round: every call is 15 while the witness is in block sync
  *     (consensus_up false) or the tip time cannot fit int64, and 16 for a
  *     snapshot of another chain (open refuses such a store too); a FAILED
@@ -1129,21 +1129,32 @@ static void test_index(const tkey_t *A)
           nodus_dht2_store_scan(st, &w->ctx,1, se, 0, &cnt, &top) == DHT2_E_ARG,
           "more than 250 per page is refused");
 
-    /* Hand-over flag: data only; survives a replacement. */
+    /* Hand-over flag: data only; a PERMANENT replacement keeps it, an
+     * expiring one gets none (§4.5 v obliges permanent records only). */
     CHECK(nodus_dht2_store_handover_get(st, aa, &pend, &found) == 0 &&
           found && !pend, "no obligation by default");
     CHECK(nodus_dht2_store_handover_set(st, aa, true, &found) == 0 && found &&
           nodus_dht2_store_handover_get(st, aa, &pend, &found) == 0 && pend,
           "obligation set");
     {
-        static env_t a3;
+        static env_t a3, a4;
         uint8_t      unknown[DHT2_HASH_LEN];
+        dht2_data_t  d;
 
         memset(unknown, 0x99, sizeof(unknown));
         CHECK(mk_owner(&a3, A, ida, 3, T0 + 3600, 4) == 0 &&
               P0(w, st, &a3) == 0 &&
               nodus_dht2_store_handover_get(st, aa, &pend, &found) == 0 &&
-              pend, "a replacement keeps the obligation");
+              !pend, "an expiring replacement carries no obligation");
+        names_add(&w->names, A->fp);
+        dbase(&d, DHT2_CLASS_OWNER, ida, 4, 0);
+        d.validity_type = DHT2_VT_NONE;
+        d.has_data = true; d.data = (const uint8_t *)"y"; d.data_len = 1;
+        CHECK(mk(&a4, &d, A) == 0 &&
+              nodus_dht2_store_handover_set(st, aa, true, &found) == 0 &&
+              found && P0(w, st, &a4) == 0 &&
+              nodus_dht2_store_handover_get(st, aa, &pend, &found) == 0 &&
+              pend, "a permanent replacement keeps the obligation");
         CHECK(nodus_dht2_store_handover_set(st, unknown, true, &found) == 0 &&
               !found, "no such record");
     }
@@ -1157,9 +1168,9 @@ static void test_index(const tkey_t *A)
     CHECK(st != NULL, "reopen");
     if (st != NULL) {
         CHECK(nodus_dht2_store_generation(st) == g1, "g persists");
-        CHECK(top_of(st) == 4, "top persists");
+        CHECK(top_of(st) == 5, "top persists");
         CHECK(nodus_dht2_store_scan(st, &w->ctx,1, se, 4, &cnt, &top) == 0 &&
-              cnt == 2 && top == 4, "scan after reopen");
+              cnt == 2 && top == 5, "scan after reopen");
         CHECK(nodus_dht2_store_handover_get(st, aa, &pend, &found) == 0 &&
               pend, "obligation persists");
     }

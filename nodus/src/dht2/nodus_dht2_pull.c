@@ -802,8 +802,8 @@ static bool responsibility_grew(const uint8_t self[DHT2_FP_LEN],
  * used by the receipt handler and by the epoch check: *met when
  * min(2, |nearest_R(S(H))|) DISTINCT members of the CURRENT nearest_R of
  * `place` have an acknowledgement stored for `address`; an acknowledger that
- * left nearest_R does not count. An empty nearest_R is never met (nobody to
- * take the record). @return 0, -1 (fault). */
+ * left nearest_R does not count. An empty nearest_R is never met: nobody holds a
+ * copy, a drop = loss (decision: "Kayıt kaybı ... imkan yok"). @return 0, -1. */
 static int handover_quorum(nodus_dht2_pull_t *p, const nodus_dht2_world_t *w,
                            const uint8_t address[DHT2_HASH_LEN],
                            const uint8_t place[DHT2_HASH_LEN], bool *met)

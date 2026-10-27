@@ -48,9 +48,9 @@
  *     drop time; a pending record whose nearest_R shrinks to the member that
  *     already acknowledged is dropped at the next epoch check with no new
  *     receipt, and one whose quorum is still not met stays pending with its
- *     acknowledgements; a pending record whose node is eligible again at the
- *     epoch check keeps the record — flag and acknowledgements cleared,
- *     nothing dropped;
+ *     acknowledgements; eligible again at the epoch check: flag and acks
+ *     cleared, record kept; an EXPIRING replacement of a pending record
+ *     carries no flag, so receipts naming it drop nothing;
  *   · a failed send of a non-empty p_offer leaves no offer kept at the
  *     source (a p_want afterwards is "without an offer");
  *   · row 22 "epoch-boundary sets": when the responsibility GREW (S(H) lost
@@ -1340,6 +1340,34 @@ static void test_handover_quorum(const tkey_t *ka, const tkey_t *kb,
               !acked_by(&g_n[0], addr, g_n[1].key.fp) &&
               get_at(&g_n[0], addr, hash) == NODUS_DHT2_GET_HELD,
           "eligible again: obligation cleared, the record kept");
+
+    /* An EXPIRING replacement of a pending permanent record carries no
+     * obligation (§4.5 v covers permanent records only; Sol 7a final
+     * finding 1): it is not pending, and receipts naming it drop nothing. */
+    {
+        static env_t     q;
+        uint8_t          qaddr[DHT2_HASH_LEN], qhash[DHT2_HASH_LEN];
+        nodus_dht2_put_t qr;
+
+        CHECK(nodus_dht2_store_handover_set(g_n[0].st, addr, true, &f) == 0 &&
+                  f && pending_at(&g_n[0], addr),
+              "permanent record pending again");
+        CHECK(mk_rec(&q, qaddr, kw, idn, 2, false) == 0 &&
+                  memcmp(qaddr, addr, DHT2_HASH_LEN) == 0 &&
+                  put_at(&g_n[0], &q, &qr) == 0 &&
+                  qr.outcome == NODUS_DHT2_PUT_STORED,
+              "an expiring version 2 replaces it at A (A eligible)");
+        CHECK(!pending_at(&g_n[0], addr),
+              "the expiring replacement is not pending");
+        CHECK(get_at(&g_n[0], addr, qhash) == NODUS_DHT2_GET_HELD,
+              "version 2 held");
+        set_members(&g_n[0], 3600, 6, (const uint8_t (*)[DHT2_FP_LEN])g_s6, 0,
+                    NULL);
+        CHECK(receipt_from(kb, gen, addr, qhash) == 0 &&
+                  receipt_from(kw, gen, addr, qhash) == 0 &&
+                  get_at(&g_n[0], addr, qhash) == NODUS_DHT2_GET_HELD,
+              "two receipts naming version 2: nothing dropped");
+    }
     net_down();
 }
 
