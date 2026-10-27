@@ -904,8 +904,8 @@ static int sw_set(sw_t *s, uint64_t H, uint8_t (*fps)[64], size_t n,
                                 set_hash) != 0)
         return -1;
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(s->w->db, "INSERT INTO v2_storage_sets VALUES "
-                           "(?1, ?2, ?3)", -1, &st, NULL) != SQLITE_OK)
+    if (sqlite3_prepare_v2(s->w->db, "INSERT INTO v2_storage_sets (epoch_start, "
+                           "set_hash, member_count) VALUES (?1, ?2, ?3)", -1, &st, NULL) != SQLITE_OK)
         return -1;
     sqlite3_bind_int64(st, 1, (sqlite3_int64)H);
     sqlite3_bind_blob(st, 2, set_hash, 64, SQLITE_TRANSIENT);
@@ -915,7 +915,8 @@ static int sw_set(sw_t *s, uint64_t H, uint8_t (*fps)[64], size_t n,
     if (rc != SQLITE_DONE) return -1;
     for (size_t i = 0; i < n; i++) {
         if (sqlite3_prepare_v2(s->w->db, "INSERT INTO v2_storage_set_members "
-                               "VALUES (?1, ?2, 0, 0)", -1, &st, NULL) !=
+                               "(epoch_start, node_fp, fail_streak, "
+                               "grace_until) VALUES (?1, ?2, 0, 0)", -1, &st, NULL) !=
                 SQLITE_OK)
             return -1;
         sqlite3_bind_int64(st, 1, (sqlite3_int64)H);

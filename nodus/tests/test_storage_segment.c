@@ -2473,11 +2473,13 @@ static int w_set(nodus_witness_t *w, uint64_t H, uint8_t (*fps)[64],
         }
     uint8_t sh[64];
     if (dna_v2_storage_set_hash(H, (const uint8_t (*)[64])fps, n, sh) != 0 ||
-        w_exec(w, "INSERT INTO v2_storage_sets VALUES (?1, ?2, ?3)", H, sh,
+        w_exec(w, "INSERT INTO v2_storage_sets (epoch_start, set_hash, "
+               "member_count) VALUES (?1, ?2, ?3)", H, sh,
                64, n) != 0)
         return -1;
     for (size_t i = 0; i < n; i++)
-        if (w_exec(w, "INSERT INTO v2_storage_set_members VALUES (?1, ?2, ?3, "
+        if (w_exec(w, "INSERT INTO v2_storage_set_members (epoch_start, "
+                   "node_fp, fail_streak, grace_until) VALUES (?1, ?2, ?3, "
                    "0)", H, fps[i], 64, streak[i]) != 0)
             return -1;
     return 0;
@@ -2489,7 +2491,9 @@ static int w_registry(nodus_witness_t *w, const uint8_t fp[64], int status) {
     int ret = -1;
     if (!pk) return -1;
     if (sqlite3_prepare_v2(w->db, "INSERT OR REPLACE INTO v2_storage_nodes "
-                           "VALUES (?1, ?2, ?1, 1000000, ?3, 1, 0, 0, 0)", -1,
+                           "(node_fp, node_pk, payee_fp, bond, status, "
+                           "registered_height, exit_height, fail_streak, "
+                           "grace_until) VALUES (?1, ?2, ?1, 1000000, ?3, 1, 0, 0, 0)", -1,
                            &st, NULL) == SQLITE_OK) {
         sqlite3_bind_blob(st, 1, fp, 64, SQLITE_TRANSIENT);
         sqlite3_bind_blob(st, 2, pk, 2592, SQLITE_TRANSIENT);

@@ -1656,9 +1656,9 @@ static int test_edge(void) {
     {
         uint32_t ver = 0;
         CHECK(nodus_witness_db_schema_version(A.w, &ver) == 0 &&
-              ver == NODUS_V2_SCHEMA_VERSION_S19,
-              "the reopened seeded chain is S19 (the at-open rung since "
-              "HF-7 P1b)"); OK();
+              ver == NODUS_V2_SCHEMA_VERSION_S20,
+              "the reopened seeded chain is S20 (the at-open rung since "
+              "HF-9 H2)"); OK();
     }
 
     /* heights 1..3: the twins agree on everything the vote row is not */
@@ -3758,8 +3758,8 @@ static int test_upgrade(void) {
         CHECK(fx_reopen(&fx) == 0, "the production open path"); OK();
         uint32_t ver = 0;
         CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
-              ver == NODUS_V2_SCHEMA_VERSION_S19,
-              "migrated through S17 and S18 to S19"); OK();
+              ver == NODUS_V2_SCHEMA_VERSION_S20,
+              "migrated through S17, S18 and S19 to S20"); OK();
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_validator_roles") == 0,
               "v2_validator_roles exists, empty"); OK();
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_replay") == 0 &&
@@ -3824,7 +3824,7 @@ static int test_upgrade(void) {
         CHECK(fx_reopen(&fx) == 0, "the production open path"); OK();
         uint32_t ver = 0;
         CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
-              ver == NODUS_V2_SCHEMA_VERSION_S19, "climbed to S19"); OK();
+              ver == NODUS_V2_SCHEMA_VERSION_S20, "climbed to S20"); OK();
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM pragma_index_info("
                        "'evm_receipts_by_pos')") == 2 &&
               q1(fx.w, "SELECT COUNT(*) FROM pragma_index_info("

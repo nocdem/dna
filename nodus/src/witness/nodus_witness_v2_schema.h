@@ -984,6 +984,81 @@ int nodus_witness_db_migrate_v2s19(nodus_witness_t *w);
 int nodus_witness_db_migrate_v2s19_ex(nodus_witness_t *w,
                                       nodus_v2s19_mig_fail_t fail_at);
 
+/* ── S20 migration: HF-9 H2 — the node-local tree tables and the four
+ *    storage-table rebuilds (docs/plans/2026-10-23-hf9-byte-spec.md rev 3
+ *    §8, §12a.6(c), §13 "Schema S20 and replay") ──────────────────────────
+ *
+ * ONE transaction creates, EMPTY and node-local (never in the genesis
+ * bundle or the snapshot stream):
+ *   v2_tree_ctx, v2_tree_nodes, v2_tree_roots, v2_tree_compwit,
+ *   v2_tree_gc                    the DDL of spec §8, verbatim;
+ *   v2_tree_dirty_<trie>          one per trie of spec §3 (19): the trie's
+ *                                 key columns (spec §4; + the domain for
+ *                                 pools and claims), PRIMARY KEY = those
+ *                                 columns. Names: utxo, token, pools,
+ *                                 claims, names, accrual, validator,
+ *                                 delegation, chain_config, vset,
+ *                                 manifest, attendance, st_registry,
+ *                                 st_sets, st_reports, st_segments,
+ *                                 bcopy, stmem, replay;
+ *   v2_tree_shadow_<table>        one per SOURCE table of the §9
+ *                                 dependency matrix (21): height, op, then
+ *                                 EVERY column of the source table as it
+ *                                 is at this rung (read from the live
+ *                                 table, so utxo_set carries its S5
+ *                                 domain_id and validators its S15 shape),
+ *                                 all nullable (op = 0 rows carry NULLs);
+ *                                 PRIMARY KEY (height, <the source PK>).
+ * and REBUILDS v2_storage_sets (member_count <= 1024, + copies),
+ * v2_storage_reports (bitmap <= 128, + ipv4s), v2_storage_set_members
+ * (+ placeable) and v2_storage_nodes (+ ipv4, ipv4_since) into the S20
+ * text of nodus_witness.h, copying every row; the new columns take their
+ * DEFAULTs (copies 3, empty ipv4s, placeable 0, ipv4 0, ipv4_since 0). A
+ * table already in the S20 text (a database the new base schema created)
+ * is left alone; a table in neither text is refused. NO triggers, no row
+ * in any tree table: the capture and the builder are HF-9 H3.
+ *
+ * Every shape is verified inside the transaction (the whole stored text of
+ * each table against what this build's SQLite stores for the same
+ * statement), then user_version = 20. A failure rolls the rung back whole.
+ *
+ * REACHABILITY: S20 is the at-open rung (nodus_witness.c) for a version-3
+ * chain at S16..S19. The builders (gen, join, bundle) still stop at S19;
+ * their database climbs at its first production open. A previous binary
+ * does not accept version 20, so a rollback needs the pre-S20 copy of the
+ * data directory. Version 21+ fails closed. */
+#define NODUS_V2_SCHEMA_VERSION_S20  20u
+
+typedef enum {
+    V2S20MIG_FAIL_NONE = 0,
+    V2S20MIG_FAIL_AFTER_BEGIN,      /* after BEGIN, before any DDL        */
+    V2S20MIG_FAIL_AFTER_REVALIDATE, /* in-txn version re-read passed      */
+    V2S20MIG_FAIL_AFTER_TABLES,     /* tree tables created, storage
+                                     * tables rebuilt                     */
+    V2S20MIG_FAIL_AFTER_VERIFY,     /* schema-shape verification passed   */
+    V2S20MIG_FAIL_BEFORE_COMMIT     /* user_version written, pre-COMMIT   */
+} nodus_v2s20_mig_fail_t;
+
+/** Atomic S20 migration. Versions below 19 run the S9…S19 chain first,
+ *  then 19 → 20 atomically with the in-transaction revalidation.
+ *  @return 0 migrated or already at 20 (idempotent); -1 failure (full
+ *  rollback of the running stage) — including an UNKNOWN user_version
+ *  (21+): fail closed. */
+int nodus_witness_db_migrate_v2s20(nodus_witness_t *w);
+
+/** Test variant: deterministic abort inside the 19 → 20 transaction. */
+int nodus_witness_db_migrate_v2s20_ex(nodus_witness_t *w,
+                                      nodus_v2s20_mig_fail_t fail_at);
+
+/** Read-only S20 shape verifier, run at EVERY open (nodus_witness.c post-
+ *  open gate): on a database at user_version 20 every tree / dirty /
+ *  shadow table and every storage table must carry exactly its S20 text
+ *  and the registry's payee index must exist (the same comparison the
+ *  rung makes). Nothing is written. @return 0 shape held, or the database
+ *  is not at S20 (nothing to hold); -1 drift or fault — refuse the
+ *  database (fail closed). */
+int nodus_witness_db_verify_v2s20_shape(nodus_witness_t *w);
+
 /* ── the §18 evm_logs CURSOR SCAN (Nodus EVM red-team 1 F4) ─────────────────
  *
  * ORDER: (global_height, item_index, log_index) — the block's own order.
