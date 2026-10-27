@@ -46,7 +46,7 @@
  *     due epoch check (acknowledgements gone, a later receipt does nothing);
  *     with |nearest_R| = 1 one receipt meets it; the acknowledging fps
  *     survive a store reopen; an acknowledger that left nearest_R does not
- *     count; at the due epoch the quorum is re-counted (not met → not
+ *     count; after the due epoch the quorum is re-counted (not met → not
  *     dropped; met at a later check → dropped); a pending record whose
  *     nearest_R shrinks to the member that already acknowledged is scheduled
  *     at the next epoch check with no new receipt, and one whose quorum is
