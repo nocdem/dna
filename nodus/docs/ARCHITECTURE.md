@@ -1514,10 +1514,14 @@ browser ──wss://<node IP>:443──► Caddy (TLS, X-Forwarded-For) ──ws
 | Key | Default | Meaning |
 |---|---|---|
 | `ws_port` | `0` = off | TCP port of the entry. The address is ALWAYS `127.0.0.1` (`nodus_tcp_ws_listen`); there is no key for it. Must differ from `tcp_port`, `peer_port`, `witness_port`, `ch_port` (checked in `nodus_server_init`). |
-| `ws_origins` | `["https://wallet.nodusnetwork.io", "https://connect.nodusnetwork.io"]` (Connect since 0.23.8) | Allowed browser `Origin` values, exact byte match, at most 8 × 255 bytes. An empty or absent list means the default. |
+There is no Origin setting. The entry does not read the browser `Origin` header, so any
+site, the wallet browser extension (`chrome-extension://<id>`) or a non-browser program
+can open it. Until 2026-10-27 a `ws_origins` list (default: the wallet and Connect sites)
+answered 403 to every other Origin. No decision record stated that list, and it refused
+the wallet extension and every other site. An old `"ws_origins"` key in `nodus.json` is
+now ignored.
 
-Startup logs `WebSocket entry listening on 127.0.0.1:<port>, <n> allowed origin(s)`
-and one line per origin.
+Startup logs `WebSocket entry listening on 127.0.0.1:<port>`.
 
 **One transport, two listening sockets.** The entry is NOT a second `nodus_tcp_t`.
 `srv->tcp` owns a second listening socket (`ws_listen_fd`, epoll marker
@@ -1536,8 +1540,8 @@ by `test_ws_frame` / `test_ws_upgrade`:
   `GET <origin-form> HTTP/1.1`; exactly one `Host`; `Upgrade` list contains
   `websocket` and `Connection` list contains `Upgrade` (case-insensitive);
   `Sec-WebSocket-Version: 13` (else 426 with `Sec-WebSocket-Version: 13`); exactly one
-  `Sec-WebSocket-Key` that is canonical base64 of 16 bytes (else 400); exactly one
-  `Origin`, in `ws_origins` (else 403). `Sec-WebSocket-Protocol` containing `binary`
+  `Sec-WebSocket-Key` that is canonical base64 of 16 bytes (else 400). `Origin` is not
+  read. `Sec-WebSocket-Protocol` containing `binary`
   (what Emscripten sends) is echoed. `Sec-WebSocket-Accept` = base64(SHA-1(key ‖
   `258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)) through OpenSSL `EVP_sha1` (§1.3 vector
   pinned in the tests).
@@ -1616,12 +1620,14 @@ connection refused`, `ws: N upgrades pending, new connection refused`, `ws: upgr
 End-to-end coverage: `test_ws_server` (real server with `ws_port`, loopback client:
 Upgrade; since DHT v2 3b-2 an OLD plaintext tier-2 `hello` inside a WebSocket frame is
 refused — no `challenge`, the connection closed — the sealed session over WS being
-covered by `test_tcp_sc`; ping/pong, 403, the
+covered by `test_tcp_sc`; ping/pong, an extension Origin (`chrome-extension://…`)
+answered 101 and its connection leaving the pool after the client closes, the
 21st connection from one `X-Forwarded-For` address, the 21st address in one IPv6 /64
 while another /64 is served, the sweep with a supplied clock, text frame → close
 1003, and the 257th WebSocket connection refused at accept with 256 in the pool).
 Codec coverage: `test_ws_upgrade` (incl. a complete 8193-byte head refused, a bare CR
-in a header line, repeated Host / Origin / Version, the /64 bucket) and
+in a header line, repeated Host / Version, an absent, foreign, extension, opaque or
+repeated Origin all accepted, the /64 bucket) and
 `test_ws_frame` (incl. close codes 999/1004/1005/1006/1015/2999/5000 refused and
 3000/4999 echoed, a 125-byte ping answered, invalid-UTF-8 close reason → 1007, every
 branch of the UTF-8 check).

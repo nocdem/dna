@@ -116,12 +116,9 @@ typedef struct {
      * ws_port: nodus.json "ws_port"; 0 = OFF (default). The listener is
      * ALWAYS bound to 127.0.0.1 — there is no address setting; the public
      * side is a local TLS proxy (Caddy). It is a second listening socket of
-     * `tcp` (the client transport), not a separate transport.
-     * ws_origins: nodus.json "ws_origins" (array of strings); allowed
-     * browser Origin values, exact match. count 0 = the default
-     * NODUS_WS_DEFAULT_ORIGIN, applied in nodus_server_init. */
+     * `tcp` (the client transport), not a separate transport. The entry
+     * does not read the browser Origin header (nodus_ws.h). */
     uint16_t            ws_port;
-    nodus_ws_origins_t  ws_origins;
 
     /* Node-local address history index (decision docs/plans/decisions/
      * 2026-10-01-node-address-history-index.md rev 2;

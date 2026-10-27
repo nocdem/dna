@@ -117,7 +117,7 @@ typedef struct {
      * PIN"); a key whose fingerprint is not in the list aborts the handshake.
      *
      * The array is owned by the caller and must outlive the client (it is
-     * not copied; same rule as nodus_tcp_t.ws_origins). count > 0 with a
+     * not copied). count > 0 with a
      * NULL pointer, or count < 0, also makes nodus_client_init() fail. */
     const nodus_key_t          *pinned_server_fps;
     int                         pinned_server_fp_count;

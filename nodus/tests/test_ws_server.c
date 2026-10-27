@@ -7,7 +7,7 @@
  * the event loop. A plain C client connects over loopback.
  *
  * What it proves (each would be false if it failed):
- *   1. An Upgrade with an allowed Origin and an X-Forwarded-For gets 101 with
+ *   1. An Upgrade with the wallet site's Origin and an X-Forwarded-For gets 101 with
  *      the correct Sec-WebSocket-Accept and the "binary" subprotocol echo.
  *   2. After the Upgrade the stream is the SecretConnection (DHT v2 3b-2),
  *      not nodus frames: an OLD plaintext nodus "hello" carried in a masked
@@ -15,7 +15,9 @@
  *      closes the connection. (The sealed session over WS is covered at the
  *      transport level by test_tcp_sc.c.)
  *   3. ping → pong with the same payload.
- *   4. A disallowed Origin gets 403 and the connection is closed.
+ *   4. The Origin is not read: the wallet extension's origin
+ *      (chrome-extension://…) also gets 101, and the connection leaves
+ *      the pool once the client closes it.
  *   5. The per-real-IP limit counts WS connections by X-Forwarded-For:
  *      20 open connections with one XFF address are served, the 21st is
  *      closed without a 101.
@@ -75,6 +77,7 @@ static int failed = 0;
 #define KEY_RFC      "dGhlIHNhbXBsZSBub25jZQ=="
 #define ACCEPT_RFC   "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
 #define XFF_IP       "198.51.100.7"
+#define WALLET_ORIGIN "https://wallet.nodusnetwork.io"
 /* Upper bound on nodus_tcp_poll rounds per wait. A liveness bound only:
  * every wait below returns as soon as its condition holds. */
 #define MAX_ROUNDS   400
@@ -242,7 +245,7 @@ static int ws_open_conn(const char *xff, rx_t *rx, int *got_101) {
     int fd = client_connect();
     if (fd < 0) return -1;
     char req[1024];
-    size_t n = upgrade_request(req, sizeof(req), NODUS_WS_DEFAULT_ORIGIN, xff, 1);
+    size_t n = upgrade_request(req, sizeof(req), WALLET_ORIGIN,xff, 1);
     memset(rx, 0, sizeof(*rx));
     if (n == 0 || send_all(fd, req, n) != 0 || rx_http_head(fd, rx) != 0)
         return fd;
@@ -268,7 +271,7 @@ static void test_upgrade_and_hello(nodus_identity_t *id) {
     TEST("Upgrade → 101, RFC accept, binary echoed");
     int fd = client_connect();
     char req[1024];
-    size_t n = upgrade_request(req, sizeof(req), NODUS_WS_DEFAULT_ORIGIN, XFF_IP, 1);
+    size_t n = upgrade_request(req, sizeof(req), WALLET_ORIGIN,XFF_IP, 1);
     int ok = fd >= 0 && n > 0 && send_all(fd, req, n) == 0 &&
              rx_http_head(fd, rx) == 0 &&
              rx->len >= 12 && memcmp(rx->buf, "HTTP/1.1 101", 12) == 0 &&
@@ -345,19 +348,43 @@ static void test_upgrade_and_hello(nodus_identity_t *id) {
     free(rx);
 }
 
-static void test_origin_refused(void) {
-    TEST("disallowed Origin → 403 and close");
+/* The entry does not read Origin: the wallet extension's origin gets the
+ * same 101 as the wallet site. Its own XFF address, and the connection is
+ * gone from the pool before the per-IP and total-cap tests run. */
+static void test_extension_origin_accepted(void) {
+    TEST("extension Origin → 101 (Origin not read)");
     rx_t *rx = calloc(1, sizeof(*rx));
     int fd = client_connect();
     char req[1024];
-    size_t n = upgrade_request(req, sizeof(req), "https://evil.example", XFF_IP, 0);
+    size_t n = upgrade_request(req, sizeof(req),
+                               "chrome-extension://kengijpmabcdefghijklmnopabcdefgh",
+                               "198.51.100.8", 1);
     int ok = rx && fd >= 0 && n > 0 && send_all(fd, req, n) == 0 &&
              rx_http_head(fd, rx) == 0 &&
-             rx->len >= 12 && memcmp(rx->buf, "HTTP/1.1 403", 12) == 0 &&
-             rx_until_eof(fd, rx) == 1;
-    if (ok) PASS(); else FAIL("not refused");
+             rx->len >= 12 && memcmp(rx->buf, "HTTP/1.1 101", 12) == 0;
+    if (ok) PASS(); else FAIL("not accepted");
+    /* Present in the pool as an open WS connection before the close, so the
+     * "leaves" check below cannot pass for a connection that never got in. */
+    int present = 0;
+    for (int i = 0; ok && i < NODUS_TCP_MAX_CONNS; i++) {
+        nodus_tcp_conn_t *c = g_srv.tcp.pool[i];
+        if (c && c->is_ws && c->ws_open && strcmp(c->ip, "198.51.100.8") == 0) present++;
+    }
     if (fd >= 0) close(fd);
     free(rx);
+
+    TEST("the closed extension connection leaves the pool");
+    if (present != 1) { FAIL("not in the pool after the 101"); return; }
+    int gone = 0;
+    for (int r = 0; r < MAX_ROUNDS && !gone; r++) {
+        pump_once();
+        gone = 1;
+        for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+            nodus_tcp_conn_t *c = g_srv.tcp.pool[i];
+            if (c && c->is_ws && strcmp(c->ip, "198.51.100.8") == 0) gone = 0;
+        }
+    }
+    if (gone) PASS(); else FAIL("still in the pool");
 }
 
 static void test_per_ip_limit(void) {
@@ -551,7 +578,7 @@ int main(void) {
     config.peer_port    = 15302;
     config.ch_port      = 15303;
     config.witness_port = 15304;
-    config.ws_port      = WS_PORT;      /* origins left empty → default */
+    config.ws_port      = WS_PORT;
     snprintf(config.data_path, sizeof(config.data_path),
              "/tmp/nodus_ws_server_test_%d", (int)getpid());
 
@@ -574,14 +601,11 @@ int main(void) {
      * SecretConnection, which needs the node's chain id — no witness here. */
     ts_server_chain(&g_srv, 0x77);
 
-    TEST("WS entry listens on 127.0.0.1 with the default origin");
-    if (g_srv.tcp.ws_listen_fd >= 0 && g_srv.tcp.ws_port == WS_PORT &&
-        g_srv.config.ws_origins.count == 2 &&
-        strcmp(g_srv.config.ws_origins.origin[0], NODUS_WS_DEFAULT_ORIGIN) == 0 &&
-        strcmp(g_srv.config.ws_origins.origin[1], NODUS_WS_CONNECT_ORIGIN) == 0)
+    TEST("WS entry listens on 127.0.0.1");
+    if (g_srv.tcp.ws_listen_fd >= 0 && g_srv.tcp.ws_port == WS_PORT)
         PASS();
     else
-        FAIL("listener / default origin");
+        FAIL("listener");
 
     nodus_identity_t *id = calloc(1, sizeof(*id));
     if (!id || nodus_identity_generate(id) != 0) {
@@ -589,7 +613,7 @@ int main(void) {
         failed++;
     } else {
         test_upgrade_and_hello(id);
-        test_origin_refused();
+        test_extension_origin_accepted();
         test_per_ip_limit();
         test_ipv6_prefix_limit();
         test_handshake_timeout();

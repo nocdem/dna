@@ -1979,8 +1979,7 @@ static bool ws_feed_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
  * Returns true if conn was closed. */
 static bool ws_try_upgrade(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     nodus_ws_hs_result_t res;
-    int rc = nodus_ws_handshake_parse(conn->rbuf, conn->rlen, conn->ip,
-                                      tcp->ws_origins, &res);
+    int rc = nodus_ws_handshake_parse(conn->rbuf, conn->rlen, conn->ip, &res);
     if (rc == NODUS_WS_HS_NEED_MORE)
         return false;
 
@@ -2616,13 +2615,12 @@ int nodus_tcp_listen(nodus_tcp_t *tcp, const char *bind_ip, uint16_t port) {
 #endif
 }
 
-int nodus_tcp_ws_listen(nodus_tcp_t *tcp, uint16_t port,
-                        const nodus_ws_origins_t *origins) {
+int nodus_tcp_ws_listen(nodus_tcp_t *tcp, uint16_t port) {
 #ifndef NODUS_TCP_EPOLL
-    (void)tcp; (void)port; (void)origins;
+    (void)tcp; (void)port;
     return -1;  /* Server is Linux-only (not Windows, not the browser) */
 #else
-    if (!tcp || !origins || origins->count <= 0 || tcp->ws_listen_fd >= 0)
+    if (!tcp || tcp->ws_listen_fd >= 0)
         return -1;
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -2662,7 +2660,6 @@ int nodus_tcp_ws_listen(nodus_tcp_t *tcp, uint16_t port,
 
     tcp->ws_listen_fd = fd;
     tcp->ws_port = ntohs(addr.sin_port);
-    tcp->ws_origins = origins;
     return 0;
 #endif
 }
