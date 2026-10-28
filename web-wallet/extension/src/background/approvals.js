@@ -6,7 +6,7 @@ import { ApprovalType } from '@metamask/controller-utils';
 const BLOCKABLE_METHODS = new Set([
   'wallet_addEthereumChain', 'eth_sendTransaction', 'eth_signTypedData', 'eth_signTypedData_v1',
   'eth_signTypedData_v3', 'eth_signTypedData_v4', 'personal_sign', 'wallet_switchEthereumChain',
-  'wallet_sendCalls', 'wallet_watchAsset',
+  'wallet_sendCalls', 'wallet_watchAsset', 'nodus_signMessage',
 ]);
 const TEST_ORIGINS = ['http://127.0.0.1:8080', 'http://127.0.0.1:8081', 'http://127.0.0.1:8082',
   'http://localhost:8080', 'http://localhost:8081', 'http://localhost:8082'];
@@ -67,7 +67,7 @@ export function createApprovals({ messenger, runtime, windows, tabs, platform, g
     // Port: wallet-init/instance-options/approval-controller.ts:27-36.
     // Plan §3.4:318-319 removes snaps, including the reference's additional snap-dialog exclusion.
     typesExcludedFromRateLimiting: [ApprovalType.PersonalSign, ApprovalType.EthSignTypedData, ApprovalType.Transaction,
-      ApprovalType.WatchAsset, ApprovalType.EthGetEncryptionPublicKey, ApprovalType.EthDecrypt],
+      ApprovalType.WatchAsset, ApprovalType.EthGetEncryptionPublicKey, ApprovalType.EthDecrypt, 'nodus_signMessage'],
     showApprovalRequest: () => {
       // The pinned controller invokes this callback without awaiting its promise (:117).
       // background.ts:1088-1100 resets only the opening flag on failure, leaving pending approvals intact.

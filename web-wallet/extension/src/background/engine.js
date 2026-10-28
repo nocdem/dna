@@ -7,7 +7,7 @@ import { createEngineStream } from '@metamask/json-rpc-middleware-stream';
 import createFilterMiddleware from '@metamask/eth-json-rpc-filters';
 import createSubscriptionManager from '@metamask/eth-json-rpc-filters/subscriptionManager.js';
 import { createWalletMiddleware, providerAsMiddleware } from '@metamask/eth-json-rpc-middleware';
-import { rpcErrors, serializeError } from '@metamask/rpc-errors';
+import { rpcErrors, providerErrors, serializeError } from '@metamask/rpc-errors';
 import { convertHexToDecimal } from '@metamask/controller-utils';
 import log from 'loglevel';
 import { CHAINS } from '../../../src/config.js';
@@ -64,7 +64,7 @@ function createDupeReqFilterStream() {
   });
 }
 
-export function createRequestEngine({ runtime, permissions, approvals, autoLockAlarm, trustedApi, getUiPorts, evm, networkClient: initialNetworkClient }) {
+export function createRequestEngine({ runtime, permissions, approvals, autoLockAlarm, trustedApi, getUiPorts, evm, nodus, networkClient: initialNetworkClient }) {
   const connections = new Map(), ports = new Set();
   // Port: background.ts:207, 935-952, with no disconnect-time deletion in that reference path.
   const requestAccountTabIds = {};
@@ -135,11 +135,21 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
     const unsupported = new Set(['eth_signTransaction', 'eth_sign', 'eth_signTypedData', 'eth_signTypedData_v1',
       'eth_signTypedData_v3', 'wallet_addEthereumChain', 'wallet_watchAsset', 'eth_getEncryptionPublicKey', 'eth_decrypt']);
     engine.push((req, _res, next, end) => unsupported.has(req.method) ? end(rpcErrors.methodNotSupported()) : next());
+    // Decision 2026-10-28-extension-nodus-site-signing.md:20: refuse disk-page Nodus calls before permissions.
+    engine.push((req, _res, next, end) => {
+      if (origin === 'null' && ['nodus_requestAccounts', 'nodus_signMessage'].includes(req.method)) return end(providerErrors.unauthorized());
+      return next();
+    });
     engine.push(permissions.createEthAccountsMethodMiddleware());
     if (subjectType !== 'internal') engine.push(permissions.createPermissionMiddleware(origin));
     // Port: metamask-controller.js:5476-5480, after permission checks and before the EIP-1193 handlers.
     engine.push(createEvmMethodsToNonEvmAccountReqFilterMiddleware({ getSelectedAccount: () => permissions.getSelectedAccount() }));
     engine.push(permissions.createEip1193MethodMiddleware());
+    engine.push((req, res, next, end) => {
+      if (req.method !== 'nodus_signMessage') return next();
+      if (!nodus) return end(rpcErrors.methodNotSupported());
+      nodus.signMessage(origin, req.params).then(result => { res.result = result; end(); }, end);
+    });
     engine.push((req, res, next, end) => {
       if (req.method !== 'wallet_switchEthereumChain' || !evm) return next();
       evm.switchChain(origin, req.params).then(result => { res.result = result; end(); }, end);
@@ -248,7 +258,7 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
       port.onMessage.addListener(message => {
         if (message && typeof message === 'object' && !Array.isArray(message) &&
           message.data && typeof message.data === 'object' && !Array.isArray(message.data) &&
-          message.data.method === 'eth_requestAccounts' && tabId !== undefined) requestAccountTabIds[origin] = tabId;
+          ['eth_requestAccounts', 'nodus_requestAccounts'].includes(message.data.method) && tabId !== undefined) requestAccountTabIds[origin] = tabId;
       });
     }
     // Port: background.ts:807-808, 968: only page streams disable chunking.

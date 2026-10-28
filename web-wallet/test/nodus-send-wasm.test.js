@@ -37,7 +37,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { NODUS_SEND_NETWORK, nodusSendModuleFactory, validateNodusSendNetwork, NODUS_CLAIM_DATA, validateNodusClaimData } from '../src/nodus/send-module.js';
+import { createNodusSendModule, NODUS_SEND_NETWORK, nodusSendModuleFactory, validateNodusSendNetwork, NODUS_CLAIM_DATA, validateNodusClaimData } from '../src/nodus/send-module.js';
 
 const wasmBytes = readFileSync(new URL('../src/nodus/send.wasm', import.meta.url));
 const glue = readFileSync(new URL('../src/nodus/send.js', import.meta.url), 'utf8');
@@ -49,6 +49,7 @@ const ENTRY_POINTS = [
   'nsw_built_in', 'nsw_net_reset', 'nsw_net_set_chain', 'nsw_net_add_endpoint', 'nsw_net_add_pin', 'nsw_unlock',
   // the split unlock: identify (local) and connect (network)
   'nsw_identify', 'nsw_connect',
+  'nsw_site_message_alloc', 'nsw_site_sign_message', 'nsw_site_signature', 'nsw_site_public_key',
   'nsw_balance', 'nsw_list', 'nsw_build_and_sign', 'nsw_req_env_alloc', 'nsw_submit', 'nsw_scan', 'nsw_tick',
   'nsw_cancel', 'nsw_lock', 'nsw_fingerprint', 'nsw_chain_hex', 'nsw_bal_total', 'nsw_bal_spendable', 'nsw_list_tip',
   'nsw_list_truncated', 'nsw_list_count', 'nsw_list_nul', 'nsw_list_amount', 'nsw_scan_tip', 'nsw_scan_height',
@@ -285,6 +286,82 @@ async function loadParity(file, fixedRandom) {
   const str = (name, types = [], args = []) => M.ccall(name, 'string', types, args);
   return { M, num, str };
 }
+
+// Node >=22.14; needs freshly built parity WASM + native vector. No node,
+// no writes. Skips without both artifacts; equality alone would not prove
+// the digest construction, so the native mode uses nodus_sign_site_message
+// and verifies the WASM result with nodus_verify_site_message.
+for (const origin of ['https://site.example', 'https://iyi.co', 'https://iyi.com:8443'])
+for (const message of [new Uint8Array(0), new TextEncoder().encode('Sign in to site'),
+  new Uint8Array([0, 255, 128, 10]), new Uint8Array(23).fill(0x23), new Uint8Array(55).fill(0x55)]) {
+  test(`site message parity: ${origin} ${hex(message)} binds origin with NDS1 0x0C`, { skip: skipParity }, async () => {
+    const { M, num } = await loadParity('send-test-node.mjs', true);
+    const originBytes = new TextEncoder().encode(origin);
+    const invoke = () => num('nsw_site_sign_message', ['number', 'number'], [originBytes.length, message.length]);
+    function loadMessage() {
+      const at = num('nsw_site_message_alloc', ['number'], [originBytes.length + message.length]);
+      assert.ok(at); M.HEAPU8.set(originBytes, at); M.HEAPU8.set(message, at + originBytes.length);
+    }
+    loadMessage(); assert.equal(invoke(), -1, 'a fresh module has no identity');
+    assert.equal(num('nsw_net_reset'), 0);
+    assert.equal(num('nsw_net_set_chain', ['string'], [INPUT.chain]), 0);
+    assert.equal(num('nsw_net_add_endpoint', ['string', 'number'], ['127.0.0.1', 14000]), 0);
+    assert.equal(num('nsw_net_add_pin', ['string'], ['01'.repeat(64)]), 0);
+    M.HEAPU8.set(INPUT.seed, num('nsw_seed_buf'));
+    assert.equal(num('nsw_identify'), 0);
+    M.HEAPU8.set(INPUT.signRandom, num('nsw_test_random_buf'));
+    assert.equal(num('nsw_test_random_load', ['number'], [32]), 0);
+    loadMessage(); assert.equal(invoke(), 0);
+    const at = num('nsw_site_signature'), pk = num('nsw_site_public_key');
+    const signature = hex(M.HEAPU8.slice(at, at + 4627)), publicKey = hex(M.HEAPU8.slice(pk, pk + 2592));
+    const native = Object.fromEntries(execFileSync(VECTOR_BIN, ['site-message', '--seed', hex(INPUT.seed),
+      '--origin', origin, '--message', hex(message), '--sign-random', hex(INPUT.signRandom)], { encoding: 'utf8' }).trim().split('\n').map(row => row.split('=')));
+    assert.deepEqual({ signature, public_key: publicKey, address: M.ccall('nsw_fingerprint', 'string', [], []) }, native);
+    assert.equal(createHash('sha3-512').update(Buffer.from(publicKey, 'hex')).digest('hex'), M.ccall('nsw_fingerprint', 'string', [], []));
+    execFileSync(VECTOR_BIN, ['site-message', '--seed', hex(INPUT.seed), '--origin', origin, '--message', hex(message),
+      '--sign-random', hex(INPUT.signRandom), '--verify-signature', signature]);
+    assert.ok(M.HEAPU8.subarray(at, at + 4627).some(byte => byte !== 0), 'lock must wipe a live signature');
+    num('nsw_cancel'); assert.equal(invoke(), -1);
+    num('nsw_lock'); assert.equal(num('nsw_site_public_key'), 0);
+    assert.deepEqual([...M.HEAPU8.slice(at, at + 4627)], Array(4627).fill(0));
+  });
+}
+
+// Same parity prerequisites and skip as above; no network or output files.
+// The real adapter packs unequal origin/message lengths and binary message
+// bytes (including NUL), then native nodus_verify_site_message checks them.
+// Swapping either the buffers or their lengths must fail this verification.
+test('send-module siteSignMessage packs the origin and message for native verification', { skip: skipParity }, async t => {
+  const { M, num } = await loadParity('send-test-node.mjs', true);
+  const module = await createNodusSendModule({ chainId: INPUT.chain, scheme: 'ws',
+    endpoints: [{ host: '127.0.0.1', port: 14000 }], pins: ['01'.repeat(64)] },
+  { loadGlue: async () => ({ default: async () => M }), startIndex: 0 });
+  t.after(() => module.lock());
+  const identity = await module.identify({ seed: INPUT.seed });
+  const origin = 'https://iyi.com:8443', message = new Uint8Array([0, 255, 128, 10, 65]);
+  assert.notEqual(new TextEncoder().encode(origin).length, message.length);
+  M.HEAPU8.set(INPUT.signRandom, num('nsw_test_random_buf'));
+  assert.equal(num('nsw_test_random_load', ['number'], [INPUT.signRandom.length]), 0);
+  const signature = hex(await module.siteSignMessage({ origin, message }));
+  const native = vectorLines(['site-message', '--seed', hex(INPUT.seed), '--origin', origin,
+    '--message', hex(message), '--sign-random', hex(INPUT.signRandom), '--verify-signature', signature]);
+  assert.equal(signature, native.signature);
+  assert.equal(identity.publicKey, native.public_key);
+  assert.equal(identity.fingerprint, native.address);
+});
+
+test('site message input is wiped when cancellation makes nsw_begin fail', { skip: skipParity }, async () => {
+  const { M, num } = await loadParity('send-test-node.mjs', true);
+  const at = num('nsw_site_message_alloc', ['number'], [256]);
+  assert.ok(at);
+  M.HEAPU8.fill(0xa5, at, at + 256);
+  num('nsw_cancel');
+  assert.equal(num('nsw_site_sign_message', ['number', 'number'], [20, 236]), -1);
+  // Inspect the allocation's interior: free() may write allocator metadata
+  // at its edges. A failed begin must still have wiped the message first.
+  assert.deepEqual([...M.HEAPU8.slice(at + 32, at + 224)], Array(192).fill(0));
+  num('nsw_lock');
+});
 // Loads claim data into a module; returns the first failing step's rc (0 = sealed).
 function loadClaimData({ num }, manifest, manifestHash, leaves) {
   let rc = num('nsw_claim_reset');

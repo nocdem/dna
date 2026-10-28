@@ -12,11 +12,12 @@ import { activityKeyFor, parseActivity, serializeActivity, serializeWithoutQuara
 import { ACTIVITY_KEY, VAULT_KEY } from '../../../src/vault.js';
 import { EvmAccount, Contract, describeArgs } from '../../../src/evm/contract.js';
 import { parseRaw, parseWei, formatRaw, formatWei } from '../../../src/evm/units.js';
-import { rpcErrors } from '@metamask/rpc-errors';
+import { rpcErrors, providerErrors } from '@metamask/rpc-errors';
+import { Buffer } from 'buffer';
 
 // Approved plan §3.5 holder 3 / §5.4–5.5: the web-wallet client and its one
 // module queue live in the background. No secret or signed envelope enters UI state.
-export function createNodus({ lockCoordinator, storage, getAddresses, factory = nodusSendModuleFactory }) {
+export function createNodus({ lockCoordinator, storage, getAddresses, factory = nodusSendModuleFactory, approvals, getPermittedAccounts }) {
   let session, nextReview = 0, writes = Promise.resolve();
   function lock() {
     const previous = session; session = undefined;
@@ -175,10 +176,67 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
   }
   return {
     consumeNodusSeed,
+    getAccount() {
+      const s = active(), publicKey = s.client.publicKey;
+      if (typeof publicKey !== 'string' || !/^[0-9a-f]{5184}$/.test(publicKey)) throw new Error('Nodus site signing is not available in this wallet build.');
+      return { address: s.addresses.nodus, publicKey: `0x${publicKey}` };
+    },
+    async signMessage(origin, params) {
+      // Surface only: pinned MetaMask eth-json-rpc-middleware 24.0.2
+      // dist/wallet.mjs:257-297 (personal_sign [message, account], including
+      // recognizable reversed ordering). Nodus's address replaces EVM's.
+      if (!getPermittedAccounts(origin).length) throw providerErrors.unauthorized();
+      if (!Array.isArray(params) || params.length < 2) throw rpcErrors.invalidInput();
+      const resemblesAddress = value => typeof value === 'string' && /^[0-9a-f]{128}$/i.test(value);
+      const reversed = resemblesAddress(params[0]) && !resemblesAddress(params[1]);
+      const from = reversed ? params[0] : params[1], data = reversed ? params[1] : params[0];
+      if (!resemblesAddress(from) || !data || typeof data !== 'string') throw rpcErrors.invalidParams('Invalid site message.');
+      const account = from.toLowerCase(), s = active();
+      const assertCurrent = () => {
+        current(s); lockCoordinator.assertUnlocked(); s.assertReady?.();
+        if (account !== s.addresses.nodus || !getPermittedAccounts(origin).some(item => item.address === account && item.publicKey === `0x${s.client.publicKey}`)) throw providerErrors.unauthorized();
+      };
+      assertCurrent();
+      // SignatureController 39.2.10 dist/utils/normalize.cjs:42-53:
+      // nonempty hex is bytes; "0x" and other strings use UTF-8.
+      // @metamask/utils 12.0.0 dist/hex.js:168-173 strips 0x and 0X.
+      // eth-sig-util 9.0.0 dist/utils.js:46-49 -> @ethereumjs/util
+      // 8.1.0 dist/bytes.js:145-149 left-pads odd hex before decoding.
+      const stripped = data.startsWith('0x') || data.startsWith('0X') ? data.slice(2) : data;
+      const message = Uint8Array.from(/^[0-9A-Fa-f]+$/gu.test(stripped)
+        ? Buffer.from(stripped.length % 2 ? `0${stripped}` : stripped, 'hex') : Buffer.from(data, 'utf8'));
+      // Decision 2026-10-28-extension-nodus-site-signing.md, 2026-10-29:
+      // 64 KiB of decoded bytes, refused before any approval is created.
+      if (message.length > 65536) {
+        message.fill(0);
+        throw rpcErrors.invalidParams('Site messages must not exceed 65536 bytes.');
+      }
+      const hex = `0x${Buffer.from(message).toString('hex')}`;
+      // MetaMask ui/pages/confirmations/components/confirm/info/personal-sign/
+      // personal-sign.tsx:45-50, 139-164 + ui/helpers/utils/util.js:707-719,
+      // 825-836: textContent-equivalent text, format characters escaped,
+      // 32-byte values shown as hex. Buffer replaces malformed UTF-8, as
+      // hexToText does in the reference. Full bytes remain visible too.
+      const text = message.length === 32 ? hex : Buffer.from(message).toString('utf8').replace(/\p{Cf}/gu,
+        char => `\\u${char.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`);
+      try {
+        // Same locked refusal as evm.js capture()/approved(): assert before
+        // approval and after each await; client.lock rejects queued/in-flight work.
+        await approvals.controller.addAndShowApprovalRequest({ origin, type: 'nodus_signMessage', requestData: { account, data: hex, text } });
+        assertCurrent();
+        const signature = await s.client.siteSignMessage({ origin, message }, { signal: s.abort.signal, assertCurrent });
+        try {
+          assertCurrent();
+          if (!(signature instanceof Uint8Array) || signature.length !== 4627) throw new Error('Invalid Nodus signature.');
+          return `0x${Buffer.from(signature).toString('hex')}`;
+        } finally { if (signature instanceof Uint8Array) signature.fill(0); }
+      } finally { message.fill(0); }
+    },
     reconcileQuarantine() { return session ? reconcileQuarantine(session) : Promise.resolve(); },
     discardActivity() { return discardActivity(active()); },
     getState() { return { state: session?.client.state ?? 'locked', tokens: nodusTokens(session?.client.tokenPins()), historyReadable: session?.client.historyReadable ?? false,
       evmBuildable: session?.client.evmBuildable ?? false, evmReadable: session?.client.evmReadable ?? false,
+      publicKey: session?.client.publicKey ? `0x${session.client.publicKey}` : undefined,
       // src/app.js:2559: recovery is offered only for the unlock-time read problem or quarantine.
       activityError: session?.activityBlocked ? session.activityError : '', quarantinedCount: session?.quarantined.length ?? 0 }; },
     async getBalances() {

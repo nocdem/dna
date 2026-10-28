@@ -3,6 +3,7 @@ import { validateNodusPhrase } from '../../../src/recovery.js';
 import { validateNewPassword } from '../../../src/vault.js';
 import { AUTO_LOCK_CHOICES } from '../../../src/auto-lock.js';
 import { CHAINS } from '../../../src/config.js';
+import { NODUS_PERMISSION } from '../background/permissions.js';
 import { Caip25CaveatType, Caip25EndowmentPermissionName, getPermittedEthChainIds,
   setEthAccounts, setPermittedEthChainIds } from '@metamask/chain-agnostic-permission';
 
@@ -68,6 +69,13 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
       await client.request('approvePermissionsRequest', [approved]); return refresh();
     },
     async rejectConnect(pending) { await client.request('rejectPermissionsRequest', [pending.id]); return refresh(); },
+    async approveNodusConnect(pending) {
+      const names = Object.keys(pending.requestData.permissions);
+      if (names.length !== 1 || names[0] !== NODUS_PERMISSION) throw new Error('Unsupported connection permissions.');
+      await client.request('approvePermissionsRequest', [structuredClone(pending.requestData)]); return refresh();
+    },
+    async approveNodusMessage(pending) { await client.request('resolvePendingApproval', [pending.id, true]); return refresh(); },
+    async rejectNodusMessage(pending) { await client.request('rejectPendingApproval', [pending.id]); return refresh(); },
     async approveEvm(pending) { await client.request('resolvePendingApproval', [pending.id, true]); return refresh(); },
     async rejectEvm(pending) { await client.request('rejectPendingApproval', [pending.id]); return refresh(); },
     async loadEvmBalances({ force = false } = {}) {
@@ -124,7 +132,9 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
     async selectEvmNetwork(chain) { await client.request('selectEvmNetwork', [chain]); return refresh(); },
     async setEvmEndpoint(chain, endpoint) { await client.request('setEvmEndpoint', [chain, endpoint]); return refresh(); },
     async revoke(origin) {
-      await client.request('removePermissionsFor', [{ [origin]: [Caip25EndowmentPermissionName] }]); return refresh();
+      const permissions = state?.subjects?.[origin]?.permissions;
+      const names = permissions ? [Caip25EndowmentPermissionName, NODUS_PERMISSION].filter(name => permissions[name]) : [Caip25EndowmentPermissionName];
+      await client.request('removePermissionsFor', [{ [origin]: names }]); return refresh();
     },
     async setAutoLock(minutes) {
       if (!AUTO_LOCK_CHOICES.includes(minutes)) throw new Error('Invalid auto-lock choice.');

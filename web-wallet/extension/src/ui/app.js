@@ -4,6 +4,8 @@ import { createWalletUi } from './wallet-ui.js';
 import { actionButton, renderHome, renderReceive, renderConnect, renderSites, renderSettings } from './views.js';
 import { renderEvmApproval, renderEvmSend } from './evm-screens.js';
 import { renderNodusSend, renderNodusHistory, renderNodusContracts } from './nodus-screens.js';
+import { renderNodusConnect, renderNodusSiteApproval } from './nodus-site-screens.js';
+import { NODUS_PERMISSION } from '../background/permissions.js';
 import { createPhraseFields } from '../../../src/phrase-fields.js';
 
 // Approved plan §3.2/§3.6/§7: all three trusted pages use the same web-wallet UI modules.
@@ -170,7 +172,15 @@ export async function mountWalletPage({ document = globalThis.document, window =
     }
     const pending = Object.values(state.pendingApprovals || {})[0];
     if (pending) {
-      if (['personal_sign', 'eth_signTypedData', 'transaction', 'wallet_switchEthereumChain'].includes(pending.type)) {
+      if (pending.type === 'nodus_signMessage') {
+        renderNodusSiteApproval(document, root, pending, {
+          approve: request => run(() => ui.approveNodusMessage(request)), reject: request => run(() => ui.rejectNodusMessage(request)),
+        });
+      } else if (pending.requestData?.permissions?.[NODUS_PERMISSION] && Object.keys(pending.requestData.permissions).length === 1) {
+        renderNodusConnect(document, root, state, pending, {
+          approve: request => run(() => ui.approveNodusConnect(request)), reject: request => run(() => ui.rejectConnect(request)),
+        });
+      } else if (['personal_sign', 'eth_signTypedData', 'transaction', 'wallet_switchEthereumChain'].includes(pending.type)) {
         renderEvmApproval(document, root, pending, {
           approve: request => run(() => ui.approveEvm(request)), reject: request => run(() => ui.rejectEvm(request)),
         });

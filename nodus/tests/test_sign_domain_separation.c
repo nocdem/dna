@@ -24,7 +24,7 @@
  * new in that migration, so no shipped client has ever produced or
  * verified a raw 0x09 signature — see §A below.):
  *
- *   §A the strict set is exactly {0x07, 0x08, 0x09, 0x0A, 0x0B} and nothing else
+ *   §A the strict set is exactly {0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C} and nothing else
  *      (0x09 MLKEM_BIND joined in KEM Faz 1, 2026-09-23 — tier-2, brand new;
  *      0x0A SESSION_AUTH and 0x0B WITNESS_ADDR joined in P2P-PORT F1,
  *      2026-09-26 — brand new)
@@ -331,8 +331,8 @@ static const uint8_t KAT_CHAIN_ID[32] = {
 
 /* ── §A — the strictness predicate itself ─────────────────────────── */
 
-static void test_strict_set_is_exactly_07_08(void) {
-    TEST("§A strict set is exactly {0x07, 0x08, 0x09, SESSION_AUTH 0x0A, WITNESS_ADDR 0x0B}");
+static void test_strict_set(void) {
+    TEST("§A strict set is exactly 0x07 through 0x0C");
     if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_PREPARED)) {
         FAIL("PREPARED (0x07) must be strict"); return; }
     if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_VIEWOK)) {
@@ -350,9 +350,11 @@ static void test_strict_set_is_exactly_07_08(void) {
         FAIL("SESSION_AUTH (0x0A) must be strict"); return; }
     if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_WITNESS_ADDR)) {
         FAIL("WITNESS_ADDR (0x0B) must be strict"); return; }
+    if (!nodus_sign_purpose_is_strict(NODUS_PURPOSE_SITE_MESSAGE)) {
+        FAIL("SITE_MESSAGE (0x0C) must be strict"); return; }
     /* The shipped-client bridge must stay EXACTLY as wide as it was:
      * none of 0x01-0x05 may become strict by accident. 0x06 is
-     * reserved-unimplemented, 0x0C unassigned. */
+     * reserved-unimplemented, 0x0D unassigned. */
     if (nodus_sign_purpose_is_strict(NODUS_PURPOSE_AUTH_CHALLENGE)) {
         FAIL("AUTH_CHALLENGE (0x01) must NOT be strict"); return; }
     if (nodus_sign_purpose_is_strict(NODUS_PURPOSE_KYBER_BIND)) {
@@ -365,7 +367,150 @@ static void test_strict_set_is_exactly_07_08(void) {
         FAIL("CERT (0x05) must NOT be strict"); return; }
     if (nodus_sign_purpose_is_strict(0x00)) { FAIL("0x00 strict"); return; }
     if (nodus_sign_purpose_is_strict(0x06)) { FAIL("0x06 strict"); return; }
-    if (nodus_sign_purpose_is_strict(0x0C)) { FAIL("0x0C strict"); return; }
+    for (int purpose = 0x0D; purpose <= 0xFF; purpose++) {
+        if (nodus_sign_purpose_is_strict((uint8_t)purpose)) {
+            FAIL("unassigned purpose strict"); return;
+        }
+    }
+    PASS();
+}
+
+/* Decision 2026-10-28-extension-nodus-site-signing.md, origin addendum:
+ * independently reconstruct SHA3-512(origin_len_be || origin || message).
+ * Controls prevent an always-failing verifier from passing this test. */
+static const uint8_t site_origin[] = "https://site.example";
+#define SITE_ORIGIN site_origin, (sizeof(site_origin) - 1)
+static int site_digest(uint8_t digest[64], const uint8_t *origin, size_t origin_len,
+                       const uint8_t *message, size_t message_len) {
+    uint8_t input[256];
+    if (4 + origin_len + message_len > sizeof(input)) return -1;
+    input[0] = (uint8_t)(origin_len >> 24);
+    input[1] = (uint8_t)(origin_len >> 16);
+    input[2] = (uint8_t)(origin_len >> 8);
+    input[3] = (uint8_t)origin_len;
+    memcpy(input + 4, origin, origin_len);
+    memcpy(input + 4 + origin_len, message, message_len);
+    return qgp_sha3_512(input, 4 + origin_len + message_len, digest);
+}
+
+static void test_site_message_domain(void) {
+    TEST("site messages sign their digest under NDS1 0x0C, with no raw fallback");
+    const uint8_t data[] = { 's', 'i', 't', 'e', 0, 0xff };
+    uint8_t digest[64];
+    uint8_t tagged[73] = { 'N', 'D', 'S', '1', 0x0C, 0, 0, 0, 0x40 };
+    if (site_digest(digest, SITE_ORIGIN, data, sizeof(data)) != 0) { FAIL("hash"); return; }
+    memcpy(tagged + 9, digest, sizeof(digest));
+    nodus_sig_t sig, raw;
+    if (NODUS_PURPOSE_SITE_MESSAGE != 0x0C ||
+        nodus_sign_site_message(&sig, SITE_ORIGIN, data, sizeof(data), &g_sk) != 0 ||
+        nodus_verify_site_message(&sig, SITE_ORIGIN, data, sizeof(data), &g_pk) != 0 ||
+        nodus_verify_tagged(&sig, NODUS_PURPOSE_SITE_MESSAGE, digest, sizeof(digest), &g_pk) != 0 ||
+        nodus_verify(&sig, tagged, sizeof(tagged), &g_pk) != 0) {
+        FAIL("site signature must verify over the independently built tag"); return;
+    }
+    if (nodus_verify(&sig, data, sizeof(data), &g_pk) == 0 ||
+        nodus_verify(&sig, digest, sizeof(digest), &g_pk) == 0) {
+        FAIL("site signer emitted a raw signature"); return;
+    }
+    for (int purpose = 0; purpose <= 0xFF; purpose++) {
+        if (purpose == 0x0C) continue;
+        if (nodus_verify_tagged(&sig, (uint8_t)purpose, digest, sizeof(digest), &g_pk) == 0) {
+            FAIL("site signature verified under another purpose"); return;
+        }
+        tagged[4] = (uint8_t)purpose;
+        if (nodus_verify(&sig, tagged, sizeof(tagged), &g_pk) == 0) {
+            FAIL("site signature verified over another tag"); return;
+        }
+    }
+    if (nodus_sign(&raw, digest, sizeof(digest), &g_sk) != 0 ||
+        nodus_verify(&raw, digest, sizeof(digest), &g_pk) != 0) {
+        FAIL("raw control"); return;
+    }
+    if (nodus_verify_site_message(&raw, SITE_ORIGIN, data, sizeof(data), &g_pk) == 0) {
+        FAIL("site verifier accepted raw fallback"); return;
+    }
+    PASS();
+}
+
+static void test_site_message_fixed_preimage(void) {
+    TEST("empty, 23-byte and 55-byte site messages all have a 73-byte preimage");
+    uint8_t message[55];
+    memset(message, 'm', sizeof(message));
+    const size_t lengths[] = { 0, 23, 55 };
+    for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); i++) {
+        uint8_t tagged[73] = { 'N', 'D', 'S', '1', 0x0C, 0, 0, 0, 0x40 };
+        nodus_sig_t sig;
+        if (site_digest(tagged + 9, SITE_ORIGIN, message, lengths[i]) != 0 ||
+            nodus_sign_site_message(&sig, SITE_ORIGIN, message, lengths[i], &g_sk) != 0 ||
+            nodus_verify_site_message(&sig, SITE_ORIGIN, message, lengths[i], &g_pk) != 0 ||
+            nodus_verify(&sig, tagged, sizeof(tagged), &g_pk) != 0) {
+            FAIL("site signature must cover exactly the 73-byte digest preimage"); return;
+        }
+        message[0] ^= 1;
+        if (lengths[i] && nodus_verify_site_message(&sig, SITE_ORIGIN, message, lengths[i], &g_pk) == 0) {
+            FAIL("tampered message verified"); return;
+        }
+        message[0] ^= 1;
+    }
+    PASS();
+}
+
+static void test_site_message_old_shapes_refused(void) {
+    TEST("raw signatures over old 32/64-byte site shapes cannot verify as site messages");
+    const size_t lengths[] = { 23, 55 };
+    uint8_t message[55];
+    memset(message, 'm', sizeof(message));
+    for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); i++) {
+        uint8_t old[64] = { 'N', 'D', 'S', '1', 0x0C, 0, 0, 0, 0 };
+        old[8] = (uint8_t)lengths[i];
+        memcpy(old + 9, message, lengths[i]);
+        nodus_sig_t raw;
+        if (nodus_sign(&raw, old, 9 + lengths[i], &g_sk) != 0 ||
+            nodus_verify(&raw, old, 9 + lengths[i], &g_pk) != 0) {
+            FAIL("old raw shape control"); return;
+        }
+        if (nodus_verify_site_message(&raw, SITE_ORIGIN, message, lengths[i], &g_pk) == 0) {
+            FAIL("old raw shape accepted as a site message"); return;
+        }
+    }
+    PASS();
+}
+
+static void test_site_message_origin_binding(void) {
+    TEST("site signatures bind length-prefixed origin bytes and reject the no-origin construction");
+    const uint8_t origin_a[] = "https://iyi.co", origin_b[] = "https://iyi.com";
+    const uint8_t message_a[] = "m...", message_b[] = "...";
+    uint8_t digest_a[64], digest_b[64], old_digest[64];
+    nodus_sig_t sig, old;
+    if (site_digest(digest_a, origin_a, sizeof(origin_a) - 1, message_a, sizeof(message_a) - 1) != 0 ||
+        site_digest(digest_b, origin_b, sizeof(origin_b) - 1, message_b, sizeof(message_b) - 1) != 0 ||
+        memcmp(digest_a, digest_b, sizeof(digest_a)) == 0 ||
+        nodus_sign_site_message(&sig, origin_a, sizeof(origin_a) - 1, message_a, sizeof(message_a) - 1, &g_sk) != 0 ||
+        nodus_verify_site_message(&sig, origin_a, sizeof(origin_a) - 1, message_a, sizeof(message_a) - 1, &g_pk) != 0) {
+        FAIL("length-prefixed origin control"); return;
+    }
+    if (nodus_verify_site_message(&sig, origin_b, sizeof(origin_b) - 1, message_a, sizeof(message_a) - 1, &g_pk) == 0 ||
+        nodus_verify_site_message(&sig, origin_b, sizeof(origin_b) - 1, message_b, sizeof(message_b) - 1, &g_pk) == 0) {
+        FAIL("another origin verified"); return;
+    }
+    if (qgp_sha3_512(message_a, sizeof(message_a) - 1, old_digest) != 0 ||
+        nodus_sign_tagged(&old, NODUS_PURPOSE_SITE_MESSAGE, old_digest, sizeof(old_digest), &g_sk) != 0 ||
+        nodus_verify_tagged(&old, NODUS_PURPOSE_SITE_MESSAGE, old_digest, sizeof(old_digest), &g_pk) != 0 ||
+        nodus_verify_site_message(&old, origin_a, sizeof(origin_a) - 1, message_a, sizeof(message_a) - 1, &g_pk) == 0) {
+        FAIL("old no-origin construction"); return;
+    }
+    if (nodus_sign_site_message(&sig, origin_a, 0, message_a, sizeof(message_a) - 1, &g_sk) == 0 ||
+        nodus_verify_site_message(&sig, origin_a, 0, message_a, sizeof(message_a) - 1, &g_pk) == 0 ||
+        nodus_sign_site_message(&sig, SITE_ORIGIN, message_a, SIZE_MAX, &g_sk) == 0 ||
+        nodus_verify_site_message(&sig, SITE_ORIGIN, message_a, SIZE_MAX, &g_pk) == 0) {
+        FAIL("invalid origin/overflow accepted"); return;
+    }
+#if SIZE_MAX > UINT32_MAX
+    if (nodus_sign_site_message(&sig, origin_a, (size_t)UINT32_MAX + 1, message_a, 0, &g_sk) == 0 ||
+        nodus_verify_site_message(&sig, origin_a, (size_t)UINT32_MAX + 1, message_a, 0, &g_pk) == 0) {
+        FAIL("origin length exceeds u32"); return;
+    }
+#endif
     PASS();
 }
 
@@ -610,7 +755,11 @@ int main(void) {
     /* ── O15N Faz 2A — the STRICT domains ─────────────────────────── */
     printf("\nO15N Faz 2A — strict domains (PREPARED 0x07, VIEWOK 0x08)\n");
     printf("---------------------------------------------------------\n");
-    test_strict_set_is_exactly_07_08();
+    test_strict_set();
+    test_site_message_domain();
+    test_site_message_fixed_preimage();
+    test_site_message_old_shapes_refused();
+    test_site_message_origin_binding();
     test_prepared_preimage_kat();
     test_strict_cross_domain_rejects();
     test_strict_raw_signature_refused();

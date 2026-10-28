@@ -332,6 +332,7 @@ exports_common=(
   nsw_built_change nsw_built_expiry nsw_built_n_in nsw_built_in
   nsw_net_reset nsw_net_set_chain nsw_net_add_endpoint nsw_net_add_pin
   nsw_unlock nsw_identify nsw_connect
+  nsw_site_message_alloc nsw_site_sign_message nsw_site_signature nsw_site_public_key
   # TOKENS (design docs/plans/2026-10-22-connect-native-tokens-design.md §6):
   # the pinned-token table (synchronous getters), the token send
   # (nsw_token_build_and_sign waits on the network — ccall { async: true }),

@@ -465,13 +465,39 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
   };
 
   const api = {
+    // One queue slot in client.js. The identity/sk stay inside the module;
+    // the export signs SHA3-512(origin_len_be || origin || message) with strict NDS1 purpose 0x0C
+    // (a 73-byte preimage); approvals still show the caller's message.
+    async siteSignMessage({ origin, message } = {}) {
+      if (typeof origin !== 'string' || !origin || !(message instanceof Uint8Array)) throw new Error('Invalid site origin or message bytes.');
+      const originBytes = new TextEncoder().encode(origin);
+      const length = originBytes.length + message.length;
+      if (length > 0x7fffffff) throw new Error('Invalid site message length.');
+      const at = num('nsw_site_message_alloc', ['number'], [length]);
+      if (!at) throw new Error('Could not allocate the site message.');
+      try {
+        M.HEAPU8.set(originBytes, at);
+        M.HEAPU8.set(message, at + originBytes.length);
+        check(await call('nsw_site_sign_message', ['number', 'number'], [originBytes.length, message.length]));
+        const sig = num('nsw_site_signature');
+        return M.HEAPU8.slice(sig, sig + 4627);
+      } finally {
+        // Once called, C wipes/frees the input even if nsw_begin refuses
+        // the operation. Wipe its public signature buffer after copying.
+        const sig = num('nsw_site_signature');
+        M.HEAPU8.fill(0, sig, sig + 4627);
+      }
+    },
     async unlock({ seed } = {}) {
       if (!(seed instanceof Uint8Array) || seed.length !== 32) throw new Error('Nodus signing seed must be 32 bytes.');
       // The C side wipes this copy on every path (nsw_unlock); the caller
       // wipes its own (./client.js unlock).
       M.HEAPU8.set(seed, num('nsw_seed_buf'));
       check(await call('nsw_unlock'));
-      return { fingerprint: str('nsw_fingerprint'), chainId: str('nsw_chain_hex') };
+      const pk = num('nsw_site_public_key');
+      if (!pk) throw new Error('The Nodus identity is not available.');
+      return { fingerprint: str('nsw_fingerprint'), chainId: str('nsw_chain_hex'),
+        publicKey: Array.from(M.HEAPU8.subarray(pk, pk + 2592), b => b.toString(16).padStart(2, '0')).join('') };
     },
     // The same unlock in two steps (./client.js identify / connectNetwork).
     // identify({ seed }): the identity from the seed — no client, nothing
@@ -481,7 +507,10 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
       // The C side wipes this copy on every path (nsw_identify).
       M.HEAPU8.set(seed, num('nsw_seed_buf'));
       check(await call('nsw_identify'));
-      return { fingerprint: str('nsw_fingerprint'), chainId: str('nsw_chain_hex') };
+      const pk = num('nsw_site_public_key');
+      if (!pk) throw new Error('The Nodus identity is not available.');
+      return { fingerprint: str('nsw_fingerprint'), chainId: str('nsw_chain_hex'),
+        publicKey: Array.from(M.HEAPU8.subarray(pk, pk + 2592), b => b.toString(16).padStart(2, '0')).join('') };
     },
     // connectNetwork(): the pinned session + the chain check (nsw_connect).
     // A failure may be tried again, except one marked `final` (the node

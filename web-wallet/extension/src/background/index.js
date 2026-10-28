@@ -32,7 +32,6 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     return walletKeys.getEvmWallet();
   };
   const keyring = createKeyring({ lockCoordinator, getWallet });
-  const nodus = createNodus({ ...nodusOptions, storage, lockCoordinator, getAddresses: () => walletKeys.getAddresses() });
   let restoring = Promise.resolve();
   const uiSubscriptions = new Map();
 
@@ -48,8 +47,10 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     popupCount: [...uiPorts].filter(port => port.name === 'popup').length,
     tabIds: new Set([...uiPorts].filter(port => port.name === 'fullscreen').map(port => port.sender?.tab?.id).filter(id => id !== undefined)),
   }) });
+  const nodus = createNodus({ ...nodusOptions, storage, lockCoordinator, getAddresses: () => walletKeys.getAddresses(),
+    getPermittedAccounts: origin => permissions.getNodusAccounts(origin), approvals });
   permissions = createPermissions({ messenger, approvals, store, runtime,
-    getNetworkState: options => engine.getNetworkState(options) });
+    getNetworkState: options => engine.getNetworkState(options), getNodusAccount: () => nodus.getAccount() });
   const evm = createEvm({ messenger, store, approvals, permissions, lockCoordinator, getWallet, keyring,
     onNetworkChanged: (client, readMetadata) => engine.attachNetworkClient(client, readMetadata) });
 
@@ -194,7 +195,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
       return unlock(password);
     },
   };
-  engine = createRequestEngine({ runtime, permissions, approvals, autoLockAlarm, trustedApi, getUiPorts: () => uiPorts, evm });
+  engine = createRequestEngine({ runtime, permissions, approvals, autoLockAlarm, trustedApi, getUiPorts: () => uiPorts, evm, nodus });
   engine.attachNetworkClient(evm.client, () => evm.client.metadata);
   const onPermissionsChanged = () => { void engine.notifyAccountsChanged(); };
   messenger.subscribe('PermissionController:stateChange', onPermissionsChanged);

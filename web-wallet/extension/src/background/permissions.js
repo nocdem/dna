@@ -1,4 +1,4 @@
-import { PermissionController, PermissionDoesNotExistError, SubjectMetadataController, createPermissionMiddleware } from '@metamask/permission-controller';
+import { PermissionController, PermissionDoesNotExistError, PermissionType, SubjectMetadataController, createPermissionMiddleware } from '@metamask/permission-controller';
 import { createMethodMiddleware } from '@metamask/json-rpc-engine';
 import { BaseController } from '@metamask/base-controller';
 import { isPlainObject } from '@metamask/controller-utils';
@@ -12,6 +12,12 @@ import { PROVIDER_METHODS } from '../constants/stream.js';
 
 // Port: shared/constants/app.ts:144; ADAPTATION: plan Q-9 (:999), renamed background-only method.
 export const SEND_METADATA = 'nodus_sendDomainMetadata';
+
+// Decision 2026-10-28-extension-nodus-site-signing.md: separate Nodus
+// access, stored by the existing PermissionController. The account caveat
+// retains only the approved public identity, just as EVM grants survive lock.
+export const NODUS_PERMISSION = 'endowment:nodus';
+export const NODUS_ACCOUNT_CAVEAT = 'nodusAccount';
 
 // Port: MetaMask v13.54.0 app/scripts/controllers/permissions/specifications.ts:104-198.
 // ADAPTATION: approved plan §3.3:235-246 renames methods; §3.4:312-319 removes snaps/EIP-7715/onboarding.
@@ -31,10 +37,10 @@ const unrestrictedMethods = [
   PROVIDER_METHODS.logWeb3ShimUsage, SEND_METADATA, 'net_listening', 'net_peerCount',
   'net_version', 'personal_ecRecover', 'personal_sign', 'wallet_addEthereumChain', 'wallet_getPermissions',
   'wallet_requestPermissions', 'wallet_revokePermissions', 'wallet_switchEthereumChain',
-  'wallet_watchAsset', 'web3_clientVersion', 'web3_sha3',
+  'wallet_watchAsset', 'web3_clientVersion', 'web3_sha3', 'nodus_requestAccounts', 'nodus_signMessage',
 ];
 
-export function createPermissions({ messenger, approvals, store, runtime, getNetworkState }) {
+export function createPermissions({ messenger, approvals, store, runtime, getNetworkState, getNodusAccount }) {
   let accounts = [];
   const locks = new Set();
   // Port: controllers/alert-controller.ts:102, 125-130, 215-225; only the shim handler's state is in 4a.
@@ -50,8 +56,22 @@ export function createPermissions({ messenger, approvals, store, runtime, getNet
       'ApprovalController:addRequest', 'ApprovalController:hasRequest', 'ApprovalController:acceptRequest', 'ApprovalController:rejectRequest',
     ] }),
     state: store?.getInitialState('PermissionController', { subjects: { persist: true } }),
-    permissionSpecifications: { [caip25EndowmentBuilder.targetName]: caip25EndowmentBuilder.specificationBuilder({}) },
-    caveatSpecifications: { [Caip25CaveatType]: caip25CaveatBuilder({
+    // Same Endowment + validator structure as pinned chain-agnostic-
+    // permission 1.6.2 dist/caip25Permission.cjs:168-180; no invented CAIP
+    // chain identifier is needed for these separately defined site calls.
+    permissionSpecifications: { [caip25EndowmentBuilder.targetName]: caip25EndowmentBuilder.specificationBuilder({}),
+      [NODUS_PERMISSION]: { permissionType: PermissionType.Endowment, targetName: NODUS_PERMISSION,
+        allowedCaveats: [NODUS_ACCOUNT_CAVEAT], endowmentGetter: () => null,
+        validator(permission) {
+          if (permission.caveats?.length !== 1 || permission.caveats[0].type !== NODUS_ACCOUNT_CAVEAT) throw rpcErrors.invalidParams('Select a Nodus account.');
+        } },
+    },
+    caveatSpecifications: {
+      [NODUS_ACCOUNT_CAVEAT]: { type: NODUS_ACCOUNT_CAVEAT,
+        validator({ value }) {
+          if (!value || !/^[0-9a-f]{128}$/.test(value.address) || !/^0x[0-9a-f]{5184}$/.test(value.publicKey)) throw rpcErrors.invalidParams('Invalid Nodus account.');
+        } },
+      [Caip25CaveatType]: caip25CaveatBuilder({
       listAccounts: () => accounts.map(address => ({ type: 'eip155:eoa', address })),
       findNetworkClientIdByChainId(chainId) {
         const entry = ['ethereum', 'bsc'].find(name => `0x${CHAINS[name].chainId.toString(16)}` === chainId);
@@ -83,6 +103,11 @@ export function createPermissions({ messenger, approvals, store, runtime, getNet
     return getEthAccounts(caveat.value);
   }
 
+  function getNodusAccounts(origin) {
+    try { return [structuredClone(controller.getCaveat(origin, NODUS_PERMISSION, NODUS_ACCOUNT_CAVEAT).value)]; }
+    catch (error) { if (error instanceof PermissionDoesNotExistError) return []; throw error; }
+  }
+
   function getChainIds(origin) {
     try { return getPermittedEthChainIds(controller.getCaveat(origin, Caip25EndowmentPermissionName, Caip25CaveatType).value); }
     catch (error) { if (error instanceof PermissionDoesNotExistError) return []; throw error; }
@@ -101,6 +126,13 @@ export function createPermissions({ messenger, approvals, store, runtime, getNet
 
   async function acceptPermissionsRequest(request) {
     // Port: metamask-controller.js:3278-3280, legacy-background-api-service.ts:3102-3113; signing remains guarded in keyring.js.
+    if (Object.hasOwn(request.permissions, NODUS_PERMISSION)) {
+      // The background selects its own identity at approval time. A site or
+      // even a stale UI cannot install a different account/public key.
+      request = structuredClone(request);
+      request.permissions[NODUS_PERMISSION] = { ...request.permissions[NODUS_PERMISSION],
+        caveats: [{ type: NODUS_ACCOUNT_CAVEAT, value: getNodusAccount() }] };
+    }
     return controller.acceptPermissionsRequest(request);
   }
 
@@ -141,6 +173,16 @@ export function createPermissions({ messenger, approvals, store, runtime, getNet
     return end();
   }
 
+  // Same flow and locked behavior as requestAccounts above: an existing
+  // public grant returns immediately; a new grant waits in ApprovalController
+  // until the wallet UI unlocks (ui/app.js render's !state.isUnlocked branch).
+  async function requestNodusAccounts(req, res, _next, end) {
+    const permitted = getNodusAccounts(req.origin);
+    if (permitted.length) { res.result = permitted; return end(); }
+    await requestPermissionsForOrigin(req.origin, { [NODUS_PERMISSION]: {} });
+    res.result = getNodusAccounts(req.origin); return end();
+  }
+
   // Port: handlers/wallet-requestPermissions.ts:113-160.
   async function requestPermissions(req, res, _next, end) {
     if (!Array.isArray(req.params) || !isPlainObject(req.params[0])) throw rpcErrors.invalidParams();
@@ -171,7 +213,7 @@ export function createPermissions({ messenger, approvals, store, runtime, getNet
       // Port: metamask-controller.js:5540-5552 returns null for absent grants too.
       // ADAPTATION: plan §11:964-966 removes the raw error log, which may include request data.
     }
-    if (relevant.includes(Caip25EndowmentPermissionName)) approvals.rejectOrigin(req.origin);
+    if (relevant.includes(Caip25EndowmentPermissionName) || relevant.includes(NODUS_PERMISSION)) approvals.rejectOrigin(req.origin);
     res.result = null; return end();
   }
 
@@ -180,6 +222,7 @@ export function createPermissions({ messenger, approvals, store, runtime, getNet
   const handlers = {
     eth_accounts: ethAccountsHandler,
     eth_requestAccounts: { implementation: requestAccounts },
+    nodus_requestAccounts: { implementation: requestNodusAccounts },
     wallet_getPermissions: { implementation: (req, res, _next, end) => { res.result = legacyPermissions(req.origin, controller.getPermissions(req.origin)); end(); } },
     wallet_requestPermissions: { implementation: requestPermissions },
     wallet_revokePermissions: { implementation: revokePermissions },
@@ -200,7 +243,7 @@ export function createPermissions({ messenger, approvals, store, runtime, getNet
     [SEND_METADATA]: { implementation: (_req, res, _next, end) => { res.result = true; end(); } },
   };
 
-  return { controller, alertController, subjectMetadataController, getAccounts, getChainIds, requestChainPermission, acceptPermissionsRequest,
+  return { controller, alertController, subjectMetadataController, getAccounts, getNodusAccounts, getChainIds, requestChainPermission, acceptPermissionsRequest,
     setAccounts(value) { accounts = [...value]; },
     // ADAPTATION: plan Q-18 / §3.5: one HD EVM account from package 2, exposed directly instead of an AccountsController.
     // Account type / pre-creation empty address: accounts-controller 39.1.0 dist/AccountsController.cjs:73-80, 180-185.

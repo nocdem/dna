@@ -27,6 +27,7 @@ out="${NODUS_SEND_VECTOR_BIN:-/tmp/nodus-send-native-vector}"
   -DNODUS_SEND_OFFLINE_ONLY -DNODUS_SEND_TEST_FIXED_RANDOM \
   -I$root/nodus/include -I$root/nodus/src -I$root/shared -I$root/dnac/include \
   crypto/nodus-send-native-vector.c crypto/nodus-send-wasm.c \
+  $root/nodus/src/crypto/nodus_sign.c \
   $root/nodus/src/client/nodus_v2_spend.c \
   $root/nodus/src/client/nodus_v2_stake.c \
   $root/nodus/src/client/nodus_v2_evm.c \

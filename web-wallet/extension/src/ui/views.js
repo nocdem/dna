@@ -4,6 +4,7 @@ import { renderQr } from '../../../src/qr.js';
 import { AUTO_LOCK_CHOICES } from '../../../src/auto-lock.js';
 import { Caip25CaveatType, Caip25EndowmentPermissionName, getEthAccounts } from '@metamask/chain-agnostic-permission';
 import { connectDetails, extensionAutoLockNote } from './wallet-ui.js';
+import { NODUS_PERMISSION, NODUS_ACCOUNT_CAVEAT } from '../background/permissions.js';
 
 // Approved plan §3.6/§7: web-wallet networks; package 5 adds real EVM balances.
 export const NETWORKS = { nodus: NODUS_NETWORK, ...CHAINS, cellframe: CELLFRAME };
@@ -92,13 +93,15 @@ export function renderConnect(document, container, state, pending, { approve, re
 
 export function renderSites(document, container, state, revoke) {
   container.replaceChildren(); heading(document, container, 'Connected sites');
-  const sites = Object.entries(state.subjects || {}).filter(([, subject]) => subject.permissions?.[Caip25EndowmentPermissionName]);
+  const sites = Object.entries(state.subjects || {}).filter(([, subject]) => subject.permissions?.[Caip25EndowmentPermissionName] || subject.permissions?.[NODUS_PERMISSION]);
   if (!sites.length) container.append(element(document, 'p', 'hint', 'No connected sites.'));
   for (const [origin, subject] of sites) {
     const row = element(document, 'article', 'extension-site'), grant = subject.permissions[Caip25EndowmentPermissionName];
     row.append(element(document, 'h2', 'extension-origin', origin));
-    const caveat = grant.caveats?.find(item => item.type === Caip25CaveatType);
+    const caveat = grant?.caveats?.find(item => item.type === Caip25CaveatType);
     if (caveat) for (const account of getEthAccounts(caveat.value)) row.append(element(document, 'code', '', account));
+    const nodusAccount = subject.permissions[NODUS_PERMISSION]?.caveats?.find(item => item.type === NODUS_ACCOUNT_CAVEAT)?.value;
+    if (nodusAccount) row.append(element(document, 'code', '', nodusAccount.address));
     row.append(actionButton(document, 'Disconnect', () => revoke(origin))); container.append(row);
   }
 }
