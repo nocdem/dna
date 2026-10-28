@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderNodusSend, renderNodusHistory, renderNodusContracts } from '../src/ui/nodus-screens.js';
-import { renderHome } from '../src/ui/views.js';
+import { renderHome, renderSettings } from '../src/ui/views.js';
 import { createWalletUi } from '../src/ui/wallet-ui.js';
 import { NODUS_TOKEN_ID } from '../../src/nodus/network.js';
 import { mountWalletPage } from '../src/ui/app.js';
@@ -34,17 +34,53 @@ test('home displays Nodus and CPUNK values returned by the background', () => {
 });
 
 // Pins the native/token form identity and renders every module-decoded review row as text before confirming its id.
-test('Nodus send uses explicit token identity and the decoded web-wallet review', async () => {
+test('Nodus send uses explicit token identity and the decoded web-wallet review', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const root = new Node('main'), prepared = [], confirmed = [];
   const actions = { prepare: fields => prepared.push(fields), confirm: id => confirmed.push(id), cancel() {} };
   renderNodusSend(document, root, { account: address, tokens: [] }, actions);
   const inputs = find(root, node => node.tagName === 'input'); inputs[0].value = address; inputs[1].value = '1';
   await find(root, node => node.tagName === 'form')[0].onsubmit({ preventDefault() {} });
   assert.deepEqual(prepared, [{ to: address, amount: '1', tokenId: NODUS_TOKEN_ID }]);
-  renderNodusSend(document, root, { account: address, review: { id: '7', review: [['To', address], ['Network fee', '0.1 NODUS'], ['Valid until block', '100'], ['Name check', '<img src=x>']] } }, actions);
+  const expiresAt = Date.now() + 60000;
+  const stop = renderNodusSend(document, root, { account: address, review: { id: '7', expiresAt, review: [['To', address], ['Network fee', '0.1 NODUS'], ['Valid until block', '100'], ['Name check', '<img src=x>']] } }, actions);
+  t.after(stop);
   for (const text of [address, '0.1 NODUS', '100', '<img src=x>']) assert.ok(root.textContent.includes(text));
   assert.equal(find(root, node => node.tagName === 'img').length, 0);
+  assert.ok(root.textContent.includes('Review expires')); assert.ok(root.textContent.includes(new Date(expiresAt).toLocaleTimeString()));
+  assert.equal(button(root, 'Confirm send').disabled, true);
+  await button(root, 'Confirm send').onclick(); assert.deepEqual(confirmed, []);
+  t.mock.timers.tick(599); assert.equal(button(root, 'Confirm send').disabled, true);
+  t.mock.timers.tick(1); assert.equal(button(root, 'Confirm send').disabled, false);
   await button(root, 'Confirm send').onclick(); assert.deepEqual(confirmed, ['7']);
+});
+
+// Pins src/evm/ui.js showReview: decoded rows only and immediate confirmation, with both controls disabled while sending.
+test('contract reviews confirm immediately without a transfer expiry row', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const root = new Node('main'), confirmed = [], cancelled = [], expiresAt = Date.now() + 60000;
+  renderNodusContracts(document, root, { review: { id: 'contract-review', expiresAt, review: [['Amount', '1 NODUS']] } },
+    { confirm: id => confirmed.push(id), cancel: () => cancelled.push(true) });
+  assert.ok(root.textContent.includes('1 NODUS')); assert.equal(root.textContent.includes('Review expires'), false);
+  assert.equal(root.textContent.includes(new Date(expiresAt).toLocaleTimeString()), false);
+  const confirm = button(root, 'Confirm & send'); assert.equal(confirm.disabled, false);
+  await confirm.onclick(); assert.deepEqual(confirmed, ['contract-review']);
+  assert.equal(confirm.disabled, true); assert.equal(button(root, 'Cancel').disabled, true);
+  t.mock.timers.tick(600); assert.equal(confirm.disabled, true);
+  await confirm.onclick(); assert.deepEqual(confirmed, ['contract-review']); assert.deepEqual(cancelled, []);
+});
+
+// Proves recovery is visible in settings for either unreadable files or quarantined rows and invokes explicit discard.
+test('settings offer discard only when saved activity needs recovery', () => {
+  const root = new Node('main'), discarded = [];
+  for (const nodus of [{ activityError: 'Saved activity authentication failed.' }, { quarantinedCount: 1 }, {}]) {
+    renderSettings(document, root, { preferences: { autoLockTimeLimit: 15 }, nodus }, { discardActivity: () => discarded.push('discard') });
+    const discard = button(root, 'Discard unreadable history');
+    if (nodus.activityError || nodus.quarantinedCount) {
+      assert.ok(root.textContent.includes('Check the explorer')); discard.onclick();
+    } else assert.equal(discard, undefined);
+  }
+  assert.deepEqual(discarded, ['discard', 'discard']);
 });
 
 // Pins history status, local pending sends and explicit retry controls without hiding a node read error.
@@ -91,12 +127,14 @@ test('wallet UI routes Nodus requests and discards balances from a locked sessio
   await ui.prepareNodusSend({ to: address, amount: '1', tokenId: NODUS_TOKEN_ID });
   await ui.confirmNodusSend('9'); await ui.cancelNodusSend('9'); await ui.resubmitNodusSend(address);
   await ui.readNodusContract({ action: 'account' }); await ui.prepareNodusContract({ action: 'deposit', amount: '1' });
+  await ui.discardNodusActivity();
   state = { isUnlocked: true, addresses: { nodus: address } }; await ui.refresh(); await ui.loadNodusHistory();
-  for (const method of ['getNodusBalances', 'getCpunkBalance', 'prepareNodusSend', 'confirmNodusSend', 'cancelNodusSend', 'getNodusHistory', 'resubmitNodusSend', 'readNodusContract', 'prepareNodusContract']) assert.ok(calls.some(([name]) => name === method));
+  for (const method of ['getNodusBalances', 'getCpunkBalance', 'prepareNodusSend', 'confirmNodusSend', 'cancelNodusSend', 'getNodusHistory', 'resubmitNodusSend', 'readNodusContract', 'prepareNodusContract', 'discardNodusActivity']) assert.ok(calls.some(([name]) => name === method));
 });
 
 // Pins mounted app navigation from returned balances through Nodus prepare/confirm/cancel and account history.
 test('the mounted wallet routes Nodus screens through the trusted background methods', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const root = new Node('main'), navigation = new Node('nav'), status = new Node('p'), calls = [];
   const pageDocument = Object.assign(new EventTarget(), document, { getElementById: id => ({ screen: root, 'wallet-navigation': navigation, 'wallet-status': status })[id] });
   const window = Object.assign(new EventTarget(), { navigator: {} });
@@ -107,7 +145,7 @@ test('the mounted wallet routes Nodus screens through the trusted background met
     if (method === 'getState') return structuredClone(state);
     if (method === 'getNodusBalances') return [{ symbol: 'NODUS', balance: '3.0' }];
     if (method === 'getCpunkBalance') return { balance: '0.25' };
-    if (method === 'prepareNodusSend') return { id: 'mounted-review', review: [['To', address], ['Network fee', '0.1 NODUS']] };
+    if (method === 'prepareNodusSend') return { id: 'mounted-review', expiresAt: Date.now() + 60000, review: [['To', address], ['Network fee', '0.1 NODUS']] };
     if (method === 'confirmNodusSend') return address;
     if (method === 'getNodusHistory') return { rows: [], local: [], status: 'Newest entries as reported by one Nodus node.' };
     return null;
@@ -122,9 +160,104 @@ test('the mounted wallet routes Nodus screens through the trusted background met
   }
   await prepare(); button(root, 'Cancel').onclick();
   assert.ok(calls.some(([method, params]) => method === 'cancelNodusSend' && params[0] === 'mounted-review'));
-  await prepare(); await button(root, 'Confirm send').onclick();
+  await prepare(); assert.equal(button(root, 'Confirm send').disabled, true);
+  t.mock.timers.tick(600); await button(root, 'Confirm send').onclick();
   assert.ok(calls.some(([method, params]) => method === 'confirmNodusSend' && params[0] === 'mounted-review'));
-  button(root, 'History').onclick(); await new Promise(resolve => setImmediate(resolve));
+  await button(root, 'History').onclick();
   assert.ok(root.textContent.includes('one Nodus node'));
   assert.equal(calls.some(([method]) => method === 'prepareEvmSend'), false);
+});
+
+// Pins contract errors to src/evm/ui.js: keep the decoded review, display the exact message and offer Close without the transfer note.
+test('mounted contract confirm errors keep the review with its message and Close button', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const root = new Node('main'), navigation = new Node('nav'), status = new Node('p'), calls = [];
+  const pageDocument = Object.assign(new EventTarget(), document, { getElementById: id => ({ screen: root, 'wallet-navigation': navigation, 'wallet-status': status })[id] });
+  const window = Object.assign(new EventTarget(), { navigator: {} });
+  const state = { isInitialized: true, isUnlocked: true, addresses: { nodus: address }, nodus: { state: 'ready', tokens: [], evmBuildable: true, evmReadable: true },
+    preferences: { autoLockTimeLimit: 0 }, pendingApprovals: {} };
+  let tracked = true;
+  const client = { close() {}, onNotification: () => () => {}, onDisconnect: () => () => {}, async request(method, params = []) {
+    calls.push([method, params]);
+    if (method === 'getState') return structuredClone(state);
+    if (method === 'getNodusBalances') return []; if (method === 'getCpunkBalance') return { balance: '1' };
+    if (method === 'prepareNodusContract') return { id: 'failed-contract', expiresAt: Date.now() + 60000, review: [['Amount', '1 NODUS']] };
+    if (method === 'confirmNodusSend') throw Object.assign(new Error('fixture contract failure'), { data: { activityTracked: tracked } });
+  } };
+  const page = await mountWalletPage({ document: pageDocument, window, client }); t.after(page.dispose);
+  for (const hasRecord of [true, false]) {
+    tracked = hasRecord; button(root, 'Smart contracts').onclick();
+    await find(root, node => node.tagName === 'form')[0].onsubmit({ preventDefault() {} });
+    assert.equal(root.textContent.includes('Review expires'), false);
+    assert.equal(button(root, 'Confirm & send').disabled, false);
+    await button(root, 'Confirm & send').onclick();
+    assert.ok(root.textContent.includes('1 NODUS'));
+    assert.ok(find(root, node => node.tagName === 'p' && node.textContent === 'fixture contract failure').length);
+    assert.equal(`${root.textContent}${status.textContent}`.includes('tracked in Activity'), false);
+    assert.equal(button(root, 'Confirm & send').disabled, true); assert.equal(button(root, 'Close').disabled, false);
+    const attempts = calls.filter(([method]) => method === 'confirmNodusSend').length;
+    await button(root, 'Confirm & send').onclick();
+    assert.equal(calls.filter(([method]) => method === 'confirmNodusSend').length, attempts);
+    button(root, 'Close').onclick();
+    assert.equal(button(root, 'Close'), undefined); assert.ok(button(root, 'Review transaction'));
+    button(navigation, 'Home').onclick();
+  }
+  assert.equal(calls.some(([method]) => method === 'getNodusHistory'), false);
+});
+
+// Proves failed confirmation closes the review, stays on the send form and preserves the original error plus Activity tracking note.
+test('mounted Nodus confirm errors close review and show the tracked outcome without opening history', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const root = new Node('main'), navigation = new Node('nav'), status = new Node('p'), calls = [];
+  const pageDocument = Object.assign(new EventTarget(), document, { getElementById: id => ({ screen: root, 'wallet-navigation': navigation, 'wallet-status': status })[id] });
+  const window = Object.assign(new EventTarget(), { navigator: {} });
+  const state = { isInitialized: true, isUnlocked: true, addresses: { nodus: address }, nodus: { state: 'ready', tokens: [], activityError: 'Unreadable activity.' },
+    preferences: { autoLockTimeLimit: 0 }, pendingApprovals: {} };
+  let tracked = true;
+  const client = { close() {}, onNotification: () => () => {}, onDisconnect: () => () => {}, async request(method) {
+    calls.push(method);
+    if (method === 'getState') return structuredClone(state);
+    if (method === 'getNodusBalances') return [{ symbol: 'NODUS', balance: '3' }];
+    if (method === 'getCpunkBalance') return { balance: '1' };
+    if (method === 'prepareNodusSend') return { id: 'failed-review', expiresAt: Date.now() + 60000, review: [['To', address]] };
+    if (method === 'confirmNodusSend') throw Object.assign(new Error('fixture confirm failure'), { data: { activityTracked: tracked } });
+    if (method === 'discardNodusActivity') { state.nodus.activityError = ''; return 'Unreadable local history discarded.'; }
+  } };
+  const page = await mountWalletPage({ document: pageDocument, window, client }); t.after(page.dispose);
+  for (const hasRecord of [true, false]) {
+    tracked = hasRecord; button(root, 'Send').onclick();
+    const inputs = find(root, node => node.tagName === 'input'); inputs[0].value = address; inputs[1].value = '1';
+    await find(root, node => node.tagName === 'form')[0].onsubmit({ preventDefault() {} });
+    t.mock.timers.tick(600); await button(root, 'Confirm send').onclick();
+    assert.equal(button(root, 'Confirm send'), undefined); assert.ok(button(root, 'Review transfer'));
+    assert.ok(status.textContent.includes('fixture confirm failure'));
+    assert.equal(status.textContent.includes('The outcome is tracked in Activity; its coins stay held until it is included or its expiry block passes.'), hasRecord);
+    assert.equal(calls.includes('getNodusHistory'), false);
+    button(navigation, 'Home').onclick();
+  }
+  button(navigation, 'Settings').onclick(); await button(root, 'Discard unreadable history').onclick();
+  assert.ok(calls.includes('discardNodusActivity')); assert.ok(status.textContent.includes('Unreadable local history discarded.'));
+  assert.equal(button(root, 'Discard unreadable history'), undefined);
+});
+
+// Proves locking or disposing a mounted review cancels its enable timer; mock time never enables a detached confirm button.
+test('mounted Nodus review timer stops on lock and disposal', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const root = new Node('main'), navigation = new Node('nav'), status = new Node('p');
+  const pageDocument = Object.assign(new EventTarget(), document, { getElementById: id => ({ screen: root, 'wallet-navigation': navigation, 'wallet-status': status })[id] });
+  const window = Object.assign(new EventTarget(), { navigator: {} });
+  const state = { isInitialized: true, isUnlocked: true, addresses: { nodus: address }, nodus: { state: 'ready', tokens: [] }, preferences: { autoLockTimeLimit: 0 }, pendingApprovals: {} };
+  const client = { close() {}, onNotification: () => () => {}, onDisconnect: () => () => {}, async request(method) {
+    if (method === 'getState') return structuredClone(state);
+    if (method === 'prepareNodusSend') return { id: 'closing-review', expiresAt: Date.now() + 60000, review: [['To', address]] };
+    if (method === 'getNodusBalances') return []; if (method === 'getCpunkBalance') return { balance: '1' };
+  } };
+  const page = await mountWalletPage({ document: pageDocument, window, client }); t.after(page.dispose);
+  for (const closing of ['lock', 'dispose']) {
+    state.isUnlocked = true; await page.refresh(); button(root, 'Send').onclick();
+    await find(root, node => node.tagName === 'form')[0].onsubmit({ preventDefault() {} });
+    const confirm = button(root, 'Confirm send'); assert.equal(confirm.disabled, true);
+    if (closing === 'lock') { state.isUnlocked = false; await page.refresh(); } else page.dispose();
+    t.mock.timers.tick(600); assert.equal(confirm.disabled, true);
+  }
 });

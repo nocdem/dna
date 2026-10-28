@@ -11,7 +11,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
   const ui = createWalletUi(client), root = document.getElementById('screen');
   const navigation = document.getElementById('wallet-navigation'), status = document.getElementById('wallet-status');
   let page = 'home', receiveNetwork, fields, revealed, busy = false, disposed = false, revision = 0;
-  let sendChain, sendReview, contractResult;
+  let sendChain, sendReview, contractResult, stopNodusReview;
   let idleTimer, entryDeadline = 0, walletDeadline = 0, refreshPending = false, publicState;
   const subscriptions = ['ApprovalController:stateChange', 'PermissionController:stateChange', 'EvmController:stateChange'];
   function element(tag, text, className = '') {
@@ -21,6 +21,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
   }
   function showError(error) { status.textContent = error.message; status.className = 'field-error'; }
   function clearSensitive() {
+    stopNodusReview?.(); stopNodusReview = undefined;
     revision++; fields?.clear(); fields = undefined; ui.clearPhrase();
     revealed?.replaceChildren(); revealed = undefined;
     for (const input of root.querySelectorAll('input')) input.value = '';
@@ -83,7 +84,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
     if (busy) return;
     clearSensitive(); page = next; receiveNetwork = network; status.textContent = ''; render(); scheduleIdle();
     if (page === 'home' && (ui.state?.evm || ui.state?.nodus)) void loadBalances().catch(showError);
-    if (page === 'nodus-history') void run(() => ui.loadNodusHistory());
+    if (page === 'nodus-history') return run(() => ui.loadNodusHistory());
   }
   function passwordInput(form, id, label, autocomplete, minimum) {
     const caption = element('label', label), input = element('input');
@@ -93,12 +94,22 @@ export async function mountWalletPage({ document = globalThis.document, window =
   }
   function confirmNodus(id) {
     return run(async () => {
+      const contractReview = page === 'contracts', review = sendReview;
       sendReview = undefined;
       try {
         const hash = await ui.confirmNodusSend(id); page = 'home';
         status.className = 'hint'; status.textContent = `Transaction submitted; confirmation is pending. Transfer ID ${hash}.`;
         await ui.loadNodusBalances({ force: true });
-      } catch (error) { page = 'nodus-history'; await ui.loadNodusHistory(); throw error; }
+      } catch (error) {
+        if (contractReview) {
+          // src/evm/ui.js:154-161: show the error in the review with Close.
+          sendReview = { ...review, error: error.message || 'Sending failed.' }; return;
+        }
+        // src/app.js:2389-2412: close the review, keep the send page and show
+        // the original error; only a recorded send gets the Activity note.
+        const note = error.data?.activityTracked ? ' The outcome is tracked in Activity; its coins stay held until it is included or its expiry block passes.' : '';
+        throw new Error(`${error.message}${note}`);
+      }
     });
   }
   function renderPhrase() {
@@ -133,6 +144,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
     if (disposed || !ui.state) return;
     // A public-state notification never replaces a recovery form that the user is filling.
     if (page === 'phrase' && fields && ui.phraseStep && root.querySelector('.phrase-grid')) return;
+    stopNodusReview?.(); stopNodusReview = undefined;
     fields?.clear(); fields = undefined; revealed?.replaceChildren(); revealed = undefined;
     root.replaceChildren(); navigation.replaceChildren();
     const state = ui.state;
@@ -167,13 +179,13 @@ export async function mountWalletPage({ document = globalThis.document, window =
         });
       return;
     }
-    if (page === 'contracts') renderNodusContracts(document, root, { account: state.addresses.nodus, readable: state.nodus.evmReadable,
+    if (page === 'contracts') stopNodusReview = renderNodusContracts(document, root, { account: state.addresses.nodus, readable: state.nodus.evmReadable,
       buildable: state.nodus.evmBuildable, result: contractResult, review: sendReview }, {
       read: fields => run(async () => { contractResult = await ui.readNodusContract(fields); }),
       prepare: fields => run(async () => { sendReview = await ui.prepareNodusContract(fields); }),
-      confirm: confirmNodus, cancel: () => navigate('home'),
+      confirm: confirmNodus, cancel: () => navigate('contracts'),
     });
-    else if (page === 'send' && sendChain === 'nodus') renderNodusSend(document, root, { account: state.addresses.nodus, tokens: state.nodus.tokens, review: sendReview }, {
+    else if (page === 'send' && sendChain === 'nodus') stopNodusReview = renderNodusSend(document, root, { account: state.addresses.nodus, tokens: state.nodus.tokens, review: sendReview }, {
       prepare: request => run(async () => { sendReview = await ui.prepareNodusSend(request); }),
       confirm: confirmNodus,
       cancel: () => navigate('home'),
@@ -196,6 +208,10 @@ export async function mountWalletPage({ document = globalThis.document, window =
     else if (page === 'receive') renderReceive(document, root, receiveNetwork, state.addresses, address => run(async () => { await window.navigator.clipboard.writeText(address); status.className = 'hint'; status.textContent = 'Address copied.'; }));
     else if (page === 'sites') renderSites(document, root, state, origin => run(() => ui.revoke(origin)));
     else if (page === 'settings') renderSettings(document, root, state, {
+      discardActivity: () => run(async () => {
+        const message = await ui.discardNodusActivity();
+        status.className = 'hint'; status.textContent = message ?? '';
+      }),
       setAutoLock: minutes => run(async () => { await ui.setAutoLock(minutes); walletDeadline = 0; }),
       selectEvmNetwork: chain => run(() => ui.selectEvmNetwork(chain)),
       setEvmEndpoint: (chain, endpoint) => run(() => ui.setEvmEndpoint(chain, endpoint)),

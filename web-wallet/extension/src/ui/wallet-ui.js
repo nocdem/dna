@@ -119,6 +119,7 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
     prepareNodusContract: fields => client.request('prepareNodusContract', [fields]),
     confirmNodusSend: id => client.request('confirmNodusSend', [id]),
     cancelNodusSend: id => client.request('cancelNodusSend', [id]),
+    discardNodusActivity: () => client.request('discardNodusActivity'),
     resubmitNodusSend: hash => client.request('resubmitNodusSend', [hash]),
     async selectEvmNetwork(chain) { await client.request('selectEvmNetwork', [chain]); return refresh(); },
     async setEvmEndpoint(chain, endpoint) { await client.request('setEvmEndpoint', [chain, endpoint]); return refresh(); },

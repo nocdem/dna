@@ -68,6 +68,9 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
         const activity = autoLockAlarm.openTrustedInterface();
         try { await activity.activity(); } finally { activity.close(); }
         lockCoordinator.assertUnlocked();
+        // src/app.js:1159-1173: begin quarantine reconciliation after unlock,
+        // even when there are no readable pending rows or open history page.
+        void nodus.reconcileQuarantine();
         return result;
       } catch (error) { await lockCoordinator.lock(); throw error; }
       finally { password = null; }
@@ -182,6 +185,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     cancelNodusSend: id => nodus.cancelSend(id),
     getNodusHistory: () => nodus.getHistory(),
     getNodusLocalHistory: () => nodus.getLocalHistory(),
+    discardNodusActivity: () => nodus.discardActivity(),
     resubmitNodusSend: hash => nodus.resubmit(hash),
     setLocked: () => lockCoordinator.lock(),
     submitPasswordOrEncryptionKey: ({ password }) => {

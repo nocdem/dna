@@ -13,9 +13,18 @@ function element(document, tag, text, className = '') {
 export function renderNodusSend(document, container, { account, tokens = [], review, title = 'Send on Nodus' }, { prepare, confirm, cancel }) {
   container.replaceChildren(element(document, 'h1', title));
   if (review) {
-    for (const [label, value] of review.review) container.append(element(document, 'h2', label), element(document, 'pre', value, 'log-line evm-result'));
-    container.append(actionButton(document, 'Cancel', cancel), actionButton(document, 'Confirm send', () => confirm(review.id), false));
-    return;
+    // src/app.js:2323-2325, 1615-1627: display the review deadline and give
+    // the user 600 ms before enabling transfer confirmation.
+    const entries = [...review.review, ['Review expires', new Date(review.expiresAt).toLocaleTimeString()]];
+    for (const [label, value] of entries) container.append(element(document, 'h2', label), element(document, 'pre', value, 'log-line evm-result'));
+    const confirmButton = actionButton(document, 'Confirm send', () => {
+      if (confirmButton.disabled) return;
+      confirmButton.disabled = true; return confirm(review.id);
+    }, false);
+    confirmButton.disabled = true;
+    container.append(actionButton(document, 'Cancel', cancel), confirmButton);
+    const timer = setTimeout(() => { confirmButton.disabled = false; }, 600);
+    return () => clearTimeout(timer);
   }
   container.append(element(document, 'code', account));
   const form = element(document, 'form'), to = element(document, 'input'), amount = element(document, 'input'), asset = element(document, 'select');
@@ -61,7 +70,21 @@ export function renderNodusHistory(document, container, history, { refresh, resu
 // src/evm/ui.js bridge/contract/deployment actions use the same Contract and
 // EvmAccount code in the background; only form fields and rendered text cross the port.
 export function renderNodusContracts(document, container, { account, readable, buildable, result, review }, actions) {
-  if (review) return renderNodusSend(document, container, { review, title: 'Review smart-contract transaction' }, actions);
+  if (review) {
+    // src/evm/ui.js:129-168: decoded rows, immediate confirmation, and a failed
+    // review keeps its error and Close button rather than the transfer outcome note.
+    container.replaceChildren(element(document, 'h1', 'Review smart-contract transaction'));
+    container.append(element(document, 'p', 'Testnet transaction. Check every line; sending cannot be undone.', 'notice'));
+    for (const [label, value] of review.review) container.append(element(document, 'h2', label), element(document, 'pre', value, 'log-line evm-result'));
+    const error = element(document, 'p', review.error ?? '', 'field-error'); error.role = 'alert';
+    const cancel = actionButton(document, review.error ? 'Close' : 'Cancel', actions.cancel); cancel.disabled = false;
+    const confirm = actionButton(document, 'Confirm & send', () => {
+      if (confirm.disabled) return;
+      confirm.disabled = true; cancel.disabled = true; return actions.confirm(review.id);
+    }, false);
+    confirm.disabled = Boolean(review.error);
+    container.append(error, cancel, confirm); return;
+  }
   container.replaceChildren(element(document, 'h1', 'Nodus smart contracts'));
   container.append(element(document, 'p', 'The network fee shown for a transaction is the most it can cost.', 'hint'));
   if (readable) container.append(actionButton(document, 'Read account', () => actions.read({ action: 'account' })));

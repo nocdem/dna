@@ -103,7 +103,7 @@ export function renderSites(document, container, state, revoke) {
   }
 }
 
-export function renderSettings(document, container, state, { setAutoLock, reveal, selectEvmNetwork, setEvmEndpoint }) {
+export function renderSettings(document, container, state, { setAutoLock, reveal, selectEvmNetwork, setEvmEndpoint, discardActivity }) {
   container.replaceChildren(); heading(document, container, 'Settings');
   const label = element(document, 'label', '', 'Auto-lock'), select = element(document, 'select');
   select.id = 'auto-lock-minutes'; label.htmlFor = select.id;
@@ -115,6 +115,14 @@ export function renderSettings(document, container, state, { setAutoLock, reveal
   select.onchange = () => setAutoLock(Number(select.value));
   const note = element(document, 'p', 'hint', extensionAutoLockNote(state.preferences.autoLockTimeLimit));
   container.append(label, select, note);
+  // src/app.js:2559-2560, 2672-2690: explicit recovery in saved-wallet settings.
+  if (state.nodus?.activityError || state.nodus?.quarantinedCount) {
+    container.append(element(document, 'h2', '', 'Saved activity'));
+    if (state.nodus.activityError) container.append(element(document, 'p', 'field-error', state.nodus.activityError));
+    else container.append(element(document, 'p', 'hint', `${state.nodus.quarantinedCount} saved records could not be read; their coins stay held.`));
+    container.append(element(document, 'p', 'hint', 'Check the explorer before discarding the unreadable history or resending any previous payment.'),
+      actionButton(document, 'Discard unreadable history', discardActivity));
+  }
   if (state.evm) {
     const caption = element(document, 'label', '', 'Selected EVM network'), network = element(document, 'select');
     caption.htmlFor = network.id = 'evm-network';

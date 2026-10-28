@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { deriveNodusAddress, nodusSigningSeed } from '../../src/nodus/derive.js';
-import { activityKeyFor, parseActivity } from '../../src/activity-storage.js';
+import { activityKeyFor, parseActivity, serializeActivity } from '../../src/activity-storage.js';
+import { NODUS_SUBMITTED_NOTE } from '../../src/nodus/resubmit.js';
+import { serializeError } from '@metamask/rpc-errors';
 import { ACTIVITY_KEY, VAULT_KEY, parseVault } from '../../src/vault.js';
 import { NODUS_TOKEN_ID } from '../../src/nodus/network.js';
 import { AUTO_LOCK_TIMEOUT_ALARM } from '../src/background/auto-lock-alarm.js';
@@ -40,7 +42,12 @@ async function setup(t) {
       return { fingerprint: state.mismatch ? recipient : address, chainId: '12'.repeat(32) };
     },
     async balance() { calls.push(['balance']); if (state.balanceWait) { state.entered.resolve(); return state.balanceWait.promise; } return { total: '500000000', spendable: '500000000' }; },
-    async list() { calls.push(['list']); return { tip: '10', coins: [{ nullifier: input, amount: '500000000' }], truncated: false }; },
+    async list() {
+      calls.push(['list']);
+      if (state.listWait) { state.entered.resolve(); return state.listWait.promise; }
+      if (state.listBad) throw new Error('fixture coin view unavailable');
+      return { tip: state.tip ?? '10', coins: [{ nullifier: input, amount: '500000000' }], truncated: false };
+    },
     async rulesetInfo() { return { generation: state.evm ? '5' : '1', tip: '10', gen2Height: '0' }; },
     evmGeneration: 5,
     async evmQuery({ method }) {
@@ -68,10 +75,12 @@ async function setup(t) {
     async submit({ envelope }) {
       calls.push(['submit', [...envelope]]);
       assert.ok(values[ACTIVITY_KEY], 'the pending record must be durable before submit');
+      state.onSubmit?.();
+      if (state.submitWait) { state.entered.resolve(); await state.submitWait.promise; }
       if (state.busy) throw Object.assign(new Error('fixture busy'), { busy: true });
       return { accepted: true };
     },
-    async scanConfirm() { return { found: false, tip: '10' }; },
+    async scanConfirm() { return state.scanWait ? state.scanWait.promise : { found: false, tip: '10' }; },
     async tick() { calls.push(['tick']); },
     async addrHistory() {
       calls.push(['history']);
@@ -91,6 +100,185 @@ async function setup(t) {
   await background.vaultStore.create(password, phrase);
   return { background, fixture, values, calls, state, memory };
 }
+
+const savedRow = changes => ({ chain: 'nodus', address, to: recipient, symbol: 'NODUS', amount: '1.0', hash: '01'.repeat(64),
+  createdAt: '2026-10-28T00:00:00.000Z', status: 'pending', expiryHeight: '100', fromHeight: '1', inputs: [input], ...changes });
+async function saveActivity(values, rows = [], quarantined = []) {
+  const id = parseVault(values[VAULT_KEY]).id, key = await activityKeyFor(phrase, id);
+  values[ACTIVITY_KEY] = await serializeActivity(id, rows, key, quarantined.map(raw => ({ raw })));
+  return { id, key };
+}
+
+// Proves explicit discard clears an unreadable or unverified file and reopens both send paths; no network or test artifacts.
+test('discarding unreadable saved activity unblocks native and contract reviews', async t => {
+  for (const saved of ['unreadable JSON', JSON.stringify({ version: 1 })]) {
+    const { background, values } = await setup(t); values[ACTIVITY_KEY] = saved;
+    await background.unlock(password, options);
+    assert.ok(background.nodus.getState().activityError);
+    await assert.rejects(background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID }), /discard the unreadable history/);
+    await background.nodus.discardActivity();
+    assert.equal(background.nodus.getState().activityError, '');
+    const id = parseVault(values[VAULT_KEY]).id, key = await activityKeyFor(phrase, id);
+    assert.deepEqual(await parseActivity(values[ACTIVITY_KEY], id, background.walletKeys.getAddresses(), key), []);
+    const review = await background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID });
+    background.nodus.cancelSend(review.id);
+    await background.lock();
+  }
+  const { background, values, state } = await setup(t); state.evm = true; values[ACTIVITY_KEY] = 'unreadable JSON';
+  await background.unlock(password, options);
+  await assert.rejects(background.nodus.prepareContract({ action: 'deposit', amount: '1' }), /discard the unreadable history/);
+  await background.nodus.discardActivity();
+  const review = await background.nodus.prepareContract({ action: 'deposit', amount: '1' }); background.nodus.cancelSend(review.id);
+});
+
+// Proves partial discard keeps readable pending rows and their reservations, and does nothing to a readable live send; no artifacts.
+test('discarding quarantined activity preserves readable saved and live pending sends', async t => {
+  const { background, values } = await setup(t), otherInput = '02'.repeat(64);
+  const readable = savedRow({ inputs: [otherInput] });
+  const { id, key } = await saveActivity(values, [readable], [savedRow({ amount: 'unreadable' })]);
+  await background.unlock(password, options);
+  assert.equal(background.nodus.getState().quarantinedCount, 1);
+  await assert.rejects(background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID }), /held by a pending send/);
+  await background.nodus.discardActivity();
+  const rows = await parseActivity(values[ACTIVITY_KEY], id, background.walletKeys.getAddresses(), key);
+  assert.equal(rows.length, 1); assert.equal(rows.quarantined.length, 0); assert.deepEqual(rows[0].inputs, [otherInput]);
+  assert.equal(background.nodus.getState().quarantinedCount, 0);
+  const review = await background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID });
+  await background.nodus.confirmSend(review.id);
+  await background.nodus.discardActivity();
+  await assert.rejects(background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID }), /held by a pending send/);
+});
+
+// Proves a tracker write failure never enables whole-file discard or destroys readable rows, reservations or kept envelope bytes.
+test('discard after a tracker persist failure keeps readable rows and busy envelopes', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (const quarantined of [[], [savedRow({ amount: 'unreadable', inputs: ['03'.repeat(64)] })]]) {
+    const { background, values, state, calls, fixture } = await setup(t);
+    const readable = savedRow({ inputs: ['02'.repeat(64)] });
+    const { id, key } = await saveActivity(values, [readable], quarantined);
+    await background.unlock(password, options);
+    const failed = deferred(), set = fixture.storage.set;
+    t.mock.method(fixture.storage, 'set', async items => {
+      try { await set(items); }
+      catch (error) { failed.resolve(); throw error; }
+    });
+    const review = await background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID });
+    state.busy = true; state.onSubmit = () => { state.failSave = true; };
+    await assert.rejects(background.nodus.confirmSend(review.id), /fixture busy/);
+    await failed.promise; await new Promise(resolve => setImmediate(resolve));
+    assert.equal(background.nodus.getState().activityError, '');
+    assert.equal(background.nodus.getState().quarantinedCount, quarantined.length);
+    assert.equal((await background.nodus.getHistory()).activityError, 'fixture storage failure');
+    state.failSave = false;
+    await background.nodus.discardActivity();
+    const rows = await parseActivity(values[ACTIVITY_KEY], id, background.walletKeys.getAddresses(), key);
+    assert.deepEqual(rows.map(row => row.hash).sort(), [readable.hash, intent].sort());
+    assert.equal(rows.quarantined.length, 0);
+    const local = background.nodus.getLocalHistory();
+    assert.equal(local.length, 2); assert.equal(local.find(row => row.hash === intent).canResubmit, true);
+    await assert.rejects(background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID }), /held by a pending send/);
+    state.busy = false; state.onSubmit = undefined;
+    assert.equal((await background.nodus.resubmit(intent)).outcome, 'sent');
+    assert.deepEqual(calls.filter(([op]) => op === 'submit').map(([, bytes]) => bytes), [[1, 2, 3], [1, 2, 3]]);
+    await background.lock();
+  }
+});
+
+// Proves failed durability and changed history cannot clear the error or release coins; fixtures remain memory-only.
+test('discard refuses storage failures and history changes during sealing', async t => {
+  const { background, values, state, fixture } = await setup(t); values[ACTIVITY_KEY] = 'unreadable JSON';
+  await background.unlock(password, options); state.failSave = true;
+  await assert.rejects(background.nodus.discardActivity(), /storage failure/);
+  assert.ok(background.nodus.getState().activityError); assert.equal(values[ACTIVITY_KEY], 'unreadable JSON');
+  state.failSave = false;
+  const get = fixture.storage.get;
+  let reads = 0;
+  t.mock.method(fixture.storage, 'get', async keys => {
+    if (Array.isArray(keys) && keys.includes(ACTIVITY_KEY) && ++reads === 2) values[ACTIVITY_KEY] = 'changed history';
+    return get(keys);
+  });
+  await assert.rejects(background.nodus.discardActivity(), /history changed/i);
+  assert.equal(values[ACTIVITY_KEY], 'changed history'); assert.ok(background.nodus.getState().activityError);
+});
+
+// Proves the shared expiry judgment releases each record separately, including shared inputs; no absence-based release.
+test('quarantine releases only beyond its validated expiry and keeps every other reservation', async t => {
+  for (const expiries of [['9'], ['10'], [undefined], ['9', '10']]) {
+    const { background, values } = await setup(t);
+    await saveActivity(values, [], expiries.map((expiryHeight, index) => savedRow({ amount: 'unreadable', expiryHeight, hash: String(index + 3).repeat(128) })));
+    await background.unlock(password, options); await background.nodus.reconcileQuarantine();
+    const sending = background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID });
+    if (expiries.length === 1 && expiries[0] === '9') {
+      const review = await sending; background.nodus.cancelSend(review.id);
+    } else await assert.rejects(sending, /held by a pending send/);
+    await background.lock();
+  }
+});
+
+// Proves 15-second monotonic pacing, failed reads keeping locks, and both lock paths stopping polls; only mock time advances.
+test('quarantine polling follows web-wallet cadence and stops on manual or inactivity lock', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let now = 0; t.mock.method(performance, 'now', () => now);
+  for (const alarm of [false, true]) {
+    const { background, values, state, calls, fixture } = await setup(t);
+    await saveActivity(values, [], [savedRow({ amount: 'unreadable', expiryHeight: '10' })]);
+    state.listBad = true;
+    await background.unlock(password, options); await background.nodus.reconcileQuarantine();
+    assert.equal(calls.filter(([op]) => op === 'list').length, 1);
+    state.listBad = false;
+    await assert.rejects(background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID }), /held by a pending send/);
+    const reads = calls.filter(([op]) => op === 'list').length;
+    now += 14999; t.mock.timers.tick(14999); assert.equal(calls.filter(([op]) => op === 'list').length, reads);
+    state.tip = '11';
+    now++; t.mock.timers.tick(1); await background.nodus.reconcileQuarantine();
+    assert.equal(calls.filter(([op]) => op === 'list').length, reads + 1);
+    const review = await background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID }); background.nodus.cancelSend(review.id);
+    // Keep an unreleased row for the shutdown assertion rather than stopping only because all rows released.
+    await background.lock(); state.tip = '10'; await background.unlock(password, options); await background.nodus.reconcileQuarantine();
+    if (alarm) await fixture.alarms.onAlarm.emit({ name: AUTO_LOCK_TIMEOUT_ALARM }); else await background.lock();
+    const before = calls.length; now += 30000; t.mock.timers.tick(30000);
+    await background.nodus.reconcileQuarantine(); assert.equal(calls.length, before);
+  }
+});
+
+// Proves an in-flight quarantine read cannot publish a release or re-arm after lock; no timers or network escape the fixture.
+test('locking during quarantine reconciliation cancels the read and its next timer', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { background, values, state, calls } = await setup(t);
+  await saveActivity(values, [], [savedRow({ amount: 'unreadable', expiryHeight: '9' })]);
+  state.listWait = deferred(); state.entered = deferred();
+  await background.unlock(password, options); await state.entered.promise;
+  const reading = background.nodus.reconcileQuarantine(); await background.lock(); await reading;
+  state.listWait.resolve({ tip: '10', coins: [] });
+  const before = calls.length; t.mock.timers.tick(30000); await background.nodus.reconcileQuarantine(); assert.equal(calls.length, before);
+  assert.equal(background.nodus.getState().state, 'locked');
+});
+
+// Proves the contract row says signed before submit and submitted only after acceptance; mock timers stop receipt polling.
+test('smart-contract activity records the signed then submitted note sequence', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { background, state } = await setup(t); state.evm = true; state.scanWait = deferred(); await background.unlock(password, options);
+  const notes = []; state.onSubmit = () => notes.push(background.nodus.getLocalHistory()[0].note);
+  state.submitWait = deferred(); state.entered = deferred();
+  const review = await background.nodus.prepareContract({ action: 'deposit', amount: '1' });
+  const confirming = background.nodus.confirmSend(review.id); await state.entered.promise;
+  assert.deepEqual(notes, ['Smart-contract transaction signed; sending.']);
+  state.submitWait.resolve(); await confirming;
+  assert.equal(background.nodus.getLocalHistory()[0].note, NODUS_SUBMITTED_NOTE);
+});
+
+// Proves the real background marks only recorded confirm failures, and the flag survives trusted-port error serialization.
+test('confirm failure exposes Activity tracking only after a pending record exists', async t => {
+  const { background, state } = await setup(t); await background.unlock(password, options);
+  await assert.rejects(background.nodus.confirmSend('closed-review'), error => {
+    assert.equal(serializeError(error).data.activityTracked, undefined); return true;
+  });
+  const review = await background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID }); state.busy = true;
+  await assert.rejects(background.nodus.confirmSend(review.id), error => {
+    const serialized = serializeError(error);
+    assert.equal(serialized.message, 'fixture busy'); assert.equal(serialized.data.activityTracked, true); return true;
+  });
+});
 
 // Pins the real vault → wallet-keys seed consumer → web-wallet client path, address parity and seed disposal.
 test('background attaches the real Nodus consumer and unlocks the web-wallet identity', async t => {

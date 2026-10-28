@@ -8,10 +8,11 @@ import { NODUS_ASSET, nodusTokens } from '../../../src/nodus/network.js';
 import { NODUS_HISTORY_LIMIT, localRowsToShow, nodusHistoryRow, nodusHistoryStatus } from '../../../src/nodus/history.js';
 import { keepBusyEnvelope, canResubmit, dropSettledEnvelope, resubmitKept, NODUS_UNCERTAIN_NOTE, NODUS_SUBMITTED_NOTE } from '../../../src/nodus/resubmit.js';
 import { recordActivity, watchActivity, terminal, evmActivityText } from '../../../src/activity.js';
-import { activityKeyFor, parseActivity, serializeActivity, requireSavedForEvm } from '../../../src/activity-storage.js';
+import { activityKeyFor, parseActivity, serializeActivity, serializeWithoutQuarantined, requireSavedForEvm } from '../../../src/activity-storage.js';
 import { ACTIVITY_KEY, VAULT_KEY } from '../../../src/vault.js';
 import { EvmAccount, Contract, describeArgs } from '../../../src/evm/contract.js';
 import { parseRaw, parseWei, formatRaw, formatWei } from '../../../src/evm/units.js';
+import { rpcErrors } from '@metamask/rpc-errors';
 
 // Approved plan §3.5 holder 3 / §5.4–5.5: the web-wallet client and its one
 // module queue live in the background. No secret or signed envelope enters UI state.
@@ -20,13 +21,14 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
   function lock() {
     const previous = session; session = undefined;
     if (!previous) return;
+    stopQuarantineTimer(previous);
     // Let the client reject its queue as locked before aborting read requests.
     previous.client.lock();
     previous.abort.abort(); previous.stopTracking?.();
     for (const review of previous.reviews.values()) review.cancel();
     previous.reviews.clear();
     for (const row of previous.rows) row.envelope?.fill(0);
-    previous.rows = []; previous.key = null;
+    previous.rows = []; previous.quarantined = []; previous.releasedQuarantine.clear(); previous.key = null;
   }
   lockCoordinator.register('nodus', { lock });
   function current(s) {
@@ -40,7 +42,8 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
   async function consumeNodusSeed(seed, { phrase, id, addresses, nodusWasmBytes, signal, assertReady } = {}) {
     lock();
     if (typeof factory !== 'function') throw new Error('Nodus sending is not available in this wallet build.');
-    const s = { client: createNodusClient({ factory }), abort: new AbortController(), rows: [], quarantined: [], reviews: new Map(), assertReady, id };
+    const s = { client: createNodusClient({ factory }), abort: new AbortController(), rows: [], quarantined: [], activityBlocked: false,
+      releasedQuarantine: new Set(), quarantineReadAt: -Infinity, reviews: new Map(), assertReady, id };
     session = s;
     try {
       const combined = signal ? AbortSignal.any([signal, s.abort.signal]) : s.abort.signal;
@@ -51,10 +54,11 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
       current(s); combined.throwIfAborted();
       const saved = await storage.get([VAULT_KEY, ACTIVITY_KEY]); current(s);
       s.vault = saved[VAULT_KEY];
+      // src/app.js:2543-2550: only the unlock-time read problem blocks sending.
       try {
         s.rows = await parseActivity(saved[ACTIVITY_KEY], id, s.addresses, s.key);
         s.quarantined = s.rows.quarantined ?? [];
-      } catch (error) { s.activityError = error.message; }
+      } catch (error) { s.activityBlocked = true; s.activityError = error.message; }
       current(s); combined.throwIfAborted();
       const identity = await s.client.unlock({ seed, fingerprint }); current(s);
       // src/evm/ui.js:96-104 and src/app.js:1275-1279: one account queue,
@@ -71,7 +75,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
   function persist(s) {
     const operation = writes.catch(() => {}).then(async () => {
       current(s);
-      if (s.activityError) throw new Error('Saved activity is unverified. Check the explorer before sending.');
+      if (s.activityBlocked) throw new Error('Saved activity is unverified. Check the explorer and discard the unreadable history before sending.');
       const saved = await storage.get([VAULT_KEY, ACTIVITY_KEY]); current(s);
       if (saved[VAULT_KEY] !== s.vault) throw new Error('Wallet storage changed before broadcast. Review the transfer again.');
       const rows = await parseActivity(saved[ACTIVITY_KEY], s.id, s.addresses, s.key); current(s);
@@ -88,10 +92,13 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
     writes = operation; return operation;
   }
   function track(s) {
+    void reconcileQuarantine(s);
     if (s.stopTracking) return;
     s.stopTracking = watchActivity(() => s.rows.filter(row => row.chain === 'nodus' && row.address === s.addresses.nodus), () => {
       for (const row of s.rows) dropSettledEnvelope(row);
+      // src/app.js:486, 587: display persist failures without changing activityBlocked.
       void persist(s).catch(error => { if (session === s) s.activityError = error.message; });
+      void reconcileQuarantine(s);
     }, { check: (row, { signal }) => adapter.checkNodusActivity(row, { signal, client: s.client }) });
   }
   function localRows(s, page) {
@@ -102,8 +109,55 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
   }
   function heldInputs(s) {
     const locked = adapter.lockedInputs(s.rows);
-    for (const held of s.quarantined) for (const input of held.inputs) locked.add(input);
+    for (const held of adapter.quarantineLockRows(s.quarantined, s.releasedQuarantine)) for (const input of held.inputs) locked.add(input);
     return locked;
+  }
+  // src/app.js:107-142, 587, 1173: reconcile on connection/tracker updates and
+  // every 15000 ms while quarantine remains. Monotonic pacing; one read at a
+  // time; lock stops the timer and an old read cannot release or re-arm it.
+  const QUARANTINE_READ_MS = 15000;
+  function stopQuarantineTimer(s) { clearTimeout(s.quarantineTimer); s.quarantineTimer = undefined; }
+  function quarantineActive(s) {
+    return session === s && !lockCoordinator.isLocked && !s.abort.signal.aborted && s.client.state === 'ready'
+      && s.quarantined.some(row => !s.releasedQuarantine.has(row));
+  }
+  function armQuarantineTimer(s) {
+    if (s.quarantineTimer || !quarantineActive(s)) return;
+    s.quarantineTimer = setTimeout(() => { s.quarantineTimer = undefined; void reconcileQuarantine(s); }, QUARANTINE_READ_MS);
+  }
+  function reconcileQuarantine(s) {
+    if (!quarantineActive(s)) { stopQuarantineTimer(s); return Promise.resolve(); }
+    if (s.quarantineReading) return s.quarantineReading;
+    if (performance.now() - s.quarantineReadAt < QUARANTINE_READ_MS) { armQuarantineTimer(s); return Promise.resolve(); }
+    s.quarantineReadAt = performance.now();
+    s.quarantineReading = (async () => {
+      try {
+        const view = await adapter.coinView({ client: s.client, from: s.addresses.nodus });
+        if (!quarantineActive(s)) return;
+        for (const row of s.quarantined) if (row.address === s.addresses.nodus && adapter.quarantineReleasable(row, view)) s.releasedQuarantine.add(row);
+      } catch { /* unreadable: the locks stay */ }
+      finally { s.quarantineReading = undefined; armQuarantineTimer(s); }
+    })();
+    return s.quarantineReading;
+  }
+  // src/app.js:2672-2690: discard only unreadable records; preserve readable
+  // pending reservations. The background write queue replaces withActivityLock.
+  function discardActivity(s) {
+    const operation = writes.catch(() => {}).then(async () => {
+      current(s);
+      if (!(s.activityBlocked || s.quarantined.length)) return;
+      const saved = await storage.get([VAULT_KEY, ACTIVITY_KEY]); current(s);
+      const blocked = s.activityBlocked, previous = saved[ACTIVITY_KEY];
+      const encrypted = blocked ? await serializeActivity(s.id, [], s.key, [])
+        : await serializeWithoutQuarantined(previous, s.id, s.addresses, s.key, s.rows.map(row => ({ ...row })));
+      const latest = await storage.get([VAULT_KEY, ACTIVITY_KEY]); current(s);
+      if (saved[VAULT_KEY] !== s.vault || latest[VAULT_KEY] !== s.vault || latest[ACTIVITY_KEY] !== previous) throw new Error('Wallet or history changed. Unlock again before discarding history.');
+      await storage.set({ [ACTIVITY_KEY]: encrypted }); current(s);
+      if (blocked) { for (const row of s.rows) row.envelope?.fill(0); s.rows = []; }
+      s.quarantined = []; s.releasedQuarantine.clear(); s.activityBlocked = false; s.activityError = undefined; stopQuarantineTimer(s);
+      return 'Unreadable local history discarded; readable records and their held coins were kept. Check the account explorer before resending any previous payment.';
+    });
+    writes = operation; return operation;
   }
   function contract(s) {
     if (!s.contractAccount) throw new Error('Smart contracts are not available in this wallet version.');
@@ -121,8 +175,12 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
   }
   return {
     consumeNodusSeed,
+    reconcileQuarantine() { return session ? reconcileQuarantine(session) : Promise.resolve(); },
+    discardActivity() { return discardActivity(active()); },
     getState() { return { state: session?.client.state ?? 'locked', tokens: nodusTokens(session?.client.tokenPins()), historyReadable: session?.client.historyReadable ?? false,
-      evmBuildable: session?.client.evmBuildable ?? false, evmReadable: session?.client.evmReadable ?? false }; },
+      evmBuildable: session?.client.evmBuildable ?? false, evmReadable: session?.client.evmReadable ?? false,
+      // src/app.js:2559: recovery is offered only for the unlock-time read problem or quarantine.
+      activityError: session?.activityBlocked ? session.activityError : '', quarantinedCount: session?.quarantined.length ?? 0 }; },
     async getBalances() {
       const s = active(); track(s);
       const rows = await adapter.balances('nodus', s.addresses.nodus, undefined, { client: s.client, signal: s.abort.signal });
@@ -134,7 +192,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
     },
     async prepareSend({ to, amount, tokenId } = {}) {
       const s = active();
-      if (s.activityError) throw new Error('Saved activity is unverified. Check the explorer before sending.');
+      if (s.activityBlocked) throw new Error('Saved activity is unverified. Check the explorer and discard the unreadable history before sending.');
       const review = await prepareTransfer({ wallet: { addresses: s.addresses, nodusClient: s.client }, chain: 'nodus',
         asset: { chain: NODUS_ASSET.chain, tokenId }, to, amount, nodusLocked: heldInputs(s) });
       current(s);
@@ -160,7 +218,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
     async prepareContract({ action, amount, dest, ticketId, address, abi, fn, args, bytecode, value = '0' } = {}) {
       const s = active(), account = contract(s);
       requireSavedForEvm(Boolean(s.vault && s.key));
-      if (s.activityError) throw new Error('Saved activity is unverified. Check the explorer before sending.');
+      if (s.activityBlocked) throw new Error('Saved activity is unverified. Check the explorer and discard the unreadable history before sending.');
       let review;
       if (action === 'deposit') review = await account.deposit(parseRaw(amount));
       else if (action === 'withdraw') review = await account.withdraw(parseRaw(amount), dest || s.addresses.nodus);
@@ -191,6 +249,8 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
             record = recordActivity({ chain: 'nodus', from: own, to: own, symbol: 'NODUS', amount: formatRaw((d.op === 'deposit' ? d.amount : 0n) + d.fee) }, details);
             Object.assign(record, { kind: 'evm', evmTitle: d.op, evmOp: d.op,
               evmMoved: d.op === 'call' || d.op === 'create' ? formatWei(d.valueWei) : formatRaw(d.amount), evmFee: formatRaw(d.fee), evmTo: d.dest });
+            // src/app.js:1241-1266: signed before persistence and submission.
+            record.note = 'Smart-contract transaction signed; sending.';
           } else record = recordActivity(review, details);
           s.rows.push(record);
           try { await persist(s); current(s); }
@@ -207,6 +267,9 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
         if (record && session === s) {
           if (!keepBusyEnvelope(record, error)) { record.status = 'unknown'; record.note = NODUS_UNCERTAIN_NOTE; }
           track(s);
+          // src/app.js:2389-2412: only an existing record gets the Activity
+          // outcome note. A serializable flag carries that fact to the UI.
+          throw rpcErrors.internal({ message: error.message, data: { activityTracked: true } });
         }
         throw error;
       }
