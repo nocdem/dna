@@ -13,6 +13,7 @@ import { createRequestEngine } from './engine.js';
 import { createEvm } from './evm.js';
 import { createNodus } from './nodus.js';
 import { createSolanaTron } from './solana-tron.js';
+import { createNetworks } from './networks.js';
 import { PermissionsRequestNotFoundError } from '@metamask/permission-controller';
 import { VAULT_KEY, decryptVault, validateNewPassword } from '../../../src/vault.js';
 import { validateNodusPhrase } from '../../../src/recovery.js';
@@ -27,6 +28,8 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   const store = await createPersistedStore({ storage, messenger });
   const uiPorts = new Set(), alarmListeners = [];
   let walletKeys = null, unlock = null, permissions = null, engine = null;
+  let chainHandlers;
+  const networks = createNetworks({ messenger, store, onChanged: chain => chainHandlers?.[chain]?.networkChanged() });
   const getWallet = () => {
     lockCoordinator.assertUnlocked();
     if (!walletKeys) throw new Error('Wallet is locked.');
@@ -80,8 +83,8 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     return { walletKeys, unlock };
   }
   attachWalletKeys(consumeNodusSeed ?? nodus.consumeNodusSeed);
-  const { solana, tron } = createSolanaTron({ lockCoordinator, getWalletKeys: () => walletKeys,
-    getActivity: chain => nodus.chainActivity(chain) });
+  const { solana, tron } = chainHandlers = createSolanaTron({ lockCoordinator, getWalletKeys: () => walletKeys,
+    getActivity: (chain, network) => nodus.chainActivity(chain, network), getNetwork: chain => networks.get(chain) });
 
   // Port: metamask-controller.js:2755-2757, 2963-2964, 3166-3168, 3278-3284, 3482-3495.
   // Plan §16 step 4 / dispatch 4a: expose background approval operations; screens belong to 4b.
@@ -94,6 +97,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
         accounts: account ? [account] : [],
         addresses: isUnlocked && walletKeys ? { ethereum: account, bsc: account, ...walletKeys.getAddresses() } : {},
         preferences: { autoLockTimeLimit: autoLockAlarm.minutes },
+        networks: networks.getState(),
         evm: evm.getState(),
         nodus: nodus.getState(),
         // Port: metamask-controller.js:2378-2384 flattens controller UI state, including subject metadata.
@@ -152,7 +156,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     // shared/constants/messages.ts:17. Only public approval/permission events cross the trusted UI boundary.
     // ADAPTATION: engine.js owns streams; share the bounded subscriptions across trusted UI ports, disposed with this background.
     messengerSubscribe(event) {
-      if (!['ApprovalController:stateChange', 'PermissionController:stateChange', 'EvmController:stateChange'].includes(event)) throw rpcErrors.invalidParams('Unsupported UI event.');
+      if (!['ApprovalController:stateChange', 'PermissionController:stateChange', 'EvmController:stateChange', 'NetworksController:stateChange'].includes(event)) throw rpcErrors.invalidParams('Unsupported UI event.');
       const subscription = uiSubscriptions.get(event);
       if (subscription) { subscription.count++; return; }
       const listener = (...payload) => {
@@ -175,6 +179,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     resolvePendingApproval: (id, value) => approvals.controller.acceptRequest(id, value),
     rejectPendingApproval: id => approvals.reject(id),
     getEvmBalances: chain => evm.getBalances(chain),
+    setChainNetwork: (chain, network) => networks.select(chain, network),
     // Package 7a: wallet-only methods on the authenticated controller stream
     // (engine.js setupTrustedCommunication); no Solana/Tron site routing.
     getSolanaBalances: () => solana.getBalances(),
@@ -216,10 +221,11 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   messenger.subscribe('PermissionController:stateChange', onPermissionsChanged);
   // Only public network/permission/approval state enters composition; ethers custody stays in walletKeys.
   store.registerControllers({ PermissionController: permissions.controller, ApprovalController: approvals.controller,
-    AlertController: permissions.alertController, SubjectMetadataController: permissions.subjectMetadataController, EvmController: evm.controller });
+    AlertController: permissions.alertController, SubjectMetadataController: permissions.subjectMetadataController, EvmController: evm.controller,
+    NetworksController: networks.controller });
   await store.flush();
   return {
-    vaultStore, lockCoordinator, autoLockAlarm, keyring, attachWalletKeys, store, permissions, approvals, engine, evm, nodus, solana, tron,
+    vaultStore, lockCoordinator, autoLockAlarm, keyring, attachWalletKeys, store, permissions, approvals, engine, evm, nodus, solana, tron, networks,
     lock: () => lockCoordinator.lock(),
     get walletKeys() { return walletKeys; },
     get unlock() { return unlock; },
@@ -227,7 +233,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
       for (const [event, { listener }] of uiSubscriptions) messenger.unsubscribe(event, listener);
       uiSubscriptions.clear();
       await lockCoordinator.lock();
-      engine.destroy(); approvals.destroy(); store.destroy(); evm.destroy(); permissions.subjectMetadataController.destroy(); permissions.controller.destroy(); permissions.alertController.destroy();
+      engine.destroy(); approvals.destroy(); store.destroy(); evm.destroy(); networks.controller.destroy(); permissions.subjectMetadataController.destroy(); permissions.controller.destroy(); permissions.alertController.destroy();
       messenger.unsubscribe('PermissionController:stateChange', onPermissionsChanged);
       for (const listener of alarmListeners) alarms.onAlarm.removeListener(listener);
       await store.flush();

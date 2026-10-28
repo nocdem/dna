@@ -101,6 +101,8 @@ test('background entry starts locked with the real Nodus seed consumer attached'
     PermissionController: { subjects: {} }, ApprovalController: {}, AlertController: { web3ShimUsageOrigins: {} },
     SubjectMetadataController: { subjectMetadata: {} },
     EvmController: { selectedChain: 'ethereum', endpoints: { ethereum: CHAINS.ethereum.endpoint, bsc: CHAINS.bsc.endpoint } },
+    // Package 8: every chain starts on mainnet; Nodus has only its testnet (plan §5.6, GAP-7).
+    NetworksController: { selected: { bsc: 'mainnet', cellframe: 'mainnet', ethereum: 'mainnet', nodus: 'testnet', solana: 'mainnet', tron: 'mainnet' } },
   } }];
   assert.equal(state.lockCoordinator.isLocked, true);
   assert.deepEqual(reads, ['nodus.extension.state', 'nodus.autoLockMinutes']); assert.deepEqual(writes, expectedWrites);

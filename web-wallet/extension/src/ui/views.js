@@ -5,6 +5,7 @@ import { AUTO_LOCK_CHOICES } from '../../../src/auto-lock.js';
 import { Caip25CaveatType, Caip25EndowmentPermissionName, getEthAccounts } from '@metamask/chain-agnostic-permission';
 import { connectDetails, extensionAutoLockNote } from './wallet-ui.js';
 import { NODUS_PERMISSION, NODUS_ACCOUNT_CAVEAT } from '../background/permissions.js';
+import { CHAIN_NETWORKS, chainNetwork } from '../constants/networks.js';
 
 // Approved plan §3.6/§7: web-wallet networks; package 5 adds real EVM balances.
 export const NETWORKS = { nodus: NODUS_NETWORK, ...CHAINS, cellframe: CELLFRAME };
@@ -27,7 +28,8 @@ export function renderHome(document, container, state, receive, send, refreshBal
     const row = element(document, 'article', 'extension-network');
     const icon = element(document, 'img', 'coin-icon');
     icon.src = new URL(`../../../src/assets/coins/${network.icon}`, import.meta.url).href; icon.alt = ''; icon.width = 36; icon.height = 36;
-    const name = element(document, 'h2', '', network.name), address = addressFor(state.addresses, key);
+    const selected = chainNetwork(key, state.networks?.[key]);
+    const name = element(document, 'h2', '', `${network.name}${selected.id === 'mainnet' ? '' : ` · ${selected.label}`}`), address = addressFor(state.addresses, key);
     row.append(icon, name);
     if (address) row.append(element(document, 'code', '', address));
     else row.append(element(document, 'p', 'hint', 'Address is unavailable.'));
@@ -115,7 +117,7 @@ export function renderSites(document, container, state, revoke) {
   }
 }
 
-export function renderSettings(document, container, state, { setAutoLock, reveal, selectEvmNetwork, setEvmEndpoint, discardActivity }) {
+export function renderSettings(document, container, state, { setAutoLock, reveal, selectEvmNetwork, setEvmEndpoint, discardActivity, setChainNetwork }) {
   container.replaceChildren(); heading(document, container, 'Settings');
   const label = element(document, 'label', '', 'Auto-lock'), select = element(document, 'select');
   select.id = 'auto-lock-minutes'; label.htmlFor = select.id;
@@ -127,6 +129,17 @@ export function renderSettings(document, container, state, { setAutoLock, reveal
   select.onchange = () => setAutoLock(Number(select.value));
   const note = element(document, 'p', 'hint', extensionAutoLockNote(state.preferences.autoLockTimeLimit));
   container.append(label, select, note);
+  // Operator §0 / plan §5.6: selectors belong here; no switch at the top.
+  for (const [chain, choices] of Object.entries(CHAIN_NETWORKS)) {
+    const caption = element(document, 'label', '', `${NETWORKS[chain].name} network`), network = element(document, 'select');
+    caption.htmlFor = network.id = `network-${chain}`;
+    for (const choice of choices) {
+      const option = element(document, 'option', '', choice.label); option.value = choice.id; network.append(option);
+    }
+    network.value = chainNetwork(chain, state.networks?.[chain]).id;
+    network.onchange = () => setChainNetwork(chain, network.value);
+    container.append(caption, network);
+  }
   // src/app.js:2559-2560, 2672-2690: explicit recovery in saved-wallet settings.
   if (state.nodus?.activityError || state.nodus?.quarantinedCount) {
     container.append(element(document, 'h2', '', 'Saved activity'));

@@ -38,8 +38,7 @@ export function renderEvmApproval(document, container, pending, { approve, rejec
 
 // Web-wallet src/wallet.js:29-69 and src/app.js send/review flow: prepare first,
 // display the adapter fee, then confirm that one background-owned review.
-export function renderEvmSend(document, container, { chain, review, account }, { prepare, confirm, cancel }) {
-  const config = CHAINS[chain];
+export function renderEvmSend(document, container, { chain, review, account, config = CHAINS[chain] }, { prepare, confirm, cancel }) {
   container.replaceChildren(element(document, 'h1', `Send on ${config.name}`));
   if (account) detail(document, container, 'From', account);
   if (review) {

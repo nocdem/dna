@@ -28,7 +28,7 @@ export async function setup(t) {
   const fixture = {
     runtime: { id: 'solana-tron-test', onConnect: event(), getManifest: () => ({ version: '0.1.132' }), getURL: path => `chrome-extension://solana-tron-test/${path}` },
     storage: { async get(key) { return Object.fromEntries((Array.isArray(key) ? key : [key]).map(name => [name, structuredClone(values[name])])); }, async set(items) {
-      if (items[ACTIVITY_KEY]) {
+      if (Object.keys(items).some(key => key === ACTIVITY_KEY || key.startsWith(`${ACTIVITY_KEY}.`))) {
         if (state.failSave) throw new Error('fixture persistence failed');
         if (state.saveGate) { state.entered.resolve(); await state.saveGate.promise; }
       }
@@ -61,10 +61,20 @@ export async function setup(t) {
     if (state.readGate && ((state.pauseMethod && body.method === state.pauseMethod) || new URL(url).pathname === state.pausePath)) {
       state.entered.resolve(); await state.readGate.promise;
     }
-    if (url.startsWith(CHAINS.solana.endpoint)) {
+    const solanaGenesis = {
+      [CHAINS.solana.endpoint]: CHAINS.solana.genesisHash,
+      // tasks/orchestration.md:5921, live reads on 2026-10-28 23:12–23:13 UTC.
+      'https://api.testnet.solana.com': '4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY',
+      'https://api.devnet.solana.com': 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG',
+    };
+    const solanaNetwork = Object.keys(solanaGenesis).find(endpoint => url.startsWith(endpoint));
+    const savedActivity = (chain, network) => values[network ? `${ACTIVITY_KEY}.${chain}.${network}` : ACTIVITY_KEY];
+    if (solanaNetwork) {
       let result;
       switch (body.method) {
-        case 'getGenesisHash': result = state.wrongNetwork ? 'wrong-network' : CHAINS.solana.genesisHash; break;
+        case 'getGenesisHash': result = state.genesisOverride ?? (state.wrongNetwork
+          ? solanaGenesis[solanaNetwork === CHAINS.solana.endpoint ? 'https://api.testnet.solana.com' : CHAINS.solana.endpoint]
+          : solanaGenesis[solanaNetwork]); break;
         case 'getBalance': result = { context: { slot: 1 }, value: 10000000000 }; break;
         case 'getTokenAccountsByOwner': {
           const mint = body.params[1].mint, owner = state.addresses.solana;
@@ -80,7 +90,7 @@ export async function setup(t) {
         case 'getFeeForMessage': result = { context: { slot: 1 }, value: 5000 }; break;
         case 'getBlockHeight': result = 50; break;
         case 'sendTransaction': {
-          assert.ok(values[ACTIVITY_KEY], 'persist before broadcast');
+          assert.ok(savedActivity('solana', solanaNetwork.includes('devnet') ? 'devnet' : solanaNetwork.includes('testnet') ? 'testnet' : null), 'persist before broadcast');
           const tx = getTransactionDecoder().decode(Buffer.from(body.params[0], 'base64'));
           broadcasts.push({ chain: 'solana', tx });
           if (state.failBroadcast) throw new Error('fixture broadcast uncertain');
@@ -88,17 +98,26 @@ export async function setup(t) {
         }
         case 'getSignatureStatuses': result = { value: [{ err: null, confirmationStatus: 'finalized' }] }; break;
         case 'getSignaturesForAddress':
+          state.historyEntered?.resolve();
           if (state.failHistory) throw new Error('fixture history unavailable');
-          result = [{ signature: '2'.repeat(88) }]; break;
+          result = [{ signature: (solanaNetwork === CHAINS.solana.endpoint ? '2' : solanaNetwork.includes('testnet') ? '3' : '4').repeat(88) }]; break;
         case 'getTransaction': result = { blockTime: 1700000000, transaction: { message: { accountKeys: [state.addresses.solana], instructions: [] } },
-          meta: { err: null, fee: 0, preBalances: [0], postBalances: [1000000000] } }; break;
+          meta: { err: null, fee: 0, preBalances: [0], postBalances: [solanaNetwork === CHAINS.solana.endpoint ? 1000000000 : solanaNetwork.includes('testnet') ? 2000000000 : 3000000000] } }; break;
         default: assert.fail(`Unexpected fake Solana method: ${body.method}`);
       }
       return Response.json({ jsonrpc: '2.0', id: body.id, result });
     }
-    assert.equal(new URL(url).origin, new URL(CHAINS.tron.endpoint).origin);
+    const tronGenesis = {
+      'https://api.trongrid.io': CHAINS.tron.genesisHash,
+      // tasks/orchestration.md:5921, live read on 2026-10-28 23:12–23:13 UTC.
+      'https://nile.trongrid.io': '0000000000000000d698d4192c56cb6be724a558448e2684802de4d6cd8690dc',
+    };
+    const tronOrigin = new URL(url).origin;
+    assert.ok(tronGenesis[tronOrigin], `Unexpected fake origin ${tronOrigin}`);
     const path = new URL(url).pathname;
-    if (path === '/wallet/getblockbynum') return Response.json({ blockID: state.wrongNetwork ? 'wrong-network' : CHAINS.tron.genesisHash });
+    if (path === '/wallet/getblockbynum') return Response.json({ blockID: state.genesisOverride ?? (state.wrongNetwork
+      ? tronGenesis[tronOrigin === 'https://api.trongrid.io' ? 'https://nile.trongrid.io' : 'https://api.trongrid.io']
+      : tronGenesis[tronOrigin]) });
     if (path === `/v1/accounts/${state.addresses.tron}`) return Response.json({ data: [{ balance: 123000000, trc20: CHAINS.tron.tokens.map(t => ({ [t.address]: (250n * 10n ** BigInt(t.decimals)).toString() })) }] });
     // Transaction fixtures match test/security.test.js:89-110, including the
     // real SDK's protobuf encoding, txID and txCheck; no mocked signing code.
@@ -115,14 +134,16 @@ export async function setup(t) {
       return Response.json({ result: { result: true }, transaction });
     }
     if (path === '/wallet/broadcasttransaction') {
-      assert.ok(values[ACTIVITY_KEY], 'persist before broadcast'); assert.ok(utils.transaction.txCheck(body)); assert.equal(body.signature.length, 1);
+      assert.ok(savedActivity('tron', tronOrigin.includes('nile') ? 'nile' : null), 'persist before broadcast'); assert.ok(utils.transaction.txCheck(body)); assert.equal(body.signature.length, 1);
       broadcasts.push({ chain: 'tron', tx: body });
       if (state.failBroadcast) throw new Error('fixture broadcast uncertain');
       return Response.json({ result: true, txid: body.txID });
     }
     if (path === '/walletsolidity/gettransactionbyid') return Response.json({ txID: body.value, ret: [{ contractRet: 'SUCCESS' }] });
     if (path.includes('/transactions')) {
+      state.historyEntered?.resolve();
       if (state.failHistory) throw new Error('fixture history unavailable');
+      if (tronOrigin !== 'https://api.trongrid.io') return Response.json({ data: [] });
       return Response.json({ data: path.endsWith('/trc20') ? [{ transaction_id: 'ab'.repeat(32), block_timestamp: 1700000000000,
         token_info: { address: CHAINS.tron.tokens[0].address }, from: TronWeb.address.fromPrivateKey('2'.repeat(64)), to: state.addresses.tron, value: '1000000' }] : [] });
     }

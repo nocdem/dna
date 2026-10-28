@@ -20,7 +20,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
   const cancelReview = () => sendChain === 'nodus' ? ui.cancelNodusSend(sendReview.id)
     : isSolanaTron(sendChain) ? ui.cancelSolanaTronSend(sendChain, sendReview.id) : ui.cancelEvmSend(sendReview.id);
   let idleTimer, entryDeadline = 0, walletDeadline = 0, refreshPending = false, publicState;
-  const subscriptions = ['ApprovalController:stateChange', 'PermissionController:stateChange', 'EvmController:stateChange'];
+  const subscriptions = ['ApprovalController:stateChange', 'PermissionController:stateChange', 'EvmController:stateChange', 'NetworksController:stateChange'];
   function element(tag, text, className = '') {
     const node = document.createElement(tag); node.className = className;
     if (text !== undefined) node.textContent = text;
@@ -56,8 +56,14 @@ export async function mountWalletPage({ document = globalThis.document, window =
     }, Math.max(0, Math.min(...deadlines) - now));
   }
   async function refresh() {
-    const state = await ui.refresh();
+    const previousNetworks = ui.state?.networks;
+    let state = await ui.refresh();
     if (disposed) return;
+    if (state.isUnlocked && page === 'chain-history' && previousNetworks &&
+      previousNetworks[receiveNetwork] !== state.networks?.[receiveNetwork]) {
+      await ui.loadSolanaTronHistory(receiveNetwork); state = ui.state;
+      if (disposed) return;
+    }
     const changed = publicState !== JSON.stringify(state);
     if (publicState && !state.isUnlocked && page !== 'phrase') { clearSensitive(); page = 'home'; }
     publicState = JSON.stringify(state);
@@ -156,6 +162,9 @@ export async function mountWalletPage({ document = globalThis.document, window =
     fields?.clear(); fields = undefined; revealed?.replaceChildren(); revealed = undefined;
     root.replaceChildren(); navigation.replaceChildren();
     const state = ui.state;
+    if (sendReview?.network && sendReview.network !== state.networks?.[sendChain]) {
+      void cancelReview().catch(() => {}); sendReview = undefined;
+    }
     if (state.isUnlocked) {
       for (const [label, next] of [['Home', 'home'], ['Connected sites', 'sites'], ['Settings', 'settings']]) navigation.append(actionButton(document, label, () => navigate(next)));
       navigation.append(actionButton(document, 'Lock', () => run(async () => { clearSensitive(); page = 'home'; await ui.lock(); })));
@@ -216,7 +225,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
     else if (page === 'chain-history') renderSolanaTronHistory(document, root, { chain: receiveNetwork, history: state.solanaTronHistory[receiveNetwork] }, {
       refresh: () => run(() => ui.loadSolanaTronHistory(receiveNetwork, { manual: true })),
     });
-    else if (page === 'send' && isSolanaTron(sendChain)) stopSendReview = renderSolanaTronSend(document, root, { chain: sendChain, account: state.addresses[sendChain], review: sendReview }, {
+    else if (page === 'send' && isSolanaTron(sendChain)) stopSendReview = renderSolanaTronSend(document, root, { chain: sendChain, account: state.addresses[sendChain], review: sendReview, network: state.networks?.[sendChain] }, {
       prepare: request => run(async () => { sendReview = await ui.prepareSolanaTronSend(request); }),
       confirm: id => run(async () => {
         // src/app.js:2346-2413: close the consumed review on every outcome,
@@ -250,6 +259,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
       }),
       setAutoLock: minutes => run(async () => { await ui.setAutoLock(minutes); walletDeadline = 0; }),
       selectEvmNetwork: chain => run(() => ui.selectEvmNetwork(chain)),
+      setChainNetwork: (chain, network) => run(() => ui.setChainNetwork(chain, network)),
       setEvmEndpoint: (chain, endpoint) => run(() => ui.setEvmEndpoint(chain, endpoint)),
       reveal: (password, container) => {
         const started = revision;

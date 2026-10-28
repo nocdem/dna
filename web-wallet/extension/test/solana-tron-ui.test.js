@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderSolanaTronSend, renderSolanaTronHistory } from '../src/ui/solana-tron-screens.js';
-import { renderHome, renderReceive } from '../src/ui/views.js';
+import { renderHome, renderReceive, renderSettings } from '../src/ui/views.js';
+import { displayAmount } from '../../src/portfolio.js';
 import { createWalletUi } from '../src/ui/wallet-ui.js';
 import { mountWalletPage } from '../src/ui/app.js';
 import { CHAINS } from '../../src/config.js';
@@ -26,6 +27,101 @@ const reviewFor = chain => ({ id: `${chain}-review`, expiresAt: Date.now() + 450
   ['Network', `${CHAINS[chain].name} mainnet`], ['From', addresses[chain]], ['To', '<img src=x onerror=alert(1)>'],
   ['Asset', 'USDT'], ['Amount', '1'], ['Network fee', 'fee from adapter'],
 ] });
+
+// Exact option lists and handlers prevent a label-only settings implementation
+// from passing. The home assertion covers the operator's no-top-button rule.
+test('settings lists each chain separately and home names non-mainnet networks without a switch button', () => {
+  const root = new Node('main'), selections = [];
+  const networks = { nodus: 'testnet', ethereum: 'mainnet', bsc: 'mainnet', solana: 'devnet', tron: 'nile', cellframe: 'mainnet' };
+  renderSettings(document, root, { networks, preferences: { autoLockTimeLimit: 15 } }, {
+    setChainNetwork: (chain, network) => selections.push([chain, network]),
+  });
+  const options = { nodus: ['Testnet'], ethereum: ['Mainnet'], bsc: ['Mainnet'], solana: ['Mainnet', 'Testnet', 'Devnet'], tron: ['Mainnet', 'Nile'], cellframe: ['Mainnet'] };
+  for (const [chain, labels] of Object.entries(options)) {
+    const selector = find(root, n => n.id === `network-${chain}`)[0];
+    assert.ok(selector, chain); assert.deepEqual(selector.children.map(n => n.textContent), labels);
+    assert.equal(selector.value, networks[chain]);
+    assert.ok(selector.children.every(n => !n.disabled));
+    selector.value = chain === 'solana' ? 'testnet' : networks[chain]; selector.onchange();
+  }
+  assert.ok(selections.some(([chain, network]) => chain === 'solana' && network === 'testnet'));
+  renderHome(document, root, { addresses, networks }, () => {}, () => {});
+  for (const text of ['Nodus · Testnet', 'Solana · Devnet', 'TRON · Nile']) assert.ok(root.textContent.includes(text), text);
+  assert.equal(find(root, n => n.tagName === 'select').length, 0);
+  assert.equal(find(root, n => n.tagName === 'button' && /network|mainnet|testnet/i.test(n.textContent)).length, 0);
+});
+
+test('history formats amounts and peer addresses like the web wallet and uses only the selected network explorer', () => {
+  for (const [chain, network, expected] of [['solana', 'devnet', null], ['tron', 'nile', 'https://nile.tronscan.org/#/transaction/']]) {
+    const root = new Node('main'), hash = chain === 'solana' ? '2'.repeat(88) : 'ab'.repeat(32), amount = '1234567.123456789';
+    renderSolanaTronHistory(document, root, { chain, history: { network, rows: [
+      { chain, hash, amount, symbol: CHAINS[chain].symbol, peer: addresses[chain], dir: 'out', status: 'confirmed', time: 1700000000000 },
+    ], local: [] } }, { refresh() {} });
+    assert.ok(root.textContent.includes(`−${displayAmount(amount)} ${CHAINS[chain].symbol}`));
+    assert.ok(root.textContent.includes(`to ${addresses[chain].slice(0, 8)}…${addresses[chain].slice(-6)}`));
+    assert.equal(root.textContent.includes(addresses[chain]), false);
+    const links = find(root, n => n.tagName === 'a');
+    if (expected) assert.deepEqual(links.map(n => n.href), [expected + hash]);
+    else { assert.equal(links.length, 0); assert.ok(root.textContent.includes(hash)); }
+  }
+});
+
+test('changing one network drops and re-reads only that chain and ignores its delayed old reads', async () => {
+  const state = { isUnlocked: true, addresses, networks: { solana: 'mainnet', tron: 'mainnet' } }, calls = [];
+  let finish;
+  const client = { async request(method, params = []) {
+    calls.push([method, params]);
+    if (method === 'getState') return structuredClone(state);
+    if (method === 'setChainNetwork') { state.networks[params[0]] = params[1]; return; }
+    if (method === 'getSolanaBalances' && !finish) return new Promise(resolve => { finish = resolve; });
+    if (method.endsWith('Balances')) return [{ symbol: method.includes('Solana') ? 'SOL' : 'TRX', balance: '2' }];
+    if (method.endsWith('History')) return { network: state.networks[method.includes('Solana') ? 'solana' : 'tron'], rows: [], local: [] };
+  } };
+  const ui = createWalletUi(client); await ui.refresh();
+  const reading = ui.loadSolanaTronBalances();
+  await ui.loadSolanaTronHistory('tron');
+  const tronHistory = ui.state.solanaTronHistory.tron;
+  await ui.setChainNetwork('solana', 'devnet');
+  finish([{ symbol: 'SOL', balance: '999' }]); await reading;
+  assert.equal(ui.state.solanaTronBalances.solana[0].balance, '2');
+  assert.equal(ui.state.solanaTronHistory.solana.network, 'devnet');
+  assert.deepEqual(ui.state.solanaTronHistory.tron, tronHistory);
+  assert.equal(calls.filter(([method]) => method === 'getTronHistory').length, 1);
+});
+
+// Mounted settings and another window's selection use the real UI wiring;
+// a renderer-only test would miss an uncancelled review timer or stale page.
+test('mounted settings route selection and a network notification closes the old review', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const root = new Node('main'), navigation = new Node('nav'), status = new Node('p'), calls = [];
+  const pageDocument = Object.assign(new EventTarget(), document, { getElementById: id => ({ screen: root, 'wallet-navigation': navigation, 'wallet-status': status })[id] });
+  const window = Object.assign(new EventTarget(), { navigator: {} });
+  const state = { isInitialized: true, isUnlocked: true, addresses, preferences: { autoLockTimeLimit: 0 }, pendingApprovals: {},
+    networks: { solana: 'mainnet', tron: 'mainnet' } };
+  const client = { close() {}, onNotification: () => () => {}, onDisconnect: () => () => {}, async request(method, params = []) {
+    calls.push([method, params]);
+    if (method === 'getState') return structuredClone(state);
+    if (method === 'setChainNetwork') { state.networks[params[0]] = params[1]; return; }
+    if (method.endsWith('Balances')) return [];
+    if (method.endsWith('History')) return { network: state.networks.solana, rows: [], local: [] };
+    if (method === 'prepareSolanaSend') return { ...reviewFor('solana'), network: state.networks.solana };
+  } };
+  const page = await mountWalletPage({ document: pageDocument, window, client }); t.after(page.dispose);
+  assert.deepEqual(navigation.children.map(node => node.textContent), ['Home', 'Connected sites', 'Settings', 'Lock']);
+  button(navigation, 'Settings').onclick();
+  const selector = find(root, n => n.id === 'network-solana')[0]; selector.value = 'devnet'; await selector.onchange();
+  assert.ok(calls.some(([method, params]) => method === 'setChainNetwork' && params[0] === 'solana' && params[1] === 'devnet'));
+  assert.ok(calls.some(([method]) => method === 'getSolanaHistory'));
+  button(navigation, 'Home').onclick();
+  const row = find(root, n => n.tagName === 'article' && n.textContent.includes(addresses.solana))[0];
+  button(row, 'Send').onclick();
+  assert.deepEqual(find(root, n => n.id === 'evm-send-asset')[0].children.map(n => n.value), ['SOL']);
+  await find(root, n => n.tagName === 'form')[0].onsubmit({ preventDefault() {} });
+  const confirm = button(root, 'Confirm send');
+  state.networks.solana = 'testnet'; await page.refresh(); t.mock.timers.tick(600);
+  assert.equal(confirm.disabled, true); assert.equal(button(root, 'Confirm send'), undefined);
+  assert.ok(calls.some(([method, params]) => method === 'cancelSolanaSend' && params[0] === 'solana-review'));
+});
 
 test('home rows show returned balances/errors and route Send Receive History by chain', () => {
   const root = new Node('main'), actions = [];

@@ -15,6 +15,8 @@ import { EvmAccount, Contract, describeArgs } from '../../../src/evm/contract.js
 import { parseRaw, parseWei, formatRaw, formatWei } from '../../../src/evm/units.js';
 import { rpcErrors, providerErrors } from '@metamask/rpc-errors';
 import { Buffer } from 'buffer';
+import { createNetworkActivity } from './network-activity.js';
+import { chainNetwork } from '../constants/networks.js';
 
 // Approved plan §3.5 holder 3 / §5.4–5.5: the web-wallet client and its one
 // module queue live in the background. No secret or signed envelope enters UI state.
@@ -32,6 +34,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
     for (const row of previous.rows) row.envelope?.fill(0);
     previous.rows = []; previous.quarantined = []; previous.releasedQuarantine.clear(); previous.key = null;
     previous.historyKey = null; previous.history = {};
+    previous.networkActivities?.clear();
   }
   lockCoordinator.register('nodus', { lock });
   function current(s) {
@@ -46,7 +49,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
     lock();
     if (typeof factory !== 'function') throw new Error('Nodus sending is not available in this wallet build.');
     const s = { client: createNodusClient({ factory }), abort: new AbortController(), rows: [], quarantined: [], activityBlocked: false,
-      releasedQuarantine: new Set(), quarantineReadAt: -Infinity, reviews: new Map(), assertReady, id };
+      releasedQuarantine: new Set(), quarantineReadAt: -Infinity, reviews: new Map(), networkActivities: new Map(), assertReady, id };
     session = s;
     try {
       const combined = signal ? AbortSignal.any([signal, s.abort.signal]) : s.abort.signal;
@@ -191,10 +194,17 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
     // background chain handlers receive this handle, never the trusted/site API.
     // src/app.js:202-225,2358-2362: one saved list for all chains, one write
     // queue; src/app.js:353-361: account-history cache under its own key.
-    chainActivity(chain) {
+    chainActivity(chain, networkId = 'mainnet') {
       if (!['solana', 'tron'].includes(chain)) throw new Error('Unsupported chain.');
       const s = active();
       const check = () => { lockCoordinator.assertUnlocked(); current(s); s.assertReady?.(); };
+      const network = chainNetwork(chain, networkId);
+      if (network.id !== 'mainnet') {
+        const key = `${chain}.${network.id}`;
+        if (!s.networkActivities.has(key)) s.networkActivities.set(key,
+          createNetworkActivity({ chain, network, session: s, storage, current: check }));
+        return s.networkActivities.get(key);
+      }
       return {
         get client() { check(); return s.client; },
         error() { check(); return s.activityError ?? ''; },
@@ -281,12 +291,17 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
       } finally { message.fill(0); }
     },
     reconcileQuarantine() { return session ? reconcileQuarantine(session) : Promise.resolve(); },
-    discardActivity() { return discardActivity(active()); },
+    async discardActivity() {
+      const s = active(), message = await discardActivity(s);
+      for (const activity of s.networkActivities.values()) await activity.discard();
+      // src/app.js:2689: use the unchanged recovery message for testnets too.
+      return message ?? 'Unreadable local history discarded; readable records and their held coins were kept. Check the account explorer before resending any previous payment.';
+    },
     getState() { return { state: session?.client.state ?? 'locked', tokens: nodusTokens(session?.client.tokenPins()), historyReadable: session?.client.historyReadable ?? false,
       evmBuildable: session?.client.evmBuildable ?? false, evmReadable: session?.client.evmReadable ?? false,
       publicKey: session?.client.publicKey ? `0x${session.client.publicKey}` : undefined,
       // src/app.js:2559: recovery is offered only for the unlock-time read problem or quarantine.
-      activityError: session?.activityBlocked ? session.activityError : '', quarantinedCount: session?.quarantined.length ?? 0 }; },
+      activityError: session?.activityBlocked ? session.activityError : [...(session?.networkActivities.values() ?? [])].find(activity => activity.blocked)?.error() ?? '', quarantinedCount: session?.quarantined.length ?? 0 }; },
     async getBalances() {
       const s = active(); track(s);
       const rows = await adapter.balances('nodus', s.addresses.nodus, undefined, { client: s.client, signal: s.abort.signal });

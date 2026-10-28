@@ -25,7 +25,8 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
   let state = null, generated = null, phraseStep = null;
   let evmBalances = {}, balanceIdentity, balancePending;
   let nodusBalances = null, cpunkBalance = null, nodusHistory = null, nodusPending, historyPending, balanceGeneration = 0;
-  let solanaTronBalances = {}, solanaTronHistory = {}, solanaTronPending;
+  let solanaTronBalances = {}, solanaTronHistory = {};
+  const solanaTronPending = new Map(), chainGeneration = { solana: 0, tron: 0 };
   const solanaTronHistoryPending = new Map();
   const chainPrefix = chain => {
     if (!['solana', 'tron'].includes(chain)) throw new Error('Unsupported chain.');
@@ -33,12 +34,20 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
   };
   const publicState = () => state ? { ...state, evmBalances, nodusBalances, cpunkBalance, nodusHistory, solanaTronBalances, solanaTronHistory } : null;
   async function refresh() {
+    const previousNetworks = state?.networks;
     state = await client.request('getState');
     const identity = state.isUnlocked ? JSON.stringify([state.addresses, state.evm, state.nodus]) : null;
     if (identity !== balanceIdentity) {
       evmBalances = {}; nodusBalances = cpunkBalance = nodusHistory = null;
-      solanaTronBalances = {}; solanaTronHistory = {}; solanaTronPending = null; solanaTronHistoryPending.clear();
+      solanaTronBalances = {}; solanaTronHistory = {}; solanaTronPending.clear(); solanaTronHistoryPending.clear();
+      chainGeneration.solana++; chainGeneration.tron++;
       balanceIdentity = identity; balanceGeneration++;
+    }
+    // Plan §5.6: invalidate only the changed chain, including in-flight reads
+    // from a different window's old selection. Other chains retain their data.
+    for (const chain of ['solana', 'tron']) if (previousNetworks && previousNetworks[chain] !== state.networks?.[chain]) {
+      delete solanaTronBalances[chain]; delete solanaTronHistory[chain];
+      solanaTronPending.delete(chain); solanaTronHistoryPending.delete(chain); chainGeneration[chain]++;
     }
     return publicState();
   }
@@ -104,17 +113,21 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
     cancelEvmSend: id => client.request('cancelEvmSend', [id]),
     // Same trusted-port boundary as EVM/Nodus; only public rows/reviews are
     // retained in the UI, and an old unlock's reads cannot replace new state.
-    async loadSolanaTronBalances({ force = false } = {}) {
+    async loadSolanaTronBalances({ force = false, chain: selectedChain } = {}) {
       if (!state?.isUnlocked) return;
-      if (solanaTronPending) return solanaTronPending;
-      const chains = ['solana', 'tron'].filter(chain => state.addresses?.[chain]);
-      if (!chains.length || (!force && chains.every(chain => solanaTronBalances[chain]))) return;
-      const started = balanceGeneration;
-      const request = Promise.allSettled(chains.map(chain => client.request(`get${chainPrefix(chain)}Balances`))).then(results => {
-        if (started !== balanceGeneration || !state?.isUnlocked) return;
-        solanaTronBalances = Object.fromEntries(results.map((result, i) => [chains[i], result.status === 'fulfilled' ? result.value : { error: result.reason.message }]));
-      }).finally(() => { if (solanaTronPending === request) solanaTronPending = null; });
-      solanaTronPending = request; return request;
+      if (selectedChain) chainPrefix(selectedChain);
+      const chains = (selectedChain ? [selectedChain] : ['solana', 'tron']).filter(chain => state.addresses?.[chain]);
+      return Promise.all(chains.map(chain => {
+        if (solanaTronPending.has(chain)) return solanaTronPending.get(chain);
+        if (!force && solanaTronBalances[chain]) return;
+        const started = chainGeneration[chain];
+        const save = value => {
+          if (started === chainGeneration[chain] && state?.isUnlocked) solanaTronBalances = { ...solanaTronBalances, [chain]: value };
+        };
+        const request = client.request(`get${chainPrefix(chain)}Balances`).then(save, error => save({ error: error.message }))
+          .finally(() => { if (solanaTronPending.get(chain) === request) solanaTronPending.delete(chain); });
+        solanaTronPending.set(chain, request); return request;
+      }));
     },
     prepareSolanaTronSend: ({ chain, ...fields }) => client.request(`prepare${chainPrefix(chain)}Send`, [fields]),
     confirmSolanaTronSend: (chain, id) => client.request(`confirm${chainPrefix(chain)}Send`, [id]),
@@ -123,11 +136,11 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
       const prefix = chainPrefix(chain);
       if (!state?.isUnlocked) return;
       if (solanaTronHistoryPending.has(chain)) return solanaTronHistoryPending.get(chain);
-      const started = balanceGeneration;
+      const started = chainGeneration[chain];
       const request = client.request(`get${prefix}History`, [{ manual }]).then(history => {
-        if (started === balanceGeneration && state?.isUnlocked) solanaTronHistory = { ...solanaTronHistory, [chain]: history };
+        if (started === chainGeneration[chain] && state?.isUnlocked) solanaTronHistory = { ...solanaTronHistory, [chain]: history };
       }).catch(error => {
-        if (started === balanceGeneration && state?.isUnlocked) solanaTronHistory = { ...solanaTronHistory,
+        if (started === chainGeneration[chain] && state?.isUnlocked) solanaTronHistory = { ...solanaTronHistory,
           [chain]: { ...solanaTronHistory[chain], error: error.message } };
       }).finally(() => { if (solanaTronHistoryPending.get(chain) === request) solanaTronHistoryPending.delete(chain); });
       solanaTronHistoryPending.set(chain, request); return request;
@@ -167,6 +180,13 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
     discardNodusActivity: () => client.request('discardNodusActivity'),
     resubmitNodusSend: hash => client.request('resubmitNodusSend', [hash]),
     async selectEvmNetwork(chain) { await client.request('selectEvmNetwork', [chain]); return refresh(); },
+    async setChainNetwork(chain, network) {
+      await client.request('setChainNetwork', [chain, network]); await refresh();
+      if (['solana', 'tron'].includes(chain)) await Promise.all([
+        this.loadSolanaTronBalances({ chain }), this.loadSolanaTronHistory(chain),
+      ]);
+      return publicState();
+    },
     async setEvmEndpoint(chain, endpoint) { await client.request('setEvmEndpoint', [chain, endpoint]); return refresh(); },
     async revoke(origin) {
       const permissions = state?.subjects?.[origin]?.permissions;

@@ -198,6 +198,10 @@ test('site switch changes the shared choice and notifies connected origins', asy
   await Promise.all(switched.map(event => event.promise));
   assert.ok(notifications.slice(0, 2).every(events => events.some(message => message.method === 'nodus_chainChanged' && message.params.chainId === '0x38')));
   assert.equal(notifications[2].length, 0);
+  // Package 8 leaves this global active-chain switch unchanged: the two
+  // per-chain settings entries still each have their sole Mainnet choice.
+  assert.equal(background.networks.getState().ethereum, 'mainnet');
+  assert.equal(background.networks.getState().bsc, 'mainnet');
   await background.store.flush(); assert.equal(background.store.backup().EvmController.selectedChain, 'bsc'); streams.forEach(stream => stream.destroy());
 });
 
