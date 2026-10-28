@@ -2,6 +2,7 @@ import { connectTrusted } from './trusted-port.js';
 import { bindActivity } from './activity.js';
 import { createWalletUi } from './wallet-ui.js';
 import { actionButton, renderHome, renderReceive, renderConnect, renderSites, renderSettings } from './views.js';
+import { renderEvmApproval, renderEvmSend } from './evm-screens.js';
 import { createPhraseFields } from '../../../src/phrase-fields.js';
 
 // Approved plan §3.2/§3.6/§7: all three trusted pages use the same web-wallet UI modules.
@@ -9,8 +10,9 @@ export async function mountWalletPage({ document = globalThis.document, window =
   const ui = createWalletUi(client), root = document.getElementById('screen');
   const navigation = document.getElementById('wallet-navigation'), status = document.getElementById('wallet-status');
   let page = 'home', receiveNetwork, fields, revealed, busy = false, disposed = false, revision = 0;
+  let sendChain, sendReview;
   let idleTimer, entryDeadline = 0, walletDeadline = 0, refreshPending = false, publicState;
-  const subscriptions = ['ApprovalController:stateChange', 'PermissionController:stateChange'];
+  const subscriptions = ['ApprovalController:stateChange', 'PermissionController:stateChange', 'EvmController:stateChange'];
   function element(tag, text, className = '') {
     const node = document.createElement(tag); node.className = className;
     if (text !== undefined) node.textContent = text;
@@ -22,6 +24,8 @@ export async function mountWalletPage({ document = globalThis.document, window =
     revealed?.replaceChildren(); revealed = undefined;
     for (const input of root.querySelectorAll('input')) input.value = '';
     entryDeadline = 0;
+    if (sendReview) void ui.cancelEvmSend(sendReview.id).catch(() => {});
+    sendReview = undefined;
   }
   function hasEntry() { return ui.phraseStep || revealed || [...root.querySelectorAll('input[type="password"]')].some(input => input.value); }
   // Web wallet app.js:885-903: a fixed ten minutes for recovery words/passwords, independently of auto-lock.
@@ -50,6 +54,13 @@ export async function mountWalletPage({ document = globalThis.document, window =
     if (busy) { refreshPending ||= changed; return; }
     if (changed) render();
     scheduleIdle();
+    if (state.isUnlocked && state.evm && page === 'home') void loadBalances().catch(showError);
+  }
+  async function loadBalances(force = false) {
+    await ui.loadEvmBalances({ force });
+    if (disposed || page !== 'home' || !ui.state?.isUnlocked) return;
+    if (busy) { refreshPending = true; return; }
+    publicState = JSON.stringify(ui.state); render();
   }
   async function run(action, { renderAfter = true } = {}) {
     if (busy || disposed) return;
@@ -59,13 +70,17 @@ export async function mountWalletPage({ document = globalThis.document, window =
     finally {
       try { await ui.refresh(); } catch (error) { showError(error); }
       busy = false; root.inert = navigation.inert = false;
-      if (!disposed) { publicState = JSON.stringify(ui.state); if (renderAfter || !ui.state?.isUnlocked || refreshPending) render(); scheduleIdle(); }
+      if (!disposed) {
+        publicState = JSON.stringify(ui.state); if (renderAfter || !ui.state?.isUnlocked || refreshPending) render(); scheduleIdle();
+        if (ui.state?.isUnlocked && ui.state.evm && page === 'home') void loadBalances().catch(showError);
+      }
       if (refreshPending) { refreshPending = false; void refresh().catch(showError); }
     }
   }
   function navigate(next, network) {
     if (busy) return;
     clearSensitive(); page = next; receiveNetwork = network; status.textContent = ''; render(); scheduleIdle();
+    if (page === 'home' && ui.state?.evm) void loadBalances().catch(showError);
   }
   function passwordInput(form, id, label, autocomplete, minimum) {
     const caption = element('label', label), input = element('input');
@@ -130,14 +145,29 @@ export async function mountWalletPage({ document = globalThis.document, window =
     }
     const pending = Object.values(state.pendingApprovals || {})[0];
     if (pending) {
-      renderConnect(document, root, state, pending, {
-        approve: (...args) => run(() => ui.approveConnect(...args)), reject: request => run(() => ui.rejectConnect(request)),
-      }); return;
+      if (['personal_sign', 'eth_signTypedData', 'transaction', 'wallet_switchEthereumChain'].includes(pending.type)) {
+        renderEvmApproval(document, root, pending, {
+          approve: request => run(() => ui.approveEvm(request)), reject: request => run(() => ui.rejectEvm(request)),
+        });
+      } else renderConnect(document, root, state, pending, {
+          approve: (...args) => run(() => ui.approveConnect(...args)), reject: request => run(() => ui.rejectConnect(request)),
+        });
+      return;
     }
-    if (page === 'receive') renderReceive(document, root, receiveNetwork, state.addresses, address => run(async () => { await window.navigator.clipboard.writeText(address); status.className = 'hint'; status.textContent = 'Address copied.'; }));
+    if (page === 'send') renderEvmSend(document, root, { chain: sendChain, account: state.addresses[sendChain], review: sendReview }, {
+      prepare: request => run(async () => { sendReview = await ui.prepareEvmSend(request); }),
+      confirm: id => run(async () => {
+        const hash = await ui.confirmEvmSend(id); sendReview = undefined; page = 'home';
+        status.className = 'hint'; status.textContent = `Transaction sent: ${hash}`; await ui.loadEvmBalances({ force: true });
+      }),
+      cancel: () => navigate('home'),
+    });
+    else if (page === 'receive') renderReceive(document, root, receiveNetwork, state.addresses, address => run(async () => { await window.navigator.clipboard.writeText(address); status.className = 'hint'; status.textContent = 'Address copied.'; }));
     else if (page === 'sites') renderSites(document, root, state, origin => run(() => ui.revoke(origin)));
     else if (page === 'settings') renderSettings(document, root, state, {
       setAutoLock: minutes => run(async () => { await ui.setAutoLock(minutes); walletDeadline = 0; }),
+      selectEvmNetwork: chain => run(() => ui.selectEvmNetwork(chain)),
+      setEvmEndpoint: (chain, endpoint) => run(() => ui.setEvmEndpoint(chain, endpoint)),
       reveal: (password, container) => {
         const started = revision;
         return run(async () => {
@@ -152,7 +182,9 @@ export async function mountWalletPage({ document = globalThis.document, window =
         }, { renderAfter: false });
       },
     });
-    else renderHome(document, root, state, network => navigate('receive', network));
+    else renderHome(document, root, state, network => navigate('receive', network), chain => {
+      sendChain = chain; navigate('send');
+    }, () => run(() => ui.loadEvmBalances({ force: true })));
   }
   const unbindActivity = bindActivity(document, client, () => {
     scheduleIdle(true);

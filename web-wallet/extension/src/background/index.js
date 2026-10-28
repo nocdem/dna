@@ -10,6 +10,7 @@ import { createPersistedStore } from './store.js';
 import { createApprovals } from './approvals.js';
 import { createPermissions } from './permissions.js';
 import { createRequestEngine } from './engine.js';
+import { createEvm } from './evm.js';
 import { PermissionsRequestNotFoundError } from '@metamask/permission-controller';
 import { VAULT_KEY, decryptVault, validateNewPassword } from '../../../src/vault.js';
 import { validateNodusPhrase } from '../../../src/recovery.js';
@@ -20,11 +21,16 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   runtime = chrome.runtime, windows = chrome.windows, tabs = globalThis.chrome?.tabs } = {}) {
   const lockCoordinator = createLockCoordinator();
   const vaultStore = createVaultStore({ storage, lockCoordinator });
-  const keyring = createKeyring({ lockCoordinator });
   const messenger = new Messenger({ namespace: 'Background' });
   const store = await createPersistedStore({ storage, messenger });
   const uiPorts = new Set(), alarmListeners = [];
   let walletKeys = null, unlock = null, permissions = null, engine = null;
+  const getWallet = () => {
+    lockCoordinator.assertUnlocked();
+    if (!walletKeys) throw new Error('Wallet is locked.');
+    return walletKeys.getEvmWallet();
+  };
+  const keyring = createKeyring({ lockCoordinator, getWallet });
   let restoring = Promise.resolve();
   const uiSubscriptions = new Map();
 
@@ -42,13 +48,15 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   }) });
   permissions = createPermissions({ messenger, approvals, store, runtime,
     getNetworkState: options => engine.getNetworkState(options) });
+  const evm = createEvm({ messenger, store, approvals, permissions, lockCoordinator, getWallet, keyring,
+    onNetworkChanged: (client, readMetadata) => engine.attachNetworkClient(client, readMetadata) });
 
   // wallet-keys.js:5-6, 43-44, 69-70: package 6 supplies the real Nodus seed consumer
   // and registers its own lock holder. No seed is discarded by a stand-in consumer.
   function attachWalletKeys(consumeNodusSeed) {
     if (walletKeys) throw new Error('Wallet keys are already attached.');
     walletKeys = createWalletKeys({ lockCoordinator, consumeNodusSeed });
-    const unlockKeys = createUnlock({ vaultStore, lockCoordinator, keyring, walletKeys });
+    const unlockKeys = createUnlock({ vaultStore, lockCoordinator, walletKeys });
     unlock = async (password, options) => {
       try {
         const result = await unlockKeys(password, options);
@@ -77,6 +85,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
         accounts: account ? [account] : [],
         addresses: isUnlocked && walletKeys ? { ethereum: account, bsc: account, ...walletKeys.getAddresses() } : {},
         preferences: { autoLockTimeLimit: autoLockAlarm.minutes },
+        evm: evm.getState(),
         // Port: metamask-controller.js:2378-2384 flattens controller UI state, including subject metadata.
         ...permissions.controller.state, ...approvals.controller.state, ...permissions.alertController.state, ...permissions.subjectMetadataController.state };
     },
@@ -133,7 +142,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     // shared/constants/messages.ts:17. Only public approval/permission events cross the trusted UI boundary.
     // ADAPTATION: engine.js owns streams; share the bounded subscriptions across trusted UI ports, disposed with this background.
     messengerSubscribe(event) {
-      if (!['ApprovalController:stateChange', 'PermissionController:stateChange'].includes(event)) throw rpcErrors.invalidParams('Unsupported UI event.');
+      if (!['ApprovalController:stateChange', 'PermissionController:stateChange', 'EvmController:stateChange'].includes(event)) throw rpcErrors.invalidParams('Unsupported UI event.');
       const subscription = uiSubscriptions.get(event);
       if (subscription) { subscription.count++; return; }
       const listener = (...payload) => {
@@ -155,6 +164,12 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     rejectPermissionsRequest: id => permissions.controller.rejectPermissionsRequest(id),
     resolvePendingApproval: (id, value) => approvals.controller.acceptRequest(id, value),
     rejectPendingApproval: id => approvals.reject(id),
+    getEvmBalances: chain => evm.getBalances(chain),
+    prepareEvmSend: fields => evm.prepareSend(fields),
+    confirmEvmSend: id => evm.confirmSend(id),
+    cancelEvmSend: id => evm.cancelSend(id),
+    selectEvmNetwork: chain => evm.selectNetwork(chain),
+    setEvmEndpoint: (chain, endpoint) => evm.setEndpoint(chain, endpoint),
     setLocked: () => lockCoordinator.lock(),
     submitPasswordOrEncryptionKey: ({ password }) => {
       // ADAPTATION: plan §3.5 uses the web-wallet password vault; no second keyring/encryption-key unlock path.
@@ -162,22 +177,24 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
       return unlock(password);
     },
   };
-  engine = createRequestEngine({ runtime, permissions, approvals, autoLockAlarm, trustedApi, getUiPorts: () => uiPorts });
+  engine = createRequestEngine({ runtime, permissions, approvals, autoLockAlarm, trustedApi, getUiPorts: () => uiPorts, evm });
+  engine.attachNetworkClient(evm.client, () => evm.client.metadata);
   const onPermissionsChanged = () => { void engine.notifyAccountsChanged(); };
   messenger.subscribe('PermissionController:stateChange', onPermissionsChanged);
-  // Plan §3.5:388-406: deliberately exclude the private KeyringController from composition and backups.
+  // Only public network/permission/approval state enters composition; ethers custody stays in walletKeys.
   store.registerControllers({ PermissionController: permissions.controller, ApprovalController: approvals.controller,
-    AlertController: permissions.alertController, SubjectMetadataController: permissions.subjectMetadataController });
+    AlertController: permissions.alertController, SubjectMetadataController: permissions.subjectMetadataController, EvmController: evm.controller });
   await store.flush();
   return {
-    vaultStore, lockCoordinator, autoLockAlarm, keyring, attachWalletKeys, store, permissions, approvals, engine,
+    vaultStore, lockCoordinator, autoLockAlarm, keyring, attachWalletKeys, store, permissions, approvals, engine, evm,
     lock: () => lockCoordinator.lock(),
     get walletKeys() { return walletKeys; },
     get unlock() { return unlock; },
     async destroy() {
       for (const [event, { listener }] of uiSubscriptions) messenger.unsubscribe(event, listener);
       uiSubscriptions.clear();
-      engine.destroy(); approvals.destroy(); store.destroy(); permissions.subjectMetadataController.destroy(); permissions.controller.destroy(); permissions.alertController.destroy();
+      await lockCoordinator.lock();
+      engine.destroy(); approvals.destroy(); store.destroy(); evm.destroy(); permissions.subjectMetadataController.destroy(); permissions.controller.destroy(); permissions.alertController.destroy();
       messenger.unsubscribe('PermissionController:stateChange', onPermissionsChanged);
       for (const listener of alarmListeners) alarms.onAlarm.removeListener(listener);
       await store.flush();

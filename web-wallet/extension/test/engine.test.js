@@ -336,7 +336,7 @@ test('RPC logs contain method/status without request or error data', async t => 
   background.engine.attachNetworkClient({ provider, blockTracker, configuration: { chainId: '0x1' } });
   const remote = port(runtime);
   assert.ok((await request(remote, 'eth_call', [{ data: sentinel }])).error);
-  assert.equal((await request(remote, 'personal_sign', [sentinel, account])).error.code, -32004);
+  assert.equal((await request(remote, 'personal_sign', [sentinel, account])).error.code, 4100);
   assert.ok(logs.some(args => args[0] === 'RPC (https://site.example): eth_call -> error'));
   assert.equal(JSON.stringify(logs).includes(sentinel), false);
   remote.disconnect();

@@ -5,7 +5,7 @@ import { AUTO_LOCK_CHOICES } from '../../../src/auto-lock.js';
 import { Caip25CaveatType, Caip25EndowmentPermissionName, getEthAccounts } from '@metamask/chain-agnostic-permission';
 import { connectDetails, extensionAutoLockNote } from './wallet-ui.js';
 
-// Approved plan §3.6/§7 and dispatch: the web-wallet networks, address-only until the balance packages.
+// Approved plan §3.6/§7: web-wallet networks; package 5 adds real EVM balances.
 export const NETWORKS = { nodus: NODUS_NETWORK, ...CHAINS, cellframe: CELLFRAME };
 const addressFor = (addresses, key) => addresses?.[key === 'cellframe' ? 'cpunk' : key];
 function element(document, tag, className = '', text) {
@@ -19,7 +19,7 @@ export function actionButton(document, text, action, secondary = true) {
 }
 function heading(document, container, text) { container.append(element(document, 'h1', '', text)); }
 
-export function renderHome(document, container, state, receive) {
+export function renderHome(document, container, state, receive, send, refreshBalances) {
   container.replaceChildren(); heading(document, container, 'Your wallet');
   const list = element(document, 'div', 'extension-addresses');
   for (const [key, network] of Object.entries(NETWORKS)) {
@@ -32,8 +32,15 @@ export function renderHome(document, container, state, receive) {
     else row.append(element(document, 'p', 'hint', 'Address is unavailable.'));
     const receiveButton = actionButton(document, 'Receive', () => receive(key)); receiveButton.disabled = !address;
     row.append(receiveButton); list.append(row);
+    if (key === 'ethereum' || key === 'bsc') {
+      const balances = state.evmBalances?.[key];
+      if (Array.isArray(balances)) for (const asset of balances) row.append(element(document, 'p', 'hint', asset.error ? `${asset.symbol}: ${asset.error}` : `${asset.balance} ${asset.symbol}`));
+      else row.append(element(document, 'p', 'hint', balances?.error ?? 'Balances have not been loaded.'));
+      if (send) { const control = actionButton(document, 'Send', () => send(key)); control.disabled = !address; row.append(control); }
+    }
   }
   container.append(list);
+  if (refreshBalances) container.append(actionButton(document, 'Refresh balances', refreshBalances));
 }
 
 // src/app.js:44-47: the QR and copy control use the same raw address. No URI or amount is added.
@@ -87,7 +94,7 @@ export function renderSites(document, container, state, revoke) {
   }
 }
 
-export function renderSettings(document, container, state, { setAutoLock, reveal }) {
+export function renderSettings(document, container, state, { setAutoLock, reveal, selectEvmNetwork, setEvmEndpoint }) {
   container.replaceChildren(); heading(document, container, 'Settings');
   const label = element(document, 'label', '', 'Auto-lock'), select = element(document, 'select');
   select.id = 'auto-lock-minutes'; label.htmlFor = select.id;
@@ -98,7 +105,25 @@ export function renderSettings(document, container, state, { setAutoLock, reveal
   select.value = String(state.preferences.autoLockTimeLimit);
   select.onchange = () => setAutoLock(Number(select.value));
   const note = element(document, 'p', 'hint', extensionAutoLockNote(state.preferences.autoLockTimeLimit));
-  container.append(label, select, note, element(document, 'h2', '', 'Reveal recovery phrase'));
+  container.append(label, select, note);
+  if (state.evm) {
+    const caption = element(document, 'label', '', 'Selected EVM network'), network = element(document, 'select');
+    caption.htmlFor = network.id = 'evm-network';
+    for (const chain of ['ethereum', 'bsc']) {
+      const option = element(document, 'option', '', CHAINS[chain].name); option.value = chain; network.append(option);
+    }
+    network.value = state.evm.selectedChain; network.onchange = () => selectEvmNetwork(network.value);
+    container.append(caption, network, element(document, 'p', 'hint', 'Every connected site uses this network.'));
+    for (const chain of ['ethereum', 'bsc']) {
+      const rpcLabel = element(document, 'label', '', `${CHAINS[chain].name} RPC provider`), rpc = element(document, 'select');
+      rpcLabel.htmlFor = rpc.id = `evm-rpc-${chain}`;
+      for (const provider of CHAINS[chain].rpcOptions) {
+        const option = element(document, 'option', '', provider.note ? `${provider.label} — ${provider.note}` : provider.label); option.value = provider.url; rpc.append(option);
+      }
+      rpc.value = state.evm.endpoints[chain]; rpc.onchange = () => setEvmEndpoint(chain, rpc.value); container.append(rpcLabel, rpc);
+    }
+  }
+  container.append(element(document, 'h2', '', 'Reveal recovery phrase'));
   const form = element(document, 'form'), passwordLabel = element(document, 'label', '', 'Re-enter your password');
   const password = element(document, 'input'); password.id = 'reveal-password'; password.type = 'password';
   password.autocomplete = 'current-password'; password.required = true; password.maxLength = 1024; passwordLabel.htmlFor = password.id;

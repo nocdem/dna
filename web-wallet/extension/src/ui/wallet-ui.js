@@ -22,14 +22,21 @@ export function connectDetails(pending) {
 
 export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
   let state = null, generated = null, phraseStep = null;
-  async function refresh() { state = await client.request('getState'); return state; }
+  let evmBalances = {}, balanceIdentity, balancePending;
+  const publicState = () => state ? { ...state, evmBalances } : null;
+  async function refresh() {
+    state = await client.request('getState');
+    const identity = state.isUnlocked ? JSON.stringify([state.addresses, state.evm]) : null;
+    if (identity !== balanceIdentity) { evmBalances = {}; balanceIdentity = identity; }
+    return publicState();
+  }
   function clearPhrase() { generated = null; phraseStep = null; }
   async function unlock(password) {
     try { await client.request('submitPasswordOrEncryptionKey', [{ password }]); return await refresh(); }
     finally { password = null; }
   }
   return {
-    get state() { return state; }, get phraseStep() { return phraseStep; }, refresh, unlock, clearPhrase,
+    get state() { return publicState(); }, get phraseStep() { return phraseStep; }, refresh, unlock, clearPhrase,
     beginCreate() { generated = validateNodusPhrase(generatePhrase()); phraseStep = 'backup'; return generated; },
     beginImport() { clearPhrase(); phraseStep = 'import'; },
     confirmBackup() { if (phraseStep !== 'backup') throw new Error('No recovery backup to confirm.'); phraseStep = 'verify'; },
@@ -57,6 +64,27 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
       await client.request('approvePermissionsRequest', [approved]); return refresh();
     },
     async rejectConnect(pending) { await client.request('rejectPermissionsRequest', [pending.id]); return refresh(); },
+    async approveEvm(pending) { await client.request('resolvePendingApproval', [pending.id, true]); return refresh(); },
+    async rejectEvm(pending) { await client.request('rejectPendingApproval', [pending.id]); return refresh(); },
+    async loadEvmBalances({ force = false } = {}) {
+      if (!state?.isUnlocked) return;
+      if (balancePending) return balancePending;
+      if (!force && Object.keys(evmBalances).length) return;
+      const started = balanceIdentity;
+      balancePending = (async () => {
+        const chains = ['ethereum', 'bsc'];
+        const results = await Promise.allSettled(chains.map(chain => client.request('getEvmBalances', [chain])));
+        if (balanceIdentity !== started || !state?.isUnlocked) return;
+        evmBalances = Object.fromEntries(results.map((result, index) => [chains[index], result.status === 'fulfilled' ? result.value : { error: result.reason.message }]));
+        return evmBalances;
+      })().finally(() => { balancePending = null; });
+      return balancePending;
+    },
+    prepareEvmSend: fields => client.request('prepareEvmSend', [fields]),
+    confirmEvmSend: id => client.request('confirmEvmSend', [id]),
+    cancelEvmSend: id => client.request('cancelEvmSend', [id]),
+    async selectEvmNetwork(chain) { await client.request('selectEvmNetwork', [chain]); return refresh(); },
+    async setEvmEndpoint(chain, endpoint) { await client.request('setEvmEndpoint', [chain, endpoint]); return refresh(); },
     async revoke(origin) {
       await client.request('removePermissionsFor', [{ [origin]: [Caip25EndowmentPermissionName] }]); return refresh();
     },

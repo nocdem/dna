@@ -64,7 +64,7 @@ function createDupeReqFilterStream() {
   });
 }
 
-export function createRequestEngine({ runtime, permissions, approvals, autoLockAlarm, trustedApi, getUiPorts, networkClient: initialNetworkClient }) {
+export function createRequestEngine({ runtime, permissions, approvals, autoLockAlarm, trustedApi, getUiPorts, evm, networkClient: initialNetworkClient }) {
   const connections = new Map(), ports = new Set();
   // Port: background.ts:207, 935-952, with no disconnect-time deletion in that reference path.
   const requestAccountTabIds = {};
@@ -88,7 +88,7 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
     networkClient = client; networkVersion = undefined; getNetworkMetadata = readMetadata;
     for (const connection of connections.values()) {
       connection.resetNetwork();
-      void notifyChainChange(connection);
+      if (permissions.getAccounts(connection.origin).length) void notifyChainChange(connection);
     }
   }
 
@@ -105,7 +105,7 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
       }
     }
     // Port: metamask-controller.js:2359-2365, shared/constants/network.ts:1802.
-    // Package 5 supplies its NetworkController metadata reader along with the client; absent metadata is disconnected.
+    // The web-wallet network client supplies its metadata reader; absent metadata is disconnected.
     return { chainId: networkClient?.configuration.chainId ?? `0x${CHAINS.ethereum.chainId.toString(16)}`,
       networkVersion: networkVersion ?? 'loading', isConnected: getNetworkMetadata?.()?.status === 'available' };
   }
@@ -130,12 +130,20 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
     }));
     engine.push(approvals.createOriginThrottlingMiddleware());
     // Plan §3.4:312-319 removes permission log, traces, scans, referrals, swaps, snaps and EIP-7715.
-    engine.push((req, _res, next, end) => req.method === 'eth_signTransaction' ? end(rpcErrors.methodNotSupported()) : next());
+    // Dispatch package 5: these methods are deferred, including before wallet
+    // hooks exist. Never forward them to an endpoint's signing/admin surface.
+    const unsupported = new Set(['eth_signTransaction', 'eth_sign', 'eth_signTypedData', 'eth_signTypedData_v1',
+      'eth_signTypedData_v3', 'wallet_addEthereumChain', 'wallet_watchAsset', 'eth_getEncryptionPublicKey', 'eth_decrypt']);
+    engine.push((req, _res, next, end) => unsupported.has(req.method) ? end(rpcErrors.methodNotSupported()) : next());
     engine.push(permissions.createEthAccountsMethodMiddleware());
     if (subjectType !== 'internal') engine.push(permissions.createPermissionMiddleware(origin));
     // Port: metamask-controller.js:5476-5480, after permission checks and before the EIP-1193 handlers.
     engine.push(createEvmMethodsToNonEvmAccountReqFilterMiddleware({ getSelectedAccount: () => permissions.getSelectedAccount() }));
     engine.push(permissions.createEip1193MethodMiddleware());
+    engine.push((req, res, next, end) => {
+      if (req.method !== 'wallet_switchEthereumChain' || !evm) return next();
+      evm.switchChain(origin, req.params).then(result => { res.result = result; end(); }, end);
+    });
 
     // Port: metamask-controller.js:5247-5251, 5640-5641. Lazily bind filters to the package-5 client.
     const filtersAndSubscriptions = (req, res, next, end) => {
@@ -152,13 +160,12 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
     filtersAndSubscriptions.destroy = resetNetwork;
     engine.push(filtersAndSubscriptions);
 
-    // Port: lib/createMetamaskMiddleware.ts:21-63. Plan §16 step 5 owns signing hooks;
-    // absent hooks intentionally use the real wallet middleware's methodNotSupported branches.
-    // Deferred to package 5 (dispatch correction; plan §16 step 5): pending nonce/tx middleware (:59-60) needs its transaction controller.
+    // Pinned lib/createMetamaskMiddleware.ts:21-63 / wallet middleware 24.0.2:
+    // the operator-selected web-wallet hooks replace the controller hooks.
     engine.push(asLegacyMiddleware(JsonRpcEngineV2.create({ middleware: [
       // ADAPTATION: plan Q-9 (:999) renames the reference's MetaMask/v client identifier.
       createScaffoldMiddleware({ eth_syncing: false, web3_clientVersion: `Nodus/v${runtime.getManifest().version}` }),
-      createWalletMiddleware({ getAccounts: origin => permissions.getAccounts(origin) }),
+      createWalletMiddleware({ getAccounts: origin => permissions.getAccounts(origin), ...evm?.walletHooks }),
     ] })));
     // Port: metamask-controller.js:5651. No node backend is fabricated before package 5 attaches it.
     engine.push((req, res, next, end) => {
@@ -183,7 +190,7 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
     const mainFrameOrigin = sender.tab?.url ? new URL(sender.tab.url).origin : origin;
     const { engine, resetNetwork } = setupProviderEngineEip1193({ origin, subjectType, mainFrameOrigin, tabId: sender.tab?.id, frameId: sender.frameId });
     const duplicateFilter = createDupeReqFilterStream(), providerStream = createEngineStream({ engine });
-    const id = Symbol(origin), connection = { id, origin, engine, resetNetwork, outStream };
+    const id = Symbol(origin), connection = { id, origin, engine, resetNetwork, outStream, accounts: [...permissions.getAccounts(origin)] };
     connections.set(id, connection);
     pipeline(outStream, duplicateFilter, providerStream, outStream, () => {
       engine.destroy(); connections.delete(id);
@@ -254,6 +261,8 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
   async function notifyAccountsChanged() {
     for (const connection of connections.values()) {
       const accounts = permissions.getAccounts(connection.origin);
+      if (accounts.length === connection.accounts.length && accounts.every((account, index) => account === connection.accounts[index])) continue;
+      connection.accounts = [...accounts];
       if (connections.has(connection.id)) connection.engine.emit('notification', { jsonrpc: '2.0', method: PROVIDER_METHODS.accountsChanged, params: accounts });
     }
   }

@@ -1,6 +1,4 @@
-import { getAddress } from 'ethers';
-
-export function createUnlock({ vaultStore, lockCoordinator, keyring, walletKeys }) {
+export function createUnlock({ vaultStore, lockCoordinator, walletKeys }) {
   let pending = false;
 
   // vault-store's inner unlock opens the coordinator before the outer one
@@ -23,15 +21,12 @@ export function createUnlock({ vaultStore, lockCoordinator, keyring, walletKeys 
           // spans both derivations too, so a lock invalidates the entire hand-over.
           authenticated = await vaultStore.unlock(password);
           lockCoordinator.assertUnlocked();
-          const accounts = await keyring.unlock(authenticated.phrase, password, { assertReady });
           password = null;
-          lockCoordinator.assertUnlocked();
           const deriving = walletKeys.unlock(authenticated.phrase, { ...options, assertReady });
           authenticated.phrase = null;
           const addresses = await deriving;
           lockCoordinator.assertUnlocked();
-          const ethereum = getAddress(accounts[0]);
-          return { id: authenticated.id, addresses: { ethereum, bsc: ethereum, ...addresses } };
+          return { id: authenticated.id, addresses };
         } finally {
           if (authenticated) authenticated.phrase = null;
           password = null;

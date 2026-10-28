@@ -27,7 +27,7 @@ function pending() {
   return { id: 'request', origin: 'https://site.example', requestData: { origin: 'https://site.example', permissions: getCaip25PermissionFromLegacyPermissions() } };
 }
 
-// Proves six address rows and receive actions use background data without balances; counting rows alone could pass with duplicated addresses or dummy amounts.
+// Proves six address rows/receive actions use background data without dummy amounts; counting rows alone misses duplicated addresses.
 test('home renders the six networks using only returned addresses', () => {
   const root = new Node('main'), selected = [], addresses = { nodus: 'public-nodus', ethereum: account, bsc: account, solana: 'public-solana', tron: 'public-tron', cpunk: 'public-cpunk' };
   renderHome(document, root, { addresses }, key => selected.push(key));
@@ -35,7 +35,7 @@ test('home renders the six networks using only returned addresses', () => {
   assert.deepEqual(descendants(root, node => node.tagName === 'code').map(node => node.textContent), [addresses.nodus, account, account, addresses.solana, addresses.tron, addresses.cpunk]);
   for (const control of descendants(root, node => node.tagName === 'button')) control.onclick();
   assert.deepEqual(selected, ['nodus', 'ethereum', 'bsc', 'solana', 'tron', 'cellframe']);
-  assert.doesNotMatch(root.textContent, /balance|\$|0\.00/i);
+  assert.doesNotMatch(root.textContent, /\$|0\.00/i);
 });
 
 // Proves receive passes exactly the displayed address to the imported QR renderer; a nonempty SVG alone could encode a different address or URI.
@@ -106,6 +106,9 @@ async function pageFixture(t, initialized = true) {
     if (method === 'getSeedPhrase') return [...new TextEncoder().encode(phrase)];
     if (method === 'createNewVaultAndRestore') state.isInitialized = true;
     if (method === 'submitPasswordOrEncryptionKey') state.isUnlocked = true;
+    if (method === 'prepareEvmSend') return { id: 'public-review', ...params[0], fee: 'Up to 0.001 ETH' };
+    if (method === 'confirmEvmSend') return 'public-transaction-hash';
+    if (method === 'getEvmBalances') return [{ symbol: params[0] === 'ethereum' ? 'ETH' : 'BNB', balance: '12.34' }];
     return null;
   } };
   const page = await mountWalletPage({ document, window, client });
@@ -175,4 +178,34 @@ test('mounted activity observes background lock and preserves unlock entry', asy
   document.dispatchEvent(new Event('input')); await new Promise(resolve => setImmediate(resolve));
   assert.equal(password.value, 'typed-password');
   assert.equal(calls.filter(call => call.method === 'getState').length, previousReads);
+});
+
+// Proves the mounted approval routes to EVM controls and the trusted id; isolated render tests miss app routing.
+test('mounted page answers incoming EVM signature approvals', async t => {
+  const { root, state, calls, page } = await pageFixture(t);
+  state.pendingApprovals.signing = { id: 'public-signature', type: 'personal_sign', origin: 'https://site.example',
+    requestData: { account, chain: 'ethereum', text: 'public signing message' } };
+  await page.refresh(); assert.match(root.textContent, /public signing message/);
+  await button(root, 'Approve').onclick();
+  assert.deepEqual(calls.find(call => call.method === 'resolvePendingApproval').params, ['public-signature', true]);
+});
+
+// Proves mounted send prepares the entered amount then confirms that review; separate form tests miss page/state wiring.
+test('mounted EVM send reaches prepare, review and confirm', async t => {
+  const { root, calls } = await pageFixture(t); button(root, 'Send').onclick();
+  const inputs = root.querySelectorAll('input'); inputs[0].value = account; inputs[1].value = '0.01';
+  await descendants(root, node => node.tagName === 'form')[0].onsubmit({ preventDefault() {} });
+  assert.match(root.textContent, /Up to 0\.001 ETH/); await button(root, 'Confirm send').onclick();
+  assert.deepEqual(calls.find(call => call.method === 'prepareEvmSend').params, [{ chain: 'ethereum', symbol: 'ETH', to: account, amount: '0.01' }]);
+  assert.deepEqual(calls.find(call => call.method === 'confirmEvmSend').params, ['public-review']);
+  assert.match(root.textContent, /your wallet/i);
+});
+
+// Proves home actually requests both chains and renders returned rows; renderer-only tests could pass without background reads.
+test('mounted home loads EVM balances through the trusted API', async t => {
+  const { root, state, page, calls } = await pageFixture(t);
+  state.evm = { selectedChain: 'ethereum', endpoints: {} }; await page.refresh();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(root.textContent, /12\.34 ETH/); assert.match(root.textContent, /12\.34 BNB/);
+  assert.deepEqual(calls.filter(call => call.method === 'getEvmBalances').map(call => call.params), [['ethereum'], ['bsc']]);
 });

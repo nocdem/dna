@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { CHAINS } from '../../src/config.js';
 
 function signal() {
   const listeners = new Set();
@@ -99,6 +100,7 @@ test('background entry starts locked and attaches keys only with a Nodus seed co
   const expectedWrites = [{ 'nodus.extension.state': {
     PermissionController: { subjects: {} }, ApprovalController: {}, AlertController: { web3ShimUsageOrigins: {} },
     SubjectMetadataController: { subjectMetadata: {} },
+    EvmController: { selectedChain: 'ethereum', endpoints: { ethereum: CHAINS.ethereum.endpoint, bsc: CHAINS.bsc.endpoint } },
   } }];
   assert.equal(state.lockCoordinator.isLocked, true);
   assert.deepEqual(reads, ['nodus.extension.state', 'nodus.autoLockMinutes']); assert.deepEqual(writes, expectedWrites);

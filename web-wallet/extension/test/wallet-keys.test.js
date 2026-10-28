@@ -77,7 +77,7 @@ test('all key access is refused on startup and after lock', async () => {
   const lockCoordinator = createLockCoordinator();
   let seed;
   const keys = createWalletKeys({ lockCoordinator, consumeNodusSeed: value => { seed = value; } });
-  const accessors = [keys.getAddresses, keys.getSolanaKeypair, keys.getTronPrivateKey];
+  const accessors = [keys.getAddresses, keys.getEvmWallet, keys.getSolanaKeypair, keys.getTronPrivateKey];
   for (const access of accessors) assert.throws(access, /locked/i);
   await lockCoordinator.unlock(() => keys.unlock(phrase, options));
   const secretKey = keys.getSolanaKeypair().secretKey;

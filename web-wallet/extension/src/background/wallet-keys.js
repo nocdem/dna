@@ -33,10 +33,9 @@ export function createWalletKeys({ lockCoordinator, consumeNodusSeed }) {
     const session = { wallet: deriveWallet(phrase), abort: new AbortController(), seed: null, addresses: null, assertReady };
     const started = generation;
     current = session; deriving = true;
-    // EVM custody is the HD keyring; this holder needs neither the phrase nor
-    // deriveWallet's extra EVM signer after the synchronous derivation.
+    // Operator package 5: retain deriveWallet's ethers signer in this holder.
+    // disposeWallet (src/keys.js:44-49) drops it on the shared lock.
     session.wallet.recoveryPhrase = null;
-    session.wallet.evm = null;
     try {
       const seed = nodusSigningSeed(phrase);
       session.seed = seed;
@@ -45,7 +44,7 @@ export function createWalletKeys({ lockCoordinator, consumeNodusSeed }) {
       assertCurrent(session, started);
       const cpunk = await deriveCpunkAddress(phrase, { wasmBytes: cpunkWasmBytes, signal: session.abort.signal });
       assertCurrent(session, started);
-      session.addresses = { solana: session.wallet.addresses.solana, tron: session.wallet.addresses.tron, cpunk };
+      session.addresses = { ...session.wallet.addresses, cpunk };
       return { ...session.addresses };
     } catch (error) {
       const stale = session !== current || generation !== started;
@@ -71,6 +70,7 @@ export function createWalletKeys({ lockCoordinator, consumeNodusSeed }) {
   return {
     unlock,
     getAddresses: () => ({ ...activeWallet().addresses }),
+    getEvmWallet: () => activeWallet().wallet,
     getSolanaKeypair: () => activeWallet().wallet.solana,
     getTronPrivateKey: () => activeWallet().wallet.tronPrivateKey,
   };

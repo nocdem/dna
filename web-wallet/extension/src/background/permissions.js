@@ -5,7 +5,7 @@ import { isPlainObject } from '@metamask/controller-utils';
 import { rpcErrors } from '@metamask/rpc-errors';
 import {
   Caip25CaveatType, Caip25EndowmentPermissionName, caip25CaveatBuilder, caip25EndowmentBuilder,
-  getCaip25PermissionFromLegacyPermissions, getEthAccounts, getPermittedEthChainIds,
+  getCaip25PermissionFromLegacyPermissions, getEthAccounts, getPermittedEthChainIds, requestPermittedChainsPermissionIncremental,
 } from '@metamask/chain-agnostic-permission';
 import { CHAINS } from '../../../src/config.js';
 import { PROVIDER_METHODS } from '../constants/stream.js';
@@ -81,6 +81,22 @@ export function createPermissions({ messenger, approvals, store, runtime, getNet
       throw error;
     }
     return getEthAccounts(caveat.value);
+  }
+
+  function getChainIds(origin) {
+    try { return getPermittedEthChainIds(controller.getCaveat(origin, Caip25EndowmentPermissionName, Caip25CaveatType).value); }
+    catch (error) { if (error instanceof PermissionDoesNotExistError) return []; throw error; }
+  }
+
+  // Pinned ethereum-chain-utils.ts:314-345: a switch requests missing scope
+  // through the existing permission approval rather than silently granting it.
+  async function requestChainPermission(origin, chainId) {
+    if (getChainIds(origin).includes(chainId)) return;
+    await requestPermittedChainsPermissionIncremental({ origin, chainId, autoApprove: false,
+      metadata: { isSwitchEthereumChain: true, isEip1193Request: true },
+      hooks: { requestPermissionsIncremental: (...args) => controller.requestPermissionsIncremental(...args) },
+    });
+    if (!getChainIds(origin).includes(chainId)) throw rpcErrors.invalidParams('The requested network was not permitted.');
   }
 
   async function acceptPermissionsRequest(request) {
@@ -184,7 +200,7 @@ export function createPermissions({ messenger, approvals, store, runtime, getNet
     [SEND_METADATA]: { implementation: (_req, res, _next, end) => { res.result = true; end(); } },
   };
 
-  return { controller, alertController, subjectMetadataController, getAccounts, acceptPermissionsRequest,
+  return { controller, alertController, subjectMetadataController, getAccounts, getChainIds, requestChainPermission, acceptPermissionsRequest,
     setAccounts(value) { accounts = [...value]; },
     // ADAPTATION: plan Q-18 / §3.5: one HD EVM account from package 2, exposed directly instead of an AccountsController.
     // Account type / pre-creation empty address: accounts-controller 39.1.0 dist/AccountsController.cjs:73-80, 180-185.

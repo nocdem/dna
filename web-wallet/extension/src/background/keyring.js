@@ -1,96 +1,47 @@
-import { KeyringController } from '@metamask/keyring-controller';
-import { Messenger } from '@metamask/messenger';
-import * as passworder from '@metamask/browser-passworder';
-import { validateNodusPhrase } from '../../../src/recovery.js';
+import { getAddress, getBytes, isHexString, toUtf8Bytes, TypedDataEncoder } from 'ethers';
+import { rpcErrors } from '@metamask/rpc-errors';
 
-// Pinned wallet-17.1.0 initialization/instances/keyring-controller/encryptor.js:
-// keyFromPasswordFactory, with 600,000 iterations from keyring-controller.js:11.
-// Restore uses keyFromPassword/exportKey, then importKey/encryptWithKey.
-const encryptor = {
-  ...passworder,
-  keyFromPassword(password, salt, exportable, options) {
-    return passworder.keyFromPassword(password, salt, exportable, options ?? {
-      algorithm: 'PBKDF2', params: { iterations: 600_000 },
-    });
-  },
-};
+// Operator 2026-10-28: "Web cüzdanınkini kullan". Custody/derivation is
+// src/keys.js:21-40 at 85506fccb352392f59f1e4d1140dd0a9452b3c1c.
+// This facade retains only guards, never another controller, vault or signer.
+export function createKeyring({ lockCoordinator, getWallet, messenger }) {
+  let generation = 0;
+  lockCoordinator.register('keyring', { lock() { generation++; } });
 
-export function createKeyring({ lockCoordinator, messenger }) {
-  let controller = null, restoringController = null, accessGuard = null, generation = 0, restoring = false;
-
-  async function lock() {
-    generation++;
-    const previous = controller;
-    controller = null; accessGuard = null;
-    for (const candidate of new Set([previous, restoringController])) {
-      if (candidate?.state.isUnlocked) await candidate.setLocked();
-    }
-  }
-  lockCoordinator.register('keyring', { lock });
-
-  async function unlock(phrase, password, { assertReady } = {}) {
-    if (restoring || controller) throw new Error('Lock the wallet before unlocking again.');
-    phrase = validateNodusPhrase(phrase);
-    const started = generation;
-    // ADAPTATION: approved plan §3.5:388-406 (Q-27, one persisted vault).
-    // The controller and its messenger are private, freshly constructed, never
-    // hydrated from storage or registered in a persistent/backup store, and no
-    // stateChanged subscriber writes their state. Stock restore DOES encrypt a
-    // vault in memory (keyring-controller 28.1.0 KeyringController.js:296-298,
-    // 413-424, 1672-1700, 1977-1987); the real encryptor above is not bypassed.
-    // Only the three guarded actions below cross this boundary; getState and
-    // the stock export/mutation actions stay on the private messenger.
-    const candidate = new KeyringController({
-      messenger: new Messenger({ namespace: 'KeyringController' }), encryptor,
-    });
-    restoring = true;
-    restoringController = candidate;
-    try {
-      // The stock HD builder is eth-hd-keyring 15.0.0 (controller :138-143).
-      // Restore fixes numberOfAccounts to 1 (:413-424), hence child index 0.
-      await candidate.createNewVaultAndRestore(password, phrase);
-      if (generation !== started) throw new Error('Wallet is locked.');
-      const accounts = await candidate.getAccounts();
-      if (generation !== started) throw new Error('Wallet is locked.');
-      if (accounts.length !== 1) throw new Error('Expected one HD account.');
-      controller = candidate; accessGuard = assertReady;
-      return accounts;
-    } finally {
-      phrase = null; password = null;
-      restoring = false; restoringController = null;
-      // A lock may finish before restore has reached its unlocked state.
-      // Dispose that late completion instead of publishing a revived holder.
-      if (controller !== candidate && candidate.state.isUnlocked) await candidate.setLocked();
-    }
-  }
-
-  function assertCurrent(candidate, started) {
+  async function call(operation, from) {
     lockCoordinator.assertUnlocked();
-    if (!candidate || candidate !== controller || started !== generation) throw new Error('Wallet is locked.');
-    accessGuard?.();
-  }
-
-  async function call(method, args) {
-    const candidate = controller, started = generation;
-    assertCurrent(candidate, started);
-    // The controller awaits keyring lookup before signing (:828-890). Check
-    // again on completion so queued results cannot escape after lock/re-unlock.
-    try { return await candidate[method](...args); }
-    finally { assertCurrent(candidate, started); }
+    const wallet = getWallet(), started = generation;
+    function assertCurrent() {
+      lockCoordinator.assertUnlocked();
+      if (generation !== started || wallet.locked || wallet !== getWallet()) throw new Error('Wallet is locked.');
+    }
+    assertCurrent();
+    if (from !== undefined && getAddress(from) !== wallet.evm.address) throw rpcErrors.invalidParams('Account does not match the wallet.');
+    try { return await operation(wallet.evm); }
+    finally { assertCurrent(); }
   }
 
   const actions = {
-    signPersonalMessage: (...args) => call('signPersonalMessage', args),
-    signTypedMessage: (...args) => call('signTypedMessage', args),
-    signTransaction: (...args) => call('signTransaction', args),
+    // ethers 6.17.0 lib.esm/wallet/base-wallet.js:73-82 implements ERC-191.
+    // Pinned middleware wallet.mjs:297-347 supplies personal_sign's data/from.
+    signPersonalMessage: params => call(evm => {
+      if (typeof params.data !== 'string') throw rpcErrors.invalidParams('Expected a message string.');
+      return evm.signMessage(isHexString(params.data) ? getBytes(params.data) : toUtf8Bytes(params.data));
+    }, params?.from),
+    // ethers 6.17.0 base-wallet.js:105-120, hash/typed-data.js:163-234.
+    // EIP712Domain is passed separately; never construct a hash or signature here.
+    signTypedMessage: (params, version = 'V4') => call(evm => {
+      if (version !== 'V4') throw rpcErrors.methodNotSupported();
+      let typed;
+      try { typed = typeof params.data === 'string' ? JSON.parse(params.data) : params.data; }
+      catch { throw rpcErrors.invalidParams('Invalid typed data.'); }
+      const { EIP712Domain: _domain, ...types } = typed.types;
+      if (TypedDataEncoder.from(types).primaryType !== typed.primaryType) throw rpcErrors.invalidParams('Typed data primary type does not match.');
+      return evm.signTypedData(typed.domain, types, typed.message);
+    }, params?.from),
+    // src/adapters/evm.js:45 and ethers base-wallet.js:51-71.
+    signTransaction: (transaction, from) => call(evm => evm.signTransaction(transaction), from),
   };
-  if (messenger) {
-    for (const [name, handler] of Object.entries(actions)) {
-      messenger.registerActionHandler(`KeyringController:${name}`, handler);
-    }
-  }
-  // setLocked clears the stock keyrings (:766-778); dropping the private
-  // controller also drops its in-memory vault. Dependency/GC copies cannot be
-  // proved erased (plan §3.5:418-420, HD keyring :364-376).
-  return { unlock, getAccounts: () => call('getAccounts', []), ...actions };
+  if (messenger) for (const [name, handler] of Object.entries(actions)) messenger.registerActionHandler(`KeyringController:${name}`, handler);
+  return { getAccounts: () => call(evm => [evm.address.toLowerCase()]), ...actions };
 }

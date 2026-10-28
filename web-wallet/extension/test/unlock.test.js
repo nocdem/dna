@@ -26,8 +26,8 @@ function memoryStorage(initial = {}) {
 function setup(storage, consumeNodusSeed = () => {}) {
   const lockCoordinator = createLockCoordinator();
   const vaultStore = createVaultStore({ storage, lockCoordinator });
-  const keyring = createKeyring({ lockCoordinator });
   const walletKeys = createWalletKeys({ lockCoordinator, consumeNodusSeed });
+  const keyring = createKeyring({ lockCoordinator, getWallet: walletKeys.getEvmWallet });
   const unlock = createUnlock({ vaultStore, lockCoordinator, keyring, walletKeys });
   return { lockCoordinator, vaultStore, keyring, walletKeys, unlock };
 }
@@ -80,8 +80,9 @@ test('the sole persisted value remains the web-wallet vault through create, impo
 // Proves the wrapper drops the vault result's phrase reference after both success and failure; checking only its returned object would miss a retained authentication object.
 test('the phrase hand-over is cleared on success and on consumer failure', async () => {
   for (const fails of [false, true]) {
-    const lockCoordinator = createLockCoordinator(), keyring = createKeyring({ lockCoordinator });
+    const lockCoordinator = createLockCoordinator();
     const walletKeys = createWalletKeys({ lockCoordinator, consumeNodusSeed: () => { if (fails) throw new Error('consumer failure'); } });
+    const keyring = createKeyring({ lockCoordinator, getWallet: walletKeys.getEvmWallet });
     const authenticated = { phrase, id: 'public-test-id' };
     // Authentication seam mock only; integration above uses real PBKDF2/AES-GCM.
     const vaultStore = { unlock: () => lockCoordinator.unlock(async () => authenticated) };
