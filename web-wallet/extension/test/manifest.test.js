@@ -74,12 +74,15 @@ test('removed integrations have no manifest entries', () => {
   assert.ok(!/metamask|trezor|cashtag|x\.com/iu.test(JSON.stringify(manifest)));
 });
 
-// Proves the imported background joins real locked holders to Chrome storage/alarms and requires the real seed seam; testing factories alone could miss entry wiring.
+// Proves the imported background joins locked holders to Chrome events, persists only controller metadata and requires the seed seam; factory-only or partial-write assertions could miss entry wiring or leaked keys.
 test('background entry starts locked and attaches keys only with a Nodus seed consumer', async t => {
   const saved = Object.getOwnPropertyDescriptor(globalThis, 'chrome');
   t.after(() => { if (saved) Object.defineProperty(globalThis, 'chrome', saved); else delete globalThis.chrome; });
   const reads = [], writes = [], scheduled = new Map(), listeners = [];
   globalThis.chrome = {
+    // Reference: background.ts:520; notification-manager.ts:34-37 -> platforms/extension.ts:178-179.
+    runtime: { id: 'test-extension', onConnect: signal() },
+    windows: { onRemoved: signal() },
     storage: { local: {
       async get(key) { reads.push(key); return {}; },
       async set(value) { writes.push(value); },
@@ -92,8 +95,13 @@ test('background entry starts locked and attaches keys only with a Nodus seed co
   };
   const { background } = await import('../src/background/index.js');
   const state = await background;
+  // Reference: ComposableObservableStore.js:90-97; approved plan §3.5:388-406 excludes key custody.
+  const expectedWrites = [{ 'nodus.extension.state': {
+    PermissionController: { subjects: {} }, ApprovalController: {}, AlertController: { web3ShimUsageOrigins: {} },
+    SubjectMetadataController: { subjectMetadata: {} },
+  } }];
   assert.equal(state.lockCoordinator.isLocked, true);
-  assert.deepEqual(reads, ['nodus.autoLockMinutes']); assert.deepEqual(writes, []);
+  assert.deepEqual(reads, ['nodus.extension.state', 'nodus.autoLockMinutes']); assert.deepEqual(writes, expectedWrites);
   assert.deepEqual(scheduled.get('AUTO_LOCK_TIMEOUT_ALARM'), { delayInMinutes: 15, periodInMinutes: 15 });
   assert.equal(listeners.length, 1);
   await assert.rejects(state.keyring.getAccounts(), /locked/iu);
@@ -109,7 +117,7 @@ test('background entry starts locked and attaches keys only with a Nodus seed co
   await state.lockCoordinator.unlock(async () => {});
   await listeners[0]({ name: 'AUTO_LOCK_TIMEOUT_ALARM' });
   assert.equal(state.lockCoordinator.isLocked, true); assert.equal(scheduled.size, 0);
-  assert.deepEqual(writes, []);
+  assert.deepEqual(writes, expectedWrites);
 });
 
 // Proves immediate/two-second timestamps and assignment to the existing hooks object; checking only the property could miss replacement by spread.
