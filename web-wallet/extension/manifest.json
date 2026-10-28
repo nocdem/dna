@@ -1,0 +1,61 @@
+{
+  "manifest_version": 3,
+  "name": "Nodus Wallet",
+  "short_name": "Nodus",
+  "version": "0.1.132",
+  "description": "Nodus Wallet",
+  "minimum_chrome_version": "123",
+  "action": {
+    "default_title": "Nodus Wallet",
+    "default_popup": "../index.html",
+    "default_icon": {
+      "16": "../public/assets/nodus-mark.svg",
+      "19": "../public/assets/nodus-mark.svg",
+      "32": "../public/assets/nodus-mark.svg",
+      "38": "../public/assets/nodus-mark.svg",
+      "64": "../public/assets/nodus-mark.svg",
+      "128": "../public/assets/nodus-mark.svg",
+      "512": "../public/assets/nodus-mark.svg"
+    }
+  },
+  "background": { "service_worker": "src/service-worker.js" },
+  "content_scripts": [
+    {
+      "matches": ["file://*/*", "http://*/*", "https://*/*"],
+      "js": ["src/contentscript.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": ["file://*/*", "http://*/*", "https://*/*"],
+      "js": ["src/inpage.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    }
+  ],
+  "host_permissions": [
+    "http://localhost:8545/",
+    "file://*/*",
+    "http://*/*",
+    "https://*/*",
+    "ws://*/*",
+    "wss://*/*"
+  ],
+  "icons": {
+    "16": "../public/assets/nodus-mark.svg",
+    "19": "../public/assets/nodus-mark.svg",
+    "32": "../public/assets/nodus-mark.svg",
+    "38": "../public/assets/nodus-mark.svg",
+    "48": "../public/assets/nodus-mark.svg",
+    "64": "../public/assets/nodus-mark.svg",
+    "128": "../public/assets/nodus-mark.svg",
+    "512": "../public/assets/nodus-mark.svg"
+  },
+  "permissions": ["activeTab", "alarms", "notifications", "scripting", "storage", "unlimitedStorage", "offscreen"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; frame-ancestors 'self'; font-src 'self';"
+  },
+  "cross_origin_opener_policy": { "value": "same-origin-allow-popups" },
+  "externally_connectable": { "matches": ["http://*/*", "https://*/*"], "ids": ["*"] }
+}
