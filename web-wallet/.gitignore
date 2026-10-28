@@ -3,3 +3,4 @@ dist/
 dist-preview/
 dist-connect/
 playwright-report/
+dist-extension/

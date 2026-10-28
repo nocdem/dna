@@ -51,7 +51,9 @@ test('permissions and external connections match the approved reference subset',
   assert.deepEqual(manifest.cross_origin_opener_policy, { value: 'same-origin-allow-popups' });
 });
 
-// Proves English literals and the existing Nodus asset are used; checking only the name could leave a MetaMask icon or locale dependency.
+// Proves English literals and the existing Nodus source asset are used; checking only the name could leave a MetaMask icon or locale dependency.
+// The packaging config rasterizes these source paths; package-smoke.test.js
+// separately checks emitted PNG signatures/dimensions and real Chromium load.
 test('identity and source UI paths point at the existing web wallet', async () => {
   assert.equal(manifest.name, 'Nodus Wallet');
   assert.equal(manifest.short_name, 'Nodus');
