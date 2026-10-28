@@ -10,6 +10,9 @@ import { createPersistedStore } from './store.js';
 import { createApprovals } from './approvals.js';
 import { createPermissions } from './permissions.js';
 import { createRequestEngine } from './engine.js';
+import { PermissionsRequestNotFoundError } from '@metamask/permission-controller';
+import { VAULT_KEY, decryptVault, validateNewPassword } from '../../../src/vault.js';
+import { validateNodusPhrase } from '../../../src/recovery.js';
 
 // Approved plan §3.5:388-435; packages 1-2 own the vault, key custody and shared lock.
 // Startup constructs fresh locked holders. Store composition receives only controller metadata, never key custody.
@@ -22,6 +25,8 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   const store = await createPersistedStore({ storage, messenger });
   const uiPorts = new Set(), alarmListeners = [];
   let walletKeys = null, unlock = null, permissions = null, engine = null;
+  let restoring = Promise.resolve();
+  const uiSubscriptions = new Map();
 
   // metamask-controller.js:6121-6143: lock/unlock do not emit accountsChanged; permissions retain public account grants.
   // Plan §3.5:407-421 retains package 1's one lock and package 2's guarded signing operations.
@@ -64,9 +69,86 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   // Port: metamask-controller.js:2755-2757, 2963-2964, 3166-3168, 3278-3284, 3482-3495.
   // Plan §16 step 4 / dispatch 4a: expose background approval operations; screens belong to 4b.
   const trustedApi = {
-    getState: () => ({ isUnlocked: !lockCoordinator.isLocked,
-      // Port: metamask-controller.js:2378-2384 flattens controller UI state, including subject metadata.
-      ...permissions.controller.state, ...approvals.controller.state, ...permissions.alertController.state, ...permissions.subjectMetadataController.state }),
+    // Port: metamask-controller.js:2378-2384; plan §3.5/§7 replaces keyring vault/preferences with web-wallet storage.
+    getState: async () => {
+      const saved = await storage.get(VAULT_KEY), account = permissions.getSelectedAccount().address;
+      const isUnlocked = !lockCoordinator.isLocked;
+      return { isInitialized: Boolean(saved[VAULT_KEY]), isUnlocked,
+        accounts: account ? [account] : [],
+        addresses: isUnlocked && walletKeys ? { ethereum: account, bsc: account, ...walletKeys.getAddresses() } : {},
+        preferences: { autoLockTimeLimit: autoLockAlarm.minutes },
+        // Port: metamask-controller.js:2378-2384 flattens controller UI state, including subject metadata.
+        ...permissions.controller.state, ...approvals.controller.state, ...permissions.alertController.state, ...permissions.subjectMetadataController.state };
+    },
+    // Port: legacy-background-api-service.ts:4449-4500 (UTF-8 restore, serialized creation, clear permissions).
+    // ADAPTATION: plan Q-27 uses only vaultStore's web-wallet vault; key derivation stays in submitPasswordOrEncryptionKey.
+    createNewVaultAndRestore(password, encodedSeedPhrase) {
+      const operation = restoring.then(async () => {
+        let phrase, saved, bytes;
+        try {
+          if (!Array.isArray(encodedSeedPhrase) || encodedSeedPhrase.some(byte => !Number.isInteger(byte) || byte < 0 || byte > 255)) throw rpcErrors.invalidParams('Expected recovery phrase bytes.');
+          bytes = Uint8Array.from(encodedSeedPhrase);
+          phrase = validateNodusPhrase(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+          validateNewPassword(password);
+          permissions.controller.clearState(); permissions.setAccounts([]);
+          saved = await vaultStore.create(password, phrase);
+          await store.flush();
+        } finally { bytes?.fill(0); if (saved) saved.phrase = null; encodedSeedPhrase?.fill?.(0); phrase = null; password = null; }
+      });
+      restoring = operation.catch(() => {});
+      return operation;
+    },
+    // Port: metamask-controller.js:2546-2548; legacy-background-api-service.ts:1385-1392;
+    // keyring-controller 28.1.0 KeyringController.js:520-528 requires unlocked state and fresh password verification.
+    // ADAPTATION: Q-27 authenticates the one web vault. The shared coordinator also invalidates an export spanning lock.
+    async getSeedPhrase(password) {
+      let authenticated, bytes;
+      try {
+        await lockCoordinator.unlock(async () => {
+          lockCoordinator.assertUnlocked();
+          const saved = await storage.get(VAULT_KEY);
+          lockCoordinator.assertUnlocked();
+          authenticated = await decryptVault(saved[VAULT_KEY], password);
+          lockCoordinator.assertUnlocked();
+          bytes = new TextEncoder().encode(authenticated.phrase);
+        });
+        lockCoordinator.assertUnlocked();
+        return [...bytes];
+      } finally { bytes?.fill(0); if (authenticated) authenticated.phrase = null; password = null; }
+    },
+    // Port: metamask-controller.js:2824-2826; preferences-controller.ts:1011-1019.
+    // ADAPTATION: plan §3.5:422-435 keeps only the dispatched web-wallet auto-lock preference and persistence result.
+    setPreference(preference, value) {
+      if (preference !== 'autoLockTimeLimit') throw rpcErrors.invalidParams('Unsupported preference.');
+      return autoLockAlarm.setMinutes(value);
+    },
+    // Port: metamask-controller.js:3274-3276; legacy-background-api-service.ts:2000-2017.
+    // Same PermissionController revocation used by permissions.js's wallet_revokePermissions handler.
+    async removePermissionsFor(subjects) {
+      try { permissions.controller.revokePermissions(subjects); }
+      catch (error) { if (!(error instanceof PermissionsRequestNotFoundError)) throw error; }
+      await store.flush();
+    },
+    // Port: metamask-controller.js:4839-4844; lib/MessengerSubscriptions.ts:31-58, 68-85;
+    // shared/constants/messages.ts:17. Only public approval/permission events cross the trusted UI boundary.
+    // ADAPTATION: engine.js owns streams; share the bounded subscriptions across trusted UI ports, disposed with this background.
+    messengerSubscribe(event) {
+      if (!['ApprovalController:stateChange', 'PermissionController:stateChange'].includes(event)) throw rpcErrors.invalidParams('Unsupported UI event.');
+      const subscription = uiSubscriptions.get(event);
+      if (subscription) { subscription.count++; return; }
+      const listener = (...payload) => {
+        for (const port of uiPorts) {
+          try { port.postMessage({ name: 'controller', data: { jsonrpc: '2.0', method: 'messengerSubscription', params: [event, payload] } }); }
+          catch { /* A closing page cannot receive the public state notification. */ }
+        }
+      };
+      uiSubscriptions.set(event, { listener, count: 1 }); messenger.subscribe(event, listener);
+    },
+    messengerUnsubscribe(event) {
+      const subscription = uiSubscriptions.get(event);
+      if (!subscription) throw rpcErrors.invalidParams('No active UI subscription.');
+      if (--subscription.count === 0) { messenger.unsubscribe(event, subscription.listener); uiSubscriptions.delete(event); }
+    },
     // Port: metamask-controller.js:2523-2525; background.ts:698-700 supplies the tracked request tabs.
     getRequestAccountTabIds: () => engine.requestAccountTabIds,
     approvePermissionsRequest: request => permissions.acceptPermissionsRequest(request),
@@ -93,6 +175,8 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     get walletKeys() { return walletKeys; },
     get unlock() { return unlock; },
     async destroy() {
+      for (const [event, { listener }] of uiSubscriptions) messenger.unsubscribe(event, listener);
+      uiSubscriptions.clear();
       engine.destroy(); approvals.destroy(); store.destroy(); permissions.subjectMetadataController.destroy(); permissions.controller.destroy(); permissions.alertController.destroy();
       messenger.unsubscribe('PermissionController:stateChange', onPermissionsChanged);
       for (const listener of alarmListeners) alarms.onAlarm.removeListener(listener);

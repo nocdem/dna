@@ -7,7 +7,7 @@
   "minimum_chrome_version": "123",
   "action": {
     "default_title": "Nodus Wallet",
-    "default_popup": "../index.html",
+    "default_popup": "popup.html",
     "default_icon": {
       "16": "../public/assets/nodus-mark.svg",
       "19": "../public/assets/nodus-mark.svg",

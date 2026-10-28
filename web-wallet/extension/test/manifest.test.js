@@ -55,7 +55,7 @@ test('identity and source UI paths point at the existing web wallet', async () =
   assert.equal(manifest.name, 'Nodus Wallet');
   assert.equal(manifest.short_name, 'Nodus');
   assert.equal(manifest.action.default_title, 'Nodus Wallet');
-  assert.equal(manifest.action.default_popup, '../index.html');
+  assert.equal(manifest.action.default_popup, 'popup.html');
   assert.equal(manifest.version, JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')).version);
   assert.ok(manifest.description.length > 0);
   for (const path of [...Object.values(manifest.icons), ...Object.values(manifest.action.default_icon)]) {
