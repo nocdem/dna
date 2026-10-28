@@ -45,6 +45,7 @@ const recent = [];                           // [{ intentId, title, state, resul
 let contract = null;                         // Contract | null
 let deployDraft = null;                      // { iface, bytecode, args } | null
 let contractError = '';
+let reviewError = null;                      // { key, message } | null
 let fieldCount = 0;                          // label/input ids of this page
 const readResults = new Map();               // function signature -> text
 
@@ -89,6 +90,7 @@ function reset() {
   generation++;
   client = undefined; account = undefined; busy = false; status = ''; balance = null;
   tickets.clear(); recent.length = 0; contract = null; deployDraft = null; contractError = ''; readResults.clear();
+  reviewError = null;
   lockedInputs = () => new Set(); recordPending = null; pendingRows = () => [];
   render();
 }
@@ -106,11 +108,18 @@ function start(detail) {
   void refreshBalance();
 }
 
-async function act(work) {
+async function act(work, reviewKey = null) {
   if (busy) return;
+  if (reviewKey !== null) reviewError = null;
   busy = true; status = ''; render();
   const gen = generation;
-  try { await work(gen); } catch (error) { if (gen === generation) { status = error?.message || 'Something went wrong.'; sessionLog.log('evm', status, { error: true }); } }
+  try { await work(gen); } catch (error) {
+    if (gen === generation) {
+      status = error?.message || 'Something went wrong.';
+      if (reviewKey !== null) reviewError = { key: reviewKey, message: status };
+      sessionLog.log('evm', status, { error: true });
+    }
+  }
   finally { if (gen === generation) { busy = false; render(); } }
 }
 
@@ -195,12 +204,20 @@ function track(sent, title, extra = {}, warning = '') {
   });
 }
 
-async function prepareAndShow(prepare, title, extra) {
+function reviewAction(key, label, prepare, title, extra) {
+  const button = btn(label, () => void prepareAndShow(prepare, title, extra, key), '');
+  if (reviewError?.key !== key) return [button];
+  const error = el('p', { className: 'notice evm-error evm-review-error', text: reviewError.message });
+  error.setAttribute('role', 'alert');
+  return [button, error];
+}
+
+async function prepareAndShow(prepare, title, extra, reviewKey = null) {
   await act(async gen => {
     const view = await prepare();
     if (gen !== generation) { view.cancel(); return; }
     showReview(view, title, (sent, warning) => track(sent, title, extra, warning));
-  });
+  }, reviewKey);
 }
 
 // ── bridge: move NODUS in / out, tickets ────────────────────────────────
@@ -239,19 +256,19 @@ function renderBridge() {
       el('h4', { text: 'Move NODUS to smart contracts' }),
       el('p', { className: 'hint', text: 'Moves NODUS from your Nodus address into your smart-contract balance, where contracts can use it.' }),
       ...field('Amount (NODUS)', inAmount),
-      btn('Review', () => void prepareAndShow(() => account.deposit(parseRaw(inAmount.value)), 'Move NODUS to smart contracts'), '')),
+      ...reviewAction('deposit', 'Review', () => account.deposit(parseRaw(inAmount.value)), 'Move NODUS to smart contracts')),
     el('div', { className: 'evm-bridge-side' },
       el('h4', { text: 'Move NODUS back' }),
       el('p', { className: 'hint', text: 'Moves NODUS from your smart-contract balance to a Nodus address — your own unless you change it. Only whole units of 0.00000001 NODUS can move back; anything smaller stays in your smart-contract balance.' }),
       ...field('Amount (NODUS)', outAmount),
       ...field('Pay to (Nodus address, 128 characters)', outTo),
-      btn('Review', () => void prepareAndShow(() => {
+      ...reviewAction('withdraw', 'Review', () => {
         const to = outTo.value.trim().toLowerCase();
         if (!HEX128.test(to)) throw new Error('Enter a Nodus address: 128 characters, 0-9 and a-f.');
         const raw = parseRaw(outAmount.value);
         if (balance && raw * 10n ** 10n > balance.wei) throw new Error(`Your smart-contract balance is ${formatWei(balance.wei)} NODUS; at most ${formatRaw(weiToRaw(balance.wei).raw)} NODUS can move back.`);
         return account.withdraw(raw, to);
-      }, 'Move NODUS back'), '')));
+      }, 'Move NODUS back')));
   return box;
 }
 
@@ -340,9 +357,9 @@ function renderDeploy() {
   for (const a of deployDraft.args) box.append(...field(a.label, a.input));
   const value = deployDraft.iface.constructorEntry?.payable ? input({ placeholder: '0.0' }) : null;
   if (value) box.append(...field('Send with it (NODUS)', value));
-  box.append(el('div', { className: 'evm-actions' }, btn('Review deployment', () => void prepareAndShow(() => Contract.prepareDeploy({
+  box.append(el('div', { className: 'evm-actions' }, ...reviewAction(deployDraft, 'Review deployment', () => Contract.prepareDeploy({
     account, bytecode: deployDraft.bytecode, abi: deployDraft.iface, args: deployDraft.args.map(argValue), valueWei: value && value.value.trim() ? parseWei(value.value) : 0n
-  }), 'Deploy a contract', { iface: deployDraft.iface }), ''), btn('Close', () => { deployDraft = null; render(); })));
+  }), 'Deploy a contract', { iface: deployDraft.iface }), btn('Close', () => { deployDraft = null; render(); })));
   return box;
 }
 
@@ -367,7 +384,7 @@ function renderContract() {
         readResults.set(fn.signature, r.values.map((v, i) => `${r.names[i] || `#${i + 1}`}: ${show(v)}`).join(' · ') || '(no result)');
       })));
     } else if (client.evmBuildable) {
-      form.append(btn('Review', () => void prepareAndShow(() => contract.prepareSend(fn, args.map(argValue), { valueWei: value && value.value.trim() ? parseWei(value.value) : 0n }), `Call ${fn.name}`, { iface: contract.iface }), ''));
+      form.append(...reviewAction(fn, 'Review', () => contract.prepareSend(fn, args.map(argValue), { valueWei: value && value.value.trim() ? parseWei(value.value) : 0n }), `Call ${fn.name}`, { iface: contract.iface }));
     }
     row.append(form);
     if (readResults.has(fn.signature)) row.append(el('p', { className: 'evm-result', text: readResults.get(fn.signature) }));

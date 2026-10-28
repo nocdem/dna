@@ -860,6 +860,8 @@ details.danger-zone.danger-zone > summary { color: #f6c2bd; }
 .evm-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 .evm-actions button { margin: 0; }
 .evm-error { margin: 14px 0 0; border-left-color: var(--amber); }
+.evm-review-error { overflow-wrap: anywhere; }
+.evm-actions > .evm-review-error { flex-basis: 100%; }
 .evm-card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
 .wallet-page .evm-card-head h4 { margin: 0; overflow-wrap: anywhere; font-size: 13px; }
 .evm-card-head button { margin: 0; }
