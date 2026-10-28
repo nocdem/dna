@@ -12,6 +12,7 @@ import { createPermissions } from './permissions.js';
 import { createRequestEngine } from './engine.js';
 import { createEvm } from './evm.js';
 import { createNodus } from './nodus.js';
+import { createSolanaTron } from './solana-tron.js';
 import { PermissionsRequestNotFoundError } from '@metamask/permission-controller';
 import { VAULT_KEY, decryptVault, validateNewPassword } from '../../../src/vault.js';
 import { validateNodusPhrase } from '../../../src/recovery.js';
@@ -79,6 +80,8 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     return { walletKeys, unlock };
   }
   attachWalletKeys(consumeNodusSeed ?? nodus.consumeNodusSeed);
+  const { solana, tron } = createSolanaTron({ lockCoordinator, getWalletKeys: () => walletKeys,
+    getActivity: chain => nodus.chainActivity(chain) });
 
   // Port: metamask-controller.js:2755-2757, 2963-2964, 3166-3168, 3278-3284, 3482-3495.
   // Plan §16 step 4 / dispatch 4a: expose background approval operations; screens belong to 4b.
@@ -172,6 +175,18 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     resolvePendingApproval: (id, value) => approvals.controller.acceptRequest(id, value),
     rejectPendingApproval: id => approvals.reject(id),
     getEvmBalances: chain => evm.getBalances(chain),
+    // Package 7a: wallet-only methods on the authenticated controller stream
+    // (engine.js setupTrustedCommunication); no Solana/Tron site routing.
+    getSolanaBalances: () => solana.getBalances(),
+    prepareSolanaSend: fields => solana.prepareSend(fields),
+    confirmSolanaSend: id => solana.confirmSend(id),
+    cancelSolanaSend: id => solana.cancelSend(id),
+    getSolanaHistory: options => solana.getHistory(options),
+    getTronBalances: () => tron.getBalances(),
+    prepareTronSend: fields => tron.prepareSend(fields),
+    confirmTronSend: id => tron.confirmSend(id),
+    cancelTronSend: id => tron.cancelSend(id),
+    getTronHistory: options => tron.getHistory(options),
     prepareEvmSend: fields => evm.prepareSend(fields),
     confirmEvmSend: id => evm.confirmSend(id),
     cancelEvmSend: id => evm.cancelSend(id),
@@ -204,7 +219,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     AlertController: permissions.alertController, SubjectMetadataController: permissions.subjectMetadataController, EvmController: evm.controller });
   await store.flush();
   return {
-    vaultStore, lockCoordinator, autoLockAlarm, keyring, attachWalletKeys, store, permissions, approvals, engine, evm, nodus,
+    vaultStore, lockCoordinator, autoLockAlarm, keyring, attachWalletKeys, store, permissions, approvals, engine, evm, nodus, solana, tron,
     lock: () => lockCoordinator.lock(),
     get walletKeys() { return walletKeys; },
     get unlock() { return unlock; },

@@ -50,7 +50,8 @@ test('internal send renders form then web-wallet review and confirms its id', as
   assert.ok(root.textContent.includes('Up to 0.001 ETH')); await button(root, 'Confirm send').onclick(); assert.deepEqual(sent, ['review']);
 });
 
-// Proves returned EVM balances/errors and chain actions survive the added disabled Nodus control; row counts alone miss wrong-chain routing.
+// Proves returned EVM balances/errors and chain actions survive the disabled
+// Nodus/Solana/Tron controls when their addresses are absent; counts alone miss wrong-chain routing.
 test('home shows returned EVM balances and unavailable token errors with send actions', () => {
   const root = new Node('main'), sent = [];
   renderHome(document, root, { addresses: { ethereum: account, bsc: account }, evmBalances: {
@@ -59,7 +60,7 @@ test('home shows returned EVM balances and unavailable token errors with send ac
   assert.ok(root.textContent.includes('12.34 ETH')); assert.ok(root.textContent.includes('USDC: Balance unavailable'));
   assert.ok(root.textContent.includes('RPC unavailable')); assert.doesNotMatch(root.textContent, /0\.00/);
   const controls = find(root, node => node.tagName === 'button' && node.textContent === 'Send');
-  assert.deepEqual(controls.map(control => control.disabled), [true, false, false]);
+  assert.deepEqual(controls.map(control => control.disabled), [true, false, false, true, true]);
   for (const control of controls) if (!control.disabled) control.onclick();
   assert.deepEqual(sent, ['ethereum', 'bsc']);
 });

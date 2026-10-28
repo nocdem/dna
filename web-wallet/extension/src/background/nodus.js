@@ -8,8 +8,9 @@ import { NODUS_ASSET, nodusTokens } from '../../../src/nodus/network.js';
 import { NODUS_HISTORY_LIMIT, localRowsToShow, nodusHistoryRow, nodusHistoryStatus } from '../../../src/nodus/history.js';
 import { keepBusyEnvelope, canResubmit, dropSettledEnvelope, resubmitKept, NODUS_UNCERTAIN_NOTE, NODUS_SUBMITTED_NOTE } from '../../../src/nodus/resubmit.js';
 import { recordActivity, watchActivity, terminal, evmActivityText } from '../../../src/activity.js';
-import { activityKeyFor, parseActivity, serializeActivity, serializeWithoutQuarantined, requireSavedForEvm } from '../../../src/activity-storage.js';
-import { ACTIVITY_KEY, VAULT_KEY } from '../../../src/vault.js';
+import { activityKeyFor, parseActivity, serializeActivity, serializeWithoutQuarantined, requireSavedForEvm,
+  historyKeyFor, parseHistory, serializeHistory } from '../../../src/activity-storage.js';
+import { ACTIVITY_KEY, VAULT_KEY, HISTORY_KEY } from '../../../src/vault.js';
 import { EvmAccount, Contract, describeArgs } from '../../../src/evm/contract.js';
 import { parseRaw, parseWei, formatRaw, formatWei } from '../../../src/evm/units.js';
 import { rpcErrors, providerErrors } from '@metamask/rpc-errors';
@@ -30,6 +31,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
     previous.reviews.clear();
     for (const row of previous.rows) row.envelope?.fill(0);
     previous.rows = []; previous.quarantined = []; previous.releasedQuarantine.clear(); previous.key = null;
+    previous.historyKey = null; previous.history = {};
   }
   lockCoordinator.register('nodus', { lock });
   function current(s) {
@@ -51,10 +53,17 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
       const fingerprint = await deriveNodusAddress(phrase, { wasmBytes: nodusWasmBytes, signal: combined });
       current(s); combined.throwIfAborted();
       s.addresses = { ...addresses, nodus: fingerprint };
-      s.key = await activityKeyFor(phrase, id); phrase = null;
+      s.key = await activityKeyFor(phrase, id);
       current(s); combined.throwIfAborted();
-      const saved = await storage.get([VAULT_KEY, ACTIVITY_KEY]); current(s);
+      // src/app.js:2528-2542: the saved wallet's separate encrypted account
+      // history key/cache, using the original format and derivation unchanged.
+      s.historyKey = await historyKeyFor(phrase, id); phrase = null;
+      current(s); combined.throwIfAborted();
+      const saved = await storage.get([VAULT_KEY, ACTIVITY_KEY, HISTORY_KEY]); current(s);
       s.vault = saved[VAULT_KEY];
+      try { s.history = await parseHistory(saved[HISTORY_KEY], id, s.historyKey); }
+      catch { s.history = {}; }
+      current(s); combined.throwIfAborted();
       // src/app.js:2543-2550: only the unlock-time read problem blocks sending.
       try {
         s.rows = await parseActivity(saved[ACTIVITY_KEY], id, s.addresses, s.key);
@@ -88,7 +97,10 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
       const aside = rows.quarantined ?? [];
       const encrypted = await serializeActivity(s.id, combined, s.key, aside); current(s);
       await storage.set({ [ACTIVITY_KEY]: encrypted }); current(s);
-      s.rows = combined; s.quarantined = aside;
+      // src/app.js:205,215-224 saves a snapshot without replacing live history.
+      // A send may append while encryption/storage yields; its queued save
+      // must still see that signed record when this older save completes.
+      s.quarantined = aside;
     });
     writes = operation; return operation;
   }
@@ -175,6 +187,42 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
     }, error => { if (session === s) s.contractOutcome = error.message; });
   }
   return {
+    // Package 7a shares the existing authenticated Activity writer. Only the
+    // background chain handlers receive this handle, never the trusted/site API.
+    // src/app.js:202-225,2358-2362: one saved list for all chains, one write
+    // queue; src/app.js:353-361: account-history cache under its own key.
+    chainActivity(chain) {
+      if (!['solana', 'tron'].includes(chain)) throw new Error('Unsupported chain.');
+      const s = active();
+      const check = () => { lockCoordinator.assertUnlocked(); current(s); s.assertReady?.(); };
+      return {
+        get client() { check(); return s.client; },
+        error() { check(); return s.activityError ?? ''; },
+        assertSendable() {
+          check();
+          if (s.activityBlocked) throw new Error('Saved activity is unverified. Check the explorer and discard the unreadable history before sending.');
+        },
+        rows() { check(); return s.rows.filter(row => row.chain === chain && row.address === s.addresses[chain]); },
+        append(transfer, details) {
+          check();
+          if (transfer.chain !== chain || transfer.from !== s.addresses[chain]) throw new Error('Invalid activity owner.');
+          const row = recordActivity(transfer, details); s.rows.push(row); return row;
+        },
+        persist() { check(); return persist(s); },
+        history() { check(); const page = s.history[chain]; return page?.address === s.addresses[chain] ? page : null; },
+        saveHistory(page) {
+          check(); s.history[chain] = page;
+          const operation = writes.catch(() => {}).then(async () => {
+            check();
+            const saved = await storage.get(VAULT_KEY); check();
+            if (saved[VAULT_KEY] !== s.vault) throw new Error('Wallet storage changed.');
+            const encrypted = await serializeHistory(s.id, s.history, s.historyKey); check();
+            await storage.set({ [HISTORY_KEY]: encrypted }); check();
+          });
+          writes = operation; return operation;
+        },
+      };
+    },
     consumeNodusSeed,
     getAccount() {
       const s = active(), publicKey = s.client.publicKey;

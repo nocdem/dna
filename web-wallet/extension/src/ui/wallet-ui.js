@@ -25,12 +25,19 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
   let state = null, generated = null, phraseStep = null;
   let evmBalances = {}, balanceIdentity, balancePending;
   let nodusBalances = null, cpunkBalance = null, nodusHistory = null, nodusPending, historyPending, balanceGeneration = 0;
-  const publicState = () => state ? { ...state, evmBalances, nodusBalances, cpunkBalance, nodusHistory } : null;
+  let solanaTronBalances = {}, solanaTronHistory = {}, solanaTronPending;
+  const solanaTronHistoryPending = new Map();
+  const chainPrefix = chain => {
+    if (!['solana', 'tron'].includes(chain)) throw new Error('Unsupported chain.');
+    return chain === 'solana' ? 'Solana' : 'Tron';
+  };
+  const publicState = () => state ? { ...state, evmBalances, nodusBalances, cpunkBalance, nodusHistory, solanaTronBalances, solanaTronHistory } : null;
   async function refresh() {
     state = await client.request('getState');
     const identity = state.isUnlocked ? JSON.stringify([state.addresses, state.evm, state.nodus]) : null;
     if (identity !== balanceIdentity) {
       evmBalances = {}; nodusBalances = cpunkBalance = nodusHistory = null;
+      solanaTronBalances = {}; solanaTronHistory = {}; solanaTronPending = null; solanaTronHistoryPending.clear();
       balanceIdentity = identity; balanceGeneration++;
     }
     return publicState();
@@ -95,6 +102,36 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
     prepareEvmSend: fields => client.request('prepareEvmSend', [fields]),
     confirmEvmSend: id => client.request('confirmEvmSend', [id]),
     cancelEvmSend: id => client.request('cancelEvmSend', [id]),
+    // Same trusted-port boundary as EVM/Nodus; only public rows/reviews are
+    // retained in the UI, and an old unlock's reads cannot replace new state.
+    async loadSolanaTronBalances({ force = false } = {}) {
+      if (!state?.isUnlocked) return;
+      if (solanaTronPending) return solanaTronPending;
+      const chains = ['solana', 'tron'].filter(chain => state.addresses?.[chain]);
+      if (!chains.length || (!force && chains.every(chain => solanaTronBalances[chain]))) return;
+      const started = balanceGeneration;
+      const request = Promise.allSettled(chains.map(chain => client.request(`get${chainPrefix(chain)}Balances`))).then(results => {
+        if (started !== balanceGeneration || !state?.isUnlocked) return;
+        solanaTronBalances = Object.fromEntries(results.map((result, i) => [chains[i], result.status === 'fulfilled' ? result.value : { error: result.reason.message }]));
+      }).finally(() => { if (solanaTronPending === request) solanaTronPending = null; });
+      solanaTronPending = request; return request;
+    },
+    prepareSolanaTronSend: ({ chain, ...fields }) => client.request(`prepare${chainPrefix(chain)}Send`, [fields]),
+    confirmSolanaTronSend: (chain, id) => client.request(`confirm${chainPrefix(chain)}Send`, [id]),
+    cancelSolanaTronSend: (chain, id) => client.request(`cancel${chainPrefix(chain)}Send`, [id]),
+    async loadSolanaTronHistory(chain, { manual = false } = {}) {
+      const prefix = chainPrefix(chain);
+      if (!state?.isUnlocked) return;
+      if (solanaTronHistoryPending.has(chain)) return solanaTronHistoryPending.get(chain);
+      const started = balanceGeneration;
+      const request = client.request(`get${prefix}History`, [{ manual }]).then(history => {
+        if (started === balanceGeneration && state?.isUnlocked) solanaTronHistory = { ...solanaTronHistory, [chain]: history };
+      }).catch(error => {
+        if (started === balanceGeneration && state?.isUnlocked) solanaTronHistory = { ...solanaTronHistory,
+          [chain]: { ...solanaTronHistory[chain], error: error.message } };
+      }).finally(() => { if (solanaTronHistoryPending.get(chain) === request) solanaTronHistoryPending.delete(chain); });
+      solanaTronHistoryPending.set(chain, request); return request;
+    },
     async loadNodusBalances({ force = false } = {}) {
       if (!state?.isUnlocked) return;
       if (nodusPending) return nodusPending;

@@ -5,6 +5,7 @@ import { actionButton, renderHome, renderReceive, renderConnect, renderSites, re
 import { renderEvmApproval, renderEvmSend } from './evm-screens.js';
 import { renderNodusSend, renderNodusHistory, renderNodusContracts } from './nodus-screens.js';
 import { renderNodusConnect, renderNodusSiteApproval } from './nodus-site-screens.js';
+import { renderSolanaTronSend, renderSolanaTronHistory } from './solana-tron-screens.js';
 import { NODUS_PERMISSION } from '../background/permissions.js';
 import { createPhraseFields } from '../../../src/phrase-fields.js';
 
@@ -13,7 +14,11 @@ export async function mountWalletPage({ document = globalThis.document, window =
   const ui = createWalletUi(client), root = document.getElementById('screen');
   const navigation = document.getElementById('wallet-navigation'), status = document.getElementById('wallet-status');
   let page = 'home', receiveNetwork, fields, revealed, busy = false, disposed = false, revision = 0;
-  let sendChain, sendReview, contractResult, stopNodusReview;
+  let sendChain, sendReview, contractResult, stopSendReview;
+  const isSolanaTron = chain => chain === 'solana' || chain === 'tron';
+  const hasBalances = state => state && (state.evm || state.nodus || state.addresses?.solana || state.addresses?.tron);
+  const cancelReview = () => sendChain === 'nodus' ? ui.cancelNodusSend(sendReview.id)
+    : isSolanaTron(sendChain) ? ui.cancelSolanaTronSend(sendChain, sendReview.id) : ui.cancelEvmSend(sendReview.id);
   let idleTimer, entryDeadline = 0, walletDeadline = 0, refreshPending = false, publicState;
   const subscriptions = ['ApprovalController:stateChange', 'PermissionController:stateChange', 'EvmController:stateChange'];
   function element(tag, text, className = '') {
@@ -23,12 +28,12 @@ export async function mountWalletPage({ document = globalThis.document, window =
   }
   function showError(error) { status.textContent = error.message; status.className = 'field-error'; }
   function clearSensitive() {
-    stopNodusReview?.(); stopNodusReview = undefined;
+    stopSendReview?.(); stopSendReview = undefined;
     revision++; fields?.clear(); fields = undefined; ui.clearPhrase();
     revealed?.replaceChildren(); revealed = undefined;
     for (const input of root.querySelectorAll('input')) input.value = '';
     entryDeadline = 0;
-    if (sendReview) void (sendChain === 'nodus' ? ui.cancelNodusSend(sendReview.id) : ui.cancelEvmSend(sendReview.id)).catch(() => {});
+    if (sendReview) void cancelReview().catch(() => {});
     sendReview = undefined;
     contractResult = undefined;
   }
@@ -59,10 +64,10 @@ export async function mountWalletPage({ document = globalThis.document, window =
     if (busy) { refreshPending ||= changed; return; }
     if (changed) render();
     scheduleIdle();
-    if (state.isUnlocked && (state.evm || state.nodus) && page === 'home') void loadBalances().catch(showError);
+    if (state.isUnlocked && hasBalances(state) && page === 'home') void loadBalances().catch(showError);
   }
   async function loadBalances(force = false) {
-    await Promise.all([ui.state?.evm && ui.loadEvmBalances({ force }), ui.state?.nodus && ui.loadNodusBalances({ force })]);
+    await Promise.all([ui.state?.evm && ui.loadEvmBalances({ force }), ui.state?.nodus && ui.loadNodusBalances({ force }), ui.loadSolanaTronBalances({ force })]);
     if (disposed || page !== 'home' || !ui.state?.isUnlocked) return;
     if (busy) { refreshPending = true; return; }
     publicState = JSON.stringify(ui.state); render();
@@ -77,7 +82,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
       busy = false; root.inert = navigation.inert = false;
       if (!disposed) {
         publicState = JSON.stringify(ui.state); if (renderAfter || !ui.state?.isUnlocked || refreshPending) render(); scheduleIdle();
-        if (ui.state?.isUnlocked && (ui.state.evm || ui.state.nodus) && page === 'home') void loadBalances().catch(showError);
+        if (ui.state?.isUnlocked && hasBalances(ui.state) && page === 'home') void loadBalances().catch(showError);
       }
       if (refreshPending) { refreshPending = false; void refresh().catch(showError); }
     }
@@ -85,8 +90,9 @@ export async function mountWalletPage({ document = globalThis.document, window =
   function navigate(next, network) {
     if (busy) return;
     clearSensitive(); page = next; receiveNetwork = network; status.textContent = ''; render(); scheduleIdle();
-    if (page === 'home' && (ui.state?.evm || ui.state?.nodus)) void loadBalances().catch(showError);
+    if (page === 'home' && hasBalances(ui.state)) void loadBalances().catch(showError);
     if (page === 'nodus-history') return run(() => ui.loadNodusHistory());
+    if (page === 'chain-history') return run(() => ui.loadSolanaTronHistory(receiveNetwork));
   }
   function passwordInput(form, id, label, autocomplete, minimum) {
     const caption = element('label', label), input = element('input');
@@ -146,7 +152,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
     if (disposed || !ui.state) return;
     // A public-state notification never replaces a recovery form that the user is filling.
     if (page === 'phrase' && fields && ui.phraseStep && root.querySelector('.phrase-grid')) return;
-    stopNodusReview?.(); stopNodusReview = undefined;
+    stopSendReview?.(); stopSendReview = undefined;
     fields?.clear(); fields = undefined; revealed?.replaceChildren(); revealed = undefined;
     root.replaceChildren(); navigation.replaceChildren();
     const state = ui.state;
@@ -189,13 +195,13 @@ export async function mountWalletPage({ document = globalThis.document, window =
         });
       return;
     }
-    if (page === 'contracts') stopNodusReview = renderNodusContracts(document, root, { account: state.addresses.nodus, readable: state.nodus.evmReadable,
+    if (page === 'contracts') stopSendReview = renderNodusContracts(document, root, { account: state.addresses.nodus, readable: state.nodus.evmReadable,
       buildable: state.nodus.evmBuildable, result: contractResult, review: sendReview }, {
       read: fields => run(async () => { contractResult = await ui.readNodusContract(fields); }),
       prepare: fields => run(async () => { sendReview = await ui.prepareNodusContract(fields); }),
       confirm: confirmNodus, cancel: () => navigate('contracts'),
     });
-    else if (page === 'send' && sendChain === 'nodus') stopNodusReview = renderNodusSend(document, root, { account: state.addresses.nodus, tokens: state.nodus.tokens, review: sendReview }, {
+    else if (page === 'send' && sendChain === 'nodus') stopSendReview = renderNodusSend(document, root, { account: state.addresses.nodus, tokens: state.nodus.tokens, review: sendReview }, {
       prepare: request => run(async () => { sendReview = await ui.prepareNodusSend(request); }),
       confirm: confirmNodus,
       cancel: () => navigate('home'),
@@ -206,6 +212,26 @@ export async function mountWalletPage({ document = globalThis.document, window =
         const result = await ui.resubmitNodusSend(hash); await ui.loadNodusHistory();
         status.className = 'hint'; status.textContent = result.message || (result.outcome === 'sent' ? 'Broadcast submitted; awaiting confirmation.' : result.outcome);
       }),
+    });
+    else if (page === 'chain-history') renderSolanaTronHistory(document, root, { chain: receiveNetwork, history: state.solanaTronHistory[receiveNetwork] }, {
+      refresh: () => run(() => ui.loadSolanaTronHistory(receiveNetwork, { manual: true })),
+    });
+    else if (page === 'send' && isSolanaTron(sendChain)) stopSendReview = renderSolanaTronSend(document, root, { chain: sendChain, account: state.addresses[sendChain], review: sendReview }, {
+      prepare: request => run(async () => { sendReview = await ui.prepareSolanaTronSend(request); }),
+      confirm: id => run(async () => {
+        // src/app.js:2346-2413: close the consumed review on every outcome,
+        // track ambiguity only when a signed local record actually exists.
+        sendReview = undefined;
+        try {
+          const hash = await ui.confirmSolanaTronSend(sendChain, id); page = 'home';
+          status.className = 'hint'; status.textContent = `Broadcast submitted; confirmation is pending. Transaction ID ${hash}.`;
+          await ui.loadSolanaTronBalances({ force: true });
+        } catch (error) {
+          const note = error.data?.activityTracked ? ' A broadcast failure can have an uncertain outcome. Check your address on the chain explorer before creating another transfer.' : '';
+          throw new Error(`${error.message}${note}`);
+        }
+      }),
+      cancel: () => navigate('home'),
     });
     else if (page === 'send') renderEvmSend(document, root, { chain: sendChain, account: state.addresses[sendChain], review: sendReview }, {
       prepare: request => run(async () => { sendReview = await ui.prepareEvmSend(request); }),
@@ -241,7 +267,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
     });
     else renderHome(document, root, state, network => navigate('receive', network), chain => {
       sendChain = chain; navigate('send');
-    }, () => run(() => loadBalances(true)), () => navigate('nodus-history'), () => { sendChain = 'nodus'; navigate('contracts'); });
+    }, () => run(() => loadBalances(true)), () => navigate('nodus-history'), () => { sendChain = 'nodus'; navigate('contracts'); }, chain => navigate('chain-history', chain));
   }
   const unbindActivity = bindActivity(document, client, () => {
     scheduleIdle(true);
