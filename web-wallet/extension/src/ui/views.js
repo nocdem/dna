@@ -19,7 +19,7 @@ export function actionButton(document, text, action, secondary = true) {
 }
 function heading(document, container, text) { container.append(element(document, 'h1', '', text)); }
 
-export function renderHome(document, container, state, receive, send, refreshBalances) {
+export function renderHome(document, container, state, receive, send, refreshBalances, history, contracts) {
   container.replaceChildren(); heading(document, container, 'Your wallet');
   const list = element(document, 'div', 'extension-addresses');
   for (const [key, network] of Object.entries(NETWORKS)) {
@@ -38,6 +38,15 @@ export function renderHome(document, container, state, receive, send, refreshBal
       else row.append(element(document, 'p', 'hint', balances?.error ?? 'Balances have not been loaded.'));
       if (send) { const control = actionButton(document, 'Send', () => send(key)); control.disabled = !address; row.append(control); }
     }
+    if (key === 'nodus') {
+      const balances = state.nodusBalances;
+      if (Array.isArray(balances)) for (const asset of balances) row.append(element(document, 'p', 'hint', asset.error ? `${asset.symbol}: Balance unavailable` : `${asset.balance} ${asset.symbol}`));
+      else row.append(element(document, 'p', 'hint', balances?.error ?? 'Balances have not been loaded.'));
+      if (send) { const control = actionButton(document, 'Send', () => send(key)); control.disabled = !address || state.nodus?.state !== 'ready'; row.append(control); }
+      if (history) { const control = actionButton(document, 'History', history); control.disabled = !address; row.append(control); }
+      if (contracts && (state.nodus?.evmBuildable || state.nodus?.evmReadable)) row.append(actionButton(document, 'Smart contracts', contracts));
+    }
+    if (key === 'cellframe') row.append(element(document, 'p', 'hint', state.cpunkBalance?.error ?? (state.cpunkBalance ? `${state.cpunkBalance.balance} CPUNK` : 'Balances have not been loaded.')));
   }
   container.append(list);
   if (refreshBalances) container.append(actionButton(document, 'Refresh balances', refreshBalances));

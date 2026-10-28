@@ -190,9 +190,11 @@ test('mounted page answers incoming EVM signature approvals', async t => {
   assert.deepEqual(calls.find(call => call.method === 'resolvePendingApproval').params, ['public-signature', true]);
 });
 
-// Proves mounted send prepares the entered amount then confirms that review; separate form tests miss page/state wiring.
+// Proves Ethereum's mounted send prepares and confirms its review with Nodus also on home; selecting the first Send no longer identifies Ethereum.
 test('mounted EVM send reaches prepare, review and confirm', async t => {
-  const { root, calls } = await pageFixture(t); button(root, 'Send').onclick();
+  const { root, calls } = await pageFixture(t);
+  const ethereum = descendants(root, node => node.tagName === 'article').find(row => descendants(row, node => node.tagName === 'h2' && node.textContent === 'Ethereum').length === 1);
+  const send = button(ethereum, 'Send'); assert.equal(send.disabled, false); send.onclick();
   const inputs = root.querySelectorAll('input'); inputs[0].value = account; inputs[1].value = '0.01';
   await descendants(root, node => node.tagName === 'form')[0].onsubmit({ preventDefault() {} });
   assert.match(root.textContent, /Up to 0\.001 ETH/); await button(root, 'Confirm send').onclick();

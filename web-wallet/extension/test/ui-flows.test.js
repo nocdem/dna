@@ -137,7 +137,8 @@ test('trusted restore saves a decryptable web-wallet vault', async t => {
   await client.request('createNewVaultAndRestore', [password, bytes]);
   assert.equal((await decryptVault(values[VAULT_KEY], password)).phrase, phrase);
   assert.equal((await client.request('getState')).isInitialized, true);
-  await assert.rejects(client.request('submitPasswordOrEncryptionKey', [{ password }]), /consumers are not attached/);
+  await assert.rejects(client.request('submitPasswordOrEncryptionKey', [{ password: 'wrong-public-password' }]), /password|unlock/i);
+  assert.equal((await client.request('getState')).isUnlocked, false);
 });
 
 // Proves UI-selected accounts/networks grant an actual site request and revocation follows the site handler; approving the controller directly would bypass both UI and port wiring.

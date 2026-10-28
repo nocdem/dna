@@ -23,11 +23,15 @@ export function connectDetails(pending) {
 export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
   let state = null, generated = null, phraseStep = null;
   let evmBalances = {}, balanceIdentity, balancePending;
-  const publicState = () => state ? { ...state, evmBalances } : null;
+  let nodusBalances = null, cpunkBalance = null, nodusHistory = null, nodusPending, historyPending, balanceGeneration = 0;
+  const publicState = () => state ? { ...state, evmBalances, nodusBalances, cpunkBalance, nodusHistory } : null;
   async function refresh() {
     state = await client.request('getState');
-    const identity = state.isUnlocked ? JSON.stringify([state.addresses, state.evm]) : null;
-    if (identity !== balanceIdentity) { evmBalances = {}; balanceIdentity = identity; }
+    const identity = state.isUnlocked ? JSON.stringify([state.addresses, state.evm, state.nodus]) : null;
+    if (identity !== balanceIdentity) {
+      evmBalances = {}; nodusBalances = cpunkBalance = nodusHistory = null;
+      balanceIdentity = identity; balanceGeneration++;
+    }
     return publicState();
   }
   function clearPhrase() { generated = null; phraseStep = null; }
@@ -83,6 +87,39 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
     prepareEvmSend: fields => client.request('prepareEvmSend', [fields]),
     confirmEvmSend: id => client.request('confirmEvmSend', [id]),
     cancelEvmSend: id => client.request('cancelEvmSend', [id]),
+    async loadNodusBalances({ force = false } = {}) {
+      if (!state?.isUnlocked) return;
+      if (nodusPending) return nodusPending;
+      if (!force && nodusBalances && cpunkBalance) return;
+      const started = balanceGeneration;
+      const request = Promise.allSettled([client.request('getNodusBalances'), client.request('getCpunkBalance')]).then(results => {
+        if (started !== balanceGeneration || !state?.isUnlocked) return;
+        const value = result => result.status === 'fulfilled' ? result.value : { error: result.reason.message };
+        nodusBalances = value(results[0]); cpunkBalance = value(results[1]);
+      }).finally(() => { if (nodusPending === request) nodusPending = null; });
+      nodusPending = request; return request;
+    },
+    async loadNodusHistory() {
+      if (!state?.isUnlocked) return;
+      if (historyPending) return historyPending;
+      const started = balanceGeneration;
+      const request = (async () => {
+        let history;
+        try { history = await client.request('getNodusHistory'); }
+        catch (error) {
+          const local = await client.request('getNodusLocalHistory').catch(() => []);
+          history = { error: error.message, rows: [], local };
+        }
+        if (started === balanceGeneration && state?.isUnlocked) nodusHistory = history;
+      })().finally(() => { if (historyPending === request) historyPending = null; });
+      historyPending = request; return request;
+    },
+    prepareNodusSend: fields => client.request('prepareNodusSend', [fields]),
+    readNodusContract: fields => client.request('readNodusContract', [fields]),
+    prepareNodusContract: fields => client.request('prepareNodusContract', [fields]),
+    confirmNodusSend: id => client.request('confirmNodusSend', [id]),
+    cancelNodusSend: id => client.request('cancelNodusSend', [id]),
+    resubmitNodusSend: hash => client.request('resubmitNodusSend', [hash]),
     async selectEvmNetwork(chain) { await client.request('selectEvmNetwork', [chain]); return refresh(); },
     async setEvmEndpoint(chain, endpoint) { await client.request('setEvmEndpoint', [chain, endpoint]); return refresh(); },
     async revoke(origin) {

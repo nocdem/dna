@@ -21,7 +21,7 @@ function event() {
 }
 function browserFixture() {
   const values = {}, writes = [], created = [], focused = [], scheduled = new Map(), alarmsCreated = [];
-  return { values, writes, created, focused, alarmsCreated,
+  return { values, writes, created, focused, alarmsCreated, consumeNodusSeed: () => {},
     runtime: { id: 'test-extension', onConnect: event(), getManifest: () => ({ version: '0.1.132' }), getURL: path => `chrome-extension://test-extension/${path}` },
     storage: { async get(key) { return key === null ? structuredClone(values) : { [key]: structuredClone(values[key]) }; },
       async set(items) { writes.push(structuredClone(items)); Object.assign(values, structuredClone(items)); } },
@@ -173,7 +173,7 @@ test('untrusted port handling retains the reference multiplex and URL-less failu
 // Proves real port/mux/engine/controller connect approval and rejection; direct controller-only tests could miss runtime wiring or a forged request origin.
 test('site connect opens notification, cannot call UI methods, and cancellation returns 4001', async t => {
   const { runtime, background, created, focused, alarmsCreated } = await setup(t);
-  background.attachWalletKeys(() => {}); await background.vaultStore.create(password, phrase); await background.unlock(password, { cpunkWasmBytes });
+  await background.vaultStore.create(password, phrase); await background.unlock(password, { cpunkWasmBytes });
   const remote = port(runtime, 'https://site.example/path', 'popup'), alarmCount = alarmsCreated.length;
   assert.deepEqual(background.engine.requestAccountTabIds, {});
   assert.deepEqual((await request(remote, 'eth_accounts')).result, []);
@@ -208,7 +208,6 @@ test('site connect opens notification, cannot call UI methods, and cancellation 
 // Proves T-2 across creation/import, real joined unlock, permission update and lock, inspecting all writes/backups; a final-only snapshot misses transient plaintext/vault leaks.
 test('persisted permission state never introduces a second encrypted phrase store', async t => {
   const { background, runtime, values, writes, storage } = await setup(t);
-  background.attachWalletKeys(() => {});
   await background.vaultStore.create(password, phrase); const value = values[VAULT_KEY];
   await background.vaultStore.importVault(value); await background.unlock(password, { cpunkWasmBytes });
   const remote = port(runtime, 'https://site.example/frame', 'nodus-contentscript', {
@@ -249,7 +248,7 @@ test('persisted permission state never introduces a second encrypted phrase stor
 // Proves T-5 expiry clears the alarm, unlock re-arms it, site traffic cannot reset it, and UI activity can; counting startup scheduling alone could falsely pass.
 test('successful unlock re-arms inactivity after expiry with every interface closed', async t => {
   const { background, runtime, alarms, scheduled, alarmsCreated } = await setup(t);
-  background.attachWalletKeys(() => {}); await background.vaultStore.create(password, phrase); await background.unlock(password, { cpunkWasmBytes });
+  await background.vaultStore.create(password, phrase); await background.unlock(password, { cpunkWasmBytes });
   const remote = port(runtime), connecting = request(remote, 'eth_requestAccounts');
   await approve(background, await until(() => Object.values(background.approvals.controller.state.pendingApprovals)[0])); await connecting;
   await Promise.all(alarms.onAlarm.emit({ name: AUTO_LOCK_TIMEOUT_ALARM }));

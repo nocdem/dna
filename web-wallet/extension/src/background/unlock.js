@@ -22,7 +22,7 @@ export function createUnlock({ vaultStore, lockCoordinator, walletKeys }) {
           authenticated = await vaultStore.unlock(password);
           lockCoordinator.assertUnlocked();
           password = null;
-          const deriving = walletKeys.unlock(authenticated.phrase, { ...options, assertReady });
+          const deriving = walletKeys.unlock(authenticated.phrase, { ...options, id: authenticated.id, assertReady });
           authenticated.phrase = null;
           const addresses = await deriving;
           lockCoordinator.assertUnlocked();

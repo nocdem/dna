@@ -24,6 +24,8 @@ let module, id = 0;
 async function setup(t) {
   const values = {}, calls = [], raw = [], logs = [];
   const fixture = {
+    // This suite isolates EVM custody; nodus-background.test.js exercises the real consumer.
+    consumeNodusSeed: () => {},
     runtime: { id: 'evm-test', onConnect: event(), getManifest: () => ({ version: '0.1.132' }), getURL: path => `chrome-extension://evm-test/${path}` },
     storage: { async get(key) { return { [key]: structuredClone(values[key]) }; }, async set(items) { Object.assign(values, structuredClone(items)); } },
     alarms: { onAlarm: event(), async clear() {}, async create() {} },
@@ -59,7 +61,7 @@ async function setup(t) {
     finally { if (saved) Object.defineProperty(globalThis, 'chrome', saved); else delete globalThis.chrome; }
   }
   const background = await module.createBackground(fixture);
-  background.attachWalletKeys(() => {}); await background.vaultStore.create(password, phrase); await background.unlock(password, { cpunkWasmBytes });
+  await background.vaultStore.create(password, phrase); await background.unlock(password, { cpunkWasmBytes });
   const engines = [];
   function site(origin = 'https://site.example') {
     const { engine } = background.engine.setupProviderEngineEip1193({ origin, subjectType: 'website' }); engines.push(engine);

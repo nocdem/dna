@@ -75,8 +75,8 @@ test('removed integrations have no manifest entries', () => {
   assert.ok(!/metamask|trezor|cashtag|x\.com/iu.test(JSON.stringify(manifest)));
 });
 
-// Proves the imported background joins locked holders to Chrome events, persists only controller metadata and requires the seed seam; factory-only or partial-write assertions could miss entry wiring or leaked keys.
-test('background entry starts locked and attaches keys only with a Nodus seed consumer', async t => {
+// Proves startup attaches the real seed consumer while holders remain locked and only controller metadata is persisted.
+test('background entry starts locked with the real Nodus seed consumer attached', async t => {
   const saved = Object.getOwnPropertyDescriptor(globalThis, 'chrome');
   t.after(() => { if (saved) Object.defineProperty(globalThis, 'chrome', saved); else delete globalThis.chrome; });
   const reads = [], writes = [], scheduled = new Map(), listeners = [];
@@ -107,11 +107,9 @@ test('background entry starts locked and attaches keys only with a Nodus seed co
   assert.deepEqual(scheduled.get('AUTO_LOCK_TIMEOUT_ALARM'), { delayInMinutes: 15, periodInMinutes: 15 });
   assert.equal(listeners.length, 1);
   await assert.rejects(state.keyring.getAccounts(), /locked/iu);
-  assert.equal(state.walletKeys, null); assert.equal(state.unlock, null);
-  assert.throws(() => state.attachWalletKeys(), /seed consumer/iu);
-  // Fixture consumer only: derivation/signing are outside this startup test and no seed is produced.
-  const { walletKeys, unlock } = state.attachWalletKeys(() => assert.fail('Startup must never derive a seed.'));
-  assert.equal(state.walletKeys, walletKeys); assert.equal(state.unlock, unlock);
+  // Startup attaches the real consumer without deriving or loading a module.
+  const { walletKeys, unlock } = state;
+  assert.ok(walletKeys);
   assert.equal(typeof unlock, 'function');
   assert.throws(walletKeys.getSolanaKeypair, /locked/iu);
   assert.throws(walletKeys.getTronPrivateKey, /locked/iu);

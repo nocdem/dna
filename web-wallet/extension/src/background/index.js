@@ -11,6 +11,7 @@ import { createApprovals } from './approvals.js';
 import { createPermissions } from './permissions.js';
 import { createRequestEngine } from './engine.js';
 import { createEvm } from './evm.js';
+import { createNodus } from './nodus.js';
 import { PermissionsRequestNotFoundError } from '@metamask/permission-controller';
 import { VAULT_KEY, decryptVault, validateNewPassword } from '../../../src/vault.js';
 import { validateNodusPhrase } from '../../../src/recovery.js';
@@ -18,7 +19,7 @@ import { validateNodusPhrase } from '../../../src/recovery.js';
 // Approved plan §3.5:388-435; packages 1-2 own the vault, key custody and shared lock.
 // Startup constructs fresh locked holders. Store composition receives only controller metadata, never key custody.
 export async function createBackground({ storage = chrome.storage.local, alarms = chrome.alarms,
-  runtime = chrome.runtime, windows = chrome.windows, tabs = globalThis.chrome?.tabs } = {}) {
+  runtime = chrome.runtime, windows = chrome.windows, tabs = globalThis.chrome?.tabs, nodusOptions = {}, consumeNodusSeed } = {}) {
   const lockCoordinator = createLockCoordinator();
   const vaultStore = createVaultStore({ storage, lockCoordinator });
   const messenger = new Messenger({ namespace: 'Background' });
@@ -31,6 +32,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     return walletKeys.getEvmWallet();
   };
   const keyring = createKeyring({ lockCoordinator, getWallet });
+  const nodus = createNodus({ ...nodusOptions, storage, lockCoordinator, getAddresses: () => walletKeys.getAddresses() });
   let restoring = Promise.resolve();
   const uiSubscriptions = new Map();
 
@@ -51,8 +53,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   const evm = createEvm({ messenger, store, approvals, permissions, lockCoordinator, getWallet, keyring,
     onNetworkChanged: (client, readMetadata) => engine.attachNetworkClient(client, readMetadata) });
 
-  // wallet-keys.js:5-6, 43-44, 69-70: package 6 supplies the real Nodus seed consumer
-  // and registers its own lock holder. No seed is discarded by a stand-in consumer.
+  // The real background consumer derives and checks the web-wallet identity.
   function attachWalletKeys(consumeNodusSeed) {
     if (walletKeys) throw new Error('Wallet keys are already attached.');
     walletKeys = createWalletKeys({ lockCoordinator, consumeNodusSeed });
@@ -73,6 +74,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     };
     return { walletKeys, unlock };
   }
+  attachWalletKeys(consumeNodusSeed ?? nodus.consumeNodusSeed);
 
   // Port: metamask-controller.js:2755-2757, 2963-2964, 3166-3168, 3278-3284, 3482-3495.
   // Plan §16 step 4 / dispatch 4a: expose background approval operations; screens belong to 4b.
@@ -86,6 +88,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
         addresses: isUnlocked && walletKeys ? { ethereum: account, bsc: account, ...walletKeys.getAddresses() } : {},
         preferences: { autoLockTimeLimit: autoLockAlarm.minutes },
         evm: evm.getState(),
+        nodus: nodus.getState(),
         // Port: metamask-controller.js:2378-2384 flattens controller UI state, including subject metadata.
         ...permissions.controller.state, ...approvals.controller.state, ...permissions.alertController.state, ...permissions.subjectMetadataController.state };
     },
@@ -170,6 +173,16 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     cancelEvmSend: id => evm.cancelSend(id),
     selectEvmNetwork: chain => evm.selectNetwork(chain),
     setEvmEndpoint: (chain, endpoint) => evm.setEndpoint(chain, endpoint),
+    getNodusBalances: () => nodus.getBalances(),
+    getCpunkBalance: () => nodus.getCpunkBalance(),
+    prepareNodusSend: fields => nodus.prepareSend(fields),
+    readNodusContract: fields => nodus.readContract(fields),
+    prepareNodusContract: fields => nodus.prepareContract(fields),
+    confirmNodusSend: id => nodus.confirmSend(id),
+    cancelNodusSend: id => nodus.cancelSend(id),
+    getNodusHistory: () => nodus.getHistory(),
+    getNodusLocalHistory: () => nodus.getLocalHistory(),
+    resubmitNodusSend: hash => nodus.resubmit(hash),
     setLocked: () => lockCoordinator.lock(),
     submitPasswordOrEncryptionKey: ({ password }) => {
       // ADAPTATION: plan §3.5 uses the web-wallet password vault; no second keyring/encryption-key unlock path.
@@ -186,7 +199,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     AlertController: permissions.alertController, SubjectMetadataController: permissions.subjectMetadataController, EvmController: evm.controller });
   await store.flush();
   return {
-    vaultStore, lockCoordinator, autoLockAlarm, keyring, attachWalletKeys, store, permissions, approvals, engine, evm,
+    vaultStore, lockCoordinator, autoLockAlarm, keyring, attachWalletKeys, store, permissions, approvals, engine, evm, nodus,
     lock: () => lockCoordinator.lock(),
     get walletKeys() { return walletKeys; },
     get unlock() { return unlock; },

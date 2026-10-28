@@ -10,6 +10,7 @@ export function createWalletKeys({ lockCoordinator, consumeNodusSeed }) {
     if (!session) return;
     session.abort.abort();
     session.seed?.fill(0);
+    session.wallet.nodusClient = null;
     disposeWallet(session.wallet);
     session.addresses = null;
   }
@@ -26,7 +27,7 @@ export function createWalletKeys({ lockCoordinator, consumeNodusSeed }) {
     if (!session || session !== current || generation !== started) throw new Error('Wallet is locked.');
   }
 
-  async function unlock(phrase, { cpunkWasmBytes, assertReady } = {}) {
+  async function unlock(phrase, { cpunkWasmBytes, nodusWasmBytes, id, assertReady } = {}) {
     if (deriving || current) throw new Error('Lock the wallet before unlocking again.');
     // Approved plan §3.5:375-387, Q-28 "a": use the web wallet's keys,
     // not a second implementation of the snap derivation boundary.
@@ -39,9 +40,16 @@ export function createWalletKeys({ lockCoordinator, consumeNodusSeed }) {
     try {
       const seed = nodusSigningSeed(phrase);
       session.seed = seed;
-      try { await consumeNodusSeed(seed, { signal: session.abort.signal }); }
+      let identity;
+      try { identity = await consumeNodusSeed(seed, { signal: session.abort.signal, phrase, id,
+        addresses: session.wallet.addresses, nodusWasmBytes, assertReady }); }
       finally { seed.fill(0); session.seed = null; }
       assertCurrent(session, started);
+      // src/app.js:1166,1868: other-chain recipient names use this same client.
+      if (identity) {
+        session.wallet.addresses.nodus = identity.fingerprint;
+        session.wallet.nodusClient = identity.client;
+      }
       const cpunk = await deriveCpunkAddress(phrase, { wasmBytes: cpunkWasmBytes, signal: session.abort.signal });
       assertCurrent(session, started);
       session.addresses = { ...session.wallet.addresses, cpunk };
@@ -65,8 +73,8 @@ export function createWalletKeys({ lockCoordinator, consumeNodusSeed }) {
   // Library handlers must call these at the point of key use, including after
   // queued work resumes. A Solana buffer handed out here is the owned buffer
   // disposeWallet zeroes (keys.js:43-49); Tron strings can only lose references.
-  // The supplied Nodus consumer owns its module identity and registers the
-  // separate 'nodus' lock holder in package 6 (plan §3.5:407-420).
+  // The Nodus consumer owns its module identity and joins the 'nodus' lock
+  // holder (plan §3.5:407-420).
   return {
     unlock,
     getAddresses: () => ({ ...activeWallet().addresses }),
