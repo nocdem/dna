@@ -32,8 +32,8 @@
  * No UTF-8 check on strings (gogoproto's generated Unmarshal does none).
  *
  * ── VALUES THIS PORT PUTS IN (host-supplied, see `cmt_p2p_node_info_make`)
- *   · protocol_version.p2p = CMT_P2P_PROTOCOL_VERSION (8) — the dispatch;
- *     the same number the secret connection carries as N9 `proto_ver`.
+ *   · protocol_version.p2p = CMT_P2P_PROTOCOL_VERSION (8). The secret
+ *     connection's N9 `proto_ver` is CMT_P2P_SC_PROTO_VER_4004 (4004 / 8).
  *     NOTE: `CompatibleWith` does NOT compare the P2P version
  *     (node_info.go:185-193 compares Block and Network only). A peer on
  *     another P2P version is refused one layer lower, by the secret
@@ -79,8 +79,8 @@ extern "C" {
 #define CMT_P2P_MAX_NODE_INFO_SIZE 10240
 /** node_info.go:17 `maxNumChannels`. */
 #define CMT_P2P_MAX_NUM_CHANNELS   16
-/** The P2P protocol version this port speaks (dispatch; equals the
- *  secret connection's N9 `proto_ver`). The reference's
+/** NodeInfo's P2P protocol version. The secret connection's N9 `proto_ver`
+ *  uses CMT_P2P_SC_PROTO_VER_4004 separately. The reference's
  *  `version.P2PProtocol` is 8 as well (version/version.go). */
 #define CMT_P2P_PROTOCOL_VERSION   8u
 /** 32-byte chain id → 64 hex digits + NUL. */
