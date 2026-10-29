@@ -48,7 +48,7 @@ set(_FORBIDDEN
 #     handle_t2_media_put — the DHT, its stores, its routing table and the
 #     media TU;
 #   nodus_dht_ipc_new — the storage-side IPC runtime;
-#   nodus_inter_dial_on_frame — the SHARED 4002 dialer (decision item 28):
+#   nodus_inter_session_start — the SHARED 4002 session (decision item 28):
 #     the process dials with core's handshake code, not a copy.
 set(_REQUIRED
     nodus_dht_init
@@ -56,7 +56,7 @@ set(_REQUIRED
     nodus_routing_try_insert
     handle_t2_media_put
     nodus_dht_ipc_new
-    nodus_inter_dial_on_frame)
+    nodus_inter_session_start)
 
 find_program(NM_EXE NAMES nm)
 if(NOT NM_EXE)

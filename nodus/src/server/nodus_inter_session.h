@@ -1,7 +1,7 @@
 /**
- * Shared 4002 SecretConnection glue (both roles, no server wiring).
+ * Shared 4002 SecretConnection glue, role-list lookup and inbound limits.
  * Governing: approved 2026-10-28 encrypted-sessions design, sections 2/3.3,
- * 2026-10-29 build plan section 3; component-split decision item 28.
+ * 2026-10-29 build plan sections 3/4; component-split decision item 28.
  * Primitive/wire implementation stays in cmt_p2p_secret, unchanged.
  */
 #ifndef NODUS_INTER_SESSION_H
@@ -9,6 +9,8 @@
 
 #include "transport/nodus_tcp.h"
 #include "dnac/cmt_p2p_transport.h"  /* self-contained cmt_p2p_hs_job_t layout */
+#include "dnac/dnac.h"             /* DNAC_MAX_VALIDATORS, DNAC_EPOCH_LENGTH */
+#include "dnac/ledger_roots_v2.h"   /* DNA_V2_STORAGE_SET_MAX */
 
 #ifdef __cplusplus
 extern "C" {
@@ -16,6 +18,23 @@ extern "C" {
 
 typedef struct nodus_inter_session_module nodus_inter_session_module_t;
 typedef struct nodus_inter_session_conn nodus_inter_session_conn_t;
+
+/* Approved build plan 4.1 c: one sorted, bounded list read at one height. */
+typedef struct {
+    uint64_t height;
+    size_t validator_count, storage_count;
+    nodus_key_t validators[DNAC_MAX_VALIDATORS];
+    nodus_key_t storage[DNA_V2_STORAGE_SET_MAX];
+} nodus_inter_role_list_t;
+
+void nodus_inter_roles_lookup(const nodus_inter_role_list_t *list,
+                              const nodus_key_t *fp, bool *va, bool *st);
+/* The two local control wires share exactly q, ok, h, va and st.
+ * Failure encodes empty arrays; decoding is strict and bounded. */
+size_t nodus_inter_roles_encode(const char *q, const nodus_inter_role_list_t *list,
+                                bool ok, uint8_t *buf, size_t cap);
+int nodus_inter_roles_decode(const char *q, const uint8_t *buf, size_t len,
+                             nodus_inter_role_list_t *list, bool *ok);
 
 typedef struct {
     /* The identity outlives the module and all its workers. ML-KEM required.
@@ -31,7 +50,20 @@ typedef struct {
      * The owner may open here, wait for admission, or disconnect. */
     void (*on_authenticated)(nodus_tcp_conn_t *, const nodus_pubkey_t *, void *);
     void *auth_ctx;
+    /* status is false until the chain is known. role only looks up the
+     * held list, on the owner thread: 1 = list held, -1 = no list.
+     * It sends no query and never waits. Re-checks use that same list. */
+    bool (*status)(void *, uint8_t chain_id[32], uint64_t *height);
+    int (*role)(void *, const nodus_key_t *, bool *validator, bool *storage);
+    void *admission_ctx;
+    unsigned inbound_cap;          /* 0 = no owner limit (module tests) */
+    bool allow_duplicate_ip;       /* test harness, same-IP refusal only */
 } nodus_inter_session_config_t;
+
+#define NODUS_INTER_INBOUND_CAP 40u
+/* ⚠ NOT GROUNDED: copied from the approved 4004 bound; measurement deferred. */
+#define NODUS_INTER_JOB_DEPTH 64u
+#define NODUS_INTER_WORKERS 2u
 
 /* Job copies never point into a connection. The key copy is needed by a
  * DECAPS that outlives its connection. Workers touch only this object and
@@ -44,13 +76,14 @@ typedef struct nodus_inter_session_job {
 } nodus_inter_session_job_t;
 
 /* Attaches session mode before any listen/connect. Refuses an existing
- * listener/connection, missing identity/chain, or zero queue depth.
+ * listener/connection, missing identity or chain/status provider, or zero depth.
  * No queue/worker defaults. tcp and identity outlive this module.
  * Close the transport before free; free joins every internal worker. */
 nodus_inter_session_module_t *nodus_inter_session_new(nodus_tcp_t *tcp,
                                 const nodus_inter_session_config_t *cfg);
 void nodus_inter_session_free(nodus_inter_session_module_t *s);
 
+bool nodus_inter_session_chain_ready(nodus_inter_session_module_t *s);
 bool nodus_inter_session_is_open(const nodus_tcp_conn_t *conn);
 int nodus_inter_session_open(nodus_tcp_conn_t *conn);
 

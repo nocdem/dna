@@ -8,7 +8,7 @@
  * <data_path>/storage.sock (mode 0600, both ends checked with SO_PEERCRED —
  * nodus_tcp_unix_listen / nodus_tcp_unix_connect). Frames are ordinary nodus
  * wire frames (the transport's 7-byte header), plaintext; no handshake
- * method exists here. Nothing on 4000 / 4001 / 4002 changes.
+ * method exists here. The network session gate is separate from this socket.
  *
  * Two kinds of connection, told apart by their FIRST frame (the preface):
  *
@@ -49,7 +49,15 @@
  *                    core's cluster membership (decision item 27) — on
  *                    change, at least every NODUS_DHT_IPC_SNAPSHOT_MAX_SEC,
  *                    and in full on every (re)connect.
- *     storage → core:
+ *     storage → core (control connection only):
+ *       {"q":"ds_status"} every 1000 ms; answer has q, co (bool), h
+ *         (uint), ci (bstr 32), ch (bool core holds the chain in-process).
+ *       {"q":"ds_roles"}; answer has q, ok (bool), h (uint), va/st
+ *         arrays of 64-byte fingerprints (at most 128/256). A fault
+ *         answers ok=false with empty arrays and is never installed.
+ *       Before ds_status, or with co=false, no 4002 session is started.
+ *       ch=true selects these queries; ch=false selects the storage
+ *       process's own witness.sock control connection for chain/roles.
  *       {"q":"ds_udps","ip":tstr,"po":uint,"p":bstr} send this T1 datagram
  *                    from UDP 4000 (raw CBOR);
  *       {"q":"ds_rt","r":[[bstr 64 node id, tstr ip, uint tcp port], ...]}
@@ -97,6 +105,7 @@
 
 #include "nodus/nodus_types.h"
 #include "dht/nodus_dht.h"
+#include "server/nodus_inter_session.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -117,6 +126,8 @@ extern "C" {
 #define NODUS_DHT_IPC_Q_MEMBERS      "ds_mbr"
 #define NODUS_DHT_IPC_Q_UDP_OUT      "ds_udps"
 #define NODUS_DHT_IPC_Q_ROUTING      "ds_rt"
+#define NODUS_DHT_IPC_Q_ROLES        "ds_roles"
+#define NODUS_DHT_IPC_Q_STATUS       "ds_status"
 
 #define NODUS_DHT_IPC_BOOT_LEN       8
 
@@ -203,7 +214,9 @@ typedef enum {
     NODUS_DHT_IPC_MSG_DEAD,
     NODUS_DHT_IPC_MSG_MEMBERS,
     NODUS_DHT_IPC_MSG_UDP_OUT,
-    NODUS_DHT_IPC_MSG_ROUTING
+    NODUS_DHT_IPC_MSG_ROUTING,
+    NODUS_DHT_IPC_MSG_ROLES,
+    NODUS_DHT_IPC_MSG_STATUS
 } nodus_dht_ipc_msg_type_t;
 
 /** One decoded control-plane frame. `payload` points INTO the decoded
@@ -227,7 +240,17 @@ typedef struct {
     int                      member_count;
     /* ROUTING (written to the caller's buffer) */
     int                      routing_count;
+    bool answer, ok, chain_open, chain_here;
+    nodus_inter_role_list_t roles;
+    uint64_t height;
+    uint8_t chain_id[32];
 } nodus_dht_ipc_msg_t;
+
+/* NULL answer encodes a query; otherwise the exact approved answer keys. */
+size_t nodus_dht_ipc_encode_roles(const nodus_inter_role_list_t *answer,
+                                  bool ok, uint8_t *buf, size_t cap);
+size_t nodus_dht_ipc_encode_status(const nodus_dht_ipc_msg_t *answer,
+                                   uint8_t *buf, size_t cap);
 
 /**
  * Decode one IPC control-plane frame (a preface or a control message).
@@ -282,6 +305,11 @@ typedef struct nodus_dht_ipc nodus_dht_ipc_t;
  */
 nodus_dht_ipc_t *nodus_dht_ipc_new(const nodus_identity_t *identity,
                                    bool require_peer_auth);
+/* Injectable monotonic transport clock, for deadline/lost-answer fixtures.
+ * NULL selects nodus_time_mono_ms; production uses the constructor above. */
+nodus_dht_ipc_t *nodus_dht_ipc_new_clock(const nodus_identity_t *identity,
+                                       bool require_peer_auth,
+                                       uint64_t (*now_ms)(void *), void *now_ctx);
 
 /**
  * The DHT's host view in the storage process: send_to_origin writes to the

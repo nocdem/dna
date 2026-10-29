@@ -227,6 +227,8 @@ typedef struct {
     /** Fill `out` with core's cluster members (node id, offline seconds),
      *  in cluster order, at most `max`. @return the count. */
     int  (*members)(void *ctx, nodus_dht_ipc_member_t *out, int max);
+    bool (*status)(void *ctx, uint8_t ci[32], uint64_t *height, bool *chain_here);
+    int (*roles)(void *ctx, nodus_inter_role_list_t *out);
     void *ctx;
 } nodus_dht_ipc_core_t;
 

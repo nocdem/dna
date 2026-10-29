@@ -19,6 +19,9 @@
  *       (proves T1 failed for the intended reason) and is torn down cleanly.
  *
  * Ports 152xx are unique to this test (ctest -j safe).
+ * Peer authentication is required so the occupied-port failure reaches the
+ * bind. No extra compile flags/environment; teardown removes the test
+ * directory. The successful-init control prevents an early refusal passing.
  */
 
 #include "server/nodus_server.h"
@@ -57,6 +60,7 @@ static void build_config(nodus_server_config_t *config) {
     config->peer_port = 15202;
     config->ch_port = 15203;
     config->witness_port = 15204;
+    config->require_peer_auth = true;
     snprintf(config->data_path, sizeof(config->data_path),
              "/tmp/nodus_initfail_test_%d", (int)getpid());
     char cmd[256];

@@ -1,6 +1,10 @@
 /**
  * Nodus — WebSocket entry end-to-end test
  *
+ * Fixture: require peer authentication; the WebSocket assertions below stay
+ * unchanged. No extra compile flags/environment; teardown removes the test
+ * directory. Init failure fails the test rather than skipping assertions.
+ *
  * Starts a real nodus_server with ws_port set and drives its client
  * transport from THIS thread (nodus_tcp_poll on srv.tcp — no server thread),
  * so calling the handshake-timeout sweep with a synthetic clock cannot race
@@ -579,6 +583,7 @@ int main(void) {
     config.peer_port    = 15302;
     config.ch_port      = 15303;
     config.witness_port = 15304;
+    config.require_peer_auth = true;
     config.ws_port      = WS_PORT;
     snprintf(config.data_path, sizeof(config.data_path),
              "/tmp/nodus_ws_server_test_%d", (int)getpid());

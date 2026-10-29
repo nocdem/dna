@@ -96,6 +96,10 @@ static int failed = 0;
 
 /* ── Real server harness (mirrors test_client.c's server_thread) ────── */
 
+/* Require peer authentication; the client algorithm/round-trip assertions
+ * stay unchanged. No extra compile flags/environment; teardown removes the
+ * test directories. Setup failure fails the drive rather than skipping it. */
+
 typedef struct {
     nodus_server_config_t config;
     pthread_t             tid;
@@ -185,6 +189,7 @@ static int start_test_server(test_server_ctx_t *ctx, nodus_server_t *server,
     ctx->config.peer_port    = (uint16_t)(base_port + 2);
     ctx->config.ch_port      = (uint16_t)(base_port + 3);
     ctx->config.witness_port = (uint16_t)(base_port + 4);
+    ctx->config.require_peer_auth = true;
     snprintf(ctx->config.data_path, sizeof(ctx->config.data_path),
              "/tmp/nodus_mlkem_test_%u_%d", (unsigned)base_port, getpid());
     ctx->disable_mlkem = disable_mlkem;

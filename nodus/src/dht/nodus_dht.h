@@ -38,7 +38,7 @@
 #include "crypto/nodus_channel_crypto.h"
 #include "protocol/nodus_tier1.h"
 #include "protocol/nodus_tier2.h"   /* nodus_t2_cursor_t / page info (DHT Package A) */
-#include "server/nodus_inter_dial.h" /* the shared 4002 dialer (batch forward) */
+#include "server/nodus_inter_session.h" /* the shared 4002 dialer (batch forward) */
 
 #ifdef __cplusplus
 extern "C" {
@@ -313,13 +313,6 @@ typedef enum {
 /** Batch forward connection states */
 enum {
     BF_CONNECTING      = 0,
-    BF_SEND_HELLO      = 1,
-    BF_RECV_CHALL      = 2,
-    BF_SEND_AUTH       = 3,
-    BF_RECV_AUTHOK     = 4,
-    BF_SEND_KEY_INIT   = 5,
-    BF_RECV_KEY_ACK    = 6,
-    BF_SEND_BATCH      = 7,
     BF_RECV_RESULT     = 8,
     BF_DONE            = 9,
 };
@@ -331,28 +324,10 @@ typedef struct {
     char        ip[64];
     uint16_t    port;
     uint64_t    started_at;
-    uint8_t    *send_buf;        /**< Current send frame (reused for hello/auth/batch) */
-    size_t      send_len;
-    size_t      send_pos;
-    uint8_t    *recv_buf;        /**< Response buffer */
-    size_t      recv_cap;
-    size_t      recv_len;
-    /* Auth state */
-    uint8_t     token[NODUS_SESSION_TOKEN_LEN]; /**< Session token from auth_ok */
-    /* Kyber handshake state */
-    nodus_channel_crypto_t crypto;  /**< AES-256-GCM session (after Kyber handshake) */
-    bool        encrypted;          /**< true after successful Kyber key exchange */
-    /* The 4002 dialer handshake — the SHARED module core uses too
-     * (server/nodus_inter_dial.h; decision 2026-10-01-nodus-component-split
-     * item 28, split S5b): the retained challenge nonce the CRIT-1 kpk_sig
-     * check needs, the pending KEM secret between key_init and key_ack
-     * (zeroed at key_ack and at cleanup), the proven peer identity. */
-    nodus_inter_dial_t dial;
-    /* CRIT-1: the EXPECTED peer identity — the FIND_NODE peer
-     * bf_start_forward dialed; the module pins fingerprint(server_pk)
-     * against it before Kyber-encapsulating. */
-    nodus_key_t expected_node_id;
-    bool        has_expected_node_id;
+    /* Compatibility field retained in get_batch (A6); no authorization. */
+    uint8_t     token[NODUS_SESSION_TOKEN_LEN];
+    nodus_tcp_conn_t *session_conn;
+    uint64_t session_gen;
     /* Batch keys (stored for sending after auth) */
     nodus_key_t *batch_keys;     /**< Keys to query (heap, freed on cleanup) */
     int         batch_key_count;
@@ -400,6 +375,8 @@ typedef struct {
 /** Batch forward state (part of nodus_dht_t) */
 typedef struct {
     dht_bf_batch_t  batches[NODUS_BF_MAX_BATCHES];
+    nodus_tcp_t *tcp;
+    nodus_inter_session_module_t *session;
     int             bf_epoll_fd;     /**< Separate epoll for batch forward fds */
 } dht_bf_state_t;
 
@@ -489,6 +466,9 @@ typedef struct {
      *  NODUS_HINT_OFFLINE_SKIP_SEC ago. Cluster membership is core's
      *  (decision item 4). */
     bool (*hint_wanted)(void *ctx, const nodus_key_t *node_id);
+    /* Chain/admission view for the separate batch-forward connections. */
+    bool (*inter_status)(void *ctx, uint8_t ci[32], uint64_t *height);
+    int (*inter_role)(void *ctx, const nodus_key_t *fp, bool *va, bool *st);
 } nodus_dht_host_t;
 
 /**

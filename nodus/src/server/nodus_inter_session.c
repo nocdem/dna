@@ -7,6 +7,7 @@
  * Job-copy discipline: shared/dnac/cmt_p2p_transport.c:193-281.
  */
 #include "server/nodus_inter_session.h"
+#include "protocol/nodus_cbor.h"
 #include "crypto/nodus_sign.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
@@ -50,6 +51,99 @@ struct nodus_inter_session_module {
     nodus_inter_session_job_t *done_head, *done_tail;
     int wake_fd;
 };
+
+void nodus_inter_roles_lookup(const nodus_inter_role_list_t *list,
+                              const nodus_key_t *fp, bool *va, bool *st) {
+    *va = *st = false;
+    if (!list || !fp) return;
+    for (size_t i=0;i<list->validator_count;++i)
+        if (!nodus_key_cmp(&list->validators[i],fp)) { *va=true; break; }
+    for (size_t i=0;i<list->storage_count;++i)
+        if (!nodus_key_cmp(&list->storage[i],fp)) { *st=true; break; }
+}
+
+size_t nodus_inter_roles_encode(const char *q, const nodus_inter_role_list_t *list,
+                                bool ok, uint8_t *buf, size_t cap) {
+    if (!q || !buf || !list) return 0;
+    if (list->validator_count>DNAC_MAX_VALIDATORS ||
+        list->storage_count>DNA_V2_STORAGE_SET_MAX) ok=false;
+    cbor_encoder_t e; cbor_encoder_init(&e,buf,cap);
+    cbor_encode_map(&e,5);
+    cbor_encode_cstr(&e,"q"); cbor_encode_cstr(&e,q);
+    cbor_encode_cstr(&e,"ok"); cbor_encode_bool(&e,ok);
+    cbor_encode_cstr(&e,"h"); cbor_encode_uint(&e,list->height);
+    cbor_encode_cstr(&e,"va"); cbor_encode_array(&e,ok ? list->validator_count : 0);
+    if (ok) for (size_t i=0;i<list->validator_count;++i)
+        cbor_encode_bstr(&e,list->validators[i].bytes,NODUS_KEY_BYTES);
+    cbor_encode_cstr(&e,"st"); cbor_encode_array(&e,ok ? list->storage_count : 0);
+    if (ok) for (size_t i=0;i<list->storage_count;++i)
+        cbor_encode_bstr(&e,list->storage[i].bytes,NODUS_KEY_BYTES);
+    return e.error ? 0 : cbor_encoder_len(&e);
+}
+
+int nodus_inter_roles_decode(const char *q, const uint8_t *buf, size_t len,
+                             nodus_inter_role_list_t *list, bool *ok) {
+    if (!q || !buf || !list || !ok) return -1;
+    cbor_decoder_t d; cbor_decoder_init(&d,buf,len);
+    cbor_item_t m=cbor_decode_next(&d);
+    if (m.type!=CBOR_ITEM_MAP || m.count!=5) return -1;
+    unsigned seen=0; *ok=false; memset(list,0,sizeof(*list));
+    for (size_t i=0;i<m.count;++i) {
+        cbor_item_t k=cbor_decode_next(&d), v=cbor_decode_next(&d);
+        if (k.type!=CBOR_ITEM_TSTR) return -1;
+        unsigned bit;
+        if (k.tstr.len==1 && !memcmp(k.tstr.ptr,"q",1)) {
+            bit=1;
+            if (v.type!=CBOR_ITEM_TSTR || v.tstr.len!=strlen(q) ||
+                memcmp(v.tstr.ptr,q,v.tstr.len)) return -1;
+        } else if (k.tstr.len==2 && !memcmp(k.tstr.ptr,"ok",2)) {
+            bit=2; if (v.type!=CBOR_ITEM_BOOL) return -1; *ok=v.bool_val;
+        } else if (k.tstr.len==1 && !memcmp(k.tstr.ptr,"h",1)) {
+            bit=4; if (v.type!=CBOR_ITEM_UINT) return -1; list->height=v.uint_val;
+        } else if (k.tstr.len==2 && (!memcmp(k.tstr.ptr,"va",2) || !memcmp(k.tstr.ptr,"st",2))) {
+            bool va=!memcmp(k.tstr.ptr,"va",2); bit=va ? 8 : 16;
+            size_t max=va ? DNAC_MAX_VALIDATORS : DNA_V2_STORAGE_SET_MAX;
+            if (v.type!=CBOR_ITEM_ARRAY || v.count>max) return -1;
+            nodus_key_t *entries=va ? list->validators : list->storage;
+            if (va) list->validator_count=v.count; else list->storage_count=v.count;
+            for (size_t j=0;j<v.count;++j) {
+                cbor_item_t item=cbor_decode_next(&d);
+                if (item.type!=CBOR_ITEM_BSTR || item.bstr.len!=NODUS_KEY_BYTES) return -1;
+                memcpy(entries[j].bytes,item.bstr.ptr,NODUS_KEY_BYTES);
+            }
+        } else return -1;
+        if (seen & bit) return -1;
+        seen |= bit;
+    }
+    if (d.error || d.pos!=len || seen!=31 ||
+        (!*ok && (list->validator_count || list->storage_count))) return -1;
+    return 0;
+}
+
+static bool chain_status(nodus_inter_session_module_t *s) {
+    if (!s->cfg.status) return true;
+    uint8_t ci[32]; uint64_t height;
+    if (!s->cfg.status(s->cfg.admission_ctx, ci, &height)) return false;
+    memcpy(s->chain_id, ci, sizeof(s->chain_id));
+    return true;
+}
+
+bool nodus_inter_session_chain_ready(nodus_inter_session_module_t *s) {
+    return s && chain_status(s);
+}
+
+static void admit(nodus_inter_session_module_t *s, nodus_tcp_conn_t *conn) {
+    nodus_inter_session_conn_t *c = conn->session;
+    if (!s->cfg.role || !c->reported) return;
+    bool va = false, st = false;
+    int rc = s->cfg.role(s->cfg.admission_ctx, &conn->peer_id, &va, &st);
+    if (rc != 1 || (!va && !st)) {
+        nodus_tcp_disconnect(s->tcp, conn); return;
+    }
+    if (!c->open && nodus_inter_session_open(conn) == 0)
+        QGP_LOG_INFO(LOG_TAG, "4002 authenticated, admitted session slot=%d peer=%s:%u",
+                     conn->slot, conn->ip, (unsigned)conn->port);
+}
 
 static uint64_t now_ms(const nodus_inter_session_module_t *s) {
     return s->cfg.now_ms ? s->cfg.now_ms(s->cfg.now_ctx) : nodus_time_mono_ms();
@@ -150,13 +244,14 @@ static void *worker(void *ctx) {
 nodus_inter_session_module_t *nodus_inter_session_new(nodus_tcp_t *tcp,
                                 const nodus_inter_session_config_t *cfg) {
     if (!tcp || !cfg || !cfg->identity || !cfg->identity->has_mlkem ||
-        !cfg->chain_id || !cfg->inbound_depth || !cfg->outbound_depth ||
+        (!cfg->chain_id && !cfg->status) || !cfg->inbound_depth || !cfg->outbound_depth ||
+        (cfg->inbound_cap && cfg->inbound_depth < cfg->inbound_cap) ||
         tcp->session_mode || tcp->count || tcp->listen_fd >= 0 ||
         tcp->ws_listen_fd >= 0 || tcp->unix_listen_fd >= 0) return NULL;
     nodus_inter_session_module_t *s = calloc(1, sizeof(*s));
     if (!s) return NULL;
     s->tcp = tcp; s->cfg = *cfg; s->wake_fd = -1;
-    memcpy(s->chain_id, cfg->chain_id, sizeof(s->chain_id));
+    if (cfg->chain_id) memcpy(s->chain_id, cfg->chain_id, sizeof(s->chain_id));
     s->cfg.chain_id = s->chain_id;
     s->host.ctx = (void *)cfg->identity;
     s->host.sign = sign_auth; s->host.verify = verify_auth;
@@ -217,6 +312,18 @@ int nodus_inter_session_start(nodus_tcp_conn_t *conn) {
     nodus_inter_session_module_t *s = conn->tcp_parent->session_mode;
     if (!s || conn->is_ws || conn->is_unix || conn->session) return -1;
     if (conn->auth_initiated_by_us && !conn->expected_peer_id_set) return -1;
+    if (!chain_status(s)) return -1;
+    if (!conn->auth_initiated_by_us && s->cfg.inbound_cap) {
+        unsigned pending = 0;
+        for (int i = 0; i < NODUS_TCP_MAX_CONNS; ++i) {
+            nodus_tcp_conn_t *other = s->tcp->pool[i];
+            if (!other || other == conn || other->close_pending ||
+                other->auth_initiated_by_us || nodus_inter_session_is_open(other)) continue;
+            pending++;
+            if (!s->cfg.allow_duplicate_ip && strcmp(other->ip, conn->ip) == 0) return -1;
+        }
+        if (pending >= s->cfg.inbound_cap) return -1;
+    }
     nodus_inter_session_conn_t *c = calloc(1, sizeof(*c));
     if (!c) return -1;
     conn->session = c;
@@ -330,6 +437,7 @@ int nodus_inter_session_job_done(nodus_inter_session_module_t *s, nodus_inter_se
 
 void nodus_inter_session_poll(nodus_inter_session_module_t *s) {
     if (!s) return;
+    bool known = chain_status(s);
 #ifdef __linux__
     uint64_t value;
     while (read(s->wake_fd, &value, sizeof(value)) < 0 && errno == EINTR) {}
@@ -344,6 +452,8 @@ void nodus_inter_session_poll(nodus_inter_session_module_t *s) {
     }
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; ++i) {
         nodus_tcp_conn_t *conn = s->tcp->pool[i];
+        if (conn && conn->session && known && s->cfg.role) admit(s, conn);
+        conn = s->tcp->pool[i];
         if (conn && conn->session &&
             (conn->session->sc.state == CMT_P2P_SC_ST_DEAD || expired(s, conn->session))) {
             cmt_p2p_sc_abort(&conn->session->sc);
@@ -384,6 +494,7 @@ int nodus_inter_session_open(nodus_tcp_conn_t *conn) {
     }
     if (c->open) return 0;
     c->open = true;
+    conn->auth_state = NODUS_CONN_AUTH_OK;
     if (nodus_tcp_pending_flush(conn) != 0) {
         cmt_p2p_sc_abort(&c->sc); nodus_tcp_disconnect(s->tcp, conn); return -1;
     }
@@ -433,6 +544,8 @@ int nodus_inter_session_read(nodus_tcp_conn_t *conn, uint8_t *plain, size_t cap,
             conn->peer_id_set = true; conn->authenticated = true;
             c->reported = true;
             if (s->cfg.on_authenticated) s->cfg.on_authenticated(conn, &conn->peer_pk, s->cfg.auth_ctx);
+            if (conn->close_pending) return CMT_REJECT;
+            if (s->cfg.role) admit(s, conn);
             if (conn->close_pending) return CMT_REJECT;
         }
         if (!c->open) return CMT_OK;

@@ -224,12 +224,23 @@ static int core_members(void *ctx, nodus_dht_ipc_member_t *out, int max) {
     return n;
 }
 
+/* Admission fixture only: chain present in core, all fixture peers hold
+ * a validator role. Existing cases keep their storage/queue assertions. */
+static bool core_status(void *ctx, uint8_t ci[32], uint64_t *height, bool *here) {
+    (void)ctx; memset(ci,0x42,32); *height=1; *here=true; return true;
+}
+static int core_roles(void *ctx, nodus_inter_role_list_t *out) {
+    (void)ctx; memset(out,0,sizeof(*out)); out->height=1;
+    out->validator_count=1; out->validators[0]=g_id.node_id; return 1;
+}
 static void core_cb(nodus_dht_ipc_core_t *c) {
     memset(c, 0, sizeof(*c));
     c->send_to_origin = core_send_to_origin;
     c->udp_send       = core_udp_send;
     c->close_origin   = core_close_origin;
     c->members        = core_members;
+    c->status         = core_status;
+    c->roles          = core_roles;
 }
 
 /* ── Helpers ──────────────────────────────────────────────────────── */
@@ -280,7 +291,7 @@ static nodus_value_t *mk_value(const nodus_key_t *key, size_t data_len,
 }
 
 static int open_storage(void) {
-    S = nodus_dht_ipc_new(&g_id, false);
+    S = nodus_dht_ipc_new(&g_id, true);
     D = calloc(1, sizeof(*D));
     if (!S || !D) return -1;
     nodus_dht_host_t host;
@@ -303,7 +314,24 @@ static int      raw_ntxn = 0;
 
 static void raw_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                          size_t len, void *ctx) {
-    (void)conn; (void)ctx;
+    (void)ctx;
+    nodus_dht_ipc_msg_t control;
+    if (nodus_dht_ipc_decode(payload,len,&control,NULL,0)==0 &&
+        !control.answer && (control.type==NODUS_DHT_IPC_MSG_STATUS ||
+                            control.type==NODUS_DHT_IPC_MSG_ROLES)) {
+        uint8_t buf[256]; size_t n;
+        nodus_dht_ipc_msg_t a={0};
+        if (control.type==NODUS_DHT_IPC_MSG_STATUS) {
+            a.chain_open=core_status(NULL,a.chain_id,&a.height,&a.chain_here);
+            n=nodus_dht_ipc_encode_status(&a,buf,sizeof(buf));
+        } else {
+            nodus_inter_role_list_t list;
+            bool ok=core_roles(NULL,&list)>0;
+            n=nodus_dht_ipc_encode_roles(&list,ok,buf,sizeof(buf));
+        }
+        if(n) nodus_tcp_send(conn,buf,n);
+        return;
+    }
     raw_frames++;
     nodus_tier2_msg_t m;
     memset(&m, 0, sizeof(m));
@@ -1244,7 +1272,7 @@ static void case_repush(void) {
     /* (b) The storage runtime restarts (no membership yet); core's
      * membership did not change, and still arrives in full. */
     nodus_dht_ipc_free(S);
-    S = nodus_dht_ipc_new(&g_id, false);
+    S = nodus_dht_ipc_new(&g_id, true);
     if (!S) { FAIL("restart"); return; }
     nodus_dht_ipc_host(S, &D->host);
     nodus_dht_ipc_attach(S, D);
@@ -1379,6 +1407,103 @@ static void case_marker_rule(void) {
     PASS();
 }
 
+/* Revision 5 whole-list holder, with explicitly delivered status frames.
+ * Flags/environment: normal target, also ASan/UBSan; none. Own ephemeral
+ * Unix socket/directory and workers are removed. Exact query counts plus
+ * installed-array lookups prevent a disconnected fixture from passing.
+ * No sleeps, epoch constants overridden only by the normal build flags. */
+typedef struct {
+    nodus_tcp_t core;
+    nodus_dht_ipc_t *storage;
+    nodus_tcp_conn_t *ctl;
+    nodus_inter_role_list_t list;
+    unsigned queries;
+    bool reply, ok;
+} role_epoch_t;
+static void role_epoch_frame(nodus_tcp_conn_t *c,const uint8_t *p,size_t n,void *ctx) {
+    role_epoch_t *f=ctx; nodus_dht_ipc_msg_t msg;
+    if (nodus_dht_ipc_decode(p,n,&msg,NULL,0)!=0 || msg.answer ||
+        msg.type!=NODUS_DHT_IPC_MSG_ROLES) return;
+    f->queries++;
+    if (f->reply) {
+        uint8_t buf[512]; n=nodus_dht_ipc_encode_roles(&f->list,f->ok,buf,sizeof(buf));
+        if (n) nodus_tcp_send(c,buf,n);
+    }
+}
+static void role_epoch_pump(role_epoch_t *f) {
+    for (unsigned i=0;i<20;++i) {
+        nodus_tcp_poll(&f->core,0); nodus_dht_ipc_poll(f->storage,0);
+        nodus_dht_ipc_tick(f->storage);
+    }
+}
+static bool role_epoch_status(role_epoch_t *f,uint64_t h,bool co) {
+    nodus_dht_ipc_msg_t a={.height=h,.chain_open=co,.chain_here=true};
+    memset(a.chain_id,0x42,sizeof(a.chain_id)); uint8_t buf[256];
+    size_t n=nodus_dht_ipc_encode_status(&a,buf,sizeof(buf));
+    if (!n || nodus_tcp_send(f->ctl,buf,n)!=0) return false;
+    role_epoch_pump(f); return true;
+}
+static void case_role_epochs(void) {
+    TEST("role lists: first, boundary, failure, no peer queries, reconnect");
+    role_epoch_t f={0}; const char *why=NULL;
+    char dir[]="/tmp/nodus_dipc_roles_XXXXXX",path[160];
+    bool core_up=false; bool dir_up=false;
+    nodus_dht_host_t host; bool va=false,st=false; uint8_t ci[32]; uint64_t h;
+#define ROLE_REQUIRE(x) do { if (!(x)) { why=#x; goto out; } } while (0)
+    ROLE_REQUIRE(mkdtemp(dir)); dir_up=true;
+    f.storage=nodus_dht_ipc_new(&g_id,true); ROLE_REQUIRE(f.storage);
+    nodus_dht_ipc_host(f.storage,&host);
+    ROLE_REQUIRE(!nodus_dht_ipc_sock_path(dir,path,sizeof(path)));
+    ROLE_REQUIRE(!nodus_dht_ipc_listen(f.storage,path));
+    ROLE_REQUIRE(!nodus_tcp_init(&f.core,-1)); core_up=true;
+    f.core.on_frame=role_epoch_frame; f.core.cb_ctx=&f;
+    f.ctl=nodus_tcp_unix_connect(&f.core,path,NODUS_TCP_UNIX_UID_SELF); ROLE_REQUIRE(f.ctl);
+    uint8_t buf[64],boot[8]={0x52};
+    size_t n=nodus_dht_ipc_encode_ctl(boot,buf,sizeof(buf));
+    ROLE_REQUIRE(n && !nodus_tcp_send(f.ctl,buf,n)); role_epoch_pump(&f);
+    ROLE_REQUIRE(!host.inter_status(host.ctx,ci,&h) && f.queries==0);
+    ROLE_REQUIRE(host.inter_role(host.ctx,&g_id.node_id,&va,&st)==-1);
+    ROLE_REQUIRE(role_epoch_status(&f,1,false) && f.queries==0);
+    ROLE_REQUIRE(role_epoch_status(&f,1,true) && f.queries==1);
+    ROLE_REQUIRE(role_epoch_status(&f,2,true) && f.queries==2);
+    f.reply=true; f.ok=false;
+    ROLE_REQUIRE(role_epoch_status(&f,3,true) && f.queries==3);
+    ROLE_REQUIRE(host.inter_role(host.ctx,&g_id.node_id,&va,&st)==-1);
+    f.ok=true; f.list.height=4; f.list.validator_count=1; f.list.validators[0]=g_id.node_id;
+    ROLE_REQUIRE(role_epoch_status(&f,4,true) && f.queries==4);
+    ROLE_REQUIRE(host.inter_role(host.ctx,&g_id.node_id,&va,&st)==1 && va && !st);
+    ROLE_REQUIRE(role_epoch_status(&f,DNAC_EPOCH_LENGTH-1,true) && f.queries==4);
+    f.ok=false;
+    ROLE_REQUIRE(role_epoch_status(&f,DNAC_EPOCH_LENGTH+3,true) && f.queries==5);
+    ROLE_REQUIRE(host.inter_role(host.ctx,&g_id.node_id,&va,&st)==1 && va && !st);
+    f.reply=false;
+    ROLE_REQUIRE(role_epoch_status(&f,DNAC_EPOCH_LENGTH+4,true) && f.queries==6);
+    f.reply=true; f.ok=true; f.list.height=DNAC_EPOCH_LENGTH+5;
+    f.list.validator_count=0; f.list.storage_count=1; f.list.storage[0]=g_id.node_id;
+    ROLE_REQUIRE(role_epoch_status(&f,f.list.height,true) && f.queries==7);
+    ROLE_REQUIRE(host.inter_role(host.ctx,&g_id.node_id,&va,&st)==1 && !va && st);
+    ROLE_REQUIRE(role_epoch_status(&f,f.list.height+1,true) && f.queries==7);
+    for (unsigned i=0;i<NODUS_TCP_MAX_CONNS+2u;++i) {
+        nodus_key_t absent={{0}}; memcpy(absent.bytes,&i,sizeof(i));
+        ROLE_REQUIRE(host.inter_role(host.ctx,&absent,&va,&st)==1 && !va && !st);
+    }
+    ROLE_REQUIRE(f.queries==7);
+    nodus_tcp_disconnect(&f.core,f.ctl); role_epoch_pump(&f);
+    f.ctl=nodus_tcp_unix_connect(&f.core,path,NODUS_TCP_UNIX_UID_SELF); ROLE_REQUIRE(f.ctl);
+    n=nodus_dht_ipc_encode_ctl(boot,buf,sizeof(buf));
+    ROLE_REQUIRE(n && !nodus_tcp_send(f.ctl,buf,n)); role_epoch_pump(&f);
+    ROLE_REQUIRE(role_epoch_status(&f,f.list.height+2,true) && f.queries==7);
+    ROLE_REQUIRE(host.inter_role(host.ctx,&g_id.node_id,&va,&st)==1 && !va && st);
+    f.list.height=3*DNAC_EPOCH_LENGTH+7;
+    ROLE_REQUIRE(role_epoch_status(&f,f.list.height,true) && f.queries==8);
+out:
+    if (core_up) nodus_tcp_close(&f.core);
+    nodus_dht_ipc_free(f.storage);
+    if (dir_up && rmdir(dir)!=0 && !why) why="temporary directory cleanup";
+    if (why) { FAIL(why); } else { PASS(); }
+#undef ROLE_REQUIRE
+}
+
 int main(void) {
     printf("test_dht_ipc (split S5b)\n");
     snprintf(g_dir, sizeof(g_dir), "/tmp/nodus_dipc_XXXXXX");
@@ -1422,6 +1547,7 @@ int main(void) {
     case_caps();
     case_storage_gate();
     case_marker_rule();
+    case_role_epochs();
 
     B->ops->close(B);
     nodus_dht_stop(D);

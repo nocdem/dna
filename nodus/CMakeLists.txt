@@ -1709,6 +1709,7 @@ add_test(NAME test_circuit_live COMMAND test_circuit_live)
 add_executable(test_circuit_cross_live tests/test_circuit_cross_live.c)
 target_link_libraries(test_circuit_cross_live nodus dsa nodus pthread)
 add_test(NAME test_circuit_cross_live COMMAND test_circuit_cross_live)
+set_tests_properties(test_circuit_cross_live PROPERTIES RUN_SERIAL TRUE)
 
 # Circuit latency probe — PQ-VoIP Faz 0 netem characterization (manual, NOT a
 # ctest: run inside a netns with netem via tests/run_circuit_netem.sh).
@@ -1822,6 +1823,28 @@ add_test(NAME test_tcp_deferred_close COMMAND test_tcp_deferred_close)
 add_executable(test_inter_session tests/test_inter_session.c)
 target_link_libraries(test_inter_session nodus dsa kem nodus crypto)
 add_test(NAME test_inter_session COMMAND test_inter_session)
+
+add_executable(test_inter_admission tests/test_inter_role_split.c)
+target_compile_definitions(test_inter_admission PRIVATE NODUS_TEST_ADMISSION=1)
+target_link_libraries(test_inter_admission nodus dsa kem nodus crypto)
+add_test(NAME test_inter_admission COMMAND test_inter_admission)
+
+add_executable(test_inter_layout tests/test_circuit_cross_live.c)
+target_compile_definitions(test_inter_layout PRIVATE NODUS_TEST_INTER_LAYOUT=1)
+target_link_libraries(test_inter_layout nodus dsa kem nodus crypto)
+add_test(NAME test_inter_layout COMMAND test_inter_layout)
+set_tests_properties(test_inter_layout PROPERTIES RUN_SERIAL TRUE)
+
+add_executable(test_inter_config tests/test_presence_dial_pin.c tools/nodus_node_config.c)
+target_compile_definitions(test_inter_config PRIVATE NODUS_TEST_INTER_CONFIG=1)
+target_include_directories(test_inter_config PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+target_link_libraries(test_inter_config nodus dsa kem nodus crypto)
+add_test(NAME test_inter_config COMMAND test_inter_config)
+
+add_executable(test_inter_witness_role tests/test_inter_preauth_gate.c)
+target_compile_definitions(test_inter_witness_role PRIVATE NODUS_TEST_WITNESS_ROLE=1)
+target_link_libraries(test_inter_witness_role nodus dsa kem nodus crypto)
+add_test(NAME test_inter_witness_role COMMAND test_inter_witness_role)
 
 # Read budget: one nodus_tcp_poll call reads at most
 # NODUS_TCP_READ_BUDGET_FRAMES frames of one connection, the rest is still

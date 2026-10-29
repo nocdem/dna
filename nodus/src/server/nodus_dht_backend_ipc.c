@@ -69,6 +69,7 @@
 
 #include "server/nodus_dht_backend.h"
 #include "dht/nodus_dht_ipc.h"
+#include "witness/nodus_witness_ipc.h"     /* role-list answer bound */
 #include "transport/nodus_tcp.h"
 #include "protocol/nodus_tier2.h"
 #include "crypto/nodus_sign.h"            /* nodus_random */
@@ -488,6 +489,25 @@ static void ob_on_ctl_frame(ipc_be_t *ib, const uint8_t *payload, size_t len) {
                              NODUS_DHT_IPC_ROUTING_MAX) != 0) {
         QGP_LOG_WARN(LOG_TAG, "malformed control frame from nodus-storage "
                      "(len=%zu) — dropped", len);
+    } else if (msg->type == NODUS_DHT_IPC_MSG_STATUS && !msg->answer) {
+        nodus_dht_ipc_msg_t a = {0}; uint8_t buf[256];
+        if (ib->core.status)
+            a.chain_open = ib->core.status(ib->core.ctx,a.chain_id,&a.height,&a.chain_here);
+        size_t n = nodus_dht_ipc_encode_status(&a,buf,sizeof(buf));
+        if (n && ib->ctl && (ib->ctl->wlen-ib->ctl->wpos)+ib->ctl->pending_bytes <
+                            NODUS_DHT_IPC_CTL_QUEUE_MAX)
+            nodus_tcp_send(ib->ctl,buf,n);
+    } else if (msg->type == NODUS_DHT_IPC_MSG_ROLES && !msg->answer) {
+        nodus_inter_role_list_t list={0};
+        int rc=ib->core.roles ? ib->core.roles(ib->core.ctx,&list) : -1;
+        bool ok=rc==1 && list.validator_count<=DNAC_MAX_VALIDATORS &&
+                        list.storage_count<=DNA_V2_STORAGE_SET_MAX;
+        if (!ok) QGP_LOG_ERROR(LOG_TAG,"%s","ds_roles chain backend read failed or list exceeds bound");
+        uint8_t buf[NODUS_WITNESS_IPC_ROLES_FRAME_MAX];
+        size_t n=nodus_dht_ipc_encode_roles(&list,ok,buf,sizeof(buf));
+        if (n && ib->ctl && (ib->ctl->wlen-ib->ctl->wpos)+ib->ctl->pending_bytes <
+                            NODUS_DHT_IPC_CTL_QUEUE_MAX)
+            nodus_tcp_send(ib->ctl,buf,n);
     } else if (msg->type == NODUS_DHT_IPC_MSG_UDP_OUT) {
         /* A T1 datagram the DHT sends — from this node's UDP 4000. */
         ib->core.udp_send(ib->core.ctx, msg->payload, msg->payload_len,
@@ -527,6 +547,11 @@ static void ob_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
     /* A reply or push for the session — to it unchanged, only while it is
      * the session of this generation (core's send_to_origin checks). */
     nodus_dht_origin_t origin = { kind, slot, o->gen };
+    nodus_dht_ipc_msg_t control;
+    if (nodus_dht_ipc_decode(payload,len,&control,NULL,0)==0 &&
+        (control.type==NODUS_DHT_IPC_MSG_ROLES || control.type==NODUS_DHT_IPC_MSG_STATUS)) {
+        nodus_tcp_disconnect(&ib->tcp,conn); return;
+    }
     ib->core.send_to_origin(ib->core.ctx, origin, payload, len);
 }
 

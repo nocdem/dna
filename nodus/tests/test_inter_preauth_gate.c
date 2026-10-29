@@ -1,223 +1,155 @@
-/**
- * Nodus — DHT Package A F2 / F3: nothing on 4002 is processed before the
- * peer authenticated AND the session key exists.
- *
- * In-process: a calloc'd server with require_peer_auth and the in-process
- * DHT attached (split S4), one inter session on a fake (never-connected,
- * fd -1, slot 0) conn, frames fed to nodus_server_dispatch_inter_frame
- * (nodus_server.h internal section). The observable is a T1 "sub"
- * (SUBSCRIBE_FWD): when processed it adds an entry to the DHT's
- * subscriptions, and it sends nothing.
- *
- * Pins down:
- *   1. F2: a frame that the T2 decoder REFUSES but the T1 decoder accepts
- *      (bstr "d" in both "a" and "r" — T2 refuses the double data owner,
- *      T1 skips "d") from an UNAUTHENTICATED peer is dropped. Positive
- *      control: the same frame from an authenticated peer (F3 off) is
- *      processed.
- *   2. F3: an AUTHENTICATED peer whose session key is not established yet
- *      (this node has Kyber) gets its "sub" dropped; once established, the
- *      same frame is processed.
- *   3. Rev 2 item 17: the same holds for a T2 method — a ri_close for a
- *      circuit on this conn is dropped before the session key, processed
- *      after.
- *
- * RED on the tree before Package A: the T1 dispatch had no auth check
- * (the T2 gate sat inside the T2-decode branch) and no handler read
- * channel_crypto.established.
- */
-
-#include "server/nodus_server.h"
-#include "protocol/nodus_tier1.h"
-#include "protocol/nodus_tier2.h"
+/* Suite selection flag: -DNODUS_TEST_WITNESS_ROLE=1; ordinary target uses
+ * the other branch. This only selects test fixtures, not protocol constants. */
+#if defined(NODUS_TEST_WITNESS_ROLE)
+/* Build plan 4.3: actual witness.sock whole-list requests for every admitted and
+ * excluded status, list height, database fault => ok=false with empty arrays, and
+ * control connections may coexist. Flags: NODUS_TEST_WITNESS_ROLE=1; also ASan/UBSan.
+ * Environment: wrong-uid arm requires root and reports a skip otherwise.
+ * No network ports; temporary Unix socket/directory and in-memory database
+ * removed. Positive role and two-control checks prevent a dead listener
+ * from passing. The wrong-uid arm temporarily relaxes file mode so it
+ * specifically reaches SO_PEERCRED rather than failing at filesystem mode. */
+#include "witness/nodus_witness_ipc.h"
+#include "witness/nodus_witness.h"
+#include "crypto/nodus_identity.h"
 #include "protocol/nodus_cbor.h"
+#include "transport/nodus_tcp.h"
+#include <sqlite3.h>
+#include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <errno.h>
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
-
-#define TEST(name) do { printf("  %-60s", name); } while(0)
-#define PASS()     do { printf("PASS\n"); passed++; } while(0)
-#define FAIL(msg)  do { printf("FAIL: %s\n", msg); failed++; } while(0)
-#define CHECK(c, m) do { if (!(c)) { FAIL(m); goto out; } } while(0)
-
-static int passed = 0;
-static int failed = 0;
-
-static nodus_tcp_conn_t conn;
-static uint8_t frame[4096];
-
-static nodus_server_t *new_server(bool has_kyber) {
-    nodus_server_t *srv = calloc(1, sizeof(*srv));
-    if (!srv) return NULL;
-    nodus_dht_host_t host;
-    nodus_server_dht_host(srv, &host);
-    if (nodus_dht_backend_inproc_new(&host, &srv->dht) != 0) {
-        free(srv);
-        return NULL;
+#include <string.h>
+#define CHECK(x) do { if(!(x)) { fprintf(stderr,"%s:%d: %s\n",__FILE__,__LINE__,#x); exit(1); } } while(0)
+static nodus_identity_t id;
+static bool answer_ok, answer_va, answer_st;
+static nodus_inter_role_list_t answer_list;
+static unsigned replies;
+static void frame(nodus_tcp_conn_t *c,const uint8_t *p,size_t n,void *ctx) {
+    (void)c; (void)ctx;
+    CHECK(!nodus_inter_roles_decode(NODUS_WITNESS_IPC_Q_ROLES,p,n,&answer_list,&answer_ok));
+    CHECK(!answer_ok || answer_list.height==17);
+    answer_va=answer_st=false;
+    nodus_inter_roles_lookup(&answer_list,&id.node_id,&answer_va,&answer_st);
+    if (!answer_ok) CHECK(!answer_list.validator_count && !answer_list.storage_count);
+    for (size_t i=1;i<answer_list.validator_count;++i)
+        CHECK(nodus_key_cmp(&answer_list.validators[i-1],&answer_list.validators[i])<=0);
+    for (size_t i=1;i<answer_list.storage_count;++i)
+        CHECK(nodus_key_cmp(&answer_list.storage[i-1],&answer_list.storage[i])<=0);
+    replies++;
+}
+static void query(nodus_witness_ipc_t *ipc,nodus_tcp_t *tcp,nodus_tcp_conn_t *c,
+                    bool ok,bool va,bool st) {
+    uint8_t buf[256]; cbor_encoder_t e; cbor_encoder_init(&e,buf,sizeof(buf));
+    cbor_encode_map(&e,1);
+    cbor_encode_cstr(&e,"q"); cbor_encode_cstr(&e,NODUS_WITNESS_IPC_Q_ROLES);
+    unsigned before=replies;
+    CHECK(!e.error && nodus_tcp_send(c,buf,cbor_encoder_len(&e))==0);
+    for(unsigned i=0;i<1000 && replies==before;++i) {
+        nodus_tcp_poll(tcp,0); nodus_witness_ipc_poll(ipc,1);
     }
-    srv->config.require_peer_auth = true;
-    srv->identity.has_kyber = has_kyber;
-    nodus_inter_circuit_table_init(&srv->inter_circuits);
-    return srv;
+    CHECK(replies==before+1 && answer_ok==ok && answer_va==va && answer_st==st);
 }
-
-static void free_server(nodus_server_t *srv) {
-    if (!srv) return;
-    srv->dht->ops->close(srv->dht);
-    free(srv);
+static nodus_tcp_conn_t *control(nodus_tcp_t *tcp,const char *path) {
+    nodus_tcp_conn_t *c=nodus_tcp_unix_connect(tcp,path,NODUS_TCP_UNIX_UID_SELF); CHECK(c);
+    uint8_t buf[64]; cbor_encoder_t e; cbor_encoder_init(&e,buf,sizeof(buf));
+    cbor_encode_map(&e,1); cbor_encode_cstr(&e,"q"); cbor_encode_cstr(&e,NODUS_WITNESS_IPC_Q_CTL);
+    CHECK(nodus_tcp_send(c,buf,cbor_encoder_len(&e))==0); return c;
 }
-
-static void reset_conn(void) {
-    memset(&conn, 0, sizeof(conn));
-    conn.fd = -1;
-    conn.slot = 0;              /* the DHT origin of this 4002 session */
-    snprintf(conn.ip, sizeof(conn.ip), "%s", "10.9.9.9");
-    conn.port = 4002;
-}
-
-static int active_subs(nodus_server_t *srv) {
-    const nodus_dht_t *dht = nodus_dht_backend_inproc_state(srv->dht);
-    int n = 0;
-    for (int i = 0; i < dht->subscriptions.count; i++)
-        if (dht->subscriptions.entries[i].active) n++;
-    return n;
-}
-
-/* {t, y:"q", q:"sub", a:{k: key, d: h'01'}, r:{d: h'01'}} */
-static size_t t1_only_sub(const nodus_key_t *key) {
-    const uint8_t one = 0x01;
-    cbor_encoder_t enc;
-    cbor_encoder_init(&enc, frame, sizeof(frame));
-    cbor_encode_map(&enc, 5);
-    cbor_encode_cstr(&enc, "t"); cbor_encode_uint(&enc, 1);
-    cbor_encode_cstr(&enc, "y"); cbor_encode_cstr(&enc, "q");
-    cbor_encode_cstr(&enc, "q"); cbor_encode_cstr(&enc, "sub");
-    cbor_encode_cstr(&enc, "a");
-    cbor_encode_map(&enc, 2);
-    cbor_encode_cstr(&enc, "k"); cbor_encode_bstr(&enc, key->bytes, NODUS_KEY_BYTES);
-    cbor_encode_cstr(&enc, "d"); cbor_encode_bstr(&enc, &one, 1);
-    cbor_encode_cstr(&enc, "r");
-    cbor_encode_map(&enc, 1);
-    cbor_encode_cstr(&enc, "d"); cbor_encode_bstr(&enc, &one, 1);
-    return cbor_encoder_len(&enc);
-}
-
-static void test_f2_unauth_t1_dropped(void) {
-    TEST("F2: unauthenticated T2-refused/T1-valid frame dropped");
-    nodus_server_t *srv = new_server(false);   /* F3 off: isolate F2 */
-    nodus_inter_session_t sess;
-    nodus_key_t key;
-    memset(key.bytes, 0x3C, NODUS_KEY_BYTES);
-    CHECK(srv, "alloc");
-    reset_conn();
-    memset(&sess, 0, sizeof(sess));
-    sess.conn = &conn;
-    sess.authenticated = false;
-
-    size_t len = t1_only_sub(&key);
-    /* Preconditions: this frame shape bypasses the T2 gate */
-    {
-        nodus_tier2_msg_t m2;
-        nodus_tier1_msg_t m1;
-        CHECK(nodus_t2_decode(frame, len, &m2) != 0, "T2 must refuse the frame");
-        CHECK(nodus_t1_decode(frame, len, &m1) == 0 &&
-              strcmp(m1.method, "sub") == 0, "T1 must accept the frame");
-        nodus_t1_msg_free(&m1);
+static void wrong_uid(nodus_witness_ipc_t *ipc,const char *dir,const char *path) {
+    if(geteuid()!=0) { puts("SKIP: witness wrong-uid arm requires root"); return; }
+    CHECK(chmod(dir,0755)==0 && chmod(path,0666)==0);
+    int ready[2],done[2]; CHECK(pipe(ready)==0 && pipe(done)==0);
+    pid_t child=fork(); CHECK(child>=0);
+    if(!child) {
+        close(ready[0]); close(done[1]);
+        if(setgid(65534)!=0 || setuid(65534)!=0) _exit(2);
+        int fd=socket(AF_UNIX,SOCK_STREAM,0); if(fd<0) _exit(3);
+        struct sockaddr_un a={.sun_family=AF_UNIX};
+        snprintf(a.sun_path,sizeof(a.sun_path),"%s",path);
+        if(connect(fd,(struct sockaddr *)&a,sizeof(a))!=0) _exit(4);
+        char b=1; if(write(ready[1],&b,1)!=1 || read(done[0],&b,1)!=1) _exit(5);
+        ssize_t n=recv(fd,&b,1,MSG_DONTWAIT);
+        bool rejected=n==0 || (n<0 && errno==ECONNRESET);
+        close(fd); _exit(rejected ? 0 : 6);
     }
-
-    nodus_server_dispatch_inter_frame(srv, &sess, frame, len);
-    CHECK(active_subs(srv) == 0, "unauthenticated T1 sub was processed");
-
-    /* positive control: authenticated → processed */
-    sess.authenticated = true;
-    nodus_server_dispatch_inter_frame(srv, &sess, frame, len);
-    CHECK(active_subs(srv) == 1, "authenticated T1 sub was not processed");
-    PASS();
-out:
-    free_server(srv);
+    close(ready[1]); close(done[0]); char b;
+    CHECK(read(ready[0],&b,1)==1);
+    for(unsigned i=0;i<20;++i) nodus_witness_ipc_poll(ipc,1);
+    CHECK(write(done[1],&b,1)==1);
+    int code; CHECK(waitpid(child,&code,0)==child && WIFEXITED(code) && WEXITSTATUS(code)==0);
+    close(ready[0]); close(done[1]); CHECK(chmod(path,0600)==0 && chmod(dir,0700)==0);
 }
-
-static void test_f3_before_session_key(void) {
-    TEST("F3: authenticated but no session key yet → dropped");
-    nodus_server_t *srv = new_server(true);
-    nodus_inter_session_t sess;
-    nodus_key_t key;
-    memset(key.bytes, 0x4D, NODUS_KEY_BYTES);
-    size_t len = 0;
-    CHECK(srv, "alloc");
-    reset_conn();
-    memset(&sess, 0, sizeof(sess));
-    sess.conn = &conn;
-    sess.authenticated = true;
-    conn.channel_crypto.established = false;
-
-    CHECK(nodus_t1_subscribe(1, &key, frame, sizeof(frame), &len) == 0, "encode");
-    nodus_server_dispatch_inter_frame(srv, &sess, frame, len);
-    CHECK(active_subs(srv) == 0, "sub processed before the session key existed");
-
-    /* the T2-refused / T1-valid shape is gated the same way */
-    len = t1_only_sub(&key);
-    nodus_server_dispatch_inter_frame(srv, &sess, frame, len);
-    CHECK(active_subs(srv) == 0, "T1-only sub processed before the session key existed");
-
-    /* positive control: established → processed */
-    conn.channel_crypto.established = true;
-    CHECK(nodus_t1_subscribe(2, &key, frame, sizeof(frame), &len) == 0, "encode2");
-    nodus_server_dispatch_inter_frame(srv, &sess, frame, len);
-    CHECK(active_subs(srv) == 1, "sub not processed after the session key existed");
-    PASS();
-out:
-    free_server(srv);
-}
-
-/* Rev 2 item 17: the F3 gate also holds for T2 methods, not only T1 "sub":
- * a ri_close for a circuit routed over this very conn, from an
- * authenticated peer, is dropped until the session key exists. */
-static void test_f3_t2_method_before_session_key(void) {
-    TEST("F3: T2 method (ri_close) before the session key → dropped");
-    nodus_server_t *srv = new_server(true);
-    nodus_inter_session_t sess;
-    uint8_t buf[256];
-    size_t len = 0;
-    CHECK(srv, "alloc");
-    reset_conn();
-    nodus_circuit_table_init(&srv->sessions[0].circuits);
-    nodus_circuit_t *c = nodus_circuit_alloc(&srv->sessions[0].circuits);
-    nodus_inter_circuit_t *ic = nodus_inter_circuit_alloc(&srv->inter_circuits);
-    CHECK(c && ic, "circuit setup");
-    ic->peer_conn = &conn;
-    ic->peer_cid = 501;
-    ic->local_sess = (struct nodus_session *)&srv->sessions[0];
-    ic->local_cid = c->local_cid;
-    c->inter = ic;
-    uint64_t cid = ic->our_cid;
-
-    memset(&sess, 0, sizeof(sess));
-    sess.conn = &conn;
-    sess.authenticated = true;
-    conn.channel_crypto.established = false;
-
-    CHECK(nodus_t2_ri_close(0, cid, buf, sizeof(buf), &len) == 0, "encode");
-    nodus_server_dispatch_inter_frame(srv, &sess, buf, len);
-    CHECK(nodus_inter_circuit_lookup(&srv->inter_circuits, cid) != NULL,
-          "ri_close processed before the session key existed");
-    CHECK(c->in_use && c->inter == ic, "client circuit touched");
-
-    /* positive control: established → processed */
-    conn.channel_crypto.established = true;
-    nodus_server_dispatch_inter_frame(srv, &sess, buf, len);
-    CHECK(nodus_inter_circuit_lookup(&srv->inter_circuits, cid) == NULL,
-          "ri_close not processed after the session key existed");
-    PASS();
-out:
-    free_server(srv);
-}
-
 int main(void) {
-    printf("=== DHT Package A F2/F3: 4002 pre-auth / pre-key gate ===\n");
-    test_f2_unauth_t1_dropped();
-    test_f3_before_session_key();
-    test_f3_t2_method_before_session_key();
-    printf("\n%d passed, %d failed\n", passed, failed);
-    return failed > 0 ? 1 : 0;
+    CHECK(nodus_identity_generate(&id)==0);
+    nodus_witness_t *w=calloc(1,sizeof(*w)); CHECK(w && sqlite3_open(":memory:",&w->db)==SQLITE_OK);
+    CHECK(sqlite3_exec(w->db,"CREATE TABLE validators(pubkey BLOB,status INTEGER);"
+        "CREATE TABLE v2_storage_nodes(node_fp BLOB,status INTEGER);"
+        "CREATE TABLE blocks(height INTEGER); INSERT INTO blocks VALUES(17)",NULL,NULL,NULL)==SQLITE_OK);
+    nodus_witness_ipc_handlers_t h; nodus_witness_ipc_handlers_for(w,&h);
+    nodus_witness_ipc_t *ipc=nodus_witness_ipc_new(&h); CHECK(ipc);
+    char dir[]="/tmp/nodus_role_wire_XXXXXX",path[160]; CHECK(mkdtemp(dir));
+    CHECK(nodus_witness_ipc_sock_path(dir,path,sizeof(path))==0);
+    CHECK(nodus_witness_ipc_listen(ipc,path)==0);
+    nodus_tcp_t tcp; CHECK(nodus_tcp_init(&tcp,-1)==0); tcp.on_frame=frame;
+    nodus_tcp_conn_t *c=control(&tcp,path), *second=control(&tcp,path);
+    query(ipc,&tcp,c,true,false,false); query(ipc,&tcp,second,true,false,false);
+    for(int kind=0;kind<2;++kind) for(int status=0;status<5;++status) {
+        sqlite3_stmt *s=NULL;
+        CHECK(sqlite3_prepare_v2(w->db,kind ? "INSERT INTO v2_storage_nodes VALUES(?,?)" :
+            "INSERT INTO validators VALUES(?,?)",-1,&s,NULL)==SQLITE_OK);
+        CHECK(sqlite3_bind_blob(s,1,kind ? id.node_id.bytes : id.pk.bytes,
+                                 kind ? 64 : NODUS_PK_BYTES,SQLITE_STATIC)==SQLITE_OK);
+        CHECK(sqlite3_bind_int(s,2,status)==SQLITE_OK);
+        CHECK(sqlite3_step(s)==SQLITE_DONE && sqlite3_finalize(s)==SQLITE_OK);
+        query(ipc,&tcp,c,true,!kind && (status==0 || status==1 || status==4),
+                               kind && (status==1 || status==2));
+        CHECK(sqlite3_exec(w->db,"DELETE FROM validators; DELETE FROM v2_storage_nodes",NULL,NULL,NULL)==SQLITE_OK);
+    }
+    for (unsigned i=0;i<DNAC_MAX_VALIDATORS;++i) {
+        nodus_pubkey_t pk=id.pk; pk.bytes[0]^=(uint8_t)i;
+        sqlite3_stmt *s=NULL;
+        CHECK(sqlite3_prepare_v2(w->db,"INSERT INTO validators VALUES(?,0)",-1,&s,NULL)==SQLITE_OK);
+        CHECK(sqlite3_bind_blob(s,1,pk.bytes,NODUS_PK_BYTES,SQLITE_TRANSIENT)==SQLITE_OK);
+        CHECK(sqlite3_step(s)==SQLITE_DONE && sqlite3_finalize(s)==SQLITE_OK);
+    }
+    for (unsigned i=0;i<DNA_V2_STORAGE_SET_MAX;++i) {
+        nodus_key_t fp=id.node_id; fp.bytes[0]^=(uint8_t)i;
+        sqlite3_stmt *s=NULL;
+        CHECK(sqlite3_prepare_v2(w->db,"INSERT INTO v2_storage_nodes VALUES(?,1)",-1,&s,NULL)==SQLITE_OK);
+        CHECK(sqlite3_bind_blob(s,1,fp.bytes,NODUS_KEY_BYTES,SQLITE_TRANSIENT)==SQLITE_OK);
+        CHECK(sqlite3_step(s)==SQLITE_DONE && sqlite3_finalize(s)==SQLITE_OK);
+    }
+    query(ipc,&tcp,c,true,true,true);
+    CHECK(answer_list.validator_count==DNAC_MAX_VALIDATORS && answer_list.storage_count==DNA_V2_STORAGE_SET_MAX);
+    CHECK(sqlite3_exec(w->db,"INSERT INTO validators SELECT * FROM validators LIMIT 1",NULL,NULL,NULL)==SQLITE_OK);
+    query(ipc,&tcp,c,false,false,false);
+    CHECK(sqlite3_exec(w->db,"DELETE FROM validators; INSERT INTO v2_storage_nodes SELECT * FROM v2_storage_nodes LIMIT 1",NULL,NULL,NULL)==SQLITE_OK);
+    query(ipc,&tcp,c,false,false,false);
+    CHECK(sqlite3_exec(w->db,"DROP TABLE validators",NULL,NULL,NULL)==SQLITE_OK);
+    query(ipc,&tcp,c,false,false,false);
+    wrong_uid(ipc,dir,path);
+    nodus_tcp_close(&tcp); nodus_witness_ipc_free(ipc);
+    CHECK(rmdir(dir)==0); sqlite3_close(w->db); free(w); nodus_identity_clear(&id); return 0;
 }
+#else
+/* Build plan 4.3: No frame dispatched before open, including AUTHSIG trailing bytes; old hello closes; handshake deadline stays three seconds.
+ * Reuse the real-machine fixture and raw-peer checks of test_inter_session.
+ * Flags: none; also ASan/UBSan. Environment: none. Leaves nothing.
+ * Positive controls require delivered frames; no worker progress cannot pass.
+ */
+#define main inter_session_fixture_all_cases
+#include "test_inter_session.c"
+#undef main
+int main(void) {
+    (void)inter_session_fixture_all_cases;
+    CHECK(nodus_identity_generate(&ids[0])==0 && nodus_identity_generate(&ids[1])==0);
+    happy_path(); trailing_authsig(); deadlines(); old_or_flood(false);
+    nodus_identity_clear(&ids[0]); nodus_identity_clear(&ids[1]);
+    return 0;
+}
+#endif

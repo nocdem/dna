@@ -25,12 +25,17 @@
  *                  find_session_conn no longer returns it (the delayed
  *                  dnac_cc_collect reply is dropped, as in the combined
  *                  binary).
- *   control (one per core):
+ *   control (one per core plus one per storage process in the three-process
+ *   layout; the listener classifies each slot, with no separate count cap):
  *     first frame  {"q":"ipc_ctl"}
  *     then         {"q":"ipc_status"} queries, each answered with
  *                  {"q":"ipc_status","co":bool chain open,"h":uint height,
  *                   "sr":bstr 64 state root,"ci":bstr 32 chain id,
  *                   "po":bool p2p host exists,"lp":uint 4004 port}.
+ *                  {"q":"ipc_roles"}; answer has q, ok (bool), h (uint),
+ *                  va/st arrays of 64-byte fingerprints, sorted ascending.
+ *                  At most 128 validators and 256 storage nodes; a fault
+ *                  answers ok=false with both arrays empty.
  *
  * Anything else as a first frame — or a frame a connection's kind does not
  * serve — closes that connection. So does any frame that arrives while
@@ -53,6 +58,7 @@
 
 #include "nodus/nodus_types.h"
 #include "protocol/nodus_tier2.h"           /* nodus_t2_status_info_t */
+#include "server/nodus_inter_session.h"     /* bounded role list */
 
 #ifdef __cplusplus
 extern "C" {
@@ -68,6 +74,7 @@ struct nodus_witness;
 #define NODUS_WITNESS_IPC_Q_HELLO     "ipc_hello"
 #define NODUS_WITNESS_IPC_Q_CTL       "ipc_ctl"
 #define NODUS_WITNESS_IPC_Q_STATUS    "ipc_status"
+#define NODUS_WITNESS_IPC_Q_ROLES     "ipc_roles"
 
 /**
  * The ONE routing rule for client tier-2 methods the chain serves: the
@@ -86,8 +93,13 @@ static inline bool nodus_chain_method_routed(const char *method) {
             method[3] == '_');
 }
 
-/** Largest control frame either side builds (status answer ≈ 150 B). */
+/** Status and small control frames (status answer ≈ 150 B). */
 #define NODUS_WITNESS_IPC_CTL_FRAME_MAX  512
+/* Encoder maximum: map header 1 + keys 13 + "ipc_roles" 10 + bool 1
+ * + uint64 height 9 + array headers 2/3 = 39, plus 66 per fingerprint
+ * (two-byte CBOR bstr header + 64 bytes). ds_roles is one byte shorter. */
+#define NODUS_WITNESS_IPC_ROLES_FRAME_MAX \
+    (39u + (DNAC_MAX_VALIDATORS + DNA_V2_STORAGE_SET_MAX) * (2u + NODUS_KEY_BYTES))
 
 /*
  * Per-connection queue bounds. "Queued" = the bytes one IPC connection
@@ -170,6 +182,7 @@ typedef struct {
                        const uint8_t *payload, size_t len,
                        uint32_t txn_id);
     void (*status)(void *ctx, nodus_witness_ipc_status_t *out);
+    int (*roles)(void *ctx, nodus_inter_role_list_t *out);
     void  *ctx;
 } nodus_witness_ipc_handlers_t;
 
@@ -186,6 +199,10 @@ void nodus_witness_status_fill(struct nodus_witness *w,
 
 /** Handlers that serve witness `w` (it need not be initialised yet;
  *  it must be by the first nodus_witness_ipc_poll). */
+/* 1 = complete list (including empty), -1 = database fault or overflow.
+ * Validator hashes are computed from pubkey, never pubkey_hash. */
+int nodus_witness_roles_build(struct nodus_witness *w, nodus_inter_role_list_t *out);
+
 void nodus_witness_ipc_handlers_for(struct nodus_witness *w,
                                     nodus_witness_ipc_handlers_t *out);
 
