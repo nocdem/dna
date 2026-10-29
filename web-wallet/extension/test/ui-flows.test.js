@@ -14,6 +14,19 @@ import { bindActivity } from '../src/ui/activity.js';
 // Node >=22.14, no flags, network or disk writes; all browser/port fixtures are in memory and disposed after each test.
 const phrase = 'abandon '.repeat(23) + 'art';
 const password = 'public-test-password-123';
+
+// Package A: skip is explicit and limited to generated words at backup.
+// No flags/network/artifacts. Import-only coverage would miss the skip guard.
+test('skip verification saves only the generated backup after explicit confirmation', async () => {
+  const client = fakeClient(), ui = createWalletUi(client, { generatePhrase: () => phrase });
+  await assert.rejects(ui.skipVerification(password, password), /backup/);
+  ui.beginImport();
+  await assert.rejects(ui.skipVerification(password, password), /backup/);
+  ui.beginCreate();
+  await ui.skipVerification(password, password);
+  assert.equal(new TextDecoder().decode(Uint8Array.from(client.calls[0].params[1])), phrase);
+  assert.equal(ui.state.isUnlocked, true);
+});
 const account = '0xf278cf59f82edcf871d630f28ecc8056f25c1cdb';
 function event() {
   const listeners = new Set();

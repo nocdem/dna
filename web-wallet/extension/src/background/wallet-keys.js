@@ -1,6 +1,8 @@
 import { deriveWallet, disposeWallet } from '../../../src/keys.js';
 import { nodusSigningSeed } from '../../../src/nodus/derive.js';
 import { deriveCpunkAddress } from '../../../src/cpunk/derive.js';
+import { deriveIxiosAddress } from '../../../src/ixios/derive.js';
+import { ixiosChecksumAddress } from '../../../src/ixios/address.js';
 
 export function createWalletKeys({ lockCoordinator, consumeNodusSeed }) {
   if (typeof consumeNodusSeed !== 'function') throw new Error('A Nodus seed consumer is required.');
@@ -27,7 +29,7 @@ export function createWalletKeys({ lockCoordinator, consumeNodusSeed }) {
     if (!session || session !== current || generation !== started) throw new Error('Wallet is locked.');
   }
 
-  async function unlock(phrase, { cpunkWasmBytes, nodusWasmBytes, id, assertReady } = {}) {
+  async function unlock(phrase, { cpunkWasmBytes, nodusWasmBytes, ixiosWasmBytes, id, assertReady } = {}) {
     if (deriving || current) throw new Error('Lock the wallet before unlocking again.');
     // Approved plan §3.5:375-387, Q-28 "a": use the web wallet's keys,
     // not a second implementation of the snap derivation boundary.
@@ -36,7 +38,8 @@ export function createWalletKeys({ lockCoordinator, consumeNodusSeed }) {
     current = session; deriving = true;
     // Operator package 5: retain deriveWallet's ethers signer in this holder.
     // disposeWallet (src/keys.js:44-49) drops it on the shared lock.
-    session.wallet.recoveryPhrase = null;
+    // Operator 2026-10-29, Package B2: this is the ONE words holder until
+    // disposeWallet drops it on the shared lock. Each connection seed is wiped.
     try {
       const seed = nodusSigningSeed(phrase);
       session.seed = seed;
@@ -53,6 +56,10 @@ export function createWalletKeys({ lockCoordinator, consumeNodusSeed }) {
       const cpunk = await deriveCpunkAddress(phrase, { wasmBytes: cpunkWasmBytes, signal: session.abort.signal });
       assertCurrent(session, started);
       session.addresses = { ...session.wallet.addresses, cpunk };
+      try {
+        const bytes = await deriveIxiosAddress(phrase, { wasmBytes: ixiosWasmBytes ?? nodusWasmBytes, signal: session.abort.signal });
+        assertCurrent(session, started); session.addresses.ixios = ixiosChecksumAddress(bytes);
+      } catch { assertCurrent(session, started); }
       return { ...session.addresses };
     } catch (error) {
       const stale = session !== current || generation !== started;
@@ -81,5 +88,7 @@ export function createWalletKeys({ lockCoordinator, consumeNodusSeed }) {
     getEvmWallet: () => activeWallet().wallet,
     getSolanaKeypair: () => activeWallet().wallet.solana,
     getTronPrivateKey: () => activeWallet().wallet.tronPrivateKey,
+    getRecoveryPhrase: () => activeWallet().wallet.recoveryPhrase,
+    replaceNodusClient(client) { if (current && !current.abort.signal.aborted) current.wallet.nodusClient = client; },
   };
 }

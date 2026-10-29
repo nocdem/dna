@@ -5,9 +5,11 @@ import { FetchRequest, JsonRpcProvider, getAddress, getBytes, formatUnits, kecca
 import { CHAINS } from '../../../src/config.js';
 import { rawInteger, rpc } from '../../../src/core.js';
 import { assertWalletActive } from '../../../src/keys.js';
-import { ethersGetUrl } from '../../../src/rpc-transport.js';
+import { ethersGetUrl, endpointUrl } from '../../../src/rpc-transport.js';
 import * as adapter from '../../../src/adapters/evm.js';
 import { prepareTransfer } from '../../../src/wallet.js';
+import { nameReviewRows, NAME_CHECK_ROW } from '../../../src/adapters/nodus.js';
+import { terminal, watchActivity } from '../../../src/activity.js';
 
 const EVM_CHAINS = ['ethereum', 'bsc'];
 // Retained eth_* reads from permissions.js / pinned specifications.ts:104-198.
@@ -51,13 +53,14 @@ export async function prepareSiteTransaction({ chain, wallet, fields, endpoint, 
     if (!gasPrice || balance < gasLimit * gasPrice + tx.value) throw new Error('Insufficient native balance for amount and network fee.');
     const unsigned = { ...tx, chainId: config.chainId, nonce, gasLimit, gasPrice, type: 0 }; delete unsigned.from;
     return { fee: `Up to ${formatUnits(gasLimit * gasPrice, 18)} ${config.symbol}`, expiresAt: Date.now() + 60000,
-      async send() {
+      async send(onBroadcast) {
         // Adapter :42-50: check immediately around every asynchronous key use.
         assertCurrent(); assertWalletActive(wallet); await adapter.checkNetwork(chain, endpoint);
         assertCurrent(); assertWalletActive(wallet);
         const signed = await wallet.evm.signTransaction(unsigned);
         assertCurrent(); assertWalletActive(wallet);
         const hash = keccak256(signed);
+        await onBroadcast?.({ hash, nonce }); assertCurrent(); assertWalletActive(wallet);
         const returned = await rpc(endpoint, 'eth_sendRawTransaction', [signed]);
         if (returned?.toLowerCase() !== hash.toLowerCase()) throw new Error('RPC returned a different transaction identifier.');
         return hash;
@@ -119,15 +122,49 @@ function networkClient(chain, endpoint) {
     destroy() { destroyed = true; listeners.clear(); const previous = pollingProvider; pollingProvider = null; events = events.then(() => previous?.destroy()); } };
 }
 
-export function createEvm({ messenger, store, approvals, permissions, lockCoordinator, getWallet, keyring, onNetworkChanged }) {
+export function createEvm({ messenger, store, approvals, permissions, lockCoordinator, getWallet, keyring, onNetworkChanged, getActivity }) {
   const metadata = Object.fromEntries(['selectedChain', 'endpoints'].map(key => [key, { persist: true, usedInUi: true, includeInStateLogs: false, includeInDebugSnapshot: false }]));
   const saved = store.getInitialState('EvmController', metadata);
   const selectedChain = EVM_CHAINS.includes(saved.selectedChain) ? saved.selectedChain : 'ethereum';
-  const endpoints = Object.fromEntries(EVM_CHAINS.map(chain => [chain,
-    CHAINS[chain].rpcOptions.some(option => option.url === saved.endpoints?.[chain]) ? saved.endpoints[chain] : CHAINS[chain].endpoint]));
+  const endpoints = Object.fromEntries(EVM_CHAINS.map(chain => {
+    try { return [chain, endpointUrl(saved.endpoints?.[chain])]; }
+    catch { return [chain, CHAINS[chain].endpoint]; }
+  }));
   const controller = new BaseController({ name: 'EvmController', metadata, messenger: messenger.buildChild({ namespace: 'EvmController' }), state: { selectedChain, endpoints } });
   let client = networkClient(selectedChain, endpoints[selectedChain]), revision = 0, reviewId = 0;
   const reviews = new Map();
+  const trackers = new Map();
+  function clearReviews() { for (const review of reviews.values()) review.prepared.cancel(); reviews.clear(); }
+  function close() { revision++; clearReviews(); for (const stop of trackers.values()) stop(); trackers.clear(); }
+  function activity(chain) {
+    const value = getActivity(chain);
+    if (!trackers.has(chain)) trackers.set(chain, watchActivity(() => value.rows(), () => { void value.persist().catch(() => {}); }));
+    return value;
+  }
+  function assertSendable(chain) {
+    const value = activity(chain); value.assertSendable();
+    const pending = value.rows().find(row => !terminal(row.status));
+    if (pending) throw new Error(`A previous send on this network has no final result yet (tx ${pending.hash}). Wait for it to resolve, or mark it as abandoned in Activity.`);
+    return value;
+  }
+  async function sendRecorded(chain, transfer, send, assertCurrent) {
+    const value = assertSendable(chain); let record;
+    try {
+      const hash = await send(async details => {
+        assertCurrent(); assertSendable(chain);
+        record = value.append(transfer, details); await value.persist(); assertCurrent();
+      });
+      assertCurrent(); record.note = 'Broadcast submitted; awaiting confirmation.';
+      await value.persist(); return hash;
+    } catch (error) {
+      if (record && !lockCoordinator.isLocked) {
+        record.status = 'unknown'; record.note = 'Broadcast outcome uncertain. Tracking the signed transaction; do not resend automatically.';
+        await value.persist().catch(() => {});
+        throw rpcErrors.internal({ message: error.message, data: { activityTracked: true } });
+      }
+      throw error;
+    }
+  }
   function capture(origin, from) {
     const wallet = getWallet(), started = revision, chain = controller.state.selectedChain, endpoint = controller.state.endpoints[chain];
     function assertCurrent() {
@@ -151,7 +188,7 @@ export function createEvm({ messenger, store, approvals, permissions, lockCoordi
     // Web-wallet src/app.js:2292 increments revision and closes reviews on
     // endpoint changes; pinned ethereum-chain-utils.ts:358-368 rejects pending
     // origin approvals on switches. Shared selection makes sessions stale here.
-    revision++; reviews.clear();
+    revision++; clearReviews();
     const previous = client;
     client = networkClient(controller.state.selectedChain, controller.state.endpoints[controller.state.selectedChain]);
     onNetworkChanged(client, () => client.metadata);
@@ -163,7 +200,7 @@ export function createEvm({ messenger, store, approvals, permissions, lockCoordi
     controller.update(state => { state.selectedChain = chain; }); changed(); await store.flush();
   }
   async function setEndpoint(chain, endpoint) {
-    if (!chainConfig(chain).rpcOptions.some(option => option.url === endpoint)) throw rpcErrors.invalidParams('Choose a listed RPC provider.');
+    chainConfig(chain); endpoint = endpointUrl(endpoint);
     if (controller.state.endpoints[chain] === endpoint) return;
     controller.update(state => { state.endpoints[chain] = endpoint; });
     changed(); await store.flush();
@@ -187,11 +224,15 @@ export function createEvm({ messenger, store, approvals, permissions, lockCoordi
     },
     async processTransaction(fields, _request, context) {
       const origin = context.assertGet('origin'), session = capture(origin, fields.from);
+      assertSendable(session.chain);
       fields = structuredClone(fields);
       const prepared = await prepareSiteTransaction({ ...session, fields });
       await approved(origin, ApprovalType.Transaction, { account: session.wallet.evm.address, chain: session.chain,
         to: fields.to ?? null, value: String(rawInteger(fields.value ?? '0x0')), data: fields.data ?? '0x', fee: prepared.fee }, session.assertCurrent);
-      assertFresh(prepared); return prepared.send();
+      assertFresh(prepared);
+      const transfer = { chain: session.chain, from: session.wallet.addresses[session.chain], to: fields.to ?? session.wallet.addresses[session.chain],
+        amount: formatUnits(rawInteger(fields.value ?? '0x0'), 18), symbol: CHAINS[session.chain].symbol, endpoint: session.endpoint };
+      return sendRecorded(session.chain, transfer, record => prepared.send(record), session.assertCurrent);
     },
   };
   async function switchChain(origin, params) {
@@ -212,17 +253,19 @@ export function createEvm({ messenger, store, approvals, permissions, lockCoordi
     await approved(origin, ApprovalType.SwitchEthereumChain, { account: wallet.evm.address, chain: controller.state.selectedChain, targetChain: chain }, assertCurrent);
     await selectNetwork(chain); return null;
   }
-  return { controller, walletHooks, switchChain, selectNetwork, setEndpoint,
+  return { controller, walletHooks, switchChain, selectNetwork, setEndpoint, lock: close,
     get client() { return client; },
     getState: () => structuredClone(controller.state),
     async getBalances(chain) {
       chainConfig(chain); const wallet = getWallet(), endpoint = controller.state.endpoints[chain];
+      activity(chain);
       const rows = await adapter.balances(chain, wallet.addresses[chain], endpoint);
       assertWalletActive(wallet); if (getWallet() !== wallet) throw new Error('Wallet is locked.');
       return rows;
     },
     async prepareSend(fields) {
       chainConfig(fields.chain);
+      assertSendable(fields.chain);
       const session = capture(), endpoint = controller.state.endpoints[fields.chain];
       // Keep the imported adapter unchanged. Its wallet checks after network,
       // signing and onBroadcast awaits (src/adapters/evm.js:42-49) must also
@@ -232,16 +275,30 @@ export function createEvm({ messenger, store, approvals, permissions, lockCoordi
         addresses: session.wallet.addresses,
         get evm() { session.assertCurrent(); return session.wallet.evm; },
         get locked() { session.assertCurrent(); return session.wallet.locked; },
+        get nodusClient() { session.assertCurrent(); return getActivity(fields.chain).client; },
       };
       const prepared = await prepareTransfer({ ...fields, endpoint, wallet }); session.assertCurrent();
-      const id = String(++reviewId), result = { id, chain: fields.chain, to: prepared.to, amount: fields.amount, symbol: fields.symbol, fee: prepared.fee, expiresAt: prepared.expiresAt };
-      reviews.clear(); reviews.set(id, { prepared, assertCurrent: session.assertCurrent }); return result;
+      const id = String(++reviewId), result = { id, chain: fields.chain, to: prepared.to, named: prepared.named, amount: fields.amount, symbol: fields.symbol, fee: prepared.fee, expiresAt: prepared.expiresAt };
+      result.review = evmReviewRows(prepared);
+      clearReviews(); reviews.set(id, { prepared, assertCurrent: session.assertCurrent }); return result;
     },
     async confirmSend(id) {
+      lockCoordinator.assertUnlocked();
       const review = reviews.get(id); if (!review) throw new Error('This review is already closed.'); reviews.delete(id);
-      review.assertCurrent(); return review.prepared.confirm(() => review.assertCurrent());
+      review.assertCurrent(); return sendRecorded(review.prepared.chain, review.prepared, record => review.prepared.confirm(record), review.assertCurrent);
     },
     cancelSend(id) { const review = reviews.get(id); review?.prepared.cancel(); reviews.delete(id); },
-    destroy() { for (const review of reviews.values()) review.prepared.cancel(); reviews.clear(); client.destroy(); controller.destroy(); },
+    destroy() { close(); client.destroy(); controller.destroy(); },
   };
+}
+
+// src/app.js:2325-2339, unchanged row wording and order.
+export function evmReviewRows(transfer) {
+  const rows = [['Network', `${CHAINS[transfer.chain].name} mainnet`], ['From', transfer.from]];
+  if (transfer.named) rows.push(...nameReviewRows(transfer.named, { via: 'the address published in the owner’s signed profile' }));
+  rows.push(['To', getAddress(transfer.to)]);
+  if (transfer.named) rows.push(NAME_CHECK_ROW);
+  else if (/^0x[0-9a-f]{40}$/.test(transfer.to)) rows.push(['Address check', 'No checksum in what you typed — compare the form above with your source character by character.']);
+  return [...rows, ['Asset', transfer.symbol], ['Amount', transfer.amount], ['Network fee', transfer.fee],
+    ['Transaction number (nonce)', transfer.nonce], ['Review expires', new Date(transfer.expiresAt).toLocaleTimeString()]];
 }

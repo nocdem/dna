@@ -127,6 +127,7 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
     finally { password = null; }
   }
   return {
+    request: (method, args = []) => client.request(method, args),
     get state() { return publicState(); }, get phraseStep() { return phraseStep; }, refresh, unlock, clearPhrase, portfolio, portfolioDetails,
     async loadPrices({ force = false } = {}) {
       if (!state?.isUnlocked) return;
@@ -146,10 +147,14 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
     beginCreate() { generated = validateNodusPhrase(generatePhrase()); phraseStep = 'backup'; return generated; },
     beginImport() { clearPhrase(); phraseStep = 'import'; },
     confirmBackup() { if (phraseStep !== 'backup') throw new Error('No recovery backup to confirm.'); phraseStep = 'verify'; },
-    async savePhrase(phrase, password, confirmation) {
+    async skipVerification(password, confirmation) {
+      if (phraseStep !== 'backup' || !generated) throw new Error('No recovery backup to confirm.');
+      return this.savePhrase(generated, password, confirmation, { skipVerification: true });
+    },
+    async savePhrase(phrase, password, confirmation, { skipVerification = false } = {}) {
       let bytes;
       try {
-        if (!['verify', 'import'].includes(phraseStep)) throw new Error('Confirm your recovery backup first.');
+        if (!['verify', 'import'].includes(phraseStep) && !(phraseStep === 'backup' && skipVerification && phrase === generated)) throw new Error('Confirm your recovery backup first.');
         phrase = validateNodusPhrase(phrase); validateNewPassword(password);
         if (password !== confirmation) throw new Error('Passwords do not match.');
         if (phraseStep === 'verify' && phrase !== generated) throw new Error('The phrase does not match. Re-enter your saved backup.');

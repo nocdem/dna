@@ -1,16 +1,24 @@
-import { createNodusClient } from '../../../src/nodus/client.js';
+import { createNodusClient, NODUS_CONNECT_BOUND_MS } from '../../../src/nodus/client.js';
+import { nodusSigningSeed } from '../../../src/nodus/derive.js';
+import { createSessionLog, stepLog } from '../../../src/session-log.js';
+import { createChainHistory } from './chain-history.js';
+import { createSharedVaults } from './shared-vaults.js';
 import { nodusSendModuleFactory } from '../../../src/nodus/send-module.js';
 import { deriveNodusAddress } from '../../../src/nodus/derive.js';
 import * as adapter from '../../../src/adapters/nodus.js';
 import { readCpunk } from '../../../src/adapters/cpunk.js';
+import { readIxiosBalance } from '../../../src/ixios/balance.js';
+import { IXIOS_NETWORK } from '../../../src/ixios/network.js';
 import { prepareTransfer } from '../../../src/wallet.js';
 import { NODUS_ASSET, nodusTokens } from '../../../src/nodus/network.js';
 import { NODUS_HISTORY_LIMIT, localRowsToShow, nodusHistoryRow, nodusHistoryStatus } from '../../../src/nodus/history.js';
 import { keepBusyEnvelope, canResubmit, dropSettledEnvelope, resubmitKept, NODUS_UNCERTAIN_NOTE, NODUS_SUBMITTED_NOTE } from '../../../src/nodus/resubmit.js';
 import { recordActivity, watchActivity, terminal, evmActivityText } from '../../../src/activity.js';
 import { activityKeyFor, parseActivity, serializeActivity, serializeWithoutQuarantined, requireSavedForEvm,
-  historyKeyFor, parseHistory, serializeHistory } from '../../../src/activity-storage.js';
-import { ACTIVITY_KEY, VAULT_KEY, HISTORY_KEY } from '../../../src/vault.js';
+  historyKeyFor, parseHistory, serializeHistory, balancesKeyFor, parseBalances, serializeBalances,
+  addressBookKeyFor, parseAddressBook, serializeAddressBook } from '../../../src/activity-storage.js';
+import { checkAddressBook } from '../../../src/address-book.js';
+import { ACTIVITY_KEY, VAULT_KEY, HISTORY_KEY, BALANCES_KEY, ADDRESS_BOOK_KEY } from '../../../src/vault.js';
 import { EvmAccount, Contract, describeArgs } from '../../../src/evm/contract.js';
 import { parseRaw, parseWei, formatRaw, formatWei } from '../../../src/evm/units.js';
 import { rpcErrors, providerErrors } from '@metamask/rpc-errors';
@@ -20,11 +28,14 @@ import { chainNetwork } from '../constants/networks.js';
 
 // Approved plan §3.5 holder 3 / §5.4–5.5: the web-wallet client and its one
 // module queue live in the background. No secret or signed envelope enters UI state.
-export function createNodus({ lockCoordinator, storage, getAddresses, factory = nodusSendModuleFactory, approvals, getPermittedAccounts }) {
+export function createNodus({ lockCoordinator, storage, getAddresses, factory = nodusSendModuleFactory, approvals, getPermittedAccounts, onLock, getWords, onClient, onStateChanged }) {
   let session, nextReview = 0, writes = Promise.resolve();
+  const log = createSessionLog();
   function lock() {
+    onLock?.();
     const previous = session; session = undefined;
-    if (!previous) return;
+    if (!previous) { log.clear(); return; }
+    clearTimeout(previous.retryTimer); previous.retryTimer = undefined;
     stopQuarantineTimer(previous);
     // Let the client reject its queue as locked before aborting read requests.
     previous.client.lock();
@@ -34,7 +45,13 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
     for (const row of previous.rows) row.envelope?.fill(0);
     previous.rows = []; previous.quarantined = []; previous.releasedQuarantine.clear(); previous.key = null;
     previous.historyKey = null; previous.history = {};
+    previous.balancesKey = null; previous.kept = {}; previous.contractAccount = null;
+    previous.addressBookKey = null; previous.addressBook = [];
+    sharedVaults.lock(); previous.receipts?.clear();
     previous.networkActivities?.clear();
+    // src/app.js:1770 clears after client shutdown logs its final state.
+    log.clear();
+    onStateChanged?.();
   }
   lockCoordinator.register('nodus', { lock });
   function current(s) {
@@ -45,12 +62,74 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
     if (!session) throw new Error('Wallet is locked.');
     current(session); session.assertReady?.(); return session;
   }
+  const sharedVaults = createSharedVaults({ active });
+  function changed(s) {
+    if (session !== s) return;
+    try { s.assertReady?.(); onStateChanged?.(); } catch { /* unlock publishes only after all holders are ready */ }
+  }
+  // src/app.js:998-1119: only replace the connection; the unlocked wallet's
+  // authenticated rows and cache keys survive. No phrase copy lives here.
+  function scheduleRetry(s, again) {
+    if (session !== s || s.abort.signal.aborted) return;
+    clearTimeout(s.retryTimer);
+    const wait = [5000, 10000, 20000, 40000, 60000][Math.min(s.retries++, 4)];
+    log.log('net', `retry ${s.retries} in ${wait / 1000} s (${again ? 'same connection' : 'new connection'})`);
+    s.retryTimer = setTimeout(() => {
+      s.retryTimer = undefined;
+      if (session === s && !s.abort.signal.aborted && !lockCoordinator.isLocked) void (again ? again() : reconnect(s));
+    }, wait);
+  }
+  function makeAccount(s) {
+    s.contractAccount = new EvmAccount({ client: s.client, fingerprint: s.addresses.nodus, lockedInputs: () => heldInputs(s),
+      reservations: () => s.rows.filter(row => row.chain === 'nodus' && row.address === s.addresses.nodus && !terminal(row.status)
+        && !adapter.isClaimRow(row) && (row.kind === 'evm' || (row.kind === undefined && row.to === s.addresses.nodus))) });
+  }
+  function newClient(s) {
+    s.connection = (s.connection ?? 0) + 1;
+    let previous = 'idle', wasReady = false;
+    const client = createNodusClient({ factory, steps: stepLog(log, 'net', () => s.retries + 1, NODUS_CONNECT_BOUND_MS),
+      onState(state, why) {
+        log.log('net', `client state ${previous} → ${state}`, { error: state === 'error' }); previous = state;
+        if (session !== s || s.client !== client) return;
+        if (state === 'ready') { wasReady = true; s.retries = 0; makeAccount(s); onClient?.(client); }
+        else if (wasReady && ['error', 'locked'].includes(state)) {
+          if (why?.error) log.log('net', why.error, { error: true });
+          scheduleRetry(s);
+        }
+        changed(s);
+      } });
+    return client;
+  }
+  async function connectIdentified(s, client) {
+    try { await client.connectNetwork(); current(s); }
+    catch (error) {
+      if (session !== s || s.client !== client || s.abort.signal.aborted) return;
+      log.log('net', error, { error: true });
+      scheduleRetry(s, client.identified ? () => connectIdentified(s, client) : undefined);
+    }
+  }
+  async function reconnect(s) {
+    let seed;
+    try {
+      current(s); lockCoordinator.assertUnlocked();
+      const previous = s.client; s.client = undefined; previous?.lock();
+      s.contractAccount = null;
+      sharedVaults.lock();
+      for (const review of s.reviews.values()) review.cancel(); s.reviews.clear();
+      const client = s.client = newClient(s); onClient?.(client);
+      seed = nodusSigningSeed(getWords());
+      await client.identify({ seed, fingerprint: s.addresses.nodus }); current(s);
+      await connectIdentified(s, client);
+    } catch (error) { if (session === s && !s.abort.signal.aborted) { log.log('net', error, { error: true }); scheduleRetry(s); } }
+    finally { seed?.fill(0); }
+  }
   async function consumeNodusSeed(seed, { phrase, id, addresses, nodusWasmBytes, signal, assertReady } = {}) {
     lock();
     if (typeof factory !== 'function') throw new Error('Nodus sending is not available in this wallet build.');
-    const s = { client: createNodusClient({ factory }), abort: new AbortController(), rows: [], quarantined: [], activityBlocked: false,
+    const s = { abort: new AbortController(), rows: [], quarantined: [], activityBlocked: false, retries: 0,
       releasedQuarantine: new Set(), quarantineReadAt: -Infinity, reviews: new Map(), networkActivities: new Map(), assertReady, id };
     session = s;
+    s.client = newClient(s);
     try {
       const combined = signal ? AbortSignal.any([signal, s.abort.signal]) : s.abort.signal;
       const fingerprint = await deriveNodusAddress(phrase, { wasmBytes: nodusWasmBytes, signal: combined });
@@ -60,12 +139,18 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
       current(s); combined.throwIfAborted();
       // src/app.js:2528-2542: the saved wallet's separate encrypted account
       // history key/cache, using the original format and derivation unchanged.
-      s.historyKey = await historyKeyFor(phrase, id); phrase = null;
+      s.historyKey = await historyKeyFor(phrase, id);
+      s.balancesKey = await balancesKeyFor(phrase, id);
+      s.addressBookKey = await addressBookKeyFor(phrase, id); phrase = null;
       current(s); combined.throwIfAborted();
-      const saved = await storage.get([VAULT_KEY, ACTIVITY_KEY, HISTORY_KEY]); current(s);
+      const saved = await storage.get([VAULT_KEY, ACTIVITY_KEY, HISTORY_KEY, BALANCES_KEY, ADDRESS_BOOK_KEY]); current(s);
       s.vault = saved[VAULT_KEY];
       try { s.history = await parseHistory(saved[HISTORY_KEY], id, s.historyKey); }
       catch { s.history = {}; }
+      try { s.kept = await parseBalances(saved[BALANCES_KEY], id, s.balancesKey); }
+      catch { s.kept = {}; }
+      try { s.addressBook = await parseAddressBook(saved[ADDRESS_BOOK_KEY], id, s.addressBookKey); }
+      catch { s.addressBook = []; s.addressBookNote = 'Saved address book could not be read. It is left as it is until you save an address.'; }
       current(s); combined.throwIfAborted();
       // src/app.js:2543-2550: only the unlock-time read problem blocks sending.
       try {
@@ -76,9 +161,6 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
       const identity = await s.client.unlock({ seed, fingerprint }); current(s);
       // src/evm/ui.js:96-104 and src/app.js:1275-1279: one account queue,
       // sharing the native pending coins and restored self-address records.
-      s.contractAccount = new EvmAccount({ client: s.client, fingerprint, lockedInputs: () => heldInputs(s),
-        reservations: () => s.rows.filter(row => row.chain === 'nodus' && row.address === fingerprint && !terminal(row.status)
-          && !adapter.isClaimRow(row) && (row.kind === 'evm' || (row.kind === undefined && row.to === fingerprint))) });
       return { ...identity, client: s.client };
     } catch (error) { if (session === s) lock(); throw error; }
     finally { phrase = null; seed.fill(0); }
@@ -120,6 +202,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
   function localRows(s, page) {
     return localRowsToShow(s.rows.filter(row => row.chain === 'nodus' && row.address === s.addresses.nodus), page)
       .map(row => ({ hash: row.hash, to: row.to, amount: row.amount, symbol: row.symbol, status: row.status, note: row.note,
+        kind: row.kind, name: row.name,
         ...(row.kind === 'evm' ? (() => { const text = evmActivityText(row); return { amountText: text.amount, detail: text.what }; })() : {}),
         createdAt: row.createdAt, canResubmit: canResubmit(row) }));
   }
@@ -185,9 +268,19 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
     return value;
   }
   function observeReceipt(s, sent) {
+    s.receipts ??= new Map(); s.receipts.set(sent.intentId, sent.receipt);
     void sent.receipt.then(result => {
       if (session === s) s.contractOutcome = describeArgs(['Outcome'], [result]);
     }, error => { if (session === s) s.contractOutcome = error.message; });
+  }
+  function rememberReview(s, review) {
+    try { current(s); } catch (error) { review.cancel(); throw error; }
+    const id = String(++nextReview); s.reviews.set(id, review);
+    return { id, to: review.to, amount: review.amount, symbol: review.symbol, kind: review.kind, recipientName: review.recipientName,
+      fee: review.fee, review: review.review, expiresAt: review.expiresAt };
+  }
+  function assertActivity(s) {
+    if (s.activityBlocked) throw new Error('Saved activity is unverified. Check the explorer and discard the unreadable history before sending.');
   }
   return {
     // Package 7a shares the existing authenticated Activity writer. Only the
@@ -195,8 +288,9 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
     // src/app.js:202-225,2358-2362: one saved list for all chains, one write
     // queue; src/app.js:353-361: account-history cache under its own key.
     chainActivity(chain, networkId = 'mainnet') {
-      if (!['solana', 'tron'].includes(chain)) throw new Error('Unsupported chain.');
+      if (!['ethereum', 'bsc', 'solana', 'tron', 'cellframe'].includes(chain)) throw new Error('Unsupported chain.');
       const s = active();
+      if (chain === 'cellframe') s.addresses.cellframe = getAddresses().cpunk;
       const check = () => { lockCoordinator.assertUnlocked(); current(s); s.assertReady?.(); };
       const network = chainNetwork(chain, networkId);
       if (network.id !== 'mainnet') {
@@ -234,6 +328,88 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
       };
     },
     consumeNodusSeed,
+    getClient() { return active().client; },
+    replaceVault(previous, value) { if (session?.vault === previous) session.vault = value; },
+    assertVault(value) { const s = active(); assertActivity(s); if (s.vault !== value) throw new Error('Lock and unlock the saved wallet before changing its password.'); },
+    readSharedVault: (method, fields) => sharedVaults.read(method, fields),
+    prepareSharedVault: (method, fields) => sharedVaults.prepare(method, fields),
+    confirmSharedVault: id => sharedVaults.confirm(id),
+    cancelSharedVault: id => sharedVaults.cancel(id),
+    async contractOperation(method, fields = {}) {
+      const s = active(), account = contract(s); let value;
+      if (method === 'account') value = { ...await account.account({ signal: s.abort.signal }), pending: account.waiting() };
+      else if (method === 'ticket') value = await account.ticket(fields.ticketId, { signal: s.abort.signal });
+      else if (method === 'simulate' || method === 'estimate') {
+        const args = { ...fields, data: Uint8Array.from(fields.data ?? []), valueWei: BigInt(fields.valueWei ?? '0') };
+        if (args.gas !== undefined) args.gas = BigInt(args.gas);
+        value = await account[method](args, { signal: s.abort.signal });
+      } else throw new Error('Unknown smart-contract read.');
+      current(s); return value;
+    },
+    async getContractReceipt(intentId) {
+      const s = active(), promise = s.receipts?.get(intentId);
+      if (!promise) throw new Error('No smart-contract receipt is being tracked for this transaction.');
+      const result = await promise; current(s); return result;
+    },
+    getAddressBook() { const s = active(); return { entries: s.addressBook.map(entry => ({ ...entry })), note: s.addressBookNote ?? '' }; },
+    async getStakingOverview() { const s = active(); const view = await adapter.stakingOverview({ client: s.client, from: s.addresses.nodus }); current(s); return view; },
+    async prepareStake(kind, params) {
+      const s = active(); assertActivity(s);
+      if (!['delegate', 'undelegate', 'stake'].includes(kind)) throw new Error('Unknown staking action.');
+      return rememberReview(s, await adapter.prepareStake({ ...params, kind, client: s.client, from: s.addresses.nodus, locked: heldInputs(s) }));
+    },
+    async getOwnName() { const s = active(); const own = await adapter.ownChainName({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal }); current(s); return own; },
+    async getNamePrices() { const s = active(); const value = adapter.parseNamePrices(await s.client.namePrices()); current(s); return { ...value, text: adapter.namePriceList(value.prices) }; },
+    async quoteName(name) { const s = active(); const value = await adapter.nameQuote({ client: s.client, from: s.addresses.nodus, name, signal: s.abort.signal }); current(s); return value; },
+    async prepareName(name) { const s = active(); assertActivity(s); return rememberReview(s, await adapter.prepareName({ client: s.client, from: s.addresses.nodus, name, locked: heldInputs(s) })); },
+    async getClaimStatus() {
+      const s = active(), status = await adapter.claimStatus({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal }); current(s);
+      const unresolved = s.rows.some(row => row.address === s.addresses.nodus && adapter.isClaimRow(row) && !terminal(row.status));
+      return { ...status, claimable: status.claimable && !unresolved };
+    },
+    async prepareClaim() { const s = active(); assertActivity(s); return rememberReview(s, await adapter.prepareClaim({ client: s.client, from: s.addresses.nodus })); },
+    setAddressBook(entries) {
+      const s = active(), next = checkAddressBook(entries);
+      const job = writes.catch(() => {}).then(async () => {
+        current(s); const value = await serializeAddressBook(s.id, next, s.addressBookKey); current(s);
+        const saved = await storage.get(VAULT_KEY); current(s);
+        if (saved[VAULT_KEY] !== s.vault) throw new Error('Wallet storage changed.');
+        await storage.set({ [ADDRESS_BOOK_KEY]: value }); current(s); s.addressBook = next; s.addressBookNote = '';
+      }); writes = job; return job;
+    },
+    async checkLiveness() { const s = active(); if (s.client.state === 'ready') await s.client.checkLiveness(); },
+    getSessionLog() { return { entries: log.entries(), running: log.running(), startedAt: log.startedAt }; },
+    getKeptBalances() {
+      const s = active();
+      return Object.fromEntries(Object.entries(s.kept).map(([key, value]) => [key, { ...value, units: value.units.toString() }]));
+    },
+    keepBalances(entries) {
+      const s = active();
+      const job = writes.catch(() => {}).then(async () => {
+        current(s);
+        const value = await serializeBalances(s.id, entries, s.balancesKey); current(s);
+        const checked = await parseBalances(value, s.id, s.balancesKey); current(s);
+        const saved = await storage.get(VAULT_KEY); current(s);
+        if (saved[VAULT_KEY] !== s.vault) throw new Error('Wallet storage changed.');
+        await storage.set({ [BALANCES_KEY]: value }); current(s); s.kept = checked;
+      });
+      writes = job; return job;
+    },
+    getChainHistory(chain, options) {
+      const s = active();
+      s.chainHistory ??= createChainHistory({ getActivity: name => this.chainActivity(name), getAddresses,
+        assertCurrent: () => { lockCoordinator.assertUnlocked(); current(s); } });
+      return s.chainHistory.getHistory(chain, options);
+    },
+    getChainLocalHistory(chain) { return this.chainActivity(chain).rows().map(row => ({ ...row })); },
+    async abandonActivity(chain, hash, networkId = 'mainnet') {
+      if (!['ethereum', 'bsc', 'solana', 'tron'].includes(chain)) throw new Error('This activity cannot be abandoned.');
+      const activity = this.chainActivity(chain, networkId); await activity.ready;
+      const row = activity.rows().find(row => row.hash === hash);
+      if (!row || terminal(row.status)) throw new Error('This activity cannot be abandoned.');
+      row.status = 'abandoned'; row.note = 'Marked abandoned by you; the network may still include it. Check the explorer.';
+      await activity.persist();
+    },
     getAccount() {
       const s = active(), publicKey = s.client.publicKey;
       if (typeof publicKey !== 'string' || !/^[0-9a-f]{5184}$/.test(publicKey)) throw new Error('Nodus site signing is not available in this wallet build.');
@@ -297,7 +473,9 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
       // src/app.js:2689: use the unchanged recovery message for testnets too.
       return message ?? 'Unreadable local history discarded; readable records and their held coins were kept. Check the account explorer before resending any previous payment.';
     },
-    getState() { return { state: session?.client.state ?? 'locked', tokens: nodusTokens(session?.client.tokenPins()), historyReadable: session?.client.historyReadable ?? false,
+    getState() { return { state: session?.retryTimer ? 'connecting' : session?.client.state ?? 'locked', connection: session?.connection ?? 0, tokens: nodusTokens(session?.client.tokenPins()), historyReadable: session?.client.historyReadable ?? false,
+      stakeable: session?.client.stakeable ?? false, nameable: session?.client.nameable ?? false, registrable: session?.client.registrable ?? false,
+      claimable: session?.client.claimable ?? false, vaultable: session?.client.vaultable ?? false,
       evmBuildable: session?.client.evmBuildable ?? false, evmReadable: session?.client.evmReadable ?? false,
       publicKey: session?.client.publicKey ? `0x${session.client.publicKey}` : undefined,
       // src/app.js:2559: recovery is offered only for the unlock-time read problem or quarantine.
@@ -310,6 +488,11 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
     async getCpunkBalance() {
       const s = active();
       const result = await readCpunk({ address: getAddresses().cpunk, signal: s.abort.signal }); current(s); return result;
+    },
+    async getIxiosBalance() {
+      const s = active(), address = getAddresses().ixios;
+      if (!address) throw new Error('Ixios address unavailable. Lock and reopen your wallet to retry.');
+      const result = await readIxiosBalance(address, IXIOS_NETWORK.endpoint, { signal: s.abort.signal }); current(s); return result;
     },
     async prepareSend({ to, amount, tokenId } = {}) {
       const s = active();
@@ -349,7 +532,9 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
       else throw new Error('Unknown smart-contract action.');
       if (session !== s) { review.cancel(); throw new Error('Wallet is locked.'); }
       const id = String(++nextReview); s.reviews.set(id, { ...review, kind: 'contract' });
-      return { id, review: review.review, expiresAt: review.expiresAt };
+      const d = review.decoded;
+      return { id, intentId: review.intentId, review: review.review, expiresAt: review.expiresAt,
+        decoded: { op: d.op, amount: d.amount.toString(), fee: d.fee.toString(), valueWei: d.valueWei.toString(), dest: d.dest } };
     },
     cancelSend(id) { const s = active(); s.reviews.get(id)?.cancel(); s.reviews.delete(id); },
     async confirmSend(id) {

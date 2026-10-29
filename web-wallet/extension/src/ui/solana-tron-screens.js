@@ -1,9 +1,10 @@
-import { CHAINS } from '../../../src/config.js';
+import { CHAINS, CELLFRAME } from '../../../src/config.js';
 import { renderEvmSend } from './evm-screens.js';
 import { actionButton } from './views.js';
 import { pageHeading } from './presentation.js';
 import { displayAmount } from '../../../src/portfolio.js';
 import { chainNetwork } from '../constants/networks.js';
+import { terminal } from '../../../src/activity.js';
 
 function element(document, tag, text, className = '') {
   const node = document.createElement(tag); node.className = className;
@@ -55,8 +56,8 @@ function explorer(document, container, chain, networkId, hash) {
 
 // src/app.js:300-326,485-529: account transfers plus local sends with their
 // network outcome/note and explorer link. All provider text uses textContent.
-export function renderSolanaTronHistory(document, container, { chain, history }, { refresh }) {
-  container.replaceChildren(pageHeading(document, `${CHAINS[chain].name} history`, 'history'));
+export function renderSolanaTronHistory(document, container, { chain, history }, { refresh, abandon }) {
+  container.replaceChildren(pageHeading(document, `${(chain === 'cellframe' ? CELLFRAME : CHAINS[chain]).name} history`, 'history'));
   container.append(actionButton(document, 'Refresh history', refresh));
   if (!history) { container.append(element(document, 'p', 'Account history has not been read yet.', 'hint')); return; }
   if (history.activityError) container.append(element(document, 'p', history.activityError, 'field-error'));
@@ -68,7 +69,15 @@ export function renderSolanaTronHistory(document, container, { chain, history },
     article.append(element(document, 'h2', `${row.amount} ${row.symbol}`), element(document, 'p', `To ${row.to}`),
       status, element(document, 'p', row.readError || row.note),
       element(document, 'time', new Date(row.createdAt).toLocaleString()));
-    explorer(document, article, chain, row.network ?? history.network, row.hash); local.append(article);
+    explorer(document, article, chain, row.network ?? history.network, row.hash);
+    if (!terminal(row.status) && abandon) {
+      let armed = false;
+      const button = actionButton(document, 'Mark as abandoned', () => {
+        if (armed) return abandon(row.hash);
+        armed = true; button.textContent = 'Confirm abandon';
+      }); article.append(button);
+    }
+    local.append(article);
   }
   container.append(local, element(document, 'h2', 'Account history', 'activity-subhead'), element(document, 'p', history.status, 'hint'));
   if (history.error) container.append(element(document, 'p', history.error, 'field-error'));

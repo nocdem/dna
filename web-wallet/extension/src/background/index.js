@@ -19,6 +19,10 @@ import { VAULT_KEY, decryptVault, validateNewPassword } from '../../../src/vault
 import { validateNodusPhrase } from '../../../src/recovery.js';
 import { readPrices as readWalletPrices } from '../../../src/portfolio.js';
 
+// Runtime ports carry JSON values. Keep the web wallet's arbitrary-precision
+// values as decimal strings; no derived key or built envelope is a result.
+const publicResult = async value => JSON.parse(JSON.stringify(await value, (_key, item) => typeof item === 'bigint' ? item.toString() : item));
+
 // Approved plan §3.5:388-435; packages 1-2 own the vault, key custody and shared lock.
 // Startup constructs fresh locked holders. Store composition receives only controller metadata, never key custody.
 export async function createBackground({ storage = chrome.storage.local, alarms = chrome.alarms,
@@ -29,7 +33,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   const store = await createPersistedStore({ storage, messenger });
   const uiPorts = new Set(), alarmListeners = [];
   let walletKeys = null, unlock = null, permissions = null, engine = null;
-  let chainHandlers;
+  let chainHandlers, evm;
   const networks = createNetworks({ messenger, store, onChanged: chain => chainHandlers?.[chain]?.networkChanged() });
   const getWallet = () => {
     lockCoordinator.assertUnlocked();
@@ -53,10 +57,19 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     tabIds: new Set([...uiPorts].filter(port => port.name === 'fullscreen').map(port => port.sender?.tab?.id).filter(id => id !== undefined)),
   }) });
   const nodus = createNodus({ ...nodusOptions, storage, lockCoordinator, getAddresses: () => walletKeys.getAddresses(),
+    onLock: () => evm?.lock(),
+    getWords: () => walletKeys.getRecoveryPhrase(), onClient: client => walletKeys?.replaceNodusClient(client),
+    onStateChanged() {
+      // Only trusted UI ports receive this invalidation. They fetch public
+      // state themselves; client objects and keys never enter the event.
+      for (const port of uiPorts) try { port.postMessage({ name: 'controller', data: { jsonrpc: '2.0', method: 'walletStateChanged', params: [] } }); }
+      catch { /* a closing interface cannot receive the invalidation */ }
+    },
     getPermittedAccounts: origin => permissions.getNodusAccounts(origin), approvals });
   permissions = createPermissions({ messenger, approvals, store, runtime,
     getNetworkState: options => engine.getNetworkState(options), getNodusAccount: () => nodus.getAccount() });
-  const evm = createEvm({ messenger, store, approvals, permissions, lockCoordinator, getWallet, keyring,
+  evm = createEvm({ messenger, store, approvals, permissions, lockCoordinator, getWallet, keyring,
+    getActivity: chain => nodus.chainActivity(chain),
     onNetworkChanged: (client, readMetadata) => engine.attachNetworkClient(client, readMetadata) });
 
   // The real background consumer derives and checks the web-wallet identity.
@@ -207,6 +220,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     setEvmEndpoint: (chain, endpoint) => evm.setEndpoint(chain, endpoint),
     getNodusBalances: () => nodus.getBalances(),
     getCpunkBalance: () => nodus.getCpunkBalance(),
+    getIxiosBalance: () => nodus.getIxiosBalance(),
     prepareNodusSend: fields => nodus.prepareSend(fields),
     readNodusContract: fields => nodus.readContract(fields),
     prepareNodusContract: fields => nodus.prepareContract(fields),
@@ -216,6 +230,42 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     getNodusLocalHistory: () => nodus.getLocalHistory(),
     discardNodusActivity: () => nodus.discardActivity(),
     resubmitNodusSend: hash => nodus.resubmit(hash),
+    abandonActivity: (chain, hash) => nodus.abandonActivity(chain, hash, networks.getState()[chain]),
+    getChainHistory: (chain, options) => nodus.getChainHistory(chain, options),
+    getChainLocalHistory: chain => nodus.getChainLocalHistory(chain),
+    getKeptBalances: () => nodus.getKeptBalances(),
+    keepBalances: entries => nodus.keepBalances(entries),
+    getSessionLog: () => nodus.getSessionLog(),
+    checkNodusLiveness: () => nodus.checkLiveness(),
+    getAddressBook: () => nodus.getAddressBook(),
+    setAddressBook: entries => nodus.setAddressBook(entries),
+    getStakingOverview: () => publicResult(nodus.getStakingOverview()),
+    prepareStake: (kind, params) => nodus.prepareStake(kind, params),
+    getOwnName: () => nodus.getOwnName(),
+    getNamePrices: () => publicResult(nodus.getNamePrices()),
+    quoteName: name => publicResult(nodus.quoteName(name)),
+    prepareName: name => nodus.prepareName(name),
+    getClaimStatus: () => publicResult(nodus.getClaimStatus()),
+    prepareClaim: () => nodus.prepareClaim(),
+    contractAccount: fields => publicResult(nodus.contractOperation('account', fields)),
+    contractTicket: fields => publicResult(nodus.contractOperation('ticket', fields)),
+    contractSimulate: fields => publicResult(nodus.contractOperation('simulate', fields)),
+    contractEstimate: fields => publicResult(nodus.contractOperation('estimate', fields)),
+    getNodusContractReceipt: intentId => publicResult(nodus.getContractReceipt(intentId)),
+    readSharedVault: (method, fields) => publicResult(nodus.readSharedVault(method, fields)),
+    prepareSharedVault: (method, fields) => nodus.prepareSharedVault(method, fields),
+    confirmSharedVault: id => publicResult(nodus.confirmSharedVault(id)),
+    cancelSharedVault: id => nodus.cancelSharedVault(id),
+    changePassword(oldPassword, newPassword) {
+      const wallet = getWallet();
+      const assertCurrent = () => { lockCoordinator.assertUnlocked(); if (getWallet() !== wallet || wallet.locked) throw new Error('Wallet is locked.'); };
+      return vaultStore.changePassword(oldPassword, newPassword, { assertCurrent,
+        validate(opened, value) { nodus.assertVault(value); if (opened.phrase !== wallet.recoveryPhrase) throw new Error('Unlock the saved wallet before changing its password.'); },
+        changed: (previous, value) => nodus.replaceVault(previous, value) });
+    },
+    async deleteVault() {
+      await vaultStore.deleteVault(); permissions.controller.clearState(); permissions.setAccounts([]); await store.flush();
+    },
     setLocked: () => lockCoordinator.lock(),
     submitPasswordOrEncryptionKey: ({ password }) => {
       // ADAPTATION: plan §3.5 uses the web-wallet password vault; no second keyring/encryption-key unlock path.

@@ -1,0 +1,41 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Extension functions test fixture</title></head>
+<body><main id="screen"></main><p id="status"></p><script type="module">
+import { mountReferenceWallet } from '../../src/ui/wallet-screen.js';
+import { ASSETS } from '../../../src/portfolio.js';
+import { CHAINS } from '../../../src/config.js';
+const state = { isUnlocked: true, addresses: { nodus: 'ab'.repeat(64), ethereum: '0x0000000000000000000000000000000000000001', bsc: '0x0000000000000000000000000000000000000001',
+  solana: '3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx', tron: 'TEfhiqsW1SdN44DeHrAWVmbyr8ZbvChrtS', cpunk: 'public-fixture-cpunk', ixios: '0x' + '11'.repeat(48) },
+  nodus: { state: 'ready', tokens: [] }, preferences: { autoLockTimeLimit: 15 }, networks: { nodus: 'testnet', ethereum: 'mainnet', bsc: 'mainnet', solana: 'devnet', tron: 'nile', cellframe: 'mainnet' },
+  evm: { selectedChain: 'ethereum', endpoints: { ethereum: CHAINS.ethereum.endpoint, bsc: CHAINS.bsc.endpoint } }, subjects: {} };
+if (new URLSearchParams(location.search).has('ixios-unavailable')) delete state.addresses.ixios;
+const calls = []; let hold, release, price = '200000000';
+const ui = { get state() { return state; },
+  async request(method, args = []) {
+    calls.push([method, args]);
+    if (method === 'getKeptBalances') return {};
+    if (method === 'keepBalances' || method === 'checkNodusLiveness') return;
+    if (method === 'getAddressBook') return { entries: [] };
+    if (method === 'getSessionLog') return { entries: [], running: [] };
+    if (method === 'getOwnName') return { found: false };
+    if (method === 'getNamePrices') return { text: 'public fixture prices' };
+    if (method === 'getStakingOverview') return { rules: { minDelegation: '10000000000', maxDelegators: '2048' }, validators: [], delegations: [],
+      network: { total: '0', selfStake: '0', delegated: '0', witnesses: 0, partial: false }, truncated: false };
+    if (method === 'readSharedVault' && args[0] === 'vaultOpen') throw new Error('Public fixture has no saved vault');
+    if (method === 'getPrices') { if (hold) await new Promise(resolve => { release = resolve; }); return Object.fromEntries(ASSETS.map(asset => [asset.key, { units: price, observedAt: Date.now() }])); }
+    if (method === 'getEvmBalances' && args[0] === 'bsc') throw new Error('Fixture failed chain read');
+    if (method === 'getEvmBalances') return ASSETS.filter(asset => asset.chain === args[0]).map(asset => ({ symbol: asset.symbol, balance: asset.symbol === 'ETH' ? '1' : '0' }));
+    if (method === 'getNodusBalances') return [{ symbol: 'NODUS', balance: '12' }];
+    if (method === 'getCpunkBalance') return { balance: '7' };
+    if (method === 'getIxiosBalance') return [{ symbol: 'IXIOS', balance: '8' }];
+    if (method === 'getSolanaBalances') return [{ symbol: 'SOL', balance: '1000' }];
+    if (method === 'getTronBalances') return [{ symbol: 'TRX', balance: '2000' }];
+    throw new Error(`Unexpected fixture method ${method}`);
+  }, async refresh() {}, async setAutoLock(value) { state.preferences.autoLockTimeLimit = value; },
+  cancelNodusSend: async () => {}, cancelEvmSend: async () => {}, cancelSolanaTronSend: async () => {} };
+let screen;
+const run = async action => { try { return await action(); } finally { screen?.update(); } };
+screen = mountReferenceWallet({ document, window, root: document.getElementById('screen'), status: document.getElementById('status'), ui, run,
+  loadBalances: () => screen.loadBalances(true), lock() {}, reveal() {}, setAutoLock: value => run(() => ui.setAutoLock(value)), clearReveal() {} });
+window.fixture = { screen, state, calls, hold() { hold = true; }, release() { hold = false; release?.(); }, price(value) { price = value; } };
+await screen.loadBalances(); window.fixture.ready = true;
+</script></body></html>

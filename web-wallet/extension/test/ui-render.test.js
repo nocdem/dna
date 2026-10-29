@@ -3,6 +3,18 @@ import assert from 'node:assert/strict';
 import { renderHome, renderReceive, renderConnect, renderSites, renderSettings } from '../src/ui/views.js';
 import { mountWalletPage } from '../src/ui/app.js';
 import { Caip25EndowmentPermissionName, getCaip25PermissionFromLegacyPermissions, setEthAccounts } from '@metamask/chain-agnostic-permission';
+import { netLevelFor, netStatusView } from '../../src/net-status.js';
+import { autoLockBarText } from '../../src/auto-lock.js';
+
+// A: every public connection state and every persisted auto-lock choice uses
+// the web-wallet bar wording. No flags/network/artifacts. This pure mapping
+// does not prove DOM wiring; portfolio-page.browser.js covers that separately.
+test('open-wallet status uses web-wallet network and auto-lock text', () => {
+  for (const state of ['idle', 'locked', 'error', 'unknown']) assert.equal(netStatusView(netLevelFor(state)).text, 'Not connected to the Nodus network. Lock and reopen your wallet to retry.');
+  for (const state of ['identifying', 'identified', 'connecting']) assert.equal(netStatusView(netLevelFor(state)).text, 'Connecting to the Nodus network…');
+  assert.equal(netStatusView(netLevelFor('ready')).text, 'Connected to the Nodus network');
+  for (const minutes of [5, 10, 15, 30, 60, 0]) assert.equal(autoLockBarText(minutes), minutes === 0 ? 'Auto-lock off' : `Auto-lock after ${minutes === 60 ? '1 hour' : `${minutes} minutes`} of inactivity`);
+});
 
 // Node >=22.14, no flags/network/storage writes; the minimal document and public addresses below are in-memory fixtures.
 class Node extends EventTarget {

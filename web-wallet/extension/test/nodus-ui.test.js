@@ -5,6 +5,32 @@ import { renderHome, renderSettings } from '../src/ui/views.js';
 import { createWalletUi } from '../src/ui/wallet-ui.js';
 import { NODUS_TOKEN_ID } from '../../src/nodus/network.js';
 import { mountWalletPage } from '../src/ui/app.js';
+import { EvmAccount as RemoteAccount, Contract as RemoteContract, Interface as RemoteInterface } from '../src/ui/contracts-remote.js';
+
+// Package G call inventory: ui.js account/account.waiting/ticket/deposit/
+// withdraw/redeem; Contract.read -> simulate, estimate -> estimate,
+// prepareSend/prepareDeploy -> background prepare. No flags/artifacts/network.
+// A subset-only mock could silently omit a call: assert the complete list.
+test('contract facade carries every account and contract operation over the trusted port', async () => {
+  const calls = [], client = { request: async (method, params) => {
+    calls.push([method, params]);
+    if (method === 'contractAccount') return { balanceWei: '1', nonce: '0', height: '1', pending: false };
+    if (method === 'contractSimulate') return { success: true, output: '0'.repeat(64), gasUsed: '1', height: '1' };
+    if (method === 'prepareNodusContract') return { id: String(calls.length), intentId: 'ab'.repeat(64), decoded: { op: params[0].action, amount: '1', fee: '1', valueWei: '0' }, review: [] };
+    return {};
+  } };
+  const account = new RemoteAccount({ client, fingerprint: 'ab'.repeat(64) });
+  await account.account(); assert.equal(account.waiting(), false); await account.ticket('cd'.repeat(64));
+  for (const review of [await account.deposit(1n), await account.withdraw(1n, 'cd'.repeat(64)), await account.redeem('ef'.repeat(64), 'cd'.repeat(64))]) review.cancel();
+  const abi = JSON.stringify([{ type: 'function', name: 'value', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+    { type: 'function', name: 'set', inputs: [{ type: 'uint256' }], outputs: [] }]);
+  const contract = new RemoteContract({ account, address: '0x' + '11'.repeat(32), abi });
+  await contract.read('value'); await contract.estimate('set', ['7']); (await contract.prepareSend('set', ['7'])).cancel();
+  (await RemoteContract.prepareDeploy({ account, abi: new RemoteInterface(abi), bytecode: '0x01' })).cancel();
+  assert.deepEqual([...new Set(calls.map(call => call[0]))].sort(), ['cancelNodusSend', 'contractAccount', 'contractEstimate', 'contractSimulate', 'contractTicket', 'prepareNodusContract']);
+  assert.deepEqual(calls.filter(call => call[0] === 'prepareNodusContract').map(call => call[1][0].action), ['deposit', 'withdraw', 'redeem', 'call', 'deploy']);
+  assert.doesNotMatch(JSON.stringify(calls), /envelope|recoveryPhrase/);
+});
 
 // Minimal DOM fixture: records displayed text and invokes actual renderer handlers.
 class Node {

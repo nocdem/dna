@@ -12,7 +12,7 @@ import { ASSETS, PRICE_MAX_AGE, chainBalances, portfolioSnapshot, usdText } from
 // Node >=22.14; Chromium at CHROMIUM_PATH or /usr/bin/chromium. No build or
 // compile flags. SHOT_DIR optionally keeps review screenshots; otherwise no
 // artifacts remain. Browser, HTTP server and Vite close in finally, even on failure.
-// Vite aliases/defines are copied from vite.extension.config.js:24-29; mirror
+// Vite aliases/defines are copied from vite.extension.config.js; mirror
 // later changes there. The version define comes from the same package.json.
 // Proves mounted-page geometry, names, price wiring and approval/form regressions.
 // Can falsely pass visually: geometry is not aesthetic approval. A normal page
@@ -24,7 +24,7 @@ const { version } = JSON.parse(readFileSync(new URL('../../package.json', import
 const button = (page, name) => page.getByRole('button', { name, exact: true });
 async function priceCount(page) { return page.evaluate(() => window.layout.calls.filter(call => call.method === 'getPrices').length); }
 async function waitHome(page) {
-  await page.waitForFunction(() => document.querySelectorAll('.network-health[data-health="current"]').length === 6 && document.getElementById('portfolio-total')?.textContent.startsWith('$'));
+  await page.waitForFunction(() => document.querySelectorAll('.network-health[data-health="current"]').length === 7 && document.getElementById('portfolio-total')?.textContent.startsWith('$'));
   await page.locator('#screen:not([inert])').waitFor();
 }
 async function assertNavigation(page, current = null) {
@@ -39,15 +39,16 @@ async function assertNavigation(page, current = null) {
     ['Portfolio', '#assets-panel'], ['Send / Receive', '#send-form'],
     ['Earn', '#earn'], ['Shared vaults', '#vaults'], ['Smart contracts', '#contracts'],
     ['Activity', '#wallet-activity'], ['Address book', '#address-book'], ['Device & settings', '#settings'],
+    ['Connected sites', '#sites'],
   ]);
   const available = values.filter(node => !node.hidden);
   assert.deepEqual(available.filter(node => !['#earn', '#vaults', '#contracts'].includes(node.href)).map(node => node.text),
-    ['Portfolio', 'Send / Receive', 'Activity', 'Address book', 'Device & settings']);
+    ['Portfolio', 'Send / Receive', 'Activity', 'Address book', 'Device & settings', 'Connected sites']);
   assert.deepEqual(await page.locator('.wallet-page:visible').evaluateAll(nodes => nodes.map(node => node.id)), current ? [`page-${current}`] : []);
   assert.equal(await page.locator('#wallet-home').isVisible(), current === null);
   assert.equal(await page.locator('.wallet-navigation a:visible').count(), current ? 0 : available.length);
   if (current) {
-    const title = current === 'wallet-activity' ? 'Activity' : 'Device & settings';
+    const title = current === 'wallet-activity' ? 'Activity' : current === 'sites' ? 'Connected sites' : 'Device & settings';
     const heading = page.locator(`#page-${current}`).getByRole('heading', { name: title, exact: true });
     await heading.waitFor();
     assert.equal(await heading.evaluate(node => document.activeElement === node), true);
@@ -94,12 +95,13 @@ async function assertAssetLayout(page) {
       }));
     } finally { details.forEach((node, index) => { node.open = opened[index]; }); }
   });
-  // All fixture balances are positive. One row per asset/network: sixteen
-  // holdings in ten asset groups; Cellframe offers Receive only (portfolio.js:35).
+  // All fixture balances are positive. One row per asset/network: seventeen
+  // holdings in eleven asset groups; Cellframe and Ixios offer Receive only.
+  // portfolio.js:153-171 sorts native groups by network name after stablecoins.
   assert.deepEqual(groups.map(group => [group.symbol, group.rows.map(row => row.chain)]), [
     ['NODUS', ['nodus']], ['USDT', ['ethereum', 'bsc', 'solana', 'tron']],
     ['USDC', ['ethereum', 'bsc', 'solana', 'tron']], ['DAI', ['ethereum']], ['USDD', ['tron']],
-    ['BNB', ['bsc']], ['CPUNK', ['cellframe']], ['ETH', ['ethereum']], ['SOL', ['solana']], ['TRX', ['tron']],
+    ['BNB', ['bsc']], ['CPUNK', ['cellframe']], ['ETH', ['ethereum']], ['IXIOS', ['ixios']], ['SOL', ['solana']], ['TRX', ['tron']],
   ]);
   const contained = (item, box, message) => {
     assert.ok(item.width > 0 && item.height > 0, `${message}: must be measurable`);
@@ -126,14 +128,14 @@ async function assertAssetLayout(page) {
         contained(amount, row.box, `${label}: amount stays inside its row`);
         assert.ok(Math.abs(amount.right - row.value.right) < 1, `${label}: amount and price share the right edge`);
       }
-      assert.deepEqual(row.actions.map(action => action.text), row.chain === 'cellframe' ? ['Receive'] : ['Send', 'Receive'], label);
+      assert.deepEqual(row.actions.map(action => action.text), ['cellframe', 'ixios'].includes(row.chain) ? ['Receive'] : ['Send', 'Receive'], label);
       for (const action of row.actions) contained(action, row.box, `${label}: action stays inside its row`);
-      if (row.chain !== 'cellframe') assert.ok(Math.abs(row.actions[0].top - row.actions[1].top) < 1, `${label}: Send and Receive share a row`);
+      if (!['cellframe', 'ixios'].includes(row.chain)) assert.ok(Math.abs(row.actions[0].top - row.actions[1].top) < 1, `${label}: Send and Receive share a row`);
     }
   }
-  assert.equal(await page.locator('.chain-holding').count(), 16);
+  assert.equal(await page.locator('.chain-holding').count(), 17);
   assert.equal(await page.locator('.holding-actions button[aria-label^="Send "]').count(), 15);
-  assert.equal(await page.locator('.holding-actions button[aria-label^="Receive "]').count(), 16);
+  assert.equal(await page.locator('.holding-actions button[aria-label^="Receive "]').count(), 17);
   assert.equal(await page.locator('.transfer-buttons #quick-send').count(), 1);
   assert.equal(await page.locator('.transfer-buttons #quick-receive').count(), 1);
 }
@@ -142,13 +144,17 @@ async function assertHome(page, popup) {
   await assertNavigation(page);
   assert.equal(await page.locator('#wallet-title').textContent(), 'Your wallet');
   assert.deepEqual(await page.locator('.wallet-navigation a:visible .nav-name').allTextContents(),
-    ['Portfolio', 'Send / Receive', 'Smart contracts', 'Activity', 'Address book', 'Device & settings']);
+    ['Portfolio', 'Send / Receive', 'Smart contracts', 'Activity', 'Address book', 'Device & settings', 'Connected sites']);
   assert.equal(await page.locator('.extension-network').count(), 0);
-  assert.equal(await page.locator('.network-health').count(), 6);
-  assert.equal(await page.locator('.network-filter').count(), 7);
-  const networks = ['Nodus', 'Ethereum', 'BNB Smart Chain', 'Solana', 'TRON', 'Cellframe'];
+  assert.equal(await page.locator('.network-health').count(), 7);
+  assert.equal(await page.locator('.network-filter').count(), 8);
+  const networks = ['Nodus', 'Ethereum', 'BNB Smart Chain', 'Solana', 'TRON', 'Cellframe', 'Ixios'];
   assert.deepEqual(await page.locator('.network-health > span:not(.health-light)').allTextContents(), networks);
   assert.deepEqual(await page.locator('#chain option').allTextContents(), networks);
+  await page.waitForFunction(() => {
+    const icons = [...document.querySelectorAll('img[data-icon="ixios.png"]')];
+    return icons.length > 0 && icons.every(icon => icon.complete && icon.naturalWidth > 0);
+  });
   assert.equal(await page.locator('#chain').inputValue(), 'nodus');
   assert.deepEqual(await page.locator('.selected-network-name').allTextContents(), Array(5).fill('Nodus'));
   assert.deepEqual(await page.locator('.selected-network-stage').allTextContents(), Array(4).fill('Testnet'));
@@ -205,7 +211,7 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         { find: /^buffer\/?$/u, replacement: require.resolve('buffer/') },
         { find: /^events\/?$/u, replacement: require.resolve('events/') },
         { find: /^process\/?$/u, replacement: require.resolve('process/browser.js') },
-      ] }, define: { __APP_VERSION__: JSON.stringify(version), 'process.env.IN_TEST': 'false', global: 'globalThis' } });
+      ] }, define: { __APP_VERSION__: JSON.stringify(version), 'process.env.IN_TEST': 'false', global: 'globalThis', 'import.meta.env.VITE_ENABLE_IXIOS': '"true"' } });
     server = createServer(vite.middlewares);
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
     const origin = `http://127.0.0.1:${server.address().port}`;
@@ -276,6 +282,7 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         const before = await page.evaluate(() => window.layout.calls.filter(call => call.method === 'getState').length);
         await page.evaluate(() => { window.typedNodes = [document.getElementById('recipient'), document.getElementById('amount')]; });
         await page.clock.setFixedTime(new Date(await page.evaluate(() => Date.now()) + PRICE_MAX_AGE + 1));
+        await page.clock.runFor(30000); // the shared controller's render tick
         await page.locator('#amount').dispatchEvent('input');
         await page.waitForFunction(count => window.layout.calls.filter(call => call.method === 'getState').length > count, before);
         await page.evaluate(async () => { await window.layout.refresh(); });
@@ -310,16 +317,16 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         await assertNavigation(page);
         await page.locator('.wallet-navigation a[href="#settings"]').click();
         await assertNavigation(page, 'settings'); await capture('settings');
-        assert.equal(await page.locator('#balance-refresh-minutes').isDisabled(), true);
-        assert.equal(await page.locator('#address-book-save').isDisabled(), true);
-        // index.html:34,62: Device & settings is the entry; the extension's
-        // existing grants live inside it (wallet-screen.js:243-257,303).
-        await page.locator('#device-panel').getByRole('heading', { name: 'Connected sites', exact: true }).waitFor();
-        assert.deepEqual(await page.locator('#device-panel .extension-site h2').allTextContents(), ['https://evm-site.example', 'https://nodus-site.example']);
-        for (const site of await page.locator('#device-panel .extension-site').all()) {
+        assert.equal(await page.locator('#balance-refresh-minutes').isDisabled(), false);
+        assert.equal(await page.locator('#address-book-save').isDisabled(), false);
+        await page.locator('#page-settings .page-back').click();
+        await page.locator('.wallet-navigation a[href="#sites"]').click(); await assertNavigation(page, 'sites');
+        assert.deepEqual(await page.locator('#page-sites .extension-site h2').allTextContents(), ['https://evm-site.example', 'https://nodus-site.example']);
+        for (const site of await page.locator('#page-sites .extension-site').all()) {
           assert.equal(await site.getByRole('button', { name: 'Disconnect', exact: true }).isVisible(), true);
         }
         assert.equal(await button(page, 'Disconnect').count(), 2); await capture('sites');
+        await page.locator('#page-sites .page-back').click(); await page.locator('.wallet-navigation a[href="#settings"]').click();
         await page.locator('#auto-lock-minutes').selectOption('15');
         await page.waitForFunction(() => window.layout.state.preferences.autoLockTimeLimit === 15);
         assert.match(await page.locator('#session-timeout').textContent(), /15 minutes/);

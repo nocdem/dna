@@ -1,20 +1,23 @@
 import { mountWalletPage } from './app.js';
 import { mountReferenceWallet } from './wallet-screen.js';
 import { WALLET_MARKUP } from './wallet-markup.js';
+import { mountDeleteWallet } from './wallet-page.js';
 
-function renderEntry({ document, root, status, state, create, restore, unlock }) {
+function renderEntry({ document, root, status, state, create, restore, unlock, ui, run }) {
   const template = document.createElement('template'); template.innerHTML = WALLET_MARKUP;
   root.className = ''; root.replaceChildren(template.content.cloneNode(true));
   const $ = id => root.querySelector('#' + id);
   $('wallet-status').replaceWith(status);
   $('wallet-boot-status').hidden = true;
   $('welcome').hidden = state.isInitialized;
+  $('welcome').querySelector('p').textContent = 'Create a new wallet or restore your 24 recovery words. Your recovery phrase is saved encrypted in this browser.';
   $('unlock-form').hidden = !state.isInitialized;
   $('create').disabled = $('restore').disabled = $('unlock-wallet').disabled = false;
   $('create').onclick = create; $('restore').onclick = restore;
   $('unlock-form').onsubmit = event => {
     event.preventDefault(); const entered = $('unlock-password').value; $('unlock-password').value = ''; return unlock(entered);
   };
+  if (state.isInitialized) mountDeleteWallet({ document, root, status, ui, run });
 }
 
 // The existing lifecycle owns onboarding, trusted approvals, secret clearing

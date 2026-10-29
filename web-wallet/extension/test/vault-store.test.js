@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { VAULT_KEY, encryptVault, decryptVault, parseVault } from '../../src/vault.js';
+import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, encryptVault, decryptVault, parseVault } from '../../src/vault.js';
 import { validateNodusPhrase } from '../../src/recovery.js';
 import { createVaultStore } from '../src/background/vault-store.js';
 import { createLockCoordinator } from '../src/background/lock.js';
+import { activityKeyFor, serializeActivity, parseActivity } from '../../src/activity-storage.js';
 
 // Public fixture from web-wallet/test/vault.test.js; encryption uses the real vault parameters.
 const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
@@ -14,7 +15,7 @@ function memoryStorage(initial = {}) {
     values, writes,
     async get(key) { return key === null ? structuredClone(values) : Object.hasOwn(values, key) ? { [key]: values[key] } : {}; },
     async set(items) { writes.push(structuredClone(items)); Object.assign(values, structuredClone(items)); },
-    async remove(key) { delete values[key]; },
+    async remove(keys) { for (const key of Array.isArray(keys) ? keys : [keys]) delete values[key]; },
   };
 }
 async function assertOnlyVault(storage, value) {
@@ -45,6 +46,24 @@ test('create from a phrase, unlock and lock keep only the web-wallet vault value
   assert.throws(() => lockCoordinator.assertUnlocked(), /locked/);
   await assertOnlyVault(storage, value);
   assert.equal(storage.writes.length, 1);
+});
+
+// Package I: real password derivation and id preservation; populate every
+// cache bucket before delete. No flags/network/artifacts. An empty fixture
+// would falsely pass deletion while missing the per-network records.
+test('change password preserves vault id and delete locks and removes every wallet bucket', async () => {
+  const storage = memoryStorage(), lockCoordinator = createLockCoordinator(), store = createVaultStore({ storage, lockCoordinator });
+  const original = await store.create(password, phrase), newer = 'public-new-password-456';
+  const activity = await serializeActivity(original.id, [], await activityKeyFor(phrase, original.id)); storage.values[ACTIVITY_KEY] = activity;
+  await store.changePassword(password, newer);
+  await assert.rejects(store.unlock(password));
+  assert.equal((await store.unlock(newer)).id, original.id);
+  assert.equal(storage.values[ACTIVITY_KEY], activity);
+  assert.deepEqual(await parseActivity(storage.values[ACTIVITY_KEY], original.id, {}, await activityKeyFor(phrase, original.id)), []);
+  for (const key of [BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, `${ACTIVITY_KEY}.solana.devnet`, `${HISTORY_KEY}.tron.nile`]) storage.values[key] = 'public encrypted fixture';
+  storage.values.unrelated = 'keep';
+  await store.deleteVault(); assert.equal(lockCoordinator.isLocked, true);
+  assert.deepEqual(storage.values, { unrelated: 'keep' });
 });
 
 // Proves the existing generator produces an accepted 24-word phrase; a nonempty-string check could accept an invalid mnemonic.

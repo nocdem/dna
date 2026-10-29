@@ -6,11 +6,14 @@ import { getBytes, keccak256, Transaction, verifyMessage, verifyTypedData } from
 import { Caip25EndowmentPermissionName, setEthAccounts, setPermittedEthChainIds } from '@metamask/chain-agnostic-permission';
 import log from 'loglevel';
 import { CHAINS } from '../../src/config.js';
+import { createMockNodusModule } from '../../test/nodus-mock-module.js';
+import { deriveNodusAddress } from '../../src/nodus/derive.js';
 
 // Node >=22.14, pinned packages and CPUNK WASM; injected HTTPS JSON-RPC only, no network/disk output.
 const phrase = 'abandon '.repeat(23) + 'art', password = 'public-test-password-123';
 const account = '0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb', to = '0x0000000000000000000000000000000000000001';
 const cpunkWasmBytes = readFileSync(new URL('../../src/cpunk/legacy-dilithium.wasm', import.meta.url));
+const nodusWasmBytes = readFileSync(new URL('../../src/nodus/mldsa87.wasm', import.meta.url));
 const types = { Message: [{ name: 'text', type: 'string' }] };
 const typed = { domain: { name: 'Public fixture', chainId: 1 }, primaryType: 'Message',
   types: { EIP712Domain: [{ name: 'name', type: 'string' }, { name: 'chainId', type: 'uint256' }], ...types }, message: { text: 'public typed message' } };
@@ -23,11 +26,14 @@ function deferred() {
 let module, id = 0;
 async function setup(t) {
   const values = {}, calls = [], raw = [], logs = [];
+  const nodusMock = createMockNodusModule();
+  nodusMock.state.fingerprint = await deriveNodusAddress(phrase, { wasmBytes: nodusWasmBytes });
   const fixture = {
-    // This suite isolates EVM custody; nodus-background.test.js exercises the real consumer.
-    consumeNodusSeed: () => {},
+    // B1 now uses the real authenticated shared activity writer; only the
+    // Nodus transport module is a fixture. The worker retains real cache keys.
+    nodusOptions: { factory: nodusMock.factory },
     runtime: { id: 'evm-test', onConnect: event(), getManifest: () => ({ version: '0.1.132' }), getURL: path => `chrome-extension://evm-test/${path}` },
-    storage: { async get(key) { return { [key]: structuredClone(values[key]) }; }, async set(items) { Object.assign(values, structuredClone(items)); } },
+    storage: { async get(keys) { return Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(key => [key, structuredClone(values[key])])); }, async set(items) { Object.assign(values, structuredClone(items)); } },
     alarms: { onAlarm: event(), async clear() {}, async create() {} },
     windows: { onRemoved: event(), async getAll() { return []; }, async getLastFocused() { return { top: 0, left: 0, width: 1000 }; }, async create(options) { return { ...options, id: 2 }; }, async update() {} },
   };
@@ -46,6 +52,7 @@ async function setup(t) {
       case 'eth_estimateGas': result = '0x5208'; break;
       case 'eth_gasPrice': case 'eth_maxPriorityFeePerGas': result = '0x3b9aca00'; break;
       case 'eth_getTransactionCount': result = '0x7'; break;
+      case 'eth_getTransactionReceipt': result = null; break;
       case 'eth_getBlockByNumber': result = { number: '0x10', hash: '0x' + '11'.repeat(32), parentHash: '0x' + '22'.repeat(32),
         timestamp: '0x1', nonce: '0x0000000000000000', difficulty: '0x0', gasLimit: '0x1c9c380', gasUsed: '0x0',
         miner: to, extraData: '0x', transactions: [] }; break;
@@ -61,7 +68,7 @@ async function setup(t) {
     finally { if (saved) Object.defineProperty(globalThis, 'chrome', saved); else delete globalThis.chrome; }
   }
   const background = await module.createBackground(fixture);
-  await background.vaultStore.create(password, phrase); await background.unlock(password, { cpunkWasmBytes });
+  await background.vaultStore.create(password, phrase); await background.unlock(password, { cpunkWasmBytes, nodusWasmBytes });
   const engines = [];
   function site(origin = 'https://site.example') {
     const { engine } = background.engine.setupProviderEngineEip1193({ origin, subjectType: 'website' }); engines.push(engine);
@@ -89,8 +96,25 @@ async function setup(t) {
     assert.deepEqual((await connecting).result, [account.toLowerCase()]);
   }
   t.after(async () => { engines.forEach(engine => engine.destroy()); await background.lock(); await background.destroy(); });
-  return { background, fixture, values, state, calls, raw, logs, site, connect, nextApproval };
+  return { background, fixture, values, state, calls, raw, logs, site, connect, nextApproval, nodusMock };
 }
+
+// B1: a chain-name EVM recipient must consult the live Nodus-client getter.
+// An always-resolving standalone name mock would miss the wrapper omission.
+test('EVM chain names resolve through the shared Nodus client getter', async t => {
+  const { background, nodusMock } = await setup(t), owner = 'cd'.repeat(64);
+  nodusMock.state.names.publicname = owner;
+  nodusMock.state.profiles[owner] = { eth: to };
+  let reads = 0; const original = background.nodus.chainActivity.bind(background.nodus);
+  t.mock.method(background.nodus, 'chainActivity', (...args) => {
+    const activity = original(...args);
+    return { ...activity, get client() { reads++; return activity.client; } };
+  });
+  const review = await background.evm.prepareSend({ chain: 'ethereum', symbol: 'ETH', to: 'publicname', amount: '0.01' });
+  assert.equal(review.to, to); assert.ok(reads > 0);
+  assert.ok(review.review.some(([label, value]) => label === 'To (chain name)' && value === 'publicname'));
+  background.evm.cancelSend(review.id);
+});
 
 // Proves engine hooks wait for approval and produce recoverable signatures; keyring-only tests miss middleware/origin wiring.
 test('site personal_sign and typedData_v4 require approval and sign with the web-wallet account', async t => {
@@ -231,14 +255,19 @@ test('switching to an unpermitted chain requests permission before shared networ
 });
 
 // Proves settings use config endpoints and hydrate on worker restart; checking a backup snapshot alone misses restoration/wiring.
-test('shared network and listed RPC choice survive a locked background restart', async t => {
-  const { background, fixture } = await setup(t);
+test('listed or typed HTTPS RPC persists and the selected client actually uses it', async t => {
+  const { background, fixture, calls } = await setup(t);
   await background.evm.selectNetwork('bsc'); await background.evm.setEndpoint('bsc', CHAINS.bsc.rpcOptions[1].url);
-  await assert.rejects(background.evm.setEndpoint('bsc', 'https://unlisted.example'), /listed/);
+  await background.evm.setEndpoint('bsc', 'https://typed-bsc.example');
+  await background.evm.selectNetwork('bsc');
+  await background.evm.client.provider.request({ method: 'eth_blockNumber' });
+  assert.ok(calls.some(call => call.url === 'https://typed-bsc.example/' && call.method === 'eth_blockNumber'));
+  for (const endpoint of ['http://typed.example', 'https://user:pass@typed.example', 'https://typed.example/#fragment'])
+    await assert.rejects(background.evm.setEndpoint('bsc', endpoint), /HTTPS|valid/);
   const restarted = await module.createBackground({ ...fixture, runtime: { ...fixture.runtime, onConnect: event() } });
   try {
     assert.equal(restarted.lockCoordinator.isLocked, true); assert.equal(restarted.evm.getState().selectedChain, 'bsc');
-    assert.equal(restarted.evm.getState().endpoints.bsc, CHAINS.bsc.rpcOptions[1].url);
+  assert.equal(restarted.evm.getState().endpoints.bsc, 'https://typed-bsc.example/');
     assert.equal((await restarted.engine.getNetworkState()).chainId, '0x38');
     assert.equal(restarted.permissions.getSelectedAccount().type, 'eip155:eoa');
   } finally { await restarted.destroy(); }
@@ -262,12 +291,16 @@ test('lock invalidates pending site signatures, site transactions and internal s
   const { background, site, connect, nextApproval, raw } = await setup(t), remote = site(); await connect(remote);
   for (const [method, params] of [['personal_sign', ['0x1234', account]], ['eth_signTypedData_v4', [account, JSON.stringify(typed)]], ['eth_sendTransaction', [{ from: account, to }]]]) {
     const signing = remote.request(method, params), pending = await nextApproval(signing);
-    await background.lock(); await background.unlock(password, { cpunkWasmBytes }); await background.approvals.controller.acceptRequest(pending.id, true);
+    await background.lock(); await background.unlock(password, { cpunkWasmBytes, nodusWasmBytes }); await background.approvals.controller.acceptRequest(pending.id, true);
     assert.match((await signing).error.message, /locked/i);
   }
   const review = await background.evm.prepareSend({ chain: 'ethereum', symbol: 'ETH', to, amount: '0.01' });
-  assert.match(review.fee, /ETH$/); await background.lock(); await background.unlock(password, { cpunkWasmBytes });
+  assert.match(review.fee, /ETH$/); await background.lock();
   await assert.rejects(background.evm.confirmSend(review.id), /locked/i); assert.equal(raw.length, 0);
+  await background.unlock(password, { cpunkWasmBytes, nodusWasmBytes });
+  // src/app.js:950,1756 cancels and drops the review on lock. Unlocking does
+  // not restore it; checking only while locked would miss a retained review.
+  await assert.rejects(background.evm.confirmSend(review.id), { message: 'This review is already closed.' }); assert.equal(raw.length, 0);
 });
 
 // Proves internal sends use real adapter bytes and one-shot confirmation; UI-only checks could hide no-op sends.
@@ -295,7 +328,7 @@ test('site and internal transactions waiting inside ethers cannot broadcast afte
       await background.approvals.controller.acceptRequest((await nextApproval(sending)).id, true);
     }
     await started;
-    try { await background.lock(); await background.unlock(password, { cpunkWasmBytes }); }
+    try { await background.lock(); await background.unlock(password, { cpunkWasmBytes, nodusWasmBytes }); }
     finally { release(); }
     if (internal) await rejected; else assert.match((await sending).error.message, /locked/i);
     assert.equal(raw.length, 0);
