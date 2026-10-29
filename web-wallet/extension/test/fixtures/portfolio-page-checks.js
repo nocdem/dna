@@ -117,15 +117,19 @@ export async function checkPortfolioStatus(page, origin) {
   await page.goto(`${origin}/test/fixtures/functions.html`);
   await page.waitForFunction(() => window.fixture?.ready);
   // The operator removed the duplicate connection text; updates must still
-  // preserve Lock and the portfolio's existing per-network status controls.
+  // preserve the lock icon and the portfolio's per-network status controls.
   for (const state of ['idle', 'locked', 'error', 'unknown', 'identifying', 'identified', 'connecting', 'ready']) {
     await page.evaluate(value => { window.fixture.state.nodus.state = value; window.fixture.screen.update(); }, state);
     assert.equal(await page.locator('#net-status, #net-status-text').count(), 0);
     assert.equal(await page.locator('#lock').isVisible(), true);
     assert.equal(await page.locator('.network-health[data-chain="nodus"]').count(), 1);
   }
-  for (const [minutes, text] of [[5, 'Auto-lock after 5 minutes of inactivity'], [10, 'Auto-lock after 10 minutes of inactivity'], [15, 'Auto-lock after 15 minutes of inactivity'], [30, 'Auto-lock after 30 minutes of inactivity'], [60, 'Auto-lock after 1 hour of inactivity'], [0, 'Auto-lock off']]) {
+  for (const minutes of [5, 10, 15, 30, 60, 0]) {
     await page.evaluate(value => { window.fixture.state.preferences.autoLockTimeLimit = value; window.fixture.screen.update(); }, minutes);
-    assert.equal(await page.locator('#session-timeout').textContent(), text);
+    assert.equal(await page.locator('.wallet-session, #session-timeout').count(), 0);
+    assert.equal(await page.getByRole('button', { name: 'Lock wallet', exact: true }).count(), 1);
+    assert.equal(await page.locator('#auto-lock-minutes').inputValue(), String(minutes));
+    assert.match(await page.locator('#auto-lock-note').textContent(), minutes === 0 ? /Auto-lock is off/u
+      : new RegExp(`The wallet locks after ${minutes === 60 ? '1 hour' : `${minutes} minutes`} without use`, 'u'));
   }
 }

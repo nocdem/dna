@@ -21,6 +21,28 @@ import { ASSETS, PRICE_MAX_AGE, chainBalances, portfolioSnapshot, usdText, displ
 // viewports are not measurements of a real window's inner size: no vertical fit.
 const walletRoot = fileURLToPath(new URL('../../', import.meta.url)), require = createRequire(import.meta.url);
 const { version } = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
+
+// Sizing at bed273dcf (0.1.136): src/style.css:530-533,886 and
+// extension/src/ui/extension.css:18-20,35. Restore those declarations on the
+// same mounted card so the comparison uses identical fonts, text and width.
+// Comparing only the two new states would falsely pass an unchanged large card.
+async function portfolioHeight0136(page) {
+  const baseline = await page.addStyleTag({ content: `
+    .extension-page .portfolio-card { padding: 28px 28px 24px; }
+    .extension-page .portfolio-heading { grid-template-columns: minmax(0, 1fr) 32px; }
+    .extension-page .portfolio-heading #lock { display: none; }
+    .extension-page .portfolio-heading .eyebrow { min-height: 3.4em; }
+    .extension-page .portfolio-amount { margin: 20px 0 6px; }
+    .extension-page #portfolio-status { min-height: 3.4em; margin: 6px 0 18px; }
+    @media (max-width: 760px) {
+      .extension-page .portfolio-card { padding: 20px 18px 18px; }
+      .extension-page #portfolio-status { min-height: 6.8em; }
+    }
+  ` });
+  try { return (await page.locator('.portfolio-card').boundingBox()).height; }
+  finally { await baseline.evaluate(node => node.remove()); }
+}
+
 const button = (page, name) => page.getByRole('button', { name, exact: true });
 async function priceCount(page) { return page.evaluate(() => window.layout.calls.filter(call => call.method === 'getPrices').length); }
 // Populated pending-send fixtures must leave no block, rows, empty text or
@@ -158,6 +180,25 @@ async function assertHome(page, popup) {
   assert.equal(await page.locator('.site-header .wordmark img').count(), 1);
   assert.equal(await page.getByText('Wallet open in this browser', { exact: true }).count(), 0);
   assert.equal(await button(page, 'Lock wallet').isVisible(), true);
+  assert.equal((await button(page, 'Lock wallet').textContent()).trim(), '');
+  assert.equal(await page.locator('#lock > svg.app-icon[aria-hidden="true"]').count(), 1);
+  assert.equal(await page.locator('.wallet-session, #session-timeout').count(), 0);
+  assert.equal(await page.locator('.portfolio-heading > #portfolio-hide + #lock').count(), 1);
+  const lockStyle = await page.locator('#lock').evaluate(node => ({ border: getComputedStyle(node).borderWidth,
+    background: getComputedStyle(node).backgroundColor, icon: node.querySelector('svg').getBoundingClientRect().toJSON() }));
+  assert.equal(lockStyle.border, '0px'); assert.equal(lockStyle.background, 'rgba(0, 0, 0, 0)');
+  assert.ok(lockStyle.icon.width > 0 && lockStyle.icon.height > 0, 'The lock icon is measurable');
+  const controls = await page.locator('#portfolio-hide, #lock').evaluateAll(nodes => nodes.map(node => {
+    const style = getComputedStyle(node);
+    return { box: node.getBoundingClientRect().toJSON(), color: style.color,
+      background: style.backgroundColor, padding: style.padding, border: style.borderWidth };
+  }));
+  const [eye, lock] = controls;
+  assert.equal(lock.color, eye.color); assert.equal(lock.background, eye.background);
+  assert.equal(lock.padding, eye.padding); assert.equal(lock.border, eye.border);
+  assert.equal(lock.box.width, eye.box.width); assert.equal(lock.box.height, eye.box.height);
+  assert.ok(Math.abs(lock.box.top - eye.box.top) < 1, 'The lock and eye share a row');
+  assert.ok(lock.box.left >= eye.box.right && lock.box.left - eye.box.right <= 12, 'The lock sits beside the eye');
   assert.deepEqual(await page.locator('.wallet-navigation a:visible .nav-name').allTextContents(),
     ['Portfolio', 'Send / Receive', 'Smart contracts', 'Activity', 'Address book', 'Device & settings', 'Connected sites']);
   assert.equal(await page.locator('.extension-network').count(), 0);
@@ -290,16 +331,34 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
           continue;
         }
         await open('home'); await assertHome(page, kind === 'popup');
+        // Real reference-page wiring, public fake background, no live keys or
+        // RPC. Visibility alone cannot prove native keyboard activation locks.
+        for (const key of ['click', 'Enter', 'Space']) {
+          const lock = button(page, 'Lock wallet');
+          if (key === 'click') await lock.click();
+          else {
+            await button(page, 'Hide balances').focus(); await page.keyboard.press('Tab');
+            assert.equal(await lock.evaluate(node => document.activeElement === node), true);
+            await page.keyboard.press(key);
+          }
+          await page.locator('#unlock-form:visible').waitFor();
+          assert.equal(await page.evaluate(() => window.layout.state.isUnlocked), false);
+          assert.equal(await page.evaluate(() => window.layout.calls.filter(call => call.method === 'setLocked').length), 1);
+          assert.equal(await page.locator('#lock').isVisible(), false);
+          await open('home'); await waitHome(page);
+        }
         // No flags/live data. The public fixture holds every initial balance
         // and quote read. Measuring only after waitHome would miss the jump.
         await page.goto(`${origin}/extension/test/fixtures/layout.html?page=${kind}&stage=home&hold`);
         await page.waitForFunction(() => window.layout && document.getElementById('portfolio-label')?.textContent === 'Updating portfolio');
         await page.evaluate(() => document.fonts.ready);
         const loading = await page.locator('.portfolio-card').boundingBox();
+        assert.ok(loading.height < await portfolioHeight0136(page) - 1, `${kind} ${width}: loading card is smaller than 0.1.136`);
         const refreshTop = await page.locator('#portfolio-refresh').evaluate(node => node.getBoundingClientRect().top);
         await page.evaluate(() => window.layout.releaseReads()); await waitHome(page);
         assert.equal(await page.locator('#portfolio-label').textContent(), 'Estimated portfolio value');
         const settled = await page.locator('.portfolio-card').boundingBox();
+        assert.ok(settled.height < await portfolioHeight0136(page) - 1, `${kind} ${width}: settled card is smaller than 0.1.136`);
         assert.ok(Math.abs(loading.height - settled.height) < 1, `${kind} ${width}: portfolio height stays fixed after loading`);
         assert.ok(Math.abs(refreshTop - await page.locator('#portfolio-refresh').evaluate(node => node.getBoundingClientRect().top)) < 1, 'Refresh action stays in place');
         // Both approved greeting states on popup/full-page layouts. A trusted
@@ -445,7 +504,8 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         await page.locator('#page-sites .page-back').click(); await page.locator('.wallet-navigation a[href="#settings"]').click();
         await page.locator('#auto-lock-minutes').selectOption('15');
         await page.waitForFunction(() => window.layout.state.preferences.autoLockTimeLimit === 15);
-        assert.match(await page.locator('#session-timeout').textContent(), /15 minutes/);
+        assert.match(await page.locator('#auto-lock-note').textContent(), /locks after 15 minutes/);
+        assert.equal(await page.locator('#session-timeout').count(), 0);
         await page.locator('#rpc-settings').evaluate(node => { node.open = true; });
         await page.locator('#network-solana').selectOption('devnet');
         await page.waitForFunction(() => window.layout.state.networks.solana === 'devnet');
@@ -457,8 +517,12 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         await page.locator('#reveal-password').fill('fresh-password');
         await button(page, 'Reveal phrase').click();
         assert.equal(await page.locator('#device-panel .phrase-grid input[readonly]').count(), 24);
+        await page.locator('#page-settings .page-back').click();
+        assert.equal(await page.locator('input[readonly]').count(), 0);
         await page.locator('#lock').click();
         await page.locator('#unlock-form:visible').waitFor();
+        assert.equal(await page.evaluate(() => window.layout.state.isUnlocked), false);
+        assert.equal(await page.evaluate(() => window.layout.calls.filter(call => call.method === 'setLocked').length), 1);
         assert.equal(await page.locator('input[readonly]').count(), 0);
         assert.equal(await page.locator('#wallet-heading').isVisible(), false);
         await capture('locked');

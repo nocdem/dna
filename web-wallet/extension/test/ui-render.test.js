@@ -17,7 +17,7 @@ test('open-wallet status uses web-wallet network and auto-lock text', () => {
   for (const minutes of [5, 10, 15, 30, 60, 0]) assert.equal(autoLockBarText(minutes), minutes === 0 ? 'Auto-lock off' : `Auto-lock after ${minutes === 60 ? '1 hour' : `${minutes} minutes`} of inactivity`);
 });
 
-// Connection updates preserve the session controls; auto-lock reaches its text;
+// Connection updates preserve the lock icon; auto-lock reaches its settings;
 // listed provider selections and the welcome paragraph retain reference text.
 // Public state only, loopback Vite, Chromium; no live RPC/wallet artifacts.
 test('mounted status, provider choices and welcome text follow the reference', { timeout: 60_000 }, async () => {
