@@ -206,8 +206,9 @@ test('mounted reveal clears after ten idle minutes even when auto-lock is never'
 });
 
 // Proves the lifecycle adapter's import form reaches save/unlock with 24 words,
-// clears inputs and restores the title (index.html:18) plus portfolio (index.html:31).
-// Its heading lives in navigation; ui-layout.test.js covers the production reference entry.
+// clears inputs and restores the session controls plus portfolio (index.html:31).
+// This uses the lifecycle's fallback renderer; ui-layout.test.js covers the
+// production reference entry and its name-based greeting.
 test('mounted import form saves through the trusted API and renders home', async t => {
   const { root, navigation, calls, phrase } = await pageFixture(t, false);
   button(root, 'Import phrase').onclick();
@@ -216,7 +217,7 @@ test('mounted import form saves through the trusted API and renders home', async
   for (const input of root.querySelectorAll('input[type="password"]')) input.value = 'public-test-password-123';
   await descendants(root, node => node.tagName === 'form')[0].onsubmit({ preventDefault() {} });
   assert.ok(calls.some(call => call.method === 'createNewVaultAndRestore')); assert.ok(calls.some(call => call.method === 'submitPasswordOrEncryptionKey'));
-  assert.deepEqual(descendants(navigation, node => node.tagName === 'h1').map(node => node.textContent), ['Your wallet']);
+  assert.ok(button(navigation, 'Lock'));
   assert.equal(descendants(root, node => node.id === 'portfolio-label')[0].textContent, 'Estimated portfolio value');
   assert.equal(root.querySelectorAll('input').length, 0);
 });

@@ -158,7 +158,8 @@ test('MV3 zip loads in Chromium and announces Nodus Wallet to a local page', { t
     smokePages.add(popup);
     popup.on('pageerror', error => errors.push(error.message));
     await popup.goto(`${extensionUrl}/${manifest.action.default_popup}`);
-    await popup.getByRole('heading', { name: 'Your wallet', exact: true }).waitFor();
+    await popup.locator('#welcome:visible').waitFor();
+    assert.equal(await popup.getByRole('heading', { name: 'Your wallet', exact: true }).count(), 0);
     assert.equal(await popup.locator('#create').isVisible(), true);
     assert.equal(await popup.locator('#restore').isVisible(), true);
     assert.equal(await popup.locator('#wallet-status').textContent(), '');
