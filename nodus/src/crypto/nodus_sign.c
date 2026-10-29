@@ -112,13 +112,19 @@ static size_t build_tagged_preimage(uint8_t *buf, size_t buf_cap,
  * identical to AUTH_CHALLENGE's (0x01) 32-byte nonce, whose raw fallback
  * stays open — a session signature and an auth-challenge signature would
  * verify against each other's bytes. 0x0B is the session design's
- * "same strict class as 0x0A" (§2R3 N7 FINAL). */
+ * "same strict class as 0x0A" (§2R3 N7 FINAL).
+ *
+ * SITE_MESSAGE (0x0C), docs/plans/decisions/2026-10-28-extension-nodus-
+ * site-signing.md, requires the NDS1 tag too. Same brand-new strict class
+ * as 0x0A/0x0B: no raw signatures to preserve. The shared predicate keeps
+ * both signing and verification strict. */
 bool nodus_sign_purpose_is_strict(uint8_t purpose) {
     return purpose == NODUS_PURPOSE_PREPARED ||
            purpose == NODUS_PURPOSE_VIEWOK ||
            purpose == NODUS_PURPOSE_MLKEM_BIND ||
            purpose == NODUS_PURPOSE_SESSION_AUTH ||
-           purpose == NODUS_PURPOSE_WITNESS_ADDR;
+           purpose == NODUS_PURPOSE_WITNESS_ADDR ||
+           purpose == NODUS_PURPOSE_SITE_MESSAGE;
 }
 
 /* ───── Tagged sign/verify (internal engine) ────────────────────────── */
@@ -314,6 +320,59 @@ int nodus_verify_witness_addr(const nodus_sig_t *sig,
                               const nodus_pubkey_t *pk) {
     return nodus_verify_tagged(sig, NODUS_PURPOSE_WITNESS_ADDR,
                                 record, record_len, pk);
+}
+
+/* Decision docs/plans/decisions/2026-10-28-extension-nodus-site-signing.md,
+ * origin addendum: digest = SHA3-512(origin_len_be(4) || origin || message).
+ * NDS1 || 0x0C || 00 00 00 40 || digest is always 73 bytes, distinct from
+ * raw 32-byte auth nonces / 64-byte TX hashes. */
+static int site_message_digest(uint8_t digest[QGP_SHA3_512_DIGEST_LENGTH],
+                                const uint8_t *origin, size_t origin_len,
+                                const uint8_t *message, size_t message_len) {
+    if (!origin || !origin_len || origin_len > UINT32_MAX || !message) return -1;
+    if (origin_len > SIZE_MAX - 4 || message_len > SIZE_MAX - 4 - origin_len) return -1;
+    const size_t input_len = 4 + origin_len + message_len;
+    uint8_t *input = malloc(input_len);
+    if (!input) return -1;
+    const uint32_t len = (uint32_t)origin_len;
+    input[0] = (uint8_t)(len >> 24);
+    input[1] = (uint8_t)(len >> 16);
+    input[2] = (uint8_t)(len >> 8);
+    input[3] = (uint8_t)len;
+    memcpy(input + 4, origin, origin_len);
+    memcpy(input + 4 + origin_len, message, message_len);
+    int rc = qgp_sha3_512(input, input_len, digest);
+    qgp_secure_memzero(input, input_len);
+    free(input);
+    return rc;
+}
+
+int nodus_sign_site_message(nodus_sig_t *sig_out,
+                            const uint8_t *origin, size_t origin_len,
+                            const uint8_t *message, size_t message_len,
+                            const nodus_seckey_t *sk) {
+    if (!sig_out || !message || !sk) return -1;
+    uint8_t digest[QGP_SHA3_512_DIGEST_LENGTH];
+    int rc = site_message_digest(digest, origin, origin_len, message, message_len);
+    if (rc == 0)
+        rc = nodus_sign_tagged(sig_out, NODUS_PURPOSE_SITE_MESSAGE,
+                               digest, sizeof(digest), sk);
+    qgp_secure_memzero(digest, sizeof(digest));
+    return rc;
+}
+
+int nodus_verify_site_message(const nodus_sig_t *sig,
+                              const uint8_t *origin, size_t origin_len,
+                              const uint8_t *message, size_t message_len,
+                              const nodus_pubkey_t *pk) {
+    if (!sig || !message || !pk) return -1;
+    uint8_t digest[QGP_SHA3_512_DIGEST_LENGTH];
+    int rc = site_message_digest(digest, origin, origin_len, message, message_len);
+    if (rc == 0)
+        rc = nodus_verify_tagged(sig, NODUS_PURPOSE_SITE_MESSAGE,
+                                 digest, sizeof(digest), pk);
+    qgp_secure_memzero(digest, sizeof(digest));
+    return rc;
 }
 
 /* P2P-PORT F5 — nodus_sign_t3_envelope / nodus_verify_t3_envelope are

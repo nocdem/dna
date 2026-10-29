@@ -1,0 +1,33 @@
+/* Extension layout only; typography, controls, colours and phrase/QR styles come from web-wallet src/style.css. */
+.extension-page { min-width: 360px; }
+.extension-page[data-page="popup"] { width: 400px; min-height: 540px; }
+.extension-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; max-width: 760px; margin: 0 auto; padding: 20px 16px; }
+.extension-header .wordmark { font-size: 28px; }
+.extension-header > a:last-child:not(.wordmark) { font-size: 11px; }
+.extension-shell { max-width: 760px; margin: 0 auto 20px; padding: 20px 16px; }
+.extension-navigation { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.extension-navigation:empty, #wallet-status:empty { display: none; }
+.extension-page h1 { margin: 8px 0 20px; font-size: 28px; letter-spacing: -.04em; }
+.extension-page h2 { font-size: 16px; margin: 0; }
+.extension-page form > button { margin-top: 16px; }
+.extension-page .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+.extension-addresses { display: grid; gap: 12px; }
+.extension-network { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 16px 0; border-bottom: 1px solid var(--line); }
+.extension-network h2 { grid-column: 2 / -1; }
+.extension-network code, .extension-network .hint { grid-column: 1 / -1; overflow-wrap: anywhere; margin: 0; font-size: 12px; line-height: 1.7; }
+.extension-network button { grid-column: 1 / -1; justify-self: start; }
+.extension-site { display: grid; gap: 14px; margin: 16px 0; padding: 18px 0; border-bottom: 1px solid var(--line); }
+.extension-site code, .extension-origin { overflow-wrap: anywhere; }
+.extension-site button { justify-self: start; }
+.extension-choices { min-width: 0; margin: 20px 0; padding: 16px; border: 1px solid var(--line); border-radius: 10px; }
+.extension-choices legend { font-size: 13px; }
+.extension-choices .check { margin: 12px 0 0; overflow-wrap: anywhere; }
+.extension-choices .check span { min-width: 0; }
+.extension-page .phrase-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.extension-page .receive-panel .address-row { flex-wrap: wrap; }
+.extension-page .receive-panel .address-row code { flex-basis: 100%; }
+.extension-page [inert] { opacity: .7; }
+@media (min-width: 640px) {
+  .extension-page[data-page="fullscreen"] .extension-shell { margin-top: 20px; padding: 32px; }
+  .extension-page[data-page="fullscreen"] .phrase-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}

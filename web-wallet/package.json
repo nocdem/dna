@@ -29,6 +29,21 @@
     "build:connect-core": "bash scripts/build-connect-wasm.sh"
   },
   "dependencies": {
+    "@metamask/approval-controller": "10.0.0",
+    "@metamask/base-controller": "10.0.0",
+    "@metamask/chain-agnostic-permission": "1.6.2",
+    "@metamask/controller-utils": "12.3.0",
+    "@metamask/eth-json-rpc-filters": "9.0.0",
+    "@metamask/eth-json-rpc-middleware": "24.0.2",
+    "@metamask/json-rpc-engine": "10.5.0",
+    "@metamask/json-rpc-middleware-stream": "8.0.8",
+    "@metamask/key-tree": "10.1.1",
+    "@metamask/messenger": "3.0.0",
+    "@metamask/object-multiplex": "2.1.0",
+    "@metamask/permission-controller": "13.1.1",
+    "@metamask/post-message-stream": "10.0.0",
+    "@metamask/providers": "22.1.1",
+    "@metamask/rpc-errors": "7.0.3",
     "@noble/curves": "1.9.7",
     "@noble/hashes": "1.8.0",
     "@solana-program/system": "0.14.1",
@@ -37,8 +52,14 @@
     "@solana/rpc-spec-types": "8.3.0",
     "buffer": "6.0.3",
     "ethers": "6.17.0",
+    "extension-port-stream": "5.0.3",
+    "is-stream": "2.0.0",
+    "loglevel": "1.9.2",
     "qrcode-generator": "2.0.4",
-    "tronweb": "6.5.1"
+    "readable-stream": "4.7.0",
+    "tronweb": "6.5.1",
+    "uuid": "8.3.2",
+    "webextension-polyfill": "0.12.0"
   },
   "devDependencies": {
     "jsqr": "1.4.0",

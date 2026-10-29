@@ -164,6 +164,7 @@
 #include "client/nodus_v2_stake.h"          /* the consent text container */
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
+#include "crypto/nodus_sign.h"
 
 /* nodus-send-wasm.c entry points this program calls (that file has no
  * header: see its include block). */
@@ -880,7 +881,56 @@ static int main_evm(int argc, char **argv) {
     return 0;
 }
 
+/* site-message --seed <64hex> --origin <origin> --message <hex> --sign-random <64hex>
+ * [--verify-signature <hex>]. Native site-message digest wrapper; the
+ * optional signature is the WASM result, verified with the same domain API. */
+static int main_site_message(int argc, char **argv) {
+    const char *seed_hex = NULL, *origin = NULL, *message_hex = NULL, *rnd_hex = NULL, *verify_hex = NULL;
+    for (int i = 2; i < argc; i += 2) {
+        if (i + 1 == argc) return fail("every option takes a value");
+        if (!strcmp(argv[i], "--seed")) seed_hex = argv[i + 1];
+        else if (!strcmp(argv[i], "--origin")) origin = argv[i + 1];
+        else if (!strcmp(argv[i], "--message")) message_hex = argv[i + 1];
+        else if (!strcmp(argv[i], "--sign-random")) rnd_hex = argv[i + 1];
+        else if (!strcmp(argv[i], "--verify-signature")) verify_hex = argv[i + 1];
+        else return fail("unknown site-message option");
+    }
+    if (!seed_hex || !origin || !*origin || !message_hex || !rnd_hex) return fail("site-message requires seed, origin, message and sign-random");
+    uint8_t seed[32] = {0};
+    nodus_pubkey_t pk;
+    nodus_seckey_t sk = {0};
+    nodus_sig_t sig, supplied;
+    uint8_t address[QGP_SHA3_512_DIGEST_LENGTH];
+    size_t n = 0, message_len = strlen(message_hex) / 2;
+    uint8_t *message = malloc(message_len ? message_len : 1);
+    int rc = 1;
+    if (!message) return fail("out of memory");
+    if (unhex(seed_hex, seed, sizeof(seed), &n) != 0 || n != sizeof(seed) ||
+        unhex(message_hex, message, message_len, &n) != 0 ||
+        unhex(rnd_hex, nsw_test_random_buf(), 4096, &n) != 0 || n != 32 ||
+        nsw_test_random_load((int)n) != 0 ||
+        qgp_dsa87_keypair_derand(pk.bytes, sk.bytes, seed) != 0 ||
+        nodus_sign_site_message(&sig, (const uint8_t *)origin, strlen(origin), message, message_len, &sk) != 0 ||
+        nodus_verify_site_message(&sig, (const uint8_t *)origin, strlen(origin), message, message_len, &pk) != 0 ||
+        nodus_verify(&sig, message, message_len, &pk) == 0 ||
+        qgp_sha3_512(pk.bytes, sizeof(pk.bytes), address) != 0) goto done;
+    if (verify_hex &&
+        (unhex(verify_hex, supplied.bytes, sizeof(supplied.bytes), &n) != 0 || n != sizeof(supplied.bytes) ||
+         nodus_verify_site_message(&supplied, (const uint8_t *)origin, strlen(origin), message, message_len, &pk) != 0)) goto done;
+    if (hex_line("signature", sig.bytes, sizeof(sig.bytes)) != 0 ||
+        hex_line("public_key", pk.bytes, sizeof(pk.bytes)) != 0 ||
+        hex_line("address", address, sizeof(address)) != 0) goto done;
+    rc = 0;
+done:
+    for (size_t i = 0; i < sizeof(sk); i++) ((volatile uint8_t *)&sk)[i] = 0;
+    for (size_t i = 0; i < sizeof(seed); i++) ((volatile uint8_t *)seed)[i] = 0;
+    for (size_t i = 0; i < message_len; i++) ((volatile uint8_t *)message)[i] = 0;
+    free(message);
+    return rc == 0 ? 0 : fail("site-message sign/verify failed");
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "site-message")) return main_site_message(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "evm")) return main_evm(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "claim-manifest")) return main_claim_manifest(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "claim")) return main_claim(argc, argv);

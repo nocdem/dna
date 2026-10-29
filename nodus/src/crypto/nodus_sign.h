@@ -77,6 +77,12 @@ extern "C" {
  *  seq, gossiped by PEX (phase F4). STRICT, same class as 0x0A: brand new,
  *  no compat to keep. 0x0B is the next free value after SESSION_AUTH. */
 #define NODUS_PURPOSE_WITNESS_ADDR   0x0B
+/** Site message, approved in docs/plans/decisions/2026-10-28-extension-
+ *  nodus-site-signing.md and its origin addendum. The site wrappers tag
+ *  SHA3-512(origin_len_be || origin || message), a 73-byte preimage.
+ *  STRICT on sign and verify,
+ *  like 0x0A/0x0B: brand new, no raw compatibility. */
+#define NODUS_PURPOSE_SITE_MESSAGE   0x0C
 
 /** Tagged preimage layout:
  *    MAGIC (4) || purpose (1) || data_len_be (4) || data (data_len)
@@ -117,7 +123,9 @@ int nodus_verify(const nodus_sig_t *sig,
  * — N1 delta 1, D2), NODUS_PURPOSE_SESSION_AUTH (0x0A) and
  * NODUS_PURPOSE_WITNESS_ADDR (0x0B) (4004 session, decision record
  * 2026-09-26-witness-port-session.md — brand new, strict from their first
- * line, like 0x09). MLKEM_BIND is strict DESPITE being a tier-2 client/
+ * line, like 0x09), and NODUS_PURPOSE_SITE_MESSAGE (0x0C, decision
+ * 2026-10-28-extension-nodus-site-signing.md — same brand-new strict class).
+ * MLKEM_BIND is strict DESPITE being a tier-2 client/
  * inter-node auth-time binding like its non-strict sibling KYBER_BIND
  * (0x02): without the tag, its preimage (mlkem_pk || nonce, 1600 bytes) is
  * byte-shape-identical to KYBER_BIND's (kyber_pk || nonce), so a raw
@@ -205,6 +213,22 @@ int nodus_sign_witness_addr(nodus_sig_t *sig_out,
                             const nodus_seckey_t *sk);
 int nodus_verify_witness_addr(const nodus_sig_t *sig,
                               const uint8_t *record, size_t record_len,
+                              const nodus_pubkey_t *pk);
+
+/** SITE_MESSAGE domain — docs/plans/decisions/2026-10-28-extension-nodus-
+ *  site-signing.md, origin addendum. digest = SHA3-512(origin_len_be(4) ||
+ *  origin || message), using the connection-bound origin bytes as-is;
+ *  then sign/verify NDS1 || 0x0C || 00 00 00 40 || digest: exactly 73 bytes
+ *  for every message length, including empty. No raw-verify fallback.
+ *  origin_len must be 1..UINT32_MAX; origin must be non-NULL.
+ *  message must be non-NULL even when message_len is zero. */
+int nodus_sign_site_message(nodus_sig_t *sig_out,
+                            const uint8_t *origin, size_t origin_len,
+                            const uint8_t *message, size_t message_len,
+                            const nodus_seckey_t *sk);
+int nodus_verify_site_message(const nodus_sig_t *sig,
+                              const uint8_t *origin, size_t origin_len,
+                              const uint8_t *message, size_t message_len,
                               const nodus_pubkey_t *pk);
 
 /* P2P-PORT F5 — the T3_ENVELOPE sign/verify pair is DELETED with the

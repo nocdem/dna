@@ -2724,6 +2724,68 @@ static int nsw_end(int rc) {
     return rc;
 }
 
+/* Site signing, decision 2026-10-28-extension-nodus-site-signing.md.
+ * g_id is the unlocked wallet identity (nsw_identify_core); client init
+ * copies it into g_client, it does not replace it. No secret crosses this
+ * boundary. nodus_sign_site_message tags SHA3-512(len_be || origin || message),
+ * always 73 bytes,
+ * and uses the module's existing hedged randomness (qgp_platform_random
+ * above; decision 2026-09-23 exception 2). */
+static uint8_t *g_site_message;
+static size_t g_site_message_len;
+static nodus_sig_t g_site_signature;
+
+static void nsw_site_message_clear(void) {
+    if (g_site_message) {
+        nsw_wipe(g_site_message, g_site_message_len);
+        free(g_site_message);
+    }
+    g_site_message = NULL;
+    g_site_message_len = 0;
+}
+
+uint8_t *nsw_site_message_alloc(int len) {
+    if (g_busy || g_locked || g_cancel) return NULL;
+    nsw_site_message_clear();
+    nsw_wipe(&g_site_signature, sizeof(g_site_signature));
+    if (len < 0) return NULL;
+    g_site_message = malloc(len ? (size_t)len : 1);
+    if (g_site_message) g_site_message_len = (size_t)len;
+    return g_site_message;
+}
+
+const uint8_t *nsw_site_signature(void) { return g_site_signature.bytes; }
+const uint8_t *nsw_site_public_key(void) {
+    return (g_identified && !g_locked && !g_cancel) ? g_id.pk.bytes : NULL;
+}
+
+/* Input allocation contains origin bytes followed by message bytes. The
+ * caller supplies both lengths; no NUL terminator or origin normalization. */
+int nsw_site_sign_message(int origin_len, int len) {
+    if (nsw_begin() != 0) {
+        nsw_site_message_clear();
+        return -1;
+    }
+    nsw_wipe(&g_site_signature, sizeof(g_site_signature));
+    int rc = -1;
+    if (!g_identified) {
+        nsw_fail("The wallet identity is not ready.");
+    } else if (origin_len <= 0 || len < 0 || !g_site_message ||
+               (size_t)origin_len > g_site_message_len ||
+               (size_t)len != g_site_message_len - (size_t)origin_len) {
+        nsw_fail("Invalid site message.");
+    } else if (nodus_sign_site_message(&g_site_signature, g_site_message,
+                                      (size_t)origin_len, g_site_message + origin_len,
+                                      (size_t)len, &g_id.sk) != 0) {
+        nsw_wipe(&g_site_signature, sizeof(g_site_signature));
+        nsw_fail("The site message could not be signed.");
+    } else {
+        rc = 0;
+    }
+    nsw_site_message_clear();
+    return nsw_end(rc);
+}
+
 /* The node's chain id must be the configured one (design §3 A3: "chain id
  * pinned in the build -> a different chain id = refusal"). Remembers which
  * server key it checked, so a reconnect to another pinned server re-checks.
@@ -7532,6 +7594,8 @@ void nsw_lock(void) {
         nsw_wipe(&g_client.identity, sizeof(g_client.identity));
     }
     nsw_wipe(&g_id, sizeof(g_id));
+    nsw_site_message_clear();
+    nsw_wipe(&g_site_signature, sizeof(g_site_signature));
     nsw_wipe(g_seed, sizeof(g_seed));
     nsw_built_clear();
     nsw_claim_built_clear();

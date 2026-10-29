@@ -426,6 +426,7 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
   // The connection step running now ({ name, handle }) and whether the first
   // keepalive after 'ready' is still to be logged.
   let currentStep, firstTick = false;
+  let publicKey;
   // The keepalive queued or running now (its promise), and the resume check
   // running now (checkLiveness).
   let pendingTick, probing;
@@ -438,7 +439,7 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
   function setState(next, why) { if (state === next) return; state = next; onState?.(next, why); }
   // A 'ready' client that has lost its session (see the callers).
   function failReady(reason, error) { if (!stopped && state === 'ready') setState('error', { reason, error }); }
-  function enqueue(op, args, { signal } = {}) {
+  function enqueue(op, args, { signal, assertCurrent } = {}) {
     if (stopped || !module) return Promise.reject(lockedError());
     if (signal?.aborted) return Promise.reject(new Error('Request cancelled.'));
     const entry = {};
@@ -452,7 +453,14 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
       if (stopped || !module) { entry.reject(lockedError()); return; }
       inFlight = entry;
       try {
+        // Site approval may have waited behind a network operation. Recheck
+        // its captured origin/account permission immediately before key use.
+        assertCurrent?.();
         const value = await module[op](args);
+        if (op === 'siteSignMessage' && (stopped || signal?.aborted)) {
+          if (value instanceof Uint8Array) value.fill(0);
+          throw stopped ? lockedError() : new Error('Request cancelled.');
+        }
         if (stopped) throw lockedError();
         entry.resolve(value);
       } catch (error) {
@@ -628,6 +636,8 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
     // the same address this wallet derived and shows (src/nodus/derive.js).
     if (info.fingerprint !== expected) throw new Error('The Nodus send module derived a different address. Nothing was connected.');
     fingerprint = info.fingerprint; chainId = info.chainId;
+    if (info.publicKey !== undefined && (typeof info.publicKey !== 'string' || !/^[0-9a-f]{5184}$/.test(info.publicKey))) throw new Error('The Nodus send module returned an invalid public key.');
+    publicKey = info.publicKey;
   }
   async function unlock({ seed, fingerprint: expected } = {}) {
     claimStart(seed, expected);
@@ -718,6 +728,11 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
     get state() { return state; },
     get fingerprint() { return fingerprint; },
     get chainId() { return chainId; },
+    get publicKey() { return publicKey; },
+    siteSignMessage: ({ origin, message } = {}, options) => {
+      if (stopped) return Promise.reject(lockedError());
+      return call('siteSignMessage')({ origin, message }, options);
+    },
     // Whether the loaded module offers the genesis claim (CLAIM_OPS).
     get claimable() { return claimable && state === 'ready'; },
     // The identity is known (identify or unlock finished) and the client is
