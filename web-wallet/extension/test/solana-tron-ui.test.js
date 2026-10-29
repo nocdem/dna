@@ -60,9 +60,15 @@ test('history formats amounts and peer addresses like the web wallet and uses on
     assert.ok(root.textContent.includes(`−${displayAmount(amount)} ${CHAINS[chain].symbol}`));
     assert.ok(root.textContent.includes(`to ${addresses[chain].slice(0, 8)}…${addresses[chain].slice(-6)}`));
     assert.equal(root.textContent.includes(addresses[chain]), false);
+    const row = find(root, n => n.tagName === 'article')[0];
+    assert.equal(row.className, 'activity-row history-dir-out');
+    assert.deepEqual(row.children.map(n => n.className), ['activity-main', 'activity-side', 'activity-footer']);
+    assert.equal(find(row, n => n.tagName === 'strong')[0].textContent, `−${displayAmount(amount)} ${CHAINS[chain].symbol}`);
+    assert.equal(find(row, n => n.className === 'status-badge')[0].attributes['data-status'], 'confirmed');
+    assert.equal(find(row, n => n.tagName === 'time')[0].dateTime, new Date(1700000000000).toISOString());
     const links = find(root, n => n.tagName === 'a');
     if (expected) assert.deepEqual(links.map(n => n.href), [expected + hash]);
-    else { assert.equal(links.length, 0); assert.ok(root.textContent.includes(hash)); }
+    else { assert.equal(links.length, 0); assert.equal(find(row, n => n.className === 'activity-id')[0].textContent, `Transaction ID ${hash}`); }
   }
 });
 
@@ -177,16 +183,24 @@ test('receive copies the raw chain address and draws its QR with the existing re
   assert.notEqual(paths[0], paths[1]);
 });
 
-test('history keeps source errors and local outcomes visible with chain explorer links', () => {
+// No flags/network/artifacts. Distinct local/account hashes prove only account
+// links survive; a populated local fixture catches a merely hidden empty list.
+// The mounted Activity assertions in ui-layout.test.js cover page wiring.
+test('history keeps source errors and account explorer links while omitting local outcomes', () => {
   for (const chain of ['solana', 'tron']) {
     const root = new Node('main'), refreshes = [], hash = chain === 'solana' ? '2'.repeat(88) : 'ab'.repeat(32);
+    const localHash = chain === 'solana' ? '3'.repeat(88) : 'ef'.repeat(32);
     renderSolanaTronHistory(document, root, { chain, history: { error: '<img src=x>', status: 'source read status',
-      local: [{ hash, to: addresses[chain], amount: '2', symbol: CHAINS[chain].symbol, status: 'unknown', note: 'Broadcast outcome uncertain.', createdAt: '2026-10-28T00:00:00Z' }],
+      activityError: 'fixture activity unreadable',
+      local: [{ hash: localHash, to: addresses[chain], amount: '2', symbol: CHAINS[chain].symbol, status: 'unknown', note: 'Broadcast outcome uncertain.', createdAt: '2026-10-28T00:00:00Z' }],
       rows: [{ chain, hash, amount: '1', symbol: 'USDT', status: 'confirmed', dir: 'in', peer: addresses[chain], time: 1700000000000 }],
     } }, { refresh: () => refreshes.push(chain) });
-    for (const text of ['<img src=x>', 'Broadcast outcome uncertain.', '1 USDT', '2 ' + CHAINS[chain].symbol, hash]) assert.ok(root.textContent.includes(text));
+    for (const text of ['<img src=x>', 'source read status', 'fixture activity unreadable', 'Account history', '1 USDT']) assert.ok(root.textContent.includes(text));
+    for (const text of ['Sent from here', 'Broadcast outcome uncertain.', '2 ' + CHAINS[chain].symbol, localHash, 'Mark as abandoned', 'Confirm abandon']) assert.equal(root.textContent.includes(text), false, text);
+    assert.equal(find(root, n => n.className === 'activity-list').length, 1);
+    assert.equal(find(root, n => n.tagName === 'article').length, 1);
     assert.equal(find(root, n => n.tagName === 'img').length, 0);
-    for (const link of find(root, n => n.tagName === 'a')) assert.equal(link.href, CHAINS[chain].explorer + encodeURIComponent(hash));
+    assert.deepEqual(find(root, n => n.tagName === 'a').map(link => link.href), [CHAINS[chain].explorer + encodeURIComponent(hash)]);
     button(root, 'Refresh history').onclick(); assert.deepEqual(refreshes, [chain]);
   }
 });

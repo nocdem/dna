@@ -142,16 +142,45 @@ test('settings offer discard only when saved activity needs recovery', () => {
   assert.deepEqual(discarded, ['discard', 'discard']);
 });
 
-// Pins history status, local pending sends and explicit retry controls without hiding a node read error.
-test('history shows node provenance, read failures and pending local sends', () => {
-  const root = new Node('main'), retried = [];
+// No flags/network/artifacts. Pins account rows, provenance, errors and refresh
+// while a populated local fixture must produce neither rows nor retry controls.
+// The mounted Activity assertions in ui-layout.test.js cover page wiring.
+test('history preserves node provenance and read failures while omitting local sends', () => {
+  const root = new Node('main'), refreshes = [];
+  const local = [{ hash: address, amount: '2', symbol: 'NODUS', status: 'pending', note: 'Network busy.', canResubmit: true }];
   renderNodusHistory(document, root, { rows: [{ title: 'Received', sign: '+', amount: '1 NODUS', detail: 'from public peer', height: '9' }],
-    status: 'Newest entries as reported by one Nodus node.', local: [{ hash: address, amount: '2', symbol: 'NODUS', status: 'pending', note: 'Network busy.', canResubmit: true }] },
-  { refresh() {}, resubmit: hash => retried.push(hash) });
-  assert.ok(root.textContent.includes('one Nodus node')); assert.ok(root.textContent.includes('Received')); assert.ok(root.textContent.includes('Network busy.'));
-  button(root, 'Try again').onclick(); assert.deepEqual(retried, [address]);
-  renderNodusHistory(document, root, { rows: [], local: [], error: 'fixture node unavailable' }, { refresh() {}, resubmit() {} });
+    status: 'Newest entries as reported by one Nodus node.', local }, { refresh: () => refreshes.push('refresh') });
+  assert.ok(root.textContent.includes('one Nodus node')); assert.ok(root.textContent.includes('Received'));
+  assert.doesNotMatch(root.textContent, /Network busy\.|Try again/u); assert.equal(root.textContent.includes(address), false);
+  assert.equal(find(root, node => node.className === 'activity-list').length, 1);
+  assert.equal(find(root, node => node.tagName === 'article').length, 1);
+  button(root, 'Refresh history').onclick(); assert.deepEqual(refreshes, ['refresh']);
+  renderNodusHistory(document, root, { rows: [], local, activityError: 'fixture activity unreadable', error: 'fixture node unavailable' }, { refresh() {} });
   assert.ok(root.textContent.includes('fixture node unavailable'));
+  assert.ok(root.textContent.includes('fixture activity unreadable'));
+  assert.doesNotMatch(root.textContent, /Network busy\.|Try again/u);
+  assert.equal(find(root, node => node.tagName === 'article').length, 0);
+});
+
+// Public DOM fixtures, no flags/network/artifacts. Pins the reference row
+// grouping, full record id, optional time and amount-less title. Geometry is
+// checked in ui-layout.test.js; text assertions alone cannot prove placement.
+test('Nodus account history uses the web wallet amount, status and record layout', () => {
+  const root = new Node('main'), wire = 'cd'.repeat(64), time = 1700000000000;
+  renderNodusHistory(document, root, { rows: [
+    { title: 'Received', dir: 'in', sign: '+', amount: '1 NODUS', detail: 'from <img src=x>', height: '9', time, wire },
+    { title: 'Witness update', dir: '', sign: '', amount: '', detail: '', height: '8', time: null, wire: '' },
+  ], local: [] }, { refresh() {} });
+  const rows = find(root, node => node.tagName === 'article');
+  assert.equal(rows[0].className, 'activity-row nodus-history-row history-dir-in');
+  assert.deepEqual(rows[0].children.map(node => node.className), ['activity-main', 'activity-side', 'activity-footer']);
+  assert.deepEqual(rows[0].children[0].children.map(node => node.textContent), ['+1 NODUS', 'Received · from <img src=x>']);
+  assert.equal(find(rows[0], node => node.className === 'status-badge')[0].attributes['data-status'], 'confirmed');
+  assert.equal(find(rows[0], node => node.tagName === 'time')[0].dateTime, new Date(time).toISOString());
+  assert.equal(find(rows[0], node => node.className === 'activity-id')[0].textContent, `Network record ID ${wire}`);
+  assert.equal(rows[1].children[0].children[0].textContent, 'Witness update');
+  assert.equal(find(rows[1], node => node.tagName === 'time').length, 0);
+  assert.equal(find(root, node => node.tagName === 'img' || node.tagName === 'h2').length, 0);
 });
 
 // Pins trusted request wiring and clears late Nodus/CPUNK reads when the background reports lock.

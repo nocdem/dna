@@ -4,7 +4,6 @@ import { actionButton } from './views.js';
 import { pageHeading } from './presentation.js';
 import { displayAmount } from '../../../src/portfolio.js';
 import { chainNetwork } from '../constants/networks.js';
-import { terminal } from '../../../src/activity.js';
 
 function element(document, tag, text, className = '') {
   const node = document.createElement(tag); node.className = className;
@@ -44,54 +43,37 @@ export function renderSolanaTronSend(document, container, { chain, account, revi
   return () => clearTimeout(timer);
 }
 
-function explorer(document, container, chain, networkId, hash) {
-  container.append(element(document, 'code', hash));
-  const network = chainNetwork(chain, networkId);
-  // No Solana testnet explorer was supplied in the pinned references.
-  if (!network.explorer) return;
-  const link = element(document, 'a', 'View transaction');
-  link.href = network.explorer + encodeURIComponent(hash); link.target = '_blank'; link.rel = 'noopener noreferrer';
-  container.append(link);
-}
-
-// src/app.js:300-326,485-529: account transfers plus local sends with their
-// network outcome/note and explorer link. All provider text uses textContent.
-export function renderSolanaTronHistory(document, container, { chain, history }, { refresh, abandon }) {
+// src/app.js:300-326: account transfers and their selected-network explorer
+// links. All provider text uses textContent.
+export function renderSolanaTronHistory(document, container, { chain, history }, { refresh }) {
   container.replaceChildren(pageHeading(document, `${(chain === 'cellframe' ? CELLFRAME : CHAINS[chain]).name} history`, 'history'));
   container.append(actionButton(document, 'Refresh history', refresh));
   if (!history) { container.append(element(document, 'p', 'Account history has not been read yet.', 'hint')); return; }
   if (history.activityError) container.append(element(document, 'p', history.activityError, 'field-error'));
-  container.append(element(document, 'h2', 'Sent from here', 'activity-subhead'));
-  const local = element(document, 'div', undefined, 'activity-list');
-  for (const row of history.local ?? []) {
-    const article = element(document, 'article', undefined, 'activity-row');
-    const status = element(document, 'p', row.status, 'status-badge'); status.setAttribute('data-status', row.status);
-    article.append(element(document, 'h2', `${row.amount} ${row.symbol}`), element(document, 'p', `To ${row.to}`),
-      status, element(document, 'p', row.readError || row.note),
-      element(document, 'time', new Date(row.createdAt).toLocaleString()));
-    explorer(document, article, chain, row.network ?? history.network, row.hash);
-    if (!terminal(row.status) && abandon) {
-      let armed = false;
-      const button = actionButton(document, 'Mark as abandoned', () => {
-        if (armed) return abandon(row.hash);
-        armed = true; button.textContent = 'Confirm abandon';
-      }); article.append(button);
-    }
-    local.append(article);
-  }
-  container.append(local, element(document, 'h2', 'Account history', 'activity-subhead'), element(document, 'p', history.status, 'hint'));
+  container.append(element(document, 'h2', 'Account history', 'activity-subhead'), element(document, 'p', history.status, 'hint'));
   if (history.error) container.append(element(document, 'p', history.error, 'field-error'));
   const account = element(document, 'div', undefined, 'activity-list');
   for (const row of history.rows ?? []) {
-    const article = element(document, 'article', undefined, 'activity-row');
+    const article = element(document, 'article', undefined, `activity-row history-dir-${row.dir}`);
     const sign = row.dir === 'in' ? '+' : row.dir === 'out' ? '−' : '';
     // src/app.js:299,310-314: shorten peers and reuse displayAmount.
     const shortPeer = peer => peer.length > 18 ? `${peer.slice(0, 8)}…${peer.slice(-6)}` : peer;
     const what = row.dir === 'self' ? 'to yourself' : row.peer ? `${row.dir === 'in' ? 'from' : 'to'} ${shortPeer(row.peer)}` : row.dir === 'in' ? 'received' : 'sent';
-    const status = element(document, 'p', row.status, 'status-badge'); status.setAttribute('data-status', row.status);
-    article.append(element(document, 'h2', `${sign}${displayAmount(row.amount)} ${row.symbol}`), element(document, 'p', what),
-      status, element(document, 'time', new Date(row.time).toLocaleString()));
-    explorer(document, article, chain, history.network, row.hash); account.append(article);
+    // src/app.js:311-324: compact reference rows, with transaction details
+    // in their own footer.
+    const main = element(document, 'span', undefined, 'activity-main');
+    main.append(element(document, 'strong', `${sign}${displayAmount(row.amount)} ${row.symbol}`), element(document, 'small', what));
+    const side = element(document, 'span', undefined, 'activity-side');
+    const status = element(document, 'span', row.status, 'status-badge'); status.setAttribute('data-status', row.status);
+    const when = element(document, 'time', new Date(row.time).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }));
+    when.dateTime = new Date(row.time).toISOString(); side.append(status, when);
+    const footer = element(document, 'div', undefined, 'activity-footer');
+    const network = chainNetwork(chain, history.network);
+    if (network.explorer) {
+      const link = element(document, 'a', 'View transaction');
+      link.href = network.explorer + encodeURIComponent(row.hash); link.target = '_blank'; link.rel = 'noopener noreferrer'; footer.append(link);
+    } else footer.append(element(document, 'span', `Transaction ID ${row.hash}`, 'activity-id'));
+    article.append(main, side, footer); account.append(article);
   }
   container.append(account);
 }

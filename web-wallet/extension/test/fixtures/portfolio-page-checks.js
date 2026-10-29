@@ -116,9 +116,13 @@ export async function checkPortfolioFlows(page, origin) {
 export async function checkPortfolioStatus(page, origin) {
   await page.goto(`${origin}/test/fixtures/functions.html`);
   await page.waitForFunction(() => window.fixture?.ready);
-  for (const [state, text] of [['idle', 'Not connected to the Nodus network. Lock and reopen your wallet to retry.'], ['locked', 'Not connected to the Nodus network. Lock and reopen your wallet to retry.'], ['error', 'Not connected to the Nodus network. Lock and reopen your wallet to retry.'], ['unknown', 'Not connected to the Nodus network. Lock and reopen your wallet to retry.'], ['identifying', 'Connecting to the Nodus network…'], ['identified', 'Connecting to the Nodus network…'], ['connecting', 'Connecting to the Nodus network…'], ['ready', 'Connected to the Nodus network']]) {
+  // The operator removed the duplicate connection text; updates must still
+  // preserve Lock and the portfolio's existing per-network status controls.
+  for (const state of ['idle', 'locked', 'error', 'unknown', 'identifying', 'identified', 'connecting', 'ready']) {
     await page.evaluate(value => { window.fixture.state.nodus.state = value; window.fixture.screen.update(); }, state);
-    assert.equal(await page.locator('#net-status-text').textContent(), text);
+    assert.equal(await page.locator('#net-status, #net-status-text').count(), 0);
+    assert.equal(await page.locator('#lock').isVisible(), true);
+    assert.equal(await page.locator('.network-health[data-chain="nodus"]').count(), 1);
   }
   for (const [minutes, text] of [[5, 'Auto-lock after 5 minutes of inactivity'], [10, 'Auto-lock after 10 minutes of inactivity'], [15, 'Auto-lock after 15 minutes of inactivity'], [30, 'Auto-lock after 30 minutes of inactivity'], [60, 'Auto-lock after 1 hour of inactivity'], [0, 'Auto-lock off']]) {
     await page.evaluate(value => { window.fixture.state.preferences.autoLockTimeLimit = value; window.fixture.screen.update(); }, minutes);

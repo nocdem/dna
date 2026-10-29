@@ -46,28 +46,33 @@ export function renderNodusSend(document, container, { account, tokens = [], rev
   form.onsubmit = event => { event.preventDefault(); return prepare({ to: to.value, amount: amount.value, tokenId: asset.value }); };
 }
 
-// src/nodus/history.js supplies node provenance and row text; local pending
-// activity remains visible when the node's account-history read fails.
-export function renderNodusHistory(document, container, history, { refresh, resubmit }) {
+// src/nodus/history.js supplies account-history provenance and row text.
+export function renderNodusHistory(document, container, history, { refresh }) {
   container.replaceChildren(pageHeading(document, 'Nodus history', 'history'));
   container.append(actionButton(document, 'Refresh history', refresh));
   if (!history) { container.append(element(document, 'p', nodusHistoryStatus(), 'hint')); return; }
   if (history.activityError) container.append(element(document, 'p', history.activityError, 'field-error'));
-  const local = element(document, 'div', undefined, 'activity-list');
-  for (const row of history.local ?? []) {
-    const article = element(document, 'article', undefined, 'activity-row');
-    article.append(element(document, 'h2', row.amountText ?? `${row.amount} ${row.symbol}`), element(document, 'p', `${row.status}: ${row.note}`), element(document, 'code', row.hash));
-    if (row.detail) article.append(element(document, 'p', row.detail));
-    if (row.canResubmit) article.append(actionButton(document, 'Try again', () => resubmit(row.hash)));
-    local.append(article);
-  }
-  container.append(local);
   container.append(element(document, 'p', history.error ? nodusHistoryStatus({ error: history.error }) : history.status, history.error ? 'field-error' : 'hint'));
   const account = element(document, 'div', undefined, 'activity-list');
   for (const row of history.rows ?? []) {
-    const article = element(document, 'article', undefined, 'activity-row');
-    article.append(element(document, 'h2', row.title), element(document, 'p', `${row.sign}${row.amount}`), element(document, 'p', row.detail), element(document, 'p', `Block ${row.height}`));
-    if (row.wire) article.append(element(document, 'code', row.wire));
+    // src/app.js:405-419: amount/description, confirmed status/block/time,
+    // then the full network record id. Boundary rows may lack amount/time/id.
+    const article = element(document, 'article', undefined, `activity-row nodus-history-row${row.dir ? ` history-dir-${row.dir}` : ''}`);
+    const main = element(document, 'span', undefined, 'activity-main');
+    main.append(element(document, 'strong', row.amount ? `${row.sign}${row.amount}` : row.title),
+      element(document, 'small', [row.amount ? row.title : '', row.detail].filter(Boolean).join(' · ')));
+    const side = element(document, 'span', undefined, 'activity-side');
+    const badge = element(document, 'span', 'confirmed', 'status-badge'); badge.setAttribute('data-status', 'confirmed');
+    const hasTime = row.time !== null && row.time !== undefined;
+    const where = element(document, 'small', `Block ${row.height}${hasTime ? ' · ' : ''}`);
+    if (hasTime) {
+      const when = element(document, 'time', new Date(row.time).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }));
+      when.dateTime = new Date(row.time).toISOString(); where.append(when);
+    }
+    side.append(badge, where);
+    const footer = element(document, 'div', undefined, 'activity-footer');
+    if (row.wire) footer.append(element(document, 'span', `Network record ID ${row.wire}`, 'activity-id'));
+    article.append(main, side, footer);
     account.append(article);
   }
   container.append(account);

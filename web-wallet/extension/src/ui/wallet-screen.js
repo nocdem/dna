@@ -18,7 +18,6 @@ import { mountContractsPage } from './contracts-page.js';
 import { mountVaultsPage } from './vaults-page.js';
 import { appIcon } from './presentation.js';
 import { autoLockBarText } from '../../../src/auto-lock.js';
-import { netLevelFor, netStatusView } from '../../../src/net-status.js';
 import { renderQr } from '../../../src/qr.js';
 import { CHAIN_NETWORKS, chainNetwork } from '../constants/networks.js';
 import { renderSites, renderSettings } from './views.js';
@@ -35,7 +34,6 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   root.className = '';
   for (const id of ['wallet-boot-status', 'welcome', 'unlock-form', 'phrase-form']) $(id).hidden = true;
   $('wallet-open').hidden = false;
-  $('activity-panel').querySelector('.page-block .hint').textContent = 'Sends made in this wallet, tracked until final. Once confirmed, a send is listed under Account history where this network’s history is read. Records are saved encrypted in this browser.';
   // Approved extension plan §3.6: the extension-only connected-sites page.
   const sitesPage = element('div', undefined, 'wallet-page'); sitesPage.id = 'page-sites'; sitesPage.dataset.page = 'sites'; sitesPage.hidden = true;
   const sitesBack = element('button', '← Back to wallet', 'secondary small page-back'); sitesBack.type = 'button';
@@ -265,23 +263,19 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   async function loadHistory(manual = false) {
     const chain = selected, started = ++readGeneration;
     if (!['nodus', 'ethereum', 'bsc', 'solana', 'tron', 'cellframe'].includes(chain)) {
-      $('activity').replaceChildren(); $('history').replaceChildren(); $('history-status').textContent = '';
-      root.querySelector('.activity-empty').hidden = true; return;
+      $('history').replaceChildren(); $('history-status').textContent = ''; return;
     }
     let history;
     if (chain === 'nodus') { await ui.loadNodusHistory(); history = ui.state.nodusHistory; }
     else if (isSolanaTron(chain)) { await ui.loadSolanaTronHistory(chain, { manual }); history = ui.state.solanaTronHistory[chain]; }
-    else if (chain === 'bsc') history = { rows: [], local: await ui.request('getChainLocalHistory', [chain]), status: 'Account history for BNB Smart Chain is not read here. Use the account explorer.' };
+    else if (chain === 'bsc') history = { rows: [], status: 'Account history for BNB Smart Chain is not read here. Use the account explorer.' };
     else history = await ui.request('getChainHistory', [chain, { manual }]);
     if (disposed || started !== readGeneration || selected !== chain) return;
     const detached = element('div');
-    if (chain === 'nodus') renderNodusHistory(document, detached, history, { refresh: () => loadHistory(true), resubmit: hash => run(async () => { await ui.resubmitNodusSend(hash); await loadHistory(); }) });
-    else renderSolanaTronHistory(document, detached, { chain, history }, { refresh: () => loadHistory(true),
-      abandon: hash => run(async () => { await ui.request('abandonActivity', [chain, hash]); await loadHistory(); }) });
-    const lists = detached.querySelectorAll('.activity-list');
-    $('activity').replaceChildren(...(lists[0]?.children || [])); $('history').replaceChildren(...(lists[1]?.children || []));
+    if (chain === 'nodus') renderNodusHistory(document, detached, history, { refresh: () => loadHistory(true) });
+    else renderSolanaTronHistory(document, detached, { chain, history }, { refresh: () => loadHistory(true) });
+    $('history').replaceChildren(...(detached.querySelector('.activity-list')?.children || []));
     $('history-status').textContent = history?.error || history?.status || '';
-    root.querySelector('.activity-empty').hidden = Boolean(history?.local?.length);
   }
   $('history-refresh').onclick = () => run(() => loadHistory(true));
   book = mountAddressBook({ root, document, ui, networks, selected: () => selected, navigate, run });
@@ -361,7 +355,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   root.querySelector('.device-logs-link a').onclick = event => { event.preventDefault(); navigate('logs'); };
   function update() {
     if (disposed) return;
-    const state = ui.state, net = netStatusView(netLevelFor(state.nodus?.state));
+    const state = ui.state;
     networks = networkDefinitions();
     for (const [chain, config] of Object.entries(networks)) {
       const testnet = ['solana', 'tron'].includes(chain) && selectedNetwork(chain).id !== 'mainnet';
@@ -375,7 +369,6 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
         if (opened) portfolio.setAddress(chain, publicAddresses()[chain]);
       }
     }
-    $('net-status').dataset.level = net.level; $('net-status-text').textContent = net.text;
     $('session-timeout').textContent = autoLockBarText(state.preferences.autoLockTimeLimit);
     $('auto-lock-minutes').value = String(state.preferences.autoLockTimeLimit);
     $('auto-lock-note').textContent = extensionAutoLockNote(state.preferences.autoLockTimeLimit);

@@ -331,10 +331,6 @@ export async function mountWalletPage({ document = globalThis.document, window =
     });
     else if (page === 'nodus-history') renderNodusHistory(document, root, state.nodusHistory, {
       refresh: () => run(() => ui.loadNodusHistory()),
-      resubmit: hash => run(async () => {
-        const result = await ui.resubmitNodusSend(hash); await ui.loadNodusHistory();
-        status.className = 'hint'; status.textContent = result.message || (result.outcome === 'sent' ? 'Broadcast submitted; awaiting confirmation.' : result.outcome);
-      }),
     });
     else if (page === 'chain-history') renderSolanaTronHistory(document, root, { chain: receiveNetwork, history: state.solanaTronHistory[receiveNetwork] }, {
       refresh: () => run(() => ui.loadSolanaTronHistory(receiveNetwork, { manual: true })),

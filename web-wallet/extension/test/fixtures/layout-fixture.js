@@ -35,9 +35,14 @@ if (stage === 'approvals') state.pendingApprovals = {
   first: signature('first', 'First queued message'), second: signature('second', 'Second queued message'),
 };
 const calls = [], balanceTimes = {};
+// Hold the initial reads until the geometry test explicitly releases them.
+// This observes the actual shared renderer's loading-to-settled transition.
+let releaseReads;
+const heldReads = query.has('hold') ? new Promise(resolve => { releaseReads = resolve; }) : null;
 let quotes = {};
 const client = { onNotification: () => () => {}, onDisconnect: () => () => {}, close() {}, async request(method, params = []) {
   calls.push({ method, params: structuredClone(params) });
+  if (heldReads && /^(?:get(?:Nodus|Evm|Solana|Tron)Balances|getCpunkBalance|getIxiosBalance|getPrices)$/u.test(method)) await heldReads;
   if (method === 'getState') return structuredClone({ ...state, addresses: state.isUnlocked ? addresses : {} });
   if (['messengerSubscribe', 'messengerUnsubscribe', 'setLastActiveTime'].includes(method)) return;
   if (['keepBalances', 'checkNodusLiveness'].includes(method)) return;
@@ -64,9 +69,18 @@ const client = { onNotification: () => () => {}, onDisconnect: () => () => {}, c
   if (method === 'getCpunkBalance') return { balance: '0.75' };
   if (method === 'getIxiosBalance') return [{ symbol: 'IXIOS', balance: '1' }];
   if (method === 'getNodusHistory') return { status: 'Fixture account history', local: [
-    { amount: '1', symbol: 'NODUS', status: 'submitted', note: 'Awaiting confirmation.', hash: 'ab'.repeat(32) },
-  ], rows: [{ title: 'Received NODUS', sign: '+', amount: '2', detail: 'Public fixture transfer', height: 12, wire: 'cd'.repeat(32) }] };
-  if (method === 'getSolanaHistory' || method === 'getTronHistory') return { network: 'mainnet', status: 'Fixture account history', local: [], rows: [] };
+    { amount: '1', symbol: 'NODUS', status: 'submitted', note: 'Awaiting confirmation.', hash: 'ab'.repeat(32), canResubmit: true },
+  ], rows: [{ title: 'Received NODUS', dir: 'in', sign: '+', amount: '2', detail: 'Public fixture transfer', height: 12, time: 1700000000000, wire: 'cd'.repeat(64) },
+    { title: 'Witness update', dir: '', sign: '', amount: '', detail: '', height: 11, time: null, wire: '' }] };
+  if (['getSolanaHistory', 'getTronHistory', 'getChainHistory'].includes(method)) {
+    const chain = method === 'getSolanaHistory' ? 'solana' : method === 'getTronHistory' ? 'tron' : params[0];
+    const hash = chain === 'solana' ? '2'.repeat(88) : 'cd'.repeat(32);
+    return { network: 'mainnet', status: 'Fixture account history', local: [
+      { amount: '1', symbol: CHAINS[chain]?.symbol ?? 'CPUNK', status: 'submitted', note: 'Awaiting confirmation.', hash: chain === 'solana' ? '3'.repeat(88) : 'ab'.repeat(32), to: addresses[chain === 'cellframe' ? 'cpunk' : chain], createdAt: '2026-10-28T00:00:00Z' },
+    ], rows: [
+      { chain, hash, dir: 'in', amount: '1234567.123456789', symbol: CHAINS[chain]?.symbol ?? 'CPUNK', peer: addresses[chain === 'cellframe' ? 'cpunk' : chain], status: 'confirmed', time: 1700000000000 },
+    ] };
+  }
   if (method === 'prepareEvmSend') return { id: 'layout-review', ...params[0], fee: 'Up to 0.001 ETH', expiresAt: Date.now() + 60000,
     review: [['Network', 'Ethereum mainnet'], ['From', addresses.ethereum], ['To', params[0].to], ['Asset', params[0].symbol], ['Amount', params[0].amount], ['Network fee', 'Up to 0.001 ETH'], ['Transaction number (nonce)', 7]] };
   if (method === 'confirmEvmSend') return 'public-fixture-transaction';
@@ -79,4 +93,4 @@ const client = { onNotification: () => () => {}, onDisconnect: () => () => {}, c
   throw new Error(`Unexpected layout fixture method: ${method}`);
 } };
 const mounted = await mountReferencePage({ document, window, client });
-window.layout = { calls, state, balances, balanceTimes, get quotes() { return quotes; }, refresh: mounted.refresh, dispose: mounted.dispose };
+window.layout = { calls, state, balances, balanceTimes, get quotes() { return quotes; }, releaseReads, refresh: mounted.refresh, dispose: mounted.dispose };
