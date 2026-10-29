@@ -17,7 +17,6 @@ import { mountClaimAction } from './claim-action.js';
 import { mountContractsPage } from './contracts-page.js';
 import { mountVaultsPage } from './vaults-page.js';
 import { appIcon } from './presentation.js';
-import { autoLockBarText } from '../../../src/auto-lock.js';
 import { renderQr } from '../../../src/qr.js';
 import { CHAIN_NETWORKS, chainNetwork } from '../constants/networks.js';
 import { renderSites, renderSettings } from './views.js';
@@ -369,7 +368,6 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
         if (opened) portfolio.setAddress(chain, publicAddresses()[chain]);
       }
     }
-    $('session-timeout').textContent = autoLockBarText(state.preferences.autoLockTimeLimit);
     $('auto-lock-minutes').value = String(state.preferences.autoLockTimeLimit);
     $('auto-lock-note').textContent = extensionAutoLockNote(state.preferences.autoLockTimeLimit);
     $('wallet-storage-state').textContent = 'Encrypted copy saved in this browser.';
