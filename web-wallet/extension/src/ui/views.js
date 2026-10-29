@@ -6,6 +6,8 @@ import { Caip25CaveatType, Caip25EndowmentPermissionName, getEthAccounts } from 
 import { connectDetails, extensionAutoLockNote } from './wallet-ui.js';
 import { NODUS_PERMISSION, NODUS_ACCOUNT_CAVEAT } from '../background/permissions.js';
 import { CHAIN_NETWORKS, chainNetwork } from '../constants/networks.js';
+import { appIcon, pageHeading } from './presentation.js';
+import { displayAmount } from '../../../src/portfolio.js';
 
 // Approved plan §3.6/§7: web-wallet networks; package 5 adds real EVM balances.
 export const NETWORKS = { nodus: NODUS_NETWORK, ...CHAINS, cellframe: CELLFRAME };
@@ -19,24 +21,35 @@ export function actionButton(document, text, action, secondary = true) {
   const button = element(document, 'button', secondary ? 'secondary small' : '', text);
   button.type = 'button'; button.onclick = action; return button;
 }
-function heading(document, container, text) { container.append(element(document, 'h1', '', text)); }
+function heading(document, container, text, icon) { container.append(pageHeading(document, text, icon)); }
 
-export function renderHome(document, container, state, receive, send, refreshBalances, history, contracts, solanaTronHistory) {
+export function renderHome(document, container, state, receive, send, refreshBalances, history, contracts, solanaTronHistory, sections = []) {
   container.replaceChildren();
-  const head = element(document, 'div', 'panel-heading extension-home-heading');
-  heading(document, head, 'Your wallet');
-  if (refreshBalances) head.append(actionButton(document, 'Refresh balances', refreshBalances));
   const card = element(document, 'section', 'portfolio-card'), cardHead = element(document, 'div', 'portfolio-heading');
+  card.setAttribute('aria-labelledby', 'portfolio-label');
   const label = element(document, 'p', 'eyebrow', state.portfolio?.label ?? 'Estimated portfolio value'); label.id = 'portfolio-label';
   const total = element(document, 'span', '', state.portfolio?.total ?? '—'); total.id = 'portfolio-total';
   const status = element(document, 'p', '', state.portfolio?.status ?? 'Balances load when you open your wallet.');
   status.id = 'portfolio-status'; status.role = 'status';
   const amount = element(document, 'p', 'portfolio-amount'); amount.append(total, element(document, 'span', 'portfolio-currency', 'USD'));
   cardHead.append(label); card.append(cardHead, amount, status);
+  if (refreshBalances) {
+    const refresh = actionButton(document, 'Refresh balances', refreshBalances); refresh.id = 'portfolio-refresh'; card.append(refresh);
+  }
   const source = element(document, 'p', 'price-source', 'Indicative USD prices from '), link = element(document, 'a', '', 'DefiLlama');
   link.href = 'https://defillama.com/'; link.target = '_blank'; link.rel = 'noopener noreferrer';
   source.append(link, element(document, 'span', '', '. This estimate is not a sale quote.'));
-  container.append(head, card, source);
+  container.append(card);
+  if (sections.length) {
+    const navigation = element(document, 'nav', 'wallet-navigation'); navigation.setAttribute('aria-label', 'Wallet sections');
+    for (const { label, icon, run } of sections) {
+      const button = actionButton(document, '', run); button.className = 'extension-section';
+      button.append(appIcon(document, icon), element(document, 'span', 'nav-name', label)); navigation.append(button);
+    }
+    container.append(navigation);
+  }
+  const assets = element(document, 'section', 'dashboard-panel assets-panel'), head = element(document, 'div', 'panel-heading');
+  head.append(element(document, 'h2', '', 'Your assets')); assets.append(head);
   const list = element(document, 'div', 'extension-addresses');
   for (const [key, network] of Object.entries(NETWORKS)) {
     const row = element(document, 'article', 'extension-network');
@@ -49,10 +62,12 @@ export function renderHome(document, container, state, receive, send, refreshBal
     if (address) { const code = element(document, 'code', '', address); code.title = address; identity.append(code); }
     else identity.append(element(document, 'p', 'hint', 'Address is unavailable.'));
     header.append(icon, identity); row.append(header);
-    const actionsRow = element(document, 'div', 'chain-holding extension-holding-actions'), actions = element(document, 'div', 'holding-actions');
-    const holding = text => {
+    const actionsRow = element(document, 'div', 'extension-holding-actions'), actions = element(document, 'div', 'holding-actions');
+    const holding = (symbol, balance, error) => {
       const entry = element(document, 'div', 'chain-holding extension-holding');
-      entry.append(element(document, 'strong', '', text)); row.append(entry);
+      const text = error ? `${symbol}: ${error}` : `${displayAmount(balance)} ${symbol}`;
+      const amount = element(document, 'strong', error ? 'field-error' : '', text); amount.title = error ? text : `${balance} ${symbol}`;
+      entry.append(element(document, 'span', 'holding-network', symbol), amount); row.append(entry);
     };
     const sendButton = disabled => {
       if (!send) return;
@@ -63,7 +78,7 @@ export function renderHome(document, container, state, receive, send, refreshBal
     receiveButton.className += ' extension-receive';
     if (key === 'ethereum' || key === 'bsc') {
       const balances = state.evmBalances?.[key];
-      if (Array.isArray(balances)) for (const asset of balances) holding(asset.error ? `${asset.symbol}: ${asset.error}` : `${asset.balance} ${asset.symbol}`);
+      if (Array.isArray(balances)) for (const asset of balances) holding(asset.symbol, asset.balance, asset.error);
       else row.append(element(document, 'p', 'hint', balances?.error ?? 'Balances have not been loaded.'));
       sendButton(!address);
     }
@@ -71,18 +86,18 @@ export function renderHome(document, container, state, receive, send, refreshBal
     // EVM rows; Receive already renders these same background addresses.
     if (key === 'solana' || key === 'tron') {
       const balances = state.solanaTronBalances?.[key];
-      if (Array.isArray(balances)) for (const asset of balances) holding(asset.error ? `${asset.symbol}: ${asset.error}` : `${asset.balance} ${asset.symbol}`);
+      if (Array.isArray(balances)) for (const asset of balances) holding(asset.symbol, asset.balance, asset.error);
       else row.append(element(document, 'p', 'hint', balances?.error ?? 'Balances have not been loaded.'));
       sendButton(!address);
     }
     if (key === 'nodus') {
       const balances = state.nodusBalances;
-      if (Array.isArray(balances)) for (const asset of balances) holding(asset.error ? `${asset.symbol}: Balance unavailable` : `${asset.balance} ${asset.symbol}`);
+      if (Array.isArray(balances)) for (const asset of balances) holding(asset.symbol, asset.balance, asset.error ? 'Balance unavailable' : undefined);
       else row.append(element(document, 'p', 'hint', balances?.error ?? 'Balances have not been loaded.'));
       sendButton(!address || state.nodus?.state !== 'ready');
     }
     if (key === 'cellframe') {
-      if (state.cpunkBalance && !state.cpunkBalance.error) holding(`${state.cpunkBalance.balance} CPUNK`);
+      if (state.cpunkBalance && !state.cpunkBalance.error) holding('CPUNK', state.cpunkBalance.balance);
       else row.append(element(document, 'p', 'hint', state.cpunkBalance?.error ?? 'Balances have not been loaded.'));
     }
     actions.append(receiveButton);
@@ -93,7 +108,7 @@ export function renderHome(document, container, state, receive, send, refreshBal
     if ((key === 'solana' || key === 'tron') && solanaTronHistory) { const control = actionButton(document, 'History', () => solanaTronHistory(key)); control.disabled = !address; actions.append(control); }
     actionsRow.append(actions); row.append(actionsRow); list.append(row);
   }
-  container.append(list);
+  assets.append(list, source); container.append(assets);
   return { label, total, status };
 }
 
@@ -101,7 +116,7 @@ export function renderHome(document, container, state, receive, send, refreshBal
 export function renderReceive(document, container, key, addresses, copy) {
   const network = NETWORKS[key], address = addressFor(addresses, key);
   if (!network || !address) throw new Error('Receive address is unavailable.');
-  container.replaceChildren(); heading(document, container, `Receive on ${network.name}`);
+  container.replaceChildren(); heading(document, container, `Receive on ${network.name}`, 'receive');
   const panel = element(document, 'div', 'receive-panel'), qr = element(document, 'div', 'receive-qr');
   const row = element(document, 'div', 'address-row');
   row.append(element(document, 'code', '', address), actionButton(document, 'Copy', () => copy(address)));
@@ -111,7 +126,7 @@ export function renderReceive(document, container, key, addresses, copy) {
 // Port: permissions-connect.tsx:668-701, pinned v13.54.0 (799dbd71812040a5aa151095b13c68eab721719b).
 // The requested accounts and networks remain explicit, editable inputs to the real pending permission request.
 export function renderConnect(document, container, state, pending, { approve, reject }) {
-  container.replaceChildren(); heading(document, container, 'Connect to site');
+  container.replaceChildren(); heading(document, container, 'Connect to site', 'sites');
   container.append(element(document, 'p', 'extension-origin', pending.origin));
   const accountChoices = [], networkChoices = [];
   function choices(title, values, target) {
@@ -136,7 +151,7 @@ export function renderConnect(document, container, state, pending, { approve, re
 }
 
 export function renderSites(document, container, state, revoke) {
-  container.replaceChildren(); heading(document, container, 'Connected sites');
+  container.replaceChildren(); heading(document, container, 'Connected sites', 'sites');
   const sites = Object.entries(state.subjects || {}).filter(([, subject]) => subject.permissions?.[Caip25EndowmentPermissionName] || subject.permissions?.[NODUS_PERMISSION]);
   if (!sites.length) { container.append(element(document, 'p', 'hint', 'No connected sites.')); return; }
   const list = element(document, 'div', 'address-book-list');
@@ -154,7 +169,7 @@ export function renderSites(document, container, state, revoke) {
 }
 
 export function renderSettings(document, container, state, { setAutoLock, reveal, selectEvmNetwork, setEvmEndpoint, discardActivity, setChainNetwork }) {
-  container.replaceChildren(); heading(document, container, 'Settings');
+  container.replaceChildren(); heading(document, container, 'Settings', 'settings');
   const label = element(document, 'label', '', 'Auto-lock'), select = element(document, 'select');
   select.id = 'auto-lock-minutes'; label.htmlFor = select.id;
   for (const minutes of AUTO_LOCK_CHOICES) {

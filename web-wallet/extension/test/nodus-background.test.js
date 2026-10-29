@@ -8,6 +8,8 @@ import { serializeError } from '@metamask/rpc-errors';
 import { ACTIVITY_KEY, VAULT_KEY, parseVault } from '../../src/vault.js';
 import { NODUS_TOKEN_ID } from '../../src/nodus/network.js';
 import { AUTO_LOCK_TIMEOUT_ALARM } from '../src/background/auto-lock-alarm.js';
+import { connectTrusted } from '../src/ui/trusted-port.js';
+import { createWalletUi } from '../src/ui/wallet-ui.js';
 
 // Public web-wallet vector and fake module replies; no live transport is used.
 const { phrase, address } = JSON.parse(readFileSync(new URL('../../test/fixtures/nodus-addresses.json', import.meta.url))).vectors[0];
@@ -21,7 +23,7 @@ function event() {
 }
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
 let backgroundModule;
-async function setup(t) {
+async function setup(t, moduleAdditions = {}, makeModule = module => module) {
   const values = {}, calls = [], state = { busy: false, mismatch: false, historyBad: false, failSave: false }, memory = new Uint8Array(256).fill(7);
   const fixture = {
     runtime: { id: 'nodus-test', onConnect: event(), getManifest: () => ({ version: '0.1.132' }), getURL: path => `chrome-extension://nodus-test/${path}` },
@@ -41,6 +43,8 @@ async function setup(t) {
       if (state.unlockWait) { state.entered.resolve(); await state.unlockWait.promise; }
       return { fingerprint: state.mismatch ? recipient : address, chainId: '12'.repeat(32) };
     },
+    async identify(args) { return this.unlock(args); },
+    async connectNetwork() {},
     async balance() { calls.push(['balance']); if (state.balanceWait) { state.entered.resolve(); return state.balanceWait.promise; } return { total: '500000000', spendable: '500000000' }; },
     async list() {
       calls.push(['list']);
@@ -54,6 +58,8 @@ async function setup(t) {
       calls.push([method]);
       if (method === 'evm_account') return { n: '0', b: '0'.repeat(64), ch: '0'.repeat(64), cs: '0', h: '10' };
       if (method === 'evm_call') return { s: '1', o: '0'.repeat(63) + '7', gu: '1', h: '10' };
+      if (method === 'evm_estimate') return { s: '1', o: '', gu: '1', h: '10', ge: '2', ue: '1', fe: '1' };
+      if (method === 'evm_ticket') return { p: true, amt: '7', dst: address };
       if (method === 'evm_receipt') return {};
       assert.fail(`Unexpected fixture smart-contract read: ${method}`);
     },
@@ -88,6 +94,7 @@ async function setup(t) {
         amount: '100000000', token: NODUS_TOKEN_ID, fee: '0', peer: recipient, wire: intent, ts: '1' }] };
     },
     cancel() { calls.push(['cancel']); }, lock() { calls.push(['lock']); }, release() { calls.push(['release']); },
+    ...moduleAdditions,
   };
   t.mock.method(globalThis, 'fetch', async () => { throw new Error('Unexpected network request.'); });
   if (!backgroundModule) {
@@ -95,11 +102,151 @@ async function setup(t) {
     try { backgroundModule = await import('../src/background/index.js'); await (await backgroundModule.background).destroy(); }
     finally { if (saved) Object.defineProperty(globalThis, 'chrome', saved); else delete globalThis.chrome; }
   }
-  const background = await backgroundModule.createBackground({ ...fixture, nodusOptions: { factory: async () => module } });
+  const background = await backgroundModule.createBackground({ ...fixture, nodusOptions: { factory: async () => makeModule(module) } });
   t.after(() => background.destroy());
   await background.vaultStore.create(password, phrase);
   return { background, fixture, values, calls, state, memory };
 }
+
+// Node >=22.14, public phrase/in-memory transport, no flags/network/artifacts.
+// Pins optional-module detection through getState, the real trusted mux and
+// the page state holder. The optional methods are presence fixtures only;
+// this does not prove live WASM/chain support or page visibility.
+test('Nodus capabilities survive the background-to-page trusted state handoff', async t => {
+  const optional = Object.fromEntries(['validators', 'delegations', 'stakeBuild', 'nameLookup', 'nameOf', 'profileAddress', 'namePrices', 'nameBuild',
+    'vaultCreate', 'vaultOpen', 'vaultBalance', 'vaultCoins', 'vaultHistory', 'vaultPropose', 'vaultReview', 'vaultApprove', 'vaultSubmit']
+    .map(method => [method, async () => { throw new Error(`Unexpected capability fixture call: ${method}`); }]));
+  const { background, fixture } = await setup(t, { ...optional,
+    stakingRules: { minDelegation: '10000000000', selfStake: '1000000000000000', commissionMaxBps: '5000', undelegateLockEpochs: '12', epochLength: '720', maxDelegators: '2048' } });
+  const { runtime } = fixture;
+  const pagePort = { name: 'popup', onMessage: event(), onDisconnect: event() };
+  const workerPort = { name: 'popup', onMessage: event(), onDisconnect: event(), sender: { id: runtime.id, url: runtime.getURL('popup.html') } };
+  let closed = false;
+  pagePort.postMessage = message => { const copy = structuredClone(message); queueMicrotask(() => { if (!closed) workerPort.onMessage.emit(copy); }); };
+  workerPort.postMessage = message => { const copy = structuredClone(message); queueMicrotask(() => { if (!closed) pagePort.onMessage.emit(copy); }); };
+  pagePort.disconnect = workerPort.disconnect = () => { if (!closed) { closed = true; pagePort.onDisconnect.emit(pagePort); workerPort.onDisconnect.emit(workerPort); } };
+  runtime.connect = () => { runtime.onConnect.emit(workerPort); return pagePort; };
+  const client = connectTrusted({ runtime, page: 'popup.html' }), ui = createWalletUi(client);
+  const flags = ['stakeable', 'nameable', 'registrable', 'vaultable'];
+  try {
+    await ui.refresh();
+    for (const flag of flags) assert.equal(ui.state.nodus[flag], false, `locked ${flag}`);
+    await background.unlock(password, options);
+    await ui.refresh();
+    assert.equal(ui.state.nodus.state, 'ready');
+    for (const flag of flags) {
+      assert.equal(background.nodus.getState()[flag], true, `module ${flag}`);
+      assert.equal(ui.state.nodus[flag], true, `trusted ${flag}`);
+    }
+    await background.lock();
+    await ui.refresh();
+    for (const flag of flags) assert.equal(ui.state.nodus[flag], false, `relocked ${flag}`);
+  } finally { client.close(); pagePort.disconnect(); }
+});
+
+// Package B2: the failed READY client is replaced without rebuilding session
+// caches, and the sole phrase holder is disposed. No flags/network/artifacts.
+// A fixture that never leaves ready would miss the retry and stale-client path.
+test('lost ready connection replaces the client while preserving rows and wipes words on lock', async t => {
+  const modules = [];
+  const { background, calls, values, state } = await setup(t, {}, module => {
+    const number = modules.length + 1;
+    const instance = { ...module, async evmQuery(args) {
+      const value = await module.evmQuery(args);
+      return args.method === 'evm_account' ? { ...value, n: String(number) } : value;
+    } };
+    modules.push(instance); return instance;
+  });
+  state.evm = true;
+  await saveActivity(values, [savedRow()]);
+  await background.unlock(password, options);
+  const wallet = background.walletKeys.getEvmWallet(), old = wallet.nodusClient;
+  assert.equal((await background.nodus.contractOperation('account')).nonce, 1n);
+  assert.equal(background.walletKeys.getRecoveryPhrase(), phrase);
+  const before = background.nodus.getLocalHistory();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  old.lock(); t.mock.timers.tick(5000);
+  for (let turn = 0; turn < 1000 && (wallet.nodusClient === old || wallet.nodusClient?.state !== 'ready'); turn++) await new Promise(resolve => setImmediate(resolve));
+  assert.notEqual(wallet.nodusClient, old); assert.equal(wallet.nodusClient.state, 'ready');
+  assert.deepEqual(background.nodus.getLocalHistory(), before);
+  assert.match(await background.nodus.readContract({ action: 'account' }), /NODUS/);
+  assert.equal(modules.length, 2);
+  assert.equal((await background.nodus.contractOperation('account')).nonce, 2n);
+  assert.ok(calls.filter(row => row[0] === 'unlock').length >= 2);
+  assert.ok(background.nodus.getSessionLog().entries.length > 0);
+  await background.lock(); const count = calls.length;
+  assert.deepEqual(background.nodus.getSessionLog().entries, []);
+  assert.deepEqual(background.nodus.getSessionLog().running, []);
+  t.mock.timers.tick(60000);
+  assert.equal(wallet.recoveryPhrase, null); assert.equal(wallet.nodusClient, null);
+  assert.throws(() => background.walletKeys.getRecoveryPhrase(), /locked/);
+  assert.deepEqual(background.nodus.getSessionLog().entries, []);
+  assert.deepEqual(background.nodus.getSessionLog().running, []); assert.equal(calls.length, count);
+});
+
+// B2: pause identification and network connection separately. Publishing on
+// construction or after identify would both fail; an instant-ready mock would
+// miss either early publication. No flags/network/artifacts.
+test('reconnect publishes the name-lookup client only after it is ready', async t => {
+  const connecting = deferred(), connected = deferred();
+  const { background, state } = await setup(t, { async connectNetwork() {
+    connecting.resolve(); await connected.promise;
+  } });
+  await background.unlock(password, options);
+  const wallet = background.walletKeys.getEvmWallet(), old = wallet.nodusClient;
+  const replace = background.walletKeys.replaceNodusClient.bind(background.walletKeys), publishedStates = [];
+  const published = t.mock.method(background.walletKeys, 'replaceNodusClient', client => { publishedStates.push(client.state); replace(client); });
+  state.entered = deferred(); state.unlockWait = deferred();
+  t.after(() => { state.unlockWait.resolve(); connected.resolve(); });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  old.lock(); t.mock.timers.tick(5000);
+  await state.entered.promise;
+  assert.equal(wallet.nodusClient, old); assert.equal(published.mock.callCount(), 0);
+  state.unlockWait.resolve(); await connecting.promise;
+  assert.equal(wallet.nodusClient, old); assert.equal(published.mock.callCount(), 0);
+  connected.resolve();
+  for (let turn = 0; turn < 1000 && wallet.nodusClient === old; turn++) await new Promise(resolve => setImmediate(resolve));
+  assert.notEqual(wallet.nodusClient, old); assert.equal(wallet.nodusClient.state, 'ready');
+  assert.equal(published.mock.callCount(), 1); assert.deepEqual(publishedStates, ['ready']);
+});
+
+// B2: retain the exact buffers passed to the module through multiple retries,
+// including failed identification. Checking only the unlock seed could miss a
+// later retry's buffer; checking only successful retries misses the error path.
+test('every reconnect seed is wiped after identification succeeds or fails', async t => {
+  const { background, calls, state } = await setup(t);
+  await background.unlock(password, options);
+  const wallet = background.walletKeys.getEvmWallet();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (const [fails, delay] of [[false, 5000], [true, 5000], [false, 10000]]) {
+    const before = calls.filter(([method]) => method === 'unlock').length;
+    if (wallet.nodusClient.state === 'ready') wallet.nodusClient.lock();
+    state.mismatch = fails; t.mock.timers.tick(delay);
+    for (let turn = 0; turn < 1000; turn++) {
+      const seeds = calls.filter(([method]) => method === 'unlock');
+      if (seeds.length > before && seeds.at(-1)[1].every(byte => byte === 0) && (fails || wallet.nodusClient.state === 'ready')) break;
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    const seeds = calls.filter(([method]) => method === 'unlock');
+    assert.equal(seeds.length, before + 1);
+    for (const [, seed] of seeds) assert.ok(seed.every(byte => byte === 0));
+    await new Promise(resolve => setImmediate(resolve));
+  }
+});
+
+// G: background reads use the session account and reject unknown operations.
+// No flags/network/artifacts. Facade-only mocks would miss these client calls.
+test('contract account, simulation, estimate and ticket reads use the session client', async t => {
+  const { background, state, calls } = await setup(t); state.evm = true;
+  await background.unlock(password, options);
+  assert.equal((await background.nodus.contractOperation('account')).balanceWei, 0n);
+  const fields = { to: 'ab'.repeat(32), data: [], valueWei: '0' };
+  assert.equal((await background.nodus.contractOperation('simulate', fields)).success, true);
+  assert.equal((await background.nodus.contractOperation('estimate', fields)).gasLimit, 2n);
+  assert.equal((await background.nodus.contractOperation('ticket', { ticketId: intent })).amountRaw, 7n);
+  for (const method of ['evm_account', 'evm_call', 'evm_estimate', 'evm_ticket']) assert.ok(calls.some(call => call[0] === method));
+  await assert.rejects(background.nodus.contractOperation('invented'), /Unknown/);
+});
 
 const savedRow = changes => ({ chain: 'nodus', address, to: recipient, symbol: 'NODUS', amount: '1.0', hash: '01'.repeat(64),
   createdAt: '2026-10-28T00:00:00.000Z', status: 'pending', expiryHeight: '100', fromHeight: '1', inputs: [input], ...changes });

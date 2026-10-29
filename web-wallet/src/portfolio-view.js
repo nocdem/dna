@@ -1,5 +1,5 @@
 import { CHAINS } from './config.js';
-import { ASSETS, chainBalances, holdingActions, sameAssetKeys, readPrices, portfolioSnapshot, groupAssets, usdText, displayAmount } from './portfolio.js';
+import { ASSETS, chainBalances, holdingActions, sameAssetKeys, readPrices as defaultReadPrices, portfolioSnapshot, groupAssets, usdText, displayAmount } from './portfolio.js';
 
 const names = { ETH: 'Ethereum', BNB: 'BNB', SOL: 'Solana', TRX: 'TRON', USDT: 'Tether', USDC: 'USD Coin', DAI: 'Dai', USDD: 'USDD', CPUNK: 'CPUNK' };
 // Asset symbol -> its own icon file. Keyed by symbol, not guessed from it, so an
@@ -61,7 +61,7 @@ function networkIcon(c) { return c.icon ? iconImg(c.icon) : icon(c.symbol); }
 // per asset — { assetKey: { units (decimal string), observedAt (ms), address } }
 // — so the app can save it with a saved wallet; open(…, { kept }) shows such
 // entries until a fresh read replaces them.
-export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [], extraNetworks = [], onKept }) {
+export function createPortfolio({ readBalances, readPrices = defaultReadPrices, selectAsset, leadingNetworks = [], extraNetworks = [], onKept }) {
   const entries = (list) => Object.fromEntries(list.map(({ network, asset }) => [asset.chain, network]));
   const networks = { ...entries(leadingNetworks), ...CHAINS, ...entries(extraNetworks) };
   const baseAssets = [...leadingNetworks.map(({ asset }) => asset), ...ASSETS, ...extraNetworks.map(({ asset }) => asset)];
@@ -77,6 +77,10 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
   // is ready, src/nodus/network.js nodusNetworkFor).
   function flag() {
     assets = baseAssets.flatMap(asset => [asset, ...(leadingAssets.has(asset) ? tokenAssets(asset.chain) : [])])
+      // Extension test networks have no configured token deployments and no
+      // USD price identity (operator 2026-10-29, plan row 21).
+      .filter(asset => !networks[asset.chain].testnet || asset.symbol === networks[asset.chain].symbol)
+      .map(asset => { if (!networks[asset.chain].testnet) return asset; const { priceId, ...unpriced } = asset; return unpriced; })
       .map(asset => networks[asset.chain].balanceUnavailable ? { ...asset, balanceUnavailable: true } : asset);
     chains = Object.keys(networks).filter(chain => !networks[chain].balanceUnavailable);
   }

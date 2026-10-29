@@ -4,6 +4,24 @@ import { renderEvmApproval, renderEvmSend } from '../src/ui/evm-screens.js';
 import { renderHome, renderSettings } from '../src/ui/views.js';
 import { createWalletUi } from '../src/ui/wallet-ui.js';
 import { CHAINS } from '../../src/config.js';
+import { evmReviewRows } from '../src/background/evm.js';
+
+// B1: src/app.js:2325-2339's row values/order, including name provenance,
+// checksum warning, nonce and expiry. No flags/network/artifacts. Checking
+// labels alone could display another recipient, amount or transaction number.
+test('EVM review rows equal the web-wallet transfer review', () => {
+  const to = '0x0000000000000000000000000000000000000001', expiresAt = 100000;
+  const transfer = { chain: 'ethereum', from: account, to, symbol: 'ETH', amount: '1.25', fee: 'Up to 0.001 ETH', nonce: 7, expiresAt };
+  assert.deepEqual(evmReviewRows(transfer), [['Network', 'Ethereum mainnet'], ['From', account], ['To', to],
+    ['Address check', 'No checksum in what you typed — compare the form above with your source character by character.'], ['Asset', 'ETH'], ['Amount', '1.25'],
+    ['Network fee', 'Up to 0.001 ETH'], ['Transaction number (nonce)', 7], ['Review expires', new Date(expiresAt).toLocaleTimeString()]]);
+  transfer.named = { name: 'publicname', owner: 'cd'.repeat(64), committedHeight: 10n };
+  const rows = evmReviewRows(transfer);
+  assert.deepEqual(rows.slice(2, 6), [['To (chain name)', 'publicname'],
+    ['Recipient source', 'Chain name, then the address published in the owner’s signed profile — looked up on one Nodus node (state of block 10).'],
+    ['Name owner (Nodus ID)', 'cd'.repeat(64)], ['To', to]]);
+  assert.equal(rows.some(([label]) => label === 'Address check'), false); assert.ok(rows.some(([label]) => label === 'Name check'));
+});
 
 // Node >=22.14, no flags/network/files; minimal DOM and trusted-client fixtures stay in memory.
 class Node {
@@ -12,8 +30,9 @@ class Node {
   get textContent() { return this.text + this.children.map(child => child.textContent).join(''); }
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this.text = ''; this.children = children; }
+  setAttribute(name, value) { (this.attributes ??= {})[name] = String(value); }
 }
-const document = { createElement: tag => new Node(tag) };
+const document = { createElement: tag => new Node(tag), createElementNS: (_ns, tag) => new Node(tag) };
 const find = (node, predicate) => node.children.flatMap(child => [...(predicate(child) ? [child] : []), ...find(child, predicate)]);
 const button = (node, text) => find(node, item => item.tagName === 'button' && item.textContent === text)[0];
 const account = '0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb';

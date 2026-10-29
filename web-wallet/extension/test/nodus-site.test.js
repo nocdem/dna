@@ -373,9 +373,10 @@ test('notification shows the Nodus origin and full message with working approval
     get textContent() { return this.text + this.children.map(node => node.textContent).join(''); }
     querySelectorAll() { return []; }
     querySelector() { return null; }
+    setAttribute(name, value) { (this.attributes ??= {})[name] = String(value); }
   }
   const nodes = Object.fromEntries(['screen', 'wallet-navigation', 'wallet-status'].map(id => [id, new Node('div')]));
-  const document = Object.assign(new EventTarget(), { createElement: tag => new Node(tag), getElementById: id => nodes[id] });
+  const document = Object.assign(new EventTarget(), { createElement: tag => new Node(tag), createElementNS: (_ns, tag) => new Node(tag), getElementById: id => nodes[id] });
   const window = new EventTarget(), calls = [], pending = { id: 'sign', type: 'nodus_signMessage', origin: 'https://site.example',
     requestData: { account: address, text: '<script>full message</script>', data: '0x1234' } };
   const client = { async request(method, params) { calls.push([method, params]); return { isInitialized: true, isUnlocked: true, addresses: {}, preferences: {}, pendingApprovals: { sign: pending } }; },

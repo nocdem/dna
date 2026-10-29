@@ -1,5 +1,6 @@
 import { CHAINS } from '../../../src/config.js';
 import { actionButton } from './views.js';
+import { pageHeading } from './presentation.js';
 
 function element(document, tag, text, className = '') {
   const node = document.createElement(tag); node.className = className;
@@ -15,7 +16,7 @@ function detail(document, container, title, text) {
 export function renderEvmApproval(document, container, pending, { approve, reject }) {
   const data = pending.requestData;
   const transaction = pending.type === 'transaction', switching = pending.type === 'wallet_switchEthereumChain';
-  container.replaceChildren(element(document, 'h1', switching ? 'Switch network' : transaction ? 'Review transaction' : 'Signature request'));
+  container.replaceChildren(pageHeading(document, switching ? 'Switch network' : transaction ? 'Review transaction' : 'Signature request', 'sites'));
   container.append(element(document, 'p', pending.origin, 'extension-origin'));
   detail(document, container, 'Account', data.account);
   detail(document, container, 'Network', CHAINS[data.chain].name);
@@ -39,7 +40,7 @@ export function renderEvmApproval(document, container, pending, { approve, rejec
 // Web-wallet src/wallet.js:29-69 and src/app.js send/review flow: prepare first,
 // display the adapter fee, then confirm that one background-owned review.
 export function renderEvmSend(document, container, { chain, review, account, config = CHAINS[chain] }, { prepare, confirm, cancel }) {
-  container.replaceChildren(element(document, 'h1', `Send on ${config.name}`));
+  container.replaceChildren(pageHeading(document, `Send on ${config.name}`, 'send'));
   if (account) detail(document, container, 'From', account);
   if (review) {
     detail(document, container, 'To', review.to);

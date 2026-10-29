@@ -15,6 +15,7 @@ const classicEntries = [manifest.background.service_worker, ...manifest.content_
 const wasm = [
   ['src/nodus/send.js', 'send.wasm', 'src/nodus/send.wasm'],
   ['src/nodus/derive.js', './mldsa87.wasm', 'src/nodus/mldsa87.wasm'],
+  ['src/ixios/derive.js', '../nodus/mldsa87.wasm', 'src/nodus/mldsa87.wasm'],
   ['src/cpunk/derive.js', './legacy-dilithium.wasm', 'src/cpunk/legacy-dilithium.wasm'],
 ];
 
@@ -26,7 +27,9 @@ const alias = [
   { find: /^events\/?$/u, replacement: require.resolve('events/') },
   { find: /^process\/?$/u, replacement: require.resolve('process/browser.js') },
 ];
-const define = { ...walletConfig.define, 'process.env.IN_TEST': 'false', global: 'globalThis' };
+// The extension always mounts Ixios; enable its shared portfolio icon guard.
+const define = { ...walletConfig.define, 'process.env.IN_TEST': 'false', global: 'globalThis',
+  'import.meta.env.VITE_ENABLE_IXIOS': '"true"' };
 
 function collectRenderedIds(bundle, ids) {
   for (const output of Object.values(bundle)) {
@@ -100,7 +103,8 @@ function packageAssets() {
       this.emitFile({ type: 'asset', fileName: 'manifest.json', source: `${JSON.stringify(packaged, null, 2)}\n` });
       // These are the orchestrator-built files. This build neither compiles nor
       // substitutes WASM; missing inputs fail. site-sdk is not a build input.
-      for (const [, , source] of wasm) this.emitFile({ type: 'asset', fileName: `wasm/${source.split('/').at(-1)}`,
+      // Nodus and Ixios load the same keygen binary; emit each source once.
+      for (const source of new Set(wasm.map(([, , source]) => source))) this.emitFile({ type: 'asset', fileName: `wasm/${source.split('/').at(-1)}`,
         source: readFileSync(resolve(here, source)) });
     },
   };

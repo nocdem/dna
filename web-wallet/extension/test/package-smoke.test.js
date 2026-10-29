@@ -158,13 +158,21 @@ test('MV3 zip loads in Chromium and announces Nodus Wallet to a local page', { t
     smokePages.add(popup);
     popup.on('pageerror', error => errors.push(error.message));
     await popup.goto(`${extensionUrl}/${manifest.action.default_popup}`);
-    await popup.getByRole('heading', { name: 'Your Nodus wallet', exact: true }).waitFor();
-    assert.equal(await popup.getByRole('button', { name: 'Create wallet', exact: true }).isVisible(), true);
-    assert.equal(await popup.getByRole('button', { name: 'Import phrase', exact: true }).isVisible(), true);
+    await popup.getByRole('heading', { name: 'Your wallet', exact: true }).waitFor();
+    assert.equal(await popup.locator('#create').isVisible(), true);
+    assert.equal(await popup.locator('#restore').isVisible(), true);
     assert.equal(await popup.locator('#wallet-status').textContent(), '');
     // Proves packaged Inter actually loads on an extension page; a plain-page
     // family check could falsely pass through inheritance. A stale zip can
     // still falsely pass, so rebuild first as required by this test's header.
+    const fontFamilies = await popup.evaluate(() => ({
+      root: getComputedStyle(document.documentElement).fontFamily,
+      body: getComputedStyle(document.body).fontFamily,
+      rootSize: getComputedStyle(document.documentElement).fontSize,
+      bodySize: getComputedStyle(document.body).fontSize,
+    }));
+    assert.equal(fontFamilies.body, fontFamilies.root, 'Extension body must use the web wallet font set on :root');
+    assert.equal(fontFamilies.bodySize, fontFamilies.rootSize, 'Extension body must inherit the web wallet base font size');
     await popup.evaluate(() => document.fonts.ready);
     assert.equal(await popup.evaluate(() => document.fonts.check('14px Inter')), true);
     assert.equal(await popup.evaluate(() => [...document.fonts].some(font => font.family === 'Inter' && font.status === 'loaded')), true);

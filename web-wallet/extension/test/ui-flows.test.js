@@ -11,9 +11,30 @@ import { connectTrusted } from '../src/ui/trusted-port.js';
 import { createWalletUi, connectDetails } from '../src/ui/wallet-ui.js';
 import { bindActivity } from '../src/ui/activity.js';
 
+// Real DOM filters/hide/refresh gating, asset/receive selection and retained
+// send inputs. Public, distinct chain replies; no live RPC/wallet artifacts.
+// Pure controller checks could pass with unwired controls on the actual page.
+test('mounted portfolio controls route reads and preserve the send form', { timeout: 60_000 }, async () => {
+  const { withPortfolioPage, checkPortfolioFlows } = await import('./fixtures/portfolio-page-checks.js');
+  await withPortfolioPage(checkPortfolioFlows);
+});
+
 // Node >=22.14, no flags, network or disk writes; all browser/port fixtures are in memory and disposed after each test.
 const phrase = 'abandon '.repeat(23) + 'art';
 const password = 'public-test-password-123';
+
+// Package A: skip is explicit and limited to generated words at backup.
+// No flags/network/artifacts. Import-only coverage would miss the skip guard.
+test('skip verification saves only the generated backup after explicit confirmation', async () => {
+  const client = fakeClient(), ui = createWalletUi(client, { generatePhrase: () => phrase });
+  await assert.rejects(ui.skipVerification(password, password), /backup/);
+  ui.beginImport();
+  await assert.rejects(ui.skipVerification(password, password), /backup/);
+  ui.beginCreate();
+  await ui.skipVerification(password, password);
+  assert.equal(new TextDecoder().decode(Uint8Array.from(client.calls[0].params[1])), phrase);
+  assert.equal(ui.state.isUnlocked, true);
+});
 const account = '0xf278cf59f82edcf871d630f28ecc8056f25c1cdb';
 function event() {
   const listeners = new Set();
@@ -253,11 +274,14 @@ test('trusted pages receive live approval state notifications', async t => {
   await client.request('messengerUnsubscribe', ['ApprovalController:stateChange']); unsubscribe();
 });
 
-// Proves each HTML entry imports one UI and contains no reference branding or web-wallet app entry; scanning only one page could miss a copied notification page.
-test('popup, notification and fullscreen pages wire the shared English UI', () => {
+// Proves each page loads exactly one reference-screen entry for index.html:18-77;
+// scanning only one page could miss a notification page still loading the old adapter.
+test('popup, notification and fullscreen pages wire the shared web-wallet screen', () => {
   for (const page of ['popup.html', 'notification.html', 'home.html']) {
     const html = readFileSync(new URL(`../${page}`, import.meta.url), 'utf8');
-    assert.match(html, /lang="en"/); assert.match(html, /src="\.\/src\/ui\/app\.js"/); assert.doesNotMatch(html, /metamask|src\/main\.js/i);
+    assert.match(html, /lang="en"/);
+    assert.deepEqual([...html.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/gu)].map(match => match[1]), ['./src/ui/reference-entry.js']);
+    assert.doesNotMatch(html, /metamask|src\/main\.js/i);
   }
   const manifest = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8')); assert.equal(manifest.action.default_popup, 'popup.html');
 });

@@ -1,4 +1,4 @@
-import { mountWalletPage } from '../../src/ui/app.js';
+import { mountReferencePage } from '../../src/ui/reference-entry.js';
 import { ASSETS } from '../../../src/portfolio.js';
 import { CHAINS } from '../../../src/config.js';
 import { DEFAULT_NETWORKS } from '../../src/constants/networks.js';
@@ -8,9 +8,12 @@ import { Caip25EndowmentPermissionName, getCaip25PermissionFromLegacyPermissions
 // Public, deliberately non-signing fixtures. All observed times come from the
 // page's clock when the fake answers; no calendar date can expire this fixture.
 const query = new URLSearchParams(location.search), stage = query.get('stage') || 'home';
+// Geometry scenarios use manual refresh; the automatic choices are exercised
+// by portfolio-page.browser.js. This is an explicit fixture device setting.
+localStorage.setItem('nodus.balanceRefreshMinutes', '0');
 document.body.dataset.page = query.get('page') || 'popup';
 const addresses = { nodus: 'ab'.repeat(64), ethereum: '0x' + '12'.repeat(20), bsc: '0x' + '12'.repeat(20),
-  solana: '1'.repeat(44), tron: 'T' + '1'.repeat(33), cpunk: 'R'.repeat(104) };
+  solana: '1'.repeat(44), tron: 'T' + '1'.repeat(33), cpunk: 'R'.repeat(104), ixios: '0x' + '11'.repeat(48) };
 const balances = Object.fromEntries(Object.keys(CHAINS).map(chain => [chain, ASSETS.filter(asset => asset.chain === chain)
   .map((asset, index) => ({ symbol: asset.symbol, balance: String(index + 1) }))]));
 const permissions = getCaip25PermissionFromLegacyPermissions();
@@ -36,7 +39,13 @@ const client = { onNotification: () => () => {}, onDisconnect: () => () => {}, c
   calls.push({ method, params: structuredClone(params) });
   if (method === 'getState') return structuredClone({ ...state, addresses: state.isUnlocked ? addresses : {} });
   if (['messengerSubscribe', 'messengerUnsubscribe', 'setLastActiveTime'].includes(method)) return;
+  if (['keepBalances', 'checkNodusLiveness'].includes(method)) return;
+  if (method === 'getKeptBalances') return {};
+  if (method === 'getAddressBook') return { entries: [] };
+  if (method === 'getSessionLog') return { entries: [], running: [] };
+  if (method === 'contractAccount') return { balanceWei: '0', nonce: '0', height: '1', pending: false };
   if (method === 'submitPasswordOrEncryptionKey') { state.isUnlocked = true; return; }
+  if (method === 'getSeedPhrase') return [...new TextEncoder().encode('abandon '.repeat(23) + 'art')];
   if (method === 'setLocked') { state.isUnlocked = false; return; }
   if (method === 'getPrices') {
     quotes = Object.fromEntries(ASSETS.map((asset, index) => [asset.key, { units: String((index + 1) * 100000000), observedAt: Date.now() }]));
@@ -50,11 +59,14 @@ const client = { onNotification: () => () => {}, onDisconnect: () => () => {}, c
   }
   if (method === 'getNodusBalances') return [{ symbol: 'NODUS', balance: '12.34' }];
   if (method === 'getCpunkBalance') return { balance: '0.75' };
+  if (method === 'getIxiosBalance') return [{ symbol: 'IXIOS', balance: '1' }];
   if (method === 'getNodusHistory') return { status: 'Fixture account history', local: [
     { amount: '1', symbol: 'NODUS', status: 'submitted', note: 'Awaiting confirmation.', hash: 'ab'.repeat(32) },
   ], rows: [{ title: 'Received NODUS', sign: '+', amount: '2', detail: 'Public fixture transfer', height: 12, wire: 'cd'.repeat(32) }] };
   if (method === 'getSolanaHistory' || method === 'getTronHistory') return { network: 'mainnet', status: 'Fixture account history', local: [], rows: [] };
-  if (method === 'prepareEvmSend') return { id: 'layout-review', ...params[0], fee: 'Up to 0.001 ETH' };
+  if (method === 'prepareEvmSend') return { id: 'layout-review', ...params[0], fee: 'Up to 0.001 ETH', expiresAt: Date.now() + 60000,
+    review: [['Network', 'Ethereum mainnet'], ['From', addresses.ethereum], ['To', params[0].to], ['Asset', params[0].symbol], ['Amount', params[0].amount], ['Network fee', 'Up to 0.001 ETH'], ['Transaction number (nonce)', 7]] };
+  if (method === 'confirmEvmSend') return 'public-fixture-transaction';
   if (method === 'cancelEvmSend') return;
   if (method === 'resolvePendingApproval' || method === 'rejectPendingApproval') { delete state.pendingApprovals[params[0]]; return; }
   if (method === 'approvePermissionsRequest') { delete state.pendingApprovals[params[0].id]; return; }
@@ -63,5 +75,5 @@ const client = { onNotification: () => () => {}, onDisconnect: () => () => {}, c
   if (method === 'setPreference') { state.preferences[params[0]] = params[1]; return true; }
   throw new Error(`Unexpected layout fixture method: ${method}`);
 } };
-const mounted = await mountWalletPage({ document, window, client });
+const mounted = await mountReferencePage({ document, window, client });
 window.layout = { calls, state, balances, balanceTimes, get quotes() { return quotes; }, refresh: mounted.refresh, dispose: mounted.dispose };
