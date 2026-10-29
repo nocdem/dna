@@ -15,6 +15,12 @@ export async function mountWalletPage({ document = globalThis.document, window =
   const navigation = document.getElementById('wallet-navigation'), status = document.getElementById('wallet-status');
   let page = 'home', receiveNetwork, fields, revealed, busy = false, disposed = false, revision = 0;
   let sendChain, sendReview, contractResult, stopSendReview;
+  let portfolioText;
+  function updatePortfolio() {
+    if (!portfolioText) return;
+    const summary = ui.portfolio();
+    for (const key of ['label', 'total', 'status']) portfolioText[key].textContent = summary[key];
+  }
   const isSolanaTron = chain => chain === 'solana' || chain === 'tron';
   const hasBalances = state => state && (state.evm || state.nodus || state.addresses?.solana || state.addresses?.tron);
   const cancelReview = () => sendChain === 'nodus' ? ui.cancelNodusSend(sendReview.id)
@@ -67,16 +73,20 @@ export async function mountWalletPage({ document = globalThis.document, window =
     const changed = publicState !== JSON.stringify(state);
     if (publicState && !state.isUnlocked && page !== 'phrase') { clearSensitive(); page = 'home'; }
     publicState = JSON.stringify(state);
-    if (busy) { refreshPending ||= changed; return; }
+    if (busy) { refreshPending ||= changed; updatePortfolio(); return; }
     if (changed) render();
+    updatePortfolio();
     scheduleIdle();
     if (state.isUnlocked && hasBalances(state) && page === 'home') void loadBalances().catch(showError);
   }
   async function loadBalances(force = false) {
-    await Promise.all([ui.state?.evm && ui.loadEvmBalances({ force }), ui.state?.nodus && ui.loadNodusBalances({ force }), ui.loadSolanaTronBalances({ force })]);
+    await Promise.all([ui.state?.evm && ui.loadEvmBalances({ force }), ui.state?.nodus && ui.loadNodusBalances({ force }), ui.loadSolanaTronBalances({ force }), ui.loadPrices({ force })]);
+    updatePortfolio();
     if (disposed || page !== 'home' || !ui.state?.isUnlocked) return;
+    const nextState = JSON.stringify(ui.state);
+    if (nextState === publicState) return;
     if (busy) { refreshPending = true; return; }
-    publicState = JSON.stringify(ui.state); render();
+    publicState = nextState; render(); updatePortfolio();
   }
   async function run(action, { renderAfter = true } = {}) {
     if (busy || disposed) return;
@@ -87,7 +97,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
       try { await ui.refresh(); } catch (error) { showError(error); }
       busy = false; root.inert = navigation.inert = false;
       if (!disposed) {
-        publicState = JSON.stringify(ui.state); if (renderAfter || !ui.state?.isUnlocked || refreshPending) render(); scheduleIdle();
+        publicState = JSON.stringify(ui.state); if (renderAfter || !ui.state?.isUnlocked || refreshPending) render(); updatePortfolio(); scheduleIdle();
         if (ui.state?.isUnlocked && hasBalances(ui.state) && page === 'home') void loadBalances().catch(showError);
       }
       if (refreshPending) { refreshPending = false; void refresh().catch(showError); }
@@ -161,12 +171,16 @@ export async function mountWalletPage({ document = globalThis.document, window =
     stopSendReview?.(); stopSendReview = undefined;
     fields?.clear(); fields = undefined; revealed?.replaceChildren(); revealed = undefined;
     root.replaceChildren(); navigation.replaceChildren();
+    portfolioText = undefined;
     const state = ui.state;
     if (sendReview?.network && sendReview.network !== state.networks?.[sendChain]) {
       void cancelReview().catch(() => {}); sendReview = undefined;
     }
     if (state.isUnlocked) {
-      for (const [label, next] of [['Home', 'home'], ['Connected sites', 'sites'], ['Settings', 'settings']]) navigation.append(actionButton(document, label, () => navigate(next)));
+      for (const [label, next] of [['Home', 'home'], ['Connected sites', 'sites'], ['Settings', 'settings']]) {
+        const button = actionButton(document, label, () => navigate(next)); button.className = 'network-filter';
+        if (page === next) button.ariaCurrent = 'page'; navigation.append(button);
+      }
       navigation.append(actionButton(document, 'Lock', () => run(async () => { clearSensitive(); page = 'home'; await ui.lock(); })));
     }
     if (page === 'phrase' && ui.phraseStep) { renderPhrase(); return; }
@@ -275,7 +289,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
         }, { renderAfter: false });
       },
     });
-    else renderHome(document, root, state, network => navigate('receive', network), chain => {
+    else portfolioText = renderHome(document, root, { ...state, portfolio: ui.portfolio() }, network => navigate('receive', network), chain => {
       sendChain = chain; navigate('send');
     }, () => run(() => loadBalances(true)), () => navigate('nodus-history'), () => { sendChain = 'nodus'; navigate('contracts'); }, chain => navigate('chain-history', chain));
   }

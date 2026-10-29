@@ -100,6 +100,9 @@ class ExtensionLazyListener {
           }
           return;
         }
+        // ADAPTATION (operator 2026-10-29: "Bizim kopyada düzeltelim, uyarı bir daha çıkmasın."): an empty tracker is
+        // dropped here, else a restarted worker warns about an event the application already awaits.
+        if (tracker) { event.removeListener(tracker.listener); listeners.delete(eventName); if (listeners.size === 0) this.#namespaceListeners.delete(namespace); }
       }
       const tempListener = (...args) => {
         event.removeListener(tempListener);

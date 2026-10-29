@@ -3,6 +3,7 @@ import { actionButton } from './views.js';
 function detail(document, container, title, value) {
   const label = document.createElement('h2'), text = document.createElement('pre');
   label.textContent = title; text.textContent = value; text.className = 'log-line evm-result';
+  label.className = 'extension-field-label';
   container.append(label, text);
 }
 
@@ -16,7 +17,8 @@ export function renderNodusSiteApproval(document, container, pending, { approve,
   detail(document, container, 'Account', pending.requestData.account);
   detail(document, container, 'Message', pending.requestData.text);
   if (pending.requestData.data !== pending.requestData.text) detail(document, container, 'Message bytes', pending.requestData.data);
-  container.append(actionButton(document, 'Reject', () => reject(pending)), actionButton(document, 'Approve', () => approve(pending), false));
+  const actions = document.createElement('div'); actions.className = 'actions';
+  actions.append(actionButton(document, 'Reject', () => reject(pending)), actionButton(document, 'Approve', () => approve(pending), false)); container.append(actions);
 }
 
 // Same permission approval controls as views.js renderConnect; the decision
@@ -29,5 +31,6 @@ export function renderNodusConnect(document, container, state, pending, { approv
   detail(document, container, 'ML-DSA-87 public key', state.nodus?.publicKey ?? 'Unavailable');
   const connect = actionButton(document, 'Connect', () => approve(pending), false);
   connect.disabled = !state.addresses.nodus || !state.nodus?.publicKey;
-  container.append(actionButton(document, 'Reject', () => reject(pending)), connect);
+  const actions = document.createElement('div'); actions.className = 'actions';
+  actions.append(actionButton(document, 'Reject', () => reject(pending)), connect); container.append(actions);
 }

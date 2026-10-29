@@ -17,11 +17,12 @@ import { createNetworks } from './networks.js';
 import { PermissionsRequestNotFoundError } from '@metamask/permission-controller';
 import { VAULT_KEY, decryptVault, validateNewPassword } from '../../../src/vault.js';
 import { validateNodusPhrase } from '../../../src/recovery.js';
+import { readPrices as readWalletPrices } from '../../../src/portfolio.js';
 
 // Approved plan §3.5:388-435; packages 1-2 own the vault, key custody and shared lock.
 // Startup constructs fresh locked holders. Store composition receives only controller metadata, never key custody.
 export async function createBackground({ storage = chrome.storage.local, alarms = chrome.alarms,
-  runtime = chrome.runtime, windows = chrome.windows, tabs = globalThis.chrome?.tabs, nodusOptions = {}, consumeNodusSeed } = {}) {
+  runtime = chrome.runtime, windows = chrome.windows, tabs = globalThis.chrome?.tabs, nodusOptions = {}, consumeNodusSeed, readPrices = readWalletPrices } = {}) {
   const lockCoordinator = createLockCoordinator();
   const vaultStore = createVaultStore({ storage, lockCoordinator });
   const messenger = new Messenger({ namespace: 'Background' });
@@ -179,6 +180,13 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     resolvePendingApproval: (id, value) => approvals.controller.acceptRequest(id, value),
     rejectPendingApproval: id => approvals.reject(id),
     getEvmBalances: chain => evm.getBalances(chain),
+    // Design r3 §2.4a: the web-wallet reader owns price validation; only public
+    // decimal strings cross the UI stream, whose state comparison uses JSON.
+    async getPrices() {
+      lockCoordinator.assertUnlocked();
+      const quotes = await readPrices();
+      return Object.fromEntries(Object.entries(quotes).map(([key, quote]) => [key, { units: quote.units.toString(), observedAt: quote.observedAt }]));
+    },
     setChainNetwork: (chain, network) => networks.select(chain, network),
     // Package 7a: wallet-only methods on the authenticated controller stream
     // (engine.js setupTrustedCommunication); no Solana/Tron site routing.

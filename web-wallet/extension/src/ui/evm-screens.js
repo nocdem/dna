@@ -7,7 +7,7 @@ function element(document, tag, text, className = '') {
   return node;
 }
 function detail(document, container, title, text) {
-  container.append(element(document, 'h2', title), element(document, 'pre', String(text ?? ''), 'log-line evm-result'));
+  container.append(element(document, 'h2', title, 'extension-field-label'), element(document, 'pre', String(text ?? ''), 'log-line evm-result'));
 }
 
 // Approved plan §3.6: origin/account plus the complete message or transaction
@@ -49,7 +49,7 @@ export function renderEvmSend(document, container, { chain, review, account, con
     actions.append(actionButton(document, 'Cancel', cancel), actionButton(document, 'Confirm send', () => confirm(review.id), false));
     container.append(actions); return;
   }
-  const form = element(document, 'form'), to = element(document, 'input'), amount = element(document, 'input'), asset = element(document, 'select');
+  const form = element(document, 'form', undefined, 'send-block'), to = element(document, 'input'), amount = element(document, 'input'), asset = element(document, 'select');
   to.id = 'evm-send-to'; to.type = 'text'; to.required = true; to.autocomplete = 'off';
   amount.id = 'evm-send-amount'; amount.type = 'text'; amount.inputMode = 'decimal'; amount.required = true; amount.autocomplete = 'off';
   asset.id = 'evm-send-asset';

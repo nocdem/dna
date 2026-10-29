@@ -16,18 +16,19 @@ export function renderNodusSend(document, container, { account, tokens = [], rev
     // src/app.js:2323-2325, 1615-1627: display the review deadline and give
     // the user 600 ms before enabling transfer confirmation.
     const entries = [...review.review, ['Review expires', new Date(review.expiresAt).toLocaleTimeString()]];
-    for (const [label, value] of entries) container.append(element(document, 'h2', label), element(document, 'pre', value, 'log-line evm-result'));
+    for (const [label, value] of entries) container.append(element(document, 'h2', label, 'extension-field-label'), element(document, 'pre', value, 'log-line evm-result'));
     const confirmButton = actionButton(document, 'Confirm send', () => {
       if (confirmButton.disabled) return;
       confirmButton.disabled = true; return confirm(review.id);
     }, false);
     confirmButton.disabled = true;
-    container.append(actionButton(document, 'Cancel', cancel), confirmButton);
+    const actions = element(document, 'div', undefined, 'actions');
+    actions.append(actionButton(document, 'Cancel', cancel), confirmButton); container.append(actions);
     const timer = setTimeout(() => { confirmButton.disabled = false; }, 600);
     return () => clearTimeout(timer);
   }
   container.append(element(document, 'code', account));
-  const form = element(document, 'form'), to = element(document, 'input'), amount = element(document, 'input'), asset = element(document, 'select');
+  const form = element(document, 'form', undefined, 'send-block'), to = element(document, 'input'), amount = element(document, 'input'), asset = element(document, 'select');
   to.id = 'nodus-send-to'; to.type = 'text'; to.required = true; to.autocomplete = 'off';
   amount.id = 'nodus-send-amount'; amount.type = 'text'; amount.inputMode = 'decimal'; amount.required = true; amount.autocomplete = 'off';
   asset.id = 'nodus-send-asset';
@@ -51,20 +52,24 @@ export function renderNodusHistory(document, container, history, { refresh, resu
   container.append(actionButton(document, 'Refresh history', refresh));
   if (!history) { container.append(element(document, 'p', nodusHistoryStatus(), 'hint')); return; }
   if (history.activityError) container.append(element(document, 'p', history.activityError, 'field-error'));
+  const local = element(document, 'div', undefined, 'activity-list');
   for (const row of history.local ?? []) {
-    const article = element(document, 'article', undefined, 'extension-network');
+    const article = element(document, 'article', undefined, 'activity-row');
     article.append(element(document, 'h2', row.amountText ?? `${row.amount} ${row.symbol}`), element(document, 'p', `${row.status}: ${row.note}`), element(document, 'code', row.hash));
     if (row.detail) article.append(element(document, 'p', row.detail));
     if (row.canResubmit) article.append(actionButton(document, 'Try again', () => resubmit(row.hash)));
-    container.append(article);
+    local.append(article);
   }
+  container.append(local);
   container.append(element(document, 'p', history.error ? nodusHistoryStatus({ error: history.error }) : history.status, history.error ? 'field-error' : 'hint'));
+  const account = element(document, 'div', undefined, 'activity-list');
   for (const row of history.rows ?? []) {
-    const article = element(document, 'article', undefined, 'extension-network');
+    const article = element(document, 'article', undefined, 'activity-row');
     article.append(element(document, 'h2', row.title), element(document, 'p', `${row.sign}${row.amount}`), element(document, 'p', row.detail), element(document, 'p', `Block ${row.height}`));
     if (row.wire) article.append(element(document, 'code', row.wire));
-    container.append(article);
+    account.append(article);
   }
+  container.append(account);
 }
 
 // src/evm/ui.js bridge/contract/deployment actions use the same Contract and
@@ -75,7 +80,7 @@ export function renderNodusContracts(document, container, { account, readable, b
     // review keeps its error and Close button rather than the transfer outcome note.
     container.replaceChildren(element(document, 'h1', 'Review smart-contract transaction'));
     container.append(element(document, 'p', 'Testnet transaction. Check every line; sending cannot be undone.', 'notice'));
-    for (const [label, value] of review.review) container.append(element(document, 'h2', label), element(document, 'pre', value, 'log-line evm-result'));
+    for (const [label, value] of review.review) container.append(element(document, 'h2', label, 'extension-field-label'), element(document, 'pre', value, 'log-line evm-result'));
     const error = element(document, 'p', review.error ?? '', 'field-error'); error.role = 'alert';
     const cancel = actionButton(document, review.error ? 'Close' : 'Cancel', actions.cancel); cancel.disabled = false;
     const confirm = actionButton(document, 'Confirm & send', () => {
@@ -83,7 +88,8 @@ export function renderNodusContracts(document, container, { account, readable, b
       confirm.disabled = true; cancel.disabled = true; return actions.confirm(review.id);
     }, false);
     confirm.disabled = Boolean(review.error);
-    container.append(error, cancel, confirm); return;
+    const buttons = element(document, 'div', undefined, 'actions'); buttons.append(cancel, confirm);
+    container.append(error, buttons); return;
   }
   container.replaceChildren(element(document, 'h1', 'Nodus smart contracts'));
   container.append(element(document, 'p', 'The network fee shown for a transaction is the most it can cost.', 'hint'));
@@ -99,14 +105,14 @@ export function renderNodusContracts(document, container, { account, readable, b
     input.value = choices[0][0]; return input;
   }
   if (buildable) {
-    const bridge = element(document, 'form'); bridge.append(element(document, 'h2', 'Move NODUS'));
+    const bridge = element(document, 'form', undefined, 'page-block'); bridge.append(element(document, 'h2', 'Move NODUS'));
     const action = select(bridge, 'Action', [['deposit', 'Move NODUS to smart contracts'], ['withdraw', 'Move NODUS back'], ['redeem', 'Collect a withdrawal ticket']]);
     const amount = field(bridge, 'Amount (NODUS)'), dest = field(bridge, 'Nodus recipient', 'input', account), ticketId = field(bridge, 'Withdrawal ticket');
     const submit = element(document, 'button', 'Review transaction'); submit.type = 'submit'; bridge.append(submit); container.append(bridge);
     bridge.onsubmit = event => { event.preventDefault(); return actions.prepare({ action: action.value, amount: amount.value, dest: dest.value, ticketId: ticketId.value }); };
   }
   if (readable) {
-    const form = element(document, 'form'); form.append(element(document, 'h2', 'Contract'));
+    const form = element(document, 'form', undefined, 'page-block'); form.append(element(document, 'h2', 'Contract'));
     const choices = [['read', 'Read contract'], ['estimate', 'Estimate contract call'], ...(buildable ? [['call', 'Call contract'], ['deploy', 'Deploy contract']] : [])];
     const action = select(form, 'Action', choices), address = field(form, 'Contract address'), abi = field(form, 'ABI (JSON)', 'textarea');
     const fn = field(form, 'Function signature'), args = field(form, 'Arguments (JSON array; use strings for integers)', 'textarea', '[]');
@@ -117,7 +123,7 @@ export function renderNodusContracts(document, container, { account, readable, b
       const fields = { action: action.value, address: address.value, abi: abi.value, fn: fn.value, args: args.value, value: value.value, bytecode: bytecode.value };
       return (['read', 'estimate'].includes(action.value) ? actions.read : actions.prepare)(fields);
     };
-    const ticket = element(document, 'form'), ticketId = field(ticket, 'Withdrawal ticket');
+    const ticket = element(document, 'form', undefined, 'page-block'), ticketId = field(ticket, 'Withdrawal ticket');
     const read = element(document, 'button', 'Inspect ticket'); read.type = 'submit'; ticket.append(read); container.append(ticket);
     ticket.onsubmit = event => { event.preventDefault(); return actions.read({ action: 'ticket', ticketId: ticketId.value }); };
   }

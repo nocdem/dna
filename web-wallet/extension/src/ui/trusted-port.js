@@ -11,6 +11,8 @@ export function connectTrusted({ runtime = chrome.runtime, page = globalThis.loc
   mux.ignoreStream('provider'); mux.ignoreStream('app-init-liveness');
   const controller = mux.createStream('controller'), pending = new Map(), disconnectListeners = new Set(), notificationListeners = new Set();
   let id = 0, closed = false;
+  // Port: ui/index.js:106 + metamask-controller.js:4857-4879: requests wait for the background's startUISync.
+  let uiSynced, synced = false; const uiSync = new Promise(resolve => { uiSynced = resolve; });
   function disconnected() {
     if (closed) return;
     closed = true;
@@ -27,6 +29,7 @@ export function connectTrusted({ runtime = chrome.runtime, page = globalThis.loc
   function onData(response) {
     // Port: lib/MessengerSubscriptions.ts:48-52 (trusted JSON-RPC event notifications).
     if (response?.id === undefined && typeof response?.method === 'string') {
+      if (response.method === 'START_UI_SYNC') { synced = true; uiSynced(); return; }
       for (const listener of notificationListeners) listener(response);
       return;
     }
@@ -43,8 +46,10 @@ export function connectTrusted({ runtime = chrome.runtime, page = globalThis.loc
       if (closed) return Promise.reject(new Error('Wallet background disconnected. Reopen this wallet page.'));
       return new Promise((resolve, reject) => {
         const requestId = ++id; pending.set(requestId, { resolve, reject });
-        try { controller.write({ jsonrpc: '2.0', id: requestId, method, params }); }
-        catch (error) { pending.delete(requestId); reject(error); }
+        const write = () => { try { if (!closed) controller.write({ jsonrpc: '2.0', id: requestId, method, params }); }
+          catch (error) { pending.delete(requestId); reject(error); } };
+        // After START_UI_SYNC a request is written at once, so a request made just before close() (dispose's unsubscribe) still goes out.
+        if (synced) write(); else void uiSync.then(write);
       });
     },
     onDisconnect(listener) { disconnectListeners.add(listener); return () => disconnectListeners.delete(listener); },

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nodus Wallet layout fixture</title>
+  <link rel="stylesheet" href="../../../src/style.css">
+  <link rel="stylesheet" href="../../src/ui/extension.css">
+</head>
+<body class="extension-page" data-page="popup">
+  <header class="extension-header">
+    <a class="wordmark" href="../../popup.html"><img src="/assets/nodus-mark.svg" width="32" height="32" alt="">Nodus</a>
+    <a href="../../home.html" target="_blank" rel="noopener">Open full page</a>
+  </header>
+  <main class="extension-shell card wallet-card">
+    <nav id="wallet-navigation" class="extension-navigation" aria-label="Wallet"></nav>
+    <p id="wallet-status" role="status" aria-live="polite"></p>
+    <section id="screen" aria-label="Wallet screen"></section>
+    <noscript>JavaScript is required to open this wallet.</noscript>
+  </main>
+  <script type="module" src="./layout-fixture.js"></script>
+</body>
+</html>

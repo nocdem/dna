@@ -205,7 +205,7 @@ Source identifiers keep their older `dna` / `dnac` names (`libdna`,
 | Nodus | v0.26.32 | `nodus/include/nodus/nodus_types.h` |
 | Nodus Chain client (DNAC) | v0.22.2 | `dnac/include/dnac/version.h` |
 | C library (libdna) | v0.11.35 | `messenger/include/dna/version.h` |
-| Nodus Web Wallet | v0.1.133 | `web-wallet/package.json` |
+| Nodus Web Wallet | v0.1.134 | `web-wallet/package.json` |
 | DNA Connect Flutter app (frozen) | v1.0.0-rc241 | `messenger/dna_messenger_flutter/pubspec.yaml` |
 
 ---

@@ -29,7 +29,7 @@ export function renderSolanaTronSend(document, container, { chain, account, revi
   // 600 ms before confirmation. Disposal closes the timer on navigation/lock.
   container.append(element(document, 'p', `${network.label} transaction. Sending cannot be undone.`, 'notice'));
   for (const [label, value] of [...review.review, ['Review expires', new Date(review.expiresAt).toLocaleTimeString()]]) {
-    container.append(element(document, 'h2', label), element(document, 'pre', value, 'log-line evm-result'));
+    container.append(element(document, 'h2', label, 'extension-field-label'), element(document, 'pre', value, 'log-line evm-result'));
   }
   const cancel = actionButton(document, 'Cancel', actions.cancel);
   const confirm = actionButton(document, 'Confirm send', () => {
@@ -37,7 +37,7 @@ export function renderSolanaTronSend(document, container, { chain, account, revi
     confirm.disabled = cancel.disabled = true; return actions.confirm(review.id);
   }, false);
   confirm.disabled = true;
-  container.append(cancel, confirm);
+  const buttons = element(document, 'div', undefined, 'actions'); buttons.append(cancel, confirm); container.append(buttons);
   const timer = setTimeout(() => { confirm.disabled = false; }, 600);
   return () => clearTimeout(timer);
 }
@@ -59,24 +59,29 @@ export function renderSolanaTronHistory(document, container, { chain, history },
   container.append(actionButton(document, 'Refresh history', refresh));
   if (!history) { container.append(element(document, 'p', 'Account history has not been read yet.', 'hint')); return; }
   if (history.activityError) container.append(element(document, 'p', history.activityError, 'field-error'));
-  container.append(element(document, 'h2', 'Sent from here'));
+  container.append(element(document, 'h2', 'Sent from here', 'activity-subhead'));
+  const local = element(document, 'div', undefined, 'activity-list');
   for (const row of history.local ?? []) {
-    const article = element(document, 'article', undefined, 'extension-network');
+    const article = element(document, 'article', undefined, 'activity-row');
+    const status = element(document, 'p', row.status, 'status-badge'); status.setAttribute('data-status', row.status);
     article.append(element(document, 'h2', `${row.amount} ${row.symbol}`), element(document, 'p', `To ${row.to}`),
-      element(document, 'p', row.status), element(document, 'p', row.readError || row.note),
+      status, element(document, 'p', row.readError || row.note),
       element(document, 'time', new Date(row.createdAt).toLocaleString()));
-    explorer(document, article, chain, row.network ?? history.network, row.hash); container.append(article);
+    explorer(document, article, chain, row.network ?? history.network, row.hash); local.append(article);
   }
-  container.append(element(document, 'h2', 'Account history'), element(document, 'p', history.status, 'hint'));
+  container.append(local, element(document, 'h2', 'Account history', 'activity-subhead'), element(document, 'p', history.status, 'hint'));
   if (history.error) container.append(element(document, 'p', history.error, 'field-error'));
+  const account = element(document, 'div', undefined, 'activity-list');
   for (const row of history.rows ?? []) {
-    const article = element(document, 'article', undefined, 'extension-network');
+    const article = element(document, 'article', undefined, 'activity-row');
     const sign = row.dir === 'in' ? '+' : row.dir === 'out' ? '−' : '';
     // src/app.js:299,310-314: shorten peers and reuse displayAmount.
     const shortPeer = peer => peer.length > 18 ? `${peer.slice(0, 8)}…${peer.slice(-6)}` : peer;
     const what = row.dir === 'self' ? 'to yourself' : row.peer ? `${row.dir === 'in' ? 'from' : 'to'} ${shortPeer(row.peer)}` : row.dir === 'in' ? 'received' : 'sent';
+    const status = element(document, 'p', row.status, 'status-badge'); status.setAttribute('data-status', row.status);
     article.append(element(document, 'h2', `${sign}${displayAmount(row.amount)} ${row.symbol}`), element(document, 'p', what),
-      element(document, 'p', row.status), element(document, 'time', new Date(row.time).toLocaleString()));
-    explorer(document, article, chain, history.network, row.hash); container.append(article);
+      status, element(document, 'time', new Date(row.time).toLocaleString()));
+    explorer(document, article, chain, history.network, row.hash); account.append(article);
   }
+  container.append(account);
 }

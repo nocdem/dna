@@ -22,7 +22,21 @@ export function actionButton(document, text, action, secondary = true) {
 function heading(document, container, text) { container.append(element(document, 'h1', '', text)); }
 
 export function renderHome(document, container, state, receive, send, refreshBalances, history, contracts, solanaTronHistory) {
-  container.replaceChildren(); heading(document, container, 'Your wallet');
+  container.replaceChildren();
+  const head = element(document, 'div', 'panel-heading extension-home-heading');
+  heading(document, head, 'Your wallet');
+  if (refreshBalances) head.append(actionButton(document, 'Refresh balances', refreshBalances));
+  const card = element(document, 'section', 'portfolio-card'), cardHead = element(document, 'div', 'portfolio-heading');
+  const label = element(document, 'p', 'eyebrow', state.portfolio?.label ?? 'Estimated portfolio value'); label.id = 'portfolio-label';
+  const total = element(document, 'span', '', state.portfolio?.total ?? '—'); total.id = 'portfolio-total';
+  const status = element(document, 'p', '', state.portfolio?.status ?? 'Balances load when you open your wallet.');
+  status.id = 'portfolio-status'; status.role = 'status';
+  const amount = element(document, 'p', 'portfolio-amount'); amount.append(total, element(document, 'span', 'portfolio-currency', 'USD'));
+  cardHead.append(label); card.append(cardHead, amount, status);
+  const source = element(document, 'p', 'price-source', 'Indicative USD prices from '), link = element(document, 'a', '', 'DefiLlama');
+  link.href = 'https://defillama.com/'; link.target = '_blank'; link.rel = 'noopener noreferrer';
+  source.append(link, element(document, 'span', '', '. This estimate is not a sale quote.'));
+  container.append(head, card, source);
   const list = element(document, 'div', 'extension-addresses');
   for (const [key, network] of Object.entries(NETWORKS)) {
     const row = element(document, 'article', 'extension-network');
@@ -30,38 +44,57 @@ export function renderHome(document, container, state, receive, send, refreshBal
     icon.src = new URL(`../../../src/assets/coins/${network.icon}`, import.meta.url).href; icon.alt = ''; icon.width = 36; icon.height = 36;
     const selected = chainNetwork(key, state.networks?.[key]);
     const name = element(document, 'h2', '', `${network.name}${selected.id === 'mainnet' ? '' : ` · ${selected.label}`}`), address = addressFor(state.addresses, key);
-    row.append(icon, name);
-    if (address) row.append(element(document, 'code', '', address));
-    else row.append(element(document, 'p', 'hint', 'Address is unavailable.'));
+    const header = element(document, 'div', 'extension-network-head'), identity = element(document, 'div', 'extension-network-name');
+    identity.append(name);
+    if (address) { const code = element(document, 'code', '', address); code.title = address; identity.append(code); }
+    else identity.append(element(document, 'p', 'hint', 'Address is unavailable.'));
+    header.append(icon, identity); row.append(header);
+    const actionsRow = element(document, 'div', 'chain-holding extension-holding-actions'), actions = element(document, 'div', 'holding-actions');
+    const holding = text => {
+      const entry = element(document, 'div', 'chain-holding extension-holding');
+      entry.append(element(document, 'strong', '', text)); row.append(entry);
+    };
+    const sendButton = disabled => {
+      if (!send) return;
+      const control = actionButton(document, 'Send', () => send(key), false);
+      control.className = 'small extension-send'; control.disabled = disabled; actions.append(control);
+    };
     const receiveButton = actionButton(document, 'Receive', () => receive(key)); receiveButton.disabled = !address;
-    row.append(receiveButton); list.append(row);
+    receiveButton.className += ' extension-receive';
     if (key === 'ethereum' || key === 'bsc') {
       const balances = state.evmBalances?.[key];
-      if (Array.isArray(balances)) for (const asset of balances) row.append(element(document, 'p', 'hint', asset.error ? `${asset.symbol}: ${asset.error}` : `${asset.balance} ${asset.symbol}`));
+      if (Array.isArray(balances)) for (const asset of balances) holding(asset.error ? `${asset.symbol}: ${asset.error}` : `${asset.balance} ${asset.symbol}`);
       else row.append(element(document, 'p', 'hint', balances?.error ?? 'Balances have not been loaded.'));
-      if (send) { const control = actionButton(document, 'Send', () => send(key)); control.disabled = !address; row.append(control); }
+      sendButton(!address);
     }
     // Package 7a uses the web-wallet adapters/config, alongside package 5's
     // EVM rows; Receive already renders these same background addresses.
     if (key === 'solana' || key === 'tron') {
       const balances = state.solanaTronBalances?.[key];
-      if (Array.isArray(balances)) for (const asset of balances) row.append(element(document, 'p', 'hint', asset.error ? `${asset.symbol}: ${asset.error}` : `${asset.balance} ${asset.symbol}`));
+      if (Array.isArray(balances)) for (const asset of balances) holding(asset.error ? `${asset.symbol}: ${asset.error}` : `${asset.balance} ${asset.symbol}`);
       else row.append(element(document, 'p', 'hint', balances?.error ?? 'Balances have not been loaded.'));
-      if (send) { const control = actionButton(document, 'Send', () => send(key)); control.disabled = !address; row.append(control); }
-      if (solanaTronHistory) { const control = actionButton(document, 'History', () => solanaTronHistory(key)); control.disabled = !address; row.append(control); }
+      sendButton(!address);
     }
     if (key === 'nodus') {
       const balances = state.nodusBalances;
-      if (Array.isArray(balances)) for (const asset of balances) row.append(element(document, 'p', 'hint', asset.error ? `${asset.symbol}: Balance unavailable` : `${asset.balance} ${asset.symbol}`));
+      if (Array.isArray(balances)) for (const asset of balances) holding(asset.error ? `${asset.symbol}: Balance unavailable` : `${asset.balance} ${asset.symbol}`);
       else row.append(element(document, 'p', 'hint', balances?.error ?? 'Balances have not been loaded.'));
-      if (send) { const control = actionButton(document, 'Send', () => send(key)); control.disabled = !address || state.nodus?.state !== 'ready'; row.append(control); }
-      if (history) { const control = actionButton(document, 'History', history); control.disabled = !address; row.append(control); }
-      if (contracts && (state.nodus?.evmBuildable || state.nodus?.evmReadable)) row.append(actionButton(document, 'Smart contracts', contracts));
+      sendButton(!address || state.nodus?.state !== 'ready');
     }
-    if (key === 'cellframe') row.append(element(document, 'p', 'hint', state.cpunkBalance?.error ?? (state.cpunkBalance ? `${state.cpunkBalance.balance} CPUNK` : 'Balances have not been loaded.')));
+    if (key === 'cellframe') {
+      if (state.cpunkBalance && !state.cpunkBalance.error) holding(`${state.cpunkBalance.balance} CPUNK`);
+      else row.append(element(document, 'p', 'hint', state.cpunkBalance?.error ?? 'Balances have not been loaded.'));
+    }
+    actions.append(receiveButton);
+    if (key === 'nodus') {
+      if (history) { const control = actionButton(document, 'History', history); control.disabled = !address; actions.append(control); }
+      if (contracts && (state.nodus?.evmBuildable || state.nodus?.evmReadable)) actions.append(actionButton(document, 'Smart contracts', contracts));
+    }
+    if ((key === 'solana' || key === 'tron') && solanaTronHistory) { const control = actionButton(document, 'History', () => solanaTronHistory(key)); control.disabled = !address; actions.append(control); }
+    actionsRow.append(actions); row.append(actionsRow); list.append(row);
   }
   container.append(list);
-  if (refreshBalances) container.append(actionButton(document, 'Refresh balances', refreshBalances));
+  return { label, total, status };
 }
 
 // src/app.js:44-47: the QR and copy control use the same raw address. No URI or amount is added.
@@ -105,16 +138,19 @@ export function renderConnect(document, container, state, pending, { approve, re
 export function renderSites(document, container, state, revoke) {
   container.replaceChildren(); heading(document, container, 'Connected sites');
   const sites = Object.entries(state.subjects || {}).filter(([, subject]) => subject.permissions?.[Caip25EndowmentPermissionName] || subject.permissions?.[NODUS_PERMISSION]);
-  if (!sites.length) container.append(element(document, 'p', 'hint', 'No connected sites.'));
+  if (!sites.length) { container.append(element(document, 'p', 'hint', 'No connected sites.')); return; }
+  const list = element(document, 'div', 'address-book-list');
   for (const [origin, subject] of sites) {
-    const row = element(document, 'article', 'extension-site'), grant = subject.permissions[Caip25EndowmentPermissionName];
-    row.append(element(document, 'h2', 'extension-origin', origin));
+    const row = element(document, 'article', 'extension-site address-book-row'), grant = subject.permissions[Caip25EndowmentPermissionName];
+    const main = element(document, 'div', 'address-book-main');
+    main.append(element(document, 'h2', '', origin));
     const caveat = grant?.caveats?.find(item => item.type === Caip25CaveatType);
-    if (caveat) for (const account of getEthAccounts(caveat.value)) row.append(element(document, 'code', '', account));
+    if (caveat) for (const account of getEthAccounts(caveat.value)) main.append(element(document, 'code', 'address-book-address', account));
     const nodusAccount = subject.permissions[NODUS_PERMISSION]?.caveats?.find(item => item.type === NODUS_ACCOUNT_CAVEAT)?.value;
-    if (nodusAccount) row.append(element(document, 'code', '', nodusAccount.address));
-    row.append(actionButton(document, 'Disconnect', () => revoke(origin))); container.append(row);
+    if (nodusAccount) main.append(element(document, 'code', 'address-book-address', nodusAccount.address));
+    row.append(main, actionButton(document, 'Disconnect', () => revoke(origin))); list.append(row);
   }
+  container.append(list);
 }
 
 export function renderSettings(document, container, state, { setAutoLock, reveal, selectEvmNetwork, setEvmEndpoint, discardActivity, setChainNetwork }) {
@@ -128,7 +164,8 @@ export function renderSettings(document, container, state, { setAutoLock, reveal
   select.value = String(state.preferences.autoLockTimeLimit);
   select.onchange = () => setAutoLock(Number(select.value));
   const note = element(document, 'p', 'hint', extensionAutoLockNote(state.preferences.autoLockTimeLimit));
-  container.append(label, select, note);
+  const autoLock = element(document, 'div', 'page-block auto-lock'); autoLock.append(label, select, note); container.append(autoLock);
+  const chainNetworks = element(document, 'div', 'page-block');
   // Operator §0 / plan §5.6: selectors belong here; no switch at the top.
   for (const [chain, choices] of Object.entries(CHAIN_NETWORKS)) {
     const caption = element(document, 'label', '', `${NETWORKS[chain].name} network`), network = element(document, 'select');
@@ -138,34 +175,38 @@ export function renderSettings(document, container, state, { setAutoLock, reveal
     }
     network.value = chainNetwork(chain, state.networks?.[chain]).id;
     network.onchange = () => setChainNetwork(chain, network.value);
-    container.append(caption, network);
+    chainNetworks.append(caption, network);
   }
+  container.append(chainNetworks);
   // src/app.js:2559-2560, 2672-2690: explicit recovery in saved-wallet settings.
   if (state.nodus?.activityError || state.nodus?.quarantinedCount) {
-    container.append(element(document, 'h2', '', 'Saved activity'));
-    if (state.nodus.activityError) container.append(element(document, 'p', 'field-error', state.nodus.activityError));
-    else container.append(element(document, 'p', 'hint', `${state.nodus.quarantinedCount} saved records could not be read; their coins stay held.`));
-    container.append(element(document, 'p', 'hint', 'Check the explorer before discarding the unreadable history or resending any previous payment.'),
+    const activity = element(document, 'div', 'page-block'); activity.append(element(document, 'h2', '', 'Saved activity'));
+    if (state.nodus.activityError) activity.append(element(document, 'p', 'field-error', state.nodus.activityError));
+    else activity.append(element(document, 'p', 'hint', `${state.nodus.quarantinedCount} saved records could not be read; their coins stay held.`));
+    activity.append(element(document, 'p', 'hint', 'Check the explorer before discarding the unreadable history or resending any previous payment.'),
       actionButton(document, 'Discard unreadable history', discardActivity));
+    container.append(activity);
   }
   if (state.evm) {
+    const evm = element(document, 'div', 'page-block');
     const caption = element(document, 'label', '', 'Selected EVM network'), network = element(document, 'select');
     caption.htmlFor = network.id = 'evm-network';
     for (const chain of ['ethereum', 'bsc']) {
       const option = element(document, 'option', '', CHAINS[chain].name); option.value = chain; network.append(option);
     }
     network.value = state.evm.selectedChain; network.onchange = () => selectEvmNetwork(network.value);
-    container.append(caption, network, element(document, 'p', 'hint', 'Every connected site uses this network.'));
+    evm.append(caption, network, element(document, 'p', 'hint', 'Every connected site uses this network.'));
     for (const chain of ['ethereum', 'bsc']) {
       const rpcLabel = element(document, 'label', '', `${CHAINS[chain].name} RPC provider`), rpc = element(document, 'select');
       rpcLabel.htmlFor = rpc.id = `evm-rpc-${chain}`;
       for (const provider of CHAINS[chain].rpcOptions) {
         const option = element(document, 'option', '', provider.note ? `${provider.label} — ${provider.note}` : provider.label); option.value = provider.url; rpc.append(option);
       }
-      rpc.value = state.evm.endpoints[chain]; rpc.onchange = () => setEvmEndpoint(chain, rpc.value); container.append(rpcLabel, rpc);
+      rpc.value = state.evm.endpoints[chain]; rpc.onchange = () => setEvmEndpoint(chain, rpc.value); evm.append(rpcLabel, rpc);
     }
+    container.append(evm);
   }
-  container.append(element(document, 'h2', '', 'Reveal recovery phrase'));
+  const revealBlock = element(document, 'div', 'page-block'); revealBlock.append(element(document, 'h2', '', 'Reveal recovery phrase'));
   const form = element(document, 'form'), passwordLabel = element(document, 'label', '', 'Re-enter your password');
   const password = element(document, 'input'); password.id = 'reveal-password'; password.type = 'password';
   password.autocomplete = 'current-password'; password.required = true; password.maxLength = 1024; passwordLabel.htmlFor = password.id;
@@ -173,6 +214,6 @@ export function renderSettings(document, container, state, { setAutoLock, reveal
   const recovery = element(document, 'div'); recovery.hidden = true;
   form.append(passwordLabel, password, submit);
   form.onsubmit = event => { event.preventDefault(); const entered = password.value; password.value = ''; return reveal(entered, recovery); };
-  container.append(form, recovery);
+  revealBlock.append(form, recovery); container.append(revealBlock);
   return { password, recovery, select };
 }
