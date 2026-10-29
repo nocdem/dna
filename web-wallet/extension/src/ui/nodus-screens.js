@@ -1,6 +1,7 @@
 import { NODUS_TOKEN_ID } from '../../../src/nodus/network.js';
 import { nodusHistoryStatus } from '../../../src/nodus/history.js';
 import { actionButton } from './views.js';
+import { pageHeading } from './presentation.js';
 
 function element(document, tag, text, className = '') {
   const node = document.createElement(tag); node.className = className;
@@ -11,7 +12,7 @@ function element(document, tag, text, className = '') {
 // src/wallet.js:31-38: every review row is the module's decoded envelope,
 // including recipient, asset, amount, fee, changes, chain and expiry.
 export function renderNodusSend(document, container, { account, tokens = [], review, title = 'Send on Nodus' }, { prepare, confirm, cancel }) {
-  container.replaceChildren(element(document, 'h1', title));
+  container.replaceChildren(pageHeading(document, title, 'send'));
   if (review) {
     // src/app.js:2323-2325, 1615-1627: display the review deadline and give
     // the user 600 ms before enabling transfer confirmation.
@@ -48,7 +49,7 @@ export function renderNodusSend(document, container, { account, tokens = [], rev
 // src/nodus/history.js supplies node provenance and row text; local pending
 // activity remains visible when the node's account-history read fails.
 export function renderNodusHistory(document, container, history, { refresh, resubmit }) {
-  container.replaceChildren(element(document, 'h1', 'Nodus history'));
+  container.replaceChildren(pageHeading(document, 'Nodus history', 'history'));
   container.append(actionButton(document, 'Refresh history', refresh));
   if (!history) { container.append(element(document, 'p', nodusHistoryStatus(), 'hint')); return; }
   if (history.activityError) container.append(element(document, 'p', history.activityError, 'field-error'));
@@ -78,7 +79,7 @@ export function renderNodusContracts(document, container, { account, readable, b
   if (review) {
     // src/evm/ui.js:129-168: decoded rows, immediate confirmation, and a failed
     // review keeps its error and Close button rather than the transfer outcome note.
-    container.replaceChildren(element(document, 'h1', 'Review smart-contract transaction'));
+    container.replaceChildren(pageHeading(document, 'Review smart-contract transaction', 'contracts'));
     container.append(element(document, 'p', 'Testnet transaction. Check every line; sending cannot be undone.', 'notice'));
     for (const [label, value] of review.review) container.append(element(document, 'h2', label, 'extension-field-label'), element(document, 'pre', value, 'log-line evm-result'));
     const error = element(document, 'p', review.error ?? '', 'field-error'); error.role = 'alert';
@@ -91,7 +92,7 @@ export function renderNodusContracts(document, container, { account, readable, b
     const buttons = element(document, 'div', undefined, 'actions'); buttons.append(cancel, confirm);
     container.append(error, buttons); return;
   }
-  container.replaceChildren(element(document, 'h1', 'Nodus smart contracts'));
+  container.replaceChildren(pageHeading(document, 'Nodus smart contracts', 'contracts'));
   container.append(element(document, 'p', 'The network fee shown for a transaction is the most it can cost.', 'hint'));
   if (readable) container.append(actionButton(document, 'Read account', () => actions.read({ action: 'account' })));
   if (result) container.append(element(document, 'pre', result, 'log-line evm-result'));

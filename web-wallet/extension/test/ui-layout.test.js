@@ -24,52 +24,169 @@ const { version } = JSON.parse(readFileSync(new URL('../../package.json', import
 const button = (page, name) => page.getByRole('button', { name, exact: true });
 async function priceCount(page) { return page.evaluate(() => window.layout.calls.filter(call => call.method === 'getPrices').length); }
 async function waitHome(page) {
-  await page.waitForFunction(() => document.querySelectorAll('.extension-holding strong').length === 16 && document.getElementById('portfolio-total')?.textContent.startsWith('$'));
+  await page.waitForFunction(() => document.querySelectorAll('.network-health[data-health="current"]').length === 6 && document.getElementById('portfolio-total')?.textContent.startsWith('$'));
   await page.locator('#screen:not([inert])').waitFor();
 }
-async function assertNavigation(page, current) {
-  const values = await page.locator('#wallet-navigation button').evaluateAll(nodes => nodes.map(node => ({ text: node.textContent, current: node.getAttribute('aria-current'), top: node.getBoundingClientRect().top })));
-  assert.deepEqual(values.map(node => node.text), ['Home', 'Connected sites', 'Settings', 'Lock']);
-  for (const node of values) assert.equal(node.current, node.text === current ? 'page' : null);
-  if (page.viewportSize().width === 400) assert.ok(values.every(node => Math.abs(node.top - values[0].top) < 1), 'Navigation stays on one row');
+async function assertNavigation(page, current = null) {
+  // index.html:34 and style.css:882-885: ordered tiles, two columns at 400px.
+  // Pages replace wallet-home (src/app.js:2134-2144); links have no aria-current.
+  const links = page.locator('.wallet-navigation a');
+  const values = await links.evaluateAll(nodes => nodes.map(node => ({
+    text: node.querySelector('.nav-name').textContent, href: node.getAttribute('href'),
+    hidden: node.hidden, box: node.getBoundingClientRect().toJSON(),
+  })));
+  assert.deepEqual(values.map(node => [node.text, node.href]), [
+    ['Portfolio', '#assets-panel'], ['Send / Receive', '#send-form'],
+    ['Earn', '#earn'], ['Shared vaults', '#vaults'], ['Smart contracts', '#contracts'],
+    ['Activity', '#wallet-activity'], ['Address book', '#address-book'], ['Device & settings', '#settings'],
+  ]);
+  const available = values.filter(node => !node.hidden);
+  assert.deepEqual(available.filter(node => !['#earn', '#vaults', '#contracts'].includes(node.href)).map(node => node.text),
+    ['Portfolio', 'Send / Receive', 'Activity', 'Address book', 'Device & settings']);
+  assert.deepEqual(await page.locator('.wallet-page:visible').evaluateAll(nodes => nodes.map(node => node.id)), current ? [`page-${current}`] : []);
+  assert.equal(await page.locator('#wallet-home').isVisible(), current === null);
+  assert.equal(await page.locator('.wallet-navigation a:visible').count(), current ? 0 : available.length);
+  if (current) {
+    const title = current === 'wallet-activity' ? 'Activity' : 'Device & settings';
+    const heading = page.locator(`#page-${current}`).getByRole('heading', { name: title, exact: true });
+    await heading.waitFor();
+    assert.equal(await heading.evaluate(node => document.activeElement === node), true);
+    assert.equal(await page.evaluate(() => location.hash), `#${current}`);
+  } else if (page.viewportSize().width <= 760) {
+    for (let index = 0; index < available.length; index += 2) {
+      const left = available[index].box, right = available[index + 1]?.box;
+      assert.ok(left.width > 0, 'Navigation tiles must have measurable width');
+      assert.ok(Math.abs(left.left - available[0].box.left) < 1, 'Left navigation column stays aligned');
+      if (right) {
+        assert.ok(right.width > 0, 'Navigation tiles must have measurable width');
+        assert.ok(Math.abs(left.top - right.top) < 1, 'Each pair of navigation tiles shares a row');
+        assert.ok(left.right < right.left, 'Navigation columns must not overlap');
+        assert.ok(Math.abs(right.left - available[1].box.left) < 1, 'Right navigation column stays aligned');
+      }
+      if (index) assert.ok(left.top > available[index - 2].box.bottom, 'Navigation rows must not overlap');
+    }
+  }
+}
+async function assertAssetLayout(page) {
+  // portfolio-view.js:168-204; style.css:452-480. Closed details have no row
+  // geometry: expand only for measurement and restore every original open state.
+  const groups = await page.evaluate(() => {
+    const details = [...document.querySelectorAll('.asset-group')], opened = details.map(node => node.open);
+    const rect = node => node.getBoundingClientRect().toJSON();
+    const identity = node => ({
+      box: rect(node), icon: rect(node.querySelector('.coin-icon')),
+      name: rect(node.querySelector('.asset-name, span:not(.coin-icon)')),
+    });
+    try {
+      for (const node of details) node.open = true;
+      return details.map(node => ({
+        symbol: node.dataset.symbol, radius: getComputedStyle(node).borderRadius,
+        summary: { ...identity(node.querySelector('.asset-summary')),
+          labels: [...node.querySelectorAll('.asset-name strong, .asset-name small')].map(rect) },
+        rows: [...node.querySelectorAll('.chain-holding')].map(row => ({
+          chain: row.dataset.chain, box: rect(row), padding: parseFloat(getComputedStyle(row).paddingRight),
+          identity: identity(row.querySelector('.holding-network')),
+          current: row.querySelector('.holding-select').getAttribute('aria-current'),
+          value: { ...rect(row.querySelector('.holding-value')), align: getComputedStyle(row.querySelector('.holding-value')).textAlign },
+          amounts: [...row.querySelectorAll('.holding-value strong, .holding-value small')].map(rect),
+          actions: [...row.querySelectorAll('.holding-actions button')].map(button => ({ text: button.textContent, ...rect(button) })),
+        })),
+      }));
+    } finally { details.forEach((node, index) => { node.open = opened[index]; }); }
+  });
+  // All fixture balances are positive. One row per asset/network: sixteen
+  // holdings in ten asset groups; Cellframe offers Receive only (portfolio.js:35).
+  assert.deepEqual(groups.map(group => [group.symbol, group.rows.map(row => row.chain)]), [
+    ['NODUS', ['nodus']], ['USDT', ['ethereum', 'bsc', 'solana', 'tron']],
+    ['USDC', ['ethereum', 'bsc', 'solana', 'tron']], ['DAI', ['ethereum']], ['USDD', ['tron']],
+    ['BNB', ['bsc']], ['CPUNK', ['cellframe']], ['ETH', ['ethereum']], ['SOL', ['solana']], ['TRX', ['tron']],
+  ]);
+  const contained = (item, box, message) => {
+    assert.ok(item.width > 0 && item.height > 0, `${message}: must be measurable`);
+    assert.ok(item.top >= box.top - 1 && item.bottom <= box.bottom + 1 && item.left >= box.left - 1 && item.right <= box.right + 1, message);
+  };
+  const alignedIdentity = (identity, label) => {
+    contained(identity.icon, identity.box, `${label}: icon stays inside its header`);
+    contained(identity.name, identity.box, `${label}: name stays inside its header`);
+    assert.ok(identity.name.top < identity.icon.bottom && identity.name.bottom > identity.icon.top, `${label}: icon and name overlap vertically`);
+    assert.ok(Math.abs((identity.icon.top + identity.icon.bottom) / 2 - (identity.name.top + identity.name.bottom) / 2) < 1, `${label}: icon and name are vertically centered`);
+    assert.ok(identity.icon.right <= identity.name.left, `${label}: icon and name must not overlap horizontally`);
+  };
+  for (const group of groups) {
+    assert.equal(group.radius, '10px', group.symbol);
+    alignedIdentity(group.summary, group.symbol);
+    for (const label of group.summary.labels) contained(label, group.summary.box, `${group.symbol}: symbol and caption stay inside the summary`);
+    for (const row of group.rows) {
+      const label = `${group.symbol} on ${row.chain}`;
+      alignedIdentity(row.identity, label);
+      assert.equal(row.current, row.chain === 'nodus' ? 'true' : null, `${label}: selected network marker`);
+      assert.equal(row.value.align, 'right', label);
+      assert.ok(Math.abs(row.box.right - row.padding - row.value.right) < 1, `${label}: holding value ends at the row's right padding`);
+      for (const amount of row.amounts) {
+        contained(amount, row.box, `${label}: amount stays inside its row`);
+        assert.ok(Math.abs(amount.right - row.value.right) < 1, `${label}: amount and price share the right edge`);
+      }
+      assert.deepEqual(row.actions.map(action => action.text), row.chain === 'cellframe' ? ['Receive'] : ['Send', 'Receive'], label);
+      for (const action of row.actions) contained(action, row.box, `${label}: action stays inside its row`);
+      if (row.chain !== 'cellframe') assert.ok(Math.abs(row.actions[0].top - row.actions[1].top) < 1, `${label}: Send and Receive share a row`);
+    }
+  }
+  assert.equal(await page.locator('.chain-holding').count(), 16);
+  assert.equal(await page.locator('.holding-actions button[aria-label^="Send "]').count(), 15);
+  assert.equal(await page.locator('.holding-actions button[aria-label^="Receive "]').count(), 16);
+  assert.equal(await page.locator('.transfer-buttons #quick-send').count(), 1);
+  assert.equal(await page.locator('.transfer-buttons #quick-receive').count(), 1);
 }
 async function assertHome(page, popup) {
   await waitHome(page); await page.evaluate(() => scrollTo(0, 0));
-  await assertNavigation(page, 'Home');
-  const geometry = await page.evaluate(() => {
-    const rect = node => { const box = node.getBoundingClientRect(); return { top: box.top, bottom: box.bottom, right: box.right }; };
-    const articles = [...document.querySelectorAll('article.extension-network')];
-    return { portfolio: rect(document.querySelector('section.portfolio-card')), cards: articles.map(article => ({
-      box: rect(article), head: rect(article.querySelector('.extension-network-head')), icon: rect(article.querySelector('img')),
-      title: rect(article.querySelector('h2')), address: rect(article.querySelector('code')),
-      values: [...article.querySelectorAll('.extension-holding strong')].map(rect),
-      buttons: [...article.querySelectorAll('button')].map(node => ({ text: node.textContent, ...rect(node) })),
-    })) };
-  });
-  assert.equal(geometry.cards.length, 6);
-  if (popup) assert.ok(geometry.portfolio.bottom <= 600, `Portfolio bottom ${geometry.portfolio.bottom} exceeds popup`);
-  for (const card of geometry.cards) {
-    for (const item of [card.icon, card.title, card.address]) {
-      assert.ok(item.top >= card.head.top && item.bottom <= card.head.bottom, 'Identity remains inside its header');
-      assert.ok(item.top < card.icon.bottom && item.bottom > card.icon.top, 'Icon overlaps name/address vertically');
-    }
-    for (const value of card.values) assert.ok(card.box.right - value.right <= 17.1 && value.right <= card.box.right, 'Holding amount is right aligned within row padding');
-    const send = card.buttons.find(node => node.text === 'Send'), receive = card.buttons.find(node => node.text === 'Receive');
-    if (send) assert.ok(Math.abs(send.top - receive.top) < 1, 'Send and Receive share a row');
+  await assertNavigation(page);
+  assert.equal(await page.locator('#wallet-title').textContent(), 'Your wallet');
+  assert.deepEqual(await page.locator('.wallet-navigation a:visible .nav-name').allTextContents(),
+    ['Portfolio', 'Send / Receive', 'Smart contracts', 'Activity', 'Address book', 'Device & settings']);
+  assert.equal(await page.locator('.extension-network').count(), 0);
+  assert.equal(await page.locator('.network-health').count(), 6);
+  assert.equal(await page.locator('.network-filter').count(), 7);
+  const networks = ['Nodus', 'Ethereum', 'BNB Smart Chain', 'Solana', 'TRON', 'Cellframe'];
+  assert.deepEqual(await page.locator('.network-health > span:not(.health-light)').allTextContents(), networks);
+  assert.deepEqual(await page.locator('#chain option').allTextContents(), networks);
+  assert.equal(await page.locator('#chain').inputValue(), 'nodus');
+  assert.deepEqual(await page.locator('.selected-network-name').allTextContents(), Array(5).fill('Nodus'));
+  assert.deepEqual(await page.locator('.selected-network-stage').allTextContents(), Array(4).fill('Testnet'));
+  assert.deepEqual(await page.locator('#asset option').allTextContents(), ['NODUS']);
+  assert.equal(await page.locator('#asset').inputValue(), '0'.repeat(128));
+  assert.equal(await page.locator('#receive-address').textContent(), 'ab'.repeat(64));
+  assert.equal(await page.locator('#receive-qr svg[aria-label="QR code for the receive address"]').count(), 1);
+  assert.equal(await page.locator('#net-status').getAttribute('data-level'), 'connected');
+  assert.equal(await page.locator('#net-status-text').textContent(), 'Connected to the Nodus network');
+  assert.equal(await page.locator('.asset-group[data-symbol="NODUS"] .asset-value strong').textContent(), '12.34');
+  assert.equal(await page.locator('.asset-group[data-symbol="NODUS"] .holding-value strong').textContent(), '12.34 NODUS');
+  assert.match(await page.locator('#portfolio-status').textContent(), /asset balances are included|balances and .* prices unavailable/u);
+  const methods = await page.evaluate(() => window.layout.calls.map(call => call.method));
+  for (const method of ['getNodusBalances', 'getCpunkBalance', 'getEvmBalances', 'getSolanaBalances', 'getTronBalances', 'getPrices']) {
+    assert.ok(methods.includes(method), `Opening the wallet must request ${method} over the trusted client`);
   }
-  assert.equal(await button(page, 'Send').count(), geometry.cards.filter(card => card.buttons.some(node => node.text === 'Send')).length);
-  assert.equal(await button(page, 'Receive').count(), 6);
+  assert.equal(await page.locator('.asset-group[data-symbol="USDT"] .chain-holding').count(), 4);
+  assert.equal(await page.locator('#send-form #receive-panel').count(), 1);
+  await assertAssetLayout(page);
   const styles = await page.evaluate(() => ({
     font: getComputedStyle(document.body).fontFamily,
-    cards: [...document.querySelectorAll('article.extension-network')].map(node => getComputedStyle(node).borderRadius),
-    portfolioRadius: getComputedStyle(document.querySelector('section.portfolio-card')).borderRadius,
-    portfolioBackground: getComputedStyle(document.querySelector('section.portfolio-card')).backgroundImage,
+    portfolioRadius: getComputedStyle(document.querySelector('.portfolio-card')).borderRadius,
+    portfolioBackground: getComputedStyle(document.querySelector('.portfolio-card')).backgroundImage,
     totalSize: parseFloat(getComputedStyle(document.getElementById('portfolio-total')).fontSize),
-    send: getComputedStyle(document.querySelector('.extension-send')).backgroundColor,
+    send: getComputedStyle(document.getElementById('quick-send')).backgroundColor,
+    sendTop: document.getElementById('quick-send').getBoundingClientRect().top,
+    receiveTop: document.getElementById('quick-receive').getBoundingClientRect().top,
+    shell: document.querySelector('.wallet-card').getBoundingClientRect().toJSON(),
+    sourceTop: document.querySelector('.price-source').getBoundingClientRect().top,
+    lastAssetBottom: [...document.querySelectorAll('.asset-group')].at(-1).getBoundingClientRect().bottom,
   }));
-  assert.match(styles.font, /^Inter(?:,|$)/u); assert.deepEqual(styles.cards, Array(6).fill('10px'));
+  assert.match(styles.font, /^Inter(?:,|$)/u);
   assert.equal(styles.portfolioRadius, '16px'); assert.notEqual(styles.portfolioBackground, 'none');
-  assert.ok(styles.totalSize >= 32); assert.equal(styles.send, 'rgb(213, 249, 152)');
+  assert.ok(styles.totalSize >= 32);
+  assert.equal(styles.send, 'rgb(213, 249, 152)');
+  assert.ok(Math.abs(styles.sendTop - styles.receiveTop) < 1, 'Transfer Send and Receive share a row');
+  if (popup) { assert.equal(styles.shell.left, 20); assert.equal(styles.shell.right, 380); }
+  assert.ok(styles.sourceTop >= styles.lastAssetBottom);
   const fixture = await page.evaluate(() => ({ balances: window.layout.balances, times: window.layout.balanceTimes, quotes: window.layout.quotes, now: Date.now() }));
   const balances = Object.assign({}, ...Object.entries(fixture.balances).map(([chain, rows]) => chainBalances(chain, rows, fixture.times[chain])));
   const quotes = Object.fromEntries(Object.entries(fixture.quotes).map(([key, quote]) => [key, { ...quote, units: BigInt(quote.units) }]));
@@ -127,40 +244,100 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
           await capture('nodus-signature');
           continue;
         }
-        await open('welcome'); await page.getByRole('heading', { name: 'Your Nodus wallet', exact: true }).waitFor();
+        await open('home'); await assertHome(page, kind === 'popup');
+        await open('welcome'); await page.locator('#welcome:visible').waitFor();
         assert.equal(await priceCount(page), 0); await capture('welcome');
-        await open('unlock'); await page.getByRole('heading', { name: 'Unlock your wallet', exact: true }).waitFor();
+        await open('unlock'); await page.locator('#unlock-form:visible').waitFor();
         assert.equal(await priceCount(page), 0); await capture('unlock');
-        await page.getByLabel('Password', { exact: true }).fill('public-fixture-password'); await button(page, 'Unlock').click();
+        await page.getByLabel('Local wallet password', { exact: true }).fill('public-fixture-password');
+        await page.locator('#unlock-wallet').click();
         await assertHome(page, kind === 'popup'); assert.equal(await priceCount(page), 1); await capture('home');
-        await button(page, 'Refresh balances').click(); await waitHome(page); assert.equal(await priceCount(page), 2);
-        const nodus = page.locator('article.extension-network').filter({ has: page.getByRole('heading', { name: 'Nodus · Testnet', exact: true }) });
-        await nodus.getByRole('button', { name: 'Receive', exact: true }).click();
-        await page.getByRole('heading', { name: 'Receive on Nodus', exact: true }).waitFor(); await assertNavigation(page, undefined); await capture('receive');
-        await button(page, 'Home').click(); await waitHome(page);
-        const ethereum = page.locator('article.extension-network').filter({ has: page.getByRole('heading', { name: 'Ethereum', exact: true }) });
-        await ethereum.getByRole('button', { name: 'Send', exact: true }).click();
-        await page.locator('#evm-send-to').fill('0x' + '34'.repeat(20)); await page.locator('#evm-send-amount').fill('0.125');
-        await assertNavigation(page, undefined); await capture('send');
+        const visibleTotal = await page.locator('#portfolio-total').textContent();
+        await page.locator('#portfolio-hide').click();
+        assert.equal(await page.locator('#portfolio-total').textContent(), '••••');
+        assert.equal(await page.locator('#portfolio-hide').getAttribute('aria-pressed'), 'true');
+        for (const value of await page.locator('.asset-value strong, .asset-value small, .holding-value strong, .holding-value small').allTextContents()) {
+          assert.equal(value, '••••');
+        }
+        await page.locator('#portfolio-hide').click();
+        assert.equal(await page.locator('#portfolio-total').textContent(), visibleTotal);
+        assert.equal(await page.locator('.asset-group[data-symbol="NODUS"] .asset-value strong').textContent(), '12.34');
+        await page.locator('#portfolio-refresh').click(); await waitHome(page); assert.equal(await priceCount(page), 2);
+        await page.locator('#quick-receive').click();
+        assert.equal(await page.locator('#receive-address').textContent(), 'ab'.repeat(64));
+        await assertNavigation(page);
+        assert.equal(await page.locator('#receive-title').evaluate(node => document.activeElement === node), true);
+        await capture('receive');
+        await page.locator('#chain').selectOption('ethereum');
+        await page.locator('#quick-send').click();
+        await page.locator('#recipient').fill('0x' + '34'.repeat(20)); await page.locator('#amount').fill('0.125');
+        await assertNavigation(page);
+        await capture('send');
         const before = await page.evaluate(() => window.layout.calls.filter(call => call.method === 'getState').length);
-        // Keep node identity inside the page too: equal values alone could miss
-        // a redraw followed by accidental restoration from a fixture.
-        await page.evaluate(() => { window.typedNodes = [document.getElementById('evm-send-to'), document.getElementById('evm-send-amount')]; });
+        await page.evaluate(() => { window.typedNodes = [document.getElementById('recipient'), document.getElementById('amount')]; });
         await page.clock.setFixedTime(new Date(await page.evaluate(() => Date.now()) + PRICE_MAX_AGE + 1));
-        await page.locator('#evm-send-amount').dispatchEvent('input');
+        await page.locator('#amount').dispatchEvent('input');
         await page.waitForFunction(count => window.layout.calls.filter(call => call.method === 'getState').length > count, before);
         await page.evaluate(async () => { await window.layout.refresh(); });
-        assert.equal(await page.locator('#evm-send-to').inputValue(), '0x' + '34'.repeat(20));
-        assert.equal(await page.locator('#evm-send-amount').inputValue(), '0.125');
-        assert.equal(await page.evaluate(() => window.typedNodes[0] === document.getElementById('evm-send-to') && window.typedNodes[1] === document.getElementById('evm-send-amount')), true);
-        await button(page, 'Review transfer').click(); await button(page, 'Confirm send').waitFor(); await capture('send-review');
-        await button(page, 'Cancel').click(); await button(page, 'Refresh balances').click(); await waitHome(page);
-        await nodus.getByRole('button', { name: 'History', exact: true }).click();
-        await page.getByRole('heading', { name: 'Nodus history', exact: true }).waitFor();
-        await page.locator('.activity-row').first().waitFor(); await capture('history');
-        await button(page, 'Settings').click(); await page.locator('#auto-lock-minutes').waitFor(); await assertNavigation(page, 'Settings'); await capture('settings');
-        await button(page, 'Connected sites').click(); await assertNavigation(page, 'Connected sites');
+        assert.equal(await page.locator('#recipient').inputValue(), '0x' + '34'.repeat(20));
+        assert.equal(await page.locator('#amount').inputValue(), '0.125');
+        assert.equal(await page.evaluate(() => window.typedNodes[0] === document.getElementById('recipient') && window.typedNodes[1] === document.getElementById('amount')), true);
+        await page.clock.pauseAt(await page.evaluate(() => Date.now()));
+        await page.locator('#review-button').click(); await page.locator('#review-dialog[open]').waitFor();
+        assert.deepEqual(await page.evaluate(() => window.layout.calls.find(call => call.method === 'prepareEvmSend').params),
+          [{ to: '0x' + '34'.repeat(20), amount: '0.125', chain: 'ethereum', symbol: 'ETH' }]);
+        assert.equal(await page.locator('#confirm-send').isDisabled(), true);
+        await capture('send-review');
+        await page.clock.runFor(600);
+        assert.equal(await page.locator('#confirm-send').isDisabled(), false);
+        await page.locator('#cancel-send').click();
+        assert.deepEqual(await page.evaluate(() => window.layout.calls.find(call => call.method === 'cancelEvmSend').params), ['layout-review']);
+        await page.locator('#review-button').click(); await page.locator('#review-dialog[open]').waitFor();
+        await page.clock.runFor(600); await page.locator('#confirm-send').click();
+        await page.waitForFunction(() => !document.getElementById('review-dialog').open);
+        assert.deepEqual(await page.evaluate(() => window.layout.calls.filter(call => call.method === 'confirmEvmSend').map(call => call.params)), [['layout-review']]);
+        await page.locator('#portfolio-refresh').click(); await waitHome(page);
+        await page.locator('#chain').selectOption('nodus');
+        await page.locator('.wallet-navigation a[href="#wallet-activity"]').click();
+        await assertNavigation(page, 'wallet-activity');
+        assert.equal(await page.locator('#activity-panel .page-chip').textContent(), 'Nodus · Testnet');
+        await page.locator('#history .activity-row').first().waitFor();
+        assert.equal(await page.locator('#history-status').textContent(), 'Fixture account history');
+        assert.ok((await page.locator('#history').textContent()).includes('Received NODUS'));
+        assert.ok((await page.locator('#activity').textContent()).includes('Awaiting confirmation.'));
+        await capture('history');
+        await page.locator('#page-wallet-activity .page-back').click(); await waitHome(page);
+        await assertNavigation(page);
+        await page.locator('.wallet-navigation a[href="#settings"]').click();
+        await assertNavigation(page, 'settings'); await capture('settings');
+        assert.equal(await page.locator('#balance-refresh-minutes').isDisabled(), true);
+        assert.equal(await page.locator('#address-book-save').isDisabled(), true);
+        // index.html:34,62: Device & settings is the entry; the extension's
+        // existing grants live inside it (wallet-screen.js:243-257,303).
+        await page.locator('#device-panel').getByRole('heading', { name: 'Connected sites', exact: true }).waitFor();
+        assert.deepEqual(await page.locator('#device-panel .extension-site h2').allTextContents(), ['https://evm-site.example', 'https://nodus-site.example']);
+        for (const site of await page.locator('#device-panel .extension-site').all()) {
+          assert.equal(await site.getByRole('button', { name: 'Disconnect', exact: true }).isVisible(), true);
+        }
         assert.equal(await button(page, 'Disconnect').count(), 2); await capture('sites');
+        await page.locator('#auto-lock-minutes').selectOption('15');
+        await page.waitForFunction(() => window.layout.state.preferences.autoLockTimeLimit === 15);
+        assert.match(await page.locator('#session-timeout').textContent(), /15 minutes/);
+        await page.locator('#rpc-settings').evaluate(node => { node.open = true; });
+        await page.locator('#network-solana').selectOption('devnet');
+        await page.waitForFunction(() => window.layout.state.networks.solana === 'devnet');
+        await page.locator('#page-settings .page-back').click();
+        await page.locator('#chain').selectOption('solana');
+        assert.deepEqual(await page.locator('#asset option').allTextContents(), ['SOL']);
+        assert.equal(await page.locator('.asset-group[data-symbol="SOL"] .asset-value small').textContent(), '—');
+        await page.locator('.wallet-navigation a[href="#settings"]').click();
+        await page.locator('#reveal-password').fill('fresh-password');
+        await button(page, 'Reveal phrase').click();
+        assert.equal(await page.locator('#device-panel .phrase-grid input[readonly]').count(), 24);
+        await page.locator('#lock').click();
+        await page.locator('#unlock-form:visible').waitFor();
+        assert.equal(await page.locator('input[readonly]').count(), 0);
+        await capture('locked');
       } finally { await context.close(); }
     }
     // A whole-chain failure must not strand the page on an already approved

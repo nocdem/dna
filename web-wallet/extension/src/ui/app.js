@@ -8,15 +8,18 @@ import { renderNodusConnect, renderNodusSiteApproval } from './nodus-site-screen
 import { renderSolanaTronSend, renderSolanaTronHistory } from './solana-tron-screens.js';
 import { NODUS_PERMISSION } from '../background/permissions.js';
 import { createPhraseFields } from '../../../src/phrase-fields.js';
+import { walletHeading } from './presentation.js';
+import { autoLockBarText } from '../../../src/auto-lock.js';
 
 // Approved plan §3.2/§3.6/§7: all three trusted pages use the same web-wallet UI modules.
-export async function mountWalletPage({ document = globalThis.document, window = globalThis.window, client = connectTrusted() } = {}) {
+export async function mountWalletPage({ document = globalThis.document, window = globalThis.window, client = connectTrusted(), renderOpenWallet, renderEntry } = {}) {
   const ui = createWalletUi(client), root = document.getElementById('screen');
   const navigation = document.getElementById('wallet-navigation'), status = document.getElementById('wallet-status');
   let page = 'home', receiveNetwork, fields, revealed, busy = false, disposed = false, revision = 0;
   let sendChain, sendReview, contractResult, stopSendReview;
-  let portfolioText;
+  let portfolioText, openScreen;
   function updatePortfolio() {
+    if (openScreen) { openScreen.update(); return; }
     if (!portfolioText) return;
     const summary = ui.portfolio();
     for (const key of ['label', 'total', 'status']) portfolioText[key].textContent = summary[key];
@@ -34,6 +37,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
   }
   function showError(error) { status.textContent = error.message; status.className = 'field-error'; }
   function clearSensitive() {
+    openScreen?.dispose(); openScreen = undefined;
     stopSendReview?.(); stopSendReview = undefined;
     revision++; fields?.clear(); fields = undefined; ui.clearPhrase();
     revealed?.replaceChildren(); revealed = undefined;
@@ -80,7 +84,9 @@ export async function mountWalletPage({ document = globalThis.document, window =
     if (state.isUnlocked && hasBalances(state) && page === 'home') void loadBalances().catch(showError);
   }
   async function loadBalances(force = false) {
-    await Promise.all([ui.state?.evm && ui.loadEvmBalances({ force }), ui.state?.nodus && ui.loadNodusBalances({ force }), ui.loadSolanaTronBalances({ force }), ui.loadPrices({ force })]);
+    const reads = Promise.all([ui.state?.evm && ui.loadEvmBalances({ force }), ui.state?.nodus && ui.loadNodusBalances({ force }), ui.loadSolanaTronBalances({ force }), ui.loadPrices({ force })]);
+    updatePortfolio();
+    await reads;
     updatePortfolio();
     if (disposed || page !== 'home' || !ui.state?.isUnlocked) return;
     const nextState = JSON.stringify(ui.state);
@@ -137,7 +143,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
     });
   }
   function renderPhrase() {
-    root.append(element('h1', ui.phraseStep === 'backup' ? 'Back up your recovery phrase' : ui.phraseStep === 'verify' ? 'Verify your backup' : 'Import your recovery phrase'));
+    root.append(walletHeading(document, ui.phraseStep === 'backup' ? 'Back up your recovery phrase' : ui.phraseStep === 'verify' ? 'Verify your backup' : 'Import your recovery phrase'));
     root.append(element('p', 'Keep a private offline backup of all 24 words. This screen clears after 10 minutes without use.', 'phrase-caution'));
     const form = element('form'), error = element('p', '', 'field-error'), grid = element('div', undefined, 'phrase-grid');
     form.append(grid, error); fields = createPhraseFields(grid, error);
@@ -166,40 +172,87 @@ export async function mountWalletPage({ document = globalThis.document, window =
   }
   function render() {
     if (disposed || !ui.state) return;
+    const state = ui.state;
+    const pending = Object.values(state.pendingApprovals || {})[0];
+    if (renderOpenWallet && state.isUnlocked && !pending && !(page === 'phrase' && ui.phraseStep)) {
+      if (openScreen) { openScreen.update(); return; }
+      fields?.clear(); fields = undefined; revealed?.replaceChildren(); revealed = undefined;
+      root.replaceChildren(); navigation.replaceChildren();
+      openScreen = renderOpenWallet({ document, window, root, status, ui, run, loadBalances,
+        lock: () => run(async () => { clearSensitive(); page = 'home'; await ui.lock(); }),
+        setAutoLock: minutes => run(async () => { await ui.setAutoLock(minutes); walletDeadline = 0; }),
+        clearReveal: () => { revealed?.replaceChildren(); revealed = undefined; entryDeadline = 0; },
+        reveal: (password, container) => {
+          const started = revision;
+          return run(async () => {
+            let phrase;
+            try {
+              phrase = await ui.revealPhrase(password); password = null;
+              if (disposed || started !== revision) return;
+              container.hidden = false;
+              const grid = element('div', undefined, 'phrase-grid'), error = element('p', '', 'field-error');
+              container.replaceChildren(grid, error);
+              const display = createPhraseFields(grid, error); display.set(phrase, true); revealed = container; scheduleIdle(true);
+            } finally { phrase = password = null; }
+          }, { renderAfter: false });
+        },
+      });
+      return;
+    }
+    openScreen?.dispose(); openScreen = undefined;
+    root.className = renderOpenWallet ? 'card wallet-card' : '';
     // A public-state notification never replaces a recovery form that the user is filling.
     if (page === 'phrase' && fields && ui.phraseStep && root.querySelector('.phrase-grid')) return;
     stopSendReview?.(); stopSendReview = undefined;
     fields?.clear(); fields = undefined; revealed?.replaceChildren(); revealed = undefined;
     root.replaceChildren(); navigation.replaceChildren();
     portfolioText = undefined;
-    const state = ui.state;
     if (sendReview?.network && sendReview.network !== state.networks?.[sendChain]) {
       void cancelReview().catch(() => {}); sendReview = undefined;
     }
     if (state.isUnlocked) {
-      for (const [label, next] of [['Home', 'home'], ['Connected sites', 'sites'], ['Settings', 'settings']]) {
-        const button = actionButton(document, label, () => navigate(next)); button.className = 'network-filter';
-        if (page === next) button.ariaCurrent = 'page'; navigation.append(button);
+      const home = page === 'home' && !pending;
+      navigation.className = home ? 'extension-home-header' : 'extension-navigation';
+      const session = element('div', undefined, home ? 'wallet-session' : 'extension-page-actions');
+      if (home) {
+        navigation.append(walletHeading(document, 'Your wallet'));
+        const open = element('div');
+        open.append(element('span', undefined, 'session-indicator'), element('span', 'Wallet open in this browser'));
+        open.append(element('span', autoLockBarText(state.preferences.autoLockTimeLimit), 'session-timeout'));
+        session.append(open);
+      } else {
+        const back = actionButton(document, 'Home', () => navigate('home')); back.className += ' page-back'; session.append(back);
       }
-      navigation.append(actionButton(document, 'Lock', () => run(async () => { clearSensitive(); page = 'home'; await ui.lock(); })));
+      session.append(actionButton(document, 'Lock', () => run(async () => { clearSensitive(); page = 'home'; await ui.lock(); })));
+      navigation.append(session);
     }
     if (page === 'phrase' && ui.phraseStep) { renderPhrase(); return; }
+    if (renderEntry && !state.isUnlocked) {
+      renderEntry({ document, root, status, state,
+        create: () => { clearSensitive(); const phrase = ui.beginCreate(); page = 'phrase'; render(); fields.set(phrase, true); scheduleIdle(true); },
+        restore: () => { clearSensitive(); ui.beginImport(); page = 'phrase'; render(); fields.focus(); scheduleIdle(true); },
+        unlock: password => run(async () => { await ui.unlock(password); page = 'home'; }),
+      });
+      return;
+    }
     if (!state.isInitialized) {
-      root.append(element('h1', 'Your Nodus wallet'), element('p', 'Create a new 24-word recovery phrase or import your existing phrase.'));
+      root.append(walletHeading(document, 'Your Nodus wallet'), element('p', 'Create a new 24-word recovery phrase or import your existing phrase.'));
       const actions = element('div', undefined, 'actions');
       actions.append(actionButton(document, 'Create wallet', () => {
         clearSensitive(); const phrase = ui.beginCreate(); page = 'phrase'; render(); fields.set(phrase, true); scheduleIdle(true);
       }, false), actionButton(document, 'Import phrase', () => { clearSensitive(); ui.beginImport(); page = 'phrase'; render(); fields.focus(); scheduleIdle(true); }));
-      root.append(actions); return;
+      root.append(actions);
+      const networks = element('div', undefined, 'wallet-network-list'); networks.setAttribute('aria-label', 'Wallet networks');
+      for (const [index, symbol] of ['NODUS', 'ETH', 'BNB', 'SOL', 'TRX'].entries()) networks.append(element('span', symbol, index === 0 ? 'native-network' : ''));
+      root.append(networks); return;
     }
     if (!state.isUnlocked) {
-      root.append(element('h1', 'Unlock your wallet'));
+      root.append(walletHeading(document, 'Unlock your wallet'));
       const form = element('form'), password = passwordInput(form, 'unlock-password', 'Password', 'current-password', 12);
       const submit = element('button', 'Unlock'); submit.type = 'submit'; form.append(submit); root.append(form);
       form.onsubmit = event => { event.preventDefault(); return run(async () => { const entered = password.value; password.value = ''; await ui.unlock(entered); page = 'home'; }); };
       return;
     }
-    const pending = Object.values(state.pendingApprovals || {})[0];
     if (pending) {
       if (pending.type === 'nodus_signMessage') {
         renderNodusSiteApproval(document, root, pending, {
@@ -291,7 +344,10 @@ export async function mountWalletPage({ document = globalThis.document, window =
     });
     else portfolioText = renderHome(document, root, { ...state, portfolio: ui.portfolio() }, network => navigate('receive', network), chain => {
       sendChain = chain; navigate('send');
-    }, () => run(() => loadBalances(true)), () => navigate('nodus-history'), () => { sendChain = 'nodus'; navigate('contracts'); }, chain => navigate('chain-history', chain));
+    }, () => run(() => loadBalances(true)), () => navigate('nodus-history'), () => { sendChain = 'nodus'; navigate('contracts'); }, chain => navigate('chain-history', chain), [
+      { label: 'Connected sites', icon: 'sites', run: () => navigate('sites') },
+      { label: 'Settings', icon: 'settings', run: () => navigate('settings') },
+    ]);
   }
   const unbindActivity = bindActivity(document, client, () => {
     scheduleIdle(true);
@@ -315,5 +371,3 @@ export async function mountWalletPage({ document = globalThis.document, window =
   catch (error) { showError(error); }
   return { refresh, dispose };
 }
-
-if (globalThis.document && globalThis.chrome?.runtime) void mountWalletPage();

@@ -38,6 +38,21 @@ test('home renders the six networks using only returned addresses', () => {
   assert.doesNotMatch(root.textContent, /\$|0\.00/i);
 });
 
+// Pin the asset/amount association and the reference's truncated display:
+// exact units remain available on hover, while failed reads stay explicit.
+test('network rows label their assets and retain exact amounts behind the web-wallet display', () => {
+  const root = new Node('main');
+  renderHome(document, root, { addresses: { ethereum: account }, evmBalances: { ethereum: [
+    { symbol: 'ETH', balance: '1234.123456789' }, { symbol: 'USDC', error: 'Balance unavailable' },
+  ] } }, () => {});
+  const rows = descendants(root, node => node.className === 'chain-holding extension-holding');
+  assert.deepEqual(rows.map(row => row.children.map(node => node.textContent)), [
+    ['ETH', '1,234.123456 ETH'], ['USDC', 'USDC: Balance unavailable'],
+  ]);
+  assert.equal(rows[0].children[1].title, '1234.123456789 ETH');
+  assert.equal(rows[1].children[1].className, 'field-error');
+});
+
 // Proves receive passes exactly the displayed address to the imported QR renderer; a nonempty SVG alone could encode a different address or URI.
 test('receive QR is identical to the address shown to the user', t => {
   const saved = Object.getOwnPropertyDescriptor(globalThis, 'document'); globalThis.document = document;
@@ -46,7 +61,7 @@ test('receive QR is identical to the address shown to the user', t => {
   renderReceive(document, one, 'ethereum', { ethereum: account }, () => {});
   renderReceive(document, two, 'ethereum', { ethereum: `${account}0` }, () => {});
   assert.equal(descendants(one, node => node.tagName === 'code')[0].textContent, account);
-  const paths = root => descendants(root, node => node.tagName === 'path').map(node => node.attributes.d);
+  const paths = root => descendants(descendants(root, node => node.className === 'receive-qr')[0], node => node.tagName === 'path').map(node => node.attributes.d);
   assert.equal(paths(one).length, 1); assert.notDeepEqual(paths(one), paths(two));
 });
 
@@ -116,10 +131,18 @@ async function pageFixture(t, initialized = true) {
   return { root, navigation, status, calls, state, page, phrase, notify: () => notification?.({ method: 'messengerSubscription' }) };
 }
 
+test('home session shows the actual background auto-lock preference', async t => {
+  const { navigation, state, page } = await pageFixture(t);
+  assert.match(navigation.textContent, /Auto-lock after 15 minutes of inactivity/);
+  state.preferences.autoLockTimeLimit = 0; await page.refresh();
+  assert.match(navigation.textContent, /Auto-lock off/);
+  assert.doesNotMatch(navigation.textContent, /15 minutes/);
+});
+
 // Proves the mounted page keeps authenticated words visible until expiry and removes them on lock; testing renderSettings alone would miss the action wrapper clearing or retaining secrets.
 test('mounted reveal survives its response and is cleared on background lock', async t => {
   const { root, navigation, calls, state, page, phrase } = await pageFixture(t);
-  button(navigation, 'Settings').onclick();
+  button(root, 'Settings').onclick();
   const password = root.querySelectorAll('input[type="password"]')[0]; password.value = 'fresh-password';
   document.dispatchEvent(new Event('input'));
   await descendants(root, node => node.tagName === 'form')[0].onsubmit({ preventDefault() {} });
@@ -132,22 +155,26 @@ test('mounted reveal survives its response and is cleared on background lock', a
 // Proves the ten-minute recovery timeout remains active with auto-lock disabled; a default fifteen-minute wallet timer could otherwise hide missing secret cleanup.
 test('mounted reveal clears after ten idle minutes even when auto-lock is never', async t => {
   const { root, navigation, state } = await pageFixture(t); state.preferences.autoLockTimeLimit = 0;
-  button(navigation, 'Settings').onclick(); root.querySelectorAll('input[type="password"]')[0].value = 'fresh-password';
+  button(root, 'Settings').onclick(); root.querySelectorAll('input[type="password"]')[0].value = 'fresh-password';
   await descendants(root, node => node.tagName === 'form')[0].onsubmit({ preventDefault() {} });
   t.mock.timers.tick(10 * 60_000);
   assert.equal(root.querySelectorAll('input').some(input => input.value), false);
 });
 
-// Proves the actual import form reaches save and unlock with 24 entered words; controller-only tests would miss missing form submission or password plumbing.
+// Proves the lifecycle adapter's import form reaches save/unlock with 24 words,
+// clears inputs and restores the title (index.html:18) plus portfolio (index.html:31).
+// Its heading lives in navigation; ui-layout.test.js covers the production reference entry.
 test('mounted import form saves through the trusted API and renders home', async t => {
-  const { root, calls, phrase } = await pageFixture(t, false);
+  const { root, navigation, calls, phrase } = await pageFixture(t, false);
   button(root, 'Import phrase').onclick();
   const words = root.querySelectorAll('input').filter(input => input.type === 'text');
   phrase.split(' ').forEach((word, index) => { words[index].value = word; });
   for (const input of root.querySelectorAll('input[type="password"]')) input.value = 'public-test-password-123';
   await descendants(root, node => node.tagName === 'form')[0].onsubmit({ preventDefault() {} });
   assert.ok(calls.some(call => call.method === 'createNewVaultAndRestore')); assert.ok(calls.some(call => call.method === 'submitPasswordOrEncryptionKey'));
-  assert.match(root.textContent, /your wallet/i); assert.equal(root.querySelectorAll('input').length, 0);
+  assert.deepEqual(descendants(navigation, node => node.tagName === 'h1').map(node => node.textContent), ['Your wallet']);
+  assert.equal(descendants(root, node => node.id === 'portfolio-label')[0].textContent, 'Estimated portfolio value');
+  assert.equal(root.querySelectorAll('input').length, 0);
 });
 
 // Proves create replaces the displayed backup with writable empty verification fields and password entry; a logical confirmBackup test would miss a renderer that stays on the backup screen.
@@ -170,7 +197,7 @@ test('mounted page presents incoming permission requests', async t => {
 // Proves activity reconciles another window's lock without erasing password entry on the locked screen; directly refreshing in the assertion would bypass the event wiring.
 test('mounted activity observes background lock and preserves unlock entry', async t => {
   const { root, navigation, state, calls } = await pageFixture(t);
-  button(navigation, 'Settings').onclick(); state.isUnlocked = false;
+  button(root, 'Settings').onclick(); state.isUnlocked = false;
   document.dispatchEvent(new Event('pointerdown')); await new Promise(resolve => setImmediate(resolve));
   assert.match(root.textContent, /unlock your wallet/i);
   const password = root.querySelectorAll('input[type="password"]')[0]; password.value = 'typed-password';
@@ -200,7 +227,7 @@ test('mounted EVM send reaches prepare, review and confirm', async t => {
   assert.match(root.textContent, /Up to 0\.001 ETH/); await button(root, 'Confirm send').onclick();
   assert.deepEqual(calls.find(call => call.method === 'prepareEvmSend').params, [{ chain: 'ethereum', symbol: 'ETH', to: account, amount: '0.01' }]);
   assert.deepEqual(calls.find(call => call.method === 'confirmEvmSend').params, ['public-review']);
-  assert.match(root.textContent, /your wallet/i);
+  assert.match(root.textContent, /your assets/i);
 });
 
 // Proves home actually requests both chains and renders returned rows; renderer-only tests could pass without background reads.

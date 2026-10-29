@@ -12,8 +12,9 @@ class Node {
   get textContent() { return this.text + this.children.map(child => child.textContent).join(''); }
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this.text = ''; this.children = children; }
+  setAttribute(name, value) { (this.attributes ??= {})[name] = String(value); }
 }
-const document = { createElement: tag => new Node(tag) };
+const document = { createElement: tag => new Node(tag), createElementNS: (_ns, tag) => new Node(tag) };
 const find = (node, predicate) => node.children.flatMap(child => [...(predicate(child) ? [child] : []), ...find(child, predicate)]);
 const button = (node, text) => find(node, item => item.tagName === 'button' && item.textContent === text)[0];
 const account = '0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb';

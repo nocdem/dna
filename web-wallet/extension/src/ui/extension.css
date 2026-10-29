@@ -1,86 +1,26 @@
-/* Design r3 §2: web-wallet src/style.css is the visual reference. Scoped
-   wallet-page/portfolio-assets rules are adapted here; shared classes inherit. */
-body.extension-page { min-width: 360px; font-family: var(--font); font-size: 16px; }
-/* MetaMask v13.54.0 app/html/ui/popup.html:2,6; base-styles.scss:18-25. */
+/* The wallet screen uses src/style.css unchanged. Only the browser surface
+   and the extension's existing onboarding/site-approval adapters live here. */
+/* src/style.css:17-35 sets the page font on :root. Chromium's extension
+   stylesheet sets body fonts directly, so restore the reference inheritance. */
+body.extension-page { min-width: 360px; font-family: var(--font); font-size: inherit; }
 html:has(body.extension-page[data-page="popup"]), body.extension-page[data-page="popup"] { width: 400px; height: 600px; }
 body.extension-page[data-page="popup"] { overflow: auto; }
-.extension-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; max-width: 760px; margin: 0 auto; padding: 20px 16px; }
-/* src/style.css:43-44,184-185,578-580. */
-.extension-header .wordmark { font-size: 30px; }
-.extension-header .wordmark img { width: 31px; height: 31px; }
-.extension-header > a:last-child:not(.wordmark) { display: inline-flex; align-items: center; min-height: 36px; padding: 7px 14px; border: 1px solid #505b43; border-radius: 999px; color: var(--text); font-size: 12px; text-decoration: none; }
-.extension-header > a:last-child:not(.wordmark):hover { border-color: #76885f; color: var(--lime); }
-.extension-shell { max-width: 760px; margin: 0 auto 20px; padding: 20px 16px; }
-/* Adaptation, plan §2.1: the popup/window is the frame; src/style.css:208-210. */
-.extension-page:is([data-page="popup"], [data-page="notification"]) .extension-shell { margin: 0; border-left: 0; border-right: 0; border-radius: 0; padding: 16px; }
-.extension-page:is([data-page="popup"], [data-page="notification"]) .extension-header { padding-inline: 14px; }
-/* Session bar and active filter: src/style.css:226,450-451,529. */
-.extension-navigation { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; padding: 10px 12px 10px 14px; border: 1px solid var(--line-soft); border-radius: 12px; background: #d5f99805; }
-.extension-navigation [aria-current="page"] { color: var(--dark); background: var(--lime); border-color: var(--lime); }
-.extension-navigation > button:last-child { margin-left: auto; flex-shrink: 0; }
-.extension-navigation:empty, #wallet-status:empty { display: none; }
-/* Title/container adaptation, plan §2.1; src/style.css:250,568,572. */
-.extension-page h1 { margin: 0 0 20px; font-size: clamp(22px, 2.3vw, 28px); font-weight: 600; letter-spacing: -.04em; line-height: 1.15; }
-.extension-page h2 { font-size: 16px; margin: 0; }
-.extension-home-heading h1 { margin: 0; }
-/* src/style.css:586 and notice :138. */
-#wallet-status:not(:empty) { padding: 12px 14px; border-left: 2px solid var(--amber); border-radius: 0 8px 8px 0; background: #f2c89608; color: var(--text); }
-#wallet-status.hint:not(:empty) { border-left-color: var(--lime); }
-/* src/style.css:724,452-459,510. */
-.extension-addresses { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 12px; }
-.extension-network { min-width: 0; border: 1px solid #d5f9981c; border-radius: 10px; background: #11170f; overflow: hidden; }
-.extension-network-head { display: flex; align-items: center; gap: 12px; padding: 17px 14px; }
-.extension-network-name { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-.extension-network-head h2 { font-size: 13px; font-weight: 500; color: var(--text); }
-.extension-network-head code { display: block; font-family: var(--mono); font-size: 10px; line-height: 1.6; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* src/style.css:466,476-477,556; these rows select nothing. */
-.extension-page .chain-holding { cursor: auto; }
-.extension-page .chain-holding:hover { background: none; }
-.extension-holding strong { grid-column: 2; min-width: 0; text-align: right; color: var(--text); font-size: 11px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
-/* Adaptation, plan §2.4: wrap the reference actions (src/style.css:479-480). */
-.extension-holding-actions .holding-actions { flex-wrap: wrap; }
-/* index.html:33 glyphs; empty alternatives preserve accessible names. */
-.extension-send::before { content: "↑" / ""; margin-right: 8px; }
-.extension-receive::before { content: "↓" / ""; margin-right: 8px; }
-/* Review dt and send labels: src/style.css:159,557. */
-.extension-page .extension-field-label { color: var(--muted); font-size: 11px; margin: 16px 0 5px; }
-.extension-page .send-block label { font-weight: 500; }
-/* Activity: src/style.css:319-330,409,628-629. */
-.extension-page .activity-row { grid-template-columns: minmax(0, 1fr); }
-.extension-page .activity-row > h2 { font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
-.extension-page .activity-row > p:not(.status-badge) { margin: 0; font-size: 11px; color: var(--muted); }
-.extension-page .activity-row > code { min-width: 0; font-size: 10px; color: var(--muted); overflow-wrap: anywhere; }
-.extension-page .activity-row > time { font-variant-numeric: tabular-nums; }
-.extension-page .activity-row > a { font-size: 11px; text-underline-offset: 3px; }
-.extension-page .activity-subhead { margin: 18px 0 6px; font-size: 13px; font-weight: 600; letter-spacing: .02em; color: var(--text); }
-.extension-page .activity-subhead:first-of-type { margin-top: 4px; }
-/* Blocks and labels: src/style.css:589,591,594; wrapped contract inputs §2.11. */
-.extension-page .page-block { margin: 16px 0 0; padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
-.extension-page .page-block h2 { margin: 0 0 10px; font-size: 15px; font-weight: 600; letter-spacing: -.015em; color: var(--text); }
-.extension-page .page-block label { margin: 16px 0 6px; font-weight: 500; color: #dde2d3; }
-.extension-page .page-block.auto-lock label { font-size: 14px; font-weight: 600; color: var(--text); }
-.extension-page .page-block > label:first-child, .extension-page .page-block > form > label:first-child { margin-top: 0; }
-.extension-page label > input, .extension-page label > select, .extension-page label > textarea { margin-top: 6px; }
-/* Address book: src/style.css:290,637; code inherits address-book-address. */
-.extension-site .address-book-main h2 { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
-/* Site screens use the reference address-check block: src/style.css:66,70,189-190. */
+.extension-shell { margin-block: 20px; }
+.extension-page .header-actions .pill { text-decoration: none; }
+#wallet-navigation:empty, #wallet-status:empty { display: none; }
+#screen, #wallet-navigation { min-width: 0; }
+
+/* Existing onboarding and site requests retain the reference's typography. */
+#screen > .section-head h1 { margin: 0; font-size: 23px; font-weight: 500; letter-spacing: -.04em; line-height: 1.2; }
+.extension-page .page-heading h1 { margin: 0; font-size: clamp(22px, 2.3vw, 28px); font-weight: 600; letter-spacing: -.04em; line-height: 1.15; }
+.extension-page-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+.extension-field-label { color: var(--muted); font-size: 11px; font-weight: 500; margin: 16px 0 5px; }
 .extension-origin { padding: 16px 18px; border-left: 2px solid #d5f99875; background: #d5f99804; color: var(--text); font-size: 16px; font-weight: 500; overflow-wrap: anywhere; }
-/* Selectable contacts: src/style.css:823-826; fieldset adaptation, plan §2.10. */
 .extension-choices { min-width: 0; margin: 20px 0; padding: 0; border: 0; }
 .extension-choices legend { font-size: 13px; }
 .extension-choices .check { display: flex; align-items: center; gap: 10px; margin: 12px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: #11170f; overflow-wrap: anywhere; }
 .extension-choices .check:has(input:checked) { border-color: #d5f99860; background: #d5f9980d; }
 .extension-choices .check input { margin: 0; }
 .extension-choices .check span { min-width: 0; }
-.extension-page .phrase-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.extension-site .address-book-main h2 { margin: 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
 .extension-page [inert] { opacity: .7; }
-@media (max-width: 760px) {
-  /* src/style.css:495-496,898. */
-  .extension-network-head { padding: 14px 10px; gap: 8px; }
-  .extension-network-head .coin-icon { width: 30px; height: 30px; }
-  .extension-page .page-block { padding: 16px; }
-}
-@media (min-width: 640px) {
-  .extension-page[data-page="fullscreen"] .extension-shell { margin-top: 20px; padding: 32px; }
-  .extension-page[data-page="fullscreen"] .phrase-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}

@@ -8,16 +8,18 @@
   <link rel="stylesheet" href="./src/ui/extension.css">
 </head>
 <body class="extension-page" data-page="notification">
-  <header class="extension-header">
-    <a class="wordmark" href="./notification.html"><img src="/assets/nodus-mark.svg" width="32" height="32" alt="">Nodus</a>
-    <a href="./home.html" target="_blank" rel="noopener">Open full page</a>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <div class="brand-group"><a class="wordmark" href="./notification.html"><img src="/assets/nodus-mark.svg" width="35" height="35" alt="">nodus</a><span class="product-name">Wallet</span></div>
+      <div class="header-actions"><a class="pill" href="./home.html" target="_blank" rel="noopener">Open full page</a></div>
+    </div>
   </header>
-  <main class="extension-shell card wallet-card">
-    <nav id="wallet-navigation" class="extension-navigation" aria-label="Wallet"></nav>
-    <p id="wallet-status" role="status" aria-live="polite"></p>
+  <main class="wrap extension-shell">
+    <div id="wallet-navigation" class="extension-navigation"></div>
+    <div id="wallet-status" class="result" role="status" aria-live="polite"></div>
     <section id="screen" aria-label="Wallet screen"></section>
     <noscript>JavaScript is required to open this wallet.</noscript>
   </main>
-  <script type="module" src="./src/ui/app.js"></script>
+  <script type="module" src="./src/ui/reference-entry.js"></script>
 </body>
 </html>

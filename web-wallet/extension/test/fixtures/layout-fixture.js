@@ -1,4 +1,4 @@
-import { mountWalletPage } from '../../src/ui/app.js';
+import { mountReferencePage } from '../../src/ui/reference-entry.js';
 import { ASSETS } from '../../../src/portfolio.js';
 import { CHAINS } from '../../../src/config.js';
 import { DEFAULT_NETWORKS } from '../../src/constants/networks.js';
@@ -37,6 +37,7 @@ const client = { onNotification: () => () => {}, onDisconnect: () => () => {}, c
   if (method === 'getState') return structuredClone({ ...state, addresses: state.isUnlocked ? addresses : {} });
   if (['messengerSubscribe', 'messengerUnsubscribe', 'setLastActiveTime'].includes(method)) return;
   if (method === 'submitPasswordOrEncryptionKey') { state.isUnlocked = true; return; }
+  if (method === 'getSeedPhrase') return [...new TextEncoder().encode('abandon '.repeat(23) + 'art')];
   if (method === 'setLocked') { state.isUnlocked = false; return; }
   if (method === 'getPrices') {
     quotes = Object.fromEntries(ASSETS.map((asset, index) => [asset.key, { units: String((index + 1) * 100000000), observedAt: Date.now() }]));
@@ -55,6 +56,7 @@ const client = { onNotification: () => () => {}, onDisconnect: () => () => {}, c
   ], rows: [{ title: 'Received NODUS', sign: '+', amount: '2', detail: 'Public fixture transfer', height: 12, wire: 'cd'.repeat(32) }] };
   if (method === 'getSolanaHistory' || method === 'getTronHistory') return { network: 'mainnet', status: 'Fixture account history', local: [], rows: [] };
   if (method === 'prepareEvmSend') return { id: 'layout-review', ...params[0], fee: 'Up to 0.001 ETH' };
+  if (method === 'confirmEvmSend') return 'public-fixture-transaction';
   if (method === 'cancelEvmSend') return;
   if (method === 'resolvePendingApproval' || method === 'rejectPendingApproval') { delete state.pendingApprovals[params[0]]; return; }
   if (method === 'approvePermissionsRequest') { delete state.pendingApprovals[params[0].id]; return; }
@@ -63,5 +65,5 @@ const client = { onNotification: () => () => {}, onDisconnect: () => () => {}, c
   if (method === 'setPreference') { state.preferences[params[0]] = params[1]; return true; }
   throw new Error(`Unexpected layout fixture method: ${method}`);
 } };
-const mounted = await mountWalletPage({ document, window, client });
+const mounted = await mountReferencePage({ document, window, client });
 window.layout = { calls, state, balances, balanceTimes, get quotes() { return quotes; }, refresh: mounted.refresh, dispose: mounted.dispose };

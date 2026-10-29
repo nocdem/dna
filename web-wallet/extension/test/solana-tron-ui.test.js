@@ -107,8 +107,12 @@ test('mounted settings route selection and a network notification closes the old
     if (method === 'prepareSolanaSend') return { ...reviewFor('solana'), network: state.networks.solana };
   } };
   const page = await mountWalletPage({ document: pageDocument, window, client }); t.after(page.dispose);
-  assert.deepEqual(navigation.children.map(node => node.textContent), ['Home', 'Connected sites', 'Settings', 'Lock']);
-  button(navigation, 'Settings').onclick();
+  // This minimal-DOM mount uses the fallback adapter: session actions and
+  // section buttons are separate. ui-layout.test.js pins the production tiles.
+  assert.deepEqual(find(navigation, n => n.tagName === 'button').map(n => n.textContent), ['Lock']);
+  assert.deepEqual(find(root, n => n.className === 'extension-section').map(n => n.textContent), ['Connected sites', 'Settings']);
+  button(root, 'Settings').onclick();
+  assert.deepEqual(find(navigation, n => n.tagName === 'button').map(n => n.textContent), ['Home', 'Lock']);
   const selector = find(root, n => n.id === 'network-solana')[0]; selector.value = 'devnet'; await selector.onchange();
   assert.ok(calls.some(([method, params]) => method === 'setChainNetwork' && params[0] === 'solana' && params[1] === 'devnet'));
   assert.ok(calls.some(([method]) => method === 'getSolanaHistory'));
@@ -168,7 +172,7 @@ test('receive copies the raw chain address and draws its QR with the existing re
     renderReceive(document, root, chain, addresses, address => copied.push(address));
     button(root, 'Copy').onclick(); assert.deepEqual(copied, [addresses[chain]]);
     assert.equal(find(root, n => n.tagName === 'code')[0].textContent, addresses[chain]);
-    paths.push(find(root, n => n.tagName === 'path')[0].attributes.d);
+    paths.push(find(find(root, n => n.className === 'receive-qr')[0], n => n.tagName === 'path')[0].attributes.d);
   }
   assert.notEqual(paths[0], paths[1]);
 });

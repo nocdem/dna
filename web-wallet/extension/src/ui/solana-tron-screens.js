@@ -1,6 +1,7 @@
 import { CHAINS } from '../../../src/config.js';
 import { renderEvmSend } from './evm-screens.js';
 import { actionButton } from './views.js';
+import { pageHeading } from './presentation.js';
 import { displayAmount } from '../../../src/portfolio.js';
 import { chainNetwork } from '../constants/networks.js';
 
@@ -24,7 +25,7 @@ export function renderSolanaTronSend(document, container, { chain, account, revi
     if (network.id !== 'mainnet') container.append(element(document, 'p', `${network.label}. Testnet token deployments are not configured.`, 'hint'));
     return;
   }
-  container.replaceChildren(element(document, 'h1', `Send on ${CHAINS[chain].name}`));
+  container.replaceChildren(pageHeading(document, `Send on ${CHAINS[chain].name}`, 'send'));
   // src/app.js:1615-1627: mainnet notice, every field as text, expiry and
   // 600 ms before confirmation. Disposal closes the timer on navigation/lock.
   container.append(element(document, 'p', `${network.label} transaction. Sending cannot be undone.`, 'notice'));
@@ -55,7 +56,7 @@ function explorer(document, container, chain, networkId, hash) {
 // src/app.js:300-326,485-529: account transfers plus local sends with their
 // network outcome/note and explorer link. All provider text uses textContent.
 export function renderSolanaTronHistory(document, container, { chain, history }, { refresh }) {
-  container.replaceChildren(element(document, 'h1', `${CHAINS[chain].name} history`));
+  container.replaceChildren(pageHeading(document, `${CHAINS[chain].name} history`, 'history'));
   container.append(actionButton(document, 'Refresh history', refresh));
   if (!history) { container.append(element(document, 'p', 'Account history has not been read yet.', 'hint')); return; }
   if (history.activityError) container.append(element(document, 'p', history.activityError, 'field-error'));

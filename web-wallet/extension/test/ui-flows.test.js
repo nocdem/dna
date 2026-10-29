@@ -253,11 +253,14 @@ test('trusted pages receive live approval state notifications', async t => {
   await client.request('messengerUnsubscribe', ['ApprovalController:stateChange']); unsubscribe();
 });
 
-// Proves each HTML entry imports one UI and contains no reference branding or web-wallet app entry; scanning only one page could miss a copied notification page.
-test('popup, notification and fullscreen pages wire the shared English UI', () => {
+// Proves each page loads exactly one reference-screen entry for index.html:18-77;
+// scanning only one page could miss a notification page still loading the old adapter.
+test('popup, notification and fullscreen pages wire the shared web-wallet screen', () => {
   for (const page of ['popup.html', 'notification.html', 'home.html']) {
     const html = readFileSync(new URL(`../${page}`, import.meta.url), 'utf8');
-    assert.match(html, /lang="en"/); assert.match(html, /src="\.\/src\/ui\/app\.js"/); assert.doesNotMatch(html, /metamask|src\/main\.js/i);
+    assert.match(html, /lang="en"/);
+    assert.deepEqual([...html.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/gu)].map(match => match[1]), ['./src/ui/reference-entry.js']);
+    assert.doesNotMatch(html, /metamask|src\/main\.js/i);
   }
   const manifest = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8')); assert.equal(manifest.action.default_popup, 'popup.html');
 });

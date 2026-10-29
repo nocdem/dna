@@ -13,10 +13,11 @@ class Node {
   get textContent() { return this.text + this.children.map(child => child.textContent).join(''); }
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this.children = children; this.text = ''; }
+  setAttribute(name, value) { (this.attributes ??= {})[name] = String(value); }
   querySelectorAll(selector) { return find(this, node => node.tagName === 'input' && (selector === 'input' || node.type === 'password')); }
   querySelector() { return null; }
 }
-const document = { createElement: tag => new Node(tag) };
+const document = { createElement: tag => new Node(tag), createElementNS: (_ns, tag) => new Node(tag) };
 const find = (root, predicate) => [...(predicate(root) ? [root] : []), ...root.children.flatMap(child => find(child, predicate))];
 const button = (root, text) => find(root, node => node.tagName === 'button' && node.textContent === text)[0];
 const address = 'ab'.repeat(64);
@@ -151,7 +152,10 @@ test('the mounted wallet routes Nodus screens through the trusted background met
     return null;
   } };
   const page = await mountWalletPage({ document: pageDocument, window, client }); t.after(page.dispose);
-  await new Promise(resolve => setImmediate(resolve)); assert.ok(root.textContent.includes('3.0 NODUS'));
+  await new Promise(resolve => setImmediate(resolve));
+  // src/portfolio-view.js:193-194: trim display zeroes, retain the exact amount on hover.
+  const amounts = find(root, node => node.tagName === 'strong' && node.title === '3.0 NODUS');
+  assert.equal(amounts.length, 1); assert.equal(amounts[0].textContent, '3 NODUS');
   async function prepare() {
     button(root, 'Send').onclick();
     const inputs = find(root, node => node.tagName === 'input'); inputs[0].value = address; inputs[1].value = '1';
@@ -235,7 +239,7 @@ test('mounted Nodus confirm errors close review and show the tracked outcome wit
     assert.equal(calls.includes('getNodusHistory'), false);
     button(navigation, 'Home').onclick();
   }
-  button(navigation, 'Settings').onclick(); await button(root, 'Discard unreadable history').onclick();
+  button(root, 'Settings').onclick(); await button(root, 'Discard unreadable history').onclick();
   assert.ok(calls.includes('discardNodusActivity')); assert.ok(status.textContent.includes('Unreadable local history discarded.'));
   assert.equal(button(root, 'Discard unreadable history'), undefined);
 });
