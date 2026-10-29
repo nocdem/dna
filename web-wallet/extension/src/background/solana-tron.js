@@ -83,7 +83,7 @@ export function createSolanaTron({ lockCoordinator, getWalletKeys, getActivity, 
       // src/app.js:300-326,478-485: account rows and "Sent from here" are
       // distinct; a confirmed send leaves the latter only when history lists it.
       return { network: s.network.id, rows: structuredClone(page?.rows ?? []), local,
-        status: s.historyNote || (page ? `Newest ${HISTORY_LIMIT} transfers as reported by ${HISTORY_SOURCES[chain]}, read ${new Date(page.readAt).toLocaleString()}. Your own sends are tracked above.` : 'Account history has not been read yet.'),
+        status: s.historyNote || (page ? `Newest ${HISTORY_LIMIT} transfers as reported by ${HISTORY_SOURCES[chain]}, read ${new Date(page.readAt).toLocaleString()}.` : 'Account history has not been read yet.'),
         error: s.historyError ?? '', activityError: s.activityError || s.activity.error() };
     }
     async function ready(s) { await guarded(s, async () => { await s.activity.ready; }); current(s); }

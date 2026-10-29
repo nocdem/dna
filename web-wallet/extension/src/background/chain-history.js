@@ -17,12 +17,12 @@ export function createChainHistory({ getActivity, getAddresses, assertCurrent, r
         status, activityError: activity.error?.() ?? '' });
       if (kept && Date.now() - kept.readAt < gap) return snapshot(manual
         ? `Read ${new Date(kept.readAt).toLocaleString()}. Try again in a minute — the provider limits requests.`
-        : `Newest ${HISTORY_LIMIT} transfers as reported by ${HISTORY_SOURCES[chain]}, read ${new Date(kept.readAt).toLocaleString()}. Your own sends are tracked above.`);
+        : `Newest ${HISTORY_LIMIT} transfers as reported by ${HISTORY_SOURCES[chain]}, read ${new Date(kept.readAt).toLocaleString()}.`);
       const job = (async () => {
         try {
           const rows = await read(chain, address); assertCurrent();
           await activity.saveHistory({ address, rows: mergeHistory(kept?.rows, rows), readAt: Date.now() }); assertCurrent();
-          return snapshot(`Newest ${HISTORY_LIMIT} transfers as reported by ${HISTORY_SOURCES[chain]}, read ${new Date().toLocaleString()}. Your own sends are tracked above.`);
+          return snapshot(`Newest ${HISTORY_LIMIT} transfers as reported by ${HISTORY_SOURCES[chain]}, read ${new Date().toLocaleString()}.`);
         } catch (error) { assertCurrent(); return { ...snapshot(''), error: error.message }; }
       })().finally(() => { if (jobs.get(chain) === job) jobs.delete(chain); });
       jobs.set(chain, job); return job;

@@ -148,7 +148,7 @@ export function createEvm({ messenger, store, approvals, permissions, lockCoordi
   function assertSendable(chain) {
     const value = activity(chain); value.assertSendable();
     const pending = value.rows().find(row => !terminal(row.status));
-    if (pending) throw new Error(`A previous send on this network has no final result yet (tx ${pending.hash}). Wait for it to resolve, or mark it as abandoned in Activity.`);
+    if (pending) throw new Error(`A previous send on this network has no final result yet (tx ${pending.hash}). Wait for it to resolve.`);
     return value;
   }
   async function sendRecorded(chain, transfer, send, assertCurrent) {
