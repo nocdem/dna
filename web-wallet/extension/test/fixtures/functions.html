@@ -8,7 +8,8 @@ const state = { isUnlocked: true, addresses: { nodus: 'ab'.repeat(64), ethereum:
   nodus: { state: 'ready', tokens: [] }, preferences: { autoLockTimeLimit: 15 }, networks: { nodus: 'testnet', ethereum: 'mainnet', bsc: 'mainnet', solana: 'devnet', tron: 'nile', cellframe: 'mainnet' },
   evm: { selectedChain: 'ethereum', endpoints: { ethereum: CHAINS.ethereum.endpoint, bsc: CHAINS.bsc.endpoint } }, subjects: {} };
 if (new URLSearchParams(location.search).has('ixios-unavailable')) delete state.addresses.ixios;
-const calls = []; let hold, release, price = '200000000';
+const calls = []; let hold, release, price = '200000000', bscFails = true;
+if (new URLSearchParams(location.search).has('contracts')) Object.assign(state.nodus, { evmReadable: true, evmBuildable: true });
 const ui = { get state() { return state; },
   async request(method, args = []) {
     calls.push([method, args]);
@@ -21,9 +22,14 @@ const ui = { get state() { return state; },
     if (method === 'getStakingOverview') return { rules: { minDelegation: '10000000000', maxDelegators: '2048' }, validators: [], delegations: [],
       network: { total: '0', selfStake: '0', delegated: '0', witnesses: 0, partial: false }, truncated: false };
     if (method === 'readSharedVault' && args[0] === 'vaultOpen') throw new Error('Public fixture has no saved vault');
+    if (method === 'contractAccount') return { balanceWei: '10000000000000000000', nonce: '0', height: '1', pending: false };
+    if (method === 'prepareNodusContract') return { id: 'fixture-contract', intentId: 'cd'.repeat(64), expiresAt: Date.now() + 60000,
+      decoded: { op: args[0].action, amount: '100000000', fee: '1', valueWei: '0' }, review: [['Amount', '1 NODUS'], ['Name', '<img src=x>']] };
+    if (method === 'confirmNodusSend') { if (hold) await new Promise(resolve => { release = resolve; }); throw new Error('fixture contract failure'); }
+    if (method === 'cancelNodusSend') return;
     if (method === 'getPrices') { if (hold) await new Promise(resolve => { release = resolve; }); return Object.fromEntries(ASSETS.map(asset => [asset.key, { units: price, observedAt: Date.now() }])); }
-    if (method === 'getEvmBalances' && args[0] === 'bsc') throw new Error('Fixture failed chain read');
-    if (method === 'getEvmBalances') return ASSETS.filter(asset => asset.chain === args[0]).map(asset => ({ symbol: asset.symbol, balance: asset.symbol === 'ETH' ? '1' : '0' }));
+    if (method === 'getEvmBalances' && args[0] === 'bsc' && bscFails) throw new Error('Fixture failed chain read');
+    if (method === 'getEvmBalances') return ASSETS.filter(asset => asset.chain === args[0]).map(asset => ({ symbol: asset.symbol, balance: asset.symbol === 'ETH' ? '1' : asset.symbol === 'BNB' ? '3' : '0' }));
     if (method === 'getNodusBalances') return [{ symbol: 'NODUS', balance: '12' }];
     if (method === 'getCpunkBalance') return { balance: '7' };
     if (method === 'getIxiosBalance') return [{ symbol: 'IXIOS', balance: '8' }];
@@ -31,11 +37,12 @@ const ui = { get state() { return state; },
     if (method === 'getTronBalances') return [{ symbol: 'TRX', balance: '2000' }];
     throw new Error(`Unexpected fixture method ${method}`);
   }, async refresh() {}, async setAutoLock(value) { state.preferences.autoLockTimeLimit = value; },
+  async setEvmEndpoint(chain, endpoint) { calls.push(['setEvmEndpoint', [chain, endpoint]]); state.evm.endpoints[chain] = new URL(endpoint).href; },
   cancelNodusSend: async () => {}, cancelEvmSend: async () => {}, cancelSolanaTronSend: async () => {} };
 let screen;
 const run = async action => { try { return await action(); } finally { screen?.update(); } };
 screen = mountReferenceWallet({ document, window, root: document.getElementById('screen'), status: document.getElementById('status'), ui, run,
   loadBalances: () => screen.loadBalances(true), lock() {}, reveal() {}, setAutoLock: value => run(() => ui.setAutoLock(value)), clearReveal() {} });
-window.fixture = { screen, state, calls, hold() { hold = true; }, release() { hold = false; release?.(); }, price(value) { price = value; } };
+window.fixture = { screen, state, calls, hold() { hold = true; }, release() { hold = false; release?.(); }, price(value) { price = value; }, bscFails(value) { bscFails = value; } };
 await screen.loadBalances(); window.fixture.ready = true;
 </script></body></html>

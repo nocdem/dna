@@ -26,6 +26,10 @@ function chainConfig(chain) {
   if (!EVM_CHAINS.includes(chain)) throw rpcErrors.invalidParams('Unsupported EVM network.');
   return CHAINS[chain];
 }
+function validatedEndpoint(chain, endpoint) {
+  const normalized = endpointUrl(endpoint);
+  return CHAINS[chain].rpcOptions.find(option => endpointUrl(option.url) === normalized)?.url ?? normalized;
+}
 // Mirrors src/adapters/evm.js:28-30 at 85506fccb352392f59f1e4d1140dd0a9452b3c1c.
 function ethersProvider(endpoint) {
   const transport = new FetchRequest(endpoint); transport.timeout = 15000; transport.getUrlFunc = ethersGetUrl;
@@ -127,7 +131,7 @@ export function createEvm({ messenger, store, approvals, permissions, lockCoordi
   const saved = store.getInitialState('EvmController', metadata);
   const selectedChain = EVM_CHAINS.includes(saved.selectedChain) ? saved.selectedChain : 'ethereum';
   const endpoints = Object.fromEntries(EVM_CHAINS.map(chain => {
-    try { return [chain, endpointUrl(saved.endpoints?.[chain])]; }
+    try { return [chain, validatedEndpoint(chain, saved.endpoints?.[chain])]; }
     catch { return [chain, CHAINS[chain].endpoint]; }
   }));
   const controller = new BaseController({ name: 'EvmController', metadata, messenger: messenger.buildChild({ namespace: 'EvmController' }), state: { selectedChain, endpoints } });
@@ -200,7 +204,7 @@ export function createEvm({ messenger, store, approvals, permissions, lockCoordi
     controller.update(state => { state.selectedChain = chain; }); changed(); await store.flush();
   }
   async function setEndpoint(chain, endpoint) {
-    chainConfig(chain); endpoint = endpointUrl(endpoint);
+    chainConfig(chain); endpoint = validatedEndpoint(chain, endpoint);
     if (controller.state.endpoints[chain] === endpoint) return;
     controller.update(state => { state.endpoints[chain] = endpoint; });
     changed(); await store.flush();

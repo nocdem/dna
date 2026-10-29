@@ -23,7 +23,7 @@ function event() {
 }
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
 let backgroundModule;
-async function setup(t, moduleAdditions = {}) {
+async function setup(t, moduleAdditions = {}, makeModule = module => module) {
   const values = {}, calls = [], state = { busy: false, mismatch: false, historyBad: false, failSave: false }, memory = new Uint8Array(256).fill(7);
   const fixture = {
     runtime: { id: 'nodus-test', onConnect: event(), getManifest: () => ({ version: '0.1.132' }), getURL: path => `chrome-extension://nodus-test/${path}` },
@@ -102,7 +102,7 @@ async function setup(t, moduleAdditions = {}) {
     try { backgroundModule = await import('../src/background/index.js'); await (await backgroundModule.background).destroy(); }
     finally { if (saved) Object.defineProperty(globalThis, 'chrome', saved); else delete globalThis.chrome; }
   }
-  const background = await backgroundModule.createBackground({ ...fixture, nodusOptions: { factory: async () => module } });
+  const background = await backgroundModule.createBackground({ ...fixture, nodusOptions: { factory: async () => makeModule(module) } });
   t.after(() => background.destroy());
   await background.vaultStore.create(password, phrase);
   return { background, fixture, values, calls, state, memory };
@@ -148,11 +148,20 @@ test('Nodus capabilities survive the background-to-page trusted state handoff', 
 // caches, and the sole phrase holder is disposed. No flags/network/artifacts.
 // A fixture that never leaves ready would miss the retry and stale-client path.
 test('lost ready connection replaces the client while preserving rows and wipes words on lock', async t => {
-  const { background, calls, values, state } = await setup(t);
+  const modules = [];
+  const { background, calls, values, state } = await setup(t, {}, module => {
+    const number = modules.length + 1;
+    const instance = { ...module, async evmQuery(args) {
+      const value = await module.evmQuery(args);
+      return args.method === 'evm_account' ? { ...value, n: String(number) } : value;
+    } };
+    modules.push(instance); return instance;
+  });
   state.evm = true;
   await saveActivity(values, [savedRow()]);
   await background.unlock(password, options);
   const wallet = background.walletKeys.getEvmWallet(), old = wallet.nodusClient;
+  assert.equal((await background.nodus.contractOperation('account')).nonce, 1n);
   assert.equal(background.walletKeys.getRecoveryPhrase(), phrase);
   const before = background.nodus.getLocalHistory();
   t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -161,6 +170,8 @@ test('lost ready connection replaces the client while preserving rows and wipes 
   assert.notEqual(wallet.nodusClient, old); assert.equal(wallet.nodusClient.state, 'ready');
   assert.deepEqual(background.nodus.getLocalHistory(), before);
   assert.match(await background.nodus.readContract({ action: 'account' }), /NODUS/);
+  assert.equal(modules.length, 2);
+  assert.equal((await background.nodus.contractOperation('account')).nonce, 2n);
   assert.ok(calls.filter(row => row[0] === 'unlock').length >= 2);
   assert.ok(background.nodus.getSessionLog().entries.length > 0);
   await background.lock(); const count = calls.length;
@@ -171,6 +182,56 @@ test('lost ready connection replaces the client while preserving rows and wipes 
   assert.throws(() => background.walletKeys.getRecoveryPhrase(), /locked/);
   assert.deepEqual(background.nodus.getSessionLog().entries, []);
   assert.deepEqual(background.nodus.getSessionLog().running, []); assert.equal(calls.length, count);
+});
+
+// B2: pause identification and network connection separately. Publishing on
+// construction or after identify would both fail; an instant-ready mock would
+// miss either early publication. No flags/network/artifacts.
+test('reconnect publishes the name-lookup client only after it is ready', async t => {
+  const connecting = deferred(), connected = deferred();
+  const { background, state } = await setup(t, { async connectNetwork() {
+    connecting.resolve(); await connected.promise;
+  } });
+  await background.unlock(password, options);
+  const wallet = background.walletKeys.getEvmWallet(), old = wallet.nodusClient;
+  const replace = background.walletKeys.replaceNodusClient.bind(background.walletKeys), publishedStates = [];
+  const published = t.mock.method(background.walletKeys, 'replaceNodusClient', client => { publishedStates.push(client.state); replace(client); });
+  state.entered = deferred(); state.unlockWait = deferred();
+  t.after(() => { state.unlockWait.resolve(); connected.resolve(); });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  old.lock(); t.mock.timers.tick(5000);
+  await state.entered.promise;
+  assert.equal(wallet.nodusClient, old); assert.equal(published.mock.callCount(), 0);
+  state.unlockWait.resolve(); await connecting.promise;
+  assert.equal(wallet.nodusClient, old); assert.equal(published.mock.callCount(), 0);
+  connected.resolve();
+  for (let turn = 0; turn < 1000 && wallet.nodusClient === old; turn++) await new Promise(resolve => setImmediate(resolve));
+  assert.notEqual(wallet.nodusClient, old); assert.equal(wallet.nodusClient.state, 'ready');
+  assert.equal(published.mock.callCount(), 1); assert.deepEqual(publishedStates, ['ready']);
+});
+
+// B2: retain the exact buffers passed to the module through multiple retries,
+// including failed identification. Checking only the unlock seed could miss a
+// later retry's buffer; checking only successful retries misses the error path.
+test('every reconnect seed is wiped after identification succeeds or fails', async t => {
+  const { background, calls, state } = await setup(t);
+  await background.unlock(password, options);
+  const wallet = background.walletKeys.getEvmWallet();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (const [fails, delay] of [[false, 5000], [true, 5000], [false, 10000]]) {
+    const before = calls.filter(([method]) => method === 'unlock').length;
+    if (wallet.nodusClient.state === 'ready') wallet.nodusClient.lock();
+    state.mismatch = fails; t.mock.timers.tick(delay);
+    for (let turn = 0; turn < 1000; turn++) {
+      const seeds = calls.filter(([method]) => method === 'unlock');
+      if (seeds.length > before && seeds.at(-1)[1].every(byte => byte === 0) && (fails || wallet.nodusClient.state === 'ready')) break;
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    const seeds = calls.filter(([method]) => method === 'unlock');
+    assert.equal(seeds.length, before + 1);
+    for (const [, seed] of seeds) assert.ok(seed.every(byte => byte === 0));
+    await new Promise(resolve => setImmediate(resolve));
+  }
 });
 
 // G: background reads use the session account and reject unknown operations.

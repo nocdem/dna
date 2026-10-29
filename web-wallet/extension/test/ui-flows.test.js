@@ -11,6 +11,14 @@ import { connectTrusted } from '../src/ui/trusted-port.js';
 import { createWalletUi, connectDetails } from '../src/ui/wallet-ui.js';
 import { bindActivity } from '../src/ui/activity.js';
 
+// Real DOM filters/hide/refresh gating, asset/receive selection and retained
+// send inputs. Public, distinct chain replies; no live RPC/wallet artifacts.
+// Pure controller checks could pass with unwired controls on the actual page.
+test('mounted portfolio controls route reads and preserve the send form', { timeout: 60_000 }, async () => {
+  const { withPortfolioPage, checkPortfolioFlows } = await import('./fixtures/portfolio-page-checks.js');
+  await withPortfolioPage(checkPortfolioFlows);
+});
+
 // Node >=22.14, no flags, network or disk writes; all browser/port fixtures are in memory and disposed after each test.
 const phrase = 'abandon '.repeat(23) + 'art';
 const password = 'public-test-password-123';

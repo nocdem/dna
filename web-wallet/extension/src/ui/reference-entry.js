@@ -10,7 +10,6 @@ function renderEntry({ document, root, status, state, create, restore, unlock, u
   $('wallet-status').replaceWith(status);
   $('wallet-boot-status').hidden = true;
   $('welcome').hidden = state.isInitialized;
-  $('welcome').querySelector('p').textContent = 'Create a new wallet or restore your 24 recovery words. Your recovery phrase is saved encrypted in this browser.';
   $('unlock-form').hidden = !state.isInitialized;
   $('create').disabled = $('restore').disabled = $('unlock-wallet').disabled = false;
   $('create').onclick = create; $('restore').onclick = restore;

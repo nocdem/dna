@@ -3,7 +3,7 @@ import { bindActivity } from './activity.js';
 import { createWalletUi } from './wallet-ui.js';
 import { actionButton, renderHome, renderReceive, renderConnect, renderSites, renderSettings } from './views.js';
 import { renderEvmApproval, renderEvmSend } from './evm-screens.js';
-import { renderNodusSend, renderNodusHistory, renderNodusContracts } from './nodus-screens.js';
+import { renderNodusSend, renderNodusHistory } from './nodus-screens.js';
 import { renderNodusConnect, renderNodusSiteApproval } from './nodus-site-screens.js';
 import { renderSolanaTronSend, renderSolanaTronHistory } from './solana-tron-screens.js';
 import { NODUS_PERMISSION } from '../background/permissions.js';
@@ -20,7 +20,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
   logPageErrors(window);
   if (renderEntry) { const boot = document.createElement('p'); boot.id = 'wallet-boot-status'; boot.className = 'hint'; boot.setAttribute('role', 'status'); boot.textContent = 'Loading wallet…'; root.replaceChildren(boot); }
   let page = 'home', receiveNetwork, fields, revealed, busy = false, disposed = false, revision = 0;
-  let sendChain, sendReview, contractResult, stopSendReview;
+  let sendChain, sendReview, stopSendReview;
   let portfolioText, openScreen;
   function updatePortfolio() {
     if (openScreen) { openScreen.update(); return; }
@@ -49,7 +49,6 @@ export async function mountWalletPage({ document = globalThis.document, window =
     entryDeadline = 0;
     if (sendReview) void cancelReview().catch(() => {});
     sendReview = undefined;
-    contractResult = undefined;
   }
   function hasEntry() { return ui.phraseStep || revealed || [...root.querySelectorAll('input[type="password"]')].some(input => input.value); }
   // Web wallet app.js:885-903: a fixed ten minutes for recovery words/passwords, independently of auto-lock.
@@ -129,17 +128,12 @@ export async function mountWalletPage({ document = globalThis.document, window =
   }
   function confirmNodus(id) {
     return run(async () => {
-      const contractReview = page === 'contracts', review = sendReview;
       sendReview = undefined;
       try {
         const hash = await ui.confirmNodusSend(id); page = 'home';
         status.className = 'hint'; status.textContent = `Transaction submitted; confirmation is pending. Transfer ID ${hash}.`;
         await ui.loadNodusBalances({ force: true });
       } catch (error) {
-        if (contractReview) {
-          // src/evm/ui.js:154-161: show the error in the review with Close.
-          sendReview = { ...review, error: error.message || 'Sending failed.' }; return;
-        }
         // src/app.js:2389-2412: close the review, keep the send page and show
         // the original error; only a recorded send gets the Activity note.
         const note = error.data?.activityTracked ? ' The outcome is tracked in Activity; its coins stay held until it is included or its expiry block passes.' : '';
@@ -330,13 +324,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
         });
       return;
     }
-    if (page === 'contracts') stopSendReview = renderNodusContracts(document, root, { account: state.addresses.nodus, readable: state.nodus.evmReadable,
-      buildable: state.nodus.evmBuildable, result: contractResult, review: sendReview }, {
-      read: fields => run(async () => { contractResult = await ui.readNodusContract(fields); }),
-      prepare: fields => run(async () => { sendReview = await ui.prepareNodusContract(fields); }),
-      confirm: confirmNodus, cancel: () => navigate('contracts'),
-    });
-    else if (page === 'send' && sendChain === 'nodus') stopSendReview = renderNodusSend(document, root, { account: state.addresses.nodus, tokens: state.nodus.tokens, review: sendReview }, {
+    if (page === 'send' && sendChain === 'nodus') stopSendReview = renderNodusSend(document, root, { account: state.addresses.nodus, tokens: state.nodus.tokens, review: sendReview }, {
       prepare: request => run(async () => { sendReview = await ui.prepareNodusSend(request); }),
       confirm: confirmNodus,
       cancel: () => navigate('home'),
@@ -403,7 +391,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
     });
     else portfolioText = renderHome(document, root, { ...state, portfolio: ui.portfolio() }, network => navigate('receive', network), chain => {
       sendChain = chain; navigate('send');
-    }, () => run(() => loadBalances(true)), () => navigate('nodus-history'), () => { sendChain = 'nodus'; navigate('contracts'); }, chain => navigate('chain-history', chain), [
+    }, () => run(() => loadBalances(true)), () => navigate('nodus-history'), undefined, chain => navigate('chain-history', chain), [
       { label: 'Connected sites', icon: 'sites', run: () => navigate('sites') },
       { label: 'Settings', icon: 'settings', run: () => navigate('settings') },
     ]);

@@ -1,6 +1,7 @@
 import { WALLET_MARKUP } from './wallet-markup.js';
 import { createPortfolio } from '../../../src/portfolio-view.js';
 import { CHAINS, CELLFRAME } from '../../../src/config.js';
+import { endpointUrl } from '../../../src/rpc-transport.js';
 import { CPUNK_ASSET } from '../../../src/portfolio.js';
 import { NODUS_TOKEN_ID, NODUS_ASSET, nodusNetworkFor } from '../../../src/nodus/network.js';
 import { IXIOS_NETWORK, IXIOS_ASSET } from '../../../src/ixios/network.js';
@@ -88,6 +89,12 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     return portfolio.refresh();
   });
   const publicAddresses = () => ({ ...ui.state.addresses, cellframe: ui.state.addresses.cpunk });
+  function updateAddressStatus() {
+    for (const chain of ['nodus', 'cellframe', 'ixios']) {
+      const node = $(`${chain}-address-status`); node.hidden = selected !== chain;
+      node.textContent = publicAddresses()[chain] ? 'Derived locally from this wallet’s recovery phrase.' : chain === 'ixios' ? 'Ixios address unavailable. Lock and reopen your wallet to retry.' : '';
+    }
+  }
   function endpoints() { return Object.fromEntries(Object.entries(networks).map(([chain, config]) => [chain, ui.state.evm?.endpoints?.[chain] || selectedNetwork(chain).endpoint || config.endpoint])); }
   const ixiosStatus = element('p', '', 'hint'); ixiosStatus.id = 'ixios-address-status'; ixiosStatus.setAttribute('role', 'status'); ixiosStatus.setAttribute('aria-live', 'polite'); $('cellframe-address-status').after(ixiosStatus);
   $('lock').onclick = lock;
@@ -163,6 +170,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     if ([...$('asset').options].some(option => option.value === value)) $('asset').value = value;
     const address = state.addresses?.[selected === 'cellframe' ? 'cpunk' : selected];
     $('receive-address').textContent = address || '';
+    updateAddressStatus();
     $('receive-qr').replaceChildren();
     if (address) renderQr($('receive-qr'), address);
     $('copy-address').disabled = !address;
@@ -339,7 +347,8 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     if (enabled) {
       const custom = element('option', 'Custom HTTPS endpoint…'); custom.value = 'custom'; $('rpc-choice').append(custom);
       const endpoint = ui.state.evm?.endpoints?.[chain] || CHAINS[chain].endpoint;
-      $('rpc-choice').value = choices.some(choice => choice.url === endpoint) ? endpoint : 'custom'; $('rpc-endpoint').value = endpoint;
+      const provider = choices.find(choice => endpointUrl(choice.url) === endpointUrl(endpoint));
+      $('rpc-choice').value = provider?.url ?? 'custom'; $('rpc-endpoint').value = provider?.url ?? endpoint;
     }
     showCustomRpc();
     if (!enabled) $('rpc-endpoint').hidden = $('rpc-endpoint-label').hidden = true;
@@ -376,10 +385,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     $('vault-save').hidden = true; $('vault-change').hidden = false;
     $('vault-password-label').textContent = 'New password (at least 16 characters)';
     $('vault-confirm-label').textContent = 'Confirm new password';
-    for (const chain of ['nodus', 'cellframe', 'ixios']) {
-      const node = $(`${chain}-address-status`); node.hidden = selected !== chain;
-      node.textContent = publicAddresses()[chain] ? 'Derived locally from this wallet’s recovery phrase.' : chain === 'ixios' ? 'Ixios address unavailable. Lock and reopen your wallet to retry.' : '';
-    }
+    updateAddressStatus();
     const activityError = state.nodus?.activityError || (state.nodus?.quarantinedCount ? `${state.nodus.quarantinedCount} saved records could not be read; their coins stay held.` : '');
     $('vault-status').textContent = activityError; $('discard-activity').hidden = !activityError;
     const tokens = JSON.stringify(selected === 'nodus' ? state.nodus?.tokens : null), address = state.addresses?.[selected === 'cellframe' ? 'cpunk' : selected];

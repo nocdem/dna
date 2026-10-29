@@ -5,15 +5,47 @@ import { mountWalletPage } from '../src/ui/app.js';
 import { Caip25EndowmentPermissionName, getCaip25PermissionFromLegacyPermissions, setEthAccounts } from '@metamask/chain-agnostic-permission';
 import { netLevelFor, netStatusView } from '../../src/net-status.js';
 import { autoLockBarText } from '../../src/auto-lock.js';
+import { CHAINS } from '../../src/config.js';
 
 // A: every public connection state and every persisted auto-lock choice uses
 // the web-wallet bar wording. No flags/network/artifacts. This pure mapping
-// does not prove DOM wiring; portfolio-page.browser.js covers that separately.
+// does not prove DOM wiring; the mounted-page test below checks that separately.
 test('open-wallet status uses web-wallet network and auto-lock text', () => {
   for (const state of ['idle', 'locked', 'error', 'unknown']) assert.equal(netStatusView(netLevelFor(state)).text, 'Not connected to the Nodus network. Lock and reopen your wallet to retry.');
   for (const state of ['identifying', 'identified', 'connecting']) assert.equal(netStatusView(netLevelFor(state)).text, 'Connecting to the Nodus network…');
   assert.equal(netStatusView(netLevelFor('ready')).text, 'Connected to the Nodus network');
   for (const minutes of [5, 10, 15, 30, 60, 0]) assert.equal(autoLockBarText(minutes), minutes === 0 ? 'Auto-lock off' : `Auto-lock after ${minutes === 60 ? '1 hour' : `${minutes} minutes`} of inactivity`);
+});
+
+// Every connection state/auto-lock choice reaches the mounted text nodes;
+// listed provider selections and the welcome paragraph retain reference text.
+// Public state only, loopback Vite, Chromium; no live RPC/wallet artifacts.
+test('mounted status, provider choices and welcome text follow the reference', { timeout: 60_000 }, async () => {
+  const { withPortfolioPage, checkPortfolioStatus } = await import('./fixtures/portfolio-page-checks.js');
+  await withPortfolioPage(async (page, origin) => {
+    await checkPortfolioStatus(page, origin);
+    // Endpoint state deliberately uses URL.href, including a trailing slash.
+    // The real background's listed/typed restart is covered in evm-site.test.js.
+    for (const chain of ['ethereum', 'bsc']) {
+      for (const provider of CHAINS[chain].rpcOptions) {
+        await page.locator('#chain').selectOption(chain);
+        await page.locator('a[href="#settings"]').click();
+        if (!await page.locator('#rpc-settings').evaluate(details => details.open)) await page.locator('#rpc-settings > summary').click();
+        await page.locator('#rpc-choice').selectOption(provider.url); await page.locator('#save-rpc').click();
+        await page.locator('#page-settings .page-back').click();
+        await page.locator('#chain').selectOption('solana'); await page.locator('#chain').selectOption(chain);
+        await page.locator('a[href="#settings"]').click();
+        assert.equal(await page.locator('#rpc-choice').inputValue(), provider.url);
+        assert.equal(await page.locator('#rpc-endpoint').isHidden(), true);
+        await page.locator('#page-settings .page-back').click();
+      }
+    }
+    // The markup is checked verbatim elsewhere; check the mounted welcome
+    // paragraph too so a runtime replacement cannot silently change it.
+    await page.goto(`${origin}/test/fixtures/layout.html?stage=welcome`);
+    await page.waitForFunction(() => window.layout);
+    assert.equal(await page.locator('#welcome > p').first().textContent(), 'Create a new wallet or restore your 24 recovery words. Open it in this tab, or choose to save an encrypted copy on your device.');
+  });
 });
 
 // Node >=22.14, no flags/network/storage writes; the minimal document and public addresses below are in-memory fixtures.

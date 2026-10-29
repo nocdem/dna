@@ -116,7 +116,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
       s.contractAccount = null;
       sharedVaults.lock();
       for (const review of s.reviews.values()) review.cancel(); s.reviews.clear();
-      const client = s.client = newClient(s); onClient?.(client);
+      const client = s.client = newClient(s);
       seed = nodusSigningSeed(getWords());
       await client.identify({ seed, fingerprint: s.addresses.nodus }); current(s);
       await connectIdentified(s, client);
@@ -328,7 +328,6 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
       };
     },
     consumeNodusSeed,
-    getClient() { return active().client; },
     replaceVault(previous, value) { if (session?.vault === previous) session.vault = value; },
     assertVault(value) { const s = active(); assertActivity(s); if (s.vault !== value) throw new Error('Lock and unlock the saved wallet before changing its password.'); },
     readSharedVault: (method, fields) => sharedVaults.read(method, fields),

@@ -258,6 +258,13 @@ test('switching to an unpermitted chain requests permission before shared networ
 test('listed or typed HTTPS RPC persists and the selected client actually uses it', async t => {
   const { background, fixture, calls } = await setup(t);
   await background.evm.selectNetwork('bsc'); await background.evm.setEndpoint('bsc', CHAINS.bsc.rpcOptions[1].url);
+  const listedRestart = await module.createBackground({ ...fixture, runtime: { ...fixture.runtime, onConnect: event() } });
+  try {
+    assert.equal(listedRestart.lockCoordinator.isLocked, true);
+    assert.equal(listedRestart.evm.getState().endpoints.bsc, CHAINS.bsc.rpcOptions[1].url);
+    await listedRestart.evm.client.provider.request({ method: 'eth_blockNumber' });
+    assert.ok(calls.some(call => call.url === new URL(CHAINS.bsc.rpcOptions[1].url).href && call.method === 'eth_blockNumber'));
+  } finally { await listedRestart.destroy(); }
   await background.evm.setEndpoint('bsc', 'https://typed-bsc.example');
   await background.evm.selectNetwork('bsc');
   await background.evm.client.provider.request({ method: 'eth_blockNumber' });
@@ -267,10 +274,42 @@ test('listed or typed HTTPS RPC persists and the selected client actually uses i
   const restarted = await module.createBackground({ ...fixture, runtime: { ...fixture.runtime, onConnect: event() } });
   try {
     assert.equal(restarted.lockCoordinator.isLocked, true); assert.equal(restarted.evm.getState().selectedChain, 'bsc');
-  assert.equal(restarted.evm.getState().endpoints.bsc, 'https://typed-bsc.example/');
+    assert.equal(restarted.evm.getState().endpoints.bsc, 'https://typed-bsc.example/');
     assert.equal((await restarted.engine.getNetworkState()).chainId, '0x38');
     assert.equal(restarted.permissions.getSelectedAccount().type, 'eip155:eoa');
   } finally { await restarted.destroy(); }
+});
+
+// A default save and its normalized spelling must preserve the live client and
+// its review. State-only equality could miss changed() clearing the review.
+test('saving the listed default endpoint is a no-op, including its trailing slash', async t => {
+  const { background, raw } = await setup(t), client = background.evm.client;
+  const review = await background.evm.prepareSend({ chain: 'ethereum', symbol: 'ETH', to, amount: '0.01' });
+  for (const endpoint of [CHAINS.ethereum.endpoint, new URL(CHAINS.ethereum.endpoint).href]) {
+    await background.evm.setEndpoint('ethereum', endpoint);
+    assert.equal(background.evm.client, client);
+    assert.equal(background.evm.getState().endpoints.ethereum, CHAINS.ethereum.endpoint);
+  }
+  await background.evm.confirmSend(review.id); assert.equal(raw.length, 1);
+});
+
+// Decision 2026-09-23 rule 1 applies to the site and wallet paths together.
+// Exercise both directions with a real signed pending row; isolated mocks of
+// assertSendable or two wallet-only sends could miss the site boundary.
+test('site and wallet sends share the unresolved EVM send guard', async t => {
+  const { background, site, connect, nextApproval, raw } = await setup(t), remote = site();
+  await connect(remote);
+  const review = await background.evm.prepareSend({ chain: 'ethereum', symbol: 'ETH', to, amount: '0.01' });
+  const walletHash = await background.evm.confirmSend(review.id);
+  const refused = await remote.request('eth_sendTransaction', [{ from: account, to, value: '0x7b' }]);
+  assert.match(refused.error.message, /previous send on this network has no final result/);
+  assert.equal(background.approvals.controller.state.pendingApprovalCount, 0); assert.equal(raw.length, 1);
+  await background.nodus.abandonActivity('ethereum', walletHash);
+  const sending = remote.request('eth_sendTransaction', [{ from: account, to, value: '0x7b' }]);
+  await background.approvals.controller.acceptRequest((await nextApproval(sending)).id, true);
+  assert.equal((await sending).error, undefined); assert.equal(raw.length, 2);
+  await assert.rejects(background.evm.prepareSend({ chain: 'ethereum', symbol: 'ETH', to, amount: '0.01' }), /previous send on this network has no final result/);
+  assert.equal(raw.length, 2);
 });
 
 // Proves only changed permitted accounts emit notifications; a single expected notification misses unrelated-origin leakage.
