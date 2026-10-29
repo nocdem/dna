@@ -18,7 +18,6 @@ import { mountContractsPage } from './contracts-page.js';
 import { mountVaultsPage } from './vaults-page.js';
 import { appIcon } from './presentation.js';
 import { autoLockBarText } from '../../../src/auto-lock.js';
-import { netLevelFor, netStatusView } from '../../../src/net-status.js';
 import { renderQr } from '../../../src/qr.js';
 import { CHAIN_NETWORKS, chainNetwork } from '../constants/networks.js';
 import { renderSites, renderSettings } from './views.js';
@@ -361,7 +360,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   root.querySelector('.device-logs-link a').onclick = event => { event.preventDefault(); navigate('logs'); };
   function update() {
     if (disposed) return;
-    const state = ui.state, net = netStatusView(netLevelFor(state.nodus?.state));
+    const state = ui.state;
     networks = networkDefinitions();
     for (const [chain, config] of Object.entries(networks)) {
       const testnet = ['solana', 'tron'].includes(chain) && selectedNetwork(chain).id !== 'mainnet';
@@ -375,7 +374,6 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
         if (opened) portfolio.setAddress(chain, publicAddresses()[chain]);
       }
     }
-    $('net-status').dataset.level = net.level; $('net-status-text').textContent = net.text;
     $('session-timeout').textContent = autoLockBarText(state.preferences.autoLockTimeLimit);
     $('auto-lock-minutes').value = String(state.preferences.autoLockTimeLimit);
     $('auto-lock-note').textContent = extensionAutoLockNote(state.preferences.autoLockTimeLimit);

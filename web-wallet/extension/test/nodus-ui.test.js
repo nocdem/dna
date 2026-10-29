@@ -154,6 +154,27 @@ test('history shows node provenance, read failures and pending local sends', () 
   assert.ok(root.textContent.includes('fixture node unavailable'));
 });
 
+// Public DOM fixtures, no flags/network/artifacts. Pins the reference row
+// grouping, full record id, optional time and amount-less title. Geometry is
+// checked in ui-layout.test.js; text assertions alone cannot prove placement.
+test('Nodus account history uses the web wallet amount, status and record layout', () => {
+  const root = new Node('main'), wire = 'cd'.repeat(64), time = 1700000000000;
+  renderNodusHistory(document, root, { rows: [
+    { title: 'Received', dir: 'in', sign: '+', amount: '1 NODUS', detail: 'from <img src=x>', height: '9', time, wire },
+    { title: 'Witness update', dir: '', sign: '', amount: '', detail: '', height: '8', time: null, wire: '' },
+  ], local: [] }, { refresh() {}, resubmit() {} });
+  const rows = find(root, node => node.tagName === 'article');
+  assert.equal(rows[0].className, 'activity-row nodus-history-row history-dir-in');
+  assert.deepEqual(rows[0].children.map(node => node.className), ['activity-main', 'activity-side', 'activity-footer']);
+  assert.deepEqual(rows[0].children[0].children.map(node => node.textContent), ['+1 NODUS', 'Received · from <img src=x>']);
+  assert.equal(find(rows[0], node => node.className === 'status-badge')[0].attributes['data-status'], 'confirmed');
+  assert.equal(find(rows[0], node => node.tagName === 'time')[0].dateTime, new Date(time).toISOString());
+  assert.equal(find(rows[0], node => node.className === 'activity-id')[0].textContent, `Network record ID ${wire}`);
+  assert.equal(rows[1].children[0].children[0].textContent, 'Witness update');
+  assert.equal(find(rows[1], node => node.tagName === 'time').length, 0);
+  assert.equal(find(root, node => node.tagName === 'img' || node.tagName === 'h2').length, 0);
+});
+
 // Pins trusted request wiring and clears late Nodus/CPUNK reads when the background reports lock.
 test('wallet UI routes Nodus requests and discards balances from a locked session', async () => {
   let state = { isUnlocked: true, addresses: { nodus: address }, nodus: { state: 'ready' } }, release;

@@ -65,9 +65,24 @@ export function renderNodusHistory(document, container, history, { refresh, resu
   container.append(element(document, 'p', history.error ? nodusHistoryStatus({ error: history.error }) : history.status, history.error ? 'field-error' : 'hint'));
   const account = element(document, 'div', undefined, 'activity-list');
   for (const row of history.rows ?? []) {
-    const article = element(document, 'article', undefined, 'activity-row');
-    article.append(element(document, 'h2', row.title), element(document, 'p', `${row.sign}${row.amount}`), element(document, 'p', row.detail), element(document, 'p', `Block ${row.height}`));
-    if (row.wire) article.append(element(document, 'code', row.wire));
+    // src/app.js:405-419: amount/description, confirmed status/block/time,
+    // then the full network record id. Boundary rows may lack amount/time/id.
+    const article = element(document, 'article', undefined, `activity-row nodus-history-row${row.dir ? ` history-dir-${row.dir}` : ''}`);
+    const main = element(document, 'span', undefined, 'activity-main');
+    main.append(element(document, 'strong', row.amount ? `${row.sign}${row.amount}` : row.title),
+      element(document, 'small', [row.amount ? row.title : '', row.detail].filter(Boolean).join(' · ')));
+    const side = element(document, 'span', undefined, 'activity-side');
+    const badge = element(document, 'span', 'confirmed', 'status-badge'); badge.setAttribute('data-status', 'confirmed');
+    const hasTime = row.time !== null && row.time !== undefined;
+    const where = element(document, 'small', `Block ${row.height}${hasTime ? ' · ' : ''}`);
+    if (hasTime) {
+      const when = element(document, 'time', new Date(row.time).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }));
+      when.dateTime = new Date(row.time).toISOString(); where.append(when);
+    }
+    side.append(badge, where);
+    const footer = element(document, 'div', undefined, 'activity-footer');
+    if (row.wire) footer.append(element(document, 'span', `Network record ID ${row.wire}`, 'activity-id'));
+    article.append(main, side, footer);
     account.append(article);
   }
   container.append(account);

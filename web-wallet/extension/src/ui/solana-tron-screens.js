@@ -83,15 +83,26 @@ export function renderSolanaTronHistory(document, container, { chain, history },
   if (history.error) container.append(element(document, 'p', history.error, 'field-error'));
   const account = element(document, 'div', undefined, 'activity-list');
   for (const row of history.rows ?? []) {
-    const article = element(document, 'article', undefined, 'activity-row');
+    const article = element(document, 'article', undefined, `activity-row history-dir-${row.dir}`);
     const sign = row.dir === 'in' ? '+' : row.dir === 'out' ? '−' : '';
     // src/app.js:299,310-314: shorten peers and reuse displayAmount.
     const shortPeer = peer => peer.length > 18 ? `${peer.slice(0, 8)}…${peer.slice(-6)}` : peer;
     const what = row.dir === 'self' ? 'to yourself' : row.peer ? `${row.dir === 'in' ? 'from' : 'to'} ${shortPeer(row.peer)}` : row.dir === 'in' ? 'received' : 'sent';
-    const status = element(document, 'p', row.status, 'status-badge'); status.setAttribute('data-status', row.status);
-    article.append(element(document, 'h2', `${sign}${displayAmount(row.amount)} ${row.symbol}`), element(document, 'p', what),
-      status, element(document, 'time', new Date(row.time).toLocaleString()));
-    explorer(document, article, chain, history.network, row.hash); account.append(article);
+    // src/app.js:311-324: compact reference rows, with transaction details
+    // in their own footer. Local sends above keep their pending actions.
+    const main = element(document, 'span', undefined, 'activity-main');
+    main.append(element(document, 'strong', `${sign}${displayAmount(row.amount)} ${row.symbol}`), element(document, 'small', what));
+    const side = element(document, 'span', undefined, 'activity-side');
+    const status = element(document, 'span', row.status, 'status-badge'); status.setAttribute('data-status', row.status);
+    const when = element(document, 'time', new Date(row.time).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }));
+    when.dateTime = new Date(row.time).toISOString(); side.append(status, when);
+    const footer = element(document, 'div', undefined, 'activity-footer');
+    const network = chainNetwork(chain, history.network);
+    if (network.explorer) {
+      const link = element(document, 'a', 'View transaction');
+      link.href = network.explorer + encodeURIComponent(row.hash); link.target = '_blank'; link.rel = 'noopener noreferrer'; footer.append(link);
+    } else footer.append(element(document, 'span', `Transaction ID ${row.hash}`, 'activity-id'));
+    article.append(main, side, footer); account.append(article);
   }
   container.append(account);
 }

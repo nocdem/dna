@@ -60,9 +60,15 @@ test('history formats amounts and peer addresses like the web wallet and uses on
     assert.ok(root.textContent.includes(`−${displayAmount(amount)} ${CHAINS[chain].symbol}`));
     assert.ok(root.textContent.includes(`to ${addresses[chain].slice(0, 8)}…${addresses[chain].slice(-6)}`));
     assert.equal(root.textContent.includes(addresses[chain]), false);
+    const row = find(root, n => n.tagName === 'article')[0];
+    assert.equal(row.className, 'activity-row history-dir-out');
+    assert.deepEqual(row.children.map(n => n.className), ['activity-main', 'activity-side', 'activity-footer']);
+    assert.equal(find(row, n => n.tagName === 'strong')[0].textContent, `−${displayAmount(amount)} ${CHAINS[chain].symbol}`);
+    assert.equal(find(row, n => n.className === 'status-badge')[0].attributes['data-status'], 'confirmed');
+    assert.equal(find(row, n => n.tagName === 'time')[0].dateTime, new Date(1700000000000).toISOString());
     const links = find(root, n => n.tagName === 'a');
     if (expected) assert.deepEqual(links.map(n => n.href), [expected + hash]);
-    else { assert.equal(links.length, 0); assert.ok(root.textContent.includes(hash)); }
+    else { assert.equal(links.length, 0); assert.equal(find(row, n => n.className === 'activity-id')[0].textContent, `Transaction ID ${hash}`); }
   }
 });
 

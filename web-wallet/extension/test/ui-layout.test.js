@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
-import { ASSETS, PRICE_MAX_AGE, chainBalances, portfolioSnapshot, usdText } from '../../src/portfolio.js';
+import { ASSETS, PRICE_MAX_AGE, chainBalances, portfolioSnapshot, usdText, displayAmount } from '../../src/portfolio.js';
 
 // Node >=22.14; Chromium at CHROMIUM_PATH or /usr/bin/chromium. No build or
 // compile flags. SHOT_DIR optionally keeps review screenshots; otherwise no
@@ -144,6 +144,10 @@ async function assertHome(page, popup) {
   await assertNavigation(page);
   assert.equal(await page.getByRole('heading', { name: 'Your wallet', exact: true }).count(), 0);
   assert.equal(await page.locator('.wallet-card > .section-head .eyebrow').count(), 0);
+  assert.equal(await page.locator('#wallet-heading img').count(), 0);
+  assert.equal(await page.locator('.site-header .wordmark img').count(), 1);
+  assert.equal(await page.getByText('Wallet open in this browser', { exact: true }).count(), 0);
+  assert.equal(await button(page, 'Lock wallet').isVisible(), true);
   assert.deepEqual(await page.locator('.wallet-navigation a:visible .nav-name').allTextContents(),
     ['Portfolio', 'Send / Receive', 'Smart contracts', 'Activity', 'Address book', 'Device & settings', 'Connected sites']);
   assert.equal(await page.locator('.extension-network').count(), 0);
@@ -163,8 +167,7 @@ async function assertHome(page, popup) {
   assert.equal(await page.locator('#asset').inputValue(), '0'.repeat(128));
   assert.equal(await page.locator('#receive-address').textContent(), 'ab'.repeat(64));
   assert.equal(await page.locator('#receive-qr svg[aria-label="QR code for the receive address"]').count(), 1);
-  assert.equal(await page.locator('#net-status').getAttribute('data-level'), 'connected');
-  assert.equal(await page.locator('#net-status-text').textContent(), 'Connected to the Nodus network');
+  assert.equal(await page.locator('#net-status, #net-status-text').count(), 0);
   assert.equal(await page.locator('.asset-group[data-symbol="NODUS"] .asset-value strong').textContent(), '12.34');
   assert.equal(await page.locator('.asset-group[data-symbol="NODUS"] .holding-value strong').textContent(), '12.34 NODUS');
   assert.match(await page.locator('#portfolio-status').textContent(), /asset balances are included|balances and .* prices unavailable/u);
@@ -175,6 +178,12 @@ async function assertHome(page, popup) {
   assert.equal(await page.locator('.asset-group[data-symbol="USDT"] .chain-holding').count(), 4);
   assert.equal(await page.locator('#send-form #receive-panel').count(), 1);
   await assertAssetLayout(page);
+  const actions = await page.locator('#quick-send, #quick-receive, #quick-earn, #quick-swap').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().toJSON()));
+  for (const action of actions) {
+    assert.ok(action.width > 0 && action.height > 0, 'Each transfer shortcut is measurable');
+    assert.ok(Math.abs(action.width - actions[0].width) < 1, 'Send, Receive, Earn and Swap have equal width');
+    assert.ok(Math.abs(action.height - actions[0].height) < 1, 'Send, Receive, Earn and Swap have equal height');
+  }
   const styles = await page.evaluate(() => ({
     font: getComputedStyle(document.body).fontFamily,
     portfolioRadius: getComputedStyle(document.querySelector('.portfolio-card')).borderRadius,
@@ -199,6 +208,23 @@ async function assertHome(page, popup) {
   const quotes = Object.fromEntries(Object.entries(fixture.quotes).map(([key, quote]) => [key, { ...quote, units: BigInt(quote.units) }]));
   const snap = portfolioSnapshot(balances, quotes, fixture.now, ASSETS);
   assert.equal(await page.locator('#portfolio-total').textContent(), usdText(snap.total, snap.positive));
+}
+
+async function assertHistoryLayout(page) {
+  const rows = await page.locator('#history .activity-row').evaluateAll(nodes => nodes.map(node => {
+    const box = item => item.getBoundingClientRect().toJSON();
+    return { row: box(node), main: box(node.querySelector('.activity-main')), side: box(node.querySelector('.activity-side')),
+      footer: box(node.querySelector('.activity-footer')),
+      content: [...node.querySelectorAll('strong, small, time, .status-badge, .activity-id, a')].map(box) };
+  }));
+  for (const { row, main, side, footer, content } of rows) {
+    for (const item of [main, side, footer, ...content]) {
+      if (!item.height) continue; // a boundary row legitimately has no footer
+      assert.ok(item.left >= row.left - 1 && item.right <= row.right + 1 && item.top >= row.top - 1 && item.bottom <= row.bottom + 1, 'Account history content stays inside its row');
+    }
+    assert.ok(main.right <= side.left + 1 || main.bottom <= side.top + 1, 'History description and status do not overlap');
+    if (footer.height) assert.ok(footer.top >= Math.max(main.bottom, side.bottom) - 1, 'Transaction details sit below the row summary');
+  }
 }
 
 test('mounted extension screens follow the web-wallet layout and preserve price/approval state', { timeout: 120_000 }, async () => {
@@ -254,6 +280,18 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
           continue;
         }
         await open('home'); await assertHome(page, kind === 'popup');
+        // No flags/live data. The public fixture holds every initial balance
+        // and quote read. Measuring only after waitHome would miss the jump.
+        await page.goto(`${origin}/extension/test/fixtures/layout.html?page=${kind}&stage=home&hold`);
+        await page.waitForFunction(() => window.layout && document.getElementById('portfolio-label')?.textContent === 'Updating portfolio');
+        await page.evaluate(() => document.fonts.ready);
+        const loading = await page.locator('.portfolio-card').boundingBox();
+        const refreshTop = await page.locator('#portfolio-refresh').evaluate(node => node.getBoundingClientRect().top);
+        await page.evaluate(() => window.layout.releaseReads()); await waitHome(page);
+        assert.equal(await page.locator('#portfolio-label').textContent(), 'Estimated portfolio value');
+        const settled = await page.locator('.portfolio-card').boundingBox();
+        assert.ok(Math.abs(loading.height - settled.height) < 1, `${kind} ${width}: portfolio height stays fixed after loading`);
+        assert.ok(Math.abs(refreshTop - await page.locator('#portfolio-refresh').evaluate(node => node.getBoundingClientRect().top)) < 1, 'Refresh action stays in place');
         // Both approved greeting states on popup/full-page layouts. A trusted
         // name reply drives the heading; the registration prompt reaches the
         // existing Nodus form even from another network and a separate page.
@@ -281,13 +319,21 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         await page.locator('#unlock-wallet').click();
         await assertHome(page, kind === 'popup'); assert.equal(await priceCount(page), 1); await capture('home');
         const visibleTotal = await page.locator('#portfolio-total').textContent();
-        await page.locator('#portfolio-hide').click();
+        const eye = page.locator('#portfolio-hide');
+        assert.equal(await button(page, 'Hide balances').count(), 1);
+        const visibleEye = await eye.evaluate(node => ({ size: getComputedStyle(node).fontSize, border: getComputedStyle(node).borderWidth,
+          background: getComputedStyle(node).backgroundColor, icon: getComputedStyle(node, '::before').maskImage }));
+        assert.equal(visibleEye.size, '0px'); assert.equal(visibleEye.border, '0px');
+        assert.equal(visibleEye.background, 'rgba(0, 0, 0, 0)'); assert.notEqual(visibleEye.icon, 'none');
+        await eye.focus(); await page.keyboard.press('Enter');
         assert.equal(await page.locator('#portfolio-total').textContent(), '••••');
         assert.equal(await page.locator('#portfolio-hide').getAttribute('aria-pressed'), 'true');
+        assert.equal(await button(page, 'Show balances').count(), 1);
+        assert.notEqual(await eye.evaluate(node => getComputedStyle(node, '::before').maskImage), visibleEye.icon);
         for (const value of await page.locator('.asset-value strong, .asset-value small, .holding-value strong, .holding-value small').allTextContents()) {
           assert.equal(value, '••••');
         }
-        await page.locator('#portfolio-hide').click();
+        await page.keyboard.press('Space');
         assert.equal(await page.locator('#portfolio-total').textContent(), visibleTotal);
         assert.equal(await page.locator('.asset-group[data-symbol="NODUS"] .asset-value strong').textContent(), '12.34');
         await page.locator('#portfolio-refresh').click(); await waitHome(page); assert.equal(await priceCount(page), 2);
@@ -334,8 +380,33 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         assert.equal(await page.locator('#history-status').textContent(), 'Fixture account history');
         assert.ok((await page.locator('#history').textContent()).includes('Received NODUS'));
         assert.ok((await page.locator('#activity').textContent()).includes('Awaiting confirmation.'));
+        const nodusRow = page.locator('#history .activity-row').first();
+        assert.equal(await nodusRow.locator('.activity-main strong').textContent(), '+2');
+        assert.equal(await nodusRow.locator('.activity-main small').textContent(), 'Received NODUS · Public fixture transfer');
+        assert.equal(await nodusRow.locator('.activity-side [data-status="confirmed"]').count(), 1);
+        assert.equal(await nodusRow.locator('time[datetime]').count(), 1);
+        assert.equal(await nodusRow.locator('.activity-footer .activity-id').textContent(), `Network record ID ${'cd'.repeat(64)}`);
+        assert.equal(await page.locator('#history .activity-row').nth(1).locator('.activity-main strong').textContent(), 'Witness update');
+        assert.equal(await page.locator('#history .activity-row').nth(1).locator('time').count(), 0);
+        await assertHistoryLayout(page);
         await capture('history');
-        await page.locator('#page-wallet-activity .page-back').click(); await waitHome(page);
+        // Ethereum, Solana, TRON and Cellframe share this renderer. Real
+        // network rows retain their explorer routing; no peer/hash is HTML.
+        for (const chain of ['ethereum', 'solana', 'tron', 'cellframe']) {
+          await page.locator('#page-wallet-activity .page-back').click();
+          await page.locator('#chain').selectOption(chain);
+          await page.locator('.wallet-navigation a[href="#wallet-activity"]').click();
+          const symbol = chain === 'ethereum' ? 'ETH' : chain === 'solana' ? 'SOL' : chain === 'tron' ? 'TRX' : 'CPUNK';
+          await page.waitForFunction(amount => document.querySelector('#history .activity-main strong')?.textContent === amount, `+${displayAmount('1234567.123456789')} ${symbol}`);
+          const peer = await page.evaluate(value => window.layout.state.addresses[value === 'cellframe' ? 'cpunk' : value], chain);
+          assert.equal(await page.locator('#history .activity-main small').textContent(), `from ${peer.slice(0, 8)}…${peer.slice(-6)}`);
+          assert.equal(await page.locator('#history .activity-side .status-badge[data-status="confirmed"]').count(), 1);
+          assert.equal(await page.locator('#history .activity-side time[datetime]').count(), 1);
+          await assertHistoryLayout(page);
+          await capture(`history-${chain}`);
+        }
+        await page.locator('#page-wallet-activity .page-back').click();
+        await page.locator('#chain').selectOption('nodus'); await waitHome(page);
         await assertNavigation(page);
         await page.locator('.wallet-navigation a[href="#settings"]').click();
         await assertNavigation(page, 'settings'); await capture('settings');
