@@ -3,6 +3,7 @@ import { validateNodusPhrase } from '../../../src/recovery.js';
 import { validateNewPassword } from '../../../src/vault.js';
 import { AUTO_LOCK_CHOICES } from '../../../src/auto-lock.js';
 import { CHAINS } from '../../../src/config.js';
+import { ASSETS, chainBalances, portfolioSnapshot, usdText } from '../../../src/portfolio.js';
 import { NODUS_PERMISSION } from '../background/permissions.js';
 import { Caip25CaveatType, Caip25EndowmentPermissionName, getPermittedEthChainIds,
   setEthAccounts, setPermittedEthChainIds } from '@metamask/chain-agnostic-permission';
@@ -28,6 +29,7 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
   let solanaTronBalances = {}, solanaTronHistory = {};
   const solanaTronPending = new Map(), chainGeneration = { solana: 0, tron: 0 };
   const solanaTronHistoryPending = new Map();
+  let quotes = {}, pricesAt = null, pricesPending, balanceTimes = {};
   const chainPrefix = chain => {
     if (!['solana', 'tron'].includes(chain)) throw new Error('Unsupported chain.');
     return chain === 'solana' ? 'Solana' : 'Tron';
@@ -42,22 +44,66 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
       solanaTronBalances = {}; solanaTronHistory = {}; solanaTronPending.clear(); solanaTronHistoryPending.clear();
       chainGeneration.solana++; chainGeneration.tron++;
       balanceIdentity = identity; balanceGeneration++;
+      quotes = {}; pricesAt = null; pricesPending = undefined; balanceTimes = {};
     }
     // Plan §5.6: invalidate only the changed chain, including in-flight reads
     // from a different window's old selection. Other chains retain their data.
     for (const chain of ['solana', 'tron']) if (previousNetworks && previousNetworks[chain] !== state.networks?.[chain]) {
       delete solanaTronBalances[chain]; delete solanaTronHistory[chain];
+      delete balanceTimes[chain];
       solanaTronPending.delete(chain); solanaTronHistoryPending.delete(chain); chainGeneration[chain]++;
     }
     return publicState();
   }
   function clearPhrase() { generated = null; phraseStep = null; }
+  // Design r3 §2.4a / src/portfolio-view.js:122-127,234-252. Convert each
+  // chain independently, so a failed read cannot stop approval/page refresh.
+  // Keep these clock-dependent strings out of publicState's redraw comparison.
+  function portfolio() {
+    const balances = {}, now = Date.now();
+    for (const chain of Object.keys(CHAINS)) {
+      if (state?.networks?.[chain] && state.networks[chain] !== 'mainnet') continue;
+      const rows = ['ethereum', 'bsc'].includes(chain) ? evmBalances[chain] : solanaTronBalances[chain];
+      const pending = ['ethereum', 'bsc'].includes(chain) ? balancePending : solanaTronPending.has(chain);
+      if (rows === undefined && !pending) continue;
+      try {
+        if (rows === undefined) Object.assign(balances, Object.fromEntries(ASSETS.filter(asset => asset.chain === chain).map(asset => [asset.key, { state: 'loading' }])));
+        else Object.assign(balances, chainBalances(chain, rows, balanceTimes[chain]));
+      } catch {
+        for (const asset of ASSETS.filter(asset => asset.chain === chain)) balances[asset.key] = { state: 'error' };
+      }
+    }
+    const snap = portfolioSnapshot(balances, quotes, now, ASSETS);
+    return {
+      label: snap.state === 'partial' ? 'Known value · incomplete' : snap.state === 'loading' ? 'Updating portfolio' : 'Estimated portfolio value',
+      total: usdText(snap.total, snap.positive),
+      status: snap.state === 'idle' ? 'Refresh all to read your balances and prices.'
+        : snap.state === 'loading' ? `${snap.known} of ${ASSETS.length} asset values available. Reading all networks…`
+        : snap.complete ? 'All supported asset balances are included.'
+        : `${snap.missingBalances} balances and ${snap.missingPrices} prices unavailable or out of date. Missing values are excluded.`,
+    };
+  }
   async function unlock(password) {
     try { await client.request('submitPasswordOrEncryptionKey', [{ password }]); return await refresh(); }
     finally { password = null; }
   }
   return {
-    get state() { return publicState(); }, get phraseStep() { return phraseStep; }, refresh, unlock, clearPhrase,
+    get state() { return publicState(); }, get phraseStep() { return phraseStep; }, refresh, unlock, clearPhrase, portfolio,
+    async loadPrices({ force = false } = {}) {
+      if (!state?.isUnlocked) return;
+      if (pricesPending) return pricesPending;
+      if (!force && pricesAt !== null && Date.now() - pricesAt < 60_000) return;
+      const started = balanceGeneration;
+      const request = client.request('getPrices').then(value => {
+        if (started !== balanceGeneration || !state?.isUnlocked) return;
+        const next = Object.fromEntries(Object.entries(value).map(([key, quote]) => [key, { units: BigInt(quote.units), observedAt: quote.observedAt }]));
+        quotes = next; pricesAt = Date.now();
+      }).catch(() => {
+        // src/portfolio-view.js:271-275: failed reads retain previous quotes;
+        // portfolioSnapshot still expires each quote by its own observedAt.
+      }).finally(() => { if (pricesPending === request) pricesPending = undefined; });
+      pricesPending = request; return request;
+    },
     beginCreate() { generated = validateNodusPhrase(generatePhrase()); phraseStep = 'backup'; return generated; },
     beginImport() { clearPhrase(); phraseStep = 'import'; },
     confirmBackup() { if (phraseStep !== 'backup') throw new Error('No recovery backup to confirm.'); phraseStep = 'verify'; },
@@ -101,9 +147,11 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
       const started = balanceIdentity;
       balancePending = (async () => {
         const chains = ['ethereum', 'bsc'];
-        const results = await Promise.allSettled(chains.map(chain => client.request('getEvmBalances', [chain])));
+        const times = {};
+        const results = await Promise.allSettled(chains.map(chain => client.request('getEvmBalances', [chain]).then(value => { times[chain] = Date.now(); return value; })));
         if (balanceIdentity !== started || !state?.isUnlocked) return;
         evmBalances = Object.fromEntries(results.map((result, index) => [chains[index], result.status === 'fulfilled' ? result.value : { error: result.reason.message }]));
+        Object.assign(balanceTimes, times);
         return evmBalances;
       })().finally(() => { balancePending = null; });
       return balancePending;
@@ -122,7 +170,9 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
         if (!force && solanaTronBalances[chain]) return;
         const started = chainGeneration[chain];
         const save = value => {
-          if (started === chainGeneration[chain] && state?.isUnlocked) solanaTronBalances = { ...solanaTronBalances, [chain]: value };
+          if (started === chainGeneration[chain] && state?.isUnlocked) {
+            solanaTronBalances = { ...solanaTronBalances, [chain]: value }; balanceTimes[chain] = Date.now();
+          }
         };
         const request = client.request(`get${chainPrefix(chain)}Balances`).then(save, error => save({ error: error.message }))
           .finally(() => { if (solanaTronPending.get(chain) === request) solanaTronPending.delete(chain); });

@@ -87,14 +87,23 @@ test('closing the trusted client leaves stream ending to port disconnection', as
   let disconnects = 0;
   client.onDisconnect(() => { disconnects++; });
   const rejected = assert.rejects(client.request('getState'), /background disconnected/i);
-  client.close(); client.close(); await rejected;
+  await new Promise(resolve => setImmediate(resolve));
+  // Proves the request stays off the port before startUISync, even after queued stream work has run.
+  assert.equal(port.postMessage.mock.callCount(), 0);
+  port.onMessage.emit({ name: 'controller', data: { jsonrpc: '2.0', method: 'START_UI_SYNC', params: [] } });
+  await Promise.resolve();
+  // Proves a request made after START_UI_SYNC and closed in the same tick is still written (dispose's messengerUnsubscribe).
+  const late = client.request('messengerUnsubscribe', ['x']).catch(() => {});
+  client.close(); client.close(); await rejected; await late;
   // Substream._write queues into the mux; the port stream's callback follows postMessage.
   assert.ifError(await written);
   assert.equal(disconnects, 1); assert.deepEqual(destructions, []);
   assert.equal(controller.listenerCount('data'), 0); assert.equal(controller.listenerCount('end'), 0);
   await assert.rejects(client.request('getState'), /background disconnected/i);
-  assert.equal(port.postMessage.mock.callCount(), 1);
+  // Proves startUISync releases the queued request exactly once; rejection alone would miss a dropped write.
+  assert.equal(port.postMessage.mock.callCount(), 2);
   assert.deepEqual(port.postMessage.mock.calls[0].arguments, [{ name: 'controller', data: { jsonrpc: '2.0', id: 1, method: 'getState', params: [] } }]);
+  assert.deepEqual(port.postMessage.mock.calls[1].arguments, [{ name: 'controller', data: { jsonrpc: '2.0', id: 2, method: 'messengerUnsubscribe', params: ['x'] } }]);
   port.onDisconnect.emit(port); await closed;
   assert.equal(controller.destroyed, true); assert.ok(destructions.length > 0);
   assert.ok(destructions.every(({ error, writableFinished }) => !error && writableFinished));

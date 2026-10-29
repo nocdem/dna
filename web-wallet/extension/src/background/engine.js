@@ -248,6 +248,11 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
       }
     };
     controllerStream.on('data', onData);
+    // Port: metamask-controller.js:4857-4879: this UI port is served now; tell the page to start (a page message sent
+    // while onConnect was still buffered by the lazy listener had no port listener and was lost).
+    // ADAPTATION: sent unconditionally with params []: the store and auto-lock alarm are awaited before the engine
+    // exists (index.js:28,45,218) and the page reads state with getState, so the reference's init gate and initialState are not ported.
+    controllerStream.write({ jsonrpc: '2.0', method: 'START_UI_SYNC', params: [] });
     const close = () => { activity.close(); controllerStream.removeListener('data', onData); getUiPorts().delete(port); };
     controllerStream.once('close', close); controllerStream.once('end', close);
     getUiPorts().add(port);
@@ -286,6 +291,9 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
   const lazyListener = globalThis.chrome?.runtime === runtime && globalThis.stateHooks?.lazyListener;
   if (lazyListener) lazyListener.addListener('runtime', 'onConnect', onConnect);
   else runtime.onConnect.addListener(onConnect);
+  // Port: background.ts:296-300 consumes the buffered onInstalled; operator 2026-10-29 chose "2":
+  // install/update open nothing (handleOnInstalled not ported), so the event is drained and ignored.
+  if (lazyListener) lazyListener.once('runtime', 'onInstalled');
   if (initialNetworkClient) attachNetworkClient(initialNetworkClient);
   return { connections, requestAccountTabIds, onConnect, setupUntrustedCommunicationEip1193, setupProviderConnectionEip1193,
     setupProviderEngineEip1193, getNetworkState, attachNetworkClient, notifyAccountsChanged,

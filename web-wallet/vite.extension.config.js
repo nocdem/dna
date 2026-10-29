@@ -121,7 +121,10 @@ function classicScriptsAndLicenses() {
       for (const entry of classicEntries) {
         const result = await build({
           configFile: false, root: extension, base: './', publicDir: false,
-          resolve: { alias }, plugins: [streamProcess(), wasmUrls()],
+          // Vite's lazy-import helper adds import.meta.url, which Rollup's iife output renders through
+          // document.baseURI; a worker has no document. Resolve it as the define above does.
+          resolve: { alias }, plugins: [streamProcess(), wasmUrls(), { name: 'nodus-extension-classic-import-meta',
+            resolveImportMeta: property => (property === 'url' ? 'self.location.href' : null) }],
           define: { ...define, 'import.meta.url': 'self.location.href' },
           build: {
             target: 'chrome123', write: false, emptyOutDir: false, copyPublicDir: false,

@@ -165,6 +165,14 @@ test('lazy listener warns about undrained events after twenty seconds', async t 
   assert.match(warnings[0], /2 buffered calls/u);
 });
 
+// Proves a restarted worker (no buffered onInstalled) that awaits the event gets no leak warning; a buffered-only fixture would miss it.
+test('lazy listener once with nothing buffered clears the warning', async t => {
+  const { lazyListener } = await workerFixture(t), warnings = [];
+  lazyListener.addListener('runtime', 'onConnect', () => {}); void lazyListener.once('runtime', 'onInstalled');
+  t.mock.method(console, 'warn', message => warnings.push(message)); t.mock.method(console, 'error', message => warnings.push(message));
+  t.mock.timers.tick(20000); assert.deepEqual(warnings, []);
+});
+
 // Proves once consumes oldest buffered arguments one at a time then waits for a future event; using only live events could miss dropped queued calls.
 test('lazy listener once consumes queued and future event arguments', async t => {
   const { runtime, lazyListener } = await workerFixture(t);

@@ -118,6 +118,9 @@ test('provider engine filters non-EVM permission requests before approval', asyn
 // Proves trusted chunk decoding, renamed internal origin and approval resolution while locked; unchunked/unlocked fixtures could miss stream options or an extra lock check.
 test('UI provider uses the renamed internal origin and default port chunking', async t => {
   const { background, runtime } = await setup(t), ui = port(runtime, `chrome-extension://${runtime.id}/popup.html`, 'popup');
+  // Proves an extension-origin port receives startUISync as its first controller frame before any request.
+  assert.deepEqual(await until(() => ui.messages.find(message => message.name === 'controller')),
+    { name: 'controller', data: { jsonrpc: '2.0', method: 'START_UI_SYNC', params: [] } });
   assert.equal([...background.engine.connections.values()][0].origin, 'nodus');
   const id = ++requestId;
   // extension-port-stream 5.0.3 dist/parsing.js:10-16: <id>|<seq>|<fin><data>.
@@ -137,6 +140,8 @@ test('triggerUi counts popup ports and active fullscreen tabs as in the referenc
     const { runtime, tabs, background, created } = await setup(t);
     t.mock.method(tabs, 'query', async () => [{ id: 8 }]);
     const ui = port(runtime, `chrome-extension://${runtime.id}/${name}.html`, name);
+    // Chrome delivers a port's disconnect in a later task, after startUISync has reached the port; wait for it likewise.
+    await until(() => ui.messages.length);
     await background.approvals.triggerUi();
     assert.equal(created.length, expectedWindows, name);
     ui.disconnect();
@@ -299,11 +304,14 @@ test('service-worker lazy listener hands an early port to the engine', async t =
   globalThis.stateHooks = { lazyListener: { addListener(namespace, name, listener) {
     assert.equal(namespace, 'runtime'); assert.equal(name, 'onConnect'); consumed = true;
     fixture.runtime.onConnect.addListener(listener); listener(early);
-  } } };
+  }, once: t.mock.fn() } };
+  const lazy = globalThis.stateHooks.lazyListener;
   try { background = await backgroundModule.createBackground(fixture); }
   finally { for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; } }
   try {
     assert.equal(consumed, true);
+    // Proves the buffered onInstalled is drained (operator 2026-10-29 "2"); removing the call leaves the event buffered.
+    assert.deepEqual(lazy.once.mock.calls.map(call => call.arguments), [['runtime', 'onInstalled']]);
     assert.deepEqual((await request(early, 'eth_accounts')).result, []);
     assert.equal(background.engine.connections.size, 1);
   } finally { early.disconnect(); await background.destroy(); }

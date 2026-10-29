@@ -276,7 +276,9 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
   // nodus WS entry echoes it, nodus_ws.c). Emscripten reads Module.websocket
   // (settings.js INCOMING_MODULE_JS_API 'websocket'; libsockfs.js url /
   // subprotocol).
-  const M = await createNodusSendWasm({ websocket: { url: `${net.scheme}://`, subprotocol: 'binary' } });
+  // printErr: the C client's stderr diagnostics go to the normal log, not console.error (operator 2026-10-29:
+  // "Extension bu satırları normal günlüğe yönlendirsin."); the glue reads Module["printErr"].
+  const M = await createNodusSendWasm({ websocket: { url: `${net.scheme}://`, subprotocol: 'binary' }, printErr: text => console.log(text) });
   const num = (name, types = [], args = []) => M.ccall(name, 'number', types, args);
   const str = (name, types = [], args = []) => M.ccall(name, 'string', types, args);
   const call = (name, types = [], args = []) => M.ccall(name, 'number', types, args, { async: true });

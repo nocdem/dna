@@ -81,6 +81,7 @@ test('MV3 zip loads in Chromium and announces Nodus Wallet to a local page', { t
       assert.doesNotThrow(() => new Script(code, { filename: script }));
       assert.doesNotMatch(code, /\bimport\s*\(/u);
       assert.doesNotMatch(code, /process\.env\.IN_TEST/u);
+      assert.doesNotMatch(code, /document\.baseURI/u, `${script} must not read document in a worker or content script`);
     }
     for (const [source, destination] of [
       ['src/nodus/send.wasm', 'wasm/send.wasm'],
@@ -161,6 +162,13 @@ test('MV3 zip loads in Chromium and announces Nodus Wallet to a local page', { t
     assert.equal(await popup.getByRole('button', { name: 'Create wallet', exact: true }).isVisible(), true);
     assert.equal(await popup.getByRole('button', { name: 'Import phrase', exact: true }).isVisible(), true);
     assert.equal(await popup.locator('#wallet-status').textContent(), '');
+    // Proves packaged Inter actually loads on an extension page; a plain-page
+    // family check could falsely pass through inheritance. A stale zip can
+    // still falsely pass, so rebuild first as required by this test's header.
+    await popup.evaluate(() => document.fonts.ready);
+    assert.equal(await popup.evaluate(() => document.fonts.check('14px Inter')), true);
+    assert.equal(await popup.evaluate(() => [...document.fonts].some(font => font.family === 'Inter' && font.status === 'loaded')), true);
+    assert.match(await popup.evaluate(() => getComputedStyle(document.body).fontFamily), /^Inter(?:,|$)/u);
 
     const page = await context.newPage();
     smokePages.add(page);
