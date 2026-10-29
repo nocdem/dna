@@ -166,6 +166,7 @@ test('MV3 zip loads in Chromium and announces Nodus Wallet to a local page', { t
     smokePages.add(page);
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(origin);
+    assert.equal(await page.evaluate(() => new URL('file:///x.html').origin), 'file://', 'Chromium serializes file origins differently from Node');
     await page.waitForFunction(() => window.announcements.some(info => info.rdns === 'io.nodusnetwork.wallet'));
     const info = await page.evaluate(() => window.announcements.find(info => info.rdns === 'io.nodusnetwork.wallet'));
     assert.equal(info.name, 'Nodus Wallet');

@@ -2,7 +2,7 @@ import { PermissionController, PermissionDoesNotExistError, PermissionType, Subj
 import { createMethodMiddleware } from '@metamask/json-rpc-engine';
 import { BaseController } from '@metamask/base-controller';
 import { isPlainObject } from '@metamask/controller-utils';
-import { rpcErrors } from '@metamask/rpc-errors';
+import { rpcErrors, providerErrors } from '@metamask/rpc-errors';
 import {
   Caip25CaveatType, Caip25EndowmentPermissionName, caip25CaveatBuilder, caip25EndowmentBuilder,
   getCaip25PermissionFromLegacyPermissions, getEthAccounts, getPermittedEthChainIds, requestPermittedChainsPermissionIncremental,
@@ -127,6 +127,7 @@ export function createPermissions({ messenger, approvals, store, runtime, getNet
   async function acceptPermissionsRequest(request) {
     // Port: metamask-controller.js:3278-3280, legacy-background-api-service.ts:3102-3113; signing remains guarded in keyring.js.
     if (Object.hasOwn(request.permissions, NODUS_PERMISSION)) {
+      if (['file://', 'null'].includes(request.metadata.origin)) throw providerErrors.unauthorized();
       // The background selects its own identity at approval time. A site or
       // even a stale UI cannot install a different account/public key.
       request = structuredClone(request);
@@ -142,8 +143,9 @@ export function createPermissions({ messenger, approvals, store, runtime, getNet
   }
 
   // Port: handlers/wallet-getPermissions.ts:79-131 and wallet-requestPermissions.ts:161-222.
-  function legacyPermissions(origin, permissionMap, includeEmptyAccounts = false) {
+  function legacyPermissions(origin, permissionMap, includeEmptyAccounts = false, isFile = false) {
     const permissions = { ...permissionMap }, endowment = permissions[Caip25EndowmentPermissionName];
+    if (isFile || ['file://', 'null'].includes(origin)) delete permissions[NODUS_PERMISSION];
     delete permissions[Caip25EndowmentPermissionName];
     const caveat = endowment?.caveats?.find(item => item.type === Caip25CaveatType);
     if (caveat) {
@@ -196,7 +198,7 @@ export function createPermissions({ messenger, approvals, store, runtime, getNet
     const hasEquivalent = Object.keys(equivalent).length > 0;
     if (hasEquivalent) requested = { ...requested, ...getCaip25PermissionFromLegacyPermissions(equivalent) };
     const [granted] = await requestPermissionsForOrigin(req.origin, requested);
-    res.result = legacyPermissions(req.origin, granted, hasEquivalent);
+    res.result = legacyPermissions(req.origin, granted, hasEquivalent, req.isFile);
     return end();
   }
 
@@ -223,7 +225,7 @@ export function createPermissions({ messenger, approvals, store, runtime, getNet
     eth_accounts: ethAccountsHandler,
     eth_requestAccounts: { implementation: requestAccounts },
     nodus_requestAccounts: { implementation: requestNodusAccounts },
-    wallet_getPermissions: { implementation: (req, res, _next, end) => { res.result = legacyPermissions(req.origin, controller.getPermissions(req.origin)); end(); } },
+    wallet_getPermissions: { implementation: (req, res, _next, end) => { res.result = legacyPermissions(req.origin, controller.getPermissions(req.origin), false, req.isFile); end(); } },
     wallet_requestPermissions: { implementation: requestPermissions },
     wallet_revokePermissions: { implementation: revokePermissions },
     // Port: handlers/get-provider-state.ts:95-104; metamask-controller.js:2287-2299 supplies runtime id.

@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { Duplex } from 'readable-stream';
+import { Caip25EndowmentPermissionName, Caip25CaveatType, setEthAccounts } from '@metamask/chain-agnostic-permission';
 import { createNodusClient } from '../../src/nodus/client.js';
-import { NODUS_PERMISSION } from '../src/background/permissions.js';
+import { NODUS_PERMISSION, NODUS_ACCOUNT_CAVEAT } from '../src/background/permissions.js';
+import { STATE_KEY } from '../src/background/store.js';
 import { createWalletUi } from '../src/ui/wallet-ui.js';
 import { mountWalletPage } from '../src/ui/app.js';
 import log from 'loglevel';
@@ -53,10 +55,19 @@ async function setup(t) {
     const { engine } = background.engine.setupProviderEngineEip1193({ origin, subjectType: 'website' }); engines.push(engine);
     return { origin, request: (method, params = []) => engine.handle({ id: ++nextId, jsonrpc: '2.0', method, params, origin: 'https://forged.example' }) };
   }
-  function senderSite(url) {
+  function senderSite(url, fileOrigin) {
     const stream = new Duplex({ objectMode: true, read() {}, write(_message, _encoding, done) { done(); } });
-    const { origin, engine } = background.engine.setupProviderConnectionEip1193(stream, { url }, 'website');
-    return { origin, request: (method, params = []) => engine.handle({ id: ++nextId, jsonrpc: '2.0', method, params, origin: 'https://forged.example' }) };
+    // Exercise the browser's file origin and Node's opaque origin while still
+    // deriving protocol and origin through the real sender-connection setup.
+    const NativeURL = globalThis.URL;
+    // t.mock.method does not intercept `new URL(...)`; swap the global for the call.
+    if (fileOrigin !== undefined) globalThis.URL = class extends NativeURL { get origin() { return this.protocol === 'file:' ? fileOrigin : super.origin; } };
+    let connection;
+    try { connection = background.engine.setupProviderConnectionEip1193(stream, { url }, 'website'); }
+    finally { globalThis.URL = NativeURL; }
+    const { origin, isFile, engine } = connection;
+    // Both page-supplied context fields must be overwritten by the connection.
+    return { origin, isFile, request: (method, params = []) => engine.handle({ id: ++nextId, jsonrpc: '2.0', method, params, origin: 'https://forged.example', isFile: !isFile }) };
   }
   async function nextApproval(request) {
     const { controller } = background.approvals, ready = deferred();
@@ -75,28 +86,114 @@ async function setup(t) {
 }
 
 // Decision 2026-10-28-extension-nodus-site-signing.md:20: disk pages cannot
-// connect/sign. Fail on an unexpected permission request instead of waiting for UI.
-test('file sender refuses both Nodus methods without permissions, approvals or module calls; eth_accounts is unchanged', async t => {
-  const f = await setup(t), remote = f.senderSite('file:///x.html');
-  assert.equal(remote.origin, 'null');
-  const requestPermissions = t.mock.method(f.background.permissions.controller, 'requestPermissions', () => { throw new Error('Unexpected permission request.'); });
-  const signMessage = t.mock.method(f.background.nodus, 'signMessage');
-  for (const [method, params] of [['nodus_requestAccounts', []], ['nodus_signMessage', ['hello', address]]]) {
-    assert.equal((await remote.request(method, params)).error?.code, 4100);
-    assert.equal(requestPermissions.mock.callCount(), 0); assert.equal(signMessage.mock.callCount(), 0);
+// obtain the Nodus identity or sign, including through generic permissions.
+// No compile flags or extra environment; fixtures leave no output artifacts.
+// Fail on unexpected permission requests instead of waiting for UI. Both file
+// serializations are forced; package-smoke.test.js checks the real browser value.
+for (const fileOrigin of ['file://', 'null']) {
+  test(`file sender (${fileOrigin}) refuses Nodus methods and permission requests before approval`, async t => {
+    const f = await setup(t), remote = f.senderSite('file:///x.html', fileOrigin);
+    assert.equal(remote.origin, fileOrigin);
+    assert.equal(remote.isFile, true);
+    const requestPermissions = t.mock.method(f.background.permissions.controller, 'requestPermissions', () => { throw new Error('Unexpected permission request.'); });
+    const signMessage = t.mock.method(f.background.nodus, 'signMessage');
+    for (const [method, params] of [
+      ['nodus_requestAccounts', []], ['nodus_signMessage', ['hello', address]],
+      ['wallet_requestPermissions', [{ [NODUS_PERMISSION]: {} }]],
+      ['wallet_requestPermissions', [{ eth_accounts: {}, [NODUS_PERMISSION]: {} }]],
+    ]) {
+      assert.equal((await remote.request(method, params)).error?.code, 4100);
+      assert.equal(requestPermissions.mock.callCount(), 0); assert.equal(signMessage.mock.callCount(), 0);
+      assert.deepEqual(f.background.approvals.controller.state.pendingApprovals, {});
+      assert.equal(f.background.permissions.controller.getPermissions(fileOrigin)?.[NODUS_PERMISSION], undefined);
+      await f.background.approvals.whenUiSettled();
+      assert.deepEqual(f.windows, []); assert.deepEqual(f.calls, []);
+    }
+    const accounts = await remote.request('eth_accounts');
+    assert.equal(accounts.error, undefined); assert.deepEqual(accounts.result, []);
+  });
+
+  // Deliberately bypass the engine to model an approval already queued by old
+  // code. A request-only guard would falsely pass without this acceptance check.
+  test(`grant acceptance refuses Nodus for ${fileOrigin} without installing a grant`, async t => {
+    const f = await setup(t), { permissions } = f.background;
+    const request = permissions.controller.requestPermissions({ origin: fileOrigin }, { [NODUS_PERMISSION]: {} })
+      .then(result => ({ result }), error => ({ error }));
+    const pending = await f.nextApproval(request);
+    await assert.rejects(permissions.acceptPermissionsRequest(structuredClone(pending.requestData)), { code: 4100 });
+    assert.equal(permissions.controller.getPermissions(fileOrigin)?.[NODUS_PERMISSION], undefined);
+    await permissions.controller.rejectPermissionsRequest(pending.id);
+    assert.equal((await request).error?.code, 4001);
     assert.deepEqual(f.background.approvals.controller.state.pendingApprovals, {});
-    await f.background.approvals.whenUiSettled();
-    assert.deepEqual(f.windows, []); assert.deepEqual(f.calls, []);
-  }
-  const accounts = await remote.request('eth_accounts');
-  assert.equal(accounts.error, undefined); assert.deepEqual(accounts.result, []);
+  });
+
+  // A valid persisted Nodus grant is intentional fixture state. Checking only
+  // an ungranted origin would miss identity leaks from permission responses.
+  test(`file sender (${fileOrigin}) hides stored Nodus grants while Ethereum permissions still work`, async t => {
+    const f = await setup(t), remote = f.senderSite('file:///x.html', fileOrigin), { permissions } = f.background;
+    permissions.controller.grantPermissions({ subject: { origin: fileOrigin }, approvedPermissions: {
+      [NODUS_PERMISSION]: { caveats: [{ type: NODUS_ACCOUNT_CAVEAT, value: account }] },
+    } });
+    await f.background.store.flush();
+    const saved = () => f.values[STATE_KEY].PermissionController.subjects[fileOrigin].permissions[NODUS_PERMISSION];
+    assert.deepEqual(saved().caveats[0].value, account);
+    assert.deepEqual((await remote.request('wallet_getPermissions')).result, []);
+    assert.deepEqual((await remote.request('eth_accounts')).result, []);
+    assert.equal((await remote.request('nodus_requestAccounts')).error?.code, 4100);
+    assert.equal((await remote.request('nodus_signMessage', ['hello', address])).error?.code, 4100);
+    assert.deepEqual(f.background.approvals.controller.state.pendingApprovals, {});
+
+    const ethereumAccount = permissions.getSelectedAccount().address;
+    for (const [method, params] of [['eth_requestAccounts', []], ['wallet_requestPermissions', [{ eth_accounts: {} }]]]) {
+      const request = remote.request(method, params), pending = await f.nextApproval(request);
+      assert.equal(pending.origin, fileOrigin);
+      assert.equal(pending.requestData.permissions[NODUS_PERMISSION], undefined);
+      const approved = structuredClone(pending.requestData);
+      const caveat = approved.permissions[Caip25EndowmentPermissionName].caveats.find(item => item.type === Caip25CaveatType);
+      caveat.value = setEthAccounts(caveat.value, [ethereumAccount]);
+      await permissions.acceptPermissionsRequest(approved);
+      const response = await request;
+      assert.equal(response.error, undefined);
+      if (method === 'eth_requestAccounts') assert.deepEqual(response.result, [ethereumAccount]);
+      else {
+        assert.equal(response.result.some(item => item.parentCapability === NODUS_PERMISSION), false);
+        assert.deepEqual(response.result.find(item => item.parentCapability === 'eth_accounts').caveats[0].value, [ethereumAccount]);
+      }
+    }
+    assert.deepEqual((await remote.request('eth_accounts')).result, [ethereumAccount]);
+    assert.equal((await remote.request('eth_chainId')).result, '0x1');
+    const listed = (await remote.request('wallet_getPermissions')).result;
+    assert.equal(listed.some(item => item.parentCapability === NODUS_PERMISSION), false);
+    assert.deepEqual(listed.find(item => item.parentCapability === 'eth_accounts').caveats[0].value, [ethereumAccount]);
+    await f.background.store.flush();
+    assert.deepEqual(saved().caveats[0].value, account, 'Response filtering must preserve unrelated stored permissions');
+    assert.deepEqual(f.calls, []);
+  });
+}
+
+test('null origin still refuses Nodus requests without a file flag', async t => {
+  const f = await setup(t), remote = f.site('null');
+  const requestPermissions = t.mock.method(f.background.permissions.controller, 'requestPermissions', () => { throw new Error('Unexpected permission request.'); });
+  for (const [method, params] of [
+    ['nodus_requestAccounts', []], ['nodus_signMessage', ['hello', address]],
+    ['wallet_requestPermissions', [{ [NODUS_PERMISSION]: {} }]],
+  ]) assert.equal((await remote.request(method, params)).error?.code, 4100);
+  assert.equal(requestPermissions.mock.callCount(), 0);
+  assert.deepEqual(f.background.approvals.controller.state.pendingApprovals, {});
 });
 
 // Exercise sender URL -> bound origin for the permitted HTTPS path as well.
 test('https sender still connects and signs with its bound origin', async t => {
   const f = await setup(t), remote = f.senderSite('https://site.example/x.html');
   assert.equal(remote.origin, 'https://site.example');
+  assert.equal(remote.isFile, false);
   await f.connect(remote);
+  const permissionRequest = remote.request('wallet_requestPermissions', [{ [NODUS_PERMISSION]: {} }]);
+  const permissionApproval = await f.nextApproval(permissionRequest);
+  await f.background.permissions.acceptPermissionsRequest(structuredClone(permissionApproval.requestData));
+  const granted = (await permissionRequest).result;
+  assert.deepEqual(granted.find(item => item.parentCapability === NODUS_PERMISSION).caveats[0].value, account);
+  assert.deepEqual((await remote.request('wallet_getPermissions')).result, granted);
   const request = remote.request('nodus_signMessage', ['hello', address]), pending = await f.nextApproval(request);
   assert.equal(pending.origin, remote.origin); assert.deepEqual(f.calls, []);
   await f.background.approvals.controller.acceptRequest(pending.id, true);

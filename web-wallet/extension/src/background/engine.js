@@ -12,6 +12,7 @@ import { convertHexToDecimal } from '@metamask/controller-utils';
 import log from 'loglevel';
 import { CHAINS } from '../../../src/config.js';
 import { EIP_1193_PROVIDER, CAIP_MULTICHAIN_PROVIDER, PROVIDER_METHODS } from '../constants/stream.js';
+import { NODUS_PERMISSION } from './permissions.js';
 
 // Port: shared/constants/app.ts:200; ADAPTATION: approved plan Q-9 (:999) renames the internal origin.
 export const ORIGIN_NODUS = 'nodus';
@@ -111,10 +112,10 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
   }
 
   // Port: metamask-controller.js:5216-5654, preserving retained middleware order.
-  function setupProviderEngineEip1193({ origin, tabId, frameId, mainFrameOrigin, subjectType }) {
+  function setupProviderEngineEip1193({ origin, isFile = false, tabId, frameId, mainFrameOrigin, subjectType }) {
     const engine = new JsonRpcEngine();
     // Port: lib/createOriginMiddleware.js:7-16; main/frame/tab middleware overwrite all page-supplied context.
-    engine.push((req, _res, next) => { req.origin = origin; next(); });
+    engine.push((req, _res, next) => { req.origin = origin; req.isFile = isFile; next(); });
     if (mainFrameOrigin) engine.push((req, _res, next) => { req.mainFrameOrigin = mainFrameOrigin; next(); });
     // Q-24 removes createSelectedNetworkMiddleware (:5235); every connection reads the one client above.
     let clientEngine = null, clientMiddleware = null;
@@ -137,7 +138,8 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
     engine.push((req, _res, next, end) => unsupported.has(req.method) ? end(rpcErrors.methodNotSupported()) : next());
     // Decision 2026-10-28-extension-nodus-site-signing.md:20: refuse disk-page Nodus calls before permissions.
     engine.push((req, _res, next, end) => {
-      if (origin === 'null' && ['nodus_requestAccounts', 'nodus_signMessage'].includes(req.method)) return end(providerErrors.unauthorized());
+      if ((isFile || origin === 'null') && (['nodus_requestAccounts', 'nodus_signMessage'].includes(req.method) ||
+        (req.method === 'wallet_requestPermissions' && Object.hasOwn(req.params?.[0] ?? {}, NODUS_PERMISSION)))) return end(providerErrors.unauthorized());
       return next();
     });
     engine.push(permissions.createEthAccountsMethodMiddleware());
@@ -192,15 +194,18 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
 
   // Port: metamask-controller.js:4936-5006, with plan §3.3's renamed notification constants.
   function setupProviderConnectionEip1193(outStream, sender, subjectType) {
-    const origin = subjectType === 'internal' ? ORIGIN_NODUS : new URL(sender.url).origin;
+    const senderUrl = subjectType === 'internal' ? null : new URL(sender.url);
+    const origin = subjectType === 'internal' ? ORIGIN_NODUS : senderUrl.origin;
+    // Chromium serializes file origins as "file://"; Node serializes them as "null".
+    const isFile = senderUrl?.protocol === 'file:';
     // Port: metamask-controller.js:4946-4952; record only other extensions, using the sender's real id.
     if (sender.id && sender.id !== runtime.id) permissions.subjectMetadataController.addSubjectMetadata({
       origin, extensionId: sender.id, subjectType: 'extension',
     });
     const mainFrameOrigin = sender.tab?.url ? new URL(sender.tab.url).origin : origin;
-    const { engine, resetNetwork } = setupProviderEngineEip1193({ origin, subjectType, mainFrameOrigin, tabId: sender.tab?.id, frameId: sender.frameId });
+    const { engine, resetNetwork } = setupProviderEngineEip1193({ origin, isFile, subjectType, mainFrameOrigin, tabId: sender.tab?.id, frameId: sender.frameId });
     const duplicateFilter = createDupeReqFilterStream(), providerStream = createEngineStream({ engine });
-    const id = Symbol(origin), connection = { id, origin, engine, resetNetwork, outStream, accounts: [...permissions.getAccounts(origin)] };
+    const id = Symbol(origin), connection = { id, origin, isFile, engine, resetNetwork, outStream, accounts: [...permissions.getAccounts(origin)] };
     connections.set(id, connection);
     pipeline(outStream, duplicateFilter, providerStream, outStream, () => {
       engine.destroy(); connections.delete(id);
