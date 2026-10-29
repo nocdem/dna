@@ -46,22 +46,12 @@ export function renderNodusSend(document, container, { account, tokens = [], rev
   form.onsubmit = event => { event.preventDefault(); return prepare({ to: to.value, amount: amount.value, tokenId: asset.value }); };
 }
 
-// src/nodus/history.js supplies node provenance and row text; local pending
-// activity remains visible when the node's account-history read fails.
-export function renderNodusHistory(document, container, history, { refresh, resubmit }) {
+// src/nodus/history.js supplies account-history provenance and row text.
+export function renderNodusHistory(document, container, history, { refresh }) {
   container.replaceChildren(pageHeading(document, 'Nodus history', 'history'));
   container.append(actionButton(document, 'Refresh history', refresh));
   if (!history) { container.append(element(document, 'p', nodusHistoryStatus(), 'hint')); return; }
   if (history.activityError) container.append(element(document, 'p', history.activityError, 'field-error'));
-  const local = element(document, 'div', undefined, 'activity-list');
-  for (const row of history.local ?? []) {
-    const article = element(document, 'article', undefined, 'activity-row');
-    article.append(element(document, 'h2', row.amountText ?? `${row.amount} ${row.symbol}`), element(document, 'p', `${row.status}: ${row.note}`), element(document, 'code', row.hash));
-    if (row.detail) article.append(element(document, 'p', row.detail));
-    if (row.canResubmit) article.append(actionButton(document, 'Try again', () => resubmit(row.hash)));
-    local.append(article);
-  }
-  container.append(local);
   container.append(element(document, 'p', history.error ? nodusHistoryStatus({ error: history.error }) : history.status, history.error ? 'field-error' : 'hint'));
   const account = element(document, 'div', undefined, 'activity-list');
   for (const row of history.rows ?? []) {

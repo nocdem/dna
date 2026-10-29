@@ -69,13 +69,15 @@ const client = { onNotification: () => () => {}, onDisconnect: () => () => {}, c
   if (method === 'getCpunkBalance') return { balance: '0.75' };
   if (method === 'getIxiosBalance') return [{ symbol: 'IXIOS', balance: '1' }];
   if (method === 'getNodusHistory') return { status: 'Fixture account history', local: [
-    { amount: '1', symbol: 'NODUS', status: 'submitted', note: 'Awaiting confirmation.', hash: 'ab'.repeat(32) },
+    { amount: '1', symbol: 'NODUS', status: 'submitted', note: 'Awaiting confirmation.', hash: 'ab'.repeat(32), canResubmit: true },
   ], rows: [{ title: 'Received NODUS', dir: 'in', sign: '+', amount: '2', detail: 'Public fixture transfer', height: 12, time: 1700000000000, wire: 'cd'.repeat(64) },
     { title: 'Witness update', dir: '', sign: '', amount: '', detail: '', height: 11, time: null, wire: '' }] };
   if (['getSolanaHistory', 'getTronHistory', 'getChainHistory'].includes(method)) {
     const chain = method === 'getSolanaHistory' ? 'solana' : method === 'getTronHistory' ? 'tron' : params[0];
     const hash = chain === 'solana' ? '2'.repeat(88) : 'cd'.repeat(32);
-    return { network: 'mainnet', status: 'Fixture account history', local: [], rows: [
+    return { network: 'mainnet', status: 'Fixture account history', local: [
+      { amount: '1', symbol: CHAINS[chain]?.symbol ?? 'CPUNK', status: 'submitted', note: 'Awaiting confirmation.', hash: chain === 'solana' ? '3'.repeat(88) : 'ab'.repeat(32), to: addresses[chain === 'cellframe' ? 'cpunk' : chain], createdAt: '2026-10-28T00:00:00Z' },
+    ], rows: [
       { chain, hash, dir: 'in', amount: '1234567.123456789', symbol: CHAINS[chain]?.symbol ?? 'CPUNK', peer: addresses[chain === 'cellframe' ? 'cpunk' : chain], status: 'confirmed', time: 1700000000000 },
     ] };
   }

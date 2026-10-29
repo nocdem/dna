@@ -23,6 +23,16 @@ const walletRoot = fileURLToPath(new URL('../../', import.meta.url)), require = 
 const { version } = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
 const button = (page, name) => page.getByRole('button', { name, exact: true });
 async function priceCount(page) { return page.evaluate(() => window.layout.calls.filter(call => call.method === 'getPrices').length); }
+// Populated pending-send fixtures must leave no block, rows, empty text or
+// actions in popup/full-page Activity. Account assertions stay below.
+async function assertAccountHistoryOnly(page) {
+  const panel = page.locator('#activity-panel');
+  assert.equal(await panel.locator('.page-block').count(), 1);
+  assert.equal(await panel.getByRole('heading', { name: 'Account history', exact: true }).count(), 1);
+  assert.equal(await panel.locator('#activity, .activity-empty').count(), 0);
+  assert.doesNotMatch(await panel.textContent(), /Sent from here|Sends made in this wallet|No sends recorded here|Awaiting confirmation\.|Mark as abandoned|Confirm abandon|Try again/u);
+  assert.equal(await page.evaluate(() => window.layout.calls.some(call => ['getChainLocalHistory', 'abandonActivity', 'resubmitNodusSend'].includes(call.method))), false);
+}
 async function waitHome(page) {
   await page.waitForFunction(() => document.querySelectorAll('.network-health[data-health="current"]').length === 7 && document.getElementById('portfolio-total')?.textContent.startsWith('$'));
   await page.locator('#screen:not([inert])').waitFor();
@@ -379,7 +389,7 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         await page.locator('#history .activity-row').first().waitFor();
         assert.equal(await page.locator('#history-status').textContent(), 'Fixture account history');
         assert.ok((await page.locator('#history').textContent()).includes('Received NODUS'));
-        assert.ok((await page.locator('#activity').textContent()).includes('Awaiting confirmation.'));
+        await assertAccountHistoryOnly(page);
         const nodusRow = page.locator('#history .activity-row').first();
         assert.equal(await nodusRow.locator('.activity-main strong').textContent(), '+2');
         assert.equal(await nodusRow.locator('.activity-main small').textContent(), 'Received NODUS · Public fixture transfer');
@@ -402,9 +412,22 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
           assert.equal(await page.locator('#history .activity-main small').textContent(), `from ${peer.slice(0, 8)}…${peer.slice(-6)}`);
           assert.equal(await page.locator('#history .activity-side .status-badge[data-status="confirmed"]').count(), 1);
           assert.equal(await page.locator('#history .activity-side time[datetime]').count(), 1);
+          await assertAccountHistoryOnly(page);
           await assertHistoryLayout(page);
           await capture(`history-${chain}`);
         }
+        await page.locator('#page-wallet-activity .page-back').click();
+        await page.locator('#chain').selectOption('bsc');
+        await page.locator('.wallet-navigation a[href="#wallet-activity"]').click();
+        await page.waitForFunction(() => document.querySelector('#history-status')?.textContent === 'Account history for BNB Smart Chain is not read here. Use the account explorer.');
+        assert.equal(await page.locator('#history .activity-row').count(), 0);
+        await assertAccountHistoryOnly(page);
+        await page.locator('#page-wallet-activity .page-back').click();
+        await page.locator('#chain').selectOption('ixios');
+        await page.locator('.wallet-navigation a[href="#wallet-activity"]').click();
+        assert.equal(await page.locator('#history-status').textContent(), '');
+        assert.equal(await page.locator('#history .activity-row').count(), 0);
+        await assertAccountHistoryOnly(page);
         await page.locator('#page-wallet-activity .page-back').click();
         await page.locator('#chain').selectOption('nodus'); await waitHome(page);
         await assertNavigation(page);
