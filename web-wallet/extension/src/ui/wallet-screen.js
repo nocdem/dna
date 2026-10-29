@@ -287,6 +287,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   book = mountAddressBook({ root, document, ui, networks, selected: () => selected, navigate, run });
   earn = mountEarn({ root, document, ui, selected: () => selected, portfolio, run, showReview: showPrepared, navigate });
   names = mountNameBlock({ root, ui, selected: () => selected, run, showReview: showPrepared });
+  $('wallet-register-name').onclick = () => { selectAsset('nodus', 'NODUS', 'choose'); navigate(null); $('quick-name').click(); };
   claim = mountClaimAction({ ui, portfolio, run, showReview: showPrepared });
   contracts = mountContractsPage({ rootNode: $('evm-root'), panelNode: $('evm-panel'), ui });
   vaults = mountVaultsPage({ rootNode: $('vaults-root'), panelNode: $('vault-panel'), ui });

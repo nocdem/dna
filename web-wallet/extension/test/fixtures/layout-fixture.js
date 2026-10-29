@@ -28,6 +28,7 @@ const state = { isInitialized: stage !== 'welcome', isUnlocked: !['welcome', 'un
     'https://evm-site.example': { permissions },
     'https://nodus-site.example': { permissions: { [NODUS_PERMISSION]: { caveats: [{ type: NODUS_ACCOUNT_CAVEAT, value: { address: addresses.nodus } }] } } },
   } };
+if (query.has('name')) Object.assign(state.nodus, { nameable: true, registrable: true });
 if (stage === 'connect') state.pendingApprovals.connect = { id: 'connect', origin: 'https://connect-request.example', requestData: { origin: 'https://connect-request.example', permissions: getCaip25PermissionFromLegacyPermissions() } };
 if (stage === 'signature') state.pendingApprovals.signature = signature('signature', 'Full Nodus message <img src=x onerror=alert(1)> ' + 'ab'.repeat(100));
 if (stage === 'approvals') state.pendingApprovals = {
@@ -43,6 +44,8 @@ const client = { onNotification: () => () => {}, onDisconnect: () => () => {}, c
   if (method === 'getKeptBalances') return {};
   if (method === 'getAddressBook') return { entries: [] };
   if (method === 'getSessionLog') return { entries: [], running: [] };
+  if (method === 'getOwnName') return query.get('name') === 'none' ? { found: false } : { found: true, name: query.get('name') };
+  if (method === 'getNamePrices') return { text: 'public fixture prices' };
   if (method === 'contractAccount') return { balanceWei: '0', nonce: '0', height: '1', pending: false };
   if (method === 'submitPasswordOrEncryptionKey') { state.isUnlocked = true; return; }
   if (method === 'getSeedPhrase') return [...new TextEncoder().encode('abandon '.repeat(23) + 'art')];

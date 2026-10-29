@@ -142,7 +142,8 @@ async function assertAssetLayout(page) {
 async function assertHome(page, popup) {
   await waitHome(page); await page.evaluate(() => scrollTo(0, 0));
   await assertNavigation(page);
-  assert.equal(await page.locator('#wallet-title').textContent(), 'Your wallet');
+  assert.equal(await page.getByRole('heading', { name: 'Your wallet', exact: true }).count(), 0);
+  assert.equal(await page.locator('.wallet-card > .section-head .eyebrow').count(), 0);
   assert.deepEqual(await page.locator('.wallet-navigation a:visible .nav-name').allTextContents(),
     ['Portfolio', 'Send / Receive', 'Smart contracts', 'Activity', 'Address book', 'Device & settings', 'Connected sites']);
   assert.equal(await page.locator('.extension-network').count(), 0);
@@ -231,8 +232,10 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         // Fix the page's clock before any fixture quote or balance answer.
         await page.clock.install({ time: new Date() });
         await page.clock.setFixedTime(new Date());
-        const open = async stage => {
-          await page.goto(`${origin}/extension/test/fixtures/layout.html?page=${kind}&stage=${stage}`);
+        const open = async (stage, name) => {
+          const params = new URLSearchParams({ page: kind, stage });
+          if (name !== undefined) params.set('name', name);
+          await page.goto(`${origin}/extension/test/fixtures/layout.html?${params}`);
           await page.waitForFunction(() => Boolean(window.layout));
           await page.evaluate(() => document.fonts.ready);
         };
@@ -251,6 +254,25 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
           continue;
         }
         await open('home'); await assertHome(page, kind === 'popup');
+        // Both approved greeting states on popup/full-page layouts. A trusted
+        // name reply drives the heading; the registration prompt reaches the
+        // existing Nodus form even from another network and a separate page.
+        await open('home', 'publicname');
+        await page.getByRole('heading', { name: 'Welcome back, publicname', exact: true }).waitFor();
+        assert.equal(await page.locator('#wallet-register-name').isVisible(), false);
+        assert.equal(await page.locator('.site-header .wordmark').textContent(), 'nodus');
+        assert.equal(await page.locator('.site-header .product-name').textContent(), 'Wallet');
+        assert.equal(await page.evaluate(() => window.layout.calls.filter(call => call.method === 'getOwnName').length), 1);
+        await open('home', 'none');
+        await page.getByRole('heading', { name: 'Welcome back', exact: true }).waitFor();
+        await page.locator('#chain').selectOption('ethereum');
+        await page.locator('.wallet-navigation a[href="#settings"]').click();
+        await button(page, 'Register your on-chain name').click();
+        assert.equal(await page.locator('#wallet-home').isVisible(), true);
+        assert.equal(await page.locator('#chain').inputValue(), 'nodus');
+        assert.equal(await page.locator('#name-block').isVisible(), true);
+        assert.equal(await page.locator('#name-input').evaluate(node => document.activeElement === node), true);
+        assert.equal(await page.evaluate(() => window.layout.calls.some(call => call.method === 'prepareName')), false);
         await open('welcome'); await page.locator('#welcome:visible').waitFor();
         assert.equal(await priceCount(page), 0); await capture('welcome');
         await open('unlock'); await page.locator('#unlock-form:visible').waitFor();
@@ -344,6 +366,7 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         await page.locator('#lock').click();
         await page.locator('#unlock-form:visible').waitFor();
         assert.equal(await page.locator('input[readonly]').count(), 0);
+        assert.equal(await page.locator('#wallet-heading').isVisible(), false);
         await capture('locked');
       } finally { await context.close(); }
     }
