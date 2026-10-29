@@ -45,7 +45,7 @@ test('MV3 uses the source worker and isolated/main document-start entries', () =
 // Proves all six hosts and only the approved permissions remain; subset assertions could silently retain a removed permission.
 test('permissions and external connections match the approved reference subset', () => {
   assert.deepEqual(manifest.host_permissions, ['http://localhost:8545/', 'file://*/*', 'http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*']);
-  assert.deepEqual([...manifest.permissions].sort(), ['activeTab', 'alarms', 'notifications', 'scripting', 'storage', 'unlimitedStorage', 'offscreen'].sort());
+  assert.deepEqual([...manifest.permissions].sort(), ['alarms', 'storage', 'unlimitedStorage'].sort());
   assert.deepEqual(manifest.externally_connectable, { matches: ['http://*/*', 'https://*/*'], ids: ['*'] });
   assert.equal(manifest.content_security_policy.extension_pages, "script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; frame-ancestors 'self'; font-src 'self';");
   assert.deepEqual(manifest.cross_origin_opener_policy, { value: 'same-origin-allow-popups' });

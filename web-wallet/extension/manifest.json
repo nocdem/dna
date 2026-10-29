@@ -52,7 +52,7 @@
     "128": "../public/assets/nodus-mark.svg",
     "512": "../public/assets/nodus-mark.svg"
   },
-  "permissions": ["activeTab", "alarms", "notifications", "scripting", "storage", "unlimitedStorage", "offscreen"],
+  "permissions": ["alarms", "storage", "unlimitedStorage"],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; frame-ancestors 'self'; font-src 'self';"
   },
