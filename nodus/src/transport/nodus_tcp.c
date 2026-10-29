@@ -34,6 +34,7 @@
 #include "transport/nodus_tcp.h"
 #include "protocol/nodus_wire.h"
 #include "crypto/nodus_channel_crypto.h"
+#include "server/nodus_inter_session.h"
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG_TCP "NODUS_TCP"
@@ -242,6 +243,7 @@ static int set_exclusiveaddruse(int fd) {
 static void pending_free_all(nodus_tcp_conn_t *conn);
 
 static nodus_tcp_conn_t *conn_alloc(nodus_tcp_t *tcp) {
+    if (tcp->session_mode && tcp->conn_generation == UINT64_MAX) return NULL;
     int slot = -1;
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
         if (tcp->pool[i] == NULL) { slot = i; break; }
@@ -252,8 +254,8 @@ static nodus_tcp_conn_t *conn_alloc(nodus_tcp_t *tcp) {
     if (!conn) return NULL;
 
     conn->fd = -1;
-    conn->rbuf = malloc(NODUS_TCP_BUF_INIT);
-    conn->rcap = NODUS_TCP_BUF_INIT;
+    conn->rcap = tcp->session_mode ? CMT_P2P_SC_HS_MSG_MAX : NODUS_TCP_BUF_INIT;
+    conn->rbuf = malloc(conn->rcap);
     conn->wbuf = malloc(NODUS_TCP_BUF_INIT);
     conn->wcap = NODUS_TCP_BUF_INIT;
 
@@ -265,6 +267,7 @@ static nodus_tcp_conn_t *conn_alloc(nodus_tcp_t *tcp) {
     }
 
     conn->slot = slot;
+    if (tcp->session_mode) conn->generation = ++tcp->conn_generation;
     conn->tcp_parent = tcp;   /* Phase 3: back-pointer for pending-full callback */
     tcp->pool[slot] = conn;
     tcp->count++;
@@ -371,7 +374,7 @@ static void wl_leave(nodus_tcp_t *tcp) {
  * event; read under the lock like every other wbuf access. */
 static bool conn_has_unsent(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     wl_enter(tcp);
-    bool unsent = conn->wlen > conn->wpos;
+    bool unsent = conn->wlen > conn->wpos || (conn->session && conn->pending_head);
     wl_leave(tcp);
     return unsent;
 }
@@ -441,6 +444,7 @@ static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
      * struct is freed. Defensive even though the entire struct is about to
      * disappear; key material should never linger on the freelist. */
     nodus_channel_crypto_clear(&conn->channel_crypto);
+    nodus_inter_session_clear(conn);
 
     conn->state = NODUS_CONN_CLOSED;
     conn->close_pending = true;
@@ -462,6 +466,8 @@ static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 
 /* Forward decl so pending_drain_to_wbuf() can grow the buffer. */
 static int buf_ensure(uint8_t **buf, size_t *cap, size_t needed);
+static int conn_wbuf_ensure(nodus_tcp_conn_t *conn, size_t needed);
+static size_t conn_write_cap(const nodus_tcp_conn_t *conn);
 
 /** Push an already-encoded frame onto the tail of the pending FIFO.
  *  Takes ownership of `encoded` (caller must not free on success). */
@@ -528,11 +534,11 @@ static void pending_drain_to_wbuf(nodus_tcp_conn_t *conn) {
                 conn->pending_count, conn->pending_bytes);
     }
     int drained = 0;
-    const size_t max_cap = NODUS_MAX_FRAME_TCP + NODUS_FRAME_HEADER_SIZE + 4096;
+    const size_t max_cap = conn_write_cap(conn);
     while (drained < NODUS_DRAIN_PER_CALL && conn->pending_head) {
         nodus_pending_frame_t *head = conn->pending_head;
         if (conn->wlen + head->frame_size > max_cap) break;
-        if (buf_ensure(&conn->wbuf, &conn->wcap, conn->wlen + head->frame_size) != 0)
+        if (conn_wbuf_ensure(conn, conn->wlen + head->frame_size) != 0)
             break;
         head = pending_pop_head(conn);
         memcpy(conn->wbuf + conn->wlen, head->encoded, head->frame_size);
@@ -544,9 +550,8 @@ static void pending_drain_to_wbuf(nodus_tcp_conn_t *conn) {
     }
 }
 
-static int buf_ensure(uint8_t **buf, size_t *cap, size_t needed) {
+static int buf_ensure_limit(uint8_t **buf, size_t *cap, size_t needed, size_t max_cap) {
     if (needed <= *cap) return 0;
-    const size_t max_cap = NODUS_MAX_FRAME_TCP + NODUS_FRAME_HEADER_SIZE + 4096;
     if (needed > max_cap) return -1;
     size_t new_cap = *cap;
     /* A zero cap makes the doubling loop below spin forever — 0 * 2 == 0,
@@ -564,6 +569,57 @@ static int buf_ensure(uint8_t **buf, size_t *cap, size_t needed) {
     *buf = nb;
     *cap = new_cap;
     return 0;
+}
+
+static int buf_ensure(uint8_t **buf, size_t *cap, size_t needed) {
+    return buf_ensure_limit(buf, cap, needed,
+                            NODUS_MAX_FRAME_TCP + NODUS_FRAME_HEADER_SIZE + 4096);
+}
+
+static size_t session_sealed_size(size_t n) {
+    return ((n + CMT_P2P_SC_DATA_MAX_SIZE - 1) / CMT_P2P_SC_DATA_MAX_SIZE) *
+            CMT_P2P_SC_SEALED_FRAME_SIZE;
+}
+
+static size_t conn_write_cap(const nodus_tcp_conn_t *conn) {
+    size_t cap = NODUS_MAX_FRAME_TCP + NODUS_FRAME_HEADER_SIZE + 4096;
+    return conn->session ? session_sealed_size(cap) : cap;
+}
+
+static int conn_wbuf_ensure(nodus_tcp_conn_t *conn, size_t needed) {
+    return buf_ensure_limit(&conn->wbuf, &conn->wcap, needed, conn_write_cap(conn));
+}
+
+int nodus_tcp_set_session_mode(nodus_tcp_t *tcp, struct nodus_inter_session_module *session) {
+    if (!tcp || !session || tcp->session_mode || tcp->count || tcp->listen_fd >= 0 ||
+        tcp->ws_listen_fd >= 0 || tcp->unix_listen_fd >= 0 || tcp->write_lock) return -1;
+    tcp->session_mode = session;
+#ifdef NODUS_TCP_EPOLL
+    int wake_fd = nodus_inter_session_wake_fd(session);
+    if (wake_fd >= 0) {
+        struct epoll_event ev = {.events = EPOLLIN, .data.ptr = &tcp->session_mode};
+        if (epoll_ctl(tcp->epoll_fd, EPOLL_CTL_ADD, wake_fd, &ev) != 0) {
+            tcp->session_mode = NULL; return -1;
+        }
+    }
+#endif
+    return 0;
+}
+
+int nodus_tcp_session_queue_wire(nodus_tcp_conn_t *conn, const uint8_t *p, size_t n) {
+    if (!conn || conn->close_pending || !conn->session || conn->pending_head) return -1;
+    if (conn->wpos) {
+        memmove(conn->wbuf, conn->wbuf + conn->wpos, conn->wlen - conn->wpos);
+        conn->wlen -= conn->wpos; conn->wpos = 0;
+    }
+    if (conn_wbuf_ensure(conn, conn->wlen + n) != 0) return -1;
+    if (n) memcpy(conn->wbuf + conn->wlen, p, n);
+    conn->wlen += n;
+    return 0;
+}
+
+void nodus_tcp_session_resume(nodus_tcp_conn_t *conn) {
+    if (conn && !conn->close_pending) read_pending_add(conn->tcp_parent, conn);
 }
 
 /* ── Outgoing wire layout: the ONE place a nodus frame is laid out ──
@@ -646,6 +702,7 @@ typedef enum {
 static parse_rc_t try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
                                    bool budgeted) {
     if (conn->close_pending) return PARSE_CLOSED;
+    if (conn->session && !nodus_inter_session_is_open(conn)) return PARSE_NEED_DATA;
     while (conn->rlen >= NODUS_FRAME_HEADER_SIZE) {
         /* Snapshot crypto state before dispatching — if it changes mid-loop
          * (e.g., key_init handler activates crypto), remaining buffered frames
@@ -707,7 +764,7 @@ static parse_rc_t try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
         uint8_t *dec_buf = NULL;
 
         nodus_channel_crypto_t *cc = &conn->channel_crypto;
-        if (cc->established) {
+        if (!conn->session && cc->established) {
             /* CRIT-3 — AEAD completeness. Once the channel is established,
              * EVERY frame must be authenticated. Previously this gated on
              * 'payload_len > NODUS_CHANNEL_OVERHEAD', so a <=28-byte payload
@@ -908,6 +965,50 @@ static read_rc_t read_plain(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     }
 }
 
+/* Sealed socket bytes never enter rbuf. Only the opened stream enters the
+ * existing nodus parser; every socket byte/frame spends today's budget. */
+static read_rc_t read_session(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    int eintr_left = NTCP_MAX_EINTR_RETRY;
+    for (;;) {
+        parse_rc_t pr = try_parse_frames(tcp, conn, true);
+        if (pr == PARSE_CLOSED) return READ_CLOSED;
+        if (pr == PARSE_MORE) return READ_MORE;
+        uint8_t plain[CMT_P2P_SC_DATA_MAX_SIZE];
+        size_t n = 0;
+        int rc = nodus_inter_session_read(conn, plain, sizeof(plain), &n);
+        if (conn->close_pending) return READ_CLOSED;
+        if (rc != CMT_OK) {
+            nodus_tcp_disconnect(tcp, conn); return READ_CLOSED;
+        }
+        if (n) {
+            if (buf_ensure(&conn->rbuf, &conn->rcap, conn->rlen + n) != 0) {
+                nodus_tcp_disconnect(tcp, conn); return READ_CLOSED;
+            }
+            memcpy(conn->rbuf + conn->rlen, plain, n); conn->rlen += n;
+            continue;   /* also drains machine read_pending without socket input */
+        }
+        if (!conn->read_bytes_left) return READ_MORE;
+        size_t room;
+        uint8_t *dst = nodus_inter_session_read_buf(conn, &room);
+        if (!room) return READ_DRAINED; /* job or owner gate resumes it */
+        if (room > conn->read_bytes_left) room = conn->read_bytes_left;
+        ssize_t got = poll_read(conn->fd, dst, room);
+        if (got > 0) {
+            nodus_inter_session_read_done(conn, (size_t)got);
+            conn->read_bytes_left -= (size_t)got;
+            conn->last_activity = nodus_time_now();
+            eintr_left = NTCP_MAX_EINTR_RETRY;
+            continue;
+        }
+        if (got < 0) {
+            ntcp_io_t io = ntcp_classify(got);
+            if (io == NTCP_IO_RETRY && eintr_left-- > 0) continue;
+            if (io == NTCP_IO_WOULDBLOCK) return READ_DRAINED;
+        }
+        nodus_tcp_disconnect(tcp, conn); return READ_CLOSED;
+    }
+}
+
 /* Read a connection within its per-call budget (NODUS_TCP_READ_BUDGET_*).
  * Every read of a connection — poll event, pending-read list, the immediate
  * read after accept / connect-complete — comes through here, so the budget,
@@ -937,7 +1038,7 @@ static void handle_read(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         rc = read_ws(tcp, conn);
     else
 #endif
-        rc = read_plain(tcp, conn);
+        rc = conn->session ? read_session(tcp, conn) : read_plain(tcp, conn);
 
     conn->read_active = false;
     if (rc == READ_CLOSED)
@@ -1091,6 +1192,10 @@ static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     conn->state = NODUS_CONN_CONNECTED;
     conn->connected_at = nodus_time_now();
     conn->last_activity = conn->connected_at;
+    if (tcp->session_mode && !conn->is_unix &&
+        nodus_inter_session_start(conn) != 0) {
+        nodus_tcp_disconnect(tcp, conn); return;
+    }
     if (!conn->is_unix) {   /* TCP options; an AF_UNIX conn never connects async anyway */
         set_keepalive(conn->fd);
         set_nodelay(conn->fd);
@@ -1186,6 +1291,10 @@ static void handle_accept(nodus_tcp_t *tcp) {
     epoll_add(tcp->epoll_fd, fd, EPOLLIN | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET), conn);
 #endif
     /* (Windows: no registration — the select loop walks the pool.) */
+
+    if (tcp->session_mode && nodus_inter_session_start(conn) != 0) {
+        nodus_tcp_disconnect(tcp, conn); return;
+    }
 
     if (tcp->on_accept)
         tcp->on_accept(conn, tcp->cb_ctx);
@@ -1903,7 +2012,7 @@ int nodus_tcp_ws_listen(nodus_tcp_t *tcp, uint16_t port) {
     (void)tcp; (void)port;
     return -1;  /* Server is Linux-only (not Windows, not the browser) */
 #else
-    if (!tcp || tcp->ws_listen_fd >= 0)
+    if (!tcp || tcp->session_mode || tcp->ws_listen_fd >= 0)
         return -1;
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -1962,7 +2071,7 @@ int nodus_tcp_unix_listen(nodus_tcp_t *tcp, const char *path,
     return -1;  /* Server is Linux-only (not Windows, not the browser) */
 #else
     /* unix_path is set only by a successful call: one entry per transport. */
-    if (!tcp || !path || tcp->unix_path[0] != '\0')
+    if (!tcp || tcp->session_mode || !path || tcp->unix_path[0] != '\0')
         return -1;
 
     struct sockaddr_un sa;
@@ -2102,6 +2211,15 @@ static bool conn_connected_now(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     conn->state = NODUS_CONN_CONNECTED;
     conn->connected_at = nodus_time_now();
     conn->last_activity = conn->connected_at;
+    /* Includes module setup and callback in the same deferred-close scope. */
+    if (tcp->session_mode && !conn->is_unix) {
+        tcp->poll_depth++;
+        bool ok = nodus_inter_session_start(conn) == 0;
+        if (!ok) nodus_tcp_disconnect(tcp, conn);
+        tcp->poll_depth--;
+        if (!tcp->poll_depth) conn_release_deferred(tcp);
+        if (!ok) return false;
+    }
     if (!conn->is_unix) {   /* TCP options; meaningless on AF_UNIX */
         set_keepalive(conn->fd);
         set_nodelay(conn->fd);
@@ -2205,9 +2323,10 @@ nodus_tcp_conn_t *nodus_tcp_unix_connect(nodus_tcp_t *tcp, const char *path,
 #endif
 }
 
-nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
-                                     const char *ip, uint16_t port) {
+static nodus_tcp_conn_t *connect_pinned(nodus_tcp_t *tcp,
+                         const char *ip, uint16_t port, const nodus_key_t *expected) {
     if (!tcp || !ip) return NULL;
+    if (tcp->session_mode && !expected) return NULL;
 
     int fd = (int)socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return NULL;
@@ -2232,6 +2351,7 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
     /* C2 fix: this is an outbound conn — we opened it. Challenge handler will
      * only sign auth responses when this flag is true (closes signing oracle). */
     conn->auth_initiated_by_us = true;
+    if (expected) { conn->expected_peer_id = *expected; conn->expected_peer_id_set = true; }
 
     /* Phase 3.2d: bind fd to slot, log it. */
     fprintf(stderr, "TCP_CONN: FD_SET slot=%d fd=%d direction=connect "
@@ -2265,10 +2385,21 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
     return conn;
 }
 
+nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp, const char *ip, uint16_t port) {
+    return connect_pinned(tcp, ip, port, NULL);
+}
+
+nodus_tcp_conn_t *nodus_tcp_connect_pinned(nodus_tcp_t *tcp, const char *ip,
+                                          uint16_t port, const nodus_key_t *expected) {
+    return connect_pinned(tcp, ip, port, expected);
+}
+
 /* ── Auth pending queue ─────────────────────────────────────────── */
 
 static int pending_queue_append(nodus_tcp_conn_t *conn,
                                  const uint8_t *payload, size_t len) {
+    if (conn->tcp_parent && conn->tcp_parent->session_mode &&
+        (!payload || conn->state == NODUS_CONN_CLOSED || len > NODUS_MAX_FRAME_TCP)) return -1;
     if (conn_ws_not_open(conn)) return -1;
     size_t frame_size = conn_wire_size(conn, len);
 
@@ -2307,8 +2438,32 @@ static int pending_queue_append(nodus_tcp_conn_t *conn,
     return 0;
 }
 
+static int send_session_locked(nodus_tcp_conn_t *conn, const uint8_t *payload,
+                               size_t len, nodus_tcp_progress_cb progress_cb,
+                               void *user_data);
+
 static int pending_flush_locked(nodus_tcp_conn_t *conn) {
     if (!conn->pending_buf || conn->pending_len == 0) return 0;
+    if (conn->session) {
+        if (!nodus_inter_session_is_open(conn)) return -1;
+        /* Detach the borrowed plaintext before sends can allocate/reallocate.
+         * Each frame is reserved and sealed in exactly this queue order. */
+        uint8_t *queued = conn->pending_buf;
+        size_t len = conn->pending_len;
+        conn->pending_buf = NULL; conn->pending_len = conn->pending_cap = 0;
+        size_t off = 0;
+        int rc = 0;
+        while (off < len) {
+            nodus_frame_t frame;
+            int used = nodus_frame_decode(queued + off, len - off, &frame);
+            if (used <= 0 || send_session_locked(conn, frame.payload, frame.payload_len, NULL, NULL) != 0) {
+                rc = -1; break;
+            }
+            off += (size_t)used;
+        }
+        free(queued);
+        return rc;
+    }
 
     if (conn->wpos > 0) {
         size_t remaining = conn->wlen - conn->wpos;
@@ -2359,9 +2514,12 @@ int nodus_tcp_send(nodus_tcp_conn_t *conn,
     /* One critical section for the gate and the write, so an auth result
      * cannot land between "still pending" and the append. */
     wl_enter(tcp);
-    if (conn->auth_required && conn->auth_state == NODUS_CONN_AUTH_FAILED)
+    if (conn->tcp_parent && conn->tcp_parent->session_mode && !conn->is_unix &&
+        !conn->is_ws && !nodus_inter_session_is_open(conn))
+        rc = pending_queue_append(conn, payload, len);
+    else if (!conn->session && conn->auth_required && conn->auth_state == NODUS_CONN_AUTH_FAILED)
         rc = -1;
-    else if (conn->auth_required && conn->auth_state != NODUS_CONN_AUTH_OK)
+    else if (!conn->session && conn->auth_required && conn->auth_state != NODUS_CONN_AUTH_OK)
         rc = pending_queue_append(conn, payload, len);  /* auth in progress */
     else
         rc = send_progress_locked(conn, payload, len, NULL, NULL);
@@ -2385,6 +2543,80 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
     return rc;
 }
 
+/* Reserve ALL storage before cmt_p2p_sc_write can advance a counter.
+ * The FIFO node and its sealed buffer are allocated before sealing; after
+ * sealing only infallible pointer/length updates remain. A refused frame
+ * reaches on_pending_full as the original plaintext and consumes nothing.
+ * Reference secret_connection.go:194-229, approved build plan 3.1 b. */
+static int send_session_locked(nodus_tcp_conn_t *conn, const uint8_t *payload,
+                               size_t len, nodus_tcp_progress_cb progress_cb,
+                               void *user_data) {
+    if (!nodus_inter_session_is_open(conn)) return pending_queue_append(conn, payload, len);
+    size_t plain_size = conn_wire_size(conn, len);
+    size_t sealed_size = session_sealed_size(plain_size);
+    if (conn->wpos) {
+        memmove(conn->wbuf, conn->wbuf + conn->wpos, conn->wlen - conn->wpos);
+        conn->wlen -= conn->wpos; conn->wpos = 0;
+    }
+    bool queued = conn->pending_count > 0 || conn_wbuf_ensure(conn, conn->wlen + sealed_size) != 0;
+    nodus_pending_frame_t *node = NULL;
+    uint8_t *dst = NULL, *plain = NULL;
+    if (queued) {
+        if (conn->pending_count >= NODUS_PENDING_MAX_FRAMES ||
+            sealed_size > NODUS_PENDING_MAX_BYTES - conn->pending_bytes) goto full;
+        node = calloc(1, sizeof(*node));
+        if (!node) goto full;
+        node->encoded = malloc(sealed_size);
+        if (!node->encoded) { free(node); node = NULL; goto full; }
+        node->frame_size = sealed_size;
+        /* No extra clock: the session clock is read only for its deadline. */
+        dst = node->encoded;
+    } else dst = conn->wbuf + conn->wlen;
+    plain = malloc(plain_size);
+    if (!plain) {
+        if (node) { free(node->encoded); free(node); }
+        goto full;
+    }
+    if (conn_wire_encode(conn, plain, plain_size, payload, len) != plain_size) {
+        free(plain);
+        if (node) { free(node->encoded); free(node); }
+        return -1;
+    }
+    size_t written = 0;
+    int rc = nodus_inter_session_seal(conn, plain, plain_size, dst, sealed_size, &written);
+    free(plain);
+    if (rc != CMT_OK || written != sealed_size) {
+        if (node) { free(node->encoded); free(node); }
+        nodus_tcp_session_resume(conn); return -1;
+    }
+    if (queued) {
+        if (conn->pending_tail) conn->pending_tail->next = node;
+        else conn->pending_head = node;
+        conn->pending_tail = node;
+        conn->pending_count++; conn->pending_bytes += sealed_size;
+        conn->pending_enqueued_count++;
+    } else conn->wlen += written;
+    conn->send_ok_count++; conn->send_bytes_total += len;
+#ifdef NODUS_TCP_EPOLL
+    nodus_tcp_t *tcp = conn->tcp_parent;
+    uint32_t events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET);
+    epoll_mod(tcp->epoll_fd, conn->fd, events, conn);
+#endif
+    if (queued) return 0;
+    ntcp_io_t io = conn_flush_wbuf(conn, progress_cb, user_data);
+    if (conn->wpos == conn->wlen) conn->wpos = conn->wlen = 0;
+    if (io == NTCP_IO_PROGRESS || io == NTCP_IO_WOULDBLOCK) return 0;
+    conn->send_error_count++; return -1;
+full:
+    if (conn->tcp_parent->on_pending_full) {
+        conn->tcp_parent->on_pending_full(conn, payload, len, conn->tcp_parent->pending_full_ctx);
+        conn->pending_hint_fallback_count++; return 0;
+    }
+    conn->send_full_count++;
+    QGP_LOG_WARN(LOG_TAG_TCP, "session send queue full, slot=%d", conn->slot);
+    return -1;
+}
+
 /* The send path proper; the caller holds the write lock. */
 static int send_progress_locked(nodus_tcp_conn_t *conn,
                                 const uint8_t *payload, size_t len,
@@ -2406,6 +2638,11 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
         QGP_LOG_WARN(LOG_TAG_TCP, "send: ws upgrade not complete, slot=%d", conn->slot);
         return -1;
     }
+
+    /* Raw/progress APIs cannot bypass the session gate, even before
+     * connect-complete has allocated its machine. */
+    if (conn->tcp_parent && conn->tcp_parent->session_mode && !conn->is_ws && !conn->is_unix)
+        return send_session_locked(conn, payload, len, progress_cb, user_data);
 
     /* Phase 3.2d: log first send per conn — captures (slot, fd, conn ptr,
      * peer, has_crypto) at the moment data is first written. Compare with
@@ -2609,7 +2846,7 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
 
 #ifdef _WIN32
 
-int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
+static int tcp_poll_io(nodus_tcp_t *tcp, int timeout_ms) {
     if (!tcp) return -1;
 
     fd_set rfds, wfds, efds;
@@ -2733,7 +2970,7 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
  * belongs to the caller, which yields to the browser event loop between
  * calls (emscripten_sleep in nodus_client.c) — without that yield SOCKFS
  * never delivers bytes. */
-int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
+static int tcp_poll_io(nodus_tcp_t *tcp, int timeout_ms) {
     if (!tcp) return -1;
     (void)timeout_ms;
 
@@ -2829,7 +3066,7 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
 
 #else /* Linux/Android: epoll */
 
-int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
+static int tcp_poll_io(nodus_tcp_t *tcp, int timeout_ms) {
     if (!tcp) return -1;
 
     /* Re-enable EPOLLOUT for connections with pending writes */
@@ -2877,6 +3114,10 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
             /* Unix socket listener (marker set in nodus_tcp_unix_listen);
              * not a connection — must not be dereferenced as one. */
             handle_accept_unix(tcp);
+            continue;
+        }
+        if ((void *)conn == (void *)&tcp->session_mode) {
+            nodus_inter_session_poll(tcp->session_mode);
             continue;
         }
 
@@ -2940,6 +3181,21 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
 }
 
 #endif /* _WIN32 / __EMSCRIPTEN__ / epoll */
+
+int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
+    if (!tcp) return -1;
+    if (!tcp->session_mode) return tcp_poll_io(tcp, timeout_ms);
+    /* Completion/deadline callbacks get the same deferred-close scope as
+     * socket callbacks, including passes with no readiness events. */
+    tcp->poll_depth++;
+    nodus_inter_session_poll(tcp->session_mode);
+    timeout_ms = nodus_inter_session_poll_timeout(tcp->session_mode, timeout_ms);
+    int rc = tcp_poll_io(tcp, timeout_ms);
+    nodus_inter_session_poll(tcp->session_mode);
+    tcp->poll_depth--;
+    if (!tcp->poll_depth) conn_release_deferred(tcp);
+    return rc;
+}
 
 /* ── Shared public API ───────────────────────────────────────────── */
 

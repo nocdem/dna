@@ -147,6 +147,11 @@ typedef struct nodus_tcp_conn {
     uint64_t            connected_at;
     uint64_t            last_activity;
     int                 slot;        /* Index in pool */
+    uint64_t            generation;  /* session generation, never reused */
+
+    /* Opt-in 4002 stream session. The owner alone opens its admission gate;
+     * channel_crypto remains unestablished on this path. */
+    struct nodus_inter_session_conn *session;
 
     /* Channel encryption — owned per-conn (B3 fix). Inline storage
      * eliminates the pointer-aliasing race that caused production
@@ -389,6 +394,11 @@ typedef struct nodus_tcp {
      * realloc under the other thread's write crashed the process. */
     void                    (*write_lock)(void *ctx, bool lock);
     void                     *write_lock_ctx;
+
+    /* Set before listen/connect. Session owners serialize every operation
+     * on their loop; worker threads touch only self-contained job copies. */
+    struct nodus_inter_session_module *session_mode;
+    uint64_t                  conn_generation;
 } nodus_tcp_t;
 
 /**
@@ -429,6 +439,19 @@ int nodus_tcp_ws_sweep(nodus_tcp_t *tcp, uint64_t now);
 /** Connect to a remote peer (non-blocking). Returns connection or NULL. */
 nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
                                      const char *ip, uint16_t port);
+
+/** Session dial: the expected fingerprint is installed before connect can
+ * complete or write HELLO. A session-mode unpinned connect is refused. */
+nodus_tcp_conn_t *nodus_tcp_connect_pinned(nodus_tcp_t *tcp,
+                       const char *ip, uint16_t port, const nodus_key_t *expected);
+
+/** Internal session attachment. Refuses existing listeners/connections,
+ * WebSocket/Unix entries or a write lock (session owner is single-threaded). */
+int nodus_tcp_set_session_mode(nodus_tcp_t *tcp, struct nodus_inter_session_module *session);
+/* Internal stream glue: append machine handshake output unchanged and
+ * schedule held bytes for budgeted processing on the loop. */
+int nodus_tcp_session_queue_wire(nodus_tcp_conn_t *conn, const uint8_t *p, size_t n);
+void nodus_tcp_session_resume(nodus_tcp_conn_t *conn);
 
 /**
  * Open the Unix domain socket entry: a listening AF_UNIX stream socket at

@@ -131,6 +131,8 @@ set(NODUS_SOURCES
 
     # Transport — TCP is cross-platform (epoll on Linux, select on Windows)
     src/transport/nodus_tcp.c
+    # Shared 4002 session machine host and worker (no server wiring).
+    src/server/nodus_inter_session.c
     # Socket readiness + socket shims for the ports 4000-4004 (net-layer
     # design 2026-10-19, package N1): epoll on Linux/Android, select on
     # Windows. Today's user: the 4004 host (nodus_p2p_host.c below).
@@ -1813,6 +1815,13 @@ add_test(NAME test_ws_server COMMAND test_ws_server)
 add_executable(test_tcp_deferred_close tests/test_tcp_deferred_close.c)
 target_link_libraries(test_tcp_deferred_close nodus dsa nodus)
 add_test(NAME test_tcp_deferred_close COMMAND test_tcp_deferred_close)
+
+# Opt-in 4002 sealed streams, both roles, owner gate and worker generations.
+# Kernel-chosen loopback ports; no environment or files. Orchestrator also
+# runs this target under AddressSanitizer/UndefinedBehaviorSanitizer.
+add_executable(test_inter_session tests/test_inter_session.c)
+target_link_libraries(test_inter_session nodus dsa kem nodus crypto)
+add_test(NAME test_inter_session COMMAND test_inter_session)
 
 # Read budget: one nodus_tcp_poll call reads at most
 # NODUS_TCP_READ_BUDGET_FRAMES frames of one connection, the rest is still
