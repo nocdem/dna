@@ -32,6 +32,7 @@ test('failed Ixios derivation shows the web wallet unavailable text', { timeout:
   await withPortfolioPage(async (page, origin) => {
     await page.goto(`${origin}/test/fixtures/functions.html?ixios-unavailable`);
     await page.waitForFunction(() => window.fixture?.ready);
+    await page.locator('#quick-receive').click();
     await page.locator('#chain').selectOption('ixios');
     assert.equal(await page.locator('#ixios-address-status').isVisible(), true);
     assert.equal(await page.locator('#ixios-address-status').textContent(), 'Ixios address unavailable. Lock and reopen your wallet to retry.');

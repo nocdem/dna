@@ -40,21 +40,27 @@ export async function checkPortfolioFlows(page, origin) {
   for (const method of ['getNodusBalances', 'getCpunkBalance', 'getIxiosBalance', 'getSolanaBalances', 'getTronBalances', 'getPrices']) assert.ok(calls.some(call => call[0] === method));
   assert.ok(calls.some(([method, args]) => method === 'getEvmBalances' && args[0] === 'ethereum'));
   assert.ok(calls.some(([method, args]) => method === 'getEvmBalances' && args[0] === 'bsc'));
+  await page.locator('.wallet-navigation a[href="#assets-panel"]').click();
   await page.locator('#portfolio-filters button[data-chain="ethereum"]').click();
   assert.equal(await page.locator('#balances .chain-holding').evaluateAll(rows => rows.length > 0 && rows.every(row => row.dataset.chain === 'ethereum')), true);
+  await page.locator('#page-assets-panel .page-back').click();
   await page.locator('#portfolio-hide').click(); assert.equal(await page.locator('#portfolio-total').textContent(), '••••');
   await page.locator('#portfolio-hide').click();
+  await page.locator('#quick-send').click();
   await page.locator('#chain').selectOption('solana');
   assert.equal(await page.locator('#receive-address').textContent(), '3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx');
   assert.deepEqual(await page.locator('#asset option').allTextContents(), ['SOL']);
   await page.locator('#recipient').fill('public fixture recipient'); await page.locator('#amount').fill('1.234');
-  await page.locator('.device-logs-link a').evaluate(link => link.closest('.wallet-page').hidden = false);
-  await page.locator('#balance-refresh-minutes').selectOption('0', { force: true });
+  await page.locator('#page-send-form .page-back').click();
+  await page.locator('.wallet-navigation a[href="#settings"]').click();
+  await page.locator('#balance-refresh-minutes').selectOption('0');
+  await page.locator('#page-settings .page-back').click();
   await page.evaluate(() => { window.fixture.price('300000000'); window.fixture.hold(); document.getElementById('portfolio-refresh').click(); });
   assert.equal(await page.locator('#portfolio-refresh').isDisabled(), true);
   await page.evaluate(() => window.fixture.release());
   await page.waitForFunction(() => document.getElementById('portfolio-total').textContent === '$3.00');
   assert.equal(await page.locator('#recipient').inputValue(), 'public fixture recipient'); assert.equal(await page.locator('#amount').inputValue(), '1.234');
+  await page.locator('.wallet-navigation a[href="#assets-panel"]').click();
   await page.locator('#portfolio-filters button[data-chain="ixios"]').click();
   assert.equal(await page.locator('.asset-group[data-symbol="IXIOS"] .asset-value strong').textContent(), '8');
   assert.deepEqual(await page.locator('.chain-holding[data-chain="ixios"] .holding-actions button').allTextContents(), ['Receive']);
@@ -69,7 +75,7 @@ export async function checkPortfolioFlows(page, origin) {
   await page.waitForFunction(() => window.fixture?.ready);
   const assertSettled = async () => {
     assert.equal(await page.locator('#portfolio-label').textContent(), 'Known value · incomplete');
-    assert.doesNotMatch(await page.locator('#portfolio-status').textContent(), /Reading all networks/);
+    assert.equal(await page.locator('#portfolio-status').isVisible(), false);
     assert.equal(await page.locator('.network-health[data-chain="ixios"]').getAttribute('data-reading'), 'false');
     assert.equal(await page.locator('#portfolio-refresh').isDisabled(), false);
     assert.equal(await page.locator('#portfolio-total').textContent(), '$2.00');
@@ -94,7 +100,8 @@ export async function checkPortfolioFlows(page, origin) {
     Object.assign(window.fixture.state.nodus, { stakeable: true, nameable: true, registrable: true, vaultable: true });
     window.fixture.screen.update();
   });
-  await page.locator('#quick-name:visible').waitFor();
+  await page.locator('#wallet-register-name:visible').waitFor();
+  assert.equal(await page.locator('#quick-name').isVisible(), false);
   assert.equal(await page.locator('#quick-earn').isEnabled(), true);
   assert.equal(await page.locator('#nav-earn').isVisible(), true);
   await page.locator('#nav-vaults:visible').waitFor();
@@ -121,6 +128,7 @@ export async function checkPortfolioStatus(page, origin) {
   for (const state of ['idle', 'locked', 'error', 'unknown', 'identifying', 'identified', 'connecting', 'ready']) {
     await page.evaluate(value => { window.fixture.state.nodus.state = value; window.fixture.screen.update(); }, state);
     assert.equal(await page.locator('#net-status, #net-status-text').count(), 0);
+    assert.equal(await page.locator('#portfolio-status').isVisible(), false);
     assert.equal(await page.locator('#lock').isVisible(), true);
     assert.equal(await page.locator('.network-health[data-chain="nodus"]').count(), 1);
   }

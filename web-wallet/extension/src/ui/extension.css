@@ -10,12 +10,20 @@ body.extension-page[data-page="popup"] { overflow: auto; }
 #wallet-navigation:empty, #wallet-status:empty { display: none; }
 #screen, #wallet-navigation { min-width: 0; }
 
-/* Compact spacing while reserving label/status lines across the initial read. */
+/* Keep both greetings beside the action in one row, using src/style.css:892's
+   44px touch target. Home has equal gaps above and below the portfolio. */
+.extension-page #wallet-heading { box-sizing: content-box; min-height: 44px; padding-bottom: 24px; margin-bottom: 24px; border-bottom: 1px solid #d5f99814; }
+.extension-page #wallet-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.extension-page #wallet-register-name { flex-shrink: 0; max-width: 50%; height: 44px; padding-block: 0; }
+.extension-page #wallet-home > #wallet-heading { padding-bottom: 0; }
+.extension-page #portfolio-networks { margin-top: 24px; padding-top: 0; }
+
+/* Amount first, with a smaller label below it. */
 .extension-page .portfolio-card { padding: 16px; }
 .extension-page .portfolio-heading { display: grid; grid-template-columns: minmax(0, 1fr) 32px 32px; }
-.extension-page .portfolio-heading .eyebrow { display: flex; align-items: center; min-height: 3.4em; }
-.extension-page .portfolio-amount { margin: 8px 0 4px; }
-.extension-page #portfolio-status { min-height: 3.4em; margin: 4px 0 10px; }
+.extension-page #portfolio-label { font-size: 8px; margin: 4px 0 10px; }
+.extension-page .portfolio-amount { margin: 0; }
+.extension-page .network-health { align-items: center; }
 
 /* Matching eye and lock buttons, with the shared renderer's Hide/Show text retained
    as the accessible name and its aria-pressed state controlling the eye.
@@ -26,13 +34,17 @@ body.extension-page[data-page="popup"] { overflow: auto; }
 .extension-page #portfolio-hide:hover, .extension-page #lock:hover { color: var(--lime); filter: none; }
 .extension-page #portfolio-hide:focus-visible, .extension-page #lock:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
 
-/* The reference already uses two equal columns on narrow screens. Keep four
-   equal columns on full pages, with shared row heights even beside Soon. */
-.extension-page .transfer-buttons { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: 1fr; flex: 1; }
+/* Former text Lock wallet: .small (src/style.css:134,892-893).
+   Send/Receive above Earn/Swap, with equal boxes and the same small text.
+   Its height is one text line + 8px padding and 1px border on each side;
+   center glyphs and Soon without letting their line boxes size both rows. */
+.extension-page .transfer-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: 1fr; flex: none; justify-items: start; }
+.extension-page .transfer-buttons button { display: inline-flex; align-items: center; justify-content: center; flex: none; height: calc(1lh + 18px); min-height: 0; padding: 8px 11px; font-size: 11px; }
+.extension-page .transfer-buttons :is(#quick-send, #quick-receive, #quick-earn, #quick-swap) { width: 100%; }
+.extension-page .transfer-buttons button span { font-size: inherit; }
 @media (max-width: 760px) {
   .extension-page .portfolio-card { padding: 14px; }
-  .extension-page #portfolio-status { min-height: 5.1em; }
-  .extension-page .transfer-buttons { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .extension-page .transfer-buttons button { min-height: 44px; padding-inline: 14px; }
 }
 
 /* Existing onboarding and site requests retain the reference's typography. */
