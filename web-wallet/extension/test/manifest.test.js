@@ -18,13 +18,13 @@ async function workerFixture(t) {
   } });
   t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
   const writes = [];
-  const runtime = { onConnect: signal() };
-  globalThis.chrome = { runtime, storage: { session: { set: value => writes.push(value) } } };
+  const runtime = { onConnect: signal() }, alarms = { onAlarm: signal() };
+  globalThis.chrome = { runtime, alarms, storage: { session: { set: value => writes.push(value) } } };
   globalThis.self = new EventTarget();
   self.serviceWorker = { state: 'installing' };
   const hooks = globalThis.stateHooks = { retainedFixtureHook: true };
   await import(`../src/service-worker.js?fixture=${++workerFixtureId}`);
-  return { runtime, writes, hooks, lazyListener: stateHooks.lazyListener };
+  return { runtime, alarms, writes, hooks, lazyListener: stateHooks.lazyListener };
 }
 
 // Node 22, no flags or browser; Chrome/storage/alarm fixtures stay in memory, no generated artifacts.
@@ -42,10 +42,11 @@ test('MV3 uses the source worker and isolated/main document-start entries', () =
   ]);
 });
 
-// Proves all six hosts and only the approved permissions remain; subset assertions could silently retain a removed permission.
+// Pins the approved hosts and transaction notification permission; a subset
+// assertion could silently retain an unrelated permission.
 test('permissions and external connections match the approved reference subset', () => {
   assert.deepEqual(manifest.host_permissions, ['file://*/*', 'http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*']);
-  assert.deepEqual([...manifest.permissions].sort(), ['alarms', 'storage', 'unlimitedStorage'].sort());
+  assert.deepEqual([...manifest.permissions].sort(), ['alarms', 'notifications', 'storage', 'unlimitedStorage'].sort());
   assert.equal(manifest.externally_connectable, undefined);
   assert.equal(manifest.content_security_policy.extension_pages, "script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; frame-ancestors 'self'; font-src 'self';");
   assert.deepEqual(manifest.cross_origin_opener_policy, { value: 'same-origin-allow-popups' });
@@ -133,6 +134,17 @@ test('service worker retains hooks and the reference keep-alive cadence', async 
   t.mock.timers.tick(1); assert.equal(writes.length, 2);
 });
 
+// A restarting worker must buffer the waking alarm while its async background
+// import runs. Testing only an already attached listener would miss that loss.
+test('service worker buffers the waking transaction alarm until background attaches', async t => {
+  const { alarms, lazyListener } = await workerFixture(t), received = [];
+  alarms.onAlarm.emit({ name: 'TRANSACTION_NOTIFICATIONS_ALARM' });
+  lazyListener.addListener('alarms', 'onAlarm', alarm => received.push(alarm.name));
+  assert.deepEqual(received, ['TRANSACTION_NOTIFICATIONS_ALARM']);
+  alarms.onAlarm.emit({ name: 'AUTO_LOCK_TIMEOUT_ALARM' });
+  assert.deepEqual(received, ['TRANSACTION_NOTIFICATIONS_ALARM', 'AUTO_LOCK_TIMEOUT_ALARM']);
+});
+
 // Proves the default twenty-second leak warning reports remaining buffered calls; draining every listener or asserting only on a timer would falsely pass.
 test('lazy listener warns about undrained events after twenty seconds', async t => {
   const { runtime } = await workerFixture(t);
@@ -140,6 +152,8 @@ test('lazy listener warns about undrained events after twenty seconds', async t 
   delete process.env.IN_TEST;
   t.after(() => { if (saved === undefined) delete process.env.IN_TEST; else process.env.IN_TEST = saved; });
   runtime.onConnect.emit({ name: 'popup' }); runtime.onConnect.emit({ name: 'notification' });
+  // The alarm consumer is attached; this test isolates the undrained ports.
+  stateHooks.lazyListener.addListener('alarms', 'onAlarm', () => {});
   const warnings = [];
   t.mock.method(console, 'warn', message => warnings.push(message));
   t.mock.timers.tick(19999); assert.deepEqual(warnings, []);

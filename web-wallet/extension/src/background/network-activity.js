@@ -1,5 +1,5 @@
 import { ACTIVITY_KEY, HISTORY_KEY, VAULT_KEY } from '../../../src/vault.js';
-import { recordActivity } from '../../../src/activity.js';
+import { recordActivity, terminal } from '../../../src/activity.js';
 import { parseActivity, serializeActivity, parseHistory, serializeHistory } from '../../../src/activity-storage.js';
 import { endpointUrl } from '../../../src/core.js';
 
@@ -8,7 +8,7 @@ import { endpointUrl } from '../../../src/core.js';
 // the unchanged encrypted formats under separate testnet storage keys, then
 // restore only the endpoint belonging to that bucket. Mainnet keeps the
 // pre-existing shared keys in nodus.js, so old sends remain mainnet sends.
-export function createNetworkActivity({ chain, network, session: s, storage, current }) {
+export function createNetworkActivity({ chain, network, session: s, storage, current, onActivityChanged }) {
   const activityKey = `${ACTIVITY_KEY}.${chain}.${network.id}`, historyKey = `${HISTORY_KEY}.${chain}.${network.id}`;
   let rows = [], page = null, blocked = false, error = '', writes = Promise.resolve();
   function checkedRows(value) {
@@ -23,6 +23,7 @@ export function createNetworkActivity({ chain, network, session: s, storage, cur
     try { page = (await parseHistory(saved[historyKey], s.id, s.historyKey))[chain] ?? null; }
     catch { page = null; }
     current();
+    onActivityChanged?.(rows, { restored: true, network: network.id });
   })();
   ready.catch(() => {});
   function enqueue(work) {
@@ -49,6 +50,8 @@ export function createNetworkActivity({ chain, network, session: s, storage, cur
       const row = recordActivity(transfer, details); rows.push(row); return row;
     },
     persist() {
+      const notificationRows = rows.map(({ chain, hash, status }) => ({ chain, hash, status }));
+      onActivityChanged?.(notificationRows.filter(row => terminal(row.status)), { network: network.id });
       return enqueue(async saved => {
         if (blocked) throw new Error('Saved activity is unverified. Check the explorer and discard the unreadable history before sending.');
         const previous = checkedRows(await parseActivity(saved[activityKey], s.id, s.addresses, s.key)); current();
@@ -56,6 +59,7 @@ export function createNetworkActivity({ chain, network, session: s, storage, cur
           .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || (a.hash < b.hash ? -1 : a.hash > b.hash ? 1 : 0));
         const encrypted = await serializeActivity(s.id, combined, s.key); current();
         await storage.set({ [activityKey]: encrypted }); current();
+        onActivityChanged?.(notificationRows, { network: network.id });
       });
     },
     history() { current(); return page?.address === s.addresses[chain] ? page : null; },

@@ -8,6 +8,7 @@ import { serializeError } from '@metamask/rpc-errors';
 import { ACTIVITY_KEY, VAULT_KEY, parseVault } from '../../src/vault.js';
 import { NODUS_TOKEN_ID } from '../../src/nodus/network.js';
 import { AUTO_LOCK_TIMEOUT_ALARM } from '../src/background/auto-lock-alarm.js';
+import { chainNetwork } from '../src/constants/networks.js';
 import { connectTrusted } from '../src/ui/trusted-port.js';
 import { createWalletUi } from '../src/ui/wallet-ui.js';
 
@@ -24,14 +25,17 @@ function event() {
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
 let backgroundModule;
 async function setup(t, moduleAdditions = {}, makeModule = module => module) {
-  const values = {}, calls = [], state = { busy: false, mismatch: false, historyBad: false, failSave: false }, memory = new Uint8Array(256).fill(7);
+  const values = {}, notificationValues = {}, notifications = [], calls = [], state = { busy: false, mismatch: false, historyBad: false, failSave: false }, memory = new Uint8Array(256).fill(7);
   const fixture = {
     runtime: { id: 'nodus-test', onConnect: event(), getManifest: () => ({ version: '0.1.132' }), getURL: path => `chrome-extension://nodus-test/${path}` },
     storage: { async get(key) { return Object.fromEntries((Array.isArray(key) ? key : [key]).map(name => [name, structuredClone(values[name])])); }, async set(items) {
-      if (state.failSave && items[ACTIVITY_KEY]) throw new Error('fixture storage failure');
+      if (state.failSave && Object.keys(items).some(key => key.startsWith(ACTIVITY_KEY))) throw new Error('fixture storage failure');
       Object.assign(values, structuredClone(items));
     } },
     alarms: { onAlarm: event(), async clear() {}, async create() {} },
+    notificationStorage: { async get(key) { return { [key]: structuredClone(notificationValues[key]) }; },
+      async set(items) { Object.assign(notificationValues, structuredClone(items)); } },
+    notifications: { async create(id, value) { notifications.push({ id, ...value }); state.onNotification?.(value); return id; } },
     windows: { onRemoved: event(), async getAll() { return []; } },
   };
   const module = {
@@ -105,8 +109,75 @@ async function setup(t, moduleAdditions = {}, makeModule = module => module) {
   const background = await backgroundModule.createBackground({ ...fixture, nodusOptions: { factory: async () => makeModule(module) } });
   t.after(() => background.destroy());
   await background.vaultStore.create(password, phrase);
-  return { background, fixture, values, calls, state, memory };
+  return { background, fixture, values, calls, state, memory, notifications };
 }
+
+// Real submit and Activity scanner through background composition; no popup,
+// flags, network or disk artifacts. A notifier-only test would miss the wiring.
+test('a Nodus submit and its Activity confirmation notify without an open popup', { timeout: 10000 }, async t => {
+  const { background, state, notifications } = await setup(t);
+  state.scanWait = deferred(); const finalShown = deferred();
+  state.onNotification = value => { if (value.title.includes('confirmed')) finalShown.resolve(); };
+  await background.unlock(password, options);
+  const review = await background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID });
+  await background.nodus.confirmSend(review.id);
+  await background.transactionNotifications.flush();
+  assert.equal(notifications.length, 1); assert.match(notifications[0].title, /pending/u);
+  state.scanWait.resolve({ found: true, tip: '11', height: '11' });
+  await finalShown.promise; await background.transactionNotifications.flush();
+  assert.equal(background.nodus.getLocalHistory()[0].status, 'confirmed');
+  assert.equal(notifications.length, 2); assert.match(notifications[1].title, /confirmed/u);
+  await background.nodus.getHistory(); await background.transactionNotifications.flush();
+  assert.equal(notifications.length, 2);
+});
+
+// Real encrypted Activity restore resets all three saved confirmations to
+// pending before the scanner confirms them again. An empty notification store
+// models browser restart; a notifier-only final-row fixture misses that reset.
+// In-memory module/storage replies; no flags, network or generated artifacts.
+test('restored final Nodus transfers do not replay notifications when scanned again', { timeout: 10000 }, async t => {
+  const { background, fixture, values, notifications } = await setup(t, {
+    async scanConfirm() { return { found: true, tip: '11', height: '11' }; },
+  });
+  const rows = ['01', '02', '03'].map(prefix => savedRow({ hash: prefix.repeat(64), status: 'confirmed' }));
+  await saveActivity(values, rows);
+  const saved = deferred(), set = fixture.storage.set; let writes = 0;
+  t.mock.method(fixture.storage, 'set', async items => {
+    await set(items);
+    if (items[ACTIVITY_KEY] && ++writes === rows.length) saved.resolve();
+  });
+  await background.unlock(password, options);
+  assert.deepEqual(background.nodus.getLocalHistory().map(row => row.status), ['pending', 'pending', 'pending']);
+  await background.transactionNotifications.flush(); assert.deepEqual(notifications, []);
+  await background.nodus.getHistory(); await saved.promise;
+  await background.transactionNotifications.flush();
+  assert.deepEqual(background.nodus.getLocalHistory().map(row => row.status), ['confirmed', 'confirmed', 'confirmed']);
+  assert.deepEqual(notifications, []);
+});
+
+// The mainnet and testnet Activity writers must both feed the same notifier.
+// Rows are public fixtures, not broadcasts; this pins persistence wiring and
+// that a known final result still notifies when the Activity save fails.
+test('all external-chain Activity buckets notify their saved status changes', async t => {
+  const { background, notifications, state } = await setup(t); await background.unlock(password, options);
+  const addresses = background.walletKeys.getAddresses();
+  for (const [chain, network, symbol, hash] of [
+    ['ethereum', 'mainnet', 'ETH', '0x' + '11'.repeat(32)], ['bsc', 'mainnet', 'BNB', '0x' + '22'.repeat(32)],
+    ['solana', 'mainnet', 'SOL', '1'.repeat(88)], ['tron', 'mainnet', 'TRX', '33'.repeat(32)],
+    ['solana', 'devnet', 'SOL', '2'.repeat(88)], ['tron', 'nile', 'TRX', '44'.repeat(32)],
+  ]) {
+    const activity = background.nodus.chainActivity(chain, network); await activity.ready;
+    const endpoint = chainNetwork(chain, network).endpoint;
+    const record = activity.append({ chain, from: addresses[chain], to: addresses[chain], symbol, amount: '1', endpoint }, { hash, nonce: 7 });
+    await activity.persist(); await background.transactionNotifications.flush();
+    assert.match(notifications.at(-1).title, /pending/u);
+    record.status = 'failed'; state.failSave = true;
+    await assert.rejects(activity.persist(), /fixture storage failure/u);
+    state.failSave = false; await background.transactionNotifications.flush();
+    assert.match(notifications.at(-1).title, /failed/u);
+  }
+  assert.equal(notifications.length, 12);
+});
 
 // Node >=22.14, public phrase/in-memory transport, no flags/network/artifacts.
 // Pins optional-module detection through getState, the real trusted mux and

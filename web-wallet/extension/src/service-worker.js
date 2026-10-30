@@ -88,7 +88,7 @@ class ExtensionLazyListener {
 // Plan §8:907/§9:930-932 removes telemetry/webpack bootstrap; port its stateHooks initialization (app/scripts/load/bootstrap.ts:4) here.
 globalThis.stateHooks ??= {};
 // Port: app/service-worker.ts:24-30; package 4 attaches the background event consumers.
-const lazyListener = new ExtensionLazyListener(chrome, { runtime: ['onConnect'] });
+const lazyListener = new ExtensionLazyListener(chrome, { runtime: ['onConnect'], alarms: ['onAlarm'] });
 globalThis.stateHooks.lazyListener = lazyListener;
 let runImportScriptsInitiated = false;
 
