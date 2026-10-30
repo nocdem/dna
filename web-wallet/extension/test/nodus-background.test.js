@@ -90,7 +90,7 @@ async function setup(t, moduleAdditions = {}, makeModule = module => module) {
       if (state.busy) throw Object.assign(new Error('fixture busy'), { busy: true });
       return { accepted: true };
     },
-    async scanConfirm() { return state.scanWait ? state.scanWait.promise : { found: false, tip: '10' }; },
+    async scanConfirm() { calls.push(['scanConfirm']); return state.scanWait ? state.scanWait.promise : { found: false, tip: '10' }; },
     async tick() { calls.push(['tick']); },
     async addrHistory() {
       calls.push(['history']);
@@ -114,17 +114,25 @@ async function setup(t, moduleAdditions = {}, makeModule = module => module) {
 
 // Real submit and Activity scanner through background composition; no popup,
 // flags, network or disk artifacts. A notifier-only test would miss the wiring.
+// Incoming history starts the empty tracker at unlock. Advance its existing
+// 12-second timer explicitly; waiting on wall time exceeds this test's bound.
 test('a Nodus submit and its Activity confirmation notify without an open popup', { timeout: 10000 }, async t => {
-  const { background, state, notifications } = await setup(t);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { background, state, notifications, calls } = await setup(t);
   state.scanWait = deferred(); const finalShown = deferred();
   state.onNotification = value => { if (value.title.includes('confirmed')) finalShown.resolve(); };
   await background.unlock(password, options);
+  await background.incomingNotifications.check();
+  assert.ok(calls.some(([op]) => op === 'history'), 'incoming polling reads history at unlock');
   const review = await background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID });
   await background.nodus.confirmSend(review.id);
   await background.transactionNotifications.flush();
   assert.equal(notifications.length, 1); assert.match(notifications[0].title, /pending/u);
+  assert.equal(calls.filter(([op]) => op === 'scanConfirm').length, 0, 'the existing tracker waits for its next tick');
   state.scanWait.resolve({ found: true, tip: '11', height: '11' });
+  t.mock.timers.tick(12000);
   await finalShown.promise; await background.transactionNotifications.flush();
+  assert.equal(calls.filter(([op]) => op === 'scanConfirm').length, 1);
   assert.equal(background.nodus.getLocalHistory()[0].status, 'confirmed');
   assert.equal(notifications.length, 2); assert.match(notifications[1].title, /confirmed/u);
   await background.nodus.getHistory(); await background.transactionNotifications.flush();
@@ -305,6 +313,62 @@ test('every reconnect seed is wiped after identification succeeds or fails', asy
   }
 });
 
+// Retain actual tracker callbacks to model a timer already queued when lock
+// clears it. Awaiting each callback exposes its rejection without intercepting
+// unhandledRejection or changing the reconnect test's timer lifecycle.
+test('incoming balance tracker callbacks cannot read a locked or replaced session', async t => {
+  const { background } = await setup(t), callbacks = [], schedule = globalThis.setTimeout;
+  const activityFor = background.nodus.chainActivity.bind(background.nodus);
+  let bscRows = 0;
+  t.mock.method(background.nodus, 'chainActivity', (chain, ...args) => {
+    const activity = activityFor(chain, ...args), rows = activity.rows;
+    if (chain === 'bsc') t.mock.method(activity, 'rows', () => { bscRows++; return rows(); });
+    return activity;
+  });
+  const balances = t.mock.method(background.evm, 'getBalances', background.evm.getBalances.bind(background.evm));
+  t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
+    if (delay === 12000) callbacks.push(callback);
+    return schedule(callback, delay, ...args);
+  });
+  await background.unlock(password, options);
+  assert.equal(balances.mock.callCount(), 1, 'incoming polling starts the real BSC balance reader');
+  assert.ok(bscRows > 0, 'the real BSC tracker reads the current session');
+  assert.ok(callbacks.length >= 2, 'Nodus and BSC have installed their Activity trackers');
+  const previous = [...callbacks], before = bscRows;
+  await background.lock();
+  for (const tick of previous) await tick();
+  assert.equal(bscRows, before);
+  await background.unlock(password, options);
+  const reopened = bscRows;
+  for (const tick of previous) await tick();
+  assert.equal(bscRows, reopened, 'the old tracker cannot enter the replacement session');
+});
+
+// Hold the real BSC transport, not the balance facade. Lock must abort the
+// request and settle the poll without any later native/token balance reads.
+test('lock aborts the incoming BSC read and settles the pending check', async t => {
+  const { background } = await setup(t), entered = deferred(), requests = [];
+  let rejectRead, signal;
+  t.mock.method(globalThis, 'fetch', async (url, request) => {
+    if (String(url) !== new URL(background.evm.getState().endpoints.bsc).href) throw new Error('Unexpected network request.');
+    requests.push(JSON.parse(request.body).method); signal = request.signal;
+    entered.resolve();
+    return new Promise((_, reject) => {
+      rejectRead = reject;
+      const cancel = () => reject(signal.reason);
+      signal.addEventListener('abort', cancel, { once: true });
+      if (signal.aborted) cancel();
+    });
+  });
+  t.after(() => rejectRead?.(new Error('Held transport fixture released.')));
+  await background.unlock(password, options); await entered.promise;
+  const checking = background.incomingNotifications.check();
+  await background.lock();
+  assert.equal(signal.aborted, true, 'the session closes its in-flight BSC transport');
+  await checking;
+  assert.deepEqual(requests, ['eth_chainId']);
+});
+
 // G: background reads use the session account and reject unknown operations.
 // No flags/network/artifacts. Facade-only mocks would miss these client calls.
 test('contract account, simulation, estimate and ticket reads use the session client', async t => {
@@ -368,22 +432,38 @@ test('discarding quarantined activity preserves readable saved and live pending 
 });
 
 // Proves a tracker write failure never enables whole-file discard or destroys readable rows, reservations or kept envelope bytes.
-test('discard after a tracker persist failure keeps readable rows and busy envelopes', async t => {
+// Incoming polling has already started this tracker before submit. Advance its
+// frozen timer to reach the failing write; the promise alone cannot advance it.
+// Synchronize only the Nodus baseline: another reader's pacing may need that
+// same frozen clock. A held Solana history fixture pins this independence;
+// it uses no network, flags or disk artifacts and is released during cleanup.
+test('discard after a tracker persist failure keeps readable rows and busy envelopes', { timeout: 10000 }, async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   for (const quarantined of [[], [savedRow({ amount: 'unreadable', inputs: ['03'.repeat(64)] })]]) {
     const { background, values, state, calls, fixture } = await setup(t);
     const readable = savedRow({ inputs: ['02'.repeat(64)] });
     const { id, key } = await saveActivity(values, [readable], quarantined);
+    const otherHistory = deferred();
+    const solanaHistory = t.mock.method(background.solana, 'getHistory', () => otherHistory.promise);
+    t.after(() => otherHistory.resolve({ rows: [] }));
     await background.unlock(password, options);
+    await background.nodus.getHistory();
+    assert.equal(calls.filter(([op]) => op === 'history').length, 2, 'incoming polling and the Nodus queue barrier both read history');
+    assert.equal(solanaHistory.mock.callCount(), 1, 'the unrelated incoming reader remains pending');
     const failed = deferred(), set = fixture.storage.set;
     t.mock.method(fixture.storage, 'set', async items => {
       try { await set(items); }
       catch (error) { failed.resolve(); throw error; }
     });
     const review = await background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID });
+    const scans = calls.filter(([op]) => op === 'scanConfirm').length;
     state.busy = true; state.onSubmit = () => { state.failSave = true; };
     await assert.rejects(background.nodus.confirmSend(review.id), /fixture busy/);
+    assert.equal(calls.filter(([op]) => op === 'scanConfirm').length, scans);
+    t.mock.timers.tick(12000);
     await failed.promise; await new Promise(resolve => setImmediate(resolve));
+    assert.ok(calls.filter(([op]) => op === 'scanConfirm').length > scans, 'the timer ran the tracker after submit');
+    otherHistory.resolve({ rows: [] });
     assert.equal(background.nodus.getState().activityError, '');
     assert.equal(background.nodus.getState().quarantinedCount, quarantined.length);
     assert.equal((await background.nodus.getHistory()).activityError, 'fixture storage failure');

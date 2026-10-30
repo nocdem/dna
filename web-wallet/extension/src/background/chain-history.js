@@ -3,7 +3,7 @@ import { sentRowsToShow } from '../../../src/activity-storage.js';
 
 // src/app.js:290-352: account-history cache and provider pacing. The caller
 // supplies the session-bound authenticated history writer, never its key.
-export function createChainHistory({ getActivity, getAddresses, assertCurrent, read = readHistory }) {
+export function createChainHistory({ getActivity, getAddresses, assertCurrent, signal, read = readHistory }) {
   const jobs = new Map();
   return {
     async getHistory(chain, { manual = false, poll = false } = {}) {
@@ -25,7 +25,8 @@ export function createChainHistory({ getActivity, getAddresses, assertCurrent, r
       const job = { status: reading };
       job.promise = Promise.resolve().then(async () => {
         try {
-          const rows = await read(chain, address, { onStatus(text) { assertCurrent(); job.status = text || reading; } }); assertCurrent();
+          assertCurrent();
+          const rows = await read(chain, address, { signal, onStatus(text) { assertCurrent(); job.status = text || reading; } }); assertCurrent();
           await activity.saveHistory({ address, rows: mergeHistory(kept?.rows, rows), readAt: Date.now() }); assertCurrent();
           return snapshot(`Newest ${HISTORY_LIMIT} transfers as reported by ${HISTORY_SOURCES[chain]}, read ${new Date().toLocaleString()}.`);
         } catch (error) { assertCurrent(); return { ...snapshot(''), error: error.message }; }
