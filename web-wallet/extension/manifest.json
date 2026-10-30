@@ -35,7 +35,6 @@
     }
   ],
   "host_permissions": [
-    "http://localhost:8545/",
     "file://*/*",
     "http://*/*",
     "https://*/*",
