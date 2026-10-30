@@ -28,7 +28,7 @@ import { chainNetwork } from '../constants/networks.js';
 
 // Approved plan §3.5 holder 3 / §5.4–5.5: the web-wallet client and its one
 // module queue live in the background. No secret or signed envelope enters UI state.
-export function createNodus({ lockCoordinator, storage, getAddresses, factory = nodusSendModuleFactory, approvals, getPermittedAccounts, onLock, getWords, onClient, onStateChanged }) {
+export function createNodus({ lockCoordinator, storage, getAddresses, factory = nodusSendModuleFactory, approvals, getPermittedAccounts, onLock, getWords, onClient, onStateChanged, onActivityChanged }) {
   let session, nextReview = 0, writes = Promise.resolve();
   const log = createSessionLog();
   function lock() {
@@ -158,6 +158,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
         s.quarantined = s.rows.quarantined ?? [];
       } catch (error) { s.activityBlocked = true; s.activityError = error.message; }
       current(s); combined.throwIfAborted();
+      onActivityChanged?.(s.rows, { restored: true });
       const identity = await s.client.unlock({ seed, fingerprint }); current(s);
       // src/evm/ui.js:96-104 and src/app.js:1275-1279: one account queue,
       // sharing the native pending coins and restored self-address records.
@@ -168,6 +169,8 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
   // src/app.js:202-225: authenticate, merge and seal before broadcast. The
   // service worker owns all writes, so its queue also joins every wallet UI.
   function persist(s) {
+    const notificationRows = s.rows.map(({ chain, hash, status }) => ({ chain, hash, status }));
+    onActivityChanged?.(notificationRows.filter(row => terminal(row.status)));
     const operation = writes.catch(() => {}).then(async () => {
       current(s);
       if (s.activityBlocked) throw new Error('Saved activity is unverified. Check the explorer and discard the unreadable history before sending.');
@@ -182,6 +185,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
       const aside = rows.quarantined ?? [];
       const encrypted = await serializeActivity(s.id, combined, s.key, aside); current(s);
       await storage.set({ [ACTIVITY_KEY]: encrypted }); current(s);
+      onActivityChanged?.(notificationRows);
       // src/app.js:205,215-224 saves a snapshot without replacing live history.
       // A send may append while encryption/storage yields; its queued save
       // must still see that signed record when this older save completes.
@@ -296,7 +300,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
       if (network.id !== 'mainnet') {
         const key = `${chain}.${network.id}`;
         if (!s.networkActivities.has(key)) s.networkActivities.set(key,
-          createNetworkActivity({ chain, network, session: s, storage, current: check }));
+          createNetworkActivity({ chain, network, session: s, storage, current: check, onActivityChanged }));
         return s.networkActivities.get(key);
       }
       return {

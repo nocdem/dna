@@ -1,6 +1,7 @@
 import { createVaultStore } from './vault-store.js';
 import { createLockCoordinator } from './lock.js';
 import { createAutoLockAlarm } from './auto-lock-alarm.js';
+import { createTransactionNotifications } from './transaction-notifications.js';
 import { createKeyring } from './keyring.js';
 import { createWalletKeys } from './wallet-keys.js';
 import { createUnlock } from './unlock.js';
@@ -26,12 +27,21 @@ const publicResult = async value => JSON.parse(JSON.stringify(await value, (_key
 // Approved plan §3.5:388-435; packages 1-2 own the vault, key custody and shared lock.
 // Startup constructs fresh locked holders. Store composition receives only controller metadata, never key custody.
 export async function createBackground({ storage = chrome.storage.local, alarms = chrome.alarms,
-  runtime = chrome.runtime, windows = chrome.windows, tabs = globalThis.chrome?.tabs, nodusOptions = {}, consumeNodusSeed, readPrices = readWalletPrices } = {}) {
+  runtime = chrome.runtime, windows = chrome.windows, tabs = globalThis.chrome?.tabs,
+  notifications = globalThis.chrome?.notifications, notificationStorage = globalThis.chrome?.storage?.session,
+  nodusOptions = {}, consumeNodusSeed, readPrices = readWalletPrices } = {}) {
   const lockCoordinator = createLockCoordinator();
   const vaultStore = createVaultStore({ storage, lockCoordinator });
   const messenger = new Messenger({ namespace: 'Background' });
   const store = await createPersistedStore({ storage, messenger });
   const uiPorts = new Set(), alarmListeners = [];
+  const backgroundAlarms = {
+    clear: (...args) => alarms.clear(...args), create: (...args) => alarms.create(...args),
+    onAlarm: {
+      addListener(listener) { alarmListeners.push(listener); },
+      removeListener(listener) { const index = alarmListeners.indexOf(listener); if (index !== -1) alarmListeners.splice(index, 1); },
+    },
+  };
   let walletKeys = null, unlock = null, permissions = null, engine = null;
   let chainHandlers, evm;
   const networks = createNetworks({ messenger, store, onChanged: chain => chainHandlers?.[chain]?.networkChanged() });
@@ -43,20 +53,20 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   const keyring = createKeyring({ lockCoordinator, getWallet });
   let restoring = Promise.resolve();
   const uiSubscriptions = new Map();
+  const transactionNotifications = notifications && notificationStorage
+    ? await createTransactionNotifications({ storage: notificationStorage, notifications, runtime, alarms: backgroundAlarms }) : null;
 
   // metamask-controller.js:6121-6143: lock/unlock do not emit accountsChanged; permissions retain public account grants.
   // Plan §3.5:407-421 retains package 1's one lock and package 2's guarded signing operations.
 
-  const autoLockAlarm = await createAutoLockAlarm({ storage, lockCoordinator, alarms: {
-    clear: (...args) => alarms.clear(...args), create: (...args) => alarms.create(...args),
-    onAlarm: { addListener(listener) { alarmListeners.push(listener); alarms.onAlarm.addListener(listener); } },
-  } });
+  const autoLockAlarm = await createAutoLockAlarm({ storage, lockCoordinator, alarms: backgroundAlarms });
   const approvals = createApprovals({ messenger, runtime, windows, tabs, getUiState: () => ({
     // Port: background.ts:857-861 counts only popup ports; :907-916 tracks fullscreen tabs separately.
     popupCount: [...uiPorts].filter(port => port.name === 'popup').length,
     tabIds: new Set([...uiPorts].filter(port => port.name === 'fullscreen').map(port => port.sender?.tab?.id).filter(id => id !== undefined)),
   }) });
   const nodus = createNodus({ ...nodusOptions, storage, lockCoordinator, getAddresses: () => walletKeys.getAddresses(),
+    onActivityChanged: (rows, options) => { void transactionNotifications?.observe(rows, options).catch(() => {}); },
     onLock: () => evm?.lock(),
     getWords: () => walletKeys.getRecoveryPhrase(), onClient: client => walletKeys?.replaceNodusClient(client),
     onStateChanged() {
@@ -280,8 +290,14 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     EvmController: evm.controller,
     NetworksController: networks.controller });
   await store.flush();
+  // Install one consumer only after both alarm handlers exist, then replay
+  // the worker's waking alarm. One handler must not drain another's events.
+  const onAlarm = alarm => Promise.all(alarmListeners.map(listener => listener(alarm)));
+  const lazyListener = globalThis.chrome?.alarms === alarms && globalThis.stateHooks?.lazyListener;
+  if (lazyListener) lazyListener.addListener('alarms', 'onAlarm', onAlarm);
+  else alarms.onAlarm.addListener(onAlarm);
   return {
-    vaultStore, lockCoordinator, autoLockAlarm, keyring, attachWalletKeys, store, permissions, approvals, engine, evm, nodus, solana, tron, networks,
+    vaultStore, lockCoordinator, autoLockAlarm, transactionNotifications, keyring, attachWalletKeys, store, permissions, approvals, engine, evm, nodus, solana, tron, networks,
     lock: () => lockCoordinator.lock(),
     get walletKeys() { return walletKeys; },
     get unlock() { return unlock; },
@@ -289,9 +305,11 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
       for (const [event, { listener }] of uiSubscriptions) messenger.unsubscribe(event, listener);
       uiSubscriptions.clear();
       await lockCoordinator.lock();
+      await transactionNotifications?.flush().catch(() => {});
+      transactionNotifications?.destroy();
       engine.destroy(); approvals.destroy(); store.destroy(); evm.destroy(); networks.controller.destroy(); permissions.controller.destroy();
       messenger.unsubscribe('PermissionController:stateChange', onPermissionsChanged);
-      for (const listener of alarmListeners) alarms.onAlarm.removeListener(listener);
+      alarms.onAlarm.removeListener(onAlarm);
       await store.flush();
     },
   };
