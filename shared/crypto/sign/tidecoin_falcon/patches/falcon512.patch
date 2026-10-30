@@ -1,0 +1,112 @@
+--- src/pq/falcon512.c
++++ upstream/pq/falcon512.c
+@@ -8,6 +8,7 @@
+ #include <pq/falcon-512/api.h>
+ #include <pq/falcon-512/inner.h>
+ #include <pq/randombytes.h>
++#include <pq/cleanse.h>
+ 
+ enum {
+     TIDECOIN_FALCON512_NONCELEN = 40,
+@@ -122,40 +123,44 @@
+     unsigned char seed[48];
+     inner_shake256_context sc;
+     size_t u, v;
++    int result = -1;
+ 
+     if (sk[0] != 0x50 + 9) {
+-        return -1;
++        goto cleanup;
+     }
+     u = 1;
+     v = PQCLEAN_FALCON512_CLEAN_trim_i8_decode(
+         f, 9, PQCLEAN_FALCON512_CLEAN_max_fg_bits[9],
+         sk + u, PQCLEAN_FALCON512_CLEAN_CRYPTO_SECRETKEYBYTES - u);
+     if (v == 0) {
+-        return -1;
++        goto cleanup;
+     }
+     u += v;
+     v = PQCLEAN_FALCON512_CLEAN_trim_i8_decode(
+         g, 9, PQCLEAN_FALCON512_CLEAN_max_fg_bits[9],
+         sk + u, PQCLEAN_FALCON512_CLEAN_CRYPTO_SECRETKEYBYTES - u);
+     if (v == 0) {
+-        return -1;
++        goto cleanup;
+     }
+     u += v;
+     v = PQCLEAN_FALCON512_CLEAN_trim_i8_decode(
+         F, 9, PQCLEAN_FALCON512_CLEAN_max_FG_bits[9],
+         sk + u, PQCLEAN_FALCON512_CLEAN_CRYPTO_SECRETKEYBYTES - u);
+     if (v == 0) {
+-        return -1;
++        goto cleanup;
+     }
+     u += v;
+     if (u != PQCLEAN_FALCON512_CLEAN_CRYPTO_SECRETKEYBYTES) {
+-        return -1;
++        goto cleanup;
+     }
+     if (!PQCLEAN_FALCON512_CLEAN_complete_private(G, f, g, F, 9, tmp.b)) {
+-        return -1;
++        goto cleanup;
+     }
+ 
+-    randombytes(nonce, TIDECOIN_FALCON512_NONCELEN);
++    if (randombytes(nonce, TIDECOIN_FALCON512_NONCELEN) != 0) {
++        result = -2;
++        goto cleanup;
++    }
+ 
+     inner_shake256_init(&sc);
+     inner_shake256_inject(&sc, nonce, TIDECOIN_FALCON512_NONCELEN);
+@@ -164,7 +169,10 @@
+     PQCLEAN_FALCON512_CLEAN_hash_to_point_ct(&sc, r.hm, 9, tmp.b);
+     inner_shake256_ctx_release(&sc);
+ 
+-    randombytes(seed, sizeof seed);
++    if (randombytes(seed, sizeof seed) != 0) {
++        result = -2;
++        goto cleanup;
++    }
+     inner_shake256_init(&sc);
+     inner_shake256_inject(&sc, seed, sizeof seed);
+     inner_shake256_flip(&sc);
+@@ -174,9 +182,19 @@
+     if (v != 0) {
+         inner_shake256_ctx_release(&sc);
+         *sigbuflen = v;
+-        return 0;
++        result = 0;
++        goto cleanup;
+     }
+-    return -1;
++    inner_shake256_ctx_release(&sc);
++cleanup:
++    pq_cleanse(&tmp, sizeof tmp);
++    pq_cleanse(f, sizeof f);
++    pq_cleanse(g, sizeof g);
++    pq_cleanse(F, sizeof F);
++    pq_cleanse(G, sizeof G);
++    pq_cleanse(&r, sizeof r);
++    pq_cleanse(seed, sizeof seed);
++    return result;
+ }
+ 
+ int tidecoin_falcon512_sign_legacy(uint8_t* sig, size_t* siglen,
+@@ -189,9 +207,13 @@
+ 
+     for (unsigned int attempt = 0; attempt < TIDECOIN_FALCON512_LEGACY_SIGN_MAX_ATTEMPTS; ++attempt) {
+         size_t vlen = TIDECOIN_FALCON512_LEGACY_VLEN_MAX;
+-        if (tidecoin_falcon512_do_sign_legacy(sig + 1,
++        int result = tidecoin_falcon512_do_sign_legacy(sig + 1,
+                                               sig + 1 + TIDECOIN_FALCON512_NONCELEN,
+-                                              &vlen, m, mlen, sk) == 0) {
++                                              &vlen, m, mlen, sk);
++        if (result == -2) {
++            return -1;
++        }
++        if (result == 0) {
+             sig[0] = 0x30 + 9;
+             *siglen = 1 + TIDECOIN_FALCON512_NONCELEN + vlen;
+             return 0;

@@ -1,0 +1,31 @@
+--- src/pq/fips202.c
++++ upstream/pq/fips202.c
+@@ -558,10 +558,6 @@
+ }
+ 
+ void shake256_inc_init(shake256incctx *state) {
+-    state->ctx = malloc(PQC_SHAKEINCCTX_BYTES);
+-    if (state->ctx == NULL) {
+-        exit(111);
+-    }
+     keccak_inc_init(state->ctx);
+ }
+ 
+@@ -578,17 +574,11 @@
+ }
+ 
+ void shake256_inc_ctx_clone(shake256incctx *dest, const shake256incctx *src) {
+-    dest->ctx = malloc(PQC_SHAKEINCCTX_BYTES);
+-    if (dest->ctx == NULL) {
+-        exit(111);
+-    }
+     memcpy(dest->ctx, src->ctx, PQC_SHAKEINCCTX_BYTES);
+ }
+ 
+ void shake256_inc_ctx_release(shake256incctx *state) {
+     pq_cleanse(state->ctx, PQC_SHAKEINCCTX_BYTES);
+-    free(state->ctx);
+-    state->ctx = NULL;
+ }
+ 
+ /*************************************************

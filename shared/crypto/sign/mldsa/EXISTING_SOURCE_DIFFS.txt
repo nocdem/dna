@@ -1,0 +1,445 @@
+FILE api.h upstream_sha256=eff2fe4cca86cb72543628656a40af6720bb66f1781a5fadd55454c695472598 local_sha256=2b68236632d3e01ad932ccd277de50f9cd2af45badd9394d3d940f0284861f74
+--- /tmp/dna-pq-port-9KyPmZ/dilithium/ref/api.h
++++ /opt/dna/shared/crypto/sign/dsa/api.h
+@@ -13,6 +13,8 @@
+ #define pqcrystals_dilithium2_ref_BYTES pqcrystals_dilithium2_BYTES
+ 
+ int pqcrystals_dilithium2_ref_keypair(uint8_t *pk, uint8_t *sk);
++
++int pqcrystals_dilithium2_ref_keypair_from_seed(uint8_t *pk, uint8_t *sk, const uint8_t *seed);
+ 
+ int pqcrystals_dilithium2_ref_signature(uint8_t *sig, size_t *siglen,
+                                         const uint8_t *m, size_t mlen,
+@@ -44,6 +46,8 @@
+ 
+ int pqcrystals_dilithium3_ref_keypair(uint8_t *pk, uint8_t *sk);
+ 
++int pqcrystals_dilithium3_ref_keypair_from_seed(uint8_t *pk, uint8_t *sk, const uint8_t *seed);
++
+ int pqcrystals_dilithium3_ref_signature(uint8_t *sig, size_t *siglen,
+                                         const uint8_t *m, size_t mlen,
+                                         const uint8_t *ctx, size_t ctxlen,
+@@ -74,6 +78,8 @@
+ 
+ int pqcrystals_dilithium5_ref_keypair(uint8_t *pk, uint8_t *sk);
+ 
++int pqcrystals_dilithium5_ref_keypair_from_seed(uint8_t *pk, uint8_t *sk, const uint8_t *seed);
++
+ int pqcrystals_dilithium5_ref_signature(uint8_t *sig, size_t *siglen,
+                                         const uint8_t *m, size_t mlen,
+                                         const uint8_t *ctx, size_t ctxlen,
+FILE config.h upstream_sha256=4f798c78a3b44669fc0febc116b9235692a555987b09d528df3e644415d4dea9 local_sha256=fc62dd2a9de4c1729608259e6ea6901c7987ae459b68f76ac0ac81253cbd1f61
+--- /tmp/dna-pq-port-9KyPmZ/dilithium/ref/config.h
++++ /opt/dna/shared/crypto/sign/dsa/config.h
+@@ -1,14 +1,11 @@
+ #ifndef CONFIG_H
+ #define CONFIG_H
+ 
+-//#define DILITHIUM_MODE 2
++// QGP Configuration: Use Dilithium5 (ML-DSA-87, NIST Level 5 / Category 5)
++#define DILITHIUM_MODE 5
+ #define DILITHIUM_RANDOMIZED_SIGNING
+ //#define USE_RDPMC
+ //#define DBENCH
+-
+-#ifndef DILITHIUM_MODE
+-#define DILITHIUM_MODE 2
+-#endif
+ 
+ #if DILITHIUM_MODE == 2
+ #define CRYPTO_ALGNAME "Dilithium2"
+FILE fips202.c upstream_sha256=e4e486d8c839805ae9ad0c2976c3ad4455eeb9a4126835cb1583d7c287ccd9f6 local_sha256=91a503a9a947a25d3286a634dcd6b0b411b78d26479163e29b484a1012807393
+--- /tmp/dna-pq-port-9KyPmZ/dilithium/ref/fips202.c
++++ /opt/dna/shared/crypto/sign/dsa/fips202.c
+@@ -6,6 +6,7 @@
+ #include <stddef.h>
+ #include <stdint.h>
+ #include "fips202.h"
++#include "secure_clear.h"
+ 
+ #define NROUNDS 24
+ #define ROL(a, offset) ((a << offset) ^ (a >> (64-offset)))
+@@ -731,6 +732,7 @@
+   outlen -= nblocks*SHAKE256_RATE;
+   out += nblocks*SHAKE256_RATE;
+   shake256_squeeze(out, outlen, &state);
++  dilithium_secure_clear(&state, sizeof(state));
+ }
+ 
+ /*************************************************
+@@ -772,3 +774,4 @@
+   for(i=0;i<8;i++)
+     store64(h+8*i,s[i]);
+ }
++
+FILE fips202.h upstream_sha256=e5e06085263e4b7726c398095fd2c6d65e8f1c714de49537198d937d9dae9bb6 local_sha256=e5e06085263e4b7726c398095fd2c6d65e8f1c714de49537198d937d9dae9bb6
+IDENTICAL
+FILE ntt.c upstream_sha256=921b76ae7a183305893800e69c0b9ea561bffd2a6e85621767eb789c02a0f8d0 local_sha256=921b76ae7a183305893800e69c0b9ea561bffd2a6e85621767eb789c02a0f8d0
+IDENTICAL
+FILE ntt.h upstream_sha256=32345efead2c237177f3c0e050c26caf6c9d1772a629664632d9ff32f2693a3e local_sha256=32345efead2c237177f3c0e050c26caf6c9d1772a629664632d9ff32f2693a3e
+IDENTICAL
+FILE packing.c upstream_sha256=af51fe6b63164c17a765fcca14afa1ad2bfa11a1389a1964781951cdaf0f6016 local_sha256=af51fe6b63164c17a765fcca14afa1ad2bfa11a1389a1964781951cdaf0f6016
+IDENTICAL
+FILE packing.h upstream_sha256=73b2a0840e23e53edaf9a3509120864ec7ee82b1a2329f35816642a788c96509 local_sha256=73b2a0840e23e53edaf9a3509120864ec7ee82b1a2329f35816642a788c96509
+IDENTICAL
+FILE params.h upstream_sha256=1d6c116396e3d20f40d72c35a093af2be9f03177282762bdbdb282bb4c4b64af local_sha256=afcf5cf2f7239825c40574a22087f0bf5d8d43c63f023cdcc53f4122bec8a106
+--- /tmp/dna-pq-port-9KyPmZ/dilithium/ref/params.h
++++ /opt/dna/shared/crypto/sign/dsa/params.h
+@@ -1,5 +1,23 @@
+ #ifndef PARAMS_H
+ #define PARAMS_H
++
++/* Windows SDK / mingw CRT headers pollute single-letter names (N, D, Q, L, K).
++ * Undef before redefining vendor constants to avoid token collision. */
++#ifdef N
++#undef N
++#endif
++#ifdef D
++#undef D
++#endif
++#ifdef Q
++#undef Q
++#endif
++#ifdef L
++#undef L
++#endif
++#ifdef K
++#undef K
++#endif
+ 
+ #include "config.h"
+ 
+FILE poly.c upstream_sha256=845f8991d166c9facbfc9646da77e9e9f6b75f0ea8fb9d629e8ac5f234707d6d local_sha256=dc6c3a5ab3e15d183916bab01ef49d6c2e2c7817115cc19f3a711b4c3d6e9d6c
+--- /tmp/dna-pq-port-9KyPmZ/dilithium/ref/poly.c
++++ /opt/dna/shared/crypto/sign/dsa/poly.c
+@@ -1,6 +1,7 @@
+ #include <stdint.h>
+ #include "params.h"
+ #include "poly.h"
++#include "secure_clear.h"
+ #include "ntt.h"
+ #include "reduce.h"
+ #include "rounding.h"
+@@ -450,6 +451,8 @@
+     stream256_squeezeblocks(buf, 1, &state);
+     ctr += rej_eta(a->coeffs + ctr, N - ctr, buf, STREAM256_BLOCKBYTES);
+   }
++  dilithium_secure_clear(buf, sizeof(buf));
++  dilithium_secure_clear(&state, sizeof(state));
+ }
+ 
+ /*************************************************
+@@ -474,6 +477,8 @@
+   stream256_init(&state, seed, nonce);
+   stream256_squeezeblocks(buf, POLY_UNIFORM_GAMMA1_NBLOCKS, &state);
+   polyz_unpack(a, buf);
++  dilithium_secure_clear(buf, sizeof(buf));
++  dilithium_secure_clear(&state, sizeof(state));
+ }
+ 
+ /*************************************************
+@@ -557,6 +562,7 @@
+   }
+ #endif
+ 
++  dilithium_secure_clear(t, sizeof(t));
+   DBENCH_STOP(*tpack);
+ }
+ 
+@@ -698,6 +704,7 @@
+     r[13*i+12]  =  t[7] >>  5;
+   }
+ 
++  dilithium_secure_clear(t, sizeof(t));
+   DBENCH_STOP(*tpack);
+ }
+ 
+@@ -905,3 +912,4 @@
+ 
+   DBENCH_STOP(*tpack);
+ }
++
+FILE poly.h upstream_sha256=2b63cc2ec62c027dd16cf92bd120a4bc4f3a41a94a4a51b2005d366fc30a0330 local_sha256=2b63cc2ec62c027dd16cf92bd120a4bc4f3a41a94a4a51b2005d366fc30a0330
+IDENTICAL
+FILE polyvec.c upstream_sha256=2fa664c380a5bef7e2e9868e0b8f02f8353c4bd81afe0d6328b498baf6864eac local_sha256=cec34fafe74c07badaef856a750710eb17a0e164760dc92f579351eb0c5a5c22
+--- /tmp/dna-pq-port-9KyPmZ/dilithium/ref/polyvec.c
++++ /opt/dna/shared/crypto/sign/dsa/polyvec.c
+@@ -2,6 +2,7 @@
+ #include "params.h"
+ #include "polyvec.h"
+ #include "poly.h"
++#include "secure_clear.h"
+ 
+ /*************************************************
+ * Name:        expand_mat
+@@ -122,6 +123,7 @@
+     poly_pointwise_montgomery(&t, &u->vec[i], &v->vec[i]);
+     poly_add(w, w, &t);
+   }
++  dilithium_secure_clear(&t, sizeof(t));
+ }
+ 
+ /*************************************************
+@@ -387,3 +389,4 @@
+   for(i = 0; i < K; ++i)
+     polyw1_pack(&r[i*POLYW1_PACKEDBYTES], &w1->vec[i]);
+ }
++
+FILE polyvec.h upstream_sha256=6523a95d74add7e36129831fd5a72370c6275703fafd1529b6af59ef9645368e local_sha256=6523a95d74add7e36129831fd5a72370c6275703fafd1529b6af59ef9645368e
+IDENTICAL
+FILE randombytes.h upstream_sha256=5ece412ed498abfd892ecec23480910b76cb8ea1b605da10adc5584ede79f048 local_sha256=195e68b052a4070d386c7a67a34c645dc868b56b48caf8adaefca9aa79dc155f
+--- /tmp/dna-pq-port-9KyPmZ/dilithium/ref/randombytes.h
++++ /opt/dna/shared/crypto/sign/dsa/randombytes.h
+@@ -4,6 +4,8 @@
+ #include <stddef.h>
+ #include <stdint.h>
+ 
+-void randombytes(uint8_t *out, size_t outlen);
++// SDK Independence: Use our qgp_randombytes
++#include "crypto/utils/qgp_random.h"
++#define randombytes qgp_randombytes
+ 
+ #endif
+FILE reduce.c upstream_sha256=3088cac3d23355a3f9adaac9fd4ee864be9caf5fb0ad30bcb4a4da17dba0e4f4 local_sha256=3088cac3d23355a3f9adaac9fd4ee864be9caf5fb0ad30bcb4a4da17dba0e4f4
+IDENTICAL
+FILE reduce.h upstream_sha256=9abe0b725e0608948eaa74fabd01c4701de5480ce9494a5f6bfa35140eee0399 local_sha256=9abe0b725e0608948eaa74fabd01c4701de5480ce9494a5f6bfa35140eee0399
+IDENTICAL
+FILE rounding.c upstream_sha256=7223dbbe56b1fba226d536d64eaf05b1ad3f249d33ec767ee655eee471478816 local_sha256=7223dbbe56b1fba226d536d64eaf05b1ad3f249d33ec767ee655eee471478816
+IDENTICAL
+FILE rounding.h upstream_sha256=7459644c21e7cbfe48361a1f6b6fda687ff8792f8e0577a0862b3de620558d25 local_sha256=7459644c21e7cbfe48361a1f6b6fda687ff8792f8e0577a0862b3de620558d25
+IDENTICAL
+LOCAL ONLY secure_clear.h
+FILE sign.c upstream_sha256=3abd138813b3f803f4f3cbabb706b93e319e19e27b8defa99dd065f8fc416bed local_sha256=8a276b9fe17a7ecba1a04cae1453558dba1be61b8ff76b4e634133c6a92f794f
+--- /tmp/dna-pq-port-9KyPmZ/dilithium/ref/sign.c
++++ /opt/dna/shared/crypto/sign/dsa/sign.c
+@@ -1,4 +1,5 @@
+ #include <stdint.h>
++#include <string.h>
+ #include "params.h"
+ #include "sign.h"
+ #include "packing.h"
+@@ -7,6 +8,7 @@
+ #include "randombytes.h"
+ #include "symmetric.h"
+ #include "fips202.h"
++#include "secure_clear.h"
+ 
+ /*************************************************
+ * Name:        crypto_sign_keypair
+@@ -18,7 +20,7 @@
+ *              - uint8_t *sk: pointer to output private key (allocated
+ *                             array of CRYPTO_SECRETKEYBYTES bytes)
+ *
+-* Returns 0 (success)
++* Returns 0 on success or -1 if randomness is unavailable (outputs cleared).
+ **************************************************/
+ int crypto_sign_keypair(uint8_t *pk, uint8_t *sk) {
+   uint8_t seedbuf[2*SEEDBYTES + CRHBYTES];
+@@ -29,7 +31,12 @@
+   polyveck s2, t1, t0;
+ 
+   /* Get randomness for rho, rhoprime and key */
+-  randombytes(seedbuf, SEEDBYTES);
++  if(randombytes(seedbuf, SEEDBYTES) != 0) {
++    dilithium_secure_clear(seedbuf, sizeof(seedbuf));
++    dilithium_secure_clear(pk, CRYPTO_PUBLICKEYBYTES);
++    dilithium_secure_clear(sk, CRYPTO_SECRETKEYBYTES);
++    return -1;
++  }
+   seedbuf[SEEDBYTES+0] = K;
+   seedbuf[SEEDBYTES+1] = L;
+   shake256(seedbuf, 2*SEEDBYTES + CRHBYTES, seedbuf, SEEDBYTES+2);
+@@ -63,6 +70,76 @@
+   shake256(tr, TRBYTES, pk, CRYPTO_PUBLICKEYBYTES);
+   pack_sk(sk, rho, tr, key, &t0, &s1, &s2);
+ 
++  dilithium_secure_clear(seedbuf, sizeof(seedbuf));
++  dilithium_secure_clear(&s1, sizeof(s1));
++  dilithium_secure_clear(&s1hat, sizeof(s1hat));
++  dilithium_secure_clear(&s2, sizeof(s2));
++  dilithium_secure_clear(&t0, sizeof(t0));
++  return 0;
++}
++
++/*************************************************
++* Name:        crypto_sign_keypair_from_seed
++*
++* Description: Generates public and private key from a 32-byte seed.
++*              Deterministic: same seed always produces same keypair.
++*
++* Arguments:   - uint8_t *pk: pointer to output public key (allocated
++*                             array of CRYPTO_PUBLICKEYBYTES bytes)
++*              - uint8_t *sk: pointer to output private key (allocated
++*                             array of CRYPTO_SECRETKEYBYTES bytes)
++*              - const uint8_t *seed: pointer to input seed (32 bytes)
++*
++* Returns 0 (success)
++**************************************************/
++int crypto_sign_keypair_from_seed(uint8_t *pk, uint8_t *sk, const uint8_t *seed) {
++  uint8_t seedbuf[2*SEEDBYTES + CRHBYTES];
++  uint8_t tr[TRBYTES];
++  const uint8_t *rho, *rhoprime, *key;
++  polyvecl mat[K];
++  polyvecl s1, s1hat;
++  polyveck s2, t1, t0;
++
++  /* Use provided seed instead of random */
++  memcpy(seedbuf, seed, SEEDBYTES);
++  seedbuf[SEEDBYTES+0] = K;
++  seedbuf[SEEDBYTES+1] = L;
++  shake256(seedbuf, 2*SEEDBYTES + CRHBYTES, seedbuf, SEEDBYTES+2);
++  rho = seedbuf;
++  rhoprime = rho + SEEDBYTES;
++  key = rhoprime + CRHBYTES;
++
++  /* Expand matrix */
++  polyvec_matrix_expand(mat, rho);
++
++  /* Sample short vectors s1 and s2 */
++  polyvecl_uniform_eta(&s1, rhoprime, 0);
++  polyveck_uniform_eta(&s2, rhoprime, L);
++
++  /* Matrix-vector multiplication */
++  s1hat = s1;
++  polyvecl_ntt(&s1hat);
++  polyvec_matrix_pointwise_montgomery(&t1, mat, &s1hat);
++  polyveck_reduce(&t1);
++  polyveck_invntt_tomont(&t1);
++
++  /* Add error vector s2 */
++  polyveck_add(&t1, &t1, &s2);
++
++  /* Extract t1 and write public key */
++  polyveck_caddq(&t1);
++  polyveck_power2round(&t1, &t0, &t1);
++  pack_pk(pk, rho, &t1);
++
++  /* Compute H(rho, t1) and write secret key */
++  shake256(tr, TRBYTES, pk, CRYPTO_PUBLICKEYBYTES);
++  pack_sk(sk, rho, tr, key, &t0, &s1, &s2);
++
++  dilithium_secure_clear(seedbuf, sizeof(seedbuf));
++  dilithium_secure_clear(&s1, sizeof(s1));
++  dilithium_secure_clear(&s1hat, sizeof(s1hat));
++  dilithium_secure_clear(&s2, sizeof(s2));
++  dilithium_secure_clear(&t0, sizeof(t0));
+   return 0;
+ }
+ 
+@@ -185,6 +262,14 @@
+   /* Write signature */
+   pack_sig(sig, sig, &z, &h);
+   *siglen = CRYPTO_BYTES;
++  dilithium_secure_clear(seedbuf, sizeof(seedbuf));
++  dilithium_secure_clear(&s1, sizeof(s1));
++  dilithium_secure_clear(&s2, sizeof(s2));
++  dilithium_secure_clear(&t0, sizeof(t0));
++  dilithium_secure_clear(&y, sizeof(y));
++  dilithium_secure_clear(&w0, sizeof(w0));
++  dilithium_secure_clear(&w1, sizeof(w1));
++  dilithium_secure_clear(&state, sizeof(state));
+   return 0;
+ }
+ 
+@@ -201,7 +286,8 @@
+ *              - size_t ctxlen:  length of contex string
+ *              - uint8_t *sk:    pointer to bit-packed secret key
+ *
+-* Returns 0 (success) or -1 (context string too long)
++* Returns 0 on success or -1 (context too long or randomness unavailable).
++* On failure siglen is zero; RNG failure also clears the signature buffer.
+ **************************************************/
+ int crypto_sign_signature(uint8_t *sig,
+                           size_t *siglen,
+@@ -214,7 +300,9 @@
+   size_t i;
+   uint8_t pre[257];
+   uint8_t rnd[RNDBYTES];
+-
++  int ret;
++
++  *siglen = 0;
+   if(ctxlen > 255)
+     return -1;
+ 
+@@ -225,14 +313,19 @@
+     pre[2 + i] = ctx[i];
+ 
+ #ifdef DILITHIUM_RANDOMIZED_SIGNING
+-  randombytes(rnd, RNDBYTES);
++  if(randombytes(rnd, RNDBYTES) != 0) {
++    dilithium_secure_clear(rnd, sizeof(rnd));
++    dilithium_secure_clear(sig, CRYPTO_BYTES);
++    return -1;
++  }
+ #else
+   for(i=0;i<RNDBYTES;i++)
+     rnd[i] = 0;
+ #endif
+ 
+-  crypto_sign_signature_internal(sig,siglen,m,mlen,pre,2+ctxlen,rnd,sk);
+-  return 0;
++  ret = crypto_sign_signature_internal(sig,siglen,m,mlen,pre,2+ctxlen,rnd,sk);
++  dilithium_secure_clear(rnd, sizeof(rnd));
++  return ret;
+ }
+ 
+ /*************************************************
+@@ -251,7 +344,8 @@
+ *              - size_t ctxlen: length of context string
+ *              - const uint8_t *sk: pointer to bit-packed secret key
+ *
+-* Returns 0 (success) or -1 (context string too long)
++* Returns 0 on success or -1 (context too long or randomness unavailable).
++* On failure smlen is zero.
+ **************************************************/
+ int crypto_sign(uint8_t *sm,
+                 size_t *smlen,
+@@ -267,6 +361,10 @@
+   for(i = 0; i < mlen; ++i)
+     sm[CRYPTO_BYTES + mlen - 1 - i] = m[mlen - 1 - i];
+   ret = crypto_sign_signature(sm, smlen, sm + CRYPTO_BYTES, mlen, ctx, ctxlen, sk);
++  if(ret != 0) {
++    *smlen = 0;
++    return ret;
++  }
+   *smlen += mlen;
+   return ret;
+ }
+@@ -350,9 +448,12 @@
+   shake256_absorb(&state, buf, K*POLYW1_PACKEDBYTES);
+   shake256_finalize(&state);
+   shake256_squeeze(c2, CTILDEBYTES, &state);
++  /* Constant-time comparison to prevent timing side-channel */
++  uint8_t r = 0;
+   for(i = 0; i < CTILDEBYTES; ++i)
+-    if(c[i] != c2[i])
+-      return -1;
++    r |= c[i] ^ c2[i];
++  if(r != 0)
++    return -1;
+ 
+   return 0;
+ }
+@@ -441,3 +542,4 @@
+ 
+   return -1;
+ }
++
+FILE sign.h upstream_sha256=a22ea01f54c68888d75db42def615aa7ca6050679894aab3a048904d98830210 local_sha256=71876db0626a4f4f9d0e6014637bc640f325926226fa2391438e504345c32272
+--- /tmp/dna-pq-port-9KyPmZ/dilithium/ref/sign.h
++++ /opt/dna/shared/crypto/sign/dsa/sign.h
+@@ -9,6 +9,9 @@
+ 
+ #define crypto_sign_keypair DILITHIUM_NAMESPACE(keypair)
+ int crypto_sign_keypair(uint8_t *pk, uint8_t *sk);
++
++#define crypto_sign_keypair_from_seed DILITHIUM_NAMESPACE(keypair_from_seed)
++int crypto_sign_keypair_from_seed(uint8_t *pk, uint8_t *sk, const uint8_t *seed);
+ 
+ #define crypto_sign_signature_internal DILITHIUM_NAMESPACE(signature_internal)
+ int crypto_sign_signature_internal(uint8_t *sig,
+FILE symmetric-shake.c upstream_sha256=5b23002163d0dd4a1030e51fed8994a06972644e923df0feca6d1d183f4bdd45 local_sha256=5b23002163d0dd4a1030e51fed8994a06972644e923df0feca6d1d183f4bdd45
+IDENTICAL
+FILE symmetric.h upstream_sha256=a272fe9473a968936121a1aa52ac928790bb653b3697fe58ffd3935f08aaaa14 local_sha256=a272fe9473a968936121a1aa52ac928790bb653b3697fe58ffd3935f08aaaa14
+IDENTICAL

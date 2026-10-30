@@ -1,0 +1,11 @@
+--- src/pq/fips202.h
++++ upstream/pq/fips202.h
+@@ -25,7 +25,7 @@
+ 
+ // Context for incremental API
+ typedef struct {
+-    uint64_t *ctx;
++    uint64_t ctx[PQC_SHAKEINCCTX_BYTES / sizeof(uint64_t)];
+ } shake256incctx;
+ 
+ // Context for non-incremental API

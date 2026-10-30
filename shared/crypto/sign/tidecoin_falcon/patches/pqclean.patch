@@ -1,0 +1,45 @@
+--- src/pq/falcon-512/pqclean.c
++++ upstream/pq/falcon-512/pqclean.c
+@@ -56,7 +56,10 @@
+     inner_shake256_context rng;
+     size_t u, v;
+ 
+-    randombytes(seed, sizeof seed);
++    if (randombytes(seed, sizeof seed) != 0) {
++        pq_cleanse(seed, sizeof seed);
++        return -1;
++    }
+     inner_shake256_init(&rng);
+     inner_shake256_inject(&rng, seed, sizeof seed);
+     inner_shake256_flip(&rng);
+@@ -240,7 +243,9 @@
+     /*
+      * Create a random nonce (40 bytes).
+      */
+-    randombytes(nonce, NONCELEN);
++    if (randombytes(nonce, NONCELEN) != 0) {
++        return -1;
++    }
+ 
+     /*
+      * Hash message nonce + message into a vector.
+@@ -255,7 +260,10 @@
+     /*
+      * Initialize a RNG.
+      */
+-    randombytes(seed, sizeof seed);
++    if (randombytes(seed, sizeof seed) != 0) {
++        pq_cleanse(seed, sizeof seed);
++        return -1;
++    }
+     inner_shake256_init(&sc);
+     inner_shake256_inject(&sc, seed, sizeof seed);
+     inner_shake256_flip(&sc);
+@@ -270,6 +278,8 @@
+         *sigbuflen = v;
+         return 0;
+     }
++    inner_shake256_ctx_release(&sc);
++    pq_cleanse(seed, sizeof seed);
+     return -1;
+ }

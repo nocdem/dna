@@ -1,0 +1,508 @@
+{
+  "algorand.bin.gz": {
+    "bytes": 3675828,
+    "compressed_sha256": "bbac370a34eab7bb1835291380ea34986e0a2cd06b402296c29ae58eaa0215bc",
+    "parameters": {
+      "1:1024": {
+        "keypairs": 512,
+        "records": 512,
+        "rejections": 0,
+        "signatures": 512
+      }
+    },
+    "records": 512,
+    "sha256": "aa3d98c833186c002041b5627924e4483166c421dc2927a98569d8e9265f795c"
+  },
+  "asentum-noble.bin.gz": {
+    "bytes": 39880,
+    "compressed_sha256": "412e9427fff975cf6800a6c166d0242078610eadde277ce17eff5b52a8df2578",
+    "parameters": {
+      "5:65": {
+        "keypairs": 4,
+        "records": 4,
+        "rejections": 0,
+        "signatures": 4
+      }
+    },
+    "records": 4,
+    "sha256": "fb52c6320969a57579e287d252093330d190e8bfef27c8fe315ef8b788abd648"
+  },
+  "circl-1.6.3-mldsa.bin.gz": {
+    "bytes": 38520,
+    "compressed_sha256": "0a01c4862baf9e308aa7a74e0c22d686f2a2838e127d9b1a88189f4cf67d5e4d",
+    "parameters": {
+      "5:65": {
+        "keypairs": 4,
+        "records": 4,
+        "rejections": 0,
+        "signatures": 4
+      }
+    },
+    "records": 4,
+    "sha256": "0ed60fad361f0c13b189c10a9b6182539570fc4832fe37616c3bdd729b56e364"
+  },
+  "circl-1.6.5-mldsa.bin.gz": {
+    "bytes": 38520,
+    "compressed_sha256": "0a01c4862baf9e308aa7a74e0c22d686f2a2838e127d9b1a88189f4cf67d5e4d",
+    "parameters": {
+      "5:65": {
+        "keypairs": 4,
+        "records": 4,
+        "rejections": 0,
+        "signatures": 4
+      }
+    },
+    "records": 4,
+    "sha256": "0ed60fad361f0c13b189c10a9b6182539570fc4832fe37616c3bdd729b56e364"
+  },
+  "circl-1.6.5-slhdsa.bin.gz": {
+    "bytes": 25016,
+    "compressed_sha256": "7f6bfb8e7277da543c13bae2494977e2ab6f6142d038ea61d829e758118c5bc6",
+    "parameters": {
+      "3:1": {
+        "keypairs": 3,
+        "records": 3,
+        "rejections": 0,
+        "signatures": 3
+      }
+    },
+    "records": 3,
+    "sha256": "cd7c23a2488a646d6b4bee98b65e1a40aa62dd1d025fa59e4ed1a909c64766b7"
+  },
+  "ckb-hash.bin.gz": {
+    "bytes": 1057517,
+    "compressed_sha256": "1b4726ab242cb1e3480cbf177d681e6393d82f0e8553aba25a61a7471765794d",
+    "parameters": {
+      "7:0": {
+        "keypairs": 0,
+        "records": 14,
+        "rejections": 0,
+        "signatures": 0
+      }
+    },
+    "records": 14,
+    "sha256": "8890afcef3fe1aa71bfca1c5d4dc5b68697a0dc883d15d3dbb43dee5fa6326e7"
+  },
+  "ckb.bin.gz": {
+    "bytes": 322104,
+    "compressed_sha256": "542c135693a4b01f0cf4c93af1913af6f1d3511f30902708213b101df9e10254",
+    "parameters": {
+      "4:48": {
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 0,
+        "signatures": 1
+      },
+      "4:49": {
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 0,
+        "signatures": 1
+      },
+      "4:50": {
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 0,
+        "signatures": 1
+      },
+      "4:51": {
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 0,
+        "signatures": 1
+      },
+      "4:52": {
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 0,
+        "signatures": 1
+      },
+      "4:53": {
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 0,
+        "signatures": 1
+      },
+      "4:54": {
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 0,
+        "signatures": 1
+      },
+      "4:55": {
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 0,
+        "signatures": 1
+      },
+      "4:56": {
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 0,
+        "signatures": 1
+      },
+      "4:57": {
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 0,
+        "signatures": 1
+      },
+      "4:58": {
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 0,
+        "signatures": 1
+      },
+      "4:59": {
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 0,
+        "signatures": 1
+      }
+    },
+    "records": 12,
+    "sha256": "8f93b5c93f3e70672c2734e268fb64499fd75b45098445639b2376b454f6fd5f"
+  },
+  "existing-dsa87.bin.gz": {
+    "bytes": 184678,
+    "compressed_sha256": "8844bbb10c50c0219df5ce22013179084712fe7e3caa890a82ded692111ee035",
+    "parameters": {
+      "6:87": {
+        "keypairs": 1,
+        "records": 10,
+        "rejections": 3,
+        "signatures": 6
+      }
+    },
+    "records": 10,
+    "sha256": "edeef3a10ab6ba3c90933c2e60e5d3f0a784d5a2d7f78eb72d2cd0c14d451c44"
+  },
+  "mldsa-nist.bin.gz": {
+    "bytes": 4179824,
+    "compressed_sha256": "bdfb4df14371b6da5993a4715db08c17e8f406c54f4b4c53b7c19e678392225f",
+    "parameters": {
+      "5:44": {
+        "keypairs": 25,
+        "records": 160,
+        "rejections": 36,
+        "signatures": 90
+      },
+      "5:65": {
+        "keypairs": 25,
+        "records": 160,
+        "rejections": 36,
+        "signatures": 90
+      }
+    },
+    "records": 320,
+    "sha256": "a5c3ddb321a3690d68348a3f50c6c46d124c6336304180137c0231c102c01e82"
+  },
+  "qtc-mldsa.bin.gz": {
+    "bytes": 54554,
+    "compressed_sha256": "4724d29f2b36e237a02b5f92017081493be29817c089eb30be99e78d1a3c7595",
+    "parameters": {
+      "5:44": {
+        "keypairs": 8,
+        "records": 8,
+        "rejections": 0,
+        "signatures": 8
+      }
+    },
+    "records": 8,
+    "sha256": "0abcc5f7923d14d32cc7bca949265eb68f3536d5ec544d38bb310bc8ad1fc65d"
+  },
+  "qtc-nist.bin.gz": {
+    "bytes": 12168,
+    "compressed_sha256": "5ea617cfa6478ec39072486bb5c241d165c52bf11148836a5aa33cb06451e197",
+    "parameters": {
+      "3:7": {
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 0,
+        "signatures": 0
+      }
+    },
+    "records": 1,
+    "sha256": "c8485fc8074c170d9de06779f5e70e09005898deb8e7f61d5291a871a7a306b4"
+  },
+  "qtc-slhdsa.bin.gz": {
+    "bytes": 65052,
+    "compressed_sha256": "1cb997c45c6224e4ec0d66c338d67d8405b1781fcfd4d586b7d66057638fb30b",
+    "parameters": {
+      "3:7": {
+        "keypairs": 4,
+        "records": 8,
+        "rejections": 4,
+        "signatures": 4
+      }
+    },
+    "records": 8,
+    "sha256": "08b2a5794cf5de4154bf03d266561f6056765bd4a28f3aff08d60899df13dd85"
+  },
+  "redteam-algorand.bin.gz": {
+    "bytes": 11287,
+    "compressed_sha256": "955fea4d4b369f6f41a873ab8f539dd62ee86844b09887249a4fad643c1556d3",
+    "parameters": {
+      "1:1024": {
+        "differential_cases": 192,
+        "keypairs": 0,
+        "records": 2,
+        "rejections": 190,
+        "signatures": 0
+      }
+    },
+    "records": 2,
+    "sha256": "aa232c9ecbae6f424b7a36d9e37bb554d03bcbbce9eaf6544726d4a7bb627a47"
+  },
+  "redteam-mldsa.bin.gz": {
+    "bytes": 24503,
+    "compressed_sha256": "a8acc078ae9e707d3ecaedb538915523957b29594a340fe14eb768cb54a84f52",
+    "parameters": {
+      "5:44": {
+        "differential_cases": 96,
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 95,
+        "signatures": 0
+      },
+      "5:65": {
+        "differential_cases": 96,
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 94,
+        "signatures": 0
+      }
+    },
+    "records": 2,
+    "sha256": "2734b0c64cb8210945070ad132d817976ef696d0ef568271f13db1e63f2ea2da"
+  },
+  "redteam-slhdsa.bin.gz": {
+    "bytes": 368219,
+    "compressed_sha256": "21de57f8be5a359edfd3fa215edb5e67921e2f4f19358e10ac724ecb66fbb609",
+    "parameters": {
+      "3:0": {
+        "differential_cases": 96,
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 95,
+        "signatures": 0
+      },
+      "3:1": {
+        "differential_cases": 96,
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 95,
+        "signatures": 0
+      },
+      "3:10": {
+        "differential_cases": 96,
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 95,
+        "signatures": 0
+      },
+      "3:11": {
+        "differential_cases": 96,
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 95,
+        "signatures": 0
+      },
+      "3:2": {
+        "differential_cases": 96,
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 95,
+        "signatures": 0
+      },
+      "3:3": {
+        "differential_cases": 96,
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 95,
+        "signatures": 0
+      },
+      "3:4": {
+        "differential_cases": 96,
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 95,
+        "signatures": 0
+      },
+      "3:5": {
+        "differential_cases": 96,
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 95,
+        "signatures": 0
+      },
+      "3:6": {
+        "differential_cases": 96,
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 95,
+        "signatures": 0
+      },
+      "3:7": {
+        "differential_cases": 96,
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 95,
+        "signatures": 0
+      },
+      "3:8": {
+        "differential_cases": 96,
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 95,
+        "signatures": 0
+      },
+      "3:9": {
+        "differential_cases": 96,
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 95,
+        "signatures": 0
+      }
+    },
+    "records": 12,
+    "sha256": "fc124f48d04732fe72ba447b8c39dcbcfc10287abcadc53bceee4d4605eb3f64"
+  },
+  "redteam-tidecoin.bin.gz": {
+    "bytes": 3124,
+    "compressed_sha256": "3e5cc5a3f31e9634df920e772defd7b4b7a4b52c5111d50b10d6a5233d908770",
+    "parameters": {
+      "2:512": {
+        "differential_cases": 96,
+        "keypairs": 0,
+        "records": 1,
+        "rejections": 94,
+        "signatures": 0
+      }
+    },
+    "records": 1,
+    "sha256": "dcdac3c6e2a8f25afceb0679510fb6122d2ae1e049bbfc4e7b12b1f4bd3ff1e2"
+  },
+  "slhdsa-nist.bin.gz": {
+    "bytes": 16722275,
+    "compressed_sha256": "07709054e635c560024395be88b0377fd38fb74e42b179d100f2f467732d70e2",
+    "parameters": {
+      "3:0": {
+        "keypairs": 1,
+        "records": 42,
+        "rejections": 36,
+        "signatures": 1
+      },
+      "3:1": {
+        "keypairs": 1,
+        "records": 42,
+        "rejections": 36,
+        "signatures": 1
+      },
+      "3:10": {
+        "keypairs": 1,
+        "records": 42,
+        "rejections": 36,
+        "signatures": 1
+      },
+      "3:11": {
+        "keypairs": 1,
+        "records": 42,
+        "rejections": 36,
+        "signatures": 1
+      },
+      "3:2": {
+        "keypairs": 1,
+        "records": 42,
+        "rejections": 36,
+        "signatures": 1
+      },
+      "3:3": {
+        "keypairs": 1,
+        "records": 42,
+        "rejections": 36,
+        "signatures": 1
+      },
+      "3:4": {
+        "keypairs": 1,
+        "records": 42,
+        "rejections": 36,
+        "signatures": 1
+      },
+      "3:5": {
+        "keypairs": 1,
+        "records": 42,
+        "rejections": 36,
+        "signatures": 1
+      },
+      "3:6": {
+        "keypairs": 1,
+        "records": 42,
+        "rejections": 36,
+        "signatures": 1
+      },
+      "3:7": {
+        "keypairs": 1,
+        "records": 42,
+        "rejections": 36,
+        "signatures": 1
+      },
+      "3:8": {
+        "keypairs": 1,
+        "records": 42,
+        "rejections": 36,
+        "signatures": 1
+      },
+      "3:9": {
+        "keypairs": 1,
+        "records": 42,
+        "rejections": 36,
+        "signatures": 1
+      }
+    },
+    "records": 504,
+    "sha256": "dac65bf103cedfbe52e1aaa962891cded3ae5fd08782cea675448e2ca2eeaa6b"
+  },
+  "soqucoin-mldsa.bin.gz": {
+    "bytes": 54554,
+    "compressed_sha256": "4724d29f2b36e237a02b5f92017081493be29817c089eb30be99e78d1a3c7595",
+    "parameters": {
+      "5:44": {
+        "keypairs": 8,
+        "records": 8,
+        "rejections": 0,
+        "signatures": 8
+      }
+    },
+    "records": 8,
+    "sha256": "0abcc5f7923d14d32cc7bca949265eb68f3536d5ec544d38bb310bc8ad1fc65d"
+  },
+  "tidecoin-historical.bin.gz": {
+    "bytes": 54690,
+    "compressed_sha256": "f9ae199b5f1b1acbd4e3c5d8d008e6ebed50b7d5d636fe748e06afbff3b4504c",
+    "parameters": {
+      "2:512": {
+        "keypairs": 0,
+        "records": 16,
+        "rejections": 0,
+        "signatures": 0
+      }
+    },
+    "records": 16,
+    "sha256": "f5920788c1081ac7f911accc29291c298feb49aebbb346db56ce0c9f1ab1129c"
+  },
+  "tidecoin.bin.gz": {
+    "bytes": 56380,
+    "compressed_sha256": "94aca2e7e37819d9fb0780a94356669b51d7d68e27d39d4b3993ec6e08bd4008",
+    "parameters": {
+      "2:512": {
+        "keypairs": 16,
+        "records": 17,
+        "rejections": 0,
+        "signatures": 16
+      }
+    },
+    "records": 17,
+    "sha256": "4e0105ce80c982a0d92bc8e17b7643781e8744373c743396b7df69cae2b03a18"
+  }
+}
