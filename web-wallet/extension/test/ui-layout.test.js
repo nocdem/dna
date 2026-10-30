@@ -27,20 +27,58 @@ const { version } = JSON.parse(readFileSync(new URL('../../package.json', import
 // same mounted card so the comparison uses identical fonts, text and width.
 // Comparing only the two new states would falsely pass an unchanged large card.
 async function portfolioHeight0136(page) {
+  // Restore the status and label-first order only for the historical measure.
+  await page.locator('.portfolio-card').evaluate(card => {
+    const heading = card.querySelector('.portfolio-heading');
+    heading.prepend(card.querySelector('#portfolio-label'));
+    heading.after(card.querySelector('.portfolio-amount'));
+    card.querySelector('#portfolio-status').hidden = false;
+  });
   const baseline = await page.addStyleTag({ content: `
     .extension-page .portfolio-card { padding: 28px 28px 24px; }
     .extension-page .portfolio-heading { grid-template-columns: minmax(0, 1fr) 32px; }
     .extension-page .portfolio-heading #lock { display: none; }
-    .extension-page .portfolio-heading .eyebrow { min-height: 3.4em; }
+    .extension-page #portfolio-label { display: flex; align-items: center; min-height: 3.4em; margin: 0; font-size: 10px; }
     .extension-page .portfolio-amount { margin: 20px 0 6px; }
     .extension-page #portfolio-status { min-height: 3.4em; margin: 6px 0 18px; }
     @media (max-width: 760px) {
       .extension-page .portfolio-card { padding: 20px 18px 18px; }
+      .extension-page #portfolio-label { font-size: 9px; }
       .extension-page #portfolio-status { min-height: 6.8em; }
     }
   ` });
   try { return (await page.locator('.portfolio-card').boundingBox()).height; }
-  finally { await baseline.evaluate(node => node.remove()); }
+  finally {
+    await page.locator('.portfolio-card').evaluate(card => {
+      const heading = card.querySelector('.portfolio-heading');
+      heading.prepend(card.querySelector('.portfolio-amount'));
+      heading.after(card.querySelector('#portfolio-label'));
+      card.querySelector('#portfolio-status').hidden = true;
+    });
+    await baseline.evaluate(node => node.remove());
+  }
+}
+
+async function assertPortfolioLayout(page) {
+  assert.equal(await page.locator('#quick-name').isVisible(), false);
+  const layout = await page.evaluate(() => {
+    const card = document.querySelector('.portfolio-card'), heading = card.querySelector('.portfolio-heading');
+    const reference = document.createElement('p'); reference.className = 'eyebrow';
+    heading.append(reference);
+    const previousLabelSize = parseFloat(getComputedStyle(reference).fontSize); reference.remove();
+    const amount = document.getElementById('portfolio-total'), label = document.getElementById('portfolio-label');
+    const greeting = document.getElementById('wallet-heading').getBoundingClientRect(), box = card.getBoundingClientRect();
+    return { amount: amount.getBoundingClientRect().toJSON(), label: label.getBoundingClientRect().toJSON(),
+      amountFirst: Boolean(amount.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING),
+      labelSize: parseFloat(getComputedStyle(label).fontSize), previousLabelSize,
+      upperGap: box.top - greeting.bottom,
+      lowerGap: document.querySelector('#portfolio-networks .network-health').getBoundingClientRect().top - box.bottom };
+  });
+  assert.equal(layout.amountFirst, true, 'The amount precedes its label in reading order');
+  assert.ok(layout.amount.bottom <= layout.label.top, 'The amount sits above its label');
+  assert.ok(layout.labelSize < layout.previousLabelSize, 'The label is smaller than the previous portfolio eyebrow');
+  assert.ok(layout.upperGap > 0 && layout.lowerGap > 0, 'The greeting, card and network chips have space between them');
+  assert.ok(Math.abs(layout.upperGap - layout.lowerGap) < 1, 'Welcome to card and card to network chips have equal gaps');
 }
 
 const button = (page, name) => page.getByRole('button', { name, exact: true });
@@ -58,6 +96,10 @@ async function assertAccountHistoryOnly(page) {
 async function waitHome(page) {
   await page.waitForFunction(() => document.querySelectorAll('.network-health[data-health="current"]').length === 7 && document.getElementById('portfolio-total')?.textContent.startsWith('$'));
   await page.locator('#screen:not([inert])').waitFor();
+}
+async function selectNetwork(page, chain) {
+  if (await page.locator('#send-form').isVisible()) await page.locator('#chain').selectOption(chain);
+  else await page.locator(`.network-health[data-chain="${chain}"]`).click();
 }
 async function assertNavigation(page, current = null) {
   // index.html:34 and style.css:882-885: ordered tiles, two columns at 400px.
@@ -78,13 +120,19 @@ async function assertNavigation(page, current = null) {
     ['Portfolio', 'Send / Receive', 'Activity', 'Address book', 'Device & settings', 'Connected sites']);
   assert.deepEqual(await page.locator('.wallet-page:visible').evaluateAll(nodes => nodes.map(node => node.id)), current ? [`page-${current}`] : []);
   assert.equal(await page.locator('#wallet-home').isVisible(), current === null);
+  assert.equal(await page.locator('#wallet-heading').isVisible(), current === null);
   assert.equal(await page.locator('.wallet-navigation a:visible').count(), current ? 0 : available.length);
   if (current) {
-    const title = current === 'wallet-activity' ? 'Activity' : current === 'sites' ? 'Connected sites' : 'Device & settings';
+    const title = current === 'assets-panel' ? 'Your assets' : current === 'send-form' ? /^Send \/ Receive/u
+      : current === 'wallet-activity' ? 'Activity' : current === 'sites' ? 'Connected sites' : 'Device & settings';
     const heading = page.locator(`#page-${current}`).getByRole('heading', { name: title, exact: true });
     await heading.waitFor();
     assert.equal(await heading.evaluate(node => document.activeElement === node), true);
     assert.equal(await page.evaluate(() => location.hash), `#${current}`);
+    const back = page.locator(`#page-${current} > .page-back`);
+    assert.equal(await back.isVisible(), true);
+    assert.match(await back.textContent(), /Back to wallet/u);
+    assert.ok((await back.boundingBox()).y < (await heading.boundingBox()).y, 'Back appears above the page heading');
   } else if (page.viewportSize().width <= 760) {
     for (let index = 0; index < available.length; index += 2) {
       const left = available[index].box, right = available[index + 1]?.box;
@@ -101,6 +149,8 @@ async function assertNavigation(page, current = null) {
   }
 }
 async function assertAssetLayout(page) {
+  await page.locator('.wallet-navigation a[href="#assets-panel"]').click();
+  await assertNavigation(page, 'assets-panel');
   // portfolio-view.js:168-204; style.css:452-480. Closed details have no row
   // geometry: expand only for measurement and restore every original open state.
   const groups = await page.evaluate(() => {
@@ -170,10 +220,15 @@ async function assertAssetLayout(page) {
   assert.equal(await page.locator('.holding-actions button[aria-label^="Receive "]').count(), 17);
   assert.equal(await page.locator('.transfer-buttons #quick-send').count(), 1);
   assert.equal(await page.locator('.transfer-buttons #quick-receive').count(), 1);
+  assert.equal(await page.locator('#send-form').isVisible(), false);
+  assert.ok(await page.locator('.price-source').evaluate(node => node.getBoundingClientRect().top >= [...document.querySelectorAll('.asset-group')].at(-1).getBoundingClientRect().bottom));
+  await page.locator('#page-assets-panel .page-back').click();
+  await assertNavigation(page);
 }
 async function assertHome(page, popup) {
   await waitHome(page); await page.evaluate(() => scrollTo(0, 0));
   await assertNavigation(page);
+  await assertPortfolioLayout(page);
   assert.equal(await page.getByRole('heading', { name: 'Your wallet', exact: true }).count(), 0);
   assert.equal(await page.locator('.wallet-card > .section-head .eyebrow').count(), 0);
   assert.equal(await page.locator('#wallet-heading img').count(), 0);
@@ -221,7 +276,9 @@ async function assertHome(page, popup) {
   assert.equal(await page.locator('#net-status, #net-status-text').count(), 0);
   assert.equal(await page.locator('.asset-group[data-symbol="NODUS"] .asset-value strong').textContent(), '12.34');
   assert.equal(await page.locator('.asset-group[data-symbol="NODUS"] .holding-value strong').textContent(), '12.34 NODUS');
-  assert.match(await page.locator('#portfolio-status').textContent(), /asset balances are included|balances and .* prices unavailable/u);
+  assert.equal(await page.locator('#portfolio-status').isVisible(), false);
+  assert.equal(await page.locator('#assets-panel').isVisible(), false);
+  assert.equal(await page.locator('#send-form').isVisible(), false);
   const methods = await page.evaluate(() => window.layout.calls.map(call => call.method));
   for (const method of ['getNodusBalances', 'getCpunkBalance', 'getEvmBalances', 'getSolanaBalances', 'getTronBalances', 'getPrices']) {
     assert.ok(methods.includes(method), `Opening the wallet must request ${method} over the trusted client`);
@@ -229,11 +286,48 @@ async function assertHome(page, popup) {
   assert.equal(await page.locator('.asset-group[data-symbol="USDT"] .chain-holding').count(), 4);
   assert.equal(await page.locator('#send-form #receive-panel').count(), 1);
   await assertAssetLayout(page);
-  const actions = await page.locator('#quick-send, #quick-receive, #quick-earn, #quick-swap').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().toJSON()));
-  for (const action of actions) {
-    assert.ok(action.width > 0 && action.height > 0, 'Each transfer shortcut is measurable');
-    assert.ok(Math.abs(action.width - actions[0].width) < 1, 'Send, Receive, Earn and Swap have equal width');
-    assert.ok(Math.abs(action.height - actions[0].height) < 1, 'Send, Receive, Earn and Swap have equal height');
+  // Restore only the former text control (c863555c6^ wallet-markup.js:14).
+  // Compare its real computed sizing, including the narrow-screen small rule;
+  // equal shortcut sizes alone could falsely pass the original large buttons.
+  // Measure all four boxes: equal heights alone miss unequal widths and wrapping.
+  // Content must still fit: matching height by clipping a glyph/badge is no fix.
+  const actionSizes = await page.evaluate(() => {
+    const reference = document.createElement('button'); reference.className = 'secondary small'; reference.textContent = 'Lock wallet';
+    document.querySelector('.wallet-card').append(reference);
+    const size = node => {
+      const style = getComputedStyle(node), content = document.createRange(); content.selectNodeContents(node);
+      return { id: node.id, box: node.getBoundingClientRect().toJSON(), padding: style.padding, font: style.fontSize,
+        content: [...content.getClientRects()].map(box => box.toJSON()) };
+    };
+    try { return { reference: size(reference), actions: [...document.querySelectorAll('#quick-send, #quick-receive, #quick-earn, #quick-swap')].map(size) }; }
+    finally { reference.remove(); }
+  });
+  assert.deepEqual(actionSizes.actions.map(action => action.id), ['quick-send', 'quick-receive', 'quick-earn', 'quick-swap']);
+  const [send, receive, earn, swap] = actionSizes.actions.map(action => action.box);
+  for (const action of actionSizes.actions) {
+    assert.ok(action.box.width > 0 && action.box.height > 0, `${action.id}: shortcut is measurable`);
+    assert.ok(Math.abs(action.box.width - send.width) < 1, `${action.id}: shortcuts have equal widths`);
+    assert.ok(Math.abs(action.box.height - send.height) < 1, `${action.id}: shortcuts have equal heights`);
+    assert.ok(Math.abs(action.box.height - actionSizes.reference.box.height) < 1,
+      `${action.id} at ${page.viewportSize().width}px: Shortcuts use the former Lock wallet height (${action.box.height}px vs ${actionSizes.reference.box.height}px)`);
+    assert.equal(action.padding, actionSizes.reference.padding);
+    assert.equal(action.font, actionSizes.reference.font);
+    for (const content of action.content) {
+      assert.ok(content.left >= action.box.left && content.right <= action.box.right
+        && content.top >= action.box.top && content.bottom <= action.box.bottom, `${action.id}: text, glyph and badge fit inside the shortcut`);
+    }
+  }
+  assert.ok(Math.abs(send.top - receive.top) < 1, 'Send and Receive share the first row');
+  assert.ok(Math.abs(earn.top - swap.top) < 1, 'Earn and Swap share the second row');
+  assert.ok(earn.top > Math.max(send.bottom, receive.bottom), 'The second row sits below the first');
+  assert.ok(send.right < receive.left && earn.right < swap.left, 'Send precedes Receive and Earn precedes Swap');
+  assert.ok(Math.abs(send.left - earn.left) < 1 && Math.abs(receive.left - swap.left) < 1, 'The two rows share the same columns');
+  for (const chip of await page.locator('.network-health').all()) {
+    const centers = await chip.evaluate(node => {
+      const center = item => { const box = item.getBoundingClientRect(); return box.top + box.height / 2; };
+      return { chip: center(node), content: [...node.querySelectorAll('.coin-icon, span:not(.health-light)')].map(center) };
+    });
+    for (const center of centers.content) assert.ok(Math.abs(center - centers.chip) < 1, 'Network icon and name are vertically centered in the chip');
   }
   const styles = await page.evaluate(() => ({
     font: getComputedStyle(document.body).fontFamily,
@@ -241,19 +335,13 @@ async function assertHome(page, popup) {
     portfolioBackground: getComputedStyle(document.querySelector('.portfolio-card')).backgroundImage,
     totalSize: parseFloat(getComputedStyle(document.getElementById('portfolio-total')).fontSize),
     send: getComputedStyle(document.getElementById('quick-send')).backgroundColor,
-    sendTop: document.getElementById('quick-send').getBoundingClientRect().top,
-    receiveTop: document.getElementById('quick-receive').getBoundingClientRect().top,
     shell: document.querySelector('.wallet-card').getBoundingClientRect().toJSON(),
-    sourceTop: document.querySelector('.price-source').getBoundingClientRect().top,
-    lastAssetBottom: [...document.querySelectorAll('.asset-group')].at(-1).getBoundingClientRect().bottom,
   }));
   assert.match(styles.font, /^Inter(?:,|$)/u);
   assert.equal(styles.portfolioRadius, '16px'); assert.notEqual(styles.portfolioBackground, 'none');
   assert.ok(styles.totalSize >= 32);
   assert.equal(styles.send, 'rgb(213, 249, 152)');
-  assert.ok(Math.abs(styles.sendTop - styles.receiveTop) < 1, 'Transfer Send and Receive share a row');
   if (popup) { assert.equal(styles.shell.left, 20); assert.equal(styles.shell.right, 380); }
-  assert.ok(styles.sourceTop >= styles.lastAssetBottom);
   const fixture = await page.evaluate(() => ({ balances: window.layout.balances, times: window.layout.balanceTimes, quotes: window.layout.quotes, now: Date.now() }));
   const balances = Object.assign({}, ...Object.entries(fixture.balances).map(([chain, rows]) => chainBalances(chain, rows, fixture.times[chain])));
   const quotes = Object.fromEntries(Object.entries(fixture.quotes).map(([key, quote]) => [key, { ...quote, units: BigInt(quote.units) }]));
@@ -351,31 +439,67 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         // and quote read. Measuring only after waitHome would miss the jump.
         await page.goto(`${origin}/extension/test/fixtures/layout.html?page=${kind}&stage=home&hold`);
         await page.waitForFunction(() => window.layout && document.getElementById('portfolio-label')?.textContent === 'Updating portfolio');
+        assert.equal(await page.locator('#portfolio-status').isVisible(), false);
         await page.evaluate(() => document.fonts.ready);
         const loading = await page.locator('.portfolio-card').boundingBox();
+        await assertPortfolioLayout(page);
         assert.ok(loading.height < await portfolioHeight0136(page) - 1, `${kind} ${width}: loading card is smaller than 0.1.136`);
         const refreshTop = await page.locator('#portfolio-refresh').evaluate(node => node.getBoundingClientRect().top);
         await page.evaluate(() => window.layout.releaseReads()); await waitHome(page);
+        assert.equal(await page.locator('#portfolio-status').isVisible(), false);
         assert.equal(await page.locator('#portfolio-label').textContent(), 'Estimated portfolio value');
         const settled = await page.locator('.portfolio-card').boundingBox();
+        await assertPortfolioLayout(page);
         assert.ok(settled.height < await portfolioHeight0136(page) - 1, `${kind} ${width}: settled card is smaller than 0.1.136`);
         assert.ok(Math.abs(loading.height - settled.height) < 1, `${kind} ${width}: portfolio height stays fixed after loading`);
         assert.ok(Math.abs(refreshTop - await page.locator('#portfolio-refresh').evaluate(node => node.getBoundingClientRect().top)) < 1, 'Refresh action stays in place');
-        // Both approved greeting states on popup/full-page layouts. A trusted
-        // name reply drives the heading; the registration prompt reaches the
-        // existing Nodus form even from another network and a separate page.
-        await open('home', 'publicname');
-        await page.getByRole('heading', { name: 'Welcome back, publicname', exact: true }).waitFor();
-        assert.equal(await page.locator('#wallet-register-name').isVisible(), false);
-        assert.equal(await page.locator('.site-header .wordmark').textContent(), 'nodus');
-        assert.equal(await page.locator('.site-header .product-name').textContent(), 'Wallet');
-        assert.equal(await page.evaluate(() => window.layout.calls.filter(call => call.method === 'getOwnName').length), 1);
+        // Public fixture replies, no live reads. Compare the generic, named
+        // (including long text) and registration states at each viewport. This
+        // pins row height and portfolio position; name-block-ui.test.js pins
+        // the pending read. Geometry alone cannot approve visual appearance.
+        assert.equal(await page.getByRole('heading', { name: 'Welcome back', exact: true }).isVisible(), true);
+        const greeting = await page.locator('#wallet-heading').boundingBox();
+        const portfolioTop = (await page.locator('.portfolio-card').boundingBox()).y;
+        const assertGreetingPosition = async () => {
+          const row = await page.locator('#wallet-heading').boundingBox();
+          assert.ok(Math.abs(row.y - greeting.y) < 1, `${kind} ${width}: greeting stays in place`);
+          assert.ok(Math.abs(row.height - greeting.height) < 1, `${kind} ${width}: greeting row height stays fixed`);
+          assert.ok(Math.abs((await page.locator('.portfolio-card').boundingBox()).y - portfolioTop) < 1, `${kind} ${width}: greeting does not move the portfolio`);
+          await assertPortfolioLayout(page);
+        };
+        for (const name of ['publicname', 'publicnamepublicnamepublicname']) {
+          await open('home', name); await waitHome(page);
+          await page.getByRole('heading', { name: `Welcome back, ${name}`, exact: true }).waitFor();
+          assert.equal(await page.locator('#wallet-register-name').isVisible(), false);
+          await assertGreetingPosition(); await capture(`greeting-${name}`);
+          assert.equal(await page.locator('.site-header .wordmark').textContent(), 'nodus');
+          assert.equal(await page.locator('.site-header .product-name').textContent(), 'Wallet');
+          assert.equal(await page.evaluate(() => window.layout.calls.filter(call => call.method === 'getOwnName').length), 1);
+        }
         await open('home', 'none');
         await page.getByRole('heading', { name: 'Welcome back', exact: true }).waitFor();
-        await page.locator('#chain').selectOption('ethereum');
+        await button(page, 'Register your on-chain name').waitFor(); await waitHome(page);
+        await assertGreetingPosition();
+        const title = await page.locator('#wallet-title').boundingBox();
+        const register = await page.locator('#wallet-register-name').boundingBox();
+        assert.ok(title.x + title.width <= register.x, 'Registration sits to the right of the greeting');
+        assert.ok(Math.abs(title.y + title.height / 2 - register.y - register.height / 2) < 1, 'Greeting and registration share a row');
+        assert.ok(Math.abs(register.x + register.width - greeting.x - greeting.width) < 1, 'Registration aligns with the right edge');
+        assert.equal(await page.locator('#wallet-register-name').evaluate(node => node.scrollHeight <= node.clientHeight), true, 'Registration text fits inside the button');
+        await capture('greeting-registration');
+        // Greeting and registration belong to home. A name/state refresh on a
+        // separate page must not restore them; returning home keeps the form.
+        await selectNetwork(page, 'ethereum');
         await page.locator('.wallet-navigation a[href="#settings"]').click();
+        assert.equal(await page.locator('#wallet-heading').isVisible(), false);
+        await page.evaluate(async () => {
+          window.layout.state.nodus.connection = 'public-refresh'; await window.layout.refresh();
+        });
+        assert.equal(await page.locator('#wallet-heading').isVisible(), false);
+        await page.locator('#page-settings .page-back').click();
         await button(page, 'Register your on-chain name').click();
-        assert.equal(await page.locator('#wallet-home').isVisible(), true);
+        assert.equal(await page.locator('#wallet-home').isVisible(), false);
+        assert.equal(await page.locator('#page-send-form').isVisible(), true);
         assert.equal(await page.locator('#chain').inputValue(), 'nodus');
         assert.equal(await page.locator('#name-block').isVisible(), true);
         assert.equal(await page.locator('#name-input').evaluate(node => document.activeElement === node), true);
@@ -408,16 +532,25 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         await page.locator('#portfolio-refresh').click(); await waitHome(page); assert.equal(await priceCount(page), 2);
         await page.locator('#quick-receive').click();
         assert.equal(await page.locator('#receive-address').textContent(), 'ab'.repeat(64));
-        await assertNavigation(page);
-        assert.equal(await page.locator('#receive-title').evaluate(node => document.activeElement === node), true);
+        await assertNavigation(page, 'send-form');
         await capture('receive');
-        await page.locator('#chain').selectOption('ethereum');
+        await page.locator('#page-send-form .page-back').click();
+        await selectNetwork(page, 'ethereum');
         await page.locator('#quick-send').click();
+        // Check navigation focus before filling fields, which moves focus to
+        // the input. Typing must not mask a missing heading focus on entry.
+        await assertNavigation(page, 'send-form');
         await page.locator('#recipient').fill('0x' + '34'.repeat(20)); await page.locator('#amount').fill('0.125');
-        await assertNavigation(page);
+        assert.equal(await page.locator('#amount').evaluate(node => document.activeElement === node), true, 'Filling the amount keeps focus in the input');
         await capture('send');
         const before = await page.evaluate(() => window.layout.calls.filter(call => call.method === 'getState').length);
         await page.evaluate(() => { window.typedNodes = [document.getElementById('recipient'), document.getElementById('amount')]; });
+        await page.locator('#page-send-form .page-back').click();
+        await page.locator('.wallet-navigation a[href="#assets-panel"]').click();
+        await assertNavigation(page, 'assets-panel');
+        await page.locator('#page-assets-panel .page-back').click();
+        await page.locator('.wallet-navigation a[href="#send-form"]').click();
+        await assertNavigation(page, 'send-form');
         await page.clock.setFixedTime(new Date(await page.evaluate(() => Date.now()) + PRICE_MAX_AGE + 1));
         await page.clock.runFor(30000); // the shared controller's render tick
         await page.locator('#amount').dispatchEvent('input');
@@ -440,8 +573,9 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         await page.clock.runFor(600); await page.locator('#confirm-send').click();
         await page.waitForFunction(() => !document.getElementById('review-dialog').open);
         assert.deepEqual(await page.evaluate(() => window.layout.calls.filter(call => call.method === 'confirmEvmSend').map(call => call.params)), [['layout-review']]);
+        await page.locator('#page-send-form .page-back').click();
         await page.locator('#portfolio-refresh').click(); await waitHome(page);
-        await page.locator('#chain').selectOption('nodus');
+        await selectNetwork(page, 'nodus');
         await page.locator('.wallet-navigation a[href="#wallet-activity"]').click();
         await assertNavigation(page, 'wallet-activity');
         assert.equal(await page.locator('#activity-panel .page-chip').textContent(), 'Nodus · Testnet');
@@ -463,7 +597,7 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         // network rows retain their explorer routing; no peer/hash is HTML.
         for (const chain of ['ethereum', 'solana', 'tron', 'cellframe']) {
           await page.locator('#page-wallet-activity .page-back').click();
-          await page.locator('#chain').selectOption(chain);
+          await selectNetwork(page, chain);
           await page.locator('.wallet-navigation a[href="#wallet-activity"]').click();
           const symbol = chain === 'ethereum' ? 'ETH' : chain === 'solana' ? 'SOL' : chain === 'tron' ? 'TRX' : 'CPUNK';
           await page.waitForFunction(amount => document.querySelector('#history .activity-main strong')?.textContent === amount, `+${displayAmount('1234567.123456789')} ${symbol}`);
@@ -476,19 +610,19 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
           await capture(`history-${chain}`);
         }
         await page.locator('#page-wallet-activity .page-back').click();
-        await page.locator('#chain').selectOption('bsc');
+        await selectNetwork(page, 'bsc');
         await page.locator('.wallet-navigation a[href="#wallet-activity"]').click();
         await page.waitForFunction(() => document.querySelector('#history-status')?.textContent === 'Account history for BNB Smart Chain is not read here. Use the account explorer.');
         assert.equal(await page.locator('#history .activity-row').count(), 0);
         await assertAccountHistoryOnly(page);
         await page.locator('#page-wallet-activity .page-back').click();
-        await page.locator('#chain').selectOption('ixios');
+        await selectNetwork(page, 'ixios');
         await page.locator('.wallet-navigation a[href="#wallet-activity"]').click();
         assert.equal(await page.locator('#history-status').textContent(), '');
         assert.equal(await page.locator('#history .activity-row').count(), 0);
         await assertAccountHistoryOnly(page);
         await page.locator('#page-wallet-activity .page-back').click();
-        await page.locator('#chain').selectOption('nodus'); await waitHome(page);
+        await selectNetwork(page, 'nodus'); await waitHome(page);
         await assertNavigation(page);
         await page.locator('.wallet-navigation a[href="#settings"]').click();
         await assertNavigation(page, 'settings'); await capture('settings');
@@ -510,7 +644,7 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         await page.locator('#network-solana').selectOption('devnet');
         await page.waitForFunction(() => window.layout.state.networks.solana === 'devnet');
         await page.locator('#page-settings .page-back').click();
-        await page.locator('#chain').selectOption('solana');
+        await selectNetwork(page, 'solana');
         assert.deepEqual(await page.locator('#asset option').allTextContents(), ['SOL']);
         assert.equal(await page.locator('.asset-group[data-symbol="SOL"] .asset-value small').textContent(), '—');
         await page.locator('.wallet-navigation a[href="#settings"]').click();
@@ -524,7 +658,9 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         assert.equal(await page.evaluate(() => window.layout.state.isUnlocked), false);
         assert.equal(await page.evaluate(() => window.layout.calls.filter(call => call.method === 'setLocked').length), 1);
         assert.equal(await page.locator('input[readonly]').count(), 0);
-        assert.equal(await page.locator('#wallet-heading').isVisible(), false);
+        assert.equal(await page.locator('#wallet-heading').isVisible(), true);
+        assert.equal(await page.locator('#wallet-title').textContent(), 'Welcome back');
+        assert.equal(await page.locator('#wallet-register-name').isVisible(), false);
         await capture('locked');
       } finally { await context.close(); }
     }

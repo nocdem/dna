@@ -33,10 +33,12 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   root.className = '';
   for (const id of ['wallet-boot-status', 'welcome', 'unlock-form', 'phrase-form']) $(id).hidden = true;
   $('wallet-open').hidden = false;
+  // The greeting belongs to home, including while a name read finishes.
+  $('wallet-home').prepend($('wallet-heading'));
+  for (const id of ['assets-panel', 'send-form']) appendPage(id, $(id));
+  root.querySelector('.dashboard-grid').remove();
   // Approved extension plan §3.6: the extension-only connected-sites page.
-  const sitesPage = element('div', undefined, 'wallet-page'); sitesPage.id = 'page-sites'; sitesPage.dataset.page = 'sites'; sitesPage.hidden = true;
-  const sitesBack = element('button', '← Back to wallet', 'secondary small page-back'); sitesBack.type = 'button';
-  const connections = element('section', undefined, 'dashboard-panel'); sitesPage.append(sitesBack, connections); $('wallet-open').append(sitesPage);
+  const connections = element('section', undefined, 'dashboard-panel'); appendPage('sites', connections);
   const sitesLink = element('a'); sitesLink.href = '#sites'; sitesLink.dataset.hint = 'Sites permitted to connect'; sitesLink.append(appIcon(document, 'sites'), element('span', 'Connected sites', 'nav-name')); root.querySelector('.wallet-navigation').append(sitesLink);
   let selected = 'nodus', shownPage = null, disposed = false, readGeneration = 0, review, reviewTimer;
   let previousNetwork, previousTokens, previousAddress, walletScroll = 0, backgroundLog = { entries: [], running: [] };
@@ -47,6 +49,11 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   function element(tag, text, className = '') {
     const node = document.createElement(tag); node.className = className;
     if (text !== undefined) node.textContent = text; return node;
+  }
+  function appendPage(name, panel) {
+    const page = element('div', undefined, 'wallet-page'); page.id = `page-${name}`; page.dataset.page = name; page.hidden = true;
+    const back = element('button', '← Back to wallet', 'secondary small page-back'); back.type = 'button';
+    page.append(back, panel); $('wallet-open').append(page);
   }
   const message = text => { status.textContent = text; status.className = 'result'; sessionLog.log('wallet', text); };
   const networkDefinitions = () => ({ nodus: nodusNetworkFor(ui.state.nodus?.state === 'ready', { module: true, tokens: ui.state.nodus?.tokens }), ...CHAINS, cellframe: CELLFRAME,
@@ -96,8 +103,8 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   const ixiosStatus = element('p', '', 'hint'); ixiosStatus.id = 'ixios-address-status'; ixiosStatus.setAttribute('role', 'status'); ixiosStatus.setAttribute('aria-live', 'polite'); $('cellframe-address-status').after(ixiosStatus);
   $('lock').onclick = lock;
 
-  // src/app.js:2083-2251: pages replace wallet-home, while both shortcuts lead
-  // to the same, persistent Send / Receive panel. Hashes use the web names.
+  // Pages replace wallet-home. Keep the original panels and hash names so
+  // opening Portfolio or Send / Receive preserves the selected asset/draft.
   function showPage(name, { focus = true } = {}) {
     const candidate = [...root.querySelectorAll('.wallet-page')].find(page => page.dataset.page === name);
     const page = candidate && !candidate.querySelector('.dashboard-panel').hidden ? candidate : null;
@@ -122,13 +129,11 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   for (const link of root.querySelectorAll('.wallet-navigation a')) link.onclick = event => {
     event.preventDefault();
     const target = link.getAttribute('href').slice(1);
-    if (target === 'assets-panel' || target === 'send-form') { navigate(null); $(target).scrollIntoView({ block: 'start' }); }
-    else navigate(target);
+    navigate(target);
   };
   const route = () => showPage(window.location.hash.slice(1));
   window.addEventListener('hashchange', route);
-  $('quick-send').onclick = () => { navigate(null); $('send-block-title').focus({ preventScroll: true }); $('send-block').scrollIntoView({ block: 'start' }); };
-  $('quick-receive').onclick = () => { navigate(null); $('receive-title').focus({ preventScroll: true }); $('receive-panel').scrollIntoView({ block: 'start' }); };
+  $('quick-send').onclick = $('quick-receive').onclick = () => navigate('send-form');
   function selectAsset(chain, symbol, action) {
     cancelReview(); selected = chain; $('chain').value = chain; selectChain(true);
     const option = [...$('asset').options].find(option => option.dataset.symbol === symbol);
@@ -136,9 +141,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     applyAssetGate();
     if (action === 'choose') return;
     if (action === 'earn') { navigate('earn'); return; }
-    navigate(null);
-    if (action === 'send' || action === 'receive') $(action === 'send' ? 'quick-send' : 'quick-receive').click();
-    else if (window.matchMedia('(max-width: 900px)').matches) $('send-form').scrollIntoView({ block: 'start' });
+    navigate('send-form');
   }
   function applyAssetGate() {
     const option = $('asset').selectedOptions[0];
@@ -280,7 +283,8 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   book = mountAddressBook({ root, document, ui, networks, selected: () => selected, navigate, run });
   earn = mountEarn({ root, document, ui, selected: () => selected, portfolio, run, showReview: showPrepared, navigate });
   names = mountNameBlock({ root, ui, selected: () => selected, run, showReview: showPrepared });
-  $('wallet-register-name').onclick = () => { selectAsset('nodus', 'NODUS', 'choose'); navigate(null); $('quick-name').click(); };
+  const registerName = $('wallet-register-name').onclick;
+  $('wallet-register-name').onclick = () => { selectAsset('nodus', 'NODUS', 'choose'); navigate('send-form'); registerName(); };
   claim = mountClaimAction({ ui, portfolio, run, showReview: showPrepared });
   contracts = mountContractsPage({ rootNode: $('evm-root'), panelNode: $('evm-panel'), ui });
   vaults = mountVaultsPage({ rootNode: $('vaults-root'), panelNode: $('vault-panel'), ui });

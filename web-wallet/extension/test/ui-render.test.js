@@ -28,12 +28,12 @@ test('mounted status, provider choices and welcome text follow the reference', {
     // The real background's listed/typed restart is covered in evm-site.test.js.
     for (const chain of ['ethereum', 'bsc']) {
       for (const provider of CHAINS[chain].rpcOptions) {
-        await page.locator('#chain').selectOption(chain);
+        await page.locator(`.network-health[data-chain="${chain}"]`).click();
         await page.locator('a[href="#settings"]').click();
         if (!await page.locator('#rpc-settings').evaluate(details => details.open)) await page.locator('#rpc-settings > summary').click();
         await page.locator('#rpc-choice').selectOption(provider.url); await page.locator('#save-rpc').click();
         await page.locator('#page-settings .page-back').click();
-        await page.locator('#chain').selectOption('solana'); await page.locator('#chain').selectOption(chain);
+        await page.locator('.network-health[data-chain="solana"]').click(); await page.locator(`.network-health[data-chain="${chain}"]`).click();
         await page.locator('a[href="#settings"]').click();
         assert.equal(await page.locator('#rpc-choice').inputValue(), provider.url);
         assert.equal(await page.locator('#rpc-endpoint').isHidden(), true);
@@ -219,6 +219,8 @@ test('mounted import form saves through the trusted API and renders home', async
   assert.ok(calls.some(call => call.method === 'createNewVaultAndRestore')); assert.ok(calls.some(call => call.method === 'submitPasswordOrEncryptionKey'));
   assert.ok(button(navigation, 'Lock'));
   assert.equal(descendants(root, node => node.id === 'portfolio-label')[0].textContent, 'Estimated portfolio value');
+  assert.deepEqual(descendants(root, node => ['portfolio-total', 'portfolio-label'].includes(node.id)).map(node => node.id),
+    ['portfolio-total', 'portfolio-label']);
   assert.equal(root.querySelectorAll('input').length, 0);
 });
 

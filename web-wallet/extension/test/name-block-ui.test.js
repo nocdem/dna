@@ -8,7 +8,7 @@ import { mountNameBlock } from '../src/ui/name-block.js';
 // popup/full-page cases in ui-layout.test.js cover visibility and registration.
 function fixture(own, registrable = true) {
   const ids = ['wallet-heading', 'wallet-title', 'wallet-register-name', 'own-name',
-    'name-fields', 'quick-name', 'name-prices', 'name-review', 'name-quote', 'name-input', 'name-check', 'name-block'];
+    'name-fields', 'name-prices', 'name-review', 'name-quote', 'name-input', 'name-check', 'name-block'];
   const nodes = Object.fromEntries(ids.map(id => [id, Object.assign(new EventTarget(), { hidden: true, textContent: '', value: '' })]));
   const calls = [], ui = { state: { addresses: { nodus: 'public-wallet' }, nodus: { state: 'ready', nameable: true, registrable } },
     async request(method) {
@@ -21,6 +21,20 @@ function fixture(own, registrable = true) {
     selected: () => 'nodus', run: action => action(), showReview: () => assert.fail('No registration was prepared.') });
   return { nodes, names, ui, calls };
 }
+
+test('wallet greeting is visible while the first name read is pending', async () => {
+  let reply;
+  const { nodes, names, calls } = fixture(() => new Promise(resolve => { reply = resolve; }));
+  const pending = names.refresh();
+  assert.equal(nodes['wallet-title'].textContent, 'Welcome back');
+  assert.equal(nodes['wallet-heading'].hidden, false);
+  assert.equal(nodes['wallet-register-name'].hidden, true);
+  assert.deepEqual(calls, ['getOwnName']);
+  reply({ found: true, name: 'publicname' }); await pending;
+  assert.equal(nodes['wallet-title'].textContent, 'Welcome back, publicname');
+  assert.equal(nodes['wallet-heading'].hidden, false);
+  assert.equal(nodes['wallet-register-name'].hidden, true);
+});
 
 test('wallet greeting uses the name returned by getOwnName', async () => {
   const { nodes, names, calls } = fixture(() => ({ found: true, name: 'publicname' }), false);
@@ -41,45 +55,58 @@ test('confirmed unnamed wallet offers registration when it is available', async 
   assert.deepEqual(calls, ['getOwnName', 'getNamePrices']);
 });
 
-test('name refresh clears the previous greeting before the reply and after failure', async () => {
+test('name refresh resets to the generic greeting before the reply and after failure', async () => {
   let next = () => ({ found: true, name: 'publicname' }), reply;
   const { nodes, names } = fixture(() => next());
   await names.refresh();
   next = () => new Promise(resolve => { reply = resolve; });
   const pending = names.refresh();
-  assert.equal(nodes['wallet-heading'].hidden, true);
-  assert.equal(nodes['wallet-title'].textContent, '');
+  assert.equal(nodes['wallet-heading'].hidden, false);
+  assert.equal(nodes['wallet-title'].textContent, 'Welcome back');
   assert.equal(nodes['wallet-register-name'].hidden, true);
   reply({ found: false }); await pending;
   assert.equal(nodes['wallet-title'].textContent, 'Welcome back');
+  assert.equal(nodes['wallet-register-name'].hidden, false);
   next = () => { throw new Error('Public fixture read failed'); };
   await names.refresh();
-  assert.equal(nodes['wallet-heading'].hidden, true);
-  assert.equal(nodes['wallet-title'].textContent, '');
+  assert.equal(nodes['wallet-heading'].hidden, false);
+  assert.equal(nodes['wallet-title'].textContent, 'Welcome back');
   assert.equal(nodes['wallet-register-name'].hidden, true);
 });
 
-test('unavailable name support clears the greeting and fences a pending reply', async () => {
+test('confirmed unnamed wallet keeps the generic greeting when registration is unavailable', async () => {
+  const { nodes, names, calls } = fixture(() => ({ found: false }), false);
+  await names.refresh();
+  assert.equal(nodes['wallet-title'].textContent, 'Welcome back');
+  assert.equal(nodes['wallet-heading'].hidden, false);
+  assert.equal(nodes['wallet-register-name'].hidden, true);
+  assert.deepEqual(calls, ['getOwnName']);
+});
+
+test('unavailable name support keeps the generic greeting and fences a pending reply', async () => {
   let next = () => ({ found: true, name: 'publicname' }), reply;
   const { nodes, names, ui } = fixture(() => next());
   await names.refresh();
   ui.state.nodus.nameable = false; names.update();
-  assert.equal(nodes['wallet-heading'].hidden, true);
-  assert.equal(nodes['wallet-title'].textContent, '');
+  assert.equal(nodes['wallet-heading'].hidden, false);
+  assert.equal(nodes['wallet-title'].textContent, 'Welcome back');
+  assert.equal(nodes['wallet-register-name'].hidden, true);
   next = () => new Promise(resolve => { reply = resolve; });
   ui.state.nodus.nameable = true; names.update();
   ui.state.nodus.nameable = false; names.update();
   reply({ found: true, name: 'stalename' });
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(nodes['wallet-heading'].hidden, true);
-  assert.equal(nodes['wallet-title'].textContent, '');
+  assert.equal(nodes['wallet-heading'].hidden, false);
+  assert.equal(nodes['wallet-title'].textContent, 'Welcome back');
+  assert.equal(nodes['wallet-register-name'].hidden, true);
 });
 
-test('disposing a name block prevents a late name from restoring its greeting', async () => {
+test('disposing a name block prevents a late name from replacing the generic greeting', async () => {
   let reply;
   const { nodes, names } = fixture(() => new Promise(resolve => { reply = resolve; }));
   const pending = names.refresh(); names.dispose();
   reply({ found: true, name: 'stalename' }); await pending;
-  assert.equal(nodes['wallet-heading'].hidden, true);
-  assert.equal(nodes['wallet-title'].textContent, '');
+  assert.equal(nodes['wallet-heading'].hidden, false);
+  assert.equal(nodes['wallet-title'].textContent, 'Welcome back');
+  assert.equal(nodes['wallet-register-name'].hidden, true);
 });

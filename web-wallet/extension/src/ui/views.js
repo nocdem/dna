@@ -32,7 +32,7 @@ export function renderHome(document, container, state, receive, send, refreshBal
   const status = element(document, 'p', '', state.portfolio?.status ?? 'Balances load when you open your wallet.');
   status.id = 'portfolio-status'; status.role = 'status';
   const amount = element(document, 'p', 'portfolio-amount'); amount.append(total, element(document, 'span', 'portfolio-currency', 'USD'));
-  cardHead.append(label); card.append(cardHead, amount, status);
+  cardHead.append(amount); card.append(cardHead, label, status);
   if (refreshBalances) {
     const refresh = actionButton(document, 'Refresh balances', refreshBalances); refresh.id = 'portfolio-refresh'; card.append(refresh);
   }
