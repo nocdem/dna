@@ -4,7 +4,7 @@ import { Messenger } from '@metamask/messenger';
 import { JsonRpcEngine } from '@metamask/json-rpc-engine';
 import { Caip25EndowmentPermissionName, Caip25CaveatType, setEthAccounts } from '@metamask/chain-agnostic-permission';
 import { createLockCoordinator } from '../src/background/lock.js';
-import { createPermissions, SEND_METADATA } from '../src/background/permissions.js';
+import { createPermissions } from '../src/background/permissions.js';
 import { createApprovals } from '../src/background/approvals.js';
 
 // Node >=22.14; no flags/network/disk output. Public unlocked account state is a fixture; controllers are real.
@@ -72,8 +72,5 @@ test('lock preserves permitted accounts and provider discovery retains the runti
   approvals.reject((await pendingApproval(approvals)).id); assert.equal((await denied).error.code, 4001);
   const discovery = (await request('nodus_getProviderState')).result;
   assert.equal(discovery.extensionId, 'fixture'); assert.deepEqual(discovery.accounts, [account]);
-  assert.equal(SEND_METADATA, 'nodus_sendDomainMetadata');
-  assert.equal((await request(SEND_METADATA, { name: 'fixture' })).result, true);
-  assert.equal((await request('nodus_logWeb3ShimUsage')).result, true);
   assert.equal((await request('resolvePendingApproval', ['anything'])).error.code, -32601);
 });

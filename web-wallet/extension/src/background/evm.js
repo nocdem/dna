@@ -127,7 +127,7 @@ function networkClient(chain, endpoint) {
 }
 
 export function createEvm({ messenger, store, approvals, permissions, lockCoordinator, getWallet, keyring, onNetworkChanged, getActivity }) {
-  const metadata = Object.fromEntries(['selectedChain', 'endpoints'].map(key => [key, { persist: true, usedInUi: true, includeInStateLogs: false, includeInDebugSnapshot: false }]));
+  const metadata = Object.fromEntries(['selectedChain', 'endpoints'].map(key => [key, { persist: true }]));
   const saved = store.getInitialState('EvmController', metadata);
   const selectedChain = EVM_CHAINS.includes(saved.selectedChain) ? saved.selectedChain : 'ethereum';
   const endpoints = Object.fromEntries(EVM_CHAINS.map(chain => {

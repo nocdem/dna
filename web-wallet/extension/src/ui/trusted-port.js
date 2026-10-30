@@ -8,7 +8,6 @@ export function connectTrusted({ runtime = chrome.runtime, page = globalThis.loc
   const name = { 'popup.html': 'popup', 'notification.html': 'notification', 'home.html': 'fullscreen' }[page];
   if (!name) throw new Error('Unknown wallet page.');
   const port = runtime.connect({ name }), stream = new ExtensionPortStream(port), mux = new ObjectMultiplex();
-  mux.ignoreStream('provider'); mux.ignoreStream('app-init-liveness');
   const controller = mux.createStream('controller'), pending = new Map(), disconnectListeners = new Set(), notificationListeners = new Set();
   let id = 0, closed = false;
   // Port: ui/index.js:106 + metamask-controller.js:4857-4879: requests wait for the background's startUISync.
