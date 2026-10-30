@@ -54,7 +54,6 @@ async function fixture(t, withOtherWallet = false, defineDescriptor) {
     await Promise.all([bridge.pageMux, mux].map(parent => new Promise(resolve => parent.end(resolve))));
     await nextTurn();
     assert.equal(bridge.pageChannel.destroyed, true);
-    assert.equal(bridge.caipChannel.destroyed, true);
     bridge.destroyStreams(); bridge.pageStream.destroy(); bridge.pageMux.destroy();
     stream.destroy(); mux.destroy(); await nextTurn();
     for (const [key, descriptor] of saved) {
@@ -79,7 +78,7 @@ test('EIP-6963 announces and re-announces Nodus with the existing logo', { timeo
   assert.equal(page.ethereum, provider); assert.equal(initialized.length, 1);
   page.dispatchEvent(new Event('eip6963:requestProvider'));
   assert.equal(announcements.length, 2); assert.deepEqual(announcements[1].info, info);
-  assert.deepEqual(caip[0].params.targets, [{ type: 'caip-348', value: 'nodus-test-extension' }]);
+  assert.deepEqual(caip[0].params.targets, []);
   page.dispatchEvent(new CustomEvent('caip294:wallet_prompt', { detail: { method: 'wallet_prompt', params: {} } }));
   assert.equal(caip.length, 2); assert.equal(caip[1].params.uuid, info.uuid);
 });
@@ -114,16 +113,10 @@ test('provider warnings preserve the renamed reference messages and links', { ti
     provider.send({ method: 'eth_accounts' });
     assert.equal(await provider._nodus.isUnlocked(), true);
   }
-  for (const request of [{ method: 'eth_decrypt' }, { method: 'eth_getEncryptionPublicKey' }, { method: 'wallet_watchAsset', params: { type: 'ERC721' } }, { method: 'wallet_watchAsset', params: { type: 'ERC1155' } }]) {
-    const response = provider.request(request);
-    await nextTurn();
-    port.onMessage.emit({ name: 'nodus-provider', data: { id: pending.at(-1).data.id, jsonrpc: '2.0', result: true } });
-    await response;
-  }
   assert.deepEqual(warnings, [
     ...Object.values(messages.warnings.events),
     messages.warnings.enableDeprecation, messages.warnings.sendDeprecation,
-    messages.warnings.experimentalMethods, ...Object.values(messages.warnings.rpc),
+    messages.warnings.experimentalMethods,
   ].map(message => [renamed(message)]));
   assert.throws(() => provider.send({ method: 'eth_unsupportedFixture' }), { message: renamed(messages.errors.unsupportedSync('eth_unsupportedFixture')) });
 });
@@ -165,28 +158,18 @@ test('inherited provider logs and initial-state failures preserve their argument
   assert.equal(errors.at(-1)[0], disconnected);
 });
 
-// Proves all web3 shim diagnostics retain reference links and the rejected error object; checking just currentProvider would miss the missing-property/setter paths.
-test('web3 shim logs preserve reference details and failure objects', { timeout: 5000 }, async t => {
-  const { page, provider, pending, port } = await fixture(t);
+// Proves web3 shim diagnostics retain reference links; checking just currentProvider would miss the missing-property/setter paths.
+test('web3 shim logs preserve reference details', { timeout: 5000 }, async t => {
+  const { page, provider } = await fixture(t);
   const { default: log } = await import('loglevel');
   const warnings = [], errors = [];
   t.mock.method(log, 'warn', (...args) => warnings.push(args));
   t.mock.method(log, 'error', (...args) => errors.push(args));
-  let debugged;
-  const logged = new Promise(resolve => { debugged = resolve; });
-  t.mock.method(log, 'debug', (...args) => debugged(args));
   assert.equal(page.web3.currentProvider, provider);
   assert.equal(page.web3.currentProvider, provider);
   assert.deepEqual(warnings, [['You are accessing the Nodus window.web3.currentProvider shim. This property is deprecated; use window.ethereum instead. For details, see: https://docs.metamask.io/guide/provider-migration.html#replacing-window-web3']]);
   assert.equal(page.web3.eth, undefined); assert.equal(page.web3.eth, undefined);
   assert.deepEqual(errors, [['Nodus no longer injects web3. For details, see: https://docs.metamask.io/guide/provider-migration.html#replacing-window-web3']]);
-  await nextTurn();
-  assert.equal(pending.at(-1).data.method, 'nodus_logWeb3ShimUsage');
-  port.onMessage.emit({ name: 'nodus-provider', data: { id: pending.at(-1).data.id, jsonrpc: '2.0', error: { code: -32601, message: 'Shim usage fixture failure' } } });
-  const [message, error] = await logged;
-  assert.equal(message, 'Nodus: Failed to log web3 shim usage.');
-  assert.equal(error.message, 'Shim usage fixture failure');
-  assert.equal(warnings.at(-1)[1], error);
   page.web3.fixtureProperty = true;
   assert.deepEqual(warnings.at(-1), ['You are accessing the Nodus window.web3 shim. This object is deprecated; use window.ethereum instead. For details, see: https://docs.metamask.io/guide/provider-migration.html#replacing-window-web3']);
 });

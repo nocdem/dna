@@ -1,6 +1,5 @@
-import { PermissionController, PermissionDoesNotExistError, PermissionType, SubjectMetadataController, createPermissionMiddleware } from '@metamask/permission-controller';
+import { PermissionController, PermissionDoesNotExistError, PermissionType, createPermissionMiddleware } from '@metamask/permission-controller';
 import { createMethodMiddleware } from '@metamask/json-rpc-engine';
-import { BaseController } from '@metamask/base-controller';
 import { isPlainObject } from '@metamask/controller-utils';
 import { rpcErrors, providerErrors } from '@metamask/rpc-errors';
 import {
@@ -9,9 +8,6 @@ import {
 } from '@metamask/chain-agnostic-permission';
 import { CHAINS } from '../../../src/config.js';
 import { PROVIDER_METHODS } from '../constants/stream.js';
-
-// Port: shared/constants/app.ts:144; ADAPTATION: plan Q-9 (:999), renamed background-only method.
-export const SEND_METADATA = 'nodus_sendDomainMetadata';
 
 // Decision 2026-10-28-extension-nodus-site-signing.md: separate Nodus
 // access, stored by the existing PermissionController. The account caveat
@@ -22,33 +18,25 @@ export const NODUS_ACCOUNT_CAVEAT = 'nodusAccount';
 // Port: MetaMask v13.54.0 app/scripts/controllers/permissions/specifications.ts:104-198.
 // ADAPTATION: approved plan §3.3:235-246 renames methods; §3.4:312-319 removes snaps/EIP-7715/onboarding.
 const unrestrictedMethods = [
-  'eth_blockNumber', 'eth_call', 'eth_chainId', 'eth_coinbase', 'eth_decrypt', 'eth_estimateGas',
+  'eth_blockNumber', 'eth_call', 'eth_chainId', 'eth_coinbase', 'eth_estimateGas',
   'eth_feeHistory', 'eth_gasPrice', 'eth_getBalance', 'eth_getBlockByHash', 'eth_getBlockByNumber',
   'eth_getBlockTransactionCountByHash', 'eth_getBlockTransactionCountByNumber', 'eth_getCode',
-  'eth_getEncryptionPublicKey', 'eth_getFilterChanges', 'eth_getFilterLogs', 'eth_getLogs', 'eth_getProof',
+  'eth_getFilterChanges', 'eth_getFilterLogs', 'eth_getLogs', 'eth_getProof',
   'eth_getStorageAt', 'eth_getTransactionByBlockHashAndIndex', 'eth_getTransactionByBlockNumberAndIndex',
   'eth_getTransactionByHash', 'eth_getTransactionCount', 'eth_getTransactionReceipt',
   'eth_getUncleByBlockHashAndIndex', 'eth_getUncleByBlockNumberAndIndex', 'eth_getUncleCountByBlockHash',
   'eth_getUncleCountByBlockNumber', 'eth_getWork', 'eth_hashrate', 'eth_mining', 'eth_newBlockFilter',
   'eth_newFilter', 'eth_newPendingTransactionFilter', 'eth_protocolVersion', 'eth_requestAccounts',
-  'eth_sendRawTransaction', 'eth_sendTransaction', 'eth_signTypedData', 'eth_signTypedData_v1',
-  'eth_signTypedData_v3', 'eth_signTypedData_v4', 'eth_submitHashrate', 'eth_submitWork', 'eth_subscribe',
+  'eth_sendRawTransaction', 'eth_sendTransaction', 'eth_signTypedData_v4', 'eth_subscribe',
   'eth_syncing', 'eth_uninstallFilter', 'eth_unsubscribe', PROVIDER_METHODS.getProviderState,
-  PROVIDER_METHODS.logWeb3ShimUsage, SEND_METADATA, 'net_listening', 'net_peerCount',
-  'net_version', 'personal_ecRecover', 'personal_sign', 'wallet_addEthereumChain', 'wallet_getPermissions',
+  'net_listening', 'net_peerCount', 'net_version', 'personal_ecRecover', 'personal_sign', 'wallet_getPermissions',
   'wallet_requestPermissions', 'wallet_revokePermissions', 'wallet_switchEthereumChain',
-  'wallet_watchAsset', 'web3_clientVersion', 'web3_sha3', 'nodus_requestAccounts', 'nodus_signMessage',
+  'web3_clientVersion', 'web3_sha3', 'nodus_requestAccounts', 'nodus_signMessage',
 ];
 
 export function createPermissions({ messenger, approvals, store, runtime, getNetworkState, getNodusAccount }) {
   let accounts = [];
   const locks = new Set();
-  // Port: controllers/alert-controller.ts:102, 125-130, 215-225; only the shim handler's state is in 4a.
-  const shimMetadata = { web3ShimUsageOrigins: { persist: true, includeInStateLogs: true, includeInDebugSnapshot: false, usedInUi: true } };
-  const alertController = new BaseController({ name: 'AlertController', metadata: shimMetadata,
-    messenger: messenger.buildChild({ namespace: 'AlertController' }),
-    state: { web3ShimUsageOrigins: {}, ...store?.getInitialState('AlertController', shimMetadata) },
-  });
   // Port: app/scripts/messenger-client-init/permission-controller-init.ts:37-78,
   // controllers/permissions/specifications.ts:54-86. Plan §16: step 7 supplies non-EVM scope support.
   const controller = new PermissionController({
@@ -82,13 +70,6 @@ export function createPermissions({ messenger, approvals, store, runtime, getNet
       getNonEvmAccountAddresses: () => [],
     }) },
     unrestrictedMethods,
-  });
-
-  // Port: messenger-client-init/subject-metadata-controller-init.ts:19-22; permission-controller 13.1.1 exports this controller.
-  const subjectMetadataController = new SubjectMetadataController({
-    messenger: messenger.buildChild({ namespace: 'SubjectMetadataController', actions: ['PermissionController:hasPermissions'] }),
-    subjectCacheLimit: 100,
-    state: store?.getInitialState('SubjectMetadataController', { subjectMetadata: { persist: true } }),
   });
 
   // Port: metamask-controller.js:4053-4072, including the absence of a lock check.
@@ -222,7 +203,6 @@ export function createPermissions({ messenger, approvals, store, runtime, getNet
   const ethAccountsHandler = { implementation: (req, res, _next, end) => { res.result = getAccounts(req.origin); end(); } };
   // Port: handlers/index.ts:34-56. Plan §16 step 5 owns add/switch/watchAsset, excluded from this package.
   const handlers = {
-    eth_accounts: ethAccountsHandler,
     eth_requestAccounts: { implementation: requestAccounts },
     nodus_requestAccounts: { implementation: requestNodusAccounts },
     wallet_getPermissions: { implementation: (req, res, _next, end) => { res.result = legacyPermissions(req.origin, controller.getPermissions(req.origin), false, req.isFile); end(); } },
@@ -234,18 +214,9 @@ export function createPermissions({ messenger, approvals, store, runtime, getNet
       res.result = { isUnlocked: true, accounts: getAccounts(req.origin), extensionId: runtime.id, ...networkState };
       end();
     } },
-    // Port: handlers/log-web3-shim-usage.ts:83-91; plan §8 removes MetaMetrics, retaining shim state only.
-    [PROVIDER_METHODS.logWeb3ShimUsage]: { implementation: (req, res, _next, end) => {
-      if (alertController.state.web3ShimUsageOrigins[req.origin] === undefined) {
-        alertController.update(state => { state.web3ShimUsageOrigins[req.origin] = 1; });
-      }
-      res.result = true; end();
-    } },
-    // Port: handlers/send-metadata.ts:65-69 is deliberately a backwards-compatibility no-op.
-    [SEND_METADATA]: { implementation: (_req, res, _next, end) => { res.result = true; end(); } },
   };
 
-  return { controller, alertController, subjectMetadataController, getAccounts, getNodusAccounts, getChainIds, requestChainPermission, acceptPermissionsRequest,
+  return { controller, getAccounts, getNodusAccounts, getChainIds, requestChainPermission, acceptPermissionsRequest,
     setAccounts(value) { accounts = [...value]; },
     // ADAPTATION: plan Q-18 / §3.5: one HD EVM account from package 2, exposed directly instead of an AccountsController.
     // Account type / pre-creation empty address: accounts-controller 39.1.0 dist/AccountsController.cjs:73-80, 180-185.

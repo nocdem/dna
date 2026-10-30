@@ -18,7 +18,7 @@ async function workerFixture(t) {
   } });
   t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
   const writes = [];
-  const runtime = { onInstalled: signal(), onConnect: signal() };
+  const runtime = { onConnect: signal() };
   globalThis.chrome = { runtime, storage: { session: { set: value => writes.push(value) } } };
   globalThis.self = new EventTarget();
   self.serviceWorker = { state: 'installing' };
@@ -100,8 +100,7 @@ test('background entry starts locked with the real Nodus seed consumer attached'
   const state = await background;
   // Reference: ComposableObservableStore.js:90-97; approved plan §3.5:388-406 excludes key custody.
   const expectedWrites = [{ 'nodus.extension.state': {
-    PermissionController: { subjects: {} }, ApprovalController: {}, AlertController: { web3ShimUsageOrigins: {} },
-    SubjectMetadataController: { subjectMetadata: {} },
+    PermissionController: { subjects: {} }, ApprovalController: {},
     EvmController: { selectedChain: 'ethereum', endpoints: { ethereum: CHAINS.ethereum.endpoint, bsc: CHAINS.bsc.endpoint } },
     // Package 8: every chain starts on mainnet; Nodus has only its testnet (plan §5.6, GAP-7).
     NetworksController: { selected: { bsc: 'mainnet', cellframe: 'mainnet', ethereum: 'mainnet', nodus: 'testnet', solana: 'mainnet', tron: 'mainnet' } },
@@ -134,65 +133,34 @@ test('service worker retains hooks and the reference keep-alive cadence', async 
   t.mock.timers.tick(1); assert.equal(writes.length, 2);
 });
 
-// Proves the actual registered onConnect sends the reference liveness envelope and catches closed-port errors; a lazy-buffer-only check would miss immediate delivery.
-test('service worker pings connecting ports and catches liveness send failures', async t => {
-  const { runtime } = await workerFixture(t);
-  const sent = [];
-  runtime.onConnect.emit({ name: 'popup', postMessage: message => sent.push(message) });
-  assert.deepEqual(sent, [{ data: { method: 'APP_INIT_ALIVE' }, name: 'app-init-liveness' }]);
-  const errors = [];
-  t.mock.method(console, 'error', (...args) => errors.push(args));
-  const failure = new Error('Closed port fixture');
-  assert.doesNotThrow(() => runtime.onConnect.emit({ name: 'closed', postMessage() { throw failure; } }));
-  assert.equal(errors.length, 1); assert.equal(errors[0][1], failure);
-});
-
 // Proves the default twenty-second leak warning reports remaining buffered calls; draining every listener or asserting only on a timer would falsely pass.
 test('lazy listener warns about undrained events after twenty seconds', async t => {
-  const { runtime, lazyListener } = await workerFixture(t);
+  const { runtime } = await workerFixture(t);
   const saved = process.env.IN_TEST;
   delete process.env.IN_TEST;
   t.after(() => { if (saved === undefined) delete process.env.IN_TEST; else process.env.IN_TEST = saved; });
-  lazyListener.addListener('runtime', 'onConnect', () => {});
-  runtime.onInstalled.emit({ reason: 'install' }); runtime.onInstalled.emit({ reason: 'update' });
+  runtime.onConnect.emit({ name: 'popup' }); runtime.onConnect.emit({ name: 'notification' });
   const warnings = [];
   t.mock.method(console, 'warn', message => warnings.push(message));
   t.mock.timers.tick(19999); assert.deepEqual(warnings, []);
   t.mock.timers.tick(1);
   assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /runtime\.onInstalled/u);
+  assert.match(warnings[0], /runtime\.onConnect/u);
   assert.match(warnings[0], /20000ms/u);
   assert.match(warnings[0], /2 buffered calls/u);
-});
-
-// Proves a restarted worker (no buffered onInstalled) that awaits the event gets no leak warning; a buffered-only fixture would miss it.
-test('lazy listener once with nothing buffered clears the warning', async t => {
-  const { lazyListener } = await workerFixture(t), warnings = [];
-  lazyListener.addListener('runtime', 'onConnect', () => {}); void lazyListener.once('runtime', 'onInstalled');
-  t.mock.method(console, 'warn', message => warnings.push(message)); t.mock.method(console, 'error', message => warnings.push(message));
-  t.mock.timers.tick(20000); assert.deepEqual(warnings, []);
-});
-
-// Proves once consumes oldest buffered arguments one at a time then waits for a future event; using only live events could miss dropped queued calls.
-test('lazy listener once consumes queued and future event arguments', async t => {
-  const { runtime, lazyListener } = await workerFixture(t);
-  runtime.onInstalled.emit('first', 1); runtime.onInstalled.emit('second', 2);
-  assert.deepEqual(await lazyListener.once('runtime', 'onInstalled'), ['first', 1]);
-  assert.deepEqual(await lazyListener.once('runtime', 'onInstalled'), ['second', 2]);
-  const next = lazyListener.once('runtime', 'onInstalled');
-  runtime.onInstalled.emit('third', 3);
-  assert.deepEqual(await next, ['third', 3]);
 });
 
 // Proves removing/throwing callbacks retain unconsumed calls during replay; success-only callbacks could hide loss in either restoring branch.
 test('lazy listener preserves unconsumed calls when replay stops', async t => {
   const { runtime, lazyListener } = await workerFixture(t);
-  for (const value of [1, 2, 3]) runtime.onInstalled.emit(value);
+  for (const value of [1, 2, 3]) runtime.onConnect.emit(value);
   const received = [];
-  const consumeFirst = value => { received.push(value); runtime.onInstalled.removeListener(consumeFirst); };
-  lazyListener.addListener('runtime', 'onInstalled', consumeFirst);
+  const consumeFirst = value => { received.push(value); runtime.onConnect.removeListener(consumeFirst); };
+  lazyListener.addListener('runtime', 'onConnect', consumeFirst);
   assert.deepEqual(received, [1]);
   const failure = new Error('Replay fixture failure');
-  assert.throws(() => lazyListener.addListener('runtime', 'onInstalled', () => { throw failure; }), error => error === failure);
-  assert.deepEqual(await lazyListener.once('runtime', 'onInstalled'), [3]);
+  assert.throws(() => lazyListener.addListener('runtime', 'onConnect', () => { throw failure; }), error => error === failure);
+  const remaining = [];
+  lazyListener.addListener('runtime', 'onConnect', value => remaining.push(value));
+  assert.deepEqual(remaining, [3]);
 });

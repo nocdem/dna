@@ -18,7 +18,6 @@ async function closeConnection(connection) {
   await new Promise(resolve => connection.pageMux.end(resolve));
   await nextTurn();
   assert.equal(connection.pageChannel.destroyed, true);
-  assert.equal(connection.caipChannel.destroyed, true);
   connection.destroyStreams();
   connection.pageStream.destroy(); connection.pageMux.destroy();
   await nextTurn();
@@ -63,8 +62,8 @@ async function fixture(t, href = 'https://dapp.example/') {
   return { page, runtime, peer, received, connection };
 }
 
-// Proves real postMessage-to-port framing relays exactly two channels both ways; a fake mux or one-direction-only check could falsely pass.
-test('only the renamed EIP-1193 and CAIP channels cross the content bridge', async t => {
+// Proves real postMessage-to-port framing relays only the provider channel both ways; a fake mux or one-direction-only check could falsely pass.
+test('only the renamed EIP-1193 channel crosses the content bridge', async t => {
   const { runtime, peer, received } = await fixture(t), port = runtime.ports[0];
   assert.equal(port.name, 'nodus-contentscript');
   for (const name of ['nodus-provider', 'nodus-multichain-provider', 'provider', 'publicConfig', 'metamask-provider', 'phishing', 'unknown']) {
@@ -72,8 +71,8 @@ test('only the renamed EIP-1193 and CAIP channels cross the content bridge', asy
     port.onMessage.emit({ name, data: { id: name, jsonrpc: '2.0', result: [] } });
   }
   await nextTurn();
-  assert.deepEqual(port.messages.map(message => message.name), ['nodus-provider', 'nodus-multichain-provider']);
-  assert.deepEqual(received.map(message => message.name), ['nodus-provider', 'nodus-multichain-provider']);
+  assert.deepEqual(port.messages.map(message => message.name), ['nodus-provider']);
+  assert.deepEqual(received.map(message => message.name), ['nodus-provider']);
 });
 
 // Proves the post-message stream rejects other origins, sources and targets; a channel-only negative control could miss cross-window injection.
@@ -96,10 +95,10 @@ test('the loaded content entry starts unconditionally', async t => {
   await closeConnection(second);
 });
 
-// Proves BFCache/READY rebuild both traffic paths and remove old listeners; port counts alone could conceal a dead relay or duplicate pipelines.
-test('BFCache restore and worker READY restore traffic without duplicate ports', async t => {
+// Proves BFCache rebuilds provider traffic and removes old listeners; port counts alone could conceal a dead relay or duplicate pipelines.
+test('BFCache restore restores traffic without duplicate ports', async t => {
   const { page, runtime, peer, connection } = await fixture(t);
-  const channels = [connection.pageChannel, connection.caipChannel];
+  const channels = [connection.pageChannel];
   const listenerCounts = () => channels.map(channel => ['close', 'end', 'error'].map(event => channel.listenerCount(event)));
   const initialCounts = listenerCounts();
   const disconnectListeners = [...runtime.ports[0].onDisconnect.listeners];
@@ -107,41 +106,29 @@ test('BFCache restore and worker READY restore traffic without duplicate ports',
   const hide = new Event('pagehide'); hide.persisted = true; page.dispatchEvent(hide);
   await nextTurn();
   assert.equal(connection.extensionStream, null);
-  assert.deepEqual(listenerCounts(), [[0, 0, 0], [0, 0, 0]]);
+  assert.deepEqual(listenerCounts(), [[0, 0, 0]]);
   // The reference never removes the port's onMessage listener (extension-port-stream); it disconnects the port.
   assert.equal(runtime.ports[0].disconnected, true);
   const show = new Event('pageshow'); show.persisted = true; page.dispatchEvent(show);
   assert.equal(runtime.ports.length, 2);
   assert.deepEqual(listenerCounts(), initialCounts);
-  const responses = runtime.onMessage.emit({ name: 'NODUS_EXTENSION_READY' });
-  assert.equal(runtime.ports.length, 2);
-  assert.deepEqual(await Promise.all(responses), ['Nodus: handled NODUS_EXTENSION_READY']);
   peer.write({ name: 'nodus-provider', data: { id: 2, method: 'eth_accounts' } });
   await nextTurn(); assert.equal(runtime.ports[1].messages[0].data.id, 2);
+  assert.equal(runtime.ports[1].messages.length, 1);
   runtime.ports[1].onDisconnect.emit();
   await nextTurn();
-  assert.deepEqual(listenerCounts(), [[0, 0, 0], [0, 0, 0]]);
-  const readyResponses = runtime.onMessage.emit({ name: 'NODUS_EXTENSION_READY' });
-  assert.deepEqual(await Promise.all(readyResponses), ['Nodus: handled NODUS_EXTENSION_READY']);
-  assert.equal(runtime.ports.length, 3);
-  assert.deepEqual(listenerCounts(), initialCounts);
-  runtime.onMessage.emit({ name: 'NODUS_EXTENSION_READY' });
-  assert.equal(runtime.ports.length, 3);
-  peer.write({ name: 'nodus-multichain-provider', data: { id: 3, method: 'wallet_getSession' } });
-  await nextTurn(); assert.equal(runtime.ports[2].messages[0].data.id, 3);
-  assert.equal(runtime.ports[1].messages.length, 1);
-  assert.deepEqual(runtime.onMessage.emit({ name: 'unrelated' }), [undefined]);
+  assert.deepEqual(listenerCounts(), [[0, 0, 0]]);
 });
 
-// Proves a real Port schedules the one-second reset and replaces both channel pipelines; emitting no Port or checking only port counts could miss callback or listener leaks.
+// Proves a real Port schedules the one-second reset and replaces the provider pipeline; emitting no Port or checking only port counts could miss callback or listener leaks.
 test('a port disconnect waits one second before the reference reset', async t => {
   const { runtime, connection } = await fixture(t);
-  const channels = [connection.pageChannel, connection.caipChannel];
+  const channels = [connection.pageChannel];
   const listenerCounts = () => channels.map(channel => ['close', 'end', 'error'].map(event => channel.listenerCount(event)));
   const initialCounts = listenerCounts();
   t.mock.timers.enable({ apis: ['setTimeout'] });
   runtime.ports[0].onDisconnect.emit(runtime.ports[0]);
-  assert.deepEqual(listenerCounts(), [[0, 0, 0], [0, 0, 0]]);
+  assert.deepEqual(listenerCounts(), [[0, 0, 0]]);
   t.mock.timers.tick(999); assert.equal(runtime.ports.length, 1);
   t.mock.timers.tick(1); assert.equal(runtime.ports.length, 2);
   assert.deepEqual(listenerCounts(), initialCounts);
@@ -156,7 +143,6 @@ test('per-channel pipelines propagate failure to the page channels', async t => 
   connection.extensionEip1193Channel.destroy(failure);
   await nextTurn();
   assert.equal(connection.pageChannel.destroyed, true);
-  assert.equal(connection.caipChannel.destroyed, false);
   assert.ok(logs.some(([message, error]) => message === 'Nodus: Muxed traffic for channel "nodus-provider" failed.' && error === failure));
   assert.equal(runtime.ports.length, 1);
 });

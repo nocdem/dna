@@ -4,7 +4,7 @@ import { CHAIN_NETWORKS, DEFAULT_NETWORKS, chainNetwork } from '../constants/net
 // Plan §5.6: one persistent selection per chain; the existing EVM active
 // chain and wallet_switchEthereumChain behaviour remain in evm.js.
 export function createNetworks({ messenger, store, onChanged }) {
-  const metadata = { selected: { persist: true, usedInUi: true, includeInStateLogs: false, includeInDebugSnapshot: false } };
+  const metadata = { selected: { persist: true } };
   const saved = store.getInitialState('NetworksController', metadata).selected;
   const selected = Object.fromEntries(Object.entries(CHAIN_NETWORKS).map(([chain, choices]) => [chain,
     choices.some(network => network.id === saved?.[chain]) ? saved[chain] : DEFAULT_NETWORKS[chain]]));

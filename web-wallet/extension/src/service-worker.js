@@ -83,40 +83,12 @@ class ExtensionLazyListener {
       }
     }
   }
-
-  once(namespace, eventName) {
-    return new Promise(resolve => {
-      const event = this.#getEvent(namespace, eventName);
-      const listeners = this.#namespaceListeners.get(namespace);
-      if (listeners) {
-        const tracker = listeners.get(eventName);
-        const length = tracker?.args.length;
-        if (length) {
-          resolve(tracker.args.shift());
-          event.removeListener(tracker.listener);
-          if (length === 1) {
-            listeners.delete(eventName);
-            if (listeners.size === 0) this.#namespaceListeners.delete(namespace);
-          }
-          return;
-        }
-        // ADAPTATION (operator 2026-10-29: "Bizim kopyada düzeltelim, uyarı bir daha çıkmasın."): an empty tracker is
-        // dropped here, else a restarted worker warns about an event the application already awaits.
-        if (tracker) { event.removeListener(tracker.listener); listeners.delete(eventName); if (listeners.size === 0) this.#namespaceListeners.delete(namespace); }
-      }
-      const tempListener = (...args) => {
-        event.removeListener(tempListener);
-        resolve(args);
-      };
-      event.addListener(tempListener);
-    });
-  }
 }
 
 // Plan §8:907/§9:930-932 removes telemetry/webpack bootstrap; port its stateHooks initialization (app/scripts/load/bootstrap.ts:4) here.
 globalThis.stateHooks ??= {};
 // Port: app/service-worker.ts:24-30; package 4 attaches the background event consumers.
-const lazyListener = new ExtensionLazyListener(chrome, { runtime: ['onInstalled', 'onConnect'] });
+const lazyListener = new ExtensionLazyListener(chrome, { runtime: ['onConnect'] });
 globalThis.stateHooks.lazyListener = lazyListener;
 let runImportScriptsInitiated = false;
 
@@ -131,17 +103,6 @@ async function runImportScripts() {
   console.log(`importScripts completed in ${(endImportScriptsTime - startImportScriptsTime) / 1000} seconds`);
 }
 self.addEventListener('install', runImportScripts);
-
-// Port: app/service-worker.ts:58-81 and shared/constants/ui-initialization.ts:6.
-const APP_INIT_LIVENESS_METHOD = 'APP_INIT_ALIVE';
-chrome.runtime.onConnect.addListener(port => {
-  console.log('Nodus service worker: Received connection from port', port.name);
-  try {
-    port.postMessage({ data: { method: APP_INIT_LIVENESS_METHOD }, name: 'app-init-liveness' });
-  } catch (error) {
-    console.error('Nodus - app-init-liveness check: Failed to message to port', error);
-  }
-});
 
 // Port: app/service-worker.ts:83-95; a restarted worker does not get another install event.
 if (self.serviceWorker.state === 'activated') runImportScripts();

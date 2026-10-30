@@ -4,15 +4,15 @@ import { pipeline } from 'readable-stream';
 import browser from 'webextension-polyfill';
 import { ExtensionPortStream } from 'extension-port-stream';
 import shouldInjectProvider from './lib/provider-injection.js';
-import { CONTENT_SCRIPT, INPAGE, EIP_1193_PROVIDER, CAIP_MULTICHAIN_PROVIDER, PROVIDER_METHODS, EXTENSION_READY } from './constants/stream.js';
+import { CONTENT_SCRIPT, INPAGE, EIP_1193_PROVIDER, PROVIDER_METHODS } from './constants/stream.js';
 
 // Port: MetaMask v13.54.0 app/scripts/contentscript.js:31-58; factory exposes the entry's streams to tests.
 // Plan: approved 2026-10-28-nodus-extension.md:223-234 removes phishing, cookie, cashtag and legacy streams.
 export function startContentscript({ runtime = browser.runtime } = {}) {
   if (!shouldInjectProvider()) return null;
-  let extensionMux, extensionEip1193Channel, extensionCaipChannel;
+  let extensionMux, extensionEip1193Channel;
   let extensionPort = null, extensionStream = null;
-  let pageStream, pageMux, pageChannel, caipChannel;
+  let pageStream, pageMux, pageChannel;
   let NODUS_EXTENSION_CONNECT_SENT = false;
 
   // Port: app/scripts/streams/provider-stream.ts:45-102.
@@ -27,10 +27,9 @@ export function startContentscript({ runtime = browser.runtime } = {}) {
     pageStream.once?.('end', endPageMuxIfOpen);
     pipeline(pageMux, pageStream, pageMux, error => logStreamDisconnectWarning('Nodus Inpage Multiplex', error));
     pageChannel = pageMux.createStream(EIP_1193_PROVIDER);
-    caipChannel = pageMux.createStream(CAIP_MULTICHAIN_PROVIDER);
   }
 
-  // Port: app/scripts/streams/provider-stream.ts:114-170, with two per-channel pipelines.
+  // Port: app/scripts/streams/provider-stream.ts:114-170, retaining the EIP-1193 pipeline.
   function setupExtensionStreams() {
     NODUS_EXTENSION_CONNECT_SENT = true;
     extensionPort = runtime.connect({ name: CONTENT_SCRIPT });
@@ -50,33 +49,17 @@ export function startContentscript({ runtime = browser.runtime } = {}) {
     extensionEip1193Channel = extensionMux.createStream(EIP_1193_PROVIDER);
     pipeline(pageChannel, extensionEip1193Channel, pageChannel, error =>
       console.debug(`Nodus: Muxed traffic for channel "${EIP_1193_PROVIDER}" failed.`, error));
-    extensionCaipChannel = extensionMux.createStream(CAIP_MULTICHAIN_PROVIDER);
-    pipeline(caipChannel, extensionCaipChannel, caipChannel, error =>
-      console.debug(`Nodus: Muxed traffic for channel "${CAIP_MULTICHAIN_PROVIDER}" failed.`, error));
     extensionPort.onDisconnect.addListener(onDisconnectDestroyStreams);
   }
 
   // Port: app/scripts/streams/provider-stream.ts:174-187.
   function destroyExtensionStreams() {
     pageChannel.removeAllListeners();
-    // Failure-fix dispatch: apply reference :175's cleanup to both :150-165 page channels so reconnect replaces every pipeline's listeners.
-    caipChannel.removeAllListeners();
     extensionMux.removeAllListeners();
     extensionMux.destroy();
     extensionEip1193Channel.removeAllListeners();
     extensionEip1193Channel.destroy();
-    extensionCaipChannel.removeAllListeners();
-    extensionCaipChannel.destroy();
     extensionStream = null;
-  }
-
-  // Port: app/scripts/streams/provider-stream.ts:294-306.
-  function onMessageSetUpExtensionStreams(message) {
-    if (message !== null && typeof message === 'object' && !Array.isArray(message) && message.name === EXTENSION_READY) {
-      if (!extensionStream) setupExtensionStreams();
-      return Promise.resolve(`Nodus: handled ${EXTENSION_READY}`);
-    }
-    return undefined;
   }
 
   // Port: app/scripts/streams/provider-stream.ts:312-325.
@@ -134,7 +117,6 @@ export function startContentscript({ runtime = browser.runtime } = {}) {
   // Port: app/scripts/streams/provider-stream.ts:358-365.
   setupPageStreams();
   setupExtensionStreams();
-  runtime.onMessage.addListener(onMessageSetUpExtensionStreams);
   // contentscript.js:34-39's prerender workaround is unreachable: manifest minimum 123 exceeds common.ts:53-66's fixes (120/121).
   // Port: app/scripts/contentscript.js:42-54.
   window.addEventListener('pageshow', event => {
@@ -150,7 +132,7 @@ export function startContentscript({ runtime = browser.runtime } = {}) {
     }
   });
   return {
-    setupExtensionStreams, destroyStreams, onDisconnectDestroyStreams, pageStream, pageMux, pageChannel, caipChannel,
+    setupExtensionStreams, destroyStreams, onDisconnectDestroyStreams, pageStream, pageMux, pageChannel,
     get extensionStream() { return extensionStream; },
     get extensionEip1193Channel() { return extensionEip1193Channel; },
   };

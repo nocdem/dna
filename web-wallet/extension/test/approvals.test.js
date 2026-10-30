@@ -34,12 +34,11 @@ test('addAndShowApprovalRequest calls triggerUi and focuses the existing window'
 });
 
 // Proves all retained reference approval types queue per origin and permissions remain limited; testing one signing type could miss an incomplete exclusion list.
-test('reference signing and asset approval types bypass the per-origin pending limit', async () => {
+test('reference signing and transaction approval types bypass the per-origin pending limit', async () => {
   const approvals = createApprovals({ ...approvalFixture(), messenger: new Messenger({ namespace: 'Background' }) });
   const pending = [];
   try {
-    for (const type of [ApprovalType.PersonalSign, ApprovalType.EthSignTypedData, ApprovalType.Transaction,
-      ApprovalType.WatchAsset, ApprovalType.EthGetEncryptionPublicKey, ApprovalType.EthDecrypt]) {
+    for (const type of [ApprovalType.PersonalSign, ApprovalType.EthSignTypedData, ApprovalType.Transaction]) {
       for (const suffix of ['first', 'second']) {
         const id = `${type}-${suffix}`;
         pending.push({ id, promise: approvals.controller.add({ id, origin: 'https://site.example', type }) });
@@ -47,7 +46,7 @@ test('reference signing and asset approval types bypass the per-origin pending l
     }
     pending.push({ id: 'permission', promise: approvals.controller.add({ id: 'permission', origin: 'https://site.example', type: 'wallet_requestPermissions' }) });
     assert.throws(() => approvals.controller.add({ id: 'duplicate', origin: 'https://site.example', type: 'wallet_requestPermissions' }), { code: -32002 });
-    assert.equal(approvals.controller.state.pendingApprovalCount, 13);
+    assert.equal(approvals.controller.state.pendingApprovalCount, 7);
   } finally {
     for (const { id } of pending) approvals.controller.acceptRequest(id, true);
     assert.deepEqual(await Promise.all(pending.map(({ promise }) => promise)), pending.map(() => true));

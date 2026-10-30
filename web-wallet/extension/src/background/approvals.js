@@ -66,8 +66,7 @@ export function createApprovals({ messenger, runtime, windows, tabs, platform, g
     messenger: messenger.buildChild({ namespace: 'ApprovalController' }),
     // Port: wallet-init/instance-options/approval-controller.ts:27-36.
     // Plan §3.4:318-319 removes snaps, including the reference's additional snap-dialog exclusion.
-    typesExcludedFromRateLimiting: [ApprovalType.PersonalSign, ApprovalType.EthSignTypedData, ApprovalType.Transaction,
-      ApprovalType.WatchAsset, ApprovalType.EthGetEncryptionPublicKey, ApprovalType.EthDecrypt, 'nodus_signMessage'],
+    typesExcludedFromRateLimiting: [ApprovalType.PersonalSign, ApprovalType.EthSignTypedData, ApprovalType.Transaction, 'nodus_signMessage'],
     showApprovalRequest: () => {
       // The pinned controller invokes this callback without awaiting its promise (:117).
       // background.ts:1088-1100 resets only the opening flag on failure, leaving pending approvals intact.

@@ -114,8 +114,8 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
         networks: networks.getState(),
         evm: evm.getState(),
         nodus: nodus.getState(),
-        // Port: metamask-controller.js:2378-2384 flattens controller UI state, including subject metadata.
-        ...permissions.controller.state, ...approvals.controller.state, ...permissions.alertController.state, ...permissions.subjectMetadataController.state };
+        // Port: metamask-controller.js:2378-2384 flattens controller UI state.
+        ...permissions.controller.state, ...approvals.controller.state };
     },
     // Port: legacy-background-api-service.ts:4449-4500 (UTF-8 restore, serialized creation, clear permissions).
     // ADAPTATION: plan Q-27 uses only vaultStore's web-wallet vault; key derivation stays in submitPasswordOrEncryptionKey.
@@ -186,8 +186,6 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
       if (!subscription) throw rpcErrors.invalidParams('No active UI subscription.');
       if (--subscription.count === 0) { messenger.unsubscribe(event, subscription.listener); uiSubscriptions.delete(event); }
     },
-    // Port: metamask-controller.js:2523-2525; background.ts:698-700 supplies the tracked request tabs.
-    getRequestAccountTabIds: () => engine.requestAccountTabIds,
     approvePermissionsRequest: request => permissions.acceptPermissionsRequest(request),
     rejectPermissionsRequest: id => permissions.controller.rejectPermissionsRequest(id),
     resolvePendingApproval: (id, value) => approvals.controller.acceptRequest(id, value),
@@ -279,7 +277,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   messenger.subscribe('PermissionController:stateChange', onPermissionsChanged);
   // Only public network/permission/approval state enters composition; ethers custody stays in walletKeys.
   store.registerControllers({ PermissionController: permissions.controller, ApprovalController: approvals.controller,
-    AlertController: permissions.alertController, SubjectMetadataController: permissions.subjectMetadataController, EvmController: evm.controller,
+    EvmController: evm.controller,
     NetworksController: networks.controller });
   await store.flush();
   return {
@@ -291,7 +289,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
       for (const [event, { listener }] of uiSubscriptions) messenger.unsubscribe(event, listener);
       uiSubscriptions.clear();
       await lockCoordinator.lock();
-      engine.destroy(); approvals.destroy(); store.destroy(); evm.destroy(); networks.controller.destroy(); permissions.subjectMetadataController.destroy(); permissions.controller.destroy(); permissions.alertController.destroy();
+      engine.destroy(); approvals.destroy(); store.destroy(); evm.destroy(); networks.controller.destroy(); permissions.controller.destroy();
       messenger.unsubscribe('PermissionController:stateChange', onPermissionsChanged);
       for (const listener of alarmListeners) alarms.onAlarm.removeListener(listener);
       await store.flush();

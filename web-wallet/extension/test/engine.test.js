@@ -2,13 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { EventEmitter, once } from 'node:events';
-import { JsonRpcEngine } from '@metamask/json-rpc-engine';
 import ObjectMultiplex from '@metamask/object-multiplex';
 import log from 'loglevel';
 import { Caip25EndowmentPermissionName, setEthAccounts } from '@metamask/chain-agnostic-permission';
 import { VAULT_KEY } from '../../src/vault.js';
 import { AUTO_LOCK_TIMEOUT_ALARM } from '../src/background/auto-lock-alarm.js';
-import { parsePortInfo, createEvmMethodsToNonEvmAccountReqFilterMiddleware } from '../src/background/engine.js';
+import { parsePortInfo } from '../src/background/engine.js';
 
 // Node >=22.14, existing CPUNK WASM; no flags/network/disk output. Browser APIs below are in-memory fakes.
 const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
@@ -84,50 +83,18 @@ test('Chromium UI trust requires this extension origin', () => {
   assert.equal(parsePortInfo({ name: 'arbitrary', sender: { url: 'chrome-extension://test-extension/notification.html' } }, runtime).isUiPort, true);
 });
 
-// Proves both non-EVM rejection branches and EVM/read pass-through; checking only the current EVM selection could pass with the filter omitted.
-test('EVM account filter rejects the reference methods and requested permissions for non-EVM selections', async () => {
-  let type = 'solana:data-account';
-  const engine = new JsonRpcEngine();
-  engine.push(createEvmMethodsToNonEvmAccountReqFilterMiddleware({ getSelectedAccount: () => ({ type }) }));
-  engine.push((_req, res, _next, end) => { res.result = true; end(); });
-  let id = 0;
-  const request = (method, params) => engine.handle({ id: ++id, jsonrpc: '2.0', method, params });
-  try {
-    for (const method of ['eth_accounts', 'eth_sendRawTransaction', 'eth_sendTransaction', 'eth_signTypedData',
-      'eth_signTypedData_v1', 'eth_signTypedData_v3', 'eth_signTypedData_v4']) {
-      assert.equal((await request(method)).error.message, `Non-EVM account cannot request this method: ${method}`);
-      assert.equal((await request('wallet_requestPermissions', [{ [method]: {} }])).error.message, `Non-EVM account cannot request this method: ${method}`);
-    }
-    assert.equal((await request('eth_blockNumber')).result, true);
-    assert.equal((await request('personal_sign')).result, true);
-    for (const params of [undefined, [], [null], [{ unrelated: {} }]]) assert.equal((await request('wallet_requestPermissions', params)).result, true);
-    for (type of ['eip155:eoa', 'eip155:erc4337']) assert.equal((await request('eth_sendTransaction')).result, true);
-  } finally { engine.destroy(); }
-});
-
-// Proves the filter is in the real engine before permission requests create approvals; a standalone middleware test cannot prove its wiring.
-test('provider engine filters non-EVM permission requests before approval', async t => {
-  const { background, runtime } = await setup(t);
-  t.mock.method(background.permissions, 'getSelectedAccount', () => ({ type: 'solana:data-account' }));
-  const remote = port(runtime);
-  assert.equal((await request(remote, 'wallet_requestPermissions', [{ eth_accounts: {} }])).error.message, 'Non-EVM account cannot request this method: eth_accounts');
-  assert.equal(background.approvals.controller.state.pendingApprovalCount, 0);
-  remote.disconnect();
-});
-
-// Proves trusted chunk decoding, renamed internal origin and approval resolution while locked; unchunked/unlocked fixtures could miss stream options or an extra lock check.
-test('UI provider uses the renamed internal origin and default port chunking', async t => {
+// Proves trusted controller chunk decoding and approval resolution while locked; unchunked/unlocked fixtures could miss stream options or an extra lock check.
+test('UI controller uses default port chunking without a provider connection', async t => {
   const { background, runtime } = await setup(t), ui = port(runtime, `chrome-extension://${runtime.id}/popup.html`, 'popup');
   // Proves an extension-origin port receives startUISync as its first controller frame before any request.
   assert.deepEqual(await until(() => ui.messages.find(message => message.name === 'controller')),
     { name: 'controller', data: { jsonrpc: '2.0', method: 'START_UI_SYNC', params: [] } });
-  assert.equal([...background.engine.connections.values()][0].origin, 'nodus');
+  assert.equal(background.engine.connections.size, 0);
   const id = ++requestId;
   // extension-port-stream 5.0.3 dist/parsing.js:10-16: <id>|<seq>|<fin><data>.
   ui.onMessage.emit(`1|0|1${JSON.stringify({ name: 'controller', data: { id, jsonrpc: '2.0', method: 'getState', params: [] } })}`);
   const reply = await until(() => ui.messages.find(message => message.name === 'controller' && message.data.id === id)?.data);
   assert.equal(reply.result.isUnlocked, false); assert.equal(reply.error, undefined);
-  assert.deepEqual(reply.result.subjectMetadata, {});
   const pending = background.approvals.controller.add({ id: 'locked-approval', origin: 'https://site.example', type: 'personal_sign' });
   assert.equal((await request(ui, 'resolvePendingApproval', ['locked-approval', true], 'controller')).error, undefined);
   assert.equal(await pending, true);
@@ -148,13 +115,9 @@ test('triggerUi counts popup ports and active fullscreen tabs as in the referenc
   }
 });
 
-// Proves the reference ignore/URL-less paths and clean closure of the unpiped provider substream; connections.size alone misses this pre-registration stream.
-test('untrusted port handling retains the reference multiplex and URL-less failure paths', async t => {
-  const { background, runtime } = await setup(t), ignored = [];
-  const ignore = ObjectMultiplex.prototype.ignoreStream;
-  t.mock.method(ObjectMultiplex.prototype, 'ignoreStream', function (name) { ignored.push(name); return ignore.call(this, name); });
-  const remote = port(runtime);
-  assert.deepEqual(ignored, ['nodus-multichain-provider']); remote.disconnect();
+// Proves the URL-less failure path and clean closure of the unpiped provider substream; connections.size alone misses this pre-registration stream.
+test('untrusted port handling retains the reference URL-less failure path', async t => {
+  const { background, runtime } = await setup(t);
   const createStream = ObjectMultiplex.prototype.createStream;
   let unconnectedStream;
   t.mock.method(ObjectMultiplex.prototype, 'createStream', function (...args) {
@@ -180,17 +143,13 @@ test('site connect opens notification, cannot call UI methods, and cancellation 
   const { runtime, background, created, focused, alarmsCreated } = await setup(t);
   await background.vaultStore.create(password, phrase); await background.unlock(password, { cpunkWasmBytes });
   const remote = port(runtime, 'https://site.example/path', 'popup'), alarmCount = alarmsCreated.length;
-  assert.deepEqual(background.engine.requestAccountTabIds, {});
   assert.deepEqual((await request(remote, 'eth_accounts')).result, []);
   assert.equal((await request(remote, 'resolvePendingApproval', ['missing'], 'nodus-provider', { origin: `chrome-extension://${runtime.id}` })).error.code, -32601);
   const connecting = request(remote, 'eth_requestAccounts', [], 'nodus-provider', { origin: 'https://forged.example' });
   const pending = await until(() => Object.values(background.approvals.controller.state.pendingApprovals)[0]);
-  assert.deepEqual(background.engine.requestAccountTabIds, { 'https://site.example': 8 });
   await background.approvals.whenUiSettled(); assert.equal(created[0].type, 'popup'); assert.equal(pending.origin, 'https://site.example');
   assert.deepEqual((await request(remote, 'eth_accounts')).result, []);
   const ui = port(runtime, `chrome-extension://${runtime.id}/notification.html`, 'notification');
-  assert.deepEqual((await request(ui, 'getRequestAccountTabIds', [], 'controller')).result, { 'https://site.example': 8 });
-  assert.deepEqual((await request(ui, 'getState', [], 'controller')).result.subjectMetadata, {});
   const approved = structuredClone(pending.requestData);
   approved.permissions[Caip25EndowmentPermissionName].caveats[0].value = setEthAccounts(approved.permissions[Caip25EndowmentPermissionName].caveats[0].value, [account]);
   remote.onMessage.emit({ name: 'controller', data: { id: 'forged-ui', jsonrpc: '2.0', method: 'approvePermissionsRequest', params: [approved] } });
@@ -227,10 +186,6 @@ test('persisted permission state never introduces a second encrypted phrase stor
   assert.equal(remote.messages.filter(message => message.data.method === 'nodus_accountsChanged').length, notificationCount);
   assert.equal(values[VAULT_KEY], value);
   assert.ok(Object.keys(background.store.backup().PermissionController.subjects).includes('https://site.example'));
-  assert.deepEqual(background.permissions.subjectMetadataController.getSubjectMetadata('https://site.example'), {
-    origin: 'https://site.example', extensionId: 'other-extension', subjectType: 'extension', name: null, iconUrl: null,
-  });
-  assert.equal(background.store.backup().SubjectMetadataController.subjectMetadata['https://site.example'].extensionId, 'other-extension');
   for (const write of [...writes, background.store.backup()]) {
     const serialized = JSON.stringify(write);
     assert.equal(serialized.includes(phrase), false); assert.equal(serialized.includes(password), false);
@@ -245,7 +200,6 @@ test('persisted permission state never introduces a second encrypted phrase stor
   const restarted = await backgroundModule.createBackground({ ...browserFixture(), storage });
   try {
     assert.equal(restarted.lockCoordinator.isLocked, true); assert.deepEqual(await restarted.permissions.getAccounts('https://site.example'), [account]);
-    assert.equal(restarted.permissions.subjectMetadataController.getSubjectMetadata('https://site.example').extensionId, 'other-extension');
   }
   finally { await restarted.destroy(); }
 });
@@ -288,8 +242,7 @@ test('network middleware uses the shared client and cleans filters on disconnect
   metadata.status = 'unavailable';
   assert.equal((await request(remote, 'nodus_getProviderState')).result.isConnected, false);
   const read = forwarded.find(req => req.method === 'eth_blockNumber');
-  assert.equal(read.origin, 'https://site.example'); assert.equal(read.mainFrameOrigin, 'https://top.example');
-  assert.equal(read.frameId, 2); assert.equal(read.tabId, 8);
+  assert.equal(read.origin, 'https://site.example');
   remote.disconnect(); await until(() => background.engine.connections.size === 0);
   assert.equal(blockTracker.listenerCount('sync'), 0);
 });
@@ -304,14 +257,11 @@ test('service-worker lazy listener hands an early port to the engine', async t =
   globalThis.stateHooks = { lazyListener: { addListener(namespace, name, listener) {
     assert.equal(namespace, 'runtime'); assert.equal(name, 'onConnect'); consumed = true;
     fixture.runtime.onConnect.addListener(listener); listener(early);
-  }, once: t.mock.fn() } };
-  const lazy = globalThis.stateHooks.lazyListener;
+  } } };
   try { background = await backgroundModule.createBackground(fixture); }
   finally { for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; } }
   try {
     assert.equal(consumed, true);
-    // Proves the buffered onInstalled is drained (operator 2026-10-29 "2"); removing the call leaves the event buffered.
-    assert.deepEqual(lazy.once.mock.calls.map(call => call.arguments), [['runtime', 'onInstalled']]);
     assert.deepEqual((await request(early, 'eth_accounts')).result, []);
     assert.equal(background.engine.connections.size, 1);
   } finally { early.disconnect(); await background.destroy(); }
@@ -349,18 +299,15 @@ test('RPC logs contain method/status without request or error data', async t => 
   remote.disconnect();
 });
 
-// Proves the renamed request flag controls the logger on both page and internal connections; checking only an internal subject would retain the wrong subjectType skip.
-test('RPC logger skips by isNodusInternal rather than the connection subject type', async t => {
+// Proves the renamed request flag controls the page logger; checking only a normal request would miss the flag-based skip.
+test('RPC logger skips page requests marked isNodusInternal', async t => {
   const { runtime } = await setup(t), logs = [];
   t.mock.method(log, 'info', (...args) => logs.push(args));
-  const remote = port(runtime), ui = port(runtime, `chrome-extension://${runtime.id}/notification.html`, 'notification');
+  const remote = port(runtime);
   assert.match((await request(remote, 'web3_clientVersion')).result, /^Nodus\/v/u);
   assert.ok(logs.some(args => args[0] === 'RPC (https://site.example): web3_clientVersion -> success'));
-  assert.match((await request(ui, 'web3_clientVersion', [], 'provider')).result, /^Nodus\/v/u);
-  assert.ok(logs.some(args => args[0] === 'RPC (nodus): web3_clientVersion -> success'));
   const before = logs.length;
   assert.match((await request(remote, 'web3_clientVersion', [], 'nodus-provider', { isNodusInternal: true })).result, /^Nodus\/v/u);
-  assert.match((await request(ui, 'web3_clientVersion', [], 'provider', { isNodusInternal: true })).result, /^Nodus\/v/u);
   assert.equal(logs.length, before);
-  remote.disconnect(); ui.disconnect();
+  remote.disconnect();
 });

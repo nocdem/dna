@@ -49,19 +49,12 @@ const messages = {
       networkChanged: "Nodus: The event 'networkChanged' is deprecated and may be removed in the future. Use 'chainChanged' instead.\nFor more information, see: https://eips.ethereum.org/EIPS/eip-1193#chainchanged",
       notification: "Nodus: The event 'notification' is deprecated and may be removed in the future. Use 'message' instead.\nFor more information, see: https://eips.ethereum.org/EIPS/eip-1193#message",
     },
-    rpc: {
-      ethDecryptDeprecation: "Nodus: The RPC method 'eth_decrypt' is deprecated and may be removed in the future.\nFor more information, see: https://medium.com/metamask/metamask-api-method-deprecation-2b0564a84686",
-      ethGetEncryptionPublicKeyDeprecation: "Nodus: The RPC method 'eth_getEncryptionPublicKey' is deprecated and may be removed in the future.\nFor more information, see: https://medium.com/metamask/metamask-api-method-deprecation-2b0564a84686",
-      walletWatchAssetNFTExperimental: "Nodus: The RPC method 'wallet_watchAsset' is experimental for ERC721/ERC1155 assets and may change in the future.\nFor more information, see: https://github.com/MetaMask/metamask-improvement-proposals/blob/main/MIPs/mip-1.md and https://github.com/MetaMask/metamask-improvement-proposals/blob/main/PROCESS-GUIDE.md#proposal-lifecycle",
-    },
     experimentalMethods: "Nodus: 'ethereum._nodus' exposes non-standard, experimental methods. They may be removed or changed without warning.",
   },
 };
 
-// Source port under Q-9: providers 22.1.1 dist/utils.mjs:22-62 and
-// dist/middleware/createRpcWarningMiddleware.mjs:11-44; request behavior stays in the pinned BaseProvider.
+// Source port under Q-9: providers 22.1.1 dist/utils.mjs:22-62; request behavior stays in the pinned BaseProvider.
 function getDefaultExternalMiddleware(log) {
-  const warned = new Set();
   return [
     createIdRemapMiddleware(),
     (request, response, next) => {
@@ -73,17 +66,6 @@ function getDefaultExternalMiddleware(log) {
         if (error) log.warn(`Nodus - RPC Error: ${error.message}`, error);
         done();
       });
-    },
-    (request, _response, next) => {
-      const deprecated = ['eth_decrypt', 'eth_getEncryptionPublicKey'].includes(request.method);
-      const experimental = request.method === 'wallet_watchAsset' && ['ERC721', 'ERC1155'].includes(request.params?.type || '');
-      if ((deprecated || experimental) && !warned.has(request.method)) {
-        warned.add(request.method);
-        log.warn(request.method === 'eth_decrypt' ? messages.warnings.rpc.ethDecryptDeprecation
-          : request.method === 'eth_getEncryptionPublicKey' ? messages.warnings.rpc.ethGetEncryptionPublicKeyDeprecation
-            : messages.warnings.rpc.walletWatchAssetNFTExperimental);
-      }
-      next();
     },
   ];
 }
@@ -281,7 +263,6 @@ function shimWeb3(provider, log) {
       } else if (property !== 'currentProvider' && property !== shimIdentifier && !loggedMissingProperty) {
         loggedMissingProperty = true;
         log.error('Nodus no longer injects web3. For details, see: https://docs.metamask.io/guide/provider-migration.html#replacing-window-web3');
-        provider.request({ method: PROVIDER_METHODS.logWeb3ShimUsage }).catch(error => log.debug('Nodus: Failed to log web3 shim usage.', error));
       }
       return Reflect.get(target, property, ...args);
     },
@@ -300,9 +281,8 @@ export function initializeProvider({ connectionStream, providerInfo, logger = lo
   const proxiedProvider = new Proxy(provider, { deleteProperty: () => true, get: (target, property) => target[property] });
   if (providerInfo) {
     eip6963AnnounceProvider({ info: providerInfo, provider: proxiedProvider });
-    provider.request({ method: PROVIDER_METHODS.getProviderState }).then(providerState => {
-      const targets = providerState?.extensionId ? [{ type: 'caip-348', value: providerState.extensionId }] : [];
-      caip294AnnounceWallet({ ...providerInfo, targets });
+    provider.request({ method: PROVIDER_METHODS.getProviderState }).then(() => {
+      caip294AnnounceWallet({ ...providerInfo, targets: [] });
     });
   }
   setGlobalProvider(proxiedProvider);

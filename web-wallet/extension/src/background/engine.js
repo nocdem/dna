@@ -11,33 +11,8 @@ import { rpcErrors, providerErrors, serializeError } from '@metamask/rpc-errors'
 import { convertHexToDecimal } from '@metamask/controller-utils';
 import log from 'loglevel';
 import { CHAINS } from '../../../src/config.js';
-import { EIP_1193_PROVIDER, CAIP_MULTICHAIN_PROVIDER, PROVIDER_METHODS } from '../constants/stream.js';
+import { EIP_1193_PROVIDER, PROVIDER_METHODS } from '../constants/stream.js';
 import { NODUS_PERMISSION } from './permissions.js';
-
-// Port: shared/constants/app.ts:200; ADAPTATION: approved plan Q-9 (:999) renames the internal origin.
-export const ORIGIN_NODUS = 'nodus';
-
-// Port: lib/createEvmMethodsToNonEvmAccountReqFilterMiddleware.ts:17-20, 29-98.
-// Method lists: shared/constants/permissions.ts:10-14, controllers/permissions/specifications.ts:88-95.
-const METHODS_TO_CHECK = ['eth_accounts', 'eth_sendRawTransaction', 'eth_sendTransaction', 'eth_signTypedData',
-  'eth_signTypedData_v1', 'eth_signTypedData_v3', 'eth_signTypedData_v4'];
-
-export function createEvmMethodsToNonEvmAccountReqFilterMiddleware({ getSelectedAccount }) {
-  // ADAPTATION: plan Q-18 / §3.5: the single HD account's accessor replaces the AccountsController messenger action.
-  return (req, _res, next, end) => {
-    const selectedAccount = getSelectedAccount();
-    // Port the keyring-api 24.1.0 dist/eth/utils.mjs:8-10 predicate without adding an undeclared dependency.
-    if (selectedAccount.type === 'eip155:eoa' || selectedAccount.type === 'eip155:erc4337') return next();
-    if (METHODS_TO_CHECK.includes(req.method)) return end(new Error(`Non-EVM account cannot request this method: ${req.method}`));
-    if (req.method === 'wallet_requestPermissions' && req.params && Array.isArray(req.params) && req.params.length > 0 && req.params[0]) {
-      const permissionsMethodRequest = Object.keys(req.params[0]);
-      if (METHODS_TO_CHECK.some(method => permissionsMethodRequest.includes(method))) {
-        return end(new Error(`Non-EVM account cannot request this method: ${permissionsMethodRequest.toString()}`));
-      }
-    }
-    return next();
-  };
-}
 
 // Port: MetaMask v13.54.0 app/scripts/lib/parse-port-info.ts:31-47, Chromium branch only (plan §3.2).
 export function parsePortInfo(port, runtime) {
@@ -45,7 +20,7 @@ export function parsePortInfo(port, runtime) {
   try { if (port.sender?.url) senderUrl = new URL(port.sender.url); } catch { /* Malformed senders have no trusted origin. */ }
   // ADAPTATION: plan §3.2:195-197's Chromium origin comparison, serialized explicitly for Node's opaque-scheme URL implementation.
   const origin = senderUrl?.protocol === 'chrome-extension:' ? `${senderUrl.protocol}//${senderUrl.host}` : senderUrl?.origin;
-  return { processName: port.name, senderUrl, origin, isUiPort: origin === `chrome-extension://${runtime.id}` };
+  return { isUiPort: origin === `chrome-extension://${runtime.id}` };
 }
 
 // Port: app/scripts/lib/createDupeReqFilterStream.ts:10-79.
@@ -67,8 +42,6 @@ function createDupeReqFilterStream() {
 
 export function createRequestEngine({ runtime, permissions, approvals, autoLockAlarm, trustedApi, getUiPorts, evm, nodus, networkClient: initialNetworkClient }) {
   const connections = new Map(), ports = new Set();
-  // Port: background.ts:207, 935-952, with no disconnect-time deletion in that reference path.
-  const requestAccountTabIds = {};
   let networkClient = null, networkVersion, getNetworkMetadata;
 
   // Port: shared/lib/network.utils.ts:78-86 (hex predicate equivalent to utils dist/hex.mjs:33-34).
@@ -112,16 +85,13 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
   }
 
   // Port: metamask-controller.js:5216-5654, preserving retained middleware order.
-  function setupProviderEngineEip1193({ origin, isFile = false, tabId, frameId, mainFrameOrigin, subjectType }) {
+  function setupProviderEngineEip1193({ origin, isFile = false }) {
     const engine = new JsonRpcEngine();
-    // Port: lib/createOriginMiddleware.js:7-16; main/frame/tab middleware overwrite all page-supplied context.
+    // Port: lib/createOriginMiddleware.js:7-16; overwrite page-supplied origin context.
     engine.push((req, _res, next) => { req.origin = origin; req.isFile = isFile; next(); });
-    if (mainFrameOrigin) engine.push((req, _res, next) => { req.mainFrameOrigin = mainFrameOrigin; next(); });
     // Q-24 removes createSelectedNetworkMiddleware (:5235); every connection reads the one client above.
     let clientEngine = null, clientMiddleware = null;
     function resetNetwork() { clientEngine?.destroy(); clientEngine = null; clientMiddleware = null; }
-    if (tabId) engine.push((req, _res, next) => { req.tabId = tabId; next(); });
-    if (typeof frameId === 'number') engine.push((req, _res, next) => { req.frameId = frameId; next(); });
     // Port: lib/createLoggerMiddleware.js:17-30. ADAPTATION: plan §3.4:299-303/§11:964-966,
     // F7 forbids the reference's whole-error log too; emit only trusted origin/method/status, never params/errors.
     engine.push((req, res, next) => next(done => {
@@ -143,9 +113,7 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
       return next();
     });
     engine.push(permissions.createEthAccountsMethodMiddleware());
-    if (subjectType !== 'internal') engine.push(permissions.createPermissionMiddleware(origin));
-    // Port: metamask-controller.js:5476-5480, after permission checks and before the EIP-1193 handlers.
-    engine.push(createEvmMethodsToNonEvmAccountReqFilterMiddleware({ getSelectedAccount: () => permissions.getSelectedAccount() }));
+    engine.push(permissions.createPermissionMiddleware(origin));
     engine.push(permissions.createEip1193MethodMiddleware());
     engine.push((req, res, next, end) => {
       if (req.method !== 'nodus_signMessage') return next();
@@ -193,17 +161,12 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
   }
 
   // Port: metamask-controller.js:4936-5006, with plan §3.3's renamed notification constants.
-  function setupProviderConnectionEip1193(outStream, sender, subjectType) {
-    const senderUrl = subjectType === 'internal' ? null : new URL(sender.url);
-    const origin = subjectType === 'internal' ? ORIGIN_NODUS : senderUrl.origin;
+  function setupProviderConnectionEip1193(outStream, sender) {
+    const senderUrl = new URL(sender.url);
+    const origin = senderUrl.origin;
     // Chromium serializes file origins as "file://"; Node serializes them as "null".
     const isFile = senderUrl?.protocol === 'file:';
-    // Port: metamask-controller.js:4946-4952; record only other extensions, using the sender's real id.
-    if (sender.id && sender.id !== runtime.id) permissions.subjectMetadataController.addSubjectMetadata({
-      origin, extensionId: sender.id, subjectType: 'extension',
-    });
-    const mainFrameOrigin = sender.tab?.url ? new URL(sender.tab.url).origin : origin;
-    const { engine, resetNetwork } = setupProviderEngineEip1193({ origin, isFile, subjectType, mainFrameOrigin, tabId: sender.tab?.id, frameId: sender.frameId });
+    const { engine, resetNetwork } = setupProviderEngineEip1193({ origin, isFile });
     const duplicateFilter = createDupeReqFilterStream(), providerStream = createEngineStream({ engine });
     const id = Symbol(origin), connection = { id, origin, isFile, engine, resetNetwork, outStream, accounts: [...permissions.getAccounts(origin)] };
     connections.set(id, connection);
@@ -211,7 +174,7 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
       engine.destroy(); connections.delete(id);
       // Plan §11: no raw stream/request error logging.
     });
-    if (subjectType !== 'internal') void notifyChainChange(connection);
+    void notifyChainChange(connection);
     return connection;
   }
 
@@ -223,15 +186,13 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
   }
 
   function setupUntrustedCommunicationEip1193({ connectionStream, sender }) {
-    const subjectType = sender.id && sender.id !== runtime.id ? 'extension' : 'website';
     const mux = setupMultiplex(connectionStream);
-    mux.ignoreStream(CAIP_MULTICHAIN_PROVIDER);
-    // Plan §3.4 removes phishing/publicConfig; §16 step 7 owns the CAIP port.
-    return setupProviderConnectionEip1193(mux.createStream(EIP_1193_PROVIDER), sender, subjectType);
+    // Plan §3.4 removes phishing/publicConfig.
+    return setupProviderConnectionEip1193(mux.createStream(EIP_1193_PROVIDER), sender);
   }
 
   // Port: metamask-controller.js:4601-4613, 4855-4856; lib/createMetaRPCHandler.ts:30-118.
-  function setupTrustedCommunication(connectionStream, sender, port) {
+  function setupTrustedCommunication(connectionStream, port) {
     const mux = setupMultiplex(connectionStream), controllerStream = mux.createStream('controller');
     const activity = autoLockAlarm.openTrustedInterface();
     const api = { ...trustedApi, setLastActiveTime: () => activity.activity() };
@@ -256,25 +217,15 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
     const close = () => { activity.close(); controllerStream.removeListener('data', onData); getUiPorts().delete(port); };
     controllerStream.once('close', close); controllerStream.once('end', close);
     getUiPorts().add(port);
-    return setupProviderConnectionEip1193(mux.createStream('provider'), sender, 'internal');
   }
 
   // Port: background.ts:796-839, 968-970; trust is derived exclusively from sender URL.
   function onConnect(port) {
     const info = parsePortInfo(port, runtime);
-    // Port: background.ts:935-952; tab tracking observes eth_requestAccounts on untrusted port messages.
-    if (!info.isUiPort && port.sender?.tab && port.sender.url) {
-      const tabId = port.sender.tab.id, { origin } = new URL(port.sender.url);
-      port.onMessage.addListener(message => {
-        if (message && typeof message === 'object' && !Array.isArray(message) &&
-          message.data && typeof message.data === 'object' && !Array.isArray(message.data) &&
-          ['eth_requestAccounts', 'nodus_requestAccounts'].includes(message.data.method) && tabId !== undefined) requestAccountTabIds[origin] = tabId;
-      });
-    }
     // Port: background.ts:807-808, 968: only page streams disable chunking.
     const stream = info.isUiPort ? new ExtensionPortStream(port) : new ExtensionPortStream(port, { chunkSize: 0 });
     ports.add(stream); stream.once('close', () => ports.delete(stream));
-    if (info.isUiPort) setupTrustedCommunication(stream, port.sender, port);
+    if (info.isUiPort) setupTrustedCommunication(stream, port);
     else setupUntrustedCommunicationEip1193({ connectionStream: stream, sender: port.sender });
   }
 
@@ -291,11 +242,8 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
   const lazyListener = globalThis.chrome?.runtime === runtime && globalThis.stateHooks?.lazyListener;
   if (lazyListener) lazyListener.addListener('runtime', 'onConnect', onConnect);
   else runtime.onConnect.addListener(onConnect);
-  // Port: background.ts:296-300 consumes the buffered onInstalled; operator 2026-10-29 chose "2":
-  // install/update open nothing (handleOnInstalled not ported), so the event is drained and ignored.
-  if (lazyListener) lazyListener.once('runtime', 'onInstalled');
   if (initialNetworkClient) attachNetworkClient(initialNetworkClient);
-  return { connections, requestAccountTabIds, onConnect, setupUntrustedCommunicationEip1193, setupProviderConnectionEip1193,
+  return { connections, onConnect, setupUntrustedCommunicationEip1193, setupProviderConnectionEip1193,
     setupProviderEngineEip1193, getNetworkState, attachNetworkClient, notifyAccountsChanged,
     destroy() { runtime.onConnect.removeListener(onConnect); for (const stream of ports) stream.destroy(); for (const connection of connections.values()) { connection.engine.destroy(); connection.outStream.destroy(); } connections.clear(); } };
 }
