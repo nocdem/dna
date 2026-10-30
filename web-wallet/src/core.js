@@ -25,7 +25,12 @@ export async function request(url, body, { signal, fetcher = fetch } = {}) {
     if (error.message?.startsWith('RPC response') || error.message === 'RPC returned invalid JSON.') throw error;
     throw new Error('RPC unavailable. Check the HTTPS endpoint, browser CORS access and connection.');
   }
-  if (!response.ok) throw new Error(`RPC request failed (HTTP ${response.status}).`);
+  if (!response.ok) {
+    const error = new Error(`RPC request failed (HTTP ${response.status}).`);
+    error.status = response.status;
+    if (response.status === 429) error.rateLimitReset = response.headers.get('x-ratelimit-reset');
+    throw error;
+  }
   const data = await response.json();
   if (!data || typeof data !== 'object' || data.error || data.Error || data.success === false) throw new Error('RPC rejected the request.');
   return data;

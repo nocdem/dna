@@ -13,9 +13,10 @@
 // does not check out is dropped. The page shows rows with textContent only.
 //
 // Requests are few because public providers limit them (operator
-// 2026-10-02): ethereum 2, tron 2, cellframe 1, solana 1 + one getTransaction
-// per signature not seen before (paced by rpc-transport.js). A refused
-// request (HTTP 429 included) is reported, never retried here.
+// 2026-10-02): ethereum 1 + one per listed token, tron 2, cellframe 1,
+// solana 1 + one getTransaction per signature not seen before (paced by
+// rpc-transport.js). Ethereum HTTP 429 waits for the provider's reset within
+// the bounded read below (operator 2026-10-30); other refusals are reported.
 import { getAddress, formatUnits } from 'ethers';
 import { TronWeb } from 'tronweb';
 import { CHAINS } from './config.js';
@@ -26,6 +27,10 @@ export const HISTORY_LIMIT = 50;           // rows per network kept and shown (t
 export const SOLANA_SIGNATURES = 20;       // newest signatures looked at per read
 export const HISTORY_SOURCES = { ethereum: 'Blockscout', tron: 'TronGrid', solana: 'Solana RPC', cellframe: 'Cellframe RPC' };
 const BLOCKSCOUT = 'https://eth.blockscout.com/api';
+// Dispatch 2026-10-30 allows a bound: two minutes including queue/network
+// time, and three retries across the whole read. Zero reset cannot loop.
+const BLOCKSCOUT_READ_MS = 120000, BLOCKSCOUT_RETRIES = 3;
+let blockscoutQueue = Promise.resolve();
 const DIGITS = /^(0|[1-9]\d{0,77})$/;
 
 export class HistoryUnavailable extends Error {}
@@ -47,7 +52,7 @@ function plainError(error) {
   return new HistoryUnavailable('History could not be read right now. Try again later.');
 }
 
-// ── Ethereum: Blockscout (2 requests) ───────────────────────────────────
+// ── Ethereum: Blockscout (native + one per listed token) ────────────────
 export function parseBlockscout(native, tokens, address) {
   const self = getAddress(address).toLowerCase(), out = [];
   const listed = new Map(CHAINS.ethereum.tokens.map(t => [t.address.toLowerCase(), t]));
@@ -69,6 +74,55 @@ export function parseBlockscout(native, tokens, address) {
   return sortRows(out);
 }
 async function ethereumHistory(address, options) {
+  const controller = new AbortController();
+  const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+  const retry = { remaining: BLOCKSCOUT_RETRIES, deadline: Date.now() + BLOCKSCOUT_READ_MS };
+  const timer = setTimeout(() => controller.abort(), BLOCKSCOUT_READ_MS);
+  // Hold the provider across retries and token reads. Concurrent callers
+  // cannot bypass a reset wait; a cancelled queue entry never issues a read.
+  const pending = blockscoutQueue.then(() => {
+    signal.throwIfAborted();
+    return readEthereumHistory(address, { ...options, signal, retry });
+  });
+  blockscoutQueue = pending.catch(() => {});
+  try { return await awaitHistory(pending, signal); }
+  catch (error) {
+    if (options.signal?.aborted) throw new Error('Request cancelled.');
+    if (controller.signal.aborted) throw retry.error || new Error('History read deadline exceeded.');
+    throw error;
+  } finally { clearTimeout(timer); }
+}
+function awaitHistory(pending, signal) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener('abort', cancel);
+    const cancel = () => { cleanup(); reject(new Error('Request cancelled.')); };
+    signal.addEventListener('abort', cancel, { once: true });
+    if (signal.aborted) cancel();
+    pending.then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
+  });
+}
+function waitBlockscout(delay, { signal, onStatus }) {
+  const until = Date.now() + delay;
+  return new Promise((resolve, reject) => {
+    let timer;
+    const cleanup = () => { clearTimeout(timer); signal.removeEventListener('abort', cancel); };
+    const cancel = () => { cleanup(); reject(new Error('Request cancelled.')); };
+    const tick = () => {
+      try {
+        signal.throwIfAborted();
+        const remaining = until - Date.now();
+        if (remaining <= 0) { cleanup(); onStatus?.(''); resolve(); return; }
+        const seconds = Math.ceil(remaining / 1000);
+        onStatus?.(`Waiting for the provider, retrying in ${seconds} ${seconds === 1 ? 'second' : 'seconds'}.`);
+        signal.throwIfAborted();
+        timer = setTimeout(tick, Math.min(1000, remaining));
+      } catch (error) { cleanup(); reject(error); }
+    };
+    signal.addEventListener('abort', cancel, { once: true });
+    tick();
+  });
+}
+async function readEthereumHistory(address, options) {
   const a = getAddress(address).toLowerCase();
   const url = (action, contract = '') => `${BLOCKSCOUT}?module=account&action=${action}&address=${a}${contract ? `&contractaddress=${contract}` : ''}&startblock=0&endblock=99999999&page=1&offset=${HISTORY_LIMIT}&sort=desc`;
   // One after the other, not in parallel: one request in flight per provider.
@@ -83,9 +137,23 @@ async function ethereumHistory(address, options) {
 // Blockscout answers "no transactions" with status "0"; core.js request()
 // would not refuse that, but the shape is checked here.
 async function blockscout(url, options) {
-  const data = await request(url, undefined, options);
-  if (!data || (data.status !== '1' && data.status !== '0') || !(Array.isArray(data.result) || data.result === null)) throw new Error('Unexpected history response.');
-  return data;
+  while (true) {
+    let data;
+    try { data = await request(url, undefined, options); }
+    catch (error) {
+      if (error.status === 429) options.retry.error = error;
+      if (error.status !== 429 || options.retry.remaining === 0 || !/^\d+$/.test(error.rateLimitReset ?? '')) throw error;
+      // Blockscout apps/block_scout_web/rate_limits.md, "Rate Limit Headers":
+      // X-RateLimit-Reset is the remaining time in milliseconds.
+      const delay = Number(error.rateLimitReset);
+      if (!Number.isSafeInteger(delay) || delay >= options.retry.deadline - Date.now()) throw error;
+      options.retry.remaining--;
+      await waitBlockscout(delay, options);
+      continue;
+    }
+    if (!data || (data.status !== '1' && data.status !== '0') || !(Array.isArray(data.result) || data.result === null)) throw new Error('Unexpected history response.');
+    return data;
+  }
 }
 
 // ── TRON: TronGrid (2 requests) ─────────────────────────────────────────
@@ -209,8 +277,8 @@ async function cellframeHistory(address, endpoint, options) {
 }
 
 // Reads one network's history. `known` (solana only): signature -> rows.
-export async function readHistory(chain, address, { endpoint, signal, known = new Map() } = {}) {
-  const options = { signal };
+export async function readHistory(chain, address, { endpoint, signal, known = new Map(), onStatus } = {}) {
+  const options = { signal, onStatus };
   try {
     if (chain === 'ethereum') return await ethereumHistory(address, options);
     if (chain === 'tron') return await tronHistory(address, endpoint || CHAINS.tron.endpoint, options);

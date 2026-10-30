@@ -271,7 +271,21 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     if (chain === 'nodus') { await ui.loadNodusHistory(); history = ui.state.nodusHistory; }
     else if (isSolanaTron(chain)) { await ui.loadSolanaTronHistory(chain, { manual }); history = ui.state.solanaTronHistory[chain]; }
     else if (chain === 'bsc') history = { rows: [], status: 'Account history is not supported on BNB Smart Chain.' };
-    else history = await ui.request('getChainHistory', [chain, { manual }]);
+    else {
+      let timer, finished = false;
+      const current = () => !finished && !disposed && started === readGeneration && selected === chain;
+      const poll = async () => {
+        if (!current()) return;
+        try {
+          const snapshot = await ui.request('getChainHistory', [chain, { poll: true }]);
+          if (current()) $('history-status').textContent = snapshot.status || '';
+        } catch { /* the original request reports its failure */ }
+        finally { if (current()) timer = setTimeout(poll, 1000); }
+      };
+      timer = setTimeout(poll, 1000);
+      try { history = await ui.request('getChainHistory', [chain, { manual }]); }
+      finally { finished = true; clearTimeout(timer); }
+    }
     if (disposed || started !== readGeneration || selected !== chain) return;
     const detached = element('div');
     if (chain === 'nodus') renderNodusHistory(document, detached, history, { refresh: () => loadHistory(true) });
