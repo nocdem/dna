@@ -304,7 +304,7 @@ function renderHistory() {
   const chain = $('chain').value, h = historyFor(chain), supported = historySupported(chain);
   button.hidden = !supported; button.disabled = !!historyJob || !wallet.addresses[chain];
   status.textContent = !supported ? `Account history for ${networkFor(chain)?.name ?? chain} is not read here. Use the account explorer.`
-    : historyJob?.chain === chain ? `Reading account history from ${HISTORY_SOURCES[chain]}…`
+    : historyJob?.chain === chain ? historyJob.status || `Reading account history from ${HISTORY_SOURCES[chain]}…`
     : historyNote[chain] || (h ? `Newest ${HISTORY_LIMIT} transfers as reported by ${HISTORY_SOURCES[chain]}, read ${historyTime(h.readAt)}. Your own sends are tracked above.` : 'Account history has not been read yet.');
   const el = (tag, className, text) => { const node = document.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node; };
   list.replaceChildren(...(supported && h ? h.rows : []).map(r => {
@@ -343,7 +343,11 @@ async function loadHistory(chain, { manual = false } = {}) {
     // Solana: signatures already read are not fetched again.
     const known = new Map();
     for (const r of kept?.rows || []) { if (!known.has(r.hash)) known.set(r.hash, []); known.get(r.hash).push(r); }
-    const rows = await readHistory(chain, address, { endpoint: endpoints[chain], signal: job.controller.signal, known });
+    const rows = await readHistory(chain, address, { endpoint: endpoints[chain], signal: job.controller.signal, known,
+      onStatus(text) {
+        if (historyJob !== job || wallet !== source) return;
+        job.status = text; renderHistory();
+      } });
     if (historyJob !== job || wallet !== source) return;
     historyByChain[chain] = { address, readAt: Date.now(), rows: mergeHistory(kept?.rows, rows) };
     persistHistory();

@@ -19,6 +19,40 @@ test('history uses the selected account and web-wallet refresh limits', async t 
   await assert.rejects(controller.getHistory('bsc'), /Unsupported/);
 });
 
+// Public read fixture only; no flags/network/artifacts. Polls must expose
+// intermediate text without starting another provider read or saving a page.
+test('waiting history status is readable while the original job is pending', async () => {
+  let page, finish, reportStatus, reads = 0, saves = 0;
+  const held = new Promise(resolve => { finish = resolve; });
+  const activity = { rows: () => [], history: () => page, saveHistory: async value => { saves++; page = value; } };
+  const controller = createChainHistory({ getActivity: () => activity, getAddresses: () => ({ ethereum: 'public-ethereum' }),
+    assertCurrent() {}, read: async (_chain, _address, options) => { reads++; reportStatus = options.onStatus; return held; } });
+  const reading = controller.getHistory('ethereum');
+  await Promise.resolve();
+  reportStatus('Waiting for the provider, retrying in 43 seconds.');
+  const waiting = await controller.getHistory('ethereum', { poll: true });
+  assert.equal(waiting.status, 'Waiting for the provider, retrying in 43 seconds.');
+  assert.equal(reads, 1); assert.equal(saves, 0);
+  const duplicate = controller.getHistory('ethereum', { manual: true });
+  reportStatus('');
+  assert.match((await controller.getHistory('ethereum', { poll: true })).status, /Reading account history/);
+  finish([]);
+  assert.deepEqual(await duplicate, await reading);
+  assert.equal(reads, 1); assert.equal(saves, 1);
+  await controller.getHistory('ethereum', { poll: true });
+  assert.equal(reads, 1, 'polling a settled job never starts another provider read');
+});
+
+test('a bounded history refusal reaches the original caller without saving a fresh page', async () => {
+  let saves = 0;
+  const message = 'The history provider is limiting requests right now. Try again in a few minutes.';
+  const activity = { rows: () => [], history: () => null, saveHistory: async () => { saves++; } };
+  const controller = createChainHistory({ getActivity: () => activity, getAddresses: () => ({ ethereum: 'public-ethereum' }),
+    assertCurrent() {}, read: async () => { throw new Error(message); } });
+  assert.equal((await controller.getHistory('ethereum')).error, message);
+  assert.equal(saves, 0);
+});
+
 // B2: cross-read the site's balance format; a different id must not decrypt.
 // No flags/network/artifacts. Reusing the same id would miss cache isolation.
 test('kept balances use the web-wallet key and reject another vault id', async t => {
