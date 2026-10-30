@@ -55,8 +55,8 @@ export function renderNodusHistory(document, container, history, { refresh }) {
   container.append(element(document, 'p', history.error ? nodusHistoryStatus({ error: history.error }) : history.status, history.error ? 'field-error' : 'hint'));
   const account = element(document, 'div', undefined, 'activity-list');
   for (const row of history.rows ?? []) {
-    // src/app.js:405-419: amount/description, confirmed status/block/time,
-    // then the full network record id. Boundary rows may lack amount/time/id.
+    // src/app.js:405-419: amount/description and confirmed status/block/time.
+    // Boundary rows may lack amount/time/id.
     const article = element(document, 'article', undefined, `activity-row nodus-history-row${row.dir ? ` history-dir-${row.dir}` : ''}`);
     const main = element(document, 'span', undefined, 'activity-main');
     main.append(element(document, 'strong', row.amount ? `${row.sign}${row.amount}` : row.title),
@@ -71,7 +71,11 @@ export function renderNodusHistory(document, container, history, { refresh }) {
     }
     side.append(badge, where);
     const footer = element(document, 'div', undefined, 'activity-footer');
-    if (row.wire) footer.append(element(document, 'span', `Network record ID ${row.wire}`, 'activity-id'));
+    if (row.wire) {
+      const link = element(document, 'a', 'View transaction');
+      link.href = `https://scan.nodusnetwork.io/tx.html?hash=${encodeURIComponent(row.wire)}&lang=en`;
+      link.target = '_blank'; link.rel = 'noopener noreferrer'; footer.append(link);
+    }
     article.append(main, side, footer);
     account.append(article);
   }

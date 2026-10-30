@@ -598,9 +598,17 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         assert.equal(await nodusRow.locator('.activity-main small').textContent(), 'Received NODUS · Public fixture transfer');
         assert.equal(await nodusRow.locator('.activity-side [data-status="confirmed"]').count(), 1);
         assert.equal(await nodusRow.locator('time[datetime]').count(), 1);
-        assert.equal(await nodusRow.locator('.activity-footer .activity-id').textContent(), `Network record ID ${'cd'.repeat(64)}`);
+        // Pin the mounted record link as well as its renderer: the footer
+        // must use this row's network record, with TRON's link text/attributes.
+        const nodusLink = nodusRow.locator('.activity-footer a');
+        assert.equal(await nodusLink.textContent(), 'View transaction');
+        assert.equal(await nodusLink.getAttribute('href'), `https://scan.nodusnetwork.io/tx.html?hash=${'cd'.repeat(64)}&lang=en`);
+        assert.equal(await nodusLink.getAttribute('target'), '_blank');
+        assert.equal(await nodusLink.getAttribute('rel'), 'noopener noreferrer');
+        assert.equal(await nodusRow.locator('.activity-id').count(), 0);
         assert.equal(await page.locator('#history .activity-row').nth(1).locator('.activity-main strong').textContent(), 'Witness update');
         assert.equal(await page.locator('#history .activity-row').nth(1).locator('time').count(), 0);
+        assert.equal(await page.locator('#history .activity-row').nth(1).locator('.activity-footer a').count(), 0);
         await assertHistoryLayout(page);
         await capture('history');
         // Ethereum, Solana, TRON and Cellframe share this renderer. Real
@@ -622,7 +630,7 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         await page.locator('#page-wallet-activity .page-back').click();
         await selectNetwork(page, 'bsc');
         await page.locator('.wallet-navigation a[href="#wallet-activity"]').click();
-        await page.waitForFunction(() => document.querySelector('#history-status')?.textContent === 'Account history for BNB Smart Chain is not read here. Use the account explorer.');
+        await page.waitForFunction(() => document.querySelector('#history-status')?.textContent === 'Account history is not supported on BNB Smart Chain.');
         assert.equal(await page.locator('#history .activity-row').count(), 0);
         await assertAccountHistoryOnly(page);
         await page.locator('#page-wallet-activity .page-back').click();
