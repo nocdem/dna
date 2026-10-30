@@ -18,10 +18,10 @@ body.extension-page[data-page="popup"] { overflow: auto; }
 .extension-page #wallet-home > #wallet-heading { padding-bottom: 0; }
 .extension-page #portfolio-networks { margin-top: 24px; padding-top: 0; }
 
-/* Amount first, with a smaller label below it. */
+/* Amount first, with a smaller label below the eye and lock on the right. */
 .extension-page .portfolio-card { padding: 16px; }
 .extension-page .portfolio-heading { display: grid; grid-template-columns: minmax(0, 1fr) 32px 32px; }
-.extension-page #portfolio-label { font-size: 8px; margin: 4px 0 10px; }
+.extension-page #portfolio-label { font-size: 8px; margin: 4px 0 10px; text-align: right; }
 .extension-page .portfolio-amount { margin: 0; }
 .extension-page .network-health { align-items: center; }
 

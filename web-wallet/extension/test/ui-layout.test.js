@@ -14,7 +14,8 @@ import { ASSETS, PRICE_MAX_AGE, chainBalances, portfolioSnapshot, usdText, displ
 // artifacts remain. Browser, HTTP server and Vite close in finally, even on failure.
 // Vite aliases/defines are copied from vite.extension.config.js; mirror
 // later changes there. The version define comes from the same package.json.
-// Proves mounted-page geometry, names, price wiring and approval/form regressions.
+// Proves mounted-page geometry, including label text below the eye and lock,
+// names, price wiring and approval/form regressions.
 // Can falsely pass visually: geometry is not aesthetic approval. A normal page
 // cannot prove extension font loading (package-smoke.test.js does). Fake state
 // and quotes cannot prove live background/chain/feed compatibility. Notification
@@ -67,8 +68,12 @@ async function assertPortfolioLayout(page) {
     heading.append(reference);
     const previousLabelSize = parseFloat(getComputedStyle(reference).fontSize); reference.remove();
     const amount = document.getElementById('portfolio-total'), label = document.getElementById('portfolio-label');
+    // Measure the text: the paragraph spans the card even when left-aligned.
+    const labelText = document.createRange(); labelText.selectNodeContents(label);
     const greeting = document.getElementById('wallet-heading').getBoundingClientRect(), box = card.getBoundingClientRect();
-    return { amount: amount.getBoundingClientRect().toJSON(), label: label.getBoundingClientRect().toJSON(),
+    return { amount: amount.getBoundingClientRect().toJSON(), label: labelText.getBoundingClientRect().toJSON(),
+      eye: document.getElementById('portfolio-hide').getBoundingClientRect().toJSON(),
+      lock: document.getElementById('lock').getBoundingClientRect().toJSON(),
       amountFirst: Boolean(amount.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING),
       labelSize: parseFloat(getComputedStyle(label).fontSize), previousLabelSize,
       upperGap: box.top - greeting.bottom,
@@ -76,6 +81,11 @@ async function assertPortfolioLayout(page) {
   });
   assert.equal(layout.amountFirst, true, 'The amount precedes its label in reading order');
   assert.ok(layout.amount.bottom <= layout.label.top, 'The amount sits above its label');
+  for (const control of [layout.eye, layout.lock]) {
+    assert.ok(layout.label.top >= control.bottom, 'The label text sits below both the eye and lock');
+    assert.ok(layout.label.left < control.right && layout.label.right > control.left, 'The label text sits beneath each icon horizontally');
+  }
+  assert.ok(Math.abs(layout.label.right - layout.lock.right) < 1, 'The label text aligns with the right edge of the lock');
   assert.ok(layout.labelSize < layout.previousLabelSize, 'The label is smaller than the previous portfolio eyebrow');
   assert.ok(layout.upperGap > 0 && layout.lowerGap > 0, 'The greeting, card and network chips have space between them');
   assert.ok(Math.abs(layout.upperGap - layout.lowerGap) < 1, 'Welcome to card and card to network chips have equal gaps');
