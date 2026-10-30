@@ -270,7 +270,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     let history;
     if (chain === 'nodus') { await ui.loadNodusHistory(); history = ui.state.nodusHistory; }
     else if (isSolanaTron(chain)) { await ui.loadSolanaTronHistory(chain, { manual }); history = ui.state.solanaTronHistory[chain]; }
-    else if (chain === 'bsc') history = { rows: [], status: 'Account history for BNB Smart Chain is not read here. Use the account explorer.' };
+    else if (chain === 'bsc') history = { rows: [], status: 'Account history is not supported on BNB Smart Chain.' };
     else history = await ui.request('getChainHistory', [chain, { manual }]);
     if (disposed || started !== readGeneration || selected !== chain) return;
     const detached = element('div');

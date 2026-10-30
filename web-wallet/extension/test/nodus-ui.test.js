@@ -163,9 +163,9 @@ test('history preserves node provenance and read failures while omitting local s
 });
 
 // Public DOM fixtures, no flags/network/artifacts. Pins the reference row
-// grouping, full record id, optional time and amount-less title. Geometry is
+// grouping, record explorer link, optional time and amount-less title. Geometry is
 // checked in ui-layout.test.js; text assertions alone cannot prove placement.
-test('Nodus account history uses the web wallet amount, status and record layout', () => {
+test('Nodus account history keeps the row layout and links each network record to the explorer', () => {
   const root = new Node('main'), wire = 'cd'.repeat(64), time = 1700000000000;
   renderNodusHistory(document, root, { rows: [
     { title: 'Received', dir: 'in', sign: '+', amount: '1 NODUS', detail: 'from <img src=x>', height: '9', time, wire },
@@ -177,9 +177,16 @@ test('Nodus account history uses the web wallet amount, status and record layout
   assert.deepEqual(rows[0].children[0].children.map(node => node.textContent), ['+1 NODUS', 'Received · from <img src=x>']);
   assert.equal(find(rows[0], node => node.className === 'status-badge')[0].attributes['data-status'], 'confirmed');
   assert.equal(find(rows[0], node => node.tagName === 'time')[0].dateTime, new Date(time).toISOString());
-  assert.equal(find(rows[0], node => node.className === 'activity-id')[0].textContent, `Network record ID ${wire}`);
+  const links = find(rows[0], node => node.tagName === 'a');
+  assert.equal(links.length, 1);
+  assert.equal(links[0].textContent, 'View transaction');
+  assert.equal(links[0].href, `https://scan.nodusnetwork.io/tx.html?hash=${wire}&lang=en`);
+  assert.equal(links[0].target, '_blank');
+  assert.equal(links[0].rel, 'noopener noreferrer');
+  assert.doesNotMatch(root.textContent, /Network record ID/u);
   assert.equal(rows[1].children[0].children[0].textContent, 'Witness update');
   assert.equal(find(rows[1], node => node.tagName === 'time').length, 0);
+  assert.equal(find(rows[1], node => node.tagName === 'a').length, 0);
   assert.equal(find(root, node => node.tagName === 'img' || node.tagName === 'h2').length, 0);
 });
 
