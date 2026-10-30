@@ -53,6 +53,41 @@ test('a bounded history refusal reaches the original caller without saving a fre
   assert.equal(saves, 0);
 });
 
+// The session signal must reach the provider; a late cancellation must reject
+// the caller without saving or starting another request.
+test('account history passes session cancellation to a pending provider read', async t => {
+  const abort = new AbortController();
+  let options, rejectRead, saves = 0;
+  const activity = { rows: () => [], history: () => null, saveHistory: async () => { saves++; } };
+  const controller = createChainHistory({ signal: abort.signal, getActivity: () => activity,
+    getAddresses: () => ({ ethereum: 'public-ethereum' }),
+    assertCurrent() { if (abort.signal.aborted) throw new Error('Wallet is locked.'); },
+    read: async (_chain, _address, value) => {
+      options = value;
+      return new Promise((_, reject) => { rejectRead = reject; value.signal?.addEventListener('abort', () => reject(value.signal.reason), { once: true }); });
+    } });
+  t.after(() => rejectRead?.(new Error('Wallet is locked.')));
+  const reading = controller.getHistory('ethereum'), rejected = assert.rejects(reading, /locked/iu);
+  await Promise.resolve();
+  const suppliedSignal = options.signal;
+  abort.abort(new Error('Wallet is locked.'));
+  assert.equal(suppliedSignal, abort.signal);
+  await rejected;
+  assert.equal(saves, 0);
+});
+
+test('account history cancelled before its queued turn never starts a provider read', async () => {
+  const abort = new AbortController(); let reads = 0;
+  const activity = { rows: () => [], history: () => null };
+  const controller = createChainHistory({ signal: abort.signal, getActivity: () => activity,
+    getAddresses: () => ({ ethereum: 'public-ethereum' }),
+    assertCurrent() { if (abort.signal.aborted) throw new Error('Wallet is locked.'); },
+    read: async () => { reads++; return []; } });
+  const reading = controller.getHistory('ethereum'), rejected = assert.rejects(reading, /locked/iu);
+  abort.abort(); await rejected;
+  assert.equal(reads, 0);
+});
+
 // B2: cross-read the site's balance format; a different id must not decrypt.
 // No flags/network/artifacts. Reusing the same id would miss cache isolation.
 test('kept balances use the web-wallet key and reject another vault id', async t => {

@@ -136,13 +136,20 @@ export function createEvm({ messenger, store, approvals, permissions, lockCoordi
   }));
   const controller = new BaseController({ name: 'EvmController', metadata, messenger: messenger.buildChild({ namespace: 'EvmController' }), state: { selectedChain, endpoints } });
   let client = networkClient(selectedChain, endpoints[selectedChain]), revision = 0, reviewId = 0;
+  let readAbort = new AbortController();
   const reviews = new Map();
   const trackers = new Map();
   function clearReviews() { for (const review of reviews.values()) review.prepared.cancel(); reviews.clear(); }
-  function close() { revision++; clearReviews(); for (const stop of trackers.values()) stop(); trackers.clear(); }
+  function close() {
+    revision++; readAbort.abort(); readAbort = new AbortController();
+    clearReviews(); for (const stop of trackers.values()) stop(); trackers.clear();
+  }
   function activity(chain) {
-    const value = getActivity(chain);
-    if (!trackers.has(chain)) trackers.set(chain, watchActivity(() => value.rows(), () => { void value.persist().catch(() => {}); }));
+    const value = getActivity(chain), signal = readAbort.signal;
+    // watchActivity reads rows before checking its own stopped signal. A
+    // timer already queued at lock must not enter the disposed session.
+    if (!trackers.has(chain)) trackers.set(chain, watchActivity(() => signal.aborted || lockCoordinator.isLocked ? [] : value.rows(),
+      () => { void value.persist().catch(() => {}); }));
     return value;
   }
   function assertSendable(chain) {
@@ -261,9 +268,10 @@ export function createEvm({ messenger, store, approvals, permissions, lockCoordi
     get client() { return client; },
     getState: () => structuredClone(controller.state),
     async getBalances(chain) {
-      chainConfig(chain); const wallet = getWallet(), endpoint = controller.state.endpoints[chain];
+      chainConfig(chain); const wallet = getWallet(), endpoint = controller.state.endpoints[chain], signal = readAbort.signal;
       activity(chain);
-      const rows = await adapter.balances(chain, wallet.addresses[chain], endpoint);
+      const rows = await adapter.balances(chain, wallet.addresses[chain], endpoint, { signal });
+      signal.throwIfAborted();
       assertWalletActive(wallet); if (getWallet() !== wallet) throw new Error('Wallet is locked.');
       return rows;
     },

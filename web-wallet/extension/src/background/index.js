@@ -2,6 +2,7 @@ import { createVaultStore } from './vault-store.js';
 import { createLockCoordinator } from './lock.js';
 import { createAutoLockAlarm } from './auto-lock-alarm.js';
 import { createTransactionNotifications } from './transaction-notifications.js';
+import { createIncomingNotifications } from './incoming-notifications.js';
 import { createKeyring } from './keyring.js';
 import { createWalletKeys } from './wallet-keys.js';
 import { createUnlock } from './unlock.js';
@@ -43,7 +44,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     },
   };
   let walletKeys = null, unlock = null, permissions = null, engine = null;
-  let chainHandlers, evm;
+  let chainHandlers, evm, incomingNotifications;
   const networks = createNetworks({ messenger, store, onChanged: chain => chainHandlers?.[chain]?.networkChanged() });
   const getWallet = () => {
     lockCoordinator.assertUnlocked();
@@ -67,7 +68,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   }) });
   const nodus = createNodus({ ...nodusOptions, storage, lockCoordinator, getAddresses: () => walletKeys.getAddresses(),
     onActivityChanged: (rows, options) => { void transactionNotifications?.observe(rows, options).catch(() => {}); },
-    onLock: () => evm?.lock(),
+    onLock: () => { void incomingNotifications?.stop().catch(() => {}); evm?.lock(); },
     getWords: () => walletKeys.getRecoveryPhrase(), onClient: client => walletKeys?.replaceNodusClient(client),
     onStateChanged() {
       // Only trusted UI ports receive this invalidation. They fetch public
@@ -100,6 +101,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
         // src/app.js:1159-1173: begin quarantine reconciliation after unlock,
         // even when there are no readable pending rows or open history page.
         void nodus.reconcileQuarantine();
+        void incomingNotifications?.start().catch(() => {});
         return result;
       } catch (error) { await lockCoordinator.lock(); throw error; }
       finally { password = null; }
@@ -109,6 +111,8 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   attachWalletKeys(consumeNodusSeed ?? nodus.consumeNodusSeed);
   const { solana, tron } = chainHandlers = createSolanaTron({ lockCoordinator, getWalletKeys: () => walletKeys,
     getActivity: (chain, network) => nodus.chainActivity(chain, network), getNetwork: chain => networks.get(chain) });
+  incomingNotifications = notifications ? await createIncomingNotifications({ alarms: backgroundAlarms, notifications, runtime,
+    lockCoordinator, networks, nodus, evm, solana, tron }) : null;
 
   // Port: metamask-controller.js:2755-2757, 2963-2964, 3166-3168, 3278-3284, 3482-3495.
   // Plan §16 step 4 / dispatch 4a: expose background approval operations; screens belong to 4b.
@@ -290,14 +294,14 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     EvmController: evm.controller,
     NetworksController: networks.controller });
   await store.flush();
-  // Install one consumer only after both alarm handlers exist, then replay
+  // Install one consumer only after all alarm handlers exist, then replay
   // the worker's waking alarm. One handler must not drain another's events.
   const onAlarm = alarm => Promise.all(alarmListeners.map(listener => listener(alarm)));
   const lazyListener = globalThis.chrome?.alarms === alarms && globalThis.stateHooks?.lazyListener;
   if (lazyListener) lazyListener.addListener('alarms', 'onAlarm', onAlarm);
   else alarms.onAlarm.addListener(onAlarm);
   return {
-    vaultStore, lockCoordinator, autoLockAlarm, transactionNotifications, keyring, attachWalletKeys, store, permissions, approvals, engine, evm, nodus, solana, tron, networks,
+    vaultStore, lockCoordinator, autoLockAlarm, transactionNotifications, incomingNotifications, keyring, attachWalletKeys, store, permissions, approvals, engine, evm, nodus, solana, tron, networks,
     lock: () => lockCoordinator.lock(),
     get walletKeys() { return walletKeys; },
     get unlock() { return unlock; },
@@ -305,6 +309,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
       for (const [event, { listener }] of uiSubscriptions) messenger.unsubscribe(event, listener);
       uiSubscriptions.clear();
       await lockCoordinator.lock();
+      await incomingNotifications?.destroy();
       await transactionNotifications?.flush().catch(() => {});
       transactionNotifications?.destroy();
       engine.destroy(); approvals.destroy(); store.destroy(); evm.destroy(); networks.controller.destroy(); permissions.controller.destroy();

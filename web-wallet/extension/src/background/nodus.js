@@ -401,7 +401,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
     getChainHistory(chain, options) {
       const s = active();
       s.chainHistory ??= createChainHistory({ getActivity: name => this.chainActivity(name), getAddresses,
-        assertCurrent: () => { lockCoordinator.assertUnlocked(); current(s); } });
+        signal: s.abort.signal, assertCurrent: () => { lockCoordinator.assertUnlocked(); current(s); } });
       return s.chainHistory.getHistory(chain, options);
     },
     getChainLocalHistory(chain) { return this.chainActivity(chain).rows().map(row => ({ ...row })); },
