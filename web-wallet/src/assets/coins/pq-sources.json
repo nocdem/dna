@@ -1,0 +1,77 @@
+{
+  "description": "Original official project assets, stored without modification. Marks belong to their respective owners.",
+  "assets": [
+    {
+      "chain": "algorand",
+      "file": "algorand.png",
+      "sourcePage": "https://dev.algorand.co/",
+      "sourceUrl": "https://dev.algorand.co/favicon.png",
+      "retrievedAt": "2026-10-31T10:06:34.333997+00:00",
+      "sha256": "f6a849ea021b01b11d656853da6bee9d6cf33ec9a2f210ce38f20ece4474d2f5",
+      "note": "Official developer portal favicon; portal is linked by the official Algorand brand hub."
+    },
+    {
+      "chain": "tidecoin",
+      "file": "tidecoin.svg",
+      "sourcePage": "https://tidecoin.org/media-kit",
+      "sourceUrl": "https://tidecoin.org/logos/tdc_default_logo.svg",
+      "retrievedAt": "2026-10-31T10:06:34.334147+00:00",
+      "sha256": "0bd84856f5253a3873d089953e9b6b62bb15c261a35549610317c344a61e2c8b",
+      "note": "Default white symbol from official media kit."
+    },
+    {
+      "chain": "ckb",
+      "file": "ckb.png",
+      "sourcePage": "https://docs.nervos.org/",
+      "sourceUrl": "https://docs.nervos.org/img/favicon.png",
+      "retrievedAt": "2026-10-31T10:06:34.334241+00:00",
+      "sha256": "027d56e259247d93ca1e5fb474c233c957296d89d73bd73fd7d8cf8f4d17f8e8",
+      "note": "Official Nervos CKB documentation favicon."
+    },
+    {
+      "chain": "soqucoin",
+      "file": "soqucoin.png",
+      "sourcePage": "https://soqu.org/",
+      "sourceUrl": "https://soqu.org/soq-logo.png",
+      "retrievedAt": "2026-10-31T10:06:34.334374+00:00",
+      "sha256": "e34c2f412d7779301f5f7348302fcb723abb2f24b2bddeb4349fd18c326ec6f7",
+      "note": "Official site apple-touch icon."
+    },
+    {
+      "chain": "qtc",
+      "file": "qtc.svg",
+      "sourcePage": "https://qtc.dev/",
+      "sourceUrl": "https://qtc.dev/assets/favicon.svg?v=2",
+      "retrievedAt": "2026-10-31T10:06:34.334583+00:00",
+      "sha256": "8bbf1a5a388012c15919320665c6b89c900d21632d9d8194b17093a6435e1121",
+      "note": "Official QTC site favicon; site links qtcchain/qtc, matching the integrated chain."
+    },
+    {
+      "chain": "xion",
+      "file": "verona.svg",
+      "sourcePage": "https://verona.dev/",
+      "sourceUrl": "https://verona.dev/icon.svg",
+      "retrievedAt": "2026-10-31T10:06:34.334684+00:00",
+      "sha256": "3478703ded4b7ddf8b56fe2603d9bac53569084ca3c8187ca8cc35dafce01d44",
+      "note": "Current Verona chain favicon; https://xion.burnt.com/ redirects to this site. Not the Burnt company icon."
+    },
+    {
+      "chain": "splendor",
+      "file": "splendor.svg",
+      "sourcePage": "https://splendor.org/",
+      "sourceUrl": "https://splendor.org/brand/splendor-mark-white.svg",
+      "retrievedAt": "2026-10-31T10:06:34.334781+00:00",
+      "sha256": "a95d7dbc0e9d3d5948d163efcefabe3f79490503af6ed1b247ef19d1c41eec4c",
+      "note": "White brand symbol referenced by official homepage JavaScript."
+    },
+    {
+      "chain": "asentum",
+      "file": "asentum.png",
+      "sourcePage": "https://www.asentum.com/",
+      "sourceUrl": "https://www.asentum.com/images/favicon.png",
+      "retrievedAt": "2026-10-31T10:06:34.334882+00:00",
+      "sha256": "adead76e1ef262fc7142e8d8b9846f760b6db457c5a190a02a026975590c219f",
+      "note": "Official site favicon and apple-touch icon."
+    }
+  ]
+}

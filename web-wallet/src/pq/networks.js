@@ -1,19 +1,19 @@
 const sendNote = 'Receive only. Sending and balances are not available in this release.';
-function entry(name, symbol, decimals, ids) {
+function entry(name, symbol, decimals, ids, icon) {
   const networks = ids.map(id => Object.freeze({ id, label: id === 'mainnet' ? 'Mainnet' : 'Testnet' }));
-  return Object.freeze({ name, symbol, decimals, tokens: Object.freeze([]),
+  return Object.freeze({ name, symbol, decimals, icon, tokens: Object.freeze([]),
     receiveOnly: true, balanceUnavailable: true, sendNote,
     networks: Object.freeze(networks), defaultNetwork: ids[0] });
 }
 export const PQ_NETWORKS = Object.freeze({
-  algorand: entry('Algorand', 'ALGO', 6, ['mainnet', 'testnet']),
-  tidecoin: entry('Tidecoin', 'TDC', 8, ['mainnet']),
-  ckb: entry('Nervos CKB', 'CKB', 8, ['mainnet', 'testnet']),
-  soqucoin: entry('Soqucoin', 'SOQ', 8, ['mainnet']),
-  qtc: entry('QTC', 'QTC', 8, ['mainnet', 'testnet']),
-  xion: entry('Verona / XION', 'XION', 6, ['mainnet', 'testnet']),
-  splendor: entry('Splendor', 'SPLD', 18, ['mainnet', 'testnet']),
-  asentum: entry('Asentum', 'ASE', 18, ['testnet']),
+  algorand: entry('Algorand', 'ALGO', 6, ['mainnet', 'testnet'], 'algorand.png'),
+  tidecoin: entry('Tidecoin', 'TDC', 8, ['mainnet'], 'tidecoin.svg'),
+  ckb: entry('Nervos CKB', 'CKB', 8, ['mainnet', 'testnet'], 'ckb.png'),
+  soqucoin: entry('Soqucoin', 'SOQ', 8, ['mainnet'], 'soqucoin.png'),
+  qtc: entry('QTC', 'QTC', 8, ['mainnet', 'testnet'], 'qtc.svg'),
+  xion: entry('Verona / XION', 'XION', 6, ['mainnet', 'testnet'], 'verona.svg'),
+  splendor: entry('Splendor', 'SPLD', 18, ['mainnet', 'testnet'], 'splendor.svg'),
+  asentum: entry('Asentum', 'ASE', 18, ['testnet'], 'asentum.png'),
 });
 export const PQ_ENTRIES = Object.freeze(Object.entries(PQ_NETWORKS).map(([chain, network]) =>
   Object.freeze({ network, asset: Object.freeze({ chain, symbol: network.symbol,

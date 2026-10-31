@@ -6,8 +6,15 @@ The product is Nodus Wallet. CPUNK is the temporary CF-20 integration until the 
 
 ## PQ receive — recovery contract v1 (2026-10-31)
 
-Wallet/extension package version: **0.1.141**. This does not change the Nodus
+Wallet/extension package version: **0.1.142**. This does not change the Nodus
 node or protocol version.
+
+The web wallet, Nodus Connect and browser extension share the eight official
+project logos bundled in `src/assets/coins/`. The original files are preserved
+without modification; `src/assets/coins/pq-sources.json` records their official
+source pages, download URLs, retrieval dates and SHA-256 hashes. The Verona
+mark represents Verona / XION. These marks belong to their respective owners.
+The shared portfolio displays them without circular clipping or stretching.
 
 The web wallet and browser extension derive receive addresses for the eight
 chains below from the existing encrypted vault v1 phrase. This addition is

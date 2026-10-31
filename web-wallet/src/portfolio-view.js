@@ -1,4 +1,5 @@
 import { CHAINS } from './config.js';
+import { PQ_NETWORKS } from './pq/networks.js';
 import { ASSETS, chainBalances, holdingActions, sameAssetKeys, readPrices as defaultReadPrices, portfolioSnapshot, groupAssets, usdText, displayAmount } from './portfolio.js';
 
 const names = { ETH: 'Ethereum', BNB: 'BNB', SOL: 'Solana', TRX: 'TRON', USDT: 'Tether', USDC: 'USD Coin', DAI: 'Dai', USDD: 'USDD', CPUNK: 'CPUNK' };
@@ -18,6 +19,14 @@ function el(tag, className, text) { const node = document.createElement(tag); no
 // file, test/browser-ixios.js). Small files are inlined as data: URLs (CSP
 // img-src allows data:); `data-icon` keeps the file name for tests.
 const ICON_URLS = {
+  'algorand.png': new URL('./assets/coins/algorand.png', import.meta.url).href,
+  'tidecoin.svg': new URL('./assets/coins/tidecoin.svg', import.meta.url).href,
+  'ckb.png': new URL('./assets/coins/ckb.png', import.meta.url).href,
+  'soqucoin.png': new URL('./assets/coins/soqucoin.png', import.meta.url).href,
+  'qtc.svg': new URL('./assets/coins/qtc.svg', import.meta.url).href,
+  'verona.svg': new URL('./assets/coins/verona.svg', import.meta.url).href,
+  'splendor.svg': new URL('./assets/coins/splendor.svg', import.meta.url).href,
+  'asentum.png': new URL('./assets/coins/asentum.png', import.meta.url).href,
   'bnb.svg': new URL('./assets/coins/bnb.svg', import.meta.url).href,
   'cellframe.svg': new URL('./assets/coins/cellframe.svg', import.meta.url).href,
   'cpunk.png': new URL('./assets/coins/cpunk.png', import.meta.url).href,
@@ -28,7 +37,8 @@ const ICON_URLS = {
   'usdt.svg': new URL('./assets/coins/usdt.svg', import.meta.url).href,
   ...(import.meta.env.VITE_ENABLE_IXIOS === 'true' ? { 'ixios.png': new URL('./assets/coins/ixios.png', import.meta.url).href } : {})
 };
-function iconImg(file) { const img = el('img', 'coin-icon'); img.src = ICON_URLS[file]; img.dataset.icon = file; img.alt = ''; img.width = 36; img.height = 36; return img; }
+const PQ_ICONS = new Set(Object.values(PQ_NETWORKS).map(network => network.icon));
+function iconImg(file) { const img = el('img', PQ_ICONS.has(file) ? 'coin-icon pq-coin-icon' : 'coin-icon'); img.src = ICON_URLS[file]; img.dataset.icon = file; img.alt = ''; img.width = 36; img.height = 36; return img; }
 // `network`, when given, is the network the asset group belongs to: an optional
 // network's own asset that has no entry in `icons` (and whose symbol is that
 // network's own symbol) shows the network's icon rather than a letter.

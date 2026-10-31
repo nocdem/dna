@@ -445,6 +445,7 @@ dialog.evm-review dd { font-family: ui-monospace, monospace; font-size: 12px; }
 @keyframes health-pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .network-health[data-reading="true"] .health-light { animation: none; opacity: .6; } }
 .coin-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; }
+.coin-icon.pq-coin-icon { object-fit: contain; border-radius: 0; }
 .coin-letter { display: inline-grid; place-items: center; background: #2775ca; color: #fff; font-size: 18px; font-weight: 500; }
 .portfolio-filters { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 22px; }
 .network-filter { border: 1px solid #46523b; background: transparent; color: #bcc9b0; border-radius: 20px; font-size: 10px; font-weight: 400; padding: 8px 11px; box-shadow: none; }
