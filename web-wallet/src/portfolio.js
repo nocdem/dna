@@ -41,6 +41,20 @@ export function unavailableAssetNote(symbol) { return `${symbol} is unavailable 
 // definition change that keeps them (pin availability) needs no re-read
 // (src/portfolio-view.js setNetwork `keepRead`).
 export function sameAssetKeys(before, after) { return before.length === after.length && after.every((a, i) => a.key === before[i].key); }
+// Only fixed labels and a validated HTTP status leave this boundary. Provider
+// messages may contain addresses, endpoints or other sensitive data.
+export function balanceErrorDetail(error) {
+  if (Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599) return `HTTP ${error.status}`;
+  const message = typeof error?.message === 'string' ? error.message : '';
+  if (/^(?:RPC is connected to the wrong network|Algorand provider is connected to the wrong network)\.$/.test(message)) return 'Wrong network';
+  if (/^(?:CPUNK connection timed out\. Try again later\.|Request timed out\.)$/.test(message) || error?.name === 'TimeoutError') return 'Connection timed out';
+  if (message === 'RPC unavailable. Check the HTTPS endpoint, browser CORS access and connection.') return 'Connection unavailable';
+  if (/^(?:Invalid balance response|RPC returned invalid JSON|RPC returned no result|RPC response identifier or version does not match)\.$/.test(message)) return 'Invalid response';
+  return 'Balance unavailable';
+}
+export function unavailableBalanceLabel(chain) {
+  return chain === 'nodus' ? 'Nodus not ready' : 'No balance reader';
+}
 export function chainBalances(chain, rows, observedAt = Date.now(), assets = ASSETS) {
   const expected = assets.filter(a => a.chain === chain);
   if (!Array.isArray(rows) || rows.length > 100) throw new Error('Invalid balance response.');

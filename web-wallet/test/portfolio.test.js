@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ASSETS, CPUNK_ASSET, PRICE_URL, BALANCE_MAX_AGE, PRICE_MAX_AGE, balanceUnits, chainBalances, parsePrices, readPrices, portfolioSnapshot, groupAssets, usdText, displayAmount } from '../src/portfolio.js';
+import { ASSETS, CPUNK_ASSET, PRICE_URL, BALANCE_MAX_AGE, PRICE_MAX_AGE, balanceUnits, chainBalances, balanceErrorDetail, unavailableBalanceLabel, parsePrices, readPrices, portfolioSnapshot, groupAssets, usdText, displayAmount } from '../src/portfolio.js';
 import { IXIOS_NETWORK, IXIOS_ASSET } from '../src/ixios/network.js';
 import { NODUS_NETWORK, NODUS_ASSET } from '../src/nodus/network.js';
 const now = 1789918200000;
@@ -198,4 +198,20 @@ test('zero balances: hidden by the amount; held unpriced assets, unread rows and
   assert.deepEqual(groupAssets(rows).map(g => g.symbol).sort(), ['CPUNK', 'ETH', 'NODUS', 'SOL', 'USDT']);
   // A network filter whose only asset is zero gives an empty list (the page says so).
   assert.deepEqual(groupAssets(rows, 'ethereum', {}, { hideZero: true }), []);
+});
+
+
+test('unavailable sources and safe read errors retain a last balance without exposing provider text', () => {
+  assert.equal(unavailableBalanceLabel('qtc'), 'No balance reader');
+  assert.equal(unavailableBalanceLabel('nodus'), 'Nodus not ready');
+  assert.equal(balanceErrorDetail(Object.assign(new Error('secret https://example.test/address'), { status: 503 })), 'HTTP 503');
+  assert.equal(balanceErrorDetail(new Error('secret https://example.test/address')), 'Balance unavailable');
+  assert.equal(balanceErrorDetail(new Error('RPC is connected to the wrong network.')), 'Wrong network');
+  assert.equal(balanceErrorDetail(new Error('RPC is connected to the wrong network. secret')), 'Balance unavailable');
+  const asset = { ...NODUS_ASSET, balanceUnavailable: true };
+  let row = portfolioSnapshot({}, {}, now, [asset], { [asset.key]: { units: 125000000n, observedAt: now - 1000 } }).rows[0];
+  assert.equal(row.state, 'unsupported'); assert.equal(row.balance, '1.25'); assert.equal(row.keptAt, now - 1000); assert.equal(row.usd, null);
+  row = portfolioSnapshot({ [asset.key]: { state: 'error', error: 'HTTP 503' } }, {}, now, [NODUS_ASSET], { [asset.key]: { units: 125000000n, observedAt: now - 1000 } }).rows[0];
+  assert.equal(row.balance, '1.25'); assert.equal(row.error, 'HTTP 503'); assert.equal(row.keptAt, now - 1000); assert.equal(row.usd, null);
+  assert.equal(portfolioSnapshot({}, {}, now, [asset]).rows[0].balance, null);
 });

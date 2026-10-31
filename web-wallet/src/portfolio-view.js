@@ -2,7 +2,7 @@ import { groupNetworkEntries } from './network-groups.js';
 import { capabilitiesFor } from './capabilities.js';
 import { CHAINS } from './config.js';
 import { PQ_NETWORKS } from './pq/networks.js';
-import { ASSETS, chainBalances, holdingActions, sameAssetKeys, readPrices as defaultReadPrices, portfolioSnapshot, groupNetworks, usdText, displayAmount } from './portfolio.js';
+import { ASSETS, chainBalances, balanceErrorDetail, unavailableBalanceLabel, holdingActions, sameAssetKeys, readPrices as defaultReadPrices, portfolioSnapshot, groupNetworks, usdText, displayAmount } from './portfolio.js';
 
 const names = { ETH: 'Ethereum', BNB: 'BNB', SOL: 'Solana', TRX: 'TRON', USDT: 'Tether', USDC: 'USD Coin', DAI: 'Dai', USDD: 'USDD', CPUNK: 'CPUNK' };
 // Asset symbol -> its own icon file. Keyed by symbol, not guessed from it, so an
@@ -187,7 +187,7 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
     $('portfolio-networks').replaceChildren(...groupedNetworkControls(Object.entries(networks), ([chain, c]) => {
       const rows = snap.rows.filter(r => r.chain === chain), ready = rows.every(r => r.balance !== null && r.keptAt === undefined);
       const lastRead = rows.filter(r => r.keptAt !== undefined).map(r => r.keptAt);
-      const status = c.balanceUnavailable ? (lastRead.length ? `Last read ${readTime(Math.min(...lastRead))}` : 'Balance not shown yet') : rows.some(r => r.state === 'loading') || jobs.has(chain) ? 'Reading' : ready ? 'Balances read'
+      const status = c.balanceUnavailable ? (lastRead.length ? `${unavailableBalanceLabel(chain)} · last read ${readTime(Math.min(...lastRead))}` : unavailableBalanceLabel(chain)) : rows.some(r => r.state === 'loading') || jobs.has(chain) ? 'Reading' : ready ? 'Balances read'
         : lastRead.length ? `Last read ${readTime(Math.min(...lastRead))}` : rows.every(r => r.state === 'idle') ? 'Not read' : 'Incomplete';
       // Historical lights show stale or failed reads; titles retain the full status.
       const reading = status === 'Reading';
@@ -221,11 +221,12 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
         identity.setAttribute('aria-label', `Select ${row.symbol} on ${network.name}`);
         identity.append(icon(row.symbol, network), el('span', '', row.symbol)); identity.onclick = () => selectAsset(row.chain, row.symbol, 'choose');
         const value = el('span', 'holding-value');
-        const state = row.state === 'loading' ? 'Reading…' : row.state === 'unsupported' ? 'Balance not shown yet' : row.state === 'idle' ? 'Not read' : 'Balance unavailable';
+        const state = row.state === 'loading' ? 'Reading…' : row.state === 'unsupported' ? unavailableBalanceLabel(row.chain) : row.state === 'idle' ? 'Not read' : (row.error || 'Balance unavailable');
         const amount = el('strong', '', text(row.balance === null ? state : `${displayAmount(row.balance)} ${row.symbol}`));
         if (row.balance !== null && !hidden) amount.title = `${row.balance} ${row.symbol}`;
         value.append(amount, el('small', '', row.keptAt !== undefined ? `Last read ${readTime(row.keptAt)}` : text(row.priceMissing ? 'Price unavailable' : usdText(row.usd, row.positive))));
-        if (row.state === 'error' && row.keptAt !== undefined) value.append(el('small', 'balance-error', 'Balance unavailable; showing last read.'));
+        if (row.state === 'unsupported' && row.keptAt !== undefined) value.append(el('small', 'balance-note', unavailableBalanceLabel(row.chain)));
+        if (row.state === 'error' && row.keptAt !== undefined) value.append(el('small', 'balance-error', `${row.error || 'Balance unavailable'}; showing last read.`));
         if (network.balanceNote) value.append(el('small', 'balance-note', network.balanceNote));
         entry.append(identity, value); detail.append(entry);
       }
@@ -260,8 +261,8 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
         keepRead(chain, result);
         return true;
       }
-    } catch {
-      if (session === current && !controller.signal.aborted) for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error' };
+    } catch (error) {
+      if (session === current && !controller.signal.aborted) for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error', error: balanceErrorDetail(error) };
     } finally { backgroundJobs.delete(controller); if (session === current) { if (jobs.get(chain) === controller) jobs.delete(chain); render(); } }
     return false;
   }

@@ -9,7 +9,7 @@ const definitions = {
   ixios: { ...receiveOnly, balance: true },
   algorand: { ...receiveOnly, balance: true, history: true },
   ckb: receiveOnly, tidecoin: receiveOnly, soqucoin: receiveOnly,
-  qtc: receiveOnly, xion: receiveOnly, splendor: receiveOnly, asentum: receiveOnly
+  qtc: receiveOnly, xion: receiveOnly, splendor: receiveOnly, asentum: { ...receiveOnly, balance: true }
 };
 const empty = Object.freeze({ receive: false, balance: false, history: false, send: false, earn: false, contracts: false, sharedVaults: false });
 export const NETWORK_CAPABILITIES = Object.freeze(Object.fromEntries(Object.entries(definitions).map(([chain, flags]) => [chain, Object.freeze({ ...empty, ...flags })])));

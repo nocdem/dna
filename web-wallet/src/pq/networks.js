@@ -13,7 +13,7 @@ export const PQ_NETWORKS = Object.freeze({
   qtc: entry('QTC', 'QTC', 8, ['mainnet', 'testnet'], 'qtc.svg'),
   xion: entry('Verona / XION', 'XION', 6, ['mainnet', 'testnet'], 'verona.svg'),
   splendor: entry('Splendor', 'SPLD', 18, ['mainnet', 'testnet'], 'splendor.svg'),
-  asentum: entry('Asentum', 'ASE', 18, ['testnet'], 'asentum.png'),
+  asentum: entry('Asentum', 'ASE', 18, ['testnet'], 'asentum.png', true, 'Testnet balances are read only. Sending is not available in this release.'),
 });
 export const PQ_ENTRIES = Object.freeze(Object.entries(PQ_NETWORKS).map(([chain, network]) =>
   Object.freeze({ network, asset: Object.freeze({ chain, symbol: network.symbol,

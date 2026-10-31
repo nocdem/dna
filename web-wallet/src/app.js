@@ -15,7 +15,8 @@ import { IXIOS_NETWORK, IXIOS_ASSET } from './ixios/network.js';
 import { PQ_NETWORKS, PQ_ENTRIES, isPqChain, pqNetwork } from './pq/networks.js';
 import { derivePqAddresses } from './pq/receive.js';
 import { readAlgorandBalances } from './pq/algorand.js';
-const pqBalanceReaders = { algorand: readAlgorandBalances };
+import { readAsentumBalances } from './pq/asentum.js';
+const pqBalanceReaders = { algorand: readAlgorandBalances, asentum: readAsentumBalances };
 import { setNetworkSelectOptions } from './network-groups.js';
 import { NODUS_ASSET, NODUS_TOKEN_ID, nodusNetworkFor } from './nodus/network.js';
 // null until package (c3) ships the module; see src/nodus/send-module.js.

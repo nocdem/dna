@@ -1017,7 +1017,9 @@ textarea.roles-paste { font-family: var(--mono); font-size: 11px; line-height: 1
   .wallet-navigation a { width: 36px; min-height: 40px; padding: 7px; }
   .wallet-session { flex-wrap: wrap; }
   .chain-holding { flex-wrap: wrap; }
-  .holding-value { min-width: 0; overflow-wrap: anywhere; }
+  .holding-value { display: contents; }
+  .holding-value strong { grid-column: 2; text-align: right; }
+  .holding-value small { grid-column: 1 / -1; text-align: right; overflow-wrap: anywhere; }
   .holding-actions { flex-wrap: wrap; }
 }
 .network-heading-select { border: 0; padding: 6px 0; background: transparent; color: var(--text); text-align: left; font-weight: 600; box-shadow: none; }
