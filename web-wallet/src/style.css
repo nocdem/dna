@@ -988,3 +988,33 @@ textarea.roles-paste { font-family: var(--mono); font-size: 11px; line-height: 1
   .network-group-items { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .network-group-items > button { min-width: 0; }
 }
+/* One compact rail stays beside the selected network and every wallet page. */
+.wallet-workspace { position: relative; padding-left: 52px; }
+.wallet-navigation { position: absolute; left: 0; top: 58px; width: 42px; display: flex; flex-direction: column; gap: 5px; margin: 0; }
+.wallet-navigation a { display: flex; justify-content: center; align-items: center; width: 40px; min-height: 40px; padding: 8px; border-radius: 8px; }
+.wallet-navigation a .app-icon { width: 22px; height: 22px; padding: 0; background: none; }
+.wallet-navigation .nav-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.wallet-navigation a::after { content: none; }
+.wallet-navigation a:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
+.dashboard-grid { grid-template-columns: minmax(0, 1fr); }
+.transfer-actions { margin-bottom: 18px; flex-wrap: wrap; }
+.transfer-actions .network-select { min-width: 140px; flex: 1; margin: 0; }
+.transfer-actions .transfer-buttons { display: none; }
+.assets-panel .panel-heading { flex-wrap: wrap; gap: 10px; }
+.assets-panel .check { font-size: 12px; margin: 0; }
+.network-assets .asset-summary { grid-template-columns: 36px minmax(0, 1fr) 20px; }
+@media (max-width: 560px) {
+  .wallet-workspace { padding-left: 44px; }
+  .wallet-navigation { width: 36px; }
+  .wallet-navigation a { width: 36px; min-height: 40px; padding: 7px; }
+  .wallet-session { flex-wrap: wrap; }
+  .chain-holding { flex-wrap: wrap; }
+  .holding-value { min-width: 0; overflow-wrap: anywhere; }
+  .holding-actions { flex-wrap: wrap; }
+}
+.network-heading-select { border: 0; padding: 6px 0; background: transparent; color: var(--text); text-align: left; font-weight: 600; box-shadow: none; }
+.network-heading-select:hover { background: transparent; color: var(--lime); }
+/* Connect's wallet body has its own padding; reserve only its wallet rail. */
+.app-body.wallet-workspace { padding-left: 52px; }
+.app-body.wallet-workspace > .wallet-navigation { top: 16px; left: 4px; }
+@media (max-width: 560px) { .app-body.wallet-workspace { padding-left: 44px; } }

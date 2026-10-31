@@ -3,7 +3,8 @@
 The approved plan is `/opt/dna/docs/plans/approved/2026-10-28-nodus-extension.md`,
 section 9. The extension uses the installed Vite 7.3.7 and the wallet config's
 version definition and third-party license helpers. No package script or
-dependency is added.
+dependency is added. Packaging requires existing Python 3 and its standard-library
+`zipfile`; system `zip` and `unzip` are unnecessary.
 
 The orchestrator first builds and verifies the WASM inputs using the wallet's
 existing scripts and parity gates:
@@ -25,7 +26,14 @@ node --test extension/test/manifest.test.js
 The build writes `dist-extension/unpacked/` and one
 `dist-extension/nodus-wallet-<manifest version>.zip`. It prints **every archived
 file and its uncompressed byte size**, sorted by path. The smoke test also prints
-every extracted file's size. Neither an actual archive inventory nor a successful
+every extracted file's size. `scripts/extension-archive.py` creates sorted ZIP
+entries with fixed timestamps and regular-file permissions, validates the CRCs,
+and exposes `create <directory> <zip>`, `list <zip>` (JSON path/size inventory),
+and `extract <zip> <new-directory>`. It rejects symlinks, special files, unsafe
+or duplicate paths, conflicting file/directory paths, encrypted entries and
+packages exceeding 10,000 files or 1 GiB uncompressed. Extraction requires a new
+directory and validates all paths before writing. The smoke file includes an
+independent synthetic archive safety/determinism test. Neither an actual archive inventory nor a successful
 Chromium load is established until these commands run; syntax checking alone
 does not verify packaging. The packaging script does not rebuild WASM.
 
@@ -60,7 +68,8 @@ using the same native notices and appendix texts as the wallet build.
 
 The smoke test skips only when the versioned zip is absent, with a message
 naming the build command. A present but invalid zip, unavailable Chromium,
-startup failure or missing UI/provider fails. It checks PNG signatures and
+startup failure or missing UI/provider fails. Chromium launches with its sandbox
+explicitly enabled (`chromiumSandbox: true`). It checks PNG signatures and
 dimensions, classic-script syntax, copied bytes, worker execution, fresh-profile
 create/import UI, and EIP-6963 name `Nodus Wallet` / reverse domain
 `io.nodusnetwork.wallet`. A local `eth_chainId` read checks the content bridge.

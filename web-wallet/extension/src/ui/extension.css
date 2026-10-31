@@ -61,3 +61,6 @@ body.extension-page[data-page="popup"] { overflow: auto; }
 .extension-choices .check span { min-width: 0; }
 .extension-site .address-book-main h2 { margin: 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
 .extension-page [inert] { opacity: .7; }
+/* The shared wallet rail is the only contextual action navigation. */
+.extension-page .transfer-actions .transfer-buttons { display: none; }
+.extension-page .wallet-workspace > .wallet-navigation { top: 0; }

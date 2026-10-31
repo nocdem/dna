@@ -1,11 +1,6 @@
-// Zero balances in the asset list (web 0.1.113; operator 2026-10-13: "sıfır
-// olan bakiyeleri göstermenin bir anlamı yok … settings olması lazım, bir
-// tane sıfır bakiyeleri gizli gibi … Hiç olmayan … Kaç dolar olduğu değil, bir
-// şey olup olmadığı önemli"). Hidden by default; Device & settings can show
-// them. Which rows count as zero: src/portfolio.js zeroRow (by the amount,
-// never the dollar value; NODUS and unread rows always stay). A per-device
-// convenience in this browser's localStorage, like the automatic lock
-// (src/auto-lock.js): a missing or unknown value gives the default.
+// Per-device preference retained under the existing key: true means show all
+// networks, false means hide only networks with fresh exact-zero holdings.
+// The UI checkbox is labelled Hide zero networks and inverts this value.
 export const SHOW_ZERO_KEY = 'nodus.showZeroBalances';
 
 export function readShowZero(storage) {
@@ -20,8 +15,4 @@ export function writeShowZero(storage, show) {
   catch { return false; }
 }
 
-export function showZeroNote(show) {
-  return show
-    ? 'Every asset is listed, including those you do not hold.'
-    : 'Assets you do not hold are left out of the list. NODUS, and any asset whose balance could not be read, always stay.';
-}
+export function showZeroNote(show) { return show ? 'All networks and their holdings are listed.' : 'Only networks with a fresh exact zero for every holding are hidden. Unread, failed and stale balances stay visible.'; }

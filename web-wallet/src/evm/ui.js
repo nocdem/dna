@@ -1,3 +1,4 @@
+import { capabilitiesFor } from '../capabilities.js';
 // Smart contracts — the panel of the wallet's Smart contracts page (#contracts;
 // src/app.js wallet pages show the page, this module only fills the panel and
 // says whether it is available through the panel's `hidden`).
@@ -155,6 +156,7 @@ function showReview(view, title, onDone) {
   const what = { title, amount, op: d.op, moved, fee: formatRaw(d.fee), to: d.op === 'withdraw' || d.op === 'redeem' ? d.dest : '' };
   const record = recordPending ? details => recordPending(details, what) : undefined;
   const confirm = btn('Confirm & send', async () => {
+    if (!capabilitiesFor($('chain')?.value).contracts || !client || client.state !== 'ready') { view.cancel(); dialog.close(); return; }
     confirm.disabled = true; cancel.disabled = true;
     try {
       const sent = await view.confirm(record);
@@ -454,7 +456,7 @@ function safeParse(iface, lg) {
 function showPanel() {
   if (!panel) return;
   const ready = !!client && client.state === 'ready' && (client.evmBuildable || client.evmReadable);
-  panel.hidden = !(ready && $('chain')?.value === NODUS_ASSET.chain);
+  panel.hidden = !capabilitiesFor($('chain')?.value).contracts;
   const nav = $('nav-evm');
   if (nav) nav.hidden = panel.hidden;
 }
@@ -462,7 +464,7 @@ function showPanel() {
 function render() {
   showPanel();
   if (!root) return;
-  if (!client || !account) { root.replaceChildren(); return; }
+  if (!client || client.state !== 'ready' || !account) { root.replaceChildren(el('p', { className: 'notice', text: 'Connect to the Nodus node to read contracts and prepare transactions.' })); return; }
   const line = el('p', { className: 'hint evm-status', text: status });
   line.setAttribute('role', 'status'); line.setAttribute('aria-live', 'polite');
   const items = [el('p', { className: 'hint page-note', text: 'The network fee shown for a transaction is the most it can cost.' }), line, renderAccount()];
@@ -476,6 +478,7 @@ function render() {
 export function mountSmartContracts({ panelNode, rootNode }) {
   panel = panelNode; root = rootNode;
   $('chain')?.addEventListener('change', showPanel);
+  document.addEventListener('wallet-network-change', () => { generation++; busy = false; reviewError = null; for (const dialog of document.querySelectorAll('dialog.evm-review[open]')) dialog.close(); render(); });
   render();
 }
 

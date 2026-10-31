@@ -1,7 +1,7 @@
+import { capabilitiesFor } from './capabilities.js';
 import { CHAINS } from './config.js';
 import { PQ_NETWORKS } from './pq/networks.js';
-import { groupNetworkEntries } from './network-groups.js';
-import { ASSETS, chainBalances, holdingActions, sameAssetKeys, readPrices as defaultReadPrices, portfolioSnapshot, groupAssets, usdText, displayAmount } from './portfolio.js';
+import { ASSETS, chainBalances, holdingActions, sameAssetKeys, readPrices as defaultReadPrices, portfolioSnapshot, groupNetworks, usdText, displayAmount } from './portfolio.js';
 
 const names = { ETH: 'Ethereum', BNB: 'BNB', SOL: 'Solana', TRX: 'TRON', USDT: 'Tether', USDC: 'USD Coin', DAI: 'Dai', USDD: 'USDD', CPUNK: 'CPUNK' };
 // Asset symbol -> its own icon file. Keyed by symbol, not guessed from it, so an
@@ -53,17 +53,6 @@ function icon(symbol, network) {
 // health badge, the per-chain holding row) must show the Cellframe logo, not
 // the CPUNK asset icon shown in the asset summary.
 function networkIcon(c) { return c.icon ? iconImg(c.icon) : icon(c.symbol); }
-
-function groupedNetworkControls(entries, control) {
-  return groupNetworkEntries(entries).map(group => {
-    const block = el('div', 'network-group'), items = el('div', 'network-group-items');
-    block.dataset.networkGroup = group.id;
-    block.setAttribute('role', 'group'); block.setAttribute('aria-label', group.label);
-    items.append(...group.entries.map(control));
-    block.append(el('h4', 'network-group-title', group.label), items);
-    return block;
-  });
-}
 
 // This controller receives only public addresses, never a wallet or signing key.
 // `extraNetworks` is an ordered list of `{ network: { name, symbol, receiveOnly,
@@ -129,6 +118,17 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
   // (today only NODUS: "Claim your allocation", src/app.js refreshClaim).
   // `{ label, note, run }`; cleared by clear() and setAction(chain, undefined).
   let rowActions = {};
+  const seenNetworks = new Set();
+  const receiveActions = el('div', 'receive-network-actions'); receiveActions.id = 'receive-network-actions';
+  $('receive-panel').append(receiveActions);
+  function renderReceiveActions() {
+    const focused = document.activeElement?.dataset?.rowAction;
+    receiveActions.replaceChildren(...Object.entries(rowActions[selected] || {}).map(([id, action]) => {
+      const block = el('div', 'asset-action notice'), button = el('button', 'small', action.label); button.type = 'button'; button.dataset.rowAction = id === 'main' ? selected : `${selected}:${id}`;
+      button.onclick = () => action.run(button); block.append(el('p', '', action.note), button); return block;
+    }));
+    if (focused) [...receiveActions.querySelectorAll('button')].find(button => button.dataset.rowAction === focused)?.focus({ preventScroll: true });
+  }
   // Networks whose rows also offer "Earn" (today only NODUS, while the app's
   // staking panel is shown: src/app.js setEarnAvailable). Cleared by clear().
   let earn = {};
@@ -155,99 +155,38 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
     $('refresh').disabled = jobs.size > 0 || !!priceJob;
     $('portfolio-hide').textContent = hidden ? 'Show balances' : 'Hide balances';
     $('portfolio-hide').setAttribute('aria-pressed', String(hidden));
-    const focusedBadge = document.activeElement?.closest('.network-health');
-    const focusedChain = focusedBadge && $('portfolio-networks').contains(focusedBadge) ? focusedBadge.dataset.chain : undefined;
-    $('portfolio-networks').replaceChildren(...groupedNetworkControls(Object.entries(networks), ([chain, c]) => {
-      const rows = snap.rows.filter(r => r.chain === chain), ready = rows.every(r => r.balance !== null && r.keptAt === undefined);
-      const lastRead = rows.filter(r => r.keptAt !== undefined).map(r => r.keptAt);
-      const status = c.balanceUnavailable ? (lastRead.length ? `Last read ${readTime(Math.min(...lastRead))}` : 'Balance not shown yet') : rows.some(r => r.state === 'loading') || jobs.has(chain) ? 'Reading' : ready ? 'Balances read'
-        : lastRead.length ? `Last read ${readTime(Math.min(...lastRead))}` : rows.every(r => r.state === 'idle') ? 'Not read' : 'Incomplete';
-      // A light instead of the words (0.1.103, operator: "yeşil … stale
-      // olanlar … sarı … bağlanamayanlar kırmızı"): green = every balance
-      // read and current, amber = shown as last read (out of date, or no
-      // source yet), red = the last read failed, grey = not read yet; it
-      // pulses while a read runs. The words stay as the badge's title and
-      // accessible name.
-      const reading = status === 'Reading';
-      const health = rows.some(r => r.state === 'error') ? 'failed' : ready && rows.length && !c.balanceUnavailable ? 'current' : lastRead.length ? 'old' : 'none';
-      // A button (0.1.107, operator: "clickable yap … network
-      // seçebilirsin"): it chooses this network — the TRANSFER NETWORK box
-      // below names it and offers its actions — without scrolling or opening
-      // anything (0.1.108, 'choose': "QR kodunu oraya gönderiyorsun … ben
-      // oraya göndermeni istemiyorum"); the chosen network's badge is marked
-      // (aria-pressed, setSelected).
-      const badge = el('button', 'network-health'); badge.type = 'button'; badge.dataset.chain = chain;
-      badge.dataset.health = health; badge.dataset.reading = String(reading);
-      badge.title = `${c.name} · ${status}`; badge.setAttribute('aria-label', `${badge.title}. Use ${c.name} for Send / Receive`);
-      badge.setAttribute('aria-pressed', String(chain === selected));
-      badge.onclick = () => selectAsset(chain, c.symbol, 'choose');
-      // The light at the right end, centred top to bottom (0.1.106, operator:
-      // "tam ortalamak … sağa dayalı olması lazım").
-      badge.append(networkIcon(c), el('span', '', c.name), el('span', 'health-light')); return badge;
-    }));
-    if (focusedChain !== undefined) [...$('portfolio-networks').querySelectorAll('.network-health')].find(badge => badge.dataset.chain === focusedChain)?.focus({ preventScroll: true });
-    for (const button of $('portfolio-filters').querySelectorAll('button')) button.setAttribute('aria-pressed', String(button.dataset.chain === filter));
+    // Networks are presented once, with their holdings below.
+    $('portfolio-networks').replaceChildren(); $('portfolio-networks').hidden = true;
     const opened = new Set([...$('balances').querySelectorAll('details[open]')].map(d => d.dataset.symbol));
     const focused = document.activeElement, focusedGroup = focused?.closest('.asset-group')?.dataset.symbol;
     const focusedAction = focused?.getAttribute('aria-label'), focusedRowAction = focused?.dataset?.rowAction;
-    const groups = groupAssets(snap.rows, filter, Object.fromEntries(Object.entries(networks).map(([key, c]) => [key, c.name])), { hideZero });
-    // Every asset of this filter left out as a zero balance (0.1.113): say so,
-    // never an empty box.
-    if (!groups.length) { $('balances').replaceChildren(el('p', 'hint balances-empty', 'Nothing held here yet. Zero balances are hidden — Device & settings can show them.')); return; }
-    $('balances').replaceChildren(...groups.flatMap(group => {
-      const detail = el('details', 'asset-group'); detail.dataset.symbol = group.symbol; detail.open = opened.has(group.symbol);
-      const summary = el('summary', 'asset-summary'), name = el('span', 'asset-name');
-      const home = networks[group.rows[0].chain];
-      name.append(el('strong', '', group.symbol), el('small', '', `${names[group.symbol] ?? group.symbol} · ${group.rows.length === 1 ? home.name : `${group.rows.length} networks`}`));
-      const value = el('span', 'asset-value');
-      const groupAmount = el('strong', '', text(group.balance === null ? '—' : `${displayAmount(group.balance)}${group.partialBalance ? ' known' : ''}`));
-      if (group.balance !== null && !hidden) groupAmount.title = `${group.balance} ${group.symbol}`;
-      value.append(groupAmount,
-        el('small', '', group.rows.every(r => r.keptAt !== undefined) ? 'Last read' : text(`${usdText(group.usd, group.positive)}${group.partialValue && group.usd !== null ? ' known' : ''}`)));
-      summary.append(icon(group.symbol, home), name, value, el('span', 'asset-chevron', '⌄')); detail.append(summary);
+    renderReceiveActions();
+    const groups = groupNetworks(snap.rows.map(row => jobs.has(row.chain) ? { ...row, state: 'loading' } : row), { hideZero });
+    $('balances').replaceChildren(...groups.map(group => {
+      const network = networks[group.chain];
+      const detail = el('details', 'asset-group network-assets'); detail.dataset.symbol = group.chain; detail.dataset.chain = group.chain;
+      detail.open = !seenNetworks.has(group.chain) || opened.has(group.chain); seenNetworks.add(group.chain);
+      const summary = el('summary', 'asset-summary');
+      const heading = el('button', 'network-heading-select', network.name); heading.type = 'button'; heading.setAttribute('aria-label', `Select ${network.name} network`);
+      heading.onclick = event => { event.preventDefault(); event.stopPropagation(); selectAsset(group.chain, network.symbol, 'choose'); };
+      summary.append(networkIcon(network), heading, el('span', 'asset-chevron', '⌄')); detail.append(summary);
       for (const row of group.rows) {
-        // The whole row selects its network for the Send / Receive panel (0.1.22);
-        // the network name is the row's keyboard control. Its aria-label is unique
-        // within the group, so the focus restore below finds it after a re-render.
-        const entry = el('div', `chain-holding${row.chain === selected ? ' selected' : ''}`);
-        entry.dataset.chain = row.chain;
+        const entry = el('div', `chain-holding${row.chain === selected ? ' selected' : ''}`); entry.dataset.chain = row.chain;
         const identity = el('button', 'holding-network holding-select'); identity.type = 'button';
-        identity.setAttribute('aria-label', `Select ${row.symbol} on ${networks[row.chain].name}`);
-        if (row.chain === selected) identity.setAttribute('aria-current', 'true');
-        identity.append(networkIcon(networks[row.chain]), el('span', '', networks[row.chain].name));
-        identity.onclick = () => selectAsset(row.chain, row.symbol, 'select');
-        entry.onclick = event => { if (!event.target.closest('button')) selectAsset(row.chain, row.symbol, 'select'); };
+        identity.setAttribute('aria-label', `Select ${row.symbol} on ${network.name}`);
+        identity.append(icon(row.symbol, network), el('span', '', row.symbol)); identity.onclick = () => selectAsset(row.chain, row.symbol, 'choose');
         const value = el('span', 'holding-value');
-        const state = row.unavailable === true ? 'Unavailable right now' : row.state === 'unsupported' ? 'Balance not shown yet' : row.state === 'loading' ? 'Reading…' : row.state === 'stale' ? 'Balance out of date' : row.state === 'idle' ? 'Not read' : 'Balance unavailable';
-        const rowAmount = el('strong', '', text(row.balance === null ? state : `${displayAmount(row.balance)} ${row.symbol}`));
-        if (row.balance !== null && !hidden) rowAmount.title = `${row.balance} ${row.symbol}`;
-        value.append(rowAmount,
-          el('small', '', row.keptAt !== undefined ? `${row.state === 'error' ? 'Read failed · last read' : 'Last read'} ${readTime(row.keptAt)}` : text(row.priceMissing ? 'Price unavailable' : usdText(row.usd, row.positive))));
-        const actions = el('span', 'holding-actions');
-        // an unavailable token is never offered for Send (holdingActions)
-        for (const action of holdingActions(networks[row.chain], row, !!earn[row.chain])) {
-          const button = el('button', 'secondary small', action); button.type = 'button';
-          button.setAttribute('aria-label', `${action} ${row.symbol} on ${networks[row.chain].name}`);
-          button.onclick = () => selectAsset(row.chain, row.symbol, action.toLowerCase()); actions.append(button);
-        }
-        entry.append(identity, value, actions); detail.append(entry);
+        const state = row.state === 'loading' ? 'Reading…' : row.state === 'unsupported' ? 'Balance not shown yet' : row.state === 'idle' ? 'Not read' : 'Balance unavailable';
+        const amount = el('strong', '', text(row.balance === null ? state : `${displayAmount(row.balance)} ${row.symbol}`));
+        if (row.balance !== null && !hidden) amount.title = `${row.balance} ${row.symbol}`;
+        value.append(amount, el('small', '', row.keptAt !== undefined ? `Last read ${readTime(row.keptAt)}` : text(row.priceMissing ? 'Price unavailable' : usdText(row.usd, row.positive))));
+        if (row.state === 'error' && row.keptAt !== undefined) value.append(el('small', 'balance-error', 'Balance unavailable; showing last read.'));
+        if (network.balanceNote) value.append(el('small', 'balance-note', network.balanceNote));
+        entry.append(identity, value); detail.append(entry);
       }
-      // The network's extra action sits right under its asset group, outside
-      // the collapsible rows so it is visible without expanding them.
-      // Under the network's OWN asset only (a leading network's tokens, e.g.
-      // tUSDT on NODUS, are groups of their own and carry no action), and
-      // one block per action of that network (setAction `id`).
-      const chains = [...new Set(group.rows.filter(row => row.symbol === networks[row.chain].symbol).map(row => row.chain))].filter(chain => rowActions[chain]);
-      return [detail, ...chains.flatMap(chain => Object.entries(rowActions[chain]).map(([id, action]) => {
-        const block = el('div', 'asset-action notice');
-        const button = el('button', 'small', action.label); button.type = 'button'; button.dataset.rowAction = id === 'main' ? chain : `${chain}:${id}`;
-        // The button is handed to the action so it can show its own
-        // "Preparing…" state (src/app.js showPreparing).
-        button.onclick = () => action.run(button);
-        block.append(el('p', '', action.note), button);
-        return block;
-      }))];
+      return detail;
     }));
+    if (!groups.length) $('balances').append(el('p', 'hint balances-empty', 'All networks have confirmed zero holdings. Uncheck Hide zero networks to show them.'));
     // Reading another network or expiring a quote must not interrupt keyboard navigation.
     if (focusedRowAction) $('balances').querySelector(`button[data-row-action="${CSS.escape(focusedRowAction)}"]`)?.focus({ preventScroll: true });
     if (focusedGroup) {
@@ -277,7 +216,7 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
         return true;
       }
     } catch {
-      if (session === current && !controller.signal.aborted && !background) for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error' };
+      if (session === current && !controller.signal.aborted) for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error' };
     } finally { backgroundJobs.delete(controller); if (session === current) { if (jobs.get(chain) === controller) jobs.delete(chain); render(); } }
     return false;
   }
@@ -430,10 +369,13 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
   // already held stay — only the definition (token availability, so the
   // rows' actions, holdingActions) is replaced. It never aborts the very read
   // whose completion triggered the update.
-  function setNetwork(chain, network, { keepRead = false } = {}) {
+  function setNetwork(chain, network, { keepRead = false, forgetKept = false } = {}) {
     if (!Object.hasOwn(networks, chain) || networks[chain] === network) return;
     const before = assets.filter(a => a.chain === chain);       // incl. the old network's tokens
     networks[chain] = network; flag();
+    // Environment changes can share an address; address-only retained values
+    // must be removed along with the active read.
+    if (forgetKept) for (const key of Object.keys(kept)) if (key.startsWith(`${chain}:`)) delete kept[key];
     if (keepRead && network.balanceUnavailable !== true) {
       const after = assets.filter(a => a.chain === chain);
       if (sameAssetKeys(before, after)) { render(); return; }
@@ -448,6 +390,7 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
   // render() applies the same marks to rows it builds later.
   function setSelected(chain) {
     selected = chain;
+    renderReceiveActions();
     freshen(chain);                      // read it again if older than a minute (0.1.93)
     for (const badge of $('portfolio-networks').querySelectorAll('.network-health')) badge.setAttribute('aria-pressed', String(badge.dataset.chain === chain));
     for (const entry of $('balances').querySelectorAll('.chain-holding')) {
@@ -479,7 +422,9 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
     const button = el('button', 'network-filter', network.name); button.type = 'button'; button.dataset.chain = chain;
     button.onclick = () => { filter = chain; render(); }; return button;
   };
-  $('portfolio-filters').replaceChildren(filterButton(['all', { name: 'All networks' }]), ...groupedNetworkControls(Object.entries(networks), filterButton));
+  // Portfolio always shows every network, independently of the transfer network.
+  $('portfolio-filters').replaceChildren();
+  $('portfolio-filters').hidden = true;
   render();
   return { open, clear, refresh, reread, changeEndpoint, setAddress, setSelected, setNetwork, setAction, setEarn, setAutoRefresh, setHideZero };
 }

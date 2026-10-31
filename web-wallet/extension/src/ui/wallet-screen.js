@@ -1,3 +1,5 @@
+import { readAlgorandHistory } from '../../../src/pq/algorand.js';
+import { capabilitiesFor, pageSupported } from '../../../src/capabilities.js';
 import { WALLET_MARKUP } from './wallet-markup.js';
 import { createPortfolio } from '../../../src/portfolio-view.js';
 import { CHAINS, CELLFRAME } from '../../../src/config.js';
@@ -37,11 +39,26 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   $('wallet-open').hidden = false;
   // The greeting belongs to home, including while a name read finishes.
   $('wallet-home').prepend($('wallet-heading'));
-  for (const id of ['assets-panel', 'send-form']) appendPage(id, $(id));
-  root.querySelector('.dashboard-grid').remove();
+  const workspace = $('wallet-open'); workspace.classList.add('wallet-workspace');
+  const rail = root.querySelector('.wallet-navigation'), context = root.querySelector('.transfer-actions');
+  workspace.insertBefore(rail, $('wallet-home')); workspace.insertBefore(context, $('wallet-home'));
+  context.prepend(root.querySelector('.network-select'));
+  const receivePanel = $('receive-panel'); receivePanel.classList.add('dashboard-panel'); receivePanel.setAttribute('aria-labelledby', 'receive-title');
+  appendPage('receive', receivePanel); appendPage('send', $('send-form'));
+  $('send-title').firstChild.textContent = 'Send · ';
+  const sendLink = rail.querySelector('a[href="#send-form"]'); sendLink.href = '#send'; sendLink.querySelector('.nav-name').textContent = 'Send';
+  const receiveLink = sendLink.cloneNode(true); receiveLink.href = '#receive'; receiveLink.querySelector('.nav-name').textContent = 'Receive'; sendLink.after(receiveLink);
+  sendLink.querySelector('svg').innerHTML = '<path d="M12 20V4M6 10l6-6 6 6"/>';
+  receiveLink.querySelector('svg').innerHTML = '<path d="M12 4v16M6 14l6 6 6-6"/>';
+  rail.querySelector('a[href="#assets-panel"]').href = '#';
+  const zeroLabel = root.querySelector('label[for="show-zero-balances"]'); zeroLabel.lastChild.textContent = ' Hide zero networks'; $('assets-panel').querySelector('.panel-heading').append(zeroLabel);
+
+
   // Approved extension plan §3.6: the extension-only connected-sites page.
   const connections = element('section', undefined, 'dashboard-panel'); appendPage('sites', connections);
   const sitesLink = element('a'); sitesLink.href = '#sites'; sitesLink.dataset.hint = 'Sites permitted to connect'; sitesLink.append(appIcon(document, 'sites'), element('span', 'Connected sites', 'nav-name')); root.querySelector('.wallet-navigation').append(sitesLink);
+  for (const link of root.querySelectorAll('.wallet-navigation a')) { const label = link.querySelector('.nav-name').textContent; link.title = label; link.setAttribute('aria-label', label); }
+  let historyController;
   let selected = 'nodus', shownPage = null, disposed = false, readGeneration = 0, review, reviewTimer;
   let previousNetwork, previousTokens, previousAddress, walletScroll = 0, backgroundLog = { entries: [], running: [] };
   const networkVersions = new Map(), endpointVersions = new Map(), logSubscriptions = [];
@@ -68,8 +85,9 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   let networks = networkDefinitions(), latestKept = {}, opened = false;
   const readers = portfolioReaders(ui);
   const portfolio = createPortfolio({ ...readers, selectAsset,
-    async readBalances(chain, ...args) {
-      const rows = await readers.readBalances(chain, ...args);
+    async readBalances(chain, address, endpoint, options = {}) {
+      const networkId = selectedNetwork(chain).id;
+      const rows = await readers.readBalances(chain, address, endpoint, { ...options, networkId });
       // src/app.js syncNodusPins: a balance read can change pin availability.
       // Read only public state, then preserve this read when its keys match.
       if (chain === 'nodus') { await ui.refresh(); if (!disposed && ui.state.isUnlocked) update(); }
@@ -78,19 +96,19 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     leadingNetworks: [{ network: networks.nodus, asset: NODUS_ASSET }],
     extraNetworks: [{ network: CELLFRAME, asset: CPUNK_ASSET }, { network: networks.ixios, asset: IXIOS_ASSET }, ...PQ_ENTRIES.map(entry => ({ ...entry, network: networks[entry.asset.chain] }))],
     onKept(entries) {
-      latestKept = Object.fromEntries(Object.entries(entries).filter(([key]) => !['solana', 'tron'].includes(key.split(':')[0]) || ui.state.networks?.[key.split(':')[0]] === 'mainnet'));
+      latestKept = Object.fromEntries(Object.entries(entries).filter(([key]) => !['algorand', 'ckb'].includes(key.split(':')[0]) && (!['solana', 'tron'].includes(key.split(':')[0]) || ui.state.networks?.[key.split(':')[0]] === 'mainnet')));
       void ui.request('keepBalances', [latestKept]).catch(error => sessionLog.log('wallet', error, { error: true }));
     } });
   let deviceStorage; try { deviceStorage = window.localStorage; } catch { /* device preferences stay in this page */ }
   const applyRefresh = minutes => { $('balance-refresh-minutes').value = String(minutes); portfolio.setAutoRefresh(minutes); return balanceRefreshNote(minutes); };
   $('balance-refresh-note').textContent = applyRefresh(readBalanceRefresh(deviceStorage));
   $('balance-refresh-minutes').onchange = () => { const minutes = Number($('balance-refresh-minutes').value), kept = writeBalanceRefresh(deviceStorage, minutes); $('balance-refresh-note').textContent = applyRefresh(minutes) + (kept ? '' : ' This browser did not allow saving the choice: it applies until this page is closed.'); };
-  const applyZero = show => { $('show-zero-balances').checked = show; portfolio.setHideZero(!show); return showZeroNote(show); };
+  const applyZero = show => { $('show-zero-balances').checked = !show; portfolio.setHideZero(!show); return showZeroNote(show); };
   $('show-zero-balances-note').textContent = applyZero(readShowZero(deviceStorage));
-  $('show-zero-balances').onchange = () => { const show = $('show-zero-balances').checked, kept = writeShowZero(deviceStorage, show); $('show-zero-balances-note').textContent = applyZero(show) + (kept ? '' : ' This browser did not allow saving the choice: it applies until this page is closed.'); };
+  $('show-zero-balances').onchange = () => { const show = !$('show-zero-balances').checked, kept = writeShowZero(deviceStorage, show); $('show-zero-balances-note').textContent = applyZero(show) + (kept ? '' : ' This browser did not allow saving the choice: it applies until this page is closed.'); };
   const initial = ui.request('getKeptBalances').catch(() => ({})).then(entries => {
     if (disposed) return;
-    latestKept = Object.fromEntries(Object.entries(entries).filter(([key]) => !['solana', 'tron'].includes(key.split(':')[0]) || ui.state.networks?.[key.split(':')[0]] === 'mainnet'));
+    latestKept = Object.fromEntries(Object.entries(entries).filter(([key]) => !['algorand', 'ckb'].includes(key.split(':')[0]) && (!['solana', 'tron'].includes(key.split(':')[0]) || ui.state.networks?.[key.split(':')[0]] === 'mainnet')));
     const kept = Object.fromEntries(Object.entries(latestKept).map(([key, value]) => [key, { ...value, units: BigInt(value.units) }]));
     portfolio.open(publicAddresses(), endpoints(), { kept, automatic: false }); opened = true;
     earn?.update(); void claim?.refresh();
@@ -122,6 +140,9 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     const chain = selected, id = chainNetwork(chain, pqEnvironment.value).id;
     if (id === selectedNetwork(chain).id) return;
     const pending = { id }; pendingPqNetworks.set(chain, pending);
+    historyController?.abort(); readGeneration++; cancelReview(); $('history').replaceChildren(); $('history-status').textContent = '';
+    portfolio.setNetwork(chain, { ...networks[chain], testnet: id !== 'mainnet' }, { forgetKept: true });
+    portfolio.setAddress(chain, undefined);
     // Clear the previous environment's address and QR before awaiting persistence.
     $('receive-address').textContent = ''; $('receive-qr').replaceChildren();
     $('copy-address').disabled = $('quick-receive').disabled = true;
@@ -146,7 +167,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   // opening Portfolio or Send / Receive preserves the selected asset/draft.
   function showPage(name, { focus = true } = {}) {
     const candidate = [...root.querySelectorAll('.wallet-page')].find(page => page.dataset.page === name);
-    const page = candidate && !candidate.querySelector('.dashboard-panel').hidden ? candidate : null;
+    const page = candidate && pageSupported(selected, name) && !candidate.querySelector('.dashboard-panel').hidden ? candidate : null;
     const previous = shownPage;
     if (page && !previous) walletScroll = window.scrollY;
     if (shownPage === 'settings' && name !== 'settings') clearReveal();
@@ -172,7 +193,9 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   };
   const route = () => showPage(window.location.hash.slice(1));
   window.addEventListener('hashchange', route);
-  $('quick-send').onclick = $('quick-receive').onclick = () => navigate('send-form');
+  $('quick-send').onclick = () => navigate('send');
+  $('quick-receive').onclick = () => navigate('receive');
+  $('nav-earn').onclick = event => { event.preventDefault(); if (capabilitiesFor(selected).earn) navigate('earn'); };
   function selectAsset(chain, symbol, action) {
     cancelReview(); selected = chain; $('chain').value = chain; selectChain(true);
     const option = [...$('asset').options].find(option => option.dataset.symbol === symbol);
@@ -180,7 +203,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     applyAssetGate();
     if (action === 'choose') return;
     if (action === 'earn') { navigate('earn'); return; }
-    navigate('send-form');
+    navigate(action === 'receive' ? 'receive' : 'send');
   }
   function applyAssetGate() {
     const option = $('asset').selectedOptions[0];
@@ -189,12 +212,16 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   $('asset').onchange = applyAssetGate;
   function selectChain(reset = false) {
     const config = networks[selected], state = ui.state;
+    if (shownPage && !pageSupported(selected, shownPage)) navigate(null);
+    for (const [page, feature] of [['send','send'], ['receive','receive'], ['earn','earn'], ['vaults','sharedVaults'], ['contracts','contracts'], ['wallet-activity','history']]) { const link = root.querySelector(`.wallet-navigation a[href="#${page}"]`); if (link) link.hidden = !capabilitiesFor(selected)[feature]; }
+    $('vault-panel').hidden = !capabilitiesFor(selected).sharedVaults;
+    $('stake-panel').hidden = !capabilitiesFor(selected).earn;
     const network = selectedNetwork(selected);
     pqEnvironment.replaceChildren(...(isPqChain(selected) ? CHAIN_NETWORKS[selected] : []).map(choice => {
       const option = element('option', choice.label); option.value = choice.id; return option;
     }));
     if (isPqChain(selected)) pqEnvironment.value = network.id;
-    if (reset) { readGeneration++; $('recipient').value = ''; $('amount').value = ''; }
+    if (reset) { historyController?.abort(); cancelReview(); contracts?.contextChanged?.(); vaults?.contextChanged?.(); earn?.contextChanged?.(); readGeneration++; $('history').replaceChildren(); $('history-status').textContent = '';  $('recipient').value = ''; $('amount').value = ''; }
     for (const name of root.querySelectorAll('.selected-network-name')) name.textContent = config.name;
     for (const stage of root.querySelectorAll('.selected-network-stage')) stage.textContent = network.label;
     $('quick-send').disabled = Boolean(config.receiveOnly);
@@ -224,7 +251,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     if (explorer && address) $('account-explorer').href = explorer + encodeURIComponent(address);
     else $('account-explorer').removeAttribute('href');
     portfolio.setSelected(selected); applyAssetGate(); populateRpc();
-    $('history-refresh').disabled = !['nodus', 'ethereum', 'solana', 'tron', 'cellframe'].includes(selected);
+    $('history-refresh').disabled = !capabilitiesFor(selected).history;
     if (shownPage === 'wallet-activity') void loadHistory();
     updateContractAvailability();
     book?.update(); earn?.update(); names?.update();
@@ -252,7 +279,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   $('review-dialog').addEventListener('cancel', event => { event.preventDefault(); if (!$('cancel-send').disabled) cancelReview(); });
   function showPrepared(prepared, { chain = 'nodus', title = 'Review transfer' } = {}) {
     cancelReview();
-    if (chain === 'nodus' && selected !== 'nodus') { selected = 'nodus'; $('chain').value = selected; selectChain(); }
+    if (disposed || selected !== chain) { void cancelPrepared({ ...prepared, chain }).catch(() => {}); return; }
     const value = { ...prepared, chain }; review = value;
     const rows = prepared.review || [];
     $('review-title').textContent = title;
@@ -304,12 +331,19 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   };
 
   async function loadHistory(manual = false) {
-    const chain = selected, started = ++readGeneration;
-    if (!['nodus', 'ethereum', 'bsc', 'solana', 'tron', 'cellframe'].includes(chain)) {
+    historyController?.abort();
+    const controller = new AbortController(); historyController = controller;
+    const chain = selected, networkId = selectedNetwork(selected).id, started = ++readGeneration;
+    if (!capabilitiesFor(chain).history) {
       $('history').replaceChildren(); $('history-status').textContent = ''; return;
     }
     let history;
-    if (chain === 'nodus') { await ui.loadNodusHistory(); history = ui.state.nodusHistory; }
+    if (chain === 'algorand') {
+      $('history').replaceChildren(); $('history-status').textContent = 'Reading Algorand history…';
+      try { history = { rows: await readAlgorandHistory(publicAddresses().algorand, { networkId, signal: controller.signal }), network: networkId, status: 'Up to 50 newest top-level native payments; excludes inner transfers, fees, rewards and assets.' }; }
+      catch (error) { if (controller.signal.aborted || disposed || started !== readGeneration) return; history = { rows: [], network: networkId, error: error.message, status: 'Algorand history could not be read.' }; }
+    }
+    else if (chain === 'nodus') { await ui.loadNodusHistory(); history = ui.state.nodusHistory; }
     else if (isSolanaTron(chain)) { await ui.loadSolanaTronHistory(chain, { manual }); history = ui.state.solanaTronHistory[chain]; }
     else if (chain === 'bsc') history = { rows: [], status: 'Account history is not supported on BNB Smart Chain.' };
     else {
@@ -327,7 +361,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
       try { history = await ui.request('getChainHistory', [chain, { manual }]); }
       finally { finished = true; clearTimeout(timer); }
     }
-    if (disposed || started !== readGeneration || selected !== chain) return;
+    if (disposed || controller.signal.aborted || started !== readGeneration || selected !== chain || selectedNetwork(chain).id !== networkId) return;
     const detached = element('div');
     if (chain === 'nodus') renderNodusHistory(document, detached, history, { refresh: () => loadHistory(true) });
     else renderSolanaTronHistory(document, detached, { chain, history }, { refresh: () => loadHistory(true) });
@@ -339,7 +373,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   earn = mountEarn({ root, document, ui, selected: () => selected, portfolio, run, showReview: showPrepared, navigate });
   names = mountNameBlock({ root, ui, selected: () => selected, run, showReview: showPrepared });
   const registerName = $('wallet-register-name').onclick;
-  $('wallet-register-name').onclick = () => { selectAsset('nodus', 'NODUS', 'choose'); navigate('send-form'); registerName(); };
+  $('wallet-register-name').onclick = () => { selectAsset('nodus', 'NODUS', 'choose'); navigate('receive'); registerName(); };
   claim = mountClaimAction({ ui, portfolio, run, showReview: showPrepared });
   contracts = mountContractsPage({ rootNode: $('evm-root'), panelNode: $('evm-panel'), ui });
   vaults = mountVaultsPage({ rootNode: $('vaults-root'), panelNode: $('vault-panel'), ui, messagesHost: ui.connectHost });
@@ -362,7 +396,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   void readBackgroundLog();
   function updateContractAvailability() {
     const state = ui.state;
-    const available = selected === 'nodus' && state.nodus?.state === 'ready' && Boolean(state.nodus?.evmReadable || state.nodus?.evmBuildable);
+    const available = capabilitiesFor(selected).contracts;
     $('nav-evm').hidden = $('evm-panel').hidden = !available;
     if (shownPage === 'contracts' && !available) showPage(null);
   }
@@ -423,7 +457,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
       if (networkVersions.get(chain) !== version) {
         const before = networkVersions.get(chain); networkVersions.set(chain, version);
         endpointVersions.set(chain, endpoint);
-        portfolio.setNetwork(chain, { ...config, testnet }, { keepRead: !before || chain === 'nodus' });
+        portfolio.setNetwork(chain, { ...config, testnet }, { keepRead: !before || chain === 'nodus', forgetKept: ['algorand', 'ckb'].includes(chain) });
         if (opened && before && previousEndpoint !== endpoint) portfolio.changeEndpoint(chain, endpoint);
         if (opened) portfolio.setAddress(chain, publicAddresses()[chain]);
       }
@@ -456,11 +490,11 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   update(); route();
   return {
     update,
-    payContact(fp) { selectAsset('nodus', 'NODUS', 'send'); $('recipient').value = fp; navigate('send-form'); },
+    payContact(fp) { selectAsset('nodus', 'NODUS', 'send'); $('recipient').value = fp; navigate('send'); },
     async loadBalances(force = false) { await initial; if (force && !disposed) await portfolio.refresh(); },
     dispose() {
       disposed = true; readGeneration++; cancelReview(); portfolio.setAutoRefresh(0); portfolio.clear();
-      pendingPqNetworks.clear(); pqStatus.textContent = ''; pqEnvironment.replaceChildren();
+      historyController?.abort(); pendingPqNetworks.clear(); pqStatus.textContent = ''; pqEnvironment.replaceChildren();
       $('receive-address').textContent = ''; $('receive-qr').replaceChildren();
       $('copy-address').disabled = $('quick-receive').disabled = true;
       book.dispose(); earn.dispose(); names.dispose(); claim.dispose(); contracts.dispose(); vaults.dispose();

@@ -1,3 +1,4 @@
+import { capabilitiesFor } from '../capabilities.js';
 // Shared vaults — the panel in the NODUS account area of the wallet and of
 // Nodus Connect, and the vault cards in Messages.
 //
@@ -1013,8 +1014,8 @@ function showPanel() {
   if (!panel) return;
   // while reconnecting (`resume`) the panel stays, with its one line
   const ready = (!!client && client.state === 'ready' && client.vaultable) || !!resume;
-  const nodusSelected = $('chain')?.value === NODUS_ASSET.chain;
-  panel.hidden = !(ready && nodusSelected);
+  const nodusSelected = capabilitiesFor($('chain')?.value).sharedVaults;
+  panel.hidden = !nodusSelected;
   const nav = $('nav-vaults');
   if (nav) nav.hidden = panel.hidden;
 }
@@ -1033,7 +1034,7 @@ function render({ keepTyped = false } = {}) {
     root.replaceChildren(line);
     return;
   }
-  if (!client) { root.replaceChildren(); return; }
+  if (!client || client.state !== 'ready') { root.replaceChildren(el('p', { className: 'notice', text: 'Connect to the Nodus node to read shared vaults and prepare transactions.' })); return; }
   // Each new status line shown also goes to the session log.
   if (status && status !== loggedStatus) sessionLog.log('vault', status);
   loggedStatus = status;
@@ -1557,6 +1558,7 @@ const payloadView = {
 export function mountVaults({ panelNode, rootNode, messagesHost = null }) {
   panel = panelNode; root = rootNode; host = messagesHost;
   $('chain')?.addEventListener('change', showPanel);
+  document.addEventListener('wallet-network-change', () => { generation++; busy = false; draft = null; createInfo = null; reviews.clear(); render(); });
   if (host) {
     host.setPayloadView(payloadView);
     // Messages opened (its kept vaults load) or new items arrived (the

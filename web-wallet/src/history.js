@@ -17,6 +17,7 @@
 // solana 1 + one getTransaction per signature not seen before (paced by
 // rpc-transport.js). Ethereum HTTP 429 waits for the provider's reset within
 // the bounded read below (operator 2026-10-30); other refusals are reported.
+import { readAlgorandHistory } from './pq/algorand.js';
 import { getAddress, formatUnits } from 'ethers';
 import { TronWeb } from 'tronweb';
 import { CHAINS } from './config.js';
@@ -25,7 +26,7 @@ import { CPUNK_ENDPOINT, validateCellframeAddress, boundedJson } from './cpunk-p
 
 export const HISTORY_LIMIT = 50;           // rows per network kept and shown (the app's offset/limit 50)
 export const SOLANA_SIGNATURES = 20;       // newest signatures looked at per read
-export const HISTORY_SOURCES = { ethereum: 'Blockscout', tron: 'TronGrid', solana: 'Solana RPC', cellframe: 'Cellframe RPC' };
+export const HISTORY_SOURCES = { ethereum: 'Blockscout', tron: 'TronGrid', solana: 'Solana RPC', cellframe: 'Cellframe RPC', algorand: 'Algorand Indexer' };
 const BLOCKSCOUT = 'https://eth.blockscout.com/api';
 // Dispatch 2026-10-30 allows a bound: two minutes including queue/network
 // time, and three retries across the whole read. Zero reset cannot loop.
@@ -277,9 +278,10 @@ async function cellframeHistory(address, endpoint, options) {
 }
 
 // Reads one network's history. `known` (solana only): signature -> rows.
-export async function readHistory(chain, address, { endpoint, signal, known = new Map(), onStatus } = {}) {
+export async function readHistory(chain, address, { endpoint, signal, known = new Map(), onStatus, networkId = 'mainnet' } = {}) {
   const options = { signal, onStatus };
   try {
+    if (chain === 'algorand') return await readAlgorandHistory(address, { signal, networkId });
     if (chain === 'ethereum') return await ethereumHistory(address, options);
     if (chain === 'tron') return await tronHistory(address, endpoint || CHAINS.tron.endpoint, options);
     if (chain === 'solana') return await solanaHistory(address, endpoint || CHAINS.solana.endpoint, options, known);
@@ -294,7 +296,7 @@ export const historySupported = chain => Object.hasOwn(HISTORY_SOURCES, chain);
 const HASHES = { ethereum: /^0x[0-9a-f]{64}$/, tron: /^[0-9a-f]{64}$/, solana: /^[1-9A-HJ-NP-Za-km-z]{64,88}$/, cellframe: /^0x[0-9a-f]{64}$/ };
 const symbolsOf = chain => chain === 'cellframe' ? ['CPUNK'] : [CHAINS[chain].symbol, ...CHAINS[chain].tokens.map(t => t.symbol)];
 export function checkHistoryRows(chain, rows) {
-  if (!historySupported(chain) || !Array.isArray(rows) || rows.length > HISTORY_LIMIT) throw new Error('Invalid saved history.');
+  if (chain === 'algorand' || !historySupported(chain) || !Array.isArray(rows) || rows.length > HISTORY_LIMIT) throw new Error('Invalid saved history.');
   return rows.map(r => {
     if (!r || r.chain !== chain || typeof r.hash !== 'string' || !HASHES[chain].test(r.hash) || !Number.isSafeInteger(r.time) || r.time <= 0 ||
         !['in', 'out', 'self'].includes(r.dir) || !symbolsOf(chain).includes(r.symbol) || typeof r.amount !== 'string' || !/^\d{1,78}(\.\d{1,18})?$/.test(r.amount) ||

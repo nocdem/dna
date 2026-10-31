@@ -1,3 +1,4 @@
+import { capabilitiesFor } from '../../../src/capabilities.js';
 // Shared vaults — the panel in the NODUS account area of the wallet and of
 // Nodus Connect, and the vault cards in Messages.
 //
@@ -1014,8 +1015,8 @@ function showPanel() {
   if (!panel) return;
   // while reconnecting (`resume`) the panel stays, with its one line
   const ready = (!!client && client.state === 'ready' && client.vaultable) || !!resume;
-  const nodusSelected = $('chain')?.value === NODUS_ASSET.chain;
-  panel.hidden = !(ready && nodusSelected);
+  const nodusSelected = capabilitiesFor($('chain')?.value).sharedVaults;
+  panel.hidden = !capabilitiesFor($('chain')?.value).sharedVaults;
   const nav = $('nav-vaults');
   if (nav) nav.hidden = panel.hidden;
 }
@@ -1034,7 +1035,7 @@ function render({ keepTyped = false } = {}) {
     root.replaceChildren(line);
     return;
   }
-  if (!client) { root.replaceChildren(); return; }
+  if (!client || client.state !== 'ready') { root.replaceChildren(el('p', { className: 'notice', text: 'Connect to the Nodus node to read shared vaults and prepare transactions.' })); return; }
   // Each new status line shown also goes to the session log.
   if (status && status !== loggedStatus) sessionLog.log('vault', status);
   loggedStatus = status;
@@ -1608,14 +1609,16 @@ export function mountVaultsPage({ rootNode, panelNode, ui, messagesHost = null }
   let identity, disposed = false;
   const dialogs = new Set();
   async function reviewed(method, fields) {
+    const contextGeneration = generation;
     const prepared = await ui.request('prepareSharedVault', [method, publicVaultFields(fields)]);
-    if (disposed) { await ui.request('cancelSharedVault', [prepared.id]); throw new Error('Wallet is locked.'); }
+    if (disposed || contextGeneration !== generation || !capabilitiesFor($('chain')?.value).sharedVaults) { await ui.request('cancelSharedVault', [prepared.id]); throw new Error('The network context changed. Review cancelled.'); }
     return new Promise((resolve, reject) => {
       const dialog = el('dialog', { className: 'vault-review' }), list = el('dl'), error = el('p');
       for (const [key, value] of prepared.review) list.append(el('dt', { text: key }), el('dd', { text: value }));
       let settled = false;
       const cancel = btn('Cancel', () => dialog.close(), 'secondary');
       const confirm = btn(method === 'vaultApprove' ? 'Approve' : 'Send payment', async () => {
+        if (!capabilitiesFor($('chain')?.value).sharedVaults || ui.state.nodus?.state !== 'ready') { dialog.close(); return; }
         confirm.disabled = cancel.disabled = true;
         try {
           const result = await ui.request('confirmSharedVault', [prepared.id]); settled = true; dialog.close(); resolve(result);
@@ -1632,7 +1635,7 @@ export function mountVaultsPage({ rootNode, panelNode, ui, messagesHost = null }
       dialogs.add(dialog); document.body.append(dialog); dialog.showModal();
     });
   }
-  return { update() {
+  return { contextChanged() { generation++; busy = false; draft = null; createInfo = null; reviews.clear(); for (const dialog of dialogs) dialog.close(); render(); }, update() {
     const state = ui.state, next = `${state.addresses.nodus}:${state.nodus?.connection}:${state.nodus?.state}:${state.nodus?.vaultable}`;
     if (next === identity) return;
     const reconnecting = identity && state.nodus?.state !== 'ready';

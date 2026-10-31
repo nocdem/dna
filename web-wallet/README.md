@@ -33,7 +33,7 @@ Connect; these provider identifiers stay unchanged.
 
 ## PQ receive — recovery contract v1 (2026-10-31)
 
-Wallet/extension package version: **0.1.144**. This does not change the Nodus
+Wallet/extension package version: **0.1.145**. This does not change the Nodus
 node or protocol version.
 
 Network badges, individual network filters and network selectors in the web
@@ -64,17 +64,20 @@ mark represents Verona / XION. These marks belong to their respective owners.
 The shared portfolio displays them without circular clipping or stretching.
 
 The web wallet and browser extension derive receive addresses for the eight
-chains below from the existing encrypted vault v1 phrase. This addition is
-receive-only: sending, balances, prices, RPC adapters and provider transaction
-methods for these chains are unavailable. It does not write chain state.
+chains below from the existing encrypted vault v1 phrase. Sending, prices and
+provider transaction methods for these additions remain unavailable. Algorand
+has read-only native balance and payment history adapters. The other seven
+additions, including CKB, remain address-only. These readers do not write chain
+state.
 Native-chain 24-word mnemonic import compatibility is **not** claimed.
 
 The extension's wallet identity and these receive addresses derive locally
 from the unlocked vault. Its Nodus network connection is a separate operation;
 these PQ receive derivations do not require that connection. Showing a local
 identity or address does not establish a chain balance, account activation,
-funding, or transaction capability. The eight additions expose receive
-addresses only; they do not enable PQ sending through extension providers.
+funding, or transaction capability. The eight additions do not enable PQ sending
+through extension providers.
+Algorand can additionally read native balances and payment history.
 
 | Chain | Symbol / decimals | Available networks | Receive key/profile |
 | --- | --- | --- | --- |
@@ -91,6 +94,26 @@ Public Tidecoin and Soqucoin testnets were not verified. The primitive bridge
 supports all twelve SLH-DSA parameter sets; the wallet's CKB receive profile
 uses only SHA2-256s, with no parameter selector. Splendor's SLH-DSA support is
 for SQVL instruction purposes, not this account receive address.
+
+### Release 0.1.145
+
+Wallet, Connect and the browser extension share network-aware navigation with
+separate Send and Receive screens. Portfolio groups holdings by network;
+Hide zero networks hides only fresh, successfully read zero balances for every
+holding. Unsupported actions stay unavailable for the selected network.
+
+Algorand adds read-only native ALGO balances and up to 50 top-level native
+payment transactions on mainnet and testnet through fixed Algonode providers.
+Reads validate the provider's genesis hash and response values. Switching
+networks cancels pending reads and clears retained Algorand balances/history.
+History excludes inner transfers, assets, fees and rewards. Provider-reported
+data is not a cryptographic inclusion proof. Algorand signing and sending
+remain unavailable; CKB and the other six additions remain receive-only.
+
+Validation sources include `test/capabilities.test.js`, `test/algorand.test.js`,
+`test/browser-capabilities.js`, `test/browser-algorand.js` and
+`extension/test/pq-readers.test.js`. Browser reader tests use mocked providers
+and isolated profiles; they do not establish live provider availability.
 
 ### Stable Nodus recovery policy
 

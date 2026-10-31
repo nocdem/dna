@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 // Parent browser gate. Requires web + extension production builds. Runs real
 // shipped WASM, restore/save/unlock, all 13 receive variants and decoded QR.
 // No outside traffic: HTTP proxy denies external origins before worker start.
@@ -16,7 +17,7 @@ import { assertNetworkGroups } from './browser-network-groups.js';
 const jsQR=createRequire(import.meta.url)('jsqr');
 const app=fileURLToPath(new URL('..',import.meta.url)),web=join(app,'dist'),extension=join(app,'dist-extension/unpacked');
 const fixture=JSON.parse(await readFile(new URL('./fixtures/pq-receive.json',import.meta.url),'utf8')).vectors[0];
-const password='Pq9!Velvet-Cedar-Moon$47',outside=[],errors=[];
+const password='Aa9!'+randomBytes(24).toString('hex'),outside=[],errors=[];
 const manifest=JSON.parse(await readFile(join(extension,'manifest.json'),'utf8'));
 assert.deepEqual(await readFile(join(extension,'wasm/receive-keygen.wasm')),await readFile(join(app,'src/pq/receive-keygen.wasm')));
 const server=createServer(async(req,res)=>{
@@ -29,11 +30,11 @@ const server=createServer(async(req,res)=>{
     res.writeHead(200,{'Content-Type':mime});res.end(await readFile(file));
   }catch{res.writeHead(404);res.end();}
 });
-server.on('connect',(req,socket)=>{outside.push(req.url);socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');});
+server.on('connect',(req,socket)=>{socket.on('error',()=>{});outside.push(req.url);socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');});
 await new Promise(done=>server.listen(0,'127.0.0.1',done));
 const origin=`http://127.0.0.1:${server.address().port}`;
 const temporary=await mkdtemp(join(tmpdir(),'pq-receive-browser-'));
-let context;
+let context, activePage, activeMode;
 async function qr(page){
   const pixels=await page.evaluate(async()=>{
     const svg=document.querySelector('#receive-qr svg');if(!svg)return null;
@@ -45,7 +46,7 @@ async function qr(page){
   });
   assert.ok(pixels,'QR exists');return jsQR(Uint8ClampedArray.from(pixels.data),pixels.size,pixels.size)?.data;
 }
-async function openReceive(page){if(!(await page.locator('#chain').isVisible()))await page.locator('#quick-receive').click();}
+async function openReceive(page){if(!(await page.locator('#page-receive').isVisible()))await page.locator('.wallet-navigation a[href="#receive"]').click();}
 async function address(page,chain,network,expected,{decode=true}={}){
   await openReceive(page);
   await page.selectOption('#chain',chain);
@@ -55,7 +56,7 @@ async function address(page,chain,network,expected,{decode=true}={}){
   assert.equal(await page.locator('#quick-send').isDisabled(),true);
   assert.equal(await page.locator('#send-fields').isVisible(),false);
   assert.equal(await page.locator('#copy-address').isDisabled(),false);
-  assert.match(await page.locator('#send-disabled-note').textContent(),/Sending and balances are not available/);
+  assert.match(await page.locator('#send-disabled-note').textContent(), /Sending.*not available/);
   assert.match(await page.locator('#pq-address-status').textContent(),new RegExp(network==='testnet'?'Testnet':'Mainnet'));
   if(decode)assert.equal(await qr(page),expected);
   await page.locator('#send-form').evaluate(form=>form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
@@ -63,13 +64,13 @@ async function address(page,chain,network,expected,{decode=true}={}){
 }
 async function settings(page){await home(page);await page.locator('.wallet-navigation a[href="#settings"]').click();await page.locator('#page-settings').waitFor({state:'visible'});}
 async function lockPage(page){if(!(await page.locator('#lock').isVisible()))await home(page);await page.locator('#lock').click();}
-async function home(page){const back=page.locator('.wallet-page:not([hidden]) .page-back');if(await back.count())await back.click();}
+async function home(page){await page.locator('.wallet-navigation a[href="#"]').click();}
 try {
   for(const mode of process.env.PQ_RECEIVE_BROWSER_MODE ? [process.env.PQ_RECEIVE_BROWSER_MODE] : ['web','extension']){
-    console.log(`Start ${mode} actual receive flow`);
+    activeMode=mode;console.log(`Start ${mode} actual receive flow`);
     context=await chromium.launchPersistentContext(join(temporary,mode),{
       executablePath:process.env.CHROMIUM_PATH||'/usr/bin/chromium',channel:'chromium',headless:true,
-      viewport:{width:1360,height:1000},ignoreDefaultArgs:mode==='extension'?['--disable-extensions']:[],
+      chromiumSandbox:true,viewport:{width:1360,height:1000},ignoreDefaultArgs:mode==='extension'?['--disable-extensions']:[],
       args:[`--proxy-server=${origin}`,'--proxy-bypass-list=127.0.0.1','--disable-background-networking',...(mode==='extension'?[`--load-extension=${extension}`,`--disable-extensions-except=${extension}`]:[])],
     });
     context.setDefaultTimeout(15000);
@@ -78,7 +79,7 @@ try {
       if(url.origin===origin||url.protocol==='chrome-extension:')return route.continue();
       outside.push(url.href);return route.abort('blockedbyclient');
     });
-    const page=await context.newPage();page.on('pageerror',e=>errors.push(`${mode}: ${e.message}`));
+    const page=activePage=await context.newPage();page.on('pageerror',e=>errors.push(`${mode}: ${e.message}`));
     await page.routeWebSocket(()=>true,ws=>ws.close());
     let url=origin;
     if(mode==='extension'){
@@ -90,17 +91,22 @@ try {
     if(mode==='extension'){await page.locator('#new-password').fill(password);await page.locator('#confirm-password').fill(password);}
     await page.locator('#phrase-submit').click();
     try { await page.locator('#wallet-open').waitFor({state:'visible'}); }
-    catch(error) { if(process.env.PQ_RECEIVE_DIAGNOSTIC) await page.waitForFunction(()=>document.querySelector('#wallet-status')?.textContent,{},{timeout:25000}).catch(()=>{}); console.error('RESTORE DIAGNOSTIC',await page.evaluate(()=>({status:document.querySelector('#wallet-status')?.textContent,phraseError:document.querySelector('#phrase-error')?.textContent,invalid:[...document.querySelectorAll(':invalid')].map(n=>({id:n.id,message:n.validationMessage})),body:document.body.innerText})),errors); throw error; }
+    catch(error) { if(process.env.PQ_RECEIVE_DIAGNOSTIC) await page.waitForFunction(()=>document.querySelector('#wallet-status')?.textContent,{},{timeout:25000}).catch(()=>{}); console.error('RESTORE DIAGNOSTIC',await page.evaluate(()=>({status:document.querySelector('#wallet-status')?.textContent,phraseError:document.querySelector('#phrase-error')?.textContent,invalid:[...document.querySelectorAll(':invalid')].map(n=>({id:n.id,message:n.validationMessage}))})),errors); throw error; }
+    await page.waitForFunction(()=>!document.querySelector('.network-heading-select')?.closest('[inert]'));
     await assertNetworkGroups(page);
     // A balance redraw keeps keyboard focus on the same grouped badge and
     // does not scroll or change the selected transfer network.
-    await page.locator('.network-health[data-chain="tidecoin"]').focus();
+    assert.equal(await page.locator('#wallet-home').isVisible(),true);
+    await page.evaluate(()=>scrollTo(0,0));
+    await page.waitForFunction(()=>!document.querySelector('#portfolio-refresh').disabled);
     const focusRedraw=await page.evaluate(()=>{
+      document.querySelector('.network-assets[data-chain="tidecoin"] .network-heading-select').focus({preventScroll:true});
+      const initialFocus=document.activeElement?.closest('[data-chain]')?.dataset.chain;
       const before={x:scrollX,y:scrollY,chain:document.querySelector('#chain').value};
       document.querySelector('#portfolio-hide').click();document.querySelector('#portfolio-hide').click();
-      return {before,after:{x:scrollX,y:scrollY,chain:document.querySelector('#chain').value},focused:document.activeElement?.dataset.chain};
+      return {initialFocus,before,after:{x:scrollX,y:scrollY,chain:document.querySelector('#chain').value},focused:document.activeElement?.closest('[data-chain]')?.dataset.chain};
     });
-    assert.deepEqual(focusRedraw.after,focusRedraw.before);assert.equal(focusRedraw.focused,'tidecoin');
+    assert.equal(focusRedraw.initialFocus,'tidecoin');assert.deepEqual(focusRedraw.after,focusRedraw.before);assert.equal(focusRedraw.focused,'tidecoin');
     // Crossing group boundaries retains the legacy receive address and returns
     // to the exact PQ fixture; selecting a heading cannot become a chain value.
     await openReceive(page);await page.selectOption('#chain','ethereum');
@@ -137,6 +143,7 @@ try {
     await page.locator('#chain').press('ArrowUp');
     assert.equal(await page.locator('#chain').inputValue(),'asentum');
     await page.waitForFunction(expected=>document.querySelector('#receive-address')?.textContent===expected,fixture.addresses.asentum.testnet);
+    await page.waitForFunction(()=>!document.querySelector('.network-heading-select')?.closest('[inert]'));
     await assertNetworkGroups(page);
     assert.equal(await page.locator('#pq-network-environment option').count(),1);
     assert.deepEqual(errors,[]);
@@ -145,6 +152,10 @@ try {
   }
   assert.ok(outside.every(url=>!url.includes(fixture.phrase)),'no recovery phrase in request URL');
   console.log('PASS offline browser gates; external transport blocked; no on-chain transaction claim');
+}catch(error){
+  console.error('SAFE FAILURE DIAGNOSTIC',activeMode,await activePage?.evaluate(()=>({vault:document.querySelector('#vault-status')?.textContent,wallet:document.querySelector('#wallet-status')?.textContent,boot:document.querySelector('#wallet-boot-status')?.textContent})).catch(()=>null));
+  if(process.env.PQ_RECEIVE_SCREENSHOT_DIR&&activePage)await activePage.screenshot({path:join(process.env.PQ_RECEIVE_SCREENSHOT_DIR,`${activeMode}-pq-failure.png`),fullPage:true}).catch(()=>{});
+  throw error;
 }finally{
   await context?.close();await new Promise(done=>server.close(done));await rm(temporary,{recursive:true,force:true});
 }

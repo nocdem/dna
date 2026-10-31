@@ -4,6 +4,7 @@
 // broadcasts or compiler flags; no claim of an on-chain spend test.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { ed25519 } from '@noble/curves/ed25519';
 import { derivePqAddresses, pqAddressFromPublicKeys, pqChainSeed } from '../src/pq/receive.js';
@@ -18,11 +19,11 @@ const fromHex = hex => Uint8Array.from(Buffer.from(hex,'hex'));
 const wasmBytes = receiveWasmBytes();
 const phrase = fixture.vectors[0].phrase;
 
-test('complete listed networks are receive-only, unavailable balances and no send adapter', async () => {
+test('listed PQ networks remain receive-only; Algorand enables read balances', async () => {
   assert.equal(PQ_ENTRIES.length,8);
   assert.equal(Object.values(PQ_NETWORKS).reduce((n,c)=>n+c.networks.length,0),13);
   for (const [chain,c] of Object.entries(PQ_NETWORKS)) {
-    assert.equal(c.receiveOnly,true); assert.equal(c.balanceUnavailable,true);
+    assert.equal(c.receiveOnly,true); assert.equal(c.balanceUnavailable,chain !== 'algorand');
     assert.equal(adapters[chain],undefined);
     for (const network of c.networks) assert.equal(pqNetwork(chain,network.id),network);
     await assert.rejects(prepareTransfer({wallet:{addresses:{}},chain,symbol:c.symbol,to:'unused',amount:'1'}),/Open a wallet/);
@@ -121,7 +122,7 @@ test('missing/corrupt module never falls back or publishes a synthetic address',
 });
 
 test('existing encrypted vault recovers all addresses without new vault schema or key storage', async () => {
-  const password='Pq9!Velvet-Cedar-Moon$47';
+  const password=`Aa9!${randomBytes(32).toString('hex')}`;
   const encrypted=await encryptVault(phrase,password),saved=JSON.parse(encrypted);
   assert.equal(saved.version,1);assert.ok(!encrypted.includes(phrase));
   assert.deepEqual(Object.keys(saved).sort(),['cipher','ciphertext','id','iterations','iv','kdf','salt','version']);

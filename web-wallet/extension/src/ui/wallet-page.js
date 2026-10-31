@@ -1,8 +1,15 @@
+import { readAlgorandBalances } from '../../../src/pq/algorand.js';
+
 // src/app.js:609-620: public balance reads injected into createPortfolio.
 // Nothing in this adapter holds a wallet, phrase, client or signing key.
 export function portfolioReaders(ui) {
   return {
-    async readBalances(chain) {
+    async readBalances(chain, address, _endpoint, { signal, fetcher, networkId } = {}) {
+      // Public-only readers use the caller's displayed address and selected
+      // environment. The screen can supply its pending selection explicitly.
+      if (chain === 'algorand') {
+        return readAlgorandBalances(address, { networkId: networkId ?? ui.state?.networks?.[chain] ?? 'mainnet', signal, fetcher });
+      }
       const methods = { nodus: 'getNodusBalances', ethereum: 'getEvmBalances', bsc: 'getEvmBalances',
         solana: 'getSolanaBalances', tron: 'getTronBalances', cellframe: 'getCpunkBalance', ixios: 'getIxiosBalance' };
       if (!methods[chain]) throw new Error('Unsupported balance network.');

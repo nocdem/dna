@@ -14,18 +14,15 @@ export async function assertNetworkGroups(page, { ixios = true, cellframe = true
   assert.deepEqual(await page.locator('#chain optgroup').evaluateAll(groups => groups.map(group => ({
     id: group.dataset.networkGroup, label: group.label, values: [...group.children].map(option => option.value),
   }))), expected);
-  for (const [container, control] of [['#portfolio-networks', '.network-health'], ['#portfolio-filters', '.network-filter']]) {
-    assert.deepEqual(await page.locator(container + ' > [data-network-group]').evaluateAll((groups, control) => groups.map(group => ({
-      id: group.dataset.networkGroup, label: group.getAttribute('aria-label'),
-      values: [...group.querySelectorAll(control)].map(button => button.dataset.chain),
-    })), control), expected);
-    assert.deepEqual(await page.locator(container + ' .network-group-title').allTextContents(), expected.map(group => group.label));
-  }
-  assert.equal(await page.locator('#portfolio-filters > .network-filter[data-chain="all"]').count(), 1);
+  assert.equal(await page.locator('#portfolio-filters button').count(), 0);
+  assert.equal(await page.locator('#portfolio-filters').isVisible(), false);
+  const visibleNetworks = await page.locator('#balances .network-assets').evaluateAll(rows => rows.map(row => row.dataset.chain));
+  assert.ok(visibleNetworks.every(chain => [...pq, ...legacy].includes(chain)));
+  assert.equal(new Set(visibleNetworks).size, visibleNetworks.length);
   assert.deepEqual(await page.locator('#address-book-network optgroup').evaluateAll(groups => groups.map(group => ({
     id: group.dataset.networkGroup, values: [...group.children].map(option => option.value),
   }))), [{ id: 'pq', values: ['nodus', ...(cellframe ? ['cellframe'] : [])] }, { id: 'legacy', values: legacy }]);
   assert.equal(await page.locator('#chain').inputValue(), selected);
-  assert.equal(await page.locator('.network-health[aria-pressed="true"]').count(), 1);
-  assert.equal(await page.locator('.network-health[aria-pressed="true"]').getAttribute('data-chain'), selected);
+  assert.equal(await page.locator('#portfolio-networks').isVisible(), false);
+  assert.equal(await page.locator('#portfolio-networks button').count(), 0);
 }

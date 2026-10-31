@@ -1,12 +1,12 @@
 const sendNote = 'Receive only. Sending and balances are not available in this release.';
-function entry(name, symbol, decimals, ids, icon) {
+function entry(name, symbol, decimals, ids, icon, readable = false, readNote) {
   const networks = ids.map(id => Object.freeze({ id, label: id === 'mainnet' ? 'Mainnet' : 'Testnet' }));
-  return Object.freeze({ name, symbol, decimals, icon, networkGroup: 'pq', tokens: Object.freeze([]),
-    receiveOnly: true, balanceUnavailable: true, sendNote,
+  return Object.freeze({ name, symbol, decimals, icon, networkGroup: 'pq', tokens: Object.freeze([]), ...(readNote ? { balanceNote: readNote } : {}),
+    receiveOnly: true, balanceUnavailable: !readable, sendNote: readNote || (readable ? 'Sending is not available in this release. Balances and native payment history are read only.' : sendNote),
     networks: Object.freeze(networks), defaultNetwork: ids[0] });
 }
 export const PQ_NETWORKS = Object.freeze({
-  algorand: entry('Algorand', 'ALGO', 6, ['mainnet', 'testnet'], 'algorand.png'),
+  algorand: entry('Algorand', 'ALGO', 6, ['mainnet', 'testnet'], 'algorand.png', true),
   tidecoin: entry('Tidecoin', 'TDC', 8, ['mainnet'], 'tidecoin.svg'),
   ckb: entry('Nervos CKB', 'CKB', 8, ['mainnet', 'testnet'], 'ckb.png'),
   soqucoin: entry('Soqucoin', 'SOQ', 8, ['mainnet'], 'soqucoin.png'),

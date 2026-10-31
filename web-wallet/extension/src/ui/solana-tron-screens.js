@@ -1,3 +1,4 @@
+import { PQ_NETWORKS } from '../../../src/pq/networks.js';
 import { CHAINS, CELLFRAME } from '../../../src/config.js';
 import { renderEvmSend } from './evm-screens.js';
 import { actionButton } from './views.js';
@@ -46,7 +47,7 @@ export function renderSolanaTronSend(document, container, { chain, account, revi
 // src/app.js:300-326: account transfers and their selected-network explorer
 // links. All provider text uses textContent.
 export function renderSolanaTronHistory(document, container, { chain, history }, { refresh }) {
-  container.replaceChildren(pageHeading(document, `${(chain === 'cellframe' ? CELLFRAME : CHAINS[chain]).name} history`, 'history'));
+  container.replaceChildren(pageHeading(document, `${(chain === 'cellframe' ? CELLFRAME : CHAINS[chain] || PQ_NETWORKS[chain]).name} history`, 'history'));
   container.append(actionButton(document, 'Refresh history', refresh));
   if (!history) { container.append(element(document, 'p', 'Account history has not been read yet.', 'hint')); return; }
   if (history.activityError) container.append(element(document, 'p', history.activityError, 'field-error'));

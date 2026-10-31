@@ -1,3 +1,4 @@
+import { capabilitiesFor, pageSupported } from './capabilities.js';
 import { getAddress } from 'ethers';
 import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, IDENTITY_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
 import { deleteVaultHistory, HistoryDeleteBlocked } from './connect/store.js';
@@ -13,6 +14,8 @@ import { CPUNK_ASSET, displayAmount, unavailableAssetNote } from './portfolio.js
 import { IXIOS_NETWORK, IXIOS_ASSET } from './ixios/network.js';
 import { PQ_NETWORKS, PQ_ENTRIES, isPqChain, pqNetwork } from './pq/networks.js';
 import { derivePqAddresses } from './pq/receive.js';
+import { readAlgorandBalances } from './pq/algorand.js';
+const pqBalanceReaders = { algorand: readAlgorandBalances };
 import { setNetworkSelectOptions } from './network-groups.js';
 import { NODUS_ASSET, NODUS_TOKEN_ID, nodusNetworkFor } from './nodus/network.js';
 // null until package (c3) ships the module; see src/nodus/send-module.js.
@@ -247,6 +250,8 @@ function persistActivity({ required = false } = {}) {
 // 2026-10-02-device-cache-only-when-saved). An unsaved wallet writes nothing.
 let latestKept = null, balanceWrites = Promise.resolve();
 function persistBalances(entries) {
+  // Algorand environments share an address; the v1 cache has no environment.
+  entries = Object.fromEntries(Object.entries(entries).filter(([key]) => !Object.hasOwn(pqBalanceReaders, key.split(':')[0])));
   latestKept = entries;
   const session = activitySession, source = wallet;
   if (!session?.balancesKey || !source) return;
@@ -311,7 +316,7 @@ function deriveOwnAddresses() {
 // 2026-10-02-device-cache-only-when-saved).
 const HISTORY_AUTO_MS = { ethereum: 30 * 60 * 1000 }, HISTORY_AUTO_DEFAULT_MS = 5 * 60 * 1000, HISTORY_MANUAL_MS = 30 * 1000;
 let historyByChain = {}, historyJob = null, historyNote = {}, accountHistoryWrites = Promise.resolve();
-const historyFor = chain => { const h = historyByChain[chain]; return h && wallet && h.address === wallet.addresses[chain] ? h : null; };
+const historyFor = chain => { const h = historyByChain[chain]; return h && wallet && h.address === wallet.addresses[chain] && (chain !== 'algorand' || h.networkId === pqSelections.algorand) ? h : null; };
 const historyTime = ms => new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 const shortPeer = peer => peer.length > 18 ? `${peer.slice(0, 8)}…${peer.slice(-6)}` : peer;
 function renderHistory() {
@@ -322,7 +327,7 @@ function renderHistory() {
   button.hidden = !supported; button.disabled = !!historyJob || !wallet.addresses[chain];
   status.textContent = !supported ? `Account history for ${networkFor(chain)?.name ?? chain} is not read here. Use the account explorer.`
     : historyJob?.chain === chain ? historyJob.status || `Reading account history from ${HISTORY_SOURCES[chain]}…`
-    : historyNote[chain] || (h ? `Newest ${HISTORY_LIMIT} transfers as reported by ${HISTORY_SOURCES[chain]}, read ${historyTime(h.readAt)}. Your own sends are tracked above.` : 'Account history has not been read yet.');
+    : historyNote[chain] || (h ? `${chain === 'algorand' ? 'Up to 50 newest top-level native payments; excludes inner transfers, fees, rewards and assets.' : `Newest ${HISTORY_LIMIT} transfers.`} As reported by ${HISTORY_SOURCES[chain]}, read ${historyTime(h.readAt)}. Your own sends are tracked above.` : 'Account history has not been read yet.');
   const el = (tag, className, text) => { const node = document.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node; };
   list.replaceChildren(...(supported && h ? h.rows : []).map(r => {
     const div = el('div', `activity-row history-dir-${r.dir}`), main = el('span', 'activity-main');
@@ -354,19 +359,19 @@ async function loadHistory(chain, { manual = false } = {}) {
     if (manual) { historyNote[chain] = `Read ${historyTime(kept.readAt)}. Try again in a minute — the provider limits requests.`; renderHistory(); }
     return;
   }
-  const source = wallet, job = { chain, controller: new AbortController() };
+  const source = wallet, job = { chain, networkId: chain === 'algorand' ? pqSelections.algorand : undefined, controller: new AbortController() };
   historyJob = job; delete historyNote[chain]; renderHistory();
   try {
     // Solana: signatures already read are not fetched again.
     const known = new Map();
     for (const r of kept?.rows || []) { if (!known.has(r.hash)) known.set(r.hash, []); known.get(r.hash).push(r); }
-    const rows = await readHistory(chain, address, { endpoint: endpoints[chain], signal: job.controller.signal, known,
+    const rows = await readHistory(chain, address, { endpoint: endpoints[chain], signal: job.controller.signal, networkId: job.networkId, known,
       onStatus(text) {
         if (historyJob !== job || wallet !== source) return;
         job.status = text; renderHistory();
       } });
-    if (historyJob !== job || wallet !== source) return;
-    historyByChain[chain] = { address, readAt: Date.now(), rows: mergeHistory(kept?.rows, rows) };
+    if (historyJob !== job || wallet !== source || source.locked || job.controller.signal.aborted || (chain === 'algorand' && job.networkId !== pqSelections.algorand)) return;
+    historyByChain[chain] = { address, networkId: job.networkId, readAt: Date.now(), rows: mergeHistory(kept?.rows, rows) };
     persistHistory();
   } catch (error) { if (historyJob === job) historyNote[chain] = error.message; }
   finally { if (historyJob === job) { historyJob = null; renderHistory(); renderActivity(); } }   // a send this read lists leaves "Sent from here" (0.1.96)
@@ -374,7 +379,7 @@ async function loadHistory(chain, { manual = false } = {}) {
 function persistHistory() {
   const session = activitySession, source = wallet;
   if (!session?.historyKey || !source) return;
-  const snapshot = Object.fromEntries(Object.entries(historyByChain).filter(([chain, h]) => h.address === source.addresses[chain]));
+  const snapshot = Object.fromEntries(Object.entries(historyByChain).filter(([chain, h]) => chain !== 'algorand' && h.address === source.addresses[chain]));
   accountHistoryWrites = accountHistoryWrites.catch(() => {}).then(async () => {
     const encrypted = await serializeHistory(session.id, snapshot, session.historyKey);
     if (session !== activitySession || source !== wallet || source.locked || localStorage.getItem(VAULT_KEY) !== session.vault) return;
@@ -635,7 +640,9 @@ const portfolio = createPortfolio({
   // Ixios build ixiosChain is undefined and never matches.
   // NODUS is read only while its send module is ready (it is not in the
   // portfolio's read list otherwise), through that module's client.
-  readBalances: (chain, address, endpoint, options) => chain === 'cellframe'
+  readBalances: (chain, address, endpoint, options) => Object.hasOwn(pqBalanceReaders, chain)
+    ? pqBalanceReaders[chain](address, { ...options, networkId: pqSelections[chain] })
+    : chain === 'cellframe'
     ? cellframeReader(address, endpoint, options)
     : chain === ixiosChain ? ixiosReader(address, endpoint, options)
     : chain === NODUS_ASSET.chain ? adapters.nodus.balances(chain, address, endpoint, { ...options, client: nodusClient }).finally(syncNodusPins)
@@ -910,6 +917,10 @@ $('chain').after(pqEnvironmentLabel, pqEnvironment, pqStatus, pqRecoveryNote);
 pqEnvironment.onchange = () => {
   const chain = $('chain').value;
   if (!isPqChain(chain)) return;
+  if (chain === 'algorand') {
+    if (historyJob?.chain === chain) { historyJob.controller.abort(); historyJob = null; }
+    delete historyByChain[chain]; delete historyNote[chain];
+  }
   pqSelections[chain] = pqNetwork(chain, pqEnvironment.value).id;
   try { localStorage.setItem('nodus-pq-network-environments', JSON.stringify(Object.fromEntries(Object.keys(PQ_NETWORKS).map(key => [key, pqNetwork(key, pqSelections[key]).id])))); } catch { /* choice stays in this page */ }
   syncPqAddress(chain);
@@ -931,11 +942,12 @@ function syncPqAddress(chain) {
   const address = pqAddresses[chain]?.[choice.id];
   if (address) wallet.addresses[chain] = address; else delete wallet.addresses[chain];
   receiveOnlyNetworks[chain] = { ...PQ_NETWORKS[chain], stage: choice.label, testnet: choice.id === 'testnet' };
-  portfolio.setNetwork(chain, receiveOnlyNetworks[chain]);
+  portfolio.setNetwork(chain, receiveOnlyNetworks[chain], { forgetKept: Object.hasOwn(pqBalanceReaders, chain) });
   portfolio.setAddress(chain, address);
   if ($('chain').value === chain) {
     setReceiveAddress(address || '');
     updatePqStatus(chain);
+    if (chain === 'algorand') { renderHistory(); void loadHistory(chain); }
   }
 }
 async function showPqAddresses() {
@@ -1034,11 +1046,11 @@ let autoLockMinutes = readAutoLock(autoLockStorage());
 // unless Device & settings shows them.
 {
   const box = $('show-zero-balances'), note = $('show-zero-balances-note');
-  const apply = show => { box.checked = show; portfolio.setHideZero(!show); return showZeroNote(show); };
+  const apply = show => { box.checked = !show; portfolio.setHideZero(!show); return showZeroNote(show); };
   note.textContent = apply(readShowZero(autoLockStorage()));
   box.addEventListener('change', () => {
-    const kept = writeShowZero(autoLockStorage(), box.checked);
-    note.textContent = apply(box.checked) + (kept ? '' : ' This browser did not allow saving the choice: it applies until this page is closed.');
+    const kept = writeShowZero(autoLockStorage(), !box.checked);
+    note.textContent = apply(!box.checked) + (kept ? '' : ' This browser did not allow saving the choice: it applies until this page is closed.');
   });
 }
 for (const event of ['pointerdown', 'keydown', 'input']) document.addEventListener(event, activity);
@@ -1516,14 +1528,14 @@ const nodusAmountText = units => groupDigits(formatUnits(units, NODUS_ASSET.deci
 // The button beside Send / Receive is always shown since 0.1.107 (operator:
 // "bizde earn olması lazım"): disabled, saying why, until staking can be read.
 function setEarnAvailable(available) {
-  $('quick-earn').disabled = !available; $('nav-earn').hidden = !available; $('stake-panel').hidden = !available;
+  $('quick-earn').disabled = !available; $('nav-earn').hidden = !capabilitiesFor($('chain').value).earn; $('stake-panel').hidden = !capabilitiesFor($('chain').value).earn;
   $('quick-earn').title = available ? '' : 'Earn opens once the wallet is connected to the Nodus network.';
   portfolio.setEarn(NODUS_ASSET.chain, available);
 }
 function hideStaking() {
   stakeCheck++; stakeView = undefined; expandedValidator = undefined; setEarnAvailable(false);
   $('validator-list').replaceChildren(); $('delegation-list').replaceChildren(); $('unlisted-delegations').hidden = true;
-  $('stake-status').textContent = '';
+  $('stake-status').textContent = 'Connect to the Nodus node to read delegations and prepare transactions.';
   $('stake-network').replaceChildren(); $('stake-network').hidden = true;
 }
 // The network's total stake above the witness list (adapters/nodus.js
@@ -2085,9 +2097,13 @@ function showIxiosAddress() { void doShowIxiosAddress?.(); }
 // exist only for Nodus (Earn disabled until staking can be read,
 // setEarnAvailable; Swap not yet usable).
 function showTransferActions(chain, c) {
-  $('quick-send').disabled = !!c.receiveOnly;
+  $('quick-send').disabled = !capabilitiesFor(chain).send || !!c.receiveOnly;
   $('quick-send').title = c.receiveOnly ? (c.sendNote || DEFAULT_SEND_DISABLED_NOTE) : '';
-  $('quick-earn').hidden = chain !== NODUS_ASSET.chain;
+  for (const [page, feature] of [['send', 'send'], ['receive', 'receive'], ['earn', 'earn'], ['vaults', 'sharedVaults'], ['contracts', 'contracts']]) { const link = document.querySelector(`.wallet-navigation a[href="#${page}"]`); if (link) link.hidden = !capabilitiesFor(chain)[feature]; }
+  $('quick-earn').hidden = !capabilitiesFor(chain).earn;
+  $('nav-earn').hidden = !capabilitiesFor(chain).earn;
+  const activityLink = document.querySelector('.wallet-navigation a[href="#wallet-activity"]');
+  if (activityLink) activityLink.hidden = !capabilitiesFor(chain).history;
   $('quick-swap').hidden = chain !== NODUS_ASSET.chain;
 }
 // The Send panel's asset list. NODUS: the option's VALUE is the asset's token
@@ -2148,7 +2164,15 @@ function applyAssetGate() {
 }
 $('asset').addEventListener('change', applyAssetGate);
 function selectChain() {
-  revision++; closeReview(); const chain = $('chain').value; const c = networkFor(chain);
+  revision++; closeReview();
+  if (historyJob) { historyJob.controller.abort(); historyJob = null; }
+  const chain = $('chain').value; const c = networkFor(chain);
+  for (const [id, feature] of [['stake-panel', 'earn'], ['vault-panel', 'sharedVaults'], ['evm-panel', 'contracts']]) $(id).hidden = !capabilitiesFor(chain)[feature];
+  document.dispatchEvent(new CustomEvent('wallet-network-change', { detail: { chain } }));
+  if (capabilitiesFor(chain).earn && (!nodusClient || nodusClient.state !== 'ready' || !nodusClient.stakeable)) hideStaking();
+  // A network change cancels the old page request as well as transaction review.
+  if (shownPage && !pageSupported(chain, shownPage)) navigateWalletPage(null, { focus: false });
+  if (waitingPage && !pageSupported(chain, waitingPage)) { waitingPage = null; window.history.replaceState(null, '', pageUrl(null)); }
   for (const label of document.querySelectorAll('.selected-network-name')) label.textContent = c.name;
   // "Mainnet" for every network but Nodus, whose `stage` is 'Testnet'.
   for (const label of document.querySelectorAll('.selected-network-stage')) label.textContent = isPqChain(chain) ? pqNetwork(chain, pqSelections[chain]).label : c.stage || 'Mainnet';
@@ -2199,10 +2223,37 @@ $('chain').onchange = selectChain;
 // available (Earn, Shared vaults and Smart contracts appear only after the
 // NODUS client connects), unless the user has done anything in the wallet
 // meanwhile.
+// Keep the network context and icon rail visible beside every wallet screen.
+const walletHome = $('wallet-home'), walletContainer = walletHome.parentElement;
+walletContainer.classList.add('wallet-workspace');
+const rail = document.querySelector('.wallet-navigation');
+const context = document.querySelector('.transfer-actions');
+walletContainer.insertBefore(rail, walletHome); walletContainer.insertBefore(context, walletHome);
+const networkSelect = document.querySelector('.network-select'); context.prepend(networkSelect);
+const receive = $('receive-panel');
+function transferPage(name, panel) {
+  const wrapper = document.createElement('div'); wrapper.id = `page-${name}`; wrapper.className = 'wallet-page'; wrapper.dataset.page = name; wrapper.hidden = true;
+  wrapper.append(panel); walletContainer.append(wrapper); return wrapper;
+}
+receive.classList.add('dashboard-panel'); receive.setAttribute('aria-labelledby', 'receive-title');
+transferPage('receive', receive); transferPage('send', $('send-form'));
+$('send-title').firstChild.textContent = 'Send · ';
+const combinedLink = rail.querySelector('a[href="#send-form"]');
+combinedLink.href = '#send'; combinedLink.querySelector('.nav-name').textContent = 'Send';
+const receiveLink = combinedLink.cloneNode(true); receiveLink.href = '#receive'; receiveLink.querySelector('.nav-name').textContent = 'Receive'; combinedLink.after(receiveLink);
+combinedLink.querySelector('svg').innerHTML = '<path d="M12 20V4M6 10l6-6 6 6"/>';
+receiveLink.querySelector('svg').innerHTML = '<path d="M12 4v16M6 14l6 6 6-6"/>';
+rail.querySelector('a[href="#assets-panel"]').href = '#';
+for (const link of rail.querySelectorAll('a')) { const label = link.querySelector('.nav-name').textContent; link.title = label; link.setAttribute('aria-label', label); }
+const zeroLabel = document.querySelector('label[for="show-zero-balances"]');
+zeroLabel.lastChild.textContent = ' Hide zero networks';
+
+$('assets-panel').querySelector('.panel-heading').append(zeroLabel);
+$('show-zero-balances-note').textContent = 'Only networks with a fresh exact zero for every holding are hidden.';
 const WALLET_PAGES = [...document.querySelectorAll('.wallet-page')];
 const pageNode = name => WALLET_PAGES.find(node => node.dataset.page === name) || null;
 const pagePanel = node => node.querySelector('.dashboard-panel');
-const pageAvailable = node => !!node && !pagePanel(node).hidden;
+const pageAvailable = node => !!node && pageSupported($('chain').value, node.dataset.page) && !pagePanel(node).hidden;
 const pageTitle = node => $(pagePanel(node).getAttribute('aria-labelledby'));
 function hashName() { try { return decodeURIComponent(location.hash.slice(1)); } catch { return ''; } }
 // The page the hash names: a page's own name, or the id of an element on a
@@ -2323,18 +2374,9 @@ new MutationObserver(() => {
 // Anything the user does in the open wallet ends the wait.
 for (const type of ['pointerdown', 'keydown']) $('wallet-open').addEventListener(type, () => { waitingPage = null; }, true);
 
-// Both shortcuts lead to the same Send / Receive panel: receive block on top,
-// send block below it.
-$('quick-send').onclick = () => {
-  navigateWalletPage(null, { focus: false });
-  $('send-block-title').focus({ preventScroll: true });
-  $('send-block').scrollIntoView({ block: 'start' });
-};
-$('quick-receive').onclick = () => {
-  navigateWalletPage(null, { focus: false });
-  $('receive-title').focus({ preventScroll: true });
-  $('receive-panel').scrollIntoView({ block: 'start' });
-};
+// Legacy shortcut handlers route to their dedicated action screens.
+$('quick-send').onclick = () => navigateWalletPage('send');
+$('quick-receive').onclick = () => navigateWalletPage('receive');
 // Earn opens the NODUS staking page; the selected network moves to NODUS
 // so Activity shows where a delegation is tracked.
 $('quick-earn').onclick = () => {
@@ -2342,13 +2384,13 @@ $('quick-earn').onclick = () => {
   if ($('chain').value !== NODUS_ASSET.chain) { $('chain').value = NODUS_ASSET.chain; selectChain(); }
   navigateWalletPage('earn');
 };
-$('nav-earn').onclick = event => { event.preventDefault(); $('quick-earn').click(); };
+$('nav-earn').onclick = event => { event.preventDefault(); if (capabilitiesFor($('chain').value).earn) navigateWalletPage('earn'); };
 // "Register a name" (HF-4): the NODUS receive block's "Chain name" part,
 // reached like Receive; the selected network moves to NODUS.
 $('quick-name').onclick = () => {
   if ($('quick-name').hidden) return;
   if ($('chain').value !== NODUS_ASSET.chain) { $('chain').value = NODUS_ASSET.chain; selectChain(); }
-  navigateWalletPage(null, { focus: false });
+  navigateWalletPage('receive', { focus: false });
   $('name-block').scrollIntoView({ block: 'start' });
   if (!$('name-fields').hidden) $('name-input').focus({ preventScroll: true });
   else $('name-title').focus({ preventScroll: true });

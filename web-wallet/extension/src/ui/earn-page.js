@@ -1,3 +1,4 @@
+import { capabilitiesFor } from '../../../src/capabilities.js';
 import { formatUnits } from '../../../src/core.js';
 import { shortKey } from '../../../src/adapters/nodus.js';
 import { NODUS_ASSET } from '../../../src/nodus/network.js';
@@ -164,9 +165,10 @@ function renderStaking(view) {
   function update() {
     const next = selected() === 'nodus' && !!ui.state.nodus?.stakeable, changed = next !== available;
     available = next; $('quick-earn').disabled = !next; $('quick-earn').title = next ? '' : 'Earn opens once the wallet is connected to the Nodus network.';
-    $('nav-earn').hidden = $('stake-panel').hidden = !next; portfolio.setEarn('nodus', next);
+    $('nav-earn').hidden = $('stake-panel').hidden = !capabilitiesFor(selected()).earn; portfolio.setEarn('nodus', next);
+    if (!next) $('stake-status').textContent = 'Connect to the Nodus node to read delegations and prepare transactions.';
     if (changed) { generation++; if (next) void refresh(); else { stakeView = undefined; expandedValidator = undefined; $('validator-list').replaceChildren(); $('delegation-list').replaceChildren(); $('stake-network').hidden = true; } }
   }
-  return { update, refresh, sent() { expandedValidator = undefined; if (stakeView) renderStaking(stakeView); void refresh(); }, dispose() { disposed = true; generation++; stakeView = undefined; } };
+  return { update, refresh, contextChanged() { generation++; expandedValidator = undefined; }, sent() { expandedValidator = undefined; if (stakeView) renderStaking(stakeView); void refresh(); }, dispose() { disposed = true; generation++; stakeView = undefined; } };
 }
 

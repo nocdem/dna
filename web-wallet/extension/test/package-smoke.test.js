@@ -12,6 +12,7 @@ import { Script } from 'node:vm';
 const exec = promisify(execFile);
 const walletRoot = fileURLToPath(new URL('../../', import.meta.url));
 const sourceManifest = JSON.parse(await readFile(new URL('../manifest.json', import.meta.url), 'utf8'));
+const archiveHelper = join(walletRoot, 'scripts', 'extension-archive.py');
 const zip = join(walletRoot, 'dist-extension', `nodus-wallet-${sourceManifest.version}.zip`);
 
 async function filesBelow(directory, prefix = '') {
@@ -26,6 +27,48 @@ async function filesBelow(directory, prefix = '') {
   }
   return files.sort();
 }
+
+test('archive helper creates deterministic files and rejects unsafe archives and sources', async () => {
+  await exec('python3', ['-c', `
+import json, pathlib, stat, subprocess, sys, tempfile, zipfile
+helper = sys.argv[1]
+def run(*args, success=True):
+    result = subprocess.run([sys.executable, helper, *map(str, args)], capture_output=True, text=True)
+    assert (result.returncode == 0) == success, result.stderr
+    return result.stdout
+with tempfile.TemporaryDirectory(prefix='extension-archive-test-') as temporary:
+    root = pathlib.Path(temporary)
+    source = root / 'source'; source.mkdir()
+    (source / 'z.txt').write_text('last')
+    (source / 'a.txt').write_text('first')
+    first = root / 'first.zip'; second = root / 'second.zip'
+    run('create', source, first); run('create', source, second)
+    assert first.read_bytes() == second.read_bytes()
+    assert json.loads(run('list', first)) == [{'path':'a.txt','size':5},{'path':'z.txt','size':4}]
+    run('create', source, first, success=False)
+    assert first.read_bytes() == second.read_bytes(), 'Existing archive must remain intact'
+    destination = root / 'extracted'
+    run('extract', first, destination)
+    assert (destination / 'a.txt').read_text() == 'first'
+    run('extract', first, destination, success=False)
+    (source / 'link').symlink_to(source / 'a.txt')
+    run('create', source, root / 'symlink-source.zip', success=False)
+    cases = [['../outside'], ['/absolute'], ['a\\b'], ['a:a'], ['a', 'a'], ['a', 'a/b'], ['link']]
+    for index, names in enumerate(cases):
+        archive = root / ('bad-%d.zip' % index)
+        with zipfile.ZipFile(archive, 'w') as output:
+            for name in names:
+                info = zipfile.ZipInfo(name)
+                info.create_system = 3
+                info.external_attr = ((stat.S_IFLNK if name == 'link' else stat.S_IFREG) | 0o644) << 16
+                output.writestr(info, 'payload')
+        run('list', archive, success=False)
+        target = root / ('bad-output-%d' % index)
+        run('extract', archive, target, success=False)
+        assert not target.exists(), 'Validation must happen before extraction'
+    assert not (root / 'outside').exists()
+`, archiveHelper]);
+});
 
 // Node 22; no compile flags. Environment: CHROMIUM_PATH defaults to /usr/bin/chromium.
 // Run after scripts/build-extension.sh. Only an absent versioned zip skips this test.
@@ -48,15 +91,15 @@ test('MV3 Connect zip keeps legacy Nodus Wallet provider discovery for local sit
   const extension = join(temporary, 'extension');
   let context, server;
   try {
-    const { stdout } = await exec('/usr/bin/unzip', ['-Z1', zip]);
-    const entries = stdout.trim().split('\n');
+    const { stdout } = await exec('python3', [archiveHelper, 'list', zip]);
+    const entries = JSON.parse(stdout).map(entry => entry.path);
     assert.equal(new Set(entries).size, entries.length, 'Duplicate zip entries');
     for (const entry of entries) {
       assert.ok(entry && !entry.startsWith('/') && !entry.includes('\\') &&
         !entry.split('/').includes('..'), `Unsafe zip entry: ${entry}`);
       assert.ok(!/(^|\/)site-sdk(\/|$)/u.test(entry), 'Site SDK must not ship in the extension');
     }
-    await exec('/usr/bin/unzip', ['-q', zip, '-d', extension]);
+    await exec('python3', [archiveHelper, 'extract', zip, extension]);
     const files = await filesBelow(extension);
     for (const file of files) t.diagnostic(`${file}\t${(await stat(join(extension, file))).size} bytes`);
     const manifest = JSON.parse(await readFile(join(extension, 'manifest.json'), 'utf8'));
@@ -124,7 +167,7 @@ test('MV3 Connect zip keeps legacy Nodus Wallet provider discovery for local sit
     const { chromium } = await import('playwright');
     context = await chromium.launchPersistentContext(join(temporary, 'profile'), {
       executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium',
-      channel: 'chromium', headless: true,
+      channel: 'chromium', headless: true, chromiumSandbox: true,
       ignoreDefaultArgs: ['--disable-extensions'],
       args: [`--load-extension=${extension}`, `--disable-extensions-except=${extension}`,
         `--proxy-server=${origin}`, '--proxy-bypass-list=127.0.0.1', '--disable-background-networking'],

@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { runInNewContext } from 'node:vm';
+import { capabilitiesFor } from '../../src/capabilities.js';
 
 async function loader(t) {
   t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -16,7 +17,8 @@ async function loader(t) {
   const slots = { history: { replaceChildren() {} }, 'history-status': {} }, polls = [];
   let finish, text = 'Waiting for the provider, retrying in 43 seconds.';
   const held = new Promise(resolve => { finish = resolve; });
-  const context = { document: {}, selected: 'ethereum', disposed: false, readGeneration: 0, $: id => slots[id],
+  const context = { document: {}, selected: 'ethereum', disposed: false, readGeneration: 0, historyController: undefined,
+    capabilitiesFor, AbortController, selectedNetwork: () => ({ id: 'mainnet' }), $: id => slots[id],
     setTimeout, clearTimeout, isSolanaTron: () => false,
     element: () => ({ querySelector: () => ({ children: [] }) }), renderSolanaTronHistory() {},
     ui: { request: async (method, [chain, options]) => {
@@ -50,4 +52,24 @@ test('extension stops status polling when its screen is disposed', async t => {
   assert.equal(polls.length, 0);
   finish({ rows: [], status: 'Late result.' }); await reading;
   assert.notEqual(slots['history-status'].textContent, 'Late result.');
+});
+
+test('switching network cancels pending history and discards its late result', async t => {
+  const { context, slots, polls, finish } = await loader(t);
+  const reading = context.loadHistory();
+  const original = context.historyController;
+  t.mock.timers.tick(1000); await nextTurn();
+  assert.equal(polls.length, 1);
+  // CKB has balances but no implemented account history. Its new context
+  // must clear the old history and cancel it without issuing another read.
+  context.selected = 'ckb';
+  await context.loadHistory();
+  assert.equal(original.signal.aborted, true);
+  assert.equal(slots['history-status'].textContent, '');
+  const count = polls.length;
+  t.mock.timers.tick(5000); await nextTurn();
+  assert.equal(polls.length, count);
+  finish({ rows: [{ hash: 'old-network' }], status: 'Late Ethereum result.' });
+  await reading;
+  assert.equal(slots['history-status'].textContent, '');
 });
