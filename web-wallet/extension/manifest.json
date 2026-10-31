@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Nodus Wallet",
   "short_name": "Nodus",
-  "version": "0.1.142",
+  "version": "0.1.143",
   "description": "Nodus Wallet",
   "minimum_chrome_version": "123",
   "action": {

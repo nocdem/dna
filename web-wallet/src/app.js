@@ -13,6 +13,7 @@ import { CPUNK_ASSET, displayAmount, unavailableAssetNote } from './portfolio.js
 import { IXIOS_NETWORK, IXIOS_ASSET } from './ixios/network.js';
 import { PQ_NETWORKS, PQ_ENTRIES, isPqChain, pqNetwork } from './pq/networks.js';
 import { derivePqAddresses } from './pq/receive.js';
+import { setNetworkSelectOptions } from './network-groups.js';
 import { NODUS_ASSET, NODUS_TOKEN_ID, nodusNetworkFor } from './nodus/network.js';
 // null until package (c3) ships the module; see src/nodus/send-module.js.
 import { nodusSendModuleFactory } from './nodus/send-module.js';
@@ -601,10 +602,10 @@ const checkRowStatus = async (row, options) => {
 };
 function trackActivity() { stopTracking(); renderActivity(); if (wallet) stopTracking = watchActivity(visibleActivity, () => { renderActivity(); followSubmission(); void reconcileQuarantine(); }, { check: checkRow }); }
 const endpoints = Object.fromEntries(Object.entries(CHAINS).map(([key, chain]) => [key, chain.endpoint]));
-// Receive-only networks outside CHAINS, in display order (network selector,
-// portfolio filters, badges and asset rows). None can be sent to: src/wallet.js
-// has no adapter for them. Nodus leads every list (and so is the network
-// selected when the page loads); Cellframe and Ixios follow CHAINS. Nodus has
+// Receive-only networks outside CHAINS, in asset-row order. Network choices,
+// badges and filters group these definitions by wallet key profile. None can
+// be sent to: src/wallet.js has no adapter for them. Nodus leads every list
+// and is selected when the page loads. In asset rows the extra networks follow CHAINS. Nodus has
 // no endpoint: nothing reads a balance for it (src/nodus/network.js).
 // With a send module in the build, the receive-only entry is the
 // "connecting" one (src/nodus/network.js nodusNetworkFor).
@@ -708,7 +709,7 @@ const ADDRESS_CHECKS = {
 };
 // The networks an address can be saved for, in the network selector's order.
 const ADDRESS_NETWORKS = [NODUS_ASSET.chain, ...Object.keys(CHAINS), ...(CPUNK_ENABLED ? ['cellframe'] : [])].filter(chain => ADDRESS_CHECKS[chain]);
-$('address-book-network').replaceChildren(...ADDRESS_NETWORKS.map(chain => new Option(networkFor(chain).name, chain)));
+setNetworkSelectOptions($('address-book-network'), ADDRESS_NETWORKS.map(chain => [chain, networkFor(chain)]));
 let addressBook = [], addressBookEditing = null, addressBookDeleteArmed = null, addressBookNote = '', addressBookWrites = Promise.resolve();
 // The saved address book did not authenticate or check out at unlock: it is
 // left as it is until the user saves an address (commitAddressBook).
@@ -887,9 +888,11 @@ function followSubmission() {
   if (follow.link) $('wallet-status').append(explorerLink(follow.record.chain, follow.record.hash));
   if (terminal(follow.record.status)) submissionFollow = null;
 }
-for (const { network, asset } of leadingNetworks) $('chain').add(new Option(network.name, asset.chain));
-for (const [key, chain] of Object.entries(CHAINS)) $('chain').add(new Option(chain.name, key));
-for (const { network, asset } of extraNetworks) $('chain').add(new Option(network.name, asset.chain));
+setNetworkSelectOptions($('chain'), [
+  ...leadingNetworks.map(({ network, asset }) => [asset.chain, network]),
+  ...Object.entries(CHAINS),
+  ...extraNetworks.map(({ network, asset }) => [asset.chain, network]),
+]);
 const pqEnvironmentLabel = document.createElement('label'), pqEnvironment = document.createElement('select');
 pqEnvironmentLabel.textContent = 'Network environment'; pqEnvironmentLabel.htmlFor = pqEnvironment.id = 'pq-network-environment';
 const pqStatus = document.createElement('p'), pqRecoveryNote = document.createElement('p');

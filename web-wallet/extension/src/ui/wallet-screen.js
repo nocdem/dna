@@ -6,6 +6,7 @@ import { CPUNK_ASSET } from '../../../src/portfolio.js';
 import { NODUS_TOKEN_ID, NODUS_ASSET, nodusNetworkFor } from '../../../src/nodus/network.js';
 import { IXIOS_NETWORK, IXIOS_ASSET } from '../../../src/ixios/network.js';
 import { PQ_NETWORKS, PQ_ENTRIES, isPqChain } from '../../../src/pq/networks.js';
+import { setNetworkSelectOptions } from '../../../src/network-groups.js';
 import { portfolioReaders, mountSavedSettings, mountDeleteWallet } from './wallet-page.js';
 import { readBalanceRefresh, writeBalanceRefresh, balanceRefreshNote } from '../../../src/balance-refresh.js';
 import { readShowZero, writeShowZero, showZeroNote } from '../../../src/zero-balances.js';
@@ -230,9 +231,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     previousNetwork = JSON.stringify([selected, state.networks?.[selected], selected === 'nodus' ? state.nodus?.state : null]);
     previousTokens = JSON.stringify(selected === 'nodus' ? state.nodus?.tokens : null); previousAddress = address;
   }
-  for (const [chain, config] of Object.entries(networks)) {
-    const option = element('option', config.name); option.value = chain; $('chain').append(option);
-  }
+  setNetworkSelectOptions($('chain'), Object.entries(networks));
   $('chain').value = selected;
   $('chain').onchange = () => { cancelReview(); selected = $('chain').value; selectChain(true); };
   $('copy-address').onclick = () => run(async () => { await window.navigator.clipboard.writeText($('receive-address').textContent); message('Address copied.'); });

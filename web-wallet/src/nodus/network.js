@@ -16,6 +16,7 @@
 // show "Mainnet" (src/app.js selectChain) — the send module is pinned to the
 // Nodus testnet (src/nodus/send-module.js NODUS_SEND_NETWORK).
 export const NODUS_NETWORK = {
+  networkGroup: 'pq',
   name: 'Nodus', symbol: 'NODUS', decimals: 8, icon: 'nodus.svg', tokens: [], receiveOnly: true, balanceUnavailable: true, stage: 'Testnet',
   // Shown under the hidden send fields when Nodus is the selected network.
   sendNote: 'Sending NODUS is not available in this release.',

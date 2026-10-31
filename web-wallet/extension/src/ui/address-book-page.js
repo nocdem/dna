@@ -4,6 +4,7 @@ import { isRecipientAddress as solanaAddress } from '../../../src/adapters/solan
 import { isRecipientAddress as tronAddress } from '../../../src/adapters/tron.js';
 import { validateCellframeAddress } from '../../../src/cpunk-protocol.js';
 import { addAddress, updateAddress, removeAddress, addressesFor, findAddress, checkAddress } from '../../../src/address-book.js';
+import { setNetworkSelectOptions } from '../../../src/network-groups.js';
 
 // src/app.js:675-692: format checks only; there is no client or key here.
 const evmAddress = name => text => {
@@ -55,7 +56,7 @@ export function mountAddressBook({ root, document, ui, networks, selected, navig
     }) : [el('p', 'No saved addresses yet. Add one below, or save a recipient after you send.', 'hint')]));
     recipients();
   }
-  $('address-book-network').replaceChildren(...Object.keys(ADDRESS_CHECKS).map(chain => { const option = el('option', networks[chain]?.name ?? chain); option.value = chain; return option; }));
+  setNetworkSelectOptions($('address-book-network'), Object.keys(ADDRESS_CHECKS).map(chain => [chain, networks[chain]]));
   $('address-book-form').onsubmit = event => {
     event.preventDefault();
     return run(async () => {

@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { ASSETS, PRICE_MAX_AGE, chainBalances, portfolioSnapshot, usdText, displayAmount } from '../../src/portfolio.js';
+import { assertNetworkGroups } from '../../test/browser-network-groups.js';
 
 // Node >=22.14; Chromium at CHROMIUM_PATH or /usr/bin/chromium. No build or
 // compile flags. SHOT_DIR optionally keeps review screenshots; otherwise no
@@ -77,7 +78,8 @@ async function assertPortfolioLayout(page) {
       amountFirst: Boolean(amount.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING),
       labelSize: parseFloat(getComputedStyle(label).fontSize), previousLabelSize,
       upperGap: box.top - greeting.bottom,
-      lowerGap: document.querySelector('#portfolio-networks .network-health').getBoundingClientRect().top - box.bottom };
+      // The network section now starts with its visible category heading.
+      lowerGap: document.querySelector('#portfolio-networks').firstElementChild.getBoundingClientRect().top - box.bottom };
   });
   assert.equal(layout.amountFirst, true, 'The amount precedes its label in reading order');
   assert.ok(layout.amount.bottom <= layout.label.top, 'The amount sits above its label');
@@ -273,10 +275,11 @@ async function assertHome(page, popup) {
   assert.equal(await page.locator('.extension-network').count(), 0);
   assert.equal(await page.locator('.network-health').count(), 15);
   assert.equal(await page.locator('.network-filter').count(), 16);
-  const networks = ['Nodus', 'Ethereum', 'BNB Smart Chain', 'Solana', 'TRON', 'Cellframe', 'Ixios',
-    'Algorand', 'Tidecoin', 'Nervos CKB', 'Soqucoin', 'QTC', 'Verona / XION', 'Splendor', 'Asentum'];
+  const networks = ['Nodus', 'Cellframe', 'Ixios', 'Algorand', 'Tidecoin', 'Nervos CKB',
+    'Soqucoin', 'QTC', 'Verona / XION', 'Splendor', 'Asentum', 'Ethereum', 'BNB Smart Chain', 'Solana', 'TRON'];
   assert.deepEqual(await page.locator('.network-health > span:not(.health-light):not(.coin-icon)').allTextContents(), networks);
   assert.deepEqual(await page.locator('#chain option').allTextContents(), networks);
+  await assertNetworkGroups(page);
   await page.waitForFunction(() => {
     const icons = [...document.querySelectorAll('img[data-icon="ixios.png"]')];
     return icons.length > 0 && icons.every(icon => icon.complete && icon.naturalWidth > 0);

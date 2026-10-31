@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { chromium } from 'playwright';
 import { pastePhrase } from './browser-phrase.js';
+import { assertNetworkGroups } from './browser-network-groups.js';
 const jsQR=createRequire(import.meta.url)('jsqr');
 const app=fileURLToPath(new URL('..',import.meta.url)),web=join(app,'dist'),extension=join(app,'dist-extension/unpacked');
 const fixture=JSON.parse(await readFile(new URL('./fixtures/pq-receive.json',import.meta.url),'utf8')).vectors[0];
@@ -90,7 +91,23 @@ try {
     await page.locator('#phrase-submit').click();
     try { await page.locator('#wallet-open').waitFor({state:'visible'}); }
     catch(error) { if(process.env.PQ_RECEIVE_DIAGNOSTIC) await page.waitForFunction(()=>document.querySelector('#wallet-status')?.textContent,{},{timeout:25000}).catch(()=>{}); console.error('RESTORE DIAGNOSTIC',await page.evaluate(()=>({status:document.querySelector('#wallet-status')?.textContent,phraseError:document.querySelector('#phrase-error')?.textContent,invalid:[...document.querySelectorAll(':invalid')].map(n=>({id:n.id,message:n.validationMessage})),body:document.body.innerText})),errors); throw error; }
+    await assertNetworkGroups(page);
+    // A balance redraw keeps keyboard focus on the same grouped badge and
+    // does not scroll or change the selected transfer network.
+    await page.locator('.network-health[data-chain="tidecoin"]').focus();
+    const focusRedraw=await page.evaluate(()=>{
+      const before={x:scrollX,y:scrollY,chain:document.querySelector('#chain').value};
+      document.querySelector('#portfolio-hide').click();document.querySelector('#portfolio-hide').click();
+      return {before,after:{x:scrollX,y:scrollY,chain:document.querySelector('#chain').value},focused:document.activeElement?.dataset.chain};
+    });
+    assert.deepEqual(focusRedraw.after,focusRedraw.before);assert.equal(focusRedraw.focused,'tidecoin');
+    // Crossing group boundaries retains the legacy receive address and returns
+    // to the exact PQ fixture; selecting a heading cannot become a chain value.
+    await openReceive(page);await page.selectOption('#chain','ethereum');
+    const legacyAddress=await page.locator('#receive-address').textContent();
+    assert.match(legacyAddress,/^0x[0-9a-fA-F]{40}$/);
     for(const [chain,networks] of Object.entries(fixture.addresses))for(const [network,expected]of Object.entries(networks))await address(page,chain,network,expected);
+    await page.selectOption('#chain','ethereum');assert.equal(await page.locator('#receive-address').textContent(),legacyAddress);
     await settings(page);
     if(mode==='web'){
       await page.locator('#vault-storage-title').click();
@@ -114,6 +131,13 @@ try {
     await lockPage(page);await page.reload();await page.locator('#unlock-password:visible').fill(password);await page.locator('#unlock-wallet').click();
     await page.locator('#wallet-open').waitFor({state:'visible'});
     await address(page,'asentum','testnet',fixture.addresses.asentum.testnet);
+    await page.locator('#chain').focus();await page.locator('#chain').press('ArrowDown');
+    assert.equal(await page.locator('#chain').inputValue(),'ethereum');
+    assert.equal(await page.locator('#receive-address').textContent(),legacyAddress);
+    await page.locator('#chain').press('ArrowUp');
+    assert.equal(await page.locator('#chain').inputValue(),'asentum');
+    await page.waitForFunction(expected=>document.querySelector('#receive-address')?.textContent===expected,fixture.addresses.asentum.testnet);
+    await assertNetworkGroups(page);
     assert.equal(await page.locator('#pq-network-environment option').count(),1);
     assert.deepEqual(errors,[]);
     await lockPage(page);await context.close();context=null;

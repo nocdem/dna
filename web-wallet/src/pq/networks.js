@@ -1,7 +1,7 @@
 const sendNote = 'Receive only. Sending and balances are not available in this release.';
 function entry(name, symbol, decimals, ids, icon) {
   const networks = ids.map(id => Object.freeze({ id, label: id === 'mainnet' ? 'Mainnet' : 'Testnet' }));
-  return Object.freeze({ name, symbol, decimals, icon, tokens: Object.freeze([]),
+  return Object.freeze({ name, symbol, decimals, icon, networkGroup: 'pq', tokens: Object.freeze([]),
     receiveOnly: true, balanceUnavailable: true, sendNote,
     networks: Object.freeze(networks), defaultNetwork: ids[0] });
 }

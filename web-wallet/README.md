@@ -6,8 +6,28 @@ The product is Nodus Wallet. CPUNK is the temporary CF-20 integration until the 
 
 ## PQ receive — recovery contract v1 (2026-10-31)
 
-Wallet/extension package version: **0.1.142**. This does not change the Nodus
+Wallet/extension package version: **0.1.143**. This does not change the Nodus
 node or protocol version.
+
+Network badges, individual network filters and network selectors in the web
+wallet, Nodus Connect and browser extension group the supported wallet profiles
+under **Post-quantum (PQ)** and **Legacy**. Nodus, Cellframe, Ixios and the eight
+receive-only additions are grouped as post-quantum; Ethereum, BNB Smart Chain,
+Solana and TRON are grouped as legacy. This describes the wallet's supported
+key profile, not a chain-wide security assertion. Unclassified entries remain
+under **Other networks**. Address-book selectors group only their existing
+supported chains; the single **All networks** filter retains its behavior.
+
+Grouping coverage for 0.1.143 is in `test/browser-network-groups.js`, called by
+`test/browser-pq-receive.js` and `extension/test/ui-layout.test.js`. It asserts
+actual native optgroups, badge/filter/address-book membership and labels, and
+a single **All networks** filter. The packaged receive gate also checks
+Legacy/PQ switching and the keyboard boundary, exact addresses, decoded QR
+codes and recovery, plus badge focus and scroll preservation on redraw.
+The existing test prerequisites apply, including web and extension builds;
+run `CHROMIUM_PATH=/usr/bin/chromium node test/browser-pq-receive.js` from
+`web-wallet/`. These checks use public fixtures and make no external chain
+transactions.
 
 The web wallet, Nodus Connect and browser extension share the eight official
 project logos bundled in `src/assets/coins/`. The original files are preserved

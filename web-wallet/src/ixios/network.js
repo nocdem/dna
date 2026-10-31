@@ -11,6 +11,7 @@
 // `rpcOptions` or enters as a custom HTTPS endpoint).
 const IXIOS_RPC = 'https://ixios-rpc.innova.limited';
 export const IXIOS_NETWORK = {
+  networkGroup: 'pq',
   name: 'Ixios', symbol: 'IXIOS', decimals: 18, icon: 'ixios.png', tokens: [], receiveOnly: true,
   endpoint: IXIOS_RPC, rpcOptions: [{ url: IXIOS_RPC, label: 'Ixios public RPC' }],
   // Shown under the hidden send fields when Ixios is the selected network, in
