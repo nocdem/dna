@@ -1,3 +1,4 @@
+import { groupNetworkEntries } from './network-groups.js';
 import { capabilitiesFor } from './capabilities.js';
 import { CHAINS } from './config.js';
 import { PQ_NETWORKS } from './pq/networks.js';
@@ -53,6 +54,17 @@ function icon(symbol, network) {
 // health badge, the per-chain holding row) must show the Cellframe logo, not
 // the CPUNK asset icon shown in the asset summary.
 function networkIcon(c) { return c.icon ? iconImg(c.icon) : icon(c.symbol); }
+
+function groupedNetworkControls(entries, control) {
+  return groupNetworkEntries(entries).map(group => {
+    const block = el('div', 'network-group'), items = el('div', 'network-group-items');
+    block.dataset.networkGroup = group.id;
+    block.setAttribute('role', 'group'); block.setAttribute('aria-label', group.label);
+    items.append(...group.entries.map(control));
+    block.append(el('h4', 'network-group-title', group.label), items);
+    return block;
+  });
+}
 
 // This controller receives only public addresses, never a wallet or signing key.
 // `extraNetworks` is an ordered list of `{ network: { name, symbol, receiveOnly,
@@ -155,8 +167,25 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
     $('refresh').disabled = jobs.size > 0 || !!priceJob;
     $('portfolio-hide').textContent = hidden ? 'Show balances' : 'Hide balances';
     $('portfolio-hide').setAttribute('aria-pressed', String(hidden));
-    // Networks are presented once, with their holdings below.
-    $('portfolio-networks').replaceChildren(); $('portfolio-networks').hidden = true;
+    const focusedBadge = document.activeElement?.closest('.network-health');
+    const focusedChain = focusedBadge && $('portfolio-networks').contains(focusedBadge) ? focusedBadge.dataset.chain : undefined;
+    $('portfolio-networks').replaceChildren(...groupedNetworkControls(Object.entries(networks), ([chain, c]) => {
+      const rows = snap.rows.filter(r => r.chain === chain), ready = rows.every(r => r.balance !== null && r.keptAt === undefined);
+      const lastRead = rows.filter(r => r.keptAt !== undefined).map(r => r.keptAt);
+      const status = c.balanceUnavailable ? (lastRead.length ? `Last read ${readTime(Math.min(...lastRead))}` : 'Balance not shown yet') : rows.some(r => r.state === 'loading') || jobs.has(chain) ? 'Reading' : ready ? 'Balances read'
+        : lastRead.length ? `Last read ${readTime(Math.min(...lastRead))}` : rows.every(r => r.state === 'idle') ? 'Not read' : 'Incomplete';
+      // Historical lights show stale or failed reads; titles retain the full status.
+      const reading = status === 'Reading';
+      const health = !c.balanceUnavailable && rows.some(r => r.state === 'error') ? 'failed' : ready && rows.length && !c.balanceUnavailable ? 'current' : lastRead.length ? 'old' : 'none';
+      // Use the existing selection path without navigating away from the current page.
+      const badge = el('button', 'network-health'); badge.type = 'button'; badge.dataset.chain = chain;
+      badge.dataset.health = health; badge.dataset.reading = String(reading);
+      badge.title = `${c.name} · ${status}`; badge.setAttribute('aria-label', `${badge.title}. Use ${c.name} for Send / Receive`);
+      badge.setAttribute('aria-pressed', String(chain === selected));
+      badge.onclick = () => selectAsset(chain, c.symbol, 'choose');
+      badge.append(networkIcon(c), el('span', '', c.name), el('span', 'health-light')); return badge;
+    }));
+    if (focusedChain !== undefined) [...$('portfolio-networks').querySelectorAll('.network-health')].find(badge => badge.dataset.chain === focusedChain)?.focus({ preventScroll: true });
     const opened = new Set([...$('balances').querySelectorAll('details[open]')].map(d => d.dataset.symbol));
     const focused = document.activeElement, focusedGroup = focused?.closest('.asset-group')?.dataset.symbol;
     const focusedAction = focused?.getAttribute('aria-label'), focusedRowAction = focused?.dataset?.rowAction;

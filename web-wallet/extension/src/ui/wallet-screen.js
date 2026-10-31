@@ -41,8 +41,14 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   $('wallet-home').prepend($('wallet-heading'));
   const workspace = $('wallet-open'); workspace.classList.add('wallet-workspace');
   const rail = root.querySelector('.wallet-navigation'), context = root.querySelector('.transfer-actions');
-  workspace.insertBefore(rail, $('wallet-home')); workspace.insertBefore(context, $('wallet-home'));
+  const portfolioCard = $('wallet-home').querySelector('.portfolio-card');
+  workspace.insertBefore(rail, $('wallet-home')); portfolioCard.after(context);
   context.prepend(root.querySelector('.network-select'));
+  const networkSelect = root.querySelector('.network-select');
+  $('chain').hidden = true; networkSelect.querySelector('label').hidden = true;
+  networkSelect.querySelector('.selected-network-stage').hidden = true;
+  networkSelect.append($('portfolio-networks'));
+  $('portfolio-networks').setAttribute('aria-label', 'Choose Send / Receive network and view balance read status');
   const receivePanel = $('receive-panel'); receivePanel.classList.add('dashboard-panel'); receivePanel.setAttribute('aria-labelledby', 'receive-title');
   appendPage('receive', receivePanel); appendPage('send', $('send-form'));
   $('send-title').firstChild.textContent = 'Send · ';
@@ -172,6 +178,8 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     if (page && !previous) walletScroll = window.scrollY;
     if (shownPage === 'settings' && name !== 'settings') clearReveal();
     shownPage = page ? name : null;
+    if (page && context.parentElement !== workspace) workspace.insertBefore(context, $('wallet-home'));
+    else if (!page && context.parentElement !== $('wallet-home')) portfolioCard.after(context);
     $('wallet-home').hidden = Boolean(page);
     for (const node of root.querySelectorAll('.wallet-page')) node.hidden = node !== page;
     if (page) {

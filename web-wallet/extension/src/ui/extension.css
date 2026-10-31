@@ -64,3 +64,5 @@ body.extension-page[data-page="popup"] { overflow: auto; }
 /* The shared wallet rail is the only contextual action navigation. */
 .extension-page .transfer-actions .transfer-buttons { display: none; }
 .extension-page .wallet-workspace > .wallet-navigation { top: 0; }
+
+.extension-page .transfer-actions #portfolio-networks { margin-top: 0; }

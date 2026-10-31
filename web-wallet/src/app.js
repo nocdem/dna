@@ -653,7 +653,7 @@ const portfolio = createPortfolio({
   // panel below the asset list: SINGLE_COLUMN_DASHBOARD) scrolls it into view.
   selectAsset(chain, symbol, action) {
     if (!wallet) return;
-    if (action !== 'earn') navigateWalletPage(null);
+    if (action !== 'earn' && action !== 'choose') navigateWalletPage(null);
     $('chain').value = chain; selectChain();
     if (!selectAssetOption(chain, symbol) && action === 'send') {
       message(`${symbol} is unavailable right now. Nothing was started.`, { category: 'send', error: true });
@@ -2228,8 +2228,14 @@ const walletHome = $('wallet-home'), walletContainer = walletHome.parentElement;
 walletContainer.classList.add('wallet-workspace');
 const rail = document.querySelector('.wallet-navigation');
 const context = document.querySelector('.transfer-actions');
-walletContainer.insertBefore(rail, walletHome); walletContainer.insertBefore(context, walletHome);
+const portfolioCard = walletHome.querySelector('.portfolio-card');
+walletContainer.insertBefore(rail, walletHome); portfolioCard.after(context);
 const networkSelect = document.querySelector('.network-select'); context.prepend(networkSelect);
+// Keep the native selection state for the existing network/environment lifecycle.
+$('chain').hidden = true; networkSelect.querySelector('label').hidden = true;
+networkSelect.querySelector('.selected-network-stage').hidden = true;
+networkSelect.append($('portfolio-networks'));
+$('portfolio-networks').setAttribute('aria-label', 'Choose Send / Receive network and view balance read status');
 const receive = $('receive-panel');
 function transferPage(name, panel) {
   const wrapper = document.createElement('div'); wrapper.id = `page-${name}`; wrapper.className = 'wallet-page'; wrapper.dataset.page = name; wrapper.hidden = true;
@@ -2283,6 +2289,8 @@ function showWalletPage(name, { focus = true } = {}) {
   const previous = shownPage;
   if (!previous && walletViewShown()) walletScroll = scrollY;
   shownPage = next;
+  if (next) walletContainer.insertBefore(context, walletHome);
+  else portfolioCard.after(context);
   $('wallet-home').hidden = !!next;
   for (const page of WALLET_PAGES) page.hidden = !next || page !== node;
   // The Logs view (src/session-log.js) fills and refreshes only while its
