@@ -278,6 +278,20 @@ export function emptyState() {
 export const SEEN_OWN_KINDS = Object.freeze(['profile', 'list']);
 const isMap = value => value && typeof value === 'object' && !Array.isArray(value);
 const HEX128_KEY = /^[0-9a-f]{128}$/;
+// Optional browser-owned metadata, outside the C-projected contact state.
+// It uses the existing encrypted state-store record format and save queue.
+// Older builds ignore this unlisted record and leave it on disk.
+export const REQUEST_RECOVERY_RECORD_ID = 'request-recovery-v1';
+const REQUEST_RECOVERY_DAMAGED = 'The stored contact-request recovery record is damaged.';
+export const emptyRequestRecovery = () => ({ version: 1, handledRequests: {}, acceptingRequests: {} });
+export function checkRequestRecovery(value) {
+  if (!isMap(value) || value.version !== 1 || Object.keys(value).sort().join() !== 'acceptingRequests,handledRequests,version' ||
+      ['handledRequests', 'acceptingRequests'].some(key => !isMap(value[key]) ||
+        Object.entries(value[key]).some(([fp, at]) => !HEX128_KEY.test(fp) || typeof at !== 'string' || !U64.test(at)))) {
+    throw new StorageError(REQUEST_RECOVERY_DAMAGED);
+  }
+  return value;
+}
 export const PROFILE_RECORD_ID = /^p\d{20}$/;
 // Shared vaults (src/vaults/): state.vaults maps a vault address to the id
 // of its own record in the 'state' store ({ id: 'v' + 20 digits, at }),
@@ -528,7 +542,7 @@ export function writeAll(db, puts, deletes = []) {
 
 // The persistent store of a saved wallet. Resolves once the whole history
 // has been read and decrypted; rejects (Messages stays closed) on any error.
-// Returns { persistent: true, state, messages, profiles, vaults,
+// Returns { persistent: true, state, requestRecovery, messages, profiles, vaults,
 // groupRecords, groupMessages, dropped, save(state, newMessages, …),
 // close(), erase() }.
 // `signal` (optional): bounds the IndexedDB open and read, which resolve only
@@ -550,6 +564,7 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
   // The last COMMITTED state records (Map id -> canonical text) and the fp
   // -> id map of the newest snapshot (design §2.3 item 2, §2.1).
   let baseline = new Map(), idMap = {}, dropped = [];
+  let requestRecovery = emptyRequestRecovery(), recoveryBaseline;
   // The held records ('p' / 'v' / 'g' / 'k' / 'x') on disk as last
   // COMMITTED, the value of every group record among them that opened, and
   // whether reachability deletes may run in this session (BUGS W-18,
@@ -622,6 +637,14 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
       finally { bytes.fill(0); }
     };
     const stateRecords = raw.stateRecords || [];
+    // Recovery receipts fail closed, before any migration can write. A
+    // missing optional record is old history; a present unreadable or
+    // malformed record must never reset replay protection to empty.
+    const recoveryRecord = stateRecords.find(r => r?.id === REQUEST_RECOVERY_RECORD_ID);
+    if (recoveryRecord !== undefined) {
+      requestRecovery = checkRequestRecovery(await open(STORE_STATE, recoveryRecord));
+      recoveryBaseline = JSON.stringify(requestRecovery);
+    }
     const stateRecord = stateRecords.find(r => r?.id === STATE_ID);
     if (stateRecord === undefined) {
       // Nothing kept yet: the first save writes the header.
@@ -743,6 +766,9 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
   function prepare(nextState) {
     if (closed) throw new StorageError('Message history is closed.');
     checkState(nextState);
+    checkRequestRecovery(requestRecovery);
+    const hasRecovery = recoveryBaseline !== undefined || Object.keys(requestRecovery.handledRequests).length || Object.keys(requestRecovery.acceptingRequests).length;
+    const recoveryText = hasRecovery ? JSON.stringify(requestRecovery) : undefined;
     const snap = stateSnapshot(core, nextState, idMap);
     try { stateLoaded(core, snap.texts.get(STATE_ID), snapshotRecords(snap.texts)); }
     catch { throw new StorageError(HISTORY_TOO_LARGE_TEXT); }
@@ -752,6 +778,9 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
     reportDropped(snap.dropped);
     // what the index points to, with this snapshot (W-18)
     snap.index = indexRefs(nextState);
+    // Snapshot recovery alongside the contact state, with the same queued
+    // failure/undo rebuild semantics. Never pass these maps to C projection.
+    snap.recoveryText = recoveryText;
     return snap;
   }
   // The caller's rollback, run at most once; its own throw never replaces
@@ -836,6 +865,9 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
       }),
       ...diff.puts.map(p => ({ store: STORE_STATE, id: p.id, text: p.text }))
     ];
+    if (snap.recoveryText !== undefined && snap.recoveryText !== recoveryBaseline) {
+      list.push({ store: STORE_STATE, id: REQUEST_RECOVERY_RECORD_ID, text: snap.recoveryText });
+    }
     // W-18: the held records nothing reachable from this snapshot's index
     // points to, in the same transaction (design §2.3 item 2). The group
     // records this commit writes are read as they will be (the last one of
@@ -861,6 +893,7 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
     if (closed) throw new StorageError('Message history is closed.');
     await writeAll(db, puts, deletes);
     baseline = snap.texts;
+    if (snap.recoveryText !== undefined) recoveryBaseline = snap.recoveryText;
     // what is on disk now (the deletes run after the puts in writeAll)
     for (const e of held) present.add(e.id);
     for (const [id, value] of writing) groupValues.set(id, structuredClone(value));
@@ -876,21 +909,23 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
     if (!navigator.locks) throw new StorageError('This browser cannot safely delete saved data.');
     await navigator.locks.request('nodus.wallet.storage', () => deleteDatabase(name));
   }
-  return { persistent: true, state, messages, profiles, vaults, groupRecords, groupMessages, dropped, save, close, erase };
+  return { persistent: true, state, requestRecovery, messages, profiles, vaults, groupRecords, groupMessages, dropped, save, close, erase };
 }
 
 // An unsaved wallet (words typed in, or a new account): nothing is written
 // anywhere; everything is gone when Messages locks (S8).
 export function memoryHistoryStore() {
   let closed = false;
+  const requestRecovery = emptyRequestRecovery();
   return {
-    persistent: false, state: emptyState(), messages: [], profiles: [], vaults: [], groupRecords: [], groupMessages: [],
+    persistent: false, state: emptyState(), requestRecovery, messages: [], profiles: [], vaults: [], groupRecords: [], groupMessages: [],
     // The same arguments as the persistent save(); nothing is written. A
     // refusal runs the caller's `undo` first, as there.
     async save(nextState, newMessages = [], keptProfiles = [], keptVaults = [], keptGroups = [], { undo } = {}) {
       try {
         if (closed) throw new StorageError('Message history is closed.');
         checkState(nextState);
+        checkRequestRecovery(requestRecovery);
       } catch (error) {
         if (typeof undo === 'function') { try { undo(); } catch { /* the save's error stands */ } }
         throw error;

@@ -42,14 +42,14 @@
 // text written by someone else (names, notes, messages, profile fields) in a
 // <bdi> with the "unusual characters" marker (dom.js untrusted); a website
 // only as a checked https: link; no innerHTML, no inline style attribute.
-import { createNodusConnectCore, acceptanceMayAutoApprove, CONTACT_READS_MAX } from '../core.js';
+import { createNodusConnectCore, acceptanceMayAutoApprove, CONTACT_ACCEPTED_MSG, CONTACT_READS_MAX } from '../core.js';
 import { openHistoryStore, memoryHistoryStore, StorageError } from '../store.js';
 import {
   parseContactInput, requestRefusal, profilePatch, profileStatusText, contactListStatusText, senderClockLabel, shownAt,
   pendingOutbox, hasUndelivered, compareLocal, receivedKey,
   publishedSeqs, markPublished, markDelivered, ackToSend, ackAllowed, messageStatus, avatarPatch, AVATAR_UPLOAD_MAX_B64,
   checkOrder, contactDays, contactNeedsFullSync, profileFresh, contactNames, mergeListedContacts, removeContact, unremoveContact,
-  firstRecordAllowed, markOwnRecordSeen, declinedNow, isDeclined, addDeclined, undecline, acceptedSalt,
+  firstRecordAllowed, markOwnRecordSeen, declinedNow, isDeclined, addDeclined, undecline,
   shortId, inspectUntrusted,
   updatingStageText, checkingContactsText, roundStartLine, stageLine, stageStartLine, contactStartLine, contactStepLine,
   contactLine, roundDoneLine
@@ -131,11 +131,14 @@ let adding = false;
 const ADD_OFFLINE_TEXT = 'Messages is still connecting to the network. You can send the request once it is connected.';
 
 // ── session state (all dropped by close / reset) ───────────────────────
-let core, store, state, messages = [], ownFp, ownProfile, fresh = false, vaultId = null;
+let core, store, state, requestRecovery, messages = [], ownFp, ownProfile, fresh = false, vaultId = null;
 let generation = 0, syncTimer, syncing = false;
 let checkRound = 0;                      // message check rounds started this session (session log only)
 let sending = false;                     // a composer send is being kept on this device (send)
 let requests = [], selectedFp, eraseArmed = false, profileTaken = false;
+let contactListReadNote = '', contactListNeedsSave = false, contactListReadable = false;
+const accepting = new Map();             // fp -> generation-specific action token
+const acceptanceSent = new Map();        // successful send, awaiting durable completion
 let mlkemRepublishTried = false;         // the own profile was republished with the ML-KEM key this open (checkOwnAccount)
 let removeArmed;                         // the contact whose "Remove" was pressed once (asks to confirm)
 let addResolved;                         // { name, owner }: the add box's chain name, looked up and shown, awaiting confirmation
@@ -229,8 +232,10 @@ function wipe() {
   const c = core; core = undefined;
   try { c?.lock(); } catch { /* the rest must still run */ }
   try { store?.close(); } catch { /* same */ }
-  store = undefined; state = undefined; messages = []; ownFp = undefined; ownProfile = undefined;
+  store = undefined; state = undefined; requestRecovery = undefined; messages = []; ownFp = undefined; ownProfile = undefined;
   fresh = false; vaultId = null; requests = []; selectedFp = undefined; nodusClient = undefined;
+  contactListReadNote = ''; contactListNeedsSave = false; contactListReadable = false;
+  accepting.clear(); acceptanceSent.clear();
   eraseArmed = false; profileTaken = false; mlkemRepublishTried = false; ownNameConfirmed = false; removeArmed = undefined; addResolved = undefined;
   replyTo = undefined; menuFor = undefined; menuAnchor = undefined; jumpNew = 0;
   payFor = undefined; transferCheckAt = 0; transferChecking = false; transferAgain = false;
@@ -352,6 +357,7 @@ async function openLocal(gen) {
     if (gen !== generation) { opened.close(); return; }
     store = opened;
     state = structuredClone(store.state);
+    requestRecovery = store.requestRecovery;
     // One pending request per ID: a double press before 0.1.98 could keep two
     // (the newest wins; saved with the next change).
     state.outgoing = [...new Map(state.outgoing.map(o => [o.fp, o])).values()];
@@ -520,6 +526,12 @@ async function republishWithMlkem(gen, own) {
 const nowSeconds = () => String(Math.floor(Date.now() / 1000));
 // A u64 from a core result (decimal string or small number); anything else is 0.
 const u64 = value => /^(0|[1-9]\d{0,19})$/.test(String(value)) ? BigInt(String(value)) : 0n;
+// Request timestamps come from the verified wire. Ordinary replay receipts
+// require strictly newer requests; pending responses may share the request's
+// second because the existing wire has no per-request nonce.
+const requestTimeValid = value => (typeof value === 'string' || typeof value === 'number') && /^(0|[1-9]\d{0,19})$/.test(String(value));
+const requestIsNewer = (at, prior) => requestTimeValid(at) && (prior === undefined || (requestTimeValid(prior) && u64(at) > u64(prior)));
+const responseIsCurrent = (at, pendingAt) => requestTimeValid(at) && requestTimeValid(pendingAt) && u64(at) >= u64(pendingAt);
 const contactOf = fp => state.contacts.find(c => c.fp === fp);
 // Someone this device sent a contact request to who has not answered yet
 // (0.1.99, operator 2026-10-12: "kontak listemize eklese, pending olarak
@@ -562,15 +574,60 @@ function addContactLocal(fp, salt) {
   return contact;
 }
 
+// Each undo owns only this approval's mutations; a later unrelated save or
+// a new session must not be rolled back when this save fails (P7 store undo).
+function prepareContactApproval(fp, salt) {
+  const target = state, before = contactOf(fp), beforeSalt = before?.salt;
+  const outgoing = target.outgoing, declined = target.declined, wasRemoved = target.removed.includes(fp);
+  const contact = addContactLocal(fp, salt), afterSalt = contact.salt;
+  const nextOutgoing = target.outgoing, nextDeclined = target.declined;
+  return () => {
+    if (!before) { const i = target.contacts.indexOf(contact); if (i >= 0) target.contacts.splice(i, 1); }
+    else if (target.contacts.includes(before) && before.salt === afterSalt) before.salt = beforeSalt;
+    if (target.outgoing === nextOutgoing) target.outgoing = outgoing;
+    if (target.declined === nextDeclined) target.declined = declined;
+    // Restore only this approval's removed membership. Other peers' new
+    // markers and a later explicit removal of this peer stay as they are.
+    if (wasRemoved && !target.removed.includes(fp)) target.removed.push(fp);
+  };
+}
+
+function setRequestClock(key, fp, at) {
+  const map = requestRecovery[key], before = map[fp];
+  if (at === undefined) delete map[fp]; else map[fp] = String(at);
+  return () => {
+    if (map[fp] !== (at === undefined ? undefined : String(at))) return;
+    if (before === undefined) delete map[fp]; else map[fp] = before;
+  };
+}
+
 // The own list on the network: add what it has and this device lacks. A
 // salt this device already holds is kept (the agreement comes first, the
 // list second — design §1.4 R3). A contact removed on this device is not
 // added back (text.js mergeListedContacts).
 async function mergeContactList(gen) {
-  const list = await core.contactsGet();
-  if (gen !== generation || list.outcome !== 'found') return;
+  let list;
+  try { list = await core.contactsGet(); }
+  catch (error) {
+    if (gen !== generation) return;
+    contactListReadable = false;
+    contactListReadNote = explain(error, 'The network contact list could not be read. Local contacts are kept; checking again automatically.');
+    return;
+  }
+  if (gen !== generation) return;
+  // EMPTY is readable, but first creation still uses firstRecordAllowed
+  // below (W-04), including saved/reopened wallets. UNREADABLE never writes.
+  contactListReadable = list.outcome === 'found' || list.outcome === 'empty';
+  if (list.outcome !== 'found') {
+    contactListReadNote = list.outcome === 'empty'
+      ? 'The network returned an empty contact-list answer. Local contacts are kept; checking again automatically.'
+      : 'The network contact list could not be read. Local contacts are kept; checking again automatically.';
+    return;
+  }
   const seen = markOwnRecordSeen(state, 'list', nowSeconds());
-  if (mergeListedContacts(state, list.contacts, ownFp) || seen) await persist();
+  if (mergeListedContacts(state, list.contacts, ownFp) || seen) contactListNeedsSave = true;
+  if (contactListNeedsSave) { await persist(); if (gen !== generation) return; contactListNeedsSave = false; }
+  contactListReadNote = '';
 }
 
 // Contacts this device has that the network list may lack: merge-only add
@@ -578,7 +635,7 @@ async function mergeContactList(gen) {
 // The FIRST list is created only while this device has never seen the own
 // list on the network (W-04, text.js firstRecordAllowed).
 async function publishContacts(gen) {
-  if (state.listTaken) return;
+  if (state.listTaken || !contactListReadable) return;
   const missing = state.contacts.filter(c => !c.listed);
   if (!missing.length) return;
   const result = await core.contactsAdd(missing.map(c => ({ fp: c.fp, salt: c.salt || undefined })),
@@ -768,13 +825,14 @@ async function sync() {
       const accountAt = stageBegin('account');
       if (!await checkOwnAccount(gen) || gen !== generation) return;
       stageEnd('account', accountAt);
-      const listAt = stageBegin('contacts');
-      await mergeContactList(gen);
-      if (gen !== generation) return;
-      stageEnd('contacts', listAt);
-      online = true;
-      render();
     }
+    // Retry failed/empty own-list reads on the existing polling/manual
+    // sync path. A successful read only merges; it never removes locals.
+    const listAt = stageBegin('contacts');
+    await mergeContactList(gen);
+    if (gen !== generation) return;
+    stageEnd('contacts', listAt);
+    if (!online) { online = true; render(); }
     const requestsAt = stageBegin('requests');
     await syncRequests(gen);
     if (gen !== generation) return;
@@ -970,6 +1028,7 @@ async function sync() {
       feedback.sync = storageFailure
         ? `${storageFailure.message}${notChecked}`
         : `Last checked ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. New messages are checked every 30 seconds.${notChecked}`;
+      if (contactListReadNote) feedback.sync += ` ${contactListReadNote}`;
       logCheck(roundDoneLine(round, { ms: Date.now() - roundAt, fresh: arrivedTotal, failed }));
       // What arrived while away is in by now (web 0.1.122): from here on a
       // growing unread total is a new message (the host's chime, alert.js).
@@ -1004,27 +1063,58 @@ async function syncRequests(gen) {
   let completed = false;
   for (const request of result.requests || []) {
     if (!request || !HEX128.test(request.sender) || request.sender === ownFp) continue;
-    if (acceptanceMayAutoApprove(request, pending)) { await completeOutgoing(request, gen); if (gen !== generation) return; completed = true; continue; }
+    if (!requestIsNewer(request.timestamp, undefined)) continue;
+    const response = request.acceptance === true && request.message === CONTACT_ACCEPTED_MSG;
+    if (acceptanceMayAutoApprove(request, pending)) {
+      const mine = state.outgoing.find(o => o.fp === request.sender);
+      // A response to an earlier outgoing request must not complete a new
+      // pending request. Missing legacy pending times cannot prove freshness.
+      if (mine && responseIsCurrent(request.timestamp, mine.at)) completed = await completeOutgoing(request, gen) || completed;
+      if (gen !== generation) return;
+      continue;
+    }
     // Without a pending outgoing request (e.g. after an unsaved session
     // ends), show the acceptance for explicit consent, as the app does.
     // HIGH-7 forbids auto-approval here, not the normal Accept / Decline flow.
-    if (contactOf(request.sender) || isDeclined(state.declined, request.sender)) continue;
+    if ((response && contactOf(request.sender)) || isDeclined(state.declined, request.sender)) continue;
+    const sent = String(acceptanceSent.get(request.sender)?.timestamp) === String(request.timestamp);
+    if (!response && !requestIsNewer(request.timestamp, requestRecovery.handledRequests[request.sender]) && !(accepting.has(request.sender) && sent)) continue;
     const seen = latest.get(request.sender);
-    if (!seen || u64(request.timestamp) > u64(seen.timestamp)) latest.set(request.sender, request);
+    if (!seen || u64(request.timestamp) > u64(seen.timestamp)) latest.set(request.sender, {
+      ...request,
+      retry: !response && (String(requestRecovery.acceptingRequests[request.sender]) === String(request.timestamp) || sent),
+      saveOnly: !response && sent
+    });
   }
   requests = [...latest.values()];
   if (gen === generation && (completed || requests.map(r => `${r.sender}|${r.timestamp}`).join() !== shownBefore)) render();
 }
 
-// They accepted our request: the contact uses the salt WE offered, and our
-// request is withdrawn as the app does after an auto-approve (nc_core.h
-// nc_request_cancel, dna_engine_contacts.c:580).
+// They accepted our request: use their established salt before our pending
+// offer, preserving any existing local contact salt. Never send another ACK.
 async function completeOutgoing(request, gen) {
-  const mine = state.outgoing.find(o => o.fp === request.sender);
-  addContactLocal(request.sender, acceptedSalt(mine, request));
-  await persist();
-  if (gen !== generation) return;
-  try { await core.requestCancel(request.sender); } catch { /* the request expires on its own */ }
+  if (accepting.has(request.sender)) return false;
+  const token = {};
+  accepting.set(request.sender, token);
+  try {
+    const mine = state.outgoing.find(o => o.fp === request.sender);
+    if (!mine || !responseIsCurrent(request.timestamp, mine.at)) return false;
+    const undo = prepareContactApproval(request.sender, request.salt || mine.salt || null);
+    invalidateContactSalt(request.sender);
+    await persist([], undo);
+    if (gen !== generation) return false;
+    if (!state.outgoing.some(o => o.fp === request.sender)) {
+      try { await core.requestCancel(request.sender); } catch { /* the request expires on its own */ }
+    }
+    return gen === generation;
+  } finally { if (accepting.get(request.sender) === token) accepting.delete(request.sender); }
+}
+
+function invalidateContactSalt(fp) {
+  saltChecked.delete(fp);
+  unpublished.add(fp);
+  for (const key of [...blobs.keys()]) if (key.startsWith(`${fp}|`)) blobs.delete(key);
+  delete state.dmSync[fp];
 }
 
 // A contact's message check, in two halves around its group's one read
@@ -2018,16 +2108,20 @@ function renderRequests() {
   ui.requestList.replaceChildren(...(requests.length ? requests.map(request => el('li', { className: 'request-row' },
     avatar(request.sender),
     el('div', { className: 'request-main' },
-      el('span', { className: 'contact-name' }, el('span', { className: 'request-label', text: 'Not a contact' }), nameTitle(request.sender)),
+      el('span', { className: 'contact-name' }, el('span', { className: 'request-label', text: contactOf(request.sender) ? 'Reconnect request' : 'Not a contact' }), nameTitle(request.sender)),
       nameHint(request.sender, { claimed: request.claimed_name, prefix: 'says their name is ' }),
       // An acceptance with no pending request of ours here (an unsaved
       // session ended, another device, or never sent; 0.1.95 shows it, BUGS
       // W-09): said in our words, not as their note, which reads like a
       // confirmation from the system (0.1.97).
-      request.acceptance === true
+      request.acceptance === true && request.message === CONTACT_ACCEPTED_MSG
         ? el('p', { className: 'request-orphan', text: 'Says they accepted a contact request from you. This device has no record of sending one — accept only if you know them.' })
         : request.message ? el('p', { className: 'request-note' }, untrusted(request.message)) : null,
-      el('div', { className: 'request-actions' }, button('Accept', () => void accept(request), 'small'), button('Decline', () => void decline(request), 'secondary small')))
+      contactOf(request.sender) ? el('p', { className: 'request-note', text: 'This contact wants to reconnect. Your existing contact and conversation history are kept.' }) : null,
+      request.retry ? el('p', { className: 'request-orphan', text: request.saveOnly
+        ? 'The reply was sent, but saving the result failed. Retry saves it without sending another reply.'
+        : 'An earlier acceptance attempt may not have completed. Retry only if you want to send the acceptance again.' }) : null,
+      el('div', { className: 'request-actions' }, button(request.retry ? 'Retry' : contactOf(request.sender) ? 'Reconnect' : 'Accept', () => void accept(request), 'small'), button('Decline', () => void decline(request), 'secondary small')))
   )) : [el('li', { className: 'contact-empty', text: 'No new requests.' })]));
 
   ui.outgoingList.replaceChildren(...(state.outgoing.length ? state.outgoing.map(o => el('li', { className: 'request-row' },
@@ -2513,27 +2607,109 @@ function fillNameLine() {
 // ── actions ────────────────────────────────────────────────────────────
 async function accept(request) {
   if (remote) return requestView('contactAccept', { fp: request.sender });
-  const gen = generation;
+  const gen = generation, fp = request.sender;
   if (!online) { feedback.requestsStatus = 'Requests can be answered once Messages is connected to the network.'; return; }
-  feedback.requestsStatus = 'Accepting…';
+  if (accepting.has(fp)) return;
+  const response = request.acceptance === true && request.message === CONTACT_ACCEPTED_MSG;
+  const token = { removed: false }, originalContact = contactOf(fp);
+  const current = () => gen === generation && isOpen() && !token.removed &&
+    requests.some(r => r.sender === fp && String(r.timestamp) === String(request.timestamp) &&
+      r.acceptance === request.acceptance && r.message === request.message) &&
+    (!originalContact || contactOf(fp) === originalContact) &&
+    (!response || !state.outgoing.some(o => o.fp === fp) || responseIsCurrent(request.timestamp, state.outgoing.find(o => o.fp === fp).at));
+  if (!current()) return;
+  accepting.set(fp, token);
+  feedback.requestsStatus = originalContact ? 'Reconnecting…' : 'Accepting…';
   try {
-    if (!await ensureProfile(request.sender)) { if (gen === generation) feedback.requestsStatus = "This person's account could not be read right now. Try again in a minute."; return; }
+    const sent = acceptanceSent.get(fp);
+    let salt = sent && String(sent.timestamp) === String(request.timestamp) ? sent.salt : undefined;
+    if (salt !== undefined && sent.removed) token.removed = true;
+    if (salt === undefined) {
+      if (!await ensureProfile(fp)) { if (gen === generation) feedback.requestsStatus = "This person's account could not be read right now. Try again in a minute."; return; }
+      if (!current()) return;
+      // A known contact never adopts an untrusted incoming offer. If its
+      // established salt is missing, only the existing authenticated salt
+      // reconciliation path may recover it; an unreadable read waits.
+      const contact = contactOf(fp);
+      salt = contact ? contact.salt : response ? request.salt || state.outgoing.find(o => o.fp === fp)?.salt || null : request.salt;
+      if (!salt) {
+        const result = await core.saltReconcile(fp, null);
+        if (!current()) return;
+        if (result.status === 'wait' || !result.salt) {
+          feedback.requestsStatus = 'The established messaging salt could not be read. Try again in a minute.';
+          return;
+        }
+        salt = result.salt;
+      }
+      if (!current()) return;
+      // An orphan acceptance needs consent, but is already a response:
+      // never acknowledge it with a reciprocal acceptance.
+      if (!response) {
+        if (!requestIsNewer(request.timestamp, requestRecovery.handledRequests[fp])) return;
+        const undo = setRequestClock('acceptingRequests', fp, request.timestamp);
+        await persist([], undo);       // no network acceptance before storage
+        if (!current()) return;
+        // Re-read the established salt after storage/profile awaits: the
+        // normal sync may have reconciled it while the approval was waiting.
+        if (contactOf(fp)?.salt) salt = contactOf(fp).salt;
+        await core.requestAccept(fp, salt);
+        if (gen !== generation) return;
+        acceptanceSent.set(fp, { timestamp: request.timestamp, salt, removed: token.removed });
+      }
+    }
     if (gen !== generation) return;
-    await core.requestAccept(request.sender, request.salt || null);
+    // A local removal while a reply was in flight stays a removal. The
+    // handled receipt still prevents the old ordinary request reappearing.
+    const undos = [];
+    if (!token.removed && (!originalContact || contactOf(fp) === originalContact)) undos.push(prepareContactApproval(fp, salt));
+    if (!response) {
+      undos.push(setRequestClock('handledRequests', fp, request.timestamp));
+      undos.push(setRequestClock('acceptingRequests', fp, undefined));
+    }
+    if (contactOf(fp)) invalidateContactSalt(fp);
+    await persist([], () => { for (const undo of undos.reverse()) undo(); });
     if (gen !== generation) return;
-    addContactLocal(request.sender, request.salt || null);
-    requests = requests.filter(r => r.sender !== request.sender);
-    await persist();
-    if (gen !== generation) return;
-    feedback.requestsStatus = 'Contact added.';
-    markRead(request.sender);
+    acceptanceSent.delete(fp);
+    requests = requests.filter(r => r.sender !== fp || String(r.timestamp) !== String(request.timestamp));
+    // Explicitly accepting a response also withdraws our own original
+    // ordinary request, just as completing a pending outgoing request does.
+    if (response) {
+      if (!state.outgoing.some(o => o.fp === fp)) {
+        try { await core.requestCancel(fp); } catch { /* expires on its own */ }
+      }
+      if (gen !== generation) return;
+    }
+    feedback.requestsStatus = token.removed
+      ? 'The contact remains removed from this device.'
+      : originalContact ? 'Contact reconnected.' : 'Contact added.';
+    if (contactOf(fp)) markRead(fp);
     render();
     await publishContacts(gen);
-  } catch (error) { if (gen === generation) feedback.requestsStatus = explain(error, 'Accepting failed. Try again in a minute.'); if (!ui) throw error; }
+  } catch (error) {
+    if (gen === generation) {
+      const sent = String(acceptanceSent.get(fp)?.timestamp) === String(request.timestamp);
+      if (sent && !requests.some(r => r.sender === fp && u64(r.timestamp) >= u64(request.timestamp))) requests.push({ ...request });
+      for (const r of requests) if (r.sender === fp && String(r.timestamp) === String(request.timestamp)) {
+        r.retry = sent || String(requestRecovery.acceptingRequests[fp]) === String(request.timestamp);
+        r.saveOnly = sent;
+      }
+      feedback.requestsStatus = sent
+        ? explain(error, 'The reply was sent, but the result could not be saved. Retry saves it without sending another reply.')
+        : explain(error, 'Accepting failed. Try again in a minute.');
+      render();
+    }
+    if (!ui) throw error;
+  } finally {
+    if (gen === generation && token.removed && ['Accepting…', 'Reconnecting…'].includes(feedback.requestsStatus)) {
+      feedback.requestsStatus = 'The contact remains removed from this device.';
+    }
+    if (accepting.get(fp) === token) accepting.delete(fp);
+  }
 }
 
 async function decline(request) {
   if (remote) return requestView('contactDecline', { fp: request.sender });
+  if (accepting.has(request.sender)) return;
   // Local only: the request is hidden on this device for 7 days (as the app)
   // and expires on the network; once per sender (text.js addDeclined, W-07).
   state.declined = addDeclined(state.declined, request.sender, nowSeconds());
@@ -2576,6 +2752,12 @@ async function removeContactAction(fp, { confirmed = false } = {}) {
   if (remote) { render(); return requestView('contactRemove', { fp, confirmed: true }); }
   const name = displayName(fp);
   removeContact(state, fp);
+  // Cancel even an approval that began before polling recovered this
+  // contact. A completed reply still needs its receipt saved, without
+  // undoing this removal on completion or on a same-session save retry.
+  const approval = accepting.get(fp), sent = acceptanceSent.get(fp);
+  if (approval) approval.removed = true;
+  if (sent) sent.removed = true;
   for (const map of [unpublished, saltChecked, dropped, others, lastRead, diags, chainNames, chainAsked, chainTried, kept, profiles]) map.delete(fp);
   for (const key of [...blobs.keys()]) if (key.startsWith(`${fp}|`)) blobs.delete(key);
   if (selectedFp === fp) selectedFp = undefined;
@@ -3049,7 +3231,7 @@ function snapshot() {
     ownNameConfirmed: open && ownNameConfirmed,
     contacts: open ? state.contacts.map(c => ({ fp: c.fp, ready: !!c.salt })) : [],
     outgoing: open ? state.outgoing.map(c => ({ fp: c.fp, ready: !!c.salt, at: c.at })) : [],
-    requests: open ? requests.map(r => pick(r, ['sender', 'timestamp', 'note', 'message', 'claimed_name', 'acceptance'])) : [],
+    requests: open ? requests.map(r => pick(r, ['sender', 'timestamp', 'note', 'message', 'claimed_name', 'acceptance', 'retry', 'saveOnly'])) : [],
     messages: open ? messages.filter(m => m.control !== true && !controlType(m.text) && (m.kind === undefined || ['chat', 'transfer', 'reaction', 'delete', 'hide'].includes(m.kind))).map(messagePublic) : [],
     profiles: people.map(fp => ({ fp, profile: profilePublic(profiles.get(fp)), chain: chainNameOf(fp), answered: chainAsked.has(fp), nameStatus: groupNameStatus(fp) })),
     groups: listed.map(g => ({ ...groupPublic(g), messages: groups.conversation(g.gid).map(m => pick(m, ['group', 'fp', 'seq', 'dir', 'text', 'at', 'published', 'failed'])) })),

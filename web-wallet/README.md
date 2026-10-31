@@ -33,7 +33,7 @@ Connect; these provider identifiers stay unchanged.
 
 ## PQ receive — recovery contract v1 (2026-10-31)
 
-Wallet/extension package version: **0.1.143**. This does not change the Nodus
+Wallet/extension package version: **0.1.144**. This does not change the Nodus
 node or protocol version.
 
 Network badges, individual network filters and network selectors in the web
@@ -2468,6 +2468,82 @@ NODUS client (`src/nodus/client.js` with `nodusSendModuleFactory`, the same
 on it (`createNodusConnectCore({ nodus })`). Lock: Messages core, then the
 client, then the store, then the single-tab lock. History records are sealed
 as UTF-8 JSON of at most 65536 bytes (`nc_wasm.c` `NC_HIST_PT_MAX`).
+
+**Contact recovery (0.1.144; browser sources).** A fresh ordinary request
+from an existing contact appears as **Reconnect / Decline**. Reconnect keeps
+the contact, its established salt and local conversation history; the reply
+carries that salt. In this approval flow the sender uses the authenticated
+acceptance's salt before its pending offer, preserving an existing local
+contact salt. Polling sends no acceptance. Known-contact acceptance responses
+produce no reconnect prompt or reciprocal reply. Removal during approval
+cancels a reply that has not started; a reply already sent keeps its receipt
+without restoring the removed contact. An unknown acceptance still
+requires explicit consent; accepting it withdraws our original request.
+
+Saved wallets keep handled request timestamps and acceptance intents in the
+optional encrypted `request-recovery-v1` state-store record, through the
+existing save queue, encryption counter reservation and transaction. A damaged
+record blocks history opening. Old builds ignore and preserve this record;
+they do not enforce its replay protection. Unsaved sessions lose this metadata
+on lock. Successful approvals suppress identical/older ordinary requests.
+Failed or uncertain attempts offer **Retry**, with no polling resend. A
+same-session completion-save retry sends no second reply. A crash after a
+successful send but before its completion is saved leaves an uncertain intent;
+an explicit retry can resend. Pending responses older than the outgoing
+request are rejected; same-second responses remain valid because the existing
+wire has no request nonce to distinguish them from a same-second replay.
+
+Own-list failures and empty answers are shown and retried by polling or manual
+sync. Reads merge only, keeping local contacts, salts, removal markers and
+history. First-list creation on an empty answer retains the existing
+`firstRecordAllowed` policy for every account, including saved/reopened
+wallets: a device that has already seen its own list does not create it again.
+Unreadable or failed reads permit no list publication. This repair
+uses shared browser sources: the receiving Web Connect site and sending
+extension package both need the update. It changes no core protocol and
+establishes neither the cause of the original network-list miss nor verified
+live recovery. Deployment and extension publication are separate actions.
+
+Recovery regressions (run from `web-wallet/`):
+
+```sh
+node --test test/connect-store.test.js test/connect-approval-undo.test.js
+node test/browser-contact-recovery.js
+CONTACT_RECOVERY_REMOTE=1 node test/browser-contact-recovery.js
+```
+
+Use Node.js 22.12 or newer and installed npm dependencies. Browser runs also
+require the shipped `src/nodus/send.js` / `src/nodus/send.wasm`, Chromium at
+`/usr/bin/chromium` (override with `CHROMIUM_PATH`), and free loopback port 4194.
+Run the browser variants serially; each starts and stops its own Vite server
+and temporary browser. No special compilation flags or live node are needed.
+
+The four recovery cases in `test/connect-store.test.js` use a fake core and
+fake IndexedDB to check separate receipt snapshots and unchanged state/history,
+counter reservations and queued rollback after a failed commit, failed opening
+of malformed/unauthenticated metadata with legacy absence allowed, and strict
+timestamp-map validation. These cases establish storage ordering, not real
+encryption or browser behavior.
+
+The two cases in `test/connect-approval-undo.test.js` execute the actual
+extracted production approval/undo functions with real local removal helpers
+to check preservation of this peer's and other peers' removal markers; they
+make no browser, network or storage assertion.
+
+`test/browser-contact-recovery.js` uses `test/contact-recovery-fixture.js` with
+the real shipped WebAssembly history codec/encryption and Chromium IndexedDB.
+It checks explicit reconnect, concurrent accepts and removal during approval;
+ordinary/acceptance distinction; salt selection; replay suppression across reopen; older versus
+same-second pending responses; unsolicited acceptance consent; storage-before-
+reply refusal; uncertain-send and completion-save retries; polling/manual list
+recovery preserving salts/removals; unchanged message ciphertext; and closed
+history after receipt ciphertext tampering. The default renders Web Connect;
+`CONTACT_RECOVERY_REMOTE=1` renders the extension's public snapshot view, not a
+packaged extension or its background lifecycle. Network exports are explicitly
+synthetic and identities use public test fixtures. External requests and all
+WebSockets are refused; no test message is sent. These tests establish no
+signature/wire correctness, real network availability, actual incident cause,
+or exactly-once delivery across the documented crash boundary.
 
 **NC-RT2 fixes (preview, unreleased).**
 - Delivery confirmation (ACK). The wire value is unchanged (8 bytes BE unix

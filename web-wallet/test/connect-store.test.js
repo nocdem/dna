@@ -60,7 +60,7 @@ import {
   openHistoryStore, stateDiff, writeAll, StorageError, DAMAGED_STATE_TEXT, emptyState, counterStorageKey,
   MAX_INVOCATIONS, STATE_ID, STORE_STATE, STORE_MESSAGES, STORE_META, COUNTER_ID,
   HISTORY_TOO_LARGE_TEXT, STATE_REMOVED_MAX, stateSnapshot, unreachableRecords, indexRefs,
-  deleteVaultHistory, HistoryDeleteBlocked
+  deleteVaultHistory, HistoryDeleteBlocked, REQUEST_RECOVERY_RECORD_ID, emptyRequestRecovery, checkRequestRecovery
 } from '../src/connect/store.js';
 import { newGroup, storedGroup } from '../src/connect/groups/model.js';
 
@@ -326,6 +326,95 @@ async function withFake(run) {
   try { return await run({ log, idb, core: fakeCore(log), storage: memoryStorage(log) }); }
   finally { globalThis.indexedDB = saved; }
 }
+
+// Recovery metadata uses the existing queue/counter/transaction, not the C
+// projected state schema. Fake crypto/IndexedDB below pin ordering; the browser
+// recovery test independently covers actual encryption, codec and disk reopen.
+test('request recovery is encrypted separately, snapshots at save and preserves ordinary history/state bytes', async () => {
+  await withFake(async ({ log, idb, core, storage }) => {
+    let store = await openHistoryStore({ core, vaultId: VAULT, storage });
+    assert.deepEqual(store.requestRecovery, emptyRequestRecovery());
+    store.state.contacts.push(contact(A));
+    await store.save(store.state, [{ seq: '1', fp: A, dir: 'in', text: 'kept fixture' }]);
+    const data = idb.dbs.get(NAME).stores;
+    const header = structuredClone(data.get(STORE_STATE).get(STATE_ID));
+    const known = structuredClone(data.get(STORE_STATE).get(cid(1)));
+    const history = structuredClone([...data.get(STORE_MESSAGES)]);
+    const oldCounter = BigInt(storage.getItem(counterStorageKey(NAME)));
+    log.length = 0;
+    store.requestRecovery.acceptingRequests[A] = '10';
+    const first = store.save(store.state);
+    store.requestRecovery.acceptingRequests[A] = '20';
+    const second = store.save(store.state);
+    await Promise.all([first, second]);
+    assert.deepEqual(log.filter(x => typeof x === 'string' && x.startsWith('seal ')),
+      [`seal state/${REQUEST_RECOVERY_RECORD_ID} @${oldCounter}`, `seal state/${REQUEST_RECOVERY_RECORD_ID} @${oldCounter + 1n}`]);
+    assert.deepEqual(data.get(STORE_STATE).get(STATE_ID), header);
+    assert.deepEqual(data.get(STORE_STATE).get(cid(1)), known);
+    assert.deepEqual([...data.get(STORE_MESSAGES)], history);
+    assert.equal(BigInt(storage.getItem(counterStorageKey(NAME))), oldCounter + 2n);
+    assert.equal(Object.hasOwn(store.state, 'acceptingRequests'), false);
+    store.close(); store = await openHistoryStore({ core, vaultId: VAULT, storage });
+    assert.equal(store.requestRecovery.acceptingRequests[A], '20');
+    delete store.requestRecovery.acceptingRequests[A]; store.requestRecovery.handledRequests[A] = '20';
+    await store.save(store.state);
+    // A normal unrelated save must keep the receipt and not rewrite messages.
+    store.state.dmSync[A] = '99'; await store.save(store.state);
+    store.close(); store = await openHistoryStore({ core, vaultId: VAULT, storage });
+    assert.equal(store.requestRecovery.handledRequests[A], '20');
+    assert.deepEqual(store.requestRecovery.acceptingRequests, {});
+    assert.deepEqual([...data.get(STORE_MESSAGES)], history); store.close();
+  });
+});
+
+test('failed recovery commit burns its reservation and queued save rebuilds after intent undo', async () => {
+  await withFake(async ({ idb, core, storage, log }) => {
+    const store = await openHistoryStore({ core, vaultId: VAULT, storage });
+    await store.save(store.state);
+    const oldCounter = BigInt(storage.getItem(counterStorageKey(NAME)));
+    store.requestRecovery.acceptingRequests[A] = '10'; idb.ctl.failCommit = 1;
+    const failed = store.save(store.state, [], [], [], [], { undo() { delete store.requestRecovery.acceptingRequests[A]; } });
+    const rejected = assert.rejects(failed, StorageError);
+    const queued = store.save(store.state);
+    await rejected; await queued;
+    assert.ok(BigInt(storage.getItem(counterStorageKey(NAME))) > oldCounter, 'failed reservation is never reused');
+    store.close();
+    const reopened = await openHistoryStore({ core, vaultId: VAULT, storage });
+    assert.deepEqual(reopened.requestRecovery.acceptingRequests, {});
+    assert.deepEqual(reopened.requestRecovery.handledRequests, {});
+    assert.ok(log.includes('commit failed')); reopened.close();
+  });
+});
+
+test('present malformed or unauthenticated recovery record fails closed; absent legacy record is allowed', async () => {
+  for (const invalid of [null, { version: 2, handledRequests: {}, acceptingRequests: {} },
+    { version: 1, handledRequests: { [A]: '-1' }, acceptingRequests: {} },
+    { version: 1, handledRequests: {}, acceptingRequests: { bad: '3' } }]) {
+    await withFake(async ({ idb, core, storage }) => {
+      const store = await openHistoryStore({ core, vaultId: VAULT, storage });
+      await store.save(store.state); store.close();
+      idb.dbs.get(NAME).stores.get(STORE_STATE).set(REQUEST_RECOVERY_RECORD_ID, sealedRecord(REQUEST_RECOVERY_RECORD_ID, invalid));
+      await assert.rejects(openHistoryStore({ core, vaultId: VAULT, storage }), StorageError);
+    });
+  }
+  await withFake(async ({ idb, core, storage }) => {
+    const store = await openHistoryStore({ core, vaultId: VAULT, storage });
+    await store.save(store.state); store.close();
+    idb.dbs.get(NAME).stores.get(STORE_STATE).set(REQUEST_RECOVERY_RECORD_ID, sealedRecord(REQUEST_RECOVERY_RECORD_ID, emptyRequestRecovery()));
+    core.tamper.add(REQUEST_RECOVERY_RECORD_ID);
+    await assert.rejects(openHistoryStore({ core, vaultId: VAULT, storage }));
+  });
+});
+
+test('recovery validation refuses unbounded/malformed clocks before a save can silently drop protection', () => {
+  for (const value of [undefined, [], { version: 1, handledRequests: [], acceptingRequests: {} },
+    { version: 1, handledRequests: { [A]: '01' }, acceptingRequests: {} },
+    { version: 1, handledRequests: {}, acceptingRequests: { [B]: '1'.repeat(21) } }]) {
+    assert.throws(() => checkRequestRecovery(value), StorageError);
+  }
+  assert.deepEqual(checkRequestRecovery({ version: 1, handledRequests: { [A]: '10' }, acceptingRequests: {} }),
+    { version: 1, handledRequests: { [A]: '10' }, acceptingRequests: {} });
+});
 
 test('stateDiff: changed or new records are put, known-ID records gone from the snapshot are deleted, the header never', () => {
   const baseline = new Map([[STATE_ID, 'h1'], [cid(1), 'a'], [cid(2), 'b'], [cid(3), 'c']]);
