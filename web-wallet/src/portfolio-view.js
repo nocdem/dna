@@ -55,13 +55,26 @@ function icon(symbol, network) {
 // the CPUNK asset icon shown in the asset summary.
 function networkIcon(c) { return c.icon ? iconImg(c.icon) : icon(c.symbol); }
 
-function groupedNetworkControls(entries, control) {
+function groupedNetworkControls(entries, control, expanded) {
   return groupNetworkEntries(entries).map(group => {
     const block = el('div', 'network-group'), items = el('div', 'network-group-items');
     block.dataset.networkGroup = group.id;
     block.setAttribute('role', 'group'); block.setAttribute('aria-label', group.label);
     items.append(...group.entries.map(control));
-    block.append(el('h4', 'network-group-title', group.label), items);
+    const title = el('h4', 'network-group-title');
+    if (group.id === 'pq' || group.id === 'legacy') {
+      const button = el('button', 'network-group-toggle', group.label); button.type = 'button';
+      const count = group.entries.length;
+      button.setAttribute('aria-label', `${group.label}, ${count} ${count === 1 ? 'network' : 'networks'}`);
+      const badge = el('span', 'network-group-count', String(count)); badge.setAttribute('aria-hidden', 'true'); button.append(badge);
+      button.dataset.networkGroupToggle = group.id; items.id = `portfolio-network-group-${group.id}`;
+      button.setAttribute('aria-controls', items.id);
+      const update = () => { const open = expanded.has(group.id); button.setAttribute('aria-expanded', String(open)); items.hidden = !open; };
+      const chevron = el('span', 'network-group-chevron', '⌄'); chevron.setAttribute('aria-hidden', 'true'); button.append(chevron);
+      button.onclick = () => { if (expanded.has(group.id)) expanded.delete(group.id); else expanded.add(group.id); update(); };
+      update(); title.append(button);
+    } else title.textContent = group.label;
+    block.append(title, items);
     return block;
   });
 }
@@ -131,6 +144,7 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
   // `{ label, note, run }`; cleared by clear() and setAction(chain, undefined).
   let rowActions = {};
   const seenNetworks = new Set();
+  const expandedNetworkGroups = new Set();
   const receiveActions = el('div', 'receive-network-actions'); receiveActions.id = 'receive-network-actions';
   $('receive-panel').append(receiveActions);
   function renderReceiveActions() {
@@ -167,6 +181,7 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
     $('refresh').disabled = jobs.size > 0 || !!priceJob;
     $('portfolio-hide').textContent = hidden ? 'Show balances' : 'Hide balances';
     $('portfolio-hide').setAttribute('aria-pressed', String(hidden));
+    const focusedToggle = document.activeElement?.dataset?.networkGroupToggle;
     const focusedBadge = document.activeElement?.closest('.network-health');
     const focusedChain = focusedBadge && $('portfolio-networks').contains(focusedBadge) ? focusedBadge.dataset.chain : undefined;
     $('portfolio-networks').replaceChildren(...groupedNetworkControls(Object.entries(networks), ([chain, c]) => {
@@ -184,7 +199,8 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
       badge.setAttribute('aria-pressed', String(chain === selected));
       badge.onclick = () => selectAsset(chain, c.symbol, 'choose');
       badge.append(networkIcon(c), el('span', '', c.name), el('span', 'health-light')); return badge;
-    }));
+    }, expandedNetworkGroups));
+    if (focusedToggle) $('portfolio-networks').querySelector(`[data-network-group-toggle="${focusedToggle}"]`)?.focus({ preventScroll: true });
     if (focusedChain !== undefined) [...$('portfolio-networks').querySelectorAll('.network-health')].find(badge => badge.dataset.chain === focusedChain)?.focus({ preventScroll: true });
     const opened = new Set([...$('balances').querySelectorAll('details[open]')].map(d => d.dataset.symbol));
     const focused = document.activeElement, focusedGroup = focused?.closest('.asset-group')?.dataset.symbol;
@@ -350,7 +366,7 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
   function clear() {
     session++; for (const job of jobs.values()) job.abort(); jobs.clear(); priceJob?.abort(); priceJob = undefined;
     clearInterval(timer); addresses = undefined; endpoints = undefined; balances = {}; quotes = {}; filter = 'all'; hidden = false; rowActions = {}; earn = {}; kept = {};
-    readAt = 0; pricesAt = 0; doneAt = 0; backgroundJobs.clear();
+    readAt = 0; pricesAt = 0; doneAt = 0; backgroundJobs.clear(); expandedNetworkGroups.clear();
     $('portfolio-updated').textContent = ''; render();
   }
   // `kept`: entries saved with this wallet (src/activity-storage.js
@@ -363,8 +379,9 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
   function changeEndpoint(chain, endpoint) {
     if (!endpoints) return;
     // Cancel the old endpoint's reads so they cannot overwrite the new state.
-    const savedAddresses = addresses, savedEndpoints = { ...endpoints, [chain]: endpoint }, savedActions = rowActions, savedKept = kept;
+    const savedAddresses = addresses, savedEndpoints = { ...endpoints, [chain]: endpoint }, savedActions = rowActions, savedKept = kept, savedGroups = [...expandedNetworkGroups];
     open(savedAddresses, savedEndpoints, { automatic: false, kept: savedKept });
+    for (const group of savedGroups) expandedNetworkGroups.add(group);
     readAt = Date.now();                 // no automatic read right after: the line below asks for Refresh (0.1.96)
     rowActions = savedActions; render();
     $('portfolio-status').textContent = 'Network endpoint changed. Refresh all to read balances again.';

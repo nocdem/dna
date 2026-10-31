@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Nodus Connect",
   "short_name": "Nodus",
-  "version": "0.1.147",
+  "version": "0.1.148",
   "description": "Nodus Connect",
   "minimum_chrome_version": "123",
   "action": {
