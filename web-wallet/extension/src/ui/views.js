@@ -6,6 +6,7 @@ import { Caip25CaveatType, Caip25EndowmentPermissionName, getEthAccounts } from 
 import { connectDetails, extensionAutoLockNote } from './wallet-ui.js';
 import { NODUS_PERMISSION, NODUS_ACCOUNT_CAVEAT } from '../background/permissions.js';
 import { CHAIN_NETWORKS, chainNetwork } from '../constants/networks.js';
+import { PQ_NETWORKS } from '../../../src/pq/networks.js';
 import { appIcon, pageHeading } from './presentation.js';
 import { displayAmount } from '../../../src/portfolio.js';
 
@@ -183,7 +184,7 @@ export function renderSettings(document, container, state, { setAutoLock, reveal
   const chainNetworks = element(document, 'div', 'page-block');
   // Operator §0 / plan §5.6: selectors belong here; no switch at the top.
   for (const [chain, choices] of Object.entries(CHAIN_NETWORKS)) {
-    const caption = element(document, 'label', '', `${NETWORKS[chain].name} network`), network = element(document, 'select');
+    const caption = element(document, 'label', '', `${(NETWORKS[chain] || PQ_NETWORKS[chain]).name} network`), network = element(document, 'select');
     caption.htmlFor = network.id = `network-${chain}`;
     for (const choice of choices) {
       const option = element(document, 'option', '', choice.label); option.value = choice.id; network.append(option);

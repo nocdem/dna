@@ -88,7 +88,12 @@ const client = { onNotification: () => () => {}, onDisconnect: () => () => {}, c
   if (method === 'resolvePendingApproval' || method === 'rejectPendingApproval') { delete state.pendingApprovals[params[0]]; return; }
   if (method === 'approvePermissionsRequest') { delete state.pendingApprovals[params[0].id]; return; }
   if (method === 'removePermissionsFor') { for (const origin of Object.keys(params[0])) delete state.subjects[origin]; return; }
-  if (method === 'setChainNetwork') { state.networks[params[0]] = params[1]; return; }
+  if (method === 'setChainNetwork') {
+    if(state.failNetworkWrites==='before')throw new Error('Public fixture network persistence failure');
+    state.networks[params[0]] = params[1];
+    if(state.failNetworkWrites==='after')throw new Error('Public fixture network persistence failure');
+    return;
+  }
   if (method === 'setPreference') { state.preferences[params[0]] = params[1]; return true; }
   throw new Error(`Unexpected layout fixture method: ${method}`);
 } };

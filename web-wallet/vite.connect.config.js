@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { collectThirdPartyLicenses, formatThirdPartyLicenses } from './scripts/third-party-licenses.mjs';
+import { vendorChunks } from './scripts/vendor-chunks.mjs';
 
 // The Nodus Connect site (connect.nodusnetwork.io; decision
 // docs/plans/decisions/2026-10-01-connect-own-origin.md): the wallet AND
@@ -47,5 +48,8 @@ export default defineConfig({
   // The entry imports ../src/; the dev server must be allowed to serve the
   // whole web-wallet tree, not only connect-site/.
   server: { fs: { allow: [here] } },
-  build: { outDir: `${here}dist-connect`, emptyOutDir: true }
+  build: {
+    outDir: `${here}dist-connect`, emptyOutDir: true,
+    rollupOptions: { output: { manualChunks: vendorChunks, onlyExplicitManualChunks: true } },
+  }
 });

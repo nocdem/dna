@@ -1,0 +1,9 @@
+{
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@asentum/sdk": "0.2.0",
+    "@noble/post-quantum": "0.2.1",
+    "@noble/hashes": "1.6.0"
+  }
+}

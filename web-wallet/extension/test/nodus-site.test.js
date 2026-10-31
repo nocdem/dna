@@ -33,6 +33,8 @@ async function setup(t) {
       async create(opts) { windows.push(opts); return { ...opts, id: 2 }; }, async update() {} },
     nodusOptions: { factory: async () => ({
       async unlock() { return { fingerprint: address, chainId: '56'.repeat(32), publicKey }; },
+      async identify() { return { fingerprint: address, chainId: '56'.repeat(32), publicKey }; },
+      async connectNetwork() {},
       async siteSignMessage({ origin, message }) { calls.push({ origin, message: [...message] }); if (state.wait) { state.entered.resolve(); await state.wait.promise; } return Uint8Array.from(Buffer.from(signature, 'hex')); },
       async balance() { if (state.balanceWait) { state.entered.resolve(); await state.balanceWait.promise; } return { total: '0', spendable: '0' }; },
       async list() { return { tip: '1', coins: [], truncated: false }; },
@@ -51,6 +53,13 @@ async function setup(t) {
   const background = await backgroundModule.createBackground(fixture), engines = [];
   await background.vaultStore.create(password, phrase);
   await background.unlock(password, options);
+  // This fixture exercises connected Nodus site/balance behavior. Local
+  // unlock now finishes before the separately scheduled network connection.
+  const readyDeadline=performance.now()+2000;
+  while(background.nodus.getState().state!=='ready') {
+    assert.ok(performance.now()<readyDeadline,'fixture connection never became ready');
+    await new Promise(resolve=>setImmediate(resolve));
+  }
   function site(origin = 'https://site.example') {
     const { engine } = background.engine.setupProviderEngineEip1193({ origin, subjectType: 'website' }); engines.push(engine);
     return { origin, request: (method, params = []) => engine.handle({ id: ++nextId, jsonrpc: '2.0', method, params, origin: 'https://forged.example' }) };

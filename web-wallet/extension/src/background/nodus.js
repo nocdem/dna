@@ -91,8 +91,13 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
       onState(state, why) {
         log.log('net', `client state ${previous} → ${state}`, { error: state === 'error' }); previous = state;
         if (session !== s || s.client !== client) return;
-        if (state === 'ready') { wasReady = true; s.retries = 0; makeAccount(s); onClient?.(client); }
+        if (state === 'ready') {
+          wasReady = true; s.retries = 0; makeAccount(s); onClient?.(client);
+          track(s);
+        }
         else if (wasReady && ['error', 'locked'].includes(state)) {
+          s.stopTracking?.(); s.stopTracking = undefined;
+          stopQuarantineTimer(s);
           if (why?.error) log.log('net', why.error, { error: true });
           scheduleRetry(s);
         }
@@ -101,12 +106,23 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
     return client;
   }
   async function connectIdentified(s, client) {
+    if (session !== s || s.client !== client || s.abort.signal.aborted || lockCoordinator.isLocked) return;
     try { await client.connectNetwork(); current(s); }
     catch (error) {
       if (session !== s || s.client !== client || s.abort.signal.aborted) return;
       log.log('net', error, { error: true });
       scheduleRetry(s, client.identified ? () => connectIdentified(s, client) : undefined);
     }
+  }
+  function startNetwork() {
+    // Injected seed consumers have no native Nodus session to connect.
+    if (!session) return;
+    const s = active();
+    if (s.networkStarted) return;
+    s.networkStarted = true;
+    // Local identities and all key holders are ready before network work joins
+    // the client's queue. Failures use the existing guarded retry lifecycle.
+    void connectIdentified(s, s.client);
   }
   async function reconnect(s) {
     let seed;
@@ -159,7 +175,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
       } catch (error) { s.activityBlocked = true; s.activityError = error.message; }
       current(s); combined.throwIfAborted();
       onActivityChanged?.(s.rows, { restored: true });
-      const identity = await s.client.unlock({ seed, fingerprint }); current(s);
+      const identity = await s.client.identify({ seed, fingerprint }); current(s); combined.throwIfAborted();
       // src/evm/ui.js:96-104 and src/app.js:1275-1279: one account queue,
       // sharing the native pending coins and restored self-address records.
       return { ...identity, client: s.client };
@@ -194,6 +210,8 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
     writes = operation; return operation;
   }
   function track(s) {
+    if (session !== s || lockCoordinator.isLocked || s.abort.signal.aborted || s.client?.state !== 'ready') return;
+    try { s.assertReady?.(); } catch { return; }
     void reconcileQuarantine(s);
     if (s.stopTracking) return;
     s.stopTracking = watchActivity(() => s.rows.filter(row => row.chain === 'nodus' && row.address === s.addresses.nodus), () => {
@@ -332,6 +350,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
       };
     },
     consumeNodusSeed,
+    startNetwork,
     replaceVault(previous, value) { if (session?.vault === previous) session.vault = value; },
     assertVault(value) { const s = active(); assertActivity(s); if (s.vault !== value) throw new Error('Lock and unlock the saved wallet before changing its password.'); },
     readSharedVault: (method, fields) => sharedVaults.read(method, fields),

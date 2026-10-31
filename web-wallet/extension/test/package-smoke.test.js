@@ -87,6 +87,7 @@ test('MV3 zip loads in Chromium and announces Nodus Wallet to a local page', { t
       ['src/nodus/send.wasm', 'wasm/send.wasm'],
       ['src/nodus/mldsa87.wasm', 'wasm/mldsa87.wasm'],
       ['src/cpunk/legacy-dilithium.wasm', 'wasm/legacy-dilithium.wasm'],
+      ['src/pq/receive-keygen.wasm', 'wasm/receive-keygen.wasm'],
       ['public/assets/nodus-mark.svg', 'assets/nodus-mark.svg'],
       ['public/assets/fonts/inter-latin.woff2', 'assets/fonts/inter-latin.woff2'],
       ['public/assets/fonts/inter-latin-ext.woff2', 'assets/fonts/inter-latin-ext.woff2'],

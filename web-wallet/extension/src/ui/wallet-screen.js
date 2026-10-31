@@ -5,6 +5,7 @@ import { endpointUrl } from '../../../src/rpc-transport.js';
 import { CPUNK_ASSET } from '../../../src/portfolio.js';
 import { NODUS_TOKEN_ID, NODUS_ASSET, nodusNetworkFor } from '../../../src/nodus/network.js';
 import { IXIOS_NETWORK, IXIOS_ASSET } from '../../../src/ixios/network.js';
+import { PQ_NETWORKS, PQ_ENTRIES, isPqChain } from '../../../src/pq/networks.js';
 import { portfolioReaders, mountSavedSettings, mountDeleteWallet } from './wallet-page.js';
 import { readBalanceRefresh, writeBalanceRefresh, balanceRefreshNote } from '../../../src/balance-refresh.js';
 import { readShowZero, writeShowZero, showZeroNote } from '../../../src/zero-balances.js';
@@ -45,7 +46,8 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   const networkVersions = new Map(), endpointVersions = new Map(), logSubscriptions = [];
   let book, earn, names, claim, contracts, vaults;
   const isSolanaTron = chain => chain === 'solana' || chain === 'tron';
-  const selectedNetwork = chain => chain === 'ixios' ? { id: 'mainnet', label: 'Mainnet', endpoint: IXIOS_NETWORK.endpoint } : chainNetwork(chain, ui.state.networks?.[chain]);
+  const pendingPqNetworks = new Map();
+  const selectedNetwork = chain => chain === 'ixios' ? { id: 'mainnet', label: 'Mainnet', endpoint: IXIOS_NETWORK.endpoint } : chainNetwork(chain, pendingPqNetworks.get(chain)?.id ?? ui.state.networks?.[chain]);
   function element(tag, text, className = '') {
     const node = document.createElement(tag); node.className = className;
     if (text !== undefined) node.textContent = text; return node;
@@ -60,7 +62,8 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     // Background derivations have settled before unlock is published. Without
     // an Ixios address there is no balance source for this session; use the
     // shared portfolio's unavailable-source branch (portfolio-view.js:78-85).
-    ixios: ui.state.addresses.ixios ? IXIOS_NETWORK : { ...IXIOS_NETWORK, balanceUnavailable: true } });
+    ixios: ui.state.addresses.ixios ? IXIOS_NETWORK : { ...IXIOS_NETWORK, balanceUnavailable: true },
+    ...Object.fromEntries(Object.entries(PQ_NETWORKS).map(([chain, config]) => [chain, { ...config, testnet: selectedNetwork(chain).id === 'testnet' }])) });
   let networks = networkDefinitions(), latestKept = {}, opened = false;
   const readers = portfolioReaders(ui);
   const portfolio = createPortfolio({ ...readers, selectAsset,
@@ -72,7 +75,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
       return rows;
     },
     leadingNetworks: [{ network: networks.nodus, asset: NODUS_ASSET }],
-    extraNetworks: [{ network: CELLFRAME, asset: CPUNK_ASSET }, { network: networks.ixios, asset: IXIOS_ASSET }],
+    extraNetworks: [{ network: CELLFRAME, asset: CPUNK_ASSET }, { network: networks.ixios, asset: IXIOS_ASSET }, ...PQ_ENTRIES.map(entry => ({ ...entry, network: networks[entry.asset.chain] }))],
     onKept(entries) {
       latestKept = Object.fromEntries(Object.entries(entries).filter(([key]) => !['solana', 'tron'].includes(key.split(':')[0]) || ui.state.networks?.[key.split(':')[0]] === 'mainnet'));
       void ui.request('keepBalances', [latestKept]).catch(error => sessionLog.log('wallet', error, { error: true }));
@@ -92,15 +95,50 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     earn?.update(); void claim?.refresh();
     return portfolio.refresh();
   });
-  const publicAddresses = () => ({ ...ui.state.addresses, cellframe: ui.state.addresses.cpunk });
+  const publicAddresses = () => ({ ...ui.state.addresses, cellframe: ui.state.addresses.cpunk,
+    ...Object.fromEntries(Object.keys(PQ_NETWORKS).map(chain => [chain, ui.state.pqAddresses?.[chain]?.[selectedNetwork(chain).id]])) });
   function updateAddressStatus() {
     for (const chain of ['nodus', 'cellframe', 'ixios']) {
       const node = $(`${chain}-address-status`); node.hidden = selected !== chain;
       node.textContent = publicAddresses()[chain] ? 'Derived locally from this wallet’s recovery phrase.' : chain === 'ixios' ? 'Ixios address unavailable. Lock and reopen your wallet to retry.' : '';
     }
+    const pq = isPqChain(selected);
+    pqStatus.hidden = pqNote.hidden = pqEnvironment.hidden = pqEnvironmentLabel.hidden = !pq;
+    if (pq) {
+      pqStatus.textContent = publicAddresses()[selected] ? `${selectedNetwork(selected).label} receive address derived locally.`
+        : ui.state.pqErrors?.[selected] || 'Receive address unavailable. Lock and reopen your wallet to retry.';
+    } else pqStatus.textContent = '';
   }
   function endpoints() { return Object.fromEntries(Object.entries(networks).map(([chain, config]) => [chain, ui.state.evm?.endpoints?.[chain] || selectedNetwork(chain).endpoint || config.endpoint])); }
   const ixiosStatus = element('p', '', 'hint'); ixiosStatus.id = 'ixios-address-status'; ixiosStatus.setAttribute('role', 'status'); ixiosStatus.setAttribute('aria-live', 'polite'); $('cellframe-address-status').after(ixiosStatus);
+  const pqStatus = element('p', '', 'hint'); pqStatus.id = 'pq-address-status'; pqStatus.setAttribute('role', 'status'); pqStatus.setAttribute('aria-live', 'polite');
+  const pqNote = element('p', 'Recover this address with your Nodus recovery phrase. Native chain wallets may derive different addresses.', 'hint'); pqNote.id = 'pq-recovery-note';
+  const pqEnvironmentLabel = element('label', 'Network environment'), pqEnvironment = element('select');
+  pqEnvironmentLabel.htmlFor = pqEnvironment.id = 'pq-network-environment';
+  ixiosStatus.after(pqEnvironmentLabel, pqEnvironment, pqStatus, pqNote);
+  pqEnvironment.onchange = () => {
+    if (disposed || !ui.state.isUnlocked || !isPqChain(selected)) return;
+    const chain = selected, id = chainNetwork(chain, pqEnvironment.value).id;
+    if (id === selectedNetwork(chain).id) return;
+    const pending = { id }; pendingPqNetworks.set(chain, pending);
+    // Clear the previous environment's address and QR before awaiting persistence.
+    $('receive-address').textContent = ''; $('receive-qr').replaceChildren();
+    $('copy-address').disabled = $('quick-receive').disabled = true;
+    return run(async () => {
+      let failure;
+      try { await ui.request('setChainNetwork', [chain, id]); }
+      catch (error) { failure = error; }
+      // A failed storage flush can follow a controller selection change, so
+      // read authoritative state after either outcome before redrawing.
+      try { if (!disposed && ui.state.isUnlocked) await ui.refresh(); }
+      catch (error) { failure ||= error; }
+      finally {
+        if (pendingPqNetworks.get(chain) === pending) pendingPqNetworks.delete(chain);
+        if (!disposed && ui.state.isUnlocked) { update(); selectChain(); }
+      }
+      if (failure) throw failure;
+    });
+  };
   $('lock').onclick = lock;
 
   // Pages replace wallet-home. Keep the original panels and hash names so
@@ -151,6 +189,10 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   function selectChain(reset = false) {
     const config = networks[selected], state = ui.state;
     const network = selectedNetwork(selected);
+    pqEnvironment.replaceChildren(...(isPqChain(selected) ? CHAIN_NETWORKS[selected] : []).map(choice => {
+      const option = element('option', choice.label); option.value = choice.id; return option;
+    }));
+    if (isPqChain(selected)) pqEnvironment.value = network.id;
     if (reset) { readGeneration++; $('recipient').value = ''; $('amount').value = ''; }
     for (const name of root.querySelectorAll('.selected-network-name')) name.textContent = config.name;
     for (const stage of root.querySelectorAll('.selected-network-stage')) stage.textContent = network.label;
@@ -168,7 +210,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
       option.value = token.tokenId || token.symbol; option.dataset.symbol = token.symbol; option.disabled = token.available === false; return option;
     }));
     if ([...$('asset').options].some(option => option.value === value)) $('asset').value = value;
-    const address = state.addresses?.[selected === 'cellframe' ? 'cpunk' : selected];
+    const address = publicAddresses()[selected];
     $('receive-address').textContent = address || '';
     updateAddressStatus();
     $('receive-qr').replaceChildren();
@@ -227,7 +269,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   }
   $('send-form').onsubmit = event => {
     event.preventDefault();
-    if ($('review-button').disabled) return;
+    if ($('review-button').disabled || networks[selected].receiveOnly) return;
     return run(async () => {
       const chain = selected, started = readGeneration;
       const fields = { to: $('recipient').value, amount: $('amount').value };
@@ -342,6 +384,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   // Keep the existing selected EVM network and network selectors below the
   // reference's connection disclosure (approved extension plan §5.6).
   for (const [chain, choices] of Object.entries(CHAIN_NETWORKS)) {
+    if (isPqChain(chain)) continue;
     if (choices.length < 2) continue;
     const label = element('label', `${networks[chain].name} network`), select = element('select');
     label.htmlFor = select.id = `network-${chain}`;
@@ -354,7 +397,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     const chain = selected, choices = CHAINS[chain]?.rpcOptions || [];
     $('rpc-choice').replaceChildren(...choices.map(provider => { const option = element('option', provider.label); option.value = provider.url; return option; }));
     const enabled = ['ethereum', 'bsc'].includes(chain);
-    $('rpc-settings').hidden = false;
+    $('rpc-settings').hidden = isPqChain(chain);
     for (const node of [$('rpc-choice'), $('save-rpc'), $('rpc-settings').querySelector('label[for="rpc-choice"]')]) node.hidden = !enabled;
     if (enabled) {
       const custom = element('option', 'Custom HTTPS endpoint…'); custom.value = 'custom'; $('rpc-choice').append(custom);
@@ -375,9 +418,9 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     const state = ui.state;
     networks = networkDefinitions();
     for (const [chain, config] of Object.entries(networks)) {
-      const testnet = ['solana', 'tron'].includes(chain) && selectedNetwork(chain).id !== 'mainnet';
+      const testnet = (isPqChain(chain) || ['solana', 'tron'].includes(chain)) && selectedNetwork(chain).id !== 'mainnet';
       const endpoint = endpoints()[chain], previousEndpoint = endpointVersions.get(chain);
-      const version = JSON.stringify([config, testnet, endpoint]);
+      const version = JSON.stringify([config, testnet, endpoint, publicAddresses()[chain]]);
       if (networkVersions.get(chain) !== version) {
         const before = networkVersions.get(chain); networkVersions.set(chain, version);
         endpointVersions.set(chain, endpoint);
@@ -398,7 +441,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     updateAddressStatus();
     const activityError = state.nodus?.activityError || (state.nodus?.quarantinedCount ? `${state.nodus.quarantinedCount} saved records could not be read; their coins stay held.` : '');
     $('vault-status').textContent = activityError; $('discard-activity').hidden = !activityError;
-    const tokens = JSON.stringify(selected === 'nodus' ? state.nodus?.tokens : null), address = state.addresses?.[selected === 'cellframe' ? 'cpunk' : selected];
+    const tokens = JSON.stringify(selected === 'nodus' ? state.nodus?.tokens : null), address = publicAddresses()[selected];
     const identity = JSON.stringify([selected, state.networks?.[selected], selected === 'nodus' ? state.nodus?.state : null]);
     if (identity !== previousNetwork || tokens !== previousTokens || address !== previousAddress) {
       if (previousNetwork && identity !== previousNetwork) { readGeneration++; cancelReview(); }
@@ -417,6 +460,9 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     async loadBalances(force = false) { await initial; if (force && !disposed) await portfolio.refresh(); },
     dispose() {
       disposed = true; readGeneration++; cancelReview(); portfolio.setAutoRefresh(0); portfolio.clear();
+      pendingPqNetworks.clear(); pqStatus.textContent = ''; pqEnvironment.replaceChildren();
+      $('receive-address').textContent = ''; $('receive-qr').replaceChildren();
+      $('copy-address').disabled = $('quick-receive').disabled = true;
       book.dispose(); earn.dispose(); names.dispose(); claim.dispose(); contracts.dispose(); vaults.dispose();
       $('session-logs').open = false; logSubscriptions.forEach(stop => stop()); clearInterval(logClock);
       window.removeEventListener('online', resume); window.removeEventListener('pageshow', resume); document.removeEventListener('visibilitychange', resume);

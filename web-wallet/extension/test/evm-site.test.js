@@ -110,6 +110,11 @@ test('EVM chain names resolve through the shared Nodus client getter', async t =
     const activity = original(...args);
     return { ...activity, get client() { reads++; return activity.client; } };
   });
+  const readyDeadline=performance.now()+2000;
+  while(background.nodus.getState().state!=='ready') {
+    assert.ok(performance.now()<readyDeadline,'name lookup requires the fixture Nodus connection');
+    await new Promise(resolve=>setImmediate(resolve));
+  }
   const review = await background.evm.prepareSend({ chain: 'ethereum', symbol: 'ETH', to: 'publicname', amount: '0.01' });
   assert.equal(review.to, to); assert.ok(reads > 0);
   assert.ok(review.review.some(([label, value]) => label === 'To (chain name)' && value === 'publicname'));

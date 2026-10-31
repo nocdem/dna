@@ -39,6 +39,8 @@ export async function setup(t) {
     nodusOptions: { factory: async () => ({
       memory: { buffer: new ArrayBuffer(64) },
       async unlock() { return { fingerprint: nodusAddress, chainId: '12'.repeat(32) }; },
+      async identify() { return { fingerprint: nodusAddress, chainId: '12'.repeat(32) }; },
+      async connectNetwork() {},
       async tick() {}, cancel() {}, lock() {}, release() {},
       async balance() { return { total: '0', spendable: '0' }; },
       async list() { return { tip: '1', coins: [], truncated: false }; },
@@ -169,6 +171,11 @@ export async function setup(t) {
   const client = connectTrusted({ runtime: fixture.runtime, page: 'popup.html' });
   t.after(async () => { client.close(); connectedPort?.disconnect(); await background.destroy(); });
   await background.vaultStore.create(password, phrase); await background.unlock(password, unlockOptions);
+  const readyDeadline=performance.now()+2000;
+  while(background.nodus.getState().state!=='ready') {
+    assert.ok(performance.now()<readyDeadline,'fixture connection never became ready');
+    await new Promise(resolve=>setImmediate(resolve));
+  }
   state.addresses = background.walletKeys.getAddresses();
   state.recipients = { solana: state.addresses.solana, tron: TronWeb.address.fromPrivateKey('2'.repeat(64)) };
   for (const method of ['getSolanaKeypair', 'getTronPrivateKey']) {

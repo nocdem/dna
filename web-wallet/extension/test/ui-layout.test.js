@@ -187,13 +187,16 @@ async function assertAssetLayout(page) {
       }));
     } finally { details.forEach((node, index) => { node.open = opened[index]; }); }
   });
-  // All fixture balances are positive. One row per asset/network: seventeen
-  // holdings in eleven asset groups; Cellframe and Ixios offer Receive only.
+  // Existing fixture balances are positive; eight new PQ rows have unavailable
+  // balances. There are 25 holdings in 19 asset groups, including receive-only rows.
   // portfolio.js:153-171 sorts native groups by network name after stablecoins.
   assert.deepEqual(groups.map(group => [group.symbol, group.rows.map(row => row.chain)]), [
     ['NODUS', ['nodus']], ['USDT', ['ethereum', 'bsc', 'solana', 'tron']],
     ['USDC', ['ethereum', 'bsc', 'solana', 'tron']], ['DAI', ['ethereum']], ['USDD', ['tron']],
-    ['BNB', ['bsc']], ['CPUNK', ['cellframe']], ['ETH', ['ethereum']], ['IXIOS', ['ixios']], ['SOL', ['solana']], ['TRX', ['tron']],
+    ['ALGO', ['algorand']], ['ASE', ['asentum']], ['BNB', ['bsc']], ['CPUNK', ['cellframe']],
+    ['ETH', ['ethereum']], ['IXIOS', ['ixios']], ['CKB', ['ckb']], ['QTC', ['qtc']],
+    ['SOL', ['solana']], ['SOQ', ['soqucoin']], ['SPLD', ['splendor']], ['TDC', ['tidecoin']],
+    ['TRX', ['tron']], ['XION', ['xion']],
   ]);
   const contained = (item, box, message) => {
     assert.ok(item.width > 0 && item.height > 0, `${message}: must be measurable`);
@@ -220,14 +223,15 @@ async function assertAssetLayout(page) {
         contained(amount, row.box, `${label}: amount stays inside its row`);
         assert.ok(Math.abs(amount.right - row.value.right) < 1, `${label}: amount and price share the right edge`);
       }
-      assert.deepEqual(row.actions.map(action => action.text), ['cellframe', 'ixios'].includes(row.chain) ? ['Receive'] : ['Send', 'Receive'], label);
+      const receiveOnly = ['cellframe', 'ixios', 'algorand', 'tidecoin', 'ckb', 'soqucoin', 'qtc', 'xion', 'splendor', 'asentum'].includes(row.chain);
+      assert.deepEqual(row.actions.map(action => action.text), receiveOnly ? ['Receive'] : ['Send', 'Receive'], label);
       for (const action of row.actions) contained(action, row.box, `${label}: action stays inside its row`);
-      if (!['cellframe', 'ixios'].includes(row.chain)) assert.ok(Math.abs(row.actions[0].top - row.actions[1].top) < 1, `${label}: Send and Receive share a row`);
+      if (!receiveOnly) assert.ok(Math.abs(row.actions[0].top - row.actions[1].top) < 1, `${label}: Send and Receive share a row`);
     }
   }
-  assert.equal(await page.locator('.chain-holding').count(), 17);
+  assert.equal(await page.locator('.chain-holding').count(), 25);
   assert.equal(await page.locator('.holding-actions button[aria-label^="Send "]').count(), 15);
-  assert.equal(await page.locator('.holding-actions button[aria-label^="Receive "]').count(), 17);
+  assert.equal(await page.locator('.holding-actions button[aria-label^="Receive "]').count(), 25);
   assert.equal(await page.locator('.transfer-buttons #quick-send').count(), 1);
   assert.equal(await page.locator('.transfer-buttons #quick-receive').count(), 1);
   assert.equal(await page.locator('#send-form').isVisible(), false);
@@ -267,10 +271,11 @@ async function assertHome(page, popup) {
   assert.deepEqual(await page.locator('.wallet-navigation a:visible .nav-name').allTextContents(),
     ['Portfolio', 'Send / Receive', 'Smart contracts', 'Activity', 'Address book', 'Device & settings', 'Connected sites']);
   assert.equal(await page.locator('.extension-network').count(), 0);
-  assert.equal(await page.locator('.network-health').count(), 7);
-  assert.equal(await page.locator('.network-filter').count(), 8);
-  const networks = ['Nodus', 'Ethereum', 'BNB Smart Chain', 'Solana', 'TRON', 'Cellframe', 'Ixios'];
-  assert.deepEqual(await page.locator('.network-health > span:not(.health-light)').allTextContents(), networks);
+  assert.equal(await page.locator('.network-health').count(), 15);
+  assert.equal(await page.locator('.network-filter').count(), 16);
+  const networks = ['Nodus', 'Ethereum', 'BNB Smart Chain', 'Solana', 'TRON', 'Cellframe', 'Ixios',
+    'Algorand', 'Tidecoin', 'Nervos CKB', 'Soqucoin', 'QTC', 'Verona / XION', 'Splendor', 'Asentum'];
+  assert.deepEqual(await page.locator('.network-health > span:not(.health-light):not(.coin-icon)').allTextContents(), networks);
   assert.deepEqual(await page.locator('#chain option').allTextContents(), networks);
   await page.waitForFunction(() => {
     const icons = [...document.querySelectorAll('img[data-icon="ixios.png"]')];
@@ -514,6 +519,27 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         assert.equal(await page.locator('#name-block').isVisible(), true);
         assert.equal(await page.locator('#name-input').evaluate(node => document.activeElement === node), true);
         assert.equal(await page.evaluate(() => window.layout.calls.some(call => call.method === 'prepareName')), false);
+        // Parent regression: rejected persistence must redraw a coherent
+        // environment/address/QR; same-value selection must preserve them.
+        // Public independent native oracle addresses; no signing or network.
+        if(kind==='popup') {
+          await open('home');await waitHome(page);
+          const pq=JSON.parse(readFileSync(new URL('../../test/fixtures/pq-receive.json',import.meta.url))).vectors[0].addresses;
+          await page.evaluate(async pq=>{window.layout.state.pqAddresses=pq;await window.layout.refresh();},pq);
+          await page.locator('#quick-receive').click();await page.selectOption('#chain','qtc');
+          await page.selectOption('#pq-network-environment','mainnet');
+          assert.equal(await page.locator('#receive-address').textContent(),pq.qtc.mainnet);
+          for(const failure of ['before','after']) {
+            await page.evaluate(failure=>{window.layout.state.failNetworkWrites=failure;},failure);
+            await page.selectOption('#pq-network-environment','testnet');
+            await page.waitForFunction(()=>!document.querySelector('#screen').inert&&document.querySelector('#wallet-status').textContent.includes('Public fixture network persistence failure'));
+            const network=failure==='before'?'mainnet':'testnet';
+            assert.equal(await page.locator('#pq-network-environment').inputValue(),network);
+            assert.equal(await page.locator('#receive-address').textContent(),pq.qtc[network]);
+            assert.equal(await page.locator('#receive-qr svg').count(),1);
+            assert.equal(await page.locator('#copy-address').isDisabled(),false);
+          }
+        }
         await open('welcome'); await page.locator('#welcome:visible').waitFor();
         assert.equal(await priceCount(page), 0); await capture('welcome');
         await open('unlock'); await page.locator('#unlock-form:visible').waitFor();

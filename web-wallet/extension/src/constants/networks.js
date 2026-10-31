@@ -1,4 +1,5 @@
 import { CHAINS, CELLFRAME } from '../../../src/config.js';
+import { PQ_NETWORKS } from '../../../src/pq/networks.js';
 
 const mainnet = chain => ({ id: 'mainnet', label: 'Mainnet', endpoint: CHAINS[chain].endpoint, explorer: CHAINS[chain].explorer });
 // Approved plan §5.6: list each chain's mainnet and runnable testnets.
@@ -25,6 +26,7 @@ export const CHAIN_NETWORKS = {
   tron: [mainnet('tron'),
     { id: 'nile', label: 'Nile', endpoint: 'https://nile.trongrid.io', genesisHash: '0000000000000000d698d4192c56cb6be724a558448e2684802de4d6cd8690dc', scope: 'tron:3448148188', explorer: 'https://nile.tronscan.org/#/transaction/' }],
   cellframe: [{ id: 'mainnet', label: 'Mainnet', endpoint: CELLFRAME.endpoint }],
+  ...Object.fromEntries(Object.entries(PQ_NETWORKS).map(([chain, config]) => [chain, config.networks.map(choice => ({ ...choice }))])),
 };
 export const DEFAULT_NETWORKS = Object.fromEntries(Object.entries(CHAIN_NETWORKS).map(([chain, networks]) => [chain, networks[0].id]));
 export function chainNetwork(chain, id = DEFAULT_NETWORKS[chain]) {

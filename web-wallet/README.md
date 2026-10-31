@@ -4,6 +4,291 @@ A standalone, accountless browser client alongside the existing DNA applications
 
 The product is Nodus Wallet. CPUNK is the temporary CF-20 integration until the airdrop; it is not a permanent chain module or the wallet identity. Airdrop eligibility and claims are outside this release.
 
+## PQ receive — recovery contract v1 (2026-10-31)
+
+Wallet/extension package version: **0.1.141**. This does not change the Nodus
+node or protocol version.
+
+The web wallet and browser extension derive receive addresses for the eight
+chains below from the existing encrypted vault v1 phrase. This addition is
+receive-only: sending, balances, prices, RPC adapters and provider transaction
+methods for these chains are unavailable. It does not write chain state.
+Native-chain 24-word mnemonic import compatibility is **not** claimed.
+
+The extension's wallet identity and these receive addresses derive locally
+from the unlocked vault. Its Nodus network connection is a separate operation;
+these PQ receive derivations do not require that connection. Showing a local
+identity or address does not establish a chain balance, account activation,
+funding, or transaction capability. The eight additions expose receive
+addresses only; they do not enable PQ sending through extension providers.
+
+| Chain | Symbol / decimals | Available networks | Receive key/profile |
+| --- | --- | --- | --- |
+| Algorand | ALGO / 6 | Mainnet, testnet | Algorand deterministic Falcon-1024 |
+| Tidecoin | TDC / 8 | Mainnet | Legacy Falcon-512 |
+| Nervos CKB | CKB / 8 | Mainnet, testnet | SLH-DSA-SHA2-256s, fixed CKB ID 53 |
+| Soqucoin | SOQ / 8 | Mainnet | ML-DSA-44 |
+| QTC | QTC / 8 | Mainnet, testnet | ML-DSA-44 primary and SLH-DSA-SHAKE-128s backup |
+| Verona / XION | XION / 6 | Mainnet, testnet | ML-DSA-65 |
+| Splendor | SPLD / 18 | Mainnet, testnet | ML-DSA-65 |
+| Asentum | ASE / 18 | Testnet, chain ID 1423 | ML-DSA-65 |
+
+Public Tidecoin and Soqucoin testnets were not verified. The primitive bridge
+supports all twelve SLH-DSA parameter sets; the wallet's CKB receive profile
+uses only SHA2-256s, with no parameter selector. Splendor's SLH-DSA support is
+for SQVL instruction purposes, not this account receive address.
+
+### Stable Nodus recovery policy
+
+The phrase is normalized and validated by `src/recovery.js`. As in the existing
+Nodus/Ixios derivations, `ethers.Mnemonic.fromPhrase(normalized).computeSeed()`
+produces the BIP39 master64. Each root is
+`SHAKE256(master64 || ASCII(label), outputLength)`, without a NUL terminator:
+
+| Chain | Exact label | Root bytes |
+| --- | --- | --- |
+| Algorand | `algorand-falcon1024-v1` | 32 |
+| Tidecoin | `tidecoin-falcon512-v1` | 32 |
+| CKB | `ckb-slh-dsa-sha2-256s-v1` | 96 |
+| Soqucoin | `soqucoin-mldsa44-v1` | 32 |
+| QTC | `qtc-pq-v1` | 32 |
+| XION | `xion-mldsa65-v1` | 32 |
+| Splendor | `splendor-mldsa65-v1` | 32 |
+| Asentum | `asentum-mldsa65-v1` | 32 |
+
+These labels and the following paths/profile choices are Nodus recovery v1
+policy. Upgrades must never silently change existing address derivation.
+Vault encryption and existing chain derivations remain unchanged.
+
+- **Algorand:** keygen seed32 is
+  `SHA512_256("PQK" || "f1" || root32)`. The `PQK/f1` domain is the native
+  scheme seed step applied to the Nodus root, not a claim about native mnemonic
+  entropy. Address candidate32 is
+  `SHA512_256("PQA" || "f1" || saltByte || pk1793)`; choose the lowest salt
+  0..255 whose candidate cannot decode as an Edwards25519 point. Decoding
+  accepts noncanonical and small-order points (Noble ZIP215 parsing), without a
+  subgroup restriction. Encode uppercase unpadded Base32 of
+  `candidate32 || SHA512_256(candidate32)[28..32]`. Raw public header must be
+  `0x0a`. Mainnet and testnet addresses are identical.
+- **Tidecoin:** master HMAC-SHA512 uses key `"Tidecoin PQHD seed"` and root32
+  as message, split into secret32 and chaincode32. Derive
+  `m/10007h/6868h/7h/0h/0h/0h`; each child is
+  `HMAC-SHA512(chaincode, 00 || secret || BE32(index | 80000000))`, split
+  again. Leaf PRK is `HMAC-SHA512("Tidecoin PQHD hkdf v1", leafSecret)`.
+  Stream key is `HMAC-SHA512(PRK, "Tidecoin PQHD stream key v1" || BE32(7) ||
+  allSixHardenedIndicesBE32 || 01)`. For counters 0..1023, use the first
+  48 bytes of `HMAC-SHA512(streamKey, "Tidecoin PQHD rng v1" || BE32(counter))`
+  as keygen seed; advance only after an actual native keygen error.
+  Serialize public key as `07 || rawPk897`, require raw header `09`, then
+  Base58Check encode `21 || RIPEMD160(SHA256(serializedPublicKey))`
+  (prefix bytes here are hexadecimal).
+- **CKB:** root96 is the SHA2-256s keygen seed. Hash config
+  `80 01 01 01 6a || pk64` with BLAKE2b-256, personalization exactly the
+  16 bytes `ckb-sphincs+-sct`, to obtain args32. ID 53 uses script prefix
+  `6a`; witness prefix `6b` is not used here. Full-address Bech32m payload
+  is `00 || codeHash32 || hashTypeByte || args32`, with encoding limit 1023.
+  Mainnet HRP `ckb` uses type hash
+  `302d35982f865ebcbedb9a9360e40530ed32adb8e10b42fbbe70d8312ff7cedf`
+  and hash type 1; testnet HRP `ckt` uses data hash
+  `147ecbb5c5127d982ee1362d2c2bb4267803da2eb006d150e88af6caaa0a7eaf`
+  and hash type 2 (`data1`).
+- **Soqucoin:** root32 is the ML-DSA-44 seed. The witness program is single
+  `SHA256(pk1312)`; encode Bech32m HRP `sq` with witness-version word 1
+  followed by the program's five-bit words, matching native `getnewaddress`
+  and `EncodeDilithiumAddress`. Legacy Base58 prefix fields do not define
+  this receive format. A public key starting with `ff`
+  is rejected by the native marker rule. A fixed seed is not retried:
+  that vault cannot display a Soqucoin address, and reloading does not fix it.
+- **QTC:** derive both alternative spend paths for each network: coin 0 on
+  mainnet, 1 on testnet, account/change/index all 0; algo byte 0 for ML-DSA-44
+  and 1 for SLH-DSA-SHAKE-128s. HKDF-SHA256 extract is
+  `HMAC-SHA256("QTC-PQ-BIP87-HKDF-V1", root32)`; the one-block expand is
+  HMAC under that PRK of `"m/87h" || BE32(87h) || BE32(coinh) ||
+  BE32(0h) || BE32(0) || BE32(0) || algoByte || 01`.
+  Concatenate `SHA256(seedMaterial32 || LE32(counter))` for counters 0..3;
+  keygen consumes the first 32 bytes for ML or 48 for SLH.
+  Primary script is `4d 20 05 || pk1312 || bb`; backup script is
+  `20 || pk32 || bc`. Tagged SHA256 `P2MRLeaf` hashes
+  `c2 || CompactSize(scriptLength) || script` (length prefixes `fd 24 05`
+  and `22`). Tagged SHA256 `P2MRBranch` hashes the two leaf digests in
+  lexicographic byte order. No digest byte reversal is applied. Encode
+  Bech32m with HRP `qtc`/`tqtc`, witness-version word 2 followed by
+  the root32's five-bit words. This is a two-leaf tree, not a single-key address.
+- **XION:** root32 generates ML-DSA-65; address is Bech32 HRP `xion` of
+  `SHA256(pk1952)[0..20]`. The dedicated Nodus label does not reuse the
+  native SDK's classical secp256k1 BIP32 path. Main/test addresses are identical.
+- **Splendor:** root32 generates ML-DSA-65; address is `SQ:` followed by
+  lowercase hex `SHA3_256(pk1952)`. Main/test addresses are identical.
+- **Asentum:** root32 generates ML-DSA-65; address is Bech32 HRP `ase`
+  of `BLAKE3(pk1952)[0..20]`, not Bech32m or an EVM address.
+
+### Source pins and execution boundary
+
+Primary sources are pinned, not followed at their latest revision:
+
+- [Algorand go-algorand 66fdf4ad](https://github.com/algorand/go-algorand/tree/66fdf4ad60479aa41e66cc39b65e7ed118834616):
+  `cmd/algokey/pq_scheme.go`, `data/basics/pq_address.go`,
+  `crypto/curve25519.go`.
+- [Tidecoin 7d653be5](https://github.com/tidecoin/tidecoin/tree/7d653be5d24e73b49d101578afb33d8d7a889c1d):
+  `src/pq/pqhd_kdf.cpp`, `pqhd_params.h`, `pqhd_keygen.cpp`,
+  `pq_scheme.h`, `src/pubkey.h`, `src/kernel/chainparams.cpp`.
+- [CKB lock 082c0a19](https://github.com/nervosnetwork/quantum-resistant-lock-script/tree/082c0a19ce4e0b2c0b00f7b46f423f59a30afc71):
+  `docs/simple.md`, `README.md` deployment table and contracts;
+  [address RFC 0021 at 0c945451](https://github.com/nervosnetwork/rfcs/blob/0c945451c24194f4d34d81195c0159df0a67581a/rfcs/0021-ckb-address-format/0021-ckb-address-format.md).
+- [Soqucoin 28222c38](https://github.com/soqucoin/soqucoin/tree/28222c3810701c05eb27e8feb09f032bb75fc097):
+  `src/key.cpp`, `src/pubkey.h`, `src/chainparams.cpp`,
+  `src/wallet/rpcwallet.cpp` (`getnewaddress`) and `src/utiladdress.cpp`
+  (`EncodeDestination`, `EncodeDilithiumAddress` and decoder).
+- [QTC 5adbc7d5](https://github.com/qtcchain/qtc/tree/5adbc7d5c2ac252804fd3c61fce3b9bbc3ad9c24):
+  `src/pq/pq_keyderivation.cpp`, `src/pqkey.cpp`,
+  `src/crypto/hkdf_sha256_32.cpp`, `src/script/pqm.cpp`,
+  `src/script/script.h`, `src/wallet/walletutil.cpp`.
+- [XION v32.0.0](https://github.com/burnt-labs/xion/tree/9b0acaffc126cf10e270bb12a7123a4168882870),
+  Cosmos SDK `64fd208a11fb54f7ffdca1a1290c2cfbbc254e49`,
+  `crypto/keys/mldsa65/key.go`, and
+  [CometBFT 0880b4d3](https://github.com/cometbft/cometbft/blob/0880b4d378f347ab16e54ec677ff50d803f37d62/crypto/mldsa65/key.go).
+- [Splendor 38ac3ded](https://github.com/Splendor-Protocol/splendor-quantum-blockchain/blob/38ac3ded57d6fa931dba3036d490c5d66b0fbcbc/core/crypto/mldsa.go):
+  `DeriveAddress` and `String`. The observed v1.2.2
+  [5ba28193](https://github.com/Splendor-Protocol/splendor-quantum-blockchain/tree/5ba2819316a85ba357aca02f68a922c409f659ba)
+  has byte-identical `core/crypto/mldsa.go`.
+- [Asentum SDK 0.2.0 tarball](https://registry.npmjs.org/@asentum/sdk/-/sdk-0.2.0.tgz):
+  `package/dist/index.js`. Exact tarball integrity and primitive pins are
+  recorded in [PQ_PORTS.md](../shared/crypto/sign/PQ_PORTS.md).
+
+`src/pq/receive.js` fetches the trusted local `receive-keygen.wasm` once before
+deriving secrets, with a 15-second timeout, omitted credentials and refused
+redirects. Each keygen uses a fresh instance; its full linear memory, including
+stacks, is wiped in `finally`. Only public-key bytes are copied out. Mutable
+master/root/KDF/seed buffers and hash instances are cleared; this does not
+promise erasure of immutable JavaScript phrase/hex strings. Abort checks and
+macrotask yields let locking stop derivation before further address publication.
+Per-chain failures use fixed safe errors and leave other chains derivable.
+There is no cryptographic fallback or silent seed retry outside Tidecoin's
+specified native counter rule.
+
+### Verification status and reproducibility
+
+This remains development work, not an audit or production-readiness claim.
+For version 0.1.141, the parent recorded 695 web tests: 597 passed, zero failed,
+98 preexisting optional native-parity skips (`web-full-0141-2.log`). Those
+skips are missing coverage, not passes. The extension suite passed 324 tests
+with zero failures or skips (`extension-full-0141-2.log`). Final packaged
+browser gates passed for both web and extension: all 13 receive variants,
+decoded QR, send refusal, encrypted recovery, network persistence and reload,
+with external transport blocked (`browser-pq-0141.log`, exit 0). Existing
+Connect smoke also passed, including 390/320 px layouts
+(`connect-smoke-0141.log`, exit 0).
+The parent's final candidate review found no additional unresolved confirmed
+finding within this scope. Four development findings were corrected and
+verified: Soqucoin format, offline unlock, selector failure and pre-ready
+tracker behavior. These checks are not a full custody audit.
+Fixtures `test/fixtures/pq-receive.json` and `pq-receive-algorand.json` cover
+three public phrases/39 addresses, 110 Edwards decode cases including
+noncanonical and small-order encodings, and five direct-seed Algorand cases
+matching committed Go address KATs. Independent oracles include pristine
+native keygens, Go Algorand/CIRCL/filippo Edwards, Tidecoin PQHD, native QTC
+HKDF/HashWriter/P2MR, native Soqucoin EncodeDilithiumAddress/DecodeDestination,
+Asentum SDK 0.2.0, Python hashlib BIP39/SHAKE/CKB args,
+pinned QTC BIP173/350 reference and independent Base58 encoding.
+
+Final pristine-oracle reproduction completed with exit 0
+(`oracle-reproduce-final.log`): both committed JSON fixtures regenerated
+byte-for-byte unchanged, including Algorand fixture regeneration anchored to
+three committed Go addresses. Their SHA256 values are:
+
+- `pq-receive.json`:
+  `bbe764a36c4ce840ff401472dab1a43d09059a0f22fbd547f53049c374d4c90e`
+- `pq-receive-algorand.json`:
+  `987749c380f653b1ea1a6050d28213acc7460b25f3e4d043511096947f1eb01f`
+
+Runtime tests consume committed fixtures. Maintenance sources are in
+`test/receive-reference/`: `build_oracles.py`, `prepare_fixtures.py`,
+`go.mod`, `go.sum`, and `asentum/package*.json`. With pinned upstream
+clones and their submodules present, regenerate independently with:
+
+```sh
+GO_BIN=/usr/local/go/bin/go GOTOOLCHAIN=go1.26.10 python3 test/receive-reference/build_oracles.py UPSTREAM_ROOT OUT_DIR
+GO_BIN=/usr/local/go/bin/go GOTOOLCHAIN=go1.26.10 python3 test/receive-reference/prepare_fixtures.py UPSTREAM_ROOT OUT_DIR
+```
+
+The tooling checks upstream HEAD pins, builds C/C++ tools sequentially, and
+uses the SDK's lock-pinned `npm ci --ignore-scripts` installation. Parent
+receive tests passed 42/42 after the Soqucoin address correction. The native
+Soqucoin oracle compiler emitted a GCC 12 `std::vector`
+`stringop-overread` warning; oracle builds are not claimed warning-free.
+
+All three final production builds completed without warnings:
+`web-build-0141.log`, `extension-build-0141.log` and
+`connect-build-0141.log`. Packaging uses `scripts/vendor-chunks.mjs` to
+create per-package vendor chunks only for included modules, preserving package
+boundaries. `scripts/browser-fetch-plugin.mjs` selects the existing browser
+branch of exact micro-ftch 0.3.1, requiring source SHA256
+`d39770ece2d303961800bdc942ef878d98d67981d2be185dfe994be2467d07a1`
+and the expected AST shape. It removes `fetchNode` and selects
+`IS_NODE = false`; `fetchBrowser`, `fetchUrl` and error classes remain
+byte-for-byte unchanged. A dependency change requires review and a new pin.
+Build warnings are not suppressed.
+
+From `web-wallet`, with Node 22.23.4 and Emscripten 4.0.16 used by the parent:
+
+```sh
+npm ci --ignore-scripts
+# Or use emcmake from PATH by omitting EMCMAKE_BIN.
+EMCMAKE_BIN=/opt/emsdk/upstream/emscripten/emcmake bash scripts/build-pq-receive-wasm.sh
+node --test test/pq-receive-wasm.test.js test/pq-receive.test.js
+CHROMIUM_PATH=/usr/bin/chromium node --test extension/test/pq-receive.test.js
+CHROMIUM_PATH=/usr/bin/chromium node --test test/pq-receive-redteam.test.js test/browser-fetch-plugin.test.js
+npm test
+CHROMIUM_PATH=/usr/bin/chromium node --test extension/test/*.test.js
+npm run build
+npm run build:connect
+bash scripts/build-extension.sh
+# Run against the production packages built above:
+CHROMIUM_PATH=/usr/bin/chromium node test/browser-pq-receive.js
+CHROMIUM_PATH=/usr/bin/chromium npm run test:connect
+```
+
+The required artifact is `src/pq/receive-keygen.wasm`; absence fails the receive
+tests rather than skipping them. Browser regression traffic is intercepted;
+these checks do not establish an on-chain transfer.
+
+Parent read-only probes on **2026-10-31 UTC** reached Algorand main/test
+Algonode status, XION main/test RPC/REST, Splendor main/test status, QTC
+main/test chain APIs, Asentum testnet chain/metadata (1423), and Tidecoin/Soqucoin
+explorer APIs. CKB published main/test deployment cells were live; independently
+computed main type hash and test data hash matched the code hashes above.
+
+Researched endpoints below are observations from saved `rpc-initial.json`,
+`rpc-second.json` and corresponding `*rpc-response` evidence. HTTP 200 at
+probe time is not a future availability guarantee or a product integration.
+
+| Chain | Mainnet endpoint checked | Testnet endpoint checked | Read-only evidence |
+| --- | --- | --- | --- |
+| Algorand | `https://mainnet-api.algonode.cloud/v2/status` | `https://testnet-api.algonode.cloud/v2/status` | Status HTTP 200 |
+| Tidecoin | `https://explorer.tidecoin.org/ext/summary` | Not verified | Explorer summary HTTP 200 |
+| CKB | `https://mainnet.ckb.dev/rpc` | `https://testnet.ckb.dev` | JSON-RPC chain info, live deployment cell and genesis header HTTP 200 |
+| Soqucoin | `https://explorer.soqu.org/api/blocks/tip` | Not verified | Explorer tip HTTP 200 |
+| QTC | `https://qtc.events/api/v1/chain` | `https://testnet.qtc.events/api/v1/chain` | Chain API HTTP 200 |
+| XION | `https://rpc.xion-mainnet-1.burnt.com/status` | `https://rpc.xion-testnet-2.burnt.com/status` | RPC status HTTP 200 |
+| XION REST | `https://api.xion-mainnet-1.burnt.com/cosmos/base/tendermint/v1beta1/node_info` | `https://api.xion-testnet-2.burnt.com/cosmos/base/tendermint/v1beta1/node_info` | Node info HTTP 200; mainnet auth params also checked |
+| Splendor | `https://quantum-rpc.splendor.org/status` | `https://quantum-rpc-testnet.splendor.org/status` | Status HTTP 200 |
+| Asentum | Not in scope | `https://testnet.asentum.com/chain`, `https://testnet.asentum.com/metadata` | HTTP 200, chain ID 1423; initial `/status` probe did not succeed |
+
+The corrected Soqucoin `sq1p...` address matched the native encoder/decoder
+oracle and the live explorer returned `isvalid: true`, `isdilithium: true`,
+and witness version 1 (parent evidence: `soqu-address-corrected.json`).
+The main deployment's data hash
+`49417a0ed39196e8d90d0088ca98bf6b881966ba1c2ea12160ca42141787565e`
+is distinct from its address type hash. These observations are not network
+constants or verification of every live node binary. Soqucoin's explorer build
+identifier is not a verified node commit. These APIs were research evidence,
+not product balance integrations: QTC/Tidecoin/Splendor probes lacked an
+Access-Control-Allow-Origin header; the other five returned CORS `*`.
+No faucet funding or end-to-end on-chain spending was executed. Faucet access
+may require authentication; Asentum documents development/faucet access as
+disabled by default with dashboard authentication required. No new Windows or
+physical ARM wallet validation is claimed.
+
 ## Run
 
 Requires Node.js 22.12+ and a modern browser with Web Crypto and BigInt. Saved-wallet operations also require the Web Locks API to serialize storage changes across tabs.

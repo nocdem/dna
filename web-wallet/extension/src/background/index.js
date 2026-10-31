@@ -20,6 +20,7 @@ import { PermissionsRequestNotFoundError } from '@metamask/permission-controller
 import { VAULT_KEY, decryptVault, validateNewPassword } from '../../../src/vault.js';
 import { validateNodusPhrase } from '../../../src/recovery.js';
 import { readPrices as readWalletPrices } from '../../../src/portfolio.js';
+import { PQ_NETWORKS, pqNetwork } from '../../../src/pq/networks.js';
 
 // Runtime ports carry JSON values. Keep the web wallet's arbitrary-precision
 // values as decimal strings; no derived key or built envelope is a result.
@@ -98,6 +99,9 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
         const activity = autoLockAlarm.openTrustedInterface();
         try { await activity.activity(); } finally { activity.close(); }
         lockCoordinator.assertUnlocked();
+        // Local identity verification and every holder's derivation have
+        // completed. Network availability must not gate receiving addresses.
+        nodus.startNetwork();
         // src/app.js:1159-1173: begin quarantine reconciliation after unlock,
         // even when there are no readable pending rows or open history page.
         void nodus.reconcileQuarantine();
@@ -121,11 +125,17 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     getState: async () => {
       const saved = await storage.get(VAULT_KEY), account = permissions.getSelectedAccount().address;
       const isUnlocked = !lockCoordinator.isLocked;
+      const selectedNetworks = networks.getState();
+      const pqAddresses = isUnlocked && walletKeys ? walletKeys.getPqAddresses?.() || {} : {};
+      const pqErrors = isUnlocked && walletKeys ? walletKeys.getPqErrors?.() || {} : {};
+      const selectedPqAddresses = Object.fromEntries(Object.keys(PQ_NETWORKS).map(chain => [chain,
+        pqAddresses[chain]?.[pqNetwork(chain, selectedNetworks[chain]).id]]));
       return { isInitialized: Boolean(saved[VAULT_KEY]), isUnlocked,
         accounts: account ? [account] : [],
-        addresses: isUnlocked && walletKeys ? { ethereum: account, bsc: account, ...walletKeys.getAddresses() } : {},
+        addresses: isUnlocked && walletKeys ? { ethereum: account, bsc: account, ...walletKeys.getAddresses(), ...selectedPqAddresses } : {},
+        pqAddresses, pqErrors,
         preferences: { autoLockTimeLimit: autoLockAlarm.minutes },
-        networks: networks.getState(),
+        networks: selectedNetworks,
         evm: evm.getState(),
         nodus: nodus.getState(),
         // Port: metamask-controller.js:2378-2384 flattens controller UI state.

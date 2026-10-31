@@ -255,10 +255,12 @@ test('history uses web parsers, encrypted cache and activity with no UI key mate
 test('unlock restores encrypted history and shares the web activity corruption gate', async t => {
   const { background, state, values, calls } = await setup(t);
   for (const chain of ['solana', 'tron']) await background[chain].getHistory();
-  const reads = calls.length;
+  // Local WASM loads during unlock are not a remote account-history read.
+  const remoteReads = () => calls.filter(call => /^https?:/.test(call.url)).length;
+  const reads = remoteReads();
   await background.lock(); await background.unlock(password, unlockOptions);
   for (const chain of ['solana', 'tron']) assert.ok((await background[chain].getHistory()).rows.length);
-  assert.equal(calls.length, reads);
+  assert.equal(remoteReads(), reads);
   await background.lock(); values[ACTIVITY_KEY] = 'invalid encrypted activity'; await background.unlock(password, unlockOptions);
   for (const chain of ['solana', 'tron']) await assert.rejects(background[chain].prepareSend({ symbol: CHAINS[chain].symbol, to: state.recipients[chain], amount: '1' }), /discard the unreadable history/);
   await background.nodus.discardActivity();

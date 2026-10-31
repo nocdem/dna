@@ -11,6 +11,8 @@ import { CPUNK_ASSET, displayAmount, unavailableAssetNote } from './portfolio.js
 // Pure data, referenced only inside `if (import.meta.env.VITE_ENABLE_IXIOS === 'true')`
 // blocks below, so a disabled build tree-shakes the whole module away.
 import { IXIOS_NETWORK, IXIOS_ASSET } from './ixios/network.js';
+import { PQ_NETWORKS, PQ_ENTRIES, isPqChain, pqNetwork } from './pq/networks.js';
+import { derivePqAddresses } from './pq/receive.js';
 import { NODUS_ASSET, NODUS_TOKEN_ID, nodusNetworkFor } from './nodus/network.js';
 // null until package (c3) ships the module; see src/nodus/send-module.js.
 import { nodusSendModuleFactory } from './nodus/send-module.js';
@@ -84,6 +86,15 @@ let doShowIxiosAddress, stopIxiosAddress = () => {}, ixiosChain, ixiosReader;
 // Settles once the open wallet's NODUS address derivation has ended (either
 // way); the other receive-only addresses are derived after it (0.1.96).
 let nodusAddressFirst = Promise.resolve();
+let pqSource, pqOperation, pqGeneration = 0, pqAddresses = {}, pqErrors = {}, pqPending = false;
+// Public page preference only; the selected IDs always pass the registry allowlist.
+const pqSelections = Object.fromEntries(Object.entries(PQ_NETWORKS).map(([chain, config]) => [chain, config.defaultNetwork]));
+try {
+  const saved = JSON.parse(localStorage.getItem('nodus-pq-network-environments') || '{}');
+  for (const chain of Object.keys(PQ_NETWORKS)) {
+    try { pqSelections[chain] = pqNetwork(chain, saved?.[chain]).id; } catch { /* keep the listed default */ }
+  }
+} catch { /* preferences remain in this page */ }
 // Receive-panel derivation status line per receive-only network, shown only
 // while that network is selected. The Ixios entry is added by its flag block.
 const addressStatus = { nodus: $('nodus-address-status'), cellframe: $('cellframe-address-status') };
@@ -278,12 +289,12 @@ function showKeptIdentity(kept) {
   if (a.nodus || kept?.name || kept?.avatar) raise('ownIdentityKept', { address: a.nodus, name: kept.name || '', avatar: kept.avatar || '' });
   // The portfolio rows after the wallet view has been drawn (each one
   // re-draws the portfolio; measured: opening ~0.2 s later when done inline).
-  setTimeout(() => { if (wallet === opened && !opened.locked) for (const [chain, address] of Object.entries(a)) portfolio.setAddress(chain, address); }, 0);
+  setTimeout(() => { if (wallet === opened && !opened.locked) for (const [chain, address] of Object.entries(a)) if (!isPqChain(chain)) portfolio.setAddress(chain, address); }, 0);
 }
 function deriveOwnAddresses() {
   const opened = wallet;
   nodusAddressFirst = showNodusAddress().catch(() => {});
-  void nodusAddressFirst.then(() => { if (wallet === opened && !opened.locked) { void showCellframeAddress(); showIxiosAddress(); } });
+  void nodusAddressFirst.then(() => { if (wallet === opened && !opened.locked) { void showCellframeAddress(); showIxiosAddress(); void showPqAddresses(); } });
 }
 // ── Account history (src/history.js) ────────────────────────────────────
 // Read for the network selected in Send / Receive, at most once per
@@ -606,6 +617,7 @@ if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
   ixiosChain = IXIOS_ASSET.chain;
   endpoints[ixiosChain] = IXIOS_NETWORK.endpoint; extraNetworks.push({ network: IXIOS_NETWORK, asset: IXIOS_ASSET });
 }
+extraNetworks.push(...PQ_ENTRIES.map(entry => ({ ...entry, network: { ...entry.network, testnet: pqNetwork(entry.asset.chain, pqSelections[entry.asset.chain]).id === 'testnet' } })));
 // The NODUS entry is swapped for its sendable variant only while a send module
 // is ready (setNodusReady below); without a module it stays receive-only.
 const receiveOnlyNetworks = Object.fromEntries([...leadingNetworks, ...extraNetworks].map(({ network, asset }) => [asset.chain, network]));
@@ -878,6 +890,82 @@ function followSubmission() {
 for (const { network, asset } of leadingNetworks) $('chain').add(new Option(network.name, asset.chain));
 for (const [key, chain] of Object.entries(CHAINS)) $('chain').add(new Option(chain.name, key));
 for (const { network, asset } of extraNetworks) $('chain').add(new Option(network.name, asset.chain));
+const pqEnvironmentLabel = document.createElement('label'), pqEnvironment = document.createElement('select');
+pqEnvironmentLabel.textContent = 'Network environment'; pqEnvironmentLabel.htmlFor = pqEnvironment.id = 'pq-network-environment';
+const pqStatus = document.createElement('p'), pqRecoveryNote = document.createElement('p');
+pqStatus.id = 'pq-address-status'; pqStatus.className = pqRecoveryNote.className = 'hint';
+pqStatus.setAttribute('role', 'status'); pqStatus.setAttribute('aria-live', 'polite');
+pqRecoveryNote.id = 'pq-recovery-note';
+pqRecoveryNote.textContent = 'Recover this address with your Nodus recovery phrase. Native chain wallets may derive different addresses.';
+for (const node of [pqEnvironmentLabel, pqEnvironment, pqStatus, pqRecoveryNote]) node.hidden = true;
+$('chain').after(pqEnvironmentLabel, pqEnvironment, pqStatus, pqRecoveryNote);
+pqEnvironment.onchange = () => {
+  const chain = $('chain').value;
+  if (!isPqChain(chain)) return;
+  pqSelections[chain] = pqNetwork(chain, pqEnvironment.value).id;
+  try { localStorage.setItem('nodus-pq-network-environments', JSON.stringify(Object.fromEntries(Object.keys(PQ_NETWORKS).map(key => [key, pqNetwork(key, pqSelections[key]).id])))); } catch { /* choice stays in this page */ }
+  syncPqAddress(chain);
+  if (wallet && !wallet.locked) selectChain();
+};
+function updatePqStatus(chain) {
+  const shown = isPqChain(chain);
+  for (const node of [pqEnvironmentLabel, pqEnvironment, pqStatus, pqRecoveryNote]) node.hidden = !shown;
+  if (!shown) { pqStatus.textContent = ''; return; }
+  const choice = pqNetwork(chain, pqSelections[chain]);
+  pqEnvironment.replaceChildren(...PQ_NETWORKS[chain].networks.map(network => new Option(network.label, network.id)));
+  pqEnvironment.value = choice.id;
+  pqStatus.textContent = pqAddresses[chain]?.[choice.id] ? `${choice.label} receive address derived locally.`
+    : pqErrors[chain] || (pqPending || pqSource !== wallet ? 'Deriving receive address locally…' : 'Receive address unavailable. Lock and reopen your wallet to retry.');
+}
+function syncPqAddress(chain) {
+  if (!wallet || wallet.locked) return;
+  const choice = pqNetwork(chain, pqSelections[chain]);
+  const address = pqAddresses[chain]?.[choice.id];
+  if (address) wallet.addresses[chain] = address; else delete wallet.addresses[chain];
+  receiveOnlyNetworks[chain] = { ...PQ_NETWORKS[chain], stage: choice.label, testnet: choice.id === 'testnet' };
+  portfolio.setNetwork(chain, receiveOnlyNetworks[chain]);
+  portfolio.setAddress(chain, address);
+  if ($('chain').value === chain) {
+    setReceiveAddress(address || '');
+    $('copy-address').disabled = $('quick-receive').disabled = !address;
+    updatePqStatus(chain);
+  }
+}
+async function showPqAddresses() {
+  const source = wallet;
+  if (!source || source.locked || pqSource === source) return;
+  pqOperation?.abort();
+  const operation = new AbortController(), generation = ++pqGeneration;
+  pqSource = source; pqOperation = operation; pqAddresses = {}; pqErrors = {}; pqPending = true;
+  const current = () => pqSource === source && wallet === source && !source.locked && pqOperation === operation && pqGeneration === generation && !operation.signal.aborted;
+  for (const chain of Object.keys(PQ_NETWORKS)) syncPqAddress(chain);
+  try {
+    const result = await derivePqAddresses(source.recoveryPhrase, { signal: operation.signal,
+      onAddress(chain, networkId, address) {
+        if (!current()) return;
+        pqAddresses[chain] = { ...pqAddresses[chain], [networkId]: address };
+        syncPqAddress(chain);
+      } });
+    if (!current()) return;
+    pqAddresses = result.addresses; pqErrors = result.errors;
+  } catch {
+    if (!current()) return;
+    pqAddresses = {};
+    pqErrors = Object.fromEntries(Object.keys(PQ_NETWORKS).map(chain => [chain, 'Receive address unavailable. Lock and reopen your wallet to retry.']));
+  } finally {
+    if (current()) {
+      pqPending = false;
+      for (const chain of Object.keys(PQ_NETWORKS)) syncPqAddress(chain);
+    }
+  }
+}
+function stopPqAddresses() {
+  pqGeneration++; pqOperation?.abort(); pqOperation = undefined; pqSource = undefined;
+  pqAddresses = {}; pqErrors = {}; pqPending = false;
+  if (wallet) for (const chain of Object.keys(PQ_NETWORKS)) delete wallet.addresses[chain];
+  pqStatus.textContent = ''; pqEnvironment.replaceChildren();
+  for (const node of [pqEnvironmentLabel, pqEnvironment, pqStatus, pqRecoveryNote]) node.hidden = true;
+}
 // (The portfolio scope paragraph — which networks are listed and which count
 // toward the total — was removed in 0.1.108, operator: "bir dolu bilgi
 // yazıyor … Gerek yok onlar artık … insanlara bastıkları zaman o network'te
@@ -1757,6 +1845,7 @@ function lock(event) {
   cellframeDerivation?.abort(); cellframeDerivation = undefined;
   $('cellframe-address-status').textContent = '';
   stopIxiosAddress();
+  stopPqAddresses();
   revision++; vaultOperation++; activitySession = null; activityBlocked = false; latestKept = null; clearHistory(); clearAddressBook(); idleDeadline = 0; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined;
   releaseSession(); $('session-conflict').hidden = true;
   $('discard-activity').hidden = true;
@@ -2047,7 +2136,7 @@ function syncNodusPins() {
 function selectedAssetUnavailable() { return !!$('asset').selectedOptions[0]?.disabled; }
 function applyAssetGate() {
   const option = $('asset').selectedOptions[0], blocked = !!option?.disabled;
-  $('review-button').disabled = blocked;
+  $('review-button').disabled = blocked || !!networkFor($('chain').value)?.receiveOnly;
   if (blocked) message(unavailableAssetNote(option.dataset.symbol),{ category: 'send', error: true });
 }
 $('asset').addEventListener('change', applyAssetGate);
@@ -2055,9 +2144,11 @@ function selectChain() {
   revision++; closeReview(); const chain = $('chain').value; const c = networkFor(chain);
   for (const label of document.querySelectorAll('.selected-network-name')) label.textContent = c.name;
   // "Mainnet" for every network but Nodus, whose `stage` is 'Testnet'.
-  for (const label of document.querySelectorAll('.selected-network-stage')) label.textContent = c.stage || 'Mainnet';
+  for (const label of document.querySelectorAll('.selected-network-stage')) label.textContent = isPqChain(chain) ? pqNetwork(chain, pqSelections[chain]).label : c.stage || 'Mainnet';
   const address = wallet.addresses[chain];
   setReceiveAddress(address || '');
+  $('copy-address').disabled = $('quick-receive').disabled = !address;
+  updatePqStatus(chain);
   portfolio.setSelected(chain);
   // A network with no RPC to choose (Nodus) hides the connection settings.
   // Offered only where there is a choice (0.1.114, operator 2026-10-13:

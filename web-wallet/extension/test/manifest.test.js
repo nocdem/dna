@@ -94,17 +94,19 @@ test('background entry starts locked with the real Nodus seed consumer attached'
     alarms: {
       async clear(name) { scheduled.delete(name); },
       async create(name, options) { scheduled.set(name, options); },
-      onAlarm: { addListener(fn) { listeners.push(fn); } },
+      onAlarm: { addListener(fn) { listeners.push(fn); }, removeListener(fn) { const i=listeners.indexOf(fn);if(i>=0)listeners.splice(i,1); } },
     },
   };
   const { background } = await import('../src/background/index.js');
   const state = await background;
+  t.after(() => state.destroy());
   // Reference: ComposableObservableStore.js:90-97; approved plan §3.5:388-406 excludes key custody.
   const expectedWrites = [{ 'nodus.extension.state': {
     PermissionController: { subjects: {} }, ApprovalController: {},
     EvmController: { selectedChain: 'ethereum', endpoints: { ethereum: CHAINS.ethereum.endpoint, bsc: CHAINS.bsc.endpoint } },
-    // Package 8: every chain starts on mainnet; Nodus has only its testnet (plan §5.6, GAP-7).
-    NetworksController: { selected: { bsc: 'mainnet', cellframe: 'mainnet', ethereum: 'mainnet', nodus: 'testnet', solana: 'mainnet', tron: 'mainnet' } },
+    // PQ receive registry adds only listed choices; Nodus/Asentum are testnet-only.
+    NetworksController: { selected: { bsc: 'mainnet', cellframe: 'mainnet', ethereum: 'mainnet', nodus: 'testnet', solana: 'mainnet', tron: 'mainnet',
+      algorand: 'mainnet', tidecoin: 'mainnet', ckb: 'mainnet', soqucoin: 'mainnet', qtc: 'mainnet', xion: 'mainnet', splendor: 'mainnet', asentum: 'testnet' } },
   } }];
   assert.equal(state.lockCoordinator.isLocked, true);
   assert.deepEqual(reads, ['nodus.extension.state', 'nodus.autoLockMinutes']); assert.deepEqual(writes, expectedWrites);

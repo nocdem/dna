@@ -19,10 +19,12 @@ const testnets = [
   ['tron', 'nile', 'https://nile.trongrid.io', '0000000000000000d698d4192c56cb6be724a558448e2684802de4d6cd8690dc'],
 ];
 
-test('each chain defaults to mainnet except the only available Nodus testnet; choices persist', async t => {
+test('listed mainnet defaults and testnet-only Nodus/Asentum choices persist', async t => {
   const { background, client, fixture } = await setup(t);
   assert.deepEqual((await client.request('getState')).networks, {
     nodus: 'testnet', ethereum: 'mainnet', bsc: 'mainnet', solana: 'mainnet', tron: 'mainnet', cellframe: 'mainnet',
+    algorand: 'mainnet', tidecoin: 'mainnet', ckb: 'mainnet', soqucoin: 'mainnet',
+    qtc: 'mainnet', xion: 'mainnet', splendor: 'mainnet', asentum: 'testnet',
   });
   for (const chain of ['ethereum', 'bsc', 'solana', 'tron']) assert.equal(background.networks.get(chain).endpoint, CHAINS[chain].endpoint);
   for (const chain of ['ethereum', 'bsc', 'cellframe']) await assert.rejects(client.request('setChainNetwork', [chain, 'testnet']), /network/i);

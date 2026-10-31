@@ -15,6 +15,8 @@ export async function walletSession(t, { module: additions = {}, beforeOpen } = 
     async set(items) { Object.assign(values, structuredClone(items)); }, async remove(keys) { for (const key of Array.isArray(keys) ? keys : [keys]) delete values[key]; } };
   const calls = [], module = {
     memory: { buffer: new ArrayBuffer(256) }, async unlock() { return { fingerprint: address, chainId: '12'.repeat(32) }; },
+    async identify() { return { fingerprint: address, chainId: '12'.repeat(32) }; },
+    async connectNetwork() {},
     async balance() { return { total: '500000000', spendable: '500000000' }; },
     async list() { return { tip: '10', coins: [{ nullifier: input, amount: '500000000' }], truncated: false }; },
     async rulesetInfo() { return { generation: '1', tip: '10', gen2Height: '0' }; },
@@ -27,6 +29,12 @@ export async function walletSession(t, { module: additions = {}, beforeOpen } = 
   await beforeOpen?.({ values, id, addresses });
   await lockCoordinator.unlock(() => nodus.consumeNodusSeed(nodusSigningSeed(phrase), { phrase, id, addresses,
     nodusWasmBytes: readFileSync(new URL('../../../src/nodus/mldsa87.wasm', import.meta.url)) }));
+  nodus.startNetwork();
+  const readyDeadline=performance.now()+2000;
+  while(nodus.getState().state!=='ready') {
+    if(performance.now()>readyDeadline)throw new Error('fixture connection never became ready');
+    await new Promise(resolve=>setImmediate(resolve));
+  }
   t.after(async () => { await lockCoordinator.lock(); disposeWallet(wallet); });
   return { nodus, lockCoordinator, values, id, addresses, storage, calls };
 }

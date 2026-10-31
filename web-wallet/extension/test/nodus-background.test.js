@@ -112,6 +112,18 @@ async function setup(t, moduleAdditions = {}, makeModule = module => module) {
   return { background, fixture, values, calls, state, memory, notifications };
 }
 
+// Unlock is local; online-behavior tests must explicitly observe the network
+// becoming ready before exercising sends, EVM or reconnect-from-ready paths.
+async function unlockConnected(background) {
+  const result=await background.unlock(password,options);
+  const deadline=performance.now()+2000;
+  while(background.nodus.getState().state!=='ready') {
+    assert.ok(performance.now()<deadline,'fixture Nodus connection never became ready');
+    await new Promise(resolve=>setImmediate(resolve));
+  }
+  return result;
+}
+
 // Real submit and Activity scanner through background composition; no popup,
 // flags, network or disk artifacts. A notifier-only test would miss the wiring.
 // Incoming history starts the empty tracker at unlock. Advance its existing
@@ -121,9 +133,9 @@ test('a Nodus submit and its Activity confirmation notify without an open popup'
   const { background, state, notifications, calls } = await setup(t);
   state.scanWait = deferred(); const finalShown = deferred();
   state.onNotification = value => { if (value.title.includes('confirmed')) finalShown.resolve(); };
-  await background.unlock(password, options);
-  await background.incomingNotifications.check();
-  assert.ok(calls.some(([op]) => op === 'history'), 'incoming polling reads history at unlock');
+  await unlockConnected(background);
+  await background.nodus.getHistory();
+  assert.ok(calls.some(([op]) => op === 'history'), 'online Nodus queue barrier reached; do not await unrelated paced readers under frozen timers');
   const review = await background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID });
   await background.nodus.confirmSend(review.id);
   await background.transactionNotifications.flush();
@@ -144,8 +156,9 @@ test('a Nodus submit and its Activity confirmation notify without an open popup'
 // models browser restart; a notifier-only final-row fixture misses that reset.
 // In-memory module/storage replies; no flags, network or generated artifacts.
 test('restored final Nodus transfers do not replay notifications when scanned again', { timeout: 10000 }, async t => {
+  const scanGate=deferred();t.after(()=>scanGate.resolve());
   const { background, fixture, values, notifications } = await setup(t, {
-    async scanConfirm() { return { found: true, tip: '11', height: '11' }; },
+    async scanConfirm() { await scanGate.promise; return { found: true, tip: '11', height: '11' }; },
   });
   const rows = ['01', '02', '03'].map(prefix => savedRow({ hash: prefix.repeat(64), status: 'confirmed' }));
   await saveActivity(values, rows);
@@ -154,10 +167,10 @@ test('restored final Nodus transfers do not replay notifications when scanned ag
     await set(items);
     if (items[ACTIVITY_KEY] && ++writes === rows.length) saved.resolve();
   });
-  await background.unlock(password, options);
+  await unlockConnected(background);
   assert.deepEqual(background.nodus.getLocalHistory().map(row => row.status), ['pending', 'pending', 'pending']);
   await background.transactionNotifications.flush(); assert.deepEqual(notifications, []);
-  await background.nodus.getHistory(); await saved.promise;
+  scanGate.resolve();await background.nodus.getHistory(); await saved.promise;
   await background.transactionNotifications.flush();
   assert.deepEqual(background.nodus.getLocalHistory().map(row => row.status), ['confirmed', 'confirmed', 'confirmed']);
   assert.deepEqual(notifications, []);
@@ -167,7 +180,7 @@ test('restored final Nodus transfers do not replay notifications when scanned ag
 // Rows are public fixtures, not broadcasts; this pins persistence wiring and
 // that a known final result still notifies when the Activity save fails.
 test('all external-chain Activity buckets notify their saved status changes', async t => {
-  const { background, notifications, state } = await setup(t); await background.unlock(password, options);
+  const { background, notifications, state } = await setup(t); await unlockConnected(background);
   const addresses = background.walletKeys.getAddresses();
   for (const [chain, network, symbol, hash] of [
     ['ethereum', 'mainnet', 'ETH', '0x' + '11'.repeat(32)], ['bsc', 'mainnet', 'BNB', '0x' + '22'.repeat(32)],
@@ -210,7 +223,7 @@ test('Nodus capabilities survive the background-to-page trusted state handoff', 
   try {
     await ui.refresh();
     for (const flag of flags) assert.equal(ui.state.nodus[flag], false, `locked ${flag}`);
-    await background.unlock(password, options);
+    await unlockConnected(background);
     await ui.refresh();
     assert.equal(ui.state.nodus.state, 'ready');
     for (const flag of flags) {
@@ -238,7 +251,7 @@ test('lost ready connection replaces the client while preserving rows and wipes 
   });
   state.evm = true;
   await saveActivity(values, [savedRow()]);
-  await background.unlock(password, options);
+  await unlockConnected(background);
   const wallet = background.walletKeys.getEvmWallet(), old = wallet.nodusClient;
   assert.equal((await background.nodus.contractOperation('account')).nonce, 1n);
   assert.equal(background.walletKeys.getRecoveryPhrase(), phrase);
@@ -267,11 +280,12 @@ test('lost ready connection replaces the client while preserving rows and wipes 
 // construction or after identify would both fail; an instant-ready mock would
 // miss either early publication. No flags/network/artifacts.
 test('reconnect publishes the name-lookup client only after it is ready', async t => {
-  const connecting = deferred(), connected = deferred();
+  const connecting = deferred(), connected = deferred();let attempts=0;
   const { background, state } = await setup(t, { async connectNetwork() {
+    if (++attempts===1) return; // Initial connection succeeds; hold only the reconnection.
     connecting.resolve(); await connected.promise;
   } });
-  await background.unlock(password, options);
+  await unlockConnected(background);
   const wallet = background.walletKeys.getEvmWallet(), old = wallet.nodusClient;
   const replace = background.walletKeys.replaceNodusClient.bind(background.walletKeys), publishedStates = [];
   const published = t.mock.method(background.walletKeys, 'replaceNodusClient', client => { publishedStates.push(client.state); replace(client); });
@@ -294,7 +308,7 @@ test('reconnect publishes the name-lookup client only after it is ready', async 
 // later retry's buffer; checking only successful retries misses the error path.
 test('every reconnect seed is wiped after identification succeeds or fails', async t => {
   const { background, calls, state } = await setup(t);
-  await background.unlock(password, options);
+  await unlockConnected(background);
   const wallet = background.walletKeys.getEvmWallet();
   t.mock.timers.enable({ apis: ['setTimeout'] });
   for (const [fails, delay] of [[false, 5000], [true, 5000], [false, 10000]]) {
@@ -330,7 +344,7 @@ test('incoming balance tracker callbacks cannot read a locked or replaced sessio
     if (delay === 12000) callbacks.push(callback);
     return schedule(callback, delay, ...args);
   });
-  await background.unlock(password, options);
+  await unlockConnected(background);
   assert.equal(balances.mock.callCount(), 1, 'incoming polling starts the real BSC balance reader');
   assert.ok(bscRows > 0, 'the real BSC tracker reads the current session');
   assert.ok(callbacks.length >= 2, 'Nodus and BSC have installed their Activity trackers');
@@ -338,7 +352,7 @@ test('incoming balance tracker callbacks cannot read a locked or replaced sessio
   await background.lock();
   for (const tick of previous) await tick();
   assert.equal(bscRows, before);
-  await background.unlock(password, options);
+  await unlockConnected(background);
   const reopened = bscRows;
   for (const tick of previous) await tick();
   assert.equal(bscRows, reopened, 'the old tracker cannot enter the replacement session');
@@ -361,7 +375,7 @@ test('lock aborts the incoming BSC read and settles the pending check', async t 
     });
   });
   t.after(() => rejectRead?.(new Error('Held transport fixture released.')));
-  await background.unlock(password, options); await entered.promise;
+  await unlockConnected(background); await entered.promise;
   const checking = background.incomingNotifications.check();
   await background.lock();
   assert.equal(signal.aborted, true, 'the session closes its in-flight BSC transport');
@@ -373,7 +387,7 @@ test('lock aborts the incoming BSC read and settles the pending check', async t 
 // No flags/network/artifacts. Facade-only mocks would miss these client calls.
 test('contract account, simulation, estimate and ticket reads use the session client', async t => {
   const { background, state, calls } = await setup(t); state.evm = true;
-  await background.unlock(password, options);
+  await unlockConnected(background);
   assert.equal((await background.nodus.contractOperation('account')).balanceWei, 0n);
   const fields = { to: 'ab'.repeat(32), data: [], valueWei: '0' };
   assert.equal((await background.nodus.contractOperation('simulate', fields)).success, true);
@@ -395,7 +409,7 @@ async function saveActivity(values, rows = [], quarantined = []) {
 test('discarding unreadable saved activity unblocks native and contract reviews', async t => {
   for (const saved of ['unreadable JSON', JSON.stringify({ version: 1 })]) {
     const { background, values } = await setup(t); values[ACTIVITY_KEY] = saved;
-    await background.unlock(password, options);
+    await unlockConnected(background);
     assert.ok(background.nodus.getState().activityError);
     await assert.rejects(background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID }), /discard the unreadable history/);
     await background.nodus.discardActivity();
@@ -407,7 +421,7 @@ test('discarding unreadable saved activity unblocks native and contract reviews'
     await background.lock();
   }
   const { background, values, state } = await setup(t); state.evm = true; values[ACTIVITY_KEY] = 'unreadable JSON';
-  await background.unlock(password, options);
+  await unlockConnected(background);
   await assert.rejects(background.nodus.prepareContract({ action: 'deposit', amount: '1' }), /discard the unreadable history/);
   await background.nodus.discardActivity();
   const review = await background.nodus.prepareContract({ action: 'deposit', amount: '1' }); background.nodus.cancelSend(review.id);
@@ -418,7 +432,7 @@ test('discarding quarantined activity preserves readable saved and live pending 
   const { background, values } = await setup(t), otherInput = '02'.repeat(64);
   const readable = savedRow({ inputs: [otherInput] });
   const { id, key } = await saveActivity(values, [readable], [savedRow({ amount: 'unreadable' })]);
-  await background.unlock(password, options);
+  await unlockConnected(background);
   assert.equal(background.nodus.getState().quarantinedCount, 1);
   await assert.rejects(background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID }), /held by a pending send/);
   await background.nodus.discardActivity();
@@ -446,9 +460,9 @@ test('discard after a tracker persist failure keeps readable rows and busy envel
     const otherHistory = deferred();
     const solanaHistory = t.mock.method(background.solana, 'getHistory', () => otherHistory.promise);
     t.after(() => otherHistory.resolve({ rows: [] }));
-    await background.unlock(password, options);
+    await unlockConnected(background);
     await background.nodus.getHistory();
-    assert.equal(calls.filter(([op]) => op === 'history').length, 2, 'incoming polling and the Nodus queue barrier both read history');
+    assert.equal(calls.filter(([op]) => op === 'history').length, 1, 'explicit online queue barrier reads history; pre-ready incoming polling refuses');
     assert.equal(solanaHistory.mock.callCount(), 1, 'the unrelated incoming reader remains pending');
     const failed = deferred(), set = fixture.storage.set;
     t.mock.method(fixture.storage, 'set', async items => {
@@ -485,7 +499,7 @@ test('discard after a tracker persist failure keeps readable rows and busy envel
 // Proves failed durability and changed history cannot clear the error or release coins; fixtures remain memory-only.
 test('discard refuses storage failures and history changes during sealing', async t => {
   const { background, values, state, fixture } = await setup(t); values[ACTIVITY_KEY] = 'unreadable JSON';
-  await background.unlock(password, options); state.failSave = true;
+  await unlockConnected(background); state.failSave = true;
   await assert.rejects(background.nodus.discardActivity(), /storage failure/);
   assert.ok(background.nodus.getState().activityError); assert.equal(values[ACTIVITY_KEY], 'unreadable JSON');
   state.failSave = false;
@@ -504,7 +518,7 @@ test('quarantine releases only beyond its validated expiry and keeps every other
   for (const expiries of [['9'], ['10'], [undefined], ['9', '10']]) {
     const { background, values } = await setup(t);
     await saveActivity(values, [], expiries.map((expiryHeight, index) => savedRow({ amount: 'unreadable', expiryHeight, hash: String(index + 3).repeat(128) })));
-    await background.unlock(password, options); await background.nodus.reconcileQuarantine();
+    await unlockConnected(background); await background.nodus.reconcileQuarantine();
     const sending = background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID });
     if (expiries.length === 1 && expiries[0] === '9') {
       const review = await sending; background.nodus.cancelSend(review.id);
@@ -521,7 +535,7 @@ test('quarantine polling follows web-wallet cadence and stops on manual or inact
     const { background, values, state, calls, fixture } = await setup(t);
     await saveActivity(values, [], [savedRow({ amount: 'unreadable', expiryHeight: '10' })]);
     state.listBad = true;
-    await background.unlock(password, options); await background.nodus.reconcileQuarantine();
+    await unlockConnected(background); await background.nodus.reconcileQuarantine();
     assert.equal(calls.filter(([op]) => op === 'list').length, 1);
     state.listBad = false;
     await assert.rejects(background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID }), /held by a pending send/);
@@ -532,7 +546,7 @@ test('quarantine polling follows web-wallet cadence and stops on manual or inact
     assert.equal(calls.filter(([op]) => op === 'list').length, reads + 1);
     const review = await background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID }); background.nodus.cancelSend(review.id);
     // Keep an unreleased row for the shutdown assertion rather than stopping only because all rows released.
-    await background.lock(); state.tip = '10'; await background.unlock(password, options); await background.nodus.reconcileQuarantine();
+    await background.lock(); state.tip = '10'; await unlockConnected(background); await background.nodus.reconcileQuarantine();
     if (alarm) await fixture.alarms.onAlarm.emit({ name: AUTO_LOCK_TIMEOUT_ALARM }); else await background.lock();
     const before = calls.length; now += 30000; t.mock.timers.tick(30000);
     await background.nodus.reconcileQuarantine(); assert.equal(calls.length, before);
@@ -545,7 +559,7 @@ test('locking during quarantine reconciliation cancels the read and its next tim
   const { background, values, state, calls } = await setup(t);
   await saveActivity(values, [], [savedRow({ amount: 'unreadable', expiryHeight: '9' })]);
   state.listWait = deferred(); state.entered = deferred();
-  await background.unlock(password, options); await state.entered.promise;
+  await unlockConnected(background); await state.entered.promise;
   const reading = background.nodus.reconcileQuarantine(); await background.lock(); await reading;
   state.listWait.resolve({ tip: '10', coins: [] });
   const before = calls.length; t.mock.timers.tick(30000); await background.nodus.reconcileQuarantine(); assert.equal(calls.length, before);
@@ -555,7 +569,7 @@ test('locking during quarantine reconciliation cancels the read and its next tim
 // Proves the contract row says signed before submit and submitted only after acceptance; mock timers stop receipt polling.
 test('smart-contract activity records the signed then submitted note sequence', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const { background, state } = await setup(t); state.evm = true; state.scanWait = deferred(); await background.unlock(password, options);
+  const { background, state } = await setup(t); state.evm = true; state.scanWait = deferred(); await unlockConnected(background);
   const notes = []; state.onSubmit = () => notes.push(background.nodus.getLocalHistory()[0].note);
   state.submitWait = deferred(); state.entered = deferred();
   const review = await background.nodus.prepareContract({ action: 'deposit', amount: '1' });
@@ -567,7 +581,7 @@ test('smart-contract activity records the signed then submitted note sequence', 
 
 // Proves the real background marks only recorded confirm failures, and the flag survives trusted-port error serialization.
 test('confirm failure exposes Activity tracking only after a pending record exists', async t => {
-  const { background, state } = await setup(t); await background.unlock(password, options);
+  const { background, state } = await setup(t); await unlockConnected(background);
   await assert.rejects(background.nodus.confirmSend('closed-review'), error => {
     assert.equal(serializeError(error).data.activityTracked, undefined); return true;
   });
@@ -581,7 +595,7 @@ test('confirm failure exposes Activity tracking only after a pending record exis
 // Pins the real vault → wallet-keys seed consumer → web-wallet client path, address parity and seed disposal.
 test('background attaches the real Nodus consumer and unlocks the web-wallet identity', async t => {
   const { background, calls } = await setup(t);
-  const result = await background.unlock(password, options);
+  const result = await unlockConnected(background);
   assert.equal(result.addresses.nodus, address);
   assert.equal(result.addresses.nodus, await deriveNodusAddress(phrase, { wasmBytes: nodusWasmBytes }));
   assert.equal(background.walletKeys.getAddresses().nodus, address);
@@ -595,7 +609,7 @@ test('background attaches the real Nodus consumer and unlocks the web-wallet ide
 // Pins adapter balances, module-decoded review fields, durable submission and node-history validation.
 test('balances, send and history reach the unchanged web-wallet implementations', async t => {
   const { background, calls, values } = await setup(t);
-  await background.unlock(password, options);
+  await unlockConnected(background);
   assert.deepEqual(await background.nodus.getBalances(), [{ symbol: 'NODUS', balance: '5.0' }]);
   const review = await background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID });
   assert.equal(review.to, recipient); assert.equal(review.amount, '1.0');
@@ -613,7 +627,7 @@ test('balances, send and history reach the unchanged web-wallet implementations'
 
 // Pins refusal of a signed-envelope mismatch, storage failure and malformed history without broadcasting.
 test('invalid decoded fields and failed durability never submit a transfer', async t => {
-  const { background, state, calls } = await setup(t); await background.unlock(password, options);
+  const { background, state, calls } = await setup(t); await unlockConnected(background);
   state.badDecode = true;
   await assert.rejects(background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID }), /does not match/);
   state.badDecode = false;
@@ -625,7 +639,7 @@ test('invalid decoded fields and failed durability never submit a transfer', asy
 
 // Pins the shared coin reservation when two wallet windows prepare against the same unspent input.
 test('a second prepared review cannot submit inputs reserved by the first send', async t => {
-  const { background, calls } = await setup(t); await background.unlock(password, options);
+  const { background, calls } = await setup(t); await unlockConnected(background);
   const fields = { to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID };
   const first = await background.nodus.prepareSend(fields), second = await background.nodus.prepareSend(fields);
   await background.nodus.confirmSend(first.id);
@@ -635,7 +649,7 @@ test('a second prepared review cannot submit inputs reserved by the first send',
 
 // Pins src/evm's account derivation, ABI decoding, deposit review and shared pending-coin reservation in the background.
 test('Nodus smart contracts reuse the web-wallet account, Contract and ABI code', async t => {
-  const { background, state, calls } = await setup(t); state.evm = true; await background.unlock(password, options);
+  const { background, state, calls } = await setup(t); state.evm = true; await unlockConnected(background);
   assert.equal(background.nodus.getState().evmBuildable, true);
   const account = await background.nodus.readContract({ action: 'account' }); assert.match(account, /nonce/);
   const value = await background.nodus.readContract({ action: 'read', address: '0x' + '11'.repeat(32),
@@ -650,7 +664,7 @@ test('Nodus smart contracts reuse the web-wallet account, Contract and ABI code'
 
 // Pins explicit busy resubmission of identical bytes and preserves the web-wallet coin reservation.
 test('a busy send keeps its envelope for explicit resubmission', async t => {
-  const { background, state, calls } = await setup(t); await background.unlock(password, options);
+  const { background, state, calls } = await setup(t); await unlockConnected(background);
   const review = await background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID }); state.busy = true;
   await assert.rejects(background.nodus.confirmSend(review.id), /fixture busy/);
   assert.equal((await background.nodus.getHistory()).local[0].canResubmit, true);
@@ -662,7 +676,7 @@ test('a busy send keeps its envelope for explicit resubmission', async t => {
 // Pins the complete client lock for both manual and inactivity paths, including queued reads and module memory.
 test('manual and inactivity lock stop the Nodus queue and wipe its module', async t => {
   for (const alarm of [false, true]) {
-    const { background, fixture, state, calls, memory } = await setup(t); await background.unlock(password, options);
+    const { background, fixture, state, calls, memory } = await setup(t); await unlockConnected(background);
     const wallet = background.walletKeys.getEvmWallet();
     state.balanceWait = deferred(); state.entered = deferred();
     const reading = background.nodus.getBalances(), rejected = assert.rejects(reading, /locked/i); await state.entered.promise;
@@ -691,7 +705,7 @@ test('identity mismatch and a lock during unlock cannot publish an address', asy
 
 // Pins CPUNK's original POST, address echo, bounded JSON and amount-consistency checks through the background reader.
 test('CPUNK reads retain all web-wallet response checks', async t => {
-  const { background } = await setup(t); await background.unlock(password, options);
+  const { background } = await setup(t); await unlockConnected(background);
   const cpunk = background.walletKeys.getAddresses().cpunk;
   let body = { result: [[{ addr: cpunk, token: 'CPUNK', balance: '2.0' }]] };
   t.mock.method(globalThis, 'fetch', async (_url, request) => {
@@ -710,4 +724,35 @@ test('CPUNK reads retain all web-wallet response checks', async t => {
   await assert.rejects(background.nodus.getCpunkBalance(), /unrecognized response/);
   t.mock.method(globalThis, 'fetch', async () => new Response('x'.repeat(65537), { headers: { 'Content-Type': 'application/json' } }));
   await assert.rejects(background.nodus.getCpunkBalance(), /too large/);
+});
+
+// Parent receive regression: a native networking outage must not become a
+// dependency for local PQ key derivation. Hold the real client connect queue;
+// all keygen modules and vault encryption remain actual production code.
+test('PQ receive unlock completes with Nodus connection pending; lock defeats late connect', { timeout: 12000 }, async t => {
+  const entered=deferred(),gate=deferred();
+  const {background}=await setup(t,{async connectNetwork(){entered.resolve();await gate.promise;}});
+  const fixture=JSON.parse(readFileSync(new URL('../../test/fixtures/pq-receive.json',import.meta.url))).vectors[0];
+  try {
+    await background.unlock(password,{...options,pqWasmBytes:readFileSync(new URL('../../src/pq/receive-keygen.wasm',import.meta.url))});
+    await entered.promise;
+    assert.equal(background.lockCoordinator.isLocked,false);
+    assert.deepEqual(background.walletKeys.getPqAddresses(),fixture.addresses);
+    assert.equal(background.nodus.getState().state,'connecting');
+    await background.lock();gate.resolve();
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(background.lockCoordinator.isLocked,true);
+    assert.throws(background.walletKeys.getPqAddresses,/locked/);
+    assert.equal(background.nodus.getState().state,'locked');
+  } finally {gate.resolve();}
+});
+
+test('Nodus connection rejection preserves locally unlocked PQ receive and records reconnect state', { timeout:12000 }, async t=>{
+  const entered=deferred();
+  const {background}=await setup(t,{async connectNetwork(){entered.resolve();throw new Error('parent offline fixture');}});
+  await background.unlock(password,{...options,pqWasmBytes:readFileSync(new URL('../../src/pq/receive-keygen.wasm',import.meta.url))});
+  await entered.promise;await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(background.lockCoordinator.isLocked,false);
+  assert.ok(background.walletKeys.getPqAddresses().soqucoin.mainnet.startsWith('sq1p'));
+  assert.equal(background.nodus.getState().state,'connecting');
 });

@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import { readFileSync } from 'node:fs';
 import { collectThirdPartyLicenses, formatThirdPartyLicenses } from './scripts/third-party-licenses.mjs';
+import { vendorChunks } from './scripts/vendor-chunks.mjs';
 
 // Writes dist/THIRD-PARTY-LICENSES.txt (0.1.22): the license notice of every npm
 // package with code in the output. Only modules Rollup actually rendered into a
@@ -27,4 +28,8 @@ function thirdPartyLicenses() {
 // The release shown on the page (src/main.js, footer "Version x.y.z").
 const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 
-export default defineConfig({ plugins: [thirdPartyLicenses()], define: { __APP_VERSION__: JSON.stringify(version) } });
+export default defineConfig({
+  plugins: [thirdPartyLicenses()],
+  define: { __APP_VERSION__: JSON.stringify(version) },
+  build: { rollupOptions: { output: { manualChunks: vendorChunks, onlyExplicitManualChunks: true } } },
+});

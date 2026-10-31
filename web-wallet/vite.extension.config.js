@@ -6,6 +6,8 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import walletConfig from './vite.config.js';
 import { collectThirdPartyLicenses, formatThirdPartyLicenses } from './scripts/third-party-licenses.mjs';
+import { vendorChunks } from './scripts/vendor-chunks.mjs';
+import { browserFetchPlugin } from './scripts/browser-fetch-plugin.mjs';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const extension = resolve(here, 'extension');
@@ -17,6 +19,7 @@ const wasm = [
   ['src/nodus/derive.js', './mldsa87.wasm', 'src/nodus/mldsa87.wasm'],
   ['src/ixios/derive.js', '../nodus/mldsa87.wasm', 'src/nodus/mldsa87.wasm'],
   ['src/cpunk/derive.js', './legacy-dilithium.wasm', 'src/cpunk/legacy-dilithium.wasm'],
+  ['src/pq/receive.js', './receive-keygen.wasm', 'src/pq/receive-keygen.wasm'],
 ];
 
 // readable-stream 4.7.0 lib/internal/streams/{readable,writable}.js imports
@@ -127,7 +130,7 @@ function classicScriptsAndLicenses() {
           configFile: false, root: extension, base: './', publicDir: false,
           // Vite's lazy-import helper adds import.meta.url, which Rollup's iife output renders through
           // document.baseURI; a worker has no document. Resolve it as the define above does.
-          resolve: { alias }, plugins: [streamProcess(), wasmUrls(), { name: 'nodus-extension-classic-import-meta',
+          resolve: { alias }, plugins: [browserFetchPlugin(), streamProcess(), wasmUrls(), { name: 'nodus-extension-classic-import-meta',
             resolveImportMeta: property => (property === 'url' ? 'self.location.href' : null) }],
           define: { ...define, 'import.meta.url': 'self.location.href' },
           build: {
@@ -161,11 +164,11 @@ export default defineConfig({
   root: extension, base: './', publicDir: resolve(here, 'public'),
   resolve: { alias }, define,
   // Replace the wallet's private license plugin with the union collector above.
-  plugins: [streamProcess(), wasmUrls(), packageAssets(), classicScriptsAndLicenses()],
+  plugins: [browserFetchPlugin(), streamProcess(), wasmUrls(), packageAssets(), classicScriptsAndLicenses()],
   build: {
     target: 'chrome123', outDir: resolve(here, 'dist-extension/unpacked'), emptyOutDir: true,
     assetsInlineLimit: 0,
-    rollupOptions: { input: {
+    rollupOptions: { output: { manualChunks: vendorChunks, onlyExplicitManualChunks: true }, input: {
       popup: resolve(extension, 'popup.html'), notification: resolve(extension, 'notification.html'), home: resolve(extension, 'home.html'),
     } },
   },

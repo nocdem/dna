@@ -3,6 +3,8 @@ import { nodusSigningSeed } from '../../../src/nodus/derive.js';
 import { deriveCpunkAddress } from '../../../src/cpunk/derive.js';
 import { deriveIxiosAddress } from '../../../src/ixios/derive.js';
 import { ixiosChecksumAddress } from '../../../src/ixios/address.js';
+import { derivePqAddresses } from '../../../src/pq/receive.js';
+import { PQ_NETWORKS } from '../../../src/pq/networks.js';
 
 export function createWalletKeys({ lockCoordinator, consumeNodusSeed }) {
   if (typeof consumeNodusSeed !== 'function') throw new Error('A Nodus seed consumer is required.');
@@ -15,6 +17,8 @@ export function createWalletKeys({ lockCoordinator, consumeNodusSeed }) {
     session.wallet.nodusClient = null;
     disposeWallet(session.wallet);
     session.addresses = null;
+    session.pqAddresses = null;
+    session.pqErrors = null;
   }
 
   function lock() {
@@ -29,11 +33,11 @@ export function createWalletKeys({ lockCoordinator, consumeNodusSeed }) {
     if (!session || session !== current || generation !== started) throw new Error('Wallet is locked.');
   }
 
-  async function unlock(phrase, { cpunkWasmBytes, nodusWasmBytes, ixiosWasmBytes, id, assertReady } = {}) {
+  async function unlock(phrase, { cpunkWasmBytes, nodusWasmBytes, ixiosWasmBytes, pqWasmBytes, id, assertReady } = {}) {
     if (deriving || current) throw new Error('Lock the wallet before unlocking again.');
     // Approved plan §3.5:375-387, Q-28 "a": use the web wallet's keys,
     // not a second implementation of the snap derivation boundary.
-    const session = { wallet: deriveWallet(phrase), abort: new AbortController(), seed: null, addresses: null, assertReady };
+    const session = { wallet: deriveWallet(phrase), abort: new AbortController(), seed: null, addresses: null, pqAddresses: {}, pqErrors: {}, assertReady };
     const started = generation;
     current = session; deriving = true;
     // Operator package 5: retain deriveWallet's ethers signer in this holder.
@@ -60,6 +64,21 @@ export function createWalletKeys({ lockCoordinator, consumeNodusSeed }) {
         const bytes = await deriveIxiosAddress(phrase, { wasmBytes: ixiosWasmBytes ?? nodusWasmBytes, signal: session.abort.signal });
         assertCurrent(session, started); session.addresses.ixios = ixiosChecksumAddress(bytes);
       } catch { assertCurrent(session, started); }
+      try {
+        const result = await derivePqAddresses(phrase, { wasmBytes: pqWasmBytes, signal: session.abort.signal,
+          onAddress(chain, networkId, address) {
+            assertCurrent(session, started);
+            session.pqAddresses[chain] = { ...session.pqAddresses[chain], [networkId]: address };
+          } });
+        assertCurrent(session, started);
+        session.pqAddresses = result.addresses;
+        session.pqErrors = result.errors;
+      } catch {
+        assertCurrent(session, started);
+        session.abort.signal.throwIfAborted();
+        session.pqAddresses = {};
+        session.pqErrors = Object.fromEntries(Object.keys(PQ_NETWORKS).map(chain => [chain, 'Address unavailable. Lock and reopen your wallet to retry.']));
+      }
       return { ...session.addresses };
     } catch (error) {
       const stale = session !== current || generation !== started;
@@ -85,6 +104,8 @@ export function createWalletKeys({ lockCoordinator, consumeNodusSeed }) {
   return {
     unlock,
     getAddresses: () => ({ ...activeWallet().addresses }),
+    getPqAddresses: () => Object.fromEntries(Object.entries(activeWallet().pqAddresses).map(([chain, addresses]) => [chain, { ...addresses }])),
+    getPqErrors: () => ({ ...activeWallet().pqErrors }),
     getEvmWallet: () => activeWallet().wallet,
     getSolanaKeypair: () => activeWallet().wallet.solana,
     getTronPrivateKey: () => activeWallet().wallet.tronPrivateKey,
