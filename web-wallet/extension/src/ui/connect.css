@@ -1,0 +1,8 @@
+.wallet-connect-switch { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin: 0 0 12px; }
+.wallet-connect-switch button { margin: 0; min-height: 36px; }
+#extension-connect { min-width: 0; }
+#extension-connect .messenger { height: calc(100dvh - 160px); min-height: 380px; }
+#extension-connect[hidden], .wallet-connect-switch button[hidden] { display: none; }
+@media (max-width: 900px) {
+  #extension-connect .messenger { height: calc(100dvh - 135px); }
+}

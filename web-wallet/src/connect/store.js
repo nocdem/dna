@@ -224,11 +224,13 @@ function deleteDatabase(name) {
 // The saved wallet `vaultId` (its base64 id, src/vault.js) is being deleted:
 // its Messages database and its counter copy go with it. Call inside the
 // storage Web Lock. Rejects with StorageError / HistoryDeleteBlocked.
-export async function deleteVaultHistory(vaultId, storage) {
+export async function deleteVaultHistory(vaultId, storage, counterStorage) {
   const name = databaseNameForVault(vaultId);
-  try { storage?.removeItem(counterStorageKey(name)); }
-  catch { throw new StorageError('The message counter could not be deleted.'); }
+  // A blocked database delete must keep its counter: the old key can still
+  // be in use until every database connection has closed.
   await deleteDatabase(name);
+  try { if (counterStorage) await counterStorage.remove(name); else storage?.removeItem(counterStorageKey(name)); }
+  catch { throw new StorageError('The message counter could not be deleted.'); }
 }
 
 // The local state kept in the 'state' record, with defaults. `acks`: the
@@ -539,12 +541,12 @@ export function writeAll(db, puts, deletes = []) {
 // once the migration's commit completed. `onDropped(paths)` (optional): the
 // paths a projection left out (nc_state.h DROPPED — paths, never values),
 // from the migration (also in the result's `dropped`) or from a save.
-export async function openHistoryStore({ core, vaultId, storage = globalThis.localStorage, signal, onMigrate, onDropped }) {
+export async function openHistoryStore({ core, vaultId, storage = globalThis.localStorage, counterStorage, signal, onMigrate, onDropped }) {
   const name = databaseNameForVault(vaultId);
   await sealing(() => core.historyKey(name), 'The key for your message history could not be prepared.');
   const db = await bounded(openDatabase(name), signal, late => late.close());
-  db.onversionchange = () => db.close();
-  let counter, state, messages, profiles, vaults, groupRecords, groupMessages;
+  let counter, state, messages, profiles, vaults, groupRecords, groupMessages, closed = false;
+  db.onversionchange = () => { closed = true; db.close(); };
   // The last COMMITTED state records (Map id -> canonical text) and the fp
   // -> id map of the newest snapshot (design §2.3 item 2, §2.1).
   let baseline = new Map(), idMap = {}, dropped = [];
@@ -570,11 +572,15 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
     try {
       if (!budgetAllows(counter, entries.length)) throw new StorageError(BUDGET_TEXT);
       const reserved = counter + BigInt(entries.length);
-      writeStoredCounter(storage, name, reserved);
+      if (closed) throw new StorageError('Message history is closed.');
+      if (counterStorage) await counterStorage.write(name, reserved);
+      else writeStoredCounter(storage, name, reserved);
+      if (closed) throw new StorageError('Message history is closed.');
       let at = counter;
       counter = reserved;
       const puts = [];
       for (const entry of entries) {
+        if (closed) throw new StorageError('Message history is closed.');
         const sealed = await sealing(() => core.historyEncrypt({ store: entry.store, id: entry.id, plaintext: entry.bytes, counter: at.toString() }), SEAL_TEXT);
         at = nextCounter(at, sealed.counter);
         puts.push({ store: entry.store, record: encodeRecord(entry.id, sealed) });
@@ -598,7 +604,10 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
     const raw = await bounded(readAll(db), signal);
     // The larger of the database record and the copy that survives a
     // history delete (counterStorageKey above).
-    counter = openingCounter(decodeCounter(raw.counter), readStoredCounter(storage, name));
+    const storedCounter = counterStorage ? await bounded(counterStorage.read(name), signal) : readStoredCounter(storage, name);
+    if (closed) throw new StorageError('Message history is closed.');
+    if (typeof storedCounter !== 'bigint' || storedCounter < 0n || storedCounter > MAX_INVOCATIONS) throw new StorageError('The stored message counter is damaged.');
+    counter = openingCounter(decodeCounter(raw.counter), storedCounter);
     const openBytes = async (store, record) => {
       const args = decodeRecord(record);
       const { plaintext } = await sealing(() => core.historyDecrypt({ store, ...args }), 'A stored message could not be opened. It may be damaged or from a different wallet.');
@@ -709,7 +718,7 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
     }
   } catch (error) { db.close(); throw error; }
 
-  let queue = Promise.resolve(), closed = false;
+  let queue = Promise.resolve();
   // How many queued runs have failed so far (design rev 2.2 item 1): a save
   // keeps the value it saw at its call; a different value at its run means a
   // run failed after the call, so its call-time snapshot may hold what that

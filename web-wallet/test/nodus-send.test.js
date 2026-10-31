@@ -895,16 +895,46 @@ test('stake (become a validator): exactly the self-bond, commission 0..50%, refu
 // CONNECT WATCHDOG (src/nodus/client.js NODUS_CONNECT_BOUND_MS, operator
 // 2026-10-07): an attempt that never settles must not leave the client in
 // 'connecting' forever. Fake timers: the bound fires when the test says so.
-function watchdogClient(factory) {
+function watchdogClient(factory, extra = {}) {
   const timeouts = [], cleared = [], intervals = [], states = [], steps = [];
   const client = createNodusClient({
-    factory, onState: state => states.push(state),
+    factory, ...extra, onState: state => states.push(state),
     setInterval: (fn, ms) => { intervals.push({ fn, ms }); return 70 + intervals.length; }, clearInterval: () => {},
     setTimeout: (fn, ms) => { timeouts.push({ fn, ms }); return timeouts.length; }, clearTimeout: id => cleared.push(id),
     steps: { begin: name => { const step = { name, outcomes: [] }; steps.push(step); return { end: (outcome, error) => step.outcomes.push(error?.timedOut ? `${outcome}:timedOut` : outcome) }; } }
   });
   return { client, timeouts, cleared, intervals, states, steps };
 }
+
+// Parent regression for extension Connect: an internally timed-out client
+// must close its dependent core/history before module disposal. Real client
+// lifecycle, fake module/explicit watchdog callback; no flags, I/O or timing
+// sleeps. A native wipe alone would pass old tests while leaving UI/history
+// projections alive, so assert the dependent callback and its ordering.
+test('client watchdog closes dependent Connect before native disposal, even if the close hook reenters and throws', async () => {
+  const mock = createMockNodusModule();
+  let count = 0, client;
+  const f = watchdogClient(mock.factory, { onBeforeLock() {
+    count++;
+    assert.equal(client.identified, true, 'The current module is still reachable for nc_lock');
+    mock.log.push('connect-close');
+    client.lock();
+    throw new Error('Fixture dependent cleanup failure');
+  } });
+  client = f.client;
+  await client.identify({ seed: new Uint8Array(32).fill(5), fingerprint: FINGERPRINT });
+  const release = mock.gate('connectNetwork');
+  const opening = client.connectNetwork();
+  const rejected = assert.rejects(opening, error => error.timedOut === true);
+  await settle();
+  const before = mock.log.length;
+  f.timeouts.at(-1).fn(); await rejected;
+  assert.deepEqual(mock.log.slice(before), ['connect-close', 'cancel', 'lock', 'release']);
+  assert.equal(mock.state.zeroAtRelease, true);
+  client.lock(); assert.equal(count, 1);
+  release(); await settle();
+  assert.equal(client.state, 'locked'); assert.equal(count, 1);
+});
 
 test('connect watchdog: a hung connect step times out after 30 s, locks the client and rejects timedOut; a late answer is ignored', async () => {
   assert.equal(NODUS_CONNECT_BOUND_MS, 30000);

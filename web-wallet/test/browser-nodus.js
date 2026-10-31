@@ -1,6 +1,9 @@
 import { portfolioRead, cellframeRead, ixiosRead, historyRead } from './portfolio-routes.js';
 import { pastePhrase, readPhrase } from './browser-phrase.js';
-// Production assets, public test phrases, and no external network requests.
+// Production assets, public test phrases; external HTTP mocked and WebSockets
+// closed. Requires a production web build and Chromium; no compile flags.
+// Browser/server cleanup leaves no persisted profile. Native derivation and
+// clipboard/lock guards are covered, not live network connectivity.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { startPreview } from './preview-server.js';
@@ -51,6 +54,7 @@ try {
   }
   console.log('Startup checks passed: entry controls wait for initialization; delayed loading recovers and failed loading gives a visible error without enabling controls.');
   const page = await browser.newPage(); page.setDefaultTimeout(10000);
+  await page.routeWebSocket(() => true, socket => socket.close());
   const seen = Promise.withResolvers(), release = Promise.withResolvers(), completed = Promise.withResolvers();
   let wasmRequests = 0, failLoad = false;
   const unexpected = [], errors = [], cellframeRequests = [];
@@ -181,7 +185,11 @@ try {
   // before then.
   const copyUnavailable = async () => {
     const before = await page.evaluate(() => navigator.clipboard.readText());
-    await page.locator('#copy-address').click();
+    // selectChain has disabled Copy without an address since ba5118f696.
+    // Assert the user-facing gate, then call the retained handler directly
+    // to preserve this test's independent no-address guard coverage.
+    assert.equal(await page.locator('#copy-address').isDisabled(), true);
+    await page.locator('#copy-address').evaluate(button => button.onclick());
     assert.equal(await page.locator('#wallet-status').innerText(), 'Address not available yet.');
     assert.equal(await page.evaluate(() => navigator.clipboard.readText()), before);
   };
@@ -193,8 +201,14 @@ try {
   await page.locator('#lock').click();
   assert.equal(await page.locator('#receive-address').textContent(), '');
   assert.equal(await page.locator('#nodus-address-status').textContent(), '');
+  assert.equal(await page.locator('#copy-address').isDisabled(), true);
+  assert.equal(await page.locator('#quick-receive').isDisabled(), true);
   await restore(vectors[1].phrase);
   await page.waitForFunction(address => document.querySelector('#receive-address').textContent === address, vectors[1].address);
+  assert.equal(await page.locator('#copy-address').isEnabled(), true);
+  assert.equal(await page.locator('#quick-receive').isEnabled(), true);
+  await page.locator('#copy-address').click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), vectors[1].address);
   release.resolve(); await completed.promise;
   assert.equal(await page.locator('#receive-address').innerText(), vectors[1].address);
   assert.equal(await page.locator('#nodus-address-status').innerText(), 'Derived locally from this wallet’s recovery phrase.');

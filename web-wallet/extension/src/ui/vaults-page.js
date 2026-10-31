@@ -48,6 +48,7 @@ const HEX128 = /^[0-9a-f]{128}$/;
 // updated yet" text and nothing else is tried (Kurultay #15: no fallback).
 
 let client, ownFp, host = null, root, panel;
+let stopMessages;
 let generation = 0, busy = false, current = null, view = 'list';
 const vaults = new Map();                // address -> record (core.js)
 const balances = new Map();              // address -> { total, spendable }
@@ -1555,6 +1556,7 @@ const payloadView = {
 // panelNode: #vault-panel; rootNode: #vaults-root; messagesHost: Messages'
 // vaultHost (Nodus Connect) or null (the wallet page).
 export function mountVaults({ panelNode, rootNode, messagesHost = null }) {
+  stopMessages?.(); stopMessages = undefined;
   panel = panelNode; root = rootNode; host = messagesHost;
   $('chain')?.addEventListener('change', showPanel);
   if (host) {
@@ -1564,7 +1566,7 @@ export function mountVaults({ panelNode, rootNode, messagesHost = null }) {
     // is also read again and its open requests reviewed again soon (0.1.86):
     // armPoll keeps an earlier deadline, so a burst of messages gives one
     // pass, at most VAULT_CHANGE_MS after them.
-    host.onChange(() => {
+    stopMessages = host.onChange(() => {
       if (!client) return;
       const gen = generation;
       void loadVaults(gen).then(() => {
@@ -1601,8 +1603,8 @@ function restoreVaultHistory(page) {
 
 // The web wallet's no-Messages host: vaults live only for this session.
 // A background-approved operation has its own decoded review id.
-export function mountVaultsPage({ rootNode, panelNode, ui }) {
-  mountVaults({ rootNode, panelNode });
+export function mountVaultsPage({ rootNode, panelNode, ui, messagesHost = null }) {
+  mountVaults({ rootNode, panelNode, messagesHost });
   let identity, disposed = false;
   const dialogs = new Set();
   async function reviewed(method, fields) {
@@ -1644,6 +1646,6 @@ export function mountVaultsPage({ rootNode, panelNode, ui }) {
       facade.vaultSubmit = fields => reviewed('vaultSubmit', fields);
       vaultExtension.nodusReady({ client: facade });
     }
-  }, dispose() { disposed = true; for (const dialog of dialogs) dialog.close(); vaultExtension.locked(); } };
+  }, dispose() { disposed = true; stopMessages?.(); stopMessages = undefined; host?.setPayloadView(null); host = null; for (const dialog of dialogs) dialog.close(); vaultExtension.locked(); } };
 }
 

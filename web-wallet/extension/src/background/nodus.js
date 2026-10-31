@@ -28,9 +28,16 @@ import { chainNetwork } from '../constants/networks.js';
 
 // Approved plan §3.5 holder 3 / §5.4–5.5: the web-wallet client and its one
 // module queue live in the background. No secret or signed envelope enters UI state.
-export function createNodus({ lockCoordinator, storage, getAddresses, factory = nodusSendModuleFactory, approvals, getPermittedAccounts, onLock, getWords, onClient, onStateChanged, onActivityChanged }) {
+export function createNodus({ lockCoordinator, storage, getAddresses, factory = nodusSendModuleFactory, approvals, getPermittedAccounts, onLock, getWords, onClient, onIdentified, onClientClosing, onSent, onStateChanged, onActivityChanged }) {
   let session, nextReview = 0, writes = Promise.resolve();
   const log = createSessionLog();
+  const closedClients = new WeakSet();
+  function closeConnect(client) {
+    if (!client || closedClients.has(client)) return;
+    closedClients.add(client);
+    try { onClientClosing?.(client); }
+    catch { log.log('messages', 'Messages could not finish closing.', { error: true }); }
+  }
   function lock() {
     onLock?.();
     const previous = session; session = undefined;
@@ -38,7 +45,8 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
     clearTimeout(previous.retryTimer); previous.retryTimer = undefined;
     stopQuarantineTimer(previous);
     // Let the client reject its queue as locked before aborting read requests.
-    previous.client.lock();
+    closeConnect(previous.client);
+    previous.client?.lock();
     previous.abort.abort(); previous.stopTracking?.();
     for (const review of previous.reviews.values()) review.cancel();
     previous.reviews.clear();
@@ -88,9 +96,13 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
     s.connection = (s.connection ?? 0) + 1;
     let previous = 'idle', wasReady = false;
     const client = createNodusClient({ factory, steps: stepLog(log, 'net', () => s.retries + 1, NODUS_CONNECT_BOUND_MS),
+      onBeforeLock() {
+        if (session === s && s.client === client) closeConnect(client);
+      },
       onState(state, why) {
         log.log('net', `client state ${previous} → ${state}`, { error: state === 'error' }); previous = state;
         if (session !== s || s.client !== client) return;
+        if (state === 'error' || state === 'locked') closeConnect(client);
         if (state === 'ready') {
           wasReady = true; s.retries = 0; makeAccount(s); onClient?.(client);
           track(s);
@@ -128,13 +140,16 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
     let seed;
     try {
       current(s); lockCoordinator.assertUnlocked();
-      const previous = s.client; s.client = undefined; previous?.lock();
+      const previous = s.client;
+      closeConnect(previous);
+      s.client = undefined; previous?.lock();
       s.contractAccount = null;
       sharedVaults.lock();
       for (const review of s.reviews.values()) review.cancel(); s.reviews.clear();
       const client = s.client = newClient(s);
       seed = nodusSigningSeed(getWords());
       await client.identify({ seed, fingerprint: s.addresses.nodus }); current(s);
+      await onIdentified?.({ client, phrase: getWords(), vaultId: s.id, fresh: false }); current(s);
       await connectIdentified(s, client);
     } catch (error) { if (session === s && !s.abort.signal.aborted) { log.log('net', error, { error: true }); scheduleRetry(s); } }
     finally { seed?.fill(0); }
@@ -157,7 +172,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
       // history key/cache, using the original format and derivation unchanged.
       s.historyKey = await historyKeyFor(phrase, id);
       s.balancesKey = await balancesKeyFor(phrase, id);
-      s.addressBookKey = await addressBookKeyFor(phrase, id); phrase = null;
+      s.addressBookKey = await addressBookKeyFor(phrase, id);
       current(s); combined.throwIfAborted();
       const saved = await storage.get([VAULT_KEY, ACTIVITY_KEY, HISTORY_KEY, BALANCES_KEY, ADDRESS_BOOK_KEY]); current(s);
       s.vault = saved[VAULT_KEY];
@@ -176,6 +191,8 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
       current(s); combined.throwIfAborted();
       onActivityChanged?.(s.rows, { restored: true });
       const identity = await s.client.identify({ seed, fingerprint }); current(s); combined.throwIfAborted();
+      await onIdentified?.({ client: s.client, phrase, vaultId: id, fresh: false });
+      current(s); combined.throwIfAborted();
       // src/evm/ui.js:96-104 and src/app.js:1275-1279: one account queue,
       // sharing the native pending coins and restored self-address records.
       return { ...identity, client: s.client };
@@ -589,7 +606,12 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
         });
         const hash = review.kind === 'contract' ? result.intentId : result;
         if (review.kind === 'contract') observeReceipt(s, result);
-        current(s); record.note = NODUS_SUBMITTED_NOTE; track(s); return hash;
+        current(s); record.note = NODUS_SUBMITTED_NOTE; track(s);
+        // Match the Connect site's native-NODUS card: use the signed wire
+        // identifier, not the returned intent identifier; token sends have
+        // no native-NODUS card (src/app.js confirm-send).
+        if (!review.kind && review.tokenId === NODUS_ASSET.tokenId && record.wire) onSent?.({ to: review.to, amount: review.amount, wire: record.wire, intentId: hash });
+        return hash;
       } catch (error) {
         if (error.sent) observeReceipt(s, error.sent);
         if (record && session === s) {

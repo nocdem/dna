@@ -420,7 +420,10 @@ export const isNodusBusy = error => error?.busy === true;
 // `onState(next, why)`: every state change. `why` is given for a change to
 // 'error' out of 'ready': { reason: 'keepalive' | 'resume check' |
 // 'session lost', error } — for the session log only.
-export function createNodusClient({ factory, onState, steps, setInterval: every = globalThis.setInterval, clearInterval: stopEvery = globalThis.clearInterval, setTimeout: after = globalThis.setTimeout, clearTimeout: stopAfter = globalThis.clearTimeout } = {}) {
+// `onBeforeLock()` (optional): synchronous host disposal while connectSync
+// can still reach the module. Called once, including a watchdog/internal
+// lock; reentrant lock calls and a throwing host cannot skip the wipe.
+export function createNodusClient({ factory, onState, onBeforeLock, steps, setInterval: every = globalThis.setInterval, clearInterval: stopEvery = globalThis.clearInterval, setTimeout: after = globalThis.setTimeout, clearTimeout: stopAfter = globalThis.clearTimeout } = {}) {
   if (typeof factory !== 'function') throw new Error('The Nodus send module is not available.');
   let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, hf6able = false, hf6Rules, connectable = false, nameable = false, registrable = false, vaultable = false, splittable = false, connecting, evmGen = 0, evmBuildable = false, evmReadable = false, historyReadable = false, compatReadable = false, tokenable = false;
   // The connection step running now ({ name, handle }) and whether the first
@@ -435,6 +438,7 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
   // settles only when the module call itself has returned, never merely when
   // its caller gave up waiting.
   let tail = Promise.resolve();
+  let locking = false, lockNotified = false;
   const waiting = new Set();
   function setState(next, why) { if (state === next) return; state = next; onState?.(next, why); }
   // A 'ready' client that has lost its session (see the callers).
@@ -564,21 +568,29 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
     });
   }
   function lock() {
-    stopped = true;
-    if (timer !== undefined) { stopEvery(timer); timer = undefined; }
-    // 1. Stop the queue: nothing queued will start, and nobody waits on the
-    //    call in flight (its late result is discarded).
-    for (const entry of waiting) entry.reject(lockedError());
-    waiting.clear();
-    inFlight?.reject(lockedError()); inFlight = undefined;
-    const current = module; module = undefined; fingerprint = undefined; chainId = undefined;
-    if (current) {
-      try { current.cancel(); } catch { /* the wipe below must still run */ }
-      try { current.lock(); } catch { /* the wipe below must still run */ }
-      try { new Uint8Array(current.memory.buffer).fill(0); } catch { /* release below must still run */ }
-      try { current.release(); } catch { /* nothing left to do */ }
-    }
-    setState('locked');
+    if (locking) return;
+    locking = true;
+    try {
+      if (!lockNotified) {
+        lockNotified = true;
+        try { onBeforeLock?.(); } catch { /* host disposal cannot prevent the module wipe */ }
+      }
+      stopped = true;
+      if (timer !== undefined) { stopEvery(timer); timer = undefined; }
+      // 1. Stop the queue: nothing queued will start, and nobody waits on the
+      //    call in flight (its late result is discarded).
+      for (const entry of waiting) entry.reject(lockedError());
+      waiting.clear();
+      inFlight?.reject(lockedError()); inFlight = undefined;
+      const current = module; module = undefined; fingerprint = undefined; chainId = undefined;
+      if (current) {
+        try { current.cancel(); } catch { /* the wipe below must still run */ }
+        try { current.lock(); } catch { /* the wipe below must still run */ }
+        try { new Uint8Array(current.memory.buffer).fill(0); } catch { /* release below must still run */ }
+        try { current.release(); } catch { /* nothing left to do */ }
+      }
+      setState('locked');
+    } finally { locking = false; }
   }
   // Refusals that touch no module: a used client (identified, ready, failed
   // or locked) stays exactly as it is. Returns the checked seed.

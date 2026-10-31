@@ -59,7 +59,8 @@ import assert from 'node:assert/strict';
 import {
   openHistoryStore, stateDiff, writeAll, StorageError, DAMAGED_STATE_TEXT, emptyState, counterStorageKey,
   MAX_INVOCATIONS, STATE_ID, STORE_STATE, STORE_MESSAGES, STORE_META, COUNTER_ID,
-  HISTORY_TOO_LARGE_TEXT, STATE_REMOVED_MAX, stateSnapshot, unreachableRecords, indexRefs
+  HISTORY_TOO_LARGE_TEXT, STATE_REMOVED_MAX, stateSnapshot, unreachableRecords, indexRefs,
+  deleteVaultHistory, HistoryDeleteBlocked
 } from '../src/connect/store.js';
 import { newGroup, storedGroup } from '../src/connect/groups/model.js';
 
@@ -67,6 +68,37 @@ const A = 'aa'.repeat(64), B = 'bb'.repeat(64), C = 'cc'.repeat(64);
 const VAULT = btoa(String.fromCharCode(...new Uint8Array(16).fill(7)));
 const NAME = '07'.repeat(16);
 const cid = n => `c${String(n).padStart(20, '0')}`;
+
+// A blocked deletion can finish later: preserve the invocation budget until
+// this call actually observes database deletion. Fake request delivery, real
+// deletion logic; no browser/network/artifacts or compile flags.
+test('blocked saved-wallet history deletion retains the worker counter, including a late success callback', async t => {
+  let request, removed = 0;
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'indexedDB');
+  Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: { deleteDatabase(name) {
+    assert.equal(name, NAME); request = {}; return request;
+  } } });
+  t.after(() => { if (descriptor) Object.defineProperty(globalThis, 'indexedDB', descriptor); else delete globalThis.indexedDB; });
+  const deleting = deleteVaultHistory(VAULT, undefined, { async remove() { removed++; } });
+  const refused = assert.rejects(deleting, HistoryDeleteBlocked);
+  request.onblocked(); await refused;
+  request.onsuccess(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(removed, 0);
+});
+
+test('saved-wallet deletion awaits database success and durable worker counter removal', async t => {
+  let request, release, removed = false, done = false;
+  const gate = new Promise(resolve => { release = resolve; });
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'indexedDB');
+  Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: { deleteDatabase() { request = {}; return request; } } });
+  t.after(() => { if (descriptor) Object.defineProperty(globalThis, 'indexedDB', descriptor); else delete globalThis.indexedDB; });
+  const deleting = deleteVaultHistory(VAULT, undefined, { async remove(name) {
+    assert.equal(name, NAME); await gate; removed = true;
+  } }).then(() => { done = true; });
+  assert.equal(removed, false); request.onsuccess();
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(done, false);
+  release(); await deleting; assert.equal(removed, true); assert.equal(done, true);
+});
 
 // localStorage stand-in; every write is logged into `log`.
 function memoryStorage(log = []) {
@@ -203,6 +235,88 @@ function fakeCore(log = []) {
 const sealedRecord = (id, value) => ({ id, nonce: new Uint8Array(12).fill(1), ct: new TextEncoder().encode(JSON.stringify(value)), tag: new Uint8Array(16).fill(2) });
 const contact = fp => ({ fp, salt: null, listed: false });
 const commits = log => log.filter(e => e && e.commit).map(e => e.commit);
+
+// Extension worker counter adapter: the real store and its existing fake
+// transaction/core fixtures prove ordering and failure isolation. These do
+// not prove encryption or browser storage; the packaged browser gate covers
+// the real WASM/IndexedDB boundary. No flags, external requests or artifacts.
+function deferredCounter() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+test('worker history awaits durable counter reservation before any seal or commit', async () => {
+  await withFake(async ({ log, core }) => {
+    const entered = deferredCounter(), durable = deferredCounter();
+    const counterStorage = {
+      async read(name) { assert.equal(name, NAME); return 7n; },
+      async write(name, count) {
+        assert.equal(name, NAME); assert.equal(count, 8n);
+        entered.resolve(); await durable.promise; log.push('reservation durable');
+      },
+    };
+    const store = await openHistoryStore({ core, vaultId: VAULT, counterStorage });
+    try {
+      const saving = store.save(structuredClone(store.state));
+      await entered.promise;
+      assert.equal(log.some(line => typeof line === 'string' && line.startsWith('seal ')), false);
+      assert.deepEqual(commits(log), []);
+      durable.resolve(); await saving;
+      const at = log.indexOf('reservation durable');
+      const seal = log.findIndex(line => typeof line === 'string' && line.startsWith('seal '));
+      assert.ok(at >= 0 && seal > at);
+      assert.match(log[seal], /@7$/u);
+      assert.equal(commits(log).length, 1);
+    } finally { durable.resolve(); store.close(); }
+  });
+});
+
+test('failed worker counter reservation seals nothing and runs the caller rollback', async () => {
+  await withFake(async ({ log, core, idb }) => {
+    const failure = new Error('fixture counter storage unavailable');
+    const counterStorage = { async read() { return 0n; }, async write() { throw failure; } };
+    const store = await openHistoryStore({ core, vaultId: VAULT, counterStorage });
+    let rollbacks = 0;
+    try {
+      await assert.rejects(store.save(structuredClone(store.state), [], [], [], [], { undo() { rollbacks++; } }), /counter|storage/u);
+      assert.equal(rollbacks, 1);
+      assert.equal(log.some(line => typeof line === 'string' && line.startsWith('seal ')), false);
+      assert.deepEqual(commits(log), []);
+      assert.equal(idb.dbs.get(NAME).stores.get(STORE_STATE).size, 0);
+    } finally { store.close(); }
+  });
+});
+
+test('lock during worker counter reservation cannot seal or commit after close', async () => {
+  await withFake(async ({ log, core }) => {
+    const entered = deferredCounter(), durable = deferredCounter();
+    let reserved = 0n;
+    const counterStorage = {
+      async read() { return reserved; },
+      async write(_name, count) { entered.resolve(); await durable.promise; reserved = count; },
+    };
+    const store = await openHistoryStore({ core, vaultId: VAULT, counterStorage });
+    const saving = store.save(structuredClone(store.state));
+    const refused = assert.rejects(saving, /closed|locked/u);
+    await entered.promise;
+    store.close(); durable.resolve(); await refused;
+    assert.equal(log.some(line => typeof line === 'string' && line.startsWith('seal ')), false);
+    assert.deepEqual(commits(log), []);
+    assert.equal(reserved, 1n, 'A reservation already in progress is conservatively burned');
+  });
+});
+
+test('worker counter read failure cannot silently fall back to an empty history', async () => {
+  await withFake(async ({ log, core }) => {
+    let reads = 0;
+    const counterStorage = { async read() { reads++; throw new Error('fixture counter read failed'); }, async write() { assert.fail('must not write'); } };
+    await assert.rejects(openHistoryStore({ core, vaultId: VAULT, counterStorage }), /counter|read/u);
+    assert.equal(reads, 1, 'The supplied adapter must actually be consulted');
+    assert.equal(log.some(line => typeof line === 'string' && line.startsWith('seal ')), false);
+    assert.deepEqual(commits(log), []);
+  });
+});
 
 async function withFake(run) {
   const saved = globalThis.indexedDB;

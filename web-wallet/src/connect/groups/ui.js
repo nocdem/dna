@@ -228,7 +228,7 @@ export function createGroupsView(h) {
     if (scroll || atBottom) list.scrollTop = list.scrollHeight;
     // Read only while the page is seen (web 0.1.122, as messages.js render):
     // a hidden page's new group message stays unread for the title and chime.
-    if (!(typeof document !== 'undefined' && document.hidden === true)) engine.markRead(g.gid);
+    if ((h.visible ? h.visible() : !(typeof document !== 'undefined' && document.hidden === true))) engine.markRead(g.gid);
   }
 
   // Members: the list of the version in force (a removal shows only once the

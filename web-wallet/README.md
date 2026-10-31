@@ -4,6 +4,26 @@ A standalone, accountless browser client alongside the existing DNA applications
 
 The product is Nodus Wallet. CPUNK is the temporary CF-20 integration until the airdrop; it is not a permanent chain module or the wallet identity. Airdrop eligibility and claims are outside this release.
 
+## Connect in the extension window
+
+The corner Connect button switches between Wallet and Connect in the same
+extension window. Contacts, contact requests, direct chats, groups and profile
+editing use the shared Connect session and screens. Wallet and chat drafts stay
+in their views while switching. Lock wallet clears both views.
+
+The extension worker owns the single Nodus client, Connect core and encrypted
+message history for every open wallet window. Trusted views receive public
+snapshots and send bounded actions; opening Connect does not export recovery
+words or messaging keys. Shared vaults use the existing message bridge for
+member sharing, payment requests and approvals.
+
+Message history belongs to this browser origin and the saved wallet's vault
+identifier. Restoring recovery words does not copy history from the Connect
+website or another vault identifier. Deleting message history keeps its
+encryption counter; deleting the saved wallet removes its history and counter
+after the database closes. A history-open failure leaves the wallet usable and
+offers retry in Connect.
+
 ## PQ receive — recovery contract v1 (2026-10-31)
 
 Wallet/extension package version: **0.1.143**. This does not change the Nodus

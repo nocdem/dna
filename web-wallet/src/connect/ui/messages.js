@@ -80,6 +80,31 @@ import { createGroupsEngine, needsProfile } from '../groups/engine.js';
 import { createGroupsView } from '../groups/ui.js';
 import { controlType } from '../groups/model.js';
 
+// One session owns its core, history and groups. The browser page uses the
+// default instance below; the extension worker owns a separate headless instance.
+// Presentation fields are plain strings, never a DOM substitute.
+export function createMessagesSession({ onChange, counterStorage, remote } = {}) {
+const values = {}, notices = {};
+// Form event handlers display their failure in the retained view. Group and
+// vault operations keep their rejecting promise for their existing guards.
+const requestView = async (name, fields) => {
+  try { return await remote(name, fields); } catch { return undefined; }
+};
+let stateTitle = 'Messages', stateText = '', retryLocal = false;
+const fields = {}, feedback = {};
+for (const name of ['addId', 'addNote', 'composer', 'bio', 'location', 'website']) {
+  Object.defineProperty(fields, name, {
+    get: () => ui?.[name]?.value ?? values[name] ?? '',
+    set(value) { values[name] = String(value); if (ui?.[name]) ui[name].value = String(value); }
+  });
+}
+for (const name of ['sync', 'addStatus', 'sendStatus', 'requestsStatus', 'contactsStatus', 'profileStatus', 'avatarStatus']) {
+  Object.defineProperty(feedback, name, {
+    enumerable: true,
+    get: () => ui?.[name]?.textContent ?? notices[name] ?? '',
+    set(value) { notices[name] = String(value); if (ui?.[name]) ui[name].textContent = String(value); onChange?.(); }
+  });
+}
 const SYNC_MS = 30000;                   // how often requests and messages are checked
 // Contacts whose ACK and day buckets one call reads together (web 0.1.74,
 // core.js CONTACT_READS_MAX = connect/nc_core.h NC_CONTACT_READS_MAX).
@@ -191,8 +216,9 @@ let screen = 'list';                     // 'list' | 'conversation' | 'contacts'
 let hubTab = 'contacts';                 // the contacts screen's tab: 'contacts' | 'requests'
 let filter = 'all';                      // the Chats filter chip: 'all' | 'unread' | 'chats'
 let notifiedScreen, notifiedId;          // last values handed to host.onScreen / host.onIdentity
+let visible = true;
 
-function isOpen() { return !!core && !!state && phase === 'open'; }
+function isOpen() { return (remote || !!core) && !!state && phase === 'open'; }
 
 // ── close / reset ──────────────────────────────────────────────────────
 // Stops everything Messages runs and drops every in-page secret. Never
@@ -206,11 +232,14 @@ function wipe() {
   store = undefined; state = undefined; messages = []; ownFp = undefined; ownProfile = undefined;
   fresh = false; vaultId = null; requests = []; selectedFp = undefined; nodusClient = undefined;
   eraseArmed = false; profileTaken = false; mlkemRepublishTried = false; ownNameConfirmed = false; removeArmed = undefined; addResolved = undefined;
-  replyTo = undefined; menuFor = undefined; jumpNew = 0;
+  replyTo = undefined; menuFor = undefined; menuAnchor = undefined; jumpNew = 0;
   payFor = undefined; transferCheckAt = 0; transferChecking = false; transferAgain = false;
   netStarted = false; online = false; caughtUp = false; groups = undefined;
-  for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, diags, chainNames, chainAsked, chainTried, vaultRecs, drawnUpTo, hashCache, transferVerdicts]) set.clear();
+  remoteGroups = []; remoteInvitations = []; remotePersistent = false; remoteGroupSending = false;
+  for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, diags, chainNames, chainAsked, chainTried, vaultRecs, drawnUpTo, hashCache, transferVerdicts, remoteDiagnostics, remoteNameStatus, reacting]) set.clear();
   notifyVaultHost();
+  for (const name of Object.keys(values)) values[name] = '';
+  for (const name of Object.keys(notices)) notices[name] = '';
   if (!ui) return;
   groupsView?.reset();
   for (const control of [ui.addId, ui.addNote, ui.composer, ui.bio, ui.location, ui.website]) control.value = '';
@@ -231,7 +260,7 @@ function wipe() {
 
 // Messages is closed with a reason (an error, the connection, a deleted
 // history). `retry`: the identity is open and only reading failed.
-export function closeMessages(reason, { retry = false } = {}) {
+function closeMessages(reason, { retry = false } = {}) {
   if (reason) logFailure(`Messages closed: ${reason}`);
   if (!retry) wipe();
   phase = 'closed';
@@ -239,7 +268,7 @@ export function closeMessages(reason, { retry = false } = {}) {
 }
 
 // Back to the start (the wallet was locked, or is reconnecting).
-export function resetMessages(text = WAITING_TEXT) {
+function resetMessages(text = WAITING_TEXT) {
   wipe();
   phase = 'waiting';
   showState('Messages', text, false);
@@ -253,7 +282,7 @@ class Closed extends Error {}
 // the Messages exports; phrase: the normalised recovery phrase; vaultId: the
 // saved wallet's id or null (memory only: nothing is kept after lock and no
 // delivery confirmation is sent); fresh: words generated in this tab (Q1).
-export async function openMessages({ client, phrase, vaultId: id = null, fresh: isFresh = false }) {
+async function openMessages({ client, phrase, vaultId: id = null, fresh: isFresh = false }) {
   wipe();
   const gen = generation;
   phase = 'opening';
@@ -317,7 +346,7 @@ async function openLocal(gen) {
     // bounded read (store.js onMigrate; design §2.2); what the update could
     // not keep — stored fields no code reads — is written to the session log
     // as paths, never values (store.js onDropped).
-    const opened = vaultId ? await openHistoryStore({ core, vaultId, signal: AbortSignal.timeout(HISTORY_OPEN_MS),
+    const opened = vaultId ? await openHistoryStore({ core, vaultId, counterStorage, signal: AbortSignal.timeout(HISTORY_OPEN_MS),
       onMigrate: step => { if (step === 'start' && gen === generation) showState('Opening Messages', 'Updating your message history…', false); },
       onDropped: paths => logCheck(`Message history: ${paths.length} stored field(s) could not be kept: ${paths.join(', ')}`, true) }) : memoryHistoryStore();
     if (gen !== generation) { opened.close(); return; }
@@ -369,13 +398,15 @@ async function openLocal(gen) {
   // one does not expire — chain-names.js).
   for (const fp of [ownFp, ...state.contacts.map(c => c.fp)]) keptChainName(fp);
 
-  ui.ownId.textContent = ownFp;
-  ui.memoryNote.hidden = store.persistent;
-  ui.erase.hidden = !store.persistent;
+  if (ui) {
+    ui.ownId.textContent = ownFp;
+    ui.memoryNote.hidden = store.persistent;
+    ui.erase.hidden = !store.persistent;
+  }
   fillProfile();
   phase = 'open';
   screen = 'list';
-  ui.sync.textContent = CONNECTING_TEXT;
+  feedback.sync = CONNECTING_TEXT;
   render();
   notifyVaultHost();
   if (nodusClient?.state === 'ready') goOnline(gen);
@@ -389,7 +420,7 @@ async function openLocal(gen) {
 function goOnline(gen) {
   if (gen !== generation || !isOpen() || netStarted) return;
   netStarted = true;
-  ui.sync.textContent = UPDATING_TEXT;
+  feedback.sync = UPDATING_TEXT;
   clearInterval(syncTimer);
   syncTimer = setInterval(() => { void sync(); }, SYNC_MS);
   void sync();
@@ -403,9 +434,8 @@ function goOnline(gen) {
 // A reconnect already starts one (nodusReady -> goOnline). The open
 // conversation is marked read only now (render; web 0.1.122): a message
 // that came while the page was hidden counted in the title and chimed.
-if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) { if (ui) render(); void sync(); } });
-}
+const visibilityChanged = () => { if (!document.hidden) { if (ui) render(); if (!remote) void sync(); } };
+if (typeof document !== 'undefined') document.addEventListener('visibilitychange', visibilityChanged);
 
 // The own profile on the network (was the gate of opening Messages; now
 // the gate of sending). An account with no profile yet gets its first one
@@ -442,7 +472,7 @@ async function checkOwnAccount(gen) {
   // The edit fields are refilled only if the user has not typed in them
   // while the network was being read.
   const was = before || {};
-  if (ui.bio.value === (was.bio || '') && ui.location.value === (was.location || '') && ui.website.value === (was.website || '')) fillProfile();
+  if (fields.bio === (was.bio || '') && fields.location === (was.location || '') && fields.website === (was.website || '')) fillProfile();
   else { fillOwnAvatar(); fillNameLine(); }
   return true;
 }
@@ -452,7 +482,7 @@ async function checkOwnAccount(gen) {
 // messages to it fall back to round-3 Kyber. The record carries the key
 // outside its signed part (decision 2026-09-23-kem-mlkem-migration.md, K1
 // rev 2 / K4). Exported for the unit test.
-export function profileNeedsMlkem(profile) {
+function profileNeedsMlkem(profile) {
   return !!profile && typeof profile === 'object' && profile.has_mlkem !== true;
 }
 
@@ -561,7 +591,7 @@ async function publishContacts(gen) {
   }
   else if (result.status === 'taken') { state.listTaken = true; await persist(); }
   const note = contactListStatusText(result.status);
-  if (note && gen === generation) ui.addStatus.textContent = note;
+  if (note && gen === generation) feedback.addStatus = note;
 }
 
 // A profile once per session — for a contact of a saved wallet from the
@@ -726,7 +756,7 @@ async function sync() {
   const round = ++checkRound, first = !online, roundAt = Date.now();
   const stageBegin = name => {
     if (!first) return 0;
-    ui.sync.textContent = updatingStageText(name);
+    feedback.sync = updatingStageText(name);
     logCheck(stageStartLine(round, name));
     return Date.now();
   };
@@ -808,7 +838,7 @@ async function sync() {
     // stays that contact's; a failed group call fails each contact it read.
     for (let start = 0; start < contacts.length; start += CHECK_GROUP_MAX) {
       if (gen !== generation) return;
-      ui.sync.textContent = checkingContactsText(start + 1, contacts.length, displayName(contacts[start].fp));
+      feedback.sync = checkingContactsText(start + 1, contacts.length, displayName(contacts[start].fp));
       const group = [];
       for (let index = start; index < Math.min(start + CHECK_GROUP_MAX, contacts.length); index++) {
         if (gen !== generation) return;
@@ -872,7 +902,7 @@ async function sync() {
         const { contact, id, days } = e;
         // Removed by the user while its group was read: not handled.
         if (!contactOf(contact.fp)) continue;
-        ui.sync.textContent = checkingContactsText(e.index + 1, contacts.length, displayName(contact.fp));
+        feedback.sync = checkingContactsText(e.index + 1, contacts.length, displayName(contact.fp));
         let complete;
         try {
           if (e.error !== undefined) throw e.error;
@@ -937,7 +967,7 @@ async function sync() {
       const notChecked = (failed ? ` ${failed} contact${failed === 1 ? '' : 's'} could not be checked (see Details in the conversation).` : '') +
         (groupsFailed ? ` ${groupsFailed} group${groupsFailed === 1 ? '' : 's'} could not be checked.` : '') +
         (deferred ? ` The network was busy: ${deferred} contact${deferred === 1 ? ' is' : 's are'} checked again on the next round.` : '');
-      ui.sync.textContent = storageFailure
+      feedback.sync = storageFailure
         ? `${storageFailure.message}${notChecked}`
         : `Last checked ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. New messages are checked every 30 seconds.${notChecked}`;
       logCheck(roundDoneLine(round, { ms: Date.now() - roundAt, fresh: arrivedTotal, failed }));
@@ -954,8 +984,8 @@ async function sync() {
     if (gen !== generation) return;
     if (isNodusBusy(error)) {
       logFailure('The message check met a busy network; checking again automatically', error);
-      ui.sync.textContent = 'The network is busy right now. Checking again automatically.';
-    } else ui.sync.textContent = explain(error, 'The network could not be reached. Checking again automatically.');
+      feedback.sync = 'The network is busy right now. Checking again automatically.';
+    } else feedback.sync = explain(error, 'The network could not be reached. Checking again automatically.');
   } finally { if (gen === generation) syncing = false; }
 }
 
@@ -1195,10 +1225,10 @@ function newestSeq(fp) {
   for (const m of messages) if (m.fp === fp && BigInt(m.seq) > newest) newest = BigInt(m.seq);
   return newest;
 }
-function markRead(fp) { lastRead.set(fp, newestSeq(fp)); }
+function markRead(fp) { const seq = newestSeq(fp); if (remote && lastRead.get(fp) !== seq) void requestView('markRead', { fp }); lastRead.set(fp, seq); }
 // The page is not being seen (another browser tab, a minimised window, a
 // phone's screen off): the open conversation is not marked read (render).
-function pageHidden() { return typeof document !== 'undefined' && document.hidden === true; }
+function pageHidden() { return !visible || (typeof document !== 'undefined' && document.hidden === true); }
 function unreadCount(fp) {
   const seen = lastRead.get(fp) ?? -1n;
   return messages.filter(m => m.fp === fp && m.dir === 'in' && !isControl(m) && BigInt(m.seq) > seen).length;
@@ -1261,7 +1291,7 @@ function nameTitle(fp) {
 // The two letters shown when there is no picture: of the chain name or the
 // profile name (direction controls and invisible characters removed), else
 // of the ID.
-export function initials(fp, name) { return (name ? [...name].slice(0, 2).join('') : fp.slice(0, 2)).toUpperCase(); }
+function initials(fp, name) { return (name ? [...name].slice(0, 2).join('') : fp.slice(0, 2)).toUpperCase(); }
 function avatarName(fp) {
   const n = namesOf(fp);
   return n.verified ? n.title : n.fromProfile ? inspectUntrusted(n.title, { name: true }).text : '';
@@ -1392,20 +1422,35 @@ const peerShown = fp => {
 // the conversation head and the lists (render).
 async function refreshPeer(fp, token) {
   const gen = generation, before = peerShown(fp);
-  let read = false;
-  try { read = await reloadProfile(fp, { keep: !!contactOf(fp) }); }
-  catch (error) { if (gen === generation && !isNodusBusy(error)) logFailure(`A profile (${shortId(fp)}) could not be read again`, error); }
-  if (gen !== generation || !isOpen()) return;
-  let moved = false;
-  try { moved = await ensureChainName(fp, !!contactOf(fp), true); } catch { /* the shown name stays */ }
-  if (gen !== generation || !isOpen()) return;
-  if (moved) { try { await persist(); } catch { /* shown this session; the next save keeps it */ } }
+  if (remote) {
+    let read = false;
+    try { read = (await remote('peerRefresh', { fp }))?.read === true; }
+    catch { /* keep the cached profile and show the existing refusal below */ }
+    if (gen !== generation || !isOpen() || !ui?.peerDialog.open || peerFp !== fp || token !== peerOpened) return;
+    drawPeer(fp);
+    ui.peerStatus.textContent = read ? '' : PEER_CHECK_FAILED_TEXT;
+    return;
+  }
+  const { read } = await refreshPeerData(fp, gen);
   if (gen !== generation || !isOpen()) return;
   const changed = peerShown(fp) !== before;
   if (changed) render();
   if (!ui.peerDialog.open || peerFp !== fp || token !== peerOpened) return;
   ui.peerStatus.textContent = read ? '' : PEER_CHECK_FAILED_TEXT;
   if (changed) drawPeer(fp);
+}
+// The owner and local page use the same refresh. A failed read keeps the
+// cached profile; the presentation receives only whether this read answered.
+async function refreshPeerData(fp, gen) {
+  let read = false;
+  try { read = await reloadProfile(fp, { keep: !!contactOf(fp) }); }
+  catch (error) { if (gen === generation && !isNodusBusy(error)) logFailure(`A profile (${shortId(fp)}) could not be read again`, error); }
+  if (gen !== generation || !isOpen()) return { read: false };
+  let moved = false;
+  try { moved = await ensureChainName(fp, !!contactOf(fp), true); } catch { /* the shown name stays */ }
+  if (gen !== generation || !isOpen()) return { read: false };
+  if (moved) { try { await persist(); } catch { /* shown this session; the next save keeps it */ } }
+  return { read: gen === generation && isOpen() && read };
 }
 function drawPeer(fp) {
   const p = profiles.get(fp), n = namesOf(fp), chain = chainNameOf(fp);
@@ -1456,9 +1501,9 @@ async function copyOwnId(statusNode) {
 // with no ID, why: Messages closed with a reason while the wallet is open,
 // else the wallet is locked or Messages is still opening. Pure;
 // test/connect-ui.test.js pins it.
-export const OWN_ID_WAITING_TEXT = 'Appears when your wallet is open';
-export const OWN_ID_CLOSED_TEXT = 'Messages could not open';
-export function ownIdText({ id = null, name = '', closed = false } = {}) {
+const OWN_ID_WAITING_TEXT = 'Appears when your wallet is open';
+const OWN_ID_CLOSED_TEXT = 'Messages could not open';
+function ownIdText({ id = null, name = '', closed = false } = {}) {
   if (id) return name ? `${name} · ${shortId(id)}` : shortId(id);
   return closed === true ? OWN_ID_CLOSED_TEXT : OWN_ID_WAITING_TEXT;
 }
@@ -1490,12 +1535,13 @@ export function ownIdText({ id = null, name = '', closed = false } = {}) {
 //                    means the host moved the user elsewhere (focus is its).
 //   payContact(fp)   (web 0.1.90) open the wallet's Send form on NODUS for
 //                    this contact; without it there is no "Send NODUS".
-export function mountMessages(root, options = {}) {
+function mountMessages(root, options = {}) {
   host = options;
   const u = {};
   u.stateTitle = el('h3', { text: 'Messages' });
   u.stateText = statusLine('hint');
   u.retry = button('Try again', () => {
+    if (remote) { void requestView('retry', {}); return; }
     if (!core || !ownFp) return;
     const gen = generation;
     openLocal(gen).catch(error => { if (gen === generation) closeMessages(explain(error, LOCAL_FAILED_TEXT), { retry: true }); });
@@ -1530,7 +1576,7 @@ export function mountMessages(root, options = {}) {
   // and "New group" above the conversations; a group's conversation in the
   // pane; the New group dialog.
   groupsView = createGroupsView({
-    engine: () => groups, isOpen, online: () => online, ownFp: () => ownFp, contacts: () => (state ? state.contacts : []),
+    engine: () => groups, isOpen, online: () => online, visible: () => !pageHidden(), ownFp: () => ownFp, contacts: () => (state ? state.contacts : []),
     el, button, untrusted, statusLine, input, setAttrs, icon, iconButton, backButton,
     nameTitle, nameHint: fp => nameHint(fp), displayName, shortWhen, dayLabel, sameDay, explain,
     openGroup, render
@@ -1641,7 +1687,7 @@ export function mountMessages(root, options = {}) {
   const hub = appBar('Contacts', { back: true, actions: [iconButton('userPlus', 'Add contact', () => openAdd())] });
   u.hubHeading = hub.heading;
   const hubTabButton = (name, label) => {
-    const node = button(label, () => { hubTab = name; if (name === 'requests') ui.requestsStatus.textContent = ''; render(); }, 'nc-tab');
+    const node = button(label, () => { hubTab = name; if (name === 'requests') feedback.requestsStatus = ''; render(); }, 'nc-tab');
     node.dataset.tab = name;
     return node;
   };
@@ -1708,8 +1754,8 @@ export function mountMessages(root, options = {}) {
   // Any change to what is typed drops a shown lookup result: the request
   // goes only to the name that was looked up and shown.
   u.addId.addEventListener('input', () => {
-    if (addResolved) { addResolved = undefined; showAddResolved(); ui.addStatus.textContent = ''; }
-    if (ui.addStatus.dataset.state) { ui.addStatus.textContent = ''; ui.addStatus.dataset.state = ''; }   // a new ID: the last result goes
+    if (addResolved) { addResolved = undefined; showAddResolved(); feedback.addStatus = ''; }
+    if (ui.addStatus.dataset.state) { feedback.addStatus = ''; ui.addStatus.dataset.state = ''; }   // a new ID: the last result goes
   });
   u.sendForm.onsubmit = event => void send(event);
   u.profileForm.onsubmit = event => void saveProfile(event);
@@ -1735,7 +1781,8 @@ export function mountMessages(root, options = {}) {
 }
 
 function growComposer() {
-  const text = ui.composer.value;
+  if (!ui) return;
+  const text = fields.composer;
   const lines = text.split('\n').length + Math.floor(text.length / 60);
   ui.composer.rows = Math.max(1, Math.min(COMPOSER_ROWS, lines));
   ui.counter.textContent = text.length > TEXT_MAX - 500 ? `${text.length} / ${TEXT_MAX}` : '';
@@ -1743,12 +1790,14 @@ function growComposer() {
 
 // ── view: what is shown ────────────────────────────────────────────────
 function showState(title, text, retry) {
+  stateTitle = title; stateText = text || ''; retryLocal = !!retry;
+  onChange?.();
   if (!ui) return;
   ui.stateTitle.textContent = title;
   ui.stateText.textContent = text;
   ui.retry.hidden = !retry;
   ui.stateView.dataset.kind = phase;
-  ui.sync.textContent = phase === 'open' ? ui.sync.textContent : '';
+  feedback.sync = phase === 'open' ? feedback.sync : '';
   render();
 }
 
@@ -1758,8 +1807,8 @@ function show(next, { tab } = {}) {
   if (!ui) return;
   if (!isOpen()) next = 'list';
   if (next !== 'conversation') { selectedFp = undefined; groupsView?.close(); }
-  if (next !== 'contacts' && removeArmed) { removeArmed = undefined; ui.contactsStatus.textContent = ''; }
-  if (next === 'contacts' && tab) { hubTab = tab; if (tab === 'requests') ui.requestsStatus.textContent = ''; }
+  if (next !== 'contacts' && removeArmed) { removeArmed = undefined; feedback.contactsStatus = ''; }
+  if (next === 'contacts' && tab) { hubTab = tab; if (tab === 'requests') feedback.requestsStatus = ''; }
   screen = next;
   render();
   const focus = { contacts: ui.hubHeading, profile: ui.profileHeading }[next];
@@ -1768,7 +1817,7 @@ function show(next, { tab } = {}) {
 
 // The host's navigation (the Nodus Connect app's tabs and More menu):
 // 'chats', 'contacts', 'requests', 'profile' or 'add' (the add-contact dialog).
-export function messagesNavigate(target) {
+function messagesNavigate(target) {
   if (target === 'add') openAdd();
   else if (target === 'contacts' || target === 'requests') show('contacts', { tab: target });
   else if (target === 'profile') show('profile');
@@ -1778,7 +1827,7 @@ export function messagesNavigate(target) {
 function openAdd() {
   if (!ui) return;
   if (!isOpen()) { show('list'); return; }
-  ui.addStatus.textContent = online ? '' : ADD_OFFLINE_TEXT;
+  feedback.addStatus = online ? '' : ADD_OFFLINE_TEXT;
   ui.addStatus.dataset.state = '';
   ui.addSubmit.disabled = !online || adding;
   addResolved = undefined; showAddResolved();
@@ -1800,7 +1849,7 @@ function openGroup(gid) {
 function selectContact(fp) {
   groupsView?.close();
   selectedFp = fp; screen = 'conversation';
-  ui.sendStatus.textContent = '';
+  feedback.sendStatus = '';
   markRead(fp);
   render({ scroll: true });
   (chatPeerOf(fp)?.salt ? ui.composer : ui.convTitle).focus({ preventScroll: true });
@@ -1813,6 +1862,7 @@ function setCount(node, count) {
 }
 
 function render({ scroll = false } = {}) {
+  onChange?.();
   if (!ui) return;
   const open = isOpen();
   // A group's conversation is open (src/connect/groups/ui.js); a group that
@@ -1828,8 +1878,8 @@ function render({ scroll = false } = {}) {
   // (`online`): the add dialog's button waits instead of refusing each press
   // (W-04: a user pressed it 30+ times while the account check failed).
   ui.addSubmit.disabled = !online || adding;   // a redraw never unlocks a send in progress (0.1.98)
-  if (!online && ui.addDialog.open && !ui.addStatus.textContent) ui.addStatus.textContent = ADD_OFFLINE_TEXT;
-  if (online && ui.addStatus.textContent === ADD_OFFLINE_TEXT) ui.addStatus.textContent = '';
+  if (!online && ui.addDialog.open && !feedback.addStatus) feedback.addStatus = ADD_OFFLINE_TEXT;
+  if (online && feedback.addStatus === ADD_OFFLINE_TEXT) feedback.addStatus = '';
   ui.stateView.hidden = open;
   ui.chatsBody.hidden = !open;
   ui.fab.hidden = !open;
@@ -1949,7 +1999,7 @@ function renderContacts() {
     const remove = button(armed ? 'Confirm: remove this contact' : 'Remove contact', () => void removeContactAction(c.fp), `secondary small contact-remove${armed ? ' contact-remove-armed' : ''}`);
     remove.setAttribute('aria-label', armed ? `Confirm: remove ${displayName(c.fp)}` : `Remove ${displayName(c.fp)}`);
     const actions = el('div', { className: 'contact-actions' }, remove);
-    if (armed) actions.append(button('Keep', () => { removeArmed = undefined; ui.contactsStatus.textContent = ''; render(); }, 'secondary small'));
+    if (armed) actions.append(button('Keep', () => { removeArmed = undefined; feedback.contactsStatus = ''; render(); }, 'secondary small'));
     return el('li', { className: 'contact-item' }, row, actions);
   }) : [el('li', { className: 'contact-empty', text: 'No contacts yet. Add one with their ID or chain name.' })]));
 }
@@ -2007,7 +2057,7 @@ function renderConversation(scroll) {
     other ? 'This contact also sent items this page cannot show yet (for example pictures or calls).' : ''
   ].filter(Boolean).join(' ');
   ui.convNote.hidden = !ui.convNote.textContent;
-  ui.convDiagText.textContent = diagText(diags.get(contact.fp));
+  ui.convDiagText.textContent = remote ? remoteDiagnostics.get(contact.fp) || '' : diagText(diags.get(contact.fp));
   ui.convDiag.hidden = !ui.convDiagText.textContent;
   ui.sendForm.hidden = !contact.salt;
   ui.notReady.hidden = !!contact.salt;
@@ -2183,9 +2233,9 @@ function setReply(m) {
 
 async function copyMessage(m) {
   const reply = parseReply(m.text);
-  try { await navigator.clipboard.writeText(reply ? reply.text : m.text); ui.sendStatus.textContent = 'Copied.'; }
-  catch { ui.sendStatus.textContent = 'This browser did not allow copying.'; }
-  setTimeout(() => { if (ui?.sendStatus.textContent === 'Copied.') ui.sendStatus.textContent = ''; }, 2000);
+  try { await navigator.clipboard.writeText(reply ? reply.text : m.text); feedback.sendStatus = 'Copied.'; }
+  catch { feedback.sendStatus = 'This browser did not allow copying.'; }
+  setTimeout(() => { if (ui?.sendStatus.textContent === 'Copied.') feedback.sendStatus = ''; }, 2000);
 }
 
 // A reaction or a delete notice to this contact: a record of its `kind`,
@@ -2214,8 +2264,9 @@ async function sendAction(fp, text, kind, stored) {
 // read the same on/off state and send the same op again: it waits (0.1.90).
 const reacting = new Set();
 async function react(m, emoji) {
+  if (remote) return requestView('messageReact', { fp: m.fp, seq: m.seq, emoji });
   const hash = hashOf(m);
-  if (!hash || !online) { if (!online) ui.sendStatus.textContent = OFFLINE_SEND_TEXT; return; }
+  if (!hash || !online) { if (!online) feedback.sendStatus = OFFLINE_SEND_TEXT; return; }
   const busy = `${hash} ${emoji}`;
   if (reacting.has(busy)) return;
   reacting.add(busy);
@@ -2223,7 +2274,7 @@ async function react(m, emoji) {
     const summary = reactionSummary(messages.filter(x => x.fp === m.fp), ownFp);
     const op = ownReactionOn(summary, hash, emoji) ? 'remove' : 'add';
     await sendAction(m.fp, buildReaction(hash, emoji, op), 'reaction', () => reacting.delete(busy));
-  } catch (error) { if (ui) ui.sendStatus.textContent = error.message; logFailure('A reaction was not sent', error); }
+  } catch (error) { if (ui) feedback.sendStatus = error.message; logFailure('A reaction was not sent', error); if (!ui) throw error; }
   finally { reacting.delete(busy); }
 }
 
@@ -2274,6 +2325,7 @@ function transferCard(m) {
 // set of this device's own address history (owner-gated, one node — the
 // wallet balance's trust), at most once a minute, after a check round.
 async function checkTransfers(gen, { force = false } = {}) {
+  if (remote) { if (force) return requestView('transferCheck', {}); return; }
   if (!isOpen() || !nodusClient?.historyReadable) return;
   // "Check now" while a check runs: one more, forced, right after it (0.1.96).
   if (transferChecking) { if (force) transferAgain = true; return; }
@@ -2379,6 +2431,7 @@ function transferPreview(m) {
 function payFromChat() {
   if (!isOpen() || !selectedFp || !chatPeerOf(selectedFp) || typeof host.payContact !== 'function') return;
   payFor = { fp: selectedFp, at: Date.now() };
+  if (remote) void requestView('payStart', { fp: selectedFp });
   host.payContact(selectedFp);
 }
 
@@ -2400,13 +2453,14 @@ async function onNodusSent(detail) {
 // app shows "deleted by the sender"; a copy they already made is theirs).
 // Any message, "on this device": a local mark only, never sent.
 async function deleteMessage(m, everyone) {
+  if (remote) return requestView('messageDelete', { fp: m.fp, seq: m.seq, everyone });
   const hash = hashOf(m);
   if (!hash) return;
   try {
     if (everyone) {
       if (m.dir !== 'out') return;
       await sendAction(m.fp, buildDelete([hash]), 'delete');
-      ui.sendStatus.textContent = 'Deleted. Their app hides it too; a copy they already made cannot be taken back.';
+      feedback.sendStatus = 'Deleted. Their app hides it too; a copy they already made cannot be taken back.';
     } else {
       const gen = generation;
       const mark = { seq: takeSeq(), fp: m.fp, dir: 'local', kind: 'hide', target: hash, at: Date.now() };
@@ -2415,12 +2469,13 @@ async function deleteMessage(m, everyone) {
       messages.push(mark);
       if (replyTo === m) setReply(undefined);
       render();
-      ui.sendStatus.textContent = 'Deleted on this device.';
+      feedback.sendStatus = 'Deleted on this device.';
     }
-  } catch (error) { if (ui) ui.sendStatus.textContent = error.message; logFailure('A message was not deleted', error); }
+  } catch (error) { if (ui) feedback.sendStatus = error.message; logFailure('A message was not deleted', error); if (!ui) throw error; }
 }
 
 function fillOwnAvatar() {
+  if (!ui || !ownFp) return;
   const p = ownProfile || {};
   ui.ownAvatar.className = `contact-avatar avatar-large avatar-${parseInt(ownFp[0], 16) % 6}`;
   fillAvatar(ui.ownAvatar, initials(ownFp, chainNameOf(ownFp)), p.avatar_base64);
@@ -2429,7 +2484,7 @@ function fillOwnAvatar() {
 
 function fillProfile() {
   const p = ownProfile || {};
-  ui.bio.value = p.bio || ''; ui.location.value = p.location || ''; ui.website.value = p.website || '';
+  fields.bio = p.bio || ''; fields.location = p.location || ''; fields.website = p.website || '';
   fillOwnAvatar();
   fillNameLine();
 }
@@ -2437,6 +2492,7 @@ function fillProfile() {
 // The names line of "Your ID & profile" (also refreshed when the own chain
 // name arrives, without touching the edit fields).
 function fillNameLine() {
+  if (!ui) return;
   const p = ownProfile || {};
   const line = ui.profileName;
   line.replaceChildren();
@@ -2456,11 +2512,12 @@ function fillNameLine() {
 
 // ── actions ────────────────────────────────────────────────────────────
 async function accept(request) {
+  if (remote) return requestView('contactAccept', { fp: request.sender });
   const gen = generation;
-  if (!online) { ui.requestsStatus.textContent = 'Requests can be answered once Messages is connected to the network.'; return; }
-  ui.requestsStatus.textContent = 'Accepting…';
+  if (!online) { feedback.requestsStatus = 'Requests can be answered once Messages is connected to the network.'; return; }
+  feedback.requestsStatus = 'Accepting…';
   try {
-    if (!await ensureProfile(request.sender)) { if (gen === generation) ui.requestsStatus.textContent = "This person's account could not be read right now. Try again in a minute."; return; }
+    if (!await ensureProfile(request.sender)) { if (gen === generation) feedback.requestsStatus = "This person's account could not be read right now. Try again in a minute."; return; }
     if (gen !== generation) return;
     await core.requestAccept(request.sender, request.salt || null);
     if (gen !== generation) return;
@@ -2468,32 +2525,34 @@ async function accept(request) {
     requests = requests.filter(r => r.sender !== request.sender);
     await persist();
     if (gen !== generation) return;
-    ui.requestsStatus.textContent = 'Contact added.';
+    feedback.requestsStatus = 'Contact added.';
     markRead(request.sender);
     render();
     await publishContacts(gen);
-  } catch (error) { if (gen === generation) ui.requestsStatus.textContent = explain(error, 'Accepting failed. Try again in a minute.'); }
+  } catch (error) { if (gen === generation) feedback.requestsStatus = explain(error, 'Accepting failed. Try again in a minute.'); if (!ui) throw error; }
 }
 
 async function decline(request) {
+  if (remote) return requestView('contactDecline', { fp: request.sender });
   // Local only: the request is hidden on this device for 7 days (as the app)
   // and expires on the network; once per sender (text.js addDeclined, W-07).
   state.declined = addDeclined(state.declined, request.sender, nowSeconds());
   requests = requests.filter(r => r.sender !== request.sender);
   render();
-  try { await persist(); } catch (error) { ui.requestsStatus.textContent = error.message; }
+  try { await persist(); } catch (error) { feedback.requestsStatus = error.message; if (!ui) throw error; }
 }
 
 async function withdraw(fp) {
+  if (remote) return requestView('contactWithdraw', { fp });
   const gen = generation;
-  if (!online) { ui.requestsStatus.textContent = 'A request can be withdrawn once Messages is connected to the network.'; return; }
+  if (!online) { feedback.requestsStatus = 'A request can be withdrawn once Messages is connected to the network.'; return; }
   try {
     await core.requestCancel(fp);
     if (gen !== generation) return;
     state.outgoing = state.outgoing.filter(o => o.fp !== fp);
     await persist();
-    if (gen === generation) { ui.requestsStatus.textContent = 'Request withdrawn.'; render(); }
-  } catch (error) { if (gen === generation) ui.requestsStatus.textContent = explain(error, 'Withdrawing failed. Try again in a minute.'); }
+    if (gen === generation) { feedback.requestsStatus = 'Request withdrawn.'; render(); }
+  } catch (error) { if (gen === generation) feedback.requestsStatus = explain(error, 'Withdrawing failed. Try again in a minute.'); if (!ui) throw error; }
 }
 
 // "Remove contact" (the app's dna_handle_remove_contact, dna_engine_contacts.c:
@@ -2505,15 +2564,16 @@ async function withdraw(fp) {
 // other devices and the DNA Connect app keep listing the person; this
 // device remembers the removal (state.removed) and does not take them back
 // from that list.
-async function removeContactAction(fp) {
+async function removeContactAction(fp, { confirmed = false } = {}) {
   if (!isOpen() || !contactOf(fp)) return;
-  if (removeArmed !== fp) {
+  if (!confirmed && removeArmed !== fp) {
     removeArmed = fp;
-    ui.contactsStatus.textContent = 'Remove this contact from this device? Your messages with them stay on this device and come back if you add them again. Your other devices and the DNA Connect app still list them.';
+    feedback.contactsStatus = 'Remove this contact from this device? Your messages with them stay on this device and come back if you add them again. Your other devices and the DNA Connect app still list them.';
     render();
     return;
   }
   removeArmed = undefined;
+  if (remote) { render(); return requestView('contactRemove', { fp, confirmed: true }); }
   const name = displayName(fp);
   removeContact(state, fp);
   for (const map of [unpublished, saltChecked, dropped, others, lastRead, diags, chainNames, chainAsked, chainTried, kept, profiles]) map.delete(fp);
@@ -2523,9 +2583,10 @@ async function removeContactAction(fp) {
   notifyVaultHost();
   try {
     await persist();
-    if (isOpen()) ui.contactsStatus.textContent = `${name} was removed from your contacts on this device.`;
+    if (isOpen()) feedback.contactsStatus = `${name} was removed from your contacts on this device.`;
   } catch (error) {
-    if (isOpen()) ui.contactsStatus.textContent = `${name} was removed for now, but this device could not save the change (${error instanceof StorageError ? error.message : 'storage failed'}). They may come back after you lock.`;
+    if (isOpen()) feedback.contactsStatus = `${name} was removed for now, but this device could not save the change (${error instanceof StorageError ? error.message : 'storage failed'}). They may come back after you lock.`;
+    if (!ui) throw error;
   }
 }
 
@@ -2549,29 +2610,39 @@ function showAddResolved() {
 // is checked like a typed ID (own ID, already a contact, already requested)
 // before it is shown and again before sending.
 async function addContact(event) {
+  if (remote) {
+    event.preventDefault();
+    if (adding) return;
+    adding = true; ui.addSubmit.disabled = true;
+    const gen = generation, typed = fields.addId;
+    try {
+      const sent = await requestView('contactAdd', { input: typed, note: fields.addNote, confirmed: addResolved?.owner });
+      if (gen === generation && sent?.sent && fields.addId === typed) { fields.addId = ''; fields.addNote = ''; }
+    } finally { if (gen === generation) { adding = false; if (ui) { showAddResolved(); ui.addSubmit.disabled = !online; } } }
+    return;
+  }
   event.preventDefault();
   if (adding) return;
   const gen = generation;
-  adding = true; ui.addSubmit.disabled = true;
-  ui.addStatus.dataset.state = '';
+  adding = true; if (ui) { ui.addSubmit.disabled = true; ui.addStatus.dataset.state = ''; }
   try {
-    const typed = parseContactInput(ui.addId.value);
+    const typed = parseContactInput(fields.addId);
     let fp = typed.fp;
     if (typed.name) {
       if (!addResolved || addResolved.name !== typed.name) {
         addResolved = undefined; showAddResolved();
-        const asked = ui.addId.value;
-        ui.addStatus.textContent = 'Looking up the name…';
-        ui.addSubmit.textContent = 'Looking up…';
+        const asked = fields.addId;
+        feedback.addStatus = 'Looking up the name…';
+        if (ui) ui.addSubmit.textContent = 'Looking up…';
         const found = await resolveContactName(nodusClient, typed.name);
         if (gen !== generation) return;
         // The box changed while the lookup ran: this answer is not for it.
-        if (ui.addId.value !== asked) { ui.addStatus.textContent = ''; return; }
+        if (fields.addId !== asked) { feedback.addStatus = ''; return; }
         const refusal = requestRefusal(found.owner, { ownFp, isContact: !!contactOf(found.owner), isRequested: state.outgoing.some(o => o.fp === found.owner) });
         if (refusal) throw new Error(refusal);
         addResolved = { name: found.name, owner: found.owner };
         showAddResolved();
-        ui.addStatus.textContent = `Check the name and the ID above, then press “Send request to ${found.name}”.`;
+        feedback.addStatus = `Check the name and the ID above, then press “Send request to ${found.name}”.`;
         return;
       }
       fp = addResolved.owner;
@@ -2579,9 +2650,9 @@ async function addContact(event) {
     const refusal = requestRefusal(fp, { ownFp, isContact: !!contactOf(fp), isRequested: state.outgoing.some(o => o.fp === fp) });
     if (refusal) throw new Error(refusal);
     if (!online) throw new Error('Requests can be sent once Messages is connected to the network.');
-    const note = ui.addNote.value;
-    ui.addStatus.textContent = 'Sending request…';
-    ui.addSubmit.textContent = 'Sending…';
+    const note = fields.addNote;
+    feedback.addStatus = 'Sending request…';
+    if (ui) ui.addSubmit.textContent = 'Sending…';
     let result;
     try { result = await core.requestSend(fp, note); }
     catch { throw new Error(new TextEncoder().encode(note).length > 255 ? 'The note is too long.' : 'The request could not be sent. Try again in a minute.'); }
@@ -2592,14 +2663,15 @@ async function addContact(event) {
     await persist();
     if (gen !== generation) return;
     const to = addResolved?.name || shortId(fp);
-    ui.addId.value = ''; ui.addNote.value = '';
+    fields.addId = ''; fields.addNote = '';
     addResolved = undefined; showAddResolved();
-    ui.addStatus.textContent = `✓ Request sent to ${to}. They are in your chats now: you can write to them, and they read it once they accept.`;
-    ui.addStatus.dataset.state = 'done';
+    feedback.addStatus = `✓ Request sent to ${to}. They are in your chats now: you can write to them, and they read it once they accept.`;
+    if (ui) ui.addStatus.dataset.state = 'done';
     logCheck(`Contact request sent to ${to}`);
     render();
   } catch (error) {
-    if (gen === generation) { ui.addStatus.textContent = error.message; ui.addStatus.dataset.state = 'error'; logFailure('A contact request was not sent', error); }
+    if (gen === generation) { feedback.addStatus = error.message; if (ui) ui.addStatus.dataset.state = 'error'; logFailure('A contact request was not sent', error); }
+    if (!ui) throw error;
   } finally {
     adding = false;
     if (gen === generation && ui) { showAddResolved(); ui.addSubmit.disabled = !online; }
@@ -2619,60 +2691,74 @@ async function addContact(event) {
 // not kept here.
 function unshow(message) { messages = messages.filter(x => x !== message); }
 async function send(event) {
+  if (remote) {
+    event.preventDefault();
+    if (sending) return;
+    sending = true; ui.sendButton.disabled = true;
+    const gen = generation, typed = fields.composer;
+    try {
+      const result = await requestView('messageSend', { fp: selectedFp, text: typed, replySeq: replyTo?.seq });
+      if (gen === generation && fields.composer === typed && result?.sent) { fields.composer = ''; setReply(undefined); growComposer(); }
+      return result;
+    } finally { if (gen === generation) { sending = false; if (ui) ui.sendButton.disabled = !online; } }
+  }
   event.preventDefault();
   // One send at a time: the text is taken from the composer, which is
   // cleared as soon as the message is drawn; a second Enter or click before
   // that would take the same text again and send it twice.
   if (sending) return;
   const gen = generation, contact = selectedFp && chatPeerOf(selectedFp);   // a pending request's chat too (0.1.99)
-  const typed = ui.composer.value;
+  const typed = fields.composer;
   if (!contact || !contact.salt || !typed.trim()) return;
-  if (!online) { ui.sendStatus.textContent = OFFLINE_SEND_TEXT; return; }
-  if (typed.length > TEXT_MAX) { ui.sendStatus.textContent = `A message can be at most ${TEXT_MAX} characters.`; return; }
+  if (!online) { feedback.sendStatus = OFFLINE_SEND_TEXT; return; }
+  if (typed.length > TEXT_MAX) { feedback.sendStatus = `A message can be at most ${TEXT_MAX} characters.`; return; }
   // A reply carries the app's quote prefix (actions.js buildReply): "me"
   // when quoting an own message, else the contact's name.
   const quoting = replyTo && replyTo.fp === contact.fp ? replyTo : undefined;
   const quotedReply = quoting ? parseReply(quoting.text) : null;
   const text = quoting ? buildReply(quoting.dir === 'out' ? 'me' : displayName(contact.fp), quotedReply ? quotedReply.text : quoting.text, typed) : typed;
-  sending = true; ui.sendButton.disabled = true;
+  sending = true; if (ui) ui.sendButton.disabled = true;
   const message = { seq: takeSeq(), fp: contact.fp, dir: 'out', text, ts: nowSeconds(), at: Date.now() };
   // Drawn now, the composer empty: the next message may be written at once.
   messages.push(message);
-  ui.composer.value = ''; growComposer();
+  fields.composer = ''; growComposer();
   if (quoting) setReply(undefined);
-  sending = false; ui.sendButton.disabled = !online;
+  sending = false; if (ui) ui.sendButton.disabled = !online;
   render({ scroll: true });
   try { await persist([message]); }
   catch (error) {
     if (gen === generation) {
       unshow(message);
-      if (!ui.composer.value) { ui.composer.value = typed; growComposer(); }
-      ui.sendStatus.textContent = error.message; logFailure('A message could not be kept on this device', error);
+      if (!fields.composer) { fields.composer = typed; growComposer(); }
+      feedback.sendStatus = error.message; logFailure('A message could not be kept on this device', error);
       render();
     }
+    if (!ui) throw error;
     return;
   }
   if (gen !== generation) return;
   unpublished.add(contact.fp);
-  try { await publishOutbox(contact, gen); if (gen === generation) ui.sendStatus.textContent = ''; }
-  catch (error) { if (gen === generation) { ui.sendStatus.textContent = 'Not sent yet. It is tried again automatically.'; logFailure('A message was not sent yet; it is tried again automatically', error); } }
+  try { await publishOutbox(contact, gen); if (gen === generation) feedback.sendStatus = ''; }
+  catch (error) { if (gen === generation) { feedback.sendStatus = 'Not sent yet. It is tried again automatically.'; logFailure('A message was not sent yet; it is tried again automatically', error); } }
   if (gen === generation) render();
+  return true;
 }
 
 async function saveProfile(event) {
+  if (remote) { event.preventDefault(); return requestView('profileSave', { bio: fields.bio, location: fields.location, website: fields.website }); }
   event.preventDefault();
   const gen = generation;
   if (profileTaken) return;
-  if (!online) { ui.profileStatus.textContent = 'Your profile can be saved once Messages is connected to the network.'; return; }
+  if (!online) { feedback.profileStatus = 'Your profile can be saved once Messages is connected to the network.'; return; }
   try {
-    const patch = profilePatch({ bio: ui.bio.value, location: ui.location.value, website: ui.website.value });
-    ui.profileStatus.textContent = 'Saving…';
+    const patch = profilePatch({ bio: fields.bio, location: fields.location, website: fields.website });
+    feedback.profileStatus = 'Saving…';
     const result = await core.profileUpdate(patch);
     if (gen !== generation) return;
-    ui.profileStatus.textContent = profileStatusText(result.status);
+    feedback.profileStatus = profileStatusText(result.status);
     if (result.status === 'published') { ownProfile = { ...(ownProfile || {}), ...patch }; fillProfile(); }
     if (result.status === 'taken') profileTaken = true;
-  } catch (error) { if (gen === generation) { ui.profileStatus.textContent = /https|Invalid profile/.test(error.message) ? error.message : 'Saving failed. Try again later.'; logFailure('Saving the profile failed', error); } }
+  } catch (error) { if (gen === generation) { feedback.profileStatus = /https|Invalid profile/.test(error.message) ? error.message : 'Saving failed. Try again later.'; logFailure('Saving the profile failed', error); } if (!ui) throw error; }
 }
 
 // A chosen picture made the way the app makes one
@@ -2708,38 +2794,40 @@ async function avatarFromFile(file) {
 
 async function pickAvatar(file) {
   const gen = generation;
-  ui.avatarStatus.textContent = 'Preparing the picture…';
+  feedback.avatarStatus = 'Preparing the picture…';
   let b64;
   try { b64 = await avatarFromFile(file); }
-  catch (error) { if (gen === generation) ui.avatarStatus.textContent = error.message; return; }
+  catch (error) { if (gen === generation) feedback.avatarStatus = error.message; return; }
   if (gen === generation) await saveAvatar(b64);
 }
 
 // Writes only avatar_base64; the core keeps every other profile field as
 // read from the network (nc_profile.c patch). '' removes the picture.
 async function saveAvatar(b64) {
+  if (remote) return requestView('avatarSave', { b64 });
   const gen = generation;
-  if (profileTaken || ui.avatarChange.disabled) return;
-  if (!online) { ui.avatarStatus.textContent = 'Your picture can be saved once Messages is connected to the network.'; return; }
-  ui.avatarChange.disabled = ui.avatarRemove.disabled = true;
+  if (profileTaken || ui?.avatarChange.disabled) return;
+  if (!online) { feedback.avatarStatus = 'Your picture can be saved once Messages is connected to the network.'; return; }
+  if (ui) ui.avatarChange.disabled = ui.avatarRemove.disabled = true;
   try {
     const patch = avatarPatch(b64);
-    ui.avatarStatus.textContent = 'Saving…';
+    feedback.avatarStatus = 'Saving…';
     const result = await core.profileUpdate(patch);
     if (gen !== generation) return;
-    ui.avatarStatus.textContent = result.status === 'published' ? (b64 ? 'Your picture was saved.' : 'Your picture was removed.') : profileStatusText(result.status);
+    feedback.avatarStatus = result.status === 'published' ? (b64 ? 'Your picture was saved.' : 'Your picture was removed.') : profileStatusText(result.status);
     if (result.status === 'published') { ownProfile = { ...(ownProfile || {}), ...patch }; fillOwnAvatar(); render(); }
     if (result.status === 'taken') profileTaken = true;
-  } catch { if (gen === generation) ui.avatarStatus.textContent = 'Saving failed. Try again later.'; }
-  finally { if (gen === generation) ui.avatarChange.disabled = ui.avatarRemove.disabled = false; }
+  } catch (error) { if (gen === generation) feedback.avatarStatus = 'Saving failed. Try again later.'; if (!ui) throw error; }
+  finally { if (gen === generation && ui) ui.avatarChange.disabled = ui.avatarRemove.disabled = false; }
 }
 
 async function erase() {
+  if (remote) { if (!eraseArmed) { eraseArmed = true; ui.erase.textContent = 'Confirm: delete all messages on this device'; return; } return requestView('historyErase', {}); }
   if (!store?.persistent) return;
-  if (!eraseArmed) { eraseArmed = true; ui.erase.textContent = 'Confirm: delete all messages on this device'; return; }
+  if (!eraseArmed) { eraseArmed = true; if (ui) ui.erase.textContent = 'Confirm: delete all messages on this device'; return; }
   const target = store;
   try { await target.erase(); closeMessages('Message history deleted from this device. Lock and open your wallet again to use Messages.'); }
-  catch (error) { closeMessages(error.message); }
+  catch (error) { closeMessages(error.message); if (!ui) throw error; }
 }
 
 // ── shared vaults' use of Messages (src/vaults/ui.js) ──────────────────
@@ -2753,7 +2841,7 @@ async function erase() {
 // Larger than the composer's TEXT_MAX: a vault item carries up to a 7-key
 // vault code (36 KiB of hex); bounded below the 64 KiB a stored record may
 // hold (store.js PLAINTEXT_MAX) with room for the message's own fields.
-export const PAYLOAD_TEXT_MAX = 60000;
+const PAYLOAD_TEXT_MAX = 60000;
 let payloadView = null;                  // { preview(text), card(message) } | null
 const vaultListeners = new Set();
 function payloadPreview(text) {
@@ -2768,6 +2856,7 @@ function notifyVaultHost() {
 const VAULT_ADDRESS = /^[0-9a-f]{128}$/;
 
 async function sendPayload(fp, text) {
+  if (remote) return remote('vaultSend', { fp, text });
   if (!isOpen()) throw new Error('Messages is not open.');
   if (!online) throw new Error(OFFLINE_SEND_TEXT);
   const gen = generation, contact = contactOf(fp);
@@ -2830,6 +2919,7 @@ async function reloadProfile(fp, { keep = false } = {}) {
 }
 
 async function keepVault(address, value) {
+  if (remote) return remote('vaultKeep', { address, value });
   if (!isOpen()) throw new Error('Messages is not open.');
   if (typeof address !== 'string' || !VAULT_ADDRESS.test(address) || !value || typeof value !== 'object') throw new Error('Invalid vault.');
   const before = state.vaults[address];
@@ -2849,6 +2939,7 @@ async function keepVault(address, value) {
 }
 
 async function dropVault(address) {
+  if (remote) return remote('vaultDrop', { address });
   if (!isOpen() || !state.vaults[address]) return;
   const before = state.vaults[address];
   delete state.vaults[address];
@@ -2859,11 +2950,11 @@ async function dropVault(address) {
   vaultRecs.delete(address);
 }
 
-export const vaultHost = {
+const vaultHost = {
   isOpen: () => isOpen(),
   ownFp: () => (isOpen() ? ownFp : undefined),
   // true: a saved wallet (records survive a reload); false: memory only
-  persistent: () => isOpen() && !!store?.persistent,
+  persistent: () => isOpen() && (remote ? remotePersistent : !!store?.persistent),
   contacts: () => (isOpen() ? state.contacts.map(c => ({ fp: c.fp, ready: !!c.salt, name: displayName(c.fp), verified: namesOf(c.fp).verified })) : []),
   name: fp => (isOpen() && typeof fp === 'string' && VAULT_ADDRESS.test(fp) ? displayName(fp) : ''),
   // A message deleted by its sender or on this device is not handed on
@@ -2889,7 +2980,7 @@ export const vaultHost = {
 
 // ── the wallet as host (src/wallet-extensions.js events) ───────────────
 // Registered only by the Nodus Connect page (src/connect-main.js).
-export const walletExtension = {
+const walletExtension = {
   // LOCAL FIRST (src/app.js startNodusSend): the wallet's client is
   // identified — Messages opens from what this device keeps. Asked with
   // gather: the answer is the local open's promise, and the wallet connects
@@ -2909,7 +3000,7 @@ export const walletExtension = {
   // A connection attempt of the identified client failed; the wallet tries
   // again by itself on the same client. The view stays; the reason is shown
   // in the status line (plain words from the wallet).
-  nodusConnectFailed({ reason } = {}) { if (ui && isOpen() && !netStarted && typeof reason === 'string' && reason) ui.sync.textContent = reason; },
+  nodusConnectFailed({ reason } = {}) { if (ui && isOpen() && !netStarted && typeof reason === 'string' && reason) feedback.sync = reason; },
   // A NODUS transfer the network accepted (src/app.js confirm-send, web
   // 0.1.90): its payment card goes into the chat it was started from.
   nodusSent(detail) { void onNodusSent(detail); },
@@ -2935,3 +3026,187 @@ export const walletExtension = {
     return state.contacts.map(c => ({ label: displayName(c.fp), address: c.fp }));
   }
 };
+
+
+// Only presentation fields cross the extension boundary. In particular neither
+// contact salts, stored profile records nor group message `item` is projected.
+const pick = (value, names) => Object.fromEntries(names.filter(k => value?.[k] !== undefined).map(k => [k, value[k]]));
+const profilePublic = p => p ? pick(p, ['name', 'claimed_name', 'avatar_base64', 'bio', 'location', 'website']) : null;
+const messagePublic = m => {
+  const out = pick(m, ['fp', 'seq', 'dir', 'text', 'ts', 'at', 'kind', 'remoteSeq', 'senderTs', 'published', 'delivered', 'target']);
+  const verdict = keptVerdict(m); if (verdict) out.verdict = verdict;
+  return out;
+};
+const groupPublic = g => pick(g, ['gid', 'name', 'role', 'status', 'owner', 'ready', 'members', 'joining', 'invited', 'leaving', 'nameless', 'unconfirmed', 'hidden', 'waiting', 'refused', 'settingUp', 'keyOld', 'problem', 'problemFp', 'note', 'unread']);
+function snapshot() {
+  const open = isOpen();
+  const listed = open ? groups?.list() || [] : [];
+  const people = open ? [...new Set([ownFp, ...state.contacts.map(c => c.fp), ...state.outgoing.map(c => c.fp), ...requests.map(r => r.sender), ...listed.flatMap(g => [...g.members, ...g.joining, ...g.invited])])] : [];
+  return {
+    phase, title: stateTitle, text: stateText, retry: retryLocal,
+    online: open && online, caughtUp: open && caughtUp, ownFp: open ? ownFp : null,
+    persistent: open && !!store?.persistent, ownProfile: open ? profilePublic(ownProfile) : null,
+    ownNameConfirmed: open && ownNameConfirmed,
+    contacts: open ? state.contacts.map(c => ({ fp: c.fp, ready: !!c.salt })) : [],
+    outgoing: open ? state.outgoing.map(c => ({ fp: c.fp, ready: !!c.salt, at: c.at })) : [],
+    requests: open ? requests.map(r => pick(r, ['sender', 'timestamp', 'note', 'message', 'claimed_name', 'acceptance'])) : [],
+    messages: open ? messages.filter(m => m.control !== true && !controlType(m.text) && (m.kind === undefined || ['chat', 'transfer', 'reaction', 'delete', 'hide'].includes(m.kind))).map(messagePublic) : [],
+    profiles: people.map(fp => ({ fp, profile: profilePublic(profiles.get(fp)), chain: chainNameOf(fp), answered: chainAsked.has(fp), nameStatus: groupNameStatus(fp) })),
+    groups: listed.map(g => ({ ...groupPublic(g), messages: groups.conversation(g.gid).map(m => pick(m, ['group', 'fp', 'seq', 'dir', 'text', 'at', 'published', 'failed'])) })),
+    invitations: open ? (groups?.invitations() || []).map(g => pick(g, ['gid', 'name', 'owner', 'ownerName'])) : [],
+    read: open ? [...lastRead].map(([fp, seq]) => [fp, String(seq)]) : [],
+    transferVerdicts: open ? [...transferVerdicts] : [],
+    diagnostics: open ? [...diags].map(([fp, diag]) => [fp, diagText(diag)]) : [],
+    dropped: open ? [...dropped] : [], otherCounts: open ? [...others] : [],
+    feedback: { ...feedback }, addResolved: addResolved ? { name: addResolved.name, owner: addResolved.owner } : null,
+    vaults: open ? vaultHost.vaults() : []
+  };
+}
+let remotePersistent = false, remoteGroups = [], remoteInvitations = [], remoteNameStatus = new Map(), remoteGroupSending = false;
+const remoteDiagnostics = new Map();
+function applySnapshot(value) {
+  if (!remote || !value) return;
+  // History deletion can close only Messages while the wallet/client epoch
+  // stays the same. Drop the retained renderer, including hidden drafts and
+  // dialogs, before showing any non-open projection. Open invalidations and
+  // Wallet/Connect switches do not enter this branch.
+  if (value.phase !== 'open') {
+    wipe(); phase = value.phase;
+    showState(value.title || 'Messages', value.text || '', value.retry === true);
+    return;
+  }
+  const was = ownProfile;
+  phase = value.phase; stateTitle = value.title; stateText = value.text; retryLocal = value.retry;
+  online = value.online; caughtUp = value.caughtUp; ownFp = value.ownFp;
+  remotePersistent = value.persistent; ownNameConfirmed = value.ownNameConfirmed;
+  ownProfile = value.ownProfile;
+  state = phase === 'open' ? {
+    contacts: value.contacts.map(c => ({ fp: c.fp, salt: c.ready ? true : null })),
+    outgoing: value.outgoing.map(c => ({ fp: c.fp, salt: c.ready ? true : null, at: c.at }))
+  } : undefined;
+  messages = value.messages || []; requests = value.requests || [];
+  profiles.clear(); chainNames.clear(); chainAsked.clear(); remoteNameStatus.clear();
+  for (const person of value.profiles || []) {
+    if (person.profile) profiles.set(person.fp, person.profile);
+    if (person.chain) chainNames.set(person.fp, person.chain);
+    if (person.answered) chainAsked.add(person.fp);
+    remoteNameStatus.set(person.fp, person.nameStatus);
+  }
+  for (const [fp, seq] of value.read || []) lastRead.set(fp, BigInt(seq));
+  transferVerdicts.clear(); for (const [key, verdict] of value.transferVerdicts || []) transferVerdicts.set(key, verdict);
+  remoteDiagnostics.clear(); for (const [fp, text] of value.diagnostics || []) remoteDiagnostics.set(fp, text);
+  dropped.clear(); for (const [fp, count] of value.dropped || []) dropped.set(fp, count);
+  others.clear(); for (const [fp, count] of value.otherCounts || []) others.set(fp, count);
+  addResolved = value.addResolved || undefined;
+  vaultRecs.clear(); for (const v of value.vaults || []) vaultRecs.set(v.address, { value: v.value });
+  remoteGroups = value.groups || []; remoteInvitations = value.invitations || [];
+  if (!groups) groups = {
+    list: () => remoteGroups, view: gid => remoteGroups.find(g => g.gid === gid),
+    invitations: () => remoteInvitations, nameStatus: fp => remoteNameStatus.get(fp) || 'unknown',
+    conversation: gid => remoteGroups.find(g => g.gid === gid)?.messages || [],
+    lastMessage: gid => remoteGroups.find(g => g.gid === gid)?.messages.at(-1),
+    markRead(gid) { const g = remoteGroups.find(g => g.gid === gid); if (g?.unread) { g.unread = 0; void remote('groupMarkRead', { gid }); } },
+    async checkPeople(fps) { return new Map(await remote('groupCheckPeople', { fps })); },
+    create: (name, fps) => remote('groupCreate', { name, fps }),
+    invite: (gid, fp) => remote('groupInvite', { gid, fp }),
+    acceptInvite: gid => remote('groupAccept', { gid }),
+    ignoreInvite: gid => remote('groupIgnore', { gid }),
+    leave: gid => remote('groupLeave', { gid }),
+    removeMember: (gid, fp) => remote('groupRemove', { gid, fp }),
+    async send(gid, text, options) {
+      if (remoteGroupSending) return 'busy';
+      remoteGroupSending = true;
+      const gen = generation;
+      try { const result = await remote('groupSend', { gid, text }); if (gen === generation && result !== 'busy') options?.onKept?.(); return result; }
+      finally { if (gen === generation) remoteGroupSending = false; }
+    },
+    get sending() { return remoteGroupSending; }
+  };
+  if (ui) {
+    ui.ownId.textContent = ownFp || '';
+    ui.memoryNote.hidden = remotePersistent; ui.erase.hidden = !remotePersistent;
+    ui.stateTitle.textContent = stateTitle || 'Messages'; ui.stateText.textContent = stateText || '';
+    ui.retry.hidden = !retryLocal;
+    ui.stateView.dataset.kind = phase;
+    const previous = was || {};
+    if (fields.bio === (previous.bio || '') && fields.location === (previous.location || '') && fields.website === (previous.website || '')) fillProfile();
+    else { fillOwnAvatar(); fillNameLine(); }
+    for (const [key, text] of Object.entries(value.feedback || {})) {
+      if (key === 'contactsStatus' && removeArmed) continue;
+      if (Object.hasOwn(feedback, key)) feedback[key] = text;
+    }
+    showAddResolved();
+  }
+  render(); notifyVaultHost();
+}
+async function action(name, input = {}) {
+  if (name === 'retry') {
+    if (!core || !ownFp) throw new Error('Lock and open your wallet again to retry.');
+    await openLocal(generation); return;
+  }
+  if (!isOpen()) throw new Error('Messages is not open.');
+  const fp = input.fp;
+  const knownPerson = value => value === ownFp || !!contactOf(value) || !!pendingOf(value) || requests.some(r => r.sender === value) ||
+    groups.list().some(g => [...g.members, ...g.joining, ...g.invited].includes(value));
+  const request = () => { const r = requests.find(r => r.sender === fp); if (!r) throw new Error('This request is no longer waiting.'); return r; };
+  const message = () => { const m = messages.find(m => m.fp === fp && String(m.seq) === String(input.seq)); if (!m || m.control) throw new Error('This message is no longer available.'); return m; };
+  const event = { preventDefault() {} };
+  switch (name) {
+    case 'sync': await sync(); break;
+    case 'markRead': if (contactOf(fp) || pendingOf(fp)) markRead(fp); break;
+    case 'contactAdd':
+      fields.addId = input.input; fields.addNote = input.note || '';
+      if (addResolved?.owner !== input.confirmed) addResolved = undefined;
+      await addContact(event); return { sent: fields.addId === '' };
+    case 'contactAccept': await accept(request()); break;
+    case 'contactDecline': await decline(request()); break;
+    case 'contactWithdraw': await withdraw(fp); break;
+    case 'contactRemove': if (input.confirmed !== true) throw new Error('Confirm removal of this contact first.'); await removeContactAction(fp, { confirmed: true }); break;
+    case 'messageSend': {
+      selectedFp = fp; fields.composer = input.text;
+      replyTo = input.replySeq ? messages.find(m => m.fp === fp && String(m.seq) === String(input.replySeq) && !isControl(m)) : undefined;
+      const sent = await send(event); return { sent: sent === true };
+    }
+    case 'messageReact': if (!REACTION_EMOJIS.includes(input.emoji)) throw new Error('Invalid reaction.'); await react(message(), input.emoji); break;
+    case 'messageDelete': await deleteMessage(message(), input.everyone === true); break;
+    case 'profileSave': for (const key of ['bio', 'location', 'website']) fields[key] = input[key] || ''; await saveProfile(event); break;
+    case 'avatarSave': await saveAvatar(input.b64); break;
+    case 'historyErase': eraseArmed = true; await erase(); break;
+    case 'transferCheck': await checkTransfers(generation, { force: true }); break;
+    case 'peerRefresh': if (!knownPerson(fp)) throw new Error('Unknown contact.'); return await refreshPeerData(fp, generation);
+    case 'payStart': if (!chatPeerOf(fp)) throw new Error('Unknown contact.'); payFor = { fp, at: Date.now() }; break;
+    case 'groupCheckPeople': {
+      const known = new Set([ownFp, ...state.contacts.map(c => c.fp), ...groups.list().flatMap(g => [...g.members, ...g.joining, ...g.invited])]);
+      if (!Array.isArray(input.fps) || input.fps.some(p => !known.has(p))) throw new Error('Unknown group member.');
+      return [...await groups.checkPeople(input.fps)];
+    }
+    case 'groupCreate': return await groups.create(input.name, input.fps);
+    case 'groupInvite': await groups.invite(input.gid, fp); break;
+    case 'groupAccept': await groups.acceptInvite(input.gid); break;
+    case 'groupIgnore': await groups.ignoreInvite(input.gid); break;
+    case 'groupLeave': await groups.leave(input.gid); break;
+    case 'groupRemove': await groups.removeMember(input.gid, fp); break;
+    case 'groupSend': return await groups.send(input.gid, input.text);
+    case 'groupMarkRead': groups.markRead(input.gid); break;
+    case 'vaultSend': await sendPayload(fp, input.text); break;
+    case 'vaultKeep': await keepVault(input.address, input.value); break;
+    case 'vaultDrop': await dropVault(input.address); break;
+    default: throw new Error('Unsupported Connect action.');
+  }
+}
+return {
+  open: openMessages, ready: detail => walletExtension.nodusReady(detail), close: resetMessages,
+  snapshot, action, applySnapshot, mountMessages, closeMessages, resetMessages, openMessages,
+  messagesNavigate, vaultHost, walletExtension, profileNeedsMlkem, initials, ownIdText,
+  PAYLOAD_TEXT_MAX, OWN_ID_WAITING_TEXT, OWN_ID_CLOSED_TEXT,
+  setVisible(value) { visible = !!value; if (visible && ui) render(); },
+  dispose() { resetMessages(); if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', visibilityChanged); vaultListeners.clear(); payloadView = null; ui = undefined; host = {}; }
+};
+}
+
+const defaultSession = createMessagesSession();
+export const {
+  mountMessages, closeMessages, resetMessages, openMessages, messagesNavigate,
+  vaultHost, walletExtension, profileNeedsMlkem, initials, ownIdText,
+  PAYLOAD_TEXT_MAX, OWN_ID_WAITING_TEXT, OWN_ID_CLOSED_TEXT
+} = defaultSession;

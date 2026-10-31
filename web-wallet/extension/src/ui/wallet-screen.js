@@ -342,7 +342,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   $('wallet-register-name').onclick = () => { selectAsset('nodus', 'NODUS', 'choose'); navigate('send-form'); registerName(); };
   claim = mountClaimAction({ ui, portfolio, run, showReview: showPrepared });
   contracts = mountContractsPage({ rootNode: $('evm-root'), panelNode: $('evm-panel'), ui });
-  vaults = mountVaultsPage({ rootNode: $('vaults-root'), panelNode: $('vault-panel'), ui });
+  vaults = mountVaultsPage({ rootNode: $('vaults-root'), panelNode: $('vault-panel'), ui, messagesHost: ui.connectHost });
   mountSavedSettings({ root, ui, run }); mountDeleteWallet({ root, document, ui, run, status });
   const mergedLog = {
     entries(filter = 'all') { return [...sessionLog.entries(filter), ...backgroundLog.entries.filter(LOG_FILTERS[filter] || LOG_FILTERS.all)].sort((a, b) => a.at - b.at); },
@@ -456,6 +456,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   update(); route();
   return {
     update,
+    payContact(fp) { selectAsset('nodus', 'NODUS', 'send'); $('recipient').value = fp; navigate('send-form'); },
     async loadBalances(force = false) { await initial; if (force && !disposed) await portfolio.refresh(); },
     dispose() {
       disposed = true; readGeneration++; cancelReview(); portfolio.setAutoRefresh(0); portfolio.clear();

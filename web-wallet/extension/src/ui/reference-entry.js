@@ -1,5 +1,5 @@
 import { mountWalletPage } from './app.js';
-import { mountReferenceWallet } from './wallet-screen.js';
+import { mountWalletAndConnect } from './connect.js';
 import { WALLET_MARKUP } from './wallet-markup.js';
 import { mountDeleteWallet } from './wallet-page.js';
 
@@ -21,6 +21,6 @@ function renderEntry({ document, root, status, state, create, restore, unlock, u
 
 // The existing lifecycle owns onboarding, trusted approvals, secret clearing
 // and lock. Every unlocked wallet page uses the web wallet's screen.
-export const mountReferencePage = options => mountWalletPage({ ...options, renderOpenWallet: mountReferenceWallet, renderEntry });
+export const mountReferencePage = options => mountWalletPage({ ...options, renderOpenWallet: mountWalletAndConnect, renderEntry });
 
 if (globalThis.document && globalThis.chrome?.runtime) void mountReferencePage();

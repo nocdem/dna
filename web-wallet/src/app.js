@@ -46,8 +46,13 @@ const $ = id => document.getElementById(id);
 const SINGLE_COLUMN_DASHBOARD = '(max-width: 900px)';
 // The only writer of #receive-address: the QR below it always encodes exactly
 // the text shown (empty text, e.g. after lock or before a derivation settles,
-// clears the QR).
-function setReceiveAddress(text) { $('receive-address').textContent = text; renderQr($('receive-qr'), text); }
+// clears the QR). Receive controls follow this local address, including
+// when a derivation finishes before its network connection is available.
+function setReceiveAddress(text) {
+  $('receive-address').textContent = text;
+  $('copy-address').disabled = $('quick-receive').disabled = !text;
+  renderQr($('receive-qr'), text);
+}
 // The only writer of the network line in the open-wallet bar (#net-status,
 // src/net-status.js). Nodus Connect loads this file too and its page has no
 // such line (connect-site/index.html), so a missing element is skipped.
@@ -930,7 +935,6 @@ function syncPqAddress(chain) {
   portfolio.setAddress(chain, address);
   if ($('chain').value === chain) {
     setReceiveAddress(address || '');
-    $('copy-address').disabled = $('quick-receive').disabled = !address;
     updatePqStatus(chain);
   }
 }
@@ -2150,7 +2154,6 @@ function selectChain() {
   for (const label of document.querySelectorAll('.selected-network-stage')) label.textContent = isPqChain(chain) ? pqNetwork(chain, pqSelections[chain]).label : c.stage || 'Mainnet';
   const address = wallet.addresses[chain];
   setReceiveAddress(address || '');
-  $('copy-address').disabled = $('quick-receive').disabled = !address;
   updatePqStatus(chain);
   portfolio.setSelected(chain);
   // A network with no RPC to choose (Nodus) hides the connection settings.

@@ -117,8 +117,24 @@ try {
   });
   await page.goto(harness);
 
-  await page.evaluate(async () => {
-    const { mountMessages, walletExtension } = await import('/src/connect/ui/messages.js');
+  // MESSAGES_REMOTE=1 runs the same assertions through the new public
+  // projection/action boundary. Native answers remain the declared fake;
+  // worker transport and real encrypted storage have their separate package
+  // gate. The unmounted owner has no ui; the mounted renderer has no core.
+  await page.evaluate(async remoteMode => {
+    const module = await import('/src/connect/ui/messages.js');
+    let { mountMessages, walletExtension } = module;
+    let owner, view;
+    if (remoteMode) {
+      owner = module.createMessagesSession({ onChange: () => queueMicrotask(() => view?.applySnapshot(owner.snapshot())) });
+      view = module.createMessagesSession({ remote: async (name, fields) => {
+        try { return await owner.action(name, fields); }
+        finally { view.applySnapshot(owner.snapshot()); }
+      } });
+      mountMessages = view.mountMessages; walletExtension = owner.walletExtension;
+    }
+    window.__messagesView = view || module;
+    window.__messagesOwner = owner;
     const { contentHash, buildReaction, buildDelete } = await import('/src/connect/ui/actions.js');
     const OWN = '1a'.repeat(64), B = '2b'.repeat(64), SALT = '11'.repeat(32), TODAY = '20370';
     const hex = s => Array.from(new TextEncoder().encode(s), b => b.toString(16).padStart(2, '0')).join('');
@@ -224,7 +240,7 @@ try {
     await Promise.all(walletExtension.nodusIdentified({ client, phrase: 'alpha beta gamma', vaultId: null, fresh: false }));
     client.state = 'ready';
     walletExtension.nodusReady({ client });
-  });
+  }, process.env.MESSAGES_REMOTE === '1');
 
   // The contact row appears once the first check round stored B's day.
   await page.waitForFunction(() => document.querySelector('.contact-row .contact-preview')?.textContent.includes('yes indeed') || document.querySelector('.contact-row'));
@@ -528,6 +544,17 @@ try {
   await page.evaluate(() => { delete document.hidden; document.dispatchEvent(new Event('visibilitychange')); });
   await page.waitForFunction(() => document.title === 'Messages (harness)');
 
+  // Extension Wallet/Connect switching hides only the view, not the page.
+  // New messages must remain unread until Connect becomes visible again.
+  if (process.env.MESSAGES_REMOTE === '1') {
+    await page.evaluate(() => window.__messagesView.setVisible(false));
+    await arrive(1);
+    await checkUntil(1);
+    assert.equal(await page.title(), '(1) Messages (harness)');
+    await page.evaluate(() => window.__messagesView.setVisible(true));
+    await page.waitForFunction(() => document.title === 'Messages (harness)');
+  }
+
   // The module alone, with a fake clock (the stub still counts).
   const unit = await page.evaluate(async () => {
     const { createMessageAlert, CHIME_GAP_MS } = await import('/src/connect/ui/alert.js');
@@ -563,6 +590,39 @@ try {
     catchUp: [0, '(5) Page'], firstSettled: 0, growth: 1, burst: 1, later: 2,
     falling: [2, '(3) Page'], off: 2, reset: 'Page', afterReset: 2, zero: 'Page'
   });
+
+  // Remove's first press must always ask again after Keep or navigation;
+  // in remote mode a stale confirmation held in the owner must not silently
+  // turn a later first click into removal. This is a local history action.
+  await page.evaluate(() => window.__messagesView.messagesNavigate('contacts'));
+  const contact = page.locator('.messenger-contacts .contact-item').filter({ has: page.locator(`.contact-row[data-fp="${'2b'.repeat(64)}"]`) });
+  await contact.locator('.contact-remove').click();
+  await contact.getByRole('button', { name: 'Keep', exact: true }).click();
+  await contact.locator('.contact-remove').click();
+  await contact.getByRole('button', { name: 'Keep', exact: true }).waitFor();
+  await page.evaluate(() => window.__messagesView.messagesNavigate('profile'));
+  await page.evaluate(() => window.__messagesView.messagesNavigate('contacts'));
+  await contact.locator('.contact-remove').click();
+  await contact.getByRole('button', { name: 'Keep', exact: true }).waitFor();
+  await contact.locator('.contact-remove').click();
+  await contact.waitFor({ state: 'detached' });
+
+  // Closing only Messages (for example history erased in another window)
+  // must wipe the remote DOM even when the wrapper's client epoch did not
+  // change. Hiding the profile without clearing its draft is insufficient.
+  if (process.env.MESSAGES_REMOTE === '1') {
+    await page.evaluate(() => window.__messagesView.messagesNavigate('profile'));
+    await page.locator('#nc-bio').fill('Draft that must be cleared on message close');
+    await page.evaluate(() => window.__messagesView.messagesNavigate('add'));
+    await page.locator('#nc-add-id:visible').fill('Another draft');
+    assert.equal(await page.locator('dialog[open]').count(), 1);
+    await page.evaluate(() => window.__messagesOwner.close());
+    await page.waitForFunction(() => document.querySelector('.messenger')?.dataset.open === 'false');
+    assert.equal(await page.locator('#nc-bio').inputValue(), '');
+    assert.equal(await page.locator('#nc-add-id').inputValue(), '');
+    assert.deepEqual(await page.locator('.message-list').allTextContents(), ['', ''], 'Direct and group message lists are empty');
+    assert.equal(await page.locator('dialog[open]').count(), 0);
+  }
 
   // The switch survives a reload (localStorage), both ways.
   await page.reload();

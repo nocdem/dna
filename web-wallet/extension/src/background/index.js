@@ -14,6 +14,7 @@ import { createPermissions } from './permissions.js';
 import { createRequestEngine } from './engine.js';
 import { createEvm } from './evm.js';
 import { createNodus } from './nodus.js';
+import { createConnect } from './connect.js';
 import { createSolanaTron } from './solana-tron.js';
 import { createNetworks } from './networks.js';
 import { PermissionsRequestNotFoundError } from '@metamask/permission-controller';
@@ -33,7 +34,12 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   notifications = globalThis.chrome?.notifications, notificationStorage = globalThis.chrome?.storage?.session,
   nodusOptions = {}, consumeNodusSeed, readPrices = readWalletPrices } = {}) {
   const lockCoordinator = createLockCoordinator();
-  const vaultStore = createVaultStore({ storage, lockCoordinator });
+  const invalidateWallet = () => {
+    for (const port of uiPorts) try { port.postMessage({ name: 'controller', data: { jsonrpc: '2.0', method: 'connectStateChanged', params: [] } }); }
+    catch { /* a closing interface cannot receive the invalidation */ }
+  };
+  const connect = createConnect({ storage, onChange: () => invalidateWallet() });
+  const vaultStore = createVaultStore({ storage, lockCoordinator, deleteHistory: id => connect.deleteHistory(id) });
   const messenger = new Messenger({ namespace: 'Background' });
   const store = await createPersistedStore({ storage, messenger });
   const uiPorts = new Set(), alarmListeners = [];
@@ -70,7 +76,8 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   const nodus = createNodus({ ...nodusOptions, storage, lockCoordinator, getAddresses: () => walletKeys.getAddresses(),
     onActivityChanged: (rows, options) => { void transactionNotifications?.observe(rows, options).catch(() => {}); },
     onLock: () => { void incomingNotifications?.stop().catch(() => {}); evm?.lock(); },
-    getWords: () => walletKeys.getRecoveryPhrase(), onClient: client => walletKeys?.replaceNodusClient(client),
+    getWords: () => walletKeys.getRecoveryPhrase(), onClient: client => { walletKeys?.replaceNodusClient(client); connect.ready(client); },
+    onIdentified: detail => connect.open(detail), onClientClosing: client => connect.close(client), onSent: detail => connect.sent(detail),
     onStateChanged() {
       // Only trusted UI ports receive this invalidation. They fetch public
       // state themselves; client objects and keys never enter the event.
@@ -121,6 +128,12 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   // Port: metamask-controller.js:2755-2757, 2963-2964, 3166-3168, 3278-3284, 3482-3495.
   // Plan §16 step 4 / dispatch 4a: expose background approval operations; screens belong to 4b.
   const trustedApi = {
+    getConnectState: () => { lockCoordinator.assertUnlocked(); return connect.getState(); },
+    async connectAction(epoch, action, fields) {
+      lockCoordinator.assertUnlocked();
+      const result = await connect.action(epoch, action, fields);
+      lockCoordinator.assertUnlocked(); return result;
+    },
     // Port: metamask-controller.js:2378-2384; plan §3.5/§7 replaces keyring vault/preferences with web-wallet storage.
     getState: async () => {
       const saved = await storage.get(VAULT_KEY), account = permissions.getSelectedAccount().address;

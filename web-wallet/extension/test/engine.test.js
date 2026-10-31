@@ -49,6 +49,42 @@ async function setup(t) {
   });
   return { ...fixture, background };
 }
+
+// Connect capabilities must use the existing authenticated controller stream.
+// Real engine/mux, fake Chrome transport; no network or disk output. This
+// tests routing/custody, not real encrypted conversations (browser coverage).
+test('Connect state and actions are trusted-UI only, including forged popup names and controller frames', async t => {
+  const { runtime, background } = await setup(t);
+  const ui = port(runtime, `chrome-extension://${runtime.id}/popup.html`, 'popup');
+  const site = port(runtime, 'https://site.example/popup.html', 'popup');
+  try {
+    await background.vaultStore.create(password, phrase);
+    await background.unlock(password, { cpunkWasmBytes });
+    const state = await request(ui, 'getConnectState', [], 'controller');
+    assert.equal(state.error, undefined, 'The genuine popup has the bounded Connect read');
+    assert.ok(state.result && typeof state.result === 'object');
+    for (const method of ['getConnectState', 'connectAction']) {
+      const reply = await request(site, method, method === 'connectAction' ? [state.result.epoch, 'sync', {}] : [], 'nodus-provider',
+        { origin: `chrome-extension://${runtime.id}`, isNodusInternal: true });
+      assert.ok(reply.error, `The website cannot invoke ${method}`);
+      assert.equal(reply.result, undefined);
+    }
+    const id = ++requestId;
+    site.onMessage.emit({ name: 'controller', data: { jsonrpc: '2.0', id, method: 'getConnectState', params: [] } });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(site.messages.some(message => message.name === 'controller' && message.data.id === id), false,
+      'Sending a controller frame does not upgrade a website to extension UI');
+    await background.lockCoordinator.lock();
+    assert.ok((await request(ui, 'getConnectState', [], 'controller')).error, 'Locked UI cannot read conversations');
+    const locked = await request(ui, 'connectAction', [state.result.epoch, 'sync', {}], 'controller');
+    assert.ok(locked.error, 'A trusted page still cannot act while locked');
+    assert.equal(locked.result, undefined);
+    assert.equal(background.lockCoordinator.isLocked, true);
+    for (const forbidden of ['phrase', 'words', 'seed', 'privateKey', 'group_key', 'historyKey']) {
+      assert.equal(Object.hasOwn(state.result, forbidden), false);
+    }
+  } finally { ui.disconnect(); site.disconnect(); }
+});
 function port(runtime, url = 'https://site.example/frame', name = 'nodus-contentscript', overrides = {}) {
   const result = { name, sender: { id: runtime.id, url, frameId: 2, tab: { id: 8, url: 'https://top.example/' } },
     messages: [], onMessage: event(), onDisconnect: event(), disconnected: false,

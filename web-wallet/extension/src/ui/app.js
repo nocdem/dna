@@ -398,7 +398,10 @@ export async function mountWalletPage({ document = globalThis.document, window =
     // Locked password and recovery forms retain their entered values until their explicit action or timeout.
     if (ui.state?.isUnlocked) void refresh().catch(showError);
   }, showError);
-  const removeNotification = client.onNotification(message => { if (['messengerSubscription', 'walletStateChanged'].includes(message.method)) void refresh().catch(showError); });
+  const removeNotification = client.onNotification(message => {
+    if (message.method === 'connectStateChanged') { openScreen?.refreshConnect?.(); return; }
+    if (['messengerSubscription', 'walletStateChanged'].includes(message.method)) void refresh().catch(showError);
+  });
   const removeDisconnect = client.onDisconnect(() => { dispose(); root.replaceChildren(); navigation.replaceChildren(); showError(new Error('Wallet background disconnected. Reopen this wallet page.')); });
   const onFocus = () => { void refresh().catch(showError); };
   const onVisible = () => { if (!document.hidden) onFocus(); };

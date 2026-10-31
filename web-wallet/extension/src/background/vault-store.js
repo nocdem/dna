@@ -4,7 +4,7 @@ import { validateNodusPhrase } from '../../../src/recovery.js';
 
 // The only persisted phrase store is the existing web-wallet JSON string.
 // Transport of the saved vault value is deferred by the approved plan (GAP-8).
-export function createVaultStore({ storage, lockCoordinator }) {
+export function createVaultStore({ storage, lockCoordinator, deleteHistory }) {
   let saving = Promise.resolve();
 
   async function importVault(value) {
@@ -56,6 +56,7 @@ export function createVaultStore({ storage, lockCoordinator }) {
       // Extension has no temporary session: delete begins with its ONE lock.
       await lockCoordinator.lock();
       const saved = await storage.get(null);
+      if (saved[VAULT_KEY] && deleteHistory) await deleteHistory(parseVault(saved[VAULT_KEY]).id);
       const roots = [VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY];
       const keys = Object.keys(saved).filter(key => roots.includes(key) ||
         [ACTIVITY_KEY, HISTORY_KEY].some(root => key.startsWith(`${root}.`)));
