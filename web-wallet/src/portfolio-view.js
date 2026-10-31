@@ -70,7 +70,7 @@ function groupedNetworkControls(entries, control, expanded) {
       button.dataset.networkGroupToggle = group.id; items.id = `portfolio-network-group-${group.id}`;
       button.setAttribute('aria-controls', items.id);
       const update = () => { const open = expanded.has(group.id); button.setAttribute('aria-expanded', String(open)); items.hidden = !open; };
-      const chevron = el('span', 'network-group-chevron', '⌄'); chevron.setAttribute('aria-hidden', 'true'); button.append(chevron);
+      const symbol = el('span', 'network-group-symbol'); symbol.setAttribute('aria-hidden', 'true'); button.append(symbol);
       button.onclick = () => { if (expanded.has(group.id)) expanded.delete(group.id); else expanded.add(group.id); update(); };
       update(); title.append(button);
     } else title.textContent = group.label;

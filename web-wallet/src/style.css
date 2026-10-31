@@ -987,7 +987,9 @@ textarea.roles-paste { font-family: var(--mono); font-size: 11px; line-height: 1
 .network-group-count { min-width: 20px; padding: 2px 6px; border-radius: 10px; background: var(--surface, #333); color: var(--muted); font-size: 11px; text-align: center; }
 .network-group-toggle:hover { background: transparent; color: var(--text); }
 .network-group-toggle:focus-visible { outline: 2px solid var(--lime); outline-offset: 3px; }
-.network-group-toggle[aria-expanded="true"] .network-group-chevron { transform: rotate(180deg); }
+.network-group-symbol { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border: 1px solid var(--muted); border-radius: 50%; color: var(--muted); font-size: 13px; line-height: 1; }
+.network-group-symbol::before { content: '+'; }
+.network-group-toggle[aria-expanded="true"] .network-group-symbol::before { content: '−'; }
 .network-group-items[hidden] { display: none; }
 .network-group-items { display: flex; flex-wrap: wrap; gap: 8px; }
 @media (max-width: 760px) {
