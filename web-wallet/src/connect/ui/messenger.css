@@ -85,7 +85,7 @@
 .messenger .nc-fab { box-shadow: 0 6px 18px #0006; }
 .nc-fab:hover { background: var(--lime); filter: brightness(1.06); }
 .nc-fab .nc-icon { width: 22px; height: 22px; }
-.messenger-sync { flex-shrink: 0; margin: 0; padding: 6px 16px 8px; font-size: 10px; line-height: 1.5; color: var(--muted); }
+.messenger-sync { flex-shrink: 0; margin: 0; padding: 6px 88px 8px 16px; font-size: 10px; line-height: 1.5; color: var(--muted); }
 .messenger-sync:empty { display: none; }
 
 /* The avatar: the profile picture, else two letters of the verified name or

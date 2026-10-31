@@ -1020,7 +1020,7 @@ textarea.roles-paste { font-family: var(--mono); font-size: 11px; line-height: 1
 @media (max-width: 560px) { .app-body.wallet-workspace { padding-left: 44px; } }
 
 /* The grouped network pills replace the context dropdown in its existing slot. */
-.transfer-actions > .network-select { flex: 1 1 100%; }
+.transfer-actions > .network-select { flex: 1 1 100%; grid-template-columns: minmax(0, 1fr); }
 .transfer-actions .portfolio-networks { margin: 0; padding: 0; gap: 12px; }
 .transfer-actions .network-health { align-items: center; }
 .transfer-actions .network-group-items > .network-health { min-width: 0; }
