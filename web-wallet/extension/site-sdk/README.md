@@ -3,7 +3,7 @@
 Copy this directory as a unit. `index.mjs` is a dependency-free JavaScript
 module; keep `nodus-site-verify.mjs` and `nodus-site-verify.wasm` beside it.
 The same files work in a browser and in Node. Provider calls require the
-Nodus Wallet browser extension; verification does not.
+Nodus Connect browser extension; verification does not.
 
 ## Include in a site
 
@@ -47,8 +47,11 @@ if (!signInResponse.ok) throw new Error('Sign-in was refused.');
 `connect()` discovers the provider through `eip6963:announceProvider`,
 requests reannouncement with `eip6963:requestProvider`, then calls
 `nodus_requestAccounts` and returns the first account object. Discovery waits
-for a matching announcement. The extension's identity is `name: "Nodus Wallet"`,
-`rdns: "io.nodusnetwork.wallet"` (`extension/src/inpage.js`, `startInpage`).
+for a matching announcement. The browser extension is named Nodus Connect.
+For compatibility, its provider discovery retains the legacy identity
+`name: "Nodus Wallet"`, `rdns: "io.nodusnetwork.wallet"`
+(`extension/src/inpage.js`, `startInpage`). This module matches both values
+exactly; the product rename does not change them.
 The module does not select another wallet from a global provider variable.
 
 `signMessage(message)` connects first if needed, then calls

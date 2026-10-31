@@ -110,6 +110,9 @@ try {
     await command('Debugger.enable'); await command('Debugger.setPauseOnExceptions', { state: 'all' });
   }
   await page.goto(`${base}/${manifest.action.default_popup}`);
+  assert.equal(manifest.name, 'Nodus Connect');
+  assert.equal(await page.title(), 'Nodus Connect');
+  assert.equal(await page.locator('.product-name').textContent(), 'Connect');
   await page.locator('#restore:visible').click(); await pastePhrase(page, fixture.phrase);
   await page.locator('#backup-confirm').check();
   await page.locator('#new-password').fill(password); await page.locator('#confirm-password').fill(password);
@@ -125,6 +128,8 @@ try {
   await page.locator('#recipient').fill('Public draft recipient');
   await page.locator('#amount').fill('1.25');
   await connectView(page);
+  assert.equal(await page.locator('.product-name').textContent(), 'Connect');
+  assert.equal(await page.locator('#wallet-connect-switch').textContent(), 'Wallet');
   let state = await rpc(page, 'getConnectState');
   assert.equal(state.phase, 'open', state.text); assert.equal(state.persistent, true); assert.equal(state.online, false);
   assert.match(state.ownFp, /^[0-9a-f]{128}$/); const fp = state.ownFp;
@@ -134,6 +139,7 @@ try {
   await page.getByRole('button', { name: 'Your ID & profile', exact: true }).click();
   await page.locator('#nc-bio').fill('Draft kept while switching');
   await page.locator('#wallet-connect-switch').click(); await page.locator('#wallet-open:visible').waitFor();
+  assert.equal(await page.locator('#wallet-connect-switch').textContent(), 'Connect');
   assert.equal(await page.locator('#recipient').inputValue(), 'Public draft recipient');
   assert.equal(await page.locator('#amount').inputValue(), '1.25');
   assert.equal(await page.locator('#chain').inputValue(), 'ethereum');

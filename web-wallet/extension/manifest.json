@@ -1,12 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "Nodus Wallet",
+  "name": "Nodus Connect",
   "short_name": "Nodus",
   "version": "0.1.143",
-  "description": "Nodus Wallet",
+  "description": "Nodus Connect",
   "minimum_chrome_version": "123",
   "action": {
-    "default_title": "Nodus Wallet",
+    "default_title": "Nodus Connect",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "../public/assets/nodus-mark.svg",

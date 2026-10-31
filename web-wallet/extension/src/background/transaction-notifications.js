@@ -33,7 +33,7 @@ export async function createTransactionNotifications({ storage, notifications, r
           // MetaMask v13.54.0 platforms/extension.ts:266-288 and Chrome's
           // notifications.create API: a basic notification with a package icon.
           await notifications.create(id, { type: 'basic', iconUrl: runtime.getURL('icons/nodus-128.png'),
-            title: `Nodus Wallet — ${status}`, message: `${entry.chain === 'nodus' ? 'Nodus' : CHAINS[entry.chain].name} (${entry.network})\n${entry.hash}` });
+            title: `Nodus Connect — ${status}`, message: `${entry.chain === 'nodus' ? 'Nodus' : CHAINS[entry.chain].name} (${entry.network})\n${entry.hash}` });
         } catch { break; }
         entry.seen.push(status); entry.queue.shift(); await save();
       }

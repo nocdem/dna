@@ -53,7 +53,7 @@ export async function createIncomingNotifications({ alarms, notifications, runti
       try {
         // Same basic native notification and packaged icon as sent Activity.
         await notifications.create(notice.id, { type: 'basic', iconUrl: runtime.getURL('icons/nodus-128.png'),
-          title: 'Nodus Wallet — funds received', message: notice.message });
+          title: 'Nodus Connect — funds received', message: notice.message });
       } catch { return; }
       entry.queue.shift();
     }

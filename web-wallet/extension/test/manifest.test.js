@@ -55,10 +55,10 @@ test('permissions and external connections match the approved reference subset',
 // Proves English literals and the existing Nodus source asset are used; checking only the name could leave a MetaMask icon or locale dependency.
 // The packaging config rasterizes these source paths; package-smoke.test.js
 // separately checks emitted PNG signatures/dimensions and real Chromium load.
-test('identity and source UI paths point at the existing web wallet', async () => {
-  assert.equal(manifest.name, 'Nodus Wallet');
+test('Connect product name keeps the existing extension paths and assets', async () => {
+  assert.equal(manifest.name, 'Nodus Connect');
   assert.equal(manifest.short_name, 'Nodus');
-  assert.equal(manifest.action.default_title, 'Nodus Wallet');
+  assert.equal(manifest.action.default_title, 'Nodus Connect');
   assert.equal(manifest.action.default_popup, 'popup.html');
   assert.equal(manifest.version, JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')).version);
   assert.ok(manifest.description.length > 0);

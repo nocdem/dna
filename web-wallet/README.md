@@ -2,12 +2,13 @@
 
 A standalone, accountless browser client alongside the existing DNA applications. No Connect installation, extension, identity registration, email, phone, or account backend is required. This is a development preview; it is not an audited custody product.
 
-The product is Nodus Wallet. CPUNK is the temporary CF-20 integration until the airdrop; it is not a permanent chain module or the wallet identity. Airdrop eligibility and claims are outside this release.
+The web wallet is Nodus Wallet. The existing browser extension is Nodus Connect.
+CPUNK is the temporary CF-20 integration until the airdrop; it is not a permanent chain module or the wallet identity. Airdrop eligibility and claims are outside this release.
 
-## Connect in the extension window
+## Nodus Connect browser extension
 
 The corner Connect button switches between Wallet and Connect in the same
-extension window. Contacts, contact requests, direct chats, groups and profile
+Nodus Connect extension window. Contacts, contact requests, direct chats, groups and profile
 editing use the shared Connect session and screens. Wallet and chat drafts stay
 in their views while switching. Lock wallet clears both views.
 
@@ -23,6 +24,12 @@ website or another vault identifier. Deleting message history keeps its
 encryption counter; deleting the saved wallet removes its history and counter
 after the database closes. A history-open failure leaves the wallet usable and
 offers retry in Connect.
+
+For site compatibility, provider discovery retains the legacy
+`name: "Nodus Wallet"` and `rdns: "io.nodusnetwork.wallet"` from
+`extension/src/inpage.js`. The site connector in `extension/site-sdk/index.mjs`
+matches both values exactly. The browser extension's product name is Nodus
+Connect; these provider identifiers stay unchanged.
 
 ## PQ receive — recovery contract v1 (2026-10-31)
 

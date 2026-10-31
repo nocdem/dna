@@ -29,8 +29,8 @@ test('each sent Activity transaction produces pending and final system notificat
   }
   assert.equal(f.shown.length, 10);
   for (let index = 0; index < f.shown.length; index += 2) {
-    assert.match(f.shown[index].title, /pending/u);
-    assert.match(f.shown[index + 1].title, /confirmed/u);
+    assert.equal(f.shown[index].title, 'Nodus Connect — pending');
+    assert.equal(f.shown[index + 1].title, 'Nodus Connect — confirmed');
     assert.equal(f.shown[index].type, 'basic');
     assert.equal(f.shown[index].iconUrl, 'chrome-extension://notification-test/icons/nodus-128.png');
     assert.notEqual(f.shown[index].id, f.shown[index + 1].id);

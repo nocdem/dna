@@ -57,7 +57,7 @@ test('existing history is silent and a new incoming transfer notifies once on ev
   assert.equal(f.shown.length, 5);
   assert.equal(new Set(f.shown.map(row => row.id)).size, 5);
   for (const row of f.shown) {
-    assert.equal(row.type, 'basic'); assert.equal(row.title, 'Nodus Wallet — funds received');
+    assert.equal(row.type, 'basic'); assert.equal(row.title, 'Nodus Connect — funds received');
     assert.equal(row.iconUrl, 'chrome-extension://incoming-test/icons/nodus-128.png');
     assert.match(row.message, /(?:2\.5 (?:USDT|CPUNK)|3\.0 NODUS)\n.+\((?:Mainnet|Testnet)\)/u);
   }

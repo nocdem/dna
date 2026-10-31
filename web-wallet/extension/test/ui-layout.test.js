@@ -491,7 +491,7 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
           assert.equal(await page.locator('#wallet-register-name').isVisible(), false);
           await assertGreetingPosition(); await capture(`greeting-${name}`);
           assert.equal(await page.locator('.site-header .wordmark').textContent(), 'nodus');
-          assert.equal(await page.locator('.site-header .product-name').textContent(), 'Wallet');
+          assert.equal(await page.locator('.site-header .product-name').textContent(), 'Connect');
           assert.equal(await page.evaluate(() => window.layout.calls.filter(call => call.method === 'getOwnName').length), 1);
         }
         await open('home', 'none');

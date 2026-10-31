@@ -36,7 +36,7 @@ async function filesBelow(directory, prefix = '') {
 // The extracted extension, browser profile and server are removed even on failure.
 // A stale zip could falsely pass against changed source: byte comparisons cover
 // copied WASM/assets; the orchestrator must rebuild before checking bundled code.
-test('MV3 zip loads in Chromium and announces Nodus Wallet to a local page', { timeout: 60_000 }, async t => {
+test('MV3 Connect zip keeps legacy Nodus Wallet provider discovery for local sites', { timeout: 60_000 }, async t => {
   try { await access(zip); }
   catch (error) {
     if (error.code !== 'ENOENT') throw error;
@@ -60,6 +60,8 @@ test('MV3 zip loads in Chromium and announces Nodus Wallet to a local page', { t
     const files = await filesBelow(extension);
     for (const file of files) t.diagnostic(`${file}\t${(await stat(join(extension, file))).size} bytes`);
     const manifest = JSON.parse(await readFile(join(extension, 'manifest.json'), 'utf8'));
+    assert.equal(manifest.name, 'Nodus Connect');
+    assert.equal(manifest.action.default_title, 'Nodus Connect');
     assert.equal(manifest.manifest_version, 3);
     assert.equal(manifest.version, sourceManifest.version);
     assert.deepEqual(manifest.content_scripts, sourceManifest.content_scripts);
@@ -160,6 +162,18 @@ test('MV3 zip loads in Chromium and announces Nodus Wallet to a local page', { t
     popup.on('pageerror', error => errors.push(error.message));
     await popup.goto(`${extensionUrl}/${manifest.action.default_popup}`);
     await popup.locator('#welcome:visible').waitFor();
+    assert.equal(await popup.title(), 'Nodus Connect');
+    assert.equal(await popup.locator('.product-name').textContent(), 'Connect');
+    // Read each real packaged entry, not the layout fixture. Keep existing
+    // approval/full-page paths while checking the new product label.
+    for (const [entry, title] of [['home.html', 'Nodus Connect'], ['notification.html', 'Nodus Connect — Site connection']]) {
+      const view = await context.newPage(); smokePages.add(view);
+      view.on('pageerror', error => errors.push(error.message));
+      await view.goto(`${extensionUrl}/${entry}`);
+      assert.equal(await view.title(), title);
+      assert.equal(await view.locator('.product-name').textContent(), 'Connect');
+      await view.close();
+    }
     assert.equal(await popup.getByRole('heading', { name: 'Your wallet', exact: true }).count(), 0);
     assert.equal(await popup.locator('#create').isVisible(), true);
     assert.equal(await popup.locator('#restore').isVisible(), true);
