@@ -42,7 +42,8 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   const workspace = $('wallet-open'); workspace.classList.add('wallet-workspace');
   const rail = root.querySelector('.wallet-navigation'), context = root.querySelector('.transfer-actions');
   const networkDisclosure = document.createElement('details'); networkDisclosure.id = 'wallet-network'; networkDisclosure.className = 'network-disclosure';
-  const networkSummary = document.createElement('summary'); networkSummary.textContent = 'Network';
+  const networkSummary = document.createElement('summary');
+  networkSummary.innerHTML = 'Network<span class="network-summary-selection"><span class="selected-network-name"></span> · <span class="selected-network-stage"></span></span>';
   context.before(networkDisclosure); networkDisclosure.append(networkSummary, context);
   const portfolioCard = $('wallet-home').querySelector('.portfolio-card');
   workspace.insertBefore(rail, $('wallet-home')); portfolioCard.after(networkDisclosure);
@@ -182,8 +183,9 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     if (page && !previous) walletScroll = window.scrollY;
     if (shownPage === 'settings' && name !== 'settings') clearReveal();
     shownPage = page ? name : null;
-    if (page && networkDisclosure.parentElement !== workspace) workspace.insertBefore(networkDisclosure, $('wallet-home'));
-    else if (!page && networkDisclosure.parentElement !== $('wallet-home')) portfolioCard.after(networkDisclosure);
+    if (page && name === 'send') $('send-title').parentElement.after(networkDisclosure);
+    else if (page && name === 'receive') $('receive-title').after(networkDisclosure);
+    else portfolioCard.after(networkDisclosure);
     $('wallet-home').hidden = Boolean(page);
     for (const node of root.querySelectorAll('.wallet-page')) node.hidden = node !== page;
     if (page) {

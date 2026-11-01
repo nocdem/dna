@@ -1043,8 +1043,9 @@ textarea.roles-paste { font-family: var(--mono); font-size: 11px; line-height: 1
 /* The network selector and transfer context share one disclosure. */
 .network-disclosure { margin: 18px 0 20px; padding: 0 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
 .network-disclosure > summary { display: flex; align-items: center; justify-content: space-between; min-height: 44px; list-style: none; color: var(--text); font-size: 14px; font-weight: 600; }
+.network-disclosure > summary .network-summary-selection { flex: 1; min-width: 0; margin: 0 12px; color: var(--muted); font-size: 12px; font-weight: 500; line-height: 1.35; text-align: right; }
 .network-disclosure > summary::-webkit-details-marker { display: none; }
-.network-disclosure > summary::after { content: ''; width: 8px; height: 8px; margin-right: 4px; border-right: 1.6px solid currentColor; border-bottom: 1.6px solid currentColor; transform: rotate(45deg) translateY(-2px); color: var(--muted); transition: transform .15s ease; }
+.network-disclosure > summary::after { content: ''; width: 8px; height: 8px; margin-right: 4px; border-right: 1.6px solid currentColor; border-bottom: 1.6px solid currentColor; transform: rotate(45deg) translateY(-2px); color: var(--muted); transition: transform .15s ease; flex-shrink: 0; }
 .network-disclosure[open] > summary::after { transform: rotate(-135deg) translateY(-2px); }
 .network-disclosure[open] > summary { border-bottom: 1px solid var(--line-soft); }
 .network-disclosure > .transfer-actions { margin: 0; padding: 14px 0; border: 0; background: transparent; }
