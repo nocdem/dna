@@ -99,8 +99,8 @@ for SQVL instruction purposes, not this account receive address.
 
 Wallet, Connect and the browser extension share network-aware navigation with
 separate Send and Receive screens. Portfolio groups holdings by network;
-Hide zero networks hides only fresh, successfully read zero balances for every
-holding. Unsupported actions stay unavailable for the selected network.
+Hide zero balances hides zero and unavailable holdings, and networks without a
+displayable nonzero holding. Unsupported actions stay unavailable for the selected network.
 
 Algorand adds read-only native ALGO balances and up to 50 top-level native
 payment transactions on mainnet and testnet through fixed Algonode providers.

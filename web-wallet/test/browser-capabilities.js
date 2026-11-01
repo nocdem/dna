@@ -23,7 +23,7 @@ for(const mode of (process.env.CAPABILITY_BROWSER_MODE||'web,connect,extension')
   assert.equal(await page.locator('.wallet-navigation').count(),1);
   assert.equal(await page.locator('#balances .holding-actions, #balances .asset-action').count(),0,'holdings only; actions live on dedicated pages');
   assert.equal(await page.locator('#show-zero-balances').isChecked(),true);
-  assert.match(await page.locator('label[for="show-zero-balances"]').textContent(),/Hide zero networks/);
+  assert.match(await page.locator('label[for="show-zero-balances"]').textContent(),/Hide zero balances/);
   await page.waitForFunction(()=>!document.querySelector('.network-assets[data-chain="tron"]'));
   assert.equal(await group('ethereum').count(),1,'zero native / funded token retained');
   assert.equal(await group('bsc').count(),1,'one raw native unit retained');

@@ -232,7 +232,7 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
       }
       return detail;
     }));
-    if (!groups.length) $('balances').append(el('p', 'hint balances-empty', 'All networks have confirmed zero holdings. Uncheck Hide zero networks to show them.'));
+    if (!groups.length) $('balances').append(el('p', 'hint balances-empty', 'No networks have a displayable nonzero balance. Uncheck Hide zero balances to show all networks.'));
     // Reading another network or expiring a quote must not interrupt keyboard navigation.
     if (focusedRowAction) $('balances').querySelector(`button[data-row-action="${CSS.escape(focusedRowAction)}"]`)?.focus({ preventScroll: true });
     if (focusedGroup) {

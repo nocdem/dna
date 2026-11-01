@@ -209,12 +209,17 @@ export function usdText(units, positive = false) {
   return '$' + (cents / 100n).toLocaleString('en-US') + '.' + String(cents % 100n).padStart(2, '0');
 }
 
-// A network is empty only after every holding has a fresh exact zero read.
+// Show only displayable nonzero holdings when the filter is enabled.
+const displayedHolding = row => row.balance != null && typeof row.units === 'bigint' && row.units !== 0n;
 export function zeroNetwork(rows) {
-  return rows.length > 0 && rows.every(row => row.state === 'ready' && row.keptAt === undefined && row.balance !== null && row.units === 0n);
+  return !rows.some(displayedHolding);
 }
 export function groupNetworks(rows, { hideZero = false } = {}) {
   const groups = new Map();
-  for (const row of rows) { if (!groups.has(row.chain)) groups.set(row.chain, []); groups.get(row.chain).push(row); }
-  return [...groups].filter(([, holdings]) => !hideZero || !zeroNetwork(holdings)).map(([chain, rows]) => ({ chain, rows }));
+  for (const row of rows) {
+    if (hideZero && !displayedHolding(row)) continue;
+    if (!groups.has(row.chain)) groups.set(row.chain, []);
+    groups.get(row.chain).push(row);
+  }
+  return [...groups].map(([chain, rows]) => ({ chain, rows }));
 }

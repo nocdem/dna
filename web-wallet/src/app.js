@@ -2253,10 +2253,10 @@ receiveLink.querySelector('svg').innerHTML = '<path d="M12 4v16M6 14l6 6 6-6"/>'
 rail.querySelector('a[href="#assets-panel"]').href = '#';
 for (const link of rail.querySelectorAll('a')) { const label = link.querySelector('.nav-name').textContent; link.title = label; link.setAttribute('aria-label', label); }
 const zeroLabel = document.querySelector('label[for="show-zero-balances"]');
-zeroLabel.lastChild.textContent = ' Hide zero networks';
+zeroLabel.lastChild.textContent = ' Hide zero balances';
 
 $('assets-panel').querySelector('.panel-heading').append(zeroLabel);
-$('show-zero-balances-note').textContent = 'Only networks with a fresh exact zero for every holding are hidden.';
+$('show-zero-balances-note').textContent = showZeroNote(readShowZero(autoLockStorage()));
 const WALLET_PAGES = [...document.querySelectorAll('.wallet-page')];
 const pageNode = name => WALLET_PAGES.find(node => node.dataset.page === name) || null;
 const pagePanel = node => node.querySelector('.dashboard-panel');

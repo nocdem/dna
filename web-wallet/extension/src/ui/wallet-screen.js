@@ -57,7 +57,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   sendLink.querySelector('svg').innerHTML = '<path d="M12 20V4M6 10l6-6 6 6"/>';
   receiveLink.querySelector('svg').innerHTML = '<path d="M12 4v16M6 14l6 6 6-6"/>';
   rail.querySelector('a[href="#assets-panel"]').href = '#';
-  const zeroLabel = root.querySelector('label[for="show-zero-balances"]'); zeroLabel.lastChild.textContent = ' Hide zero networks'; $('assets-panel').querySelector('.panel-heading').append(zeroLabel);
+  const zeroLabel = root.querySelector('label[for="show-zero-balances"]'); zeroLabel.lastChild.textContent = ' Hide zero balances'; $('assets-panel').querySelector('.panel-heading').append(zeroLabel);
 
 
   // Approved extension plan §3.6: the extension-only connected-sites page.
