@@ -919,7 +919,20 @@ pqStatus.setAttribute('role', 'status'); pqStatus.setAttribute('aria-live', 'pol
 pqRecoveryNote.id = 'pq-recovery-note';
 pqRecoveryNote.textContent = 'Recover this address with your Nodus recovery phrase. Native chain wallets may derive different addresses.';
 for (const node of [pqEnvironmentLabel, pqEnvironment, pqStatus, pqRecoveryNote]) node.hidden = true;
-$('chain').after(pqEnvironmentLabel, pqEnvironment, pqStatus, pqRecoveryNote);
+$('chain').after(pqEnvironmentLabel, pqEnvironment);
+const environmentDisclosure = document.createElement('details'); environmentDisclosure.id = 'wallet-environment'; environmentDisclosure.className = 'environment-disclosure';
+const environmentSummary = document.createElement('summary');
+const environmentChoices = document.createElement('div'); environmentChoices.className = 'environment-choices';
+environmentDisclosure.append(environmentSummary, environmentChoices, pqStatus, pqRecoveryNote);
+function renderEnvironment() {
+  environmentSummary.textContent = `Environment · ${pqEnvironment.selectedOptions[0]?.textContent || ''}`;
+  environmentChoices.replaceChildren(...[...pqEnvironment.options].map(option => {
+    const button = document.createElement('button'); button.type = 'button'; button.textContent = option.textContent; button.dataset.environment = option.value;
+    button.setAttribute('aria-pressed', String(option.selected));
+    button.onclick = () => { environmentDisclosure.open = false; if (pqEnvironment.value !== option.value) { pqEnvironment.value = option.value; pqEnvironment.onchange(); } };
+    return button;
+  }));
+}
 pqEnvironment.onchange = () => {
   const chain = $('chain').value;
   if (!isPqChain(chain)) return;
@@ -934,11 +947,12 @@ pqEnvironment.onchange = () => {
 };
 function updatePqStatus(chain) {
   const shown = isPqChain(chain);
-  for (const node of [pqEnvironmentLabel, pqEnvironment, pqStatus, pqRecoveryNote]) node.hidden = !shown;
+  environmentDisclosure.hidden = !shown; pqStatus.hidden = pqRecoveryNote.hidden = !shown;
   if (!shown) { pqStatus.textContent = ''; return; }
   const choice = pqNetwork(chain, pqSelections[chain]);
   pqEnvironment.replaceChildren(...PQ_NETWORKS[chain].networks.map(network => new Option(network.label, network.id)));
   pqEnvironment.value = choice.id;
+  renderEnvironment();
   pqStatus.textContent = pqAddresses[chain]?.[choice.id] ? `${choice.label} receive address derived locally.`
     : pqErrors[chain] || (pqPending || pqSource !== wallet ? 'Deriving receive address locally…' : 'Receive address unavailable. Lock and reopen your wallet to retry.');
 }
@@ -989,7 +1003,7 @@ function stopPqAddresses() {
   pqAddresses = {}; pqErrors = {}; pqPending = false;
   if (wallet) for (const chain of Object.keys(PQ_NETWORKS)) delete wallet.addresses[chain];
   pqStatus.textContent = ''; pqEnvironment.replaceChildren();
-  for (const node of [pqEnvironmentLabel, pqEnvironment, pqStatus, pqRecoveryNote]) node.hidden = true;
+  environmentDisclosure.hidden = true;
 }
 // (The portfolio scope paragraph — which networks are listed and which count
 // toward the total — was removed in 0.1.108, operator: "bir dolu bilgi
@@ -2166,7 +2180,16 @@ function applyAssetGate() {
   if (blocked) message(unavailableAssetNote(option.dataset.symbol),{ category: 'send', error: true });
 }
 $('asset').addEventListener('change', applyAssetGate);
+let lastSelectedChain;
 function selectChain() {
+  const incoming = $('chain').value;
+  if (lastSelectedChain !== incoming) {
+    lastSelectedChain = incoming; environmentDisclosure.open = false;
+    if (isPqChain(incoming) && PQ_NETWORKS[incoming].networks.length > 1 && pqSelections[incoming] !== 'mainnet') {
+      pqEnvironment.replaceChildren(...PQ_NETWORKS[incoming].networks.map(network => new Option(network.label, network.id)));
+      pqEnvironment.value = 'mainnet'; pqEnvironment.onchange(); return;
+    }
+  }
   revision++; closeReview();
   if (historyJob) { historyJob.controller.abort(); historyJob = null; }
   const chain = $('chain').value; const c = networkFor(chain);
@@ -2230,7 +2253,7 @@ $('chain').onchange = selectChain;
 const walletHome = $('wallet-home'), walletContainer = walletHome.parentElement;
 walletContainer.classList.add('wallet-workspace');
 const rail = document.querySelector('.wallet-navigation');
-const context = document.querySelector('.transfer-actions');
+const context = document.querySelector('.transfer-actions'); context.append(environmentDisclosure);
 const networkDisclosure = document.createElement('details'); networkDisclosure.id = 'wallet-network'; networkDisclosure.className = 'network-disclosure';
 const networkSummary = document.createElement('summary');
 networkSummary.innerHTML = 'Network<span class="network-summary-selection"><span class="selected-network-name"></span> · <span class="selected-network-stage"></span></span>';

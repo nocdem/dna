@@ -1049,3 +1049,11 @@ textarea.roles-paste { font-family: var(--mono); font-size: 11px; line-height: 1
 .network-disclosure[open] > summary::after { transform: rotate(-135deg) translateY(-2px); }
 .network-disclosure[open] > summary { border-bottom: 1px solid var(--line-soft); }
 .network-disclosure > .transfer-actions { margin: 0; padding: 14px 0; border: 0; background: transparent; }
+
+.environment-disclosure { flex: 1 1 100%; margin: 0; padding: 0 12px; border: 1px solid var(--line); border-radius: 10px; }
+.environment-disclosure > summary { min-height: 44px; display: flex; align-items: center; justify-content: space-between; color: var(--text); font-size: 13px; list-style: none; }
+.environment-disclosure > summary::-webkit-details-marker { display: none; }
+.environment-disclosure > summary::after { content: ''; width: 8px; height: 8px; margin-right: 4px; border-right: 1.6px solid currentColor; border-bottom: 1.6px solid currentColor; transform: rotate(45deg) translateY(-2px); color: var(--muted); }
+.environment-disclosure[open] > summary::after { transform: rotate(-135deg) translateY(-2px); }
+.environment-choices { display: flex; flex-wrap: wrap; gap: 8px; }
+.environment-choices button { min-height: 44px; margin: 0; }

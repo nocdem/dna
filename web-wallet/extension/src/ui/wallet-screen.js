@@ -133,7 +133,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
       node.textContent = publicAddresses()[chain] ? 'Derived locally from this wallet’s recovery phrase.' : chain === 'ixios' ? 'Ixios address unavailable. Lock and reopen your wallet to retry.' : '';
     }
     const pq = isPqChain(selected);
-    pqStatus.hidden = pqNote.hidden = pqEnvironment.hidden = pqEnvironmentLabel.hidden = !pq;
+    environmentDisclosure.hidden = !pq;
     if (pq) {
       pqStatus.textContent = publicAddresses()[selected] ? `${selectedNetwork(selected).label} receive address derived locally.`
         : ui.state.pqErrors?.[selected] || 'Receive address unavailable. Lock and reopen your wallet to retry.';
@@ -145,7 +145,18 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   const pqNote = element('p', 'Recover this address with your Nodus recovery phrase. Native chain wallets may derive different addresses.', 'hint'); pqNote.id = 'pq-recovery-note';
   const pqEnvironmentLabel = element('label', 'Network environment'), pqEnvironment = element('select');
   pqEnvironmentLabel.htmlFor = pqEnvironment.id = 'pq-network-environment';
-  $('chain').after(pqEnvironmentLabel, pqEnvironment, pqStatus, pqNote);
+  pqEnvironmentLabel.hidden = pqEnvironment.hidden = true; $('chain').after(pqEnvironmentLabel, pqEnvironment);
+  const environmentDisclosure = element('details', undefined, 'environment-disclosure'); environmentDisclosure.id = 'wallet-environment';
+  const environmentSummary = element('summary'), environmentChoices = element('div', undefined, 'environment-choices');
+  environmentDisclosure.append(environmentSummary, environmentChoices, pqStatus, pqNote); context.append(environmentDisclosure);
+  function renderEnvironment() {
+    environmentSummary.textContent = `Environment · ${pqEnvironment.selectedOptions[0]?.textContent || ''}`;
+    environmentChoices.replaceChildren(...[...pqEnvironment.options].map(option => {
+      const button = element('button', option.textContent); button.type = 'button'; button.dataset.environment = option.value; button.setAttribute('aria-pressed', String(option.selected));
+      button.onclick = () => { environmentDisclosure.open = false; if (pqEnvironment.value !== option.value) { pqEnvironment.value = option.value; void pqEnvironment.onchange(); } };
+      return button;
+    }));
+  }
   pqEnvironment.onchange = () => {
     if (disposed || !ui.state.isUnlocked || !isPqChain(selected)) return;
     const chain = selected, id = chainNetwork(chain, pqEnvironment.value).id;
@@ -211,7 +222,8 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   $('quick-receive').onclick = () => navigate('receive');
   $('nav-earn').onclick = event => { event.preventDefault(); if (capabilitiesFor(selected).earn) navigate('earn'); };
   function selectAsset(chain, symbol, action) {
-    cancelReview(); selected = chain; $('chain').value = chain; selectChain(true);
+    const changed = selected !== chain; cancelReview(); selected = chain; $('chain').value = chain; selectChain(true);
+    if (changed) defaultEnvironment();
     const option = [...$('asset').options].find(option => option.dataset.symbol === symbol);
     if (option) $('asset').value = option.value;
     applyAssetGate();
@@ -224,6 +236,10 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     $('review-button').disabled = !option || option.disabled || networks[selected].receiveOnly;
   }
   $('asset').onchange = applyAssetGate;
+  function defaultEnvironment() {
+    environmentDisclosure.open = false;
+    if (isPqChain(selected) && pqEnvironment.options.length > 1 && pqEnvironment.value !== 'mainnet') { pqEnvironment.value = 'mainnet'; void pqEnvironment.onchange(); }
+  }
   function selectChain(reset = false) {
     const config = networks[selected], state = ui.state;
     if (shownPage && !pageSupported(selected, shownPage)) navigate(null);
@@ -234,7 +250,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     pqEnvironment.replaceChildren(...(isPqChain(selected) ? CHAIN_NETWORKS[selected] : []).map(choice => {
       const option = element('option', choice.label); option.value = choice.id; return option;
     }));
-    if (isPqChain(selected)) pqEnvironment.value = network.id;
+    if (isPqChain(selected)) { pqEnvironment.value = network.id; renderEnvironment(); }
     if (reset) { historyController?.abort(); cancelReview(); contracts?.contextChanged?.(); vaults?.contextChanged?.(); earn?.contextChanged?.(); readGeneration++; $('history').replaceChildren(); $('history-status').textContent = '';  $('recipient').value = ''; $('amount').value = ''; }
     for (const name of root.querySelectorAll('.selected-network-name')) name.textContent = config.name;
     for (const stage of root.querySelectorAll('.selected-network-stage')) stage.textContent = network.label;
@@ -274,7 +290,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   }
   setNetworkSelectOptions($('chain'), Object.entries(networks));
   $('chain').value = selected;
-  $('chain').onchange = () => { cancelReview(); selected = $('chain').value; selectChain(true); };
+  $('chain').onchange = () => { const changed = selected !== $('chain').value; cancelReview(); selected = $('chain').value; selectChain(true); if (changed) defaultEnvironment(); };
   $('copy-address').onclick = () => run(async () => { await window.navigator.clipboard.writeText($('receive-address').textContent); message('Address copied.'); });
 
   // index.html:116 and src/app.js:1615-1627: the same dialog and decoded rows,
