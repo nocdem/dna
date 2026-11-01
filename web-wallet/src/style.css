@@ -1008,8 +1008,13 @@ textarea.roles-paste { font-family: var(--mono); font-size: 11px; line-height: 1
 .transfer-actions { margin-bottom: 18px; flex-wrap: wrap; }
 .transfer-actions .network-select { min-width: 140px; flex: 1; margin: 0; }
 .transfer-actions .transfer-buttons { display: none; }
-.assets-panel .panel-heading { flex-wrap: wrap; gap: 10px; }
-.assets-panel .check { font-size: 12px; margin: 0; }
+.assets-panel .panel-heading { flex-wrap: nowrap; justify-content: space-between; gap: 6px; }
+.assets-panel .panel-heading h3 { white-space: nowrap; }
+.assets-panel .panel-heading #refresh { display: none; }
+.assets-panel .check { display: flex; align-items: center; gap: 6px; min-height: 44px; margin: 0; font-size: 12px; white-space: nowrap; cursor: pointer; }
+.assets-panel .check input { width: 15px; height: 15px; margin: 0; flex: none; accent-color: var(--lime); }
+.assets-panel .check input:focus-visible { outline: 2px solid var(--lime); outline-offset: 3px; }
+@media (max-width: 380px) { .assets-panel { padding-inline: 12px; } }
 .network-assets .asset-summary { grid-template-columns: 36px minmax(0, 1fr) 20px; }
 @media (max-width: 560px) {
   .wallet-workspace { padding-left: 44px; }
@@ -1034,3 +1039,12 @@ textarea.roles-paste { font-family: var(--mono); font-size: 11px; line-height: 1
 .transfer-actions .portfolio-networks { margin: 0; padding: 0; gap: 12px; }
 .transfer-actions .network-health { align-items: center; }
 .transfer-actions .network-group-items > .network-health { min-width: 0; }
+
+/* The network selector and transfer context share one disclosure. */
+.network-disclosure { margin: 18px 0 20px; padding: 0 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+.network-disclosure > summary { display: flex; align-items: center; justify-content: space-between; min-height: 44px; list-style: none; color: var(--text); font-size: 14px; font-weight: 600; }
+.network-disclosure > summary::-webkit-details-marker { display: none; }
+.network-disclosure > summary::after { content: ''; width: 8px; height: 8px; margin-right: 4px; border-right: 1.6px solid currentColor; border-bottom: 1.6px solid currentColor; transform: rotate(45deg) translateY(-2px); color: var(--muted); transition: transform .15s ease; }
+.network-disclosure[open] > summary::after { transform: rotate(-135deg) translateY(-2px); }
+.network-disclosure[open] > summary { border-bottom: 1px solid var(--line-soft); }
+.network-disclosure > .transfer-actions { margin: 0; padding: 14px 0; border: 0; background: transparent; }

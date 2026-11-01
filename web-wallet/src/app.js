@@ -47,7 +47,7 @@ import { raise, gather, siteName, onOwnIdentity } from './wallet-extensions.js';
 import { createSiteLock } from './site-lock.js';
 import { readAutoLock, writeAutoLock, parseAutoLock, autoLockNote, autoLockBarText } from './auto-lock.js';
 import { readBalanceRefresh, writeBalanceRefresh, parseBalanceRefresh, balanceRefreshNote } from './balance-refresh.js';
-import { readShowZero, writeShowZero, showZeroNote } from './zero-balances.js';
+import { showZeroNote } from './zero-balances.js';
 const $ = id => document.getElementById(id);
 // Must equal the src/style.css media query that sets `.dashboard-grid` to one
 // column (`@media (max-width: 900px)`): below it the Send / Receive panel sits
@@ -1053,11 +1053,8 @@ let autoLockMinutes = readAutoLock(autoLockStorage());
 {
   const box = $('show-zero-balances'), note = $('show-zero-balances-note');
   const apply = show => { box.checked = !show; portfolio.setHideZero(!show); return showZeroNote(show); };
-  note.textContent = apply(readShowZero(autoLockStorage()));
-  box.addEventListener('change', () => {
-    const kept = writeShowZero(autoLockStorage(), !box.checked);
-    note.textContent = apply(!box.checked) + (kept ? '' : ' This browser did not allow saving the choice: it applies until this page is closed.');
-  });
+  note.textContent = apply(false);
+  box.addEventListener('change', () => { note.textContent = apply(!box.checked); });
 }
 for (const event of ['pointerdown', 'keydown', 'input']) document.addEventListener(event, activity);
 // Shown again: an idle wallet locks; otherwise the connection is checked
@@ -2234,8 +2231,11 @@ const walletHome = $('wallet-home'), walletContainer = walletHome.parentElement;
 walletContainer.classList.add('wallet-workspace');
 const rail = document.querySelector('.wallet-navigation');
 const context = document.querySelector('.transfer-actions');
+const networkDisclosure = document.createElement('details'); networkDisclosure.id = 'wallet-network'; networkDisclosure.className = 'network-disclosure';
+const networkSummary = document.createElement('summary'); networkSummary.textContent = 'Network';
+context.before(networkDisclosure); networkDisclosure.append(networkSummary, context);
 const portfolioCard = walletHome.querySelector('.portfolio-card');
-walletContainer.insertBefore(rail, walletHome); portfolioCard.after(context);
+walletContainer.insertBefore(rail, walletHome); portfolioCard.after(networkDisclosure);
 const networkSelect = document.querySelector('.network-select'); context.prepend(networkSelect);
 // Keep the native selection state for the existing network/environment lifecycle.
 $('chain').hidden = true; networkSelect.querySelector('label').hidden = true;
@@ -2261,7 +2261,14 @@ const zeroLabel = document.querySelector('label[for="show-zero-balances"]');
 zeroLabel.lastChild.textContent = ' Hide zero balances';
 
 $('assets-panel').querySelector('.panel-heading').append(zeroLabel);
-$('show-zero-balances-note').textContent = showZeroNote(readShowZero(autoLockStorage()));
+function resetAssetView() {
+  networkDisclosure.open = false;
+  portfolio.resetAssetView();
+  $('show-zero-balances').checked = true;
+  $('show-zero-balances-note').textContent = showZeroNote(false);
+  portfolio.setHideZero(true);
+}
+document.addEventListener('wallet-view-opened', resetAssetView);
 const WALLET_PAGES = [...document.querySelectorAll('.wallet-page')];
 const pageNode = name => WALLET_PAGES.find(node => node.dataset.page === name) || null;
 const pagePanel = node => node.querySelector('.dashboard-panel');
@@ -2295,8 +2302,8 @@ function showWalletPage(name, { focus = true } = {}) {
   const previous = shownPage;
   if (!previous && walletViewShown()) walletScroll = scrollY;
   shownPage = next;
-  if (next) walletContainer.insertBefore(context, walletHome);
-  else portfolioCard.after(context);
+  if (next) walletContainer.insertBefore(networkDisclosure, walletHome);
+  else portfolioCard.after(networkDisclosure);
   $('wallet-home').hidden = !!next;
   for (const page of WALLET_PAGES) page.hidden = !next || page !== node;
   // The Logs view (src/session-log.js) fills and refreshes only while its
@@ -2310,6 +2317,7 @@ function showWalletPage(name, { focus = true } = {}) {
     if (focus) pageTitle(node)?.focus({ preventScroll: true });
     return;
   }
+  if (previous) resetAssetView();
   if (walletViewShown()) scrollTo(0, walletScroll);
   if (!focus) return;
   const link = document.querySelector(`.wallet-navigation a[href="#${previous}"]`);
@@ -2656,6 +2664,7 @@ function updateVaultUI() {
 }
 function focusOpenWallet(kept = {}) {
   updateVaultUI(); renderAddressBook();
+  resetAssetView();
   portfolio.open(wallet.addresses, endpoints, { kept });
   $('wallet-title').focus({ preventScroll: true });
   document.querySelector('.wallet-card').scrollIntoView({ block: 'start' });

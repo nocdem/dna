@@ -11,7 +11,7 @@ import { PQ_NETWORKS, PQ_ENTRIES, isPqChain } from '../../../src/pq/networks.js'
 import { setNetworkSelectOptions } from '../../../src/network-groups.js';
 import { portfolioReaders, mountSavedSettings, mountDeleteWallet } from './wallet-page.js';
 import { readBalanceRefresh, writeBalanceRefresh, balanceRefreshNote } from '../../../src/balance-refresh.js';
-import { readShowZero, writeShowZero, showZeroNote } from '../../../src/zero-balances.js';
+import { showZeroNote } from '../../../src/zero-balances.js';
 import { sessionLog, mountSessionLogView, LOG_FILTERS, dateTimeText } from '../../../src/session-log.js';
 import { extensionAutoLockNote } from './wallet-ui.js';
 import { mountAddressBook } from './address-book-page.js';
@@ -41,8 +41,11 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   $('wallet-home').prepend($('wallet-heading'));
   const workspace = $('wallet-open'); workspace.classList.add('wallet-workspace');
   const rail = root.querySelector('.wallet-navigation'), context = root.querySelector('.transfer-actions');
+  const networkDisclosure = document.createElement('details'); networkDisclosure.id = 'wallet-network'; networkDisclosure.className = 'network-disclosure';
+  const networkSummary = document.createElement('summary'); networkSummary.textContent = 'Network';
+  context.before(networkDisclosure); networkDisclosure.append(networkSummary, context);
   const portfolioCard = $('wallet-home').querySelector('.portfolio-card');
-  workspace.insertBefore(rail, $('wallet-home')); portfolioCard.after(context);
+  workspace.insertBefore(rail, $('wallet-home')); portfolioCard.after(networkDisclosure);
   context.prepend(root.querySelector('.network-select'));
   const networkSelect = root.querySelector('.network-select');
   $('chain').hidden = true; networkSelect.querySelector('label').hidden = true;
@@ -110,8 +113,9 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   $('balance-refresh-note').textContent = applyRefresh(readBalanceRefresh(deviceStorage));
   $('balance-refresh-minutes').onchange = () => { const minutes = Number($('balance-refresh-minutes').value), kept = writeBalanceRefresh(deviceStorage, minutes); $('balance-refresh-note').textContent = applyRefresh(minutes) + (kept ? '' : ' This browser did not allow saving the choice: it applies until this page is closed.'); };
   const applyZero = show => { $('show-zero-balances').checked = !show; portfolio.setHideZero(!show); return showZeroNote(show); };
-  $('show-zero-balances-note').textContent = applyZero(readShowZero(deviceStorage));
-  $('show-zero-balances').onchange = () => { const show = !$('show-zero-balances').checked, kept = writeShowZero(deviceStorage, show); $('show-zero-balances-note').textContent = applyZero(show) + (kept ? '' : ' This browser did not allow saving the choice: it applies until this page is closed.'); };
+  const resetAssetView = () => { networkDisclosure.open = false; portfolio.resetAssetView(); $('show-zero-balances-note').textContent = applyZero(false); };
+  resetAssetView();
+  $('show-zero-balances').onchange = () => { $('show-zero-balances-note').textContent = applyZero(!$('show-zero-balances').checked); };
   const initial = ui.request('getKeptBalances').catch(() => ({})).then(entries => {
     if (disposed) return;
     latestKept = Object.fromEntries(Object.entries(entries).filter(([key]) => !['algorand', 'ckb'].includes(key.split(':')[0]) && (!['solana', 'tron'].includes(key.split(':')[0]) || ui.state.networks?.[key.split(':')[0]] === 'mainnet')));
@@ -140,7 +144,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   const pqNote = element('p', 'Recover this address with your Nodus recovery phrase. Native chain wallets may derive different addresses.', 'hint'); pqNote.id = 'pq-recovery-note';
   const pqEnvironmentLabel = element('label', 'Network environment'), pqEnvironment = element('select');
   pqEnvironmentLabel.htmlFor = pqEnvironment.id = 'pq-network-environment';
-  ixiosStatus.after(pqEnvironmentLabel, pqEnvironment, pqStatus, pqNote);
+  $('chain').after(pqEnvironmentLabel, pqEnvironment, pqStatus, pqNote);
   pqEnvironment.onchange = () => {
     if (disposed || !ui.state.isUnlocked || !isPqChain(selected)) return;
     const chain = selected, id = chainNetwork(chain, pqEnvironment.value).id;
@@ -178,14 +182,14 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     if (page && !previous) walletScroll = window.scrollY;
     if (shownPage === 'settings' && name !== 'settings') clearReveal();
     shownPage = page ? name : null;
-    if (page && context.parentElement !== workspace) workspace.insertBefore(context, $('wallet-home'));
-    else if (!page && context.parentElement !== $('wallet-home')) portfolioCard.after(context);
+    if (page && networkDisclosure.parentElement !== workspace) workspace.insertBefore(networkDisclosure, $('wallet-home'));
+    else if (!page && networkDisclosure.parentElement !== $('wallet-home')) portfolioCard.after(networkDisclosure);
     $('wallet-home').hidden = Boolean(page);
     for (const node of root.querySelectorAll('.wallet-page')) node.hidden = node !== page;
     if (page) {
       root.querySelector('.wallet-card').scrollIntoView({ block: 'start' });
       if (focus) { const heading = page.querySelector('h3, h1'); if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); } }
-    } else if (previous) window.scrollTo(0, walletScroll);
+    } else if (previous) { resetAssetView(); window.scrollTo(0, walletScroll); }
     if (name === 'wallet-activity') void loadHistory();
     if (name === 'earn') void earn.refresh();
   }
@@ -497,7 +501,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   }
   update(); route();
   return {
-    update,
+    update, resetAssetView,
     payContact(fp) { selectAsset('nodus', 'NODUS', 'send'); $('recipient').value = fp; navigate('send'); },
     async loadBalances(force = false) { await initial; if (force && !disposed) await portfolio.refresh(); },
     dispose() {

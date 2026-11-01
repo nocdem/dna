@@ -44,7 +44,7 @@ export function mountWalletAndConnect(options) {
     toggle.setAttribute('aria-label', showing ? 'Switch to Wallet' : 'Switch to Connect');
     toggle.setAttribute('aria-pressed', String(showing));
     if (showing) { session.setVisible(true); void refresh(); }
-    else session.setVisible(false);
+    else { session.setVisible(false); wallet.resetAssetView(); }
   }
   toggle.onclick = () => show(!showing);
   connectLock.onclick = options.lock;

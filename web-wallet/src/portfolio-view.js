@@ -143,8 +143,8 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
   // (today only NODUS: "Claim your allocation", src/app.js refreshClaim).
   // `{ label, note, run }`; cleared by clear() and setAction(chain, undefined).
   let rowActions = {};
-  const seenNetworks = new Set();
   const expandedNetworkGroups = new Set();
+  const expandedAssets = new Set();
   const receiveActions = el('div', 'receive-network-actions'); receiveActions.id = 'receive-network-actions';
   $('receive-panel').append(receiveActions);
   function renderReceiveActions() {
@@ -202,7 +202,9 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
     }, expandedNetworkGroups));
     if (focusedToggle) $('portfolio-networks').querySelector(`[data-network-group-toggle="${focusedToggle}"]`)?.focus({ preventScroll: true });
     if (focusedChain !== undefined) [...$('portfolio-networks').querySelectorAll('.network-health')].find(badge => badge.dataset.chain === focusedChain)?.focus({ preventScroll: true });
-    const opened = new Set([...$('balances').querySelectorAll('details[open]')].map(d => d.dataset.symbol));
+    for (const detail of $('balances').querySelectorAll('details.asset-group')) {
+      if (detail.open) expandedAssets.add(detail.dataset.symbol); else expandedAssets.delete(detail.dataset.symbol);
+    }
     const focused = document.activeElement, focusedGroup = focused?.closest('.asset-group')?.dataset.symbol;
     const focusedAction = focused?.getAttribute('aria-label'), focusedRowAction = focused?.dataset?.rowAction;
     renderReceiveActions();
@@ -210,7 +212,7 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
     $('balances').replaceChildren(...groups.map(group => {
       const network = networks[group.chain];
       const detail = el('details', 'asset-group network-assets'); detail.dataset.symbol = group.chain; detail.dataset.chain = group.chain;
-      detail.open = !seenNetworks.has(group.chain) || opened.has(group.chain); seenNetworks.add(group.chain);
+      detail.open = expandedAssets.has(group.chain);
       const summary = el('summary', 'asset-summary');
       const heading = el('button', 'network-heading-select', network.name); heading.type = 'button'; heading.setAttribute('aria-label', `Select ${network.name} network`);
       heading.onclick = event => { event.preventDefault(); event.stopPropagation(); selectAsset(group.chain, network.symbol, 'choose'); };
@@ -348,6 +350,10 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
     if (Date.now() - readAt < autoMinutes * 60000 - 1000) return;
     void refresh({ background: true });
   }
+  function resetAssetView() {
+    expandedAssets.clear();
+    for (const detail of $('balances').querySelectorAll('details[open]')) detail.open = false;
+  }
   function setHideZero(value) { hideZero = value === true; render(); }
   function setAutoRefresh(minutes) {
     autoMinutes = Number.isSafeInteger(minutes) && minutes > 0 ? minutes : 0;
@@ -473,5 +479,5 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
   $('portfolio-filters').replaceChildren();
   $('portfolio-filters').hidden = true;
   render();
-  return { open, clear, refresh, reread, changeEndpoint, setAddress, setSelected, setNetwork, setAction, setEarn, setAutoRefresh, setHideZero };
+  return { open, clear, refresh, reread, changeEndpoint, setAddress, setSelected, setNetwork, setAction, setEarn, setAutoRefresh, setHideZero, resetAssetView };
 }

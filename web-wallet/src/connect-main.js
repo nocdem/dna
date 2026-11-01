@@ -56,6 +56,7 @@ function setTab(next, { highlight = next } = {}) {
     if (item.dataset.tab === highlight) item.setAttribute('aria-current', 'page');
     else item.removeAttribute('aria-current');
   }
+  if (changed && next === 'wallet') document.dispatchEvent(new Event('wallet-view-opened'));
   if (changed) scrollTo(0, scrollByTab[next] || 0);
   syncPushed();
 }
