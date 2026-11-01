@@ -8,11 +8,11 @@ function entry(name, symbol, decimals, ids, icon, readable = false, readNote) {
 export const PQ_NETWORKS = Object.freeze({
   algorand: entry('Algorand', 'ALGO', 6, ['mainnet', 'testnet'], 'algorand.png', true),
   tidecoin: entry('Tidecoin', 'TDC', 8, ['mainnet'], 'tidecoin.svg'),
-  ckb: entry('Nervos CKB', 'CKB', 8, ['mainnet', 'testnet'], 'ckb.png'),
-  soqucoin: entry('Soqucoin', 'SOQ', 8, ['mainnet'], 'soqucoin.png'),
-  qtc: entry('QTC', 'QTC', 8, ['mainnet', 'testnet'], 'qtc.svg'),
-  xion: entry('Verona / XION', 'XION', 6, ['mainnet', 'testnet'], 'verona.svg'),
-  splendor: entry('Splendor', 'SPLD', 18, ['mainnet', 'testnet'], 'splendor.svg'),
+  ckb: entry('Nervos CKB', 'CKB', 8, ['mainnet', 'testnet'], 'ckb.png', true, 'Total live-cell capacity is not necessarily spendable. Sending is unavailable.'),
+  soqucoin: entry('Soqucoin', 'SOQ', 8, ['mainnet'], 'soqucoin.png', true, 'Confirmed native total includes immature coinbase and is not necessarily spendable. Sending is unavailable.'),
+  qtc: entry('QTC', 'QTC', 8, ['mainnet', 'testnet'], 'qtc.svg', true, 'Confirmed indexed total includes immature coinbase and is not necessarily spendable. Sending is unavailable.'),
+  xion: entry('Verona / XION', 'XION', 6, ['mainnet', 'testnet'], 'verona.svg', true, 'Bank balance excludes staking and rewards and does not establish spendability. Sending is unavailable.'),
+  splendor: entry('Splendor', 'SPLD', 18, ['mainnet', 'testnet'], 'splendor.svg', true, 'Committed native balance. Sending is unavailable.'),
   asentum: entry('Asentum', 'ASE', 18, ['testnet'], 'asentum.png', true, 'Testnet balances are read only. Sending is not available in this release.'),
 });
 export const PQ_ENTRIES = Object.freeze(Object.entries(PQ_NETWORKS).map(([chain, network]) =>

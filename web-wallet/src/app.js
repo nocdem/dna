@@ -16,7 +16,12 @@ import { PQ_NETWORKS, PQ_ENTRIES, isPqChain, pqNetwork } from './pq/networks.js'
 import { derivePqAddresses } from './pq/receive.js';
 import { readAlgorandBalances } from './pq/algorand.js';
 import { readAsentumBalances } from './pq/asentum.js';
-const pqBalanceReaders = { algorand: readAlgorandBalances, asentum: readAsentumBalances };
+import { readCkbBalances } from './pq/ckb.js';
+import { readXionBalances } from './pq/xion.js';
+import { readSplendorBalances } from './pq/splendor.js';
+import { readSoquBalances } from './pq/soqucoin.js';
+import { readQtcBalances } from './pq/qtc.js';
+const pqBalanceReaders = { qtc: readQtcBalances, soqucoin: readSoquBalances, splendor: readSplendorBalances, algorand: readAlgorandBalances, asentum: readAsentumBalances, ckb: readCkbBalances, xion: readXionBalances };
 import { setNetworkSelectOptions } from './network-groups.js';
 import { NODUS_ASSET, NODUS_TOKEN_ID, nodusNetworkFor } from './nodus/network.js';
 // null until package (c3) ships the module; see src/nodus/send-module.js.

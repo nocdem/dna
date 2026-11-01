@@ -1,6 +1,15 @@
 import { readAlgorandBalances } from '../../../src/pq/algorand.js';
 import { readAsentumBalances } from '../../../src/pq/asentum.js';
 
+import { readCkbBalances } from '../../../src/pq/ckb.js';
+import { readXionBalances } from '../../../src/pq/xion.js';
+
+import { readSplendorBalances } from '../../../src/pq/splendor.js';
+
+import { readSoquBalances } from '../../../src/pq/soqucoin.js';
+
+import { readQtcBalances } from '../../../src/pq/qtc.js';
+
 // src/app.js:609-620: public balance reads injected into createPortfolio.
 // Nothing in this adapter holds a wallet, phrase, client or signing key.
 export function portfolioReaders(ui) {
@@ -10,6 +19,10 @@ export function portfolioReaders(ui) {
       // environment. The screen can supply its pending selection explicitly.
       if (chain === 'algorand') {
         return readAlgorandBalances(address, { networkId: networkId ?? ui.state?.networks?.[chain] ?? 'mainnet', signal, fetcher });
+      }
+      if (chain === 'ckb' || chain === 'xion' || chain === 'splendor' || chain === 'soqucoin' || chain === 'qtc') {
+        const reader = { ckb: readCkbBalances, xion: readXionBalances, splendor: readSplendorBalances, soqucoin: readSoquBalances, qtc: readQtcBalances }[chain];
+        return reader(address, { networkId: networkId ?? ui.state?.networks?.[chain] ?? 'mainnet', signal, fetcher });
       }
       if (chain === 'asentum') {
         return readAsentumBalances(address, { networkId: networkId ?? ui.state?.networks?.[chain] ?? 'testnet', signal, fetcher });

@@ -51,10 +51,10 @@ test('extension PQ provider failures and invalid addresses propagate without fak
   }
 });
 
-test('extension CKB remains receive-only without invoking a provider', async () => {
+test('extension CKB rejects an invalid address without invoking a provider', async () => {
   let calls = 0;
   await assert.rejects(portfolioReaders(ui('mainnet')).readBalances('ckb', 'unused', '', {
     fetcher: async () => { calls++; throw Error('Unexpected provider call'); }
-  }), /Unsupported balance network/);
+  }), /Invalid CKB/);
   assert.equal(calls, 0);
 });
