@@ -155,10 +155,9 @@ typedef struct {
 
     /* 4001 / WebSocket secret-connection key-exchange line (approved 4001
      * plan 2.2 a and 4.5). client_session_depth: job queue depth of the
-     * line; client_session_workers: its worker threads. 0 = unset, which
-     * nodus_server_init resolves to the PROVISIONAL values below. The
-     * production numbers are the operator's, set after the load measurement
-     * of plan 4.5 (section 9 answer 4); the driver and tests set both. */
+     * line; client_session_workers: its worker threads. Read from the node
+     * config keys of the same names (nodus_node_config.c); 0 = unset, which
+     * nodus_server_init resolves to the defaults below. */
     uint32_t            client_session_depth;
     uint32_t            client_session_workers;
     /* TEST SEAM (never set by a loader): the monotonic clock of the 4001 /
@@ -170,13 +169,15 @@ typedef struct {
     void               *client_session_now_ctx;
 } nodus_server_config_t;
 
-/* PROVISIONAL, NOT A PRODUCTION VALUE: so that the node runs before the
- * measurement exists, the unset 4001 line takes the 4002 module's numbers
- * (NODUS_INTER_JOB_DEPTH / NODUS_INTER_WORKERS, themselves marked NOT
- * GROUNDED in nodus_inter_session.h). Replaced by the numbers the operator
- * sets after plan 4.5. */
-#define NODUS_CLIENT_SESSION_DEPTH_PROVISIONAL   NODUS_INTER_JOB_DEPTH
-#define NODUS_CLIENT_SESSION_WORKERS_PROVISIONAL NODUS_INTER_WORKERS
+/* Defaults of the 4001 / WebSocket key-exchange line when the node config
+ * sets neither key. Operator 2026-11-02, after the plan 4.5 load
+ * measurement (bench_4001_session_load, Release, 4 CPUs): "Tamam,
+ * onaylıyorum." to queue depth 256 and 4 workers (no honest client lost
+ * under 500 standing attackers at depth 256; p99 open <= 0.14 s with 4
+ * workers), and "ayar dosyasında kalsın." — the numbers stay changeable in
+ * nodus.json without a release. The 4002 module keeps its own numbers. */
+#define NODUS_CLIENT_SESSION_DEPTH_DEFAULT   256u
+#define NODUS_CLIENT_SESSION_WORKERS_DEFAULT 4u
 
 /* ── Inter-node application state (transport owns admission) ─────── */
 

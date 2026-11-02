@@ -2242,15 +2242,14 @@ int nodus_server_init_ex(nodus_server_t *srv, const nodus_server_config_t *confi
      * (no id -> no new session), no admission by role (D8 is 4002 only),
      * no inbound cap (design Q3; the transport's own limits stay). It is
      * attached before either listener exists. Queue depth and workers: the
-     * config values, or the provisional ones until the operator sets the
-     * measured numbers (nodus_server.h). */
+     * config values, or the defaults (nodus_server.h). */
     {
         uint32_t depth = config->client_session_depth
                        ? config->client_session_depth
-                       : NODUS_CLIENT_SESSION_DEPTH_PROVISIONAL;
+                       : NODUS_CLIENT_SESSION_DEPTH_DEFAULT;
         uint32_t workers = config->client_session_workers
                          ? config->client_session_workers
-                         : NODUS_CLIENT_SESSION_WORKERS_PROVISIONAL;
+                         : NODUS_CLIENT_SESSION_WORKERS_DEFAULT;
         nodus_inter_session_config_t client_cfg = {
             .identity = &srv->identity,
             .proto_ver = CMT_P2P_SC_PROTO_VER_4001,

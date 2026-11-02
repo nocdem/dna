@@ -3,6 +3,10 @@
 #if defined(NODUS_TEST_INTER_CONFIG)
 /* Build plan 4.3: nodus-core's actual entry point returns nonzero for
  * require_peer_auth=false, and its loader reads allow_duplicate_ip.
+ * 4001 plan 4.5 / operator 2026-11-02 "ayar dosyasında kalsın.": the loader
+ * reads client_session_depth / client_session_workers, leaves them 0 (the
+ * code's defaults) when absent, and refuses a value that is not a positive
+ * integer.
  * Flags: NODUS_TEST_INTER_CONFIG=1. Environment: none. Temporary config is unlinked. A mere
  * parse failure cannot pass: a valid positive config must load both flags.
  * Only the rejected entry-point invocation runs; no server is started. */
@@ -15,9 +19,13 @@
 static void config_file(const char *path,bool auth) {
     FILE *f=fopen(path,"w"); CHECK(f);
     CHECK(fprintf(f,"{\"require_peer_auth\":%s,\"allow_duplicate_ip\":true,"
-                    "\"storage_external\":true,\"witness_external\":true}",
+                    "\"storage_external\":true,\"witness_external\":true,"
+                    "\"client_session_depth\":300,\"client_session_workers\":3}",
                     auth ? "true" : "false")>0);
     CHECK(fclose(f)==0);
+}
+static void raw_file(const char *path,const char *json) {
+    FILE *f=fopen(path,"w"); CHECK(f); CHECK(fputs(json,f)>=0); CHECK(fclose(f)==0);
 }
 int main(void) {
     char path[]="/tmp/nodus_inter_config_XXXXXX";
@@ -27,6 +35,18 @@ int main(void) {
     nodus_server_config_t cfg={0};
     CHECK(nodus_node_config_load_storage(3,argv,"Nodus Core",&cfg)==-1);
     CHECK(cfg.require_peer_auth && cfg.p2p.allow_duplicate_ip);
+    CHECK(cfg.client_session_depth==300 && cfg.client_session_workers==3);
+    raw_file(path,"{\"storage_external\":true,\"witness_external\":true}");
+    optind=1; memset(&cfg,0,sizeof(cfg));
+    CHECK(nodus_node_config_load_storage(3,argv,"Nodus Core",&cfg)==-1);
+    CHECK(cfg.client_session_depth==0 && cfg.client_session_workers==0);
+    const char *bad[]={"{\"client_session_depth\":0}","{\"client_session_workers\":-1}",
+                       "{\"client_session_depth\":\"256\"}","{\"client_session_workers\":2.5}"};
+    for (size_t i=0;i<sizeof(bad)/sizeof(bad[0]);i++) {
+        raw_file(path,bad[i]); optind=1;
+        CHECK(nodus_node_config_load_storage(3,argv,"Nodus Core",&cfg)==1);
+    }
+    config_file(path,true);
     config_file(path,false);
     optind=1;
     CHECK(nodus_node_config_load_storage(3,argv,"Nodus Core",&cfg)==1);

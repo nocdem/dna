@@ -4,8 +4,8 @@
  * built by CMake as bench_4001_session_load, is NOT registered with ctest, and
  * asserts nothing. The orchestrator runs it and takes the numbers to the
  * operator, who sets the 4001 queue depth and worker count; this file sets
- * none and neither does the code it measures (NODUS_CLIENT_SESSION_*_
- * PROVISIONAL are placeholders, nodus_server.h).
+ * none: the node's defaults are NODUS_CLIENT_SESSION_*_DEFAULT (nodus_server.h),
+ * and the driver passes its own --depth / --workers.
  *
  * What it does. It forks a node child: a real nodus_server_t (same code as
  * nodus-server's client port) polled by that child alone, with the 4001 line's
