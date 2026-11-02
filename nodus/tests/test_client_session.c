@@ -25,9 +25,22 @@
  *      stream decrypts in strict order, which a second machine caller would
  *      break: the counters would collide and the AEAD would fail).
  *
+ *   Part B, a real nodus_server_t (ports 15500-15505, chain id set on the
+ *   server directly) driven by a raw-machine client:
+ *   9. A raw 4001 client authenticates; the node serves its request carrying
+ *      a zero token (A6); the client key is the session identity; every byte
+ *      the node writes after the handshake is whole 1044-byte sealed frames.
+ *  10. The old T2 hello frame gets zero bytes back and a closed connection.
+ *  11. The node's own key (reflection), proto_ver 4002 and a chain id one
+ *      byte off never authenticate.
+ *  12. The fifth session of one identity evicts the oldest (limit 4).
+ *  13. No chain id known -> a new connection is closed at accept, zero bytes.
+ *
  * Compile flags: none. Orchestrator also runs it under ASan/UBSan (case 8
- * is a borrowed-buffer / threading case). Environment: none; kernel-chosen
- * loopback ports. Leaves nothing behind: sockets, workers, identities freed.
+ * is a borrowed-buffer / threading case). Environment: none; Part A uses
+ * kernel-chosen loopback ports, Part B the fixed ports above and a
+ * /tmp/nodus_client_session_<pid> directory it removes. Leaves nothing
+ * behind: sockets, workers, identities freed.
  * How it can falsely pass: jobs are taken and run by this test; if it did
  * not run them every positive case would FAIL (no authentication), so a
  * pass needs the handshake to complete. Waits count rounds without
@@ -380,6 +393,258 @@ static void write_lock_owner(void) {
     ep_free(&cli); ep_free(&srv);
 }
 
+/* ══ Part B: a real nodus_server_t, driven by a raw-machine client ═════
+ * (plan 4.1, "driven by a raw-machine client first"). The server's own
+ * transport is polled from this thread. Its chain id is set directly on the
+ * server (the fields core's refresh fills), so no witness is needed. */
+#include "server/nodus_server.h"
+#include "protocol/nodus_tier2.h"
+#include "crypto/nodus_sign.h"
+#include <sys/stat.h>
+
+static nodus_server_t g_srv;   /* static: far too large for the stack */
+static void srv_pump(void) { CHECK(nodus_tcp_poll(&g_srv.tcp, POLL_MS) >= 0); }
+
+typedef struct {
+    int fd;
+    cmt_p2p_sc_t sc;
+    cmt_p2p_sc_host_t host;
+    const nodus_identity_t *id;
+    uint8_t in[1 << 15]; size_t in_len;
+    size_t bytes_after_auth;      /* socket bytes received once authenticated */
+    bool eof;
+} raw_t;
+
+static int raw_sign(void *ctx, const uint8_t *p, size_t n, uint8_t *out) {
+    nodus_sig_t sig;
+    int rc = nodus_sign_session_auth(&sig, p, n, &((nodus_identity_t *)ctx)->sk);
+    if (rc == 0) memcpy(out, sig.bytes, sizeof(sig.bytes));
+    return rc;
+}
+static int raw_verify(void *ctx, const uint8_t *s, const uint8_t *p, size_t n, const uint8_t *k) {
+    (void)ctx;
+    nodus_sig_t sig; nodus_pubkey_t pk;
+    memcpy(sig.bytes, s, sizeof(sig.bytes)); memcpy(pk.bytes, k, sizeof(pk.bytes));
+    return nodus_verify_session_auth(&sig, p, n, &pk);
+}
+static void raw_out(raw_t *r) {
+    size_t n; const uint8_t *p = cmt_p2p_sc_out(&r->sc, &n);
+    if (!n) return;
+    size_t off = 0;
+    WAIT_WHILE(off < n) {
+        ssize_t w = send(r->fd, p + off, n - off, MSG_NOSIGNAL);
+        if (w > 0) { off += (size_t)w; progress++; }
+        else if (w < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) { r->eof = true; break; }
+        else srv_pump();
+    }
+    cmt_p2p_sc_out_consume(&r->sc, n);
+}
+static void raw_in(raw_t *r) {
+    for (;;) {
+        CHECK(r->in_len < sizeof(r->in));
+        ssize_t n = recv(r->fd, r->in + r->in_len, sizeof(r->in) - r->in_len, 0);
+        if (n > 0) {
+            r->in_len += (size_t)n; progress++;
+            if (cmt_p2p_sc_is_authenticated(&r->sc)) r->bytes_after_auth += (size_t)n;
+            continue;
+        }
+        if (n == 0 || errno == ECONNRESET) { if (!r->eof) progress++; r->eof = true; }
+        else CHECK(errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR);
+        return;
+    }
+}
+static void raw_consume(raw_t *r, size_t used) {
+    CHECK(used <= r->in_len); r->in_len -= used; memmove(r->in, r->in + used, r->in_len);
+    if (used) progress++;
+}
+static void raw_jobs(raw_t *r) {
+    const cmt_p2p_sc_job_t *j;
+    while ((j = cmt_p2p_sc_job(&r->sc)) != NULL) {
+        if (cmt_p2p_sc_job_done(&r->sc, cmt_p2p_sc_job_run(j, &r->host)) != CMT_OK) return;
+        progress++;
+    }
+}
+static void raw_open(raw_t *r, const nodus_identity_t *id, uint32_t version, const uint8_t *cid) {
+    memset(r, 0, sizeof(*r)); r->id = id;
+    r->fd = socket(AF_INET, SOCK_STREAM, 0); CHECK(r->fd >= 0);
+    struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons(g_srv.tcp.port)};
+    CHECK(inet_pton(AF_INET, "127.0.0.1", &a.sin_addr) == 1);
+    CHECK(connect(r->fd, (struct sockaddr *)&a, sizeof(a)) == 0);
+    CHECK(fcntl(r->fd, F_SETFL, O_NONBLOCK) == 0);
+    r->host.ctx = (void *)id; r->host.sign = raw_sign; r->host.verify = raw_verify;
+    CHECK(cmt_p2p_sc_init(&r->sc, CMT_P2P_SC_ROLE_INITIATOR, &r->host, id->pk.bytes,
+                          NULL, NULL, version, cid) == CMT_OK);
+}
+static void raw_close(raw_t *r) { close(r->fd); cmt_p2p_sc_clear(&r->sc); }
+/* One round: node loop, client machine. */
+static void raw_step(raw_t *r) {
+    raw_out(r); srv_pump(); raw_in(r);
+    if (!cmt_p2p_sc_is_authenticated(&r->sc) && !r->eof) {
+        size_t used = 0;
+        if (r->in_len && cmt_p2p_sc_recv(&r->sc, r->in, r->in_len, &used) != CMT_OK) r->eof = true;
+        raw_consume(r, used); raw_jobs(r);
+    }
+}
+static void raw_auth(raw_t *r) {
+    WAIT_WHILE(!cmt_p2p_sc_is_authenticated(&r->sc) && !r->eof) raw_step(r);
+    CHECK(cmt_p2p_sc_is_authenticated(&r->sc) && !r->eof);
+    raw_out(r);   /* nothing left; the node opens on its side after verifying */
+}
+static void raw_until_eof(raw_t *r) {
+    WAIT_WHILE(!r->eof) raw_step(r);
+    CHECK(r->eof);
+}
+static bool srv_has_session_of(const nodus_identity_t *id) {
+    for (int i = 0; i < NODUS_MAX_SESSIONS; ++i)
+        if (g_srv.sessions[i].authenticated && g_srv.sessions[i].conn &&
+            nodus_key_cmp(&g_srv.sessions[i].client_fp, &id->node_id) == 0) return true;
+    return false;
+}
+/* Send one request on the sealed stream, read one sealed reply. */
+static void raw_request(raw_t *r, const uint8_t *payload, size_t n, nodus_tier2_msg_t *reply) {
+    uint8_t plain[256], sealed[CMT_P2P_SC_SEALED_FRAME_SIZE * 2]; size_t written = 0;
+    size_t pn = nodus_frame_encode(plain, sizeof(plain), payload, (uint32_t)n); CHECK(pn);
+    CHECK(cmt_p2p_sc_write(&r->sc, plain, pn, sealed, sizeof(sealed), &written) == CMT_OK);
+    CHECK(written > 0 && written % CMT_P2P_SC_SEALED_FRAME_SIZE == 0);
+    size_t off = 0;
+    WAIT_WHILE(off < written) {
+        ssize_t w = send(r->fd, sealed + off, written - off, MSG_NOSIGNAL);
+        if (w > 0) { off += (size_t)w; progress++; } else srv_pump();
+    }
+    uint8_t got[512]; size_t gl = 0;
+    nodus_frame_t f; int used = 0;
+    WAIT_WHILE(used <= 0) {
+        srv_pump(); raw_in(r);
+        size_t cu = 0, pl = 0;
+        CHECK(cmt_p2p_sc_read(&r->sc, r->in, r->in_len, &cu, got + gl, sizeof(got) - gl, &pl) == CMT_OK);
+        raw_consume(r, cu); gl += pl;
+        used = nodus_frame_decode(got, gl, &f);
+    }
+    CHECK(used > 0);
+    memset(reply, 0, sizeof(*reply));
+    CHECK(nodus_t2_decode(f.payload, f.payload_len, reply) == 0);
+}
+
+/* N1: the 4001 handshake with a raw client; the node serves a request that
+ * carries a zero token (A6); the client key is the session identity; every
+ * byte the node writes after the handshake is whole sealed frames. */
+static void node_session(void) {
+    raw_t *r = calloc(1, sizeof(*r)); CHECK(r);
+    raw_open(r, &ids[0], CMT_P2P_SC_PROTO_VER_4001, chain);
+    raw_auth(r);
+    WAIT_WHILE(!srv_has_session_of(&ids[0])) raw_step(r);
+    CHECK(srv_has_session_of(&ids[0]));
+    uint8_t buf[256], zero_token[NODUS_SESSION_TOKEN_LEN] = {0}; size_t n = 0;
+    CHECK(nodus_t2_ping(7, zero_token, buf, sizeof(buf), &n) == 0);
+    nodus_tier2_msg_t reply;
+    r->bytes_after_auth = 0;
+    raw_request(r, buf, n, &reply);
+    CHECK(reply.type == 'r' && reply.txn_id == 7);
+    CHECK(r->bytes_after_auth > 0 && r->bytes_after_auth % CMT_P2P_SC_SEALED_FRAME_SIZE == 0);
+    nodus_t2_msg_free(&reply);
+    CHECK(!r->eof);
+    raw_close(r); free(r);
+    for (int i = 0; i < 50; ++i) srv_pump();
+}
+
+/* N2: the old T2 handshake gets nothing: closed, zero bytes written. */
+static void node_old_handshake(void) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0); CHECK(fd >= 0);
+    struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons(g_srv.tcp.port)};
+    CHECK(inet_pton(AF_INET, "127.0.0.1", &a.sin_addr) == 1);
+    CHECK(connect(fd, (struct sockaddr *)&a, sizeof(a)) == 0);
+    CHECK(fcntl(fd, F_SETFL, O_NONBLOCK) == 0);
+    uint8_t p[8192], fr[8300]; size_t pn = 0;
+    CHECK(nodus_t2_hello(1, &ids[0].pk, &ids[0].node_id, p, sizeof(p), &pn) == 0);
+    size_t fn = nodus_frame_encode(fr, sizeof(fr), p, (uint32_t)pn); CHECK(fn);
+    CHECK(send(fd, fr, fn, MSG_NOSIGNAL) == (ssize_t)fn);
+    bool eof = false; size_t total = 0;
+    WAIT_WHILE(!eof) {
+        srv_pump();
+        uint8_t b[64]; ssize_t r = recv(fd, b, sizeof(b), 0);
+        if (r > 0) { total += (size_t)r; progress++; }
+        else if (r == 0 || (r < 0 && errno == ECONNRESET)) { eof = true; progress++; }
+    }
+    CHECK(eof && total == 0);
+    close(fd);
+}
+
+/* N3: reflection (the node's own key) and a different port-version. */
+static void node_refusals(void) {
+    raw_t *r = calloc(1, sizeof(*r)); CHECK(r);
+    raw_open(r, &g_srv.identity, CMT_P2P_SC_PROTO_VER_4001, chain);
+    raw_until_eof(r);
+    CHECK(!srv_has_session_of(&g_srv.identity));
+    raw_close(r);
+    raw_open(r, &ids[0], CMT_P2P_SC_PROTO_VER_4002, chain);
+    raw_until_eof(r);
+    CHECK(!cmt_p2p_sc_is_authenticated(&r->sc));
+    raw_close(r);
+    uint8_t other[CMT_P2P_SC_CHAIN_ID_SIZE]; memcpy(other, chain, sizeof(other)); other[0] ^= 1;
+    raw_open(r, &ids[0], CMT_P2P_SC_PROTO_VER_4001, other);
+    raw_until_eof(r);
+    CHECK(!cmt_p2p_sc_is_authenticated(&r->sc));
+    raw_close(r); free(r);
+}
+
+/* N4: the fifth session of one identity evicts the oldest (limit 4). */
+static void node_eviction(void) {
+    raw_t *rs[NODUS_MAX_SESSIONS_PER_IDENTITY + 1];
+    for (int i = 0; i <= NODUS_MAX_SESSIONS_PER_IDENTITY; ++i) {
+        rs[i] = calloc(1, sizeof(raw_t)); CHECK(rs[i]);
+        raw_open(rs[i], &ids[2], CMT_P2P_SC_PROTO_VER_4001, chain);
+        raw_auth(rs[i]);
+        /* let the node apply the identity before the next one starts */
+        for (int k = 0; k < 20; ++k) { srv_pump(); raw_in(rs[i]); }
+    }
+    WAIT_WHILE(!rs[0]->eof) { srv_pump(); raw_in(rs[0]); }
+    CHECK(rs[0]->eof);
+    for (int i = 1; i <= NODUS_MAX_SESSIONS_PER_IDENTITY; ++i) {
+        for (int k = 0; k < 20; ++k) { srv_pump(); raw_in(rs[i]); }
+        CHECK(!rs[i]->eof);
+    }
+    for (int i = 0; i <= NODUS_MAX_SESSIONS_PER_IDENTITY; ++i) { raw_close(rs[i]); free(rs[i]); }
+}
+
+/* N5: no chain id -> a new connection is closed at accept, zero bytes. */
+static void node_chain_unknown(void) {
+    g_srv.inter_chain_id_valid = false;
+    int fd = socket(AF_INET, SOCK_STREAM, 0); CHECK(fd >= 0);
+    struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons(g_srv.tcp.port)};
+    CHECK(inet_pton(AF_INET, "127.0.0.1", &a.sin_addr) == 1);
+    CHECK(connect(fd, (struct sockaddr *)&a, sizeof(a)) == 0);
+    CHECK(fcntl(fd, F_SETFL, O_NONBLOCK) == 0);
+    bool eof = false; size_t total = 0;
+    WAIT_WHILE(!eof) {
+        srv_pump();
+        uint8_t b[64]; ssize_t r = recv(fd, b, sizeof(b), 0);
+        if (r > 0) { total += (size_t)r; progress++; }
+        else if (r == 0 || (r < 0 && errno == ECONNRESET)) { eof = true; progress++; }
+    }
+    CHECK(eof && total == 0);
+    close(fd);
+    g_srv.inter_chain_id_valid = true;
+}
+
+static void node_cases(void) {
+    nodus_server_config_t config;
+    memset(&config, 0, sizeof(config));
+    snprintf(config.bind_ip, sizeof(config.bind_ip), "127.0.0.1");
+    config.udp_port = 15500; config.tcp_port = 15501; config.peer_port = 15502;
+    config.ch_port = 15503; config.witness_port = 15504;
+    config.require_peer_auth = true;
+    snprintf(config.data_path, sizeof(config.data_path), "/tmp/nodus_client_session_%d", (int)getpid());
+    CHECK(mkdir(config.data_path, 0700) == 0);
+    CHECK(nodus_server_init(&g_srv, &config) == 0);
+    memcpy(g_srv.inter_chain_id, chain, sizeof(chain));
+    g_srv.inter_chain_known = g_srv.inter_chain_id_valid = true;
+    node_session(); node_old_handshake(); node_refusals(); node_eviction(); node_chain_unknown();
+    nodus_server_close(&g_srv);
+    char cmd[320];
+    snprintf(cmd, sizeof(cmd), "rm -rf %s", config.data_path);
+    CHECK(system(cmd) == 0);
+}
+
 int main(void) {
     for (int i = 0; i < 3; ++i) CHECK(nodus_identity_generate(&ids[i]) == 0);
     client_identity = ids[0];
@@ -388,6 +653,7 @@ int main(void) {
     client_identity.has_mlkem = false;
     trusted_list(); not_listed(); empty_list(); wire_hello(); mismatches();
     reject_self(); initiator_only_refuses_inbound(); chain_unknown(); write_lock_owner();
+    node_cases();
     for (int i = 0; i < 3; ++i) nodus_identity_clear(&ids[i]);
     puts("test_client_session: all cases passed");
     return 0;

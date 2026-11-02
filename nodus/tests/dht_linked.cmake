@@ -26,7 +26,8 @@ cmake_minimum_required(VERSION 3.10)
 # Core-only entry points — none may be reachable from the DHT objects.
 #   nodus_server_init / nodus_server_dht_host — the server object (session
 #     table, inter-node pool, the host side of the seam);
-#   nodus_auth_handle_auth — the client-port auth handshake;
+#   nodus_auth_session_authenticated — the client-port session identity
+#     (nodus_auth_handle_auth until the 4001 secret-connection step);
 #   nodus_presence_tick — presence;
 #   nodus_cluster_init / nodus_cluster_tick — cluster heartbeat;
 #   nodus_dht_backend_inproc_new — core's door to the DHT (the DHT must not
@@ -34,7 +35,7 @@ cmake_minimum_required(VERSION 3.10)
 set(_FORBIDDEN
     nodus_server_init
     nodus_server_dht_host
-    nodus_auth_handle_auth
+    nodus_auth_session_authenticated
     nodus_presence_tick
     nodus_cluster_init
     nodus_cluster_tick

@@ -311,16 +311,14 @@ static void ipc_on_session_frame(nodus_witness_ipc_t *ipc, ipc_slot_t *s,
     memset(&msg, 0, sizeof(msg));
 
     /* The decoder the server's dispatch_t2 uses. Core forwards only
-     * frames that decoded there, with this session's token. */
+     * frames that decoded there. A6: no per-frame token check — the
+     * requester's identity is the one this connection's preface named
+     * (core took it from the authenticated secret-connection key); the
+     * preface token stays only as the session's lookup handle
+     * (nodus_witness_ipc_find_session_conn). */
     if (nodus_t2_decode(payload, len, &msg) != 0) {
         nodus_t2_msg_free(&msg);
         ipc_refuse(ipc, conn, "session frame does not decode");
-        return;
-    }
-    if (!msg.has_token ||
-        memcmp(msg.token, s->token, NODUS_SESSION_TOKEN_LEN) != 0) {
-        nodus_t2_msg_free(&msg);
-        ipc_refuse(ipc, conn, "session frame carries another token");
         return;
     }
     if (strcmp(msg.method, "dnac_cc_collect") == 0) {

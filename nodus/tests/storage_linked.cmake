@@ -22,7 +22,8 @@ cmake_minimum_required(VERSION 3.10)
 # Other components' entry points — none may be in the storage binary
 # (Fable S5 review (f)1).
 #   nodus_server_init — the server object (sessions, 4001 / 4002 listeners);
-#   nodus_auth_handle_auth — the client-port auth handshake;
+#   nodus_auth_session_authenticated — the client-port session identity
+#     (nodus_auth_handle_auth until the 4001 secret-connection step);
 #   nodus_cluster_init / nodus_cluster_tick — cluster heartbeat (core);
 #   nodus_presence_tick — presence (core);
 #   nodus_witness_init / nodus_witness_p2p_new — the witness and its 4004
@@ -33,7 +34,7 @@ cmake_minimum_required(VERSION 3.10)
 #   nodus_dht_backend_inproc_new — core's in-process door to the DHT.
 set(_FORBIDDEN
     nodus_server_init
-    nodus_auth_handle_auth
+    nodus_auth_session_authenticated
     nodus_cluster_init
     nodus_cluster_tick
     nodus_presence_tick

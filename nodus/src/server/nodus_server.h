@@ -152,7 +152,24 @@ typedef struct {
      * (decision item 9). nodus-storage refuses to start unless its loaded
      * config has it too (tools/nodus-storage.c). */
     bool                storage_external;
+
+    /* 4001 / WebSocket secret-connection key-exchange line (approved 4001
+     * plan 2.2 a and 4.5). client_session_depth: job queue depth of the
+     * line; client_session_workers: its worker threads. 0 = unset, which
+     * nodus_server_init resolves to the PROVISIONAL values below. The
+     * production numbers are the operator's, set after the load measurement
+     * of plan 4.5 (section 9 answer 4); the driver and tests set both. */
+    uint32_t            client_session_depth;
+    uint32_t            client_session_workers;
 } nodus_server_config_t;
+
+/* PROVISIONAL, NOT A PRODUCTION VALUE: so that the node runs before the
+ * measurement exists, the unset 4001 line takes the 4002 module's numbers
+ * (NODUS_INTER_JOB_DEPTH / NODUS_INTER_WORKERS, themselves marked NOT
+ * GROUNDED in nodus_inter_session.h). Replaced by the numbers the operator
+ * sets after plan 4.5. */
+#define NODUS_CLIENT_SESSION_DEPTH_PROVISIONAL   NODUS_INTER_JOB_DEPTH
+#define NODUS_CLIENT_SESSION_WORKERS_PROVISIONAL NODUS_INTER_WORKERS
 
 /* ── Inter-node application state (transport owns admission) ─────── */
 
@@ -199,7 +216,10 @@ typedef struct {
      * a counter, not a clock, so two auths in one tick never tie. */
     uint64_t            auth_seq;
 
-    /* Pending auth challenge */
+    /* Pending auth challenge: no longer set by the node — the secret-
+     * connection handshake replaced the T2 hello / challenge / auth pair on
+     * 4001 and the WebSocket entry. The fields stay so the struct layout
+     * does not change. */
     uint8_t             nonce[NODUS_NONCE_LEN];
     bool                nonce_pending;
 
@@ -236,6 +256,8 @@ typedef struct nodus_server {
     nodus_tcp_t             tcp;
     nodus_tcp_t             inter_tcp;
     nodus_inter_session_module_t *inter_session;
+    /* The 4001 + WebSocket session module (srv->tcp), responder only. */
+    nodus_inter_session_module_t *client_session;
     bool inter_chain_known;
     /* The HELLO chain id of every session module (4001, WebSocket, 4002):
      * the id 4004 uses as its network (approved A3). Valid only when the
@@ -575,19 +597,18 @@ nodus_tcp_conn_t *nodus_server_inter_find(nodus_server_t *srv, const char *ip,
 /* ── Auth helpers (used by server) ───────────────────────────────── */
 
 /**
- * Handle HELLO message from a client/nodus.
- * Verifies fingerprint, generates challenge nonce.
+ * A 4001 / WebSocket connection finished the secret-connection handshake
+ * (approved 4001 plan 2.2 b). Loop thread, after the module's pin and
+ * reject-self checks; `pk` is the authenticated client key. Sets the session
+ * identity (client_pk / client_fp, the connection's peer identity), numbers
+ * the session, evicts older sessions of the identity beyond
+ * NODUS_MAX_SESSIONS_PER_IDENTITY, adds presence and keeps a random
+ * server-side token (never sent: it is only the handle the witness.sock
+ * preface and the cc_collect reply lookup use). Does NOT open the session.
+ * @return 0, or -1 (the caller closes the connection).
  */
-int nodus_auth_handle_hello(nodus_server_t *srv, nodus_session_t *sess,
-                             const nodus_pubkey_t *pk, const nodus_key_t *fp,
-                             uint32_t txn_id);
-
-/**
- * Handle AUTH message (signed nonce).
- * Verifies signature, creates session token.
- */
-int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
-                            const nodus_sig_t *sig, uint32_t txn_id);
+int nodus_auth_session_authenticated(nodus_server_t *srv, nodus_session_t *sess,
+                                     const nodus_pubkey_t *pk);
 
 /* ── Sessions of one identity (client port 4001) ────────────────────
  *
@@ -674,24 +695,6 @@ int nodus_sessions_evict_plan(const nodus_session_t *sessions, int n,
                               int max_per_identity,
                               int *slots_out, int cap);
 
-/**
- * Handle KEY_INIT message (Kyber ciphertext + client nonce).
- * Decapsulates, derives AES key, sends KEY_ACK.
- */
-int nodus_auth_handle_key_init(nodus_server_t *srv, nodus_session_t *sess,
-                                const uint8_t *kyber_ct, const uint8_t *nonce_c,
-                                uint32_t txn_id);
-
-/**
- * Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-mlkem-
- * migration.md) — algorithm-aware KEY_INIT handler. key_alg: 0 = round-3
- * Kyber (delegates to nodus_auth_handle_key_init() above, byte-identical
- * to pre-Faz-1 behaviour), 1 = ML-KEM-1024. D11, N1 delta 1.
- */
-int nodus_auth_handle_key_init_alg(nodus_server_t *srv, nodus_session_t *sess,
-                                    uint8_t key_alg,
-                                    const uint8_t *ct, const uint8_t *nonce_c,
-                                    uint32_t txn_id);
 
 /* ════════════════════════════════════════════════════════════════════
  * INTERNAL — exposed ONLY so unit tests can drive them in-process
