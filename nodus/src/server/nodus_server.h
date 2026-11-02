@@ -237,6 +237,10 @@ typedef struct nodus_server {
     nodus_tcp_t             inter_tcp;
     nodus_inter_session_module_t *inter_session;
     bool inter_chain_known;
+    /* The HELLO chain id of every session module (4001, WebSocket, 4002):
+     * the id 4004 uses as its network (approved A3). Valid only when the
+     * chain backend reports it; until then no session starts. */
+    bool inter_chain_id_valid;
     uint8_t inter_chain_id[32];
     uint64_t inter_chain_height;      /* Inter-node TCP transport (port 4002) */
     bool inter_roles_have;

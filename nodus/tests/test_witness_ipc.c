@@ -62,6 +62,7 @@
 
 #include "server/nodus_chain_backend.h"
 #include "witness/nodus_witness_ipc.h"
+#include "witness/nodus_witness.h"        /* nodus_witness_t: status-fill cases */
 #include "transport/nodus_tcp.h"
 #include "protocol/nodus_cbor.h"
 #include "protocol/nodus_tier2.h"
@@ -123,6 +124,10 @@ static void h_cc_collect(void *ctx, nodus_tcp_conn_t *conn,
     /* no reply: a collection answers later, through find_session_conn */
 }
 
+/* Whether the stand-in witness knows the id 4004 uses as its network
+ * (the optional "c3" key of ipc_status). */
+static bool g_v3_valid = true;
+
 static void fill_status(nodus_witness_ipc_status_t *st) {
     memset(st, 0, sizeof(*st));
     st->chain_open = true;
@@ -131,6 +136,10 @@ static void fill_status(nodus_witness_ipc_status_t *st) {
     for (int i = 0; i < 32; i++) st->chain_id[i] = (uint8_t)(0x10 + i);
     st->p2p_opened = true;
     st->listen_port = 14004;
+    if (g_v3_valid) {
+        for (int i = 0; i < 32; i++) st->chain_id_v3[i] = (uint8_t)(0x70 + i);
+        st->chain_id_v3_valid = true;
+    }
 }
 
 static void h_status(void *ctx, nodus_witness_ipc_status_t *out) {
@@ -277,10 +286,68 @@ static void test_status(nodus_chain_backend_t *b, nodus_witness_ipc_t *ipc) {
         FAIL("status fields differ from the witness's answer");
         return;
     }
+    /* "c3" travels as the 8th key and reaches core's status info. */
+    if (!info.chain_id_v3_valid ||
+        memcmp(info.chain_id_v3, want.chain_id_v3, 32) != 0) {
+        FAIL("the version-3 chain id (c3) did not reach core");
+        return;
+    }
     if (!opened || port != want.listen_port) {
         FAIL("listen_port differs from the witness's answer");
         return;
     }
+    PASS();
+}
+
+/* The 7-key answer: a witness without a version-3 id / joiner pin sends no
+ * "c3"; core's decoder still accepts it and reports the id as not valid. */
+static void test_status_without_c3(nodus_witness_ipc_t *ipc) {
+    TEST("ipc_status without c3: 7 keys accepted, id reported not valid");
+    g_v3_valid = false;
+    nodus_chain_backend_t *b7 = NULL;
+    if (nodus_chain_backend_ipc_open(g_dir, &b7) != 0 || !b7) {
+        g_v3_valid = true; FAIL("second backend open failed"); return;
+    }
+    for (int i = 0; i < POLL_ROUNDS && !b7->ops->chain_open(b7); i++)
+        poll_all(b7, ipc);
+    bool open = b7->ops->chain_open(b7);
+    nodus_t2_status_info_t info;
+    memset(&info, 0, sizeof(info));
+    b7->ops->status(b7, &info);
+    b7->ops->close(b7);
+    g_v3_valid = true;
+    if (!open) { FAIL("7-key snapshot never arrived"); return; }
+    if (info.chain_id_v3_valid) { FAIL("a missing c3 was reported valid"); return; }
+    PASS();
+}
+
+/* The two arms of the id 4004 uses as its network (nodus_witness_status_fill):
+ * a version-3 chain gives its chain id, an active joiner its pin, a node with
+ * neither gives none; a successor wins over a (stale) joiner. */
+static void test_status_fill_v3(void) {
+    TEST("status fill: v3 chain id, joiner pin, or none");
+    nodus_witness_t *w = calloc(1, sizeof(*w));
+    if (!w) { FAIL("alloc"); return; }
+    nodus_t2_status_info_t info;
+    memset(&info, 0, sizeof(info));
+    nodus_witness_status_fill(w, &info);
+    if (info.chain_id_v3_valid) { free(w); FAIL("none expected for a bare node"); return; }
+
+    for (int i = 0; i < 32; i++) w->v2_join.pin[i] = (uint8_t)(0x30 + i);
+    w->v2_join.active = 1;
+    memset(&info, 0, sizeof(info));
+    nodus_witness_status_fill(w, &info);
+    if (!info.chain_id_v3_valid || memcmp(info.chain_id_v3, w->v2_join.pin, 32) != 0) {
+        free(w); FAIL("joiner pin expected"); return;
+    }
+
+    for (int i = 0; i < 32; i++) w->v2_chain32[i] = (uint8_t)(0x90 + i);
+    w->v2_successor = true;
+    memset(&info, 0, sizeof(info));
+    nodus_witness_status_fill(w, &info);
+    bool ok = info.chain_id_v3_valid && memcmp(info.chain_id_v3, w->v2_chain32, 32) == 0;
+    free(w);
+    if (!ok) { FAIL("version-3 chain id expected"); return; }
     PASS();
 }
 
@@ -563,6 +630,8 @@ int main(void) {
     /* The control connection first: without it no session socket is
      * dialled (the backend's no-dial-while-down rule). */
     test_status(b, ipc);
+    test_status_without_c3(ipc);
+    test_status_fill_v3();
     test_session_roundtrip(b, ipc);
     test_cc_collect(b, ipc);
     test_session_closed(b, ipc);

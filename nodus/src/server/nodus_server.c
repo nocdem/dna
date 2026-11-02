@@ -1011,10 +1011,14 @@ static void idle_timeout_sweep(nodus_server_t *srv) {
 
 void nodus_server_inter_chain_refresh(nodus_server_t *srv) {
     srv->inter_chain_known=false;
+    srv->inter_chain_id_valid=false;
     if (!srv->chain || !srv->chain->ops->chain_open(srv->chain)) return;
     nodus_t2_status_info_t info={0};
     srv->chain->ops->status(srv->chain,&info);
-    memcpy(srv->inter_chain_id,info.chain_id,32);
+    /* A3 "chain_id as on 4004": the version-3 id (or a joiner's pin), not the
+     * legacy 16-byte status chain_id. Unknown -> chain_id_valid stays false. */
+    memcpy(srv->inter_chain_id,info.chain_id_v3,32);
+    srv->inter_chain_id_valid=info.chain_id_v3_valid;
     srv->inter_chain_height=info.block_height;
     srv->inter_chain_known=true;
     if (srv->chain->ops->roles && (!srv->inter_roles_have ||
@@ -1028,7 +1032,7 @@ void nodus_server_inter_chain_refresh(nodus_server_t *srv) {
 
 static bool server_inter_status(void *ctx, uint8_t ci[32], uint64_t *height) {
     const nodus_server_t *srv=ctx;
-    if (!srv->inter_chain_known) return false;
+    if (!srv->inter_chain_known || !srv->inter_chain_id_valid) return false;
     memcpy(ci,srv->inter_chain_id,32); *height=srv->inter_chain_height;
     return true;
 }

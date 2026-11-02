@@ -176,6 +176,14 @@ typedef struct {
      * filesystem that is currently free (0–100, integer). 255 = unknown
      * (statvfs failed or no data dir). Phase 0 / Task 0.12. */
     uint8_t  disk_free_pct;
+    /* The id the 4004 transport uses as its network (approved A3 "chain_id
+     * as on 4004"): the version-3 chain id of a node running that chain,
+     * else the pin of an active joiner; valid=false when neither. Read by
+     * the 4001 / WebSocket / 4002 session modules as their HELLO chain id.
+     * Never encoded in the T2 `status` reply (nodus_t2_status_result): it is
+     * a node-internal field, `chain_id` above is unchanged. */
+    uint8_t  chain_id_v3[32];
+    bool     chain_id_v3_valid;
 } nodus_t2_status_info_t;
 
 int nodus_t2_status_result(uint32_t txn,

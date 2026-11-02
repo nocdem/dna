@@ -31,7 +31,10 @@
  *     then         {"q":"ipc_status"} queries, each answered with
  *                  {"q":"ipc_status","co":bool chain open,"h":uint height,
  *                   "sr":bstr 64 state root,"ci":bstr 32 chain id,
- *                   "po":bool p2p host exists,"lp":uint 4004 port}.
+ *                   "po":bool p2p host exists,"lp":uint 4004 port}
+ *                  plus, only when the id 4004 uses as its network is known,
+ *                  "c3":bstr 32 (version-3 chain id, else a joiner's pin):
+ *                  7 keys, or 8 with "c3".
  *                  {"q":"ipc_roles"}; answer has q, ok (bool), h (uint),
  *                  va/st arrays of 64-byte fingerprints, sorted ascending.
  *                  At most 128 validators and 256 storage nodes; a fault
@@ -168,6 +171,11 @@ typedef struct {
     uint8_t  chain_id[32];               /* status chain_id               */
     bool     p2p_opened;                 /* the 4004 p2p host exists      */
     uint16_t listen_port;                /* its bound port (0 = none)     */
+    /* The id 4004 uses as its network (version-3 chain id, else a joiner's
+     * pin). On the wire as the optional key "c3" of ipc_status, present
+     * only when valid: a decoder accepts exactly 7 keys, or 8 with "c3". */
+    uint8_t  chain_id_v3[32];
+    bool     chain_id_v3_valid;
 } nodus_witness_ipc_status_t;
 
 /** Where the IPC listener hands its work. Production binds them to a

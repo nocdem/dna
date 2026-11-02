@@ -110,12 +110,14 @@ static ipc_backend_t *ipc_be(nodus_chain_backend_t *b) {
 static int ipc_status_decode(const uint8_t *p, size_t len,
                              nodus_witness_ipc_status_t *out) {
     enum { K_Q = 1, K_CO = 2, K_H = 4, K_SR = 8, K_CI = 16, K_PO = 32,
-           K_LP = 64, K_ALL = 127 };
+           K_LP = 64, K_ALL = 127, K_C3 = 128 };
     cbor_decoder_t dec;
     cbor_decoder_init(&dec, p, len);
 
+    /* Exactly the 7 keys, or those 7 plus the optional "c3" (the id 4004
+     * uses as its network). */
     cbor_item_t m = cbor_decode_next(&dec);
-    if (m.type != CBOR_ITEM_MAP || m.count != 7) return -1;
+    if (m.type != CBOR_ITEM_MAP || (m.count != 7 && m.count != 8)) return -1;
 
     unsigned seen = 0;
     memset(out, 0, sizeof(*out));
@@ -160,13 +162,20 @@ static int ipc_status_decode(const uint8_t *p, size_t len,
                 return -1;
             out->listen_port = (uint16_t)v.uint_val;
             bit = K_LP;
+        } else if (k.tstr.len == 2 && memcmp(k.tstr.ptr, "c3", 2) == 0) {
+            if (v.type != CBOR_ITEM_BSTR ||
+                v.bstr.len != sizeof(out->chain_id_v3))
+                return -1;
+            memcpy(out->chain_id_v3, v.bstr.ptr, sizeof(out->chain_id_v3));
+            out->chain_id_v3_valid = true;
+            bit = K_C3;
         } else {
             return -1;
         }
         if (seen & bit) return -1;
         seen |= bit;
     }
-    if (dec.error || dec.pos != len || seen != K_ALL) return -1;
+    if (dec.error || dec.pos != len || (seen & K_ALL) != K_ALL) return -1;
     return 0;
 }
 
@@ -406,6 +415,8 @@ static void ipcb_status(nodus_chain_backend_t *b, nodus_t2_status_info_t *info) 
     info->block_height = st->height;
     memcpy(info->state_root, st->state_root, sizeof(info->state_root));
     memcpy(info->chain_id, st->chain_id, sizeof(info->chain_id));
+    memcpy(info->chain_id_v3, st->chain_id_v3, sizeof(info->chain_id_v3));
+    info->chain_id_v3_valid = st->chain_id_v3_valid;
 }
 
 static int ipcb_roles(nodus_chain_backend_t *b, nodus_inter_role_list_t *out) {

@@ -51,6 +51,16 @@ _Static_assert(NODUS_WITNESS_IPC_ROLES_FRAME_MAX < NODUS_MAX_FRAME_TCP,
 
 void nodus_witness_status_fill(nodus_witness_t *w,
                                nodus_t2_status_info_t *info) {
+    /* The id 4004 uses as its network, both arms as 4004 picks them
+     * (nodus_witness.c: `network`): the version-3 chain id of a successor,
+     * else the active joiner's pin, else none. */
+    if (w->v2_successor) {
+        memcpy(info->chain_id_v3, w->v2_chain32, sizeof(info->chain_id_v3));
+        info->chain_id_v3_valid = true;
+    } else if (w->v2_join.active) {
+        memcpy(info->chain_id_v3, w->v2_join.pin, sizeof(info->chain_id_v3));
+        info->chain_id_v3_valid = true;
+    }
     if (!w->db) return;
     info->block_height = nodus_witness_block_height(w);
     if (w->v2_successor) {
@@ -153,6 +163,8 @@ static void witness_h_status(void *ctx, nodus_witness_ipc_status_t *out) {
     out->height = info.block_height;
     memcpy(out->state_root, info.state_root, sizeof(out->state_root));
     memcpy(out->chain_id, info.chain_id, sizeof(out->chain_id));
+    memcpy(out->chain_id_v3, info.chain_id_v3, sizeof(out->chain_id_v3));
+    out->chain_id_v3_valid = info.chain_id_v3_valid;
     out->p2p_opened = w->p2p != NULL;
     out->listen_port = nodus_witness_p2p_listen_port(w->p2p);
 }
@@ -360,7 +372,7 @@ static void ipc_on_ctl_frame(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn,
     uint8_t buf[NODUS_WITNESS_IPC_CTL_FRAME_MAX];
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, sizeof(buf));
-    cbor_encode_map(&enc, 7);
+    cbor_encode_map(&enc, st.chain_id_v3_valid ? 8 : 7);
     cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, NODUS_WITNESS_IPC_Q_STATUS);
     cbor_encode_cstr(&enc, "co"); cbor_encode_bool(&enc, st.chain_open);
     cbor_encode_cstr(&enc, "h");  cbor_encode_uint(&enc, st.height);
@@ -370,6 +382,10 @@ static void ipc_on_ctl_frame(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn,
                                                    sizeof(st.chain_id));
     cbor_encode_cstr(&enc, "po"); cbor_encode_bool(&enc, st.p2p_opened);
     cbor_encode_cstr(&enc, "lp"); cbor_encode_uint(&enc, st.listen_port);
+    if (st.chain_id_v3_valid) {
+        cbor_encode_cstr(&enc, "c3"); cbor_encode_bstr(&enc, st.chain_id_v3,
+                                                       sizeof(st.chain_id_v3));
+    }
     size_t n = cbor_encoder_len(&enc);
     if (n == 0) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "ipc_status answer does not fit its "

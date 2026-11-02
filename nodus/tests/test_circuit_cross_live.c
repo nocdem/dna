@@ -40,6 +40,8 @@ static bool chain_open(nodus_chain_backend_t *b) { return ((chain_t *)b)->known;
 static void status(nodus_chain_backend_t *b,nodus_t2_status_info_t *st) {
     if (!chain_open(b)) return;
     memcpy(st->chain_id,ci,32); st->block_height=((chain_t *)b)->height;
+    /* 4002 HELLO chain id = the id 4004 uses (approved A3, 4001 plan 2.3). */
+    memcpy(st->chain_id_v3,ci,32); st->chain_id_v3_valid=true;
 }
 static void peers(nodus_inter_role_list_t *out,bool va,bool st,uint64_t height) {
     memset(out,0,sizeof(*out)); out->height=height;
@@ -73,6 +75,7 @@ typedef struct { unsigned statuses,roles; } witness_t;
 static void wstatus(void *ctx,nodus_witness_ipc_status_t *st) {
     witness_t *w=ctx; w->statuses++; memset(st,0,sizeof(*st));
     st->chain_open=true; st->height=1; memcpy(st->chain_id,ci,32);
+    memcpy(st->chain_id_v3,ci,32); st->chain_id_v3_valid=true;   /* "c3" */
 }
 static int wroles(void *ctx,nodus_inter_role_list_t *out) {
     ((witness_t *)ctx)->roles++; peers(out,true,false,1); return 1;

@@ -605,7 +605,10 @@ static bool dipc_status(void *ctx, uint8_t ci[32], uint64_t *height) {
         if (!ipc->witness || !ipc->witness->ops->chain_open(ipc->witness)) return false;
         nodus_t2_status_info_t st={0};
         ipc->witness->ops->status(ipc->witness,&st);
-        memcpy(ci,st.chain_id,32); *height=st.block_height;
+        /* A3 "chain_id as on 4004": no such id (no v3 chain, no joiner pin)
+         * means no 4002 session, as for a node with no chain. */
+        if (!st.chain_id_v3_valid) return false;
+        memcpy(ci,st.chain_id_v3,32); *height=st.block_height;
     } else {
         memcpy(ci,ipc->chain_id,32); *height=ipc->height;
     }
