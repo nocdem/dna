@@ -161,6 +161,13 @@ typedef struct {
      * of plan 4.5 (section 9 answer 4); the driver and tests set both. */
     uint32_t            client_session_depth;
     uint32_t            client_session_workers;
+    /* TEST SEAM (never set by a loader): the monotonic clock of the 4001 /
+     * WebSocket session module's 3 s handshake deadline, as the module's own
+     * now_ms (nodus_inter_session.h). NULL = the real monotonic clock. A
+     * test that parks many unauthenticated WebSocket connections freezes it
+     * so the deadline cannot fire mid-run. */
+    uint64_t          (*client_session_now_ms)(void *ctx);
+    void               *client_session_now_ctx;
 } nodus_server_config_t;
 
 /* PROVISIONAL, NOT A PRODUCTION VALUE: so that the node runs before the

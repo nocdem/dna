@@ -52,6 +52,13 @@
 #include "protocol/nodus_cbor.h"
 #include "core/nodus_value.h"
 #include "crypto/nodus_sign.h"
+#include "nodus_test_session.h"
+
+/* The fake node's identity and secret-connection module (4001 plan 4.2: the
+ * old hello / auth answers are gone; reaching READY proves the real session).
+ * Compile flags: none; environment: none. */
+static nodus_identity_t g_node_id;
+static nodus_inter_session_module_t *g_node_mod;
 #include "crypto/nodus_identity.h"
 
 #include <stdio.h>
@@ -159,19 +166,8 @@ static void fake_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
         return;
     }
     size_t out = 0;
-    if (strcmp(msg.method, "hello") == 0) {
-        uint8_t nonce[NODUS_NONCE_LEN];
-        nodus_random(nonce, NODUS_NONCE_LEN);
-        if (nodus_t2_challenge(msg.txn_id, nonce,
-                                g_fake.buf, FAKE_BUF_SIZE, &out) == 0)
-            nodus_tcp_send(conn, g_fake.buf, out);
-    } else if (strcmp(msg.method, "auth") == 0) {
-        uint8_t token[NODUS_SESSION_TOKEN_LEN];
-        memset(token, 0x5a, sizeof(token));
-        if (nodus_t2_auth_ok(msg.txn_id, token,
-                              g_fake.buf, FAKE_BUF_SIZE, &out) == 0)
-            nodus_tcp_send(conn, g_fake.buf, out);
-    } else if (strcmp(msg.method, "get") == 0 ||
+    (void)out;
+    if (strcmp(msg.method, "get") == 0 ||
                strcmp(msg.method, "get_all") == 0) {
         fake_send_result(conn, msg.txn_id);
     }
@@ -192,6 +188,8 @@ static int start_fake_server(void) {
     if (!g_fake.tcp || !g_fake.buf) return -1;
     if (nodus_tcp_init(g_fake.tcp, -1) != 0) return -1;
     g_fake.tcp->on_frame = fake_on_frame;
+    if (nodus_identity_generate(&g_node_id) != 0 ||
+        !(g_node_mod = nts_attach(g_fake.tcp, &g_node_id))) return -1;
     if (nodus_tcp_listen(g_fake.tcp, "127.0.0.1", 0) != 0) return -1;
     atomic_store(&g_fake.mode, MODE_EMPTY);
     atomic_store(&g_fake.stop, false);
@@ -202,6 +200,8 @@ static void stop_fake_server(void) {
     atomic_store(&g_fake.stop, true);
     pthread_join(g_fake.tid, NULL);
     nodus_tcp_close(g_fake.tcp);
+    nodus_inter_session_free(g_node_mod);
+    nodus_identity_clear(&g_node_id);
     free(g_fake.tcp);
     free(g_fake.buf);
 }
@@ -405,6 +405,7 @@ int main(void) {
     cfg.server_count = 1;
     cfg.connect_timeout_ms = 3000;
 
+    nts_trust(&cfg, &g_node_id);
     if (nodus_client_init(c, &cfg, client_id) != 0) {
         printf("FATAL: client init\n");
         return 1;

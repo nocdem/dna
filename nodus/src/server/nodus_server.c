@@ -2257,6 +2257,8 @@ int nodus_server_init_ex(nodus_server_t *srv, const nodus_server_config_t *confi
             .inbound_depth = depth,
             .outbound_depth = depth,
             .workers = workers,
+            .now_ms = config->client_session_now_ms,
+            .now_ctx = config->client_session_now_ctx,
             .on_authenticated = client_authenticated, .auth_ctx = srv,
             .status = server_inter_status, .admission_ctx = srv
         };

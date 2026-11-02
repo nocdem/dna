@@ -172,6 +172,12 @@ int main(void) {
         cfg.server_count = 1;
         snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "127.0.0.1");
         cfg.servers[0].port = 1;
+        /* init requires a trusted list and a chain id (4001 plan 3.1); this
+         * client never connects, so any values will do. */
+        static const nodus_key_t k_unused_pin = {{0x01}};
+        cfg.pinned_server_fps = &k_unused_pin;
+        cfg.pinned_server_fp_count = 1;
+        cfg.has_chain_id = true;
         CHECK(dc && id);
         CHECK_EQ(nodus_client_init(dc, &cfg, id), 0);
 
