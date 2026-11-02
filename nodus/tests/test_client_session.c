@@ -766,7 +766,13 @@ static void node_bad_keyx(int variant) {
         }
     }
     raw_until_eof(r);                                    /* carries on normally */
-    CHECK(!cmt_p2p_sc_is_authenticated(&r->sc) && !srv_has_session_of(&ids[0]));
+    /* The node closed and holds no session of this key. Variant 0: the node
+     * signs before the peer proves anything, so the raw initiator has already
+     * verified the node's AUTHSIG when the second KEYX makes the node close;
+     * its own authenticated flag is set and is not a session. Variant 1: the
+     * implicit-rejection key differs, so the initiator never authenticates. */
+    CHECK(r->eof && !srv_has_session_of(&ids[0]));
+    CHECK(variant == 0 || !cmt_p2p_sc_is_authenticated(&r->sc));
     raw_close(r); free(r);
 }
 
