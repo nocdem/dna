@@ -52,7 +52,17 @@
  *   node (exact, from the module's own counters): sessions started and opened,
  *     key-exchange jobs refused because the queue was full, connections that
  *     ran past the 3 s handshake deadline.
- *   node job queue (inbound class, sampled every ms): peak and mean.
+ *   node job queue (inbound class, sampled every ms): peak and mean, and the
+ *     queue OVER TIME: per 100 ms window since the node was ready, the largest
+ *     value and the mean of the 1 ms samples (printed as at most ~60 rows).
+ *   accept-to-open per connection, measured AT THE NODE in
+ *     nodus_inter_session_open (machine start to open, on the module's own
+ *     deadline clock, ms): count, mean, maximum, and a 100 ms-bucket histogram
+ *     from which p50/p95/p99 are printed as bucket upper edges (the last bucket
+ *     is everything from 3,100 ms, past the 3 s deadline's own cut). Only
+ *     sessions that OPENED are in it; connections the node closed are the
+ *     "honest closed" counts and the deadline counter. Unlike the driver-side
+ *     wall times below, it contains no driver scheduling.
  *   processor time of the node child, the stand-in witness and the storage
  *     process (if any) and the driver, apart; peak resident memory (VmHWM) of
  *     the node child.
@@ -168,6 +178,13 @@ static int witness_child(int report_fd) {
 /* ── the node child ──────────────────────────────────────────────── */
 typedef struct { uint64_t peak, sum, samples; } occupancy_t;
 
+/* The inbound queue over time: per 100 ms window since "ready", the largest
+ * value, the sum and the count of the 1 ms samples. Windows past the last
+ * one are folded into it. */
+#define OCC_WINDOW_MS 100u
+#define OCC_WINDOWS   1200u
+static uint64_t g_win_max[OCC_WINDOWS], g_win_sum[OCC_WINDOWS], g_win_n[OCC_WINDOWS];
+
 static int node_child(const opts_t *o, int report_fd) {
     static nodus_server_t srv;
     nodus_server_config_t config;
@@ -206,7 +223,7 @@ static int node_child(const opts_t *o, int report_fd) {
     if (write(report_fd, "n", 1) != 1) return 1;
     signal(SIGTERM, on_term);
     occupancy_t occ = {0};
-    uint64_t last = 0, last_chain = 0;
+    uint64_t last = 0, last_chain = 0, t_ready = mono_ms();
     while (!g_stop) {
         nodus_tcp_poll(&srv.tcp, 1);
         uint64_t now = mono_ms();
@@ -220,8 +237,14 @@ static int node_child(const opts_t *o, int report_fd) {
             uint64_t q = nodus_inter_session_job_queued(srv.client_session, false);
             if (q > occ.peak) occ.peak = q;
             occ.sum += q; occ.samples++;
+            uint64_t w = (now - t_ready) / OCC_WINDOW_MS;
+            if (w >= OCC_WINDOWS) w = OCC_WINDOWS - 1;
+            if (q > g_win_max[w]) g_win_max[w] = q;
+            g_win_sum[w] += q; g_win_n[w]++;
         }
     }
+    const uint64_t n_win = (mono_ms() - t_ready) / OCC_WINDOW_MS + 1 > OCC_WINDOWS
+                               ? OCC_WINDOWS : (mono_ms() - t_ready) / OCC_WINDOW_MS + 1;
     nodus_inter_session_stats_t st;
     nodus_inter_session_stats(srv.client_session, &st);
     struct rusage ru; getrusage(RUSAGE_SELF, &ru);
@@ -232,7 +255,7 @@ static int node_child(const opts_t *o, int report_fd) {
         if (!strncmp(line, "VmHWM:", 6)) { snprintf(vm, sizeof(vm), "%s", line + 6); break; }
     if (f) fclose(f);
     size_t ln = strlen(vm); while (ln && (vm[ln-1] == '\n' || vm[ln-1] == ' ')) vm[--ln] = 0;
-    char out[1024];
+    static char out[65536];
     int n = snprintf(out, sizeof(out), "%llu %llu %llu %.1f %llu %llu %llu %llu|%s|",
                      (unsigned long long)occ.peak, (unsigned long long)occ.sum,
                      (unsigned long long)occ.samples, ts_ms(&ru.ru_utime) + ts_ms(&ru.ru_stime),
@@ -243,8 +266,25 @@ static int node_child(const opts_t *o, int report_fd) {
         n += snprintf(out + n, sizeof(out) - (size_t)n, " %llu %llu %llu",
                       (unsigned long long)st.job_count[k], (unsigned long long)st.job_ns_total[k],
                       (unsigned long long)st.job_ns_max[k]);
+    /* accept-to-open at the node: " O total_ms max_ms" then " H" + the buckets */
+    if (n > 0 && (size_t)n < sizeof(out))
+        n += snprintf(out + n, sizeof(out) - (size_t)n, " O %llu %llu H",
+                      (unsigned long long)st.open_ms_total, (unsigned long long)st.open_ms_max);
+    for (unsigned b = 0; b < NODUS_INTER_OPEN_BUCKETS && n > 0 && (size_t)n < sizeof(out); ++b)
+        n += snprintf(out + n, sizeof(out) - (size_t)n, " %llu", (unsigned long long)st.open_hist[b]);
+    /* the queue over time: " W <windows>" then max sum count per window */
+    if (n > 0 && (size_t)n < sizeof(out))
+        n += snprintf(out + n, sizeof(out) - (size_t)n, " W %llu", (unsigned long long)n_win);
+    for (uint64_t w = 0; w < n_win && n > 0 && (size_t)n < sizeof(out); ++w)
+        n += snprintf(out + n, sizeof(out) - (size_t)n, " %llu %llu %llu",
+                      (unsigned long long)g_win_max[w], (unsigned long long)g_win_sum[w],
+                      (unsigned long long)g_win_n[w]);
     if (n < 0 || (size_t)n >= sizeof(out)) return 1;
-    if (write(report_fd, out, (size_t)n) < 0) return 1;
+    for (int off = 0; off < n; ) {                 /* the pipe may take it in pieces */
+        ssize_t w = write(report_fd, out + off, (size_t)(n - off));
+        if (w <= 0) return 1;
+        off += (int)w;
+    }
     nodus_server_close(&srv);
     return 0;
 }
@@ -678,8 +718,14 @@ int main(int argc, char **argv) {
     for (unsigned i = 0; i < started; ++i) if (honest[i].state == C_LIVE) conn_finish(&honest[i], false);
     for (unsigned i = 0; i < atk_started; ++i) if (atk[i].state == C_LIVE) conn_finish(&atk[i], false);
     kill(child, SIGTERM);
-    char rep[1024] = {0};
-    ssize_t rn = read(npipe[0], rep, sizeof(rep) - 1);
+    static char rep[65536];
+    ssize_t rn = 0;
+    for (;;) {                                    /* until the child closes its end */
+        ssize_t r = read(npipe[0], rep + rn, sizeof(rep) - 1 - (size_t)rn);
+        if (r <= 0) break;
+        rn += r;
+    }
+    rep[rn > 0 ? rn : 0] = 0;
     int status = 0; struct rusage cru;
     wait4(child, &status, 0, &cru);
     double scpu = 0;
@@ -717,6 +763,74 @@ int main(int argc, char **argv) {
             else printf("  %s n=0", names[k]);
         }
         printf("\n");
+
+        /* accept (or Upgrade) to open, measured at the node's open */
+        unsigned long long hist[NODUS_INTER_OPEN_BUCKETS] = {0}, o_total = 0, o_max = 0, o_count = 0;
+        unsigned long long nw = 0;
+        static unsigned long long wmax[OCC_WINDOWS], wsum[OCC_WINDOWS], wn[OCC_WINDOWS];
+        bool have_open = false, have_win = false;
+        if (jp) {
+            char *e = NULL;
+            while (*jp == ' ') jp++;
+            if (*jp == 'O') {
+                jp++; o_total = strtoull(jp, &e, 10); jp = e; o_max = strtoull(jp, &e, 10); jp = e;
+                while (*jp == ' ') jp++;
+                if (*jp == 'H') {
+                    jp++;
+                    for (unsigned b = 0; b < NODUS_INTER_OPEN_BUCKETS; ++b) {
+                        hist[b] = strtoull(jp, &e, 10); jp = e; o_count += hist[b];
+                    }
+                    have_open = true;
+                }
+            }
+            while (*jp == ' ') jp++;
+            if (have_open && *jp == 'W') {
+                jp++; nw = strtoull(jp, &e, 10); jp = e;
+                if (nw > OCC_WINDOWS) nw = OCC_WINDOWS;
+                for (unsigned long long w = 0; w < nw; ++w) {
+                    wmax[w] = strtoull(jp, &e, 10); jp = e;
+                    wsum[w] = strtoull(jp, &e, 10); jp = e;
+                    wn[w] = strtoull(jp, &e, 10); jp = e;
+                }
+                have_win = true;
+            }
+        }
+        if (have_open) {
+            if (!o_count) printf("accept-to-open at the node: no session opened\n");
+            else {
+                unsigned long long acc = 0, p50 = 0, p95 = 0, p99 = 0;
+                for (unsigned b = 0; b < NODUS_INTER_OPEN_BUCKETS; ++b) {
+                    acc += hist[b];
+                    const unsigned long long edge = (unsigned long long)(b + 1) * NODUS_INTER_OPEN_BUCKET_MS;
+                    if (!p50 && acc * 100 >= o_count * 50) p50 = edge;
+                    if (!p95 && acc * 100 >= o_count * 95) p95 = edge;
+                    if (!p99 && acc * 100 >= o_count * 99) p99 = edge;
+                }
+                printf("accept-to-open at the node (ms, module deadline clock; n=%llu): mean %.1f max %llu  "
+                       "p50 <= %llu  p95 <= %llu  p99 <= %llu (bucket upper edges, %u ms buckets; the last "
+                       "bucket is >= %u ms)\n", o_count, (double)o_total / (double)o_count, o_max, p50, p95, p99,
+                       NODUS_INTER_OPEN_BUCKET_MS, (NODUS_INTER_OPEN_BUCKETS - 1) * NODUS_INTER_OPEN_BUCKET_MS);
+                printf("accept-to-open histogram (bucket start ms: count, nonzero only):");
+                for (unsigned b = 0; b < NODUS_INTER_OPEN_BUCKETS; ++b)
+                    if (hist[b]) printf("  %u: %llu", b * NODUS_INTER_OPEN_BUCKET_MS, hist[b]);
+                printf("\n");
+            }
+        }
+        if (have_win && nw) {
+            /* at most ~60 lines: merge consecutive windows (max of max, mean of the samples) */
+            unsigned long long per = (nw + 59) / 60;
+            printf("node job queue over time (inbound class; each row %llu ms from node ready, 1 ms samples):\n",
+                   per * OCC_WINDOW_MS);
+            for (unsigned long long w0 = 0; w0 < nw; w0 += per) {
+                unsigned long long mx = 0, sm = 0, cn = 0;
+                for (unsigned long long w = w0; w < w0 + per && w < nw; ++w) {
+                    if (wmax[w] > mx) mx = wmax[w];
+                    sm += wsum[w]; cn += wn[w];
+                }
+                printf("  t=%6llu ms  max %3llu  mean %6.2f\n", w0 * OCC_WINDOW_MS, mx,
+                       cn ? (double)sm / (double)cn : 0.0);
+            }
+        }
     }
     printf("processor time: node child %.0f ms (rusage)%s, driver %llu ms (process CPU), wall %llu ms\n",
            node_cpu, o.split ? " (stand-in witness process measured apart below)" : "",

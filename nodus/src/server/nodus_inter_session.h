@@ -122,7 +122,17 @@ typedef struct {
      * nanoseconds on the monotonic clock, on whichever thread ran it, queue
      * wait excluded): index = CMT_P2P_SC_JOB_ENCAPS .. _VERIFY. */
     uint64_t job_count[5], job_ns_total[5], job_ns_max[5];
+    /* Time from the machine's start (accept, or the WebSocket Upgrade) to the
+     * module's open, measured in nodus_inter_session_open on the module's
+     * deadline clock (ms): total, maximum, and a histogram of
+     * NODUS_INTER_OPEN_BUCKETS buckets of NODUS_INTER_OPEN_BUCKET_MS each, the
+     * last one holding everything at or above its start. Counts equal
+     * `opened`. */
+    uint64_t open_ms_total, open_ms_max;
+    uint64_t open_hist[32];
 } nodus_inter_session_stats_t;
+#define NODUS_INTER_OPEN_BUCKETS   32u
+#define NODUS_INTER_OPEN_BUCKET_MS 100u
 void nodus_inter_session_stats(nodus_inter_session_module_t *s, nodus_inter_session_stats_t *out);
 
 bool nodus_inter_session_chain_ready(nodus_inter_session_module_t *s);

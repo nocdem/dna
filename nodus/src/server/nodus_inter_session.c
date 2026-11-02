@@ -572,7 +572,17 @@ int nodus_inter_session_open(nodus_tcp_conn_t *conn) {
     }
     if (c->open) return 0;
     c->open = true;
-    pthread_mutex_lock(&s->mu); s->stats.opened++; pthread_mutex_unlock(&s->mu);
+    {   /* measurement only (plan 4.5): accept-to-open time at the node */
+        uint64_t t = now_ms(s) - c->started_ms;
+        uint64_t b = t / NODUS_INTER_OPEN_BUCKET_MS;
+        if (b >= NODUS_INTER_OPEN_BUCKETS) b = NODUS_INTER_OPEN_BUCKETS - 1;
+        pthread_mutex_lock(&s->mu);
+        s->stats.opened++;
+        s->stats.open_ms_total += t;
+        if (t > s->stats.open_ms_max) s->stats.open_ms_max = t;
+        s->stats.open_hist[b]++;
+        pthread_mutex_unlock(&s->mu);
+    }
     conn->auth_state = NODUS_CONN_AUTH_OK;
     if (nodus_tcp_pending_flush(conn) != 0) {
         cmt_p2p_sc_abort(&c->sc); nodus_tcp_disconnect(s->tcp, conn); return -1;
