@@ -276,7 +276,7 @@ nodus_inter_session_module_t *nodus_inter_session_new(nodus_tcp_t *tcp,
         (!cfg->chain_id && !cfg->status) || !cfg->inbound_depth || !cfg->outbound_depth ||
         (cfg->inbound_cap && cfg->inbound_depth < cfg->inbound_cap) ||
         tcp->session_mode || tcp->count || tcp->listen_fd >= 0 ||
-        tcp->ws_listen_fd >= 0 || tcp->unix_listen_fd >= 0) return NULL;
+        tcp->unix_listen_fd >= 0) return NULL;   /* a WebSocket listener may exist (plan 2.1 f) */
     nodus_inter_session_module_t *s = calloc(1, sizeof(*s));
     if (!s) return NULL;
     s->tcp = tcp; s->cfg = *cfg; s->wake_fd = -1; s->proto_ver = proto;

@@ -250,7 +250,7 @@ static int cli_find_tool_sock(const char *config_path, char *out, size_t cap,
     char sock[NODUS_TCP_UNIX_PATH_MAX];
     if (nodus_witness_ipc_sock_path(dp, sock, sizeof(sock)) != 0 ||
         strlen(sock) >= cap) {
-        snprintf(err, errcap, "the witness socket path under %s is too long", dp);
+        snprintf(err, errcap, "the witness socket path under %.180s is too long", dp);
         return -1;
     }
     memcpy(out, sock, strlen(sock) + 1);

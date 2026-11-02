@@ -646,8 +646,11 @@ static int conn_wbuf_ensure(nodus_tcp_conn_t *conn, size_t needed) {
 }
 
 int nodus_tcp_set_session_mode(nodus_tcp_t *tcp, struct nodus_inter_session_module *session) {
+    /* An existing WebSocket listener is allowed (plan 2.1 f): no connection
+     * exists yet (count == 0) and every one accepted later is started by the
+     * module at its Upgrade. */
     if (!tcp || !session || tcp->session_mode || tcp->count || tcp->listen_fd >= 0 ||
-        tcp->ws_listen_fd >= 0 || tcp->unix_listen_fd >= 0) return -1;
+        tcp->unix_listen_fd >= 0) return -1;
     tcp->session_mode = session;
 #ifdef NODUS_TCP_EPOLL
     int wake_fd = nodus_inter_session_wake_fd(session);

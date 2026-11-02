@@ -100,11 +100,12 @@ typedef struct nodus_inter_session_job {
 } nodus_inter_session_job_t;
 
 /* Attaches session mode before any listen/connect. Refuses an existing
- * listener/connection, missing identity or chain/status provider, zero depth,
+ * plain or Unix listener, any connection, missing identity or chain/status provider, zero depth,
  * an unknown proto_ver, or a non-initiator-only identity without ML-KEM.
  * A transport with a write lock is allowed (the threaded client): then every
  * session send only queues plaintext and wakes the owner, and the machine is
- * called by the owner thread alone. A WebSocket listener may be added after.
+ * called by the owner thread alone. A WebSocket listener may exist already or
+ * be added after (either order; no connection may exist yet).
  * No queue/worker defaults. tcp and identity outlive this module.
  * Close the transport before free; free joins every internal worker. */
 nodus_inter_session_module_t *nodus_inter_session_new(nodus_tcp_t *tcp,
