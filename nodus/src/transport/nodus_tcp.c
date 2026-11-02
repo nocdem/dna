@@ -296,6 +296,11 @@ static bool conn_in_pool(const nodus_tcp_t *tcp, const nodus_tcp_conn_t *conn) {
 /* Release the memory of a connection that conn_free already detached. */
 static void conn_release(nodus_tcp_conn_t *conn) {
     free(conn->pending_buf);
+    while (conn->prog_head) {
+        nodus_tcp_progress_req_t *r = conn->prog_head;
+        conn->prog_head = r->next;
+        free(r);
+    }
     free(conn->ws_pend);
     free(conn->rbuf);
     free(conn->wbuf);
@@ -2575,6 +2580,7 @@ static int pending_queue_append(nodus_tcp_conn_t *conn,
                                       payload, len);
     if (written == 0) return -1;
     conn->pending_len += written;
+    conn->pending_frames_in++;
     return 0;
 }
 
@@ -2604,12 +2610,30 @@ static int pending_flush_locked(nodus_tcp_conn_t *conn) {
         while (off < len) {
             nodus_frame_t frame;
             int used = nodus_frame_decode(queued + off, len - off, &frame);
-            if (used <= 0 || send_session_locked(conn, frame.payload, frame.payload_len, NULL, NULL) != 0) {
+            /* A frame queued with a progress callback reports it while this
+             * (owner) thread writes the frame's sealed bytes. */
+            nodus_tcp_progress_cb cb = NULL; void *ud = NULL;
+            uint64_t idx = conn->pending_frames_out++;
+            while (conn->prog_head && conn->prog_head->seq < idx) {   /* its frame is gone */
+                nodus_tcp_progress_req_t *dead = conn->prog_head;
+                conn->prog_head = dead->next;
+                if (!conn->prog_head) conn->prog_tail = NULL;
+                free(dead);
+            }
+            if (conn->prog_head && conn->prog_head->seq == idx) {
+                nodus_tcp_progress_req_t *r = conn->prog_head;
+                conn->prog_head = r->next;
+                if (!conn->prog_head) conn->prog_tail = NULL;
+                cb = r->cb; ud = r->user_data;
+                free(r);
+            }
+            if (used <= 0 || send_session_locked(conn, frame.payload, frame.payload_len, cb, ud) != 0) {
                 rc = -1; break;
             }
             off += (size_t)used;
         }
         free(queued);
+        conn->pending_frames_out = conn->pending_frames_in;   /* buffer is empty now */
         return rc;
     }
 
@@ -2694,10 +2718,22 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
     nodus_tcp_t *tcp = conn ? conn->tcp_parent : NULL;
     bool owner_seals = conn && payload && session_queue_only(conn);
     wl_enter(tcp);
-    /* Owner-sealed session sends leave later, on the owner's thread: there
-     * is no partial write to report, so progress_cb is not called. */
-    int rc = owner_seals ? pending_queue_append(conn, payload, len)
-                         : send_progress_locked(conn, payload, len, progress_cb, user_data);
+    int rc;
+    if (owner_seals) {
+        /* The frame leaves later, sealed on the owner's thread; a progress
+         * callback waits with it and is called there, while that frame's
+         * sealed bytes are written (pending_flush_locked). */
+        rc = pending_queue_append(conn, payload, len);
+        if (rc == 0 && progress_cb) {
+            nodus_tcp_progress_req_t *r = calloc(1, sizeof(*r));
+            if (r) {
+                r->seq = conn->pending_frames_in - 1;     /* the frame just appended */
+                r->cb = progress_cb; r->user_data = user_data;
+                if (conn->prog_tail) conn->prog_tail->next = r; else conn->prog_head = r;
+                conn->prog_tail = r;
+            }   /* out of memory: the frame is sent, only its progress report is lost */
+        }
+    } else rc = send_progress_locked(conn, payload, len, progress_cb, user_data);
     wl_leave(tcp);
     if (owner_seals && rc == 0) nodus_inter_session_wake_owner(tcp->session_mode);
     return rc;

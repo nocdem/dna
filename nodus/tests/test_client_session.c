@@ -44,7 +44,10 @@
  *      node serves the ping after it verified and opened (a pong arrives and
  *      the client key is the session identity). Case 8 above also asserts, via
  *      the module's machine_hook test seam, that every machine-touching module
- *      call of the threaded client came from the owner thread (row 13).
+ *      call of the threaded client came from the owner thread (row 13), and
+ *      that nodus_tcp_send_progress of a 700 KiB frame calls its callback from
+ *      the owner thread with strictly increasing byte counts ending at the
+ *      total (operator 2026-11-02: media_put progress comes back).
  *   Part C, the real nodus_client_t against that server (polled by a thread
  *   of this test):
  *  14. A config without a trusted list, with a negative count, or without a
@@ -381,6 +384,16 @@ static void machine_hook(void *ctx) {
     g_hook_calls++;
     if (!pthread_equal(pthread_self(), g_owner)) g_hook_foreign++;
 }
+typedef struct { size_t last_sent, total; unsigned calls, bad_order; bool foreign; } prog_t;
+/* progress callback: counts calls, requires strictly increasing bytes_sent
+ * and that the owner (this thread) is the caller */
+static void prog_cb(size_t sent, size_t total, void *ud) {
+    prog_t *p = ud;
+    p->calls++;
+    if (sent <= p->last_sent) p->bad_order++;
+    p->last_sent = sent; p->total = total;
+    if (!pthread_equal(pthread_self(), g_owner)) p->foreign = true;
+}
 static pthread_mutex_t wlock = PTHREAD_MUTEX_INITIALIZER;
 static void lock_fn(void *ctx, bool lock) {
     (void)ctx; if (lock) pthread_mutex_lock(&wlock); else pthread_mutex_unlock(&wlock);
@@ -430,6 +443,22 @@ static void write_lock_owner(void) {
     /* Row 13: every machine-touching module call of the client was made by the
      * owner (this thread) — never by a sender thread — and there were some. */
     CHECK(g_hook_calls > 0 && g_hook_foreign == 0);
+    /* Operator 2026-11-02 (item 2): the progress callback of
+     * nodus_tcp_send_progress is called again on this transport — by the
+     * owner, with increasing byte counts up to the total of the write. */
+    {
+        enum { BIG = 700 * 1024 };
+        uint8_t *big = malloc(BIG); CHECK(big);
+        memset(big, 0x41, BIG); big[0] = 0x7f;          /* not a case-8 sequence frame */
+        prog_t pg; memset(&pg, 0, sizeof(pg));
+        unsigned before = srv.frames;
+        CHECK(nodus_tcp_send_progress(cli.conn, big, BIG, prog_cb, &pg) == 0);
+        free(big);
+        WAIT_WHILE(srv.frames == before) step(&cli, &srv);
+        CHECK(srv.frames == before + 1);
+        CHECK(pg.calls >= 1 && pg.bad_order == 0 && !pg.foreign);
+        CHECK(pg.last_sent == pg.total && pg.total >= (size_t)BIG);
+    }
     CHECK(srv.closed == 0 && cli.closed == 0);
     CHECK(nodus_tcp_decrypt_fail_total(&srv.tcp) == 0);
     ep_free(&cli); ep_free(&srv);

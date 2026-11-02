@@ -87,6 +87,17 @@ typedef struct nodus_pending_frame {
     uint64_t                    enqueued_at;  /* monotonic ms for diagnostics */
 } nodus_pending_frame_t;
 
+/* A progress callback attached to one frame queued for the owner to seal
+ * (session transport with a write lock). `seq` is the frame's index in the
+ * conn's pending plaintext queue; the owner calls cb while it writes that
+ * frame's sealed bytes (nodus_tcp_send_progress). */
+typedef struct nodus_tcp_progress_req {
+    struct nodus_tcp_progress_req *next;
+    uint64_t                       seq;
+    void                         (*cb)(size_t bytes_sent, size_t total_bytes, void *user_data);
+    void                          *user_data;
+} nodus_tcp_progress_req_t;
+
 typedef struct nodus_tcp_conn {
     int                 fd;
     nodus_conn_state_t  state;
@@ -148,6 +159,13 @@ typedef struct nodus_tcp_conn {
     uint8_t                *pending_buf;
     size_t                  pending_len;
     size_t                  pending_cap;
+    /* Session transport: frames appended to / taken from pending_buf over the
+     * connection's life, and the progress callbacks waiting for their frame
+     * to be sealed by the owner (all under the write lock). */
+    uint64_t                pending_frames_in;
+    uint64_t                pending_frames_out;
+    nodus_tcp_progress_req_t *prog_head;
+    nodus_tcp_progress_req_t *prog_tail;
 
     void               *user_data;
     uint64_t            connected_at;
@@ -554,9 +572,12 @@ int nodus_tcp_send(nodus_tcp_conn_t *conn,
  * Same as nodus_tcp_send but calls progress_cb after each partial write.
  * progress_cb (and tcp->on_pending_full) run with the write lock held when
  * one is installed: they must not send on this transport.
- * On a transport in session mode WITH a write lock the frame is only queued
- * for the owner thread to seal (see nodus_tcp_set_session_mode): progress_cb
- * is not called, there is no partial write to report at queue time.
+ * On a transport in session mode WITH a write lock the frame is queued for
+ * the owner thread to seal (see nodus_tcp_set_session_mode): progress_cb is
+ * called by THAT owner thread, with the write lock held, while it writes the
+ * frame's sealed bytes (bytes written so far and the write buffer's total, as
+ * on every other path). It is not called from the sender's thread, and not
+ * at all if the connection closes before the frame is written.
  */
 int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
                              const uint8_t *payload, size_t len,
