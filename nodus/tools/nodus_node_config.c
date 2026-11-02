@@ -318,6 +318,8 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg,
      * Split S5b: only with the witness-side parts (not nodus-storage). */
     if (w)
         load_p2p_json(root, &cfg->p2p, w);
+    else if (json_object_object_get_ex(root, "allow_duplicate_ip", &val))
+        cfg->p2p.allow_duplicate_ip = json_object_get_boolean(val);
 
     if (json_object_object_get_ex(root, "seed_nodes", &val) &&
         json_object_is_type(val, json_type_array)) {
@@ -651,6 +653,10 @@ int nodus_node_config_parse(int argc, char **argv, const char *title,
             return 1;
     }
 
+    if (!config.require_peer_auth) {
+        QGP_LOG_ERROR(LOG_TAG_CFG, "%s", "require_peer_auth=false is refused: 4002 requires authenticated encrypted sessions");
+        return 1;
+    }
     *out = config;
     return -1;
 }

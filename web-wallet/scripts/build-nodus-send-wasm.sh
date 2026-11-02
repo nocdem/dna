@@ -246,6 +246,8 @@ sources=(
   # nodus client (package (c1) compile set, scripts/check-nodus-client-wasm.sh)
   $root/nodus/src/client/nodus_client.c
   $root/nodus/src/transport/nodus_tcp.c
+  $root/nodus/src/server/nodus_inter_session.c
+  $root/shared/dnac/cmt_p2p_secret.c
   $root/nodus/src/protocol/nodus_tier2.c
   $root/nodus/src/protocol/nodus_cbor.c
   $root/nodus/src/protocol/nodus_wire.c

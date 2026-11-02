@@ -212,6 +212,25 @@ extern "C" {
 #define CMT_P2P_SC_PROTO_VER_SIZE 4      /* u32 big-endian (N9)              */
 #define CMT_P2P_SC_T_SIZE         64     /* SHA3-512 transcript (row 4)      */
 
+/* Operator 2026-10-29 (approved encrypted-sessions design, A3):
+ * proto_ver = (port << 16) | version. These are fixed protocol ports,
+ * never the configured listen port. 4001 includes WebSocket sessions;
+ * NodeInfo's protocol_version.p2p remains 8. */
+#define CMT_P2P_SC_PROTO_VER_4004 0x0FA40008u
+#define CMT_P2P_SC_PROTO_VER_4002 0x0FA20001u
+#define CMT_P2P_SC_PROTO_VER_4001 0x0FA10001u
+
+_Static_assert(CMT_P2P_SC_PROTO_VER_4004 == ((4004u << 16) | 8u),
+               "4004 HELLO proto_ver must encode port 4004, version 8");
+_Static_assert(CMT_P2P_SC_PROTO_VER_4002 == ((4002u << 16) | 1u),
+               "4002 session proto_ver must encode port 4002, version 1");
+_Static_assert(CMT_P2P_SC_PROTO_VER_4001 == ((4001u << 16) | 1u),
+               "4001 / WebSocket proto_ver must encode port 4001, version 1");
+_Static_assert(CMT_P2P_SC_PROTO_VER_4004 != CMT_P2P_SC_PROTO_VER_4002 &&
+               CMT_P2P_SC_PROTO_VER_4004 != CMT_P2P_SC_PROTO_VER_4001 &&
+               CMT_P2P_SC_PROTO_VER_4002 != CMT_P2P_SC_PROTO_VER_4001,
+               "session proto_ver values must not collide across ports");
+
 _Static_assert(CMT_P2P_SC_DSA_PK_SIZE == 2592,
                "must equal NODUS_PK_BYTES (nodus/include/nodus/nodus_types.h:77)");
 _Static_assert(CMT_P2P_SC_SIG_SIZE == 4627,

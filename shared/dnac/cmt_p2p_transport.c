@@ -764,7 +764,7 @@ int cmt_p2p_transport_accept(cmt_p2p_transport_t *t,
     c->state = CMT_P2P_CONN_SECRET;
     c->deadline_ns = now_ns(t) + t->cfg.handshake_timeout_ns;      /* :588 */
     if (cmt_p2p_sc_init(c->sc, CMT_P2P_SC_ROLE_RESPONDER, &t->cfg.sc_host,
-                        t->dsa_pk, t->kem_pk, t->kem_sk, CMT_P2P_PROTOCOL_VERSION,
+                        t->dsa_pk, t->kem_pk, t->kem_sk, CMT_P2P_SC_PROTO_VER_4004,
                         t->chain_id) != CMT_OK) {
         c->in_conn_set = false;
         cmt_p2p_conn_set_remove(&t->conns, &remote);
@@ -860,7 +860,7 @@ void cmt_p2p_transport_dial_connected(cmt_p2p_transport_t *t, int slot,
     c->state = CMT_P2P_CONN_SECRET;
     c->deadline_ns = now_ns(t) + t->cfg.handshake_timeout_ns;      /* :588 */
     if (cmt_p2p_sc_init(c->sc, CMT_P2P_SC_ROLE_INITIATOR, &t->cfg.sc_host,
-                        t->dsa_pk, NULL, NULL, CMT_P2P_PROTOCOL_VERSION,
+                        t->dsa_pk, NULL, NULL, CMT_P2P_SC_PROTO_VER_4004,
                         t->chain_id) != CMT_OK) {
         conn_fail(t, c, CMT_FAULT, NULL);
         return;

@@ -1,3 +1,40 @@
+/* Suite selection flag: -DNODUS_TEST_INTER_CONFIG=1; ordinary target uses
+ * the other branch. This only selects test fixtures, not protocol constants. */
+#if defined(NODUS_TEST_INTER_CONFIG)
+/* Build plan 4.3: nodus-core's actual entry point returns nonzero for
+ * require_peer_auth=false, and its loader reads allow_duplicate_ip.
+ * Flags: NODUS_TEST_INTER_CONFIG=1. Environment: none. Temporary config is unlinked. A mere
+ * parse failure cannot pass: a valid positive config must load both flags.
+ * Only the rejected entry-point invocation runs; no server is started. */
+#define main nodus_core_entry
+#include "nodus-core.c"
+#undef main
+#include <unistd.h>
+#include <stdlib.h>
+#define CHECK(x) do { if (!(x)) { fprintf(stderr,"%s:%d: %s\n",__FILE__,__LINE__,#x); exit(1); } } while(0)
+static void config_file(const char *path,bool auth) {
+    FILE *f=fopen(path,"w"); CHECK(f);
+    CHECK(fprintf(f,"{\"require_peer_auth\":%s,\"allow_duplicate_ip\":true,"
+                    "\"storage_external\":true,\"witness_external\":true}",
+                    auth ? "true" : "false")>0);
+    CHECK(fclose(f)==0);
+}
+int main(void) {
+    char path[]="/tmp/nodus_inter_config_XXXXXX";
+    int fd=mkstemp(path); CHECK(fd>=0); close(fd);
+    char *argv[]={"nodus-core","-c",path,NULL};
+    config_file(path,true);
+    nodus_server_config_t cfg={0};
+    CHECK(nodus_node_config_load_storage(3,argv,"Nodus Core",&cfg)==-1);
+    CHECK(cfg.require_peer_auth && cfg.p2p.allow_duplicate_ip);
+    config_file(path,false);
+    optind=1;
+    CHECK(nodus_node_config_load_storage(3,argv,"Nodus Core",&cfg)==1);
+    optind=1;
+    CHECK(nodus_core_entry(3,argv)==1);
+    CHECK(unlink(path)==0); return 0;
+}
+#else
 /**
  * Nodus — core's outbound 4002 dials pin the expected peer identity
  * (component split S5a, decision 2026-10-01-nodus-component-split item 30),
@@ -115,6 +152,25 @@ static int pool_count(nodus_tcp_t *tcp, const char *ip, uint16_t port) {
     return n;
 }
 
+/* These pool/backoff fixtures stop before a handshake; the separate
+ * raw-machine dialer test asserts that this pin is checked at ENCAPS.
+ * Flags/environment: none. Ephemeral listeners and identity released.
+ * A missing session module must fail the positive dial assertions. */
+static int fixture_transport(nodus_server_t *srv) {
+    static const uint8_t chain[32]={0x42};
+    if (!srv->identity.has_mlkem && nodus_identity_generate(&srv->identity)!=0) return -1;
+    if (nodus_tcp_init(&srv->inter_tcp,-1)!=0) return -1;
+    nodus_inter_session_config_t cfg={
+        .identity=&srv->identity,.chain_id=chain,.inbound_depth=64,.outbound_depth=64
+    };
+    srv->inter_session=nodus_inter_session_new(&srv->inter_tcp,&cfg);
+    return srv->inter_session ? 0 : -1;
+}
+static void fixture_close(nodus_server_t *srv) {
+    nodus_tcp_close(&srv->inter_tcp);
+    nodus_inter_session_free(srv->inter_session); srv->inter_session=NULL;
+}
+
 static void test_presence_dial_pinned(void) {
     TEST("presence p_sync dial pins the snapshot's node_id");
     nodus_server_t *srv = calloc(1, sizeof(*srv));
@@ -130,7 +186,7 @@ static void test_presence_dial_pinned(void) {
     CHECK(nodus_tcp_init(&lst, -1) == 0, "listener init");
     lst_up = true;
     CHECK(nodus_tcp_listen(&lst, "127.0.0.1", 0) == 0 && lst.port != 0, "listen");
-    CHECK(nodus_tcp_init(&srv->inter_tcp, -1) == 0, "inter_tcp init");
+    CHECK(fixture_transport(srv) == 0, "inter_tcp init");
     inter_up = true;
 
     fake.base.ops = &fake_ops;
@@ -152,14 +208,15 @@ static void test_presence_dial_pinned(void) {
 out:
     if (srv) {
         srv->dht = NULL;
-        if (inter_up) nodus_tcp_close(&srv->inter_tcp);
+        if (inter_up) fixture_close(srv);
     }
     if (lst_up) nodus_tcp_close(&lst);
+    if (srv) nodus_identity_clear(&srv->identity);
     free(srv);
 }
 
 static void test_inter_dial_semantics(void) {
-    TEST("inter_dial: pinned reuse only for the same id; NULL unchanged");
+    TEST("inter_dial: pinned reuse only for the same id; missing pin refused");
     nodus_server_t *srv = calloc(1, sizeof(*srv));
     nodus_tcp_t lst_a, lst_b;
     bool a_up = false, b_up = false, inter_up = false;
@@ -176,7 +233,7 @@ static void test_inter_dial_semantics(void) {
     CHECK(nodus_tcp_init(&lst_b, -1) == 0, "listener b init");
     b_up = true;
     CHECK(nodus_tcp_listen(&lst_b, "127.0.0.1", 0) == 0, "listen b");
-    CHECK(nodus_tcp_init(&srv->inter_tcp, -1) == 0, "inter_tcp init");
+    CHECK(fixture_transport(srv) == 0, "inter_tcp init");
     inter_up = true;
 
     /* A new pinned dial records its identity. */
@@ -206,11 +263,12 @@ static void test_inter_dial_semantics(void) {
           nodus_server_inter_find(srv, "127.0.0.1", lst_a.port, &id2) == c2,
           "find does not tell the two pinned conns apart");
 
-    /* A dial with no identity records none (b has nothing pooled yet). */
-    c3 = nodus_server_inter_dial(srv, "127.0.0.1", lst_b.port, NULL);
-    CHECK(c3 != NULL && c3 != c1 && c3 != c2, "dial b");
-    CHECK(!c3->expected_peer_id_set, "a dial without identity recorded one");
-
+    /* A missing pin is refused before connecting or writing. */
+    CHECK(nodus_server_inter_dial(srv,"127.0.0.1",lst_b.port,NULL)==NULL,
+          "a missing-pin dial was allowed");
+    c3=nodus_server_inter_dial(srv,"127.0.0.1",lst_b.port,&id3);
+    CHECK(c3!=NULL,"dial b pinned");
+    c3->expected_peer_id_set=false; /* lookup-only fixture */
     /* An unpinned conn is not returned to a pinned call. */
     CHECK(nodus_server_inter_find(srv, "127.0.0.1", lst_b.port, &id3) == NULL,
           "an unpinned conn was returned to a pinned find");
@@ -238,24 +296,14 @@ static void test_inter_dial_semantics(void) {
     CHECK(pool_count(&srv->inter_tcp, "127.0.0.1", lst_b.port) == 2,
           "expected the inbound conn and a fresh dial at b");
 
-    /* NULL pin: the old rule — the first pool entry for ip:port, whatever
-     * it is, and no new conn. */
-    {
-        int before = pool_count(&srv->inter_tcp, NULL, 0);
-        r = nodus_server_inter_dial(srv, "127.0.0.1", lst_b.port, NULL);
-        CHECK(r == nodus_tcp_find_by_addr(&srv->inter_tcp, "127.0.0.1", lst_b.port),
-              "a NULL-pin dial did not return the first pool entry");
-        r = nodus_server_inter_dial(srv, "127.0.0.1", lst_a.port, NULL);
-        CHECK(r == nodus_tcp_find_by_addr(&srv->inter_tcp, "127.0.0.1", lst_a.port),
-              "a NULL-pin dial did not return the first pool entry (a)");
-        CHECK(pool_count(&srv->inter_tcp, NULL, 0) == before,
-              "a NULL-pin dial opened a conn although one was pooled");
-    }
+    CHECK(nodus_server_inter_dial(srv,"127.0.0.1",lst_b.port,NULL)==NULL,
+          "a missing pin reused an existing connection");
     PASS();
 out:
-    if (inter_up) nodus_tcp_close(&srv->inter_tcp);
+    if (inter_up) fixture_close(srv);
     if (a_up) nodus_tcp_close(&lst_a);
     if (b_up) nodus_tcp_close(&lst_b);
+    if (srv) nodus_identity_clear(&srv->identity);
     free(srv);
 }
 
@@ -356,7 +404,7 @@ static void test_tick_backoff_and_cap(void) {
         CHECK(nodus_tcp_listen(&lst[i], "127.0.0.1", 0) == 0 && lst[i].port != 0,
               "listen");
     }
-    CHECK(nodus_tcp_init(&srv->inter_tcp, -1) == 0, "inter_tcp init");
+    CHECK(fixture_transport(srv) == 0, "inter_tcp init");
     inter_up = true;
     fake.base.ops = &fake_ops;
     srv->dht = &fake.base;
@@ -386,10 +434,10 @@ static void test_tick_backoff_and_cap(void) {
 
     /* 2. DIAL_CAP + 3 peers, none pooled (new identities): one tick opens
      *    exactly DIAL_CAP conns. */
-    nodus_tcp_close(&srv->inter_tcp);
+    fixture_close(srv);
     inter_up = false;
     memset(&srv->presence.dial_backoff, 0, sizeof(srv->presence.dial_backoff));
-    CHECK(nodus_tcp_init(&srv->inter_tcp, -1) == 0, "inter_tcp re-init");
+    CHECK(fixture_transport(srv) == 0, "inter_tcp re-init");
     inter_up = true;
     for (int i = 0; i < FAKE_MAX_PEERS; i++)
         fake_peer(&fake, i, (uint8_t)(0x80 + i), lst[i].port);
@@ -414,17 +462,28 @@ static void test_tick_backoff_and_cap(void) {
 out:
     if (srv) {
         srv->dht = NULL;
-        if (inter_up) nodus_tcp_close(&srv->inter_tcp);
+        if (inter_up) fixture_close(srv);
     }
     if (lst)
         for (int i = 0; i < FAKE_MAX_PEERS; i++)
             if (lst_up[i]) nodus_tcp_close(&lst[i]);
     free(lst);
+    if (srv) nodus_identity_clear(&srv->identity);
     free(srv);
 }
 
+/* The same raw-machine fixture also checks the point where the recorded
+ * presence pin is enforced: no ENCAPS or SIGN job on a mismatching key. */
+#undef CHECK
+#define main inter_session_fixture_all_cases
+#include "test_inter_session.c"
+#undef main
 int main(void) {
     printf("=== Split S5a item 30 + review: core's 4002 dials pin the peer identity ===\n");
+    (void)inter_session_fixture_all_cases;
+    CHECK(nodus_identity_generate(&ids[0])==0 && nodus_identity_generate(&ids[1])==0);
+    wire_and_pin(true);
+    nodus_identity_clear(&ids[0]); nodus_identity_clear(&ids[1]);
     test_presence_dial_pinned();
     test_inter_dial_semantics();
     test_backoff_pure();
@@ -432,3 +491,4 @@ int main(void) {
     printf("\n%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }
+#endif

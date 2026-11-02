@@ -95,6 +95,8 @@ typedef struct {
     bool                        snap_have;
     uint64_t                    snap_at_ms;
     nodus_witness_ipc_status_t  snap;
+    bool                        roles_have;
+    nodus_inter_role_list_t      roles;
 } ipc_backend_t;
 
 static ipc_backend_t *ipc_be(nodus_chain_backend_t *b) {
@@ -335,7 +337,13 @@ static void ipc_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
     if (cs == IPC_SLOT_CTL && conn == ib->ctl) {
         nodus_witness_ipc_status_t st;
         if (ipc_status_decode(payload, len, &st) != 0) {
-            QGP_LOG_WARN(LOG_TAG, "%s", "malformed ipc_status answer — "
+            nodus_inter_role_list_t list; bool ok;
+            if (nodus_inter_roles_decode(NODUS_WITNESS_IPC_Q_ROLES,payload,len,&list,&ok)==0) {
+                if (ok) { ib->roles=list; ib->roles_have=true; }
+                else QGP_LOG_ERROR(LOG_TAG,"%s","ipc_roles database read failed");
+                return;
+            }
+            QGP_LOG_WARN(LOG_TAG, "%s", "malformed control answer — "
                          "closing the control connection");
             nodus_tcp_disconnect(&ib->tcp, conn);
             return;
@@ -343,6 +351,11 @@ static void ipc_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
         ib->snap = st;
         ib->snap_have = true;
         ib->snap_at_ms = nodus_time_mono_ms();
+        /* Same acquisition state for first-list and failed-boundary cases:
+         * each status asks until this epoch is held, then silence. */
+        if (st.chain_open && (!ib->roles_have ||
+            st.height/DNAC_EPOCH_LENGTH > ib->roles.height/DNAC_EPOCH_LENGTH))
+            ipc_ctl_send_q(ib,NODUS_WITNESS_IPC_Q_ROLES);
         return;
     }
     if (cs >= 0 && ib->sess[cs].ipc == conn) {
@@ -360,6 +373,7 @@ static void ipc_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
     if (cs == IPC_SLOT_CTL && conn == ib->ctl) {
         ib->ctl = NULL;
         ib->snap_have = false;
+        /* A control reconnect preserves the last installed list. */
         ib->ctl_next_dial_ms = nodus_time_mono_ms() + ib->ctl_backoff_ms;
         QGP_LOG_WARN(LOG_TAG, "control connection to the witness lost (%s) "
                      "— chain status unavailable until it is back", ib->path);
@@ -392,6 +406,14 @@ static void ipcb_status(nodus_chain_backend_t *b, nodus_t2_status_info_t *info) 
     info->block_height = st->height;
     memcpy(info->state_root, st->state_root, sizeof(info->state_root));
     memcpy(info->chain_id, st->chain_id, sizeof(info->chain_id));
+}
+
+static int ipcb_roles(nodus_chain_backend_t *b, nodus_inter_role_list_t *out) {
+    ipc_backend_t *ib = ipc_be(b);
+    if (!out) return -1;
+    if (!ib->roles_have) return 0;
+    *out=ib->roles;
+    return 1;
 }
 
 static bool ipcb_chain_open(nodus_chain_backend_t *b) {
@@ -444,6 +466,7 @@ static const nodus_chain_backend_ops_t ipc_ops = {
     .read_pending   = ipcb_read_pending,
     .status         = ipcb_status,
     .chain_open     = ipcb_chain_open,
+    .roles          = ipcb_roles,
     .listen_port    = ipcb_listen_port,
     .dispatch_dnac  = ipcb_dispatch_dnac,
     .cc_collect     = ipcb_cc_collect,

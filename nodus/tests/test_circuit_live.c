@@ -3,6 +3,9 @@
  *
  * Starts one server, connects two clients to it, opens a circuit between them
  * via fingerprint-based routing, and verifies bidirectional data flow.
+ * Fixture: peer authentication is required; circuit assertions stay unchanged.
+ * No extra compile flags/environment; teardown removes the test directory.
+ * Setup failure fails the test rather than skipping delivery assertions.
  */
 
 #include "server/nodus_server.h"
@@ -68,6 +71,7 @@ static void *server_thread(void *arg) {
     config.peer_port = 15002;
     config.ch_port  = 15003;
     config.witness_port = 15004;
+    config.require_peer_auth = true;
     snprintf(config.data_path, sizeof(config.data_path), "/tmp/nodus_circuit_test_%d", getpid());
 
     char cmd[256];

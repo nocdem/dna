@@ -30,7 +30,8 @@
 #include "witness/nodus_witness_network_file.h" /* nodus_network_file_target_t */
 #include "server/nodus_chain_backend.h"     /* srv->chain */
 #include "server/nodus_presence.h"
-#include "server/nodus_inter_dial.h"       /* the 4002 dialer handshake (S5a) */
+#include "server/nodus_inter_dial.h"
+#include "server/nodus_inter_session.h"       /* the 4002 dialer handshake (S5a) */
 #include "server/nodus_partial_wipe.h"     /* the H-10 boot gate (S5b) */
 #include "circuit/nodus_circuit.h"
 #include "circuit/nodus_inter_circuit.h"
@@ -153,7 +154,7 @@ typedef struct {
     bool                storage_external;
 } nodus_server_config_t;
 
-/* ── Inter-node session (lightweight — rate limiting only, no auth) ── */
+/* ── Inter-node application state (transport owns admission) ─────── */
 
 typedef struct {
     nodus_tcp_conn_t   *conn;
@@ -162,11 +163,9 @@ typedef struct {
      * conn is set (connect / accept); 0 once cleared. */
     uint64_t            dht_gen;
 
-    /* C-01/C-02: Dilithium5 authentication (same as client sessions) */
+    /* Authenticated peer supplied by the admitted session transport. */
     nodus_key_t         client_fp;
     nodus_pubkey_t      client_pk;
-    uint8_t             nonce[NODUS_NONCE_LEN];
-    bool                nonce_pending;
     bool                authenticated;
 
     /* Per-session rate limiting (the DHT methods' sv / fv windows are the
@@ -178,17 +177,6 @@ typedef struct {
     uint64_t            w_window_start;
     int                 w_count;
 
-    /* Peer protocol version (from hello) */
-    uint32_t            proto_version;
-
-    /* The DIALER side of the handshake on a conn we opened (split S5a,
-     * decision item 28: server/nodus_inter_dial.h — challenge nonce, the
-     * pending KEM secret between key_init and key_ack, the proven peer
-     * identity). Channel crypto itself lives on the conn (B3 fix:
-     * sess->conn->channel_crypto). On a dialed conn, `authenticated` above
-     * and dial.authenticated are carried both ways around each call
-     * (dispatch_inter). Unused on an accepted conn. */
-    nodus_inter_dial_t  dial;
 } nodus_inter_session_t;
 
 /* ── Client session ──────────────────────────────────────────────── */
@@ -246,7 +234,13 @@ typedef struct nodus_server {
 
     /* Transports */
     nodus_tcp_t             tcp;
-    nodus_tcp_t             inter_tcp;      /* Inter-node TCP transport (port 4002) */
+    nodus_tcp_t             inter_tcp;
+    nodus_inter_session_module_t *inter_session;
+    bool inter_chain_known;
+    uint8_t inter_chain_id[32];
+    uint64_t inter_chain_height;      /* Inter-node TCP transport (port 4002) */
+    bool inter_roles_have;
+    nodus_inter_role_list_t inter_roles;
     /* P2P-PORT F5 — `witness_tcp` (the nodus_tcp framed transport on port
      * 4004) is DELETED: 4004 is the witness's p2p host
      * (witness->p2p, nodus_witness_p2p.h). */
@@ -396,6 +390,10 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config);
  * (above). Same contract as nodus_server_init; -1 also when `be` is NULL
  * or refuses (admit, or a NULL slot the config needs).
  */
+/* Refresh once per loop pass beside the chain tick (also for manual-loop
+ * fixtures); session callbacks read this snapshot without another DB read. */
+void nodus_server_inter_chain_refresh(nodus_server_t *srv);
+
 int nodus_server_init_ex(nodus_server_t *srv, const nodus_server_config_t *config,
                          const nodus_server_backends_t *be);
 

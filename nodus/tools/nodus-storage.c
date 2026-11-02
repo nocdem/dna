@@ -242,8 +242,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "  Data: %s\n", config.data_path[0] ? config.data_path
                                                          : "/tmp");
     fprintf(stderr, "  IPC socket: %s\n", sock_path);
-    fprintf(stderr, "  4002 dials: %s\n", config.require_peer_auth
-            ? "authenticated (require_peer_auth)" : "plaintext");
+    fprintf(stderr, "  4002 dials: authenticated encrypted sessions, role required\n");
 
     while (!g_stop) {
         nodus_dht_ipc_poll(ipc, 50);

@@ -42,6 +42,11 @@
  * pass. A count only — no clock on the witness side. */
 #define NODUS_WITNESS_IPC_READ_BUDGET_FRAMES  8
 
+_Static_assert(NODUS_WITNESS_IPC_ROLES_FRAME_MAX >=
+    39u + (128u + 256u) * 66u, "role-list frame must fit both full arrays");
+_Static_assert(NODUS_WITNESS_IPC_ROLES_FRAME_MAX < NODUS_MAX_FRAME_TCP,
+               "role-list frame must fit the Unix transport");
+
 /* ── Status (shared with the in-process backend) ─────────────────── */
 
 void nodus_witness_status_fill(nodus_witness_t *w,
@@ -68,6 +73,55 @@ void nodus_witness_status_fill(nodus_witness_t *w,
      * writer); a non-successor witness reports the zeroed
      * state_root from the caller's memset, as it already did. */
     memcpy(info->chain_id, w->chain_id, 32);
+}
+
+/* Approved build plan 4.1 c: ACTIVE/ELIGIBLE/RETIRING validators and
+ * ACTIVE/EXITING storage nodes. No result is published on a partial scan. */
+static int role_fp_cmp(const void *a, const void *b) {
+    return nodus_key_cmp(a,b);
+}
+
+int nodus_witness_roles_build(nodus_witness_t *w, nodus_inter_role_list_t *out) {
+    if (!out) return -1;
+    memset(out,0,sizeof(*out));
+    if (!w || !w->db || nodus_witness_block_height_checked(w,&out->height)!=0) return -1;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(w->db,
+        "SELECT pubkey FROM validators WHERE status IN (0,4,1)",
+        -1, &s, NULL) != SQLITE_OK) goto fail;
+    int rc;
+    while ((rc = sqlite3_step(s)) == SQLITE_ROW) {
+        if (out->validator_count>=DNAC_MAX_VALIDATORS ||
+            sqlite3_column_bytes(s, 0) != NODUS_PK_BYTES ||
+            !sqlite3_column_blob(s, 0)) goto fail;
+        nodus_pubkey_t pk;
+        memcpy(pk.bytes, sqlite3_column_blob(s, 0), NODUS_PK_BYTES);
+        if (nodus_fingerprint(&pk,&out->validators[out->validator_count]) != 0) goto fail;
+        out->validator_count++;
+    }
+    int fin = sqlite3_finalize(s); s=NULL;
+    if (rc != SQLITE_DONE || fin != SQLITE_OK) goto fail;
+    if (sqlite3_prepare_v2(w->db,
+        "SELECT node_fp FROM v2_storage_nodes WHERE status IN (1,2)",
+        -1, &s, NULL) != SQLITE_OK) goto fail;
+    while ((rc = sqlite3_step(s)) == SQLITE_ROW) {
+        if (out->storage_count>=DNA_V2_STORAGE_SET_MAX ||
+            sqlite3_column_bytes(s,0)!=NODUS_KEY_BYTES || !sqlite3_column_blob(s,0)) goto fail;
+        memcpy(out->storage[out->storage_count++].bytes,sqlite3_column_blob(s,0),NODUS_KEY_BYTES);
+    }
+    fin = sqlite3_finalize(s); s=NULL;
+    if (rc != SQLITE_DONE || fin != SQLITE_OK) goto fail;
+    qsort(out->validators,out->validator_count,sizeof(out->validators[0]),role_fp_cmp);
+    qsort(out->storage,out->storage_count,sizeof(out->storage[0]),role_fp_cmp);
+    return 1;
+fail:
+    sqlite3_finalize(s);
+    memset(out,0,sizeof(*out));
+    return -1;
+}
+
+static int witness_h_roles(void *ctx, nodus_inter_role_list_t *out) {
+    return nodus_witness_roles_build(ctx, out);
 }
 
 /* ── Handlers bound to a witness ─────────────────────────────────── */
@@ -109,6 +163,7 @@ void nodus_witness_ipc_handlers_for(nodus_witness_t *w,
     out->dispatch_dnac = witness_h_dispatch_dnac;
     out->cc_collect    = witness_h_cc_collect;
     out->status        = witness_h_status;
+    out->roles         = witness_h_roles;
     out->ctx           = w;
 }
 
@@ -168,6 +223,7 @@ static int ipc_parse_ctl(const uint8_t *p, size_t len,
         if (k.tstr.len == 1 && memcmp(k.tstr.ptr, "q", 1) == 0) {
             if (has_q || v.type != CBOR_ITEM_TSTR || v.tstr.len >= 32)
                 return -1;
+            if (memchr(v.tstr.ptr,'\0',v.tstr.len)) return -1;
             memcpy(q, v.tstr.ptr, v.tstr.len);
             q[v.tstr.len] = '\0';
             has_q = true;
@@ -279,8 +335,21 @@ static void ipc_on_ctl_frame(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn,
     uint8_t tk[NODUS_SESSION_TOKEN_LEN];
 
     if (ipc_parse_ctl(payload, len, q, &has_pk, pk, &has_tk, tk) != 0 ||
-        strcmp(q, NODUS_WITNESS_IPC_Q_STATUS) != 0 || has_pk || has_tk) {
-        ipc_refuse(ipc, conn, "control frame is not ipc_status");
+        (strcmp(q, NODUS_WITNESS_IPC_Q_STATUS) != 0 &&
+         strcmp(q, NODUS_WITNESS_IPC_Q_ROLES) != 0) || has_pk || has_tk) {
+        ipc_refuse(ipc, conn, "control frame is not ipc_status or ipc_roles");
+        return;
+    }
+
+    if (!strcmp(q,NODUS_WITNESS_IPC_Q_ROLES)) {
+        nodus_inter_role_list_t list={0};
+        int rc=ipc->h.roles ? ipc->h.roles(ipc->h.ctx,&list) : -1;
+        bool ok=rc==1 && list.validator_count<=DNAC_MAX_VALIDATORS &&
+                        list.storage_count<=DNA_V2_STORAGE_SET_MAX;
+        if (!ok) QGP_LOG_ERROR(LOG_TAG,"%s","ipc_roles database read failed or list exceeds bound");
+        uint8_t buf[NODUS_WITNESS_IPC_ROLES_FRAME_MAX];
+        size_t n=nodus_inter_roles_encode(q,&list,ok,buf,sizeof(buf));
+        if (n) nodus_tcp_send(conn,buf,n);
         return;
     }
 

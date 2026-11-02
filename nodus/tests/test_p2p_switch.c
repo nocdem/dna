@@ -35,7 +35,8 @@
  *     right class (dialer OUTBOUND, acceptor INBOUND).
  *   · refusals: another chain id (at the secret connection, N9); the same
  *     chain id but another NodeInfo network (CompatibleWith); a peer on
- *     P2P version 7 (the secret connection's HELLO, before any job); a
+ *     legacy HELLO version 7 or 8 (before any job), with a positive
+ *     4004 HELLO control reaching the responder's DECAPS job; a
  *     dial to ID X answered by key Y — aborted with NO Encaps job at all
  *     (R-P2P-14); a duplicate ID (same identity from a second address),
  *     also when that identity is bonded; a duplicate IP (and admitted
@@ -1450,8 +1451,11 @@ static void test_wrong_network(void)
     }
 }
 
-/* A raw secret-connection initiator speaking P2P version 7. */
-static void test_wrong_p2p_version(void)
+/* Legacy HELLO versions 7 and 8 are refused before any job. Compile
+ * flags: none. Environment: none. Leaves nothing. A generic HELLO
+ * failure could falsely pass; test_4004_hello_version proves that the
+ * approved value reaches DECAPS through the same transport. */
+static void check_wrong_p2p_version(const char *name, uint32_t proto_ver)
 {
     node_params_t pb;
     node_t *B;
@@ -1462,7 +1466,7 @@ static void test_wrong_p2p_version(void)
     int slot = -1, i, ok = 1;
     uint64_t gen = 0;
 
-    TEST("P2P version 7 refused at HELLO (N9), before any job");
+    TEST(name);
     params_default(&pb, "10.0.0.2", 4004);
     B = node_new("B", &pb);
     if (B == NULL || rid == NULL || sc == NULL || nodus_identity_generate(rid) != 0) {
@@ -1476,7 +1480,7 @@ static void test_wrong_p2p_version(void)
     h.sign = sc_sign;
     h.verify = sc_verify;
     CHECK(cmt_p2p_sc_init(sc, CMT_P2P_SC_ROLE_INITIATOR, &h, rid->pk.bytes, NULL,
-                          NULL, 7u, CHAIN_A) == CMT_OK);
+                          NULL, proto_ver, CHAIN_A) == CMT_OK);
     (void)cmt_p2p_ip_parse("10.0.0.9", 8, &rip);
     CHECK(cmt_p2p_transport_accept(&B->t, &rip, 5555, 0, &slot, &gen) ==
           CMT_P2P_ERR_NONE);
@@ -1497,6 +1501,9 @@ static void test_wrong_p2p_version(void)
     }
     CHECK(cmt_p2p_transport_conn(&B->t, slot, gen) == NULL);
     CHECK(B->jobs_seen_kind[CMT_P2P_SC_JOB_DECAPS] == 0 && B->t.n_inbound == 0);
+    CHECK(B->jobs_seen_class[CMT_P2P_JOB_CLASS_INBOUND] == 0 &&
+          B->jobs_seen_class[CMT_P2P_JOB_CLASS_OUTBOUND] == 0);
+    CHECK(cmt_p2p_sc_job(sc) == NULL);
     CHECK(n_peers(B) == 0);
     cmt_p2p_sc_clear(sc);
     free(sc);
@@ -1507,6 +1514,12 @@ static void test_wrong_p2p_version(void)
     } else {
         FAIL("p2p version");
     }
+}
+
+static void test_wrong_p2p_version(void)
+{
+    check_wrong_p2p_version("P2P version 7 refused at HELLO, before any job", 7u);
+    check_wrong_p2p_version("old P2P version 8 refused at HELLO, before any job", 8u);
 }
 
 static void test_dial_pin(void)
@@ -1861,7 +1874,7 @@ static raw_t *raw_new(cmt_p2p_sc_role_t role)
     if (cmt_p2p_sc_init(r->sc, role, &r->host, r->holder->id.pk.bytes,
                         role == CMT_P2P_SC_ROLE_RESPONDER ? r->holder->id.mlkem_pk : NULL,
                         role == CMT_P2P_SC_ROLE_RESPONDER ? r->holder->id.mlkem_sk : NULL,
-                        CMT_P2P_PROTOCOL_VERSION, CHAIN_A) != CMT_OK) {
+                        CMT_P2P_SC_PROTO_VER_4004, CHAIN_A) != CMT_OK) {
         free(r->holder);
         free(r->sc);
         free(r);
@@ -1914,6 +1927,51 @@ static void raw_pump(raw_t *r, node_t *n, int slot, uint64_t gen)
     }
     while ((j = cmt_p2p_sc_job(r->sc)) != NULL) {
         (void)cmt_p2p_sc_job_done(r->sc, cmt_p2p_sc_job_run(j, &r->host));
+    }
+}
+
+/* Positive control for the legacy-version refusals: the literal approved
+ * 4004 HELLO reaches a pending responder DECAPS job. Compile flags: none.
+ * Environment: none. Leaves nothing (world_reset returns the held job).
+ * Comparing a shared constant with itself could falsely pass; the raw
+ * version is checked against a literal, and test_p2p_secret checks bytes. */
+static void test_4004_hello_version(void)
+{
+    node_params_t pb;
+    node_t *B;
+    raw_t *r = raw_new(CMT_P2P_SC_ROLE_INITIATOR);
+    cmt_p2p_ip_t rip;
+    int slot = -1, i, ok = 1;
+    uint64_t gen = 0;
+
+    TEST("4004 HELLO 0x0FA40008 reaches responder DECAPS");
+    params_default(&pb, "10.0.0.2", 4004);
+    B = node_new("B", &pb);
+    if (B == NULL || r == NULL) {
+        FAIL("setup");
+        raw_free(r);
+        world_reset();
+        return;
+    }
+    CHECK(r->sc->proto_ver == 0x0FA40008u);
+    CHECK(cmt_p2p_ip_parse("10.0.0.9", 8, &rip));
+    CHECK(cmt_p2p_transport_accept(&B->t, &rip, 5555, 0, &slot, &gen) ==
+          CMT_P2P_ERR_NONE);
+    for (i = 0; i < 10 && B->jobs_seen_kind[CMT_P2P_SC_JOB_DECAPS] == 0; i++) {
+        raw_pump(r, B, slot, gen);
+        cmt_p2p_switch_tick(&B->sw);
+    }
+    CHECK(cmt_p2p_transport_conn(&B->t, slot, gen) != NULL);
+    CHECK(B->jobs_seen_kind[CMT_P2P_SC_JOB_DECAPS] == 1 &&
+          B->njobs[CMT_P2P_JOB_CLASS_INBOUND] == 1);
+    CHECK(B->jobs_seen_class[CMT_P2P_JOB_CLASS_INBOUND] == 1 &&
+          B->jobs_seen_class[CMT_P2P_JOB_CLASS_OUTBOUND] == 0);
+    raw_free(r);
+    world_reset();
+    if (ok) {
+        PASS();
+    } else {
+        FAIL("4004 HELLO did not reach DECAPS");
     }
 }
 
@@ -3075,6 +3133,7 @@ int main(void)
     test_connect_and_exchange();
     test_wrong_network();
     test_wrong_p2p_version();
+    test_4004_hello_version();
     test_dial_pin();
     test_duplicate_id();
     test_duplicate_ip();

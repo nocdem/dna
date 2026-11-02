@@ -3,6 +3,9 @@
  *
  * Tests the public nodus_client API against a local test server.
  * Exercises connect, auth, DHT put/get/listen, channel create/post/get/subscribe.
+ * Fixture: peer authentication is required; existing client assertions stay
+ * unchanged. No extra compile flags/environment; teardown removes the test
+ * directory. Setup failure fails the test rather than skipping assertions.
  */
 
 #include "nodus/nodus.h"
@@ -65,6 +68,7 @@ static void *server_thread(void *arg) {
     config.peer_port = 15102;
     config.ch_port  = 15103;
     config.witness_port = 15104;
+    config.require_peer_auth = true;
     snprintf(config.data_path, sizeof(config.data_path),
              "/tmp/nodus_client_test_%d", getpid());
 

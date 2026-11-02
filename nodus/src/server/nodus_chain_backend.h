@@ -33,6 +33,7 @@
 #include "protocol/nodus_tier2.h"           /* nodus_t2_status_info_t */
 #include "witness/nodus_witness_host.h"
 #include "witness/nodus_witness.h"          /* nodus_witness_config_t */
+#include "server/nodus_inter_session.h"     /* nodus_inter_role_list_t */
 
 #ifdef __cplusplus
 extern "C" {
@@ -69,6 +70,11 @@ typedef struct {
 
     /** true when a chain database is open (arms the partial-wipe gate). */
     bool (*chain_open)(nodus_chain_backend_t *b);
+
+    /* 1 complete list, 0 no list yet, -1 database fault. In-process: read
+     * only when the holder needs a new epoch. IPC: return the held list;
+     * status answers trigger the whole-list query, never a peer lookup. */
+    int (*roles)(nodus_chain_backend_t *b, nodus_inter_role_list_t *out);
 
     /** The bound 4004 port (0 when none); `*opened` = the p2p host exists. */
     int  (*listen_port)(nodus_chain_backend_t *b, bool *opened);

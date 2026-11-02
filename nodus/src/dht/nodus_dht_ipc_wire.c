@@ -142,6 +142,31 @@ size_t nodus_dht_ipc_encode_routing(const nodus_dht_peer_addr_t *r, int n,
     return enc_done(&enc);
 }
 
+size_t nodus_dht_ipc_encode_roles(const nodus_inter_role_list_t *a,
+                                  bool ok, uint8_t *buf, size_t cap) {
+    if (a) return nodus_inter_roles_encode(NODUS_DHT_IPC_Q_ROLES,a,ok,buf,cap);
+    if (!buf) return 0;
+    cbor_encoder_t e; cbor_encoder_init(&e, buf, cap);
+    cbor_encode_map(&e, 1);
+    cbor_encode_cstr(&e, "q"); cbor_encode_cstr(&e, NODUS_DHT_IPC_Q_ROLES);
+    return enc_done(&e);
+}
+
+size_t nodus_dht_ipc_encode_status(const nodus_dht_ipc_msg_t *a,
+                                   uint8_t *buf, size_t cap) {
+    if (!buf) return 0;
+    cbor_encoder_t e; cbor_encoder_init(&e, buf, cap);
+    cbor_encode_map(&e, a ? 5 : 1);
+    cbor_encode_cstr(&e, "q"); cbor_encode_cstr(&e, NODUS_DHT_IPC_Q_STATUS);
+    if (a) {
+        cbor_encode_cstr(&e, "co"); cbor_encode_bool(&e, a->chain_open);
+        cbor_encode_cstr(&e, "h"); cbor_encode_uint(&e, a->height);
+        cbor_encode_cstr(&e, "ci"); cbor_encode_bstr(&e, a->chain_id, 32);
+        cbor_encode_cstr(&e, "ch"); cbor_encode_bool(&e, a->chain_here);
+    }
+    return enc_done(&e);
+}
+
 /* ── The decoder ─────────────────────────────────────────────────── */
 
 /* Keys, one bit each. */
@@ -149,7 +174,9 @@ enum {
     K_Q  = 1u << 0,  K_V  = 1u << 1,  K_K  = 1u << 2,  K_S  = 1u << 3,
     K_G  = 1u << 4,  K_B  = 1u << 5,  K_FP = 1u << 6,  K_PK = 1u << 7,
     K_IP = 1u << 8,  K_PO = 1u << 9,  K_P  = 1u << 10, K_ID = 1u << 11,
-    K_UP = 1u << 12, K_TP = 1u << 13, K_M  = 1u << 14, K_R  = 1u << 15
+    K_UP = 1u << 12, K_TP = 1u << 13, K_M  = 1u << 14, K_R  = 1u << 15,
+    K_OK = 1u << 16, K_VA = 1u << 17, K_ST = 1u << 18, K_CO = 1u << 19,
+    K_H = 1u << 20, K_CI = 1u << 21, K_CH = 1u << 22
 };
 
 static bool key_is(const cbor_item_t *k, const char *s) {
@@ -241,6 +268,20 @@ int nodus_dht_ipc_decode(const uint8_t *p, size_t len, nodus_dht_ipc_msg_t *out,
         if (k.type != CBOR_ITEM_TSTR) return -1;
         unsigned bit;
         bool ok;
+        if (key_is(&k,"va") || key_is(&k,"st")) {
+            bool va=key_is(&k,"va"); bit=va ? K_VA : K_ST;
+            cbor_item_t arr=cbor_decode_next(&dec);
+            size_t max=va ? DNAC_MAX_VALIDATORS : DNA_V2_STORAGE_SET_MAX;
+            if ((seen & bit) || arr.type!=CBOR_ITEM_ARRAY || arr.count>max) return -1;
+            nodus_key_t *entries=va ? tmp.roles.validators : tmp.roles.storage;
+            if (va) tmp.roles.validator_count=arr.count; else tmp.roles.storage_count=arr.count;
+            for (size_t j=0;j<arr.count;++j) {
+                cbor_item_t entry=cbor_decode_next(&dec);
+                if (!copy_bstr(&entry,entries[j].bytes,NODUS_KEY_BYTES)) return -1;
+            }
+            seen |= bit;
+            continue;
+        }
         if (key_is(&k, "m") || key_is(&k, "r")) {
             /* The array is decoded in place (it is the value). */
             cbor_item_t arr = cbor_decode_next(&dec);
@@ -287,6 +328,16 @@ int nodus_dht_ipc_decode(const uint8_t *p, size_t len, nodus_dht_ipc_msg_t *out,
             bit = K_UP; ok = get_u16(&v, &tmp.port);
         } else if (key_is(&k, "tp")) {
             bit = K_TP; ok = get_u16(&v, &tmp.tcp_port);
+        } else if (key_is(&k, "ok")) {
+            bit = K_OK; ok = v.type == CBOR_ITEM_BOOL; tmp.ok = ok && v.bool_val;
+        } else if (key_is(&k, "co")) {
+            bit = K_CO; ok = v.type == CBOR_ITEM_BOOL; tmp.chain_open = ok && v.bool_val;
+        } else if (key_is(&k, "ch")) {
+            bit = K_CH; ok = v.type == CBOR_ITEM_BOOL; tmp.chain_here = ok && v.bool_val;
+        } else if (key_is(&k, "h")) {
+            bit = K_H; ok = v.type == CBOR_ITEM_UINT; tmp.height = v.uint_val;
+        } else if (key_is(&k, "ci")) {
+            bit = K_CI; ok = copy_bstr(&v, tmp.chain_id, sizeof(tmp.chain_id));
         } else {
             return -1;
         }
@@ -295,7 +346,15 @@ int nodus_dht_ipc_decode(const uint8_t *p, size_t len, nodus_dht_ipc_msg_t *out,
     }
     if (dec.error || dec.pos != len || !(seen & K_Q)) return -1;
 
-    if (strcmp(q, NODUS_DHT_IPC_Q_ORIGIN) == 0) {
+    if (strcmp(q, NODUS_DHT_IPC_Q_ROLES) == 0) {
+        if (seen != K_Q && seen != (K_Q | K_H | K_OK | K_VA | K_ST)) return -1;
+        tmp.type = NODUS_DHT_IPC_MSG_ROLES; tmp.answer = (seen & K_OK) != 0;
+        tmp.roles.height=tmp.height;
+        if (tmp.answer && !tmp.ok && (tmp.roles.validator_count || tmp.roles.storage_count)) return -1;
+    } else if (strcmp(q, NODUS_DHT_IPC_Q_STATUS) == 0) {
+        if (seen != K_Q && seen != (K_Q | K_CO | K_H | K_CI | K_CH)) return -1;
+        tmp.type = NODUS_DHT_IPC_MSG_STATUS; tmp.answer = (seen & K_CH) != 0;
+    } else if (strcmp(q, NODUS_DHT_IPC_Q_ORIGIN) == 0) {
         unsigned common = K_Q | K_V | K_K | K_S | K_G | K_B | K_FP;
         if (v_ver != NODUS_DHT_IPC_VERSION) return -1;
         if (v_kind == 0) {

@@ -132,6 +132,8 @@ set(NC_SOURCES
   ${ROOT}/messenger/dht/client/dna_profile.c
   ${ROOT}/nodus/src/client/nodus_client.c
   ${ROOT}/nodus/src/transport/nodus_tcp.c
+  ${ROOT}/nodus/src/server/nodus_inter_session.c
+  ${ROOT}/shared/dnac/cmt_p2p_secret.c
   # native nodus_tcp.c also carries the server's WebSocket entry (the
   # __EMSCRIPTEN__ branch does not); its codec lives here
   ${ROOT}/nodus/src/transport/nodus_ws.c

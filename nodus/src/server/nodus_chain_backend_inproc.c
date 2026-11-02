@@ -50,6 +50,10 @@ static void inproc_status(nodus_chain_backend_t *b,
     nodus_witness_status_fill(inproc_w(b), info);
 }
 
+static int inproc_roles(nodus_chain_backend_t *b, nodus_inter_role_list_t *out) {
+    return nodus_witness_roles_build(inproc_w(b), out);
+}
+
 static bool inproc_chain_open(nodus_chain_backend_t *b) {
     return inproc_w(b)->db != NULL;
 }
@@ -105,6 +109,7 @@ static const nodus_chain_backend_ops_t inproc_ops = {
     .read_pending  = inproc_read_pending,
     .status        = inproc_status,
     .chain_open    = inproc_chain_open,
+    .roles         = inproc_roles,
     .listen_port   = inproc_listen_port,
     .dispatch_dnac = inproc_dispatch_dnac,
     .cc_collect    = inproc_cc_collect,

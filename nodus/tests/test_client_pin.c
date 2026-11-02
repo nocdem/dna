@@ -90,6 +90,10 @@ static int failed = 0;
 
 /* ── Real server (test_client.c / test_mlkem_handshake.c pattern) ─────── */
 
+/* Require peer authentication without changing the client pin assertions.
+ * No extra compile flags/environment; stop_real_server removes the test
+ * directory. Setup failure fails the real-server cases instead of skipping. */
+
 /* Large — static, never a stack local. */
 static nodus_server_t g_server;
 static nodus_server_config_t g_server_cfg;
@@ -146,6 +150,7 @@ static int start_real_server(void) {
     g_server_cfg.peer_port    = REAL_BASE_PORT + 2;
     g_server_cfg.ch_port      = REAL_BASE_PORT + 3;
     g_server_cfg.witness_port = REAL_BASE_PORT + 4;
+    g_server_cfg.require_peer_auth = true;
     snprintf(g_server_cfg.data_path, sizeof(g_server_cfg.data_path),
              "/tmp/nodus_client_pin_test_%d", getpid());
 

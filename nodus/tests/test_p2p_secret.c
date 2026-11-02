@@ -581,6 +581,56 @@ _Static_assert(CMT_P2P_SC_HELLO_BODY >= 128 && CMT_P2P_SC_HELLO_BODY < 16384 &&
                CMT_P2P_SC_HELLO_R_BODY < 16384 && CMT_P2P_SC_KEYX_BODY >= 128 &&
                CMT_P2P_SC_KEYX_BODY < 16384, "every prefix is 2 bytes");
 
+/* Build plan 2026-10-29 §2.3 (values: A3, operator "Onaylıyorum."): pin all three port/version values and their actual
+ * HELLO / HELLO_R big-endian bytes. Compile flags: none. Environment:
+ * none. Leaves nothing. Comparing a constant with itself could falsely
+ * pass; independent numeric and byte literals guard that failure mode. */
+static void test_port_proto_versions(void)
+{
+    static const struct {
+        const char *name;
+        uint32_t value;
+        uint32_t expected;
+        uint8_t bytes[4];
+    } cases[] = {
+        { "4004 HELLO: 0x0FA40008, bytes 0F A4 00 08",
+          CMT_P2P_SC_PROTO_VER_4004, 0x0FA40008u, { 0x0f, 0xa4, 0x00, 0x08 } },
+        { "4002 session: 0x0FA20001, bytes 0F A2 00 01",
+          CMT_P2P_SC_PROTO_VER_4002, 0x0FA20001u, { 0x0f, 0xa2, 0x00, 0x01 } },
+        { "4001 / WebSocket: 0x0FA10001, bytes 0F A1 00 01",
+          CMT_P2P_SC_PROTO_VER_4001, 0x0FA10001u, { 0x0f, 0xa1, 0x00, 0x01 } },
+    };
+    size_t k;
+
+    for (k = 0; k < sizeof(cases) / sizeof(cases[0]); k++) {
+        side_t i = { 0 }, r = { 0 };
+        const uint8_t *o;
+        size_t n = 0, used = 0;
+        bool ok;
+
+        TEST(cases[k].name);
+        ok = cases[k].value == cases[k].expected &&
+             side_init(&i, g_a, CMT_P2P_SC_ROLE_INITIATOR, NULL, NULL,
+                       cases[k].value, CHAIN_A) == CMT_OK &&
+             side_init(&r, g_b, CMT_P2P_SC_ROLE_RESPONDER, NULL, NULL,
+                       cases[k].value, CHAIN_A) == CMT_OK;
+        if (ok) {
+            o = cmt_p2p_sc_out(i.sc, &n);
+            ok = n == HELLO_WIRE &&
+                 memcmp(o + OFF_HELLO_PV, cases[k].bytes, sizeof(cases[k].bytes)) == 0 &&
+                 cmt_p2p_sc_recv(r.sc, o, n, &used) == CMT_OK && used == n;
+        }
+        if (ok) {
+            o = cmt_p2p_sc_out(r.sc, &n);
+            ok = n == PFX + CMT_P2P_SC_HELLO_R_BODY &&
+                 memcmp(o + OFF_HR_PV, cases[k].bytes, sizeof(cases[k].bytes)) == 0;
+        }
+        if (ok) PASS(); else FAIL("port/version value or wire bytes differ");
+        side_free(&i);
+        side_free(&r);
+    }
+}
+
 typedef struct {
     const char *name;
     int dir;               /* 0 = I→R, 1 = R→I */
@@ -654,8 +704,7 @@ static void test_mismatch(const char *name, uint32_t pv_i, const uint8_t *ch_i,
     opts_default(&o);
     drive(&i, &r, &ir, &ri, &o);
     ok = neither_authenticated(&i, &r) && r.sc->state == CMT_P2P_SC_ST_DEAD &&
-         ((i.jobs_seen | r.jobs_seen) & KEM_JOBS) == 0 &&
-         r.jobs_seen == 0;
+         i.jobs_seen == 0 && r.jobs_seen == 0;
     if (ok) PASS(); else FAIL("mismatch not refused before KEM");
     free_pair(&i, &r, &ir, &ri);
 }
@@ -1180,6 +1229,14 @@ int main(void)
     test_read_write();
     test_frame_boundaries();
     test_tamper();
+    test_port_proto_versions();
+    /* Port separation: 4002 cannot handshake with 4004 before any job.
+     * Compile flags: none; environment: none; leaves nothing. A pair of
+     * equal wrong constants could mask the distinction; the literal
+     * value and wire-byte cases above pin each constant independently. */
+    test_mismatch("4002 vs 4004 -> refused before any job",
+                  CMT_P2P_SC_PROTO_VER_4002, CHAIN_A,
+                  CMT_P2P_SC_PROTO_VER_4004, CHAIN_A);
     test_mismatch("proto_ver 8 vs 7 -> refused before KEM", PROTO_VER, CHAIN_A,
                   7u, CHAIN_A);
     test_mismatch("chain id A vs B -> refused before KEM", PROTO_VER, CHAIN_A,

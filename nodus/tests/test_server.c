@@ -3,6 +3,9 @@
  *
  * Starts a server, connects a client, authenticates,
  * then tests PUT/GET/LISTEN round-trips.
+ * Fixture: peer authentication is required; the round-trip assertions stay
+ * unchanged. No extra compile flags/environment; teardown removes the test
+ * directory. Setup failure fails the test rather than skipping assertions.
  */
 
 #include "server/nodus_server.h"
@@ -90,6 +93,7 @@ static void *server_thread(void *arg) {
     config.peer_port    = TS_PEER_PORT;
     config.ch_port      = TS_CH_PORT;
     config.witness_port = TS_WITNESS_PORT;
+    config.require_peer_auth = true;
     snprintf(config.data_path, sizeof(config.data_path), "/tmp/nodus_test_%d", getpid());
 
     /* Create data dir */

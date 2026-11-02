@@ -56,6 +56,59 @@ static uint64_t now_ns(void) {
 
 /* ── Server threads (mirror test_circuit_cross_live) ────────────── */
 static nodus_server_t srv_a, srv_b;
+/* Admission fixture, as in test_circuit_cross_live: both nodes report the
+ * same test chain and a validator role. No protocol constants change.
+ * Build flags: none beyond the normal target (also ASan/UBSan); environment:
+ * existing PROBE_* controls. Temporary server dirs are removed on teardown.
+ * Latency still requires a real admitted session and received circuit data.
+ * Fixed ports overlap test_circuit_cross_live: run this probe separately. */
+static void fixture_tick(nodus_chain_backend_t *b) { (void)b; }
+static bool fixture_pending(nodus_chain_backend_t *b) { (void)b; return false; }
+static bool fixture_open(nodus_chain_backend_t *b) { (void)b; return true; }
+static void fixture_status(nodus_chain_backend_t *b, nodus_t2_status_info_t *out) {
+    (void)b; memset(out->chain_id, 0x42, 32); out->block_height = 1;
+}
+static pthread_mutex_t fixture_lock = PTHREAD_MUTEX_INITIALIZER;
+static nodus_key_t fixture_peers[2];
+static size_t fixture_count;
+static int fixture_roles(nodus_chain_backend_t *b, nodus_inter_role_list_t *out) {
+    (void)b; pthread_mutex_lock(&fixture_lock);
+    memset(out, 0, sizeof(*out)); out->height = 1;
+    if (fixture_count == 2) {
+        memcpy(out->validators, fixture_peers, sizeof(fixture_peers)); out->validator_count = 2;
+        if (nodus_key_cmp(&out->validators[0], &out->validators[1]) > 0) {
+            nodus_key_t swap = out->validators[0]; out->validators[0] = out->validators[1]; out->validators[1] = swap;
+        }
+    }
+    pthread_mutex_unlock(&fixture_lock);
+    return out->validator_count == 2 ? 1 : 0;
+}
+static int fixture_port(nodus_chain_backend_t *b, bool *open) {
+    (void)b; *open = false; return 0;
+}
+static void fixture_session_closed(nodus_chain_backend_t *b, nodus_tcp_conn_t *c) {
+    (void)b; (void)c;
+}
+static void fixture_close(nodus_chain_backend_t *b) { free(b); }
+static const nodus_chain_backend_ops_t fixture_ops = {
+    .tick = fixture_tick, .read_pending = fixture_pending, .status = fixture_status,
+    .chain_open = fixture_open, .roles = fixture_roles, .listen_port = fixture_port,
+    .session_closed = fixture_session_closed, .close = fixture_close
+};
+static int fixture_chain(const nodus_witness_host_t *host,
+                           const nodus_witness_config_t *cfg, nodus_chain_backend_t **out) {
+    (void)cfg; *out = calloc(1, sizeof(**out));
+    if (!*out) return -2;
+    pthread_mutex_lock(&fixture_lock);
+    if (fixture_count < 2) fixture_peers[fixture_count++] = host->identity->node_id;
+    pthread_mutex_unlock(&fixture_lock);
+    (*out)->ops = &fixture_ops; return 0;
+}
+static int fixture_server(nodus_server_t *srv, const nodus_server_config_t *cfg) {
+    nodus_server_backends_t be = nodus_server_backends_inproc;
+    be.chain_open = fixture_chain;
+    return nodus_server_init_ex(srv, cfg, &be);
+}
 /* srv_*_done: that server's nodus_server_init has RETURNED, success or
  * failure; srv_*_ready: it succeeded. main waits for both outcomes, not for
  * a time budget: init runs the witness start checks (the EVM precompile
@@ -80,10 +133,10 @@ static void *srv_a_thread(void *arg) {
     nodus_server_config_t cfg; memset(&cfg, 0, sizeof(cfg));
     snprintf(cfg.bind_ip, sizeof(cfg.bind_ip), "127.0.0.1");
     cfg.udp_port = 16000; cfg.tcp_port = 16001; cfg.peer_port = 16002;
-    cfg.ch_port = 16003; cfg.witness_port = 16004; cfg.require_peer_auth = false;
+    cfg.ch_port = 16003; cfg.witness_port = 16004; cfg.require_peer_auth = true;
     snprintf(cfg.data_path, sizeof(cfg.data_path), "/tmp/nodus_lat_a_%d", getpid());
     char cmd[256]; snprintf(cmd, sizeof(cmd), "mkdir -p %s", cfg.data_path); if (system(cmd)) {}
-    if (nodus_server_init(&srv_a, &cfg) != 0) {
+    if (fixture_server(&srv_a, &cfg) != 0) {
         fprintf(stderr, "srv_a init failed\n");
         srv_init_outcome(&srv_a_done, &srv_a_ready, false);
         return NULL;
@@ -99,10 +152,10 @@ static void *srv_b_thread(void *arg) {
     nodus_server_config_t cfg; memset(&cfg, 0, sizeof(cfg));
     snprintf(cfg.bind_ip, sizeof(cfg.bind_ip), "127.0.0.1");
     cfg.udp_port = 17000; cfg.tcp_port = 17001; cfg.peer_port = 17002;
-    cfg.ch_port = 17003; cfg.witness_port = 17004; cfg.require_peer_auth = false;
+    cfg.ch_port = 17003; cfg.witness_port = 17004; cfg.require_peer_auth = true;
     snprintf(cfg.data_path, sizeof(cfg.data_path), "/tmp/nodus_lat_b_%d", getpid());
     char cmd[256]; snprintf(cmd, sizeof(cmd), "mkdir -p %s", cfg.data_path); if (system(cmd)) {}
-    if (nodus_server_init(&srv_b, &cfg) != 0) {
+    if (fixture_server(&srv_b, &cfg) != 0) {
         fprintf(stderr, "srv_b init failed\n");
         srv_init_outcome(&srv_b_done, &srv_b_ready, false);
         return NULL;
@@ -150,6 +203,29 @@ static void on_inbound_cb(struct nodus_client *cl, const nodus_key_t *peer_fp,
 static bool wait_for(volatile bool *f, int ms) {
     int e = 0; while (!*f && e < ms) { struct timespec t = {0, 10*1000*1000}; nanosleep(&t, NULL); e += 10; }
     return *f;
+}
+/* Same progress assertion as test_circuit_cross_live: query server A's
+ * owner thread, requiring a remote entry; fail after fifty unchanged polls. */
+static bool wait_for_remote_presence(nodus_client_t *client,
+                                     const nodus_key_t *local, const nodus_key_t *remote) {
+    const nodus_key_t fps[] = {*local, *remote};
+    unsigned seen = 0, stalled = 0;
+    while (stalled < 50) {
+        nodus_presence_result_t result;
+        if (nodus_client_presence_query(client, fps, 2, &result) != 0) return false;
+        unsigned online = 0;
+        for (int i = 0; result.entries && i < result.online_count; ++i) {
+            if (!result.entries[i].online) continue;
+            if (nodus_key_cmp(&result.entries[i].fp, local) == 0) online |= 1;
+            if (result.entries[i].peer_index != 0 &&
+                nodus_key_cmp(&result.entries[i].fp, remote) == 0) online |= 2;
+        }
+        nodus_client_free_presence_result(&result);
+        if (online & 2) return true;
+        if (online & ~seen) { seen |= online; stalled = 0; }
+        else stalled++;
+    }
+    return false;
 }
 static int cmp_u64(const void *a, const void *b) {
     uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
@@ -206,6 +282,7 @@ int main(void) {
     memcpy(&cfg_b, &cfg_a, sizeof(cfg_a)); cfg_b.servers[0].port = 17001;
 
     nodus_client_t cl_u1, cl_u2; memset(&cl_u1, 0, sizeof(cl_u1)); memset(&cl_u2, 0, sizeof(cl_u2));
+    probe_ctx_t ctx; memset(&ctx, 0, sizeof(ctx));
     int rc = 3;
     if (nodus_client_init(&cl_u1, &cfg_a, &id_u1) != 0 || nodus_client_connect(&cl_u1) != 0) {
         fprintf(stderr, "u1 connect failed\n"); goto cleanup;
@@ -214,9 +291,11 @@ int main(void) {
         fprintf(stderr, "u2 connect failed\n"); goto cleanup;
     }
     srv_a.presence.last_sync = 0; srv_b.presence.last_sync = 0;
-    struct timespec sw = {0, 500*1000*1000}; nanosleep(&sw, NULL);
+    if (!wait_for_remote_presence(&cl_u1, &id_u1.node_id, &id_u2.node_id)) {
+        fprintf(stderr, "server A did not report user2 online after consecutive polls without progress\n");
+        goto cleanup;
+    }
 
-    probe_ctx_t ctx; memset(&ctx, 0, sizeof(ctx));
     ctx.n = frames;
     ctx.send_ns = calloc(frames, sizeof(uint64_t));
     ctx.recv_ns = calloc(frames, sizeof(uint64_t));

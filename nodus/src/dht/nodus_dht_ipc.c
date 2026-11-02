@@ -53,6 +53,8 @@
 
 #include "dht/nodus_dht_ipc.h"
 #include "server/nodus_inter_dial.h"
+#include "server/nodus_inter_session.h"
+#include "server/nodus_chain_backend.h"
 #include "server/nodus_partial_wipe.h"   /* the H-10 boot gate (decision 9) */
 #include "transport/nodus_tcp.h"
 #include "protocol/nodus_tier1.h"
@@ -100,8 +102,14 @@ struct nodus_dht_ipc {
     uint8_t                 ctl_boot[NODUS_DHT_IPC_BOOT_LEN];
     bool                    boot_have;   /* ctl_boot is set (dipc_boot_seen) */
 
-    /* The dialer state of each outbound connection (out pool slot). */
-    nodus_inter_dial_t      dial[NODUS_TCP_MAX_CONNS];
+    nodus_inter_session_module_t *session;
+    nodus_chain_backend_t *witness;
+    char data_path[NODUS_TCP_UNIX_PATH_MAX];
+    bool status_have, chain_open, chain_here;
+    uint8_t chain_id[32];
+    uint64_t height, status_query_ms;
+    bool roles_have;
+    nodus_inter_role_list_t roles;
 
     /* Core's last membership snapshot (decision item 27). */
     nodus_dht_ipc_member_t  mbr[NODUS_DHT_IPC_MEMBERS_MAX];
@@ -123,6 +131,9 @@ struct nodus_dht_ipc {
     uint64_t                last_sweep;
     uint64_t                last_stale;
 };
+
+static bool dipc_status(void *ctx, uint8_t ci[32], uint64_t *height);
+static int dipc_role(void *ctx, const nodus_key_t *fp, bool *va, bool *st);
 
 /* ── Small helpers ───────────────────────────────────────────────── */
 
@@ -326,6 +337,8 @@ void nodus_dht_ipc_host(nodus_dht_ipc_t *ipc, nodus_dht_host_t *out) {
     out->udp_send       = dipc_udp_send;
     out->inter_send     = dipc_inter_send;
     out->hint_wanted    = dipc_hint_wanted;
+    out->inter_status   = dipc_status;
+    out->inter_role     = dipc_role;
 }
 
 /* ── Origins ─────────────────────────────────────────────────────── */
@@ -443,6 +456,24 @@ static void dipc_on_ctl_frame(nodus_dht_ipc_t *ipc, const uint8_t *payload,
         return;
     }
     switch (msg->type) {
+    case NODUS_DHT_IPC_MSG_STATUS:
+        if (!msg->answer) break;
+        ipc->status_have=true; ipc->chain_open=msg->chain_open;
+        ipc->chain_here=msg->chain_here; ipc->height=msg->height;
+        memcpy(ipc->chain_id,msg->chain_id,32);
+        if (ipc->chain_here && ipc->chain_open && (!ipc->roles_have ||
+            ipc->height/DNAC_EPOCH_LENGTH > ipc->roles.height/DNAC_EPOCH_LENGTH)) {
+            uint8_t buf[64];
+            size_t n=nodus_dht_ipc_encode_roles(NULL,true,buf,sizeof(buf));
+            if (n && dipc_queued(ipc->ctl)<NODUS_DHT_IPC_CTL_QUEUE_MAX)
+                nodus_tcp_send(ipc->ctl,buf,n);
+        }
+        break;
+    case NODUS_DHT_IPC_MSG_ROLES:
+        if (!msg->answer) break;
+        if (msg->ok) { ipc->roles=msg->roles; ipc->roles_have=true; }
+        else QGP_LOG_ERROR(LOG_TAG,"%s","ds_roles backend read failed");
+        break;
     case NODUS_DHT_IPC_MSG_UDP_IN: {
         nodus_tier1_msg_t t1;
         memset(&t1, 0, sizeof(t1));
@@ -488,6 +519,8 @@ static void dipc_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
 
     if (s->kind == DIPC_CTL && conn == ipc->ctl) {
         ipc->ctl = NULL;
+        ipc->status_have = false;
+        /* Reconnect keeps the last installed list. */
         QGP_LOG_WARN(LOG_TAG, "%s", "control connection from core lost — "
                      "datagrams and peer events wait for its return");
     } else if (s->kind == DIPC_ORIGIN) {
@@ -535,6 +568,7 @@ static void dipc_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
             }
             s->kind = DIPC_CTL;
             ipc->ctl = conn;
+            ipc->status_have=false; ipc->status_query_ms=0;
             dipc_boot_seen(ipc, msg->boot);
             ipc->rt_force = true;
             ipc->rt_now = true;
@@ -545,9 +579,15 @@ static void dipc_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
         free(msg);
         return;
     }
-    case DIPC_ORIGIN:
+    case DIPC_ORIGIN: {
+        nodus_dht_ipc_msg_t control;
+        if (nodus_dht_ipc_decode(payload,len,&control,NULL,0)==0 &&
+            (control.type==NODUS_DHT_IPC_MSG_ROLES || control.type==NODUS_DHT_IPC_MSG_STATUS)) {
+            dipc_refuse(ipc,conn,"chain query on an origin connection"); return;
+        }
         dipc_on_origin_frame(ipc, conn, payload, len);
         return;
+    }
     case DIPC_CTL:
         dipc_on_ctl_frame(ipc, payload, len);
         return;
@@ -556,98 +596,35 @@ static void dipc_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
 
 /* ── The outbound 4002 pool ──────────────────────────────────────── */
 
-static int dipc_out_send_raw(void *ctx, const uint8_t *payload, size_t len) {
-    return nodus_tcp_send_raw((nodus_tcp_conn_t *)ctx, payload, len);
-}
-
-typedef struct {
-    nodus_dht_ipc_t  *ipc;
-    nodus_tcp_conn_t *conn;
-} dipc_out_ctx_t;
-
-static int dipc_out_send_raw_x(void *ctx, const uint8_t *payload, size_t len) {
-    return nodus_tcp_send_raw(((dipc_out_ctx_t *)ctx)->conn, payload, len);
-}
-
-static void dipc_out_established(void *ctx, bool encrypted) {
-    dipc_out_ctx_t *x = (dipc_out_ctx_t *)ctx;
-    nodus_inter_dial_conn_sync(&x->ipc->dial[x->conn->slot], x->conn);
-    nodus_inter_dial_conn_open(x->conn, encrypted);
-}
-
-static void dipc_out_on_connect(nodus_tcp_conn_t *conn, void *ctx) {
-    nodus_dht_ipc_t *ipc = (nodus_dht_ipc_t *)ctx;
-    if (conn->slot >= 0 && conn->slot < NODUS_TCP_MAX_CONNS)
-        memset(&ipc->dial[conn->slot], 0, sizeof(ipc->dial[0]));
-    conn->is_nodus = true;
-    conn->auth_required = ipc->out.auth_required;
-    if (conn->auth_required) {
-        /* The dialer module's hello (core's on_inter_connect does the same). */
-        nodus_inter_dial_io_t io;
-        memset(&io, 0, sizeof(io));
-        io.identity = ipc->identity;
-        io.send_raw = dipc_out_send_raw;
-        io.ctx = conn;
-        conn->auth_state = nodus_inter_dial_start(&io) == 0
-                         ? NODUS_CONN_AUTH_HELLO_SENT : NODUS_CONN_AUTH_FAILED;
+/* Status chooses the authority solely from the latest ds_status answer.
+ * No answer or control connection means no chain and no 4002 dial. */
+static bool dipc_status(void *ctx, uint8_t ci[32], uint64_t *height) {
+    nodus_dht_ipc_t *ipc=ctx;
+    if (!ipc->ctl || !ipc->status_have || !ipc->chain_open) return false;
+    if (!ipc->chain_here) {
+        if (!ipc->witness || !ipc->witness->ops->chain_open(ipc->witness)) return false;
+        nodus_t2_status_info_t st={0};
+        ipc->witness->ops->status(ipc->witness,&st);
+        memcpy(ci,st.chain_id,32); *height=st.block_height;
     } else {
-        conn->auth_state = NODUS_CONN_AUTH_OK;
+        memcpy(ci,ipc->chain_id,32); *height=ipc->height;
     }
+    return true;
+}
+
+static int dipc_role(void *ctx, const nodus_key_t *fp, bool *va, bool *st) {
+    nodus_dht_ipc_t *ipc=ctx; *va=*st=false;
+    if (!ipc->ctl || !ipc->status_have || !ipc->chain_open) return -1;
+    if (!ipc->roles_have) return -1;
+    nodus_inter_roles_lookup(&ipc->roles,fp,va,st);
+    return 1;
 }
 
 static void dipc_out_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                               size_t len, void *ctx) {
-    nodus_dht_ipc_t *ipc = (nodus_dht_ipc_t *)ctx;
-    if (conn->slot < 0 || conn->slot >= NODUS_TCP_MAX_CONNS) return;
-
-    nodus_tier2_msg_t msg;
-    memset(&msg, 0, sizeof(msg));
-    if (nodus_t2_decode(payload, len, &msg) != 0) {
-        nodus_t2_msg_free(&msg);
-        QGP_LOG_WARN(LOG_TAG, "dialed 4002 conn %s:%u: a frame that is not a "
-                     "handshake reply (len=%zu) — dropped",
-                     conn->ip, (unsigned)conn->port, len);
-        return;
-    }
-    if (strcmp(msg.method, "challenge") == 0 ||
-        strcmp(msg.method, "auth_ok") == 0 ||
-        strcmp(msg.method, "key_ack") == 0) {
-        nodus_inter_dial_t *d = &ipc->dial[conn->slot];
-        dipc_out_ctx_t x = { ipc, conn };
-        nodus_inter_dial_io_t io;
-        memset(&io, 0, sizeof(io));
-        io.identity = ipc->identity;
-        /* CRIT-1: the pin recorded at dial (nodus_inter_pool_dial). */
-        io.expected_peer_id = conn->expected_peer_id_set
-                            ? &conn->expected_peer_id : NULL;
-        io.crypto = &conn->channel_crypto;
-        io.peer_ip = conn->ip;
-        io.peer_port = conn->port;
-        io.slot = conn->slot;
-        io.send_raw = dipc_out_send_raw_x;
-        io.established = dipc_out_established;
-        io.ctx = &x;
-        nodus_inter_dial_rc_t rc = nodus_inter_dial_on_frame(d, &io, &msg);
-        nodus_inter_dial_conn_sync(d, conn);
-        nodus_t2_msg_free(&msg);
-        if (rc == NODUS_INTER_DIAL_REFUSED) {
-            conn->auth_state = NODUS_CONN_AUTH_FAILED;
-            nodus_tcp_disconnect(&ipc->out, conn);
-        }
-        return;
-    }
-    if (strcmp(msg.method, "error") != 0)
-        QGP_LOG_WARN(LOG_TAG, "dialed 4002 conn %s:%u: \"%s\" is not a "
-                     "handshake reply — dropped (this process serves no "
-                     "4002 request)", conn->ip, (unsigned)conn->port,
-                     msg.method);
-    nodus_t2_msg_free(&msg);
-}
-
-static void dipc_out_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
-    nodus_dht_ipc_t *ipc = (nodus_dht_ipc_t *)ctx;
-    if (conn->slot >= 0 && conn->slot < NODUS_TCP_MAX_CONNS)
-        memset(&ipc->dial[conn->slot], 0, sizeof(ipc->dial[0]));
+    (void)payload; (void)ctx;
+    QGP_LOG_DEBUG(LOG_TAG,"dialed 4002 reply from %s:%u, len=%zu",
+                    conn->ip,(unsigned)conn->port,len);
 }
 
 /* The pending-full hook of the outbound pool — core's
@@ -793,7 +770,25 @@ void nodus_dht_ipc_tick(nodus_dht_ipc_t *ipc) {
         }
     }
 
-    dipc_routing_tick(ipc, nodus_time_mono_ms());
+    uint64_t mono=nodus_time_mono_ms();
+    if (ipc->ctl && (!ipc->status_query_ms || mono-ipc->status_query_ms>=1000)) {
+        uint8_t buf[64];
+        size_t n=nodus_dht_ipc_encode_status(NULL,buf,sizeof(buf));
+        if (n && dipc_queued(ipc->ctl)<NODUS_DHT_IPC_CTL_QUEUE_MAX)
+            nodus_tcp_send(ipc->ctl,buf,n);
+        ipc->status_query_ms=mono;
+    }
+    if (ipc->ctl && ipc->status_have && !ipc->chain_here) {
+        if (!ipc->witness && nodus_chain_backend_ipc_open(ipc->data_path,&ipc->witness)!=0)
+            QGP_LOG_ERROR(LOG_TAG,"%s","cannot create storage witness control connection");
+        if (ipc->witness) {
+            ipc->witness->ops->tick(ipc->witness);
+            nodus_inter_role_list_t list;
+            if (ipc->witness->ops->roles(ipc->witness,&list)==1)
+                { ipc->roles=list; ipc->roles_have=true; }
+        }
+    }
+    dipc_routing_tick(ipc, mono);
 
     uint64_t now = nodus_time_now();
     if (now - ipc->last_sweep >= DIPC_SWEEP_SEC) {
@@ -810,7 +805,13 @@ void nodus_dht_ipc_tick(nodus_dht_ipc_t *ipc) {
 
 nodus_dht_ipc_t *nodus_dht_ipc_new(const nodus_identity_t *identity,
                                    bool require_peer_auth) {
-    if (!identity) return NULL;
+    return nodus_dht_ipc_new_clock(identity,require_peer_auth,NULL,NULL);
+}
+
+nodus_dht_ipc_t *nodus_dht_ipc_new_clock(const nodus_identity_t *identity,
+                                       bool require_peer_auth,
+                                       uint64_t (*now_ms)(void *), void *now_ctx) {
+    if (!identity || !require_peer_auth) return NULL;
     nodus_dht_ipc_t *ipc = calloc(1, sizeof(*ipc));
     if (!ipc) return NULL;
     ipc->rt_last    = calloc(NODUS_DHT_IPC_ROUTING_MAX, sizeof(*ipc->rt_last));
@@ -836,14 +837,22 @@ nodus_dht_ipc_t *nodus_dht_ipc_new(const nodus_identity_t *identity,
     ipc->tcp.on_pending_full  = dipc_on_pending_full;
     ipc->tcp.pending_full_ctx = ipc;
 
-    ipc->out.on_connect       = dipc_out_on_connect;
     ipc->out.on_frame         = dipc_out_on_frame;
-    ipc->out.on_disconnect    = dipc_out_on_disconnect;
     ipc->out.cb_ctx           = ipc;
     ipc->out.auth_required    = require_peer_auth;
     ipc->out.auth_ctx         = (void *)identity;
     ipc->out.on_pending_full  = dipc_out_on_pending_full;
     ipc->out.pending_full_ctx = ipc;
+    nodus_inter_session_config_t cfg={
+        .identity=identity, .inbound_depth=NODUS_INTER_JOB_DEPTH,
+        .outbound_depth=NODUS_INTER_JOB_DEPTH, .workers=NODUS_INTER_WORKERS,
+        .status=dipc_status, .role=dipc_role, .admission_ctx=ipc,
+        .now_ms=now_ms, .now_ctx=now_ctx
+    };
+    ipc->session=nodus_inter_session_new(&ipc->out,&cfg);
+    if (!ipc->session) {
+        nodus_tcp_close(&ipc->out); nodus_tcp_close(&ipc->tcp); goto fail;
+    }
     ipc->last_sweep = nodus_time_now();
     ipc->last_stale = ipc->last_sweep;
     return ipc;
@@ -871,6 +880,9 @@ void nodus_dht_ipc_attach(nodus_dht_ipc_t *ipc, nodus_dht_t *dht) {
 
 int nodus_dht_ipc_listen(nodus_dht_ipc_t *ipc, const char *path) {
     if (!ipc || !path) return -1;
+    size_t n=strlen(path), suffix=strlen(NODUS_DHT_IPC_SOCK_NAME);
+    if (n<=suffix || n-suffix-1>=sizeof(ipc->data_path)) return -1;
+    memcpy(ipc->data_path,path,n-suffix-1); ipc->data_path[n-suffix-1]='\0';
     return nodus_tcp_unix_listen(&ipc->tcp, path, NODUS_TCP_UNIX_UID_SELF);
 }
 
@@ -890,6 +902,8 @@ void nodus_dht_ipc_free(nodus_dht_ipc_t *ipc) {
     if (!ipc) return;
     /* nodus_tcp_close frees the connections without on_disconnect. */
     nodus_tcp_close(&ipc->out);
+    nodus_inter_session_free(ipc->session);
+    if (ipc->witness) ipc->witness->ops->close(ipc->witness);
     nodus_tcp_close(&ipc->tcp);
     free(ipc->rt_last);
     free(ipc->rt_scratch);
