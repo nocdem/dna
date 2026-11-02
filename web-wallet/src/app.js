@@ -111,14 +111,10 @@ let doShowIxiosAddress, stopIxiosAddress = () => {}, ixiosChain, ixiosReader;
 // way); the other receive-only addresses are derived after it (0.1.96).
 let nodusAddressFirst = Promise.resolve();
 let pqSource, pqOperation, pqGeneration = 0, pqAddresses = {}, pqErrors = {}, pqPending = false;
-// Public page preference only; the selected IDs always pass the registry allowlist.
+// Every opening starts on each network's listed default — mainnet where one exists
+// (operator 2026-11-03: "hersey varsa yeniden acista mainnet"); a choice lasts
+// for this page only. The selected IDs always pass the registry allowlist.
 const pqSelections = Object.fromEntries(Object.entries(PQ_NETWORKS).map(([chain, config]) => [chain, config.defaultNetwork]));
-try {
-  const saved = JSON.parse(localStorage.getItem('nodus-pq-network-environments') || '{}');
-  for (const chain of Object.keys(PQ_NETWORKS)) {
-    try { pqSelections[chain] = pqNetwork(chain, saved?.[chain]).id; } catch { /* keep the listed default */ }
-  }
-} catch { /* preferences remain in this page */ }
 // Receive-panel derivation status line per receive-only network, shown only
 // while that network is selected. The Ixios entry is added by its flag block.
 const addressStatus = { nodus: $('nodus-address-status'), cellframe: $('cellframe-address-status') };
@@ -988,7 +984,6 @@ pqEnvironment.onchange = () => {
     delete historyByChain[chain]; delete historyNote[chain];
   }
   pqSelections[chain] = pqNetwork(chain, pqEnvironment.value).id;
-  try { localStorage.setItem('nodus-pq-network-environments', JSON.stringify(Object.fromEntries(Object.keys(PQ_NETWORKS).map(key => [key, pqNetwork(key, pqSelections[key]).id])))); } catch { /* choice stays in this page */ }
   syncPqAddress(chain);
   if (wallet && !wallet.locked) selectChain();
 };
@@ -2799,6 +2794,16 @@ function updateVaultUI() {
 function focusOpenWallet(kept = {}) {
   updateVaultUI(); renderAddressBook();
   resetAssetView();
+  // Every opening (restore, create, unlock) starts each network on its listed
+  // default — mainnet where one exists (operator 2026-11-03: "hersey varsa
+  // yeniden acista mainnet"), as the extension does after unlock.
+  for (const chain of Object.keys(PQ_NETWORKS)) {
+    const id = PQ_NETWORKS[chain].defaultNetwork;
+    if (pqSelections[chain] === id) continue;
+    if (historyJob?.chain === chain) { historyJob.controller.abort(); historyJob = null; }
+    delete historyByChain[chain]; delete historyNote[chain];
+    pqSelections[chain] = id; syncPqAddress(chain);
+  }
   portfolio.open(wallet.addresses, endpoints, { kept });
   $('wallet-title').focus({ preventScroll: true });
   document.querySelector('.wallet-card').scrollIntoView({ block: 'start' });
