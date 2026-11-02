@@ -2784,6 +2784,43 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
     return rc;
 }
 
+void nodus_tcp_progress_cancel(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
+                               nodus_tcp_progress_cb progress_cb, void *user_data) {
+    if (!tcp || !conn || !progress_cb) return;
+    wl_enter(tcp);
+    /* A connection no longer in the pool was released with its records. */
+#ifndef _WIN32
+    bool live = conn_in_pool(tcp, conn);
+#else
+    bool live = true;
+#endif
+    if (live) {
+        nodus_tcp_progress_req_t **pp = &conn->prog_head, *prev = NULL;
+        while (*pp) {                                  /* queued for the owner to seal */
+            nodus_tcp_progress_req_t *r = *pp;
+            if (r->cb == progress_cb && r->user_data == user_data) {
+                *pp = r->next;
+                if (conn->prog_tail == r) conn->prog_tail = prev;
+                free(r);
+            } else { prev = r; pp = &r->next; }
+        }
+        nodus_tcp_wprog_t **wp = &conn->wprog_head, *wprev = NULL;
+        while (*wp) {                                  /* in wbuf, not fully written */
+            nodus_tcp_wprog_t *w = *wp;
+            if (w->cb == progress_cb && w->user_data == user_data) {
+                *wp = w->next;
+                if (conn->wprog_tail == w) conn->wprog_tail = wprev;
+                free(w);
+            } else { wprev = w; wp = &w->next; }
+        }
+        for (nodus_pending_frame_t *n = conn->pending_head; n; n = n->next)
+            if (n->progress_cb == progress_cb && n->progress_ud == user_data) {
+                n->progress_cb = NULL; n->progress_ud = NULL;   /* sealed, waiting for wbuf */
+            }
+    }
+    wl_leave(tcp);
+}
+
 /* Reserve ALL storage before cmt_p2p_sc_write can advance a counter.
  * The FIFO node and its sealed buffer are allocated before sealing; after
  * sealing only infallible pointer/length updates remain. A refused frame

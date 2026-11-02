@@ -256,6 +256,19 @@ static int send_request_progress(nodus_client_t *client, const uint8_t *payload,
     return rc;
 }
 
+/* After send_request_progress: the connection may still hold progress_cb /
+ * user_data (session transport: the owner thread reports while it writes the
+ * frame). The caller's user_data dies when its function returns, so every exit
+ * of it calls this first; no callback runs after it returns (nodus_tcp.h). */
+static void send_progress_release(nodus_client_t *client, nodus_tcp_progress_cb progress_cb,
+                                  void *user_data) {
+    if (!progress_cb) return;
+    pthread_mutex_lock(&client->send_mutex);
+    nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)client->conn;
+    if (conn) nodus_tcp_progress_cancel((nodus_tcp_t *)client->tcp, conn, progress_cb, user_data);
+    pthread_mutex_unlock(&client->send_mutex);
+}
+
 /* Tear down an inbound circuit we are not accepting. Sent when the application
  * registered no circuit-inbound handler (default-deny) or the per-session
  * circuit table is full — so the originator stops forwarding data against a
@@ -2732,6 +2745,7 @@ int nodus_client_media_put(nodus_client_t *client,
                               progress_user_data) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "media_put: send failed (chunk=%u, encoded_len=%zu)",
                       chunk_index, len);
+        send_progress_release(client, (nodus_tcp_progress_cb)progress_cb, progress_user_data);
         free_pending(client, req); free(buf); return -1;
     }
     free(buf);
@@ -2744,7 +2758,11 @@ int nodus_client_media_put(nodus_client_t *client,
                   media_timeout, data_len);
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
-    if (!wait_response(client, req, media_timeout)) {
+    const bool answered = wait_response(client, req, media_timeout);
+    /* progress_user_data is the caller's (a stack context): from here on no
+     * report may reach it, whatever the outcome below. */
+    send_progress_release(client, (nodus_tcp_progress_cb)progress_cb, progress_user_data);
+    if (!answered) {
         QGP_LOG_ERROR(LOG_TAG, "media_put: client timeout after %dms (chunk=%u)",
                       media_timeout, chunk_index);
         free_pending(client, req); return NODUS_ERR_TIMEOUT;

@@ -608,6 +608,22 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
                              nodus_tcp_progress_cb progress_cb,
                              void *user_data);
 
+/**
+ * Lifetime of progress_cb / user_data (session transport with a write lock):
+ * they are held by the connection after nodus_tcp_send_progress returns, until
+ * the frame is fully written or the connection is released, and the owner
+ * thread may call progress_cb in that time. A caller whose user_data does not
+ * outlive the connection MUST call this before it lets user_data go (on every
+ * exit path: success, error, timeout). It removes every record of
+ * (progress_cb, user_data) on `conn` under the write lock; callbacks run under
+ * the same lock, so none is running or can start once it returns. A frame
+ * already queued is still sent, only its reports stop. Safe on a connection
+ * that has been released (it is not in the pool then) and on any transport
+ * (no-op without session mode).
+ */
+void nodus_tcp_progress_cancel(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
+                               nodus_tcp_progress_cb progress_cb, void *user_data);
+
 /** Internal: send bypassing auth gate. For hello/auth frames only. */
 int nodus_tcp_send_raw(nodus_tcp_conn_t *conn,
                         const uint8_t *payload, size_t len);

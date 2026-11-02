@@ -52,6 +52,13 @@
  *      frame's bytes ending at its total (operator 2026-11-02: media_put
  *      progress comes back). It can falsely pass only if the owner's poll
  *      drained the queue before the check; then pending_count == 0 fails it.
+ *      A second block leaves fourteen frames in all three places that hold a
+ *      callback (written in part, sealed and queued, still plaintext), then
+ *      calls nodus_tcp_progress_cancel for each context and marks it released
+ *      (the caller's return, as nodus_client_media_put does on every exit):
+ *      all frames still arrive and no callback runs on a released context.
+ *      nodus_client_media_put itself is not driven (its timeout is 30 s or
+ *      more); its exits call the same cancel (nodus_client.c).
  *   Part C, the real nodus_client_t against that server (polled by a thread
  *   of this test):
  *  14. A config without a trusted list, with a negative count, or without a
@@ -397,11 +404,14 @@ static void machine_hook(void *ctx) {
     g_hook_calls++;
     if (!pthread_equal(pthread_self(), g_owner)) g_hook_foreign++;
 }
-typedef struct { size_t last_sent, total; unsigned calls, bad_order; bool foreign; } prog_t;
+typedef struct { size_t last_sent, total; unsigned calls, bad_order, late; bool foreign, released; } prog_t;
 /* progress callback: counts calls, requires strictly increasing bytes_sent
- * and that the owner (this thread) is the caller */
+ * and that the owner (this thread) is the caller. `released` is set by the
+ * test once it called nodus_tcp_progress_cancel for this context (the caller's
+ * "return"): a call after that is `late` — the dangling-context case. */
 static void prog_cb(size_t sent, size_t total, void *ud) {
     prog_t *p = ud;
+    if (p->released) { p->late++; return; }
     p->calls++;
     if (sent <= p->last_sent) p->bad_order++;
     p->last_sent = sent; p->total = total;
@@ -488,6 +498,43 @@ static void write_lock_owner(void) {
             CHECK(pg[i].calls >= 2 && pg[i].bad_order == 0 && !pg[i].foreign);
             CHECK(pg[i].last_sent == pg[i].total && pg[i].total >= (size_t)BIG);
         }
+    }
+    /* Lifetime (the caller returns before its frame is written): fourteen
+     * frames, each with its own context, are left in all three places that
+     * keep the callback — written in part (the first, reported at least once),
+     * sealed and waiting in the pending queue, and still plaintext waiting for
+     * the owner — then every context is cancelled and marked released (the
+     * caller's return; the real caller frees it). The server then reads
+     * everything: all frames still arrive, and no callback ran on a released
+     * context. */
+    {
+        enum { BIG = 700 * 1024, ROUND = 6, EXTRA = 2, FRAMES = 2 * ROUND + EXTRA };
+        uint8_t *big = malloc(BIG); CHECK(big);
+        memset(big, 0x42, BIG); big[0] = 0x7f;
+        prog_t pg[FRAMES]; memset(pg, 0, sizeof(pg));
+        unsigned before = srv.frames;
+        for (int r = 0; r < 2; ++r) {
+            for (int i = 0; i < ROUND; ++i)
+                CHECK(nodus_tcp_send_progress(cli.conn, big, BIG, prog_cb, &pg[r * ROUND + i]) == 0);
+            CHECK(nodus_tcp_poll(&cli.tcp, POLL_MS) >= 0);
+        }
+        for (int i = 0; i < EXTRA; ++i)           /* not polled: still plaintext */
+            CHECK(nodus_tcp_send_progress(cli.conn, big, BIG, prog_cb, &pg[2 * ROUND + i]) == 0);
+        free(big);
+        CHECK(cli.conn->pending_count > 0);              /* sealed, waiting */
+        CHECK(cli.conn->pending_len > 0 && cli.conn->prog_head != NULL);   /* plaintext, waiting */
+        CHECK(pg[0].calls >= 1);                         /* written in part */
+        CHECK(cli.conn->wprog_head != NULL);             /* a record in wbuf */
+        for (int i = 0; i < FRAMES; ++i) {
+            nodus_tcp_progress_cancel(&cli.tcp, cli.conn, prog_cb, &pg[i]);
+            pg[i].released = true;
+        }
+        CHECK(cli.conn->wprog_head == NULL && cli.conn->prog_head == NULL);
+        for (nodus_pending_frame_t *n = cli.conn->pending_head; n; n = n->next)
+            CHECK(n->progress_cb == NULL && n->progress_ud == NULL);
+        WAIT_WHILE(srv.frames < before + FRAMES) step(&cli, &srv);
+        CHECK(srv.frames == before + FRAMES);
+        for (int i = 0; i < FRAMES; ++i) CHECK(pg[i].late == 0);
     }
     CHECK(srv.closed == 0 && cli.closed == 0);
     CHECK(nodus_tcp_decrypt_fail_total(&srv.tcp) == 0);
