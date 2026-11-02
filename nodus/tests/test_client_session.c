@@ -353,6 +353,9 @@ static void chain_unknown(void) {
     WAIT_WHILE(!cli.authenticated || !srv.authenticated) step(&cli, &srv);
     CHECK(cli.authenticated == 1 && srv.authenticated == 1);
     srv.chain_known = false;
+    nodus_tcp_conn_t *open_conn = srv.conn;
+    const unsigned accepts0 = srv.accepts, closed0 = srv.closed;
+    CHECK(open_conn && nodus_inter_session_is_open(open_conn));
     /* a new connection: refused at accept, no byte written to it */
     int fd = socket(AF_INET, SOCK_STREAM, 0); CHECK(fd >= 0);
     struct sockaddr_in sa = {.sin_family = AF_INET, .sin_port = htons(srv.tcp.port)};
@@ -367,9 +370,15 @@ static void chain_unknown(void) {
         if (r == 0 || (r < 0 && errno == ECONNRESET)) { eof = true; progress++; }
     }
     CHECK(eof);
+    /* The refused connection is torn down by nodus_tcp_disconnect at accept
+     * (nodus_tcp.c handle_accept): on_disconnect runs once for it and on_accept
+     * never does. That one callback is the refusal, not a loss of the open
+     * session, so it is counted against the baseline taken above. */
+    CHECK(srv.accepts == accepts0 && srv.closed == closed0 + 1);
     send_frame(cli.conn, 0, 0);   /* the open session still carries traffic */
     WAIT_WHILE(!srv.frames) step(&cli, &srv);
-    CHECK(srv.frames == 1 && srv.closed == 0);
+    CHECK(srv.frames == 1 && srv.closed == closed0 + 1);
+    CHECK(srv.conn == open_conn && nodus_inter_session_is_open(open_conn) && cli.closed == 0);
     close(fd); ep_free(&cli); ep_free(&srv);
 }
 
