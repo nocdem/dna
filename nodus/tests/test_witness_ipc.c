@@ -36,6 +36,11 @@
  *     ipc_ctl and serves ipc_tool;
  *   - A6: a session-kind request whose token differs from the preface token
  *     is served (no per-frame token check);
+ *   - the client library in local-tool mode connects with no trusted list and
+ *     no chain id and its dnac_node_duties request is served as the node's own
+ *     key (the stand-in answers k_reply, which is not a duties reply, so the
+ *     client call itself waits out its 3 s request timeout: the assertion is
+ *     on what the witness saw, not on the call's result);
  *   - NOT covered here: a connection from another uid (the SO_PEERCRED check
  *     is nodus_tcp_unix_listen's and is tested with the unix transport);
  *   - with no witness listening, a dnac_* request is answered at once with
