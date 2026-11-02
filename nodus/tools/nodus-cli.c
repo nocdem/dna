@@ -204,6 +204,35 @@ static void cli_load_builtin_pins(void) {
             g_cli_builtin_count++;
 }
 
+/* The node's own key as a trusted node for `status`'s sessions to its own
+ * node (operator 2026-11-02, "nodun kendini okumamasi kotu ama" -> "1"): a
+ * node outside the built-in list could not read itself without --pin. Set by
+ * cmd_status from the key named in the node config; used only for sessions
+ * to that node's own configured address and port (textual match), added to
+ * the active list (the built-in one or --pin). Static: the pin array is
+ * borrowed by the client / transport for the life of the session. */
+static bool        g_st_own_set = false;
+static nodus_key_t g_st_own_fp;
+static const char *g_st_own_ip;
+static uint16_t    g_st_own_port;
+static nodus_key_t g_st_pins[CLI_PIN_MAX + NODUS_LIGHT_DEFAULT_NODE_COUNT + 1];
+
+/* The trusted list for a session to host:port: the active list, plus the
+ * node's own key when this is `status` talking to its own node. */
+static void cli_trust_for(const char *host, uint16_t port,
+                          const nodus_key_t **list, size_t *count) {
+    cli_load_builtin_pins();
+    const nodus_key_t *src = g_cli_pin_count ? g_cli_pins : g_cli_builtin_pins;
+    size_t n = (size_t)(g_cli_pin_count ? g_cli_pin_count : g_cli_builtin_count);
+    if (g_st_own_set && g_st_own_ip && host && port == g_st_own_port &&
+        strcmp(host, g_st_own_ip) == 0) {
+        memcpy(g_st_pins, src, n * sizeof(*src));
+        g_st_pins[n++] = g_st_own_fp;
+        src = g_st_pins;
+    }
+    *list = src; *count = n;
+}
+
 /* Fill the trust part of a client config that does not already carry one. */
 static void cli_apply_trust(nodus_client_config_t *cfg) {
     if (g_cli_tool_sock[0] && !cfg->local_tool_sock) {
@@ -313,9 +342,8 @@ static void raw_on_authenticated(nodus_tcp_conn_t *conn, const nodus_pubkey_t *p
 /* Attach the module to the (freshly initialised) global transport and dial.
  * @return 0 with server_conn set, -1 on failure (server_conn NULL). */
 static int raw_session_connect(const char *host, uint16_t port) {
-    cli_load_builtin_pins();
-    const nodus_key_t *list = g_cli_pin_count ? g_cli_pins : g_cli_builtin_pins;
-    const size_t count = (size_t)(g_cli_pin_count ? g_cli_pin_count : g_cli_builtin_count);
+    const nodus_key_t *list; size_t count;
+    cli_trust_for(host, port, &list, &count);
     uint8_t chain_id[32];
     if (g_cli_chain_id_set) memcpy(chain_id, g_cli_chain_id, sizeof(chain_id));
     else if (cli_hex_n(NODUS_LIGHT_CHAIN_ID_HEX, chain_id, sizeof(chain_id)) != 0) return -1;
@@ -7636,18 +7664,6 @@ static void st_hex(const uint8_t *b, size_t n, char *out) {
     out[2 * n] = '\0';
 }
 
-/* The node's own key as a trusted node for `status`'s session to its own
- * node (operator 2026-11-02, "nodun kendini okumamasi kotu ama" -> "1"): a
- * node outside the built-in list could not read itself without --pin. Set by
- * cmd_status from the key named in the node config; used only for the session
- * to that node's own address and port, added to the active list (the
- * built-in one or --pin). Static: the client borrows the pin array. */
-static bool        g_st_own_set = false;
-static nodus_key_t g_st_own_fp;
-static const char *g_st_own_ip;
-static uint16_t    g_st_own_port;
-static nodus_key_t g_st_pins[CLI_PIN_MAX + NODUS_LIGHT_DEFAULT_NODE_COUNT + 1];
-
 /* One read-only session with bounded waits; the reason in err on failure.
  * @return 0 (close owed) / -1. */
 static int st_session(nodus_client_t *client, const char *ip, uint16_t port,
@@ -7655,15 +7671,11 @@ static int st_session(nodus_client_t *client, const char *ip, uint16_t port,
                       size_t errcap) {
     nodus_client_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
-    if (g_st_own_set && port == g_st_own_port && g_st_own_ip &&
-        strcmp(ip, g_st_own_ip) == 0) {
-        cli_load_builtin_pins();
-        const nodus_key_t *src = g_cli_pin_count ? g_cli_pins : g_cli_builtin_pins;
-        int n = g_cli_pin_count ? g_cli_pin_count : g_cli_builtin_count;
-        memcpy(g_st_pins, src, (size_t)n * sizeof(*src));
-        g_st_pins[n++] = g_st_own_fp;
-        cfg.pinned_server_fps = g_st_pins;
-        cfg.pinned_server_fp_count = n;
+    {
+        const nodus_key_t *list; size_t n;
+        cli_trust_for(ip, port, &list, &n);
+        cfg.pinned_server_fps = list;
+        cfg.pinned_server_fp_count = (int)n;
     }
     snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", ip);
     cfg.servers[0].port       = port;
