@@ -1,0 +1,22 @@
+# Test Caddyfile for browser-nodus-caddy.js (approved 4001 plan 4.3).
+#
+# The production shape (nodus/docs/DEPLOY_RUNBOOK.md section 2.4: Caddy
+# terminates TLS and reverse-proxies to the node's WebSocket entry on
+# 127.0.0.1:<ws_port>) on localhost, without the ACME issuer a bare IP cannot
+# use: `tls internal` issues a certificate from Caddy's own local CA for the
+# IP, so the browser context must accept it (ignoreHTTPSErrors).
+#
+# Run by the test as a USER process, never the system service:
+#   caddy run --config nodus-caddy.Caddyfile --adapter caddyfile
+# with the environment CADDY_TEST_PORT (the unprivileged TLS port) and
+# CADDY_TEST_WS_PORT (the node's ws_port) and private XDG_DATA_HOME /
+# XDG_CONFIG_HOME, so nothing is written under the user's home or /etc.
+{
+	admin off
+	auto_https disable_redirects
+}
+
+https://127.0.0.1:{$CADDY_TEST_PORT} {
+	tls internal
+	reverse_proxy 127.0.0.1:{$CADDY_TEST_WS_PORT}
+}
