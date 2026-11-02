@@ -743,6 +743,52 @@ production (4000-4004) so both can run simultaneously.
 | `stagef_hf6_owner.sh` | **The PRE-BUILD step of (HF-6 6b-3) `test_storage_archive.sh`'s TEST-OWNER MODE (written for HF-6 6f-2's `test_hf6_edge.sh` rotation phase, deleted by HF-6 D1; the printed `STAGEF_V2_CANDIDATES=1` export is that phase's and is now unused) (the NO_EVIDENCE leg; that scenario needs no `STAGEF_V2_CANDIDATES`) — not a scenario, never in the sweep.** `bash stagef_hf6_owner.sh <DIR> [NODUS_SERVER_BIN]` generates ONE single-key nodus identity in `<DIR>/identity` the harness's own way (a short-lived `nodus-server -i … -d …` spawn, as `stagef_up_v2.sh` section 1b makes v2user / v2pump / cand<i>; port block 90 = 14890-14894, every port checked free with `ss` first; the server creates an identity only when neither key file exists), checks `nodus.fp == SHA3-512(nodus.pk)` and that `nodus.sk` exists, and prints the 128-hex owner_fp, the exact flag `-DDNAC_HF6_FOUNDATION_OWNER="{0x..,…}"` (64 bytes, no spaces — dnac.h's own override form, checked by its author against `flags.make` and the compiled object of `nodus_witness_v2_apply.c` under the "Unix Makefiles" generator with `/bin/sh` = dash) AND (HF-6 slice 8b) the SECOND flag `-DDNAC_CFG_RULESET_GEN_ROLES_D=0x…ULL` — the generation-4 vote value D4 of THAT owner, taken from the `D4 =` line of the independent oracle `shared/dnac/tests/hf6_vote_oracle.py --owner <fp>` (never computed in bash; python3 required; the script refuses if the oracle exits non-zero, prints no D4 line, or does not report the override) AND (HF-7 P1d) the THIRD flag `-DDNAC_CFG_RULESET_GEN_ROOTS_D=0x…ULL` — the generation-5 vote value D5 of the same owner, the `D5 =` line of `shared/dnac/tests/hf7_vote_oracle.py --owner <fp>` under the same three refusals — all inside a full `cmake -DCMAKE_C_FLAGS=…` line with the short-epoch set, and the exports (`STAGEF_V2_CANDIDATES=1`, `STAGEF_HF6_OWNER_FP_HEX`, `STAGEF_HF6_OWNER_KEYS`). Re-runnable: an existing `<DIR>/identity/nodus.pk` is re-checked and printed, never regenerated. WHY before the build: the owner the HF-6 edge gives the genesis validators is COMPILED (`DNAC_HF6_FOUNDATION_OWNER`); every other harness identity is born at bring-up, after the build. Leaves `<DIR>/identity`, `<DIR>/data`, `<DIR>/identity_gen.log`; no process. It cannot prove the build you make next carries the bytes — `test_hf6_edge.sh` step 7 and `test_storage_archive.sh`'s owner check do. **All three flags or none:** D4 (`dnac.h` `DNAC_CFG_RULESET_GEN_ROLES_D`) and, since HF-7 P1d, D5 (`DNAC_CFG_RULESET_GEN_ROOTS_D`) hash the compiled owner and the runtime selfcheck re-derives both on every start, so a build that overrides the owner without the matching literals (or a literal without the owner) REFUSES TO START on every node ("the compiled RULESET_GEN_ROLES literal … does not re-derive" / "the compiled RULESET_GEN_ROOTS literal … does not re-derive") — the bring-up fails visibly, it does not run with a wrong value. A test build only: production never defines any of the overrides. |
 
 
+### nodus-cli in the harness — the 4001 session (approved 4001 plan 4.4)
+
+A 4001 session needs a trusted node list and a chain id before it starts, and a
+node refuses a client holding its own key (reflection). `tools/stagef_nodus_cli.sh`
+is therefore what `STAGEF_NODUSCLI_BIN` names after `stagef_env.sh` is sourced
+(`STAGEF_NODUSCLI_BIN` as the caller sets it is captured as
+`STAGEF_NODUSCLI_REAL`, the binary that really runs). For a call naming a
+harness node by its client port it adds, before the command,
+`--pin <that node's identity/nodus.fp> --chain-id <$BASE_DIR/v2_chain_id>`.
+`chain-config propose` is an own-node tool (it talks to the node's own
+`<data>/witness.sock`, in every harness mode, `combined` included): the wrapper
+appends `--config <node<N>/cli-tool.json>` (written by it: identity_path and
+data_path of the node whose key `-i` names, else of the `-p` port's node; the
+harness gives data dirs on the command line, not in nodus.json). A call with no
+harness port (usage probes on `PROBE_PORT`, `whoami`, `msig address`) or before
+`v2_chain_id` exists is passed through unchanged. Not run by the author.
+
+Calls by class (the nodus-cli calls whose meaning the 4001 change touches):
+- **Pin and chain id added, otherwise as before:** every nodus-cli call through
+  `$CLI` / `$NEW_CLI` / `$STAGEF_NODUSCLI_BIN` that names a harness port and is
+  not listed below (v2-claim, v2-envelope spend/stake/name/token-create,
+  validator/storage reads, `storage consent` of a non-node key, `status`-style
+  reads, msig, `cluster-status`, the height pump).
+- **chain-config propose, now an own-node tool (route changed, proposer the
+  same):** test_cmt_hf2_gov_power.sh:735, test_cmt_evm_lib.sh:553,
+  test_cmt_evm.sh:923 and :937, test_hf6_edge.sh:602, test_cmt_hf4_names.sh:647
+  and :865, test_cmt_hf7.sh:536, test_cmt_mldsa.sh:500 and :514,
+  test_cmt_hf3_block_bounds.sh:488, test_cmt_hf8_gen5.sh:554,
+  test_v2_grow_7_20.sh:825, test_storage_archive.sh:700,
+  test_cmt_hf8_delegate_name.sh:391. The proposal goes through the key owner's
+  own node, not through the node the `-p` port names; for test_cmt_hf1_gas_upgrade.sh:622
+  (`who` proposes through node `to`) the route is therefore node `who`'s own
+  socket: **the meaning changes (node `to` no longer relays it) and is reported,
+  not hidden.**
+- **A node's key against that node's own port, unchanged (the node refuses it
+  as a reflection — these calls fail until a decision moves them to another node
+  or to an own-node tool):** test_storage_archive.sh:804 (`consent_make`, node
+  n's key to node n's port: `storage consent`), :853 (`storage status` when the
+  key's node equals the port's node), test_cmt_hf2_gov_power.sh:665 (`v2-envelope
+  chain-config` when `$node` is 1), test_v2_grow_7_20.sh:784 (when `$n` is 1) and
+  :833 (node 1's key to node 1's port).
+- **Cannot cross the change:** the OLD/NEW upgrade scenarios (an old nodus-cli
+  or node binary on one side) — an old binary speaks the removed handshake and
+  has no `--pin`; the wrapper passes `--pin` to whatever binary
+  `STAGEF_NODUSCLI_BIN` named.
+
 ## Scenario tests (`tests/`)
 
 Every script on disk is listed. **"Plain" means: a default `nodus/build`
