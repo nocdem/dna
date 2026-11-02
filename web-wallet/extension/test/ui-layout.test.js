@@ -16,7 +16,10 @@ import { assertNetworkGroups } from '../../test/browser-network-groups.js';
 // Vite aliases/defines are copied from vite.extension.config.js; mirror
 // later changes there. The version define comes from the same package.json.
 // Proves mounted-page geometry, including label text below the eye and lock,
-// names, price wiring and approval/form regressions.
+// the 0.1.145 navigation rail beside every page, separate Send and Receive
+// pages, network-grouped holdings, names, price wiring and approval/form
+// regressions. With PQ addresses set, the page's public-only PQ readers are
+// aborted by the route and their origins are checked against a fixed list.
 // Can falsely pass visually: geometry is not aesthetic approval. A normal page
 // cannot prove extension font loading (package-smoke.test.js does). Fake state
 // and quotes cannot prove live background/chain/feed compatibility. Notification
@@ -78,8 +81,8 @@ async function assertPortfolioLayout(page) {
       amountFirst: Boolean(amount.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING),
       labelSize: parseFloat(getComputedStyle(label).fontSize), previousLabelSize,
       upperGap: box.top - greeting.bottom,
-      // The network section now starts with its visible category heading.
-      lowerGap: document.querySelector('#portfolio-networks').firstElementChild.getBoundingClientRect().top - box.bottom };
+      // wallet-screen.js:44,49 (0b3b0eb0d): the network disclosure follows the card.
+      lowerGap: document.getElementById('wallet-network').getBoundingClientRect().top - box.bottom };
   });
   assert.equal(layout.amountFirst, true, 'The amount precedes its label in reading order');
   assert.ok(layout.amount.bottom <= layout.label.top, 'The amount sits above its label');
@@ -90,7 +93,8 @@ async function assertPortfolioLayout(page) {
   assert.ok(Math.abs(layout.label.right - layout.lock.right) < 1, 'The label text aligns with the right edge of the lock');
   assert.ok(layout.labelSize < layout.previousLabelSize, 'The label is smaller than the previous portfolio eyebrow');
   assert.ok(layout.upperGap > 0 && layout.lowerGap > 0, 'The greeting, card and network chips have space between them');
-  assert.ok(Math.abs(layout.upperGap - layout.lowerGap) < 1, 'Welcome to card and card to network chips have equal gaps');
+  assert.ok(Math.abs(layout.upperGap - layout.lowerGap) < 1, 'Welcome to card and card to network disclosure have equal gaps');
+  assert.ok(Math.abs(layout.lowerGap - 18) < 1, 'Both portfolio gaps are 18px (operator 2026-11-02: "ikiside 18")');
 }
 
 const button = (page, name) => page.getByRole('button', { name, exact: true });
@@ -109,33 +113,50 @@ async function waitHome(page) {
   await page.waitForFunction(() => document.querySelectorAll('.network-health[data-health="current"]').length === 7 && document.getElementById('portfolio-total')?.textContent.startsWith('$'));
   await page.locator('#screen:not([inert])').waitFor();
 }
+// The network chips live in the closed disclosure beside the card, on Send and
+// on Receive (wallet-screen.js:44,199-202); groups collapse their chips. Same
+// steps as fixtures/portfolio-page-checks.js selectFixtureNetwork, on any page.
 async function selectNetwork(page, chain) {
-  if (await page.locator('#send-form').isVisible()) await page.locator('#chain').selectOption(chain);
-  else await page.locator(`.network-health[data-chain="${chain}"]`).click();
+  if (!await page.locator('#wallet-network').evaluate(node => node.open)) await page.locator('#wallet-network > summary').click();
+  const badge = page.locator(`#portfolio-networks .network-health[data-chain="${chain}"]`);
+  const toggle = badge.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " network-group ")]').locator('.network-group-toggle');
+  if (await toggle.count() && await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
+  await badge.click();
+}
+// 0.1.155 (5eb8dc724): the environment is chosen with buttons in the compact
+// disclosure inside the network disclosure (wallet-screen.js:149-161).
+async function selectEnvironment(page, id) {
+  if (!await page.locator('#wallet-network').evaluate(node => node.open)) await page.locator('#wallet-network > summary').click();
+  if (!await page.locator('#wallet-environment').evaluate(node => node.open)) await page.locator('#wallet-environment > summary').click();
+  await page.locator(`#wallet-environment button[data-environment="${id}"]`).click();
 }
 async function assertNavigation(page, current = null) {
-  // index.html:34 and style.css:882-885: ordered tiles, two columns at 400px.
-  // Pages replace wallet-home (src/app.js:2134-2144); links have no aria-current.
+  // index.html:34 sets the link order.
+  // wallet-screen.js:57-63 (0.1.145, 0b3b0eb0d): Portfolio returns home ('#'),
+  // Send and Receive are separate pages. Pages replace wallet-home
+  // (wallet-screen.js:194-212); links have no aria-current.
   const links = page.locator('.wallet-navigation a');
   const values = await links.evaluateAll(nodes => nodes.map(node => ({
     text: node.querySelector('.nav-name').textContent, href: node.getAttribute('href'),
     hidden: node.hidden, box: node.getBoundingClientRect().toJSON(),
   })));
   assert.deepEqual(values.map(node => [node.text, node.href]), [
-    ['Portfolio', '#assets-panel'], ['Send / Receive', '#send-form'],
+    ['Portfolio', '#'], ['Send', '#send'], ['Receive', '#receive'],
     ['Earn', '#earn'], ['Shared vaults', '#vaults'], ['Smart contracts', '#contracts'],
     ['Activity', '#wallet-activity'], ['Address book', '#address-book'], ['Device & settings', '#settings'],
     ['Connected sites', '#sites'],
   ]);
   const available = values.filter(node => !node.hidden);
   assert.deepEqual(available.filter(node => !['#earn', '#vaults', '#contracts'].includes(node.href)).map(node => node.text),
-    ['Portfolio', 'Send / Receive', 'Activity', 'Address book', 'Device & settings', 'Connected sites']);
+    ['Portfolio', 'Send', 'Receive', 'Activity', 'Address book', 'Device & settings', 'Connected sites']);
   assert.deepEqual(await page.locator('.wallet-page:visible').evaluateAll(nodes => nodes.map(node => node.id)), current ? [`page-${current}`] : []);
   assert.equal(await page.locator('#wallet-home').isVisible(), current === null);
   assert.equal(await page.locator('#wallet-heading').isVisible(), current === null);
-  assert.equal(await page.locator('.wallet-navigation a:visible').count(), current ? 0 : available.length);
+  // style.css:999-1005 and :1019-1022 (0b3b0eb0d): one compact rail stays beside
+  // the home screen and every wallet page; names are visually hidden labels.
+  assert.equal(await page.locator('.wallet-navigation a:visible').count(), available.length);
   if (current) {
-    const title = current === 'assets-panel' ? 'Your assets' : current === 'send-form' ? /^Send \/ Receive/u
+    const title = current === 'send' ? /^Send · /u : current === 'receive' ? /^Receive on /u
       : current === 'wallet-activity' ? 'Activity' : current === 'sites' ? 'Connected sites' : 'Device & settings';
     const heading = page.locator(`#page-${current}`).getByRole('heading', { name: title, exact: true });
     await heading.waitFor();
@@ -145,60 +166,48 @@ async function assertNavigation(page, current = null) {
     assert.equal(await back.isVisible(), true);
     assert.match(await back.textContent(), /Back to wallet/u);
     assert.ok((await back.boundingBox()).y < (await heading.boundingBox()).y, 'Back appears above the page heading');
-  } else if (page.viewportSize().width <= 760) {
-    for (let index = 0; index < available.length; index += 2) {
-      const left = available[index].box, right = available[index + 1]?.box;
-      assert.ok(left.width > 0, 'Navigation tiles must have measurable width');
-      assert.ok(Math.abs(left.left - available[0].box.left) < 1, 'Left navigation column stays aligned');
-      if (right) {
-        assert.ok(right.width > 0, 'Navigation tiles must have measurable width');
-        assert.ok(Math.abs(left.top - right.top) < 1, 'Each pair of navigation tiles shares a row');
-        assert.ok(left.right < right.left, 'Navigation columns must not overlap');
-        assert.ok(Math.abs(right.left - available[1].box.left) < 1, 'Right navigation column stays aligned');
-      }
-      if (index) assert.ok(left.top > available[index - 2].box.bottom, 'Navigation rows must not overlap');
-    }
+  }
+  const content = await page.locator(current ? `#page-${current}` : '#wallet-home').evaluate(node => node.getBoundingClientRect().toJSON());
+  for (const [index, link] of available.entries()) {
+    assert.ok(link.box.width > 0 && link.box.height > 0, `${link.text}: rail link must be measurable`);
+    assert.ok(Math.abs(link.box.left - available[0].box.left) < 1, `${link.text}: rail links share one column`);
+    assert.ok(Math.abs(link.box.width - available[0].box.width) < 1, `${link.text}: rail links have equal widths`);
+    if (index) assert.ok(link.box.top >= available[index - 1].box.bottom, `${link.text}: rail links stack without overlap`);
+    assert.ok(link.box.right <= content.left, `${link.text}: the rail stays beside the ${current ?? 'home'} content`);
   }
 }
 async function assertAssetLayout(page) {
-  await page.locator('.wallet-navigation a[href="#assets-panel"]').click();
-  await assertNavigation(page, 'assets-panel');
-  // portfolio-view.js:168-204; style.css:452-480. Closed details have no row
-  // geometry: expand only for measurement and restore every original open state.
+  // 0.1.145 (0b3b0eb0d): holdings are grouped by network on the home screen
+  // (portfolio-view.js:211-214, portfolio.js groupNetworks); no Portfolio page.
+  // Closed details have no row geometry: expand only for measurement and
+  // restore every original open state.
+  assert.equal(await page.locator('#assets-panel').isVisible(), true);
   const groups = await page.evaluate(() => {
     const details = [...document.querySelectorAll('.asset-group')], opened = details.map(node => node.open);
     const rect = node => node.getBoundingClientRect().toJSON();
-    const identity = node => ({
-      box: rect(node), icon: rect(node.querySelector('.coin-icon')),
-      name: rect(node.querySelector('.asset-name, span:not(.coin-icon)')),
-    });
     try {
       for (const node of details) node.open = true;
       return details.map(node => ({
-        symbol: node.dataset.symbol, radius: getComputedStyle(node).borderRadius,
-        summary: { ...identity(node.querySelector('.asset-summary')),
-          labels: [...node.querySelectorAll('.asset-name strong, .asset-name small')].map(rect) },
+        chain: node.dataset.chain, radius: getComputedStyle(node).borderRadius,
+        summary: { box: rect(node.querySelector('.asset-summary')), icon: rect(node.querySelector('.asset-summary > .coin-icon')),
+          name: rect(node.querySelector('.asset-summary > .network-heading-select')) },
         rows: [...node.querySelectorAll('.chain-holding')].map(row => ({
-          chain: row.dataset.chain, box: rect(row), padding: parseFloat(getComputedStyle(row).paddingRight),
-          identity: identity(row.querySelector('.holding-network')),
-          current: row.querySelector('.holding-select').getAttribute('aria-current'),
+          chain: row.dataset.chain, symbol: row.querySelector('.holding-network span:not(.coin-icon)').textContent,
+          selected: row.classList.contains('selected'), box: rect(row), padding: parseFloat(getComputedStyle(row).paddingRight),
+          identity: { box: rect(row.querySelector('.holding-network')), icon: rect(row.querySelector('.holding-network .coin-icon')),
+            name: rect(row.querySelector('.holding-network span:not(.coin-icon)')) },
           value: { ...rect(row.querySelector('.holding-value')), align: getComputedStyle(row.querySelector('.holding-value')).textAlign },
           amounts: [...row.querySelectorAll('.holding-value strong, .holding-value small')].map(rect),
-          actions: [...row.querySelectorAll('.holding-actions button')].map(button => ({ text: button.textContent, ...rect(button) })),
+          actions: row.querySelectorAll('.holding-actions button').length,
         })),
       }));
     } finally { details.forEach((node, index) => { node.open = opened[index]; }); }
   });
-  // Existing fixture balances are positive; eight new PQ rows have unavailable
-  // balances. There are 25 holdings in 19 asset groups, including receive-only rows.
-  // portfolio.js:153-171 sorts native groups by network name after stablecoins.
-  assert.deepEqual(groups.map(group => [group.symbol, group.rows.map(row => row.chain)]), [
-    ['NODUS', ['nodus']], ['USDT', ['ethereum', 'bsc', 'solana', 'tron']],
-    ['USDC', ['ethereum', 'bsc', 'solana', 'tron']], ['DAI', ['ethereum']], ['USDD', ['tron']],
-    ['ALGO', ['algorand']], ['ASE', ['asentum']], ['BNB', ['bsc']], ['CPUNK', ['cellframe']],
-    ['ETH', ['ethereum']], ['IXIOS', ['ixios']], ['CKB', ['ckb']], ['QTC', ['qtc']],
-    ['SOL', ['solana']], ['SOQ', ['soqucoin']], ['SPLD', ['splendor']], ['TDC', ['tidecoin']],
-    ['TRX', ['tron']], ['XION', ['xion']],
+  // Hide zero balances is on by default (portfolio-view.js:129): networks whose
+  // balance is unavailable or zero leave no group. Order follows snapshot rows.
+  assert.deepEqual(groups.map(group => [group.chain, group.rows.map(row => row.symbol)]), [
+    ['nodus', ['NODUS']], ['ethereum', ['ETH', 'USDT', 'USDC', 'DAI']], ['bsc', ['BNB', 'USDT', 'USDC']],
+    ['solana', ['SOL', 'USDT', 'USDC']], ['tron', ['TRX', 'USDT', 'USDC', 'USDD']], ['cellframe', ['CPUNK']], ['ixios', ['IXIOS']],
   ]);
   const contained = (item, box, message) => {
     assert.ok(item.width > 0 && item.height > 0, `${message}: must be measurable`);
@@ -212,34 +221,31 @@ async function assertAssetLayout(page) {
     assert.ok(identity.icon.right <= identity.name.left, `${label}: icon and name must not overlap horizontally`);
   };
   for (const group of groups) {
-    assert.equal(group.radius, '10px', group.symbol);
-    alignedIdentity(group.summary, group.symbol);
-    for (const label of group.summary.labels) contained(label, group.summary.box, `${group.symbol}: symbol and caption stay inside the summary`);
+    assert.equal(group.radius, '10px', group.chain);
+    alignedIdentity(group.summary, group.chain); // operator 2026-11-02: "hizala"
     for (const row of group.rows) {
-      const label = `${group.symbol} on ${row.chain}`;
+      const label = `${row.symbol} on ${group.chain}`;
+      assert.equal(row.chain, group.chain, label);
       alignedIdentity(row.identity, label);
-      assert.equal(row.current, row.chain === 'nodus' ? 'true' : null, `${label}: selected network marker`);
+      assert.equal(row.selected, group.chain === 'nodus', `${label}: selected network marker`);
       assert.equal(row.value.align, 'right', label);
-      assert.ok(Math.abs(row.box.right - row.padding - row.value.right) < 1, `${label}: holding value ends at the row's right padding`);
+      // style.css:1024 (<=560px): .holding-value is display: contents, so its
+      // amount and price are measured as the row's own grid items there.
+      const valueRight = row.value.width ? row.value.right : Math.max(...row.amounts.map(amount => amount.right));
+      assert.ok(Math.abs(row.box.right - row.padding - valueRight) < 1, `${label}: holding value ends at the row's right padding`);
       for (const amount of row.amounts) {
         contained(amount, row.box, `${label}: amount stays inside its row`);
-        assert.ok(Math.abs(amount.right - row.value.right) < 1, `${label}: amount and price share the right edge`);
+        assert.ok(Math.abs(amount.right - valueRight) < 1, `${label}: amount and price share the right edge`);
       }
-      const receiveOnly = ['cellframe', 'ixios', 'algorand', 'tidecoin', 'ckb', 'soqucoin', 'qtc', 'xion', 'splendor', 'asentum'].includes(row.chain);
-      assert.deepEqual(row.actions.map(action => action.text), receiveOnly ? ['Receive'] : ['Send', 'Receive'], label);
-      for (const action of row.actions) contained(action, row.box, `${label}: action stays inside its row`);
-      if (!receiveOnly) assert.ok(Math.abs(row.actions[0].top - row.actions[1].top) < 1, `${label}: Send and Receive share a row`);
+      // Send and Receive are pages reached from the rail or the shortcuts.
+      assert.equal(row.actions, 0, `${label}: rows carry no transfer buttons`);
     }
   }
-  assert.equal(await page.locator('.chain-holding').count(), 25);
-  assert.equal(await page.locator('.holding-actions button[aria-label^="Send "]').count(), 15);
-  assert.equal(await page.locator('.holding-actions button[aria-label^="Receive "]').count(), 25);
+  assert.equal(await page.locator('.chain-holding').count(), 17);
   assert.equal(await page.locator('.transfer-buttons #quick-send').count(), 1);
   assert.equal(await page.locator('.transfer-buttons #quick-receive').count(), 1);
   assert.equal(await page.locator('#send-form').isVisible(), false);
   assert.ok(await page.locator('.price-source').evaluate(node => node.getBoundingClientRect().top >= [...document.querySelectorAll('.asset-group')].at(-1).getBoundingClientRect().bottom));
-  await page.locator('#page-assets-panel .page-back').click();
-  await assertNavigation(page);
 }
 async function assertHome(page, popup) {
   await waitHome(page); await page.evaluate(() => scrollTo(0, 0));
@@ -270,76 +276,46 @@ async function assertHome(page, popup) {
   assert.equal(lock.box.width, eye.box.width); assert.equal(lock.box.height, eye.box.height);
   assert.ok(Math.abs(lock.box.top - eye.box.top) < 1, 'The lock and eye share a row');
   assert.ok(lock.box.left >= eye.box.right && lock.box.left - eye.box.right <= 12, 'The lock sits beside the eye');
+  // wallet-screen.js:249 and capabilities.js: Nodus pages follow chain capability.
   assert.deepEqual(await page.locator('.wallet-navigation a:visible .nav-name').allTextContents(),
-    ['Portfolio', 'Send / Receive', 'Smart contracts', 'Activity', 'Address book', 'Device & settings', 'Connected sites']);
+    ['Portfolio', 'Send', 'Receive', 'Earn', 'Shared vaults', 'Smart contracts', 'Activity', 'Address book', 'Device & settings', 'Connected sites']);
   assert.equal(await page.locator('.extension-network').count(), 0);
   assert.equal(await page.locator('.network-health').count(), 15);
-  assert.equal(await page.locator('.network-filter').count(), 16);
+  // portfolio-view.js:477-479: the portfolio always shows every network; no filter buttons.
+  assert.equal(await page.locator('.network-filter').count(), 0);
+  assert.equal(await page.locator('#portfolio-filters').isHidden(), true);
   const networks = ['Nodus', 'Cellframe', 'Ixios', 'Algorand', 'Tidecoin', 'Nervos CKB',
     'Soqucoin', 'QTC', 'Verona / XION', 'Splendor', 'Asentum', 'Ethereum', 'BNB Smart Chain', 'Solana', 'TRON'];
   assert.deepEqual(await page.locator('.network-health > span:not(.health-light):not(.coin-icon)').allTextContents(), networks);
   assert.deepEqual(await page.locator('#chain option').allTextContents(), networks);
-  await assertNetworkGroups(page);
+  await assertNetworkGroups(page, { addressBookIxios: true });
   await page.waitForFunction(() => {
     const icons = [...document.querySelectorAll('img[data-icon="ixios.png"]')];
     return icons.length > 0 && icons.every(icon => icon.complete && icon.naturalWidth > 0);
   });
   assert.equal(await page.locator('#chain').inputValue(), 'nodus');
-  assert.deepEqual(await page.locator('.selected-network-name').allTextContents(), Array(5).fill('Nodus'));
-  assert.deepEqual(await page.locator('.selected-network-stage').allTextContents(), Array(4).fill('Testnet'));
+  assert.deepEqual(await page.locator('.selected-network-name').allTextContents(), Array(6).fill('Nodus'));
+  assert.deepEqual(await page.locator('.selected-network-stage').allTextContents(), Array(5).fill('Testnet'));
   assert.deepEqual(await page.locator('#asset option').allTextContents(), ['NODUS']);
   assert.equal(await page.locator('#asset').inputValue(), '0'.repeat(128));
   assert.equal(await page.locator('#receive-address').textContent(), 'ab'.repeat(64));
   assert.equal(await page.locator('#receive-qr svg[aria-label="QR code for the receive address"]').count(), 1);
   assert.equal(await page.locator('#net-status, #net-status-text').count(), 0);
-  assert.equal(await page.locator('.asset-group[data-symbol="NODUS"] .asset-value strong').textContent(), '12.34');
-  assert.equal(await page.locator('.asset-group[data-symbol="NODUS"] .holding-value strong').textContent(), '12.34 NODUS');
+  assert.equal(await page.locator('.asset-group[data-chain="nodus"] .holding-value strong').textContent(), '12.34 NODUS');
   assert.equal(await page.locator('#portfolio-status').isVisible(), false);
-  assert.equal(await page.locator('#assets-panel').isVisible(), false);
+  assert.equal(await page.locator('#assets-panel').isVisible(), true);
   assert.equal(await page.locator('#send-form').isVisible(), false);
   const methods = await page.evaluate(() => window.layout.calls.map(call => call.method));
   for (const method of ['getNodusBalances', 'getCpunkBalance', 'getEvmBalances', 'getSolanaBalances', 'getTronBalances', 'getPrices']) {
     assert.ok(methods.includes(method), `Opening the wallet must request ${method} over the trusted client`);
   }
-  assert.equal(await page.locator('.asset-group[data-symbol="USDT"] .chain-holding').count(), 4);
-  assert.equal(await page.locator('#send-form #receive-panel').count(), 1);
+  assert.equal(await page.locator('.asset-group[data-chain="ethereum"] .chain-holding').count(), 4);
+  assert.equal(await page.locator('#page-receive #receive-panel').count(), 1);
   await assertAssetLayout(page);
-  // Restore only the former text control (c863555c6^ wallet-markup.js:14).
-  // Compare its real computed sizing, including the narrow-screen small rule;
-  // equal shortcut sizes alone could falsely pass the original large buttons.
-  // Measure all four boxes: equal heights alone miss unequal widths and wrapping.
-  // Content must still fit: matching height by clipping a glyph/badge is no fix.
-  const actionSizes = await page.evaluate(() => {
-    const reference = document.createElement('button'); reference.className = 'secondary small'; reference.textContent = 'Lock wallet';
-    document.querySelector('.wallet-card').append(reference);
-    const size = node => {
-      const style = getComputedStyle(node), content = document.createRange(); content.selectNodeContents(node);
-      return { id: node.id, box: node.getBoundingClientRect().toJSON(), padding: style.padding, font: style.fontSize,
-        content: [...content.getClientRects()].map(box => box.toJSON()) };
-    };
-    try { return { reference: size(reference), actions: [...document.querySelectorAll('#quick-send, #quick-receive, #quick-earn, #quick-swap')].map(size) }; }
-    finally { reference.remove(); }
-  });
-  assert.deepEqual(actionSizes.actions.map(action => action.id), ['quick-send', 'quick-receive', 'quick-earn', 'quick-swap']);
-  const [send, receive, earn, swap] = actionSizes.actions.map(action => action.box);
-  for (const action of actionSizes.actions) {
-    assert.ok(action.box.width > 0 && action.box.height > 0, `${action.id}: shortcut is measurable`);
-    assert.ok(Math.abs(action.box.width - send.width) < 1, `${action.id}: shortcuts have equal widths`);
-    assert.ok(Math.abs(action.box.height - send.height) < 1, `${action.id}: shortcuts have equal heights`);
-    assert.ok(Math.abs(action.box.height - actionSizes.reference.box.height) < 1,
-      `${action.id} at ${page.viewportSize().width}px: Shortcuts use the former Lock wallet height (${action.box.height}px vs ${actionSizes.reference.box.height}px)`);
-    assert.equal(action.padding, actionSizes.reference.padding);
-    assert.equal(action.font, actionSizes.reference.font);
-    for (const content of action.content) {
-      assert.ok(content.left >= action.box.left && content.right <= action.box.right
-        && content.top >= action.box.top && content.bottom <= action.box.bottom, `${action.id}: text, glyph and badge fit inside the shortcut`);
-    }
-  }
-  assert.ok(Math.abs(send.top - receive.top) < 1, 'Send and Receive share the first row');
-  assert.ok(Math.abs(earn.top - swap.top) < 1, 'Earn and Swap share the second row');
-  assert.ok(earn.top > Math.max(send.bottom, receive.bottom), 'The second row sits below the first');
-  assert.ok(send.right < receive.left && earn.right < swap.left, 'Send precedes Receive and Earn precedes Swap');
-  assert.ok(Math.abs(send.left - earn.left) < 1 && Math.abs(receive.left - swap.left) < 1, 'The two rows share the same columns');
+  // style.css:1009 (0b3b0eb0d): the rail replaces the home shortcuts, which
+  // stay in the DOM for their handlers but are not displayed.
+  assert.equal(await page.locator('.transfer-actions .transfer-buttons').evaluate(node => getComputedStyle(node).display), 'none');
+  for (const id of ['quick-send', 'quick-receive', 'quick-earn', 'quick-swap']) assert.equal(await page.locator(`#${id}`).isVisible(), false, id);
   for (const chip of await page.locator('.network-health').all()) {
     const centers = await chip.evaluate(node => {
       const center = item => { const box = item.getBoundingClientRect(); return box.top + box.height / 2; };
@@ -352,13 +328,11 @@ async function assertHome(page, popup) {
     portfolioRadius: getComputedStyle(document.querySelector('.portfolio-card')).borderRadius,
     portfolioBackground: getComputedStyle(document.querySelector('.portfolio-card')).backgroundImage,
     totalSize: parseFloat(getComputedStyle(document.getElementById('portfolio-total')).fontSize),
-    send: getComputedStyle(document.getElementById('quick-send')).backgroundColor,
     shell: document.querySelector('.wallet-card').getBoundingClientRect().toJSON(),
   }));
   assert.match(styles.font, /^Inter(?:,|$)/u);
   assert.equal(styles.portfolioRadius, '16px'); assert.notEqual(styles.portfolioBackground, 'none');
   assert.ok(styles.totalSize >= 32);
-  assert.equal(styles.send, 'rgb(213, 249, 152)');
   if (popup) { assert.equal(styles.shell.left, 20); assert.equal(styles.shell.right, 380); }
   const fixture = await page.evaluate(() => ({ balances: window.layout.balances, times: window.layout.balanceTimes, quotes: window.layout.quotes, now: Date.now() }));
   const balances = Object.assign({}, ...Object.entries(fixture.balances).map(([chain, rows]) => chainBalances(chain, rows, fixture.times[chain])));
@@ -465,12 +439,17 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         const refreshTop = await page.locator('#portfolio-refresh').evaluate(node => node.getBoundingClientRect().top);
         await page.evaluate(() => window.layout.releaseReads()); await waitHome(page);
         assert.equal(await page.locator('#portfolio-status').isVisible(), false);
-        assert.equal(await page.locator('#portfolio-label').textContent(), 'Estimated portfolio value');
+        // The fixture has no selected-environment PQ addresses: those networks are
+        // balanceUnavailable (wallet-screen.js:194-196), so the known value is incomplete.
+        assert.equal(await page.locator('#portfolio-label').textContent(), 'Known value · incomplete');
         const settled = await page.locator('.portfolio-card').boundingBox();
         await assertPortfolioLayout(page);
         assert.ok(settled.height < await portfolioHeight0136(page) - 1, `${kind} ${width}: settled card is smaller than 0.1.136`);
         assert.ok(Math.abs(loading.height - settled.height) < 1, `${kind} ${width}: portfolio height stays fixed after loading`);
         assert.ok(Math.abs(refreshTop - await page.locator('#portfolio-refresh').evaluate(node => node.getBoundingClientRect().top)) < 1, 'Refresh action stays in place');
+        // operator 2026-11-03 ("12'den 6 piksele indir"): amount and currency share one line.
+        const [total, currency] = await page.locator('#portfolio-total, .portfolio-currency').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().toJSON()));
+        assert.ok(currency.top >= total.top - 1 && currency.bottom <= total.bottom + 1 && currency.left > total.right, `${kind} ${width}: USD stays on the amount's line`);
         // Public fixture replies, no live reads. Compare the generic, named
         // (including long text) and registration states at each viewport. This
         // pins row height and portfolio position; name-block-ui.test.js pins
@@ -517,7 +496,8 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         await page.locator('#page-settings .page-back').click();
         await button(page, 'Register your on-chain name').click();
         assert.equal(await page.locator('#wallet-home').isVisible(), false);
-        assert.equal(await page.locator('#page-send-form').isVisible(), true);
+        // wallet-screen.js:419-420: registration opens Nodus Receive with the name block.
+        assert.equal(await page.locator('#page-receive').isVisible(), true);
         assert.equal(await page.locator('#chain').inputValue(), 'nodus');
         assert.equal(await page.locator('#name-block').isVisible(), true);
         assert.equal(await page.locator('#name-input').evaluate(node => document.activeElement === node), true);
@@ -526,15 +506,16 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         // environment/address/QR; same-value selection must preserve them.
         // Public independent native oracle addresses; no signing or network.
         if(kind==='popup') {
+          const pqStart = blocked.length;
           await open('home');await waitHome(page);
           const pq=JSON.parse(readFileSync(new URL('../../test/fixtures/pq-receive.json',import.meta.url))).vectors[0].addresses;
           await page.evaluate(async pq=>{window.layout.state.pqAddresses=pq;await window.layout.refresh();},pq);
-          await page.locator('#quick-receive').click();await page.selectOption('#chain','qtc');
-          await page.selectOption('#pq-network-environment','mainnet');
+          await page.locator('.wallet-navigation a[href="#receive"]').click();await selectNetwork(page,'qtc');
+          await selectEnvironment(page,'mainnet');
           assert.equal(await page.locator('#receive-address').textContent(),pq.qtc.mainnet);
           for(const failure of ['before','after']) {
             await page.evaluate(failure=>{window.layout.state.failNetworkWrites=failure;},failure);
-            await page.selectOption('#pq-network-environment','testnet');
+            await selectEnvironment(page,'testnet');
             await page.waitForFunction(()=>!document.querySelector('#screen').inert&&document.querySelector('#wallet-status').textContent.includes('Public fixture network persistence failure'));
             const network=failure==='before'?'mainnet':'testnet';
             assert.equal(await page.locator('#pq-network-environment').inputValue(),network);
@@ -542,6 +523,13 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
             assert.equal(await page.locator('#receive-qr svg').count(),1);
             assert.equal(await page.locator('#copy-address').isDisabled(),false);
           }
+          // With PQ addresses the page's public-only readers (wallet-page.js:17-28)
+          // call their own endpoints directly; the route above aborts them, so
+          // those rows stay unavailable. Only these public read origins may appear.
+          const pqOrigins = new Set(['https://mainnet-api.algonode.cloud', 'https://mainnet-api.soqu.org', 'https://qtc.events',
+            'https://testnet.qtc.events', 'https://api.xion-mainnet-1.burnt.com', 'https://quantum-rpc.splendor.org',
+            'https://testnet.asentum.com', 'https://mainnet.ckb.dev']); // src/pq/{algorand,soqucoin,qtc,xion,ckb}.js, splendor-history.js, asentum-transfer.js
+          for (const url of blocked.splice(pqStart)) assert.ok(pqOrigins.has(new URL(url).origin), `Unexpected outside request ${url}`);
         }
         await open('welcome'); await page.locator('#welcome:visible').waitFor();
         assert.equal(await priceCount(page), 0); await capture('welcome');
@@ -567,29 +555,28 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         }
         await page.keyboard.press('Space');
         assert.equal(await page.locator('#portfolio-total').textContent(), visibleTotal);
-        assert.equal(await page.locator('.asset-group[data-symbol="NODUS"] .asset-value strong').textContent(), '12.34');
+        assert.equal(await page.locator('.asset-group[data-chain="nodus"] .holding-value strong').textContent(), '12.34 NODUS');
         await page.locator('#portfolio-refresh').click(); await waitHome(page); assert.equal(await priceCount(page), 2);
-        await page.locator('#quick-receive').click();
+        await page.locator('.wallet-navigation a[href="#receive"]').click();
         assert.equal(await page.locator('#receive-address').textContent(), 'ab'.repeat(64));
-        await assertNavigation(page, 'send-form');
+        await assertNavigation(page, 'receive');
         await capture('receive');
-        await page.locator('#page-send-form .page-back').click();
+        await page.locator('#page-receive .page-back').click();
         await selectNetwork(page, 'ethereum');
-        await page.locator('#quick-send').click();
+        await page.locator('.wallet-navigation a[href="#send"]').click();
         // Check navigation focus before filling fields, which moves focus to
         // the input. Typing must not mask a missing heading focus on entry.
-        await assertNavigation(page, 'send-form');
+        await assertNavigation(page, 'send');
         await page.locator('#recipient').fill('0x' + '34'.repeat(20)); await page.locator('#amount').fill('0.125');
         assert.equal(await page.locator('#amount').evaluate(node => document.activeElement === node), true, 'Filling the amount keeps focus in the input');
         await capture('send');
         const before = await page.evaluate(() => window.layout.calls.filter(call => call.method === 'getState').length);
         await page.evaluate(() => { window.typedNodes = [document.getElementById('recipient'), document.getElementById('amount')]; });
-        await page.locator('#page-send-form .page-back').click();
-        await page.locator('.wallet-navigation a[href="#assets-panel"]').click();
-        await assertNavigation(page, 'assets-panel');
-        await page.locator('#page-assets-panel .page-back').click();
-        await page.locator('.wallet-navigation a[href="#send-form"]').click();
-        await assertNavigation(page, 'send-form');
+        await page.locator('#page-send .page-back').click();
+        await page.locator('.wallet-navigation a[href="#"]').click();
+        await assertNavigation(page);
+        await page.locator('.wallet-navigation a[href="#send"]').click();
+        await assertNavigation(page, 'send');
         await page.clock.setFixedTime(new Date(await page.evaluate(() => Date.now()) + PRICE_MAX_AGE + 1));
         await page.clock.runFor(30000); // the shared controller's render tick
         await page.locator('#amount').dispatchEvent('input');
@@ -612,7 +599,7 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         await page.clock.runFor(600); await page.locator('#confirm-send').click();
         await page.waitForFunction(() => !document.getElementById('review-dialog').open);
         assert.deepEqual(await page.evaluate(() => window.layout.calls.filter(call => call.method === 'confirmEvmSend').map(call => call.params)), [['layout-review']]);
-        await page.locator('#page-send-form .page-back').click();
+        await page.locator('#page-send .page-back').click();
         await page.locator('#portfolio-refresh').click(); await waitHome(page);
         await selectNetwork(page, 'nodus');
         await page.locator('.wallet-navigation a[href="#wallet-activity"]').click();
@@ -658,11 +645,9 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         }
         await page.locator('#page-wallet-activity .page-back').click();
         await selectNetwork(page, 'bsc');
-        await page.locator('.wallet-navigation a[href="#wallet-activity"]').click();
-        await page.waitForFunction(() => document.querySelector('#history-status')?.textContent === 'Account history is not supported on BNB Smart Chain.');
-        assert.equal(await page.locator('#history .activity-row').count(), 0);
-        await assertAccountHistoryOnly(page);
-        await page.locator('#page-wallet-activity .page-back').click();
+        // wallet-screen.js:249 (0b3b0eb0d): without history capability the
+        // Activity page is not offered at all.
+        assert.equal(await page.locator('.wallet-navigation a[href="#wallet-activity"]').isHidden(), true);
         await selectNetwork(page, 'ixios');
         await page.locator('.wallet-navigation a[href="#wallet-activity"]').click();
         assert.equal(await page.locator('#history-status').textContent(), '');
@@ -693,7 +678,7 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         await page.locator('#page-settings .page-back').click();
         await selectNetwork(page, 'solana');
         assert.deepEqual(await page.locator('#asset option').allTextContents(), ['SOL']);
-        assert.equal(await page.locator('.asset-group[data-symbol="SOL"] .asset-value small').textContent(), '—');
+        assert.equal(await page.locator('.asset-group[data-chain="solana"] .chain-holding').first().locator('.holding-value small').textContent(), '—');
         await page.locator('.wallet-navigation a[href="#settings"]').click();
         await page.locator('#reveal-password').fill('fresh-password');
         await button(page, 'Reveal phrase').click();

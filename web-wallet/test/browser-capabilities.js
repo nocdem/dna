@@ -16,7 +16,7 @@ for(const mode of (process.env.CAPABILITY_BROWSER_MODE||'web,connect,extension')
   if(mode==='extension'){await page.locator('#new-password').fill(password);await page.locator('#confirm-password').fill(password);}
   await page.locator('#phrase-submit').click();await page.locator('#wallet-open').waitFor({state:'visible'});await page.waitForFunction(()=>!document.querySelector('#chain')?.closest('[inert]'));if(mode==='connect')await page.locator('#nav-wallet').click();
   await page.waitForFunction(()=>!document.querySelector('#portfolio-refresh').disabled);
-  await assertNetworkGroups(page);
+  await assertNetworkGroups(page, { addressBookIxios: mode === 'extension' });
   const group=chain=>page.locator(`.network-assets[data-chain="${chain}"]`);
   const nav=href=>page.locator(`.wallet-navigation a[href="#${href}"]`);
   const select=async chain=>{await page.selectOption('#chain',chain);};

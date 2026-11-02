@@ -42,7 +42,8 @@ await page.route('**/*', async route => {
   if (await ixiosRead(route)) return;
   // New PQ readers are outside this EVM smoke fixture. Model their provider
   // unavailability explicitly, and never forward an unmatched chain request.
-  if (req.url() !== CHAINS.ethereum.endpoint || req.method() !== 'POST') return route.abort('blockedbyclient');
+  // Compare parsed URLs: the configured endpoint has no trailing slash, the request does.
+  if (new URL(req.url()).href !== new URL(CHAINS.ethereum.endpoint).href || req.method() !== 'POST') return route.abort('blockedbyclient');
   const body = req.postDataJSON(); calls.push(body);
   assert.ok(!JSON.stringify(body).includes(phrase));
   const process = call => {
@@ -59,12 +60,23 @@ await page.route('**/*', async route => {
 // "released" is waited for (the 10 s page timeout fails it if it never happens).
 const sessionHeld = () => page.evaluate(async () => (await navigator.locks.query()).held.some(lock => lock.name === 'nodus.wallet.session'));
 const sessionReleased = () => page.waitForFunction(async () => !(await navigator.locks.query()).held.some(lock => lock.name === 'nodus.wallet.session'));
-// Wallet pages (src/app.js, 0.1.75): everything but Portfolio and Send /
-// Receive is a page of its own, opened from the wallet's navigation; the
+// Wallet pages (src/app.js, 0.1.75; Send and Receive since 0.1.145): everything
+// but Portfolio is a page of its own, opened from the wallet's navigation; the
 // page's Back control returns to the wallet view.
-const WALLET_PAGES = ['earn', 'vaults', 'contracts', 'wallet-activity', 'address-book', 'settings', 'logs'];
+const WALLET_PAGES = ['send', 'receive', 'earn', 'vaults', 'contracts', 'wallet-activity', 'address-book', 'settings', 'logs'];
+// The network chips live in the closed network disclosure (src/app.js:2307);
+// #chain itself is hidden. Same steps as the extension layout suite.
+const selectNetwork = async chain => {
+  if (!await page.locator('#wallet-network').evaluate(node => node.open)) await page.locator('#wallet-network > summary').click();
+  const badge = page.locator(`#portfolio-networks .network-health[data-chain="${chain}"]`);
+  const toggle = badge.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " network-group ")]').locator('.network-group-toggle');
+  if (await toggle.count() && await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
+  await badge.click();
+};
 const openPage = async name => { await page.locator(`.wallet-navigation a[href="#${name}"]`).click(); await page.locator(`#page-${name}`).waitFor({ state: 'visible' }); };
-const walletView = async () => { const back = page.locator('.wallet-page:not([hidden]) .page-back'); if (await back.count()) await back.click(); await page.locator('#wallet-home').waitFor({ state: 'visible' }); };
+// Send and Receive pages carry no Back control (src/app.js:2320-2322); the rail's
+// Portfolio link ('#') returns to the wallet view from them.
+const walletView = async () => { const back = page.locator('.wallet-page:not([hidden]) .page-back'); if (await back.count()) await back.click(); else if (await page.locator('.wallet-page:not([hidden])').count()) await page.locator('.wallet-navigation a[href="#"]').click(); await page.locator('#wallet-home').waitFor({ state: 'visible' }); };
 // Serializes the receive QR <svg>, draws it through an <img> (data: URL, allowed
 // by img-src) onto a white canvas at 4 px per module, and decodes the pixels
 // with jsQR. Returns the decoded text, or undefined when nothing decodes.
@@ -101,8 +113,9 @@ try {
   assert.equal(await page.locator('#chain').inputValue(), 'nodus');
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#receive-address').textContent));
   assert.equal(await page.locator('#receive-address').innerText(), nodusAddress);
-  // Send / Receive panel: heading names the selected network; the QR encodes exactly the shown address.
-  assert.equal(await page.locator('#send-title').innerText(), 'Send / Receive · Nodus');
+  // Send and Receive are separate pages since 0.1.145 (0b3b0eb0d); the Send
+  // heading names the selected network; the QR encodes exactly the shown address.
+  assert.equal(await page.locator('#send-title').innerText(), 'Send · Nodus');
   assert.equal(await page.locator('#receive-qr svg').getAttribute('role'), 'img');
   assert.equal(await page.locator('#receive-qr svg').getAttribute('aria-label'), 'QR code for the receive address');
   // 0.1.104 (operator: "auto lock … 10 minutes yazıyor … settings'ten okuması
@@ -119,9 +132,13 @@ try {
   // automatically (the default) and come back when that is turned Off.
   for (const id of ['portfolio-refresh', 'refresh']) assert.equal(await page.locator(`#${id}`).isVisible(), false, `${id} hidden`);
   await page.locator('#balance-refresh-minutes').evaluate(select => { select.value = '0'; select.dispatchEvent(new Event('change')); });
-  for (const id of ['portfolio-refresh', 'refresh']) assert.equal(await page.locator(`#${id}`).isHidden(), false, `${id} back with automatic updates Off`);
+  assert.equal(await page.locator('#portfolio-refresh').isHidden(), false, 'portfolio-refresh back with automatic updates Off');
+  // style.css:1012 (0b3b0eb0d): the asset panel's own Refresh stays hidden; the card's is the control.
+  assert.equal(await page.locator('#refresh').isHidden(), true, 'asset-panel refresh stays hidden');
   await page.locator('#balance-refresh-minutes').evaluate(select => { select.value = '5'; select.dispatchEvent(new Event('change')); });
   await page.evaluate(key => localStorage.removeItem(key), BALANCE_REFRESH_KEY);
+  // Receive is its own page (0.1.145): the QR and address status are checked there.
+  await openPage('receive');
   // 0.1.102 (operator: "sol tarafına yapışık … ortalayalım"): centred in its panel
   const qrGap = await page.locator('#receive-qr svg').evaluate(svg => { const s = svg.getBoundingClientRect(), p = svg.parentElement.getBoundingClientRect(); return [s.left - p.left, p.right - s.right]; });
   assert.ok(Math.abs(qrGap[0] - qrGap[1]) <= 2, `QR centred (left ${qrGap[0]}, right ${qrGap[1]})`);
@@ -129,93 +146,83 @@ try {
   assert.equal(await page.locator('#nodus-address-status').isVisible(), true);
   assert.match(await page.locator('#nodus-address-status').innerText(), /Derived locally/);
   assert.equal(await page.locator('#cellframe-address-status').isVisible(), false);
+  await walletView(); await openPage('send');
   assert.equal(await page.locator('#send-fields').isVisible(), false);
   // The build carries the send module, so until a node connection is ready
   // (never, here: no node is reachable) NODUS says it is connecting.
   assert.equal(await page.locator('#send-disabled-note').innerText(), 'Connecting to the Nodus network… Sending NODUS becomes available as soon as the connection is ready.');
+  await walletView();
   assert.equal(await page.locator('#account-explorer').evaluate(node => node.hidden), true);
   assert.equal(await page.locator('#rpc-settings').evaluate(node => node.hidden), true);
   assert.equal(await page.locator('#activity').textContent(), '');
-  // The wallet view is Portfolio and Send / Receive; every other section is
-  // a page, not shown until opened.
+  // The wallet view is the Portfolio; every other section, Send and Receive
+  // included (0.1.145), is a page, not shown until opened.
   assert.equal(await page.locator('#wallet-home').isVisible(), true);
   for (const name of WALLET_PAGES) assert.equal(await page.locator(`#page-${name}`).isVisible(), false, name);
-  // Portfolio: NODUS is the first asset group, badge and network filter; its row
-  // has only Receive and shows no balance (no amount, no zero, no read state).
-  assert.equal(await page.locator('#balances .asset-group').first().getAttribute('data-symbol'), 'NODUS');
+  // Portfolio (0.1.145 network groups; 0.1.153 defaults): every wallet-view
+  // opening hides zero and unavailable balances (src/app.js:1116, 2338-2343);
+  // the asset panel's Hide zero balances box lists every network. No filters.
+  assert.equal(await page.locator('#show-zero-balances').isChecked(), true);
+  assert.equal(await page.locator('#portfolio-filters button').count(), 0);
   // 0.1.103: a light, the words in the title / accessible name
-  assert.equal(await page.locator('#portfolio-networks .network-health').first().getAttribute('title'), 'Nodus · Balance not shown yet');
-  assert.equal(await page.locator('#portfolio-networks .network-health').first().getAttribute('data-health'), 'none');
-  assert.deepEqual((await page.locator('#portfolio-filters button').allTextContents()).slice(0, 2), ['All networks', 'Nodus']);
-  const nodusGroup = page.locator('.asset-group[data-symbol="NODUS"]');
+  const nodusChip = page.locator('#portfolio-networks .network-health').first();
+  assert.equal(await nodusChip.getAttribute('data-chain'), 'nodus');
+  assert.equal(await nodusChip.getAttribute('title'), 'Nodus · Nodus not ready');
+  assert.equal(await nodusChip.getAttribute('data-health'), 'none');
+  const group = chain => page.locator(`#balances .asset-group[data-chain="${chain}"]`);
+  const holding = chain => group(chain).locator(`.chain-holding[data-chain="${chain}"]`).first();
+  await page.locator('#show-zero-balances').uncheck();
+  assert.equal(await page.locator('#show-zero-balances-note').innerText(), 'All networks and their holdings are listed.');
+  // SOL must have been READ as 0 first: a row not read yet always stays (it
+  // may hold something) — checking before the read answered raced it.
+  await page.waitForFunction(() => document.querySelector('.asset-group[data-chain="solana"] .chain-holding .holding-value strong')?.textContent === '0 SOL');
+  // Groups follow the portfolio rows: NODUS first, then legacy and PQ networks.
+  assert.deepEqual(await page.locator('#balances .asset-group').evaluateAll(nodes => nodes.map(node => node.dataset.chain)),
+    ['nodus', 'ethereum', 'bsc', 'solana', 'tron', 'cellframe', 'ixios', 'algorand', 'tidecoin', 'ckb', 'soqucoin', 'qtc', 'xion', 'splendor', 'asentum']);
+  const nodusGroup = group('nodus');
   // 0.1.102: icons are built in — inlined (data:) or under a content-hashed
   // name, the only form the sites let browsers cache (an icon fetched again
   // on every redraw blinked out); `data-icon` names the file.
   const nodusIcon = nodusGroup.locator('summary img.coin-icon');
   assert.equal(await nodusIcon.getAttribute('data-icon'), 'nodus.svg');
   assert.match(await nodusIcon.getAttribute('src'), /^data:image\/|\/assets\/[^/]+-[A-Za-z0-9_-]{8}\.(svg|png)$/);
-  assert.equal(await nodusGroup.locator('.asset-value strong').innerText(), '—');
   await nodusGroup.locator('summary').click();
   assert.equal(await nodusGroup.locator('.chain-holding').count(), 1);
-  assert.match(await nodusGroup.locator('.chain-holding').innerText(), /Balance not shown yet/);
-  assert.doesNotMatch(await nodusGroup.innerText(), /Reading|Not read|Balance unavailable|\b0\.0\b/);
-  assert.deepEqual(await nodusGroup.locator('.holding-actions button').allTextContents(), ['Receive']);
+  // No node is reachable here: NODUS says so; no amount, no zero, no read state.
+  assert.match(await nodusGroup.locator('.chain-holding').innerText(), /Nodus not ready/);
+  assert.doesNotMatch(await nodusGroup.innerText(), /Reading|Not read|\b0\.0\b/);
+  // Send and Receive are pages (rail), not row buttons.
+  assert.equal(await page.locator('#balances .holding-actions').count(), 0);
   await nodusGroup.locator('summary').click();
-  // Zero balances (0.1.113, src/zero-balances.js): hidden unless Device &
-  // settings shows them. SOL is read as 0 here: it leaves the list while NODUS
-  // stays; the box brings it back. (This suite runs with them shown.)
-  // SOL must have been READ as 0 first: a row not read yet always stays (it
-  // may hold something) — checking before the read answered raced it.
-  await page.waitForFunction(() => document.querySelector('.asset-group[data-symbol="SOL"] .holding-value strong')?.textContent === '0 SOL');
-  await openPage('settings');
-  assert.equal(await page.locator('#show-zero-balances').isChecked(), true);
-  await page.locator('#show-zero-balances').uncheck();
-  assert.match(await page.locator('#show-zero-balances-note').innerText(), /left out of the list/);
-  await walletView();
-  assert.equal(await page.locator('.asset-group[data-symbol="SOL"]').count(), 0);
-  assert.equal(await page.locator('.asset-group[data-symbol="NODUS"]').count(), 1);
-  await openPage('settings');
+  // Zero balances (src/portfolio.js groupNetworks): with the box checked, only
+  // networks with a displayable nonzero holding stay — SOL read as 0 leaves,
+  // Cellframe's 5 CPUNK stays; unchecking brings SOL back.
   await page.locator('#show-zero-balances').check();
-  await walletView();
-  await page.locator('.asset-group[data-symbol="SOL"]').waitFor();
-  // Clicking a holding row (outside its buttons) switches the Send / Receive
-  // panel to that network and marks the row; the network name is the row's
-  // keyboard control and does the same on Enter.
-  const solGroup = page.locator('.asset-group[data-symbol="SOL"]');
+  assert.equal(await group('solana').count(), 0);
+  assert.equal(await group('cellframe').count(), 1);
+  await page.locator('#show-zero-balances').uncheck();
+  await group('solana').waitFor();
+  // Selecting a holding switches the transfer network and marks the row; the
+  // holding control does the same from the keyboard and keeps focus.
+  const solGroup = group('solana');
   await solGroup.locator('summary').click();
-  await solGroup.locator('.chain-holding .holding-value').click();
+  await holding('solana').locator('.holding-select').click();
   assert.equal(await page.locator('#chain').inputValue(), 'solana');
-  assert.equal(await page.locator('#send-title').innerText(), 'Send / Receive · Solana');
+  assert.equal(await page.locator('#send-title').innerText(), 'Send · Solana');
   assert.equal(await page.locator('#receive-address').innerText(), '3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx');
-  assert.equal(await solGroup.locator('.holding-select').getAttribute('aria-current'), 'true');
-  assert.equal(await solGroup.locator('.chain-holding').evaluate(node => node.classList.contains('selected')), true);
+  assert.equal(await holding('solana').evaluate(node => node.classList.contains('selected')), true);
   assert.equal(await page.locator('#review-dialog').isVisible(), false);
   await nodusGroup.locator('summary').click();
-  await nodusGroup.locator('.holding-select').focus(); await page.keyboard.press('Enter');
+  await holding('nodus').locator('.holding-select').focus(); await page.keyboard.press('Enter');
   assert.equal(await page.locator('#chain').inputValue(), 'nodus');
-  assert.equal(await page.locator('#send-title').innerText(), 'Send / Receive · Nodus');
+  assert.equal(await page.locator('#send-title').innerText(), 'Send · Nodus');
   assert.equal(await page.locator('#receive-address').innerText(), nodusAddress);
-  assert.equal(await nodusGroup.locator('.holding-select').getAttribute('aria-current'), 'true');
-  assert.equal(await solGroup.locator('.holding-select').getAttribute('aria-current'), null);
-  assert.equal(await nodusGroup.locator('.holding-select').evaluate(el => el === document.activeElement), true, 'selecting does not move focus');
+  assert.equal(await holding('nodus').evaluate(node => node.classList.contains('selected')), true);
+  assert.equal(await holding('solana').evaluate(node => node.classList.contains('selected')), false);
+  assert.equal(await holding('nodus').locator('.holding-select').evaluate(el => el === document.activeElement), true, 'selecting does not move focus');
   assert.equal(await decodeQr(), nodusAddress);
-  // Single-column dashboard (max-width 900px, src/style.css): the panel sits below
-  // the asset list, so selecting a row scrolls it into view — checked on a phone
-  // width and on a width between the 760px and 900px breakpoints.
-  const panelTop = () => page.locator('#send-form').evaluate(node => node.getBoundingClientRect().top);
-  for (const width of [390, 820]) {
-    await page.setViewportSize({ width, height: 844 });
-    await nodusGroup.locator('.holding-select').click(); assert.equal(await page.locator('#chain').inputValue(), 'nodus');
-    await page.evaluate(() => scrollTo(0, 0));
-    assert.ok(await panelTop() >= await page.evaluate(() => innerHeight), `panel starts below the fold at ${width}px`);
-    await solGroup.locator('.chain-holding .holding-value').click();
-    assert.equal(await page.locator('#chain').inputValue(), 'solana');
-    const top = await panelTop();
-    assert.ok(top >= 0 && top < await page.evaluate(() => innerHeight / 2), `Send / Receive panel scrolled into view at ${width}px (top ${top})`);
-  }
-  await page.setViewportSize({ width: 1280, height: 960 });
-  await nodusGroup.locator('.holding-select').click();
-  assert.equal(await page.locator('#chain').inputValue(), 'nodus');
+  // (The former single-column "panel scrolls into view" check is gone: Send and
+  // Receive are separate pages since 0.1.145.)
   await nodusGroup.locator('summary').click(); await solGroup.locator('summary').click();
   assert.equal(await page.locator('#portfolio-scope').count(), 0, 'the scope paragraph is gone (0.1.108)');
   // Device & settings is its own page: it replaces the wallet view, its title
@@ -249,37 +256,26 @@ try {
   assert.equal(await page.evaluate(() => document.activeElement.id), 'logs-title');
   await page.locator('#page-logs .page-back').click(); await page.locator('#wallet-home').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#session-logs').evaluate(node => node.open), false);
-  // Earn, Shared vaults and Smart contracts need the NODUS node: no link, and
-  // their hashes show the wallet view.
-  for (const id of ['nav-earn', 'nav-vaults', 'nav-evm']) assert.equal(await page.locator(`#${id}`).isVisible(), false, id);
-  await page.evaluate(() => { location.hash = 'contracts'; }); await page.waitForFunction(() => location.hash === '#contracts');
-  assert.equal(await page.locator('#wallet-home').isVisible(), true);
-  assert.equal(await page.locator('#page-contracts').isVisible(), false);
+  // 0.1.145 capability-driven rail: on Nodus, Earn, Shared vaults and Smart
+  // contracts follow chain capability, not the node connection.
+  for (const id of ['nav-earn', 'nav-vaults', 'nav-evm']) assert.equal(await page.locator(`#${id}`).isVisible(), true, id);
   await walletView(); await page.evaluate(() => history.replaceState(null, '', location.pathname));
-  // Both shortcuts lead to the same Send / Receive panel: send block below, receive block on top.
-  assert.equal(await page.locator('.wallet-navigation a[href="#send-form"]').innerText(), 'Send / Receive');
-  // 0.1.108: Send follows the chosen network — disabled (with its reason) on
-  // NODUS while it is receive-only here; on Ethereum it leads to the send block.
-  assert.equal(await page.locator('#quick-send').isDisabled(), true);
-  assert.match(await page.locator('#quick-send').getAttribute('title'), /Sending NODUS/);
-  await page.locator('#chain').selectOption('ethereum');
-  await page.locator('#quick-send').click();
-  assert.equal(await page.locator('#send-block-title').evaluate(el => el === document.activeElement), true);
-  await page.locator('#chain').selectOption('nodus');
-  await page.locator('#quick-receive').click();
+  // Send and Receive are separate rail pages (src/app.js:2324-2329); the page's
+  // labelling heading takes focus (pageTitle, src/app.js:2350).
+  assert.equal(await page.locator('.wallet-navigation a[href="#send"] .nav-name').innerText(), 'Send');
+  assert.equal(await page.locator('.wallet-navigation a[href="#receive"] .nav-name').innerText(), 'Receive');
+  await selectNetwork('ethereum');
+  await openPage('send');
+  assert.equal(await page.locator('#send-title').evaluate(el => el === document.activeElement), true);
+  await walletView(); await selectNetwork('nodus');
+  await openPage('receive');
   assert.equal(await page.locator('#receive-title').evaluate(el => el === document.activeElement), true);
-  // 0.1.107 (operator: "swap getir. Ama swap disabled yap"): shown next to
-  // Send / Receive, disabled, saying "Soon".
-  assert.equal(await page.locator('#quick-swap').isVisible(), true);
-  assert.equal(await page.locator('#quick-swap').isDisabled(), true);
-  assert.equal(await page.locator('#quick-swap').innerText(), '⇄ Swap SOON');
-  // Earn is always there (operator: "bizde earn olması lazım"); without a
-  // staking-ready connection (this test has none) it is disabled and says why.
-  assert.equal(await page.locator('#quick-earn').isVisible(), true);
-  assert.equal(await page.locator('#quick-earn').isDisabled(), true);
-  assert.match(await page.locator('#quick-earn').getAttribute('title'), /connected to the Nodus network/);
-  if (process.env.SHOT_DIR) await page.locator('.transfer-actions').screenshot({ path: `${process.env.SHOT_DIR}/transfer-actions.png` });
-  assert.equal(await page.locator('#send-form #receive-panel + #send-block').count(), 1, 'receive block directly above the send block');
+  // style.css:1009: the rail replaces the former shortcuts (Send, Receive, Earn,
+  // Swap); they stay in the DOM for their handlers but are not displayed.
+  for (const id of ['quick-send', 'quick-receive', 'quick-earn', 'quick-swap']) assert.equal(await page.locator(`#${id}`).isVisible(), false, id);
+  if (process.env.SHOT_DIR) await page.locator('#page-receive').screenshot({ path: `${process.env.SHOT_DIR}/receive-page.png` });
+  assert.equal(await page.locator('#page-receive #receive-panel').count(), 1);
+  assert.equal(await page.locator('#page-send #send-form').count(), 1);
   for (const width of [320, 390, 820, 1280]) {
     await page.setViewportSize({ width, height: 960 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `Dashboard overflow at ${width}px`);
@@ -291,7 +287,7 @@ try {
   await page.locator('#copy-address').click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), nodusAddress);
   assert.equal(await readPhrase(page), '');
-  await page.selectOption('#chain', 'ethereum');
+  await selectNetwork('ethereum');
   assert.equal(await page.locator('#receive-address').innerText(), '0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb');
   assert.equal(await page.locator('#nodus-address-status').isVisible(), false);
   // Account history (0.1.42): selecting Ethereum reads Blockscout once (txlist
@@ -304,10 +300,10 @@ try {
   assert.equal(await page.locator('#history a').getAttribute('href'), 'https://etherscan.io/tx/0x' + 'ab'.repeat(32));
   assert.deepEqual(historySeen.filter(s => s.startsWith('ethereum')), ['ethereum:txlist', 'ethereum:tokentx', 'ethereum:tokentx', 'ethereum:tokentx']);
   await walletView();
-  await page.selectOption('#chain', 'bsc'); await page.selectOption('#chain', 'ethereum');
+  await selectNetwork('bsc'); await selectNetwork('ethereum');
   assert.equal(historySeen.filter(s => s.startsWith('ethereum')).length, 4);
   await openPage('wallet-activity');
-  assert.match(await page.locator('#history-status').innerText(), /as reported by Blockscout/);
+  assert.match(await page.locator('#history-status').innerText(), /As reported by Blockscout/);
   await page.locator('#history-refresh').click();
   assert.match(await page.locator('#history-status').innerText(), /Try again in a minute/);
   await walletView();
@@ -315,7 +311,7 @@ try {
   // Cellframe/CPUNK now lives inside the wallet like any other asset: its
   // address is derived automatically (started right after the wallet opened,
   // same as Nodus), and there is no separate panel or manual derive button.
-  await page.selectOption('#chain', 'cellframe');
+  await selectNetwork('cellframe');
   await page.waitForFunction(() => /^[1-9A-HJ-NP-Za-km-z]{100,110}$/.test(document.querySelector('#receive-address').textContent));
   assert.match(await page.locator('#cellframe-address-status').innerText(), /Derived locally/);
   // The longest address format (100–110 characters) still decodes exactly.
@@ -327,10 +323,10 @@ try {
   assert.equal(await page.locator('#account-explorer').evaluate(node => node.hidden), true);
   assert.equal(broadcasts.length, 0);
   for (const [chain, expected] of [['bsc','0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb'],['solana','3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx'],['tron','TEfhiqsW1SdN44DeHrAWVmbyr8ZbvChrtS'],['ethereum','0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb']]) {
-    await page.selectOption('#chain', chain); assert.equal(await page.locator('#receive-address').innerText(), expected);
+    await selectNetwork(chain); assert.equal(await page.locator('#receive-address').innerText(), expected);
     const selectedName = await page.locator('#chain option:checked').innerText();
     assert.ok((await page.locator('.selected-network-name').allTextContents()).every(name => name === selectedName));
-    assert.equal(await page.locator('#send-title').innerText(), `Send / Receive · ${selectedName}`);
+    assert.equal(await page.locator('#send-title').innerText(), `Send · ${selectedName}`);
     assert.equal(await decodeQr(), expected, `${chain} QR decodes to the shown address`);
   }
   // Paket C: RPC provider select — populated per network, TRON has no custom
@@ -339,8 +335,8 @@ try {
   // <details> Chromium reports option innerText as '' and every control as
   // not visible, so the visibility checks below would pass vacuously. The
   // settings are on the Device & settings page and follow the network
-  // selected in Send / Receive on the wallet view.
-  const rpcFor = async chain => { await walletView(); await page.selectOption('#chain', chain); await openPage('settings'); };
+  // selected in the network disclosure on the wallet view.
+  const rpcFor = async chain => { await walletView(); await selectNetwork(chain); await openPage('settings'); };
   await openPage('settings');
   await page.locator('#rpc-settings summary').click();
   assert.equal(await page.locator('#rpc-choice').isVisible(), true);
@@ -363,9 +359,11 @@ try {
   await page.selectOption('#rpc-choice', '0');
   assert.equal(await page.locator('#rpc-endpoint').isVisible(), false);
   await walletView();
-  await pressRefresh('refresh'); await page.waitForFunction(() => document.querySelector('#balances').textContent.includes('10 ETH')); // 0.1.28 display form (was '10.0')
-  await page.waitForFunction(() => { const strong = document.querySelector('.asset-group[data-symbol="CPUNK"] .holding-value strong'); return strong && strong.textContent.includes('CPUNK'); });
-  assert.equal(await page.locator('.asset-group[data-symbol="CPUNK"] .asset-value small').innerText(), '—');
+  // The card's Refresh is the control (style.css:1012 hides the asset panel's).
+  await pressRefresh('portfolio-refresh'); await page.waitForFunction(() => document.querySelector('#balances').textContent.includes('10 ETH')); // 0.1.28 display form (was '10.0')
+  await page.waitForFunction(() => { const strong = document.querySelector('.asset-group[data-chain="cellframe"] .holding-value strong'); return strong && strong.textContent.includes('CPUNK'); });
+  assert.equal(await page.locator('.asset-group[data-chain="cellframe"] .holding-value small').textContent(), '—'); // closed group: innerText is empty
+  await openPage('send');
   await page.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await page.locator('#amount').fill('0.01');
   await page.locator('#review-button').click(); await page.locator('#review-dialog').waitFor({ state: 'visible' }); assert.equal(broadcasts.length, 0);
   assert.match(await page.locator('#review-details').innerText(), /0.01/); await page.locator('#cancel-send').click(); assert.equal(broadcasts.length, 0);
@@ -377,14 +375,14 @@ try {
   // after a successful broadcast, so it is re-filled here too.
   await openPage('wallet-activity');
   await page.locator('#activity').getByRole('button', { name: 'Mark as abandoned' }).click(); await page.locator('#activity').getByRole('button', { name: 'Confirm abandon' }).click(); await page.waitForFunction(() => document.querySelector('#activity').textContent.includes('abandoned'));
-  await walletView();
+  await walletView(); await openPage('send');
   await page.locator('#recipient').fill('0x0000000000000000000000000000000000000001');
   await page.selectOption('#asset','USDC'); await page.locator('#amount').fill('1.000001'); await page.locator('#review-button').click(); await page.locator('#review-dialog').waitFor({ state: 'visible' }); await page.locator('#confirm-send').click();
   await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Broadcast submitted'));
   assert.equal(broadcasts.length, 2); assert.equal(broadcasts[1].to, '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'); assert.equal(broadcasts[1].value, 0n);
   const erc = new Interface(['function transfer(address,uint256)']); assert.equal(erc.decodeFunctionData('transfer', broadcasts[1].data)[1], 1000001n);
   assert.match(await page.locator('#activity').innerText(), /pending/);
-  finalized = true; await page.selectOption('#chain', 'bsc'); assert.equal(await page.locator('#activity').innerText(), ''); await page.selectOption('#chain', 'ethereum');
+  finalized = true; await selectNetwork('bsc'); assert.equal(await page.locator('#activity').innerText(), ''); await selectNetwork('ethereum');
   // 0.1.96 (BUGS W-05): a confirmed send leaves "Sent from here" only once
   // the account history SHOWS it; this test's Blockscout lists only an
   // unrelated incoming transfer, so the confirmed send stays here (since
@@ -394,9 +392,9 @@ try {
   await page.waitForFunction(confirmedLeft);
   assert.doesNotMatch(await page.locator('#activity + .activity-empty').innerText(), /listed under Account history/);
   // The Nodus address is unchanged after sends on other networks, and Nodus has no activity.
-  await page.selectOption('#chain', 'nodus');
+  await selectNetwork('nodus');
   assert.equal(await page.locator('#receive-address').innerText(), nodusAddress); assert.equal(await page.locator('#activity').innerText(), '');
-  await page.selectOption('#chain', 'ethereum');
+  await selectNetwork('ethereum');
   await page.waitForFunction(confirmedLeft);
   await page.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await page.locator('#amount').fill('0.01');
   networkId = '0x38'; await page.locator('#review-button').click(); await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('wrong network')); assert.equal(broadcasts.length, 2);
@@ -404,9 +402,11 @@ try {
   // with the amount read earlier, 0.1.41 — the app's stale-while-revalidate
   // wallet cache), never an inferred zero, and never blocks the rest of the
   // (unrelated) portfolio.
-  cellframeFail = true; await pressRefresh('refresh');
-  await page.waitForFunction(() => { const small = document.querySelector('.asset-group[data-symbol="CPUNK"] .holding-value small'); return small && small.textContent.startsWith('Read failed · last read'); });
-  assert.notEqual(await page.locator('.asset-group[data-symbol="CPUNK"] .holding-value strong').textContent(), '0 CPUNK');
+  cellframeFail = true; await pressRefresh('portfolio-refresh');
+  // Current wording (src/portfolio-view.js): the time of the last read, and the
+  // row says the balance is unavailable and the last read is shown.
+  await page.waitForFunction(() => { const row = document.querySelector('.asset-group[data-chain="cellframe"] .chain-holding'); return row && row.querySelector('.holding-value small')?.textContent.startsWith('Last read ') && row.textContent.includes('Balance unavailable; showing last read.'); });
+  assert.notEqual(await page.locator('.asset-group[data-chain="cellframe"] .holding-value strong').textContent(), '0 CPUNK');
   cellframeFail = false;
   assert.equal(await page.evaluate(k => Object.keys(localStorage).filter(x => x !== k).length + sessionStorage.length, SHOW_ZERO_KEY), 0);
   networkId = '0x1';
@@ -449,7 +449,7 @@ try {
   assert.deepEqual(Object.keys(JSON.parse(balancesText)).sort(), ['cipher', 'ciphertext', 'id', 'iv', 'version']);
   assert.doesNotMatch(balancesText, /0x[0-9a-fA-F]{40}|ethereum:|"units"/, 'saved balances are not readable without the key');
   // Lock with Nodus selected: its address and status are cleared.
-  await page.selectOption('#chain', 'nodus'); assert.equal(await page.locator('#receive-address').innerText(), nodusAddress);
+  await selectNetwork('nodus'); assert.equal(await page.locator('#receive-address').innerText(), nodusAddress);
   assert.equal(await qrEmpty(), false);
   await page.locator('#lock').click(); assert.equal(await page.locator('#receive-address').textContent(), ''); assert.equal(await qrEmpty(), true); assert.equal(await page.locator('#nodus-address-status').textContent(), ''); assert.equal(await page.locator('#cellframe-address-status').innerText(), ''); await sessionReleased();
   // Restoring the words opens a temporary session, not the saved copy.
@@ -503,10 +503,10 @@ try {
   await walletView();
   assert.equal(await page.locator('#wallet-open').isVisible(), true);
   assert.equal(await page.evaluate(() => location.hash), '');
-  await page.selectOption('#chain', 'nodus');
+  await selectNetwork('nodus');
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#receive-address').textContent));
   assert.equal(await page.locator('#receive-address').innerText(), nodusAddress);
-  await page.selectOption('#chain', 'ethereum');
+  await selectNetwork('ethereum');
   // reopened from the saved copy: the confirmed send, never shown by the
   // account history, was saved and is back (re-checked to "confirmed")
   await page.waitForFunction(confirmedLeft);
@@ -544,7 +544,7 @@ try {
   await page.locator('#phrase-submit').click(); await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('does not match'));
   for (const [i, word] of created.split(' ').entries()) await boxes.nth(i).fill(word);
   await page.locator('#phrase-submit').click(); await page.locator('#wallet-open').waitFor({ state: 'visible' });
-  await page.selectOption('#chain', 'nodus');
+  await selectNetwork('nodus');
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#receive-address').textContent));
   await page.locator('#lock').click(); assert.equal(await page.locator('#receive-address').textContent(), ''); assert.equal(await qrEmpty(), true); assert.equal(await page.locator('#nodus-address-status').textContent(), '');
   // 0.1.123 (operator: someone who saved the words, e.g. as a screenshot, may
@@ -570,7 +570,7 @@ try {
   await page.locator('#phrase-submit').click(); await page.locator('#skip-verify-dialog').waitFor({ state: 'visible' });
   await page.locator('#skip-verify-yes').click(); await page.locator('#wallet-open').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#phrase-form').isVisible(), false); assert.equal(await page.locator('#skip-verify-dialog').isVisible(), false);
-  await page.selectOption('#chain', 'ethereum');
+  await selectNetwork('ethereum');
   await page.waitForFunction(() => /^0x[0-9a-fA-F]{40}$/.test(document.querySelector('#receive-address').textContent));
   assert.equal(await page.locator('#receive-address').innerText(), HDNodeWallet.fromPhrase(skipped, undefined, "m/44'/60'/0'/0/0").address);
   await page.locator('#lock').click(); await page.locator('#welcome').waitFor({ state: 'visible' });

@@ -93,7 +93,7 @@ try {
     try { await page.locator('#wallet-open').waitFor({state:'visible'}); }
     catch(error) { if(process.env.PQ_RECEIVE_DIAGNOSTIC) await page.waitForFunction(()=>document.querySelector('#wallet-status')?.textContent,{},{timeout:25000}).catch(()=>{}); console.error('RESTORE DIAGNOSTIC',await page.evaluate(()=>({status:document.querySelector('#wallet-status')?.textContent,phraseError:document.querySelector('#phrase-error')?.textContent,invalid:[...document.querySelectorAll(':invalid')].map(n=>({id:n.id,message:n.validationMessage}))})),errors); throw error; }
     await page.waitForFunction(()=>!document.querySelector('.network-heading-select')?.closest('[inert]'));
-    await assertNetworkGroups(page);
+    await assertNetworkGroups(page,{addressBookIxios:mode==='extension'});
     // A balance redraw keeps keyboard focus on the same grouped badge and
     // does not scroll or change the selected transfer network.
     assert.equal(await page.locator('#wallet-home').isVisible(),true);
@@ -144,7 +144,7 @@ try {
     assert.equal(await page.locator('#chain').inputValue(),'asentum');
     await page.waitForFunction(expected=>document.querySelector('#receive-address')?.textContent===expected,fixture.addresses.asentum.testnet);
     await page.waitForFunction(()=>!document.querySelector('.network-heading-select')?.closest('[inert]'));
-    await assertNetworkGroups(page);
+    await assertNetworkGroups(page,{addressBookIxios:mode==='extension'});
     assert.equal(await page.locator('#pq-network-environment option').count(),1);
     assert.deepEqual(errors,[]);
     await lockPage(page);await context.close();context=null;

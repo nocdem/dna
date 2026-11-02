@@ -4,7 +4,10 @@
 // owns browser cleanup; these checks leave no artifacts and never skip.
 import assert from 'node:assert/strict';
 
-export async function assertNetworkGroups(page, { ixios = true, cellframe = true } = {}) {
+// The address book lists only networks with an address check, in selector order:
+// no Tidecoin check exists; the Ixios check is extension-only (Ixios sends exist
+// only there). src/app.js:776, extension/src/ui/address-book-page.js:63-64.
+export async function assertNetworkGroups(page, { ixios = true, cellframe = true, addressBookIxios = false } = {}) {
   const pq = ['nodus', ...(cellframe ? ['cellframe'] : []), ...(ixios ? ['ixios'] : []),
     'algorand', 'tidecoin', 'ckb', 'soqucoin', 'qtc', 'xion', 'splendor', 'asentum'];
   const legacy = ['ethereum', 'bsc', 'solana', 'tron'];
@@ -21,8 +24,10 @@ export async function assertNetworkGroups(page, { ixios = true, cellframe = true
   assert.equal(new Set(visibleNetworks).size, visibleNetworks.length);
   assert.deepEqual(await page.locator('#address-book-network optgroup').evaluateAll(groups => groups.map(group => ({
     id: group.dataset.networkGroup, values: [...group.children].map(option => option.value),
-  }))), [{ id: 'pq', values: ['nodus', ...(cellframe ? ['cellframe'] : [])] }, { id: 'legacy', values: legacy }]);
+  }))), [{ id: 'pq', values: pq.filter(chain => chain !== 'tidecoin' && (chain !== 'ixios' || addressBookIxios)) }, { id: 'legacy', values: legacy }]);
   assert.equal(await page.locator('#chain').inputValue(), selected);
   assert.equal(await page.locator('#portfolio-networks').isVisible(), false);
-  assert.equal(await page.locator('#portfolio-networks button').count(), 0);
+  // 0.1.153-0.1.155: the grouped network chips live in the closed network
+  // disclosure (src/app.js:2317, extension wallet-screen.js:54), one per network.
+  assert.deepEqual(await page.locator('#portfolio-networks .network-health').evaluateAll(chips => chips.map(chip => chip.dataset.chain)), [...pq, ...legacy]);
 }
