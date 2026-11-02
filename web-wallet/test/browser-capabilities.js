@@ -53,7 +53,7 @@ for(const mode of (process.env.CAPABILITY_BROWSER_MODE||'web,connect,extension')
   await page.waitForFunction(a=>document.querySelector('#receive-address').textContent===a,publicFixture.addresses.ckb.testnet);
   await assertPages('ckb','testnet');
   // 0.1.152 (729389e77): CKB reads balances from its public JSON-RPC (src/pq/ckb.js:6-7);
-  // sending stays off (Send hidden above). Reads use only that RPC, by POST.
+  // Send follows the surface table above. Reads use only that RPC, by POST.
   for(const {url,method} of run.requests.filter(({url})=>/ckb\.dev/.test(url)))assert.ok(/^https:\/\/(?:mainnet\.ckb\.dev\/rpc|testnet\.ckb\.dev\/?)$/.test(url)&&method==='POST',`CKB request ${method} ${url}`);
   await select('algorand');await nav('receive').click();
   await page.waitForFunction(a=>document.querySelector('#receive-address').textContent===a,publicFixture.addresses.algorand.mainnet);
@@ -115,8 +115,11 @@ for(const mode of (process.env.CAPABILITY_BROWSER_MODE||'web,connect,extension')
    await nav('receive').focus();await page.keyboard.press('Enter');assert.equal(await page.locator('#page-receive').isVisible(),true);
    await page.screenshot({path:join(evidence,`${mode}-receive-${width}.png`),fullPage:true});
   }
-  // 0.1.152 CKB balance reader: only its public JSON-RPC, by POST, throughout all flows.
-  for(const {url,method} of run.requests.filter(({url})=>/ckb\.dev/.test(url)))assert.ok(/^https:\/\/(?:mainnet\.ckb\.dev\/rpc|testnet\.ckb\.dev\/?)$/.test(url)&&method==='POST',`CKB request ${method} ${url}`);
+  // 0.1.152 CKB balance reader: at least one read occurred, and every request to a CKB host
+  // (any *.ckb.dev) used only its public JSON-RPC, by POST, throughout all flows.
+  const ckbRequests=run.requests.filter(({url})=>/^https:\/\/[^/]*ckb\.dev(?:[/:?]|$)/.test(url));
+  assert.ok(ckbRequests.length>0,'the CKB balance reader made at least one request');
+  for(const {url,method} of ckbRequests)assert.ok(/^https:\/\/(?:mainnet\.ckb\.dev\/rpc|testnet\.ckb\.dev\/?)$/.test(url)&&method==='POST',`CKB request ${method} ${url}`);
   assert.equal(run.state.broadcasts,0);assert.deepEqual(run.errors,[]);await writeFile(join(evidence,`${mode}-browser.json`),JSON.stringify({passed:true,broadcasts:run.state.broadcasts,requests:run.requests,blocked:run.blocked,pageErrors:run.errors,consoleErrors:run.consoleErrors},null,2));
   console.log(`PASS ${mode}: network holdings/zero precision, contextual capabilities, dedicated pages, stale state, keyboard and 1360/390/360 layouts`);
  }catch(error){await writeFile(join(evidence,`${mode}-failure.json`),JSON.stringify({error:String(error),pageErrors:run?.errors,consoleErrors:run?.consoleErrors},null,2));if(run)await writeFile(join(evidence,`${mode}-failure-transports.json`),JSON.stringify({requests:run.requests,blocked:run.blocked},null,2));if(run)await run.page.screenshot({path:join(evidence,`${mode}-failure.png`),fullPage:true}).catch(()=>{});throw error;}

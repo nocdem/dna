@@ -64,6 +64,8 @@ async function address(page,chain,network,expected,{decode=true}={}){
   try { await page.waitForFunction(expected=>document.querySelector('#receive-address')?.textContent===expected,expected); } catch(error) { console.error('ADDRESS DIAGNOSTIC',{chain,network,expected},await page.evaluate(()=>({chain:document.querySelector('#chain')?.value,address:document.querySelector('#receive-address')?.textContent,network:document.querySelector('#pq-network-environment')?.value,status:document.querySelector('#pq-address-status')?.textContent,wallet:document.querySelector('#wallet-status')?.textContent})));throw error; }
   assert.equal(await page.locator('#pq-network-environment').inputValue(),network);
   assert.equal(await page.locator('#copy-address').isDisabled(),false);
+  // Positive side: where the table enables sending, the rail offers Send.
+  assert.equal(await page.locator('.wallet-navigation a[href="#send"]').isVisible(),sendSupported(chain,network),`${activeMode} ${chain} ${network}: Send link follows the capability table`);
   if(!sendSupported(chain,network)){
     assert.equal(await page.locator('#quick-send').isDisabled(),true);
     assert.equal(await page.locator('#send-fields').isVisible(),false);
