@@ -38,6 +38,21 @@
  *      (4) is the one that carries it; the trailing path is exercised with
  *      the only machine bytes that exist at that time.
  *
+ * Plan 4.1 rows through WebSocket frames (added by the second verifier pass):
+ *  10. (row 4) ws_wire: the node's first machine bytes carry 0F A1 00 01; every
+ *      byte after the handshake is a whole number of 1044-byte sealed frames.
+ *  11. (row 5) ws_other_version: a 4002 and a 4004 proto_ver client never
+ *      authenticate, no handshake job runs.
+ *  12. (row 7) ws_old_handshake: a T2 hello frame in a WebSocket frame gives no
+ *      session and no dispatch.
+ *  Rows 1 and 2 of the plan are about the CLIENT's trusted list. Row 1 here is
+ *  every positive case above (a client with no ML-KEM key reaches the node
+ *  through WebSocket frames). Row 2 (a client whose list lacks the node aborts
+ *  at ENCAPS) is client logic with no effect the node can observe over the
+ *  WebSocket; it runs on the module in test_client_session.c (not_listed), and
+ *  the browser client is the wasm build (build-order step 6, tested through
+ *  Caddy by web-wallet/test/browser-nodus-caddy.js).
+ *
  * Not covered here (later steps of the same package): the node's own
  * 4001 request path, a real client, the 10 s Upgrade limit (covered by
  * test_ws_server), a request packed with the AUTHSIG (the raw initiator cannot
@@ -55,6 +70,7 @@
 #include "crypto/nodus_identity.h"
 #include "crypto/nodus_sign.h"
 #include "protocol/nodus_wire.h"
+#include "protocol/nodus_tier2.h"
 #include "transport/nodus_ws.h"
 
 #include <arpa/inet.h>
@@ -91,7 +107,7 @@ typedef struct {
     nodus_tcp_conn_t *conn;
     uint64_t now;
     bool hold;                       /* do not take jobs while set */
-    unsigned accepts, authenticated, closed, frames;
+    unsigned accepts, authenticated, closed, frames, jobs;   /* jobs: handshake jobs the test took */
     size_t last_len;
 } srv_t;
 
@@ -111,12 +127,18 @@ static void on_frame(nodus_tcp_conn_t *c, const uint8_t *p, size_t n, void *ctx)
     s->frames++; s->last_len = n; progress++;
 }
 
+/* Plan 2.1 f: session mode is allowed on a transport that already has its
+ * WebSocket listener, and the listener is allowed after the module. g_ws_first
+ * selects the first order (the other is the one the node itself uses). */
+static bool g_ws_first;
+
 static void srv_init(srv_t *s) {
     memset(s, 0, sizeof(*s));
     s->now = 100;
     CHECK(nodus_tcp_init(&s->tcp, -1) == 0);
     s->tcp.on_accept = on_accept; s->tcp.on_disconnect = on_disconnect;
     s->tcp.on_frame = on_frame; s->tcp.cb_ctx = s;
+    if (g_ws_first) CHECK(nodus_tcp_ws_listen(&s->tcp, 0) == 0 && s->tcp.ws_port != 0);
     nodus_inter_session_config_t cfg = {
         .identity = &ids[1], .proto_ver = CMT_P2P_SC_PROTO_VER_4001, .chain_id = chain,
         .inbound_depth = 8, .outbound_depth = 8, .workers = 0,
@@ -124,14 +146,14 @@ static void srv_init(srv_t *s) {
     };
     s->mod = nodus_inter_session_new(&s->tcp, &cfg);
     CHECK(s->mod != NULL);
-    CHECK(nodus_tcp_ws_listen(&s->tcp, 0) == 0 && s->tcp.ws_port != 0);
+    if (!g_ws_first) CHECK(nodus_tcp_ws_listen(&s->tcp, 0) == 0 && s->tcp.ws_port != 0);
 }
 static void srv_free(srv_t *s) { nodus_tcp_close(&s->tcp); nodus_inter_session_free(s->mod); }
 static void srv_step(srv_t *s) {
     CHECK(nodus_tcp_poll(&s->tcp, POLL_MS) >= 0);
     nodus_inter_session_job_t *j;
     while (!s->hold && (j = nodus_inter_session_job_take(s->mod)) != NULL) {
-        progress++;
+        progress++; s->jobs++;
         nodus_inter_session_job_run(j);
         /* stale completion of a closed connection's job is CMT_REJECT by
          * design (nodus_inter_session.h); a live connection's must be OK */
@@ -251,11 +273,12 @@ static int tcp_connect_ws(uint16_t port) {
     return fd;
 }
 static int g_cli_id = 0;    /* which identity the raw client holds (1 = the node's own key) */
+static uint32_t g_cli_proto = CMT_P2P_SC_PROTO_VER_4001;   /* the client's proto_ver */
 static void cli_init(cli_t *c, int fd) {
     memset(c, 0, sizeof(*c)); c->fd = fd;
     c->host.ctx = &ids[g_cli_id]; c->host.sign = raw_sign; c->host.verify = raw_verify;
     CHECK(cmt_p2p_sc_init(&c->sc, CMT_P2P_SC_ROLE_INITIATOR, &c->host, ids[g_cli_id].pk.bytes,
-                          NULL, NULL, CMT_P2P_SC_PROTO_VER_4001, chain) == CMT_OK);
+                          NULL, NULL, g_cli_proto, chain) == CMT_OK);
 }
 static void cli_free(cli_t *c) { close(c->fd); cmt_p2p_sc_clear(&c->sc); }
 
@@ -469,6 +492,67 @@ static void bytes_before_upgrade(void) {
 }
 
 /* 3: the deadline starts at Upgrade completion. */
+/* Row 4 through WebSocket frames (wire): the node's first machine bytes inside
+ * the WebSocket frames carry proto_ver 0F A1 00 01, and after the handshake
+ * every byte the node sends is a whole number of 1044-byte sealed frames (no
+ * plaintext session). */
+static void ws_wire(void) {
+    srv_t s; srv_init(&s);
+    cli_t *c = calloc(1, sizeof(*c)); CHECK(c);
+    cli_init(c, tcp_connect_ws(s.tcp.ws_port));
+    cli_upgrade(c, &s);
+    static uint8_t out[1 << 15];
+    size_t n = cli_take_out(c, out); CHECK(n > 0);
+    cli_ws_chunks(c, out, n, 7);
+    c->hello_sent = true;
+    for (int i = 0; i < 60; ++i) { srv_step(&s); cli_pump(c); }   /* the node's HELLO answer, unread by the machine */
+    static const uint8_t version[] = {0x0f, 0xa1, 0x00, 0x01};
+    bool found = false;
+    for (size_t i = 0; i + 4 <= c->in_len; ++i) if (!memcmp(c->in + i, version, 4)) found = true;
+    CHECK(c->in_len > 0 && found);
+    drive_handshake(c, &s, false);
+    CHECK(c->in_len == 0 && s.conn != NULL);
+    uint8_t p[31]; memset(p, 0x5a, sizeof(p));
+    CHECK(nodus_tcp_send(s.conn, p, sizeof(p)) == 0);
+    for (int i = 0; i < 60; ++i) { srv_step(&s); cli_pump(c); }
+    CHECK(c->in_len > 0 && c->in_len % CMT_P2P_SC_SEALED_FRAME_SIZE == 0);
+    cli_free(c); free(c); srv_free(&s);
+}
+
+/* Row 5 through WebSocket frames: a client whose proto_ver is the 4002 or the
+ * 4004 value never authenticates; the connection is closed before any
+ * handshake job and nothing is delivered. */
+static void ws_other_version(uint32_t proto) {
+    srv_t s; srv_init(&s);
+    cli_t *c = calloc(1, sizeof(*c)); CHECK(c);
+    g_cli_proto = proto;
+    cli_init(c, tcp_connect_ws(s.tcp.ws_port));
+    g_cli_proto = CMT_P2P_SC_PROTO_VER_4001;
+    cli_upgrade(c, &s);
+    static uint8_t out[1 << 15];
+    size_t n = cli_take_out(c, out); CHECK(n > 0);
+    cli_ws_chunks(c, out, n, 7);
+    WAIT_WHILE(!s.closed) { srv_step(&s); cli_pump(c); }
+    CHECK(s.closed == 1 && s.authenticated == 0 && s.frames == 0 && s.jobs == 0);
+    cli_free(c); free(c); srv_free(&s);
+}
+
+/* Row 7 through WebSocket frames: the old T2 hello frame, sent in a binary
+ * WebSocket frame after the Upgrade, gives no session and no dispatch. */
+static void ws_old_handshake(void) {
+    srv_t s; srv_init(&s);
+    cli_t *c = calloc(1, sizeof(*c)); CHECK(c);
+    cli_init(c, tcp_connect_ws(s.tcp.ws_port));
+    cli_upgrade(c, &s);
+    uint8_t p[8192], fr[8300]; size_t pn = 0;
+    CHECK(nodus_t2_hello(1, &ids[0].pk, &ids[0].node_id, p, sizeof(p), &pn) == 0);
+    size_t fn = nodus_frame_encode(fr, sizeof(fr), p, (uint32_t)pn); CHECK(fn);
+    cli_ws_frame(c, fr, fn);
+    WAIT_WHILE(!s.closed) { srv_step(&s); cli_pump(c); }
+    CHECK(s.closed == 1 && s.authenticated == 0 && s.frames == 0 && s.jobs == 0);
+    cli_free(c); free(c); srv_free(&s);
+}
+
 static void deadline_from_upgrade(void) {
     srv_t s; srv_init(&s);
     cli_t *c = calloc(1, sizeof(*c)); CHECK(c);
@@ -491,7 +575,12 @@ int main(void) {
     for (int i = 0; i < 2; ++i) CHECK(nodus_identity_generate(&ids[i]) == 0);
     ws_session(false, false); ws_session(true, false);
     ws_session(false, true);     /* the HELLO trails the Upgrade request in one write */
+    g_ws_first = true;           /* plan 2.1 f: the listener first, the module second */
+    ws_session(false, false);
+    g_ws_first = false;
     ws_reflection(); ws_packed_request();
+    ws_wire(); ws_other_version(CMT_P2P_SC_PROTO_VER_4002); ws_other_version(CMT_P2P_SC_PROTO_VER_4004);
+    ws_old_handshake();
     bytes_before_upgrade(); deadline_from_upgrade();
     for (int i = 0; i < 2; ++i) nodus_identity_clear(&ids[i]);
     puts("test_ws_session: all cases passed");

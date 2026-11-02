@@ -23,7 +23,18 @@
  *      threads send while the owner polls; every frame arrives, in each
  *      thread's send order, and the owner thread alone seals (the sealed
  *      stream decrypts in strict order, which a second machine caller would
- *      break: the counters would collide and the AEAD would fail).
+ *      break: the counters would collide and the AEAD would fail). The node
+ *      answers each frame with the same frame (echo): the threaded client
+ *      receives all replies, per sender thread in send order (row 13).
+ *   4a. (row 5) a 4001 initiator at a 4002 acceptor is refused before any job
+ *      on either side; a raw 4001 initiator at the REAL 4004 responder
+ *      (cmt_p2p_transport_accept, test_p2p_switch.c check_wrong_p2p_version
+ *      pattern) is refused at the HELLO: slot gone, no handshake job
+ *      submitted. Falsely passes only if the HELLO never reached the
+ *      transport (guarded: the case asserts it was fed).
+ *   4b. (row 11) the 3 s handshake deadline on a fake clock (the module's
+ *      now_ms): a silent peer, and a peer that stops after HELLO (its ENCAPS
+ *      job queued, never run), stay open at 2999 ms and are closed at 3000.
  *
  *   Part B, a real nodus_server_t (ports 15500-15505, chain id set on the
  *   server directly) driven by a raw-machine client:
@@ -81,6 +92,10 @@
 #include "server/nodus_inter_session.h"
 #include "crypto/nodus_identity.h"
 #include "protocol/nodus_wire.h"
+#include "dnac/cmt_p2p_netaddr.h"
+#include "dnac/cmt_p2p_nodeinfo.h"
+#include "dnac/cmt_block.h"
+#include "crypto/nodus_sign.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -121,7 +136,12 @@ typedef struct {
     /* case 8: per-sender-thread next expected sequence */
     uint32_t next_seq[2];
     unsigned bad_order;
+    uint64_t now;                  /* the fake clock, when ep_cfg_t.fake_clock */
+    bool echo;                     /* answer each 40-byte case-8 frame with the same frame */
 } ep_t;
+static int raw_sign(void *ctx, const uint8_t *p, size_t n, uint8_t *out);
+static int raw_verify(void *ctx, const uint8_t *s, const uint8_t *p, size_t n, const uint8_t *k);
+static uint64_t fake_now(void *ctx) { return ((ep_t *)ctx)->now; }
 
 static void on_accept(nodus_tcp_conn_t *c, void *ctx) { ep_t *e = ctx; e->conn = c; e->accepts++; progress++; }
 static void on_connect(nodus_tcp_conn_t *c, void *ctx) { ep_t *e = ctx; e->conn = c; e->connects++; progress++; }
@@ -140,6 +160,7 @@ static void on_frame(nodus_tcp_conn_t *c, const uint8_t *p, size_t n, void *ctx)
     if (n >= 5 && p[0] < 2) {   /* case 8 payload: thread id, u32 seq */
         uint32_t seq; memcpy(&seq, p + 1, sizeof(seq));
         if (seq != e->next_seq[p[0]]++) e->bad_order++;
+        if (e->echo && n == 40) CHECK(nodus_tcp_send(c, p, n) == 0);   /* the reply, in receive order */
     }
     e->frames++; progress++;
 }
@@ -153,6 +174,7 @@ typedef struct {
     uint32_t proto;
     bool initiator_only;
     const uint8_t *chain;   /* NULL = use status callback */
+    bool fake_clock;        /* the module's deadline clock is ep_t.now (row 11) */
 } ep_cfg_t;
 
 static void ep_init(ep_t *e, const ep_cfg_t *c) {
@@ -167,6 +189,7 @@ static void ep_init(ep_t *e, const ep_cfg_t *c) {
         .on_authenticated = on_authed, .auth_ctx = e
     };
     if (!c->chain) { cfg.status = status_cb; cfg.admission_ctx = e; e->chain_known = true; }
+    if (c->fake_clock) { e->now = 1000; cfg.now_ms = fake_now; cfg.now_ctx = e; }
     e->mod = nodus_inter_session_new(&e->tcp, &cfg);
     CHECK(e->mod != NULL);
 }
@@ -317,6 +340,98 @@ static void mismatches(void) {
     }
 }
 
+/* 5 (continued): a 4001 HELLO against a 4002 acceptor is refused before any job
+ * on either side (the other direction of the version check). */
+static void to_4002_acceptor(void) {
+    nodus_key_t list[1] = {ids[1].node_id};
+    ep_t cli, srv;
+    ep_cfg_t sc = {.id = &ids[1], .proto = CMT_P2P_SC_PROTO_VER_4002, .chain = chain};
+    ep_cfg_t cc = {.id = &client_identity, .proto = CMT_P2P_SC_PROTO_VER_4001,
+                   .initiator_only = true, .chain = chain};
+    ep_init(&srv, &sc); ep_init(&cli, &cc);
+    CHECK(nodus_tcp_listen(&srv.tcp, "127.0.0.1", 0) == 0);
+    cli.conn = nodus_tcp_connect_trusted(&cli.tcp, "127.0.0.1", srv.tcp.port, list, 1);
+    CHECK(cli.conn != NULL);
+    WAIT_WHILE(!cli.closed || !srv.closed) step(&cli, &srv);
+    CHECK(cli.closed == 1 && srv.closed == 1);
+    CHECK(cli.authenticated == 0 && srv.authenticated == 0 && srv.frames == 0 && cli.frames == 0);
+    for (int k = CMT_P2P_SC_JOB_NONE + 1; k <= CMT_P2P_SC_JOB_VERIFY; ++k)
+        CHECK(cli.jobs[k] == 0 && srv.jobs[k] == 0);
+    ep_free(&cli); ep_free(&srv);
+}
+
+/* 5 (continued), back: a raw initiator with the 4001 value (0F A1 00 01)
+ * against the REAL 4004 responder, cmt_p2p_transport_accept, in the raw-
+ * initiator pattern of test_p2p_switch.c check_wrong_p2p_version: the
+ * transport refuses at the HELLO (cmt_p2p_secret.c proto_ver comparison), so
+ * the connection is gone, no handshake job was submitted and the initiator
+ * has none either. */
+typedef struct { int64_t now; unsigned submitted; } tr_host_t;
+static int64_t tr_now(void *ctx) { tr_host_t *h = ctx; h->now += 1000000; return h->now; }
+static int tr_dial(void *ctx, int slot, uint64_t gen, const cmt_p2p_netaddr_t *addr, uint64_t *handle) {
+    (void)ctx; (void)slot; (void)gen; (void)addr; (void)handle; return -1;
+}
+static void tr_close(void *ctx, int slot, uint64_t gen, uint64_t handle) {
+    (void)ctx; (void)slot; (void)gen; (void)handle;
+}
+static int tr_submit(void *ctx, cmt_p2p_hs_job_t *job) {
+    (void)job; ((tr_host_t *)ctx)->submitted++; return -1;
+}
+static void to_4004_transport(void) {
+    tr_host_t h = {.now = 1000000000};
+    char idhex[CMT_P2P_ID_CAP];
+    CHECK(cmt_p2p_pubkey_to_id(ids[1].pk.bytes, idhex) == CMT_OK);
+    cmt_p2p_node_info_t *ni = calloc(1, sizeof(*ni)); CHECK(ni);
+    static const uint8_t chans[] = {0x30};
+    cmt_p2p_node_info_params_t nip; memset(&nip, 0, sizeof(nip));
+    nip.block_version = CMT_BLOCK_PROTOCOL; nip.node_id = idhex; nip.chain_id = "test-chain";
+    nip.version = "0.19.80"; nip.channels = chans; nip.n_channels = sizeof(chans);
+    nip.moniker = "t"; nip.tx_index = "off"; nip.rpc_address = ""; nip.listen_addr = "10.0.0.2:4004";
+    CHECK(cmt_p2p_node_info_make(ni, &nip) == CMT_P2P_ERR_NONE);
+    cmt_p2p_transport_host_t th; memset(&th, 0, sizeof(th));
+    th.ctx = &h; th.now_ns = tr_now; th.dial = tr_dial; th.close = tr_close; th.submit_job = tr_submit;
+    cmt_p2p_transport_config_t tc; memset(&tc, 0, sizeof(tc));
+    tc.dsa_pk = ids[1].pk.bytes; tc.kem_pk = ids[1].mlkem_pk; tc.kem_sk = ids[1].mlkem_sk;
+    tc.sc_host.ctx = &ids[1]; tc.sc_host.sign = raw_sign; tc.sc_host.verify = raw_verify;
+    tc.chain_id = chain; tc.node_info = ni;
+    cmt_p2p_mconn_p2p_default_config(&tc.mconn);
+    tc.max_num_inbound_peers = 10;
+    cmt_p2p_transport_t *t = calloc(1, sizeof(*t)); CHECK(t);
+    CHECK(cmt_p2p_transport_init(t, &th, &tc) == CMT_OK);
+    cmt_p2p_ip_t lip; CHECK(cmt_p2p_ip_parse("10.0.0.2", 8, &lip));
+    cmt_p2p_netaddr_t laddr = cmt_p2p_netaddr_new_ip_port(&lip, 4004);
+    memcpy(laddr.id, idhex, sizeof(laddr.id));
+    cmt_p2p_transport_listen(t, &laddr);
+
+    cmt_p2p_sc_host_t ih = {.ctx = &ids[0], .sign = raw_sign, .verify = raw_verify};
+    cmt_p2p_sc_t *sc = calloc(1, sizeof(*sc)); CHECK(sc);
+    CHECK(cmt_p2p_sc_init(sc, CMT_P2P_SC_ROLE_INITIATOR, &ih, ids[0].pk.bytes, NULL, NULL,
+                          CMT_P2P_SC_PROTO_VER_4001, chain) == CMT_OK);
+    cmt_p2p_ip_t rip; CHECK(cmt_p2p_ip_parse("10.0.0.9", 8, &rip));
+    int slot = -1; uint64_t gen = 0;
+    CHECK(cmt_p2p_transport_accept(t, &rip, 5555, 0, &slot, &gen) == CMT_P2P_ERR_NONE);
+    bool fed = false;                         /* read_buf is non-NULL only while the slot lives */
+    for (int i = 0; i < 10; ++i) {
+        size_t n = 0, room = 0;
+        const uint8_t *o = cmt_p2p_sc_out(sc, &n);
+        uint8_t *in = cmt_p2p_transport_read_buf(t, slot, gen, &room);
+        if (n > 0 && in != NULL) {
+            size_t k = n < room ? n : room;
+            memcpy(in, o, k);
+            cmt_p2p_transport_read_done(t, slot, gen, k);
+            cmt_p2p_sc_out_consume(sc, k);
+            fed = true;
+        }
+        cmt_p2p_transport_tick(t);
+    }
+    CHECK(fed);                                                /* the 4001 HELLO really was offered */
+    CHECK(cmt_p2p_transport_conn(t, slot, gen) == NULL);       /* refused */
+    CHECK(h.submitted == 0 && t->n_inbound == 0);              /* before any job */
+    CHECK(cmt_p2p_sc_job(sc) == NULL);
+    cmt_p2p_sc_clear(sc); free(sc);
+    cmt_p2p_transport_free(t); free(t); free(ni);
+}
+
 /* 5: a dialer holding the responder's own key. */
 static void reject_self(void) {
     nodus_key_t list[1] = {ids[1].node_id};
@@ -393,6 +508,57 @@ static void chain_unknown(void) {
     close(fd); ep_free(&cli); ep_free(&srv);
 }
 
+/* 11: the 3 s handshake deadline, on a fake clock (the module's now_ms): a
+ * connection that never finishes is closed at 3 s from accept and not before.
+ * Variant 0: a silent peer (connects, writes nothing). Variant 1: a peer that
+ * stops after HELLO (a real client whose jobs this test never runs: it sent its
+ * HELLO, got the node's answer, queued its ENCAPS job and goes no further). */
+static void deadline(int variant) {
+    nodus_key_t list[1] = {ids[1].node_id};
+    ep_t srv, cli;
+    ep_cfg_t sc = {.id = &ids[1], .proto = CMT_P2P_SC_PROTO_VER_4001, .chain = chain, .fake_clock = true};
+    ep_init(&srv, &sc);
+    CHECK(nodus_tcp_listen(&srv.tcp, "127.0.0.1", 0) == 0);
+    int fd = -1;
+    memset(&cli, 0, sizeof(cli));
+    if (variant == 0) {
+        fd = socket(AF_INET, SOCK_STREAM, 0); CHECK(fd >= 0);
+        struct sockaddr_in sa = {.sin_family = AF_INET, .sin_port = htons(srv.tcp.port)};
+        CHECK(inet_pton(AF_INET, "127.0.0.1", &sa.sin_addr) == 1);
+        CHECK(connect(fd, (struct sockaddr *)&sa, sizeof(sa)) == 0);
+    } else {
+        ep_cfg_t cc = {.id = &client_identity, .proto = CMT_P2P_SC_PROTO_VER_4001,
+                       .initiator_only = true, .chain = chain};
+        ep_init(&cli, &cc);
+        cli.conn = nodus_tcp_connect_trusted(&cli.tcp, "127.0.0.1", srv.tcp.port, list, 1);
+        CHECK(cli.conn != NULL);
+    }
+    /* accept (and, in variant 1, HELLO / HELLO answer) happen at the start clock */
+    for (int i = 0; i < 40; ++i) {
+        CHECK(nodus_tcp_poll(&srv.tcp, POLL_MS) >= 0);
+        if (variant) CHECK(nodus_tcp_poll(&cli.tcp, POLL_MS) >= 0);
+    }
+    CHECK(srv.accepts == 1 && srv.closed == 0);
+    if (variant) CHECK(nodus_inter_session_job_queued(cli.mod, true) == 1);   /* ENCAPS waits, never run */
+    srv.now += 2999;                              /* 2999 ms after accept: still open */
+    for (int i = 0; i < 40; ++i) {
+        CHECK(nodus_tcp_poll(&srv.tcp, POLL_MS) >= 0);
+        if (variant) CHECK(nodus_tcp_poll(&cli.tcp, POLL_MS) >= 0);
+    }
+    CHECK(srv.closed == 0 && srv.conn != NULL);   /* not before 3 s */
+    srv.now += 1;                                 /* the 3000th millisecond */
+    WAIT_WHILE(!srv.closed) {
+        CHECK(nodus_tcp_poll(&srv.tcp, POLL_MS) >= 0);
+        if (variant) CHECK(nodus_tcp_poll(&cli.tcp, POLL_MS) >= 0);
+    }
+    CHECK(srv.closed == 1 && srv.authenticated == 0 && srv.frames == 0);
+    if (variant) {
+        CHECK(cli.jobs[CMT_P2P_SC_JOB_ENCAPS] == 0 && cli.jobs[CMT_P2P_SC_JOB_SIGN] == 0);
+        ep_free(&cli);
+    } else close(fd);
+    ep_free(&srv);
+}
+
 /* 8: write lock installed: any thread queues, the owner alone seals. */
 static pthread_t g_owner;
 static volatile unsigned g_hook_calls, g_hook_foreign;
@@ -459,10 +625,15 @@ static void write_lock_owner(void) {
     enum { PER_THREAD = 60 };
     sender_t s[2] = {{cli.conn, 0, PER_THREAD}, {cli.conn, 1, PER_THREAD}};
     pthread_t th[2];
+    srv.echo = true;                         /* the node answers every frame, in the order it got them */
     for (int i = 0; i < 2; ++i) CHECK(pthread_create(&th[i], NULL, sender_fn, &s[i]) == 0);
-    WAIT_WHILE(srv.frames < 2 * PER_THREAD) step(&cli, &srv);
+    WAIT_WHILE(srv.frames < 2 * PER_THREAD || cli.frames < 2 * PER_THREAD) step(&cli, &srv);
     for (int i = 0; i < 2; ++i) { void *rc; CHECK(pthread_join(th[i], &rc) == 0 && rc == NULL); }
+    srv.echo = false;
     CHECK(srv.frames == 2 * PER_THREAD && srv.bad_order == 0);
+    /* Row 13, the replies: the client got every answer, per sender thread in
+     * the order that thread sent (cli.bad_order counts a reply out of order). */
+    CHECK(cli.frames == 2 * PER_THREAD && cli.bad_order == 0);
     /* Row 13: every machine-touching module call of the client was made by the
      * owner (this thread) — never by a sender thread — and there were some. */
     CHECK(g_hook_calls > 0 && g_hook_foreign == 0);
@@ -1020,6 +1191,7 @@ int main(void) {
     memset(client_identity.mlkem_sk, 0, sizeof(client_identity.mlkem_sk));
     client_identity.has_mlkem = false;
     trusted_list(); not_listed(); empty_list(); wire_hello(); mismatches();
+    to_4002_acceptor(); to_4004_transport(); deadline(0); deadline(1);
     reject_self(); initiator_only_refuses_inbound(); chain_unknown(); write_lock_owner();
     node_cases();
     for (int i = 0; i < 3; ++i) nodus_identity_clear(&ids[i]);

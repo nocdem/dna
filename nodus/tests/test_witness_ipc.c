@@ -41,8 +41,13 @@
  *     key (the stand-in answers k_reply, which is not a duties reply, so the
  *     client call itself waits out its 3 s request timeout: the assertion is
  *     on what the witness saw, not on the call's result);
- *   - NOT covered here: a connection from another uid (the SO_PEERCRED check
- *     is nodus_tcp_unix_listen's and is tested with the unix transport);
+ *   - a peer of another uid is closed and its request never served: the
+ *     tool-only listener is opened with nodus_witness_ipc_listen_uid for
+ *     geteuid()+1 (the pattern of test_tcp_unix.c; an unprivileged test cannot
+ *     connect from a second uid), so this process is "another uid". The accept
+ *     check itself is nodus_tcp_unix_listen's (SO_PEERCRED). It would falsely
+ *     pass if the connect never happened: the case asserts the connect and
+ *     then the close;
  *   - with no witness listening, a dnac_* request is answered at once with
  *     exactly the bytes a witness-less server sends (nodus_t2_error,
  *     NODUS_ERR_PROTOCOL_ERROR, NODUS_CHAIN_NO_WITNESS_MSG), and that
@@ -627,6 +632,42 @@ static void test_tool_only_listener(nodus_witness_ipc_t *main_ipc) {
     PASS();
 }
 
+/* Refused from another uid (plan 4.1, the SO_PEERCRED pattern of
+ * test_tcp_unix.c "peer with a uid other than the allowed one is closed"): the
+ * real accept path, the tool-only listener configured to admit geteuid()+1, so
+ * this process is "another uid". The peer is closed before a connection is
+ * allocated: on_accept never runs, its ipc_tool request is never served. */
+static void test_tool_other_uid(void) {
+    TEST("tool-only listener: a peer of another uid is closed, its request never served");
+    nodus_witness_ipc_handlers_t th = {
+        .dispatch_dnac = h_dispatch_dnac, .cc_collect = h_cc_collect,
+        .status = h_status, .own_pk = h_own_pk, .ctx = NULL
+    };
+    nodus_witness_ipc_t *tool_ipc = nodus_witness_ipc_new_tools(&th);
+    char sock[NODUS_TCP_UNIX_PATH_MAX];
+    snprintf(sock, sizeof(sock), "%s/tools_other_uid.sock", g_dir);
+    if (!tool_ipc || nodus_witness_ipc_listen_uid(tool_ipc, sock, (uint32_t)geteuid() + 1u) != 0) {
+        nodus_witness_ipc_free(tool_ipc); FAIL("listen"); return;
+    }
+    uint8_t first[NODUS_PK_BYTES + 128], frame[256];
+    size_t fn = first_frame(NODUS_WITNESS_IPC_Q_TOOL, false, NULL, first, sizeof(first));
+    int calls = h_dnac_calls;
+    nodus_tcp_conn_t *c = raw_peer(tool_ipc, sock, first, fn);
+    if (c) {                                     /* the request a served tool would answer */
+        size_t n = t2_query(51, "dnac_test", frame, sizeof(frame));
+        nodus_tcp_send(c, frame, n);
+    }
+    bool closed = c && raw_closed_within(tool_ipc);
+    for (int i = 0; i < 20; i++) nodus_witness_ipc_poll(tool_ipc, 5);
+    bool unserved = h_dnac_calls == calls;
+    nodus_tcp_close(&g_raw);
+    nodus_witness_ipc_free(tool_ipc);
+    if (!c) { FAIL("connect (the listener must accept the socket-level connect)"); return; }
+    if (!closed) { FAIL("a peer of another uid was not closed"); return; }
+    if (!unserved) { FAIL("a request from another uid was served"); return; }
+    PASS();
+}
+
 static void test_no_witness(void) {
     TEST("no witness: dnac_* answered with the decision-20 error at once");
     nodus_chain_backend_t *b2 = NULL;
@@ -876,6 +917,7 @@ int main(void) {
     test_session_other_token(ipc, wsock);
     test_tool_client(ipc, wsock);
     test_tool_only_listener(ipc);
+    test_tool_other_uid();
     test_session_bound(b, ipc);
 
     b->ops->close(b);

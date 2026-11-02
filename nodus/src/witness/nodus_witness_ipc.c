@@ -506,9 +506,14 @@ nodus_witness_ipc_t *nodus_witness_ipc_new(const nodus_witness_ipc_handlers_t *h
     return ipc;
 }
 
-int nodus_witness_ipc_listen(nodus_witness_ipc_t *ipc, const char *path) {
+int nodus_witness_ipc_listen_uid(nodus_witness_ipc_t *ipc, const char *path,
+                                 uint32_t allowed_uid) {
     if (!ipc || !path) return -1;
-    return nodus_tcp_unix_listen(&ipc->tcp, path, NODUS_TCP_UNIX_UID_SELF);
+    return nodus_tcp_unix_listen(&ipc->tcp, path, allowed_uid);
+}
+
+int nodus_witness_ipc_listen(nodus_witness_ipc_t *ipc, const char *path) {
+    return nodus_witness_ipc_listen_uid(ipc, path, NODUS_TCP_UNIX_UID_SELF);
 }
 
 void nodus_witness_ipc_poll(nodus_witness_ipc_t *ipc, int timeout_ms) {

@@ -245,6 +245,13 @@ nodus_witness_ipc_t *nodus_witness_ipc_new_tools(const nodus_witness_ipc_handler
 /** Open the socket (nodus_tcp_unix_listen, this euid only). 0 / -1. */
 int nodus_witness_ipc_listen(nodus_witness_ipc_t *ipc, const char *path);
 
+/** TEST SEAM (production uses nodus_witness_ipc_listen): the same, admitting
+ *  peers of `allowed_uid` (NODUS_TCP_UNIX_UID_SELF = this euid). A test passes
+ *  another uid so its own process is "a connection from another uid", which an
+ *  unprivileged test cannot otherwise make. */
+int nodus_witness_ipc_listen_uid(nodus_witness_ipc_t *ipc, const char *path,
+                                 uint32_t allowed_uid);
+
 /** One pass of the socket's events, waiting up to `timeout_ms`. */
 void nodus_witness_ipc_poll(nodus_witness_ipc_t *ipc, int timeout_ms);
 
