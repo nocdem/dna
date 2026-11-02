@@ -42,6 +42,7 @@
 #include "crypto/nodus_identity.h"
 #include "crypto/nodus_sign.h"
 #include "protocol/nodus_wire.h"
+#include "transport/nodus_ws.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -119,7 +120,13 @@ static void srv_step(srv_t *s) {
     while (!s->hold && (j = nodus_inter_session_job_take(s->mod)) != NULL) {
         progress++;
         nodus_inter_session_job_run(j);
-        CHECK(nodus_inter_session_job_done(s->mod, j) == CMT_OK);
+        /* stale completion of a closed connection's job is CMT_REJECT by
+         * design (nodus_inter_session.h); a live connection's must be OK */
+        const int slot = j->work.slot;
+        const uint64_t gen = j->work.gen;
+        const nodus_tcp_conn_t *cn = slot >= 0 && slot < NODUS_TCP_MAX_CONNS ? s->tcp.pool[slot] : NULL;
+        const bool alive = cn && cn->generation == gen && cn->session;
+        CHECK(nodus_inter_session_job_done(s->mod, j) == (alive ? CMT_OK : CMT_REJECT));
     }
 }
 
@@ -336,7 +343,16 @@ static void bytes_before_upgrade(void) {
     cli_init(c, tcp_connect_ws(s.tcp.ws_port));
     uint8_t out[CMT_P2P_SC_OUT_CAP]; size_t n = cli_take_out(c, out); CHECK(n > 0);
     cli_send(c, out, n);                        /* HELLO as raw bytes, not HTTP */
-    WAIT_WHILE(!s.closed) { srv_step(&s); cli_pump(c); }
+    /* The HTTP parser has no end of head (no CRLFCRLF) in these bytes, so it
+     * waits for more (nodus_ws.c nodus_ws_handshake_parse: NEED_MORE until
+     * 8 KiB). Nothing starts a machine and nothing is written back; the 10 s
+     * Upgrade limit (nodus_tcp_ws_sweep, called by the server loop) is what
+     * closes it. Run a bounded number of passes, assert that, then drive the
+     * sweep with a synthetic clock as test_ws_server.c does. */
+    for (int i = 0; i < 200; ++i) { srv_step(&s); cli_pump(c); }
+    CHECK(s.closed == 0 && s.conn != NULL && s.conn->session == NULL && !s.conn->ws_open);
+    CHECK(s.authenticated == 0 && s.frames == 0 && c->rx_len == 0 && !c->eof);
+    CHECK(nodus_tcp_ws_sweep(&s.tcp, nodus_time_now() + NODUS_WS_HANDSHAKE_TIMEOUT_S + 1) == 1);
     CHECK(s.closed == 1 && s.authenticated == 0 && s.frames == 0);
     cli_free(c); free(c); srv_free(&s);
 }

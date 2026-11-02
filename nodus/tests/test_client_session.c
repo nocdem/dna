@@ -154,7 +154,16 @@ static void run_jobs(ep_t *e) {
         CHECK(j->work.kind > CMT_P2P_SC_JOB_NONE && j->work.kind <= CMT_P2P_SC_JOB_VERIFY);
         e->jobs[j->work.kind]++; progress++;
         nodus_inter_session_job_run(j);
-        CHECK(nodus_inter_session_job_done(e->mod, j) == CMT_OK);
+        /* A job queued for a connection that closed before the test took the
+         * job (the peer's EOF arrives in the same poll that queued it) is
+         * completed as stale: CMT_REJECT, by design (nodus_inter_session.h
+         * "Always consumes ... including a stale (slot,generation)"). A live
+         * connection's job must complete CMT_OK. Read before job_done frees j. */
+        const int slot = j->work.slot;
+        const uint64_t gen = j->work.gen;
+        const nodus_tcp_conn_t *cn = slot >= 0 && slot < NODUS_TCP_MAX_CONNS ? e->tcp.pool[slot] : NULL;
+        const bool alive = cn && cn->generation == gen && cn->session;
+        CHECK(nodus_inter_session_job_done(e->mod, j) == (alive ? CMT_OK : CMT_REJECT));
     }
 }
 static void step(ep_t *a, ep_t *b) {
