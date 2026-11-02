@@ -101,6 +101,15 @@ nodus_inter_session_module_t *nodus_inter_session_new(nodus_tcp_t *tcp,
                                 const nodus_inter_session_config_t *cfg);
 void nodus_inter_session_free(nodus_inter_session_module_t *s);
 
+/* Counters since the module was created: connections whose machine started,
+ * sessions opened, key-exchange jobs refused because a class queue was full
+ * (the connection is then closed) and connections that ran past the 3 s
+ * handshake deadline. Read by the load-measurement driver (plan 4.5). */
+typedef struct {
+    uint64_t started, opened, queue_refused, deadline_closed;
+} nodus_inter_session_stats_t;
+void nodus_inter_session_stats(nodus_inter_session_module_t *s, nodus_inter_session_stats_t *out);
+
 bool nodus_inter_session_chain_ready(nodus_inter_session_module_t *s);
 bool nodus_inter_session_is_open(const nodus_tcp_conn_t *conn);
 int nodus_inter_session_open(nodus_tcp_conn_t *conn);
