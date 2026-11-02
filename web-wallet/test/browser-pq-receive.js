@@ -150,7 +150,9 @@ try {
     }
     await page.locator('#unlock-password:visible').fill(password);await page.locator('#unlock-wallet').click();
     await page.locator('#wallet-open').waitFor({state:'visible'});
-    await openReceive(page);await selectChain(page,'ckb');assert.equal(await page.locator('#pq-network-environment').inputValue(),'testnet');
+    // Operator 2026-11-03 ("hersey varsa yeniden acista mainnet"): after reopening, a network
+    // that has a mainnet opens on mainnet, whatever was chosen before.
+    await openReceive(page);await selectChain(page,'ckb');assert.equal(await page.locator('#pq-network-environment').inputValue(),'mainnet');
     await address(page,'ckb','testnet',fixture.addresses.ckb.testnet);
     await address(page,'qtc','mainnet',fixture.addresses.qtc.mainnet);
     await address(page,'qtc','testnet',fixture.addresses.qtc.testnet);
