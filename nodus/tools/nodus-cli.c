@@ -7147,6 +7147,8 @@ static int cmd_validator_consent(const char *server_ip, uint16_t server_port,
     const char *op_s = NULL, *owner_hex = NULL;
     const char *expiry_s = NULL, *out_path = NULL, *chain_hex = NULL;
     const char *msig_path = NULL;
+    const char *tool_config = NULL;
+    bool tool_config_set = false;
     int bad_arg = 0;
     for (int i = cmd_start + 2; i < argc; i++) {   /* skip "consent" */
         const char *a = argv[i];
@@ -7157,6 +7159,10 @@ static int cmd_validator_consent(const char *server_ip, uint16_t server_port,
         else if (!strcmp(a, "--expiry")  && i + 1 < argc) expiry_s = argv[++i];
         else if (!strcmp(a, "--out")     && i + 1 < argc) out_path = argv[++i];
         else if (!strcmp(a, "--chain-id") && i + 1 < argc) chain_hex = argv[++i];
+        /* own-node tool (design D9): ask this node's own witness socket, found
+         * from the node config (identity_path / data_path), instead of dialing
+         * a node over 4001 — for the node's own key against its own node */
+        else if (!strcmp(a, "--config")  && i + 1 < argc) tool_config = argv[++i];
         else { bad_arg = 1; break; }
     }
     /* exactly one owner form: --owner <hex128> or --msig <descriptor> */
@@ -7242,8 +7248,20 @@ static int cmd_validator_consent(const char *server_ip, uint16_t server_port,
     }
     memcpy(c.consensus_pk, identity.pk.bytes, DNA_VALBIND_PUBKEY_LEN);
 
+    if (tool_config && !g_cli_tool_sock[0]) {
+        char tool_err[256] = "";
+        if (cli_find_tool_sock(tool_config, g_cli_tool_sock, sizeof(g_cli_tool_sock),
+                               tool_err, sizeof(tool_err)) != 0) {
+            fprintf(stderr, "cannot find this node's witness socket: %s\n"
+                    "  (config %s); nothing signed\n", tool_err, tool_config);
+            return 1;
+        }
+        tool_config_set = true;
+    }
     nodus_client_t client;
-    if (t8_session(&client, server_ip, server_port) != 0) return 1;
+    const int sess_rc = t8_session(&client, server_ip, server_port);
+    if (tool_config_set) g_cli_tool_sock[0] = '\0';   /* only this session was a tool */
+    if (sess_rc != 0) return 1;
     bool has_chain32 = false;
     const int crc = nodus_client_dnac_chain_id32(&client, &has_chain32,
                                                  c.chain32);

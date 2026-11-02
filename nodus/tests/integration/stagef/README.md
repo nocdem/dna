@@ -777,13 +777,21 @@ Calls by class (the nodus-cli calls whose meaning the 4001 change touches):
   (`who` proposes through node `to`) the route is therefore node `who`'s own
   socket: **the meaning changes (node `to` no longer relays it) and is reported,
   not hidden.**
-- **A node's key against that node's own port, unchanged (the node refuses it
-  as a reflection — these calls fail until a decision moves them to another node
-  or to an own-node tool):** test_storage_archive.sh:804 (`consent_make`, node
-  n's key to node n's port: `storage consent`), :853 (`storage status` when the
-  key's node equals the port's node), test_cmt_hf2_gov_power.sh:665 (`v2-envelope
-  chain-config` when `$node` is 1), test_v2_grow_7_20.sh:784 (when `$n` is 1) and
-  :833 (node 1's key to node 1's port).
+- **A node's key against that node's own port (the node refuses it as a
+  reflection) — decided by the operator 2026-11-02 ("öneri ile"):**
+  - test_storage_archive.sh:804 (`consent_make`, node n's key, `storage consent`)
+    is an own-node tool: the wrapper appends `--config` (the key owner's
+    generated `cli-tool.json`) and nodus-cli's `<storage|validator> consent`
+    takes `--config` and asks the node's own `<data>/witness.sock`.
+  - The other four dial ANOTHER node with the SAME key:
+    test_storage_archive.sh:853 (`status_of N KN`: when N == KN it now dials node
+    `N % $N + 1`; the answer is the chain's, equal on every node at a tip),
+    test_cmt_hf2_gov_power.sh:665 (`cc_build`: submit node 1 → node 2, key node
+    1), test_v2_grow_7_20.sh:784 (STEP 3 loop: for n = 1 it dials node 2 with node
+    1's key; node 1's own CheckTx is then not exercised by that loop and node 2's
+    runs twice) and :833 (vote B: node 1's key, dials node 2 instead of node 1).
+- **Accepted as it is (operator 2026-11-02):** test_cmt_hf1_gas_upgrade.sh:622,
+  `who` proposes through `who`'s own socket instead of relaying through node `to`.
 - **Cannot cross the change:** the OLD/NEW upgrade scenarios (an old nodus-cli
   or node binary on one side) — an old binary speaks the removed handshake and
   has no `--pin`; the wrapper passes `--pin` to whatever binary

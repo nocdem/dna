@@ -662,6 +662,9 @@ check_unequal() {
 # SUBMIT_NODE. Returns the CLI's rc.
 cc_build() {
     local db="$1" keys="$2" eff="$3" nonce="$4" node="$5" log="$6"
+    # 4001 plan 4.4 (operator 2026-11-02): node 1's key against node 1's own
+    # port is refused as a reflection; with the same key node 2 is dialed.
+    [ "$node" = 1 ] && node=2
     "$NEW_CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$node")" -i "$(node_keys 1)" \
         v2-envelope chain-config --db "$db" --keys "$keys" --param "$PARAM_GAS" \
         --value "$GAS_NOW" --effective "$eff" --nonce "$nonce" > "$log" 2>&1

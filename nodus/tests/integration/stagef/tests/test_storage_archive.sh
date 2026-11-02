@@ -847,10 +847,14 @@ st_register() {
 
 # status_of NODE KEYS_NODE [--fp FP] — `storage status` on NODE's own port
 status_of() {
-    local n="$1" kn="$2" log src=0
+    local n="$1" kn="$2" log src=0 dn
     shift 2
     log="$LOGD/status_node${kn}_on_node${n}_$(tip_of "$n").log"
-    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$n")" -i "$(node_keys "$kn")" \
+    # 4001 plan 4.4 (operator 2026-11-02): a node's key against that node's own
+    # port is refused as a reflection; with the same key the next node is asked
+    # instead (the answer is the chain's, equal on every node at a tip).
+    dn="$n"; [ "$n" = "$kn" ] && dn=$(( n % N + 1 ))
+    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$dn")" -i "$(node_keys "$kn")" \
         storage status "$@" > "$log" 2>&1 || src=$?
     ST_RC="$src"
     ST_OUT=$(cat "$log")

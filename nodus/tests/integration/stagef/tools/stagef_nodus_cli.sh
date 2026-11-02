@@ -69,16 +69,26 @@ fi
 fp="$(cat "$(stagef_node_dir "$n")/identity/nodus.fp")"
 chain="$(cat "$chain_file")"
 
-rest=("$@")
-if [ "${rest[0]:-}" = "chain-config" ] && [ "${rest[1]:-}" = "propose" ]; then
-    owner="$(node_of_ident "$ident")"
-    o="${owner:-$n}"
-    # The harness gives every node its data dir on the command line (-d), not
-    # in nodus.json, so the node config does not name witness.sock's directory.
-    # The tool reads only identity_path and data_path: write that, per node.
-    tool_cfg="$(stagef_node_dir "$o")/cli-tool.json"
+# The harness gives every node its data dir on the command line (-d), not in
+# nodus.json, so the node config does not name witness.sock's directory. The
+# tool reads only identity_path and data_path: write that, per node, and print
+# the file's path.
+tool_config_of() {
+    local o="$1" f
+    f="$(stagef_node_dir "$o")/cli-tool.json"
     printf '{"identity_path": "%s", "data_path": "%s"}\n' \
-        "$(stagef_node_dir "$o")/identity" "$(stagef_node_dir "$o")/data" > "$tool_cfg"
-    rest+=(--config "$tool_cfg")
+        "$(stagef_node_dir "$o")/identity" "$(stagef_node_dir "$o")/data" > "$f"
+    echo "$f"
+}
+
+rest=("$@")
+owner="$(node_of_ident "$ident")"
+if [ "${rest[0]:-}" = "chain-config" ] && [ "${rest[1]:-}" = "propose" ]; then
+    rest+=(--config "$(tool_config_of "${owner:-$n}")")
+elif { [ "${rest[0]:-}" = "storage" ] || [ "${rest[0]:-}" = "validator" ]; } &&
+     [ "${rest[1]:-}" = "consent" ] && [ -n "$owner" ] && [ "$owner" = "$n" ]; then
+    # `<storage|validator> consent` with a node's key against that node's own
+    # port is an own-node tool (design D9): its own witness.sock, not 4001.
+    rest+=(--config "$(tool_config_of "$owner")")
 fi
 exec "$REAL" "${globals[@]}" --pin "$fp" --chain-id "$chain" "${rest[@]}"
