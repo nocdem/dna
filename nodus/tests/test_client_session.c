@@ -35,6 +35,16 @@
  *      byte off never authenticate.
  *  12. The fifth session of one identity evicts the oldest (limit 4).
  *  13. No chain id known -> a new connection is closed at accept, zero bytes.
+ *  13a. (row 5) a 4004 proto_ver at the node never authenticates; a 4001
+ *      client at a raw 4004 responder is refused at the HELLO, no ENCAPS /
+ *      SIGN job on the client.
+ *  13b. (row 8) a second KEYX, and a Kyber round-3 ciphertext in KEYX (made
+ *      against the node's round-3 key): no session; the connection closes.
+ *  13c. (row 9) the client's AUTHSIG and a sealed ping sent in ONE write: the
+ *      node serves the ping after it verified and opened (a pong arrives and
+ *      the client key is the session identity). Case 8 above also asserts, via
+ *      the module's machine_hook test seam, that every machine-touching module
+ *      call of the threaded client came from the owner thread (row 13).
  *   Part C, the real nodus_client_t against that server (polled by a thread
  *   of this test):
  *  14. A config without a trusted list, with a negative count, or without a
@@ -361,6 +371,16 @@ static void chain_unknown(void) {
 }
 
 /* 8: write lock installed: any thread queues, the owner alone seals. */
+static pthread_t g_owner;
+static volatile unsigned g_hook_calls, g_hook_foreign;
+/* machine_hook: runs on entry of each machine-touching module call; counts the
+ * calls and the ones made by a thread other than the owner. Only the owner (this
+ * thread) polls; if a sender thread sealed, it would show up as foreign. */
+static void machine_hook(void *ctx) {
+    (void)ctx;
+    g_hook_calls++;
+    if (!pthread_equal(pthread_self(), g_owner)) g_hook_foreign++;
+}
 static pthread_mutex_t wlock = PTHREAD_MUTEX_INITIALIZER;
 static void lock_fn(void *ctx, bool lock) {
     (void)ctx; if (lock) pthread_mutex_lock(&wlock); else pthread_mutex_unlock(&wlock);
@@ -389,8 +409,10 @@ static void write_lock_owner(void) {
     nodus_inter_session_config_t cfg = {
         .identity = cc.id, .proto_ver = cc.proto, .initiator_only = true, .chain_id = chain,
         .inbound_depth = 8, .outbound_depth = 8, .workers = 0,
-        .on_authenticated = on_authed, .auth_ctx = &cli
+        .on_authenticated = on_authed, .auth_ctx = &cli,
+        .machine_hook = machine_hook, .machine_hook_ctx = NULL
     };
+    g_owner = pthread_self(); g_hook_calls = g_hook_foreign = 0;
     cli.mod = nodus_inter_session_new(&cli.tcp, &cfg);
     CHECK(cli.mod != NULL);
     CHECK(nodus_tcp_listen(&srv.tcp, "127.0.0.1", 0) == 0);
@@ -405,6 +427,9 @@ static void write_lock_owner(void) {
     WAIT_WHILE(srv.frames < 2 * PER_THREAD) step(&cli, &srv);
     for (int i = 0; i < 2; ++i) { void *rc; CHECK(pthread_join(th[i], &rc) == 0 && rc == NULL); }
     CHECK(srv.frames == 2 * PER_THREAD && srv.bad_order == 0);
+    /* Row 13: every machine-touching module call of the client was made by the
+     * owner (this thread) — never by a sender thread — and there were some. */
+    CHECK(g_hook_calls > 0 && g_hook_foreign == 0);
     CHECK(srv.closed == 0 && cli.closed == 0);
     CHECK(nodus_tcp_decrypt_fail_total(&srv.tcp) == 0);
     ep_free(&cli); ep_free(&srv);
@@ -417,6 +442,7 @@ static void write_lock_owner(void) {
 #include "server/nodus_server.h"
 #include "protocol/nodus_tier2.h"
 #include "crypto/nodus_sign.h"
+#include "crypto/enc/qgp_kyber.h"
 #include <sys/stat.h>
 
 static nodus_server_t g_srv;   /* static: far too large for the stack */
@@ -623,6 +649,146 @@ static void node_eviction(void) {
     for (int i = 0; i <= NODUS_MAX_SESSIONS_PER_IDENTITY; ++i) { raw_close(rs[i]); free(rs[i]); }
 }
 
+/* Row 5, 4004 HELLO at 4001: a raw initiator whose proto_ver is the 4004 value
+ * never authenticates and the node opens no session for it. */
+static void node_proto_4004(void) {
+    raw_t *r = calloc(1, sizeof(*r)); CHECK(r);
+    raw_open(r, &ids[0], CMT_P2P_SC_PROTO_VER_4004, chain);
+    raw_until_eof(r);
+    CHECK(!cmt_p2p_sc_is_authenticated(&r->sc) && !srv_has_session_of(&ids[0]));
+    raw_close(r); free(r);
+}
+
+/* Row 5, back: a 4001 initiator (the module client) against a raw responder
+ * that speaks 4004 — refused at the HELLO, before any KEM job on either side. */
+static void to_4004_responder(void) {
+    cmt_p2p_sc_host_t host = {.ctx = &ids[1], .sign = raw_sign, .verify = raw_verify};
+    cmt_p2p_sc_t *m = calloc(1, sizeof(*m)); CHECK(m);
+    CHECK(cmt_p2p_sc_init(m, CMT_P2P_SC_ROLE_RESPONDER, &host, ids[1].pk.bytes,
+          ids[1].mlkem_pk, ids[1].mlkem_sk, CMT_P2P_SC_PROTO_VER_4004, chain) == CMT_OK);
+    int lf = socket(AF_INET, SOCK_STREAM, 0); CHECK(lf >= 0);
+    struct sockaddr_in sa = {.sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+    CHECK(bind(lf, (struct sockaddr *)&sa, sizeof(sa)) == 0 && listen(lf, 1) == 0);
+    socklen_t sl = sizeof(sa); CHECK(getsockname(lf, (struct sockaddr *)&sa, &sl) == 0);
+    ep_t cli; ep_cfg_t cc = {.id = &client_identity, .proto = CMT_P2P_SC_PROTO_VER_4001,
+                             .initiator_only = true, .chain = chain};
+    ep_init(&cli, &cc);
+    nodus_key_t list[1] = {ids[1].node_id};
+    cli.conn = nodus_tcp_connect_trusted(&cli.tcp, "127.0.0.1", ntohs(sa.sin_port), list, 1);
+    CHECK(cli.conn);
+    int fd = accept(lf, NULL, NULL); CHECK(fd >= 0); close(lf);
+    CHECK(fcntl(fd, F_SETFL, O_NONBLOCK) == 0);
+    uint8_t buf[CMT_P2P_SC_OUT_CAP * 2]; size_t got = 0; int rc = CMT_OK; bool refused = false;
+    WAIT_WHILE(!refused) {
+        CHECK(nodus_tcp_poll(&cli.tcp, POLL_MS) >= 0); run_jobs(&cli);
+        ssize_t r = recv(fd, buf + got, sizeof(buf) - got, 0);
+        if (r > 0) { got += (size_t)r; progress++; }
+        size_t used = 0;
+        if (got) rc = cmt_p2p_sc_recv(m, buf, got, &used);
+        if (rc != CMT_OK) refused = true;
+    }
+    CHECK(refused && cmt_p2p_sc_job(m) == NULL);
+    CHECK(cli.jobs[CMT_P2P_SC_JOB_ENCAPS] == 0 && cli.jobs[CMT_P2P_SC_JOB_SIGN] == 0);
+    CHECK(cli.authenticated == 0);
+    close(fd); cmt_p2p_sc_clear(m); free(m); ep_free(&cli);
+}
+
+/* Row 8: a second KEYX, and a round-3 (Kyber) ciphertext in KEYX. The raw
+ * initiator runs the handshake up to its ENCAPS job, then sends the KEYX
+ * (variant 0: twice; variant 1: with a Kyber round-3 ciphertext made against
+ * the node's round-3 key — decapsulation under ML-KEM-1024 is implicit
+ * rejection, the AUTHSIG open then fails) and carries on normally. Neither
+ * ever becomes a session. */
+static void node_bad_keyx(int variant) {
+    raw_t *r = calloc(1, sizeof(*r)); CHECK(r);
+    raw_open(r, &ids[0], CMT_P2P_SC_PROTO_VER_4001, chain);
+    raw_out(r);                                          /* HELLO */
+    WAIT_WHILE(!cmt_p2p_sc_job(&r->sc) && !r->eof) {
+        srv_pump(); raw_in(r);
+        size_t used = 0;
+        if (r->in_len) { CHECK(cmt_p2p_sc_recv(&r->sc, r->in, r->in_len, &used) == CMT_OK); raw_consume(r, used); }
+    }
+    CHECK(!r->eof);
+    const cmt_p2p_sc_job_t *j = cmt_p2p_sc_job(&r->sc);
+    CHECK(j && j->kind == CMT_P2P_SC_JOB_ENCAPS);
+    CHECK(cmt_p2p_sc_job_done(&r->sc, cmt_p2p_sc_job_run(j, &r->host)) == CMT_OK);
+    size_t n; const uint8_t *p = cmt_p2p_sc_out(&r->sc, &n);
+    CHECK(n == 3 + CMT_P2P_SC_KEM_CT_SIZE);
+    uint8_t keyx[3 + CMT_P2P_SC_KEM_CT_SIZE]; memcpy(keyx, p, n);
+    cmt_p2p_sc_out_consume(&r->sc, n);
+    if (variant == 1) {
+        uint8_t ss[32];
+        CHECK(qgp_kem1024_encapsulate(keyx + 3, ss, g_srv.identity.kyber_pk) == 0);
+    }
+    for (int k = 0; k < (variant == 0 ? 2 : 1); ++k) {
+        size_t off = 0;
+        WAIT_WHILE(off < n) {
+            ssize_t w = send(r->fd, keyx + off, n - off, MSG_NOSIGNAL);
+            if (w > 0) { off += (size_t)w; progress++; } else srv_pump();
+        }
+    }
+    raw_until_eof(r);                                    /* carries on normally */
+    CHECK(!cmt_p2p_sc_is_authenticated(&r->sc) && !srv_has_session_of(&ids[0]));
+    raw_close(r); free(r);
+}
+
+/* Row 9: a request packed with the client's AUTHSIG. The raw initiator
+ * withholds its sealed AUTHSIG, finishes its side (it needs only the node's
+ * AUTHSIG), seals a ping, and sends AUTHSIG + ping in ONE write. The node must
+ * hold the ping until it has verified the AUTHSIG and opened the session, then
+ * answer it: a pong arrives, and by then the client key is the session
+ * identity. (A reply before authentication is impossible to observe from
+ * outside; this proves the packed request is served after open, not dropped.) */
+static void node_packed_request(void) {
+    raw_t *r = calloc(1, sizeof(*r)); CHECK(r);
+    raw_open(r, &ids[0], CMT_P2P_SC_PROTO_VER_4001, chain);
+    raw_out(r);                                          /* HELLO */
+    uint8_t held[CMT_P2P_SC_OUT_CAP * 2]; size_t held_len = 0; bool keyx_sent = false;
+    WAIT_WHILE(!cmt_p2p_sc_is_authenticated(&r->sc) && !r->eof) {
+        srv_pump(); raw_in(r);
+        size_t used = 0;
+        if (r->in_len) { CHECK(cmt_p2p_sc_recv(&r->sc, r->in, r->in_len, &used) == CMT_OK); raw_consume(r, used); }
+        const cmt_p2p_sc_job_t *j;
+        while ((j = cmt_p2p_sc_job(&r->sc)) != NULL) {
+            CHECK(cmt_p2p_sc_job_done(&r->sc, cmt_p2p_sc_job_run(j, &r->host)) == CMT_OK);
+            progress++;
+            size_t n; const uint8_t *p = cmt_p2p_sc_out(&r->sc, &n);
+            if (!n) continue;
+            if (!keyx_sent) { raw_out(r); keyx_sent = true; }      /* KEYX goes at once */
+            else { CHECK(held_len + n <= sizeof(held)); memcpy(held + held_len, p, n);
+                   held_len += n; cmt_p2p_sc_out_consume(&r->sc, n); }   /* AUTHSIG is withheld */
+        }
+    }
+    CHECK(cmt_p2p_sc_is_authenticated(&r->sc) && held_len > 0 && !srv_has_session_of(&ids[0]));
+    uint8_t buf[256], zero_token[NODUS_SESSION_TOKEN_LEN] = {0}; size_t pn = 0;
+    CHECK(nodus_t2_ping(9, zero_token, buf, sizeof(buf), &pn) == 0);
+    uint8_t plain[300], pack[CMT_P2P_SC_OUT_CAP * 2 + CMT_P2P_SC_SEALED_FRAME_SIZE * 2];
+    size_t fl = nodus_frame_encode(plain, sizeof(plain), buf, (uint32_t)pn); CHECK(fl);
+    size_t written = 0;
+    memcpy(pack, held, held_len);
+    CHECK(cmt_p2p_sc_write(&r->sc, plain, fl, pack + held_len, CMT_P2P_SC_SEALED_FRAME_SIZE * 2, &written) == CMT_OK);
+    size_t total = held_len + written, off = 0;
+    WAIT_WHILE(off < total) {
+        ssize_t w = send(r->fd, pack + off, total - off, MSG_NOSIGNAL);
+        if (w > 0) { off += (size_t)w; progress++; } else srv_pump();
+    }
+    uint8_t got[512]; size_t gl = 0; nodus_frame_t f; int used = 0;
+    WAIT_WHILE(used <= 0 && !r->eof) {
+        srv_pump(); raw_in(r);
+        size_t cu = 0, pl = 0;
+        CHECK(cmt_p2p_sc_read(&r->sc, r->in, r->in_len, &cu, got + gl, sizeof(got) - gl, &pl) == CMT_OK);
+        raw_consume(r, cu); gl += pl;
+        used = nodus_frame_decode(got, gl, &f);
+    }
+    CHECK(used > 0);
+    nodus_tier2_msg_t reply; memset(&reply, 0, sizeof(reply));
+    CHECK(nodus_t2_decode(f.payload, f.payload_len, &reply) == 0);
+    CHECK(reply.type == 'r' && reply.txn_id == 9 && srv_has_session_of(&ids[0]));
+    nodus_t2_msg_free(&reply);
+    raw_close(r); free(r);
+    for (int i = 0; i < 50; ++i) srv_pump();
+}
+
 /* N5: no chain id -> a new connection is closed at accept, zero bytes. */
 static void node_chain_unknown(void) {
     g_srv.inter_chain_id_valid = false;
@@ -722,6 +888,7 @@ static void node_cases(void) {
     memcpy(g_srv.inter_chain_id, chain, sizeof(chain));
     g_srv.inter_chain_known = g_srv.inter_chain_id_valid = true;
     node_session(); node_old_handshake(); node_refusals(); node_eviction(); node_chain_unknown();
+    node_proto_4004(); to_4004_responder(); node_bad_keyx(0); node_bad_keyx(1); node_packed_request();
     pthread_t pt;
     g_pump_stop = false;
     CHECK(pthread_create(&pt, NULL, pump_thread, NULL) == 0);

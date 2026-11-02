@@ -25,6 +25,19 @@
  *   6. Application data does not reach on_frame before authentication
  *      completes (frames stays 0 until the open callback).
  *
+ * Added with the verifier's findings (plan 4.1 rows 9 and 10 and the
+ * trailing case):
+ *   7. Reflection through WebSocket frames: a client holding the node's own
+ *      key gets no session and delivers nothing.
+ *   8. A request packed with the client's AUTHSIG in one WebSocket frame is
+ *      delivered after the node verified and opened, never before.
+ *   9. The client's HELLO written in the same send as the Upgrade request
+ *      (it trails the request head): the handshake completes. The 5,220-byte
+ *      sealed AUTHSIG itself cannot trail the Upgrade request: it needs the
+ *      node's HELLO_R and a KEM encapsulation first, so the held-job case
+ *      (4) is the one that carries it; the trailing path is exercised with
+ *      the only machine bytes that exist at that time.
+ *
  * Not covered here (later steps of the same package): the node's own
  * 4001 request path, a real client, the 10 s Upgrade limit (covered by
  * test_ws_server), a request packed with the AUTHSIG (the raw initiator cannot
@@ -138,6 +151,7 @@ typedef struct {
     uint8_t rx[1 << 17]; size_t rx_len;      /* socket bytes */
     uint8_t in[1 << 17]; size_t in_len;      /* unframed machine bytes */
     bool eof;
+    bool hello_sent;                         /* the HELLO already left (trailing mode) */
 } cli_t;
 
 static int raw_sign(void *ctx, const uint8_t *p, size_t n, uint8_t *out) {
@@ -236,43 +250,73 @@ static int tcp_connect_ws(uint16_t port) {
     CHECK(fcntl(fd, F_SETFL, O_NONBLOCK) == 0);
     return fd;
 }
+static int g_cli_id = 0;    /* which identity the raw client holds (1 = the node's own key) */
 static void cli_init(cli_t *c, int fd) {
     memset(c, 0, sizeof(*c)); c->fd = fd;
-    c->host.ctx = &ids[0]; c->host.sign = raw_sign; c->host.verify = raw_verify;
-    CHECK(cmt_p2p_sc_init(&c->sc, CMT_P2P_SC_ROLE_INITIATOR, &c->host, ids[0].pk.bytes,
+    c->host.ctx = &ids[g_cli_id]; c->host.sign = raw_sign; c->host.verify = raw_verify;
+    CHECK(cmt_p2p_sc_init(&c->sc, CMT_P2P_SC_ROLE_INITIATOR, &c->host, ids[g_cli_id].pk.bytes,
                           NULL, NULL, CMT_P2P_SC_PROTO_VER_4001, chain) == CMT_OK);
 }
 static void cli_free(cli_t *c) { close(c->fd); cmt_p2p_sc_clear(&c->sc); }
 
 #define KEY_RFC "dGhlIHNhbXBsZSBub25jZQ=="
-static void cli_upgrade(cli_t *c, srv_t *s) {
-    char req[512];
-    int w = snprintf(req, sizeof(req),
+/* The HTTP Upgrade. `trailing`: the client's HELLO, as one masked binary
+ * WebSocket frame, is written in the SAME send as the request, so it trails
+ * the request head in the node's first read (plan 2.1 f: bytes trailing the
+ * Upgrade request are machine input). Anything the node sends after the 101 in
+ * the same recv is handed to the frame reader. */
+static void cli_upgrade_ex(cli_t *c, srv_t *s, bool trailing) {
+    uint8_t req[1024];
+    int w = snprintf((char *)req, sizeof(req),
         "GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
         "Sec-WebSocket-Key: " KEY_RFC "\r\nSec-WebSocket-Version: 13\r\n"
         "Sec-WebSocket-Protocol: binary\r\nX-Forwarded-For: 198.51.100.7\r\n\r\n");
-    CHECK(w > 0 && (size_t)w < sizeof(req));
-    cli_send(c, (const uint8_t *)req, (size_t)w);
-    uint8_t head[1024]; size_t hl = 0; bool done = false;
+    CHECK(w > 0 && (size_t)w < sizeof(req) - 200);
+    size_t total = (size_t)w;
+    if (trailing) {
+        uint8_t hello[CMT_P2P_SC_OUT_CAP]; size_t hn = cli_take_out(c, hello);
+        CHECK(hn > 0 && hn < 126 + 8000);
+        static const uint8_t key[4] = {0x11, 0x22, 0x33, 0x44};
+        static uint8_t big[CMT_P2P_SC_OUT_CAP + 1100];
+        memcpy(big, req, total);
+        size_t o = total;
+        big[o++] = 0x82;
+        if (hn < 126) big[o++] = (uint8_t)(0x80 | hn);
+        else { big[o++] = 0x80 | 126; big[o++] = (uint8_t)(hn >> 8); big[o++] = (uint8_t)hn; }
+        memcpy(big + o, key, 4); o += 4;
+        for (size_t i = 0; i < hn; ++i) big[o + i] = hello[i] ^ key[i & 3];
+        cli_send(c, big, o + hn);
+        c->hello_sent = true;
+    } else cli_send(c, req, total);
+    uint8_t head[1024]; size_t hl = 0; bool done = false; size_t head_end = 0;
     WAIT_WHILE(!done) {
         srv_step(s);
         ssize_t r = recv(c->fd, head + hl, sizeof(head) - hl, 0);
         if (r > 0) { hl += (size_t)r; progress++; }
         else CHECK(r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR));
-        for (size_t i = 0; i + 4 <= hl; ++i)
-            if (!memcmp(head + i, "\r\n\r\n", 4)) { done = true; CHECK(i + 4 == hl); }
+        for (size_t i = 0; !done && i + 4 <= hl; ++i)
+            if (!memcmp(head + i, "\r\n\r\n", 4)) { done = true; head_end = i + 4; }
     }
     CHECK(done && !memcmp(head, "HTTP/1.1 101", 12));
+    if (hl > head_end) {                       /* frames that followed the 101 */
+        CHECK(c->rx_len + (hl - head_end) <= sizeof(c->rx));
+        memcpy(c->rx + c->rx_len, head + head_end, hl - head_end);
+        c->rx_len += hl - head_end;
+    }
 }
+static void cli_upgrade(cli_t *c, srv_t *s) { cli_upgrade_ex(c, s, false); }
 
 /* Handshake from the client side after the HELLO was sent: runs until both
  * machines are authenticated. `single` = send the KEYX+AUTHSIG output in one
  * WebSocket frame while the node's job is held (case 4), else 7-byte frames. */
 static void drive_handshake(cli_t *c, srv_t *s, bool single) {
     static uint8_t out[1 << 15];
-    size_t n = cli_take_out(c, out);               /* HELLO */
-    CHECK(n > 0);
-    if (single) cli_ws_frame(c, out, n); else cli_ws_chunks(c, out, n, 7);
+    size_t n = 0;
+    if (!c->hello_sent) {                          /* HELLO (not already sent trailing the Upgrade) */
+        n = cli_take_out(c, out);
+        CHECK(n > 0);
+        if (single) cli_ws_frame(c, out, n); else cli_ws_chunks(c, out, n, 7);
+    }
     bool sent_rest = false;
     WAIT_WHILE(!cmt_p2p_sc_is_authenticated(&c->sc) || !s->authenticated) {
         srv_step(s); cli_pump(c); cli_recv_hs(c);
@@ -321,18 +365,85 @@ static void send_app(cli_t *c, srv_t *s, size_t payload_len, size_t ws_chunk) {
 }
 
 /* 1/4/5/6 */
-static void ws_session(bool single) {
+static void ws_session(bool single, bool trailing) {
     srv_t s; srv_init(&s);
     cli_t *c = calloc(1, sizeof(*c)); CHECK(c);
     int fd = tcp_connect_ws(s.tcp.ws_port);
     cli_init(c, fd);
-    cli_upgrade(c, &s);
+    cli_upgrade_ex(c, &s, trailing);
     drive_handshake(c, &s, single);
     CHECK(s.frames == 0);                       /* nothing delivered before open */
     /* a small request, then one larger than the node's wire buffer */
     send_app(c, &s, 31, single ? 1 << 20 : 7);
     send_app(c, &s, 20000, 1 << 20);
     CHECK(s.closed == 0);
+    cli_free(c); free(c); srv_free(&s);
+}
+
+/* Row 10 through WebSocket frames: a client holding the node's own key never
+ * gets a session (reject-self), nothing is delivered. */
+static void ws_reflection(void) {
+    srv_t s; srv_init(&s);
+    cli_t *c = calloc(1, sizeof(*c)); CHECK(c);
+    g_cli_id = 1;                               /* ids[1] is the node's key */
+    cli_init(c, tcp_connect_ws(s.tcp.ws_port));
+    cli_upgrade(c, &s);
+    static uint8_t out[1 << 15];
+    size_t n = cli_take_out(c, out); CHECK(n > 0);
+    cli_ws_chunks(c, out, n, 7);
+    bool sent_rest = false;
+    WAIT_WHILE(!s.closed) {
+        srv_step(&s); cli_pump(c);
+        if (c->eof) break;
+        cli_recv_hs(c); cli_jobs(c);
+        n = cli_take_out(c, out);
+        if (n) { cli_ws_chunks(c, out, n, 7); sent_rest = true; }
+    }
+    g_cli_id = 0;
+    WAIT_WHILE(!s.closed) srv_step(&s);
+    CHECK(sent_rest && s.closed == 1 && s.authenticated == 0 && s.frames == 0);
+    cli_free(c); free(c); srv_free(&s);
+}
+
+/* Row 9 through WebSocket frames: a request packed with the client's AUTHSIG
+ * (one WebSocket frame). The client withholds its sealed AUTHSIG until it is
+ * itself authenticated, seals a ping, and sends AUTHSIG + ping together. The
+ * node must not deliver the ping before it verified the AUTHSIG and opened the
+ * session (frames stays 0 until on_authenticated ran: on_frame itself asserts
+ * the session is open and authenticated == 1), and delivers it after. */
+static void ws_packed_request(void) {
+    srv_t s; srv_init(&s);
+    cli_t *c = calloc(1, sizeof(*c)); CHECK(c);
+    cli_init(c, tcp_connect_ws(s.tcp.ws_port));
+    cli_upgrade(c, &s);
+    static uint8_t out[1 << 15], held[1 << 15];
+    size_t held_len = 0, n = cli_take_out(c, out); CHECK(n > 0);
+    cli_ws_chunks(c, out, n, 7);                          /* HELLO */
+    bool keyx_sent = false;
+    WAIT_WHILE(!cmt_p2p_sc_is_authenticated(&c->sc) && !c->eof) {
+        srv_step(&s); cli_pump(c); cli_recv_hs(c);
+        const cmt_p2p_sc_job_t *j;
+        while ((j = cmt_p2p_sc_job(&c->sc)) != NULL) {
+            CHECK(cmt_p2p_sc_job_done(&c->sc, cmt_p2p_sc_job_run(j, &c->host)) == CMT_OK);
+            progress++;
+            n = cli_take_out(c, out);
+            if (!n) continue;
+            if (!keyx_sent) { cli_ws_chunks(c, out, n, 7); keyx_sent = true; }
+            else { CHECK(held_len + n <= sizeof(held)); memcpy(held + held_len, out, n); held_len += n; }
+        }
+    }
+    CHECK(cmt_p2p_sc_is_authenticated(&c->sc) && held_len > 0);
+    CHECK(s.authenticated == 0 && s.frames == 0);        /* the node has not seen our AUTHSIG */
+    uint8_t payload[64]; memset(payload, 0x6b, sizeof(payload));
+    uint8_t plain[128], pack[1 << 15];
+    size_t pl = nodus_frame_encode(plain, sizeof(plain), payload, (uint32_t)sizeof(payload));
+    CHECK(pl == sizeof(payload) + NODUS_FRAME_HEADER_SIZE);
+    memcpy(pack, held, held_len);
+    size_t written = 0;
+    CHECK(cmt_p2p_sc_write(&c->sc, plain, pl, pack + held_len, sizeof(pack) - held_len, &written) == CMT_OK);
+    cli_ws_frame(c, pack, held_len + written);            /* AUTHSIG and the request, ONE frame */
+    WAIT_WHILE(s.frames == 0) { srv_step(&s); cli_pump(c); }
+    CHECK(s.authenticated == 1 && s.frames == 1 && s.last_len == sizeof(payload) && s.closed == 0);
     cli_free(c); free(c); srv_free(&s);
 }
 
@@ -378,7 +489,9 @@ static void deadline_from_upgrade(void) {
 
 int main(void) {
     for (int i = 0; i < 2; ++i) CHECK(nodus_identity_generate(&ids[i]) == 0);
-    ws_session(false); ws_session(true);
+    ws_session(false, false); ws_session(true, false);
+    ws_session(false, true);     /* the HELLO trails the Upgrade request in one write */
+    ws_reflection(); ws_packed_request();
     bytes_before_upgrade(); deadline_from_upgrade();
     for (int i = 0; i < 2; ++i) nodus_identity_clear(&ids[i]);
     puts("test_ws_session: all cases passed");

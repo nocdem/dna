@@ -332,8 +332,14 @@ void nodus_inter_session_wake_owner(nodus_inter_session_module_t *s) {
     if (s) wake(s);
 }
 
+/* Test seam (config.machine_hook): the entry of a machine-touching function. */
+static void machine_hook(const nodus_inter_session_module_t *s) {
+    if (s && s->cfg.machine_hook) s->cfg.machine_hook(s->cfg.machine_hook_ctx);
+}
+
 int nodus_inter_session_start(nodus_tcp_conn_t *conn) {
     nodus_inter_session_module_t *s = conn->tcp_parent->session_mode;
+    machine_hook(s);
     if (!s || conn->is_unix || conn->session) return -1;
     /* An outbound connection needs a non-empty trusted list (D4); an
      * initiator-only module (a client) never takes an inbound one. */
@@ -388,6 +394,7 @@ static bool pin_matches(nodus_tcp_conn_t *conn, const uint8_t *remote) {
 int nodus_inter_session_submit(nodus_tcp_conn_t *conn) {
     nodus_inter_session_conn_t *c = conn->session;
     nodus_inter_session_module_t *s = conn->tcp_parent->session_mode;
+    machine_hook(s);
     const cmt_p2p_sc_job_t *sj = cmt_p2p_sc_job(&c->sc);
     if (!sj || c->job) return CMT_OK;
     if (sj->kind == CMT_P2P_SC_JOB_ENCAPS &&
@@ -444,6 +451,7 @@ int nodus_inter_session_submit(nodus_tcp_conn_t *conn) {
 
 int nodus_inter_session_job_done(nodus_inter_session_module_t *s, nodus_inter_session_job_t *j) {
     if (!s || !j) { job_free(j); return CMT_FAULT; }
+    machine_hook(s);
     cmt_p2p_hs_job_t *w = &j->work;
     nodus_tcp_conn_t *conn = w->slot >= 0 && w->slot < NODUS_TCP_MAX_CONNS ? s->tcp->pool[w->slot] : NULL;
     if (!conn || conn->generation != w->gen || !conn->session || conn->session->job != j) {
@@ -470,6 +478,7 @@ int nodus_inter_session_job_done(nodus_inter_session_module_t *s, nodus_inter_se
 
 void nodus_inter_session_poll(nodus_inter_session_module_t *s) {
     if (!s) return;
+    machine_hook(s);
     bool known = chain_status(s);
 #ifdef __linux__
     uint64_t value;
@@ -538,6 +547,7 @@ int nodus_inter_session_open(nodus_tcp_conn_t *conn) {
     if (!conn || conn->close_pending || !conn->session) return -1;
     nodus_inter_session_conn_t *c = conn->session;
     nodus_inter_session_module_t *s = conn->tcp_parent->session_mode;
+    machine_hook(s);
     if (!c->reported || !cmt_p2p_sc_is_authenticated(&c->sc)) return -1;
     if (expired(s, c)) {
         cmt_p2p_sc_abort(&c->sc); nodus_tcp_disconnect(s->tcp, conn); return -1;
@@ -570,6 +580,7 @@ void nodus_inter_session_read_done(nodus_tcp_conn_t *conn, size_t n) {
 int nodus_inter_session_read(nodus_tcp_conn_t *conn, uint8_t *plain, size_t cap, size_t *n) {
     nodus_inter_session_conn_t *c = conn->session;
     nodus_inter_session_module_t *s = conn->tcp_parent->session_mode;
+    machine_hook(s);
     *n = 0;
     for (;;) {
         if (expired(s, c)) return CMT_REJECT;
@@ -613,6 +624,7 @@ int nodus_inter_session_read(nodus_tcp_conn_t *conn, uint8_t *plain, size_t cap,
 int nodus_inter_session_seal(nodus_tcp_conn_t *conn, const uint8_t *plain,
                              size_t n, uint8_t *out, size_t cap, size_t *written) {
     if (!nodus_inter_session_is_open(conn)) return CMT_REJECT;
+    machine_hook(conn->tcp_parent->session_mode);
     int rc = cmt_p2p_sc_write(&conn->session->sc, plain, n, out, cap, written);
     if (rc != CMT_OK) cmt_p2p_sc_abort(&conn->session->sc);
     return rc;

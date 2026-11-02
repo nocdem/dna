@@ -70,6 +70,13 @@ typedef struct {
     bool (*status)(void *, uint8_t chain_id[32], uint64_t *height);
     int (*role)(void *, const nodus_key_t *, bool *validator, bool *storage);
     void *admission_ctx;
+    /* TEST SEAM (never set by a production owner): called with the context on
+     * entry of every module function that touches a connection's machine
+     * (start, submit, job_done, read, seal, open, the owner poll pass). A
+     * test records the calling thread to assert that one thread alone owns
+     * the machine (approved 4001 plan 2.1 e, 4.1 row 13). NULL = off. */
+    void (*machine_hook)(void *ctx);
+    void *machine_hook_ctx;
     unsigned inbound_cap;          /* 0 = no owner limit (module tests) */
     bool allow_duplicate_ip;       /* test harness, same-IP refusal only */
 } nodus_inter_session_config_t;
