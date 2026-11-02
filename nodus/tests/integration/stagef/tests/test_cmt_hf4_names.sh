@@ -472,6 +472,11 @@ wait_applied() {
     esac
 }
 
+# 4001 plan 4.4: from here on the NEW nodus-cli runs through the harness wrapper
+# (pin, chain id, own-node tools; tools/stagef_nodus_cli_new.sh). The version
+# and capability probes above ran the binary directly and need no session.
+export STAGEF_NODUSCLI_BIN_NEW="$NEW_CLI"
+NEW_CLI="$STAGEF_REPO_ROOT/nodus/tests/integration/stagef/tools/stagef_nodus_cli_new.sh"
 PUMP_KEYS=$(node_keys 3)          # node 3's leaf drives height (stagef_env.sh's funder)
 PUMP_SEQ=0
 pump_to() {
@@ -688,11 +693,12 @@ require_ruleset() {
         printf '%s\n' "$RI_OUT" >&2; die "the NEW CLI does not carry node$n's tuple as compiled generation $g"; }
 }
 
-# name_register NODE_KEYS_OF NAME LOG — the NEW CLI, submitted to node 1.
-# Sets NR_RC (exit code); output in LOG.
+# name_register NODE_KEYS_OF NAME LOG — the NEW CLI, submitted to node 1; with
+# node 1's own key it is submitted to node 2 (a node refuses a client holding
+# its own key, 4001 plan 4.4). Sets NR_RC (exit code); output in LOG.
 name_register() {
     local kn="$1" nm="$2" log="$3" port
-    port=$(stagef_tcp_port 1)
+    port=$(stagef_tcp_port "$(( kn == 1 ? 2 : 1 ))")
     NR_RC=0
     "$NEW_CLI" -s 127.0.0.1 -p "$port" name register "$nm" --keys "$(node_keys "$kn")" \
         --submit "127.0.0.1:$port" > "$log" 2>&1 || NR_RC=$?

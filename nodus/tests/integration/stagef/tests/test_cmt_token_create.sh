@@ -122,7 +122,10 @@ fi
 [ -x "$CLI" ] || die "no nodus-cli at $CLI"
 stagef_sentinel SETUP_OK   # W4-H: the runner turns PASS-without-ASSERT_RUN into FAIL
 
-port=$(stagef_tcp_port "$REF")
+# Every nodus-cli call below carries node 1's key (the creator), and a node
+# refuses a client holding its own key (reflection, 4001 plan 4.4): the calls
+# dial node 2, not node $REF. The chain is read from node $REF's database.
+port=$(stagef_tcp_port "$(( REF % STAGEF_COMMITTEE_SIZE + 1 ))")
 creator_fp=$(cat "$CREATOR_DIR/nodus.fp")
 recipient_fp=$(cat "$RECIPIENT_DIR/nodus.fp")
 [ "${#creator_fp}" = 128 ] && [ "${#recipient_fp}" = 128 ] \

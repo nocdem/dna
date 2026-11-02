@@ -288,11 +288,11 @@ for n in $(seq 1 "$C"); do
     # A split node's witness listens on <data>/witness.sock, and the Unix
     # socket entry refuses a directory that group/other can write
     # (nodus_tcp.c unix_parent_dir_ok, split S2 review) — mkdir -p follows
-    # the caller's umask (0002 on a desktop shell gives 0775). Combined
-    # nodes keep today's mode.
-    if stagef_node_is_split "$n" || stagef_node_is_storage_split "$n"; then
-        chmod 0700 "$(stagef_node_dir "$n")/data"
-    fi
+    # the caller's umask (0002 on a desktop shell gives 0775). Since the 4001
+    # step a COMBINED node listens there too (the tool-only listener of the
+    # node's own tools, approved 4001 plan 2.4), so every node's data
+    # directory gets 0700, not only the split ones.
+    chmod 0700 "$(stagef_node_dir "$n")/data"
 done
 echo "[ok] dir layout created"
 

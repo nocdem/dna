@@ -433,6 +433,11 @@ wait_applied() {
     esac
 }
 
+# 4001 plan 4.4: from here on the NEW nodus-cli runs through the harness wrapper
+# (pin, chain id, own-node tools; tools/stagef_nodus_cli_new.sh). The version
+# and capability probes above ran the binary directly and need no session.
+export STAGEF_NODUSCLI_BIN_NEW="$NEW_CLI"
+NEW_CLI="$STAGEF_REPO_ROOT/nodus/tests/integration/stagef/tools/stagef_nodus_cli_new.sh"
 PUMP_KEYS=$(node_keys 3)          # node 3's leaf drives height (stagef_env.sh's funder)
 PUMP_SEQ=0
 # pump_to NODE TARGET — self-send SPENDs by node 3's identity with the
@@ -709,9 +714,11 @@ echo "[ok] all 7 nodes upgraded one at a time with no wipe; 7/7 agreed after eve
 PK1=$(xxd -p -c 99999 "$(node_keys 1)/nodus.pk")
 [ "${#PK1}" = 5184 ] || die "node1's public key file has the wrong length"
 dlog="$LOGD/self_delegate.log"
-"$NEW_CLI" -s 127.0.0.1 -p "$(stagef_tcp_port 1)" v2-envelope delegate \
+# node 1's key dials node 2 (a node refuses its own key, 4001 plan 4.4); the
+# delegation is read back from node 1's database below.
+"$NEW_CLI" -s 127.0.0.1 -p "$(stagef_tcp_port 2)" v2-envelope delegate \
     --keys "$(node_keys 1)" --validator "$PK1" --amount "$DELEG_RAW" \
-    --submit "127.0.0.1:$(stagef_tcp_port 1)" > "$dlog" 2>&1 \
+    --submit "127.0.0.1:$(stagef_tcp_port 2)" > "$dlog" 2>&1 \
     || { cat "$dlog" >&2; die "node1's self-DELEGATE was refused (see $dlog)"; }
 d_intent=$(awk '/^ *intent_id=/{sub(/^ *intent_id=/,""); print; exit}' "$dlog")
 [ "${#d_intent}" = 128 ] || { cat "$dlog" >&2; die "the self-DELEGATE printed no intent_id"; }

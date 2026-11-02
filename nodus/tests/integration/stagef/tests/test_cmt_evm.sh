@@ -670,6 +670,12 @@ node_runs() {
     [ "$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)" = "$(readlink -f "$2")" ]
 }
 
+# 4001 plan 4.4: from here on the NEW nodus-cli runs through the harness wrapper
+# (pin, chain id, own-node tools; tools/stagef_nodus_cli_new.sh). The version
+# and capability probes above ran the binary directly and need no session.
+export STAGEF_NODUSCLI_BIN_NEW="$NEW_CLI"
+NEW_CLI="$STAGEF_REPO_ROOT/nodus/tests/integration/stagef/tools/stagef_nodus_cli_new.sh"
+
 # the CLI that may talk to node $1 (the HF-4 rule: a NEW CLI asks
 # `dnac_ruleset_info`; the OLD CLI is kept for OLD nodes)
 cli_for() {
@@ -1028,6 +1034,10 @@ evm_addr_of() {
 evm_tx() {
     local node="$1" kn="$2" log="$3" port
     shift 3
+    # A node refuses a client holding its own key (4001 plan 4.4, operator
+    # 2026-11-02): node KN's key is submitted to the next node instead (the
+    # calls `evm_tx 1 1` go to node 2, `evm_tx 2 2` to node 3).
+    [ "$node" = "$kn" ] && node=$(( kn % STAGEF_COMMITTEE_SIZE + 1 ))
     port=$(stagef_tcp_port "$node")
     EV_RC=0
     "$NEW_CLI" -s 127.0.0.1 -p "$port" evm "$@" --keys "$(node_keys "$kn")" \

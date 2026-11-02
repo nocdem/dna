@@ -790,6 +790,48 @@ Calls by class (the nodus-cli calls whose meaning the 4001 change touches):
     1), test_v2_grow_7_20.sh:784 (STEP 3 loop: for n = 1 it dials node 2 with node
     1's key; node 1's own CheckTx is then not exercised by that loop and node 2's
     runs twice) and :833 (vote B: node 1's key, dials node 2 instead of node 1).
+  - **Found by the harness run after that list (the earlier search caught only
+    `-i`; these hold the key in `--keys`, in a helper, or in a variable).** Rule
+    for each: the call that held a node's key and dialed that node now dials the
+    NEXT node (`N % committee + 1`); the chain read from the key's node
+    database is unchanged. A call that is `msig sign` also pins the dialed
+    node's fingerprint (the pin names the node the session is with); the
+    co-signer's key is still the signer. Calls and new targets:
+    test_cmt_token_create.sh (`port`, all five calls: node 1's key, node 2),
+    test_cmt_multisig.sh (`port` for node 1's funding claim, pay and
+    envelope: node 2; `sport` for node 5's build and `msig combine --submit`:
+    node 6; `msig sign` by node 2: node 3 with node 3's pin, its no-pin and
+    wrong-pin controls on node 3; by node 3: node 4; by node 2 and node 4 in the
+    genesis-coin spend: nodes 3 and 5), test_cmt_self_delegate.sh (`port`: node
+    2 for node 1's claim and delegation), test_cmt_hf2_gov_power.sh:712 (node 1's
+    self-delegation: node 2), test_cmt_hf4_names.sh `name_register` (node 1's
+    key: node 2), test_cmt_evm.sh / test_cmt_evm_lib.sh / test_cmt_mldsa.sh
+    `evm_tx NODE KN` (when NODE == KN: node KN+1; so `evm_tx 1 1` goes to node 2
+    and `evm_tx 2 2` to node 3), their `claim_leaf` (node 1's leaf: node 2),
+    test_cmt_hf7.sh (`msig_build` node 5's key: node 6; `msig_sign` by node n:
+    node n+1 with its pin; `msig_combine` to the spender's node: node 6),
+    test_cmt_hf8_gen5.sh (`vname_build` node 5's key: node 6; the two `msig
+    sign` calls: node n+1 with its pin), test_storage_archive.sh (`dial_for`:
+    `claim_leaf` of nodes 4 and 5, `st_register` of a node's own key, the test
+    owner's funding spend and the owner's `storage exit` when the key is the
+    node's: the next node). Node 1's own CheckTx (or node n's) is therefore not
+    the one exercised by these calls.
+  - **Not changed, reported:** test_cmt_nonval_forward.sh (not in the sweep) submits
+    the candidate node's own genesis-leaf key to the candidate node's own client
+    port — its subject — and a node refuses its own key. Dialing another node would
+    defeat the scenario, so it is left as it is and will fail at STEP 2 until the
+    operator decides (for example: start the candidate node under a fresh node
+    identity and keep this key as the client's).
+- **The OLD/NEW upgrade scenarios** (test_cmt_hf1_gas_upgrade.sh,
+  test_cmt_hf2_gov_power.sh, test_cmt_hf3_block_bounds.sh,
+  test_cmt_hf4_names.sh, test_cmt_evm.sh): after the version and capability
+  probes, `$NEW_CLI` is `tools/stagef_nodus_cli_new.sh` — the wrapper above
+  with `STAGEF_NODUSCLI_BIN_NEW` as the real binary — so the NEW CLI's calls get
+  `--pin`, `--chain-id` and the own-node tools like every other call (they used
+  to run the binary directly). The OLD CLI still runs directly.
+- **Data directories:** `stagef_up_v2.sh` sets every node's `data` directory to
+  0700 (it did so only for split nodes). The combined node's tool-only
+  witness.sock is refused in a directory that group or other can write.
 - **Accepted as it is (operator 2026-11-02):** test_cmt_hf1_gas_upgrade.sh:622,
   `who` proposes through `who`'s own socket instead of relaying through node `to`.
 - **Cannot cross the change:** the OLD/NEW upgrade scenarios (an old nodus-cli

@@ -592,8 +592,10 @@ cross_edge() {
 
 spend_intent() { awk -F= '/^  intent_id=/{print $2; exit}' "$1"; }
 claim_leaf() {
-    local keys="$1" node="$2" port db fp log h wrc
-    port=$(stagef_tcp_port "$node"); db=$(db_of "$node"); fp=$(fp_of "$keys")
+    local keys="$1" node="$2" port db fp log h wrc dial
+    # a node refuses its own key (4001 plan 4.4): dial the next node, read node's DB
+    dial="$node"; [ "$keys" = "$(node_keys "$node")" ] && dial=$(( node % STAGEF_COMMITTEE_SIZE + 1 ))
+    port=$(stagef_tcp_port "$dial"); db=$(db_of "$node"); fp=$(fp_of "$keys")
     log="$LOGD/claim_$(basename "$(dirname "$keys")").log"
     "$CLI" -s 127.0.0.1 -p "$port" v2-claim --config "$CONF" --db "$db" \
         --keys "$keys" --submit "127.0.0.1:$port" > "$log" 2>&1 \
@@ -644,6 +646,9 @@ evm_addr_of() {
 evm_tx() {
     local node="$1" kn="$2" log="$3" port
     shift 3
+    # A node refuses a client holding its own key (4001 plan 4.4, operator
+    # 2026-11-02): node KN's key is submitted to the next node instead.
+    [ "$node" = "$kn" ] && node=$(( kn % STAGEF_COMMITTEE_SIZE + 1 ))
     port=$(stagef_tcp_port "$node")
     EV_RC=0
     "$CLI" -s 127.0.0.1 -p "$port" evm "$@" --keys "$(node_keys "$kn")" \

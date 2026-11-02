@@ -489,6 +489,11 @@ wait_applied() {
     esac
 }
 
+# 4001 plan 4.4: from here on the NEW nodus-cli runs through the harness wrapper
+# (pin, chain id, own-node tools; tools/stagef_nodus_cli_new.sh). The version
+# and capability probes above ran the binary directly and need no session.
+export STAGEF_NODUSCLI_BIN_NEW="$NEW_CLI"
+NEW_CLI="$STAGEF_REPO_ROOT/nodus/tests/integration/stagef/tools/stagef_nodus_cli_new.sh"
 PUMP_KEYS=$(node_keys 3)          # node 3's leaf drives height (stagef_env.sh's funder)
 PUMP_SEQ=0
 # pump_to NODE TARGET FEE — self-send SPENDs by node 3's identity with the
