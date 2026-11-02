@@ -94,6 +94,9 @@ typedef struct nodus_inter_session_job {
     struct nodus_inter_session_job *next;
     cmt_p2p_hs_job_t work;
     uint8_t kem_sk[CMT_P2P_SC_KEM_SK_SIZE];
+    /* The module that queued it (stats only; set by submit, never
+     * dereferenced after nodus_inter_session_free). */
+    struct nodus_inter_session_module *owner;
 } nodus_inter_session_job_t;
 
 /* Attaches session mode before any listen/connect. Refuses an existing
@@ -114,6 +117,10 @@ void nodus_inter_session_free(nodus_inter_session_module_t *s);
  * handshake deadline. Read by the load-measurement driver (plan 4.5). */
 typedef struct {
     uint64_t started, opened, queue_refused, deadline_closed;
+    /* Run time of each job kind measured around cmt_p2p_sc_job_run (wall
+     * nanoseconds on the monotonic clock, on whichever thread ran it, queue
+     * wait excluded): index = CMT_P2P_SC_JOB_ENCAPS .. _VERIFY. */
+    uint64_t job_count[5], job_ns_total[5], job_ns_max[5];
 } nodus_inter_session_stats_t;
 void nodus_inter_session_stats(nodus_inter_session_module_t *s, nodus_inter_session_stats_t *out);
 

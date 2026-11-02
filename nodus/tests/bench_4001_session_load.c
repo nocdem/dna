@@ -25,15 +25,22 @@
  *     offered load is a standing population plus reconnections.
  *   --path plain|ws selects the plain 4001 path or the WebSocket entry (the
  *   machine inside binary WebSocket frames after an HTTP Upgrade).
- *   --layout combined|witness-split: combined = one node process, the chain id
- *   set on it directly (no witness work); witness-split = the node's core
- *   reaches a separate stand-in WITNESS PROCESS over <data>/witness.sock
- *   (witness_external), as the live nodes' core does. THE WITNESS WORKLOAD OF
- *   THIS LAYOUT IS NONE: the stand-in answers only ipc_status (open chain, the
- *   id the session uses) and has no consensus, 4004 or block work; the DHT /
- *   storage stays in the node process (not split). Conclusions are limited to
- *   the layouts measured; the live three-process layout with a real witness
- *   under consensus load is NOT measured by this file.
+ *   --layout combined|witness-split|three:
+ *   combined = one node process, the chain id set on it directly (no witness
+ *   work);
+ *   witness-split = the node's core reaches a separate stand-in WITNESS PROCESS
+ *   over <data>/witness.sock (witness_external), as the live nodes' core does;
+ *   three = the live shape: the node core (nodus_server_backends_ipc, both
+ *   witness_external and storage_external), the real nodus-storage binary
+ *   (found next to this driver) and the stand-in witness process, three
+ *   processes plus the driver. THE WITNESS WORKLOAD OF THE LAST TWO LAYOUTS IS
+ *   NONE: the stand-in answers only ipc_status (open chain, the id the session
+ *   uses) and has no consensus, 4004 or block work. THE STORAGE WORKLOAD OF
+ *   `three` IS NONE TOO: the real nodus-storage runs idle (no seeds, no DHT
+ *   request, no peer), so it only shows its own idle load on the machine and
+ *   the core without an in-process DHT. Conclusions are limited to the layouts
+ *   measured; the live layout with a real witness under consensus load and a
+ *   storage under DHT traffic is NOT measured by this file.
  *
  * Recorded and printed (one block per run, parameters first):
  *   offered: honest and attacker connections started and the offered rates.
@@ -46,19 +53,26 @@
  *     key-exchange jobs refused because the queue was full, connections that
  *     ran past the 3 s handshake deadline.
  *   node job queue (inbound class, sampled every ms): peak and mean.
- *   processor time of the node child, the stand-in witness (if any) and the
- *     driver, apart; peak resident memory (VmHWM) of the node child.
+ *   processor time of the node child, the stand-in witness and the storage
+ *     process (if any) and the driver, apart; peak resident memory (VmHWM) of
+ *     the node child.
  *   unloaded per-kind job run times (encapsulate, decapsulate, sign, verify):
- *     cmt_p2p_sc_job_run on this build before the load starts. The node's
- *     per-job times UNDER load are not instrumented (no hook in the module).
+ *     cmt_p2p_sc_job_run on this build before the load starts (mean PROCESSOR
+ *     ms per job, clock()).
+ *   per-kind job run times UNDER load, from the module's own stats
+ *     (nodus_inter_session_stats): count, mean and maximum WALL ms around
+ *     cmt_p2p_sc_job_run on the worker that ran it, queue wait excluded. Wall,
+ *     not processor, time: a worker preempted by the other workers, the owner
+ *     and the driver shows it here, so these exceed the unloaded numbers when
+ *     the machine is busy.
  *
- * Not covered: mobile browsers; a real witness's consensus work; a split
- * storage process. A reduced load proves logic, not production magnitude
+ * Not covered: mobile browsers; a real witness's consensus work; a storage
+ * process under DHT traffic. A reduced load proves logic, not production magnitude
  * (CLAUDE.md TESTS). Candidate queue depths and worker counts are given by
  * repeated runs (--depth, --workers).
  *
  * Usage: bench_4001_session_load --n N --workers W --depth D
- *          [--path plain|ws] [--layout combined|witness-split]
+ *          [--path plain|ws] [--layout combined|witness-split|three]
  *          [--pattern burst|steady] [--rate R]       honest arrivals, R/s
  *          [--attack-count A] [--attack-rate AR] [--reconnect]
  *          [--seconds S]                             run limit (default 30)
@@ -112,6 +126,7 @@ static double ts_ms(const struct timeval *tv) { return tv->tv_sec * 1000.0 + tv-
 typedef struct {
     unsigned n, workers, depth, rate, attack_count, attack_rate, seconds;
     int steady, ws, split, reconnect;
+    int three;                        /* split + the real nodus-storage process */
 } opts_t;
 
 static char g_dir[96];
@@ -166,7 +181,14 @@ static int node_child(const opts_t *o, int report_fd) {
     config.client_session_depth = o->depth;       /* the line under test */
     config.client_session_workers = o->workers;
     snprintf(config.data_path, sizeof(config.data_path), "%s", g_dir);
-    if (nodus_server_init(&srv, &config) != 0) return 1;
+    if (o->three) {
+        /* nodus-core's shape: the IPC-only table, DHT in nodus-storage, chain
+         * in the witness. The core creates the identity files the storage
+         * process then reads (decision item 10); main() made the directory. */
+        config.storage_external = true;
+        snprintf(config.identity_path, sizeof(config.identity_path), "%s/identity", g_dir);
+        if (nodus_server_init_ex(&srv, &config, &nodus_server_backends_ipc) != 0) return 1;
+    } else if (nodus_server_init(&srv, &config) != 0) return 1;
     if (!o->split) {
         memcpy(srv.inter_chain_id, chain, sizeof(chain));
         srv.inter_chain_known = srv.inter_chain_id_valid = true;
@@ -210,12 +232,18 @@ static int node_child(const opts_t *o, int report_fd) {
         if (!strncmp(line, "VmHWM:", 6)) { snprintf(vm, sizeof(vm), "%s", line + 6); break; }
     if (f) fclose(f);
     size_t ln = strlen(vm); while (ln && (vm[ln-1] == '\n' || vm[ln-1] == ' ')) vm[--ln] = 0;
-    char out[384];
-    int n = snprintf(out, sizeof(out), "%llu %llu %llu %.1f %llu %llu %llu %llu|%s",
+    char out[1024];
+    int n = snprintf(out, sizeof(out), "%llu %llu %llu %.1f %llu %llu %llu %llu|%s|",
                      (unsigned long long)occ.peak, (unsigned long long)occ.sum,
                      (unsigned long long)occ.samples, ts_ms(&ru.ru_utime) + ts_ms(&ru.ru_stime),
                      (unsigned long long)st.started, (unsigned long long)st.opened,
                      (unsigned long long)st.queue_refused, (unsigned long long)st.deadline_closed, vm);
+    /* per-kind job stats: count, total ns, max ns for kinds 1..4 */
+    for (int k = 1; k <= 4 && n > 0 && (size_t)n < sizeof(out); ++k)
+        n += snprintf(out + n, sizeof(out) - (size_t)n, " %llu %llu %llu",
+                      (unsigned long long)st.job_count[k], (unsigned long long)st.job_ns_total[k],
+                      (unsigned long long)st.job_ns_max[k]);
+    if (n < 0 || (size_t)n >= sizeof(out)) return 1;
     if (write(report_fd, out, (size_t)n) < 0) return 1;
     nodus_server_close(&srv);
     return 0;
@@ -486,7 +514,13 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--seconds") && i + 1 < argc) o.seconds = atoi_u(argv[++i]);
         else if (!strcmp(a, "--pattern") && i + 1 < argc) o.steady = !strcmp(argv[++i], "steady");
         else if (!strcmp(a, "--path") && i + 1 < argc) o.ws = !strcmp(argv[++i], "ws");
-        else if (!strcmp(a, "--layout") && i + 1 < argc) o.split = !strcmp(argv[++i], "witness-split");
+        else if (!strcmp(a, "--layout") && i + 1 < argc) {
+            const char *l = argv[++i];
+            if (!strcmp(l, "combined")) { o.split = 0; o.three = 0; }
+            else if (!strcmp(l, "witness-split")) { o.split = 1; o.three = 0; }
+            else if (!strcmp(l, "three")) { o.split = 1; o.three = 1; }
+            else { fprintf(stderr, "bad layout: %s\n", l); return 2; }
+        }
         else if (!strcmp(a, "--reconnect")) o.reconnect = 1;
         else { fprintf(stderr, "bad argument: %s\n", a); return 2; }
     }
@@ -497,6 +531,11 @@ int main(int argc, char **argv) {
     }
     snprintf(g_dir, sizeof(g_dir), "/tmp/bench_4001_%d", (int)getpid());
     if (mkdir(g_dir, 0700) != 0) return 2;
+    if (o.three) {
+        char idir[160];
+        snprintf(idir, sizeof(idir), "%s/identity", g_dir);
+        if (mkdir(idir, 0700) != 0) return 2;
+    }
     nodus_identity_generate(&g_client_id);
 
     int wpipe[2] = {-1, -1}, npipe[2];
@@ -519,10 +558,47 @@ int main(int argc, char **argv) {
     if (read(npipe[0], &ready, 1) != 1) {
         fprintf(stderr, "the node did not start\n"); kill(child, SIGTERM); return 1;
     }
+    pid_t schild = -1;
+    if (o.three) {
+        /* The real nodus-storage, next to this driver, on the identity the core
+         * just created. Flags as stagef_spawn_storage gives them, without a
+         * config file and without seeds (no peer, no DHT request: idle). */
+        char exe[400], bin[420], peer[16], idir[160], log[160];
+        ssize_t el = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+        if (el <= 0) { fprintf(stderr, "cannot find the driver's own path\n"); kill(child, SIGTERM); return 1; }
+        exe[el] = 0;
+        char *slash = strrchr(exe, '/');
+        if (slash) *slash = 0;
+        snprintf(bin, sizeof(bin), "%s/nodus-storage", exe);
+        snprintf(peer, sizeof(peer), "%d", PORT_BASE + 2);
+        snprintf(idir, sizeof(idir), "%s/identity", g_dir);
+        snprintf(log, sizeof(log), "%s/storage.log", g_dir);
+        schild = fork();
+        if (schild < 0) { kill(child, SIGTERM); return 2; }
+        if (schild == 0) {
+            int lf = open(log, O_WRONLY | O_CREAT | O_APPEND, 0600);
+            if (lf >= 0) { dup2(lf, 1); dup2(lf, 2); close(lf); }
+            execl(bin, bin, "--storage-external", "-b", "127.0.0.1", "-p", peer,
+                  "-i", idir, "-d", g_dir, (char *)NULL);
+            _exit(127);
+        }
+        char sockp[200]; struct stat sb;
+        snprintf(sockp, sizeof(sockp), "%s/storage.sock", g_dir);
+        int up = 0;
+        for (int i = 0; i < 200 && !up; ++i) {      /* up to 10 s for the socket to exist */
+            if (stat(sockp, &sb) == 0) { up = 1; break; }
+            if (waitpid(schild, NULL, WNOHANG) == schild) break;
+            usleep(50000);
+        }
+        if (!up) {
+            fprintf(stderr, "nodus-storage did not come up (%s; log %s)\n", bin, log);
+            kill(child, SIGTERM); return 1;
+        }
+    }
 
     printf("bench_4001_session_load: n=%u workers=%u depth=%u path=%s layout=%s pattern=%s rate=%u "
            "attack_count=%u attack_rate=%u reconnect=%s build=%s\n",
-           o.n, o.workers, o.depth, o.ws ? "ws" : "plain", o.split ? "witness-split" : "combined",
+           o.n, o.workers, o.depth, o.ws ? "ws" : "plain", o.three ? "three" : o.split ? "witness-split" : "combined",
            o.steady ? "steady" : "burst", o.rate, o.attack_count, o.attack_rate,
            o.reconnect ? "yes" : "no",
 #ifdef NDEBUG
@@ -533,7 +609,9 @@ int main(int argc, char **argv) {
     );
     if (o.split)
         printf("layout note: separate stand-in witness PROCESS (ipc_status only, no consensus/4004/block work); "
-               "DHT/storage stays in the node process\n");
+               "%s\n", o.three ? "the real nodus-storage process runs idle beside it (no DHT traffic, no peers); "
+                                  "the node core has no in-process DHT"
+                                : "DHT/storage stays in the node process");
     unloaded_job_times();
     usleep(200000);
 
@@ -600,10 +678,16 @@ int main(int argc, char **argv) {
     for (unsigned i = 0; i < started; ++i) if (honest[i].state == C_LIVE) conn_finish(&honest[i], false);
     for (unsigned i = 0; i < atk_started; ++i) if (atk[i].state == C_LIVE) conn_finish(&atk[i], false);
     kill(child, SIGTERM);
-    char rep[512] = {0};
+    char rep[1024] = {0};
     ssize_t rn = read(npipe[0], rep, sizeof(rep) - 1);
     int status = 0; struct rusage cru;
     wait4(child, &status, 0, &cru);
+    double scpu = 0;
+    if (o.three) {
+        struct rusage sru;
+        kill(schild, SIGTERM);
+        if (wait4(schild, &status, 0, &sru) == schild) scpu = ts_ms(&sru.ru_utime) + ts_ms(&sru.ru_stime);
+    }
     double wcpu = 0;
     if (o.split) {
         kill(wchild, SIGTERM);
@@ -613,17 +697,32 @@ int main(int argc, char **argv) {
     }
     unsigned long long peak = 0, sum = 0, samples = 0, st_started = 0, st_opened = 0, st_refused = 0, st_deadline = 0;
     double node_cpu = 0; char vm[64] = "unknown";
-    if (rn > 0 && sscanf(rep, "%llu %llu %llu %lf %llu %llu %llu %llu|%63[^\n]", &peak, &sum, &samples,
+    if (rn > 0 && sscanf(rep, "%llu %llu %llu %lf %llu %llu %llu %llu|%63[^|]", &peak, &sum, &samples,
                          &node_cpu, &st_started, &st_opened, &st_refused, &st_deadline, vm) >= 8) {
         printf("node counters: sessions started %llu  opened %llu  key-exchange jobs refused (queue full) %llu  "
                "past the 3 s deadline %llu\n", st_started, st_opened, st_refused, st_deadline);
         printf("node job queue (inbound class, sampled every ms): peak %llu  mean %.2f over %llu samples\n",
                peak, samples ? (double)sum / (double)samples : 0.0, samples);
+        /* per-kind job run times under load: "<vm>|" is followed by 4 x (count total_ns max_ns) */
+        const char *jp = strchr(rep, '|');
+        jp = jp ? strchr(jp + 1, '|') : NULL;
+        static const char *names[5] = {"none", "encapsulate", "decapsulate", "sign", "verify"};
+        printf("job run time under load (wall ms around cmt_p2p_sc_job_run, queue wait excluded):");
+        for (int k = 1; k <= 4 && jp; ++k) {
+            unsigned long long cnt, tot, mx; int used = 0;
+            if (sscanf(jp + 1, "%llu %llu %llu%n", &cnt, &tot, &mx, &used) != 3) break;
+            jp += 1 + used;
+            if (cnt) printf("  %s mean %.2f max %.2f (n=%llu)", names[k],
+                            (double)tot / (double)cnt / 1e6, (double)mx / 1e6, cnt);
+            else printf("  %s n=0", names[k]);
+        }
+        printf("\n");
     }
     printf("processor time: node child %.0f ms (rusage)%s, driver %llu ms (process CPU), wall %llu ms\n",
            node_cpu, o.split ? " (stand-in witness process measured apart below)" : "",
            (unsigned long long)driver_cpu, (unsigned long long)wall);
     if (o.split) printf("processor time: stand-in witness process %.0f ms\n", wcpu);
+    if (o.three) printf("processor time: nodus-storage process %.0f ms (idle: no DHT traffic)\n", scpu);
     printf("node resident memory peak (VmHWM): %s\n", vm);
     char cmd[128]; snprintf(cmd, sizeof(cmd), "rm -rf %s", g_dir);
     if (system(cmd) != 0) fprintf(stderr, "cleanup of %s failed\n", g_dir);

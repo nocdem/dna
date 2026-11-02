@@ -16,6 +16,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #ifdef __linux__
 #include <sys/eventfd.h>
 #include <unistd.h>
@@ -217,7 +218,23 @@ size_t nodus_inter_session_job_queued(nodus_inter_session_module_t *s, bool outb
 }
 
 void nodus_inter_session_job_run(nodus_inter_session_job_t *j) {
-    if (j) j->work.rc = cmt_p2p_sc_job_run(&j->work.job, j->work.sc_host);
+    if (!j) return;
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    j->work.rc = cmt_p2p_sc_job_run(&j->work.job, j->work.sc_host);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    /* Measurement only: nothing in the session reads these (the load driver,
+     * plan 4.5). owner is the module that queued the job; a job taken by hand
+     * after the module is gone is not timed. */
+    nodus_inter_session_module_t *s = j->owner;
+    int k = (int)j->work.kind;
+    if (s && k >= 1 && k <= 4) {
+        uint64_t ns = (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000u + (uint64_t)t1.tv_nsec - (uint64_t)t0.tv_nsec;
+        pthread_mutex_lock(&s->mu);
+        s->stats.job_count[k]++; s->stats.job_ns_total[k] += ns;
+        if (ns > s->stats.job_ns_max[k]) s->stats.job_ns_max[k] = ns;
+        pthread_mutex_unlock(&s->mu);
+    }
 }
 
 static void wake(nodus_inter_session_module_t *s) {
@@ -406,6 +423,7 @@ int nodus_inter_session_submit(nodus_tcp_conn_t *conn) {
     nodus_inter_session_job_t *j = calloc(1, sizeof(*j));
     if (!j) return CMT_FAULT;
     cmt_p2p_hs_job_t *w = &j->work;
+    j->owner = s;
     w->slot = conn->slot; w->gen = conn->generation;
     w->job_class = conn->auth_initiated_by_us ? CMT_P2P_JOB_CLASS_OUTBOUND : CMT_P2P_JOB_CLASS_INBOUND;
     w->kind = w->job.kind = sj->kind; w->sc_host = &s->host;
