@@ -15,6 +15,7 @@
  */
 
 #include "transport/nodus_tcp.h"
+#include "server/nodus_inter_session.h"     /* the raw path's secret connection */
 #include "protocol/nodus_tier2.h"
 #include "protocol/nodus_wire.h"
 #include "crypto/nodus_sign.h"
@@ -296,46 +297,62 @@ static bool wait_response(int timeout_ms) {
     return response_ready;
 }
 
+/* The raw path (ping, put, get, listen, servers, presence, cluster status)
+ * runs the 4001 secret connection on its own single-threaded transport, as
+ * initiator, with the trusted list and chain id above (approved 4001 plan
+ * 3.5); its frames then go out through the ordinary nodus_tcp_send. */
+static nodus_inter_session_module_t *g_raw_mod = NULL;
+static bool g_raw_open = false;
+
+static void raw_on_authenticated(nodus_tcp_conn_t *conn, const nodus_pubkey_t *pk,
+                                 void *ctx) {
+    (void)pk; (void)ctx;
+    if (nodus_inter_session_open(conn) == 0) g_raw_open = true;
+}
+
+/* Attach the module to the (freshly initialised) global transport and dial.
+ * @return 0 with server_conn set, -1 on failure (server_conn NULL). */
+static int raw_session_connect(const char *host, uint16_t port) {
+    cli_load_builtin_pins();
+    const nodus_key_t *list = g_cli_pin_count ? g_cli_pins : g_cli_builtin_pins;
+    const size_t count = (size_t)(g_cli_pin_count ? g_cli_pin_count : g_cli_builtin_count);
+    uint8_t chain_id[32];
+    if (g_cli_chain_id_set) memcpy(chain_id, g_cli_chain_id, sizeof(chain_id));
+    else if (cli_hex_n(NODUS_LIGHT_CHAIN_ID_HEX, chain_id, sizeof(chain_id)) != 0) return -1;
+    nodus_inter_session_config_t cfg = {
+        .identity = &identity,
+        .proto_ver = CMT_P2P_SC_PROTO_VER_4001,
+        .initiator_only = true,
+        .chain_id = chain_id,
+        .inbound_depth = 4, .outbound_depth = 4,   /* one connection, one job at a time */
+        .workers = 0, .run_jobs_inline = true,
+        .on_authenticated = raw_on_authenticated,
+    };
+    nodus_inter_session_free(g_raw_mod);
+    g_raw_open = false;
+    g_raw_mod = nodus_inter_session_new(&transport, &cfg);
+    if (!g_raw_mod) return -1;
+    server_conn = nodus_tcp_connect_trusted(&transport, host, port, list, count);
+    return server_conn ? 0 : -1;
+}
+
+static void raw_session_free(void) {
+    nodus_tcp_close(&transport);
+    nodus_inter_session_free(g_raw_mod);
+    g_raw_mod = NULL;
+}
+
+/* Wait until the secret-connection session is open. */
 static int do_auth(void) {
-    /* Step 1: HELLO */
-    size_t len = 0;
-    uint32_t txn = next_txn++;
-    nodus_t2_hello(txn, &identity.pk, &identity.node_id,
-                    proto_buf, sizeof(proto_buf), &len);
-    nodus_tcp_send(server_conn, proto_buf, len);
-
-    if (!wait_response(5000)) {
-        fprintf(stderr, "No response to HELLO\n");
+    for (int i = 0; i < 100 && !g_raw_open && server_conn && running; i++)
+        nodus_tcp_poll(&transport, 50);
+    if (!g_raw_open) {
+        fprintf(stderr, "No secret-connection session: the node's key is not in "
+                "the trusted list, the chain id differs, or the node did not "
+                "answer (see --pin / --chain-id)\n");
         return -1;
     }
-
-    if (strcmp(last_response.method, "challenge") != 0) {
-        fprintf(stderr, "Expected challenge, got: %s\n", last_response.method);
-        return -1;
-    }
-
-    /* Step 2: Sign nonce and send AUTH (C2: domain-tagged AUTH_CHALLENGE) */
-    nodus_sig_t sig;
-    nodus_sign_auth_challenge(&sig, last_response.nonce, &identity.sk);
-
-    txn = next_txn++;
-    nodus_t2_auth(txn, &sig, proto_buf, sizeof(proto_buf), &len);
-    nodus_tcp_send(server_conn, proto_buf, len);
-
-    if (!wait_response(5000)) {
-        fprintf(stderr, "No response to AUTH\n");
-        return -1;
-    }
-
-    if (strcmp(last_response.method, "auth_ok") != 0) {
-        if (last_response.type == 'e')
-            fprintf(stderr, "Auth failed: %s\n", last_response.error_msg);
-        else
-            fprintf(stderr, "Expected auth_ok, got: %s\n", last_response.method);
-        return -1;
-    }
-
-    memcpy(session_token, last_response.token, NODUS_SESSION_TOKEN_LEN);
+    memset(session_token, 0, sizeof(session_token));   /* no token on 4001 (A6) */
     authenticated = true;
     return 0;
 }
@@ -850,8 +867,7 @@ static int cluster_status_query_one(const char *host, uint16_t port,
     transport.on_disconnect = on_disconnect;
     transport.on_connect = on_connect;
 
-    server_conn = nodus_tcp_connect(&transport, host, port);
-    if (!server_conn) goto done;
+    if (raw_session_connect(host, port) != 0) goto done;
 
     for (int i = 0; i < 60 && server_conn->state == NODUS_CONN_CONNECTING; i++)
         nodus_tcp_poll(&transport, 50);
@@ -877,7 +893,7 @@ static int cluster_status_query_one(const char *host, uint16_t port,
 
 done:
     nodus_t2_msg_free(&last_response);
-    nodus_tcp_close(&transport);
+    raw_session_free();
     server_conn = NULL;
     authenticated = false;
     return out->reachable ? 0 : -1;
@@ -12740,8 +12756,7 @@ int main(int argc, char **argv) {
 
     printf("Connecting to %s:%u...\n", server_ip, server_port);
     fflush(stdout);
-    server_conn = nodus_tcp_connect(&transport, server_ip, server_port);
-    if (!server_conn) {
+    if (raw_session_connect(server_ip, server_port) != 0) {
         fprintf(stderr, "Failed to connect\n");
         goto cleanup;
     }
@@ -12805,7 +12820,7 @@ int main(int argc, char **argv) {
 
 cleanup:
     nodus_t2_msg_free(&last_response);
-    nodus_tcp_close(&transport);
+    raw_session_free();
     nodus_identity_clear(&identity);
     return rc;
 }
