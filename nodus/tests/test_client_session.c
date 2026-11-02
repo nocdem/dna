@@ -45,9 +45,13 @@
  *      the client key is the session identity). Case 8 above also asserts, via
  *      the module's machine_hook test seam, that every machine-touching module
  *      call of the threaded client came from the owner thread (row 13), and
- *      that nodus_tcp_send_progress of a 700 KiB frame calls its callback from
- *      the owner thread with strictly increasing byte counts ending at the
- *      total (operator 2026-11-02: media_put progress comes back).
+ *      that nodus_tcp_send_progress of twelve 700 KiB frames, written over a
+ *      4 KiB send buffer (partial writes) with some of them waiting in the
+ *      pending queue (asserted), calls each frame's callback from the owner
+ *      thread, at least twice, with strictly increasing counts of that
+ *      frame's bytes ending at its total (operator 2026-11-02: media_put
+ *      progress comes back). It can falsely pass only if the owner's poll
+ *      drained the queue before the check; then pending_count == 0 fails it.
  *   Part C, the real nodus_client_t against that server (polled by a thread
  *   of this test):
  *  14. A config without a trusted list, with a negative count, or without a
@@ -455,18 +459,35 @@ static void write_lock_owner(void) {
     /* Operator 2026-11-02 (item 2): the progress callback of
      * nodus_tcp_send_progress is called again on this transport — by the
      * owner, with increasing byte counts up to the total of the write. */
+    /* Forced partial writes and queueing: a small socket send buffer makes
+     * every write partial; two rounds of six 700 KiB frames, with only the
+     * client polled while the server reads nothing, put more unsent bytes
+     * behind the socket than the write buffer's cap, so the later frames wait
+     * in the pending queue (asserted below, not assumed). Every frame carries
+     * its own callback: it must be called by the owner, with strictly
+     * increasing counts of THAT frame's bytes, several times (partial
+     * writes), the last call equal to the frame's total. */
     {
-        enum { BIG = 700 * 1024 };
+        enum { BIG = 700 * 1024, ROUND = 6, FRAMES = 2 * ROUND };
+        int sndbuf = 4096;
+        CHECK(setsockopt(cli.conn->fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) == 0);
         uint8_t *big = malloc(BIG); CHECK(big);
         memset(big, 0x41, BIG); big[0] = 0x7f;          /* not a case-8 sequence frame */
-        prog_t pg; memset(&pg, 0, sizeof(pg));
+        prog_t pg[FRAMES]; memset(pg, 0, sizeof(pg));
         unsigned before = srv.frames;
-        CHECK(nodus_tcp_send_progress(cli.conn, big, BIG, prog_cb, &pg) == 0);
+        for (int r = 0; r < 2; ++r) {
+            for (int i = 0; i < ROUND; ++i)
+                CHECK(nodus_tcp_send_progress(cli.conn, big, BIG, prog_cb, &pg[r * ROUND + i]) == 0);
+            CHECK(nodus_tcp_poll(&cli.tcp, POLL_MS) >= 0);   /* the owner seals them; the server reads nothing */
+        }
+        CHECK(cli.conn->pending_count > 0);    /* some frames really waited in the queue */
         free(big);
-        WAIT_WHILE(srv.frames == before) step(&cli, &srv);
-        CHECK(srv.frames == before + 1);
-        CHECK(pg.calls >= 1 && pg.bad_order == 0 && !pg.foreign);
-        CHECK(pg.last_sent == pg.total && pg.total >= (size_t)BIG);
+        WAIT_WHILE(srv.frames < before + FRAMES) step(&cli, &srv);
+        CHECK(srv.frames == before + FRAMES);
+        for (int i = 0; i < FRAMES; ++i) {
+            CHECK(pg[i].calls >= 2 && pg[i].bad_order == 0 && !pg[i].foreign);
+            CHECK(pg[i].last_sent == pg[i].total && pg[i].total >= (size_t)BIG);
+        }
     }
     CHECK(srv.closed == 0 && cli.closed == 0);
     CHECK(nodus_tcp_decrypt_fail_total(&srv.tcp) == 0);

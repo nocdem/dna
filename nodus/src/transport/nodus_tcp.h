@@ -85,7 +85,23 @@ typedef struct nodus_pending_frame {
     uint8_t                    *encoded;      /* malloc'd, owned */
     size_t                      frame_size;   /* encoded bytes including 7-byte header */
     uint64_t                    enqueued_at;  /* monotonic ms for diagnostics */
+    /* Session transport only: the frame's progress callback, registered
+     * (nodus_tcp_wprog_t) when the frame moves into wbuf. NULL = none. */
+    void                      (*progress_cb)(size_t bytes_sent, size_t total_bytes, void *user_data);
+    void                       *progress_ud;
 } nodus_pending_frame_t;
+
+/* Session transport: the bytes of one sealed frame inside the connection's
+ * output stream. start/end are positions in out_done space (the running count
+ * of bytes written to the socket); conn_flush_wbuf reports the frame's own
+ * bytes written so far against its own size, once per write that advanced it,
+ * and drops the record when the frame is out. */
+typedef struct nodus_tcp_wprog {
+    struct nodus_tcp_wprog *next;
+    uint64_t                start, end, last;
+    void                  (*cb)(size_t bytes_sent, size_t total_bytes, void *user_data);
+    void                   *user_data;
+} nodus_tcp_wprog_t;
 
 /* A progress callback attached to one frame queued for the owner to seal
  * (session transport with a write lock). `seq` is the frame's index in the
@@ -114,6 +130,11 @@ typedef struct nodus_tcp_conn {
     size_t              wlen;     /* total buffered bytes */
     size_t              wcap;
     size_t              wpos;     /* bytes already sent */
+    /* Session transport: bytes written to the socket over the connection's
+     * life, and the progress records of frames not yet fully written. */
+    uint64_t            out_done;
+    nodus_tcp_wprog_t  *wprog_head;
+    nodus_tcp_wprog_t  *wprog_tail;
 
     /* Peer identity (set after authentication) */
     nodus_key_t         peer_id;
@@ -575,9 +596,12 @@ int nodus_tcp_send(nodus_tcp_conn_t *conn,
  * On a transport in session mode WITH a write lock the frame is queued for
  * the owner thread to seal (see nodus_tcp_set_session_mode): progress_cb is
  * called by THAT owner thread, with the write lock held, while it writes the
- * frame's sealed bytes (bytes written so far and the write buffer's total, as
- * on every other path). It is not called from the sender's thread, and not
- * at all if the connection closes before the frame is written.
+ * frame's sealed bytes (bytes written so far and the frame's size, strictly
+ * increasing, the last call equal to the size), whether the frame is written
+ * at once, after a partial write, or after it waited in the pending queue.
+ * It is not called from the sender's thread, and not at all if the
+ * connection closes before the frame is fully written. Outside session mode
+ * the numbers are the write buffer's (wpos, wlen), as before.
  */
 int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
                              const uint8_t *payload, size_t len,

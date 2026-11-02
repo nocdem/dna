@@ -296,6 +296,11 @@ static bool conn_in_pool(const nodus_tcp_t *tcp, const nodus_tcp_conn_t *conn) {
 /* Release the memory of a connection that conn_free already detached. */
 static void conn_release(nodus_tcp_conn_t *conn) {
     free(conn->pending_buf);
+    while (conn->wprog_head) {
+        nodus_tcp_wprog_t *w = conn->wprog_head;
+        conn->wprog_head = w->next;
+        free(w);
+    }
     while (conn->prog_head) {
         nodus_tcp_progress_req_t *r = conn->prog_head;
         conn->prog_head = r->next;
@@ -485,6 +490,8 @@ static int pending_push_tail(nodus_tcp_conn_t *conn,
     node->encoded = encoded;
     node->frame_size = frame_size;
     node->enqueued_at = nodus_time_now_ms();
+    node->progress_cb = NULL;
+    node->progress_ud = NULL;
 
     if (conn->pending_tail) {
         conn->pending_tail->next = node;
@@ -528,6 +535,41 @@ static void pending_free_all(nodus_tcp_conn_t *conn) {
     conn->pending_bytes = 0;
 }
 
+/** Register a progress record for a frame of `size` bytes that is about to be
+ *  appended to wbuf (call BEFORE wlen grows): it will occupy the bytes after
+ *  everything still unsent. Out of memory loses only the progress report. */
+static void wprog_add(nodus_tcp_conn_t *conn, size_t size,
+                      void (*cb)(size_t, size_t, void *), void *user_data) {
+    if (!cb) return;
+    nodus_tcp_wprog_t *w = calloc(1, sizeof(*w));
+    if (!w) return;
+    w->start = conn->out_done + (conn->wlen - conn->wpos);
+    w->end = w->start + size;
+    w->cb = cb; w->user_data = user_data;
+    if (conn->wprog_tail) conn->wprog_tail->next = w; else conn->wprog_head = w;
+    conn->wprog_tail = w;
+}
+
+/** After a write advanced out_done: report each frame whose bytes moved, in
+ *  byte order (a later frame cannot have moved while an earlier one is not
+ *  out), and drop the frames that are completely out. */
+static void wprog_fire(nodus_tcp_conn_t *conn) {
+    while (conn->wprog_head) {
+        nodus_tcp_wprog_t *w = conn->wprog_head;
+        if (conn->out_done <= w->start) break;
+        uint64_t reached = conn->out_done < w->end ? conn->out_done : w->end;
+        reached -= w->start;
+        if (reached > w->last) {
+            w->last = reached;
+            w->cb((size_t)reached, (size_t)(w->end - w->start), w->user_data);
+        }
+        if (conn->out_done < w->end) break;
+        conn->wprog_head = w->next;
+        if (!conn->wprog_head) conn->wprog_tail = NULL;
+        free(w);
+    }
+}
+
 /** Drain pending head frames into wbuf as long as they fit.
  *  Bounded by NODUS_DRAIN_PER_CALL to avoid monopolizing the event loop. */
 static void pending_drain_to_wbuf(nodus_tcp_conn_t *conn) {
@@ -547,6 +589,7 @@ static void pending_drain_to_wbuf(nodus_tcp_conn_t *conn) {
         if (conn_wbuf_ensure(conn, conn->wlen + head->frame_size) != 0)
             break;
         head = pending_pop_head(conn);
+        wprog_add(conn, head->frame_size, head->progress_cb, head->progress_ud);
         memcpy(conn->wbuf + conn->wlen, head->encoded, head->frame_size);
         conn->wlen += head->frame_size;
         conn->pending_drained_count++;
@@ -1136,7 +1179,9 @@ static ntcp_io_t conn_flush_wbuf(nodus_tcp_conn_t *conn,
         ntcp_io_t io = ntcp_classify(n);
         if (io == NTCP_IO_PROGRESS) {
             conn->wpos += (size_t)n;
+            conn->out_done += (uint64_t)n;
             eintr_left = NTCP_MAX_EINTR_RETRY;
+            if (conn->wprog_head) wprog_fire(conn);
             if (progress_cb) progress_cb(conn->wpos, conn->wlen, user_data);
             continue;
         }
@@ -2806,7 +2851,12 @@ static int send_session_locked(nodus_tcp_conn_t *conn, const uint8_t *payload,
         conn->pending_tail = node;
         conn->pending_count++; conn->pending_bytes += out_size;
         conn->pending_enqueued_count++;
-    } else conn->wlen += out_size;
+        /* Reported when the frame moves into wbuf and is written. */
+        node->progress_cb = progress_cb; node->progress_ud = user_data;
+    } else {
+        wprog_add(conn, out_size, progress_cb, user_data);
+        conn->wlen += out_size;
+    }
     conn->send_ok_count++; conn->send_bytes_total += len;
 #ifdef NODUS_TCP_EPOLL
     nodus_tcp_t *tcp = conn->tcp_parent;
@@ -2814,7 +2864,9 @@ static int send_session_locked(nodus_tcp_conn_t *conn, const uint8_t *payload,
     epoll_mod(tcp->epoll_fd, conn->fd, events, conn);
 #endif
     if (queued) return 0;
-    ntcp_io_t io = conn_flush_wbuf(conn, progress_cb, user_data);
+    /* The frame's own progress is reported from the flush (wprog_fire), also
+     * for the part written later by handle_write; no per-call callback. */
+    ntcp_io_t io = conn_flush_wbuf(conn, NULL, NULL);
     if (conn->wpos == conn->wlen) conn->wpos = conn->wlen = 0;
     if (io == NTCP_IO_PROGRESS || io == NTCP_IO_WOULDBLOCK) return 0;
     conn->send_error_count++; return -1;
