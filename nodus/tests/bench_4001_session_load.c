@@ -328,7 +328,11 @@ typedef struct {
     uint8_t rx[4 * CMT_P2P_SC_OUT_CAP]; size_t rx_len;      /* socket bytes (ws only) */
 } conn_t;
 
-static nodus_identity_t g_client_id;
+static nodus_identity_t g_client_id;        /* attackers' HELLO key (they never sign) */
+/* One identity per honest connection: the node keeps at most
+ * NODUS_MAX_SESSIONS_PER_IDENTITY (4, nodus_server.h) sessions of one key and
+ * evicts the oldest, so a shared honest key would measure eviction. */
+static nodus_identity_t *g_honest_ids;
 static int raw_sign(void *ctx, const uint8_t *p, size_t n, uint8_t *out) {
     nodus_sig_t sig;
     int rc = nodus_sign_session_auth(&sig, p, n, &((nodus_identity_t *)ctx)->sk);
@@ -383,8 +387,9 @@ static bool conn_open(conn_t *c, unsigned index, bool attacker, bool ws) {
     if (connect(c->fd, (struct sockaddr *)&dst, sizeof(dst)) != 0 && errno != EINPROGRESS) {
         close(c->fd); return false;
     }
-    c->host.ctx = &g_client_id; c->host.sign = raw_sign; c->host.verify = raw_verify;
-    if (cmt_p2p_sc_init(&c->sc, CMT_P2P_SC_ROLE_INITIATOR, &c->host, g_client_id.pk.bytes,
+    nodus_identity_t *id = attacker ? &g_client_id : &g_honest_ids[index];
+    c->host.ctx = id; c->host.sign = raw_sign; c->host.verify = raw_verify;
+    if (cmt_p2p_sc_init(&c->sc, CMT_P2P_SC_ROLE_INITIATOR, &c->host, id->pk.bytes,
                         NULL, NULL, CMT_P2P_SC_PROTO_VER_4001, chain) != CMT_OK) {
         close(c->fd); return false;
     }
@@ -634,6 +639,9 @@ int main(int argc, char **argv) {
         if (mkdir(idir, 0700) != 0) return 2;
     }
     nodus_identity_generate(&g_client_id);
+    g_honest_ids = calloc(o.n, sizeof(*g_honest_ids));      /* generated before any timing */
+    if (!g_honest_ids) return 2;
+    for (unsigned i = 0; i < o.n; i++) nodus_identity_generate(&g_honest_ids[i]);
 
     int wpipe[2] = {-1, -1}, npipe[2];
     pid_t wchild = -1;
@@ -910,5 +918,7 @@ int main(int argc, char **argv) {
     if (system(cmd) != 0) fprintf(stderr, "cleanup of %s failed\n", g_dir);
     free(honest); free(atk); free(times);
     nodus_identity_clear(&g_client_id);
+    for (unsigned i = 0; i < o.n; i++) nodus_identity_clear(&g_honest_ids[i]);
+    free(g_honest_ids);
     return 0;
 }
