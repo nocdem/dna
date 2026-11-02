@@ -15,8 +15,29 @@
  * local`), so the 20-per-IP limit is not what is measured (on the WebSocket
  * path each connection also carries a distinct X-Forwarded-For address, the
  * real-IP key of that entry):
- *   - honest clients: complete the handshake; arrival as one burst or at a
- *     steady rate;
+ *   - honest clients: complete the handshake, then keep the connection until
+ *     the NODE has opened it: after their AUTHSIG they send one sealed
+ *     request, a T2 "ping" (nodus_t2_ping), and finish when the sealed "pong"
+ *     arrives (the connection-complete time is the arrival of that answer).
+ *     The node dispatches "ping" in nodus_server.c dispatch_t2 (:1282; the
+ *     method chain at :1439-1440) to handle_t2_ping (:857-862), which answers with
+ *     nodus_t2_pong and touches neither the chain backend nor the DHT, so it
+ *     is answered in every layout and on both paths. The node delivers
+ *     application data only after it opened the session
+ *     (nodus_inter_session.h "read delivers plaintext only after open"), so
+ *     an answer is proof the node opened THIS connection (design
+ *     2026-10-28-encrypted-sessions.md separates local authentication from
+ *     proof that the peer opened). Why the node's "opened" counter equals the
+ *     honest opened count in a cooperative run: an honest connection is
+ *     closed only after its pong, never earlier, so every connection the node
+ *     opens stays until it is answered; attackers never complete the
+ *     handshake and are never opened; so opened(node) = answered(honest) +
+ *     the honest connections the node opened but whose pong had not yet
+ *     arrived when the run ended (the "unfinished" count). The driver prints
+ *     both numbers and a consistency line; a run with unfinished honest
+ *     connections (time limit reached) is flagged and its two numbers may
+ *     differ by exactly that count.
+ *     Arrival as one burst or at a steady rate;
  *   - attackers: a valid HELLO, then a KEYX whose ciphertext is replaced by
  *     random bytes (decapsulation of an invalid ciphertext still returns
  *     success, so the node decapsulates and signs), then silence. Their size
@@ -44,9 +65,10 @@
  *
  * Recorded and printed (one block per run, parameters first):
  *   offered: honest and attacker connections started and the offered rates.
- *   honest: connections, opened, closed before 3 s without opening, closed at
- *     or after 3 s, unfinished; wall time from TCP connect to the client's
- *     authenticated state: min, p50, p95, p99, max, and the count over 3 s.
+ *   honest: connections, opened (= answered by the node's pong), closed
+ *     before 3 s without opening, closed at or after 3 s, unfinished; wall
+ *     time from TCP connect to the arrival of the pong: min, p50, p95, p99,
+ *     max, and the count over 3 s.
  *     The driver's own processor time is NEVER subtracted from these times
  *     (driver and node share the machine).
  *   node (exact, from the module's own counters): sessions started and opened,
@@ -101,6 +123,7 @@
 #include "crypto/nodus_identity.h"
 #include "crypto/nodus_sign.h"
 #include "protocol/nodus_wire.h"
+#include "protocol/nodus_tier2.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -294,6 +317,8 @@ enum { C_IDLE = 0, C_LIVE, C_DONE };
 typedef struct {
     int state, fd;
     bool attacker, sent_keyx, authed, closed, replaced;
+    bool pinged;                      /* honest: the sealed ping was written */
+    uint8_t plain[512]; size_t plain_len;   /* honest: decrypted bytes of the answer */
     int ws_state;                     /* 0 not ws / 1 upgrade sent / 2 open */
     uint64_t t_start, t_end;
     cmt_p2p_sc_t sc;
@@ -474,9 +499,41 @@ static bool conn_step(conn_t *c) {
             }
         }
         take_out(c);
-        if (cmt_p2p_sc_is_authenticated(&c->sc)) {
-            c->authed = true;
-            conn_finish(c, false);   /* sets t_end; keeps authed */
+    }
+    if (!cmt_p2p_sc_is_authenticated(&c->sc)) return true;
+    /* Locally authenticated (the node's AUTHSIG verified): NOT yet proof that
+     * the node opened this connection — the node opens only after it verified
+     * OUR AUTHSIG. The sealed AUTHSIG left through take_out above; now one
+     * sealed ping, then wait for the pong. */
+    if (!c->pinged) {
+        uint8_t token[NODUS_SESSION_TOKEN_LEN] = {0};
+        uint8_t req[128], plain[160], sealed[CMT_P2P_SC_SEALED_FRAME_SIZE * 2];
+        size_t rn = 0, written = 0;
+        if (nodus_t2_ping(9, token, req, sizeof(req), &rn) != 0) { conn_finish(c, false); return false; }
+        size_t pn = nodus_frame_encode(plain, sizeof(plain), req, (uint32_t)rn);
+        if (!pn || cmt_p2p_sc_write(&c->sc, plain, pn, sealed, sizeof(sealed), &written) != CMT_OK || !written) {
+            conn_finish(c, false); return false;
+        }
+        take_out(c);                 /* the AUTHSIG, if still in the output, goes first */
+        queue_bytes(c, sealed, written);
+        c->pinged = true;
+    }
+    if (c->in_len) {
+        size_t cu = 0, pl = 0;
+        if (cmt_p2p_sc_read(&c->sc, c->in, c->in_len, &cu, c->plain + c->plain_len,
+                            sizeof(c->plain) - c->plain_len, &pl) != CMT_OK) {
+            conn_finish(c, false); return false;
+        }
+        if (cu) { c->in_len -= cu; memmove(c->in, c->in + cu, c->in_len); }
+        c->plain_len += pl;
+        nodus_frame_t f;
+        if (nodus_frame_decode(c->plain, c->plain_len, &f) > 0) {
+            nodus_tier2_msg_t reply; memset(&reply, 0, sizeof(reply));
+            bool pong = nodus_t2_decode(f.payload, f.payload_len, &reply) == 0 &&
+                        reply.type == 'r' && reply.txn_id == 9;
+            nodus_t2_msg_free(&reply);
+            if (pong) c->authed = true;      /* answered: the node opened this connection */
+            conn_finish(c, false);           /* sets t_end */
             return false;
         }
     }
@@ -747,6 +804,17 @@ int main(int argc, char **argv) {
                          &node_cpu, &st_started, &st_opened, &st_refused, &st_deadline, vm) >= 8) {
         printf("node counters: sessions started %llu  opened %llu  key-exchange jobs refused (queue full) %llu  "
                "past the 3 s deadline %llu\n", st_started, st_opened, st_refused, st_deadline);
+        /* honest connections are closed only after the node's pong, so the node's
+         * count may exceed the honest count only by the connections it opened
+         * whose pong had not arrived at the end of the run (header) */
+        if (st_opened == opened)
+            printf("consistency: node opened %llu = honest opened %u\n", st_opened, opened);
+        else
+            printf("consistency: node opened %llu, honest opened %u, honest unfinished %u -- %s\n",
+                   st_opened, opened, unfinished,
+                   (st_opened >= opened && st_opened - opened <= unfinished)
+                       ? "the difference is within the unfinished honest connections (time limit)"
+                       : "MISMATCH beyond the unfinished connections: do not use this run's open counts");
         printf("node job queue (inbound class, sampled every ms): peak %llu  mean %.2f over %llu samples\n",
                peak, samples ? (double)sum / (double)samples : 0.0, samples);
         /* per-kind job run times under load: "<vm>|" is followed by 4 x (count total_ns max_ns) */
