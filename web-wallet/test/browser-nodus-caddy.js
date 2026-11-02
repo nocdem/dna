@@ -14,8 +14,11 @@
 //     ignoreHTTPSErrors is NOT established; this test runs the module in a
 //     page context only. The extension service worker and Connect (same
 //     module) are not driven here; that stays an open item for the operator.
-//   - A send (submit) — a read needs no funds; the send path shares the same
-//     session and is not exercised.
+//   - The send runs only with NODUS_TEST_SEND_PHRASE (a phrase funded on that
+//     chain) and NODUS_TEST_SEND_TO (128 hex): without them it is reported
+//     "send NOT RUN" and the exit code is 2. Connect's read (the Messages core,
+//     nc_unlock + nc_profile_get, in the same module and session as the
+//     wallet's balance read) always runs.
 //   - Caddy 2.11.2 (the live nodes' version): the local binary is 2.6.2
 //     (`caddy version`); the difference is reported with a result.
 //
@@ -70,6 +73,41 @@ window.runModule = async (network, seedHex) => {
   await mod.connectNetwork();
   return await mod.balance();
 };
+// A send through the same session: list the coins, build and sign one native
+// transfer, submit it. Resolves { accepted, intentId, wireId, message }.
+window.runSend = async (network, seedHex, to, amount) => {
+  const seed = Uint8Array.from(seedHex.match(/../g), h => parseInt(h, 16));
+  const mod = await createNodusSendModule(network, { startIndex: 0 });
+  await mod.identify({ seed });
+  await mod.connectNetwork();
+  const listed = await mod.list();
+  if (!listed.coins.length) throw new Error('the funded identity has no native coin');
+  const built = await mod.buildAndSign({ to, tokenId: '0'.repeat(128), amount,
+    expiryHeight: String(BigInt(listed.tip) + 50n), coins: listed.coins.slice(0, 8) });
+  const res = await mod.submit({ envelope: built.envelope });
+  return { accepted: res.accepted, message: res.message || '', intentId: built.intentId, wireId: built.wireId };
+};
+// Connect's read through the SAME session as the wallet's balance read: the
+// Messages core (nc_* exports of the one module) unlocks with the phrase and
+// reads a profile record from the node. Resolves { balance, profile }.
+window.runConnectRead = async (network, seedHex, wordsText, fp) => {
+  const seed = Uint8Array.from(seedHex.match(/../g), h => parseInt(h, 16));
+  const mod = await createNodusSendModule(network, { startIndex: 0 });
+  await mod.identify({ seed });
+  await mod.connectNetwork();
+  const balance = await mod.balance();
+  const words = new TextEncoder().encode(wordsText);
+  const profile = await mod.connect(async api => {
+    const at = api.num('nc_words_alloc', ['number'], [words.length]);
+    if (!at) throw new Error('out of memory');
+    api.heap().set(words, at);
+    if (await api.call('nc_unlock', ['number'], [1]) !== 0) throw new Error(api.str('nc_error') || 'nc_unlock failed');
+    if (await api.call('nc_profile_get', ['string'], [fp]) !== 0) throw new Error(api.str('nc_error') || 'nc_profile_get failed');
+    return JSON.parse(api.str('nc_result'));
+  });
+  mod.lock();
+  return { balance, profile };
+};
 window.ready = true;
 </script>`;
 
@@ -83,7 +121,7 @@ const staticServer = createServer((req, res) => {
 });
 
 const work = mkdtempSync(join(tmpdir(), 'nodus-caddy-'));
-let caddy = null, browser = null, failed = false;
+let caddy = null, browser = null, failed = false, skipped = false;
 try {
   await new Promise((ok, no) => { staticServer.once('error', no); staticServer.listen(pagePort, '127.0.0.1', ok); });
   caddy = spawn('caddy', ['run', '--config', join(here, 'nodus-caddy.Caddyfile'), '--adapter', 'caddyfile'], {
@@ -122,7 +160,32 @@ try {
                                      { n: network(other), s: seed });
   assert.notEqual(refused, 'connected', 'a pin that is not the node\'s key must be refused');
   console.log(`wrong pin refused: ${refused}`);
-  console.log('PASS browser-nodus-caddy (page context only; extension service worker not established)');
+
+  // 4. Connect's read through the same session (the phrase here is a public test
+  //    phrase unless NODUS_TEST_PHRASE is given; any valid 24-word phrase reads).
+  const phrase = process.env.NODUS_TEST_PHRASE || `${'abandon '.repeat(23)}art`;
+  const { nodusSigningSeed } = await import('../src/nodus/derive.js');
+  const phraseSeed = Buffer.from(nodusSigningSeed(phrase)).toString('hex');
+  const ownFp = process.env.NODUS_TEST_CONNECT_FP || nodeFp;   // any fingerprint the node can answer for
+  const cr = await tab.evaluate(({ n, s, w, f }) => window.runConnectRead(n, s, w, f),
+                                { n: network(nodeFp), s: phraseSeed, w: phrase, f: ownFp });
+  assert.ok(cr.balance && typeof cr.balance.total === 'string', 'wallet balance read on the Connect session');
+  assert.ok(cr.profile && typeof cr.profile === 'object', 'Connect profile read returned a result');
+  console.log(`Connect read through the same session: balance ${cr.balance.total}, profile ${JSON.stringify(cr.profile).slice(0, 120)}`);
+
+  // 5. A send (needs a funded identity: NODUS_TEST_SEND_PHRASE, NODUS_TEST_SEND_TO 128 hex).
+  const sendPhrase = process.env.NODUS_TEST_SEND_PHRASE, sendTo = process.env.NODUS_TEST_SEND_TO;
+  if (sendPhrase && /^[0-9a-f]{128}$/.test(sendTo || '')) {
+    const sendSeed = Buffer.from(nodusSigningSeed(sendPhrase)).toString('hex');
+    const sent = await tab.evaluate(({ n, s, t, a }) => window.runSend(n, s, t, a),
+                                    { n: network(nodeFp), s: sendSeed, t: sendTo, a: process.env.NODUS_TEST_SEND_AMOUNT || '1' });
+    assert.equal(sent.accepted, true, `the node did not accept the send: ${sent.message}`);
+    console.log(`send accepted through Caddy: intent ${sent.intentId.slice(0, 16)}...`);
+  } else {
+    console.log('send NOT RUN: set NODUS_TEST_SEND_PHRASE (a phrase funded on this chain) and NODUS_TEST_SEND_TO (128 hex).');
+    skipped = true;
+  }
+  console.log(`${skipped ? 'PARTIAL' : 'PASS'} browser-nodus-caddy (page context only; extension service worker not established)`);
 } catch (error) {
   failed = true;
   console.error('FAIL browser-nodus-caddy:', error && error.stack || error);
@@ -132,4 +195,4 @@ try {
   staticServer.close();
   rmSync(work, { recursive: true, force: true });
 }
-process.exit(failed ? 1 : 0);
+process.exit(failed ? 1 : skipped ? 2 : 0);   // a part that did not run is missing coverage, never a pass
