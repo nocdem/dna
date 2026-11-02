@@ -1,26 +1,21 @@
 /**
- * Nodus — Authentication Handler
+ * Nodus — client session identity (ports 4001 and the WebSocket entry)
  *
- * 3-way Dilithium5 challenge-response:
- *   1. Client: HELLO(pk, fp)
- *   2. Server: verify fp == SHA3-512(pk), send CHALLENGE(nonce)
- *   3. Client: AUTH(SIGN(nonce, sk))
- *   4. Server: VERIFY(sig, nonce, pk) -> AUTH_OK(token)
+ * The secret-connection handshake (shared/dnac/cmt_p2p_secret, hosted by
+ * server/nodus_inter_session.c) authenticates the client key. This file is
+ * what the node does with that key: it becomes the session identity, the
+ * per-identity session limit is applied and presence is added. The T2
+ * hello / challenge / auth / auth_ok / key_init / key_ack path that stood
+ * here is gone (approved 4001 plan 2.2 c; decisions D6, A6).
  */
 
 #include "server/nodus_server.h"
-#include "protocol/nodus_tier2.h"
 #include "crypto/nodus_sign.h"
-#include "crypto/nodus_channel_crypto.h"
-#include "crypto/enc/qgp_kyber.h"
-#include "crypto/enc/qgp_mlkem.h"
 
 #include <string.h>
 #include <stdio.h>
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
-
-extern void qgp_secure_memzero(void *ptr, size_t len);
 
 /* ── Sessions of one identity (nodus_server.h) ───────────────────── */
 
@@ -92,86 +87,27 @@ int nodus_sessions_evict_plan(const nodus_session_t *sessions, int n,
     return out;
 }
 
-int nodus_auth_handle_hello(nodus_server_t *srv, nodus_session_t *sess,
-                             const nodus_pubkey_t *pk, const nodus_key_t *fp,
-                             uint32_t txn_id) {
-    if (!srv || !sess || !pk || !fp) return -1;
+int nodus_auth_session_authenticated(nodus_server_t *srv, nodus_session_t *sess,
+                                     const nodus_pubkey_t *pk) {
+    if (!srv || !sess || !sess->conn || !pk) return -1;
 
-    uint8_t buf[8192];
-
-    /* Verify: fingerprint == SHA3-512(public_key) */
-    nodus_key_t computed_fp;
-    nodus_fingerprint(pk, &computed_fp);
-    if (nodus_key_cmp(&computed_fp, fp) != 0) {
-        size_t len = 0;
-        nodus_t2_error(txn_id, NODUS_ERR_INVALID_SIGNATURE,
-                        "fingerprint mismatch", buf, sizeof(buf), &len);
-        nodus_tcp_send(sess->conn, buf, len);
-        return -1;
-    }
-
-    /* Store client identity in session */
+    /* The authenticated key is the session identity. */
     sess->client_pk = *pk;
-    sess->client_fp = *fp;
+    if (nodus_fingerprint(pk, &sess->client_fp) != 0) return -1;
 
-    /* Generate random nonce */
-    nodus_random(sess->nonce, NODUS_NONCE_LEN);
-    sess->nonce_pending = true;
-
-    /* Send CHALLENGE */
-    size_t len = 0;
-    nodus_t2_challenge(txn_id, sess->nonce,
-                        buf, sizeof(buf), &len);
-    nodus_tcp_send(sess->conn, buf, len);
-
-    return 0;
-}
-
-int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
-                            const nodus_sig_t *sig, uint32_t txn_id) {
-    if (!srv || !sess || !sig) return -1;
-
-    uint8_t buf[16384];  /* Large enough for AUTH_OK with spk(2592) + kpk_sig(4627) */
-
-    if (!sess->nonce_pending) {
-        size_t len = 0;
-        nodus_t2_error(txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                        "no pending challenge", buf, sizeof(buf), &len);
-        nodus_tcp_send(sess->conn, buf, len);
-        return -1;
-    }
-
-    /* Verify signature of nonce using client's public key (C2: domain-tagged) */
-    int rc = nodus_verify_auth_challenge(sig, sess->nonce, &sess->client_pk);
-    if (rc != 0) {
-        size_t len = 0;
-        nodus_t2_error(txn_id, NODUS_ERR_INVALID_SIGNATURE,
-                        "auth signature invalid", buf, sizeof(buf), &len);
-        nodus_tcp_send(sess->conn, buf, len);
-        sess->nonce_pending = false;
-        return -1;
-    }
-
-    /* Auth success — generate session token */
-    nodus_random(sess->token, NODUS_SESSION_TOKEN_LEN);
+    /* A random server-side token. It is never sent and never compared with
+     * anything a client sends (A6); it is only the handle the witness.sock
+     * preface and the delayed cc_collect reply lookup use. */
+    if (nodus_random(sess->token, NODUS_SESSION_TOKEN_LEN) != 0) return -1;
     sess->authenticated = true;
-    sess->nonce_pending = false;
-
-    /* Set peer identity on connection */
-    sess->conn->peer_id = sess->client_fp;
-    sess->conn->peer_pk = sess->client_pk;
-    sess->conn->peer_id_set = true;
-    /* D-20: authenticated — the pre-auth frame cap set on accept
-     * (NODUS_PREAUTH_PAYLOAD_MAX) gives way to the transport's own. */
-    sess->conn->max_payload = 0;
 
     sess->auth_seq = ++srv->next_auth_seq;
 
     /* Per-identity session limit (NODUS_MAX_SESSIONS_PER_IDENTITY, see
      * nodus_server.h): keep this session and the 3 most recently
      * authenticated others of the same identity; disconnect the older
-     * ones. Ghost connections of dead mobile sockets (alive until the 30 s
-     * idle sweep notices) are the oldest sessions of their identity, so a
+     * ones. Ghost connections of dead mobile sockets (alive until the idle
+     * sweep notices) are the oldest sessions of their identity, so a
      * reconnecting device still clears its own ghost once the limit is
      * reached. The plan is taken first: each disconnect runs
      * on_tcp_disconnect, which clears only that session. */
@@ -207,183 +143,5 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
         fp_hex[32] = '\0';
         fprintf(stderr, "AUTH_OK: client %s... authenticated (presence added)\n", fp_hex);
     }
-
-    /* Send AUTH_OK with session token (+ Kyber pubkey if client supports v2+) */
-    size_t len = 0;
-    if (srv->identity.has_kyber && sess->proto_version >= 2) {
-        /* Sign kyber_pk || nonce with server's Dilithium5 key.
-         * This binds the Kyber public key to this specific auth session,
-         * preventing MITM replacement of the Kyber PK. */
-        uint8_t sign_data[NODUS_KYBER_PK_BYTES + NODUS_NONCE_LEN];
-        memcpy(sign_data, srv->identity.kyber_pk, NODUS_KYBER_PK_BYTES);
-        memcpy(sign_data + NODUS_KYBER_PK_BYTES, sess->nonce, NODUS_NONCE_LEN);
-
-        nodus_sig_t kpk_sig;
-        /* C2: KYBER_BIND domain */
-        if (nodus_sign_kyber_bind(&kpk_sig, sign_data, sizeof(sign_data), &srv->identity.sk) != 0) {
-            fprintf(stderr, "AUTH: Failed to sign Kyber PK for AUTH_OK\n");
-            nodus_t2_auth_ok(txn_id, sess->token, buf, sizeof(buf), &len);
-            nodus_tcp_send(sess->conn, buf, len);
-            return 0;
-        }
-
-        /* Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-mlkem-
-         * migration.md): also bind the ML-KEM-1024 pubkey, if this
-         * identity has one, under the new MLKEM_BIND purpose (0x09) —
-         * same ROLE as kpk_sig, new purpose byte, no new signing
-         * mechanism (still nodus_sign_tagged()). UNLIKE kpk_sig, this
-         * purpose IS in nodus_sign_purpose_is_strict() (N1 delta 1, D2):
-         * (mlkem_pk || nonce) is the same length/shape as (kyber_pk ||
-         * nonce), so a non-strict raw signature here would be
-         * interchangeable with a kpk_sig — the NDS1 tag is what keeps
-         * them from being swappable. kpk/kpk_sig above are untouched
-         * either way. */
-        const uint8_t *mlkem_pk_ptr = NULL;
-        const nodus_sig_t *mpk_sig_ptr = NULL;
-        nodus_sig_t mpk_sig;
-        if (srv->identity.has_mlkem) {
-            uint8_t msign_data[NODUS_MLKEM_PK_BYTES + NODUS_NONCE_LEN];
-            memcpy(msign_data, srv->identity.mlkem_pk, NODUS_MLKEM_PK_BYTES);
-            memcpy(msign_data + NODUS_MLKEM_PK_BYTES, sess->nonce, NODUS_NONCE_LEN);
-            if (nodus_sign_mlkem_bind(&mpk_sig, msign_data, sizeof(msign_data),
-                                       &srv->identity.sk) == 0) {
-                mlkem_pk_ptr = srv->identity.mlkem_pk;
-                mpk_sig_ptr = &mpk_sig;
-            } else {
-                fprintf(stderr, "AUTH: Failed to sign ML-KEM PK for AUTH_OK\n");
-            }
-        }
-
-        nodus_t2_auth_ok_kyber(txn_id, sess->token, srv->identity.kyber_pk,
-                                &srv->identity.pk, &kpk_sig,
-                                mlkem_pk_ptr, mpk_sig_ptr,
-                                buf, sizeof(buf), &len);
-    } else {
-        nodus_t2_auth_ok(txn_id, sess->token,
-                          buf, sizeof(buf), &len);
-    }
-    nodus_tcp_send(sess->conn, buf, len);
-
     return 0;
-}
-
-/* Faz 1 KEM migration — algorithm-independent KEY_INIT tail, shared by the
- * round-3 and ML-KEM-1024 paths below: generate the server nonce, send
- * KEY_ACK (plaintext — B3 ordering, see below), init channel crypto, log.
- * shared_secret is always NODUS_KYBER_SS_BYTES == NODUS_MLKEM_SS_BYTES (32)
- * bytes regardless of which KEM produced it; zeroed on every exit path. */
-static int key_init_complete_responder(nodus_session_t *sess,
-                                        uint8_t *shared_secret,
-                                        const uint8_t *nonce_c,
-                                        const char *alg_label,
-                                        uint32_t txn_id) {
-    uint8_t buf[8192];
-
-    /* Generate server nonce */
-    uint8_t nonce_s[NODUS_NONCE_LEN];
-    nodus_random(nonce_s, NODUS_NONCE_LEN);
-
-    /* B3 fix — KEY_ACK MUST go out plaintext (peer hasn't completed
-     * its side of the handshake yet, has no derived AES key). So we:
-     *   (1) build + send KEY_ACK while conn->channel_crypto.established
-     *       is still false (encrypt path early-returns)
-     *   (2) THEN call nodus_channel_crypto_init which flips established=true
-     * From the next frame onward, encrypt is active. This matches the
-     * pre-B3 ordering where conn->crypto was attached only after KEY_ACK
-     * was on the wire. */
-    size_t len = 0;
-    nodus_t2_key_ack(txn_id, nonce_s, buf, sizeof(buf), &len);
-    nodus_tcp_send_raw(sess->conn, buf, len);
-
-    /* Init channel crypto AFTER KEY_ACK is queued for send. Storage lives
-     * on the conn struct (B3); no separate session-level alias. */
-    /* We ACCEPTED this client connection → responder. */
-    int rc = nodus_channel_crypto_init(&sess->conn->channel_crypto,
-                                        shared_secret, nonce_c, nonce_s,
-                                        NODUS_CHANNEL_ROLE_RESPONDER);
-    qgp_secure_memzero(shared_secret, 32);
-    if (rc != 0) {
-        size_t err_len = 0;
-        nodus_t2_error(txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                        "channel crypto init failed", buf, sizeof(buf), &err_len);
-        nodus_tcp_send(sess->conn, buf, err_len);
-        return -1;
-    }
-
-    /* Phase 3.2b-inv: tagged format consistent with inter-node crypto logs */
-    fprintf(stderr,
-            "CRYPTO: SET_CLIENT slot=%d peer=%s:%u (client channel %s+AES-256-GCM)\n",
-            sess->conn->slot, sess->conn->ip, (unsigned)sess->conn->port, alg_label);
-
-    return 0;
-}
-
-int nodus_auth_handle_key_init(nodus_server_t *srv, nodus_session_t *sess,
-                                const uint8_t *kyber_ct, const uint8_t *nonce_c,
-                                uint32_t txn_id) {
-    if (!srv || !sess || !kyber_ct || !nonce_c) return -1;
-    if (!srv->identity.has_kyber) return -1;
-
-    uint8_t buf[8192];
-
-    /* Decapsulate: shared_secret = Kyber_decap(ct, server_sk) */
-    uint8_t shared_secret[32];
-    int rc = qgp_kem1024_decapsulate(shared_secret, kyber_ct, srv->identity.kyber_sk);
-    if (rc != 0) {
-        size_t len = 0;
-        nodus_t2_error(txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                        "KEM decapsulation failed", buf, sizeof(buf), &len);
-        nodus_tcp_send(sess->conn, buf, len);
-        return -1;
-    }
-
-    return key_init_complete_responder(sess, shared_secret, nonce_c,
-                                        "Kyber1024", txn_id);
-}
-
-/* Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-mlkem-
- * migration.md) — algorithm-aware KEY_INIT handler. key_alg: 0 = round-3
- * Kyber (delegates to nodus_auth_handle_key_init() above, byte-identical to
- * pre-Faz-1 behaviour), 1 = ML-KEM-1024. Declared in nodus_server.h beside
- * nodus_auth_handle_key_init (D11, N1 delta 1 — the whitelist was extended
- * by that one line; the earlier local `extern` prototype in
- * nodus_server.c is gone). */
-int nodus_auth_handle_key_init_alg(nodus_server_t *srv, nodus_session_t *sess,
-                                    uint8_t key_alg,
-                                    const uint8_t *ct, const uint8_t *nonce_c,
-                                    uint32_t txn_id) {
-    if (!srv || !sess || !ct || !nonce_c) return -1;
-
-    if (key_alg != 1)
-        return nodus_auth_handle_key_init(srv, sess, ct, nonce_c, txn_id);
-
-    uint8_t buf[8192];
-
-    /* D7 (N1 delta 1): answer, don't hang. A silent return here left the
-     * client blocked on wait_response() until connect_timeout_ms elapsed
-     * — the same wire-visible outcome the client already handles for a
-     * real decapsulation failure below, so send the identical error
-     * frame rather than invent a new error code for what is, from the
-     * client's side, the same "cannot proceed with ML-KEM here" fact. */
-    if (!srv->identity.has_mlkem) {
-        size_t len = 0;
-        nodus_t2_error(txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                        "KEM decapsulation failed", buf, sizeof(buf), &len);
-        nodus_tcp_send(sess->conn, buf, len);
-        return -1;
-    }
-
-    /* Decapsulate: shared_secret = MLKEM_decap(ct, server_sk) */
-    uint8_t shared_secret[NODUS_MLKEM_SS_BYTES];
-    int rc = qgp_mlkem1024_decapsulate(shared_secret, ct, srv->identity.mlkem_sk);
-    if (rc != 0) {
-        size_t len = 0;
-        nodus_t2_error(txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                        "KEM decapsulation failed", buf, sizeof(buf), &len);
-        nodus_tcp_send(sess->conn, buf, len);
-        return -1;
-    }
-
-    return key_init_complete_responder(sess, shared_secret, nonce_c,
-                                        "ML-KEM-1024", txn_id);
 }

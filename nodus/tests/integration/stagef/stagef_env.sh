@@ -17,7 +17,20 @@ export STAGEF_REPO_ROOT
 # without touching the default build tree.
 STAGEF_NODUS_BIN="${STAGEF_NODUS_BIN:-$STAGEF_REPO_ROOT/nodus/build/nodus-server}"
 STAGEF_DNACLI_BIN="${STAGEF_DNACLI_BIN:-$STAGEF_REPO_ROOT/messenger/build/cli/dna-connect-cli}"
-STAGEF_NODUSCLI_BIN="${STAGEF_NODUSCLI_BIN:-$STAGEF_REPO_ROOT/nodus/build/nodus-cli}"
+# 4001 plan 4.4: nodus-cli goes through tools/stagef_nodus_cli.sh, which adds
+# the harness node's `--pin <nodus.fp>` and `--chain-id <v2_chain_id>` (the 4001
+# session needs both). STAGEF_NODUSCLI_BIN keeps its meaning for the caller —
+# the nodus-cli binary to run (default: the build tree's) — and is captured as
+# STAGEF_NODUSCLI_REAL; afterwards STAGEF_NODUSCLI_BIN names the wrapper, which
+# every scenario already uses. Sourcing again (a child scenario) keeps the
+# captured binary.
+_stagef_cli_wrap="$STAGEF_REPO_ROOT/nodus/tests/integration/stagef/tools/stagef_nodus_cli.sh"
+if [ "${STAGEF_NODUSCLI_BIN:-}" != "$_stagef_cli_wrap" ]; then
+    STAGEF_NODUSCLI_REAL="${STAGEF_NODUSCLI_BIN:-$STAGEF_REPO_ROOT/nodus/build/nodus-cli}"
+fi
+STAGEF_NODUSCLI_REAL="${STAGEF_NODUSCLI_REAL:-$STAGEF_REPO_ROOT/nodus/build/nodus-cli}"
+STAGEF_NODUSCLI_BIN="$_stagef_cli_wrap"
+export STAGEF_NODUSCLI_REAL
 # Split S3 — the external witness binary (read only in a split mode,
 # STAGEF_MODE below). Default: the same build directory as the default
 # STAGEF_NODUS_BIN. Decision 2026-10-01-nodus-component-split.md item 23:

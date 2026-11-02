@@ -11,7 +11,9 @@
  * (cmt_p2p_transport.c:766 responder, :862 initiator), and the transport
  * is built by the p2p host (nodus/src/witness/nodus_witness_p2p.c:3508
  * `cmt_p2p_transport_init`) since P2P-PORT F5 (1e9285922, v0.20.0).
- * 4001/4002 do not use it.
+ * 4002, 4001 and the WebSocket entry run the same machine through
+ * nodus/src/server/nodus_inter_session.c, each with its own port-version
+ * proto_ver (CMT_P2P_SC_PROTO_VER_4002 / _4001 below).
  * ════════════════════════════════════════════════════════════════════════
  *
  * Governing records: docs/plans/decisions/2026-09-26-witness-port-session.md

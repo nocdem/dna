@@ -20,6 +20,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <pthread.h>
+#include "nodus_test_session.h"
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -76,7 +77,12 @@ static void *server_thread(void *arg) {
     snprintf(cmd, sizeof(cmd), "mkdir -p %s", config.data_path);
     system(cmd);
 
-    if (nodus_server_init(&server, &config) != 0) {
+    /* 4001 plan 4.2: a node without a chain refuses every session; this test
+     * runs the server with a chain backend that reports an open chain and the
+     * test chain id (nodus_test_session.h). */
+    nodus_server_backends_t be;
+    nts_fake_chain_be(&be);
+    if (nodus_server_init_ex(&server, &config, &be) != 0) {
         fprintf(stderr, "server init failed\n");
         server_init_outcome(false);
         return NULL;
@@ -176,6 +182,7 @@ static void test_init(void) {
     cfg.on_value_changed = on_value_changed;
     cfg.on_ch_post = on_ch_post;
     cfg.on_state_change = on_state_change;
+    nts_trust(&cfg, &server.identity);
 
     int rc = nodus_client_init(&client, &cfg, &client_id);
     if (rc == 0 && client.state == NODUS_CLIENT_DISCONNECTED)
@@ -273,6 +280,7 @@ static void test_listen(void) {
     snprintf(cfg2.servers[0].ip, sizeof(cfg2.servers[0].ip), "127.0.0.1");
     cfg2.servers[0].port = 15101;
     cfg2.server_count = 1;
+    nts_trust(&cfg2, &server.identity);
     nodus_client_init(&client2, &cfg2, &id2);
     nodus_client_connect(&client2);
 
@@ -457,6 +465,7 @@ static void test_failover_bad_server(void) {
     cfg.server_count = 2;
     cfg.connect_timeout_ms = 1000;
 
+    nts_trust(&cfg, &server.identity);
     nodus_client_init(&fc, &cfg, &fid);
     int rc = nodus_client_connect(&fc);
 

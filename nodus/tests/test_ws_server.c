@@ -13,11 +13,15 @@
  * What it proves (each would be false if it failed):
  *   1. An Upgrade with the wallet site's Origin and an X-Forwarded-For gets 101 with
  *      the correct Sec-WebSocket-Accept and the "binary" subprotocol echo.
- *   2. After the Upgrade the connection is an ordinary tier-2 client
- *      connection: a nodus "hello" frame carried in a masked binary WS frame
- *      is answered with a "challenge", itself carried in one unmasked binary
- *      WS frame — i.e. inbound bytes reach the nodus frame decoder and
- *      outbound nodus frames are wrapped.
+ *   2. (4001 plan 4.2) After the Upgrade the connection speaks the secret
+ *      connection, not tier-2 hello / auth: an old "hello" nodus frame in a
+ *      masked binary WS frame gets no nodus frame back and the connection is
+ *      closed (the session itself over WebSocket is test_ws_session.c).
+ *      The server's session handshake deadline is frozen (test seam
+ *      client_session_now_ms), so connections parked for the per-IP and
+ *      total-cap counts are not closed by the 3 s deadline; a false pass or
+ *      fail through that clock is therefore not possible, but cases 5-9 no
+ *      longer prove the deadline (test_ws_session.c does).
  *   3. ping → pong with the same payload.
  *   4. The Origin is not read: the wallet extension's origin
  *      (chrome-extension://…) also gets 101, and the connection leaves
@@ -58,6 +62,7 @@
 #include "protocol/nodus_wire.h"
 #include "protocol/nodus_tier2.h"
 #include "crypto/nodus_identity.h"
+#include "nodus_test_session.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -86,6 +91,7 @@ static int failed = 0;
 #define MAX_ROUNDS   400
 
 static nodus_server_t g_srv;   /* static: far too large for the stack */
+static uint64_t frozen_clock(void *ctx) { (void)ctx; return 1000; }
 
 static void pump_once(void) {
     nodus_tcp_poll(&g_srv.tcp, 5);
@@ -297,38 +303,39 @@ static void test_upgrade_and_hello(nodus_identity_t *id) {
         if (found == 1) PASS(); else FAIL("conn->ip is not the XFF address");
     }
 
-    TEST("tier-2 hello in WS frame → challenge in WS frame");
+    /* 4001 plan 4.2: the old tier-2 hello is not a 4001 / WebSocket method any
+     * more. On its own connection (the machine closes it, so the connection
+     * above stays usable for the ping case): a hello in a binary WS frame gets
+     * no nodus frame back and the connection is closed. */
+    TEST("old tier-2 hello in WS frame → no reply, connection closed");
     uint8_t *t2 = malloc(16384);
     uint8_t *nf = malloc(16384 + NODUS_FRAME_HEADER_SIZE);
     uint8_t *wf = malloc(16384 + NODUS_FRAME_HEADER_SIZE + 16);
     ok = 0;
-    if (t2 && nf && wf) {
+    rx_t *rxh = calloc(1, sizeof(*rxh));
+    int goth = 0;
+    int fdh = rxh ? ws_open_conn("198.51.100.99", rxh, &goth) : -1;
+    if (t2 && nf && wf && fdh >= 0 && goth) {
         size_t t2_len = 0;
         if (nodus_t2_hello(7, &id->pk, &id->node_id, t2, 16384, &t2_len) == 0) {
             size_t nf_len = nodus_frame_encode(nf, 16384 + NODUS_FRAME_HEADER_SIZE,
                                                t2, (uint32_t)t2_len);
             size_t wf_len = client_frame(wf, 0x82, nf, nf_len);
-            if (nf_len > 0 && send_all(fd, wf, wf_len) == 0) {
-                uint8_t op = 0;
-                const uint8_t *pl = NULL;
-                uint64_t pln = 0;
-                long fl = rx_frame(fd, rx, 0, &op, &pl, &pln);
-                nodus_frame_t fr;
-                if (fl > 0 && op == NODUS_WS_OP_BINARY &&
-                    nodus_frame_decode(pl, (size_t)pln, &fr) == (int)pln) {
-                    nodus_tier2_msg_t msg;
-                    memset(&msg, 0, sizeof(msg));
-                    if (nodus_t2_decode(fr.payload, fr.payload_len, &msg) == 0 &&
-                        strcmp(msg.method, "challenge") == 0 && msg.txn_id == 7)
-                        ok = 1;
-                    nodus_t2_msg_free(&msg);
-                    memmove(rx->buf, rx->buf + fl, rx->len - (size_t)fl);
-                    rx->len -= (size_t)fl;
+            if (nf_len > 0 && send_all(fdh, wf, wf_len) == 0) {
+                /* closed, and no nodus data frame ever came back */
+                if (rx_until_eof(fdh, rxh) == 1) {
+                    uint8_t op = 0;
+                    const uint8_t *pl = NULL;
+                    uint64_t pln = 0;
+                    long fl = server_frame_at(rxh, 0, &op, &pl, &pln);
+                    if (!(fl > 0 && op == NODUS_WS_OP_BINARY)) ok = 1;
                 }
             }
         }
     }
-    if (ok) PASS(); else FAIL("no challenge");
+    if (ok) PASS(); else FAIL("the old hello was answered or the connection stayed open");
+    if (fdh >= 0) close(fdh);
+    free(rxh);
     free(t2); free(nf); free(wf);
 
     TEST("ping → pong with the same payload");
@@ -595,7 +602,15 @@ int main(void) {
         return 1;
     }
 
-    if (nodus_server_init(&g_srv, &config) != 0) {
+    /* 4001 plan 4.2: a node without a chain id refuses every session, so the
+     * server runs with a backend reporting an open chain and the test chain
+     * id. The session module's handshake deadline is frozen: these cases park
+     * unauthenticated WebSocket connections (per-IP and total-cap counting)
+     * for longer than 3 s of real time, which would otherwise close them. */
+    nodus_server_backends_t be;
+    nts_fake_chain_be(&be);
+    config.client_session_now_ms = frozen_clock;
+    if (nodus_server_init_ex(&g_srv, &config, &be) != 0) {
         printf("server init failed\n");
         nodus_server_close(&g_srv);
         snprintf(cmd, sizeof(cmd), "rm -rf %s", config.data_path);

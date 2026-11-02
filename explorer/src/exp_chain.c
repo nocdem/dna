@@ -23,6 +23,69 @@
 #include "crypto/utils/qgp_log.h"
 #define LOG_TAG "EXP_CHAIN"
 
+/* Built-in trusted nodes and chain id of the 4001 secret connection (approved
+ * 4001 plan 3.7 / 3.10): the compiled network table nodus-light carries. The
+ * header is read-only for this package and is outside the include path, so it
+ * is named by its path from here. */
+#include "../../nodus/tools/nodus_light_checkpoint.h"
+
+#define EXP_TRUST_PIN_MAX 16
+static nodus_key_t s_pins[EXP_TRUST_PIN_MAX];     /* command-line --pin, if any */
+static int         s_pin_count = 0;               /* 0 = the built-in list      */
+static uint8_t     s_chain_id[32];                /* command-line --chain-id    */
+static int         s_chain_id_set = 0;            /* 0 = the built-in chain id  */
+
+static int exp_hex_n(const char *hex, uint8_t *out, size_t n) {
+    if (!hex || strlen(hex) != 2 * n) return -1;
+    for (size_t i = 0; i < n; i++) {
+        unsigned v = 0;
+        for (int k = 0; k < 2; k++) {
+            char c = hex[2 * i + k];
+            unsigned d = (c >= '0' && c <= '9') ? (unsigned)(c - '0')
+                       : (c >= 'a' && c <= 'f') ? (unsigned)(c - 'a' + 10)
+                       : (c >= 'A' && c <= 'F') ? (unsigned)(c - 'A' + 10) : 16u;
+            if (d > 15) return -1;
+            v = v * 16 + d;
+        }
+        out[i] = (uint8_t)v;
+    }
+    return 0;
+}
+
+/* Command-line override (main.c: --pin, --chain-id). Not in exp_chain.h: that
+ * header is outside this package's file list. A given value replaces the
+ * built-in one for the whole run and is never replaced from a node's answer.
+ * @return 0, -1 on a malformed hex string or more than EXP_TRUST_PIN_MAX pins. */
+int exp_chain_trust_override(const char *chain_id_hex, const char *const *pin_hex,
+                             int pin_count) {
+    if (chain_id_hex) {
+        if (exp_hex_n(chain_id_hex, s_chain_id, sizeof(s_chain_id)) != 0) return -1;
+        s_chain_id_set = 1;
+    }
+    if (pin_count > EXP_TRUST_PIN_MAX) return -1;
+    for (int i = 0; i < pin_count; i++)
+        if (exp_hex_n(pin_hex[i], s_pins[i].bytes, NODUS_KEY_BYTES) != 0) return -1;
+    s_pin_count = pin_count;
+    return 0;
+}
+
+static nodus_key_t s_builtin[NODUS_LIGHT_DEFAULT_NODE_COUNT];
+static int         s_builtin_count = 0;
+
+static void exp_trust_fill(nodus_client_config_t *cfg) {
+    if (!s_pin_count && !s_builtin_count) {
+        for (size_t i = 0; i < NODUS_LIGHT_DEFAULT_NODE_COUNT; i++)
+            if (exp_hex_n(NODUS_LIGHT_DEFAULT_NODES[i].pin_hex,
+                          s_builtin[s_builtin_count].bytes, NODUS_KEY_BYTES) == 0)
+                s_builtin_count++;
+    }
+    cfg->pinned_server_fps = s_pin_count ? s_pins : s_builtin;
+    cfg->pinned_server_fp_count = s_pin_count ? s_pin_count : s_builtin_count;
+    if (s_chain_id_set) memcpy(cfg->chain_id, s_chain_id, sizeof(cfg->chain_id));
+    else (void)exp_hex_n(NODUS_LIGHT_CHAIN_ID_HEX, cfg->chain_id, sizeof(cfg->chain_id));
+    cfg->has_chain_id = true;
+}
+
 struct exp_chain {
     exp_server_t     servers[EXP_CHAIN_MAX_SERVERS];
     int              count;
@@ -57,6 +120,9 @@ static int chain_connect(exp_chain_t *c, int idx) {
     strncpy(cfg.servers[0].ip, c->servers[idx].host, sizeof(cfg.servers[0].ip) - 1);
     cfg.servers[0].port = c->servers[idx].port;
     cfg.server_count = 1;
+    /* Any listed fingerprint is accepted at this address (design D3); the
+     * chain id is never replaced from what a node answers. */
+    exp_trust_fill(&cfg);
     /* auto_reconnect left false (zeroed) — exp_chain drives rotation
      * itself via exp_chain_rotate; a second, Nodus-internal reconnect
      * loop racing against that would be undiagnosable non-determinism. */

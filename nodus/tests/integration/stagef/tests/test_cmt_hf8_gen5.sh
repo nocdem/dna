@@ -663,6 +663,10 @@ deleg_amount() {
 }
 
 pin_of() { fp_of "$(node_keys "$1")"; }
+# A node refuses a client holding its own key (reflection, 4001 plan 4.4): a call
+# with node K's key dials the node after K. `msig sign` pins THAT node's
+# fingerprint (the pin names the node the session is with).
+next_node() { echo $(( $1 % STAGEF_COMMITTEE_SIZE + 1 )); }
 
 # rev3: vname_build LABEL EXPORT NAME --in NUL:AMT ... — `name register
 # --msig` of the genesis 2-of-3 vault (session node 5, signs nothing).
@@ -670,7 +674,7 @@ pin_of() { fp_of "$(node_keys "$1")"; }
 vname_build() {
     local label="$1" exp="$2" nm="$3" port
     shift 3
-    port=$(stagef_tcp_port 5)
+    port=$(stagef_tcp_port "$(next_node 5)")      # node 5's key dials node 6
     VB_LOG="$LOGD/vault_name_build_$label.log"; VB_RC=0
     "$CLI" -s 127.0.0.1 -p "$port" name register "$nm" --msig "$MSIG_DESC" \
         --keys "$(node_keys 5)" "$@" --export "$exp" --submit "127.0.0.1:$port" \
@@ -994,7 +998,7 @@ EXPM="$LOGD/vault_name_mixed.export"
 vname_build mixed "$EXPM" "$NAME_M" --in "$GNUL:$GAMT" --in "$mixed_coin"
 [ "$VB_RC" = 0 ] || die "the mixed-funding vault registration could not be BUILT (see $VB_LOG)"
 mslog="$LOGD/msig_sign_vault_mixed_node2.log"; msrc=0
-"$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port 2)" msig sign --pin "$(pin_of 2)" \
+"$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$(next_node 2)")" msig sign --pin "$(pin_of "$(next_node 2)")" \
     --keys "$(node_keys 2)" --in "$EXPM" --out "$LOGD/sig_vault_mixed_node2" > "$mslog" 2>&1 || msrc=$?
 cat "$mslog"
 [ "$msrc" != 0 ] || die "node2 SIGNED a vault name registration funded by its own coin (see $mslog)"
@@ -1008,7 +1012,7 @@ vname_build vault "$EXPV" "$NAME_V" --in "$GNUL:$GAMT"
 [ "$VB_RC" = 0 ] || die "the vault name registration could not be BUILT after H (see $VB_LOG)"
 for n in 2 3; do
     vslog="$LOGD/msig_sign_vault_node$n.log"
-    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$n")" msig sign --pin "$(pin_of "$n")" \
+    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$(next_node "$n")")" msig sign --pin "$(pin_of "$(next_node "$n")")" \
         --keys "$(node_keys "$n")" --in "$EXPV" --out "$LOGD/sig_vault_node$n" > "$vslog" 2>&1 \
         || { cat "$vslog" >&2; die "node$n could not sign the vault name registration (see $vslog)"; }
     grep -qF "signing a NAME REGISTRATION by 2-of-3 vault $MSIG_ADDR" "$vslog" \

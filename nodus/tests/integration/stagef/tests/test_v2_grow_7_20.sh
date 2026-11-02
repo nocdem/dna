@@ -781,7 +781,11 @@ for n in $(seq 1 $(( C * 2 / 3 + 1 ))); do KEYS="${KEYS:+$KEYS,}$(node_dir "$n")
 for n in $(seq 1 "$C"); do
     lg="$BASE_DIR/grow_cc_illegal_node$n.log"
     irc=0
-    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$n")" -i "$(node_dir 1)/identity" \
+    # 4001 plan 4.4 (operator 2026-11-02): node 1's key against node 1's own
+    # port is a reflection; for n=1 the same key dials node 2 (node 1's own
+    # CheckTx is then not exercised by this loop; node 2's is, twice).
+    dn="$n"; [ "$n" = 1 ] && dn=2
+    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$dn")" -i "$(node_dir 1)/identity" \
         v2-envelope chain-config --db "$SDB" --keys "$KEYS" --param 4 \
         --value "$ILLEGAL" --effective "$E_MID" --nonce $(( 77000 + n )) > "$lg" 2>&1 || irc=$?
     [ "$irc" != 0 ] || { cat "$lg" >&2; die "node $n ADMITTED a TARGET_ACTIVE_COUNT of $ILLEGAL (ceiling $V2_SET_MAX)"; }
@@ -830,7 +834,9 @@ cbA=$(cc_wait "$MID_TARGET" "$E_MID" "$E_TEN" "vote A") || exit 1
 ok "STEP 2 — vote A: target $MID_TARGET effective $E_MID committed at $cbA (networked approvals, verbs 40-41)"
 
 lgB="$BASE_DIR/grow_cc_voteB.log"; brc=0
-"$CLI" -s 127.0.0.1 -p "$PORT1" -i "$(node_dir 1)/identity" v2-envelope chain-config \
+# 4001 plan 4.4 (operator 2026-11-02): node 1's key against node 1's own port
+# is a reflection; the same key dials node 2.
+"$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port 2)" -i "$(node_dir 1)/identity" v2-envelope chain-config \
     --db "$SDB" --keys "$KEYS" --param 4 --value "$TOTAL" --effective "$E_GROW" \
     --nonce 77102 > "$lgB" 2>&1 || brc=$?
 [ "$brc" = 0 ] && grep -q 'accepted: mempool CheckTx approved' "$lgB" || { cat "$lgB" >&2; die "vote B (target $TOTAL at $E_GROW) was not admitted over the SAME offline path the $ILLEGAL refusal used — so that refusal proves nothing about governance"; }

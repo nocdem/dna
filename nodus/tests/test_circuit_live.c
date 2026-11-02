@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <time.h>
+#include "nodus_test_session.h"
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -78,7 +79,11 @@ static void *server_thread(void *arg) {
     snprintf(cmd, sizeof(cmd), "mkdir -p %s", config.data_path);
     system(cmd);
 
-    if (nodus_server_init(&server, &config) != 0) {
+    /* 4001 plan 4.2: a chain backend reporting an open chain and the test
+     * chain id, so the node accepts sessions (nodus_test_session.h). */
+    nodus_server_backends_t be;
+    nts_fake_chain_be(&be);
+    if (nodus_server_init_ex(&server, &config, &be) != 0) {
         fprintf(stderr, "server init failed\n");
         server_init_outcome(false);
         return NULL;
@@ -178,6 +183,7 @@ int main(void) {
     cfg.servers[0].port = 15001;
     cfg.server_count = 1;
     cfg.request_timeout_ms = 5000;
+    nts_trust(&cfg, &server.identity);
 
     nodus_client_t client_u1, client_u2;
     memset(&client_u1, 0, sizeof(client_u1));

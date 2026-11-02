@@ -298,6 +298,27 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg,
         }
         cfg->ws_port = (uint16_t)p;
     }
+    /* 4001 / WebSocket key-exchange line (nodus_server.h
+     * client_session_depth / client_session_workers; operator 2026-11-02
+     * "ayar dosyasında kalsın."). Absent = the code's defaults. A value that
+     * is not a positive integer refuses the start, like ws_port above. */
+    {
+        static const char *const keys[2] = {"client_session_depth",
+                                            "client_session_workers"};
+        uint32_t *dst[2] = {&cfg->client_session_depth,
+                            &cfg->client_session_workers};
+        for (int k = 0; k < 2; k++) {
+            if (!json_object_object_get_ex(root, keys[k], &val)) continue;
+            int64_t v = json_object_get_int64(val);
+            if (!json_object_is_type(val, json_type_int) || v < 1 || v > UINT32_MAX) {
+                QGP_LOG_ERROR(LOG_TAG_CFG, "%s must be a positive integer", keys[k]);
+                json_object_put(root);
+                return -1;
+            }
+            *dst[k] = (uint32_t)v;
+        }
+    }
+
     /* A "ws_origins" key left in an old nodus.json is ignored: the entry
      * no longer has an Origin list (nodus_ws.h). */
 

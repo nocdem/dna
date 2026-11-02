@@ -40,6 +40,8 @@ static bool chain_open(nodus_chain_backend_t *b) { return ((chain_t *)b)->known;
 static void status(nodus_chain_backend_t *b,nodus_t2_status_info_t *st) {
     if (!chain_open(b)) return;
     memcpy(st->chain_id,ci,32); st->block_height=((chain_t *)b)->height;
+    /* 4002 HELLO chain id = the id 4004 uses (approved A3, 4001 plan 2.3). */
+    memcpy(st->chain_id_v3,ci,32); st->chain_id_v3_valid=true;
 }
 static void peers(nodus_inter_role_list_t *out,bool va,bool st,uint64_t height) {
     memset(out,0,sizeof(*out)); out->height=height;
@@ -73,6 +75,7 @@ typedef struct { unsigned statuses,roles; } witness_t;
 static void wstatus(void *ctx,nodus_witness_ipc_status_t *st) {
     witness_t *w=ctx; w->statuses++; memset(st,0,sizeof(*st));
     st->chain_open=true; st->height=1; memcpy(st->chain_id,ci,32);
+    memcpy(st->chain_id_v3,ci,32); st->chain_id_v3_valid=true;   /* "c3" */
 }
 static int wroles(void *ctx,nodus_inter_role_list_t *out) {
     ((witness_t *)ctx)->roles++; peers(out,true,false,1); return 1;
@@ -311,6 +314,8 @@ static bool fixture_pending(nodus_chain_backend_t *b) { (void)b; return false; }
 static bool fixture_open(nodus_chain_backend_t *b) { (void)b; return true; }
 static void fixture_status(nodus_chain_backend_t *b, nodus_t2_status_info_t *out) {
     (void)b; memset(out->chain_id,0x42,32); out->block_height=1;
+    /* the id the 4001 / 4002 sessions carry (4001 plan 2.3) */
+    memset(out->chain_id_v3,0x42,32); out->chain_id_v3_valid=true;
 }
 static pthread_mutex_t fixture_lock=PTHREAD_MUTEX_INITIALIZER;
 static nodus_key_t fixture_peers[2];
@@ -554,6 +559,11 @@ int main(void) {
     cfg_a.servers[0].port = 16001; cfg_a.server_count = 1; cfg_a.request_timeout_ms = 8000;
     memcpy(&cfg_b, &cfg_a, sizeof(cfg_a));
     cfg_b.servers[0].port = 17001;
+    /* 4001 plan 4.2: each client trusts its own node and carries the fixture's chain id */
+    cfg_a.pinned_server_fps = &srv_a.identity.node_id; cfg_a.pinned_server_fp_count = 1;
+    cfg_b.pinned_server_fps = &srv_b.identity.node_id; cfg_b.pinned_server_fp_count = 1;
+    memset(cfg_a.chain_id, 0x42, 32); cfg_a.has_chain_id = true;
+    memset(cfg_b.chain_id, 0x42, 32); cfg_b.has_chain_id = true;
 
     nodus_client_t cl_u1, cl_u2;
     memset(&cl_u1, 0, sizeof(cl_u1)); memset(&cl_u2, 0, sizeof(cl_u2));

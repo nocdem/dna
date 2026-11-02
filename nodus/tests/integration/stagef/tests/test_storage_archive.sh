@@ -567,6 +567,12 @@ fp_of()  { cat "$1/nodus.fp"; }                 # $1 = identity dir
 fp_lc()  { tr 'A-F' 'a-f' < "$1/nodus.fp"; }
 node_keys() { echo "$(stagef_node_dir "$1")/identity"; }
 node_log()  { stagef_node_log "$1"; }
+# dial_for NODE KEYS_DIR — the node a call holding KEYS_DIR dials: NODE, except
+# that a node refuses a client holding its own key (reflection, 4001 plan 4.4,
+# operator 2026-11-02), so a node's own key goes to the next node instead.
+dial_for() {
+    if [ "$2" = "$(node_keys "$1")" ]; then echo $(( $1 % N + 1 )); else echo "$1"; fi
+}
 
 node_runs_srv() {          # storage: the one build (no OLD/NEW pair)
     local pat pid
@@ -581,7 +587,7 @@ spend_intent() { awk -F= '/^  intent_id=/{print $2; exit}' "$1"; }
 
 claim_leaf() {
     local keys="$1" node="$2" port db fp log h wrc
-    port=$(stagef_tcp_port "$node"); db=$(db_of "$node"); fp=$(fp_of "$keys")
+    port=$(stagef_tcp_port "$(dial_for "$node" "$keys")"); db=$(db_of "$node"); fp=$(fp_of "$keys")
     log="$LOGD/claim_$(basename "$(dirname "$keys")").log"
     "$CLI" -s 127.0.0.1 -p "$port" v2-claim --config "$CONF" --db "$db" \
         --keys "$keys" --submit "127.0.0.1:$port" > "$log" 2>&1 \
@@ -833,7 +839,7 @@ consent_file_ok() {
 # NODE's port, MODE dry-run | submit. Sets RG_RC, RG_OUT.
 st_register() {
     local n="$1" keys="$2" cf="$3" mode="$4" log="$5" port
-    port=$(stagef_tcp_port "$n"); RG_RC=0
+    port=$(stagef_tcp_port "$(dial_for "$n" "$keys")"); RG_RC=0
     if [ "$mode" = submit ]; then
         "$CLI" -s 127.0.0.1 -p "$port" storage register --keys "$keys" --consent "$cf" \
             --submit "127.0.0.1:$port" > "$log" 2>&1 || RG_RC=$?
@@ -847,10 +853,14 @@ st_register() {
 
 # status_of NODE KEYS_NODE [--fp FP] — `storage status` on NODE's own port
 status_of() {
-    local n="$1" kn="$2" log src=0
+    local n="$1" kn="$2" log src=0 dn
     shift 2
     log="$LOGD/status_node${kn}_on_node${n}_$(tip_of "$n").log"
-    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$n")" -i "$(node_keys "$kn")" \
+    # 4001 plan 4.4 (operator 2026-11-02): a node's key against that node's own
+    # port is refused as a reflection; with the same key the next node is asked
+    # instead (the answer is the chain's, equal on every node at a tip).
+    dn="$n"; [ "$n" = "$kn" ] && dn=$(( n % N + 1 ))
+    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$dn")" -i "$(node_keys "$kn")" \
         storage status "$@" > "$log" 2>&1 || src=$?
     ST_RC="$src"
     ST_OUT=$(cat "$log")
@@ -906,9 +916,9 @@ claim_leaf "$(node_keys "$ST_B")" "$ST_B"
 # (utxo_set.tx_hash), never by "the owner has a coin".
 if [ -n "$OWN_KEYS" ]; then
     flog="$LOGD/fund_owner.log"; frc=0
-    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$ST_B")" v2-envelope spend \
+    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$(dial_for "$ST_B" "$(node_keys "$ST_B")")")" v2-envelope spend \
         --keys "$(node_keys "$ST_B")" --to "$OWNER" --amount "$OWNER_FUND" \
-        --submit "127.0.0.1:$(stagef_tcp_port "$ST_B")" > "$flog" 2>&1 || frc=$?
+        --submit "127.0.0.1:$(stagef_tcp_port "$(dial_for "$ST_B" "$(node_keys "$ST_B")")")" > "$flog" 2>&1 || frc=$?
     cat "$flog"
     [ "$frc" = 0 ] || die "node$ST_B's funding spend to the test owner was refused (rc $frc, see $flog)"
     f_intent=$(spend_intent "$flog")
@@ -1324,8 +1334,8 @@ cat "$xlog"
 echo "[ok] the CLI refused an exit of node$ST_B by a non-owner — nothing built"
 # 11b. the owner's exit
 xlog="$LOGD/exit_node$ST_B.log"; xrc=0
-"$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$ST_B")" storage exit --keys "$KEYS_B" \
-    --node-fp "$FP_B" --submit "127.0.0.1:$(stagef_tcp_port "$ST_B")" > "$xlog" 2>&1 || xrc=$?
+"$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$(dial_for "$ST_B" "$KEYS_B")")" storage exit --keys "$KEYS_B" \
+    --node-fp "$FP_B" --submit "127.0.0.1:$(stagef_tcp_port "$(dial_for "$ST_B" "$KEYS_B")")" > "$xlog" 2>&1 || xrc=$?
 cat "$xlog"
 [ "$xrc" = 0 ] || die "storage exit of node$ST_B by its owner exited $xrc (see $xlog)"
 grep -q '^accepted: mempool CheckTx approved' "$xlog" || die "storage exit: no CheckTx approval line (see $xlog)"

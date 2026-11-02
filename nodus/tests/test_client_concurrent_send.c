@@ -16,8 +16,14 @@
  * gets work) through one connected client. Every put must return 0, every
  * txn must arrive exactly once, and the total must be SENDERS * PUTS.
  *
- * Requires: a default build; no environment. Leaves nothing behind (one
- * loopback port, closed at exit).
+ * Handshake (4001 plan 4.2, step 7): the fake node is a secret-connection
+ * responder (nodus_test_session.h) and the client carries its fingerprint and
+ * the test chain id; the old hello / auth answers are gone. A node that never
+ * authenticated would fail the connect FATAL, so a pass needs the real session.
+ *
+ * Requires: a default build; no compile flags, no environment (ASan/UBSan run
+ * by the orchestrator is the useful one: this is the write-lock race). Leaves
+ * nothing behind (one loopback port, closed at exit).
  * How it can lie: the race needs the drain and a send to overlap; on an idle
  * machine with an enormous socket buffer one run could pass on the old code
  * too. ROUNDS repeats the whole burst so the window is crossed many times;
@@ -29,6 +35,7 @@
 #include "protocol/nodus_tier2.h"
 #include "crypto/nodus_identity.h"
 #include "crypto/nodus_sign.h"
+#include "nodus_test_session.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -57,6 +64,8 @@ static struct {
     atomic_int    seen[MAX_TXN];
     atomic_int    puts;
     atomic_int    out_of_range;
+    nodus_identity_t node;
+    nodus_inter_session_module_t *mod;
 } g_fake;
 
 static void on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
@@ -66,17 +75,7 @@ static void on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
     memset(&msg, 0, sizeof(msg));
     if (nodus_t2_decode(payload, len, &msg) != 0) { nodus_t2_msg_free(&msg); return; }
     size_t out = 0;
-    if (strcmp(msg.method, "hello") == 0) {
-        uint8_t nonce[NODUS_NONCE_LEN];
-        nodus_random(nonce, NODUS_NONCE_LEN);
-        if (nodus_t2_challenge(msg.txn_id, nonce, g_fake.buf, FAKE_BUF, &out) == 0)
-            nodus_tcp_send(conn, g_fake.buf, out);
-    } else if (strcmp(msg.method, "auth") == 0) {
-        uint8_t token[NODUS_SESSION_TOKEN_LEN];
-        memset(token, 0x5a, sizeof(token));
-        if (nodus_t2_auth_ok(msg.txn_id, token, g_fake.buf, FAKE_BUF, &out) == 0)
-            nodus_tcp_send(conn, g_fake.buf, out);
-    } else if (strcmp(msg.method, "put") == 0) {
+    if (strcmp(msg.method, "put") == 0) {
         atomic_fetch_add(&g_fake.puts, 1);
         if (msg.txn_id < MAX_TXN) atomic_fetch_add(&g_fake.seen[msg.txn_id], 1);
         else atomic_fetch_add(&g_fake.out_of_range, 1);
@@ -126,6 +125,12 @@ int main(void) {
         return 1;
     }
     g_fake.tcp->on_frame = on_frame;
+    /* The fake node is a secret-connection responder (nodus_test_session.h). */
+    if (nodus_identity_generate(&g_fake.node) != 0 ||
+        !(g_fake.mod = nts_attach(g_fake.tcp, &g_fake.node))) {
+        printf("FATAL: fake node session module\n");
+        return 1;
+    }
     if (nodus_tcp_listen(g_fake.tcp, "127.0.0.1", 0) != 0 ||
         pthread_create(&g_fake.tid, NULL, fake_thread, NULL) != 0) {
         printf("FATAL: fake node listen\n");
@@ -141,6 +146,7 @@ int main(void) {
     cfg.server_count = 1;
     cfg.connect_timeout_ms = 3000;
     cfg.request_timeout_ms = 20000;
+    nts_trust(&cfg, &g_fake.node);
     if (!id || !client || nodus_identity_generate(id) != 0 ||
         nodus_client_init(client, &cfg, id) != 0 ||
         nodus_client_connect(client) != 0 || !nodus_client_is_ready(client)) {
@@ -192,6 +198,8 @@ int main(void) {
     atomic_store(&g_fake.stop, true);
     pthread_join(g_fake.tid, NULL);
     nodus_tcp_close(g_fake.tcp);
+    nodus_inter_session_free(g_fake.mod);
+    nodus_identity_clear(&g_fake.node);
     free(g_fake.tcp);
     free(g_fake.buf);
 

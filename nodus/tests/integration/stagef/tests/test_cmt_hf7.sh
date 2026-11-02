@@ -439,6 +439,10 @@ tip_of() { stagef_cmt_tip "$(db_of "$1")"; }
 node_keys() { echo "$(stagef_node_dir "$1")/identity"; }
 node_log()  { stagef_node_log "$1"; }
 pin_of()    { cat "$(node_keys "$1")/nodus.fp"; }
+# A node refuses a client holding its own key (reflection, 4001 plan 4.4): a call
+# with node K's key dials the node after K. `msig sign` pins THAT node's
+# fingerprint (the pin names the node the session is with).
+next_node() { echo $(( $1 % STAGEF_COMMITTEE_SIZE + 1 )); }
 
 node_runs_srv() {
     local pat pid
@@ -700,9 +704,9 @@ prune_inv() {
 # Sets MB_INTENT / MB_EXPIRY.
 msig_build() {
     local label="$1" exp="$2" log="$LOGD/msig_build_$1.log"
-    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$SPENDER")" v2-envelope spend --msig "$MSIG_DESC" \
+    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$(next_node "$SPENDER")")" v2-envelope spend --msig "$MSIG_DESC" \
         --keys "$(node_keys "$SPENDER")" --in "$GNUL:$GAMT" --to "$FP_SPENDER" \
-        --amount "$GSEND" --export "$exp" --submit "127.0.0.1:$(stagef_tcp_port "$SPENDER")" \
+        --amount "$GSEND" --export "$exp" --submit "127.0.0.1:$(stagef_tcp_port "$(next_node "$SPENDER")")" \
         > "$log" 2>&1 || { cat "$log" >&2; die "$label: the unsigned 2-of-3 envelope could not be BUILT"; }
     cat "$log"
     MB_INTENT=$(awk '/^ *intent_id=/{sub(/^ *intent_id=/,""); print; exit}' "$log")
@@ -715,7 +719,7 @@ msig_build() {
 # pinned to its fingerprint (test_cmt_multisig.sh stage 5)
 msig_sign() {
     local label="$1" exp="$2" n="$3" log="$LOGD/msig_sign_$1_node$3.log"
-    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$n")" msig sign --pin "$(pin_of "$n")" \
+    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$(next_node "$n")")" msig sign --pin "$(pin_of "$(next_node "$n")")" \
         --keys "$(node_keys "$n")" --in "$exp" --out "$LOGD/sig_$1_node$n" > "$log" 2>&1 \
         || { cat "$log" >&2; die "$label: node $n could not sign"; }
     [ -s "$LOGD/sig_$1_node$n" ] || die "$label: node $n wrote no signature file"
@@ -727,6 +731,7 @@ msig_combine() {
     local log="$1" exp="$2" sn="$3" s args=()
     shift 3
     for s in "$@"; do args+=(--sig "$s"); done
+    [ "$sn" = "$SPENDER" ] && sn=$(next_node "$SPENDER")   # the spender's key never dials its own node
     MC_RC=0
     "$CLI" msig combine --in "$exp" "${args[@]}" --keys "$(node_keys "$SPENDER")" \
         --submit "127.0.0.1:$(stagef_tcp_port "$sn")" > "$log" 2>&1 || MC_RC=$?

@@ -270,15 +270,6 @@ int nodus_server_inter_sweep_orphans(nodus_server_t *srv, uint64_t now_ms,
     return freed;
 }
 
-static bool session_check_token(nodus_session_t *sess, const uint8_t *token) {
-    if (!sess->authenticated || !token) return false;
-    /* Constant-time comparison to prevent timing side-channel (HIGH-11) */
-    volatile uint8_t diff = 0;
-    for (size_t i = 0; i < NODUS_SESSION_TOKEN_LEN; i++)
-        diff |= sess->token[i] ^ token[i];
-    return diff == 0;
-}
-
 /* ── Phase 1: Send diagnostics dump ──────────────────────────────── */
 /* Periodic per-peer counter dump so we can correlate buf_ensure failures
  * with throughput and identify slow peers. No behavior change — pure
@@ -959,9 +950,10 @@ static void handle_t2_servers(nodus_server_t *srv, nodus_session_t *sess,
 
 #define IDLE_SWEEP_INTERVAL   30   /* seconds between sweeps */
 #define IDLE_TIMEOUT_AUTH    180   /* seconds for authenticated connections (client pings every 60s) */
-#define IDLE_TIMEOUT_UNAUTH   15   /* seconds for unauthenticated connections */
-#define IDLE_ABSOLUTE_UNAUTH  30   /* absolute bound from connected_at while unauthenticated:
-                                    * a slow trickle resets last_activity but not this */
+/* No unauthenticated branch for srv->tcp: the secret-connection module's
+ * 3 s handshake deadline (accept or Upgrade completion to open) closes a
+ * connection that does not authenticate, and nodus_tcp_ws_sweep closes an
+ * Upgrade that never completes (approved 4001 plan 2.2 d). */
 
 static void idle_timeout_sweep(nodus_server_t *srv) {
     uint64_t now = nodus_time_now();
@@ -975,18 +967,16 @@ static void idle_timeout_sweep(nodus_server_t *srv) {
         if (!c || c->state != NODUS_CONN_CONNECTED) continue;
         uint64_t idle = now - c->last_activity;
         bool authed = srv->sessions[c->slot].authenticated;
-        uint64_t timeout = authed ? IDLE_TIMEOUT_AUTH : IDLE_TIMEOUT_UNAUTH;
-        bool abs_expired = !authed &&
-                           now - c->connected_at > IDLE_ABSOLUTE_UNAUTH;
-        if (idle > timeout || abs_expired) {
+        if (!authed) continue;   /* deadline / Upgrade sweep own it */
+        uint64_t timeout = IDLE_TIMEOUT_AUTH;
+        if (idle > timeout) {
             char fp_hex[33] = {0};
-            if (authed)
-                for (int j = 0; j < 16; j++)
-                    snprintf(fp_hex + j*2, sizeof(fp_hex) - j*2, "%02x", srv->sessions[c->slot].client_fp.bytes[j]);
+            for (int j = 0; j < 16; j++)
+                snprintf(fp_hex + j*2, sizeof(fp_hex) - j*2, "%02x", srv->sessions[c->slot].client_fp.bytes[j]);
             fprintf(stderr, "IDLE_SWEEP: slot=%d ip=%s idle=%lus timeout=%lus auth=%s fp=%s\n",
                     c->slot, c->ip,
                     (unsigned long)idle, (unsigned long)timeout,
-                    authed ? "yes" : "no", fp_hex);
+                    "yes", fp_hex);
             nodus_tcp_disconnect(&srv->tcp, c);
         }
     }
@@ -1011,10 +1001,14 @@ static void idle_timeout_sweep(nodus_server_t *srv) {
 
 void nodus_server_inter_chain_refresh(nodus_server_t *srv) {
     srv->inter_chain_known=false;
+    srv->inter_chain_id_valid=false;
     if (!srv->chain || !srv->chain->ops->chain_open(srv->chain)) return;
     nodus_t2_status_info_t info={0};
     srv->chain->ops->status(srv->chain,&info);
-    memcpy(srv->inter_chain_id,info.chain_id,32);
+    /* A3 "chain_id as on 4004": the version-3 id (or a joiner's pin), not the
+     * legacy 16-byte status chain_id. Unknown -> chain_id_valid stays false. */
+    memcpy(srv->inter_chain_id,info.chain_id_v3,32);
+    srv->inter_chain_id_valid=info.chain_id_v3_valid;
     srv->inter_chain_height=info.block_height;
     srv->inter_chain_known=true;
     if (srv->chain->ops->roles && (!srv->inter_roles_have ||
@@ -1028,7 +1022,7 @@ void nodus_server_inter_chain_refresh(nodus_server_t *srv) {
 
 static bool server_inter_status(void *ctx, uint8_t ci[32], uint64_t *height) {
     const nodus_server_t *srv=ctx;
-    if (!srv->inter_chain_known) return false;
+    if (!srv->inter_chain_known || !srv->inter_chain_id_valid) return false;
     memcpy(ci,srv->inter_chain_id,32); *height=srv->inter_chain_height;
     return true;
 }
@@ -1287,6 +1281,12 @@ void nodus_server_inter_disconnected(nodus_server_t *srv, nodus_tcp_conn_t *conn
 
 static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
                           const uint8_t *payload, size_t len) {
+    /* Frames reach here only on an OPEN secret-connection session, after the
+     * client key was authenticated and made the session identity
+     * (client_authenticated, nodus_auth_session_authenticated). A frame on
+     * any other state is dropped unanswered: nothing is parsed before open. */
+    if (!sess->authenticated) return;
+
     nodus_tier2_msg_t msg;
     memset(&msg, 0, sizeof(msg));
 
@@ -1296,51 +1296,11 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
 
-    /* Pre-auth: ONLY hello and auth allowed on client port */
-    if (!sess->authenticated) {
-        if (strcmp(msg.method, "hello") == 0) {
-            sess->proto_version = msg.proto_version;
-            nodus_auth_handle_hello(srv, sess, &msg.pk, &msg.fp, msg.txn_id);
-        } else if (strcmp(msg.method, "auth") == 0) {
-            /* D-18: an invalid signature, or `auth` with no pending
-             * challenge, is answered (inside the handler) and then closes
-             * the connection. Safe here: dispatch_t2 runs from on_frame
-             * inside nodus_tcp_poll (poll_depth > 0), so conn_free only
-             * parks the conn and rbuf (which `payload` points into) lives
-             * until the poll returns; try_parse_frames stops on
-             * close_pending. The disconnect clears `sess` (session_clear);
-             * after it only the stack-local `msg` is touched. */
-            if (nodus_auth_handle_auth(srv, sess, &msg.sig, msg.txn_id) != 0 &&
-                sess->conn)
-                nodus_tcp_disconnect(&srv->tcp, sess->conn);
-        } else {
-            size_t rlen = 0;
-            nodus_t2_error(msg.txn_id, NODUS_ERR_NOT_AUTHENTICATED,
-                            "authenticate first", resp_buf, sizeof(resp_buf), &rlen);
-            nodus_tcp_send(sess->conn, resp_buf, rlen);
-        }
-        nodus_t2_msg_free(&msg);
-        return;
-    }
-
-    /* Post-auth key exchange: key_init has no token (transition message).
-     * Faz 1 KEM migration: dispatch by msg.key_alg (0 = round-3 default). */
-    if (strcmp(msg.method, "key_init") == 0 && msg.has_kyber_ct && msg.has_key_nonce) {
-        nodus_auth_handle_key_init_alg(srv, sess, msg.key_alg,
-                                        msg.kyber_ct, msg.key_nonce, msg.txn_id);
-        nodus_t2_msg_free(&msg);
-        return;
-    }
-
-    /* Post-auth: verify session token */
-    if (!msg.has_token || !session_check_token(sess, msg.token)) {
-        size_t rlen = 0;
-        nodus_t2_error(msg.txn_id, NODUS_ERR_NOT_AUTHENTICATED,
-                        "invalid token", resp_buf, sizeof(resp_buf), &rlen);
-        nodus_tcp_send(sess->conn, resp_buf, rlen);
-        nodus_t2_msg_free(&msg);
-        return;
-    }
+    /* A6: the session token is no longer a gate. Identity is the
+     * connection's authenticated key, as in the reference
+     * (transport.go:333-339); a request token is neither required nor
+     * compared. `hello`, `auth` and `key_init` are not 4001 methods any
+     * more and fall through to the unknown-method answer below. */
 
     /* P2P-PORT F5 (witness-port session design §2R R16; p2p-port design
      * §3): the `w_*` witness methods are REFUSED on the client port. The
@@ -1576,10 +1536,8 @@ static void session_dht_closed(nodus_server_t *srv, nodus_tcp_conn_t *conn,
 
 static void on_tcp_accept(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_server_t *srv = (nodus_server_t *)ctx;
-    /* D-20: until auth succeeds only hello / auth may arrive; a frame
-     * declaring more than NODUS_PREAUTH_PAYLOAD_MAX closes the connection
-     * at its header. nodus_auth_handle_auth clears the cap (0). */
-    conn->max_payload = NODUS_PREAUTH_PAYLOAD_MAX;
+    /* No pre-auth frame cap (the D-20 NODUS_PREAUTH_PAYLOAD_MAX): nothing is
+     * parsed before the secret-connection session opens. */
     nodus_session_t *sess = session_for_conn(srv, conn);
     if (sess) {
         session_chain_closed(srv, conn);
@@ -1588,6 +1546,19 @@ static void on_tcp_accept(nodus_tcp_conn_t *conn, void *ctx) {
         sess->dht_gen = session_gen_next(srv);
         session_dht_opened(srv, conn, sess->dht_gen);
     }
+}
+
+/* The module's on_authenticated for 4001 and the WebSocket entry (loop
+ * thread, after pin and reject-self): make the authenticated key the session
+ * identity, then open the session. A failure closes the connection. */
+static void client_authenticated(nodus_tcp_conn_t *conn, const nodus_pubkey_t *pk,
+                                 void *ctx) {
+    nodus_server_t *srv = (nodus_server_t *)ctx;
+    nodus_session_t *sess = session_for_conn(srv, conn);
+    if (!sess || sess->conn != conn ||
+        nodus_auth_session_authenticated(srv, sess, pk) != 0 ||
+        nodus_inter_session_open(conn) != 0)
+        nodus_tcp_disconnect(&srv->tcp, conn);
 }
 
 static void on_tcp_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
@@ -1632,7 +1603,9 @@ static void on_tcp_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
         session_chain_closed(srv, conn);
         uint64_t gen = sess->dht_gen;
         session_clear(sess);
-        session_dht_closed(srv, conn, gen);
+        /* gen 0: closed before on_accept ever ran (the module refused the
+         * connection at start); the DHT was never told of it. */
+        if (gen) session_dht_closed(srv, conn, gen);
     }
 }
 
@@ -2263,6 +2236,35 @@ int nodus_server_init_ex(nodus_server_t *srv, const nodus_server_config_t *confi
     srv->inter_session = nodus_inter_session_new(&srv->inter_tcp, &inter_cfg);
     if (!srv->inter_session) goto fail;
 
+    /* The client port 4001 and its WebSocket entry run the same secret-
+     * connection module as 4002 (approved 4001 plan 2.2 a): this node's
+     * identity with ML-KEM (D5), proto_ver 4001, the chain id 4004 uses
+     * (no id -> no new session), no admission by role (D8 is 4002 only),
+     * no inbound cap (design Q3; the transport's own limits stay). It is
+     * attached before either listener exists. Queue depth and workers: the
+     * config values, or the defaults (nodus_server.h). */
+    {
+        uint32_t depth = config->client_session_depth
+                       ? config->client_session_depth
+                       : NODUS_CLIENT_SESSION_DEPTH_DEFAULT;
+        uint32_t workers = config->client_session_workers
+                         ? config->client_session_workers
+                         : NODUS_CLIENT_SESSION_WORKERS_DEFAULT;
+        nodus_inter_session_config_t client_cfg = {
+            .identity = &srv->identity,
+            .proto_ver = CMT_P2P_SC_PROTO_VER_4001,
+            .inbound_depth = depth,
+            .outbound_depth = depth,
+            .workers = workers,
+            .now_ms = config->client_session_now_ms,
+            .now_ctx = config->client_session_now_ctx,
+            .on_authenticated = client_authenticated, .auth_ctx = srv,
+            .status = server_inter_status, .admission_ctx = srv
+        };
+        srv->client_session = nodus_inter_session_new(&srv->tcp, &client_cfg);
+        if (!srv->client_session) goto fail;
+    }
+
     /* Bind TCP (client port) */
     if (nodus_tcp_listen(&srv->tcp, config->bind_ip, config->tcp_port) != 0) {
         fprintf(stderr, "Failed to listen on TCP %s:%d (%s)\n",
@@ -2601,6 +2603,8 @@ fail:
     srv->inter_session = NULL;
     if (have_udp) nodus_udp_close(&srv->udp);
     if (have_tcp) nodus_tcp_close(&srv->tcp);
+    nodus_inter_session_free(srv->client_session);
+    srv->client_session = NULL;
     /* The DHT's databases (those it opened) and its batch-forward epoll */
     srv->dht->ops->close(srv->dht);
     srv->dht = NULL;
@@ -2795,6 +2799,8 @@ void nodus_server_close(nodus_server_t *srv) {
     nodus_channel_server_close(&srv->ch_server);
 #endif
     nodus_tcp_close(&srv->tcp);
+    nodus_inter_session_free(srv->client_session);
+    srv->client_session = NULL;
     nodus_tcp_close(&srv->inter_tcp);
     nodus_inter_session_free(srv->inter_session);
     srv->inter_session = NULL;

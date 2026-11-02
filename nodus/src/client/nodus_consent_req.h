@@ -86,6 +86,21 @@ int nodus_consent_req_read_config(const char *path, char *identity_path,
                                   size_t cap, uint16_t *tcp_port,
                                   char *err, size_t errcap);
 
+/* What the node's own loader uses when its config has no "data_path". */
+#define NODUS_CONSENT_REQ_DEFAULT_DATA_PATH "/var/lib/nodus"
+
+/**
+ * As nodus_consent_req_read_config, and also the node's "data_path" (the
+ * directory of witness.sock) into data_path/data_cap, read from the same key
+ * the node's loader reads, with the loader's default when the key is absent.
+ * data_path NULL = not wanted (then this is the function above). Outputs are
+ * written only on success. Approved 4001 plan 3.6.
+ */
+int nodus_consent_req_read_config_ex(const char *path, char *identity_path,
+                                     size_t cap, uint16_t *tcp_port,
+                                     char *data_path, size_t data_cap,
+                                     char *err, size_t errcap);
+
 /**
  * The confirmation answer: 1 when the line (trailing "\r\n" ignored) is
  * "y" or "yes" in any case, 0 for anything else, including NULL.

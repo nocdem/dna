@@ -1824,6 +1824,22 @@ add_executable(test_inter_session tests/test_inter_session.c)
 target_link_libraries(test_inter_session nodus dsa kem nodus crypto)
 add_test(NAME test_inter_session COMMAND test_inter_session)
 
+# 4001 session glue, transport level (approved plan 2026-11-02-4001-ws-session-
+# build-plan 4.1): trusted list, initiator without ML-KEM, write-lock owner,
+# and the WebSocket entry. Kernel-chosen loopback ports; no environment.
+add_executable(test_client_session tests/test_client_session.c)
+target_link_libraries(test_client_session nodus dsa kem nodus crypto pthread)
+add_test(NAME test_client_session COMMAND test_client_session)
+
+add_executable(test_ws_session tests/test_ws_session.c)
+target_link_libraries(test_ws_session nodus dsa kem nodus crypto)
+add_test(NAME test_ws_session COMMAND test_ws_session)
+
+# Load measurement of the 4001 key-exchange line (plan 4.5). A DRIVER, not a
+# test: no add_test, run by hand and alone (see the file header).
+add_executable(bench_4001_session_load tests/bench_4001_session_load.c)
+target_link_libraries(bench_4001_session_load nodus dsa kem nodus crypto pthread)
+
 add_executable(test_inter_admission tests/test_inter_role_split.c)
 target_compile_definitions(test_inter_admission PRIVATE NODUS_TEST_ADMISSION=1)
 target_link_libraries(test_inter_admission nodus dsa kem nodus crypto)
@@ -1921,7 +1937,8 @@ add_test(NAME test_inter_pending_replay COMMAND test_inter_pending_replay)
 # 2026-07-21 parallel-safety: every server-spawning test now uses a FULLY
 # explicit, test-unique port set (test_server 140xx, test_circuit_live
 # 150xx, test_client 151xx, test_server_init_fail_closes 152xx,
-# test_ws_server 153xx, test_client_pin 154xx,
+# test_ws_server 153xx, test_client_pin 154xx, test_client_session 15500-15505
+# and bench_4001_session_load 15510-15515 (both fixed-port: not in parallel),
 # test_circuit_cross_live 16xxx/17xxx) — an unset peer/witness port made
 # nodus_server_init bind the production defaults 4002/4004, which collided
 # under `ctest -j`. No shared ports remain, so no RESOURCE_LOCK is needed.

@@ -311,6 +311,10 @@ int faucet_node_real_open(const faucet_cfg_t *cfg, const nodus_identity_t *id,
     n->ccfg.request_timeout_ms = RPC_TIMEOUT_MS;
     n->ccfg.pinned_server_fps = &n->pin;
     n->ccfg.pinned_server_fp_count = 1;
+    /* The 4001 secret connection carries the chain id (design A3): the one
+     * chain this faucet serves, required by the config. */
+    memcpy(n->ccfg.chain_id, cfg->chain_id, sizeof(n->ccfg.chain_id));
+    n->ccfg.has_chain_id = true;
     uint8_t raw[64];
     if (qgp_sha3_512(id->pk.bytes, NODUS_PK_BYTES, raw) != 0) {
         pthread_mutex_destroy(&n->mu);

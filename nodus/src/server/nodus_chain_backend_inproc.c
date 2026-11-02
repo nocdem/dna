@@ -16,8 +16,12 @@
 #include "witness/nodus_witness_p2p.h"         /* the 4004 listen port (log) */
 #include "witness/nodus_witness_network_file.h" /* nodus_witness_check_chain_pin */
 
+#include "crypto/utils/qgp_log.h"
+
 #include <stdlib.h>
 #include <string.h>
+
+#define LOG_TAG "CHAIN_INPROC"
 
 typedef struct {
     nodus_chain_backend_t   base;       /* first member: ops */
@@ -25,14 +29,35 @@ typedef struct {
      * the witness that points at it (nodus_witness_t.host). */
     nodus_witness_host_t    host;
     nodus_witness_t        *w;
+    /* The node's own tools (approved 4001 plan 2.4, D9/A12): in the combined
+     * process the witness also listens on <data_path>/witness.sock for the
+     * `ipc_tool` connection kind ONLY (ipc_hello / ipc_ctl belong to a
+     * separate core). NULL when the socket could not be opened. */
+    nodus_witness_ipc_t    *tools;
+    /* The server's session lookup, wrapped so a delayed reply (dnac_cc_collect)
+     * also finds a tool connection. */
+    nodus_witness_find_session_conn_fn  orig_find;
+    void                               *orig_ctx;
 } inproc_backend_t;
 
 static nodus_witness_t *inproc_w(nodus_chain_backend_t *b) {
     return ((inproc_backend_t *)b)->w;
 }
 
+static struct nodus_tcp_conn *inproc_find_session_conn(
+        void *ctx, const uint8_t pk[NODUS_PK_BYTES],
+        const uint8_t token[NODUS_SESSION_TOKEN_LEN]) {
+    inproc_backend_t *ib = (inproc_backend_t *)ctx;
+    struct nodus_tcp_conn *c = ib->tools
+        ? nodus_witness_ipc_find_session_conn(ib->tools, pk, token) : NULL;
+    if (c) return c;
+    return ib->orig_find ? ib->orig_find(ib->orig_ctx, pk, token) : NULL;
+}
+
 static void inproc_tick(nodus_chain_backend_t *b) {
-    nodus_witness_tick(inproc_w(b));
+    inproc_backend_t *ib = (inproc_backend_t *)b;
+    nodus_witness_tick(ib->w);
+    if (ib->tools) nodus_witness_ipc_poll(ib->tools, 0);
 }
 
 /* The witness polls its own 4004 host inside the tick; nothing here for
@@ -99,6 +124,8 @@ static void inproc_session_closed(nodus_chain_backend_t *b,
 static void inproc_close(nodus_chain_backend_t *b) {
     inproc_backend_t *ib = (inproc_backend_t *)b;
 
+    nodus_witness_ipc_free(ib->tools);
+    ib->tools = NULL;
     nodus_witness_close(ib->w);
     free(ib->w);
     free(ib);
@@ -146,6 +173,34 @@ int nodus_chain_backend_inproc_open(const nodus_witness_host_t *host,
         free(ib->w);
         free(ib);
         return -1;
+    }
+
+    /* The node's own tools: witness.sock, tool kind only. A failure here
+     * (for example a separate nodus-witness already listens) costs the
+     * tools, never the node's chain role: it is logged and the backend
+     * opens without the socket. */
+    {
+        nodus_witness_ipc_handlers_t th;
+        char sock[NODUS_TCP_UNIX_PATH_MAX];
+        nodus_witness_ipc_handlers_for(ib->w, &th);
+        ib->tools = nodus_witness_ipc_new_tools(&th);
+        if (ib->tools &&
+            (nodus_witness_ipc_sock_path(ib->w->data_path, sock, sizeof(sock)) != 0 ||
+             nodus_witness_ipc_listen(ib->tools, sock) != 0)) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "the node's own tool socket (witness.sock) "
+                          "could not be opened — chain-config / consent / node "
+                          "package tools are unavailable on this node");
+            nodus_witness_ipc_free(ib->tools);
+            ib->tools = NULL;
+        } else if (!ib->tools) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "the node's own tool socket could not be created");
+        }
+        if (ib->tools) {
+            ib->orig_find = ib->host.find_session_conn;
+            ib->orig_ctx  = ib->host.ctx;
+            ib->host.find_session_conn = inproc_find_session_conn;
+            ib->host.ctx = ib;
+        }
     }
     *out = &ib->base;
     return 0;

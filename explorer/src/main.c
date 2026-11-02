@@ -45,9 +45,19 @@ static void handle_stop_signal(int sig) {
     g_stop = 1;
 }
 
+/* exp_chain.c: the 4001 trusted list / chain id override (exp_chain.h is
+ * outside this change's file list, so the prototype is here). */
+int exp_chain_trust_override(const char *chain_id_hex, const char *const *pin_hex,
+                             int pin_count);
+
+#define EXPLORERD_PIN_MAX 16
+
 static void print_usage(const char *prog) {
     fprintf(stderr,
-        "Usage: %s [--config PATH] [--db PATH] [--rewards-db PATH] [--port N] [--once] [--verify-index] [--version]\n",
+        "Usage: %s [--config PATH] [--db PATH] [--rewards-db PATH] [--port N] [--once] [--verify-index]\n"
+        "          [--pin HEX128]... [--chain-id HEX64] [--version]\n"
+        "  --pin / --chain-id replace the built-in trusted node list / chain id for this run;\n"
+        "  after a chain reset, give the new chain id here.\n",
         prog);
 }
 
@@ -58,9 +68,20 @@ int main(int argc, char **argv) {
     int port = EXPLORERD_DEFAULT_PORT;
     int once = 0;
     int verify_index = 0;
+    const char *pin_hex[EXPLORERD_PIN_MAX];
+    int pin_count = 0;
+    const char *chain_id_hex = NULL;
 
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--version") == 0) {
+        if (strcmp(argv[i], "--pin") == 0 && i + 1 < argc) {
+            if (pin_count >= EXPLORERD_PIN_MAX) {
+                fprintf(stderr, "--pin: at most %d\n", EXPLORERD_PIN_MAX);
+                return 1;
+            }
+            pin_hex[pin_count++] = argv[++i];
+        } else if (strcmp(argv[i], "--chain-id") == 0 && i + 1 < argc) {
+            chain_id_hex = argv[++i];
+        } else if (strcmp(argv[i], "--version") == 0) {
             printf("dna-explorerd %s\n", EXPLORERD_VERSION);
             return 0;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -83,6 +104,11 @@ int main(int argc, char **argv) {
             print_usage(argv[0]);
             return 1;
         }
+    }
+
+    if (exp_chain_trust_override(chain_id_hex, pin_hex, pin_count) != 0) {
+        fprintf(stderr, "--pin must be 128 hex characters, --chain-id 64 hex characters\n");
+        return 1;
     }
 
     if (verify_index) {

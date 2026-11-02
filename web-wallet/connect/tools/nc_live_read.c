@@ -18,12 +18,13 @@
  *                 mode exactly 0600. The words are never printed.
  *   --server      a tier-2 TCP endpoint. The native client connects to an
  *                 IPv4 literal only (nodus_tcp.c inet_pton(AF_INET)).
- *   --server-fp   optional server-key pin: the client's own
- *                 pinned_server_fps (nodus.h) — the connection fails closed
- *                 unless the node's AUTH_OK carries a signed channel key
- *                 from a server key with this fingerprint AND a signed
- *                 ML-KEM-1024 key (a pinned session is ML-KEM-1024 only).
- *                 Without it the session trusts the node on first use.
+ *   --server-fp   optional: replaces the built-in trusted node list with this
+ *                 one fingerprint (the client's pinned_server_fps, nodus.h).
+ *                 The 4001 secret connection fails closed unless the node's
+ *                 key hashes to a listed fingerprint (approved 4001 plan
+ *                 3.2 / 3.10); there is no trust-on-first-use any more.
+ *   --chain-id    optional: replaces the built-in chain id (64 hex) the
+ *                 handshake carries in its first message.
  *
  * Reads, in order: own profile (R1), own contact list (R4), own contact
  * request inbox (R2); with a peer: the peer's profile (R1, needed for the
@@ -52,6 +53,7 @@
  */
 
 #include "nc_core.h"
+#include "../../../nodus/tools/nodus_light_checkpoint.h"   /* built-in trusted nodes + chain id */
 #include "dht/shared/dht_dm_outbox.h"   /* dht_dm_outbox_get_day_bucket */
 #include "crypto/utils/qgp_platform.h"
 
@@ -70,7 +72,26 @@
 
 static void usage(void) {
     printf("usage: nc_live_read <words-file> [<peer fp>] --server <IPv4>:<port> "
-           "[--server-fp <128 hex>]\n");
+           "[--server-fp <128 hex>] [--chain-id <64 hex>]\n"
+           "  Without --server-fp / --chain-id the built-in trusted node list and chain\n"
+           "  id (nodus-light's compiled network table) are used; a given value replaces them.\n");
+}
+
+/* 64 hex characters -> 32 bytes. 0 / -1. */
+static int chain_id_parse(const char *hex, uint8_t out[32]) {
+    if (!hex || strlen(hex) != 64) return -1;
+    for (int i = 0; i < 32; i++) {
+        unsigned v = 0;
+        for (int k = 0; k < 2; k++) {
+            char c = hex[2 * i + k];
+            unsigned d = (c >= '0' && c <= '9') ? (unsigned)(c - '0')
+                       : (c >= 'a' && c <= 'f') ? (unsigned)(c - 'a' + 10) : 16u;
+            if (d > 15) return -1;
+            v = v * 16 + d;
+        }
+        out[i] = (uint8_t)v;
+    }
+    return 0;
 }
 
 /* Read the words file (regular, mode 0600) and rebuild the app's canonical
@@ -216,10 +237,12 @@ static bool read_profile(const nc_ctx_t *ctx, const char *record,
 
 int main(int argc, char **argv) {
     const char *words_path = NULL, *peer_fp = NULL, *server = NULL,
-               *server_fp = NULL;
+               *server_fp = NULL, *chain_hex = NULL;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--server") == 0 && i + 1 < argc) {
             server = argv[++i];
+        } else if (strcmp(argv[i], "--chain-id") == 0 && i + 1 < argc) {
+            chain_hex = argv[++i];
         } else if (strcmp(argv[i], "--server-fp") == 0 && i + 1 < argc) {
             server_fp = argv[++i];
         } else if (argv[i][0] == '-') {
@@ -246,17 +269,32 @@ int main(int argc, char **argv) {
     /* connect / request timeouts 0 = the client's defaults
      * (nodus_client_init); auto_reconnect stays off (zeroed config). */
 
-    /* The pin array is not copied by the client and must outlive it
-     * (nodus.h pinned_server_fps). */
-    static nodus_key_t pin;
+    /* The trusted list is required by the 4001 secret connection (design D4):
+     * the built-in compiled list, or the one given with --server-fp. The array
+     * is not copied by the client and must outlive it (nodus.h
+     * pinned_server_fps). */
+    static nodus_key_t pins[NODUS_LIGHT_DEFAULT_NODE_COUNT];
+    int pin_count = 0;
     if (server_fp) {
-        if (nc_fp_parse(server_fp, &pin) != 0) {
+        if (nc_fp_parse(server_fp, &pins[0]) != 0) {
             printf("--server-fp: expected 128 lowercase hex\n");
             return 1;
         }
-        cfg.pinned_server_fps = &pin;
-        cfg.pinned_server_fp_count = 1;
+        pin_count = 1;
+    } else {
+        for (size_t i = 0; i < NODUS_LIGHT_DEFAULT_NODE_COUNT; i++)
+            if (nc_fp_parse(NODUS_LIGHT_DEFAULT_NODES[i].pin_hex, &pins[pin_count]) == 0)
+                pin_count++;
     }
+    cfg.pinned_server_fps = pins;
+    cfg.pinned_server_fp_count = pin_count;
+    /* The chain id: the built-in one, or --chain-id. */
+    if (chain_id_parse(chain_hex ? chain_hex : NODUS_LIGHT_CHAIN_ID_HEX,
+                       cfg.chain_id) != 0) {
+        printf("--chain-id: expected 64 lowercase hex\n");
+        return 1;
+    }
+    cfg.has_chain_id = true;
 
     nodus_key_t peer_key;
     if (peer_fp && nc_fp_parse(peer_fp, &peer_key) != 0) {
@@ -281,7 +319,8 @@ int main(int argc, char **argv) {
     }
     printf("identity fp: %.16s...\n", keys->fp);
     printf("server: %s:%u  pin: %s\n", cfg.servers[0].ip,
-           (unsigned)cfg.servers[0].port, server_fp ? "set" : "none (TOFU)");
+           (unsigned)cfg.servers[0].port,
+           server_fp ? "given" : "built-in trusted list");
 
     nodus_client_t *c = calloc(1, sizeof(*c));
     bool inited = c && nodus_client_init(c, &cfg, &keys->id) == 0;

@@ -749,10 +749,13 @@ static void full_queue_and_generation(void) {
     }
 }
 
-/* 14: listener guard in both directions; no Unix socket is created here. */
+/* 14: listener guard in both directions; no Unix socket is created here.
+ * 2026-11-02 4001 plan 2.1 f: "session mode is allowed on a transport with a
+ * WebSocket listener" — in either order (WebSocket listener before or after
+ * the module); a Unix listener is refused in both orders. */
 static void mode_guard(void) {
     endpoint_t e; endpoint_init(&e, 0, 1, 1, 0);
-    CHECK(nodus_tcp_ws_listen(&e.tcp, 0) == -1);
+    CHECK(nodus_tcp_ws_listen(&e.tcp, 0) == 0);
     CHECK(nodus_tcp_unix_listen(&e.tcp, "/unused-session-guard.sock", NODUS_TCP_UNIX_UID_SELF) == -1);
     endpoint_free(&e);
     for (int unix_listener = 0; unix_listener < 2; ++unix_listener) {
@@ -775,9 +778,11 @@ static void mode_guard(void) {
             .identity = &ids[0], .chain_id = chain, .inbound_depth = 1,
             .outbound_depth = 1, .workers = 0
         };
-        CHECK(nodus_inter_session_new(&tcp, &cfg) == NULL);
+        nodus_inter_session_module_t *m = nodus_inter_session_new(&tcp, &cfg);
+        if (unix_listener) CHECK(m == NULL); else CHECK(m != NULL);
         if (unix_fd >= 0) { tcp.unix_listen_fd = -1; close(unix_fd); }
         nodus_tcp_close(&tcp);
+        if (m) nodus_inter_session_free(m);   /* endpoint_free's order */
     }
 }
 

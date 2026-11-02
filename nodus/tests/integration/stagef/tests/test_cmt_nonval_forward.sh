@@ -22,22 +22,29 @@
 #   — identically on the 7 validators and on the non-validator itself.*
 #
 #   Steps, each asserted separately:
-#     1. cand1 (a funded identity the bring-up minted, NOT a validator)
-#        starts as an 8th node with an EMPTY data directory and joins by
-#        the 64-hex genesis pin (`--v2-genesis-pin`, the grow scenario's
-#        STEP 9 / test_v2_join.sh shape): it adopts the fleet's chain,
-#        comes up COMETBFT + LIVE, block-syncs (the "block sync done …
-#        consensus started" line), and catches up to the fleet tip. It has
-#        NO `validators` row (node 1's DB and its own) — so it can neither
-#        propose nor vote, and a block carrying its transaction can only
-#        have been proposed by a validator that received the bytes from
-#        somewhere else.
-#     2. Through cand1's OWN client port (port block C+3+1 — printed, and
-#        checked to be (a) none of the 7 validators' client ports and (b)
-#        served by the very process this script started): cand1 claims
-#        its genesis leaf (`v2-claim`), and the claimed coin is waited for
-#        as a LEDGER EFFECT on node 1's DB AND on cand1's DB.
-#     3. Again only through cand1's port: one SPEND self-send of that coin
+#     1. The 8th node starts with an EMPTY data directory under a NODE
+#        identity generated for this run ($BASE_DIR/node11/identity, made by
+#        the node itself on first start; node 11 = the port block C+3+1, so
+#        the nodus-cli wrapper finds this node's fingerprint as the --pin
+#        for its client port). It is NOT cand1's key: cand1's identity (the
+#        key the bring-up minted and bound a genesis leaf to) is only the
+#        CLIENT's key in steps 2-3 — a node refuses a client holding its own
+#        key (reflection, 4001 plan 4.4; operator 2026-11-02 "duzlet test
+#        icin"). The node joins by the 64-hex genesis pin
+#        (`--v2-genesis-pin`, the grow scenario's STEP 9 / test_v2_join.sh
+#        shape): it adopts the fleet's chain, comes up COMETBFT + LIVE,
+#        block-syncs (the "block sync done … consensus started" line), and
+#        catches up to the fleet tip. Its NODE key has NO `validators` row
+#        (node 1's DB and its own) — so it can neither propose nor vote, and
+#        a block carrying the client's transaction can only have been
+#        proposed by a validator that received the bytes from somewhere else.
+#     2. Through the 8th node's OWN client port (port block C+3+1 — printed,
+#        and checked to be (a) none of the 7 validators' client ports and
+#        (b) served by the very process this script started): the client
+#        (cand1's key) claims its genesis leaf (`v2-claim`), and the claimed
+#        coin is waited for as a LEDGER EFFECT on node 1's DB AND on the 8th
+#        node's DB.
+#     3. Again only through that port: one SPEND self-send of that coin
 #        minus the fee (`v2-envelope spend --no-dust-sweep`, the pump's
 #        shape); its created utxo_set row (tx_hash = the intent_id) is
 #        waited for on node 1 AND on cand1 (progress- and height-bounded;
@@ -46,9 +53,11 @@
 #        stagef_cmt_diff_at_floor agrees across the 7 validators; cand1's
 #        v2_blocks row at the spend's height (global_root + block_id)
 #        equals node 1's.
-#     5. TERMINAL anti-vacuity: cand1 still has no `validators` row on
-#        node 1 or on itself, and NO v2_attendance row carries its
-#        voter_id (stagef_voter_id) on node 1 — it signed no commit.
+#     5. TERMINAL anti-vacuity: the 8th node's NODE key still has no
+#        `validators` row on node 1 or on itself, and NO v2_attendance row
+#        carries its voter_id (stagef_voter_id) on node 1 — it signed no
+#        commit. (Coin ownership checks use cand1's fingerprint: they are
+#        about the client.)
 #
 # WHY "COMMITTED" HERE MEANS "FORWARDED" (the inference, and its basis)
 #   - On a version-3 chain the client RPC's whole answer is the local
@@ -102,11 +111,12 @@
 #   - a few chain heights.
 #
 # HOW IT CAN LIE
-#   - **If cand1 were a validator**, its own proposal could include the
-#     transaction with no forwarding at all. Guarded twice: no
-#     `validators` row for its key on node 1 and on cand1 (before and
-#     after), and no v2_attendance row for its voter_id on node 1 (it
-#     signed no commit). Seats come only from `validators` rows
+#   - **If the 8th node were a validator**, its own proposal could include
+#     the transaction with no forwarding at all. Guarded twice: no
+#     `validators` row for the NODE's generated key on node 1 and on the
+#     8th node (before and after), and no v2_attendance row for that key's
+#     voter_id on node 1 (it signed no commit). The client key (cand1's) is
+#     checked once before the start only (not a validator, owns no coin). Seats come only from `validators` rows
 #     (snapshot ranking), so no row = no seat.
 #   - **If the claim/spend went to node 1 by mistake** forwarding would be
 #     untested. The script prints the port it submits to, asserts it is
@@ -179,6 +189,11 @@ CAND_DIR="$BASE_DIR/cand1"
 CAND_PIDX=$(( C + 3 + 1 ))
 CAND_PORT=$(stagef_tcp_port "$CAND_PIDX")
 CAND_LOG="$CAND_DIR/nodus.log"
+# The 8th node's own (NODE) identity directory, generated by the node on its
+# first start. It is node $CAND_PIDX's directory, so tools/stagef_nodus_cli.sh
+# finds its nodus.fp as the --pin for the client port $CAND_PORT. The cand1
+# identity in $CAND_DIR stays the CLIENT's key only.
+NODE_DIR="$(stagef_node_dir "$CAND_PIDX")"
 FEE="$STAGEF_PUMP_FEE_RAW"
 
 # ── requirements, checked not assumed ───────────────────────────────
@@ -196,8 +211,9 @@ PIN=$(cat "$BASE_DIR/v2_genesis_pin")
 CAND_FP=$(cat "$CAND_DIR/identity/nodus.fp")
 [ "${#CAND_FP}" = 128 ] || die "cand1's fingerprint is not 128 hex characters"
 CAND_PKHEX=$(xxd -p -c 999999 "$CAND_DIR/identity/nodus.pk")
-CAND_VID=$(stagef_voter_id "$CAND_DIR/identity/nodus.pk")
-[ "${#CAND_VID}" = 64 ] || die "could not derive cand1's voter_id"
+# the 8th node's NODE key does not exist yet: NODE_PKHEX / NODE_VID are read
+# after it starts (step 1a)
+[ ! -e "$NODE_DIR/identity/nodus.pk" ] || die "$NODE_DIR already holds an identity — a leftover; bring up fresh"
 grep -q "^dest_binding = ${CAND_FP}\$" "$CONF" || die "$CONF binds no genesis leaf to cand1 ($CAND_FP)"
 
 # Fresh for cand1: its leaf is single-use.
@@ -294,7 +310,8 @@ stagef_cmt_diff_at_floor "pre-nonval-forward" || exit 2
 # ════════════════════════════════════════════════════════════════════
 # STEP 1 — cand1 joins by the pin, block-syncs, catches up; not a validator
 # ════════════════════════════════════════════════════════════════════
-mkdir -p "$CAND_DIR/data"
+mkdir -p "$CAND_DIR/data" "$NODE_DIR/identity"
+chmod 0700 "$CAND_DIR/data"      # the node's tool-only witness.sock is refused in a group/other-writable directory
 SEEDS=()
 for s in $(seq 1 "$C"); do SEEDS+=(-s "127.0.0.1:$(stagef_udp_port "$s")"); done
 # The pin joiner's spawn line: test_v2_grow_7_20.sh STEP 9 (-c nodus.json
@@ -304,7 +321,7 @@ for s in $(seq 1 "$C"); do SEEDS+=(-s "127.0.0.1:$(stagef_udp_port "$s")"); done
     -u "$(stagef_udp_port "$CAND_PIDX")" -t "$CAND_PORT" \
     -p "$(stagef_peer_port "$CAND_PIDX")" -C "$(stagef_chan_port "$CAND_PIDX")" \
     -W "$(stagef_witness_port "$CAND_PIDX")" \
-    --v2-genesis-pin "$PIN" -i "$CAND_DIR/identity" -d "$CAND_DIR/data" "${SEEDS[@]}" \
+    --v2-genesis-pin "$PIN" -i "$NODE_DIR/identity" -d "$CAND_DIR/data" "${SEEDS[@]}" \
     >> "$CAND_LOG" 2>&1 &
 CAND_PID=$!
 echo "$CAND_PID" >> "$BASE_DIR/pids.txt"
@@ -329,6 +346,24 @@ grep -q "pid=${CAND_PID}," <<< "$plin" || {
     die "the listener on $CAND_PORT is not cand1's process (pid $CAND_PID) — the submissions below would not go to cand1"
 }
 ok "STEP 1 — cand1's client port $CAND_PORT is served by pid $CAND_PID"
+
+# 1a'. the node's generated identity (made by the node on its first start, the
+#      way stagef_up_v2.sh makes every node's): its fingerprint is the --pin the
+#      wrapper adds for $CAND_PORT, its key is the one the non-validator checks
+#      below are about. Attempt-bounded (20 x 0.5 s: the listener is already up).
+for _ in $(seq 1 20); do
+    [ -s "$NODE_DIR/identity/nodus.pk" ] && [ -s "$NODE_DIR/identity/nodus.fp" ] && break
+    sleep 0.5
+done
+[ -s "$NODE_DIR/identity/nodus.pk" ] && [ -s "$NODE_DIR/identity/nodus.fp" ] || \
+    { tail -30 "$CAND_LOG" >&2; die "the 8th node wrote no identity under $NODE_DIR/identity"; }
+NODE_FP=$(cat "$NODE_DIR/identity/nodus.fp")
+[ "${#NODE_FP}" = 128 ] || die "the 8th node's fingerprint is not 128 hex characters"
+[ "$NODE_FP" != "$CAND_FP" ] || die "the 8th node runs under cand1's key — the client would be refused as a reflection"
+NODE_PKHEX=$(xxd -p -c 999999 "$NODE_DIR/identity/nodus.pk")
+NODE_VID=$(stagef_voter_id "$NODE_DIR/identity/nodus.pk")
+[ "${#NODE_VID}" = 64 ] || die "could not derive the 8th node's voter_id"
+ok "STEP 1 — the 8th node runs under its own generated key (fp ${NODE_FP:0:16}…), not cand1's"
 
 # 1b. adoption by pin — attempt-bounded (120 x 1 s, test_cmt_prune.sh's
 #     pin-joiner bound); the adopted file is the fleet's chain.
@@ -392,10 +427,10 @@ ok "STEP 1 — cand1 caught up to the fleet tip $fleet (its tip $ct)"
 
 # 1f. NOT a validator — on node 1 and on its own copy.
 for db in "$SDB" "$CDB"; do
-    v=$(sqlite3 "$db" "SELECT COUNT(*) FROM validators WHERE lower(hex(pubkey))='$CAND_PKHEX';")
-    [ "$v" = 0 ] || die "cand1 has a validators row on $db — it is not a non-validator; the scenario would prove nothing"
+    v=$(sqlite3 "$db" "SELECT COUNT(*) FROM validators WHERE lower(hex(pubkey))='$NODE_PKHEX';")
+    [ "$v" = 0 ] || die "the 8th node's key has a validators row on $db — it is not a non-validator; the scenario would prove nothing"
 done
-ok "STEP 1 — cand1 has NO validators row (node 1 and its own DB): it can neither propose nor vote"
+ok "STEP 1 — the 8th node's key has NO validators row (node 1 and its own DB): it can neither propose nor vote"
 
 # ════════════════════════════════════════════════════════════════════
 # STEP 2 — the claim, submitted ONLY to cand1's client port
@@ -474,12 +509,12 @@ ok "STEP 4 — the 7 validators agree at their floor; cand1's block $SPEND_H equ
 # TERMINAL — cand1 is still not a validator and signed no commit
 # ════════════════════════════════════════════════════════════════════
 for db in "$SDB" "$CDB"; do
-    v=$(sqlite3 "$db" "SELECT COUNT(*) FROM validators WHERE lower(hex(pubkey))='$CAND_PKHEX';")
-    [ "$v" = 0 ] || die "cand1 has a validators row on $db at the end — the commit could have been its own proposal"
+    v=$(sqlite3 "$db" "SELECT COUNT(*) FROM validators WHERE lower(hex(pubkey))='$NODE_PKHEX';")
+    [ "$v" = 0 ] || die "the 8th node's key has a validators row on $db at the end — the commit could have been its own proposal"
 done
-att=$(sqlite3 "$SDB" "SELECT COUNT(*) FROM v2_attendance WHERE lower(hex(voter_id))='$CAND_VID';")
-[ "$att" = 0 ] || die "cand1's voter_id has $att v2_attendance row(s) on node 1 — it signed commits, so it is in cometbft's voting set"
-ok "TERMINAL — cand1: no validators row, no attendance (it signed no commit)"
+att=$(sqlite3 "$SDB" "SELECT COUNT(*) FROM v2_attendance WHERE lower(hex(voter_id))='$NODE_VID';")
+[ "$att" = 0 ] || die "the 8th node's voter_id has $att v2_attendance row(s) on node 1 — it signed commits, so it is in cometbft's voting set"
+ok "TERMINAL — the 8th node: no validators row, no attendance (it signed no commit)"
 
 stagef_sentinel PASS
 echo

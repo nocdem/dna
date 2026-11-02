@@ -845,6 +845,12 @@ static int net_init_slot(light_net_t *net, size_t i)
     cfg.auto_reconnect         = true;
     cfg.pinned_server_fps      = &nd->pin;   /* item 8 */
     cfg.pinned_server_fp_count = 1;
+    /* The 4001 secret connection carries the chain id in its first message
+     * (design A3): the one this run was given (--chain-id or the compiled id). */
+    _Static_assert(NODUS_LIGHT_CHAIN_ID_LEN == sizeof(cfg.chain_id),
+                   "the light chain id is the 32-byte session chain id");
+    memcpy(cfg.chain_id, net->chain_id, sizeof(cfg.chain_id));
+    cfg.has_chain_id           = true;
     if (nodus_client_init(&net->clients[i], &cfg, net->id) != 0) {
         fprintf(stderr, "%s (%s:%u): client init failed\n", nd->label,
                 nd->host, (unsigned)nd->port);

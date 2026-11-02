@@ -26,6 +26,28 @@
  *     status (height, state root, chain id) and listen_port report what
  *     the witness answered;
  *   - a first frame that is not a preface closes the connection;
+ *   - the node's own tools (4001 plan 2.4): after {"q":"ipc_tool"} a
+ *     dnac_node_duties request reaches the dnac handler on a connection
+ *     whose peer identity is the node's own key, dnac_cc_collect reaches the
+ *     cc_collect handler with that key and a non-zero per-connection handle
+ *     that find_session_conn resolves, a method outside the routed family
+ *     closes the connection, and so does a second first-frame kind; a
+ *     tool-only listener (the combined process) refuses ipc_hello and
+ *     ipc_ctl and serves ipc_tool;
+ *   - A6: a session-kind request whose token differs from the preface token
+ *     is served (no per-frame token check);
+ *   - the client library in local-tool mode connects with no trusted list and
+ *     no chain id and its dnac_node_duties request is served as the node's own
+ *     key (the stand-in answers k_reply, which is not a duties reply, so the
+ *     client call itself waits out its 3 s request timeout: the assertion is
+ *     on what the witness saw, not on the call's result);
+ *   - a peer of another uid is closed and its request never served: the
+ *     tool-only listener is opened with nodus_witness_ipc_listen_uid for
+ *     geteuid()+1 (the pattern of test_tcp_unix.c; an unprivileged test cannot
+ *     connect from a second uid), so this process is "another uid". The accept
+ *     check itself is nodus_tcp_unix_listen's (SO_PEERCRED). It would falsely
+ *     pass if the connect never happened: the case asserts the connect and
+ *     then the close;
  *   - with no witness listening, a dnac_* request is answered at once with
  *     exactly the bytes a witness-less server sends (nodus_t2_error,
  *     NODUS_ERR_PROTOCOL_ERROR, NODUS_CHAIN_NO_WITNESS_MSG), and that
@@ -62,6 +84,7 @@
 
 #include "server/nodus_chain_backend.h"
 #include "witness/nodus_witness_ipc.h"
+#include "witness/nodus_witness.h"        /* nodus_witness_t: status-fill cases */
 #include "transport/nodus_tcp.h"
 #include "protocol/nodus_cbor.h"
 #include "protocol/nodus_tier2.h"
@@ -123,6 +146,10 @@ static void h_cc_collect(void *ctx, nodus_tcp_conn_t *conn,
     /* no reply: a collection answers later, through find_session_conn */
 }
 
+/* Whether the stand-in witness knows the id 4004 uses as its network
+ * (the optional "c3" key of ipc_status). */
+static bool g_v3_valid = true;
+
 static void fill_status(nodus_witness_ipc_status_t *st) {
     memset(st, 0, sizeof(*st));
     st->chain_open = true;
@@ -131,6 +158,10 @@ static void fill_status(nodus_witness_ipc_status_t *st) {
     for (int i = 0; i < 32; i++) st->chain_id[i] = (uint8_t)(0x10 + i);
     st->p2p_opened = true;
     st->listen_port = 14004;
+    if (g_v3_valid) {
+        for (int i = 0; i < 32; i++) st->chain_id_v3[i] = (uint8_t)(0x70 + i);
+        st->chain_id_v3_valid = true;
+    }
 }
 
 static void h_status(void *ctx, nodus_witness_ipc_status_t *out) {
@@ -277,10 +308,68 @@ static void test_status(nodus_chain_backend_t *b, nodus_witness_ipc_t *ipc) {
         FAIL("status fields differ from the witness's answer");
         return;
     }
+    /* "c3" travels as the 8th key and reaches core's status info. */
+    if (!info.chain_id_v3_valid ||
+        memcmp(info.chain_id_v3, want.chain_id_v3, 32) != 0) {
+        FAIL("the version-3 chain id (c3) did not reach core");
+        return;
+    }
     if (!opened || port != want.listen_port) {
         FAIL("listen_port differs from the witness's answer");
         return;
     }
+    PASS();
+}
+
+/* The 7-key answer: a witness without a version-3 id / joiner pin sends no
+ * "c3"; core's decoder still accepts it and reports the id as not valid. */
+static void test_status_without_c3(nodus_witness_ipc_t *ipc) {
+    TEST("ipc_status without c3: 7 keys accepted, id reported not valid");
+    g_v3_valid = false;
+    nodus_chain_backend_t *b7 = NULL;
+    if (nodus_chain_backend_ipc_open(g_dir, &b7) != 0 || !b7) {
+        g_v3_valid = true; FAIL("second backend open failed"); return;
+    }
+    for (int i = 0; i < POLL_ROUNDS && !b7->ops->chain_open(b7); i++)
+        poll_all(b7, ipc);
+    bool open = b7->ops->chain_open(b7);
+    nodus_t2_status_info_t info;
+    memset(&info, 0, sizeof(info));
+    b7->ops->status(b7, &info);
+    b7->ops->close(b7);
+    g_v3_valid = true;
+    if (!open) { FAIL("7-key snapshot never arrived"); return; }
+    if (info.chain_id_v3_valid) { FAIL("a missing c3 was reported valid"); return; }
+    PASS();
+}
+
+/* The two arms of the id 4004 uses as its network (nodus_witness_status_fill):
+ * a version-3 chain gives its chain id, an active joiner its pin, a node with
+ * neither gives none; a successor wins over a (stale) joiner. */
+static void test_status_fill_v3(void) {
+    TEST("status fill: v3 chain id, joiner pin, or none");
+    nodus_witness_t *w = calloc(1, sizeof(*w));
+    if (!w) { FAIL("alloc"); return; }
+    nodus_t2_status_info_t info;
+    memset(&info, 0, sizeof(info));
+    nodus_witness_status_fill(w, &info);
+    if (info.chain_id_v3_valid) { free(w); FAIL("none expected for a bare node"); return; }
+
+    for (int i = 0; i < 32; i++) w->v2_join.pin[i] = (uint8_t)(0x30 + i);
+    w->v2_join.active = 1;
+    memset(&info, 0, sizeof(info));
+    nodus_witness_status_fill(w, &info);
+    if (!info.chain_id_v3_valid || memcmp(info.chain_id_v3, w->v2_join.pin, 32) != 0) {
+        free(w); FAIL("joiner pin expected"); return;
+    }
+
+    for (int i = 0; i < 32; i++) w->v2_chain32[i] = (uint8_t)(0x90 + i);
+    w->v2_successor = true;
+    memset(&info, 0, sizeof(info));
+    nodus_witness_status_fill(w, &info);
+    bool ok = info.chain_id_v3_valid && memcmp(info.chain_id_v3, w->v2_chain32, 32) == 0;
+    free(w);
+    if (!ok) { FAIL("version-3 chain id expected"); return; }
     PASS();
 }
 
@@ -323,6 +412,259 @@ static void test_non_preface(nodus_witness_ipc_t *ipc, const char *sock) {
     nodus_tcp_close(&g_raw);
     if (!closed) { FAIL("connection stayed open"); return; }
     if (!unserved) { FAIL("the frame was served"); return; }
+    PASS();
+}
+
+/* ── The node's own tools: the `ipc_tool` kind (4001 plan 2.4, D9/A12) ─ */
+
+static nodus_pubkey_t g_own;              /* the stand-in node's own key */
+static const nodus_pubkey_t *h_own_pk(void *ctx) { (void)ctx; return &g_own; }
+
+static size_t first_frame(const char *q, bool with_pk, const uint8_t *tk,
+                          uint8_t *buf, size_t cap) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    cbor_encode_map(&enc, with_pk ? 3 : 1);
+    cbor_encode_cstr(&enc, "q"); cbor_encode_cstr(&enc, q);
+    if (with_pk) {
+        cbor_encode_cstr(&enc, "pk"); cbor_encode_bstr(&enc, g_pk, sizeof(g_pk));
+        cbor_encode_cstr(&enc, "tk"); cbor_encode_bstr(&enc, tk, NODUS_SESSION_TOKEN_LEN);
+    }
+    return cbor_encoder_len(&enc);
+}
+
+/* Connect a raw peer to `sock` and send a first frame; poll `ipc` rounds. */
+static nodus_tcp_conn_t *raw_peer(nodus_witness_ipc_t *ipc, const char *sock,
+                                  const uint8_t *first, size_t first_len) {
+    raw_disconnects = 0;
+    nodus_tcp_init(&g_raw, -1);
+    g_raw.on_disconnect = raw_on_disconnect;
+    g_raw.on_frame = cli_on_frame;
+    nodus_tcp_conn_t *c = nodus_tcp_unix_connect(&g_raw, sock, NODUS_TCP_UNIX_UID_SELF);
+    if (!c) { nodus_tcp_close(&g_raw); return NULL; }
+    nodus_tcp_send(c, first, first_len);
+    for (int i = 0; i < 20; i++) { nodus_witness_ipc_poll(ipc, 5); nodus_tcp_poll(&g_raw, 5); }
+    return c;
+}
+
+static bool raw_closed_within(nodus_witness_ipc_t *ipc) {
+    for (int i = 0; i < POLL_ROUNDS && raw_disconnects < 1; i++) {
+        nodus_witness_ipc_poll(ipc, 5);
+        nodus_tcp_poll(&g_raw, 5);
+    }
+    return raw_disconnects >= 1;
+}
+
+static void test_tool_kind(nodus_witness_ipc_t *ipc, const char *sock) {
+    TEST("ipc_tool: dnac_* served as the node's own key, cc_collect by handle");
+    for (int i = 0; i < NODUS_PK_BYTES; i++) g_own.bytes[i] = (uint8_t)(i * 5 + 11);
+    nodus_key_t own_fp;
+    nodus_fingerprint(&g_own, &own_fp);
+
+    uint8_t first[64], frame[256];
+    size_t fn = first_frame(NODUS_WITNESS_IPC_Q_TOOL, false, NULL, first, sizeof(first));
+    nodus_tcp_conn_t *c = raw_peer(ipc, sock, first, fn);
+    if (!c) { FAIL("connect"); return; }
+
+    int dnac_before = h_dnac_calls, frames_before = cli_frames;
+    size_t n = t2_query(21, "dnac_node_duties", frame, sizeof(frame));
+    nodus_tcp_send(c, frame, n);
+    for (int i = 0; i < POLL_ROUNDS && (h_dnac_calls == dnac_before || cli_frames == frames_before); i++) {
+        nodus_witness_ipc_poll(ipc, 5); nodus_tcp_poll(&g_raw, 5);
+    }
+    if (h_dnac_calls != dnac_before + 1 || strcmp(h_dnac_method, "dnac_node_duties") != 0 ||
+        !h_dnac_peer_set || nodus_key_cmp(&h_dnac_peer_id, &own_fp) != 0) {
+        nodus_tcp_close(&g_raw); FAIL("not served as the node's own key"); return;
+    }
+    if (cli_frames != frames_before + 1) { nodus_tcp_close(&g_raw); FAIL("no reply"); return; }
+
+    int cc_before = h_cc_calls;
+    n = t2_query(22, "dnac_cc_collect", frame, sizeof(frame));
+    nodus_tcp_send(c, frame, n);
+    for (int i = 0; i < POLL_ROUNDS && h_cc_calls == cc_before; i++) {
+        nodus_witness_ipc_poll(ipc, 5); nodus_tcp_poll(&g_raw, 5);
+    }
+    static const uint8_t zero[NODUS_SESSION_TOKEN_LEN];
+    bool ok = h_cc_calls == cc_before + 1 &&
+              memcmp(h_cc_pk, g_own.bytes, NODUS_PK_BYTES) == 0 &&
+              memcmp(h_cc_token, zero, sizeof(zero)) != 0 &&
+              nodus_witness_ipc_find_session_conn(ipc, g_own.bytes, h_cc_token) == h_cc_conn &&
+              h_cc_conn != NULL;
+    if (!ok) { nodus_tcp_close(&g_raw); FAIL("cc_collect not given the own key + handle"); return; }
+
+    /* a method outside the routed family closes the connection */
+    n = t2_query(23, "ping", frame, sizeof(frame));
+    nodus_tcp_send(c, frame, n);
+    bool closed = raw_closed_within(ipc);
+    nodus_tcp_close(&g_raw);
+    if (!closed) { FAIL("a non-routed method kept the tool connection open"); return; }
+    PASS();
+}
+
+static void test_tool_second_first_frame(nodus_witness_ipc_t *ipc, const char *sock) {
+    TEST("ipc_tool: a second first-frame kind closes the connection");
+    uint8_t first[64];
+    size_t fn = first_frame(NODUS_WITNESS_IPC_Q_TOOL, false, NULL, first, sizeof(first));
+    nodus_tcp_conn_t *c = raw_peer(ipc, sock, first, fn);
+    if (!c) { FAIL("connect"); return; }
+    int calls = h_dnac_calls;
+    nodus_tcp_send(c, first, fn);
+    bool closed = raw_closed_within(ipc);
+    bool unserved = h_dnac_calls == calls;
+    nodus_tcp_close(&g_raw);
+    if (!closed || !unserved) { FAIL("second first frame not refused"); return; }
+    PASS();
+}
+
+static void test_session_other_token(nodus_witness_ipc_t *ipc, const char *sock) {
+    TEST("session kind: a request token differing from the preface is served (A6)");
+    uint8_t other[NODUS_SESSION_TOKEN_LEN];
+    for (int i = 0; i < NODUS_SESSION_TOKEN_LEN; i++) other[i] = (uint8_t)(g_token[i] ^ 0xff);
+    uint8_t first[NODUS_PK_BYTES + 128], frame[256];
+    size_t fn = first_frame(NODUS_WITNESS_IPC_Q_HELLO, true, other, first, sizeof(first));
+    nodus_tcp_conn_t *c = raw_peer(ipc, sock, first, fn);
+    if (!c) { FAIL("connect"); return; }
+    int calls = h_dnac_calls;
+    size_t n = t2_query(31, "dnac_test", frame, sizeof(frame));   /* carries g_token */
+    nodus_tcp_send(c, frame, n);
+    for (int i = 0; i < POLL_ROUNDS && h_dnac_calls == calls; i++) {
+        nodus_witness_ipc_poll(ipc, 5); nodus_tcp_poll(&g_raw, 5);
+    }
+    bool served = h_dnac_calls == calls + 1 && raw_disconnects == 0;
+    nodus_tcp_close(&g_raw);
+    if (!served) { FAIL("a request with another token was not served"); return; }
+    PASS();
+}
+
+/* The client library in local-tool mode (build-order step 5): no trusted
+ * list, no chain id, no secret connection — the request reaches the witness
+ * as the node's own key. The witness side is polled by a thread. */
+#include "nodus/nodus.h"
+#include <pthread.h>
+static volatile bool g_tool_pump_stop;
+static void *tool_pump(void *arg) {
+    while (!g_tool_pump_stop) nodus_witness_ipc_poll((nodus_witness_ipc_t *)arg, 5);
+    return NULL;
+}
+
+static void test_tool_client(nodus_witness_ipc_t *ipc, const char *sock) {
+    TEST("client tool mode: reaches the witness as the node's own key");
+    nodus_identity_t unused;
+    memset(&unused, 0, sizeof(unused));
+    nodus_client_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.local_tool_sock = sock;
+    cfg.connect_timeout_ms = 3000;
+    cfg.request_timeout_ms = 3000;
+    nodus_client_t *cl = calloc(1, sizeof(*cl));
+    if (!cl) { FAIL("alloc"); return; }
+    /* without tool mode the same empty config is refused (D4) */
+    nodus_client_config_t bare = cfg; bare.local_tool_sock = NULL;
+    if (nodus_client_init(cl, &bare, &unused) == 0) {
+        nodus_client_close(cl); free(cl); FAIL("a config without a list was accepted"); return;
+    }
+    pthread_t th;
+    g_tool_pump_stop = false;
+    if (pthread_create(&th, NULL, tool_pump, ipc) != 0) { free(cl); FAIL("thread"); return; }
+    int calls = h_dnac_calls;
+    nodus_key_t own_fp; nodus_fingerprint(&g_own, &own_fp);
+    bool inited = nodus_client_init(cl, &cfg, &unused) == 0;
+    bool connected = inited && nodus_client_connect(cl) == 0;
+    nodus_dnac_node_duties_t duties;
+    memset(&duties, 0, sizeof(duties));
+    if (connected) (void)nodus_client_dnac_node_duties(cl, &duties);  /* k_reply is not a duties reply */
+    g_tool_pump_stop = true;
+    pthread_join(th, NULL);
+    if (inited) nodus_client_close(cl);
+    free(cl);
+    if (!connected) { FAIL("tool connect failed"); return; }
+    if (h_dnac_calls != calls + 1 || !h_dnac_peer_set ||
+        nodus_key_cmp(&h_dnac_peer_id, &own_fp) != 0) {
+        FAIL("the request was not served as the node's own key"); return;
+    }
+    PASS();
+}
+
+static void test_tool_only_listener(nodus_witness_ipc_t *main_ipc) {
+    TEST("tool-only listener: ipc_hello / ipc_ctl refused, ipc_tool served");
+    (void)main_ipc;
+    nodus_witness_ipc_handlers_t th = {
+        .dispatch_dnac = h_dispatch_dnac, .cc_collect = h_cc_collect,
+        .status = h_status, .own_pk = h_own_pk, .ctx = NULL
+    };
+    nodus_witness_ipc_t *tool_ipc = nodus_witness_ipc_new_tools(&th);
+    nodus_witness_ipc_handlers_t no_own = th; no_own.own_pk = NULL;
+    if (!tool_ipc || nodus_witness_ipc_new_tools(&no_own) != NULL) {
+        nodus_witness_ipc_free(tool_ipc); FAIL("constructor"); return;
+    }
+    char sock[NODUS_TCP_UNIX_PATH_MAX];
+    snprintf(sock, sizeof(sock), "%s/tools.sock", g_dir);
+    if (nodus_witness_ipc_listen(tool_ipc, sock) != 0) {
+        nodus_witness_ipc_free(tool_ipc); FAIL("listen"); return;
+    }
+    uint8_t first[NODUS_PK_BYTES + 128];
+    size_t fn = first_frame(NODUS_WITNESS_IPC_Q_HELLO, true, g_token, first, sizeof(first));
+    nodus_tcp_conn_t *c = raw_peer(tool_ipc, sock, first, fn);
+    bool hello_refused = c && raw_closed_within(tool_ipc);
+    nodus_tcp_close(&g_raw);
+    fn = first_frame(NODUS_WITNESS_IPC_Q_CTL, false, NULL, first, sizeof(first));
+    c = raw_peer(tool_ipc, sock, first, fn);
+    bool ctl_refused = c && raw_closed_within(tool_ipc);
+    nodus_tcp_close(&g_raw);
+    fn = first_frame(NODUS_WITNESS_IPC_Q_TOOL, false, NULL, first, sizeof(first));
+    c = raw_peer(tool_ipc, sock, first, fn);
+    bool tool_open = c && raw_disconnects == 0;
+    uint8_t frame[256];
+    int calls = h_dnac_calls;
+    if (c) {
+        size_t n = t2_query(41, "dnac_test", frame, sizeof(frame));
+        nodus_tcp_send(c, frame, n);
+        for (int i = 0; i < POLL_ROUNDS && h_dnac_calls == calls; i++) {
+            nodus_witness_ipc_poll(tool_ipc, 5); nodus_tcp_poll(&g_raw, 5);
+        }
+    }
+    bool served = h_dnac_calls == calls + 1;
+    nodus_tcp_close(&g_raw);
+    nodus_witness_ipc_free(tool_ipc);
+    if (!hello_refused || !ctl_refused || !tool_open || !served) {
+        FAIL("tool-only socket behaved wrongly"); return;
+    }
+    PASS();
+}
+
+/* Refused from another uid (plan 4.1, the SO_PEERCRED pattern of
+ * test_tcp_unix.c "peer with a uid other than the allowed one is closed"): the
+ * real accept path, the tool-only listener configured to admit geteuid()+1, so
+ * this process is "another uid". The peer is closed before a connection is
+ * allocated: on_accept never runs, its ipc_tool request is never served. */
+static void test_tool_other_uid(void) {
+    TEST("tool-only listener: a peer of another uid is closed, its request never served");
+    nodus_witness_ipc_handlers_t th = {
+        .dispatch_dnac = h_dispatch_dnac, .cc_collect = h_cc_collect,
+        .status = h_status, .own_pk = h_own_pk, .ctx = NULL
+    };
+    nodus_witness_ipc_t *tool_ipc = nodus_witness_ipc_new_tools(&th);
+    char sock[NODUS_TCP_UNIX_PATH_MAX];
+    snprintf(sock, sizeof(sock), "%s/tools_other_uid.sock", g_dir);
+    if (!tool_ipc || nodus_witness_ipc_listen_uid(tool_ipc, sock, (uint32_t)geteuid() + 1u) != 0) {
+        nodus_witness_ipc_free(tool_ipc); FAIL("listen"); return;
+    }
+    uint8_t first[NODUS_PK_BYTES + 128], frame[256];
+    size_t fn = first_frame(NODUS_WITNESS_IPC_Q_TOOL, false, NULL, first, sizeof(first));
+    int calls = h_dnac_calls;
+    nodus_tcp_conn_t *c = raw_peer(tool_ipc, sock, first, fn);
+    if (c) {                                     /* the request a served tool would answer */
+        size_t n = t2_query(51, "dnac_test", frame, sizeof(frame));
+        nodus_tcp_send(c, frame, n);
+    }
+    bool closed = c && raw_closed_within(tool_ipc);
+    for (int i = 0; i < 20; i++) nodus_witness_ipc_poll(tool_ipc, 5);
+    bool unserved = h_dnac_calls == calls;
+    nodus_tcp_close(&g_raw);
+    nodus_witness_ipc_free(tool_ipc);
+    if (!c) { FAIL("connect (the listener must accept the socket-level connect)"); return; }
+    if (!closed) { FAIL("a peer of another uid was not closed"); return; }
+    if (!unserved) { FAIL("a request from another uid was served"); return; }
     PASS();
 }
 
@@ -525,6 +867,7 @@ int main(void) {
         .dispatch_dnac = h_dispatch_dnac,
         .cc_collect    = h_cc_collect,
         .status        = h_status,
+        .own_pk        = h_own_pk,
         .ctx           = NULL,
     };
     nodus_witness_ipc_t *ipc = nodus_witness_ipc_new(&h);
@@ -563,10 +906,18 @@ int main(void) {
     /* The control connection first: without it no session socket is
      * dialled (the backend's no-dial-while-down rule). */
     test_status(b, ipc);
+    test_status_without_c3(ipc);
+    test_status_fill_v3();
     test_session_roundtrip(b, ipc);
     test_cc_collect(b, ipc);
     test_session_closed(b, ipc);
     test_non_preface(ipc, wsock);
+    test_tool_kind(ipc, wsock);
+    test_tool_second_first_frame(ipc, wsock);
+    test_session_other_token(ipc, wsock);
+    test_tool_client(ipc, wsock);
+    test_tool_only_listener(ipc);
+    test_tool_other_uid();
     test_session_bound(b, ipc);
 
     b->ops->close(b);

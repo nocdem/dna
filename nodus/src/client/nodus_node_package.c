@@ -26,7 +26,9 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "client/nodus_consent_req.h"   /* identity_path + tcp_port          */
+#include "client/nodus_consent_req.h"   /* identity_path + tcp_port + data_path */
+#include "witness/nodus_witness_ipc.h"  /* the node's own socket path (tool mode) */
+#include "transport/nodus_tcp.h"        /* NODUS_TCP_UNIX_PATH_MAX            */
 #include "client/nodus_node_status.h"   /* data_path                         */
 #include "crypto/nodus_identity.h"      /* nodus_identity_load_readonly      */
 #include "nodus/nodus_types.h"
@@ -685,40 +687,38 @@ int nodus_node_package_read_duties(const char *config_path,
                                    char *err, size_t errcap) {
     if (!config_path || !out) return -1;
     memset(out, 0, sizeof(*out));
+    /* The node's own tool path (approved encrypted-sessions design D9, A12;
+     * 4001 plan 3.6): the question goes to <data_path>/witness.sock, which
+     * only this uid can open, and is answered for the node's own key. No
+     * secret connection, no node key loaded here, no 4001 session. */
     char identity_path[512];
+    char data_path[256];
+    char sock[NODUS_TCP_UNIX_PATH_MAX];
     uint16_t port = NODUS_DEFAULT_TCP_PORT;
     char cerr[256] = "";
-    if (nodus_consent_req_read_config(config_path, identity_path,
-                                      sizeof(identity_path), &port, cerr,
-                                      sizeof(cerr)) != 0) {
+    if (nodus_consent_req_read_config_ex(config_path, identity_path,
+                                         sizeof(identity_path), &port,
+                                         data_path, sizeof(data_path), cerr,
+                                         sizeof(cerr)) != 0) {
         np_err(err, errcap, "cannot read the node config: %s", cerr);
         return -1;
     }
-    /* the loader that never writes a file (only nodus-core writes the
-     * identity); nodus_identity_load is NOT used */
-    nodus_identity_t id;
-    memset(&id, 0, sizeof(id));
-    if (nodus_identity_load_readonly(identity_path, &id) != 0) {
-        nodus_identity_clear(&id);
-        np_err(err, errcap, "cannot load the node key from %s (run with "
-               "sudo?)", identity_path);
+    if (nodus_witness_ipc_sock_path(data_path, sock, sizeof(sock)) != 0) {
+        np_err(err, errcap, "the witness socket path under %s is too long",
+               data_path);
         return -1;
     }
-    /* the pin: this node's own id; the array outlives the client */
-    nodus_key_t pin = id.node_id;
 
+    nodus_identity_t id;        /* not used in tool mode; init copies it */
+    memset(&id, 0, sizeof(id));
     nodus_client_t client;
     memset(&client, 0, sizeof(client));
     nodus_client_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
-    snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "127.0.0.1");
-    cfg.servers[0].port        = port;
-    cfg.server_count           = 1;
     cfg.auto_reconnect         = false;
     cfg.connect_timeout_ms     = 5000;
     cfg.request_timeout_ms     = 10000;
-    cfg.pinned_server_fps      = &pin;
-    cfg.pinned_server_fp_count = 1;
+    cfg.local_tool_sock        = sock;
 
     int rc = -1;
     if (nodus_client_init(&client, &cfg, &id) != 0) {
@@ -726,9 +726,9 @@ int nodus_node_package_read_duties(const char *config_path,
         goto done;
     }
     if (nodus_client_connect(&client) != 0) {
-        np_err(err, errcap, "no pinned, authenticated session to "
-               "127.0.0.1:%u (the witness is down, or the node there does "
-               "not hold this node's key)", (unsigned)port);
+        np_err(err, errcap, "cannot open the node's own socket %s (the "
+               "witness is down, or this is not the node's machine / user)",
+               sock);
         nodus_client_close(&client);
         goto done;
     }

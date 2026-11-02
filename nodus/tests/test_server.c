@@ -14,7 +14,12 @@
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_identity.h"
 #include "nodus/nodus_types.h"
+#include "protocol/nodus_wire.h"
+#include "nodus_test_session.h"
 
+#include <arpa/inet.h>
+#include <errno.h>
+#include <sys/socket.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -101,7 +106,11 @@ static void *server_thread(void *arg) {
     snprintf(cmd, sizeof(cmd), "mkdir -p %s", config.data_path);
     system(cmd);
 
-    if (nodus_server_init(&server, &config) != 0) {
+    /* 4001 plan 4.2: the node needs a chain id to accept sessions; this test
+     * runs it with a backend that reports an open chain and the test chain id. */
+    nodus_server_backends_t be;
+    nts_fake_chain_be(&be);
+    if (nodus_server_init_ex(&server, &config, &be) != 0) {
         fprintf(stderr, "server init failed\n");
         server_init_outcome(false);
         return NULL;
@@ -208,6 +217,17 @@ static bool wait_response(int timeout_ms) {
 
 /* ── Tests ──────────────────────────────────────────────────────── */
 
+/* The client side of the 4001 secret connection: an initiator-only module on
+ * client_tcp, jobs run inline by the polls below, the session opened as soon
+ * as the node's key matched the trusted list (the node's id). */
+static nodus_inter_session_module_t *client_mod;
+static volatile bool session_opened = false;
+
+static void client_authed(nodus_tcp_conn_t *conn, const nodus_pubkey_t *pk, void *ctx) {
+    (void)pk; (void)ctx;
+    if (nodus_inter_session_open(conn) == 0) session_opened = true;
+}
+
 static void test_connect(void) {
     TEST("client connects to server");
 
@@ -215,7 +235,20 @@ static void test_connect(void) {
     client_tcp.on_frame = on_frame;
     client_tcp.on_disconnect = on_disconnect;
 
-    client_conn = nodus_tcp_connect(&client_tcp, "127.0.0.1", TS_TCP_PORT);
+    nodus_inter_session_config_t scfg;
+    memset(&scfg, 0, sizeof(scfg));
+    scfg.identity = &client_id;
+    scfg.proto_ver = CMT_P2P_SC_PROTO_VER_4001;
+    scfg.initiator_only = true;
+    scfg.chain_id = NODUS_TEST_CHAIN;
+    scfg.inbound_depth = 4; scfg.outbound_depth = 4;
+    scfg.run_jobs_inline = true;
+    scfg.on_authenticated = client_authed;
+    client_mod = nodus_inter_session_new(&client_tcp, &scfg);
+    if (!client_mod) { FAIL("session module"); return; }
+
+    client_conn = nodus_tcp_connect_trusted(&client_tcp, "127.0.0.1", TS_TCP_PORT,
+                                            &server.identity.node_id, 1);
     if (!client_conn) { FAIL("connect returned NULL"); return; }
 
     /* Wait for connection */
@@ -227,36 +260,13 @@ static void test_connect(void) {
 }
 
 static void test_auth(void) {
-    TEST("3-way Dilithium5 auth handshake");
+    TEST("secret-connection session opens (node key in the trusted list)");
 
-    /* Step 1: HELLO */
-    size_t len = 0;
-    uint32_t txn = next_txn++;
-    nodus_t2_hello(txn, &client_id.pk, &client_id.node_id,
-                    proto_buf, sizeof(proto_buf), &len);
-    nodus_tcp_send(client_conn, proto_buf, len);
+    for (int i = 0; i < 500 && !session_opened && client_conn; i++)
+        nodus_tcp_poll(&client_tcp, 10);
+    if (!session_opened) { FAIL("session did not open"); return; }
 
-    if (!wait_response(5000)) { FAIL("no CHALLENGE response"); return; }
-    if (strcmp(last_resp.method, "challenge") != 0) {
-        FAIL("expected challenge"); return;
-    }
-
-    /* Step 2: Sign nonce, send AUTH (C2: domain-tagged) */
-    nodus_sig_t sig;
-    nodus_sign_auth_challenge(&sig, last_resp.nonce, &client_id.sk);
-
-    txn = next_txn++;
-    nodus_t2_auth(txn, &sig, proto_buf, sizeof(proto_buf), &len);
-    nodus_tcp_send(client_conn, proto_buf, len);
-
-    if (!wait_response(5000)) { FAIL("no AUTH_OK response"); return; }
-    if (strcmp(last_resp.method, "auth_ok") != 0) {
-        char buf[128];
-        snprintf(buf, sizeof(buf), "expected auth_ok, got %s", last_resp.method);
-        FAIL(buf); return;
-    }
-
-    memcpy(session_token, last_resp.token, NODUS_SESSION_TOKEN_LEN);
+    memset(session_token, 0, sizeof(session_token));   /* no token on 4001 (A6) */
     authenticated = true;
     PASS();
 }
@@ -372,49 +382,42 @@ static void test_listen_notify(void) {
 }
 
 static void test_unauth_rejected(void) {
-    TEST("unauthenticated request is rejected");
+    TEST("unauthenticated request is refused (closed, nothing written)");
 
-    /* Open a second connection without authenticating */
-    nodus_tcp_t tcp2;
-    nodus_tcp_init(&tcp2, -1);
-
-    nodus_tier2_msg_t resp2;
-    memset(&resp2, 0, sizeof(resp2));
-    volatile bool resp2_ready = false;
-
-    /* We need a simple test — just connect and try a GET */
-    nodus_tcp_conn_t *conn2 = nodus_tcp_connect(&tcp2, "127.0.0.1", TS_TCP_PORT);
-    if (!conn2) { FAIL("connect2 returned NULL"); nodus_tcp_close(&tcp2); return; }
-
-    for (int i = 0; i < 100 && conn2->state == NODUS_CONN_CONNECTING; i++)
-        nodus_tcp_poll(&tcp2, 10);
-
-    if (conn2->state != NODUS_CONN_CONNECTED) {
-        FAIL("conn2 not connected"); nodus_tcp_close(&tcp2); return;
+    /* A second connection that never runs the secret-connection handshake:
+     * a plain GET frame. The node parses nothing before a session opens, so
+     * it closes the connection and writes no byte. */
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) { FAIL("socket"); return; }
+    struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons(TS_TCP_PORT)};
+    inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
+    if (connect(fd, (struct sockaddr *)&a, sizeof(a)) != 0) {
+        close(fd); FAIL("connect2"); return;
     }
 
-    /* Set callback to capture response */
-    typedef struct { nodus_tier2_msg_t *resp; volatile bool *ready; } cb_ctx_t;
-    cb_ctx_t ctx2 = { &resp2, &resp2_ready };
-
-    /* Send a GET without auth — use a bogus token */
     nodus_key_t key;
     memset(&key, 0x42, sizeof(key));
-    uint8_t buf[4096];
+    uint8_t buf[4096], fr[4200];
     size_t len = 0;
-    uint8_t bogus_token[NODUS_SESSION_TOKEN_LEN];
-    memset(bogus_token, 0, sizeof(bogus_token));
-    nodus_t2_get(1, bogus_token, &key, buf, sizeof(buf), &len);
-    nodus_tcp_send(conn2, buf, len);
+    uint8_t zero_token[NODUS_SESSION_TOKEN_LEN];
+    memset(zero_token, 0, sizeof(zero_token));
+    nodus_t2_get(1, zero_token, &key, buf, sizeof(buf), &len);
+    size_t fn = nodus_frame_encode(fr, sizeof(fr), buf, (uint32_t)len);
+    (void)send(fd, fr, fn, MSG_NOSIGNAL);
 
-    /* Poll and read response manually — use the on_frame of the main tcp */
-    /* Actually, tcp2 doesn't have on_frame set. Let's set it to capture. */
-    /* For simplicity, just verify the server doesn't crash and returns something */
-    nodus_tcp_poll(&tcp2, 500);
-
-    /* If we got here without crashing, that's the main test */
-    nodus_tcp_close(&tcp2);
-    nodus_t2_msg_free(&resp2);
+    size_t got = 0;
+    bool eof = false;
+    struct timeval tv = {.tv_sec = 0, .tv_usec = 100000};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    for (int i = 0; i < 50 && !eof; i++) {       /* up to ~5 s: the 3 s deadline closes it */
+        uint8_t b[64];
+        ssize_t r = recv(fd, b, sizeof(b), 0);
+        if (r > 0) got += (size_t)r;
+        else if (r == 0 || errno == ECONNRESET) eof = true;
+    }
+    close(fd);
+    if (!eof) { FAIL("connection stayed open"); return; }
+    if (got != 0) { FAIL("the node wrote bytes to an unauthenticated peer"); return; }
     PASS();
 }
 
@@ -992,6 +995,7 @@ int main(void) {
     nodus_t2_msg_free(&ch_last_resp);
 #endif
     nodus_tcp_close(&client_tcp);
+    nodus_inter_session_free(client_mod);
 #ifndef NODUS_CHANNELS_DISABLED
     nodus_tcp_close(&ch_client_tcp);
 #endif

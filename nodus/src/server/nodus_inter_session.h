@@ -37,13 +37,27 @@ int nodus_inter_roles_decode(const char *q, const uint8_t *buf, size_t len,
                              nodus_inter_role_list_t *list, bool *ok);
 
 typedef struct {
-    /* The identity outlives the module and all its workers. ML-KEM required.
-     * chain_id is copied; nothing here reads a chain database. */
+    /* The identity outlives the module and all its workers. ML-KEM is
+     * required unless `initiator_only` is set: an initiator-only module (a
+     * client) never accepts and needs none (design 3.1 "The client needs no
+     * KEM key"). chain_id is copied; nothing here reads a chain database. */
     const nodus_identity_t *identity;
+    /* Port/version of this module's sessions: CMT_P2P_SC_PROTO_VER_4001
+     * (4001 and the WebSocket entry) or _4002. 0 keeps the 4002 value the
+     * existing 4002 owners were built with; the 4001 owners state theirs. */
+    uint32_t proto_ver;
+    /* true = this owner only dials. Stated by the owner, never inferred from
+     * a listener; an inbound connection on such a module is refused. */
+    bool initiator_only;
     const uint8_t *chain_id;
     size_t inbound_depth;
     size_t outbound_depth;
     unsigned workers;              /* explicit; 0 = owner runs job_take/run/done */
+    /* With workers == 0: true = the owner's poll pass takes, runs and
+     * completes the queued jobs itself (the client and the browser build: no
+     * thread, the owner's own loop does the work). false = the owner calls
+     * job_take/run/done (the module tests). Ignored when workers > 0. */
+    bool run_jobs_inline;
     uint64_t (*now_ms)(void *ctx);  /* NULL = nodus_time_mono_ms, deadline only */
     void *now_ctx;
     /* Loop thread only, after pin and reject-self. Authenticated != open.
@@ -56,6 +70,13 @@ typedef struct {
     bool (*status)(void *, uint8_t chain_id[32], uint64_t *height);
     int (*role)(void *, const nodus_key_t *, bool *validator, bool *storage);
     void *admission_ctx;
+    /* TEST SEAM (never set by a production owner): called with the context on
+     * entry of every module function that touches a connection's machine
+     * (start, submit, job_done, read, seal, open, the owner poll pass). A
+     * test records the calling thread to assert that one thread alone owns
+     * the machine (approved 4001 plan 2.1 e, 4.1 row 13). NULL = off. */
+    void (*machine_hook)(void *ctx);
+    void *machine_hook_ctx;
     unsigned inbound_cap;          /* 0 = no owner limit (module tests) */
     bool allow_duplicate_ip;       /* test harness, same-IP refusal only */
 } nodus_inter_session_config_t;
@@ -73,15 +94,46 @@ typedef struct nodus_inter_session_job {
     struct nodus_inter_session_job *next;
     cmt_p2p_hs_job_t work;
     uint8_t kem_sk[CMT_P2P_SC_KEM_SK_SIZE];
+    /* The module that queued it (stats only; set by submit, never
+     * dereferenced after nodus_inter_session_free). */
+    struct nodus_inter_session_module *owner;
 } nodus_inter_session_job_t;
 
 /* Attaches session mode before any listen/connect. Refuses an existing
- * listener/connection, missing identity or chain/status provider, or zero depth.
+ * plain or Unix listener, any connection, missing identity or chain/status provider, zero depth,
+ * an unknown proto_ver, or a non-initiator-only identity without ML-KEM.
+ * A transport with a write lock is allowed (the threaded client): then every
+ * session send only queues plaintext and wakes the owner, and the machine is
+ * called by the owner thread alone. A WebSocket listener may exist already or
+ * be added after (either order; no connection may exist yet).
  * No queue/worker defaults. tcp and identity outlive this module.
  * Close the transport before free; free joins every internal worker. */
 nodus_inter_session_module_t *nodus_inter_session_new(nodus_tcp_t *tcp,
                                 const nodus_inter_session_config_t *cfg);
 void nodus_inter_session_free(nodus_inter_session_module_t *s);
+
+/* Counters since the module was created: connections whose machine started,
+ * sessions opened, key-exchange jobs refused because a class queue was full
+ * (the connection is then closed) and connections that ran past the 3 s
+ * handshake deadline. Read by the load-measurement driver (plan 4.5). */
+typedef struct {
+    uint64_t started, opened, queue_refused, deadline_closed;
+    /* Run time of each job kind measured around cmt_p2p_sc_job_run (wall
+     * nanoseconds on the monotonic clock, on whichever thread ran it, queue
+     * wait excluded): index = CMT_P2P_SC_JOB_ENCAPS .. _VERIFY. */
+    uint64_t job_count[5], job_ns_total[5], job_ns_max[5];
+    /* Time from the machine's start (accept, or the WebSocket Upgrade) to the
+     * module's open, measured in nodus_inter_session_open on the module's
+     * deadline clock (ms): total, maximum, and a histogram of
+     * NODUS_INTER_OPEN_BUCKETS buckets of NODUS_INTER_OPEN_BUCKET_MS each, the
+     * last one holding everything at or above its start. Counts equal
+     * `opened`. */
+    uint64_t open_ms_total, open_ms_max;
+    uint64_t open_hist[32];
+} nodus_inter_session_stats_t;
+#define NODUS_INTER_OPEN_BUCKETS   32u
+#define NODUS_INTER_OPEN_BUCKET_MS 100u
+void nodus_inter_session_stats(nodus_inter_session_module_t *s, nodus_inter_session_stats_t *out);
 
 bool nodus_inter_session_chain_ready(nodus_inter_session_module_t *s);
 bool nodus_inter_session_is_open(const nodus_tcp_conn_t *conn);
@@ -100,6 +152,9 @@ int nodus_inter_session_job_done(nodus_inter_session_module_t *s,
  * completions on the owner thread and checks every not-open deadline.
  * nodus_tcp_poll calls it even on passes without socket activity. */
 int nodus_inter_session_wake_fd(const nodus_inter_session_module_t *s);
+/* Any thread: makes the owner's next poll pass run (queued sends are sealed
+ * there). The wake is a coalescing eventfd write; it never blocks. */
+void nodus_inter_session_wake_owner(nodus_inter_session_module_t *s);
 void nodus_inter_session_poll(nodus_inter_session_module_t *s);
 int nodus_inter_session_poll_timeout(nodus_inter_session_module_t *s, int timeout_ms);
 

@@ -114,8 +114,16 @@ if [ ! -f "$CONF" ]; then
     echo "[SKIP] not a Ledger V2 cluster from this tree (no $CONF) — use stagef_up_v2.sh"
     exit 99
 fi
-port=$(stagef_tcp_port "$REF")
-sport=$(stagef_tcp_port "$SPENDER")
+# A node refuses a client holding its own key (reflection, 4001 plan 4.4), and
+# this scenario uses node identities as the users' keys. So every nodus-cli
+# call below dials the NEXT node after the one whose key it holds: node 2 for
+# node 1's key (port), node 6 for node 5's key (sport), and a co-signer's
+# `msig sign` dials the node after its own, with THAT node's fingerprint as
+# --pin (the pin names the node the session is with; the chain it reads is the
+# same on every node). REF stays the node whose database is read.
+next_node() { echo $(( $1 % STAGEF_COMMITTEE_SIZE + 1 )); }
+port=$(stagef_tcp_port "$(next_node "$FUNDER")")
+sport=$(stagef_tcp_port "$(next_node "$SPENDER")")
 key_dir() { echo "$(stagef_node_dir "$1")/identity"; }
 for n in "$FUNDER" 2 3 4 "$SPENDER"; do
     [ -s "$(key_dir "$n")/nodus.pk" ] && [ -s "$(key_dir "$n")/nodus.fp" ] \
@@ -220,14 +228,14 @@ S3="$BASE_DIR/msig_sig_node3"
 pin_of() { cat "$(key_dir "$1")/nodus.fp"; }
 # negative controls first (nothing may be written): no --pin, and node 3's
 # pin against node 2's port (the session's key is not the pinned one)
-if "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port 2)" msig sign --keys "$(key_dir 2)" \
+if "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$(next_node 2)")" msig sign --keys "$(key_dir 2)" \
        --in "$EXP" --out "$S2" > "$BASE_DIR/msig_sign2_nopin.log" 2>&1; then
     die "msig sign SIGNED without --pin"
 fi
 grep -q -- "--pin" "$BASE_DIR/msig_sign2_nopin.log" \
     || { cat "$BASE_DIR/msig_sign2_nopin.log" >&2; die "the no-pin refusal gave the wrong reason"; }
 [ ! -e "$S2" ] || die "a signature file was written without --pin"
-if "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port 2)" msig sign --pin "$(pin_of 3)" \
+if "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$(next_node 2)")" msig sign --pin "$(pin_of 2)" \
        --keys "$(key_dir 2)" --in "$EXP" --out "$S2" \
        > "$BASE_DIR/msig_sign2_wrongpin.log" 2>&1; then
     die "msig sign SIGNED over a session whose key is not the pinned one"
@@ -236,7 +244,7 @@ grep -q "no PINNED session" "$BASE_DIR/msig_sign2_wrongpin.log" \
     || { cat "$BASE_DIR/msig_sign2_wrongpin.log" >&2; die "the pin-mismatch refusal gave the wrong reason"; }
 [ ! -e "$S2" ] || die "a signature file was written over a mismatched pin"
 echo "[ok] msig sign refuses without --pin and with another node's pin — nothing written"
-"$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port 2)" msig sign --pin "$(pin_of 2)" \
+"$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$(next_node 2)")" msig sign --pin "$(pin_of "$(next_node 2)")" \
     --keys "$(key_dir 2)" --in "$EXP" --out "$S2" \
     > "$BASE_DIR/msig_sign2.log" 2>&1 \
     || { cat "$BASE_DIR/msig_sign2.log" >&2; die "node 2 could not sign"; }
@@ -250,7 +258,7 @@ grep -q "fixed 2 signers" "$BASE_DIR/msig_combine_one.log" \
 echo "[ok] one signature (M - 1) refused by combine — nothing written or sent"
 
 # ── Stage 5: the second signature, assembly, submission ──────────────
-"$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port 3)" msig sign --pin "$(pin_of 3)" \
+"$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$(next_node 3)")" msig sign --pin "$(pin_of "$(next_node 3)")" \
     --keys "$(key_dir 3)" --in "$EXP" --out "$S3" \
     > "$BASE_DIR/msig_sign3.log" 2>&1 \
     || { cat "$BASE_DIR/msig_sign3.log" >&2; die "node 3 could not sign"; }
@@ -321,7 +329,7 @@ if [ -s "$BASE_DIR/msig_genesis.addr" ]; then
         > "$BASE_DIR/msig_genesis_build.log" 2>&1 \
         || { cat "$BASE_DIR/msig_genesis_build.log" >&2; die "the genesis-coin envelope could not be BUILT"; }
     for n in 2 4; do
-        "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$n")" msig sign --pin "$(pin_of "$n")" \
+        "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$(next_node "$n")")" msig sign --pin "$(pin_of "$(next_node "$n")")" \
             --keys "$(key_dir "$n")" --in "$GEXP" \
             --out "$BASE_DIR/msig_genesis_sig_node$n" \
             > "$BASE_DIR/msig_genesis_sign$n.log" 2>&1 \

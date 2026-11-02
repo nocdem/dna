@@ -131,7 +131,10 @@ PK=$(xxd -p -c 99999 "$KEYS/nodus.pk")
 FP=$(cat "$KEYS/nodus.fp")
 [ "${#PK}" = 5184 ] && [ "${#FP}" = 128 ] || die "node$NODE's key or fingerprint has the wrong length"
 VOTER="${FP:0:64}"
-port=$(stagef_tcp_port "$REF")
+# Every nodus-cli call below holds node $NODE's key; a node refuses a client
+# holding its own key (reflection, 4001 plan 4.4), so they dial the next node.
+# The chain is read from node $REF's database.
+port=$(stagef_tcp_port "$(( NODE % STAGEF_COMMITTEE_SIZE + 1 ))")
 
 # ── pace and feasibility (a PURE check, nothing submitted yet) ───────
 pace="idle"

@@ -5,6 +5,25 @@
  * (K1-K6) and docs/plans/2026-09-23-mlkem-fips203-migration-design.md §5.8-
  * §5.10 (nodus).
  *
+ * REWRITTEN for the 4001 secret connection (approved 4001 plan 4.2, build-
+ * order step 7). What is left, and what each case proves:
+ *   - drive (a): a real client and a real node (fake chain backend, test
+ *     chain id) open a secret-connection session (ML-KEM-1024 only) and an
+ *     encrypted put + get round trip works; the client reports the node's
+ *     key as server_dil_pk.
+ *   - D4: an inbound E2E circuit with no matching key is refused (client
+ *     without an ML-KEM key; the 4001 client needs none).
+ *   - the identity / seed / KAT / load / MLKEM_BIND cases (unchanged).
+ * Removed (their subject is gone from 4001 and the WebSocket entry): drive
+ * (b) the legacy hello/auth/key_init client, drive (c) a server without an
+ * ML-KEM key, D5 the stale mlkem cache, D7 KEY_INIT at a server without
+ * ML-KEM. The old-handshake refusal is test_client_session.c / test_ws_server.c.
+ * Compile flags: none. Environment: none; fixed ports 18100-18139 and
+ * /tmp/nodus_mlkem_test_* directories it removes. False passes: the round
+ * trip needs the AEAD to agree on both ends; a missing session fails READY.
+ * The historical description below is of the removed T2 path where it
+ * mentions do_auth / alg=0 / Kyber round-3.
+ *
  * Three drives over the REAL handshake handlers (a real nodus_server_t,
  * spawned in a thread, exactly like test_client.c's server_thread):
  *
@@ -77,6 +96,7 @@
 #include "crypto/enc/kem/fips202.h"   /* shake256(): the D10 coins step, re-derived in the KAT */
 #include "crypto/hash/qgp_sha3.h"
 #include "core/nodus_value.h"
+#include "nodus_test_session.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -143,22 +163,15 @@ static void *server_thread_fn(void *arg_) {
     snprintf(cmd, sizeof(cmd), "mkdir -p %s", ctx->config.data_path);
     system(cmd);
 
-    if (nodus_server_init(arg->server, &ctx->config) != 0) {
+    /* 4001 plan 4.2: the node needs a chain id to accept sessions: a backend
+     * reporting an open chain and the test chain id (nodus_test_session.h). */
+    nodus_server_backends_t be;
+    nts_fake_chain_be(&be);
+    if (nodus_server_init_ex(arg->server, &ctx->config, &be) != 0) {
         fprintf(stderr, "test_mlkem_handshake: server init failed\n");
         free(arg);
         server_init_outcome(ctx, false);
         return NULL;
-    }
-
-    if (ctx->disable_mlkem) {
-        /* Drive (c): simulate a pre-Faz-1 server that has an identity but
-         * no ML-KEM keypair yet. nodus_server_init() -> nodus_identity_
-         * generate() always produces one now (Faz 1) — clear the flag to
-         * model a node that has not upgraded. The underlying bytes are
-         * left alone; only the "do I have one" flag changes, matching
-         * what a real pre-Faz-1 identity.kyber-only file set would load
-         * as. */
-        arg->server->identity.has_mlkem = false;
     }
 
     server_init_outcome(ctx, true);
@@ -219,8 +232,8 @@ static void stop_test_server(test_server_ctx_t *ctx, nodus_server_t *server) {
 
 /* ── Drive (a)/(c): real nodus_client_t against a real server ───────── */
 
-static bool run_client_drive(uint16_t server_tcp_port, bool *out_has_mlkem_cache,
-                              bool *out_has_kyber_cache) {
+static bool run_client_drive(uint16_t server_tcp_port, const nodus_identity_t *server_id,
+                              bool *out_server_key_seen) {
     nodus_identity_t client_id;
     nodus_identity_generate(&client_id);
 
@@ -230,13 +243,16 @@ static bool run_client_drive(uint16_t server_tcp_port, bool *out_has_mlkem_cache
     snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "127.0.0.1");
     cfg.servers[0].port = server_tcp_port;
     cfg.server_count = 1;
+    nts_trust(&cfg, server_id);
 
     bool ok = (nodus_client_init(&client, &cfg, &client_id) == 0) &&
               (nodus_client_connect(&client) == 0) &&
               nodus_client_is_ready(&client);
 
-    if (out_has_mlkem_cache) *out_has_mlkem_cache = client.has_cached_server_mlkem;
-    if (out_has_kyber_cache) *out_has_kyber_cache = client.has_cached_server_kyber;
+    /* the client took the responder's key from the authenticated handshake */
+    if (out_server_key_seen)
+        *out_server_key_seen = client.has_server_dil_pk &&
+            memcmp(client.server_dil_pk.bytes, server_id->pk.bytes, NODUS_PK_BYTES) == 0;
 
     if (ok) {
         nodus_key_t key;
@@ -270,7 +286,7 @@ static bool run_client_drive(uint16_t server_tcp_port, bool *out_has_mlkem_cache
 }
 
 static void test_drive_a_new_client_new_server(void) {
-    TEST("drive (a): new client <-> new server -> alg=1, matching session key");
+    TEST("drive (a): client <-> node -> secret connection, put/get round trip");
 
     test_server_ctx_t sctx;
     /* D1 (N1 delta 1): nodus_server_t is ~21.27 MB (sizeof, measured via
@@ -288,44 +304,17 @@ static void test_drive_a_new_client_new_server(void) {
     }
     usleep(100000); /* let the server settle, same margin as test_client.c */
 
-    bool has_mlkem_cache = false, has_kyber_cache = false;
-    bool ok = run_client_drive(sctx.config.tcp_port, &has_mlkem_cache, &has_kyber_cache);
+    bool server_key_seen = false;
+    bool ok = run_client_drive(sctx.config.tcp_port, &server.identity, &server_key_seen);
 
-    /* has_cached_server_mlkem is set ONLY inside the has_mpk branch of
-     * nodus_client.c do_auth(), after nodus_verify_mlkem_bind() succeeded
-     * and qgp_mlkem1024_encapsulate()+key_ack completed — the direct,
-     * inspectable proof that alg=1 was negotiated, not merely "some
-     * session key". */
-    if (ok && has_mlkem_cache)
+    /* The 4001 session is the secret connection (ML-KEM-1024 only): the
+     * client became READY (the node's key was in its trusted list and the
+     * chain ids matched) and an encrypted put + get round trip worked (a key
+     * mismatch would fail the AEAD and the request would time out). */
+    if (ok && server_key_seen)
         PASS();
     else
-        FAIL("ML-KEM handshake did not complete or session key mismatch");
-
-    stop_test_server(&sctx, &server);
-}
-
-static void test_drive_c_new_client_server_without_mlkem(void) {
-    TEST("drive (c): new client <-> server WITHOUT mlkem -> Kyber fallback");
-
-    test_server_ctx_t sctx;
-    /* D1 (N1 delta 1): see the sizing comment on drive (a) above — same
-     * fix, static storage duration, not a stack local. */
-    static nodus_server_t server;
-    if (start_test_server(&sctx, &server, 18120, true /* disable_mlkem */) != 0) {
-        FAIL("server did not come up (start-up failed)");
-        return;
-    }
-    usleep(100000);
-
-    bool has_mlkem_cache = false, has_kyber_cache = false;
-    bool ok = run_client_drive(sctx.config.tcp_port, &has_mlkem_cache, &has_kyber_cache);
-
-    /* AUTH_OK carried no mpk (server.identity.has_mlkem == false) -> the
-     * client must never cache an ML-KEM pubkey, only the Kyber one. */
-    if (ok && has_kyber_cache && !has_mlkem_cache)
-        PASS();
-    else
-        FAIL("Kyber fallback handshake failed, or client wrongly cached mlkem");
+        FAIL("secret-connection handshake did not complete or the round trip failed");
 
     stop_test_server(&sctx, &server);
 }
@@ -366,6 +355,7 @@ static void test_d4_inbound_e2e_no_key_refused(void) {
     snprintf(cfg_a.servers[0].ip, sizeof(cfg_a.servers[0].ip), "127.0.0.1");
     cfg_a.servers[0].port = sctx.config.tcp_port;
     cfg_a.server_count = 1;
+    nts_trust(&cfg_a, &server.identity);
 
     g_d4_got_inbound = false;
 
@@ -393,6 +383,7 @@ static void test_d4_inbound_e2e_no_key_refused(void) {
     snprintf(cfg_b.servers[0].ip, sizeof(cfg_b.servers[0].ip), "127.0.0.1");
     cfg_b.servers[0].port = sctx.config.tcp_port;
     cfg_b.server_count = 1;
+    nts_trust(&cfg_b, &server.identity);
 
     ok = ok && (nodus_client_init(&client_b, &cfg_b, &id_b) == 0) &&
               (nodus_client_connect(&client_b) == 0) &&
@@ -433,302 +424,14 @@ static void test_d4_inbound_e2e_no_key_refused(void) {
     stop_test_server(&sctx, &server);
 }
 
-/* D5 (N1 delta 1) — cache hygiene: a fresh, signed, kpk-only AUTH_OK
- * (server has no mpk) must clear a STALE cached mlkem pubkey from a
- * previous session (server rollback, or failover to a different cluster
- * server that hasn't generated an ML-KEM key yet). */
-static void test_d5_mlkem_cache_cleared_on_rollback(void) {
-    TEST("D5: fresh signed kpk-only AUTH_OK clears a stale mlkem cache");
-
-    test_server_ctx_t sctx_a, sctx_b;
-    static nodus_server_t server_a, server_b;
-    if (start_test_server(&sctx_a, &server_a, 18140, false) != 0) {
-        FAIL("server A did not come up (start-up failed)");
-        return;
-    }
-    if (start_test_server(&sctx_b, &server_b, 18150, true /* disable_mlkem */) != 0) {
-        FAIL("server B did not come up (start-up failed)");
-        stop_test_server(&sctx_a, &server_a);
-        return;
-    }
-    usleep(100000);
-
-    nodus_identity_t id;
-    nodus_identity_generate(&id);
-
-    nodus_client_t client;
-    nodus_client_config_t cfg;
-    memset(&cfg, 0, sizeof(cfg));
-    snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "127.0.0.1");
-    cfg.servers[0].port = sctx_a.config.tcp_port;
-    cfg.server_count = 1;
-
-    bool ok = (nodus_client_init(&client, &cfg, &id) == 0) &&
-              (nodus_client_connect(&client) == 0) &&
-              nodus_client_is_ready(&client);
-
-    /* First connect to server A (mlkem-capable) -> cache set. */
-    ok = ok && client.has_cached_server_mlkem;
-
-    /* Reconnect the SAME client struct to server B (mlkem DISABLED), using
-     * nodus_client_force_disconnect() + a second nodus_client_connect()
-     * call -- NOT the SDK's own auto_reconnect path (this client has
-     * auto_reconnect left false; force_disconnect is documented as a
-     * teardown helper "before joining threads that may be blocked", used
-     * here only to drive do_auth() a second time on purpose). Verified by
-     * reading: force_disconnect() (nodus_client.c) stops the read thread,
-     * closes the fd, sets conn=NULL/state=DISCONNECTED, but does NOT
-     * touch has_cached_server_mlkem, the identity, or the mutexes (unlike
-     * nodus_client_close(), which destroys the mutexes and clears the
-     * identity) -- and nodus_client_connect() -> do_connect_one() runs
-     * do_auth() SYNCHRONOUSLY, starting a fresh read thread (which resets
-     * read_thread_stop to false, start_read_thread()) only AFTER do_auth()
-     * already succeeded. So this exercises do_auth() fresh, with a stale
-     * cache still set, pointed at a server that will never send mpk. */
-    if (ok) {
-        nodus_client_force_disconnect(&client);
-        client.config.servers[0].port = sctx_b.config.tcp_port;
-        ok = (nodus_client_connect(&client) == 0) && nodus_client_is_ready(&client);
-    }
-
-    /* D5: server B's fresh, signed AUTH_OK carried kpk but no mpk -> the
-     * stale cache from server A must be cleared, not silently reused. */
-    if (ok)
-        ok = client.has_cached_server_kyber && !client.has_cached_server_mlkem;
-
-    if (ok) PASS(); else FAIL("stale mlkem cache survived a fresh kpk-only AUTH_OK");
-
-    nodus_client_close(&client);
-    nodus_identity_clear(&id);
-    stop_test_server(&sctx_a, &server_a);
-    stop_test_server(&sctx_b, &server_b);
-}
-
-/* ── Drive (b): hand-rolled legacy-wire client (real transport, real
- * server, manual protocol driving — see the file header for why this
- * exists instead of the public nodus_client_t API). ────────────────── */
-
-typedef struct {
-    nodus_tier2_msg_t msg;
-    bool              got;
-} manual_rx_t;
-
-static manual_rx_t g_manual_rx;
-
-static void manual_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
-                             size_t len, void *ctx) {
-    (void)conn; (void)ctx;
-    nodus_t2_msg_free(&g_manual_rx.msg);
-    memset(&g_manual_rx.msg, 0, sizeof(g_manual_rx.msg));
-    if (nodus_t2_decode(payload, len, &g_manual_rx.msg) == 0)
-        g_manual_rx.got = true;
-}
-
-static bool manual_wait(nodus_tcp_t *tcp, int timeout_ms) {
-    g_manual_rx.got = false;
-    for (int elapsed = 0; elapsed < timeout_ms; elapsed += 20) {
-        nodus_tcp_poll(tcp, 20);
-        if (g_manual_rx.got) return true;
-    }
-    return false;
-}
-
-static void test_drive_b_legacy_client_new_server(void) {
-    TEST("drive (b): legacy-wire client (alg=0) <-> new server -> round-3 decap");
-
-    test_server_ctx_t sctx;
-    /* D1 (N1 delta 1): see the sizing comment on drive (a) above — same
-     * fix, static storage duration, not a stack local. */
-    static nodus_server_t server;
-    if (start_test_server(&sctx, &server, 18110, false) != 0) {
-        FAIL("server did not come up (start-up failed)");
-        return;
-    }
-    usleep(100000);
-
-    nodus_identity_t old_id;
-    nodus_identity_generate(&old_id);
-
-    nodus_tcp_t tcp;
-    nodus_tcp_init(&tcp, -1);
-    tcp.on_frame = manual_on_frame;
-    memset(&g_manual_rx, 0, sizeof(g_manual_rx));
-
-    nodus_tcp_conn_t *conn = nodus_tcp_connect(&tcp, "127.0.0.1", sctx.config.tcp_port);
-    for (int i = 0; i < 200 && (!conn || conn->state != NODUS_CONN_CONNECTED); i++)
-        nodus_tcp_poll(&tcp, 10);
-
-    bool ok = (conn != NULL && conn->state == NODUS_CONN_CONNECTED);
-    if (!ok) FAIL("TCP connect failed");
-
-    uint8_t buf[16384];
-    size_t len = 0;
-
-    /* HELLO -> CHALLENGE */
-    if (ok) {
-        nodus_t2_hello(1, &old_id.pk, &old_id.node_id, buf, sizeof(buf), &len);
-        nodus_tcp_send(conn, buf, len);
-        ok = manual_wait(&tcp, 3000) &&
-             strcmp(g_manual_rx.msg.method, "challenge") == 0;
-        if (!ok) FAIL("no challenge response");
-    }
-
-    /* Sign nonce, send AUTH -> AUTH_OK. An old client never looks at
-     * mpk/mpk_sig even if the (new, ML-KEM-capable) server included them —
-     * it only reads kyber_pk/kpk_sig, exactly like a shipped pre-Faz-1
-     * binary would. */
-    uint8_t token[NODUS_SESSION_TOKEN_LEN];
-    uint8_t server_kyber_pk[NODUS_KYBER_PK_BYTES];
-    if (ok) {
-        uint8_t nonce[NODUS_NONCE_LEN];
-        memcpy(nonce, g_manual_rx.msg.nonce, NODUS_NONCE_LEN);
-        nodus_sig_t sig;
-        nodus_sign_auth_challenge(&sig, nonce, &old_id.sk);
-        len = 0;
-        nodus_t2_auth(2, &sig, buf, sizeof(buf), &len);
-        nodus_tcp_send(conn, buf, len);
-        ok = manual_wait(&tcp, 3000) &&
-             strcmp(g_manual_rx.msg.method, "auth_ok") == 0 &&
-             g_manual_rx.msg.has_kyber_pk;
-        if (!ok) {
-            FAIL("no auth_ok / no kyber_pk");
-        } else {
-            memcpy(token, g_manual_rx.msg.token, NODUS_SESSION_TOKEN_LEN);
-            memcpy(server_kyber_pk, g_manual_rx.msg.kyber_pk, NODUS_KYBER_PK_BYTES);
-        }
-    }
-
-    /* Encapsulate against the server's Kyber pk ONLY (ignore mlkem_pk even
-     * if present), send KEY_INIT with alg=0 explicit — this is the exact
-     * frame a pre-Faz-1 client emits, byte-identical per
-     * test_key_init_legacy_byte_identical (test_tier2.c). */
-    if (ok) {
-        uint8_t ct[NODUS_KYBER_CT_BYTES], ss[NODUS_KYBER_SS_BYTES];
-        ok = (qgp_kem1024_encapsulate(ct, ss, server_kyber_pk) == 0);
-        if (!ok) {
-            FAIL("Kyber encapsulate failed");
-        } else {
-            uint8_t nc[NODUS_NONCE_LEN];
-            nodus_random(nc, NODUS_NONCE_LEN);
-            len = 0;
-            nodus_t2_key_init(3, ct, nc, 0, buf, sizeof(buf), &len);
-            nodus_tcp_send(conn, buf, len);
-            ok = manual_wait(&tcp, 3000) &&
-                 strcmp(g_manual_rx.msg.method, "key_ack") == 0 &&
-                 g_manual_rx.msg.has_key_nonce;
-            if (!ok) {
-                FAIL("no key_ack");
-            } else {
-                /* nodus_tcp_send/recv auto-encrypt/decrypt via
-                 * conn->channel_crypto once established (nodus_tcp.c) —
-                 * setting this up is all a manual client needs to do. */
-                ok = (nodus_channel_crypto_init(&conn->channel_crypto, ss, nc,
-                                                 g_manual_rx.msg.key_nonce,
-                                                 NODUS_CHANNEL_ROLE_INITIATOR) == 0);
-                if (!ok) FAIL("channel crypto init failed");
-            }
-            qgp_secure_memzero(ss, sizeof(ss));
-        }
-    }
-
-    /* Prove the round-3 session actually works end to end: an
-     * authenticated, encrypted ping/pong round trip. This exercises the
-     * REAL nodus_auth_handle_key_init_alg(...,key_alg=0,...) ->
-     * nodus_auth_handle_key_init() delegation on the server side. */
-    if (ok) {
-        len = 0;
-        nodus_t2_ping(4, token, buf, sizeof(buf), &len);
-        nodus_tcp_send(conn, buf, len);
-        ok = manual_wait(&tcp, 3000) && strcmp(g_manual_rx.msg.method, "pong") == 0;
-        if (!ok) FAIL("no pong over the round-3 encrypted channel");
-    }
-
-    if (ok) PASS();
-
-    nodus_t2_msg_free(&g_manual_rx.msg);
-    nodus_tcp_close(&tcp);
-    nodus_identity_clear(&old_id);
-    stop_test_server(&sctx, &server);
-}
-
-/* D7 (N1 delta 1) — answer, don't hang: KEY_INIT alg=1 at a server with no
- * ML-KEM keypair must get an error frame promptly, not the silence that
- * left a sender waiting out its connect_timeout. Reuses drive (b)'s
- * manual-wire helpers (manual_on_frame/manual_wait/g_manual_rx) above. */
-static void test_d7_key_init_mlkem_at_server_without_mlkem_answers(void) {
-    TEST("D7: KEY_INIT alg=1 at a server without mlkem answers, doesn't hang");
-
-    test_server_ctx_t sctx;
-    static nodus_server_t server;
-    if (start_test_server(&sctx, &server, 18160, true /* disable_mlkem */) != 0) {
-        FAIL("server did not come up (start-up failed)");
-        return;
-    }
-    usleep(100000);
-
-    nodus_identity_t id;
-    nodus_identity_generate(&id);
-
-    nodus_tcp_t tcp;
-    nodus_tcp_init(&tcp, -1);
-    tcp.on_frame = manual_on_frame;
-    memset(&g_manual_rx, 0, sizeof(g_manual_rx));
-
-    nodus_tcp_conn_t *conn = nodus_tcp_connect(&tcp, "127.0.0.1", sctx.config.tcp_port);
-    for (int i = 0; i < 200 && (!conn || conn->state != NODUS_CONN_CONNECTED); i++)
-        nodus_tcp_poll(&tcp, 10);
-
-    bool ok = (conn != NULL && conn->state == NODUS_CONN_CONNECTED);
-    if (!ok) FAIL("TCP connect failed");
-
-    uint8_t buf[16384];
-    size_t len = 0;
-
-    if (ok) {
-        nodus_t2_hello(1, &id.pk, &id.node_id, buf, sizeof(buf), &len);
-        nodus_tcp_send(conn, buf, len);
-        ok = manual_wait(&tcp, 3000) && strcmp(g_manual_rx.msg.method, "challenge") == 0;
-        if (!ok) FAIL("no challenge response");
-    }
-
-    if (ok) {
-        uint8_t nonce[NODUS_NONCE_LEN];
-        memcpy(nonce, g_manual_rx.msg.nonce, NODUS_NONCE_LEN);
-        nodus_sig_t sig;
-        nodus_sign_auth_challenge(&sig, nonce, &id.sk);
-        len = 0;
-        nodus_t2_auth(2, &sig, buf, sizeof(buf), &len);
-        nodus_tcp_send(conn, buf, len);
-        ok = manual_wait(&tcp, 3000) && strcmp(g_manual_rx.msg.method, "auth_ok") == 0;
-        if (!ok) FAIL("no auth_ok");
-    }
-
-    /* Deliberately send KEY_INIT alg=1 even though this server has no
-     * ML-KEM keypair (disable_mlkem=true) -- an attacker or a
-     * misconfigured client could do this. The ciphertext bytes are
-     * irrelevant: D7's fix answers BEFORE ever touching them. */
-    if (ok) {
-        uint8_t ct[NODUS_MLKEM_CT_BYTES];
-        memset(ct, 0xEF, sizeof(ct));
-        uint8_t nc[NODUS_NONCE_LEN];
-        nodus_random(nc, NODUS_NONCE_LEN);
-        len = 0;
-        nodus_t2_key_init(3, ct, nc, 1, buf, sizeof(buf), &len);
-        nodus_tcp_send(conn, buf, len);
-        /* The whole point of D7: this must come back promptly, not after
-         * a full connect_timeout worth of silence. */
-        ok = manual_wait(&tcp, 3000) && g_manual_rx.msg.type == 'e' &&
-             g_manual_rx.msg.error_code == NODUS_ERR_PROTOCOL_ERROR;
-        if (!ok) FAIL("server stayed silent instead of answering with an error");
-    }
-
-    if (ok) PASS();
-
-    nodus_t2_msg_free(&g_manual_rx.msg);
-    nodus_tcp_close(&tcp);
-    nodus_identity_clear(&id);
-    stop_test_server(&sctx, &server);
-}
+/* Removed with the 4001 secret connection (approved 4001 plan 4.2):
+ *   drive (b) legacy hello/auth/key_init client, D5 the stale mlkem cache,
+ *   D7 KEY_INIT alg=1 at a server without ML-KEM, and drive (c) a server
+ *   without an ML-KEM key. Their subject (the T2 hello / auth_ok / KEY_INIT
+ *   path and the Kyber round-3 fallback) no longer exists on 4001 or the
+ *   WebSocket entry; a server without ML-KEM cannot open a session at all
+ *   (nodus_inter_session_new refuses it) and the old handshake gets nothing
+ *   (test_client_session.c, test_ws_server.c). */
 
 /* ── Identity determinism / migration (N6 "Also:") ───────────────────── */
 
@@ -1188,11 +891,7 @@ int main(void) {
     test_identity_load_mlkem_pair_mismatch_regenerates();
     test_mlkem_bind_strict_no_swap();
     test_drive_a_new_client_new_server();
-    test_drive_b_legacy_client_new_server();
-    test_d7_key_init_mlkem_at_server_without_mlkem_answers();
-    test_drive_c_new_client_server_without_mlkem();
     test_d4_inbound_e2e_no_key_refused();
-    test_d5_mlkem_cache_cleared_on_rollback();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;
