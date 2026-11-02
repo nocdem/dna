@@ -193,7 +193,10 @@ export default defineConfig({
   build: {
     target: 'chrome123', outDir: resolve(here, 'dist-extension/unpacked'), emptyOutDir: true,
     assetsInlineLimit: 0,
-    rollupOptions: { output: { manualChunks: vendorChunks, onlyExplicitManualChunks: true }, input: {
+    // The shared Connect modules (src/connect) form their own chunk: one entry
+    // chunk carried them past Vite's 500 kB warning (519.9 kB at 0.1.155 + PQ
+    // handoff; operator 2026-11-03 "3 duzelt"). Packages keep vendorChunks.
+    rollupOptions: { output: { manualChunks: (id, api) => vendorChunks(id, api) ?? (id.replaceAll('\\', '/').includes('/web-wallet/src/connect/') && api.getModuleInfo(id)?.isIncluded === true ? 'app-connect' : undefined), onlyExplicitManualChunks: true }, input: {
       popup: resolve(extension, 'popup.html'), notification: resolve(extension, 'notification.html'), home: resolve(extension, 'home.html'),
     } },
   },
