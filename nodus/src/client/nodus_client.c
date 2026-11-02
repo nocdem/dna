@@ -777,6 +777,10 @@ int nodus_client_init(nodus_client_t *client,
     atomic_store(&client->next_txn, 1);
     client->server_idx = 0;
 
+    /* Local-tool mode has no server list: one attempt at the tool socket. */
+    if (tool_mode && client->config.server_count == 0)
+        client->config.server_count = 1;
+
     /* Apply defaults */
     if (client->config.connect_timeout_ms <= 0)
         client->config.connect_timeout_ms = 5000;

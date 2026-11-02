@@ -174,7 +174,16 @@ int nodus_consent_req_parse(const char *code, nodus_consent_req_t *out,
 int nodus_consent_req_read_config(const char *path, char *identity_path,
                                   size_t cap, uint16_t *tcp_port,
                                   char *err, size_t errcap) {
-    if (!path || !identity_path || cap == 0 || !tcp_port) {
+    return nodus_consent_req_read_config_ex(path, identity_path, cap, tcp_port,
+                                            NULL, 0, err, errcap);
+}
+
+int nodus_consent_req_read_config_ex(const char *path, char *identity_path,
+                                     size_t cap, uint16_t *tcp_port,
+                                     char *data_path, size_t data_cap,
+                                     char *err, size_t errcap) {
+    if (!path || !identity_path || cap == 0 || !tcp_port ||
+        (data_path && data_cap == 0)) {
         cr_err(err, errcap, "no config path given");
         return -1;
     }
@@ -265,8 +274,27 @@ int nodus_consent_req_read_config(const char *path, char *identity_path,
             }
             port = (uint16_t)v;
         }
+        /* data_path: the node's own loader reads the same key and falls back
+         * to NODUS_CONSENT_REQ_DEFAULT_DATA_PATH when it is absent
+         * (tools/nodus_node_config.c). Judged before anything is written. */
+        const char *dp = NODUS_CONSENT_REQ_DEFAULT_DATA_PATH;
+        struct json_object *dv = NULL;
+        if (data_path && json_object_object_get_ex(root, "data_path", &dv)) {
+            if (!json_object_is_type(dv, json_type_string) ||
+                !json_object_get_string(dv)[0]) {
+                cr_err(err, errcap, "\"data_path\" in %s is not a non-empty string",
+                       path);
+                goto out;
+            }
+            dp = json_object_get_string(dv);
+        }
+        if (data_path && strlen(dp) >= data_cap) {
+            cr_err(err, errcap, "\"data_path\" in %s is too long", path);
+            goto out;
+        }
         memcpy(identity_path, s, sl + 1u);
         *tcp_port = port;
+        if (data_path) memcpy(data_path, dp, strlen(dp) + 1u);
     }
     rc = 0;
 out:

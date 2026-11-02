@@ -23,6 +23,7 @@
 
 #include "witness/nodus_witness_ipc.h"
 #include "witness/nodus_witness.h"
+#include "witness/nodus_witness_host.h"        /* host->identity (own key of a tool) */
 #include "witness/nodus_witness_db.h"          /* nodus_witness_block_height */
 #include "witness/nodus_witness_p2p.h"         /* nodus_witness_p2p_listen_port */
 #include "witness/nodus_witness_v2_apply.h"    /* nodus_witness_v2_committed_global_root (W4-H) */
@@ -169,6 +170,11 @@ static void witness_h_status(void *ctx, nodus_witness_ipc_status_t *out) {
     out->listen_port = nodus_witness_p2p_listen_port(w->p2p);
 }
 
+static const nodus_pubkey_t *witness_h_own_pk(void *ctx) {
+    nodus_witness_t *w = (nodus_witness_t *)ctx;
+    return (w && w->host && w->host->identity) ? &w->host->identity->pk : NULL;
+}
+
 void nodus_witness_ipc_handlers_for(nodus_witness_t *w,
                                     nodus_witness_ipc_handlers_t *out) {
     memset(out, 0, sizeof(*out));
@@ -176,6 +182,7 @@ void nodus_witness_ipc_handlers_for(nodus_witness_t *w,
     out->cc_collect    = witness_h_cc_collect;
     out->status        = witness_h_status;
     out->roles         = witness_h_roles;
+    out->own_pk        = witness_h_own_pk;
     out->ctx           = w;
 }
 
@@ -184,7 +191,8 @@ void nodus_witness_ipc_handlers_for(nodus_witness_t *w,
 typedef enum {
     IPC_KIND_NONE = 0,      /* accepted, first frame not seen yet */
     IPC_KIND_SESSION,       /* ipc_hello: one core client session */
-    IPC_KIND_CTL            /* ipc_ctl: core's control connection */
+    IPC_KIND_CTL,           /* ipc_ctl: core's control connection */
+    IPC_KIND_TOOL           /* ipc_tool: the node's own tool, as the node key */
 } ipc_kind_t;
 
 typedef struct {
@@ -196,6 +204,7 @@ typedef struct {
 struct nodus_witness_ipc {
     nodus_tcp_t                   tcp;
     nodus_witness_ipc_handlers_t  h;
+    bool                          tool_only;   /* the combined process's socket */
     /* Indexed by conn->slot of `tcp` (its pool index). */
     ipc_slot_t                    slots[NODUS_TCP_MAX_CONNS];
 };
@@ -276,6 +285,32 @@ static void ipc_on_first_frame(nodus_witness_ipc_t *ipc, ipc_slot_t *s,
 
     if (ipc_parse_ctl(payload, len, q, &has_pk, pk, &has_tk, tk) != 0) {
         ipc_refuse(ipc, conn, "first frame is not an IPC preface");
+        return;
+    }
+    if (strcmp(q, NODUS_WITNESS_IPC_Q_TOOL) == 0 && !has_pk && !has_tk) {
+        /* The node's own tool. The socket admits only this uid; the request
+         * is served as the node's own key, with a handle only this witness
+         * knows (never on a wire), so find_session_conn can reach the
+         * connection for a delayed reply. */
+        const nodus_pubkey_t *own = ipc->h.own_pk ? ipc->h.own_pk(ipc->h.ctx) : NULL;
+        nodus_key_t fp;
+        if (!own || nodus_fingerprint(own, &fp) != 0) {
+            ipc_refuse(ipc, conn, "no own identity to serve a tool as");
+            return;
+        }
+        if (nodus_random(s->token, NODUS_SESSION_TOKEN_LEN) != 0) {
+            ipc_refuse(ipc, conn, "no handle for the tool connection");
+            return;
+        }
+        s->kind = IPC_KIND_TOOL;
+        memcpy(s->pk, own->bytes, NODUS_PK_BYTES);
+        conn->peer_pk = *own;
+        conn->peer_id = fp;
+        conn->peer_id_set = true;
+        return;
+    }
+    if (ipc->tool_only) {
+        ipc_refuse(ipc, conn, "this socket serves tool connections only");
         return;
     }
     if (strcmp(q, NODUS_WITNESS_IPC_Q_HELLO) == 0 && has_pk && has_tk) {
@@ -437,12 +472,20 @@ static void ipc_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
         ipc_on_first_frame(ipc, s, conn, payload, len);
         break;
     case IPC_KIND_SESSION:
+    case IPC_KIND_TOOL:
         ipc_on_session_frame(ipc, s, conn, payload, len);
         break;
     case IPC_KIND_CTL:
         ipc_on_ctl_frame(ipc, conn, payload, len);
         break;
     }
+}
+
+nodus_witness_ipc_t *nodus_witness_ipc_new_tools(const nodus_witness_ipc_handlers_t *h) {
+    if (!h || !h->own_pk) return NULL;
+    nodus_witness_ipc_t *ipc = nodus_witness_ipc_new(h);
+    if (ipc) ipc->tool_only = true;
+    return ipc;
 }
 
 nodus_witness_ipc_t *nodus_witness_ipc_new(const nodus_witness_ipc_handlers_t *h) {
@@ -482,7 +525,8 @@ nodus_tcp_conn_t *nodus_witness_ipc_find_session_conn(
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
         const ipc_slot_t *s = &ipc->slots[i];
         nodus_tcp_conn_t *c = ipc->tcp.pool[i];
-        if (s->kind == IPC_KIND_SESSION && c != NULL && !c->close_pending &&
+        if ((s->kind == IPC_KIND_SESSION || s->kind == IPC_KIND_TOOL) &&
+            c != NULL && !c->close_pending &&
             memcmp(s->token, token, NODUS_SESSION_TOKEN_LEN) == 0 &&
             memcmp(s->pk, pk, NODUS_PK_BYTES) == 0) {
             return c;

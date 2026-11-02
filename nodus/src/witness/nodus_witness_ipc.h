@@ -9,7 +9,9 @@
  * nodus_tcp_unix_connect). Frames are ordinary nodus wire frames (the
  * transport's 7-byte header), plaintext; no handshake method exists here.
  *
- * Two kinds of connection, told apart by their FIRST frame:
+ * Three kinds of connection, told apart by their FIRST frame (the third,
+ * `tool`, is the node's own tools: approved encrypted-sessions design D9/A12,
+ * 4001 plan 2.4):
  *
  *   session (one per core client session that has sent a `dnac_*`):
  *     first frame  {"q":"ipc_hello","pk":<bstr NODUS_PK_BYTES>,
@@ -39,6 +41,21 @@
  *                  va/st arrays of 64-byte fingerprints, sorted ascending.
  *                  At most 128 validators and 256 storage nodes; a fault
  *                  answers ok=false with both arrays empty.
+ *
+ *   tool (the node's own tools on its own machine: chain-config propose,
+ *   consent, the node package duties read):
+ *     first frame  {"q":"ipc_tool"}
+ *     then         the same tier-2 `dnac_*` / `evm_*` payloads as a session
+ *                  connection, served as THIS node's own identity key: the
+ *                  connection's peer_pk / peer_id are the witness's own key
+ *                  (the socket admits only this uid, services run as root),
+ *                  and dnac_cc_collect reaches the cc_collect handler with
+ *                  that key and a per-connection handle the witness
+ *                  generates (find_session_conn finds the connection by it).
+ *                  There is no session token, no secret connection and no
+ *                  core in this path. The combined process opens this
+ *                  socket too, tool kind ONLY (nodus_witness_ipc_new_tools):
+ *                  ipc_hello and ipc_ctl belong to a separate core.
  *
  * Anything else as a first frame — or a frame a connection's kind does not
  * serve — closes that connection. So does any frame that arrives while
@@ -76,6 +93,7 @@ struct nodus_witness;
 /** Frame methods ("q"). */
 #define NODUS_WITNESS_IPC_Q_HELLO     "ipc_hello"
 #define NODUS_WITNESS_IPC_Q_CTL       "ipc_ctl"
+#define NODUS_WITNESS_IPC_Q_TOOL      "ipc_tool"
 #define NODUS_WITNESS_IPC_Q_STATUS    "ipc_status"
 #define NODUS_WITNESS_IPC_Q_ROLES     "ipc_roles"
 
@@ -191,6 +209,9 @@ typedef struct {
                        uint32_t txn_id);
     void (*status)(void *ctx, nodus_witness_ipc_status_t *out);
     int (*roles)(void *ctx, nodus_inter_role_list_t *out);
+    /* This node's own identity key, or NULL when unknown. A `tool`
+     * connection is served as this key; without it the kind is refused. */
+    const nodus_pubkey_t *(*own_pk)(void *ctx);
     void  *ctx;
 } nodus_witness_ipc_handlers_t;
 
@@ -216,6 +237,10 @@ void nodus_witness_ipc_handlers_for(struct nodus_witness *w,
 
 /** A listener not yet listening. NULL on allocation failure. */
 nodus_witness_ipc_t *nodus_witness_ipc_new(const nodus_witness_ipc_handlers_t *h);
+
+/** The same, serving ONLY the `tool` connection kind (the combined process:
+ *  ipc_hello and ipc_ctl first frames are refused). Needs h->own_pk. */
+nodus_witness_ipc_t *nodus_witness_ipc_new_tools(const nodus_witness_ipc_handlers_t *h);
 
 /** Open the socket (nodus_tcp_unix_listen, this euid only). 0 / -1. */
 int nodus_witness_ipc_listen(nodus_witness_ipc_t *ipc, const char *path);

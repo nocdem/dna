@@ -30,6 +30,7 @@
                                              * voting-power unit          */
 
 #include <errno.h>
+#include <getopt.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,6 +40,7 @@
 #include <time.h>
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+#include "nodus_light_checkpoint.h"         /* built-in nodes + chain id (4001 trust) */
 
 #ifdef NODUS_CLI_HAS_DNAC
 /* Hard-Fork v1 Stage E.3 — chain-config propose verb.
@@ -86,7 +88,8 @@
 #include "client/nodus_node_package.h"         /* `package list|add|remove`  */
 #include "client/nodus_node_status.h"          /* `status`                   */
 #include "witness/nodus_witness_network_file.h" /* `status`: network file    */
-#include <fcntl.h>                             /* `status`: quiet stderr     */
+#include "witness/nodus_witness_ipc.h"         /* own-node tools: witness.sock */
+#include <fcntl.h>                            /* `status`: quiet stderr     */
 #ifdef NODUS_EVM_ENABLED
 #include "client/nodus_v2_evm.h"               /* Nodus EVM: the shared EVM
                                                  * envelope builder         */
@@ -148,6 +151,111 @@ static bool response_ready = false;
 
 /* Protocol message buffer */
 static uint8_t proto_buf[32768];
+
+/* ── Trusted list, chain id and own-node tool socket (4001 session) ──
+ *
+ * Every 4001 session needs a trusted node list and a 32-byte chain id before
+ * it starts (approved encrypted-sessions design D3/D4, A3; 4001 plan 3.10).
+ * Built in: the node list and chain id nodus-light compiles in
+ * (nodus_light_checkpoint.h). Changeable on the command line, before the
+ * command: `--pin <128 hex>` (repeatable; the first one replaces the built-in
+ * list) and `--chain-id <64 hex>`. The built-in values are never replaced from
+ * what a node says. A subcommand's own `--chain-id` keeps its meaning.
+ *
+ * Own-node tools (`chain-config propose`, `consent <code>`) talk to the
+ * node's own witness socket instead (design D9, A12): g_cli_tool_sock is set
+ * for their duration and every nodus_client_t made meanwhile uses it. */
+/* The node config the own-node tools find the key, port and witness socket
+ * through (decision 2026-10-14-consent-request-code.md). */
+#define CLI_CONSENT_DEFAULT_CONFIG "/etc/nodus.conf"
+#define CLI_PIN_MAX 16
+static nodus_key_t g_cli_pins[CLI_PIN_MAX];
+static int         g_cli_pin_count = 0;          /* 0 = the built-in list */
+static nodus_key_t g_cli_builtin_pins[NODUS_LIGHT_DEFAULT_NODE_COUNT];
+static int         g_cli_builtin_count = 0;
+static uint8_t     g_cli_chain_id[32];
+static bool        g_cli_chain_id_set = false;   /* false = the built-in id */
+static char        g_cli_tool_sock[NODUS_TCP_UNIX_PATH_MAX];
+
+static int cli_hex_n(const char *hex, uint8_t *out, size_t n) {
+    if (!hex || strlen(hex) != 2 * n) return -1;
+    for (size_t i = 0; i < n; i++) {
+        unsigned v = 0;
+        for (int k = 0; k < 2; k++) {
+            char c = hex[2 * i + k];
+            unsigned d = (c >= '0' && c <= '9') ? (unsigned)(c - '0')
+                       : (c >= 'a' && c <= 'f') ? (unsigned)(c - 'a' + 10)
+                       : (c >= 'A' && c <= 'F') ? (unsigned)(c - 'A' + 10) : 16u;
+            if (d > 15) return -1;
+            v = v * 16 + d;
+        }
+        out[i] = (uint8_t)v;
+    }
+    return 0;
+}
+
+static void cli_load_builtin_pins(void) {
+    if (g_cli_builtin_count) return;
+    for (size_t i = 0; i < NODUS_LIGHT_DEFAULT_NODE_COUNT; i++)
+        if (cli_hex_n(NODUS_LIGHT_DEFAULT_NODES[i].pin_hex,
+                      g_cli_builtin_pins[g_cli_builtin_count].bytes,
+                      NODUS_KEY_BYTES) == 0)
+            g_cli_builtin_count++;
+}
+
+/* Fill the trust part of a client config that does not already carry one. */
+static void cli_apply_trust(nodus_client_config_t *cfg) {
+    if (g_cli_tool_sock[0] && !cfg->local_tool_sock) {
+        cfg->local_tool_sock = g_cli_tool_sock;
+        return;
+    }
+    if (cfg->local_tool_sock) return;
+    if (cfg->pinned_server_fp_count <= 0 || !cfg->pinned_server_fps) {
+        cli_load_builtin_pins();
+        if (g_cli_pin_count) {
+            cfg->pinned_server_fps = g_cli_pins;
+            cfg->pinned_server_fp_count = g_cli_pin_count;
+        } else {
+            cfg->pinned_server_fps = g_cli_builtin_pins;
+            cfg->pinned_server_fp_count = g_cli_builtin_count;
+        }
+    }
+    if (!cfg->has_chain_id) {
+        if (g_cli_chain_id_set) memcpy(cfg->chain_id, g_cli_chain_id, 32);
+        else (void)cli_hex_n(NODUS_LIGHT_CHAIN_ID_HEX, cfg->chain_id, 32);
+        cfg->has_chain_id = true;
+    }
+}
+
+/* Every nodus_client_t of this CLI is started through the trust above. */
+static int cli_client_init(nodus_client_t *c, const nodus_client_config_t *cfg,
+                           const nodus_identity_t *id) {
+    nodus_client_config_t w = *cfg;
+    cli_apply_trust(&w);
+    return (nodus_client_init)(c, &w, id);
+}
+#define nodus_client_init(c, cfg, id) cli_client_init((c), (cfg), (id))
+
+/* The node's own witness socket, from the node config (the same file and
+ * key the node's loader reads: data_path, default /var/lib/nodus). */
+#ifdef NODUS_CLI_HAS_DNAC
+static int cli_find_tool_sock(const char *config_path, char *out, size_t cap,
+                              char *err, size_t errcap) {
+    char idp[512], dp[256];
+    uint16_t port = NODUS_DEFAULT_TCP_PORT;
+    if (nodus_consent_req_read_config_ex(config_path, idp, sizeof(idp), &port,
+                                         dp, sizeof(dp), err, errcap) != 0)
+        return -1;
+    char sock[NODUS_TCP_UNIX_PATH_MAX];
+    if (nodus_witness_ipc_sock_path(dp, sock, sizeof(sock)) != 0 ||
+        strlen(sock) >= cap) {
+        snprintf(err, errcap, "the witness socket path under %s is too long", dp);
+        return -1;
+    }
+    memcpy(out, sock, strlen(sock) + 1);
+    return 0;
+}
+#endif
 
 /* ── Callbacks ───────────────────────────────────────────────────── */
 
@@ -1882,12 +1990,16 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
     /* 1. Parse sub-flags --param / --value / --effective / [--nonce] /
      * [--chain-id]. */
     const char *param_name = NULL, *chain_id_hex = NULL;
+    const char *tool_config = CLI_CONSENT_DEFAULT_CONFIG;
     uint64_t new_value = 0, effective_block = 0, proposal_nonce = 0;
     int has_value = 0, has_effective = 0, has_nonce = 0;
+    (void)server_ip; (void)server_port;   /* own-node tool: witness.sock, not -s/-p */
 
     for (int i = cmd_start + 2; i < argc; i++) {
         const char *a = argv[i];
-        if (strcmp(a, "--param") == 0 && i + 1 < argc) {
+        if (strcmp(a, "--config") == 0 && i + 1 < argc) {
+            tool_config = argv[++i];
+        } else if (strcmp(a, "--param") == 0 && i + 1 < argc) {
             param_name = argv[++i];
         } else if (strcmp(a, "--value") == 0 && i + 1 < argc) {
             new_value = strtoull(argv[++i], NULL, 10); has_value = 1;
@@ -1905,7 +2017,11 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
     if (!param_name || !has_value || !has_effective) {
         fprintf(stderr,
             "Usage: chain-config propose --param <NAME> --value <N> "
-            "--effective <BLOCK> [--nonce <N>] [--chain-id <64-hex>]\n"
+            "--effective <BLOCK> [--nonce <N>] [--chain-id <64-hex>] "
+            "[--config <node config file>]\n"
+            "Run on the node, as its user: the proposal goes through the "
+            "node's own witness socket\n(data_path of the config, default "
+            CLI_CONSENT_DEFAULT_CONFIG "); -s / -p are not used.\n"
             "Params the running consensus reads (--value range):\n"
             "  TARGET_ACTIVE_COUNT    [%llu, %llu]   "
             "(active validator set; epoch-boundary effective)\n"
@@ -2018,24 +2134,35 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
         have_chain_id_arg = true;
     }
 
-    /* 2. Open the session for the whole flow (queries + submit). */
+    /* 2. Open the session for the whole flow (queries + submit). This is an
+     * own-node tool (design D9, A12): the node's key proposes, on the node's
+     * own machine, through <data_path>/witness.sock — a 4001 session as the
+     * node's key is refused as a reflection. */
+    char tool_err[256] = "";
+    if (cli_find_tool_sock(tool_config, g_cli_tool_sock, sizeof(g_cli_tool_sock),
+                           tool_err, sizeof(tool_err)) != 0) {
+        fprintf(stderr, "cannot find this node's witness socket: %s\n"
+                "  (config %s) — give --config <node config file>; run as the "
+                "node's user\n", tool_err, tool_config);
+        return 1;
+    }
     nodus_client_t client;
     nodus_client_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
-    snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", server_ip);
-    cfg.servers[0].port = server_port;
-    cfg.server_count    = 1;
     cfg.auto_reconnect  = false;
 
     if (nodus_client_init(&client, &cfg, &identity) != 0) {
         fprintf(stderr, "client_init failed\n");
+        g_cli_tool_sock[0] = '\0';
         return 1;
     }
     if (cli_client_connect(&client) != 0) {
-        fprintf(stderr, "client_connect failed\n");
+        fprintf(stderr, "client_connect failed (%s)\n", g_cli_tool_sock);
         nodus_client_close(&client);
+        g_cli_tool_sock[0] = '\0';
         return 1;
     }
+    g_cli_tool_sock[0] = '\0';   /* the session exists; nothing else is a tool */
 
     int rc = 1;
     nodus_dnac_committee_result_t *committee = NULL;  /* ~370 KB, heap  */
@@ -3979,9 +4106,9 @@ static int cli_storage_row_check(nodus_client_t *client, int is_exit,
  * nodus_v2_stake.h — the 9254-hex signature and 5184-hex key dominate). */
 #define CLI_CONSENT_FILE_MAX 16384u
 
-/* `consent <code>`: the node config the key and port are found through
- * (decision 2026-10-14-consent-request-code.md) */
-#define CLI_CONSENT_DEFAULT_CONFIG "/etc/nodus.conf"
+/* CLI_CONSENT_DEFAULT_CONFIG (the node config `consent <code>` finds the key,
+ * port and witness socket through, decision 2026-10-14-consent-request-
+ * code.md) is defined with the trust block near the top of this file. */
 
 /* Read and parse a consent file. @return 0 / -1 (message printed). */
 static int cli_consent_load(const char *path, nodus_v2_consent_t *c) {
@@ -7303,6 +7430,20 @@ static int cmd_consent_code(const char *server_ip, uint16_t server_port,
     }
     if (!server_ip) server_ip = "127.0.0.1";
 
+    /* The consent runs as an own-node tool (design D9, A12): the node's key
+     * asks its own node through <data_path>/witness.sock, not over 4001. */
+    {
+        char tool_err[256] = "";
+        if (cli_find_tool_sock(config_path, g_cli_tool_sock,
+                               sizeof(g_cli_tool_sock), tool_err,
+                               sizeof(tool_err)) != 0) {
+            fprintf(stderr, "cannot find this node's witness socket: %s\n"
+                    "  (config %s) — give --config <file>; nothing signed\n",
+                    tool_err, config_path);
+            return 1;
+        }
+    }
+
     if (nodus_identity_load_readonly(key_dir, &identity) != 0) {
         fprintf(stderr, "cannot load the node key from %s (run with sudo? "
                 "nodus.pk, nodus.sk and the KEM key files must be there) "
@@ -7358,6 +7499,7 @@ static int cmd_consent_code(const char *server_ip, uint16_t server_port,
     a2[n2]   = NULL;
     const int rc = cmd_validator_consent(server_ip, server_port, n2, a2, 1,
                                          req.storage);
+    g_cli_tool_sock[0] = '\0';
     nodus_identity_clear(&identity);
     return rc;
 }
@@ -12070,7 +12212,11 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
 
 static void usage(const char *prog) {
     fprintf(stderr, "Nodus CLI v%s\n", NODUS_VERSION_STRING);
-    fprintf(stderr, "Usage: %s -s <server> [-p <port>] [-i <identity_dir>] <command> [args]\n", prog);
+    fprintf(stderr, "Usage: %s -s <server> [-p <port>] [-i <identity_dir>] "
+            "[--pin <128 hex>]... [--chain-id <64 hex>] <command> [args]\n", prog);
+    fprintf(stderr, "  --pin / --chain-id replace the built-in trusted node list / "
+            "chain id for this run\n  (a session is refused unless the node's key "
+            "is in the list and the chain id matches).\n");
     fprintf(stderr, "\nCommands:\n");
     fprintf(stderr, "  whoami           Show identity\n");
     fprintf(stderr, "  ping             Ping server\n");
@@ -12200,8 +12346,32 @@ int main(int argc, char **argv) {
     /* Leading "+" makes getopt stop at the first non-option argument so
      * sub-command long options (e.g. `chain-config propose --param ...`)
      * are not consumed here and instead reach the command handler. */
-    while ((opt = getopt(argc, argv, "+s:p:i:h")) != -1) {
+    /* `--pin <128 hex>` (repeatable) and `--chain-id <64 hex>` replace the
+     * built-in trusted list / chain id for this run (4001 plan 3.10). */
+    static const struct option long_opts[] = {
+        { "pin",      required_argument, NULL, 1000 },
+        { "chain-id", required_argument, NULL, 1001 },
+        { NULL, 0, NULL, 0 }
+    };
+    while ((opt = getopt_long(argc, argv, "+s:p:i:h", long_opts, NULL)) != -1) {
         switch (opt) {
+        case 1000:
+            if (g_cli_pin_count >= CLI_PIN_MAX ||
+                cli_hex_n(optarg, g_cli_pins[g_cli_pin_count].bytes,
+                          NODUS_KEY_BYTES) != 0) {
+                fprintf(stderr, "--pin: exactly 128 hex characters, at most %d "
+                        "times\n", CLI_PIN_MAX);
+                return 1;
+            }
+            g_cli_pin_count++;
+            break;
+        case 1001:
+            if (cli_hex_n(optarg, g_cli_chain_id, 32) != 0) {
+                fprintf(stderr, "--chain-id: exactly 64 hex characters\n");
+                return 1;
+            }
+            g_cli_chain_id_set = true;
+            break;
         case 's': {
             /* Support host:port format. The host ends up in
              * nodus_server_endpoint_t.ip (64 bytes): a longer one is
