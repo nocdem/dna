@@ -19,6 +19,7 @@
 
 #include "nodus/nodus.h"
 #include "crypto/nodus_identity.h"
+#include "nodus_light_checkpoint.h"   /* built-in trusted nodes + chain id */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -106,6 +107,36 @@ static int cmp_double(const void *a, const void *b)
 
 /* ── setup ── */
 
+/* The 4001 secret connection needs a trusted node list and a chain id
+ * (approved 4001 plan 3.8 / 3.10). Built in: the compiled network table of
+ * nodus-light. `--pin <128 hex>` (repeatable) and `--chain-id <64 hex>`
+ * replace them for this run; neither is ever replaced from a node's answer. */
+#define CIRC_PIN_MAX 16
+static nodus_key_t g_pins[CIRC_PIN_MAX];
+static int         g_pin_count = 0;
+static nodus_key_t g_builtin_pins[NODUS_LIGHT_DEFAULT_NODE_COUNT];
+static int         g_builtin_count = 0;
+static uint8_t     g_chain_id[32];
+static int         g_chain_id_set = 0;
+
+static int hex_n(const char *hex, uint8_t *out, size_t n)
+{
+    if (!hex || strlen(hex) != 2 * n) return -1;
+    for (size_t i = 0; i < n; i++) {
+        unsigned v = 0;
+        for (int k = 0; k < 2; k++) {
+            char c = hex[2 * i + k];
+            unsigned d = (c >= '0' && c <= '9') ? (unsigned)(c - '0')
+                       : (c >= 'a' && c <= 'f') ? (unsigned)(c - 'a' + 10)
+                       : (c >= 'A' && c <= 'F') ? (unsigned)(c - 'A' + 10) : 16u;
+            if (d > 15) return -1;
+            v = v * 16 + d;
+        }
+        out[i] = (uint8_t)v;
+    }
+    return 0;
+}
+
 static int connect_ready(nodus_client_t *client, const char *ip, uint16_t port,
                          const nodus_identity_t *id)
 {
@@ -114,6 +145,17 @@ static int connect_ready(nodus_client_t *client, const char *ip, uint16_t port,
     snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", ip);
     cfg.servers[0].port = port;
     cfg.server_count = 1;
+    if (!g_pin_count && !g_builtin_count) {
+        for (size_t i = 0; i < NODUS_LIGHT_DEFAULT_NODE_COUNT; i++)
+            if (hex_n(NODUS_LIGHT_DEFAULT_NODES[i].pin_hex,
+                      g_builtin_pins[g_builtin_count].bytes, NODUS_KEY_BYTES) == 0)
+                g_builtin_count++;
+    }
+    cfg.pinned_server_fps = g_pin_count ? g_pins : g_builtin_pins;
+    cfg.pinned_server_fp_count = g_pin_count ? g_pin_count : g_builtin_count;
+    if (g_chain_id_set) memcpy(cfg.chain_id, g_chain_id, sizeof(cfg.chain_id));
+    else (void)hex_n(NODUS_LIGHT_CHAIN_ID_HEX, cfg.chain_id, sizeof(cfg.chain_id));
+    cfg.has_chain_id = true;
 
     if (nodus_client_init(client, &cfg, id) != 0) { fprintf(stderr, "client_init failed\n"); return -1; }
     if (nodus_client_connect(client) != 0) { fprintf(stderr, "connect failed (%s:%u)\n", ip, port); return -1; }
@@ -126,7 +168,9 @@ static int connect_ready(nodus_client_t *client, const char *ip, uint16_t port,
 
 static void usage(const char *p)
 {
-    fprintf(stderr, "Usage: %s -s <server[:port]> {listen | call} [-n count]\n", p);
+    fprintf(stderr, "Usage: %s -s <server[:port]> [--pin <128 hex>]... [--chain-id <64 hex>] "
+            "{listen | call} [-n count]\n"
+            "  --pin / --chain-id replace the built-in trusted node list / chain id.\n", p);
 }
 
 int main(int argc, char **argv)
@@ -135,8 +179,29 @@ int main(int argc, char **argv)
     uint16_t port = 4001;
     int count = 50;
     int opt;
-    while ((opt = getopt(argc, argv, "+s:n:kh")) != -1) {
+    static const struct option long_opts[] = {
+        { "pin",      required_argument, NULL, 1000 },
+        { "chain-id", required_argument, NULL, 1001 },
+        { NULL, 0, NULL, 0 }
+    };
+    while ((opt = getopt_long(argc, argv, "+s:n:kh", long_opts, NULL)) != -1) {
         switch (opt) {
+        case 1000:
+            if (g_pin_count >= CIRC_PIN_MAX ||
+                hex_n(optarg, g_pins[g_pin_count].bytes, NODUS_KEY_BYTES) != 0) {
+                fprintf(stderr, "--pin: exactly 128 hex characters, at most %d times\n",
+                        CIRC_PIN_MAX);
+                return 1;
+            }
+            g_pin_count++;
+            break;
+        case 1001:
+            if (hex_n(optarg, g_chain_id, sizeof(g_chain_id)) != 0) {
+                fprintf(stderr, "--chain-id: exactly 64 hex characters\n");
+                return 1;
+            }
+            g_chain_id_set = 1;
+            break;
         case 'k': g_keyed = 1; break;
         case 's': {
             char *c = strchr(optarg, ':');

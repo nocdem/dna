@@ -648,14 +648,15 @@ void nodus_tcp_session_resume(nodus_tcp_conn_t *conn) {
  * writers — pending_drain_to_wbuf and nodus_tcp_pending_flush — only copy
  * bytes these produced. On a WebSocket connection each nodus frame becomes
  * the payload of one FIN=1 binary WS frame (server→client frames are never
- * masked, RFC 6455 §5.1); on a plain connection the layout is unchanged. */
-/* A WebSocket connection on a transport in session mode carries the BARE
- * nodus frame as the sealed plaintext; the WebSocket header wraps the sealed
- * run instead (send_session_locked). Only a plaintext WebSocket connection
- * wraps each nodus frame itself. */
+ * masked, RFC 6455 §5.1); on a plain connection the layout is unchanged.
+ * On a transport in session mode the nodus frame stays bare (the sealed
+ * plaintext) and send_session_locked wraps the sealed run instead. */
+#ifdef NODUS_TCP_EPOLL
+/* Only a plaintext WebSocket connection wraps each nodus frame itself. */
 static inline bool conn_ws_plain(const nodus_tcp_conn_t *conn) {
     return conn->is_ws && !(conn->tcp_parent && conn->tcp_parent->session_mode);
 }
+#endif
 
 static size_t conn_wire_size(const nodus_tcp_conn_t *conn, size_t send_len) {
     size_t n = NODUS_FRAME_HEADER_SIZE + send_len;

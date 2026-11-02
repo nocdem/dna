@@ -2546,11 +2546,13 @@ static int g_locked;                    /* lock ran: terminal              */
 static volatile int g_cancel;           /* cancel ran: terminal            */
 static int g_busy;                      /* an async export is running      */
 static uint8_t g_checked_server_pk[NODUS_PK_BYTES];
-/* The session token of the connection nsw_check_chain last passed. The
- * server draws a fresh random token for every authenticated connection
- * (nodus_auth.c), so a different token = a NEW connection, also one to the
- * SAME server (whose key g_checked_server_pk cannot tell apart). */
-static uint8_t g_checked_token[NODUS_SESSION_TOKEN_LEN];
+/* The session-connection generation of the connection nsw_check_chain last
+ * passed. The client's transport numbers every secret-connection session with
+ * a counter that is never reused (nodus_client_conn_generation), so a
+ * different generation = a NEW connection, also one to the SAME server (whose
+ * key g_checked_server_pk cannot tell apart). The request token cannot mark
+ * it any more: the 4001 handshake sends none (approved 4001 plan 3.1, 3.2). */
+static uint64_t g_checked_generation;
 static char g_fp_hex[129];
 static char g_chain_hex[65];
 
@@ -2815,17 +2817,17 @@ static int nsw_check_chain(void) {
         return -2;
     }
     /* A connection this function has not passed before (another server, or
-     * a reconnect to the same one: a fresh session token) gets its pins read
+     * a reconnect to the same one: a new session generation) gets its pins read
      * afresh HERE, so no caller can record the new connection without them
      * (nsw_session_ok, nsw_connect_core and the mid-build re-check all come
      * through this one place). */
     const int fresh =
         memcmp(g_client.server_dil_pk.bytes, g_checked_server_pk,
                sizeof(g_checked_server_pk)) != 0 ||
-        memcmp(g_client.token, g_checked_token, sizeof(g_checked_token)) != 0;
+        nodus_client_conn_generation(&g_client) != g_checked_generation;
     memcpy(g_checked_server_pk, g_client.server_dil_pk.bytes,
            sizeof(g_checked_server_pk));
-    memcpy(g_checked_token, g_client.token, sizeof(g_checked_token));
+    g_checked_generation = nodus_client_conn_generation(&g_client);
     if (fresh) nsw_pins_check();
     return 0;
 }
@@ -2878,8 +2880,7 @@ static int nsw_session_ok(void) {
     if (!g_client.has_server_dil_pk ||
         memcmp(g_client.server_dil_pk.bytes, g_checked_server_pk,
                sizeof(g_checked_server_pk)) != 0 ||
-        memcmp(g_client.token, g_checked_token,
-               sizeof(g_checked_token)) != 0) {
+        nodus_client_conn_generation(&g_client) != g_checked_generation) {
         /* a new connection — another server, or a reconnect to the same
          * one: the chain id AND the pins are read afresh (nsw_check_chain) */
         return nsw_check_chain();
@@ -3060,6 +3061,11 @@ static int nsw_connect_core(void) {
                                           * reconnect, nodus_client_tick */
     cfg.pinned_server_fps      = g_net.pins;
     cfg.pinned_server_fp_count = g_net.n_pins;
+    /* The 4001 secret connection carries the chain id in its first message
+     * (design A3): a node on another chain is refused before any key work.
+     * The post-connect check (nsw_check_chain) still reads it from the node. */
+    memcpy(cfg.chain_id, g_net.chain, sizeof(cfg.chain_id));
+    cfg.has_chain_id           = true;
     if (nodus_client_init(&g_client, &cfg, &g_id) != 0) {
         /* init copies the identity into the client before an allocation
          * that can fail (nodus_client.c nodus_client_init); with
