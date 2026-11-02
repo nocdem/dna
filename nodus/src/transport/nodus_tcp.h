@@ -123,6 +123,12 @@ typedef struct nodus_tcp_conn {
     nodus_key_t         expected_peer_id;
     bool                expected_peer_id_set;
 
+    /* Session dial trust list (D3/D4): the responder's key must hash to ANY
+     * of these fingerprints. Caller-owned and must outlive the connection;
+     * a 4002 pinned dial points it at its own expected_peer_id (count 1). */
+    const nodus_key_t  *trusted_ids;
+    size_t              trusted_count;
+
     /* C-01/C-02: Auth state for inter-node and witness ports */
     uint8_t             auth_nonce[NODUS_NONCE_LEN];
     bool                auth_nonce_pending;
@@ -217,6 +223,13 @@ typedef struct nodus_tcp_conn {
     bool                is_ws;
     bool                ws_open;
     nodus_ws_parser_t   ws;
+    /* Session over WebSocket: unmasked payload read from the socket but not
+     * yet fed to the machine's wire buffer (the machine consumes no input
+     * while a job is outstanding). Socket reads pause while it is non-empty,
+     * so it never holds more than one read chunk. */
+    uint8_t            *ws_pend;
+    size_t              ws_pend_len;
+    size_t              ws_pend_cap;
     /* Per-IP limit key of the real client address (IPv6 by /64), set when
      * the Upgrade completes — compared instead of the text in `ip`. */
     nodus_ws_ip_bucket_t ws_bucket;
@@ -445,8 +458,16 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
 nodus_tcp_conn_t *nodus_tcp_connect_pinned(nodus_tcp_t *tcp,
                        const char *ip, uint16_t port, const nodus_key_t *expected);
 
-/** Internal session attachment. Refuses existing listeners/connections,
- * WebSocket/Unix entries or a write lock (session owner is single-threaded). */
+/** Session dial against a trusted list (any listed fingerprint is accepted,
+ * D3). The list is caller-owned and must outlive the connection. An empty
+ * list is refused before any socket exists (D4). */
+nodus_tcp_conn_t *nodus_tcp_connect_trusted(nodus_tcp_t *tcp, const char *ip,
+                       uint16_t port, const nodus_key_t *trusted, size_t count);
+
+/** Internal session attachment. Refuses existing listeners/connections or a
+ * Unix entry. A WebSocket listener and a write lock are allowed: with a
+ * write lock installed every session send only queues plaintext and wakes
+ * the owner, which alone calls the machine (one owner per machine). */
 int nodus_tcp_set_session_mode(nodus_tcp_t *tcp, struct nodus_inter_session_module *session);
 /* Internal stream glue: append machine handshake output unchanged and
  * schedule held bytes for budgeted processing on the loop. */
@@ -533,6 +554,9 @@ int nodus_tcp_send(nodus_tcp_conn_t *conn,
  * Same as nodus_tcp_send but calls progress_cb after each partial write.
  * progress_cb (and tcp->on_pending_full) run with the write lock held when
  * one is installed: they must not send on this transport.
+ * On a transport in session mode WITH a write lock the frame is only queued
+ * for the owner thread to seal (see nodus_tcp_set_session_mode): progress_cb
+ * is not called, there is no partial write to report at queue time.
  */
 int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
                              const uint8_t *payload, size_t len,

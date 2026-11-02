@@ -1824,6 +1824,17 @@ add_executable(test_inter_session tests/test_inter_session.c)
 target_link_libraries(test_inter_session nodus dsa kem nodus crypto)
 add_test(NAME test_inter_session COMMAND test_inter_session)
 
+# 4001 session glue, transport level (approved plan 2026-11-02-4001-ws-session-
+# build-plan 4.1): trusted list, initiator without ML-KEM, write-lock owner,
+# and the WebSocket entry. Kernel-chosen loopback ports; no environment.
+add_executable(test_client_session tests/test_client_session.c)
+target_link_libraries(test_client_session nodus dsa kem nodus crypto pthread)
+add_test(NAME test_client_session COMMAND test_client_session)
+
+add_executable(test_ws_session tests/test_ws_session.c)
+target_link_libraries(test_ws_session nodus dsa kem nodus crypto)
+add_test(NAME test_ws_session COMMAND test_ws_session)
+
 add_executable(test_inter_admission tests/test_inter_role_split.c)
 target_compile_definitions(test_inter_admission PRIVATE NODUS_TEST_ADMISSION=1)
 target_link_libraries(test_inter_admission nodus dsa kem nodus crypto)

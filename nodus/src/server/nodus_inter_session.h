@@ -37,9 +37,18 @@ int nodus_inter_roles_decode(const char *q, const uint8_t *buf, size_t len,
                              nodus_inter_role_list_t *list, bool *ok);
 
 typedef struct {
-    /* The identity outlives the module and all its workers. ML-KEM required.
-     * chain_id is copied; nothing here reads a chain database. */
+    /* The identity outlives the module and all its workers. ML-KEM is
+     * required unless `initiator_only` is set: an initiator-only module (a
+     * client) never accepts and needs none (design 3.1 "The client needs no
+     * KEM key"). chain_id is copied; nothing here reads a chain database. */
     const nodus_identity_t *identity;
+    /* Port/version of this module's sessions: CMT_P2P_SC_PROTO_VER_4001
+     * (4001 and the WebSocket entry) or _4002. 0 keeps the 4002 value the
+     * existing 4002 owners were built with; the 4001 owners state theirs. */
+    uint32_t proto_ver;
+    /* true = this owner only dials. Stated by the owner, never inferred from
+     * a listener; an inbound connection on such a module is refused. */
+    bool initiator_only;
     const uint8_t *chain_id;
     size_t inbound_depth;
     size_t outbound_depth;
@@ -76,7 +85,11 @@ typedef struct nodus_inter_session_job {
 } nodus_inter_session_job_t;
 
 /* Attaches session mode before any listen/connect. Refuses an existing
- * listener/connection, missing identity or chain/status provider, or zero depth.
+ * listener/connection, missing identity or chain/status provider, zero depth,
+ * an unknown proto_ver, or a non-initiator-only identity without ML-KEM.
+ * A transport with a write lock is allowed (the threaded client): then every
+ * session send only queues plaintext and wakes the owner, and the machine is
+ * called by the owner thread alone. A WebSocket listener may be added after.
  * No queue/worker defaults. tcp and identity outlive this module.
  * Close the transport before free; free joins every internal worker. */
 nodus_inter_session_module_t *nodus_inter_session_new(nodus_tcp_t *tcp,
@@ -100,6 +113,9 @@ int nodus_inter_session_job_done(nodus_inter_session_module_t *s,
  * completions on the owner thread and checks every not-open deadline.
  * nodus_tcp_poll calls it even on passes without socket activity. */
 int nodus_inter_session_wake_fd(const nodus_inter_session_module_t *s);
+/* Any thread: makes the owner's next poll pass run (queued sends are sealed
+ * there). The wake is a coalescing eventfd write; it never blocks. */
+void nodus_inter_session_wake_owner(nodus_inter_session_module_t *s);
 void nodus_inter_session_poll(nodus_inter_session_module_t *s);
 int nodus_inter_session_poll_timeout(nodus_inter_session_module_t *s, int timeout_ms);
 

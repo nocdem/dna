@@ -39,6 +39,7 @@ struct nodus_inter_session_conn {
 struct nodus_inter_session_module {
     nodus_tcp_t *tcp;
     nodus_inter_session_config_t cfg;
+    uint32_t proto_ver;              /* resolved from cfg.proto_ver, never 0 */
     uint8_t chain_id[CMT_P2P_SC_CHAIN_ID_SIZE];
     cmt_p2p_sc_host_t host;
     pthread_mutex_t mu;
@@ -243,14 +244,18 @@ static void *worker(void *ctx) {
 
 nodus_inter_session_module_t *nodus_inter_session_new(nodus_tcp_t *tcp,
                                 const nodus_inter_session_config_t *cfg) {
-    if (!tcp || !cfg || !cfg->identity || !cfg->identity->has_mlkem ||
+    /* proto_ver 0 = the 4002 value the 4002 owners were built with. */
+    uint32_t proto = cfg ? (cfg->proto_ver ? cfg->proto_ver : CMT_P2P_SC_PROTO_VER_4002) : 0;
+    if (!tcp || !cfg || !cfg->identity ||
+        (!cfg->initiator_only && !cfg->identity->has_mlkem) ||
+        (proto != CMT_P2P_SC_PROTO_VER_4001 && proto != CMT_P2P_SC_PROTO_VER_4002) ||
         (!cfg->chain_id && !cfg->status) || !cfg->inbound_depth || !cfg->outbound_depth ||
         (cfg->inbound_cap && cfg->inbound_depth < cfg->inbound_cap) ||
         tcp->session_mode || tcp->count || tcp->listen_fd >= 0 ||
         tcp->ws_listen_fd >= 0 || tcp->unix_listen_fd >= 0) return NULL;
     nodus_inter_session_module_t *s = calloc(1, sizeof(*s));
     if (!s) return NULL;
-    s->tcp = tcp; s->cfg = *cfg; s->wake_fd = -1;
+    s->tcp = tcp; s->cfg = *cfg; s->wake_fd = -1; s->proto_ver = proto;
     if (cfg->chain_id) memcpy(s->chain_id, cfg->chain_id, sizeof(s->chain_id));
     s->cfg.chain_id = s->chain_id;
     s->host.ctx = (void *)cfg->identity;
@@ -308,10 +313,17 @@ int nodus_inter_session_wake_fd(const nodus_inter_session_module_t *s) {
     return s ? s->wake_fd : -1;
 }
 
+void nodus_inter_session_wake_owner(nodus_inter_session_module_t *s) {
+    if (s) wake(s);
+}
+
 int nodus_inter_session_start(nodus_tcp_conn_t *conn) {
     nodus_inter_session_module_t *s = conn->tcp_parent->session_mode;
-    if (!s || conn->is_ws || conn->is_unix || conn->session) return -1;
-    if (conn->auth_initiated_by_us && !conn->expected_peer_id_set) return -1;
+    if (!s || conn->is_unix || conn->session) return -1;
+    /* An outbound connection needs a non-empty trusted list (D4); an
+     * initiator-only module (a client) never takes an inbound one. */
+    if (conn->auth_initiated_by_us ? (!conn->trusted_ids || !conn->trusted_count)
+                                   : s->cfg.initiator_only) return -1;
     if (!chain_status(s)) return -1;
     if (!conn->auth_initiated_by_us && s->cfg.inbound_cap) {
         unsigned pending = 0;
@@ -333,7 +345,7 @@ int nodus_inter_session_start(nodus_tcp_conn_t *conn) {
           &s->host, s->cfg.identity->pk.bytes,
           outbound ? NULL : s->cfg.identity->mlkem_pk,
           outbound ? NULL : s->cfg.identity->mlkem_sk,
-          CMT_P2P_SC_PROTO_VER_4002, s->chain_id) != CMT_OK) return -1;
+          s->proto_ver, s->chain_id) != CMT_OK) return -1;
     size_t n; const uint8_t *out = cmt_p2p_sc_out(&c->sc, &n);
     if (n && nodus_tcp_session_queue_wire(conn, out, n) != 0) return -1;
     cmt_p2p_sc_out_consume(&c->sc, n);
@@ -346,11 +358,15 @@ void nodus_inter_session_clear(nodus_tcp_conn_t *conn) {
     qgp_secure_memzero(conn->session, sizeof(*conn->session)); free(conn->session); conn->session = NULL;
 }
 
+/* Any listed fingerprint is trusted (D3). A 4002 dial is a list of one. */
 static bool pin_matches(nodus_tcp_conn_t *conn, const uint8_t *remote) {
     nodus_pubkey_t pk; nodus_key_t fp;
-    if (!remote || !conn->expected_peer_id_set) return false;
+    if (!remote || !conn->trusted_ids || !conn->trusted_count) return false;
     memcpy(pk.bytes, remote, sizeof(pk.bytes));
-    return nodus_fingerprint(&pk, &fp) == 0 && nodus_key_cmp(&fp, &conn->expected_peer_id) == 0;
+    if (nodus_fingerprint(&pk, &fp) != 0) return false;
+    for (size_t i = 0; i < conn->trusted_count; ++i)
+        if (nodus_key_cmp(&fp, &conn->trusted_ids[i]) == 0) return true;
+    return false;
 }
 
 int nodus_inter_session_submit(nodus_tcp_conn_t *conn) {
@@ -454,6 +470,14 @@ void nodus_inter_session_poll(nodus_inter_session_module_t *s) {
         nodus_tcp_conn_t *conn = s->tcp->pool[i];
         if (conn && conn->session && known && s->cfg.role) admit(s, conn);
         conn = s->tcp->pool[i];
+        /* A transport with a write lock only queues plaintext from sender
+         * threads; this owner pass seals it, in send order. */
+        if (conn && conn->session && conn->session->open && s->tcp->write_lock &&
+            nodus_tcp_pending_flush(conn) != 0) {
+            cmt_p2p_sc_abort(&conn->session->sc);
+            nodus_tcp_disconnect(s->tcp, conn);
+            continue;
+        }
         if (conn && conn->session &&
             (conn->session->sc.state == CMT_P2P_SC_ST_DEAD || expired(s, conn->session))) {
             cmt_p2p_sc_abort(&conn->session->sc);

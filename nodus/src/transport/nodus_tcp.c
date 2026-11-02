@@ -296,6 +296,7 @@ static bool conn_in_pool(const nodus_tcp_t *tcp, const nodus_tcp_conn_t *conn) {
 /* Release the memory of a connection that conn_free already detached. */
 static void conn_release(nodus_tcp_conn_t *conn) {
     free(conn->pending_buf);
+    free(conn->ws_pend);
     free(conn->rbuf);
     free(conn->wbuf);
     free(conn);
@@ -581,9 +582,15 @@ static size_t session_sealed_size(size_t n) {
             CMT_P2P_SC_SEALED_FRAME_SIZE;
 }
 
+/* Largest server->client WebSocket frame header (RFC 6455 section 5.2:
+ * 2 bytes + 8-byte extended length). A session connection on the WebSocket
+ * entry wraps each sealed run in one such frame. */
+#define SESSION_WS_HDR_MAX 10u
+
 static size_t conn_write_cap(const nodus_tcp_conn_t *conn) {
     size_t cap = NODUS_MAX_FRAME_TCP + NODUS_FRAME_HEADER_SIZE + 4096;
-    return conn->session ? session_sealed_size(cap) : cap;
+    if (!conn->session) return cap;
+    return session_sealed_size(cap) + (conn->is_ws ? SESSION_WS_HDR_MAX : 0);
 }
 
 static int conn_wbuf_ensure(nodus_tcp_conn_t *conn, size_t needed) {
@@ -592,7 +599,7 @@ static int conn_wbuf_ensure(nodus_tcp_conn_t *conn, size_t needed) {
 
 int nodus_tcp_set_session_mode(nodus_tcp_t *tcp, struct nodus_inter_session_module *session) {
     if (!tcp || !session || tcp->session_mode || tcp->count || tcp->listen_fd >= 0 ||
-        tcp->ws_listen_fd >= 0 || tcp->unix_listen_fd >= 0 || tcp->write_lock) return -1;
+        tcp->ws_listen_fd >= 0 || tcp->unix_listen_fd >= 0) return -1;
     tcp->session_mode = session;
 #ifdef NODUS_TCP_EPOLL
     int wake_fd = nodus_inter_session_wake_fd(session);
@@ -612,7 +619,18 @@ int nodus_tcp_session_queue_wire(nodus_tcp_conn_t *conn, const uint8_t *p, size_
         memmove(conn->wbuf, conn->wbuf + conn->wpos, conn->wlen - conn->wpos);
         conn->wlen -= conn->wpos; conn->wpos = 0;
     }
-    if (conn_wbuf_ensure(conn, conn->wlen + n) != 0) return -1;
+    /* A WebSocket session carries its machine bytes inside binary WebSocket
+     * frames (A11); the machine output itself stays unchanged. */
+    size_t hdr = 0;
+#ifdef NODUS_TCP_EPOLL
+    if (conn->is_ws && n) hdr = nodus_ws_frame_header_len(n);
+#endif
+    if (conn_wbuf_ensure(conn, conn->wlen + hdr + n) != 0) return -1;
+#ifdef NODUS_TCP_EPOLL
+    if (hdr && nodus_ws_frame_header(NODUS_WS_OP_BINARY, n,
+                                     conn->wbuf + conn->wlen, hdr) != hdr) return -1;
+#endif
+    conn->wlen += hdr;
     if (n) memcpy(conn->wbuf + conn->wlen, p, n);
     conn->wlen += n;
     return 0;
@@ -631,10 +649,18 @@ void nodus_tcp_session_resume(nodus_tcp_conn_t *conn) {
  * bytes these produced. On a WebSocket connection each nodus frame becomes
  * the payload of one FIN=1 binary WS frame (server→client frames are never
  * masked, RFC 6455 §5.1); on a plain connection the layout is unchanged. */
+/* A WebSocket connection on a transport in session mode carries the BARE
+ * nodus frame as the sealed plaintext; the WebSocket header wraps the sealed
+ * run instead (send_session_locked). Only a plaintext WebSocket connection
+ * wraps each nodus frame itself. */
+static inline bool conn_ws_plain(const nodus_tcp_conn_t *conn) {
+    return conn->is_ws && !(conn->tcp_parent && conn->tcp_parent->session_mode);
+}
+
 static size_t conn_wire_size(const nodus_tcp_conn_t *conn, size_t send_len) {
     size_t n = NODUS_FRAME_HEADER_SIZE + send_len;
 #ifdef NODUS_TCP_EPOLL
-    if (conn->is_ws)
+    if (conn_ws_plain(conn))
         n += nodus_ws_frame_header_len(n);
 #else
     (void)conn;
@@ -647,7 +673,7 @@ static size_t conn_wire_encode(const nodus_tcp_conn_t *conn,
                                const uint8_t *payload, size_t send_len) {
     size_t hdr = 0;
 #ifdef NODUS_TCP_EPOLL
-    if (conn->is_ws) {
+    if (conn_ws_plain(conn)) {
         hdr = nodus_ws_frame_header(NODUS_WS_OP_BINARY,
                                     NODUS_FRAME_HEADER_SIZE + send_len, dst, cap);
         if (hdr == 0) return 0;
@@ -1365,6 +1391,17 @@ static void ws_close_now(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
  * ordinary nodus frame decoder (try_parse_frames) finds it (RT1 F4). */
 static int ws_sink_data(void *ctx, const uint8_t *data, size_t len) {
     nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)ctx;
+    if (conn->session) {
+        /* Session bytes never reach rbuf: held here until the machine's wire
+         * buffer has room (read_ws_session). The reader takes the next socket
+         * chunk only when this is empty, so it holds one chunk at most. */
+        if (buf_ensure(&conn->ws_pend, &conn->ws_pend_cap,
+                       conn->ws_pend_len + len) != 0)
+            return -1;
+        memcpy(conn->ws_pend + conn->ws_pend_len, data, len);
+        conn->ws_pend_len += len;
+        return 0;
+    }
     if (buf_ensure(&conn->rbuf, &conn->rcap, conn->rlen + len) != 0)
         return -1;
     memcpy(conn->rbuf + conn->rlen, data, len);
@@ -1500,6 +1537,15 @@ static bool ws_try_upgrade(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     QGP_LOG_INFO(LOG_TAG_TCP, "ws: upgrade ok slot=%d ip=%s%s",
                  conn->slot, conn->ip, res.proto_binary ? " proto=binary" : "");
 
+    /* The Upgrade is the stream's own setup: the machine, and its 3 s
+     * deadline, start here and not at TCP accept, where the bytes are HTTP.
+     * A refused start (chain unknown, no machine) closes the connection. */
+    if (tcp->session_mode && nodus_inter_session_start(conn) != 0) {
+        free(rest);
+        ws_close_now(tcp, conn, NULL, 0);
+        return true;
+    }
+
     wl_enter(tcp);
     (void)conn_flush_wbuf(conn, NULL, NULL);   /* never frees; see ws_sink_ping */
     wl_leave(tcp);
@@ -1539,10 +1585,88 @@ static bool ws_ingest(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
  * while rbuf holds no complete nodus frame. nodus_ws_feed takes a whole
  * chunk, so the frame budget can overrun by the pings of one chunk; empty
  * data frames and pongs reach no callback and are bounded by the bytes. */
+/* Capacity-aware feeding (approved 4001 plan 2.1 f): hand the machine only
+ * what its wire buffer can take. Returns the bytes fed. */
+static size_t ws_pend_feed(nodus_tcp_conn_t *conn) {
+    size_t room = 0;
+    uint8_t *dst = nodus_inter_session_read_buf(conn, &room);
+    if (!dst || room == 0 || conn->ws_pend_len == 0) return 0;
+    size_t take = room < conn->ws_pend_len ? room : conn->ws_pend_len;
+    memcpy(dst, conn->ws_pend, take);
+    nodus_inter_session_read_done(conn, take);
+    conn->ws_pend_len -= take;
+    if (conn->ws_pend_len) memmove(conn->ws_pend, conn->ws_pend + take, conn->ws_pend_len);
+    return take;
+}
+
+/* The WebSocket reader once the Upgrade is complete and the machine runs.
+ * Payload is unmasked into ws_pend, fed to the machine as room allows, and
+ * only opened plaintext reaches rbuf and the nodus frame parser. The socket
+ * is read only while ws_pend is empty and the machine has room: while a job
+ * is outstanding it consumes nothing, reading pauses, and nodus_tcp_session_
+ * resume (job done / open) schedules this reader again. */
+static read_rc_t read_ws_session(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    uint8_t chunk[16384];
+    int eintr_left = NTCP_MAX_EINTR_RETRY;
+    for (;;) {
+        parse_rc_t pr = try_parse_frames(tcp, conn, true);
+        if (pr == PARSE_CLOSED) return READ_CLOSED;
+        if (pr == PARSE_MORE) return READ_MORE;
+        uint8_t plain[CMT_P2P_SC_DATA_MAX_SIZE];
+        size_t n = 0;
+        int rc = nodus_inter_session_read(conn, plain, sizeof(plain), &n);
+        if (conn->close_pending) return READ_CLOSED;
+        if (rc != CMT_OK) {
+            nodus_tcp_disconnect(tcp, conn); return READ_CLOSED;
+        }
+        if (n) {
+            if (buf_ensure(&conn->rbuf, &conn->rcap, conn->rlen + n) != 0) {
+                nodus_tcp_disconnect(tcp, conn); return READ_CLOSED;
+            }
+            memcpy(conn->rbuf + conn->rlen, plain, n); conn->rlen += n;
+            continue;
+        }
+        if (!conn->read_bytes_left) return READ_MORE;
+        size_t room = 0;
+        (void)nodus_inter_session_read_buf(conn, &room);
+        if (!room) return READ_DRAINED;   /* job or owner gate resumes it */
+        if (conn->ws_pend_len) {
+            if (ws_pend_feed(conn)) continue;
+            return READ_DRAINED;
+        }
+        size_t want = sizeof(chunk);
+        if (want > conn->read_bytes_left) want = conn->read_bytes_left;
+        ssize_t got = poll_read(conn->fd, chunk, want);
+        if (got > 0) {
+            conn->read_bytes_left -= (size_t)got;
+            conn->last_activity = nodus_time_now();
+            eintr_left = NTCP_MAX_EINTR_RETRY;
+            if (ws_ingest(tcp, conn, chunk, (size_t)got))
+                return READ_CLOSED;
+            continue;
+        }
+        if (got == 0) {
+            /* EOF: frames already opened are still frames (unbudgeted). */
+            if (try_parse_frames(tcp, conn, false) != PARSE_CLOSED) {
+                if (tcp->on_disconnect) tcp->on_disconnect(conn, tcp->cb_ctx);
+                conn_free(tcp, conn);
+            }
+            return READ_CLOSED;
+        }
+        ntcp_io_t io = ntcp_classify(got);
+        if (io == NTCP_IO_RETRY && eintr_left-- > 0) continue;
+        if (io == NTCP_IO_WOULDBLOCK) return READ_DRAINED;
+        if (tcp->on_disconnect) tcp->on_disconnect(conn, tcp->cb_ctx);
+        conn_free(tcp, conn);
+        return READ_CLOSED;
+    }
+}
+
 static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     uint8_t chunk[16384];
     parse_rc_t pr;
 
+    if (conn->session) return read_ws_session(tcp, conn);
     if (conn->ws_open) {
         pr = try_parse_frames(tcp, conn, true);
         if (pr == PARSE_CLOSED) return READ_CLOSED;
@@ -1564,6 +1688,8 @@ static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             eintr_left = NTCP_MAX_EINTR_RETRY;
             if (ws_ingest(tcp, conn, chunk, (size_t)n))
                 return READ_CLOSED;      /* closed — no further work on conn */
+            if (conn->session)           /* the Upgrade just started the machine */
+                return read_ws_session(tcp, conn);
             if (conn->ws_open) {
                 pr = try_parse_frames(tcp, conn, true);
                 if (pr == PARSE_CLOSED) return READ_CLOSED;
@@ -2012,7 +2138,7 @@ int nodus_tcp_ws_listen(nodus_tcp_t *tcp, uint16_t port) {
     (void)tcp; (void)port;
     return -1;  /* Server is Linux-only (not Windows, not the browser) */
 #else
-    if (!tcp || tcp->session_mode || tcp->ws_listen_fd >= 0)
+    if (!tcp || tcp->ws_listen_fd >= 0)
         return -1;
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -2324,9 +2450,12 @@ nodus_tcp_conn_t *nodus_tcp_unix_connect(nodus_tcp_t *tcp, const char *path,
 }
 
 static nodus_tcp_conn_t *connect_pinned(nodus_tcp_t *tcp,
-                         const char *ip, uint16_t port, const nodus_key_t *expected) {
+                         const char *ip, uint16_t port, const nodus_key_t *expected,
+                         const nodus_key_t *trusted, size_t trusted_count) {
     if (!tcp || !ip) return NULL;
-    if (tcp->session_mode && !expected) return NULL;
+    /* A session dial needs a pin or a non-empty trusted list before any
+     * socket exists (D4); the two forms are never mixed. */
+    if (tcp->session_mode && !expected && (!trusted || !trusted_count)) return NULL;
 
     int fd = (int)socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return NULL;
@@ -2351,7 +2480,12 @@ static nodus_tcp_conn_t *connect_pinned(nodus_tcp_t *tcp,
     /* C2 fix: this is an outbound conn — we opened it. Challenge handler will
      * only sign auth responses when this flag is true (closes signing oracle). */
     conn->auth_initiated_by_us = true;
-    if (expected) { conn->expected_peer_id = *expected; conn->expected_peer_id_set = true; }
+    if (expected) {
+        conn->expected_peer_id = *expected; conn->expected_peer_id_set = true;
+        conn->trusted_ids = &conn->expected_peer_id; conn->trusted_count = 1;
+    } else if (trusted && trusted_count) {
+        conn->trusted_ids = trusted; conn->trusted_count = trusted_count;
+    }
 
     /* Phase 3.2d: bind fd to slot, log it. */
     fprintf(stderr, "TCP_CONN: FD_SET slot=%d fd=%d direction=connect "
@@ -2386,12 +2520,17 @@ static nodus_tcp_conn_t *connect_pinned(nodus_tcp_t *tcp,
 }
 
 nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp, const char *ip, uint16_t port) {
-    return connect_pinned(tcp, ip, port, NULL);
+    return connect_pinned(tcp, ip, port, NULL, NULL, 0);
 }
 
 nodus_tcp_conn_t *nodus_tcp_connect_pinned(nodus_tcp_t *tcp, const char *ip,
                                           uint16_t port, const nodus_key_t *expected) {
-    return connect_pinned(tcp, ip, port, expected);
+    return connect_pinned(tcp, ip, port, expected, NULL, 0);
+}
+
+nodus_tcp_conn_t *nodus_tcp_connect_trusted(nodus_tcp_t *tcp, const char *ip,
+                       uint16_t port, const nodus_key_t *trusted, size_t count) {
+    return connect_pinned(tcp, ip, port, NULL, trusted, count);
 }
 
 /* ── Auth pending queue ─────────────────────────────────────────── */
@@ -2441,6 +2580,14 @@ static int pending_queue_append(nodus_tcp_conn_t *conn,
 static int send_session_locked(nodus_tcp_conn_t *conn, const uint8_t *payload,
                                size_t len, nodus_tcp_progress_cb progress_cb,
                                void *user_data);
+
+/* True when sends on this connection must not call the machine: the
+ * transport has a write lock, so a sender may be a thread other than the
+ * owner (nodus_client.c: callers send, the read thread polls). */
+static bool session_queue_only(const nodus_tcp_conn_t *conn) {
+    return conn->tcp_parent && conn->tcp_parent->session_mode &&
+           conn->tcp_parent->write_lock && !conn->is_unix;
+}
 
 static int pending_flush_locked(nodus_tcp_conn_t *conn) {
     if (!conn->pending_buf || conn->pending_len == 0) return 0;
@@ -2514,8 +2661,14 @@ int nodus_tcp_send(nodus_tcp_conn_t *conn,
     /* One critical section for the gate and the write, so an auth result
      * cannot land between "still pending" and the append. */
     wl_enter(tcp);
-    if (conn->tcp_parent && conn->tcp_parent->session_mode && !conn->is_unix &&
-        !conn->is_ws && !nodus_inter_session_is_open(conn))
+    /* With a write lock the sender may be any thread: it only queues the
+     * plaintext (in send order) and wakes the owner, which alone seals. The
+     * open flag is not read here — it belongs to the owner. */
+    bool owner_seals = session_queue_only(conn);
+    if (owner_seals)
+        rc = pending_queue_append(conn, payload, len);
+    else if (conn->tcp_parent && conn->tcp_parent->session_mode && !conn->is_unix &&
+        !nodus_inter_session_is_open(conn))
         rc = pending_queue_append(conn, payload, len);
     else if (!conn->session && conn->auth_required && conn->auth_state == NODUS_CONN_AUTH_FAILED)
         rc = -1;
@@ -2524,6 +2677,7 @@ int nodus_tcp_send(nodus_tcp_conn_t *conn,
     else
         rc = send_progress_locked(conn, payload, len, NULL, NULL);
     wl_leave(tcp);
+    if (owner_seals && rc == 0) nodus_inter_session_wake_owner(tcp->session_mode);
     return rc;
 }
 
@@ -2537,9 +2691,14 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
                              nodus_tcp_progress_cb progress_cb,
                              void *user_data) {
     nodus_tcp_t *tcp = conn ? conn->tcp_parent : NULL;
+    bool owner_seals = conn && payload && session_queue_only(conn);
     wl_enter(tcp);
-    int rc = send_progress_locked(conn, payload, len, progress_cb, user_data);
+    /* Owner-sealed session sends leave later, on the owner's thread: there
+     * is no partial write to report, so progress_cb is not called. */
+    int rc = owner_seals ? pending_queue_append(conn, payload, len)
+                         : send_progress_locked(conn, payload, len, progress_cb, user_data);
     wl_leave(tcp);
+    if (owner_seals && rc == 0) nodus_inter_session_wake_owner(tcp->session_mode);
     return rc;
 }
 
@@ -2554,21 +2713,28 @@ static int send_session_locked(nodus_tcp_conn_t *conn, const uint8_t *payload,
     if (!nodus_inter_session_is_open(conn)) return pending_queue_append(conn, payload, len);
     size_t plain_size = conn_wire_size(conn, len);
     size_t sealed_size = session_sealed_size(plain_size);
+    /* On the WebSocket entry the whole sealed run leaves as one binary
+     * WebSocket frame; the sealed plaintext itself is the bare nodus frame. */
+    size_t hdr = 0;
+#ifdef NODUS_TCP_EPOLL
+    if (conn->is_ws) hdr = nodus_ws_frame_header_len(sealed_size);
+#endif
+    size_t out_size = hdr + sealed_size;
     if (conn->wpos) {
         memmove(conn->wbuf, conn->wbuf + conn->wpos, conn->wlen - conn->wpos);
         conn->wlen -= conn->wpos; conn->wpos = 0;
     }
-    bool queued = conn->pending_count > 0 || conn_wbuf_ensure(conn, conn->wlen + sealed_size) != 0;
+    bool queued = conn->pending_count > 0 || conn_wbuf_ensure(conn, conn->wlen + out_size) != 0;
     nodus_pending_frame_t *node = NULL;
     uint8_t *dst = NULL, *plain = NULL;
     if (queued) {
         if (conn->pending_count >= NODUS_PENDING_MAX_FRAMES ||
-            sealed_size > NODUS_PENDING_MAX_BYTES - conn->pending_bytes) goto full;
+            out_size > NODUS_PENDING_MAX_BYTES - conn->pending_bytes) goto full;
         node = calloc(1, sizeof(*node));
         if (!node) goto full;
-        node->encoded = malloc(sealed_size);
+        node->encoded = malloc(out_size);
         if (!node->encoded) { free(node); node = NULL; goto full; }
-        node->frame_size = sealed_size;
+        node->frame_size = out_size;
         /* No extra clock: the session clock is read only for its deadline. */
         dst = node->encoded;
     } else dst = conn->wbuf + conn->wlen;
@@ -2582,8 +2748,16 @@ static int send_session_locked(nodus_tcp_conn_t *conn, const uint8_t *payload,
         if (node) { free(node->encoded); free(node); }
         return -1;
     }
+#ifdef NODUS_TCP_EPOLL
+    /* Header first: nothing can fail after the seal advances its counter. */
+    if (hdr && nodus_ws_frame_header(NODUS_WS_OP_BINARY, sealed_size, dst, hdr) != hdr) {
+        free(plain);
+        if (node) { free(node->encoded); free(node); }
+        return -1;
+    }
+#endif
     size_t written = 0;
-    int rc = nodus_inter_session_seal(conn, plain, plain_size, dst, sealed_size, &written);
+    int rc = nodus_inter_session_seal(conn, plain, plain_size, dst + hdr, sealed_size, &written);
     free(plain);
     if (rc != CMT_OK || written != sealed_size) {
         if (node) { free(node->encoded); free(node); }
@@ -2593,9 +2767,9 @@ static int send_session_locked(nodus_tcp_conn_t *conn, const uint8_t *payload,
         if (conn->pending_tail) conn->pending_tail->next = node;
         else conn->pending_head = node;
         conn->pending_tail = node;
-        conn->pending_count++; conn->pending_bytes += sealed_size;
+        conn->pending_count++; conn->pending_bytes += out_size;
         conn->pending_enqueued_count++;
-    } else conn->wlen += written;
+    } else conn->wlen += out_size;
     conn->send_ok_count++; conn->send_bytes_total += len;
 #ifdef NODUS_TCP_EPOLL
     nodus_tcp_t *tcp = conn->tcp_parent;
@@ -2641,7 +2815,7 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
 
     /* Raw/progress APIs cannot bypass the session gate, even before
      * connect-complete has allocated its machine. */
-    if (conn->tcp_parent && conn->tcp_parent->session_mode && !conn->is_ws && !conn->is_unix)
+    if (conn->tcp_parent && conn->tcp_parent->session_mode && !conn->is_unix)
         return send_session_locked(conn, payload, len, progress_cb, user_data);
 
     /* Phase 3.2d: log first send per conn — captures (slot, fd, conn ptr,

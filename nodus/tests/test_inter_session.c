@@ -749,10 +749,12 @@ static void full_queue_and_generation(void) {
     }
 }
 
-/* 14: listener guard in both directions; no Unix socket is created here. */
+/* 14: listener guard in both directions; no Unix socket is created here.
+ * 2026-11-02 4001 plan 2.1 f: a WebSocket listener may be opened on a
+ * transport already in session mode (the module must still come first). */
 static void mode_guard(void) {
     endpoint_t e; endpoint_init(&e, 0, 1, 1, 0);
-    CHECK(nodus_tcp_ws_listen(&e.tcp, 0) == -1);
+    CHECK(nodus_tcp_ws_listen(&e.tcp, 0) == 0);
     CHECK(nodus_tcp_unix_listen(&e.tcp, "/unused-session-guard.sock", NODUS_TCP_UNIX_UID_SELF) == -1);
     endpoint_free(&e);
     for (int unix_listener = 0; unix_listener < 2; ++unix_listener) {
