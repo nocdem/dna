@@ -53,6 +53,11 @@ typedef struct {
     size_t inbound_depth;
     size_t outbound_depth;
     unsigned workers;              /* explicit; 0 = owner runs job_take/run/done */
+    /* With workers == 0: true = the owner's poll pass takes, runs and
+     * completes the queued jobs itself (the client and the browser build: no
+     * thread, the owner's own loop does the work). false = the owner calls
+     * job_take/run/done (the module tests). Ignored when workers > 0. */
+    bool run_jobs_inline;
     uint64_t (*now_ms)(void *ctx);  /* NULL = nodus_time_mono_ms, deadline only */
     void *now_ctx;
     /* Loop thread only, after pin and reject-self. Authenticated != open.

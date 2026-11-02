@@ -458,6 +458,15 @@ void nodus_inter_session_poll(nodus_inter_session_module_t *s) {
     uint64_t value;
     while (read(s->wake_fd, &value, sizeof(value)) < 0 && errno == EINTR) {}
 #endif
+    if (!s->cfg.workers && s->cfg.run_jobs_inline) {
+        /* The owner is the only thread: run each queued job here, on the
+         * owner's loop, and complete it as a worker's result would. */
+        nodus_inter_session_job_t *queued;
+        while ((queued = nodus_inter_session_job_take(s)) != NULL) {
+            nodus_inter_session_job_run(queued);
+            nodus_inter_session_job_done(s, queued);
+        }
+    }
     pthread_mutex_lock(&s->mu);
     nodus_inter_session_job_t *j = s->done_head;
     s->done_head = s->done_tail = NULL;

@@ -35,6 +35,14 @@
  *      byte off never authenticate.
  *  12. The fifth session of one identity evicts the oldest (limit 4).
  *  13. No chain id known -> a new connection is closed at accept, zero bytes.
+ *   Part C, the real nodus_client_t against that server (polled by a thread
+ *   of this test):
+ *  14. A config without a trusted list, with a negative count, or without a
+ *      chain id is refused at nodus_client_init (D4, A3).
+ *  15. A list that does not hold the node never becomes ready; a list that
+ *      holds it at the second position does, answers a request, reports the
+ *      node's key as server_dil_pk, and a new connection to the same node
+ *      reports a larger generation (nodus_client_conn_generation).
  *
  * Compile flags: none. Orchestrator also runs it under ASan/UBSan (case 8
  * is a borrowed-buffer / threading case). Environment: none; Part A uses
@@ -626,6 +634,72 @@ static void node_chain_unknown(void) {
     g_srv.inter_chain_id_valid = true;
 }
 
+/* ══ Part C: the real client library against the real server ════════
+ * (build-order step 4: "the tests switch to the real client"). The node is
+ * polled by a thread of this test while the client runs its own read thread. */
+#include "nodus/nodus.h"
+
+static volatile bool g_pump_stop;
+static void *pump_thread(void *arg) {
+    (void)arg;
+    while (!g_pump_stop) nodus_tcp_poll(&g_srv.tcp, 5);
+    return NULL;
+}
+
+static void client_config(nodus_client_config_t *cfg, const nodus_key_t *list, int count) {
+    memset(cfg, 0, sizeof(*cfg));
+    cfg->servers[0].port = g_srv.tcp.port;
+    snprintf(cfg->servers[0].ip, sizeof(cfg->servers[0].ip), "127.0.0.1");
+    cfg->server_count = 1;
+    cfg->connect_timeout_ms = 5000;
+    cfg->request_timeout_ms = 5000;
+    cfg->pinned_server_fps = list;
+    cfg->pinned_server_fp_count = count;
+    memcpy(cfg->chain_id, chain, sizeof(chain));
+    cfg->has_chain_id = true;
+}
+
+static void real_client(void) {
+    nodus_client_t *c = calloc(1, sizeof(*c)); CHECK(c);
+    nodus_client_config_t cfg;
+    nodus_key_t list[2] = {ids[2].node_id, g_srv.identity.node_id};   /* the node at position 2 */
+
+    /* D4: no list / no chain id -> refused at init, before any socket. */
+    client_config(&cfg, NULL, 0);
+    CHECK(nodus_client_init(c, &cfg, &ids[0]) == -1);
+    client_config(&cfg, list, 2); cfg.has_chain_id = false;
+    CHECK(nodus_client_init(c, &cfg, &ids[0]) == -1);
+    client_config(&cfg, list, 2); cfg.pinned_server_fp_count = -1;
+    CHECK(nodus_client_init(c, &cfg, &ids[0]) == -1);
+
+    /* The node is not in the list: the client aborts, never becomes ready. */
+    nodus_key_t wrong[1] = {ids[2].node_id};
+    client_config(&cfg, wrong, 1);
+    memset(c, 0, sizeof(*c));
+    CHECK(nodus_client_init(c, &cfg, &ids[0]) == 0);
+    CHECK(nodus_client_connect(c) != 0 && !nodus_client_is_ready(c));
+    nodus_client_close(c);
+
+    /* Listed at any position: ready, a request is answered, generation set. */
+    client_config(&cfg, list, 2);
+    memset(c, 0, sizeof(*c));
+    CHECK(nodus_client_init(c, &cfg, &ids[0]) == 0);
+    CHECK(nodus_client_connect(c) == 0 && nodus_client_is_ready(c));
+    uint64_t gen1 = nodus_client_conn_generation(c);
+    CHECK(gen1 != 0);
+    CHECK(c->has_server_dil_pk &&
+          memcmp(c->server_dil_pk.bytes, g_srv.identity.pk.bytes, NODUS_PK_BYTES) == 0);
+    nodus_server_endpoint_t eps[8]; int n = 0;
+    CHECK(nodus_client_get_servers(c, eps, 8, &n) == 0);
+    /* A new connection to the SAME server is a different generation. */
+    nodus_client_force_disconnect(c);
+    CHECK(nodus_client_connect(c) == 0 && nodus_client_is_ready(c));
+    CHECK(nodus_client_conn_generation(c) > gen1);
+    CHECK(nodus_client_get_servers(c, eps, 8, &n) == 0);
+    nodus_client_close(c);
+    free(c);
+}
+
 static void node_cases(void) {
     nodus_server_config_t config;
     memset(&config, 0, sizeof(config));
@@ -639,6 +713,12 @@ static void node_cases(void) {
     memcpy(g_srv.inter_chain_id, chain, sizeof(chain));
     g_srv.inter_chain_known = g_srv.inter_chain_id_valid = true;
     node_session(); node_old_handshake(); node_refusals(); node_eviction(); node_chain_unknown();
+    pthread_t pt;
+    g_pump_stop = false;
+    CHECK(pthread_create(&pt, NULL, pump_thread, NULL) == 0);
+    real_client();
+    g_pump_stop = true;
+    CHECK(pthread_join(pt, NULL) == 0);
     nodus_server_close(&g_srv);
     char cmd[320];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", config.data_path);

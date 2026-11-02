@@ -97,26 +97,34 @@ typedef struct {
     nodus_on_state_change_fn    on_state_change;
     void                       *callback_data;
 
-    /* Server key pin (optional). Fingerprints (SHA3-512 of the server's
-     * Dilithium5 public key — nodus_fingerprint(), the same 64-byte value
-     * as a node id) of the servers this client accepts.
-     *
-     * NULL / 0 (what a zeroed config gives): no pin — the handshake behaves
-     * exactly as before this field existed.
-     *
-     * Set (count > 0): the connection FAILS CLOSED unless the server's
-     * AUTH_OK carries a Kyber pubkey + server pubkey + kpk_sig, the
-     * signature verifies, fingerprint(server pubkey) is in this list, and
-     * the AUTH_OK also carries an ML-KEM-1024 pubkey whose mpk_sig
-     * verifies — a pinned session is ML-KEM-1024 only (operator
-     * 2026-09-29). With a pin set there is no unsigned-kpk ("legacy
-     * server"), cached-key, Kyber round-3 or unencrypted session.
+    /* Trusted node list (REQUIRED, approved encrypted-sessions design D3/D4).
+     * Fingerprints (SHA3-512 of a node's ML-DSA-87 public key —
+     * nodus_fingerprint(), the same 64-byte value as a node id) of the nodes
+     * this client accepts. The secret-connection handshake (4001) succeeds
+     * only if the responder's key hashes to ANY entry; otherwise the client
+     * aborts at the key exchange, before it encapsulates or signs anything.
      *
      * The array is owned by the caller and must outlive the client (it is
-     * not copied). count > 0 with a NULL pointer, or count < 0, makes
-     * nodus_client_init() fail. */
+     * not copied). nodus_client_init() FAILS when the list is missing:
+     * count <= 0, a NULL pointer, or count < 0 (unless local_tool_sock is
+     * set, which talks to the node's own witness socket and needs neither). */
     const nodus_key_t          *pinned_server_fps;
     int                         pinned_server_fp_count;
+
+    /* The chain id the 4001 handshake carries in its first message
+     * (REQUIRED, design A3 "chain_id as on 4004"): 32 bytes, the id the
+     * network's nodes use as their 4004 network. A node on another chain
+     * is refused before any key work. has_chain_id must be true;
+     * nodus_client_init() fails otherwise (same tool-mode exception). */
+    uint8_t                     chain_id[32];
+    bool                        has_chain_id;
+
+    /* Local-tool mode (design D9, A12): when set, the client does NOT use
+     * the secret connection. It connects to the node's own witness socket
+     * (a Unix socket path, same uid) and sends the tool first frame, for the
+     * node's own tools (chain-config, consent, node package) that run as the
+     * node's key on the node's own machine. NULL / empty = normal mode. */
+    const char                 *local_tool_sock;
 } nodus_client_config_t;
 
 /* ── Concurrent request slot ────────────────────────────────────── */
@@ -246,6 +254,15 @@ typedef struct nodus_client {
     nodus_pubkey_t             server_dil_pk;
     bool                       has_server_dil_pk;
 
+    /* Secret-connection session (4001). The module is owned by the client
+     * (opaque here); the generation is a per-transport counter assigned to
+     * every session connection and never reused: a different generation is
+     * a NEW connection, also to the SAME server (nodus_client_conn_generation).
+     * session_open is set by the module's authenticated callback. */
+    void                      *session_mod;
+    _Atomic uint64_t           conn_generation;
+    bool                       session_open;
+
 } nodus_client_t;
 
 /* ── Lifecycle ──────────────────────────────────────────────────── */
@@ -295,6 +312,16 @@ int nodus_client_tick(nodus_client_t *client);
  * Check if client is connected and authenticated.
  */
 bool nodus_client_is_ready(const nodus_client_t *client);
+
+/**
+ * The generation of the current secret-connection session: a counter the
+ * transport assigns to every session connection and never reuses, recorded
+ * when the session opens. A different value than before means a NEW
+ * connection, also one to the SAME server (the browser module re-reads the
+ * chain id and the pins on every new connection). 0 = no session yet (or
+ * local-tool mode).
+ */
+uint64_t nodus_client_conn_generation(const nodus_client_t *client);
 
 /** O15C-D — the request/result correlation rule: the pending entry that
  * is in_use AND holds exactly `txn`, or NULL. A response therefore can
