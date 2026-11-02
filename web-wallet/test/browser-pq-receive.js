@@ -14,6 +14,9 @@ import { createRequire } from 'node:module';
 import { chromium } from 'playwright';
 import { pastePhrase } from './browser-phrase.js';
 import { assertNetworkGroups } from './browser-network-groups.js';
+import { walletPageSupported, walletPqNetwork } from '../src/pq/wallet-capabilities.js';
+import { extensionPageSupported, extensionNetworkConfig } from '../extension/src/constants/capabilities.js';
+import { PQ_NETWORKS } from '../src/pq/networks.js';
 const jsQR=createRequire(import.meta.url)('jsqr');
 const app=fileURLToPath(new URL('..',import.meta.url)),web=join(app,'dist'),extension=join(app,'dist-extension/unpacked');
 const fixture=JSON.parse(await readFile(new URL('./fixtures/pq-receive.json',import.meta.url),'utf8')).vectors[0];
@@ -46,17 +49,30 @@ async function qr(page){
   });
   assert.ok(pixels,'QR exists');return jsQR(Uint8ClampedArray.from(pixels.data),pixels.size,pixels.size)?.data;
 }
+// #chain and #pq-network-environment are hidden; the shipped page chooses both in
+// the network disclosure (src/app.js:2307, :970). Send expectations come from the
+// surface's capability table (handoff enables some mainnet/testnet sends).
+const sendSupported=(chain,network)=>activeMode==='extension'?extensionPageSupported(chain,'send',network):walletPageSupported(chain,'send',network);
+async function openDisclosure(page){if(!await page.locator('#wallet-network').evaluate(n=>n.open))await page.locator('#wallet-network > summary').click();}
+async function selectChain(page,chain){await openDisclosure(page);const badge=page.locator(`#portfolio-networks .network-health[data-chain="${chain}"]`);const toggle=badge.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " network-group ")]').locator('.network-group-toggle');if(await toggle.count()&&await toggle.getAttribute('aria-expanded')!=='true')await toggle.click();await badge.click();}
+async function selectEnvironment(page,network){if(await page.locator('#pq-network-environment').inputValue()===network)return;await openDisclosure(page);if(!await page.locator('#wallet-environment').evaluate(n=>n.open))await page.locator('#wallet-environment > summary').click();await page.locator(`#wallet-environment button[data-environment="${network}"]`).click();}
 async function openReceive(page){if(!(await page.locator('#page-receive').isVisible()))await page.locator('.wallet-navigation a[href="#receive"]').click();}
 async function address(page,chain,network,expected,{decode=true}={}){
   await openReceive(page);
-  await page.selectOption('#chain',chain);
-  await page.selectOption('#pq-network-environment',network);
+  await selectChain(page,chain);
+  await selectEnvironment(page,network);
   try { await page.waitForFunction(expected=>document.querySelector('#receive-address')?.textContent===expected,expected); } catch(error) { console.error('ADDRESS DIAGNOSTIC',{chain,network,expected},await page.evaluate(()=>({chain:document.querySelector('#chain')?.value,address:document.querySelector('#receive-address')?.textContent,network:document.querySelector('#pq-network-environment')?.value,status:document.querySelector('#pq-address-status')?.textContent,wallet:document.querySelector('#wallet-status')?.textContent})));throw error; }
   assert.equal(await page.locator('#pq-network-environment').inputValue(),network);
-  assert.equal(await page.locator('#quick-send').isDisabled(),true);
-  assert.equal(await page.locator('#send-fields').isVisible(),false);
   assert.equal(await page.locator('#copy-address').isDisabled(),false);
-  assert.match(await page.locator('#send-disabled-note').textContent(), /Sending.*not available/);
+  if(!sendSupported(chain,network)){
+    assert.equal(await page.locator('#quick-send').isDisabled(),true);
+    assert.equal(await page.locator('#send-fields').isVisible(),false);
+    // The note is the surface's configured sendNote for this network (web/Connect
+    // walletPqNetwork, extension extensionNetworkConfig over src/pq/networks.js).
+    const config=PQ_NETWORKS[chain]&&(activeMode==='extension'?extensionNetworkConfig(chain,PQ_NETWORKS[chain],network):walletPqNetwork(chain,PQ_NETWORKS[chain],network));
+    assert.ok(config?.sendNote,`${chain} ${network}: a receive-only network has a send note`);
+    assert.equal(await page.locator('#send-disabled-note').textContent(),config.sendNote);
+  }
   assert.match(await page.locator('#pq-address-status').textContent(),new RegExp(network==='testnet'?'Testnet':'Mainnet'));
   if(decode)assert.equal(await qr(page),expected);
   await page.locator('#send-form').evaluate(form=>form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
@@ -97,6 +113,8 @@ try {
     // A balance redraw keeps keyboard focus on the same grouped badge and
     // does not scroll or change the selected transfer network.
     assert.equal(await page.locator('#wallet-home').isVisible(),true);
+    // 0.1.151: unavailable balances are hidden by default; list every network to reach Tidecoin's heading.
+    await page.locator('#show-zero-balances').uncheck();
     await page.evaluate(()=>scrollTo(0,0));
     await page.waitForFunction(()=>!document.querySelector('#portfolio-refresh').disabled);
     const focusRedraw=await page.evaluate(()=>{
@@ -109,11 +127,11 @@ try {
     assert.equal(focusRedraw.initialFocus,'tidecoin');assert.deepEqual(focusRedraw.after,focusRedraw.before);assert.equal(focusRedraw.focused,'tidecoin');
     // Crossing group boundaries retains the legacy receive address and returns
     // to the exact PQ fixture; selecting a heading cannot become a chain value.
-    await openReceive(page);await page.selectOption('#chain','ethereum');
+    await openReceive(page);await selectChain(page,'ethereum');
     const legacyAddress=await page.locator('#receive-address').textContent();
     assert.match(legacyAddress,/^0x[0-9a-fA-F]{40}$/);
     for(const [chain,networks] of Object.entries(fixture.addresses))for(const [network,expected]of Object.entries(networks))await address(page,chain,network,expected);
-    await page.selectOption('#chain','ethereum');assert.equal(await page.locator('#receive-address').textContent(),legacyAddress);
+    await selectChain(page,'ethereum');assert.equal(await page.locator('#receive-address').textContent(),legacyAddress);
     await settings(page);
     if(mode==='web'){
       await page.locator('#vault-storage-title').click();
@@ -130,20 +148,24 @@ try {
     }
     await page.locator('#unlock-password:visible').fill(password);await page.locator('#unlock-wallet').click();
     await page.locator('#wallet-open').waitFor({state:'visible'});
-    await openReceive(page);await page.selectOption('#chain','ckb');assert.equal(await page.locator('#pq-network-environment').inputValue(),'testnet');
+    await openReceive(page);await selectChain(page,'ckb');assert.equal(await page.locator('#pq-network-environment').inputValue(),'testnet');
     await address(page,'ckb','testnet',fixture.addresses.ckb.testnet);
     await address(page,'qtc','mainnet',fixture.addresses.qtc.mainnet);
     await address(page,'qtc','testnet',fixture.addresses.qtc.testnet);
     await lockPage(page);await page.reload();await page.locator('#unlock-password:visible').fill(password);await page.locator('#unlock-wallet').click();
     await page.locator('#wallet-open').waitFor({state:'visible'});
     await address(page,'asentum','testnet',fixture.addresses.asentum.testnet);
-    await page.locator('#chain').focus();await page.locator('#chain').press('ArrowDown');
+    // #chain is hidden (keyboard users choose in the network disclosure); cross the
+    // PQ/legacy group boundary through its chips instead.
+    await selectChain(page,'ethereum');
     assert.equal(await page.locator('#chain').inputValue(),'ethereum');
     assert.equal(await page.locator('#receive-address').textContent(),legacyAddress);
-    await page.locator('#chain').press('ArrowUp');
+    await selectChain(page,'asentum');
     assert.equal(await page.locator('#chain').inputValue(),'asentum');
     await page.waitForFunction(expected=>document.querySelector('#receive-address')?.textContent===expected,fixture.addresses.asentum.testnet);
     await page.waitForFunction(()=>!document.querySelector('.network-heading-select')?.closest('[inert]'));
+    // The helper expects the network disclosure closed, as the page leaves it after a choice is made elsewhere.
+    if(await page.locator('#wallet-network').evaluate(n=>n.open))await page.locator('#wallet-network > summary').click();
     await assertNetworkGroups(page,{addressBookIxios:mode==='extension'});
     assert.equal(await page.locator('#pq-network-environment option').count(),1);
     assert.deepEqual(errors,[]);
