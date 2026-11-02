@@ -3,6 +3,7 @@ import { pastePhrase, readPhrase } from './browser-phrase.js';
 import { AUTO_LOCK_KEY } from '../src/auto-lock.js';
 import { BALANCE_REFRESH_KEY } from '../src/balance-refresh.js';
 import { SHOW_ZERO_KEY } from '../src/zero-balances.js';
+import { CHAINS } from '../src/config.js';
 // Run after npm run build + npm run preview. Every external request is intercepted.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -39,6 +40,9 @@ await page.route('**/*', async route => {
   if (await cellframeRead(route, { balance: cellframeBalance, fail: cellframeFail })) return;
   if (await portfolioRead(route, { ethereum: false })) return;
   if (await ixiosRead(route)) return;
+  // New PQ readers are outside this EVM smoke fixture. Model their provider
+  // unavailability explicitly, and never forward an unmatched chain request.
+  if (req.url() !== CHAINS.ethereum.endpoint || req.method() !== 'POST') return route.abort('blockedbyclient');
   const body = req.postDataJSON(); calls.push(body);
   assert.ok(!JSON.stringify(body).includes(phrase));
   const process = call => {

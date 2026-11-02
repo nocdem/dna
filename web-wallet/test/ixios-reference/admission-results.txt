@@ -1,0 +1,10 @@
+PASS full: receipt=1 gas=1000 fee=93000000000000000000 sender_nonce=8 recipient=123456789
+PASS compact: receipt=1 gas=1000 fee=93000000000000000000 sender_nonce=8 recipient=123456789
+PASS high-limit-refund: receipt=1 gas=1000 fee=93000000000000000000 sender_nonce=8 recipient=123456789
+PASS low-price rejected: transaction gas price 92999999999999999 is below the required minimum of 100 zeta (93000000000000000 wei total, 1 zeta = 930000000000000 wei) (generic pool: <nil>)
+PASS pre-aegis rejected: MLDSA87 signature payload not allowed before Aegis Upgrade hard fork at block 32399999 (generic pool: MLDSA87 signature payload not allowed before Aegis Upgrade hard fork at block 32399999)
+PASS low-gas rejected: intrinsic gas too low: have 999, want 1000 (generic pool: intrinsic gas too low: gas 999, minimum needed 1000)
+PASS low-balance rejected: insufficient funds for gas * price + value: address 0x3FB1D00e6Eb1496183e951dE6506eDE1180e3957733dcAf602eC56ccc06cfe04450E75039C090512dF72894e7423154a have 1 want 93000000000123456789 (generic pool: <nil>)
+PASS wrong-nonce rejected: nonce too low: address 0x3FB1D00e6Eb1496183e951dE6506eDE1180e3957733dcAf602eC56ccc06cfe04450E75039C090512dF72894e7423154a, tx: 7 state: 8 (generic pool: <nil>)
+PASS sender-code rejected: sender not an eoa: address 0x3FB1D00e6Eb1496183e951dE6506eDE1180e3957733dcAf602eC56ccc06cfe04450E75039C090512dF72894e7423154a, codehash: 0xbc36789e7a1e281436464229828f817d6612f7b477d66591ff96a9e064bcc98a (generic pool: <nil>)
+PASS wasm-hedged: receipt=1 gas=1000 fee=93000000000000000000 sender_nonce=8 recipient=123456789

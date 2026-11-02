@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { LOCK_ORDER, createLockCoordinator } from '../src/background/lock.js';
 
-const order = ['keyring', 'webWallet', 'nodus', 'solana', 'tron'];
+const order = ['keyring', 'webWallet', 'nodus', 'solana', 'tron', 'algorand', 'soqucoin', 'splendor', 'asentum', 'xion', 'ckb', 'qtc', 'tidecoin', 'ixios'];
 
 // Proves startup/restart denies signing and failed unlock stays locked; an already-locked-only assertion could miss successful unlock entirely.
 test('a new coordinator starts locked and only successful unlock opens the guard', async () => {
@@ -18,7 +18,7 @@ test('a new coordinator starts locked and only successful unlock opens the guard
 });
 
 // Proves every holder is awaited in the specified order despite reverse registration; sorting both actual and expected would hide wrong ordering.
-test('manual lock awaits all five holders in a fixed order and closes signing immediately', async () => {
+test('manual lock awaits all registered holders in a fixed order and closes signing immediately', async () => {
   assert.deepEqual(LOCK_ORDER, order);
   const coordinator = createLockCoordinator(), calls = [];
   let release, started, finishLast, lastStarted, settled = false;
@@ -30,7 +30,7 @@ test('manual lock awaits all five holders in a fixed order and closes signing im
       assert.equal(this.name, name);
       calls.push(name);
       if (name === 'keyring') { started(); await new Promise(resolve => { release = resolve; }); }
-      if (name === 'tron') { lastStarted(); await new Promise(resolve => { finishLast = resolve; }); }
+      if (name === 'asentum') { lastStarted(); await new Promise(resolve => { finishLast = resolve; }); }
     },
   });
   await coordinator.unlock(async () => {});

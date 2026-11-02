@@ -1,0 +1,17 @@
+HTTP/1.1 200 OK
+date: Mon, 02 Nov 2026 08:00:42 GMT
+
+HTTP/2 200 
+date: Mon, 02 Nov 2026 08:00:42 GMT
+content-type: application/json
+content-length: 770
+vary: Origin,Origin
+cf-cache-status: DYNAMIC
+nel: {"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}
+speculation-rules: "/cdn-cgi/speculation"
+report-to: {"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=DTl1f6QCfChHkPoZ1jZsh%2FjswQEwN8M4DHQFbDEfPk14EZ4Rntaei%2BBYrpzWFzyYkWrcdaP5H3MS5boy%2BLkEUe3q9lUozntofCUVGfENFDiNOWD3JiMi3ffwCOPxFm9shBZ31OtTx%2FCh8YH48ZAuVIcQX6OSfsMk%2BOYNhqva"}]}
+server: envoy
+cf-ray: a5419b6afec22251-DFW
+alt-svc: h3=":443"; ma=86400
+x-envoy-upstream-service-time: 136
+

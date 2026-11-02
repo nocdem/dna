@@ -1,3 +1,4 @@
+import { extensionCapabilitiesFor } from '../constants/capabilities.js';
 import { createVaultStore } from './vault-store.js';
 import { createLockCoordinator } from './lock.js';
 import { createAutoLockAlarm } from './auto-lock-alarm.js';
@@ -15,6 +16,16 @@ import { createRequestEngine } from './engine.js';
 import { createEvm } from './evm.js';
 import { createNodus } from './nodus.js';
 import { createConnect } from './connect.js';
+import { createSplendor } from './splendor.js';
+import { createAsentum } from './asentum.js';
+import { createIxios } from './ixios.js';
+import { createXion } from './xion.js';
+import { createCkb } from './ckb.js';
+import { createQtc } from './qtc.js';
+import { prepareQtcGatewayReview } from '../../../src/pq/qtc-gateway-controller.js';
+import { createQtcGatewayTransport } from '../../../src/pq/qtc-gateway.js';
+import { createSoqucoin } from './soqucoin.js';
+import { createAlgorand } from './algorand.js';
 import { createSolanaTron } from './solana-tron.js';
 import { createNetworks } from './networks.js';
 import { PermissionsRequestNotFoundError } from '@metamask/permission-controller';
@@ -73,7 +84,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     popupCount: [...uiPorts].filter(port => port.name === 'popup').length,
     tabIds: new Set([...uiPorts].filter(port => port.name === 'fullscreen').map(port => port.sender?.tab?.id).filter(id => id !== undefined)),
   }) });
-  const nodus = createNodus({ ...nodusOptions, storage, lockCoordinator, getAddresses: () => walletKeys.getAddresses(),
+  const nodus = createNodus({ ...nodusOptions, storage, lockCoordinator, getAddresses: () => walletKeys.getAddresses(), getPqAddresses: () => walletKeys.getPqAddresses(),
     onActivityChanged: (rows, options) => { void transactionNotifications?.observe(rows, options).catch(() => {}); },
     onLock: () => { void incomingNotifications?.stop().catch(() => {}); evm?.lock(); },
     getWords: () => walletKeys.getRecoveryPhrase(), onClient: client => { walletKeys?.replaceNodusClient(client); connect.ready(client); },
@@ -122,6 +133,22 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   attachWalletKeys(consumeNodusSeed ?? nodus.consumeNodusSeed);
   const { solana, tron } = chainHandlers = createSolanaTron({ lockCoordinator, getWalletKeys: () => walletKeys,
     getActivity: (chain, network) => nodus.chainActivity(chain, network), getNetwork: chain => networks.get(chain) });
+  const algorand = createAlgorand({ lockCoordinator, getWalletKeys: () => walletKeys, getActivity: (chain, network) => nodus.chainActivity(chain, network), getNetwork: chain => networks.get(chain) });
+  chainHandlers.algorand = algorand;
+  const soqucoin = createSoqucoin({ storage, lockCoordinator, getWalletKeys: () => walletKeys, getActivity: (chain, network) => nodus.chainActivity(chain, network), getNetwork: chain => networks.get(chain) });
+  chainHandlers.soqucoin = soqucoin;
+  const splendor = createSplendor({ storage, lockCoordinator, getWalletKeys: () => walletKeys, getActivity: (chain, network) => nodus.chainActivity(chain, network), getNetwork: chain => networks.get(chain) });
+  chainHandlers.splendor = splendor;
+  const asentum = createAsentum({ storage, lockCoordinator, getWalletKeys: () => walletKeys, getActivity: (chain, network) => nodus.chainActivity(chain, network), getNetwork: chain => networks.get(chain) });
+  chainHandlers.asentum = asentum;
+  const xion = createXion({ storage, lockCoordinator, getWalletKeys: () => walletKeys, getActivity: (chain, network) => nodus.chainActivity(chain, network), getNetwork: chain => networks.get(chain) });
+  chainHandlers.xion = xion;
+  const ckb = createCkb({ storage, lockCoordinator, getWalletKeys: () => walletKeys, getActivity: (chain, network) => nodus.chainActivity(chain, network), getNetwork: chain => networks.get(chain) });
+  chainHandlers.ckb = ckb;
+  const qtc = createQtc({ storage, transportKind: 'gateway', prepare: prepareQtcGatewayReview, getTransport: id => createQtcGatewayTransport(id), lockCoordinator, getWalletKeys: () => walletKeys, getActivity: (chain, network) => nodus.chainActivity(chain, network), getNetwork: chain => networks.get(chain) });
+  chainHandlers.qtc = qtc;
+  const ixios = createIxios({ storage, lockCoordinator, getWalletKeys: () => walletKeys, getActivity: () => nodus.chainActivity('ixios', 'mainnet') });
+  chainHandlers.ixios = ixios;
   incomingNotifications = notifications ? await createIncomingNotifications({ alarms: backgroundAlarms, notifications, runtime,
     lockCoordinator, networks, nodus, evm, solana, tron }) : null;
 
@@ -238,6 +265,53 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     setChainNetwork: (chain, network) => networks.select(chain, network),
     // Package 7a: wallet-only methods on the authenticated controller stream
     // (engine.js setupTrustedCommunication); no Solana/Tron site routing.
+    getQtcBalances: () => qtc.getBalances(),
+    getQtcHistory: async options => { const h = await qtc.getHistory(options); return { ...h, local: h.local.map(row => ({ ...row, canResubmit: row.canResubmit && extensionCapabilitiesFor('qtc', networks.get('qtc').id).send })) }; },
+    prepareQtcSend: fields => { if (networks.get('qtc').id !== 'mainnet' || !extensionCapabilitiesFor('qtc', networks.get('qtc').id).send) throw new Error('QTC mainnet sending is not enabled.'); return qtc.prepareSend(fields); },
+    prepareQtcResubmit: hash => { if (networks.get('qtc').id !== 'mainnet' || !extensionCapabilitiesFor('qtc', networks.get('qtc').id).send) throw new Error('QTC mainnet recovery is not enabled.'); return qtc.prepareResubmit(hash); },
+    confirmQtcSend: id => { if (networks.get('qtc').id !== 'mainnet' || !extensionCapabilitiesFor('qtc', networks.get('qtc').id).send) throw new Error('QTC mainnet sending is not enabled.'); return qtc.confirmSend(id); },
+    cancelQtcSend: id => qtc.cancelSend(id),
+    getCkbBalances: () => ckb.getBalances(),
+    getCkbHistory: async options => { const h = await ckb.getHistory(options); return { ...h, local: h.local.map(row => ({ ...row, canResubmit: row.canResubmit && extensionCapabilitiesFor('ckb', networks.get('ckb').id).send })) }; },
+    prepareCkbSend: fields => { if (!extensionCapabilitiesFor('ckb', networks.get('ckb').id).send) throw new Error('CKB sending is not enabled.'); return ckb.prepareSend(fields); },
+    prepareCkbResubmit: hash => { if (!extensionCapabilitiesFor('ckb', networks.get('ckb').id).send) throw new Error('CKB recovery is not enabled.'); return ckb.prepareResubmit(hash); },
+    confirmCkbSend: id => { if (!extensionCapabilitiesFor('ckb', networks.get('ckb').id).send) throw new Error('CKB sending is not enabled.'); return ckb.confirmOperation(id); },
+    cancelCkbSend: id => ckb.cancelOperation(id),
+    getIxiosBalances: () => ixios.getBalances(),
+    getIxiosHistory: async options => { const h=await ixios.getHistory(options);return {...h,local:(h.local??[]).map(row=>({...row,canResubmit:row.canResubmit&&extensionCapabilitiesFor('ixios',networks.get('ixios').id).send}))}; },
+    prepareIxiosSend: fields => { if(!extensionCapabilitiesFor('ixios',networks.get('ixios').id).send)throw new Error('IXIOS sending is not enabled.');return ixios.prepareSend(fields); },
+    prepareIxiosResubmit: hash => { if(!extensionCapabilitiesFor('ixios',networks.get('ixios').id).send)throw new Error('IXIOS recovery is not enabled.');return ixios.prepareResubmit(hash); },
+    confirmIxiosSend: id => { if(!extensionCapabilitiesFor('ixios',networks.get('ixios').id).send)throw new Error('IXIOS sending is not enabled.');return ixios.confirmOperation(id); },
+    cancelIxiosSend: id => ixios.cancelOperation(id),
+    getXionBalances: () => xion.getBalances(),
+    getXionHistory: async options => { const h=await xion.getHistory(options);return {...h,local:h.local.map(row=>({...row,canResubmit:row.canResubmit&&extensionCapabilitiesFor('xion',networks.get('xion').id).send}))}; },
+    prepareXionSend: fields => { if(!extensionCapabilitiesFor('xion',networks.get('xion').id).send)throw new Error('XION sending is not enabled.');return xion.prepareSend(fields); },
+    prepareXionResubmit: hash => { if(!extensionCapabilitiesFor('xion',networks.get('xion').id).send)throw new Error('XION recovery is not enabled.');return xion.prepareResubmit(hash); },
+    confirmXionSend: id => { if(!extensionCapabilitiesFor('xion',networks.get('xion').id).send)throw new Error('XION sending is not enabled.');return xion.confirmOperation(id); },
+    cancelXionSend: id => xion.cancelOperation(id),
+    getAsentumBalances: () => asentum.getBalances(),
+    getAsentumHistory: async options => { const h=await asentum.getHistory(options);return {...h,local:h.local.map(row=>({...row,canResubmit:row.canResubmit&&extensionCapabilitiesFor('asentum',networks.get('asentum').id).send}))}; },
+    prepareAsentumSend: fields => { if(!extensionCapabilitiesFor('asentum',networks.get('asentum').id).send)throw new Error('Asentum sending is not enabled.');return asentum.prepareSend(fields); },
+    prepareAsentumResubmit: hash => { if(!extensionCapabilitiesFor('asentum',networks.get('asentum').id).send)throw new Error('Asentum recovery is not enabled.');return asentum.prepareResubmit(hash); },
+    confirmAsentumSend: id => { if(!extensionCapabilitiesFor('asentum',networks.get('asentum').id).send)throw new Error('Asentum sending is not enabled.');return asentum.confirmOperation(id); },
+    cancelAsentumSend: id => asentum.cancelOperation(id),
+    getSplendorBalances: () => splendor.getBalances(),
+    getSplendorHistory: options => splendor.getHistory(options),
+    prepareSplendorSend: fields => { if (networks.get('splendor').id !== 'mainnet') throw new Error('Splendor sending is enabled only on verified mainnet.'); return splendor.prepareSend(fields); },
+    prepareSplendorResubmit: hash => { if (networks.get('splendor').id !== 'mainnet') throw new Error('Splendor recovery is enabled only on verified mainnet.'); return splendor.prepareResubmit(hash); },
+    confirmSplendorSend: id => splendor.confirmOperation(id),
+    cancelSplendorSend: id => splendor.cancelOperation(id),
+    getSoqucoinBalances: () => soqucoin.getBalances(),
+    prepareSoqucoinResubmit: hash => soqucoin.prepareResubmit(hash),
+    prepareSoqucoinSend: fields => soqucoin.prepareSend(fields),
+    confirmSoqucoinSend: id => soqucoin.confirmSend(id),
+    cancelSoqucoinSend: id => soqucoin.cancelSend(id),
+    getSoqucoinHistory: options => soqucoin.getHistory(options),
+    getAlgorandBalances: () => algorand.getBalances(),
+    prepareAlgorandSend: fields => algorand.prepareSend(fields),
+    confirmAlgorandSend: id => algorand.confirmSend(id),
+    cancelAlgorandSend: id => algorand.cancelSend(id),
+    getAlgorandHistory: options => algorand.getHistory(options),
     getSolanaBalances: () => solana.getBalances(),
     prepareSolanaSend: fields => solana.prepareSend(fields),
     confirmSolanaSend: id => solana.confirmSend(id),
@@ -324,7 +398,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   if (lazyListener) lazyListener.addListener('alarms', 'onAlarm', onAlarm);
   else alarms.onAlarm.addListener(onAlarm);
   return {
-    vaultStore, lockCoordinator, autoLockAlarm, transactionNotifications, incomingNotifications, keyring, attachWalletKeys, store, permissions, approvals, engine, evm, nodus, solana, tron, networks,
+    vaultStore, lockCoordinator, autoLockAlarm, transactionNotifications, incomingNotifications, keyring, attachWalletKeys, store, permissions, approvals, engine, evm, nodus, solana, tron, algorand, soqucoin, splendor, asentum, xion, ckb, qtc, ixios, networks,
     lock: () => lockCoordinator.lock(),
     get walletKeys() { return walletKeys; },
     get unlock() { return unlock; },

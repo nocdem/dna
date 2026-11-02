@@ -1,0 +1,46 @@
+package app
+
+import (
+ "encoding/base64"
+ "encoding/json"
+ "os"
+ "testing"
+ "time"
+
+ abci "github.com/cometbft/cometbft/abci/types"
+ cmttypes "github.com/cometbft/cometbft/types"
+ dbm "github.com/cosmos/cosmos-db"
+ "cosmossdk.io/log/v2"
+ math "cosmossdk.io/math"
+ "github.com/cosmos/cosmos-sdk/baseapp"
+ "github.com/cosmos/cosmos-sdk/client/flags"
+ "github.com/cosmos/cosmos-sdk/testutil/mock"
+ simtestutil "github.com/cosmos/cosmos-sdk/testutil/sims"
+ sdk "github.com/cosmos/cosmos-sdk/types"
+ authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
+ banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
+ globalfeetypes "github.com/burnt-labs/xion/x/globalfee/types"
+ "github.com/stretchr/testify/require"
+)
+
+type walletOracleFixture struct { From string `json:"from"`; Good string `json:"good"`; HighAccount string `json:"highAccount"`; BadSignature string `json:"badSignature"`; BadChain string `json:"badChain"`; BadAccount string `json:"badAccount"`; BadSequence string `json:"badSequence"`; LowFee string `json:"lowFee"`; Timeout2 string `json:"timeout2"`; TamperedTimeout string `json:"tamperedTimeout"` }
+func TestLocalSyntheticXionWalletAnte(t *testing.T) {
+ // A unique chain ID and public synthetic test-only key ensure no signed wire
+ // produced here can be replayed on either public network.
+ const chainID="synthetic-xion"
+ sdk.GetConfig().SetBech32PrefixForAccount("xion","xionpub")
+ b,err:=os.ReadFile(os.Getenv("XION_FIXTURE"));require.NoError(t,err);var f walletOracleFixture;require.NoError(t,json.Unmarshal(b,&f))
+ payer,err:=sdk.AccAddressFromBech32(f.From);require.NoError(t,err)
+ now:=time.Unix(1_800_000_000,0).UTC();gapp:=NewWasmApp(log.NewNopLogger(),dbm.NewMemDB(),true,simtestutil.AppOptionsMap{flags.FlagHome:t.TempDir()},nil,baseapp.SetChainID(chainID),baseapp.SetMinGasPrices("0.025uxion"));t.Cleanup(func(){require.NoError(t,gapp.Close())})
+ pv:=mock.NewPV();pub,err:=pv.GetPubKey();require.NoError(t,err);val:=cmttypes.NewValidator(pub,1);vals:=cmttypes.NewValidatorSet([]*cmttypes.Validator{val})
+ var number uint64; if os.Getenv("XION_HIGH_ACCOUNT")=="1" { number=1<<63 }; account:=authtypes.NewBaseAccount(payer,nil,number,0)
+ genesis,err:=GenesisStateWithValSet(gapp.AppCodec(),gapp.DefaultGenesis(),vals,[]authtypes.GenesisAccount{account},banktypes.Balance{Address:payer.String(),Coins:sdk.NewCoins(sdk.NewInt64Coin("stake",100000000000000),sdk.NewInt64Coin("uxion",1000000000))});require.NoError(t,err)
+ fee:=globalfeetypes.DefaultGenesisState();fee.Params.MinimumGasPrices=sdk.NewDecCoins(sdk.NewDecCoinFromDec("uxion",math.LegacyMustNewDecFromStr("0.025")));genesis[globalfeetypes.ModuleName]=gapp.AppCodec().MustMarshalJSON(fee);state,err:=json.Marshal(genesis);require.NoError(t,err)
+ _,err=gapp.InitChain(&abci.RequestInitChain{ChainId:chainID,Time:now,InitialHeight:1,ConsensusParams:simtestutil.DefaultConsensusParams,AppStateBytes:state,Validators:[]abci.ValidatorUpdate{}});require.NoError(t,err)
+ _,err=gapp.FinalizeBlock(&abci.RequestFinalizeBlock{Height:1,Time:now,NextValidatorsHash:vals.Hash(),ProposerAddress:val.Address});require.NoError(t,err);_,err=gapp.Commit();require.NoError(t,err)
+ check:=func(label,s string,expected bool){wire,err:=base64.StdEncoding.DecodeString(s);require.NoError(t,err);r,err:=gapp.CheckTx(&abci.RequestCheckTx{Tx:wire});require.NoError(t,err);t.Logf("%s code=%d codespace=%s log=%s",label,r.Code,r.Codespace,r.Log);if expected{require.Zero(t,r.Code,label)}else{require.NotZero(t,r.Code,label)}}
+ if number!=0 { check("wrong low account",f.Good,false);check("high uint64 account",f.HighAccount,true);return }
+ for _,probe:=range []struct{name,raw string}{{"bad signature",f.BadSignature},{"insufficient fee",f.LowFee}}{wire,err:=base64.StdEncoding.DecodeString(probe.raw);require.NoError(t,err);gas,_,err:=gapp.Simulate(wire);require.NoError(t,err,probe.name);t.Logf("simulation accepts %s with gas_used=%d",probe.name,gas.GasUsed)}
+ for _,tc:=range []struct{name,raw string;height int64;ok bool}{{"at timeout height",f.Timeout2,2,true},{"after timeout height",f.Timeout2,3,false},{"tampered timeout",f.TamperedTimeout,2,false}} {wire,err:=base64.StdEncoding.DecodeString(tc.raw);require.NoError(t,err);tx,err:=gapp.TxConfig().TxDecoder()(wire);require.NoError(t,err);ctx,_:=gapp.GetContextForCheckTx(wire).WithBlockHeight(tc.height).CacheContext();_,err=gapp.AnteHandler()(ctx,tx,false);t.Logf("timeout %s: %v",tc.name,err);if tc.ok {require.NoError(t,err)}else{require.Error(t,err)}}
+ check("bad signature",f.BadSignature,false);check("wrong chain",f.BadChain,false);check("wrong account",f.BadAccount,false);check("wrong sequence",f.BadSequence,false);check("insufficient fee",f.LowFee,false);check("valid",f.Good,true)
+}

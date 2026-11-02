@@ -1,0 +1,4 @@
+#include <primitives/transaction.h>
+#include <streams.h>
+#include <cstdio>
+int main(){DataStream s; int32_t version=2; s << version; WriteCompactSize(s,2); CTxIn blank; uint256 blankid; for(int i=0;i<32;i++) blankid.begin()[i]=0x80+i; blank.prevout.hash=Txid::FromUint256(blankid); blank.prevout.n=7; blank.nSequence=0xfffffffe; s << blank; CTxIn in; uint256 id; for(int i=0;i<32;i++) id.begin()[i]=i; in.prevout.hash=Txid::FromUint256(id); in.prevout.n=3; in.scriptSig=CScript() << OP_DUP << OP_HASH160 << std::vector<unsigned char>(20,0x11) << OP_EQUALVERIFY << OP_CHECKSIG; in.nSequence=0xffffffff; s << in; WriteCompactSize(s,1); CTxOut out; out.nValue=123456789; out.scriptPubKey=CScript() << OP_DUP << OP_HASH160 << std::vector<unsigned char>(20,0x22) << OP_EQUALVERIFY << OP_CHECKSIG; s << out; uint32_t lock=0, type=1; s << lock << type; for (auto b:s) printf("%02x", (unsigned char)b); puts("");}

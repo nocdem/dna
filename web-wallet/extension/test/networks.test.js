@@ -22,12 +22,12 @@ const testnets = [
 test('listed mainnet defaults and testnet-only Nodus/Asentum choices persist', async t => {
   const { background, client, fixture } = await setup(t);
   assert.deepEqual((await client.request('getState')).networks, {
-    nodus: 'testnet', ethereum: 'mainnet', bsc: 'mainnet', solana: 'mainnet', tron: 'mainnet', cellframe: 'mainnet',
+    nodus: 'testnet', ethereum: 'mainnet', bsc: 'mainnet', solana: 'mainnet', tron: 'mainnet', cellframe: 'mainnet', ixios: 'mainnet',
     algorand: 'mainnet', tidecoin: 'mainnet', ckb: 'mainnet', soqucoin: 'mainnet',
     qtc: 'mainnet', xion: 'mainnet', splendor: 'mainnet', asentum: 'testnet',
   });
   for (const chain of ['ethereum', 'bsc', 'solana', 'tron']) assert.equal(background.networks.get(chain).endpoint, CHAINS[chain].endpoint);
-  for (const chain of ['ethereum', 'bsc', 'cellframe']) await assert.rejects(client.request('setChainNetwork', [chain, 'testnet']), /network/i);
+  for (const chain of ['ethereum', 'bsc', 'cellframe', 'ixios']) await assert.rejects(client.request('setChainNetwork', [chain, 'testnet']), /network/i);
   await assert.rejects(client.request('setChainNetwork', ['nodus', 'mainnet']), /network/i);
   await client.request('setChainNetwork', ['solana', 'devnet']);
   const { createBackground } = await import('../src/background/index.js');

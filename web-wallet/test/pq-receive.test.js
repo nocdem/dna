@@ -19,14 +19,14 @@ const fromHex = hex => Uint8Array.from(Buffer.from(hex,'hex'));
 const wasmBytes = receiveWasmBytes();
 const phrase = fixture.vectors[0].phrase;
 
-test('listed PQ networks remain receive-only; implemented native balances are read only', async () => {
+test('shared PQ registry remains receive-only; Web Wallet ALGO has a separately gated dispatcher', async () => {
   assert.equal(PQ_ENTRIES.length,8);
   assert.equal(Object.values(PQ_NETWORKS).reduce((n,c)=>n+c.networks.length,0),13);
   for (const [chain,c] of Object.entries(PQ_NETWORKS)) {
     assert.equal(c.receiveOnly,true); assert.equal(c.balanceUnavailable,!['algorand', 'asentum', 'ckb', 'xion', 'splendor', 'soqucoin', 'qtc'].includes(chain));
     assert.equal(adapters[chain],undefined);
     for (const network of c.networks) assert.equal(pqNetwork(chain,network.id),network);
-    await assert.rejects(prepareTransfer({wallet:{addresses:{}},chain,symbol:c.symbol,to:'unused',amount:'1'}),/Open a wallet/);
+    await assert.rejects(prepareTransfer({wallet:{addresses:{}},chain,symbol:c.symbol,to:'unused',amount:'1'}),['algorand', 'soqucoin', 'splendor', 'asentum'].includes(chain) ? /Invalid|Choose verified|SOQ|Soqucoin|Unsupported|explicit|testnet/ : /Open a wallet/);
     assert.throws(()=>pqNetwork(chain,'regtest'));
   }
   for (const chain of ['__proto__','constructor','toString','',null,{}]) {

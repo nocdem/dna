@@ -174,7 +174,7 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
     $('portfolio-total').textContent = text(usdText(snap.total, snap.positive));
     $('portfolio-label').textContent = snap.state === 'partial' ? 'Known value · incomplete' : snap.state === 'loading' ? 'Updating portfolio' : 'Estimated portfolio value';
     $('portfolio-status').textContent = snap.state === 'idle' ? 'Refresh all to read your balances and prices.'
-      : snap.state === 'loading' ? `${snap.known} of ${ASSETS.length} asset values available. Reading all networks…`
+      : snap.state === 'loading' ? `${snap.known} of ${assets.filter(asset => asset.priceId).length} asset values available. Reading all networks…`
       : snap.complete ? 'All supported asset balances are included.'
       : `${snap.missingBalances} balances and ${snap.missingPrices} prices unavailable or out of date. Missing values are excluded.`;
     $('portfolio-refresh').disabled = jobs.size > 0 || !!priceJob;

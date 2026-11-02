@@ -3,7 +3,9 @@
 The approved plan is `/opt/dna/docs/plans/approved/2026-10-28-nodus-extension.md`,
 section 9. The extension uses the installed Vite 7.3.7 and the wallet config's
 version definition and third-party license helpers. No package script or
-dependency is added. Packaging requires existing Python 3 and its standard-library
+runtime dependency is added. Windows builds use the pinned `sharp` development
+dependency to render the same SVG icons; Linux retains `rsvg-convert`, and an
+explicit `RSVG_CONVERT` takes precedence on either platform. Packaging requires existing Python 3 and its standard-library
 `zipfile`; system `zip` and `unzip` are unnecessary.
 
 The orchestrator first builds and verifies the WASM inputs using the wallet's
@@ -22,6 +24,11 @@ bash scripts/build-extension.sh
 CHROMIUM_PATH=/usr/bin/chromium node --test extension/test/package-smoke.test.js
 node --test extension/test/manifest.test.js
 ```
+
+On Windows, use an LF checkout (`git config core.autocrlf false` before checkout),
+run `node scripts/build-extension-isolated.mjs`, then use Python's
+`scripts/extension-archive.py create` command below. Set `CHROMIUM_PATH` to the
+test Chromium executable. Keep test browser profiles separate from user profiles.
 
 The build writes `dist-extension/unpacked/` and one
 `dist-extension/nodus-wallet-<manifest version>.zip`. It prints **every archived

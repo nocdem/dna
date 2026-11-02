@@ -15,8 +15,22 @@ const require = createRequire(import.meta.url);
 const manifest = JSON.parse(readFileSync(resolve(extension, 'manifest.json'), 'utf8'));
 const classicEntries = [manifest.background.service_worker, ...manifest.content_scripts.flatMap(entry => entry.js)];
 const wasm = [
+  ['src/pq/xion-public-key.js', './receive-keygen.wasm', 'src/pq/receive-keygen.wasm'],
+  ['src/pq/xion-recovery.js', './mldsa65-sign.wasm', 'src/pq/mldsa65-sign.wasm'],
+  ['src/pq/tidecoin-wallet-sign.js', './receive-keygen.wasm', 'src/pq/receive-keygen.wasm'],
+  ['src/pq/tidecoin-sign.js', './tidecoin-sign.wasm', 'src/pq/tidecoin-sign.wasm'],
+  ['src/pq/tidecoin-recovery.js', './tidecoin-sign.wasm', 'src/pq/tidecoin-sign.wasm'],
+  ['src/pq/qtc-payment-sign.js', './qtc-mldsa44-sign.wasm', 'src/pq/qtc-mldsa44-sign.wasm'],
+  ['src/pq/qtc-receive-wasm.js', './receive-keygen.wasm', 'src/pq/receive-keygen.wasm'],
+  ['src/pq/ckb-sign.js', './ckb-slh-sign.wasm', 'src/pq/ckb-slh-sign.wasm'],
+  ['src/pq/ckb-signed-payload.js', './ckb-slh-sign.wasm', 'src/pq/ckb-slh-sign.wasm'],
+  ['src/pq/mldsa65-sign.js', './mldsa65-sign.wasm', 'src/pq/mldsa65-sign.wasm'],
+  ['src/pq/soqu-sign.js', './mldsa44-sign.wasm', 'src/pq/mldsa44-sign.wasm'],
+  ['src/pq/algorand-sign.js', './algorand-sign.wasm', 'src/pq/algorand-sign.wasm'],
   ['src/nodus/send.js', 'send.wasm', 'src/nodus/send.wasm'],
   ['src/nodus/derive.js', './mldsa87.wasm', 'src/nodus/mldsa87.wasm'],
+  ['src/pq/sign.js', './mldsa87-sign.wasm', 'src/pq/mldsa87-sign.wasm'],
+  ['src/ixios/verify.js', './mldsa87-verify.wasm', 'src/ixios/mldsa87-verify.wasm'],
   ['src/ixios/derive.js', '../nodus/mldsa87.wasm', 'src/nodus/mldsa87.wasm'],
   ['src/cpunk/derive.js', './legacy-dilithium.wasm', 'src/cpunk/legacy-dilithium.wasm'],
   ['src/pq/receive.js', './receive-keygen.wasm', 'src/pq/receive-keygen.wasm'],
@@ -62,11 +76,13 @@ function streamProcess() {
 // binaries fixed extension URLs before Vite's asset transform; this also avoids
 // a document.currentScript fallback in the classic service worker. The glue's
 // other import.meta.url becomes self.location.href in that worker build.
-function wasmUrls() {
+export function wasmUrls() {
   return {
     name: 'nodus-extension-wasm-urls', enforce: 'pre',
     transform(code, id) {
-      const entry = wasm.find(([loader]) => id.split('?')[0] === resolve(here, loader));
+      // Vite normalizes module IDs to '/' even when node:path.resolve uses '\\'.
+      const modulePath = id.split('?')[0].replaceAll('\\', '/');
+      const entry = wasm.find(([loader]) => modulePath === resolve(here, loader).replaceAll('\\', '/'));
       if (!entry) return;
       const [, relative, source] = entry;
       const pattern = /new\s+URL\(\s*(['"])([^'"]+)\1\s*,\s*import\.meta\.url\s*\)/gu;
@@ -85,7 +101,7 @@ function wasmUrls() {
 function packageAssets() {
   return {
     name: 'nodus-extension-assets',
-    generateBundle() {
+    async generateBundle() {
       const packaged = structuredClone(manifest);
       const sizes = [...new Set([...Object.keys(packaged.icons), ...Object.keys(packaged.action.default_icon)])]
         .map(Number).sort((a, b) => a - b);
@@ -98,8 +114,11 @@ function packageAssets() {
       for (const size of sizes) {
         if (!Number.isSafeInteger(size) || size <= 0) this.error(`Invalid manifest icon size: ${size}`);
         const fileName = `icons/nodus-${size}.png`;
-        const png = execFileSync('/usr/bin/rsvg-convert', ['--format=png', `--width=${size}`, `--height=${size}`,
-          resolve(here, 'public/assets/nodus-mark.svg')]);
+        const source = resolve(here, 'public/assets/nodus-mark.svg');
+        const png = process.platform === 'win32' && !process.env.RSVG_CONVERT
+          ? await (await import('sharp')).default(source).resize(size, size).png().toBuffer()
+          : execFileSync(process.env.RSVG_CONVERT || '/usr/bin/rsvg-convert',
+            ['--format=png', `--width=${size}`, `--height=${size}`, source]);
         this.emitFile({ type: 'asset', fileName, source: png });
         for (const icons of [packaged.icons, packaged.action.default_icon]) if (Object.hasOwn(icons, size)) icons[size] = fileName;
       }
@@ -113,20 +132,9 @@ function packageAssets() {
   };
 }
 
-function classicScriptsAndLicenses() {
+export function extensionClassicConfig(entry) {
+  if (!classicEntries.includes(entry)) throw new Error('Unknown extension classic entry.');
   return {
-    name: 'nodus-extension-classic-scripts-and-licenses',
-    async generateBundle(_options, bundle) {
-      const ids = new Set();
-      collectRenderedIds(bundle, ids);
-      // Chrome's content_scripts schema exposes js/run_at/world, not a module
-      // type: https://developer.chrome.com/docs/extensions/reference/manifest/content-scripts (web page, not pinned; inference)
-      // Both ISOLATED and MAIN entries in extension/manifest.json therefore get
-      // independent IIFEs, with no shared imports. The worker has no type:module
-      // either; inline its lazy background import (MV3 disallows import()).
-      // https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/basics#import-scripts (web page, not pinned; pinned support: refs/metamask-extension-v13.54.0/development/webpack/README.md:237 "Service workers, used by MV3, must load dependencies via importScripts")
-      for (const entry of classicEntries) {
-        const result = await build({
           configFile: false, root: extension, base: './', publicDir: false,
           // Vite's lazy-import helper adds import.meta.url, which Rollup's iife output renders through
           // document.baseURI; a worker has no document. Resolve it as the define above does.
@@ -141,7 +149,24 @@ function classicScriptsAndLicenses() {
               output: { format: 'iife', inlineDynamicImports: true, entryFileNames: entry },
             },
           },
-        });
+        };
+}
+export { classicEntries, collectRenderedIds };
+
+function classicScriptsAndLicenses() {
+  return {
+    name: 'nodus-extension-classic-scripts-and-licenses',
+    async generateBundle(_options, bundle) {
+      const ids = new Set();
+      collectRenderedIds(bundle, ids);
+      // Chrome's content_scripts schema exposes js/run_at/world, not a module
+      // type: https://developer.chrome.com/docs/extensions/reference/manifest/content-scripts (web page, not pinned; inference)
+      // Both ISOLATED and MAIN entries in extension/manifest.json therefore get
+      // independent IIFEs, with no shared imports. The worker has no type:module
+      // either; inline its lazy background import (MV3 disallows import()).
+      // https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/basics#import-scripts (web page, not pinned; pinned support: refs/metamask-extension-v13.54.0/development/webpack/README.md:237 "Service workers, used by MV3, must load dependencies via importScripts")
+      for (const entry of classicEntries) {
+        const result = await build(extensionClassicConfig(entry));
         if (Array.isArray(result) || !('output' in result)) this.error(`Unexpected Vite output for ${entry}`);
         const chunks = result.output.filter(output => output.type === 'chunk');
         if (result.output.length !== 1 || chunks.length !== 1 || chunks[0].imports.length || chunks[0].dynamicImports.length) {

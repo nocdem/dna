@@ -13,7 +13,7 @@ import { prepareTransfer } from '../../../src/wallet.js';
 import { NODUS_ASSET, nodusTokens } from '../../../src/nodus/network.js';
 import { NODUS_HISTORY_LIMIT, localRowsToShow, nodusHistoryRow, nodusHistoryStatus } from '../../../src/nodus/history.js';
 import { keepBusyEnvelope, canResubmit, dropSettledEnvelope, resubmitKept, NODUS_UNCERTAIN_NOTE, NODUS_SUBMITTED_NOTE } from '../../../src/nodus/resubmit.js';
-import { recordActivity, watchActivity, terminal, evmActivityText } from '../../../src/activity.js';
+import { recordActivity, watchActivity, terminal, evmActivityText, publicActivityRow } from '../../../src/activity.js';
 import { activityKeyFor, parseActivity, serializeActivity, serializeWithoutQuarantined, requireSavedForEvm,
   historyKeyFor, parseHistory, serializeHistory, balancesKeyFor, parseBalances, serializeBalances,
   addressBookKeyFor, parseAddressBook, serializeAddressBook } from '../../../src/activity-storage.js';
@@ -28,7 +28,7 @@ import { chainNetwork } from '../constants/networks.js';
 
 // Approved plan §3.5 holder 3 / §5.4–5.5: the web-wallet client and its one
 // module queue live in the background. No secret or signed envelope enters UI state.
-export function createNodus({ lockCoordinator, storage, getAddresses, factory = nodusSendModuleFactory, approvals, getPermittedAccounts, onLock, getWords, onClient, onIdentified, onClientClosing, onSent, onStateChanged, onActivityChanged }) {
+export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddresses, factory = nodusSendModuleFactory, approvals, getPermittedAccounts, onLock, getWords, onClient, onIdentified, onClientClosing, onSent, onStateChanged, onActivityChanged }) {
   let session, nextReview = 0, writes = Promise.resolve();
   const log = createSessionLog();
   const closedClients = new WeakSet();
@@ -327,15 +327,21 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
     // src/app.js:202-225,2358-2362: one saved list for all chains, one write
     // queue; src/app.js:353-361: account-history cache under its own key.
     chainActivity(chain, networkId = 'mainnet') {
-      if (!['ethereum', 'bsc', 'solana', 'tron', 'cellframe'].includes(chain)) throw new Error('Unsupported chain.');
+      if (!['ethereum', 'bsc', 'solana', 'tron', 'cellframe', 'algorand', 'soqucoin', 'splendor', 'asentum', 'ckb', 'xion', 'qtc', 'ixios'].includes(chain)) throw new Error('Unsupported chain.');
       const s = active();
+      if (chain === 'ixios') { const address=getAddresses().ixios; if(!address) throw new Error('Ixios receive address is unavailable.'); s.addresses.ixios=address; }
       if (chain === 'cellframe') s.addresses.cellframe = getAddresses().cpunk;
       const check = () => { lockCoordinator.assertUnlocked(); current(s); s.assertReady?.(); };
       const network = chainNetwork(chain, networkId);
-      if (network.id !== 'mainnet') {
+      if (['algorand', 'soqucoin', 'splendor', 'asentum', 'ckb', 'xion', 'qtc'].includes(chain)) {
+        const address = getPqAddresses?.()[chain]?.[network.id];
+        if (!address) throw new Error('PQ receive address is unavailable.');
+        s.addresses[chain] = address;
+      }
+      if (network.id !== 'mainnet' || ['algorand', 'soqucoin', 'splendor', 'asentum', 'ckb', 'xion', 'qtc', 'ixios'].includes(chain)) {
         const key = `${chain}.${network.id}`;
         if (!s.networkActivities.has(key)) s.networkActivities.set(key,
-          createNetworkActivity({ chain, network, session: s, storage, current: check, onActivityChanged }));
+          createNetworkActivity({ chain, network, session: (['algorand', 'soqucoin', 'splendor', 'asentum', 'ckb', 'xion', 'qtc', 'ixios'].includes(chain)) ? { ...s, addresses: { ...s.addresses } } : s, storage, current: check, onActivityChanged }));
         return s.networkActivities.get(key);
       }
       return {
@@ -440,7 +446,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, factory = 
         signal: s.abort.signal, assertCurrent: () => { lockCoordinator.assertUnlocked(); current(s); } });
       return s.chainHistory.getHistory(chain, options);
     },
-    getChainLocalHistory(chain) { return this.chainActivity(chain).rows().map(row => ({ ...row })); },
+    getChainLocalHistory(chain) { return this.chainActivity(chain).rows().map(publicActivityRow); },
     async abandonActivity(chain, hash, networkId = 'mainnet') {
       if (!['ethereum', 'bsc', 'solana', 'tron'].includes(chain)) throw new Error('This activity cannot be abandoned.');
       const activity = this.chainActivity(chain, networkId); await activity.ready;

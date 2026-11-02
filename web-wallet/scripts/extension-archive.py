@@ -13,6 +13,39 @@ MAX_FILES = 10000
 MAX_TOTAL = 1024 * 1024 * 1024
 
 
+def open_regular_source(path):
+    """Open without following a final symlink/reparse point on either platform."""
+    if os.name != 'nt':
+        return os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), 'rb')
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                  wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    class Attributes(ctypes.Structure):
+        _fields_ = [('attributes', wintypes.DWORD), ('tag', wintypes.DWORD)]
+    # Read sharing only prevents replacement or writes while the file is read.
+    # OPEN_REPARSE_POINT opens the link itself rather than its target.
+    handle = kernel.CreateFileW(str(path), 0x80000000, 1, None, 3, 0x00200000, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        attributes = Attributes()
+        if not kernel.GetFileInformationByHandleEx(handle, 9, ctypes.byref(attributes), ctypes.sizeof(attributes)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if attributes.attributes & (0x400 | 0x10):
+            raise ValueError('Source file is a reparse point or directory')
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+    except BaseException:
+        kernel.CloseHandle(handle)
+        raise
+    return os.fdopen(descriptor, 'rb')
+
+
 def safe_name(name):
     parts = name.split('/')
     if not name or '\\' in name or ':' in name or any(ord(c) < 32 for c in name) or any(p in ('', '.', '..') for p in parts) or PurePosixPath(name).is_absolute():
@@ -42,7 +75,7 @@ def inventory(archive):
 
 def create(source, target):
     source = Path(source)
-    if source.is_symlink() or not source.is_dir():
+    if source.is_symlink() or not source.is_dir() or getattr(source.lstat(), 'st_file_attributes', 0) & 0x400:
         raise ValueError('Source must be a real directory')
     source = source.resolve()
     target = Path(target).absolute()
@@ -52,8 +85,9 @@ def create(source, target):
     for directory, folders, names in os.walk(source, followlinks=False):
         for name in folders + names:
             path = Path(directory) / name
-            mode = path.lstat().st_mode
-            if stat.S_ISLNK(mode) or not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+            info = path.lstat()
+            mode = info.st_mode
+            if getattr(info, 'st_file_attributes', 0) & 0x400 or stat.S_ISLNK(mode) or not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
                 raise ValueError('Source contains a non-file/directory entry')
         for name in names:
             path = Path(directory) / name
@@ -69,7 +103,7 @@ def create(source, target):
                 info.external_attr = (stat.S_IFREG | 0o644) << 16
                 info.compress_type = zipfile.ZIP_DEFLATED
                 # O_NOFOLLOW also protects the final path from symlink replacement.
-                with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), 'rb') as payload:
+                with open_regular_source(path) as payload:
                     if not stat.S_ISREG(os.fstat(payload.fileno()).st_mode):
                         raise ValueError('Source file changed type')
                     with archive.open(info, 'w') as destination:

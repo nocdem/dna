@@ -1,0 +1,7 @@
+WARNING: sonic/ast only supports (go1.17~1.26 and amd64 CPU) or (go1.20~1.26 and arm64 CPU), but your environment is not suitable and will fallback to encoding/json
+=== RUN   TestLocalSyntheticXionWalletAnte
+    local_xion_wallet_oracle_test.go:41: wrong low account code=4 codespace=sdk log=signature verification failed; please verify account number (9223372036854775808) and chain-id (synthetic-xion): (unable to verify single signer signature): unauthorized
+    local_xion_wallet_oracle_test.go:41: high uint64 account code=0 codespace= log=
+--- PASS: TestLocalSyntheticXionWalletAnte (0.09s)
+PASS
+ok  	github.com/burnt-labs/xion/app	0.258s

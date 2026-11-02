@@ -65,6 +65,7 @@
     "@metamask/key-tree": "10.1.1",
     "jsqr": "1.4.0",
     "playwright": "1.58.2",
+    "sharp": "0.35.5",
     "vite": "7.3.7"
   },
   "overrides": {

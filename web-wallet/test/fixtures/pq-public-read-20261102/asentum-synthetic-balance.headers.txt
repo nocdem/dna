@@ -1,0 +1,13 @@
+HTTP/1.1 200 OK
+date: Mon, 02 Nov 2026 08:44:07 GMT
+
+HTTP/2 200 
+server: envoy
+date: Mon, 02 Nov 2026 08:44:08 GMT
+content-type: application/json
+content-length: 116
+access-control-allow-origin: *
+access-control-allow-methods: GET, POST, OPTIONS
+access-control-allow-headers: Content-Type, Authorization
+x-envoy-upstream-service-time: 1118
+

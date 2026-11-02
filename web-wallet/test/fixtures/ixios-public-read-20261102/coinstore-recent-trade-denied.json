@@ -1,0 +1,4 @@
+{
+  "url": "https://api.coinstore.com/api/v1/market/trade/IXIOSUSDT?size=1",
+  "error": "HTTP Error 403: Forbidden"
+}

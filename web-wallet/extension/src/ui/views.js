@@ -1,3 +1,4 @@
+import { IXIOS_NETWORK } from '../../../src/ixios/network.js';
 import { CHAINS, CELLFRAME } from '../../../src/config.js';
 import { NODUS_NETWORK } from '../../../src/nodus/network.js';
 import { renderQr } from '../../../src/qr.js';
@@ -184,7 +185,7 @@ export function renderSettings(document, container, state, { setAutoLock, reveal
   const chainNetworks = element(document, 'div', 'page-block');
   // Operator §0 / plan §5.6: selectors belong here; no switch at the top.
   for (const [chain, choices] of Object.entries(CHAIN_NETWORKS)) {
-    const caption = element(document, 'label', '', `${(NETWORKS[chain] || PQ_NETWORKS[chain]).name} network`), network = element(document, 'select');
+    const caption = element(document, 'label', '', `${(NETWORKS[chain] || PQ_NETWORKS[chain] || (chain === 'ixios' ? IXIOS_NETWORK : undefined)).name} network`), network = element(document, 'select');
     caption.htmlFor = network.id = `network-${chain}`;
     for (const choice of choices) {
       const option = element(document, 'option', '', choice.label); option.value = choice.id; network.append(option);

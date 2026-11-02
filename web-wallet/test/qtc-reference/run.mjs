@@ -1,0 +1,12 @@
+// Run independent pinned QTC node's ML-DSA implementation against a synthetic
+// wallet-produced witness. This is NOT the QTC script interpreter or node.
+import {readFileSync,writeFileSync,mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join,dirname} from 'node:path';import {fileURLToPath} from 'node:url';import {spawnSync} from 'node:child_process';import assert from 'node:assert/strict';
+import {hexToBytes} from '@noble/hashes/utils';import {qtcScript} from '../../src/pq/qtc-transaction.js';import {signQtcPayment} from '../../src/pq/qtc-payment-sign.js';import {qtcMldsaLeaf,qtcSignatureHash} from '../../src/pq/qtc-sighash.js';
+const here=dirname(fileURLToPath(import.meta.url)),temp=mkdtempSync(join(tmpdir(),'qtc-native-oracle-'));
+try{
+ const cc=spawnSync(process.env.CC||'cc',['-O2','-I',here,'-o',join(temp,'verify'),...['verify.c','sign.c','packing.c','polyvec.c','poly.c','ntt.c','reduce.c','rounding.c','symmetric-shake.c','fips202.c','randombytes.c'].map(f=>join(here,f))]);if(cc.status!==0)throw Error('QTC native oracle compile failed: '+cc.stderr);
+ const v=JSON.parse(readFileSync(new URL('../fixtures/pq-receive.json',import.meta.url))).vectors[0],root=hexToBytes(v.roots.qtc),networkId='mainnet',from=v.addresses.qtc[networkId],pk=hexToBytes(v.keys.qtc[networkId].pk),tx={version:2,locktime:0,inputs:[{txid:'ab'.repeat(32),vout:0,value:100000000n,script_pubkey:qtcScript(from,networkId),sequence:0xffffffff}],outputs:[{value:99000000n,script_pubkey:qtcScript(from,networkId)}]};
+ const r=await signQtcPayment({transaction:tx,from,networkId,root,rnd:new Uint8Array(32).fill(7),signWasmBytes:readFileSync(new URL('../../src/pq/qtc-mldsa44-sign.wasm',import.meta.url)),receiveWasmBytes:readFileSync(new URL('../../src/pq/receive-keygen.wasm',import.meta.url))}),raw=hexToBytes(r.raw),message=qtcSignatureHash(tx,0,qtcMldsaLeaf(pk));
+ writeFileSync(join(temp,'pk'),pk);writeFileSync(join(temp,'sig'),raw.slice(96,96+2420));writeFileSync(join(temp,'msg'),message);let verify=()=>spawnSync(join(temp,'verify'),[join(temp,'pk'),join(temp,'sig'),join(temp,'msg')]);assert.equal(verify().status,0,'QTC source verify failed');message[0]^=1;writeFileSync(join(temp,'msg'),message);assert.equal(verify().status,1,'QTC source accepted altered digest');
+ console.log('PASS pinned QTC native ML-DSA verification and altered-digest rejection; interpreter not executed.');
+}finally{rmSync(temp,{recursive:true,force:true});}

@@ -36,7 +36,7 @@ for (const [name, read, address, identity, result, symbol, unit, expected] of [
     for (const key of ['wallet', 'phrase', 'keys', 'client']) Object.defineProperty(state, key, { get() { throw Error('Secret accessed'); } });
     const readers = portfolioReaders({ state, request() { throw Error('Background accessed'); } });
     assert.deepEqual(await readers.readBalances(name, address, '', { ...mock([identity('testnet'), result('0')]), networkId: 'testnet' }), [{ symbol, balance: '0' }]);
-    assert.equal(capabilitiesFor(name).balance, true); assert.equal(capabilitiesFor(name).history, false);
+    assert.equal(capabilitiesFor(name).balance, true); assert.equal(capabilitiesFor(name).history, ['xion', 'splendor'].includes(name));
   });
 }
 test('Splendor rejects wrong account and incomplete committed view', async () => {

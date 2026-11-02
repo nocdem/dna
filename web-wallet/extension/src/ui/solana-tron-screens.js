@@ -1,3 +1,4 @@
+import { IXIOS_NETWORK } from '../../../src/ixios/network.js';
 import { PQ_NETWORKS } from '../../../src/pq/networks.js';
 import { CHAINS, CELLFRAME } from '../../../src/config.js';
 import { renderEvmSend } from './evm-screens.js';
@@ -46,15 +47,18 @@ export function renderSolanaTronSend(document, container, { chain, account, revi
 
 // src/app.js:300-326: account transfers and their selected-network explorer
 // links. All provider text uses textContent.
-export function renderSolanaTronHistory(document, container, { chain, history }, { refresh }) {
-  container.replaceChildren(pageHeading(document, `${(chain === 'cellframe' ? CELLFRAME : CHAINS[chain] || PQ_NETWORKS[chain]).name} history`, 'history'));
+export function renderSolanaTronHistory(document, container, { chain, history }, { refresh, resubmit }) {
+  container.replaceChildren(pageHeading(document, `${(chain === 'cellframe' ? CELLFRAME : CHAINS[chain] || PQ_NETWORKS[chain] || (chain === 'ixios' ? IXIOS_NETWORK : undefined)).name} history`, 'history'));
   container.append(actionButton(document, 'Refresh history', refresh));
   if (!history) { container.append(element(document, 'p', 'Account history has not been read yet.', 'hint')); return; }
   if (history.activityError) container.append(element(document, 'p', history.activityError, 'field-error'));
   container.append(element(document, 'h2', 'Account history', 'activity-subhead'), element(document, 'p', history.status, 'hint'));
   if (history.error) container.append(element(document, 'p', history.error, 'field-error'));
   const account = element(document, 'div', undefined, 'activity-list');
-  for (const row of history.rows ?? []) {
+  // ALGO local submissions must remain visible while the indexer lags. They
+  // are explicitly labelled, never presented as confirmed account history.
+  const local = ['algorand', 'soqucoin', 'splendor', 'asentum', 'xion', 'ckb', 'qtc', 'ixios'].includes(chain) ? (history.local ?? []).map(row => ({ ...row, local: true, dir: 'out', peer: row.to, time: Date.parse(row.createdAt) })) : [];
+  for (const row of [...local, ...(history.rows ?? [])]) {
     const article = element(document, 'article', undefined, `activity-row history-dir-${row.dir}`);
     const sign = row.dir === 'in' ? '+' : row.dir === 'out' ? '−' : '';
     // src/app.js:299,310-314: shorten peers and reuse displayAmount.
@@ -63,7 +67,7 @@ export function renderSolanaTronHistory(document, container, { chain, history },
     // src/app.js:311-324: compact reference rows, with transaction details
     // in their own footer.
     const main = element(document, 'span', undefined, 'activity-main');
-    main.append(element(document, 'strong', `${sign}${displayAmount(row.amount)} ${row.symbol}`), element(document, 'small', what));
+    main.append(element(document, 'strong', `${sign}${displayAmount(row.amount)} ${row.symbol}`), element(document, 'small', row.local ? `Local submission · ${what}` : what));
     const side = element(document, 'span', undefined, 'activity-side');
     const status = element(document, 'span', row.status, 'status-badge'); status.setAttribute('data-status', row.status);
     const when = element(document, 'time', new Date(row.time).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }));
@@ -74,6 +78,7 @@ export function renderSolanaTronHistory(document, container, { chain, history },
       const link = element(document, 'a', 'View transaction');
       link.href = network.explorer + encodeURIComponent(row.hash); link.target = '_blank'; link.rel = 'noopener noreferrer'; footer.append(link);
     } else footer.append(element(document, 'span', `Transaction ID ${row.hash}`, 'activity-id'));
+    if (['soqucoin','splendor','asentum','xion','ckb','qtc','ixios'].includes(chain) && row.local && row.canResubmit && resubmit) footer.append(actionButton(document, 'Review same-transaction recovery', () => resubmit(row.hash)));
     article.append(main, side, footer); account.append(article);
   }
   container.append(account);

@@ -1,6 +1,6 @@
 // Bounded transport and exact JSON number lexemes for public indexer responses.
 import { rpcFetch } from '../rpc-transport.js';
-export async function integerJson(url, { signal, fetcher } = {}) {
+export async function integerJson(url, { signal, fetcher, allowError = false } = {}) {
   signal?.throwIfAborted();
   const response = await rpcFetch(url, { method: 'GET', signal }, { fetcher });
   signal?.throwIfAborted();
@@ -11,6 +11,12 @@ export async function integerJson(url, { signal, fetcher } = {}) {
   }
   const text = await response.text();
   signal?.throwIfAborted();
+  const data = parseExactJson(text);
+  if (!data || typeof data !== 'object' || (!allowError && (data.error || data.Error || data.success === false))) throw new Error('RPC rejected the request.');
+  return data;
+}
+// Reused by JSON-RPC POST readers without losing integer/decimal lexemes.
+export function parseExactJson(text) {
   let data;
   try {
     data = JSON.parse(text, (_key, value, context) => typeof value === 'number' && context?.source !== undefined ? context.source : value);
@@ -39,7 +45,6 @@ export async function integerJson(url, { signal, fetcher } = {}) {
       else if (c === '}' || c === ']') stack.pop();
     }
   } catch { throw new Error('Invalid or ambiguous JSON response.'); }
-  if (!data || typeof data !== 'object' || data.error || data.Error || data.success === false) throw new Error('RPC rejected the request.');
   return data;
 }
 export function atoms(value) {

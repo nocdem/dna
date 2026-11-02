@@ -1,4 +1,8 @@
+import { parseIxiosAddress, ixiosChecksumAddress } from '../../../src/ixios/address.js';
+import { pqAddressBookChecks } from '../../../src/pq/address-book-checks.js';
 import { getAddress } from 'ethers';
+import { soquScript } from '../../../src/pq/soqu-transaction.js';
+import { algorandAddressBytes } from '../../../src/pq/algorand-prepare.js';
 import { nodusRecipient } from '../../../src/adapters/nodus.js';
 import { isRecipientAddress as solanaAddress } from '../../../src/adapters/solana.js';
 import { isRecipientAddress as tronAddress } from '../../../src/adapters/tron.js';
@@ -11,7 +15,7 @@ const evmAddress = name => text => {
   if (!/^0x[0-9a-fA-F]{40}$/.test(text)) throw new Error(`Enter a ${name} address.`);
   try { return getAddress(text); } catch { throw new Error(`This ${name} address does not match its own check (capital and small letters). Copy it again from your source.`); }
 };
-export const ADDRESS_CHECKS = { nodus: nodusRecipient, ethereum: evmAddress('Ethereum'), bsc: evmAddress('BNB Smart Chain'),
+export const ADDRESS_CHECKS = { ixios: text => ixiosChecksumAddress(parseIxiosAddress(text)), ...pqAddressBookChecks, soqucoin: text => { soquScript(text); return text; }, algorand: text => { algorandAddressBytes(text); return text; }, nodus: nodusRecipient, ethereum: evmAddress('Ethereum'), bsc: evmAddress('BNB Smart Chain'),
   solana: text => { if (!solanaAddress(text)) throw new Error('Enter a Solana address.'); return text; },
   tron: text => { if (!tronAddress(text)) throw new Error('Enter a TRON address.'); return text; }, cellframe: validateCellframeAddress };
 

@@ -1,12 +1,31 @@
+import {validIxiosPending,validateIxiosSignedPayload} from './ixios/pending.js';
+import {observeIxiosSubmission} from './ixios/observe.js';
+import {validateTidecoinFundingEvidence,validateTidecoinSignedPayload} from './pq/tidecoin-recovery.js';
+import {validateCkbSignedPayload} from './pq/ckb-signed-payload.js';
+import {validateQtcSignedPayload} from './pq/qtc-signed-payload.js';
+import {validQtcPending} from './pq/qtc-pending.js';
+import {observeCkbSubmission} from './pq/ckb-preflight.js';
+import {validXionPending,validateXionSignedPayload} from './pq/xion-recovery.js';
+import {observeXionSubmission} from './pq/xion-transfer.js';
+import {validCkbPending} from './pq/ckb-pending.js';
+import {asentumTransferBody} from './pq/asentum-sign.js';
+import {validateAsentumSignedPayload} from './pq/asentum-recovery.js';
+import {observeAsentumSubmission} from './pq/asentum-transfer.js';
 import { CHAINS } from './config.js';
-import { rpc, request, endpointUrl } from './core.js';
+import { rpc, request, endpointUrl, formatUnits } from './core.js';
+import { observeSplendorSubmission } from './pq/splendor-transfer.js';
+import { splendorTransferBody } from './pq/splendor-transfer-body.js';
+import { validateSplendorSignedPayload } from './pq/splendor-recovery.js';
+import { validateSoquSignedPayload } from './pq/soqu-signed-payload.js';
+import { reconcileSoquSubmission } from './pq/soqu-transfer.js';
+import { observeAlgorandSubmission } from './pq/algorand-transfer.js';
 export const terminal = status => ['confirmed', 'failed', 'expired', 'replaced', 'abandoned'].includes(status);
 // NODUS (src/nodus/network.js NODUS_ASSET.chain): the record's `hash` is the
 // envelope's 64-byte intent_id (128 hex) — stable across the hedged signature,
 // unlike wire_id (design §2 D7).
 const NODUS_CHAIN = 'nodus', HEX128 = /^[0-9a-f]{128}$/, HEIGHT = /^[1-9]\d{0,19}$/;
 export function validHash(chain, hash) {
-  return typeof hash === 'string' && (chain === NODUS_CHAIN ? HEX128.test(hash) : chain === 'solana' ? /^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(hash) : chain === 'tron' ? /^[0-9a-f]{64}$/i.test(hash) : /^0x[0-9a-f]{64}$/i.test(hash));
+  return typeof hash === 'string' && ((chain === 'splendor' || chain === 'xion' || chain === 'qtc' || chain === 'tidecoin') ? /^[0-9a-f]{64}$/.test(hash) : chain === 'algorand' ? /^[A-Z2-7]{52}$/.test(hash) : chain === NODUS_CHAIN ? HEX128.test(hash) : chain === 'solana' ? /^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(hash) : (chain === 'tron' || chain === 'soqucoin') ? /^[0-9a-f]{64}$/i.test(hash) : /^0x[0-9a-f]{64}$/i.test(hash));
 }
 // A NODUS pending send keeps what the resend rule needs
 // (docs/plans/2026-09-26-note-to-web-wallet-session-expiry.md item 3):
@@ -30,9 +49,73 @@ export function activitySymbol(row, tokens = [], known = false) {
   const pin = tokens.find(t => t.tokenId === row.tokenId);
   return pin ? pin.symbol : known ? 'unknown token' : row.symbol;
 }
+export function validSoquPending({ inputs }) {
+  return Array.isArray(inputs) && inputs.length >= 1 && inputs.length <= 80
+    && inputs.every(input => input && /^[0-9a-f]{64}$/.test(input.txid) && Number.isSafeInteger(input.vout) && input.vout >= 0 && input.vout <= 0xffffffff)
+    && new Set(inputs.map(input => `${input.txid}:${input.vout}`)).size === inputs.length;
+}
+export function validSplendorPending(p) {
+  try {
+    if (!p || !['mainnet','testnet'].includes(p.networkId) || !validHash('splendor',p.hash) || typeof p.submissionId!=='string' || !/^[0-9a-f]{32}$/.test(p.submissionId) || p.amountAtoms === '0') return false;
+    splendorTransferBody({networkId:p.networkId,from:p.address,to:p.to,amount:p.amountAtoms,fee:p.feeAtoms,nonce:p.nonce,timestamp:'1'});
+    return true;
+  } catch { return false; }
+}
+export function validAsentumPending(p) {
+ try { if(!p || p.networkId!=='testnet' || !/^0x[0-9a-f]{64}$/.test(p.hash) || !/^[0-9a-f]{32}$/.test(p.submissionId) || p.gasLimit!=='21000') return false;
+ asentumTransferBody({networkId:p.networkId,from:p.address,to:p.to,amount:p.amountAtoms,nonce:p.nonce,gasLimit:p.gasLimit,maxFeePerGas:p.maxFeePerGas}); return true; } catch { return false; }
+}
 export function recordActivity(transfer, details) {
   if (!validHash(transfer.chain, details.hash)) throw new Error('Invalid transaction identifier.');
   const record = { chain: transfer.chain, address: transfer.from, to: transfer.to, symbol: transfer.symbol, amount: transfer.amount, endpoint: transfer.endpoint, hash: details.hash, lastValidBlockHeight: details.lastValidBlockHeight, expiration: details.expiration, nonce: details.nonce, createdAt: new Date().toISOString(), status: 'pending', note: 'Broadcast outcome pending.' };
+  if (transfer.chain === 'ixios') {
+    Object.assign(record,{networkId:details.networkId,amountAtoms:details.amountAtoms,feeAtoms:details.feeAtoms,gasLimit:details.gasLimit,gasPrice:details.gasPrice,nonce:details.nonce,submissionId:Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('')});
+    if(details.signedPayload!==undefined)record.signedPayload={encoding:details.signedPayload.encoding,data:details.signedPayload.data};
+    if(!validIxiosPending(record)||details.from!==transfer.from||details.to!==transfer.to||transfer.symbol!=='IXIOS'||transfer.amount!==formatUnits(BigInt(details.amountAtoms),18))throw Error('Invalid pending Ixios transfer.');
+    if(record.signedPayload!==undefined)validateIxiosSignedPayload(record);
+  }
+  if (transfer.chain === 'tidecoin') {
+    Object.assign(record,{networkId:details.networkId,amountAtoms:details.amountAtoms,feeAtoms:details.feeAtoms,changeAtoms:details.changeAtoms,maxBytes:details.maxBytes,snapshot:structuredClone(details.snapshot),outpoints:structuredClone(details.outpoints),funding:structuredClone(details.funding),submissionId:Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('')});
+    validateTidecoinFundingEvidence(record);if(details.signedPayload!==undefined){record.signedPayload={encoding:details.signedPayload.encoding,data:details.signedPayload.data};validateTidecoinSignedPayload(record);}
+    if(details.from!==transfer.from||details.to!==transfer.to||transfer.symbol!=='TDC'||transfer.amount!==formatUnits(BigInt(details.amountAtoms),8))throw Error('Invalid pending Tidecoin transfer.');
+  }
+  if (transfer.chain === 'algorand') record.submissionId=Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('');
+  if (transfer.chain === 'qtc') {
+    Object.assign(record,{networkId:details.networkId,amountAtoms:details.amount,feeAtoms:details.fee,inputs:Array.isArray(details.outpoints)?[...details.outpoints]:details.outpoints,submissionId:Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('')});
+    if(details.signedPayload!==undefined)record.signedPayload={encoding:details.signedPayload.encoding,data:details.signedPayload.data};
+    if(!validQtcPending(record)||details.from!==transfer.from||details.to!==transfer.to||transfer.symbol!=='QTC'||(transfer.networkId!==undefined&&transfer.networkId!==details.networkId)||transfer.amount!==formatUnits(BigInt(details.amount),8)||details.state!=='signed-exposure-pending')throw new Error('Invalid pending QTC transfer.');
+    if(record.signedPayload!==undefined)validateQtcSignedPayload(record);
+  }
+  if (transfer.chain === 'xion') {
+    Object.assign(record,{networkId:details.networkId,amountAtoms:details.amountAtoms,feeAtoms:details.feeAtoms,gasLimit:details.gasLimit,sequence:details.sequence,accountNumber:details.accountNumber,...(details.timeoutHeight!==undefined?{timeoutHeight:details.timeoutHeight}:{}),submissionId:Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('')});
+    if(details.signedPayload!==undefined)record.signedPayload={encoding:details.signedPayload.encoding,data:details.signedPayload.data};
+    if(!validXionPending(record)||details.from!==transfer.from||details.to!==transfer.to||transfer.symbol!=='XION'||(transfer.networkId!==undefined&&transfer.networkId!==details.networkId)||transfer.amount!==formatUnits(BigInt(details.amountAtoms),6))throw new Error('Invalid pending XION transfer.');
+    if(record.signedPayload!==undefined)validateXionSignedPayload(record);
+  }
+  if (transfer.chain === 'ckb') {
+    Object.assign(record,{networkId:details.networkId,amountAtoms:details.amount,feeAtoms:details.fee,inputs:Array.isArray(details.outpoints)?[...details.outpoints]:details.outpoints,inputCapacities:Array.isArray(details.inputCapacities)?[...details.inputCapacities]:details.inputCapacities,submissionId:Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('')});
+    if(details.signedPayload!==undefined)record.signedPayload={encoding:details.signedPayload.encoding,data:details.signedPayload.data};
+    if(!validCkbPending(record)||details.from!==transfer.from||details.to!==transfer.to||transfer.symbol!=='CKB'||(transfer.networkId!==undefined&&transfer.networkId!==details.networkId)||transfer.amount!==formatUnits(BigInt(details.amount),8)||details.state!=='signed-exposure-pending')throw new Error('Invalid pending CKB transfer.');
+    if(record.signedPayload!==undefined)validateCkbSignedPayload(record);
+  }
+  if (transfer.chain === 'asentum') {
+    Object.assign(record,{networkId:details.networkId,amountAtoms:details.amount,nonce:details.nonce,gasLimit:details.gasLimit,maxFeePerGas:details.maxFeePerGas,submissionId:Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('')});
+    if(details.signedPayload!==undefined){record.signedPayload={encoding:details.signedPayload.encoding,data:details.signedPayload.data};validateAsentumSignedPayload(record);}
+    if(!validAsentumPending(record)||details.from!==transfer.from||details.to!==transfer.to||transfer.symbol!=='ASE'||transfer.amount!==formatUnits(BigInt(details.amount),18))throw new Error('Invalid pending Asentum transfer.');
+  }
+  if (transfer.chain === 'splendor') {
+    const submissionId=Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('');
+    Object.assign(record,{networkId:details.networkId,amountAtoms:details.amount,feeAtoms:details.fee,nonce:details.nonce,submissionId});
+    if(details.signedPayload!==undefined){record.timestamp=details.timestamp;record.signedPayload={encoding:details.signedPayload?.encoding,data:details.signedPayload?.data};validateSplendorSignedPayload(record);}
+    if (!validSplendorPending(record) || details.from !== transfer.from || details.to !== transfer.to || transfer.symbol !== 'SPLD' || (transfer.networkId !== undefined && details.networkId !== transfer.networkId) || transfer.amount !== formatUnits(BigInt(details.amount),18)) throw new Error('Invalid pending Splendor transfer.');
+  }
+  if (transfer.chain === 'soqucoin') {
+    if (!validSoquPending(details)) throw new Error('Invalid SOQ consumed outpoints.');
+    record.inputs = details.inputs.map(({txid, vout}) => ({txid, vout}));
+    record.submissionId=Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('');
+    if(details.feeAtoms!==undefined){if(typeof details.feeAtoms!=='string'||!/^[1-9]\d{0,8}$/.test(details.feeAtoms)||BigInt(details.feeAtoms)>200000000n||(transfer.feeAtoms!==undefined&&transfer.feeAtoms!==details.feeAtoms))throw new Error('Invalid SOQ fee.');record.feeAtoms=details.feeAtoms;}
+    if(details.signedPayload!==undefined){if(typeof details.signedPayload?.data!=='string'||details.signedPayload.data.length>120000)throw new Error('SOQ signed recovery payload is too large.');record.signedPayload={encoding:details.signedPayload.encoding,data:details.signedPayload.data};validateSoquSignedPayload(record);}
+  }
   if (transfer.chain === NODUS_CHAIN) {
     if (!validNodusPending(details)) throw new Error('Invalid pending transfer record.');
     Object.assign(record, { expiryHeight: details.expiryHeight, fromHeight: details.fromHeight, inputs: [...details.inputs] });
@@ -80,7 +163,52 @@ export function evmActivityText({ evmOp, evmMoved, evmFee, evmTo, evmTitle, amou
   if (/^0+(\.0+)?$/.test(evmMoved)) return { amount: `${evmFee} ${symbol}`, what: `Smart contracts · ${action} · network fee only` };
   return { amount: `${evmMoved} ${symbol}`, what: `Smart contracts · ${action} · fee ${evmFee} ${symbol}` };
 }
-export async function checkActivity(row, { signal, call = rpc, post = request } = {}) {
+export async function checkActivity(row, { signal, call = rpc, post = request, fetcher } = {}) {
+  if(row.chain==='ixios') {if(!validIxiosPending(row))throw Error('Invalid Ixios activity.');if(row.notSubmitted===true)return {status:'failed',note:'Authenticated cancellation before network submission.'};const result=await observeIxiosSubmission(row,{signal,fetcher});return {status:result.state,note:result.state==='confirmed'?'Ixios node reports at least 24 confirmations; reorganization remains possible.':result.state==='failed'?'Ixios node reports a failed transaction at least 24 blocks deep.':'Ixios outcome unresolved; nonce remains held.'};}
+  if(row.chain==='qtc') {
+    if(!validQtcPending(row))throw new Error('Invalid QTC activity record.');
+    if(row.notSubmitted===true)return {status:'failed',note:'Authenticated proof: this attempt was not exposed.'};
+    // Explorer absence or mempool rejection is not proof of non-submission.
+    return {status:'pending',note:'QTC outcome unresolved; outpoints remain held until independently verified.'};
+  }
+  if(row.chain==='ckb') {
+    if(!validCkbPending(row))throw new Error('Invalid CKB activity record.');
+    if(row.notSubmitted===true)return {status:'failed',note:'Authenticated proof: this attempt was not exposed.'};
+    const result=await observeCkbSubmission(row,{signal,fetcher});
+    return {status:result.state,note:result.state==='confirmed'?'CKB node reports at least 24 confirmations; reorganization remains possible.':'CKB outcome unresolved; held outpoints remain reserved. Do not resend.'};
+  }
+  if(row.chain==='xion') {
+    if(!validXionPending(row))throw new Error('Invalid XION activity record.');
+    if(row.notSubmitted===true)return {status:'failed',note:'Cancelled before network submission. Nothing was broadcast.'};
+    const result=await observeXionSubmission({networkId:row.networkId,from:row.address,hash:row.hash,signal,fetcher});
+    return {status:result.state==='pending'&&row.executionWindowClosed?'unknown':result.state,note:result.state==='confirmed'?'XION transaction reported confirmed.':result.state==='failed'?'XION transaction reported failed.':row.executionWindowClosed?'Configured node reports execution window closed; historical outcome remains unknown.':'XION outcome unresolved; do not resend.'};
+  }
+  if (row.chain === 'asentum') {
+    if(!validAsentumPending(row))throw new Error('Invalid Asentum activity record.');
+    if(row.notSubmitted===true)return {status:'failed',note:'Cancelled before network submission. Nothing was broadcast.'};
+    const result=await observeAsentumSubmission({networkId:row.networkId,from:row.address,to:row.to,hash:row.hash},{signal,fetcher});
+    return {status:result.state==='included'?'pending':result.state,note:result.state==='confirmed'?'ASE transfer reported finalized.':result.state==='failed'?'ASE transaction reported failed.':'ASE outcome unresolved; do not resend.'};
+  }
+  if (row.chain === 'tidecoin') {validateTidecoinFundingEvidence(row);if(row.notSubmitted===true)return {status:'failed',note:'Cancelled before network submission. Nothing was broadcast.'};return {status:'pending',note:'Tidecoin outcome unresolved; a verified provider is required.'};}
+  if (row.chain === 'splendor') {
+    if (!validSplendorPending(row)) throw new Error('Invalid Splendor activity record.');
+    if (row.notSubmitted === true) return {status:'failed',note:'Cancelled before network submission. Nothing was broadcast.'};
+    const result=await observeSplendorSubmission({networkId:row.networkId,from:row.address,to:row.to,amount:row.amountAtoms,fee:row.feeAtoms,nonce:row.nonce,hash:row.hash},{signal,fetcher});
+    return {status:result.state,note:result.state==='confirmed'?'SPLD transfer reported confirmed.':result.state==='failed'?'SPLD transaction reported failed.':'SPLD outcome unresolved; do not resend.'};
+  }
+  if (row.chain === 'soqucoin') {
+    if (!validHash(row.chain, row.hash) || !validSoquPending(row)) throw new Error('Invalid SOQ activity record.');
+    if (row.notSubmitted === true) return { status: 'failed', note: 'Cancelled before network submission. Nothing was broadcast.' };
+    const result = await reconcileSoquSubmission({ hash: row.hash, from: row.address, signal, fetcher });
+    return { status: result.state, note: result.state === 'confirmed' ? 'SOQ payment confirmed.' : 'SOQ outcome unresolved; inputs remain reserved. Do not resend.' };
+  }
+  if (row.chain === 'algorand') {
+    if (row.notSubmitted === true) return { status: 'failed', note: 'Cancelled before network submission. Nothing was broadcast.' };
+    if (!Number.isSafeInteger(row.lastValidBlockHeight) || row.lastValidBlockHeight <= 0) throw new Error('Invalid Algorand expiry.');
+    const result = await observeAlgorandSubmission({ hash: row.hash, from: row.address, lastValid: String(row.lastValidBlockHeight), networkId: 'mainnet' }, { signal, fetcher });
+    const status = result.state === 'rejected' ? 'failed' : result.state;
+    return { status, note: status === 'confirmed' ? 'Algorand payment confirmed.' : status === 'failed' ? 'Algorand node rejected this payment.' : status === 'expired' ? 'Algorand validity rounds elapsed; this transaction can no longer be included.' : 'Awaiting Algorand confirmation; do not resend.' };
+  }
   const c = CHAINS[row.chain], endpoint = row.endpoint;
   const rpcCall = (method, params) => call(endpoint, method, params, { signal });
   const tron = (path, body) => post(`${endpoint.replace(/\/$/, '')}${path}`, body, { signal });
@@ -180,4 +308,18 @@ export function watchActivity(rows, onChange, { interval = 12000, check = checkA
     if (!controller.signal.aborted) timer = setTimeout(tick, interval);
   }
   void tick(); return () => { controller.abort(); clearTimeout(timer); };
+}
+
+// Deliberate public projection for extension/UI RPC boundaries. Private
+// recovery material (including any future signedPayload/capsule) is never
+// copied merely because a new field appears on an internal activity record.
+export function publicActivityRow(row) {
+  if (!row || typeof row !== 'object') throw new Error('Invalid activity row.');
+  return {
+    chain:row.chain,address:row.address,to:row.to,symbol:row.symbol,amount:row.amount,
+    hash:row.hash,status:row.status,note:row.note,readError:row.readError,createdAt:row.createdAt,
+    networkId:row.networkId,lastValidBlockHeight:row.lastValidBlockHeight,expiration:row.expiration,
+    nonce:row.nonce,tokenId:row.tokenId,wire:row.wire,kind:row.kind,name:row.name,
+    evmOp:row.evmOp,evmMoved:row.evmMoved,evmFee:row.evmFee,evmTo:row.evmTo,evmTitle:row.evmTitle,
+  };
 }

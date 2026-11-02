@@ -21,19 +21,19 @@ test('open-wallet status uses web-wallet network and auto-lock text', () => {
 // listed provider selections and the welcome paragraph retain reference text.
 // Public state only, loopback Vite, Chromium; no live RPC/wallet artifacts.
 test('mounted status, provider choices and welcome text follow the reference', { timeout: 60_000 }, async () => {
-  const { withPortfolioPage, checkPortfolioStatus } = await import('./fixtures/portfolio-page-checks.js');
+  const { withPortfolioPage, checkPortfolioStatus, selectFixtureNetwork } = await import('./fixtures/portfolio-page-checks.js');
   await withPortfolioPage(async (page, origin) => {
     await checkPortfolioStatus(page, origin);
     // Endpoint state deliberately uses URL.href, including a trailing slash.
     // The real background's listed/typed restart is covered in evm-site.test.js.
     for (const chain of ['ethereum', 'bsc']) {
       for (const provider of CHAINS[chain].rpcOptions) {
-        await page.locator(`.network-health[data-chain="${chain}"]`).click();
+        await selectFixtureNetwork(page, chain);
         await page.locator('a[href="#settings"]').click();
         if (!await page.locator('#rpc-settings').evaluate(details => details.open)) await page.locator('#rpc-settings > summary').click();
         await page.locator('#rpc-choice').selectOption(provider.url); await page.locator('#save-rpc').click();
         await page.locator('#page-settings .page-back').click();
-        await page.locator('.network-health[data-chain="solana"]').click(); await page.locator(`.network-health[data-chain="${chain}"]`).click();
+        await selectFixtureNetwork(page, 'solana'); await selectFixtureNetwork(page, chain);
         await page.locator('a[href="#settings"]').click();
         assert.equal(await page.locator('#rpc-choice').inputValue(), provider.url);
         assert.equal(await page.locator('#rpc-endpoint').isHidden(), true);

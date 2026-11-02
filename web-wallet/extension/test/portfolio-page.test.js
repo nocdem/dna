@@ -59,26 +59,29 @@ test('portfolio and transfers open pages with Back to wallet and a home-only gre
       assert.equal(await page.locator('#wallet-home').isVisible(), true);
       assert.equal(await page.locator('.wallet-page:visible').count(), 0);
     };
-    for (const name of ['assets-panel', 'send-form']) {
+    for (const name of ['send', 'receive']) {
       await page.locator(`.wallet-navigation a[href="#${name}"]`).click();
       await assertPage(name); await back(name);
     }
     for (const id of ['quick-send', 'quick-receive']) {
-      await page.locator(`#${id}`).click(); await assertPage('send-form'); await back('send-form');
+      await page.locator('#wallet-network > summary').click();
+      const name = id === 'quick-send' ? 'send' : 'receive';
+      await page.locator(`#${id}`).click(); await assertPage(name); await back(name);
     }
-    await page.locator('.wallet-navigation a[href="#assets-panel"]').click();
-    await page.locator('.asset-group[data-symbol="ETH"] > summary').click();
-    await page.getByRole('button', { name: 'Send ETH on Ethereum', exact: true }).click();
-    await assertPage('send-form');
+    const ethereum = page.locator('.asset-group[data-chain="ethereum"]');
+    if (!await ethereum.evaluate(node => node.open)) await ethereum.locator('summary').click();
+    await page.getByRole('button', { name: 'Select ETH on Ethereum', exact: true }).click();
+    await page.locator('.wallet-navigation a[href="#send"]').click();
+    await assertPage('send');
     await page.locator('#recipient').fill('public fixture draft'); await page.locator('#amount').fill('1.25');
     const recipient = await page.locator('#recipient').elementHandle();
-    await back('send-form');
-    await page.locator('#quick-receive').click();
+    await back('send');
+    await page.locator('.wallet-navigation a[href="#receive"]').click();
     assert.equal(await page.locator('#recipient').inputValue(), 'public fixture draft');
     assert.equal(await page.locator('#amount').inputValue(), '1.25');
     assert.equal(await recipient.evaluate(node => node === document.getElementById('recipient')), true);
-    await back('send-form');
-    for (const name of ['assets-panel', 'send-form']) {
+    await back('receive');
+    for (const name of ['send', 'receive']) {
       await page.evaluate(value => { location.hash = value; }, name);
       await page.locator(`#page-${name}:visible`).waitFor(); await assertPage(name);
       await page.reload(); await page.waitForFunction(() => window.fixture?.ready);
