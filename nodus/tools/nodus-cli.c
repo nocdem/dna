@@ -7636,6 +7636,18 @@ static void st_hex(const uint8_t *b, size_t n, char *out) {
     out[2 * n] = '\0';
 }
 
+/* The node's own key as a trusted node for `status`'s session to its own
+ * node (operator 2026-11-02, "nodun kendini okumamasi kotu ama" -> "1"): a
+ * node outside the built-in list could not read itself without --pin. Set by
+ * cmd_status from the key named in the node config; used only for the session
+ * to that node's own address and port, added to the active list (the
+ * built-in one or --pin). Static: the client borrows the pin array. */
+static bool        g_st_own_set = false;
+static nodus_key_t g_st_own_fp;
+static const char *g_st_own_ip;
+static uint16_t    g_st_own_port;
+static nodus_key_t g_st_pins[CLI_PIN_MAX + NODUS_LIGHT_DEFAULT_NODE_COUNT + 1];
+
 /* One read-only session with bounded waits; the reason in err on failure.
  * @return 0 (close owed) / -1. */
 static int st_session(nodus_client_t *client, const char *ip, uint16_t port,
@@ -7643,6 +7655,16 @@ static int st_session(nodus_client_t *client, const char *ip, uint16_t port,
                       size_t errcap) {
     nodus_client_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
+    if (g_st_own_set && port == g_st_own_port && g_st_own_ip &&
+        strcmp(ip, g_st_own_ip) == 0) {
+        cli_load_builtin_pins();
+        const nodus_key_t *src = g_cli_pin_count ? g_cli_pins : g_cli_builtin_pins;
+        int n = g_cli_pin_count ? g_cli_pin_count : g_cli_builtin_count;
+        memcpy(g_st_pins, src, (size_t)n * sizeof(*src));
+        g_st_pins[n++] = g_st_own_fp;
+        cfg.pinned_server_fps = g_st_pins;
+        cfg.pinned_server_fp_count = n;
+    }
     snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", ip);
     cfg.servers[0].port       = port;
     cfg.server_count          = 1;
@@ -7784,6 +7806,10 @@ static int cmd_status(const char *server_ip, uint16_t server_port,
             have_key = true;
             memcpy(node_fp, identity.fingerprint, sizeof(node_fp));
             memcpy(node_pk, identity.pk.bytes, sizeof(node_pk));
+            g_st_own_fp = identity.node_id;
+            g_st_own_ip = server_ip;
+            g_st_own_port = server_port;
+            g_st_own_set = true;
         } else {
             snprintf(key_err, sizeof(key_err), "cannot load the node key "
                      "from %s — run with sudo", key_dir);
