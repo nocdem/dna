@@ -60,7 +60,8 @@ export function mountAddressBook({ root, document, ui, networks, selected, navig
     }) : [el('p', 'No saved addresses yet. Add one below, or save a recipient after you send.', 'hint')]));
     recipients();
   }
-  setNetworkSelectOptions($('address-book-network'), Object.keys(ADDRESS_CHECKS).map(chain => [chain, networks[chain]]));
+  // In the network selector's order (wallet-screen.js:297), as on the web page.
+  setNetworkSelectOptions($('address-book-network'), Object.keys(networks).filter(chain => ADDRESS_CHECKS[chain]).map(chain => [chain, networks[chain]]));
   $('address-book-form').onsubmit = event => {
     event.preventDefault();
     return run(async () => {

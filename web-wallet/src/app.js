@@ -773,7 +773,7 @@ const ADDRESS_CHECKS = {
   ...(CPUNK_ENABLED ? { cellframe: validateCellframeAddress } : {})
 };
 // The networks an address can be saved for, in the network selector's order.
-const ADDRESS_NETWORKS = [NODUS_ASSET.chain, ...Object.keys(CHAINS), 'algorand', 'soqucoin', ...Object.keys(pqAddressBookChecks), ...(CPUNK_ENABLED ? ['cellframe'] : [])].filter(chain => ADDRESS_CHECKS[chain]);
+const ADDRESS_NETWORKS = [...leadingNetworks.map(({ asset }) => asset.chain), ...Object.keys(CHAINS), ...extraNetworks.map(({ asset }) => asset.chain)].filter(chain => ADDRESS_CHECKS[chain]);
 setNetworkSelectOptions($('address-book-network'), ADDRESS_NETWORKS.map(chain => [chain, networkFor(chain)]));
 let addressBook = [], addressBookEditing = null, addressBookDeleteArmed = null, addressBookNote = '', addressBookWrites = Promise.resolve();
 // The saved address book did not authenticate or check out at unlock: it is

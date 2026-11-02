@@ -204,7 +204,8 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     for (const node of root.querySelectorAll('.wallet-page')) node.hidden = node !== page;
     if (page) {
       root.querySelector('.wallet-card').scrollIntoView({ block: 'start' });
-      if (focus) { const heading = page.querySelector('h3, h1'); if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); } }
+      // As src/app.js:2350 pageTitle: the panel's labelling heading (Receive's is an h4).
+      if (focus) { const labelled = page.querySelector('.dashboard-panel')?.getAttribute('aria-labelledby'); const heading = (labelled && document.getElementById(labelled)) || page.querySelector('h3, h1'); if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); } }
     } else if (previous) { resetAssetView(); window.scrollTo(0, walletScroll); }
     if (name === 'wallet-activity') void loadHistory();
     if (name === 'earn') void earn.refresh();
