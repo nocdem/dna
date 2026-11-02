@@ -62,11 +62,27 @@ node_of_ident() {
 }
 
 n="$(node_of_port "$port")"
+# A subcommand's `--submit host:port` opens its own 4001 session to that
+# port (e.g. `msig combine --submit`, `v2-claim --submit`), with or without
+# -p: its node is trusted too. --pin is repeatable (any listed key, D3).
+sub=""
+args=("$@")
+for ((k = 0; k < ${#args[@]}; k++)); do
+    if [ "${args[$k]}" = "--submit" ] && [ $((k + 1)) -lt ${#args[@]} ]; then
+        sub="$(node_of_port "${args[$((k + 1))]##*:}")"
+    fi
+done
 chain_file="${BASE_DIR:-}/v2_chain_id"
-if [ -z "$n" ] || [ ! -s "$chain_file" ] || [ ! -s "$(stagef_node_dir "$n")/identity/nodus.fp" ]; then
+pins=()
+for t in $n $sub; do
+    f="$(stagef_node_dir "$t")/identity/nodus.fp"
+    [ -s "$f" ] || continue
+    case " ${pins[*]:-} " in *" $(cat "$f") "*) continue ;; esac
+    pins+=(--pin "$(cat "$f")")
+done
+if [ ${#pins[@]} -eq 0 ] || [ ! -s "$chain_file" ]; then
     exec "$REAL" "${globals[@]}" "$@"
 fi
-fp="$(cat "$(stagef_node_dir "$n")/identity/nodus.fp")"
 chain="$(cat "$chain_file")"
 
 # The harness gives every node its data dir on the command line (-d), not in
@@ -91,4 +107,4 @@ elif { [ "${rest[0]:-}" = "storage" ] || [ "${rest[0]:-}" = "validator" ]; } &&
     # port is an own-node tool (design D9): its own witness.sock, not 4001.
     rest+=(--config "$(tool_config_of "$owner")")
 fi
-exec "$REAL" "${globals[@]}" --pin "$fp" --chain-id "$chain" "${rest[@]}"
+exec "$REAL" "${globals[@]}" "${pins[@]}" --chain-id "$chain" "${rest[@]}"
