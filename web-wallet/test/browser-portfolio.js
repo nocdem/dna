@@ -19,9 +19,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright';
 import { ASSETS, PRICE_URL } from '../src/portfolio.js';
 import { CHAINS } from '../src/config.js';
-import { priceFixture, portfolioRead, cellframeRead, historyRead } from './portfolio-routes.js';
+import { priceFixture, portfolioRead, cellframeRead, historyRead, PQ_HOST } from './portfolio-routes.js';
 import { pastePhrase } from './browser-phrase.js';
 import { IXIOS_NETWORK } from '../src/ixios/network.js';
+import { PQ_ENTRIES } from '../src/pq/networks.js';
 // A VITE_ENABLE_IXIOS=true dist also reads the IXIOS balance (like CPUNK); its
 // own behaviour is covered by test/browser-ixios.js. Ixios mainnet genesis
 // (ixiosSpark params/config.go:27); 1 IXIOS held.
@@ -48,7 +49,10 @@ let browser, priceMode = 'valid', failures = [], wrongNetwork, gate, requested, 
 let ethHold, ethHeld;
 const unexpected = [], errors = [], reads = new Set(), pqRefused = [];
 // The PQ networks' read providers (src/pq/*.js); the portfolio contacts them on open since 0.1.155.
-const PQ_HOST = /(^|\.)(algonode\.cloud|soqu\.org|ckb\.dev|qtc\.events|burnt\.com|splendor\.org|asentum\.com)$/;
+// Their priced assets (src/pq/prices.js PQ_PRICE_IDS) join the hero's priced-only count since 0.1.155
+// (src/portfolio.js), so each refused read is one of the "X balances ... unavailable" there.
+const PQ_MISSING = PQ_ENTRIES.filter(({ asset }) => asset.priceId !== undefined).length;
+const missingStatus = legacy => new RegExp(`^${legacy + PQ_MISSING} balances and 0 prices unavailable or out of date\\.`);
 try {
   for (let i = 0; i < 100; i++) { try { if ((await fetch(url)).ok) break; } catch {} await delay(50); }
   browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || undefined });
@@ -122,7 +126,7 @@ try {
   const ixiosShown = await page.locator('#chain option[value="ixios"]').count() === 1;
   if (ixiosShown) await ixiosSettled();
   assert.equal(reads.size, ixiosShown ? 6 : 5); assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00');
-  assert.match(await page.locator('#portfolio-status').innerText(), /All supported asset balances/);
+  assert.match(await page.locator('#portfolio-status').innerText(), missingStatus(0));
   // Coin icons: CPUNK's own file on its holding row, the Cellframe network's
   // own logo (not the CPUNK asset icon) on its group summary and network badge,
   // ETH unaffected, and every rendered coin-icon actually decodes from the served
@@ -219,7 +223,7 @@ try {
   assert.match(await (await badgeOf('Ethereum')).getAttribute('title'), /^Ethereum · Last read \d{1,2}:\d{2}/);
   failures = []; wrongNetwork = 'bsc'; await refresh();
   assert.equal(await page.locator('#portfolio-total').innerText(), '$22.00');
-  assert.match(await page.locator('#portfolio-status').innerText(), /3 balances/);
+  assert.match(await page.locator('#portfolio-status').innerText(), missingStatus(3));
   wrongNetwork = undefined;
   // A CPUNK read failure never becomes an inferred zero, never joins the
   // priced-only "X balances unavailable" hero count, and does not stop the
@@ -231,7 +235,7 @@ try {
   assert.doesNotMatch(await cpunk.innerText(), /(^|\s)0 CPUNK/);
   assert.match(await cpunk.locator('.holding-value small').innerText(), /^Last read \d{1,2}:\d{2}/);
   assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00');
-  assert.match(await page.locator('#portfolio-status').innerText(), /All supported asset balances/);
+  assert.match(await page.locator('#portfolio-status').innerText(), missingStatus(0));
   cellframeFail = false; await refresh(); await cpunkSettled();
   assert.match(await cpunk.innerText(), /\b10 CPUNK/);
   assert.doesNotMatch(await cpunk.innerText(), /Last read/);
@@ -315,23 +319,39 @@ try {
   const offered = async () => ({ send: await rail('send').isVisible(), receive: await rail('receive').isVisible(), earn: await page.locator('#nav-earn').isVisible() });
   const swap = () => page.locator('#quick-swap').evaluate(button => ({ hidden: button.hidden, disabled: button.disabled }));
   // The badge is scrolled into view first, so a scroll seen after the click is the click's own.
-  const pick = async name => { const target = badge(name); await target.scrollIntoViewIfNeeded(); const before = await page.evaluate(() => window.scrollY); await target.click(); return before; };
+  // "Nothing scrolls" is checked as: the click makes no scroll call (scrollIntoView, scrollTo,
+  // scroll, scrollBy, or a focus without preventScroll) and the badge stays on screen. scrollY
+  // itself is not compared: on a single-column width the rail sits above the badges and loses
+  // the Nodus-only links (Earn, Vaults, Contracts) when another network is chosen, and the
+  // browser's scroll anchoring then moves scrollY by that height (measured at 390 px: 135 px)
+  // without any call from the page.
+  await page.evaluate(() => {
+    if (window.__scrollCalls) return;
+    window.__scrollCalls = [];
+    const wrap = (owner, key, record = () => true) => { const original = owner[key]; owner[key] = function (...args) { if (record(args)) window.__scrollCalls.push(key); return original.apply(this, args); }; };
+    for (const key of ['scrollTo', 'scroll', 'scrollBy']) { wrap(window, key); wrap(Element.prototype, key); }
+    wrap(Element.prototype, 'scrollIntoView');
+    wrap(HTMLElement.prototype, 'focus', args => !args[0]?.preventScroll);
+  });
+  const pick = async name => { const target = badge(name); await target.scrollIntoViewIfNeeded(); await page.evaluate(() => { window.__scrollCalls.length = 0; }); await target.click(); return target; };
+  const stayed = async (target, width) => {
+    assert.deepEqual(await page.evaluate(() => window.__scrollCalls), [], `nothing scrolls at ${width}px`);
+    const { top, bottom } = await target.evaluate(node => node.getBoundingClientRect());
+    assert.ok(top >= 0 && bottom <= await page.evaluate(() => innerHeight), `the badge stays on screen at ${width}px`);
+  };
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 900 });
     await page.evaluate(() => window.scrollTo(0, 0));
-    let before = await pick('Ethereum');
-    assert.equal(await page.evaluate(() => window.scrollY), before, `nothing scrolls at ${width}px`);
+    await stayed(await pick('Ethereum'), width);
     assert.equal(await box.locator('.selected-network-name').innerText(), 'Ethereum');
     assert.deepEqual(await offered(), { send: true, receive: true, earn: false }, 'Ethereum: Send and Receive');
     if (process.env.SHOT_DIR && width === 1440) await box.screenshot({ path: `${process.env.SHOT_DIR}/box-ethereum.png` });
-    before = await pick('Cellframe');
-    assert.equal(await page.evaluate(() => window.scrollY), before, `nothing scrolls at ${width}px`);
+    await stayed(await pick('Cellframe'), width);
     assert.equal(await box.locator('.selected-network-name').innerText(), 'Cellframe');
     assert.deepEqual(await offered(), { send: false, receive: true, earn: false }, 'Cellframe: receive only');
     assert.match(await page.locator('#quick-send').getAttribute('title'), /./, 'a disabled Send says why');
     if (process.env.SHOT_DIR && width === 1440) await box.screenshot({ path: `${process.env.SHOT_DIR}/box-cellframe.png` });
-    before = await pick('Nodus');
-    assert.equal(await page.evaluate(() => window.scrollY), before, `nothing scrolls at ${width}px`);
+    await stayed(await pick('Nodus'), width);
     assert.equal(await box.locator('.selected-network-name').innerText(), 'Nodus');
     assert.equal((await offered()).earn, true, 'Nodus: Earn there');
     assert.deepEqual(await swap(), { hidden: false, disabled: true }, 'Nodus: Swap there, not yet usable');
@@ -366,7 +386,7 @@ try {
   await page.locator('#portfolio-hide').click(); await page.locator('#portfolio-hide').click();
   assert.equal(await page.locator('#portfolio-total').innerText(), '—');
   assert.equal(await page.locator('#portfolio-networks .network-health', { hasText: 'Ethereum' }).getAttribute('data-health'), 'old', 'amber light once out of date (0.1.103)');
-  assert.match(await page.locator('#portfolio-status').innerText(), /14 balances/);
+  assert.match(await page.locator('#portfolio-status').innerText(), missingStatus(14));
   await page.clock.setFixedTime(new Date());
   priceMode = 'late'; gate = Promise.withResolvers(); requested = Promise.withResolvers(); completed = Promise.withResolvers();
   await pressRefresh(); await requested.promise;

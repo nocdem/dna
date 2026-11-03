@@ -30,6 +30,8 @@ export async function cellframeRead(route, { balance = '10', fail = false } = {}
 // shape-checked, never forwarded. `ethereum`: Blockscout txlist rows to
 // serve (default none); everything else answers "no transfers".
 // `seen` (optional array) collects 'chain:what' per request.
+// The PQ networks' read providers (src/pq/*.js), refused by the browser scripts whose fixture leaves them out.
+export const PQ_HOST = /(^|\.)(algonode\.cloud|soqu\.org|ckb\.dev|qtc\.events|burnt\.com|splendor\.org|asentum\.com)$/;
 export const BLOCKSCOUT_API = 'https://eth.blockscout.com/api';
 export async function historyRead(route, { ethereum = [], seen } = {}) {
   const req = route.request(), url = new URL(req.url());

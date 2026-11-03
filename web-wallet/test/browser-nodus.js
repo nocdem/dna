@@ -1,4 +1,4 @@
-import { portfolioRead, cellframeRead, ixiosRead, historyRead } from './portfolio-routes.js';
+import { portfolioRead, cellframeRead, ixiosRead, historyRead, PQ_HOST } from './portfolio-routes.js';
 import { pastePhrase, readPhrase } from './browser-phrase.js';
 // Production assets, public test phrases; external HTTP mocked and WebSockets
 // closed. Requires a production web build and Chromium; no compile flags.
@@ -60,7 +60,7 @@ try {
   await page.routeWebSocket(() => true, socket => socket.close());
   const seen = Promise.withResolvers(), release = Promise.withResolvers(), completed = Promise.withResolvers();
   let wasmRequests = 0, failLoad = false;
-  const unexpected = [], errors = [], cellframeRequests = [];
+  const unexpected = [], errors = [], cellframeRequests = [], pqRefused = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.route('**/*', async route => {
     const req = route.request();
@@ -75,6 +75,8 @@ try {
     // Flag-on builds also read the Ixios balance (shape-checked mock, never forwarded).
     if (await ixiosRead(route)) return;
     if (await portfolioRead(route)) return;
+    // The PQ networks' read providers (src/pq/*.js) are outside this fixture: refused and counted apart, as in test/browser-portfolio.js.
+    if (PQ_HOST.test(new URL(req.url()).hostname)) { pqRefused.push(req.url()); return route.abort('blockedbyclient'); }
     if (!req.url().startsWith(url + '/') || req.method() !== 'GET' || req.postData()) {
       unexpected.push({ url: req.url(), method: req.method() }); return route.abort();
     }
@@ -217,7 +219,10 @@ try {
   release.resolve(); await completed.promise;
   assert.equal(await page.locator('#receive-address').innerText(), vectors[1].address);
   // UI pack 2026-11-03 (operator "2"): the "Derived locally from this wallet’s recovery phrase." line is gone.
-  assert.equal(await page.locator('#nodus-address-status').textContent(), '');
+  // The sockets are closed (above), so the line next shows the connection state alone (src/app.js
+  // startNodusSend/connectNodus); waiting for that state removes the race with the empty moment.
+  await page.waitForFunction(() => document.querySelector('#nodus-address-status').textContent.includes('unavailable'));
+  assert.match(await page.locator('#nodus-address-status').textContent(), /^Nodus balance and sending are unavailable right now \(.+\); trying again in \d+ seconds\.$/);
   // #chain is a hidden select driven by the network list (force: it is not visible).
   await page.selectOption('#chain', 'solana', { force: true });
   assert.notEqual(await page.locator('#receive-address').innerText(), vectors[1].address);
