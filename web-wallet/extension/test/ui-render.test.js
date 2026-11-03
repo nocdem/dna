@@ -272,7 +272,11 @@ test('mounted page presents incoming permission requests', async t => {
 test('mounted activity observes background lock and preserves unlock entry', async t => {
   const { root, navigation, state, calls } = await pageFixture(t);
   button(root, 'Settings').onclick(); state.isUnlocked = false;
+  // W-42: a press re-reads the background only once released (a redraw between press and release lost the click).
+  const reads = () => calls.filter(call => call.method === 'getState').length, beforePress = reads();
   document.dispatchEvent(new Event('pointerdown')); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reads(), beforePress, 'a press alone does not re-read');
+  document.dispatchEvent(new Event('pointerup')); t.mock.timers.tick(0); await new Promise(resolve => setImmediate(resolve)); // setTimeout is mocked (pageFixture)
   assert.match(root.textContent, /unlock your wallet/i);
   const password = root.querySelectorAll('input[type="password"]')[0]; password.value = 'typed-password';
   const previousReads = calls.filter(call => call.method === 'getState').length;

@@ -226,6 +226,18 @@ test('pointer, key and input events report trusted activity', async t => {
   unbind(); document.dispatchEvent(new Event('input')); await new Promise(resolve => setImmediate(resolve)); assert.equal(creates.length, 0);
 });
 
+// Proves the activity callback receives the event, so a press can be told apart from a key or input (W-42:
+// the open wallet re-reads the background after a press is released, not on the press). Falsely passes if a
+// caller ignores the argument; the mounted-page click in ui-layout.test.js checks the caller.
+test('activity callback receives the event that caused it', async t => {
+  const { client, fixture } = await setup(t), document = new EventTarget(), seen = [], creates = [];
+  t.mock.method(fixture.alarms, 'create', async (...args) => { creates.push(args); });
+  const unbind = bindActivity(document, client, event => seen.push(event?.type));
+  for (const type of ['pointerdown', 'keydown', 'input']) document.dispatchEvent(new Event(type));
+  await until(() => creates.length === 3); // the three activity reports settle before the fixture closes
+  unbind(); assert.deepEqual(seen, ['pointerdown', 'keydown', 'input']);
+});
+
 // Proves unsupported permission shapes cannot be accidentally approved; using only the normal EVM caveat would miss unknown permission escalation.
 test('connect details refuse approvals outside the current permission shape', () => {
   assert.throws(() => connectDetails({ requestData: { permissions: { unexpected: {} } } }), /unsupported/i);

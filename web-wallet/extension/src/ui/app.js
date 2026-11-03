@@ -388,11 +388,23 @@ export async function mountWalletPage({ document = globalThis.document, window =
       { label: 'Settings', icon: 'settings', run: () => navigate('settings') },
     ]);
   }
-  const unbindActivity = bindActivity(document, client, () => {
+  // A press re-reads only once it is released (W-42): the re-read redraws the open screen, and a row
+  // redrawn between press and release (a Connect chat, measured in ui-layout.test.js) never gets its click.
+  // pointerup, mouseup and click are dispatched in one task; the re-read starts in the next one.
+  let pressRead = false;
+  const readAfterPress = () => {
+    document.removeEventListener('pointerup', readAfterPress, true); document.removeEventListener('pointercancel', readAfterPress, true);
+    setTimeout(() => { pressRead = false; if (!disposed && ui.state?.isUnlocked) void refresh().catch(showError); }, 0);
+  };
+  const unbindActivity = bindActivity(document, client, event => {
     scheduleIdle(true);
     // Re-read the background while using an open wallet (including another window's manual lock).
     // Locked password and recovery forms retain their entered values until their explicit action or timeout.
-    if (ui.state?.isUnlocked) void refresh().catch(showError);
+    if (!ui.state?.isUnlocked) return;
+    if (event?.type !== 'pointerdown') { void refresh().catch(showError); return; }
+    if (pressRead) return;
+    pressRead = true;
+    document.addEventListener('pointerup', readAfterPress, true); document.addEventListener('pointercancel', readAfterPress, true);
   }, showError);
   const removeNotification = client.onNotification(message => {
     if (message.method === 'connectStateChanged') { openScreen?.refreshConnect?.(); return; }
@@ -403,7 +415,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
   const onVisible = () => { if (!document.hidden) onFocus(); };
   function dispose() {
     if (disposed) return;
-    disposed = true; clearSensitive(); clearTimeout(idleTimer); unbindActivity(); removeNotification(); removeDisconnect();
+    disposed = true; clearSensitive(); clearTimeout(idleTimer); unbindActivity(); document.removeEventListener('pointerup', readAfterPress, true); document.removeEventListener('pointercancel', readAfterPress, true); removeNotification(); removeDisconnect();
     window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('pagehide', dispose);
     for (const event of subscriptions) void client.request('messengerUnsubscribe', [event]).catch(() => {});
     client.close();

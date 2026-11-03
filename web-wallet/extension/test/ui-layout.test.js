@@ -30,6 +30,10 @@ import { assertNetworkGroups } from '../../test/browser-network-groups.js';
 // cannot prove extension font loading (package-smoke.test.js does). Fake state
 // and quotes cannot prove live background/chain/feed compatibility. Notification
 // viewports are not measurements of a real window's inner size: no vertical fit.
+// The chat row is opened by a held mouse press (W-42); the fixture's client answers in microtasks, so a
+// re-read that redrew the list on the press removes the row at once; the real worker answers later, inside
+// the hold. Without the release-time re-read (extension/src/ui/app.js) this step times out on the screen wait.
+// The wide-tab shell edges (1100 px) are fixed numbers measured on 14dc02b9f and this branch.
 const walletRoot = fileURLToPath(new URL('../../', import.meta.url)), require = createRequire(import.meta.url);
 const { version } = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
 
@@ -500,15 +504,18 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         await capture('bottom-bar-connect');
         const bottoms = await page.evaluate(() => ({ messenger: document.querySelector('#extension-connect .messenger').getBoundingClientRect().bottom, bar: document.querySelector('#extension-bottom-bar').getBoundingClientRect().top }));
         assert.ok(bottoms.messenger <= bottoms.bar + 0.5, `${kind} ${width}: messenger bottom ${bottoms.messenger} reaches the bar top ${bottoms.bar}`);
-        // Chat "Send NODUS" follows the wallet's NODUS send state (UI pack 2026-11-03, connect.js nodusSendable):
-        // the fixture's NODUS connection is ready (shown); a connection that is not ready hides it again.
-        // The button sits in the conversation head; whether a fixture contact row opens that screen is not
-        // what this proves, so the check reads the button's own hidden state (messages.js nodusSendable).
-        await page.waitForFunction(() => document.querySelector('.conversation-pay')?.hidden === false);
+        // Chat "Send NODUS" follows the wallet's NODUS send state (UI pack 2026-11-03, connect.js nodusSendable),
+        // seen in the fixture contact's open conversation: ready shows it, not ready hides it, ready shows it again.
+        // The conversation is opened by a mouse press held 100 ms (W-42: a re-read on the press redrew the chat
+        // list before the release and the click was lost; the screen stayed on the list).
+        await page.locator('#extension-connect .contact-list .contact-row').first().click({ delay: 100 });
+        await page.waitForFunction(() => document.querySelector('#extension-connect .messenger').dataset.screen === 'conversation');
+        const pay = page.locator('#extension-connect .conversation-pay');
+        await pay.waitFor({ state: 'visible' });
         await page.evaluate(async () => { window.layout.state.nodus.state = 'connecting'; await window.layout.refresh(); });
-        await page.waitForFunction(() => document.querySelector('.conversation-pay').hidden === true);
+        await pay.waitFor({ state: 'hidden' });
         await page.evaluate(async () => { window.layout.state.nodus.state = 'ready'; await window.layout.refresh(); });
-        await page.waitForFunction(() => document.querySelector('.conversation-pay').hidden === false);
+        await pay.waitFor({ state: 'visible' });
         await open('home'); await waitHome(page);
         // No flags/live data. The public fixture holds every initial balance
         // and quote read. Measuring only after waitHome would miss the jump.
