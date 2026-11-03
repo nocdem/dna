@@ -21,5 +21,15 @@ export function createNetworks({ messenger, store, onChanged }) {
       controller.update(state => { state.selected[chain] = id; });
       await store.flush();
     },
+    // Every opening starts each chain on its listed default — mainnet where one
+    // exists (operator 2026-11-03: "hersey varsa yeniden acista mainnet",
+    // "2 hepsi": PQ networks and the Solana / TRON setting alike).
+    async resetToDefaults() {
+      const changed = Object.keys(DEFAULT_NETWORKS).filter(chain => controller.state.selected[chain] !== DEFAULT_NETWORKS[chain]);
+      if (!changed.length) return;
+      for (const chain of changed) onChanged(chain);
+      controller.update(state => { for (const chain of changed) state.selected[chain] = DEFAULT_NETWORKS[chain]; });
+      await store.flush();
+    },
   };
 }

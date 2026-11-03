@@ -110,6 +110,8 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     unlock = async (password, options) => {
       try {
         const result = await unlockKeys(password, options);
+        // Opening the wallet again resets every network choice (networks.js resetToDefaults).
+        await networks.resetToDefaults();
         permissions.setAccounts(await keyring.getAccounts());
         // ADAPTATION: dispatch T-5/security finding on a4f77b206; plan §3.5:422-435.
         // Reference app-state-controller.ts:1225-1261 re-arms on interface activity;
