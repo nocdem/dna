@@ -163,12 +163,13 @@ try {
   assert.equal(await page.locator('#nodus-address-status').isVisible(), true);
   assert.match(await page.locator('#nodus-address-status').innerText(), /Derived locally/);
   assert.equal(await page.locator('#cellframe-address-status').isVisible(), false);
-  await walletView(); await openPage('send');
-  assert.equal(await page.locator('#send-fields').isVisible(), false);
-  // The build carries the send module, so until a node connection is ready
-  // (never, here: no node is reachable) NODUS says it is connecting.
-  assert.equal(await page.locator('#send-disabled-note').innerText(), 'Connecting to the Nodus network… Sending NODUS becomes available as soon as the connection is ready.');
   await walletView();
+  // UI pack 2026-11-03 (operator "send tusunu kaldir gecsin"): until a node connection is ready (never,
+  // here: no node is reachable) NODUS cannot send, so Send is not offered at all; the hidden shortcut
+  // button keeps its disabled state for the code paths that read it.
+  assert.equal(await page.locator('.wallet-navigation a[href="#send"]').isVisible(), false);
+  assert.equal(await page.locator('#quick-send').isDisabled(), true);
+  assert.equal(await page.locator('#balances .balance-note, #balances .balance-error').count(), 0, 'no note under any coin');
   assert.equal(await page.locator('#account-explorer').evaluate(node => node.hidden), true);
   assert.equal(await page.locator('#rpc-settings').evaluate(node => node.hidden), true);
   assert.equal(await page.locator('#activity').textContent(), '');
@@ -279,9 +280,10 @@ try {
   await walletView(); await page.evaluate(() => history.replaceState(null, '', location.pathname));
   // Send and Receive are separate rail pages (src/app.js:2324-2329); the page's
   // labelling heading takes focus (pageTitle, src/app.js:2350).
+  await selectNetwork('ethereum');
+  // The Send link is offered once a network that can send is selected (NODUS cannot, here).
   assert.equal(await page.locator('.wallet-navigation a[href="#send"] .nav-name').innerText(), 'Send');
   assert.equal(await page.locator('.wallet-navigation a[href="#receive"] .nav-name').innerText(), 'Receive');
-  await selectNetwork('ethereum');
   await openPage('send');
   assert.equal(await page.locator('#send-title').evaluate(el => el === document.activeElement), true);
   await walletView(); await selectNetwork('nodus');
@@ -422,7 +424,10 @@ try {
   cellframeFail = true; await pressRefresh('portfolio-refresh');
   // Current wording (src/portfolio-view.js): the time of the last read, and the
   // row says the balance is unavailable and the last read is shown.
-  await page.waitForFunction(() => { const row = document.querySelector('.asset-group[data-chain="cellframe"] .chain-holding'); return row && row.querySelector('.holding-value small')?.textContent.startsWith('Last read ') && row.textContent.includes('Balance unavailable; showing last read.'); });
+  // UI pack 2026-11-03: the "Balance unavailable; showing last read." line under a coin is gone; the failed
+  // read is proven by the Cellframe network light turning failed, the older value stays marked "Last read".
+  await page.waitForFunction(() => { const row = document.querySelector('.asset-group[data-chain="cellframe"] .chain-holding'); return row && row.querySelector('.holding-value small')?.textContent.startsWith('Last read ') && document.querySelector('#portfolio-networks .network-health[data-chain="cellframe"][data-health="failed"]'); });
+  assert.equal(await page.locator('.asset-group[data-chain="cellframe"] .chain-holding .balance-error, .asset-group[data-chain="cellframe"] .chain-holding .balance-note').count(), 0);
   assert.notEqual(await page.locator('.asset-group[data-chain="cellframe"] .holding-value strong').textContent(), '0 CPUNK');
   cellframeFail = false;
   assert.equal(await page.evaluate(k => Object.keys(localStorage).filter(x => x !== k).length + sessionStorage.length, SHOW_ZERO_KEY), 0);

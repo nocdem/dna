@@ -9,7 +9,12 @@ import { soquScript } from './pq/soqu-transaction.js';
 import { walletCapabilities, walletPageSupported, walletPqNetwork } from './pq/wallet-capabilities.js';
 import { algorandAddressBytes } from './pq/algorand-prepare.js';
 function capabilitiesFor(chain) { return walletCapabilities(chain, pqSelections[chain]); }
-function pageSupported(chain, page) { return walletPageSupported(chain, page, pqSelections[chain]); }
+// Send is offered only where the network can send now: capability AND not receive-only (UI pack 2026-11-03,
+// operator "send tusunu kaldir gecsin"). networkFor is a hoisted function over a table built at load; this runs after load.
+function pageSupported(chain, page) {
+  if (page === 'send' && networkFor(chain)?.receiveOnly) return false;
+  return walletPageSupported(chain, page, pqSelections[chain]);
+}
 import { getAddress } from 'ethers';
 import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, IDENTITY_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
 import { deleteVaultHistory, HistoryDeleteBlocked } from './connect/store.js';
@@ -1204,6 +1209,8 @@ function setNodusReady(ready, { reselect = true, keepRead = false } = {}) {
   const network = nodusNetworkFor(ready, { module: NODUS_HAS_MODULE, tokens: nodusPins });
   if (receiveOnlyNetworks[NODUS_ASSET.chain] === network) return;
   receiveOnlyNetworks[NODUS_ASSET.chain] = network;
+  // Messages (Connect site) shows "Send NODUS" in a chat only while NODUS can send; the web wallet page has no listener.
+  raise('nodusSendable', { sendable: capabilitiesFor(NODUS_ASSET.chain).send && !network.receiveOnly });
   if (!ready && wallet) wallet.nodusClient = undefined;
   if (!ready) { claimCheck++; portfolio.setAction(NODUS_ASSET.chain, undefined); portfolio.setAction(NODUS_ASSET.chain, undefined, 'faucet'); hideStaking(); hideName(); }
   portfolio.setNetwork(NODUS_ASSET.chain, network, { keepRead });
@@ -2231,7 +2238,7 @@ function showIxiosAddress() { void doShowIxiosAddress?.(); }
 function showTransferActions(chain, c) {
   $('quick-send').disabled = !capabilitiesFor(chain).send || !!c.receiveOnly;
   $('quick-send').title = c.receiveOnly ? (c.sendNote || DEFAULT_SEND_DISABLED_NOTE) : '';
-  for (const [page, feature] of [['send', 'send'], ['receive', 'receive'], ['earn', 'earn'], ['vaults', 'sharedVaults'], ['contracts', 'contracts']]) { const link = document.querySelector(`.wallet-navigation a[href="#${page}"]`); if (link) link.hidden = !capabilitiesFor(chain)[feature]; }
+  for (const [page, feature] of [['send', 'send'], ['receive', 'receive'], ['earn', 'earn'], ['vaults', 'sharedVaults'], ['contracts', 'contracts']]) { const link = document.querySelector(`.wallet-navigation a[href="#${page}"]`); if (link) link.hidden = !capabilitiesFor(chain)[feature] || (page === 'send' && !!c.receiveOnly); }
   $('quick-earn').hidden = !capabilitiesFor(chain).earn;
   $('nav-earn').hidden = !capabilitiesFor(chain).earn;
   const activityLink = document.querySelector('.wallet-navigation a[href="#wallet-activity"]');

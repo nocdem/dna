@@ -466,6 +466,14 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         await capture('bottom-bar-connect');
         const bottoms = await page.evaluate(() => ({ messenger: document.querySelector('#extension-connect .messenger').getBoundingClientRect().bottom, bar: document.querySelector('#extension-bottom-bar').getBoundingClientRect().top }));
         assert.ok(bottoms.messenger <= bottoms.bar + 0.5, `${kind} ${width}: messenger bottom ${bottoms.messenger} reaches the bar top ${bottoms.bar}`);
+        // Chat "Send NODUS" follows the wallet's NODUS send state (UI pack 2026-11-03, connect.js nodusSendable):
+        // the fixture's NODUS connection is ready (shown); a connection that is not ready hides it again.
+        await page.locator('.contact-row').first().click();
+        await page.locator('.conversation-pay').waitFor({ state: 'visible' });
+        await page.evaluate(async () => { window.layout.state.nodus.state = 'connecting'; await window.layout.refresh(); });
+        await page.waitForFunction(() => document.querySelector('.conversation-pay').hidden === true);
+        await page.evaluate(async () => { window.layout.state.nodus.state = 'ready'; await window.layout.refresh(); });
+        await page.waitForFunction(() => document.querySelector('.conversation-pay').hidden === false);
         await open('home'); await waitHome(page);
         // No flags/live data. The public fixture holds every initial balance
         // and quote read. Measuring only after waitHome would miss the jump.

@@ -74,7 +74,8 @@ try {
   for (let i = 0; i < 100; i++) { try { if ((await fetch(url)).ok) break; } catch {} await delay(50); }
   browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || undefined });
   const context = await browser.newContext({ viewport: { width: 1280, height: 960 } });
-  // UI pack 2026-11-03: the Reveal screen's Copy phrase button writes to the clipboard.
+  // UI pack 2026-11-03: the Reveal screen's Copy phrase button writes to the clipboard;
+  // Home's Send is hidden while the selected network cannot send (checked in the Wallet section).
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
@@ -162,6 +163,20 @@ try {
   assert.equal(await page.locator('#send-form').isVisible(), false, 'send-form');
   for (const id of ['activity-panel', 'address-book-panel', 'device-panel', 'session-logs', 'stake-panel', 'vault-panel', 'evm-panel']) assert.equal(await page.locator(`#${id}`).isVisible(), false, id);
   assert.equal(await page.locator('#tab-home').isVisible(), false);
+  // UI pack 2026-11-03: Home's Send follows the selected network's ability to send. No node is
+  // reachable here, so NODUS (the default) cannot send: hidden. Ethereum can: shown. Then NODUS again.
+  const chooseNetwork = async chain => {
+    if (!await page.locator('#wallet-network').evaluate(node => node.open)) await page.locator('#wallet-network > summary').click();
+    const badge = page.locator(`#portfolio-networks .network-health[data-chain="${chain}"]`);
+    const toggle = badge.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " network-group ")]').locator('.network-group-toggle');
+    if (await toggle.count() && await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
+    await badge.click();
+  };
+  assert.equal(await page.locator('#home-send').evaluate(node => node.hidden), true, 'Home Send hidden on NODUS without a node');
+  await chooseNetwork('ethereum');
+  await page.waitForFunction(() => document.querySelector('#home-send').hidden === false);
+  await chooseNetwork('nodus');
+  await page.waitForFunction(() => document.querySelector('#home-send').hidden === true);
   await page.locator('.wallet-navigation a[href="#settings"]').click();
   assert.equal(await page.locator('#device-panel').isVisible(), true);
   assert.equal(await page.locator('#wallet-home').isVisible(), false);

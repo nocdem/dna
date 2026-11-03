@@ -23,7 +23,9 @@ for(const mode of (process.env.CAPABILITY_BROWSER_MODE||'web,connect,extension')
   await assertNetworkGroups(page, { addressBookIxios: mode === 'extension' });
   const group=chain=>page.locator(`.network-assets[data-chain="${chain}"]`);
   const nav=href=>page.locator(`.wallet-navigation a[href="#${href}"]`);
-  const supports=(chain,pageName,networkId)=>mode==='extension'?extensionPageSupported(chain,pageName,networkId):walletPageSupported(chain,pageName,networkId);
+  // UI pack 2026-11-03: Send is offered only where the network can send now. NODUS is receive-only while its
+  // connection is not ready (never here: no node is reachable), so the capability table alone is not enough for it.
+  const supports=(chain,pageName,networkId)=>chain==='nodus'&&pageName==='send'?false:mode==='extension'?extensionPageSupported(chain,pageName,networkId):walletPageSupported(chain,pageName,networkId);
   const assertPages=async(chain,networkId,label='')=>{assert.equal(await nav('send').isVisible(),supports(chain,'send',networkId),`${mode} ${chain} ${networkId} Send ${label}`);assert.equal(await nav('wallet-activity').isVisible(),supports(chain,'wallet-activity',networkId),`${mode} ${chain} ${networkId} Activity ${label}`);};
   // #chain is hidden; networks and environments are chosen in the network
   // disclosure (src/app.js:2307, :970), as on the shipped page; pages without the
@@ -77,7 +79,8 @@ for(const mode of (process.env.CAPABILITY_BROWSER_MODE||'web,connect,extension')
   await nav('').click();await page.locator('#assets-panel').waitFor({state:'visible'});
   await group('bsc').getByRole('button',{name:'Select BNB Smart Chain network',exact:true}).click();assert.equal(await page.locator('#chain').inputValue(),'bsc');assert.equal(await nav('wallet-activity').isVisible(),false);
   for(const id of ['nav-earn','nav-vaults','nav-evm'])assert.equal(await page.locator('#'+id).isVisible(),false);
-  await nav('settings').click();assert.equal(await page.locator('#page-settings').isVisible(),true);
+  // The extension's Settings is a bottom-bar button (UI pack 2026-11-03); web and Connect keep the rail gear.
+  await (mode==='extension'?page.locator('#extension-bottom-bar button[aria-label="Settings"]'):nav('settings')).click();assert.equal(await page.locator('#page-settings').isVisible(),true);
   run.state.historyEthereum=address=>[{hash:'0x'+'c'.repeat(64),from:'0x0000000000000000000000000000000000000001',to:address,timeStamp:'1700000000',value:'314159000000000000',isError:'0',txreceipt_status:'1'}];
   await select('ethereum');await nav('wallet-activity').click();await page.locator('#history-refresh').click();
   await page.waitForFunction(()=>document.querySelector('#history').textContent.includes('0.314159'));

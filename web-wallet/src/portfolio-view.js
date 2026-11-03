@@ -227,9 +227,6 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
         const amount = el('strong', '', text(row.balance === null ? state : `${displayAmount(row.balance)} ${row.symbol}`));
         if (row.balance !== null && !hidden) amount.title = `${row.balance} ${row.symbol}`;
         value.append(amount, el('small', '', row.keptAt !== undefined ? `Last read ${readTime(row.keptAt)}` : text(row.priceMissing ? 'Price unavailable' : usdText(row.usd, row.positive))));
-        if (row.state === 'unsupported' && row.keptAt !== undefined) value.append(el('small', 'balance-note', unavailableBalanceLabel(row.chain)));
-        if (row.state === 'error' && row.keptAt !== undefined) value.append(el('small', 'balance-error', `${row.error || 'Balance unavailable'}; showing last read.`));
-        if (network.balanceNote) value.append(el('small', 'balance-note', network.balanceNote));
         entry.append(identity, value); detail.append(entry);
       }
       return detail;

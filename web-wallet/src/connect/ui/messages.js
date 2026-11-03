@@ -214,7 +214,8 @@ let caughtUp = false;                    // the first message check of this
 // (screens/contacts/contacts_hub_screen.dart), 'profile' = your ID and
 // profile. Add contact is a dialog (screens/contacts/add_contact_dialog.dart).
 let ui, host = {};
-let phase = 'waiting';                   // 'waiting' | 'opening' | 'open' | 'closed'
+let payAvailable = false;                // the wallet says NODUS can send now (walletExtension.nodusSendable); "Send NODUS" stays hidden until then
+let phase = 'waiting';                  // 'waiting' | 'opening' | 'open' | 'closed'
 let screen = 'list';                     // 'list' | 'conversation' | 'contacts' | 'profile'
 let hubTab = 'contacts';                 // the contacts screen's tab: 'contacts' | 'requests'
 let filter = 'all';                      // the Chats filter chip: 'all' | 'unread' | 'chats'
@@ -1625,6 +1626,10 @@ function ownIdText({ id = null, name = '', closed = false } = {}) {
 //                    means the host moved the user elsewhere (focus is its).
 //   payContact(fp)   (web 0.1.90) open the wallet's Send form on NODUS for
 //                    this contact; without it there is no "Send NODUS".
+//                    With it, "Send NODUS" is shown only while the wallet has
+//                    said NODUS can send (walletExtension.nodusSendable:
+//                    the Connect site raises it from setNodusReady, the
+//                    extension calls it on every render).
 function mountMessages(root, options = {}) {
   host = options;
   const u = {};
@@ -1697,7 +1702,7 @@ function mountMessages(root, options = {}) {
   // contact (host.payContact); the wallet's review and signing are the only
   // way the transfer is made.
   u.convPay = iconButton('pay', 'Send NODUS', () => payFromChat(), 'conversation-pay');
-  u.convPay.hidden = typeof options.payContact !== 'function';
+  u.convPay.hidden = !payAvailable || typeof options.payContact !== 'function';
   // The picture and the name open their profile (0.1.104, operator: "karşıdaki
   // user'ın ismine veya … resmine basınca profilini göstermesi lazım").
   u.convWho = setAttrs(el('div', { className: 'conversation-who' }, u.convAvatar, el('div', { className: 'conversation-title' }, u.convTitle, u.convClaim)), { role: 'button', tabindex: '0' });
@@ -2523,7 +2528,7 @@ function transferPreview(m) {
 }
 
 function payFromChat() {
-  if (!isOpen() || !selectedFp || !chatPeerOf(selectedFp) || typeof host.payContact !== 'function') return;
+  if (!payAvailable || !isOpen() || !selectedFp || !chatPeerOf(selectedFp) || typeof host.payContact !== 'function') return;
   payFor = { fp: selectedFp, at: Date.now() };
   if (remote) void requestView('payStart', { fp: selectedFp });
   host.payContact(selectedFp);
@@ -3186,6 +3191,13 @@ const walletExtension = {
   // A NODUS transfer the network accepted (src/app.js confirm-send, web
   // 0.1.90): its payment card goes into the chat it was started from.
   nodusSent(detail) { void onNodusSent(detail); },
+  // The wallet's NODUS network can send (capability and not receive-only) or
+  // cannot (src/app.js setNodusReady; the extension's connect.js). "Send NODUS"
+  // in a chat follows it; a host without payContact never shows it.
+  nodusSendable({ sendable } = {}) {
+    payAvailable = sendable === true;
+    if (ui) ui.convPay.hidden = !payAvailable || typeof host.payContact !== 'function';
+  },
   // reason: the connection was lost (Messages stays closed until the
   // wallet's reconnect raises nodusReady again); none: the wallet is
   // locking or reconnecting.

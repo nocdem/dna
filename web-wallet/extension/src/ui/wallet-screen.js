@@ -79,7 +79,8 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   const pendingPqNetworks = new Map();
   const selectedNetwork = chain => chain === 'ixios' ? { id: 'mainnet', label: 'Mainnet', endpoint: IXIOS_NETWORK.endpoint } : chainNetwork(chain, pendingPqNetworks.get(chain)?.id ?? ui.state.networks?.[chain]);
   const capabilitiesFor = chain => extensionCapabilitiesFor(chain, selectedNetwork(chain).id);
-  const pageSupported = (chain, page) => extensionPageSupported(chain, page, selectedNetwork(chain).id);
+  // Send is offered only where the network can send now: capability AND not receive-only (UI pack 2026-11-03, operator "send tusunu kaldir gecsin").
+  const pageSupported = (chain, page) => !(page === 'send' && networks[chain]?.receiveOnly) && extensionPageSupported(chain, page, selectedNetwork(chain).id);
   function element(tag, text, className = '') {
     const node = document.createElement(tag); node.className = className;
     if (text !== undefined) node.textContent = text; return node;
@@ -250,7 +251,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   function selectChain(reset = false) {
     const config = networks[selected], state = ui.state;
     if (shownPage && !pageSupported(selected, shownPage)) navigate(null);
-    for (const [page, feature] of [['send','send'], ['receive','receive'], ['earn','earn'], ['vaults','sharedVaults'], ['contracts','contracts'], ['wallet-activity','history']]) { const link = root.querySelector(`.wallet-navigation a[href="#${page}"]`); if (link) link.hidden = !capabilitiesFor(selected)[feature]; }
+    for (const [page, feature] of [['send','send'], ['receive','receive'], ['earn','earn'], ['vaults','sharedVaults'], ['contracts','contracts'], ['wallet-activity','history']]) { const link = root.querySelector(`.wallet-navigation a[href="#${page}"]`); if (link) link.hidden = !capabilitiesFor(selected)[feature] || (page === 'send' && Boolean(config.receiveOnly)); }
     $('vault-panel').hidden = !capabilitiesFor(selected).sharedVaults;
     $('stake-panel').hidden = !capabilitiesFor(selected).earn;
     const network = selectedNetwork(selected);
@@ -538,6 +539,8 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   update(); route();
   return {
     update, resetAssetView, navigate,
+    // Whether `chain` can send now (capability and not receive-only): the chat's "Send NODUS" follows it (connect.js).
+    canSend: chain => pageSupported(chain, 'send'),
     // The bottom bar leaves Settings for Connect: the shown words go with the page (same condition as showPage).
     leaveSettings() { if (shownPage === 'settings') clearReveal(); },
     payContact(fp) { selectAsset('nodus', 'NODUS', 'send'); $('recipient').value = fp; navigate('send'); },

@@ -61,6 +61,9 @@ export function mountWalletAndConnect(options) {
   });
   ui.connectHost = session.vaultHost;
   wallet = mountReferenceWallet({ ...options, root: walletRoot, onPage(name) { walletPage = name; updateBar(); } });
+  // "Send NODUS" in a chat is offered only while the wallet's NODUS network can send.
+  const syncSendNodus = () => session.walletExtension.nodusSendable({ sendable: wallet.canSend('nodus') });
+  syncSendNodus();
   function show(connect) {
     showing = connect;
     walletRoot.hidden = showing; connectRoot.hidden = !showing;
@@ -106,7 +109,7 @@ export function mountWalletAndConnect(options) {
   session.setVisible(false); void refresh();
   return {
     refreshConnect() { void refresh(); },
-    update() { if (!disposed) { wallet.update(); void refresh(); } },
+    update() { if (!disposed) { wallet.update(); syncSendNodus(); void refresh(); } },
     loadBalances: force => wallet.loadBalances(force),
     dispose() {
       disposed = true; epoch = undefined; identity = undefined;

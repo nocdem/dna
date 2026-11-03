@@ -5,7 +5,8 @@
 // the operator's 2026-11-03 decision "XION, Splendor, QTC ve Ixios'ta gönderme
 // eklentide kalır"). The override list is printed so the divergence is visible.
 // It also pins the CKB notes to the extension's wording, the "send from the
-// extension" notes, and that the shared table carries no Ixios entry.
+// extension" notes, that no network carries a balanceNote any more (UI pack
+// 2026-11-03) and that the shared table carries no Ixios entry.
 // What it leaves behind: nothing (pure functions, no network, no files written).
 // How it could falsely pass: the chain list below comes from PQ_NETWORKS, so a
 // chain missing there is not compared; Ixios is deliberately excluded because
@@ -61,7 +62,15 @@ test('page support for send and wallet-activity follows the same table on both s
 test('CKB notes are the extension wording; XION, Splendor, QTC mainnet say send from the extension', () => {
   const web = walletPqNetwork('ckb', PQ_NETWORKS.ckb, 'mainnet'), ext = extensionNetworkConfig('ckb', PQ_NETWORKS.ckb, 'mainnet');
   assert.equal(web.sendNote, ext.sendNote);
-  assert.equal(web.balanceNote, ext.balanceNote);
+  // UI pack 2026-11-03 (operator "hepsi kalksin"): no note is drawn under any coin, so no network carries a balanceNote.
+  assert.equal(web.balanceNote, undefined); assert.equal(ext.balanceNote, undefined);
+  for (const [chain, config] of Object.entries(PQ_NETWORKS)) {
+    assert.equal(config.balanceNote, undefined, `${chain}: no balanceNote in the registry`);
+    for (const id of ['mainnet', 'testnet']) {
+      assert.equal(walletPqNetwork(chain, config, id).balanceNote, undefined, `${chain} ${id} web`);
+      assert.equal(extensionNetworkConfig(chain, config, id).balanceNote, undefined, `${chain} ${id} extension`);
+    }
+  }
   assert.equal(typeof CKB_FULL_RECIPIENT_SEND_ENABLED, 'boolean');
   for (const [chain, symbol] of [['xion', 'XION'], ['splendor', 'SPLD'], ['qtc', 'QTC']]) {
     const mainnet = walletPqNetwork(chain, PQ_NETWORKS[chain], 'mainnet');
