@@ -37,15 +37,16 @@ test('MV3 uses the source worker and isolated/main document-start entries', () =
   assert.equal(manifest.minimum_chrome_version, '123');
   assert.equal(manifest.background.service_worker, 'src/service-worker.js');
   assert.deepEqual(manifest.content_scripts, [
-    { matches: ['file://*/*', 'http://*/*', 'https://*/*'], js: ['src/contentscript.js'], run_at: 'document_start', all_frames: true },
-    { matches: ['file://*/*', 'http://*/*', 'https://*/*'], js: ['src/inpage.js'], run_at: 'document_start', world: 'MAIN', all_frames: true },
+    { matches: ['http://*/*', 'https://*/*'], js: ['src/contentscript.js'], run_at: 'document_start', all_frames: true },
+    { matches: ['http://*/*', 'https://*/*'], js: ['src/inpage.js'], run_at: 'document_start', world: 'MAIN', all_frames: true },
   ]);
 });
 
-// Pins the approved hosts and transaction notification permission; a subset
-// assertion could silently retain an unrelated permission.
+// Pins the exact host and permission lists of the operator decision docs/plans/decisions/2026-11-03-chrome-web-store.md
+// (file:// matches and host permission, http:// and ws:// host permissions removed; unlimitedStorage kept, wss:// kept broad).
+// A subset assertion could silently retain an unrelated permission.
 test('permissions and external connections match the approved reference subset', () => {
-  assert.deepEqual(manifest.host_permissions, ['file://*/*', 'http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*']);
+  assert.deepEqual(manifest.host_permissions, ['https://*/*', 'wss://*/*']);
   assert.deepEqual([...manifest.permissions].sort(), ['alarms', 'notifications', 'storage', 'unlimitedStorage'].sort());
   assert.equal(manifest.externally_connectable, undefined);
   assert.equal(manifest.content_security_policy.extension_pages, "script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; frame-ancestors 'self'; font-src 'self';");
@@ -61,7 +62,8 @@ test('Connect product name keeps the existing extension paths and assets', async
   assert.equal(manifest.action.default_title, 'Nodus Connect');
   assert.equal(manifest.action.default_popup, 'popup.html');
   assert.equal(manifest.version, JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')).version);
-  assert.ok(manifest.description.length > 0);
+  assert.equal(manifest.description, 'Wallet for the Nodus testnet, Ethereum, BNB Smart Chain, Solana and TRON, with website connections and Nodus Connect messages.');
+  assert.ok(manifest.description.length <= 132);
   for (const path of [...Object.values(manifest.icons), ...Object.values(manifest.action.default_icon)]) {
     assert.equal(path, '../public/assets/nodus-mark.svg');
     assert.match(await readFile(new URL(`../${path}`, import.meta.url), 'utf8'), /<svg/u);
@@ -101,8 +103,9 @@ test('background entry starts locked with the real Nodus seed consumer attached'
   const state = await background;
   t.after(() => state.destroy());
   // Reference: ComposableObservableStore.js:90-97; approved plan §3.5:388-406 excludes key custody.
+  // The connected-sites controller is not in the plain state any more (sealed in nodus.sites.v1, plan section 2.6).
   const expectedWrites = [{ 'nodus.extension.state': {
-    PermissionController: { subjects: {} }, ApprovalController: {},
+    ApprovalController: {},
     EvmController: { selectedChain: 'ethereum', endpoints: { ethereum: CHAINS.ethereum.endpoint, bsc: CHAINS.bsc.endpoint } },
     // PQ receive registry adds only listed choices; Nodus/Asentum are testnet-only.
     NetworksController: { selected: { bsc: 'mainnet', cellframe: 'mainnet', ixios: 'mainnet', ethereum: 'mainnet', nodus: 'testnet', solana: 'mainnet', tron: 'mainnet',
