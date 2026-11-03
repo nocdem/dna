@@ -312,6 +312,8 @@ test('service-worker lazy listener hands an early port to the engine', async t =
   finally { for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; } }
   try {
     assert.equal(consumed, true);
+    // The data notice gate refuses website requests until the agreement (plan section 2.7); this test proves the port hand-off.
+    await background.privacyConsent.accept();
     assert.deepEqual((await request(early, 'eth_accounts')).result, []);
     assert.equal(background.engine.connections.size, 1);
   } finally { early.disconnect(); await background.destroy(); }

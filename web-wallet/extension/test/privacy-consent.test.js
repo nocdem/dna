@@ -60,20 +60,29 @@ function siteRequest(remote, method, params = []) {
   remote.onMessage.emit({ name: 'nodus-provider', data: { id, jsonrpc: '2.0', method, params } });
   return until(() => remote.messages.find(message => message.name === 'nodus-provider' && message.data.id === id)?.data);
 }
+// The trusted page's answers are awaited by id, not by a number of event-loop turns: vault creation runs its key
+// derivation off the event loop. A missing answer fails through the test's own timeout.
 function trustedPort(runtime) {
-  const ui = { name: 'popup', sender: { id: runtime.id, url: `chrome-extension://${runtime.id}/popup.html` }, messages: [], onMessage: event(), onDisconnect: event(),
-    postMessage(message) { this.messages.push(structuredClone(message)); }, disconnect() {} };
+  const waiting = new Map();
+  const ui = { name: 'popup', sender: { id: runtime.id, url: `chrome-extension://${runtime.id}/popup.html` }, messages: [], onMessage: event(), onDisconnect: event(), disconnected: false,
+    postMessage(message) {
+      const copy = structuredClone(message); this.messages.push(copy);
+      if (copy.name === 'controller' && waiting.has(copy.data?.id)) { waiting.get(copy.data.id)(copy.data); waiting.delete(copy.data.id); }
+    },
+    disconnect() { if (!this.disconnected) { this.disconnected = true; this.onDisconnect.emit(this); } },
+    waiting };
   runtime.onConnect.emit(ui); return ui;
 }
 function trustedRequest(ui, method, params = []) {
   const id = ++requestId;
+  const answer = new Promise(resolve => ui.waiting.set(id, resolve));
   ui.onMessage.emit(`1|0|1${JSON.stringify({ name: 'controller', data: { id, jsonrpc: '2.0', method, params } })}`);
-  return until(() => ui.messages.find(message => message.name === 'controller' && message.data.id === id)?.data);
+  return answer;
 }
 const phraseBytes = () => [...new TextEncoder().encode(phrase)];
 
 for (const [name, initial] of [['fresh storage', {}], ['an older text version', { [CONSENT_KEY]: '0' }]]) {
-  test(`${name}: state reports no consent, trusted create and unlock refuse, websites are refused, eth_chainId answers`, async t => {
+  test(`${name}: state reports no consent, trusted create and unlock refuse, websites are refused, eth_chainId answers`, { timeout: 60000 }, async t => {
     const { background, runtime, values, outside } = await setup(t, initial), ui = trustedPort(runtime), remote = sitePort(runtime);
     assert.equal((await trustedRequest(ui, 'getState')).result.privacyConsent, false);
     // Trusted calls: nothing is created, nothing is unlocked.
@@ -92,7 +101,7 @@ for (const [name, initial] of [['fresh storage', {}], ['an older text version', 
   });
 }
 
-test('agreeing stores the current text version and opens create, unlock and website requests', async t => {
+test('agreeing stores the current text version and opens create, unlock and website requests', { timeout: 60000 }, async t => {
   const { runtime, values } = await setup(t), ui = trustedPort(runtime), remote = sitePort(runtime);
   assert.equal(CONSENT_VERSION, '1');
   assert.equal((await trustedRequest(ui, 'acceptPrivacyNotice')).error, undefined);

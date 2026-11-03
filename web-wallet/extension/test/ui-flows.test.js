@@ -75,6 +75,8 @@ async function setup(t) {
     finally { if (saved) Object.defineProperty(globalThis, 'chrome', saved); else delete globalThis.chrome; }
   }
   const background = await backgroundModule.createBackground(fixture);
+  // The data notice gate refuses website requests and wallet creation until the agreement (plan section 2.7); every test here starts after it.
+  await background.privacyConsent.accept();
   const client = connectTrusted({ runtime, page: 'notification.html' });
   t.after(async () => { client.close(); ports.forEach(port => port.disconnect()); await until(() => background.engine.connections.size === 0); await background.lock(); await background.destroy(); });
   return { background, client, values, scheduled, fixture, runtime };

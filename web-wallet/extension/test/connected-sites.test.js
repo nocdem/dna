@@ -146,14 +146,15 @@ test('a damaged record is reported, leaves the list empty, and is not overwritte
   await background.unlock(password, { cpunkWasmBytes });
   assert.match(background.connectedSites.getError(), /Saved connected sites could not be read/);
   assert.deepEqual(background.permissions.controller.getSubjectNames(), []);
-  const state = await (async () => {
-    const ui = { name: 'popup', sender: { id: runtime.id, url: `chrome-extension://${runtime.id}/popup.html` }, messages: [], onMessage: event(), onDisconnect: event(),
-      postMessage(message) { this.messages.push(structuredClone(message)); }, disconnect() {} };
-    runtime.onConnect.emit(ui);
-    const id = ++requestId;
-    ui.onMessage.emit(`1|0|1${JSON.stringify({ name: 'controller', data: { id, jsonrpc: '2.0', method: 'getState', params: [] } })}`);
-    return (await until(() => ui.messages.find(message => message.name === 'controller' && message.data.id === id)?.data)).result;
-  })();
+  const ui = { name: 'popup', sender: { id: runtime.id, url: `chrome-extension://${runtime.id}/popup.html` }, messages: [], onMessage: event(), onDisconnect: event(), disconnected: false,
+    postMessage(message) { this.messages.push(structuredClone(message)); },
+    disconnect() { if (!this.disconnected) { this.disconnected = true; this.onDisconnect.emit(this); } } };
+  runtime.onConnect.emit(ui);
+  const id = ++requestId;
+  ui.onMessage.emit(`1|0|1${JSON.stringify({ name: 'controller', data: { id, jsonrpc: '2.0', method: 'getState', params: [] } })}`);
+  const state = (await until(() => ui.messages.find(message => message.name === 'controller' && message.data.id === id)?.data)).result;
+  // The trusted page's stream is closed before the test ends, as a real popup closing does.
+  ui.disconnect();
   assert.match(state.connectedSitesError, /could not be read/);
   await connectSite(background, remote);
   assert.equal(values[SITES_KEY], damaged, 'a record that did not open is left as it is');

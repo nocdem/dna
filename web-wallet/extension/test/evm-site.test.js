@@ -68,6 +68,8 @@ async function setup(t) {
     finally { if (saved) Object.defineProperty(globalThis, 'chrome', saved); else delete globalThis.chrome; }
   }
   const background = await module.createBackground(fixture);
+  // The data notice gate refuses website requests and wallet creation until the agreement (plan section 2.7); every test here starts after it.
+  await background.privacyConsent.accept();
   await background.vaultStore.create(password, phrase); await background.unlock(password, { cpunkWasmBytes, nodusWasmBytes });
   const engines = [];
   function site(origin = 'https://site.example') {
