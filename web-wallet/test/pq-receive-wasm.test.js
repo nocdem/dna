@@ -122,6 +122,17 @@ test('secret storage is zero after a failed derivation and after every other kin
       if (mustSucceed) assert.equal(status, 0, `${kind}/${param}`);
       assert.ok(zero(), `other selector ${kind}/${param}`);
     }
+    // Every other supported selector of the upstream corpus (all SLH-DSA parameter sets included; plan section 6:
+    // "after every other kind / parameter"), each with its own upstream seed: a successful derive keeps no secret.
+    const seen = new Set();
+    for (const v of selected) {
+      const kind = kindOf(v.scheme), key = `${kind}/${v.param}`;
+      if ((kind === 2 && v.param === 512) || seen.has(key)) continue;
+      seen.add(key); retain(); mem.set(v.seed, input);
+      assert.equal(e.pq_receive_derive(kind, v.param, v.seed.length), 0, key);
+      assert.ok(zero(), `every other selector ${key}`);
+    }
+    assert.ok(seen.size >= 15, `selectors covered: ${[...seen].join(' ')}`);
   } finally { mem.fill(0); }
 });
 
