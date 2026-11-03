@@ -49,7 +49,7 @@ const scrollByTab = {};
 
 function setTab(next, { highlight = next } = {}) {
   if (next !== tab) { scrollByTab[tab] = scrollY; }
-  const changed = next !== tab;
+  const changed = next !== tab, left = tab;
   tab = next;
   for (const name of TABS) $(`tab-${name}`).hidden = name !== next;
   for (const item of document.querySelectorAll('.app-nav-item')) {
@@ -57,6 +57,10 @@ function setTab(next, { highlight = next } = {}) {
     else item.removeAttribute('aria-current');
   }
   if (changed && next === 'wallet') document.dispatchEvent(new Event('wallet-view-opened'));
+  // The Wallet tab was left: the wallet drops what it shows only there (the
+  // recovery words in Device & settings). The shell writes nothing into the
+  // wallet's state, it only announces (header comment above).
+  if (changed && left === 'wallet') document.dispatchEvent(new Event('wallet-view-closed'));
   if (changed) scrollTo(0, scrollByTab[next] || 0);
   syncPushed();
 }

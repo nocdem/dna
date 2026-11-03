@@ -15,7 +15,9 @@ const password = 'public-security-test-password-2026', addresses = deriveWallet(
 const server = await startPreview(['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '4189', '--strictPort'], 4189, { cwd: app });
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined, headless: true });
 let page, broadcasts = 0, durable = 0, staleWriteCompleted = false;
-const errors = [];
+const errors = [], unscripted = [];
+// The PQ networks' read hosts the portfolio contacts on open (as in test/connect-smoke.js).
+const PQ_READ_HOSTS = new Set(['mainnet-api.algonode.cloud', 'mainnet-api.soqu.org', 'mainnet.ckb.dev', 'qtc.events', 'api.xion-mainnet-1.burnt.com', 'quantum-rpc.splendor.org', 'testnet.asentum.com']);
 const context = await browser.newContext();
 await context.route('**/*', async route => {
   const req = route.request(); if (req.url().startsWith(url + '/')) return route.continue();
@@ -25,6 +27,11 @@ await context.route('**/*', async route => {
   if (await portfolioRead(route, { ethereum: false })) return;
   if (await ixiosRead(route)) return;
   const body = req.postDataJSON(); assert.ok(!JSON.stringify(body).includes(phrase));
+  // Since 0.1.155 the portfolio reads the PQ networks' balances on open; refused here.
+  if (PQ_READ_HOSTS.has(new URL(req.url()).hostname)) { unscripted.push(req.url()); return route.abort('blockedbyclient'); }
+  // A request with no JSON-RPC body is none of the scripted reads: refuse it, as before
+  // any read existed for it (the phrase check above still ran on it).
+  if (!body) { unscripted.push(req.url()); return route.abort('blockedbyclient'); }
   const process = async call => {
     if (call.method === 'eth_sendRawTransaction') {
       const tx = Transaction.from(call.params[0]); broadcasts++;
@@ -63,6 +70,45 @@ try {
   await page.clock.setSystemTime(Date.now() + 24 * 60 * 60 * 1000); await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   assert.equal(await readPhrase(page), ''); await page.close();
   console.log('RT-01: create, verify, restore and suspended-tab expiry clear secrets.');
+
+  // RT-REVEAL (plan docs/plans/approved/2026-11-03-reveal-phrase.md sections
+  // 2.3 items 5-6 and 5): the recovery words shown in Device & settings, and a
+  // typed but unsubmitted reveal password, are cleared after ten minutes
+  // without use, also when auto-lock is "Never", WITHOUT locking the wallet;
+  // a suspended tab (clock jumps 24 h, then a focus event) clears the words
+  // too. Needs the production bundle and page.clock (time flows, fastForward
+  // fires each due timer once). Leaves nothing behind: the wallet is locked and
+  // localStorage cleared before the page closes (the next scenarios expect an
+  // empty storage). Falsely passes if the words never showed: each clear check
+  // follows a check that exactly 24 words equal to `phrase` were on screen,
+  // and "wallet still open" is asserted after every clear.
+  {
+    const shown = () => page.locator('#device-panel input[readonly]').evaluateAll(inputs => inputs.map(input => input.value));
+    const revealButton = () => page.locator('#device-panel form:has(#reveal-password) button[type="submit"]');
+    const reveal = async () => { await revealButton().click(); await page.waitForFunction(() => document.querySelectorAll('#device-panel input[readonly]').length === 24); assert.equal((await shown()).join(' '), phrase); };
+    page = await fresh(); await page.clock.install(); await restore(page); await openPage(page, 'settings');
+    await page.selectOption('#auto-lock-minutes', '0');
+    assert.equal(await page.locator('#reveal-password').isVisible(), false);
+    await reveal();
+    await page.clock.fastForward(11 * 60 * 1000);
+    assert.deepEqual(await shown(), []); assert.equal(await page.locator('#wallet-open').isVisible(), true);
+    await reveal();
+    await page.clock.setSystemTime(Date.now() + 24 * 60 * 60 * 1000); await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    assert.deepEqual(await shown(), []); assert.equal(await page.locator('#wallet-open').isVisible(), true);
+    // A saved, unlocked wallet: a typed, unsubmitted reveal password is emptied; the wallet stays open.
+    await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
+    await page.locator('#vault-password').fill(password); await page.locator('#vault-confirm-password').fill(password);
+    await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
+    await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Encrypted wallet saved'));
+    assert.equal(await page.locator('#reveal-password').isVisible(), true);
+    await page.locator('#reveal-password').fill('typed-and-left-password-2026');
+    await page.clock.fastForward(11 * 60 * 1000);
+    assert.equal(await page.locator('#reveal-password').inputValue(), ''); assert.equal(await page.locator('#wallet-open').isVisible(), true);
+    await page.locator('#lock').click();
+    await page.waitForFunction(async () => !(await navigator.locks.query()).held.some(lock => lock.name === 'nodus.wallet.session'));
+    await page.evaluate(() => localStorage.clear()); await page.close();
+    console.log('RT-REVEAL: shown words and a typed reveal password clear after ten minutes and on a suspended tab, without locking the wallet.');
+  }
 
   page = await fresh(); await restore(page); await openPage(page, 'settings'); await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
   assert.equal(await page.locator('#vault-risk-confirm').isChecked(), false);

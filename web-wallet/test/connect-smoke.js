@@ -66,6 +66,9 @@ console.log('Wallet build check passed: no app shell, Messages navigation or Mes
 const url = process.env.CONNECT_URL || 'http://127.0.0.1:4192';
 const server = process.env.CONNECT_URL ? null : await startPreview(['node_modules/vite/bin/vite.js', 'preview', '--config', 'vite.connect.config.js', '--host', '127.0.0.1', '--port', '4192', '--strictPort'], 4192);
 const { vectors } = JSON.parse(readFileSync(new URL('./fixtures/nodus-addresses.json', import.meta.url)));
+// The PQ networks' read hosts the portfolio contacts on open (observed in this script's
+// run on 2026-11-03; endpoints in src/pq/*.js and src/ixios/network.js).
+const PQ_READ_HOSTS = new Set(['mainnet-api.algonode.cloud', 'mainnet-api.soqu.org', 'mainnet.ckb.dev', 'qtc.events', 'api.xion-mainnet-1.burnt.com', 'quantum-rpc.splendor.org', 'testnet.asentum.com']);
 let browser;
 try {
   for (let i = 0; i < 100; i++) { try { if ((await fetch(url)).ok) break; } catch {} await delay(50); }
@@ -73,6 +76,24 @@ try {
   const context = await browser.newContext({ viewport: { width: 1280, height: 960 } });
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
+  // REVEAL RECOVERY PHRASE in Device & settings on Connect (plan docs/plans/
+  // approved/2026-11-03-reveal-phrase.md section 5; src/reveal-phrase.js,
+  // src/app.js, src/connect-main.js setTab -> 'wallet-view-closed').
+  // Proves: no password before saving, the password after saving (wrong:
+  // refused; right: the 24 words); leaving the Wallet tab removes the words
+  // and returning does not restore them; a reveal whose result arrives after
+  // the tab was left is dropped (the reveal is submitted and the tab changed
+  // in ONE synchronous page.evaluate, so the departure always precedes the
+  // awaited result); after deleting the saved copy the open wallet reveals with
+  // no password (plan section 7); the lock leaves no words. Falsely passes if
+  // the words were never shown: each removal check follows a check that the 24
+  // words of vectors[0].phrase were on screen, and the dropped-result check
+  // also asserts that no decryptVault error text reached the status line.
+  const shownWords = () => page.locator('#device-panel input[readonly]').evaluateAll(inputs => inputs.map(input => input.value));
+  const revealButton = () => page.locator('#device-panel form:has(#reveal-password) button[type="submit"]');
+  const revealNow = async () => { await revealButton().click(); await page.waitForFunction(() => document.querySelectorAll('#device-panel input[readonly]').length === 24); };
+  const assertShown = async () => assert.equal((await shownWords()).join(' '), vectors[0].phrase);
+  const assertNotShown = async () => assert.deepEqual(await shownWords(), []);
   const errors = [], unexpected = [], sockets = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.route('**/*', async route => {
@@ -82,6 +103,12 @@ try {
     if (await portfolioRead(route)) return;
     // A VITE_ENABLE_IXIOS=true build (the release build) also reads IXIOS.
     if (await ixiosRead(route)) return;
+    // Since 0.1.155 the portfolio reads the PQ networks' balances on open; those
+    // reads are refused here (no answer is needed) and must never be a submission.
+    if (PQ_READ_HOSTS.has(new URL(req.url()).hostname)) {
+      assert.doesNotMatch(req.url() + ' ' + (req.postData() ?? ''), /send_transaction|broadcast|\/tx\/submit|\/txs\b/, 'a PQ read is never a submission');
+      return route.abort();
+    }
     if (!req.url().startsWith(url + '/') || req.method() !== 'GET' || req.postData()) {
       unexpected.push({ url: req.url(), method: req.method() }); return route.abort();
     }
@@ -128,7 +155,9 @@ try {
   // by the URL hash, with a "Back to wallet" control; deleting the saved
   // wallet sits in Device & settings.
   await page.locator('.app-nav-item[data-tab="wallet"]').click();
-  for (const id of ['assets-panel', 'send-form']) assert.equal(await page.locator(`#${id}`).isVisible(), true, id);
+  // Send is a page of its own (src/app.js transferPage('send', $('send-form'))): its form is not on the Wallet view (BUGS W-40).
+  assert.equal(await page.locator('#assets-panel').isVisible(), true, 'assets-panel');
+  assert.equal(await page.locator('#send-form').isVisible(), false, 'send-form');
   for (const id of ['activity-panel', 'address-book-panel', 'device-panel', 'session-logs', 'stake-panel', 'vault-panel', 'evm-panel']) assert.equal(await page.locator(`#${id}`).isVisible(), false, id);
   assert.equal(await page.locator('#tab-home').isVisible(), false);
   await page.locator('.wallet-navigation a[href="#settings"]').click();
@@ -172,7 +201,9 @@ try {
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('href')), '#settings');
   // More → Address book opens that page in the Wallet tab.
   await page.locator('.app-nav-item[data-tab="more"]').click();
-  assert.equal(await page.locator('#more-contracts').isVisible(), false, 'no Smart contracts row without the EVM generation');
+  // Since 0.1.145 the row follows the selected network's contracts capability
+  // (src/evm/ui.js showPanel; src/connect-main.js syncContractsRow); NODUS is selected.
+  assert.equal(await page.locator('#more-contracts').isVisible(), true, 'Smart contracts row follows the NODUS contracts capability');
   await page.locator('#more-address-book').click();
   assert.equal(await page.locator('#tab-wallet').isVisible(), true);
   assert.equal(await page.locator('#address-book-panel').isVisible(), true);
@@ -258,6 +289,9 @@ try {
   // The Connect copy of the save UI follows the same real storage states.
   await page.locator('.app-nav-item[data-tab="more"]').click();
   await page.locator('#more-device').click();
+  // Reveal before saving: no password field; the words show, and saving removes them.
+  assert.equal(await page.locator('#reveal-password').isVisible(), false);
+  await assertNotShown(); await revealNow(); await assertShown();
   await page.locator('#vault-storage-title').click();
   assert.equal(await page.locator('#vault-save').isVisible(), true);
   assert.equal(await page.locator('#vault-change').isVisible(), false);
@@ -278,9 +312,42 @@ try {
   assert.equal(await page.locator('#vault-confirm-label').innerText(), 'Confirm new password');
   assert.equal(await page.locator('#vault-confirm-password').inputValue(), '');
   assert.match(await page.locator('#vault-save-explain').innerText(), /already saved/);
+  // Saving ran updateVaultUI: the words shown before are gone; the password is now asked for.
+  await assertNotShown();
+  assert.equal(await page.locator('#reveal-password').isVisible(), true);
+  await page.locator('#reveal-password').fill('public-connect-test-password-2026'); await revealNow(); await assertShown();
+  assert.equal(await page.locator('#reveal-password').inputValue(), '');
+  // Leaving the Wallet tab removes the words; returning does not restore them.
+  await page.locator('.app-nav-item[data-tab="home"]').click();
+  await assertNotShown();
+  await page.locator('.app-nav-item[data-tab="wallet"]').click();
+  assert.equal(await page.locator('#page-settings').isVisible(), true);
+  await assertNotShown();
+  // A reveal whose result arrives after the tab was left is dropped: submit and
+  // leave in one synchronous call (the result is awaited, so it comes later).
+  await page.locator('#reveal-password').fill('public-connect-test-password-2026');
+  await page.evaluate(() => {
+    document.querySelector('#device-panel form:has(#reveal-password)').requestSubmit();
+    document.querySelector('.app-nav-item[data-tab="home"]').click();
+  });
+  await page.waitForFunction(() => !document.querySelector('#device-panel form:has(#reveal-password) button[type="submit"]').disabled);
+  const decryptErrors = ['Incorrect password or damaged saved wallet.', 'Saved wallet is too large or invalid.', 'Invalid saved wallet.', 'Unsupported saved wallet format.', 'Use a local password of 12–1024 characters.'];
+  const statusAfterDrop = await page.locator('#wallet-status').textContent();
+  for (const text of decryptErrors) assert.equal(statusAfterDrop.includes(text), false, text);
+  await assertNotShown();
+  await page.locator('.app-nav-item[data-tab="wallet"]').click();
+  assert.equal(await page.locator('#page-settings').isVisible(), true);
+  await assertNotShown();
+  // A wrong password is refused and shows nothing.
+  await page.locator('#reveal-password').fill('incorrect-connect-password-2026'); await revealButton().click();
+  await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Incorrect password or damaged saved wallet.'));
+  await assertNotShown(); assert.equal(await page.locator('#reveal-password').inputValue(), '');
   await page.locator('#vault-delete-details summary').click();
   await page.locator('#vault-delete-confirm').check(); await page.locator('#vault-delete').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('deleted from this device'));
+  // The open wallet is no longer saved: the words show with no password (plan section 7).
+  assert.equal(await page.locator('#reveal-password').isVisible(), false);
+  await revealNow(); await assertShown();
   assert.equal(await page.locator('#vault-storage-title').innerText(), 'Save wallet on this device (optional)');
   assert.equal(await page.locator('#vault-save').isVisible(), true);
   assert.equal(await page.locator('#vault-change').isVisible(), false);
@@ -292,6 +359,7 @@ try {
   for (const id of ['more-profile', 'more-contacts', 'more-requests', 'more-device', 'lock']) assert.equal(await page.locator(`#${id}`).isVisible(), true, id);
   await page.locator('#lock').click();
   await page.locator('#welcome').waitFor({ state: 'visible' });
+  await assertNotShown(); // the More tab click already left the Wallet tab; the lock leaves no words either
   assert.equal(await page.locator('#wallet-open').isVisible(), false);
   assert.equal(await page.locator('#start-screen').isVisible(), true);
   assert.match(await page.locator('#wallet-status').innerText(), /Wallet locked/);
