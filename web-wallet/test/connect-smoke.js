@@ -85,7 +85,8 @@ const server = process.env.CONNECT_URL ? null : await startPreview(['node_module
 const { vectors } = JSON.parse(readFileSync(new URL('./fixtures/nodus-addresses.json', import.meta.url)));
 // The PQ networks' read hosts the portfolio contacts on open (observed in this script's
 // run on 2026-11-03; endpoints in src/pq/*.js and src/pq/ixios/network.js).
-const PQ_READ_HOSTS = new Set(['mainnet-api.algonode.cloud', 'mainnet-api.soqu.org', 'mainnet.ckb.dev', 'qtc.events', 'api.xion-mainnet-1.burnt.com', 'quantum-rpc.splendor.org', 'testnet.asentum.com']);
+// The Receive-page network choice (Soqucoin, Algorand) reads the Soqucoin RPC and the Algorand indexer genesis block.
+const PQ_READ_HOSTS = new Set(['mainnet-api.algonode.cloud', 'mainnet-idx.algonode.cloud', 'mainnet-rpc.soqu.org', 'mainnet-api.soqu.org', 'mainnet.ckb.dev', 'qtc.events', 'api.xion-mainnet-1.burnt.com', 'quantum-rpc.splendor.org', 'testnet.asentum.com']);
 let browser;
 try {
   for (let i = 0; i < 100; i++) { try { if ((await fetch(url)).ok) break; } catch {} await delay(50); }
@@ -209,7 +210,8 @@ try {
   assert.equal(await page.locator('#pq-recovery-note').textContent(), 'Recover this address with your Nodus recovery phrase. Native chain wallets may derive different addresses.');
   await chooseNetwork('nodus');
   await page.waitForFunction(() => document.querySelector('#chain').value === 'nodus');
-  await page.locator('#page-receive .page-back').click();
+  // Back to the wallet view through the rail's Portfolio link (as test/browser-smoke.js walletView does).
+  await page.locator('.wallet-navigation a[href="#"]').click();
   await page.waitForFunction(() => location.hash === '');
   assert.equal(await page.locator('#wallet-home').isVisible(), true);
   await page.locator('.wallet-navigation a[href="#settings"]').click();
