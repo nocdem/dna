@@ -1,6 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {ADDRESS_CHECKS} from '../src/ui/address-book-page.js';
-import {ixiosChecksumAddress} from '../../src/ixios/address.js';
+import {ixiosChecksumAddress} from '../../src/pq/ixios/address.js';
 test('IXIOS saved recipient preserves exact 48-byte identity and rejects Ethereum-width addresses',()=>{
  const bytes=Uint8Array.from({length:48},(_,i)=>i+20),checked=ixiosChecksumAddress(bytes);
  assert.equal(ADDRESS_CHECKS.ixios(checked.toLowerCase()),checked);

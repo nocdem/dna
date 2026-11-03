@@ -1,4 +1,4 @@
-import {verifyIxiosSignedTransfer} from '../../../src/ixios/verify.js';
+import {verifyIxiosSignedTransfer} from '../../../src/pq/ixios/verify.js';
 import {verifyTidecoinSignedPayload} from '../../../src/pq/tidecoin-recovery.js';
 import { createSubmissionProof, clearSubmissionProofs, recoverSubmissionProofs as recoverProofs } from '../../../src/pq/submission-proof.js';
 import { ACTIVITY_KEY, HISTORY_KEY, VAULT_KEY } from '../../../src/vault.js';

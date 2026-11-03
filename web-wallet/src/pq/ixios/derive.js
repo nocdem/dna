@@ -1,6 +1,6 @@
 import { Mnemonic, getBytes } from 'ethers';
 import { sha3_512, shake256 } from '@noble/hashes/sha3';
-import { validateNodusPhrase } from '../recovery.js';
+import { validateNodusPhrase } from '../../recovery.js';
 
 // Ixios ML-DSA-87 signing seed — DELIBERATELY a different key than the Nodus/
 // messenger one derived by src/nodus/derive.js (same 'qgp-signing-v1' pattern,
@@ -44,7 +44,7 @@ export async function deriveIxiosAddress(phrase, { wasmBytes, signal } = {}) {
     // Same file as the Nodus derivation; the "ixios" query only makes this
     // request distinguishable from it (static servers ignore the query), so a
     // test holding the Nodus request does not depend on which fetch runs first.
-    const moduleUrl = new URL('../nodus/mldsa87.wasm', import.meta.url);
+    const moduleUrl = new URL('../../nodus/mldsa87.wasm', import.meta.url);
     moduleUrl.search = 'ixios';
     const response = await fetch(moduleUrl, { credentials: 'omit', redirect: 'error', signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
     if (!response.ok) throw new Error('Ixios address module could not load. Reload to retry.');

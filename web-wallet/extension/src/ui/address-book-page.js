@@ -1,4 +1,4 @@
-import { parseIxiosAddress, ixiosChecksumAddress } from '../../../src/ixios/address.js';
+import { parseIxiosAddress, ixiosChecksumAddress } from '../../../src/pq/ixios/address.js';
 import { pqAddressBookChecks } from '../../../src/pq/address-book-checks.js';
 import { getAddress } from 'ethers';
 import { soquScript } from '../../../src/pq/soqu-transaction.js';

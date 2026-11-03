@@ -1,4 +1,4 @@
-import { IXIOS_NETWORK } from '../../../src/ixios/network.js';
+import { IXIOS_NETWORK } from '../../../src/pq/ixios/network.js';
 import { CHAINS, CELLFRAME } from '../../../src/config.js';
 import { SOQU_MAINNET } from '../../../src/pq/soqu-preflight.js';
 import { ckbNetwork } from '../../../src/pq/ckb.js';

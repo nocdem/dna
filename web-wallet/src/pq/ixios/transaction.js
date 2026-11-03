@@ -5,7 +5,7 @@
 import {encodeRlp,decodeRlp,keccak256} from 'ethers';
 import {parseIxiosAddress,ixiosChecksumAddress} from './address.js';
 import {ixiosAddressBytes} from './derive.js';
-import {mldsa87Sign} from '../pq/sign.js';
+import {mldsa87Sign} from '../sign.js';
 const hex=b=>'0x'+Array.from(b,x=>x.toString(16).padStart(2,'0')).join('');
 const uint=(v,bits,name)=>{if(typeof v!=='bigint'||v<0n||v>=(1n<<BigInt(bits)))throw Error(`Invalid Ixios ${name}.`);return v;};
 const intHex=n=>n===0n?'0x':'0x'+(n.toString(16).length%2?'0':'')+n.toString(16);

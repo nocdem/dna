@@ -1,7 +1,7 @@
 // Bounded read-only Ixios mainnet checks; no signing or broadcast. One RPC's
 // answers are not cryptographic consensus proofs. See ixiosSpark v1.1.1
 // core/{address_format,state_transition}.go and internal/ethapi/api.go.
-import {rpc} from '../core.js';
+import {rpc} from '../../core.js';
 import {parseIxiosAddress} from './address.js';
 import {IXIOS_GENESIS_HASH} from './balance.js';
 export const IXIOS_RPC='https://ixios-rpc.innova.limited';

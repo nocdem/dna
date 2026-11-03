@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createWalletKeys } from '../src/background/wallet-keys.js';
 import { createLockCoordinator } from '../src/background/lock.js';
-import { deriveIxiosAddress } from '../../src/ixios/derive.js';
-import { ixiosChecksumAddress } from '../../src/ixios/address.js';
-import { IXIOS_NETWORK, IXIOS_ASSET } from '../../src/ixios/network.js';
+import { deriveIxiosAddress } from '../../src/pq/ixios/derive.js';
+import { ixiosChecksumAddress } from '../../src/pq/ixios/address.js';
+import { IXIOS_NETWORK, IXIOS_ASSET } from '../../src/pq/ixios/network.js';
 import { holdingActions, portfolioSnapshot } from '../../src/portfolio.js';
 
 // Package J: calls both real derivations on a known public phrase; no flags,

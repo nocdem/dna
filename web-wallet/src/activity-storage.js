@@ -1,4 +1,4 @@
-import {validIxiosPending,validateIxiosSignedPayload} from './ixios/pending.js';
+import {validIxiosPending,validateIxiosSignedPayload} from './pq/ixios/pending.js';
 import {validateTidecoinFundingEvidence,validateTidecoinSignedPayload} from './pq/tidecoin-recovery.js';
 import {validateCkbSignedPayload} from './pq/ckb-signed-payload.js';
 import {validateQtcSignedPayload} from './pq/qtc-signed-payload.js';

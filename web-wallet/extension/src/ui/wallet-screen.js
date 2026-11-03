@@ -6,8 +6,8 @@ import { CHAINS, CELLFRAME } from '../../../src/config.js';
 import { endpointUrl } from '../../../src/rpc-transport.js';
 import { CPUNK_ASSET } from '../../../src/portfolio.js';
 import { NODUS_TOKEN_ID, NODUS_ASSET, nodusNetworkFor } from '../../../src/nodus/network.js';
-import { IXIOS_NETWORK, IXIOS_ASSET } from '../../../src/ixios/network.js';
-import { PQ_NETWORKS, PQ_ENTRIES, isPqChain } from '../../../src/pq/networks.js';
+import { IXIOS_NETWORK, IXIOS_ASSET } from '../../../src/pq/ixios/network.js';
+import { PQ_NETWORKS, PQ_ENTRIES, PQ_NATIVE_WORD_CHAINS, isPqChain } from '../../../src/pq/networks.js';
 import { setNetworkSelectOptions } from '../../../src/network-groups.js';
 import { portfolioReaders, mountSavedSettings, mountDeleteWallet } from './wallet-page.js';
 import { readBalanceRefresh, writeBalanceRefresh, balanceRefreshNote } from '../../../src/balance-refresh.js';
@@ -141,6 +141,8 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     }
     const pq = isPqChain(selected);
     environmentDisclosure.hidden = !pq;
+    // Native-word chains derive the chain wallet's own address: the "may derive different addresses" note is untrue there.
+    pqNote.hidden = !pq || PQ_NATIVE_WORD_CHAINS.includes(selected);
     if (pq) {
       pqStatus.textContent = publicAddresses()[selected] ? ''
         : ui.state.pqErrors?.[selected] || 'Receive address unavailable. Lock and reopen your wallet to retry.';

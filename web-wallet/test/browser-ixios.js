@@ -1,21 +1,16 @@
 import { portfolioRead, cellframeRead, historyRead } from './portfolio-routes.js';
 import { pastePhrase } from './browser-phrase.js';
-// Ixios as a receive-only wallet network handled exactly like Cellframe, both
-// sides of VITE_ENABLE_IXIOS. Public test phrase only; every external request is
-// intercepted (the Ixios RPC included: mocked below). Unlike the other browser
-// scripts this one builds its own two bundles (flag on, flag off) into temporary
-// directories and previews each with --outDir, so dist/ is left untouched.
-// Needs: node_modules/vite (two `vite build` runs; VITE_ENABLE_IXIOS is set to
-// true for one and removed from the environment for the other), jsqr,
-// fixtures/ixios-checksum.json, and Chromium (CHROMIUM_PATH, otherwise the one
-// Playwright finds). Preview ports 4193 (flag on) and 4194 (flag off) on
-// 127.0.0.1 with --strictPort: a busy port makes the script fail, not pass.
-// Leaves: nothing; both output directories are removed and both previews are
-// stopped in finally.
+// Ixios as a receive-only wallet network handled exactly like Cellframe (the
+// Ixios build switch is gone: every build carries Ixios). Public test
+// phrase only; every external request is intercepted (the Ixios RPC included:
+// mocked below). Unlike the other browser scripts this one builds its own bundle
+// into a temporary directory and previews it with --outDir, so dist/ is left untouched.
+// Needs: node_modules/vite (one `vite build` run), jsqr, fixtures/ixios-checksum.json,
+// and Chromium (CHROMIUM_PATH, otherwise the one Playwright finds). Preview port
+// 4193 on 127.0.0.1 with --strictPort: a busy port makes the script fail, not pass.
+// Leaves: nothing; the output directory is removed and the preview is stopped in finally.
 // Falsely passes: the Ixios RPC is a mock, so balances prove the page wiring,
-// not the live node; "no Ixios in the flag-off build" is a case-insensitive
-// text search of the emitted files and the page text, so a renamed identifier
-// would not be seen.
+// not the live node.
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -61,17 +56,14 @@ let browser, ixiosGenesis = IXIOS_GENESIS;
 // Every JSON-RPC call answered by the Ixios mock, in arrival order.
 const ixiosCalls = [];
 
-function build(enabled) {
-  const outDir = mkdtempSync(join(tmpdir(), `nodus-wallet-ixios-${enabled ? 'on' : 'off'}-`)); dirs.push(outDir);
-  // The disabled build leaves the variable unset, exactly like a default production build.
-  const env = { ...process.env }; delete env.VITE_ENABLE_IXIOS;
-  if (enabled) env.VITE_ENABLE_IXIOS = 'true';
-  const result = spawnSync(process.execPath, [vite, 'build', '--outDir', outDir, '--emptyOutDir'], { cwd: app, encoding: 'utf8', env });
+function build() {
+  const outDir = mkdtempSync(join(tmpdir(), 'nodus-wallet-ixios-')); dirs.push(outDir);
+  const result = spawnSync(process.execPath, [vite, 'build', '--outDir', outDir, '--emptyOutDir'], { cwd: app, encoding: 'utf8' });
   assert.equal(result.status, 0, `vite build failed:\n${result.stdout}\n${result.stderr}`);
   return outDir;
 }
 // Every emitted file, not only assets/: the signing module must not ship in
-// either build (this release displays the address; it never signs).
+// the web build (this release displays the address; it never signs).
 function inspect(outDir) {
   const files = readdirSync(outDir, { recursive: true }).map(String);
   const js = files.filter(file => file.endsWith('.js'));
@@ -88,7 +80,7 @@ async function serve(outDir, port) {
   return server.url;
 }
 // Any request whose host names Ixios (the public RPC ixios-rpc.innova.limited,
-// or any other Ixios endpoint). Flag on: only the mocked RPC; flag off: none.
+// or any other Ixios endpoint). Only the mocked RPC may be requested.
 const ixiosHost = requestUrl => /ixios|innova\.limited/i.test(new URL(requestUrl).hostname);
 // The Ixios RPC mock: genesis block 0 (network identity) and eth_getBalance.
 async function ixiosRead(route) {
@@ -128,8 +120,7 @@ async function openWallet(url) {
   await page.locator('#restore').click(); await pastePhrase(page, phrase);
   await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
   await page.locator('#wallet-open').waitFor({ state: 'visible' });
-  // The Nodus address is independent of the flag and proves the wallet finished
-  // opening. Nodus is the network selected on page load, so it is the receive address.
+  // The Nodus address proves the wallet finished opening. Nodus is the network selected on page load, so it is the receive address.
   assert.equal(await page.locator('#chain').inputValue(), 'nodus');
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#receive-address').textContent));
   const nodusAddress = await page.locator('#receive-address').innerText();
@@ -145,23 +136,22 @@ async function ixiosSettled(page) {
 }
 
 try {
-  const enabledDir = build(true), disabledDir = build(false);
-  const enabledFiles = inspect(enabledDir), disabledFiles = inspect(disabledDir);
-  // Non-vacuous: the enabled bundle does carry Ixios code, so the empty result below means something.
-  assert.ok(enabledFiles.ixiosJs.length > 0, 'enabled build must contain the Ixios code');
-  assert.deepEqual(disabledFiles.ixiosJs, [], 'disabled build must contain no JavaScript mentioning Ixios');
-  // The old top-of-page panel is gone: Ixios is created only by the flag-on JavaScript.
-  assert.deepEqual(enabledFiles.ixiosHtml, []); assert.deepEqual(disabledFiles.ixiosHtml, []);
-  assert.deepEqual(enabledFiles.signWasm, []); assert.deepEqual(disabledFiles.signWasm, []);
-  assert.equal(enabledFiles.keygenWasm.length, 1); assert.equal(disabledFiles.keygenWasm.length, 1);
-  assert.deepEqual(enabledFiles.keygenWasm, disabledFiles.keygenWasm, 'Ixios reuses the Nodus keygen module, not a new one');
+  const outDir = build();
+  const files = inspect(outDir);
+  assert.ok(files.ixiosJs.length > 0, 'the build must contain the Ixios code');
+  // The old top-of-page panel is gone: Ixios is created only by JavaScript.
+  assert.deepEqual(files.ixiosHtml, []);
+  assert.deepEqual(files.signWasm, []);
+  assert.equal(files.keygenWasm.length, 1, 'Ixios reuses the Nodus keygen module, not a new one');
   browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || undefined });
 
-  const on = await openWallet(await serve(enabledDir, 4193));
+  const on = await openWallet(await serve(outDir, 4193));
   const page = on.page;
   assert.equal(await page.locator('#ixios-address-panel').count(), 0, 'no separate top panel');
   // Network selector: Nodus first, Ixios after the sendable chains and Cellframe.
-  assert.deepEqual(await page.locator('#chain option').evaluateAll(options => options.map(o => o.value)), ['nodus', 'ethereum', 'bsc', 'solana', 'tron', 'cellframe', 'ixios']);
+  // Today's screen (reason: the list is grouped, PQ group first, and includes the eight PQ networks since 0.1.155; src/network-groups.js, src/app.js extraNetworks order).
+  assert.deepEqual(await page.locator('#chain option').evaluateAll(options => options.map(o => o.value)),
+    ['nodus', 'cellframe', 'ixios', 'algorand', 'tidecoin', 'ckb', 'soqucoin', 'qtc', 'xion', 'splendor', 'asentum', 'ethereum', 'bsc', 'solana', 'tron']);
   assert.equal(await page.locator('#chain option[value="ixios"]').textContent(), 'Ixios');
   // The scope paragraph is gone (0.1.108, operator: "Gerek yok onlar artık").
   assert.equal(await page.locator('#portfolio-scope').count(), 0);
@@ -274,24 +264,7 @@ try {
   assert.ok(on.ixiosRequests.length > 0);
   assert.ok(on.ixiosRequests.every(requestUrl => new URL(requestUrl).origin === new URL(IXIOS_RPC).origin), on.ixiosRequests.join());
   assert.deepEqual(on.unexpected, []); assert.deepEqual(on.errors, []);
-
-  const off = await openWallet(await serve(disabledDir, 4194));
-  await portfolioDone(off.page);
-  assert.equal(await off.page.locator('#chain option[value="ixios"]').count(), 0);
-  assert.deepEqual((await off.page.locator('#chain option').evaluateAll(options => options.map(o => `${o.value} ${o.textContent}`))).filter(text => /ixios/i.test(text)), []);
-  assert.equal(await off.page.locator('.asset-group[data-symbol="IXIOS"]').count(), 0);
-  assert.equal(await off.page.locator('.network-filter[data-chain="ixios"]').count(), 0);
-  assert.doesNotMatch(await off.page.locator('#portfolio-networks').innerText(), /ixios/i);
-  assert.doesNotMatch(await off.page.locator('.portfolio-card').innerText(), /ixios/i);
-  assert.equal(await off.page.locator('#ixios-address-status').count(), 0);
-  assert.doesNotMatch(await off.page.locator('body').innerText(), /ixios/i);
-  assert.ok(off.wasm.every(path => !/mldsa87-sign/.test(path)));
-  assert.ok(off.wasm.every(path => !/\?ixios$/.test(path)), 'flag-off build makes no Ixios keygen request');
-  await off.page.locator('#lock').click();
-  assert.equal(await off.page.evaluate(() => Object.keys(localStorage).filter(x => x !== 'nodus.showZeroBalances').length + sessionStorage.length), 0);
-  assert.deepEqual(off.ixiosRequests, []);
-  assert.deepEqual(off.unexpected, []); assert.deepEqual(off.errors, []);
-  console.log('Ixios browser checks passed: flag-on build lists Ixios in the network selector, portfolio filters, badges and assets (IXIOS row: Receive only, balance read like CPUNK after a genesis-block identity check, outside the USD total; a wrong genesis makes no balance read and keeps only the amount read earlier from the right network, marked "Read failed · last read"); selecting it shows the checksummed receive address (its QR decodes to exactly that address; lock clears the QR), hides the send fields and shows the Ixios note while Cellframe keeps its own; Ixios requests go only to the configured RPC; lock clears it; loads only the keygen module (?ixios). Flag-off build shows no Ixios anywhere and ships no Ixios JavaScript; neither build ships mldsa87-sign.wasm or Ixios markup; no unmocked external requests or storage.');
+  console.log('Ixios browser checks passed: the build lists Ixios in the network selector, portfolio filters, badges and assets (IXIOS row: Receive only, balance read like CPUNK after a genesis-block identity check, outside the USD total; a wrong genesis makes no balance read and keeps only the amount read earlier from the right network, marked "Read failed · last read"); selecting it shows the checksummed receive address (its QR decodes to exactly that address; lock clears the QR), hides the send fields and shows the Ixios note while Cellframe keeps its own; Ixios requests go only to the configured RPC; lock clears it; loads only the keygen module (?ixios). The build ships neither mldsa87-sign.wasm nor Ixios markup; no unmocked external requests or storage.');
 } finally {
   await browser?.close();
   for (const server of servers) server.stop();

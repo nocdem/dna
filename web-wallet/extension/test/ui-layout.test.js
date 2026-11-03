@@ -399,7 +399,7 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         { find: /^buffer\/?$/u, replacement: require.resolve('buffer/') },
         { find: /^events\/?$/u, replacement: require.resolve('events/') },
         { find: /^process\/?$/u, replacement: require.resolve('process/browser.js') },
-      ] }, define: { __APP_VERSION__: JSON.stringify(version), 'process.env.IN_TEST': 'false', global: 'globalThis', 'import.meta.env.VITE_ENABLE_IXIOS': '"true"' } });
+      ] }, define: { __APP_VERSION__: JSON.stringify(version), 'process.env.IN_TEST': 'false', global: 'globalThis' } });
     server = createServer(vite.middlewares);
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
     const origin = `http://127.0.0.1:${server.address().port}`;

@@ -30,8 +30,8 @@ const wasm = [
   ['src/nodus/send.js', 'send.wasm', 'src/nodus/send.wasm'],
   ['src/nodus/derive.js', './mldsa87.wasm', 'src/nodus/mldsa87.wasm'],
   ['src/pq/sign.js', './mldsa87-sign.wasm', 'src/pq/mldsa87-sign.wasm'],
-  ['src/ixios/verify.js', './mldsa87-verify.wasm', 'src/ixios/mldsa87-verify.wasm'],
-  ['src/ixios/derive.js', '../nodus/mldsa87.wasm', 'src/nodus/mldsa87.wasm'],
+  ['src/pq/ixios/verify.js', './mldsa87-verify.wasm', 'src/pq/ixios/mldsa87-verify.wasm'],
+  ['src/pq/ixios/derive.js', '../../nodus/mldsa87.wasm', 'src/nodus/mldsa87.wasm'],
   ['src/cpunk/derive.js', './legacy-dilithium.wasm', 'src/cpunk/legacy-dilithium.wasm'],
   ['src/pq/receive.js', './receive-keygen.wasm', 'src/pq/receive-keygen.wasm'],
 ];
@@ -44,9 +44,7 @@ const alias = [
   { find: /^events\/?$/u, replacement: require.resolve('events/') },
   { find: /^process\/?$/u, replacement: require.resolve('process/browser.js') },
 ];
-// The extension always mounts Ixios; enable its shared portfolio icon guard.
-const define = { ...walletConfig.define, 'process.env.IN_TEST': 'false', global: 'globalThis',
-  'import.meta.env.VITE_ENABLE_IXIOS': '"true"' };
+const define = { ...walletConfig.define, 'process.env.IN_TEST': 'false', global: 'globalThis' };
 
 function collectRenderedIds(bundle, ids) {
   for (const output of Object.values(bundle)) {

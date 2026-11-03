@@ -77,7 +77,7 @@ const url = process.env.CONNECT_URL || 'http://127.0.0.1:4192';
 const server = process.env.CONNECT_URL ? null : await startPreview(['node_modules/vite/bin/vite.js', 'preview', '--config', 'vite.connect.config.js', '--host', '127.0.0.1', '--port', '4192', '--strictPort'], 4192);
 const { vectors } = JSON.parse(readFileSync(new URL('./fixtures/nodus-addresses.json', import.meta.url)));
 // The PQ networks' read hosts the portfolio contacts on open (observed in this script's
-// run on 2026-11-03; endpoints in src/pq/*.js and src/ixios/network.js).
+// run on 2026-11-03; endpoints in src/pq/*.js and src/pq/ixios/network.js).
 const PQ_READ_HOSTS = new Set(['mainnet-api.algonode.cloud', 'mainnet-api.soqu.org', 'mainnet.ckb.dev', 'qtc.events', 'api.xion-mainnet-1.burnt.com', 'quantum-rpc.splendor.org', 'testnet.asentum.com']);
 let browser;
 try {
@@ -114,7 +114,7 @@ try {
     if (await historyRead(route)) return;
     if (await cellframeRead(route)) return;
     if (await portfolioRead(route)) return;
-    // A VITE_ENABLE_IXIOS=true build (the release build) also reads IXIOS.
+    // Every build also reads IXIOS.
     if (await ixiosRead(route)) return;
     // Since 0.1.155 the portfolio reads the PQ networks' balances on open; those
     // reads are refused here (no answer is needed) and must never be a submission.

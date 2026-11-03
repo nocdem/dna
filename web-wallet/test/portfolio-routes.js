@@ -13,8 +13,8 @@
 import assert from 'node:assert/strict';
 import { ASSETS, PRICE_URL } from '../src/portfolio.js';
 import { CHAINS, CELLFRAME } from '../src/config.js';
-import { IXIOS_NETWORK } from '../src/ixios/network.js';
-import { IXIOS_GENESIS_HASH } from '../src/ixios/balance.js';
+import { IXIOS_NETWORK } from '../src/pq/ixios/network.js';
+import { IXIOS_GENESIS_HASH } from '../src/pq/ixios/balance.js';
 export function priceFixture(price = 2, timestamp = Math.floor(Date.now() / 1000)) {
   return { coins: Object.fromEntries(ASSETS.map(a => [a.priceId, { symbol: a.symbol, decimals: a.decimals, price, timestamp, confidence: .99 }])) };
 }

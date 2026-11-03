@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ASSETS, CPUNK_ASSET, PRICE_URL, BALANCE_MAX_AGE, PRICE_MAX_AGE, balanceUnits, chainBalances, balanceErrorDetail, unavailableBalanceLabel, parsePrices, readPrices, portfolioSnapshot, groupAssets, usdText, displayAmount } from '../src/portfolio.js';
-import { IXIOS_NETWORK, IXIOS_ASSET } from '../src/ixios/network.js';
+import { IXIOS_NETWORK, IXIOS_ASSET } from '../src/pq/ixios/network.js';
 import { NODUS_NETWORK, NODUS_ASSET } from '../src/nodus/network.js';
 const now = 1789918200000;
 const coins = () => Object.fromEntries(ASSETS.map(a => [a.priceId, { price: 2, symbol: a.symbol, decimals: a.decimals, timestamp: now / 1000, confidence: .99 }]));

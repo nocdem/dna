@@ -1,8 +1,8 @@
 import { deriveWallet, disposeWallet } from '../../../src/keys.js';
 import { nodusSigningSeed } from '../../../src/nodus/derive.js';
 import { deriveCpunkAddress } from '../../../src/cpunk/derive.js';
-import { deriveIxiosAddress } from '../../../src/ixios/derive.js';
-import { ixiosChecksumAddress } from '../../../src/ixios/address.js';
+import { deriveIxiosAddress } from '../../../src/pq/ixios/derive.js';
+import { ixiosChecksumAddress } from '../../../src/pq/ixios/address.js';
 import { derivePqAddresses } from '../../../src/pq/receive.js';
 import { PQ_NETWORKS } from '../../../src/pq/networks.js';
 

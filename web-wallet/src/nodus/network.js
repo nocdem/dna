@@ -1,6 +1,6 @@
 // Nodus as a wallet network, listed first in the network selector, the
 // portfolio badges and filters, and the asset list, in the same shape as Ixios
-// (src/ixios/network.js) and Cellframe (src/config.js CELLFRAME).
+// (src/pq/ixios/network.js) and Cellframe (src/config.js CELLFRAME).
 //
 // Not part of CHAINS: src/wallet.js has no 'nodus' adapter, so nothing can be
 // sent here. `receiveOnly` gives it the single Receive action and hides the
