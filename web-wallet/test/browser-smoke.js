@@ -518,6 +518,16 @@ try {
   await assertNotShown(); assert.equal(await page.locator('#reveal-password').inputValue(), '');
   await page.locator('#reveal-password').fill('public-test-password-123'); await revealNow(); await assertShown();
   assert.equal(await page.locator('#reveal-password').inputValue(), '');
+  // A refused attempt after a shown one leaves nothing on screen.
+  await page.evaluate(() => { document.querySelector('#wallet-status').textContent = ''; });
+  await page.locator('#reveal-password').fill('incorrect-password-123'); await revealButton().click();
+  await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Incorrect password or damaged saved wallet.'));
+  await assertNotShown();
+  // A typed but unsent reveal password does not stay behind when Settings is left.
+  await page.locator('#reveal-password').fill('typed-not-sent-123');
+  await page.locator('#page-settings .page-back').click(); await page.locator('#wallet-home').waitFor({ state: 'visible' });
+  await openPage('settings'); assert.equal(await page.locator('#reveal-password').inputValue(), '');
+  await page.locator('#reveal-password').fill('public-test-password-123'); await revealNow(); await assertShown();
   const revealedStorage = await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }));
   assert.ok(!revealedStorage.includes(phrase)); assert.ok(!revealedStorage.includes('public-test-password-123'));
   // Leaving Settings (here: to Logs) removes the words; the log never holds them.

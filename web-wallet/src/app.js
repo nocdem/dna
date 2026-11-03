@@ -1057,7 +1057,7 @@ function stopPqAddresses() {
 function expireIdle() {
   // The shown recovery words (and a typed, unsubmitted reveal password) clear
   // on their own deadline and never lock the wallet: checked first.
-  if (revealDeadline && Date.now() >= revealDeadline) clearReveal({ password: true });
+  if (revealDeadline && Date.now() >= revealDeadline) clearReveal();
   if (idleDeadline && Date.now() >= idleDeadline) { lock(); return true; }
   return false;
 }
@@ -1101,23 +1101,27 @@ const reveal = renderRevealBlock(document, { reveal: revealPhrase });
   reveal.block.querySelector('h2').replaceWith(title);
   $('device-panel').append(reveal.block);
 }
-// The one clear routine: removes the shown words, stops the timer, counts.
-function clearReveal({ password = false } = {}) {
+// The one clear routine: removes the shown words and a typed reveal password,
+// stops the timer, counts. The password goes too: once the timer is stopped
+// nothing else would empty it (plan section 2.3, the ten-minute rule).
+function clearReveal() {
   revealRun++; clearTimeout(revealTimer); revealTimer = undefined; revealDeadline = 0;
   clearRevealedPhrase(reveal.recovery);
-  if (password) reveal.password.value = '';
+  reveal.password.value = '';
 }
 // Set (and renewed by activity()) while words are shown or a reveal password is typed.
 function syncRevealTimer() {
   if (reveal.recovery.hidden && !reveal.password.value) return;
   const ms = ENTRY_IDLE_MINUTES * 60 * 1000;
   clearTimeout(revealTimer); revealDeadline = Date.now() + ms;
-  revealTimer = setTimeout(() => clearReveal({ password: true }), ms);
+  revealTimer = setTimeout(() => clearReveal(), ms);
 }
 async function revealPhrase(password, container) {
   if (!wallet || wallet.locked) return;
   const button = reveal.block.querySelector('button[type="submit"]');
   button.disabled = true;
+  // A new attempt removes words an earlier one showed: a refused attempt shows nothing.
+  clearRevealedPhrase(container);
   const source = wallet, started = revision, startedReveal = revealRun;
   let phrase;
   try {
@@ -1134,7 +1138,11 @@ async function revealPhrase(password, container) {
     } else phrase = source.recoveryPhrase;
     showRevealedPhrase(document, container, phrase);
     syncRevealTimer();
-  } catch (error) { message(error.message, { error: true }); }
+  } catch (error) {
+    // Only our fixed texts reach the status line (and Connect's toast): a browser
+    // crypto error (a DOMException from crypto.subtle) gets the vault's own text.
+    message(error instanceof DOMException ? 'Incorrect password or damaged saved wallet.' : error.message, { error: true });
+  }
   finally { phrase = password = null; button.disabled = false; }
 }
 // Reading the localStorage property itself throws where the browser blocks
