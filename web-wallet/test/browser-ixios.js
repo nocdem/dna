@@ -198,8 +198,9 @@ try {
   assert.equal(await page.locator('#send-fields').isVisible(), false);
   assert.equal(await page.locator('#send-disabled-note').isVisible(), true);
   assert.equal(await page.locator('#send-disabled-note').innerText(), IXIOS_NOTE);
-  assert.equal(await page.locator('#ixios-address-status').isVisible(), true);
-  assert.match(await page.locator('#ixios-address-status').innerText(), /Derived locally/);
+  // UI pack 2026-11-03 (operator "2"): the "Derived locally…" status line is gone; the empty line takes no space.
+  assert.equal(await page.locator('#ixios-address-status').isVisible(), false);
+  assert.equal(await page.locator('#ixios-address-status').textContent(), '');
   assert.equal(await page.locator('#cellframe-address-status').isVisible(), false);
   // (#account-explorer sits on the Activity page since 0.1.75: its own
   // `hidden` says whether the network has an explorer.)

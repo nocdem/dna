@@ -1003,7 +1003,8 @@ function updatePqStatus(chain) {
   pqEnvironment.replaceChildren(...PQ_NETWORKS[chain].networks.map(network => new Option(network.label, network.id)));
   pqEnvironment.value = choice.id;
   renderEnvironment();
-  pqStatus.textContent = pqAddresses[chain]?.[choice.id] ? `${choice.label} receive address derived locally.`
+  // UI pack 2026-11-03 (operator "2"): no "derived locally" line once the address is shown; style.css hides the empty line.
+  pqStatus.textContent = pqAddresses[chain]?.[choice.id] ? ''
     : pqErrors[chain] || (pqPending || pqSource !== wallet ? 'Deriving receive address locally…' : 'Receive address unavailable. Lock and reopen your wallet to retry.');
 }
 function syncPqAddress(chain) {
@@ -1338,7 +1339,7 @@ async function startNodusSend(source, address) {
       if (source === wallet && !source.locked) {
         const seconds = scheduleNodusRetry(source, address);
         setNetStatus('connecting');
-        $('nodus-address-status').textContent = `Derived locally from this wallet’s recovery phrase. The connection to the Nodus network was lost; trying again in ${seconds} seconds.`;
+        $('nodus-address-status').textContent = `The connection to the Nodus network was lost; trying again in ${seconds} seconds.`;
       }
       return;
     }
@@ -1360,7 +1361,7 @@ async function startNodusSend(source, address) {
       if (source === wallet && !source.locked) {
         const seconds = scheduleNodusRetry(source, address);
         setNetStatus('connecting');
-        $('nodus-address-status').textContent = `Derived locally from this wallet’s recovery phrase. Nodus balance and sending are unavailable right now${why}; trying again in ${seconds} seconds.`;
+        $('nodus-address-status').textContent = `Nodus balance and sending are unavailable right now${why}; trying again in ${seconds} seconds.`;
       }
     }
     return;
@@ -1413,7 +1414,7 @@ async function connectNodus(source, address, client, markReady) {
     markReady(); nodusRetries = 0;
     source.nodusClient = client;
     setNetStatus('connected');
-    $('nodus-address-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
+    $('nodus-address-status').textContent = '';
     setNodusReady(true);
     portfolio.setAddress(NODUS_ASSET.chain, address);
     void refreshUpdateNotice(client);
@@ -1454,14 +1455,14 @@ async function connectNodus(source, address, client, markReady) {
       setNodusReady(false);
       const seconds = scheduleNodusRetry(source, address);
       setNetStatus('connecting');
-      $('nodus-address-status').textContent = `Derived locally from this wallet’s recovery phrase. Nodus balance and sending are unavailable right now${why}; trying again in ${seconds} seconds.`;
+      $('nodus-address-status').textContent = `Nodus balance and sending are unavailable right now${why}; trying again in ${seconds} seconds.`;
       return;
     }
     if (client.identified) {
       const seconds = scheduleNodusRetry(source, address, () => connectNodus(source, address, client, markReady));
       raise('nodusConnectFailed', { reason: `Not connected to the network right now; trying again in ${seconds} seconds. Your messages on this device are shown.` });
       setNetStatus('connecting');
-      $('nodus-address-status').textContent = `Derived locally from this wallet’s recovery phrase. Nodus balance and sending are unavailable right now${why}; trying again in ${seconds} seconds.`;
+      $('nodus-address-status').textContent = `Nodus balance and sending are unavailable right now${why}; trying again in ${seconds} seconds.`;
       return;
     }
     // Final: the client locked itself (it reached a node of another chain).
@@ -1469,7 +1470,7 @@ async function connectNodus(source, address, client, markReady) {
     raise('nodusClosing', { reason: 'The Nodus network could not be verified. Lock and open your wallet again to retry.' });
     setNodusReady(false);
     setNetStatus('offline');
-    $('nodus-address-status').textContent = `Derived locally from this wallet’s recovery phrase. Nodus balance and sending are unavailable${why}. Lock and reopen your wallet to retry.`;
+    $('nodus-address-status').textContent = `Nodus balance and sending are unavailable${why}. Lock and reopen your wallet to retry.`;
   }
 }
 // SMART CONTRACTS (src/evm/ui.js, red-team 1 F8): an EVM transaction is
@@ -2123,7 +2124,7 @@ async function showNodusAddress() {
     // read for it (a saved wallet's kept one too) until it is read again (0.1.96).
     portfolio.setAddress(NODUS_ASSET.chain, address);
     if ($('chain').value === NODUS_ASSET.chain) setReceiveAddress(address);
-    $('nodus-address-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
+    $('nodus-address-status').textContent = '';
     if (nodusSendModuleFactory) void startNodusSend(source, address);
     else raise('nodusUnavailable');
   } catch {
@@ -2161,7 +2162,7 @@ if (import.meta.env.VITE_ENABLE_CPUNK !== 'false') {
         source.addresses.cellframe = address;
         noteIdentity({ addresses: { cellframe: address } });
         if ($('chain').value === 'cellframe') { setReceiveAddress(address); renderHistory(); void loadHistory('cellframe'); }
-        $('cellframe-address-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
+        $('cellframe-address-status').textContent = '';
         portfolio.setAddress('cellframe', address);
       } catch {
         if (current()) {
@@ -2217,7 +2218,7 @@ if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
         source.addresses[chain] = address;
         if (chain === 'ixios') noteIdentity({ addresses: { ixios: address } });
         if ($('chain').value === chain) setReceiveAddress(address);
-        status.textContent = 'Derived locally from this wallet’s recovery phrase.';
+        status.textContent = '';
         portfolio.setAddress(chain, address);
       } catch {
         if (current()) { status.textContent = unavailable; portfolio.setAddress(chain, undefined); }

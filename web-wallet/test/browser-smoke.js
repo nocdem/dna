@@ -160,8 +160,11 @@ try {
   const qrGap = await page.locator('#receive-qr svg').evaluate(svg => { const s = svg.getBoundingClientRect(), p = svg.parentElement.getBoundingClientRect(); return [s.left - p.left, p.right - s.right]; });
   assert.ok(Math.abs(qrGap[0] - qrGap[1]) <= 2, `QR centred (left ${qrGap[0]}, right ${qrGap[1]})`);
   assert.equal(await decodeQr(), await page.locator('#receive-address').innerText());
-  assert.equal(await page.locator('#nodus-address-status').isVisible(), true);
-  assert.match(await page.locator('#nodus-address-status').innerText(), /Derived locally/);
+  // UI pack 2026-11-03 (operator "2"): "Derived locally…" is gone from the status line; no node is reachable
+  // in this script, so the line may still hold a connection-state remainder. It is visible exactly when it has text.
+  const nodusStatus = await page.locator('#nodus-address-status').textContent();
+  assert.doesNotMatch(nodusStatus, /Derived locally/);
+  assert.equal(await page.locator('#nodus-address-status').isVisible(), nodusStatus.trim() !== '');
   assert.equal(await page.locator('#cellframe-address-status').isVisible(), false);
   await walletView();
   // UI pack 2026-11-03 (operator "send tusunu kaldir gecsin"): until a node connection is ready (never,
@@ -332,7 +335,8 @@ try {
   // same as Nodus), and there is no separate panel or manual derive button.
   await selectNetwork('cellframe');
   await page.waitForFunction(() => /^[1-9A-HJ-NP-Za-km-z]{100,110}$/.test(document.querySelector('#receive-address').textContent));
-  assert.match(await page.locator('#cellframe-address-status').innerText(), /Derived locally/);
+  assert.equal(await page.locator('#cellframe-address-status').textContent(), '');
+  assert.equal(await page.locator('#cellframe-address-status').isVisible(), false);
   // The longest address format (100–110 characters) still decodes exactly.
   assert.equal(await decodeQr(), await page.locator('#receive-address').innerText(), 'cellframe QR decodes to the shown address');
   assert.equal(await page.locator('#send-fields').isVisible(), false);

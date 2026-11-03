@@ -211,7 +211,8 @@ try {
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), vectors[1].address);
   release.resolve(); await completed.promise;
   assert.equal(await page.locator('#receive-address').innerText(), vectors[1].address);
-  assert.equal(await page.locator('#nodus-address-status').innerText(), 'Derived locally from this wallet’s recovery phrase.');
+  // UI pack 2026-11-03 (operator "2"): the "Derived locally from this wallet’s recovery phrase." line is gone.
+  assert.equal(await page.locator('#nodus-address-status').textContent(), '');
   await page.selectOption('#chain', 'solana');
   assert.notEqual(await page.locator('#receive-address').innerText(), vectors[1].address);
   assert.equal(await page.locator('#nodus-address-status').isVisible(), false);

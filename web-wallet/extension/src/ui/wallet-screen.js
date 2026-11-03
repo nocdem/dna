@@ -136,12 +136,13 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   function updateAddressStatus() {
     for (const chain of ['nodus', 'cellframe', 'ixios']) {
       const node = $(`${chain}-address-status`); node.hidden = selected !== chain;
-      node.textContent = publicAddresses()[chain] ? 'Derived locally from this wallet’s recovery phrase.' : chain === 'ixios' ? 'Ixios address unavailable. Lock and reopen your wallet to retry.' : '';
+      // UI pack 2026-11-03 (operator "2"): no "Derived locally…" line once the address exists; style.css hides the empty line.
+      node.textContent = publicAddresses()[chain] ? '' : chain === 'ixios' ? 'Ixios address unavailable. Lock and reopen your wallet to retry.' : '';
     }
     const pq = isPqChain(selected);
     environmentDisclosure.hidden = !pq;
     if (pq) {
-      pqStatus.textContent = publicAddresses()[selected] ? `${selectedNetwork(selected).label} receive address derived locally.`
+      pqStatus.textContent = publicAddresses()[selected] ? ''
         : ui.state.pqErrors?.[selected] || 'Receive address unavailable. Lock and reopen your wallet to retry.';
     } else pqStatus.textContent = '';
   }
