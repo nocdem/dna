@@ -141,7 +141,8 @@ async function ckbSendFlow(mode, directory) {
   await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
   await page.locator('#wallet-open').waitFor({ state: 'visible' });
   await walletTab(page);
-  await page.locator('.wallet-navigation a[href="#settings"]').click(); await page.locator('#vault-storage-title').click();
+  // The extension's Settings is a bottom-bar button (UI pack 2026-11-03); web and Connect keep the rail gear.
+  await page.locator(mode === 'extension' ? '#extension-bottom-bar button[aria-label="Settings"]' : '.wallet-navigation a[href="#settings"]').click(); await page.locator('#vault-storage-title').click();
   await page.locator('#vault-password').fill(password); await page.locator('#vault-confirm-password').fill(password);
   await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
   await page.waitForFunction(() => document.querySelector('#vault-save-status').textContent.includes('Encrypted wallet saved'));

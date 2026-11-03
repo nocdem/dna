@@ -29,12 +29,15 @@ test('mounted status, provider choices and welcome text follow the reference', {
     for (const chain of ['ethereum', 'bsc']) {
       for (const provider of CHAINS[chain].rpcOptions) {
         await selectFixtureNetwork(page, chain);
-        await page.locator('a[href="#settings"]').click();
+        // functions.html has no bottom bar and the rail has no Settings link (UI pack): the #settings hash opens the page.
+        await page.evaluate(() => { window.location.hash = '#settings'; });
+        await page.locator('#page-settings').waitFor({ state: 'visible' });
         if (!await page.locator('#rpc-settings').evaluate(details => details.open)) await page.locator('#rpc-settings > summary').click();
         await page.locator('#rpc-choice').selectOption(provider.url); await page.locator('#save-rpc').click();
         await page.locator('#page-settings .page-back').click();
         await selectFixtureNetwork(page, 'solana'); await selectFixtureNetwork(page, chain);
-        await page.locator('a[href="#settings"]').click();
+        await page.evaluate(() => { window.location.hash = '#settings'; });
+        await page.locator('#page-settings').waitFor({ state: 'visible' });
         assert.equal(await page.locator('#rpc-choice').inputValue(), provider.url);
         assert.equal(await page.locator('#rpc-endpoint').isHidden(), true);
         await page.locator('#page-settings .page-back').click();

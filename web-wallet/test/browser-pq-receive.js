@@ -80,7 +80,7 @@ async function address(page,chain,network,expected,{decode=true}={}){
   await page.locator('#send-form').evaluate(form=>form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
   assert.equal(await page.locator('#review-dialog').evaluate(d=>d.open),false);
 }
-async function settings(page){await home(page);await page.locator('.wallet-navigation a[href="#settings"]').click();await page.locator('#page-settings').waitFor({state:'visible'});}
+async function settings(page){await home(page);await page.locator(activeMode==='extension'?'#extension-bottom-bar button[aria-label="Settings"]':'.wallet-navigation a[href="#settings"]').click();await page.locator('#page-settings').waitFor({state:'visible'});}
 async function lockPage(page){if(!(await page.locator('#lock').isVisible()))await home(page);await page.locator('#lock').click();}
 async function home(page){await page.locator('.wallet-navigation a[href="#"]').click();}
 try {

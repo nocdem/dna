@@ -29,7 +29,7 @@ import { renderSolanaTronHistory } from './solana-tron-screens.js';
 
 // index.html:18-77 is the screen. This adapter passes only public form fields
 // to wallet-ui.js; no wallet, derived key or signing implementation enters it.
-export function mountReferenceWallet({ document, window, root, status, ui, run, loadBalances, lock, reveal, setAutoLock, clearReveal }) {
+export function mountReferenceWallet({ document, window, root, status, ui, run, loadBalances, lock, reveal, setAutoLock, clearReveal, onPage }) {
   const template = document.createElement('template'); template.innerHTML = WALLET_MARKUP;
   root.replaceChildren(template.content.cloneNode(true));
   const $ = id => root.querySelector('#' + id);
@@ -68,6 +68,8 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   const connections = element('section', undefined, 'dashboard-panel'); appendPage('sites', connections);
   const sitesLink = element('a'); sitesLink.href = '#sites'; sitesLink.dataset.hint = 'Sites permitted to connect'; sitesLink.append(appIcon(document, 'sites'), element('span', 'Connected sites', 'nav-name')); root.querySelector('.wallet-navigation').append(sitesLink);
   for (const link of root.querySelectorAll('.wallet-navigation a')) { const label = link.querySelector('.nav-name').textContent; link.title = label; link.setAttribute('aria-label', label); }
+  // Settings is a destination of the bottom bar (connect.js); the page, its Back button and the #settings hash stay.
+  rail.querySelector('a[href="#settings"]').remove();
   let historyController;
   let selected = 'nodus', shownPage = null, disposed = false, readGeneration = 0, review, reviewTimer;
   let previousNetwork, previousTokens, previousAddress, walletScroll = 0, backgroundLog = { entries: [], running: [] };
@@ -209,6 +211,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     } else if (previous) { resetAssetView(); window.scrollTo(0, walletScroll); }
     if (name === 'wallet-activity') void loadHistory();
     if (name === 'earn') void earn.refresh();
+    onPage?.(shownPage);
   }
   function navigate(name) {
     window.history.replaceState(null, '', name ? `#${name}` : window.location.pathname + window.location.search);
@@ -534,7 +537,9 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   }
   update(); route();
   return {
-    update, resetAssetView,
+    update, resetAssetView, navigate,
+    // The bottom bar leaves Settings for Connect: the shown words go with the page (same condition as showPage).
+    leaveSettings() { if (shownPage === 'settings') clearReveal(); },
     payContact(fp) { selectAsset('nodus', 'NODUS', 'send'); $('recipient').value = fp; navigate('send'); },
     async loadBalances(force = false) { await initial; if (force && !disposed) await portfolio.refresh(); },
     dispose() {

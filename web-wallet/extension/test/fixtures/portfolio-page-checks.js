@@ -60,7 +60,9 @@ export async function checkPortfolioFlows(page, origin) {
   assert.deepEqual(await page.locator('#asset option').allTextContents(), ['SOL']);
   await page.locator('#recipient').fill('public fixture recipient'); await page.locator('#amount').fill('1.234');
   await page.locator('#page-send .page-back').click();
-  await page.locator('.wallet-navigation a[href="#settings"]').click();
+  // This fixture mounts the wallet screen without the bottom bar (connect.js); the rail has no Settings link since the UI pack, the #settings hash opens the page.
+  await page.evaluate(() => { window.location.hash = '#settings'; });
+  await page.locator('#page-settings').waitFor({ state: 'visible' });
   await page.locator('#balance-refresh-minutes').selectOption('0');
   await page.locator('#page-settings .page-back').click();
   await page.evaluate(() => { window.fixture.price('300000000'); window.fixture.hold(); document.getElementById('portfolio-refresh').click(); });

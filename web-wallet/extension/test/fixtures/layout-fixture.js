@@ -97,6 +97,16 @@ const client = { onNotification: () => () => {}, onDisconnect: () => () => {}, c
     return;
   }
   if (method === 'setPreference') { state.preferences[params[0]] = params[1]; return true; }
+  // `?unread`: an OPEN Connect snapshot (shape of snapshot() in src/connect/ui/messages.js) with one ready
+  // contact and two incoming chat messages, no read mark: the bottom bar's badge must read 2. Without the
+  // flag the method stays unanswered, as before. Public fixture values only.
+  if (method === 'getConnectState' && query.has('unread')) {
+    const fp = 'cd'.repeat(64), message = seq => ({ fp, seq, dir: 'in', text: `Public fixture message ${seq}`, ts: 1700000000000 + seq, at: 1700000000000 + seq, kind: 'chat' });
+    return { epoch: 1, phase: 'open', title: '', text: '', retry: false, online: false, caughtUp: true, ownFp: addresses.nodus, persistent: false,
+      ownProfile: null, ownNameConfirmed: false, contacts: [{ fp, ready: true }], outgoing: [], requests: [], messages: [message(1), message(2)],
+      profiles: [], groups: [], invitations: [], read: [], transferVerdicts: [], diagnostics: [], dropped: [], otherCounts: [],
+      feedback: {}, addResolved: null, vaults: [] };
+  }
   throw new Error(`Unexpected layout fixture method: ${method}`);
 } };
 const mounted = await mountReferencePage({ document, window, client });

@@ -20,6 +20,12 @@ import { assertNetworkGroups } from '../../test/browser-network-groups.js';
 // pages, network-grouped holdings, names, price wiring and approval/form
 // regressions. With PQ addresses set, the page's public-only PQ readers are
 // aborted by the route and their origins are checked against a fixed list.
+// UI pack 2026-11-03 additions: the bottom bar (Connect, Wallet, Settings;
+// current view, no top switch, one lock control, Settings page and Back, the
+// unread badge from the fixture's `?unread` open Connect snapshot, messenger
+// above the bar), the Reveal screen's frame / centred numbers / Copy phrase
+// button, and (below) the other UI-pack screen checks. The badge check falsely
+// passes only if the snapshot were not "open"; it asserts the positive count 2.
 // Can falsely pass visually: geometry is not aesthetic approval. A normal page
 // cannot prove extension font loading (package-smoke.test.js does). Fake state
 // and quotes cannot prove live background/chain/feed compatibility. Notification
@@ -98,6 +104,9 @@ async function assertPortfolioLayout(page) {
 }
 
 const button = (page, name) => page.getByRole('button', { name, exact: true });
+// UI pack 2026-11-03: Settings is a button of the bottom bar (connect.js); the rail has no gear.
+// Connect's accessible name gains ", N new" with unread messages, hence the prefix match.
+const bottomBar = (page, name) => page.locator(`#extension-bottom-bar button[aria-label^="${name}"]`);
 async function priceCount(page) { return page.evaluate(() => window.layout.calls.filter(call => call.method === 'getPrices').length); }
 // Populated pending-send fixtures must leave no block, rows, empty text or
 // actions in popup/full-page Activity. Account assertions stay below.
@@ -143,12 +152,12 @@ async function assertNavigation(page, current = null) {
   assert.deepEqual(values.map(node => [node.text, node.href]), [
     ['Portfolio', '#'], ['Send', '#send'], ['Receive', '#receive'],
     ['Earn', '#earn'], ['Shared vaults', '#vaults'], ['Smart contracts', '#contracts'],
-    ['Activity', '#wallet-activity'], ['Address book', '#address-book'], ['Device & settings', '#settings'],
+    ['Activity', '#wallet-activity'], ['Address book', '#address-book'],
     ['Connected sites', '#sites'],
   ]);
   const available = values.filter(node => !node.hidden);
   assert.deepEqual(available.filter(node => !['#earn', '#vaults', '#contracts'].includes(node.href)).map(node => node.text),
-    ['Portfolio', 'Send', 'Receive', 'Activity', 'Address book', 'Device & settings', 'Connected sites']);
+    ['Portfolio', 'Send', 'Receive', 'Activity', 'Address book', 'Connected sites']);
   assert.deepEqual(await page.locator('.wallet-page:visible').evaluateAll(nodes => nodes.map(node => node.id)), current ? [`page-${current}`] : []);
   assert.equal(await page.locator('#wallet-home').isVisible(), current === null);
   assert.equal(await page.locator('#wallet-heading').isVisible(), current === null);
@@ -278,7 +287,7 @@ async function assertHome(page, popup) {
   assert.ok(lock.box.left >= eye.box.right && lock.box.left - eye.box.right <= 12, 'The lock sits beside the eye');
   // wallet-screen.js:249 and capabilities.js: Nodus pages follow chain capability.
   assert.deepEqual(await page.locator('.wallet-navigation a:visible .nav-name').allTextContents(),
-    ['Portfolio', 'Send', 'Receive', 'Earn', 'Shared vaults', 'Smart contracts', 'Activity', 'Address book', 'Device & settings', 'Connected sites']);
+    ['Portfolio', 'Send', 'Receive', 'Earn', 'Shared vaults', 'Smart contracts', 'Activity', 'Address book', 'Connected sites']);
   assert.equal(await page.locator('.extension-network').count(), 0);
   assert.equal(await page.locator('.network-health').count(), 15);
   // portfolio-view.js:477-479: the portfolio always shows every network; no filter buttons.
@@ -428,6 +437,36 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
           assert.equal(await page.locator('#lock').isVisible(), false);
           await open('home'); await waitHome(page);
         }
+        // UI pack 2026-11-03: the bottom bar. Order, current view, no top switch, one lock control,
+        // Settings and Back, no horizontal overflow, no badge without unread messages.
+        assert.deepEqual(await page.locator('#extension-bottom-bar button').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label'))), ['Connect', 'Wallet', 'Settings']);
+        assert.equal(await bottomBar(page, 'Wallet').getAttribute('aria-current'), 'page');
+        assert.equal(await page.locator('#extension-bottom-bar [aria-current="page"]').count(), 1);
+        assert.equal(await page.locator('.wallet-connect-switch, #wallet-connect-switch').count(), 0);
+        assert.equal(await page.getByRole('button', { name: 'Lock wallet' }).count(), 1);
+        assert.equal(await page.locator('.extension-bottom-badge').isVisible(), false);
+        await bottomBar(page, 'Settings').click();
+        await page.locator('#page-settings').waitFor({ state: 'visible' });
+        assert.equal(await bottomBar(page, 'Settings').getAttribute('aria-current'), 'page');
+        assert.equal(await bottomBar(page, 'Wallet').getAttribute('aria-current'), null);
+        await capture('bottom-bar-settings');
+        await page.locator('#page-settings .page-back').click();
+        assert.equal(await bottomBar(page, 'Wallet').getAttribute('aria-current'), 'page');
+        await capture('bottom-bar-wallet');
+        // The badge reads the unread count of the fixture's open Connect snapshot (2), only off the Connect view.
+        await page.goto(`${origin}/extension/test/fixtures/layout.html?page=${kind}&stage=home&unread`);
+        await page.waitForFunction(() => Boolean(window.layout));
+        await page.locator('.extension-bottom-badge:visible').waitFor();
+        assert.equal(await page.locator('.extension-bottom-badge').textContent(), '2');
+        assert.equal(await bottomBar(page, 'Connect').getAttribute('aria-label'), 'Connect, 2 new');
+        await bottomBar(page, 'Connect').click();
+        await page.locator('#extension-connect').waitFor({ state: 'visible' });
+        assert.equal(await bottomBar(page, 'Connect').getAttribute('aria-current'), 'page');
+        assert.equal(await page.locator('.extension-bottom-badge').isVisible(), false);
+        await capture('bottom-bar-connect');
+        const bottoms = await page.evaluate(() => ({ messenger: document.querySelector('#extension-connect .messenger').getBoundingClientRect().bottom, bar: document.querySelector('#extension-bottom-bar').getBoundingClientRect().top }));
+        assert.ok(bottoms.messenger <= bottoms.bar + 0.5, `${kind} ${width}: messenger bottom ${bottoms.messenger} reaches the bar top ${bottoms.bar}`);
+        await open('home'); await waitHome(page);
         // No flags/live data. The public fixture holds every initial balance
         // and quote read. Measuring only after waitHome would miss the jump.
         await page.goto(`${origin}/extension/test/fixtures/layout.html?page=${kind}&stage=home&hold`);
@@ -488,7 +527,7 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         // Greeting and registration belong to home. A name/state refresh on a
         // separate page must not restore them; returning home keeps the form.
         await selectNetwork(page, 'ethereum');
-        await page.locator('.wallet-navigation a[href="#settings"]').click();
+        await bottomBar(page, 'Settings').click();
         assert.equal(await page.locator('#wallet-heading').isVisible(), false);
         await page.evaluate(async () => {
           window.layout.state.nodus.connection = 'public-refresh'; await window.layout.refresh();
@@ -657,7 +696,7 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         await page.locator('#page-wallet-activity .page-back').click();
         await selectNetwork(page, 'nodus'); await waitHome(page);
         await assertNavigation(page);
-        await page.locator('.wallet-navigation a[href="#settings"]').click();
+        await bottomBar(page, 'Settings').click();
         await assertNavigation(page, 'settings'); await capture('settings');
         assert.equal(await page.locator('#balance-refresh-minutes').isDisabled(), false);
         assert.equal(await page.locator('#address-book-save').isDisabled(), false);
@@ -668,7 +707,7 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
           assert.equal(await site.getByRole('button', { name: 'Disconnect', exact: true }).isVisible(), true);
         }
         assert.equal(await button(page, 'Disconnect').count(), 2); await capture('sites');
-        await page.locator('#page-sites .page-back').click(); await page.locator('.wallet-navigation a[href="#settings"]').click();
+        await page.locator('#page-sites .page-back').click(); await bottomBar(page, 'Settings').click();
         await page.locator('#auto-lock-minutes').selectOption('15');
         await page.waitForFunction(() => window.layout.state.preferences.autoLockTimeLimit === 15);
         assert.match(await page.locator('#auto-lock-note').textContent(), /locks after 15 minutes/);
@@ -680,7 +719,7 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         await selectNetwork(page, 'solana');
         assert.deepEqual(await page.locator('#asset option').allTextContents(), ['SOL']);
         assert.equal(await page.locator('.asset-group[data-chain="solana"] .chain-holding').first().locator('.holding-value small').textContent(), '—');
-        await page.locator('.wallet-navigation a[href="#settings"]').click();
+        await bottomBar(page, 'Settings').click();
         await page.locator('#reveal-password').fill('fresh-password');
         await button(page, 'Reveal phrase').click();
         assert.equal(await page.locator('#device-panel .phrase-grid input[readonly]').count(), 24);
