@@ -89,8 +89,15 @@ try {
         assert.equal(await page.locator('#receive-qr svg').count(), 1);
         const send = mode === 'extension'
           ? chain !== 'tidecoin' && (chain === 'asentum' ? network === 'testnet' : network === 'mainnet')
-          : ['algorand', 'soqucoin'].includes(chain) ? network === 'mainnet' : chain === 'asentum' && network === 'testnet';
+          : ['algorand', 'soqucoin', 'ckb'].includes(chain) ? network === 'mainnet' : chain === 'asentum' && network === 'testnet';
         assert.equal(await page.locator('#quick-send').isDisabled(), !send, `${mode}:${chain}:${network} send gate`);
+        // Operator decision 2026-11-03: XION, Splendor and QTC send stays in the extension; the
+        // web wallet and Connect say so on mainnet (the extension does send there).
+        const fromExtension = { xion: 'XION', splendor: 'SPLD', qtc: 'QTC' }[chain];
+        if (mode === 'web' && fromExtension && network === 'mainnet') {
+          assert.equal(await page.locator('#send-disabled-note').textContent(), `Send ${fromExtension} from the extension.`, `${mode}:${chain}:${network} note`);
+          assert.equal(await page.locator('#send-fields').isVisible(), false, `${mode}:${chain}:${network} has no send fields`);
+        }
         checked++;
       }
     }

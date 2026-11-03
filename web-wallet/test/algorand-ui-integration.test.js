@@ -59,10 +59,10 @@ test('tracker validates network and sender; 404 after expiry is not evidence of 
 test('UI routes selected network, persists before submission and prevents abandonment/duplicate pending sends',async()=>{
  const app=await readFile(new URL('../src/app.js',import.meta.url),'utf8');
  assert.match(app,/networkId: isPqChain\(chain\) \? pqSelections\[chain\]/);
- assert.match(app,/\['ethereum', 'bsc', 'algorand', 'soqucoin', 'splendor', 'asentum'\]\.includes/);
- assert.match(app,/row.chain !== NODUS_ASSET.chain && !\['algorand', 'soqucoin', 'splendor', 'asentum'\]\.includes/);
+ assert.match(app,/\['ethereum', 'bsc', 'algorand', 'soqucoin', 'splendor', 'asentum', 'ckb'\]\.includes/);
+ assert.match(app,/row.chain !== NODUS_ASSET.chain && !\['algorand', 'soqucoin', 'splendor', 'asentum', 'ckb'\]\.includes/);
  assert.match(app,/await persistActivity\(\{ required: true,/);
- assert.match(app,/\['algorand', 'soqucoin', 'splendor', 'asentum'\]\.includes\(\$\('chain'\)\.value\) && !activitySession/);
+ assert.match(app,/\['algorand', 'soqucoin', 'splendor', 'asentum', 'ckb'\]\.includes\(\$\('chain'\)\.value\) && !activitySession/);
 });
 
 test('old confirmations and known pre-submit cancellation recover without duplicate send',async()=>{

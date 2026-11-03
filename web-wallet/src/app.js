@@ -1,6 +1,8 @@
 import { pqAddressBookChecks } from './pq/address-book-checks.js';
 import {prepareAsentumExactRecovery} from './pq/asentum-transfer.js';
 import {prepareSplendorExactRecovery} from './pq/splendor-transfer.js';
+import {prepareCkbExactRecovery} from './pq/ckb-recovery.js';
+import {ckbRecoveryTransfer} from './pq/ckb-transfer.js';
 import { prepareSoquResubmission } from './pq/soqu-transfer.js';
 import { createSubmissionProof, commitSubmissionProof, recoverSubmissionProofs, clearSubmissionProofs } from './pq/submission-proof.js';
 import { soquScript } from './pq/soqu-transaction.js';
@@ -251,15 +253,15 @@ function persistActivity({ required = false, expectedPreviousSubmissionId, expec
     if (required) {
       // Serialize the reservation across tabs, not merely each tab's UI. An
       // authenticated unresolved hash from another tab must win before POST.
-      const freshAlgo = rows.filter(row => ['algorand', 'soqucoin', 'splendor', 'asentum'].includes(row.chain) && !terminal(row.status));
+      const freshAlgo = rows.filter(row => ['algorand', 'soqucoin', 'splendor', 'asentum', 'ckb'].includes(row.chain) && !terminal(row.status));
       for (const candidate of freshAlgo) {
-        if (['soqucoin', 'splendor', 'asentum'].includes(candidate.chain) && candidate.chain===expectedPreviousChain && candidate.hash===expectedPreviousHash && expectedPreviousSubmissionId !== undefined) {
+        if (['soqucoin', 'splendor', 'asentum', 'ckb'].includes(candidate.chain) && candidate.chain===expectedPreviousChain && candidate.hash===expectedPreviousHash && expectedPreviousSubmissionId !== undefined) {
           const prior = saved.find(row => row.chain === candidate.chain && row.address === candidate.address && row.hash === candidate.hash);
           if (!prior || prior.submissionId !== expectedPreviousSubmissionId || prior.notSubmitted || terminal(prior.savedStatus ?? prior.status)) throw new Error('Recovery attempt changed in another tab. Check Activity.');
         }
         const other = saved.find(row => row.chain === candidate.chain && row.address === candidate.address
           && !terminal(row.savedStatus ?? row.status)
-          && (row.hash !== candidate.hash || (['soqucoin', 'splendor', 'asentum'].includes(candidate.chain) && row.submissionId !== candidate.submissionId && !(candidate.chain===expectedPreviousChain && candidate.hash===expectedPreviousHash && row.submissionId===expectedPreviousSubmissionId)))
+          && (row.hash !== candidate.hash || (['soqucoin', 'splendor', 'asentum', 'ckb'].includes(candidate.chain) && row.submissionId !== candidate.submissionId && !(candidate.chain===expectedPreviousChain && candidate.hash===expectedPreviousHash && row.submissionId===expectedPreviousSubmissionId)))
           && !rows.some(local => local.chain === row.chain && local.hash === row.hash && terminal(local.status)));
         if (other) throw new Error(`Another ${candidate.chain} submission is unresolved. Check Activity before sending.`);
       }
@@ -268,7 +270,7 @@ function persistActivity({ required = false, expectedPreviousSubmissionId, expec
     // must respect attempt identity. Only the required write of an explicitly
     // reviewed replay may replace the exact prior durable attempt.
     for (const local of rows) {
-      if (!['algorand', 'soqucoin', 'splendor', 'asentum'].includes(local.chain)) continue;
+      if (!['algorand', 'soqucoin', 'splendor', 'asentum', 'ckb'].includes(local.chain)) continue;
       const prior=saved.find(row=>row.chain===local.chain && row.address===local.address && row.hash===local.hash);
       if (prior && prior.submissionId!==local.submissionId && !(local.chain !== 'algorand' && required && local.chain===expectedPreviousChain && local.hash===expectedPreviousHash && expectedPreviousSubmissionId!==undefined && prior.submissionId===expectedPreviousSubmissionId && !prior.notSubmitted && !terminal(prior.savedStatus ?? prior.status)))
         throw new Error('Activity attempt changed in another tab. Refresh Activity before continuing.');
@@ -596,14 +598,14 @@ function renderActivity(save = true) {
       link.href = CHAINS[row.chain].explorer + encodeURIComponent(row.hash); link.textContent = 'View transaction'; link.target = '_blank'; link.rel = 'noopener noreferrer'; footer.append(link);
     } else footer.append(el('span', 'activity-id', `${claim ? 'Claim ID' : row.kind ? 'Transaction ID' : 'Transfer ID'} ${row.hash}`));
     if (ready) footer.append(tryAgainButton(row));
-    if (['soqucoin','splendor','asentum'].includes(row.chain) && capabilitiesFor(row.chain).send && row.signedPayload && !row.notSubmitted && ['pending', 'unknown'].includes(row.status)) {
+    if (['soqucoin','splendor','asentum','ckb'].includes(row.chain) && capabilitiesFor(row.chain).send && row.signedPayload && !row.notSubmitted && ['pending', 'unknown'].includes(row.status)) {
       const recover = document.createElement('button'); recover.type = 'button'; recover.className = 'secondary small';
-      recover.textContent = 'Review same-transaction recovery'; recover.onclick = () => void (row.chain === 'asentum' ? reviewAsentumRecovery(row) : row.chain === 'splendor' ? reviewSplendorRecovery(row) : reviewSoquRecovery(row)); footer.append(recover);
+      recover.textContent = 'Review same-transaction recovery'; recover.onclick = () => void (row.chain === 'asentum' ? reviewAsentumRecovery(row) : row.chain === 'splendor' ? reviewSplendorRecovery(row) : row.chain === 'ckb' ? reviewCkbRecovery(row) : reviewSoquRecovery(row)); footer.append(recover);
     }
     // A NODUS send always resolves: included, or 'expired' once the chain passes
     // its expiry block. Its coins stay held until then (src/adapters/nodus.js
     // lockedInputs), so it is never marked abandoned by hand.
-    if (!terminal(row.status) && row.chain !== NODUS_ASSET.chain && !['algorand', 'soqucoin', 'splendor', 'asentum'].includes(row.chain)) {
+    if (!terminal(row.status) && row.chain !== NODUS_ASSET.chain && !['algorand', 'soqucoin', 'splendor', 'asentum', 'ckb'].includes(row.chain)) {
       const abandon = document.createElement('button'); abandon.type = 'button'; abandon.className = 'secondary small';
       abandon.textContent = row._abandonArmed ? 'Confirm abandon' : 'Mark as abandoned';
       abandon.onclick = () => {
@@ -2534,8 +2536,8 @@ $('send-form').onsubmit = async event => {
   // network's own note (Cellframe: index.html's default text).
   const selected = networkFor($('chain').value);
   if (selected?.receiveOnly) { message(selected.sendNote || DEFAULT_SEND_DISABLED_NOTE); return; }
-  if (['algorand', 'soqucoin', 'splendor', 'asentum'].includes($('chain').value) && !activitySession) { message('Save this wallet encrypted before sending on this network, so an uncertain submission survives reload.'); return; }
-  if (['ethereum', 'bsc', 'algorand', 'soqucoin', 'splendor', 'asentum'].includes($('chain').value)) {
+  if (['algorand', 'soqucoin', 'splendor', 'asentum', 'ckb'].includes($('chain').value) && !activitySession) { message('Save this wallet encrypted before sending on this network, so an uncertain submission survives reload.'); return; }
+  if (['ethereum', 'bsc', 'algorand', 'soqucoin', 'splendor', 'asentum', 'ckb'].includes($('chain').value)) {
     const address = wallet.addresses[$('chain').value];
     const blocking = history.find(row => row.chain === $('chain').value && row.address === address && !terminal(row.status));
     if (blocking) { message(`A previous send on this network has no final result yet (tx ${blocking.hash}). Wait for it to resolve in Activity.`); return; }
@@ -2553,7 +2555,8 @@ $('send-form').onsubmit = async event => {
     // NODUS: the asset travels as its token id (the option's value), required
     // by prepareTransfer — never defaulted to native on the way.
     const asset = chain === NODUS_ASSET.chain ? { chain, tokenId: $('asset').value } : undefined;
-    const transfer = await prepareTransfer({ wallet, chain, symbol: $('asset').value, asset, to: $('recipient').value, amount: $('amount').value, endpoint: endpoints[chain], nodusLocked, networkId: isPqChain(chain) ? pqSelections[chain] : undefined, ...(chain === 'asentum' ? { maxFeePerGas: $('asentum-max-fee').value } : {}) });
+    const transfer = await prepareTransfer({ wallet, chain, symbol: $('asset').value, asset, to: $('recipient').value, amount: $('amount').value, endpoint: endpoints[chain], nodusLocked, networkId: isPqChain(chain) ? pqSelections[chain] : undefined, ...(chain === 'asentum' ? { maxFeePerGas: $('asentum-max-fee').value } : {}),
+      ...(chain === 'ckb' ? { ckbUnresolved: () => history.some(row => row.chain === 'ckb' && row.address === wallet?.addresses?.ckb && !terminal(row.status)) } : {}) });
     if (current !== revision || !wallet) { transfer.cancel(); return; }
     let entries;
     if (transfer.review) {
@@ -2594,7 +2597,7 @@ $('confirm-send').onclick = async () => {
     const hash = await transfer.confirm(async details => {
       sentWire = typeof details?.wire === 'string' ? details.wire : undefined;
       record = recordActivity(transfer, details);
-      if (!transfer.isResubmission && ['soqucoin', 'splendor', 'asentum'].includes(transfer.chain)) {
+      if (!transfer.isResubmission && ['soqucoin', 'splendor', 'asentum', 'ckb'].includes(transfer.chain)) {
         const session = activitySession, source = wallet;
         if (!session || !source || source.locked) throw new Error('Save and unlock the wallet before sending.');
         submissionProof = await createSubmissionProof({ id: session.id, row: record, key: session.key });
@@ -2604,8 +2607,9 @@ $('confirm-send').onclick = async () => {
       if (previous >= 0) history.splice(previous, 1, record); else history.push(record);
       if (current === revision) renderActivity(false);
       // The signed hash must be durable before the first network submission.
-      await persistActivity({ required: true, ...(['soqucoin', 'splendor', 'asentum'].includes(transfer.chain) && transfer.isResubmission ? { expectedPreviousSubmissionId: transfer.previousSubmissionId, expectedPreviousChain: transfer.chain, expectedPreviousHash: transfer.hash } : {}) });
-      if (['splendor', 'asentum'].includes(transfer.chain) && transfer.isResubmission) return { submissionId: record.submissionId };
+      await persistActivity({ required: true, ...(['soqucoin', 'splendor', 'asentum', 'ckb'].includes(transfer.chain) && transfer.isResubmission ? { expectedPreviousSubmissionId: transfer.previousSubmissionId, expectedPreviousChain: transfer.chain, expectedPreviousHash: transfer.hash } : {}) });
+      // The CKB controller and recovery module require the fresh durable attempt identity on an initial send too.
+      if ((['splendor', 'asentum'].includes(transfer.chain) && transfer.isResubmission) || transfer.chain === 'ckb') return { submissionId: record.submissionId };
     });
     if (record) { record.note = 'Broadcast submitted; awaiting confirmation.'; if (current === revision) trackActivity(); }
     // A plain NODUS transfer the network accepted: Nodus Connect's Messages
@@ -2633,7 +2637,7 @@ $('confirm-send').onclick = async () => {
     }
     follow();
   } catch (error) {
-    if (submissionProof && ((transfer.chain === 'soqucoin' && error.soquNotSubmitted === true) || (transfer.chain === 'splendor' && error.splendorNotSubmitted === true) || (transfer.chain === 'asentum' && error.asentumNotSubmitted === true))) {
+    if (submissionProof && ((transfer.chain === 'soqucoin' && error.soquNotSubmitted === true) || (transfer.chain === 'splendor' && error.splendorNotSubmitted === true) || (transfer.chain === 'asentum' && error.asentumNotSubmitted === true) || (transfer.chain === 'ckb' && !transfer.isResubmission && error.ckbNotExposed === true))) {
       // This capability contains ciphertext only. No key is consulted after
       // lock, and the separate attempt-bound journal cannot overwrite a vault.
       try { await commitSubmissionProof(submissionProofStorage, submissionProof); }
@@ -2650,7 +2654,7 @@ $('confirm-send').onclick = async () => {
       return;
     }
     if (record) {
-      if ((transfer.chain === 'algorand' && error.algorandNotSubmitted === true) || (transfer.chain === 'soqucoin' && error.soquNotSubmitted === true) || (transfer.chain === 'splendor' && error.splendorNotSubmitted === true) || (transfer.chain === 'asentum' && error.asentumNotSubmitted === true)) {
+      if ((transfer.chain === 'algorand' && error.algorandNotSubmitted === true) || (transfer.chain === 'soqucoin' && error.soquNotSubmitted === true) || (transfer.chain === 'splendor' && error.splendorNotSubmitted === true) || (transfer.chain === 'asentum' && error.asentumNotSubmitted === true) || (transfer.chain === 'ckb' && !transfer.isResubmission && error.ckbNotExposed === true)) {
         record.status = 'failed'; record.notSubmitted = true;
         record.note = 'Cancelled before network submission. Nothing was broadcast.';
         await persistActivity().catch(() => { record.status='unknown'; delete record.notSubmitted; record.note='Another activity attempt may exist; check Activity before sending.'; });
@@ -2697,6 +2701,19 @@ async function reviewSplendorRecovery(row) {
     const transfer={...prepared,chain:'splendor',symbol:'SPLD',amount:formatUnits(BigInt(row.amountAtoms),18),endpoint:'https://quantum-rpc.splendor.org',isResubmission:true,previousSubmissionId:row.submissionId,
       confirm:onBroadcast=>prepared.confirm(async()=>onBroadcast(snapshot))};
     showReview(transfer,[['Network','Splendor mainnet'],['From',prepared.from],['To',prepared.to],['Amount',`${transfer.amount} SPLD`],['Fee',`${formatUnits(BigInt(prepared.feeAtoms),18)} SPLD`],['Transaction ID',prepared.hash],['Recovery',prepared.notice],['Review expires',new Date(prepared.expiresAt).toLocaleTimeString()]],'Review same-transaction recovery');
+  } catch(error) { if(current===revision) message(error.message,{category:'send',error:true}); } finally {busy=false;}
+}
+// CKB recovery review: the extension's prepareResubmit (extension/src/background/ckb.js:32-35)
+// in the page. The guard also tests the account (the extension's current(s)), and the transfer is
+// marked isResubmission so a failed replay stays unresolved with its signed bytes and hold.
+async function reviewCkbRecovery(row) {
+  if (busy || !wallet || wallet.locked || $('chain').value !== 'ckb' || !capabilitiesFor('ckb').send || pqSelections.ckb !== 'mainnet' || !activitySession || row.address !== wallet.addresses.ckb) return;
+  const current=revision, source=wallet; busy=true;
+  const guard=()=>{if(current!==revision || source!==wallet || source.locked || $('chain').value!=='ckb' || pqSelections.ckb!=='mainnet' || row.address!==source.addresses.ckb)throw new Error('Wallet or network changed.');};
+  try {
+    const prepared=await prepareCkbExactRecovery(row,{assertCurrent:guard});guard();
+    const transfer=ckbRecoveryTransfer(prepared,row);
+    showReview(transfer,[...transfer.review,['Review expires',new Date(prepared.expiresAt).toLocaleTimeString()]],'Review same-transaction recovery');
   } catch(error) { if(current===revision) message(error.message,{category:'send',error:true}); } finally {busy=false;}
 }
 async function reviewSoquRecovery(row) {
