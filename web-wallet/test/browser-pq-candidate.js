@@ -145,6 +145,15 @@ async function ckbSendFlow(mode, directory) {
   await page.locator('#vault-password').fill(password); await page.locator('#vault-confirm-password').fill(password);
   await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
   await page.waitForFunction(() => document.querySelector('#vault-save-status').textContent.includes('Encrypted wallet saved'));
+  // Operator decision 2026-11-03 (plan D2): on this page XION, Splendor, QTC and Ixios mainnet
+  // show "Send <SYMBOL> from the extension." and no send fields; the extension sends there.
+  for (const [chain, symbol] of [['xion', 'XION'], ['splendor', 'SPLD'], ['qtc', 'QTC'], ['ixios', 'IXIOS']]) {
+    await choose(page, chain);
+    if (chain !== 'ixios') await environment(page, 'mainnet');
+    assert.equal(await page.locator('#quick-send').isDisabled(), true, `${mode}:${chain} send gate`);
+    assert.equal(await page.locator('#send-disabled-note').textContent(), `Send ${symbol} from the extension.`, `${mode}:${chain} note`);
+    assert.equal(await page.locator('#send-fields').isVisible(), false, `${mode}:${chain} has no send fields`);
+  }
   await choose(page, 'ckb'); await environment(page, 'mainnet');
   assert.equal(await page.locator('#quick-send').isDisabled(), false, `${mode}: CKB mainnet send is open`);
   // First send: the simulation request is refused after the signed transaction was handed
@@ -186,7 +195,7 @@ async function ckbSendFlow(mode, directory) {
   assert.equal(node.requests.filter(m => m === 'test_tx_pool_accept').length, 2, `${mode}: one simulation request for the send, one for the recovery`);
   assert.equal(node.requests.includes('send_transaction'), false);
   assert.deepEqual(errors, []);
-  console.log(`PASS ckb-send ${mode}: extension review rows, uncertain first send, failed recovery stays unresolved after reload, new send refused; nothing broadcast`);
+  console.log(`PASS ckb-send ${mode}: four "from the extension" notes, extension review rows, uncertain first send, failed recovery stays unresolved after reload, new send refused; nothing broadcast`);
   await context.close(); context = null;
 }
 try {
