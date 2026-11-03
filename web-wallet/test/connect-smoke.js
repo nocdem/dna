@@ -66,6 +66,9 @@ console.log('Wallet build check passed: no app shell, Messages navigation or Mes
 const url = process.env.CONNECT_URL || 'http://127.0.0.1:4192';
 const server = process.env.CONNECT_URL ? null : await startPreview(['node_modules/vite/bin/vite.js', 'preview', '--config', 'vite.connect.config.js', '--host', '127.0.0.1', '--port', '4192', '--strictPort'], 4192);
 const { vectors } = JSON.parse(readFileSync(new URL('./fixtures/nodus-addresses.json', import.meta.url)));
+// The PQ networks' read hosts the portfolio contacts on open (observed in this script's
+// run on 2026-11-03; endpoints in src/pq/*.js and src/ixios/network.js).
+const PQ_READ_HOSTS = new Set(['mainnet-api.algonode.cloud', 'mainnet-api.soqu.org', 'mainnet.ckb.dev', 'qtc.events', 'api.xion-mainnet-1.burnt.com', 'quantum-rpc.splendor.org', 'testnet.asentum.com']);
 let browser;
 try {
   for (let i = 0; i < 100; i++) { try { if ((await fetch(url)).ok) break; } catch {} await delay(50); }
@@ -100,6 +103,12 @@ try {
     if (await portfolioRead(route)) return;
     // A VITE_ENABLE_IXIOS=true build (the release build) also reads IXIOS.
     if (await ixiosRead(route)) return;
+    // Since 0.1.155 the portfolio reads the PQ networks' balances on open; those
+    // reads are refused here (no answer is needed) and must never be a submission.
+    if (PQ_READ_HOSTS.has(new URL(req.url()).hostname)) {
+      assert.doesNotMatch(req.url() + ' ' + (req.postData() ?? ''), /send_transaction|broadcast|\/tx\/submit|\/txs\b/, 'a PQ read is never a submission');
+      return route.abort();
+    }
     if (!req.url().startsWith(url + '/') || req.method() !== 'GET' || req.postData()) {
       unexpected.push({ url: req.url(), method: req.method() }); return route.abort();
     }
@@ -192,7 +201,9 @@ try {
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('href')), '#settings');
   // More → Address book opens that page in the Wallet tab.
   await page.locator('.app-nav-item[data-tab="more"]').click();
-  assert.equal(await page.locator('#more-contracts').isVisible(), false, 'no Smart contracts row without the EVM generation');
+  // Since 0.1.145 the row follows the selected network's contracts capability
+  // (src/evm/ui.js showPanel; src/connect-main.js syncContractsRow); NODUS is selected.
+  assert.equal(await page.locator('#more-contracts').isVisible(), true, 'Smart contracts row follows the NODUS contracts capability');
   await page.locator('#more-address-book').click();
   assert.equal(await page.locator('#tab-wallet').isVisible(), true);
   assert.equal(await page.locator('#address-book-panel').isVisible(), true);

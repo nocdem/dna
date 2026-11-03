@@ -15,7 +15,9 @@ const password = 'public-security-test-password-2026', addresses = deriveWallet(
 const server = await startPreview(['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '4189', '--strictPort'], 4189, { cwd: app });
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined, headless: true });
 let page, broadcasts = 0, durable = 0, staleWriteCompleted = false;
-const errors = [];
+const errors = [], unscripted = [];
+// The PQ networks' read hosts the portfolio contacts on open (as in test/connect-smoke.js).
+const PQ_READ_HOSTS = new Set(['mainnet-api.algonode.cloud', 'mainnet-api.soqu.org', 'mainnet.ckb.dev', 'qtc.events', 'api.xion-mainnet-1.burnt.com', 'quantum-rpc.splendor.org', 'testnet.asentum.com']);
 const context = await browser.newContext();
 await context.route('**/*', async route => {
   const req = route.request(); if (req.url().startsWith(url + '/')) return route.continue();
@@ -25,6 +27,11 @@ await context.route('**/*', async route => {
   if (await portfolioRead(route, { ethereum: false })) return;
   if (await ixiosRead(route)) return;
   const body = req.postDataJSON(); assert.ok(!JSON.stringify(body).includes(phrase));
+  // Since 0.1.155 the portfolio reads the PQ networks' balances on open; refused here.
+  if (PQ_READ_HOSTS.has(new URL(req.url()).hostname)) { unscripted.push(req.url()); return route.abort('blockedbyclient'); }
+  // A request with no JSON-RPC body is none of the scripted reads: refuse it, as before
+  // any read existed for it (the phrase check above still ran on it).
+  if (!body) { unscripted.push(req.url()); return route.abort('blockedbyclient'); }
   const process = async call => {
     if (call.method === 'eth_sendRawTransaction') {
       const tx = Transaction.from(call.params[0]); broadcasts++;
