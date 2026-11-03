@@ -351,10 +351,12 @@ try {
     await stayed(await pick('Ethereum'), width);
     assert.equal(await box.locator('.selected-network-name').innerText(), 'Ethereum');
     assert.deepEqual(await offered(), { send: true, receive: true, earn: false }, 'Ethereum: Send and Receive');
+    assert.equal((await swap()).hidden, true, 'Ethereum: no Swap (src/app.js quick-swap only on Nodus)');
     if (process.env.SHOT_DIR && width === 1440) await box.screenshot({ path: `${process.env.SHOT_DIR}/box-ethereum.png` });
     await stayed(await pick('Cellframe'), width);
     assert.equal(await box.locator('.selected-network-name').innerText(), 'Cellframe');
     assert.deepEqual(await offered(), { send: false, receive: true, earn: false }, 'Cellframe: receive only');
+    assert.equal((await swap()).hidden, true, 'Cellframe: no Swap');
     assert.match(await page.locator('#quick-send').getAttribute('title'), /./, 'a disabled Send says why');
     if (process.env.SHOT_DIR && width === 1440) await box.screenshot({ path: `${process.env.SHOT_DIR}/box-cellframe.png` });
     await stayed(await pick('Nodus'), width);

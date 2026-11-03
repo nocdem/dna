@@ -19,7 +19,10 @@ test('mounted portfolio controls route reads and preserve the send form', { time
   await withPortfolioPage(checkPortfolioFlows);
 });
 
-// Node >=22.14, no flags, network or disk writes; all browser/port fixtures are in memory and disposed after each test.
+// Node >=22.14, no flags, no network. The tests below use in-memory port/background fixtures disposed after
+// each test. The mounted portfolio test above is the exception: withPortfolioPage
+// (fixtures/portfolio-page-checks.js:25-42) starts a loopback Vite server on 127.0.0.1 port 0 and Chromium
+// (CHROMIUM_PATH or /usr/bin/chromium) and writes a temporary Vite cache it removes in finally.
 const phrase = 'abandon '.repeat(23) + 'art';
 const password = 'public-test-password-123';
 
