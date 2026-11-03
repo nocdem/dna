@@ -17,6 +17,9 @@ import { randomBytes } from 'node:crypto';
 // line is empty and not visible; the network is checked on the environment summary);
 // the extension's Settings is reached through the bottom bar. Falsely passes if the
 // address never appeared (the check follows the wait for the shown address).
+// Native-rule chains (plan 2026-11-03-pq-native): #pq-recovery-note is hidden for Tidecoin, Soqucoin, XION and
+// Splendor and shown with today's text for the other four, on web and extension (Connect shares the web page).
+// Falsely passes if a chain were never iterated (the iteration is over the 13 receive variants).
 import assert from 'node:assert/strict';
 import { readFile, mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -29,7 +32,7 @@ import { pastePhrase } from './browser-phrase.js';
 import { assertNetworkGroups } from './browser-network-groups.js';
 import { walletPageSupported, walletPqNetwork } from '../src/pq/wallet-capabilities.js';
 import { extensionPageSupported, extensionNetworkConfig } from '../extension/src/constants/capabilities.js';
-import { PQ_NETWORKS } from '../src/pq/networks.js';
+import { PQ_NETWORKS, PQ_NATIVE_WORD_CHAINS } from '../src/pq/networks.js';
 const jsQR=createRequire(import.meta.url)('jsqr');
 const app=fileURLToPath(new URL('..',import.meta.url)),web=join(app,'dist'),extension=join(app,'dist-extension/unpacked');
 const fixture=JSON.parse(await readFile(new URL('./fixtures/pq-receive.json',import.meta.url),'utf8')).vectors[0];
@@ -92,10 +95,13 @@ async function address(page,chain,network,expected,{decode=true}={}){
   // is shown, the empty line takes no space; the network is read from the environment summary ("Environment · <label>").
   assert.equal(await page.locator('#pq-address-status').textContent(),'');
   assert.equal(await page.locator('#pq-address-status').isVisible(),false);
-  // The recovery note stays (UI pack 2026-11-03 section 5b), its text as on 14dc02b9f (src/app.js:966, extension wallet-screen.js:148).
+  // The recovery note (UI pack 2026-11-03 section 5b) keeps its text as on 14dc02b9f (src/app.js, extension wallet-screen.js) for
+  // Algorand, CKB, QTC and Asentum; for Tidecoin, Soqucoin, XION and Splendor the address is the chain wallet's own, so the note
+  // (whose second sentence says native wallets may differ) is hidden (plan 2026-11-03-pq-native section 4, PQ_NATIVE_WORD_CHAINS).
+  const nativeWords=PQ_NATIVE_WORD_CHAINS.includes(chain);
   assert.equal(await page.locator('#pq-recovery-note').textContent(),'Recover this address with your Nodus recovery phrase. Native chain wallets may derive different addresses.');
-  // It sits in the network environment disclosure (src/app.js:977, extension wallet-screen.js:158), shown with it, not hidden.
-  assert.equal(await page.locator('#pq-recovery-note').evaluate(node=>node.hidden),false);
+  // It sits in the network environment disclosure, shown with it unless the chain is a native-word chain.
+  assert.equal(await page.locator('#pq-recovery-note').evaluate(node=>node.hidden),nativeWords,`${activeMode} ${chain}: recovery note hidden only for native-word chains`);
   assert.match(await page.locator('#wallet-environment summary').textContent(),new RegExp(network==='testnet'?'Testnet':'Mainnet'));
   if(decode)assert.equal(await qr(page),expected);
   await page.locator('#send-form').evaluate(form=>form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
