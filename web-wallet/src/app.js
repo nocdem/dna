@@ -25,10 +25,9 @@ import { readHistory, mergeHistory, historySupported, HISTORY_SOURCES, HISTORY_L
 import { recordActivity, watchActivity, checkActivity, terminal, submissionStatus, evmActivityText, activitySymbol } from './activity.js';
 import { CHAINS, CELLFRAME, rpcChoiceOffered } from './config.js';
 import { CPUNK_ASSET, displayAmount, unavailableAssetNote } from './portfolio.js';
-// Pure data, referenced only inside `if (import.meta.env.VITE_ENABLE_IXIOS === 'true')`
-// blocks below, so a disabled build tree-shakes the whole module away.
-import { IXIOS_NETWORK, IXIOS_ASSET } from './ixios/network.js';
-import { PQ_NETWORKS, PQ_ENTRIES, isPqChain, pqNetwork } from './pq/networks.js';
+// Pure data, referenced by the Ixios blocks below.
+import { IXIOS_NETWORK, IXIOS_ASSET } from './pq/ixios/network.js';
+import { PQ_NETWORKS, PQ_ENTRIES, PQ_NATIVE_WORD_CHAINS, isPqChain, pqNetwork } from './pq/networks.js';
 import { derivePqAddresses } from './pq/receive.js';
 import { readAlgorandBalances } from './pq/algorand.js';
 import { readAsentumBalances } from './pq/asentum.js';
@@ -112,8 +111,7 @@ let nodusClient;
 // Bumped whenever the claim offer must be re-read or withdrawn; a status read
 // started under an older value is dropped (refreshClaim).
 let claimCheck = 0;
-// Set only inside the VITE_ENABLE_IXIOS blocks below; undefined/no-ops in a
-// disabled build (so no Ixios string literal is needed outside those blocks).
+// Set only inside the Ixios blocks below; undefined/no-ops until the Ixios modules have loaded.
 let doShowIxiosAddress, stopIxiosAddress = () => {}, ixiosChain, ixiosReader;
 // Settles once the open wallet's NODUS address derivation has ended (either
 // way); the other receive-only addresses are derived after it (0.1.96).
@@ -124,7 +122,7 @@ let pqSource, pqOperation, pqGeneration = 0, pqAddresses = {}, pqErrors = {}, pq
 // for this page only. The selected IDs always pass the registry allowlist.
 const pqSelections = Object.fromEntries(Object.entries(PQ_NETWORKS).map(([chain, config]) => [chain, config.defaultNetwork]));
 // Receive-panel derivation status line per receive-only network, shown only
-// while that network is selected. The Ixios entry is added by its flag block.
+// while that network is selected. The Ixios entry is added by its own block.
 const addressStatus = { nodus: $('nodus-address-status'), cellframe: $('cellframe-address-status') };
 // index.html's #send-disabled-note text is Cellframe's; a network may carry its own `sendNote`.
 const DEFAULT_SEND_DISABLED_NOTE = $('send-disabled-note').textContent;
@@ -677,8 +675,8 @@ const NODUS_HAS_MODULE = nodusSendModuleFactory !== null;
 const leadingNetworks = [{ network: nodusNetworkFor(false, { module: NODUS_HAS_MODULE }), asset: NODUS_ASSET }];
 const extraNetworks = [];
 if (CPUNK_ENABLED) { endpoints.cellframe = CELLFRAME.endpoint; extraNetworks.push({ network: CELLFRAME, asset: CPUNK_ASSET }); }
-// Ixios: receive-only, like Cellframe (see src/ixios/network.js).
-if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
+// Ixios: receive-only, like Cellframe (see src/pq/ixios/network.js).
+{
   ixiosChain = IXIOS_ASSET.chain;
   endpoints[ixiosChain] = IXIOS_NETWORK.endpoint; extraNetworks.push({ network: IXIOS_NETWORK, asset: IXIOS_ASSET });
 }
@@ -690,8 +688,7 @@ function networkFor(chain) { return CHAINS[chain] || receiveOnlyNetworks[chain];
 const portfolio = createPortfolio({
   // cellframeReader / ixiosReader are set, in the same module-load callback as
   // their address derivation, before either ever reports an address to the
-  // portfolio, so each is ready by the time its branch runs. In a disabled
-  // Ixios build ixiosChain is undefined and never matches.
+  // portfolio, so each is ready by the time its branch runs.
   // NODUS is read only while its send module is ready (it is not in the
   // portfolio's read list otherwise), through that module's client.
   readBalances: (chain, address, endpoint, options) => Object.hasOwn(pqBalanceReaders, chain)
@@ -997,7 +994,9 @@ pqEnvironment.onchange = () => {
 };
 function updatePqStatus(chain) {
   const shown = isPqChain(chain);
-  environmentDisclosure.hidden = !shown; pqStatus.hidden = pqRecoveryNote.hidden = !shown;
+  environmentDisclosure.hidden = !shown; pqStatus.hidden = !shown;
+  // Native-word chains derive the chain wallet's own address: the "may derive different addresses" note is untrue there.
+  pqRecoveryNote.hidden = !shown || PQ_NATIVE_WORD_CHAINS.includes(chain);
   if (!shown) { pqStatus.textContent = ''; return; }
   const choice = pqNetwork(chain, pqSelections[chain]);
   pqEnvironment.replaceChildren(...PQ_NETWORKS[chain].networks.map(network => new Option(network.label, network.id)));
@@ -2179,7 +2178,7 @@ if (import.meta.env.VITE_ENABLE_CPUNK !== 'false') {
   }).catch(() => { if (wallet && !wallet.locked) $('cellframe-address-status').textContent = 'Cellframe address unavailable. Lock and reopen your wallet to retry.'; });
 }
 function showCellframeAddress() { void doShowCellframeAddress?.(); }
-// Ixios receive-only address (default OFF), shown in the receive panel when
+// Ixios receive-only address, shown in the receive panel when
 // Ixios is the selected network, like Cellframe's. Same pattern as
 // showNodusAddress() and doShowCellframeAddress(): AbortController, current()
 // guard, aborted and cleared on lock, late results dropped; the address is
@@ -2188,22 +2187,20 @@ function showCellframeAddress() { void doShowCellframeAddress?.(); }
 // ixiosReader, as it does Cellframe's through cellframeReader.
 // Everything Ixios-specific — the dynamic imports (derive.js fetches
 // nodus/mldsa87.wasm through `new URL(..., import.meta.url)`; balance.js reads
-// the balance), the status element and the UI text — stays inside this literal
-// top-level `if`, for the reason given above the VITE_ENABLE_CPUNK block: only
-// then does a disabled build carry no Ixios code or text in its JavaScript.
+// the balance), the status element and the UI text — stays inside this block.
 // lock(), the open paths and readBalances reach it only through
 // stopIxiosAddress / doShowIxiosAddress / ixiosChain + ixiosReader.
-if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
+{
   let ixiosDerivation;
   const chain = IXIOS_ASSET.chain;
   const unavailable = 'Ixios address unavailable. Lock and reopen your wallet to retry.';
-  // Created here rather than in index.html so a disabled build has no Ixios markup.
+  // Created here rather than in index.html.
   const status = document.createElement('p');
   status.id = 'ixios-address-status'; status.className = 'hint'; status.hidden = true;
   status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
   $('cellframe-address-status').after(status); addressStatus[chain] = status;
   stopIxiosAddress = () => { ixiosDerivation?.abort(); ixiosDerivation = undefined; status.textContent = ''; };
-  Promise.all([import('./ixios/derive.js'), import('./ixios/address.js'), import('./ixios/balance.js')]).then(([{ deriveIxiosAddress }, { ixiosChecksumAddress }, { readIxiosBalance }]) => {
+  Promise.all([import('./pq/ixios/derive.js'), import('./pq/ixios/address.js'), import('./pq/ixios/balance.js')]).then(([{ deriveIxiosAddress }, { ixiosChecksumAddress }, { readIxiosBalance }]) => {
     ixiosReader = (address, endpoint, options) => readIxiosBalance(address, endpoint, { signal: options.signal });
     doShowIxiosAddress = async () => {
       ixiosDerivation?.abort();

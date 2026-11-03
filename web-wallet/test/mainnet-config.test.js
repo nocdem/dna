@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getAddress } from 'ethers';
 import { CHAINS, CELLFRAME, rpcChoiceOffered } from '../src/config.js';
-import { IXIOS_NETWORK } from '../src/ixios/network.js';
+import { IXIOS_NETWORK } from '../src/pq/ixios/network.js';
 import { endpointUrl } from '../src/core.js';
 import { balances } from '../src/adapters/solana.js';
 import { checkActivity } from '../src/activity.js';

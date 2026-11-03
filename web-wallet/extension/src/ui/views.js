@@ -1,4 +1,4 @@
-import { IXIOS_NETWORK } from '../../../src/ixios/network.js';
+import { IXIOS_NETWORK } from '../../../src/pq/ixios/network.js';
 import { CHAINS, CELLFRAME } from '../../../src/config.js';
 import { NODUS_NETWORK } from '../../../src/nodus/network.js';
 import { renderQr } from '../../../src/qr.js';

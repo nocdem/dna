@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import { mldsa87Sign } from '../src/pq/sign.js';
-import { ixiosSigningSeed, ixiosAddressBytes } from '../src/ixios/derive.js';
+import { ixiosSigningSeed, ixiosAddressBytes } from '../src/pq/ixios/derive.js';
 
 const wasmBytes = readFileSync(new URL('../src/pq/mldsa87-sign.wasm', import.meta.url));
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/ixios-vectors.json', import.meta.url)));

@@ -40,7 +40,11 @@ test('abort queued by native return runs before publication and wipes WASM',asyn
   assert.equal(published,0);assert.equal(memories.length,1);wiped(memories);
 });
 test('native-invalid Soqucoin key cannot publish an address or poison other chains',async t=>{
-  let count=0;const memories=wrap(t,api=>({pq_receive_derive(...args){const rc=api.pq_receive_derive(...args);if(++count===4)new Uint8Array(api.memory.buffer)[api.pq_receive_output()]=255;return rc;}}));
+  // Soqucoin's native rule retries keygen up to 9 times (r = 0..8) while the public key starts with 0xFF and
+  // then refuses (src/pq/receive.js soqucoinSelect; SoquShield key_service.dart:168,183-196). Every ML-DSA-44
+  // (kind 3, parameter 44) derive before QTC's is a Soqucoin attempt (PQ_NETWORKS order: soqucoin precedes qtc),
+  // so the first nine are forced to 0xFF; QTC's own ML-DSA-44 call (the tenth) is left untouched.
+  let soqu=0;const memories=wrap(t,api=>({pq_receive_derive(kind,param,...rest){const rc=api.pq_receive_derive(kind,param,...rest);if(kind===3&&param===44&&++soqu<=9)new Uint8Array(api.memory.buffer)[api.pq_receive_output()]=255;return rc;}}));
   const result=await derivePqAddresses(fixture.phrase,{wasmBytes});
   const expected=structuredClone(fixture.addresses);delete expected.soqucoin;
   assert.deepEqual(result.addresses,expected);assert.deepEqual(result.errors,{soqucoin:'Receive address could not be derived.'});

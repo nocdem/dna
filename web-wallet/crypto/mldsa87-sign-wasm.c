@@ -7,7 +7,7 @@
  *
  * sk never leaves this module. seed/hash/rnd/sk are wiped on every path; pk/sig
  * are additionally wiped on failure. No signing key is generated here — the
- * caller supplies the already-derived seed (see src/ixios/derive.js).
+ * caller supplies the already-derived seed (see src/pq/ixios/derive.js).
  */
 #include "crypto/sign/qgp_dilithium.h"
 #include "crypto/sign/dsa/sign.h"

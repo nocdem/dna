@@ -4,7 +4,7 @@
 import {validateSoquSignedPayload} from './soqu-signed-payload.js';
 import {integerJson,atoms} from './integer-json.js';
 import {soquScript} from './soqu-transaction.js';
-import {pqChainSeed} from './receive.js';
+import {soqucoinSigningSeed} from './receive.js';
 import {prepareVerifiedSoquPayment,checkSoquMainnet,checkSoquInput,soquRpc,SOQU_MAINNET} from './soqu-preflight.js';
 import {signSoquPayment} from './soqu-payment.js';
 const inFlight=new Map();
@@ -26,7 +26,7 @@ export async function prepareSoquTransfer({wallet,to,amountAtoms,networkId='main
    const reservation={hash:null};inFlight.set(from,reservation);let seed,submitted=false;
    try{
     const recheck=async()=>{const tip=await checkSoquMainnet(options);for(const input of prepared.transaction.inputs)if(!await checkSoquInput(input,from,tip,options))throw Error('SOQ input is spent or immature; prepare again.');check(wallet,from,signal);};
-    await recheck();seed=pqChainSeed(wallet.recoveryPhrase,'soqucoin');
+    await recheck();seed=await soqucoinSigningSeed(wallet.recoveryPhrase,{signal});
     const signed=await signSoquPayment(prepared,{seed,wasmBytes,signal});seed.fill(0);seed=undefined;
     check(wallet,from,signal);await recheck();if(Date.now()>=expiresAt)throw Error('SOQ review expired.');
     reservation.hash=signed.txid;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {setup} from './solana-tron-fixture.js';
 import {extensionCapabilitiesFor,extensionNetworkConfig,extensionPageSupported} from '../src/constants/capabilities.js';
 import {chainNetwork} from '../src/constants/networks.js';
-import {IXIOS_NETWORK} from '../../src/ixios/network.js';
+import {IXIOS_NETWORK} from '../../src/pq/ixios/network.js';
 import {createWalletUi} from '../src/ui/wallet-ui.js';
 
 test('IXIOS trusted code candidate is mainnet-only; website methods unavailable',async t=>{

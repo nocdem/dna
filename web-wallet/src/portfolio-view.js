@@ -37,7 +37,7 @@ const ICON_URLS = {
   'sol.svg': new URL('./assets/coins/sol.svg', import.meta.url).href,
   'trx.svg': new URL('./assets/coins/trx.svg', import.meta.url).href,
   'usdt.svg': new URL('./assets/coins/usdt.svg', import.meta.url).href,
-  ...(import.meta.env.VITE_ENABLE_IXIOS === 'true' ? { 'ixios.png': new URL('./assets/coins/ixios.png', import.meta.url).href } : {})
+  'ixios.png': new URL('./assets/coins/ixios.png', import.meta.url).href
 };
 const PQ_ICONS = new Set(Object.values(PQ_NETWORKS).map(network => network.icon));
 function iconImg(file) { const img = el('img', PQ_ICONS.has(file) ? 'coin-icon pq-coin-icon' : 'coin-icon'); img.src = ICON_URLS[file]; img.dataset.icon = file; img.alt = ''; img.width = 36; img.height = 36; return img; }

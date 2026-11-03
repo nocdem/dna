@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { readIxiosBalance, IXIOS_GENESIS_HASH } from '../src/ixios/balance.js';
-import { IXIOS_NETWORK } from '../src/ixios/network.js';
+import { readIxiosBalance, IXIOS_GENESIS_HASH } from '../src/pq/ixios/balance.js';
+import { IXIOS_NETWORK } from '../src/pq/ixios/network.js';
 // Public fixture address (the checksummed Ixios address of the public test phrase).
 const address = JSON.parse(readFileSync(new URL('./fixtures/ixios-checksum.json', import.meta.url))).vectors[0].Checksummed;
 const endpoint = IXIOS_NETWORK.endpoint;

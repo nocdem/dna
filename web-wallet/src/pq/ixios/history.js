@@ -3,7 +3,7 @@
 // completeness. ixiosSpark v1.1.1 internal/ethapi/api.go RPCMarshalBlock,
 // RPCTransaction, marshalReceipt; params/config.go AegisBlock=32,400,000;
 // consensus/fastClique/fastClique.go compares block Time with UnixMilli().
-import {rpc,formatUnits} from '../core.js';import {parseIxiosAddress} from './address.js';import {IXIOS_GENESIS_HASH} from './balance.js';import {IXIOS_NETWORK} from './network.js';
+import {rpc,formatUnits} from '../../core.js';import {parseIxiosAddress} from './address.js';import {IXIOS_GENESIS_HASH} from './balance.js';import {IXIOS_NETWORK} from './network.js';
 const AEGIS=32400000,MAX_BLOCKS=50,MAX_TRANSACTIONS=500,MAX_MATCHES=25,HASH=/^0x[0-9a-f]{64}$/;
 const quantity=(x,max=(1n<<256n)-1n)=>{if(typeof x!=='string'||!/^0x(?:0|[1-9a-f][0-9a-f]{0,63})$/.test(x))throw Error('Invalid Ixios RPC quantity.');const n=BigInt(x);if(n>max)throw Error('Ixios RPC quantity out of range.');return n;};
 const safe=(x)=>Number(quantity(x,BigInt(Number.MAX_SAFE_INTEGER)));

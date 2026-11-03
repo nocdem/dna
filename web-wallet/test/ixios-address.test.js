@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
-import { deriveIxiosAddress } from '../src/ixios/derive.js';
-import { ixiosChecksumAddress, parseIxiosAddress } from '../src/ixios/address.js';
+import { deriveIxiosAddress } from '../src/pq/ixios/derive.js';
+import { ixiosChecksumAddress, parseIxiosAddress } from '../src/pq/ixios/address.js';
 // Address display uses the keygen-only Nodus module, never the signing module.
 const wasmBytes = readFileSync(new URL('../src/nodus/mldsa87.wasm', import.meta.url));
 const { vectors } = JSON.parse(readFileSync(new URL('./fixtures/ixios-vectors.json', import.meta.url)));

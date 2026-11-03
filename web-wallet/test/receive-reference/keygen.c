@@ -28,8 +28,15 @@ int randombytes(uint8_t *out,size_t n) { (void)out;(void)n;abort(); }
 #else
 void randombytes(unsigned char *out,unsigned long long n) { (void)out;(void)n;abort(); }
 #endif
-int main(void) {
+/* Under TIDE any argument makes stdout pk || sk (897 + 1281 bytes); the
+ * Tidecoin hardened child step hashes the raw secret key (plan section 1.4
+ * step 5). Without an argument, and for every other build, stdout is pk only. */
+int main(int argc,char **argv) {
  uint8_t pk[PKLEN],sk[SKLEN];int rc;
+ (void)argv;
+#ifndef TIDE
+ (void)argc;
+#endif
  if(fread(seed,1,sizeof seed,stdin)!=sizeof seed || fgetc(stdin)!=EOF) return 2;
 #ifdef TIDE
  rc=PQCLEAN_FALCON512_CLEAN_crypto_sign_keypair_deterministic(pk,sk,seed,sizeof seed);
@@ -39,5 +46,8 @@ int main(void) {
  rc=crypto_sign_seed_keypair(pk,sk,seed);
 #endif
  if(rc) return 3;
+#ifdef TIDE
+ if(argc>1) return fwrite(pk,1,sizeof pk,stdout)==sizeof pk && fwrite(sk,1,sizeof sk,stdout)==sizeof sk ? 0 : 5;
+#endif
  return fwrite(pk,1,sizeof pk,stdout)==sizeof pk ? 0 : 4;
 }

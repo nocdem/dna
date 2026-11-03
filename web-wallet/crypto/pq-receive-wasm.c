@@ -1,6 +1,13 @@
-/* Public-key-only bridge. Selectors are application routing, not wire IDs.
- * Input/output storage is shared by calls; callers must serialize operations.
- * Secret storage has no exported accessor. Clear after copying the public key.
+/* Key-generation bridge: public keys, plus one restricted secret-key export.
+ * Selectors are application routing, not wire IDs.
+ * Input/output/secret storage is shared by calls; callers must serialize operations.
+ * The only secret accessors are pq_receive_secret and pq_receive_secret_size, and
+ * they serve kind 2 / parameter 512 (Tidecoin Falcon-512, 1281-byte secret key) only:
+ * the native Tidecoin hardened child step consumes the parent secret key. After a
+ * successful kind 2 / parameter 512 derivation the secret stays in the shared
+ * storage until pq_receive_clear (or the next pq_receive_derive call). An error,
+ * and every other kind and parameter, wipes the secret before the call returns.
+ * Clear after copying the public key and, for Tidecoin, the secret key.
  */
 #include "crypto/sign/algorand_falcon/qgp_algorand_falcon.h"
 #include "crypto/sign/tidecoin_falcon/qgp_tidecoin_falcon.h"
@@ -50,6 +57,15 @@ static int sizes(int kind, int param, size_t *seed, size_t *pk, size_t *sk)
 
 uint8_t *pq_receive_input(void) { return input; }
 uint8_t *pq_receive_output(void) { return output; }
+uint8_t *pq_receive_secret(void) { return secret; }
+
+/* Secret-key size of the restricted export: nonzero for kind 2 / parameter 512 only. */
+int pq_receive_secret_size(int kind, int param)
+{
+    size_t seed, pk, sk;
+    if (kind != 2 || param != 512 || sizes(kind, param, &seed, &pk, &sk)) return 0;
+    return (int)sk;
+}
 
 int pq_receive_seed_size(int kind, int param)
 {
@@ -75,6 +91,7 @@ int pq_receive_derive(int kind, int param, int seed_len)
     size_t seed, pk, sk;
     int result = -1;
     wipe(output, sizeof output);
+    wipe(secret, sizeof secret);
     if (sizes(kind, param, &seed, &pk, &sk) || seed_len < 0 ||
         (size_t)seed_len != seed) goto cleanup;
     switch (kind) {
@@ -97,7 +114,8 @@ int pq_receive_derive(int kind, int param, int seed_len)
     }
 cleanup:
     wipe(input, sizeof input);
-    wipe(secret, sizeof secret);
+    /* Only a successful kind 2 / parameter 512 derivation keeps its secret. */
+    if (result || kind != 2 || param != 512) wipe(secret, sizeof secret);
     if (result) wipe(output, sizeof output);
     return result;
 }

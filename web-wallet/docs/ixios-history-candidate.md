@@ -1,6 +1,6 @@
 # Ixios recent native history — trusted extension candidate
 
-`src/ixios/history.js` is a read-only helper now wired through the trusted
+`src/pq/ixios/history.js` is a read-only helper now wired through the trusted
 mainnet extension holder; Web Wallet does not use it. The separately reviewed
 mainnet trusted-extension send code candidate is enabled, but live provider
 availability and admission are not established. Provider history errors are

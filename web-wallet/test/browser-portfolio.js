@@ -5,7 +5,9 @@
 // its read time, never a zero), Refresh keeping what is shown, network badges choosing the
 // transfer network (the box and the rail follow what the network can do), the badge lights,
 // a click / Enter / Space on a network's name selecting it and toggling its group
-// (UI pack 2026-11-03), lock cancelling late replies, reopening refreshing, coin icons.
+// (UI pack 2026-11-03), lock cancelling late replies, reopening refreshing, coin icons, and that
+// Ixios is always listed and read (no build switch; plan 2026-11-03-pq-native section 5.2). Falsely
+// passes if the Ixios RPC mock answers a request the page should not make (the mock is the only answer).
 // Needs the built page (dist, served by vite preview on 127.0.0.1 port 4192 with
 // --strictPort; run from web-wallet/) and Chromium (CHROMIUM_PATH, otherwise
 // Playwright's own). WALLET_URL replaces the server: nothing is started and
@@ -27,9 +29,9 @@ import { ASSETS, PRICE_URL } from '../src/portfolio.js';
 import { CHAINS } from '../src/config.js';
 import { priceFixture, portfolioRead, cellframeRead, historyRead, PQ_HOST } from './portfolio-routes.js';
 import { pastePhrase } from './browser-phrase.js';
-import { IXIOS_NETWORK } from '../src/ixios/network.js';
+import { IXIOS_NETWORK } from '../src/pq/ixios/network.js';
 import { PQ_ENTRIES } from '../src/pq/networks.js';
-// A VITE_ENABLE_IXIOS=true dist also reads the IXIOS balance (like CPUNK); its
+// Every build also reads the IXIOS balance (like CPUNK); its
 // own behaviour is covered by test/browser-ixios.js. Ixios mainnet genesis
 // (ixiosSpark params/config.go:27); 1 IXIOS held.
 const IXIOS_GENESIS = '0xa19acef59b3b84f192a69407981c50695fd105988d9311dd2e1c60332b629f2f';
@@ -107,7 +109,7 @@ try {
   // One group per network (0.1.145): data-symbol / data-chain is the chain id, CPUNK is the row of "cellframe".
   // While the row reads (or has no balance) the group is left out by Hide zero balances, so the wait is for it to appear.
   async function cpunkSettled() { await page.waitForFunction(() => { const strong = document.querySelector('.asset-group[data-chain="cellframe"] .holding-value strong'); return strong && strong.textContent !== 'Reading…'; }); }
-  // Same for the IXIOS row, when the dist was built with VITE_ENABLE_IXIOS=true.
+  // Same for the IXIOS row.
   async function ixiosSettled() { await page.waitForFunction(() => { const strong = document.querySelector('.asset-group[data-chain="ixios"] .holding-value strong'); return strong && strong.textContent !== 'Reading…'; }); }
   const cpunk = page.locator('.asset-group[data-chain="cellframe"]');
   const group = chain => page.locator(`#balances .asset-group[data-chain="${chain}"]`);
@@ -129,9 +131,9 @@ try {
   const expandAllNetworks = async () => { await openNetworks(); for (const button of await page.locator('.network-group-toggle').all()) if (await button.getAttribute('aria-expanded') !== 'true') await button.click(); };
   const rail = href => page.locator(`.wallet-navigation a[href="#${href}"]`);
   await restore(); await done(); await cpunkSettled();
-  const ixiosShown = await page.locator('#chain option[value="ixios"]').count() === 1;
-  if (ixiosShown) await ixiosSettled();
-  assert.equal(reads.size, ixiosShown ? 6 : 5); assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00');
+  assert.equal(await page.locator('#chain option[value="ixios"]').count(), 1, 'Ixios is always listed (no build switch)');
+  await ixiosSettled();
+  assert.equal(reads.size, 6); assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00');
   assert.match(await page.locator('#portfolio-status').innerText(), missingStatus(0));
   // Coin icons: CPUNK's own file on its holding row, the Cellframe network's
   // own logo (not the CPUNK asset icon) on its group summary and network badge,
@@ -168,13 +170,12 @@ try {
   // Hide zero balances (0.1.151, src/portfolio.js groupNetworks): checked on every wallet opening, only networks
   // with a displayable nonzero holding are listed — the held networks, in network order; NODUS (never read),
   // the PQ networks (their providers are refused here) and everything else without a balance are left out.
-  // A VITE_ENABLE_IXIOS=true dist adds the IXIOS group (after Cellframe), shown like CPUNK:
-  // a read balance, no USD value. The default build has none.
+  // The IXIOS group follows Cellframe, shown like CPUNK: a read balance, no USD value.
   assert.equal(await page.locator('#show-zero-balances').isChecked(), true);
   assert.deepEqual(await page.locator('#balances .asset-group').evaluateAll(nodes => nodes.map(node => node.dataset.chain)),
-    ['ethereum', 'bsc', 'solana', 'tron', 'cellframe', ...(ixiosShown ? ['ixios'] : [])]);
+    ['ethereum', 'bsc', 'solana', 'tron', 'cellframe', 'ixios']);
   assert.equal(await page.locator('#portfolio-filters button').count(), 0, 'no network filters (0.1.145)');
-  if (ixiosShown) {
+  {
     const ixios = group('ixios');
     await toggle(ixios);
     assert.equal(await ixios.locator('.holding-value strong').innerText(), '1 IXIOS');
@@ -183,7 +184,7 @@ try {
   }
   // Unchecked, every network is listed; NODUS (never read here) and the PQ networks join the held ones.
   await page.locator('#show-zero-balances').uncheck();
-  assert.ok(await page.locator('#balances .asset-group').count() > (ixiosShown ? 6 : 5));
+  assert.ok(await page.locator('#balances .asset-group').count() > 6);
   for (const chain of ['nodus', 'algorand']) assert.equal(await group(chain).count(), 1, `${chain} listed with zero balances shown`);
   await page.locator('#show-zero-balances').check();
   assert.equal(await group('nodus').count(), 0);

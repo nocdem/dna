@@ -1,4 +1,4 @@
-import { IXIOS_NETWORK } from '../../../src/ixios/network.js';
+import { IXIOS_NETWORK } from '../../../src/pq/ixios/network.js';
 import { PQ_NETWORKS } from '../../../src/pq/networks.js';
 import { CHAINS, CELLFRAME } from '../../../src/config.js';
 import { renderEvmSend } from './evm-screens.js';

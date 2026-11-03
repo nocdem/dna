@@ -34,7 +34,7 @@ test('every configured holding keeps its network when displayable and nonzero', 
   const { ASSETS, CPUNK_ASSET } = await import('../src/portfolio.js');
   const { PQ_ENTRIES } = await import('../src/pq/networks.js');
   const { NODUS_ASSET } = await import('../src/nodus/network.js');
-  const { IXIOS_ASSET } = await import('../src/ixios/network.js');
+  const { IXIOS_ASSET } = await import('../src/pq/ixios/network.js');
   const assets = [...ASSETS, CPUNK_ASSET, NODUS_ASSET, IXIOS_ASSET, ...PQ_ENTRIES.map(e => e.asset)];
   for (const asset of assets) {
     const rows = assets.filter(a => a.chain === asset.chain).map(a => ({ ...a, state: 'ready', balance: '0', units: 0n }));

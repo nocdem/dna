@@ -2,12 +2,20 @@
 // come from test/receive-reference, never from src/pq. Public phrases only.
 // Runs offline with the built keygen artifact. No skips, persistent secrets,
 // broadcasts or compiler flags; no claim of an on-chain spend test.
+// Proves: pqChainSeed returns the six seeds the fixture lists (Algorand, CKB, QTC, Asentum label roots;
+// XION BIP32 key; Splendor entropy), soqucoinSigningSeed returns the retry-selected Soqucoin seed, the
+// Tidecoin master (PBKDF2 tree start) equals an independent node:crypto computation, and derivePqAddresses
+// through the real wasm gives the fixture's native addresses (plan 2026-11-03-pq-native sections 1, 6).
+// Needs: src/pq/receive-keygen.wasm built from crypto/pq-receive-wasm.c; test/fixtures/pq-receive.json.
+// Leaves: nothing. Can falsely pass: the key-generation instance count below follows the
+// algorithm (5 Tidecoin keygens, 1 + retry Soqucoin keygens); a changed count needs its cause read,
+// not the number edited; the fixture is only as independent as test/receive-reference/prepare_fixtures.py.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, pbkdf2Sync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { ed25519 } from '@noble/curves/ed25519';
-import { derivePqAddresses, pqAddressFromPublicKeys, pqChainSeed } from '../src/pq/receive.js';
+import { derivePqAddresses, pqAddressFromPublicKeys, pqChainSeed, soqucoinSigningSeed } from '../src/pq/receive.js';
 import { PQ_NETWORKS, PQ_ENTRIES, pqNetwork, isPqChain } from '../src/pq/networks.js';
 import { encryptVault, decryptVault } from '../src/vault.js';
 import { prepareTransfer, adapters } from '../src/wallet.js';
@@ -51,13 +59,21 @@ test('Algorand native 32-byte seed known-answer addresses and exact Go point pre
 });
 
 for (const [index,row] of fixture.vectors.entries()) {
-  test(`Nodus recovery roots match independent Python BIP39/SHAKE: phrase ${index}`, () => {
-    assert.equal(Object.keys(row.roots).length,8);
+  test(`Nodus recovery roots and native seeds match independent Python/Go oracles: phrase ${index}`, async () => {
+    assert.equal(Object.keys(row.roots).length,6);
     for (const [chain,expected] of Object.entries(row.roots)) {
       const root=pqChainSeed(row.phrase,chain);
       try { assert.equal(Buffer.from(root).toString('hex'),expected); } finally { root.fill(0); }
     }
-    assert.equal(new Set(Object.values(row.roots)).size,8);
+    assert.equal(new Set(Object.values(row.roots)).size,6);
+    // Soqucoin has no synchronous seed (the retry rule needs the keygen module).
+    assert.throws(()=>pqChainSeed(row.phrase,'soqucoin'),/soqucoinSigningSeed/);
+    const seed=await soqucoinSigningSeed(row.phrase,{wasmBytes});
+    try { assert.equal(Buffer.from(seed).toString('hex'),row.soqucoinSeed); } finally { seed.fill(0); }
+    assert.equal(row.keys.soqucoin.seed,row.soqucoinSeed);
+    // Tidecoin master I[0..96] by node:crypto, independent of src/pq.
+    const seed64=pbkdf2Sync(row.phrase,'mnemonic',10,64,'sha512');
+    assert.equal(pbkdf2Sync('Tidecoin seed',seed64,10,96,'sha512').toString('hex'),row.tidecoinMaster);
   });
   test(`all public-key address formats match independent chain oracles: phrase ${index}`, () => {
     let count=0;
@@ -95,7 +111,10 @@ test('full instance memories are zeroed and distinct on successful derivation', 
   const original=WebAssembly.instantiate,instances=[];
   t.mock.method(WebAssembly,'instantiate',async (...args)=>{const result=await original(...args);instances.push(result.instance??result);return result;});
   assert.deepEqual((await derivePqAddresses(phrase,{wasmBytes})).addresses,fixture.vectors[0].addresses);
-  assert.equal(instances.length,11);assert.equal(new Set(instances).size,11);
+  // One module instance per key generation: Algorand 1, Tidecoin 5 (master + 4 path steps), CKB 1,
+  // Soqucoin 1 + retries needed by the fixture phrase, QTC 4, XION 1, Splendor 1, Asentum 1.
+  const expected=1+5+1+(1+fixture.vectors[0].keys.soqucoin.retry)+4+1+1+1;
+  assert.equal(instances.length,expected);assert.equal(new Set(instances).size,expected);
   for (const instance of instances) assert.ok(new Uint8Array(instance.exports.memory.buffer).every(x=>x===0));
 });
 

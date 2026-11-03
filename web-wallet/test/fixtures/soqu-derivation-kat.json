@@ -1,0 +1,11 @@
+{
+  "_source": "Copy of test/derivation.kat.json from https://github.com/soqucoin/soqushield at commit cb3e842af29e4c087a5eb9974f6f76c415862b7a. The keys below this one are the upstream file unchanged; only this _source key is added. Do NOT edit an address to make a test pass.",
+  "_comment": "CANONICAL Soqucoin wallet key-derivation known-answer test. These addresses are produced by the node (pqderive.cpp) and SoquShield (KeyService) and MUST be reproduced by every wallet implementation. Do NOT edit an address to make a test pass — that hides a derivation drift (bead c7t). Regenerate only via a deliberate, reviewed derivation change across ALL implementations. Vectors generated from SoquShield KeyService 2026-07-09.",
+  "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+  "vectors": [
+    { "network": "stagenet", "accountIndex": 0, "address": "ssq1p3j6nd46xrh8vl8ac86x8sm4dlynv95ckpyn5y4d46kte8js05k2qvft6ee" },
+    { "network": "stagenet", "accountIndex": 1, "address": "ssq1p7tta8tvwvne78np3pg2w3aqgq5d4ay9h24cs7r3fnewyksdxtntq02ef52" },
+    { "network": "mainnet", "accountIndex": 0, "address": "sq1p3j6nd46xrh8vl8ac86x8sm4dlynv95ckpyn5y4d46kte8js05k2qarf5vn" },
+    { "network": "mainnet", "accountIndex": 1, "address": "sq1p7tta8tvwvne78np3pg2w3aqgq5d4ay9h24cs7r3fnewyksdxtntq7qm8pq" }
+  ]
+}

@@ -1,6 +1,5 @@
 // IXIOS balance read, the Ixios counterpart of src/adapters/cpunk.js readCpunk.
-// Pulled in only by the VITE_ENABLE_IXIOS block in src/app.js (dynamic import),
-// so a build with the flag off carries none of it.
+// Pulled in by dynamic import from src/app.js, so it stays in its own code-split chunk.
 //
 // Network identity is checked by genesis hash, never by eth_chainId: Ixios
 // mainnet's chain id is 1, the same as Ethereum's, so an Ethereum RPC would pass
@@ -11,7 +10,7 @@
 // (src/rpc-transport.js, 65536 characters) rightly refuses; block 1 is ~1.6 KB
 // and its parentHash is the genesis hash. Requests go through rpc() in
 // src/core.js (HTTPS only, timeout, bounded response size).
-import { rpc, rawInteger, formatUnits } from '../core.js';
+import { rpc, rawInteger, formatUnits } from '../../core.js';
 import { parseIxiosAddress } from './address.js';
 export const IXIOS_GENESIS_HASH = '0xa19acef59b3b84f192a69407981c50695fd105988d9311dd2e1c60332b629f2f';
 export async function readIxiosBalance(address, endpoint, { signal } = {}) {

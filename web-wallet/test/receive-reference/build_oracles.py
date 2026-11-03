@@ -3,6 +3,22 @@
 
 Usage: build_oracles.py UPSTREAM_ROOT OUTPUT_DIR. Public fixture inputs only.
 No upstream mutation. Builds sequentially. Runtime tests never call this file.
+
+Proves: each oracle is built from a checkout at the pinned commit (rev-parse
+assertion) or from the Go module hashes in the checked-in go.sum files; no port
+code is linked.
+Needs: UPSTREAM_ROOT holding the pinned checkouts under the names in `pins`
+(tidecoin, soqucoin, qtc, ckb, algorand-falcon, soqushield, sdk, splendor,
+decred-dcrd-secp256k1-v4.4.1); cc, g++, go (GO_BIN, default `go` on PATH;
+network only for `go mod download` of the pinned modules), npm.
+Leaves: OUTPUT_DIR with oracle-* binaries, oracle-go/ and oracle-xion-go/ build
+trees (go.mod edited there only), oracle-go-bin, oracle-xion-bin, asentum-oracle/.
+Can falsely pass: the commit assertion covers the checkout's HEAD and its tracked
+*.c/*.cpp/*.h files only - a modified Go file in sdk or decred, or an untracked
+file, is not seen; the Splendor oracle links go-bip39/circl from the module
+cache (hash-pinned in go.sum), not from the splendor checkout, whose commit is
+asserted but not linked; the go.sum files were copied from the SDK and Splendor
+checkouts, not produced by `go mod tidy` here.
 """
 import os, pathlib, shutil, subprocess, sys
 
@@ -14,7 +30,11 @@ pins = {'algorand-falcon':'19f185792c39326bebc173b2a100c2c247423be3',
         'soqucoin':'28222c3810701c05eb27e8feb09f032bb75fc097',
         'qtc':'5adbc7d5c2ac252804fd3c61fce3b9bbc3ad9c24',
         'ckb':'082c0a19ce4e0b2c0b00f7b46f423f59a30afc71',
-        'ckb/deps/sphincsplus':'129b72c80e122a22a61f71b5d2b042770890ccee'}
+        'ckb/deps/sphincsplus':'129b72c80e122a22a61f71b5d2b042770890ccee',
+        'soqushield':'cb3e842af29e4c087a5eb9974f6f76c415862b7a',
+        'sdk':'64fd208a11fb54f7ffdca1a1290c2cfbbc254e49',
+        'splendor':'38ac3ded57d6fa931dba3036d490c5d66b0fbcbc',
+        'decred-dcrd-secp256k1-v4.4.1':'76c0dc4f362b89331ff3bd46a3527f904181b8e0'}
 for repo,pin in pins.items():
     assert subprocess.check_output(['git','-C',u/repo,'rev-parse','HEAD'],text=True).strip()==pin
     assert not subprocess.check_output(['git','-C',u/repo,'diff','HEAD','--','*.c','*.cpp','*.h'])
@@ -41,6 +61,14 @@ go_dir=r/'oracle-go';go_dir.mkdir(exist_ok=True)
 for name in ['go.mod','go.sum','oracle.go']:shutil.copyfile(s/name,go_dir/name)
 subprocess.run([os.environ.get('GO_BIN','go'),'mod','edit','-replace=github.com/algorand/falcon='+str(u/'algorand-falcon')],cwd=go_dir,check=True)
 subprocess.run([os.environ.get('GO_BIN','go'),'build','-buildvcs=false','-mod=readonly','-o',str(r/'oracle-go-bin'),'.'],cwd=go_dir,check=True)
+# Second Go build (XION, secp-zero): the Cosmos SDK graph (circl v1.6.3), the SDK and
+# decred pointed at the pinned checkouts (plan section 6; Kurultay 52 conditions 1, 3).
+# The first build above keeps circl v1.6.5 for Splendor and Asentum.
+xion_dir=r/'oracle-xion-go';xion_dir.mkdir(exist_ok=True)
+for name in ['go.mod','go.sum','oracle.go']:shutil.copyfile(s/'native2'/name,xion_dir/name)
+subprocess.run([os.environ.get('GO_BIN','go'),'mod','edit','-replace=github.com/cosmos/cosmos-sdk='+str(u/'sdk'),
+                '-replace=github.com/decred/dcrd/dcrec/secp256k1/v4='+str(u/'decred-dcrd-secp256k1-v4.4.1/dcrec/secp256k1')],cwd=xion_dir,check=True)
+subprocess.run([os.environ.get('GO_BIN','go'),'build','-buildvcs=false','-mod=readonly','-o',str(r/'oracle-xion-bin'),'.'],cwd=xion_dir,check=True)
 node_dir=r/'asentum-oracle';node_dir.mkdir(exist_ok=True)
 for name in ['package.json','package-lock.json']:shutil.copyfile(s/'asentum'/name,node_dir/name)
 subprocess.run(['npm','ci','--ignore-scripts','--no-audit','--no-fund'],cwd=node_dir,check=True)

@@ -93,7 +93,9 @@ provider transaction methods for these additions remain unavailable. Algorand
 has read-only native balance and payment history adapters. The other seven
 additions, including CKB, remain address-only. These readers do not write chain
 state.
-Native-chain 24-word mnemonic import compatibility is **not** claimed.
+Native-chain 24-word mnemonic import compatibility is **not** claimed, except
+as stated for Soqucoin, XION, Splendor and Tidecoin in "Native wallet
+derivations" below.
 
 The extension's wallet identity and these receive addresses derive locally
 from the unlocked vault. Its Nodus network connection is a separate operation;
@@ -143,23 +145,25 @@ and isolated profiles; they do not establish live provider availability.
 
 The phrase is normalized and validated by `src/recovery.js`. As in the existing
 Nodus/Ixios derivations, `ethers.Mnemonic.fromPhrase(normalized).computeSeed()`
-produces the BIP39 master64. Each root is
-`SHAKE256(master64 || ASCII(label), outputLength)`, without a NUL terminator:
+produces the BIP39 master64. For Algorand, CKB, QTC and Asentum each root is
+`SHAKE256(master64 || ASCII(label), outputLength)`, without a NUL terminator
+(`ROOTS` and `pqChainSeed` in `src/pq/receive.js`):
 
 | Chain | Exact label | Root bytes |
 | --- | --- | --- |
 | Algorand | `algorand-falcon1024-v1` | 32 |
-| Tidecoin | `tidecoin-falcon512-v1` | 32 |
 | CKB | `ckb-slh-dsa-sha2-256s-v1` | 96 |
-| Soqucoin | `soqucoin-mldsa44-v1` | 32 |
 | QTC | `qtc-pq-v1` | 32 |
-| XION | `xion-mldsa65-v1` | 32 |
-| Splendor | `splendor-mldsa65-v1` | 32 |
 | Asentum | `asentum-mldsa65-v1` | 32 |
 
-These labels and the following paths/profile choices are Nodus recovery v1
-policy. Upgrades must never silently change existing address derivation.
-Vault encryption and existing chain derivations remain unchanged.
+These labels and the following paths/profile choices for those four chains are
+Nodus recovery v1 policy. Upgrades must never silently change existing address
+derivation for them. Soqucoin, XION, Splendor and Tidecoin no longer use a
+Nodus label for their receive addresses; see "Native wallet derivations" below.
+The label `tidecoin-falcon512-v1` remains in `ROOTS` only for the legacy
+Tidecoin send stack (`src/pq/tidecoin-wallet-sign.js`, per the comment at
+`src/pq/receive.js:16-17`). Vault encryption and existing chain derivations
+remain unchanged.
 
 - **Algorand:** keygen seed32 is
   `SHA512_256("PQK" || "f1" || root32)`. The `PQK/f1` domain is the native
@@ -171,18 +175,6 @@ Vault encryption and existing chain derivations remain unchanged.
   subgroup restriction. Encode uppercase unpadded Base32 of
   `candidate32 || SHA512_256(candidate32)[28..32]`. Raw public header must be
   `0x0a`. Mainnet and testnet addresses are identical.
-- **Tidecoin:** master HMAC-SHA512 uses key `"Tidecoin PQHD seed"` and root32
-  as message, split into secret32 and chaincode32. Derive
-  `m/10007h/6868h/7h/0h/0h/0h`; each child is
-  `HMAC-SHA512(chaincode, 00 || secret || BE32(index | 80000000))`, split
-  again. Leaf PRK is `HMAC-SHA512("Tidecoin PQHD hkdf v1", leafSecret)`.
-  Stream key is `HMAC-SHA512(PRK, "Tidecoin PQHD stream key v1" || BE32(7) ||
-  allSixHardenedIndicesBE32 || 01)`. For counters 0..1023, use the first
-  48 bytes of `HMAC-SHA512(streamKey, "Tidecoin PQHD rng v1" || BE32(counter))`
-  as keygen seed; advance only after an actual native keygen error.
-  Serialize public key as `07 || rawPk897`, require raw header `09`, then
-  Base58Check encode `21 || RIPEMD160(SHA256(serializedPublicKey))`
-  (prefix bytes here are hexadecimal).
 - **CKB:** root96 is the SHA2-256s keygen seed. Hash config
   `80 01 01 01 6a || pk64` with BLAKE2b-256, personalization exactly the
   16 bytes `ckb-sphincs+-sct`, to obtain args32. ID 53 uses script prefix
@@ -193,13 +185,6 @@ Vault encryption and existing chain derivations remain unchanged.
   and hash type 1; testnet HRP `ckt` uses data hash
   `147ecbb5c5127d982ee1362d2c2bb4267803da2eb006d150e88af6caaa0a7eaf`
   and hash type 2 (`data1`).
-- **Soqucoin:** root32 is the ML-DSA-44 seed. The witness program is single
-  `SHA256(pk1312)`; encode Bech32m HRP `sq` with witness-version word 1
-  followed by the program's five-bit words, matching native `getnewaddress`
-  and `EncodeDilithiumAddress`. Legacy Base58 prefix fields do not define
-  this receive format. A public key starting with `ff`
-  is rejected by the native marker rule. A fixed seed is not retried:
-  that vault cannot display a Soqucoin address, and reloading does not fix it.
 - **QTC:** derive both alternative spend paths for each network: coin 0 on
   mainnet, 1 on testnet, account/change/index all 0; algo byte 0 for ML-DSA-44
   and 1 for SLH-DSA-SHAKE-128s. HKDF-SHA256 extract is
@@ -215,17 +200,74 @@ Vault encryption and existing chain derivations remain unchanged.
   lexicographic byte order. No digest byte reversal is applied. Encode
   Bech32m with HRP `qtc`/`tqtc`, witness-version word 2 followed by
   the root32's five-bit words. This is a two-leaf tree, not a single-key address.
-- **XION:** root32 generates ML-DSA-65; address is Bech32 HRP `xion` of
-  `SHA256(pk1952)[0..20]`. The dedicated Nodus label does not reuse the
-  native SDK's classical secp256k1 BIP32 path. Main/test addresses are identical.
-- **Splendor:** root32 generates ML-DSA-65; address is `SQ:` followed by
-  lowercase hex `SHA3_256(pk1952)`. Main/test addresses are identical.
 - **Asentum:** root32 generates ML-DSA-65; address is Bech32 HRP `ase`
   of `BLAKE3(pk1952)[0..20]`, not Bech32m or an EVM address.
 
+### Native wallet derivations (Soqucoin, XION, Splendor, Tidecoin)
+
+For these four chains the web wallet and the extension derive the receive
+address the chain's own wallet derives from the same recovery phrase (operator
+2026-11-03: "adam kendi walletinda hangi adresi uretiyorsa burda da aynisniini
+uretmesi lazim"; plan `docs/plans/approved/2026-11-03-pq-native.md` section 1,
+decision `docs/plans/decisions/2026-11-03-pq-native-derivation.md`). Code:
+`src/pq/receive.js`. Only the key derivation differs; the address encodings
+below were not changed by this work except Tidecoin's.
+
+- **Soqucoin:** master64 is the BIP39 seed. `salt = SHA256(master64)`,
+  `prk = HMAC-SHA256(salt, master64)`, seed32 =
+  `HMAC-SHA256(prk, info || 01)` with `info` =
+  `"soqucoin-pqwallet-v1" || BE32(44h) || BE32(21329h) || BE32(0h) ||
+  BE32(0) || BE32(0)` plus one retry byte when the retry number is above 0
+  (`soqucoinKeySeed`, `receive.js:116-126`). ML-DSA-44 keygen runs for retry
+  0..8; the first public key whose first byte is not `ff` is selected, and nine
+  failures are an error (`soqucoinSelect`). The witness program is single
+  `SHA256(pk1312)`; encode Bech32m HRP `sq` with witness-version word 1
+  followed by the program's five-bit words, matching native `getnewaddress`
+  and `EncodeDilithiumAddress`. Legacy Base58 prefix fields do not define
+  this receive format. `pqChainSeed` refuses Soqucoin; the SOQ payment path
+  signs with the same retry-selected seed through `soqucoinSigningSeed`
+  (`src/pq/soqu-transfer.js:29`).
+- **XION:** master64 is the BIP39 seed; the private key is the result of the
+  Cosmos SDK `crypto/hd/hdpath.go` derivation (v0.55.0, `64fd208a`) of
+  `m/44'/118'/0'/0/0` from HMAC-SHA512 key `"Bitcoin seed"` (`xionKey`,
+  `xionHdChild`). A parent scalar of zero gives the compressed point
+  `02 || 32 zero bytes`, decided in code before `@noble/curves` is called
+  (`xionCompressedPublicKey`). That 32-byte key is the ML-DSA-65 seed. The
+  address is Bech32 HRP `xion` of `SHA256(pk1952)[0..20]`. Main/test addresses
+  are identical.
+- **Splendor:** the seed is the BIP39 entropy itself, with no PBKDF2
+  (`sqc-wallet` `cmd/wallet/seed.go` at `38ac3ded`, per the comment at
+  `receive.js:132`); a phrase whose entropy is not 32 bytes is refused. The
+  seed generates ML-DSA-65; address is `SQ:` followed by lowercase hex
+  `SHA3_256(pk1952)`. Main/test addresses are identical.
+- **Tidecoin:** Tidecoin Wallet 0.3.1 default restore. Every PBKDF2 is
+  HMAC-SHA512 with 10 iterations (`tidecoinKdf`). `seed64` is PBKDF2 of the
+  normalized phrase with salt `"mnemonic"`; the node is PBKDF2 of
+  `"Tidecoin seed"` with salt `seed64`, 96 bytes: the first 48 bytes are the
+  Falcon-512 keygen seed, the last 48 the chain code. Path
+  `m/84'/0'/0'/0`: for a hardened step the next node is PBKDF2 of
+  `00 || secret1281 || BE32(index)` with the chain code as salt; for the
+  non-hardened step it is `07 || pk897 || BE32(index)`. The secret key comes
+  from the receive module's restricted export (below) and is requested only
+  where the next step is hardened. A keygen failure is an error, never a
+  retry. The address is the leaf public key (raw header `09` required) as
+  serialized `07 || pk897`, `HASH160` of it, Bech32 HRP `tbc`, witness version
+  0 (P2WPKH). The earlier Nodus-label Tidecoin Base58 address is kept only as
+  `legacyTidecoin` in `test/fixtures/pq-receive.json`.
+
+The receive-page note `#pq-recovery-note` ("Recover this address with your
+Nodus recovery phrase. Native chain wallets may derive different addresses.")
+is hidden when the selected chain is in `PQ_NATIVE_WORD_CHAINS`
+(`src/pq/networks.js:35`: `tidecoin`, `soqucoin`, `xion`, `splendor`); the hide
+sites are `src/app.js:999` and `extension/src/ui/wallet-screen.js:145`. The
+note stays for the other PQ chains.
+
 ### Source pins and execution boundary
 
-Primary sources are pinned, not followed at their latest revision:
+Primary sources are pinned, not followed at their latest revision. The
+Tidecoin entry below was the pin for the former Nodus-label derivation; the
+native Tidecoin, Soqucoin, XION and Splendor oracle pins are in
+`test/receive-reference/build_oracles.py`:
 
 - [Algorand go-algorand 66fdf4ad](https://github.com/algorand/go-algorand/tree/66fdf4ad60479aa41e66cc39b65e7ed118834616):
   `cmd/algokey/pq_scheme.go`, `data/basics/pq_address.go`,
@@ -259,13 +301,19 @@ Primary sources are pinned, not followed at their latest revision:
 `src/pq/receive.js` fetches the trusted local `receive-keygen.wasm` once before
 deriving secrets, with a 15-second timeout, omitted credentials and refused
 redirects. Each keygen uses a fresh instance; its full linear memory, including
-stacks, is wiped in `finally`. Only public-key bytes are copied out. Mutable
+stacks, is wiped in `finally`. Public-key bytes are copied out; the one exception is the Tidecoin
+Falcon-512 secret key (1281 bytes), which `crypto/pq-receive-wasm.c` exports
+through `pq_receive_secret` / `pq_receive_secret_size` for kind 2 / parameter 512
+only. After a successful derivation of that selector it stays in the module's
+storage until `pq_receive_clear` or the next derive call; an error and every
+other selector wipe it. `src/pq/receive.js` copies it before the module cleanup
+and wipes its copy after the hardened child step. Mutable
 master/root/KDF/seed buffers and hash instances are cleared; this does not
 promise erasure of immutable JavaScript phrase/hex strings. Abort checks and
 macrotask yields let locking stop derivation before further address publication.
 Per-chain failures use fixed safe errors and leave other chains derivable.
-There is no cryptographic fallback or silent seed retry outside Tidecoin's
-specified native counter rule.
+There is no cryptographic fallback or silent seed retry outside Soqucoin's
+specified native retry rule (retry 0..8, `0xFF` public-key marker).
 
 ### Verification status and reproducibility
 
@@ -292,13 +340,22 @@ HKDF/HashWriter/P2MR, native Soqucoin EncodeDilithiumAddress/DecodeDestination,
 Asentum SDK 0.2.0, Python hashlib BIP39/SHAKE/CKB args,
 pinned QTC BIP173/350 reference and independent Base58 encoding.
 
+The fixtures and oracle list in this section are the 0.1.141 state. On
+2026-11-03 `test/fixtures/pq-receive.json` was regenerated so that Soqucoin,
+Tidecoin, XION and Splendor carry the addresses each chain's own wallet derives
+(`prepare_fixtures.py` checks both Tidecoin Wallet extension answers and the
+SoquShield known answers in `test/fixtures/soqu-derivation-kat.json` before the
+Go oracles run); `test/pq-native-derivation.test.js` consumes them.
+
 Final pristine-oracle reproduction completed with exit 0
 (`oracle-reproduce-final.log`): both committed JSON fixtures regenerated
 byte-for-byte unchanged, including Algorand fixture regeneration anchored to
 three committed Go addresses. Their SHA256 values are:
 
-- `pq-receive.json`:
-  `bbe764a36c4ce840ff401472dab1a43d09059a0f22fbd547f53049c374d4c90e`
+- `pq-receive.json`: `bbe764a3…c90e` at 0.1.141; regenerated 2026-11-03 from
+  the native wallets' own code (`test/receive-reference/prepare_fixtures.py`),
+  current file:
+  `3e1cba3f23efbc370549c20483dc5cdb50f1a10771fc6dab18a68a8488e08f58`
 - `pq-receive-algorand.json`:
   `987749c380f653b1ea1a6050d28213acc7460b25f3e4d043511096947f1eb01f`
 
@@ -1238,7 +1295,9 @@ Spec `docs/plans/2026-09-23-wallet-0.1.16-ixios-spec.md`; decisions
   a custom one: an RPC can still misreport balances and nonces.
   `npm run verify:networks` probes every listed URL from Chromium; the 2026-09-23
   run returned READ_OK for all 15.
-- **Ixios address, build flag `VITE_ENABLE_IXIOS=true` (default off in the
+- **Ixios address, build flag `VITE_ENABLE_IXIOS=true` (historical: the flag
+  is removed; Ixios is always built, see "Ixios moves to `src/pq/ixios`"
+  below; default off in the
   source; the published 0.1.16 build turns it on — operator decision
   2026-09-23: show it, remove later if needed; the panel was replaced in 0.1.17,
   see below).** When enabled, a panel shows the
@@ -1289,7 +1348,8 @@ Spec `docs/plans/2026-09-23-wallet-0.1.16-ixios-spec.md`; decisions
 ## Ixios listed like the other coins (0.1.17)
 
 The 0.1.16 top-of-page Ixios panel is gone (operator, 2026-09-23: Ixios belongs
-where the other coins are). With `VITE_ENABLE_IXIOS=true` (the published build):
+where the other coins are). With `VITE_ENABLE_IXIOS=true` (the published build;
+the flag no longer exists, the same set is now always built):
 
 - Ixios is a receive-only network in the same places as Cellframe/CPUNK: the
   network selector, the portfolio filters and health badges, and the asset list
@@ -1301,7 +1361,8 @@ where the other coins are). With `VITE_ENABLE_IXIOS=true` (the published build):
   to any Ixios host), because the public RPC (v1.0.5) answers 0 for any 48-byte
   address. The row and badge say "Not active yet" and the amount is "—", never
   a false zero. IXIOS is unpriced and outside the USD total.
-- The definition lives in `src/ixios/network.js`, pulled in only by the flag-on
+- The definition lives in `src/pq/ixios/network.js` (moved from `src/ixios/`),
+  formerly pulled in only by the flag-on
   build; `createPortfolio` takes an ordered `extraNetworks` list
   (Cellframe, then Ixios) instead of the single `cellframe` option.
 - `npm run test:ixios` checks the placement, the zero Ixios requests, the lock
@@ -1332,7 +1393,7 @@ Operator, 2026-09-23: no special treatment for Ixios. The 0.1.17 `notActive`
 behaviour is removed:
 
 - The IXIOS balance is read like CPUNK's, from the selected Ixios RPC
-  (`src/ixios/balance.js`): network identity first — block 1's `parentHash`
+  (`src/pq/ixios/balance.js`): network identity first — block 1's `parentHash`
   must equal Ixios mainnet genesis `0xa19acef5…2f2f` (ixiosSpark
   `params/config.go:27`; never `eth_chainId`, which is 1 on both Ixios and
   Ethereum) — then `eth_getBalance`. **0.1.19 fix:** 0.1.18 read block 0, whose
@@ -1910,6 +1971,17 @@ scheduled-change row, record-before-submit), the mock module's
 the module's rules with canned data; the parity tests use synthetic coins
 and a made-up chain id and never talk to a node; nothing drives the browser
 UI (`src/app.js` wiring is untested).
+
+## Ixios moves to `src/pq/ixios`; the build switch is removed
+
+The Ixios modules moved from `src/ixios/` to `src/pq/ixios/`
+(`src/app.js:29` imports `./pq/ixios/network.js`; `vite.extension.config.js:33-34`
+names `src/pq/ixios/verify.js` and `derive.js`). The `VITE_ENABLE_IXIOS`
+environment switch is removed: `package.json` scripts `build` and
+`build:connect` are plain `vite build` (with `--config vite.connect.config.js`
+for Connect), and `src/app.js:679-682` registers the Ixios network
+unconditionally. Web Ixios send stays off (rows above and the table at the top
+of this file). The dated sections below describe the flag as it was.
 
 ## Release build always includes Ixios (0.1.44)
 
@@ -2754,7 +2826,8 @@ live in `src/connect/ui/messenger.css`; `test/connect-smoke.js` checks
 string "Message history" in the wallet's `app.js` chunk is the saved-wallet
 delete text of 0.1.37, not Messages UI.) Ixios is a build flag in both:
 `VITE_ENABLE_IXIOS=true npm run build:connect` for the same set as the wallet
-site.
+site (history: the flag is removed; `npm run build:connect` builds Ixios
+unconditionally).
 
 **Wallet extensions in Connect.** `src/connect-main.js` registers, before
 `src/app.js` loads: Messages, the own-name display, the shared vaults

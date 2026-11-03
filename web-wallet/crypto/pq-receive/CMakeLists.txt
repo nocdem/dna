@@ -23,5 +23,5 @@ target_link_options(pq_receive_keygen PRIVATE
     "-sSTACK_SIZE=1048576"
     "-sINITIAL_MEMORY=4194304"
     "-sALLOW_MEMORY_GROWTH=0"
-    "-sEXPORTED_FUNCTIONS=['_pq_receive_input','_pq_receive_output','_pq_receive_seed_size','_pq_receive_public_size','_pq_receive_derive','_pq_receive_clear']"
+    "-sEXPORTED_FUNCTIONS=['_pq_receive_input','_pq_receive_output','_pq_receive_seed_size','_pq_receive_public_size','_pq_receive_derive','_pq_receive_clear','_pq_receive_secret','_pq_receive_secret_size']"
     -Wl,--export-memory -Wl,--gc-sections -Wl,--strip-all)

@@ -29,3 +29,7 @@ export function pqNetwork(chain, id = isPqChain(chain) ? PQ_NETWORKS[chain].defa
   if (!choice) throw new Error('Unknown PQ network.');
   return choice;
 }
+// Chains whose key and address follow the chain's own wallet from the same 24 words
+// (plan docs/plans/approved/2026-11-03-pq-native.md section 1): the "native chain wallets may
+// derive different addresses" note on the receive page is not true for them and is hidden.
+export const PQ_NATIVE_WORD_CHAINS = Object.freeze(['tidecoin', 'soqucoin', 'xion', 'splendor']);
