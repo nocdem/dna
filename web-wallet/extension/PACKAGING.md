@@ -31,7 +31,7 @@ run `node scripts/build-extension-isolated.mjs`, then use Python's
 test Chromium executable. Keep test browser profiles separate from user profiles.
 
 The build writes `dist-extension/unpacked/` and one
-`dist-extension/nodus-wallet-<manifest version>.zip`. It prints **every archived
+`dist-extension/nodus-connect-<manifest version>.zip`. It prints **every archived
 file and its uncompressed byte size**, sorted by path. The smoke test also prints
 every extracted file's size. `scripts/extension-archive.py` creates sorted ZIP
 entries with fixed timestamps and regular-file permissions, validates the CRCs,

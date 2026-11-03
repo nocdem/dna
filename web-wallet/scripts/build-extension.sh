@@ -19,9 +19,9 @@ trap 'rm -rf -- "$staging"' EXIT
 # Python's standard library creates a sorted archive with fixed timestamps and
 # validates paths, regular files and CRCs. No system zip/unzip dependency.
 python3 "$wallet_root/scripts/extension-archive.py" create "$output/unpacked" "$staging/package.zip"
-mv -- "$staging/package.zip" "$output/nodus-wallet-$version.zip"
-printf 'Archive: %s\n' "$output/nodus-wallet-$version.zip"
-python3 "$wallet_root/scripts/extension-archive.py" list "$output/nodus-wallet-$version.zip" > "$staging/files.json"
+mv -- "$staging/package.zip" "$output/nodus-connect-$version.zip"
+printf 'Archive: %s\n' "$output/nodus-connect-$version.zip"
+python3 "$wallet_root/scripts/extension-archive.py" list "$output/nodus-connect-$version.zip" > "$staging/files.json"
 node --input-type=module - "$staging/files.json" <<'NODE'
 import { readFileSync } from 'node:fs';
 for (const file of JSON.parse(readFileSync(process.argv[2], 'utf8'))) {

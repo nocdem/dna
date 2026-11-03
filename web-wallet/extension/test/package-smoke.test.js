@@ -14,7 +14,7 @@ const python = process.env.PYTHON || 'python3';
 const walletRoot = fileURLToPath(new URL('../../', import.meta.url));
 const sourceManifest = JSON.parse(await readFile(new URL('../manifest.json', import.meta.url), 'utf8'));
 const archiveHelper = join(walletRoot, 'scripts', 'extension-archive.py');
-const zip = join(walletRoot, 'dist-extension', `nodus-wallet-${sourceManifest.version}.zip`);
+const zip = join(walletRoot, 'dist-extension', `nodus-connect-${sourceManifest.version}.zip`);
 
 async function filesBelow(directory, prefix = '') {
   const files = [];
