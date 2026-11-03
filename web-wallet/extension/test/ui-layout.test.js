@@ -684,8 +684,18 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         await page.locator('#reveal-password').fill('fresh-password');
         await button(page, 'Reveal phrase').click();
         assert.equal(await page.locator('#device-panel .phrase-grid input[readonly]').count(), 24);
+        // UI pack 2026-11-03: framed words, centred numbers, Copy phrase button; all gone after Back.
+        assert.equal(await page.locator('#device-panel .reveal-words').isVisible(), true);
+        assert.equal(await page.locator('#device-panel .reveal-words input[readonly]').count(), 24);
+        const labelOffsets = await page.locator('#device-panel .reveal-words .phrase-cell').evaluateAll(cells => cells.map(cell => {
+          const label = cell.querySelector('label').getBoundingClientRect(), input = cell.querySelector('input').getBoundingClientRect();
+          return Math.abs((label.top + label.height / 2) - (input.top + input.height / 2));
+        }));
+        assert.ok(labelOffsets.every(offset => offset <= 1), `number labels off centre: ${labelOffsets}`);
+        assert.equal(await button(page, 'Copy phrase').isVisible(), true);
         await page.locator('#page-settings .page-back').click();
         assert.equal(await page.locator('input[readonly]').count(), 0);
+        assert.equal(await button(page, 'Copy phrase').count(), 0);
         await page.locator('#lock').click();
         await page.locator('#unlock-form:visible').waitFor();
         assert.equal(await page.evaluate(() => window.layout.state.isUnlocked), false);

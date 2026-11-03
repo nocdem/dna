@@ -8,6 +8,7 @@ import { renderNodusConnect, renderNodusSiteApproval } from './nodus-site-screen
 import { renderSolanaTronSend, renderSolanaTronHistory } from './solana-tron-screens.js';
 import { NODUS_PERMISSION } from '../background/permissions.js';
 import { createPhraseFields } from '../../../src/phrase-fields.js';
+import { showRevealedPhrase } from '../../../src/reveal-phrase.js';
 import { walletHeading } from './presentation.js';
 import { autoLockBarText } from '../../../src/auto-lock.js';
 import { WALLET_MARKUP } from './wallet-markup.js';
@@ -242,10 +243,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
             try {
               phrase = await ui.revealPhrase(password); password = null;
               if (disposed || started !== revision) return;
-              container.hidden = false;
-              const grid = element('div', undefined, 'phrase-grid'), error = element('p', '', 'field-error');
-              container.replaceChildren(grid, error);
-              const display = createPhraseFields(grid, error); display.set(phrase, true); revealed = container; scheduleIdle(true);
+              showRevealedPhrase(document, container, phrase, { clipboard: window.navigator.clipboard }); revealed = container; scheduleIdle(true);
             } finally { phrase = password = null; }
           }, { renderAfter: false });
         },
@@ -378,9 +376,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
           try {
             phrase = await ui.revealPhrase(password); password = null;
             if (disposed || started !== revision) return;
-            container.hidden = false;
-            const grid = element('div', undefined, 'phrase-grid'), error = element('p', '', 'field-error');
-            container.replaceChildren(grid, error); createPhraseFields(grid, error).set(phrase, true); revealed = container; scheduleIdle(true);
+            showRevealedPhrase(document, container, phrase, { clipboard: window.navigator.clipboard }); revealed = container; scheduleIdle(true);
           } finally { phrase = password = null; }
         }, { renderAfter: false });
       },

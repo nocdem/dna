@@ -74,6 +74,8 @@ try {
   for (let i = 0; i < 100; i++) { try { if ((await fetch(url)).ok) break; } catch {} await delay(50); }
   browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || undefined });
   const context = await browser.newContext({ viewport: { width: 1280, height: 960 } });
+  // UI pack 2026-11-03: the Reveal screen's Copy phrase button writes to the clipboard.
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
   // REVEAL RECOVERY PHRASE in Device & settings on Connect (plan docs/plans/
@@ -292,6 +294,13 @@ try {
   // Reveal before saving: no password field; the words show, and saving removes them.
   assert.equal(await page.locator('#reveal-password').isVisible(), false);
   await assertNotShown(); await revealNow(); await assertShown();
+  // UI pack 2026-11-03: the note, the framed words and the Copy phrase button; the copy reaches the clipboard only.
+  assert.match(await page.locator('#device-panel .reveal-note').innerText(), /^Your 24 words control your wallet\. Never send them to anyone/);
+  assert.equal(await page.locator('#device-panel .reveal-words').isVisible(), true);
+  assert.equal(await page.getByRole('button', { name: 'Copy phrase' }).isVisible(), true);
+  await page.getByRole('button', { name: 'Copy phrase' }).click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), vectors[0].phrase);
+  assert.ok(!(await page.locator('#wallet-status').textContent()).includes('abandon'), 'the copied words reached the status line');
   await page.locator('#vault-storage-title').click();
   assert.equal(await page.locator('#vault-save').isVisible(), true);
   assert.equal(await page.locator('#vault-change').isVisible(), false);

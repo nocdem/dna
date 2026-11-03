@@ -155,7 +155,8 @@ async function pageFixture(t, initialized = true) {
   const saved = Object.getOwnPropertyDescriptor(globalThis, 'document'); globalThis.document = document;
   const root = new Node('section'), navigation = new Node('nav'), status = new Node('p');
   document.getElementById = id => ({ screen: root, 'wallet-navigation': navigation, 'wallet-status': status })[id];
-  const window = Object.assign(new EventTarget(), { navigator: { clipboard: { async writeText() {} } } });
+  const clipboardWrites = [];
+  const window = Object.assign(new EventTarget(), { navigator: { clipboard: { async writeText(text) { clipboardWrites.push(text); } } } });
   const calls = [], phrase = 'abandon '.repeat(23) + 'art';
   const state = { isInitialized: initialized, isUnlocked: initialized, accounts: [account], addresses: { ethereum: account }, subjects: {}, pendingApprovals: {}, preferences: { autoLockTimeLimit: 15 } };
   let notification;
@@ -172,7 +173,7 @@ async function pageFixture(t, initialized = true) {
   } };
   const page = await mountWalletPage({ document, window, client });
   t.after(() => { page.dispose(); if (saved) Object.defineProperty(globalThis, 'document', saved); else delete globalThis.document; });
-  return { root, navigation, status, calls, state, page, phrase, notify: () => notification?.({ method: 'messengerSubscription' }) };
+  return { root, navigation, status, calls, state, page, phrase, clipboardWrites, notify: () => notification?.({ method: 'messengerSubscription' }) };
 }
 
 test('home session shows the actual background auto-lock preference', async t => {
@@ -185,15 +186,20 @@ test('home session shows the actual background auto-lock preference', async t =>
 
 // Proves the mounted page keeps authenticated words visible until expiry and removes them on lock; testing renderSettings alone would miss the action wrapper clearing or retaining secrets.
 test('mounted reveal survives its response and is cleared on background lock', async t => {
-  const { root, navigation, calls, state, page, phrase } = await pageFixture(t);
+  const { root, navigation, calls, state, page, phrase, clipboardWrites } = await pageFixture(t);
   button(root, 'Settings').onclick();
   const password = root.querySelectorAll('input[type="password"]')[0]; password.value = 'fresh-password';
   document.dispatchEvent(new Event('input'));
   await descendants(root, node => node.tagName === 'form')[0].onsubmit({ preventDefault() {} });
   assert.deepEqual(calls.find(call => call.method === 'getSeedPhrase').params, ['fresh-password']);
   assert.equal(root.querySelectorAll('input').filter(input => input.readOnly).map(input => input.value).join(' '), phrase);
+  // UI pack 2026-11-03: Copy phrase writes the shown words to the clipboard on click only.
+  assert.deepEqual(clipboardWrites, []);
+  await button(root, 'Copy phrase').onclick();
+  assert.deepEqual(clipboardWrites, [phrase]);
   state.isUnlocked = false; await page.refresh();
   assert.equal(root.querySelectorAll('input').some(input => input.value), false); assert.match(root.textContent, /unlock your wallet/i);
+  assert.equal(button(root, 'Copy phrase'), undefined);
 });
 
 // Proves the ten-minute recovery timeout remains active with auto-lock disabled; a default fifteen-minute wallet timer could otherwise hide missing secret cleanup.
@@ -201,8 +207,10 @@ test('mounted reveal clears after ten idle minutes even when auto-lock is never'
   const { root, navigation, state } = await pageFixture(t); state.preferences.autoLockTimeLimit = 0;
   button(root, 'Settings').onclick(); root.querySelectorAll('input[type="password"]')[0].value = 'fresh-password';
   await descendants(root, node => node.tagName === 'form')[0].onsubmit({ preventDefault() {} });
+  assert.ok(button(root, 'Copy phrase'));
   t.mock.timers.tick(10 * 60_000);
   assert.equal(root.querySelectorAll('input').some(input => input.value), false);
+  assert.equal(button(root, 'Copy phrase'), undefined);
 });
 
 // Proves the lifecycle adapter's import form reaches save/unlock with 24 words,

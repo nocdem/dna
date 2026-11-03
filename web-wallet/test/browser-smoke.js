@@ -435,8 +435,21 @@ try {
   await revealNow(); await assertShown();
   assert.equal(await page.locator('#reveal-phrase-1').count(), 1); assert.equal(await page.locator('#phrase-1').count(), 1);
   assert.equal(await page.evaluate(k => Object.keys(localStorage).filter(x => x !== k).length + sessionStorage.length, SHOW_ZERO_KEY), 0);
+  // UI pack 2026-11-03: note, framed words with centred numbers, Copy phrase (clipboard permission granted above).
+  assert.match(await page.locator('#device-panel .reveal-note').innerText(), /^Your 24 words control your wallet\. Never send them to anyone/);
+  assert.equal(await page.locator('#device-panel .reveal-words').isVisible(), true);
+  const labelOffsets = await page.locator('#device-panel .reveal-words .phrase-cell').evaluateAll(cells => cells.map(cell => {
+    const label = cell.querySelector('label').getBoundingClientRect(), input = cell.querySelector('input').getBoundingClientRect();
+    return Math.abs((label.top + label.height / 2) - (input.top + input.height / 2));
+  }));
+  assert.equal(labelOffsets.length, 24); assert.ok(labelOffsets.every(offset => offset <= 1), `number labels off centre: ${labelOffsets}`);
+  await page.getByRole('button', { name: 'Copy phrase' }).click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), phrase);
+  const leaked = await page.evaluate(() => JSON.stringify([document.querySelector('#wallet-status').textContent, document.querySelector('#session-log-text').textContent, { ...localStorage }, { ...sessionStorage }]));
+  assert.ok(!leaked.includes('abandon abandon'), 'the copied words reached a status line, the log or storage');
   await page.locator('#page-settings .page-back').click(); await page.locator('#wallet-home').waitFor({ state: 'visible' });
   await assertNotShown();
+  assert.equal(await page.getByRole('button', { name: 'Copy phrase' }).count(), 0);
   await openPage('settings'); await assertNotShown();
   await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
   assert.equal(await page.locator('#vault-save').isVisible(), true);
