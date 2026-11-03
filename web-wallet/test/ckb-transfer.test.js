@@ -136,14 +136,15 @@ test('review rows are the extension rows, in the extension order', async () => {
     ? 'Full-format Bech32m recipients only; non-cellbase empty-data quantum inputs. Check recipient control; address validity does not prove spendability.'
     : 'Quantum-lock recipients only; non-cellbase empty-data inputs.';
   assert.deepEqual(transfer.review.map(r => r[0]), ['Network', 'From', 'To', 'Amount', 'Fee', 'Fee rate', 'Scope', 'Simulation']);
-  assert.deepEqual(transfer.review.filter(r => r[0] !== 'Fee rate'), [['Network', 'CKB Mainnet'], ['From', address], ['To', address], ['Amount', '100 CKB'], ['Fee', fee], ['Scope', scope], ['Simulation', SIMULATION_ROW]]);
+  assert.deepEqual(transfer.review.filter(r => r[0] !== 'Fee rate'), [['Network', 'CKB Mainnet'], ['From', address], ['To', address], ['Amount', '100.0 CKB'], ['Fee', fee], ['Scope', scope], ['Simulation', SIMULATION_ROW]]);
   assert.match(transfer.review.find(r => r[0] === 'Fee rate')[1], /^\d+ shannons per 1000 weight$/);
   // The extension source carries the same row texts (extension/src/background/ckb.js:44).
   const extension = readFileSync(new URL('../extension/src/background/ckb.js', import.meta.url), 'utf8');
   for (const text of [scope, SIMULATION_ROW, 'shannons per 1000 weight', "['Network',`CKB ${s.network.label||s.network.id}`]"]) assert.ok(extension.includes(text), text);
   assert.equal(transfer.chain, 'ckb');
   assert.equal(transfer.symbol, 'CKB');
-  assert.equal(transfer.amount, '100');
+  // formatUnits form, the one recordActivity compares (src/activity.js:95-99).
+  assert.equal(transfer.amount, '100.0');
   assert.equal(transfer.networkId, 'mainnet');
   assert.equal(transfer.endpoint, net.rpc);
   assert.equal(transfer.from, address);

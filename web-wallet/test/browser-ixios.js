@@ -37,7 +37,7 @@ const vite = join(app, 'node_modules/vite/bin/vite.js');
 const { Phrase: phrase, Checksummed: expected } = JSON.parse(readFileSync(new URL('./fixtures/ixios-checksum.json', import.meta.url))).vectors[0];
 assert.equal(phrase, Array(23).fill('abandon').concat('art').join(' '));
 // Web wallet 0.1.18, Package R3 item 3, verbatim (the Cellframe-style note).
-const IXIOS_NOTE = 'Sending IXIOS is not available in this release. Wallet support for Ixios post-quantum transactions has not yet been verified.';
+const IXIOS_NOTE = 'Send IXIOS from the extension.';
 const IXIOS_RPC = 'https://ixios-rpc.innova.limited';
 // Ixios mainnet genesis block hash (ixiosSpark params/config.go:27) and, for
 // the wrong-network case, Ethereum mainnet's: both chains report chain id 1.

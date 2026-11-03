@@ -194,7 +194,9 @@ test('(c) the flag on an initial send after its durable write marks it not submi
   assert.equal(row.notSubmitted, true);
   assert.equal(row.note, 'Cancelled before network submission. Nothing was broadcast.');
   const stored = (await t.reload())[0];
-  assert.equal(stored.status, 'failed');
+  // parseActivity returns every authenticated row as status 'pending' and keeps the
+  // written status in savedStatus (src/activity-storage.js:383).
+  assert.equal(stored.savedStatus, 'failed');
   assert.equal(stored.notSubmitted, true);
   // A network error at the first simulation request is after disclosure: unknown.
   const u = await tab(54), { failure: afterDisclosure } = await ambiguousFirstSend(u);

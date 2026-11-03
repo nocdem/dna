@@ -5,8 +5,8 @@
 import { capabilitiesFor, pageSupported } from '../capabilities.js';
 import { pqSendGate } from './send-gates.js';
 import { CKB_FULL_RECIPIENT_SEND_ENABLED } from './ckb-recipient-policy.js';
-// Web override list (operator 2026-11-03, "XION, Splendor, QTC ve Ixios'ta gönderme
-// eklentide kalır"): the extension sends on these mainnets, the web wallet and Connect
+// Web override list (operator decision 2026-11-03, docs/plans/approved/2026-11-03-pq-send-parity.md
+// section 0: sending on these networks stays in the extension): the extension sends on these mainnets, the web wallet and Connect
 // do not and say so. Printed by test/pq-send-gate-parity.test.js.
 export const WEB_SEND_OFF = Object.freeze([['xion', 'mainnet'], ['splendor', 'mainnet'], ['qtc', 'mainnet']].map(entry => Object.freeze(entry)));
 const SEND_FROM_EXTENSION = Object.freeze({ xion: 'XION', splendor: 'SPLD', qtc: 'QTC' });
