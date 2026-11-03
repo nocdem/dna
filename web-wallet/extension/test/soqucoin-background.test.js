@@ -1,4 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
+import{readFileSync}from'node:fs';
 import {createSoquRpcFixture} from '../../test/fixtures/soqu-rpc-fixture.js';
 import {createSoqucoin} from '../src/background/soqucoin.js';
 import {createLockCoordinator} from '../src/background/lock.js';
@@ -20,6 +21,8 @@ async function setup(t,extra={}){
  const original=globalThis.fetch;t.after(()=>{globalThis.fetch=original;});
  globalThis.fetch=async(url,options)=>{
   if(String(url).endsWith('/mldsa44-sign.wasm'))return new Response(x.wasmBytes);
+  // The Soqucoin signing seed comes from the receive module (native retry rule, src/pq/receive.js soqucoinSigningSeed).
+  if(String(url).endsWith('/receive-keygen.wasm'))return new Response(readFileSync(new URL('../../src/pq/receive-keygen.wasm',import.meta.url)));
   if(options.method==='POST'&&JSON.parse(options.body).method==='sendrawtransaction'){
    const rows=await parseActivity(values[key],id,session.addresses,session.key);assert.equal(rows.length,1);assert.deepEqual(rows[0].inputs,[{txid:x.row.txid,vout:0}]);x.record({hash:rows[0].hash});
   }

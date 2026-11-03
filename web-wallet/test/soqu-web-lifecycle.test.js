@@ -1,4 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';import{readFileSync}from'node:fs';import{runInNewContext}from'node:vm';
+import{serveReceiveWasmForFile}from'./fixtures/receive-wasm-fetch.js';serveReceiveWasmForFile(); // Soqucoin signing seed comes from the receive module (native rule)
 import{createSoquRpcFixture}from'./fixtures/soqu-rpc-fixture.js';
 import{prepareSoquTransfer}from'../src/pq/soqu-transfer.js';
 import{recordActivity}from'../src/activity.js';
