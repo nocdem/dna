@@ -1,16 +1,28 @@
-import { portfolioRead, cellframeRead, historyRead } from './portfolio-routes.js';
+import { portfolioRead, cellframeRead, historyRead, PQ_HOST } from './portfolio-routes.js';
 import { pastePhrase } from './browser-phrase.js';
-// Ixios as a receive-only wallet network handled exactly like Cellframe (the
-// Ixios build switch is gone: every build carries Ixios). Public test
-// phrase only; every external request is intercepted (the Ixios RPC included:
-// mocked below). Unlike the other browser scripts this one builds its own bundle
+import { PQ_ENTRIES } from '../src/pq/networks.js';
+// Proves, on a web build made for this script: Ixios (a receive-only wallet network handled
+// exactly like Cellframe; the Ixios build switch is gone, every build carries it) is listed and
+// selectable (network selector, network badge, its own group in the coin list); its IXIOS row is
+// read like the CPUNK row (balance, no USD value, outside the total) after a genesis-block
+// identity check (a wrong genesis makes no balance read and keeps only the amount read earlier,
+// marked "Last read"); selecting it shows the checksummed receive address and a QR that decodes
+// to exactly that address, hides the send fields and shows the Ixios note while Cellframe keeps
+// its own; lock clears it; the page never fetches the signing module at runtime (web send stays off) and
+// the build has no Ixios markup; every Ixios request goes to the mocked public RPC.
+// Public test phrase only; every external request is intercepted (the Ixios RPC included:
+// mocked below; the PQ networks' providers are refused, as in test/browser-portfolio.js, and counted
+// apart from `unexpected`). Unlike the other browser scripts this one builds its own bundle
 // into a temporary directory and previews it with --outDir, so dist/ is left untouched.
 // Needs: node_modules/vite (one `vite build` run), jsqr, fixtures/ixios-checksum.json,
 // and Chromium (CHROMIUM_PATH, otherwise the one Playwright finds). Preview port
 // 4193 on 127.0.0.1 with --strictPort: a busy port makes the script fail, not pass.
 // Leaves: nothing; the output directory is removed and the preview is stopped in finally.
 // Falsely passes: the Ixios RPC is a mock, so balances prove the page wiring,
-// not the live node.
+// not the live node. The note, send-fields and explorer checks read the elements' `hidden`
+// state and text, because the Send page is never displayed for a receive-only network (an
+// isVisible() there is false whatever the state); a group read while closed would give empty
+// innerText, so the rows are read with textContent after the group has been opened once.
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -49,6 +61,10 @@ const IXIOS_RPC = 'https://ixios-rpc.innova.limited';
 // the wrong-network case, Ethereum mainnet's: both chains report chain id 1.
 const IXIOS_GENESIS = '0xa19acef59b3b84f192a69407981c50695fd105988d9311dd2e1c60332b629f2f';
 const ETHEREUM_GENESIS = '0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3';
+// The PQ networks' priced assets (src/pq/prices.js PQ_PRICE_IDS) join the hero's priced-only count and their
+// providers are refused here, so the status counts them as unavailable balances (test/browser-portfolio.js missingStatus).
+const PQ_MISSING = PQ_ENTRIES.filter(({ asset }) => asset.priceId !== undefined).length;
+const missingStatus = new RegExp(`^${PQ_MISSING} balances and 0 prices unavailable or out of date\\.`);
 // Mocked IXIOS holding: 1234.567 IXIOS (18 decimals).
 const IXIOS_BALANCE = '0x' + (1234567n * 10n ** 15n).toString(16);
 const dirs = [], servers = [];
@@ -99,9 +115,7 @@ async function ixiosRead(route) {
 }
 async function openWallet(url) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 960 } }); page.setDefaultTimeout(20000);
-  // Every asset row, held or not (zero balances hidden by default since 0.1.113).
-  await page.addInitScript(() => { try { localStorage.setItem('nodus.showZeroBalances', '1'); } catch { /* storage refused */ } });
-  const unexpected = [], errors = [], wasm = [], ixiosRequests = [];
+  const unexpected = [], errors = [], wasm = [], ixiosRequests = [], pqRefused = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('request', req => { if (ixiosHost(req.url())) ixiosRequests.push(req.url()); });
   await page.route('**/*', async route => {
@@ -110,6 +124,7 @@ async function openWallet(url) {
     if (await historyRead(route)) return;
     if (await cellframeRead(route)) return;
     if (await portfolioRead(route)) return;
+    if (PQ_HOST.test(new URL(req.url()).hostname)) { pqRefused.push(req.url()); return route.abort('blockedbyclient'); }
     if (!req.url().startsWith(url + '/') || req.method() !== 'GET' || req.postData()) {
       unexpected.push({ url: req.url(), method: req.method() }); return route.abort();
     }
@@ -125,7 +140,37 @@ async function openWallet(url) {
   assert.equal(await page.locator('#chain').inputValue(), 'nodus');
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#receive-address').textContent));
   const nodusAddress = await page.locator('#receive-address').innerText();
-  return { page, unexpected, errors, wasm, ixiosRequests, nodusAddress };
+  // Hide zero balances is checked on every wallet opening (src/app.js resetAssetView); unchecked, every
+  // network's group is listed, held or not.
+  assert.equal(await page.locator('#show-zero-balances').isChecked(), true);
+  await page.locator('#show-zero-balances').uncheck();
+  return { page, unexpected, errors, wasm, ixiosRequests, pqRefused, nodusAddress };
+}
+// The network list lives in the closed network disclosure, the PQ and Legacy groups collapsed
+// (src/app.js #wallet-network, src/portfolio-view.js groupedNetworkControls).
+async function openNetworks(page) { if (!await page.locator('#wallet-network').evaluate(node => node.open)) await page.locator('#wallet-network > summary').click(); }
+async function expandGroupOf(page, badge) {
+  const groupToggle = badge.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " network-group ")]').locator('.network-group-toggle');
+  if (await groupToggle.count() && await groupToggle.getAttribute('aria-expanded') !== 'true') await groupToggle.click();
+}
+async function badgeOf(page, name) {
+  await openNetworks(page);
+  const badge = page.locator('#portfolio-networks .network-health', { hasText: name });
+  await expandGroupOf(page, badge);
+  return badge;
+}
+// Chooses the transfer network as a user does: its badge in the network disclosure.
+async function selectNetwork(page, chain) {
+  await openNetworks(page);
+  const badge = page.locator(`#portfolio-networks .network-health[data-chain="${chain}"]`);
+  await expandGroupOf(page, badge); await badge.click();
+}
+const rail = (page, href) => page.locator(`.wallet-navigation a[href="#${href}"]`);
+async function openPage(page, name) { await rail(page, name).click(); await page.locator(`#page-${name}`).waitFor({ state: 'visible' }); }
+// The rail's Portfolio link leaves a Send / Receive page.
+async function walletView(page) {
+  if (await page.locator('.wallet-page:not([hidden])').count()) await rail(page, '').click();
+  await page.locator('#wallet-home').waitFor({ state: 'visible' });
 }
 async function portfolioDone(page) {
   await page.waitForFunction(() => !document.querySelector('#portfolio-refresh').disabled && document.querySelector('#portfolio-updated').textContent.startsWith('Last refresh:'));
@@ -133,7 +178,7 @@ async function portfolioDone(page) {
 // The Ixios address (and so its balance read) arrives after the automatic
 // refresh has settled, as Cellframe's does; wait for its row to leave "Reading…".
 async function ixiosSettled(page) {
-  await page.waitForFunction(() => { const strong = document.querySelector('.asset-group[data-symbol="IXIOS"] .holding-value strong'); return strong && strong.textContent !== 'Reading…'; });
+  await page.waitForFunction(() => { const strong = document.querySelector('.asset-group[data-chain="ixios"] .holding-value strong'); return strong && strong.textContent !== 'Reading…'; });
 }
 
 try {
@@ -159,9 +204,11 @@ try {
   assert.equal(await page.locator('#chain option[value="ixios"]').textContent(), 'Ixios');
   // The scope paragraph is gone (0.1.108, operator: "Gerek yok onlar artık").
   assert.equal(await page.locator('#portfolio-scope').count(), 0);
-  // Portfolio: filter, health badge, and an IXIOS row read like the CPUNK row.
-  assert.equal(await page.locator('.network-filter[data-chain="ixios"]').innerText(), 'Ixios');
-  const badge = page.locator('#portfolio-networks .network-health', { hasText: 'Ixios' });
+  // Portfolio: health badge, and an IXIOS row read like the CPUNK row. There are no network filters (0.1.145,
+  // commit 0b3b0eb0d; src/portfolio-view.js: `$('portfolio-filters').hidden = true`, the group list lists every network).
+  assert.equal(await page.locator('#portfolio-filters button').count(), 0, 'no network filters (0.1.145)');
+  // The badge is in the closed network disclosure, the PQ group collapsed: opened as a user would (badgeOf).
+  const badge = await badgeOf(page, 'Ixios');
   // 0.1.102: built-in icon (data: or content-hashed); data-icon names the file
   assert.equal(await badge.locator('img.coin-icon').getAttribute('data-icon'), 'ixios.png');
   assert.match(await badge.locator('img.coin-icon').getAttribute('src'), /^data:image\/|\/assets\/[^/]+-[A-Za-z0-9_-]{8}\.png$/);
@@ -174,35 +221,46 @@ try {
     { method: 'eth_getBlockByNumber', params: ['0x1', false] },
     { method: 'eth_getBalance', params: [expected, 'latest'] },
   ]);
-  const row = page.locator('.asset-group[data-symbol="IXIOS"]');
+  // One group per network (0.1.145): data-symbol / data-chain is the chain id, the IXIOS row is the row of "ixios"
+  // (src/portfolio-view.js render). The coin list shows the groups of held networks, or of every network with Hide
+  // zero balances unchecked (openWallet unchecks it).
+  const row = page.locator('.asset-group[data-chain="ixios"]');
   assert.equal(await row.count(), 1);
   assert.equal(await row.locator('summary img.coin-icon').getAttribute('data-icon'), 'ixios.png');
-  assert.equal(await row.locator('.asset-name small').innerText(), 'IXIOS · Ixios');
-  assert.equal(await page.locator('.asset-group[data-symbol="ETH"] .asset-name small').innerText(), 'Ethereum · Ethereum', 'shared subtitle format unchanged for other coins');
-  // Shown like the CPUNK row: the balance, and no USD value.
-  const cpunk = page.locator('.asset-group[data-symbol="CPUNK"]');
-  assert.equal(await row.locator('.asset-value strong').innerText(), '1,234.567'); // 0.1.28 display form
-  assert.equal(await row.locator('.asset-value small').innerText(), '—');
-  assert.equal(await row.locator('.asset-value small').innerText(), await cpunk.locator('.asset-value small').innerText());
-  await row.locator('summary').click();
-  assert.equal(await row.locator('.holding-value strong').innerText(), '1,234.567 IXIOS');
+  assert.equal(await row.locator('summary .network-heading-select').innerText(), 'Ixios');
+  // The old per-asset summary ("IXIOS · Ixios" subtitle, .asset-value) is gone with the grouped list (0.1.145,
+  // commit 0b3b0eb0d removed .asset-name / .asset-value from src/portfolio-view.js); the amount is on the holding row.
+  assert.equal(await row.locator('.asset-name, .asset-value').count(), 0);
+  // Shown like the CPUNK row: the balance, and no USD value. A closed group has no innerText: it is opened by its chevron first.
+  const cpunk = page.locator('.asset-group[data-chain="cellframe"]');
+  await row.locator('summary .asset-chevron').click();
+  assert.equal(await row.locator('.chain-holding img.coin-icon').getAttribute('data-icon'), 'ixios.png');
+  assert.equal(await row.locator('.holding-value strong').innerText(), '1,234.567 IXIOS'); // 0.1.28 display form
   assert.equal(await row.locator('.holding-value small').innerText(), '—');
-  assert.deepEqual(await row.locator('.holding-actions button').allTextContents(), ['Receive']);
-  // Outside the USD total: the priced four networks only (price fixture $2,
-  // zero holdings), although IXIOS holds a non-zero balance.
+  assert.equal(await row.locator('.holding-value small').textContent(), await cpunk.locator('.holding-value small').textContent(), 'no USD value, like CPUNK');
+  // Row buttons are gone (0.1.145, commit 0b3b0eb0d; test/browser-portfolio.js: "Send and Receive are rail pages, not row
+  // buttons"): the row only selects its network and asset, the rail offers Receive and, for a receive-only network, no Send.
+  assert.equal(await page.locator('#balances .holding-actions').count(), 0, 'Send and Receive are rail pages, not row buttons');
+  // Outside the USD total: the priced networks only (price fixture $2,
+  // zero holdings), although IXIOS holds a non-zero balance. The PQ networks' providers are refused here, and
+  // their priced assets count as unavailable balances (as in test/browser-portfolio.js).
   assert.equal(await page.locator('#portfolio-total').innerText(), '$0.00');
-  assert.match(await page.locator('#portfolio-status').innerText(), /All supported asset balances/);
+  // The PQ addresses arrive after the refresh settled; their refused reads leave the status on the count above.
+  await page.waitForFunction(source => new RegExp(source).test(document.querySelector('#portfolio-status').textContent), missingStatus.source);
+  assert.match(await page.locator('#portfolio-status').innerText(), missingStatus);
   assert.doesNotMatch(await page.locator('body').innerText(), /not active/i);
-  await page.locator('.network-filter[data-chain="ixios"]').click();
-  assert.deepEqual(await page.locator('.asset-group').evaluateAll(groups => groups.map(g => g.dataset.symbol)), ['IXIOS']);
-  await page.locator('.network-filter[data-chain="all"]').click();
-  // Receive action selects the Ixios network: checksummed address, send fields hidden, Ixios note.
-  await page.getByRole('button', { name: 'Receive IXIOS on Ixios', exact: true }).click();
+  // Selecting the IXIOS row (a 'choose' selection, src/app.js selectAsset) selects the Ixios network: the rail offers Receive, not Send.
+  await row.locator('.holding-select').click();
   assert.equal(await page.locator('#chain').inputValue(), 'ixios');
+  assert.equal(await rail(page, 'send').isVisible(), false, 'IXIOS: no Send');
+  assert.equal(await rail(page, 'receive').isVisible(), true, 'IXIOS: Receive');
+  await openPage(page, 'receive');
+  // Checksummed address, send fields hidden, Ixios note. The Send page is never displayed for a receive-only network,
+  // so the state is read from `hidden` (src/app.js: send-fields hidden = receiveOnly, send-disabled-note hidden = !receiveOnly).
   await page.waitForFunction(address => document.querySelector('#receive-address').textContent === address, expected);
-  assert.equal(await page.locator('#send-fields').isVisible(), false);
-  assert.equal(await page.locator('#send-disabled-note').isVisible(), true);
-  assert.equal(await page.locator('#send-disabled-note').innerText(), IXIOS_NOTE);
+  assert.equal(await page.locator('#send-fields').evaluate(node => node.hidden), true);
+  assert.equal(await page.locator('#send-disabled-note').evaluate(node => node.hidden), false);
+  assert.equal(await page.locator('#send-disabled-note').textContent(), IXIOS_NOTE);
   // UI pack 2026-11-03 (operator "2"): the "Derived locally…" status line is gone; the empty line takes no space.
   assert.equal(await page.locator('#ixios-address-status').isVisible(), false);
   assert.equal(await page.locator('#ixios-address-status').textContent(), '');
@@ -211,7 +269,8 @@ try {
   // `hidden` says whether the network has an explorer.)
   assert.equal(await page.locator('#account-explorer').evaluate(node => node.hidden), true);
   assert.match(await page.locator('#receive-title').innerText(), /Receive on Ixios/);
-  assert.equal(await page.locator('#send-title').innerText(), 'Send / Receive · Ixios');
+  // "Send / Receive · " became "Send · " (src/app.js: send-title firstChild text; test/browser-smoke.js 'Send · Solana').
+  assert.equal(await page.locator('#send-title').textContent(), 'Send · Ixios');
   // The QR encodes exactly the checksummed Ixios address shown.
   assert.equal(await page.locator('#receive-address').innerText(), expected);
   assert.equal(await decodeQr(page), expected);
@@ -221,27 +280,33 @@ try {
   await page.locator('#copy-address').click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), expected);
   // Cellframe keeps its own note; switching back to Ixios restores the Ixios one.
-  await page.selectOption('#chain', 'cellframe');
-  assert.equal(await page.locator('#send-disabled-note').innerText(), 'Sending CPUNK is not available in this release. You can receive to the address above.');
+  // #chain is hidden since 0.1.145 (src/app.js `$('chain').hidden = true`): the network is chosen by its badge in the network disclosure.
+  await selectNetwork(page, 'cellframe');
+  assert.equal(await page.locator('#chain').inputValue(), 'cellframe');
+  assert.equal(await page.locator('#send-disabled-note').textContent(), 'Sending CPUNK is not available in this release. You can receive to the address above.');
   assert.equal(await page.locator('#ixios-address-status').isVisible(), false);
-  await page.selectOption('#chain', 'ethereum');
-  assert.equal(await page.locator('#send-fields').isVisible(), true); assert.equal(await page.locator('#send-disabled-note').isVisible(), false);
-  await page.selectOption('#chain', 'ixios');
+  await selectNetwork(page, 'ethereum');
+  assert.equal(await page.locator('#chain').inputValue(), 'ethereum');
+  assert.equal(await page.locator('#send-fields').evaluate(node => node.hidden), false); assert.equal(await page.locator('#send-disabled-note').evaluate(node => node.hidden), true);
+  await selectNetwork(page, 'ixios');
+  assert.equal(await page.locator('#chain').inputValue(), 'ixios');
   assert.equal(await page.locator('#receive-address').innerText(), expected);
-  assert.equal(await page.locator('#send-disabled-note').innerText(), IXIOS_NOTE);
+  assert.equal(await page.locator('#send-disabled-note').textContent(), IXIOS_NOTE);
   // Wrong network (an RPC whose genesis is Ethereum's, same chain id 1): the
   // balance is never read; the row keeps the amount read earlier from the
   // right network, marked "Read failed · last read" (0.1.41, the app's
   // stale-while-revalidate wallet cache) — never an amount from the wrong
   // network, never a zero.
+  await walletView(page);
   ixiosCalls.length = 0; ixiosGenesis = ETHEREUM_GENESIS;
   // Refresh is hidden while balances update automatically (0.1.108): it is
   // pressed through the page once enabled (a read in flight disables it).
   await page.waitForFunction(() => { const b = document.getElementById('portfolio-refresh'); if (b.disabled) return false; b.click(); return true; }); await portfolioDone(page);
   assert.deepEqual(ixiosCalls, [{ method: 'eth_getBlockByNumber', params: ['0x1', false] }], 'no eth_getBalance after a wrong genesis');
-  assert.equal(await row.locator('.holding-value strong').innerText(), '1,234.567 IXIOS');
-  assert.match(await row.locator('.holding-value small').innerText(), /^Read failed · last read /);
-  assert.equal(await row.locator('.asset-value small').innerText(), 'Last read');
+  assert.equal(await row.locator('.holding-value strong').textContent(), '1,234.567 IXIOS');
+  // The row says "Last read <time>" under the amount (the "Read failed" wording is gone, UI pack 2026-11-03;
+  // src/portfolio-view.js: keptAt -> `Last read ${readTime}`), and the network's badge says it too.
+  assert.match(await row.locator('.holding-value small').textContent(), /^Last read \d{1,2}:\d{2}/);
   assert.match(await badge.getAttribute('title'), /^Ixios · Last read /);
   assert.equal(await badge.getAttribute('data-health'), 'failed', 'red light: the last read failed (0.1.103)');
   assert.equal(await page.locator('#portfolio-total').innerText(), '$0.00');
@@ -249,7 +314,8 @@ try {
   ixiosCalls.length = 0; ixiosGenesis = IXIOS_GENESIS;
   await page.waitForFunction(() => { const b = document.getElementById('portfolio-refresh'); if (b.disabled) return false; b.click(); return true; }); await portfolioDone(page);
   assert.deepEqual(ixiosCalls.map(call => call.method), ['eth_getBlockByNumber', 'eth_getBalance']);
-  assert.equal(await row.locator('.holding-value strong').innerText(), '1,234.567 IXIOS');
+  assert.equal(await row.locator('.holding-value strong').textContent(), '1,234.567 IXIOS');
+  assert.doesNotMatch(await row.locator('.holding-value small').textContent(), /Last read/);
   assert.equal(await badge.getAttribute('title'), 'Ixios · Balances read');
   assert.equal(await badge.getAttribute('data-health'), 'current');
   assert.doesNotMatch(await page.locator('body').innerText(), /not active/i);
@@ -263,12 +329,12 @@ try {
   assert.equal(await page.locator('#receive-qr').evaluate(node => node.childElementCount), 0);
   assert.equal(await page.locator('#ixios-address-status').textContent(), '');
   assert.equal(await page.locator('#balances').textContent(), '');
-  assert.equal(await page.evaluate(() => Object.keys(localStorage).filter(x => x !== 'nodus.showZeroBalances').length + sessionStorage.length), 0);
+  assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
   // Every Ixios-host request went to the configured public RPC (and was mocked).
   assert.ok(on.ixiosRequests.length > 0);
   assert.ok(on.ixiosRequests.every(requestUrl => new URL(requestUrl).origin === new URL(IXIOS_RPC).origin), on.ixiosRequests.join());
   assert.deepEqual(on.unexpected, []); assert.deepEqual(on.errors, []);
-  console.log('Ixios browser checks passed: the build lists Ixios in the network selector, portfolio filters, badges and assets (IXIOS row: Receive only, balance read like CPUNK after a genesis-block identity check, outside the USD total; a wrong genesis makes no balance read and keeps only the amount read earlier from the right network, marked "Read failed · last read"); selecting it shows the checksummed receive address (its QR decodes to exactly that address; lock clears the QR), hides the send fields and shows the Ixios note while Cellframe keeps its own; Ixios requests go only to the configured RPC; lock clears it; loads only the keygen module (?ixios). The build ships neither mldsa87-sign.wasm nor Ixios markup; no unmocked external requests or storage.');
+  console.log('Ixios browser checks passed: the build lists Ixios in the network selector, network badges and coin list (IXIOS row: no row buttons, receive only through the rail, balance read like CPUNK after a genesis-block identity check, outside the USD total; a wrong genesis makes no balance read and keeps only the amount read earlier from the right network, marked "Last read"); selecting it shows the checksummed receive address (its QR decodes to exactly that address; lock clears the QR), hides the send fields and shows the Ixios note while Cellframe keeps its own; Ixios requests go only to the configured RPC; lock clears it; loads only the keygen module (?ixios). The build ships neither mldsa87-sign.wasm nor Ixios markup; no unmocked external requests or storage.');
 } finally {
   await browser?.close();
   for (const server of servers) server.stop();
