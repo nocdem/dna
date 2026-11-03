@@ -28,6 +28,9 @@
 // the other site's fresh cross-site mark refuses an unlock (src/site-lock.js,
 // through the real page wiring); no horizontal scroll at 390 px and 320 px;
 // the wallet build has no app shell, Messages navigation or Messages UI code;
+// the extension's privacy policy page /privacy.html (plan 2026-11-03-chrome-web-store section 3.4):
+// HTTP 200, title, heading, contact address, no <script>, Inter applied, no page error, no request
+// outside the preview origin (its own listener, before the main flow);
 // the PQ receive note (plan 2026-11-03-pq-native section 6, Connect surface): on the
 // Receive page #pq-recovery-note is hidden for Soqucoin (PQ_NATIVE_WORD_CHAINS) and
 // not hidden for Algorand, with its unchanged text (src/app.js:968).
@@ -56,7 +59,10 @@
 // Falsely passes: "the wallet build has no Messages" is a text search of dist/ for
 // the marker strings listed in the script, so a Messages part that uses other
 // strings is not seen; the provider reads are mocks; the receive-note check covers
-// two chains only (Soqucoin, Algorand), reads the `hidden` property of the note
+// two chains only (Soqucoin, Algorand), the privacy page check is a stale-build pass if
+// dist-connect/ predates the page (the preview then answers 404 and the status check fails, but a
+// build with an older text still passes: only the title, heading and contact address are asserted),
+// reads the `hidden` property of the note
 // (not what the user sees, the disclosure is closed), compares the text with a
 // copy of the string in this script, and does not wait for an address to appear
 // (reads are refused), so a note that is correct before derivation finishes passes.
@@ -95,6 +101,29 @@ try {
   // UI pack 2026-11-03: the Reveal screen's Copy phrase button writes to the clipboard;
   // Home's Send is hidden while the selected network cannot send (checked in the Wallet section).
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  // PRIVACY POLICY PAGE of the extension (plan docs/plans/2026-11-03-chrome-web-store-plan.md section 3.4;
+  // connect-site/privacy.html): served with HTTP 200, the title, the heading, the contact address, no <script>, the
+  // stylesheet applied (Inter), no page error, and not one request outside the preview origin. The request check is
+  // this page's own listener over every request (the main page's route handler below answers mocked reads before its
+  // `unexpected` list, so it would not see them). The "Last updated" date still reads {DATE} before a release is
+  // prepared; that is not asserted either way.
+  {
+    const privacyPage = await context.newPage(), privacyErrors = [], privacyRequests = [];
+    privacyPage.on('pageerror', error => privacyErrors.push(error.message));
+    privacyPage.on('request', request => privacyRequests.push(request.url()));
+    const response = await privacyPage.goto(`${url}/privacy.html`);
+    assert.equal(response.status(), 200, 'privacy.html is served');
+    await privacyPage.evaluate(() => document.fonts.ready);
+    assert.equal(await privacyPage.title(), 'Nodus Connect — Privacy policy');
+    assert.equal(await privacyPage.locator('h1').innerText(), 'Nodus Connect browser extension — Privacy policy');
+    assert.match(await privacyPage.locator('main').innerText(), /privacy@nodusnetwork\.io/);
+    assert.equal(await privacyPage.locator('script').count(), 0, 'privacy.html has no <script>');
+    assert.match(await privacyPage.evaluate(() => getComputedStyle(document.body).fontFamily), /^Inter(?:,|$)/u, 'the page stylesheet is applied');
+    assert.deepEqual(privacyErrors, []);
+    assert.ok(privacyRequests.length > 0);
+    for (const requested of privacyRequests) assert.ok(requested.startsWith(`${url}/`), `privacy.html requested ${requested} outside the site`);
+    await privacyPage.close();
+  }
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
   // REVEAL RECOVERY PHRASE in Device & settings on Connect (plan docs/plans/
