@@ -1,23 +1,22 @@
 import { CKB_FULL_RECIPIENT_SEND_ENABLED } from '../../../src/pq/ckb-recipient-policy.js';
 import { capabilitiesFor, pageSupported } from '../../../src/capabilities.js';
+import { pqSendGate, PQ_PAGE_HISTORY_CHAINS } from '../../../src/pq/send-gates.js';
 
 // Trusted extension wallet UI only. This does not enable site-provider signing,
-// assets, rekeyed accounts, testnet sends, or the web/Connect send surfaces.
+// assets, rekeyed accounts or testnet sends. The send / history flags of the
+// post-quantum networks other than Ixios come from src/pq/send-gates.js, the table
+// the web wallet and Connect read too (operator 2026-11-03: the surfaces must match;
+// the web wallet keeps its own override list for XION, Splendor and QTC).
 // The background still independently enforces mainnet + v42 + direct-account
 // identity and balance/fee checks before preparing and before signing.
 export function extensionCapabilitiesFor(chain, networkId) {
   const shared = capabilitiesFor(chain);
   if (chain === 'ixios') return { ...shared, send: networkId === 'mainnet', history: networkId === 'mainnet' }; // Trusted code candidate; live RPC availability remains qualified.
-  if (chain === 'qtc') return { ...shared, send: networkId === 'mainnet', history: true }; // Reviewed structured-UTXO final gateway; trusted wallet only.
-  if (chain === 'ckb') return { ...shared, send: networkId === 'mainnet', history: true }; // Trusted wallet only; restricted quantum-lock native transfers.
-  if (chain === 'xion') return { ...shared, send: networkId === 'mainnet' }; // Trusted wallet only; explicit fee and bounded height window.
-  if (chain === 'splendor') return { ...shared, send: networkId === 'mainnet' };
-  if (chain === 'asentum' && networkId === 'testnet') return { ...shared, send: true, history: true }; // verified testnet candidate, local history only
-  if (chain === 'soqucoin' && networkId === 'mainnet') return { ...shared, send: true, history: true }; // local submissions, not a full account scan
-  return chain === 'algorand' && networkId === 'mainnet' ? { ...shared, send: true } : shared;
+  const gate = pqSendGate(chain, networkId);
+  return gate ? { ...shared, ...gate } : shared;
 }
 export function extensionPageSupported(chain, page, networkId) {
-  return page === 'send' ? extensionCapabilitiesFor(chain, networkId).send : page === 'wallet-activity' && ['asentum', 'ckb', 'qtc', 'ixios'].includes(chain) ? extensionCapabilitiesFor(chain, networkId).history : pageSupported(chain, page);
+  return page === 'send' ? extensionCapabilitiesFor(chain, networkId).send : page === 'wallet-activity' && [...PQ_PAGE_HISTORY_CHAINS, 'ixios'].includes(chain) ? extensionCapabilitiesFor(chain, networkId).history : pageSupported(chain, page);
 }
 export function extensionNetworkConfig(chain, config, networkId) {
   if (chain === 'ixios') return { ...config, receiveOnly: !extensionCapabilitiesFor(chain, networkId).send, sendNote: networkId === 'mainnet' ? 'Native IXIOS only, 1,000 gas and an explicit gas-price cap. Fresh identity/fee checks must pass; live RPC availability is not guaranteed. No contracts, tokens or automatic replacement.' : 'IXIOS sends are available only on the mainnet code candidate.' };
