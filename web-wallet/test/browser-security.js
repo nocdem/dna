@@ -55,7 +55,7 @@ async function unlock(p) { await p.locator('#unlock-password').fill(password); a
 async function openPage(p, name) { await p.locator(`.wallet-navigation a[href="#${name}"]`).click(); await p.locator(`#page-${name}`).waitFor({ state: 'visible' }); }
 async function walletView(p) { const back = p.locator('.wallet-page:not([hidden]) .page-back'); if (await back.count()) await back.click(); await p.locator('#wallet-home').waitFor({ state: 'visible' }); }
 // Nodus (receive-only) is the network selected on page load; sends here are on Ethereum.
-async function review(p) { await walletView(p); await p.selectOption('#chain', 'ethereum'); await p.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await p.locator('#amount').fill('0.01'); await p.locator('#review-button').click(); await p.locator('#review-dialog').waitFor({ state: 'visible' }); }
+async function review(p) { await walletView(p); await p.selectOption('#chain', 'ethereum', { force: true }); await p.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await p.locator('#amount').fill('0.01'); await p.locator('#review-button').click(); await p.locator('#review-dialog').waitFor({ state: 'visible' }); }
 try {
   page = await fresh(); await page.clock.install();
   for (const stage of ['create', 'verify', 'restore']) {
@@ -190,7 +190,7 @@ try {
   await peer.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Enter your local password again'));
   await unlock(peer);
   // A fresh tab opens on Nodus, which has no sends; the Ethereum send is listed there.
-  assert.equal(await peer.locator('#chain').inputValue(), 'nodus'); await peer.selectOption('#chain', 'ethereum');
+  assert.equal(await peer.locator('#chain').inputValue(), 'nodus'); await peer.selectOption('#chain', 'ethereum', { force: true });
   await peer.waitForFunction(() => document.querySelector('#activity').textContent.includes('0.01'));
   assert.equal(await peer.locator('#session-conflict').isVisible(), false);
   await page.locator('#unlock-password').fill(password); await page.locator('#unlock-wallet').click(); await unlockSettled(page);

@@ -207,6 +207,8 @@ try {
   await page.waitForFunction(address => document.querySelector('#receive-address').textContent === address, vectors[1].address);
   assert.equal(await page.locator('#copy-address').isEnabled(), true);
   assert.equal(await page.locator('#quick-receive').isEnabled(), true);
+  // Receive is its own page (0.1.75); the copy control is on it.
+  await page.locator('#quick-receive').click(); await page.locator('#copy-address').waitFor({ state: 'visible' });
   await page.locator('#copy-address').click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), vectors[1].address);
   release.resolve(); await completed.promise;
