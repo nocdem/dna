@@ -1,5 +1,16 @@
 // Parent test oracle. Link only the pinned upstream Falcon/CIRCL/Edwards
 // packages. Input and output are public fixture material. Never import src/pq.
+//
+// Modes (argv: mode, hex of the input):
+//   curve, mldsa65, algorand - as before.
+//   splendor - Splendor's own rule (sqc-wallet 38ac3ded, cmd/wallet/seed.go:42-51,
+//     core/crypto/mldsa.go:154-160,252-275): input = hex of the UTF-8 phrase;
+//     lower-case + single spaces, go-bip39 v1.1.0 EntropyFromMnemonic (32 bytes,
+//     no PBKDF2), CIRCL v1.6.5 NewKeyFromSeed, address "SQ:" + hex(SHA3-256(pk)).
+//   mnemonic - go-bip39 v1.1.0 NewMnemonic of the input entropy (used only to
+//     turn public entropies into phrases for the Soqucoin retry search).
+// XION and secp-zero are in native2/ (a second module: the Cosmos SDK graph
+// resolves circl v1.6.3, this module circl v1.6.5; plan section 6).
 package main
 
 import (
@@ -9,9 +20,12 @@ import (
  "encoding/json"
  "fmt"
  "os"
+ "strings"
  "filippo.io/edwards25519"
  "github.com/algorand/falcon"
  "github.com/cloudflare/circl/sign/mldsa/mldsa65"
+ "github.com/tyler-smith/go-bip39"
+ "golang.org/x/crypto/sha3"
 )
 func main() {
  if len(os.Args)!=3 { panic("mode hex-input required") }
@@ -35,6 +49,17 @@ func main() {
   }
   if address=="" {panic("salt exhausted")}
   if e:=json.NewEncoder(os.Stdout).Encode(map[string]any{"seed":os.Args[2],"pk":hex.EncodeToString(pk[:]),"salt":salt,"address":address});e!=nil {panic(e)}
+ case "splendor":
+  phrase:=strings.ToLower(strings.Join(strings.Fields(string(input))," "))
+  entropy,e:=bip39.EntropyFromMnemonic(phrase);if e!=nil {panic(e)}
+  if len(entropy)!=32 {panic("phrase must be 24 words (32-byte entropy)")}
+  var seed [32]byte;copy(seed[:],entropy)
+  pk,_:=mldsa65.NewKeyFromSeed(&seed);raw,e:=pk.MarshalBinary();if e!=nil {panic(e)}
+  digest:=sha3.Sum256(raw)
+  if e:=json.NewEncoder(os.Stdout).Encode(map[string]any{"seed":hex.EncodeToString(seed[:]),"pk":hex.EncodeToString(raw),"address":"SQ:"+hex.EncodeToString(digest[:])});e!=nil {panic(e)}
+ case "mnemonic":
+  phrase,e:=bip39.NewMnemonic(input);if e!=nil {panic(e)}
+  fmt.Print(phrase)
  default:panic("unknown mode")
  }
 }
