@@ -73,3 +73,14 @@ body.extension-page[data-page="popup"] { overflow: auto; }
 .extension-page .wallet-workspace > .wallet-navigation { top: 0; }
 
 .extension-page .transfer-actions #portfolio-networks { margin-top: 0; }
+
+/* UI pack 2026-11-03, extension home width (operator "2" = wide-a.png): at <=760 px (popup and approval window)
+   the open wallet drops the outer frame and the assets get the freed width. Values of the approved mockup
+   (ext-mock.mjs, option wide) without !important; scoped to the open wallet (the locked, create and restore
+   screens reuse the card), to #assets-panel only (other pages keep their padding) and to <=760 px (a full
+   tab on a wide screen stays as it is). */
+@media (max-width: 760px) {
+  body.extension-page:has(#wallet-open:not([hidden])) .extension-shell { width: auto; max-width: none; margin: 0; padding: 10px 10px 0; }
+  body.extension-page:has(#wallet-open:not([hidden])) #screen .wallet-card { border: 0; background: transparent; padding: 0; box-shadow: none; }
+  body.extension-page:has(#wallet-open:not([hidden])) #assets-panel { padding: 14px; }
+}

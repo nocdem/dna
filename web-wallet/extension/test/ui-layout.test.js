@@ -343,7 +343,20 @@ async function assertHome(page, popup) {
   assert.equal(styles.portfolioRadius, '16px'); assert.notEqual(styles.portfolioBackground, 'none');
   // 32px+ total; at <=380px the extension uses 27px so USD stays on its line (operator 2026-11-03).
   assert.ok(page.viewportSize().width <= 380 ? styles.totalSize === 27 : styles.totalSize >= 32, `total font ${styles.totalSize}px at ${page.viewportSize().width}px`);
-  if (popup) { assert.equal(styles.shell.left, 20); assert.equal(styles.shell.right, 380); }
+  // UI pack 2026-11-03 (operator "2" = wide-a.png): the open wallet at <=760 px loses its outer frame and the
+  // assets panel is padded 14 px; the full browser tab on a wide screen keeps today's frame.
+  if (popup) { assert.equal(styles.shell.left, 10); assert.equal(styles.shell.right, 390); }
+  const frame = await page.evaluate(() => { const card = getComputedStyle(document.querySelector('.wallet-card')), panel = getComputedStyle(document.querySelector('#assets-panel')); return { border: card.borderTopWidth, padding: card.paddingTop, panel: panel.paddingTop }; });
+  if (page.viewportSize().width <= 760) {
+    assert.deepEqual(frame, { border: '0px', padding: '0px', panel: '14px' }, `frame at ${page.viewportSize().width}px`);
+    if (popup) {
+      // Rows were 232 px wide in the popup; they are wider without the frame.
+      const rowWidth = await page.evaluate(() => { const group = document.querySelector('.asset-group'), was = group.open; group.open = true; try { return document.querySelector('.asset-group .chain-holding').getBoundingClientRect().width; } finally { group.open = was; } });
+      assert.ok(rowWidth > 232, `popup row width ${rowWidth}`);
+    }
+  } else {
+    assert.equal(frame.border, '1px', 'a wide full tab keeps its frame'); assert.equal(frame.panel, '18px');
+  }
   const fixture = await page.evaluate(() => ({ balances: window.layout.balances, times: window.layout.balanceTimes, quotes: window.layout.quotes, now: Date.now() }));
   const balances = Object.assign({}, ...Object.entries(fixture.balances).map(([chain, rows]) => chainBalances(chain, rows, fixture.times[chain])));
   const quotes = Object.fromEntries(Object.entries(fixture.quotes).map(([key, quote]) => [key, { ...quote, units: BigInt(quote.units) }]));
@@ -432,6 +445,9 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
             await page.keyboard.press(key);
           }
           await page.locator('#unlock-form:visible').waitFor();
+          // UI pack 2026-11-03: only the OPEN wallet loses its frame; the locked screen keeps the card border.
+          assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.wallet-card')).borderTopWidth), '1px');
+          assert.equal(await page.locator('#extension-bottom-bar').count(), 0, 'no bottom bar on the locked screen');
           assert.equal(await page.evaluate(() => window.layout.state.isUnlocked), false);
           assert.equal(await page.evaluate(() => window.layout.calls.filter(call => call.method === 'setLocked').length), 1);
           assert.equal(await page.locator('#lock').isVisible(), false);
