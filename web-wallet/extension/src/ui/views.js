@@ -10,6 +10,7 @@ import { CHAIN_NETWORKS, chainNetwork } from '../constants/networks.js';
 import { PQ_NETWORKS } from '../../../src/pq/networks.js';
 import { appIcon, pageHeading } from './presentation.js';
 import { displayAmount } from '../../../src/portfolio.js';
+import { renderRevealBlock } from '../../../src/reveal-phrase.js';
 
 // Approved plan §3.6/§7: web-wallet networks; package 5 adds real EVM balances.
 export const NETWORKS = { nodus: NODUS_NETWORK, ...CHAINS, cellframe: CELLFRAME };
@@ -223,14 +224,8 @@ export function renderSettings(document, container, state, { setAutoLock, reveal
     }
     container.append(evm);
   }
-  const revealBlock = element(document, 'div', 'page-block'); revealBlock.append(element(document, 'h2', '', 'Reveal recovery phrase'));
-  const form = element(document, 'form'), passwordLabel = element(document, 'label', '', 'Re-enter your password');
-  const password = element(document, 'input'); password.id = 'reveal-password'; password.type = 'password';
-  password.autocomplete = 'current-password'; password.required = true; password.maxLength = 1024; passwordLabel.htmlFor = password.id;
-  const submit = element(document, 'button', '', 'Reveal phrase'); submit.type = 'submit';
-  const recovery = element(document, 'div'); recovery.hidden = true;
-  form.append(passwordLabel, password, submit);
-  form.onsubmit = event => { event.preventDefault(); const entered = password.value; password.value = ''; return reveal(entered, recovery); };
-  revealBlock.append(form, recovery); container.append(revealBlock);
+  // The block is shared with the web wallet and Connect (src/reveal-phrase.js); the extension always asks for the password.
+  const { block: revealBlock, password, recovery } = renderRevealBlock(document, { reveal });
+  container.append(revealBlock);
   return { password, recovery, select };
 }

@@ -50,6 +50,7 @@ import { deriveWallet, disposeWallet, newPhrase, normalizePhrase } from './keys.
 import { adapters, prepareTransfer } from './wallet.js';
 import { endpointUrl, formatUnits } from './core.js';
 import { createPhraseFields } from './phrase-fields.js';
+import { renderRevealBlock, showRevealedPhrase, clearRevealedPhrase } from './reveal-phrase.js';
 import { createPortfolio } from './portfolio-view.js';
 import { renderQr } from './qr.js';
 // Wallet-only page: no extension is registered and these are no-ops; the
@@ -1054,11 +1055,15 @@ function stopPqAddresses() {
 // yazıyor … Gerek yok onlar artık … insanlara bastıkları zaman o network'te
 // ne yaptıklarını görüyorlar".)
 function expireIdle() {
+  // The shown recovery words (and a typed, unsubmitted reveal password) clear
+  // on their own deadline and never lock the wallet: checked first.
+  if (revealDeadline && Date.now() >= revealDeadline) clearReveal({ password: true });
   if (idleDeadline && Date.now() >= idleDeadline) { lock(); return true; }
   return false;
 }
 function activity() {
   if (expireIdle()) return;
+  syncRevealTimer();
   clearTimeout(lockTimer);
   // A tab that took the session over holds it before the wallet is reopened;
   // the same idle lock gives it back if nobody reopens it here.
@@ -1076,6 +1081,62 @@ function activity() {
   }
 }
 const ENTRY_IDLE_MINUTES = 10;
+// ── Reveal recovery phrase (Device & settings; src/reveal-phrase.js is shared
+// with the extension; plan docs/plans/approved/2026-11-03-reveal-phrase.md).
+// A saved wallet opened from its saved copy asks for the password again; every
+// other open wallet (nothing saved; a saved copy exists but this session was
+// opened by typing the words; device storage unreadable) shows the words with
+// no password. The words go only into read-only inputs in #device-panel; they
+// are never passed to message(), the session log, storage or the URL.
+// revealRun: counts the clear points; a saved-wallet reveal still pending when
+// one runs is dropped (it cannot use `revision` / `vaultOperation`, which also
+// cancel sends and saves). revealDeadline / revealTimer: shown words, or a
+// typed reveal password, clear after ENTRY_IDLE_MINUTES without use — clear
+// only, the wallet is not locked by this timer (as the extension).
+const REVEAL_REFUSED = 'Incorrect password or damaged saved wallet.';
+let revealRun = 0, revealTimer, revealDeadline = 0;
+const reveal = renderRevealBlock(document, { reveal: revealPhrase });
+{
+  const title = document.createElement('h4'); title.textContent = 'Reveal recovery phrase';
+  reveal.block.querySelector('h2').replaceWith(title);
+  $('device-panel').append(reveal.block);
+}
+// The one clear routine: removes the shown words, stops the timer, counts.
+function clearReveal({ password = false } = {}) {
+  revealRun++; clearTimeout(revealTimer); revealTimer = undefined; revealDeadline = 0;
+  clearRevealedPhrase(reveal.recovery);
+  if (password) reveal.password.value = '';
+}
+// Set (and renewed by activity()) while words are shown or a reveal password is typed.
+function syncRevealTimer() {
+  if (reveal.recovery.hidden && !reveal.password.value) return;
+  const ms = ENTRY_IDLE_MINUTES * 60 * 1000;
+  clearTimeout(revealTimer); revealDeadline = Date.now() + ms;
+  revealTimer = setTimeout(() => clearReveal({ password: true }), ms);
+}
+async function revealPhrase(password, container) {
+  if (!wallet || wallet.locked) return;
+  const button = reveal.block.querySelector('button[type="submit"]');
+  button.disabled = true;
+  const source = wallet, started = revision, startedReveal = revealRun;
+  let phrase;
+  try {
+    // The state at the click, not the mode shown: unreadable storage is the
+    // no-password state, as in updateVaultUI's catch.
+    let previous = null;
+    try { previous = localStorage.getItem(VAULT_KEY); } catch { /* storage unreadable: no password */ }
+    if (previous && activitySession?.vault === previous) {
+      const operation = ++vaultOperation;
+      const saved = await decryptVault(previous, password); password = null;
+      if (operation !== vaultOperation || wallet !== source || source.locked || revision !== started || shownPage !== 'settings' || revealRun !== startedReveal) return;
+      if (saved.phrase !== source.recoveryPhrase) throw new Error(REVEAL_REFUSED);
+      phrase = saved.phrase;
+    } else phrase = source.recoveryPhrase;
+    showRevealedPhrase(document, container, phrase);
+    syncRevealTimer();
+  } catch (error) { message(error.message, { error: true }); }
+  finally { phrase = password = null; button.disabled = false; }
+}
 // Reading the localStorage property itself throws where the browser blocks
 // site data: asked for inside a try, like every other use here (0.1.90).
 function autoLockStorage() { try { return globalThis.localStorage; } catch { return undefined; } }
@@ -1918,7 +1979,7 @@ function lock(event) {
   stopNodusSend({ reselect: false }); nodusRetries = 0;
   siteLock.stop(); walletFresh = false; ownIdentity = { addresses: {} };
   portfolio.clear();
-  phraseFields.clear();
+  phraseFields.clear(); clearReveal();
   nodusDerivation?.abort(); nodusDerivation = undefined;
   $('nodus-address-status').textContent = '';
   // stopNodusSend dropped the client before locking it, so its 'locked' never
@@ -1936,7 +1997,7 @@ function lock(event) {
   resetWalletPages({ keepHash: event?.type === 'pagehide' });
   history.length = 0; quarantinedRows = []; releasedQuarantine.clear(); quarantineReadAt = QUARANTINE_NEVER_READ; stopQuarantineTimer(); $('account-explorer').removeAttribute('href');
   $('activity').replaceChildren(); setReceiveAddress(''); $('balances').replaceChildren(); $('recipient').value = ''; $('amount').value = '';
-  for (const id of ['unlock-password', 'vault-password', 'vault-confirm-password', 'vault-old-password']) $(id).value = '';
+  for (const id of ['unlock-password', 'vault-password', 'vault-confirm-password', 'vault-old-password', 'reveal-password']) $(id).value = '';
   $('vault-risk-confirm').checked = false; $('vault-save-status').textContent = '';
   updateVaultUI(); clearTimeout(lockTimer); message('Wallet locked. Restore your recovery phrase or unlock your saved wallet.');
   raise('locked');
@@ -2340,6 +2401,9 @@ function resetAssetView() {
   portfolio.setHideZero(true);
 }
 document.addEventListener('wallet-view-opened', resetAssetView);
+// Connect only: leaving the Wallet tab does not leave the Settings page, so the
+// shell announces it (src/connect-main.js setTab) and the shown words go.
+document.addEventListener('wallet-view-closed', () => clearReveal());
 const WALLET_PAGES = [...document.querySelectorAll('.wallet-page')];
 const pageNode = name => WALLET_PAGES.find(node => node.dataset.page === name) || null;
 const pagePanel = node => node.querySelector('.dashboard-panel');
@@ -2373,6 +2437,8 @@ function showWalletPage(name, { focus = true } = {}) {
   const previous = shownPage;
   if (!previous && walletViewShown()) walletScroll = scrollY;
   shownPage = next;
+  // Leaving Device & settings removes the shown recovery words (the extension's rule).
+  if (previous === 'settings' && next !== 'settings') clearReveal();
   if (next === 'send') $('send-title').parentElement.after(networkDisclosure);
   else if (next === 'receive') $('receive-title').after(networkDisclosure);
   else portfolioCard.after(networkDisclosure);
@@ -2774,9 +2840,12 @@ async function resubmitRow(row) {
   submissionFollow = { record: row, what, idLabel, link: false, shown: null }; followSubmission();
 }
 function updateVaultUI() {
+  // A save, delete, unlock or lock never leaves words shown under the other mode.
+  clearReveal();
   try {
     const saved = localStorage.getItem(VAULT_KEY);
     const authenticated = !!saved && activitySession?.vault === saved;
+    reveal.setPasswordRequired(authenticated);
     $('vault-password-controls').hidden = !!saved && !authenticated;
     $('vault-current-password').hidden = !authenticated;
     $('vault-password-label').textContent = authenticated ? 'New password (at least 16 characters)' : 'Password (at least 16 characters)';
@@ -2799,6 +2868,7 @@ function updateVaultUI() {
       : saved ? 'Temporary session · the saved copy has not been unlocked here.' : 'Temporary session · this wallet has not been saved on this device. To keep it here, open “Save wallet on this device” below.';
   }
   catch {
+    reveal.setPasswordRequired(false);
     $('vault-password-controls').hidden = true;
     $('vault-current-password').hidden = true;
     $('vault-save').hidden = true; $('vault-change').hidden = true;

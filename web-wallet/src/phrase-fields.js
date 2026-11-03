@@ -3,7 +3,10 @@ import { attachPhraseSuggestions } from './phrase-suggestions.js';
 
 // Phrase values exist only in these inputs until local validation/derivation.
 // No hidden aggregate input, storage, background clipboard access or network requests.
-export function createPhraseFields(grid, error) {
+// idPrefix: the ids are `${idPrefix}-N` and `${idPrefix}-suggestions-N`. The default keeps
+// every existing id; the reveal display (src/reveal-phrase.js) uses its own prefix so its
+// ids never duplicate the restore form's ids on the same page.
+export function createPhraseFields(grid, error, { idPrefix = 'phrase' } = {}) {
   const inputs = [], clearSuggestions = [];
   let pasteAllowed = true;
   const focus = index => inputs[Math.min(index, NODUS_WORD_COUNT - 1)].focus();
@@ -24,14 +27,14 @@ export function createPhraseFields(grid, error) {
     const cell = document.createElement('div'), label = document.createElement('label');
     const input = document.createElement('input'), panel = document.createElement('div');
     cell.className = 'phrase-cell';
-    label.htmlFor = input.id = `phrase-${index + 1}`;
+    label.htmlFor = input.id = `${idPrefix}-${index + 1}`;
     label.textContent = `${index + 1}.`;
     input.type = 'text'; input.maxLength = 1024;
     input.autocomplete = 'off'; input.autocapitalize = 'off'; input.spellcheck = false;
     input.setAttribute('autocorrect', 'off');
     input.setAttribute('aria-label', `Recovery word ${index + 1}`);
     input.setAttribute('role', 'combobox'); input.setAttribute('aria-autocomplete', 'list');
-    input.setAttribute('aria-controls', panel.id = `phrase-suggestions-${index + 1}`);
+    input.setAttribute('aria-controls', panel.id = `${idPrefix}-suggestions-${index + 1}`);
     input.setAttribute('aria-expanded', 'false');
     panel.className = 'phrase-suggestions'; panel.setAttribute('role', 'listbox'); panel.hidden = true;
     cell.append(label, input, panel); grid.append(cell); inputs.push(input);

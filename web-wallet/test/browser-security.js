@@ -64,6 +64,45 @@ try {
   assert.equal(await readPhrase(page), ''); await page.close();
   console.log('RT-01: create, verify, restore and suspended-tab expiry clear secrets.');
 
+  // RT-REVEAL (plan docs/plans/approved/2026-11-03-reveal-phrase.md sections
+  // 2.3 items 5-6 and 5): the recovery words shown in Device & settings, and a
+  // typed but unsubmitted reveal password, are cleared after ten minutes
+  // without use, also when auto-lock is "Never", WITHOUT locking the wallet;
+  // a suspended tab (clock jumps 24 h, then a focus event) clears the words
+  // too. Needs the production bundle and page.clock (time flows, fastForward
+  // fires each due timer once). Leaves nothing behind: the wallet is locked and
+  // localStorage cleared before the page closes (the next scenarios expect an
+  // empty storage). Falsely passes if the words never showed: each clear check
+  // follows a check that exactly 24 words equal to `phrase` were on screen,
+  // and "wallet still open" is asserted after every clear.
+  {
+    const shown = () => page.locator('#device-panel input[readonly]').evaluateAll(inputs => inputs.map(input => input.value));
+    const revealButton = () => page.locator('#device-panel form:has(#reveal-password) button[type="submit"]');
+    const reveal = async () => { await revealButton().click(); await page.waitForFunction(() => document.querySelectorAll('#device-panel input[readonly]').length === 24); assert.equal((await shown()).join(' '), phrase); };
+    page = await fresh(); await page.clock.install(); await restore(page); await openPage(page, 'settings');
+    await page.selectOption('#auto-lock-minutes', '0');
+    assert.equal(await page.locator('#reveal-password').isVisible(), false);
+    await reveal();
+    await page.clock.fastForward(11 * 60 * 1000);
+    assert.deepEqual(await shown(), []); assert.equal(await page.locator('#wallet-open').isVisible(), true);
+    await reveal();
+    await page.clock.setSystemTime(Date.now() + 24 * 60 * 60 * 1000); await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    assert.deepEqual(await shown(), []); assert.equal(await page.locator('#wallet-open').isVisible(), true);
+    // A saved, unlocked wallet: a typed, unsubmitted reveal password is emptied; the wallet stays open.
+    await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
+    await page.locator('#vault-password').fill(password); await page.locator('#vault-confirm-password').fill(password);
+    await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
+    await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Encrypted wallet saved'));
+    assert.equal(await page.locator('#reveal-password').isVisible(), true);
+    await page.locator('#reveal-password').fill('typed-and-left-password-2026');
+    await page.clock.fastForward(11 * 60 * 1000);
+    assert.equal(await page.locator('#reveal-password').inputValue(), ''); assert.equal(await page.locator('#wallet-open').isVisible(), true);
+    await page.locator('#lock').click();
+    await page.waitForFunction(async () => !(await navigator.locks.query()).held.some(lock => lock.name === 'nodus.wallet.session'));
+    await page.evaluate(() => localStorage.clear()); await page.close();
+    console.log('RT-REVEAL: shown words and a typed reveal password clear after ten minutes and on a suspended tab, without locking the wallet.');
+  }
+
   page = await fresh(); await restore(page); await openPage(page, 'settings'); await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
   assert.equal(await page.locator('#vault-risk-confirm').isChecked(), false);
   await page.locator('#vault-password').fill(password); await page.locator('#vault-confirm-password').fill(password); await page.locator('#vault-save').click();

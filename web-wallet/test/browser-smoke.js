@@ -77,6 +77,23 @@ const openPage = async name => { await page.locator(`.wallet-navigation a[href="
 // Send and Receive pages carry no Back control (src/app.js:2320-2322); the rail's
 // Portfolio link ('#') returns to the wallet view from them.
 const walletView = async () => { const back = page.locator('.wallet-page:not([hidden]) .page-back'); if (await back.count()) await back.click(); else if (await page.locator('.wallet-page:not([hidden])').count()) await page.locator('.wallet-navigation a[href="#"]').click(); await page.locator('#wallet-home').waitFor({ state: 'visible' }); };
+// REVEAL RECOVERY PHRASE in Device & settings (plan docs/plans/approved/
+// 2026-11-03-reveal-phrase.md section 5; src/reveal-phrase.js, src/app.js).
+// Proves, on the web page: a wallet that is not saved reveals its 24 words with
+// no password field; a saved wallet that is open from its saved copy asks for
+// the password again (wrong: refused, no words; right: the 24 words); a
+// temporary session over a saved copy reveals with no password (orchestrator
+// decision, plan section 0 items 5-6); Back, Logs and Lock remove the words;
+// the words never reach localStorage, sessionStorage or the session log; the
+// reveal ids do not duplicate #phrase-1. The storage-unreadable state is not
+// driven here. Leaves nothing behind (storage is checked empty / unchanged).
+// Falsely passes if the words were never shown: every "removed" check follows a
+// check that exactly the 24 words equal to `phrase` were on screen.
+const shownWords = () => page.locator('#device-panel input[readonly]').evaluateAll(inputs => inputs.map(input => input.value));
+const revealButton = () => page.locator('#device-panel form:has(#reveal-password) button[type="submit"]');
+const revealNow = async () => { await revealButton().click(); await page.waitForFunction(() => document.querySelectorAll('#device-panel input[readonly]').length === 24); };
+const assertShown = async () => assert.equal((await shownWords()).join(' '), phrase);
+const assertNotShown = async () => assert.deepEqual(await shownWords(), []);
 // Serializes the receive QR <svg>, draws it through an <img> (data: URL, allowed
 // by img-src) onto a white canvas at 4 px per module, and decodes the pixels
 // with jsQR. Returns the decoded text, or undefined when nothing decodes.
@@ -411,6 +428,16 @@ try {
   assert.equal(await page.evaluate(k => Object.keys(localStorage).filter(x => x !== k).length + sessionStorage.length, SHOW_ZERO_KEY), 0);
   networkId = '0x1';
   await openPage('settings');
+  // Reveal 1: temporary session, nothing saved: no password field.
+  assert.equal(await page.locator('#reveal-password').isVisible(), false);
+  assert.equal(await revealButton().isVisible(), true);
+  await assertNotShown();
+  await revealNow(); await assertShown();
+  assert.equal(await page.locator('#reveal-phrase-1').count(), 1); assert.equal(await page.locator('#phrase-1').count(), 1);
+  assert.equal(await page.evaluate(k => Object.keys(localStorage).filter(x => x !== k).length + sessionStorage.length, SHOW_ZERO_KEY), 0);
+  await page.locator('#page-settings .page-back').click(); await page.locator('#wallet-home').waitFor({ state: 'visible' });
+  await assertNotShown();
+  await openPage('settings'); await assertNotShown();
   await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
   assert.equal(await page.locator('#vault-save').isVisible(), true);
   assert.equal(await page.locator('#vault-change').isVisible(), false);
@@ -438,6 +465,14 @@ try {
   assert.match(await page.locator('#vault-save-status').innerText(), /Encrypted wallet saved/);
   assert.equal(await page.locator('#vault-confirm-password').inputValue(), '');
   const stored = await page.evaluate(() => JSON.stringify({ ...localStorage })); assert.ok(!stored.includes(phrase)); assert.ok(!stored.includes('public-test-password-123'));
+  // Reveal 2: saved in this session: the password is asked for again; the
+  // reveal writes nothing to either storage.
+  assert.equal(await page.locator('#reveal-password').isVisible(), true);
+  await page.locator('#reveal-password').fill('public-test-password-123'); await revealNow(); await assertShown();
+  assert.equal(await page.locator('#reveal-password').inputValue(), '');
+  const afterReveal = await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }));
+  assert.ok(!afterReveal.includes(phrase)); assert.ok(!afterReveal.includes('public-test-password-123'));
+  assert.equal(await page.evaluate(() => localStorage.getItem('nodus.wallet.v1')), JSON.parse(stored)['nodus.wallet.v1']);
   // 0.1.41: the balances read while the wallet was NOT saved were not written
   // (localStorage was empty above); once saved they are, encrypted (decision
   // 2026-10-02-device-cache-only-when-saved).
@@ -461,7 +496,12 @@ try {
   assert.match(await page.locator('#vault-save-explain').innerText(), /Lock this temporary session, then unlock the saved wallet/);
   for (const id of ['vault-password', 'vault-confirm-password', 'vault-old-password', 'vault-risk-confirm', 'vault-save', 'vault-change']) assert.equal(await page.locator(`#${id}`).isVisible(), false, id);
   assert.equal(await page.evaluate(() => localStorage.getItem('nodus.wallet.v1')), JSON.parse(stored)['nodus.wallet.v1']);
+  // Reveal 3: temporary session over a saved copy: no password field (plan
+  // section 0 items 5-6 — the session was opened by typing the words).
+  assert.equal(await page.locator('#reveal-password').isVisible(), false);
+  await assertNotShown(); await revealNow(); await assertShown();
   await page.locator('#lock').click(); await sessionReleased();
+  await assertNotShown();
   await page.locator('#unlock-password').fill('incorrect-password-123'); await page.locator('#unlock-wallet').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Incorrect password'));
   // A failed unlock gives the session lock back.
@@ -471,6 +511,29 @@ try {
   assert.equal(await page.locator('#chain').inputValue(), 'nodus');
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#receive-address').textContent));
   await openPage('settings');
+  // Reveal 4: opened from the saved copy: the password is asked for again.
+  assert.equal(await page.locator('#reveal-password').isVisible(), true);
+  await page.locator('#reveal-password').fill('incorrect-password-123'); await revealButton().click();
+  await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Incorrect password or damaged saved wallet.'));
+  await assertNotShown(); assert.equal(await page.locator('#reveal-password').inputValue(), '');
+  await page.locator('#reveal-password').fill('public-test-password-123'); await revealNow(); await assertShown();
+  assert.equal(await page.locator('#reveal-password').inputValue(), '');
+  const revealedStorage = await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }));
+  assert.ok(!revealedStorage.includes(phrase)); assert.ok(!revealedStorage.includes('public-test-password-123'));
+  // Leaving Settings (here: to Logs) removes the words; the log never holds them.
+  await page.locator('#device-panel a[href="#logs"]').click(); await page.locator('#page-logs').waitFor({ state: 'visible' });
+  await assertNotShown();
+  const logText = await page.locator('#session-log-text').textContent();
+  assert.ok(!logText.includes(phrase)); assert.ok(!logText.includes('abandon abandon abandon abandon'));
+  await page.locator('#page-logs .page-back').click(); await page.locator('#wallet-home').waitFor({ state: 'visible' });
+  await openPage('settings'); await assertNotShown();
+  await page.locator('#reveal-password').fill('public-test-password-123'); await revealNow(); await assertShown();
+  // Lock removes the words and closes the page.
+  await page.locator('#lock').click(); await sessionReleased();
+  await assertNotShown(); assert.equal(await page.locator('#page-settings').isVisible(), false);
+  await page.locator('#unlock-password').fill('public-test-password-123'); await page.locator('#unlock-wallet').click(); await page.locator('#wallet-open').waitFor({ state: 'visible' });
+  await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#receive-address').textContent));
+  await openPage('settings'); await assertNotShown();
   assert.equal(await page.locator('#vault-save').isVisible(), false);
   assert.equal(await page.locator('#vault-change').isVisible(), true);
   assert.equal(await page.locator('#vault-old-password').isVisible(), true);
