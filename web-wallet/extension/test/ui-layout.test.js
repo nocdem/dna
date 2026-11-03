@@ -445,6 +445,21 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         assert.equal(await page.locator('.wallet-connect-switch, #wallet-connect-switch').count(), 0);
         assert.equal(await page.getByRole('button', { name: 'Lock wallet' }).count(), 1);
         assert.equal(await page.locator('.extension-bottom-badge').isVisible(), false);
+        // UI pack 2026-11-03: a click, Enter and Space on a network's name select it and toggle its group.
+        {
+          const group = page.locator('.network-assets[data-chain="ethereum"]');
+          const name = page.getByRole('button', { name: 'Select Ethereum network', exact: true });
+          const isOpen = () => group.evaluate(node => node.open);
+          if (await isOpen()) await group.locator('summary .asset-chevron').click();
+          assert.equal(await isOpen(), false, 'the group starts closed');
+          await name.click();
+          assert.equal(await page.locator('#chain').inputValue(), 'ethereum'); assert.equal(await isOpen(), true);
+          await name.click();
+          assert.equal(await page.locator('#chain').inputValue(), 'ethereum'); assert.equal(await isOpen(), false);
+          await name.focus(); await page.keyboard.press('Enter'); assert.equal(await isOpen(), true);
+          await page.keyboard.press('Space'); assert.equal(await isOpen(), false);
+          await selectNetwork(page, 'nodus');
+        }
         await bottomBar(page, 'Settings').click();
         await page.locator('#page-settings').waitFor({ state: 'visible' });
         assert.equal(await bottomBar(page, 'Settings').getAttribute('aria-current'), 'page');

@@ -1,4 +1,8 @@
 // Public fixtures only. Every external request is intercepted; no transaction is sent.
+// UI pack 2026-11-03 (network name click): proves a click, Enter and Space on a
+// network's name button select the network and toggle its group (web build).
+// Needs the built page; leaves nothing behind; falsely passes if the group were
+// already open before the first click (the test closes it first and asserts it).
 import assert from 'node:assert/strict';
 import { startPreview } from './preview-server.js';
 import { mkdirSync } from 'node:fs';
@@ -273,6 +277,26 @@ try {
     assert.equal(nodus.earn !== 'none' && nodus.swap !== 'none', true, `Nodus: Earn and Swap there (${JSON.stringify(nodus)})`);
     assert.equal(nodus.swap, 'off', 'Swap not yet usable');
     if (process.env.SHOT_DIR && width === 1440) await box.screenshot({ path: `${process.env.SHOT_DIR}/box-nodus.png` });
+  }
+  // UI pack 2026-11-03 (operator: "ustune basilinca yapmali"): a click on the network NAME selects the
+  // network and opens or closes its group; the keyboard does the same. False pass: a group already open
+  // before the first click, so it is closed first.
+  {
+    const ethereumGroup = page.locator('.network-assets[data-chain="ethereum"]');
+    const ethereumName = page.getByRole('button', { name: 'Select Ethereum network', exact: true });
+    const isOpen = () => ethereumGroup.evaluate(node => node.open);
+    if (await isOpen()) await ethereumGroup.locator('summary .asset-chevron').click();
+    assert.equal(await isOpen(), false, 'the group starts closed');
+    await ethereumName.click();
+    assert.equal(await page.locator('#chain').inputValue(), 'ethereum'); assert.equal(await isOpen(), true, 'a click on the name opens the group');
+    await ethereumName.click();
+    assert.equal(await page.locator('#chain').inputValue(), 'ethereum'); assert.equal(await isOpen(), false, 'a second click closes it');
+    await ethereumName.focus(); await page.keyboard.press('Enter');
+    assert.equal(await isOpen(), true, 'Enter on the name opens the group');
+    await page.keyboard.press('Space');
+    assert.equal(await isOpen(), false, 'Space on the name closes it');
+    assert.equal(await page.locator('#chain').inputValue(), 'ethereum');
+    await badgeOf('Nodus').click();
   }
   await page.setViewportSize({ width: 1440, height: 1050 });
   priceMode = 'valid'; await refresh();
