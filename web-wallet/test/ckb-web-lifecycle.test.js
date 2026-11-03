@@ -196,9 +196,6 @@ test('(c) the flag on an initial send after its durable write marks it not submi
   const stored = (await t.reload())[0];
   assert.equal(stored.status, 'failed');
   assert.equal(stored.notSubmitted, true);
-  // The released outpoints can be selected again by the same wallet.
-  const again = await prepareCkbTransfer({ wallet: t.wallet, to: address, amountAtoms: 10000000000n, fetcher: node().fetcher, wasmBytes });
-  again.cancel();
   // A network error at the first simulation request is after disclosure: unknown.
   const u = await tab(54), { failure: afterDisclosure } = await ambiguousFirstSend(u);
   assert.notEqual(afterDisclosure.ckbNotExposed, true);

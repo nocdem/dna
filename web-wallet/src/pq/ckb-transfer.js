@@ -47,10 +47,11 @@ export async function prepareCkbTransfer({ wallet, to, amountAtoms, networkId = 
   if (!from) throw new Error('Open a wallet first.');
   if (networkId !== 'mainnet') throw new Error('Choose CKB mainnet.');
   const held = heldBy(wallet);
-  let token;
+  // Like the extension holder (extension/src/background/ckb.js:27-28): the controller releases a
+  // reservation it never handed off; after the hand-off it stays until the wallet object is gone.
   const reserve = async ({ networkId: id, from: owner, outpoints }) => {
     if (id !== networkId || owner !== from || unresolved() || !Array.isArray(outpoints) || !outpoints.length || outpoints.some(x => held.has(x))) return null;
-    token = Object.freeze({ id: Symbol('ckb-reservation'), outpoints: [...outpoints] });
+    const token = Object.freeze({ id: Symbol('ckb-reservation'), outpoints: [...outpoints] });
     for (const x of outpoints) held.set(x, token);
     return token;
   };
@@ -76,10 +77,6 @@ export async function prepareCkbTransfer({ wallet, to, amountAtoms, networkId = 
         seed.fill(0); seed = undefined;
         if (Date.now() >= r.expiresAt) throw new Error('CKB review expired before submission; the signed simulation remains held.');
         return await submit({ networkId, rpcTransaction: signed.rpcTransaction, txid: signed.txid, expiresAt: r.expiresAt, signal, fetcher });
-      } catch (error) {
-        // Never exposed (the controller's own flag): the outpoints are free again.
-        if (error?.ckbNotExposed === true) await release(token);
-        throw error;
       } finally { seed?.fill(0); }
     }
   };
