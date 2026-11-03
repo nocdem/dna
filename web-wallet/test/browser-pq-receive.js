@@ -83,6 +83,10 @@ async function address(page,chain,network,expected,{decode=true}={}){
   // is shown, the empty line takes no space; the network is read from the environment summary ("Environment · <label>").
   assert.equal(await page.locator('#pq-address-status').textContent(),'');
   assert.equal(await page.locator('#pq-address-status').isVisible(),false);
+  // The recovery note stays (UI pack 2026-11-03 section 5b), its text as on 14dc02b9f (src/app.js:966, extension wallet-screen.js:148).
+  assert.equal(await page.locator('#pq-recovery-note').textContent(),'Recover this address with your Nodus recovery phrase. Native chain wallets may derive different addresses.');
+  // It sits in the network environment disclosure (src/app.js:977, extension wallet-screen.js:158), shown with it, not hidden.
+  assert.equal(await page.locator('#pq-recovery-note').evaluate(node=>node.hidden),false);
   assert.match(await page.locator('#wallet-environment summary').textContent(),new RegExp(network==='testnet'?'Testnet':'Mainnet'));
   if(decode)assert.equal(await qr(page),expected);
   await page.locator('#send-form').evaluate(form=>form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));

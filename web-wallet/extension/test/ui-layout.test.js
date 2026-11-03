@@ -355,6 +355,9 @@ async function assertHome(page, popup) {
       assert.ok(rowWidth > 232, `popup row width ${rowWidth}`);
     }
   } else {
+    // Shell edges at the full 1100 px tab, measured on 14dc02b9f (before the UI pack) and on this branch:
+    // left 56, right 1044, width 988 on both (only its top moved up, 173 -> 115, with the top Connect toggle gone).
+    if (page.viewportSize().width === 1100) assert.deepEqual({ left: styles.shell.left, right: styles.shell.right, width: styles.shell.width }, { left: 56, right: 1044, width: 988 }, 'the wide full tab keeps its shell geometry');
     assert.equal(frame.border, '1px', 'a wide full tab keeps its frame'); assert.ok(['18px', '24px'].includes(frame.panel), `wide tab panel padding ${frame.panel} is today's (src/style.css:249 24 px, :403 18 px)`);
   }
   const fixture = await page.evaluate(() => ({ balances: window.layout.balances, times: window.layout.balanceTimes, quotes: window.layout.quotes, now: Date.now() }));
