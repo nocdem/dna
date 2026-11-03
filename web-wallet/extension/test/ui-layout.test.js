@@ -332,7 +332,8 @@ async function assertHome(page, popup) {
   }));
   assert.match(styles.font, /^Inter(?:,|$)/u);
   assert.equal(styles.portfolioRadius, '16px'); assert.notEqual(styles.portfolioBackground, 'none');
-  assert.ok(styles.totalSize >= 32);
+  // 32px+ total; at <=380px the extension uses 27px so USD stays on its line (operator 2026-11-03).
+  assert.ok(page.viewportSize().width <= 380 ? styles.totalSize === 27 : styles.totalSize >= 32, `total font ${styles.totalSize}px at ${page.viewportSize().width}px`);
   if (popup) { assert.equal(styles.shell.left, 20); assert.equal(styles.shell.right, 380); }
   const fixture = await page.evaluate(() => ({ balances: window.layout.balances, times: window.layout.balanceTimes, quotes: window.layout.quotes, now: Date.now() }));
   const balances = Object.assign({}, ...Object.entries(fixture.balances).map(([chain, rows]) => chainBalances(chain, rows, fixture.times[chain])));

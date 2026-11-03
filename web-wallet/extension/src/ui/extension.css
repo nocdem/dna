@@ -27,6 +27,9 @@ body.extension-page[data-page="popup"] { overflow: auto; }
 /* 6px keeps "$254.00 USD" on one line in the 270px card (operator 2026-11-03:
    "12'den 6 piksele indir"); longer totals may break their digits, USD stays. */
 .extension-page .portfolio-amount { margin: 0; gap: 6px; }
+/* At 360px the amount row is 136px: a 27px total keeps "$254.00 USD" on one
+   line (operator 2026-11-03: "1 duzlet", the 27px option). */
+@media (max-width: 380px) { .extension-page #portfolio-total { font-size: 27px; } }
 .extension-page .network-health { align-items: center; }
 
 /* Matching eye and lock buttons, with the shared renderer's Hide/Show text retained
