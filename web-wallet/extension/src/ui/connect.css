@@ -2,10 +2,14 @@
    messenger in the open wallet: >760 px shell margin 20 + card padding and border 23 above, 23 + 20 below plus the
    bar; <=760 px the frame is removed (extension.css) so only the shell's 10 px top padding remains above it. */
 #extension-connect { min-width: 0; }
-#extension-connect .messenger { height: calc(100dvh - 108px); min-height: 380px; }
+/* >760 px: measured in extension/test/ui-layout.test.js (fullscreen 1100): the messenger starts 115 px from the top;
+   115 + the 56 px bar + 8 px gap = 179 → 180. */
+#extension-connect .messenger { height: min(720px, calc(100dvh - 180px)); min-height: 0; }
 #extension-connect[hidden] { display: none; }
 @media (max-width: 760px) {
-  #extension-connect .messenger { height: calc(100dvh - 74px); }
+  /* Measured in the 400 px popup (extension/test/ui-layout.test.js): the messenger starts 88 px from the top
+     (shell padding + Connect header); 88 + the 56 px bar + 8 px gap = 152. */
+  #extension-connect .messenger { height: calc(100dvh - 152px); min-height: 0; }
 }
 /* Bottom bar: Connect, Wallet, Settings. Values of the approved mockup (docs/research-evidence/2026-11-03-ui-pack/ext-mock.mjs, mode icons3). */
 body.extension-page:has(#extension-bottom-bar) { padding-bottom: 64px; }

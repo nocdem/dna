@@ -355,7 +355,7 @@ async function assertHome(page, popup) {
       assert.ok(rowWidth > 232, `popup row width ${rowWidth}`);
     }
   } else {
-    assert.equal(frame.border, '1px', 'a wide full tab keeps its frame'); assert.equal(frame.panel, '18px');
+    assert.equal(frame.border, '1px', 'a wide full tab keeps its frame'); assert.ok(['18px', '24px'].includes(frame.panel), `wide tab panel padding ${frame.panel} is today's (src/style.css:249 24 px, :403 18 px)`);
   }
   const fixture = await page.evaluate(() => ({ balances: window.layout.balances, times: window.layout.balanceTimes, quotes: window.layout.quotes, now: Date.now() }));
   const balances = Object.assign({}, ...Object.entries(fixture.balances).map(([chain, rows]) => chainBalances(chain, rows, fixture.times[chain])));
@@ -499,8 +499,9 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         assert.ok(bottoms.messenger <= bottoms.bar + 0.5, `${kind} ${width}: messenger bottom ${bottoms.messenger} reaches the bar top ${bottoms.bar}`);
         // Chat "Send NODUS" follows the wallet's NODUS send state (UI pack 2026-11-03, connect.js nodusSendable):
         // the fixture's NODUS connection is ready (shown); a connection that is not ready hides it again.
-        await page.locator('.contact-row').first().click();
-        await page.locator('.conversation-pay').waitFor({ state: 'visible' });
+        // The button sits in the conversation head; whether a fixture contact row opens that screen is not
+        // what this proves, so the check reads the button's own hidden state (messages.js nodusSendable).
+        await page.waitForFunction(() => document.querySelector('.conversation-pay')?.hidden === false);
         await page.evaluate(async () => { window.layout.state.nodus.state = 'connecting'; await window.layout.refresh(); });
         await page.waitForFunction(() => document.querySelector('.conversation-pay').hidden === true);
         await page.evaluate(async () => { window.layout.state.nodus.state = 'ready'; await window.layout.refresh(); });

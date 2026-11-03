@@ -419,6 +419,8 @@ try {
   assert.equal(await page.locator('#receive-address').innerText(), nodusAddress); assert.equal(await page.locator('#activity').innerText(), '');
   await selectNetwork('ethereum');
   await page.waitForFunction(confirmedLeft);
+  // Selecting NODUS (no Send there) closed the open Send page (UI pack 2026-11-03, item 3): open it again.
+  await walletView(); await openPage('send');
   await page.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await page.locator('#amount').fill('0.01');
   networkId = '0x38'; await page.locator('#review-button').click(); await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('wrong network')); assert.equal(broadcasts.length, 2);
   // A CPUNK read failure is shown on its own row ("Read failed · last read"
