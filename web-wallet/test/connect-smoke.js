@@ -27,7 +27,10 @@
 // in this browser;
 // the other site's fresh cross-site mark refuses an unlock (src/site-lock.js,
 // through the real page wiring); no horizontal scroll at 390 px and 320 px;
-// the wallet build has no app shell, Messages navigation or Messages UI code.
+// the wallet build has no app shell, Messages navigation or Messages UI code;
+// the PQ receive note (plan 2026-11-03-pq-native section 6, Connect surface): on the
+// Receive page #pq-recovery-note is hidden for Soqucoin (PQ_NATIVE_WORD_CHAINS) and
+// not hidden for Algorand, with its unchanged text (src/app.js:968).
 //
 // How it can lie / what it does NOT cover: every node WebSocket is closed
 // by the test (no network), so Messages only opens locally: a memory-only
@@ -52,7 +55,11 @@
 // Leaves: nothing written; the browser is closed and the server stopped in finally.
 // Falsely passes: "the wallet build has no Messages" is a text search of dist/ for
 // the marker strings listed in the script, so a Messages part that uses other
-// strings is not seen; the provider reads are mocks.
+// strings is not seen; the provider reads are mocks; the receive-note check covers
+// two chains only (Soqucoin, Algorand), reads the `hidden` property of the note
+// (not what the user sees, the disclosure is closed), compares the text with a
+// copy of the string in this script, and does not wait for an address to appear
+// (reads are refused), so a note that is correct before derivation finishes passes.
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { startPreview } from './preview-server.js';
@@ -187,6 +194,24 @@ try {
   await page.waitForFunction(() => document.querySelector('#home-send').hidden === false);
   await chooseNetwork('nodus');
   await page.waitForFunction(() => document.querySelector('#home-send').hidden === true);
+  // PQ receive note (plan docs/plans/approved/2026-11-03-pq-native.md section 6; src/app.js updatePqStatus,
+  // PQ_NATIVE_WORD_CHAINS in src/pq/networks.js): on the Receive page, Soqucoin (native-word chain) hides
+  // #pq-recovery-note; Algorand (PQ, not native-word) shows it with the text set at src/app.js:968. The
+  // `hidden` property is read, not visibility: the note sits in the closed network disclosure.
+  await page.locator('.wallet-navigation a[href="#receive"]').click();
+  await page.locator('#page-receive').waitFor({ state: 'visible' });
+  await chooseNetwork('soqucoin');
+  await page.waitForFunction(() => document.querySelector('#chain').value === 'soqucoin');
+  assert.equal(await page.locator('#pq-recovery-note').evaluate(node => node.hidden), true, 'Soqucoin: recovery note hidden');
+  await chooseNetwork('algorand');
+  await page.waitForFunction(() => document.querySelector('#chain').value === 'algorand');
+  assert.equal(await page.locator('#pq-recovery-note').evaluate(node => node.hidden), false, 'Algorand: recovery note shown');
+  assert.equal(await page.locator('#pq-recovery-note').textContent(), 'Recover this address with your Nodus recovery phrase. Native chain wallets may derive different addresses.');
+  await chooseNetwork('nodus');
+  await page.waitForFunction(() => document.querySelector('#chain').value === 'nodus');
+  await page.locator('#page-receive .page-back').click();
+  await page.waitForFunction(() => location.hash === '');
+  assert.equal(await page.locator('#wallet-home').isVisible(), true);
   await page.locator('.wallet-navigation a[href="#settings"]').click();
   assert.equal(await page.locator('#device-panel').isVisible(), true);
   assert.equal(await page.locator('#wallet-home').isVisible(), false);
