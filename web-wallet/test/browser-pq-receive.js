@@ -4,6 +4,15 @@ import { randomBytes } from 'node:crypto';
 // No outside traffic: HTTP proxy denies external origins before worker start.
 // Public fixture phrase only. Temporary browser profiles are removed; screenshots
 // can be supplied via PQ_RECEIVE_SCREENSHOT_DIR. Missing artifacts fail, no skips.
+// Needs dist/ and dist-extension/unpacked, Chromium at CHROMIUM_PATH (default
+// /usr/bin/chromium), jsqr; the host listens on 127.0.0.1 port 0. Env:
+// PQ_RECEIVE_BROWSER_MODE (web or extension) runs one surface only;
+// PQ_RECEIVE_DIAGNOSTIC (any value) waits longer for a restore failure to show.
+// Leaves: screenshots in PQ_RECEIVE_SCREENSHOT_DIR when set, including
+// <mode>-pq-failure.png after a failure (which is rethrown); nothing else.
+// Falsely passes: the outside-traffic check asserts only that no refused URL
+// contains the recovery phrase, not that none was attempted; a mode left out by
+// PQ_RECEIVE_BROWSER_MODE is not run; a stale build is tested as built.
 // UI pack 2026-11-03: the "receive address derived locally" status line is gone (the
 // line is empty and not visible; the network is checked on the environment summary);
 // the extension's Settings is reached through the bottom bar. Falsely passes if the

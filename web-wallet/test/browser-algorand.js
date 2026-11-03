@@ -3,7 +3,12 @@ import { randomBytes } from 'node:crypto';
 // loopback static host and mocked providers. No external traffic is allowed.
 // Proves: Algorand balance/history reads, failure states, same-address
 // environment switches cancelling stale reads, send refusal for an unsaved
-// wallet, and lock clearing. Needs dist/ built and a Chromium (CHROMIUM_PATH).
+// wallet, and lock clearing. Needs dist/ built and a Chromium (CHROMIUM_PATH,
+// default /usr/bin/google-chrome). The static host listens on 127.0.0.1 port 0.
+// ALGORAND_SCREENSHOT_DIR (default algorand-ui-evidence under the system temp
+// directory) receives algorand-receive.png and is left in place; the temporary
+// browser profile and the host are removed in finally.
+// It tests the built dist/, not src/: a stale build is tested as built.
 // Hide zero balances hides a row whose balance is unavailable (src/portfolio.js
 // groupNetworks), and every return to the home page re-checks the box
 // (src/app.js resetAssetView), so the script unchecks it on each home opening

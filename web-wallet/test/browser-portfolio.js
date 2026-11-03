@@ -6,7 +6,13 @@
 // transfer network (the box and the rail follow what the network can do), the badge lights,
 // a click / Enter / Space on a network's name selecting it and toggling its group
 // (UI pack 2026-11-03), lock cancelling late replies, reopening refreshing, coin icons.
-// Needs the built page (dist, port 4192) and Chromium. Leaves nothing behind. The PQ
+// Needs the built page (dist, served by vite preview on 127.0.0.1 port 4192 with
+// --strictPort; run from web-wallet/) and Chromium (CHROMIUM_PATH, otherwise
+// Playwright's own). WALLET_URL replaces the server: nothing is started and
+// whatever answers there is tested, including a stale build.
+// Leaves: only screenshots, and only when SCREENSHOT_DIR (portfolio-1440/390.png),
+// BADGE_SHOT_DIR (badges-<width>.png) or SHOT_DIR (box-*.png) is set; the browser
+// is closed and the server stopped in finally. The PQ
 // networks' providers are outside this fixture: their reads are refused, as in
 // test/browser-security.js, and counted apart from `unexpected`.
 // False passes: a group already open before the first name click (the test closes it

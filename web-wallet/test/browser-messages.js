@@ -76,6 +76,14 @@
 // Playwright's own is not installed; SCREENSHOT_DIR = where the PNGs go —
 // without it nothing is written: messages-conversation, messages-menu,
 // messages-reply-390).
+// Needs: node_modules/vite, started with a path relative to the working
+// directory, so run it from web-wallet/; the vite dev server uses 127.0.0.1 port
+// 4197 with --strictPort, and preview-server.js refuses to start if that port
+// already answers (an old server is never tested by mistake). MESSAGES_REMOTE=1
+// runs the same assertions through the public projection/action boundary.
+// Leaves: with SCREENSHOT_DIR the three PNGs above, with PEER_SHOT one profile
+// card PNG; nothing else is written. The browser closes and the vite server is
+// killed in finally.
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { startPreview } from './preview-server.js';

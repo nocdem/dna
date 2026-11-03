@@ -23,6 +23,8 @@
 // How it can falsely pass: the fake document is not a browser (no layout, no
 // real `hidden` semantics); the browser tests (test/browser-smoke.js,
 // test/connect-smoke.js, test/browser-security.js) cover the real page.
+// The clipboard is an injected stub, so real clipboard permission is not proved,
+// and the "raises nothing" test (3b) has no assertion: it passes if nothing throws.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderRevealBlock, showRevealedPhrase, clearRevealedPhrase } from '../src/reveal-phrase.js';

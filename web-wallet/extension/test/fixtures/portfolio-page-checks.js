@@ -4,6 +4,16 @@
 // the same rows for every method could falsely pass routing and USD checks.
 // This checks real DOM/controller behavior, including retaining entered send
 // fields while a price-only refresh changes the total. Builder does not run it.
+// Imported, not run: portfolio-page.browser.js, ui-flows.test.js,
+// ui-render.test.js, nodus-ui.test.js, ixios.test.js, portfolio-page.test.js,
+// pq-send.browser.test.js and pq-missing-address.browser.test.js. Needs the
+// vite and playwright packages and vite.extension.config.js; the Vite server
+// listens on 127.0.0.1 port 0 (the system picks a free port).
+// Leaves: a temporary Vite cache directory under the system temp directory,
+// removed in finally together with the server and browser; nothing else.
+// Falsely passes: the only global check is that the page raised no uncaught
+// error (console errors are not looked at), and it runs after the caller's
+// check returns; a caller that never opens a page asserts nothing.
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

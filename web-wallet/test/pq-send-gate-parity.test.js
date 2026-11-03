@@ -7,10 +7,13 @@
 // It also pins the CKB notes to the extension's wording, the "send from the
 // extension" notes, that no network carries a balanceNote any more (UI pack
 // 2026-11-03) and that the shared table carries no Ixios entry.
+// What it needs: node:test only; no build, browser, network or environment
+// variable. It reads src/pq/send-gates.js and src/pq/wallet-capabilities.js as text.
 // What it leaves behind: nothing (pure functions, no network, no files written).
 // How it could falsely pass: the chain list below comes from PQ_NETWORKS, so a
 // chain missing there is not compared; Ixios is deliberately excluded because
 // its gate stays in the extension file (src/pq/send-gates.js has no Ixios key).
+// The Ixios check is a case-insensitive text search of two source files.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

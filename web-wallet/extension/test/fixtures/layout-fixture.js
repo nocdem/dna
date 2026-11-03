@@ -1,3 +1,14 @@
+// Browser fixture, not a test: layout.html loads it as a module, and
+// ui-layout.test.js and ui-render.test.js open that page. It mounts the shared
+// reference page on a fake background client. The query string picks the
+// state: stage, page, name, hold, failed, unread.
+// Needs: a Vite server resolving the bare @metamask import and the ../../src
+// paths, plus the caller's Chromium. No flags, env vars, ports or network.
+// Leaves: only the page's own localStorage key nodus.balanceRefreshMinutes=0
+// and window.layout; nothing on disk.
+// Falsely passes: the answers are fixed public values, so a caller proves how
+// the page renders those shapes, not that the real background returns them.
+// Any method not listed throws, so a new page call fails here loudly.
 import { mountReferencePage } from '../../src/ui/reference-entry.js';
 import { ASSETS } from '../../../src/portfolio.js';
 import { CHAINS } from '../../../src/config.js';

@@ -1,3 +1,19 @@
+// Proves the extension's page renderers and the mounted wallet page: home,
+// receive QR, connect, sites, settings, reveal phrase, import, create, send,
+// approvals and balances, plus one Chromium check of the status bar wording,
+// RPC provider choices and welcome text.
+// Needs: Node >=22.14 for the in-memory tests. The Chromium test also needs
+// CHROMIUM_PATH or /usr/bin/chromium and a loopback Vite server (through
+// portfolio-page-checks.js). No flags, network, wallet artifacts or ports
+// chosen here.
+// Leaves: nothing on disk except the temporary Vite cache that
+// portfolio-page-checks.js removes. In-memory tests swap globalThis.document
+// and restore it afterwards; document.getElementById is replaced on the
+// file's own fake document only.
+// Falsely passes: the fake Node class answers only the selectors these tests
+// use, so it does not prove real DOM behaviour; timers are mocked; the
+// provider loop in the Chromium test asserts nothing for a chain whose
+// rpcOptions is empty.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderHome, renderReceive, renderConnect, renderSites, renderSettings } from '../src/ui/views.js';

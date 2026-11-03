@@ -4,9 +4,16 @@ import { pastePhrase, readPhrase } from './browser-phrase.js';
 // Proves: secrets clear on timeout / suspended tab, storage is opt-in, the
 // single-tab rule, durable-before-broadcast activity, review-dialog guards.
 // Needs dist/ built and Chromium (CHROMIUM_PATH); it starts `vite preview` on
-// port 4189. Leaves browser contexts only. Send is its own page: every review
+// port 4189 (127.0.0.1, --strictPort; run from web-wallet/; preview-server.js
+// refuses a port that already answers). Chromium is CHROMIUM_PATH, otherwise
+// Playwright's own. Leaves nothing: the browser is closed and the server killed
+// in finally. Send is its own page: every review
 // opens it through the wallet rail, so a send that never reached the page
 // would fail at the form fill, not pass silently.
+// Falsely passes: the timeouts run on Playwright's fake clock, so they prove the
+// page's reaction to the elapsed time, not its real timers; the broadcast is
+// the script's mock; the "Enter held down does not confirm" check waits a real
+// 700 ms and then asserts no extra broadcast, so one later than that is not seen.
 import assert from 'node:assert/strict';
 import { startPreview } from './preview-server.js';
 import { setTimeout as delay } from 'node:timers/promises';

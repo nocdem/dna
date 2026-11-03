@@ -43,6 +43,16 @@
 // the browser stores the Secure cookie on
 // http://127.0.0.1 is not asserted (the rule fails open); the refusal is
 // driven by a cookie the test adds.
+//
+// Needs: dist/ (wallet) and dist-connect/ (Connect) built; the preview uses
+// 127.0.0.1 port 4192 with --strictPort (browser-portfolio.js uses the same port,
+// so do not run both at once; run from web-wallet/); CONNECT_URL replaces the
+// server, then nothing is started and whatever answers there is tested, a stale
+// build included. Chromium at CHROMIUM_PATH, otherwise Playwright's own.
+// Leaves: nothing written; the browser is closed and the server stopped in finally.
+// Falsely passes: "the wallet build has no Messages" is a text search of dist/ for
+// the marker strings listed in the script, so a Messages part that uses other
+// strings is not seen; the provider reads are mocks.
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { startPreview } from './preview-server.js';

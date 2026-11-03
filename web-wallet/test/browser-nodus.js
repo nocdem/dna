@@ -4,6 +4,18 @@ import { pastePhrase, readPhrase } from './browser-phrase.js';
 // closed. Requires a production web build and Chromium; no compile flags.
 // Browser/server cleanup leaves no persisted profile. Native derivation and
 // clipboard/lock guards are covered, not live network connectivity.
+// Proves the startup gating (controls disabled until the app script loads, a
+// visible error when it fails), the numbered phrase boxes and paste handling,
+// the Nodus address and its status line, and that wallet storage is empty after lock.
+// Needs: the production build that `vite preview` serves, started on 127.0.0.1
+// port 4190 with --strictPort (run from web-wallet/); WALLET_URL replaces the
+// server, then nothing is started and whatever answers there is tested, a stale
+// build included. Chromium at CHROMIUM_PATH, otherwise Playwright's own.
+// Fixtures: fixtures/nodus-addresses.json and src/nodus/mldsa87.wasm.
+// Leaves: nothing written; the browser is closed and the server stopped in finally.
+// Falsely passes: the Cellframe balance reads are mocked, and only "at least one,
+// all to rpc.cellframe.net/connect" is asserted, because how many complete before
+// a lock aborts them is not deterministic.
 // Receive is its own page, opened from the wallet rail; the Copy click would
 // fail (not skip) if the page were not shown. The hidden #chain select is
 // driven with force, as the network list does.

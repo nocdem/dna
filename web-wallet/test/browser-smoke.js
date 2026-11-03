@@ -4,7 +4,23 @@ import { AUTO_LOCK_KEY } from '../src/auto-lock.js';
 import { BALANCE_REFRESH_KEY } from '../src/balance-refresh.js';
 import { SHOW_ZERO_KEY } from '../src/zero-balances.js';
 import { CHAINS } from '../src/config.js';
-// Run after npm run build + npm run preview. Every external request is intercepted.
+// Run after npm run build. Every external request is intercepted.
+// Proves, on the web build: wallet create / restore / backup, the Nodus and
+// external addresses, the Send and Receive pages and the receive QR (decoded to
+// the shown address), signed ETH/ERC20 sends against a mocked node, the wrong-
+// network guard, Cellframe balance and error states, activity, saved-wallet
+// controls, the settings page, the rail, licence text and the footer version.
+// Needs: dist/ built; the script starts `vite preview` itself on 127.0.0.1 port
+// 4173 with --strictPort (run from web-wallet/), and preview-server.js refuses a
+// port that already answers, so do not start a preview first. WALLET_URL replaces
+// the server: nothing is started and whatever answers there is tested. Chromium
+// at CHROMIUM_PATH, otherwise Playwright's own. jsqr and fixtures/nodus-addresses.json.
+// Leaves: SHOT_DIR/receive-page.png when SHOT_DIR is set; nothing else (fresh
+// browser context, closed with the server in finally).
+// Falsely passes: every provider and every broadcast is the script's mock; zero
+// balances are forced visible by an init script (hiding is checked in
+// browser-portfolio.js); the footer version is compared with package.json, so a
+// dist built at another version fails, but a stale build of the same version passes.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';

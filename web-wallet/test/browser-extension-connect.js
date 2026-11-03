@@ -17,6 +17,13 @@
 // extension. Falsely passes if the Send draft page were never opened (the
 // recipient/amount checks follow its fill) or if the viewport (440 wide) hid a
 // geometry difference of a wider window (ui-layout.test.js covers more widths).
+// Also needs the esbuild package and dist-extension/unpacked; Chromium at
+// CHROMIUM_PATH, default /usr/bin/chromium. The blocking proxy listens on
+// 127.0.0.1 port 0. CONNECT_DEBUG_EXCEPTIONS (any value) logs worker exceptions.
+// Leaves: only screenshots in CONNECT_SCREENSHOT_DIR when it is set; the
+// temporary copy and profile are removed in finally.
+// The outside-traffic check only asserts that no blocked request URL contains
+// the recovery phrase; blocked requests are recorded, not required to be zero.
 import assert from 'node:assert/strict';
 import { readFile, mkdtemp, rm, mkdir, cp } from 'node:fs/promises';
 import { build } from 'esbuild';

@@ -1,5 +1,21 @@
 import { randomBytes } from 'node:crypto';
 // Production DOM, real recovery WASM, synthetic accounts, intercepted providers.
+// Proves, per surface, which network pages (Send, Activity, Earn, Vaults,
+// contracts) are offered, zero-balance hiding, stale-state clearing on network
+// and environment switches, keyboard use, no overflow at 1360/390/360 px, and
+// that the CKB reads are POST to the public RPC only. No broadcast occurs.
+// Needs: built dist/ (web), dist-connect/ (connect) and dist-extension/unpacked
+// (extension), and Chromium at CHROMIUM_PATH (default /usr/bin/google-chrome);
+// browser-capability-fixture.js hosts the build on 127.0.0.1 port 0.
+// Env: CAPABILITY_BROWSER_MODE (default web,connect,extension; comma list) picks
+// the surfaces; CAPABILITY_SCREENSHOT_DIR (default ../evidence/navigation-stage2
+// relative to the working directory).
+// Leaves: screenshots plus <mode>-browser.json on a pass, or <mode>-failure.json
+// / -failure-transports.json / -failure.png on a failure (which is rethrown), in
+// that directory; the temporary profile and host are removed.
+// Falsely passes: a mode left out of CAPABILITY_BROWSER_MODE is simply not run.
+// Expected Send/Activity come from the same capability tables the pages use, so
+// a wrong table entry agrees with itself. It tests the built files, not src/.
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';

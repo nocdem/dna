@@ -1,4 +1,15 @@
 // Fully intercepted read-only portfolio fixtures. Never forward a blockchain request.
+// Imported, not run: browser-smoke.js, browser-security.js, browser-portfolio.js,
+// browser-nodus.js, browser-ixios.js, browser-capability-fixture.js (so
+// browser-capabilities.js) and connect-smoke.js call these readers from their
+// Playwright route handlers. Needs no build, Chromium, port or environment
+// variable of its own, only src/ (portfolio, config, ixios). Writes nothing.
+// Falsely passes: each reader answers only a request it recognises and returns
+// false for the rest, so the caller must refuse those (the scripts above do); a
+// caller that continues or fulfils the leftovers would let them through. The
+// answers are fixed (zero holdings unless the caller passes some, a price
+// stamped with the time of the call), so a caller proves how the page reads
+// these shapes, not what a real provider returns.
 import assert from 'node:assert/strict';
 import { ASSETS, PRICE_URL } from '../src/portfolio.js';
 import { CHAINS, CELLFRAME } from '../src/config.js';
