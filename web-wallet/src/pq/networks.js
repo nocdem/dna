@@ -1,3 +1,4 @@
+import { PQ_PRICE_IDS } from './prices.js';
 const sendNote = 'Receive only. Sending and balances are not available in this release.';
 function entry(name, symbol, decimals, ids, icon, readable = false, readNote) {
   const networks = ids.map(id => Object.freeze({ id, label: id === 'mainnet' ? 'Mainnet' : 'Testnet' }));
@@ -17,7 +18,8 @@ export const PQ_NETWORKS = Object.freeze({
 });
 export const PQ_ENTRIES = Object.freeze(Object.entries(PQ_NETWORKS).map(([chain, network]) =>
   Object.freeze({ network, asset: Object.freeze({ chain, symbol: network.symbol,
-    decimals: network.decimals, key: `${chain}:${network.symbol}` }) })));
+    decimals: network.decimals, key: `${chain}:${network.symbol}`,
+    ...(PQ_PRICE_IDS[chain] ? { priceId: PQ_PRICE_IDS[chain] } : {}) }) })));
 export function isPqChain(chain) {
   return typeof chain === 'string' && Object.hasOwn(PQ_NETWORKS, chain);
 }

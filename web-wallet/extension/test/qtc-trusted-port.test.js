@@ -1,0 +1,14 @@
+// Real production routing/capability with mocked public transport only. No live signed request.
+import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';
+import {qtcGatewayFixture} from '../../test/fixtures/qtc-gateway-fixture.js';
+import {ACTIVITY_KEY,VAULT_KEY,parseVault} from '../../src/vault.js';
+import {activityKeyFor,parseActivity} from '../../src/activity-storage.js';
+test('QTC production trusted-port route persists exact bytes before final gateway and denies sites/testnet',async t=>{
+ const {setup,phrase}=await import('./solana-tron-fixture.js'),{background,client,values}=await setup(t),g=qtcGatewayFixture();assert.equal(g.vector.phrase,phrase);
+ t.mock.method(background.walletKeys,'getPqAddresses',()=>({qtc:{mainnet:g.address,testnet:g.vector.addresses.qtc.testnet}}));const id=parseVault(values[VAULT_KEY]).id,key=await activityKeyFor(phrase,id);let posts=0,raw,firstAttempt;
+ globalThis.fetch=async(url,o={})=>{const text=String(url);assert.equal(text.endsWith('/hex'),false);if(text.endsWith('/qtc-mldsa44-sign.wasm'))return new Response(g.signWasmBytes);if(text.endsWith('/receive-keygen.wasm'))return new Response(g.receiveWasmBytes);if(o.method==='POST'){posts++;raw=JSON.parse(o.body).hex;const rows=await parseActivity(values[`${ACTIVITY_KEY}.qtc.mainnet`],id,{qtc:g.address},key);assert.equal(rows.length,1);assert.equal(rows[0].signedPayload.data,raw);if(firstAttempt)assert.notEqual(rows[0].submissionId,firstAttempt);else firstAttempt=rows[0].submissionId;assert.equal(JSON.stringify(values).includes(raw),false);}return g.fetcher(text,o);};
+ const r=await client.request('prepareQtcSend',[{symbol:'QTC',to:g.address,amount:'1'}]);assert.equal(posts,0);assert.equal(JSON.stringify(r).includes(phrase),false);g.state.postStatus=409;await assert.rejects(client.request('confirmQtcSend',[r.id]),/409/);assert.equal(posts,1);const record=background.nodus.chainActivity('qtc','mainnet').rows()[0];assert.equal(record.status,'unknown');assert.equal(record.notSubmitted,undefined);const p=await client.request('getQtcHistory');assert.equal(p.local[0].canResubmit,true);assert.equal(JSON.stringify(p).includes(raw),false);
+ g.state.postStatus=200;const replay=await client.request('prepareQtcResubmit',[record.hash]);assert.equal(await client.request('confirmQtcSend',[replay.id]),record.hash);assert.equal(posts,2);assert.equal(g.state.signedRaw,raw);
+ await client.request('setChainNetwork',['qtc','testnet']);await assert.rejects(client.request('prepareQtcSend',[{symbol:'QTC',to:g.address,amount:'1'}]),/not enabled/);
+ const {engine}=background.engine.setupProviderEngineEip1193({origin:'https://site.example',subjectType:'website'});try{assert.ok((await engine.handle({id:1,jsonrpc:'2.0',method:'prepareQtcSend',params:[]})).error);}finally{engine.destroy();}
+});

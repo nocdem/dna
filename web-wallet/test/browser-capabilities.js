@@ -6,6 +6,10 @@ import { resolve, join } from 'node:path';
 import { isolatedWallet, publicFixture } from './browser-capability-fixture.js';
 import { pastePhrase } from './browser-phrase.js';
 import { assertNetworkGroups } from './browser-network-groups.js';
+// Expected Send/Activity per surface come from the shipped capability tables:
+// web and Connect src/pq/wallet-capabilities.js, extension constants/capabilities.js.
+import { walletPageSupported } from '../src/pq/wallet-capabilities.js';
+import { extensionPageSupported } from '../extension/src/constants/capabilities.js';
 const evidence=resolve(process.env.CAPABILITY_SCREENSHOT_DIR||'../evidence/navigation-stage2');await mkdir(evidence,{recursive:true});
 const password='Aa9!'+randomBytes(24).toString('hex');
 for(const mode of (process.env.CAPABILITY_BROWSER_MODE||'web,connect,extension').split(',')){
@@ -16,10 +20,16 @@ for(const mode of (process.env.CAPABILITY_BROWSER_MODE||'web,connect,extension')
   if(mode==='extension'){await page.locator('#new-password').fill(password);await page.locator('#confirm-password').fill(password);}
   await page.locator('#phrase-submit').click();await page.locator('#wallet-open').waitFor({state:'visible'});await page.waitForFunction(()=>!document.querySelector('#chain')?.closest('[inert]'));if(mode==='connect')await page.locator('#nav-wallet').click();
   await page.waitForFunction(()=>!document.querySelector('#portfolio-refresh').disabled);
-  await assertNetworkGroups(page);
+  await assertNetworkGroups(page, { addressBookIxios: mode === 'extension' });
   const group=chain=>page.locator(`.network-assets[data-chain="${chain}"]`);
   const nav=href=>page.locator(`.wallet-navigation a[href="#${href}"]`);
-  const select=async chain=>{await page.selectOption('#chain',chain);};
+  const supports=(chain,pageName,networkId)=>mode==='extension'?extensionPageSupported(chain,pageName,networkId):walletPageSupported(chain,pageName,networkId);
+  const assertPages=async(chain,networkId,label='')=>{assert.equal(await nav('send').isVisible(),supports(chain,'send',networkId),`${mode} ${chain} ${networkId} Send ${label}`);assert.equal(await nav('wallet-activity').isVisible(),supports(chain,'wallet-activity',networkId),`${mode} ${chain} ${networkId} Activity ${label}`);};
+  // #chain is hidden; networks and environments are chosen in the network
+  // disclosure (src/app.js:2307, :970), as on the shipped page; pages without the
+  // disclosure return home first.
+  const select=async chain=>{if(!await page.locator('#wallet-network').isVisible()){await nav('').click();await page.locator('#wallet-home').waitFor({state:'visible'});}if(!await page.locator('#wallet-network').evaluate(n=>n.open))await page.locator('#wallet-network > summary').click();const badge=page.locator(`#portfolio-networks .network-health[data-chain="${chain}"]`);const toggle=badge.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " network-group ")]').locator('.network-group-toggle');if(await toggle.count()&&await toggle.getAttribute('aria-expanded')!=='true')await toggle.click();await badge.click();};
+  const environment=async id=>{if(!await page.locator('#wallet-network').evaluate(n=>n.open))await page.locator('#wallet-network > summary').click();if(!await page.locator('#wallet-environment').evaluate(n=>n.open))await page.locator('#wallet-environment > summary').click();await page.locator(`#wallet-environment button[data-environment="${id}"]`).click();};
   assert.equal(await page.locator('.wallet-navigation').count(),1);
   assert.equal(await page.locator('#balances .holding-actions, #balances .asset-action').count(),0,'holdings only; actions live on dedicated pages');
   assert.equal(await page.locator('#show-zero-balances').isChecked(),true);
@@ -27,32 +37,42 @@ for(const mode of (process.env.CAPABILITY_BROWSER_MODE||'web,connect,extension')
   await page.waitForFunction(()=>!document.querySelector('.network-assets[data-chain="tron"]'));
   assert.equal(await group('ethereum').count(),1,'zero native / funded token retained');
   assert.equal(await group('bsc').count(),1,'one raw native unit retained');
-  assert.equal(await group('solana').count(),1,'failed balance retained');
-  assert.equal(await group('tidecoin').count(),1,'unknown balance retained');
-  await page.locator('#show-zero-balances').uncheck();assert.equal(await group('tron').count(),1);
+  // 0.1.151 (399147dd2, src/portfolio.js groupNetworks): with Hide zero
+  // balances checked, zero, failed and unknown balances all leave the list.
+  assert.equal(await group('solana').count(),0,'failed balance hidden');
+  assert.equal(await group('tidecoin').count(),0,'unknown balance hidden');
+  await page.locator('#show-zero-balances').uncheck();
+  for(const chain of ['tron','solana','tidecoin'])assert.equal(await group(chain).count(),1,`${chain} listed with zero balances shown`);
   await page.locator('#show-zero-balances').check();assert.equal(await group('tron').count(),0);
   await select('ckb');await nav('receive').click();
   await page.waitForFunction(a=>document.querySelector('#receive-address').textContent===a,publicFixture.addresses.ckb.mainnet);
-  assert.equal(await nav('send').isVisible(),false);assert.equal(await nav('wallet-activity').isVisible(),false);
-  assert.doesNotMatch(await group('ckb').textContent(),/total live-cell capacity/i);
-  await page.selectOption('#pq-network-environment','testnet');
+  await assertPages('ckb','mainnet');
+  // The proxy denies the CKB read, so the row has no balance and is hidden while Hide zero balances is checked (0.1.151).
+  assert.equal(await group('ckb').count(),0,'CKB without a balance read leaves the list');
+  await environment('testnet');
   await page.waitForFunction(a=>document.querySelector('#receive-address').textContent===a,publicFixture.addresses.ckb.testnet);
-  assert.equal(await nav('send').isVisible(),false);assert.equal(await nav('wallet-activity').isVisible(),false);
-  assert.equal(run.requests.some(({url})=>/https:\/\/(?:mainnet|testnet)\.ckb\.dev(?:\/|$)/.test(url)),false,'CKB remains receive-only without provider reads');
+  await assertPages('ckb','testnet');
+  // 0.1.152 (729389e77): CKB reads balances from its public JSON-RPC (src/pq/ckb.js:6-7);
+  // Send follows the surface table above. Reads use only that RPC, by POST.
+  for(const {url,method} of run.requests.filter(({url})=>/ckb\.dev/.test(url)))assert.ok(/^https:\/\/(?:mainnet\.ckb\.dev\/rpc|testnet\.ckb\.dev\/?)$/.test(url)&&method==='POST',`CKB request ${method} ${url}`);
   await select('algorand');await nav('receive').click();
   await page.waitForFunction(a=>document.querySelector('#receive-address').textContent===a,publicFixture.addresses.algorand.mainnet);
-  assert.equal(await nav('send').isVisible(),false);assert.equal(await nav('wallet-activity').isVisible(),true);
-  run.state.failAlgorand=true;await page.selectOption('#pq-network-environment','testnet');
-  await page.waitForFunction(()=>document.querySelector('.network-assets[data-chain="algorand"]')?.textContent.includes('Balance unavailable'));
-  assert.equal(await group('algorand').count(),1,'failed Algorand balance retained');
-  assert.equal(await nav('send').isVisible(),false);assert.equal(await nav('wallet-activity').isVisible(),true,'RPC failure retains implemented history capability');
+  // Algorand mainnet send is enabled by the handoff on every surface; testnet stays receive-only.
+  await assertPages('algorand','mainnet');
+  // The Hide zero balances box is on the home asset panel; it resets on each home opening (src/app.js:2338-2343).
+  run.state.failAlgorand=true;await nav('').click();await page.locator('#assets-panel').waitFor({state:'visible'});await page.locator('#show-zero-balances').uncheck();await environment('testnet');
+  // A failed read shows its error on the row (the fixture's HTTP 503), never an inferred zero.
+  await page.waitForFunction(()=>(document.querySelector('.network-assets[data-chain="algorand"]')?.textContent??'').includes('HTTP 503'));
+  assert.equal(await group('algorand').count(),1,'failed Algorand balance listed with zero balances shown');
+  await assertPages('algorand','testnet','after an RPC failure');
   run.state.failAlgorand=false;
   await select('nodus');
   for(const [target,panel] of [['earn','stake-panel'],['contracts','evm-panel'],['vaults','vault-panel']]){
    assert.equal(await nav(target).isVisible(),true);await nav(target).click();await page.locator('#'+panel).waitFor({state:'visible'});
    assert.match(await page.locator('#'+panel).textContent(),/Connect to the Nodus node/);
    assert.equal(await page.locator('#'+panel+' button:visible:not(:disabled)').filter({hasText:/^(Delegate|Withdraw|Approve|Create|Deploy|Send|Confirm)/}).count(),0);
-   await select('bsc');await page.locator('#page-'+target).waitFor({state:'hidden'});await select('nodus');
+   // These pages show no network chooser; switch through the hidden #chain selector the chips drive.
+   await page.selectOption('#chain','bsc',{force:true});await page.locator('#page-'+target).waitFor({state:'hidden'});await page.selectOption('#chain','nodus',{force:true});
   }
   await nav('').click();await page.locator('#assets-panel').waitFor({state:'visible'});
   await group('bsc').getByRole('button',{name:'Select BNB Smart Chain network',exact:true}).click();assert.equal(await page.locator('#chain').inputValue(),'bsc');assert.equal(await nav('wallet-activity').isVisible(),false);
@@ -74,8 +94,8 @@ for(const mode of (process.env.CAPABILITY_BROWSER_MODE||'web,connect,extension')
   await nav('receive').click();assert.equal(await page.locator('#receive-panel').isVisible(),true);assert.equal(await page.locator('#send-fields').isVisible(),false);
   await select('algorand');await page.waitForFunction(a=>document.querySelector('#receive-address').textContent===a,publicFixture.addresses.algorand.mainnet);
   assert.equal(await page.locator('#recipient').inputValue(),'');assert.equal(await page.locator('#amount').inputValue(),'');assert.equal(await page.locator('#review-dialog').evaluate(n=>n.open),false);
-  assert.equal(await nav('send').isVisible(),false);assert.equal(await nav('wallet-activity').isVisible(),true);
-  await page.selectOption('#pq-network-environment','testnet');await page.waitForFunction(a=>document.querySelector('#receive-address').textContent===a,publicFixture.addresses.algorand.testnet);
+  await assertPages('algorand','mainnet');
+  await environment('testnet');await assertPages('algorand','testnet');await page.waitForFunction(a=>document.querySelector('#receive-address').textContent===a,publicFixture.addresses.algorand.testnet);
   await select('tidecoin');assert.equal(await nav('wallet-activity').isVisible(),false);assert.equal(await page.locator('#history').textContent(),'');
   await select('ethereum');await nav('').click();run.state.holdEthereum=true;
   await page.locator('#portfolio-refresh').evaluate(n=>n.click());
@@ -95,7 +115,11 @@ for(const mode of (process.env.CAPABILITY_BROWSER_MODE||'web,connect,extension')
    await nav('receive').focus();await page.keyboard.press('Enter');assert.equal(await page.locator('#page-receive').isVisible(),true);
    await page.screenshot({path:join(evidence,`${mode}-receive-${width}.png`),fullPage:true});
   }
-  assert.equal(run.requests.some(({url})=>/https:\/\/(?:mainnet|testnet)\.ckb\.dev(?:\/|$)/.test(url)),false,'no CKB API reads throughout all flows');
+  // 0.1.152 CKB balance reader: at least one read occurred, and every request to a CKB host
+  // (any *.ckb.dev) used only its public JSON-RPC, by POST, throughout all flows.
+  const ckbRequests=run.requests.filter(({url})=>/^https:\/\/[^/]*ckb\.dev(?:[/:?]|$)/.test(url));
+  assert.ok(ckbRequests.length>0,'the CKB balance reader made at least one request');
+  for(const {url,method} of ckbRequests)assert.ok(/^https:\/\/(?:mainnet\.ckb\.dev\/rpc|testnet\.ckb\.dev\/?)$/.test(url)&&method==='POST',`CKB request ${method} ${url}`);
   assert.equal(run.state.broadcasts,0);assert.deepEqual(run.errors,[]);await writeFile(join(evidence,`${mode}-browser.json`),JSON.stringify({passed:true,broadcasts:run.state.broadcasts,requests:run.requests,blocked:run.blocked,pageErrors:run.errors,consoleErrors:run.consoleErrors},null,2));
   console.log(`PASS ${mode}: network holdings/zero precision, contextual capabilities, dedicated pages, stale state, keyboard and 1360/390/360 layouts`);
  }catch(error){await writeFile(join(evidence,`${mode}-failure.json`),JSON.stringify({error:String(error),pageErrors:run?.errors,consoleErrors:run?.consoleErrors},null,2));if(run)await writeFile(join(evidence,`${mode}-failure-transports.json`),JSON.stringify({requests:run.requests,blocked:run.blocked},null,2));if(run)await run.page.screenshot({path:join(evidence,`${mode}-failure.png`),fullPage:true}).catch(()=>{});throw error;}

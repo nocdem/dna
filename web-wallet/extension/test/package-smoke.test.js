@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { access, mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
+import { access, mkdtemp, readFile, readdir, rm, stat, mkdir, writeFile, symlink } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { Script } from 'node:vm';
 
 const exec = promisify(execFile);
+const python = process.env.PYTHON || 'python3';
 const walletRoot = fileURLToPath(new URL('../../', import.meta.url));
 const sourceManifest = JSON.parse(await readFile(new URL('../manifest.json', import.meta.url), 'utf8'));
 const archiveHelper = join(walletRoot, 'scripts', 'extension-archive.py');
@@ -29,7 +30,7 @@ async function filesBelow(directory, prefix = '') {
 }
 
 test('archive helper creates deterministic files and rejects unsafe archives and sources', async () => {
-  await exec('python3', ['-c', `
+  await exec(python, ['-c', `
 import json, pathlib, stat, subprocess, sys, tempfile, zipfile
 helper = sys.argv[1]
 def run(*args, success=True):
@@ -51,8 +52,6 @@ with tempfile.TemporaryDirectory(prefix='extension-archive-test-') as temporary:
     run('extract', first, destination)
     assert (destination / 'a.txt').read_text() == 'first'
     run('extract', first, destination, success=False)
-    (source / 'link').symlink_to(source / 'a.txt')
-    run('create', source, root / 'symlink-source.zip', success=False)
     cases = [['../outside'], ['/absolute'], ['a\\b'], ['a:a'], ['a', 'a'], ['a', 'a/b'], ['link']]
     for index, names in enumerate(cases):
         archive = root / ('bad-%d.zip' % index)
@@ -68,6 +67,22 @@ with tempfile.TemporaryDirectory(prefix='extension-archive-test-') as temporary:
         assert not target.exists(), 'Validation must happen before extraction'
     assert not (root / 'outside').exists()
 `, archiveHelper]);
+});
+
+test('archive helper rejects a source symlink', async t => {
+  const temporary = await mkdtemp(join(tmpdir(), 'extension-symlink-test-'));
+  try {
+    const source = join(temporary, 'source'); await mkdir(source);
+    const original = join(source, 'a.txt'); await writeFile(original, 'first');
+    try { await symlink(original, join(source, 'link'), 'file'); }
+    catch (error) {
+      if (process.platform === 'win32' && error.code === 'EPERM') {
+        t.skip('Windows account lacks the symlink creation privilege; no privilege change attempted'); return;
+      }
+      throw error;
+    }
+    await assert.rejects(exec(python, [archiveHelper, 'create', source, join(temporary, 'bad.zip')]), /non-file\/directory entry/);
+  } finally { await rm(temporary, { recursive: true, force: true }); }
 });
 
 // Node 22; no compile flags. Environment: CHROMIUM_PATH defaults to /usr/bin/chromium.
@@ -91,7 +106,7 @@ test('MV3 Connect zip keeps legacy Nodus Wallet provider discovery for local sit
   const extension = join(temporary, 'extension');
   let context, server;
   try {
-    const { stdout } = await exec('python3', [archiveHelper, 'list', zip]);
+    const { stdout } = await exec(python, [archiveHelper, 'list', zip]);
     const entries = JSON.parse(stdout).map(entry => entry.path);
     assert.equal(new Set(entries).size, entries.length, 'Duplicate zip entries');
     for (const entry of entries) {
@@ -99,7 +114,7 @@ test('MV3 Connect zip keeps legacy Nodus Wallet provider discovery for local sit
         !entry.split('/').includes('..'), `Unsafe zip entry: ${entry}`);
       assert.ok(!/(^|\/)site-sdk(\/|$)/u.test(entry), 'Site SDK must not ship in the extension');
     }
-    await exec('python3', [archiveHelper, 'extract', zip, extension]);
+    await exec(python, [archiveHelper, 'extract', zip, extension]);
     const files = await filesBelow(extension);
     for (const file of files) t.diagnostic(`${file}\t${(await stat(join(extension, file))).size} bytes`);
     const manifest = JSON.parse(await readFile(join(extension, 'manifest.json'), 'utf8'));
@@ -133,6 +148,8 @@ test('MV3 Connect zip keeps legacy Nodus Wallet provider discovery for local sit
       ['src/nodus/mldsa87.wasm', 'wasm/mldsa87.wasm'],
       ['src/cpunk/legacy-dilithium.wasm', 'wasm/legacy-dilithium.wasm'],
       ['src/pq/receive-keygen.wasm', 'wasm/receive-keygen.wasm'],
+      ['src/pq/ckb-slh-sign.wasm', 'wasm/ckb-slh-sign.wasm'],
+      ['src/pq/qtc-mldsa44-sign.wasm', 'wasm/qtc-mldsa44-sign.wasm'],
       ['public/assets/nodus-mark.svg', 'assets/nodus-mark.svg'],
       ['public/assets/fonts/inter-latin.woff2', 'assets/fonts/inter-latin.woff2'],
       ['public/assets/fonts/inter-latin-ext.woff2', 'assets/fonts/inter-latin-ext.woff2'],
@@ -161,7 +178,11 @@ test('MV3 Connect zip keeps legacy Nodus Wallet provider discovery for local sit
         response.writeHead(403); response.end();
       }
     });
-    server.on('connect', (_request, socket) => { socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'); });
+    server.on('connect', (_request, socket) => {
+      // The browser can reset a deliberately rejected background CONNECT.
+      socket.on('error', error => { if (error.code !== 'ECONNRESET') server.emit('error', error); });
+      socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
+    });
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
     const origin = `http://127.0.0.1:${server.address().port}`;
     const { chromium } = await import('playwright');

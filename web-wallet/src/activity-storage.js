@@ -1,5 +1,19 @@
+import {validIxiosPending,validateIxiosSignedPayload} from './ixios/pending.js';
+import {validateTidecoinFundingEvidence,validateTidecoinSignedPayload} from './pq/tidecoin-recovery.js';
+import {validateCkbSignedPayload} from './pq/ckb-signed-payload.js';
+import {validateQtcSignedPayload} from './pq/qtc-signed-payload.js';
+import {validQtcPending} from './pq/qtc-pending.js';
+import {validXionPending,validateXionSignedPayload} from './pq/xion-recovery.js';
+import {validCkbPending} from './pq/ckb-pending.js';
+import {ckbNetwork} from './pq/ckb.js';
+import {validateAsentumSignedPayload} from './pq/asentum-recovery.js';
+import { soquScript } from './pq/soqu-transaction.js';
+import { algorandAddressBytes } from './pq/algorand-prepare.js';
 import { CHAINS } from './config.js';
-import { validHash, validNodusPending, terminal } from './activity.js';
+import { formatUnits } from './core.js';
+import { validateSplendorSignedPayload } from './pq/splendor-recovery.js';
+import { validateSoquSignedPayload } from './pq/soqu-signed-payload.js';
+import { validHash, validNodusPending, validSoquPending, validSplendorPending, validAsentumPending, terminal } from './activity.js';
 import { NODUS_ASSET } from './nodus/network.js';
 import { historySupported, checkHistoryRows } from './history.js';
 import { checkAddressBook, ADDRESS_BOOK_MAX } from './address-book.js';
@@ -179,7 +193,7 @@ const header = data => ({ version: data.version, id: data.id, cipher: data.ciphe
 export function requireSavedForEvm(saved) {
   if (saved !== true) throw new Error('Smart-contract transactions need this wallet to be saved in this browser first. Save it in Device & settings, then try again. Nothing was sent.');
 }
-const ACTIVITY_MAX_ROWS = 100;
+export const ACTIVITY_MAX_ROWS = 100;
 // A row read back by parseActivity carries `savedStatus`, the status it was
 // SAVED with (its live `status` is reset to 'pending' until the tracker
 // re-verifies it). A row made in this session has none.
@@ -256,10 +270,10 @@ export async function serializeActivity(id, rows, key, quarantined = rows.quaran
   // them (undefined) for every other network, whose saved form is unchanged.
   // `status` is written as savedForm (above); `savedStatus` is never written.
   const selected = keptActivity(rows, quarantined.length).map(row => {
-    const { chain, address, to, symbol, amount, hash, lastValidBlockHeight, expiration, nonce, createdAt, expiryHeight, fromHeight, inputs, tokenId } = row;
+    const { chain, address, to, symbol, amount, hash, lastValidBlockHeight, expiration, nonce, createdAt, expiryHeight, fromHeight, inputs, tokenId, notSubmitted, networkId, amountAtoms, feeAtoms, submissionId, timestamp, signedPayload, gasLimit, gasPrice, maxFeePerGas, sequence, accountNumber, inputCapacities, timeoutHeight, executionWindowClosed, changeAtoms, maxBytes, snapshot, outpoints, funding } = row;
     // tokenId: a pinned token's NODUS send only (src/activity.js recordActivity);
     // absent (dropped by JSON) for every native row and every other network.
-    return { chain, address, to, symbol, amount, hash, lastValidBlockHeight, expiration, nonce, createdAt, status: savedForm(row), expiryHeight, fromHeight, inputs, tokenId };
+    return { chain, address, to, symbol, amount, hash, lastValidBlockHeight, expiration, nonce, createdAt, status: savedForm(row), expiryHeight, fromHeight, inputs, tokenId, ...(chain === 'ixios' ? {networkId,amountAtoms,feeAtoms,gasLimit,gasPrice,submissionId,...(signedPayload!==undefined?{signedPayload}:{})} : chain === 'tidecoin' ? {networkId,amountAtoms,feeAtoms,changeAtoms,maxBytes,snapshot,outpoints,funding,submissionId,...(signedPayload!==undefined?{signedPayload}:{})} : chain === 'algorand' ? {...(submissionId!==undefined?{submissionId}:{})} : chain === 'xion' ? {networkId,amountAtoms,feeAtoms,gasLimit,sequence,accountNumber,submissionId,...(timeoutHeight!==undefined?{timeoutHeight}:{}),...(executionWindowClosed!==undefined?{executionWindowClosed}:{}),...(signedPayload!==undefined?{signedPayload}:{})} : chain === 'qtc' ? {networkId,amountAtoms,feeAtoms,submissionId,...(signedPayload!==undefined?{signedPayload}:{})} : chain === 'ckb' ? {networkId,amountAtoms,feeAtoms,submissionId,...(inputCapacities!==undefined?{inputCapacities}:{}),...(signedPayload!==undefined?{signedPayload}:{})} : chain === 'asentum' ? {networkId,amountAtoms,gasLimit,maxFeePerGas,submissionId,...(signedPayload!==undefined?{signedPayload}:{})} : chain === 'splendor' ? {networkId,amountAtoms,feeAtoms,submissionId,...(signedPayload!==undefined?{timestamp,signedPayload}:{})} : chain === 'soqucoin' ? {...(submissionId!==undefined?{submissionId}:{}),...(feeAtoms!==undefined?{feeAtoms}:{}),...(signedPayload!==undefined?{signedPayload}:{})} : {}), ...((chain === 'algorand' || chain === 'soqucoin' || chain === 'splendor' || chain === 'asentum' || chain === 'xion' || chain === 'qtc' || chain === 'ckb' || chain === 'tidecoin' || chain === 'ixios') && notSubmitted === true ? { notSubmitted: true } : {}) };
   });
   const bytes = encoder.encode(JSON.stringify([...selected, ...quarantined.map(held => held.raw)]));
   try {
@@ -344,6 +358,73 @@ function readActivityRow(row, addresses) {
     // owner is accepted — the row is inside this wallet's authenticated
     // envelope — and the app shows it only once the addresses match.
     const nodus = row?.chain === NODUS_ASSET.chain;
+    if (row?.chain === 'ixios') {
+      if(!validIxiosPending(row)||(addresses.ixios!==undefined&&row.address!==addresses.ixios)||row.symbol!=='IXIOS'||row.amount!==formatUnits(BigInt(row.amountAtoms),18)||typeof row.createdAt!=='string'||!Number.isFinite(Date.parse(row.createdAt))||!['pending','unknown','confirmed','failed'].includes(row.status)||(row.notSubmitted!==undefined&&(row.notSubmitted!==true||row.status!=='failed'))||row.lastValidBlockHeight!==undefined||row.expiration!==undefined||row.inputs!==undefined||row.tokenId!==undefined)throw Error('Invalid saved Ixios activity.');
+      if(row.signedPayload!==undefined)validateIxiosSignedPayload(row);
+      return {chain:'ixios',address:row.address,to:row.to,symbol:'IXIOS',amount:row.amount,hash:row.hash,networkId:'mainnet',amountAtoms:row.amountAtoms,feeAtoms:row.feeAtoms,gasLimit:row.gasLimit,gasPrice:row.gasPrice,nonce:row.nonce,submissionId:row.submissionId,createdAt:row.createdAt,...(row.signedPayload!==undefined?{signedPayload:{encoding:row.signedPayload.encoding,data:row.signedPayload.data}}:{}),...(row.notSubmitted===true?{notSubmitted:true}:{}),endpoint:'https://ixios-rpc.innova.limited',savedStatus:row.status,status:'pending',note:'Authenticated Ixios nonce; outcome unresolved until independently checked.'};
+    }
+    if (row?.chain === 'tidecoin') {
+      validateTidecoinFundingEvidence(row);if((addresses.tidecoin!==undefined&&row.address!==addresses.tidecoin)||row.symbol!=='TDC'||row.amount!==formatUnits(BigInt(row.amountAtoms),8)||typeof row.createdAt!=='string'||!Number.isFinite(Date.parse(row.createdAt))||!['pending','unknown','confirmed','failed'].includes(row.status)||(row.notSubmitted!==undefined&&(row.notSubmitted!==true||row.status!=='failed'))||row.lastValidBlockHeight!==undefined||row.expiration!==undefined||row.nonce!==undefined||row.inputs!==undefined||row.tokenId!==undefined)throw Error('Invalid saved Tidecoin activity.');if(row.signedPayload!==undefined)validateTidecoinSignedPayload(row);
+      return {chain:'tidecoin',address:row.address,to:row.to,symbol:'TDC',amount:row.amount,hash:row.hash,networkId:'mainnet',amountAtoms:row.amountAtoms,feeAtoms:row.feeAtoms,changeAtoms:row.changeAtoms,maxBytes:row.maxBytes,snapshot:{height:row.snapshot.height,hash:row.snapshot.hash},outpoints:row.outpoints.map(({txid,vout})=>({txid,vout})),funding:row.funding.map(({txid,vout,rawTx,blockHeight,blockHash})=>({txid,vout,rawTx,blockHeight,blockHash})),submissionId:row.submissionId,createdAt:row.createdAt,...(row.signedPayload!==undefined?{signedPayload:{encoding:row.signedPayload.encoding,data:row.signedPayload.data}}:{}),...(row.notSubmitted===true?{notSubmitted:true}:{}),savedStatus:row.status,status:'pending',note:'Authenticated TDC inputs; outcome unresolved until independently checked.'};
+    }
+    if (row?.chain === 'qtc') {
+      if(!validQtcPending(row)||(addresses.qtc!==undefined&&row.address!==addresses.qtc)||row.symbol!=='QTC'||row.amount!==formatUnits(BigInt(row.amountAtoms),8)||typeof row.createdAt!=='string'||!Number.isFinite(Date.parse(row.createdAt))||!['pending','unknown','confirmed','failed'].includes(row.status)||(row.status==='failed'&&row.notSubmitted!==true)||(row.notSubmitted!==undefined&&(row.notSubmitted!==true||row.status!=='failed'))||row.lastValidBlockHeight!==undefined||row.expiration!==undefined||row.nonce!==undefined||row.tokenId!==undefined)throw new Error('Invalid saved QTC activity.');
+      if(row.signedPayload!==undefined)validateQtcSignedPayload(row);
+      return {chain:'qtc',address:row.address,to:row.to,symbol:'QTC',amount:row.amount,hash:row.hash,networkId:row.networkId,amountAtoms:row.amountAtoms,feeAtoms:row.feeAtoms,inputs:[...row.inputs],submissionId:row.submissionId,createdAt:row.createdAt,...(row.signedPayload!==undefined?{signedPayload:{encoding:row.signedPayload.encoding,data:row.signedPayload.data}}:{}),...(row.notSubmitted===true?{notSubmitted:true}:{}),endpoint:row.networkId==='mainnet'?'https://qtc.events':'https://testnet.qtc.events',savedStatus:row.status,status:'pending',note:'Authenticated QTC outpoints; outcome unresolved until independently checked.'};
+    }
+    if (row?.chain === 'xion') {
+      if(!validXionPending(row)||(addresses.xion!==undefined&&row.address!==addresses.xion)||row.symbol!=='XION'||row.amount!==formatUnits(BigInt(row.amountAtoms),6)||typeof row.createdAt!=='string'||!Number.isFinite(Date.parse(row.createdAt))||!['pending','unknown','confirmed','failed'].includes(row.status)||(row.notSubmitted!==undefined&&(row.notSubmitted!==true||row.status!=='failed'))||row.lastValidBlockHeight!==undefined||row.expiration!==undefined||row.inputs!==undefined||row.nonce!==undefined||row.tokenId!==undefined)throw new Error('Invalid saved XION activity.');
+      if(row.signedPayload!==undefined)validateXionSignedPayload(row);
+      return {chain:'xion',address:row.address,to:row.to,symbol:'XION',amount:row.amount,hash:row.hash,networkId:row.networkId,amountAtoms:row.amountAtoms,feeAtoms:row.feeAtoms,gasLimit:row.gasLimit,sequence:row.sequence,accountNumber:row.accountNumber,...(row.timeoutHeight!==undefined?{timeoutHeight:row.timeoutHeight}:{}),...(row.executionWindowClosed!==undefined?{executionWindowClosed:{...row.executionWindowClosed}}:{}),submissionId:row.submissionId,createdAt:row.createdAt,...(row.signedPayload!==undefined?{signedPayload:{encoding:row.signedPayload.encoding,data:row.signedPayload.data}}:{}),endpoint:row.networkId==='mainnet'?'https://api.xion-mainnet-1.burnt.com':'https://api.xion-testnet-2.burnt.com',...(row.notSubmitted===true?{notSubmitted:true}:{}),savedStatus:row.status,status:'pending',note:'Authenticated XION record; verifying network status.'};
+    }
+    if (row?.chain === 'ckb') {
+      if(!validCkbPending(row)||(addresses.ckb!==undefined&&row.address!==addresses.ckb)||row.symbol!=='CKB'||row.amount!==formatUnits(BigInt(row.amountAtoms),8)||typeof row.createdAt!=='string'||!Number.isFinite(Date.parse(row.createdAt))||!['pending','unknown','confirmed','failed'].includes(row.status)||(row.status==='failed'&&row.notSubmitted!==true)||(row.notSubmitted!==undefined&&(row.notSubmitted!==true||row.status!=='failed'))||row.lastValidBlockHeight!==undefined||row.expiration!==undefined||row.nonce!==undefined||row.tokenId!==undefined)throw new Error('Invalid saved CKB activity.');
+      if(row.signedPayload!==undefined)validateCkbSignedPayload(row);
+      return {chain:'ckb',address:row.address,to:row.to,symbol:'CKB',amount:row.amount,hash:row.hash,networkId:row.networkId,amountAtoms:row.amountAtoms,feeAtoms:row.feeAtoms,inputs:[...row.inputs],...(row.inputCapacities!==undefined?{inputCapacities:[...row.inputCapacities]}:{}),submissionId:row.submissionId,createdAt:row.createdAt,...(row.signedPayload!==undefined?{signedPayload:{encoding:row.signedPayload.encoding,data:row.signedPayload.data}}:{}),...(row.notSubmitted===true?{notSubmitted:true}:{}),endpoint:ckbNetwork(row.networkId).rpc,savedStatus:row.status,status:'pending',note:'Authenticated CKB outpoints; outcome unresolved until independently checked.'};
+    }
+    if (row?.chain === 'asentum') {
+      if(!validAsentumPending(row)||(addresses.asentum!==undefined&&row.address!==addresses.asentum)||row.symbol!=='ASE'||row.amount!==formatUnits(BigInt(row.amountAtoms),18)||typeof row.createdAt!=='string'||!Number.isFinite(Date.parse(row.createdAt))||!['pending','unknown','confirmed','failed'].includes(row.status)||(row.notSubmitted!==undefined&&(row.notSubmitted!==true||row.status!=='failed'))||row.lastValidBlockHeight!==undefined||row.expiration!==undefined||row.inputs!==undefined||row.tokenId!==undefined)throw new Error('Invalid saved Asentum activity.');
+      if(row.signedPayload!==undefined)validateAsentumSignedPayload(row);
+      return {chain:'asentum',address:row.address,to:row.to,symbol:'ASE',amount:row.amount,hash:row.hash,networkId:row.networkId,amountAtoms:row.amountAtoms,nonce:row.nonce,gasLimit:row.gasLimit,maxFeePerGas:row.maxFeePerGas,submissionId:row.submissionId,createdAt:row.createdAt,...(row.signedPayload!==undefined?{signedPayload:{encoding:row.signedPayload.encoding,data:row.signedPayload.data}}:{}),endpoint:'https://testnet.asentum.com',...(row.notSubmitted===true?{notSubmitted:true}:{}),savedStatus:row.status,status:'pending',note:'Authenticated ASE record; verifying network status.'};
+    }
+    if (row?.chain === 'splendor') {
+      if (!validSplendorPending(row) || (addresses.splendor !== undefined && row.address !== addresses.splendor)
+        || row.symbol !== 'SPLD' || row.amount !== formatUnits(BigInt(row.amountAtoms),18)
+        || typeof row.createdAt !== 'string' || !Number.isFinite(Date.parse(row.createdAt))
+        || !['pending','unknown','confirmed','failed'].includes(row.status)
+        || (row.notSubmitted !== undefined && (row.notSubmitted !== true || row.status !== 'failed'))
+        || (row.submissionId !== undefined && (typeof row.submissionId !== 'string' || !/^[0-9a-f]{32}$/.test(row.submissionId)))
+        || row.lastValidBlockHeight !== undefined || row.expiration !== undefined || row.inputs !== undefined || row.tokenId !== undefined) throw new Error('Invalid saved Splendor activity.');
+      if (row.signedPayload !== undefined) validateSplendorSignedPayload(row);
+      else if (row.timestamp !== undefined) throw new Error('Invalid saved Splendor recovery data.');
+      return {chain:'splendor',address:row.address,to:row.to,symbol:'SPLD',amount:row.amount,hash:row.hash,
+        networkId:row.networkId,amountAtoms:row.amountAtoms,feeAtoms:row.feeAtoms,nonce:row.nonce,submissionId:row.submissionId,createdAt:row.createdAt,
+        ...(row.signedPayload!==undefined?{timestamp:row.timestamp,signedPayload:{encoding:row.signedPayload.encoding,data:row.signedPayload.data}}:{}),
+        endpoint:row.networkId==='mainnet'?'https://quantum-rpc.splendor.org':'https://quantum-rpc-testnet.splendor.org',
+        ...(row.notSubmitted===true?{notSubmitted:true}:{}),savedStatus:row.status,status:'pending',note:'Authenticated SPLD record; verifying network status.'};
+    }
+    if (row?.chain === 'soqucoin') {
+      soquScript(row.address); soquScript(row.to);
+      if ((addresses.soqucoin !== undefined && row.address !== addresses.soqucoin) || row.symbol !== 'SOQ' || !validHash(row.chain, row.hash) || !validSoquPending(row)
+        || typeof row.amount !== 'string' || !/^(0|[1-9]\d{0,10})(\.\d{1,8})?$/.test(row.amount)
+        || typeof row.createdAt !== 'string' || !Number.isFinite(Date.parse(row.createdAt))
+        || !['pending','unknown','confirmed','failed'].includes(row.status)
+        || (row.notSubmitted !== undefined && (row.notSubmitted !== true || row.status !== 'failed'))
+        || (row.submissionId !== undefined && (typeof row.submissionId !== 'string' || !/^[0-9a-f]{32}$/.test(row.submissionId)))
+        || row.lastValidBlockHeight !== undefined || row.expiration !== undefined || row.nonce !== undefined) throw new Error('Invalid saved SOQ activity.');
+      if(row.feeAtoms!==undefined&&(typeof row.feeAtoms!=='string'||!/^[1-9]\d{0,8}$/.test(row.feeAtoms)||BigInt(row.feeAtoms)>200000000n))throw new Error('Invalid saved SOQ fee.');
+      if(row.signedPayload!==undefined){if(typeof row.signedPayload?.data!=='string'||row.signedPayload.data.length>120000)throw new Error('Invalid saved SOQ payload.');validateSoquSignedPayload(row);}
+      return { chain: row.chain, address: row.address, to: row.to, symbol: row.symbol, amount: row.amount,
+        hash: row.hash, createdAt: row.createdAt, endpoint: 'https://mainnet-rpc.soqu.org',
+        inputs: row.inputs.map(({txid,vout}) => ({txid,vout})), ...(row.submissionId !== undefined ? {submissionId:row.submissionId} : {}), ...(row.feeAtoms!==undefined?{feeAtoms:row.feeAtoms}:{}), ...(row.signedPayload!==undefined?{signedPayload:{encoding:row.signedPayload.encoding,data:row.signedPayload.data}}:{}), ...(row.notSubmitted === true ? {notSubmitted:true} : {}),
+        savedStatus: row.status, status: 'pending', note: 'Authenticated SOQ outpoints; verifying network status.' };
+    }
+    const algo = row?.chain === 'algorand';
+    if (row?.notSubmitted !== undefined && (!algo || row.notSubmitted !== true || row.status !== 'failed')) throw new Error('Invalid saved submission status.');
+    if (algo) {
+      algorandAddressBytes(row.address); algorandAddressBytes(row.to);
+      if ((addresses.algorand !== undefined && row.address !== addresses.algorand) || row.symbol !== 'ALGO' || !/^\d{1,14}(\.\d{1,6})?$/.test(row.amount) || !Number.isSafeInteger(row.lastValidBlockHeight) || row.lastValidBlockHeight <= 0 || row.nonce !== undefined || row.expiration !== undefined || (row.submissionId!==undefined && (typeof row.submissionId!=='string'||!/^[0-9a-f]{32}$/.test(row.submissionId)))) throw new Error('Invalid saved Algorand activity.');
+    }
     // tokenId (design docs/plans/2026-10-22-connect-native-tokens-design.md
     // §6 item 7): a row without one is a native row (its symbol NODUS, as
     // every row saved before tokens); one WITH one is a token send — 128 hex,
@@ -357,12 +438,12 @@ function readActivityRow(row, addresses) {
     if (nodus && (!(addresses.nodus === undefined ? /^[0-9a-f]{128}$/.test(row.address) : row.address === addresses.nodus)
         || (tokenRow ? typeof row.tokenId !== 'string' || !/^[0-9a-f]{128}$/.test(row.tokenId) || row.tokenId === '0'.repeat(128) || typeof row.symbol !== 'string' || !/^[A-Za-z0-9]{1,12}$/.test(row.symbol) : row.symbol !== NODUS_ASSET.symbol)
         || !/^[0-9a-f]{128}$/.test(row.to) || !validNodusPending(row) || row.lastValidBlockHeight !== undefined || row.expiration !== undefined || row.nonce !== undefined)) throw new Error('Invalid saved activity.');
-    if (!row || !(nodus || Object.hasOwn(CHAINS, row.chain)) || (!nodus && row.address !== addresses[row.chain]) || !validHash(row.chain, row.hash) || typeof row.to !== 'string' || row.to.length > 128 || typeof row.symbol !== 'string' || row.symbol.length > 12 || typeof row.amount !== 'string' || !/^\d{1,78}(\.\d{1,18})?$/.test(row.amount) || typeof row.createdAt !== 'string' || !Number.isFinite(Date.parse(row.createdAt)) || !(row.nonce === undefined || Number.isSafeInteger(row.nonce)) || !['pending','included','unknown','confirmed','failed','expired','replaced','abandoned'].includes(row.status)) throw new Error('Invalid saved activity.');
+    if (!row || !(nodus || algo || Object.hasOwn(CHAINS, row.chain)) || (!nodus && !algo && row.address !== addresses[row.chain]) || !validHash(row.chain, row.hash) || typeof row.to !== 'string' || row.to.length > 128 || typeof row.symbol !== 'string' || row.symbol.length > 12 || typeof row.amount !== 'string' || !/^\d{1,78}(\.\d{1,18})?$/.test(row.amount) || typeof row.createdAt !== 'string' || !Number.isFinite(Date.parse(row.createdAt)) || !(row.nonce === undefined || Number.isSafeInteger(row.nonce)) || !['pending','included','unknown','confirmed','failed','expired','replaced','abandoned'].includes(row.status)) throw new Error('Invalid saved activity.');
     if (row.lastValidBlockHeight !== undefined && (!Number.isSafeInteger(row.lastValidBlockHeight) || row.lastValidBlockHeight < 0)) throw new Error('Invalid saved expiry.');
     if (row.expiration !== undefined && (!Number.isSafeInteger(row.expiration) || row.expiration < 0)) throw new Error('Invalid saved expiry.');
     // Every saved status is re-verified from the network (NODUS included: an
     // 'expired' row locks its coins again until a fresh scan says so). The
     // status it was saved with stays in memory as `savedStatus`, for
     // serializeActivity's retention and re-save only (keptActivity / savedForm).
-    return { savedStatus: row.status, chain: row.chain, address: row.address, to: row.to, symbol: row.symbol, amount: row.amount, endpoint: nodus ? undefined : CHAINS[row.chain].endpoint, hash: row.hash, createdAt: row.createdAt, lastValidBlockHeight: row.lastValidBlockHeight, expiration: row.expiration, nonce: row.nonce, ...(nodus ? { expiryHeight: row.expiryHeight, fromHeight: row.fromHeight, inputs: [...row.inputs], ...(tokenRow ? { tokenId: row.tokenId } : {}) } : {}), ...(row.status === 'abandoned' ? { status: 'abandoned', note: 'Marked abandoned by you; the network may still include it. Check the explorer.' } : { status: 'pending', note: 'Authenticated local record; verifying network status.' }) };
+    return { ...(algo && row.submissionId !== undefined ? {submissionId:row.submissionId} : {}), ...(algo && row.notSubmitted === true ? { notSubmitted: true } : {}), savedStatus: row.status, chain: row.chain, address: row.address, to: row.to, symbol: row.symbol, amount: row.amount, endpoint: algo ? 'https://mainnet-api.algonode.cloud' : nodus ? undefined : CHAINS[row.chain].endpoint, hash: row.hash, createdAt: row.createdAt, lastValidBlockHeight: row.lastValidBlockHeight, expiration: row.expiration, nonce: row.nonce, ...(nodus ? { expiryHeight: row.expiryHeight, fromHeight: row.fromHeight, inputs: [...row.inputs], ...(tokenRow ? { tokenId: row.tokenId } : {}) } : {}), ...(row.status === 'abandoned' ? { status: 'abandoned', note: 'Marked abandoned by you; the network may still include it. Check the explorer.' } : { status: 'pending', note: 'Authenticated local record; verifying network status.' }) };
 }

@@ -32,6 +32,16 @@ export async function withPortfolioPage(check) {
   }
 }
 
+export async function selectFixtureNetwork(page, chain) {
+  await page.locator('.wallet-navigation a[href="#"]').click();
+  if (!await page.locator('#wallet-network').evaluate(node => node.open)) await page.locator('#wallet-network > summary').click();
+  const badge = page.locator(`#portfolio-networks .network-health[data-chain="${chain}"]`);
+  const group = badge.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " network-group ")]');
+  const toggle = group.locator('.network-group-toggle');
+  if (await toggle.count() && await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
+  await badge.click();
+}
+
 export async function checkPortfolioFlows(page, origin) {
   await page.goto(`${origin}/test/fixtures/functions.html`);
   await page.waitForFunction(() => window.fixture?.ready);
@@ -40,18 +50,16 @@ export async function checkPortfolioFlows(page, origin) {
   for (const method of ['getNodusBalances', 'getCpunkBalance', 'getIxiosBalance', 'getSolanaBalances', 'getTronBalances', 'getPrices']) assert.ok(calls.some(call => call[0] === method));
   assert.ok(calls.some(([method, args]) => method === 'getEvmBalances' && args[0] === 'ethereum'));
   assert.ok(calls.some(([method, args]) => method === 'getEvmBalances' && args[0] === 'bsc'));
-  await page.locator('.wallet-navigation a[href="#assets-panel"]').click();
-  await page.locator('#portfolio-filters button[data-chain="ethereum"]').click();
-  assert.equal(await page.locator('#balances .chain-holding').evaluateAll(rows => rows.length > 0 && rows.every(row => row.dataset.chain === 'ethereum')), true);
-  await page.locator('#page-assets-panel .page-back').click();
+  assert.equal(await page.locator('#assets-panel').isVisible(), true);
+  assert.equal(await page.locator('#portfolio-filters').isHidden(), true);
   await page.locator('#portfolio-hide').click(); assert.equal(await page.locator('#portfolio-total').textContent(), '••••');
   await page.locator('#portfolio-hide').click();
-  await page.locator('#quick-send').click();
-  await page.locator('#chain').selectOption('solana');
+  await selectFixtureNetwork(page, 'solana');
+  await page.locator('.wallet-navigation a[href="#send"]').click();
   assert.equal(await page.locator('#receive-address').textContent(), '3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx');
   assert.deepEqual(await page.locator('#asset option').allTextContents(), ['SOL']);
   await page.locator('#recipient').fill('public fixture recipient'); await page.locator('#amount').fill('1.234');
-  await page.locator('#page-send-form .page-back').click();
+  await page.locator('#page-send .page-back').click();
   await page.locator('.wallet-navigation a[href="#settings"]').click();
   await page.locator('#balance-refresh-minutes').selectOption('0');
   await page.locator('#page-settings .page-back').click();
@@ -60,10 +68,12 @@ export async function checkPortfolioFlows(page, origin) {
   await page.evaluate(() => window.fixture.release());
   await page.waitForFunction(() => document.getElementById('portfolio-total').textContent === '$3.00');
   assert.equal(await page.locator('#recipient').inputValue(), 'public fixture recipient'); assert.equal(await page.locator('#amount').inputValue(), '1.234');
-  await page.locator('.wallet-navigation a[href="#assets-panel"]').click();
-  await page.locator('#portfolio-filters button[data-chain="ixios"]').click();
-  assert.equal(await page.locator('.asset-group[data-symbol="IXIOS"] .asset-value strong').textContent(), '8');
-  assert.deepEqual(await page.locator('.chain-holding[data-chain="ixios"] .holding-actions button').allTextContents(), ['Receive']);
+  await selectFixtureNetwork(page, 'ixios');
+  const ixios = page.locator('.asset-group[data-chain="ixios"]');
+  if (!await ixios.evaluate(node => node.open)) await ixios.locator('summary').click();
+  assert.match(await ixios.locator('.holding-value strong').textContent(), /^8 IXIOS$/);
+  assert.equal(await page.locator('#chain').inputValue(), 'ixios');
+  assert.equal(await page.locator('.wallet-navigation a[href="#send"]').isVisible(), true);
   // Check the actual image bytes load; a balance/address-only implementation
   // could falsely pass with a missing shared icon-map entry.
   await page.waitForFunction(() => { const images = [...document.querySelectorAll('img[data-icon="ixios.png"]')]; return images.length > 0 && images.every(image => image.complete && image.naturalWidth > 0); });
@@ -74,6 +84,7 @@ export async function checkPortfolioFlows(page, origin) {
   await page.goto(`${origin}/test/fixtures/functions.html?ixios-unavailable`);
   await page.waitForFunction(() => window.fixture?.ready);
   const assertSettled = async () => {
+    await page.waitForFunction(() => document.getElementById('portfolio-label').textContent !== 'Updating portfolio');
     assert.equal(await page.locator('#portfolio-label').textContent(), 'Known value · incomplete');
     assert.equal(await page.locator('#portfolio-status').isVisible(), false);
     assert.equal(await page.locator('.network-health[data-chain="ixios"]').getAttribute('data-reading'), 'false');
@@ -105,7 +116,7 @@ export async function checkPortfolioFlows(page, origin) {
   assert.equal(await page.locator('#quick-earn').isEnabled(), true);
   assert.equal(await page.locator('#nav-earn').isVisible(), true);
   await page.locator('#nav-vaults:visible').waitFor();
-  await page.locator('#quick-earn').click();
+  await page.locator('#nav-earn').click();
   assert.equal(await page.locator('#page-earn').isVisible(), true);
   await page.locator('#page-earn .page-back').click();
   await page.locator('#nav-vaults').click();
@@ -116,7 +127,8 @@ export async function checkPortfolioFlows(page, origin) {
     window.fixture.screen.update();
   });
   assert.equal(await page.locator('#quick-earn').isEnabled(), false);
-  assert.equal(await page.locator('#nav-earn').isVisible(), false);
+  // Navigation reflects chain capabilities; the unavailable action stays disabled.
+  assert.equal(await page.locator('#nav-earn').isVisible(), true);
   assert.equal(await page.locator('#quick-name').isVisible(), false);
 }
 

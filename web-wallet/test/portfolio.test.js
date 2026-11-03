@@ -87,7 +87,7 @@ test('IXIOS is an unpriced, receive-only row like CPUNK: no priceId, no PRICE_UR
   assert.equal(IXIOS_NETWORK.receiveOnly, true); assert.equal(Object.hasOwn(IXIOS_NETWORK, 'notActive'), false);
   assert.equal(IXIOS_NETWORK.endpoint, 'https://ixios-rpc.innova.limited');
   assert.deepEqual(IXIOS_NETWORK.rpcOptions, [{ url: IXIOS_NETWORK.endpoint, label: 'Ixios public RPC' }]); assert.deepEqual(IXIOS_NETWORK.tokens, []);
-  assert.equal(IXIOS_NETWORK.sendNote, 'Sending IXIOS is not available in this release. The Ixios network does not accept this address type yet.');
+  assert.equal(IXIOS_NETWORK.sendNote, 'Sending IXIOS is not available in this release. Wallet support for Ixios post-quantum transactions has not yet been verified.');
   assert.ok(!/ixios/i.test(PRICE_URL));
   const withBoth = [...ASSETS, CPUNK_ASSET, IXIOS_ASSET];
   const result = chainBalances('ixios', [{ symbol: 'IXIOS', balance: '7.25' }], now, withBoth);

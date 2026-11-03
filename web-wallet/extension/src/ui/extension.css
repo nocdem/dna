@@ -11,18 +11,25 @@ body.extension-page[data-page="popup"] { overflow: auto; }
 #screen, #wallet-navigation { min-width: 0; }
 
 /* Keep both greetings beside the action in one row, using src/style.css:892's
-   44px touch target. Home has equal gaps above and below the portfolio. */
+   44px touch target. Home has equal 18px gaps above and below the portfolio
+   (operator 2026-11-02: "ikiside 18"; the network disclosure below is
+   src/style.css:1044's 18px). */
 .extension-page #wallet-heading { box-sizing: content-box; min-height: 44px; padding-bottom: 24px; margin-bottom: 24px; border-bottom: 1px solid #d5f99814; }
 .extension-page #wallet-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .extension-page #wallet-register-name { flex-shrink: 0; max-width: 50%; height: 44px; padding-block: 0; }
-.extension-page #wallet-home > #wallet-heading { padding-bottom: 0; }
+.extension-page #wallet-home > #wallet-heading { padding-bottom: 0; margin-bottom: 18px; }
 .extension-page #portfolio-networks { margin-top: 24px; padding-top: 0; }
 
 /* Amount first, with a smaller label below the eye and lock on the right. */
 .extension-page .portfolio-card { padding: 16px; }
 .extension-page .portfolio-heading { display: grid; grid-template-columns: minmax(0, 1fr) 32px 32px; }
 .extension-page #portfolio-label { font-size: 8px; margin: 4px 0 10px; text-align: right; }
-.extension-page .portfolio-amount { margin: 0; }
+/* 6px keeps "$254.00 USD" on one line in the 270px card (operator 2026-11-03:
+   "12'den 6 piksele indir"); longer totals may break their digits, USD stays. */
+.extension-page .portfolio-amount { margin: 0; gap: 6px; }
+/* At 360px the amount row is 136px: a 27px total keeps "$254.00 USD" on one
+   line (operator 2026-11-03: "1 duzlet", the 27px option). */
+@media (max-width: 380px) { .extension-page #portfolio-total { font-size: 27px; } }
 .extension-page .network-health { align-items: center; }
 
 /* Matching eye and lock buttons, with the shared renderer's Hide/Show text retained

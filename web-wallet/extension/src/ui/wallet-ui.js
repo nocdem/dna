@@ -29,28 +29,28 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
   let evmBalances = {}, balanceIdentity, balancePending;
   let nodusBalances = null, cpunkBalance = null, nodusHistory = null, nodusPending, historyPending, balanceGeneration = 0;
   let solanaTronBalances = {}, solanaTronHistory = {};
-  const solanaTronPending = new Map(), chainGeneration = { solana: 0, tron: 0 };
+  const solanaTronPending = new Map(), chainGeneration = { solana: 0, tron: 0, algorand: 0, soqucoin: 0, splendor: 0, asentum: 0, xion: 0, ckb: 0, qtc: 0, ixios: 0 };
   const solanaTronHistoryPending = new Map();
   let quotes = {}, pricesAt = null, pricesPending, balanceTimes = {}, referenceKept = {};
   const chainPrefix = chain => {
-    if (!['solana', 'tron'].includes(chain)) throw new Error('Unsupported chain.');
-    return chain === 'solana' ? 'Solana' : 'Tron';
+    if (!['solana', 'tron', 'algorand', 'soqucoin', 'splendor', 'asentum', 'xion', 'ckb', 'qtc', 'ixios'].includes(chain)) throw new Error('Unsupported chain.');
+    return { solana: 'Solana', tron: 'Tron', algorand: 'Algorand', soqucoin: 'Soqucoin', splendor: 'Splendor', asentum: 'Asentum', xion: 'Xion', ckb: 'Ckb', qtc: 'Qtc', ixios: 'Ixios' }[chain];
   };
   const publicState = () => state ? { ...state, evmBalances, nodusBalances, cpunkBalance, nodusHistory, solanaTronBalances, solanaTronHistory } : null;
   async function refresh() {
     const previousNetworks = state?.networks;
     state = await client.request('getState');
-    const identity = state.isUnlocked ? JSON.stringify([state.addresses, state.evm, state.nodus]) : null;
+    const identity = state.isUnlocked ? JSON.stringify([state.addresses, state.pqAddresses, state.evm, state.nodus]) : null;
     if (identity !== balanceIdentity) {
       evmBalances = {}; nodusBalances = cpunkBalance = nodusHistory = null;
       solanaTronBalances = {}; solanaTronHistory = {}; solanaTronPending.clear(); solanaTronHistoryPending.clear();
-      chainGeneration.solana++; chainGeneration.tron++;
+      chainGeneration.solana++; chainGeneration.tron++; chainGeneration.algorand++; chainGeneration.soqucoin++; chainGeneration.splendor++; chainGeneration.asentum++; chainGeneration.xion++; chainGeneration.ckb++; chainGeneration.qtc++; chainGeneration.ixios++;
       balanceIdentity = identity; balanceGeneration++;
       quotes = {}; pricesAt = null; pricesPending = undefined; balanceTimes = {}; referenceKept = {};
     }
     // Plan §5.6: invalidate only the changed chain, including in-flight reads
     // from a different window's old selection. Other chains retain their data.
-    for (const chain of ['solana', 'tron']) if (previousNetworks && previousNetworks[chain] !== state.networks?.[chain]) {
+    for (const chain of ['solana', 'tron', 'algorand', 'soqucoin', 'splendor', 'asentum', 'xion', 'ckb', 'qtc', 'ixios']) if (previousNetworks && previousNetworks[chain] !== state.networks?.[chain]) {
       delete solanaTronBalances[chain]; delete solanaTronHistory[chain];
       delete balanceTimes[chain];
       for (const key of Object.keys(referenceKept)) if (key.startsWith(`${chain}:`)) delete referenceKept[key];
@@ -208,7 +208,7 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
     async loadSolanaTronBalances({ force = false, chain: selectedChain } = {}) {
       if (!state?.isUnlocked) return;
       if (selectedChain) chainPrefix(selectedChain);
-      const chains = (selectedChain ? [selectedChain] : ['solana', 'tron']).filter(chain => state.addresses?.[chain]);
+      const chains = (selectedChain ? [selectedChain] : ['solana', 'tron']).filter(chain => chain === 'ixios' ? state.addresses?.ixios : ['algorand', 'soqucoin', 'splendor', 'asentum', 'xion', 'ckb', 'qtc', 'ixios'].includes(chain) ? state.pqAddresses?.[chain]?.[state.networks?.[chain] || 'mainnet'] : state.addresses?.[chain]);
       return Promise.all(chains.map(chain => {
         if (solanaTronPending.has(chain)) return solanaTronPending.get(chain);
         if (!force && solanaTronBalances[chain]) return;
@@ -278,7 +278,7 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
     async selectEvmNetwork(chain) { await client.request('selectEvmNetwork', [chain]); return refresh(); },
     async setChainNetwork(chain, network) {
       await client.request('setChainNetwork', [chain, network]); await refresh();
-      if (['solana', 'tron'].includes(chain)) await Promise.all([
+      if (['solana', 'tron', 'algorand', 'soqucoin', 'splendor', 'asentum', 'xion', 'ckb', 'qtc', 'ixios'].includes(chain)) await Promise.all([
         this.loadSolanaTronBalances({ chain }), this.loadSolanaTronHistory(chain),
       ]);
       return publicState();

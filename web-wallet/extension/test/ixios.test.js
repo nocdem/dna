@@ -28,12 +28,12 @@ test('Ixios address equals the web wallet derivation and failure keeps the walle
 // The failed derivation above leaves no address. Exercise that public state
 // on the real mounted screen; a key-holder-only test could miss its message.
 test('failed Ixios derivation shows the web wallet unavailable text', { timeout: 60_000 }, async () => {
-  const { withPortfolioPage } = await import('./fixtures/portfolio-page-checks.js');
+  const { withPortfolioPage, selectFixtureNetwork } = await import('./fixtures/portfolio-page-checks.js');
   await withPortfolioPage(async (page, origin) => {
     await page.goto(`${origin}/test/fixtures/functions.html?ixios-unavailable`);
     await page.waitForFunction(() => window.fixture?.ready);
-    await page.locator('#quick-receive').click();
-    await page.locator('#chain').selectOption('ixios');
+    await selectFixtureNetwork(page, 'ixios');
+    await page.locator('.wallet-navigation a[href="#receive"]').click();
     assert.equal(await page.locator('#ixios-address-status').isVisible(), true);
     assert.equal(await page.locator('#ixios-address-status').textContent(), 'Ixios address unavailable. Lock and reopen your wallet to retry.');
     assert.equal(await page.evaluate(() => window.fixture.state.isUnlocked), true);

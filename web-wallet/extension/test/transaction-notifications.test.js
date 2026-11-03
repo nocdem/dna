@@ -156,3 +156,11 @@ test('the notification ledger contains only notification identity and states', a
   const kept = JSON.stringify(f.values);
   for (const field of ['envelope', 'inputs', 'secret-input', 'address', 'private-owner', 'amount', '12345']) assert.equal(kept.includes(field), false, field);
 });
+
+test('Algorand uses its PQ display name and drains pending/final notification queues', async t => {
+  const f = fixture(), notifier = await createTransactionNotifications(f.options); t.after(() => notifier.destroy());
+  const sent = {chain:'algorand',hash:'A'.repeat(52),status:'pending'};
+  await notifier.observe([sent],{network:'mainnet'});await notifier.observe([{...sent,status:'confirmed'}],{network:'mainnet'});
+  assert.equal(f.shown.length,2);assert.ok(f.shown.every(note=>note.message.startsWith('Algorand (mainnet)')));
+  assert.equal(f.scheduled.has(TRANSACTION_NOTIFICATIONS_ALARM),false);
+});

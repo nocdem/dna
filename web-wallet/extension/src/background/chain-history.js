@@ -1,5 +1,6 @@
 import { readHistory, mergeHistory, HISTORY_SOURCES, HISTORY_LIMIT } from '../../../src/history.js';
 import { sentRowsToShow } from '../../../src/activity-storage.js';
+import { publicActivityRow } from '../../../src/activity.js';
 
 // src/app.js:290-352: account-history cache and provider pacing. The caller
 // supplies the session-bound authenticated history writer, never its key.
@@ -12,7 +13,7 @@ export function createChainHistory({ getActivity, getAddresses, assertCurrent, s
       const activity = getActivity(chain), addresses = getAddresses(), address = addresses[chain === 'cellframe' ? 'cpunk' : chain];
       if (!address) throw new Error('Receive address is unavailable.');
       const kept = activity.history(), gap = manual ? 30000 : chain === 'ethereum' ? 1800000 : 300000;
-      const snapshot = status => ({ rows: activity.history()?.rows ?? [], local: sentRowsToShow(activity.rows(), { historyRows: activity.history()?.rows ?? [] }).map(row => ({ ...row })),
+      const snapshot = status => ({ rows: activity.history()?.rows ?? [], local: sentRowsToShow(activity.rows(), { historyRows: activity.history()?.rows ?? [] }).map(publicActivityRow),
         status, activityError: activity.error?.() ?? '' });
       // Status polling only reads this job's public snapshot. It never starts
       // a provider request, including after the original job has completed.

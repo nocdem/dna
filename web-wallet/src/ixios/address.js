@@ -19,9 +19,10 @@ export function ixiosChecksumAddress(bytes) {
 }
 
 // Accepts only "0x" + exactly 96 hex characters (48 bytes). The 20- and 32-byte
-// forms are rejected: the Ixios RPC zero-pads them to 48 bytes
-// (common/address_compat.go decodeAddressText), which would send to a different
-// account. All-lowercase or all-uppercase input is accepted as unchecksummed;
+// forms are rejected by this wallet's explicit full-address policy. Ixios RPC
+// zero-pads legacy forms (common/address_compat.go decodeAddressText); that
+// padding represents the same legacy-compatible account, not a new account.
+// All-lowercase or all-uppercase input is accepted as unchecksummed;
 // mixed case must match ixiosChecksumAddress() exactly. Returns the 48 bytes.
 export function parseIxiosAddress(text) {
   if (typeof text !== 'string' || !/^0x[0-9a-fA-F]{96}$/.test(text)) throw new Error('Enter a 48-byte Ixios address: 0x followed by 96 hex characters.');

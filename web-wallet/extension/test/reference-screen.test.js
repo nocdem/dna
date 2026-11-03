@@ -11,7 +11,19 @@ test('extension keeps the web wallet body apart from the approved polish and loc
   const section = source.slice(source.indexOf('<section class="card wallet-card"'), source.indexOf('\n\n<details class="danger-zone"'));
   const body = '\n<p id="wallet-boot-status"';
   assert.ok(WALLET_MARKUP.includes(body)); assert.ok(section.includes(body));
-  const withoutLockControls = markup => markup.replace(/  <div class="wallet-session">.*?<\/div>\n/u, '')
+  // Both surfaces expose the bounded ASE fee input; copy differs explicitly.
+  const aseFee = '<div id="asentum-fee-fields" hidden><label for="asentum-max-fee">Maximum fee per gas (ASE atoms)</label><input id="asentum-max-fee" inputmode="numeric" autocomplete="off" pattern="[0-9]+" disabled><p class="hint">Enter a maximum in atomic units per gas. Gas limit is 21,000; the finalized base fee may change. The total maximum is shown for review.</p></div>';
+  assert.ok(WALLET_MARKUP.includes(aseFee));
+  assert.equal(WALLET_MARKUP.split('id="asentum-max-fee"').length - 1, 1);
+  const xionFee = '<div id="xion-fee-fields" hidden><label for="xion-fee-atoms">Explicit fee (uxion)</label><input id="xion-fee-atoms" inputmode="numeric" autocomplete="off" pattern="[0-9]+" disabled><label for="xion-gas-limit">Explicit gas limit</label><input id="xion-gas-limit" inputmode="numeric" autocomplete="off" pattern="[0-9]+" disabled><p class="hint">You choose both values; they are not a network fee quote. Simulation and fee policy do not guarantee acceptance.</p></div>';
+  assert.ok(WALLET_MARKUP.includes(xionFee));
+  assert.equal(WALLET_MARKUP.split('id="xion-fee-atoms"').length - 1, 1);
+  const ixiosFee = '<div id="ixios-fee-fields" hidden><label for="ixios-max-gas-price">Maximum gas price (IXIOS atomic units)</label><input id="ixios-max-gas-price" inputmode="numeric" autocomplete="off" pattern="[0-9]+" disabled><p class="hint">Native transfers use 1,000 gas. Review the current quoted price and exact fee; your cap is not a network acceptance guarantee.</p></div>';
+  assert.ok(WALLET_MARKUP.includes(ixiosFee));
+  assert.equal(WALLET_MARKUP.split('id="ixios-max-gas-price"').length - 1, 1);
+  const webAseFee = aseFee.replace('Enter a maximum', 'Enter an explicit maximum').replace('the finalized base fee', 'finalized base fee');
+  assert.ok(section.includes(webAseFee));
+  const withoutLockControls = markup => markup.replace(aseFee, '').replace(webAseFee, '').replace(xionFee, '').replace(ixiosFee, '').replace(/  <div class="wallet-session">.*?<\/div>\n/u, '')
     .replace(/<button id="lock"[^>]*>.*?<\/button>/u, '')
     .replace(/<p id="portfolio-status"[^>]*>.*?<\/p>/u, '')
     .replace(/<button id="quick-name"[^>]*>.*?<\/button>/u, '')

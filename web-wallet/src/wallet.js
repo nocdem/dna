@@ -1,3 +1,4 @@
+import {prepareAsentumReview} from './pq/asentum-transfer.js';
 import * as evm from './adapters/evm.js';
 import * as solana from './adapters/solana.js';
 import * as tron from './adapters/tron.js';
@@ -6,6 +7,11 @@ import { CHAINS, assetFor } from './config.js';
 import { amountUnits, endpointUrl } from './core.js';
 import { NODUS_ASSET } from './nodus/network.js';
 import { chainName } from './nodus/names.js';
+import { prepareSoquTransfer } from './pq/soqu-transfer.js';
+import { prepareAlgorandTransfer } from './pq/algorand-transfer.js';
+import { prepareSplendorReview } from './pq/splendor-transfer.js';
+import { prepareSplendorTransfer } from './pq/splendor-prepare.js';
+import { formatUnits } from './core.js';
 // `nodus` is reached only through the NODUS send module's client
 // (wallet.nodusClient, set by src/app.js while the module reports 'ready');
 // without it prepare() refuses, so the entry changes nothing until then.
@@ -26,7 +32,47 @@ function reviewed(prepared, fields) {
 // chain must be the chain being sent on: no hop defaults to native, so a
 // missing or malformed tokenId refuses here, before any module call. The
 // other networks still take their asset by `symbol`.
-export async function prepareTransfer({ wallet, chain, symbol, asset: identity, to, amount, endpoint, nodusLocked }, implementations = adapters) {
+export async function prepareTransfer({ wallet, chain, symbol, asset: identity, to, amount, endpoint, nodusLocked, networkId = 'mainnet', maxFeePerGas, signal }, implementations = adapters) {
+  if (chain === 'asentum') {
+    if(symbol!=='ASE'||networkId!=='testnet')throw new Error('Choose Asentum testnet ASE.');
+    const units=amountUnits(amount,18),recipient=typeof to==='string'?to.trim():to;
+    const transfer=await prepareAsentumReview({wallet,to:recipient,amount:String(units),maxFeePerGas,networkId,signal});
+    return {...transfer,chain,symbol,amount:formatUnits(units,18),amountAtoms:String(units),endpoint:'https://testnet.asentum.com',fee:`Up to ${formatUnits(BigInt(transfer.maximumFee),18)} ASE`,review:[['Network','Asentum testnet'],['From',transfer.from],['To',transfer.to],['Asset','ASE'],['Amount',formatUnits(units,18)],['Maximum network fee',`${formatUnits(BigInt(transfer.maximumFee),18)} ASE`],['Fee policy','Explicit user maximum; finalized base fee may change'],['Authorization','Native ML-DSA-65']]};
+  }
+  if (chain === 'splendor') {
+    if (symbol !== 'SPLD' || !['mainnet','testnet'].includes(networkId)) throw new Error('Choose a supported Splendor network and SPLD.');
+    const units=amountUnits(amount,18),from=wallet?.addresses?.splendor,recipient=typeof to==='string'?to.trim():to;
+    // The node's current mempool minimum is a snapshot, not a guarantee. The
+    // exact quoted fee is shown for approval and rechecked on confirm.
+    const quote=await prepareSplendorTransfer({networkId,from,to:recipient,amount:String(units),fee:'0',timestamp:String(Math.floor(Date.now()/1000)),signal});
+    const transfer=await prepareSplendorReview({wallet,to:recipient,amount:String(units),fee:quote.minimumFee,networkId,signal});
+    const url=networkId==='mainnet'?'https://quantum-rpc.splendor.org':'https://quantum-rpc-testnet.splendor.org';
+    return {...transfer,chain,symbol,amount:formatUnits(units,18),amountAtoms:String(units),feeAtoms:transfer.fee,endpoint:url,
+      fee:`${formatUnits(BigInt(transfer.fee),18)} SPLD`,review:[['Network',`Splendor ${networkId}`],['From',transfer.from],['To',transfer.to],['Asset','SPLD'],['Amount',formatUnits(units,18)],['Network fee',`${formatUnits(BigInt(transfer.fee),18)} SPLD`],['Fee policy','Node-reported current minimum; may change before admission'],['Authorization','Native ML-DSA-65']]};
+  }
+  if (chain === 'soqucoin') {
+    if (symbol !== 'SOQ' || networkId !== 'mainnet') throw new Error('Choose verified Soqucoin mainnet SOQ.');
+    const units = amountUnits(amount, 8);
+    const transfer = await prepareSoquTransfer({ wallet, to: typeof to === 'string' ? to.trim() : to,
+      amountAtoms: String(units), networkId, signal });
+    return { ...transfer, chain, symbol, amount: formatUnits(units, 8), endpoint: 'https://mainnet-rpc.soqu.org',
+      fee: `${formatUnits(BigInt(transfer.feeAtoms), 8)} SOQ`,
+      review: [['Network', 'Soqucoin mainnet'], ['From', transfer.from], ['To', transfer.to], ['Asset', 'SOQ'],
+        ['Amount', formatUnits(units, 8)], ['Network fee', `${formatUnits(BigInt(transfer.feeAtoms), 8)} SOQ`],
+        ['Fee policy', `${transfer.feeRate} shors/vByte; native transparent inputs only`],
+        ['Authorization', 'ML-DSA-44; node-verified mature UTXOs']] };
+  }
+  if (chain === 'algorand') {
+    if (symbol !== 'ALGO' || networkId !== 'mainnet') throw new Error('Choose verified Algorand mainnet ALGO.');
+    const units = amountUnits(amount, 6);
+    const transfer = await prepareAlgorandTransfer({ wallet, to: typeof to === 'string' ? to.trim() : to,
+      amountAtoms: String(units), maxFeeAtoms: '10000', networkId, signal });
+    return { ...transfer, chain, symbol, amount: formatUnits(units, 6), endpoint: 'https://mainnet-api.algonode.cloud',
+      fee: `${formatUnits(BigInt(transfer.feeAtoms), 6)} ALGO`,
+      review: [['Network', 'Algorand mainnet'], ['From', transfer.from], ['To', transfer.to], ['Asset', 'ALGO'],
+        ['Amount', formatUnits(units, 6)], ['Network fee', `${formatUnits(BigInt(transfer.feeAtoms), 6)} ALGO`],
+        ['Authorization', 'Native Falcon-1024; direct account only']] };
+  }
   if (!wallet || !implementations[chain]) throw new Error('Open a wallet first.');
   if (chain === NODUS_ASSET.chain) {
     if (!identity || identity.chain !== NODUS_ASSET.chain || typeof identity.tokenId !== 'string' || !/^[0-9a-f]{128}$/.test(identity.tokenId)) throw new Error('Choose the asset to send.');

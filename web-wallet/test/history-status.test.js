@@ -17,6 +17,7 @@ test('the site displays the live countdown and ignores a stale wallet callback',
     NODUS_ASSET: { chain: 'nodus' }, historyJob: null, historyNote: {}, historyByChain: {},
     historyFor: () => null, historySupported: () => true, HISTORY_SOURCES: { ethereum: 'Blockscout' },
     HISTORY_AUTO_MS: { ethereum: 1800000 }, HISTORY_AUTO_DEFAULT_MS: 300000, HISTORY_MANUAL_MS: 30000,
+    isPqChain: chain => ['algorand', 'qtc'].includes(chain), pqSelections: {},
     endpoints: {}, AbortController, Date, mergeHistory: (_kept, rows) => rows, persistHistory() {}, renderActivity() {},
     readHistory: async (_chain, _address, options) => { reportStatus = options.onStatus; return held; } };
   runInNewContext(render + load, context);

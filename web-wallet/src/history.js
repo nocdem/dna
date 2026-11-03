@@ -1,3 +1,6 @@
+import {readSoquHistory} from './pq/soqu-history.js';
+import { readXionHistory } from './pq/xion-history.js';
+import { readSplendorHistory } from './pq/splendor-history.js';
 // Account history per network — incoming and outgoing transfers of this
 // wallet's addresses, read from the same sources the DNA Connect app uses
 // (messenger/src/api/engine/dna_engine_wallet.c dna_handle_get_transactions):
@@ -17,6 +20,7 @@
 // solana 1 + one getTransaction per signature not seen before (paced by
 // rpc-transport.js). Ethereum HTTP 429 waits for the provider's reset within
 // the bounded read below (operator 2026-10-30); other refusals are reported.
+import { readQtcHistory } from './pq/qtc.js';
 import { readAlgorandHistory } from './pq/algorand.js';
 import { getAddress, formatUnits } from 'ethers';
 import { TronWeb } from 'tronweb';
@@ -26,7 +30,7 @@ import { CPUNK_ENDPOINT, validateCellframeAddress, boundedJson } from './cpunk-p
 
 export const HISTORY_LIMIT = 50;           // rows per network kept and shown (the app's offset/limit 50)
 export const SOLANA_SIGNATURES = 20;       // newest signatures looked at per read
-export const HISTORY_SOURCES = { ethereum: 'Blockscout', tron: 'TronGrid', solana: 'Solana RPC', cellframe: 'Cellframe RPC', algorand: 'Algorand Indexer' };
+export const HISTORY_SOURCES = { soqucoin: 'SOQ index + genesis-bound node: partial native net flows, outgoing fees included; mixed/confidential/unconfirmed/missing-prevout entries omitted', ethereum: 'Blockscout', tron: 'TronGrid', solana: 'Solana RPC', cellframe: 'Cellframe RPC', algorand: 'Algorand Indexer', qtc: 'QTC Explorer (net flows, including outgoing fees)', xion: 'XION indexed single-message native MsgSend only; excludes contracts, internal and multi-message transfers', splendor: 'Splendor indexed native transfers only; excludes contracts and tokens' };
 const BLOCKSCOUT = 'https://eth.blockscout.com/api';
 // Dispatch 2026-10-30 allows a bound: two minutes including queue/network
 // time, and three retries across the whole read. Zero reset cannot loop.
@@ -281,6 +285,10 @@ async function cellframeHistory(address, endpoint, options) {
 export async function readHistory(chain, address, { endpoint, signal, known = new Map(), onStatus, networkId = 'mainnet' } = {}) {
   const options = { signal, onStatus };
   try {
+    if (chain === 'soqucoin') return await readSoquHistory(address, { signal, networkId });
+    if (chain === 'xion') return await readXionHistory(address, { signal, networkId });
+    if (chain === 'splendor') return await readSplendorHistory(address, { signal, networkId });
+    if (chain === 'qtc') return await readQtcHistory(address, { signal, networkId });
     if (chain === 'algorand') return await readAlgorandHistory(address, { signal, networkId });
     if (chain === 'ethereum') return await ethereumHistory(address, options);
     if (chain === 'tron') return await tronHistory(address, endpoint || CHAINS.tron.endpoint, options);
@@ -296,7 +304,7 @@ export const historySupported = chain => Object.hasOwn(HISTORY_SOURCES, chain);
 const HASHES = { ethereum: /^0x[0-9a-f]{64}$/, tron: /^[0-9a-f]{64}$/, solana: /^[1-9A-HJ-NP-Za-km-z]{64,88}$/, cellframe: /^0x[0-9a-f]{64}$/ };
 const symbolsOf = chain => chain === 'cellframe' ? ['CPUNK'] : [CHAINS[chain].symbol, ...CHAINS[chain].tokens.map(t => t.symbol)];
 export function checkHistoryRows(chain, rows) {
-  if (chain === 'algorand' || !historySupported(chain) || !Array.isArray(rows) || rows.length > HISTORY_LIMIT) throw new Error('Invalid saved history.');
+  if (chain === 'soqucoin' || chain === 'algorand' || chain === 'qtc' || chain === 'xion' || chain === 'splendor' || !historySupported(chain) || !Array.isArray(rows) || rows.length > HISTORY_LIMIT) throw new Error('Invalid saved history.');
   return rows.map(r => {
     if (!r || r.chain !== chain || typeof r.hash !== 'string' || !HASHES[chain].test(r.hash) || !Number.isSafeInteger(r.time) || r.time <= 0 ||
         !['in', 'out', 'self'].includes(r.dir) || !symbolsOf(chain).includes(r.symbol) || typeof r.amount !== 'string' || !/^\d{1,78}(\.\d{1,18})?$/.test(r.amount) ||

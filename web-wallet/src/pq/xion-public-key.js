@@ -1,0 +1,9 @@
+// Derive only a public key for XION review; no signing or network activity.
+import {pqChainSeed,pqAddressFromPublicKeys} from './receive.js';
+export async function deriveXionPublicKey(phrase,{networkId,address,wasmBytes,signal}={}){
+ signal?.throwIfAborted();let seed,instance,binary=wasmBytes;
+ try{seed=pqChainSeed(phrase,'xion');if(!binary){const timeout=AbortSignal.timeout(15000);const response=await fetch(new URL('./receive-keygen.wasm',import.meta.url),{credentials:'omit',redirect:'error',signal:signal?AbortSignal.any([signal,timeout]):timeout});if(!response.ok)throw Error('Receive module could not load.');binary=await response.arrayBuffer();}
+ signal?.throwIfAborted();const result=await WebAssembly.instantiate(binary,{});instance=result.instance??result;const api=instance.exports;api._initialize?.();if(!(api.memory instanceof WebAssembly.Memory)||['pq_receive_input','pq_receive_output','pq_receive_seed_size','pq_receive_public_size','pq_receive_derive','pq_receive_clear'].some(n=>typeof api[n]!=='function')||api.pq_receive_seed_size(3,65)!==32||api.pq_receive_public_size(3,65)!==1952)throw Error('Invalid XION receive module.');
+ const mem=new Uint8Array(api.memory.buffer),input=api.pq_receive_input();if(!Number.isInteger(input)||input<0||input+32>mem.length)throw Error('Invalid receive input.');mem.set(seed,input);if(api.pq_receive_derive(3,65,32)!==0)throw Error('XION key generation failed.');signal?.throwIfAborted();const out=api.pq_receive_output(),current=new Uint8Array(api.memory.buffer);if(!Number.isInteger(out)||out<0||out+1952>current.length)throw Error('Invalid receive output.');const pub=current.slice(out,out+1952);if(pqAddressFromPublicKeys('xion',networkId,pub)!==address)throw Error('XION public key does not match account.');return pub;
+ }finally{seed?.fill(0);if(instance){try{instance.exports.pq_receive_clear?.();}finally{if(instance.exports.memory)new Uint8Array(instance.exports.memory.buffer).fill(0);}}}
+}

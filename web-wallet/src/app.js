@@ -1,4 +1,13 @@
-import { capabilitiesFor, pageSupported } from './capabilities.js';
+import { pqAddressBookChecks } from './pq/address-book-checks.js';
+import {prepareAsentumExactRecovery} from './pq/asentum-transfer.js';
+import {prepareSplendorExactRecovery} from './pq/splendor-transfer.js';
+import { prepareSoquResubmission } from './pq/soqu-transfer.js';
+import { createSubmissionProof, commitSubmissionProof, recoverSubmissionProofs, clearSubmissionProofs } from './pq/submission-proof.js';
+import { soquScript } from './pq/soqu-transaction.js';
+import { walletCapabilities, walletPageSupported, walletPqNetwork } from './pq/wallet-capabilities.js';
+import { algorandAddressBytes } from './pq/algorand-prepare.js';
+function capabilitiesFor(chain) { return walletCapabilities(chain, pqSelections[chain]); }
+function pageSupported(chain, page) { return walletPageSupported(chain, page, pqSelections[chain]); }
 import { getAddress } from 'ethers';
 import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, IDENTITY_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
 import { deleteVaultHistory, HistoryDeleteBlocked } from './connect/store.js';
@@ -102,14 +111,10 @@ let doShowIxiosAddress, stopIxiosAddress = () => {}, ixiosChain, ixiosReader;
 // way); the other receive-only addresses are derived after it (0.1.96).
 let nodusAddressFirst = Promise.resolve();
 let pqSource, pqOperation, pqGeneration = 0, pqAddresses = {}, pqErrors = {}, pqPending = false;
-// Public page preference only; the selected IDs always pass the registry allowlist.
+// Every opening starts on each network's listed default — mainnet where one exists
+// (operator 2026-11-03: "hersey varsa yeniden acista mainnet"); a choice lasts
+// for this page only. The selected IDs always pass the registry allowlist.
 const pqSelections = Object.fromEntries(Object.entries(PQ_NETWORKS).map(([chain, config]) => [chain, config.defaultNetwork]));
-try {
-  const saved = JSON.parse(localStorage.getItem('nodus-pq-network-environments') || '{}');
-  for (const chain of Object.keys(PQ_NETWORKS)) {
-    try { pqSelections[chain] = pqNetwork(chain, saved?.[chain]).id; } catch { /* keep the listed default */ }
-  }
-} catch { /* preferences remain in this page */ }
 // Receive-panel derivation status line per receive-only network, shown only
 // while that network is selected. The Ixios entry is added by its flag block.
 const addressStatus = { nodus: $('nodus-address-status'), cellframe: $('cellframe-address-status') };
@@ -225,7 +230,11 @@ function refuseOpen(flow) {
   sessionConflictFlow = flow; $('session-conflict').hidden = false; $('session-takeover').focus();
 }
 function visibleActivity() { return wallet ? history.filter(row => row.chain === $('chain').value && row.address === wallet.addresses[row.chain]) : []; }
-function persistActivity({ required = false } = {}) {
+const submissionProofStorage = {
+  async get(keys) { return Object.fromEntries(keys.map(key => [key, localStorage.getItem(key) ?? undefined])); },
+  async set(entries) { for (const [key, value] of Object.entries(entries)) localStorage.setItem(key, value); }
+};
+function persistActivity({ required = false, expectedPreviousSubmissionId, expectedPreviousChain, expectedPreviousHash } = {}) {
   const session = activitySession, source = wallet;
   if (!session || !source) return Promise.resolve();
   const rows = history.filter(row => row.address === source.addresses[row.chain]).map(row => ({ ...row }));
@@ -236,8 +245,34 @@ function persistActivity({ required = false } = {}) {
   historyWrites = historyWrites.catch(() => {}).then(() => withActivityLock(async () => {
     if (!current()) return changed();
     if (activityBlocked) throw new Error('Saved activity is unverified. Check the explorer and discard the unreadable history before sending.');
-    const saved = await parseActivity(localStorage.getItem(ACTIVITY_KEY), session.id, source.addresses, session.key);
+    const parsed = await parseActivity(localStorage.getItem(ACTIVITY_KEY), session.id, source.addresses, session.key);
+    const saved = await recoverSubmissionProofs({ storage: submissionProofStorage, id: session.id, rows: parsed, key: session.key, addresses: source.addresses });
     if (!current()) return changed();
+    if (required) {
+      // Serialize the reservation across tabs, not merely each tab's UI. An
+      // authenticated unresolved hash from another tab must win before POST.
+      const freshAlgo = rows.filter(row => ['algorand', 'soqucoin', 'splendor', 'asentum'].includes(row.chain) && !terminal(row.status));
+      for (const candidate of freshAlgo) {
+        if (['soqucoin', 'splendor', 'asentum'].includes(candidate.chain) && candidate.chain===expectedPreviousChain && candidate.hash===expectedPreviousHash && expectedPreviousSubmissionId !== undefined) {
+          const prior = saved.find(row => row.chain === candidate.chain && row.address === candidate.address && row.hash === candidate.hash);
+          if (!prior || prior.submissionId !== expectedPreviousSubmissionId || prior.notSubmitted || terminal(prior.savedStatus ?? prior.status)) throw new Error('Recovery attempt changed in another tab. Check Activity.');
+        }
+        const other = saved.find(row => row.chain === candidate.chain && row.address === candidate.address
+          && !terminal(row.savedStatus ?? row.status)
+          && (row.hash !== candidate.hash || (['soqucoin', 'splendor', 'asentum'].includes(candidate.chain) && row.submissionId !== candidate.submissionId && !(candidate.chain===expectedPreviousChain && candidate.hash===expectedPreviousHash && row.submissionId===expectedPreviousSubmissionId)))
+          && !rows.some(local => local.chain === row.chain && local.hash === row.hash && terminal(local.status)));
+        if (other) throw new Error(`Another ${candidate.chain} submission is unresolved. Check Activity before sending.`);
+      }
+    }
+    // Every write, including a failed/cancelled catch and a tracker update,
+    // must respect attempt identity. Only the required write of an explicitly
+    // reviewed replay may replace the exact prior durable attempt.
+    for (const local of rows) {
+      if (!['algorand', 'soqucoin', 'splendor', 'asentum'].includes(local.chain)) continue;
+      const prior=saved.find(row=>row.chain===local.chain && row.address===local.address && row.hash===local.hash);
+      if (prior && prior.submissionId!==local.submissionId && !(local.chain !== 'algorand' && required && local.chain===expectedPreviousChain && local.hash===expectedPreviousHash && expectedPreviousSubmissionId!==undefined && prior.submissionId===expectedPreviousSubmissionId && !prior.notSubmitted && !terminal(prior.savedStatus ?? prior.status)))
+        throw new Error('Activity attempt changed in another tab. Refresh Activity before continuing.');
+    }
     const merged = new Map([...saved, ...rows].map(row => [`${row.chain}:${row.hash}`, row]));
     const combined = [...merged.values()].sort((a, b) => {
       const time = Date.parse(a.createdAt) - Date.parse(b.createdAt), aKey = `${a.chain}:${a.hash}`, bKey = `${b.chain}:${b.hash}`;
@@ -247,6 +282,7 @@ function persistActivity({ required = false } = {}) {
     const encrypted = await serializeActivity(session.id, combined, session.key, aside);
     if (!current()) return changed();
     localStorage.setItem(ACTIVITY_KEY, encrypted);
+    await clearSubmissionProofs(submissionProofStorage, session.id, combined);
     quarantinedRows = quarantineLocks(aside);
   }));
   return historyWrites;
@@ -322,7 +358,7 @@ function deriveOwnAddresses() {
 // 2026-10-02-device-cache-only-when-saved).
 const HISTORY_AUTO_MS = { ethereum: 30 * 60 * 1000 }, HISTORY_AUTO_DEFAULT_MS = 5 * 60 * 1000, HISTORY_MANUAL_MS = 30 * 1000;
 let historyByChain = {}, historyJob = null, historyNote = {}, accountHistoryWrites = Promise.resolve();
-const historyFor = chain => { const h = historyByChain[chain]; return h && wallet && h.address === wallet.addresses[chain] && (chain !== 'algorand' || h.networkId === pqSelections.algorand) ? h : null; };
+const historyFor = chain => { const h = historyByChain[chain]; return h && wallet && h.address === wallet.addresses[chain] && (!isPqChain(chain) || h.networkId === pqSelections[chain]) ? h : null; };
 const historyTime = ms => new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 const shortPeer = peer => peer.length > 18 ? `${peer.slice(0, 8)}…${peer.slice(-6)}` : peer;
 function renderHistory() {
@@ -333,7 +369,7 @@ function renderHistory() {
   button.hidden = !supported; button.disabled = !!historyJob || !wallet.addresses[chain];
   status.textContent = !supported ? `Account history for ${networkFor(chain)?.name ?? chain} is not read here. Use the account explorer.`
     : historyJob?.chain === chain ? historyJob.status || `Reading account history from ${HISTORY_SOURCES[chain]}…`
-    : historyNote[chain] || (h ? `${chain === 'algorand' ? 'Up to 50 newest top-level native payments; excludes inner transfers, fees, rewards and assets.' : `Newest ${HISTORY_LIMIT} transfers.`} As reported by ${HISTORY_SOURCES[chain]}, read ${historyTime(h.readAt)}. Your own sends are tracked above.` : 'Account history has not been read yet.');
+    : historyNote[chain] || (h ? `${chain === 'soqucoin' ? 'Partial confirmed native SOQ net flows (up to 20); outgoing amounts include fees. Mixed/confidential/unconfirmed/missing-prevout entries omitted.' : chain === 'qtc' ? 'Up to 50 indexed transparent net flows; outgoing amounts include fees. Shielded transfers omitted; not inclusion proof.' : chain === 'algorand' ? 'Up to 50 newest top-level native payments; excludes inner transfers, fees, rewards and assets.' : `Newest ${HISTORY_LIMIT} transfers.`} As reported by ${HISTORY_SOURCES[chain]}, read ${historyTime(h.readAt)}. Your own sends are tracked above.` : 'Account history has not been read yet.');
   const el = (tag, className, text) => { const node = document.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node; };
   list.replaceChildren(...(supported && h ? h.rows : []).map(r => {
     const div = el('div', `activity-row history-dir-${r.dir}`), main = el('span', 'activity-main');
@@ -365,7 +401,7 @@ async function loadHistory(chain, { manual = false } = {}) {
     if (manual) { historyNote[chain] = `Read ${historyTime(kept.readAt)}. Try again in a minute — the provider limits requests.`; renderHistory(); }
     return;
   }
-  const source = wallet, job = { chain, networkId: chain === 'algorand' ? pqSelections.algorand : undefined, controller: new AbortController() };
+  const source = wallet, job = { chain, networkId: isPqChain(chain) ? pqSelections[chain] : undefined, controller: new AbortController() };
   historyJob = job; delete historyNote[chain]; renderHistory();
   try {
     // Solana: signatures already read are not fetched again.
@@ -376,8 +412,8 @@ async function loadHistory(chain, { manual = false } = {}) {
         if (historyJob !== job || wallet !== source) return;
         job.status = text; renderHistory();
       } });
-    if (historyJob !== job || wallet !== source || source.locked || job.controller.signal.aborted || (chain === 'algorand' && job.networkId !== pqSelections.algorand)) return;
-    historyByChain[chain] = { address, networkId: job.networkId, readAt: Date.now(), rows: mergeHistory(kept?.rows, rows) };
+    if (historyJob !== job || wallet !== source || source.locked || job.controller.signal.aborted || (isPqChain(chain) && job.networkId !== pqSelections[chain])) return;
+    historyByChain[chain] = { address, networkId: job.networkId, readAt: Date.now(), rows: chain === 'soqucoin' ? rows : mergeHistory(kept?.rows, rows) };
     persistHistory();
   } catch (error) { if (historyJob === job) historyNote[chain] = error.message; }
   finally { if (historyJob === job) { historyJob = null; renderHistory(); renderActivity(); } }   // a send this read lists leaves "Sent from here" (0.1.96)
@@ -385,7 +421,7 @@ async function loadHistory(chain, { manual = false } = {}) {
 function persistHistory() {
   const session = activitySession, source = wallet;
   if (!session?.historyKey || !source) return;
-  const snapshot = Object.fromEntries(Object.entries(historyByChain).filter(([chain, h]) => chain !== 'algorand' && h.address === source.addresses[chain]));
+  const snapshot = Object.fromEntries(Object.entries(historyByChain).filter(([chain, h]) => !isPqChain(chain) && h.address === source.addresses[chain]));
   accountHistoryWrites = accountHistoryWrites.catch(() => {}).then(async () => {
     const encrypted = await serializeHistory(session.id, snapshot, session.historyKey);
     if (session !== activitySession || source !== wallet || source.locked || localStorage.getItem(VAULT_KEY) !== session.vault) return;
@@ -560,10 +596,14 @@ function renderActivity(save = true) {
       link.href = CHAINS[row.chain].explorer + encodeURIComponent(row.hash); link.textContent = 'View transaction'; link.target = '_blank'; link.rel = 'noopener noreferrer'; footer.append(link);
     } else footer.append(el('span', 'activity-id', `${claim ? 'Claim ID' : row.kind ? 'Transaction ID' : 'Transfer ID'} ${row.hash}`));
     if (ready) footer.append(tryAgainButton(row));
+    if (['soqucoin','splendor','asentum'].includes(row.chain) && capabilitiesFor(row.chain).send && row.signedPayload && !row.notSubmitted && ['pending', 'unknown'].includes(row.status)) {
+      const recover = document.createElement('button'); recover.type = 'button'; recover.className = 'secondary small';
+      recover.textContent = 'Review same-transaction recovery'; recover.onclick = () => void (row.chain === 'asentum' ? reviewAsentumRecovery(row) : row.chain === 'splendor' ? reviewSplendorRecovery(row) : reviewSoquRecovery(row)); footer.append(recover);
+    }
     // A NODUS send always resolves: included, or 'expired' once the chain passes
     // its expiry block. Its coins stay held until then (src/adapters/nodus.js
     // lockedInputs), so it is never marked abandoned by hand.
-    if (!terminal(row.status) && row.chain !== NODUS_ASSET.chain) {
+    if (!terminal(row.status) && row.chain !== NODUS_ASSET.chain && !['algorand', 'soqucoin', 'splendor', 'asentum'].includes(row.chain)) {
       const abandon = document.createElement('button'); abandon.type = 'button'; abandon.className = 'secondary small';
       abandon.textContent = row._abandonArmed ? 'Confirm abandon' : 'Mark as abandoned';
       abandon.onclick = () => {
@@ -634,7 +674,7 @@ if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
   ixiosChain = IXIOS_ASSET.chain;
   endpoints[ixiosChain] = IXIOS_NETWORK.endpoint; extraNetworks.push({ network: IXIOS_NETWORK, asset: IXIOS_ASSET });
 }
-extraNetworks.push(...PQ_ENTRIES.map(entry => ({ ...entry, network: { ...entry.network, testnet: pqNetwork(entry.asset.chain, pqSelections[entry.asset.chain]).id === 'testnet' } })));
+extraNetworks.push(...PQ_ENTRIES.map(entry => ({ ...entry, network: walletPqNetwork(entry.asset.chain, entry.network, pqSelections[entry.asset.chain]) })));
 // The NODUS entry is swapped for its sendable variant only while a send module
 // is ready (setNodusReady below); without a module it stays receive-only.
 const receiveOnlyNetworks = Object.fromEntries([...leadingNetworks, ...extraNetworks].map(({ network, asset }) => [asset.chain, network]));
@@ -718,6 +758,9 @@ function evmAddressCheck(name) {
   };
 }
 const ADDRESS_CHECKS = {
+  ...pqAddressBookChecks,
+  soqucoin: text => { soquScript(text); return text; },
+  algorand: text => { algorandAddressBytes(text); return text; },
   nodus: text => adapters.nodus.nodusRecipient(text),
   ethereum: evmAddressCheck('Ethereum'),
   bsc: evmAddressCheck('BNB Smart Chain'),
@@ -726,7 +769,7 @@ const ADDRESS_CHECKS = {
   ...(CPUNK_ENABLED ? { cellframe: validateCellframeAddress } : {})
 };
 // The networks an address can be saved for, in the network selector's order.
-const ADDRESS_NETWORKS = [NODUS_ASSET.chain, ...Object.keys(CHAINS), ...(CPUNK_ENABLED ? ['cellframe'] : [])].filter(chain => ADDRESS_CHECKS[chain]);
+const ADDRESS_NETWORKS = [...leadingNetworks.map(({ asset }) => asset.chain), ...Object.keys(CHAINS), ...extraNetworks.map(({ asset }) => asset.chain)].filter(chain => ADDRESS_CHECKS[chain]);
 setNetworkSelectOptions($('address-book-network'), ADDRESS_NETWORKS.map(chain => [chain, networkFor(chain)]));
 let addressBook = [], addressBookEditing = null, addressBookDeleteArmed = null, addressBookNote = '', addressBookWrites = Promise.resolve();
 // The saved address book did not authenticate or check out at unlock: it is
@@ -936,12 +979,11 @@ function renderEnvironment() {
 pqEnvironment.onchange = () => {
   const chain = $('chain').value;
   if (!isPqChain(chain)) return;
-  if (chain === 'algorand') {
+  if (isPqChain(chain) && historySupported(chain)) {
     if (historyJob?.chain === chain) { historyJob.controller.abort(); historyJob = null; }
     delete historyByChain[chain]; delete historyNote[chain];
   }
   pqSelections[chain] = pqNetwork(chain, pqEnvironment.value).id;
-  try { localStorage.setItem('nodus-pq-network-environments', JSON.stringify(Object.fromEntries(Object.keys(PQ_NETWORKS).map(key => [key, pqNetwork(key, pqSelections[key]).id])))); } catch { /* choice stays in this page */ }
   syncPqAddress(chain);
   if (wallet && !wallet.locked) selectChain();
 };
@@ -961,13 +1003,13 @@ function syncPqAddress(chain) {
   const choice = pqNetwork(chain, pqSelections[chain]);
   const address = pqAddresses[chain]?.[choice.id];
   if (address) wallet.addresses[chain] = address; else delete wallet.addresses[chain];
-  receiveOnlyNetworks[chain] = { ...PQ_NETWORKS[chain], stage: choice.label, testnet: choice.id === 'testnet' };
+  receiveOnlyNetworks[chain] = { ...walletPqNetwork(chain, PQ_NETWORKS[chain], choice.id), stage: choice.label };
   portfolio.setNetwork(chain, receiveOnlyNetworks[chain], { forgetKept: Object.hasOwn(pqBalanceReaders, chain) });
   portfolio.setAddress(chain, address);
   if ($('chain').value === chain) {
     setReceiveAddress(address || '');
     updatePqStatus(chain);
-    if (chain === 'algorand') { renderHistory(); void loadHistory(chain); }
+    if (isPqChain(chain) && historySupported(chain)) { renderHistory(); void loadHistory(chain); }
   }
 }
 async function showPqAddresses() {
@@ -1431,7 +1473,9 @@ function recordRoleActivity(source, transfer, title) {
       if ($('chain').value !== NODUS_ASSET.chain) { $('chain').value = NODUS_ASSET.chain; selectChain(); }
       record = recordActivity(transfer, details);
       record.kind = 'role'; record.roleTitle = what;
-      history.push(record); if (current === revision) renderActivity(false);
+      const previous = transfer.isResubmission ? history.findIndex(row => row.chain === transfer.chain && row.hash === record.hash) : -1;
+      if (previous >= 0) history.splice(previous, 1, record); else history.push(record);
+      if (current === revision) renderActivity(false);
       // The signed hash must be durable before the first network submission.
       await persistActivity({ required: true });
     },
@@ -2215,6 +2259,7 @@ function selectChain() {
   $('asset').replaceChildren(...assetOptions(chain, c));
   applyAssetGate();
   $('solana-send-hint').hidden = chain !== 'solana';
+  $('asentum-fee-fields').hidden = chain !== 'asentum'; $('asentum-max-fee').disabled = chain !== 'asentum'; $('asentum-max-fee').required = chain === 'asentum';
   const explorers = { ethereum: 'https://etherscan.io/address/', bsc: 'https://bscscan.com/address/', solana: 'https://solscan.io/account/', tron: 'https://tronscan.org/#/address/' };
   if (explorers[chain]) { $('account-explorer').href = explorers[chain] + encodeURIComponent(address); $('account-explorer').hidden = false; }
   else { $('account-explorer').removeAttribute('href'); $('account-explorer').hidden = true; }
@@ -2483,16 +2528,17 @@ $('save-rpc').onclick = () => { if (!rpcChoiceOffered(networkFor($('chain').valu
 $('send-form').onsubmit = async event => {
   event.preventDefault(); if (busy) return;
   // Belt-and-suspenders: the send fields are hidden/disabled for a receive-only
-  // network already, and prepareTransfer() has no adapter for a receive-only
-  // network to route to either (src/wallet.js is unchanged), so this can only be
+  // network already, and the dispatcher independently rejects unsupported
+  // networks and Algorand testnet, so this can only be
   // reached by a script bypassing the UI, not a real user. The message is the
   // network's own note (Cellframe: index.html's default text).
   const selected = networkFor($('chain').value);
   if (selected?.receiveOnly) { message(selected.sendNote || DEFAULT_SEND_DISABLED_NOTE); return; }
-  if ($('chain').value === 'ethereum' || $('chain').value === 'bsc') {
+  if (['algorand', 'soqucoin', 'splendor', 'asentum'].includes($('chain').value) && !activitySession) { message('Save this wallet encrypted before sending on this network, so an uncertain submission survives reload.'); return; }
+  if (['ethereum', 'bsc', 'algorand', 'soqucoin', 'splendor', 'asentum'].includes($('chain').value)) {
     const address = wallet.addresses[$('chain').value];
     const blocking = history.find(row => row.chain === $('chain').value && row.address === address && !terminal(row.status));
-    if (blocking) { message(`A previous send on this network has no final result yet (tx ${blocking.hash}). Wait for it to resolve, or mark it as abandoned in Activity.`); return; }
+    if (blocking) { message(`A previous send on this network has no final result yet (tx ${blocking.hash}). Wait for it to resolve in Activity.`); return; }
   }
   // An unavailable selected asset is never prepared (retry included); the
   // selection is never replaced by NODUS on the user's behalf.
@@ -2507,7 +2553,7 @@ $('send-form').onsubmit = async event => {
     // NODUS: the asset travels as its token id (the option's value), required
     // by prepareTransfer — never defaulted to native on the way.
     const asset = chain === NODUS_ASSET.chain ? { chain, tokenId: $('asset').value } : undefined;
-    const transfer = await prepareTransfer({ wallet, chain, symbol: $('asset').value, asset, to: $('recipient').value, amount: $('amount').value, endpoint: endpoints[chain], nodusLocked });
+    const transfer = await prepareTransfer({ wallet, chain, symbol: $('asset').value, asset, to: $('recipient').value, amount: $('amount').value, endpoint: endpoints[chain], nodusLocked, networkId: isPqChain(chain) ? pqSelections[chain] : undefined, ...(chain === 'asentum' ? { maxFeePerGas: $('asentum-max-fee').value } : {}) });
     if (current !== revision || !wallet) { transfer.cancel(); return; }
     let entries;
     if (transfer.review) {
@@ -2535,7 +2581,7 @@ $('cancel-send').onclick = closeReview;
 $('review-dialog').addEventListener('cancel', event => { if (busy) event.preventDefault(); else closeReview(); });
 $('confirm-send').onclick = async () => {
   if (!pending || busy) return;
-  busy = true; const transfer = pending, current = revision; pending = undefined; let record;
+  busy = true; const transfer = pending, current = revision; pending = undefined; let record, submissionProof;
   // The action's name in the status line, now and once its record resolves
   // (followSubmission); the ID label is null where an explorer link is shown.
   const what = transfer.kind === 'delegate' ? 'Delegation' : transfer.kind === 'undelegate' ? 'Undelegation' : transfer.kind === 'stake' ? 'Witness bond'
@@ -2547,9 +2593,19 @@ $('confirm-send').onclick = async () => {
   try {
     const hash = await transfer.confirm(async details => {
       sentWire = typeof details?.wire === 'string' ? details.wire : undefined;
-      record = recordActivity(transfer, details); history.push(record); if (current === revision) renderActivity(false);
+      record = recordActivity(transfer, details);
+      if (!transfer.isResubmission && ['soqucoin', 'splendor', 'asentum'].includes(transfer.chain)) {
+        const session = activitySession, source = wallet;
+        if (!session || !source || source.locked) throw new Error('Save and unlock the wallet before sending.');
+        submissionProof = await createSubmissionProof({ id: session.id, row: record, key: session.key });
+        if (current !== revision || session !== activitySession || source !== wallet || source.locked) throw new Error('Wallet changed before submission.');
+      }
+      const previous = transfer.isResubmission ? history.findIndex(row => row.chain === transfer.chain && row.hash === record.hash) : -1;
+      if (previous >= 0) history.splice(previous, 1, record); else history.push(record);
+      if (current === revision) renderActivity(false);
       // The signed hash must be durable before the first network submission.
-      await persistActivity({ required: true });
+      await persistActivity({ required: true, ...(['soqucoin', 'splendor', 'asentum'].includes(transfer.chain) && transfer.isResubmission ? { expectedPreviousSubmissionId: transfer.previousSubmissionId, expectedPreviousChain: transfer.chain, expectedPreviousHash: transfer.hash } : {}) });
+      if (['splendor', 'asentum'].includes(transfer.chain) && transfer.isResubmission) return { submissionId: record.submissionId };
     });
     if (record) { record.note = 'Broadcast submitted; awaiting confirmation.'; if (current === revision) trackActivity(); }
     // A plain NODUS transfer the network accepted: Nodus Connect's Messages
@@ -2577,6 +2633,12 @@ $('confirm-send').onclick = async () => {
     }
     follow();
   } catch (error) {
+    if (submissionProof && ((transfer.chain === 'soqucoin' && error.soquNotSubmitted === true) || (transfer.chain === 'splendor' && error.splendorNotSubmitted === true) || (transfer.chain === 'asentum' && error.asentumNotSubmitted === true))) {
+      // This capability contains ciphertext only. No key is consulted after
+      // lock, and the separate attempt-bound journal cannot overwrite a vault.
+      try { await commitSubmissionProof(submissionProofStorage, submissionProof); }
+      catch { error.message += ' Cancellation could not be saved; the pending reservation remains locked.'; }
+    }
     // The node answered "busy" (web 0.1.124, src/nodus/resubmit.js): nothing
     // was forwarded. The record keeps the signed bytes and stays pending;
     // "Try again" sends exactly those bytes (its coins are held for them).
@@ -2587,7 +2649,14 @@ $('confirm-send').onclick = async () => {
       if (current === revision) { showBusyReady(record); follow(); }
       return;
     }
-    if (record) { record.status = 'unknown'; record.note = 'Broadcast outcome uncertain. Tracking the signed transaction; do not resend automatically.'; if (current === revision) trackActivity(); }
+    if (record) {
+      if ((transfer.chain === 'algorand' && error.algorandNotSubmitted === true) || (transfer.chain === 'soqucoin' && error.soquNotSubmitted === true) || (transfer.chain === 'splendor' && error.splendorNotSubmitted === true) || (transfer.chain === 'asentum' && error.asentumNotSubmitted === true)) {
+        record.status = 'failed'; record.notSubmitted = true;
+        record.note = 'Cancelled before network submission. Nothing was broadcast.';
+        await persistActivity().catch(() => { record.status='unknown'; delete record.notSubmitted; record.note='Another activity attempt may exist; check Activity before sending.'; });
+      } else { record.status = 'unknown'; record.note = 'Broadcast outcome uncertain. Tracking the signed transaction; do not resend automatically.'; }
+      if (current === revision) trackActivity();
+    }
     closeReview();
     if (transfer.kind === 'claim') void refreshClaim();
     // Something may have reached the network (a record exists): close the
@@ -2610,6 +2679,41 @@ $('confirm-send').onclick = async () => {
 // The action's name as the confirm-send handler words it.
 const rowAction = row => (row.kind === 'delegate' ? 'Delegation' : row.kind === 'undelegate' ? 'Undelegation' : row.kind === 'stake' ? 'Witness bond'
   : row.kind === 'name' ? `Registration of the chain name "${row.name}"` : 'Transfer');
+async function reviewAsentumRecovery(row) {
+  if(busy||!wallet||wallet.locked||$('chain').value!=='asentum'||!capabilitiesFor('asentum').send||pqSelections.asentum!=='testnet'||!activitySession||row.address!==wallet.addresses.asentum)return;
+  const current=revision,source=wallet;busy=true;const guard=()=>{if(current!==revision||source!==wallet||source.locked||$('chain').value!=='asentum'||pqSelections.asentum!=='testnet')throw new Error('Wallet or network changed.');};
+  try{const prepared=await prepareAsentumExactRecovery(row,{assertCurrent:guard});guard();const snapshot={networkId:row.networkId,from:row.address,to:row.to,amount:row.amountAtoms,nonce:row.nonce,gasLimit:row.gasLimit,maxFeePerGas:row.maxFeePerGas,hash:row.hash,signedPayload:{...row.signedPayload}};
+    const transfer={...prepared,chain:'asentum',symbol:'ASE',amount:formatUnits(BigInt(row.amountAtoms),18),endpoint:'https://testnet.asentum.com',isResubmission:true,previousSubmissionId:row.submissionId,confirm:onBroadcast=>prepared.confirm(async()=>onBroadcast(snapshot))};
+    showReview(transfer,[['Network','Asentum testnet'],['From',prepared.from],['To',prepared.to],['Amount',`${transfer.amount} ASE`],['Maximum fee',`${formatUnits(BigInt(prepared.maximumFee),18)} ASE`],['Transaction ID',prepared.hash],['Recovery',prepared.notice],['Review expires',new Date(prepared.expiresAt).toLocaleTimeString()]],'Review same-transaction recovery');
+  }catch(error){if(current===revision)message(error.message,{category:'send',error:true});}finally{busy=false;}
+}
+async function reviewSplendorRecovery(row) {
+  if (busy || !wallet || wallet.locked || $('chain').value !== 'splendor' || !capabilitiesFor('splendor').send || pqSelections.splendor !== 'mainnet' || !activitySession || row.address !== wallet.addresses.splendor) return;
+  const current=revision, source=wallet; busy=true;
+  const guard=()=>{if(current!==revision || source!==wallet || source.locked || $('chain').value!=='splendor' || pqSelections.splendor!=='mainnet')throw new Error('Wallet or network changed.');};
+  try {
+    const prepared=await prepareSplendorExactRecovery(row,{assertCurrent:guard});guard();
+    const snapshot={networkId:row.networkId,from:row.address,to:row.to,amount:row.amountAtoms,fee:row.feeAtoms,nonce:row.nonce,timestamp:row.timestamp,hash:row.hash,signedPayload:{...row.signedPayload}};
+    const transfer={...prepared,chain:'splendor',symbol:'SPLD',amount:formatUnits(BigInt(row.amountAtoms),18),endpoint:'https://quantum-rpc.splendor.org',isResubmission:true,previousSubmissionId:row.submissionId,
+      confirm:onBroadcast=>prepared.confirm(async()=>onBroadcast(snapshot))};
+    showReview(transfer,[['Network','Splendor mainnet'],['From',prepared.from],['To',prepared.to],['Amount',`${transfer.amount} SPLD`],['Fee',`${formatUnits(BigInt(prepared.feeAtoms),18)} SPLD`],['Transaction ID',prepared.hash],['Recovery',prepared.notice],['Review expires',new Date(prepared.expiresAt).toLocaleTimeString()]],'Review same-transaction recovery');
+  } catch(error) { if(current===revision) message(error.message,{category:'send',error:true}); } finally {busy=false;}
+}
+async function reviewSoquRecovery(row) {
+  if (busy || !wallet || wallet.locked || $('chain').value !== 'soqucoin' || !capabilitiesFor('soqucoin').send || !activitySession) return;
+  const current = revision, source = wallet; busy = true;
+  try {
+    if(typeof row.submissionId!=='string'||!/^[0-9a-f]{32}$/.test(row.submissionId))throw new Error('This older SOQ activity cannot safely identify a recovery attempt. Check the transaction status.');
+    const prepared = await prepareSoquResubmission({ wallet: source, row });
+    if (current !== revision || source !== wallet || source.locked) { prepared.cancel(); return; }
+    const transfer = { ...prepared, chain: 'soqucoin', symbol: 'SOQ', endpoint: 'https://mainnet-rpc.soqu.org', previousSubmissionId: row.submissionId };
+    const review = [['Network', 'Soqucoin mainnet'], ['From', prepared.from], ['To', prepared.to], ['Amount', `${prepared.amount} SOQ`],
+      ['Transaction ID', prepared.hash], ['Recovery', 'Resubmit the exact previously signed transaction. No new signing. Its previous outcome is still uncertain.'],
+      ['Review expires', new Date(prepared.expiresAt).toLocaleTimeString()]];
+    showReview(transfer, review, 'Review same-transaction recovery');
+  } catch (error) { if (current === revision) message(error.message, { category: 'send', error: true }); }
+  finally { busy = false; }
+}
 function tryAgainButton(row) {
   const button = document.createElement('button'); button.type = 'button'; button.className = 'secondary small';
   button.textContent = row._resubmitting ? 'Sending…' : 'Try again';
@@ -2690,6 +2794,16 @@ function updateVaultUI() {
 function focusOpenWallet(kept = {}) {
   updateVaultUI(); renderAddressBook();
   resetAssetView();
+  // Every opening (restore, create, unlock) starts each network on its listed
+  // default — mainnet where one exists (operator 2026-11-03: "hersey varsa
+  // yeniden acista mainnet"), as the extension does after unlock.
+  for (const chain of Object.keys(PQ_NETWORKS)) {
+    const id = PQ_NETWORKS[chain].defaultNetwork;
+    if (pqSelections[chain] === id) continue;
+    if (historyJob?.chain === chain) { historyJob.controller.abort(); historyJob = null; }
+    delete historyByChain[chain]; delete historyNote[chain];
+    pqSelections[chain] = id; syncPqAddress(chain);
+  }
   portfolio.open(wallet.addresses, endpoints, { kept });
   $('wallet-title').focus({ preventScroll: true });
   document.querySelector('.wallet-card').scrollIntoView({ block: 'start' });
@@ -2731,7 +2845,10 @@ $('unlock-form').onsubmit = async event => {
       // Saved history that does not authenticate is simply not shown.
       try { keptHistory = await parseHistory(localStorage.getItem(HISTORY_KEY), saved.id, historyKey); }
       catch { keptHistory = {}; }
-      try { rows = await parseActivity(localStorage.getItem(ACTIVITY_KEY), saved.id, restored.addresses, key); }
+      try {
+        rows = await parseActivity(localStorage.getItem(ACTIVITY_KEY), saved.id, restored.addresses, key);
+        rows = await recoverSubmissionProofs({ storage: submissionProofStorage, id: saved.id, rows, key, addresses: restored.addresses });
+      }
       catch (error) { problem = error.message; }
       // Saved balances that do not authenticate are simply not shown.
       try { kept = await parseBalances(localStorage.getItem(BALANCES_KEY), saved.id, balancesKey); }

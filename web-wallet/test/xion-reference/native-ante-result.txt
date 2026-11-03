@@ -1,0 +1,16 @@
+WARNING: sonic/ast only supports (go1.17~1.26 and amd64 CPU) or (go1.20~1.26 and arm64 CPU), but your environment is not suitable and will fallback to encoding/json
+=== RUN   TestLocalSyntheticXionWalletAnte
+    local_xion_wallet_oracle_test.go:42: simulation accepts bad signature with gas_used=291756
+    local_xion_wallet_oracle_test.go:42: simulation accepts insufficient fee with gas_used=291596
+    local_xion_wallet_oracle_test.go:43: timeout at timeout height: <nil>
+    local_xion_wallet_oracle_test.go:43: timeout after timeout height: block height: 3, timeout height: 2: tx timeout height [cosmos/cosmos-sdk@v0.55.0/x/auth/ante/basic.go:213]
+    local_xion_wallet_oracle_test.go:43: timeout tampered timeout: signature verification failed; please verify account number (0) and chain-id (synthetic-xion): (unable to verify single signer signature): unauthorized [cosmos/cosmos-sdk@v0.55.0/x/auth/ante/sigverify.go:415]
+    local_xion_wallet_oracle_test.go:41: bad signature code=4 codespace=sdk log=signature verification failed; please verify account number (0) and chain-id (synthetic-xion): (unable to verify single signer signature): unauthorized
+    local_xion_wallet_oracle_test.go:41: wrong chain code=4 codespace=sdk log=signature verification failed; please verify account number (0) and chain-id (synthetic-xion): (unable to verify single signer signature): unauthorized
+    local_xion_wallet_oracle_test.go:41: wrong account code=4 codespace=sdk log=signature verification failed; please verify account number (0) and chain-id (synthetic-xion): (unable to verify single signer signature): unauthorized
+    local_xion_wallet_oracle_test.go:41: wrong sequence code=32 codespace=sdk log=account sequence mismatch, expected 0, got 1: incorrect account sequence
+    local_xion_wallet_oracle_test.go:41: insufficient fee code=13 codespace=sdk log=insufficient fees; got: 1uxion required: 25000uxion: insufficient fee
+    local_xion_wallet_oracle_test.go:41: valid code=0 codespace= log=
+--- PASS: TestLocalSyntheticXionWalletAnte (0.10s)
+PASS
+ok  	github.com/burnt-labs/xion/app	0.276s

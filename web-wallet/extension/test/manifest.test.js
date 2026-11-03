@@ -105,7 +105,7 @@ test('background entry starts locked with the real Nodus seed consumer attached'
     PermissionController: { subjects: {} }, ApprovalController: {},
     EvmController: { selectedChain: 'ethereum', endpoints: { ethereum: CHAINS.ethereum.endpoint, bsc: CHAINS.bsc.endpoint } },
     // PQ receive registry adds only listed choices; Nodus/Asentum are testnet-only.
-    NetworksController: { selected: { bsc: 'mainnet', cellframe: 'mainnet', ethereum: 'mainnet', nodus: 'testnet', solana: 'mainnet', tron: 'mainnet',
+    NetworksController: { selected: { bsc: 'mainnet', cellframe: 'mainnet', ixios: 'mainnet', ethereum: 'mainnet', nodus: 'testnet', solana: 'mainnet', tron: 'mainnet',
       algorand: 'mainnet', tidecoin: 'mainnet', ckb: 'mainnet', soqucoin: 'mainnet', qtc: 'mainnet', xion: 'mainnet', splendor: 'mainnet', asentum: 'testnet' } },
   } }];
   assert.equal(state.lockCoordinator.isLocked, true);

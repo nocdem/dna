@@ -16,7 +16,7 @@ export const IXIOS_NETWORK = {
   endpoint: IXIOS_RPC, rpcOptions: [{ url: IXIOS_RPC, label: 'Ixios public RPC' }],
   // Shown under the hidden send fields when Ixios is the selected network, in
   // the style of Cellframe's (index.html's default #send-disabled-note text).
-  sendNote: 'Sending IXIOS is not available in this release. The Ixios network does not accept this address type yet.',
+  sendNote: 'Sending IXIOS is not available in this release. Wallet support for Ixios post-quantum transactions has not yet been verified.',
 };
 // Unpriced like CPUNK_ASSET: no priceId, so it never enters PRICE_URL and never
 // counts toward the USD total or its completeness.

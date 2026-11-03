@@ -72,6 +72,8 @@ const client = { onNotification: () => () => {}, onDisconnect: () => () => {}, c
     { amount: '1', symbol: 'NODUS', status: 'submitted', note: 'Awaiting confirmation.', hash: 'ab'.repeat(32), canResubmit: true },
   ], rows: [{ title: 'Received NODUS', dir: 'in', sign: '+', amount: '2', detail: 'Public fixture transfer', height: 12, time: 1700000000000, wire: 'cd'.repeat(64) },
     { title: 'Witness update', dir: '', sign: '', amount: '', detail: '', height: 11, time: null, wire: '' }] };
+  // Public empty Ixios answer (background/ixios.js getHistory shape): no rows.
+  if (method === 'getIxiosHistory') return { network: 'mainnet', status: '', rows: [], local: [] };
   if (['getSolanaHistory', 'getTronHistory', 'getChainHistory'].includes(method)) {
     const chain = method === 'getSolanaHistory' ? 'solana' : method === 'getTronHistory' ? 'tron' : params[0];
     const hash = chain === 'solana' ? '2'.repeat(88) : 'cd'.repeat(32);

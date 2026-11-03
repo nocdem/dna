@@ -27,7 +27,7 @@ test('Soqu extension public route honors explicit network and avoids secret acce
   const state = { networks: { soqucoin: 'testnet' } }; for (const key of ['wallet','phrase','keys','client']) Object.defineProperty(state, key, { get() { throw Error('secret'); } });
   const reader = portfolioReaders({ state, request() { throw Error('background'); } });
   assert.deepEqual(await reader.readBalances('soqucoin', S, '', { ...mock(soqu('0')), networkId: 'mainnet' }), [{ symbol: 'SOQ', balance: '0' }]);
-  assert.equal(capabilitiesFor('soqucoin').balance, true); assert.equal(capabilitiesFor('soqucoin').history, false);
+  assert.equal(capabilitiesFor('soqucoin').balance, true); assert.equal(capabilitiesFor('soqucoin').history, true);
 });
 const { readQtcBalances } = await import('../src/pq/qtc.js');
 const gen = { mainnet: 'd5f04a8a320b4e7bb454c7c564ca9cf191f70d7521d2486b62274df776f4eb24', testnet: 'efcba50d2de7cb16fd92423df899eba29e750b2271ef0ea64efe8cfeb4382ddf' };
@@ -59,7 +59,7 @@ test('QTC extension honors explicit network without secret access', async () => 
   const state = { networks: { qtc: 'mainnet' } }; for (const key of ['wallet','phrase','keys','client']) Object.defineProperty(state, key, { get() { throw Error('secret'); } });
   const readers = portfolioReaders({ state, request() { throw Error('background'); } });
   assert.deepEqual(await readers.readBalances('qtc', qa('testnet'), '', { ...mock(chain('testnet'), block('testnet'), empty('testnet')), networkId: 'testnet' }), [{ symbol: 'QTC', balance: '0' }]);
-  assert.equal(capabilitiesFor('qtc').balance, true); assert.equal(capabilitiesFor('qtc').history, false);
+  assert.equal(capabilitiesFor('qtc').balance, true); assert.equal(capabilitiesFor('qtc').history, true);
 });
 
 test('HTTP status is retained for sanitized UI error details', async () => {

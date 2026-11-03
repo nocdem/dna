@@ -1,0 +1,10 @@
+{
+  "date": "2026-11-02",
+  "endpoint": "https://ixios-rpc.innova.limited",
+  "events": [
+    {"atUtc":"10:07","method":"JSON-RPC batch eth_gasPrice, eth_getBlockByNumber(latest), eth_chainId","outcome":"HTTP403","headersAndBodyPreserved":false,"cause":"unknown","constraint":"No further live probes or alternate individual-call retries"},
+    {"atUtc":"10:12:30","workerReportedCommand":"curl -sS --max-time 8 -H 'content-type:application/json' --data '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_gasPrice\",\"params\":[]}' https://ixios-rpc.innova.limited","workerReportedResponse":{"jsonrpc":"2.0","id":1,"result":"0x14a6701dc1c8000"},"context":"Independent implementation worker issued this before the lead directly relayed the batch denial/no-alternate-retry constraint. It is not evidence that the denied path was resolved and grants no additional access."},
+    {"atUtc":"10:13","action":"Lead forwarded stop/no-alternate-retry constraint to every active IXIOS worker. No further live probes authorized."}
+  ],
+  "limitations":"No account, key, signed transaction, submission, financial broadcast or live admission proof. Candidate readiness rests on pinned source/offline native oracles and fail-closed runtime checks; availability remains qualified."
+}

@@ -1,5 +1,5 @@
-import { readAlgorandHistory } from '../../../src/pq/algorand.js';
-import { capabilitiesFor, pageSupported } from '../../../src/capabilities.js';
+import { readHistory as readPublicHistory, HISTORY_SOURCES } from '../../../src/history.js';
+import { extensionCapabilitiesFor, extensionPageSupported, extensionNetworkConfig } from '../constants/capabilities.js';
 import { WALLET_MARKUP } from './wallet-markup.js';
 import { createPortfolio } from '../../../src/portfolio-view.js';
 import { CHAINS, CELLFRAME } from '../../../src/config.js';
@@ -73,9 +73,11 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   let previousNetwork, previousTokens, previousAddress, walletScroll = 0, backgroundLog = { entries: [], running: [] };
   const networkVersions = new Map(), endpointVersions = new Map(), logSubscriptions = [];
   let book, earn, names, claim, contracts, vaults;
-  const isSolanaTron = chain => chain === 'solana' || chain === 'tron';
+  const isSolanaTron = chain => chain === 'solana' || chain === 'tron' || chain === 'algorand' || chain === 'soqucoin' || chain === 'splendor' || chain === 'asentum' || chain === 'qtc' || chain === 'ckb' || chain === 'ixios' || (chain === 'xion' && extensionCapabilitiesFor(chain, selectedNetwork(chain).id).send);
   const pendingPqNetworks = new Map();
   const selectedNetwork = chain => chain === 'ixios' ? { id: 'mainnet', label: 'Mainnet', endpoint: IXIOS_NETWORK.endpoint } : chainNetwork(chain, pendingPqNetworks.get(chain)?.id ?? ui.state.networks?.[chain]);
+  const capabilitiesFor = chain => extensionCapabilitiesFor(chain, selectedNetwork(chain).id);
+  const pageSupported = (chain, page) => extensionPageSupported(chain, page, selectedNetwork(chain).id);
   function element(tag, text, className = '') {
     const node = document.createElement(tag); node.className = className;
     if (text !== undefined) node.textContent = text; return node;
@@ -88,10 +90,11 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   const message = text => { status.textContent = text; status.className = 'result'; sessionLog.log('wallet', text); };
   const networkDefinitions = () => ({ nodus: nodusNetworkFor(ui.state.nodus?.state === 'ready', { module: true, tokens: ui.state.nodus?.tokens }), ...CHAINS, cellframe: CELLFRAME,
     // Background derivations have settled before unlock is published. Without
-    // an Ixios address there is no balance source for this session; use the
+    // an Ixios or selected PQ address there is no balance source for this session; use the
     // shared portfolio's unavailable-source branch (portfolio-view.js:78-85).
-    ixios: ui.state.addresses.ixios ? IXIOS_NETWORK : { ...IXIOS_NETWORK, balanceUnavailable: true },
-    ...Object.fromEntries(Object.entries(PQ_NETWORKS).map(([chain, config]) => [chain, { ...config, testnet: selectedNetwork(chain).id === 'testnet' }])) });
+    ixios: { ...extensionNetworkConfig('ixios', IXIOS_NETWORK, selectedNetwork('ixios').id), ...(!ui.state.addresses.ixios ? { balanceUnavailable: true } : {}) },
+    ...Object.fromEntries(Object.entries(PQ_NETWORKS).map(([chain, config]) => [chain, { ...extensionNetworkConfig(chain, config, selectedNetwork(chain).id), testnet: selectedNetwork(chain).id === 'testnet',
+      ...(!ui.state.pqAddresses?.[chain]?.[selectedNetwork(chain).id] ? { balanceUnavailable: true } : {}) }])) });
   let networks = networkDefinitions(), latestKept = {}, opened = false;
   const readers = portfolioReaders(ui);
   const portfolio = createPortfolio({ ...readers, selectAsset,
@@ -201,7 +204,8 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     for (const node of root.querySelectorAll('.wallet-page')) node.hidden = node !== page;
     if (page) {
       root.querySelector('.wallet-card').scrollIntoView({ block: 'start' });
-      if (focus) { const heading = page.querySelector('h3, h1'); if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); } }
+      // As src/app.js:2350 pageTitle: the panel's labelling heading (Receive's is an h4).
+      if (focus) { const labelled = page.querySelector('.dashboard-panel')?.getAttribute('aria-labelledby'); const heading = (labelled && document.getElementById(labelled)) || page.querySelector('h3, h1'); if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); } }
     } else if (previous) { resetAssetView(); window.scrollTo(0, walletScroll); }
     if (name === 'wallet-activity') void loadHistory();
     if (name === 'earn') void earn.refresh();
@@ -261,6 +265,9 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     $('send-disabled-note').hidden = !config.receiveOnly;
     $('send-disabled-note').textContent = config.sendNote || 'Sending CPUNK is not available in this release. You can receive to the address above.';
     $('solana-send-hint').hidden = selected !== 'solana' || network.id !== 'mainnet';
+    const ixiosEnabled = selected === 'ixios' && capabilitiesFor('ixios').send; $('ixios-fee-fields').hidden = !ixiosEnabled; $('ixios-max-gas-price').disabled = !ixiosEnabled; $('ixios-max-gas-price').required = ixiosEnabled; if(reset) $('ixios-max-gas-price').value = '';
+    const xionEnabled = selected === 'xion' && capabilitiesFor('xion').send; $('xion-fee-fields').hidden = !xionEnabled; for (const id of ['xion-fee-atoms','xion-gas-limit']) { $(id).disabled = !xionEnabled; $(id).required = xionEnabled; if (reset) $(id).value = ''; }
+    $('asentum-fee-fields').hidden = selected !== 'asentum'; $('asentum-max-fee').disabled = selected !== 'asentum'; $('asentum-max-fee').required = selected === 'asentum'; if(reset) $('asentum-max-fee').value = '';
     const tokens = config.tokens.filter(() => !isSolanaTron(selected) || network.id === 'mainnet');
     const value = $('asset').value;
     $('asset').replaceChildren(...[{ symbol: config.symbol, tokenId: selected === 'nodus' ? NODUS_TOKEN_ID : undefined, available: true }, ...tokens].map(token => {
@@ -328,7 +335,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     if ($('review-button').disabled || networks[selected].receiveOnly) return;
     return run(async () => {
       const chain = selected, started = readGeneration;
-      const fields = { to: $('recipient').value, amount: $('amount').value };
+      const fields = { to: $('recipient').value, amount: $('amount').value, ...(chain === 'ixios' ? { maxGasPrice: $('ixios-max-gas-price').value } : {}), ...(chain === 'asentum' ? { maxFeePerGas: $('asentum-max-fee').value } : {}), ...(chain === 'xion' ? {feeAtoms:$('xion-fee-atoms').value,gasLimit:$('xion-gas-limit').value} : {}) };
       const prepared = chain === 'nodus' ? await ui.prepareNodusSend({ ...fields, tokenId: $('asset').value })
         : isSolanaTron(chain) ? await ui.prepareSolanaTronSend({ ...fields, chain, symbol: $('asset').value })
         : await ui.prepareEvmSend({ ...fields, chain, symbol: $('asset').value });
@@ -368,13 +375,15 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
       $('history').replaceChildren(); $('history-status').textContent = ''; return;
     }
     let history;
-    if (chain === 'algorand') {
-      $('history').replaceChildren(); $('history-status').textContent = 'Reading Algorand history…';
-      try { history = { rows: await readAlgorandHistory(publicAddresses().algorand, { networkId, signal: controller.signal }), network: networkId, status: 'Up to 50 newest top-level native payments; excludes inner transfers, fees, rewards and assets.' }; }
-      catch (error) { if (controller.signal.aborted || disposed || started !== readGeneration) return; history = { rows: [], network: networkId, error: error.message, status: 'Algorand history could not be read.' }; }
-    }
-    else if (chain === 'nodus') { await ui.loadNodusHistory(); history = ui.state.nodusHistory; }
+    if (chain === 'nodus') { await ui.loadNodusHistory(); history = ui.state.nodusHistory; }
     else if (isSolanaTron(chain)) { await ui.loadSolanaTronHistory(chain, { manual }); history = ui.state.solanaTronHistory[chain]; }
+    else if (['qtc', 'xion', 'splendor'].includes(chain)) {
+      $('history').replaceChildren(); $('history-status').textContent = 'Reading native account history…';
+      const address = ui.state.pqAddresses?.[chain]?.[networkId];
+      if (!address) throw new Error('Receive address is unavailable.');
+      const rows = await readPublicHistory(chain, address, { networkId, signal: controller.signal });
+      history = { rows, local: [], status: `Up to 50 records reported by ${HISTORY_SOURCES[chain]}. May be incomplete or stale; not inclusion proof.` };
+    }
     else if (chain === 'bsc') history = { rows: [], status: 'Account history is not supported on BNB Smart Chain.' };
     else {
       let timer, finished = false;
@@ -394,9 +403,15 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     if (disposed || controller.signal.aborted || started !== readGeneration || selected !== chain || selectedNetwork(chain).id !== networkId) return;
     const detached = element('div');
     if (chain === 'nodus') renderNodusHistory(document, detached, history, { refresh: () => loadHistory(true) });
-    else renderSolanaTronHistory(document, detached, { chain, history }, { refresh: () => loadHistory(true) });
+    else renderSolanaTronHistory(document, detached, { chain, history }, { refresh: () => loadHistory(true),
+      resubmit: hash => run(async () => {
+        if (!['soqucoin','splendor','asentum','xion','ckb','qtc','ixios'].includes(chain) || selected !== chain) return;
+        const started=readGeneration, prepared=await ui.request(chain === 'ixios' ? 'prepareIxiosResubmit' : chain === 'qtc' ? 'prepareQtcResubmit' : chain === 'ckb' ? 'prepareCkbResubmit' : chain === 'xion' ? 'prepareXionResubmit' : chain === 'asentum' ? 'prepareAsentumResubmit' : chain === 'splendor' ? 'prepareSplendorResubmit' : 'prepareSoqucoinResubmit', [hash]);
+        if(disposed || selected !== chain || started !== readGeneration) { await ui.cancelSolanaTronSend(chain,prepared.id);return; }
+        showPrepared(prepared,{chain,title:'Review same-transaction recovery'});
+      }) });
     $('history').replaceChildren(...(detached.querySelector('.activity-list')?.children || []));
-    $('history-status').textContent = history?.error || history?.status || '';
+    $('history-status').textContent = history?.error || history?.activityError || history?.status || '';
   }
   $('history-refresh').onclick = () => run(() => loadHistory(true));
   book = mountAddressBook({ root, document, ui, networks, selected: () => selected, navigate, run });

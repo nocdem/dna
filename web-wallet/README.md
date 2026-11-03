@@ -5,6 +5,26 @@ A standalone, accountless browser client alongside the existing DNA applications
 The web wallet is Nodus Wallet. The existing browser extension is Nodus Connect.
 CPUNK is the temporary CF-20 integration until the airdrop; it is not a permanent chain module or the wallet identity. Airdrop eligibility and claims are outside this release.
 
+## Unreleased PQ integration candidate (2026-11-02)
+
+This working-tree checkpoint is **not a release or deployment**. Older receive-only descriptions below describe the baseline; the current surface-specific candidate status is:
+
+| Network | Trusted extension Wallet | Standalone Web Wallet |
+|---|---|---|
+| ALGO | Mainnet candidate | Mainnet candidate |
+| SOQ | Mainnet candidate | Mainnet candidate |
+| SPLD | Mainnet candidate | Send disabled: observed REST CORS restriction |
+| CKB | Mainnet candidate; full-format recipients, quantum empty-data/non-cellbase inputs | Send disabled; not wired |
+| ASE | Testnet candidate only | Testnet candidate only |
+| QTC | Mainnet structured-UTXO gateway candidate; eight-input/body bounds and provider-reported state | Send disabled; not wired |
+| Verona XION | Mainnet candidate; explicit non-quoted fee/gas and signed timeout, unknown outcome retained on expiry | Send disabled; not wired |
+| IXIOS | Mainnet code candidate; native 1,000-gas ML-DSA-87, explicit cap and fail-closed fresh checks; live availability qualified | Send disabled; not wired |
+| TDC | Send disabled: usable public balance/history/UTXO provider unavailable | Send disabled |
+
+Candidates require durable encrypted activity before exposing signed bytes, guarded one-use confirmation, and network/account checks. Where implemented, recovery is explicitly reviewed **same signed transaction**, never an automatic retry or new signature. History coverage is labelled per reader (local submissions or bounded provider-reported native net flow); unavailable/stale market data remains unavailable. No external dApp/PQSwap signing permissions are added.
+
+Synthetic/native/VM/regtest and mocked-controller tests are not live funded acceptance. A minified extension checkpoint builds and passes static package checks; browser/device installation QA remains unrun due environment restrictions. See [the detailed evidence matrix](../engineering-evidence/NETWORK-COMPLETION.md), [SOQ scope](docs/soqucoin-candidate-send.md), and [XION account evidence](docs/xion-account-acceptance.md). IXIOS is a post-handoff addition with pinned native admission evidence; see [its candidate status and availability limits](docs/ixios-candidate-status.md). It is distinct from Verona XION.
+
 ## Nodus Connect browser extension
 
 The corner Connect button switches between Wallet and Connect in the same
@@ -1257,6 +1277,11 @@ Spec `docs/plans/2026-09-23-wallet-0.1.16-ixios-spec.md`; decisions
   is the independent check, and it is run by hand, not in CI. No Ixios
   transaction has been sent on any network.
 
+> **Historical release notes:** The September 2026 Ixios activation status
+> described below is superseded by the 2026-11-02 update immediately after
+> the 0.1.17 section. Wallet IXIOS sending remains disabled pending a
+> separately implemented and verified transaction path.
+
 ## Ixios listed like the other coins (0.1.17)
 
 The 0.1.16 top-of-page Ixios panel is gone (operator, 2026-09-23: Ixios belongs
@@ -1277,6 +1302,25 @@ where the other coins are). With `VITE_ENABLE_IXIOS=true` (the published build):
   (Cellframe, then Ixios) instead of the single `cellframe` option.
 - `npm run test:ixios` checks the placement, the zero Ixios requests, the lock
   behaviour and the flag-off build (no Ixios option, row, badge, markup or JS).
+
+> **Current status, 2026-11-02:** The 2026-09-23 observations in this
+> historical section are superseded. Official ixiosSpark v1.1.1
+> [`params/config.go`](https://github.com/ixios-io/ixiosSpark/blob/v1.1.1/params/config.go)
+> sets mainnet Aegis activation at block 32,400,000 and identifies it as the
+> canonical 48-byte address / ML-DSA-87 transition. The configured public RPC
+> reported a matching mainnet genesis and head 32,419,996 at 08:53 UTC on
+> 2026-11-02, with client `ixiosSpark/v1.1.1-ccd1345e-20261004`. Its
+> block 32,400,000 (`0x06aa0618744edc50cbfc957c1df263f5dc87b8df44f0d36298b85bbb6fc09a6a`)
+> timestamp was reported as 2026-11-01 17:06:33.345 UTC. The
+> [release](https://github.com/ixios-io/ixiosSpark/releases/tag/v1.1.1),
+> [address validation](https://github.com/ixios-io/ixiosSpark/blob/v1.1.1/core/address_format.go)
+> and [ML-DSA-87 transaction implementation](https://github.com/ixios-io/ixiosSpark/blob/v1.1.1/core/types/mldsa87.go)
+> are published in the same upstream repository.
+> Those are provider-reported chain data, not a proof of inclusion. The network
+> transition is therefore no longer described as pending. **Wallet IXIOS send
+> remains disabled:** this Wallet has not implemented and independently
+> verified the post-activation transaction path. The old notes below describe
+> the state observed in September 2026, not current network capabilities.
 
 ## Ixios handled exactly like Cellframe (0.1.18)
 

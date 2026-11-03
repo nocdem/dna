@@ -1,3 +1,5 @@
+import { PQ_ENTRIES } from './pq/networks.js';
+import { validatedAssetPrices } from './pq/prices.js';
 import { CHAINS } from './config.js';
 import { request, formatUnits } from './core.js';
 
@@ -8,7 +10,8 @@ export const ASSETS = Object.entries(CHAINS).flatMap(([chain, c]) => [
   { chain, symbol: c.symbol, decimals: c.decimals, priceId: `coingecko:${nativeIds[chain]}` },
   ...c.tokens.map(t => ({ chain, ...t, priceId: `${chain}:${t.address}` }))
 ].map(asset => ({ ...asset, key: `${chain}:${asset.symbol}` })));
-export const PRICE_URL = `https://coins.llama.fi/prices/current/${ASSETS.map(a => a.priceId).join(',')}`;
+export const PRICE_ASSETS = [...ASSETS, ...PQ_ENTRIES.map(({ asset }) => asset).filter(asset => asset.priceId)];
+export const PRICE_URL = `https://coins.llama.fi/prices/current/${PRICE_ASSETS.map(a => a.priceId).join(',')}`;
 // Read-only Cellframe/CPUNK balance row. Unpriced by design: no priceId, so it
 // never enters PRICE_URL and is always excluded from the USD total (see the
 // `priced` scoping in portfolioSnapshot below), matching the README promise
@@ -74,22 +77,7 @@ export function chainBalances(chain, rows, observedAt = Date.now(), assets = ASS
   }));
 }
 export function parsePrices(data, now = Date.now()) {
-  if (!data?.coins || typeof data.coins !== 'object' || Array.isArray(data.coins)) throw new Error('Price response unavailable.');
-  const quotes = {};
-  for (const asset of ASSETS) {
-    const row = data.coins[asset.priceId];
-    if (!row || typeof row.price !== 'number' || !Number.isFinite(row.price) || row.price <= 0 || row.price > 1e9 ||
-        typeof row.confidence !== 'number' || !Number.isFinite(row.confidence) || row.confidence < .9 || row.confidence > 1 ||
-        !Number.isSafeInteger(row.timestamp) || Math.abs(row.timestamp) > 1e12 ||
-        typeof row.symbol !== 'string' || row.symbol.toUpperCase() !== asset.symbol ||
-        (asset.address && row.decimals !== asset.decimals)) continue;
-    const observedAt = row.timestamp * 1000;
-    if (now - observedAt > PRICE_MAX_AGE || observedAt - now > 60000) continue;
-    const units = BigInt(row.price.toFixed(8).replace('.', ''));
-    if (units <= 0n) continue;
-    quotes[asset.key] = { units, observedAt };
-  }
-  return quotes;
+  return validatedAssetPrices(data, PRICE_ASSETS, now, PRICE_MAX_AGE);
 }
 export async function readPrices({ signal, fetcher } = {}) {
   return parsePrices(await request(PRICE_URL, undefined, { signal, fetcher }));

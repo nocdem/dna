@@ -1,6 +1,6 @@
 // Approved extension plan §3.5: keyring, web-wallet disposal, complete Nodus
 // client lock, then the two chain libraries. Later packages supply the holders.
-export const LOCK_ORDER = Object.freeze(['keyring', 'webWallet', 'nodus', 'solana', 'tron']);
+export const LOCK_ORDER = Object.freeze(['keyring', 'webWallet', 'nodus', 'solana', 'tron', 'algorand', 'soqucoin', 'splendor', 'asentum', 'xion', 'ckb', 'qtc', 'tidecoin', 'ixios']);
 
 export function createLockCoordinator() {
   const holders = new Map();

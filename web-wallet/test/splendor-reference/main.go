@@ -1,0 +1,3 @@
+package main
+import("encoding/json";"fmt";"io";"os";"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"; qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto")
+func main(){b,e:=io.ReadAll(os.Stdin);if e!=nil{panic(e)};var tx types.Transaction;if e=json.Unmarshal(b,&tx);e!=nil{panic(e)};if e=types.SetClientChainID("splendor-quantum-testnet-1");e!=nil{panic(e)};if e=tx.Validate();e!=nil{panic(e)};pub,e:=qcrypto.PublicKeyFromBytes(tx.PublicKey);if e!=nil{panic(e)};if qcrypto.DeriveAddress(pub)!=tx.From{panic("sender binding")};if e=tx.VerifySignature(tx.PublicKey);e!=nil{panic(e)};h,e:=tx.FullHash();if e!=nil{panic(e)};fmt.Printf("Go VALID sender=%s fullhash=%x\n",tx.From.String(),h)}

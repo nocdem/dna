@@ -1027,7 +1027,9 @@ textarea.roles-paste { font-family: var(--mono); font-size: 11px; line-height: 1
   .holding-value small { grid-column: 1 / -1; text-align: right; overflow-wrap: anywhere; }
   .holding-actions { flex-wrap: wrap; }
 }
-.network-heading-select { border: 0; padding: 6px 0; background: transparent; color: var(--text); text-align: left; font-weight: 600; box-shadow: none; }
+/* margin: 0 — inside <details>, :155's `details button { margin-top: 10px }` pushed the
+   name 5px below its icon (operator 2026-11-02: "hizala"). */
+.network-heading-select { margin: 0; border: 0; padding: 6px 0; background: transparent; color: var(--text); text-align: left; font-weight: 600; box-shadow: none; }
 .network-heading-select:hover { background: transparent; color: var(--lime); }
 /* Connect's wallet body has its own padding; reserve only its wallet rail. */
 .app-body.wallet-workspace { padding-left: 52px; }

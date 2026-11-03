@@ -43,6 +43,6 @@ let screen;
 const run = async action => { try { return await action(); } finally { screen?.update(); } };
 screen = mountReferenceWallet({ document, window, root: document.getElementById('screen'), status: document.getElementById('status'), ui, run,
   loadBalances: () => screen.loadBalances(true), lock() {}, reveal() {}, setAutoLock: value => run(() => ui.setAutoLock(value)), clearReveal() {} });
-window.fixture = { screen, state, calls, hold() { hold = true; }, release() { hold = false; release?.(); }, price(value) { price = value; }, bscFails(value) { bscFails = value; } };
+window.fixture = { screen, state, ui, calls, hold() { hold = true; }, release() { hold = false; release?.(); }, price(value) { price = value; }, bscFails(value) { bscFails = value; } };
 await screen.loadBalances(); window.fixture.ready = true;
 </script></body></html>

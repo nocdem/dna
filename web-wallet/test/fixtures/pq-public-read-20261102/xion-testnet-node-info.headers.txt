@@ -1,0 +1,22 @@
+HTTP/1.1 200 OK
+date: Mon, 02 Nov 2026 08:00:46 GMT
+
+HTTP/2 200 
+date: Mon, 02 Nov 2026 08:00:46 GMT
+content-type: application/json
+server: envoy
+access-control-allow-origin: *
+grpc-metadata-content-type: application/grpc+cosmos-sdk-grpc-codec
+grpc-metadata-x-cosmos-block-height: 19451774
+x-cosmos-block-height: 19451774
+x-server-time: 1793606446
+access-control-allow-methods: GET, POST, PUT, DELETE, PATCH, OPTIONS
+last-modified: Mon, 02 Nov 2026 08:00:46 GMT
+cf-cache-status: MISS
+speculation-rules: "/cdn-cgi/speculation"
+vary: accept-encoding
+access-control-allow-headers: *
+cf-ray: a5419b803c6f2251-DFW
+alt-svc: h3=":443"; ma=86400
+x-envoy-upstream-service-time: 808
+

@@ -275,3 +275,22 @@ test('mounted pages wire both send/review/confirm and history; lock disposes rev
   const confirm = button(root, 'Confirm send'); state.isUnlocked = false; await page.refresh();
   t.mock.timers.tick(600); assert.equal(confirm.disabled, true); assert.equal(button(root, 'Confirm send'), undefined);
 });
+
+test('Algorand pending local submission is labelled and never claimed as confirmed history', () => {
+  const root = new Node('main');
+  renderSolanaTronHistory(document, root, { chain: 'algorand', history: { network: 'mainnet', rows: [], local: [{hash:'A'.repeat(52),to:'B'.repeat(58),amount:'1',symbol:'ALGO',status:'unknown',createdAt:'2026-11-02T07:00:00.000Z'}] } }, { refresh() {} });
+  assert.ok(root.textContent.includes('Local submission'));assert.ok(root.textContent.includes('unknown'));assert.ok(!root.textContent.includes('confirmed'));
+});
+
+test('SOQ uncertain local row offers only a review action for same-transaction recovery', () => {
+ const root=new Node('main'),calls=[];const hash='ab'.repeat(32);
+ renderSolanaTronHistory(document,root,{chain:'soqucoin',history:{network:'mainnet',rows:[],local:[{hash,to:'sq1public',amount:'1',symbol:'SOQ',status:'unknown',createdAt:'2026-11-02T07:00:00.000Z',canResubmit:true}]}},{refresh(){},resubmit:id=>calls.push(id)});
+ const review=button(root,'Review same-transaction recovery');assert.ok(review);assert.deepEqual(calls,[]);review.onclick();assert.deepEqual(calls,[hash]);assert.ok(root.textContent.includes('Local submission'));
+});
+
+test('IXIOS uncertain local history labels outcome and offers only explicit same-byte review',()=>{
+ const root=new Node('main'),calls=[],hash='0x'+'ab'.repeat(32);
+ renderSolanaTronHistory(document,root,{chain:'ixios',history:{network:'mainnet',rows:[],status:'Local submissions only.',local:[{hash,to:'0x'+'11'.repeat(48),amount:'1',symbol:'IXIOS',status:'unknown',createdAt:'2026-11-02T10:00:00.000Z',canResubmit:true}]}},{refresh(){},resubmit:id=>calls.push(id)});
+ assert.ok(root.textContent.includes('Ixios history'));assert.ok(root.textContent.includes('Local submission'));assert.ok(root.textContent.includes('unknown'));assert.deepEqual(calls,[]);
+ button(root,'Review same-transaction recovery').onclick();assert.deepEqual(calls,[hash]);
+});
