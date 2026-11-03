@@ -4,6 +4,9 @@ import { pastePhrase, readPhrase } from './browser-phrase.js';
 // closed. Requires a production web build and Chromium; no compile flags.
 // Browser/server cleanup leaves no persisted profile. Native derivation and
 // clipboard/lock guards are covered, not live network connectivity.
+// Receive is its own page, opened from the wallet rail; the Copy click would
+// fail (not skip) if the page were not shown. The hidden #chain select is
+// driven with force, as the network list does.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { startPreview } from './preview-server.js';
@@ -207,18 +210,19 @@ try {
   await page.waitForFunction(address => document.querySelector('#receive-address').textContent === address, vectors[1].address);
   assert.equal(await page.locator('#copy-address').isEnabled(), true);
   assert.equal(await page.locator('#quick-receive').isEnabled(), true);
-  // Receive is its own page (0.1.75); the copy control is on it.
-  await page.locator('#quick-receive').click(); await page.locator('#copy-address').waitFor({ state: 'visible' });
+  // Receive is its own page (0.1.75), opened from the rail (the quick buttons are hidden, test/browser-smoke.js:297); the copy control is on it.
+  await page.locator('.wallet-navigation a[href="#receive"]').click(); await page.locator('#page-receive').waitFor({ state: 'visible' }); await page.locator('#copy-address').waitFor({ state: 'visible' });
   await page.locator('#copy-address').click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), vectors[1].address);
   release.resolve(); await completed.promise;
   assert.equal(await page.locator('#receive-address').innerText(), vectors[1].address);
   // UI pack 2026-11-03 (operator "2"): the "Derived locally from this wallet’s recovery phrase." line is gone.
   assert.equal(await page.locator('#nodus-address-status').textContent(), '');
-  await page.selectOption('#chain', 'solana');
+  // #chain is a hidden select driven by the network list (force: it is not visible).
+  await page.selectOption('#chain', 'solana', { force: true });
   assert.notEqual(await page.locator('#receive-address').innerText(), vectors[1].address);
   assert.equal(await page.locator('#nodus-address-status').isVisible(), false);
-  await page.selectOption('#chain', 'nodus');
+  await page.selectOption('#chain', 'nodus', { force: true });
   assert.equal(await page.locator('#receive-address').innerText(), vectors[1].address);
   await page.locator('#lock').click(); failLoad = true;
   await restore(vectors[0].phrase);

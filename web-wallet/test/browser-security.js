@@ -1,6 +1,12 @@
 import { portfolioRead, cellframeRead, ixiosRead, historyRead } from './portfolio-routes.js';
 import { pastePhrase, readPhrase } from './browser-phrase.js';
 // Production bundle; all external traffic is intercepted. Public test phrase only.
+// Proves: secrets clear on timeout / suspended tab, storage is opt-in, the
+// single-tab rule, durable-before-broadcast activity, review-dialog guards.
+// Needs dist/ built and Chromium (CHROMIUM_PATH); it starts `vite preview` on
+// port 4189. Leaves browser contexts only. Send is its own page: every review
+// opens it through the wallet rail, so a send that never reached the page
+// would fail at the form fill, not pass silently.
 import assert from 'node:assert/strict';
 import { startPreview } from './preview-server.js';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -53,9 +59,10 @@ async function unlock(p) { await p.locator('#unlock-password').fill(password); a
 // of their own, opened from the wallet's navigation; the page's Back control
 // returns to the wallet view (Portfolio and Send / Receive).
 async function openPage(p, name) { await p.locator(`.wallet-navigation a[href="#${name}"]`).click(); await p.locator(`#page-${name}`).waitFor({ state: 'visible' }); }
-async function walletView(p) { const back = p.locator('.wallet-page:not([hidden]) .page-back'); if (await back.count()) await back.click(); await p.locator('#wallet-home').waitFor({ state: 'visible' }); }
-// Nodus (receive-only) is the network selected on page load; sends here are on Ethereum.
-async function review(p) { await walletView(p); await p.selectOption('#chain', 'ethereum', { force: true }); await p.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await p.locator('#amount').fill('0.01'); await p.locator('#review-button').click(); await p.locator('#review-dialog').waitFor({ state: 'visible' }); }
+// Send and Receive pages carry no Back control; the rail's Portfolio link ('#') returns from them (as test/browser-smoke.js).
+async function walletView(p) { const back = p.locator('.wallet-page:not([hidden]) .page-back'); if (await back.count()) await back.click(); else if (await p.locator('.wallet-page:not([hidden])').count()) await p.locator('.wallet-navigation a[href="#"]').click(); await p.locator('#wallet-home').waitFor({ state: 'visible' }); }
+// Nodus (receive-only) is the network selected on page load; sends here are on Ethereum. Send is its own page (0.1.75), offered once the network can send.
+async function review(p) { await walletView(p); await p.selectOption('#chain', 'ethereum', { force: true }); await openPage(p, 'send'); await p.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await p.locator('#amount').fill('0.01'); await p.locator('#review-button').click(); await p.locator('#review-dialog').waitFor({ state: 'visible' }); }
 try {
   page = await fresh(); await page.clock.install();
   for (const stage of ['create', 'verify', 'restore']) {
@@ -311,7 +318,7 @@ try {
   await page.locator('#activity').getByRole('button', { name: 'Mark as abandoned' }).click();
   await page.locator('#activity').getByRole('button', { name: 'Confirm abandon' }).click();
   await page.waitForFunction(() => document.querySelector('#activity').textContent.includes('abandoned'));
-  await walletView(page);
+  await walletView(page); await openPage(page, 'send');
   console.log('B-1: a second review on the same network is blocked while the first send has no final result.');
 
   await page.locator('#recipient').fill(addresses.ethereum.toLowerCase()); await page.locator('#amount').fill('0.01'); await page.locator('#review-button').click();
