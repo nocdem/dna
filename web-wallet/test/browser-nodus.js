@@ -1,9 +1,24 @@
-import { portfolioRead, cellframeRead, ixiosRead, historyRead } from './portfolio-routes.js';
+import { portfolioRead, cellframeRead, ixiosRead, historyRead, PQ_HOST } from './portfolio-routes.js';
 import { pastePhrase, readPhrase } from './browser-phrase.js';
 // Production assets, public test phrases; external HTTP mocked and WebSockets
 // closed. Requires a production web build and Chromium; no compile flags.
 // Browser/server cleanup leaves no persisted profile. Native derivation and
 // clipboard/lock guards are covered, not live network connectivity.
+// Proves the startup gating (controls disabled until the app script loads, a
+// visible error when it fails), the numbered phrase boxes and paste handling,
+// the Nodus address and its status line, and that wallet storage is empty after lock.
+// Needs: the production build that `vite preview` serves, started on 127.0.0.1
+// port 4190 with --strictPort (run from web-wallet/); WALLET_URL replaces the
+// server, then nothing is started and whatever answers there is tested, a stale
+// build included. Chromium at CHROMIUM_PATH, otherwise Playwright's own.
+// Fixtures: fixtures/nodus-addresses.json and src/nodus/mldsa87.wasm.
+// Leaves: nothing written; the browser is closed and the server stopped in finally.
+// Falsely passes: the Cellframe balance reads are mocked, and only "at least one,
+// all to rpc.cellframe.net/connect" is asserted, because how many complete before
+// a lock aborts them is not deterministic.
+// Receive is its own page, opened from the wallet rail; the Copy click would
+// fail (not skip) if the page were not shown. The hidden #chain select is
+// driven with force, as the network list does.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { startPreview } from './preview-server.js';
@@ -57,7 +72,7 @@ try {
   await page.routeWebSocket(() => true, socket => socket.close());
   const seen = Promise.withResolvers(), release = Promise.withResolvers(), completed = Promise.withResolvers();
   let wasmRequests = 0, failLoad = false;
-  const unexpected = [], errors = [], cellframeRequests = [];
+  const unexpected = [], errors = [], cellframeRequests = [], pqRefused = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.route('**/*', async route => {
     const req = route.request();
@@ -72,6 +87,8 @@ try {
     // Flag-on builds also read the Ixios balance (shape-checked mock, never forwarded).
     if (await ixiosRead(route)) return;
     if (await portfolioRead(route)) return;
+    // The PQ networks' read providers (src/pq/*.js) are outside this fixture: refused and counted apart, as in test/browser-portfolio.js.
+    if (PQ_HOST.test(new URL(req.url()).hostname)) { pqRefused.push(req.url()); return route.abort('blockedbyclient'); }
     if (!req.url().startsWith(url + '/') || req.method() !== 'GET' || req.postData()) {
       unexpected.push({ url: req.url(), method: req.method() }); return route.abort();
     }
@@ -207,15 +224,22 @@ try {
   await page.waitForFunction(address => document.querySelector('#receive-address').textContent === address, vectors[1].address);
   assert.equal(await page.locator('#copy-address').isEnabled(), true);
   assert.equal(await page.locator('#quick-receive').isEnabled(), true);
+  // Receive is its own page (0.1.75), opened from the rail (the quick buttons are hidden, test/browser-smoke.js:297); the copy control is on it.
+  await page.locator('.wallet-navigation a[href="#receive"]').click(); await page.locator('#page-receive').waitFor({ state: 'visible' }); await page.locator('#copy-address').waitFor({ state: 'visible' });
   await page.locator('#copy-address').click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), vectors[1].address);
   release.resolve(); await completed.promise;
   assert.equal(await page.locator('#receive-address').innerText(), vectors[1].address);
-  assert.equal(await page.locator('#nodus-address-status').innerText(), 'Derived locally from this wallet’s recovery phrase.');
-  await page.selectOption('#chain', 'solana');
+  // UI pack 2026-11-03 (operator "2"): the "Derived locally from this wallet’s recovery phrase." line is gone.
+  // The sockets are closed (above), so the line next shows the connection state alone (src/app.js
+  // startNodusSend/connectNodus); waiting for that state removes the race with the empty moment.
+  await page.waitForFunction(() => document.querySelector('#nodus-address-status').textContent.includes('unavailable'));
+  assert.match(await page.locator('#nodus-address-status').textContent(), /^Nodus balance and sending are unavailable right now \(.+\); trying again in \d+ seconds\.$/);
+  // #chain is a hidden select driven by the network list (force: it is not visible).
+  await page.selectOption('#chain', 'solana', { force: true });
   assert.notEqual(await page.locator('#receive-address').innerText(), vectors[1].address);
   assert.equal(await page.locator('#nodus-address-status').isVisible(), false);
-  await page.selectOption('#chain', 'nodus');
+  await page.selectOption('#chain', 'nodus', { force: true });
   assert.equal(await page.locator('#receive-address').innerText(), vectors[1].address);
   await page.locator('#lock').click(); failLoad = true;
   await restore(vectors[0].phrase);

@@ -1,8 +1,22 @@
-.wallet-connect-switch { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin: 0 0 12px; }
-.wallet-connect-switch button { margin: 0; min-height: 36px; }
+/* The messenger ends above the bottom bar (56 px, fixed). The subtracted height is everything above and below the
+   messenger in the open wallet: >760 px shell margin 20 + card padding and border 23 above, 23 + 20 below plus the
+   bar; <=760 px the frame is removed (extension.css) so only the shell's 10 px top padding remains above it. */
 #extension-connect { min-width: 0; }
-#extension-connect .messenger { height: calc(100dvh - 160px); min-height: 380px; }
-#extension-connect[hidden], .wallet-connect-switch button[hidden] { display: none; }
-@media (max-width: 900px) {
-  #extension-connect .messenger { height: calc(100dvh - 135px); }
+/* >760 px: measured in extension/test/ui-layout.test.js (fullscreen 1100): the messenger starts 115 px from the top;
+   115 + the 56 px bar + 8 px gap = 179 → 180. */
+#extension-connect .messenger { height: min(720px, calc(100dvh - 180px)); min-height: 0; }
+#extension-connect[hidden] { display: none; }
+@media (max-width: 760px) {
+  /* Measured in the 400 px popup (extension/test/ui-layout.test.js): the messenger starts 88 px from the top
+     (shell padding + Connect header); 88 + the 56 px bar + 8 px gap = 152. */
+  #extension-connect .messenger { height: calc(100dvh - 152px); min-height: 0; }
 }
+/* Bottom bar: Connect, Wallet, Settings. Values of the approved mockup (docs/research-evidence/2026-11-03-ui-pack/ext-mock.mjs, mode icons3). */
+body.extension-page:has(#extension-bottom-bar) { padding-bottom: 64px; }
+#extension-bottom-bar { position: fixed; left: 0; right: 0; bottom: 0; height: 56px; display: flex; justify-content: center; gap: 44px; align-items: center; background: #0e110c; border-top: 1px solid #252c1e; z-index: 50; }
+#extension-bottom-bar button { all: unset; position: relative; display: grid; place-items: center; width: 44px; height: 40px; border-radius: 12px; color: #7d8673; cursor: pointer; }
+#extension-bottom-bar button svg { width: 22px; height: 22px; }
+#extension-bottom-bar button[aria-current="page"] { color: #10130e; background: var(--lime); }
+#extension-bottom-bar button:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
+#extension-bottom-bar .extension-bottom-badge { position: absolute; top: 4px; right: 6px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: #e8706a; color: #fff; font: 700 10px/16px Inter, system-ui, sans-serif; text-align: center; }
+#extension-bottom-bar .extension-bottom-badge[hidden] { display: none; }

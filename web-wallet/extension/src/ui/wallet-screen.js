@@ -29,7 +29,7 @@ import { renderSolanaTronHistory } from './solana-tron-screens.js';
 
 // index.html:18-77 is the screen. This adapter passes only public form fields
 // to wallet-ui.js; no wallet, derived key or signing implementation enters it.
-export function mountReferenceWallet({ document, window, root, status, ui, run, loadBalances, lock, reveal, setAutoLock, clearReveal }) {
+export function mountReferenceWallet({ document, window, root, status, ui, run, loadBalances, lock, reveal, setAutoLock, clearReveal, onPage }) {
   const template = document.createElement('template'); template.innerHTML = WALLET_MARKUP;
   root.replaceChildren(template.content.cloneNode(true));
   const $ = id => root.querySelector('#' + id);
@@ -68,6 +68,8 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   const connections = element('section', undefined, 'dashboard-panel'); appendPage('sites', connections);
   const sitesLink = element('a'); sitesLink.href = '#sites'; sitesLink.dataset.hint = 'Sites permitted to connect'; sitesLink.append(appIcon(document, 'sites'), element('span', 'Connected sites', 'nav-name')); root.querySelector('.wallet-navigation').append(sitesLink);
   for (const link of root.querySelectorAll('.wallet-navigation a')) { const label = link.querySelector('.nav-name').textContent; link.title = label; link.setAttribute('aria-label', label); }
+  // Settings is a destination of the bottom bar (connect.js); the page, its Back button and the #settings hash stay.
+  rail.querySelector('a[href="#settings"]').remove();
   let historyController;
   let selected = 'nodus', shownPage = null, disposed = false, readGeneration = 0, review, reviewTimer;
   let previousNetwork, previousTokens, previousAddress, walletScroll = 0, backgroundLog = { entries: [], running: [] };
@@ -77,7 +79,8 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   const pendingPqNetworks = new Map();
   const selectedNetwork = chain => chain === 'ixios' ? { id: 'mainnet', label: 'Mainnet', endpoint: IXIOS_NETWORK.endpoint } : chainNetwork(chain, pendingPqNetworks.get(chain)?.id ?? ui.state.networks?.[chain]);
   const capabilitiesFor = chain => extensionCapabilitiesFor(chain, selectedNetwork(chain).id);
-  const pageSupported = (chain, page) => extensionPageSupported(chain, page, selectedNetwork(chain).id);
+  // Send is offered only where the network can send now: capability AND not receive-only (UI pack 2026-11-03, operator "send tusunu kaldir gecsin").
+  const pageSupported = (chain, page) => !(page === 'send' && networks[chain]?.receiveOnly) && extensionPageSupported(chain, page, selectedNetwork(chain).id);
   function element(tag, text, className = '') {
     const node = document.createElement(tag); node.className = className;
     if (text !== undefined) node.textContent = text; return node;
@@ -133,12 +136,13 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   function updateAddressStatus() {
     for (const chain of ['nodus', 'cellframe', 'ixios']) {
       const node = $(`${chain}-address-status`); node.hidden = selected !== chain;
-      node.textContent = publicAddresses()[chain] ? 'Derived locally from this wallet’s recovery phrase.' : chain === 'ixios' ? 'Ixios address unavailable. Lock and reopen your wallet to retry.' : '';
+      // UI pack 2026-11-03 (operator "2"): no "Derived locally…" line once the address exists; style.css hides the empty line.
+      node.textContent = publicAddresses()[chain] ? '' : chain === 'ixios' ? 'Ixios address unavailable. Lock and reopen your wallet to retry.' : '';
     }
     const pq = isPqChain(selected);
     environmentDisclosure.hidden = !pq;
     if (pq) {
-      pqStatus.textContent = publicAddresses()[selected] ? `${selectedNetwork(selected).label} receive address derived locally.`
+      pqStatus.textContent = publicAddresses()[selected] ? ''
         : ui.state.pqErrors?.[selected] || 'Receive address unavailable. Lock and reopen your wallet to retry.';
     } else pqStatus.textContent = '';
   }
@@ -209,6 +213,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     } else if (previous) { resetAssetView(); window.scrollTo(0, walletScroll); }
     if (name === 'wallet-activity') void loadHistory();
     if (name === 'earn') void earn.refresh();
+    onPage?.(shownPage);
   }
   function navigate(name) {
     window.history.replaceState(null, '', name ? `#${name}` : window.location.pathname + window.location.search);
@@ -247,7 +252,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   function selectChain(reset = false) {
     const config = networks[selected], state = ui.state;
     if (shownPage && !pageSupported(selected, shownPage)) navigate(null);
-    for (const [page, feature] of [['send','send'], ['receive','receive'], ['earn','earn'], ['vaults','sharedVaults'], ['contracts','contracts'], ['wallet-activity','history']]) { const link = root.querySelector(`.wallet-navigation a[href="#${page}"]`); if (link) link.hidden = !capabilitiesFor(selected)[feature]; }
+    for (const [page, feature] of [['send','send'], ['receive','receive'], ['earn','earn'], ['vaults','sharedVaults'], ['contracts','contracts'], ['wallet-activity','history']]) { const link = root.querySelector(`.wallet-navigation a[href="#${page}"]`); if (link) link.hidden = !capabilitiesFor(selected)[feature] || (page === 'send' && Boolean(config.receiveOnly)); }
     $('vault-panel').hidden = !capabilitiesFor(selected).sharedVaults;
     $('stake-panel').hidden = !capabilitiesFor(selected).earn;
     const network = selectedNetwork(selected);
@@ -534,7 +539,11 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   }
   update(); route();
   return {
-    update, resetAssetView,
+    update, resetAssetView, navigate,
+    // Whether `chain` can send now (capability and not receive-only): the chat's "Send NODUS" follows it (connect.js).
+    canSend: chain => pageSupported(chain, 'send'),
+    // The bottom bar leaves Settings for Connect: the shown words go with the page (same condition as showPage).
+    leaveSettings() { if (shownPage === 'settings') clearReveal(); },
     payContact(fp) { selectAsset('nodus', 'NODUS', 'send'); $('recipient').value = fp; navigate('send'); },
     async loadBalances(force = false) { await initial; if (force && !disposed) await portfolio.refresh(); },
     dispose() {

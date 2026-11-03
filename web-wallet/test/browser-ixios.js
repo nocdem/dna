@@ -5,6 +5,17 @@ import { pastePhrase } from './browser-phrase.js';
 // intercepted (the Ixios RPC included: mocked below). Unlike the other browser
 // scripts this one builds its own two bundles (flag on, flag off) into temporary
 // directories and previews each with --outDir, so dist/ is left untouched.
+// Needs: node_modules/vite (two `vite build` runs; VITE_ENABLE_IXIOS is set to
+// true for one and removed from the environment for the other), jsqr,
+// fixtures/ixios-checksum.json, and Chromium (CHROMIUM_PATH, otherwise the one
+// Playwright finds). Preview ports 4193 (flag on) and 4194 (flag off) on
+// 127.0.0.1 with --strictPort: a busy port makes the script fail, not pass.
+// Leaves: nothing; both output directories are removed and both previews are
+// stopped in finally.
+// Falsely passes: the Ixios RPC is a mock, so balances prove the page wiring,
+// not the live node; "no Ixios in the flag-off build" is a case-insensitive
+// text search of the emitted files and the page text, so a renamed identifier
+// would not be seen.
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -198,8 +209,9 @@ try {
   assert.equal(await page.locator('#send-fields').isVisible(), false);
   assert.equal(await page.locator('#send-disabled-note').isVisible(), true);
   assert.equal(await page.locator('#send-disabled-note').innerText(), IXIOS_NOTE);
-  assert.equal(await page.locator('#ixios-address-status').isVisible(), true);
-  assert.match(await page.locator('#ixios-address-status').innerText(), /Derived locally/);
+  // UI pack 2026-11-03 (operator "2"): the "Derived locally…" status line is gone; the empty line takes no space.
+  assert.equal(await page.locator('#ixios-address-status').isVisible(), false);
+  assert.equal(await page.locator('#ixios-address-status').textContent(), '');
   assert.equal(await page.locator('#cellframe-address-status').isVisible(), false);
   // (#account-explorer sits on the Activity page since 0.1.75: its own
   // `hidden` says whether the network has an explorer.)

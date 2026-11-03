@@ -54,6 +54,13 @@
 // reset() the next first value does not. The switch survives a reload
 // (localStorage nodus.connect.sound.v1 '0', then '1').
 //
+// UI pack 2026-11-03 ("Send NODUS" in a chat): hidden until the wallet raises
+// nodusSendable({ sendable: true }) on the session that draws the view, hidden
+// again on { sendable: false }, and a forced click handler call while hidden
+// pays nothing (payFromChat guard). Falsely passes only if the button were
+// never drawn (the positive isVisible check follows the raise). The raise in
+// src/app.js setNodusReady against a real connection is NOT driven here.
+//
 // How it can lie: every answer is the fake's — nothing proves a real node
 // stores or returns these records (the C side is the native tests'
 // test_nc_classify K1-K12; the hash the oracle test). The memory-only
@@ -69,6 +76,14 @@
 // Playwright's own is not installed; SCREENSHOT_DIR = where the PNGs go —
 // without it nothing is written: messages-conversation, messages-menu,
 // messages-reply-390).
+// Needs: node_modules/vite, started with a path relative to the working
+// directory, so run it from web-wallet/; the vite dev server uses 127.0.0.1 port
+// 4197 with --strictPort, and preview-server.js refuses to start if that port
+// already answers (an old server is never tested by mistake). MESSAGES_REMOTE=1
+// runs the same assertions through the public projection/action boundary.
+// Leaves: with SCREENSHOT_DIR the three PNGs above, with PEER_SHOT one profile
+// card PNG; nothing else is written. The browser closes and the vite server is
+// killed in finally.
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { startPreview } from './preview-server.js';
@@ -384,8 +399,19 @@ try {
 
   // "Send NODUS": the host opens the wallet's form for this contact; the
   // wallet's accepted transfer to THAT contact posts one card in the app's form.
+  // UI pack 2026-11-03: "Send NODUS" is shown only while the wallet says NODUS can send (nodusSendable).
+  // It is raised on the session that draws the view (window.__messagesView; with MESSAGES_REMOTE=1 the
+  // view session, whose payAvailable is its own, not the owner's).
+  assert.equal(await page.locator('.conversation-pay').isHidden(), true, 'hidden until nodusSendable says so');
+  await page.evaluate(() => window.__messagesView.walletExtension.nodusSendable({ sendable: true }));
+  assert.equal(await page.locator('.conversation-pay').isVisible(), true);
   await page.locator('.conversation-pay').click();
   assert.deepEqual(await page.evaluate(() => window.__paid), ['2b'.repeat(64)]);
+  await page.evaluate(() => window.__messagesView.walletExtension.nodusSendable({ sendable: false }));
+  assert.equal(await page.locator('.conversation-pay').isHidden(), true);
+  await page.locator('.conversation-pay').evaluate(button => button.click());
+  assert.deepEqual(await page.evaluate(() => window.__paid), ['2b'.repeat(64)], 'a forced click while NODUS cannot send pays nothing');
+  await page.evaluate(() => window.__messagesView.walletExtension.nodusSendable({ sendable: true }));
   const WIRE_NEW = 'e3'.repeat(64);
   await page.evaluate(w => window.__walletExtension.nodusSent({ to: '9f'.repeat(64), amount: '1', wire: w }), WIRE_NEW);
   await page.waitForTimeout(300);

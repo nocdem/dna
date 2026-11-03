@@ -43,6 +43,16 @@
 // the browser stores the Secure cookie on
 // http://127.0.0.1 is not asserted (the rule fails open); the refusal is
 // driven by a cookie the test adds.
+//
+// Needs: dist/ (wallet) and dist-connect/ (Connect) built; the preview uses
+// 127.0.0.1 port 4192 with --strictPort (browser-portfolio.js uses the same port,
+// so do not run both at once; run from web-wallet/); CONNECT_URL replaces the
+// server, then nothing is started and whatever answers there is tested, a stale
+// build included. Chromium at CHROMIUM_PATH, otherwise Playwright's own.
+// Leaves: nothing written; the browser is closed and the server stopped in finally.
+// Falsely passes: "the wallet build has no Messages" is a text search of dist/ for
+// the marker strings listed in the script, so a Messages part that uses other
+// strings is not seen; the provider reads are mocks.
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { startPreview } from './preview-server.js';
@@ -74,6 +84,9 @@ try {
   for (let i = 0; i < 100; i++) { try { if ((await fetch(url)).ok) break; } catch {} await delay(50); }
   browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || undefined });
   const context = await browser.newContext({ viewport: { width: 1280, height: 960 } });
+  // UI pack 2026-11-03: the Reveal screen's Copy phrase button writes to the clipboard;
+  // Home's Send is hidden while the selected network cannot send (checked in the Wallet section).
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
   // REVEAL RECOVERY PHRASE in Device & settings on Connect (plan docs/plans/
@@ -160,6 +173,20 @@ try {
   assert.equal(await page.locator('#send-form').isVisible(), false, 'send-form');
   for (const id of ['activity-panel', 'address-book-panel', 'device-panel', 'session-logs', 'stake-panel', 'vault-panel', 'evm-panel']) assert.equal(await page.locator(`#${id}`).isVisible(), false, id);
   assert.equal(await page.locator('#tab-home').isVisible(), false);
+  // UI pack 2026-11-03: Home's Send follows the selected network's ability to send. No node is
+  // reachable here, so NODUS (the default) cannot send: hidden. Ethereum can: shown. Then NODUS again.
+  const chooseNetwork = async chain => {
+    if (!await page.locator('#wallet-network').evaluate(node => node.open)) await page.locator('#wallet-network > summary').click();
+    const badge = page.locator(`#portfolio-networks .network-health[data-chain="${chain}"]`);
+    const toggle = badge.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " network-group ")]').locator('.network-group-toggle');
+    if (await toggle.count() && await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
+    await badge.click();
+  };
+  assert.equal(await page.locator('#home-send').evaluate(node => node.hidden), true, 'Home Send hidden on NODUS without a node');
+  await chooseNetwork('ethereum');
+  await page.waitForFunction(() => document.querySelector('#home-send').hidden === false);
+  await chooseNetwork('nodus');
+  await page.waitForFunction(() => document.querySelector('#home-send').hidden === true);
   await page.locator('.wallet-navigation a[href="#settings"]').click();
   assert.equal(await page.locator('#device-panel').isVisible(), true);
   assert.equal(await page.locator('#wallet-home').isVisible(), false);
@@ -292,6 +319,13 @@ try {
   // Reveal before saving: no password field; the words show, and saving removes them.
   assert.equal(await page.locator('#reveal-password').isVisible(), false);
   await assertNotShown(); await revealNow(); await assertShown();
+  // UI pack 2026-11-03: the note, the framed words and the Copy phrase button; the copy reaches the clipboard only.
+  assert.match(await page.locator('#device-panel .reveal-note').innerText(), /^Your 24 words control your wallet\. Never send them to anyone/);
+  assert.equal(await page.locator('#device-panel .reveal-words').isVisible(), true);
+  assert.equal(await page.getByRole('button', { name: 'Copy phrase' }).isVisible(), true);
+  await page.getByRole('button', { name: 'Copy phrase' }).click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), vectors[0].phrase);
+  assert.ok(!(await page.locator('#wallet-status').textContent()).includes('abandon'), 'the copied words reached the status line');
   await page.locator('#vault-storage-title').click();
   assert.equal(await page.locator('#vault-save').isVisible(), true);
   assert.equal(await page.locator('#vault-change').isVisible(), false);

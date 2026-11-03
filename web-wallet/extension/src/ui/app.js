@@ -8,6 +8,7 @@ import { renderNodusConnect, renderNodusSiteApproval } from './nodus-site-screen
 import { renderSolanaTronSend, renderSolanaTronHistory } from './solana-tron-screens.js';
 import { NODUS_PERMISSION } from '../background/permissions.js';
 import { createPhraseFields } from '../../../src/phrase-fields.js';
+import { showRevealedPhrase } from '../../../src/reveal-phrase.js';
 import { walletHeading } from './presentation.js';
 import { autoLockBarText } from '../../../src/auto-lock.js';
 import { WALLET_MARKUP } from './wallet-markup.js';
@@ -242,10 +243,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
             try {
               phrase = await ui.revealPhrase(password); password = null;
               if (disposed || started !== revision) return;
-              container.hidden = false;
-              const grid = element('div', undefined, 'phrase-grid'), error = element('p', '', 'field-error');
-              container.replaceChildren(grid, error);
-              const display = createPhraseFields(grid, error); display.set(phrase, true); revealed = container; scheduleIdle(true);
+              showRevealedPhrase(document, container, phrase, { clipboard: window.navigator.clipboard }); revealed = container; scheduleIdle(true);
             } finally { phrase = password = null; }
           }, { renderAfter: false });
         },
@@ -378,9 +376,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
           try {
             phrase = await ui.revealPhrase(password); password = null;
             if (disposed || started !== revision) return;
-            container.hidden = false;
-            const grid = element('div', undefined, 'phrase-grid'), error = element('p', '', 'field-error');
-            container.replaceChildren(grid, error); createPhraseFields(grid, error).set(phrase, true); revealed = container; scheduleIdle(true);
+            showRevealedPhrase(document, container, phrase, { clipboard: window.navigator.clipboard }); revealed = container; scheduleIdle(true);
           } finally { phrase = password = null; }
         }, { renderAfter: false });
       },
@@ -392,11 +388,23 @@ export async function mountWalletPage({ document = globalThis.document, window =
       { label: 'Settings', icon: 'settings', run: () => navigate('settings') },
     ]);
   }
-  const unbindActivity = bindActivity(document, client, () => {
+  // A press re-reads only once it is released (W-42): the re-read redraws the open screen, and a row
+  // redrawn between press and release (a Connect chat, measured in ui-layout.test.js) never gets its click.
+  // pointerup, mouseup and click are dispatched in one task; the re-read starts in the next one.
+  let pressRead = false;
+  const readAfterPress = () => {
+    document.removeEventListener('pointerup', readAfterPress, true); document.removeEventListener('pointercancel', readAfterPress, true);
+    setTimeout(() => { pressRead = false; if (!disposed && ui.state?.isUnlocked) void refresh().catch(showError); }, 0);
+  };
+  const unbindActivity = bindActivity(document, client, event => {
     scheduleIdle(true);
     // Re-read the background while using an open wallet (including another window's manual lock).
     // Locked password and recovery forms retain their entered values until their explicit action or timeout.
-    if (ui.state?.isUnlocked) void refresh().catch(showError);
+    if (!ui.state?.isUnlocked) return;
+    if (event?.type !== 'pointerdown') { void refresh().catch(showError); return; }
+    if (pressRead) return;
+    pressRead = true;
+    document.addEventListener('pointerup', readAfterPress, true); document.addEventListener('pointercancel', readAfterPress, true);
   }, showError);
   const removeNotification = client.onNotification(message => {
     if (message.method === 'connectStateChanged') { openScreen?.refreshConnect?.(); return; }
@@ -407,7 +415,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
   const onVisible = () => { if (!document.hidden) onFocus(); };
   function dispose() {
     if (disposed) return;
-    disposed = true; clearSensitive(); clearTimeout(idleTimer); unbindActivity(); removeNotification(); removeDisconnect();
+    disposed = true; clearSensitive(); clearTimeout(idleTimer); unbindActivity(); document.removeEventListener('pointerup', readAfterPress, true); document.removeEventListener('pointercancel', readAfterPress, true); removeNotification(); removeDisconnect();
     window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('pagehide', dispose);
     for (const event of subscriptions) void client.request('messengerUnsubscribe', [event]).catch(() => {});
     client.close();

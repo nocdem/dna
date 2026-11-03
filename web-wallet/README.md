@@ -27,10 +27,14 @@ Synthetic/native/VM/regtest and mocked-controller tests are not live funded acce
 
 ## Nodus Connect browser extension
 
-The corner Connect button switches between Wallet and Connect in the same
-Nodus Connect extension window. Contacts, contact requests, direct chats, groups and profile
+A bottom bar with three buttons, Connect, Wallet and Settings, switches the views in
+the same Nodus Connect extension window; the current view is marked, and Connect
+carries an unread-message count while another view is shown (UI pack 2026-11-03,
+`extension/src/ui/connect.js`). Contacts, contact requests, direct chats, groups and profile
 editing use the shared Connect session and screens. Wallet and chat drafts stay
-in their views while switching. Lock wallet clears both views.
+in their views while switching. The lock icon on the wallet home locks the wallet and
+clears both views; there is no separate "Lock wallet" button and no Settings gear in the
+extension's side menu. Leaving Settings removes recovery words shown there.
 
 The extension worker owns the single Nodus client, Connect core and encrypted
 message history for every open wallet window. Trusted views receive public

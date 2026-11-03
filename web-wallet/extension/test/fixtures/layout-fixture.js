@@ -1,3 +1,14 @@
+// Browser fixture, not a test: layout.html loads it as a module, and
+// ui-layout.test.js and ui-render.test.js open that page. It mounts the shared
+// reference page on a fake background client. The query string picks the
+// state: stage, page, name, hold, failed, unread.
+// Needs: a Vite server resolving the bare @metamask import and the ../../src
+// paths, plus the caller's Chromium. No flags, env vars, ports or network.
+// Leaves: only the page's own localStorage key nodus.balanceRefreshMinutes=0
+// and window.layout; nothing on disk.
+// Falsely passes: the answers are fixed public values, so a caller proves how
+// the page renders those shapes, not that the real background returns them.
+// Any method not listed throws, so a new page call fails here loudly.
 import { mountReferencePage } from '../../src/ui/reference-entry.js';
 import { ASSETS } from '../../../src/portfolio.js';
 import { CHAINS } from '../../../src/config.js';
@@ -97,6 +108,16 @@ const client = { onNotification: () => () => {}, onDisconnect: () => () => {}, c
     return;
   }
   if (method === 'setPreference') { state.preferences[params[0]] = params[1]; return true; }
+  // `?unread`: an OPEN Connect snapshot (shape of snapshot() in src/connect/ui/messages.js) with one ready
+  // contact and two incoming chat messages, no read mark: the bottom bar's badge must read 2. Without the
+  // flag the method stays unanswered, as before. Public fixture values only.
+  if (method === 'getConnectState' && query.has('unread')) {
+    const fp = 'cd'.repeat(64), message = seq => ({ fp, seq, dir: 'in', text: `Public fixture message ${seq}`, ts: 1700000000000 + seq, at: 1700000000000 + seq, kind: 'chat' });
+    return { epoch: 1, phase: 'open', title: '', text: '', retry: false, online: false, caughtUp: true, ownFp: addresses.nodus, persistent: false,
+      ownProfile: null, ownNameConfirmed: false, contacts: [{ fp, ready: true }], outgoing: [], requests: [], messages: [message(1), message(2)],
+      profiles: [], groups: [], invitations: [], read: [], transferVerdicts: [], diagnostics: [], dropped: [], otherCounts: [],
+      feedback: {}, addResolved: null, vaults: [] };
+  }
   throw new Error(`Unexpected layout fixture method: ${method}`);
 } };
 const mounted = await mountReferencePage({ document, window, client });

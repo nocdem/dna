@@ -4,6 +4,19 @@ import { randomBytes } from 'node:crypto';
 // No outside traffic: HTTP proxy denies external origins before worker start.
 // Public fixture phrase only. Temporary browser profiles are removed; screenshots
 // can be supplied via PQ_RECEIVE_SCREENSHOT_DIR. Missing artifacts fail, no skips.
+// Needs dist/ and dist-extension/unpacked, Chromium at CHROMIUM_PATH (default
+// /usr/bin/chromium), jsqr; the host listens on 127.0.0.1 port 0. Env:
+// PQ_RECEIVE_BROWSER_MODE (web or extension) runs one surface only;
+// PQ_RECEIVE_DIAGNOSTIC (any value) waits longer for a restore failure to show.
+// Leaves: screenshots in PQ_RECEIVE_SCREENSHOT_DIR when set, including
+// <mode>-pq-failure.png after a failure (which is rethrown); nothing else.
+// Falsely passes: the outside-traffic check asserts only that no refused URL
+// contains the recovery phrase, not that none was attempted; a mode left out by
+// PQ_RECEIVE_BROWSER_MODE is not run; a stale build is tested as built.
+// UI pack 2026-11-03: the "receive address derived locally" status line is gone (the
+// line is empty and not visible; the network is checked on the environment summary);
+// the extension's Settings is reached through the bottom bar. Falsely passes if the
+// address never appeared (the check follows the wait for the shown address).
 import assert from 'node:assert/strict';
 import { readFile, mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -75,12 +88,20 @@ async function address(page,chain,network,expected,{decode=true}={}){
     assert.ok(config?.sendNote,`${chain} ${network}: a receive-only network has a send note`);
     assert.equal(await page.locator('#send-disabled-note').textContent(),config.sendNote);
   }
-  assert.match(await page.locator('#pq-address-status').textContent(),new RegExp(network==='testnet'?'Testnet':'Mainnet'));
+  // UI pack 2026-11-03 (operator "2"): the status line "<Network> receive address derived locally." is gone once the address
+  // is shown, the empty line takes no space; the network is read from the environment summary ("Environment · <label>").
+  assert.equal(await page.locator('#pq-address-status').textContent(),'');
+  assert.equal(await page.locator('#pq-address-status').isVisible(),false);
+  // The recovery note stays (UI pack 2026-11-03 section 5b), its text as on 14dc02b9f (src/app.js:966, extension wallet-screen.js:148).
+  assert.equal(await page.locator('#pq-recovery-note').textContent(),'Recover this address with your Nodus recovery phrase. Native chain wallets may derive different addresses.');
+  // It sits in the network environment disclosure (src/app.js:977, extension wallet-screen.js:158), shown with it, not hidden.
+  assert.equal(await page.locator('#pq-recovery-note').evaluate(node=>node.hidden),false);
+  assert.match(await page.locator('#wallet-environment summary').textContent(),new RegExp(network==='testnet'?'Testnet':'Mainnet'));
   if(decode)assert.equal(await qr(page),expected);
   await page.locator('#send-form').evaluate(form=>form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
   assert.equal(await page.locator('#review-dialog').evaluate(d=>d.open),false);
 }
-async function settings(page){await home(page);await page.locator('.wallet-navigation a[href="#settings"]').click();await page.locator('#page-settings').waitFor({state:'visible'});}
+async function settings(page){await home(page);await page.locator(activeMode==='extension'?'#extension-bottom-bar button[aria-label="Settings"]':'.wallet-navigation a[href="#settings"]').click();await page.locator('#page-settings').waitFor({state:'visible'});}
 async function lockPage(page){if(!(await page.locator('#lock').isVisible()))await home(page);await page.locator('#lock').click();}
 async function home(page){await page.locator('.wallet-navigation a[href="#"]').click();}
 try {

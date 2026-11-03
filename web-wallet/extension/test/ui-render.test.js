@@ -1,3 +1,19 @@
+// Proves the extension's page renderers and the mounted wallet page: home,
+// receive QR, connect, sites, settings, reveal phrase, import, create, send,
+// approvals and balances, plus one Chromium check of the status bar wording,
+// RPC provider choices and welcome text.
+// Needs: Node >=22.14 for the in-memory tests. The Chromium test also needs
+// CHROMIUM_PATH or /usr/bin/chromium and a loopback Vite server (through
+// portfolio-page-checks.js). No flags, network, wallet artifacts or ports
+// chosen here.
+// Leaves: nothing on disk except the temporary Vite cache that
+// portfolio-page-checks.js removes. In-memory tests swap globalThis.document
+// and restore it afterwards; document.getElementById is replaced on the
+// file's own fake document only.
+// Falsely passes: the fake Node class answers only the selectors these tests
+// use, so it does not prove real DOM behaviour; timers are mocked; the
+// provider loop in the Chromium test asserts nothing for a chain whose
+// rpcOptions is empty.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderHome, renderReceive, renderConnect, renderSites, renderSettings } from '../src/ui/views.js';
@@ -29,12 +45,15 @@ test('mounted status, provider choices and welcome text follow the reference', {
     for (const chain of ['ethereum', 'bsc']) {
       for (const provider of CHAINS[chain].rpcOptions) {
         await selectFixtureNetwork(page, chain);
-        await page.locator('a[href="#settings"]').click();
+        // functions.html has no bottom bar and the rail has no Settings link (UI pack): the #settings hash opens the page.
+        await page.evaluate(() => { window.location.hash = '#settings'; });
+        await page.locator('#page-settings').waitFor({ state: 'visible' });
         if (!await page.locator('#rpc-settings').evaluate(details => details.open)) await page.locator('#rpc-settings > summary').click();
         await page.locator('#rpc-choice').selectOption(provider.url); await page.locator('#save-rpc').click();
         await page.locator('#page-settings .page-back').click();
         await selectFixtureNetwork(page, 'solana'); await selectFixtureNetwork(page, chain);
-        await page.locator('a[href="#settings"]').click();
+        await page.evaluate(() => { window.location.hash = '#settings'; });
+        await page.locator('#page-settings').waitFor({ state: 'visible' });
         assert.equal(await page.locator('#rpc-choice').inputValue(), provider.url);
         assert.equal(await page.locator('#rpc-endpoint').isHidden(), true);
         await page.locator('#page-settings .page-back').click();
@@ -155,7 +174,8 @@ async function pageFixture(t, initialized = true) {
   const saved = Object.getOwnPropertyDescriptor(globalThis, 'document'); globalThis.document = document;
   const root = new Node('section'), navigation = new Node('nav'), status = new Node('p');
   document.getElementById = id => ({ screen: root, 'wallet-navigation': navigation, 'wallet-status': status })[id];
-  const window = Object.assign(new EventTarget(), { navigator: { clipboard: { async writeText() {} } } });
+  const clipboardWrites = [];
+  const window = Object.assign(new EventTarget(), { navigator: { clipboard: { async writeText(text) { clipboardWrites.push(text); } } } });
   const calls = [], phrase = 'abandon '.repeat(23) + 'art';
   const state = { isInitialized: initialized, isUnlocked: initialized, accounts: [account], addresses: { ethereum: account }, subjects: {}, pendingApprovals: {}, preferences: { autoLockTimeLimit: 15 } };
   let notification;
@@ -172,7 +192,7 @@ async function pageFixture(t, initialized = true) {
   } };
   const page = await mountWalletPage({ document, window, client });
   t.after(() => { page.dispose(); if (saved) Object.defineProperty(globalThis, 'document', saved); else delete globalThis.document; });
-  return { root, navigation, status, calls, state, page, phrase, notify: () => notification?.({ method: 'messengerSubscription' }) };
+  return { root, navigation, status, calls, state, page, phrase, clipboardWrites, notify: () => notification?.({ method: 'messengerSubscription' }) };
 }
 
 test('home session shows the actual background auto-lock preference', async t => {
@@ -185,15 +205,20 @@ test('home session shows the actual background auto-lock preference', async t =>
 
 // Proves the mounted page keeps authenticated words visible until expiry and removes them on lock; testing renderSettings alone would miss the action wrapper clearing or retaining secrets.
 test('mounted reveal survives its response and is cleared on background lock', async t => {
-  const { root, navigation, calls, state, page, phrase } = await pageFixture(t);
+  const { root, navigation, calls, state, page, phrase, clipboardWrites } = await pageFixture(t);
   button(root, 'Settings').onclick();
   const password = root.querySelectorAll('input[type="password"]')[0]; password.value = 'fresh-password';
   document.dispatchEvent(new Event('input'));
   await descendants(root, node => node.tagName === 'form')[0].onsubmit({ preventDefault() {} });
   assert.deepEqual(calls.find(call => call.method === 'getSeedPhrase').params, ['fresh-password']);
   assert.equal(root.querySelectorAll('input').filter(input => input.readOnly).map(input => input.value).join(' '), phrase);
+  // UI pack 2026-11-03: Copy phrase writes the shown words to the clipboard on click only.
+  assert.deepEqual(clipboardWrites, []);
+  await button(root, 'Copy phrase').onclick();
+  assert.deepEqual(clipboardWrites, [phrase]);
   state.isUnlocked = false; await page.refresh();
   assert.equal(root.querySelectorAll('input').some(input => input.value), false); assert.match(root.textContent, /unlock your wallet/i);
+  assert.equal(button(root, 'Copy phrase'), undefined);
 });
 
 // Proves the ten-minute recovery timeout remains active with auto-lock disabled; a default fifteen-minute wallet timer could otherwise hide missing secret cleanup.
@@ -201,8 +226,10 @@ test('mounted reveal clears after ten idle minutes even when auto-lock is never'
   const { root, navigation, state } = await pageFixture(t); state.preferences.autoLockTimeLimit = 0;
   button(root, 'Settings').onclick(); root.querySelectorAll('input[type="password"]')[0].value = 'fresh-password';
   await descendants(root, node => node.tagName === 'form')[0].onsubmit({ preventDefault() {} });
+  assert.ok(button(root, 'Copy phrase'));
   t.mock.timers.tick(10 * 60_000);
   assert.equal(root.querySelectorAll('input').some(input => input.value), false);
+  assert.equal(button(root, 'Copy phrase'), undefined);
 });
 
 // Proves the lifecycle adapter's import form reaches save/unlock with 24 words,
@@ -245,7 +272,11 @@ test('mounted page presents incoming permission requests', async t => {
 test('mounted activity observes background lock and preserves unlock entry', async t => {
   const { root, navigation, state, calls } = await pageFixture(t);
   button(root, 'Settings').onclick(); state.isUnlocked = false;
+  // W-42: a press re-reads the background only once released (a redraw between press and release lost the click).
+  const reads = () => calls.filter(call => call.method === 'getState').length, beforePress = reads();
   document.dispatchEvent(new Event('pointerdown')); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reads(), beforePress, 'a press alone does not re-read');
+  document.dispatchEvent(new Event('pointerup')); t.mock.timers.tick(0); await new Promise(resolve => setImmediate(resolve)); // setTimeout is mocked (pageFixture)
   assert.match(root.textContent, /unlock your wallet/i);
   const password = root.querySelectorAll('input[type="password"]')[0]; password.value = 'typed-password';
   const previousReads = calls.filter(call => call.method === 'getState').length;

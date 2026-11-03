@@ -1,4 +1,15 @@
 // Fully intercepted read-only portfolio fixtures. Never forward a blockchain request.
+// Imported, not run: browser-smoke.js, browser-security.js, browser-portfolio.js,
+// browser-nodus.js, browser-ixios.js, browser-capability-fixture.js (so
+// browser-capabilities.js) and connect-smoke.js call these readers from their
+// Playwright route handlers. Needs no build, Chromium, port or environment
+// variable of its own, only src/ (portfolio, config, ixios). Writes nothing.
+// Falsely passes: each reader answers only a request it recognises and returns
+// false for the rest, so the caller must refuse those (the scripts above do); a
+// caller that continues or fulfils the leftovers would let them through. The
+// answers are fixed (zero holdings unless the caller passes some, a price
+// stamped with the time of the call), so a caller proves how the page reads
+// these shapes, not what a real provider returns.
 import assert from 'node:assert/strict';
 import { ASSETS, PRICE_URL } from '../src/portfolio.js';
 import { CHAINS, CELLFRAME } from '../src/config.js';
@@ -30,6 +41,8 @@ export async function cellframeRead(route, { balance = '10', fail = false } = {}
 // shape-checked, never forwarded. `ethereum`: Blockscout txlist rows to
 // serve (default none); everything else answers "no transfers".
 // `seen` (optional array) collects 'chain:what' per request.
+// The PQ networks' read providers (src/pq/*.js), refused by the browser scripts whose fixture leaves them out.
+export const PQ_HOST = /(^|\.)(algonode\.cloud|soqu\.org|ckb\.dev|qtc\.events|burnt\.com|splendor\.org|asentum\.com)$/;
 export const BLOCKSCOUT_API = 'https://eth.blockscout.com/api';
 export async function historyRead(route, { ethereum = [], seen } = {}) {
   const req = route.request(), url = new URL(req.url());

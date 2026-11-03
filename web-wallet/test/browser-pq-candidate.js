@@ -1,4 +1,17 @@
 // Real production bundles, public test phrase, temporary profiles, and no live RPC.
+// Proves: restore and the receive address, QR and send gate for all 13 chain/
+// network variants of fixtures/pq-receive.json on the web build and the extension
+// (plus an encrypted lock/unlock for the extension); the CKB send flow on the web
+// build and Connect (see the CKB block below). Nothing is broadcast.
+// Needs: built dist/ (web), dist-connect/ (Connect) and dist-extension/unpacked
+// (extension); Chromium given by CHROMIUM_PATH (executablePath with channel
+// 'chromium'; the file sets no default); the host listens on 127.0.0.1 port 0 and
+// every other origin is refused. No flags.
+// Leaves: nothing; the temporary profiles and the host are removed in finally.
+// Falsely passes: the files served are the built ones, so a stale build passes;
+// the send-gate expectations are written out in this file, so a gate changed in
+// both places at once is not noticed; the 13 count is asserted, a fixture with
+// other entries fails rather than passes.
 import assert from 'node:assert/strict';
 import { readFile, mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -141,7 +154,8 @@ async function ckbSendFlow(mode, directory) {
   await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
   await page.locator('#wallet-open').waitFor({ state: 'visible' });
   await walletTab(page);
-  await page.locator('.wallet-navigation a[href="#settings"]').click(); await page.locator('#vault-storage-title').click();
+  // The extension's Settings is a bottom-bar button (UI pack 2026-11-03); web and Connect keep the rail gear.
+  await page.locator(mode === 'extension' ? '#extension-bottom-bar button[aria-label="Settings"]' : '.wallet-navigation a[href="#settings"]').click(); await page.locator('#vault-storage-title').click();
   await page.locator('#vault-password').fill(password); await page.locator('#vault-confirm-password').fill(password);
   await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
   await page.waitForFunction(() => document.querySelector('#vault-save-status').textContent.includes('Encrypted wallet saved'));

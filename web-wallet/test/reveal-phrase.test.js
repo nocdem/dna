@@ -12,12 +12,19 @@
 //      (never phrase-N, so they cannot duplicate the restore form's ids) and
 //      un-hides the container; clearRevealedPhrase removes every node and
 //      hides the container again.
+//   3b. (2026-11-03 UI pack) the block carries the note p.reveal-note; the words
+//      sit in one div.reveal-words wrapper with a "Copy phrase" button that
+//      writes exactly the 24 words to the injected clipboard on click only,
+//      raises nothing when the write rejects, throws or the clipboard is
+//      missing, and is removed with the words by clearRevealedPhrase.
 //   4. createPhraseFields keeps its default ids (phrase-N, phrase-suggestions-N).
 // What it needs: node:test only; no network, no storage, no browser.
 // What it leaves behind: nothing (the fake document is removed after each test).
 // How it can falsely pass: the fake document is not a browser (no layout, no
 // real `hidden` semantics); the browser tests (test/browser-smoke.js,
 // test/connect-smoke.js, test/browser-security.js) cover the real page.
+// The clipboard is an injected stub, so real clipboard permission is not proved,
+// and the "raises nothing" test (3b) has no assertion: it passes if nothing throws.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderRevealBlock, showRevealedPhrase, clearRevealedPhrase } from '../src/reveal-phrase.js';
@@ -55,10 +62,12 @@ test('renderRevealBlock builds the extension block and passes the typed value, e
   });
   const { block, password, recovery } = built;
   assert.equal(block.tagName, 'div'); assert.equal(block.className, 'page-block');
-  assert.deepEqual(block.children.map(node => node.tagName), ['h2', 'form', 'div']);
+  assert.deepEqual(block.children.map(node => node.tagName), ['h2', 'p', 'form', 'div']);
   assert.equal(block.children[0].textContent, 'Reveal recovery phrase');
-  assert.equal(block.children[2], recovery); assert.equal(recovery.hidden, true);
-  const form = block.children[1];
+  assert.equal(block.children[1].className, 'reveal-note');
+  assert.equal(block.children[1].textContent, 'Your 24 words control your wallet. Never send them to anyone, including a person claiming to be from Nodus.');
+  assert.equal(block.children[3], recovery); assert.equal(recovery.hidden, true);
+  const form = block.children[2];
   assert.deepEqual(form.children.map(node => node.tagName), ['label', 'input', 'button']);
   const [label, input, submit] = form.children;
   assert.equal(input, password);
@@ -77,7 +86,7 @@ test('renderRevealBlock builds the extension block and passes the typed value, e
 test('setPasswordRequired(false) leaves only the button; (true) restores the form', async () => {
   const calls = [];
   const built = renderRevealBlock(fakeDocument, { reveal: (password, container) => calls.push([password, container]) });
-  const form = built.block.children[1];
+  const form = built.block.children[2];
   const [label, input, submit] = form.children;
   built.setPasswordRequired(false);
   assert.equal(label.hidden, true); assert.equal(input.hidden, true); assert.equal(input.required, false);
@@ -103,6 +112,45 @@ test('showRevealedPhrase shows 24 read-only words under reveal-phrase-N ids; cle
   assert.equal(container.children.length, 0); assert.equal(container.hidden, true);
   assert.equal(descendants(container, node => node.tagName === 'input').length, 0);
   assert.equal(container.textContent.includes('word1'), false);
+});
+
+test('showRevealedPhrase draws one reveal-words wrapper with a Copy phrase button that writes exactly the 24 words on click', async t => {
+  withDocument(t);
+  const written = [];
+  const container = new Node('div'); container.hidden = true;
+  showRevealedPhrase(fakeDocument, container, PHRASE, { clipboard: { writeText: async text => { written.push(text); } } });
+  assert.equal(container.children.length, 1);
+  const wrapper = container.children[0];
+  assert.equal(wrapper.className, 'reveal-words');
+  assert.deepEqual(wrapper.children.map(node => node.className), ['phrase-grid', 'field-error', 'reveal-actions']);
+  assert.equal(descendants(wrapper, node => node.tagName === 'input' && node.readOnly === true).length, 24);
+  const buttons = descendants(container, node => node.tagName === 'button');
+  assert.equal(buttons.length, 1);
+  assert.equal(buttons[0].textContent, 'Copy phrase'); assert.equal(buttons[0].type, 'button');
+  assert.equal(buttons[0].className, 'secondary');
+  const hint = descendants(wrapper, node => node.className === 'hint');
+  assert.equal(hint.length, 1);
+  assert.equal(hint[0].textContent, 'Copied words stay on the clipboard until you copy something else.');
+  assert.deepEqual(written, [], 'nothing is written at reveal time');
+  await buttons[0].onclick();
+  assert.deepEqual(written, [PHRASE]);
+  clearRevealedPhrase(container);
+  assert.equal(descendants(container, node => node.tagName === 'button' || node.tagName === 'input').length, 0);
+});
+
+test('the Copy phrase button raises nothing when the clipboard write rejects, throws or is missing', async t => {
+  withDocument(t);
+  const cases = [
+    { writeText: async () => { throw new Error('denied'); } },
+    { writeText: () => { throw new Error('sync denied'); } },
+    undefined,
+  ];
+  for (const clipboard of cases) {
+    const container = new Node('div');
+    showRevealedPhrase(fakeDocument, container, PHRASE, { clipboard });
+    const button = descendants(container, node => node.tagName === 'button')[0];
+    await button.onclick();
+  }
 });
 
 test('createPhraseFields keeps the default ids and honours an id prefix', t => {

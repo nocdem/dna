@@ -224,6 +224,11 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
     if ($('home-register-name').disabled) return;
     origin = null; setTab('wallet'); $('quick-name').click();
   };
+  // Send is not offered where the wallet cannot send (UI pack 2026-11-03): #quick-send's disabled follows the
+  // selected network's capability and receive-only state (src/app.js showTransferActions).
+  const syncHomeSend = () => { $('home-send').hidden = $('quick-send').disabled; };
+  new MutationObserver(syncHomeSend).observe($('quick-send'), { attributes: true, attributeFilter: ['disabled'] });
+  syncHomeSend();
   $('home-new-chat').onclick = () => { origin = null; setTab('chats'); navigate('add'); };
   $('home-send').onclick = () => { setTab('wallet'); $('quick-send').click(); };
   $('home-receive').onclick = () => { setTab('wallet'); $('quick-receive').click(); };

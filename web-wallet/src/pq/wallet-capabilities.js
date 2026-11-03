@@ -26,7 +26,7 @@ export function walletPqNetwork(chain, config, networkId) {
         ...(chain === 'soqucoin' && networkId === 'mainnet' ? { sendNote: 'Native transparent SOQ payments; mature node-verified inputs only.' } : {}),
     ...(chain === 'algorand' && networkId === 'mainnet' ? { sendNote: 'Native ALGO payments; verified mainnet protocol and direct Falcon account required.' } : {}),
     // Same wording as the extension (extension/src/constants/capabilities.js, extensionNetworkConfig).
-    ...(chain === 'ckb' && networkId === 'mainnet' ? { balanceNote: 'Total live-cell capacity is not necessarily spendable.',
+    ...(chain === 'ckb' && networkId === 'mainnet' ? {
       sendNote: CKB_FULL_RECIPIENT_SEND_ENABLED ? 'Native CKB to full-format Bech32m recipients; quantum inputs only. Address validity does not prove recipient control. Signed simulation is disclosed to the configured node.' : 'Native CKB only; quantum-lock recipients and empty-data, non-cellbase inputs. Signed simulation is disclosed to the configured node.' } : {}),
     ...(Object.hasOwn(SEND_FROM_EXTENSION, chain) && networkId === 'mainnet' ? { sendNote: `Send ${SEND_FROM_EXTENSION[chain]} from the extension.` } : {}) };
 }

@@ -19,7 +19,10 @@ test('mounted portfolio controls route reads and preserve the send form', { time
   await withPortfolioPage(checkPortfolioFlows);
 });
 
-// Node >=22.14, no flags, network or disk writes; all browser/port fixtures are in memory and disposed after each test.
+// Node >=22.14, no flags, no network. The tests below use in-memory port/background fixtures disposed after
+// each test. The mounted portfolio test above is the exception: withPortfolioPage
+// (fixtures/portfolio-page-checks.js:25-42) starts a loopback Vite server on 127.0.0.1 port 0 and Chromium
+// (CHROMIUM_PATH or /usr/bin/chromium) and writes a temporary Vite cache it removes in finally.
 const phrase = 'abandon '.repeat(23) + 'art';
 const password = 'public-test-password-123';
 
@@ -224,6 +227,18 @@ test('pointer, key and input events report trusted activity', async t => {
   const unbind = bindActivity(document, client);
   for (const type of ['pointerdown', 'keydown', 'input']) { document.dispatchEvent(new Event(type)); await until(() => creates.length > 0); creates.pop(); }
   unbind(); document.dispatchEvent(new Event('input')); await new Promise(resolve => setImmediate(resolve)); assert.equal(creates.length, 0);
+});
+
+// Proves the activity callback receives the event, so a press can be told apart from a key or input (W-42:
+// the open wallet re-reads the background after a press is released, not on the press). Falsely passes if a
+// caller ignores the argument; the mounted-page click in ui-layout.test.js checks the caller.
+test('activity callback receives the event that caused it', async t => {
+  const { client, fixture } = await setup(t), document = new EventTarget(), seen = [], creates = [];
+  t.mock.method(fixture.alarms, 'create', async (...args) => { creates.push(args); });
+  const unbind = bindActivity(document, client, event => seen.push(event?.type));
+  for (const type of ['pointerdown', 'keydown', 'input']) document.dispatchEvent(new Event(type));
+  await until(() => creates.length === 3); // the three activity reports settle before the fixture closes
+  unbind(); assert.deepEqual(seen, ['pointerdown', 'keydown', 'input']);
 });
 
 // Proves unsupported permission shapes cannot be accidentally approved; using only the normal EVM caveat would miss unknown permission escalation.

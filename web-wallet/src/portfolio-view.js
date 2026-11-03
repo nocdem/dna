@@ -215,7 +215,14 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
       detail.open = expandedAssets.has(group.chain);
       const summary = el('summary', 'asset-summary');
       const heading = el('button', 'network-heading-select', network.name); heading.type = 'button'; heading.setAttribute('aria-label', `Select ${network.name} network`);
-      heading.onclick = event => { event.preventDefault(); event.stopPropagation(); selectAsset(group.chain, network.symbol, 'choose'); };
+      // A click on the network name selects the network AND opens or closes its group (UI pack 2026-11-03).
+      // Toggle first, then select: selectAsset redraws the groups synchronously from the open state.
+      heading.onclick = event => {
+        event.preventDefault(); event.stopPropagation();
+        detail.open = !detail.open;
+        if (detail.open) expandedAssets.add(group.chain); else expandedAssets.delete(group.chain);
+        selectAsset(group.chain, network.symbol, 'choose');
+      };
       summary.append(networkIcon(network), heading, el('span', 'asset-chevron', '⌄')); detail.append(summary);
       for (const row of group.rows) {
         const entry = el('div', `chain-holding${row.chain === selected ? ' selected' : ''}`); entry.dataset.chain = row.chain;
@@ -227,9 +234,6 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
         const amount = el('strong', '', text(row.balance === null ? state : `${displayAmount(row.balance)} ${row.symbol}`));
         if (row.balance !== null && !hidden) amount.title = `${row.balance} ${row.symbol}`;
         value.append(amount, el('small', '', row.keptAt !== undefined ? `Last read ${readTime(row.keptAt)}` : text(row.priceMissing ? 'Price unavailable' : usdText(row.usd, row.positive))));
-        if (row.state === 'unsupported' && row.keptAt !== undefined) value.append(el('small', 'balance-note', unavailableBalanceLabel(row.chain)));
-        if (row.state === 'error' && row.keptAt !== undefined) value.append(el('small', 'balance-error', `${row.error || 'Balance unavailable'}; showing last read.`));
-        if (network.balanceNote) value.append(el('small', 'balance-note', network.balanceNote));
         entry.append(identity, value); detail.append(entry);
       }
       return detail;

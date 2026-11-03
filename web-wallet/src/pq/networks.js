@@ -2,7 +2,7 @@ import { PQ_PRICE_IDS } from './prices.js';
 const sendNote = 'Receive only. Sending and balances are not available in this release.';
 function entry(name, symbol, decimals, ids, icon, readable = false, readNote) {
   const networks = ids.map(id => Object.freeze({ id, label: id === 'mainnet' ? 'Mainnet' : 'Testnet' }));
-  return Object.freeze({ name, symbol, decimals, icon, networkGroup: 'pq', tokens: Object.freeze([]), ...(readNote ? { balanceNote: readNote } : {}),
+  return Object.freeze({ name, symbol, decimals, icon, networkGroup: 'pq', tokens: Object.freeze([]),
     receiveOnly: true, balanceUnavailable: !readable, sendNote: readNote || (readable ? 'Sending is not available in this release. Balances and native payment history are read only.' : sendNote),
     networks: Object.freeze(networks), defaultNetwork: ids[0] });
 }

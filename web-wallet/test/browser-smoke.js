@@ -4,7 +4,23 @@ import { AUTO_LOCK_KEY } from '../src/auto-lock.js';
 import { BALANCE_REFRESH_KEY } from '../src/balance-refresh.js';
 import { SHOW_ZERO_KEY } from '../src/zero-balances.js';
 import { CHAINS } from '../src/config.js';
-// Run after npm run build + npm run preview. Every external request is intercepted.
+// Run after npm run build. Every external request is intercepted.
+// Proves, on the web build: wallet create / restore / backup, the Nodus and
+// external addresses, the Send and Receive pages and the receive QR (decoded to
+// the shown address), signed ETH/ERC20 sends against a mocked node, the wrong-
+// network guard, Cellframe balance and error states, activity, saved-wallet
+// controls, the settings page, the rail, licence text and the footer version.
+// Needs: dist/ built; the script starts `vite preview` itself on 127.0.0.1 port
+// 4173 with --strictPort (run from web-wallet/), and preview-server.js refuses a
+// port that already answers, so do not start a preview first. WALLET_URL replaces
+// the server: nothing is started and whatever answers there is tested. Chromium
+// at CHROMIUM_PATH, otherwise Playwright's own. jsqr and fixtures/nodus-addresses.json.
+// Leaves: SHOT_DIR/receive-page.png when SHOT_DIR is set; nothing else (fresh
+// browser context, closed with the server in finally).
+// Falsely passes: every provider and every broadcast is the script's mock; zero
+// balances are forced visible by an init script (hiding is checked in
+// browser-portfolio.js); the footer version is compared with package.json, so a
+// dist built at another version fails, but a stale build of the same version passes.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -160,15 +176,19 @@ try {
   const qrGap = await page.locator('#receive-qr svg').evaluate(svg => { const s = svg.getBoundingClientRect(), p = svg.parentElement.getBoundingClientRect(); return [s.left - p.left, p.right - s.right]; });
   assert.ok(Math.abs(qrGap[0] - qrGap[1]) <= 2, `QR centred (left ${qrGap[0]}, right ${qrGap[1]})`);
   assert.equal(await decodeQr(), await page.locator('#receive-address').innerText());
-  assert.equal(await page.locator('#nodus-address-status').isVisible(), true);
-  assert.match(await page.locator('#nodus-address-status').innerText(), /Derived locally/);
+  // UI pack 2026-11-03 (operator "2"): "Derived locally…" is gone from the status line; no node is reachable
+  // in this script, so the line may still hold a connection-state remainder. It is visible exactly when it has text.
+  const nodusStatus = await page.locator('#nodus-address-status').textContent();
+  assert.doesNotMatch(nodusStatus, /Derived locally/);
+  assert.equal(await page.locator('#nodus-address-status').isVisible(), nodusStatus.trim() !== '');
   assert.equal(await page.locator('#cellframe-address-status').isVisible(), false);
-  await walletView(); await openPage('send');
-  assert.equal(await page.locator('#send-fields').isVisible(), false);
-  // The build carries the send module, so until a node connection is ready
-  // (never, here: no node is reachable) NODUS says it is connecting.
-  assert.equal(await page.locator('#send-disabled-note').innerText(), 'Connecting to the Nodus network… Sending NODUS becomes available as soon as the connection is ready.');
   await walletView();
+  // UI pack 2026-11-03 (operator "send tusunu kaldir gecsin"): until a node connection is ready (never,
+  // here: no node is reachable) NODUS cannot send, so Send is not offered at all; the hidden shortcut
+  // button keeps its disabled state for the code paths that read it.
+  assert.equal(await page.locator('.wallet-navigation a[href="#send"]').isVisible(), false);
+  assert.equal(await page.locator('#quick-send').isDisabled(), true);
+  assert.equal(await page.locator('#balances .balance-note, #balances .balance-error').count(), 0, 'no note under any coin');
   assert.equal(await page.locator('#account-explorer').evaluate(node => node.hidden), true);
   assert.equal(await page.locator('#rpc-settings').evaluate(node => node.hidden), true);
   assert.equal(await page.locator('#activity').textContent(), '');
@@ -279,9 +299,10 @@ try {
   await walletView(); await page.evaluate(() => history.replaceState(null, '', location.pathname));
   // Send and Receive are separate rail pages (src/app.js:2324-2329); the page's
   // labelling heading takes focus (pageTitle, src/app.js:2350).
+  await selectNetwork('ethereum');
+  // The Send link is offered once a network that can send is selected (NODUS cannot, here).
   assert.equal(await page.locator('.wallet-navigation a[href="#send"] .nav-name').innerText(), 'Send');
   assert.equal(await page.locator('.wallet-navigation a[href="#receive"] .nav-name').innerText(), 'Receive');
-  await selectNetwork('ethereum');
   await openPage('send');
   assert.equal(await page.locator('#send-title').evaluate(el => el === document.activeElement), true);
   await walletView(); await selectNetwork('nodus');
@@ -330,7 +351,8 @@ try {
   // same as Nodus), and there is no separate panel or manual derive button.
   await selectNetwork('cellframe');
   await page.waitForFunction(() => /^[1-9A-HJ-NP-Za-km-z]{100,110}$/.test(document.querySelector('#receive-address').textContent));
-  assert.match(await page.locator('#cellframe-address-status').innerText(), /Derived locally/);
+  assert.equal(await page.locator('#cellframe-address-status').textContent(), '');
+  assert.equal(await page.locator('#cellframe-address-status').isVisible(), false);
   // The longest address format (100–110 characters) still decodes exactly.
   assert.equal(await decodeQr(), await page.locator('#receive-address').innerText(), 'cellframe QR decodes to the shown address');
   assert.equal(await page.locator('#send-fields').isVisible(), false);
@@ -413,6 +435,8 @@ try {
   assert.equal(await page.locator('#receive-address').innerText(), nodusAddress); assert.equal(await page.locator('#activity').innerText(), '');
   await selectNetwork('ethereum');
   await page.waitForFunction(confirmedLeft);
+  // Selecting NODUS (no Send there) closed the open Send page (UI pack 2026-11-03, item 3): open it again.
+  await walletView(); await openPage('send');
   await page.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await page.locator('#amount').fill('0.01');
   networkId = '0x38'; await page.locator('#review-button').click(); await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('wrong network')); assert.equal(broadcasts.length, 2);
   // A CPUNK read failure is shown on its own row ("Read failed · last read"
@@ -422,7 +446,10 @@ try {
   cellframeFail = true; await pressRefresh('portfolio-refresh');
   // Current wording (src/portfolio-view.js): the time of the last read, and the
   // row says the balance is unavailable and the last read is shown.
-  await page.waitForFunction(() => { const row = document.querySelector('.asset-group[data-chain="cellframe"] .chain-holding'); return row && row.querySelector('.holding-value small')?.textContent.startsWith('Last read ') && row.textContent.includes('Balance unavailable; showing last read.'); });
+  // UI pack 2026-11-03: the "Balance unavailable; showing last read." line under a coin is gone; the failed
+  // read is proven by the Cellframe network light turning failed, the older value stays marked "Last read".
+  await page.waitForFunction(() => { const row = document.querySelector('.asset-group[data-chain="cellframe"] .chain-holding'); return row && row.querySelector('.holding-value small')?.textContent.startsWith('Last read ') && document.querySelector('#portfolio-networks .network-health[data-chain="cellframe"][data-health="failed"]'); });
+  assert.equal(await page.locator('.asset-group[data-chain="cellframe"] .chain-holding .balance-error, .asset-group[data-chain="cellframe"] .chain-holding .balance-note').count(), 0);
   assert.notEqual(await page.locator('.asset-group[data-chain="cellframe"] .holding-value strong').textContent(), '0 CPUNK');
   cellframeFail = false;
   assert.equal(await page.evaluate(k => Object.keys(localStorage).filter(x => x !== k).length + sessionStorage.length, SHOW_ZERO_KEY), 0);
@@ -435,8 +462,21 @@ try {
   await revealNow(); await assertShown();
   assert.equal(await page.locator('#reveal-phrase-1').count(), 1); assert.equal(await page.locator('#phrase-1').count(), 1);
   assert.equal(await page.evaluate(k => Object.keys(localStorage).filter(x => x !== k).length + sessionStorage.length, SHOW_ZERO_KEY), 0);
+  // UI pack 2026-11-03: note, framed words with centred numbers, Copy phrase (clipboard permission granted above).
+  assert.match(await page.locator('#device-panel .reveal-note').innerText(), /^Your 24 words control your wallet\. Never send them to anyone/);
+  assert.equal(await page.locator('#device-panel .reveal-words').isVisible(), true);
+  const labelOffsets = await page.locator('#device-panel .reveal-words .phrase-cell').evaluateAll(cells => cells.map(cell => {
+    const label = cell.querySelector('label').getBoundingClientRect(), input = cell.querySelector('input').getBoundingClientRect();
+    return Math.abs((label.top + label.height / 2) - (input.top + input.height / 2));
+  }));
+  assert.equal(labelOffsets.length, 24); assert.ok(labelOffsets.every(offset => offset <= 1), `number labels off centre: ${labelOffsets}`);
+  await page.getByRole('button', { name: 'Copy phrase' }).click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), phrase);
+  const leaked = await page.evaluate(() => JSON.stringify([document.querySelector('#wallet-status').textContent, document.querySelector('#session-log-text').textContent, { ...localStorage }, { ...sessionStorage }]));
+  assert.ok(!leaked.includes('abandon abandon'), 'the copied words reached a status line, the log or storage');
   await page.locator('#page-settings .page-back').click(); await page.locator('#wallet-home').waitFor({ state: 'visible' });
   await assertNotShown();
+  assert.equal(await page.getByRole('button', { name: 'Copy phrase' }).count(), 0);
   await openPage('settings'); await assertNotShown();
   await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
   assert.equal(await page.locator('#vault-save').isVisible(), true);

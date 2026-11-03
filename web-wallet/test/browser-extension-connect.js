@@ -8,6 +8,22 @@
 // copy; production scripts/WASM/manifest remain byte-identical. NOT live delivery.
 // No compile flags. CHROMIUM_PATH optional; CONNECT_SCREENSHOT_DIR preserves
 // screenshots. Temporary browser profile/server are always removed; no skips.
+// UI pack 2026-11-03 (bottom bar): the views are switched by the bar's Connect /
+// Wallet / Settings buttons (no top switch, no "Lock wallet" text button on the
+// Connect view). Proves: aria-current follows the view, a kept Send page and its
+// draft survive Connect <-> Wallet, locking is the wallet home's lock icon
+// (reached by bar Wallet, plus Back from a kept page), Settings opens
+// #page-settings, and the messenger ends at or above the bar. Needs the built
+// extension. Falsely passes if the Send draft page were never opened (the
+// recipient/amount checks follow its fill) or if the viewport (440 wide) hid a
+// geometry difference of a wider window (ui-layout.test.js covers more widths).
+// Also needs the esbuild package and dist-extension/unpacked; Chromium at
+// CHROMIUM_PATH, default /usr/bin/chromium. The blocking proxy listens on
+// 127.0.0.1 port 0. CONNECT_DEBUG_EXCEPTIONS (any value) logs worker exceptions.
+// Leaves: only screenshots in CONNECT_SCREENSHOT_DIR when it is set; the
+// temporary copy and profile are removed in finally.
+// The outside-traffic check only asserts that no blocked request URL contains
+// the recovery phrase; blocked requests are recorded, not required to be zero.
 import assert from 'node:assert/strict';
 import { readFile, mkdtemp, rm, mkdir, cp } from 'node:fs/promises';
 import { build } from 'esbuild';
@@ -56,8 +72,19 @@ async function rpcSetup(page) {
   });
 }
 const rpc = (page, method, params = []) => page.evaluate(({ method, params }) => window.connectTestRpc(method, params), { method, params });
+// UI pack 2026-11-03: the bottom bar (Connect, Wallet, Settings) replaced the top-right switch and the
+// "Lock wallet" text button; locking is the wallet home's lock icon only. The accessible name of Connect
+// gains ", N new" when messages are unread, hence the prefix match.
+const bar = (page, name) => page.locator(`#extension-bottom-bar button[aria-label^="${name}"]`);
+async function selectNetwork(page, chain) {
+  if (!await page.locator('#wallet-network').evaluate(node => node.open)) await page.locator('#wallet-network > summary').click();
+  const badge = page.locator(`#portfolio-networks .network-health[data-chain="${chain}"]`);
+  const toggle = badge.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " network-group ")]').locator('.network-group-toggle');
+  if (await toggle.count() && await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
+  await badge.click();
+}
 async function connectView(page) {
-  await page.locator('#wallet-connect-switch').click();
+  await bar(page, 'Connect').click();
   await page.locator('#extension-connect:visible').waitFor();
   await page.waitForFunction(() => document.querySelector('#nc-own-id')?.textContent?.length === 128);
 }
@@ -120,16 +147,24 @@ try {
   await rpcSetup(page);
   const tabs = context.pages().length;
   await screenshot(page, 'extension-wallet.png');
-  // NODUS correctly disables sending without a connection. Use the existing
+  // NODUS has no Send entry without a connection (UI pack 2026-11-03). Use the
   // Ethereum draft form for view-retention coverage; never review or submit it.
-  await page.locator('.wallet-navigation a[href="#send-form"]').click();
-  await page.locator('#chain').selectOption('ethereum');
+  await selectNetwork(page, 'ethereum');
+  await page.locator('.wallet-navigation a[href="#send"]').click();
+  assert.equal(await page.locator('#chain').inputValue(), 'ethereum');
   const initialUrl = page.url();
   await page.locator('#recipient').fill('Public draft recipient');
   await page.locator('#amount').fill('1.25');
   await connectView(page);
   assert.equal(await page.locator('.product-name').textContent(), 'Connect');
-  assert.equal(await page.locator('#wallet-connect-switch').textContent(), 'Wallet');
+  assert.equal(await bar(page, 'Connect').getAttribute('aria-current'), 'page');
+  assert.equal(await page.locator('#wallet-connect-switch').count(), 0);
+  assert.equal(await page.locator('.wallet-connect-switch').count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Lock wallet', exact: true }).count(), 0, 'no lock control on the Connect view');
+  assert.deepEqual(await page.locator('#extension-bottom-bar button').evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label'))), ['Connect', 'Wallet', 'Settings']);
+  // The messenger ends at or above the bar (the bar is fixed over the page bottom).
+  const geometry = await page.evaluate(() => ({ messenger: document.querySelector('#extension-connect .messenger').getBoundingClientRect().bottom, bar: document.querySelector('#extension-bottom-bar').getBoundingClientRect().top }));
+  assert.ok(geometry.messenger <= geometry.bar + 0.5, `messenger bottom ${geometry.messenger} reaches the bar top ${geometry.bar}`);
   let state = await rpc(page, 'getConnectState');
   assert.equal(state.phase, 'open', state.text); assert.equal(state.persistent, true); assert.equal(state.online, false);
   assert.match(state.ownFp, /^[0-9a-f]{128}$/); const fp = state.ownFp;
@@ -138,16 +173,23 @@ try {
   await screenshot(page, 'extension-connect.png');
   await page.getByRole('button', { name: 'Your ID & profile', exact: true }).click();
   await page.locator('#nc-bio').fill('Draft kept while switching');
-  await page.locator('#wallet-connect-switch').click(); await page.locator('#wallet-open:visible').waitFor();
-  assert.equal(await page.locator('#wallet-connect-switch').textContent(), 'Connect');
+  await bar(page, 'Wallet').click(); await page.locator('#wallet-open:visible').waitFor();
+  assert.equal(await bar(page, 'Wallet').getAttribute('aria-current'), 'page');
+  assert.equal(await bar(page, 'Connect').getAttribute('aria-current'), null);
   assert.equal(await page.locator('#recipient').inputValue(), 'Public draft recipient');
   assert.equal(await page.locator('#amount').inputValue(), '1.25');
   assert.equal(await page.locator('#chain').inputValue(), 'ethereum');
-  await page.locator('#wallet-connect-switch').click();
+  await bar(page, 'Connect').click();
   assert.equal(await page.locator('#nc-bio').inputValue(), 'Draft kept while switching');
   assert.equal(context.pages().length, tabs); assert.equal(page.url(), initialUrl);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Popup has no horizontal overflow');
 
+  // The Send page opened above was kept through the switches; the lock icon sits on the wallet home, so:
+  // bar Wallet shows the kept Send page, its Back control returns home, then the lock icon.
+  await bar(page, 'Wallet').click();
+  assert.equal(await page.locator('#page-send').isVisible(), true);
+  await page.locator('#page-send .page-back').click();
+  assert.equal(await page.getByRole('button', { name: 'Lock wallet', exact: true }).count(), 1);
   await page.getByRole('button', { name: 'Lock wallet', exact: true }).click();
   await page.locator('#unlock-password:visible').waitFor();
   await page.evaluate(async input => (await import(chrome.runtime.getURL('test-history-fixture.js'))).seedHistory(input),
@@ -170,7 +212,8 @@ try {
   const reopened = await context.newPage(); reopened.on('pageerror', error => errors.push(error.message));
   await reopened.goto(`${base}/popup.html`); await reopened.locator('#wallet-open:visible').waitFor(); await rpcSetup(reopened);
   assert.equal((await rpc(reopened, 'getConnectState')).epoch, state.epoch, 'Closing windows does not replace the worker session');
-  await connectView(reopened); await reopened.getByRole('button', { name: 'Lock wallet', exact: true }).click();
+  // A window opened on popup.html without a hash mounts the wallet on home, so the bar's Wallet reaches the lock icon.
+  await connectView(reopened); await bar(reopened, 'Wallet').click(); await reopened.getByRole('button', { name: 'Lock wallet', exact: true }).click();
   await reopened.locator('#unlock-password:visible').waitFor();
   assert.equal(await reopened.locator('#extension-connect').count(), 0);
   await assert.rejects(rpc(reopened, 'getConnectState'), /locked/i);
@@ -190,24 +233,25 @@ try {
   assert.equal(await reopened.locator('dialog[open]').count(), 0);
   const counterAfter = await worker.evaluate(async key => (await chrome.storage.local.get(key))[key], counterKey);
   assert.ok(BigInt(counterAfter) >= count, 'Erasing messages preserves the encryption invocation budget');
-  await reopened.getByRole('button', { name: 'Lock wallet', exact: true }).click();
+  await bar(reopened, 'Wallet').click(); await reopened.getByRole('button', { name: 'Lock wallet', exact: true }).click();
   await unlock(reopened); await connectView(reopened);
   after = await rpc(reopened, 'getConnectState');
   assert.deepEqual(after.vaults, []); assert.equal(after.ownFp, fp);
-  // Negative control: blocked transport holds the native queue until its
-  // EXISTING watchdog closes it. The worker must immediately drop Connect's
-  // public projection, reject that old action and then reopen on a new client.
-  const beforeLoss = after;
-  const waitingWrite = rpc(reopened, 'connectAction', [beforeLoss.epoch, 'vaultKeep', { address, value: { name: marker } }]);
-  await assert.rejects(waitingWrite, /closed|locked|sealed/i);
-  const lost = await rpc(reopened, 'getConnectState');
-  assert.equal(lost.ownFp, null); assert.notEqual(lost.phase, 'open'); assert.deepEqual(lost.vaults, []);
-  await reopened.waitForFunction(() => document.querySelector('#nc-own-id')?.textContent === '');
-  await reopened.waitForFunction(() => document.querySelector('#nc-own-id')?.textContent?.length === 128);
-  const reconnected = await rpc(reopened, 'getConnectState');
-  assert.ok(reconnected.epoch > beforeLoss.epoch); assert.equal(reconnected.phase, 'open');
-  assert.equal(reconnected.ownFp, fp); assert.deepEqual(reconnected.vaults, []);
-  await assert.rejects(rpc(reopened, 'connectAction', [beforeLoss.epoch, 'sync', {}]), /closed/i);
+  // The transport negative control (a blocked transport holding the client's queue until the 30 s
+  // connect watchdog closes Connect) was removed: the 4001 client bounds each node's TCP connect and
+  // handshake by connect_timeout_ms (nodus/src/client/nodus_client.c:956-959, :990-993, 14710ab52) and
+  // tries the next node (:890-896), so an attempt fails by itself first. Measured: with the next CONNECT
+  // held unanswered, the attempt failed after 18,123 ms and the queued write was not rejected. The
+  // watchdog closing Connect and stale epochs are covered by test/nodus-send.test.js:914, :939 and
+  // extension/test/connect-background.test.js:50; a stale epoch is also refused above (after the unlock).
+  // Bar Settings leaves the Connect view for the Device & settings page; Wallet returns home.
+  await bar(reopened, 'Settings').click();
+  await reopened.locator('#page-settings').waitFor({ state: 'visible' });
+  assert.equal(await reopened.locator('#extension-connect').isVisible(), false);
+  assert.equal(await bar(reopened, 'Settings').getAttribute('aria-current'), 'page');
+  await bar(reopened, 'Wallet').click();
+  assert.equal(await reopened.locator('#page-settings').isVisible(), false);
+  assert.equal(await bar(reopened, 'Wallet').getAttribute('aria-current'), 'page');
   assert.deepEqual(errors, []);
   assert.ok(outside.every(url => !url.includes(fixture.phrase)));
   console.log('PASS packaged extension: same-window switch/draft, shared worker, real encrypted history, lock/reopen and erase counter continuity; external transport blocked, live delivery untested');

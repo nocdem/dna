@@ -660,6 +660,17 @@ button.network-health:focus-visible { outline: 2px solid var(--lime); outline-of
 .wallet-page .device-panel > details:last-child { margin-bottom: 0; }
 .wallet-page .device-panel #vault-save, .wallet-page .device-panel #vault-change { width: auto; min-width: 200px; margin: 6px 12px 0 0; }
 .wallet-page .rpc-settings #save-rpc { margin-top: 14px; }
+/* Reveal recovery phrase: note, framed words, Copy button (UI pack 2026-11-03; values of the approved mockup). */
+#device-panel .reveal-note { margin: 6px 0 4px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+#device-panel .reveal-words { margin-top: 16px; padding: 18px; border: 1px solid #3a4230; border-radius: 12px; background: #0b0d0a; }
+#device-panel .reveal-words .phrase-grid { gap: 8px; }
+#device-panel .reveal-words .phrase-cell label { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); margin: 0; font-size: 11px; font-weight: 400; color: var(--muted); }
+#device-panel .reveal-words .phrase-cell input { padding-left: 38px; }
+#device-panel .reveal-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 16px; }
+#device-panel .reveal-actions button { width: auto; margin: 0; padding: 9px 18px; }
+#device-panel .reveal-actions .hint { margin: 0; flex: 1 1 200px; color: var(--muted); font-size: 12px; }
+/* Receive pages: a status line with no text takes no space (UI pack 5b). */
+#pq-address-status:empty, #nodus-address-status:empty, #cellframe-address-status:empty, #ixios-address-status:empty { display: none; }
 .device-logs-link { display: flex; align-items: center; gap: 12px; margin: 16px 0 0; padding: 16px 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); font-size: 13px; color: var(--muted); }
 .device-logs-link .app-icon { color: var(--lime); }
 .device-logs-link a { font-weight: 600; text-underline-offset: 3px; }
