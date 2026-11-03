@@ -71,7 +71,8 @@ function inspect(outDir) {
     ixiosJs: js.filter(file => /ixios/i.test(file) || /ixios/i.test(readFileSync(join(outDir, file), 'utf8'))),
     ixiosHtml: files.filter(file => file.endsWith('.html') && /ixios/i.test(readFileSync(join(outDir, file), 'utf8'))),
     signWasm: files.filter(file => /mldsa87-sign/.test(file)),
-    keygenWasm: files.filter(file => /mldsa87-[^/]+\.wasm$/.test(file) && !/mldsa87-sign/.test(file)),
+    // mldsa87-verify (src/pq/ixios verify path) ships too; the released 0.1.160 build has the same three files.
+    keygenWasm: files.filter(file => /mldsa87-[^/]+\.wasm$/.test(file) && !/mldsa87-(sign|verify)/.test(file)),
   };
 }
 async function serve(outDir, port) {
@@ -141,7 +142,10 @@ try {
   assert.ok(files.ixiosJs.length > 0, 'the build must contain the Ixios code');
   // The old top-of-page panel is gone: Ixios is created only by JavaScript.
   assert.deepEqual(files.ixiosHtml, []);
-  assert.deepEqual(files.signWasm, []);
+  // The signing module ships in the build (src/pq/ixios/transaction.js imports src/pq/sign.js); the released 0.1.160
+  // web and Connect builds already carry it (deployment0160 SHA256SUMS: dist/assets/mldsa87-sign-Dd8Y3xVG.wasm).
+  // Web send stays off (decisions/2026-09-23-ixios-send-mainnet-first.md "Değişiklik 2"); the page never fetches it (below).
+  assert.equal(files.signWasm.length, 1);
   assert.equal(files.keygenWasm.length, 1, 'Ixios reuses the Nodus keygen module, not a new one');
   browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || undefined });
 
