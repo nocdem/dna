@@ -155,6 +155,8 @@ export function renderConnect(document, container, state, pending, { approve, re
 
 export function renderSites(document, container, state, revoke) {
   container.replaceChildren(); heading(document, container, 'Connected sites', 'sites');
+  // A connected-sites record that could not be opened stays as it is; say so (plan section 2.6).
+  if (state.connectedSitesError) container.append(element(document, 'p', 'field-error', state.connectedSitesError));
   const sites = Object.entries(state.subjects || {}).filter(([, subject]) => subject.permissions?.[Caip25EndowmentPermissionName] || subject.permissions?.[NODUS_PERMISSION]);
   if (!sites.length) { container.append(element(document, 'p', 'hint', 'No connected sites.')); return; }
   const list = element(document, 'div', 'address-book-list');

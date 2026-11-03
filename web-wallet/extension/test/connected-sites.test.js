@@ -161,14 +161,34 @@ test('a damaged record is reported, leaves the list empty, and is not overwritte
   remote.disconnect();
 });
 
-test('a record of another wallet is ignored and replaced by the next grant', async t => {
+// Plan section 2.6: a record that fails to open, also one sealed for another vault id, is not overwritten silently;
+// a restore (which replaces the wallet and clears its permissions) removes the replaced wallet's record.
+test('a record of another wallet is reported and left as it is', async t => {
   const { background, runtime, values } = await setup(t), remote = port(runtime);
-  // A record sealed for a different vault id (a restore replaced the wallet).
   const otherId = Buffer.alloc(16, 7).toString('base64');
-  values[SITES_KEY] = await serializeSites(otherId, {}, await sitesKeyFor(phrase, otherId));
-  const unlocked = await startWallet(background);
-  assert.equal(background.connectedSites.getError(), '');
+  const other = await serializeSites(otherId, {}, await sitesKeyFor(phrase, otherId));
+  values[SITES_KEY] = other;
+  await startWallet(background);
+  assert.match(background.connectedSites.getError(), /Saved connected sites could not be read/);
   await connectSite(background, remote);
-  assert.deepEqual(Object.keys(await parseSites(values[SITES_KEY], unlocked.id, await sitesKeyFor(phrase, unlocked.id))), [origin]);
+  assert.equal(values[SITES_KEY], other, 'a record that did not open is left as it is');
+  remote.disconnect();
+});
+
+test('a restore removes the replaced wallet\'s record', { timeout: 60000 }, async t => {
+  const { background, runtime, values } = await setup(t), remote = port(runtime);
+  await startWallet(background); await connectSite(background, remote);
+  assert.equal(typeof values[SITES_KEY], 'string');
+  const ui = { name: 'popup', sender: { id: runtime.id, url: `chrome-extension://${runtime.id}/popup.html` }, messages: [], onMessage: event(), onDisconnect: event(), disconnected: false,
+    postMessage(message) { this.messages.push(structuredClone(message)); },
+    disconnect() { if (!this.disconnected) { this.disconnected = true; this.onDisconnect.emit(this); } } };
+  runtime.onConnect.emit(ui);
+  const id = ++requestId, answered = () => ui.messages.find(message => message.name === 'controller' && message.data.id === id)?.data;
+  ui.onMessage.emit(`1|0|1${JSON.stringify({ name: 'controller', data: { id, jsonrpc: '2.0', method: 'createNewVaultAndRestore', params: [password, [...new TextEncoder().encode(phrase)]] } })}`);
+  // Vault creation derives its key with WebCrypto; wait for the answer itself, bounded by the test timeout.
+  while (!answered()) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(answered().error, undefined);
+  ui.disconnect();
+  assert.equal(Object.hasOwn(values, SITES_KEY), false, 'the replaced wallet\'s record is removed');
   remote.disconnect();
 });

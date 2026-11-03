@@ -11,12 +11,6 @@ export function createConnectedSites({ storage, controller, messenger }) {
   // `session` holds the vault id and the sealing key only between load() and clear().
   let session = null, generation = 0, writing = Promise.resolve(), applying = false, error = '';
 
-  function staleRecord(text, id) {
-    // A record of another wallet (a restore replaced the vault) is not this
-    // wallet's data: it is ignored and may be replaced.
-    try { return JSON.parse(text).id !== id; } catch { return false; }
-  }
-
   // Called after the wallet's keys exist. A record that fails to open keeps the
   // list empty, shows the reason and is left as it is.
   async function load({ id, key }) {
@@ -28,7 +22,9 @@ export function createConnectedSites({ storage, controller, messenger }) {
       await writing.catch(() => {});
       const saved = await storage.get(SITES_KEY), text = saved[SITES_KEY];
       if (started !== generation) return;
-      if (text && !staleRecord(text, id)) subjects = await parseSites(text, id, key);
+      // A record that does not open for this wallet (another vault id, damaged) is left as it is (plan section 2.6);
+      // a restore removes the replaced wallet's record (index.js createNewVaultAndRestore).
+      if (text !== undefined) subjects = await parseSites(text, id, key);
     } catch (failure) {
       readable = false; error = `Saved connected sites could not be read (${failure.message}). Websites you connect now are not saved.`;
     }

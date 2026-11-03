@@ -32,7 +32,8 @@ for(const mode of (process.env.CAPABILITY_BROWSER_MODE||'web,connect,extension')
  let run;
  try{
   run=await isolatedWallet(mode);const {page}=run;
-  await page.goto(run.url);await page.locator('#restore:visible').click();await pastePhrase(page,publicFixture.phrase);await page.locator('#backup-confirm').check();
+  // A fresh extension profile shows the data notice first (plan section 2.7); its button opens the start screen.
+  await page.goto(run.url);if(mode==='extension')await page.locator('#privacy-agree:visible').click();await page.locator('#restore:visible').click();await pastePhrase(page,publicFixture.phrase);await page.locator('#backup-confirm').check();
   if(mode==='extension'){await page.locator('#new-password').fill(password);await page.locator('#confirm-password').fill(password);}
   await page.locator('#phrase-submit').click();await page.locator('#wallet-open').waitFor({state:'visible'});await page.waitForFunction(()=>!document.querySelector('#chain')?.closest('[inert]'));if(mode==='connect')await page.locator('#nav-wallet').click();
   await page.waitForFunction(()=>!document.querySelector('#portfolio-refresh').disabled);

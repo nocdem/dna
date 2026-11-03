@@ -232,11 +232,11 @@ test('Nodus connect uses permission approval, returns public identity, restores 
   assert.equal((await remote.request('nodus_signMessage', ['hello', address])).error.code, 4100);
   const lockedRequest = remote.request('nodus_requestAccounts'), lockedPending = await f.nextApproval(lockedRequest);
   assert.equal(lockedPending.origin, remote.origin);
-  f.background.permissions.controller.rejectPermissionsRequest(lockedPending.id);
-  assert.equal((await lockedRequest).error.code, 4001);
+  // The waiting request answers with the grant the unlock opens, without a second approval.
   await f.background.unlock(password, options);
-  assert.deepEqual((await remote.request('nodus_requestAccounts')).result, [account]);
+  assert.deepEqual((await lockedRequest).result, [account]);
   assert.deepEqual(f.background.approvals.controller.state.pendingApprovals, {}, 'the restored grant needs no new approval');
+  assert.deepEqual((await remote.request('nodus_requestAccounts')).result, [account]);
   assert.deepEqual(f.calls, []);
   assert.equal((await remote.request('wallet_revokePermissions', [{ [NODUS_PERMISSION]: {} }])).result, null);
   assert.equal((await remote.request('nodus_signMessage', ['hello', address])).error.code, 4100);

@@ -383,8 +383,6 @@ export async function mountWalletPage({ document = globalThis.document, window =
     else if (page === 'receive') renderReceive(document, root, receiveNetwork, state.addresses, address => run(async () => { await window.navigator.clipboard.writeText(address); status.className = 'hint'; status.textContent = 'Address copied.'; }));
     else if (page === 'sites') {
       renderSites(document, root, state, origin => run(() => ui.revoke(origin)));
-      // A connected-sites record that could not be opened stays as it is; say so (plan section 2.6).
-      if (state.connectedSitesError) { status.className = 'field-error'; status.textContent = state.connectedSitesError; }
     }
     else if (page === 'settings') renderSettings(document, root, state, {
       discardActivity: () => run(async () => {

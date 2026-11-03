@@ -32,7 +32,7 @@ import { createSolanaTron } from './solana-tron.js';
 import { createNetworks } from './networks.js';
 import { PermissionsRequestNotFoundError } from '@metamask/permission-controller';
 import { VAULT_KEY, decryptVault, validateNewPassword } from '../../../src/vault.js';
-import { sitesKeyFor } from '../../../src/activity-storage.js';
+import { sitesKeyFor, SITES_KEY } from '../../../src/activity-storage.js';
 import { validateNodusPhrase } from '../../../src/recovery.js';
 import { readPrices as readWalletPrices } from '../../../src/portfolio.js';
 import { PQ_NETWORKS, pqNetwork } from '../../../src/pq/networks.js';
@@ -125,6 +125,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
         // The sealed connected-sites list opens with a key from the unlocked wallet (plan section 2.6).
         await connectedSites.load({ id: result.id, key: await sitesKeyFor(walletKeys.getRecoveryPhrase(), result.id) });
         lockCoordinator.assertUnlocked();
+        permissions.settleWaitingAccountRequests();
         // ADAPTATION: dispatch T-5/security finding on a4f77b206; plan §3.5:422-435.
         // Reference app-state-controller.ts:1225-1261 re-arms on interface activity;
         // re-arm after successful unlock too, even after expiry with every UI closed.
@@ -207,7 +208,11 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
           bytes = Uint8Array.from(encodedSeedPhrase);
           phrase = validateNodusPhrase(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
           validateNewPassword(password);
+          // A restore replaces the wallet and clears its permissions; the sealed connected-sites record of the
+          // replaced wallet goes with them (plan section 2.6), after any change already queued for it.
+          await connectedSites.flush().catch(() => {}); connectedSites.clear();
           permissions.controller.clearState(); permissions.setAccounts([]);
+          await storage.remove(SITES_KEY);
           saved = await vaultStore.create(password, phrase);
           await store.flush();
         } finally { bytes?.fill(0); if (saved) saved.phrase = null; encodedSeedPhrase?.fill?.(0); phrase = null; password = null; }

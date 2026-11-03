@@ -119,6 +119,29 @@ export function createPermissions({ messenger, approvals, runtime, getNetworkSta
     return controller.acceptPermissionsRequest(request);
   }
 
+  // Plan section 2.6 (2026-11-03 Chrome Web Store decision): while locked the sealed connected-sites list is not
+  // in memory, so an account request of an already connected site waits in the approval window, which asks for
+  // the unlock first. When the unlock opens the list and the site's grant is there, settleWaitingAccountRequests
+  // closes that approval and the request answers with the grant: no second approval.
+  const waitingAccountRequests = new Map();
+  async function waitForGrant(origin, requestedPermissions, granted) {
+    waitingAccountRequests.set(origin, (waitingAccountRequests.get(origin) ?? 0) + 1);
+    try { await requestPermissionsForOrigin(origin, requestedPermissions); }
+    catch (error) { if (!granted(origin).length) throw error; }
+    finally {
+      const left = waitingAccountRequests.get(origin) - 1;
+      if (left) waitingAccountRequests.set(origin, left); else waitingAccountRequests.delete(origin);
+    }
+  }
+  function settleWaitingAccountRequests() {
+    for (const pending of Object.values(approvals.controller.state.pendingApprovals)) {
+      if (!waitingAccountRequests.has(pending.origin)) continue;
+      const requested = pending.requestData?.permissions ?? {};
+      const granted = requested[NODUS_PERMISSION] ? getNodusAccounts(pending.origin) : requested[Caip25EndowmentPermissionName] ? getAccounts(pending.origin) : [];
+      if (granted.length) approvals.reject(pending.id);
+    }
+  }
+
   function requestPermissionsForOrigin(origin, requestedPermissions) {
     // Port: metamask-controller.js:5530-5539; pending requests stay in ApprovalController until UI unlocks/answers.
     return controller.requestPermissions({ origin }, requestedPermissions, { metadata: { isEip1193Request: true } });
@@ -152,7 +175,7 @@ export function createPermissions({ messenger, approvals, runtime, getNetworkSta
       try { locks.add(origin); res.result = permitted; return end(); }
       finally { locks.delete(origin); }
     }
-    await requestPermissionsForOrigin(origin, getCaip25PermissionFromLegacyPermissions());
+    await waitForGrant(origin, getCaip25PermissionFromLegacyPermissions(), getAccounts);
     res.result = getAccounts(origin);
     return end();
   }
@@ -163,7 +186,7 @@ export function createPermissions({ messenger, approvals, runtime, getNetworkSta
   async function requestNodusAccounts(req, res, _next, end) {
     const permitted = getNodusAccounts(req.origin);
     if (permitted.length) { res.result = permitted; return end(); }
-    await requestPermissionsForOrigin(req.origin, { [NODUS_PERMISSION]: {} });
+    await waitForGrant(req.origin, { [NODUS_PERMISSION]: {} }, getNodusAccounts);
     res.result = getNodusAccounts(req.origin); return end();
   }
 
@@ -217,7 +240,7 @@ export function createPermissions({ messenger, approvals, runtime, getNetworkSta
     } },
   };
 
-  return { controller, getAccounts, getNodusAccounts, getChainIds, requestChainPermission, acceptPermissionsRequest,
+  return { controller, getAccounts, getNodusAccounts, getChainIds, requestChainPermission, acceptPermissionsRequest, settleWaitingAccountRequests,
     setAccounts(value) { accounts = [...value]; },
     // ADAPTATION: plan Q-18 / §3.5: one HD EVM account from package 2, exposed directly instead of an AccountsController.
     // Account type / pre-creation empty address: accounts-controller 39.1.0 dist/AccountsController.cjs:73-80, 180-185.

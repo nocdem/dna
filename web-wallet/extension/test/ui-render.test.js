@@ -62,6 +62,8 @@ test('mounted status, provider choices and welcome text follow the reference', {
     // The markup is checked verbatim elsewhere; check the mounted welcome
     // paragraph too so a runtime replacement cannot silently change it.
     await page.goto(`${origin}/test/fixtures/layout.html?stage=welcome`);
+    // A fresh profile shows the data notice first; its button opens the start screen (plan section 2.7).
+    await page.locator('#privacy-agree:visible').click();
     await page.waitForFunction(() => window.layout);
     assert.equal(await page.locator('#welcome > p').first().textContent(), 'Create a new wallet or restore your 24 recovery words. Open it in this tab, or choose to save an encrypted copy on your device.');
   });
@@ -151,6 +153,9 @@ test('connected sites render grants and revoke their actual origins', async () =
   assert.deepEqual(revoked, ['https://site.example']);
   renderSites(document, root, { subjects: {} }, () => assert.fail('No revoked control should remain.'));
   assert.match(root.textContent, /no connected sites/i);
+  // A connected-sites record that could not be opened is reported on this page (plan section 2.6).
+  renderSites(document, root, { subjects: {}, connectedSitesError: 'Saved connected sites could not be read (x).' }, () => {});
+  assert.match(root.textContent, /Saved connected sites could not be read/);
 });
 
 // Proves settings use the six web-wallet choices and password re-entry, clearing the input before export; inspecting labels alone could miss a cached-password export.

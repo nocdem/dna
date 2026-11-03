@@ -62,7 +62,8 @@ async function setup(t) {
   const values = {}, scheduled = new Map(), ports = [];
   const runtime = { id: 'ui-test', onConnect: event(), getManifest: () => ({ version: '0.1.132' }), getURL: path => `chrome-extension://ui-test/${path}` };
   const fixture = { runtime,
-    storage: { async get(key) { return { [key]: structuredClone(values[key]) }; }, async set(items) { Object.assign(values, structuredClone(items)); } },
+    storage: { async get(key) { return { [key]: structuredClone(values[key]) }; }, async set(items) { Object.assign(values, structuredClone(items)); },
+      async remove(keys) { for (const key of [keys].flat()) delete values[key]; } },
     alarms: { onAlarm: event(), async clear(name) { scheduled.delete(name); }, async create(name, options) { scheduled.set(name, options); } },
     windows: { onRemoved: event(), async getAll() { return []; }, async getLastFocused() { return { top: 0, left: 0, width: 1000 }; }, async create(options) { return { ...options, id: 2 }; }, async update() {} },
     tabs: { async query() { return []; } },
