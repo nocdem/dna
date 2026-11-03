@@ -244,7 +244,9 @@ try {
   // Outside the USD total: the priced networks only (price fixture $2,
   // zero holdings), although IXIOS holds a non-zero balance. The PQ networks' providers are refused here, and
   // their priced assets count as unavailable balances (as in test/browser-portfolio.js).
-  assert.equal(await page.locator('#portfolio-total').innerText(), '$0.00');
+  // With the refused PQ reads the priced set is incomplete and its known total is zero, so no total is shown
+  // (src/portfolio.js:133: a total only when the set is complete or above zero).
+  assert.equal(await page.locator('#portfolio-total').innerText(), '—');
   // The PQ addresses arrive after the refresh settled; their refused reads leave the status on the count above.
   await page.waitForFunction(source => new RegExp(source).test(document.querySelector('#portfolio-status').textContent), missingStatus.source);
   assert.match(await page.locator('#portfolio-status').innerText(), missingStatus);
@@ -309,7 +311,7 @@ try {
   assert.match(await row.locator('.holding-value small').textContent(), /^Last read \d{1,2}:\d{2}/);
   assert.match(await badge.getAttribute('title'), /^Ixios · Last read /);
   assert.equal(await badge.getAttribute('data-health'), 'failed', 'red light: the last read failed (0.1.103)');
-  assert.equal(await page.locator('#portfolio-total').innerText(), '$0.00');
+  assert.equal(await page.locator('#portfolio-total').innerText(), '—'); // same rule as above (src/portfolio.js:133)
   // The right network again: the balance comes back.
   ixiosCalls.length = 0; ixiosGenesis = IXIOS_GENESIS;
   await page.waitForFunction(() => { const b = document.getElementById('portfolio-refresh'); if (b.disabled) return false; b.click(); return true; }); await portfolioDone(page);
