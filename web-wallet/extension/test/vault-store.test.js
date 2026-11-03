@@ -4,7 +4,7 @@ import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, e
 import { validateNodusPhrase } from '../../src/recovery.js';
 import { createVaultStore } from '../src/background/vault-store.js';
 import { createLockCoordinator } from '../src/background/lock.js';
-import { activityKeyFor, serializeActivity, parseActivity } from '../../src/activity-storage.js';
+import { activityKeyFor, serializeActivity, parseActivity, SITES_KEY } from '../../src/activity-storage.js';
 
 // Public fixture from web-wallet/test/vault.test.js; encryption uses the real vault parameters.
 const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
@@ -60,10 +60,12 @@ test('change password preserves vault id and delete locks and removes every wall
   assert.equal((await store.unlock(newer)).id, original.id);
   assert.equal(storage.values[ACTIVITY_KEY], activity);
   assert.deepEqual(await parseActivity(storage.values[ACTIVITY_KEY], original.id, {}, await activityKeyFor(phrase, original.id)), []);
-  for (const key of [BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, `${ACTIVITY_KEY}.solana.devnet`, `${HISTORY_KEY}.tron.nile`]) storage.values[key] = 'public encrypted fixture';
+  for (const key of [BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, SITES_KEY, `${ACTIVITY_KEY}.solana.devnet`, `${HISTORY_KEY}.tron.nile`]) storage.values[key] = 'public encrypted fixture';
   storage.values.unrelated = 'keep';
+  // The agreed data notice is not wallet data: "Delete saved wallet" leaves it (plan section 2.7).
+  storage.values['nodus.privacyConsent.v1'] = '1';
   await store.deleteVault(); assert.equal(lockCoordinator.isLocked, true);
-  assert.deepEqual(storage.values, { unrelated: 'keep' });
+  assert.deepEqual(storage.values, { unrelated: 'keep', 'nodus.privacyConsent.v1': '1' });
 });
 
 // Proves the existing generator produces an accepted 24-word phrase; a nonempty-string check could accept an invalid mnemonic.

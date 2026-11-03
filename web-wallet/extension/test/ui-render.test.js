@@ -183,6 +183,7 @@ async function pageFixture(t, initialized = true) {
     calls.push({ method, params: structuredClone(params) });
     if (method === 'getState') return structuredClone(state);
     if (method === 'getSeedPhrase') return [...new TextEncoder().encode(phrase)];
+    if (method === 'acceptPrivacyNotice') state.privacyConsent = true;
     if (method === 'createNewVaultAndRestore') state.isInitialized = true;
     if (method === 'submitPasswordOrEncryptionKey') state.isUnlocked = true;
     if (method === 'prepareEvmSend') return { id: 'public-review', ...params[0], fee: 'Up to 0.001 ETH' };
@@ -194,6 +195,26 @@ async function pageFixture(t, initialized = true) {
   t.after(() => { page.dispose(); if (saved) Object.defineProperty(globalThis, 'document', saved); else delete globalThis.document; });
   return { root, navigation, status, calls, state, page, phrase, clipboardWrites, notify: () => notification?.({ method: 'messengerSubscription' }) };
 }
+
+// Proves the data notice (plan docs/plans/2026-11-03-chrome-web-store-plan.md section 2.7) replaces every other screen
+// while the background reports no consent: its text and policy link, one button and no create/import control; the
+// button sends acceptPrivacyNotice and the next screen follows. Fake document and client: it does not prove the real
+// stylesheet or the background gate (privacy-consent.test.js and package-smoke.test.js do).
+test('the data notice shows first with one button and agreeing opens the start screen', async t => {
+  const { root, calls, state, page } = await pageFixture(t, false);
+  assert.ok(button(root, 'Create wallet'), 'without the consent flag the start screen shows (older fake background)');
+  state.privacyConsent = false; await page.refresh();
+  assert.match(root.textContent, /Before you start: what this extension does with your data/);
+  assert.match(root.textContent, /never sends the phrase, the password or your private keys to a server/);
+  assert.match(root.textContent, /No analytics, no tracking, no advertising\./);
+  assert.deepEqual(descendants(root, node => node.tagName === 'button').map(node => node.textContent), ['Agree and continue']);
+  assert.deepEqual(descendants(root, node => node.tagName === 'a').map(node => node.href), ['https://connect.nodusnetwork.io/privacy.html']);
+  assert.equal(button(root, 'Create wallet'), undefined); assert.equal(button(root, 'Import phrase'), undefined);
+  await button(root, 'Agree and continue').onclick();
+  assert.ok(calls.some(call => call.method === 'acceptPrivacyNotice'));
+  assert.equal(button(root, 'Agree and continue'), undefined);
+  assert.ok(button(root, 'Create wallet'));
+});
 
 test('home session shows the actual background auto-lock preference', async t => {
   const { navigation, state, page } = await pageFixture(t);

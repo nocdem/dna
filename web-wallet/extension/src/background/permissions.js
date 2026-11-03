@@ -34,7 +34,7 @@ const unrestrictedMethods = [
   'web3_clientVersion', 'web3_sha3', 'nodus_requestAccounts', 'nodus_signMessage',
 ];
 
-export function createPermissions({ messenger, approvals, store, runtime, getNetworkState, getNodusAccount }) {
+export function createPermissions({ messenger, approvals, runtime, getNetworkState, getNodusAccount }) {
   let accounts = [];
   const locks = new Set();
   // Port: app/scripts/messenger-client-init/permission-controller-init.ts:37-78,
@@ -43,7 +43,8 @@ export function createPermissions({ messenger, approvals, store, runtime, getNet
     messenger: messenger.buildChild({ namespace: 'PermissionController', actions: [
       'ApprovalController:addRequest', 'ApprovalController:hasRequest', 'ApprovalController:acceptRequest', 'ApprovalController:rejectRequest',
     ] }),
-    state: store?.getInitialState('PermissionController', { subjects: { persist: true } }),
+    // No `state:` hydration from the plain store (2026-11-03 Chrome Web Store decision, plan section 2.6): the
+    // controller starts empty at every worker start; connected-sites.js loads the sealed list at unlock.
     // Same Endowment + validator structure as pinned chain-agnostic-
     // permission 1.6.2 dist/caip25Permission.cjs:168-180; no invented CAIP
     // chain identifier is needed for these separately defined site calls.

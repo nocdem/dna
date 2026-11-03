@@ -1,3 +1,24 @@
+// The data notice shown before anything else (docs/plans/2026-11-03-chrome-web-store-plan.md section 2.7, text
+// version 1; operator 2026-11-03 "veri izin ekranı orada da olsun"). Every sentence restates a fact of the privacy
+// policy page (connect-site/privacy.html). Changing a word means a new text version in background/privacy-consent.js.
+export const PRIVACY_POLICY_URL = 'https://connect.nodusnetwork.io/privacy.html';
+export const PRIVACY_NOTICE = {
+  title: 'Before you start: what this extension does with your data',
+  facts: [
+    ['Your recovery phrase, password and keys stay on this device',
+      'The extension stores your recovery phrase encrypted with your password. It never sends the phrase, the password or your private keys to a server.'],
+    ['What the networks receive',
+      'To show balances and send transactions, the extension sends your public addresses and the transactions you sign to each network\'s public server, and a list of asset names to the price server. While the wallet is unlocked it checks for incoming funds once a minute. Every server also sees your IP address.'],
+    ['Nodus network and Nodus Connect',
+      'Your Nodus public key and address, your Nodus transactions, and your Nodus Connect messages, contact requests, groups and the profile name and picture you publish go through the Nodus network\'s nodes.'],
+    ['Websites',
+      'Websites can see that the wallet is installed and which network it uses, and can ask it to read public blockchain data. A website gets your address or a signature only after you approve it in this extension\'s own window. The list of websites you connected is stored encrypted on this device.'],
+  ],
+  footnote: 'No analytics, no tracking, no advertising.',
+  policyLabel: 'Full privacy policy: ',
+  button: 'Agree and continue',
+};
+
 // Body copied from web-wallet/index.html:18-77, with the operator's extension
 // greeting and session polish. Name reads stay in name-block.js.
 // The shared createPortfolio renderer still writes #portfolio-status; keep its

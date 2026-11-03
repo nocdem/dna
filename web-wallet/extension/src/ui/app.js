@@ -11,7 +11,7 @@ import { createPhraseFields } from '../../../src/phrase-fields.js';
 import { showRevealedPhrase } from '../../../src/reveal-phrase.js';
 import { walletHeading } from './presentation.js';
 import { autoLockBarText } from '../../../src/auto-lock.js';
-import { WALLET_MARKUP } from './wallet-markup.js';
+import { WALLET_MARKUP, PRIVACY_NOTICE, PRIVACY_POLICY_URL } from './wallet-markup.js';
 import { sessionLog, logPageErrors } from '../../../src/session-log.js';
 
 // Approved plan §3.2/§3.6/§7: all three trusted pages use the same web-wallet UI modules.
@@ -224,9 +224,31 @@ export async function mountWalletPage({ document = globalThis.document, window =
     if (ui.phraseStep === 'verify') fields.focus();
     else { $('recovery-warning-title').focus({ preventScroll: true }); $('recovery-warning').scrollIntoView({ block: 'start' }); }
   }
+  // The data notice comes before every other screen until its text version is agreed to (plan section 2.7).
+  function renderPrivacyConsent() {
+    openScreen?.dispose(); openScreen = undefined;
+    stopSendReview?.(); stopSendReview = undefined;
+    fields?.clear(); fields = undefined; revealed?.replaceChildren(); revealed = undefined;
+    portfolioText = undefined;
+    root.className = renderOpenWallet ? 'card wallet-card' : '';
+    root.replaceChildren(); navigation.replaceChildren();
+    const card = element('aside', undefined, 'privacy-card'); card.id = 'privacy-consent'; card.setAttribute('aria-labelledby', 'privacy-consent-title');
+    const title = element('h2', PRIVACY_NOTICE.title); title.id = 'privacy-consent-title';
+    const facts = element('dl', undefined, 'privacy-facts');
+    for (const [name, text] of PRIVACY_NOTICE.facts) {
+      const row = element('div'); row.append(element('dt', name), element('dd', text)); facts.append(row);
+    }
+    const link = element('a', PRIVACY_POLICY_URL); link.href = PRIVACY_POLICY_URL; link.target = '_blank'; link.rel = 'noopener noreferrer';
+    const policy = element('p', PRIVACY_NOTICE.policyLabel, 'privacy-footnote'); policy.append(link);
+    const agree = element('button', PRIVACY_NOTICE.button); agree.type = 'button'; agree.id = 'privacy-agree';
+    agree.onclick = () => run(() => client.request('acceptPrivacyNotice'));
+    card.append(title, facts, element('p', PRIVACY_NOTICE.footnote, 'privacy-footnote'), policy, agree);
+    root.append(card);
+  }
   function render() {
     if (disposed || !ui.state) return;
     const state = ui.state;
+    if (state.privacyConsent === false) { renderPrivacyConsent(); return; }
     const pending = Object.values(state.pendingApprovals || {})[0];
     if (renderOpenWallet && state.isUnlocked && !pending && !(page === 'phrase' && ui.phraseStep)) {
       if (openScreen) { openScreen.update(); return; }
@@ -359,7 +381,11 @@ export async function mountWalletPage({ document = globalThis.document, window =
       cancel: () => navigate('home'),
     });
     else if (page === 'receive') renderReceive(document, root, receiveNetwork, state.addresses, address => run(async () => { await window.navigator.clipboard.writeText(address); status.className = 'hint'; status.textContent = 'Address copied.'; }));
-    else if (page === 'sites') renderSites(document, root, state, origin => run(() => ui.revoke(origin)));
+    else if (page === 'sites') {
+      renderSites(document, root, state, origin => run(() => ui.revoke(origin)));
+      // A connected-sites record that could not be opened stays as it is; say so (plan section 2.6).
+      if (state.connectedSitesError) { status.className = 'field-error'; status.textContent = state.connectedSitesError; }
+    }
     else if (page === 'settings') renderSettings(document, root, state, {
       discardActivity: () => run(async () => {
         const message = await ui.discardNodusActivity();

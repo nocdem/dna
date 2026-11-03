@@ -40,7 +40,8 @@ function createDupeReqFilterStream() {
   });
 }
 
-export function createRequestEngine({ runtime, permissions, approvals, autoLockAlarm, trustedApi, getUiPorts, evm, nodus, networkClient: initialNetworkClient }) {
+export function createRequestEngine({ runtime, permissions, approvals, autoLockAlarm, trustedApi, getUiPorts, evm, nodus, privacyConsent, networkClient: initialNetworkClient }) {
+  if (typeof privacyConsent?.isGiven !== 'function') throw new Error('A privacy consent reader is required.');
   const connections = new Map(), ports = new Set();
   let networkClient = null, networkVersion, getNetworkMetadata;
 
@@ -99,6 +100,13 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
       if (!req.isNodusInternal) log.info(`RPC (${origin}): ${req.method} -> ${res.error ? 'error' : 'success'}`);
       done();
     }));
+    // Before the user agreed to the data notice (plan section 2.7) a website gets nothing that would reach a server or
+    // return wallet data: the same "unauthorized" answer as the disk-page refusal below. eth_chainId is answered from
+    // local configuration (package-smoke.test.js "networkClient in background/evm.js answers eth_chainId from local config").
+    engine.push((req, _res, next, end) => {
+      if (req.method === 'eth_chainId') return next();
+      privacyConsent.isGiven().then(given => given ? next() : end(providerErrors.unauthorized()), end);
+    });
     engine.push(approvals.createOriginThrottlingMiddleware());
     // Plan §3.4:312-319 removes permission log, traces, scans, referrals, swaps, snaps and EIP-7715.
     // Dispatch package 5: these methods are deferred, including before wallet
@@ -156,6 +164,8 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
   }
 
   async function notifyChainChange(connection) {
+    // Reading the network state can ask the chain server; not before the data notice is agreed to.
+    if (!await privacyConsent.isGiven()) return;
     const params = await getNetworkState();
     if (connections.has(connection.id)) connection.engine.emit('notification', { jsonrpc: '2.0', method: PROVIDER_METHODS.chainChanged, params });
   }

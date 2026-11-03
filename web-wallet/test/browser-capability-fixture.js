@@ -51,6 +51,9 @@ export async function isolatedWallet(mode='web') {
   if(mode==='extension'){
    const worker=context.serviceWorkers().find(w=>w.url().startsWith('chrome-extension:'))||await context.waitForEvent('serviceworker',{timeout:15000});
    url=`chrome-extension://${new URL(worker.url()).hostname}/home.html`;
+   // The consumers of this fixture restore a wallet straight away; the data notice (2026-11-03 Chrome Web Store
+   // decision, plan section 2.7) is agreed to here by storing its text version (background/privacy-consent.js).
+   await worker.evaluate(()=>chrome.storage.local.set({'nodus.privacyConsent.v1':'1'}));
   }
   return {page,context,url,state,blocked,requests,errors,consoleErrors,async close(){state.pending.splice(0).forEach(ok=>ok());await context.close();await new Promise(ok=>server.close(ok));await rm(temporary,{recursive:true,force:true});}};
  }catch(error){await context?.close();await new Promise(ok=>server.close(ok));await rm(temporary,{recursive:true,force:true});throw error;}

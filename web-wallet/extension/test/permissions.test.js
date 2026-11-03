@@ -74,3 +74,21 @@ test('lock preserves permitted accounts and provider discovery retains the runti
   assert.equal(discovery.extensionId, 'fixture'); assert.deepEqual(discovery.accounts, [account]);
   assert.equal((await request('resolvePendingApproval', ['anything'])).error.code, -32601);
 });
+
+// Proves the PermissionController is never hydrated from the plain store (2026-11-03 Chrome Web Store decision, plan
+// section 2.6: an old plain grant would reach websites while the wallet is locked, because getAccounts has no lock
+// check). The store below throws if asked for any initial state and holds a plain subject; a controller that still
+// hydrated would either throw or answer that origin. Falsely passes if createPermissions stopped calling the store
+// for another reason, which is the intent; the sealed list itself is covered in connected-sites.test.js.
+test('the permission controller starts empty and never reads an initial state from the plain store', () => {
+  const messenger = new Messenger({ namespace: 'Background' });
+  const windows = { onRemoved: { addListener() {}, removeListener() {} }, async getAll() { return []; }, async getLastFocused() { return {}; },
+    async create(options) { return { ...options, id: 1 }; }, async update() {} };
+  const approvals = createApprovals({ messenger, windows, runtime: { id: 'fixture', getURL: path => path } });
+  const store = { getInitialState() { throw new Error('The plain store must not hydrate the permission controller.'); } };
+  const permissions = createPermissions({ messenger, approvals, store, runtime: { id: 'fixture' }, getNetworkState: () => ({}) });
+  try {
+    assert.deepEqual(permissions.controller.getSubjectNames(), []);
+    assert.deepEqual(permissions.getAccounts('https://site.example'), []);
+  } finally { permissions.controller.destroy(); approvals.destroy(); }
+});

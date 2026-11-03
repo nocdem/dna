@@ -41,6 +41,9 @@ async function setup(t) {
     finally { if (saved) Object.defineProperty(globalThis, 'chrome', saved); else delete globalThis.chrome; }
   }
   const background = await backgroundModule.createBackground(fixture);
+  // The data notice gate (2026-11-03 Chrome Web Store decision) refuses website requests until the user agreed to
+  // it; privacy-consent.test.js covers the refusal, every test here starts after the agreement.
+  await background.privacyConsent.accept();
   t.after(async () => {
     // metamask-controller.js:4987-5001 removes connections in pipeline cleanup; disconnect alone does not prove it finished.
     // Preserve pipeline cleanup before locking and disposing the background's holders/controllers.
@@ -216,26 +219,36 @@ test('persisted permission state never introduces a second encrypted phrase stor
   await approve(background, await until(() => Object.values(background.approvals.controller.state.pendingApprovals)[0]));
   assert.deepEqual((await connecting).result, [account]);
   await until(() => remote.messages.some(message => message.data.method === 'nodus_accountsChanged'));
-  const notificationCount = remote.messages.filter(message => message.data.method === 'nodus_accountsChanged').length;
+  const accountNotices = () => remote.messages.filter(message => message.data.method === 'nodus_accountsChanged');
+  const notificationCount = accountNotices().length;
+  await background.connectedSites.flush();
   await background.lock(); await background.store.flush();
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(remote.messages.filter(message => message.data.method === 'nodus_accountsChanged').length, notificationCount);
+  // 2026-11-03 Chrome Web Store decision, plan section 2.6: the connected-sites list leaves memory at lock, so the
+  // page is told its account list is empty (before, lock kept the grant and sent nothing).
+  assert.equal(accountNotices().length, notificationCount + 1);
+  assert.deepEqual(accountNotices().at(-1).data.params, []);
   assert.equal(values[VAULT_KEY], value);
-  assert.ok(Object.keys(background.store.backup().PermissionController.subjects).includes('https://site.example'));
+  // The list is no longer in the plain controller state; only the sealed record holds it.
+  assert.equal(Object.hasOwn(background.store.backup(), 'PermissionController'), false);
+  assert.equal(typeof values['nodus.sites.v1'], 'string');
   for (const write of [...writes, background.store.backup()]) {
     const serialized = JSON.stringify(write);
     assert.equal(serialized.includes(phrase), false); assert.equal(serialized.includes(password), false);
     assert.equal(serialized.includes('KeyringController'), false); assert.equal(serialized.includes('"vault"'), false);
+    assert.equal(serialized.includes('site.example'), false, 'no origin in any stored write');
   }
-  assert.deepEqual((await request(remote, 'eth_accounts')).result, [account]);
+  assert.deepEqual((await request(remote, 'eth_accounts')).result, []);
   for (const method of ['signPersonalMessage', 'signTypedMessage', 'signTransaction']) await assert.rejects(background.keyring[method](), /locked/iu);
   await background.unlock(password, { cpunkWasmBytes });
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(remote.messages.filter(message => message.data.method === 'nodus_accountsChanged').length, notificationCount);
+  await until(() => accountNotices().length === notificationCount + 2);
+  assert.deepEqual(accountNotices().at(-1).data.params, [account]);
+  assert.deepEqual((await request(remote, 'eth_accounts')).result, [account]);
   remote.disconnect();
+  // A restarted worker starts with the list empty and locked; no plain grant is read.
   const restarted = await backgroundModule.createBackground({ ...browserFixture(), storage });
   try {
-    assert.equal(restarted.lockCoordinator.isLocked, true); assert.deepEqual(await restarted.permissions.getAccounts('https://site.example'), [account]);
+    assert.equal(restarted.lockCoordinator.isLocked, true); assert.deepEqual(await restarted.permissions.getAccounts('https://site.example'), []);
   }
   finally { await restarted.destroy(); }
 });
@@ -247,7 +260,8 @@ test('successful unlock re-arms inactivity after expiry with every interface clo
   const remote = port(runtime), connecting = request(remote, 'eth_requestAccounts');
   await approve(background, await until(() => Object.values(background.approvals.controller.state.pendingApprovals)[0])); await connecting;
   await Promise.all(alarms.onAlarm.emit({ name: AUTO_LOCK_TIMEOUT_ALARM }));
-  assert.equal(scheduled.has(AUTO_LOCK_TIMEOUT_ALARM), false); assert.deepEqual((await request(remote, 'eth_accounts')).result, [account]);
+  // The expiry lock empties the connected-sites list from memory (plan section 2.6); the next unlock below restores it.
+  assert.equal(scheduled.has(AUTO_LOCK_TIMEOUT_ALARM), false); assert.deepEqual((await request(remote, 'eth_accounts')).result, []);
   for (const method of ['signPersonalMessage', 'signTypedMessage', 'signTransaction']) await assert.rejects(background.keyring[method](), /locked/iu);
   const before = alarmsCreated.length;
   await background.unlock(password, { cpunkWasmBytes }); assert.equal(alarmsCreated.length, before + 1);
