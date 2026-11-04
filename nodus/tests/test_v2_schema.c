@@ -1580,6 +1580,26 @@ static int run_s20_rung(void) {
         CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
                       "type='trigger' AND name LIKE 'v2_supply_%'", &n) == 0
               && n == 6, "six supply triggers"); OK();
+        /* HF-9 WP2: the keyed-trie tables, 24 triggers, the capture row */
+        CHECK(has_table(fx.w->db, "v2_trie_nodes") == 1 &&
+              has_table(fx.w->db, "v2_trie_roots") == 1 &&
+              has_table(fx.w->db, "v2_trie_dirty") == 1 &&
+              has_table(fx.w->db, "v2_trie_state") == 1 &&
+              has_table(fx.w->db, "v2_trie_shadow_state") == 1,
+              "the five keyed-trie tables"); OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
+                      "type='trigger' AND name LIKE 'v2_trie_l%'", &n) == 0
+              && n == 24, "24 dirty-capture triggers"); OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM v2_trie_state WHERE "
+                      "id = 1 AND capture = 0", &n) == 0 && n == 1 &&
+              count_q(fx.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_state",
+                      &n) == 0 && n == 0 &&
+              count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
+                      "type='index' AND name = 'v2_storage_nodes_by_status'",
+                      &n) == 0 && n == 1,
+              "capture row 0, no shadow row, the status index"); OK();
+        CHECK(nodus_witness_db_s20_trie_shape_ok(fx.w) == 1,
+              "the stored DDL equals this build's"); OK();
         CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM v2_supply_totals "
                       "WHERE token_id = zeroblob(64) AND utxo_total = 0",
                       &n) == 0 && n == 1,
@@ -1636,12 +1656,18 @@ static int run_s20_rung(void) {
                   ver == NODUS_V2_SCHEMA_VERSION_S19,
                   "failed S20 stage moved the version");
             CHECK(has_table(fx.w->db, "v2_supply_totals") == 0 &&
-                  has_table(fx.w->db, "v2_bond_total") == 0,
+                  has_table(fx.w->db, "v2_bond_total") == 0 &&
+                  has_table(fx.w->db, "v2_trie_nodes") == 0 &&
+                  has_table(fx.w->db, "v2_trie_roots") == 0 &&
+                  has_table(fx.w->db, "v2_trie_dirty") == 0 &&
+                  has_table(fx.w->db, "v2_trie_state") == 0 &&
+                  has_table(fx.w->db, "v2_trie_shadow_state") == 0,
                   "failed S20 stage left a table");
             CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master "
-                          "WHERE type='trigger' AND name LIKE "
-                          "'v2_supply_%'", &n) == 0 && n == 0,
-                  "failed S20 stage left a trigger");
+                          "WHERE (type='trigger' AND (name LIKE "
+                          "'v2_supply_%' OR name LIKE 'v2_trie_l%')) OR "
+                          "name = 'v2_storage_nodes_by_status'", &n) == 0
+                  && n == 0, "failed S20 stage left a trigger or the index");
             uint8_t dnow[64];
             CHECK(v2x_db_digest(fx.w, dnow) == 0, "post-stage digest");
             CHECK(memcmp(d19, dnow, 64) == 0,

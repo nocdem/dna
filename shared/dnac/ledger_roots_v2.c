@@ -290,6 +290,17 @@ int dna_v2_token_root(const dna_v2_token_leaf_t *leaves, size_t n,
 
 /* ── validator_set_root (S3) ────────────────────────────────────────── */
 
+int dna_v2_vset_leaf_hash(uint64_t epoch,
+                          const uint8_t snapshot_hash[DNA_V2_ROOT_LEN],
+                          uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!snapshot_hash || !out) return -1;
+    uint8_t pre[TAG_LEN + 8 + DNA_V2_ROOT_LEN];
+    memcpy(pre, TAG_VSLEAF, TAG_LEN);
+    put_be64(epoch, pre + TAG_LEN);
+    memcpy(pre + TAG_LEN + 8, snapshot_hash, DNA_V2_ROOT_LEN);
+    return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
+}
+
 int dna_v2_vset_root(const uint64_t *epochs,
                      const uint8_t (*snapshot_hashes)[DNA_V2_ROOT_LEN],
                      size_t n, uint8_t out[DNA_V2_ROOT_LEN]) {
@@ -305,11 +316,8 @@ int dna_v2_vset_root(const uint64_t *epochs,
     uint8_t (*level)[DNA_V2_ROOT_LEN] = malloc(n * sizeof(*level));
     if (!level) return -1;
     for (size_t i = 0; i < n; i++) {
-        uint8_t pre[TAG_LEN + 8 + DNA_V2_ROOT_LEN];
-        memcpy(pre, TAG_VSLEAF, TAG_LEN);
-        put_be64(epochs[i], pre + TAG_LEN);
-        memcpy(pre + TAG_LEN + 8, snapshot_hashes[i], DNA_V2_ROOT_LEN);
-        if (qgp_sha3_512(pre, sizeof(pre), level[i]) != 0) {
+        if (dna_v2_vset_leaf_hash(epochs[i], snapshot_hashes[i],
+                                  level[i]) != 0) {
             free(level);
             return -1;
         }

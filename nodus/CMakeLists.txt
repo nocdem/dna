@@ -914,6 +914,13 @@ set(NODUS_EVM_ENABLED OFF)
 if(NODUS_STANDALONE AND NOT WIN32)
     set(NODUS_EVM_ENABLED ON)
     list(APPEND NODUS_SOURCES src/witness/nodus_witness_rt_evm.c)
+    # HF-9 WP2 (docs/plans/approved/2026-11-04-hf9.md §5): the eight keyed
+    # Patricia tries over SQLite. It calls evm_trie_* and evm_trie_full_root,
+    # which live in nodus_evm (below), so it is EVM-only like rt_evm.c. The
+    # schema, triggers and totals (nodus_witness_v2_schema.c) stay in every
+    # build; the generic engine reaches nothing of this file before
+    # generation 6.
+    list(APPEND NODUS_SOURCES src/witness/nodus_witness_v2_trie.c)
     # The EVM contract-ABI text layer (types, signatures, selectors, the
     # argument encoder) and the ML-DSA-87 companion library's attested
     # message + signature — `nodus-cli evm encode|send|call|deploy|attest`'s
@@ -1099,6 +1106,11 @@ if(NODUS_EVM_ENABLED)
         ${EVM_DIR}/evm_precompile.c
         ${EVM_DIR}/trie/evm_trie.c
         ${EVM_DIR}/trie/evm_trie_rlp.c
+        # HF-9 WP2: the full-rebuild root (edge cross-check, per-leg
+        # build-from-rows, plan §7.2 step 4) is linked into the node
+        # library; its keccak mode needs the keccak object above, which is
+        # why it lives here and not in the base library
+        ${EVM_DIR}/trie/evm_trie_full.c
         $<TARGET_OBJECTS:nodus_evm_keccak>)
     target_compile_options(nodus_evm PRIVATE -Wall -Wextra -Wpedantic -O2)
     set_target_properties(nodus_evm PROPERTIES
@@ -2946,12 +2958,12 @@ register_witness_test(test_v2_pools)
 # Nodus EVM package 1 — the EVM domain (runtime ABI 2) through the cometbft lane:
 # deploy/call, applied failures (REVERT, OOG, over-ceiling, BUDGET), the
 # bridge ops and tickets, the storage trie against the independent full
-# rebuild (shared/evm/trie/evm_trie_full.c — test-only, never in a library),
+# rebuild (shared/evm/trie/evm_trie_full.c — since HF-9 WP2 part of the
+# nodus_evm library, so this target no longer compiles it itself),
 # restart, a determinism twin and the inertness twin. Built only where the
 # EVM runtime is (NODUS_EVM_ENABLED). Live invariant (no supply bypass).
 if(NODUS_EVM_ENABLED)
-    add_executable(test_v2_evm tests/test_v2_evm.c
-                   ${SHARED_DIR}/evm/trie/evm_trie_full.c)
+    add_executable(test_v2_evm tests/test_v2_evm.c)
     target_include_directories(test_v2_evm PRIVATE ${SHARED_DIR}/evm/trie)
     target_link_libraries(test_v2_evm nodus dsa nodus)
     target_compile_definitions(test_v2_evm PRIVATE NODUS_WITNESS_INTERNAL_API)
@@ -4175,6 +4187,15 @@ add_test(NAME test_supply_invariant COMMAND test_supply_invariant)
 # (fail closed). A real derived chain (v2_genesis_fixture.h); no
 # environment, no compile flag.
 register_witness_test(test_supply_totals)
+
+# HF-9 T-5, WP2 part (plan §5, §12): the eight keyed Patricia tries — S20
+# triggers, node store, flush, build from rows, capture checks, the
+# factored vset leaf. The trie is EVM-only (nodus_witness_v2_trie.c), so
+# the target is built only with NODUS_EVM_ENABLED. No environment, no
+# compile flag; the generation >= 6 rows are deferred to WP3 (test header).
+if(NODUS_EVM_ENABLED)
+    register_witness_test(test_hf9_trie_legs)
+endif()
 
 # Performance benchmark harness (Phase 1 — micro-benchmarks).
 # See nodus/docs/plans/2026-04-24-perf-harness-design.md.

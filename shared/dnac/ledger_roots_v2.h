@@ -553,6 +553,20 @@ int dna_v2_vset_root(const uint64_t *epochs,
                      const uint8_t (*snapshot_hashes)[DNA_V2_ROOT_LEN],
                      size_t n, uint8_t out[DNA_V2_ROOT_LEN]);
 
+/**
+ * One validator_set_root leaf, the SAME bytes dna_v2_vset_root computes
+ * inline for every row (HF-9 WP2, plan §4.2 row L7 and §12 T-5):
+ *
+ *   leaf = SHA3-512("NDS.VSLEAF.v1" ‖ epoch(8 BE) ‖ snapshot_hash[64])
+ *
+ * dna_v2_vset_root calls this function, so the Merkle root of every
+ * generation up to 5 and the keyed-trie value of the HF-9 leg L7 cannot
+ * differ. @return 0 / -1 (NULL args, digest failure).
+ */
+int dna_v2_vset_leaf_hash(uint64_t epoch,
+                          const uint8_t snapshot_hash[DNA_V2_ROOT_LEN],
+                          uint8_t out[DNA_V2_ROOT_LEN]);
+
 /* ── attendance_root (tokenomics-v3 P1, D-4 / S-2) ─────────────────────
  *
  * Two layers, matching the vset leg's shape exactly:

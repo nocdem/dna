@@ -686,6 +686,45 @@ static uint64_t q1(nodus_witness_t *w, const char *sql) {
     return v;
 }
 
+/* HF-9: a test that turns a live (S20) chain database back into a
+ * previous build's S16 / S17 one by dropping the later rungs' objects must
+ * also drop the S20 ones — the supply totals, the keyed-trie tables, the
+ * status index and every trigger of both (a real pre-S20 database has none
+ * of them; leaving the triggers would also make later writes use totals
+ * tables that are gone). 0 / -1. */
+static int drop_s20_objects(sqlite3 *db) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND "
+            "(name LIKE 'v2_supply_%' OR name LIKE 'v2_trie_l%') "
+            "ORDER BY name", -1, &st, NULL) != SQLITE_OK) return -1;
+    char names[40][40];
+    size_t n = 0;
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const char *nm = (const char *)sqlite3_column_text(st, 0);
+        if (!nm || n >= 40 || strlen(nm) >= sizeof(names[0])) {
+            sqlite3_finalize(st);
+            return -1;
+        }
+        snprintf(names[n++], sizeof(names[0]), "%s", nm);
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) return -1;
+    for (size_t i = 0; i < n; i++) {
+        char sql[96];
+        snprintf(sql, sizeof(sql), "DROP TRIGGER %s", names[i]);
+        if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) return -1;
+    }
+    return sqlite3_exec(db,
+        "DROP INDEX v2_storage_nodes_by_status;"
+        "DROP TABLE v2_supply_totals; DROP TABLE v2_bond_total;"
+        "DROP TABLE v2_trie_nodes; DROP TABLE v2_trie_roots;"
+        "DROP TABLE v2_trie_dirty; DROP TABLE v2_trie_state;"
+        "DROP TABLE v2_trie_shadow_state", NULL, NULL, NULL) == SQLITE_OK
+        ? 0 : -1;
+}
+
 static const nodus_domain_runtime_t *gevm(uint32_t dom) {
     return nodus_runtime_for_generation(NODUS_RT_GEN_EVM, dom);
 }
@@ -3750,6 +3789,7 @@ static int test_upgrade(void) {
                            "ALTER TABLE v2_domain_heads DROP COLUMN "
                            "last_upd_hash", NULL, NULL, NULL) == SQLITE_OK,
               "drop the S19 table and column");
+        CHECK(drop_s20_objects(fx.w->db) == 0, "drop the S20 objects");
         CHECK(sqlite3_exec(fx.w->db, "PRAGMA user_version = 16", NULL, NULL,
                            NULL) == SQLITE_OK, "user_version 16");
         uint8_t g0[64], c0[64];
@@ -3808,6 +3848,7 @@ static int test_upgrade(void) {
         fixture_t fx;
         CHECK(fx_open(&fx, "s17ix", 1, 0) == 0, "a generation-2 chain");
         CHECK(fx_to(&fx, 4) == 0, "three blocks");
+        CHECK(drop_s20_objects(fx.w->db) == 0, "drop the S20 objects");
         CHECK(sqlite3_exec(fx.w->db,
                   "DROP INDEX evm_receipts_by_pos; DROP INDEX evm_logs_by_addr;"
                   "DROP TABLE v2_validator_roles; DROP TABLE v2_replay;"

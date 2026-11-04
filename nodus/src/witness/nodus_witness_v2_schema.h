@@ -1003,7 +1003,26 @@ int nodus_witness_db_migrate_v2s19_ex(nodus_witness_t *w,
  *       three triggers on v2_storage_nodes (AFTER INSERT, AFTER DELETE,
  *       AFTER UPDATE OF bond, status).
  *
- * Both tables are SEEDED from their source tables inside the migration,
+ * HF-9 WP2 adds to the same rung (plan §5.1, §5.2, §5.5; consensus-inert
+ * until generation 6):
+ *
+ *   v2_trie_nodes (digest BLOB NOT NULL PRIMARY KEY, rlp BLOB NOT NULL)
+ *   v2_trie_roots (leg INTEGER PRIMARY KEY, root BLOB NOT NULL)
+ *   v2_trie_dirty (leg INTEGER NOT NULL, key NOT NULL, PRIMARY KEY(leg,
+ *                  key)) — the primary keys written in the block
+ *   v2_trie_state (id = 1, capture INTEGER NOT NULL CHECK(capture IN
+ *                  (0, 1))) — the consensus capture flag, row (1, 0)
+ *   v2_trie_shadow_state (id = 1, status INTEGER) — no row; the shadow
+ *                  package's
+ *   index v2_storage_nodes_by_status ON v2_storage_nodes(status, node_fp)
+ *   24 triggers v2_trie_l<leg>_<ins|del|upd> (legs 1..8: utxo_set,
+ *   tokens, v2_claims_spent, v2_names, v2_storage_nodes,
+ *   v2_storage_segments, validator_set_snapshots, v2_attendance_epoch),
+ *   each gated by WHEN (SELECT capture FROM v2_trie_state WHERE id = 1) =
+ *   1, recording the OLD / NEW primary key in v2_trie_dirty. With capture
+ *   0 (every generation this build has) they write nothing.
+ *
+ * Both supply tables are SEEDED from their source tables inside the migration,
  * and RE-SEEDED on every open (nodus_witness_db_s20_reseed; precedent
  * nodus/src/core/nodus_storage.c dht_hint_totals): the native row and the
  * bond row are always present after a seed, so an absent row is
@@ -1042,9 +1061,25 @@ int nodus_witness_db_migrate_v2s20_ex(nodus_witness_t *w,
  *  v2_storage_nodes (S20 databases only; below S20 a no-op returning 0).
  *  One transaction: the old rows are deleted and the sums written again,
  *  the native row (64 zero bytes) and the bond row always included.
- *  The six supply triggers are (re)created when absent. Must run outside
- *  any transaction. @return 0 / -1 fault (the database must not be used). */
+ *  The six supply triggers are (re)created when absent. The keyed-trie
+ *  tables and the 24 dirty-capture triggers are only VERIFIED
+ *  (nodus_witness_db_s20_trie_shape_ok), never recreated: a missing or
+ *  altered one is -1. Must run outside any transaction.
+ *  @return 0 / -1 fault (the database must not be used). */
 int nodus_witness_db_s20_reseed(nodus_witness_t *w);
+
+/** 1 = the five keyed-trie tables, the v2_storage_nodes(status, node_fp)
+ *  index and all 24 dirty-capture triggers are present with the stored
+ *  SQL this build generates; 0 = something is absent or altered; -1 =
+ *  fault. The open-time re-seed refuses a database for a 0 (plan §5.2);
+ *  later packages call it again at the activation edge and at block
+ *  starts. Reads only. */
+int nodus_witness_db_s20_trie_shape_ok(nodus_witness_t *w);
+
+/** Read v2_trie_state.capture. @return 0 with *capture in {0, 1};
+ *  -1 for a missing row, a stored value that is not the INTEGER 0 or 1,
+ *  a second row or any read fault — never a default. */
+int nodus_witness_db_s20_trie_capture(nodus_witness_t *w, int *capture);
 
 /* ── the §18 evm_logs CURSOR SCAN (Nodus EVM red-team 1 F4) ─────────────────
  *

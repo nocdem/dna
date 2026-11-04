@@ -5476,6 +5476,30 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                        (unsigned)NODUS_V2_SCHEMA_VERSION_S20);
             return -2;
         }
+        /* HF-9 WP2, plan §5.2 "capture consistency at every block start,
+         * before any item runs": from S20 the consensus capture flag
+         * v2_trie_state.capture exists, and every generation this build
+         * compiles (NODUS_RT_GEN_MAX, at most 5) requires it to be 0. A
+         * missing or unreadable row, a value outside {0, 1} or a 1 is a
+         * node FAULT before any of the block's writes are processed —
+         * never a skipped capture: a missing row would make the
+         * triggers' WHEN condition NULL, i.e. silently off
+         * (nodus/CLAUDE.md "A DB failure is never a value"). The
+         * generation >= 6 branch (capture 1 and the 24 triggers) arrives
+         * with the generation itself. */
+        if (ver >= NODUS_V2_SCHEMA_VERSION_S20) {
+            int capture = -1;
+            if (nodus_witness_db_s20_trie_capture(w, &capture) != 0 ||
+                capture != 0) {
+                V2AP_FAULT("cometbft lane: the trie capture flag "
+                           "v2_trie_state.capture is %s - every "
+                           "generation this build compiles needs it 0; "
+                           "nothing about the block was judged",
+                           capture < 0 ? "missing or unreadable"
+                                       : "1");
+                return -2;
+            }
+        }
         /* The HOST owns the transaction (D-23 rev 5 (5)): this entry
          * issues no BEGIN, no COMMIT and no ROLLBACK, so being called
          * outside one would silently autocommit every statement below

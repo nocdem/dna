@@ -2592,12 +2592,14 @@ static const char *const V2_S20_SUPPLY_TRIGGER_NAMES[6] = {
     "v2_supply_bond_ins", "v2_supply_bond_del", "v2_supply_bond_upd"
 };
 
-/* 1 = trigger `name`'s stored SQL equals what THIS build's SQLite stores
- * for the statement in `ddl` that creates it (reference: a private
- * ":memory:" database holding stub tables `tables_ddl`), 0 = absent or
- * another definition, -1 = fault. The table_ddl_exact pattern. */
-static int trigger_sql_exact(nodus_witness_t *w, const char *name,
-                             const char *prereq_ddl, const char *trig_ddl) {
+/* 1 = every trigger in `names` (n of them) has a stored SQL equal to what
+ * THIS build's SQLite stores for the statements in `trig_ddl` (reference:
+ * a private ":memory:" database holding the stub tables `prereq_ddl` and
+ * then `trig_ddl`), 0 = one is absent or another definition, -1 = fault.
+ * The table_ddl_exact pattern, one reference database for the whole set. */
+static int triggers_sql_exact(nodus_witness_t *w, const char *const *names,
+                              size_t n, const char *prereq_ddl,
+                              const char *trig_ddl) {
     static const char *const q =
         "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?1";
     sqlite3 *mem = NULL;
@@ -2610,24 +2612,35 @@ static int trigger_sql_exact(nodus_witness_t *w, const char *name,
     if (sqlite3_exec(mem, prereq_ddl, NULL, NULL, NULL) == SQLITE_OK &&
         sqlite3_exec(mem, trig_ddl, NULL, NULL, NULL) == SQLITE_OK &&
         sqlite3_prepare_v2(mem, q, -1, &a, NULL) == SQLITE_OK &&
-        sqlite3_bind_text(a, 1, name, -1, SQLITE_STATIC) == SQLITE_OK &&
-        sqlite3_prepare_v2(w->db, q, -1, &b, NULL) == SQLITE_OK &&
-        sqlite3_bind_text(b, 1, name, -1, SQLITE_STATIC) == SQLITE_OK) {
-        int ra = sqlite3_step(a);
-        int rb = sqlite3_step(b);
-        if (ra != SQLITE_ROW) {
-            out = -1;                   /* the reference must exist       */
-        } else if (rb == SQLITE_DONE) {
-            out = 0;                    /* absent                         */
-        } else if (rb != SQLITE_ROW) {
-            out = -1;
-        } else {
-            const unsigned char *sa = sqlite3_column_text(a, 0);
-            const unsigned char *sb = sqlite3_column_text(b, 0);
-            int la = sqlite3_column_bytes(a, 0);
-            int lb = sqlite3_column_bytes(b, 0);
-            out = (sa && sb && la == lb &&
-                   memcmp(sa, sb, (size_t)la) == 0) ? 1 : 0;
+        sqlite3_prepare_v2(w->db, q, -1, &b, NULL) == SQLITE_OK) {
+        out = 1;
+        for (size_t i = 0; i < n && out == 1; i++) {
+            if (sqlite3_reset(a) != SQLITE_OK ||
+                sqlite3_reset(b) != SQLITE_OK ||
+                sqlite3_bind_text(a, 1, names[i], -1, SQLITE_STATIC)
+                    != SQLITE_OK ||
+                sqlite3_bind_text(b, 1, names[i], -1, SQLITE_STATIC)
+                    != SQLITE_OK) {
+                out = -1;
+                break;
+            }
+            int ra = sqlite3_step(a);
+            int rb = sqlite3_step(b);
+            if (ra != SQLITE_ROW) {
+                out = -1;               /* the reference must exist       */
+            } else if (rb == SQLITE_DONE) {
+                out = 0;                /* absent                         */
+            } else if (rb != SQLITE_ROW) {
+                out = -1;
+            } else {
+                const unsigned char *sa = sqlite3_column_text(a, 0);
+                const unsigned char *sb = sqlite3_column_text(b, 0);
+                int la = sqlite3_column_bytes(a, 0);
+                int lb = sqlite3_column_bytes(b, 0);
+                if (!(sa && sb && la == lb &&
+                      memcmp(sa, sb, (size_t)la) == 0))
+                    out = 0;
+            }
         }
     }
     sqlite3_finalize(a);
@@ -2654,13 +2667,254 @@ static int s20_supply_shape_ok(nodus_witness_t *w) {
     if (r != 1) return r;
     r = table_ddl_exact(w, "v2_bond_total", V2_S20_BOND_TOTAL_DDL);
     if (r != 1) return r;
-    for (size_t i = 0; i < 6; i++) {
-        r = trigger_sql_exact(w, V2_S20_SUPPLY_TRIGGER_NAMES[i],
+    return triggers_sql_exact(w, V2_S20_SUPPLY_TRIGGER_NAMES, 6,
                               V2_S20_SUPPLY_STUBS_DDL,
                               V2_S20_SUPPLY_TRIGGERS_DDL);
+}
+
+/* ── HF-9 WP2: the keyed-trie tables, indexes and the 24 dirty-capture
+ *    triggers (plan §5.1, §5.2, §5.5). Contract: nodus_witness_v2_schema.h */
+
+/* Digest-addressed node store of the eight leg tries (plan §5.1). NOT NULL
+ * closes the Z-51 class at the schema too. */
+static const char *V2_S20_TRIE_NODES_DDL =
+    "CREATE TABLE IF NOT EXISTS v2_trie_nodes ("
+    "  digest BLOB NOT NULL PRIMARY KEY,"
+    "  rlp BLOB NOT NULL"
+    ") WITHOUT ROWID";
+
+/* The committed root of each leg (plan §5.1). */
+static const char *V2_S20_TRIE_ROOTS_DDL =
+    "CREATE TABLE IF NOT EXISTS v2_trie_roots ("
+    "  leg INTEGER NOT NULL PRIMARY KEY,"
+    "  root BLOB NOT NULL"
+    ") WITHOUT ROWID";
+
+/* The primary keys written in this block, duplicates collapsed (plan
+ * §5.1; physical layout DF-9). `key` has no declared type: it holds the
+ * source row's primary key AS STORED — a BLOB for the legs whose key is a
+ * blob, an INTEGER for the segment and the two epoch legs. The 8-byte
+ * big-endian encoding of an integer key is made in C at the flush, because
+ * the linked SQLite (3.40.1) has no unhex(); inside one leg ORDER BY key
+ * is already the canonical key order (non-negative integers ascend as
+ * their big-endian bytes do, blobs by memcmp). */
+static const char *V2_S20_TRIE_DIRTY_DDL =
+    "CREATE TABLE IF NOT EXISTS v2_trie_dirty ("
+    "  leg INTEGER NOT NULL,"
+    "  key NOT NULL,"
+    "  PRIMARY KEY (leg, key)"
+    ") WITHOUT ROWID";
+
+/* The CONSENSUS capture flag (plan §5.1): 0 before activation (the
+ * migration writes the row), 1 only by the activation edge or a
+ * generation >= 6 genesis. */
+static const char *V2_S20_TRIE_STATE_DDL =
+    "CREATE TABLE IF NOT EXISTS v2_trie_state ("
+    "  id INTEGER NOT NULL PRIMARY KEY CHECK(id = 1),"
+    "  capture INTEGER NOT NULL CHECK(capture IN (0, 1))"
+    ") WITHOUT ROWID";
+
+/* Node-local shadow status (plan §5.1; the values are the shadow
+ * package's). Created without a row; nothing in this package reads or
+ * writes it. */
+static const char *V2_S20_TRIE_SHADOW_STATE_DDL =
+    "CREATE TABLE IF NOT EXISTS v2_trie_shadow_state ("
+    "  id INTEGER NOT NULL PRIMARY KEY CHECK(id = 1),"
+    "  status INTEGER"
+    ") WITHOUT ROWID";
+
+/* plan §5.5 */
+static const char *V2_S20_STORAGE_STATUS_INDEX_DDL =
+    "CREATE INDEX IF NOT EXISTS v2_storage_nodes_by_status "
+    "ON v2_storage_nodes(status, node_fp)";
+
+/* The eight migrated tables: leg id (plan §4.2 order L1..L8), table,
+ * primary-key column. */
+static const struct {
+    int         leg;
+    const char *table;
+    const char *pk;
+} V2_S20_TRIE_LEGS[8] = {
+    { 1, "utxo_set",                "nullifier"    },
+    { 2, "tokens",                  "token_id"     },
+    { 3, "v2_claims_spent",         "nullifier"    },
+    { 4, "v2_names",                "name"         },
+    { 5, "v2_storage_nodes",        "node_fp"      },
+    { 6, "v2_storage_segments",     "k"            },
+    { 7, "validator_set_snapshots", "epoch_start"  },
+    { 8, "v2_attendance_epoch",     "epoch_start"  }
+};
+
+#define S20_TRIE_N_TRIGGERS 24
+#define S20_TRIE_TRIG_NAME_LEN 24
+#define S20_TRIE_DDL_CAP (S20_TRIE_N_TRIGGERS * 512 + 64)
+
+/* Build the 24 trigger statements (ins, del, upd for each of the eight
+ * tables, in leg order) into `ddl`, and their names into
+ * names[i] (storage `store`, S20_TRIE_N_TRIGGERS * S20_TRIE_TRIG_NAME_LEN
+ * bytes, name pointers returned in `names`). Every trigger is gated by
+ * WHEN (SELECT capture FROM v2_trie_state WHERE id = 1) = 1 — a missing
+ * state row makes the condition NULL (never true), which is why the
+ * block-start check reads the row and faults on its absence (plan §5.2).
+ * An UPDATE records the OLD and the NEW key (the key may change), a
+ * DELETE the OLD key, an INSERT the NEW key; INSERT OR IGNORE collapses
+ * duplicates. @return 0 / -1 (buffer too small: never). */
+static int s20_trie_triggers(char *ddl, size_t ddl_cap,
+                             char store[][S20_TRIE_TRIG_NAME_LEN],
+                             const char **names) {
+    static const char *const when =
+        "WHEN (SELECT capture FROM v2_trie_state WHERE id = 1) = 1 ";
+    size_t off = 0;
+    size_t ti = 0;
+    for (size_t i = 0; i < 8; i++) {
+        const int leg = V2_S20_TRIE_LEGS[i].leg;
+        const char *tab = V2_S20_TRIE_LEGS[i].table;
+        const char *pk = V2_S20_TRIE_LEGS[i].pk;
+        static const char *const kind[3] = { "ins", "del", "upd" };
+        for (int k = 0; k < 3; k++) {
+            int nn = snprintf(store[ti], S20_TRIE_TRIG_NAME_LEN,
+                              "v2_trie_l%d_%s", leg, kind[k]);
+            if (nn <= 0 || nn >= S20_TRIE_TRIG_NAME_LEN) return -1;
+            names[ti] = store[ti];
+            ti++;
+            int w;
+            if (k == 0) {
+                w = snprintf(ddl + off, ddl_cap - off,
+                    "CREATE TRIGGER IF NOT EXISTS v2_trie_l%d_ins "
+                    "AFTER INSERT ON %s %s"
+                    "BEGIN INSERT OR IGNORE INTO v2_trie_dirty(leg, key) "
+                    "VALUES (%d, NEW.%s); END;",
+                    leg, tab, when, leg, pk);
+            } else if (k == 1) {
+                w = snprintf(ddl + off, ddl_cap - off,
+                    "CREATE TRIGGER IF NOT EXISTS v2_trie_l%d_del "
+                    "AFTER DELETE ON %s %s"
+                    "BEGIN INSERT OR IGNORE INTO v2_trie_dirty(leg, key) "
+                    "VALUES (%d, OLD.%s); END;",
+                    leg, tab, when, leg, pk);
+            } else {
+                w = snprintf(ddl + off, ddl_cap - off,
+                    "CREATE TRIGGER IF NOT EXISTS v2_trie_l%d_upd "
+                    "AFTER UPDATE ON %s %s"
+                    "BEGIN INSERT OR IGNORE INTO v2_trie_dirty(leg, key) "
+                    "VALUES (%d, OLD.%s); "
+                    "INSERT OR IGNORE INTO v2_trie_dirty(leg, key) "
+                    "VALUES (%d, NEW.%s); END;",
+                    leg, tab, when, leg, pk, leg, pk);
+            }
+            if (w <= 0 || (size_t)w >= ddl_cap - off) return -1;
+            off += (size_t)w;
+        }
+    }
+    return 0;
+}
+
+/* Stub source tables for the reference database: only the primary-key
+ * column each trigger names, plus the two tables its body names. */
+static int s20_trie_stubs(char *out, size_t cap) {
+    size_t off = 0;
+    int w = snprintf(out, cap,
+        "CREATE TABLE v2_trie_state(id INTEGER PRIMARY KEY, capture "
+        "INTEGER);"
+        "CREATE TABLE v2_trie_dirty(leg INTEGER, key, PRIMARY KEY (leg, "
+        "key)) WITHOUT ROWID;");
+    if (w <= 0 || (size_t)w >= cap) return -1;
+    off = (size_t)w;
+    for (size_t i = 0; i < 8; i++) {
+        w = snprintf(out + off, cap - off, "CREATE TABLE %s(%s);",
+                     V2_S20_TRIE_LEGS[i].table, V2_S20_TRIE_LEGS[i].pk);
+        if (w <= 0 || (size_t)w >= cap - off) return -1;
+        off += (size_t)w;
+    }
+    return 0;
+}
+
+/* 1 = the five trie tables, the registry index and all 24 triggers are
+ * exactly this build's, 0 = drift, -1 = fault. */
+static int s20_trie_shape_ok(nodus_witness_t *w) {
+    int r = table_ddl_exact(w, "v2_trie_nodes", V2_S20_TRIE_NODES_DDL);
+    if (r != 1) return r;
+    r = table_ddl_exact(w, "v2_trie_roots", V2_S20_TRIE_ROOTS_DDL);
+    if (r != 1) return r;
+    r = table_ddl_exact(w, "v2_trie_dirty", V2_S20_TRIE_DIRTY_DDL);
+    if (r != 1) return r;
+    r = table_ddl_exact(w, "v2_trie_state", V2_S20_TRIE_STATE_DDL);
+    if (r != 1) return r;
+    r = table_ddl_exact(w, "v2_trie_shadow_state",
+                        V2_S20_TRIE_SHADOW_STATE_DDL);
+    if (r != 1) return r;
+    {
+        static const char *const ix_cols[] = { "status", "node_fp" };
+        r = index_cols_exact(w, "v2_storage_nodes_by_status",
+                             "v2_storage_nodes", ix_cols, 2);
         if (r != 1) return r;
     }
-    return 1;
+    char *ddl = malloc(S20_TRIE_DDL_CAP);
+    char *stubs = malloc(2048);
+    char (*store)[S20_TRIE_TRIG_NAME_LEN] =
+        malloc(S20_TRIE_N_TRIGGERS * S20_TRIE_TRIG_NAME_LEN);
+    const char *names[S20_TRIE_N_TRIGGERS];
+    r = -1;
+    if (ddl && stubs && store &&
+        s20_trie_triggers(ddl, S20_TRIE_DDL_CAP, store, names) == 0 &&
+        s20_trie_stubs(stubs, 2048) == 0)
+        r = triggers_sql_exact(w, names, S20_TRIE_N_TRIGGERS, stubs, ddl);
+    free(ddl);
+    free(stubs);
+    free(store);
+    return r;
+}
+
+/* The migration's DDL for the trie part: tables, index, triggers, and the
+ * capture row at 0. @return 0 / -1. */
+static int s20_trie_create(nodus_witness_t *w) {
+    if (exec_sql(w, V2_S20_TRIE_NODES_DDL) != 0) return -1;
+    if (exec_sql(w, V2_S20_TRIE_ROOTS_DDL) != 0) return -1;
+    if (exec_sql(w, V2_S20_TRIE_DIRTY_DDL) != 0) return -1;
+    if (exec_sql(w, V2_S20_TRIE_STATE_DDL) != 0) return -1;
+    if (exec_sql(w, V2_S20_TRIE_SHADOW_STATE_DDL) != 0) return -1;
+    if (exec_sql(w, V2_S20_STORAGE_STATUS_INDEX_DDL) != 0) return -1;
+    char *ddl = malloc(S20_TRIE_DDL_CAP);
+    char (*store)[S20_TRIE_TRIG_NAME_LEN] =
+        malloc(S20_TRIE_N_TRIGGERS * S20_TRIE_TRIG_NAME_LEN);
+    const char *names[S20_TRIE_N_TRIGGERS];
+    int rc = -1;
+    if (ddl && store &&
+        s20_trie_triggers(ddl, S20_TRIE_DDL_CAP, store, names) == 0)
+        rc = exec_sql(w, ddl);
+    free(ddl);
+    free(store);
+    if (rc != 0) return -1;
+    /* the capture flag starts at 0 (consensus-off until the edge) */
+    return exec_sql(w, "INSERT INTO v2_trie_state (id, capture) "
+                       "VALUES (1, 0)");
+}
+
+int nodus_witness_db_s20_trie_shape_ok(nodus_witness_t *w) {
+    if (!w || !w->db) return -1;
+    return s20_trie_shape_ok(w);
+}
+
+int nodus_witness_db_s20_trie_capture(nodus_witness_t *w, int *capture) {
+    if (!w || !w->db || !capture) return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT capture, typeof(capture) FROM v2_trie_state "
+            "WHERE id = 1", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    int rc = sqlite3_step(st);
+    int ret = -1;
+    if (rc == SQLITE_ROW) {
+        const char *t = (const char *)sqlite3_column_text(st, 1);
+        sqlite3_int64 v = sqlite3_column_int64(st, 0);
+        if (t && strcmp(t, "integer") == 0 && (v == 0 || v == 1) &&
+            sqlite3_step(st) == SQLITE_DONE) {
+            *capture = (int)v;
+            ret = 0;
+        }
+    }
+    sqlite3_finalize(st);
+    return ret;
 }
 
 int nodus_witness_db_migrate_v2s20_ex(nodus_witness_t *w,
@@ -2694,14 +2948,18 @@ int nodus_witness_db_migrate_v2s20_ex(nodus_witness_t *w,
         if (exec_sql(w, V2_S20_BOND_TOTAL_DDL) != 0) break;
         if (exec_sql(w, V2_S20_SUPPLY_TRIGGERS_DDL) != 0) break;
         if (exec_sql(w, V2_S20_SUPPLY_RESEED_SQL) != 0) break;
+        /* HF-9 WP2: the keyed-trie tables, the registry index, the 24
+         * dirty-capture triggers and the capture row at 0 */
+        if (s20_trie_create(w) != 0) break;
         if (fail_at == V2S20MIG_FAIL_AFTER_TABLES) break;
 
-        /* Verify: both tables' whole stored definitions and the six
-         * triggers' stored SQL — a DDL that silently did nothing, or a
-         * pre-existing object of another shape, is not a migrated schema. */
-        if (s20_supply_shape_ok(w) != 1) {
-            QGP_LOG_ERROR(LOG_TAG, "%s", "S20 supply-totals schema shape "
-                          "drift — refusing");
+        /* Verify: every table's whole stored definition, the index's
+         * exact key columns and every trigger's stored SQL — a DDL that
+         * silently did nothing, or a pre-existing object of another
+         * shape, is not a migrated schema. */
+        if (s20_supply_shape_ok(w) != 1 || s20_trie_shape_ok(w) != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "S20 supply-totals / keyed-trie "
+                          "schema shape drift — refusing");
             break;
         }
         if (fail_at == V2S20MIG_FAIL_AFTER_VERIFY) break;
@@ -2749,6 +3007,17 @@ int nodus_witness_db_s20_reseed(nodus_witness_t *w) {
         if (s20_supply_shape_ok(w) != 1) {
             QGP_LOG_ERROR(LOG_TAG, "%s", "S20 supply-totals schema shape "
                           "drift at open — refusing");
+            break;
+        }
+        /* plan §5.2: the keyed-trie tables and the 24 triggers are
+         * verified at EVERY open of an S20 database, independent of any
+         * shadow setting and before activation (a missing or altered
+         * trigger = refuse to start: DROP TABLE removes triggers). They
+         * are never recreated here — a repaired trigger would hide that
+         * writes went uncaptured. */
+        if (s20_trie_shape_ok(w) != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "S20 keyed-trie schema or trigger "
+                          "missing or altered at open — refusing");
             break;
         }
         ok = 1;

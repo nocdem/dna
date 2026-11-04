@@ -1430,7 +1430,13 @@ static int gen_seed_state(nodus_witness_t *w2,
     {
         static const char *const must_be_empty[] = {
             "delegations", "v2_reward_accrual", "v2_balance_copy",
-            "v2_validator_roles", "v2_replay"
+            "v2_validator_roles", "v2_replay",
+            /* HF-9 WP2 (plan §5.1): the keyed-trie node store, the leg
+             * roots and the dirty keys are written only by the trie
+             * build / flush (a generation >= 6 genesis builds them
+             * after this list); v2_trie_state holds its one row (0) and
+             * v2_trie_shadow_state none, so neither is listed */
+            "v2_trie_nodes", "v2_trie_roots", "v2_trie_dirty"
         };
         for (size_t i = 0; i < sizeof(must_be_empty) /
                                sizeof(must_be_empty[0]); i++) {
