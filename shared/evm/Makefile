@@ -243,7 +243,7 @@ TRIE_OBJS  := $(TRIE_BUILD)/evm_trie.o $(TRIE_BUILD)/evm_trie_rlp.o \
         test_mldsa_precompile mldsa-acvp-vectors mldsa-acvp-vectors-check \
         vectors addr32-vectors \
         addr32-vectors-check \
-        statetest conformance differential clean test_trie trie-vectors trie-vectors-check \
+        statetest conformance differential clean test_trie trie-vectors trie-vectors-check rlp-vectors \
         bench
 
 all: lib deps test_u256 test-portable
@@ -502,6 +502,13 @@ trie-vectors:
 trie-vectors-check: | $(BUILD)
 	python3 trie/trie_oracle.py $(FIXTURES) $(BUILD)/trie_vectors.check.h
 	cmp $(BUILD)/trie_vectors.check.h trie/trie_vectors.h
+
+# HF-9 review T-2: regenerate the RLP conformity vectors from the pinned
+# ethereum-rlp 0.1.6 sdist (RLP_SDIST=<ethereum_rlp-0.1.6.tar.gz>; its
+# sha256 is checked by the script; the package ethereum-types and
+# typing-extensions must be installed, the script does not substitute them).
+rlp-vectors:
+	python3 -I trie/rlp_conformity_oracle.py $(RLP_SDIST) trie/rlp_vectors_0_1_6.json
 
 test: addr32-vectors-check $(BUILD)/test_u256 $(BUILD)/test_u256_portable \
       $(BUILD)/test_addr32 $(BUILD)/test_nodus_profile \
