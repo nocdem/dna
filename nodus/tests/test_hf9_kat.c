@@ -88,8 +88,26 @@
  *   control values; where the K8 owner is compiled, the owner bytes and the
  *   literal DNAC_CFG_RULESET_GEN_TRIE_D equal the JSON's.
  *
+ *  WP4 group "hrw" (plan §8.3, AD-5, Kurultay 55 A5 / F-9 / F-10), the
+ *  values produced by the PRODUCTION selector (shared/dnac/ledger_roots_v2.c
+ *  dna_v2_segment_score / dna_v2_hrw_rank_cmp / dna_v2_segment_holders_hrw):
+ *   22 selector vectors ("cases" 10, "R_sweep_same_set" 8,
+ *   "same_set_other_segments" 4): A(k) from Root(k); every eligible
+ *   member's score equals the JSON's; each ranked entry ranks strictly
+ *   before the next (descending 64-byte score, then descending fp); the
+ *   eligible count is the members with fail_streak < 3; the holders equal
+ *   the JSON's in rank order with n_holders = min(R, eligible) (fewer than
+ *   R, exactly R, R+1, none, an empty set); the 144-byte score preimage
+ *   assembled here equals the JSON's and hashes to the rank-0 score.
+ *   "refusals" (3): a duplicate fp among the eligible, a duplicate among
+ *   the ineligible and a descending neighbour each return -1 with nothing
+ *   written. "tie_comparator": injected scores (SHA3-512 cannot make a
+ *   tie, so the comparator alone is checked): the rank order, the holders
+ *   for R = 2 / 4 / 16-with-fewer, and that of two equal scores the higher
+ *   node_fp ranks first.
+ *
  * GROUPS NOT CHECKED HERE (they belong to later packages and are named so
- * that nothing reads this test as covering them): hrw (WP4, §8.3);
+ * that nothing reads this test as covering them):
  * composition_chains, empty_leg_proofs, merkle_steps (WP6, §10). The
  * vector_counts of those groups are not asserted.
  *
@@ -117,9 +135,13 @@
  *    not K8 (a test-owner build) the owner-bound comparisons of "votes"
  *    (the compiled literal, the startup derivation, the D4 / D5 controls)
  *    are compiled out; the layout and constructor checks stay.
- *  - "new_tags" cannot see a tag that no composition uses (NDS.STHRW.v1
- *    until WP4); the three composition tags are seen only through their
+ *  - "new_tags" cannot see a tag that no composition uses; NDS.STHRW.v1 is
+ *    seen through the "hrw" group's scores (a wrong tag changes every
+ *    score); the three composition tags are seen only through their
  *    functions' outputs.
+ *  - "hrw" is the same self-consistency class as the rest: the score
+ *    preimage layout is the plan's (AD-5), the oracle re-implements it in
+ *    Python (author != C author); only SHA3-512 itself is grounded.
  *  - The leg-5 registry and leg-6 segment records do NOT go through the
  *    SQL reader: the oracle's registry fixture has node_fp = SHA3-512 of
  *    its 128-byte pk fixture, but the reader accepts only a public key of
@@ -1290,6 +1312,225 @@ static int check_votes(json_object *vec) {
     return 0;
 }
 
+/* ── HF-9 WP4: the "hrw" group (plan §8.3, AD-5, Kurultay 55 A5 / F-9 / F-10;
+ *    values produced by the PRODUCTION selector) ───────────────────────── */
+
+#define HRW_MAXM 64
+
+typedef struct {
+    uint8_t  fp[HRW_MAXM][64];
+    uint32_t fs[HRW_MAXM];
+    size_t   n;
+} hrw_members_t;
+
+/* members[] of a vector -> arrays; 0 / -1 */
+static int hrw_read_members(json_object *vec, hrw_members_t *m) {
+    json_object *ms = jget(vec, "members");
+    if (!ms || !json_object_is_type(ms, json_type_array)) return -1;
+    m->n = json_object_array_length(ms);
+    if (m->n > HRW_MAXM) return -1;
+    for (size_t i = 0; i < m->n; i++) {
+        json_object *e = json_object_array_get_idx(ms, i);
+        json_object *fs = jget(e, "fail_streak");
+        if (!e || !fs || jhex(e, "node_fp", m->fp[i], 64) != 0) return -1;
+        m->fs[i] = (uint32_t)json_object_get_int64(fs);
+    }
+    return 0;
+}
+
+/* One selector vector (a case, an R-sweep entry or a same-set-other-
+ * segment): a_key from Root(k), every score, the rank order, the eligible
+ * count, the holders and the preimage sample. */
+static int hrw_check_vector(json_object *v) {
+    snprintf(g_ctx, sizeof(g_ctx), "hrw %s", jstr(v, "name") ? jstr(v, "name")
+                                                              : "?");
+    hrw_members_t *m = calloc(1, sizeof(*m));
+    CHECK(m != NULL, "alloc");
+    uint8_t rootk[64], a[64];
+    json_object *rj = jget(v, "R");
+    CHECK(rj && jhex(v, "root_k_fixture", rootk, 64) == 0 &&
+          hrw_read_members(v, m) == 0, "vector decodes");
+    const size_t R = (size_t)json_object_get_int64(rj);
+    CHECK(dna_v2_segment_assign_key(rootk, a) == 0 && jeq(v, "a_key", a, 64),
+          "A(k) = SHA3-512(TAG16(NDS.STASGN.v1) || Root(k)) == the oracle's");
+
+    /* every eligible member's score, and the order, against ranked_eligible */
+    json_object *rk = jget(v, "ranked_eligible");
+    CHECK(rk && json_object_is_type(rk, json_type_array), "ranked_eligible");
+    size_t elig = 0;
+    for (size_t i = 0; i < m->n; i++) if (m->fs[i] < DNA_V2_STORAGE_FAIL_LIMIT) elig++;
+    CHECK(elig == (size_t)json_object_get_int64(jget(v, "eligible_count")) &&
+          elig == json_object_array_length(rk),
+          "eligible count = members with fail_streak < 3");
+    for (size_t r = 0; r < elig; r++) {
+        json_object *e = json_object_array_get_idx(rk, r);
+        uint8_t fp[64], sc[64];
+        CHECK(jhex(e, "node_fp", fp, 64) == 0 &&
+              (size_t)json_object_get_int64(jget(e, "rank")) == r,
+              "ranked entry decodes, rank = position");
+        CHECK(dna_v2_segment_score(a, fp, sc) == 0 && jeq(e, "score", sc, 64),
+              "score(k, m) == the oracle's");
+        if (r > 0) {
+            uint8_t pf[64], ps[64];
+            json_object *pe = json_object_array_get_idx(rk, r - 1);
+            CHECK(jhex(pe, "node_fp", pf, 64) == 0 &&
+                  jhex(pe, "score", ps, 64) == 0 &&
+                  dna_v2_hrw_rank_cmp(ps, pf, sc, fp) > 0,
+                  "the previous entry ranks strictly before this one "
+                  "(descending score, then descending fp)");
+        }
+    }
+    /* the production selector */
+    size_t idx[DNA_V2_STORAGE_HOLDERS_CAP], nout = 99;
+    CHECK(dna_v2_segment_holders_hrw(a, (const uint8_t (*)[64])m->fp, m->fs,
+                                     m->n, R, idx, &nout) == 0,
+          "holders_hrw runs");
+    json_object *hj = jget(v, "holders");
+    CHECK(hj && json_object_is_type(hj, json_type_array) &&
+          nout == json_object_array_length(hj) &&
+          nout == (size_t)json_object_get_int64(jget(v, "n_holders")) &&
+          nout == (elig < R ? elig : R),
+          "n_holders = min(R, eligible): fewer than R fills what exists");
+    for (size_t i = 0; i < nout; i++) {
+        json_object *h = json_object_array_get_idx(hj, i);
+        size_t hl = 0;
+        uint8_t *hb = unhex(json_object_get_string(h), &hl);
+        CHECK(idx[i] < m->n && hb && hl == 64 &&
+              memcmp(hb, m->fp[idx[i]], 64) == 0,
+              "holder i (rank order) == the oracle's");
+        free(hb);
+    }
+    json_object *sp = jget(v, "score_preimage_sample");
+    if (sp && !json_object_is_type(sp, json_type_null) && elig > 0) {
+        uint8_t pre[144], fp0[64], sc0[64];
+        json_object *e0 = json_object_array_get_idx(rk, 0);
+        CHECK(jhex(e0, "node_fp", fp0, 64) == 0, "rank 0 fp");
+        memset(pre, 0, 16);
+        memcpy(pre, "NDS.STHRW.v1", 12);
+        memcpy(pre + 16, a, 64);
+        memcpy(pre + 80, fp0, 64);
+        CHECK(qgp_sha3_512(pre, 144, sc0) == 0 && jeq(e0, "score", sc0, 64) &&
+              jeq(v, "score_preimage_sample", pre, 144),
+              "the 144-byte preimage assembled here == the JSON's and "
+              "hashes to the rank-0 score");
+    }
+    free(m);
+    return 0;
+}
+
+/* the cases that must be refused: nothing written, -1 */
+static int hrw_check_refusal(json_object *v) {
+    snprintf(g_ctx, sizeof(g_ctx), "hrw refusal %s", jstr(v, "name"));
+    hrw_members_t *m = calloc(1, sizeof(*m));
+    CHECK(m != NULL, "alloc");
+    uint8_t rootk[64], a[64];
+    CHECK(jhex(v, "root_k_fixture", rootk, 64) == 0 &&
+          hrw_read_members(v, m) == 0 &&
+          dna_v2_segment_assign_key(rootk, a) == 0, "refusal decodes");
+    size_t idx[DNA_V2_STORAGE_HOLDERS_CAP], nout = 99;
+    CHECK(dna_v2_segment_holders_hrw(a, (const uint8_t (*)[64])m->fp, m->fs,
+                                     m->n,
+                                     (size_t)json_object_get_int64(
+                                         jget(v, "R")), idx, &nout) == -1 &&
+          nout == 0,
+          "duplicate / non-ascending list refused, no holders written");
+    free(m);
+    return 0;
+}
+
+/* injected scores: the comparator alone (SHA3-512 cannot make a tie) */
+static int hrw_check_tie(json_object *t) {
+    snprintf(g_ctx, sizeof(g_ctx), "hrw tie_comparator");
+    json_object *en = jget(t, "entries"), *rk = jget(t, "ranked");
+    CHECK(en && rk && json_object_is_type(en, json_type_array), "entries");
+    const size_t n = json_object_array_length(en);
+    CHECK(n > 0 && n <= 8 && n == json_object_array_length(rk), "sizes");
+    uint8_t s[8][64], f[8][64];
+    for (size_t i = 0; i < n; i++) {
+        json_object *e = json_object_array_get_idx(en, i);
+        CHECK(jhex(e, "score", s[i], 64) == 0 &&
+              jhex(e, "node_fp", f[i], 64) == 0, "entry decodes");
+    }
+    /* insertion sort with the production comparator */
+    size_t ord[8];
+    for (size_t i = 0; i < n; i++) {
+        size_t p = i;
+        while (p > 0 && dna_v2_hrw_rank_cmp(s[i], f[i], s[ord[p - 1]],
+                                            f[ord[p - 1]]) > 0) {
+            ord[p] = ord[p - 1];
+            p--;
+        }
+        ord[p] = i;
+    }
+    for (size_t r = 0; r < n; r++) {
+        json_object *e = json_object_array_get_idx(rk, r);
+        CHECK(jeq(e, "node_fp", f[ord[r]], 64) &&
+              jeq(e, "score", s[ord[r]], 64),
+              "rank order of the injected scores == the oracle's");
+    }
+    struct { const char *key; size_t R; } hk[3] = {
+        { "holders_R2", 2 }, { "holders_R4", 4 },
+        { "holders_R16_fewer_than_R", 16 } };
+    for (int q = 0; q < 3; q++) {
+        json_object *hl = jget(t, hk[q].key);
+        const size_t want = n < hk[q].R ? n : hk[q].R;
+        CHECK(hl && json_object_array_length(hl) == want,
+              "holders = the first min(R, n) of the order");
+        for (size_t r = 0; r < want; r++) {
+            size_t l = 0;
+            uint8_t *b = unhex(json_object_get_string(
+                json_object_array_get_idx(hl, r)), &l);
+            CHECK(b && l == 64 && memcmp(b, f[ord[r]], 64) == 0,
+                  "holder r == rank r");
+            free(b);
+        }
+    }
+    /* the equal scores: the higher node_fp wins (paper p. 9) */
+    uint8_t tw[64];
+    CHECK(jhex(t, "tie_winner_of_equal_scores", tw, 64) == 0,
+          "tie winner decodes");
+    size_t wi = n, li = n;
+    for (size_t i = 0; i < n; i++)
+        for (size_t j = i + 1; j < n; j++)
+            if (memcmp(s[i], s[j], 64) == 0) {
+                CHECK(dna_v2_hrw_rank_cmp(s[i], f[i], s[j], f[j]) != 0,
+                      "equal scores are still strictly ordered");
+                wi = dna_v2_hrw_rank_cmp(s[i], f[i], s[j], f[j]) > 0 ? i : j;
+                li = wi == i ? j : i;
+                if (memcmp(f[wi], tw, 64) == 0) goto tie_ok;
+            }
+    CHECK(0, "no equal-score pair has the JSON's winner");
+tie_ok:
+    CHECK(memcmp(f[wi], f[li], 64) > 0,
+          "the winner of two equal scores has the higher node_fp");
+    return 0;
+}
+
+static int check_hrw(json_object *vec) {
+    json_object *h = jget(vec, "hrw");
+    CHECK(h && json_object_is_type(h, json_type_object), "hrw group");
+    static const char *const lists[3] = { "cases", "R_sweep_same_set",
+                                          "same_set_other_segments" };
+    int nvec = 0;
+    for (int l = 0; l < 3; l++) {
+        json_object *a = jget(h, lists[l]);
+        CHECK(a && json_object_is_type(a, json_type_array), "vector list");
+        for (size_t i = 0; i < json_object_array_length(a); i++) {
+            if (hrw_check_vector(json_object_array_get_idx(a, i)) != 0)
+                return 1;
+            nvec++;
+        }
+    }
+    CHECK(nvec == 22, "22 selector vectors (10 cases + 8 R sweep + 4 "
+                      "other segments)");
+    json_object *rf = jget(h, "refusals");
+    CHECK(rf && json_object_array_length(rf) == 3, "3 refusals");
+    for (size_t i = 0; i < 3; i++)
+        if (hrw_check_refusal(json_object_array_get_idx(rf, i)) != 0)
+            return 1;
+    return hrw_check_tie(jget(h, "tie_comparator"));
+}
+
 int main(void) {
     char hex[65];
     if (file_sha256_hex(HF9_KAT_PATH, hex) != 0) {
@@ -1347,6 +1588,8 @@ int main(void) {
     if (!rc) rc = check_new_tags(vec);
     if (!rc) rc = check_compositions(vec);
     if (!rc) rc = check_votes(vec);
+    /* WP4 group: hrw */
+    if (!rc) rc = check_hrw(vec);
     json_object_put(root);
     if (rc) {
         fprintf(stderr, "test_hf9_kat: FAILED\n");
@@ -1354,7 +1597,8 @@ int main(void) {
     }
     printf("test_hf9_kat: %d leg_vectors, %d leg_row_sets (%d rows), "
            "new_tags (4), compositions (3 + 3 + 3 + 8), votes (D6 and the "
-           "D4 / D5 controls), %d checks passed (hf9_kat.json sha256 %s)\n",
+           "D4 / D5 controls), hrw (22 selector vectors, 3 refusals, the "
+           "tie comparator), %d checks passed (hf9_kat.json sha256 %s)\n",
            vectors, sets, rows, g_checks, KAT_SHA256);
     return 0;
 }

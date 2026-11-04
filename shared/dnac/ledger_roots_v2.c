@@ -107,6 +107,11 @@ static const uint8_t TAG_STSGLEAF[TAG_LEN] = "NDS.STSGLEAF.v1";
 static const uint8_t TAG_STSGNODE[TAG_LEN] = "NDS.STSGNODE.v1";
 static const uint8_t TAG_STASGN[TAG_LEN]   = "NDS.STASGN.v1\0\0\0";
 static const uint8_t TAG_STSAMP[TAG_LEN]   = "NDS.STSAMP.v1\0\0\0";
+/* HF-9 rendezvous score (plan §8.3, AD-5). Collision scan: see the tag
+ * table in ledger_roots_v2.h (git grep -nF over the tracked tree and the
+ * docs/plans grep, two runs, 0 hits in C code before WP4). The
+ * independent oracle is nodus/tests/vectors/hf9_kat_oracle.py. */
+static const uint8_t TAG_STHRW[TAG_LEN]    = "NDS.STHRW.v1\0\0\0\0";
 /* HF-7 roots (snapshot design §8.9 S1-S8, APPROVED 2026-10-15) —
  * collision scan 2026-10-20: `git grep -nF` of each tag over the tree,
  * found only in the independent oracle and its KAT
@@ -576,13 +581,23 @@ int dna_v2_storage_registry_root(const dna_v2_storage_node_row_t *rows,
 int dna_v2_storage_set_hash(uint64_t epoch_start,
                             const uint8_t (*node_fps)[DNA_V2_ROOT_LEN],
                             size_t count, uint8_t out[DNA_V2_ROOT_LEN]) {
+    return dna_v2_storage_set_hash_lim(epoch_start, node_fps, count,
+                                       DNA_V2_STORAGE_SET_MAX, out);
+}
+
+int dna_v2_storage_set_hash_lim(uint64_t epoch_start,
+                                const uint8_t (*node_fps)[DNA_V2_ROOT_LEN],
+                                size_t count, size_t max_count,
+                                uint8_t out[DNA_V2_ROOT_LEN]) {
     if (!out || (count > 0 && !node_fps)) return -1;
-    if (count > DNA_V2_STORAGE_SET_MAX) return -1;
+    if (max_count > DNA_V2_STORAGE_SET_CAP) return -1;
+    if (count > max_count) return -1;
     for (size_t i = 1; i < count; i++)
         if (memcmp(node_fps[i - 1], node_fps[i], DNA_V2_ROOT_LEN) >= 0)
             return -1;                    /* strictly ascending, no dups */
 
-    /* Bounded preimage: 16 + 8 + 4 + 256 × 64 = 16412 bytes. */
+    /* Bounded preimage: 16 + 8 + 4 + max_count × 64 bytes (16412 at the
+     * historical 256, 65564 at the generation-6 capacity 1024). */
     size_t pre_len = (size_t)TAG_LEN + 8 + 4 + count * DNA_V2_ROOT_LEN;
     uint8_t *pre = malloc(pre_len);
     if (!pre) return -1;
@@ -635,10 +650,19 @@ int dna_v2_storage_sets_root(const uint64_t *epoch_starts,
 
 int dna_v2_storage_report_leaf_hash(const dna_v2_storage_report_t *rep,
                                     uint8_t out[DNA_V2_ROOT_LEN]) {
+    return dna_v2_storage_report_leaf_hash_lim(rep,
+                                               DNA_V2_STORAGE_BITMAP_MAX,
+                                               out);
+}
+
+int dna_v2_storage_report_leaf_hash_lim(const dna_v2_storage_report_t *rep,
+                                        size_t max_bitmap,
+                                        uint8_t out[DNA_V2_ROOT_LEN]) {
     if (!rep || !out) return -1;
-    if (rep->bitmap_len > DNA_V2_STORAGE_BITMAP_MAX) return -1;
+    if (max_bitmap > DNA_V2_STORAGE_BITMAP_CAP) return -1;
+    if (rep->bitmap_len > max_bitmap) return -1;
     uint8_t pre[TAG_LEN + 8 + 4 + DNA_V2_ROOT_LEN + 2
-                + DNA_V2_STORAGE_BITMAP_MAX];
+                + DNA_V2_STORAGE_BITMAP_CAP];
     size_t off = 0;
     memcpy(pre + off, TAG_STREP, TAG_LEN);              off += TAG_LEN;
     put_be64(rep->epoch_start, pre + off);              off += 8;
@@ -652,6 +676,13 @@ int dna_v2_storage_report_leaf_hash(const dna_v2_storage_report_t *rep,
 
 int dna_v2_storage_reports_root(const dna_v2_storage_report_t *reps,
                                 size_t n, uint8_t out[DNA_V2_ROOT_LEN]) {
+    return dna_v2_storage_reports_root_lim(reps, n,
+                                           DNA_V2_STORAGE_BITMAP_MAX, out);
+}
+
+int dna_v2_storage_reports_root_lim(const dna_v2_storage_report_t *reps,
+                                    size_t n, size_t max_bitmap,
+                                    uint8_t out[DNA_V2_ROOT_LEN]) {
     if (!out || (n > 0 && !reps)) return -1;
     if (n == 0)
         return dna_v2_empty_root(DNA_V2_EMPTY_STORAGE_REPORTS, out);
@@ -667,7 +698,8 @@ int dna_v2_storage_reports_root(const dna_v2_storage_report_t *reps,
     uint8_t (*level)[DNA_V2_ROOT_LEN] = malloc(n * sizeof(*level));
     if (!level) return -1;
     for (size_t i = 0; i < n; i++) {
-        if (dna_v2_storage_report_leaf_hash(&reps[i], level[i]) != 0) {
+        if (dna_v2_storage_report_leaf_hash_lim(&reps[i], max_bitmap,
+                                                level[i]) != 0) {
             free(level);
             return -1;
         }
@@ -837,6 +869,73 @@ int dna_v2_segment_holders(const uint8_t a_key[DNA_V2_ROOT_LEN],
         if (nb < DNA_V2_STORAGE_HOLDERS) nb++;
     }
     for (size_t s = 0; s < nb; s++) out_idx[s] = best_i[s];
+    *n_out = nb;
+    return 0;
+}
+
+int dna_v2_segment_score(const uint8_t a_key[DNA_V2_ROOT_LEN],
+                         const uint8_t node_fp[DNA_V2_ROOT_LEN],
+                         uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!a_key || !node_fp || !out) return -1;
+    uint8_t pre[TAG_LEN + DNA_V2_ROOT_LEN + DNA_V2_ROOT_LEN];   /* 144 */
+    memcpy(pre, TAG_STHRW, TAG_LEN);
+    memcpy(pre + TAG_LEN, a_key, DNA_V2_ROOT_LEN);              /* object */
+    memcpy(pre + TAG_LEN + DNA_V2_ROOT_LEN, node_fp,
+           DNA_V2_ROOT_LEN);                                    /* server */
+    return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
+}
+
+int dna_v2_hrw_rank_cmp(const uint8_t score_a[DNA_V2_ROOT_LEN],
+                        const uint8_t fp_a[DNA_V2_ROOT_LEN],
+                        const uint8_t score_b[DNA_V2_ROOT_LEN],
+                        const uint8_t fp_b[DNA_V2_ROOT_LEN]) {
+    int c = memcmp(score_a, score_b, DNA_V2_ROOT_LEN);
+    if (c == 0) c = memcmp(fp_a, fp_b, DNA_V2_ROOT_LEN);
+    return c;                       /* higher score, then higher fp, first */
+}
+
+int dna_v2_segment_holders_hrw(const uint8_t a_key[DNA_V2_ROOT_LEN],
+                               const uint8_t (*node_fps)[DNA_V2_ROOT_LEN],
+                               const uint32_t *fail_streaks, size_t n,
+                               size_t copies,
+                               size_t out_idx[DNA_V2_STORAGE_HOLDERS_CAP],
+                               size_t *n_out) {
+    if (n_out) *n_out = 0;
+    if (!a_key || !out_idx || !n_out) return -1;
+    if (n > 0 && (!node_fps || !fail_streaks)) return -1;
+    if (copies < 1 || copies > DNA_V2_STORAGE_HOLDERS_CAP) return -1;
+    if (n > DNA_V2_STORAGE_SET_CAP) return -1;
+    /* strict ascent once, O(n): a duplicate or a descending neighbour
+     * anywhere in the list — eligible or not — refuses (no tie rule for
+     * equal fingerprints; the frozen set's contract is strict ascent) */
+    for (size_t i = 1; i < n; i++)
+        if (memcmp(node_fps[i - 1], node_fps[i], DNA_V2_ROOT_LEN) >= 0)
+            return -1;
+
+    uint8_t best_s[DNA_V2_STORAGE_HOLDERS_CAP][DNA_V2_ROOT_LEN];
+    size_t best_i[DNA_V2_STORAGE_HOLDERS_CAP];
+    size_t nb = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (fail_streaks[i] >= DNA_V2_STORAGE_FAIL_LIMIT) continue;
+        uint8_t s[DNA_V2_ROOT_LEN];
+        if (dna_v2_segment_score(a_key, node_fps[i], s) != 0) return -1;
+        /* insertion position among the nb kept (rank order) */
+        size_t pos = nb;
+        while (pos > 0 &&
+               dna_v2_hrw_rank_cmp(s, node_fps[i], best_s[pos - 1],
+                                   node_fps[best_i[pos - 1]]) > 0)
+            pos--;
+        if (pos >= copies) continue;                  /* not in the top R */
+        size_t last = nb < copies ? nb : copies - 1;
+        for (size_t t = last; t > pos; t--) {
+            memcpy(best_s[t], best_s[t - 1], DNA_V2_ROOT_LEN);
+            best_i[t] = best_i[t - 1];
+        }
+        memcpy(best_s[pos], s, DNA_V2_ROOT_LEN);
+        best_i[pos] = i;
+        if (nb < copies) nb++;
+    }
+    for (size_t t = 0; t < nb; t++) out_idx[t] = best_i[t];
     *n_out = nb;
     return 0;
 }

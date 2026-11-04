@@ -166,9 +166,9 @@
  *   hf9.md §6,                    (same 4 legs as "NDS.STOR.v2"; registry
  *   AD-4)                         = L5, segments = L6)
  *                 "NDS.STHRW.v1"  rendezvous score tag (plan §8.3, AD-5;
- *                                 defined by HF-9 package WP4 — NOT
- *                                 defined in this file yet; in this table
- *                                 because the scan below covers it)
+ *                                 defined by HF-9 package WP4 in this
+ *                                 file: dna_v2_segment_score; the scan
+ *                                 below covers it)
  *   Every tag is exactly 16 bytes, zero-padded ASCII. "NDS.CORE.v3" is
  *   NOT used: it is defined differently (8 legs with dist_root) in
  *   docs/plans/2026-09-11-nodus-ledger-snapshot-design.md:137, was never
@@ -669,6 +669,23 @@ int dna_v2_attendance_root(const uint64_t *epoch_starts,
 /** Longest report bitmap: ceil(DNA_V2_STORAGE_SET_MAX / 8). */
 #define DNA_V2_STORAGE_BITMAP_MAX  32u
 
+/* HF-9 (plan docs/plans/approved/2026-11-04-hf9.md §8.7, D17 report 2
+ * finding 3): the three constants above and DNA_V2_STORAGE_HOLDERS below
+ * are HISTORICAL — their names and values keep governing every generation
+ * <= 5 path (set cap, bitmap length, XOR selector count). The three
+ * CAPACITY constants below size buffers and bound readers of committed
+ * rows ONLY; the generation-6 rule values (member cap, bitmap length of
+ * the set, copies R) are passed to generation-6 code explicitly, never
+ * read from a compile maximum. Operator: "2 b - evet 1024 storage girsin"
+ * (cap 1024, docs/plans/decisions/2026-11-04-hf9-scope.md); copies 4..16
+ * (D4). */
+/** Largest storage set the buffers hold (generation-6 member cap 1024). */
+#define DNA_V2_STORAGE_SET_CAP      1024u
+/** Largest report bitmap the buffers hold: ceil(SET_CAP / 8). */
+#define DNA_V2_STORAGE_BITMAP_CAP   128u
+/** Largest holder list the buffers hold (param 25 maximum, 16). */
+#define DNA_V2_STORAGE_HOLDERS_CAP  16u
+
 /** Registry row status byte (bytes doc item 1; 0 is invalid). */
 #define DNA_V2_STORAGE_ACTIVE      ((uint8_t)1)
 #define DNA_V2_STORAGE_EXITING     ((uint8_t)2)
@@ -719,6 +736,16 @@ int dna_v2_storage_set_hash(uint64_t epoch_start,
                             const uint8_t (*node_fps)[DNA_V2_ROOT_LEN],
                             size_t count, uint8_t out[DNA_V2_ROOT_LEN]);
 
+/** The same S(H) with the member limit passed explicitly (HF-9 plan §8.7:
+ *  generation-6 code gets its limit as an argument): identical bytes and
+ *  identical checks; `max_count` (<= DNA_V2_STORAGE_SET_CAP) replaces the
+ *  compiled 256. dna_v2_storage_set_hash is this with 256. @return 0 / -1
+ *  (also max_count > DNA_V2_STORAGE_SET_CAP). */
+int dna_v2_storage_set_hash_lim(uint64_t epoch_start,
+                                const uint8_t (*node_fps)[DNA_V2_ROOT_LEN],
+                                size_t count, size_t max_count,
+                                uint8_t out[DNA_V2_ROOT_LEN]);
+
 /** sets leaf = SHA3-512("NDS.STSLEAF.v1" ‖ epoch_start(8 BE) ‖
  *  set_hash[64]). @return 0 / -1. */
 int dna_v2_storage_sets_leaf_hash(uint64_t epoch_start,
@@ -738,8 +765,10 @@ typedef struct {
     uint64_t epoch_start;
     uint32_t seat;
     uint8_t  set_hash[DNA_V2_ROOT_LEN];  /* S(H)                        */
-    uint16_t bitmap_len;                 /* 0..DNA_V2_STORAGE_BITMAP_MAX */
-    uint8_t  bitmap[DNA_V2_STORAGE_BITMAP_MAX];
+    uint16_t bitmap_len;                 /* 0..the generation's bitmap limit
+                                          * (32 up to generation 5, 128 from
+                                          * 6); the buffer holds the capacity */
+    uint8_t  bitmap[DNA_V2_STORAGE_BITMAP_CAP];
 } dna_v2_storage_report_t;
 
 /** leaf = SHA3-512("NDS.STREP.v1" ‖ epoch_start(8 BE) ‖ seat(4 BE) ‖
@@ -748,6 +777,20 @@ typedef struct {
  *  the CALLER's checks. @return 0 / -1 (NULL, bitmap_len >
  *  DNA_V2_STORAGE_BITMAP_MAX). */
 int dna_v2_storage_report_leaf_hash(const dna_v2_storage_report_t *rep,
+                                    uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** The same leaf with the bitmap limit passed explicitly (<=
+ *  DNA_V2_STORAGE_BITMAP_CAP); dna_v2_storage_report_leaf_hash is this
+ *  with 32. @return 0 / -1. */
+int dna_v2_storage_report_leaf_hash_lim(const dna_v2_storage_report_t *rep,
+                                        size_t max_bitmap,
+                                        uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** The same reports_root with the bitmap limit passed explicitly (<=
+ *  DNA_V2_STORAGE_BITMAP_CAP); dna_v2_storage_reports_root is this with 32.
+ *  @return 0 / -1. */
+int dna_v2_storage_reports_root_lim(const dna_v2_storage_report_t *reps,
+                                    size_t n, size_t max_bitmap,
                                     uint8_t out[DNA_V2_ROOT_LEN]);
 
 /** reports_root over reports STRICTLY ascending by (epoch_start, seat)
@@ -846,6 +889,57 @@ int dna_v2_segment_holders(const uint8_t a_key[DNA_V2_ROOT_LEN],
                            const uint32_t *fail_streaks, size_t n,
                            size_t out_idx[DNA_V2_STORAGE_HOLDERS],
                            size_t *n_out);
+
+/* ── HF-9 rendezvous selector (plan §8.3, AD-5; Kurultay 55 A5 / F-9 /
+ *    F-10; HRW paper, Thaler & Ravishankar 1998, p. 6 eq. (9), p. 9) ───
+ *
+ *   score(k, m) = SHA3-512("NDS.STHRW.v1" zero-padded to 16 ‖ A(k)[64] ‖
+ *                          node_fp[64])           — 144-byte preimage;
+ *   object first, server second (the argument order of eq. (9)); the
+ *   score function is SHA3-512 by the operator's decision D2 ("3 a puan
+ *   sha3 ile hesaplansin"), replacing the paper's 31-bit LCG (16); the
+ *   paper's tie theorem is NOT transferred.
+ *   Order: DESCENDING score compared as 64-byte big-endian unsigned
+ *   integers (memcmp order, the form of seg_distance); equal scores ->
+ *   the HIGHER node_fp (memcmp) ranks first (paper p. 9: "the server with
+ *   the highest S_i"). The same total order serves the full recomputation
+ *   and every retained-assignment update. */
+
+/** score(k, m) of the preimage above. @return 0 / -1 (NULL). */
+int dna_v2_segment_score(const uint8_t a_key[DNA_V2_ROOT_LEN],
+                         const uint8_t node_fp[DNA_V2_ROOT_LEN],
+                         uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** The ONE rank comparator of the selector: > 0 when (score_a, fp_a)
+ *  ranks BEFORE (score_b, fp_b) (higher score; equal scores -> higher
+ *  fp), < 0 when after, 0 only when both pairs are byte-equal. Every
+ *  64-byte argument is compared in full with memcmp. */
+int dna_v2_hrw_rank_cmp(const uint8_t score_a[DNA_V2_ROOT_LEN],
+                        const uint8_t fp_a[DNA_V2_ROOT_LEN],
+                        const uint8_t score_b[DNA_V2_ROOT_LEN],
+                        const uint8_t fp_b[DNA_V2_ROOT_LEN]);
+
+/** holders_hrw(k, set, R): among the n members (node_fps STRICTLY
+ *  ascending — checked once, O(n), a duplicate or a descending neighbour
+ *  anywhere in the list, eligible or not, refuses; fail_streaks[i] its
+ *  frozen streak), the first `copies` eligible members (fail_streak <
+ *  DNA_V2_STORAGE_FAIL_LIMIT) in the rank order above. `copies` is an
+ *  EXPLICIT argument, 1..DNA_V2_STORAGE_HOLDERS_CAP; n <=
+ *  DNA_V2_STORAGE_SET_CAP. out_idx[0..*n_out) receives their indices into
+ *  node_fps, rank 0 first; *n_out = min(copies, eligible members), and
+ *  with fewer eligible than `copies` the available positions are filled
+ *  without reading a nonexistent R-th score. The result does not depend
+ *  on the input order beyond the strict-ascent requirement. This is the
+ *  full-recompute reference (tests, the edge's E-s2, the checker); the
+ *  retained-assignment updates use the same comparator.
+ *  @return 0 / -1 (NULL, copies or n out of range, duplicate /
+ *  non-ascending list, hash failure; *n_out is 0 then). */
+int dna_v2_segment_holders_hrw(const uint8_t a_key[DNA_V2_ROOT_LEN],
+                               const uint8_t (*node_fps)[DNA_V2_ROOT_LEN],
+                               const uint32_t *fail_streaks, size_t n,
+                               size_t copies,
+                               size_t out_idx[DNA_V2_STORAGE_HOLDERS_CAP],
+                               size_t *n_out);
 
 /** OFF-CHAIN probe sample (bytes §6): x_i = SHA3-512("NDS.STSAMP.v1" ‖
  *  nonce[32] ‖ target_fp[64] ‖ i(4 BE)). Never a consensus input — the
