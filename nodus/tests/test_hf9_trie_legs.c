@@ -2364,9 +2364,19 @@ static int test_gen6_releases(void) {
           "delegation to it (blocks 1..15 committed)");
     CHECK(q1(f.w->db, "SELECT capture FROM v2_trie_state") == 1,
           "K7: capture is 1");
-    CHECK(q1(f.w->db, "SELECT COUNT(*) FROM delegations") == 1 &&
-          q1(f.w->db, "SELECT COUNT(*) FROM validators") == 8,
-          "K7: eight validator rows and the delegation row are in place");
+    /* After the HF-6 migration at the ladder's generation-4 edge
+     * (nodus_witness_v2_migrate.c:832 deletes every delegations row and
+     * :839 re-inserts the computed set; log "8 delegations (1 before)"):
+     * the seeded delegation survives re-keyed (its amount unchanged, only
+     * a row matching (owner, validator) is topped up, :690-697), and each
+     * of the seven BONDED document seats gains one self-delegation row
+     * (:683-740); the RETIRING validator is not bonded and has none. So 8
+     * rows: 7 self-delegations + the seeded one, and the RETIRING
+     * validator's only delegation is the seeded one. */
+    CHECK(q1(f.w->db, "SELECT COUNT(*) FROM validators") == 8 &&
+          q1(f.w->db, "SELECT COUNT(*) FROM delegations") == 8,
+          "K7: eight validator rows; eight delegation rows (seven "
+          "self-delegations and the seeded delegation, re-keyed)");
     const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
     for (uint64_t h = 16; h < E; h++)
         CHECK(j_apply_ok(&f, h) == 0, "K7: an idle block before the "
@@ -2405,9 +2415,10 @@ static int test_gen6_releases(void) {
           "K7: the graduation released the bond (index 200)");
     CHECK(q1(f.w->db, "SELECT COUNT(*) FROM utxo_set WHERE output_index >= "
                       "1073741824") == 1 &&
-          q1(f.w->db, "SELECT COUNT(*) FROM delegations") == 0,
-          "K7: the delegation was released (index 0x40000000 + rank) and "
-          "its row deleted");
+          q1(f.w->db, "SELECT COUNT(*) FROM delegations") == 7,
+          "K7: the graduate's one delegation was released (index "
+          "0x40000000 + rank 0) and its row deleted; the seven seats' "
+          "self-delegations remain");
     CHECK(q1(f.w->db, "SELECT COUNT(*) FROM v2_trie_dirty") == 0 &&
           k_read_legs(f.w, L2) == 0, "K7: dirty empty, roots read");
     CHECK((k_moved(L1, L2) & 0xC1u) == 0xC1u,
