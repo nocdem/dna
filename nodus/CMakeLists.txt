@@ -2701,6 +2701,13 @@ endif()
 # environment; epoch-length agnostic.
 if(NODUS_EVM_ENABLED)
 register_witness_test(test_storage_hrw)
+# HF-9 WP4 (plan §12 T-16) - the probe's eligible list, the holder
+# runtime's must-hold list and the fetch client's candidate holders over the
+# same assignment (see the test header); same scratch-chain fixture.
+register_witness_test(test_storage_hrw_runtime)
+# HF-9 WP4 (plan §12 T-9, the storage-assignment part) - deterministic work
+# counters of the generation-6 freeze constant while the history grows.
+register_witness_test(test_hf9_growth)
 endif()
 
 # HF-6 sub-slice 3c — owner authority and the generation-4 call layouts of

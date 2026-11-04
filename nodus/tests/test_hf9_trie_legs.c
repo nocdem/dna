@@ -153,10 +153,19 @@
  *  rtn_core_mutate (spend, token create, name register),
  *  nodus_rt_core_claim_apply, nodus_witness_v2_claim_spend_insert,
  *  nodus_witness_vset_insert and v2ep_attendance_digest. NOT driven here:
- *   - the storage exit release (nodus_witness_v2_storage.c:1180-1183,
- *     through nodus_witness_v2_epoch_release_utxo): WP4;
- *   - the storage writers (v2_storage_nodes, v2_storage_segments, the
- *     storage exit release): HF-9 package WP4 (storage work excluded);
+ *   - the storage exit release (nodus_witness_v2_storage.c st_release,
+ *     through nodus_witness_v2_epoch_release_utxo) and the other engine
+ *     writers of v2_storage_nodes / v2_storage_segments (st_streak_write,
+ *     st_grace_write, st_publish, the registry writers of rtn_sys_mutate)
+ *     - HF-9 WP4 (storage assignment) wrote the generation-6 boundary:
+ *     its ROWS are proven by test_storage_hrw (T-7, no flush runs there,
+ *     so no leg root); the leg roots after a real generation-6 boundary
+ *     with these writers are the harness's (T-13, WP7). They are NOT added
+ *     here: this fixture has no open storage gate (param 18 / the
+ *     snapshots a boundary settles against), and opening one would move
+ *     every case's SYSTEM root. The SQL statement shapes of the writers
+ *     (INSERT / UPDATE / DELETE of the plan §4.3 rows) ARE exercised above
+ *     (groups A-J), so the triggers and the flush see every shape;
  *   - the storage boundary under generation 6, the head_activate guard's
  *     engine call site (an in-block domain activation under generation 6;
  *     the getter guard itself is C and J4) and a restart of the process
