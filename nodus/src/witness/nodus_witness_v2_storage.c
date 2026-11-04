@@ -2345,8 +2345,10 @@ done:
 /* STEP 5 from generation 6: freeze storage_set(B) from the status index,
  * assign (§8.5), K9 grace from the assignment counts, write the set rows
  * and the members' v2_storage_member_epoch rows. @return 0 / -2. */
-static int st_freeze6(nodus_witness_t *w, uint64_t B, uint32_t R,
-                      uint32_t set_cap, nodus_storage_boundary_t *out) {
+int nodus_witness_storage_freeze_gen6(nodus_witness_t *w, uint64_t B,
+                                      uint32_t R, uint32_t set_cap,
+                                      nodus_storage_boundary_t *out) {
+    if (!w || !w->db || !out) return -2;
     if (B > ST_STORE_MAX) return -2;
     const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
     dna_v2_storage_node_row_t *rows = NULL;
@@ -2649,7 +2651,7 @@ int nodus_witness_storage_boundary_apply(
     if (st_prune(w, B, gen6) != 0 ||
         st_release(w, B, chain_id, gen6, out) != 0 ||
         st_publish(w, B, gen6, out) != 0 ||
-        (gen6 ? st_freeze6(w, B, copies, set_cap, out)
+        (gen6 ? nodus_witness_storage_freeze_gen6(w, B, copies, set_cap, out)
               : st_freeze(w, B, out)) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "storage boundary maintenance failed at %llu",
                       (unsigned long long)B);

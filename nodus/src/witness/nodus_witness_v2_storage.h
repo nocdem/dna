@@ -295,6 +295,20 @@ int nodus_witness_storage_boundary_apply(
         const uint8_t chain_id[DNA_CHAIN_ID_LEN],
         nodus_storage_boundary_t *out);
 
+/** Step 5 from generation 6 (plan §8.5), exported so the assignment can be
+ *  proven over synthetic registry / segment rows without a whole boundary
+ *  (the nodus_witness_storage_publish_due precedent); the boundary calls
+ *  the same code. Freezes storage_set(B) from the ACTIVE rows (status
+ *  index) with the member cap `set_cap` (the generation-6 limit,
+ *  nodus_witness_storage_limits_at), assigns the segments (the top
+ *  out->n_published segments were published at THIS boundary), applies the
+ *  K9 grace from the assignment counts, writes the set rows and
+ *  v2_storage_member_epoch(B). `R` = param 25 at B. Runs inside the
+ *  caller's transaction. @return 0 / -2 FAULT. */
+int nodus_witness_storage_freeze_gen6(nodus_witness_t *w, uint64_t B,
+                                      uint32_t R, uint32_t set_cap,
+                                      nodus_storage_boundary_t *out);
+
 /** Step 4 alone: publish every unpublished segment k (from the last
  *  published + 1, ascending) with k·P + 2E <= boundary_height, Root(k)
  *  from v2_blocks, published_height = boundary_height. The boundary

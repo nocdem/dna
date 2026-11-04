@@ -2694,6 +2694,15 @@ register_witness_test(test_hf9_activation)
 register_witness_test(test_hf9_edge)
 endif()
 
+# HF-9 WP4 (plan §8, §12 T-7) - the rendezvous storage assignment over a
+# scratch S20 chain database: the edge's storage transition E-s1..E-s3 and
+# the generation-6 freeze boundary by boundary, every case against a model
+# computed from the relations (see the test header). No block is applied; no
+# environment; epoch-length agnostic.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_storage_hrw)
+endif()
+
 # HF-6 sub-slice 3c — owner authority and the generation-4 call layouts of
 # the SYSTEM validator-record ops 2..5, STAKE refused under generation 4
 # (design 2026-10-03-hf5-validator-owner-stake rev 6 §1.3/§2; plan
