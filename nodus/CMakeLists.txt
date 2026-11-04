@@ -4197,6 +4197,19 @@ if(NODUS_EVM_ENABLED)
     register_witness_test(test_hf9_trie_legs)
 endif()
 
+# HF-9 T-4, C side for WP2 (plan §12): this build's leaf functions, row
+# readers, build path and trie against the independent oracle's groups
+# "leg_vectors" and "leg_row_sets" of tests/vectors/hf9_kat.json (json-c at
+# run time, the file's sha256 checked; the other groups belong to WP3 /
+# WP4 / WP6 and are named in the test header). EVM-only (the trie module)
+# and only with json-c: without either the target does not exist, which is
+# missing coverage, not a pass.
+if(NODUS_EVM_ENABLED AND JSONC_FOUND)
+    register_witness_test(test_hf9_kat)
+    target_compile_definitions(test_hf9_kat PRIVATE
+        HF9_KAT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/hf9_kat.json")
+endif()
+
 # Performance benchmark harness (Phase 1 — micro-benchmarks).
 # See nodus/docs/plans/2026-04-24-perf-harness-design.md.
 # Run with: ctest -L bench
