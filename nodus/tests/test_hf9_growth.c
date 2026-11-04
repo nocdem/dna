@@ -38,10 +38,16 @@
  *
  * ── HOW IT CAN FALSELY PASS OR SKIP ─────────────────────────────────────
  *  Equal counters on a path that does no work are caught by the non-zero
- *  asserts; the planted history is never read by an ordinary boundary, so
- *  a counter that missed a read of it would pass - the counters sit on
- *  every query the freeze makes against the assignment, segment and
- *  registry tables (see the increments in nodus_witness_v2_storage.c).
+ *  asserts. The planted history is deliberately NOT loader-well-formed
+ *  (the RELEASED registry rows' fingerprints are not SHA3-512 of their
+ *  key; the ended assignment rows and old segments have no matching
+ *  relation): an ordinary generation-6 boundary never reads it, which IS
+ *  the growth claim - a path that did read it would FAULT or move a
+ *  counter, not pass silently. A counter that missed a read of the planted
+ *  tables would pass: the counters sit on the freeze's queries against the
+ *  assignment, segment and registry tables (the increments in
+ *  nodus_witness_v2_storage.c), and the rows are deterministic functions
+ *  of a counter (no randomblob).
  */
 
 #include "witness/nodus_witness.h"
@@ -261,6 +267,10 @@ int main(void) {
     CHECK(freeze(B, 0, &wev) == 0, "event boundary");
     CHECK(wev.segments_visited == g_nseg,
           "an event boundary visits every published segment once (D11)");
+    CHECK(wev.assign_rows_read > 0 && wev.assign_rows_written > 0,
+          "the assignment-row counters are wired to the real path (they "
+          "are 0 on an ordinary boundary, so the event boundary proves "
+          "them non-zero)");
 
     /* 2. an ordinary boundary on a small history (11 members, one new
      * segment) */
@@ -279,16 +289,20 @@ int main(void) {
                "(k, node_fp, score, from_h, to_h) SELECT 1000000 + i, "
                "zeroblob(64), zeroblob(64), 1, 2 FROM c") == 0,
           "100 000 ended assignment rows");
+    /* deterministic 64-byte blobs derived from the counter (no randomblob:
+     * a test's data is a function of its source) */
     CHECK(sqlx("WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 "
                "FROM c WHERE i < 5000) INSERT INTO v2_storage_segments "
-               "(k, root, published_height) SELECT 100 + i, randomblob(64), "
+               "(k, root, published_height) SELECT 100 + i, "
+               "zeroblob(64 - length(CAST(i AS TEXT))) || CAST(i AS BLOB), "
                "1 FROM c") == 0, "5 000 old segments");
     CHECK(sqlx("WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 "
                "FROM c WHERE i < 10000) INSERT INTO v2_storage_nodes "
                "(node_fp, node_pk, payee_fp, bond, status, "
                "registered_height, exit_height, fail_streak, grace_until) "
-               "SELECT randomblob(64), zeroblob(2592), zeroblob(64), 0, 3, "
-               "1, 1, 0, 0 FROM c") == 0, "10 000 RELEASED registry rows");
+               "SELECT zeroblob(64 - length(CAST(i AS TEXT))) || "
+               "CAST(i AS BLOB), zeroblob(2592), zeroblob(64), 0, 3, 1, 1, "
+               "0, 0 FROM c") == 0, "10 000 RELEASED registry rows");
     CHECK(sqlx("COMMIT") == 0, "commit");
     g_nseg = 5100;                    /* the planted k = 101 .. 5100 */
     B += E_LEN;
