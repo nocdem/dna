@@ -26,7 +26,19 @@
  *      a correctly-hashed non-canonical node, a correctly-hashed node of a
  *      shape patricialize never builds -> -2, sticky;
  *   7. [O] unsecured variable-length-key cases through evm_trie_full;
- *   8. evm_trie_full in keccak mode reproduces two [F] roots.
+ *   8. evm_trie_full in keccak mode reproduces two [F] roots;
+ *   9. (HF-9 review Z-52) a stored extension whose hashed child is a leaf
+ *      faults when the extension is loaded, also for a path that does not
+ *      share its segment; a stored extension over a branch loads both
+ *      (n_get = 2) and still reads and answers absence correctly.
+ *
+ * HF-9 review T-1 (WP0 part, B-10 and Z-52): compile flags: none (plain
+ * `make test_trie`); environment: none. Leaves behind: nothing (in-memory
+ * stores, no files). How it can falsely pass: item 9 asserts the number
+ * of node fetches (n_get = 2), so a path that never reaches the extension's
+ * child cannot pass unnoticed; the B-10 reopen is now a CHECK, a failed
+ * reopen counts as a failure. The prove / verify items of T-1 belong to the
+ * proof module (a later package) and are not in this file yet.
  */
 #include "evm_trie.h"
 #include "evm_trie_full.h"
@@ -300,7 +312,12 @@ static void replay(const tv_scenario *sc, unsigned interval, int reopen,
     if (with_gets) {
         evm_trie_close(t);
         t = NULL;
-        if (evm_trie_open(&st, root, &t) == 0)
+        /* B-10: a failed reopen is a failure of this test, never a skipped
+         * lookup that still prints PASSED */
+        int orc = evm_trie_open(&st, root, &t);
+        CHECK(orc == 0, "%s/%u/%d: final reopen at the committed root, rc %d",
+              sc->name, interval, reopen, orc);
+        if (orc == 0)
             check_gets(t, sc->mode, &sh, sc->name);
     }
 out:
@@ -615,6 +632,136 @@ static void test_lying_store(void)
     printf("ok   lying store\n");
 }
 
+/* ── 9: an extension's hashed child is loaded and checked with it (Z-52) ─
+ * Hand-built stored nodes (hashed correctly, canonical RLP). The path in
+ * each get does NOT share the extension's segment, so the pre-fix code
+ * answered "absent" (1) after loading only the extension; the fixed code
+ * loads the child with the extension: n_get is 2 in both cases, and a
+ * child that is not a branch is -2 although the lookup never goes below. */
+
+/* Append a hex-prefix key to `b` as one RLP string. */
+static int put_hp(evm_trie_rlp_buf *b, const uint8_t *nib, size_t n,
+                  int leaf)
+{
+    uint8_t out[80];
+    size_t k = 0, i = 0;
+    unsigned flag = (unsigned)(leaf ? 2 : 0) | (unsigned)(n & 1);
+    if (n & 1) out[k++] = (uint8_t)((flag << 4) | nib[i++]);
+    else       out[k++] = (uint8_t)(flag << 4);
+    for (; i < n; i += 2) out[k++] = (uint8_t)((nib[i] << 4) | nib[i + 1]);
+    return evm_trie_rlp_put_bytes(b, out, k);
+}
+
+/* leaf [hp(rest), val]; the node is stored, its digest returned */
+static int mk_leaf(mstore *ms, const uint8_t *rest, size_t n, uint8_t val,
+                   uint8_t d[64])
+{
+    evm_trie_rlp_buf b = {0};
+    int rc = put_hp(&b, rest, n, 1);
+    if (rc == 0) rc = evm_trie_rlp_put_bytes(&b, &val, 1);
+    if (rc == 0) rc = evm_trie_rlp_wrap_list(&b, 0);
+    if (rc == 0) rc = put_raw_node(ms, b.p, b.len, d);
+    evm_trie_rlp_buf_free(&b);
+    return rc;
+}
+
+static void test_extension_child(void)
+{
+    uint8_t seg[2] = { 1, 2 };             /* the extension's segment      */
+    uint8_t miss[64];                      /* first byte 0xFF: no match    */
+    memset(miss, 0xFF, sizeof(miss));
+    uint8_t rest[128];
+    memset(rest, 7, sizeof(rest));
+    uint8_t *v = NULL;
+    size_t vl = 0;
+
+    /* (a) extension whose hashed child is a LEAF: -2 at the load, with
+     * exactly the extension and the child fetched, and sticky */
+    {
+        mstore ms = {0};
+        uint8_t dl[64], dr[64];
+        evm_trie_rlp_buf b = {0};
+        int rc = mk_leaf(&ms, rest, 126, 0x78, dl);   /* leaf at depth 2 */
+        if (rc == 0) rc = put_hp(&b, seg, 2, 0);
+        if (rc == 0) rc = evm_trie_rlp_put_bytes(&b, dl, 64);
+        if (rc == 0) rc = evm_trie_rlp_wrap_list(&b, 0);
+        if (rc == 0) rc = put_raw_node(&ms, b.p, b.len, dr);
+        CHECK(rc == 0, "ext->leaf fixture built");
+        evm_trie_store_t st = ms_iface(&ms);
+        evm_trie_t *t = NULL;
+        if (rc == 0) rc = evm_trie_open(&st, dr, &t);
+        CHECK(rc == 0, "ext->leaf open");
+        if (rc == 0) {
+            int grc = evm_trie_get_path(t, miss, &v, &vl);
+            CHECK(grc == -2, "ext with a leaf child, mismatching path: -2 "
+                  "at load (rc %d)", grc);
+            CHECK(ms.n_get == 2, "ext->leaf: extension and child fetched "
+                  "(n_get %zu)", ms.n_get);
+            CHECK(evm_trie_get_path(t, miss, &v, &vl) == -2,
+                  "ext->leaf: sticky");
+        }
+        free(v);
+        v = NULL;
+        evm_trie_close(t);
+        evm_trie_rlp_buf_free(&b);
+        ms_free(&ms);
+    }
+
+    /* (b) control: extension -> branch of two leaves, honest: the same
+     * mismatching path is absent (1) and the branch was fetched with the
+     * extension (n_get 2: the eager load is real, and costs one load) */
+    {
+        mstore ms = {0};
+        uint8_t l0[64], l1[64], db[64], dr[64];
+        uint8_t r0[128], r1[128];
+        memset(r0, 7, sizeof(r0));
+        memset(r1, 8, sizeof(r1));
+        evm_trie_rlp_buf bb = {0}, be = {0};
+        int rc = mk_leaf(&ms, r0, 125, 0x78, l0);     /* depth 3 */
+        if (rc == 0) rc = mk_leaf(&ms, r1, 125, 0x79, l1);
+        for (int k = 0; rc == 0 && k < 16; k++) {
+            if (k == 0)      rc = evm_trie_rlp_put_bytes(&bb, l0, 64);
+            else if (k == 1) rc = evm_trie_rlp_put_bytes(&bb, l1, 64);
+            else             rc = evm_trie_rlp_put_bytes(&bb, NULL, 0);
+        }
+        if (rc == 0) rc = evm_trie_rlp_put_bytes(&bb, NULL, 0);
+        if (rc == 0) rc = evm_trie_rlp_wrap_list(&bb, 0);
+        if (rc == 0) rc = put_raw_node(&ms, bb.p, bb.len, db);
+        if (rc == 0) rc = put_hp(&be, seg, 2, 0);
+        if (rc == 0) rc = evm_trie_rlp_put_bytes(&be, db, 64);
+        if (rc == 0) rc = evm_trie_rlp_wrap_list(&be, 0);
+        if (rc == 0) rc = put_raw_node(&ms, be.p, be.len, dr);
+        CHECK(rc == 0, "ext->branch fixture built");
+        evm_trie_store_t st = ms_iface(&ms);
+        evm_trie_t *t = NULL;
+        if (rc == 0) rc = evm_trie_open(&st, dr, &t);
+        CHECK(rc == 0, "ext->branch open");
+        if (rc == 0) {
+            int grc = evm_trie_get_path(t, miss, &v, &vl);
+            CHECK(grc == 1, "ext->branch, mismatching path: absent (rc %d)",
+                  grc);
+            CHECK(ms.n_get == 2, "ext->branch: extension and branch "
+                  "fetched (n_get %zu)", ms.n_get);
+            /* a matching path still reads the leaf: path nibbles 1,2,0 then
+             * seven-nibbles, i.e. byte 0 = 0x12, byte 1 = 0x07, rest 0x77 */
+            uint8_t hit[64];
+            memset(hit, 0x77, sizeof(hit));
+            hit[0] = 0x12;
+            hit[1] = 0x07;
+            grc = evm_trie_get_path(t, hit, &v, &vl);
+            CHECK(grc == 0 && vl == 1 && v && v[0] == 0x78,
+                  "ext->branch->leaf reads back (rc %d)", grc);
+        }
+        free(v);
+        v = NULL;
+        evm_trie_close(t);
+        evm_trie_rlp_buf_free(&bb);
+        evm_trie_rlp_buf_free(&be);
+        ms_free(&ms);
+    }
+    printf("ok   extension child loaded with the extension (Z-52)\n");
+}
+
 /* ── 7: unsecured variable-length keys through the full port ───────── */
 
 static void test_full_only(void)
@@ -807,6 +954,7 @@ int main(void)
     test_scenarios();
     test_order_independence();
     test_lying_store();
+    test_extension_child();
     test_full_only();
     test_keccak_fixture_roots();
     printf("%s: %d failure(s)\n", g_fail ? "FAILED" : "PASSED", g_fail);

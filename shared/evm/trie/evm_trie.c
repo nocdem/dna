@@ -388,6 +388,14 @@ static int resolve(evm_trie_t *t, tnode *n, size_t depth)
     n->val_len = dec->val_len;
     memcpy(n->child, dec->child, sizeof(n->child));
     free(dec);                     /* shell only: its parts now belong to n */
+
+    /* Z-52: an extension's hashed child is loaded and verified now, with
+     * the same checks and must_branch = 1 (decode_child set it), so a
+     * stored extension whose child is not a branch faults at the load of
+     * the extension, on every path that reaches it. The child is a branch;
+     * its own children stay unresolved, so this recursion is one level. */
+    if (n->kind == N_EXT && n->child[0] && n->child[0]->kind == N_REF)
+        return resolve(t, n->child[0], depth + n->nlen);
     return 0;
 }
 

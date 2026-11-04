@@ -81,9 +81,23 @@
  * may hold a half-applied update, so every later call on it returns -2.
  * Close it and reopen at the last committed root.
  *
+ *   An extension's hashed child is loaded and verified together with the
+ *   extension (same checks, and it must be a branch), not when a later
+ *   step reaches it: a stored extension over a leaf or another extension
+ *   faults at the extension's load, on every path that reaches the
+ *   extension, whether or not the path continues below it.
+ *
+ * RLP: the node RLP is the encoding of ethereum-rlp 0.1.6 (PyPI sdist,
+ * sha256 ede36f53b53c8da21f19259a676eed8790950d47f0b42cb928ac8a3c562282f3,
+ * the version execution-specs a87891f7 pins in uv.lock), src/ethereum_rlp/
+ * rlp.py encode :66-130, decode :143-159 and :387-543. Conformity of evm_trie_rlp.c to it is checked by test_rlp_conformity
+ * against vectors from rlp_conformity_oracle.py.
+ *
  * COST: set/delete/get touch only the nodes on one path (<= 129 nodes,
- * plus one sibling on a delete that collapses a branch); commit encodes and
- * hashes only nodes modified since the last commit. No full scan.
+ * plus one sibling on a delete that collapses a branch, plus one extension
+ * child: the child of an extension on the path is loaded with it); commit
+ * encodes and hashes only nodes modified since the last commit. No full
+ * scan.
  *
  * DETERMINISM: no hash map, no iteration over unordered data; commit writes
  * nodes in post-order, children in nibble order 0..15.
