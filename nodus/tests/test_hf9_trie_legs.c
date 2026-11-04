@@ -1850,6 +1850,10 @@ static int k_env(nodus_witness_t *w, uint64_t h, uint32_t op,
     dna_env_in_t in;
     memset(&in, 0, sizeof(in));
     in.fee_amount = fee;
+    /* inside the D2 window [h, h + 720] of the block that carries it (0
+     * is refused, phase 0d); h + 5 as test_hf7_edge.c case A3 sets
+     * (:667 "expiry A + 5") */
+    in.expiry_height = h + 5u;
     in.leg_count  = 1;
     in.legs       = &leg;
     if (n_reads >= 0) {

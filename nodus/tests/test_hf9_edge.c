@@ -1207,7 +1207,10 @@ static int cc_env_build(nodus_witness_t *w, uint64_t height, uint8_t param,
 
     dna_env_in_t in;
     memset(&in, 0, sizeof(in));
-    in.expiry_height       = 0;
+    /* inside the D2 window [height, height + 720] of the block that
+     * carries it (0 is refused, phase 0d); height + 5 as test_hf7_edge.c
+     * case A3 sets (:667 "expiry A + 5") */
+    in.expiry_height       = height + 5u;
     in.fee_amount          = 0;
     in.res_max_total_units = 200000;
     in.leg_count           = 1;
