@@ -24,16 +24,20 @@ Environment (nothing is fetched; the script never touches the network):
   - the sdist is extracted into a fresh temporary directory and its src/ is
     put on sys.path, so the package is loaded from the verified tarball;
   - rlp.py itself needs two packages the sdist does not carry:
-    ethereum-types (>=0.2.1,<0.5, setup.cfg install_requires; execution-specs
-    uv.lock: >=0.4.1,<0.5) and typing-extensions (>=4.12.2). They must be
-    importable. If they are not, the script EXITS 2 and writes nothing: it
-    does not substitute them.
+    ethereum-types (setup.cfg: >=0.2.1,<0.5) and typing-extensions
+    (>=4.12.2). They are taken from a directory given as argv[2] that holds
+    the two pinned wheels (execution-specs a87891f7 uv.lock pins
+    ethereum_types-0.4.1 and typing_extensions-4.15.0) and a sibling
+    `<dir>.SOURCE` file listing "<wheel name> sha256 <hex>" per wheel. Each
+    wheel's sha256 is checked against that file AND against the constants
+    below before it is unzipped into the temporary directory; nothing is
+    installed and the pre-unzipped copy beside the wheels is not used.
+    A missing wheel or a mismatch stops the run with no output.
 
 Usage:
-    python3 -I rlp_conformity_oracle.py <ethereum_rlp-0.1.6.tar.gz> <out.json>
-(-I keeps the working directory off sys.path; run it from anywhere. For the
-two dependencies to be found with -I they must be installed in the
-interpreter's own site-packages, not in the user site.)
+    python3 -I rlp_conformity_oracle.py <ethereum_rlp-0.1.6.tar.gz> \
+        <deps dir with the two wheels> <out.json>
+(-I keeps the working directory off sys.path; run it from anywhere.)
 
 Output (rlp_vectors_0_1_6.json): {"source": ..., "sha256_of_sdist": ...,
 "vectors": [...]}. Each vector:
@@ -52,10 +56,17 @@ import random
 import sys
 import tarfile
 import tempfile
+import zipfile
 
 EXPECTED_SHA256 = (
     "ede36f53b53c8da21f19259a676eed8790950d47f0b42cb928ac8a3c562282f3")
-SDIST_SRC = "ethereum_rlp-0.1.6/src"
+WHEELS = {   # execution-specs a87891f7 uv.lock pins
+    "ethereum_types-0.4.1-py3-none-any.whl":
+        "33de3e2a0c0e57ea1b67802485de556b92d557aae7c8c640070800f2b4f639e3",
+    "typing_extensions-4.15.0-py3-none-any.whl":
+        "f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548",
+}
+SDIST_SRC ="ethereum_rlp-0.1.6/src"
 SEED = 0x524C5030          # "RLP0"
 # intended list headers of the payload-boundary fixtures (checked against
 # what the reference returned: a wrong fixture stops the run)
@@ -74,19 +85,47 @@ def fail(msg, code=2):
     sys.exit(code)
 
 
-def load_reference(tarball):
-    with open(tarball, "rb") as f:
-        data = f.read()
-    got = hashlib.sha256(data).hexdigest()
+def sha256_file(path):
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def load_deps(deps_dir, tmp):
+    """Verify the two pinned wheels, unzip them into tmp/deps, put it on
+    sys.path. Hashes must match the sibling .SOURCE file and WHEELS."""
+    listed = {}
+    try:
+        with open(deps_dir.rstrip("/") + ".SOURCE") as f:
+            for line in f:
+                p = line.split()
+                if len(p) == 3 and p[1] == "sha256":
+                    listed[p[0]] = p[2]
+    except OSError as e:
+        fail("cannot read %s.SOURCE: %s" % (deps_dir, e), 1)
+    target = os.path.join(tmp, "deps")
+    os.mkdir(target)
+    for name, want in WHEELS.items():
+        path = os.path.join(deps_dir, name)
+        if not os.path.isfile(path):
+            fail("missing wheel %s" % path, 1)
+        got = sha256_file(path)
+        if got != want or listed.get(name) != want:
+            fail("wheel %s sha256 %s: pinned %s, .SOURCE %s" %
+                 (name, got, want, listed.get(name)), 1)
+        with zipfile.ZipFile(path) as z:
+            for n in z.namelist():
+                if os.path.isabs(n) or ".." in n.split("/"):
+                    fail("unexpected wheel member %r" % n, 1)
+            z.extractall(target)
+    sys.path.insert(0, target)
+
+
+def load_reference(tarball, deps_dir):
+    got = sha256_file(tarball)
     if got != EXPECTED_SHA256:
         fail("sdist sha256 %s != pinned %s" % (got, EXPECTED_SHA256), 1)
-    for dep in ("ethereum_types", "typing_extensions"):
-        try:
-            __import__(dep)
-        except ImportError:
-            fail("the dependency %r of ethereum-rlp 0.1.6 is not installed "
-                 "(see the header: nothing is substituted)" % dep)
     tmp = tempfile.mkdtemp(prefix="rlp016-")
+    load_deps(deps_dir, tmp)
     with tarfile.open(tarball, "r:gz") as tf:
         for m in tf.getmembers():
             # a plain extraction guard: no absolute path, no parent escape,
@@ -196,9 +235,10 @@ def reject_inputs():
 
 
 def main():
-    if len(sys.argv) != 3:
-        fail("usage: rlp_conformity_oracle.py <sdist.tar.gz> <out.json>", 64)
-    ref = load_reference(sys.argv[1])
+    if len(sys.argv) != 4:
+        fail("usage: rlp_conformity_oracle.py <sdist.tar.gz> <deps dir> "
+             "<out.json>", 64)
+    ref = load_reference(sys.argv[1], sys.argv[2])
     vectors = []
 
     def add_encode(vid, tree):
@@ -236,10 +276,10 @@ def main():
            "sha256_of_sdist": EXPECTED_SHA256,
            "seed": SEED, "vectors": vectors}
     text = json.dumps(doc, indent=1, sort_keys=True) + "\n"
-    with open(sys.argv[2], "w") as f:
+    with open(sys.argv[3], "w") as f:
         f.write(text)
     print("wrote %s: %d vectors, sha256 %s" % (
-        sys.argv[2], len(vectors),
+        sys.argv[3], len(vectors),
         hashlib.sha256(text.encode()).hexdigest()))
 
 
