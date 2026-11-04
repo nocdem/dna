@@ -115,6 +115,30 @@ export async function parseAddressBook(text, id, key, validators) {
   return checkAddressBook(await openRecord(ADDRESS_BOOK_CONTEXT, text, id, key, ADDRESS_BOOK_MAX_PLAIN, 'address book entries'), validators);
 }
 
+// The connected-websites record of the extension (the PermissionController
+// `subjects`: each website's origin and the account it may see), saved only
+// with a saved wallet under its own key and sealed like the history. Operator
+// 2026-11-03 "Şifrelesin tabii canım." / "Hatta böyle olur. Tamam." /
+// "Onaylıyorum." (docs/plans/decisions/2026-11-03-chrome-web-store.md:13,15):
+// context nodus.wallet.sites.v1, storage key nodus.sites.v1, 400,000 plain bytes.
+// Only the extension calls these; the web wallet and Connect site never do.
+export const SITES_KEY = 'nodus.sites.v1';
+export const SITES_CONTEXT = 'nodus.wallet.sites.v1';
+const SITES_MAX_PLAIN = 400000;
+export const sitesKeyFor = (phrase, id) => activityKeyFor(phrase, id, SITES_CONTEXT);
+const isPlain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+export async function serializeSites(id, subjects, key) {
+  if (!isPlain(subjects)) throw new Error('Invalid connected sites.');
+  return sealRecord(SITES_CONTEXT, id, subjects, key, SITES_MAX_PLAIN, 'connected sites');
+}
+// -> { origin: subject }; anything that does not authenticate or check out throws.
+export async function parseSites(text, id, key) {
+  if (!text) return {};
+  const subjects = await openRecord(SITES_CONTEXT, text, id, key, SITES_MAX_PLAIN, 'connected sites');
+  if (!isPlain(subjects) || Object.entries(subjects).some(([origin, subject]) => !isPlain(subject) || subject.origin !== origin || !isPlain(subject.permissions))) throw new Error('Invalid saved connected sites.');
+  return subjects;
+}
+
 export async function serializeBalances(id, entries, key) {
   const selected = Object.entries(entries).slice(0, BALANCES_MAX).map(([asset, e]) => [asset, { units: e.units, observedAt: e.observedAt, address: e.address }]);
   return sealRecord(BALANCES_CONTEXT, id, Object.fromEntries(selected), key, BALANCES_MAX_PLAIN, 'balances');

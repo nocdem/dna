@@ -6,6 +6,7 @@ import { Caip25EndowmentPermissionName, Caip25CaveatType, setEthAccounts } from 
 import { createNodusClient } from '../../src/nodus/client.js';
 import { NODUS_PERMISSION, NODUS_ACCOUNT_CAVEAT } from '../src/background/permissions.js';
 import { STATE_KEY } from '../src/background/store.js';
+import { SITES_KEY } from '../../src/activity-storage.js';
 import { createWalletUi } from '../src/ui/wallet-ui.js';
 import { mountWalletPage } from '../src/ui/app.js';
 import log from 'loglevel';
@@ -51,6 +52,8 @@ async function setup(t) {
     finally { delete globalThis.chrome; }
   }
   const background = await backgroundModule.createBackground(fixture), engines = [];
+  // The data notice gate refuses website requests and wallet creation until the agreement (plan section 2.7); every test here starts after it.
+  await background.privacyConsent.accept();
   await background.vaultStore.create(password, phrase);
   await background.unlock(password, options);
   // This fixture exercises connected Nodus site/balance behavior. Local
@@ -143,9 +146,12 @@ for (const fileOrigin of ['file://', 'null']) {
     permissions.controller.grantPermissions({ subject: { origin: fileOrigin }, approvedPermissions: {
       [NODUS_PERMISSION]: { caveats: [{ type: NODUS_ACCOUNT_CAVEAT, value: account }] },
     } });
-    await f.background.store.flush();
-    const saved = () => f.values[STATE_KEY].PermissionController.subjects[fileOrigin].permissions[NODUS_PERMISSION];
+    await f.background.store.flush(); await f.background.connectedSites.flush();
+    // The grant lives in the controller and, sealed, in nodus.sites.v1 (plan section 2.6); the plain state holds no list.
+    const saved = () => permissions.controller.state.subjects[fileOrigin].permissions[NODUS_PERMISSION];
     assert.deepEqual(saved().caveats[0].value, account);
+    assert.equal(typeof f.values[SITES_KEY], 'string');
+    assert.equal(Object.hasOwn(f.values[STATE_KEY] ?? {}, 'PermissionController'), false);
     assert.deepEqual((await remote.request('wallet_getPermissions')).result, []);
     assert.deepEqual((await remote.request('eth_accounts')).result, []);
     assert.equal((await remote.request('nodus_requestAccounts')).error?.code, 4100);
@@ -210,7 +216,10 @@ test('https sender still connects and signs with its bound origin', async t => {
   assert.deepEqual(f.calls, [{ origin: remote.origin, message: [104, 101, 108, 108, 111] }]);
 });
 
-test('Nodus connect uses permission approval, returns public identity, retains grants across lock and supports revocation', async t => {
+// Plan section 2.6 (connected-sites list sealed, cleared from memory at lock): while locked the grant is not known, so
+// a repeated connect waits for the approval window (which asks for the unlock first); after unlock the grant is read
+// back from nodus.sites.v1 and answers without a new approval.
+test('Nodus connect uses permission approval, returns public identity, restores grants after unlock and supports revocation', async t => {
   const f = await setup(t), remote = f.site();
   const request = remote.request('nodus_requestAccounts'), pending = await f.nextApproval(request);
   assert.equal(pending.origin, remote.origin); assert.ok(pending.requestData.permissions[NODUS_PERMISSION]);
@@ -219,9 +228,16 @@ test('Nodus connect uses permission approval, returns public identity, retains g
   assert.deepEqual((await request).result, [account]);
   await f.background.approvals.whenUiSettled(); assert.match(f.windows[0].url, /notification\.html$/);
   assert.deepEqual((await remote.request('eth_accounts')).result, [], 'Nodus connection must not grant EVM accounts');
-  await f.background.lock();
+  await f.background.connectedSites.flush(); await f.background.lock();
+  assert.equal((await remote.request('nodus_signMessage', ['hello', address])).error.code, 4100);
+  const lockedRequest = remote.request('nodus_requestAccounts'), lockedPending = await f.nextApproval(lockedRequest);
+  assert.equal(lockedPending.origin, remote.origin);
+  // The waiting request answers with the grant the unlock opens, without a second approval.
+  await f.background.unlock(password, options);
+  assert.deepEqual((await lockedRequest).result, [account]);
+  assert.deepEqual(f.background.approvals.controller.state.pendingApprovals, {}, 'the restored grant needs no new approval');
   assert.deepEqual((await remote.request('nodus_requestAccounts')).result, [account]);
-  assert.match((await remote.request('nodus_signMessage', ['hello', address])).error.message, /locked/i);
+  assert.deepEqual(f.calls, []);
   assert.equal((await remote.request('wallet_revokePermissions', [{ [NODUS_PERMISSION]: {} }])).result, null);
   assert.equal((await remote.request('nodus_signMessage', ['hello', address])).error.code, 4100);
 });

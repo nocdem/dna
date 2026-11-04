@@ -31,7 +31,8 @@ const permissions = getCaip25PermissionFromLegacyPermissions();
 permissions[Caip25EndowmentPermissionName].caveats[0].value = setEthAccounts(permissions[Caip25EndowmentPermissionName].caveats[0].value, [addresses.ethereum]);
 const signature = (id, text) => ({ id, type: 'nodus_signMessage', origin: `https://${id}.example`,
   requestData: { account: addresses.nodus, text, data: text } });
-const state = { isInitialized: stage !== 'welcome', isUnlocked: !['welcome', 'unlock'].includes(stage),
+// A fresh profile (stage welcome) has not agreed to the data notice yet (plan section 2.7); every other stage has.
+const state = { isInitialized: stage !== 'welcome', isUnlocked: !['welcome', 'unlock'].includes(stage), privacyConsent: stage !== 'welcome',
   addresses, accounts: [addresses.ethereum], preferences: { autoLockTimeLimit: 0 }, networks: { ...DEFAULT_NETWORKS },
   evm: { selectedChain: 'ethereum', endpoints: { ethereum: CHAINS.ethereum.endpoint, bsc: CHAINS.bsc.endpoint } },
   nodus: { state: 'ready', tokens: [], evmReadable: true, evmBuildable: true, publicKey: '0x' + 'ab'.repeat(2592) },
@@ -63,6 +64,7 @@ const client = { onNotification: () => () => {}, onDisconnect: () => () => {}, c
   if (method === 'getOwnName') return query.get('name') === 'none' ? { found: false } : { found: true, name: query.get('name') };
   if (method === 'getNamePrices') return { text: 'public fixture prices' };
   if (method === 'contractAccount') return { balanceWei: '0', nonce: '0', height: '1', pending: false };
+  if (method === 'acceptPrivacyNotice') { state.privacyConsent = true; return; }
   if (method === 'submitPasswordOrEncryptionKey') { state.isUnlocked = true; return; }
   if (method === 'getSeedPhrase') return [...new TextEncoder().encode('abandon '.repeat(23) + 'art')];
   if (method === 'setLocked') { state.isUnlocked = false; return; }

@@ -62,7 +62,8 @@ async function setup(t) {
   const values = {}, scheduled = new Map(), ports = [];
   const runtime = { id: 'ui-test', onConnect: event(), getManifest: () => ({ version: '0.1.132' }), getURL: path => `chrome-extension://ui-test/${path}` };
   const fixture = { runtime,
-    storage: { async get(key) { return { [key]: structuredClone(values[key]) }; }, async set(items) { Object.assign(values, structuredClone(items)); } },
+    storage: { async get(key) { return { [key]: structuredClone(values[key]) }; }, async set(items) { Object.assign(values, structuredClone(items)); },
+      async remove(keys) { for (const key of [keys].flat()) delete values[key]; } },
     alarms: { onAlarm: event(), async clear(name) { scheduled.delete(name); }, async create(name, options) { scheduled.set(name, options); } },
     windows: { onRemoved: event(), async getAll() { return []; }, async getLastFocused() { return { top: 0, left: 0, width: 1000 }; }, async create(options) { return { ...options, id: 2 }; }, async update() {} },
     tabs: { async query() { return []; } },
@@ -75,6 +76,8 @@ async function setup(t) {
     finally { if (saved) Object.defineProperty(globalThis, 'chrome', saved); else delete globalThis.chrome; }
   }
   const background = await backgroundModule.createBackground(fixture);
+  // The data notice gate refuses website requests and wallet creation until the agreement (plan section 2.7); every test here starts after it.
+  await background.privacyConsent.accept();
   const client = connectTrusted({ runtime, page: 'notification.html' });
   t.after(async () => { client.close(); ports.forEach(port => port.disconnect()); await until(() => background.engine.connections.size === 0); await background.lock(); await background.destroy(); });
   return { background, client, values, scheduled, fixture, runtime };

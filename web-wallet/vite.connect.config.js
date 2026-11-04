@@ -50,6 +50,9 @@ export default defineConfig({
   server: { fs: { allow: [here] } },
   build: {
     outDir: `${here}dist-connect`, emptyOutDir: true,
-    rollupOptions: { output: { manualChunks: vendorChunks, onlyExplicitManualChunks: true } },
+    // Two pages: the app and the extension's static privacy policy (connect-site/privacy.html, plan
+    // 2026-11-03-chrome-web-store section 3.3), the same way vite.extension.config.js lists its inputs.
+    rollupOptions: { input: { index: `${here}connect-site/index.html`, privacy: `${here}connect-site/privacy.html` },
+      output: { manualChunks: vendorChunks, onlyExplicitManualChunks: true } },
   }
 });

@@ -140,6 +140,8 @@ try {
   assert.equal(manifest.name, 'Nodus Connect');
   assert.equal(await page.title(), 'Nodus Connect');
   assert.equal(await page.locator('.product-name').textContent(), 'Connect');
+  // The data notice (2026-11-03 Chrome Web Store decision, plan section 2.7) is the first screen of a fresh profile.
+  await page.locator('#privacy-agree:visible').click();
   await page.locator('#restore:visible').click(); await pastePhrase(page, fixture.phrase);
   await page.locator('#backup-confirm').check();
   await page.locator('#new-password').fill(password); await page.locator('#confirm-password').fill(password);

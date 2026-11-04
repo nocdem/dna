@@ -113,10 +113,19 @@ function packageAssets() {
         if (!Number.isSafeInteger(size) || size <= 0) this.error(`Invalid manifest icon size: ${size}`);
         const fileName = `icons/nodus-${size}.png`;
         const source = resolve(here, 'public/assets/nodus-mark.svg');
+        // Chrome Web Store icon rule (P6 "Extension icon", plan section 5.2): the 128-pixel icon carries the
+        // 96 x 96 mark inside 16 transparent pixels per side. Every other size is rendered edge to edge as before.
+        const padded = size === 128;
+        const art = padded ? 96 : size;
         const png = process.platform === 'win32' && !process.env.RSVG_CONVERT
-          ? await (await import('sharp')).default(source).resize(size, size).png().toBuffer()
+          ? await (async () => {
+            const sharp = (await import('sharp')).default;
+            const mark = await sharp(source).resize(art, art).png().toBuffer();
+            return padded ? sharp(mark).extend({ top: 16, bottom: 16, left: 16, right: 16, background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer() : mark;
+          })()
           : execFileSync(process.env.RSVG_CONVERT || '/usr/bin/rsvg-convert',
-            ['--format=png', `--width=${size}`, `--height=${size}`, source]);
+            ['--format=png', `--width=${art}`, `--height=${art}`,
+              ...(padded ? ['--page-width=128', '--page-height=128', '--left=16', '--top=16'] : []), source]);
         this.emitFile({ type: 'asset', fileName, source: png });
         for (const icons of [packaged.icons, packaged.action.default_icon]) if (Object.hasOwn(icons, size)) icons[size] = fileName;
       }

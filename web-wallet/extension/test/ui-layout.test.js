@@ -621,7 +621,8 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
             'https://testnet.asentum.com', 'https://mainnet.ckb.dev']); // src/pq/{algorand,soqucoin,qtc,xion,ckb}.js, splendor-history.js, asentum-transfer.js
           for (const url of blocked.splice(pqStart)) assert.ok(pqOrigins.has(new URL(url).origin), `Unexpected outside request ${url}`);
         }
-        await open('welcome'); await page.locator('#welcome:visible').waitFor();
+        // A fresh profile shows the data notice first; its button opens the start screen (plan section 2.7).
+        await open('welcome'); await page.locator('#privacy-agree:visible').click(); await page.locator('#welcome:visible').waitFor();
         assert.equal(await priceCount(page), 0); await capture('welcome');
         await open('unlock'); await page.locator('#unlock-form:visible').waitFor();
         assert.equal(await priceCount(page), 0); await capture('unlock');

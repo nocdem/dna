@@ -225,6 +225,11 @@ test('MV3 Connect zip keeps legacy Nodus Wallet provider discovery for local sit
     smokePages.add(popup);
     popup.on('pageerror', error => errors.push(error.message));
     await popup.goto(`${extensionUrl}/${manifest.action.default_popup}`);
+    // 2026-11-03 Chrome Web Store decision, plan section 2.7: a fresh profile shows the data notice first, with no
+    // start-screen control, until its single button is pressed.
+    await popup.locator('#privacy-agree:visible').waitFor();
+    for (const id of ['welcome', 'create', 'restore', 'unlock-form']) assert.equal(await popup.locator(`#${id}`).count(), 0, `#${id} must not exist before the notice is agreed to`);
+    await popup.locator('#privacy-agree').click();
     await popup.locator('#welcome:visible').waitFor();
     assert.equal(await popup.title(), 'Nodus Connect');
     assert.equal(await popup.locator('.product-name').textContent(), 'Connect');

@@ -1283,7 +1283,7 @@ Spec `docs/plans/2026-09-23-wallet-0.1.16-ixios-spec.md`; decisions
   provider select plus a "Custom HTTPS endpoint…" choice (not offered for TRON,
   which keeps its single pinned provider; Apply still re-checks it). Listed on
   2026-09-23 after identity, CORS, balance, `finalized` block and gas-price reads:
-  Ethereum — PublicNode, dRPC, Blast API, MEV Blocker (shown with a
+  Ethereum — PublicNode, dRPC, MEV Blocker (shown with a
   private-submission note); BSC — Binance dataseed and dataseed1–4, Defibit,
   Ninicoin, PublicNode; Solana, TRON, Cellframe — the existing single provider.
   Not listed, with the observed reason: cloudflare-eth (`finalized` and

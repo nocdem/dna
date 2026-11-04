@@ -12,6 +12,8 @@ import { rpcErrors } from '@metamask/rpc-errors';
 import { createPersistedStore } from './store.js';
 import { createApprovals } from './approvals.js';
 import { createPermissions } from './permissions.js';
+import { createConnectedSites } from './connected-sites.js';
+import { createPrivacyConsent } from './privacy-consent.js';
 import { createRequestEngine } from './engine.js';
 import { createEvm } from './evm.js';
 import { createNodus } from './nodus.js';
@@ -30,6 +32,7 @@ import { createSolanaTron } from './solana-tron.js';
 import { createNetworks } from './networks.js';
 import { PermissionsRequestNotFoundError } from '@metamask/permission-controller';
 import { VAULT_KEY, decryptVault, validateNewPassword } from '../../../src/vault.js';
+import { sitesKeyFor, SITES_KEY } from '../../../src/activity-storage.js';
 import { validateNodusPhrase } from '../../../src/recovery.js';
 import { readPrices as readWalletPrices } from '../../../src/portfolio.js';
 import { PQ_NETWORKS, pqNetwork } from '../../../src/pq/networks.js';
@@ -43,6 +46,7 @@ const publicResult = async value => JSON.parse(JSON.stringify(await value, (_key
 export async function createBackground({ storage = chrome.storage.local, alarms = chrome.alarms,
   runtime = chrome.runtime, windows = chrome.windows, tabs = globalThis.chrome?.tabs,
   notifications = globalThis.chrome?.notifications, notificationStorage = globalThis.chrome?.storage?.session,
+  sessionStorage = globalThis.chrome?.storage?.session,
   nodusOptions = {}, consumeNodusSeed, readPrices = readWalletPrices } = {}) {
   const lockCoordinator = createLockCoordinator();
   const invalidateWallet = () => {
@@ -62,7 +66,12 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     },
   };
   let walletKeys = null, unlock = null, permissions = null, engine = null;
-  let chainHandlers, evm, incomingNotifications;
+  let chainHandlers, evm, incomingNotifications, connectedSites;
+  const privacyConsent = createPrivacyConsent({ storage });
+  // The data notice must be agreed to before the extension handles user data (plan section 2.7).
+  const assertConsent = async () => {
+    if (!await privacyConsent.isGiven()) throw rpcErrors.resourceUnavailable('Read and agree to the data notice first.');
+  };
   const networks = createNetworks({ messenger, store, onChanged: chain => chainHandlers?.[chain]?.networkChanged() });
   const getWallet = () => {
     lockCoordinator.assertUnlocked();
@@ -86,7 +95,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   }) });
   const nodus = createNodus({ ...nodusOptions, storage, lockCoordinator, getAddresses: () => walletKeys.getAddresses(), getPqAddresses: () => walletKeys.getPqAddresses(),
     onActivityChanged: (rows, options) => { void transactionNotifications?.observe(rows, options).catch(() => {}); },
-    onLock: () => { void incomingNotifications?.stop().catch(() => {}); evm?.lock(); },
+    onLock: () => { void incomingNotifications?.stop().catch(() => {}); evm?.lock(); connectedSites?.clear(); },
     getWords: () => walletKeys.getRecoveryPhrase(), onClient: client => { walletKeys?.replaceNodusClient(client); connect.ready(client); },
     onIdentified: detail => connect.open(detail), onClientClosing: client => connect.close(client), onSent: detail => connect.sent(detail),
     onStateChanged() {
@@ -96,8 +105,10 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
       catch { /* a closing interface cannot receive the invalidation */ }
     },
     getPermittedAccounts: origin => permissions.getNodusAccounts(origin), approvals });
-  permissions = createPermissions({ messenger, approvals, store, runtime,
-    getNetworkState: options => engine.getNetworkState(options), getNodusAccount: () => nodus.getAccount() });
+  permissions = createPermissions({ messenger, approvals, runtime,
+    getNetworkState: options => engine.getNetworkState(options), getNodusAccount: () => nodus.getAccount(),
+    rememberRevocation: (origin, names) => connectedSites.rememberRevocation(origin, names) });
+  connectedSites = createConnectedSites({ storage, sessionStorage, controller: permissions.controller, messenger });
   evm = createEvm({ messenger, store, approvals, permissions, lockCoordinator, getWallet, keyring,
     getActivity: chain => nodus.chainActivity(chain),
     onNetworkChanged: (client, readMetadata) => engine.attachNetworkClient(client, readMetadata) });
@@ -113,6 +124,10 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
         // Opening the wallet again resets every network choice (networks.js resetToDefaults).
         await networks.resetToDefaults();
         permissions.setAccounts(await keyring.getAccounts());
+        // The sealed connected-sites list opens with a key from the unlocked wallet (plan section 2.6).
+        await connectedSites.load({ id: result.id, key: await sitesKeyFor(walletKeys.getRecoveryPhrase(), result.id) });
+        lockCoordinator.assertUnlocked();
+        permissions.settleWaitingAccountRequests();
         // ADAPTATION: dispatch T-5/security finding on a4f77b206; plan §3.5:422-435.
         // Reference app-state-controller.ts:1225-1261 re-arms on interface activity;
         // re-arm after successful unlock too, even after expiry with every UI closed.
@@ -173,6 +188,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
       const selectedPqAddresses = Object.fromEntries(Object.keys(PQ_NETWORKS).map(chain => [chain,
         pqAddresses[chain]?.[pqNetwork(chain, selectedNetworks[chain]).id]]));
       return { isInitialized: Boolean(saved[VAULT_KEY]), isUnlocked,
+        privacyConsent: await privacyConsent.isGiven(), connectedSitesError: connectedSites.getError(),
         accounts: account ? [account] : [],
         addresses: isUnlocked && walletKeys ? { ethereum: account, bsc: account, ...walletKeys.getAddresses(), ...selectedPqAddresses } : {},
         pqAddresses, pqErrors,
@@ -189,11 +205,16 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
       const operation = restoring.then(async () => {
         let phrase, saved, bytes;
         try {
+          await assertConsent();
           if (!Array.isArray(encodedSeedPhrase) || encodedSeedPhrase.some(byte => !Number.isInteger(byte) || byte < 0 || byte > 255)) throw rpcErrors.invalidParams('Expected recovery phrase bytes.');
           bytes = Uint8Array.from(encodedSeedPhrase);
           phrase = validateNodusPhrase(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
           validateNewPassword(password);
+          // A restore replaces the wallet and clears its permissions; the sealed connected-sites record of the
+          // replaced wallet goes with them (plan section 2.6), after any change already queued for it.
+          await connectedSites.flush().catch(() => {}); connectedSites.clear(); await connectedSites.forgetRevocations();
           permissions.controller.clearState(); permissions.setAccounts([]);
+          await storage.remove(SITES_KEY);
           saved = await vaultStore.create(password, phrase);
           await store.flush();
         } finally { bytes?.fill(0); if (saved) saved.phrase = null; encodedSeedPhrase?.fill?.(0); phrase = null; password = null; }
@@ -230,8 +251,10 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     async removePermissionsFor(subjects) {
       try { permissions.controller.revokePermissions(subjects); }
       catch (error) { if (!(error instanceof PermissionsRequestNotFoundError)) throw error; }
-      await store.flush();
+      await store.flush(); await connectedSites.flush();
     },
+    // The data notice (plan section 2.7): the screen's single button stores the agreed text version.
+    acceptPrivacyNotice: () => privacyConsent.accept(),
     // Port: metamask-controller.js:4839-4844; lib/MessengerSubscriptions.ts:31-58, 68-85;
     // shared/constants/messages.ts:17. Only public approval/permission events cross the trusted UI boundary.
     // ADAPTATION: engine.js owns streams; share the bounded subscriptions across trusted UI ports, disposed with this background.
@@ -375,21 +398,25 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
         changed: (previous, value) => nodus.replaceVault(previous, value) });
     },
     async deleteVault() {
+      // A queued sealed write must land before the delete removes the record, never after it.
+      await connectedSites.flush().catch(() => {}); await connectedSites.forgetRevocations();
       await vaultStore.deleteVault(); permissions.controller.clearState(); permissions.setAccounts([]); await store.flush();
     },
     setLocked: () => lockCoordinator.lock(),
-    submitPasswordOrEncryptionKey: ({ password }) => {
+    submitPasswordOrEncryptionKey: async ({ password }) => {
       // ADAPTATION: plan §3.5 uses the web-wallet password vault; no second keyring/encryption-key unlock path.
       if (!unlock) throw rpcErrors.resourceUnavailable('Wallet key consumers are not attached.');
+      await assertConsent();
       return unlock(password);
     },
   };
-  engine = createRequestEngine({ runtime, permissions, approvals, autoLockAlarm, trustedApi, getUiPorts: () => uiPorts, evm, nodus });
+  engine = createRequestEngine({ runtime, permissions, approvals, autoLockAlarm, trustedApi, getUiPorts: () => uiPorts, evm, nodus, privacyConsent });
   engine.attachNetworkClient(evm.client, () => evm.client.metadata);
   const onPermissionsChanged = () => { void engine.notifyAccountsChanged(); };
   messenger.subscribe('PermissionController:stateChange', onPermissionsChanged);
   // Only public network/permission/approval state enters composition; ethers custody stays in walletKeys.
-  store.registerControllers({ PermissionController: permissions.controller, ApprovalController: approvals.controller,
+  // PermissionController is not registered: its connected-sites list is sealed by connected-sites.js (plan section 2.6).
+  store.registerControllers({ ApprovalController: approvals.controller,
     EvmController: evm.controller,
     NetworksController: networks.controller });
   await store.flush();
@@ -400,7 +427,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   if (lazyListener) lazyListener.addListener('alarms', 'onAlarm', onAlarm);
   else alarms.onAlarm.addListener(onAlarm);
   return {
-    vaultStore, lockCoordinator, autoLockAlarm, transactionNotifications, incomingNotifications, keyring, attachWalletKeys, store, permissions, approvals, engine, evm, nodus, solana, tron, algorand, soqucoin, splendor, asentum, xion, ckb, qtc, ixios, networks,
+    vaultStore, lockCoordinator, autoLockAlarm, transactionNotifications, incomingNotifications, keyring, attachWalletKeys, store, permissions, connectedSites, privacyConsent, approvals, engine, evm, nodus, solana, tron, algorand, soqucoin, splendor, asentum, xion, ckb, qtc, ixios, networks,
     lock: () => lockCoordinator.lock(),
     get walletKeys() { return walletKeys; },
     get unlock() { return unlock; },
@@ -411,6 +438,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
       await incomingNotifications?.destroy();
       await transactionNotifications?.flush().catch(() => {});
       transactionNotifications?.destroy();
+      await connectedSites.flush().catch(() => {}); connectedSites.destroy();
       engine.destroy(); approvals.destroy(); store.destroy(); evm.destroy(); networks.controller.destroy(); permissions.controller.destroy();
       messenger.unsubscribe('PermissionController:stateChange', onPermissionsChanged);
       alarms.onAlarm.removeListener(onAlarm);

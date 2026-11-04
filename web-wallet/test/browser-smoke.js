@@ -390,7 +390,8 @@ try {
   await rpcFor('solana');
   assert.equal(await page.locator('#rpc-settings').evaluate(node => node.hidden), true);
   await rpcFor('ethereum');
-  assert.equal(await page.locator('#rpc-choice option').count(), 5);
+  // Three Ethereum servers (Blast API removed, operator 2026-11-03 "Plastapı'yı kullanıyorsak kaldır.") plus the custom entry.
+  assert.equal(await page.locator('#rpc-choice option').count(), 4);
   assert.equal(await page.locator('#rpc-endpoint').isVisible(), false);
   await page.selectOption('#rpc-choice', 'custom');
   assert.equal(await page.locator('#rpc-endpoint').isVisible(), true);

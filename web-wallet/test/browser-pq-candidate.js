@@ -235,6 +235,8 @@ try {
     const page = activePage = await context.newPage(), errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(url);
+    // The extension's first screen is the data notice (2026-11-03 Chrome Web Store decision, plan section 2.7).
+    if (mode === 'extension') await page.locator('#privacy-agree:visible').click();
     await page.locator('#restore:visible').click(); await pastePhrase(page, fixture.phrase);
     await page.locator('#backup-confirm').check();
     if (mode === 'extension') {

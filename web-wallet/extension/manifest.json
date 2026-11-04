@@ -3,7 +3,7 @@
   "name": "Nodus Connect",
   "short_name": "Nodus",
   "version": "0.1.161",
-  "description": "Nodus Connect",
+  "description": "Wallet for the Nodus testnet, Ethereum, BNB Smart Chain, Solana and TRON, with website connections and Nodus Connect messages.",
   "minimum_chrome_version": "123",
   "action": {
     "default_title": "Nodus Connect",
@@ -21,26 +21,20 @@
   "background": { "service_worker": "src/service-worker.js" },
   "content_scripts": [
     {
-      "matches": ["file://*/*", "http://*/*", "https://*/*"],
+      "matches": ["http://*/*", "https://*/*"],
       "js": ["src/contentscript.js"],
       "run_at": "document_start",
       "all_frames": true
     },
     {
-      "matches": ["file://*/*", "http://*/*", "https://*/*"],
+      "matches": ["http://*/*", "https://*/*"],
       "js": ["src/inpage.js"],
       "run_at": "document_start",
       "world": "MAIN",
       "all_frames": true
     }
   ],
-  "host_permissions": [
-    "file://*/*",
-    "http://*/*",
-    "https://*/*",
-    "ws://*/*",
-    "wss://*/*"
-  ],
+  "host_permissions": ["https://*/*", "wss://*/*"],
   "icons": {
     "16": "../public/assets/nodus-mark.svg",
     "19": "../public/assets/nodus-mark.svg",
