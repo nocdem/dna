@@ -5751,17 +5751,34 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
          * (nodus/CLAUDE.md "A DB failure is never a value"). Committed
          * state selects consensus behaviour, node-local state stays
          * node-local (nodus/CLAUDE.md): the shadow status is not read
-         * here. */
+         * here.
+         *
+         * The committed generation is resolved at EVERY accepted schema
+         * (HF-9 WP3, Sol verifier row 1): the entry gate above accepts
+         * S16-S20, and a generation-6 registry on a database below S20
+         * has no capture flag and no triggers to check - that schema is
+         * incompatible with the generation, so it is a node FAULT here,
+         * never a block processed with the capture silently absent. */
+        uint32_t gen = 0;
+        if (nodus_witness_v2_key_generation(w, &gen) != 0) {
+            V2AP_FAULT("%s", "cometbft lane: the rule-set generation "
+                       "judging this block is unreadable on this node "
+                       "- the trie capture check cannot be made; "
+                       "nothing about the block was judged");
+            return -2;
+        }
+        if (ver < NODUS_V2_SCHEMA_VERSION_S20 && gen >= NODUS_RT_GEN_TRIE) {
+            V2AP_FAULT("cometbft lane: generation %u needs schema %u (the "
+                       "trie capture flag and the 24 dirty-capture "
+                       "triggers) and this node's database is at %u; "
+                       "nothing about the block was judged",
+                       (unsigned)gen,
+                       (unsigned)NODUS_V2_SCHEMA_VERSION_S20,
+                       (unsigned)ver);
+            return -2;
+        }
         if (ver >= NODUS_V2_SCHEMA_VERSION_S20) {
             int capture = -1;
-            uint32_t gen = 0;
-            if (nodus_witness_v2_key_generation(w, &gen) != 0) {
-                V2AP_FAULT("%s", "cometbft lane: the rule-set generation "
-                           "judging this block is unreadable on this node "
-                           "- the trie capture check cannot be made; "
-                           "nothing about the block was judged");
-                return -2;
-            }
             const int want = (gen >= NODUS_RT_GEN_TRIE) ? 1 : 0;
             if (nodus_witness_db_s20_trie_capture(w, &capture) != 0 ||
                 capture != want) {
