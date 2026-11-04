@@ -320,6 +320,23 @@ typedef struct {
 #define NODUS_V2_STSETS_DDL                                               \
     "CREATE TABLE IF NOT EXISTS " NODUS_V2_STSETS_DDL_BODY
 
+/* HF-9 WP4 (plan docs/plans/approved/2026-11-04-hf9.md §8.7, §5.5): from
+ * schema S20 the table is rebuilt with the CAPACITY bound (1024) in its
+ * CHECK — the only text that can hold a generation-6 set. The macros above
+ * (member_count 0..256) are the historical shape and stay what a database
+ * BELOW S20 holds; generation <= 5 limits stay enforced in code. The
+ * per-open shape check (nodus_witness.c) expects the historical text below
+ * S20 and this one from S20; the S20 rung (nodus_witness_v2_schema.c)
+ * performs the rebuild inside its transaction. */
+#define NODUS_V2_STSETS_DDL_S20_BODY                                      \
+    "v2_storage_sets(epoch_start INTEGER NOT NULL PRIMARY KEY CHECK("     \
+    "typeof(epoch_start)='integer' AND epoch_start >= 1), set_hash BLOB " \
+    "NOT NULL CHECK(typeof(set_hash)='blob' AND length(set_hash)=64), "   \
+    "member_count INTEGER NOT NULL CHECK(typeof(member_count)='integer' " \
+    "AND member_count BETWEEN 0 AND 1024)) WITHOUT ROWID"
+#define NODUS_V2_STSETS_DDL_S20                                           \
+    "CREATE TABLE IF NOT EXISTS " NODUS_V2_STSETS_DDL_S20_BODY
+
 /* v2_storage_set_members — the members of each frozen set, node_fp ASC
  * is the bitmap order (bit i = member i):
  *   epoch_start, node_fp  the key (node_fp = SHA3-512(node_pk))
@@ -365,6 +382,20 @@ typedef struct {
     "WITHOUT ROWID"
 #define NODUS_V2_STREPS_DDL                                               \
     "CREATE TABLE IF NOT EXISTS " NODUS_V2_STREPS_DDL_BODY
+
+/* HF-9 WP4: the S20 form of v2_storage_reports — bitmap up to 128 bytes
+ * (ceil(1024 / 8)); the historical text above is what a database below S20
+ * holds (see NODUS_V2_STSETS_DDL_S20_BODY). */
+#define NODUS_V2_STREPS_DDL_S20_BODY                                      \
+    "v2_storage_reports(epoch_start INTEGER NOT NULL CHECK(typeof("       \
+    "epoch_start)='integer' AND epoch_start >= 1), seat INTEGER NOT NULL "\
+    "CHECK(typeof(seat)='integer' AND seat BETWEEN 0 AND 4294967295), "   \
+    "set_hash BLOB NOT NULL CHECK(typeof(set_hash)='blob' AND "           \
+    "length(set_hash)=64), bitmap BLOB NOT NULL CHECK(typeof(bitmap)="    \
+    "'blob' AND length(bitmap) <= 128), PRIMARY KEY (epoch_start, seat)) "\
+    "WITHOUT ROWID"
+#define NODUS_V2_STREPS_DDL_S20                                           \
+    "CREATE TABLE IF NOT EXISTS " NODUS_V2_STREPS_DDL_S20_BODY
 
 /* v2_storage_segments — the published segment list (archive bytes items
  * 1-2), never pruned:

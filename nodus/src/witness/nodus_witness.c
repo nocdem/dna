@@ -803,10 +803,28 @@ static int witness_db_open_attempt(nodus_witness_t *witness,
     /* archive reward: the four storage-leg tables, the same check, in a
      * fixed order */
     {
-        static const struct { const char *t; const char *ddl; } ST[] = {
-            { "v2_storage_sets",        NODUS_V2_STSETS_DDL },
+        /* HF-9 WP4 (plan §8.7, §5.5): v2_storage_sets and v2_storage_reports
+         * carry the CAPACITY bounds (1024 / 128) from schema S20 — the S20
+         * rung rebuilds them inside its transaction — and the historical
+         * bounds (256 / 32) below it. This check runs BEFORE the rung, so
+         * the expected text follows the stored schema version: a database
+         * at S19 or below still holds the historical text and must open so
+         * that the rung can run; an unreadable version refuses. */
+        uint32_t sver = 0;
+        if (nodus_witness_db_schema_version(witness, &sver) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "schema version unreadable before "
+                          "the storage-table shape check - refusing to open "
+                          "this database");
+            witness_db_open_fail(witness);
+            return SQLITE_CORRUPT;
+        }
+        const int s20 = sver >= NODUS_V2_SCHEMA_VERSION_S20;
+        const struct { const char *t; const char *ddl; } ST[] = {
+            { "v2_storage_sets",        s20 ? NODUS_V2_STSETS_DDL_S20
+                                            : NODUS_V2_STSETS_DDL },
             { "v2_storage_set_members", NODUS_V2_STMEMB_DDL },
-            { "v2_storage_reports",     NODUS_V2_STREPS_DDL },
+            { "v2_storage_reports",     s20 ? NODUS_V2_STREPS_DDL_S20
+                                            : NODUS_V2_STREPS_DDL },
             { "v2_storage_segments",    NODUS_V2_STSEGS_DDL }
         };
         for (size_t i = 0; i < sizeof(ST) / sizeof(ST[0]); i++) {

@@ -1022,6 +1022,27 @@ int nodus_witness_db_migrate_v2s19_ex(nodus_witness_t *w,
  *   1, recording the OLD / NEW primary key in v2_trie_dirty. With capture
  *   0 (every generation this build has) they write nothing.
  *
+ * HF-9 WP4 adds to the same rung (plan §8.4, §8.7, AD-6; inert until the
+ * generation-6 edge writes them):
+ *
+ *   the CAPACITY REBUILD of v2_storage_sets (member_count 0..1024) and
+ *   v2_storage_reports (bitmap <= 128 bytes): rows copied aside, DROP, the
+ *   S20 statement (NODUS_V2_STSETS_DDL_S20 / NODUS_V2_STREPS_DDL_S20),
+ *   rows copied back, all inside the rung's transaction (precedent: the S5
+ *   rebuild of utxo_set). The per-open byte-for-byte shape check
+ *   (nodus_witness.c) runs BEFORE the rung, so it expects the historical
+ *   text below S20 and the S20 text from S20; generation <= 5 limits
+ *   (256 / 32) stay enforced in code.
+ *   v2_storage_assign (k, node_fp, score, from_h, to_h) + indexes
+ *     v2_storage_assign_cur ON (k) WHERE to_h IS NULL and
+ *     v2_storage_assign_by_node ON (node_fp, k)
+ *   v2_storage_assign_basis (node_fp), v2_storage_assign_state (id = 1,
+ *   copies, boundary), v2_storage_held (node_fp, held),
+ *   v2_storage_member_epoch (epoch_start, node_fp, held_union, n_new),
+ *   v2_storage_xfer_diff (node_fp, ended_x, new_x) - the one-use table of
+ *   the §8.6 transition; its ROWS are cleared at B1, the table stays.
+ *   Derived node state written inside the block transaction, in no root.
+ *
  * Both supply tables are SEEDED from their source tables inside the migration,
  * and RE-SEEDED on every open (nodus_witness_db_s20_reseed; precedent
  * nodus/src/core/nodus_storage.c dht_hint_totals): the native row and the

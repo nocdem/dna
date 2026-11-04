@@ -2728,6 +2728,161 @@ static const char *V2_S20_STORAGE_STATUS_INDEX_DDL =
     "CREATE INDEX IF NOT EXISTS v2_storage_nodes_by_status "
     "ON v2_storage_nodes(status, node_fp)";
 
+/* ── HF-9 WP4: the retained-assignment tables (plan §8.4, AD-6) and the
+ *    capacity rebuild of the two storage tables (plan §8.7) ──────────────
+ * Derived node state written inside the block transaction, never part of
+ * any root; empty until the generation-6 edge (E-s2) writes them. No
+ * garbage collection (D6): rows are ended (to_h = B), never deleted. The
+ * physical layout is the package's within the §8.4 contracts (DF-9 class).
+ *
+ * v2_storage_assign — holders(k, H) = the rows with from_h <= H and
+ *   (to_h IS NULL or to_h > H). score = the rendezvous score of (k, node)
+ *   (the join rule's stored R-th score); the key carries from_h because a
+ *   member can leave and return.
+ * v2_storage_assign_basis — the eligible members the CURRENT rows reflect
+ *   (<= 1024 fps) and v2_storage_assign_state — the R of those rows and the
+ *   boundary they were made at (one row once written; absent before E-s2).
+ * v2_storage_held — current rows per member (>= 1 row exists only for a
+ *   holder; the member's row is deleted when its count falls to 0 so the
+ *   table stays bounded by the live members, an ended assignment row keeps
+ *   its history in v2_storage_assign).
+ * v2_storage_member_epoch — per member of each frozen set: the union of
+ *   its holdings over the epoch's current and previous relation and the
+ *   segments newly taken over (the grace input); pruned with the set
+ *   members (same rule).
+ * v2_storage_xfer_diff — the one-use table of the transition (E-s3): per
+ *   member, the segments ended / newly taken between XOR(set(H2)) and the
+ *   rendezvous rows; its ROWS are cleared at B1, the table stays (a DROP
+ *   would change the schema shape every open verifies). */
+static const char *V2_S20_ASSIGN_DDL =
+    "CREATE TABLE IF NOT EXISTS v2_storage_assign ("
+    "  k INTEGER NOT NULL CHECK(typeof(k)='integer' AND k >= 1),"
+    "  node_fp BLOB NOT NULL CHECK(typeof(node_fp)='blob' AND "
+    "length(node_fp)=64),"
+    "  score BLOB NOT NULL CHECK(typeof(score)='blob' AND "
+    "length(score)=64),"
+    "  from_h INTEGER NOT NULL CHECK(typeof(from_h)='integer' AND "
+    "from_h >= 1),"
+    "  to_h INTEGER CHECK(to_h IS NULL OR (typeof(to_h)='integer' AND "
+    "to_h > from_h)),"
+    "  PRIMARY KEY (k, node_fp, from_h)"
+    ") WITHOUT ROWID";
+static const char *V2_S20_ASSIGN_INDEX_CUR_DDL =
+    "CREATE INDEX IF NOT EXISTS v2_storage_assign_cur "
+    "ON v2_storage_assign(k) WHERE to_h IS NULL";
+static const char *V2_S20_ASSIGN_INDEX_NODE_DDL =
+    "CREATE INDEX IF NOT EXISTS v2_storage_assign_by_node "
+    "ON v2_storage_assign(node_fp, k)";
+static const char *V2_S20_ASSIGN_BASIS_DDL =
+    "CREATE TABLE IF NOT EXISTS v2_storage_assign_basis ("
+    "  node_fp BLOB NOT NULL PRIMARY KEY CHECK(typeof(node_fp)='blob' AND "
+    "length(node_fp)=64)"
+    ") WITHOUT ROWID";
+static const char *V2_S20_ASSIGN_STATE_DDL =
+    "CREATE TABLE IF NOT EXISTS v2_storage_assign_state ("
+    "  id INTEGER NOT NULL PRIMARY KEY CHECK(id = 1),"
+    "  copies INTEGER NOT NULL CHECK(typeof(copies)='integer' AND "
+    "copies BETWEEN 1 AND 16),"
+    "  boundary INTEGER NOT NULL CHECK(typeof(boundary)='integer' AND "
+    "boundary >= 1)"
+    ") WITHOUT ROWID";
+static const char *V2_S20_HELD_DDL =
+    "CREATE TABLE IF NOT EXISTS v2_storage_held ("
+    "  node_fp BLOB NOT NULL PRIMARY KEY CHECK(typeof(node_fp)='blob' AND "
+    "length(node_fp)=64),"
+    "  held INTEGER NOT NULL CHECK(typeof(held)='integer' AND held >= 1)"
+    ") WITHOUT ROWID";
+static const char *V2_S20_MEMBER_EPOCH_DDL =
+    "CREATE TABLE IF NOT EXISTS v2_storage_member_epoch ("
+    "  epoch_start INTEGER NOT NULL CHECK(typeof(epoch_start)='integer' AND "
+    "epoch_start >= 1),"
+    "  node_fp BLOB NOT NULL CHECK(typeof(node_fp)='blob' AND "
+    "length(node_fp)=64),"
+    "  held_union INTEGER NOT NULL CHECK(typeof(held_union)='integer' AND "
+    "held_union >= 0),"
+    "  n_new INTEGER NOT NULL CHECK(typeof(n_new)='integer' AND n_new >= 0),"
+    "  PRIMARY KEY (epoch_start, node_fp)"
+    ") WITHOUT ROWID";
+static const char *V2_S20_XFER_DIFF_DDL =
+    "CREATE TABLE IF NOT EXISTS v2_storage_xfer_diff ("
+    "  node_fp BLOB NOT NULL PRIMARY KEY CHECK(typeof(node_fp)='blob' AND "
+    "length(node_fp)=64),"
+    "  ended_x INTEGER NOT NULL CHECK(typeof(ended_x)='integer' AND "
+    "ended_x >= 0),"
+    "  new_x INTEGER NOT NULL CHECK(typeof(new_x)='integer' AND new_x >= 0)"
+    ") WITHOUT ROWID";
+
+/* 1 = the six §8.4 tables, their two indexes and the capacity-rebuilt
+ * v2_storage_sets / v2_storage_reports are exactly this build's, 0 = drift,
+ * -1 = fault. */
+static int s20_storage_shape_ok(nodus_witness_t *w) {
+    static const struct { const char *t; const char **ddl; } T[] = {
+        { "v2_storage_assign",        &V2_S20_ASSIGN_DDL },
+        { "v2_storage_assign_basis",  &V2_S20_ASSIGN_BASIS_DDL },
+        { "v2_storage_assign_state",  &V2_S20_ASSIGN_STATE_DDL },
+        { "v2_storage_held",          &V2_S20_HELD_DDL },
+        { "v2_storage_member_epoch",  &V2_S20_MEMBER_EPOCH_DDL },
+        { "v2_storage_xfer_diff",     &V2_S20_XFER_DIFF_DDL }
+    };
+    for (size_t i = 0; i < sizeof(T) / sizeof(T[0]); i++) {
+        int r = table_ddl_exact(w, T[i].t, *T[i].ddl);
+        if (r != 1) return r;
+    }
+    int r = table_ddl_exact(w, "v2_storage_sets", NODUS_V2_STSETS_DDL_S20);
+    if (r != 1) return r;
+    r = table_ddl_exact(w, "v2_storage_reports", NODUS_V2_STREPS_DDL_S20);
+    if (r != 1) return r;
+    static const char *const cur_cols[] = { "k" };
+    r = index_cols_exact(w, "v2_storage_assign_cur", "v2_storage_assign",
+                         cur_cols, 1);
+    if (r != 1) return r;
+    static const char *const node_cols[] = { "node_fp", "k" };
+    return index_cols_exact(w, "v2_storage_assign_by_node",
+                            "v2_storage_assign", node_cols, 2);
+}
+
+/* Rebuild one storage table with its S20 text: copy the rows aside, DROP,
+ * CREATE with the exact S20 statement, copy back, drop the copy. The table
+ * is created by the statement itself (not by RENAME, which would rewrite
+ * the stored text), so the stored definition equals the reference text.
+ * The precedent is the S5 rebuild of utxo_set (migrate_v2s5_ex). All
+ * inside the caller's transaction. @return 0 / -1. */
+static int s20_rebuild_storage_table(nodus_witness_t *w, const char *table,
+                                     const char *ddl_s20) {
+    char sql[256];
+    int n = snprintf(sql, sizeof(sql),
+                     "CREATE TABLE v2_s20_rebuild_tmp AS SELECT * FROM %s",
+                     table);
+    if (n <= 0 || (size_t)n >= sizeof(sql)) return -1;
+    if (exec_sql(w, sql) != 0) return -1;
+    n = snprintf(sql, sizeof(sql), "DROP TABLE %s", table);
+    if (n <= 0 || (size_t)n >= sizeof(sql)) return -1;
+    if (exec_sql(w, sql) != 0) return -1;
+    if (exec_sql(w, ddl_s20) != 0) return -1;
+    n = snprintf(sql, sizeof(sql),
+                 "INSERT INTO %s SELECT * FROM v2_s20_rebuild_tmp", table);
+    if (n <= 0 || (size_t)n >= sizeof(sql)) return -1;
+    if (exec_sql(w, sql) != 0) return -1;
+    return exec_sql(w, "DROP TABLE v2_s20_rebuild_tmp");
+}
+
+/* The migration's DDL for the storage part: the capacity rebuild of the
+ * sets and reports tables, the six tables, the indexes. @return 0 / -1. */
+static int s20_storage_create(nodus_witness_t *w) {
+    if (s20_rebuild_storage_table(w, "v2_storage_sets",
+                                  NODUS_V2_STSETS_DDL_S20) != 0) return -1;
+    if (s20_rebuild_storage_table(w, "v2_storage_reports",
+                                  NODUS_V2_STREPS_DDL_S20) != 0) return -1;
+    if (exec_sql(w, V2_S20_ASSIGN_DDL) != 0) return -1;
+    if (exec_sql(w, V2_S20_ASSIGN_INDEX_CUR_DDL) != 0) return -1;
+    if (exec_sql(w, V2_S20_ASSIGN_INDEX_NODE_DDL) != 0) return -1;
+    if (exec_sql(w, V2_S20_ASSIGN_BASIS_DDL) != 0) return -1;
+    if (exec_sql(w, V2_S20_ASSIGN_STATE_DDL) != 0) return -1;
+    if (exec_sql(w, V2_S20_HELD_DDL) != 0) return -1;
+    if (exec_sql(w, V2_S20_MEMBER_EPOCH_DDL) != 0) return -1;
+    return exec_sql(w, V2_S20_XFER_DIFF_DDL);
+}
+
 /* The eight migrated tables: leg id (plan §4.2 order L1..L8), table,
  * primary-key column. */
 static const struct {
@@ -2951,15 +3106,20 @@ int nodus_witness_db_migrate_v2s20_ex(nodus_witness_t *w,
         /* HF-9 WP2: the keyed-trie tables, the registry index, the 24
          * dirty-capture triggers and the capture row at 0 */
         if (s20_trie_create(w) != 0) break;
+        /* HF-9 WP4: the capacity rebuild of v2_storage_sets / _reports
+         * (1024 / 128) and the retained-assignment tables (§8.4) */
+        if (s20_storage_create(w) != 0) break;
         if (fail_at == V2S20MIG_FAIL_AFTER_TABLES) break;
 
         /* Verify: every table's whole stored definition, the index's
          * exact key columns and every trigger's stored SQL — a DDL that
          * silently did nothing, or a pre-existing object of another
          * shape, is not a migrated schema. */
-        if (s20_supply_shape_ok(w) != 1 || s20_trie_shape_ok(w) != 1) {
-            QGP_LOG_ERROR(LOG_TAG, "%s", "S20 supply-totals / keyed-trie "
-                          "schema shape drift — refusing");
+        if (s20_supply_shape_ok(w) != 1 || s20_trie_shape_ok(w) != 1 ||
+            s20_storage_shape_ok(w) != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "S20 supply-totals / keyed-trie / "
+                          "storage-assignment schema shape drift — "
+                          "refusing");
             break;
         }
         if (fail_at == V2S20MIG_FAIL_AFTER_VERIFY) break;
@@ -3017,6 +3177,12 @@ int nodus_witness_db_s20_reseed(nodus_witness_t *w) {
          * writes went uncaptured. */
         if (s20_trie_shape_ok(w) != 1) {
             QGP_LOG_ERROR(LOG_TAG, "%s", "S20 keyed-trie schema or trigger "
+                          "missing or altered at open — refusing");
+            break;
+        }
+        if (s20_storage_shape_ok(w) != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "S20 storage-assignment tables or "
+                          "the capacity-rebuilt storage sets / reports "
                           "missing or altered at open — refusing");
             break;
         }
