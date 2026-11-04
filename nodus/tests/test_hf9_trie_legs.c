@@ -20,7 +20,12 @@
  *     row whose node_fp is not SHA3-512(node_pk), segments k = 1, 3,
  *     a vset snapshot_hash of 3 bytes, an attendance digest of 3 bytes)
  *     is -1 — never a shorter trie. A claim of another domain is not part
- *     of the CORE leg (the root does not move).
+ *     of the CORE leg (the root does not move). A claim whose stored
+ *     target_domain_id is REAL 1.5 (the column is not STRICT) is not part
+ *     of it either, in the build (B2b) and in the flush (end of F, "G0"):
+ *     the selection is the historical SQL predicate `target_domain_id =
+ *     1`, never an integer coercion of the stored value (Sol verifier
+ *     row 1).
  *  C. TRIGGERS + FLUSH. With capture = 1 inside a transaction: inserts,
  *     updates (including a primary-key change), and deletes on every
  *     table put exactly the OLD / NEW keys in v2_trie_dirty (duplicates
@@ -30,10 +35,23 @@
  *     root (the trie is a function of the rows). A key written and
  *     restored inside one block (a utxo created and deleted) leaves the
  *     root as it was.
+ *  C3. ALL 24 TRIGGER OPERATIONS (Sol verifier row 2). With capture 1, for
+ *     each of the eight tables, one INSERT, one UPDATE of a non-key column
+ *     and one DELETE of the same row, each in its own transaction: the
+ *     dirty table holds exactly the operation's key (queried by value,
+ *     blob or integer) and nothing else, and after the flush every leg
+ *     root equals the oracle recomputation and the build-from-rows root.
+ *     A trigger body that records the wrong key, no key, or none (a
+ *     no-op) fails here; the shape check (G) cannot see that, because it
+ *     compares the stored SQL with SQL generated from the same constants.
  *  D. ROLLBACK. An item SAVEPOINT rolled back removes its dirty rows and
  *     leaves the roots; a whole transaction rolled back after a flush
- *     restores the roots row, the node store and the dirty rows (they are
- *     in the transaction).
+ *     restores the roots row, the dirty rows AND the complete node table:
+ *     the table is dumped (digest and body of every row) before the block,
+ *     the flush is asserted to have changed it (control), and the dump
+ *     after the rollback is compared byte for byte BEFORE any oracle call
+ *     (the oracle rebuilds the tries and writes nodes; Sol verifier
+ *     row 3).
  *  E. RESTART. After closing and reopening the SQLite file the next flush
  *     continues from the stored roots and equals the oracle.
  *  F. FAULTS. A corrupted stored node (digest unchanged, body altered) is
@@ -90,6 +108,16 @@
  *    T-4's independent KAT (hf9_kat.json, follow-up).
  *  - A trigger or a flush that wrote nothing would fail C (dirty rows and
  *    roots are asserted non-empty / changed before they are compared).
+ *  - C3 compares keys and roots for one row per table; an operation whose
+ *    trigger is correct for that row but wrong for another shape of row
+ *    (for example a key change by UPDATE, covered separately in C1 for
+ *    utxo_set only) is not covered for the other seven tables.
+ *  - The D node-table comparison is a string of every row; it cannot see
+ *    a rolled-back write that SQLite itself failed to undo (not this
+ *    code's property).
+ *  - B2b / G0 pass vacuously if the REAL value were stored as an integer;
+ *    the typeof(...) = 'real' and `target_domain_id = 1` controls in B2b
+ *    assert the premise.
  *  - Section B's malformed-row cases rely on the table accepting the
  *    malformed value; the tables with CHECK constraints (names, registry,
  *    segments) cannot hold a bad type, so those cases use the values the
@@ -502,6 +530,36 @@ static int roots_equal_oracle(fx_t *fx, const char *what) {
     return 0;
 }
 
+/* The whole node table as one string (digest and body of every row, in
+ * digest order); the caller frees it. NULL on any fault. */
+static char *nodes_dump(sqlite3 *db) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT hex(digest) || ':' || hex(rlp) FROM v2_trie_nodes "
+            "ORDER BY digest", -1, &st, NULL) != SQLITE_OK)
+        return NULL;
+    size_t cap = 1024, len = 0;
+    char *out = malloc(cap);
+    int rc;
+    while (out && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const char *t = (const char *)sqlite3_column_text(st, 0);
+        size_t n = t ? strlen(t) : 0;
+        if (len + n + 2 > cap) {
+            while (len + n + 2 > cap) cap *= 2;
+            char *no = realloc(out, cap);
+            if (!no) { free(out); out = NULL; break; }
+            out = no;
+        }
+        memcpy(out + len, t, n);
+        len += n;
+        out[len++] = '\n';
+    }
+    if (out && rc != SQLITE_DONE) { free(out); out = NULL; }
+    sqlite3_finalize(st);
+    if (out) out[len] = 0;
+    return out;
+}
+
 static int dirty_of(sqlite3 *db, int leg) {
     char sql[120];
     snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM v2_trie_dirty WHERE "
@@ -558,6 +616,28 @@ static int test_build(fx_t *fx) {
           "B2: another domain's claim does not move the CORE leg");
     CHECK(run_sql(db, "DELETE FROM v2_claims_spent WHERE target_domain_id "
                       "= 2") == 0, "B2: cleanup");
+
+    /* B2b (Sol verifier row 1): the selection is the historical SQL
+     * predicate `target_domain_id = 1`, with no integer coercion. The
+     * column is INTEGER-affinity but not STRICT, so a REAL 1.5 stays REAL;
+     * sqlite3_column_int64 would turn it into 1 and let the row in. */
+    CHECK(run_sql(db,
+        "INSERT INTO v2_claims_spent (nullifier, manifest_hash, "
+        "target_domain_id, target_asset_ref, leaf_index, amount, "
+        "claimed_height, output_id) VALUES (CAST(zeroblob(63)||x'41' AS "
+        "BLOB), CAST(zeroblob(63)||x'ee' AS BLOB), 1.5, zeroblob(64), 2, "
+        "5, 9, zeroblob(64))") == 0, "B2b: a claim with a REAL domain");
+    CHECK(q1(db, "SELECT typeof(target_domain_id) = 'real' FROM "
+                 "v2_claims_spent WHERE nullifier = " NB("41")) == 1,
+          "B2b: the value is stored as REAL (control)");
+    CHECK(q1(db, "SELECT COUNT(*) FROM v2_claims_spent WHERE "
+                 "target_domain_id = 1 AND nullifier = " NB("41")) == 0,
+          "B2b: the historical predicate excludes it (control)");
+    CHECK(nodus_witness_v2_trie_build_leg(fx->w, 3, after, full) == 0 &&
+          memcmp(before, after, 64) == 0,
+          "B2b: a REAL-domain claim does not enter the CORE leg (build)");
+    CHECK(run_sql(db, "DELETE FROM v2_claims_spent WHERE nullifier = "
+                      NB("41")) == 0, "B2b: cleanup");
 
     /* B3: malformed rows are -1 (never a shorter trie) */
     struct { int leg; const char *add; const char *undo; } bad[] = {
@@ -719,6 +799,8 @@ static int test_flush(fx_t *fx) {
           "C2: the root is as it was (a delete of an absent key)");
 
     /* D: rollback */
+    char *nodes0 = nodes_dump(db);
+    CHECK(nodes0 != NULL && nodes0[0] != 0, "D0: the node table, non-empty");
     CHECK(run_sql(db, "BEGIN") == 0, "D1: begin");
     CHECK(utxo_sql(db, 0x90, 1) == 0, "D1: block write");
     CHECK(run_sql(db, "SAVEPOINT item") == 0 && utxo_sql(db, 0x91, 2) == 0 &&
@@ -729,7 +811,23 @@ static int test_flush(fx_t *fx) {
     CHECK(dirty_of(db, 1) == 1 && dirty_of(db, 6) == 0,
           "D1: the item's dirty rows left with its writes");
     CHECK(nodus_witness_v2_trie_flush(fx->w) == 0, "D1: flush");
+    {
+        char *nodes1 = nodes_dump(db);
+        CHECK(nodes1 != NULL && strcmp(nodes1, nodes0) != 0,
+              "D1: the flush wrote new nodes (control: the rollback has "
+              "something to undo)");
+        free(nodes1);
+    }
     CHECK(run_sql(db, "ROLLBACK") == 0, "D2: whole block rolled back");
+    {
+        /* compared BEFORE any oracle call: roots_equal_oracle rebuilds
+         * the tries and writes nodes */
+        char *nodes2 = nodes_dump(db);
+        CHECK(nodes2 != NULL && strcmp(nodes2, nodes0) == 0,
+              "D2: the complete node table is as before the block");
+        free(nodes2);
+    }
+    free(nodes0);
     CHECK(q1(db, "SELECT COUNT(*) FROM v2_trie_dirty") == 0 &&
           nodus_witness_v2_trie_leg_root(fx->w, 1, r_now) == 0 &&
           memcmp(r_now, r_before[0], 64) == 0,
@@ -780,6 +878,134 @@ static int test_flush(fx_t *fx) {
     CHECK(nodus_witness_v2_trie_leg_root(fx->w, 0, r_now) == -1 &&
           nodus_witness_v2_trie_leg_root(fx->w, 9, r_now) == -1,
           "F2: a leg outside 1..8 is refused");
+
+    /* G0 (Sol verifier row 1, flush side): a claim with a REAL domain
+     * written under capture is not selected by the flush either */
+    CHECK(run_sql(db, "BEGIN") == 0 &&
+          run_sql(db,
+            "INSERT INTO v2_claims_spent (nullifier, manifest_hash, "
+            "target_domain_id, target_asset_ref, leaf_index, amount, "
+            "claimed_height, output_id) VALUES (CAST(zeroblob(63)||x'42' "
+            "AS BLOB), CAST(zeroblob(63)||x'ee' AS BLOB), 1.5, "
+            "zeroblob(64), 2, 5, 9, zeroblob(64))") == 0 &&
+          dirty_of(db, 3) == 1, "G0: a REAL-domain claim is captured");
+    CHECK(nodus_witness_v2_trie_flush(fx->w) == 0 &&
+          run_sql(db, "COMMIT") == 0, "G0: flush");
+    CHECK(roots_equal_oracle(fx, "G0") == 0,
+          "G0: the flushed leg 3 root excludes the REAL-domain claim");
+    return 0;
+}
+
+/* ── C3 (Sol verifier row 2): all 24 trigger operations with capture 1 ─ */
+typedef struct {
+    int   leg;
+    int (*ins)(fx_t *);       /* insert the row (key K)                    */
+    const char *upd;          /* UPDATE of a non-key column of that row    */
+    const char *del;          /* DELETE of that row                        */
+    const char *key;          /* SQL expression of K as stored in the dirty
+                               * table (blob literal or integer)           */
+} trig_case_t;
+
+static int ti_utxo(fx_t *f)  { return utxo_sql(f->w->db, 0xD0, 5); }
+static int ti_token(fx_t *f) { return token_sql(f->w->db, 0xD0, 8); }
+static int ti_claim(fx_t *f) { return claim_sql(f->w->db, 0xD0, 1, 5); }
+static int ti_name(fx_t *f)  { return name_sql(f->w->db, "dave", 0xD0); }
+static int ti_node(fx_t *f)  { return node_sql(f->w, 0xD0, 70, 1); }
+static int ti_seg(fx_t *f)   { return seg_sql(f->w->db, 5); }
+static int ti_vset(fx_t *f)  { return vset_sql(f->w->db, 9000); }
+static int ti_att(fx_t *f)   { return att_sql(f->w->db, 9000); }
+
+static int test_all_triggers(fx_t *fx) {
+    sqlite3 *db = fx->w->db;
+    /* the registry key is SHA3-512(node_pk): spelled as a blob literal */
+    char fp_key[160];
+    {
+        uint8_t pk[DNAC_PUBKEY_SIZE], fp[64];
+        memset(pk, 0xD0, sizeof(pk));
+        CHECK(qgp_sha3_512(pk, sizeof(pk), fp) == 0, "C3: node_fp");
+        size_t o = (size_t)snprintf(fp_key, sizeof(fp_key), "x'");
+        for (int i = 0; i < 64; i++)
+            o += (size_t)snprintf(fp_key + o, sizeof(fp_key) - o, "%02x",
+                                  fp[i]);
+        snprintf(fp_key + o, sizeof(fp_key) - o, "'");
+    }
+    const trig_case_t cases[8] = {
+        { 1, ti_utxo,
+          "UPDATE utxo_set SET owner = 'zz' WHERE nullifier = " NB("d0"),
+          "DELETE FROM utxo_set WHERE nullifier = " NB("d0"), NB("d0") },
+        { 2, ti_token,
+          "UPDATE tokens SET supply = 9 WHERE token_id = " NB("d0"),
+          "DELETE FROM tokens WHERE token_id = " NB("d0"), NB("d0") },
+        { 3, ti_claim,
+          "UPDATE v2_claims_spent SET amount = 6 WHERE nullifier = "
+          NB("d0"),
+          "DELETE FROM v2_claims_spent WHERE nullifier = " NB("d0"),
+          NB("d0") },
+        { 4, ti_name,
+          "UPDATE v2_names SET registered_height = 12 WHERE name = "
+          "CAST('dave' AS BLOB)",
+          "DELETE FROM v2_names WHERE name = CAST('dave' AS BLOB)",
+          "CAST('dave' AS BLOB)" },
+        { 5, ti_node, NULL, NULL, NULL },      /* statements built below */
+        { 6, ti_seg,
+          "UPDATE v2_storage_segments SET published_height = 300 WHERE k = 5",
+          "DELETE FROM v2_storage_segments WHERE k = 5", "5" },
+        { 7, ti_vset,
+          "UPDATE validator_set_snapshots SET snapshot_hash = CAST("
+          "zeroblob(63)||x'aa' AS BLOB) WHERE epoch_start = 9000",
+          "DELETE FROM validator_set_snapshots WHERE epoch_start = 9000",
+          "9000" },
+        { 8, ti_att,
+          "UPDATE v2_attendance_epoch SET digest = CAST(zeroblob(63)||"
+          "x'bb' AS BLOB) WHERE epoch_start = 9000",
+          "DELETE FROM v2_attendance_epoch WHERE epoch_start = 9000",
+          "9000" },
+    };
+    char node_upd[200], node_del[200];
+    snprintf(node_upd, sizeof(node_upd), "UPDATE v2_storage_nodes SET bond "
+             "= 71 WHERE node_fp = %s", fp_key);
+    snprintf(node_del, sizeof(node_del), "DELETE FROM v2_storage_nodes "
+             "WHERE node_fp = %s", fp_key);
+
+    CHECK(nodus_witness_db_s20_trie_capture(fx->w, &(int){-1}) == 0 &&
+          q1(db, "SELECT capture FROM v2_trie_state WHERE id = 1") == 1,
+          "C3: capture is 1");
+    CHECK(q1(db, "SELECT COUNT(*) FROM v2_trie_dirty") == 0,
+          "C3: nothing pending");
+
+    for (int c = 0; c < 8; c++) {
+        const int leg = cases[c].leg;
+        const char *key = leg == 5 ? fp_key : cases[c].key;
+        for (int op = 0; op < 3; op++) {
+            /* one operation per transaction: the dirty set is exactly
+             * the operation's key, then the flushed root equals the rows */
+            CHECK(run_sql(db, "BEGIN") == 0, "C3: begin");
+            if (op == 0) {
+                CHECK(cases[c].ins(fx) == 0, "C3: insert");
+            } else if (op == 1) {
+                CHECK(run_sql(db, leg == 5 ? node_upd : cases[c].upd) == 0,
+                      "C3: update");
+            } else {
+                CHECK(run_sql(db, leg == 5 ? node_del : cases[c].del) == 0,
+                      "C3: delete");
+            }
+            char sql[400];
+            snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM v2_trie_dirty "
+                     "WHERE leg = %d AND key = %s", leg, key);
+            CHECK(q1(db, sql) == 1,
+                  "C3: the operation's key is in the dirty table");
+            CHECK(q1(db, "SELECT COUNT(*) FROM v2_trie_dirty") == 1,
+                  "C3: and it is the only dirty key");
+            CHECK(nodus_witness_v2_trie_flush(fx->w) == 0, "C3: flush");
+            CHECK(run_sql(db, "COMMIT") == 0, "C3: commit");
+            CHECK(roots_equal_oracle(fx, "C3") == 0,
+                  "C3: every leg root equals the rows after the operation");
+        }
+    }
+    /* after insert, update and delete of the same key the table is as it
+     * was: a wrong trigger body would leave a stale leaf or a stale key */
+    CHECK(q1(db, "SELECT COUNT(*) FROM v2_trie_dirty") == 0,
+          "C3: nothing pending at the end");
     return 0;
 }
 
@@ -966,6 +1192,7 @@ int main(void) {
     }
     int rc = test_build(&fx);
     if (!rc) rc = test_flush(&fx);
+    if (!rc) rc = test_all_triggers(&fx);
     if (!rc) rc = test_schema(&fx);
     fx_close(&fx);
     if (!rc) rc = test_vset_leaf();

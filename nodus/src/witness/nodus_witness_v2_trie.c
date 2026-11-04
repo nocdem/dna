@@ -152,8 +152,11 @@ static const struct {
         "SELECT token_id, name, symbol, decimals, supply, creator_fp, "
         "flags, block_height FROM tokens", "token_id" },
     [NODUS_V2_TRIE_LEG_CLAIMS] = {
+        /* column 5 is the historical predicate evaluated by SQL itself
+         * (`target_domain_id = <CORE>`, nodus_witness_v2_claims.c:139):
+         * 1 or 0, no integer coercion of the stored value */
         "SELECT nullifier, manifest_hash, leaf_index, amount, "
-        "claimed_height, target_domain_id FROM v2_claims_spent",
+        "claimed_height, (target_domain_id = 1) FROM v2_claims_spent",
         "nullifier" },
     [NODUS_V2_TRIE_LEG_NAMES] = {
         "SELECT name, owner, registered_height, typeof(name), "
@@ -256,9 +259,14 @@ static int rd_tokens(sqlite3_stmt *st, v2t_item_t *it) {
  * caller, CORE: a row of another target_domain_id is not part of the leg
  * (selected = 0, not validated — the loader's WHERE filter); a CORE row
  * is checked exactly as the loader does. */
+_Static_assert(DNA_DOMAIN_CORE == 1,
+               "LEG_SQL spells the CORE domain id literally in the claims "
+               "selection");
 static int rd_claims(sqlite3_stmt *st, v2t_item_t *it) {
-    sqlite3_int64 dom = sqlite3_column_int64(st, 5);
-    if (dom != (sqlite3_int64)DNA_DOMAIN_CORE) {
+    /* the SQL equality, not sqlite3_column_int64 of the stored value: a
+     * REAL 1.5 would coerce to 1 and enter the leg (Sol verifier row 1) */
+    if (sqlite3_column_type(st, 5) != SQLITE_INTEGER ||
+        sqlite3_column_int64(st, 5) != 1) {
         it->selected = 0;
         return 0;
     }
