@@ -2673,6 +2673,27 @@ register_witness_test(test_hf7_activation)
 register_witness_test(test_hf7_edge)
 endif()
 
+# HF-9 WP3 (plan docs/plans/approved/2026-11-04-hf9.md §7.1, §7.2, §12 T-6 /
+# T-12) — the generation-6 activation. test_hf9_activation (pure): the
+# compiled generation 6 against the independent oracle's hashes and C1
+# (shared/dnac/tests/hf9_vote_oracle.py), the vote literal D6 and the
+# quantities its selfcheck row compares, the param-24 scalar / grace
+# (SAFETY) / stateful rules, the param-25 range / one-epoch grace /
+# generation-6 gate and its default-4 reader, a generation-5-signed EVM
+# envelope refused at A. test_hf9_edge (engine): the edge at the end of
+# block A-1 on a seeded S20 chain (registry 5 -> 6, the eight tries built
+# and checked against the full rebuild, capture on, SYSTEM + CORE touched,
+# NDS.SYS.v7 / NDS.CORE.v4), the wrong-registry / wrong-value / missing-
+# trigger FAULTs, the shadow-row and replay invariances; its mismatch case
+# is compiled only with -DQGP_FAULT_INJECT=ON (the hook nodus_witness_v2_
+# trie_test_corrupt_full). Generations 3-6 and the tries exist only with the
+# EVM runtime, so both are built only with NODUS_EVM_ENABLED. No
+# environment; the edge test assumes no epoch boundary among its heights.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_hf9_activation)
+register_witness_test(test_hf9_edge)
+endif()
+
 # HF-6 sub-slice 3c — owner authority and the generation-4 call layouts of
 # the SYSTEM validator-record ops 2..5, STAKE refused under generation 4
 # (design 2026-10-03-hf5-validator-owner-stake rev 6 §1.3/§2; plan

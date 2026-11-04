@@ -530,6 +530,18 @@ int nodus_witness_v2_trie_dirty_count(nodus_witness_t *w, int64_t *n) {
     return ret;
 }
 
+int nodus_witness_v2_trie_dirty_clear(nodus_witness_t *w) {
+    if (!w || !w->db) return -1;
+    if (sqlite3_get_autocommit(w->db)) return -1;     /* inside a txn only */
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, "DELETE FROM v2_trie_dirty", -1, &st,
+                           NULL) != SQLITE_OK)
+        return -1;
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
 int nodus_witness_v2_trie_leg_root(nodus_witness_t *w, int leg,
                                    uint8_t root[64]) {
     if (!w || !w->db || !root || !leg_valid(leg)) return -1;
@@ -659,6 +671,22 @@ int nodus_witness_v2_trie_build_leg(nodus_witness_t *w, int leg,
     return ret;
 }
 
+#ifdef QGP_FAULT_INJECT
+/* HF-9 WP3 T-6: an incremental / full-rebuild mismatch hook for
+ * nodus_witness_v2_trie_build_all, compiled only under QGP_FAULT_INJECT.
+ * While armed with a leg (1..8), build_all flips one bit of that leg's
+ * FULL-rebuild root before comparing, so the leg reads as a mismatch.
+ * Arming 0 disarms. Test-only: no consensus path calls it, and a build
+ * without the flag has neither the variable nor the function. */
+static int g_test_corrupt_full_leg;
+int nodus_witness_v2_trie_test_corrupt_full(int leg);
+int nodus_witness_v2_trie_test_corrupt_full(int leg) {
+    if (leg < 0 || leg > NODUS_V2_TRIE_LEGS) return -1;
+    g_test_corrupt_full_leg = leg;
+    return 0;
+}
+#endif
+
 int nodus_witness_v2_trie_build_all(nodus_witness_t *w) {
     if (!w || !w->db) return -1;
     uint8_t roots[NODUS_V2_TRIE_LEGS][64];
@@ -667,6 +695,9 @@ int nodus_witness_v2_trie_build_all(nodus_witness_t *w) {
         uint8_t full[64];
         if (nodus_witness_v2_trie_build_leg(w, leg, roots[leg - 1], full) != 0)
             return -1;
+#ifdef QGP_FAULT_INJECT
+        if (g_test_corrupt_full_leg == leg) full[0] ^= 0x01;
+#endif
         if (memcmp(roots[leg - 1], full, 64) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "leg %d: incremental root != full "
                           "rebuild", leg);

@@ -846,6 +846,14 @@ int nodus_witness_v2_claim_state_update(nodus_witness_t *w,
  * resolves the ROOTS runtimes, so A−1's own SYSTEM root is already v6. */
 int nodus_rt_system_state_root(const nodus_domain_runtime_t *rt,
                                struct nodus_witness *w, uint8_t out[64]) {
+    /* HF-9 WP3 (plan docs/plans/approved/2026-11-04-hf9.md §6): TRIE or
+     * later composes "NDS.SYS.v7" — the twelve v6 legs with L7 / L8 / the
+     * "NDS.STOR.v3" storage leg read from the keyed tries. The same edge
+     * rule: the HF-9 edge rewrites the registry in phase 6b''''' of block
+     * A-1, the 6c re-scan resolves the TRIE runtimes, so A-1's own SYSTEM
+     * root is already v7. */
+    if (rt && rt->generation >= NODUS_RT_GEN_TRIE)
+        return nodus_witness_system_root_v7((nodus_witness_t *)w, out);
     if (rt && rt->generation >= NODUS_RT_GEN_ROOTS)
         return nodus_witness_system_root_v6((nodus_witness_t *)w, out);
     if (rt && rt->generation >= NODUS_RT_GEN_STORAGE)
@@ -870,6 +878,11 @@ int nodus_rt_system_payload_root(const nodus_domain_runtime_t *rt,
  * a generation-1/2 history is byte-identical. */
 int nodus_rt_core_state_root(const nodus_domain_runtime_t *rt,
                              struct nodus_witness *w, uint8_t out[64]) {
+    /* HF-9 WP3 (plan §6, D23): TRIE or later composes "NDS.CORE.v4" — the
+     * seven CORE legs with utxo / token / claims / name read from the
+     * keyed tries (and the EVM supply leaf). */
+    if (rt && rt->generation >= NODUS_RT_GEN_TRIE)
+        return nodus_witness_core_root_v4((nodus_witness_t *)w, out);
     if (rt && rt->generation >= NODUS_RT_GEN_EVM)
         return nodus_witness_core_root_v2_evm((nodus_witness_t *)w, out);
     return nodus_witness_core_root_v2((nodus_witness_t *)w, out);

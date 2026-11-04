@@ -30,7 +30,28 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef NODUS_EVM_ENABLED
+#include "witness/nodus_witness_v2_trie.h"      /* HF-9: the leg roots    */
+#endif
+
 #define LOG_TAG "ROOTS-V2"
+
+/* HF-9 WP3 (plan docs/plans/approved/2026-11-04-hf9.md §5.3): the committed
+ * root of keyed-trie leg `leg` (1..8) — the one reader every generation-6
+ * composition below uses. It refuses (-1) while a dirty key of the leg is
+ * pending (the head_activate guard), for a missing or malformed
+ * v2_trie_roots row and for any read fault: never a stale or substituted
+ * root. The tries are EVM-only (nodus_witness_v2_trie.c); a build without
+ * NODUS_EVM_ENABLED never reaches generation 6 (it never passes the EVM
+ * edge), so there the answer is -1. */
+static int trie_leg_root(nodus_witness_t *w, int leg, uint8_t out[64]) {
+#ifdef NODUS_EVM_ENABLED
+    return nodus_witness_v2_trie_leg_root(w, leg, out);
+#else
+    (void)w; (void)leg; (void)out;
+    return -1;
+#endif
+}
 
 /* ── token_root ─────────────────────────────────────────────────────── */
 
@@ -600,6 +621,19 @@ int nodus_witness_storage_root_segv2(nodus_witness_t *w, uint8_t out[64]) {
     return storage_root_impl(w, 1, out);
 }
 
+/* HF-9 WP3 — contract: nodus_witness_roots_v2.h. "NDS.STOR.v3": the four
+ * legs in the "NDS.STOR.v2" order; registry (L5) and segments (L6) are the
+ * committed keyed-trie roots, sets and reports are read as before. */
+int nodus_witness_storage_root_v3(nodus_witness_t *w, uint8_t out[64]) {
+    if (!w || !w->db || !out) return -1;
+    uint8_t reg[64], sets[64], reps[64], segs[64];
+    if (trie_leg_root(w, 5, reg) != 0) return -1;
+    if (nodus_witness_storage_sets_root(w, sets) != 0) return -1;
+    if (nodus_witness_storage_reports_root(w, reps) != 0) return -1;
+    if (trie_leg_root(w, 6, segs) != 0) return -1;
+    return dna_v2_storage_root_v3(reg, sets, reps, segs, out);
+}
+
 /* ── attendance_root (tokenomics-v3 P1, D-4 / S-2) ─────────────────────
  * Follows the (now deleted) epoch leg's pattern: "no such table" via
  * sqlite_master probe = the honest EMPTY
@@ -734,8 +768,15 @@ typedef struct {
     uint8_t attendance[64], treasury[64];
 } sys_legs_v4_t;
 
+/* HF-9 WP3: `trie_legs` (generation >= NODUS_RT_GEN_TRIE, composition
+ * "NDS.SYS.v7") takes the validator-set leg (L7) and the attendance leg
+ * (L8) from the committed keyed-trie roots (nodus_witness_v2_trie_leg_root,
+ * which refuses while a dirty key of the leg is pending) instead of
+ * scanning the two tables — no scan of a migrated table (plan §5.6). It
+ * implies the v2 validator / delegation leaves (a generation-6 chain is
+ * past generation 4). Every other leg is read exactly as before. */
 static int system_legs_v4(nodus_witness_t *w, sys_legs_v4_t *l,
-                          int v2_leaves) {
+                          int v2_leaves, int trie_legs) {
     uint8_t *validator_root = l->validator_root;
     uint8_t *delegation_root = l->delegation_root;
     uint8_t *chain_config_root = l->chain_config_root;
@@ -764,9 +805,13 @@ static int system_legs_v4(nodus_witness_t *w, sys_legs_v4_t *l,
     /* S3: the real validator-set leg. An EMPTY validator_set_snapshots
      * table yields the SAME tagged empty root the S2 placeholder emitted
      * (nodus_witness_vset_root → dna_v2_vset_root n==0 → DNA_V2_EMPTY_VSET),
-     * so a pre-snapshot chain's system_state_root is byte-unchanged. */
-    if (nodus_witness_vset_root(w, vset) != 0)
+     * so a pre-snapshot chain's system_state_root is byte-unchanged.
+     * HF-9: under the trie composition this leg is trie L7. */
+    if (trie_legs) {
+        if (trie_leg_root(w, 7, vset) != 0) return -1;
+    } else if (nodus_witness_vset_root(w, vset) != 0) {
         return -1;
+    }
     /* S4: the domain-registry leg is REAL — nodus_witness_domreg_root
      * over the domain_registry table. An empty table (every pre-V2 chain)
      * returns exactly the DNA_V2_EMPTY_DOMREG tagged root the S2
@@ -791,9 +836,13 @@ static int system_legs_v4(nodus_witness_t *w, sys_legs_v4_t *l,
      * byte-unchanged for a pre-P1 chain the way the vset/domreg/manifest
      * legs were for THEIR predecessors: every state_root changes at this
      * package (devnet wipe + stop-all, decision file §2 "F1-F4, F8, F9,
-     * F12 ve F13-b" class). */
-    if (nodus_witness_attendance_root(w, attendance) != 0)
+     * F12 ve F13-b" class). HF-9: under the trie composition this leg
+     * is trie L8. */
+    if (trie_legs) {
+        if (trie_leg_root(w, 8, attendance) != 0) return -1;
+    } else if (nodus_witness_attendance_root(w, attendance) != 0) {
         return -1;
+    }
     /* Final pre-testnet wipe, W-A: the keyless treasury pools, the 8th
      * and LAST leg under "NDS.SYS.v4". A SYSTEM leg (not CORE) because
      * a future exit rule will be a SYSTEM leg with a CORE sibling
@@ -810,7 +859,8 @@ static int system_legs_v4(nodus_witness_t *w, sys_legs_v4_t *l,
 int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     if (!w || !out) return -1;
     sys_legs_v4_t l;
-    if (system_legs_v4(w, &l, /*v2_leaves=*/0) != 0) return -1;
+    if (system_legs_v4(w, &l, /*v2_leaves=*/0, /*trie_legs=*/0) != 0)
+        return -1;
     /* GENERICITY CORRECTION (locked): the native supply_root is NOT a
      * SYSTEM leg — issuance belongs to the DNA_CORE runtime and is
      * committed by ITS state root below. */
@@ -833,7 +883,8 @@ int nodus_witness_system_root_v5(nodus_witness_t *w, uint8_t out[64]) {
     if (!w || !out) return -1;
     sys_legs_v4_t l;
     uint8_t storage[64];
-    if (system_legs_v4(w, &l, /*v2_leaves=*/1) != 0) return -1;
+    if (system_legs_v4(w, &l, /*v2_leaves=*/1, /*trie_legs=*/0) != 0)
+        return -1;
     if (nodus_witness_storage_root_v2(w, storage) != 0) return -1;
     return dna_v2_system_root_v5(l.validator_root, l.delegation_root,
                                  l.chain_config_root, l.vset, l.domreg,
@@ -1149,7 +1200,8 @@ int nodus_witness_system_root_v6(nodus_witness_t *w, uint8_t out[64]) {
     if (!w || !out) return -1;
     sys_legs_v4_t l;
     uint8_t storage[64], bcopy[64], vstat[64], stmem[64];
-    if (system_legs_v4(w, &l, /*v2_leaves=*/1) != 0) return -1;
+    if (system_legs_v4(w, &l, /*v2_leaves=*/1, /*trie_legs=*/0) != 0)
+        return -1;
     if (nodus_witness_storage_root_segv2(w, storage) != 0) return -1;
     if (nodus_witness_bcopy_root(w, bcopy) != 0) return -1;
     if (nodus_witness_vstat_hash(w, vstat) != 0) return -1;
@@ -1160,20 +1212,53 @@ int nodus_witness_system_root_v6(nodus_witness_t *w, uint8_t out[64]) {
                                  storage, bcopy, vstat, stmem, out);
 }
 
+/* HF-9 WP3 — contract: nodus_witness_roots_v2.h. "NDS.SYS.v7": the twelve
+ * v6 legs in v6 order, read EXACTLY as nodus_witness_system_root_v6 reads
+ * them except the three that move to the keyed tries — validator_set_root
+ * (L7) and attendance_root (L8) through system_legs_v4's trie mode, and
+ * storage_root as "NDS.STOR.v3" (registry L5, segments L6;
+ * nodus_witness_storage_root_v3). */
+int nodus_witness_system_root_v7(nodus_witness_t *w, uint8_t out[64]) {
+    if (!w || !out) return -1;
+    sys_legs_v4_t l;
+    uint8_t storage[64], bcopy[64], vstat[64], stmem[64];
+    if (system_legs_v4(w, &l, /*v2_leaves=*/1, /*trie_legs=*/1) != 0)
+        return -1;
+    if (nodus_witness_storage_root_v3(w, storage) != 0) return -1;
+    if (nodus_witness_bcopy_root(w, bcopy) != 0) return -1;
+    if (nodus_witness_vstat_hash(w, vstat) != 0) return -1;
+    if (nodus_witness_stmem_root(w, stmem) != 0) return -1;
+    return dna_v2_system_root_v7(l.validator_root, l.delegation_root,
+                                 l.chain_config_root, l.vset, l.domreg,
+                                 l.manifest, l.attendance, l.treasury,
+                                 storage, bcopy, vstat, stmem, out);
+}
+
 /* The body of both CORE root variants: `with_evm_reserve` 0 = every
  * generation before the EVM one (the supply leg exactly
  * nodus_witness_supply_root_v2 — byte-identical to before Nodus EVM), 1 = the
  * EVM generation (the supply leg gains the CORE EVM reserve under
- * "NDS.SUPPLY.v3"). Every other leg and the composition are shared. */
+ * "NDS.SUPPLY.v3"). Every other leg and the composition are shared.
+ * HF-9 WP3: `trie` (generation >= NODUS_RT_GEN_TRIE, composition
+ * "NDS.CORE.v4"; always with the EVM supply leaf) takes the utxo, token,
+ * claims and name legs from the committed keyed-trie roots L1-L4
+ * (trie_leg_root) instead of scanning the four tables; pools, supply and
+ * accrual are read as before. */
 static int core_root_impl(nodus_witness_t *w, int with_evm_reserve,
-                          uint8_t out[64]) {
+                          int trie, uint8_t out[64]) {
     if (!w || !out) return -1;
     uint8_t utxo_root[64], token_root[64], pools[64], claims[64], names[64];
     uint8_t supply[64], accrual[64];
-    if (nodus_witness_merkle_compute_utxo_root(w, utxo_root) != 0)
-        return -1;
-    if (nodus_witness_token_root_v2(w, token_root) != 0)
-        return -1;
+    if (trie) {
+        if (!with_evm_reserve) return -1;
+        if (trie_leg_root(w, 1, utxo_root) != 0) return -1;
+        if (trie_leg_root(w, 2, token_root) != 0) return -1;
+    } else {
+        if (nodus_witness_merkle_compute_utxo_root(w, utxo_root) != 0)
+            return -1;
+        if (nodus_witness_token_root_v2(w, token_root) != 0)
+            return -1;
+    }
     /* S7: the pools leg is REAL — nodus_witness_pools_root_v2 over the
      * v2_pools rows OWNED BY THIS DOMAIN (each runtime commits the pool
      * state of its own domain; a foreign domain's pool can never enter
@@ -1186,15 +1271,25 @@ static int core_root_impl(nodus_witness_t *w, int with_evm_reserve,
      * the claims commitment of its own domain — this is the CORE
      * runtime's root, so it covers CORE-targeted claims only).
      * Absent/empty tables reproduce the S2 tagged-empty root
-     * byte-identically (pre-S6 chains unchanged). */
-    if (nodus_witness_claims_root_v2(w, DNA_DOMAIN_CORE, claims) != 0)
+     * byte-identically (pre-S6 chains unchanged). HF-9: under the trie
+     * composition this leg is trie L3 — the CORE-targeted rows only, the
+     * one trie of the one caller (plan §4.2 row L3). */
+    if (trie) {
+        if (trie_leg_root(w, 3, claims) != 0) return -1;
+    } else if (nodus_witness_claims_root_v2(w, DNA_DOMAIN_CORE, claims)
+               != 0) {
         return -1;
+    }
     /* HF-4: the name leg is REAL — names_root_v2 over v2_names. An empty
      * table (every chain before its first registration) is exactly the
      * tagged-empty root this leg held since S2, so no pre-H root moves
-     * and the composition tag stays "NDS.CORE.v2". */
-    if (names_root_v2(w, names) != 0)
+     * and the composition tag stays "NDS.CORE.v2". HF-9: under the trie
+     * composition this leg is trie L4. */
+    if (trie) {
+        if (trie_leg_root(w, 4, names) != 0) return -1;
+    } else if (names_root_v2(w, names) != 0) {
         return -1;
+    }
     /* Native issuance (genesis/minted/burned) is the CORE runtime's OWN
      * asset commitment — the supply leg lives HERE (locked ownership).
      * Nodus EVM: the EVM generation's leaf also commits the reserve bucket. */
@@ -1220,17 +1315,25 @@ static int core_root_impl(nodus_witness_t *w, int with_evm_reserve,
      * after every payday) is the tagged empty root. */
     if (nodus_witness_accrual_root_v2(w, accrual) != 0)
         return -1;
+    if (trie)
+        return dna_v2_core_root_v4(utxo_root, token_root, pools, claims,
+                                   names, supply, accrual, out);
     return dna_v2_core_root(utxo_root, token_root, pools, claims, names,
                             supply, accrual, out);
 }
 
 int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]) {
-    return core_root_impl(w, 0, out);
+    return core_root_impl(w, 0, 0, out);
 }
 
 /* Nodus EVM — contract: nodus_witness_roots_v2.h. */
 int nodus_witness_core_root_v2_evm(nodus_witness_t *w, uint8_t out[64]) {
-    return core_root_impl(w, 1, out);
+    return core_root_impl(w, 1, 0, out);
+}
+
+/* HF-9 WP3 — contract: nodus_witness_roots_v2.h. */
+int nodus_witness_core_root_v4(nodus_witness_t *w, uint8_t out[64]) {
+    return core_root_impl(w, 1, 1, out);
 }
 
 /* Decode the 89-byte canonical head blob (layout: ledger_roots_v2.h). */

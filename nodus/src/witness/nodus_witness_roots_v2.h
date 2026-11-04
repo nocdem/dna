@@ -218,6 +218,23 @@ int nodus_witness_replay_root(nodus_witness_t *w, uint8_t out[64]);
  *  nodus_witness_v2_claims.c). @return 0 / -1. */
 int nodus_witness_system_root_v6(nodus_witness_t *w, uint8_t out[64]);
 
+/** HF-9 WP3 (plan docs/plans/approved/2026-11-04-hf9.md §6): system_state_
+ *  root v7 ("NDS.SYS.v7"): the twelve v6 legs in v6 order, read as
+ *  nodus_witness_system_root_v6 reads them except validator_set_root
+ *  (keyed-trie root L7), attendance_root (L8) and storage_root
+ *  (nodus_witness_storage_root_v3). The trie roots are the committed
+ *  v2_trie_roots rows — PURE reads, no trie work (§5.3); a leg with a
+ *  pending dirty key, a missing or malformed row is -1, never a stale
+ *  root. Selected ONLY by the SYSTEM state-root hook of a runtime of
+ *  generation >= NODUS_RT_GEN_TRIE (nodus_rt_system_state_root). A build
+ *  without NODUS_EVM_ENABLED answers -1. @return 0 / -1. */
+int nodus_witness_system_root_v7(nodus_witness_t *w, uint8_t out[64]);
+
+/** HF-9 WP3: storage_root v3 ("NDS.STOR.v3"): registry_root (trie L5),
+ *  sets_root, reports_root, segments_root (trie L6) — read by
+ *  nodus_witness_system_root_v7 only. -1 as above. @return 0 / -1. */
+int nodus_witness_storage_root_v3(nodus_witness_t *w, uint8_t out[64]);
+
 /** THE GLOBAL composition (HF-7 P1c-1, Kurultay #27 summary item 8 — every
  *  composition site calls this one function, so they move together):
  *    roots_v2 == 0: dna_v2_domains_root(heads) → dna_v2_global_root — the
@@ -273,6 +290,15 @@ int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]);
  *  or row is a fault here (the EVM generation never runs below S17).
  *  @return 0 / -1. */
 int nodus_witness_core_root_v2_evm(nodus_witness_t *w, uint8_t out[64]);
+
+/** HF-9 WP3 (plan §6): core_state_root v4 ("NDS.CORE.v4", D23): the same
+ *  seven legs in the same order, the EVM generation's supply leaf, with
+ *  utxo / token / claims / name read from the committed keyed-trie roots
+ *  L1-L4 (pure reads, as nodus_witness_system_root_v7) and pools, supply,
+ *  accrual as before. Selected ONLY by a CORE runtime of generation >=
+ *  NODUS_RT_GEN_TRIE (nodus_rt_core_state_root). A build without
+ *  NODUS_EVM_ENABLED answers -1. @return 0 / -1. */
+int nodus_witness_core_root_v4(nodus_witness_t *w, uint8_t out[64]);
 
 /** S5 — SYSTEM runtime-owned genesis PAYLOAD root ("NDS.SYSPAYL.v3",
  *  W-A): the five runtime legs validator ‖ delegation ‖ chain_config ‖

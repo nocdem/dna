@@ -157,6 +157,43 @@
  *   the S6 inner node and the existing v5 / v1 tags are reused unchanged.
  *   (domains_root has NO empty tag: SYSTEM must always be present — an
  *    empty domain list is a hard error, not an empty tree.)
+ *   HF-9 trie   "NDS.CORE.v4"     core_state_root v4 (plan §6, D23: same 7
+ *   generation  "NDS.SYS.v7"      legs in the same order as "NDS.CORE.v2";
+ *   (plan docs/ "NDS.STOR.v3"     utxo / token / claims / name are the
+ *   plans/                        trie roots L1-L4) / system_state_root v7
+ *   approved/                     (same 12 legs as "NDS.SYS.v6"; vset =
+ *   2026-11-04-                   L7, attendance = L8) / storage_root v3
+ *   hf9.md §6,                    (same 4 legs as "NDS.STOR.v2"; registry
+ *   AD-4)                         = L5, segments = L6)
+ *                 "NDS.STHRW.v1"  rendezvous score tag (plan §8.3, AD-5;
+ *                                 defined by HF-9 package WP4 — NOT
+ *                                 defined in this file yet; in this table
+ *                                 because the scan below covers it)
+ *   Every tag is exactly 16 bytes, zero-padded ASCII. "NDS.CORE.v3" is
+ *   NOT used: it is defined differently (8 legs with dist_root) in
+ *   docs/plans/2026-09-11-nodus-ledger-snapshot-design.md:137, was never
+ *   implemented and stays unused (operator "2 için Astra'nın cevabı ile
+ *   ilerleyelim.", docs/plans/decisions/2026-11-04-hf9-scope.md).
+ *   HF-9 collision scan (plan §6, Kurultay 55 A4 / F-8), two runs:
+ *     (1) main, 2026-11-04, tracked tree at 57942442e, `git grep -nF`:
+ *         0 lines for each of the four tags; local `grep -rnF` over
+ *         docs/plans: NDS.CORE.v4 26 lines, NDS.STOR.v3 15, NDS.SYS.v7
+ *         15, NDS.STHRW.v1 14, all in HF-9 records (docs/plans/
+ *         2026-11-04-hf9-tag-scan.md); C string literals starting with a
+ *         tag in shared/dnac and nodus/src: 0 each.
+ *     (2) HF-9 WP3, re-run on its base 005f3509c (`git grep -nF <tag>
+ *         HEAD`): NDS.CORE.v4 6 lines, NDS.STOR.v3 4, NDS.SYS.v7 6,
+ *         NDS.STHRW.v1 4 — every line in nodus/tests/vectors/hf9_kat.json
+ *         or nodus/tests/vectors/hf9_kat_oracle.py (the independent T-4
+ *         oracle and its vectors), none in C code; docs/plans `grep -rnF`:
+ *         27 / 16 / 16 / 15 lines, HF-9 records only.
+ *   Independent oracle: nodus/tests/vectors/hf9_kat_oracle.py (author !=
+ *   the C author; cross-check: the new tags are absent from the 73 tag
+ *   strings of ledger_roots_v2.c and manifest_wire.c) — the KAT groups
+ *   "new_tags" and "compositions" of hf9_kat.json, compared by
+ *   nodus/tests/test_hf9_kat.c. SELF-CONSISTENT, not externally
+ *   referenced (the compositions are this project's, like every tag
+ *   above). Precedent: the HF-7 block above.
  *
  * ── Composition preimages (exact) ─────────────────────────────────────
  *   system_state_root = SHA3-512("NDS.SYS.v4"  ‖ validator_root[64]
@@ -729,6 +766,18 @@ int dna_v2_storage_root(const uint8_t registry_root[DNA_V2_ROOT_LEN],
                         const uint8_t segments_root[DNA_V2_ROOT_LEN],
                         uint8_t out[DNA_V2_ROOT_LEN]);
 
+/** HF-9 storage_root v3 = SHA3-512("NDS.STOR.v3" ‖ registry_root ‖
+ *  sets_root ‖ reports_root ‖ segments_root) — the "NDS.STOR.v2" layout
+ *  under the new tag (plan §6, AD-4). Under generation 6 registry_root is
+ *  the trie root of leg L5 and segments_root that of L6 (nodus_witness_
+ *  v2_trie.h); sets_root and reports_root are unchanged. A NEW function:
+ *  dna_v2_storage_root is unchanged. @return 0 / -1. */
+int dna_v2_storage_root_v3(const uint8_t registry_root[DNA_V2_ROOT_LEN],
+                           const uint8_t sets_root[DNA_V2_ROOT_LEN],
+                           const uint8_t reports_root[DNA_V2_ROOT_LEN],
+                           const uint8_t segments_root[DNA_V2_ROOT_LEN],
+                           uint8_t out[DNA_V2_ROOT_LEN]);
+
 /* ── archive reward (storage reward v1 rev 4) ──────────────────────────
  * Decision 2026-10-05-archive-reward-bytes-approved.md; design
  * docs/plans/2026-10-05-archive-reward-design.md rev 4; bytes
@@ -901,6 +950,22 @@ int dna_v2_core_root(const uint8_t utxo_root[64],
                      const uint8_t accrual_root[64],
                      uint8_t out[DNA_V2_ROOT_LEN]);
 
+/** HF-9 core_state_root v4 = SHA3-512("NDS.CORE.v4" ‖ utxo_root ‖
+ *  token_root ‖ pools_root ‖ claims_root ‖ name_root ‖ supply_root ‖
+ *  accrual_root) — the same seven legs in the same order as
+ *  "NDS.CORE.v2" under the new tag (plan §6, D23). Under generation 6
+ *  utxo_root, token_root, claims_root and name_root are the trie roots of
+ *  legs L1-L4; pools, supply and accrual are unchanged. A NEW function:
+ *  dna_v2_core_root is unchanged. @return 0 / -1. */
+int dna_v2_core_root_v4(const uint8_t utxo_root[64],
+                        const uint8_t token_root[64],
+                        const uint8_t pools_root[64],
+                        const uint8_t claims_root[64],
+                        const uint8_t name_root[64],
+                        const uint8_t supply_root[64],
+                        const uint8_t accrual_root[64],
+                        uint8_t out[DNA_V2_ROOT_LEN]);
+
 int dna_v2_global_root(const uint8_t domains_root[64],
                        uint8_t out[DNA_V2_ROOT_LEN]);
 
@@ -1029,6 +1094,27 @@ int dna_v2_stmem_root(const dna_v2_stmem_row_t *rows, size_t n,
  *  12 × 64 bytes after the tag. A NEW function: dna_v2_system_root_v5
  *  is unchanged. Each leg is an opaque 64-byte input. @return 0 / -1. */
 int dna_v2_system_root_v6(const uint8_t validator_root[64],
+                          const uint8_t delegation_root[64],
+                          const uint8_t chain_config_root[64],
+                          const uint8_t validator_set_root[64],
+                          const uint8_t domain_registry_root[64],
+                          const uint8_t manifest_root[64],
+                          const uint8_t attendance_root[64],
+                          const uint8_t treasury_root[64],
+                          const uint8_t storage_root[64],
+                          const uint8_t bcopy_root[64],
+                          const uint8_t vstat[64],
+                          const uint8_t stmem_root[64],
+                          uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** HF-9 system_state_root v7 = SHA3-512("NDS.SYS.v7" ‖ the twelve
+ *  "NDS.SYS.v6" legs in v6 order) — 12 × 64 bytes after the tag, the same
+ *  legs and order as dna_v2_system_root_v6 under the new tag (plan §6,
+ *  AD-4). Under generation 6 validator_set_root is the trie root of leg
+ *  L7, attendance_root that of L8 and storage_root the "NDS.STOR.v3"
+ *  composition. A NEW function: dna_v2_system_root_v6 is unchanged. Each
+ *  leg is an opaque 64-byte input. @return 0 / -1. */
+int dna_v2_system_root_v7(const uint8_t validator_root[64],
                           const uint8_t delegation_root[64],
                           const uint8_t chain_config_root[64],
                           const uint8_t validator_set_root[64],

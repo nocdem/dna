@@ -122,6 +122,13 @@ static const uint8_t TAG_DOMHEAD2[TAG_LEN]  = "NDS.DOMHEAD.v2\0";
 static const uint8_t TAG_RPLEAF[TAG_LEN]    = "NDS.RPLEAF.v1\0\0";
 static const uint8_t TAG_RPNODE[TAG_LEN]    = "NDS.RPNODE.v1\0\0";
 static const uint8_t TAG_GLOBAL2[TAG_LEN]   = "NDS.GLOBAL.v2\0\0";
+/* HF-9 (plan docs/plans/approved/2026-11-04-hf9.md §6, AD-4; D23 "NDS.CORE.v4"):
+ * the three generation-6 composition tags. Collision scan and checked
+ * commits: the tag table in ledger_roots_v2.h. SELF-CONSISTENT; the
+ * independent oracle is nodus/tests/vectors/hf9_kat_oracle.py. */
+static const uint8_t TAG_CORE_V4[TAG_LEN]   = "NDS.CORE.v4\0\0\0\0";
+static const uint8_t TAG_SYS_V7[TAG_LEN]    = "NDS.SYS.v7\0\0\0\0\0";
+static const uint8_t TAG_STOR_V3[TAG_LEN]   = "NDS.STOR.v3\0\0\0\0";
 
 static const uint8_t TAG_EMPTY[DNA_V2_EMPTY__COUNT][TAG_LEN] = {
     "NDS.E.VSET.v1\0\0",   /* DNA_V2_EMPTY_VSET     */
@@ -690,6 +697,27 @@ int dna_v2_storage_root(const uint8_t registry_root[DNA_V2_ROOT_LEN],
     return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
 }
 
+/* HF-9: "NDS.STOR.v3" — the "NDS.STOR.v2" legs in the same order under the
+ * new tag. dna_v2_storage_root is untouched. */
+int dna_v2_storage_root_v3(const uint8_t registry_root[DNA_V2_ROOT_LEN],
+                           const uint8_t sets_root[DNA_V2_ROOT_LEN],
+                           const uint8_t reports_root[DNA_V2_ROOT_LEN],
+                           const uint8_t segments_root[DNA_V2_ROOT_LEN],
+                           uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!registry_root || !sets_root || !reports_root || !segments_root ||
+        !out)
+        return -1;
+    uint8_t pre[TAG_LEN + 4 * DNA_V2_ROOT_LEN];
+    memcpy(pre, TAG_STOR_V3, TAG_LEN);
+    memcpy(pre + TAG_LEN, registry_root, DNA_V2_ROOT_LEN);
+    memcpy(pre + TAG_LEN + DNA_V2_ROOT_LEN, sets_root, DNA_V2_ROOT_LEN);
+    memcpy(pre + TAG_LEN + 2 * DNA_V2_ROOT_LEN, reports_root,
+           DNA_V2_ROOT_LEN);
+    memcpy(pre + TAG_LEN + 3 * DNA_V2_ROOT_LEN, segments_root,
+           DNA_V2_ROOT_LEN);
+    return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
+}
+
 /* ── archive reward (storage reward v1 rev 4) ──────────────────────────
  * Contract: ledger_roots_v2.h ("Composition preimages", archive block). */
 
@@ -1000,6 +1028,31 @@ int dna_v2_core_root(const uint8_t utxo_root[64],
     return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
 }
 
+/* HF-9: "NDS.CORE.v4" — the seven "NDS.CORE.v2" legs in the same order
+ * under the new tag. dna_v2_core_root is untouched. */
+int dna_v2_core_root_v4(const uint8_t utxo_root[64],
+                        const uint8_t token_root[64],
+                        const uint8_t pools_root[64],
+                        const uint8_t claims_root[64],
+                        const uint8_t name_root[64],
+                        const uint8_t supply_root[64],
+                        const uint8_t accrual_root[64],
+                        uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!utxo_root || !token_root || !pools_root || !claims_root ||
+        !name_root || !supply_root || !accrual_root || !out)
+        return -1;
+    uint8_t pre[TAG_LEN + 7 * DNA_V2_ROOT_LEN];
+    memcpy(pre, TAG_CORE_V4, TAG_LEN);
+    const uint8_t *parts[7] = {
+        utxo_root, token_root, pools_root, claims_root, name_root,
+        supply_root, accrual_root
+    };
+    for (int i = 0; i < 7; i++)
+        memcpy(pre + TAG_LEN + (size_t)i * DNA_V2_ROOT_LEN, parts[i],
+               DNA_V2_ROOT_LEN);
+    return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
+}
+
 int dna_v2_global_root(const uint8_t domains_root[64],
                        uint8_t out[DNA_V2_ROOT_LEN]) {
     if (!domains_root || !out) return -1;
@@ -1186,6 +1239,42 @@ int dna_v2_system_root_v6(const uint8_t validator_root[64],
         return -1;
     uint8_t pre[TAG_LEN + 12 * DNA_V2_ROOT_LEN];
     memcpy(pre, TAG_SYS_V6, TAG_LEN);
+    const uint8_t *parts[12] = {
+        validator_root, delegation_root, chain_config_root,
+        validator_set_root, domain_registry_root, manifest_root,
+        attendance_root, treasury_root, storage_root,
+        bcopy_root, vstat, stmem_root
+    };
+    for (int i = 0; i < 12; i++)
+        memcpy(pre + TAG_LEN + (size_t)i * DNA_V2_ROOT_LEN, parts[i],
+               DNA_V2_ROOT_LEN);
+    return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
+}
+
+/* ── HF-9 SYSTEM composition v7 ──────────────────────────────────────── */
+
+/* "NDS.SYS.v7" — the twelve "NDS.SYS.v6" legs in v6 order under the new
+ * tag. dna_v2_system_root_v6 is untouched. */
+int dna_v2_system_root_v7(const uint8_t validator_root[64],
+                          const uint8_t delegation_root[64],
+                          const uint8_t chain_config_root[64],
+                          const uint8_t validator_set_root[64],
+                          const uint8_t domain_registry_root[64],
+                          const uint8_t manifest_root[64],
+                          const uint8_t attendance_root[64],
+                          const uint8_t treasury_root[64],
+                          const uint8_t storage_root[64],
+                          const uint8_t bcopy_root[64],
+                          const uint8_t vstat[64],
+                          const uint8_t stmem_root[64],
+                          uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!validator_root || !delegation_root ||
+        !chain_config_root || !validator_set_root || !domain_registry_root ||
+        !manifest_root || !attendance_root || !treasury_root ||
+        !storage_root || !bcopy_root || !vstat || !stmem_root || !out)
+        return -1;
+    uint8_t pre[TAG_LEN + 12 * DNA_V2_ROOT_LEN];
+    memcpy(pre, TAG_SYS_V7, TAG_LEN);
     const uint8_t *parts[12] = {
         validator_root, delegation_root, chain_config_root,
         validator_set_root, domain_registry_root, manifest_root,

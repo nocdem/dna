@@ -5,13 +5,15 @@
  *        per-leg row readers, the build from rows, the flush of the dirty
  *        keys, the leg roots.
  *
- * INERT until generation 6. Nothing in this build calls the build or the
- * flush from the block path: the capture flag v2_trie_state.capture is 0
- * for every generation this build compiles, so the S20 triggers write no
- * dirty key (nodus_witness_v2_schema.h). The generation >= 6 wiring (the
- * activation edge, phase 8-pre, the dirty-empty assertion, the
- * head_activate guard's call site) arrives with the generation (plan §13
- * WP3). EVM-only, like nodus_witness_rt_evm.c: the tries are
+ * INERT until generation 6. HF-9 WP3 wired the generation (plan §13 WP3):
+ * the activation edge (nodus_witness_v2_apply.c phase_6b_gen6_edge) calls
+ * the build and turns the capture flag v2_trie_state.capture on; from
+ * there phase 8-pre calls the flush and the end-of-block dirty-empty
+ * assertion reads the dirty count; the SYSTEM / CORE root hooks read the
+ * leg roots through nodus_witness_v2_trie_leg_root, which is also the
+ * head_activate guard. Below generation 6 the capture flag is 0, so the
+ * S20 triggers write no dirty key (nodus_witness_v2_schema.h) and
+ * nothing here runs. EVM-only, like nodus_witness_rt_evm.c: the tries are
  * shared/evm/trie/evm_trie.{c,h} (SHA3-512 Patricia, plan §4.1) and the
  * full-rebuild cross-check shared/evm/trie/evm_trie_full.c, which both
  * live in the EVM library.
@@ -112,10 +114,16 @@ int nodus_witness_v2_trie_leg_root(nodus_witness_t *w, int leg,
 /** Number of rows in v2_trie_dirty (all legs). @return 0 with *n, -1. */
 int nodus_witness_v2_trie_dirty_count(nodus_witness_t *w, int64_t *n);
 
-/** Write v2_trie_state.capture (0 or 1). Only the activation edge and a
- *  generation >= 6 genesis may call it (plan §5.1); nothing in this build
- *  does. Refused (-1) outside a transaction, for any value but 0 / 1 and
- *  when the row is missing. @return 0 / -1. */
+/** Delete every row of v2_trie_dirty (all legs) — the activation edge's
+ *  step 5 (plan §7.2: "clear v2_trie_dirty, set capture = 1"). Refused
+ *  (-1) outside a transaction. @return 0 / -1. */
+int nodus_witness_v2_trie_dirty_clear(nodus_witness_t *w);
+
+/** Write v2_trie_state.capture (0 or 1). Only the activation edge
+ *  (nodus_witness_v2_apply.c phase_6b_gen6_edge, HF-9 WP3) and a
+ *  generation >= 6 genesis (DF-4, not built) may call it (plan §5.1).
+ *  Refused (-1) outside a transaction, for any value but 0 / 1 and when
+ *  the row is missing. @return 0 / -1. */
 int nodus_witness_v2_trie_set_capture(nodus_witness_t *w, int capture);
 
 #ifdef __cplusplus

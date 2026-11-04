@@ -77,20 +77,44 @@
  *     = SHA3-512("NDS.VSNODE.v1" padded ‖ l0 ‖ l1)) — byte-identical to
  *     the inline computation it replaced.
  *
- * ── NOT COVERED (deferred to WP3 with the generation, plan §13) ─────────
- *  The generation >= 6 rows of T-5: the flush on the live block path
- *  (phase 8-pre), the dirty-empty end-of-block assertion, the
- *  head_activate guard's engine call site (the getter guard itself is
- *  tested in C), "generation >= 6 with capture 0" and "generation <= 5
- *  with capture 1" as a generation pair (only the <= 5 half exists:
- *  H). Writers exercised: SQL INSERT / UPDATE / DELETE of the plan §4.3
- *  statement shapes for every table; the engine writers (rtn_core_mutate, claim_spend_insert,
- *  st_publish, vset_insert, v2ep_attendance_digest ...) are NOT driven
- *  here — the triggers are on the tables, not on the writers, which is
- *  the design (plan §5.2), and the full-rebuild comparison catches a
- *  divergence; a per-writer coverage list belongs to the WP3 block tests.
- *  The HF-9 store bind-failure test (T-3 part) needs -DQGP_FAULT_INJECT=ON
- *  and a hook this package does not add.
+ *  J. GENERATION 6 ON THE LIVE BLOCK PATH (HF-9 WP3, plan §5.2, §5.3, §12
+ *     T-5 generation-6 rows): a real chain climbing 2 -> 6 through the
+ *     engine's own edges (params 9 / 14 / 18 / 22 / 24, direct rows),
+ *     blocks 14 and 15 committed under generation 6. J0: capture 1, 24
+ *     triggers, every stored leg root equals the oracle and the rows.
+ *     J1 (block-start capture consistency, the generation >= 6 half; the
+ *     <= 5 half is H): capture 0, a missing state row and ONE dropped
+ *     trigger each fault the block before any item runs with the database
+ *     byte-identical, and the block commits once restored (the trigger
+ *     from its stored SQL). J2: a writer that fires in phase 13 (a SQLite
+ *     trigger on v2_blocks inserting a token) makes the dirty-empty
+ *     assertion fault the block ("phase 13-bis"), nothing of it survives,
+ *     and the same block commits without the writer. J3: a stored node
+ *     body altered (digest unchanged) is a node FAULT at the phase-8-pre
+ *     flush that touches it (the node does not vote), the database byte-
+ *     identical; restored, the block commits and the roots equal the
+ *     rows. J4: the head_activate guard's getter — a trie-leg root read
+ *     with a dirty key of its leg pending refuses, another leg reads.
+ *     J5: a state value outside {0, 1} faults under generation 6 (run
+ *     last: the table is recreated without its CHECK).
+ *
+ * ── NOT COVERED ─────────────────────────────────────────────────────────
+ *  Writers exercised: SQL INSERT / UPDATE / DELETE of the plan §4.3
+ *  statement shapes for every table, plus the engine's own writers that
+ *  run in the blocks above (the genesis seed, the edge's build); the
+ *  engine writers (rtn_core_mutate, claim_spend_insert, st_publish,
+ *  vset_insert, v2ep_attendance_digest ...) are NOT driven here — the
+ *  triggers are on the tables, not on the writers, which is the design
+ *  (plan §5.2), and the full-rebuild comparison catches a divergence. A
+ *  block carrying items (a spend, a token create, a name register) under
+ *  generation 6, an epoch boundary under generation 6 (vset snapshot,
+ *  attendance digest, storage boundary), the head_activate guard's
+ *  engine call site (an in-block domain activation under generation 6;
+ *  the getter guard itself is C and J4) and a restart of the process
+ *  across the edge are the harness's (T-13, WP7). J3 and the pending-key
+ *  flush of J4 read the same node store the edge test (test_hf9_edge.c)
+ *  fills. The HF-9 store bind-failure test (T-3 part) is
+ *  test_evm_trie_store_fault.c (-DQGP_FAULT_INJECT=ON).
  *
  * ── FLAGS ───────────────────────────────────────────────────────────────
  *  register_witness_test (NODUS_WITNESS_INTERNAL_API); only where
@@ -1181,6 +1205,293 @@ static int test_vset_leaf(void) {
     return 0;
 }
 
+/* ── J: GENERATION 6 on the live block path (HF-9 WP3, plan §5.2, §5.3) ──
+ * A real chain climbing generations 2 -> 6 through the engine's own edges
+ * (params 9 / 14 / 18 / 22 / 24 at 3 / 5 / 8 / 11 / 14, direct rows, the
+ * shape of test_hf9_edge.c), then blocks under generation 6. */
+
+#define J_A   14u        /* param 24: generation 6 from block 14; edge 13   */
+
+static int j_cc_row(nodus_witness_t *w, unsigned param, uint64_t value,
+                    uint64_t effective, uint64_t nonce) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO chain_config_history (param_id, new_value, "
+            "effective_block, commit_block, tx_hash, proposal_nonce, "
+            "created_at_unix) VALUES (?1, ?2, ?3, 0, zeroblob(64), ?4, 0)",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)param);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)value);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)effective);
+    sqlite3_bind_int64(st, 4, (sqlite3_int64)nonce);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    w->chain_config_cache_warm = false;
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+typedef struct {
+    nodus_witness_t *w;
+    char             dir[128];
+} jfx_t;
+
+static void jfx_close(jfx_t *f) {
+    if (!f->w) return;
+    f->w->v2_runtime_table = NULL;
+    f->w->v2_runtime_table_n = 0;
+    if (f->w->db) sqlite3_close(f->w->db);
+    free(f->w);
+    f->w = NULL;
+    rmrf(f->dir);
+}
+
+static int j_apply_ok(jfx_t *f, uint64_t h) {
+    nodus_v2_block_t b;
+    memset(&b, 0, sizeof(b));
+    b.global_height = h;
+    b.epoch = nodus_v2_epoch_for_height(h);
+    return v2x_cmt_apply_ok(f->w, &b);
+}
+
+/* faults the block at `h` as a node FAULT with `why` in the reason and the
+ * whole database byte-identical; the block is NOT committed */
+static int j_fault(jfx_t *f, uint64_t h, const char *why) {
+    nodus_v2_block_t b;
+    memset(&b, 0, sizeof(b));
+    b.global_height = h;
+    b.epoch = nodus_v2_epoch_for_height(h);
+    return v2x_cmt_fault_why(f->w, &b, V2X_FAULT, why);
+}
+
+/* a chain at generation 6: ladder to the edge block 13, block A = 14, one
+ * more block 15 (so the next block to apply is 16). */
+static int j_open(jfx_t *f) {
+    memset(f, 0, sizeof(*f));
+    f->w = calloc(1, sizeof(*f->w));            /* multi-MB — heap */
+    if (!f->w) return -1;
+    snprintf(f->dir, sizeof(f->dir), "/tmp/test_hf9_trie_g6_XXXXXX");
+    if (!mkdtemp(f->dir)) { free(f->w); f->w = NULL; return -1; }
+    snprintf(f->w->data_path, sizeof(f->w->data_path), "%s", f->dir);
+    uint8_t id16[16];
+    memset(id16, 0x6A, sizeof(id16));
+    if (v2x_seed_prepare(f->w, id16, 0) != 0) return -1;
+    if (j_cc_row(f->w, DNAC_CFG_HF2_ACTIVE, DNAC_CFG_HF2_ACTIVE_ON, 1, 11)
+        != 0 ||
+        j_cc_row(f->w, DNAC_CFG_RULESET_GEN2,
+                 (uint64_t)DNAC_CFG_RULESET_GEN2_D2, 3, 12) != 0 ||
+        j_cc_row(f->w, DNAC_CFG_EVM_ACTIVE,
+                 (uint64_t)DNAC_CFG_EVM_ACTIVE_D, 5, 14) != 0 ||
+        j_cc_row(f->w, DNAC_CFG_RULESET_GEN_ROLES,
+                 (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D, 8, 13) != 0 ||
+        j_cc_row(f->w, DNAC_CFG_RULESET_GEN_ROOTS,
+                 (uint64_t)DNAC_CFG_RULESET_GEN_ROOTS_D, 11, 15) != 0 ||
+        j_cc_row(f->w, DNAC_CFG_RULESET_GEN_TRIE,
+                 (uint64_t)DNAC_CFG_RULESET_GEN_TRIE_D, J_A, 16) != 0)
+        return -1;
+    if (v2x_seed_genesis(f->w, id16, 0, NULL, 0, NULL) != 0) return -1;
+    for (uint64_t h = 1; h <= J_A - 2u; h++)
+        if (j_apply_ok(f, h) != 0) return -1;
+    /* rows between blocks with capture 0 (silent triggers): two tokens, two
+     * names, two segments, one RELEASED registry node (its bond is not in
+     * the running bond total) — so the edge's build has nodes to store */
+    if (token_sql(f->w->db, 0xA1, 8) != 0 || token_sql(f->w->db, 0xA2, 8)
+            != 0 ||
+        name_sql(f->w->db, "alice", 0xB1) != 0 ||
+        name_sql(f->w->db, "bobby", 0xB2) != 0 ||
+        seg_sql(f->w->db, 1) != 0 || seg_sql(f->w->db, 2) != 0 ||
+        node_sql(f->w, 0x5E, 1000, 3) != 0)
+        return -1;
+    for (uint64_t h = J_A - 1u; h <= J_A + 1u; h++)
+        if (j_apply_ok(f, h) != 0) return -1;
+    return 0;
+}
+
+/* every leg's stored root equals the oracle recomputation (this file's
+ * own, from SELECTs) and the build-from-rows root */
+static int j_roots_ok(jfx_t *f, const char *what) {
+    fx_t fx;
+    memset(&fx, 0, sizeof(fx));
+    fx.w = f->w;
+    return roots_equal_oracle(&fx, what);
+}
+
+static int test_gen6(void) {
+    jfx_t f;
+    nodus_v2_block_t unused;
+    (void)unused;
+    CHECK(DNAC_EPOCH_LENGTH > J_A + 8, "J0: no epoch boundary among the "
+          "probed heights");
+    CHECK(j_open(&f) == 0, "J0: a chain at generation 6 (edge at block 13, "
+          "blocks 14 and 15 committed)");
+    uint32_t gen = 0;
+    CHECK(nodus_witness_v2_key_generation(f.w, &gen) == 0 &&
+          gen == NODUS_RT_GEN_TRIE, "J0: the registry resolves generation 6");
+    CHECK(q1(f.w->db, "SELECT capture FROM v2_trie_state") == 1,
+          "J0: capture is 1 under generation 6");
+    CHECK(nodus_witness_db_s20_trie_shape_ok(f.w) == 1,
+          "J0: the 24 triggers are in place");
+    CHECK(j_roots_ok(&f, "J0 after the edge") == 0,
+          "J0: every stored leg root equals the oracle and the rows");
+    uint64_t next = J_A + 2u;                  /* 16 */
+
+    /* ── J1: capture consistency at the block start, generation >= 6 ── */
+    CHECK(run_sql(f.w->db, "UPDATE v2_trie_state SET capture = 0") == 0,
+          "J1: capture 0 under generation 6");
+    CHECK(j_fault(&f, next, "needs it 1") == 0,
+          "J1: generation >= 6 with capture 0 faults before any item runs, "
+          "the database byte-identical");
+    CHECK(run_sql(f.w->db, "UPDATE v2_trie_state SET capture = 1") == 0,
+          "J1: restored");
+    CHECK(run_sql(f.w->db, "DELETE FROM v2_trie_state") == 0,
+          "J1: no state row");
+    CHECK(j_fault(&f, next, "missing or unreadable") == 0,
+          "J1: a missing state row faults under generation 6");
+    CHECK(run_sql(f.w->db, "INSERT INTO v2_trie_state (id, capture) VALUES "
+                           "(1, 1)") == 0, "J1: restored");
+    /* one dropped trigger (its stored SQL kept, then re-created) */
+    {
+        sqlite3_stmt *st = NULL;
+        char *sql = NULL;
+        CHECK(sqlite3_prepare_v2(f.w->db,
+                  "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND "
+                  "name = 'v2_trie_l5_upd'", -1, &st, NULL) == SQLITE_OK &&
+              sqlite3_step(st) == SQLITE_ROW, "J1: the trigger's SQL");
+        sql = strdup((const char *)sqlite3_column_text(st, 0));
+        sqlite3_finalize(st);
+        CHECK(sql != NULL && run_sql(f.w->db,
+                  "DROP TRIGGER v2_trie_l5_upd") == 0, "J1: dropped");
+        int rc = j_fault(&f, next, "24 dirty-capture triggers");
+        int rs = run_sql(f.w->db, sql);
+        free(sql);
+        CHECK(rc == 0, "J1: a dropped trigger faults under generation 6");
+        CHECK(rs == 0 && nodus_witness_db_s20_trie_shape_ok(f.w) == 1,
+              "J1: restored from its stored SQL");
+    }
+    CHECK(j_apply_ok(&f, next) == 0,
+          "J1: with everything restored the block commits");
+    next++;
+
+    /* ── J2: the dirty-empty assertion faults a late writer ── */
+    CHECK(run_sql(f.w->db,
+              "CREATE TRIGGER hf9_late_writer AFTER INSERT ON v2_blocks "
+              "BEGIN INSERT INTO tokens (token_id, name, symbol, decimals, "
+              "supply, creator_fp, flags, block_height, timestamp) VALUES "
+              "(CAST(zeroblob(63)||x'f7' AS BLOB), 'late', 'LT', 8, 1, "
+              "'fpL', 1, 1, 1); END") == 0,
+          "J2: a writer that fires in phase 13 (after the roots)");
+    CHECK(j_fault(&f, next, "phase 13-bis") == 0,
+          "J2: the dirty-empty assertion faults the block that wrote a "
+          "migrated table after phase 8, the database byte-identical "
+          "(the dirty row and the token row are rolled back with it)");
+    CHECK(q1(f.w->db, "SELECT COUNT(*) FROM v2_trie_dirty") == 0 &&
+          q1(f.w->db, "SELECT COUNT(*) FROM tokens WHERE name = 'late'")
+              == 0, "J2: nothing of the rolled-back block survives");
+    CHECK(run_sql(f.w->db, "DROP TRIGGER hf9_late_writer") == 0,
+          "J2: the writer is removed");
+    CHECK(j_apply_ok(&f, next) == 0, "J2: the same block now commits");
+    CHECK(q1(f.w->db, "SELECT COUNT(*) FROM v2_trie_dirty") == 0,
+          "J2: the dirty table is empty after the block");
+    CHECK(j_roots_ok(&f, "J2 after the block") == 0,
+          "J2: roots equal the rows");
+    next++;
+
+    /* ── J3: one corrupted stored node -> FAULT at the next touch ── */
+    {
+        uint8_t root2[64];
+        CHECK(nodus_witness_v2_trie_leg_root(f.w, 2, root2) == 0,
+              "J3: leg 2's committed root");
+        CHECK(run_sql(f.w->db, "INSERT INTO tokens (token_id, name, "
+                               "symbol, decimals, supply, creator_fp, "
+                               "flags, block_height, timestamp) VALUES "
+                               "(CAST(zeroblob(63)||x'f8' AS BLOB), "
+                               "'tokx', 'TX', 8, 5, 'fpX', 1, 1, 1)") == 0,
+              "J3: a token row (capture on: one dirty key of leg 2)");
+        /* corrupt the stored body of leg 2's root node (the digest
+         * unchanged; the original body kept to restore it): the flush
+         * must load it */
+        sqlite3_stmt *st = NULL;
+        uint8_t body[2048], bad[2048];
+        size_t blen = 0;
+        CHECK(sqlite3_prepare_v2(f.w->db,
+                  "SELECT rlp FROM v2_trie_nodes WHERE digest = ?1", -1,
+                  &st, NULL) == SQLITE_OK &&
+              sqlite3_bind_blob(st, 1, root2, 64, SQLITE_STATIC)
+                  == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW &&
+              sqlite3_column_type(st, 0) == SQLITE_BLOB &&
+              sqlite3_column_bytes(st, 0) > 0 &&
+              (size_t)sqlite3_column_bytes(st, 0) <= sizeof(body),
+              "J3: leg 2's root node is stored (two token rows)");
+        blen = (size_t)sqlite3_column_bytes(st, 0);
+        memcpy(body, sqlite3_column_blob(st, 0), blen);
+        sqlite3_finalize(st);
+        memcpy(bad, body, blen);
+        bad[blen - 1] ^= 0x01;
+        CHECK(sqlite3_prepare_v2(f.w->db,
+                  "UPDATE v2_trie_nodes SET rlp = ?2 WHERE digest = ?1",
+                  -1, &st, NULL) == SQLITE_OK &&
+              sqlite3_bind_blob(st, 1, root2, 64, SQLITE_STATIC)
+                  == SQLITE_OK &&
+              sqlite3_bind_blob(st, 2, bad, (int)blen, SQLITE_STATIC)
+                  == SQLITE_OK && sqlite3_step(st) == SQLITE_DONE &&
+              sqlite3_changes(f.w->db) == 1, "J3: a node body altered");
+        sqlite3_finalize(st);
+        CHECK(j_fault(&f, next, "phase 8-pre") == 0,
+              "J3: the flush that touches the corrupted node is a node "
+              "FAULT (the node does not vote), the database byte-"
+              "identical");
+        /* restore: the original body back, the token row deleted again */
+        CHECK(sqlite3_prepare_v2(f.w->db,
+                  "UPDATE v2_trie_nodes SET rlp = ?2 WHERE digest = ?1",
+                  -1, &st, NULL) == SQLITE_OK &&
+              sqlite3_bind_blob(st, 1, root2, 64, SQLITE_STATIC)
+                  == SQLITE_OK &&
+              sqlite3_bind_blob(st, 2, body, (int)blen, SQLITE_STATIC)
+                  == SQLITE_OK && sqlite3_step(st) == SQLITE_DONE,
+              "J3: the node body restored");
+        sqlite3_finalize(st);
+        CHECK(run_sql(f.w->db, "DELETE FROM tokens WHERE name = 'tokx'")
+              == 0, "J3: the token row deleted again");
+        CHECK(j_apply_ok(&f, next) == 0,
+              "J3: with the node restored and the key written and "
+              "restored, the block commits");
+        CHECK(j_roots_ok(&f, "J3 after the block") == 0,
+              "J3: roots equal the rows");
+        next++;
+    }
+
+    /* ── J4: the head_activate guard's getter, on the live chain ── */
+    {
+        uint8_t r[64];
+        CHECK(run_sql(f.w->db, "INSERT INTO v2_names (name, owner, "
+                               "registered_height) VALUES (CAST('guard' AS "
+                               "BLOB), CAST(zeroblob(63)||x'd9' AS BLOB), "
+                               "5)") == 0, "J4: a name row (dirty key)");
+        CHECK(nodus_witness_v2_trie_leg_root(f.w, 4, r) != 0,
+              "J4: a trie-leg getter called with a dirty key of its leg "
+              "pending refuses (never a stale root)");
+        CHECK(nodus_witness_v2_trie_leg_root(f.w, 1, r) == 0,
+              "J4: a leg without a pending key is readable");
+        CHECK(run_sql(f.w->db, "DELETE FROM v2_names WHERE name = "
+                               "CAST('guard' AS BLOB)") == 0,
+              "J4: the row deleted again");
+        CHECK(j_apply_ok(&f, next) == 0,
+              "J4: the flush clears the written-and-restored key");
+        next++;
+    }
+
+    /* ── J5: a state value outside {0, 1} under generation 6 (last: the
+     *        recreated table no longer has the CHECK) ── */
+    CHECK(run_sql(f.w->db, "DROP TABLE v2_trie_state; CREATE TABLE "
+                           "v2_trie_state(id INTEGER PRIMARY KEY, capture); "
+                           "INSERT INTO v2_trie_state VALUES (1, 2)") == 0,
+          "J5: capture 2");
+    CHECK(j_fault(&f, next, "needs it 1") == 0,
+          "J5: a value outside {0, 1} faults under generation 6");
+    jfx_close(&f);
+    return 0;
+}
+
 int main(void) {
     fx_t fx;
     if (fx_open(&fx) != 0) {
@@ -1194,6 +1505,7 @@ int main(void) {
     fx_close(&fx);
     if (!rc) rc = test_vset_leaf();
     if (!rc) rc = test_block_start();
+    if (!rc) rc = test_gen6();
     if (rc) {
         fprintf(stderr, "test_hf9_trie_legs: FAILED\n");
         return 1;

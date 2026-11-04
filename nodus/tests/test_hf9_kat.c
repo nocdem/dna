@@ -1,11 +1,13 @@
 /**
  * @file nodus/tests/test_hf9_kat.c
- * @brief HF-9 T-4, C side, for what WP2 implements: this build's code
+ * @brief HF-9 T-4, C side, for what WP2 and WP3 implement: this build's code
  *        against the independent oracle's groups "leg_vectors" and
- *        "leg_row_sets" of nodus/tests/vectors/hf9_kat.json.
+ *        "leg_row_sets" (WP2) and "new_tags", "compositions" and "votes"
+ *        (WP3) of nodus/tests/vectors/hf9_kat.json.
  *
- * Plan docs/plans/approved/2026-11-04-hf9.md §12 row T-4, §4.1, §4.2, §15
- * AD-1 / AD-2 / AD-3 (A1, A2, A3, F-2, F-5, F-7).
+ * Plan docs/plans/approved/2026-11-04-hf9.md §12 row T-4, §4.1, §4.2, §6,
+ * §7.1, §15 AD-1 / AD-2 / AD-3 / AD-4 / AD-7 (A1-A4, A8, A9, F-2, F-5, F-7,
+ * F-8, F-15, F-17).
  *
  * KAT FILE. nodus/tests/vectors/hf9_kat.json, sha256
  * 5cdd9c46372cc0c79a30eb4edc6aec25e23e4830d256a4a69afd2a85bb7e12fa
@@ -56,10 +58,39 @@
  *  leaf, branch, extension) read from the C-produced root-node RLP equals
  *  the JSON label; n = 0 is the empty root SHA3-512(0x80) (A3 / F-7).
  *
+ *  WP3 groups (plan §6, §7.1, §15 AD-4 / AD-7, §15a A4 / A8 / A9 / F-8 /
+ *  F-15 / F-17), the values again produced by the production code:
+ *  "new_tags" (4) — each tag's 16 bytes in the JSON equal the ASCII name
+ *   zero-padded to 16 (built here); the three composition tags
+ *   (NDS.CORE.v4, NDS.SYS.v7, NDS.STOR.v3) are checked THROUGH the
+ *   composition functions below (a function with another tag yields
+ *   another root); NDS.STHRW.v1 is WP4's and is only checked as a 16-byte
+ *   padded name here.
+ *  "compositions" (4 sub-groups): for "all_trie_legs_empty" (3 roots),
+ *   "fixed_filler_all_legs" (3), "derived_from_trie_roots_n5" (3, the
+ *   fixed filler with the eight trie legs replaced by the n = 5 roots) and
+ *   "one_empty_leg_each" (8, one composition each with exactly one leg
+ *   empty): dna_v2_core_root_v4 / dna_v2_system_root_v7 /
+ *   dna_v2_storage_root_v3 over the JSON legs equals the JSON root, and
+ *   so does SHA3-512(tag ‖ legs…) assembled here (an independent
+ *   restatement of the preimage); the preimage lengths (464 / 784 / 272)
+ *   are checked; the empty-leg value in every trie position is the empty
+ *   root SHA3-512(0x80) computed here.
+ *  "votes" — the D6 preimage (256 bytes) is assembled here from the
+ *   plan's layout (TAG16 "NDS.ROLEGEN.v1" ‖ 6 ‖ 5 ‖ SYSTEM hash ‖ CORE hash
+ *   ‖ 1 ‖ owner ‖ 4 ‖ [1024, 4, 4, 16]) and equals the JSON preimage; its
+ *   SHA3-512, first 8 bytes big-endian with the top bit cleared equal the
+ *   JSON value / decimal; the PRODUCTION constructor
+ *   dna_rolegen_vote_digest and the runtime's startup derivation
+ *   nodus_runtime_gen6_vote_digest give the same value; the compiled
+ *   generation-6 SYSTEM / CORE ruleset hashes equal the JSON's; the
+ *   controls D4 / D5 re-derived by the production wrappers equal the JSON's
+ *   control values; where the K8 owner is compiled, the owner bytes and the
+ *   literal DNAC_CFG_RULESET_GEN_TRIE_D equal the JSON's.
+ *
  * GROUPS NOT CHECKED HERE (they belong to later packages and are named so
- * that nothing reads this test as covering them): new_tags, compositions
- * (WP3, plan §6, §7); hrw (WP4, §8.3); composition_chains,
- * empty_leg_proofs, merkle_steps (WP6, §10); votes (D6, WP3, §7.1). The
+ * that nothing reads this test as covering them): hrw (WP4, §8.3);
+ * composition_chains, empty_leg_proofs, merkle_steps (WP6, §10). The
  * vector_counts of those groups are not asserted.
  *
  * ── FLAGS ──────────────────────────────────────────────────────────────
@@ -78,7 +109,17 @@
  *    oracle labels them SELF-CONSISTENT). A green run proves the C equals
  *    the oracle's reading, NOT that the layouts are sound; only the trie
  *    structure and the roots over given (key, value) pairs are grounded in
- *    the pinned reference.
+ *    the pinned reference. The WP3 groups are the same: the compositions
+ *    are tag ‖ legs of the plan's order, and the generation-6 ruleset
+ *    hashes and D6 rest on the plan's rule "only ruleset_version bumped
+ *    (12 / 11)" (the oracle's controls reproduce the pinned D4 / D5 and the
+ *    generation-4 / -5 hashes from the same layouts). Where the owner is
+ *    not K8 (a test-owner build) the owner-bound comparisons of "votes"
+ *    (the compiled literal, the startup derivation, the D4 / D5 controls)
+ *    are compiled out; the layout and constructor checks stay.
+ *  - "new_tags" cannot see a tag that no composition uses (NDS.STHRW.v1
+ *    until WP4); the three composition tags are seen only through their
+ *    functions' outputs.
  *  - The leg-5 registry and leg-6 segment records do NOT go through the
  *    SQL reader: the oracle's registry fixture has node_fp = SHA3-512 of
  *    its 128-byte pk fixture, but the reader accepts only a public key of
@@ -106,12 +147,16 @@
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_merkle.h"
+#include "witness/nodus_witness_runtime.h"
 #include "witness/nodus_witness_v2_schema.h"
 #include "witness/nodus_witness_v2_trie.h"
 
 #include "evm/trie/evm_trie.h"
 #include "evm/trie/evm_trie_full.h"
 
+#include "dnac/dnac.h"
+#include "dnac/domain_wire.h"
+#include "dnac/ledger_ids.h"
 #include "dnac/ledger_roots_v2.h"
 #include "dnac/manifest_wire.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -206,6 +251,9 @@ static int jeq(json_object *o, const char *k, const uint8_t *got, size_t n) {
 
 static void be64(uint64_t v, uint8_t *o) {
     for (int i = 7; i >= 0; i--) { o[i] = (uint8_t)v; v >>= 8; }
+}
+static void be32_put(uint32_t v, uint8_t *o) {
+    for (int i = 3; i >= 0; i--) { o[i] = (uint8_t)v; v >>= 8; }
 }
 static void le64(uint64_t v, uint8_t *o) {
     for (int i = 0; i < 8; i++) { o[i] = (uint8_t)v; v >>= 8; }
@@ -895,6 +943,353 @@ static int check_row_set(int leg, json_object *s) {
     return 0;
 }
 
+/* ── WP3: new_tags, compositions, votes ─────────────────────────────── */
+
+#define T16 16
+
+/* the tag text zero-padded to exactly 16 bytes */
+static int tag16(const char *name, uint8_t out[T16]) {
+    size_t n = strlen(name);
+    if (n == 0 || n >= T16) return -1;
+    memset(out, 0, T16);
+    memcpy(out, name, n);
+    return 0;
+}
+
+static int empty_root_c(uint8_t out[64]) {
+    const uint8_t b = 0x80;
+    return qgp_sha3_512(&b, 1, out);
+}
+
+typedef struct {
+    const char *key;       /* the JSON key of the "..._all_trie_legs..." */
+    const char *comp;      /* "CORE" / "SYS" / "STOR" in one_empty_leg   */
+    const char *tag;       /* the composition tag text                   */
+    size_t      nlegs;
+    int         ntrie;     /* trie legs inside the composition           */
+    int         trie_leg[4];  /* leg ids 1..8                            */
+    int         trie_pos[4];  /* their positions in the composition      */
+} comp_t;
+
+static const comp_t COMPS[3] = {
+    { "CORE_v4", "CORE", "NDS.CORE.v4", 7, 4, { 1, 2, 3, 4 },
+      { 0, 1, 3, 4 } },
+    { "SYS_v7", "SYS", "NDS.SYS.v7", 12, 2, { 7, 8, 0, 0 }, { 3, 6, 0, 0 } },
+    { "STOR_v3", "STOR", "NDS.STOR.v3", 4, 2, { 5, 6, 0, 0 },
+      { 0, 3, 0, 0 } }
+};
+
+/* the production composition of `ci` over legs[0..nlegs-1] */
+static int compose_c(int ci, uint8_t legs[][64], uint8_t out[64]) {
+    switch (ci) {
+    case 0:
+        return dna_v2_core_root_v4(legs[0], legs[1], legs[2], legs[3],
+                                   legs[4], legs[5], legs[6], out);
+    case 1:
+        return dna_v2_system_root_v7(legs[0], legs[1], legs[2], legs[3],
+                                     legs[4], legs[5], legs[6], legs[7],
+                                     legs[8], legs[9], legs[10], legs[11],
+                                     out);
+    case 2:
+        return dna_v2_storage_root_v3(legs[0], legs[1], legs[2], legs[3],
+                                      out);
+    }
+    return -1;
+}
+
+/* this test's own restatement of the preimage: tag16 ‖ legs, SHA3-512 */
+static int compose_own(const comp_t *c, uint8_t legs[][64], uint8_t out[64],
+                       size_t *pre_len) {
+    uint8_t pre[T16 + 12 * 64];
+    if (tag16(c->tag, pre) != 0) return -1;
+    for (size_t i = 0; i < c->nlegs; i++)
+        memcpy(pre + T16 + i * 64, legs[i], 64);
+    *pre_len = T16 + c->nlegs * 64;
+    return qgp_sha3_512(pre, *pre_len, out);
+}
+
+/* the JSON "legs" array of an entry into legs[0..n-1]; 0 / -1 */
+static int read_legs(json_object *e, size_t n, uint8_t legs[][64]) {
+    json_object *a = jget(e, "legs");
+    if (!a || !json_object_is_type(a, json_type_array) ||
+        json_object_array_length(a) != n)
+        return -1;
+    for (size_t i = 0; i < n; i++) {
+        size_t l = 0;
+        const char *s = json_object_get_string(
+            json_object_array_get_idx(a, i));
+        uint8_t *b = unhex(s, &l);
+        if (!b || l != 64) { free(b); return -1; }
+        memcpy(legs[i], b, 64);
+        free(b);
+    }
+    return 0;
+}
+
+/* one composition entry: the C function, the independent restatement and
+ * the JSON root agree; `has_pre` entries also carry the preimage length and
+ * the tag bytes */
+static int check_comp_entry(json_object *e, int ci) {
+    const comp_t *c = &COMPS[ci];
+    uint8_t legs[12][64], got[64], own[64], tg[T16];
+    size_t plen = 0;
+    CHECK(read_legs(e, c->nlegs, legs) == 0, "composition legs decode");
+    CHECK(compose_c(ci, legs, got) == 0, "the C composition runs");
+    CHECK(jeq(e, "root", got, 64),
+          "the C composition over the JSON legs == the oracle root");
+    CHECK(compose_own(c, legs, own, &plen) == 0 &&
+          memcmp(own, got, 64) == 0,
+          "SHA3-512(tag ‖ legs) assembled here == the C composition (the "
+          "C uses the oracle's tag)");
+    json_object *pl = jget(e, "preimage_len");
+    if (pl)
+        CHECK(json_object_get_int64(pl) == (int64_t)plen,
+              "the preimage length (464 / 784 / 272)");
+    if (jget(e, "tag")) {
+        CHECK(tag16(c->tag, tg) == 0 && jeq(e, "tag", tg, T16),
+              "the JSON tag == the zero-padded ASCII name");
+    }
+    return 0;
+}
+
+static int check_new_tags(json_object *vec) {
+    snprintf(g_ctx, sizeof(g_ctx), "new_tags");
+    json_object *nt = jget(vec, "new_tags");
+    CHECK(nt && json_object_is_type(nt, json_type_object) &&
+          json_object_object_length(nt) == 4, "new_tags has 4 tags");
+    static const char *const names[4] = { "NDS.CORE.v4", "NDS.SYS.v7",
+                                          "NDS.STOR.v3", "NDS.STHRW.v1" };
+    for (int i = 0; i < 4; i++) {
+        uint8_t t[T16];
+        CHECK(tag16(names[i], t) == 0 && jeq(nt, names[i], t, T16),
+              "tag bytes == the ASCII name zero-padded to 16");
+    }
+    return 0;
+}
+
+static int check_compositions(json_object *vec) {
+    json_object *cg = jget(vec, "compositions");
+    CHECK(cg && json_object_is_type(cg, json_type_object), "compositions");
+    uint8_t empty[64];
+    CHECK(empty_root_c(empty) == 0, "the empty root SHA3-512(0x80)");
+    CHECK(jeq(jget(cg, "all_trie_legs_empty"), "empty_root_sha3_512_0x80",
+              empty, 64), "the JSON empty root == SHA3-512(0x80) (C)");
+
+    /* all_trie_legs_empty, fixed_filler_all_legs */
+    static const char *const grp[2] = { "all_trie_legs_empty",
+                                        "fixed_filler_all_legs" };
+    for (int g = 0; g < 2; g++) {
+        json_object *gj = jget(cg, grp[g]);
+        CHECK(gj != NULL, "sub-group present");
+        for (int ci = 0; ci < 3; ci++) {
+            snprintf(g_ctx, sizeof(g_ctx), "compositions %s %s", grp[g],
+                     COMPS[ci].key);
+            json_object *e = jget(gj, COMPS[ci].key);
+            CHECK(e != NULL, "entry present");
+            if (check_comp_entry(e, ci) != 0) return 1;
+            if (g == 0) {
+                uint8_t legs[12][64];
+                CHECK(read_legs(e, COMPS[ci].nlegs, legs) == 0, "legs");
+                for (int k = 0; k < COMPS[ci].ntrie; k++)
+                    CHECK(memcmp(legs[COMPS[ci].trie_pos[k]], empty, 64)
+                              == 0,
+                          "every trie position holds the empty root "
+                          "SHA3-512(0x80) (A3 / F-7)");
+            }
+        }
+    }
+
+    /* derived_from_trie_roots_n5: the fixed filler with the trie legs
+     * replaced by the n = 5 roots */
+    {
+        json_object *dg = jget(cg, "derived_from_trie_roots_n5");
+        json_object *ff = jget(cg, "fixed_filler_all_legs");
+        json_object *tl = jget(dg, "trie_legs");
+        CHECK(dg && ff && tl, "derived sub-group");
+        for (int ci = 0; ci < 3; ci++) {
+            snprintf(g_ctx, sizeof(g_ctx), "compositions derived %s",
+                     COMPS[ci].key);
+            uint8_t legs[12][64], got[64];
+            CHECK(read_legs(jget(ff, COMPS[ci].key), COMPS[ci].nlegs, legs)
+                      == 0, "filler legs");
+            for (int k = 0; k < COMPS[ci].ntrie; k++) {
+                char key[4];
+                snprintf(key, sizeof(key), "%d", COMPS[ci].trie_leg[k]);
+                CHECK(jhex(tl, key, legs[COMPS[ci].trie_pos[k]], 64) == 0,
+                      "a trie root of the n = 5 sets");
+            }
+            if (ci == 1) {
+                /* SYSTEM's storage_root leg (position 8) IS the storage
+                 * composition: in the filler it is the filler STOR_v3 root,
+                 * here it is the derived one */
+                uint8_t fs[64];
+                CHECK(jhex(jget(ff, "STOR_v3"), "root", fs, 64) == 0 &&
+                      memcmp(legs[8], fs, 64) == 0,
+                      "in the filler, SYSTEM's storage leg is the filler "
+                      "STOR_v3 root");
+                CHECK(jhex(dg, "STOR_v3", legs[8], 64) == 0,
+                      "the derived STOR_v3 root");
+            }
+            CHECK(compose_c(ci, legs, got) == 0 &&
+                  jeq(dg, COMPS[ci].key, got, 64),
+                  "the C composition over the filler + the n = 5 trie "
+                  "roots == the oracle's derived root");
+        }
+    }
+
+    /* one_empty_leg_each: 8 entries, exactly one leg empty */
+    {
+        json_object *oe = jget(cg, "one_empty_leg_each");
+        CHECK(oe && json_object_is_type(oe, json_type_array) &&
+              json_object_array_length(oe) == 8, "8 one-empty-leg entries");
+        for (int i = 0; i < 8; i++) {
+            json_object *e = json_object_array_get_idx(oe, i);
+            const char *cn = jstr(e, "composition");
+            int ci = -1;
+            for (int k = 0; k < 3; k++)
+                if (cn && strcmp(cn, COMPS[k].comp) == 0) ci = k;
+            snprintf(g_ctx, sizeof(g_ctx), "compositions one_empty_leg %d "
+                     "(%s)", i, cn ? cn : "?");
+            CHECK(ci >= 0, "a known composition");
+            if (check_comp_entry(e, ci) != 0) return 1;
+            uint8_t legs[12][64];
+            CHECK(read_legs(e, COMPS[ci].nlegs, legs) == 0, "legs");
+            int pos = (int)json_object_get_int64(jget(e, "position"));
+            CHECK(pos >= 0 && (size_t)pos < COMPS[ci].nlegs, "position");
+            CHECK(memcmp(legs[pos], empty, 64) == 0 &&
+                  jeq(e, "empty_root", empty, 64),
+                  "the empty leg is SHA3-512(0x80) at its position");
+        }
+    }
+    return 0;
+}
+
+static uint64_t hex64(const char *s) {          /* "0x…" -> value */
+    if (!s) return 0;
+    return strtoull(s, NULL, 16);
+}
+
+static int check_votes(json_object *vec) {
+    snprintf(g_ctx, sizeof(g_ctx), "votes D6");
+    json_object *v = jget(vec, "votes");
+    json_object *d6 = jget(v, "D6");
+    json_object *ct = jget(v, "controls");
+    CHECK(d6 && ct, "votes D6 and controls present");
+    uint8_t sys[64], core[64], owner[64];
+    CHECK(jhex(d6, "sys_gen6_ruleset_hash", sys, 64) == 0 &&
+          jhex(d6, "core_gen6_ruleset_hash", core, 64) == 0 &&
+          jhex(d6, "foundation_owner", owner, 64) == 0, "D6 inputs");
+    json_object *cj = jget(d6, "consts");
+    CHECK(cj && json_object_array_length(cj) == 4, "four constants");
+    uint64_t consts[4];
+    for (int i = 0; i < 4; i++)
+        consts[i] = strtoull(json_object_get_string(
+                      json_object_array_get_idx(cj, (size_t)i)), NULL, 10);
+    CHECK(json_object_get_int64(jget(d6, "generation")) == 6 &&
+          json_object_get_int64(jget(d6, "base_generation")) == 5 &&
+          json_object_get_int64(jget(d6, "spec_version")) == 1, "layout "
+          "numbers 6 / 5 / 1");
+    CHECK(consts[0] == 1024 && consts[1] == 4 && consts[2] == 4 &&
+          consts[3] == 16, "the constants [1024, 4, 4, 16]");
+
+    /* the preimage assembled here from the plan's layout */
+    uint8_t pre[256];
+    size_t o = 0;
+    CHECK(tag16("NDS.ROLEGEN.v1", pre) == 0, "tag");
+    o = T16;
+    be32_put(6, pre + o); o += 4;
+    be32_put(5, pre + o); o += 4;
+    memcpy(pre + o, sys, 64); o += 64;
+    memcpy(pre + o, core, 64); o += 64;
+    be32_put(1, pre + o); o += 4;
+    memcpy(pre + o, owner, 64); o += 64;
+    be32_put(4, pre + o); o += 4;
+    for (int i = 0; i < 4; i++) { be64(consts[i], pre + o); o += 8; }
+    CHECK(o == 256 && json_object_get_int64(jget(d6, "preimage_len")) == 256,
+          "the D6 preimage is 256 bytes");
+    CHECK(jeq(d6, "preimage", pre, 256),
+          "the preimage assembled here == the oracle's");
+    uint8_t dg[64];
+    CHECK(qgp_sha3_512(pre, sizeof(pre), dg) == 0 &&
+          jeq(d6, "sha3_512", dg, 64), "SHA3-512(preimage) == the oracle's");
+    uint64_t val = 0;
+    for (int i = 0; i < 8; i++) val = (val << 8) | dg[i];
+    val &= 0x7FFFFFFFFFFFFFFFULL;
+    {
+        /* the oracle prints the raw first 8 bytes as "0x9f12a7f0b824ae45"
+         * and the value with the top bit cleared as "0x1f12a7f0b824ae45" */
+        uint64_t raw = 0;
+        for (int i = 0; i < 8; i++) raw = (raw << 8) | dg[i];
+        CHECK(raw == hex64(jstr(d6, "first_8_bytes_be")) &&
+              (raw >> 63) == 1 &&
+              json_object_get_boolean(jget(d6, "top_bit_cleared")),
+              "the first 8 digest bytes read big-endian == the oracle's, "
+              "top bit set before clearing");
+    }
+    CHECK(val == hex64(jstr(d6, "value")), "first 8 bytes BE, top bit "
+          "cleared == the oracle's value");
+    {
+        char dec[32];
+        snprintf(dec, sizeof(dec), "%llu", (unsigned long long)val);
+        const char *w = jstr(d6, "value_decimal");
+        CHECK(w && strcmp(w, dec) == 0, "the decimal value");
+    }
+    CHECK(val <= (uint64_t)INT64_MAX, "D6 fits SQLite int64");
+
+    /* the PRODUCTION constructor over the same inputs */
+    uint64_t d = 0;
+    CHECK(dna_rolegen_vote_digest(6, 5, sys, core, 1, owner, consts, 4, &d)
+              == 0 && d == val,
+          "dna_rolegen_vote_digest(6, 5, ...) == the oracle's D6");
+
+    /* the compiled generation-6 tuples == the oracle's hashes (independent
+     * of the owner) */
+    {
+        const nodus_domain_runtime_t *s6 = nodus_runtime_for_generation(
+            NODUS_RT_GEN_TRIE, DNA_DOMAIN_SYSTEM);
+        const nodus_domain_runtime_t *c6 = nodus_runtime_for_generation(
+            NODUS_RT_GEN_TRIE, DNA_DOMAIN_CORE);
+        CHECK(s6 && c6 && memcmp(s6->ruleset_hash, sys, 64) == 0 &&
+              memcmp(c6->ruleset_hash, core, 64) == 0 &&
+              s6->ruleset_version == (uint32_t)json_object_get_int64(
+                  jget(d6, "sys_gen6_ruleset_version")) &&
+              c6->ruleset_version == (uint32_t)json_object_get_int64(
+                  jget(d6, "core_gen6_ruleset_version")),
+              "the compiled generation-6 SYSTEM / CORE hashes and versions "
+              "== the oracle's");
+    }
+#ifdef DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT
+    {
+        static const uint8_t own_c[] = DNAC_HF6_FOUNDATION_OWNER;
+        uint64_t w6 = 0, w5 = 0, w4 = 0;
+        CHECK(sizeof(own_c) == 64 && memcmp(own_c, owner, 64) == 0,
+              "the compiled Foundation owner == the oracle's");
+        CHECK((uint64_t)DNAC_CFG_RULESET_GEN_TRIE_D == val,
+              "the compiled literal DNAC_CFG_RULESET_GEN_TRIE_D == D6");
+        CHECK(nodus_runtime_gen6_vote_digest(&w6) == 0 && w6 == val,
+              "the startup derivation nodus_runtime_gen6_vote_digest == D6");
+        /* the controls D4 and D5 (F-17) */
+        json_object *c4 = jget(ct, "D4"), *c5 = jget(ct, "D5");
+        CHECK(c4 && c5, "controls D4 / D5");
+        CHECK(nodus_runtime_gen4_vote_digest(&w4) == 0 &&
+              w4 == hex64(jstr(c4, "derived")) &&
+              (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D == w4 &&
+              w4 == hex64(jstr(c4, "dnac_h_literal")),
+              "control D4: the production derivation == the oracle's == "
+              "the literal");
+        CHECK(nodus_runtime_gen5_vote_digest(&w5) == 0 &&
+              w5 == hex64(jstr(c5, "derived")) &&
+              (uint64_t)DNAC_CFG_RULESET_GEN_ROOTS_D == w5 &&
+              w5 == hex64(jstr(c5, "dnac_h_literal")),
+              "control D5: the production derivation == the oracle's == "
+              "the literal");
+    }
+#else
+    (void)ct;
+#endif
+    return 0;
+}
+
 int main(void) {
     char hex[65];
     if (file_sha256_hex(HF9_KAT_PATH, hex) != 0) {
@@ -948,13 +1343,18 @@ int main(void) {
         }
     }
     fx_close(&fx);
+    /* WP3 groups: new_tags, compositions, votes */
+    if (!rc) rc = check_new_tags(vec);
+    if (!rc) rc = check_compositions(vec);
+    if (!rc) rc = check_votes(vec);
     json_object_put(root);
     if (rc) {
         fprintf(stderr, "test_hf9_kat: FAILED\n");
         return 1;
     }
     printf("test_hf9_kat: %d leg_vectors, %d leg_row_sets (%d rows), "
-           "%d checks passed (hf9_kat.json sha256 %s)\n", vectors, sets,
-           rows, g_checks, KAT_SHA256);
+           "new_tags (4), compositions (3 + 3 + 3 + 8), votes (D6 and the "
+           "D4 / D5 controls), %d checks passed (hf9_kat.json sha256 %s)\n",
+           vectors, sets, rows, g_checks, KAT_SHA256);
     return 0;
 }
