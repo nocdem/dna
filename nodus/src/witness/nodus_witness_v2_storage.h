@@ -357,6 +357,29 @@ int nodus_witness_storage_holders(const nodus_storage_set_t *set,
                                   uint8_t out_fps[DNA_V2_STORAGE_HOLDERS][64],
                                   size_t *n_out);
 
+/** HF-9 WP4 (plan §8.4, §8.5, §8.8): the segments `fp` holds in epoch
+ *  (H, H+E] from generation 6 (H a boundary with param 24 in effect): the
+ *  rows of v2_storage_assign active at H (the current relation) UNION the
+ *  rows active at H - E (the previous one; at H = B1, where H - E < B1,
+ *  XOR(set(H - E)) over the segments published at or before H - E,
+ *  node-locally, §8.6); k ascending, no duplicates; no grace gate (the
+ *  holder's must-hold list; the probe's eligible list applies the grace on
+ *  top). O(own rows). *ks_out is malloc'd (NULL when none). @return 0 /
+ *  -1 (also: H is not a generation-6 boundary). */
+int nodus_witness_storage_member_ks(nodus_witness_t *w, uint64_t H,
+                                    const uint8_t fp[64], uint64_t **ks_out,
+                                    size_t *n_out);
+
+/** holders(k, X) of segment k (root `seg_root`) at boundary X, whichever
+ *  generation X belongs to: from generation 6 the rows of v2_storage_assign
+ *  active at X (node_fp ASC), else XOR over storage_set(X). out_fps holds
+ *  the capacity (16). @return 0 / -1 (no storage_set(X) below generation 6
+ *  is -1 too). */
+int nodus_witness_storage_holders_at(nodus_witness_t *w, uint64_t k,
+                                     const uint8_t seg_root[64], uint64_t X,
+                                     uint8_t out_fps[DNA_V2_STORAGE_HOLDERS_CAP][64],
+                                     size_t *n_out);
+
 /** The ELIGIBLE segments of `node_fp` in epoch (H, H+E] (header
  *  "ELIGIBILITY"), k ascending — the probe client's B = n × P blocks in
  *  ascending height. Writes at most `cap` k's; *n_out is the full count

@@ -1039,6 +1039,175 @@ static int st_rel_new(void *ud, size_t member, uint64_t k, uint64_t pub,
     return 0;
 }
 
+/* ── the generation-6 relation of one member (HF-9 plan §8.4, §8.5): the
+ *    segments m holds in epoch (H, H+E] = the rows of m active at H (the
+ *    current relation) UNION the rows active at H - E (the previous one),
+ *    ascending, no duplicates. At H = B1 the previous relation is
+ *    XOR(set(H - E)) over the segments published at or before H - E
+ *    (§8.6, node-locally); for H - E >= B1 it is the rows. ──────────────── */
+
+/* The k's of fp's rows active at X, ascending, appended after *n. */
+static int st_ks_rows_at(nodus_witness_t *w, const uint8_t fp[64],
+                         uint64_t X, uint64_t **arr, size_t *n,
+                         size_t *cap) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT k FROM v2_storage_assign WHERE node_fp = ?1 AND "
+            "from_h <= ?2 AND (to_h IS NULL OR to_h > ?2) ORDER BY k ASC",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, fp, 64, SQLITE_STATIC);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)X);
+    int rc, bad = 0;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        sqlite3_int64 k = 0;
+        if (!col_int(st, 0, 1, INT64_MAX, &k)) { bad = 1; break; }
+        if (*n == *cap) {
+            size_t nc = *cap ? *cap * 2 : 16;
+            uint64_t *na = realloc(*arr, nc * sizeof(**arr));
+            if (!na) { bad = 1; break; }
+            *arr = na;
+            *cap = nc;
+        }
+        (*arr)[(*n)++] = (uint64_t)k;
+        g_nodus_storage_work.assign_rows_read++;
+    }
+    sqlite3_finalize(st);
+    return (bad || rc != SQLITE_DONE) ? -1 : 0;
+}
+
+/* The k's m holds under XOR(set(X)), segments published <= X, ascending. */
+static int st_ks_xor_at(nodus_witness_t *w, const uint8_t fp[64], uint64_t X,
+                        uint64_t **arr, size_t *n, size_t *cap) {
+    nodus_storage_set_t *set = calloc(1, sizeof(*set));
+    st_seg_t *segs = NULL;
+    size_t n_segs = 0;
+    int ret = -1;
+    if (!set) return -1;
+    int rc = nodus_witness_storage_set_get(w, X, set);
+    if (rc == 1) { ret = 0; goto done; }              /* no set: nothing  */
+    if (rc != 0) goto done;
+    if (st_segments_load(w, X, &segs, &n_segs) != 0) goto done;
+    for (size_t s = 0; s < n_segs; s++) {
+        uint8_t hf[DNA_V2_STORAGE_HOLDERS][64];
+        size_t nh = 0;
+        if (set->count == 0) break;
+        if (nodus_witness_storage_holders(set, segs[s].root, hf, &nh) != 0)
+            goto done;
+        for (size_t j = 0; j < nh; j++)
+            if (memcmp(hf[j], fp, 64) == 0) {
+                if (*n == *cap) {
+                    size_t nc = *cap ? *cap * 2 : 16;
+                    uint64_t *na = realloc(*arr, nc * sizeof(**arr));
+                    if (!na) goto done;
+                    *arr = na;
+                    *cap = nc;
+                }
+                (*arr)[(*n)++] = segs[s].k;
+            }
+    }
+    ret = 0;
+done:
+    free(segs);
+    free(set);
+    return ret;
+}
+
+int nodus_witness_storage_member_ks(nodus_witness_t *w, uint64_t H,
+                                    const uint8_t fp[64], uint64_t **ks_out,
+                                    size_t *n_out) {
+    if (!w || !w->db || !fp || !ks_out || !n_out) return -1;
+    *ks_out = NULL;
+    *n_out = 0;
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    if (H == 0 || (H % E) != 0) return -1;
+    if (nodus_witness_storage_gen6_at(w, H) != 1) return -1;  /* not gen 6 */
+    uint64_t *a = NULL, *b = NULL, *u = NULL;
+    size_t na = 0, ca = 0, nb = 0, cb = 0, nu = 0;
+    int ret = -1;
+    if (st_ks_rows_at(w, fp, H, &a, &na, &ca) != 0) goto done;
+    if (H > E) {
+        const uint64_t X = H - E;
+        int g = nodus_witness_storage_gen6_at(w, X);
+        if (g < 0) goto done;
+        if ((g ? st_ks_rows_at(w, fp, X, &b, &nb, &cb)
+               : st_ks_xor_at(w, fp, X, &b, &nb, &cb)) != 0)
+            goto done;
+    }
+    u = malloc((na + nb + 1) * sizeof(*u));
+    if (!u) goto done;
+    {
+        size_t i = 0, j = 0;
+        while (i < na || j < nb) {
+            uint64_t v;
+            if (j == nb || (i < na && a[i] <= b[j])) {
+                v = a[i++];
+                if (j < nb && b[j] == v) j++;
+            } else {
+                v = b[j++];
+            }
+            if (nu > 0 && u[nu - 1] >= v) goto done;   /* not ascending   */
+            u[nu++] = v;
+        }
+    }
+    *ks_out = u;
+    *n_out = nu;
+    u = NULL;
+    ret = 0;
+done:
+    free(u);
+    free(b);
+    free(a);
+    return ret;
+}
+
+int nodus_witness_storage_holders_at(nodus_witness_t *w, uint64_t k,
+                                     const uint8_t seg_root[64], uint64_t X,
+                                     uint8_t out_fps[DNA_V2_STORAGE_HOLDERS_CAP][64],
+                                     size_t *n_out) {
+    if (!w || !w->db || !seg_root || !out_fps || !n_out) return -1;
+    *n_out = 0;
+    int g = nodus_witness_storage_gen6_at(w, X);
+    if (g < 0) return -1;
+    if (g) {
+        /* the rows of k active at X: from_h <= X < to_h (or current) */
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT node_fp FROM v2_storage_assign WHERE k = ?1 AND "
+                "from_h <= ?2 AND (to_h IS NULL OR to_h > ?2) "
+                "ORDER BY node_fp ASC", -1, &st, NULL) != SQLITE_OK)
+            return -1;
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)k);
+        sqlite3_bind_int64(st, 2, (sqlite3_int64)X);
+        size_t n = 0;
+        int rc, bad = 0;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            if (n >= ST_R_CAP || !col_blob_len(st, 0, 64)) { bad = 1; break; }
+            memcpy(out_fps[n++], sqlite3_column_blob(st, 0), 64);
+        }
+        sqlite3_finalize(st);
+        if (bad || rc != SQLITE_DONE) return -1;
+        *n_out = n;
+        return 0;
+    }
+    nodus_storage_set_t *set = calloc(1, sizeof(*set));
+    if (!set) return -1;
+    int rc = nodus_witness_storage_set_get(w, X, set);
+    int ret = -1;
+    if (rc == 0) {
+        uint8_t hf[DNA_V2_STORAGE_HOLDERS][64];
+        size_t nh = 0;
+        if (set->count == 0 ||
+            nodus_witness_storage_holders(set, seg_root, hf, &nh) == 0) {
+            for (size_t i = 0; i < nh; i++) memcpy(out_fps[i], hf[i], 64);
+            *n_out = nh;
+            ret = 0;
+        }
+    }
+    free(set);
+    return ret;
+}
+
 int nodus_witness_storage_eligible_segments(nodus_witness_t *w,
                                             uint64_t epoch_start,
                                             const uint8_t node_fp[64],
@@ -1066,6 +1235,24 @@ int nodus_witness_storage_eligible_segments(nodus_witness_t *w,
     if (nodus_storage_in_grace(epoch_start, cur->grace_until[me])) {
         ret = 0;
         goto done;
+    }
+    {
+        /* from generation 6 (H >= B1) the relation is the member's own
+         * assignment rows (O(own rows), plan §8.8), not a segment walk */
+        const int g6 = nodus_witness_storage_gen6_at(w, epoch_start);
+        if (g6 < 0) goto done;
+        if (g6) {
+            uint64_t *all = NULL;
+            size_t na = 0;
+            if (nodus_witness_storage_member_ks(w, epoch_start, node_fp,
+                                                &all, &na) != 0)
+                goto done;
+            for (size_t i = 0; i < na && i < cap; i++) ks_out[i] = all[i];
+            free(all);
+            *n_out = na;
+            ret = na <= cap ? 0 : -1;
+            goto done;
+        }
     }
     if (st_segments_load(w, epoch_start, &segs, &n_segs) != 0)
         goto done;
