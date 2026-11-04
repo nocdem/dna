@@ -157,8 +157,9 @@ int nodus_witness_storage_limits_at(nodus_witness_t *w, uint64_t epoch_start,
                                     uint32_t *bitmap_cap_out) {
     int g = nodus_witness_storage_gen6_at(w, epoch_start);
     if (g < 0 || !set_cap_out || !bitmap_cap_out) return -1;
-    *set_cap_out = g ? DNA_V2_STORAGE_SET_CAP : DNA_V2_STORAGE_SET_MAX;
-    *bitmap_cap_out = g ? DNA_V2_STORAGE_BITMAP_CAP
+    *set_cap_out = g ? DNA_V2_STORAGE_SET_LIMIT_GEN6
+                     : DNA_V2_STORAGE_SET_MAX;
+    *bitmap_cap_out = g ? DNA_V2_STORAGE_BITMAP_LIMIT_GEN6
                         : DNA_V2_STORAGE_BITMAP_MAX;
     return 0;
 }

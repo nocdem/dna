@@ -6405,7 +6405,7 @@ static int rtn_storage_register_exec(const dna_env_view_t *env,
      * generation 6 (HF-9 plan §8.7; the cap is passed in, not the compile
      * maximum of the buffers) */
     if (rtn_get64(reads[1].value) >=
-        (gen6 ? (uint64_t)DNA_V2_STORAGE_SET_CAP
+        (gen6 ? (uint64_t)DNA_V2_STORAGE_SET_LIMIT_GEN6
               : (uint64_t)NODUS_STORAGE_SET_MAX))
         return -1;
 
@@ -6594,7 +6594,7 @@ static int rtn_strep_static(const dna_env_view_t *env, uint16_t leg_index,
     if (env->fee_amount != 0) return -1;     /* no SYSTEM fee sink      */
     /* the generation's report limits (HF-9 §8.7): bitmap 0..32, call
      * 78..110 up to generation 5; bitmap 0..128, call 78..206 from 6 */
-    const uint32_t bm_lim = gen6 ? DNA_V2_STORAGE_BITMAP_CAP
+    const uint32_t bm_lim = gen6 ? DNA_V2_STORAGE_BITMAP_LIMIT_GEN6
                                  : DNA_V2_STORAGE_BITMAP_MAX;
     const uint32_t len = env->leg[leg_index].call_len;
     if (len < RTN_STREP_FIXED_LEN || len > RTN_STREP_FIXED_LEN + bm_lim)
@@ -6660,7 +6660,8 @@ static int rtn_strep_exec(const dna_env_view_t *env, uint16_t leg_index,
     if (memcmp(sr->value, c.set_hash, 64) != 0) return -1;
     const uint32_t count = rtn_get32(sr->value + 64);
     /* the set's member limit is its generation's (256 / 1024) */
-    if (count > (gen6 ? DNA_V2_STORAGE_SET_CAP : DNA_V2_STORAGE_SET_MAX))
+    if (count > (gen6 ? DNA_V2_STORAGE_SET_LIMIT_GEN6
+                      : DNA_V2_STORAGE_SET_MAX))
         return -2;
     if ((uint32_t)c.bitmap_len != (count + 7u) / 8u) return -1;
     if ((count % 8u) != 0 && c.bitmap_len > 0 &&

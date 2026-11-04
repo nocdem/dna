@@ -686,6 +686,20 @@ int dna_v2_attendance_root(const uint64_t *epoch_starts,
 /** Largest holder list the buffers hold (param 25 maximum, 16). */
 #define DNA_V2_STORAGE_HOLDERS_CAP  16u
 
+/** The generation-6 RULE values (the vote constants of D6, plan §7.1:
+ *  cap 1024): the member cap and the report bitmap length a set / report
+ *  of generation 6 is held to. Named apart from the buffer capacities
+ *  above (equal today) so a rule never reads as "whatever the buffers
+ *  hold"; generation-6 code takes these (or the value limits_at returns)
+ *  as its limit. */
+#define DNA_V2_STORAGE_SET_LIMIT_GEN6     1024u
+#define DNA_V2_STORAGE_BITMAP_LIMIT_GEN6  128u
+_Static_assert(DNA_V2_STORAGE_SET_LIMIT_GEN6 <= DNA_V2_STORAGE_SET_CAP &&
+               DNA_V2_STORAGE_BITMAP_LIMIT_GEN6 <= DNA_V2_STORAGE_BITMAP_CAP &&
+               DNA_V2_STORAGE_BITMAP_LIMIT_GEN6 ==
+                   (DNA_V2_STORAGE_SET_LIMIT_GEN6 + 7u) / 8u,
+               "the generation-6 limits fit the buffers");
+
 /** Registry row status byte (bytes doc item 1; 0 is invalid). */
 #define DNA_V2_STORAGE_ACTIVE      ((uint8_t)1)
 #define DNA_V2_STORAGE_EXITING     ((uint8_t)2)

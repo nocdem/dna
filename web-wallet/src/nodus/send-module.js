@@ -899,7 +899,7 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
     // graceUntil, registered, exit, member, segments }] } — the storage
     // nodes THIS wallet registered (dnac_storage_by_owner; the module asks
     // for its own session's fingerprint, never a caller's), every u64 a
-    // decimal string, at most 256 nodes (total > nodes.length: the node's
+    // decimal string, at most 1024 nodes (total > nodes.length: the node's
     // list stops there). ONE node's committed tables (design G4).
     // ./client.js checks the answer.
     async storageByOwner() {

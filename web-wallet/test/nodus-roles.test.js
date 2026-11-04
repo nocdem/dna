@@ -210,7 +210,14 @@ test('roles: the storage list shape', () => {
   const ok = parseStorageByOwner({ tip: '900', total: '2', nodes: [node(NODE, 1), node(NODE2, 3)] });
   assert.deepEqual(ok.nodes.map(n => n.status), ['active', 'released']);
   assert.equal(ok.hidden, 0n);
-  assert.throws(() => parseStorageByOwner({ tip: '900', total: '3', nodes: [node(NODE, 1), node(NODE2, 3)] }), /invalid storage/, 'fewer nodes than min(total, 256)');
+  assert.throws(() => parseStorageByOwner({ tip: '900', total: '3', nodes: [node(NODE, 1), node(NODE2, 3)] }), /invalid storage/, 'fewer nodes than min(total, 1024)');
+  // HF-9 (plan §8.7): the list bound is the chain's capacity, 1024 (256 before)
+  const many = n => Array.from({ length: n }, (_, i) => node((i + 1).toString(16).padStart(128, '0'), 1));
+  assert.equal(parseStorageByOwner({ tip: '900', total: '1024', nodes: many(1024) }).nodes.length, 1024, '1024 listed, total 1024');
+  assert.equal(parseStorageByOwner({ tip: '900', total: '5000', nodes: many(1024) }).nodes.length, 1024, 'the list stops at 1024, total says more');
+  assert.equal(parseStorageByOwner({ tip: '900', total: '300', nodes: many(300) }).nodes.length, 300, 'a list above the old 256 is accepted');
+  assert.throws(() => parseStorageByOwner({ tip: '900', total: '5000', nodes: many(1025) }), /invalid storage/, 'more than 1024 refused');
+  assert.throws(() => parseStorageByOwner({ tip: '900', total: '300', nodes: many(256) }), /invalid storage/, 'min(total, 1024) = 300, 256 listed refused');
   assert.throws(() => parseStorageByOwner({ tip: '900', total: '2', nodes: [node(NODE2, 1), node(NODE, 3)] }), /invalid storage/, 'not ascending');
   assert.throws(() => parseStorageByOwner({ tip: '900', total: '1', nodes: [node(NODE, 4)] }), /invalid storage/, 'unknown status');
 });
