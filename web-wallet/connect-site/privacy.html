@@ -6,92 +6,76 @@
 <main class="policy">
 <h1>Nodus Connect browser extension — Privacy policy</h1>
 <p class="updated">Last updated: 2026-11-04</p>
-<p>This policy covers the Nodus Connect extension for Google Chrome: the wallet and the Nodus Connect messages inside it.</p>
+<p>This policy explains what the Nodus Connect browser extension for Google Chrome does with your information. Nodus Connect is a self-custody wallet with built-in Nodus Connect messaging. You do not create an account with us, and we do not collect analytics.</p>
 <p>Questions about this policy: <a href="mailto:privacy@nodusnetwork.io">privacy@nodusnetwork.io</a></p>
 
-<h2>1. In short</h2>
+<h2>1. Summary</h2>
 <ul>
-<li>Your recovery phrase, your password and your private keys stay on your device. The extension does not send them to any server.</li>
-<li>To show balances, send transactions and carry Nodus Connect messages, the extension contacts the public servers of the networks it supports and the Nodus network's nodes. They receive what each feature needs, listed below.</li>
-<li>There are no analytics, no tracking, no advertising, and no account with us. We do not sell data.</li>
+<li>Your recovery phrase, password and private keys stay on your device. The extension never sends them anywhere.</li>
+<li>To work, the extension sends only what each feature needs: your public addresses and the transactions you approve go to the blockchain networks you use, and your Nodus Connect messages go through the Nodus network.</li>
+<li>Websites get your address or a signature only after you approve them.</li>
+<li>No analytics, no tracking, no advertising. We do not sell your data.</li>
 </ul>
 
-<h2>2. What is stored on your device</h2>
+<h2>2. Information stored on your device</h2>
 <ul>
-<li>Your wallet: the 24-word recovery phrase, encrypted with the password you choose (AES-256-GCM; the key is derived from your password with PBKDF2-SHA256, 600,000 iterations, a new random salt per save).</li>
-<li>Encrypted with a key from your unlocked wallet: your sent transactions, account history, last balances and address book.</li>
-<li>Nodus Connect: your message history, contacts, profiles, groups and shared vaults, each record encrypted with AES-256-GCM before it is written; only a message counter is kept next to them without encryption.</li>
-<li>Encrypted with a key from your unlocked wallet: the list of websites you connected and the account each one may see.</li>
-<li>Stored without encryption: your network and server choices, the auto-lock time, the balance refresh interval, whether you agreed to the data notice shown when the extension is first opened, a message counter, and, until the browser closes, the status of transactions you sent (used for notifications).</li>
-<li>Nothing is stored in Chrome's sync storage, so nothing is copied to other devices.</li>
+<li><strong>Your wallet.</strong> Your recovery phrase, encrypted with the password you choose.</li>
+<li><strong>Wallet records.</strong> Your transaction history, recent balances, address book and the list of websites you connected. These are stored encrypted and can be read only while your wallet is unlocked.</li>
+<li><strong>Nodus Connect.</strong> Your messages, contacts, profiles, groups and shared vaults, stored encrypted.</li>
+<li><strong>Settings.</strong> Your network and server choices, the auto-lock time and whether you agreed to the data notice. These are not encrypted. The status of transactions you just sent is also kept, without encryption, until the browser closes, so the extension can notify you.</li>
+</ul>
+<p>Nothing is stored in Chrome sync, so nothing is copied to your other devices.</p>
+
+<h2>3. Information that leaves your device</h2>
+
+<h3>Blockchain networks</h3>
+<p>To show your balances and history and to send the transactions you approve, the extension sends your public address for that network, and the signed transaction, to a public server of that network. While the wallet is unlocked, it also checks for incoming funds once a minute. If you enter your own server address for Ethereum or BNB Smart Chain, that server receives the same information instead.</p>
+
+<h3>Prices</h3>
+<p>To show prices, the extension asks DefiLlama for the prices of a fixed list of assets. Your addresses are not sent.</p>
+
+<h3>Nodus network</h3>
+<p>Your Nodus public key and address, your Nodus balance, history and name lookups, the Nodus transactions you approve, and your Nodus Connect messages, contact requests, groups and payments in chat go through the Nodus network's nodes. The profile name and picture you choose to publish are visible on the Nodus network.</p>
+
+<h3>Websites you visit</h3>
+<p>Websites can see that the wallet is installed, the extension's identifier and which network it uses, and can ask it to read public blockchain data. A website gets your address or a signature only after you approve it in the extension's own window. The extension does not read the content of the pages you visit.</p>
+
+<h3>Connection data</h3>
+<p>As with any internet connection, every server the extension contacts also sees your IP address. All connections are encrypted.</p>
+
+<h2>4. Service providers</h2>
+<p>The blockchain and price servers are run by independent providers under their own privacy policies:</p>
+<ul>
+<li>Ethereum and BNB Smart Chain: <a href="https://www.publicnode.com/privacy" rel="noopener noreferrer">PublicNode</a>, <a href="https://drpc.org/privacy-policy" rel="noopener noreferrer">dRPC</a>, <a href="https://consensys.io/privacy-notice" rel="noopener noreferrer">MEV Blocker</a> (if you choose it), <a href="https://www.bnbchain.org/en/privacy-policy" rel="noopener noreferrer">BNB Chain</a>, Defibit, Ninicoin, and <a href="https://eaas.blockscout.com/privacy-notice" rel="noopener noreferrer">Blockscout</a> for Ethereum history.</li>
+<li>Solana: <a href="https://solanavibestation.com/privacy" rel="noopener noreferrer">Solana Vibe Station</a>; test networks: <a href="https://solana.com/privacy-policy" rel="noopener noreferrer">Solana Foundation</a>.</li>
+<li>TRON: <a href="https://trondao.org/privacy-policy" rel="noopener noreferrer">TRON DAO</a>.</li>
+<li>Algorand: <a href="https://algonode.io/legal/privacy-policy" rel="noopener noreferrer">Nodely (AlgoNode)</a>.</li>
+<li>Cellframe: <a href="https://cellframe.net/privacy-policy/" rel="noopener noreferrer">Cellframe</a>.</li>
+<li>Splendor: <a href="https://splendor.org/privacy" rel="noopener noreferrer">Splendor</a>.</li>
+<li>Soqucoin: <a href="https://soqu.org/privacy" rel="noopener noreferrer">Soqucoin</a>.</li>
+<li>Prices: <a href="https://defillama.com/privacy-policy" rel="noopener noreferrer">DefiLlama</a>.</li>
+<li>Ixios, Nervos CKB, QTC, XION and Asentum: the public servers of each network.</li>
 </ul>
 
-<h2>3. What leaves your device, and to whom</h2>
-<p>Each request goes over an encrypted connection (HTTPS; for the Nodus network, WSS with the nodes' keys fixed in the extension). Every server also receives your IP address and normal connection information, as with any website.</p>
+<h2>5. Notifications</h2>
+<p>The extension shows a notification when a transaction you sent is pending, confirmed or failed, and when funds arrive at your address. It sends no other notifications.</p>
 
-<h3>a) Public blockchain servers</h3>
-<p>They receive your public address for the network concerned (to read balances and history) and the transactions you sign and choose to send. While the wallet is unlocked, the extension checks once a minute for incoming funds on Nodus, Ethereum, BNB Smart Chain, Solana, TRON, Cellframe and Ixios, so those servers see your address once a minute.</p>
+<h2>6. What we do not do</h2>
+<p>We do not use analytics, tracking or error-reporting services, show advertising, sell or rent data, or use data to decide creditworthiness or lending. Data leaves your device only as described in section 3.</p>
+<p>The use of information described in this policy complies with the Chrome Web Store User Data Policy, including the Limited Use requirements.</p>
+
+<h2>7. Your choices and deleting your data</h2>
 <ul>
-<li>Ethereum: ethereum-rpc.publicnode.com (default), eth.drpc.org or rpc.mevblocker.io (your choice), or a server address you enter yourself; account history: eth.blockscout.com.</li>
-<li>BNB Smart Chain: bsc-dataseed.binance.org (default), bsc-dataseed1.binance.org, bsc-dataseed2.binance.org, bsc-dataseed3.binance.org, bsc-dataseed4.binance.org, bsc-dataseed1.defibit.io, bsc-dataseed1.ninicoin.io, bsc-rpc.publicnode.com (your choice), or a server address you enter yourself.</li>
-<li>Solana: public.rpc.solanavibestation.com; test networks you choose: api.testnet.solana.com, api.devnet.solana.com.</li>
-<li>TRON: api.trongrid.io; test network you choose: nile.trongrid.io.</li>
-<li>Cellframe: rpc.cellframe.net.   Ixios: ixios-rpc.innova.limited.</li>
-<li>Algorand: mainnet-api.algonode.cloud, mainnet-idx.algonode.cloud (test network: testnet-api.algonode.cloud, testnet-idx.algonode.cloud).</li>
-<li>Nervos CKB: mainnet.ckb.dev (test network: testnet.ckb.dev).   QTC: qtc.events (test network: testnet.qtc.events).</li>
-<li>Soqucoin: mainnet-rpc.soqu.org, mainnet-api.soqu.org.</li>
-<li>XION: api.xion-mainnet-1.burnt.com (test network: api.xion-testnet-2.burnt.com).</li>
-<li>Splendor: quantum-rpc.splendor.org (test network: quantum-rpc-testnet.splendor.org).   Asentum: testnet.asentum.com.</li>
-</ul>
-<p>When a website you connected asks to read data from Ethereum or BNB Smart Chain, the extension passes that read request to the server you chose for that network.</p>
-
-<h3>b) Prices</h3>
-<p>coins.llama.fi receives a fixed list of asset names to return prices. It does not receive your addresses.</p>
-
-<h3>c) The Nodus network's nodes</h3>
-<p>164.68.116.180, 154.38.182.161, 161.97.85.25, 156.67.24.125, 156.67.25.251, 164.68.105.227. While the wallet is open, the extension connects to them with your Nodus public key and address. They receive your Nodus balance, history and name queries, the Nodus transactions you sign, and all Nodus Connect traffic: contact requests, messages, reactions, group messages, payments in chat, and the profile name and picture you choose to publish. Your profile name and picture are published to the Nodus network.</p>
-
-<h3>d) Websites</h3>
-<p>Any website you open can see that the wallet is installed, the extension's identifier and which network it is set to, and can ask it to read public blockchain data (passed to the server you chose). Your address, your Nodus address and public key, and any signature are given to a website only after you approve it in the extension's own window; each signature is approved one by one. The extension does not read the content of web pages.</p>
-
-<h3>e) Third-party privacy policies</h3>
-<p>The servers above are run by other parties under their own policies:</p>
-<ul>
-<li>PublicNode (ethereum-rpc.publicnode.com, bsc-rpc.publicnode.com): <a href="https://www.publicnode.com/privacy" rel="noopener noreferrer">https://www.publicnode.com/privacy</a></li>
-<li>dRPC (eth.drpc.org): <a href="https://drpc.org/privacy-policy" rel="noopener noreferrer">https://drpc.org/privacy-policy</a></li>
-<li>MEV Blocker (rpc.mevblocker.io): <a href="https://consensys.io/privacy-notice" rel="noopener noreferrer">https://consensys.io/privacy-notice</a></li>
-<li>BNB Chain (bsc-dataseed*.binance.org): <a href="https://www.bnbchain.org/en/privacy-policy" rel="noopener noreferrer">https://www.bnbchain.org/en/privacy-policy</a></li>
-<li>Blockscout (eth.blockscout.com): <a href="https://eaas.blockscout.com/privacy-notice" rel="noopener noreferrer">https://eaas.blockscout.com/privacy-notice</a></li>
-<li>Solana Vibe Station (public.rpc.solanavibestation.com): <a href="https://solanavibestation.com/privacy" rel="noopener noreferrer">https://solanavibestation.com/privacy</a></li>
-<li>Cellframe (rpc.cellframe.net): <a href="https://cellframe.net/privacy-policy/" rel="noopener noreferrer">https://cellframe.net/privacy-policy/</a></li>
-<li>AlgoNode / Nodely (algonode.cloud servers): <a href="https://algonode.io/legal/privacy-policy" rel="noopener noreferrer">https://algonode.io/legal/privacy-policy</a></li>
-<li>Splendor (quantum-rpc.splendor.org): <a href="https://splendor.org/privacy" rel="noopener noreferrer">https://splendor.org/privacy</a></li>
-<li>Solana (api.testnet.solana.com, api.devnet.solana.com): <a href="https://solana.com/privacy-policy" rel="noopener noreferrer">https://solana.com/privacy-policy</a></li>
-<li>TRON (api.trongrid.io, nile.trongrid.io): <a href="https://trondao.org/privacy-policy" rel="noopener noreferrer">https://trondao.org/privacy-policy</a></li>
-<li>Soqucoin (mainnet-rpc.soqu.org, mainnet-api.soqu.org): <a href="https://soqu.org/privacy" rel="noopener noreferrer">https://soqu.org/privacy</a></li>
-<li>DefiLlama (coins.llama.fi): <a href="https://defillama.com/privacy-policy" rel="noopener noreferrer">https://defillama.com/privacy-policy</a></li>
-</ul>
-<p>Named above without a link: bsc-dataseed1.defibit.io, bsc-dataseed1.ninicoin.io, ixios-rpc.innova.limited, mainnet.ckb.dev, testnet.ckb.dev, qtc.events, testnet.qtc.events, api.xion-mainnet-1.burnt.com, api.xion-testnet-2.burnt.com, testnet.asentum.com.</p>
-
-<h2>4. Notifications</h2>
-<p>The extension shows a system notification when a transaction you sent is pending, confirmed or failed, and when funds arrive at your own address. It sends no other notifications.</p>
-
-<h2>5. What we do not do</h2>
-<p>No analytics or tracking scripts, no error-reporting service, no advertising, no sale or rental of data, no use of data to decide creditworthiness or lending. The extension sends data only to the servers, nodes and websites listed in section 3.</p>
-<p>The use of the information described in this policy complies with the Chrome Web Store User Data Policy, including the Limited Use requirements.</p>
-
-<h2>6. Keeping and deleting your data</h2>
-<ul>
-<li>"Delete saved wallet" in the extension removes the encrypted wallet, sent transactions, history, balances, address book, the list of connected websites and the Nodus Connect message history from this device.</li>
-<li>"Connected sites" lets you disconnect any website at any time.</li>
-<li>Removing the extension from Chrome removes the extension's local storage.</li>
-<li>Transactions you send on the supported networks are public. Messages and profile data sent to the Nodus network have left your device; deleting your data from this device does not remove what was already sent.</li>
+<li>You can disconnect any website at any time under "Connected sites".</li>
+<li>"Delete saved wallet" removes your wallet, your wallet records and your Nodus Connect history from this device.</li>
+<li>Removing the extension from Chrome removes the data it stored on this device.</li>
+<li>Transactions on public blockchains are public and permanent. Messages and profile data already sent through the Nodus network cannot be recalled by deleting them from your device.</li>
 </ul>
 
-<h2>7. Changes</h2>
-<p>When the extension's handling of data changes, this page is updated and the date at the top changes.</p>
+<h2>8. Changes to this policy</h2>
+<p>If the way the extension handles data changes, this page is updated and the date at the top changes.</p>
 
-<h2>8. Contact</h2>
+<h2>9. Contact</h2>
 <p><a href="mailto:privacy@nodusnetwork.io">privacy@nodusnetwork.io</a></p>
 </main>
 </body>
