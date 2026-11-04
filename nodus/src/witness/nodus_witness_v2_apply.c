@@ -19,6 +19,8 @@
 #include "witness/nodus_witness_rt_native.h"   /* HF-4: the CheckTx OWNER
                                                 * conflict key           */
 #include "witness/nodus_witness_v2_schema.h"
+#include "witness/nodus_witness_v2_storage.h"  /* HF-9 WP4: the storage
+                                                * transition of the edge */
 #include "witness/nodus_witness_v2_claims.h"
 #include "witness/nodus_witness_v2_migrate.h"  /* HF-6 3b: the gen-4 edge's
                                                 * validator migration    */
@@ -5447,20 +5449,23 @@ static int phase_6b_gen5_edge(nodus_witness_t *w, nodus_v2_block_t *blk,
 }
 
 #ifdef NODUS_EVM_ENABLED
-/* HF-9 WP4 SEAM — plan §7.2 step 6 / §8.6: the storage transition steps
- * E-s1 (the XOR union counts of the two epochs settled at B1 and B1 + E),
- * E-s2 (the rendezvous holders of every published segment, rows from_h =
- * B1) and E-s3 (the one-use XOR-vs-rendezvous diff table), run only if the
- * storage gate is open (param 18 in effect). They need the storage
- * assignment of plan §8 (selector, tables), which is HF-9 package WP4; this
- * call site is named and INERT until then — it reads and writes nothing
- * and answers 0. WP4 gives the body; the edge's order (step 6 after the
- * capture switch, before the touched declaration) is fixed here.
- * @return 0 / -2 (node FAULT). */
+/* HF-9 plan §7.2 step 6 / §8.6: the storage transition steps E-s1 (the XOR
+ * union counts of the two epochs settled at B1 and B1 + E), E-s2 (the
+ * rendezvous holders of every published segment, rows from_h = B1) and
+ * E-s3 (the one-use XOR-vs-rendezvous diff table), run only if the storage
+ * gate is open (param 18 in effect); the body is
+ * nodus_witness_storage_gen6_transition (nodus_witness_v2_storage.c). The
+ * edge's order (step 6 after the capture switch, before the touched
+ * declaration) is fixed here. @return 0 / -2 (node FAULT). */
 static int phase_6b_gen6_storage_transition(nodus_witness_t *w,
                                             nodus_v2_block_t *blk) {
-    (void)w;
-    (void)blk;
+    if (nodus_witness_storage_gen6_transition(w, blk->global_height) != 0) {
+        V2AP_FAULT("phase 6b''''': the storage transition (E-s1..E-s3) "
+                   "failed on this node at height %llu (reason in the log); "
+                   "this node does not vote",
+                   (unsigned long long)blk->global_height);
+        return -2;
+    }
     return 0;
 }
 #endif

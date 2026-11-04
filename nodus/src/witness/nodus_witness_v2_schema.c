@@ -2737,11 +2737,14 @@ static const char *V2_S20_STORAGE_STATUS_INDEX_DDL =
  *
  * v2_storage_assign — holders(k, H) = the rows with from_h <= H and
  *   (to_h IS NULL or to_h > H). score = the rendezvous score of (k, node)
- *   (the join rule's stored R-th score); the key carries from_h because a
- *   member can leave and return.
+ *   (the join rule's stored scores); the key carries from_h because a
+ *   member can leave and return. to_h >= from_h: the transition rows (E-s2)
+ *   carry from_h = B1 and an event AT B1 ends some of them with to_h = B1,
+ *   a row that is never current for any H.
  * v2_storage_assign_basis — the eligible members the CURRENT rows reflect
- *   (<= 1024 fps) and v2_storage_assign_state — the R of those rows and the
- *   boundary they were made at (one row once written; absent before E-s2).
+ *   (<= 1024 fps) and v2_storage_assign_state — the R of those rows, the
+ *   boundary they were made at and `xfer` (1 while the one-use transition
+ *   table is pending: set by E-s2, cleared at B1) (one row once written; absent before E-s2).
  * v2_storage_held — current rows per member (>= 1 row exists only for a
  *   holder; the member's row is deleted when its count falls to 0 so the
  *   table stays bounded by the live members, an ended assignment row keeps
@@ -2764,7 +2767,7 @@ static const char *V2_S20_ASSIGN_DDL =
     "  from_h INTEGER NOT NULL CHECK(typeof(from_h)='integer' AND "
     "from_h >= 1),"
     "  to_h INTEGER CHECK(to_h IS NULL OR (typeof(to_h)='integer' AND "
-    "to_h > from_h)),"
+    "to_h >= from_h)),"
     "  PRIMARY KEY (k, node_fp, from_h)"
     ") WITHOUT ROWID";
 static const char *V2_S20_ASSIGN_INDEX_CUR_DDL =
@@ -2784,7 +2787,9 @@ static const char *V2_S20_ASSIGN_STATE_DDL =
     "  copies INTEGER NOT NULL CHECK(typeof(copies)='integer' AND "
     "copies BETWEEN 1 AND 16),"
     "  boundary INTEGER NOT NULL CHECK(typeof(boundary)='integer' AND "
-    "boundary >= 1)"
+    "boundary >= 0),"
+    "  xfer INTEGER NOT NULL CHECK(typeof(xfer)='integer' AND "
+    "xfer IN (0, 1))"
     ") WITHOUT ROWID";
 static const char *V2_S20_HELD_DDL =
     "CREATE TABLE IF NOT EXISTS v2_storage_held ("

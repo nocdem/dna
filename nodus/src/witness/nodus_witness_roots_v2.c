@@ -458,8 +458,14 @@ int nodus_witness_treasury_total(nodus_witness_t *w, uint64_t *out) {
  * INTEGER bound every u64 column here follows), read with the same
  * typed-column discipline. */
 #define STORAGE_SCAN_COLS 9
+/* HF-9 WP4 (plan §8.8): the same scan and row checks restricted to one
+ * status or one node_fp, so the generation-6 boundary reads only the rows
+ * it needs (the status index / the primary key). mode 0 = every row, 1 =
+ * `status == arg_status`, 2 = `node_fp == arg_fp`. */
+enum { STSCAN_ALL = 0, STSCAN_STATUS = 1, STSCAN_FP = 2 };
 static int storage_scan(nodus_witness_t *w, dna_v2_storage_node_row_t **rows,
-                        size_t *n_out) {
+                        size_t *n_out, int mode, int arg_status,
+                        const uint8_t *arg_fp) {
     static const char *const want_type[STORAGE_SCAN_COLS] = {
         "blob", "blob", "blob", "integer", "integer", "integer", "integer",
         "integer", "integer"
@@ -467,14 +473,28 @@ static int storage_scan(nodus_witness_t *w, dna_v2_storage_node_row_t **rows,
     *rows = NULL;
     *n_out = 0;
     sqlite3_stmt *st = NULL;
-    int rc = sqlite3_prepare_v2(w->db,
-        "SELECT node_fp, node_pk, payee_fp, bond, status, "
-        "registered_height, exit_height, fail_streak, grace_until, "
-        "typeof(node_fp), typeof(node_pk), typeof(payee_fp), typeof(bond), "
-        "typeof(status), typeof(registered_height), typeof(exit_height), "
-        "typeof(fail_streak), typeof(grace_until) "
-        "FROM v2_storage_nodes ORDER BY node_fp ASC", -1, &st, NULL);
+#define STSCAN_SELECT                                                      \
+        "SELECT node_fp, node_pk, payee_fp, bond, status, "                \
+        "registered_height, exit_height, fail_streak, grace_until, "       \
+        "typeof(node_fp), typeof(node_pk), typeof(payee_fp), typeof(bond), "\
+        "typeof(status), typeof(registered_height), typeof(exit_height), " \
+        "typeof(fail_streak), typeof(grace_until) FROM v2_storage_nodes "
+    /* one statement text per mode, so each is served by its own index
+     * (the status index / the primary key) - never a flag-controlled OR */
+    const char *sql =
+        mode == STSCAN_STATUS
+            ? STSCAN_SELECT "WHERE status = ?1 ORDER BY node_fp ASC"
+        : mode == STSCAN_FP
+            ? STSCAN_SELECT "WHERE node_fp = ?1 ORDER BY node_fp ASC"
+            : STSCAN_SELECT "ORDER BY node_fp ASC";
+    int rc = sqlite3_prepare_v2(w->db, sql, -1, &st, NULL);
+#undef STSCAN_SELECT
+    if (rc == SQLITE_OK && mode == STSCAN_STATUS)
+        rc = sqlite3_bind_int(st, 1, arg_status);
+    else if (rc == SQLITE_OK && mode == STSCAN_FP)
+        rc = sqlite3_bind_blob(st, 1, arg_fp, 64, SQLITE_STATIC);
     if (rc != SQLITE_OK) {
+        if (st) sqlite3_finalize(st);
         QGP_LOG_ERROR(LOG_TAG, "storage registry scan prepare failed: %s",
                       sqlite3_errmsg(w->db));
         return -1;
@@ -557,7 +577,35 @@ int nodus_witness_storage_registry_load(nodus_witness_t *w,
                                         dna_v2_storage_node_row_t **rows,
                                         size_t *n_out) {
     if (!w || !w->db || !rows || !n_out) return -1;
-    return storage_scan(w, rows, n_out);
+    return storage_scan(w, rows, n_out, STSCAN_ALL, 0, NULL);
+}
+
+int nodus_witness_storage_registry_load_status(nodus_witness_t *w,
+                                               uint8_t status,
+                                               dna_v2_storage_node_row_t **rows,
+                                               size_t *n_out) {
+    if (!w || !w->db || !rows || !n_out) return -1;
+    if (status < DNA_V2_STORAGE_ACTIVE || status > DNA_V2_STORAGE_RELEASED)
+        return -1;
+    return storage_scan(w, rows, n_out, STSCAN_STATUS, (int)status, NULL);
+}
+
+int nodus_witness_storage_registry_get(nodus_witness_t *w,
+                                       const uint8_t node_fp[64],
+                                       dna_v2_storage_node_row_t *out) {
+    if (!w || !w->db || !node_fp || !out) return -1;
+    dna_v2_storage_node_row_t *rows = NULL;
+    size_t n = 0;
+    if (storage_scan(w, &rows, &n, STSCAN_FP, 0, node_fp) != 0) return -1;
+    int ret = 1;
+    if (n == 1) {
+        *out = rows[0];
+        ret = 0;
+    } else if (n > 1) {
+        ret = -1;                          /* the PRIMARY KEY forbids it  */
+    }
+    free(rows);
+    return ret;
 }
 
 int nodus_witness_storage_registry_root(nodus_witness_t *w,
@@ -565,7 +613,7 @@ int nodus_witness_storage_registry_root(nodus_witness_t *w,
     if (!w || !w->db || !out) return -1;
     dna_v2_storage_node_row_t *rows = NULL;
     size_t n = 0;
-    if (storage_scan(w, &rows, &n) != 0) return -1;
+    if (storage_scan(w, &rows, &n, STSCAN_ALL, 0, NULL) != 0) return -1;
     int ret = dna_v2_storage_registry_root(rows, n, out);
     free(rows);
     return ret;
@@ -575,7 +623,7 @@ int nodus_witness_storage_bond_total(nodus_witness_t *w, uint64_t *out) {
     if (!w || !w->db || !out) return -1;
     dna_v2_storage_node_row_t *rows = NULL;
     size_t n = 0;
-    if (storage_scan(w, &rows, &n) != 0) return -1;
+    if (storage_scan(w, &rows, &n, STSCAN_ALL, 0, NULL) != 0) return -1;
     uint64_t sum = 0;
     int ret = 0;
     for (size_t i = 0; i < n; i++) {

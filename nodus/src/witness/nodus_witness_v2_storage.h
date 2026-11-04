@@ -203,16 +203,68 @@ extern "C" {
  *  epochs). The stored value never reaches it: 14 + 1 is written as 0. */
 #define NODUS_STORAGE_FAIL_RETURN      15u
 
-/** One frozen storage set, as committed. Heap-allocate it (19.5 KB). */
+/** One frozen storage set, as committed. Heap-allocate it (77 KB: the
+ *  buffers hold the generation-6 capacity, HF-9 plan §8.7; the member
+ *  limit that governs a set is its generation's - 256 up to generation 5,
+ *  1024 from 6 - and is enforced where the set is written and read). */
 typedef struct {
     uint64_t epoch_start;
     uint8_t  set_hash[64];                           /* S(H)              */
-    uint32_t count;                                  /* 0..256            */
-    uint8_t  fps[DNA_V2_STORAGE_SET_MAX][64];        /* node_fp ASC       */
-    uint32_t fail_streak[DNA_V2_STORAGE_SET_MAX];    /* frozen at H       */
-    uint64_t grace_until[DNA_V2_STORAGE_SET_MAX];    /* frozen at H, AFTER
+    uint32_t count;                                  /* 0..256 / 0..1024  */
+    uint8_t  fps[DNA_V2_STORAGE_SET_CAP][64];        /* node_fp ASC       */
+    uint32_t fail_streak[DNA_V2_STORAGE_SET_CAP];    /* frozen at H       */
+    uint64_t grace_until[DNA_V2_STORAGE_SET_CAP];    /* frozen at H, AFTER
                                                       * the K9 update     */
 } nodus_storage_set_t;
+
+/** HF-9 WP4 - THE generation-6 storage rule, stated once (plan §8.6: the
+ *  generation-6 storage regime is B >= B1, the first boundary at or after
+ *  the effective height A of param 24): 1 iff chain_config param 24
+ *  (RULESET_GEN_TRIE) is in effect at `height` (a committed row with
+ *  effective <= height), 0 if not, -1 on a read fault. Every reader of a
+ *  committed set / report row applies it to the row's epoch_start to pick
+ *  the generation's limits (256 / 32 or 1024 / 128); the boundary and the
+ *  item executors use the runtime's generation, which agrees with it
+ *  (A-1 and A are never boundaries, so no boundary falls between the edge
+ *  and A). */
+int nodus_witness_storage_gen6_at(nodus_witness_t *w, uint64_t height);
+
+/** The member cap and the bitmap length of a set frozen at `epoch_start`
+ *  (the rule above): 256 / 32 up to generation 5, 1024 / 128 from 6.
+ *  @return 0 / -1 (read fault, nothing written). */
+int nodus_witness_storage_limits_at(nodus_witness_t *w, uint64_t epoch_start,
+                                    uint32_t *set_cap_out,
+                                    uint32_t *bitmap_cap_out);
+
+/** R (copies per segment) in effect at boundary B: chain_config param 25
+ *  at B, default DNAC_STORAGE_COPIES_DEFAULT (4) when no row. A stored
+ *  value outside [DNAC_CFG_MIN_STORAGE_COPIES, DNAC_CFG_MAX_STORAGE_COPIES]
+ *  is corrupt state. @return 0 / -1 (read fault or a value out of range). */
+int nodus_witness_storage_copies_at(nodus_witness_t *w, uint64_t boundary,
+                                    uint32_t *copies_out);
+
+/** HF-9 plan §7.2 step 6 / §8.6 E-s1..E-s3, run by the generation-6 edge
+ *  inside the edge block `h` (= A-1, not a boundary), after the capture
+ *  switch: writes the union counts of the two epochs settled at B1 and
+ *  B1 + E (E-s1), the rendezvous rows of every published segment, the
+ *  basis and the state (E-s2), and the one-use XOR-vs-rendezvous table
+ *  (E-s3). Only if the storage gate is open (param 18 in effect at h);
+ *  gate closed -> nothing written, 0. Idempotent shape: it requires the
+ *  assignment tables to be empty (a repeated edge is a FAULT).
+ *  @return 0 / -2 FAULT (the reason is logged). */
+int nodus_witness_storage_gen6_transition(nodus_witness_t *w, uint64_t h);
+
+/** Deterministic work counters of the generation-6 storage path (plan
+ *  T-9): incremented on the REAL path, read by tests only. Not state, not
+ *  consensus; reset by the test. */
+typedef struct {
+    uint64_t registry_rows_read;     /* registry rows read at a boundary   */
+    uint64_t segments_visited;       /* segments visited by an event visit */
+    uint64_t assign_rows_read;       /* v2_storage_assign rows read        */
+    uint64_t assign_rows_written;    /* rows inserted or ended             */
+    uint64_t scores_computed;        /* dna_v2_segment_score calls         */
+} nodus_storage_work_t;
+extern nodus_storage_work_t g_nodus_storage_work;
 
 /** What the storage boundary did (the caller's touched input). */
 typedef struct {

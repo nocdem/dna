@@ -135,6 +135,21 @@ int nodus_witness_storage_registry_load(nodus_witness_t *w,
                                         dna_v2_storage_node_row_t **rows,
                                         size_t *n_out);
 
+/** HF-9 WP4 (plan §8.8): the rows of ONE status, node_fp ASC, through the
+ *  same scan and row checks as the full load, served by the S20 status
+ *  index (status, node_fp). *rows is malloc'd (NULL when none).
+ *  @return 0 / -1 (also a status outside 1..3). */
+int nodus_witness_storage_registry_load_status(nodus_witness_t *w,
+                                               uint8_t status,
+                                               dna_v2_storage_node_row_t **rows,
+                                               size_t *n_out);
+
+/** HF-9 WP4: ONE row by node_fp (the primary key), the same row checks.
+ *  @return 0 found / 1 absent / -1 fault. */
+int nodus_witness_storage_registry_get(nodus_witness_t *w,
+                                       const uint8_t node_fp[64],
+                                       dna_v2_storage_node_row_t *out);
+
 /** Σ bond over the ACTIVE + EXITING rows of `v2_storage_nodes`, with the
  *  registry root's own row checks (ONE scan for both — the treasury
  *  pattern) and a checked add: the supply equation's storage-bond term
