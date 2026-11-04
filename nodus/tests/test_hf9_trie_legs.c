@@ -98,31 +98,70 @@
  *     J5: a state value outside {0, 1} faults under generation 6 (run
  *     last: the table is recreated without its CHECK).
  *
+ *  K. THE ENGINE'S OWN WRITERS UNDER GENERATION 6 (HF-9 WP3, Sol verifier
+ *     row 6; plan §4.3, §12 T-5): the J ladder again (params 9 / 14 / 18 /
+ *     22 / 24, the edge at block 13), then blocks carrying REAL signed
+ *     transactions and claims, each followed by: v2_trie_dirty empty,
+ *     exactly the expected legs moved (and no other), every stored leg
+ *     root equal to the oracle recomputation and the build-from-rows root.
+ *      K1 NAME_REGISTER  (rtn_core_mutate: utxo DELETE + INSERT, v2_names
+ *         INSERT)                                        -> legs 1, 4
+ *      K2 TOKEN_CREATE   (rtn_core_mutate: tokens INSERT, utxo DELETE +
+ *         INSERTs; the governed fee read from chain_config) -> legs 1, 2
+ *      K3 SPEND          (rtn_core_mutate: utxo DELETE + 2 INSERTs)
+ *                                                        -> leg 1
+ *      K4 rollback: a SPEND block that faults after the flush and phase 8
+ *         (V2AP_FAIL_AFTER_DOMAIN_ROOTS) leaves the database byte-
+ *         identical, the coin unspent, no dirty key, the node table and
+ *         every leg root as before; K4b an ITEM refused in exec (a spend
+ *         of a spent coin) leaves no dirty key and moves no root; K4c the
+ *         faulted spend, applied for real, moves leg 1.
+ *      K5 the first EPOCH BOUNDARY under generation 6 (idle blocks to
+ *         DNAC_EPOCH_LENGTH): nodus_witness_vset_insert and
+ *         v2ep_attendance_digest write a snapshot and a digest; legs 7
+ *         and 8 moved.                                   -> legs 7, 8
+ *      K6 CLAIM RELEASE on a chain whose genesis manifest commits a three-
+ *         leaf distribution to CORE (nodus_rt_core_claim_apply: utxo
+ *         INSERT; claim_spend_insert: v2_claims_spent INSERT): a claim
+ *         block faulting after the flush is rolled back whole; then two
+ *         claims in one block and a third in the next    -> legs 1, 3
+ *
  * ── NOT COVERED ─────────────────────────────────────────────────────────
  *  Writers exercised: SQL INSERT / UPDATE / DELETE of the plan §4.3
- *  statement shapes for every table, plus the engine's own writers that
- *  run in the blocks above (the genesis seed, the edge's build); the
- *  engine writers (rtn_core_mutate, claim_spend_insert, st_publish,
- *  vset_insert, v2ep_attendance_digest ...) are NOT driven here — the
- *  triggers are on the tables, not on the writers, which is the design
- *  (plan §5.2), and the full-rebuild comparison catches a divergence. A
- *  block carrying items (a spend, a token create, a name register) under
- *  generation 6, an epoch boundary under generation 6 (vset snapshot,
- *  attendance digest, storage boundary), the head_activate guard's
- *  engine call site (an in-block domain activation under generation 6;
- *  the getter guard itself is C and J4) and a restart of the process
- *  across the edge are the harness's (T-13, WP7). J3 and the pending-key
- *  flush of J4 read the same node store the edge test (test_hf9_edge.c)
- *  fills. The HF-9 store bind-failure test (T-3 part) is
- *  test_evm_trie_store_fault.c (-DQGP_FAULT_INJECT=ON).
+ *  statement shapes for every table (A-J), plus the engine's own writers
+ *  in the blocks above: the genesis seed, the edge's build, and (K)
+ *  rtn_core_mutate (spend, token create, name register),
+ *  nodus_rt_core_claim_apply, nodus_witness_v2_claim_spend_insert,
+ *  nodus_witness_vset_insert and v2ep_attendance_digest. NOT driven here:
+ *   - v2ep_release_utxo: the graduation bond release and the delegation
+ *     release at an epoch boundary (nodus_witness_v2_epoch.c:679, :998)
+ *     need a RETIRING validator that is not an entry of the snapshot
+ *     taking effect, which the seeded genesis does not provide (the
+ *     validator fixture is test_v2_epoch.c's own genesis, a different
+ *     chain); the row it writes is the same utxo_set INSERT K2 / K6 drive
+ *     through other callers, and the trigger sits on the table;
+ *   - the storage writers (v2_storage_nodes, v2_storage_segments, the
+ *     storage exit release): HF-9 package WP4 (storage work excluded);
+ *   - the storage boundary under generation 6, the head_activate guard's
+ *     engine call site (an in-block domain activation under generation 6;
+ *     the getter guard itself is C and J4) and a restart of the process
+ *     across the edge: the harness's (T-13, WP7).
+ *  J3 and the pending-key flush of J4 read the same node store the edge
+ *  test (test_hf9_edge.c) fills. The HF-9 store bind-failure test (T-3
+ *  part) is test_evm_trie_store_fault.c (-DQGP_FAULT_INJECT=ON).
  *
  * ── FLAGS ───────────────────────────────────────────────────────────────
  *  register_witness_test (NODUS_WITNESS_INTERNAL_API); only where
- *  NODUS_EVM_ENABLED (the trie is EVM-only). No fault injection, no epoch
- *  constants, no environment.
+ *  NODUS_EVM_ENABLED (the trie is EVM-only). No fault injection (the
+ *  injection points K4 / K6 use are the engine's own block fields, no
+ *  compile flag), no environment. J and K assume no epoch boundary among
+ *  the heights they drive before K5 and require DNAC_EPOCH_LENGTH > 40
+ *  (CHECKed: a short-epoch build fails the guard instead of running the
+ *  wrong scenario); K5 applies DNAC_EPOCH_LENGTH blocks, one at a time.
  *
  * ── LEAVES BEHIND ───────────────────────────────────────────────────────
- *  /tmp/test_hf9_trie_XXXXXX and /tmp/v2x_hf9trie_XXXXXX directories,
+ *  /tmp/test_hf9_trie_XXXXXX, /tmp/test_hf9_trie_g6_XXXXXX,
+ *  /tmp/test_hf9_trie_k_XXXXXX and /tmp/v2x_hf9trie_XXXXXX directories,
  *  removed on exit (a crash leaves one).
  *
  * ── HOW IT CAN FALSELY PASS OR SKIP ─────────────────────────────────────
@@ -146,6 +185,24 @@
  *  - H passes vacuously if the idle block would fault anyway; the control
  *    (the first idle block commits) and the restore (the next idle block
  *    commits again) bracket every refusal.
+ *  - K proves "the stored leg roots equal the oracle's recomputation from
+ *    the rows" and "exactly the expected legs moved"; the oracle shares
+ *    the leaf-hash functions and the key convention with the code under
+ *    test (see above), so K does not prove the byte choices (T-4's KAT).
+ *    The expected-moved masks are this test's reading of each writer's
+ *    tables (K1 0x09, K2 0x03, K3 / K4c 0x01, K5 legs 7 and 8 at least,
+ *    K6 0x05): a writer that also touched another leg would fail the mask,
+ *    one that wrote nothing would fail "moved". The transactions are built
+ *    with the sender's key and applied through the cometbft lane (the
+ *    quorum of a SYSTEM operation is not involved: CORE legs only).
+ *  - K5's boundary carries no votes: the first boundary leaves every
+ *    validator at one missed epoch (the retirement threshold is
+ *    DNAC_AUTO_RETIRE_EPOCHS = 2), so the validator set is unchanged; the
+ *    snapshot and the digest rows are asserted by count, not by content.
+ *  - K4b's refusal is a spend of an already spent coin; it proves the
+ *    item-level rollback leaves no dirty key for a refusal that happens
+ *    before any write, not for one that happens after a captured write
+ *    (the SAVEPOINT removal of captured keys is D's SQL case).
  */
 
 #include "witness/nodus_witness.h"
@@ -154,15 +211,24 @@
 #include "witness/nodus_witness_v2_apply.h"
 #include "witness/nodus_witness_v2_schema.h"
 #include "witness/nodus_witness_v2_trie.h"
+#include "witness/nodus_witness_domreg.h"
+#include "witness/nodus_witness_runtime.h"
+#include "nodus/nodus_chain_config.h"
+#include "nodus/nodus_v2_spend.h"
 
 #include "evm/trie/evm_trie.h"
 #include "evm/trie/evm_trie_full.h"
 
 #include "dnac/dnac.h"
+#include "dnac/domain_wire.h"
+#include "dnac/effect_wire.h"
+#include "dnac/env_wire.h"
+#include "dnac/env_preflight.h"
 #include "dnac/ledger_ids.h"
 #include "dnac/ledger_roots_v2.h"
 #include "dnac/manifest_wire.h"
 #include "crypto/hash/qgp_sha3.h"
+#include "crypto/sign/qgp_dilithium.h"
 
 #include "v2_genesis_fixture.h"
 
@@ -1492,6 +1558,693 @@ static int test_gen6(void) {
     return 0;
 }
 
+/* ── K: THE ENGINE'S OWN WRITERS UNDER GENERATION 6 (HF-9 WP3, Sol
+ * verifier row 6; plan §4.3, §5.3, §12 T-5 "every writer path through the
+ * real functions; after each block incremental leg root = full rebuild of
+ * rows") ──
+ * Blocks carrying REAL signed transactions and claims, and an epoch
+ * boundary, on a chain that climbed to generation 6 through the engine's
+ * own edge (the J ladder). After every block: v2_trie_dirty is empty, the
+ * legs the writer touches moved and no other leg did, and every stored leg
+ * root equals the oracle recomputation and the build-from-rows root. */
+
+#define K_FEE     ((uint64_t)DNAC_MIN_FEE_RAW)
+#define K_P4      ((uint64_t)DNAC_NAME_PRICE_4P_DEFAULT)
+#define K_CHG     700000000ULL
+#define K_TOK_CHG 3000000ULL
+#define K_SPEND   5000000ULL          /* the two plain-spend coins          */
+#define K_AUTH_LEN (1u + NODUS_RT_AUTH_SIGNER_LEN)
+
+enum { K_COIN_N, K_COIN_T, K_COIN_S1, K_COIN_S2, K_N_COINS };
+
+static uint8_t k_pk[QGP_DSA87_PUBLICKEYBYTES];
+static uint8_t k_sk[QGP_DSA87_SECRETKEYBYTES];
+static char    k_hex[129];            /* the sender's 128-hex fingerprint   */
+static char    k_hex_to[129];         /* a second owner, the spend's payee  */
+static uint8_t k_nul[K_N_COINS][64];
+static uint64_t k_amt[K_N_COINS];
+
+static void k_hex_of(const uint8_t raw[64], char out[129]) {
+    static const char hx[] = "0123456789abcdef";
+    for (int i = 0; i < 64; i++) {
+        out[2 * i]     = hx[raw[i] >> 4];
+        out[2 * i + 1] = hx[raw[i] & 15];
+    }
+    out[128] = '\0';
+}
+
+static int k_keys(void) {
+    uint8_t seed[32], fp[64];
+    memset(seed, 0x71, sizeof(seed));
+    if (qgp_dsa87_keypair_derand(k_pk, k_sk, seed) != 0) return -1;
+    if (qgp_sha3_512(k_pk, sizeof(k_pk), fp) != 0) return -1;
+    k_hex_of(fp, k_hex);
+    static const uint8_t to_src[8] = { 'p', 'a', 'y', 'e', 'e', 0, 0, 1 };
+    if (qgp_sha3_512(to_src, sizeof(to_src), fp) != 0) return -1;
+    k_hex_of(fp, k_hex_to);
+    return 0;
+}
+
+/* one spendable native coin of the sender; nullifier = SHA3-512(owner128
+ * || seed32), the output-identity derivation (test_hf4_names_engine.c
+ * seed_coin's shape) */
+static int k_seed_coin(nodus_witness_t *w, int c, uint64_t amount,
+                       uint8_t seed_byte) {
+    uint8_t pre[160];
+    memcpy(pre, k_hex, 128);
+    memset(pre + 128, seed_byte, 32);
+    if (qgp_sha3_512(pre, sizeof(pre), k_nul[c]) != 0) return -1;
+    k_amt[c] = amount;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
+            "tx_hash, output_index, block_height, created_at, "
+            "unlock_block, domain_id) VALUES "
+            "(?1, ?2, ?3, zeroblob(64), zeroblob(64), 0, 0, 0, 0, 1)",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, k_nul[c], 64, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, k_hex, 128, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)amount);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+/* the distribution leaves of the claim chain (test_v2_claims.c keys_init's
+ * shape): three DNA-native claimants, conversion 3/2 FLOOR, sum 32 */
+#define K_N_LEAVES 3
+static uint8_t         k_lpk[K_N_LEAVES][QGP_DSA87_PUBLICKEYBYTES];
+static uint8_t         k_lsk[K_N_LEAVES][QGP_DSA87_SECRETKEYBYTES];
+static dna_dist_leaf_t k_leaf[K_N_LEAVES];
+static uint8_t         k_leaf_hash[K_N_LEAVES][64];
+static uint8_t         k_snapshot_root[64];
+static const uint8_t   k_native_asset[64] = {0};
+static const uint64_t  k_src_amount[K_N_LEAVES] = { 10, 5, 7 };
+static const char     *k_src_id[K_N_LEAVES] =
+    { "src-alpha", "src-beta", "src-gamma" };
+
+static int k_leaves(void) {
+    for (int i = 0; i < K_N_LEAVES; i++) {
+        uint8_t seed[32];
+        memset(seed, 0x40 + i, sizeof(seed));
+        if (qgp_dsa87_keypair_derand(k_lpk[i], k_lsk[i], seed) != 0)
+            return -1;
+        memset(&k_leaf[i], 0, sizeof(k_leaf[i]));
+        k_leaf[i].leaf_version = DNA_DIST_VERSION;
+        k_leaf[i].source_id_len = (uint16_t)strlen(k_src_id[i]);
+        memcpy(k_leaf[i].source_id, k_src_id[i], k_leaf[i].source_id_len);
+        k_leaf[i].source_amount = k_src_amount[i];
+        if (qgp_sha3_512(k_lpk[i], QGP_DSA87_PUBLICKEYBYTES,
+                         k_leaf[i].dest_binding) != 0)
+            return -1;
+        if (dna_dist_leaf_hash(&k_leaf[i], k_leaf_hash[i]) != 0) return -1;
+    }
+    if (dna_dist_snapshot_root(k_leaf, K_N_LEAVES, k_snapshot_root) != 0)
+        return -1;
+    return dna_dist_check_totals(k_leaf, K_N_LEAVES, 3, 2,
+                                 DNA_DISTROUND_FLOOR, 32);
+}
+
+static int k_claim(dna_claim_t *c, int leaf, const uint8_t chain[32],
+                   const uint8_t manifest_hash[64]) {
+    memset(c, 0, sizeof(*c));
+    c->claim_version = DNA_CLAIM_VERSION;
+    memcpy(c->chain_id, chain, 32);
+    memcpy(c->manifest_hash, manifest_hash, 64);
+    c->leaf_index = (uint64_t)leaf;
+    c->source_id_len = k_leaf[leaf].source_id_len;
+    memcpy(c->source_id, k_leaf[leaf].source_id, c->source_id_len);
+    c->source_amount = k_leaf[leaf].source_amount;
+    memcpy(c->dest_binding, k_leaf[leaf].dest_binding, 64);
+    uint16_t ns = 0;
+    if (dna_dist_proof_build((const uint8_t (*)[64])k_leaf_hash,
+                             K_N_LEAVES, (uint64_t)leaf, c->siblings, &ns)
+        != 0)
+        return -1;
+    c->n_siblings = ns;
+    c->auth_mode = DNA_CLAIMAUTH_DNA_NATIVE;
+    memcpy(c->pubkey, k_lpk[leaf], QGP_DSA87_PUBLICKEYBYTES);
+    uint8_t pre[DNA_CLAIM_PREIMAGE_MAX];
+    size_t pre_len = 0;
+    if (dna_claim_preimage(c, pre, &pre_len) != 0) return -1;
+    size_t siglen = 0;
+    if (qgp_dsa87_sign(c->signature, &siglen, pre, pre_len, k_lsk[leaf])
+            != 0 || siglen != DNA_CLAIM_SIG_LEN)
+        return -1;
+    return 0;
+}
+
+/* The chain: the J ladder (params 9 / 14 / 18 / 22 / 24 at 3 / 5 / 8 / 11 /
+ * 14, direct rows) over (dist == 0) a genesis with four spendable coins of
+ * the sender, or (dist == 1) a genesis whose manifest commits a three-leaf
+ * claim distribution to the CORE runtime (window [2, 40]); blocks 1..15
+ * committed, so the edge ran at block 13 and block 14 / 15 were judged under
+ * generation 6. The next block to apply is 16. */
+static int k_open(jfx_t *f, int dist, uint8_t chain32[32],
+                  uint8_t mh[64]) {
+    memset(f, 0, sizeof(*f));
+    f->w = calloc(1, sizeof(*f->w));            /* multi-MB - heap */
+    if (!f->w) return -1;
+    snprintf(f->dir, sizeof(f->dir), "/tmp/test_hf9_trie_k_XXXXXX");
+    if (!mkdtemp(f->dir)) { free(f->w); f->w = NULL; return -1; }
+    snprintf(f->w->data_path, sizeof(f->w->data_path), "%s", f->dir);
+    uint8_t id16[16];
+    memset(id16, 0x6B, sizeof(id16));
+    if (v2x_seed_prepare(f->w, id16, 0) != 0) return -1;
+    if (j_cc_row(f->w, DNAC_CFG_HF2_ACTIVE, DNAC_CFG_HF2_ACTIVE_ON, 1, 11)
+        != 0 ||
+        j_cc_row(f->w, DNAC_CFG_RULESET_GEN2,
+                 (uint64_t)DNAC_CFG_RULESET_GEN2_D2, 3, 12) != 0 ||
+        j_cc_row(f->w, DNAC_CFG_EVM_ACTIVE,
+                 (uint64_t)DNAC_CFG_EVM_ACTIVE_D, 5, 14) != 0 ||
+        j_cc_row(f->w, DNAC_CFG_RULESET_GEN_ROLES,
+                 (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D, 8, 13) != 0 ||
+        j_cc_row(f->w, DNAC_CFG_RULESET_GEN_ROOTS,
+                 (uint64_t)DNAC_CFG_RULESET_GEN_ROOTS_D, 11, 15) != 0 ||
+        j_cc_row(f->w, DNAC_CFG_RULESET_GEN_TRIE,
+                 (uint64_t)DNAC_CFG_RULESET_GEN_TRIE_D, J_A, 16) != 0)
+        return -1;
+    if (!dist) {
+        uint64_t tokfee = 0;
+        if (nodus_chain_config_get_u64(f->w,
+                (uint8_t)DNAC_CFG_TOKEN_CREATE_FEE_RAW, 1, 0, &tokfee) != 0
+            || tokfee == 0)
+            return -1;
+        if (k_seed_coin(f->w, K_COIN_N, K_P4 + K_FEE + K_CHG, 0xC1) != 0 ||
+            k_seed_coin(f->w, K_COIN_T, tokfee + K_TOK_CHG, 0xC2) != 0 ||
+            k_seed_coin(f->w, K_COIN_S1, K_SPEND, 0xC3) != 0 ||
+            k_seed_coin(f->w, K_COIN_S2, K_SPEND, 0xC4) != 0)
+            return -1;
+        v2x_seed_not_real(V2X_SEED_NOT_REAL_UTXOS);
+        if (v2x_seed_genesis(f->w, id16, 0, NULL, 0, chain32) != 0)
+            return -1;
+    } else {
+        /* test_v2_claims.c dist_genesis: the supply row and the one
+         * non-claimable genesis UTXO, the registry committed first, the
+         * manifest naming the real DomainManifest hashes */
+        const uint64_t total = 32;
+        char sql[640];
+        snprintf(sql, sizeof(sql),
+            "INSERT INTO supply_tracking (id, genesis_supply, "
+            "total_burned, total_minted, current_supply, last_tx_hash, "
+            "last_sequence) VALUES (1, 1000, 0, 0, 1000, x'00', 0)");
+        if (run_sql(f->w->db, sql) != 0) return -1;
+        snprintf(sql, sizeof(sql),
+            "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
+            "tx_hash, output_index, block_height, created_at, "
+            "unlock_block, domain_id) VALUES (zeroblob(63)||x'01', "
+            "'genesis', %llu, zeroblob(64), zeroblob(63)||x'aa', 0, 0, 0, "
+            "0, 1)", (unsigned long long)(1000 - total));
+        if (run_sql(f->w->db, sql) != 0) return -1;
+        if (v2x_seed_rows(f->w, 0) != 0) return -1;
+        if (nodus_witness_domreg_init_genesis(f->w) != 0) return -1;
+        dna_domain_manifest_t sm, cm;
+        uint8_t sys_h[64], core_h[64];
+        if (nodus_witness_domreg_get(f->w, DNA_DOMAIN_SYSTEM, NULL, &sm,
+                                     NULL) != 0 ||
+            dna_domman_hash(&sm, sys_h) != 0 ||
+            nodus_witness_domreg_get(f->w, DNA_DOMAIN_CORE, NULL, &cm,
+                                     NULL) != 0 ||
+            dna_domman_hash(&cm, core_h) != 0)
+            return -1;
+        nodus_witness_supply_t sup;
+        memset(&sup, 0, sizeof(sup));
+        if (nodus_witness_supply_get(f->w, &sup) != 0) return -1;
+        dna_gman_t m;
+        memset(&m, 0, sizeof(m));
+        m.manifest_version = DNA_GMAN_VERSION;
+        m.genesis_supply_raw = sup.genesis_supply;
+        m.domain_count = 2;
+        m.domains[0].domain_id = DNA_DOMAIN_SYSTEM;
+        memcpy(m.domains[0].manifest_hash, sys_h, 64);
+        m.domains[1].domain_id = DNA_DOMAIN_CORE;
+        memcpy(m.domains[1].manifest_hash, core_h, 64);
+        m.dist_present = 1;
+        m.dist_version = DNA_DIST_VERSION;
+        m.target_domain_id = DNA_DOMAIN_CORE;
+        m.target_asset_len = 64;
+        memcpy(m.target_asset_ref, k_native_asset, 64);
+        m.source_tag_len = (uint16_t)strlen("testnet-generic");
+        memcpy(m.source_tag, "testnet-generic", m.source_tag_len);
+        m.source_commit_len = 16;
+        memset(m.source_commit, 0x77, 16);
+        memcpy(m.snapshot_root, k_snapshot_root, 64);
+        m.leaf_count = K_N_LEAVES;
+        m.conv_numerator = 3;
+        m.conv_denominator = 2;
+        m.rounding_mode = DNA_DISTROUND_FLOOR;
+        m.excluded_amount = 4;
+        m.total_claimable = total;
+        m.claim_start_height = 2;
+        m.claim_end_height = 40;
+        m.auth_mode = DNA_CLAIMAUTH_DNA_NATIVE;
+        m.fee_mode = DNA_CLAIMFEE_NONE;
+        m.post_deadline_mode = DNA_POSTDL_RETAIN;
+        uint8_t mbytes[8192];
+        size_t mlen = 0;
+        if (dna_gman_encode(&m, mbytes, sizeof(mbytes), &mlen) != 0 ||
+            dna_gman_hash(&m, mh) != 0)
+            return -1;
+        v2x_seed_not_real(V2X_SEED_NOT_REAL_UTXOS);
+        if (v2x_seed_genesis(f->w, id16, 0, mbytes, mlen, chain32) != 0)
+            return -1;
+    }
+    for (uint64_t h = 1; h <= J_A + 1u; h++)
+        if (j_apply_ok(f, h) != 0) return -1;
+    return 0;
+}
+
+/* One one-leg CORE envelope, really signed by the sender over the
+ * engine-derived leg digest at height `h` (nodus_v2_env_sign_one_key: the
+ * two-pass build nodus-cli uses), built against the registry's CURRENT
+ * CORE manifest. n_reads >= 0: units = nodus_v2_spend_ceiling over this
+ * envelope under the generation-6 SYSTEM policy; n_reads < 0: the flat
+ * 200000 units test_v2_native.c env_build_signed declares. 0 / -1. */
+static int k_env(nodus_witness_t *w, uint64_t h, uint32_t op,
+                 const uint8_t *call, uint32_t call_len, uint64_t fee,
+                 uint32_t effects, uint32_t effect_bytes, int n_reads,
+                 uint8_t **out, size_t *out_len) {
+    dna_domain_manifest_t core;
+    const nodus_domain_runtime_t *sys =
+        nodus_runtime_for_generation(NODUS_RT_GEN_TRIE, DNA_DOMAIN_SYSTEM);
+    uint8_t auth[K_AUTH_LEN];
+    memset(auth, 0, sizeof(auth));
+    *out = NULL;
+    if (!sys || !sys->meter_policy) return -1;
+    if (nodus_witness_domreg_get(w, DNA_DOMAIN_CORE, NULL, &core, NULL) != 0)
+        return -1;
+    dna_env_leg_in_t leg;
+    memset(&leg, 0, sizeof(leg));
+    leg.hdr.domain_id            = DNA_DOMAIN_CORE;
+    leg.hdr.runtime_op           = op;
+    leg.hdr.ruleset_version      = core.ruleset_version;
+    leg.hdr.access_mode          = DNA_ENV_ACCESS_INVOKE;
+    leg.hdr.auth_kind            = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+    leg.hdr.call_len             = call_len;
+    leg.hdr.auth_len             = K_AUTH_LEN;
+    leg.hdr.res_max_effects      = effects;
+    leg.hdr.res_max_effect_bytes = effect_bytes;
+    leg.call_data = call;
+    leg.auth_data = auth;
+    dna_env_in_t in;
+    memset(&in, 0, sizeof(in));
+    in.fee_amount = fee;
+    in.leg_count  = 1;
+    in.legs       = &leg;
+    if (n_reads >= 0) {
+        uint64_t units = 0;
+        if (nodus_v2_spend_ceiling(&in, sys->meter_policy,
+                                   (uint32_t)n_reads, &units) != 0)
+            return -1;
+        in.res_max_total_units = units;
+    } else {
+        in.res_max_total_units = 200000;
+    }
+    dna_env_leg_ctx_t lctx;
+    memset(&lctx, 0, sizeof(lctx));
+    lctx.domain_id       = DNA_DOMAIN_CORE;
+    lctx.ruleset_version = core.ruleset_version;
+    memcpy(lctx.ruleset_hash, core.ruleset_hash, 64);
+    uint8_t *auths[1] = { auth };
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    if (!pf) return -1;
+    nodus_v2_spend_err_t err;
+    memset(&err, 0, sizeof(err));
+    int rc = nodus_v2_env_sign_one_key(&in, auths, &lctx, w->v2_chain32,
+                                       h - 1u, k_pk, k_sk, out, out_len, pf,
+                                       &err);
+    free(pf);
+    return rc == NODUS_V2_SPEND_OK ? 0 : -1;
+}
+
+/* NAME_REGISTER of `name` by the sender spending coin `c`, change back to
+ * the sender (the call layout and the effect declaration are
+ * test_hf4_names_engine.c reg_env's) */
+static int k_name_env(nodus_witness_t *w, uint64_t h, const char *name,
+                      int c, uint8_t **out, size_t *out_len) {
+    static uint8_t call[1 + 36 + 8 + 1 + 64 + 1 + NODUS_V2_SPEND_OUT_LEN];
+    const size_t nl = strlen(name);
+    const uint64_t change = k_amt[c] - K_FEE - K_P4;
+    const uint32_t n_out = change > 0 ? 1u : 0u;
+    size_t off = 0;
+    call[off++] = (uint8_t)nl;
+    memcpy(call + off, name, nl);               off += nl;
+    for (int i = 0; i < 8; i++)
+        call[off + i] = (uint8_t)(K_P4 >> (56 - 8 * i));
+    off += 8;
+    call[off++] = 1;
+    memcpy(call + off, k_nul[c], 64);           off += 64;
+    call[off++] = (uint8_t)n_out;
+    if (n_out) {
+        uint8_t seed[32];
+        memset(seed, (uint8_t)(0x40 + c), sizeof(seed));
+        nodus_v2_xfer_out_put(call + off, k_hex, change, NULL, seed);
+        off += NODUS_V2_SPEND_OUT_LEN;
+    }
+    const uint32_t effects = 1u + n_out + 2u;
+    const uint32_t bytes = (uint32_t)DNA_EFFECT_FIXED_HEAD +
+        (uint32_t)DNA_EFFECT_RECORD_LEN * effects +
+        n_out * (64u + 284u) + ((uint32_t)nl + 72u) + (1u + 8u) + 64u;
+    return k_env(w, h, DNA_CORERULE_NAME_REGISTER, call, (uint32_t)off,
+                 K_FEE, effects, bytes, 1 + 3, out, out_len);
+}
+
+/* TOKEN_CREATE of `tok` paying the governed fee `fee` from coin `c`; the
+ * token output (777 units) and the native change go to the sender
+ * (test_v2_native.c tc_call_build's layout) */
+static int k_token_env(nodus_witness_t *w, uint64_t h, const uint8_t tok[64],
+                       int c, uint64_t fee, uint8_t **out, size_t *out_len) {
+    static uint8_t call[64 + 1 + 8 + 1 + 4 + 1 + 2 + 64 +
+                        2 * NODUS_V2_SPEND_OUT_LEN];
+    size_t off = 0;
+    memcpy(call, tok, 64);                      off = 64;
+    call[off++] = 8;
+    memcpy(call + off, "KTokenOne", 8);         off += 8;
+    call[off++] = 2;
+    memcpy(call + off, "K1", 2);                off += 2;
+    call[off++] = 8;                            /* decimals               */
+    call[off++] = 1;                            /* one input              */
+    memcpy(call + off, k_nul[c], 64);           off += 64;
+    call[off++] = 2;                            /* two outputs            */
+    uint8_t seed[32];
+    memset(seed, 0x61, sizeof(seed));
+    nodus_v2_xfer_out_put(call + off, k_hex, 777, tok, seed);
+    off += NODUS_V2_SPEND_OUT_LEN;
+    memset(seed, 0x62, sizeof(seed));
+    nodus_v2_xfer_out_put(call + off, k_hex, k_amt[c] - fee, NULL, seed);
+    off += NODUS_V2_SPEND_OUT_LEN;
+    return k_env(w, h, DNA_CORERULE_TOKEN_CREATE, call, (uint32_t)off, fee,
+                 40, 16384, -1, out, out_len);
+}
+
+/* a plain SPEND of coin `c`: 3 000 000 to the payee, the rest of the coin
+ * minus the fee back to the sender; `seed_base` makes the output ids */
+static int k_spend_env(nodus_witness_t *w, uint64_t h, int c,
+                       uint8_t seed_base, uint8_t **out, size_t *out_len) {
+    static uint8_t call[2 + 64 + 2 * NODUS_V2_SPEND_OUT_LEN];
+    size_t off = 0;
+    call[off++] = 1;
+    memcpy(call + off, k_nul[c], 64);           off += 64;
+    call[off++] = 2;
+    uint8_t seed[32];
+    memset(seed, seed_base, sizeof(seed));
+    nodus_v2_xfer_out_put(call + off, k_hex_to, 3000000, NULL, seed);
+    off += NODUS_V2_SPEND_OUT_LEN;
+    memset(seed, (uint8_t)(seed_base + 1u), sizeof(seed));
+    nodus_v2_xfer_out_put(call + off, k_hex, k_amt[c] - 3000000 - K_FEE,
+                          NULL, seed);
+    off += NODUS_V2_SPEND_OUT_LEN;
+    uint32_t effects = 0, bytes = 0;
+    nodus_v2_spend_effect_decl(1, 2, &effects, &bytes);
+    return k_env(w, h, DNA_CORERULE_SPEND, call, (uint32_t)off, K_FEE,
+                 effects, bytes, 1 + 1, out, out_len);
+}
+
+static void k_mk_block(nodus_v2_block_t *b, uint64_t h) {
+    memset(b, 0, sizeof(*b));
+    b->global_height = h;
+    b->epoch = nodus_v2_epoch_for_height(h);
+}
+
+static int k_read_legs(nodus_witness_t *w, uint8_t r[8][64]) {
+    for (int leg = 1; leg <= 8; leg++)
+        if (nodus_witness_v2_trie_leg_root(w, leg, r[leg - 1]) != 0)
+            return -1;
+    return 0;
+}
+
+/* bit i of `mask` = leg i+1 moved between `a` and `b` (exactly) */
+static unsigned k_moved(const uint8_t a[8][64], const uint8_t b[8][64]) {
+    unsigned m = 0;
+    for (int i = 0; i < 8; i++)
+        if (memcmp(a[i], b[i], 64) != 0) m |= 1u << i;
+    return m;
+}
+
+static int k_utxo_live(nodus_witness_t *w, const uint8_t nul[64]) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, "SELECT COUNT(*) FROM utxo_set WHERE "
+                           "nullifier = ?1", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, nul, 64, SQLITE_STATIC);
+    int n = -1;
+    if (sqlite3_step(st) == SQLITE_ROW) n = sqlite3_column_int(st, 0);
+    sqlite3_finalize(st);
+    return n;
+}
+
+/* apply one single-envelope block */
+static int k_apply_env(jfx_t *f, uint64_t h, const uint8_t *env,
+                       size_t len) {
+    nodus_v2_envelope_t e = { env, len };
+    nodus_v2_block_t b;
+    k_mk_block(&b, h);
+    b.envs = &e;
+    b.n_envs = 1;
+    return v2x_cmt_apply_ok(f->w, &b);
+}
+
+/* after a committed block: the dirty table is empty, exactly the legs in
+ * `mask` moved against `before`, and every stored leg root equals the
+ * oracle and the rows. `now` receives the leg roots. */
+static int k_after_block(jfx_t *f, const uint8_t before[8][64],
+                         uint8_t now[8][64], unsigned mask,
+                         const char *what) {
+    if (q1(f->w->db, "SELECT COUNT(*) FROM v2_trie_dirty") != 0) {
+        fprintf(stderr, "%s: the dirty table is not empty\n", what);
+        return -1;
+    }
+    if (k_read_legs(f->w, now) != 0) return -1;
+    unsigned moved = k_moved(before, now);
+    if (moved != mask) {
+        fprintf(stderr, "%s: legs moved 0x%02x, expected 0x%02x\n", what,
+                moved, mask);
+        return -1;
+    }
+    return j_roots_ok(f, what);
+}
+
+static int test_gen6_writers(void) {
+    jfx_t f;
+    CHECK(DNAC_EPOCH_LENGTH > 40, "K: no epoch boundary among blocks "
+          "1..19 (the boundary case drives to DNAC_EPOCH_LENGTH itself)");
+    CHECK(k_keys() == 0, "K: sender keys");
+    CHECK(k_open(&f, 0, NULL, NULL) == 0, "K: a chain at generation 6 with "
+          "four spendable coins (blocks 1..15 committed)");
+    CHECK(q1(f.w->db, "SELECT capture FROM v2_trie_state") == 1,
+          "K: capture is 1");
+    uint8_t L0[8][64], L1[8][64], L2[8][64];
+    CHECK(k_read_legs(f.w, L0) == 0, "K: leg roots before");
+    uint8_t *env = NULL;
+    size_t elen = 0;
+
+    /* K1: NAME_REGISTER (rtn_core_mutate: the utxo input DELETE, the
+     * change INSERT, the v2_names INSERT) -> legs 1 and 4 */
+    CHECK(k_name_env(f.w, 16, "punk", K_COIN_N, &env, &elen) == 0,
+          "K1: a signed NAME_REGISTER");
+    CHECK(k_apply_env(&f, 16, env, elen) == 0, "K1: block 16 commits");
+    free(env);
+    CHECK(q1(f.w->db, "SELECT COUNT(*) FROM v2_names WHERE name = "
+                      "CAST('punk' AS BLOB)") == 1 &&
+          k_utxo_live(f.w, k_nul[K_COIN_N]) == 0,
+          "K1: the name row exists and the input coin is spent");
+    CHECK(k_after_block(&f, L0, L1, 0x09u, "K1 name register") == 0,
+          "K1: legs 1 and 4 moved, no other; every leg root equals the "
+          "oracle and the rows; dirty empty");
+
+    /* K2: TOKEN_CREATE (rtn_core_mutate: the tokens INSERT, the utxo
+     * DELETE / INSERTs) -> legs 1 and 2 */
+    {
+        uint64_t tokfee = 0;
+        uint8_t tok[64];
+        memset(tok, 0x6C, sizeof(tok));
+        CHECK(nodus_chain_config_get_u64(f.w,
+                  (uint8_t)DNAC_CFG_TOKEN_CREATE_FEE_RAW, 17, 0, &tokfee)
+                  == 0 && tokfee + K_TOK_CHG == k_amt[K_COIN_T],
+              "K2: the governed creation fee is the one the coin was "
+              "sized for");
+        CHECK(k_token_env(f.w, 17, tok, K_COIN_T, tokfee, &env, &elen)
+                  == 0, "K2: a signed TOKEN_CREATE");
+        CHECK(k_apply_env(&f, 17, env, elen) == 0, "K2: block 17 commits");
+        free(env);
+        CHECK(q1(f.w->db, "SELECT COUNT(*) FROM tokens") == 1 &&
+              k_utxo_live(f.w, k_nul[K_COIN_T]) == 0,
+              "K2: the token row exists and the funding coin is spent");
+        CHECK(k_after_block(&f, L1, L2, 0x03u, "K2 token create") == 0,
+              "K2: legs 1 and 2 moved, no other; roots equal the oracle");
+        memcpy(L1, L2, sizeof(L1));
+    }
+
+    /* K3: SPEND (rtn_core_mutate: the utxo DELETE and two INSERTs) -> leg 1 */
+    CHECK(k_spend_env(f.w, 18, K_COIN_S1, 0x70, &env, &elen) == 0,
+          "K3: a signed SPEND");
+    CHECK(k_apply_env(&f, 18, env, elen) == 0, "K3: block 18 commits");
+    free(env);
+    CHECK(k_utxo_live(f.w, k_nul[K_COIN_S1]) == 0,
+          "K3: the input coin is spent");
+    CHECK(k_after_block(&f, L1, L2, 0x01u, "K3 spend") == 0,
+          "K3: only leg 1 moved; roots equal the oracle");
+    memcpy(L1, L2, sizeof(L1));
+
+    /* K4: rollback. A second SPEND of coin S2 in a block that FAULTS after
+     * the flush and the roots (V2AP_FAIL_AFTER_DOMAIN_ROOTS): the whole
+     * block, its dirty keys, its trie nodes and its leg roots are rolled
+     * back. */
+    {
+        nodus_v2_block_t b;
+        const sqlite3_int64 nodes0 =
+            q1(f.w->db, "SELECT COUNT(*) FROM v2_trie_nodes");
+        CHECK(k_spend_env(f.w, 19, K_COIN_S2, 0x72, &env, &elen) == 0,
+              "K4: a signed SPEND of coin S2");
+        nodus_v2_envelope_t e = { env, elen };
+        k_mk_block(&b, 19);
+        b.envs = &e;
+        b.n_envs = 1;
+        b.fail_at = V2AP_FAIL_AFTER_DOMAIN_ROOTS;
+        CHECK(v2x_cmt_injected(f.w, &b) == 0,
+              "K4: the block faulting after the flush is a FAULT naming "
+              "the injection, the whole database byte-identical");
+        CHECK(k_utxo_live(f.w, k_nul[K_COIN_S2]) == 1 &&
+              q1(f.w->db, "SELECT COUNT(*) FROM v2_trie_dirty") == 0 &&
+              q1(f.w->db, "SELECT COUNT(*) FROM v2_trie_nodes") == nodes0,
+              "K4: the coin is unspent, no dirty key, the node table as "
+              "it was");
+        CHECK(k_read_legs(f.w, L2) == 0 && k_moved(L1, L2) == 0,
+              "K4: every leg root is as before the block");
+        CHECK(j_roots_ok(&f, "K4 after the rolled-back block") == 0,
+              "K4: and equals the oracle");
+
+        /* K4b: an ITEM refused after its writes were captured? - a spend
+         * of the already spent coin S1 is refused in exec (no row to
+         * read): the block commits, the item's savepoint leaves no dirty
+         * key and no root moves */
+        nodus_v2_envelope_t e2;
+        uint8_t *env2 = NULL;
+        size_t elen2 = 0;
+        CHECK(k_spend_env(f.w, 19, K_COIN_S1, 0x74, &env2, &elen2) == 0,
+              "K4b: a signed SPEND of the spent coin S1");
+        e2.env_bytes = env2;
+        e2.env_len = elen2;
+        k_mk_block(&b, 19);
+        b.envs = &e2;
+        b.n_envs = 1;
+        uint32_t code = 0;
+        CHECK(v2x_cmt_refused_probe(f.w, &b, 0, &code) == 0 &&
+              code != NODUS_V2_TX_OK,
+              "K4b: the spend of a spent coin is refused in exec, the "
+              "ledger byte-identical");
+        free(env2);
+        CHECK(q1(f.w->db, "SELECT COUNT(*) FROM v2_trie_dirty") == 0 &&
+              k_read_legs(f.w, L2) == 0 && k_moved(L1, L2) == 0,
+              "K4b: no dirty key and no leg root moved");
+
+        /* K4c: the same S2 spend, committed for real, moves leg 1 */
+        CHECK(k_apply_env(&f, 19, env, elen) == 0,
+              "K4c: the S2 spend commits at block 19");
+        free(env);
+        CHECK(k_after_block(&f, L1, L2, 0x01u, "K4c spend") == 0,
+              "K4c: only leg 1 moved; roots equal the oracle");
+        memcpy(L1, L2, sizeof(L1));
+    }
+
+    /* K5: the first EPOCH BOUNDARY under generation 6 (idle blocks to
+     * DNAC_EPOCH_LENGTH): nodus_witness_vset_insert (leg 7) and
+     * v2ep_attendance_digest (leg 8) write inside the block, the flush
+     * puts them into the tries */
+    {
+        const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+        for (uint64_t h = 20; h < E; h++)
+            CHECK(j_apply_ok(&f, h) == 0, "K5: an idle block before the "
+                  "boundary");
+        const sqlite3_int64 vs0 =
+            q1(f.w->db, "SELECT COUNT(*) FROM validator_set_snapshots");
+        const sqlite3_int64 at0 =
+            q1(f.w->db, "SELECT COUNT(*) FROM v2_attendance_epoch");
+        CHECK(k_read_legs(f.w, L1) == 0, "K5: roots before the boundary");
+        CHECK(j_apply_ok(&f, E) == 0, "K5: the boundary block commits");
+        CHECK(q1(f.w->db, "SELECT COUNT(*) FROM validator_set_snapshots")
+                  > vs0 &&
+              q1(f.w->db, "SELECT COUNT(*) FROM v2_attendance_epoch") > at0,
+              "K5: the boundary wrote a validator-set snapshot and an "
+              "attendance digest");
+        CHECK(q1(f.w->db, "SELECT COUNT(*) FROM v2_trie_dirty") == 0 &&
+              k_read_legs(f.w, L2) == 0, "K5: dirty empty, roots read");
+        CHECK((k_moved(L1, L2) & 0xC0u) == 0xC0u,
+              "K5: legs 7 (vset) and 8 (attendance) moved");
+        CHECK(j_roots_ok(&f, "K5 epoch boundary") == 0,
+              "K5: every leg root equals the oracle and the rows");
+    }
+    jfx_close(&f);
+    return 0;
+}
+
+static int test_gen6_claims(void) {
+    jfx_t f;
+    uint8_t chain[32], mh[64];
+    CHECK(DNAC_EPOCH_LENGTH > 40, "K6: no epoch boundary among the heights");
+    CHECK(k_leaves() == 0, "K6: the distribution leaves");
+    CHECK(k_open(&f, 1, chain, mh) == 0, "K6: a chain at generation 6 whose "
+          "genesis commits a three-leaf claim distribution (blocks 1..15 "
+          "committed)");
+    CHECK(q1(f.w->db, "SELECT capture FROM v2_trie_state") == 1,
+          "K6: capture is 1");
+    uint8_t L0[8][64], L1[8][64], L2[8][64];
+    CHECK(k_read_legs(f.w, L0) == 0, "K6: leg roots before");
+    dna_claim_t c[K_N_LEAVES];
+    for (int i = 0; i < K_N_LEAVES; i++)
+        CHECK(k_claim(&c[i], i, chain, mh) == 0, "K6: a signed claim");
+
+    /* a claim block that FAULTS after the flush: nothing of it survives */
+    {
+        nodus_v2_block_t b;
+        const sqlite3_int64 nodes0 =
+            q1(f.w->db, "SELECT COUNT(*) FROM v2_trie_nodes");
+        k_mk_block(&b, 16);
+        b.claims = c;
+        b.n_claims = 2;
+        b.fail_at = V2AP_FAIL_AFTER_DOMAIN_ROOTS;
+        CHECK(v2x_cmt_injected(f.w, &b) == 0,
+              "K6: a claim block faulting after the flush is a FAULT, the "
+              "whole database byte-identical");
+        CHECK(q1(f.w->db, "SELECT COUNT(*) FROM v2_claims_spent") == 0 &&
+              q1(f.w->db, "SELECT COUNT(*) FROM v2_trie_dirty") == 0 &&
+              q1(f.w->db, "SELECT COUNT(*) FROM v2_trie_nodes") == nodes0,
+              "K6: no claim row, no dirty key, the node table as it was");
+        CHECK(k_read_legs(f.w, L1) == 0 && k_moved(L0, L1) == 0,
+              "K6: every leg root is as before the block");
+    }
+
+    /* claim release (nodus_rt_core_claim_apply: the utxo INSERT;
+     * nodus_witness_v2_claim_spend_insert: the v2_claims_spent INSERT)
+     * -> legs 1 and 3 */
+    {
+        nodus_v2_block_t b;
+        k_mk_block(&b, 16);
+        b.claims = c;
+        b.n_claims = 2;
+        CHECK(v2x_cmt_apply_ok(f.w, &b) == 0, "K6: block 16 carrying two "
+              "claims commits");
+        CHECK(q1(f.w->db, "SELECT COUNT(*) FROM v2_claims_spent WHERE "
+                          "target_domain_id = 1") == 2,
+              "K6: two claim rows");
+        CHECK(k_after_block(&f, L0, L1, 0x05u, "K6 two claims") == 0,
+              "K6: legs 1 and 3 moved, no other; roots equal the oracle");
+        k_mk_block(&b, 17);
+        b.claims = &c[2];
+        b.n_claims = 1;
+        CHECK(v2x_cmt_apply_ok(f.w, &b) == 0, "K6: block 17 carrying the "
+              "third claim commits");
+        CHECK(q1(f.w->db, "SELECT COUNT(*) FROM v2_claims_spent WHERE "
+                          "target_domain_id = 1") == 3,
+              "K6: three claim rows");
+        CHECK(k_after_block(&f, L1, L2, 0x05u, "K6 third claim") == 0,
+              "K6: legs 1 and 3 moved again; roots equal the oracle");
+    }
+    jfx_close(&f);
+    return 0;
+}
+
 int main(void) {
     fx_t fx;
     if (fx_open(&fx) != 0) {
@@ -1506,6 +2259,8 @@ int main(void) {
     if (!rc) rc = test_vset_leaf();
     if (!rc) rc = test_block_start();
     if (!rc) rc = test_gen6();
+    if (!rc) rc = test_gen6_writers();
+    if (!rc) rc = test_gen6_claims();
     if (rc) {
         fprintf(stderr, "test_hf9_trie_legs: FAILED\n");
         return 1;

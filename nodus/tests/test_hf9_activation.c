@@ -95,7 +95,10 @@
  *    that is the source read (nodus_witness_runtime.c, the D6 row).
  *  - Sections 4 and 5 call the rule functions with hand-set facts. Which
  *    facts the block path passes is the engine's: proven on the block path
- *    by test_hf9_edge.c (the param-24 single-use case), not here. The
+ *    by test_hf9_edge.c case L (two really signed param-24 CHAIN_CONFIG
+ *    envelopes through the engine: the first applies, the second is
+ *    refused while the first is pending; the engine derives the single-use
+ *    fact and nodus_witness_rt_native.c transfers it), not here. The
  *    0x71 approval responder's own reads are test_cc_appr.c's shape and
  *    are not exercised here.
  *  - Section 5's grace equality with the ERGONOMIC constant holds in the
