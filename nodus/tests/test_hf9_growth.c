@@ -294,15 +294,16 @@ int main(void) {
     CHECK(sqlx("WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 "
                "FROM c WHERE i < 5000) INSERT INTO v2_storage_segments "
                "(k, root, published_height) SELECT 100 + i, "
-               "zeroblob(64 - length(CAST(i AS TEXT))) || CAST(i AS BLOB), "
-               "1 FROM c") == 0, "5 000 old segments");
+               "CAST(zeroblob(64 - length(CAST(i AS TEXT))) || "
+               "CAST(i AS BLOB) AS BLOB), 1 FROM c") == 0,
+          "5 000 old segments");
     CHECK(sqlx("WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 "
                "FROM c WHERE i < 10000) INSERT INTO v2_storage_nodes "
                "(node_fp, node_pk, payee_fp, bond, status, "
                "registered_height, exit_height, fail_streak, grace_until) "
-               "SELECT zeroblob(64 - length(CAST(i AS TEXT))) || "
-               "CAST(i AS BLOB), zeroblob(2592), zeroblob(64), 0, 3, 1, 1, "
-               "0, 0 FROM c") == 0, "10 000 RELEASED registry rows");
+               "SELECT CAST(zeroblob(64 - length(CAST(i AS TEXT))) || "
+               "CAST(i AS BLOB) AS BLOB), zeroblob(2592), zeroblob(64), 0, "
+               "3, 1, 1, 0, 0 FROM c") == 0, "10 000 RELEASED registry rows");
     CHECK(sqlx("COMMIT") == 0, "commit");
     g_nseg = 5100;                    /* the planted k = 101 .. 5100 */
     B += E_LEN;
