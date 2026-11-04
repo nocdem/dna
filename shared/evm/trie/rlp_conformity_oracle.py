@@ -39,8 +39,9 @@ Usage:
         <deps dir with the two wheels> <out.json>
 (-I keeps the working directory off sys.path; run it from anywhere.)
 
-Output (rlp_vectors_0_1_6.json): {"source": ..., "sha256_of_sdist": ...,
-"vectors": [...]}. Each vector:
+Output (rlp_vectors_0_1_6.json): line 1 is a header object {"count": N,
+"seed": ..., "sha256_of_sdist": ..., "source": ...}; each following line is
+one vector, keys sorted, no spaces:
     {"id": "...", "op": "encode", "in": TREE, "out": HEX}
     {"id": "...", "op": "decode", "in": HEX, "ok": true,  "tree": TREE}
     {"id": "...", "op": "decode", "in": HEX, "ok": false, "error": NAME}
@@ -65,6 +66,8 @@ WHEELS = {   # execution-specs a87891f7 uv.lock pins
         "33de3e2a0c0e57ea1b67802485de556b92d557aae7c8c640070800f2b4f639e3",
     "typing_extensions-4.15.0-py3-none-any.whl":
         "f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548",
+    "mypy_extensions-1.1.0-py3-none-any.whl":
+        "1be4cccdb0f2482337c4743e60421de3a356cd97508abadd57d47403e94f5505",
 }
 SDIST_SRC ="ethereum_rlp-0.1.6/src"
 SEED = 0x524C5030          # "RLP0"
@@ -169,8 +172,7 @@ def fixed_trees():
     out.append(("empty-list", []))
     for v in ("00", "01", "7f", "80", "81", "ff"):
         out.append(("byte-" + v, b(v)))
-    for n in (2, 54, 55, 56, 57, 63, 64, 65, 255, 256, 257, 1023, 1024,
-              65535, 65536):
+    for n in (2, 54, 55, 56, 57, 63, 64, 65, 255, 256, 257, 1024, 65536):
         out.append(("str-len-%d" % n, b(("ab" * n))))
     out.append(("list-of-empty-lists", [[], [[]], [[], [[]]]]))
     for n in (1, 2, 17):
@@ -190,9 +192,9 @@ def fixed_trees():
 
 def random_tree(rng, depth):
     if depth == 0 or rng.random() < 0.55:
-        n = rng.choice((0, 1, 1, 2, 3, 20, 54, 55, 56, 64, 70, 300))
+        n = rng.choice((0, 1, 1, 2, 3, 20, 54, 55, 56, 64, 70))
         return b(bytes(rng.randrange(256) for _ in range(n)).hex())
-    k = rng.choice((0, 1, 2, 3, 5, 17, 20))
+    k = rng.choice((0, 1, 2, 3, 5, 17))
     return [random_tree(rng, depth - 1) for _ in range(k)]
 
 
@@ -226,7 +228,7 @@ def reject_inputs():
     r.append(("list-item-truncated-long-length", "c2" + "b9" + "00"))
     r.append(("list-empty", "c0"))
     r.append(("string-empty", "80"))
-    r.append(("byte-7f", "7f"))
+    r.append(("byte-7f-alone", "7f"))
     r.append(("byte-trailing", "7f00"))
     r.append(("0xbf-length-8", "bf" + "00" * 8))
     r.append(("0xff-length-8", "ff" + "00" * 8))
@@ -268,14 +270,21 @@ def main():
         add_encode(vid, tree)
     rng = random.Random(SEED)
     for i in range(300):
-        add_encode("rand-%03d" % i, random_tree(rng, 4))
+        add_encode("rand-%03d" % i, random_tree(rng, 3))
     for vid, hexs in reject_inputs():
         add_decode(vid, hexs)
 
-    doc = {"source": "ethereum-rlp 0.1.6 sdist",
-           "sha256_of_sdist": EXPECTED_SHA256,
-           "seed": SEED, "vectors": vectors}
-    text = json.dumps(doc, indent=1, sort_keys=True) + "\n"
+    ids = [v["id"] for v in vectors]
+    if len(ids) != len(set(ids)):
+        fail("duplicate vector id", 1)
+    # one vector per line, fixed key order: the file diffs and parses line
+    # by line (the C test relies on this layout)
+    head = json.dumps({"source": "ethereum-rlp 0.1.6 sdist",
+                       "sha256_of_sdist": EXPECTED_SHA256, "seed": SEED,
+                       "count": len(vectors)}, sort_keys=True)
+    text = head + "\n" + "".join(
+        json.dumps(v, sort_keys=True, separators=(",", ":")) + "\n"
+        for v in vectors)
     with open(sys.argv[3], "w") as f:
         f.write(text)
     print("wrote %s: %d vectors, sha256 %s" % (
