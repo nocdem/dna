@@ -27,10 +27,16 @@
  *  segments_visited of W2 grow with the history and fails step 4.
  *
  * ── WHAT IT DOES NOT COVER ──────────────────────────────────────────────
- *  Trie nodes loaded and rows read by the 8-pre flush for ordinary blocks
- *  (the rest of plan T-9) are WP2's flush; the EVM trie store has no
- *  counter in this package. The settlement of a boundary and the registry
- *  point reads at settlement are not run here (no snapshots / reports).
+ *  The ordinary-block half (trie nodes loaded by the 8-pre flush of ONE
+ *  changed key, counted in nodus_witness_v2_trie.c ts_get) is measured on
+ *  a tokens leg of 100 and of 5 000 rows by trie_probe(): the path-depth
+ *  BOUND (<= 131 nodes, plan 5.6) holds at both sizes and is far below the
+ *  leg's size - not equality, because the depth grows with log16(rows).
+ *  The flush is driven directly, not through a block; the other seven legs
+ *  are empty. The settlement of a boundary, release and the registry point
+ *  reads at settlement are not run here (no snapshots / reports): the
+ *  counters cover the freeze and the flush only. registry_fullscan_steps is
+ *  SQLite's own full-scan step count of the registry status query.
  *
  * ── FLAGS ───────────────────────────────────────────────────────────────
  *  register_witness_test; EVM runtime only. No fault injection, no
@@ -55,6 +61,7 @@
 #include "witness/nodus_witness_roots_v2.h"
 #include "witness/nodus_witness_v2_schema.h"
 #include "witness/nodus_witness_v2_storage.h"
+#include "witness/nodus_witness_v2_trie.h"
 #include "nodus/nodus_chain_config.h"
 
 #include "dnac/dnac.h"
@@ -228,6 +235,53 @@ static int freeze(uint64_t B, unsigned n_new_seg, nodus_storage_work_t *wk) {
     return sqlx("COMMIT");
 }
 
+/* The flush of ONE changed key on a tokens leg of `n_tokens` rows: a fresh
+ * S20 chain, the tokens planted, the eight tries built (the edge's step),
+ * capture on, one more token written (the trigger captures it), then the
+ * phase-8-pre flush with the counters read around it. The planted tokens
+ * only fill leg 2; the other seven legs are empty. */
+static int trie_probe(unsigned n_tokens, uint64_t *loaded) {
+    char sql[800];
+    g_w = calloc(1, sizeof(*g_w));
+    CHECK(g_w != NULL, "alloc");
+    snprintf(g_dir, sizeof(g_dir), "/tmp/test_hf9_growth_XXXXXX");
+    CHECK(mkdtemp(g_dir) != NULL, "tmpdir");
+    snprintf(g_w->data_path, sizeof(g_w->data_path), "%s", g_dir);
+    uint8_t c16[16];
+    memset(c16, 0x47, sizeof(c16));
+    CHECK(nodus_witness_create_chain_db(g_w, c16) == 0 &&
+          nodus_witness_db_migrate_v2s20(g_w) == 0, "fixture");
+    static const char *const ins =
+        "WITH RECURSIVE c(i) AS (SELECT %u UNION ALL SELECT i + 1 FROM c "
+        "WHERE i < %u) INSERT INTO tokens (token_id, name, symbol, "
+        "decimals, supply, creator_fp, flags, block_height, timestamp) "
+        "SELECT CAST(zeroblob(64 - length(CAST(i AS TEXT))) || "
+        "CAST(i AS BLOB) AS BLOB), 'tok' || i, 'T' || i, 8, 1000, 'fp1', "
+        "1, 7, 99 FROM c";
+    snprintf(sql, sizeof(sql), ins, 1u, n_tokens);
+    CHECK(sqlx(sql) == 0, "tokens planted");
+    CHECK(sqlx("BEGIN IMMEDIATE") == 0, "begin");
+    CHECK(nodus_witness_v2_trie_build_all(g_w) == 0 &&
+          nodus_witness_v2_trie_dirty_clear(g_w) == 0 &&
+          nodus_witness_v2_trie_set_capture(g_w, 1) == 0,
+          "the tries built, capture on");
+    CHECK(sqlx("COMMIT") == 0, "commit");
+    snprintf(sql, sizeof(sql), ins, n_tokens + 1u, n_tokens + 1u);
+    CHECK(sqlx("BEGIN IMMEDIATE") == 0 && sqlx(sql) == 0,
+          "one more token (captured)");
+    int64_t dirty = 0;
+    CHECK(nodus_witness_v2_trie_dirty_count(g_w, &dirty) == 0 && dirty == 1,
+          "exactly one dirty key");
+    memset(&g_nodus_storage_work, 0, sizeof(g_nodus_storage_work));
+    CHECK(nodus_witness_v2_trie_flush(g_w) == 0, "the flush");
+    *loaded = g_nodus_storage_work.trie_nodes_loaded;
+    CHECK(sqlx("COMMIT") == 0, "commit");
+    sqlite3_close(g_w->db);
+    free(g_w);
+    rmrf(g_dir);
+    return 0;
+}
+
 int main(void) {
     for (unsigned i = 0; i < NMEM; i++) {
         for (size_t j = 0; j < DNAC_PUBKEY_SIZE; j++)
@@ -320,10 +374,35 @@ int main(void) {
           "assignment rows, 5 000 segments and 10^4 registry rows");
     CHECK(w2.segments_visited == 1 && w2.assign_rows_read == 0,
           "and it is the one new segment, no old assignment row read");
+    /* work EXAMINED, not rows returned (Sol row 12): SQLite's own count of
+     * full-scan steps of the registry status query. The status index
+     * serves it, so both are 0; a status query forced to scan the registry
+     * (NOT INDEXED) would examine the 10 000 RELEASED rows and fail the
+     * second equality and the zero. */
+    CHECK(w1.registry_fullscan_steps == 0 && w2.registry_fullscan_steps == 0,
+          "the registry status query is served by the index: no full-scan "
+          "step, before or after the history grew");
 
     sqlite3_close(g_w->db);
     free(g_w);
     rmrf(g_dir);
+
+    /* 5. the ordinary-block half of T-9: trie nodes loaded by the flush of
+     * ONE changed key, on a tokens leg of 100 and of 5 000 rows */
+    {
+        uint64_t l_small = 0, l_big = 0;
+        CHECK(trie_probe(100, &l_small) == 0, "trie probe, 100 tokens");
+        CHECK(trie_probe(5000, &l_big) == 0, "trie probe, 5 000 tokens");
+        /* plan 5.6: one changed key loads at most its path (<= 129 nodes)
+         * + 1 sibling + 1 extension child. The path depth grows only with
+         * log16(rows), so the bound - not equality - is the invariant. */
+        CHECK(l_small > 0 && l_big > 0,
+              "the trie-node counter is wired (non-zero)");
+        CHECK(l_small <= 131 && l_big <= 131,
+              "one changed key loads at most 131 nodes at either size");
+        CHECK(l_big < 5000 / 4,
+              "and nowhere near the leg's size: no full reload");
+    }
     printf("test_hf9_growth: ALL %d checks passed\n", g_checks);
     return 0;
 }

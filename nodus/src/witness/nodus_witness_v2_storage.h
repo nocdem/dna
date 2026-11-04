@@ -263,6 +263,12 @@ typedef struct {
     uint64_t assign_rows_read;       /* v2_storage_assign rows read        */
     uint64_t assign_rows_written;    /* rows inserted or ended             */
     uint64_t scores_computed;        /* dna_v2_segment_score calls         */
+    uint64_t trie_nodes_loaded;      /* store gets of the keyed tries
+                                      * (nodus_witness_v2_trie.c ts_get) */
+    uint64_t registry_fullscan_steps;/* forward steps of FULL table scans
+                                      * of the registry status / node_fp
+                                      * queries (SQLite's own count): 0
+                                      * while the index serves them      */
 } nodus_storage_work_t;
 extern nodus_storage_work_t g_nodus_storage_work;
 

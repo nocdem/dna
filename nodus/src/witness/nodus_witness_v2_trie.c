@@ -8,6 +8,7 @@
 #include "witness/nodus_witness_v2_trie.h"
 #include "witness/nodus_witness_merkle.h"   /* nodus_witness_merkle_leaf_hash */
 #include "witness/nodus_witness_v2_schema.h"
+#include "witness/nodus_witness_v2_storage.h"   /* g_nodus_storage_work (T-9) */
 
 #include "evm/trie/evm_trie.h"
 #include "evm/trie/evm_trie_full.h"
@@ -36,6 +37,7 @@ static int ts_get(void *ctx, const uint8_t digest[64], uint8_t **rlp,
                   size_t *len) {
     sqlite3 *db = (sqlite3 *)ctx;
     sqlite3_stmt *st = NULL;
+    g_nodus_storage_work.trie_nodes_loaded++;     /* T-9: nodes loaded */
     if (sqlite3_prepare_v2(db,
             "SELECT rlp FROM v2_trie_nodes WHERE digest = ?1",
             -1, &st, NULL) != SQLITE_OK)

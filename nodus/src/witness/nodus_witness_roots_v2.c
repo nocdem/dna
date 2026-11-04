@@ -565,6 +565,13 @@ static int storage_scan(nodus_witness_t *w, dna_v2_storage_node_row_t **rows,
                       "(rc=%d) — failing root", rc);
         fail = 1;
     }
+    /* work actually EXAMINED, not rows returned (T-9, Sol row 12): the
+     * forward steps of a full table scan of this statement; 0 when the
+     * status index / the primary key serves it. Counted for the restricted
+     * variants only (the generation-6 boundary's reads). */
+    if (mode != STSCAN_ALL)
+        g_nodus_storage_work.registry_fullscan_steps += (uint64_t)
+            sqlite3_stmt_status(st, SQLITE_STMTSTATUS_FULLSCAN_STEP, 0);
     sqlite3_finalize(st);
     if (fail) { free(r); return -1; }
     if (n == 0) { free(r); r = NULL; }

@@ -9,9 +9,10 @@
  *        relation, for every member and epoch of a scratch S20 chain.
  *
  * ── WHAT IT PROVES ──────────────────────────────────────────────────────
- *  After the edge step and each of four generation-6 boundaries (B1, a
- *  join, a departure with an eligibility crossing, a replica-count change
- *  4 -> 6), for EVERY member fixture (members of set(B) and not):
+ *  After the edge step and each of six generation-6 boundaries (B1, a
+ *  join, a departure with an eligibility crossing up, a replica-count
+ *  change 4 -> 6, the eligibility RECOVERY, the replica-count decrease
+ *  6 -> 4), for EVERY member fixture (members of set(B) and not):
  *   M  must_hold(B, m) = {k : m in cur(k)} U {k published <= B - E :
  *      m in prev(k)}, ascending, no grace gate;
  *   P  eligible_segments(B, m) = the same list for a member of set(B)
@@ -480,6 +481,32 @@ int main(void) {
     CHECK(check_paths(B, cur, prev, set, &grace_seen, last, last_n,
                       &changed) == 0, "R paths");
     CHECK(changed, "the replica-count change changes a must-hold list");
+    memcpy(prev, cur, sizeof(*prev));
+
+    /* eligibility recovery: M5 (fail_streak 3 above) is eligible again */
+    snprintf(g_ctx, sizeof(g_ctx), "eligibility recovery");
+    CHECK(reg_put(5, 1, 0) == 0, "M5 fail_streak 0");
+    B += E_LEN;
+    changed = 0;
+    CHECK(freeze(B, 6, 0) == 0, "freeze");
+    CHECK(nodus_witness_storage_set_get(g_w, B, set) == 0 &&
+          rel_hrw(set, 6, cur) == 0, "model");
+    CHECK(check_paths(B, cur, prev, set, &grace_seen, last, last_n,
+                      &changed) == 0, "recovery paths");
+    CHECK(changed, "the recovery changes a must-hold list");
+    memcpy(prev, cur, sizeof(*prev));
+
+    /* R 6 -> 4 (down) */
+    snprintf(g_ctx, sizeof(g_ctx), "R 6 -> 4");
+    B += E_LEN;
+    CHECK(cc_row(DNAC_CFG_STORAGE_COPIES, 4, B, 4) == 0, "param 25 = 4");
+    changed = 0;
+    CHECK(freeze(B, 4, 0) == 0, "freeze");
+    CHECK(nodus_witness_storage_set_get(g_w, B, set) == 0 &&
+          rel_hrw(set, 4, cur) == 0, "model");
+    CHECK(check_paths(B, cur, prev, set, &grace_seen, last, last_n,
+                      &changed) == 0, "R down paths");
+    CHECK(changed, "the replica-count decrease changes a must-hold list");
     CHECK(grace_seen,
           "a member was in grace at some checked boundary (the grace case "
           "is exercised)");

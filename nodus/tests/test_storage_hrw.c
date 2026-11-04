@@ -31,7 +31,8 @@
  *  arrivals with segments where both enter the top R (the join-rule case:
  *  comparing each arrival against the stale R-th score would be wrong), a
  *  departure of holders, a fail_streak crossing up and back down, R 4 -> 6
- *  -> 4 (param 25 rows), B1 WITH an event (rows maintained against the E-s2
+ *  -> 4 and R 4 -> 16 -> 4 through the retained maintenance (18 eligible
+ *  members, exactly 16 holders per segment at R = 16; param 25 rows), B1 WITH an event (rows maintained against the E-s2
  *  rows, counts against XOR(set(H2)) - two separate CHECK groups, D17
  *  report 2 finding 4), a chain with no set(H2) (B1 is an ordinary first
  *  freeze, which runs through the event path: six arrivals against an empty
@@ -114,7 +115,7 @@ static int g_checks = 0;
 static char g_ctx[96] = "(setup)";
 
 #define E_LEN   ((uint64_t)DNAC_EPOCH_LENGTH)
-#define NMEM    16u      /* member fixtures                                 */
+#define NMEM    20u      /* member fixtures (18 eligible at the R = 16 case) */
 #define NSEG    20u      /* segment fixtures                                */
 #define RMAX    DNA_V2_STORAGE_HOLDERS_CAP
 
@@ -830,6 +831,31 @@ static int t_main_chain(void) {
     CHECK(cc_row(w, DNAC_CFG_STORAGE_COPIES, 4, B, 4) == 0, "param 25 = 4");
     CHECK(boundary(w, B, 4, 1, prev, 0, cur, 1, "R 6 -> 4 (event)") == 0,
           "r down");
+    memcpy(prev, cur, sizeof(*prev));
+
+    /* R = 16 through the retained maintenance (Sol row 10; plan T-7 "R 16"):
+     * M3 returns and M13..M17 register, so 18 members are eligible; first
+     * an arrivals boundary at R = 4, then R 4 -> 16 (param 25 = 16): each
+     * segment holds exactly 16 of the 18, the counts follow the relation */
+    CHECK(reg_put(w, 3, 1, 0) == 0, "M3 returns");
+    for (unsigned i = 13; i <= 17; i++)
+        CHECK(reg_put(w, i, 1, 0) == 0, "M13..M17 register");
+    B += E_LEN;
+    CHECK(boundary(w, B, 4, 0, prev, 0, cur, 1, "six arrivals at R = 4")
+          == 0, "arrivals");
+    memcpy(prev, cur, sizeof(*prev));
+    B += E_LEN;
+    CHECK(cc_row(w, DNAC_CFG_STORAGE_COPIES, 16, B, 6) == 0,
+          "param 25 = 16");
+    CHECK(boundary(w, B, 16, 1, prev, 0, cur, 1, "R 4 -> 16 (event)") == 0,
+          "r 16");
+    for (unsigned k = 1; k <= g_nseg; k++)
+        CHECK(cur->n[k] == 16, "R = 16: exactly 16 of the 18 eligible");
+    memcpy(prev, cur, sizeof(*prev));
+    B += E_LEN;
+    CHECK(cc_row(w, DNAC_CFG_STORAGE_COPIES, 4, B, 7) == 0, "param 25 = 4");
+    CHECK(boundary(w, B, 4, 0, prev, 0, cur, 1, "R 16 -> 4 (event)") == 0,
+          "r 16 down");
 
     /* the state guards: a skipped boundary is stale derived data */
     snprintf(g_ctx, sizeof(g_ctx), "state guards");
