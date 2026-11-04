@@ -313,7 +313,7 @@ static void hex_of(const uint8_t *p, size_t n, char *out, size_t cap)
 {
     static const char *h = "0123456789abcdef";
     size_t k = 0;
-    for (size_t i = 0; i < n && k + 3 < cap; i++) {
+    for (size_t i = 0; i < n && k + 2 < cap; i++) {   /* 2 chars + NUL fit */
         out[k++] = h[p[i] >> 4];
         out[k++] = h[p[i] & 15];
     }
