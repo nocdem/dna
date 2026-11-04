@@ -139,9 +139,11 @@
  *         delegation row is gone, legs 1, 7 and 8 moved, every leg root
  *         equals the oracle and the rows.
  *      K4d (inside K4) the engine's ITEM rollback after captured writes: a
- *         SPEND stopped after its effect 1 (V2AP_FAIL_AFTER_EFFECT_APPLY)
- *         is refused, the block applies; read inside the block's
- *         transaction after the flush: the coin is back, no dirty key,
+ *         1-input / 2-output SPEND stopped after its effect 3, the input
+ *         DELETE, the last effect (V2AP_FAIL_AFTER_EFFECT_APPLY; effects
+ *         0-1 the output INSERTs, 2 the pool SET, 3 the input DELETE) is
+ *         refused, the block applies; read inside the block's transaction
+ *         after the flush: the DELETEd input coin is back, no dirty key,
  *         every leg root as before and equal to the oracle.
  *
  * ── NOT COVERED ─────────────────────────────────────────────────────────
@@ -2212,27 +2214,33 @@ static int test_gen6_writers(void) {
               "K4b: no dirty key and no leg root moved");
 
         /* K4d: the engine's ITEM rollback after captured writes (Sol
-         * verifier, second round, row 2). The S2 spend is stopped inside
-         * its own item savepoint after its effect at index 1 was applied
-         * (V2AP_FAIL_AFTER_EFFECT_APPLY: the input DELETE and an output
-         * INSERT have run and the triggers have captured their keys): the
-         * item is refused, the block still applies. Read INSIDE the
-         * block's transaction, after the engine (phase 8-pre flush
-         * included): the coin is back, no dirty key, every leg root as
-         * before and equal to the oracle; then the host rolls back. */
+         * verifier, second round, row 2; third round, row 1). The S2 spend
+         * has 1 input and 2 outputs, so its effect list is, in the order
+         * rtn_core_mutate applies it (nodus_witness_rt_native.c, "CREATEs
+         * first", "DELETEs last"): 0 and 1 = the two output INSERTs, 2 =
+         * the pool supply SET, 3 = the input DELETE. The stop is injected
+         * after effect 3 (V2AP_FAIL_AFTER_EFFECT_APPLY), i.e. after the
+         * input DELETE ran and the triggers captured its key together with
+         * the two output keys: the item is refused, the block still
+         * applies. Read INSIDE the block's transaction, after the engine
+         * (phase 8-pre flush included): the DELETEd input coin is back
+         * (restoration of a deleted row, not just removal of inserted
+         * ones), no dirty key, every leg root as before and equal to the
+         * oracle; then the host rolls back. */
         nodus_v2_envelope_t e3 = { env, elen };
         k_mk_block(&b, 19);
         b.envs = &e3;
         b.n_envs = 1;
         b.fail_at = V2AP_FAIL_AFTER_EFFECT_APPLY;
         b.fail_env_index = 0;
-        b.fail_effect_index = 1;
+        b.fail_effect_index = 3;            /* the input DELETE, the last */
         CHECK(v2x_cmt_host(f.w, &b, 1) == 0 &&
               b.cmt.results[0].code != NODUS_V2_TX_OK,
-              "K4d: the item stopped after a real writer ran is refused, "
-              "the block applies");
+              "K4d: the item stopped after the input DELETE ran is "
+              "refused, the block applies");
         CHECK(k_utxo_live(f.w, k_nul[K_COIN_S2]) == 1,
-              "K4d: the engine's item rollback restored the input coin");
+              "K4d: the engine's item rollback restored the DELETEd input "
+              "coin");
         CHECK(q1(f.w->db, "SELECT COUNT(*) FROM v2_trie_dirty") == 0,
               "K4d: no dirty key survives the refused item");
         CHECK(k_read_legs(f.w, L2) == 0 && k_moved(L1, L2) == 0,
