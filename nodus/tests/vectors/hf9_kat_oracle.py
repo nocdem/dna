@@ -51,7 +51,16 @@ PROVENANCE (what was read; nothing else)
           dna_v2_domain_head_hash_v2 / dna_v2_domains_root_v2 :1239-1274;
           dna_v2_global_root_v2 :1336-1345; dna_v2_domain_head_encode
           :869-880.
-        shared/dnac/ledger_roots_v2.h :262-305 (A(k), holders(k) text).
+        shared/dnac/ledger_roots_v2.h :262-305 (A(k), holders(k) text),
+          :820-840 (DomainHead struct, enc89), and by grep only
+          :451-507 (name / token length constants).
+        Format precedents read for structure, not content:
+          nodus/tests/vectors/hf7_root_coverage_oracle.py (docstring,
+          :1-120 and a grep of its S6 / S8 sections),
+          shared/evm/trie/trie_oracle.py (:1-140: how it copies the
+          reference functions and self-checks first),
+          nodus/tests/vectors/hf7_root_coverage_kat.json (schema and the
+          S4 / S5 / S6 / S8 vector fields, to use them as controls).
         shared/dnac/manifest_wire.c dna_claims_leaf_hash :663-677.
         nodus/src/witness/nodus_witness_merkle.c :78-88 (leaf_hash 0x00),
           :136-187 (the 340-byte untagged UTXO preimage), :371-381.
@@ -73,8 +82,10 @@ PROVENANCE (what was read; nothing else)
           unchanged existing compositions, DomainHead v2, domains_root,
           GLOBAL v2, segment leaf v2).
         shared/evm/tests/addr32_oracle.py keccak256 / keccak_f (FIPS 202
-          Keccak-f[1600] from its definition) -- used only for the
-          unsubstituted-mode control and the SHA3-512 sponge cross-check.
+          Keccak-f[1600] from its definition; read :1-40, :83-130,
+          :170-192) -- used only for the unsubstituted-mode control, the
+          SHA3-512 sponge cross-check and (rlp_bytes / rlp_list) the
+          cross-check of the pinned ethereum_rlp encoder.
 
 HONEST LABEL
   Trie structure and roots: GROUNDED. They are produced by executing the
