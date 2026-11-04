@@ -44,7 +44,7 @@
 #define NODUS_WITNESS_IPC_READ_BUDGET_FRAMES  8
 
 _Static_assert(NODUS_WITNESS_IPC_ROLES_FRAME_MAX >=
-    39u + (128u + 256u) * 66u, "role-list frame must fit both full arrays");
+    39u + (128u + 1024u) * 66u, "role-list frame must fit both full arrays");
 _Static_assert(NODUS_WITNESS_IPC_ROLES_FRAME_MAX < NODUS_MAX_FRAME_TCP,
                "role-list frame must fit the Unix transport");
 
@@ -116,7 +116,7 @@ int nodus_witness_roles_build(nodus_witness_t *w, nodus_inter_role_list_t *out) 
         "SELECT node_fp FROM v2_storage_nodes WHERE status IN (1,2)",
         -1, &s, NULL) != SQLITE_OK) goto fail;
     while ((rc = sqlite3_step(s)) == SQLITE_ROW) {
-        if (out->storage_count>=DNA_V2_STORAGE_SET_MAX ||
+        if (out->storage_count>=DNA_V2_STORAGE_SET_CAP ||
             sqlite3_column_bytes(s,0)!=NODUS_KEY_BYTES || !sqlite3_column_blob(s,0)) goto fail;
         memcpy(out->storage[out->storage_count++].bytes,sqlite3_column_blob(s,0),NODUS_KEY_BYTES);
     }
@@ -390,7 +390,7 @@ static void ipc_on_ctl_frame(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn,
         nodus_inter_role_list_t list={0};
         int rc=ipc->h.roles ? ipc->h.roles(ipc->h.ctx,&list) : -1;
         bool ok=rc==1 && list.validator_count<=DNAC_MAX_VALIDATORS &&
-                        list.storage_count<=DNA_V2_STORAGE_SET_MAX;
+                        list.storage_count<=DNA_V2_STORAGE_SET_CAP;
         if (!ok) QGP_LOG_ERROR(LOG_TAG,"%s","ipc_roles database read failed or list exceeds bound");
         uint8_t buf[NODUS_WITNESS_IPC_ROLES_FRAME_MAX];
         size_t n=nodus_inter_roles_encode(q,&list,ok,buf,sizeof(buf));

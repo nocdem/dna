@@ -838,6 +838,27 @@ static int t_hooks(void) {
           "a RELEASED row with exit_height 0 refused");
     reads_set(0, NULL, 0, (uint64_t)NODUS_STORAGE_SET_MAX);
     CHECK(hk_exec(s4, &e, 2, NULL) == -1, "cap: 256 live rows refused");
+    /* HF-9 WP4 (plan §8.7): the registration cap is the generation's -
+     * generation 4 above stays 256; the generation-6 runtime admits up to
+     * 1023 live rows and refuses at 1024. The same fixture, only the
+     * runtime differs. */
+    {
+        const nodus_domain_runtime_t *s6 =
+            nodus_runtime_for_generation(NODUS_RT_GEN_TRIE, DNA_DOMAIN_SYSTEM);
+        CHECK(s6 != NULL, "the compiled generation-6 SYSTEM runtime");
+        reads_set(0, NULL, 0, (uint64_t)NODUS_STORAGE_SET_MAX);
+        CHECK(hk_exec(s6, &e, 2, NULL) == 0,
+              "generation 6: 256 live rows admitted");
+        reads_set(0, NULL, 0, (uint64_t)DNA_V2_STORAGE_SET_CAP - 1u);
+        CHECK(hk_exec(s6, &e, 2, NULL) == 0,
+              "generation 6: 1023 live rows admitted");
+        reads_set(0, NULL, 0, (uint64_t)DNA_V2_STORAGE_SET_CAP);
+        CHECK(hk_exec(s6, &e, 2, NULL) == -1,
+              "generation 6: cap: 1024 live rows refused");
+        reads_set(0, NULL, 0, (uint64_t)DNA_V2_STORAGE_SET_CAP);
+        CHECK(hk_exec(s4, &e, 2, NULL) == -1,
+              "generation 4 still refuses (the historical 256)");
+    }
     reads_set(DNA_V2_STORAGE_RELEASED, g_k[KO].fp, 3, 0);
     memcpy(g_reads[0].value, g_k[KX].pk, PK_LEN);   /* another node's row */
     CHECK(hk_exec(s4, &e, 2, NULL) == -2,

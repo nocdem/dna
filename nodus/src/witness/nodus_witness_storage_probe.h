@@ -160,6 +160,11 @@ extern "C" {
  *  bitmap_len(2) ‖ bitmap (rt_native.c RTN_STREP_*; bytes 2026-10-04 item
  *  3). */
 #define NODUS_STPROBE_REPORT_CALL_MAX  (78u + DNA_V2_STORAGE_BITMAP_MAX)
+/** HF-9 WP4 (plan §8.7): the CAPACITY of the call buffer (bitmap up to 128
+ *  bytes, generation 6); the call a given set needs is bounded by that
+ *  set's generation limit, which the caller passes explicitly. _MAX above
+ *  stays the historical (generation <= 5) bound. */
+#define NODUS_STPROBE_REPORT_CALL_CAP  (78u + DNA_V2_STORAGE_BITMAP_CAP)
 
 _Static_assert(NODUS_STPROBE_REQ_LEN == 16u + 32u + 8u + 64u + 64u + 64u +
                                         32u + 8u,
@@ -355,11 +360,15 @@ bool nodus_stprobe_answer_ok(const nodus_stprobe_ans_view_t *a,
 /** The STORAGE_REPORT call (bytes 2026-10-04 item 3): epoch_start u64 ‖
  *  seat u32 ‖ S(H)[64] ‖ bitmap_len u16 ‖ bitmap, bitmap_len =
  *  ceil(count/8), bit i (LSB-first within byte i/8) = ok[i]; unused high
- *  bits 0. count <= DNA_V2_STORAGE_SET_MAX. @return 0 / -1. */
+ *  bits 0. count <= `max_count` - the member limit of the set's generation
+ *  (256 up to generation 5, 1024 from 6; nodus_witness_storage_limits_at),
+ *  passed by the caller and at most DNA_V2_STORAGE_SET_CAP.
+ *  @return 0 / -1. */
 int nodus_stprobe_report_call(uint64_t epoch_start, uint32_t seat,
                               const uint8_t set_hash[64],
                               const bool *ok, uint32_t count,
-                              uint8_t out[NODUS_STPROBE_REPORT_CALL_MAX],
+                              uint32_t max_count,
+                              uint8_t out[NODUS_STPROBE_REPORT_CALL_CAP],
                               size_t *len_out);
 
 /**
@@ -369,6 +378,8 @@ int nodus_stprobe_report_call(uint64_t epoch_start, uint32_t seat,
  * (the tip + 1 this node submits at) and signed by the seat key `pk` /
  * `sk` (this node's identity — the consensus key, nodus_witness.c
  * witness_cmt_raw_sign). `expiry` must be >= applying_height.
+ * `max_call_len` = 78 + the bitmap limit of the set's generation (110 up to
+ * generation 5, 206 from 6), at most NODUS_STPROBE_REPORT_CALL_CAP.
  * *out is heap (free()). @return 0 / -1.
  */
 int nodus_stprobe_report_env(const uint8_t chain32[DNA_CHAIN_ID_LEN],
@@ -376,6 +387,7 @@ int nodus_stprobe_report_env(const uint8_t chain32[DNA_CHAIN_ID_LEN],
                              const uint8_t sys_hash[64],
                              uint64_t applying_height, uint64_t expiry,
                              const uint8_t *call, size_t call_len,
+                             size_t max_call_len,
                              const uint8_t *pk, const uint8_t *sk,
                              uint8_t **out, size_t *out_len);
 

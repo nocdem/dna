@@ -40,6 +40,8 @@
 _Static_assert(STP_PK_LEN == 2592u, "the node key is ML-DSA-87");
 _Static_assert(NODUS_STPROBE_REPORT_CALL_MAX == 110u,
                "the report call bound is rt_native.c RTN_STREP_CALL_MAX");
+_Static_assert(NODUS_STPROBE_REPORT_CALL_CAP == 206u,
+               "the report call capacity is rt_native.c RTN_STREP_CALL_CAP");
 
 /* ── byte helpers ────────────────────────────────────────────────────── */
 
@@ -474,10 +476,11 @@ bool nodus_stprobe_answer_ok(const nodus_stprobe_ans_view_t *a,
 int nodus_stprobe_report_call(uint64_t epoch_start, uint32_t seat,
                               const uint8_t set_hash[64],
                               const bool *ok, uint32_t count,
-                              uint8_t out[NODUS_STPROBE_REPORT_CALL_MAX],
+                              uint32_t max_count,
+                              uint8_t out[NODUS_STPROBE_REPORT_CALL_CAP],
                               size_t *len_out) {
     if (!set_hash || !out || !len_out) return -1;
-    if (count > DNA_V2_STORAGE_SET_MAX) return -1;
+    if (max_count > DNA_V2_STORAGE_SET_CAP || count > max_count) return -1;
     if (count > 0 && !ok) return -1;
     const uint16_t bl = (uint16_t)((count + 7u) / 8u);
     put64(out, epoch_start);
@@ -497,13 +500,15 @@ int nodus_stprobe_report_env(const uint8_t chain32[DNA_CHAIN_ID_LEN],
                              const uint8_t sys_hash[64],
                              uint64_t applying_height, uint64_t expiry,
                              const uint8_t *call, size_t call_len,
+                             size_t max_call_len,
                              const uint8_t *pk, const uint8_t *sk,
                              uint8_t **out, size_t *out_len) {
     if (!out || !out_len) return -1;
     *out = NULL;
     *out_len = 0;
     if (!chain32 || !sys_hash || !call || !pk || !sk) return -1;
-    if (call_len < 78u || call_len > NODUS_STPROBE_REPORT_CALL_MAX) return -1;
+    if (max_call_len > NODUS_STPROBE_REPORT_CALL_CAP) return -1;
+    if (call_len < 78u || call_len > max_call_len) return -1;
     if (applying_height == 0 || expiry < applying_height) return -1;
 
     uint8_t *auth = calloc(1, STP_AUTH_LEN);

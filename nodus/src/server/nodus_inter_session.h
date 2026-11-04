@@ -24,7 +24,9 @@ typedef struct {
     uint64_t height;
     size_t validator_count, storage_count;
     nodus_key_t validators[DNAC_MAX_VALIDATORS];
-    nodus_key_t storage[DNA_V2_STORAGE_SET_MAX];
+    nodus_key_t storage[DNA_V2_STORAGE_SET_CAP];   /* HF-9 §8.7: the live
+                                                    * rows, up to the
+                                                    * generation-6 capacity */
 } nodus_inter_role_list_t;
 
 void nodus_inter_roles_lookup(const nodus_inter_role_list_t *list,

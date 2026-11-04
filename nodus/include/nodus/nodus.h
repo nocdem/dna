@@ -1566,8 +1566,10 @@ int nodus_ruleset_compat(const nodus_dnac_ruleset_info_t *ri,
  * node answers "unknown DNAC method". One node is trusted for the answer
  * (as every dnac_* query). */
 
-/** Members of one frozen storage set at most (DNA_V2_STORAGE_SET_MAX). */
-#define NODUS_DNAC_STORAGE_SET_MAX  256u
+/** Members of one frozen storage set at most (DNA_V2_STORAGE_SET_CAP, the
+ *  generation-6 member capacity; HF-9 plan §8.7 - 256 up to generation 5).
+ *  Also the most rows one dnac_storage_by_owner reply lists. */
+#define NODUS_DNAC_STORAGE_SET_MAX  1024u
 /** Eligible segment numbers one dnac_storage_status reply lists. */
 #define NODUS_DNAC_STORAGE_SEG_MAX  64u
 

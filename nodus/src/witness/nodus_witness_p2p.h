@@ -81,7 +81,10 @@
  *     member stays until the boundary that drops it; a newly ACTIVE
  *     registry row is not a member until the next boundary freezes it in;
  *     before the storage activation there is no set (each set holds at
- *     most DNA_V2_STORAGE_SET_MAX = 256 members) — plus the
+ *     most 256 members up to generation 5 and DNA_V2_STORAGE_SET_CAP =
+ *     1024 from generation 6; the consumer, bonded_add_storage_set, reads
+ *     each set's own count and has no literal bound - HF-9 plan §8.7) —
+ *     plus the
  *     members of the committees for tip + 1 and tip − 1 (the two
  *     committees the deleted B1 IDENT gate consulted) — recomputed
  *     whenever the local tip moves.

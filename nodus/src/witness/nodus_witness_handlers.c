@@ -2750,8 +2750,9 @@ static void handle_dnac_name_of(nodus_witness_t *w,
  * A store fault is an error reply, never a partial answer.
  * ════════════════════════════════════════════════════════════════════ */
 
-_Static_assert(NODUS_DNAC_STORAGE_SET_MAX == DNA_V2_STORAGE_SET_MAX,
-               "the status wire's set bound is the chain's");
+_Static_assert(NODUS_DNAC_STORAGE_SET_MAX == DNA_V2_STORAGE_SET_CAP,
+               "the status wire's set bound is the chain's capacity "
+               "(HF-9 plan §8.7: 1024 from generation 6)");
 
 /* The registry row of `fp`. @return 1 found / 0 absent / -1 fault. */
 static int st_status_row(nodus_witness_t *w, const uint8_t fp[64],
