@@ -212,7 +212,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
           validateNewPassword(password);
           // A restore replaces the wallet and clears its permissions; the sealed connected-sites record of the
           // replaced wallet goes with them (plan section 2.6), after any change already queued for it.
-          await connectedSites.flush().catch(() => {}); connectedSites.clear();
+          await connectedSites.flush().catch(() => {}); connectedSites.clear(); await connectedSites.forgetRevocations();
           permissions.controller.clearState(); permissions.setAccounts([]);
           await storage.remove(SITES_KEY);
           saved = await vaultStore.create(password, phrase);
@@ -399,7 +399,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     },
     async deleteVault() {
       // A queued sealed write must land before the delete removes the record, never after it.
-      await connectedSites.flush().catch(() => {});
+      await connectedSites.flush().catch(() => {}); await connectedSites.forgetRevocations();
       await vaultStore.deleteVault(); permissions.controller.clearState(); permissions.setAccounts([]); await store.flush();
     },
     setLocked: () => lockCoordinator.lock(),

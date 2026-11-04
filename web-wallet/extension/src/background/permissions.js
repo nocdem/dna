@@ -208,7 +208,7 @@ export function createPermissions({ messenger, approvals, runtime, getNetworkSta
   }
 
   // Port: handlers/wallet-revokePermissions.ts:86-132; metamask-controller.js:5540-5552 tolerates missing grants.
-  function revokePermissions(req, res, _next, end) {
+  async function revokePermissions(req, res, _next, end) {
     const param = req.params?.[0];
     if (!param) throw rpcErrors.invalidParams();
     const keys = Object.keys(param).filter(name => name !== Caip25EndowmentPermissionName);
@@ -221,8 +221,11 @@ export function createPermissions({ messenger, approvals, runtime, getNetworkSta
       // ADAPTATION: plan §11:964-966 removes the raw error log, which may include request data.
     }
     // While locked the grant is only in the sealed record; connected-sites.js applies it at the next unlock
-    // (operator 2026-11-04: "Hatırlansın, kilit açılınca uygulansın").
-    rememberRevocation?.(req.origin, relevant);
+    // (operator 2026-11-04: "Hatırlansın, kilit açılınca uygulansın"). A request naming any other permission
+    // changes nothing when unlocked (the controller throws, caught above), so it is not remembered.
+    if (rememberRevocation && relevant.every(name => name === Caip25EndowmentPermissionName || name === NODUS_PERMISSION)) {
+      await rememberRevocation(req.origin, relevant);
+    }
     if (relevant.includes(Caip25EndowmentPermissionName) || relevant.includes(NODUS_PERMISSION)) approvals.rejectOrigin(req.origin);
     res.result = null; return end();
   }

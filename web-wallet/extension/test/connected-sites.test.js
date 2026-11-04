@@ -6,13 +6,15 @@ import { SITES_KEY, parseSites, serializeSites, sitesKeyFor } from '../../src/ac
 import { STATE_KEY } from '../src/background/store.js';
 import { REVOKED_KEY } from '../src/background/connected-sites.js';
 import { PROVIDER_METHODS } from '../src/constants/stream.js';
+import { NODUS_PERMISSION } from '../src/background/permissions.js';
 
 // Proves the connected-websites list is sealed at rest (docs/plans/decisions/2026-11-03-chrome-web-store.md:13,15;
 // plan docs/plans/2026-11-03-chrome-web-store-plan.md section 2.6): it is written only as an AES-256-GCM record under
 // nodus.sites.v1, no origin appears in any plain stored value, lock empties it, unlock restores it without a new
 // approval, an old plain list is dropped (no migration, same record line 18), a record that fails to open is
 // reported and left as it is, and a website's own wallet_revokePermissions sent while locked is applied at the next
-// unlock (operator 2026-11-04: "Hatırlansın, kilit açılınca uygulansın"), also after a service worker restart.
+// unlock (operator 2026-11-04: "Hatırlansın, kilit açılınca uygulansın"): each request as the controller applies it
+// when unlocked, kept through a refused sealed write and read back by a new background, forgotten by a restore.
 // Needs: Node >=22.14 and the committed CPUNK WASM. No flags, network or disk output; the browser APIs are in-memory
 // fakes with the real background, engine, permission controller and AES-GCM.
 // Leaves: nothing. Falsely passes: the fake storage persists whatever it is given, so it cannot show a write lost to a
@@ -28,15 +30,18 @@ function event() {
   return { listeners, addListener(fn) { listeners.add(fn); }, removeListener(fn) { listeners.delete(fn); }, emit(...args) { return [...listeners].map(fn => fn(...args)); } };
 }
 function browserFixture(initial = {}, session = {}) {
-  const values = structuredClone(initial), writes = [];
-  return { values, writes, session, consumeNodusSeed: () => {},
+  const values = structuredClone(initial), writes = [], failures = { sites: false };
+  return { values, writes, session, failures, consumeNodusSeed: () => {},
     // chrome.storage.session: kept by the browser across service worker restarts, not written to disk.
     sessionStorage: { async get(key) { return { [key]: structuredClone(session[key]) }; },
       async set(items) { Object.assign(session, structuredClone(items)); },
       async remove(key) { delete session[key]; } },
     runtime: { id: 'test-extension', onConnect: event(), getManifest: () => ({ version: '0.1.132' }), getURL: path => `chrome-extension://test-extension/${path}` },
     storage: { async get(key) { return key === null ? structuredClone(values) : { [key]: structuredClone(values[key]) }; },
-      async set(items) { writes.push(structuredClone(items)); Object.assign(values, structuredClone(items)); },
+      async set(items) {
+        if (failures.sites && Object.hasOwn(items, SITES_KEY)) throw new Error('write refused');
+        writes.push(structuredClone(items)); Object.assign(values, structuredClone(items));
+      },
       async remove(keys) { for (const key of Array.isArray(keys) ? keys : [keys]) delete values[key]; } },
     alarms: { onAlarm: event(), async clear() {}, async create() {} },
     windows: { onRemoved: event(), async getAll() { return []; }, async getLastFocused() { return { top: 0, left: 0, width: 1000 }; },
@@ -221,7 +226,8 @@ test('a website\'s revocation sent while locked is answered, remembered and appl
   remote.disconnect();
 });
 
-test('a revocation remembered while locked survives a service worker restart', async t => {
+// Not a real worker restart: a second background in the same process reads the same fake session storage.
+test('a revocation remembered while locked is read back by a new background from session storage', async t => {
   const first = await setup(t), unlocked = await startWallet(first.background), remote = port(first.runtime);
   await connectSite(first.background, remote);
   await first.background.lock();
@@ -233,4 +239,67 @@ test('a revocation remembered while locked survives a service worker restart', a
   assert.deepEqual(background.permissions.controller.getSubjectNames(), []);
   await background.connectedSites.flush();
   assert.deepEqual(await parseSites(values[SITES_KEY], unlocked.id, await sitesKeyFor(phrase, unlocked.id)), {});
+});
+
+test('separate revocations sent while locked are applied one by one, as when unlocked', async t => {
+  const { background, runtime } = await setup(t); await startWallet(background); const remote = port(runtime);
+  await connectSite(background, remote);
+  await background.lock();
+  // The site holds only the Ethereum permission; the second request names a permission it does not hold.
+  assert.equal((await request(remote, 'wallet_revokePermissions', [{ eth_accounts: {} }])).result, null);
+  assert.equal((await request(remote, 'wallet_revokePermissions', [{ [NODUS_PERMISSION]: {} }])).result, null);
+  await background.unlock(password, { cpunkWasmBytes });
+  assert.deepEqual(background.permissions.controller.getSubjectNames(), []);
+  remote.disconnect();
+});
+
+test('a revocation naming an unknown permission changes nothing and is not remembered', async t => {
+  const { background, runtime, session } = await setup(t); await startWallet(background); const remote = port(runtime);
+  await connectSite(background, remote);
+  await background.lock();
+  assert.equal((await request(remote, 'wallet_revokePermissions', [{ 'endowment:unknown': {} }])).result, null);
+  assert.equal(Object.hasOwn(session, REVOKED_KEY), false);
+  await background.unlock(password, { cpunkWasmBytes });
+  assert.deepEqual(background.permissions.controller.getSubjectNames(), [origin]);
+  remote.disconnect();
+});
+
+test('a refused sealed write keeps the remembered revocation for the next unlock', async t => {
+  const { background, runtime, values, session, failures } = await setup(t), unlocked = await startWallet(background), remote = port(runtime);
+  await connectSite(background, remote);
+  await background.lock();
+  assert.equal((await request(remote, 'wallet_revokePermissions', [{ eth_accounts: {} }])).result, null);
+  failures.sites = true;
+  await background.unlock(password, { cpunkWasmBytes });
+  await assert.rejects(background.connectedSites.flush(), /write refused/);
+  await background.connectedSites.flushRevoked();
+  assert.deepEqual(Object.keys(session[REVOKED_KEY]), [origin], 'the stored request stays');
+  failures.sites = false;
+  await background.lock();
+  await background.unlock(password, { cpunkWasmBytes });
+  assert.deepEqual(background.permissions.controller.getSubjectNames(), []);
+  await background.connectedSites.flush(); await background.connectedSites.flushRevoked();
+  assert.deepEqual(await parseSites(values[SITES_KEY], unlocked.id, await sitesKeyFor(phrase, unlocked.id)), {});
+  assert.equal(Object.hasOwn(session, REVOKED_KEY), false);
+  remote.disconnect();
+});
+
+test('a restore forgets the revocations remembered for the replaced wallet', { timeout: 60000 }, async t => {
+  const { background, runtime, session } = await setup(t); await startWallet(background); const remote = port(runtime);
+  await connectSite(background, remote);
+  await background.lock();
+  assert.equal((await request(remote, 'wallet_revokePermissions', [{ eth_accounts: {} }])).result, null);
+  assert.equal(Object.hasOwn(session, REVOKED_KEY), true);
+  const ui = { name: 'popup', sender: { id: runtime.id, url: `chrome-extension://${runtime.id}/popup.html` }, messages: [], onMessage: event(), onDisconnect: event(), disconnected: false,
+    postMessage(message) { this.messages.push(structuredClone(message)); },
+    disconnect() { if (!this.disconnected) { this.disconnected = true; this.onDisconnect.emit(this); } } };
+  runtime.onConnect.emit(ui);
+  const id = ++requestId, answered = () => ui.messages.find(message => message.name === 'controller' && message.data.id === id)?.data;
+  ui.onMessage.emit(`1|0|1${JSON.stringify({ name: 'controller', data: { id, jsonrpc: '2.0', method: 'createNewVaultAndRestore', params: [password, [...new TextEncoder().encode(phrase)]] } })}`);
+  // Vault creation derives its key with WebCrypto; wait for the answer itself, bounded by the test timeout.
+  while (!answered()) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(answered().error, undefined);
+  ui.disconnect();
+  assert.equal(Object.hasOwn(session, REVOKED_KEY), false);
+  remote.disconnect();
 });
