@@ -4170,6 +4170,12 @@ add_executable(test_supply_invariant tests/test_supply_invariant.c)
 target_link_libraries(test_supply_invariant nodus dsa nodus)
 add_test(NAME test_supply_invariant COMMAND test_supply_invariant)
 
+# HF-9 T-8 (plan §9.1): the supply running totals kept by the S20
+# triggers, their re-seed on open and the CORE invariant reading them
+# (fail closed). A real derived chain (v2_genesis_fixture.h); no
+# environment, no compile flag.
+register_witness_test(test_supply_totals)
+
 # Performance benchmark harness (Phase 1 — micro-benchmarks).
 # See nodus/docs/plans/2026-04-24-perf-harness-design.md.
 # Run with: ctest -L bench

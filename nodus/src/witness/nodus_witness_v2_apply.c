@@ -4968,9 +4968,13 @@ static int phase_6b_evm_activation(nodus_witness_t *w, nodus_v2_block_t *blk,
         if (nodus_witness_db_schema_version(w, &ver) != 0 ||
             (ver != NODUS_V2_SCHEMA_VERSION_S17 &&
              ver != NODUS_V2_SCHEMA_VERSION_S18 &&
-             ver != NODUS_V2_SCHEMA_VERSION_S19)) {
-            V2AP_FAULT("phase 6b'': the EVM edge needs schema S17, S18 or "
-                       "S19; this node's database is at %u", (unsigned)ver);
+             ver != NODUS_V2_SCHEMA_VERSION_S19 &&
+             ver != NODUS_V2_SCHEMA_VERSION_S20)) {   /* HF-9: the live
+                                                       * rung (S19 + the
+                                                       * supply totals) */
+            V2AP_FAULT("phase 6b'': the EVM edge needs schema S17, S18, "
+                       "S19 or S20; this node's database is at %u",
+                       (unsigned)ver);
             return -2;
         }
     }
@@ -5126,9 +5130,11 @@ static int phase_6b_gen4_edge(nodus_witness_t *w, nodus_v2_block_t *blk,
          * v2_domain_heads.last_upd_hash — nothing this edge touches */
         if (nodus_witness_db_schema_version(w, &ver) != 0 ||
             (ver != NODUS_V2_SCHEMA_VERSION_S18 &&
-             ver != NODUS_V2_SCHEMA_VERSION_S19)) {
+             ver != NODUS_V2_SCHEMA_VERSION_S19 &&
+             ver != NODUS_V2_SCHEMA_VERSION_S20)) {   /* HF-9: the live
+                                                       * rung */
             V2AP_FAULT("phase 6b''': the generation-4 edge needs schema "
-                       "S18 or S19; this node's database is at %u",
+                       "S18, S19 or S20; this node's database is at %u",
                        (unsigned)ver);
             return -2;
         }
@@ -5317,12 +5323,17 @@ static int phase_6b_gen5_edge(nodus_witness_t *w, nodus_v2_block_t *blk,
 #else
     {
         uint32_t ver = 0;
-        /* EXACTLY S19: v2_replay (the generation-5 replay relation) and
-         * v2_domain_heads.last_upd_hash (the column step 4 seeds) */
+        /* S19 or S20: v2_replay (the generation-5 replay relation) and
+         * v2_domain_heads.last_upd_hash (the column step 4 seeds) exist
+         * from S19; HF-9's S20 = S19 + tables this edge never touches, and
+         * it is the live rung a replay from genesis reaches (plan §5.5:
+         * "Every gate that accepts 19 also accepts 20") */
         if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-            ver != NODUS_V2_SCHEMA_VERSION_S19) {
+            (ver != NODUS_V2_SCHEMA_VERSION_S19 &&
+             ver != NODUS_V2_SCHEMA_VERSION_S20)) {
             V2AP_FAULT("phase 6b'''': the generation-5 edge needs schema "
-                       "S19; this node's database is at %u", (unsigned)ver);
+                       "S19 or S20; this node's database is at %u",
+                       (unsigned)ver);
             return -2;
         }
     }
@@ -5449,16 +5460,20 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
             (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
              ver != NODUS_V2_SCHEMA_VERSION_S17 &&
              ver != NODUS_V2_SCHEMA_VERSION_S18 &&
-             ver != NODUS_V2_SCHEMA_VERSION_S19)) {
+             ver != NODUS_V2_SCHEMA_VERSION_S19 &&
+             ver != NODUS_V2_SCHEMA_VERSION_S20)) {   /* HF-9: the live
+                                                       * rung (S19 + the
+                                                       * supply totals) */
             V2AP_FAULT("cometbft lane: this node's schema version is %u, "
-                       "not %u, %u, %u or %u - the Comet block row cannot "
-                       "be written here; nothing about the block was "
-                       "judged",
+                       "not %u, %u, %u, %u or %u - the Comet block row "
+                       "cannot be written here; nothing about the block "
+                       "was judged",
                        (unsigned)ver,
                        (unsigned)NODUS_V2_SCHEMA_VERSION_S16,
                        (unsigned)NODUS_V2_SCHEMA_VERSION_S17,
                        (unsigned)NODUS_V2_SCHEMA_VERSION_S18,
-                       (unsigned)NODUS_V2_SCHEMA_VERSION_S19);
+                       (unsigned)NODUS_V2_SCHEMA_VERSION_S19,
+                       (unsigned)NODUS_V2_SCHEMA_VERSION_S20);
             return -2;
         }
         /* The HOST owns the transaction (D-23 rev 5 (5)): this entry
@@ -7791,9 +7806,12 @@ int nodus_witness_v2_genesis_cmt(nodus_witness_t *w,
         (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
          ver != NODUS_V2_SCHEMA_VERSION_S17 &&
          ver != NODUS_V2_SCHEMA_VERSION_S18 &&
-         ver != NODUS_V2_SCHEMA_VERSION_S19)) {
+         ver != NODUS_V2_SCHEMA_VERSION_S19 &&
+         ver != NODUS_V2_SCHEMA_VERSION_S20)) {   /* HF-9: the live rung
+                                                   * (S19 + the supply
+                                                   * totals) */
         QGP_LOG_ERROR(LOG_TAG, "cometbft genesis needs schema S16, S17, "
-                      "S18 or S19, the database is at %u — refusing",
+                      "S18, S19 or S20, the database is at %u — refusing",
                       (unsigned)ver);
         return -1;
     }

@@ -984,6 +984,68 @@ int nodus_witness_db_migrate_v2s19(nodus_witness_t *w);
 int nodus_witness_db_migrate_v2s19_ex(nodus_witness_t *w,
                                       nodus_v2s19_mig_fail_t fail_at);
 
+/* ── S20 migration: HF-9 — the supply running totals (plan docs/plans/
+ *    approved/2026-11-04-hf9.md §9.1, §5.5; decisions D8, D27) ──────────
+ *
+ * ONE rung. This package (WP1) creates the supply tables and triggers;
+ * the later HF-9 packages add their tables to this same rung before any
+ * release (plan §5.5: "S20 = S19 + the tables of §5.1, §8.4, §9.1 +
+ * triggers + indexes"):
+ *
+ *   v2_supply_totals (token_id BLOB NOT NULL PRIMARY KEY,
+ *                     utxo_total INTEGER NOT NULL)
+ *       Σ utxo_set.amount per token_id, kept by three triggers on
+ *       utxo_set (AFTER INSERT, AFTER DELETE, AFTER UPDATE OF amount,
+ *       token_id). The native token is the 64-zero-byte token_id.
+ *   v2_bond_total    (id INTEGER PRIMARY KEY CHECK(id = 1),
+ *                     total INTEGER NOT NULL)
+ *       Σ v2_storage_nodes.bond over status ACTIVE and EXITING, kept by
+ *       three triggers on v2_storage_nodes (AFTER INSERT, AFTER DELETE,
+ *       AFTER UPDATE OF bond, status).
+ *
+ * Both tables are SEEDED from their source tables inside the migration,
+ * and RE-SEEDED on every open (nodus_witness_db_s20_reseed; precedent
+ * nodus/src/core/nodus_storage.c dht_hint_totals): the native row and the
+ * bond row are always present after a seed, so an absent row is
+ * corruption (the invariant answers -1). No generation gates them: the
+ * supply check decides no proposal, root or vote.
+ *
+ * REACHABILITY: S20 is THE LIVE RUNG. Every builder migrates to it and an
+ * S16..S19 version-3 chain database is migrated in place at OPEN
+ * (nodus_witness.c). Every gate that accepted 19 also accepts 20. The
+ * previous binary does not accept version 20 (its gates take 16..19 and
+ * its ladder fails closed above 19), so a rollback needs the pre-S20 copy
+ * of the data directory. Version 21+ fails closed. */
+#define NODUS_V2_SCHEMA_VERSION_S20  20u
+
+typedef enum {
+    V2S20MIG_FAIL_NONE = 0,
+    V2S20MIG_FAIL_AFTER_BEGIN,      /* after BEGIN, before any DDL        */
+    V2S20MIG_FAIL_AFTER_REVALIDATE, /* in-txn version re-read passed      */
+    V2S20MIG_FAIL_AFTER_TABLES,     /* tables, triggers and seeds made    */
+    V2S20MIG_FAIL_AFTER_VERIFY,     /* schema-shape verification passed   */
+    V2S20MIG_FAIL_BEFORE_COMMIT     /* user_version written, pre-COMMIT   */
+} nodus_v2s20_mig_fail_t;
+
+/** Atomic S20 migration. Versions below 19 run the S9...S19 chain first,
+ *  then 19 -> 20 atomically with the in-transaction revalidation.
+ *  @return 0 migrated or already at 20 (idempotent); -1 failure (full
+ *  rollback of the running stage), including an UNKNOWN user_version
+ *  (21+): fail closed. */
+int nodus_witness_db_migrate_v2s20(nodus_witness_t *w);
+
+/** Test variant: deterministic abort inside the 19 -> 20 transaction. */
+int nodus_witness_db_migrate_v2s20_ex(nodus_witness_t *w,
+                                      nodus_v2s20_mig_fail_t fail_at);
+
+/** Open-time re-seed of the supply running totals from utxo_set and
+ *  v2_storage_nodes (S20 databases only; below S20 a no-op returning 0).
+ *  One transaction: the old rows are deleted and the sums written again,
+ *  the native row (64 zero bytes) and the bond row always included.
+ *  The six supply triggers are (re)created when absent. Must run outside
+ *  any transaction. @return 0 / -1 fault (the database must not be used). */
+int nodus_witness_db_s20_reseed(nodus_witness_t *w);
+
 /* ── the §18 evm_logs CURSOR SCAN (Nodus EVM red-team 1 F4) ─────────────────
  *
  * ORDER: (global_height, item_index, log_index) — the block's own order.

@@ -7,6 +7,7 @@
  */
 
 #include "witness/nodus_witness_v2_schema.h"
+#include "dnac/ledger_roots_v2.h"   /* DNA_V2_STORAGE_ACTIVE / EXITING */
 
 #include <sqlite3.h>
 #include <limits.h>
@@ -2158,7 +2159,8 @@ int nodus_witness_db_ensure_v2s17_indexes(nodus_witness_t *w) {
      * rung reaches S19 before this step runs — header) */
     if (ver != NODUS_V2_SCHEMA_VERSION_S17 &&
         ver != NODUS_V2_SCHEMA_VERSION_S18 &&
-        ver != NODUS_V2_SCHEMA_VERSION_S19) return 0;   /* not this rung */
+        ver != NODUS_V2_SCHEMA_VERSION_S19 &&
+        ver != NODUS_V2_SCHEMA_VERSION_S20) return 0;   /* not this rung */
     int have = s17_log_indexes_ok(w);
     if (have < 0) return -1;
     if (have == 1) return 0;                            /* idempotent    */
@@ -2498,6 +2500,268 @@ int nodus_witness_db_migrate_v2s19_ex(nodus_witness_t *w,
 
 int nodus_witness_db_migrate_v2s19(nodus_witness_t *w) {
     return nodus_witness_db_migrate_v2s19_ex(w, V2S19MIG_FAIL_NONE);
+}
+
+/* ── S20 migration: HF-9, the supply running totals ─────────────────────
+ * Contract: nodus_witness_v2_schema.h. Plan §9.1. */
+
+_Static_assert(DNA_V2_STORAGE_ACTIVE == 1 && DNA_V2_STORAGE_EXITING == 2,
+               "the v2_bond_total triggers name status 1 and 2 literally");
+
+/* The two tables, the plan §9.1 shapes (token_id is the utxo_set key as
+ * stored: no length check, so a row the old SUM helper ignored can never
+ * make a seed refuse the database). utxo_total is NOT range-checked: the
+ * invariant type- and range-checks the stored value and answers -1
+ * (plan §9.1), so a total that overflowed int64 (SQLite turns an
+ * overflowing integer sum into a REAL) is visible there, never wrapped. */
+static const char *V2_S20_SUPPLY_TOTALS_DDL =
+    "CREATE TABLE IF NOT EXISTS v2_supply_totals ("
+    "  token_id BLOB NOT NULL PRIMARY KEY,"
+    "  utxo_total INTEGER NOT NULL"
+    ") WITHOUT ROWID";
+
+static const char *V2_S20_BOND_TOTAL_DDL =
+    "CREATE TABLE IF NOT EXISTS v2_bond_total ("
+    "  id INTEGER NOT NULL PRIMARY KEY CHECK(id = 1),"
+    "  total INTEGER NOT NULL"
+    ") WITHOUT ROWID";
+
+/* The six supply triggers. A deleted or updated row leaves its token's
+ * total with an UPDATE (the row exists: the insert created it); an insert
+ * and the new side of an update UPSERT. An INSERT OR IGNORE that inserts
+ * nothing fires nothing. */
+static const char *V2_S20_SUPPLY_TRIGGERS_DDL =
+    "CREATE TRIGGER IF NOT EXISTS v2_supply_utxo_ins AFTER INSERT ON utxo_set "
+    "BEGIN "
+    "  INSERT INTO v2_supply_totals(token_id, utxo_total) "
+    "    VALUES (NEW.token_id, NEW.amount) "
+    "    ON CONFLICT(token_id) DO UPDATE SET "
+    "      utxo_total = utxo_total + excluded.utxo_total; "
+    "END;"
+    "CREATE TRIGGER IF NOT EXISTS v2_supply_utxo_del AFTER DELETE ON utxo_set "
+    "BEGIN "
+    "  UPDATE v2_supply_totals SET utxo_total = utxo_total - OLD.amount "
+    "    WHERE token_id = OLD.token_id; "
+    "END;"
+    "CREATE TRIGGER IF NOT EXISTS v2_supply_utxo_upd "
+    "AFTER UPDATE OF amount, token_id ON utxo_set "
+    "BEGIN "
+    "  UPDATE v2_supply_totals SET utxo_total = utxo_total - OLD.amount "
+    "    WHERE token_id = OLD.token_id; "
+    "  INSERT INTO v2_supply_totals(token_id, utxo_total) "
+    "    VALUES (NEW.token_id, NEW.amount) "
+    "    ON CONFLICT(token_id) DO UPDATE SET "
+    "      utxo_total = utxo_total + excluded.utxo_total; "
+    "END;"
+    "CREATE TRIGGER IF NOT EXISTS v2_supply_bond_ins "
+    "AFTER INSERT ON v2_storage_nodes BEGIN "
+    "  UPDATE v2_bond_total SET total = total + "
+    "    (CASE WHEN NEW.status IN (1, 2) THEN NEW.bond ELSE 0 END) "
+    "    WHERE id = 1; "
+    "END;"
+    "CREATE TRIGGER IF NOT EXISTS v2_supply_bond_del "
+    "AFTER DELETE ON v2_storage_nodes BEGIN "
+    "  UPDATE v2_bond_total SET total = total - "
+    "    (CASE WHEN OLD.status IN (1, 2) THEN OLD.bond ELSE 0 END) "
+    "    WHERE id = 1; "
+    "END;"
+    "CREATE TRIGGER IF NOT EXISTS v2_supply_bond_upd "
+    "AFTER UPDATE OF bond, status ON v2_storage_nodes BEGIN "
+    "  UPDATE v2_bond_total SET total = total - "
+    "    (CASE WHEN OLD.status IN (1, 2) THEN OLD.bond ELSE 0 END) + "
+    "    (CASE WHEN NEW.status IN (1, 2) THEN NEW.bond ELSE 0 END) "
+    "    WHERE id = 1; "
+    "END;";
+
+/* Re-seed: every sum from its source table; the native row and the bond
+ * row always exist afterwards (an empty GROUP BY writes no native row). */
+static const char *V2_S20_SUPPLY_RESEED_SQL =
+    "DELETE FROM v2_supply_totals;"
+    "INSERT INTO v2_supply_totals(token_id, utxo_total) "
+    "  SELECT token_id, SUM(amount) FROM utxo_set GROUP BY token_id;"
+    "INSERT OR IGNORE INTO v2_supply_totals(token_id, utxo_total) "
+    "  VALUES (zeroblob(64), 0);"
+    "DELETE FROM v2_bond_total;"
+    "INSERT INTO v2_bond_total(id, total) "
+    "  SELECT 1, COALESCE(SUM(bond), 0) FROM v2_storage_nodes "
+    "  WHERE status IN (1, 2);";
+
+/* The six trigger names, for the shape verification. */
+static const char *const V2_S20_SUPPLY_TRIGGER_NAMES[6] = {
+    "v2_supply_utxo_ins", "v2_supply_utxo_del", "v2_supply_utxo_upd",
+    "v2_supply_bond_ins", "v2_supply_bond_del", "v2_supply_bond_upd"
+};
+
+/* 1 = trigger `name`'s stored SQL equals what THIS build's SQLite stores
+ * for the statement in `ddl` that creates it (reference: a private
+ * ":memory:" database holding stub tables `tables_ddl`), 0 = absent or
+ * another definition, -1 = fault. The table_ddl_exact pattern. */
+static int trigger_sql_exact(nodus_witness_t *w, const char *name,
+                             const char *prereq_ddl, const char *trig_ddl) {
+    static const char *const q =
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?1";
+    sqlite3 *mem = NULL;
+    sqlite3_stmt *a = NULL, *b = NULL;
+    int out = -1;
+    if (sqlite3_open(":memory:", &mem) != SQLITE_OK) {
+        if (mem) sqlite3_close(mem);
+        return -1;
+    }
+    if (sqlite3_exec(mem, prereq_ddl, NULL, NULL, NULL) == SQLITE_OK &&
+        sqlite3_exec(mem, trig_ddl, NULL, NULL, NULL) == SQLITE_OK &&
+        sqlite3_prepare_v2(mem, q, -1, &a, NULL) == SQLITE_OK &&
+        sqlite3_bind_text(a, 1, name, -1, SQLITE_STATIC) == SQLITE_OK &&
+        sqlite3_prepare_v2(w->db, q, -1, &b, NULL) == SQLITE_OK &&
+        sqlite3_bind_text(b, 1, name, -1, SQLITE_STATIC) == SQLITE_OK) {
+        int ra = sqlite3_step(a);
+        int rb = sqlite3_step(b);
+        if (ra != SQLITE_ROW) {
+            out = -1;                   /* the reference must exist       */
+        } else if (rb == SQLITE_DONE) {
+            out = 0;                    /* absent                         */
+        } else if (rb != SQLITE_ROW) {
+            out = -1;
+        } else {
+            const unsigned char *sa = sqlite3_column_text(a, 0);
+            const unsigned char *sb = sqlite3_column_text(b, 0);
+            int la = sqlite3_column_bytes(a, 0);
+            int lb = sqlite3_column_bytes(b, 0);
+            out = (sa && sb && la == lb &&
+                   memcmp(sa, sb, (size_t)la) == 0) ? 1 : 0;
+        }
+    }
+    sqlite3_finalize(a);
+    sqlite3_finalize(b);
+    sqlite3_close(mem);
+    return out;
+}
+
+/* The stub source tables the reference database needs for the supply
+ * triggers (columns the trigger bodies name). */
+static const char *V2_S20_SUPPLY_STUBS_DDL =
+    "CREATE TABLE utxo_set(nullifier BLOB, amount INTEGER, token_id BLOB);"
+    "CREATE TABLE v2_storage_nodes(node_fp BLOB, bond INTEGER, "
+    "  status INTEGER);"
+    "CREATE TABLE v2_supply_totals(token_id BLOB PRIMARY KEY, "
+    "  utxo_total INTEGER) WITHOUT ROWID;"
+    "CREATE TABLE v2_bond_total(id INTEGER PRIMARY KEY, total INTEGER) "
+    "  WITHOUT ROWID;";
+
+/* 1 = the two tables and all six triggers are exactly this build's,
+ * 0 = drift, -1 = fault. */
+static int s20_supply_shape_ok(nodus_witness_t *w) {
+    int r = table_ddl_exact(w, "v2_supply_totals", V2_S20_SUPPLY_TOTALS_DDL);
+    if (r != 1) return r;
+    r = table_ddl_exact(w, "v2_bond_total", V2_S20_BOND_TOTAL_DDL);
+    if (r != 1) return r;
+    for (size_t i = 0; i < 6; i++) {
+        r = trigger_sql_exact(w, V2_S20_SUPPLY_TRIGGER_NAMES[i],
+                              V2_S20_SUPPLY_STUBS_DDL,
+                              V2_S20_SUPPLY_TRIGGERS_DDL);
+        if (r != 1) return r;
+    }
+    return 1;
+}
+
+int nodus_witness_db_migrate_v2s20_ex(nodus_witness_t *w,
+                                      nodus_v2s20_mig_fail_t fail_at) {
+    if (!w || !w->db) return -1;
+
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
+    if (ver == NODUS_V2_SCHEMA_VERSION_S20) return 0;    /* idempotent    */
+    if (ver != NODUS_V2_SCHEMA_VERSION_S19) {
+        /* the S9...S19 chain; an unknown version (21+) fails closed there */
+        if (nodus_witness_db_migrate_v2s19(w) != 0) return -1;
+        ver = NODUS_V2_SCHEMA_VERSION_S19;
+    }
+
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) return -1;
+
+    int ok = 0;
+    int already = 0;
+    do {
+        if (fail_at == V2S20MIG_FAIL_AFTER_BEGIN) break;
+
+        /* O15B discipline: the pre-BEGIN read decided nothing. */
+        int rv = mig_revalidate_version(w, NODUS_V2_SCHEMA_VERSION_S19,
+                                        NODUS_V2_SCHEMA_VERSION_S20, "S20");
+        if (rv < 0) break;
+        if (rv == 0) { already = 1; break; }
+        if (fail_at == V2S20MIG_FAIL_AFTER_REVALIDATE) break;
+
+        if (exec_sql(w, V2_S20_SUPPLY_TOTALS_DDL) != 0) break;
+        if (exec_sql(w, V2_S20_BOND_TOTAL_DDL) != 0) break;
+        if (exec_sql(w, V2_S20_SUPPLY_TRIGGERS_DDL) != 0) break;
+        if (exec_sql(w, V2_S20_SUPPLY_RESEED_SQL) != 0) break;
+        if (fail_at == V2S20MIG_FAIL_AFTER_TABLES) break;
+
+        /* Verify: both tables' whole stored definitions and the six
+         * triggers' stored SQL — a DDL that silently did nothing, or a
+         * pre-existing object of another shape, is not a migrated schema. */
+        if (s20_supply_shape_ok(w) != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "S20 supply-totals schema shape "
+                          "drift — refusing");
+            break;
+        }
+        if (fail_at == V2S20MIG_FAIL_AFTER_VERIFY) break;
+
+        if (exec_sql(w, "PRAGMA user_version = 20") != 0) break;
+        if (fail_at == V2S20MIG_FAIL_BEFORE_COMMIT) break;
+
+        ok = 1;
+    } while (0);
+
+    if (already) {
+        (void)exec_sql(w, "ROLLBACK");
+        return 0;
+    }
+    if (!ok) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    if (exec_sql(w, "COMMIT") != 0) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_db_migrate_v2s20(nodus_witness_t *w) {
+    return nodus_witness_db_migrate_v2s20_ex(w, V2S20MIG_FAIL_NONE);
+}
+
+int nodus_witness_db_s20_reseed(nodus_witness_t *w) {
+    if (!w || !w->db) return -1;
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
+    if (ver < NODUS_V2_SCHEMA_VERSION_S20) return 0;
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) return -1;
+    int ok = 0;
+    do {
+        uint32_t v2 = 0;
+        if (nodus_witness_db_schema_version(w, &v2) != 0 || v2 != ver)
+            break;
+        if (exec_sql(w, V2_S20_SUPPLY_TOTALS_DDL) != 0) break;
+        if (exec_sql(w, V2_S20_BOND_TOTAL_DDL) != 0) break;
+        if (exec_sql(w, V2_S20_SUPPLY_TRIGGERS_DDL) != 0) break;
+        if (exec_sql(w, V2_S20_SUPPLY_RESEED_SQL) != 0) break;
+        if (s20_supply_shape_ok(w) != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "S20 supply-totals schema shape "
+                          "drift at open — refusing");
+            break;
+        }
+        ok = 1;
+    } while (0);
+    if (!ok) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    if (exec_sql(w, "COMMIT") != 0) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    return 0;
 }
 
 /* ── the §18 evm_logs cursor scan (red-team 1 F4) ──────────────────────

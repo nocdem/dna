@@ -656,8 +656,10 @@ int nodus_witness_v2_bundle_apply(nodus_witness_t *w2,
      * live rung is S19 (cascades through S18; adds the empty v2_replay,
      * its index and the nullable v2_domain_heads.last_upd_hash — neither
      * table is one of this file's bundle tables, so apply_table is
-     * unaffected). */
-    if (nodus_witness_db_migrate_v2s19(w2) != 0) { free(doc); return -1; }
+     * unaffected). HF-9: the live rung is S20 (S19 + the supply running
+     * totals, not bundle tables; the bundle's utxo_set and registry rows
+     * move them through the triggers). */
+    if (nodus_witness_db_migrate_v2s20(w2) != 0) { free(doc); return -1; }
     {
         nodus_cmt_store_t s;
         if (nodus_cmt_store_init(&s, w2->db, false) != CMT_OK) {

@@ -1001,8 +1001,14 @@ static int witness_gate_table_has_rows(sqlite3 *db, const char *count_sql) {
  * S18 — the S19 rung cascades through S18 and S17. S19 is a no-op;
  * anything else is the gates' to refuse. No root moves (nothing reads or
  * writes the new objects before HF-7 P1c).
+ *
+ * HF-9 (plan docs/plans/approved/2026-11-04-hf9.md §5.5, §9.1): the
+ * at-open rung is now S20 (S19 + the supply running totals,
+ * nodus_witness_v2_schema.h) and runs on a version-3 chain at S16, S17,
+ * S18 OR S19 — the S20 rung cascades through the others. S20 is a no-op.
+ * No root moves (the totals are read only by the supply check).
  * @return 0 (migrated, or nothing to do) / -1 refuse the database. */
-static int witness_open_migrate_s19(nodus_witness_t *witness,
+static int witness_open_migrate_s20(nodus_witness_t *witness,
                                     const char *db_path) {
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(witness, &ver) != 0) {
@@ -1012,7 +1018,8 @@ static int witness_open_migrate_s19(nodus_witness_t *witness,
     }
     if (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
         ver != NODUS_V2_SCHEMA_VERSION_S17 &&
-        ver != NODUS_V2_SCHEMA_VERSION_S18) return 0;
+        ver != NODUS_V2_SCHEMA_VERSION_S18 &&
+        ver != NODUS_V2_SCHEMA_VERSION_S19) return 0;
     int st = witness_gate_table_exists(witness->db,
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cmt_state'");
     int bs = witness_gate_table_exists(witness->db,
@@ -1029,17 +1036,19 @@ static int witness_open_migrate_s19(nodus_witness_t *witness,
     if (nodus_witness_v2_gen_stored_chain_id(witness, id) != 0)
         return 0;                       /* no stored document: the role
                                          * gate below refuses it         */
-    if (nodus_witness_db_migrate_v2s19(witness) != 0) {
-        fprintf(stderr, "%s: the S%u -> S19 migration (Nodus EVM empty EVM "
+    if (nodus_witness_db_migrate_v2s20(witness) != 0) {
+        fprintf(stderr, "%s: the S%u -> S20 migration (Nodus EVM empty EVM "
                 "tables when below S17; HF-6 empty v2_validator_roles when "
                 "below S18; HF-7 empty v2_replay + nullable "
-                "v2_domain_heads.last_upd_hash) FAILED for %s — rolled "
+                "v2_domain_heads.last_upd_hash when below S19; HF-9 supply "
+                "running totals) FAILED for %s — rolled "
                 "back, refusing the database (fail closed)\n", LOG_TAG,
                 (unsigned)ver, db_path);
         return -1;
     }
-    fprintf(stderr, "%s: schema S%u -> S19 (empty tables only; no root "
-            "moves) for %s\n", LOG_TAG, (unsigned)ver, db_path);
+    fprintf(stderr, "%s: schema S%u -> S20 (empty tables and the seeded "
+            "supply totals; no root moves) for %s\n", LOG_TAG,
+            (unsigned)ver, db_path);
     return 0;
 }
 
@@ -1048,7 +1057,18 @@ static int witness_post_open_gate(nodus_witness_t *witness,
     /* The at-open rung (witness_open_migrate_s19 above; Nodus EVM added
      * it for S16 -> S17, HF-6 3a moved it to S18, HF-7 P1b to S19),
      * FIRST — the S7 check and every later gate see the live rung. */
-    if (witness_open_migrate_s19(witness, db_path) != 0) {
+    if (witness_open_migrate_s20(witness, db_path) != 0) {
+        sqlite3_close(witness->db);
+        witness->db = NULL;
+        return -1;
+    }
+    /* HF-9 §9.1: the supply running totals are re-seeded from their
+     * tables on every open of an S20 database (a no-op below S20). A
+     * failure refuses the database like the rung above. */
+    if (nodus_witness_db_s20_reseed(witness) != 0) {
+        fprintf(stderr, "%s: the S20 supply totals could not be seeded "
+                "for %s — refusing the database (fail closed)\n",
+                LOG_TAG, db_path);
         sqlite3_close(witness->db);
         witness->db = NULL;
         return -1;

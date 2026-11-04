@@ -1041,6 +1041,13 @@ static int v2x_seed_genesis(nodus_witness_t *w, const uint8_t file16[16],
     g_v2x_seed_not_real = 0;                  /* one-shot, every outcome */
     if (!w || !w->db || !file16) return -1;
     if (!w->v2_successor) return -1;          /* v2x_seed_prepare first */
+    /* HF-9: the engine genesis's supply gate reads the S20 running totals
+     * (v2_supply_totals / v2_bond_total), and the real derivation
+     * (nodus_witness_v2_gen.c) climbs to S20 before its genesis too. The
+     * rung cascades through whatever rungs the test already climbed, is a
+     * no-op at S20, and seeds the totals from the rows the test planted
+     * after v2x_seed_prepare. */
+    if (nodus_witness_db_migrate_v2s20(w) != 0) return -1;
 #ifdef NODUS_V2_TEST_SUPPLY
     /* P4 fix round: the engine genesis's own supply gate and the
      * post-conditions below run against the LIVE equation. An earlier

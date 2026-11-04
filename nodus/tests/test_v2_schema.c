@@ -463,10 +463,11 @@ static int run_s12_apply_matrix(void) {
         /* Nodus EVM F3-C2 made S17 (empty EVM tables) the live rung;
          * HF-6 3a moved it to S18 (+ the empty v2_validator_roles); HF-7
          * P1b to S19 (+ the empty v2_replay and last_upd_hash). S19
-         * still carries the S12 claim tables this section checks. */
+         * still carries the S12 claim tables this section checks. HF-9:
+         * the live rung is S20 (+ the supply running totals). */
         CHECK(nodus_witness_db_schema_version(fx.w, &sv) == 0 &&
-              sv == NODUS_V2_SCHEMA_VERSION_S19,
-              "fixture DB at the live rung S19"); OK();
+              sv == NODUS_V2_SCHEMA_VERSION_S20,
+              "fixture DB at the live rung S20"); OK();
         CHECK(has_table(fx.w->db, "v2_claim_bytes") == 1 &&
               has_table(fx.w->db, "v2_claim_counts") == 1,
               "S12 claim tables present"); OK();
@@ -1547,6 +1548,158 @@ static int run_s19_rung(void) {
     return 0;
 }
 
+/* ── HF-9: the S20 rung (the supply running totals, plan §9.1, §5.5) ────
+ * Proves: a fresh 0 -> 20 and an S19 -> 20 climb create both tables, the
+ * six triggers (stored SQL equal to this build's), and SEED them from the
+ * rows already there; every staged failure rolls the whole stage back
+ * (version, tables, triggers, whole-DB digest unchanged); re-run is a
+ * no-op; version 21 fails closed; a pre-existing table of another shape
+ * is refused; the S19 rung refuses an S20 database; the re-seed rewrites
+ * a corrupted total. Flags: none. Leaves: a temp dir per fixture (removed).
+ * Can falsely pass: the seed check compares to literal amounts planted by
+ * this function; the digest check covers every table the oracle covers
+ * (v2x_db_digest). */
+static int run_s20_rung(void) {
+    uint32_t ver = 0;
+    int n = -1;
+
+    /* (a) fresh 0 -> 20 */
+    {
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s20 fresh fixture");
+        CHECK(has_table(fx.w->db, "v2_supply_totals") == 0 &&
+              has_table(fx.w->db, "v2_bond_total") == 0,
+              "the totals are not in the base schema"); OK();
+        CHECK(nodus_witness_db_migrate_v2s20(fx.w) == 0, "0->20"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S20, "climbed to 20"); OK();
+        CHECK(has_table(fx.w->db, "v2_supply_totals") == 1 &&
+              has_table(fx.w->db, "v2_bond_total") == 1 &&
+              has_table(fx.w->db, "v2_replay") == 1,
+              "the S20 tables and every rung below"); OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
+                      "type='trigger' AND name LIKE 'v2_supply_%'", &n) == 0
+              && n == 6, "six supply triggers"); OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM v2_supply_totals "
+                      "WHERE token_id = zeroblob(64) AND utxo_total = 0",
+                      &n) == 0 && n == 1,
+              "the native row exists, 0, on an empty utxo_set"); OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM v2_bond_total WHERE "
+                      "id = 1 AND total = 0", &n) == 0 && n == 1,
+              "the bond row exists, 0"); OK();
+        CHECK(nodus_witness_db_migrate_v2s20(fx.w) == 0 &&
+              nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S20, "re-run is a no-op"); OK();
+        CHECK(nodus_witness_db_migrate_v2s19(fx.w) == -1,
+              "the S19 rung refuses an S20 database"); OK();
+        CHECK(nodus_witness_db_ensure_v2s17_indexes(fx.w) == 0 &&
+              count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
+                      "type='index' AND name IN ('evm_receipts_by_pos', "
+                      "'evm_logs_by_addr')", &n) == 0 && n == 2,
+              "the scan indexes are ensured at S20 too"); OK();
+        fx_close(&fx);
+    }
+
+    /* (b) S19 with rows -> 20: seeded from them; staged failures */
+    {
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s20 seed fixture");
+        CHECK(nodus_witness_db_migrate_v2s19(fx.w) == 0, "0->19"); OK();
+        CHECK(run_sql(fx.w->db,
+            "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
+            " tx_hash, output_index, block_height, created_at, "
+            " unlock_block, domain_id) VALUES "
+            "(CAST(zeroblob(63)||x'01' AS BLOB), 'a', 100, zeroblob(64), "
+            " zeroblob(64), 0, 1, 0, 0, 1),"
+            "(CAST(zeroblob(63)||x'02' AS BLOB), 'b', 250, zeroblob(64), "
+            " zeroblob(64), 0, 1, 0, 0, 1),"
+            "(CAST(zeroblob(63)||x'03' AS BLOB), 'c', 9, "
+            " CAST(zeroblob(63)||x'77' AS BLOB), zeroblob(64), 0, 1, 0, "
+            " 0, 1);"
+            "INSERT INTO v2_storage_nodes (node_fp, node_pk, payee_fp, "
+            " bond, status, registered_height, exit_height, fail_streak, "
+            " grace_until) VALUES "
+            "(CAST(zeroblob(63)||x'01' AS BLOB), zeroblob(2592), "
+            " zeroblob(64), 5000, 1, 1, 0, 0, 0),"
+            "(CAST(zeroblob(63)||x'02' AS BLOB), zeroblob(2592), "
+            " zeroblob(64), 700, 2, 1, 0, 0, 0),"
+            "(CAST(zeroblob(63)||x'03' AS BLOB), zeroblob(2592), "
+            " zeroblob(64), 40, 3, 1, 0, 0, 0)") == 0, "rows at S19");
+        uint8_t d19[64];
+        CHECK(v2x_db_digest(fx.w, d19) == 0, "S19 digest"); OK();
+        for (int stage = V2S20MIG_FAIL_AFTER_BEGIN;
+             stage <= V2S20MIG_FAIL_BEFORE_COMMIT; stage++) {
+            CHECK(nodus_witness_db_migrate_v2s20_ex(fx.w,
+                      (nodus_v2s20_mig_fail_t)stage) == -1,
+                  "staged S20 failure did not fail");
+            CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+                  ver == NODUS_V2_SCHEMA_VERSION_S19,
+                  "failed S20 stage moved the version");
+            CHECK(has_table(fx.w->db, "v2_supply_totals") == 0 &&
+                  has_table(fx.w->db, "v2_bond_total") == 0,
+                  "failed S20 stage left a table");
+            CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master "
+                          "WHERE type='trigger' AND name LIKE "
+                          "'v2_supply_%'", &n) == 0 && n == 0,
+                  "failed S20 stage left a trigger");
+            uint8_t dnow[64];
+            CHECK(v2x_db_digest(fx.w, dnow) == 0, "post-stage digest");
+            CHECK(memcmp(d19, dnow, 64) == 0,
+                  "failed S20 stage mutated the DB");
+        }
+        OK();
+        CHECK(nodus_witness_db_migrate_v2s20(fx.w) == 0, "19->20"); OK();
+        CHECK(count_q(fx.w->db, "SELECT utxo_total FROM v2_supply_totals "
+                      "WHERE token_id = zeroblob(64)", &n) == 0 && n == 350,
+              "native total seeded from the existing rows"); OK();
+        CHECK(count_q(fx.w->db, "SELECT utxo_total FROM v2_supply_totals "
+                      "WHERE token_id = CAST(zeroblob(63)||x'77' AS BLOB)",
+                      &n) == 0 && n == 9,
+              "the second token's total seeded"); OK();
+        CHECK(count_q(fx.w->db, "SELECT total FROM v2_bond_total WHERE "
+                      "id = 1", &n) == 0 && n == 5700,
+              "bond total seeded: ACTIVE + EXITING, not RELEASED"); OK();
+        /* the re-seed rewrites a corrupted total (the production open path
+         * itself is exercised in test_supply_totals: this scratch chain
+         * has Comet stores but no genesis document, which the open path
+         * refuses) */
+        CHECK(run_sql(fx.w->db, "UPDATE v2_bond_total SET total = 1") == 0,
+              "corrupt");
+        CHECK(nodus_witness_db_s20_reseed(fx.w) == 0 &&
+              count_q(fx.w->db, "SELECT total FROM v2_bond_total", &n) == 0
+              && n == 5700, "the re-seed rewrote the bond total"); OK();
+        fx_close(&fx);
+    }
+
+    /* (c) unknown version 21 fails closed; a table of another shape */
+    {
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s20 v21 fixture");
+        CHECK(run_sql(fx.w->db, "PRAGMA user_version = 21") == 0, "set 21");
+        CHECK(nodus_witness_db_migrate_v2s20(fx.w) == -1,
+              "version 21 migrated"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 21,
+              "version 21 mutated");
+        CHECK(has_table(fx.w->db, "v2_supply_totals") == 0,
+              "version 21 got a table"); OK();
+        fx_close(&fx);
+    }
+    {
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s20 drift fixture");
+        CHECK(nodus_witness_db_migrate_v2s19(fx.w) == 0, "0->19");
+        CHECK(run_sql(fx.w->db, "CREATE TABLE v2_supply_totals (token_id "
+                                "BLOB, utxo_total TEXT)") == 0,
+              "a pre-existing table of another shape");
+        CHECK(nodus_witness_db_migrate_v2s20(fx.w) == -1,
+              "the shape drift is refused"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S19, "and rolled back"); OK();
+        fx_close(&fx);
+    }
+    return 0;
+}
+
 int main(void) {
     /* ── 1+2. fresh / S4-shaped DB (current production schema) ──────── */
     fixture_t fx;
@@ -2045,6 +2198,9 @@ int main(void) {
 
     /* HF-7 P1b: the S19 rung (v2_replay + last_upd_hash). */
     if (run_s19_rung() != 0) return 1;
+
+    /* HF-9: the S20 rung (the supply running totals). */
+    if (run_s20_rung() != 0) return 1;
 
     printf("test_v2_schema: ALL %d checks passed\n", g_checks);
     return 0;

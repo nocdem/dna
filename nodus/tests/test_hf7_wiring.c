@@ -189,9 +189,10 @@ static int fxd_open(fixture_t *fx, const char *tag) {
     snprintf(fx->w->data_path, sizeof(fx->w->data_path), "%s", fx->dir);
     memset(fx->chain16, 0x7A, sizeof(fx->chain16));
     if (nodus_witness_create_chain_db(fx->w, fx->chain16) != 0) return -1;
-    /* the S9 … S19 ladder: v2_replay exists from S19 (test_v2_schema
-     * "0->19") */
-    return nodus_witness_db_migrate_v2s19(fx->w);
+    /* the S9 … S20 ladder: v2_replay exists from S19 (test_v2_schema
+     * "0->19"); HF-9: S20 adds the supply running totals the supply check
+     * reads */
+    return nodus_witness_db_migrate_v2s20(fx->w);
 }
 
 /* ══ A. the legs ══════════════════════════════════════════════════════ */

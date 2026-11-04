@@ -984,6 +984,39 @@ static int sum_q(nodus_witness_t *w, const char *sql, uint64_t *out) {
     return 0;
 }
 
+/* HF-9 plan §9.1: read one running-total row kept by the S20 triggers.
+ * `sql` selects (value, typeof(value)) for ONE row, with an optional blob
+ * bound as ?1 (`key`, key_len bytes; NULL = nothing bound). The row must
+ * exist (the open-time re-seed always writes the native and the bond row,
+ * so an absent row is corruption), must be stored as an INTEGER and must
+ * lie in 0..INT64_MAX; anything else — absent, REAL (an overflowed
+ * running sum), TEXT, NULL, negative, a prepare / bind / step failure —
+ * is -1, never a value. */
+static int total_row_read(nodus_witness_t *w, const char *sql,
+                          const uint8_t *key, size_t key_len,
+                          uint64_t *out) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    if (key &&
+        sqlite3_bind_blob(st, 1, key, (int)key_len, SQLITE_STATIC)
+            != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    int rc = sqlite3_step(st);
+    if (rc != SQLITE_ROW) { sqlite3_finalize(st); return -1; }
+    const char *t = (const char *)sqlite3_column_text(st, 1);
+    int ok = t && strcmp(t, "integer") == 0;
+    sqlite3_int64 v = sqlite3_column_int64(st, 0);
+    /* a second row would be a table of the wrong shape */
+    int more = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (!ok || v < 0 || more != SQLITE_DONE) return -1;
+    *out = (uint64_t)v;
+    return 0;
+}
+
 /**
  * The DNAC conservation invariant — owned by the CORE runtime (DNAC is
  * CORE's native asset; this equation is NOT a universal rule for other
@@ -1211,9 +1244,18 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
     uint64_t utxo = 0, bonds = 0, delegated = 0, accrued = 0, unclaimed = 0;
     uint64_t treasury = 0, storage_bonds = 0;
     const uint64_t pool = sup.reward_pool;
-    /* the production helper OWNS the native-token representation rule —
-     * one authority, never a parallel SQL mirror */
-    if (nodus_witness_utxo_sum_by_token(w, NULL, &utxo) != 0) return -1;
+    /* HF-9 §9.1: the native UTXO total and the storage-bond total are the
+     * trigger-kept running totals of schema S20 (v2_supply_totals row of
+     * the 64-zero-byte native token_id; v2_bond_total row 1), read in
+     * O(1) instead of a SUM over every row each time the check runs. The
+     * native-token rule (NULL or 64 zero bytes) stays the same one
+     * authority as nodus_witness_utxo_sum_by_token. Not generation-gated:
+     * the check decides no proposal, root or vote. */
+    static const uint8_t native_zero[64] = {0};
+    if (total_row_read(w,
+            "SELECT utxo_total, typeof(utxo_total) FROM v2_supply_totals "
+            "WHERE token_id = ?1", native_zero, sizeof(native_zero),
+            &utxo) != 0) return -1;
     if (sum_q(w, "SELECT COALESCE(SUM(self_stake),0) FROM validators",
               &bonds) != 0) return -1;
     if (sum_q(w, "SELECT COALESCE(SUM(total_delegated),0) FROM validators",
@@ -1221,7 +1263,9 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
     if (sum_q(w, "SELECT COALESCE(SUM(amount),0) FROM v2_reward_accrual",
               &accrued) != 0) return -1;
     if (nodus_witness_treasury_total(w, &treasury) != 0) return -1;
-    if (nodus_witness_storage_bond_total(w, &storage_bonds) != 0) return -1;
+    if (total_row_read(w,
+            "SELECT total, typeof(total) FROM v2_bond_total WHERE id = 1",
+            NULL, 0, &storage_bonds) != 0) return -1;
     /* Unclaimed distribution value TARGETING THIS RUNTIME'S NATIVE
      * ASSET only — a distribution targeting another domain/asset is
      * that runtime's invariant, never summed here. */
