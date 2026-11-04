@@ -76,6 +76,24 @@ if(QGP_BENCH)
     add_compile_definitions(QGP_BENCH)
 endif()
 
+# HF-9 review T-3 (docs/plans/approved/2026-11-04-hf9.md §12): QGP_FAULT_INJECT
+# compiles the test-only fault hooks in: the six CMT_FAIL_POINT()s of
+# shared/dnac/cmt_cs.c (their existing meaning), the consensus-build log
+# line of nodus_witness.c, and the trie-store bind-failure hook of
+# nodus_witness_rt_evm.c (test_evm_trie_store_fault). Default OFF. The
+# option was removed with the closed PBFT lane (R3 W4, e72d8cb5c); this is
+# the same option, with the same Release guard, re-added for the hooks
+# above only.
+option(QGP_FAULT_INJECT "Enable test-only fault-injection hooks (test builds only)" OFF)
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND QGP_FAULT_INJECT)
+    message(FATAL_ERROR
+        "QGP_FAULT_INJECT must not be set in Release builds — "
+        "the fault hooks would be live in the shipped binary")
+endif()
+if(QGP_FAULT_INJECT)
+    add_compile_definitions(QGP_FAULT_INJECT)
+endif()
+
 # ── ML-KEM-1024 (Kyber) ────────────────────────────────────────────
 if(NOT TARGET kem)
     add_subdirectory(${SHARED_DIR}/crypto/enc/kem ${CMAKE_BINARY_DIR}/crypto/kem)
@@ -2942,6 +2960,20 @@ if(NODUS_EVM_ENABLED)
     target_compile_options(test_v2_evm PRIVATE -Wall -Wextra
                            -Wno-unused-function)
     add_test(NAME test_v2_evm COMMAND test_v2_evm)
+
+    # HF-9 review T-3 (Z-51): a failed bind in ts_put / ts_get is -2 before
+    # the statement is stepped. Needs the bind-failure hook, which exists
+    # only in a -DQGP_FAULT_INJECT=ON build, so the test is registered only
+    # there (the header of the test says what a build without it does).
+    if(QGP_FAULT_INJECT)
+        add_executable(test_evm_trie_store_fault
+                       tests/test_evm_trie_store_fault.c)
+        target_include_directories(test_evm_trie_store_fault PRIVATE
+                                   ${SHARED_DIR}/evm/trie)
+        target_link_libraries(test_evm_trie_store_fault nodus dsa nodus)
+        target_compile_options(test_evm_trie_store_fault PRIVATE -Wall -Wextra)
+        add_test(NAME test_evm_trie_store_fault COMMAND test_evm_trie_store_fault)
+    endif()
 
     # Keccak-256 known answers against the keccak object libnodus links
     # (nodus_evm_keccak, the XKCP Keccak-f[1600] of red-team 1): "", "abc"
