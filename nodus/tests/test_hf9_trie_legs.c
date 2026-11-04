@@ -125,6 +125,24 @@
  *         INSERT; claim_spend_insert: v2_claims_spent INSERT): a claim
  *         block faulting after the flush is rolled back whole; then two
  *         claims in one block and a third in the next    -> legs 1, 3
+ *      K7 EPOCH RELEASES (v2ep_release_utxo, nodus_witness_v2_epoch.c:998
+ *         the graduation bond, :679 the delegation release): a chain with
+ *         one extra bonded RETIRING validator outside the frozen
+ *         snapshots and one delegation to it (seeded after the document's
+ *         seven seats, test_v2_epoch.c's late-joiner shape, genesis flag
+ *         V2X_SEED_NOT_REAL_STATUSES). The first boundary is applied
+ *         twice with an injection (after the first graduate's release,
+ *         after its delegation release): each a node FAULT, database
+ *         byte-identical, dirty empty, node table and leg roots as before
+ *         and equal to the oracle; then for real: the bond UTXO (index
+ *         200) and the delegation UTXO (index 0x40000000) exist, the
+ *         delegation row is gone, legs 1, 7 and 8 moved, every leg root
+ *         equals the oracle and the rows.
+ *      K4d (inside K4) the engine's ITEM rollback after captured writes: a
+ *         SPEND stopped after its effect 1 (V2AP_FAIL_AFTER_EFFECT_APPLY)
+ *         is refused, the block applies; read inside the block's
+ *         transaction after the flush: the coin is back, no dirty key,
+ *         every leg root as before and equal to the oracle.
  *
  * ── NOT COVERED ─────────────────────────────────────────────────────────
  *  Writers exercised: SQL INSERT / UPDATE / DELETE of the plan §4.3
@@ -133,13 +151,8 @@
  *  rtn_core_mutate (spend, token create, name register),
  *  nodus_rt_core_claim_apply, nodus_witness_v2_claim_spend_insert,
  *  nodus_witness_vset_insert and v2ep_attendance_digest. NOT driven here:
- *   - v2ep_release_utxo: the graduation bond release and the delegation
- *     release at an epoch boundary (nodus_witness_v2_epoch.c:679, :998)
- *     need a RETIRING validator that is not an entry of the snapshot
- *     taking effect, which the seeded genesis does not provide (the
- *     validator fixture is test_v2_epoch.c's own genesis, a different
- *     chain); the row it writes is the same utxo_set INSERT K2 / K6 drive
- *     through other callers, and the trigger sits on the table;
+ *   - the storage exit release (nodus_witness_v2_storage.c:1180-1183,
+ *     through nodus_witness_v2_epoch_release_utxo): WP4;
  *   - the storage writers (v2_storage_nodes, v2_storage_segments, the
  *     storage exit release): HF-9 package WP4 (storage work excluded);
  *   - the storage boundary under generation 6, the head_activate guard's
@@ -190,9 +203,13 @@
  *    the leaf-hash functions and the key convention with the code under
  *    test (see above), so K does not prove the byte choices (T-4's KAT).
  *    The expected-moved masks are this test's reading of each writer's
- *    tables (K1 0x09, K2 0x03, K3 / K4c 0x01, K5 legs 7 and 8 at least,
- *    K6 0x05): a writer that also touched another leg would fail the mask,
- *    one that wrote nothing would fail "moved". The transactions are built
+ *    tables (K1 0x09, K2 0x03, K3 / K4c 0x01, K6 0x05, exact: a writer
+ *    that also touched another leg, or one that wrote nothing, fails the
+ *    mask). K5 and K7 are NOT exact: they require the named legs to move
+ *    (K5 legs 7 and 8; K7 legs 1, 7 and 8) and do not require any other
+ *    leg to stay unchanged; their guard against a stray leg is the
+ *    full-rebuild comparison, which proves consistency with the rows,
+ *    not absence of other changes. The transactions are built
  *    with the sender's key and applied through the cometbft lane (the
  *    quorum of a SYSTEM operation is not involved: CORE legs only).
  *  - K5's boundary carries no votes: the first boundary leaves every
@@ -213,6 +230,9 @@
 #include "witness/nodus_witness_v2_trie.h"
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_runtime.h"
+#include "witness/nodus_witness_validator.h"
+#include "witness/nodus_witness_delegation.h"
+#include "witness/nodus_witness_v2_epoch.h"
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_v2_spend.h"
 
@@ -1725,7 +1745,55 @@ static int k_open(jfx_t *f, int dist, uint8_t chain32[32],
         j_cc_row(f->w, DNAC_CFG_RULESET_GEN_TRIE,
                  (uint64_t)DNAC_CFG_RULESET_GEN_TRIE_D, J_A, 16) != 0)
         return -1;
-    if (!dist) {
+    if (dist == 2) {
+        /* the graduation chain (test_v2_epoch.c's late-joiner shape): the
+         * document's seven seats and the snapshots 0 / E first, THEN one
+         * more bonded validator in status RETIRING - not an entry of any
+         * frozen snapshot, so the first boundary graduates it at once -
+         * and one delegation to it; the supply gains exactly the bond and
+         * the delegated amount; the genesis names the departure
+         * (V2X_SEED_NOT_REAL_STATUSES recomputes active_count). */
+        if (v2x_seed_rows(f->w, 0) != 0) return -1;
+        uint8_t gpk[QGP_DSA87_PUBLICKEYBYTES];
+        uint8_t gsk[QGP_DSA87_SECRETKEYBYTES];
+        uint8_t gseed[32];
+        memset(gseed, 0x7A, sizeof(gseed));
+        if (qgp_dsa87_keypair_derand(gpk, gsk, gseed) != 0) return -1;
+        const uint64_t bond = (uint64_t)DNAC_SELF_STAKE_AMOUNT;
+        const uint64_t dam = 2u * (uint64_t)DNAC_MIN_DELEGATION;
+        dnac_validator_record_t v;
+        memset(&v, 0, sizeof(v));
+        memcpy(v.pubkey, gpk, DNAC_PUBKEY_SIZE);
+        memcpy(v.unstake_destination_pubkey, k_pk, DNAC_PUBKEY_SIZE);
+        memcpy(v.unstake_destination_fp, k_hex, 128);
+        v.self_stake          = bond;
+        v.commission_bps      = 100;
+        v.status              = DNAC_VALIDATOR_RETIRING;
+        v.active_since_block  = 1;
+        v.unstake_commit_block = 3;
+        if (nodus_validator_insert(f->w, &v) != 0) return -1;
+        dnac_delegation_record_t d;
+        memset(&d, 0, sizeof(d));
+        memcpy(d.delegator_pubkey, k_pk, DNAC_PUBKEY_SIZE);
+        memcpy(d.validator_pubkey, gpk, DNAC_PUBKEY_SIZE);
+        d.amount = dam;
+        if (nodus_delegation_insert(f->w, &d) != 0) return -1;
+        if (nodus_validator_get(f->w, gpk, &v) != 0) return -1;
+        v.total_delegated    += dam;
+        v.external_delegated += dam;
+        if (nodus_validator_update(f->w, &v) != 0) return -1;
+        char sql[224];
+        snprintf(sql, sizeof(sql),
+                 "UPDATE supply_tracking SET genesis_supply = "
+                 "genesis_supply + %llu, current_supply = current_supply "
+                 "+ %llu WHERE id = 1",
+                 (unsigned long long)(bond + dam),
+                 (unsigned long long)(bond + dam));
+        if (run_sql(f->w->db, sql) != 0) return -1;
+        v2x_seed_not_real(V2X_SEED_NOT_REAL_STATUSES);
+        if (v2x_seed_genesis(f->w, id16, 0, NULL, 0, chain32) != 0)
+            return -1;
+    } else if (!dist) {
         uint64_t tokfee = 0;
         if (nodus_chain_config_get_u64(f->w,
                 (uint8_t)DNAC_CFG_TOKEN_CREATE_FEE_RAW, 1, 0, &tokfee) != 0
@@ -2143,6 +2211,36 @@ static int test_gen6_writers(void) {
               k_read_legs(f.w, L2) == 0 && k_moved(L1, L2) == 0,
               "K4b: no dirty key and no leg root moved");
 
+        /* K4d: the engine's ITEM rollback after captured writes (Sol
+         * verifier, second round, row 2). The S2 spend is stopped inside
+         * its own item savepoint after its effect at index 1 was applied
+         * (V2AP_FAIL_AFTER_EFFECT_APPLY: the input DELETE and an output
+         * INSERT have run and the triggers have captured their keys): the
+         * item is refused, the block still applies. Read INSIDE the
+         * block's transaction, after the engine (phase 8-pre flush
+         * included): the coin is back, no dirty key, every leg root as
+         * before and equal to the oracle; then the host rolls back. */
+        nodus_v2_envelope_t e3 = { env, elen };
+        k_mk_block(&b, 19);
+        b.envs = &e3;
+        b.n_envs = 1;
+        b.fail_at = V2AP_FAIL_AFTER_EFFECT_APPLY;
+        b.fail_env_index = 0;
+        b.fail_effect_index = 1;
+        CHECK(v2x_cmt_host(f.w, &b, 1) == 0 &&
+              b.cmt.results[0].code != NODUS_V2_TX_OK,
+              "K4d: the item stopped after a real writer ran is refused, "
+              "the block applies");
+        CHECK(k_utxo_live(f.w, k_nul[K_COIN_S2]) == 1,
+              "K4d: the engine's item rollback restored the input coin");
+        CHECK(q1(f.w->db, "SELECT COUNT(*) FROM v2_trie_dirty") == 0,
+              "K4d: no dirty key survives the refused item");
+        CHECK(k_read_legs(f.w, L2) == 0 && k_moved(L1, L2) == 0,
+              "K4d: every persisted leg root is as before the block");
+        CHECK(j_roots_ok(&f, "K4d inside the block after the refusal") == 0,
+              "K4d: and equals the oracle and the full rebuild");
+        CHECK(run_sql(f.w->db, "ROLLBACK") == 0, "K4d: the host rolls back");
+
         /* K4c: the same S2 spend, committed for real, moves leg 1 */
         CHECK(k_apply_env(&f, 19, env, elen) == 0,
               "K4c: the S2 spend commits at block 19");
@@ -2249,6 +2347,77 @@ static int test_gen6_claims(void) {
     return 0;
 }
 
+/* K7: the epoch releases of a graduation at the first boundary under
+ * generation 6 (Sol verifier, second round, row 1): v2ep_release_utxo
+ * called for the graduate's bond (output index NODUS_V2_EPGRAD_OUT_IDX) and
+ * for its delegation (index NODUS_V2_GRAD_DELEG_OUT_IDX_BASE + rank). The
+ * boundary is first applied with an injection after each release (a node
+ * FAULT, rolled back whole: dirty empty, node table and leg roots as
+ * before, equal to the oracle), then for real. Storage releases are not
+ * driven (WP4). */
+static int test_gen6_releases(void) {
+    jfx_t f;
+    CHECK(DNAC_EPOCH_LENGTH > 40, "K7: no epoch boundary among the heights");
+    CHECK(k_keys() == 0, "K7: sender keys");
+    CHECK(k_open(&f, 2, NULL, NULL) == 0, "K7: a chain at generation 6 "
+          "holding one RETIRING validator outside the snapshots and one "
+          "delegation to it (blocks 1..15 committed)");
+    CHECK(q1(f.w->db, "SELECT capture FROM v2_trie_state") == 1,
+          "K7: capture is 1");
+    CHECK(q1(f.w->db, "SELECT COUNT(*) FROM delegations") == 1 &&
+          q1(f.w->db, "SELECT COUNT(*) FROM validators") == 8,
+          "K7: eight validator rows and the delegation row are in place");
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    for (uint64_t h = 16; h < E; h++)
+        CHECK(j_apply_ok(&f, h) == 0, "K7: an idle block before the "
+              "boundary");
+    CHECK(q1(f.w->db, "SELECT COUNT(*) FROM utxo_set WHERE output_index = "
+                      "200") == 0, "K7: no bond release yet");
+    uint8_t L1[8][64], L2[8][64];
+    CHECK(k_read_legs(f.w, L1) == 0, "K7: roots before the boundary");
+    const sqlite3_int64 nodes0 =
+        q1(f.w->db, "SELECT COUNT(*) FROM v2_trie_nodes");
+
+    static const nodus_v2_apply_fail_t pts[2] = {
+        V2AP_FAIL_AFTER_FIRST_GRAD_RELEASE,
+        V2AP_FAIL_AFTER_FIRST_GRAD_DELEG_RELEASE };
+    for (int i = 0; i < 2; i++) {
+        nodus_v2_block_t b;
+        k_mk_block(&b, E);
+        b.fail_at = pts[i];
+        CHECK(v2x_cmt_injected(f.w, &b) == 0,
+              "K7: the boundary faulting after a release is a node FAULT, "
+              "the whole database byte-identical");
+        CHECK(q1(f.w->db, "SELECT COUNT(*) FROM utxo_set WHERE "
+                          "output_index = 200") == 0 &&
+              q1(f.w->db, "SELECT COUNT(*) FROM v2_trie_dirty") == 0 &&
+              q1(f.w->db, "SELECT COUNT(*) FROM v2_trie_nodes") == nodes0,
+              "K7: no release row, no dirty key, the node table as it was");
+        CHECK(k_read_legs(f.w, L2) == 0 && k_moved(L1, L2) == 0,
+              "K7: every leg root is as before the faulted boundary");
+        CHECK(j_roots_ok(&f, "K7 after the rolled-back boundary") == 0,
+              "K7: and equals the oracle and the rows");
+    }
+
+    CHECK(j_apply_ok(&f, E) == 0, "K7: the boundary block commits");
+    CHECK(q1(f.w->db, "SELECT COUNT(*) FROM utxo_set WHERE output_index = "
+                      "200") == 1,
+          "K7: the graduation released the bond (index 200)");
+    CHECK(q1(f.w->db, "SELECT COUNT(*) FROM utxo_set WHERE output_index >= "
+                      "1073741824") == 1 &&
+          q1(f.w->db, "SELECT COUNT(*) FROM delegations") == 0,
+          "K7: the delegation was released (index 0x40000000 + rank) and "
+          "its row deleted");
+    CHECK(q1(f.w->db, "SELECT COUNT(*) FROM v2_trie_dirty") == 0 &&
+          k_read_legs(f.w, L2) == 0, "K7: dirty empty, roots read");
+    CHECK((k_moved(L1, L2) & 0xC1u) == 0xC1u,
+          "K7: legs 1 (the two releases), 7 and 8 moved");
+    CHECK(j_roots_ok(&f, "K7 graduation boundary") == 0,
+          "K7: every leg root equals the oracle and the rows");
+    jfx_close(&f);
+    return 0;
+}
+
 int main(void) {
     fx_t fx;
     if (fx_open(&fx) != 0) {
@@ -2265,6 +2434,7 @@ int main(void) {
     if (!rc) rc = test_gen6();
     if (!rc) rc = test_gen6_writers();
     if (!rc) rc = test_gen6_claims();
+    if (!rc) rc = test_gen6_releases();
     if (rc) {
         fprintf(stderr, "test_hf9_trie_legs: FAILED\n");
         return 1;
