@@ -2405,9 +2405,10 @@ static int hf4_tip(nodus_witness_t *w, uint64_t *tip) {
  * generation its edge moves the registry TO (nodus_witness_v2_apply.c:
  * RULESET_EDGES param 9 -> NODUS_RT_GEN_2; phase_6b_evm_activation param
  * 14 -> NODUS_RT_GEN_EVM; phase_6b_gen4_edge param 18 ->
- * NODUS_RT_GEN_STORAGE; phase_6b_gen5_edge param 22 -> NODUS_RT_GEN_ROOTS).
+ * NODUS_RT_GEN_STORAGE; phase_6b_gen5_edge param 22 -> NODUS_RT_GEN_ROOTS;
+ * the generation-6 edge param 24 -> NODUS_RT_GEN_TRIE).
  * Every id and generation number is defined in every build; a build
- * without NODUS_EVM_ENABLED reports a 14/18/22 row it could not itself
+ * without NODUS_EVM_ENABLED reports a 14/18/22/24 row it could not itself
  * execute (it stops at that edge) — the report is still the chain's. */
 static const struct {
     uint8_t  param_id;
@@ -2417,11 +2418,12 @@ static const struct {
     { (uint8_t)DNAC_CFG_EVM_ACTIVE,        NODUS_RT_GEN_EVM     },
     { (uint8_t)DNAC_CFG_RULESET_GEN_ROLES, NODUS_RT_GEN_STORAGE },
     { (uint8_t)DNAC_CFG_RULESET_GEN_ROOTS, NODUS_RT_GEN_ROOTS   },
+    { (uint8_t)DNAC_CFG_RULESET_GEN_TRIE,  NODUS_RT_GEN_TRIE    },
 };
 #define RULESET_SWITCH_N \
     (sizeof(RULESET_SWITCH_PARAMS) / sizeof(RULESET_SWITCH_PARAMS[0]))
-_Static_assert(RULESET_SWITCH_N == 4,
-               "ruleset_next_switch binds exactly four switch params");
+_Static_assert(RULESET_SWITCH_N == 5,
+               "ruleset_next_switch binds exactly five switch params");
 
 /* The committed generation-switch row with the smallest effective_block
  * above `tip` (ties: the smaller param_id). 0 with *ng = *nh = 0 when
@@ -2436,7 +2438,7 @@ static int ruleset_next_switch(nodus_witness_t *w, uint64_t tip,
     if (tip > (uint64_t)INT64_MAX) return -1;
     if (sqlite3_prepare_v2(w->db,
             "SELECT param_id, effective_block FROM chain_config_history "
-            "WHERE param_id IN (?1, ?2, ?3, ?4) AND effective_block > ?5 "
+            "WHERE param_id IN (?1, ?2, ?3, ?4, ?5) AND effective_block > ?6 "
             "ORDER BY effective_block, param_id LIMIT 1",
             -1, &st, NULL) != SQLITE_OK) {
         sqlite3_finalize(st);
@@ -2445,7 +2447,7 @@ static int ruleset_next_switch(nodus_witness_t *w, uint64_t tip,
     for (size_t i = 0; i < RULESET_SWITCH_N; i++)
         sqlite3_bind_int(st, (int)i + 1,
                          (int)RULESET_SWITCH_PARAMS[i].param_id);
-    sqlite3_bind_int64(st, 5, (sqlite3_int64)tip);
+    sqlite3_bind_int64(st, (int)RULESET_SWITCH_N + 1, (sqlite3_int64)tip);
     int s = sqlite3_step(st);
     if (s == SQLITE_DONE) {
         rc = 0;

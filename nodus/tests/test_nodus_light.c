@@ -1090,8 +1090,8 @@ static int t_compat_judge(void)
       "compat: update-required names the generation");
     T(strstr(msg, "this nodus-light knows up to 5") != NULL,
       "compat: update-required names what nodus-light knows");
-    T(NODUS_LIGHT_GEN_MAX == NODUS_RT_GEN_ROOTS,
-      "compat: nodus-light judges by the roots generation");
+    T(NODUS_LIGHT_GEN_MAX == NODUS_RT_GEN_TRIE,
+      "compat: nodus-light judges by the trie generation");
     T(!light_compat_judge(&st, &ri, 5, msg, sizeof(msg)),
       "compat: update-required only once");
 
