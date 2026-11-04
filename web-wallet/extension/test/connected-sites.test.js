@@ -4,16 +4,20 @@ import { readFileSync } from 'node:fs';
 import { Caip25EndowmentPermissionName, setEthAccounts } from '@metamask/chain-agnostic-permission';
 import { SITES_KEY, parseSites, serializeSites, sitesKeyFor } from '../../src/activity-storage.js';
 import { STATE_KEY } from '../src/background/store.js';
+import { REVOKED_KEY } from '../src/background/connected-sites.js';
+import { PROVIDER_METHODS } from '../src/constants/stream.js';
 
 // Proves the connected-websites list is sealed at rest (docs/plans/decisions/2026-11-03-chrome-web-store.md:13,15;
 // plan docs/plans/2026-11-03-chrome-web-store-plan.md section 2.6): it is written only as an AES-256-GCM record under
 // nodus.sites.v1, no origin appears in any plain stored value, lock empties it, unlock restores it without a new
-// approval, an old plain list is dropped (no migration, same record line 18), and a record that fails to open is
-// reported and left as it is.
+// approval, an old plain list is dropped (no migration, same record line 18), a record that fails to open is
+// reported and left as it is, and a website's own wallet_revokePermissions sent while locked is applied at the next
+// unlock (operator 2026-11-04: "Hatırlansın, kilit açılınca uygulansın"), also after a service worker restart.
 // Needs: Node >=22.14 and the committed CPUNK WASM. No flags, network or disk output; the browser APIs are in-memory
 // fakes with the real background, engine, permission controller and AES-GCM.
 // Leaves: nothing. Falsely passes: the fake storage persists whatever it is given, so it cannot show a write lost to a
-// real browser quota; the checks read the fake's contents, not chrome.storage.local.
+// real browser quota; the checks read the fake's contents, not chrome.storage.local or chrome.storage.session; the
+// worker restart is a second background over the same fake storage, not a real browser restart.
 const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
 const password = 'public-test-password-123';
 const cpunkWasmBytes = readFileSync(new URL('../../src/cpunk/legacy-dilithium.wasm', import.meta.url));
@@ -23,9 +27,13 @@ function event() {
   const listeners = new Set();
   return { listeners, addListener(fn) { listeners.add(fn); }, removeListener(fn) { listeners.delete(fn); }, emit(...args) { return [...listeners].map(fn => fn(...args)); } };
 }
-function browserFixture(initial = {}) {
+function browserFixture(initial = {}, session = {}) {
   const values = structuredClone(initial), writes = [];
-  return { values, writes, consumeNodusSeed: () => {},
+  return { values, writes, session, consumeNodusSeed: () => {},
+    // chrome.storage.session: kept by the browser across service worker restarts, not written to disk.
+    sessionStorage: { async get(key) { return { [key]: structuredClone(session[key]) }; },
+      async set(items) { Object.assign(session, structuredClone(items)); },
+      async remove(key) { delete session[key]; } },
     runtime: { id: 'test-extension', onConnect: event(), getManifest: () => ({ version: '0.1.132' }), getURL: path => `chrome-extension://test-extension/${path}` },
     storage: { async get(key) { return key === null ? structuredClone(values) : { [key]: structuredClone(values[key]) }; },
       async set(items) { writes.push(structuredClone(items)); Object.assign(values, structuredClone(items)); },
@@ -36,8 +44,8 @@ function browserFixture(initial = {}) {
     tabs: { async query() { return []; } } };
 }
 let backgroundModule;
-async function setup(t, initial) {
-  const fixture = browserFixture(initial);
+async function setup(t, initial, session) {
+  const fixture = browserFixture(initial, session);
   if (!backgroundModule) {
     const saved = Object.getOwnPropertyDescriptor(globalThis, 'chrome');
     globalThis.chrome = { runtime: fixture.runtime, storage: { local: fixture.storage }, alarms: fixture.alarms, windows: fixture.windows };
@@ -191,4 +199,38 @@ test('a restore removes the replaced wallet\'s record', { timeout: 60000 }, asyn
   ui.disconnect();
   assert.equal(Object.hasOwn(values, SITES_KEY), false, 'the replaced wallet\'s record is removed');
   remote.disconnect();
+});
+
+test('a website\'s revocation sent while locked is answered, remembered and applied at the next unlock', async t => {
+  const { background, runtime, values, session } = await setup(t), unlocked = await startWallet(background), remote = port(runtime);
+  await connectSite(background, remote);
+  await background.lock();
+  assert.equal((await request(remote, 'wallet_revokePermissions', [{ eth_accounts: {} }])).result, null);
+  await background.connectedSites.flushRevoked();
+  assert.equal(JSON.stringify(values).includes('site.example'), false, 'the remembered revocation is not stored in plain on disk');
+  assert.deepEqual(Object.keys(session[REVOKED_KEY]), [origin]);
+  const seen = remote.messages.length;
+  await background.unlock(password, { cpunkWasmBytes });
+  assert.deepEqual(background.permissions.controller.getSubjectNames(), []);
+  assert.deepEqual((await request(remote, 'eth_accounts')).result, []);
+  const notices = remote.messages.slice(seen).filter(message => message.data?.method === PROVIDER_METHODS.accountsChanged);
+  assert.deepEqual(notices, [], 'the site is not given the address back at unlock');
+  await background.connectedSites.flush(); await background.connectedSites.flushRevoked();
+  assert.deepEqual(await parseSites(values[SITES_KEY], unlocked.id, await sitesKeyFor(phrase, unlocked.id)), {});
+  assert.equal(Object.hasOwn(session, REVOKED_KEY), false, 'an applied revocation is forgotten');
+  remote.disconnect();
+});
+
+test('a revocation remembered while locked survives a service worker restart', async t => {
+  const first = await setup(t), unlocked = await startWallet(first.background), remote = port(first.runtime);
+  await connectSite(first.background, remote);
+  await first.background.lock();
+  assert.equal((await request(remote, 'wallet_revokePermissions', [{ eth_accounts: {} }])).result, null);
+  await first.background.connectedSites.flushRevoked();
+  remote.disconnect();
+  const { background, values } = await setup(t, first.values, first.session);
+  await background.unlock(password, { cpunkWasmBytes });
+  assert.deepEqual(background.permissions.controller.getSubjectNames(), []);
+  await background.connectedSites.flush();
+  assert.deepEqual(await parseSites(values[SITES_KEY], unlocked.id, await sitesKeyFor(phrase, unlocked.id)), {});
 });

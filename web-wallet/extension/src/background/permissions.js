@@ -34,7 +34,7 @@ const unrestrictedMethods = [
   'web3_clientVersion', 'web3_sha3', 'nodus_requestAccounts', 'nodus_signMessage',
 ];
 
-export function createPermissions({ messenger, approvals, runtime, getNetworkState, getNodusAccount }) {
+export function createPermissions({ messenger, approvals, runtime, getNetworkState, getNodusAccount, rememberRevocation }) {
   let accounts = [];
   const locks = new Set();
   // Port: app/scripts/messenger-client-init/permission-controller-init.ts:37-78,
@@ -220,6 +220,9 @@ export function createPermissions({ messenger, approvals, runtime, getNetworkSta
       // Port: metamask-controller.js:5540-5552 returns null for absent grants too.
       // ADAPTATION: plan §11:964-966 removes the raw error log, which may include request data.
     }
+    // While locked the grant is only in the sealed record; connected-sites.js applies it at the next unlock
+    // (operator 2026-11-04: "Hatırlansın, kilit açılınca uygulansın").
+    rememberRevocation?.(req.origin, relevant);
     if (relevant.includes(Caip25EndowmentPermissionName) || relevant.includes(NODUS_PERMISSION)) approvals.rejectOrigin(req.origin);
     res.result = null; return end();
   }

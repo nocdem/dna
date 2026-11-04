@@ -46,6 +46,7 @@ const publicResult = async value => JSON.parse(JSON.stringify(await value, (_key
 export async function createBackground({ storage = chrome.storage.local, alarms = chrome.alarms,
   runtime = chrome.runtime, windows = chrome.windows, tabs = globalThis.chrome?.tabs,
   notifications = globalThis.chrome?.notifications, notificationStorage = globalThis.chrome?.storage?.session,
+  sessionStorage = globalThis.chrome?.storage?.session,
   nodusOptions = {}, consumeNodusSeed, readPrices = readWalletPrices } = {}) {
   const lockCoordinator = createLockCoordinator();
   const invalidateWallet = () => {
@@ -105,8 +106,9 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     },
     getPermittedAccounts: origin => permissions.getNodusAccounts(origin), approvals });
   permissions = createPermissions({ messenger, approvals, runtime,
-    getNetworkState: options => engine.getNetworkState(options), getNodusAccount: () => nodus.getAccount() });
-  connectedSites = createConnectedSites({ storage, controller: permissions.controller, messenger });
+    getNetworkState: options => engine.getNetworkState(options), getNodusAccount: () => nodus.getAccount(),
+    rememberRevocation: (origin, names) => connectedSites.rememberRevocation(origin, names) });
+  connectedSites = createConnectedSites({ storage, sessionStorage, controller: permissions.controller, messenger });
   evm = createEvm({ messenger, store, approvals, permissions, lockCoordinator, getWallet, keyring,
     getActivity: chain => nodus.chainActivity(chain),
     onNetworkChanged: (client, readMetadata) => engine.attachNetworkClient(client, readMetadata) });
