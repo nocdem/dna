@@ -7864,7 +7864,10 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
      * param-18 rule reads either.
      * HF-7 (snapshot design §10.2 item 1): the param-22 vote reads its
      * single-use fact ctx->ruleset_gen_roots_voted (rule (a)) — the same
-     * UNMETERED engine class; only the param-22 rule reads it. */
+     * UNMETERED engine class; only the param-22 rule reads it.
+     * HF-9 (plan §7.1): the param-24 vote reads its single-use fact
+     * ctx->ruleset_gen_trie_voted (rule (a)) — the same UNMETERED engine
+     * class; only the param-24 rule reads it. */
     {
         /* Nodus EVM: + the EVM_ACTIVE facts (hf3_active / gas_price_on /
          * evm_active_voted — UNMETERED engine facts like the two above);
@@ -7880,6 +7883,7 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
         facts.ruleset_gen_roles_voted = ctx->ruleset_gen_roles_voted;
         facts.ruleset_gen_roots_voted = ctx->ruleset_gen_roots_voted;
         facts.mldsa_active_voted = ctx->mldsa_active_voted;
+        facts.ruleset_gen_trie_voted = ctx->ruleset_gen_trie_voted;
         facts.chain_initial_height = ctx->chain_initial_height; /* F5 */
         facts.judging_generation = rt ? rt->generation : 0u;
         if (nodus_chain_config_stateful_rules_ex(c.param_id, c.effective,

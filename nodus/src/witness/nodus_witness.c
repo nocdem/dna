@@ -2916,6 +2916,21 @@ int nodus_witness_init(nodus_witness_t *witness,
                  (unsigned)DNAC_CFG_RULESET_GEN_ROOTS,
                  (unsigned)DNAC_HF7_SWITCH_SPEC_VERSION,
                  NODUS_BUILD_GIT_COMMIT);
+    /* HF-9 WP3 (plan docs/plans/approved/2026-11-04-hf9.md §7.1): the
+     * generation-6 vote literal D6 (chain_config param 24
+     * RULESET_GEN_TRIE) — an EVM-enabled build's selfcheck just
+     * re-derived it from the generation-6 pins, the 5 -> 6 spec version,
+     * the compiled Foundation owner and the four HF-9 constants — for the
+     * same 8/8 comparison before THAT vote. Its own line, so the HF-6 and
+     * HF-7 lines above keep the exact text the scenarios grep. */
+    QGP_LOG_INFO(LOG_TAG, "HF-9 rule-set generation %u vote D6 0x%016llx "
+                 "(param %u RULESET_GEN_TRIE, switch spec v%u), built from "
+                 "git commit %s",
+                 (unsigned)NODUS_RT_GEN_TRIE,
+                 (unsigned long long)DNAC_CFG_RULESET_GEN_TRIE_D,
+                 (unsigned)DNAC_CFG_RULESET_GEN_TRIE,
+                 (unsigned)DNAC_HF9_SWITCH_SPEC_VERSION,
+                 NODUS_BUILD_GIT_COMMIT);
     /* HF-4 review (L1 F2): the compile-time constants consensus depends
      * on and that a harness build overrides (#ifndef in dnac.h /
      * nodus_witness_emission.h), plus whether the fault-injection hooks

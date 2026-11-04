@@ -462,6 +462,14 @@ int dnac_tx_verify_validator_update_rules(const dnac_transaction_t *tx) {
  *                                ML-DSA-87 precompile, param 23; the
  *                                EVM_ACTIVE shape — the witness's
  *                                stateful rules are not mirrored)
+ *       RULESET_GEN_TRIE       : exactly DNAC_CFG_RULESET_GEN_TRIE_D (D6;
+ *                                HF-9, param 24; the RULESET_GEN_ROOTS
+ *                                shape — the witness's stateful rules are
+ *                                not mirrored)
+ *       STORAGE_COPIES         : [DNAC_CFG_MIN_STORAGE_COPIES=4,
+ *                                 DNAC_CFG_MAX_STORAGE_COPIES=16] (HF-9,
+ *                                param 25; "generation 6 judges the vote"
+ *                                is witness-side only)
  *   - signed_at_block > 0            (CC-AUDIT-008)
  *   - valid_before_block > effective_block_height
  *   - valid_before_block > signed_at_block
@@ -644,6 +652,43 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
                               (unsigned long long)cc->new_value,
                               (unsigned long long)
                                   DNAC_CFG_RULESET_GEN_ROOTS_D);
+                return DNAC_ERROR_INVALID_PARAM;
+            }
+            break;
+        case DNAC_CFG_RULESET_GEN_TRIE:
+            /* HF-9 (plan docs/plans/approved/2026-11-04-hf9.md §7.1),
+             * mirroring nodus_witness_chain_config.c's scalar_rules:
+             * EXACTLY the compiled generation-6 vote literal D6 (the same
+             * dnac.h literal the witness compares against). The
+             * witness's stateful rules — single use, HF-2 active, judged
+             * under generation 5, A-1 and A not epoch boundaries — need
+             * chain state this mirror does not have (the param-22
+             * divergence). */
+            if (cc->new_value != (uint64_t)DNAC_CFG_RULESET_GEN_TRIE_D) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "CHAIN_CONFIG: RULESET_GEN_TRIE=0x%016llx, "
+                              "only D6=0x%016llx is a legal value",
+                              (unsigned long long)cc->new_value,
+                              (unsigned long long)
+                                  DNAC_CFG_RULESET_GEN_TRIE_D);
+                return DNAC_ERROR_INVALID_PARAM;
+            }
+            break;
+        case DNAC_CFG_STORAGE_COPIES:
+            /* HF-9 (plan §7.1, §15 AD-12), mirroring the witness scalar
+             * rules: [DNAC_CFG_MIN_STORAGE_COPIES,
+             * DNAC_CFG_MAX_STORAGE_COPIES]. "Votable only while
+             * generation 6 judges the vote" is witness-side. */
+            if (cc->new_value < DNAC_CFG_MIN_STORAGE_COPIES ||
+                cc->new_value > DNAC_CFG_MAX_STORAGE_COPIES) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "CHAIN_CONFIG: STORAGE_COPIES=%llu out of "
+                              "[%llu,%llu]",
+                              (unsigned long long)cc->new_value,
+                              (unsigned long long)
+                                  DNAC_CFG_MIN_STORAGE_COPIES,
+                              (unsigned long long)
+                                  DNAC_CFG_MAX_STORAGE_COPIES);
                 return DNAC_ERROR_INVALID_PARAM;
             }
             break;

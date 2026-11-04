@@ -970,10 +970,67 @@ typedef enum {
                                           *   rules. Grace class
                                           *   ERGONOMIC (operator "720
                                           *   blokta geçelim").
-                                          *   NEXT FREE id in this tree —
-                                          *   renumber at merge if
-                                          *   another hard fork took it. */
-    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_MLDSA_ACTIVE
+                                          *   (Was the NEXT FREE id when
+                                          *   it landed.) */
+    DNAC_CFG_RULESET_GEN_TRIE      = 24, /**< HF-9 (plan docs/plans/
+                                          *   approved/2026-11-04-hf9.md
+                                          *   §7.1, §15 AD-12; the name is
+                                          *   ours): the vote for rule-set
+                                          *   generation 6 — the TRIE
+                                          *   generation (the eight legs
+                                          *   committed by SHA3-512
+                                          *   Patricia tries, compositions
+                                          *   "NDS.CORE.v4" / "NDS.SYS.v7"
+                                          *   / "NDS.STOR.v3"). Its
+                                          *   effective block A is the
+                                          *   first block judged under it;
+                                          *   the engine builds the eight
+                                          *   tries, switches the SYSTEM
+                                          *   and CORE registry records
+                                          *   5 -> 6 and turns the dirty
+                                          *   capture on at the end of
+                                          *   block A-1 (phase 6b'''''). Value
+                                          *   domain EXACTLY DNAC_CFG_
+                                          *   RULESET_GEN_TRIE_D (D6).
+                                          *   Single use; HF-2 active;
+                                          *   judged under generation
+                                          *   EXACTLY 5 (NODUS_RT_GEN_
+                                          *   TRIE_BASE); neither A-1 nor
+                                          *   A an epoch boundary —
+                                          *   witness-side stateful rules
+                                          *   the client mirror cannot
+                                          *   apply. Grace class SAFETY,
+                                          *   17280 blocks (operator
+                                          *   "4.24.", decision docs/plans/
+                                          *   decisions/2026-11-04-hf9-
+                                          *   scope.md: NOT param 22's
+                                          *   ERGONOMIC). */
+    DNAC_CFG_STORAGE_COPIES        = 25, /**< HF-9 (plan §7.1, §15 AD-12;
+                                          *   the name is ours): R, the
+                                          *   number of holders per
+                                          *   storage segment under the
+                                          *   rendezvous assignment.
+                                          *   Range [DNAC_CFG_MIN_STORAGE_
+                                          *   COPIES (4), DNAC_CFG_MAX_
+                                          *   STORAGE_COPIES (16)]; no row
+                                          *   = DNAC_STORAGE_COPIES_
+                                          *   DEFAULT (4). Votable only
+                                          *   while generation >= 6
+                                          *   judges the vote
+                                          *   (witness-side). Grace: ONE
+                                          *   EPOCH exactly (operator
+                                          *   2026-11-04: "Oylamalarda bir
+                                          *   epoxa bir epok olsun o
+                                          *   zaman." and "diğer ayarları
+                                          *   değiştirme.", decision
+                                          *   docs/plans/decisions/2026-
+                                          *   11-04-hf9-scope.md);
+                                          *   every other parameter keeps
+                                          *   its wait class. The value is
+                                          *   read at the storage freeze
+                                          *   boundary (HF-9 WP4, plan
+                                          *   §8.5). */
+    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_STORAGE_COPIES
 } dnac_chain_config_param_id_t;
 
 /** The chain-config parameters the RUNNING consensus reads — the one list
@@ -1056,7 +1113,19 @@ typedef enum {
  *    - MLDSA_ACTIVE (23, the ML-DSA-87 precompile): nodus_witness_v2_apply.c
  *      env_evm_facts (nodus_rt_evm_mldsa_active_at -> ctx.mldsa_active,
  *      the EVM VM switch; "any param-23 row" -> ctx.mldsa_active_voted,
- *      the single use).
+ *      the single use);
+ *    - RULESET_GEN_TRIE (24, HF-9): nodus_witness_v2_apply.c phase
+ *      6b''''' (phase_6b_gen6_edge — the edge trigger that builds the
+ *      eight tries, switches the registry 5 -> 6 and turns the dirty
+ *      capture on at the end of block A-1) and env_ruleset_gen_trie_voted
+ *      (nodus_rt_exec_ctx_t.ruleset_gen_trie_voted — the single-use vote
+ *      rule), the 0x71 approval responder's "any param-24 row" read
+ *      (nodus_witness_chain_config.c);
+ *    - STORAGE_COPIES (25, HF-9): the storage freeze boundary reads it
+ *      (nodus_chain_config_get_u64(25, B, 4)) — that reader arrives with
+ *      HF-9 package WP4 (plan §8.5); until then a committed row is
+ *      accepted (the scalar and stateful rules below) and read by no
+ *      consensus path.
  *  No other governed id is votable: 1, 3 and 16 are RETIRED (above), 2
  *  (BLOCK_INTERVAL_SEC) is not read on this lane. RETIRED 16
  *  (RULESET_GEN_STORAGE) is off this list, so no new param-16 row can be
@@ -1093,7 +1162,9 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
            param_id == (uint8_t)DNAC_CFG_POWER_CAP_BPS ||
            param_id == (uint8_t)DNAC_CFG_STORAGE_BOND ||
            param_id == (uint8_t)DNAC_CFG_RULESET_GEN_ROOTS ||
-           param_id == (uint8_t)DNAC_CFG_MLDSA_ACTIVE;
+           param_id == (uint8_t)DNAC_CFG_MLDSA_ACTIVE ||
+           param_id == (uint8_t)DNAC_CFG_RULESET_GEN_TRIE ||
+           param_id == (uint8_t)DNAC_CFG_STORAGE_COPIES;
 }
 
 /** Value range bounds — consensus-critical (client + witness reject out-of-range).
@@ -1478,6 +1549,72 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
 #define DNAC_CFG_RULESET_GEN_ROOTS_D     0x6f4c60640dd57094ULL /* D5 of shared/dnac/tests/hf7_vote_oracle.py, owner K8 (8019891019285098644) */
 #endif
 
+/** HF-9 — the generation-6 switch procedure version (plan docs/plans/
+ *  approved/2026-11-04-hf9.md §7.1; value 1 = the spec_version argument
+ *  of rolegen_preimage(6, 5, ..., 1, ...) in shared/dnac/tests/
+ *  hf9_vote_oracle.py). It names the phase code
+ *  the engine runs at the end of block A-1 of the generation-6 vote
+ *  (nodus_witness_v2_apply.c phase_6b_gen6_edge: the one-time build of
+ *  the eight tries, the registry switch 5 -> 6, the capture switch). It is
+ *  hashed into DNAC_CFG_RULESET_GEN_TRIE_D, so two binaries that run a
+ *  different 5 -> 6 procedure cannot share a vote value; any change to
+ *  that phase bumps it, and with it D6. DNAC_RULESET_SWITCH_SPEC_VERSION,
+ *  DNAC_HF6_SWITCH_SPEC_VERSION and DNAC_HF7_SWITCH_SPEC_VERSION do NOT
+ *  change. */
+#define DNAC_HF9_SWITCH_SPEC_VERSION     1u
+
+/** HF-9 vote constants (plan §7.1 HF9_VOTE_CONSTS, in this order inside
+ *  D6): the storage member cap, the copies-per-segment default, minimum
+ *  and maximum (param 25's range is [MIN, MAX]; no row = DEFAULT). They
+ *  are RESTATEMENTS of values later packages consume (HF-9 WP4); D6 binds
+ *  them now so a binary with another cap or range cannot share the vote. */
+#define DNAC_HF9_MEMBER_CAP              1024u
+#define DNAC_STORAGE_COPIES_DEFAULT      4u
+#define DNAC_CFG_MIN_STORAGE_COPIES      4u
+#define DNAC_CFG_MAX_STORAGE_COPIES      16u
+
+/** RULESET_GEN_TRIE value domain (HF-9, the generation-6 vote, param_id
+ *  24): EXACTLY this literal, D6 = the first 8 bytes, big-endian, top bit
+ *  cleared, of the ROLEGEN constructor (shared/dnac/domain_wire.h
+ *  dna_rolegen_vote_digest — the HF-6 / HF-7 constructor reused, no new
+ *  hash construction; layout approved by the operator, plan §1 D24, "3,
+ *  evet.", docs/plans/decisions/2026-11-04-hf9-scope.md):
+ *    SHA3-512( TAG16("NDS.ROLEGEN.v1")
+ *              ‖ u32 BE NODUS_RT_GEN_TRIE (6)
+ *              ‖ u32 BE NODUS_RT_GEN_TRIE_BASE (5, GEN_ROOTS)
+ *              ‖ generation-6 SYSTEM ruleset_hash[64] (v12)
+ *              ‖ generation-6 CORE ruleset_hash[64] (v11)
+ *              ‖ u32 BE DNAC_HF9_SWITCH_SPEC_VERSION (1)
+ *              ‖ DNAC_HF6_FOUNDATION_OWNER[64]
+ *              ‖ u32 BE 4
+ *              ‖ 4 × u64 BE: DNAC_HF9_MEMBER_CAP (1024),
+ *                DNAC_STORAGE_COPIES_DEFAULT (4),
+ *                DNAC_CFG_MIN_STORAGE_COPIES (4),
+ *                DNAC_CFG_MAX_STORAGE_COPIES (16) )
+ *  — a 256-byte preimage. D6 is a fixed activation identifier and drift
+ *  check, not a security commitment to arbitrary code or specifications
+ *  (plan AD-7, Kurultay 55 A8 / F-15). The value is the literal of the
+ *  INDEPENDENT oracle shared/dnac/tests/hf9_vote_oracle.py (author != the
+ *  C author; it re-derives D4 and D5 as controls before printing D6;
+ *  "D6 = 0x1f12a7f0b824ae45ULL", decimal 2239036617079959109) — never this
+ *  build's encoder. nodus_witness_runtime_selfcheck re-derives it through
+ *  dna_rolegen_vote_digest from the COMPILED generation-6 pins, owner and
+ *  constants on every start of an EVM-enabled build; nothing in the vote
+ *  path hashes. Its three comparers: the witness scalar rule
+ *  (nodus_witness_chain_config.c), the client mirror (dnac/src/
+ *  transaction/verify.c) and the generation-6 edge (nodus_witness_v2_
+ *  apply.c phase_6b_gen6_edge).
+ *
+ *  TEST-BUILD OVERRIDE ONLY, and only TOGETHER with
+ *  DNAC_HF6_FOUNDATION_OWNER (and the D4 / D5 literals): D6 binds the
+ *  compiled owner, so a build that overrides the owner must pass that
+ *  owner's D6 too (hf9_vote_oracle.py prints the compiled owner's only).
+ *  A build that overrides one and not the other refuses to start (the
+ *  selfcheck row). Production builds never define it. */
+#ifndef DNAC_CFG_RULESET_GEN_TRIE_D
+#define DNAC_CFG_RULESET_GEN_TRIE_D      0x1f12a7f0b824ae45ULL /* D6 of shared/dnac/tests/hf9_vote_oracle.py, owner K8 (2239036617079959109) */
+#endif
+
 /** HF-4 NAME_REGISTER price range (params 10-13), both inclusive:
  *  [10^8, 10^15] raw = [1 NODUS, 10 000 000 NODUS] (design §2 Price). */
 #define DNAC_CFG_MIN_NAME_PRICE             100000000ULL
@@ -1651,9 +1788,30 @@ _Static_assert(DNAC_CFG_RULESET_GEN_ROLES == 18 &&
                "HF-6 param ids (design rev 6 §8)");
 _Static_assert(DNAC_CFG_RULESET_GEN_ROOTS == 22,
                "HF-7 param id (snapshot design §10.1: next free id 22)");
-_Static_assert(DNAC_CFG_MLDSA_ACTIVE == 23 &&
-               DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_MLDSA_ACTIVE,
-               "ML-DSA-87 precompile param id (the next free id, 23)");
+_Static_assert(DNAC_CFG_MLDSA_ACTIVE == 23,
+               "ML-DSA-87 precompile param id (23)");
+_Static_assert(DNAC_CFG_RULESET_GEN_TRIE == 24 &&
+               DNAC_CFG_STORAGE_COPIES == 25 &&
+               DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_STORAGE_COPIES,
+               "HF-9 param ids (plan §7.1: next free id 23 -> 24, 25)");
+_Static_assert(DNAC_CFG_RULESET_GEN_TRIE_D <= 0x7FFFFFFFFFFFFFFFULL,
+               "D6 must fit SQLite int64 (top bit cleared by construction)");
+_Static_assert(DNAC_CFG_RULESET_GEN_TRIE_D != DNAC_CFG_RULESET_GEN2_D2 &&
+               DNAC_CFG_RULESET_GEN_TRIE_D != DNAC_CFG_EVM_ACTIVE_D &&
+               DNAC_CFG_RULESET_GEN_TRIE_D != DNAC_CFG_RULESET_GEN_ROLES_D &&
+               DNAC_CFG_RULESET_GEN_TRIE_D != DNAC_CFG_RULESET_GEN_ROOTS_D &&
+               DNAC_CFG_RULESET_GEN_TRIE_D != DNAC_CFG_MLDSA_ACTIVE_D,
+               "D6 differs from every earlier vote literal (D2, EVM_ACTIVE, "
+               "D4, D5, MLDSA_ACTIVE) — one value can never trigger two "
+               "edges");
+_Static_assert(DNAC_HF9_MEMBER_CAP == 1024u &&
+               DNAC_STORAGE_COPIES_DEFAULT == 4u &&
+               DNAC_CFG_MIN_STORAGE_COPIES == 4u &&
+               DNAC_CFG_MAX_STORAGE_COPIES == 16u &&
+               DNAC_CFG_MIN_STORAGE_COPIES <= DNAC_STORAGE_COPIES_DEFAULT &&
+               DNAC_STORAGE_COPIES_DEFAULT <= DNAC_CFG_MAX_STORAGE_COPIES,
+               "HF-9 vote constants [1024, 4, 4, 16] (plan §7.1, D4 "
+               "\"range 4..16\", default 4); the default lies in the range");
 _Static_assert(DNAC_CFG_MLDSA_ACTIVE_D <= 0x7FFFFFFFFFFFFFFFULL,
                "the MLDSA_ACTIVE literal must fit SQLite int64 (top bit "
                "cleared by construction)");

@@ -72,7 +72,8 @@ typedef struct nodus_witness nodus_witness_t;
  * checked on every block, nodus_witness_v2_econ_params_load.)
  *
  * WHY 200+. The band must never collide with a future
- * DNAC_CFG_* allocation, which grows upward from 1 (currently 23 —
+ * DNAC_CFG_* allocation, which grows upward from 1 (currently 25 —
+ * HF-9's RULESET_GEN_TRIE = 24 and STORAGE_COPIES = 25,
  * the ML-DSA-87 precompile's MLDSA_ACTIVE = 23,
  * HF-7's RULESET_GEN_ROOTS = 22, HF-6's RULESET_GEN_ROLES = 18, STAKE_MIN = 19, POWER_CAP_BPS = 20,
  * STORAGE_BOND = 21, after HF-8's DELEGATE_NAME_REQUIRED = 17,
@@ -313,7 +314,8 @@ int nodus_chain_config_scan_unknown_params(nodus_witness_t *w);
  *     (the runtime that judges the vote; 0 for a synthetic or unresolved
  *     runtime);
  *   - param 18 RULESET_GEN_ROLES, param 22 RULESET_GEN_ROOTS, param 23
- *     MLDSA_ACTIVE: see the _ex form below;
+ *     MLDSA_ACTIVE, param 24 RULESET_GEN_TRIE, param 25 STORAGE_COPIES:
+ *     see the _ex form below;
  *   - ids 1-8: no stateful rule (0);
  *   - any other id (RETIRED 16 included): -1.
  * THREE sites apply it with the same facts: the SYSTEM CHAIN_CONFIG exec
@@ -369,6 +371,14 @@ typedef struct {
                                    * SYSTEM CHAIN_CONFIG exec from
                                    * ctx.mldsa_active_voted (engine
                                    * env_evm_facts)                       */
+    uint8_t  ruleset_gen_trie_voted; /* HF-9: any param-24 row, any
+                                   * height — the param-24 single use.
+                                   * Filled by the 0x71 approval
+                                   * responder (nodus_witness_chain_
+                                   * config.c) and by the SYSTEM
+                                   * CHAIN_CONFIG exec from
+                                   * ctx.ruleset_gen_trie_voted (engine
+                                   * env_ruleset_gen_trie_voted)          */
     uint32_t judging_generation;  /* the SYSTEM runtime judging the vote
                                    * (0 = synthetic / unresolved)         */
     /* red-team 1 F5: the chain's FIRST block height, derived from the
@@ -441,11 +451,21 @@ typedef struct {
  *     registry generation), or (c) effective == 0 or effective - 1 is an
  *     epoch boundary (param 14's rule). Effective itself MAY be a
  *     boundary: Route B runs no procedure at H (no param-22 rule (e)).
- *     No other fact is read.
+ *     No other fact is read;
+ *   - param 24 RULESET_GEN_TRIE (HF-9, plan docs/plans/approved/2026-11-
+ *     04-hf9.md §7.1, §15 AD-12): param 22's rules over the generation-6
+ *     facts — refused if (a) `ruleset_gen_trie_voted` (single use), (b)
+ *     !`hf2_active`, (c) `judging_generation` is not NODUS_RT_GEN_TRIE_
+ *     BASE (exactly 5 — the switch it schedules is GEN_ROOTS ->
+ *     generation 6), (d) effective == 0 or effective - 1 is an epoch
+ *     boundary, or (e) effective itself is an epoch boundary;
+ *   - param 25 STORAGE_COPIES (HF-9, plan §7.1): refused unless
+ *     `judging_generation` >= NODUS_RT_GEN_TRIE (6). No single-use rule,
+ *     no other fact read; the range [4, 16] is a scalar rule.
  * The 5-argument function above is this with hf3 / gas price / EVM-voted /
- * param-16-row all 0 and the param-9, param-18, param-22 and param-23
- * single-use facts set from its 4th argument (so it refuses every
- * EVM_ACTIVE vote).
+ * param-16-row all 0 and the param-9, param-18, param-22, param-23 and
+ * param-24 single-use facts set from its 4th argument (so it refuses
+ * every EVM_ACTIVE vote).
  * Pure.
  * @return 0 / -1.
  */

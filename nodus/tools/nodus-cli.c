@@ -1840,6 +1840,16 @@ static int cc_param_name_to_id(const char *name, uint8_t *out_id) {
          * 3 or later judges the vote */
         { "MLDSA_ACTIVE",         DNAC_CFG_MLDSA_ACTIVE },
         { "mldsa_active",         DNAC_CFG_MLDSA_ACTIVE },
+        /* HF-9 (plan docs/plans/approved/2026-11-04-hf9.md §7.1) — param
+         * id 24, the generation-6 vote, value exactly
+         * DNAC_CFG_RULESET_GEN_TRIE_D (D6); votable once, while
+         * generation 5 judges the vote; param id 25, the storage copies
+         * per segment [4, 16], votable while generation 6 judges the
+         * vote */
+        { "RULESET_GEN_TRIE",     DNAC_CFG_RULESET_GEN_TRIE },
+        { "ruleset_gen_trie",     DNAC_CFG_RULESET_GEN_TRIE },
+        { "STORAGE_COPIES",       DNAC_CFG_STORAGE_COPIES },
+        { "storage_copies",       DNAC_CFG_STORAGE_COPIES },
     };
     for (size_t i = 0; i < sizeof(map)/sizeof(map[0]); i++) {
         if (strcmp(name, map[i].n) == 0) { *out_id = map[i].id; return 0; }
@@ -2120,6 +2130,15 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             "ML-DSA-87 signatures from --effective on; once only; "
             "generation 3 or later must be in force; --effective - 1 not "
             "an epoch boundary)\n"
+            "  RULESET_GEN_TRIE       exactly %llu   "
+            "(HF-9: rule-set generation 6 (the trie generation: eight "
+            "legs in keyed Patricia tries) from --effective on; once "
+            "only; generation 5 must be in force; HF-2 must be active; "
+            "neither --effective nor --effective - 1 an epoch boundary; "
+            "vote wait %u blocks)\n"
+            "  STORAGE_COPIES         [%u, %u]   "
+            "(HF-9: holders per storage segment; generation 6 must be in "
+            "force; vote wait one epoch, %u blocks)\n"
             "BLOCK_INTERVAL_SEC is not read by the running consensus "
             "and is refused; RULESET_GEN_STORAGE (id 16) is retired.\n",
             (unsigned long long)DNAC_CFG_MIN_TARGET_ACTIVE,
@@ -2144,7 +2163,12 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             (unsigned long long)DNAC_HF6_STORAGE_BOND_MIN,
             (unsigned long long)DNAC_HF6_STORAGE_BOND_MAX,
             (unsigned long long)DNAC_CFG_RULESET_GEN_ROOTS_D,
-            (unsigned long long)DNAC_CFG_MLDSA_ACTIVE_D);
+            (unsigned long long)DNAC_CFG_MLDSA_ACTIVE_D,
+            (unsigned long long)DNAC_CFG_RULESET_GEN_TRIE_D,
+            (unsigned)DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS,
+            (unsigned)DNAC_CFG_MIN_STORAGE_COPIES,
+            (unsigned)DNAC_CFG_MAX_STORAGE_COPIES,
+            (unsigned)DNAC_EPOCH_LENGTH);
         return 1;
     }
     uint8_t param_id = 0;
@@ -2156,7 +2180,8 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
                 "NAME_PRICE_5P | NAME_PRICE_6P | EVM_ACTIVE | "
                 "EVM_BLOCK_GAS_LIMIT | DELEGATE_NAME_REQUIRED | "
                 "RULESET_GEN_ROLES | STAKE_MIN | POWER_CAP_BPS | "
-                "STORAGE_BOND | RULESET_GEN_ROOTS | MLDSA_ACTIVE "
+                "STORAGE_BOND | RULESET_GEN_ROOTS | MLDSA_ACTIVE | "
+                "RULESET_GEN_TRIE | STORAGE_COPIES "
                 "(the parameters the running consensus reads)\n",
                 param_name);
         return 1;
@@ -12324,7 +12349,8 @@ static void usage(const char *prog) {
     fprintf(stderr, "                        EVM_ACTIVE | EVM_BLOCK_GAS_LIMIT |\n");
     fprintf(stderr, "                        DELEGATE_NAME_REQUIRED | RULESET_GEN_ROLES |\n");
     fprintf(stderr, "                        STAKE_MIN | POWER_CAP_BPS | STORAGE_BOND |\n");
-    fprintf(stderr, "                        RULESET_GEN_ROOTS | MLDSA_ACTIVE\n");
+    fprintf(stderr, "                        RULESET_GEN_ROOTS | MLDSA_ACTIVE |\n");
+    fprintf(stderr, "                        RULESET_GEN_TRIE | STORAGE_COPIES\n");
     fprintf(stderr, "                        (the parameters the running consensus reads)\n");
     fprintf(stderr, "                  run without --value for per-param ranges\n");
     fprintf(stderr, "  storage consent (--owner <hex128> | --msig <descriptor>) --expiry <h> [--out <f>]\n");

@@ -1461,8 +1461,10 @@ static int test_shape(void) {
           "selfcheck (generations 1-3, the D literal)"); OK();
     /* storage reward v1 (main merge order, QEVM first): GEN_STORAGE (4)
      * is built on the EVM generation; HF-7 P1d: GEN_ROOTS (5), built on
-     * GEN_STORAGE, is the newest compiled one */
-    CHECK(nodus_runtime_generation_count() == NODUS_RT_GEN_ROOTS &&
+     * GEN_STORAGE; HF-9 WP3: GEN_TRIE (6), built on GEN_ROOTS, is the
+     * newest compiled one */
+    CHECK(nodus_runtime_generation_count() == NODUS_RT_GEN_TRIE &&
+          NODUS_RT_GEN_TRIE == NODUS_RT_GEN_ROOTS + 1u &&
           NODUS_RT_GEN_ROOTS == NODUS_RT_GEN_STORAGE + 1u &&
           NODUS_RT_GEN_STORAGE == NODUS_RT_GEN_EVM + 1u &&
           NODUS_RT_GEN_EVM == 3u && NODUS_RT_GEN_EVM_BASE == NODUS_RT_GEN_2,
@@ -5168,10 +5170,11 @@ static int test_mldsa_activation(void) {
         while (ok_k * E_LEN + 5u < 257u) ok_k++;
         const uint64_t ok_eff = ok_k * E_LEN + 5u;
         CHECK(DNAC_CFG_MLDSA_ACTIVE == 23 &&
-              DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_MLDSA_ACTIVE &&
+              DNAC_CFG_PARAM_MAX_ID >= DNAC_CFG_MLDSA_ACTIVE &&
               dnac_cfg_param_read_by_consensus(
                   (uint8_t)DNAC_CFG_MLDSA_ACTIVE),
-              "id 23, the last id, read by the running consensus"); OK();
+              "id 23 (no longer the last id since HF-9), read by the "
+              "running consensus"); OK();
         CHECK(nodus_chain_config_scalar_rules(23, DMLDSA, 1, ok_eff + 10,
                                               ok_eff, 1) == 0,
               "MLDSA_ACTIVE: D accepted"); OK();
@@ -5197,11 +5200,12 @@ static int test_mldsa_activation(void) {
         memset(&f, 0, sizeof(f));
         const uint32_t legal_gens[] = { NODUS_RT_GEN_EVM,
                                         NODUS_RT_GEN_STORAGE,
-                                        NODUS_RT_GEN_ROOTS };
-        for (size_t i = 0; i < 3; i++) {
+                                        NODUS_RT_GEN_ROOTS,
+                                        NODUS_RT_GEN_TRIE };
+        for (size_t i = 0; i < 4; i++) {
             g = f; g.judging_generation = legal_gens[i];
             CHECK(nodus_chain_config_stateful_rules_ex(23, ok_eff, &g) == 0,
-                  "MLDSA_ACTIVE: legal under generations 3, 4 and 5 "
+                  "MLDSA_ACTIVE: legal under generations 3, 4, 5 and 6 "
                   "(nothing but the generation set)"); OK();
         }
         g = f; g.judging_generation = NODUS_RT_GEN_EVM;
