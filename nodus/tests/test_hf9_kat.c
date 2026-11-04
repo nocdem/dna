@@ -80,8 +80,10 @@
  *    structure and the roots over given (key, value) pairs are grounded in
  *    the pinned reference.
  *  - The leg-5 registry and leg-6 segment records do NOT go through the
- *    SQL reader: the oracle's registry fixture has node_fp that is not
- *    SHA3-512(node_pk) (the reader refuses such a row, by design) and a
+ *    SQL reader: the oracle's registry fixture has node_fp = SHA3-512 of
+ *    its 128-byte pk fixture, but the reader accepts only a public key of
+ *    DNAC_PUBKEY_SIZE (2592) bytes, so that fixture is incompatible with
+ *    the reader (sol-verify row 2); and a
  *    single segment k = 2 is not the contiguous 1..n the build scan
  *    requires. Their values and roots are produced through the production
  *    LEAF functions and the trie primitives only; the readers of legs 5
