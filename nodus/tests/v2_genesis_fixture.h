@@ -476,7 +476,7 @@ static int v2x_chain_open(v2x_chain_t *c, const char *tag, uint8_t salt) {
  * WHAT IT IS. The version-3 derivation's own steps
  * (nodus_witness_v2_gen_derive_v3, steps 4-10), run in the SAME order,
  * with ONE seam: between the database preparation (step 4 — create,
- * v2_successor before any validator row, the live rung S16, the
+ * v2_successor before any validator row, the live rung (S20), the
  * chain-config table, the economic band gen_seed_state commits) and the
  * authority + engine genesis (steps 6-7 — the epoch-0/E snapshots, the
  * registry, the manifest, nodus_witness_v2_genesis_cmt with its supply
@@ -586,7 +586,8 @@ static void v2x_seed_not_real(unsigned flags) {
  * caller) under the file id `file16`, which must be a PRE-GENESIS
  * database; mark it a Ledger V2 successor BEFORE any validator row
  * exists (the vset writer guard is gated on it); migrate to the live
- * rung S16; create the chain-config table; commit the economic band
+ * rung (S20 since HF-9: the supply totals the supply check reads; S16
+ * before); create the chain-config table; commit the economic band
  * exactly as gen_seed_state does (tx_hash = the document's source
  * commit). The test seeds its genesis rows after this and then calls
  * v2x_seed_genesis with the SAME salt. 0 / -1.
@@ -602,7 +603,12 @@ static int v2x_seed_prepare(nodus_witness_t *w, const uint8_t file16[16],
         return -1;
     }
     w->v2_successor = 1;
-    if (nodus_witness_db_migrate_v2s16(w) != 0) return -1;
+    /* HF-9: the live rung is S20 — the supply check reads the S20 running
+     * totals (v2_supply_totals / v2_bond_total), and several tests run it
+     * between this call and the genesis (the direct-SQL matrix of
+     * test_v2_apply); the real derivation (nodus_witness_v2_gen.c) climbs
+     * to S20 at the same point. The rung cascades through S16..S19. */
+    if (nodus_witness_db_migrate_v2s20(w) != 0) return -1;
     if (nodus_chain_config_db_migrate(w) != 0) return -1;
 
     v2x_cfgbox_t box;

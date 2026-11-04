@@ -60,8 +60,8 @@
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  *  Compile flags: none beyond the default nodus build (NODUS_EVM_ENABLED
  *  not needed). Environment: none. The seeded database is climbed to
- *  schema S19 (nodus_witness_db_migrate_v2s19) before the genesis — the
- *  seeding helper stops at S16. The roots generation is reached
+ *  schema S20 (v2x_seed_prepare climbs to the live rung since HF-9; it was
+ *  S19 climbed here before) before the genesis. The roots generation is reached
  *  WITHOUT its edge: the scripted runtime table (v2_exec_fixture.h,
  *  builtin-copied SYSTEM/CORE entries) is copied per fixture with its
  *  `generation` field set to NODUS_RT_GEN_ROOTS (or NODUS_RT_GEN_STORAGE)
@@ -211,14 +211,17 @@ static int h7_open(h7_fx_t *fx, const char *tag, uint32_t gen, int hf3) {
     snprintf(fx->w->data_path, sizeof(fx->w->data_path), "%s", fx->dir);
     memset(fx->chain_id16, 0x37, sizeof(fx->chain_id16));
     if (v2x_seed_prepare(fx->w, fx->chain_id16, 0) != 0) return -1;
-    /* v2x_seed_prepare leaves the chain at S16; v2_replay is an S19 table
-     * (HF-7 P1b), so climb the rungs before the genesis, as a node's
-     * at-open rung does (nodus_witness.c witness_open_migrate_s19) */
+    /* v2x_seed_prepare climbs to the live rung S20 (HF-9; it left the
+     * chain at S16 before, and this test climbed to S19 itself, as a
+     * node's at-open rung does, nodus_witness.c witness_open_migrate_s20);
+     * v2_replay is an S19 table (HF-7 P1b) */
     {
         uint32_t ver = 0;
-        if (nodus_witness_db_migrate_v2s19(fx->w) != 0 ||
+        /* v2x_seed_prepare already climbs to the live rung (S20 since
+         * HF-9, which carries v2_replay); idempotent, kept explicit */
+        if (nodus_witness_db_migrate_v2s20(fx->w) != 0 ||
             nodus_witness_db_schema_version(fx->w, &ver) != 0 ||
-            ver != NODUS_V2_SCHEMA_VERSION_S19)
+            ver != NODUS_V2_SCHEMA_VERSION_S20)
             return -1;
     }
     if (v2x_table_init(fx->w) != 0) return -1;

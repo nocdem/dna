@@ -62,8 +62,8 @@
  * Compile flags: NODUS_EVM_ENABLED (generations 3-5 exist only there; the
  * target is registered only in that configuration); DNAC_EPOCH_LENGTH > 13
  * (checked — no epoch boundary among the heights used; the default 720
- * qualifies). Environment: none. The seeded database is climbed to S19
- * (nodus_witness_db_migrate_v2s19) before the genesis.
+ * qualifies). Environment: none. The seeded database is at the live rung
+ * S20 (v2x_seed_prepare; S19 before HF-9) before the genesis.
  *
  * ── WHAT IT LEAVES BEHIND ───────────────────────────────────────────────
  * One /tmp/test_hf7_edge_<tag>_XXXXXX directory per case, removed at its
@@ -204,9 +204,12 @@ static int fx_open(fixture_t *fx, const char *tag, uint64_t h9, uint64_t he,
     if (v2x_seed_prepare(fx->w, fx->chain16, 0) != 0) return -1;
     {
         uint32_t ver = 0;
-        if (nodus_witness_db_migrate_v2s19(fx->w) != 0 ||
+        /* v2x_seed_prepare already climbs to the live rung (S20 since
+         * HF-9, which accepts every S19 object this test needs); the
+         * call is an idempotent no-op that keeps the rung explicit */
+        if (nodus_witness_db_migrate_v2s20(fx->w) != 0 ||
             nodus_witness_db_schema_version(fx->w, &ver) != 0 ||
-            ver != NODUS_V2_SCHEMA_VERSION_S19)
+            ver != NODUS_V2_SCHEMA_VERSION_S20)
             return -1;
     }
     if (cc_row(fx->w, DNAC_CFG_HF2_ACTIVE, DNAC_CFG_HF2_ACTIVE_ON, 1, 11)
