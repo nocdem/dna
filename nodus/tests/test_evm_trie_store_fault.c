@@ -16,9 +16,13 @@
  *      not the only way these calls could return -2;
  *   2. ts_put with bind #1, #2 or #3 failing returns -2, the hit counter
  *      equals the failed bind's number (the statement stopped at the failed
- *      bind, no later bind was made) and no row was written;
+ *      bind, no later bind was made), no row was written, and a
+ *      sqlite3_trace_v2 step observer saw no INSERT stepped, and the SELECT
+ *      stepped only when bind #1 had passed - so removing the bind-result
+ *      check of any put bind is caught even where the step would have
+ *      failed anyway (a NULL body breaks NOT NULL);
  *   3. ts_get with bind #1 failing returns -2 although the row exists, with
- *      hit counter 1;
+ *      hit counter 1 and no statement stepped;
  *   4. through the trie: a commit whose first put bind fails returns -2 and
  *      the handle is sticky (a later get is -2 with no further store call).
  *
@@ -36,6 +40,10 @@
  *   - A hook that counted nothing would fail case 1 (3 and 1 hits asserted)
  *     and every case asserts the hit count after the call; a store that
  *     returned -2 for every input would fail the control.
+ *   - The step observer counts statements whose SQL text starts with SELECT
+ *     or INSERT; if ts_put's SQL were reworded to start otherwise, the
+ *     observer would count nothing, and the control (1 SELECT and 1 INSERT
+ *     stepped by a fresh put) would fail.
  *   - The table definition below is a copy of nodus_witness_v2_schema.c
  *     (evm_trie_nodes); if the schema changes without this copy, the test
  *     checks the store against the old shape.
@@ -87,6 +95,29 @@ static sqlite3 *open_db(void)
     return db;
 }
 
+/* Statement-step observer: sqlite3_trace_v2 SQLITE_TRACE_STMT fires when a
+ * statement is first stepped, so a statement that was prepared but never
+ * stepped is not counted. Counts the SELECT and INSERT of the node store. */
+static int g_stepped_select;
+static int g_stepped_insert;
+
+static int trace_cb(unsigned type, void *ctx, void *p, void *x)
+{
+    (void)ctx; (void)p;
+    if (type == SQLITE_TRACE_STMT && x) {
+        const char *sql = (const char *)x;
+        if (strncmp(sql, "SELECT", 6) == 0) g_stepped_select++;
+        else if (strncmp(sql, "INSERT", 6) == 0) g_stepped_insert++;
+    }
+    return 0;
+}
+
+static void trace_reset(void)
+{
+    g_stepped_select = 0;
+    g_stepped_insert = 0;
+}
+
 static int row_count(sqlite3 *db)
 {
     sqlite3_stmt *st = NULL;
@@ -114,8 +145,15 @@ static void test_control(void)
     CHECK(db && nodus_rt_evm_test_trie_store(db, &s) == 0, "setup");
     if (!db) return;
 
+    CHECK(sqlite3_trace_v2(db, SQLITE_TRACE_STMT, trace_cb, NULL) ==
+          SQLITE_OK, "trace setup");
+    trace_reset();
     nodus_rt_evm_test_ts_bind_arm(0);
     CHECK(s.put(s.ctx, d, r, 70) == 0, "control: fresh put is 0");
+    CHECK(g_stepped_select == 1 && g_stepped_insert == 1,
+          "control: fresh put steps 1 SELECT and 1 INSERT (SELECT %d, "
+          "INSERT %d) - the observer sees what it claims to",
+          g_stepped_select, g_stepped_insert);
     CHECK(nodus_rt_evm_test_ts_bind_hits() == 3,
           "control: fresh put makes 3 binds, got %d",
           nodus_rt_evm_test_ts_bind_hits());
@@ -149,9 +187,19 @@ static void test_put_bind_failures(void)
         fill_node(d, r);
         CHECK(db && nodus_rt_evm_test_trie_store(db, &s) == 0, "setup");
         if (!db) return;
+        CHECK(sqlite3_trace_v2(db, SQLITE_TRACE_STMT, trace_cb, NULL) ==
+              SQLITE_OK, "trace setup");
+        trace_reset();
         nodus_rt_evm_test_ts_bind_arm(nth);
         CHECK(s.put(s.ctx, d, r, 70) == -2, "put with bind #%d failing is -2",
               nth);
+        /* the SELECT is stepped only if bind #1 passed; the INSERT never */
+        CHECK(g_stepped_select == (nth == 1 ? 0 : 1),
+              "put bind #%d: SELECT stepped %d time(s)", nth,
+              g_stepped_select);
+        CHECK(g_stepped_insert == 0,
+              "put bind #%d: INSERT stepped %d time(s) after a failed bind",
+              nth, g_stepped_insert);
         CHECK(nodus_rt_evm_test_ts_bind_hits() == nth,
               "put bind #%d: reached, and nothing after it (hits %d)", nth,
               nodus_rt_evm_test_ts_bind_hits());
@@ -173,11 +221,17 @@ static void test_get_bind_failure(void)
     nodus_rt_evm_test_ts_bind_arm(0);
     CHECK(s.put(s.ctx, d, r, 70) == 0, "get setup: put");
 
+    CHECK(sqlite3_trace_v2(db, SQLITE_TRACE_STMT, trace_cb, NULL) ==
+          SQLITE_OK, "trace setup");
+    trace_reset();
     nodus_rt_evm_test_ts_bind_arm(1);
     uint8_t *got = NULL;
     size_t gl = 0;
     CHECK(s.get(s.ctx, d, &got, &gl) == -2,
           "get with its bind failing is -2 although the row exists");
+    CHECK(g_stepped_select == 0 && g_stepped_insert == 0,
+          "get: no statement stepped after the failed bind (SELECT %d, "
+          "INSERT %d)", g_stepped_select, g_stepped_insert);
     CHECK(got == NULL, "get with a failed bind returns no buffer");
     free(got);
     CHECK(nodus_rt_evm_test_ts_bind_hits() == 1, "get bind reached (hits %d)",
