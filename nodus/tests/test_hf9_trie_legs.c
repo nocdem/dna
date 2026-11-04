@@ -112,9 +112,6 @@
  *    trigger is correct for that row but wrong for another shape of row
  *    (for example a key change by UPDATE, covered separately in C1 for
  *    utxo_set only) is not covered for the other seven tables.
- *  - The D node-table comparison is a string of every row; it cannot see
- *    a rolled-back write that SQLite itself failed to undo (not this
- *    code's property).
  *  - B2b / G0 pass vacuously if the REAL value were stored as an integer;
  *    the typeof(...) = 'real' and `target_domain_id = 1` controls in B2b
  *    assert the premise.
