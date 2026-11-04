@@ -160,10 +160,14 @@
  *     - HF-9 WP4 (storage assignment) wrote the generation-6 boundary:
  *     its ROWS are proven by test_storage_hrw (T-7, no flush runs there,
  *     so no leg root); the leg roots after a real generation-6 boundary
- *     with these writers are the harness's (T-13, WP7). They are NOT added
- *     here: this fixture has no open storage gate (param 18 / the
- *     snapshots a boundary settles against), and opening one would move
- *     every case's SYSTEM root. The SQL statement shapes of the writers
+ *     with these writers are the harness's (T-13, WP7). They are NOT driven
+ *     here: the J / K fixtures DO open the storage gate (param 18 is
+ *     effective at height 8), but the engine writers run only at a storage
+ *     BOUNDARY, a multiple of DNAC_EPOCH_LENGTH (production 720), far above
+ *     this file's heights (<= 20); reaching one would need hundreds of
+ *     blocks, a settled snapshot and reports. Plan T-5 "every writer path
+ *     through the real functions" is therefore NOT met for the storage
+ *     writers by this file (reported, not hidden). The SQL statement shapes of the writers
  *     (INSERT / UPDATE / DELETE of the plan §4.3 rows) ARE exercised above
  *     (groups A-J), so the triggers and the flush see every shape;
  *   - the storage boundary under generation 6, the head_activate guard's
@@ -1390,13 +1394,17 @@ static int j_open(jfx_t *f) {
     for (uint64_t h = 1; h <= J_A - 2u; h++)
         if (j_apply_ok(f, h) != 0) return -1;
     /* rows between blocks with capture 0 (silent triggers): two tokens, two
-     * names, two segments, one RELEASED registry node (its bond is not in
-     * the running bond total) — so the edge's build has nodes to store */
+     * names, one RELEASED registry node (its bond is not in the running
+     * bond total) — so the edge's build has nodes to store. NO segment
+     * (HF-9 WP4): production publishes a segment together with the freeze
+     * of that boundary's set, and at this edge height (13 <
+     * DNAC_EPOCH_LENGTH) no boundary has run, so segments without a set
+     * are a state production cannot reach and the edge's storage
+     * transition faults on them. */
     if (token_sql(f->w->db, 0xA1, 8) != 0 || token_sql(f->w->db, 0xA2, 8)
             != 0 ||
         name_sql(f->w->db, "alice", 0xB1) != 0 ||
         name_sql(f->w->db, "bobby", 0xB2) != 0 ||
-        seg_sql(f->w->db, 1) != 0 || seg_sql(f->w->db, 2) != 0 ||
         node_sql(f->w, 0x5E, 1000, 3) != 0)
         return -1;
     for (uint64_t h = J_A - 1u; h <= J_A + 1u; h++)

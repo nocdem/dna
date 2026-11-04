@@ -716,12 +716,33 @@ static int drop_s20_objects(sqlite3 *db) {
         snprintf(sql, sizeof(sql), "DROP TRIGGER %s", names[i]);
         if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) return -1;
     }
+    /* HF-9 WP4: and the retained-assignment tables, and v2_storage_sets /
+     * v2_storage_reports back in the HISTORICAL shape (member_count 0..256,
+     * bitmap <= 32) a database below S20 holds - the per-open shape check
+     * expects that text below S20 (nodus_witness.c) and the S20 rung
+     * rebuilds it. Rows are carried over (the fixture holds none beyond
+     * the historical limits). */
     return sqlite3_exec(db,
         "DROP INDEX v2_storage_nodes_by_status;"
         "DROP TABLE v2_supply_totals; DROP TABLE v2_bond_total;"
         "DROP TABLE v2_trie_nodes; DROP TABLE v2_trie_roots;"
         "DROP TABLE v2_trie_dirty; DROP TABLE v2_trie_state;"
-        "DROP TABLE v2_trie_shadow_state", NULL, NULL, NULL) == SQLITE_OK
+        "DROP TABLE v2_trie_shadow_state;"
+        "DROP INDEX v2_storage_assign_cur;"
+        "DROP INDEX v2_storage_assign_by_node;"
+        "DROP TABLE v2_storage_assign; DROP TABLE v2_storage_assign_basis;"
+        "DROP TABLE v2_storage_assign_state; DROP TABLE v2_storage_held;"
+        "DROP TABLE v2_storage_member_epoch; DROP TABLE v2_storage_xfer_diff;"
+        "CREATE TABLE v2_s20_tmp_sets AS SELECT * FROM v2_storage_sets;"
+        "DROP TABLE v2_storage_sets;"
+        NODUS_V2_STSETS_DDL ";"
+        "INSERT INTO v2_storage_sets SELECT * FROM v2_s20_tmp_sets;"
+        "DROP TABLE v2_s20_tmp_sets;"
+        "CREATE TABLE v2_s20_tmp_reps AS SELECT * FROM v2_storage_reports;"
+        "DROP TABLE v2_storage_reports;"
+        NODUS_V2_STREPS_DDL ";"
+        "INSERT INTO v2_storage_reports SELECT * FROM v2_s20_tmp_reps;"
+        "DROP TABLE v2_s20_tmp_reps", NULL, NULL, NULL) == SQLITE_OK
         ? 0 : -1;
 }
 

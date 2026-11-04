@@ -25,9 +25,10 @@
  *      (d) v2_trie_roots has one row per leg, each equal to this test's
  *          recomputation of the leg from the rows (nodus_witness_v2_trie_
  *          build_leg: incremental root == full-rebuild root == the stored
- *          root); legs 2 (tokens), 4 (names), 5 (one RELEASED registry
- *          row) and 6 (segments) hold this test's extra rows and are not
- *          the empty root (so the build visited rows); for every leg the
+ *          root); legs 2 (tokens), 4 (names) and 5 (one RELEASED registry
+ *          row) hold this test's extra rows and are not the empty root (so
+ *          the build visited rows), leg 6 (segments) is the empty root
+ *          (no segment can exist at the edge height, see add_extras); for every leg the
  *          root is the empty root SHA3-512(0x80) exactly when its table has
  *          no row (the genesis fixture writes no UTXO, so leg 1 is empty
  *          here);
@@ -141,7 +142,7 @@
  *    root == a fresh build of the same rows == the full rebuild", not that
  *    the readers select the right rows (that is test_hf9_trie_legs.c and
  *    the independent KAT test_hf9_kat.c).
- *  - The extra rows this test writes (tokens, names, segments, one
+ *  - The extra rows this test writes (tokens, names, one
  *    RELEASED registry node) are written between blocks with capture 0 and
  *    are the only rows beyond the genesis fixture's; no UTXO is added (the
  *    conservation invariant would refuse the block), so a UTXO-writer
@@ -285,9 +286,16 @@ static int cc_row(nodus_witness_t *w, unsigned param, uint64_t value,
 }
 
 /* rows written BETWEEN blocks with capture 0 (the triggers are silent):
- * two tokens, two names, two contiguous segments and one RELEASED registry
- * node (status 3: its bond is not in the running bond total, so the
- * conservation invariant is untouched). No UTXO: it would break it. */
+ * two tokens, two names and one RELEASED registry node (status 3: its bond
+ * is not in the running bond total, so the conservation invariant is
+ * untouched). No UTXO: it would break it. NO SEGMENT (HF-9 WP4): a segment
+ * is published only at a storage boundary together with the freeze of that
+ * boundary's set, so a chain with segments has a frozen set at the last
+ * boundary before the edge (H2 >= E); at this test's edge height (13 <
+ * DNAC_EPOCH_LENGTH) H2 is 0, no set and no segment can exist, and the
+ * edge's storage transition faults on segments without a set. Leg 6 is
+ * therefore the empty root here; its non-empty roots are test_hf9_kat's
+ * and test_hf9_trie_legs groups A-J. */
 static int add_extras(nodus_witness_t *w) {
     sqlite3 *db = w->db;
     if (run_sql(db,
@@ -302,10 +310,6 @@ static int add_extras(nodus_witness_t *w) {
             "(CAST('alice' AS BLOB), CAST(zeroblob(63)||x'b1' AS BLOB), 4), "
             "(CAST('bobby' AS BLOB), CAST(zeroblob(63)||x'b2' AS BLOB), 4)")
         != 0) return -1;
-    if (run_sql(db,
-            "INSERT INTO v2_storage_segments (k, root, published_height) "
-            "VALUES (1, CAST(zeroblob(63)||x'c1' AS BLOB), 101), "
-            "(2, CAST(zeroblob(63)||x'c2' AS BLOB), 102)") != 0) return -1;
     uint8_t pk[DNAC_PUBKEY_SIZE], fp[64];
     memset(pk, 0x5E, sizeof(pk));
     if (qgp_sha3_512(pk, sizeof(pk), fp) != 0) return -1;
@@ -614,8 +618,9 @@ static int t_edge(void) {
         CHECK(memcmp(legs[1], empty, 64) != 0 &&
               memcmp(legs[3], empty, 64) != 0 &&
               memcmp(legs[4], empty, 64) != 0 &&
-              memcmp(legs[5], empty, 64) != 0,
-              "(d) legs 2, 4, 5, 6 hold this test's extra rows: not empty");
+              memcmp(legs[5], empty, 64) == 0,
+              "(d) legs 2, 4, 5 hold this test's extra rows: not empty; "
+              "leg 6 has no segment: the empty root");
         for (int i = 0; i < 8; i++)
             for (int j = i + 1; j < 8; j++)
                 if (memcmp(legs[i], empty, 64) != 0 &&

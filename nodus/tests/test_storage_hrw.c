@@ -23,7 +23,8 @@
  *      model relation, or at B1 XOR(set(H2)) over the segments published at
  *      or before H2;
  *   S  the basis equals eligible(B), the state is (R(B), B, xfer 0), and the
- *      one-use table is empty after B1.
+ *      one-use table is DROPPED after B1 (plan 8.6) and the per-open
+ *      re-check (db_s20_reseed) accepts the database without it.
  *  Cases (each is asserted to CHANGE at least one holder - the false-pass
  *  guard of the plan's T-7 row): B1 without an event (the E-s3 table path),
  *  an ordinary boundary with a new segment, one arrival (join rule), TWO
@@ -516,9 +517,14 @@ static int check_rows_held_state(nodus_witness_t *w, uint64_t B, size_t R,
               == (long long)B &&
           q1(w, "SELECT xfer FROM v2_storage_assign_state WHERE id = 1") == 0,
           "S: state = (R(B), B, xfer 0)");
-    if (is_b1)
-        CHECK(q1(w, "SELECT COUNT(*) FROM v2_storage_xfer_diff") == 0,
-              "S: the one-use table is empty after B1");
+    if (is_b1) {
+        CHECK(q1(w, "SELECT COUNT(*) FROM sqlite_master WHERE type = "
+                    "'table' AND name = 'v2_storage_xfer_diff'") == 0,
+              "S: the one-use table is DROPPED after B1 (plan 8.6)");
+        CHECK(nodus_witness_db_s20_reseed(w) == 0,
+              "S: the per-open re-check accepts the database without the "
+              "one-use table (state xfer = 0)");
+    }
     return 0;
 }
 

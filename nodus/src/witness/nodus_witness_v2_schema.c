@@ -2817,6 +2817,52 @@ static const char *V2_S20_XFER_DIFF_DDL =
     "  new_x INTEGER NOT NULL CHECK(typeof(new_x)='integer' AND new_x >= 0)"
     ") WITHOUT ROWID";
 
+/* 1 = the stored sqlite_master.sql of index `name` equals what THIS
+ * build's SQLite stores for `ddl` executed over the stub `prereq_ddl` in a
+ * private ":memory:" database (the table_ddl_exact pattern) - the whole
+ * definition, the partial WHERE predicate included; 0 = absent or another
+ * definition; -1 = fault. (index_cols_exact sees only name, table and
+ * columns - plan §8.4 "(k) WHERE to_h IS NULL", §5.5 revalidation.) */
+static int index_ddl_exact(nodus_witness_t *w, const char *name,
+                           const char *prereq_ddl, const char *ddl) {
+    static const char *const q =
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1";
+    sqlite3 *mem = NULL;
+    sqlite3_stmt *a = NULL, *b = NULL;
+    int out = -1;
+    if (sqlite3_open(":memory:", &mem) != SQLITE_OK) {
+        if (mem) sqlite3_close(mem);
+        return -1;
+    }
+    if (sqlite3_exec(mem, prereq_ddl, NULL, NULL, NULL) == SQLITE_OK &&
+        sqlite3_exec(mem, ddl, NULL, NULL, NULL) == SQLITE_OK &&
+        sqlite3_prepare_v2(mem, q, -1, &a, NULL) == SQLITE_OK &&
+        sqlite3_bind_text(a, 1, name, -1, SQLITE_STATIC) == SQLITE_OK &&
+        sqlite3_prepare_v2(w->db, q, -1, &b, NULL) == SQLITE_OK &&
+        sqlite3_bind_text(b, 1, name, -1, SQLITE_STATIC) == SQLITE_OK) {
+        int ra = sqlite3_step(a);
+        int rb = sqlite3_step(b);
+        if (ra != SQLITE_ROW) {
+            out = -1;                       /* the reference must exist   */
+        } else if (rb == SQLITE_DONE) {
+            out = 0;                        /* absent                     */
+        } else if (rb != SQLITE_ROW) {
+            out = -1;
+        } else {
+            const unsigned char *sa = sqlite3_column_text(a, 0);
+            const unsigned char *sb = sqlite3_column_text(b, 0);
+            int la = sqlite3_column_bytes(a, 0);
+            int lb = sqlite3_column_bytes(b, 0);
+            out = (sa && sb && la == lb &&
+                   memcmp(sa, sb, (size_t)la) == 0) ? 1 : 0;
+        }
+    }
+    sqlite3_finalize(a);
+    sqlite3_finalize(b);
+    sqlite3_close(mem);
+    return out;
+}
+
 /* 1 = the six §8.4 tables, their two indexes and the capacity-rebuilt
  * v2_storage_sets / v2_storage_reports are exactly this build's, 0 = drift,
  * -1 = fault. */
@@ -2831,19 +2877,41 @@ static int s20_storage_shape_ok(nodus_witness_t *w) {
     };
     for (size_t i = 0; i < sizeof(T) / sizeof(T[0]); i++) {
         int r = table_ddl_exact(w, T[i].t, *T[i].ddl);
+        if (r == 0 && strcmp(T[i].t, "v2_storage_xfer_diff") == 0) {
+            /* plan §8.6: the one-use table is DROPPED after B1. Its absence
+             * is the shape only when the state row exists and says xfer = 0
+             * (consumed or never pending); every other absence is drift. */
+            int absent = table_exists(w, T[i].t);
+            if (absent < 0) return -1;
+            if (absent == 0) {
+                sqlite3_stmt *st = NULL;
+                if (sqlite3_prepare_v2(w->db, "SELECT xfer FROM "
+                        "v2_storage_assign_state WHERE id = 1", -1, &st,
+                        NULL) != SQLITE_OK)
+                    return -1;
+                int sr = sqlite3_step(st);
+                int consumed = sr == SQLITE_ROW &&
+                               sqlite3_column_type(st, 0) == SQLITE_INTEGER &&
+                               sqlite3_column_int64(st, 0) == 0;
+                sqlite3_finalize(st);
+                if (sr != SQLITE_ROW && sr != SQLITE_DONE) return -1;
+                if (consumed) continue;
+            }
+        }
         if (r != 1) return r;
     }
     int r = table_ddl_exact(w, "v2_storage_sets", NODUS_V2_STSETS_DDL_S20);
     if (r != 1) return r;
     r = table_ddl_exact(w, "v2_storage_reports", NODUS_V2_STREPS_DDL_S20);
     if (r != 1) return r;
-    static const char *const cur_cols[] = { "k" };
-    r = index_cols_exact(w, "v2_storage_assign_cur", "v2_storage_assign",
-                         cur_cols, 1);
+    /* the whole stored definition, the partial predicate included */
+    static const char *const stub =
+        "CREATE TABLE v2_storage_assign (k, node_fp, to_h)";
+    r = index_ddl_exact(w, "v2_storage_assign_cur", stub,
+                        V2_S20_ASSIGN_INDEX_CUR_DDL);
     if (r != 1) return r;
-    static const char *const node_cols[] = { "node_fp", "k" };
-    return index_cols_exact(w, "v2_storage_assign_by_node",
-                            "v2_storage_assign", node_cols, 2);
+    return index_ddl_exact(w, "v2_storage_assign_by_node", stub,
+                           V2_S20_ASSIGN_INDEX_NODE_DDL);
 }
 
 /* Rebuild one storage table with its S20 text: copy the rows aside, DROP,

@@ -2322,7 +2322,11 @@ no_segments:
     }
 
     /* ── the one-use table, the basis and the state ──────────────────── */
-    if (is_b1 && sqlite3_exec(w->db, "DELETE FROM v2_storage_xfer_diff",
+    /* plan §8.6 "The one-use table is dropped after B1": the table goes
+     * with the state's xfer flag (written 0 below, in this transaction).
+     * The per-open shape check accepts its absence only while the state
+     * row says xfer = 0 (nodus_witness_v2_schema.c s20_storage_shape_ok). */
+    if (is_b1 && sqlite3_exec(w->db, "DROP TABLE v2_storage_xfer_diff",
                               NULL, NULL, NULL) != SQLITE_OK)
         goto done;
     if (st_basis_store(w, event || is_b1 || !present,

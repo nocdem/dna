@@ -1728,33 +1728,33 @@ static int run_s20_rung(void) {
 
 /* ── HF-9 WP4: the S20 storage part (plan §8.4, §8.7, §5.5) ─────────────
  * Proves: (a) after the 0 -> 20 climb v2_storage_sets takes member_count
- * 1024 and refuses 1025, v2_storage_reports takes a 128-byte bitmap and
- * refuses 129, the six retained-assignment tables and their two indexes
- * exist and are empty, the per-open re-check (db_s20_reseed) passes and a
- * REOPEN of the S20 database passes the byte-for-byte shape check against
- * the S20 text; (b) a database at S19 holding a set, its members and a
- * report REOPENS at S19 (the shape check still expects the historical text
- * below S20 - the order the rung needs), the rung rebuilds the two tables
- * with the rows kept byte-identical, and the stored definition of both now
- * carries 1024 / 128; (c) a historical-text sets table put back at S20 is
- * refused by the re-check AND by the reopen's shape check (a missing
- * rebuild cannot be read through); a dropped assignment index is refused by
- * the re-check; (d) a rebuilt-table failure at every staged point of the
- * rung rolls the whole rung back (the existing staged loop of run_s20_rung
- * covers the digest; here the rebuilt tables are checked to still carry the
- * historical text after a staged failure). Flags: none. Leaves: a temp dir
- * per fixture (removed). Can falsely pass: the reopen path of (b) is the
- * production open attempt only through nodus_witness_create_chain_db on a
- * scratch chain (no genesis document, so witness_open_migrate_s20 does not
- * run - the rung is invoked by the test, as in run_s20_rung); the byte
- * comparison is the production shape check, the reference text is built
- * from the same macros the production code uses. */
+ * 1024 and refuses 1025 (at an UNUSED primary key, so the refusal is the
+ * CHECK's and not a duplicate key), v2_storage_reports takes a 128-byte
+ * bitmap and refuses 129, the six retained-assignment tables and the two
+ * indexes (name, table, columns AND the partial predicate) exist and are
+ * empty, the per-open re-check (db_s20_reseed) passes; (b) a database at
+ * S19 holding a set, its members and a report: the rung rebuilds the two
+ * tables with the rows kept byte-identical, the stored definition of both
+ * carries 1024 / 128, every staged failure leaves the historical text;
+ * (c) a historical-text sets table put back at S20, a dropped assignment
+ * index and an assignment index with a wrong partial predicate are each
+ * refused by the per-open re-check; (d) on a SEEDED version-3 chain (stored
+ * genesis document, s12_open_dist) the PRODUCTION open path: the S20
+ * database reopens with the S20 text of the sets table, and a historical-text sets table at
+ * S20 is refused by the shape check (the only refusal reason on that chain,
+ * as it has a genesis document). The S19 -> S20 reopen of a live chain
+ * (historical text accepted below S20, rung rebuilds it) is test_v2_evm's
+ * S16 downgrade case (drop_s20_objects). Flags: none. Leaves: a temp dir
+ * per fixture (removed). Can falsely pass: a scratch chain WITHOUT a
+ * genesis document is refused by the open gate whatever its shape (that is
+ * why (d) uses the seeded chain); the reference text is built from the
+ * same macros the production code uses. */
 static int run_s20_storage(void) {
     uint32_t ver = 0;
     int n = -1;
     static const char *const SET_INS =
         "INSERT INTO v2_storage_sets (epoch_start, set_hash, member_count) "
-        "VALUES (15, zeroblob(64), %d)";
+        "VALUES (%d, zeroblob(64), %d)";
     char sql[256];
 
     /* (a) fresh 0 -> 20 */
@@ -1763,7 +1763,9 @@ static int run_s20_storage(void) {
         CHECK(fx_open(&fx) == 0, "s20 storage fixture");
         CHECK(nodus_witness_db_migrate_v2s20(fx.w) == 0, "0->20"); OK();
         for (int cnt = 1024; cnt <= 1025; cnt++) {
-            snprintf(sql, sizeof(sql), SET_INS, cnt);
+            /* an UNUSED primary key per row: the 1025 refusal is the
+             * CHECK's, not a duplicate epoch_start */
+            snprintf(sql, sizeof(sql), SET_INS, cnt == 1024 ? 15 : 16, cnt);
             CHECK((run_sql(fx.w->db, sql) == 0) == (cnt == 1024),
                   "v2_storage_sets: member_count 1024 accepted, 1025 "
                   "refused"); OK();
@@ -1794,8 +1796,6 @@ static int run_s20_storage(void) {
                       "DELETE FROM v2_storage_reports") == 0, "clear");
         CHECK(nodus_witness_db_s20_reseed(fx.w) == 0,
               "the per-open re-check passes on the migrated database"); OK();
-        CHECK(fx_reopen(&fx) == 0,
-              "REOPEN of the S20 database passes the S20 shape check"); OK();
         CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
               ver == NODUS_V2_SCHEMA_VERSION_S20, "still S20"); OK();
         fx_close(&fx);
@@ -1817,9 +1817,6 @@ static int run_s20_storage(void) {
                       "set_hash, member_count) VALUES (45, zeroblob(64), "
                       "257)") != 0,
               "below S20 the historical bound 256 still holds"); OK();
-        CHECK(fx_reopen(&fx) == 0,
-              "REOPEN at S19 passes the historical shape check (the check "
-              "runs before the rung)"); OK();
         uint8_t d19[64];
         CHECK(v2x_db_digest(fx.w, d19) == 0, "S19 digest");
         for (int stage = V2S20MIG_FAIL_AFTER_BEGIN;
@@ -1859,7 +1856,6 @@ static int run_s20_storage(void) {
                       "name = 'v2_storage_reports' AND sql LIKE "
                       "'%length(bitmap) <= 128%'", &n) == 0 && n == 1,
               "the stored definitions carry 1024 / 128"); OK();
-        CHECK(fx_reopen(&fx) == 0, "REOPEN after the rung passes"); OK();
         fx_close(&fx);
     }
 
@@ -1881,8 +1877,53 @@ static int run_s20_storage(void) {
         CHECK(nodus_witness_db_s20_reseed(fx.w) == -1,
               "a missing rebuild (historical text at S20) is refused by the "
               "per-open re-check"); OK();
+        fx_close(&fx);
+    }
+    {
+        /* an index of the right name, table and columns but WITHOUT the
+         * partial predicate (and one with another predicate) */
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s20 predicate fixture");
+        CHECK(nodus_witness_db_migrate_v2s20(fx.w) == 0, "0->20"); OK();
+        CHECK(run_sql(fx.w->db, "DROP INDEX v2_storage_assign_cur;"
+                      "CREATE INDEX v2_storage_assign_cur ON "
+                      "v2_storage_assign(k)") == 0, "index without WHERE");
+        CHECK(nodus_witness_db_s20_reseed(fx.w) == -1,
+              "an assignment index missing its partial predicate is "
+              "refused at open"); OK();
+        CHECK(run_sql(fx.w->db, "DROP INDEX v2_storage_assign_cur;"
+                      "CREATE INDEX v2_storage_assign_cur ON "
+                      "v2_storage_assign(k) WHERE to_h IS NOT NULL") == 0,
+              "index with another predicate");
+        CHECK(nodus_witness_db_s20_reseed(fx.w) == -1,
+              "an assignment index with another predicate is refused"); OK();
+        fx_close(&fx);
+    }
+
+    /* (d) the PRODUCTION open path on a SEEDED version-3 chain (a stored
+     * genesis document exists, so the open gate does not refuse the chain
+     * for any reason but a shape) */
+    {
+        fixture_t fx;
+        uint8_t chain[32], mh[64];
+        memset(&fx, 0, sizeof(fx));
+        CHECK(s12_open_dist(&fx, chain, mh) == 0, "a seeded chain");
+        /* no storage row is planted: a set row would move the storage
+         * root the open path re-derives against the committed head */
+        fx.w->chain_config_cache_warm = false;
+        CHECK(fx_reopen(&fx) == 0,
+              "the production open path accepts the seeded chain");
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S20, "at S20 after the open");
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
+                      "name = 'v2_storage_sets' AND sql LIKE '%BETWEEN 0 "
+                      "AND 1024%'", &n) == 0 && n == 1,
+              "the stored definition carries 1024"); OK();
+        CHECK(run_sql(fx.w->db, "DROP TABLE v2_storage_sets") == 0 &&
+              run_sql(fx.w->db, NODUS_V2_STSETS_DDL) == 0,
+              "the historical sets table back at S20");
         CHECK(fx_reopen(&fx) != 0,
-              "and by the reopen's shape check (it expects the S20 text)");
+              "the production open path refuses it (the S20 shape check)");
         OK();
         fx_close(&fx);
     }
