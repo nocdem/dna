@@ -7686,9 +7686,16 @@ static int hyb_digest(sqlite3 *db, uint8_t out[64])
 /* one block at `height` the CONSENSUS way: last commit, block, BlockID with
  * its part set, SAVE to the block store, then APPLY. @return the apply's rc
  * (CMT_OK / CMT_FAULT), or -2 on a setup failure */
-static int hyb_step_save_first(hyb_t *h, int64_t height)
+/* ONE block at `height`, made ONCE (by node A: last commit, block, BlockID,
+ * part set - ML-DSA signing is randomized, so two nodes that each built
+ * their own block would build different bytes) and applied to BOTH nodes
+ * the consensus way (save to the block store, then apply): node B first,
+ * then node A, which stops after its COMMIT when `a_stop` is set.
+ * @return A's apply rc (CMT_OK / CMT_FAULT), -2 on a setup failure, -3
+ * when node B's save or apply failed. */
+static int hyb_pair_step(hyb_t *A, hyb_t *B, int64_t height, int a_stop)
 {
-    exec_t        *x = &h->x;
+    exec_t        *x = &A->x;
     const size_t   save_cap = 1u << 20;
     uint8_t       *save_scratch = malloc(save_cap);
     cmt_part_set_t ps;
@@ -7696,29 +7703,52 @@ static int hyb_step_save_first(hyb_t *h, int64_t height)
     int            rc = -2;
 
     if (!save_scratch) return -2;
-    if (height > 1 && exec_make_last_commit(x, height - 1, &h->bid) != 0)
+    if (height > 1 && exec_make_last_commit(x, height - 1, &A->bid) != 0)
         goto done;
     if (exec_make_block(x, height, 0) != 0) goto done;
-    memset(&h->bid, 0, sizeof(h->bid));
-    if (cmt_block_hash(x->blk, h->bid.hash) != CMT_OK) goto done;
-    h->bid.hash_len = CMT_TMHASH_SIZE;
+    memset(&A->bid, 0, sizeof(A->bid));
+    if (cmt_block_hash(x->blk, A->bid.hash) != CMT_OK) goto done;
+    A->bid.hash_len = CMT_TMHASH_SIZE;
     if (cmt_block_make_part_set(x->blk, CMT_BLOCK_PART_SIZE_BYTES,
                                 x->part_scratch, x->part_scratch_cap,
                                 x->parts, x->parts_cap, &ps) != CMT_OK ||
-        cmt_part_set_header(&ps, &h->bid.part_set_header) != CMT_OK ||
-        !block_id_is_complete(&h->bid))
+        cmt_part_set_header(&ps, &A->bid.part_set_header) != CMT_OK ||
+        !block_id_is_complete(&A->bid))
         goto done;
     memset(&seen, 0, sizeof(seen));
     seen.height   = height;
     seen.round    = 0;
-    seen.block_id = h->bid;
+    seen.block_id = A->bid;
+    if (B) {
+        if (nodus_cmt_bs_save_block(B->x.store, x->blk, &ps, &seen,
+                                    save_scratch, save_cap) != CMT_OK ||
+            nodus_cmt_host_apply_verified_block(B->x.be, &A->bid, x->blk,
+                                                B->x.state) != CMT_OK) {
+            rc = -3;
+            goto done;
+        }
+    }
     if (nodus_cmt_bs_save_block(x->store, x->blk, &ps, &seen, save_scratch,
                                 save_cap) != CMT_OK)
         goto done;
-    rc = nodus_cmt_host_apply_verified_block(x->be, &h->bid, x->blk, x->state);
+    x->be->test_fail_after_commit = a_stop ? true : false;
+    rc = nodus_cmt_host_apply_verified_block(x->be, &A->bid, x->blk, x->state);
+    x->be->test_fail_after_commit = false;
 done:
     free(save_scratch);
     return rc;
+}
+
+/* blocks from+1 .. to on both nodes, no stop */
+static int hyb_pair_to(hyb_t *A, hyb_t *B, int64_t from, int64_t to)
+{
+    for (int64_t h = from + 1; h <= to; h++) {
+        if (hyb_pair_step(A, B, h, 0) != CMT_OK) {
+            fprintf(stderr, "hyb_pair_to: height %" PRId64 " failed\n", h);
+            return -1;
+        }
+    }
+    return 0;
 }
 
 static int hyb_handshake(hyb_t *h, int *nblocks)
@@ -7767,18 +7797,18 @@ static int hyb_case(int64_t stop_h, const char *what)
     CHECK(A && Bn, "alloc");
     CHECK(hyb_open(A) == 0, "S0 node A (stops) opens");
     CHECK(hyb_open(Bn) == 0, "S0 node B (never stops) opens");
-    CHECK(vu_host_drive_to(&A->x, &A->bid, 0, stop_h - 1) == 0,
-          "S0 node A reaches the block before the stop");
-    CHECK(vu_host_drive_to(&Bn->x, &Bn->bid, 0, stop_h - 1) == 0,
-          "S0 node B reaches the block before the stop");
+    /* every block is made ONCE (by A) and applied to both nodes: the same
+     * bytes (signing is randomized, two builders would differ) */
+    CHECK(hyb_pair_to(A, Bn, 0, stop_h - 1) == 0,
+          "S0 both nodes reach the block before the stop, on the same "
+          "blocks");
     CHECK(hyb_digest(A->g.w->db, d0a) == 0 &&
           hyb_digest(Bn->g.w->db, d0b) == 0 && memcmp(d0a, d0b, 64) == 0,
           "S0 the twins are byte-identical before the stop block");
 
     /* S1 — the stop */
-    A->x.be->test_fail_after_commit = true;
-    rc = hyb_step_save_first(A, stop_h);
-    A->x.be->test_fail_after_commit = false;
+    rc = hyb_pair_step(A, Bn, stop_h, 1);   /* B applies it, A stops */
+    CHECK(rc != -3, "S1 node B applied the stop block");
     CHECK(rc == CMT_FAULT,
           "S1a the apply stops with CMT_FAULT in the post-commit window");
     CHECK(sqlite3_get_autocommit(A->g.w->db) != 0,
@@ -7802,9 +7832,10 @@ static int hyb_case(int64_t stop_h, const char *what)
     }
     CHECK(hyb_digest(A->g.w->db, d1a) == 0, "S1g digest of A after the stop");
 
-    /* S2 — the twin applies the same block without stopping */
-    CHECK(vu_host_drive_to(&Bn->x, &Bn->bid, stop_h - 1, stop_h) == 0,
-          "S2a node B applies the stop height normally");
+    /* S2 — the twin applied the SAME block without stopping */
+    CHECK(q1(Bn->g.w->db, "SELECT MAX(global_height) FROM v2_blocks") ==
+              stop_h && sqlite3_get_autocommit(Bn->g.w->db) != 0,
+          "S2a node B committed the stop height normally");
     CHECK(hyb_digest(Bn->g.w->db, d1b) == 0 && memcmp(d1a, d1b, 64) == 0,
           "S2b the stopped node's ledger = the node that never stopped");
 
@@ -7835,10 +7866,9 @@ static int hyb_case(int64_t stop_h, const char *what)
     /* S5 — the next block */
     CHECK(nodus_cmt_ss_load(A->x.store, A->x.state) == CMT_OK,
           "S5a the executor's State is the caught-up one");
-    CHECK(vu_host_drive_to(&A->x, &A->bid, stop_h, stop_h + 1) == 0,
-          "S5b node A applies the next block");
-    CHECK(vu_host_drive_to(&Bn->x, &Bn->bid, stop_h, stop_h + 1) == 0,
-          "S5c node B applies the next block");
+    CHECK(hyb_pair_to(A, Bn, stop_h, stop_h + 1) == 0,
+          "S5b the next block, made once, applies on the replayed node A "
+          "and on node B");
     CHECK(hyb_digest(A->g.w->db, d3a) == 0 &&
           hyb_digest(Bn->g.w->db, d3b) == 0 && memcmp(d3a, d3b, 64) == 0,
           "S5d the next block: the replayed node's tables = the node that "
