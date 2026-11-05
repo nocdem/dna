@@ -438,7 +438,19 @@ static void ipc_on_accept(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_witness_ipc_t *ipc = (nodus_witness_ipc_t *)ctx;
     ipc_slot_t *s = ipc_slot(ipc, conn);
     if (s) ipc_slot_reset(s);
-    if (ipc && conn) conn->user_data = (void *)(uintptr_t)(++ipc->next_serial);
+    if (ipc && conn) {
+        /* The serial travels through a pointer-sized field: pin the width so
+         * it can never be truncated into a repeat. At the end of the 64-bit
+         * space NO serial is issued (0 = no identity: the state proof
+         * service refuses such a connection, nodus_witness_state_proof.c);
+         * the counter never wraps. */
+        _Static_assert(sizeof(uintptr_t) >= sizeof(uint64_t),
+                       "conn->user_data must hold a 64-bit serial untruncated");
+        if (ipc->next_serial < UINT64_MAX)
+            conn->user_data = (void *)(uintptr_t)(++ipc->next_serial);
+        else
+            conn->user_data = NULL;
+    }
 }
 
 static void ipc_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {

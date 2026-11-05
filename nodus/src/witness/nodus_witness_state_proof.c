@@ -89,18 +89,28 @@ int nodus_state_proof_request_decode(const uint8_t *payload, size_t len,
     cbor_decoder_init(&dec, payload, len);
     top = cbor_decode_next(&dec);
     if (top.type != CBOR_ITEM_MAP) return fail(ec, em, cap, pe, "not a map");
-    args.type = CBOR_ITEM_END;
+    /* Pass 1: EVERY outer entry is read to its end (a truncated last
+     * entry, known or unknown, refuses the request); the position of the
+     * single "a" value is remembered. The generic Tier-2 skip that decoded
+     * this frame before (nodus_tier2.c) returns quietly at the end of the
+     * input; that leniency stays for other messages. */
+    size_t a_pos = (size_t)-1;
     for (size_t i = 0; i < top.count; i++) {
         cbor_item_t k = cbor_decode_next(&dec);
-        if (k.type == CBOR_ITEM_END || k.type == CBOR_ITEM_ERROR)
+        if (k.type != CBOR_ITEM_TSTR)
             return fail(ec, em, cap, pe, "truncated request");
         if (tkey(&k, "a")) {
-            args = cbor_decode_next(&dec);
-            break;
+            if (a_pos != (size_t)-1)
+                return fail(ec, em, cap, pe, "args twice");
+            a_pos = dec.pos;
         }
         if (skip_value(&dec, 0) != 0)
             return fail(ec, em, cap, pe, "truncated request");
     }
+    if (a_pos == (size_t)-1) return fail(ec, em, cap, pe, "missing args map");
+    /* Pass 2: the args map */
+    dec.pos = a_pos;
+    args = cbor_decode_next(&dec);
     if (args.type != CBOR_ITEM_MAP) return fail(ec, em, cap, pe, "missing args map");
 
     for (size_t i = 0; i < args.count; i++) {
@@ -458,7 +468,8 @@ enum { JOB_IDLE = 0, JOB_BUSY = 1, JOB_DONE = 2 };
 typedef struct {
     int       state;                    /* under svc->mu                    */
     uint32_t  txn;
-    void     *tag;
+    uint8_t   tag[NODUS_STATE_PROOF_TAG_MAX];   /* copied at hand-off */
+    size_t    tag_len;
     nodus_state_proof_req_t req;        /* embedded: no per-request allocation */
     uint8_t  *frame;
     size_t    frame_len;
@@ -593,11 +604,12 @@ static int limiter_check(const struct nodus_state_proof_service *s,
 
 int nodus_state_proof_submit(nodus_state_proof_service_t *svc, int64_t now_ns,
                              const uint8_t *payload, size_t len,
-                             uint32_t txn_id, void *tag, int *ec, char *em,
-                             size_t cap)
+                             uint32_t txn_id, const void *tag, size_t tag_len,
+                             int *ec, char *em, size_t cap)
 {
-    if (!svc || !payload) return fail(ec, em, cap, NODUS_ERR_PROTOCOL_ERROR,
-                                      "no request");
+    if (!svc || !payload || tag_len > NODUS_STATE_PROOF_TAG_MAX ||
+        (tag_len && !tag))
+        return fail(ec, em, cap, NODUS_ERR_PROTOCOL_ERROR, "no request");
     svc->c.decoded++;
     /* the request is validated in bounded scratch storage (stack) BEFORE
      * anything is allocated or handed off; the job slot holds its own copy */
@@ -619,7 +631,8 @@ int nodus_state_proof_submit(nodus_state_proof_service_t *svc, int64_t now_ns,
     if (job) {
         job->state = JOB_BUSY;
         job->txn = txn_id;
-        job->tag = tag;
+        if (tag_len) memcpy(job->tag, tag, tag_len);
+        job->tag_len = tag_len;
         memcpy(&job->req, &req, sizeof(req));
         job->frame = NULL;
         job->frame_len = 0;
@@ -646,7 +659,7 @@ size_t nodus_state_proof_poll(nodus_state_proof_service_t *svc,
     if (!svc || !done) return 0;
     for (unsigned i = 0; i < svc->n; i++) {
         job_t *j = &svc->jobs[i];
-        void *tag;
+        uint8_t tag[NODUS_STATE_PROOF_TAG_MAX];
         uint8_t *frame;
         size_t flen;
         int ec;
@@ -654,10 +667,11 @@ size_t nodus_state_proof_poll(nodus_state_proof_service_t *svc,
         nodus_state_proof_stats_t st;
         pthread_mutex_lock(&svc->mu);
         if (j->state != JOB_DONE) { pthread_mutex_unlock(&svc->mu); continue; }
-        tag = j->tag; frame = j->frame; flen = j->frame_len; ec = j->ec;
+        memcpy(tag, j->tag, sizeof(tag));    /* the slot is free after this */
+        frame = j->frame; flen = j->frame_len; ec = j->ec;
         memcpy(em, j->em, sizeof(em));
         st = j->stats;
-        j->frame = NULL; j->tag = NULL;
+        j->frame = NULL;
         j->state = JOB_IDLE;
         pthread_mutex_unlock(&svc->mu);
         done(user, tag, frame, flen, ec, em, &st, 0);
@@ -716,6 +730,9 @@ typedef struct {
  * The IPC transport is never in session mode, so its generation stays 0; the
  * serial is what tells a replacement connection in the same slot from the
  * one that asked. A connection with neither has no identity. */
+_Static_assert(sizeof(uintptr_t) >= sizeof(uint64_t),
+               "conn->user_data must carry the 64-bit IPC serial untruncated");
+
 int nodus_state_proof_conn_id_of(struct nodus_tcp_conn *conn,
                                  nodus_state_proof_conn_id_t *id)
 {
@@ -778,45 +795,44 @@ void nodus_witness_state_proof_handle(nodus_witness_t *w,
                       "state proofs are not served by this node");
         return;
     }
-    conn_tag_t *t = malloc(sizeof(*t));
-    if (!t) {
-        send_error_to(conn, txn_id, NODUS_ERR_RATE_LIMITED,
-                      "state proof service busy, ask another node");
-        return;
-    }
-    t->txn = txn_id;
-    if (nodus_state_proof_conn_id_of(conn, &t->id) != 0) {
+    /* The completion tag lives on the stack and is copied into the reader's
+     * job slot only after the request was validated and admitted: nothing is
+     * allocated for a refused request (plan §10.2: bounds before allocation). */
+    conn_tag_t t;
+    memset(&t, 0, sizeof(t));
+    t.txn = txn_id;
+    if (nodus_state_proof_conn_id_of(conn, &t.id) != 0) {
         /* no way to tell this connection from a replacement: fail closed */
-        free(t);
         send_error_to(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                       "internal error");
         return;
     }
     if (nodus_state_proof_submit(w->state_proof, now_ns, payload, len, txn_id,
-                                 t, &ec, em, sizeof(em)) != 0) {
-        free(t);
+                                 &t, sizeof(t), &ec, em, sizeof(em)) != 0)
         send_error_to(conn, txn_id, ec ? ec : NODUS_ERR_INTERNAL_ERROR,
                       ec ? em : "internal error");
-    }
 }
+
+_Static_assert(sizeof(conn_tag_t) <= NODUS_STATE_PROOF_TAG_MAX,
+               "the completion tag fits the job slot's tag area");
 
 static void deliver(void *user, void *tag, uint8_t *frame, size_t flen,
                     int ec, const char *em,
                     const nodus_state_proof_stats_t *st, int dropped)
 {
-    conn_tag_t *t = tag;
+    conn_tag_t t;
     (void)user; (void)st;
-    if (t && !dropped) {
+    if (tag && !dropped) {
+        memcpy(&t, tag, sizeof(t));
         /* the connection that asked, if it is still the one in its slot */
-        nodus_tcp_conn_t *c = nodus_state_proof_conn_alive(&t->id);
+        nodus_tcp_conn_t *c = nodus_state_proof_conn_alive(&t.id);
         if (c) {
             if (frame) nodus_tcp_send(c, frame, flen);
-            else send_error_to(c, t->txn, ec ? ec : NODUS_ERR_INTERNAL_ERROR,
+            else send_error_to(c, t.txn, ec ? ec : NODUS_ERR_INTERNAL_ERROR,
                                ec ? em : "internal error");
         }
     }
     free(frame);
-    free(t);
 }
 
 void nodus_witness_state_proof_poll(nodus_witness_t *w)

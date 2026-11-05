@@ -59,11 +59,24 @@
  *     one or with two, a repeated "f" / "h", no "cp", fewer results than keys,
  *     a 63-byte leg root, an empty and a 1,061-byte node, a COMPOSE step
  *     without legs are refused; 5000 and 16768 nodes (above the generic CBOR
- *     decoder's 4,096) are accepted and 16769 refused. NOT covered: the
- *     client's receive path (nodus_client.c client_on_frame ->
- *     nodus_t2_decode -> cbor_decode_next) still refuses a reply array above
- *     4,096 items; that limit lives in nodus_cbor.c / nodus_tier2.c (outside
- *     this package's whitelist) and is reported, not changed.
+ *     decoder's 4,096) are accepted and 16769 refused (the receive path
+ *     in front of this decoder is F2).
+ *  E2. A real IPC accept and the PRODUCTION delivery (a unix socket listener
+ *     nodus_witness_ipc_new_tools, real client connections, the production
+ *     nodus_witness_state_proof_handle / _poll): client 1 asks and
+ *     disconnects before its answer is delivered; client 2 connects into the
+ *     same slot (asserted) with another accept serial (generation is 0 on
+ *     this transport) and asks; after both answers are built one production
+ *     poll delivers: client 2 receives exactly its own answer (txn 22), never
+ *     the first. Kills: removing the accept stamp (no identity -> client 2 is
+ *     refused), comparing only the generation in nodus_state_proof_conn_alive
+ *     (client 2 gets both answers). NOT covered: the exhaustion branch of the
+ *     serial (the counter is private to the listener).
+ *  F2. The client RECEIVE path: nodus_t2_decode (the first call of
+ *     client_on_frame, nodus_client.c:419) takes 5000 and 16768 nodes for the
+ *     dnac_state_proof reply, refuses 16769, and keeps the generic 4,096-item
+ *     limit for another method (4000 accepted, 5000 refused). Not the whole
+ *     client_on_frame (a live client object is not built here).
  *  G. One snapshot per answer: between the committed-height read and the
  *     legs a committed change (a token row deleted, flushed, the fixture
  *     anchor rewritten) lands on the writer connection; the answer verifies
@@ -98,7 +111,10 @@
  *  Printed per request: rows in the leg, keys requested / present, the trie
  *  nodes loaded, nodes in the bundle, the frame bytes, and the wall time (CLOCK_MONOTONIC, in this TEST
  *  only; the service itself reads no clock for the build) of the build
- *  (three runs, the first one cold) and of the sibling-leg load alone
+ *  (one build on a FRESH reader connection - empty SQLite page and statement
+ *  caches, the operating system's file cache is not dropped - then three on
+ *  the connection that has just counted every row's path, so those three are
+ *  "after path counting", not cold) and of the sibling-leg load alone
  *  (nodus_witness_proof_legs_load, which includes the chain_config_history
  *  scan). Lines start with "COST ". These numbers are input for the
  *  operator's limits (rate, reader count, per-request work bound); nothing
@@ -154,6 +170,8 @@
 #include "nodus/nodus_types.h"
 #include "protocol/nodus_cbor.h"
 #include "transport/nodus_tcp.h"
+#include "protocol/nodus_tier2.h"
+#include "witness/nodus_witness_ipc.h"
 
 #include "evm/trie/evm_trie_proof.h"
 #include "dnac/dnac.h"
@@ -697,14 +715,15 @@ static size_t mkreq(uint8_t *buf, size_t cap, long leg, int dup_leg,
     uint8_t token[NODUS_SESSION_TOKEN_LEN];
     memset(token, 0, sizeof(token));
     cbor_encoder_init(&e, buf, cap);
-    cbor_encode_map(&e, 5);
+    cbor_encode_map(&e, unknown == 4 ? 6 : 5);
     cbor_encode_cstr(&e, "t");   cbor_encode_uint(&e, 7);
     cbor_encode_cstr(&e, "y");   cbor_encode_cstr(&e, "q");
     cbor_encode_cstr(&e, "q");   cbor_encode_cstr(&e, "dnac_state_proof");
     cbor_encode_cstr(&e, "tok"); cbor_encode_bstr(&e, token, sizeof(token));
     cbor_encode_cstr(&e, "a");
     cbor_encode_map(&e, (size_t)((leg >= 0) + (dup_leg ? 1 : 0) +
-                                 (n_keys >= 0) + (unknown ? 1 : 0)));
+                                 (n_keys >= 0) +
+                                 ((unknown >= 1 && unknown <= 3) ? 1 : 0)));
     if (leg >= 0) { cbor_encode_cstr(&e, "leg"); cbor_encode_uint(&e, (uint64_t)leg); }
     if (dup_leg) { cbor_encode_cstr(&e, "leg"); cbor_encode_uint(&e, 1); }
     if (n_keys >= 0) {
@@ -727,6 +746,9 @@ static size_t mkreq(uint8_t *buf, size_t cap, long leg, int dup_leg,
         cbor_encode_array(&e, 3);
         cbor_encode_uint(&e, 1);
     }
+    /* 4 = a complete request followed by a final TOP-LEVEL key "zz" with no
+     * value (the outer map claims 6 entries) */
+    if (unknown == 4) cbor_encode_cstr(&e, "zz");
     return cbor_encoder_len(&e);
 }
 
@@ -785,6 +807,8 @@ static int test_request_decode(void) {
                  0)) return 1;
     if (dec_case("a final unknown argument with a truncated array", 1, 0, 2,
                  64, 0, 3, 0)) return 1;
+    if (dec_case("a final top-level key with no value", 1, 0, 2, 64, 0, 4,
+                 0)) return 1;
     if (dec_case("128 keys", 1, 0, 128, 64, 0, 0, 1)) return 1;
     if (dec_case("leg 4, 3 bytes", 4, 0, 2, 3, 0, 0, 1)) return 1;
     if (dec_case("leg 4, 36 bytes", 4, 0, 2, 36, 0, 0, 1)) return 1;
@@ -825,11 +849,20 @@ static void sink_done(void *user, void *tag, uint8_t *frame, size_t flen,
         s->frame[s->n] = frame;
         s->len[s->n] = flen;
         s->ec[s->n] = ec;
-        s->tag[s->n] = (uint64_t)(uintptr_t)tag;
+        s->tag[s->n] = 0;
+        if (tag) memcpy(&s->tag[s->n], tag, sizeof(uint64_t));   /* the copy */
         s->n++;
     } else {
         free(frame);
     }
+}
+
+/* submit with a 64-bit tag value (copied by the service) */
+static int sub(nodus_state_proof_service_t *svc, int64_t now,
+               const uint8_t *buf, size_t len, uint32_t txn, uint64_t tagv,
+               int *ec, char *em, size_t cap) {
+    return nodus_state_proof_submit(svc, now, buf, len, txn, &tagv,
+                                    sizeof(tagv), ec, em, cap);
 }
 
 static void sink_free(sink_t *s) {
@@ -968,8 +1001,8 @@ static int test_service(fixture_t *fx, const rows_t *rows) {
             nodus_state_proof_service_t *svc =
                 nodus_state_proof_service_new(path, &lim[i]);
             CHECK(svc != NULL, "a service with a zero limit");
-            CHECK(nodus_state_proof_submit(svc, 1000000000LL, buf, len, 77,
-                      (void *)1, &ec, em, sizeof(em)) == -1 &&
+            CHECK(sub(svc, 1000000000LL, buf, len, 77, 1, &ec, em,
+                      sizeof(em)) == -1 &&
                   ec == NODUS_ERR_RATE_LIMITED, "not enabled: RATE_LIMITED");
             nodus_state_proof_counters_t c = nodus_state_proof_service_counters(svc);
             CHECK(c.decoded == 1 && c.refused_rate == 1 && c.handed_off == 0 &&
@@ -985,9 +1018,8 @@ static int test_service(fixture_t *fx, const rows_t *rows) {
         sink_t sk;
         memset(&sk, 0, sizeof(sk));
         CHECK(svc != NULL, "the service starts");
-        CHECK(nodus_state_proof_submit(svc, 1000000000LL, buf, len, 77,
-                  (void *)(uintptr_t)5, &ec, em, sizeof(em)) == 0,
-              "a valid request is handed off");
+        CHECK(sub(svc, 1000000000LL, buf, len, 77, 5, &ec, em,
+                  sizeof(em)) == 0, "a valid request is handed off");
         CHECK(wait_answers(svc, &sk, 1) == 1 && sk.frame[0] && sk.ec[0] == 0 &&
               sk.tag[0] == 5, "the answer comes back with its tag");
         nodus_witness_t *ctx = nodus_state_proof_ctx_open(path);
@@ -1024,13 +1056,13 @@ static int test_service(fixture_t *fx, const rows_t *rows) {
         sink_t sk;
         memset(&sk, 0, sizeof(sk));
         CHECK(svc != NULL, "the service starts");
-        CHECK(nodus_state_proof_submit(svc, 1000000000LL, buf, len, 1,
-                  (void *)1, &ec, em, sizeof(em)) == 0 &&
-              nodus_state_proof_submit(svc, 1000000000LL, buf, len, 2,
-                  (void *)2, &ec, em, sizeof(em)) == 0,
+        CHECK(sub(svc, 1000000000LL, buf, len, 1, 1, &ec, em,
+                  sizeof(em)) == 0 &&
+              sub(svc, 1000000000LL, buf, len, 2, 2, &ec, em,
+                  sizeof(em)) == 0,
               "two readers take two requests");
-        CHECK(nodus_state_proof_submit(svc, 1000000000LL, buf, len, 3,
-                  (void *)3, &ec, em, sizeof(em)) == -1 &&
+        CHECK(sub(svc, 1000000000LL, buf, len, 3, 3, &ec, em,
+                  sizeof(em)) == -1 &&
               ec == NODUS_ERR_RATE_LIMITED, "the third request: RATE_LIMITED");
         nodus_state_proof_counters_t c = nodus_state_proof_service_counters(svc);
         CHECK(c.refused_busy == 1 && c.handed_off == 2, "counted as busy");
@@ -1050,9 +1082,8 @@ static int test_service(fixture_t *fx, const rows_t *rows) {
         memset(&sk, 0, sizeof(sk));
         CHECK(svc != NULL, "the service starts");
         for (int i = 0; i < 1000; i++)
-            (void)nodus_state_proof_submit(svc, 1000000000LL, buf, len,
-                                           (uint32_t)i, (void *)(uintptr_t)(i + 1),
-                                           &ec, em, sizeof(em));
+            (void)sub(svc, 1000000000LL, buf, len, (uint32_t)i,
+                      (uint64_t)(i + 1), &ec, em, sizeof(em));
         nodus_state_proof_counters_t c = nodus_state_proof_service_counters(svc);
         CHECK(c.decoded == 1000 && c.handed_off == 2 && c.refused_rate == 998 &&
               c.refused_busy == 0 && c.refused_protocol == 0,
@@ -1065,14 +1096,14 @@ static int test_service(fixture_t *fx, const rows_t *rows) {
         /* malformed flood: decoded and refused on the loop, no build */
         for (int i = 0; i < 1000; i++)
             CHECK(nodus_state_proof_submit(svc, 1000000000LL, bad, sizeof(bad),
-                      1, NULL, &ec, em, sizeof(em)) == -1 &&
+                      1, NULL, 0, &ec, em, sizeof(em)) == -1 &&
                   ec == NODUS_ERR_PROTOCOL_ERROR, "malformed: PROTOCOL_ERROR");
         c = nodus_state_proof_service_counters(svc);
         CHECK(c.refused_protocol == 1000 && c.builds_started == 2,
               "1000 malformed requests started no build");
         /* one second later the limiter admits again */
-        CHECK(nodus_state_proof_submit(svc, 2000000000LL, buf, len, 9,
-                  (void *)9, &ec, em, sizeof(em)) == 0, "admitted again later");
+        CHECK(sub(svc, 2000000000LL, buf, len, 9, 9, &ec, em,
+                  sizeof(em)) == 0, "admitted again later");
         CHECK(wait_answers(svc, &sk, 3) == 3, "the third answer");
         sink_free(&sk);
         nodus_state_proof_service_free(svc, sink_done, NULL);
@@ -1085,8 +1116,8 @@ static int test_service(fixture_t *fx, const rows_t *rows) {
         sink_t sk;
         memset(&sk, 0, sizeof(sk));
         CHECK(svc != NULL, "the service starts");
-        CHECK(nodus_state_proof_submit(svc, 1000000000LL, buf, len, 1,
-                  (void *)4, &ec, em, sizeof(em)) == 0, "handed off");
+        CHECK(sub(svc, 1000000000LL, buf, len, 1, 4, &ec, em,
+                  sizeof(em)) == 0, "handed off");
         nodus_state_proof_service_free(svc, sink_done, &sk);
         CHECK(sk.dropped == 1 && sk.n == 1 && sk.tag[0] == 4 &&
               sk.frame[0] == NULL, "the undelivered tag is dropped, not lost");
@@ -1278,6 +1309,207 @@ static int test_response_decode(void) {
         return 1;
     if (resp_case("16768 nodes (the plan's ceiling)", RV_OK, 16768, 1)) return 1;
     if (resp_case("16769 nodes is refused", RV_OK, 16769, 0)) return 1;
+    return 0;
+}
+
+/* ══ F2. the client RECEIVE path: nodus_t2_decode (what client_on_frame calls
+ *        first, nodus_client.c:419) takes the plan's node ceiling for the
+ *        dnac_state_proof reply only ══════════════════════════════════════ */
+
+static int t2_case(const char *what, int patch_method, size_t n_nodes,
+                   int want_ok) {
+    const size_t cap = 256 * 1024;
+    uint8_t *buf = malloc(cap);
+    nodus_tier2_msg_t msg;
+    CHECK(buf != NULL, "allocation");
+    size_t len = mkresp(buf, cap, RV_OK, n_nodes);
+    CHECK(len > 0, "frame");
+    if (patch_method) {                  /* "dnac_state_proof" -> "dnac_state_prooG" */
+        static const char M[] = "dnac_state_proof";
+        for (size_t i = 0; i + 16 <= len; i++)
+            if (memcmp(buf + i, M, 16) == 0) { buf[i + 15] = 'G'; break; }
+    }
+    memset(&msg, 0, sizeof(msg));
+    int rc = nodus_t2_decode(buf, len, &msg);
+    int good = want_ok ? rc == 0 && msg.type == 'r' && msg.txn_id == 7
+                       : rc == -1;
+    if (rc == 0) nodus_t2_msg_free(&msg);
+    free(buf);
+    if (!good) fprintf(stderr, "receive-path case failed: %s (rc %d)\n", what, rc);
+    CHECK(good, what);
+    return 0;
+}
+
+static int test_receive_path(void) {
+    if (t2_case("dnac_state_proof reply, 5000 nodes", 0, 5000, 1)) return 1;
+    if (t2_case("dnac_state_proof reply, 16768 nodes (the plan's ceiling)", 0,
+                16768, 1)) return 1;
+    if (t2_case("dnac_state_proof reply, 16769 nodes is refused", 0, 16769,
+                0)) return 1;
+    /* every other message keeps the generic 4,096-item limit */
+    if (t2_case("another method, 4000 nodes (below the generic limit)", 1,
+                4000, 1)) return 1;
+    if (t2_case("another method, 5000 nodes is refused", 1, 5000, 0)) return 1;
+    return 0;
+}
+
+/* ══ E2. a real IPC accept and the production delivery ═════════════════ */
+
+static nodus_pubkey_t g_ipc_own;
+static const nodus_pubkey_t *ipc_own_pk(void *c) { (void)c; return &g_ipc_own; }
+
+typedef struct {
+    nodus_witness_t *w;
+    int64_t          now;
+    int              calls;
+    int              slot[4];
+    uint64_t         serial[4];
+} ipc_ctx_t;
+
+static void ipc_dispatch(void *ctx, struct nodus_tcp_conn *conn,
+                         const uint8_t *payload, size_t len,
+                         const char *method, uint32_t txn) {
+    ipc_ctx_t *c = ctx;
+    (void)method;
+    if (c->calls < 4) {
+        c->slot[c->calls] = conn->slot;
+        c->serial[c->calls] = (uint64_t)(uintptr_t)conn->user_data;
+    }
+    c->calls++;
+    c->now += 2000000000LL;
+    nodus_witness_state_proof_handle(c->w, conn, payload, len, txn, c->now);
+}
+
+typedef struct { int frames; uint32_t txn; int is_reply; } ipc_cli_t;
+
+static void ipc_cli_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
+                          size_t len, void *ctx) {
+    ipc_cli_t *c = ctx;
+    nodus_tier2_msg_t m;
+    (void)conn;
+    memset(&m, 0, sizeof(m));
+    c->frames++;
+    if (nodus_t2_decode(payload, len, &m) == 0) {
+        c->txn = m.txn_id;
+        c->is_reply = m.type == 'r';
+    }
+    nodus_t2_msg_free(&m);
+}
+
+static void ipc_pump(nodus_witness_ipc_t *ipc, nodus_tcp_t *a, int rounds) {
+    for (int i = 0; i < rounds; i++) {
+        nodus_witness_ipc_poll(ipc, 5);
+        if (a) nodus_tcp_poll(a, 5);
+    }
+}
+
+/* a bounded wait for the readers: builds_done reaches `want` */
+static int wait_builds(nodus_witness_t *w, uint64_t want) {
+    for (int i = 0; i < 4000; i++) {
+        if (nodus_state_proof_service_counters(w->state_proof).builds_done >= want)
+            return 1;
+        usleep(5000);
+    }
+    return 0;
+}
+
+static int test_ipc_delivery(fixture_t *fx, const rows_t *rows) {
+    char sock[200];
+    uint8_t first[64], f11[8192], f22[8192];
+    size_t n_first = 0, l11 = 0, l22 = 0, np = 0;
+    nodus_state_proof_req_t *req = malloc(sizeof(*req));
+    uint8_t token[NODUS_SESSION_TOKEN_LEN];
+    nodus_state_proof_limits_t lim = { 2, 1000 };
+    ipc_ctx_t ic;
+    nodus_tcp_t cli1, cli2;
+    ipc_cli_t s1, s2;
+    CHECK(req != NULL, "allocation");
+    snprintf(sock, sizeof(sock), "%s/witness.sock", fx->dir);
+    memset(token, 0, sizeof(token));
+    memset(&ic, 0, sizeof(ic));
+    memset(&s1, 0, sizeof(s1));
+    memset(&s2, 0, sizeof(s2));
+    for (int i = 0; i < NODUS_PK_BYTES; i++) g_ipc_own.bytes[i] = (uint8_t)(i * 7 + 3);
+
+    pick_keys(2, &rows[2], 3, 4, req, &np);
+    {
+        const uint8_t *kp[NODUS_STATE_PROOF_MAX_KEYS];
+        for (size_t i = 0; i < req->n_keys; i++) kp[i] = req->keys[i];
+        CHECK(nodus_dnac_state_proof_request_encode(11, token, req->leg, kp,
+                  req->key_len, req->n_keys, f11, sizeof(f11), &l11) == 0 &&
+              nodus_dnac_state_proof_request_encode(22, token, req->leg, kp,
+                  req->key_len, req->n_keys, f22, sizeof(f22), &l22) == 0,
+              "the two request frames");
+    }
+    {   /* {"q": "ipc_tool"} */
+        cbor_encoder_t e;
+        cbor_encoder_init(&e, first, sizeof(first));
+        cbor_encode_map(&e, 1);
+        cbor_encode_cstr(&e, "q"); cbor_encode_cstr(&e, NODUS_WITNESS_IPC_Q_TOOL);
+        n_first = cbor_encoder_len(&e);
+        CHECK(n_first > 0, "first frame");
+    }
+
+    CHECK(nodus_witness_state_proof_enable(fx->w, &lim) == 0,
+          "the service is enabled on the witness (the test's own limits)");
+    ic.w = fx->w;
+    nodus_witness_ipc_handlers_t h;
+    memset(&h, 0, sizeof(h));
+    h.dispatch_dnac = ipc_dispatch;
+    h.own_pk = ipc_own_pk;
+    h.ctx = &ic;
+    nodus_witness_ipc_t *ipc = nodus_witness_ipc_new_tools(&h);
+    CHECK(ipc != NULL && nodus_witness_ipc_listen(ipc, sock) == 0,
+          "a real IPC listener");
+
+    /* client 1 asks, then goes away before the answer is delivered */
+    CHECK(nodus_tcp_init(&cli1, -1) == 0, "client transport");
+    cli1.on_frame = ipc_cli_frame;
+    cli1.cb_ctx = &s1;
+    nodus_tcp_conn_t *c1 = nodus_tcp_unix_connect(&cli1, sock,
+                                                  NODUS_TCP_UNIX_UID_SELF);
+    CHECK(c1 != NULL, "client 1 connects");
+    nodus_tcp_send(c1, first, n_first);
+    nodus_tcp_send(c1, f11, l11);
+    ipc_pump(ipc, &cli1, 30);
+    CHECK(ic.calls == 1 && ic.serial[0] != 0, "the request reached the "
+          "dispatcher on an accepted connection with an accept serial");
+    CHECK(wait_builds(fx->w, 1), "the reader built the first answer");
+    nodus_tcp_close(&cli1);                       /* disconnect, NOT polled */
+    ipc_pump(ipc, NULL, 40);                      /* the listener sees EOF  */
+
+    /* client 2 connects: a NEW connection in the same slot */
+    CHECK(nodus_tcp_init(&cli2, -1) == 0, "client 2 transport");
+    cli2.on_frame = ipc_cli_frame;
+    cli2.cb_ctx = &s2;
+    nodus_tcp_conn_t *c2 = nodus_tcp_unix_connect(&cli2, sock,
+                                                  NODUS_TCP_UNIX_UID_SELF);
+    CHECK(c2 != NULL, "client 2 connects");
+    nodus_tcp_send(c2, first, n_first);
+    nodus_tcp_send(c2, f22, l22);
+    ipc_pump(ipc, &cli2, 30);
+    CHECK(ic.calls == 2, "client 2's request reached the dispatcher");
+    CHECK(ic.slot[0] == ic.slot[1],
+          "slot reuse is real: the replacement connection sits in the slot "
+          "of the one that asked first");
+    CHECK(ic.serial[1] != 0 && ic.serial[1] != ic.serial[0],
+          "the replacement carries another accept serial (generation is 0 "
+          "on this transport)");
+    CHECK(wait_builds(fx->w, 2), "both answers are built");
+
+    /* the production delivery: the old answer must NOT reach client 2 */
+    nodus_witness_state_proof_poll(fx->w);
+    ipc_pump(ipc, &cli2, 40);
+    CHECK(s2.frames == 1 && s2.is_reply && s2.txn == 22,
+          "client 2 received exactly its own answer (txn 22), not the answer "
+          "of the connection that asked before it");
+    ipc_pump(ipc, &cli2, 20);
+    CHECK(s2.frames == 1, "nothing more arrives");
+
+    nodus_tcp_close(&cli2);
+    nodus_witness_ipc_free(ipc);
+    nodus_witness_state_proof_disable(fx->w);
+    free(req);
     return 0;
 }
 
@@ -1547,12 +1779,32 @@ out:
 
 /* three timed builds of `req` and one COST line */
 static int time_request(const char *name, int leg, const char *label,
-                        nodus_witness_t *ctx,
+                        const char *path, nodus_witness_t *ctx,
                         const nodus_state_proof_req_t *req, size_t np,
                         size_t rows) {
-    double ts[3];
+    double ts[3], cold = -1.0;
     nodus_state_proof_stats_t st;
     memset(&st, 0, sizeof(st));
+    {   /* one build on a FRESH reader connection (empty SQLite page cache and
+         * statement cache; the operating system's file cache is whatever the
+         * run left - this is not a drop-caches measurement) */
+        nodus_witness_t *fresh = nodus_state_proof_ctx_open(path);
+        uint8_t *frame = NULL;
+        size_t flen = 0;
+        int ec = 0;
+        char em[96];
+        double a = now_ms();
+        if (!fresh || nodus_state_proof_build(fresh, req, 1, &frame, &flen,
+                                              NULL, &ec, em, sizeof(em)) != 0) {
+            fprintf(stderr, "measure: leg %d %s fresh-connection build "
+                    "failed\n", leg, label);
+            nodus_state_proof_ctx_close(fresh);
+            return 1;
+        }
+        cold = now_ms() - a;
+        free(frame);
+        nodus_state_proof_ctx_close(fresh);
+    }
     for (int i = 0; i < 3; i++) {
         uint8_t *frame = NULL;
         size_t flen = 0;
@@ -1570,8 +1822,10 @@ static int time_request(const char *name, int leg, const char *label,
     }
     printf("COST size=%s leg=%d request=%s rows=%zu keys=%zu present=%zu "
            "nodes_loaded=%zu nodes=%zu frame_bytes=%zu "
-           "build_ms=[%.1f %.1f %.1f]\n", name, leg, label, rows, req->n_keys,
-           np, st.nodes_loaded, st.nodes, st.frame_bytes, ts[0], ts[1], ts[2]);
+           "build_ms_fresh_connection=%.1f "
+           "build_ms_same_connection_after_path_counting=[%.1f %.1f %.1f]\n",
+           name, leg, label, rows, req->n_keys, np, st.nodes_loaded, st.nodes,
+           st.frame_bytes, cold, ts[0], ts[1], ts[2]);
     return 0;
 }
 
@@ -1606,7 +1860,9 @@ static int measure(const char *name, const uint32_t n[9], uint32_t extra_cc) {
             ts[i] = now_ms() - a;
         }
         printf("COST size=%s sibling_legs_load_ms=[%.1f %.1f %.1f] "
-               "(first run cold)\n", name, ts[0], ts[1], ts[2]);
+               "(the first run is on the fresh reader connection the "
+               "measurement opened; the OS file cache is warm)\n", name, ts[0],
+               ts[1], ts[2]);
     }
     for (int leg = 1; leg <= 8; leg++) {
         rows_t rows;
@@ -1637,13 +1893,15 @@ static int measure(const char *name, const uint32_t n[9], uint32_t extra_cc) {
         printf("COST size=%s leg=%d selection=deepest_paths rows_counted=%zu "
                "path_nodes_max=%zu path_nodes_sum_upper_bound=%zu\n", name,
                leg, rows.n, max_path, sum_bound);
-        if (time_request(name, leg, "deepest", ctx, req, np, rows.n) != 0) {
+        if (time_request(name, leg, "deepest", db_path(&fx), ctx, req, np,
+                         rows.n) != 0) {
             rows_free(&rows);
             fx_close(&fx);
             return 1;
         }
         pick_keys(leg, &rows, 0, 128, req, &np);
-        if (time_request(name, leg, "absent128", ctx, req, np, rows.n) != 0) {
+        if (time_request(name, leg, "absent128", db_path(&fx), ctx, req, np,
+                         rows.n) != 0) {
             rows_free(&rows);
             fx_close(&fx);
             return 1;
@@ -1660,6 +1918,7 @@ int main(void) {
     int rc = 0;
     if (test_request_decode() != 0) return 1;
     if (test_response_decode() != 0) return 1;
+    if (test_receive_path() != 0) return 1;
     if (test_conn_identity() != 0) return 1;
     if (test_below_generation_6() != 0) return 1;
     if (test_block_anchor() != 0) return 1;
@@ -1681,6 +1940,7 @@ int main(void) {
               "the legs hold the populated rows");
         rc = test_proofs(&fx, rows);
         if (!rc) rc = test_service(&fx, rows);
+        if (!rc) rc = test_ipc_delivery(&fx, rows);
         if (!rc) rc = test_snapshot_and_anchor(&fx);   /* mutates the chain */
         for (int leg = 1; leg <= 8; leg++) rows_free(&rows[leg]);
         fx_close(&fx);

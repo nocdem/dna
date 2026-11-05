@@ -157,18 +157,23 @@ nodus_state_proof_counters_t
 nodus_state_proof_service_counters(nodus_state_proof_service_t *svc);
 
 /** Loop side: decode, admit, hand off. `now_ns` is the node's monotonic
- *  clock. `tag` is returned to the poll callback with the answer.
+ *  clock. `tag` (`tag_len` <= NODUS_STATE_PROOF_TAG_MAX bytes) is COPIED into
+ *  the reader's job slot only after the request was validated and admitted
+ *  (nothing is allocated for a refused request) and is handed back to the
+ *  poll callback with the answer.
  *  @return 0 handed to a reader (the answer comes through poll); -1 refused
  *  at once, err_code = NODUS_ERR_PROTOCOL_ERROR or NODUS_ERR_RATE_LIMITED. */
+#define NODUS_STATE_PROOF_TAG_MAX  64u
 int nodus_state_proof_submit(nodus_state_proof_service_t *svc, int64_t now_ns,
                              const uint8_t *payload, size_t len,
-                             uint32_t txn_id, void *tag, int *err_code,
-                             char *err_msg, size_t err_cap);
+                             uint32_t txn_id, const void *tag, size_t tag_len,
+                             int *err_code, char *err_msg, size_t err_cap);
 
 /** A finished answer: `frame` (malloc'd, ownership passes to the callee) is
  *  the response frame, or NULL with err_code / err_msg when the build
  *  refused; `dropped` = 1 when the service is being freed and the answer was
- *  not delivered (frame NULL, err_code 0). */
+ *  not delivered (frame NULL, err_code 0). `tag` points to the copy given to
+ *  submit, valid only during the call. */
 typedef void (*nodus_state_proof_done_fn)(void *user, void *tag,
                                           uint8_t *frame, size_t frame_len,
                                           int err_code, const char *err_msg,

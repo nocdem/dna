@@ -5895,6 +5895,11 @@ static int spd_step(cbor_decoder_t *d, nodus_dnac_state_proof_step_t *s)
     return -1;
 }
 
+_Static_assert(NODUS_CBOR_MAX_ITEMS_STATE_PROOF ==
+                   NODUS_DNAC_STATE_PROOF_MAX_NODES,
+               "the receive path's limit for the reply is the wire contract's "
+               "node ceiling (plan §10.2, 128 x 131)");
+
 /* An array header read with the count bound of THIS reply (the plan's
  * 128 x 131 node ceiling), not with the generic decoder's
  * NODUS_CBOR_MAX_ITEMS (4,096), which stays for every other decoder

@@ -186,6 +186,11 @@ void cbor_decoder_init(cbor_decoder_t *dec, const uint8_t *buf, size_t len) {
     dec->pos = 0;
     dec->depth = 0;
     dec->error = false;
+    dec->max_items = NODUS_CBOR_MAX_ITEMS;
+}
+
+void cbor_decoder_set_max_items(cbor_decoder_t *dec, size_t max_items) {
+    if (dec && max_items > 0) dec->max_items = max_items;
 }
 
 cbor_item_t cbor_decode_next(cbor_decoder_t *dec) {
@@ -235,7 +240,7 @@ cbor_item_t cbor_decode_next(cbor_decoder_t *dec) {
     }
     case CBOR_ARRAY: {
         uint64_t n = dec_arg(dec, ai);
-        if (n > NODUS_CBOR_MAX_ITEMS) {
+        if (n > (dec->max_items ? dec->max_items : NODUS_CBOR_MAX_ITEMS)) {
             dec->error = true;
             item.type = CBOR_ITEM_ERROR;
             break;
@@ -246,7 +251,7 @@ cbor_item_t cbor_decode_next(cbor_decoder_t *dec) {
     }
     case CBOR_MAP: {
         uint64_t n = dec_arg(dec, ai);
-        if (n > NODUS_CBOR_MAX_ITEMS) {
+        if (n > (dec->max_items ? dec->max_items : NODUS_CBOR_MAX_ITEMS)) {
             dec->error = true;
             item.type = CBOR_ITEM_ERROR;
             break;
