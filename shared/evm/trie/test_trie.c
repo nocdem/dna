@@ -1626,7 +1626,7 @@ static void test_proof_order(void)
     CHECK(evm_trie_proof_set_finish(&u) == 0 && u.n > a.n + 10,
           "the bundle holds nodes key 0 does not need");
     size_t n = u.n;
-    size_t *ord = malloc((n + 1) * sizeof(*ord));
+    size_t *ord = calloc(n + 1, sizeof(*ord));
     uint8_t (*dig)[64] = malloc((n + 1) * sizeof(*dig));
     CHECK(ord && dig, "allocation");
     if (!ord || !dig) {
