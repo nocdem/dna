@@ -5861,8 +5861,6 @@ static void handle_dnac_light_block(nodus_witness_t *w,
  * no shadow run: NODUS_ERR_NOT_FOUND.
  * ════════════════════════════════════════════════════════════════════ */
 
-#define NODUS_HF9_SHADOW_NONE_WIRE  255u
-
 static void handle_dnac_hf9_shadow(nodus_witness_t *w,
                                    struct nodus_tcp_conn *conn,
                                    const uint8_t *payload, size_t len,
@@ -5932,7 +5930,7 @@ static void handle_dnac_hf9_shadow(nodus_witness_t *w,
     enc_dnac_response(&enc, txn_id, "dnac_hf9_shadow", found ? 15 : 2);
     cbor_encode_cstr(&enc, "st");
     cbor_encode_uint(&enc, st == NODUS_V2_SHADOW_NONE
-                               ? NODUS_HF9_SHADOW_NONE_WIRE : (uint64_t)st);
+                               ? NODUS_DNAC_HF9_SHADOW_NONE : (uint64_t)st);
     cbor_encode_cstr(&enc, "found");
     cbor_encode_bool(&enc, found == 1);
     if (found == 1) {

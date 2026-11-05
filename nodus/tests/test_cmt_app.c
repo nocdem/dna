@@ -29,7 +29,10 @@
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * Compile flags: none beyond a default build (no QGP_FAULT_INJECT — the
  * post-commit window is the RUNTIME field
- * `nodus_cmt_blockexec_t.test_fail_after_commit`). Environment: none.
+ * `nodus_cmt_blockexec_t.test_fail_after_commit`), except the one HF-9 WP5
+ * case `hyb_shadow_fault_host`, built only with -DQGP_FAULT_INJECT=ON (the
+ * shadow job's injection point; absent otherwise = missing coverage).
+ * Environment: none.
  * SQLite >= 3.35.0, which the S14 rung enforces itself.
  *
  * ── WHAT IT LEAVES BEHIND ──────────────────────────────────────────────
@@ -8164,17 +8167,26 @@ static int t_hyb_crash_boundary_event(void)
  * that applies changes is test_hf9_shadow.c A / F; the hook's wiring on the
  * node's executor (not the test's) is test_cmt_node.c.
  */
+/* The full rebuild writes nodes to the CONSENSUS v2_trie_nodes (the build is
+ * the edge's), which must stay empty on a pre-edge chain: it runs inside a
+ * transaction that is rolled back, and the caller digests the ledger around
+ * the call. */
 static int hyb_shadow_roots_equal_rebuild(nodus_witness_t *w)
 {
-    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++) {
+    int ret = 0;
+
+    if (sqlite3_exec(w->db, "BEGIN", NULL, NULL, NULL) != SQLITE_OK) return -1;
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS && ret == 0; leg++) {
         uint8_t sh[64], inc[64], full[64];
 
         if (nodus_witness_v2_trie_shadow_leg_root(w, leg, sh) != 0 ||
             nodus_witness_v2_trie_build_leg(w, leg, inc, full) != 0 ||
             memcmp(sh, full, 64) != 0 || memcmp(inc, full, 64) != 0)
-            return -1;
+            ret = -1;
     }
-    return 0;
+    if (sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL) != SQLITE_OK)
+        ret = -1;
+    return ret;
 }
 
 static int t_hyb_crash_shadow(void)
@@ -8261,10 +8273,13 @@ static int t_hyb_crash_shadow(void)
           q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_log") == 2,
           "P4c ONE new log row, at 12, none at 11: the pass covered the "
           "missed height in one step");
+    CHECK(hyb_digest(A->g.w->db, d3a) == 0, "P4d0 digest before the rebuild");
     CHECK(hyb_shadow_roots_equal_rebuild(A->g.w) == 0,
           "P4d every shadow leg root equals the full rebuild of the rows");
-    CHECK(hyb_digest(A->g.w->db, d3a) == 0 &&
-          hyb_digest(Bn->g.w->db, d3b) == 0 && memcmp(d3a, d3b, 64) == 0,
+    CHECK(hyb_digest(A->g.w->db, d2a) == 0 && memcmp(d2a, d3a, 64) == 0,
+          "P4d1 the rolled-back rebuild left the ledger tables untouched "
+          "(v2_trie_nodes stays empty before the edge)");
+    CHECK(hyb_digest(Bn->g.w->db, d3b) == 0 && memcmp(d3a, d3b, 64) == 0,
           "P4e the replayed node's ledger tables = the node that never "
           "stopped");
     CHECK(nodus_witness_v2_committed_global_root(A->g.w, ra) == 0 &&
@@ -8278,6 +8293,73 @@ static int t_hyb_crash_shadow(void)
     free(A);
     return 0;
 }
+
+#ifdef QGP_FAULT_INJECT
+/* HF-9 WP5, plan T-10 "injected shadow fault -> block still commits, node
+ * keeps running", THROUGH THE HOST: the shadow log write (injection point 3,
+ * which fires on every pass, idle blocks included) is armed before block 11
+ * of the hybrid chain on node A (hook bound, hf9_shadow on); the host's
+ * apply returns CMT_OK, the ledger tip advances, the saved State names 11,
+ * the shadow status is FAULTED, A's ledger tables equal the twin B's, and
+ * the next block applies on both and still equals. Flags:
+ * -DQGP_FAULT_INJECT=ON (absent otherwise = missing coverage). Leaves: two
+ * /tmp/test_cmt_app_hyb_XXXXXX directories (removed). Can falsely pass: if
+ * the injection point is never reached - asserted through the hit count. */
+static int t_hyb_shadow_fault_host(void)
+{
+    hyb_t  *A = calloc(1, sizeof(*A)), *Bn = calloc(1, sizeof(*Bn));
+    uint8_t da[64], db_[64];
+    int     hits0, st = -2, rc;
+
+    CHECK(A && Bn, "alloc");
+    CHECK(hyb_open(A, 0) == 0 && hyb_open(Bn, 0) == 0, "Q0 both nodes open");
+    A->g.w->config.hf9_shadow = NODUS_HF9_SHADOW_ON;
+    CHECK(nodus_cmt_blockexec_set_block_saved_hook(
+              A->x.be, nodus_witness_v2_shadow_after_commit, A->g.w)
+              == CMT_OK, "Q0 the hook is bound on A's executor");
+    CHECK(hyb_pair_to(A, Bn, 0, 10) == 0, "Q1 blocks 1..10 (seeded at 10)");
+    CHECK(nodus_witness_v2_shadow_status(A->g.w, &st) == 0 &&
+          st == NODUS_V2_SHADOW_RUNNING, "Q1 the shadow runs");
+
+    hits0 = nodus_witness_v2_shadow_test_hits();
+    CHECK(nodus_witness_v2_shadow_test_fault(3) == 0, "Q2 arm the log write");
+    rc = hyb_pair_step(A, Bn, 11, 0);
+    CHECK(rc == CMT_OK, "Q2a the host's apply of block 11 is CMT_OK although "
+          "the shadow faulted");
+    CHECK(nodus_witness_v2_shadow_test_hits() == hits0 + 1,
+          "Q2b the injection point was reached (false-pass guard)");
+    CHECK(q1(A->g.w->db, "SELECT MAX(global_height) FROM v2_blocks") == 11 &&
+          sqlite3_get_autocommit(A->g.w->db) != 0,
+          "Q2c the block is committed and no transaction is left open");
+    {
+        cmt_state_storage_t *stor = calloc(1, sizeof(*stor));
+        cmt_state_t         *cs = calloc(1, sizeof(*cs));
+
+        CHECK(stor && cs && cmt_state_init(cs, stor) == CMT_OK &&
+              nodus_cmt_ss_load(A->x.store, cs) == CMT_OK &&
+              cs->last_block_height == 11,
+              "Q2d the consensus state was saved at 11");
+        free(cs);
+        free(stor);
+    }
+    CHECK(nodus_witness_v2_shadow_status(A->g.w, &st) == 0 &&
+          st == NODUS_V2_SHADOW_FAULTED, "Q2e the shadow status is FAULTED");
+    CHECK(hyb_digest(A->g.w->db, da) == 0 && hyb_digest(Bn->g.w->db, db_) == 0 &&
+          memcmp(da, db_, 64) == 0,
+          "Q2f the faulted node's ledger = the node without a shadow");
+    CHECK(hyb_pair_to(A, Bn, 11, 12) == 0,
+          "Q3 the node keeps running: block 12 applies on both");
+    CHECK(hyb_digest(A->g.w->db, da) == 0 && hyb_digest(Bn->g.w->db, db_) == 0 &&
+          memcmp(da, db_, 64) == 0 &&
+          q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_log") == 1,
+          "Q3a ... equal again, and the faulted shadow logged nothing more");
+    hyb_close(Bn);
+    hyb_close(A);
+    free(Bn);
+    free(A);
+    return 0;
+}
+#endif
 /* ── the STORAGE_REGISTER envelope (step b), ported from test_storage_b2.c
  *    streg_call :1719-1745 and st_env :1747-1830: a 2-leg envelope, SYSTEM
  *    STORAGE_REGISTER (owner_fp ‖ node_pk ‖ consent_sig ‖ expiry ‖ bond,
@@ -9486,6 +9568,9 @@ int main(int argc, char **argv)
         { "hybrid_storage_writers_probe", t_hybrid_storage_writers_probe, 1 },
         { "hyb_crash_boundary_event",   t_hyb_crash_boundary_event },
         { "hyb_crash_shadow",           t_hyb_crash_shadow },
+#ifdef QGP_FAULT_INJECT
+        { "hyb_shadow_fault_host",      t_hyb_shadow_fault_host },
+#endif
         { "hyb_crash_edge",             t_hyb_crash_edge },
         { "hyb_crash_ordinary_gen6",    t_hyb_crash_ordinary },
         { "hyb_crash_boundary_b1",      t_hyb_crash_boundary },

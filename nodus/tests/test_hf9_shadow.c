@@ -71,11 +71,21 @@
  *     hook; the shadow's own tables are rolled back (a faulted seeding
  *     leaves no shadow table at all; a faulted pass leaves the row copy,
  *     roots and log as they were); no later hook call writes anything; the
- *     NEXT block commits and its global root equals the twin's. The
- *     control (no injection) shows the same row change is picked up.
+ *     NEXT block commits and its global root equals the twin's. (That the
+ *     same row change IS picked up without the injection is F and C.)
  *  F. CATCH-UP ON THE CHAIN. Two blocks applied without the hook, one row
  *     change, one hook call: ONE new log row at the tip (no row for the
- *     missed height), and its legs equal the full rebuild of the rows.
+ *     missed height), and its legs equal the full rebuild of the rows (the
+ *     rebuild inside a rolled-back transaction: the consensus node table
+ *     stays empty on the pre-edge chain).
+ *  G. THE dnac_hf9_shadow REPLY DECODER (nodus_dnac_hf9_shadow_decode, no
+ *     network): hand-encoded replies - a found reply with all fifteen keys
+ *     and a not-found reply with st / found only decode; a 63-byte root, a
+ *     duplicate key, a found reply with one key missing, a not-found reply
+ *     with an extra root and a truncated reply are each refused with the
+ *     output zeroed; the request encodes and a too-small buffer is refused.
+ *     (The injected faults through the host's apply path are
+ *     test_cmt_app.c hyb_shadow_fault_host.)
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: NODUS_EVM_ENABLED (the tries and generations 3-6 exist only
@@ -129,6 +139,8 @@
 #include "witness/nodus_witness_roots_v2.h"
 #include "witness/nodus_witness_runtime.h"
 #include "nodus/nodus_chain_config.h"
+#include "nodus/nodus.h"                      /* the dnac_hf9_shadow codec */
+#include "protocol/nodus_cbor.h"
 
 #include "dnac/dnac.h"
 #include "dnac/ledger_ids.h"
@@ -597,9 +609,10 @@ static int t_equality_and_isolation(void) {
               "(round 3 in full mode)");
         CHECK(t_round(&T, n, &dirty) == 0, "A: the trigger round");
         if (n == 3)
-            CHECK(dirty >= 6, "A3: the triggers captured the keys the row "
-                  "comparison cannot see (created+spent, changed+back, "
-                  "created+removed)");
+            CHECK(dirty == 3, "A3: the triggers captured exactly the three "
+                  "keys the row comparison cannot see: the utxo created and "
+                  "spent (0x81), the utxo changed and changed back (0x72) "
+                  "and the token created and removed (0x82)");
         CHECK(legs_equal(&S, &T) == 0, "A: after the round, shadow roots = "
               "trigger roots = full rebuild, all eight legs");
         /* B: nothing shadow-related reached the consensus tables */
@@ -1007,6 +1020,9 @@ static int t_chain_catch_up(void) {
               nodus_witness_v2_shadow_log_read(fx.w, H5, &row) == 0,
               "F1: at the tip, none for the missed height");
     }
+    /* the full rebuild writes nodes to the CONSENSUS v2_trie_nodes: inside a
+     * transaction that is rolled back, so the pre-edge chain keeps it empty */
+    CHECK(run_sql(fx.w->db, "BEGIN") == 0, "F1: begin");
     for (int leg = 1; leg <= 8; leg++) {
         uint8_t inc[64], full[64];
         CHECK(nodus_witness_v2_trie_shadow_leg_root(fx.w, leg, after[leg - 1])
@@ -1015,6 +1031,9 @@ static int t_chain_catch_up(void) {
               memcmp(after[leg - 1], full, 64) == 0,
               "F1: every leg equals the full rebuild of the rows");
     }
+    CHECK(run_sql(fx.w->db, "ROLLBACK") == 0 &&
+          q1(fx.w->db, "SELECT COUNT(*) FROM v2_trie_nodes") == 0,
+          "F1: the rebuild was rolled back, v2_trie_nodes is still empty");
     CHECK(memcmp(before[1], after[1], 64) != 0,
           "F1: control - the tokens leg moved (the change was caught up)");
     CHECK(memcmp(before[0], after[0], 64) == 0,
@@ -1128,8 +1147,95 @@ static int t_chain_faults(void) {
 }
 #endif
 
+/* ══ G. the dnac_hf9_shadow reply decoder (client side) ═════════════════ */
+
+/* A hand-encoded reply {"t","y":"r","q","r": {...}} (no network). `skip`
+ * drops one key, `dup` emits that key a second time, `short_leg` makes "l1"
+ * a 63-byte string, `extra` adds "l1" to a not-found reply. */
+static size_t build_reply(uint8_t *buf, size_t cap, int found,
+                          const char *skip, const char *dup, int short_leg,
+                          int extra) {
+    static const char *const names[15] = {
+        "st", "found", "h", "l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8",
+        "core", "stor", "sys", "glob"
+    };
+    const char *emit[20];
+    size_t n = 0;
+    uint8_t root[64];
+    memset(root, 0x5A, sizeof(root));
+    for (size_t i = 0; i < (found ? 15u : 2u); i++)
+        if (!skip || strcmp(skip, names[i]) != 0) emit[n++] = names[i];
+    if (!found && extra) emit[n++] = "l1";
+    if (dup) emit[n++] = dup;
+
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    cbor_encode_map(&enc, 4);
+    cbor_encode_cstr(&enc, "t");  cbor_encode_uint(&enc, 1);
+    cbor_encode_cstr(&enc, "y");  cbor_encode_cstr(&enc, "r");
+    cbor_encode_cstr(&enc, "q");  cbor_encode_cstr(&enc, "dnac_hf9_shadow");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, n);
+    for (size_t i = 0; i < n; i++) {
+        cbor_encode_cstr(&enc, emit[i]);
+        if (strcmp(emit[i], "st") == 0) cbor_encode_uint(&enc, 1);
+        else if (strcmp(emit[i], "found") == 0) cbor_encode_bool(&enc, found);
+        else if (strcmp(emit[i], "h") == 0) cbor_encode_uint(&enc, 7);
+        else cbor_encode_bstr(&enc, root,
+                              short_leg && strcmp(emit[i], "l1") == 0 ? 63u
+                                                                      : 64u);
+    }
+    return cbor_encoder_len(&enc);
+}
+
+static int t_decoder(void) {
+    uint8_t buf[2048];
+    nodus_dnac_hf9_shadow_t r;
+    size_t len;
+    uint8_t token[NODUS_SESSION_TOKEN_LEN];
+    uint8_t req[256];
+    size_t rlen = 0;
+
+    len = build_reply(buf, sizeof(buf), 1, NULL, NULL, 0, 0);
+    CHECK(len > 0 && nodus_dnac_hf9_shadow_decode(buf, len, &r) == 0 &&
+          r.found && r.status == 1 && r.height == 7 &&
+          r.leg[0][0] == 0x5A && r.leg[7][63] == 0x5A &&
+          r.core[0] == 0x5A && r.stor[0] == 0x5A && r.sys[0] == 0x5A &&
+          r.glob[63] == 0x5A, "G1: a found reply with all fifteen keys "
+          "decodes");
+    len = build_reply(buf, sizeof(buf), 0, NULL, NULL, 0, 0);
+    CHECK(len > 0 && nodus_dnac_hf9_shadow_decode(buf, len, &r) == 0 &&
+          !r.found && r.status == 1 && r.height == 0,
+          "G2: a not-found reply with only st and found decodes");
+    len = build_reply(buf, sizeof(buf), 1, NULL, NULL, 1, 0);
+    CHECK(len > 0 && nodus_dnac_hf9_shadow_decode(buf, len, &r) == -1,
+          "G3: a 63-byte root is refused");
+    len = build_reply(buf, sizeof(buf), 1, NULL, "core", 0, 0);
+    CHECK(len > 0 && nodus_dnac_hf9_shadow_decode(buf, len, &r) == -1,
+          "G4: a duplicate key is refused");
+    len = build_reply(buf, sizeof(buf), 1, "glob", NULL, 0, 0);
+    CHECK(len > 0 && nodus_dnac_hf9_shadow_decode(buf, len, &r) == -1,
+          "G5: found with one key missing is refused");
+    len = build_reply(buf, sizeof(buf), 0, NULL, NULL, 0, 1);
+    CHECK(len > 0 && nodus_dnac_hf9_shadow_decode(buf, len, &r) == -1,
+          "G6: not found with an extra root is refused");
+    len = build_reply(buf, sizeof(buf), 1, NULL, NULL, 0, 0);
+    CHECK(nodus_dnac_hf9_shadow_decode(buf, len - 1, &r) == -1,
+          "G7: a truncated reply is refused");
+    CHECK(r.found == false && r.height == 0, "G7: the output is zeroed on "
+          "a refusal");
+    memset(token, 0x11, sizeof(token));
+    CHECK(nodus_dnac_hf9_shadow_request_encode(5, token, 9, req, sizeof(req),
+                                               &rlen) == 0 && rlen > 0 &&
+          nodus_dnac_hf9_shadow_request_encode(5, token, 9, req, 8, &rlen)
+              == -1, "G8: the request encodes, and a too-small buffer is "
+          "refused");
+    return 0;
+}
+
 int main(void) {
     int rc = 0;
+    if (!rc) rc = t_decoder();
     if (!rc) rc = t_equality_and_isolation();
 #ifdef QGP_FAULT_INJECT
     if (!rc) rc = t_faults_within_pass();

@@ -3,10 +3,17 @@
  * @brief HF-9 WP5 - the shadow run. Contract: nodus_witness_v2_shadow.h.
  *        Plan docs/plans/approved/2026-11-04-hf9.md §11.
  *
- * Threading: the hook runs on the witness event loop right after the host's
- * COMMIT and state save (nodus_witness.h:18-19 "single-threaded state
- * transitions in the event loop"), like every handler that reads w->db, so
- * the shadow's transactions never overlap a block transaction.
+ * Threading (INFERENCE from the source, not a proven single thread): the
+ * consensus state machine is stepped by witness_cmt_tick, called from the
+ * witness poll (nodus_witness.c:3253; cmt_cs_step at :2625), and the dnac_*
+ * handlers are dispatched through nodus_witness_dispatch_dnac
+ * (nodus_witness.c:3291) whose handlers.c comment names the witness loop as
+ * their thread ("handle_dnac_light_block ... runs on the witness loop, the
+ * sole nodus_witness_handle_dnac call site"); nodus_witness.h:18-19 states
+ * "single-threaded state transitions in the event loop". On that reading the
+ * hook and the dnac_hf9_shadow handler share w->db on one thread and the
+ * shadow's transactions never overlap a block transaction. A different
+ * thread for either would make them share the connection concurrently.
  * Clock: none (the log row has no timestamp).
  */
 
@@ -361,8 +368,15 @@ int nodus_witness_v2_shadow_seed(nodus_witness_t *w) {
         return -1;
     }
     uint64_t tip = 0;
-    if (nodus_witness_v2_tip_height(w, &tip) != 0) return -1;
-    if (exec_sql(w->db, "BEGIN IMMEDIATE") != 0) return -1;
+    if (nodus_witness_v2_tip_height(w, &tip) != 0)
+        return shadow_fail(w, 0, 0, "seeding: the tip height is unreadable");
+    if (exec_sql(w->db, "BEGIN IMMEDIATE") != 0) {
+        /* plan §11 names no failure for it: a transaction that cannot begin
+         * (the file is busy) is a refusal; the next block's call seeds */
+        QGP_LOG_WARN(LOG_TAG, "%s", "seeding skipped: the shadow "
+                     "transaction could not begin");
+        return -1;
+    }
 
     if (nodus_witness_v2_shadow_build(w) != 0)
         return shadow_fail(w, 1, tip, "seeding: shadow tables and legs");
@@ -621,8 +635,16 @@ int nodus_witness_v2_shadow_sync(nodus_witness_t *w, int full) {
 
 static int run_pass(nodus_witness_t *w) {
     uint64_t tip = 0, last = 0;
-    if (nodus_witness_v2_tip_height(w, &tip) != 0) return -1;
-    if (exec_sql(w->db, "BEGIN IMMEDIATE") != 0) return -1;
+    if (nodus_witness_v2_tip_height(w, &tip) != 0)
+        return shadow_fail(w, 0, 0, "the tip height is unreadable");
+    if (exec_sql(w->db, "BEGIN IMMEDIATE") != 0) {
+        /* plan §11 names no failure for it: a transaction that cannot begin
+         * (the file is busy) skips this pass; the next pass is state based
+         * and covers the height (§11 catch-up) */
+        QGP_LOG_WARN(LOG_TAG, "%s", "shadow pass skipped: the shadow "
+                     "transaction could not begin");
+        return 0;
+    }
     if (log_last_height(w, &last) != 0)
         return shadow_fail(w, 1, tip, "the last logged height");
     if (tip <= last) {                         /* nothing is due             */
