@@ -300,6 +300,11 @@ static void v2x_cfg_free(v2x_cfgbox_t *b) {
     b->allocs = NULL;
 }
 
+/** HF-9 WP4: optional hook applied to the config v2x_cfg_make builds (see
+ *  the call site). Static to every including test, NULL unless a test
+ *  sets it. */
+static void (*g_v2x_cfg_hook)(nodus_v2_gen_config_t *c);
+
 /** A complete, derivable version-3 config (see the banner). 0 / -1. */
 static int v2x_cfg_make(v2x_cfgbox_t *b, uint8_t salt) {
     static const char hexd[] = "0123456789abcdef";
@@ -342,6 +347,12 @@ static int v2x_cfg_make(v2x_cfgbox_t *b, uint8_t salt) {
         v->self_stake     = DNAC_SELF_STAKE_AMOUNT;
         v->commission_bps = (uint16_t)(100 * (i + 1));
     }
+    /* HF-9 WP4: a test that needs REAL committee keys (it signs blocks with
+     * them - test_cmt_app.c's hybrid generation-6 probe) installs a hook
+     * that rewrites the validators' pubkeys; it runs HERE, before the
+     * comet rows are derived from the validators. NULL by default: no
+     * other test is affected. */
+    if (g_v2x_cfg_hook) g_v2x_cfg_hook(c);
     {
         nodus_v2_gen_alloc_t *a = &b->allocs[0];
         uint8_t owner[DNAC_PUBKEY_SIZE];

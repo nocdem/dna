@@ -7351,12 +7351,176 @@ static int t_hf3_bounds_and_fee(void)
 
 /* ══ main ════════════════════════════════════════════════════════════ */
 
+/* ══ HF-9 WP4 — the HYBRID generation-6 blockexec probe ═════════════════
+ *
+ * What it is: a PROBE that only BUILDS the fixture plan :455 (T-15) needs
+ * and asserts each prerequisite on its own labelled CHECK, so a run shows
+ * exactly which step of the route breaks. No T-15 case yet.
+ *
+ * The route: the chain is seeded the way test_hf9_edge.c:340-371 seeds it
+ * (v2x_seed_prepare, the chain_config ladder rows BEFORE v2x_seed_genesis
+ * - rows written after the production genesis would move SYSTEM's
+ * chain_config_root and trip the untouched-domain guard), but with the
+ * committee's REAL g_ks public keys, installed through the config hook of
+ * v2_genesis_fixture.h (g_v2x_cfg_hook), so the REAL blockexec of
+ * exec_init can sign and apply blocks over it. The cometbft document is
+ * projected from the very config the ledger was seeded from (gfx_doc), and
+ * exec_init builds and saves the cometbft State itself.
+ *
+ * Proves, step by step: P1 the hook gives the committee the g_ks keys;
+ * P2 the database and the ladder rows exist before the genesis; P3 the
+ * seeded genesis (a version-3 chain with the g_ks committee in
+ * `validators`); P4 the node identity and the committed root; P5 exec_init
+ * (store, real application, blockexec, State saved: stateKey); P6 the
+ * ladder rows survived the genesis; P7 a block 1 made over the real State
+ * with a COMPLETE BlockID; P8 the block applies through
+ * nodus_cmt_host_apply_verified_block and the ledger holds block 1.
+ *
+ * Flags: none beyond the file's (NODUS_EVM_ENABLED for the generation
+ * constants). Leaves: a /tmp/test_cmt_app_hyb_XXXXXX directory (removed by
+ * gfx_close). Can falsely pass: a probe passing means the route holds for
+ * ONE empty block at height 1, not that generation 6 is reached - the
+ * ladder heights (3..14) are not crossed here; the T-15 cases will.
+ */
+static void hyb_cfg_hook(nodus_v2_gen_config_t *c)
+{
+    for (uint16_t i = 0; i < c->n_validators && i < (uint16_t)N_KEYS; i++) {
+        memcpy(c->validators[i].pubkey, g_ks[i].pk, DNAC_PUBKEY_SIZE);
+    }
+}
+
+static int hyb_cc_row(nodus_witness_t *w, unsigned param, uint64_t value,
+                      uint64_t effective, uint64_t nonce)
+{
+    sqlite3_stmt *st = NULL;
+    int rc;
+
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO chain_config_history (param_id, new_value, "
+            "effective_block, commit_block, tx_hash, proposal_nonce, "
+            "created_at_unix) VALUES (?1, ?2, ?3, 0, zeroblob(64), ?4, 0)",
+            -1, &st, NULL) != SQLITE_OK) {
+        return -1;
+    }
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)param);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)value);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)effective);
+    sqlite3_bind_int64(st, 4, (sqlite3_int64)nonce);
+    rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    w->chain_config_cache_warm = false;
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+static int t_hybrid_probe(void)
+{
+    gfx_t          g;
+    exec_t         x;
+    cmt_block_id_t bid;
+    v2x_cfgbox_t   hb;
+    uint8_t        file16[16];
+    uint8_t        root[64];
+
+    memset(&g, 0, sizeof(g));
+    memset(&hb, 0, sizeof(hb));
+    snprintf(g.dir, sizeof(g.dir), "/tmp/test_cmt_app_hyb_XXXXXX");
+    CHECK(mkdtemp(g.dir) != NULL, "P0 a temp directory");
+
+    /* P1 — the config hook: the committee is the g_ks keys */
+    g_v2x_cfg_hook = hyb_cfg_hook;
+    CHECK(v2x_cfg_make(&hb, 0) == 0, "P1a the v2x config builds");
+    CHECK(hb.cfg->n_validators == (uint16_t)N_KEYS &&
+          memcmp(hb.cfg->validators[0].pubkey, g_ks[0].pk,
+                 DNAC_PUBKEY_SIZE) == 0 &&
+          memcmp(hb.cfg->validators[N_KEYS - 1].pubkey, g_ks[N_KEYS - 1].pk,
+                 DNAC_PUBKEY_SIZE) == 0,
+          "P1b the hook gave the committee the real g_ks public keys");
+    g.box.cfg    = hb.cfg;        /* ownership moves to g.box (gfx_close) */
+    g.box.allocs = hb.allocs;
+
+    /* P2 — database + the ladder rows BEFORE the genesis (edge test) */
+    g.w = calloc(1, sizeof(*g.w));
+    g.srv = calloc(1, sizeof(*g.srv));
+    CHECK(g.w && g.srv, "P2a heap");
+    snprintf(g.w->data_path, sizeof(g.w->data_path), "%s", g.dir);
+    memset(file16, 0x5A, sizeof(file16));
+    CHECK(v2x_seed_prepare(g.w, file16, 0) == 0,
+          "P2b v2x_seed_prepare (an S20 version-3 database)");
+    CHECK(hyb_cc_row(g.w, DNAC_CFG_HF2_ACTIVE, DNAC_CFG_HF2_ACTIVE_ON, 1, 11)
+              == 0 &&
+          hyb_cc_row(g.w, DNAC_CFG_RULESET_GEN2,
+                     (uint64_t)DNAC_CFG_RULESET_GEN2_D2, 3, 12) == 0 &&
+          hyb_cc_row(g.w, DNAC_CFG_EVM_ACTIVE,
+                     (uint64_t)DNAC_CFG_EVM_ACTIVE_D, 5, 14) == 0 &&
+          hyb_cc_row(g.w, DNAC_CFG_RULESET_GEN_ROLES,
+                     (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D, 8, 13) == 0 &&
+          hyb_cc_row(g.w, DNAC_CFG_RULESET_GEN_ROOTS,
+                     (uint64_t)DNAC_CFG_RULESET_GEN_ROOTS_D, 11, 15) == 0 &&
+          hyb_cc_row(g.w, DNAC_CFG_RULESET_GEN_TRIE,
+                     (uint64_t)DNAC_CFG_RULESET_GEN_TRIE_D, 14, 16) == 0,
+          "P2c the generation ladder rows (params 9/14/18/22/24) before "
+          "the genesis");
+
+    /* P3 — the seeded genesis over the same config */
+    CHECK(v2x_seed_genesis(g.w, file16, 0, NULL, 0, g.chain32) == 0,
+          "P3a v2x_seed_genesis (the engine genesis over the g_ks config)");
+    g_v2x_cfg_hook = NULL;
+    CHECK(g.w->v2_successor, "P3b the chain is a version-3 chain");
+    CHECK(q1(g.w->db, "SELECT COUNT(*) FROM validators") == N_KEYS,
+          "P3c the committee rows are the config's validators");
+    CHECK(q1(g.w->db, "SELECT COUNT(*) FROM v2_blocks") == 0,
+          "P3d no block row yet");
+
+    /* P4 — the node identity the fixture gives every gfx chain, and the
+     * committed root the document's app_hash is made from */
+    g.w->cached_committee_epoch_start = UINT64_MAX;
+    g.w->v2_ingress_armed = true;
+    memcpy(g.w->v2_chain32, g.chain32, 32);
+    memcpy(g.srv->identity.pk.bytes, g_ks[0].pk, NODUS_PK_BYTES);
+    memcpy(g.srv->identity.sk.bytes, g_ks[0].sk, QGP_DSA87_SECRETKEYBYTES);
+    memcpy(g.srv->identity.node_id.bytes, g_ks[0].voter, 32);
+    nodus_server_witness_host(g.srv, &g.host);
+    g.w->host = &g.host;
+    memcpy(g.w->my_id, g_ks[0].voter, 32);
+    CHECK(nodus_witness_v2_committed_global_root(g.w, root) == 0,
+          "P4 the committed global root reads");
+
+    /* P5 — the real blockexec + application, State saved */
+    CHECK(exec_init(&x, &g) == 0,
+          "P5a exec_init: store, real application, blockexec, State made "
+          "from the projected genesis document");
+    CHECK(has_state_key(g.w->db, "stateKey") == 1,
+          "P5b the cometbft State at height 0 is saved (stateKey)");
+
+    /* P6 — the ladder rows survived the genesis */
+    CHECK(q1(g.w->db, "SELECT COUNT(*) FROM chain_config_history WHERE "
+                      "param_id = 24") == 1 &&
+          q1(g.w->db, "SELECT effective_block FROM chain_config_history "
+                      "WHERE param_id = 24") == 14,
+          "P6 the param-24 ladder row is still there");
+
+    /* P7 / P8 — one empty block through the real blockexec */
+    CHECK(exec_make_block(&x, 1, 0) == 0, "P7a block 1 over the real State");
+    CHECK(exec_block_id(&x, x.blk, &bid) == 0 && block_id_is_complete(&bid),
+          "P7b a COMPLETE BlockID");
+    CHECK(nodus_cmt_host_apply_verified_block(x.be, &bid, x.blk, x.state)
+              == CMT_OK,
+          "P8a the block applies through the real blockexec");
+    CHECK(q1(g.w->db, "SELECT COUNT(*) FROM v2_blocks") == 1,
+          "P8b the ledger holds block 1");
+
+    exec_free(&x);
+    gfx_close(&g);
+    return 0;
+}
+
 int main(void)
 {
     static const struct {
         const char *name;
         int (*fn)(void);
     } cases[] = {
+        { "hybrid_gen6_probe",          t_hybrid_probe },
         { "bind_refuses_legacy",        t_bind_refuses_legacy },
         { "init_chain_match",           t_init_chain_match },
         { "init_chain_mismatches",      t_init_chain_mismatches },
