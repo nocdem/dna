@@ -90,7 +90,8 @@ int nodus_state_proof_request_decode(const uint8_t *payload, size_t len,
     /* this decoder reads a dnac_state_proof request: an oversize "keys" array
      * must reach the explicit 1..128 bound below (PROTOCOL_ERROR), not be
      * cut by the generic limit */
-    cbor_decoder_set_max_items(&dec, NODUS_CBOR_MAX_ITEMS_STATE_PROOF);
+    cbor_decoder_set_max_items(&dec, NODUS_MAX_FRAME_TCP);   /* no array in a
+                                  * frame can hold more items than bytes */
     top = cbor_decode_next(&dec);
     if (top.type != CBOR_ITEM_MAP) return fail(ec, em, cap, pe, "not a map");
     /* Pass 1: EVERY outer entry is read to its end (a truncated last

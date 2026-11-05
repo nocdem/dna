@@ -21,8 +21,11 @@
  *     of 4097 keys passes the Tier-2 receive decoder (nodus_t2_decode, limit
  *     raised for the dnac_state_proof REQUEST only) and the proof decoder
  *     answers PROTOCOL_ERROR; the same bytes under another method are refused
- *     by the generic 4,096 limit as before. Residual (reported): a request
- *     array above 16,768 items is still cut by the Tier-2 decoder.
+ *     by the generic 4,096 limit as before. The request limit is the frame
+ *     ceiling (no array in a frame holds more items than bytes): 16769
+ *     64-byte keys and 2,000,000 one-byte keys (about 4 MB) both reach the
+ *     proof decoder and get PROTOCOL_ERROR; under another method both are
+ *     refused by the generic decoder.
  *     The IPC delivery case (E2) waits for the answers to be PUBLISHED
  *     (JOB_DONE, via nodus_state_proof_service_published), a bounded wait on
  *     the state that fails if it never arrives, before its single production
@@ -889,7 +892,7 @@ static int nontext_case(const char *what, int array_key) {
  * the frame of a dnac_state_proof REQUEST, so the proof decoder answers
  * PROTOCOL_ERROR (plan §10.2); every other method keeps the generic limit. */
 static int test_request_limits(void) {
-    const size_t cap = 600 * 1024;
+    const size_t cap = (size_t)NODUS_MAX_FRAME_TCP + 64 * 1024;
     uint8_t *buf = malloc(cap);
     nodus_state_proof_req_t *req = malloc(sizeof(*req));
     nodus_tier2_msg_t msg;
@@ -917,6 +920,33 @@ static int test_request_limits(void) {
         memset(&msg, 0, sizeof(msg));
         CHECK(nodus_t2_decode(buf, len, &msg) == -1,
               "another method with 4097 items is refused as before");
+    }
+    /* above the reply's 16,768 and up to the frame ceiling (every item takes
+     * at least one byte, so no request array inside a frame is out of reach):
+     * 16769 keys of 64 bytes, and 2,000,000 one-byte keys (about 4 MB) */
+    static const struct { long n; size_t klen; } big[2] = {
+        { 16769, 64 }, { 2000000, 1 } };
+    for (int b = 0; b < 2; b++) {
+        len = mkreq(buf, cap, 1, 0, big[b].n, big[b].klen, 0, 0);
+        CHECK(len > 0 && len < (size_t)NODUS_MAX_FRAME_TCP,
+              "a large request frame inside the frame ceiling");
+        memset(&msg, 0, sizeof(msg));
+        CHECK(nodus_t2_decode(buf, len, &msg) == 0 &&
+              strcmp(msg.method, "dnac_state_proof") == 0,
+              "the receive decoder takes it");
+        nodus_t2_msg_free(&msg);
+        CHECK(nodus_state_proof_request_decode(buf, len, req, &ec, em,
+                                               sizeof(em)) == -1 &&
+              ec == NODUS_ERR_PROTOCOL_ERROR,
+              "...and the proof decoder answers PROTOCOL_ERROR");
+        {
+            static const char M[] = "dnac_state_proof";
+            for (size_t i = 0; i + 16 <= len; i++)
+                if (memcmp(buf + i, M, 16) == 0) { buf[i + 15] = 'G'; break; }
+            memset(&msg, 0, sizeof(msg));
+            CHECK(nodus_t2_decode(buf, len, &msg) == -1,
+                  "another method with that many items is refused as before");
+        }
     }
     free(buf);
     free(req);

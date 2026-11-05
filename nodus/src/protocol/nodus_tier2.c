@@ -1854,10 +1854,14 @@ static int t2_decode_body(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg
              * generic 4,096-item limit, so it reaches the proof decoder and
              * is answered; only this method, every other keeps
              * NODUS_CBOR_MAX_ITEMS. */
+            /* The limit for this REQUEST is the frame ceiling: every CBOR
+             * item takes at least one byte, so no array inside a frame of
+             * at most NODUS_MAX_FRAME_TCP bytes can exceed it, and every
+             * over-limit request reaches the proof decoder's explicit 1..128
+             * key check and is answered PROTOCOL_ERROR. */
             if (msg->type == 'q' &&
                 strcmp(msg->method, "dnac_state_proof") == 0)
-                cbor_decoder_set_max_items(&dec,
-                                           NODUS_CBOR_MAX_ITEMS_STATE_PROOF);
+                cbor_decoder_set_max_items(&dec, NODUS_MAX_FRAME_TCP);
 
             for (size_t j = 0; j < args.count; j++) {
                 cbor_item_t akey = cbor_decode_next(&dec);
