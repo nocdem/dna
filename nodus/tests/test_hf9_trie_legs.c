@@ -167,11 +167,13 @@
  *     the real freeze runs over an EMPTY registry - it writes an empty
  *     set(E), the assignment state and the member-epoch rows, none of which
  *     is a leg table (K5 asserts that legs 5 and 6 do not move and the
- *     roots equal the oracle). A registry or segment write needs a
- *     registered node (a funded STORAGE_REGISTER) and, for a segment, 24
- *     epochs of blocks; neither is built here. Plan T-5 "every writer path
- *     through the real functions" is therefore NOT met for v2_storage_nodes
- *     / v2_storage_segments by this file (reported, not hidden). The SQL statement shapes of the writers
+ *     roots equal the oracle). SEGMENT publication IS driven by K8 (26 E
+ *     real blocks: st_publish writes v2_storage_segments at the first
+ *     boundary B with k * 24E + 2E <= B; leg 6 moves, roots equal the
+ *     oracle). A REGISTRY write needs a registered node (a funded
+ *     STORAGE_REGISTER with a consent signature) and is not built here:
+ *     plan T-5 "every writer path through the real functions" is NOT met
+ *     for v2_storage_nodes by this file (reported, not hidden). The SQL statement shapes of the writers
  *     (INSERT / UPDATE / DELETE of the plan §4.3 rows) ARE exercised above
  *     (groups A-J), so the triggers and the flush see every shape;
  *   - the storage boundary under generation 6, the head_activate guard's
@@ -2471,6 +2473,53 @@ static int test_gen6_releases(void) {
     return 0;
 }
 
+/* K8: SEGMENT PUBLICATION by real blocks (plan :445 T-5, the storage writer
+ * st_publish -> v2_storage_segments, leg 6). Segment k is published at the
+ * first storage boundary B with k * P + 2E <= B, P = DNA_V2_SEGMENT_BLOCKS =
+ * 24 E (nodus_witness_v2_storage.c st_publish; shared/dnac/ledger_roots_v2.h
+ * "P = 24 epochs"), so segment 1 appears at block 26 E: 18 720 real blocks
+ * at the production E = 720 (390 at E = 15), every one applied through the
+ * engine with its flush. Nothing is planted. At the boundary block: the
+ * segment row exists with published_height = 26 E, the leg-6 root moved
+ * (and only legs 6 and the ones a boundary always moves), dirty is empty
+ * and every leg root equals the oracle and the full rebuild. The registry
+ * leg stays untouched: no node registers here (a registration needs a
+ * funded STORAGE_REGISTER envelope with a consent signature, test_storage_
+ * b2's streg_call, not built in this file). The run time is main's to
+ * measure. */
+static int test_gen6_publication(void) {
+    jfx_t f;
+    CHECK(DNAC_EPOCH_LENGTH > 40, "K8: no epoch boundary among the heights");
+    CHECK(k_keys() == 0, "K8: sender keys");
+    CHECK(k_open(&f, 0, NULL, NULL) == 0, "K8: a chain at generation 6");
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    const uint64_t B = (uint64_t)DNA_V2_SEGMENT_BLOCKS + 2u * E;   /* 26 E */
+    CHECK(B == 26u * E, "K8: the first publication boundary is 26 E");
+    for (uint64_t h = 16; h < B; h++)
+        CHECK(j_apply_ok(&f, h) == 0, "K8: a block before the publication "
+              "boundary");
+    CHECK(q1(f.w->db, "SELECT COUNT(*) FROM v2_storage_segments") == 0,
+          "K8: no segment published before the boundary");
+    uint8_t L1[8][64], L2[8][64];
+    CHECK(k_read_legs(f.w, L1) == 0, "K8: roots before the boundary");
+    CHECK(j_apply_ok(&f, B) == 0, "K8: the publication boundary commits");
+    CHECK(q1(f.w->db, "SELECT COUNT(*) FROM v2_storage_segments") == 1 &&
+          q1(f.w->db, "SELECT k FROM v2_storage_segments") == 1 &&
+          q1(f.w->db, "SELECT published_height FROM v2_storage_segments") ==
+              (sqlite3_int64)B,
+          "K8: segment 1 was published at block 26 E by the real boundary");
+    CHECK(q1(f.w->db, "SELECT COUNT(*) FROM v2_trie_dirty") == 0 &&
+          k_read_legs(f.w, L2) == 0, "K8: dirty empty, roots read");
+    CHECK((k_moved(L1, L2) & 0x20u) == 0x20u,
+          "K8: leg 6 (segments) moved");
+    CHECK((k_moved(L1, L2) & 0x10u) == 0,
+          "K8: leg 5 (registry) did not move: no node registered");
+    CHECK(j_roots_ok(&f, "K8 publication boundary") == 0,
+          "K8: every leg root equals the oracle and the rows");
+    jfx_close(&f);
+    return 0;
+}
+
 int main(void) {
     fx_t fx;
     if (fx_open(&fx) != 0) {
@@ -2488,6 +2537,7 @@ int main(void) {
     if (!rc) rc = test_gen6_writers();
     if (!rc) rc = test_gen6_claims();
     if (!rc) rc = test_gen6_releases();
+    if (!rc) rc = test_gen6_publication();
     if (rc) {
         fprintf(stderr, "test_hf9_trie_legs: FAILED\n");
         return 1;
