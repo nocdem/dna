@@ -24,10 +24,19 @@
 # TWO RUNS (plan §12, the paragraph under the table) — how each is started
 #   SHORT EPOCH — "7/7 state_root at epoch length 15" (CLAUDE.md TESTS):
 #     the whole scenario, storage included. Build, environment and command
-#     sequence are below ("WHAT IT REQUIRES"). Expected length ≈ 560 blocks.
-#   PRODUCTION-CONSTANT EDGE RUN — the same script on a build WITHOUT the
-#     short-epoch flags (E = 720, STAGEF_EPOCH_LENGTH unset or 720). The
-#     script then runs `WITH_STORAGE=0`: everything up to and through the
+#     sequence are below ("WHAT IT REQUIRES"). Expected length ≈ 800 blocks
+#     (JUDGMENT, not measured: ≈ 515 to the exit as before, then the
+#     candidate's registration, three NOT OK epochs, twelve skipped epochs
+#     and the revival ≈ 270 more, then the replay).
+#   PRODUCTION-CONSTANT EDGE RUN — test parameters chosen by the
+#     orchestrator (fix round 2026-11-05, not a plan value): E = 720 and
+#     BPY = 6 307 200 (the shipped values, no -DDNAC_EPOCH_LENGTH /
+#     -DDNAC_BLOCKS_PER_YEAR) with the SHORT GRACE 15 / 15 (-DDNAC_CHAIN_
+#     CONFIG_GRACE_SAFETY_BLOCKS=15 -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_
+#     BLOCKS=15, STAGEF_CC_GRACE_SAFETY=15 STAGEF_CC_GRACE_ERGONOMIC=15) — the
+#     grace the upgrade scenarios use (README env row). The production 17 280
+#     safety grace is NOT exercised: the run proves the edge at E = 720, not
+#     the production wait. The script then runs `WITH_STORAGE=0`: everything up to and through the
 #     edge (the votes, the populated legs that exist without a segment, the
 #     param-24 vote, A−2 / A / A+1, the restart across A, the fresh replay),
 #     and LEAVES OUT every storage step (registration, segment 1, B1, join,
@@ -36,11 +45,9 @@
 #     reach (plan §12: "P = 17280 is out of reach"). Legs 5 (registry) and
 #     6 (segments) are then EMPTY on every node and the scenario asserts
 #     exactly that (their roots must equal the empty-leg root). The PASS
-#     line says "WITHOUT storage". Which grace the production run uses is
-#     NOT chosen here (the plan is silent): the effective heights come from
-#     STAGEF_CC_GRACE_SAFETY / _ERGONOMIC as the other scenarios read them,
-#     so at the shipped 17 280 / 720 the votes of params 14 and 24 wait that
-#     many blocks — the run is as long as those waits say.
+#     line names E, BPY, the 15 / 15 grace and "WITHOUT storage segments".
+#     SKIP (99) unless STAGEF_EPOCH_LENGTH is 15 or 720, both grace variables
+#     are 15 and, in this run, STAGEF_BLOCKS_PER_YEAR is unset or 6307200.
 #
 # WHAT IT PROVES — each item would be false if it failed
 #   0. Capability gate (FAIL): one version banner for the server and the CLI;
@@ -112,6 +119,23 @@
 #           RELEASED at the first boundary ≥ x; at that boundary node 5 is
 #           out of the basis, its segment rows are ended (to_h = boundary),
 #           the other four keep theirs, no n_new.
+#        f. the FAIL-STREAK CROSSING, both ways (plan T-13; §8.5 step 3):
+#           the funded identity cand1 (STAGEF_V2_CANDIDATES=1), which runs NO
+#           node, registers as a storage member (arrival boundary BD0: one
+#           row inserted, n_new 1, grace_until BD0 + E, fail_streak 0).
+#           Every reporter finds it "never reachable on 0x72" in each epoch
+#           in which it is eligible and FAILs it; each settlement adds 1 to
+#           its fail_streak; at the first freeze with fail_streak 3 it is
+#           out of the basis (DEPARTURE: its rows ended at that boundary,
+#           the four live members keep theirs, no n_new). As a skipped
+#           member its counter rises by 1 per settlement (3 … 14) and 14 + 1
+#           is written as 0; at the freeze after that it is back in the
+#           basis (REVIVAL: fail_streak 0, one row per published segment
+#           inserted, n_new = that count, grace_until = boundary + count x E,
+#           eligible again). The waits are bounded boundary loops (9 and 20
+#           boundaries; a settlement without half the power's reports moves
+#           nothing, F1, so the exact boundary is not predicted). The
+#           boundary of each event: the 7/7 full diff.
 #      At every one of those boundaries: v2_storage_assign_state.boundary =
 #      the boundary and copies = R(boundary); the basis = the registry's
 #      ACTIVE members with fail_streak < 3; every published segment has
@@ -127,7 +151,25 @@
 #      holder of segment 1 at B1, B1 + E and B1 + 3E has the completeness
 #      marker segments/seg-1.ok before the next boundary; node 5, taken out
 #      by its exit, still has it at B_rel and at B_rel + E − 1 (the overlap
-#      epoch) and has deleted it by B_rel + E + 3.
+#      epoch) and has deleted it by B_rel + E + 3. The candidate of 7f is
+#      the non-serving case: it has no node, hence no file.
+#      The probe-report BITS (T-16 "the probe reports carry bits for the new
+#      holders"). What a bit means, from source: v2_storage_reports.bitmap is
+#      LSB-first, bit i = member i of the frozen set S(H) in node_fp ASC
+#      order (nodus_witness.h, v2_storage_set_members "node_fp ASC is the
+#      bitmap order"); a reporter sets bit i only when its probe of member i
+#      answered OK; itself, a member with no eligible segment (in grace
+#      included) and a failed or unreachable probe are bit 0 (nodus_witness_
+#      storage_reporter.c). Which epoch: the joined member (node 2) is
+#      eligible at H when H ≥ its grace_until and it has assignment rows at H
+#      or H − E (nodus_witness_v2_storage.c eligible_segments / member_ks):
+#      H_BITS = B1 + 3E, or its grace end. The reports of H are committed in
+#      the window (H + E, H + E + ⌊E/2⌋] and pruned at H + 2E, so they are
+#      read at a tip in [H + E + ⌊E/2⌋, H + 2E − 1]. Asserted: identical rows
+#      on 7/7; more than half the seats reported (F1); for node 2 (it holds
+#      segment 1 and its file exists) 3·Y > 2·(N − 1) seats carry its bit —
+#      the OK rule 3·Y > 2·I with its own seat excluded; for the candidate
+#      (no node) in its first eligible epoch no seat carries its bit.
 #   9. A fresh node replaying from genesis (T-13): node 3 is stopped, its
 #      databases are wiped (its identity kept), it is restarted with the
 #      genesis pin only; its log (truncated first, so every line is of THIS
@@ -153,18 +195,24 @@
 #   after generation 4, checks that every validator is owned by that owner;
 #   without it the K8 default is expected. Nothing else here needs the owner:
 #   the storage members register under their OWN keys.
-#   Compile flags — PRODUCTION-CONSTANT EDGE RUN: a default build (no
-#   -DDNAC_* constants); with a TEST-OWNER the same four owner flags only.
+#   Compile flags — PRODUCTION-CONSTANT EDGE RUN: only the short grace
+#   -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15
+#   -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15 (E = 720 and BPY =
+#   6 307 200 are the defaults — no -DDNAC_EPOCH_LENGTH, no
+#   -DDNAC_BLOCKS_PER_YEAR); with a TEST-OWNER the same four owner flags too.
 #   Environment, ALL exported BEFORE stagef_up_v2.sh unless noted:
 #     STAGEF_NODUS_BIN / STAGEF_NODUSCLI_BIN    that build
 #     short epoch:   STAGEF_EPOCH_LENGTH=15 STAGEF_BLOCKS_PER_YEAR=20
-#     read by THIS script only: STAGEF_CC_GRACE_SAFETY=15
-#       STAGEF_CC_GRACE_ERGONOMIC=15 (short epoch: both MUST be 15, else
-#       SKIP; production run: the values of the build)
+#       and STAGEF_V2_CANDIDATES=1 (the candidate cand1 of 7f: a genesis
+#       document field — a different chain id; no cand1 → SKIP)
+#     production-constant run: STAGEF_EPOCH_LENGTH and STAGEF_BLOCKS_PER_YEAR
+#       unset (720 / 6307200); STAGEF_V2_CANDIDATES not needed
+#     read by THIS script only (both runs): STAGEF_CC_GRACE_SAFETY=15
+#       STAGEF_CC_GRACE_ERGONOMIC=15 (both MUST be 15, else SKIP)
 #     optional: STAGEF_HF6_OWNER_FP_HEX / STAGEF_HF6_OWNER_KEYS (test owner)
-#   Leave STAGEF_MODE (combined), STAGEF_V2_CANDIDATES and
-#   STAGEF_PAYOUT_INTERVAL_EPOCHS unset. No treasury pool 1 is needed: no
-#   settlement AMOUNT is asserted (see HOW IT CAN LIE).
+#   Leave STAGEF_MODE (combined) and STAGEF_PAYOUT_INTERVAL_EPOCHS unset.
+#   No treasury pool 1 is needed: no settlement AMOUNT is asserted (see HOW
+#   IT CAN LIE).
 #   Tools: sqlite3, xxd, ss, openssl (SHA3-512).
 #   Exact command sequence (ORCHESTRATOR), short epoch, test-owner build:
 #     S=<TREE>/nodus/tests/integration/stagef
@@ -175,7 +223,7 @@
 #     make -C <TREE>/nodus/build-hf9 -j"$(nproc)" nodus-server nodus-cli
 #     export STAGEF_NODUS_BIN=<TREE>/nodus/build-hf9/nodus-server
 #     export STAGEF_NODUSCLI_BIN=<TREE>/nodus/build-hf9/nodus-cli
-#     export STAGEF_EPOCH_LENGTH=15 STAGEF_BLOCKS_PER_YEAR=20
+#     export STAGEF_EPOCH_LENGTH=15 STAGEF_BLOCKS_PER_YEAR=20 STAGEF_V2_CANDIDATES=1
 #     export STAGEF_CC_GRACE_SAFETY=15 STAGEF_CC_GRACE_ERGONOMIC=15
 #     export STAGEF_HF6_OWNER_FP_HEX=<fp> STAGEF_HF6_OWNER_KEYS=/tmp/hf9-owner/identity
 #     bash $S/stagef_up_v2.sh
@@ -183,10 +231,14 @@
 #     bash $S/stagef_down.sh
 #   (without the owner: drop the first command, $O $D $D5F $D6F and the two
 #   STAGEF_HF6_OWNER_* exports.) Production-constant edge run: the same with
-#   a build made without $F, STAGEF_EPOCH_LENGTH / _BLOCKS_PER_YEAR /
-#   _CC_GRACE_* unset (or the build's own values).
-#   SKIP (rc 99): a binary missing, STAGEF_EPOCH_LENGTH or the genesis
-#   epoch_length differing, short epoch with a grace variable ≠ 15, a tool
+#   F='-DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15 -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15'
+#   (no -DDNAC_EPOCH_LENGTH / -DDNAC_BLOCKS_PER_YEAR), STAGEF_EPOCH_LENGTH /
+#   STAGEF_BLOCKS_PER_YEAR / STAGEF_V2_CANDIDATES unset, the two grace
+#   variables 15.
+#   SKIP (rc 99): a binary missing, STAGEF_EPOCH_LENGTH not 15 or 720 or the
+#   genesis epoch_length differing, a grace variable ≠ 15, the production-
+#   constant run with STAGEF_BLOCKS_PER_YEAR ≠ 6307200, the short run without
+#   the candidate identity cand1 (STAGEF_V2_CANDIDATES=1), a tool
 #   missing, STAGEF_HF6_OWNER_KEYS set but unusable is a FAIL (not a skip),
 #   not a Comet cluster, no $BASE_DIR/v2_genesis.conf, no pump, any split
 #   STAGEF_MODE. A skip is not a pass.
@@ -202,8 +254,10 @@
 #   pump), 4, 5, 6, 7 claimed. Short run: four storage nodes registered at
 #   generation 5 (nodes 4, 5, 6, 7), node 2 registered after B1, node 5
 #   RELEASED (its bond back as one locked coin, output_index 201), segment 1
-#   published, segment files under node<N>/data/segments, one STORAGE_COPIES
-#   row (5). Node 3 restarted once and then wiped and rejoined (its
+#   published plus a second (due at 750), segment files under
+#   node<N>/data/segments, one STORAGE_COPIES row (5), the candidate cand1's
+#   leaf claimed and cand1 registered as a storage member that runs no node
+#   (ACTIVE at the end, fail_streak 0, in grace; its bond locked). Node 3 restarted once and then wiped and rejoined (its
 #   nodus.log truncated, a new pid in pids.txt, its databases rebuilt).
 #   $BASE_DIR/hf9/ (every CLI log, consent files). Tear down with
 #   stagef_down.sh before re-running (every switch is one-way, every leaf and
@@ -242,19 +296,26 @@
 #     proves agreement, not correctness. The HRW SCORES / ORDER are not
 #     recomputed either (the selector against its oracle is T-4 / T-7); the
 #     set of holders of segment 1 is read from the chain.
-#   - **Not driven (the plan names them, the tree has no mechanism):** the
-#     FAIL-STREAK CROSSING of T-13 (three NOT OK epochs → ineligible → a
-#     departure at the next freeze). A member answers probes or not: the
-#     tree has no fault knob for the 0x72 serving side (no getenv in
-#     nodus_witness_storage_*.c — test_storage_archive.sh, HOW IT CAN LIE),
-#     and freezing a validator (SIGSTOP) for the three settled epochs breaks
-#     the Rule-N cap test_cmt_blocksync.sh keeps. The eligibility CROSSING
-#     therefore appears only through R, the join and the exit. Also not
-#     asserted: any settlement AMOUNT (no pool 1), the probe-report bits of
-#     the new holders (T-16's "probe reports carry bits for the new holders":
-#     the plan does not say what a member in grace must carry), K9 grace
-#     beyond "n_new > 0 ⇒ grace_until ≥ boundary + n_new × E", R decreasing,
-#     a second segment (the second is due at 2P + 2E = 750), a kind-3 owner.
+#   - **The fail-streak crossing is driven by a member that runs no node**
+#     (the tree has no fault knob for the 0x72 serving side — test_storage_
+#     archive.sh, HOW IT CAN LIE — and SIGSTOP of a validator breaks the
+#     Rule-N cap): the chain is not told the candidate is dead, the
+#     reporters find it unreachable. What is therefore NOT separated: a NOT
+#     OK that comes from a failed answer (an answering node whose segment
+#     file is wrong) — only "never reachable" is exercised; the 0x72 serving
+#     side and its NOT OK-by-answer path are the unit tests'
+#     (test_storage_probe / test_storage_b2). The crossing needs more than
+#     half the power's reports every epoch (F1); a run where reports miss
+#     their window only takes longer (the loops are bounded at 9 / 20
+#     boundaries) and FAILs if the bound is exceeded — a false RED.
+#     Also not asserted: any settlement AMOUNT (no pool 1), K9 grace beyond
+#     "n_new > 0 ⇒ grace_until ≥ boundary + n_new × E" (exactly BD0 + E and
+#     REV + count × E for the candidate), R decreasing, a kind-3 owner. A
+#     second segment IS published during the candidate's skipped epochs
+#     (due at 2P + 2E = 750) and the generic invariants cover it.
+#   - The report-bit read of the candidate is at its FIRST eligible epoch; a
+#     candidate whose first epochs are not probed (grace) shows no bits
+#     earlier, by construction.
 #   - The join's new holder and the displaced holder depend on the node
 #     identities of the run (the rendezvous scores): the scenario asserts
 #     only what is true for every identity set (sums, equalities,
@@ -271,8 +332,9 @@
 #     (README). Its leg roots are compared only after it is back; while it is
 #     down the cells compare the six live nodes (the 7/7 full-mode diff at
 #     A−1 / A / A+1 is made after it caught up).
-#   - Duration ≈ 560 blocks short epoch (JUDGMENT, not measured: the six
-#     votes ≈ 330, segment 1 at 390, A ≈ 428, B1 + 3E + the exit ≈ 520,
+#   - Duration ≈ 800 blocks short epoch (JUDGMENT, not measured: the six
+#     votes ≈ 330, segment 1 at 390, A ≈ 429, B1 + 3E + the exit ≈ 495-510,
+#     the candidate: arrival ≈ 525, departure ≈ 600, revival ≈ 780, then
 #     the replay). rc 99 = coverage that did not happen.
 #
 # ════════════════════════════════════════════════════════════════════
@@ -323,6 +385,10 @@ VICTIM=3                   # hf9: restart across A and fresh replay (header, HOW
 JOINER=2                   # hf9: registers as a storage node after B1
 EXITER=5                   # hf9: the storage node its owner takes out
 MEMBERS_PRE="4 5 6 7"      # hf9: registered at generation 5, before A
+CAND="$BASE_DIR/cand1/identity"   # hf9: the storage member that runs no node (STAGEF_V2_CANDIDATES=1)
+R_NOW=5                    # hf9: STORAGE_COPIES after the param-25 vote
+E_PROD=720                 # hf9: the production-constant run's epoch length
+BPY_PROD=6307200           # hf9: its blocks per year (the shipped value)
 NAME_B=hf9nameone          # hf9: node 2's name (9 characters)
 TK_NAME="Harness HF9 Token"
 TK_SYM="HF9"
@@ -345,11 +411,28 @@ for pair in "STAGEF_NODUS_BIN=$SRV" "STAGEF_NODUSCLI_BIN=$CLI"; do
     fi
 done
 case "$E" in ''|*[!0-9]*) echo "[SKIP] STAGEF_EPOCH_LENGTH='$E' is not an integer"; exit 99 ;; esac
-if [ "$WITH_STORAGE" = 1 ] && { [ "$GRACE_ERG" != 15 ] || [ "$GRACE_SAF" != 15 ]; }; then
-    echo "[SKIP] STAGEF_CC_GRACE_ERGONOMIC=$GRACE_ERG STAGEF_CC_GRACE_SAFETY=$GRACE_SAF — the short run needs the"
+if [ "$E" != "$E_SHORT" ] && [ "$E" != "$E_PROD" ]; then
+    echo "[SKIP] STAGEF_EPOCH_LENGTH=$E — this scenario is laid out for E=$E_SHORT (short run) or E=$E_PROD (production-constant edge run)"
+    exit 99
+fi
+# both runs use the short grace (15 / 15), the grace the upgrade scenarios use
+# (README env row); the production 17 280 safety grace is NOT exercised
+if [ "$GRACE_ERG" != 15 ] || [ "$GRACE_SAF" != 15 ]; then
+    echo "[SKIP] STAGEF_CC_GRACE_ERGONOMIC=$GRACE_ERG STAGEF_CC_GRACE_SAFETY=$GRACE_SAF — both runs need the"
     echo "       short-grace build (-DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15"
     echo "       -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15) and both variables = 15"
     exit 99
+fi
+if [ "$WITH_STORAGE" = 0 ] && [ "${STAGEF_BLOCKS_PER_YEAR:-$BPY_PROD}" != "$BPY_PROD" ]; then
+    echo "[SKIP] STAGEF_BLOCKS_PER_YEAR=${STAGEF_BLOCKS_PER_YEAR} — the production-constant run uses the shipped $BPY_PROD"
+    exit 99
+fi
+if [ "$WITH_STORAGE" = 1 ]; then
+    if [ ! -s "$CAND/nodus.pk" ] || [ ! -s "$CAND/nodus.sk" ] || [ ! -s "$CAND/nodus.fp" ]; then
+        echo "[SKIP] no candidate identity $CAND — the fail-streak crossing registers a storage member that runs no node;"
+        echo "       export STAGEF_V2_CANDIDATES=1 BEFORE stagef_up_v2.sh (a genesis-document field: a different chain id)"
+        exit 99
+    fi
 fi
 for t in sqlite3 xxd ss openssl; do
     if ! command -v "$t" >/dev/null 2>&1; then
@@ -635,7 +718,7 @@ spend_intent() { awk -F= '/^  intent_id=/{print $2; exit}' "$1"; }
 claim_leaf() {
     local keys="$1" node="$2" port db fp log h wrc
     port=$(stagef_tcp_port "$(dial_for "$node" "$keys")"); db=$(db_of "$node"); fp=$(fp_of "$keys")
-    log="$LOGD/claim_node$node.log"
+    log="$LOGD/claim_$(basename "$(dirname "$keys")")_via$node.log"
     "$CLI" -s 127.0.0.1 -p "$port" v2-claim --config "$CONF" --db "$db" \
         --keys "$keys" --submit "127.0.0.1:$port" > "$log" 2>&1 \
         || { cat "$log" >&2; die "v2-claim for $keys was refused (see $log)"; }
@@ -854,6 +937,80 @@ require_holder_files() {   # LABEL BOUNDARY — every current holder of segment 
     echo "[ok] $label: every current holder of segment 1 ($(cur_holders_of 1 | tr '\n' ' ')) has seg-1.ok"
 }
 
+reg_fs()   { cell_lines reg | awk -F'|' -v f="$1" '$1 == f { print $4 }'; }
+in_basis() { [ -n "$(cell_lines basis | awk -v f="$1" '$0 == f')" ]; }
+cur_rows_of() { cell_lines assign | awk -F'|' -v f="$1" '$2 == f && $5 == "-"' | wc -l; }
+
+# hf9: pump to the boundary + 1, read the cell and check the generic storage invariants
+boundary_cell() {          # LABEL BOUNDARY R
+    pump_to $(( $2 + 1 ))
+    cell_read "$1" "$2" "$A" $(( $2 + 1 ))
+    check_legs post "$1"
+    check_storage_state "$2" "$3" "$1"
+}
+
+# hf9 (T-16, the bits): what the stored reports say. Source: nodus_witness.h
+# v2_storage_reports ("bitmap … LSB-first bit i = member i", seat = index in
+# snapshot(H)) and v2_storage_set_members ("node_fp ASC is the bitmap order");
+# the reporter sets bit i only when its probe of member i answered OK
+# (nodus_witness_storage_reporter.c: STP_NOPROBE — itself, no eligible segment,
+# in grace — and a probe that fails or is never reachable are bit 0);
+# a member is eligible at H when it is not in grace (H >= grace_until) and has
+# assignment rows at H or at H-E (nodus_witness_v2_storage.c
+# nodus_witness_storage_eligible_segments / nodus_witness_storage_member_ks).
+# The reports of epoch H are committed in the window (H+E, H+E+floor(E/2)] and
+# pruned at the settlement boundary H+2E (nodus_witness_storage_probe.h, and the
+# reads of test_storage_archive.sh step 8) — so they are read at a tip in
+# [H+E+floor(E/2), H+2E-1]. report_bits sets RB_N (reports) and RB_Y (reports
+# whose bit of member FP is 1); every live node must return the same rows.
+RB_N=0; RB_Y=0
+report_bits() {            # H FP
+    local h="$1" fp="$2" n out ref="" body t inset idx seat hex byte
+    for n in "${ALIVE[@]}"; do
+        if ! out=$(sqlite3 -cmd '.timeout 5000' "$(db_of "$n")" \
+            "BEGIN; SELECT 'tip|' || COALESCE(MAX(global_height), -1) FROM v2_blocks;
+             SELECT 'in|' || COUNT(*) FROM v2_storage_set_members WHERE epoch_start = $h AND node_fp = x'$fp';
+             SELECT 'idx|' || COUNT(*) FROM v2_storage_set_members WHERE epoch_start = $h AND node_fp < x'$fp';
+             SELECT 'rep|' || seat || '|' || hex(bitmap) FROM v2_storage_reports WHERE epoch_start = $h ORDER BY seat;
+             COMMIT;" 2>&1); then die "report read on node$n failed: $out"; fi
+        t=$(sed -n 's/^tip|//p' <<< "$out" | sed -n '1p')
+        [[ "$t" =~ ^[0-9]+$ ]] || die "report read on node$n: no tip ('$out')"
+        [ "$t" -ge $(( h + E + E / 2 )) ] || die "internal: the reports of epoch $h were read at tip $t, before the report window closed ($(( h + E + E / 2 ))) — $MSG_LAYOUT"
+        [ "$t" -lt $(( h + 2 * E )) ] || die "the reports of epoch $h were read at tip $t, at or past their settlement boundary $(( h + 2 * E )) where they are pruned — $MSG_LAYOUT"
+        body=$(grep -v '^tip|' <<< "$out" || true)
+        if [ -z "$ref" ]; then ref="$body"
+        elif [ "$body" != "$ref" ]; then
+            diff <(printf '%s\n' "$ref") <(printf '%s\n' "$body") >&2 || true
+            die "node$n's committed reports of epoch $h DIFFER from node${ALIVE[0]}'s (diff above)"
+        fi
+    done
+    inset=$(sed -n 's/^in|//p' <<< "$ref")
+    [ "$inset" = 1 ] || die "member ${fp:0:16}… is not in the frozen set of epoch $h"
+    idx=$(sed -n 's/^idx|//p' <<< "$ref")
+    RB_N=0; RB_Y=0
+    while IFS='|' read -r _ seat hex; do
+        [ -n "$seat" ] || continue
+        byte="${hex:$(( 2 * (idx / 8) )):2}"
+        [ -n "$byte" ] || die "the bitmap of seat $seat in epoch $h is $(( ${#hex} / 2 )) byte(s), too short for member index $idx"
+        RB_N=$(( RB_N + 1 ))
+        RB_Y=$(( RB_Y + ( (16#$byte >> (idx % 8)) & 1 ) ))
+    done < <(grep '^rep|' <<< "$ref" || true)
+    [ $(( 2 * RB_N )) -gt "${#ALIVE[@]}" ] || die "only $RB_N of ${#ALIVE[@]} seats committed a report for epoch $h — F1 (more than half the power) cannot hold, nothing settles"
+}
+# check_report_bits LABEL H FP ok|dead — ok: the member's own seat (if it reported) is bit 0 (F2: never
+# itself), so the OK verdict rule 3·Y > 2·I (nodus_storage_member_verdict, equal power) needs
+# 3·Y > 2·(N−1); dead: no seat set the bit
+check_report_bits() {
+    report_bits "$2" "$3"
+    if [ "$4" = ok ]; then
+        [ $(( 3 * RB_Y )) -gt $(( 2 * (RB_N - 1) )) ] || die "$1: member ${3:0:16}… holds segments and serves them, but only $RB_Y of $RB_N seats carry its bit in epoch $2 (the OK rule 3Y > 2I fails)"
+        echo "[ok] $1: the committed reports of epoch $2 carry the bit of ${3:0:16}… in $RB_Y of $RB_N seats (it serves its segment file)"
+    else
+        [ "$RB_Y" = 0 ] || die "$1: $RB_Y seat(s) set the bit of the member ${3:0:16}… that runs no node in epoch $2"
+        echo "[ok] $1: the committed reports of epoch $2 carry bit 0 of ${3:0:16}… in all $RB_N seats (it runs no node)"
+    fi
+}
+
 # ── hf9: storage CLI (test_storage_archive.sh's) ────────────────────
 consent_make() {           # NODE OWNER OUT LOG
     local n="$1" own="$2" out="$3" log="$4" crc=0 exp
@@ -916,6 +1073,14 @@ PIN_FILE="$BASE_DIR/v2_genesis_pin"
 [ -s "$PIN_FILE" ] || die "no $PIN_FILE — needed by the fresh-replay step (stagef_up_v2.sh writes it)"
 PIN=$(cat "$PIN_FILE")
 [ "${#PIN}" = 64 ] || die "the recorded pin is not 64 hex characters"
+if [ "$WITH_STORAGE" = 1 ]; then
+    D_FP=$(fp_of "$CAND")
+    [ "${#D_FP}" = 128 ] || die "$CAND/nodus.fp is not 128 hex characters"
+    grep -q "^dest_binding = ${D_FP}\$" "$CONF" || die "the genesis config binds no leaf to the candidate $CAND — export STAGEF_V2_CANDIDATES=1 before the bring-up"
+    for k in $(seq 1 "$N"); do
+        [ "$D_FP" != "${FP[$k]}" ] || die "the candidate is node$k's own identity"
+    done
+fi
 stagef_cmt_pump_ready "$(db_of 1)" || die "the CLI-SPEND pump is not usable on this bring-up (reason above)"
 [ "$VICTIM" != "$STAGEF_PUMP_SUBMIT_NODE" ] || die "the restart victim (node $VICTIM) is the pump's submit node — change STAGEF_PUMP_SUBMIT_NODE"
 stagef_sentinel SETUP_OK
@@ -1212,6 +1377,14 @@ if [ "$WITH_STORAGE" = 1 ]; then
     echo "[ok] B1+3E=$(( B1 + 3 * E )): STORAGE_COPIES 5 took effect at the freeze — five current rows for segment 1, exactly one new holder (n_new 1)"
     diff_full_at $(( B1 + 3 * E )) "B1+3E-at-height-$(( B1 + 3 * E ))"
     require_holder_files "B1+3E" $(( B1 + 3 * E ))
+    # T-16 bits: the joined node (JOINER) holds segment 1 now; the first epoch H_BITS in which it
+    # is eligible (not in grace: H >= grace_until, and rows at H) is B1+3E, or its grace end
+    [ -n "$(cur_holders_of 1 | awk -v n="$JOINER" '$1 == n')" ] || die "B1+3E: node $JOINER is not a current holder of segment 1 with R = 5 and five eligible members"
+    M_FP="${FP[$JOINER]}"
+    g=$(reg_grace "$M_FP")
+    H_BITS=$(( g > B1 + 3 * E ? g : B1 + 3 * E ))
+    [ "$H_BITS" -le $(( B1 + 4 * E )) ] || die "node $JOINER's grace ends at $g, after $(( B1 + 4 * E )) — $MSG_LAYOUT"
+    echo "[ok] node $JOINER (the joined member) is eligible from epoch H_BITS=$H_BITS (grace_until $g); its bit is read from the reports of that epoch"
 
     # (e) the exit of node $EXITER by its owner (its own key), at B_rel
     xlog="$LOGD/exit_node$EXITER.log"; xrc=0
@@ -1246,9 +1419,113 @@ if [ "$WITH_STORAGE" = 1 ]; then
     pump_to $(( B_REL + E - 1 ))
     [ -f "$(seg_file "$EXITER" 1)" ] || die "node$EXITER's seg-1.ok was deleted at tip $(tip_of 1) < B_rel + E = $(( B_REL + E )) — before the overlap epoch ended"
     echo "[ok] T-16: node$EXITER still has seg-1.ok at tip $(tip_of 1) (B_rel + E - 1) — the overlap epoch"
+    if [ "$H_BITS" -lt "$B_REL" ]; then
+        [ -f "$(seg_file "$JOINER" 1)" ] || die "node $JOINER has no seg-1.ok at tip $(tip_of 1)"
+        check_report_bits "T-16 reports" "$H_BITS" "$M_FP" ok
+    fi
     pump_to $(( B_REL + E + 1 ))
     wait_seg_gone "$EXITER" 1 $(( B_REL + E + 4 )) || die "node$EXITER's seg-1.ok was not deleted by tip $(( B_REL + E + 4 )) although it is no holder in either epoch any more"
     echo "[ok] T-16: node$EXITER deleted seg-1.ok once the overlap epoch had passed (tip $(tip_of 1))"
+    if [ "$H_BITS" -ge "$B_REL" ]; then
+        pump_to $(( H_BITS + E + E / 2 ))
+        [ -f "$(seg_file "$JOINER" 1)" ] || die "node $JOINER has no seg-1.ok at tip $(tip_of 1)"
+        check_report_bits "T-16 reports" "$H_BITS" "$M_FP" ok
+    fi
+
+    # ── hf9: the fail-streak crossing, both ways (plan T-13; §8.5 step 3) ──
+    # A storage member that runs no node: the candidate identity cand1 (a funded genesis leaf,
+    # STAGEF_V2_CANDIDATES=1). Registration has no reachability or role requirement
+    # (rtn_storage_register_exec, nodus_witness_rt_native.c: owner authority, exact bond, the
+    # node's consent signature, row absent or RELEASED, cap, a funding leg). A frozen-set member
+    # never reachable on 0x72 is FAILed at the epoch's close ("never reachable on 0x72 … NOT OK",
+    # nodus_witness_storage_reporter.c expire()); settlement adds 1 to fail_streak per epoch with
+    # weight > 0 and NOT OK, not in grace and not NO_EVIDENCE, at 3 or more adds 1 every
+    # settlement and writes 14 + 1 as 0 (nodus_storage_fail_streak_next, st_settle); eligibility
+    # is fail_streak < 3 (DNA_V2_STORAGE_FAIL_LIMIT). The cell loops below are BOUNDED waits (a
+    # settlement without half the power's reports moves nothing, F1), never a fixed count.
+    claim_leaf "$CAND" 1
+    dlog="$LOGD/consent_cand1.txt"; drc=0
+    D_EXP=$(( $(tip_of 1) + CONSENT_AHEAD ))
+    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port 1)" -i "$CAND" \
+        storage consent --owner "$D_FP" --expiry "$D_EXP" --out "$dlog" > "$LOGD/consent_cand1.log" 2>&1 || drc=$?
+    cat "$LOGD/consent_cand1.log"
+    [ "$drc" = 0 ] && [ -s "$dlog" ] || die "the storage consent of the candidate was refused (rc $drc, see $LOGD/consent_cand1.log)"
+    dport=$(stagef_tcp_port 1)
+    "$CLI" -s 127.0.0.1 -p "$dport" storage register --keys "$CAND" --consent "$dlog" \
+        --submit "127.0.0.1:$dport" > "$LOGD/register_cand1.log" 2>&1 \
+        || { cat "$LOGD/register_cand1.log" >&2; die "storage register for the candidate failed (see $LOGD/register_cand1.log)"; }
+    cat "$LOGD/register_cand1.log"
+    grep -q '^accepted: mempool CheckTx approved' "$LOGD/register_cand1.log" || die "storage register for the candidate: no CheckTx approval line"
+    h=$(stagef_cmt_wait_row "$(db_of 1)" \
+        "SELECT COUNT(*) FROM v2_storage_nodes WHERE lower(hex(node_fp)) = '$D_FP' AND status = 1;") && wrc=0 || wrc=$?
+    [ "$wrc" = 0 ] || die "the candidate's registration did not land (wait rc $wrc, tip $h)"
+    BD0=$(( (h / E + 1) * E ))          # h = the tip at which the ACTIVE row was first seen
+    [ $(( h % E )) != 0 ] || die "the candidate's row was first seen at tip $h, on the boundary $(( BD0 - E )) — $MSG_LAYOUT"
+    echo "[ok] the candidate ${D_FP:0:16}… (no node runs it) is a registered storage member (row seen at tip $h); its arrival boundary is $BD0"
+
+    # arrival: five eligible, R 5 — one row inserted, n_new 1, grace B + E
+    boundary_cell "D-arrival" "$BD0" "$R_NOW"
+    in_basis "$D_FP" || die "D-arrival: the candidate is not in the basis at $BD0"
+    [ "$(rows_from "$BD0")" = 1 ] && [ "$(rows_ended "$BD0")" = 0 ] && [ "$(n_new_sum "$BD0")" = 1 ] \
+        || die "D-arrival: rows inserted $(rows_from "$BD0"), ended $(rows_ended "$BD0"), Σ n_new $(n_new_sum "$BD0") — expected 1 / 0 / 1 (the one new eligible member holds segment 1)"
+    [ "$(reg_grace "$D_FP")" = $(( BD0 + E )) ] || die "D-arrival: the candidate's grace_until is $(reg_grace "$D_FP"), expected $(( BD0 + E ))"
+    [ "$(reg_fs "$D_FP")" = 0 ] || die "D-arrival: the candidate's fail_streak is $(reg_fs "$D_FP"), expected 0"
+    diff_full_at "$BD0" "D-arrival-at-height-$BD0"
+    HD=$(( BD0 + E ))                   # the first epoch the candidate is eligible (grace over)
+
+    # NOT OK epochs: wait (boundary by boundary) until the first freeze with fail_streak >= 3
+    prev_fs=0; DEP=0; bits_done=0; b="$BD0"
+    for _ in 1 2 3 4 5 6 7 8 9; do
+        b=$(( b + E ))
+        boundary_cell "D-b$b" "$b" "$R_NOW"
+        fs=$(reg_fs "$D_FP")
+        [[ "$fs" =~ ^[0-9]+$ ]] || die "D-b$b: the candidate's fail_streak is '$fs'"
+        [ "$fs" = "$prev_fs" ] || [ "$fs" = $(( prev_fs + 1 )) ] || die "D-b$b: fail_streak went $prev_fs -> $fs (one settlement adds at most 1)"
+        if ! in_basis "$D_FP"; then DEP="$b"; break; fi
+        [ "$fs" -lt 3 ] || die "D-b$b: fail_streak $fs >= 3 but the candidate is still in the basis"
+        prev_fs="$fs"
+        # T-16, the non-serving case: in the reports of epoch HD (its first eligible epoch) the
+        # candidate's bit is 0 in every seat
+        if [ "$bits_done" = 0 ] && [ "$b" = $(( HD + E )) ]; then
+            pump_to $(( HD + E + E / 2 ))
+            check_report_bits "T-16 reports (candidate)" "$HD" "$D_FP" dead
+            bits_done=1
+        fi
+    done
+    [ "$DEP" != 0 ] || die "the candidate (never reachable on 0x72) was still eligible after 9 boundaries (fail_streak $prev_fs) — the reports did not settle (F1) or the NOT OK path did not run"
+    [ "$bits_done" = 1 ] || die "internal: the candidate left the basis at $DEP before its report bits were read — $MSG_LAYOUT"
+    [ "$fs" -ge 3 ] || die "D-departure: the candidate left the basis at $DEP with fail_streak $fs < 3"
+    [ "$(cur_rows_of "$D_FP")" = 0 ] || die "D-departure: the candidate still has current assignment rows"
+    [ "$(cell_lines assign | awk -F'|' -v f="$D_FP" -v b="$DEP" '$2 == f && $5 == b' | wc -l)" = "$(cell_lines seg | wc -l)" ] \
+        || die "D-departure: not every row of the candidate was ended at $DEP"
+    [ "$(rows_from "$DEP")" = 0 ] && [ "$(n_new_sum "$DEP")" = 0 ] || die "D-departure: rows inserted $(rows_from "$DEP"), Σ n_new $(n_new_sum "$DEP") — expected none (the four others already hold)"
+    diff_full_at "$DEP" "D-departure-at-height-$DEP"
+    echo "[ok] D-departure: at the first freeze with fail_streak $fs ($DEP) the candidate left the basis, its rows ended at $DEP, the four live members keep theirs"
+
+    # skipped epochs: fail_streak counts up (3 .. 14), 14 + 1 is written as 0
+    prev_fs="$fs"; DEP_FS="$fs"; REV=0; b="$DEP"
+    for _ in $(seq 1 20); do
+        b=$(( b + E ))
+        boundary_cell "D-b$b" "$b" "$R_NOW"
+        fs=$(reg_fs "$D_FP")
+        [[ "$fs" =~ ^[0-9]+$ ]] || die "D-b$b: the candidate's fail_streak is '$fs'"
+        if in_basis "$D_FP"; then
+            [ "$fs" = 0 ] || die "D-b$b: the candidate is back in the basis with fail_streak $fs, expected 0"
+            REV="$b"; break
+        fi
+        if [ "$prev_fs" = 14 ]; then [ "$fs" = 0 ] || [ "$fs" = 14 ] || die "D-b$b: fail_streak went 14 -> $fs"
+        else [ "$fs" = "$prev_fs" ] || [ "$fs" = $(( prev_fs + 1 )) ] || die "D-b$b: fail_streak went $prev_fs -> $fs (+1 per settlement, K5)"; fi
+        [ "$fs" -ge 3 ] || [ "$fs" = 0 ] || die "D-b$b: fail_streak $fs below 3 while the candidate is out of the basis"
+        prev_fs="$fs"
+    done
+    [ "$REV" != 0 ] || die "the candidate was still out of the basis after 20 boundaries (fail_streak $prev_fs) — the K5 return (3 + 12 skipped epochs) did not complete"
+    NSEG=$(cell_lines seg | wc -l)
+    [ "$(cur_rows_of "$D_FP")" = "$NSEG" ] || die "D-revival: the candidate has $(cur_rows_of "$D_FP") current rows, expected one per published segment = $NSEG"
+    [ "$(rows_from "$REV")" = "$NSEG" ] && [ "$(rows_ended "$REV")" = 0 ] && [ "$(n_new_sum "$REV")" = "$NSEG" ] \
+        || die "D-revival: rows inserted $(rows_from "$REV"), ended $(rows_ended "$REV"), Σ n_new $(n_new_sum "$REV") — expected $NSEG / 0 / $NSEG"
+    [ "$(reg_grace "$D_FP")" = $(( REV + NSEG * E )) ] || die "D-revival: the candidate's grace_until is $(reg_grace "$D_FP"), expected $(( REV + NSEG * E ))"
+    diff_full_at "$REV" "D-revival-at-height-$REV"
+    echo "[ok] D-revival: fail_streak back to 0 at the freeze $REV, the candidate is back in the basis, $NSEG row(s) inserted (one per published segment), 7/7"
 fi
 
 # ── 7. hf9: a fresh node replaying from genesis ─────────────────────
@@ -1292,11 +1569,13 @@ for x in $(( A - 1 )) "$A" $(( A + 1 )) "$vt"; do diff_full_at "$x" "replay-at-h
 cell_read "post-replay" "$(( A - 1 )) $A $(( A + 1 ))" "$A" "$vt"
 check_legs post "post-replay (tip $CELL_TIP, 7/7)"
 if [ "$WITH_STORAGE" = 1 ]; then
-    members_set $MEMBERS_PRE "$JOINER"
     st=$(cell_one astate)
-    [ "${st%%|*}" = 5 ] || die "post-replay: v2_storage_assign_state.copies = '${st%%|*}', expected 5"
-    [ "$(cell_lines assign | awk -F'|' '$1 == 1 && $5 == "-"' | wc -l)" = 4 ] || die "post-replay: segment 1 does not have four current rows"
-    echo "[ok] post-replay: the replayed node holds the same storage relations (R 5, four current rows, every table byte-identical to the six others)"
+    IFS='|' read -r pr_copies pr_b _ <<< "$st"
+    [ "$pr_copies" = "$R_NOW" ] || die "post-replay: v2_storage_assign_state.copies = '$pr_copies', expected $R_NOW"
+    check_storage_state "$pr_b" "$R_NOW" "post-replay"
+    in_basis "$D_FP" || die "post-replay: the revived candidate is not in the basis"
+    [ "$(cur_rows_of "$D_FP")" = "$(cell_lines seg | wc -l)" ] || die "post-replay: the candidate does not hold one row per published segment"
+    echo "[ok] post-replay: the replayed node holds the same storage relations (R $R_NOW, the revived candidate back, every table byte-identical to the six others)"
 fi
 stagef_sentinel ASSERT_RUN
 floor_diff "post-hf9"
@@ -1319,15 +1598,18 @@ echo ""
 echo "[info] HEIGHTS: HF2 $H2 | HF3 $H3 | GEN2 $H4 | EVM $HE | ROLES $H6 | ROOTS $A5 | TRIE (A) $A | H2 $H2_LAST | B1 $B1"
 if [ "$WITH_STORAGE" = 1 ]; then
     echo "       | segment 1 at $H_PUB | join B1+E $(( B1 + E )) | STORAGE_COPIES effective $E25 | R=5 at $(( B1 + 3 * E )) | exit x=$XH released $B_REL"
-    echo "[PASS] HF-9 generation 6 at E=$E (7/7 at epoch length $E): populated legs (utxo, token, claims, name,"
-    echo "       registry, segment, snapshots, attendance), D6 voted at A=$A, the edge at the end of A-1, eight leg"
-    echo "       roots and the storage assignment byte-identical on 7/7 at A, B1, B1+E, B1+2E, B1+3E and the exit's"
-    echo "       boundary, node $VICTIM restarted across A and then replayed from genesis, segment files held and"
-    echo "       dropped as the overlap rule says. NOT driven: the fail-streak crossing, any settlement amount."
+    echo "       | candidate arrival $BD0 | departure (fail_streak $DEP_FS) $DEP | revival $REV"
+    echo "[PASS] HF-9 generation 6 at E=$E, BPY 20, grace 15/15 (7/7 at epoch length $E): populated legs (utxo, token,"
+    echo "       claims, name, registry, segment, snapshots, attendance), D6 voted at A=$A, the edge at the end of A-1,"
+    echo "       eight leg roots and the storage assignment byte-identical on 7/7 at A, B1, B1+E, B1+2E, B1+3E, the exit's"
+    echo "       boundary and the candidate's arrival, departure (fail_streak >= 3) and revival (fail_streak back to 0),"
+    echo "       node $VICTIM restarted across A and then replayed from genesis, segment files held and dropped as the"
+    echo "       overlap rule says, the report bits of the joined member (1) and of the member that runs no node (0)."
+    echo "       NOT driven: any settlement amount."
 else
-    echo "[PASS] HF-9 generation 6 at E=$E WITHOUT storage segments (production-constant edge run): populated"
-    echo "       legs 1, 2, 3, 4, 7, 8 and EMPTY legs 5 and 6 (their roots equal the empty-leg root), D6 voted at A=$A,"
-    echo "       the edge at the end of A-1, eight leg roots byte-identical on 7/7, node $VICTIM restarted across A and"
-    echo "       then replayed from genesis. LEFT OUT: storage registration, segment 1 (P = 24 x E is out of reach),"
-    echo "       B1, join, exit, param 25 (header)."
+    echo "[PASS] HF-9 generation 6 at E=$E, BPY $BPY_PROD, grace 15/15 WITHOUT storage segments (production-constant edge"
+    echo "       run; the production 17280 safety grace is NOT exercised): populated legs 1, 2, 3, 4, 7, 8 and EMPTY legs"
+    echo "       5 and 6 (their roots equal the empty-leg root), D6 voted at A=$A, the edge at the end of A-1, eight leg"
+    echo "       roots byte-identical on 7/7, node $VICTIM restarted across A and then replayed from genesis. LEFT OUT:"
+    echo "       storage registration, segment 1 (P = 24 x E is out of reach), B1, join, exit, param 25, the candidate."
 fi

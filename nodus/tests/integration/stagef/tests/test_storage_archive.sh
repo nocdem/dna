@@ -217,9 +217,12 @@
 #   TEST-OWNER MODE (NO_EVIDENCE) — the same, plus BEFORE the build:
 #     bash $S/stagef_hf6_owner.sh /tmp/hf6-owner <TREE>/nodus/build/nodus-server
 #       (prints the owner's 128-hex fp and the exact
-#        -DDNAC_HF6_FOUNDATION_OWNER="{0x..,…}" flag — 64 bytes, no spaces)
+#        -DDNAC_HF6_FOUNDATION_OWNER="{0x..,…}" flag — 64 bytes, no spaces —
+#        and that owner's three literals D4 / D5 / D6, all four or none)
 #     cmake -S <TREE>/nodus -B <TREE>/nodus/build-hf6own \
-#           -DCMAKE_C_FLAGS="$F -DDNAC_HF6_FOUNDATION_OWNER={0x..,…}"
+#           -DCMAKE_C_FLAGS="$F $O $D $D5F $D6F"   (the four flags the helper printed:
+#           -DDNAC_HF6_FOUNDATION_OWNER, -DDNAC_CFG_RULESET_GEN_ROLES_D,
+#           -DDNAC_CFG_RULESET_GEN_ROOTS_D, -DDNAC_CFG_RULESET_GEN_TRIE_D)
 #     make -C <TREE>/nodus/build-hf6own -j"$(nproc)" nodus-server nodus-cli
 #     export STAGEF_NODUS_BIN / STAGEF_NODUSCLI_BIN = that build's binaries
 #     export STAGEF_HF6_OWNER_FP_HEX=<the helper's 128 hex>
@@ -272,7 +275,7 @@
 #     §11.6, the three-state verdict's third state) is NOT exercised —
 #     the PASS line says "NO_EVIDENCE: not run". Only the TEST-OWNER
 #     build (stagef_hf6_owner.sh + -DDNAC_HF6_FOUNDATION_OWNER and that
-#     owner's -DDNAC_CFG_RULESET_GEN_ROLES_D) proves it
+#     owner's D4 / D5 / D6 flags) proves it
 #     on 7/7; the PASS line names which build ran (the validators' owner
 #     read from v2_validator_roles at step 4, not taken from the env).
 #   - **NO_EVIDENCE vs NOT OK vs "unpaid"**: a NO_EVIDENCE node is merely
