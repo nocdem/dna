@@ -43,15 +43,17 @@
 #     the edge at E = 720, not the production wait. Length: the five
 #     ERGONOMIC votes (params 7, 8, 9, 18, 22) each wait ≥ 725 blocks, so
 #     ≈ 4 500 blocks (JUDGMENT) — hours even pumped. The script then runs `WITH_STORAGE=0`: everything up to and through the
-#     edge (the votes, the populated legs that exist without a segment, the
-#     param-24 vote, A−2 / A / A+1, the restart across A, the fresh replay),
-#     and LEAVES OUT every storage step (registration, segment 1, B1, join,
-#     exit, param 25) because a segment is P = 24 × E = 17 280 blocks at
-#     E = 720 and the first one is published at P + 2E = 18 720 — out of
-#     reach (plan §12: "P = 17280 is out of reach"). Legs 5 (registry) and
-#     6 (segments) are then EMPTY on every node and the scenario asserts
-#     exactly that (their roots must equal the empty-leg root). The PASS
-#     line names E, BPY, both graces and "WITHOUT storage segments".
+#     edge (the votes, the REGISTRATION of the four storage members 4-7 at
+#     generation 5 under their own keys — round-4 row 20, so leg 5 is populated
+#     —, the populated legs, the param-24 vote, A−2 / A / A+1, the restart
+#     across A, the fresh replay), and LEAVES OUT every other storage step
+#     (segment 1, B1, join, exit, param 25) because a segment is P = 24 × E =
+#     17 280 blocks at E = 720 and the first one is published at P + 2E =
+#     18 720 — out of reach (plan §12: "P = 17280 is out of reach"). Leg 5
+#     (registry) holds exactly the four registered members; leg 6 (segments) is
+#     EMPTY on every node and the scenario asserts exactly that (its root must
+#     equal the empty-leg root). The PASS line names E, BPY, both graces and
+#     "WITHOUT storage segments".
 #     SKIP (99) unless STAGEF_EPOCH_LENGTH is 15 (grace 15 / 15, BPY 20) or
 #     720 (SAFETY 15, ERGONOMIC 720, BPY 6307200); BPY and payout_interval_
 #     epochs are READ from the genesis document and printed.
@@ -81,7 +83,8 @@
 #      under their own keys; segment 1 is published at exactly 26 E (= P +
 #      2E, the first storage boundary ≥ P + 2E), identical 7/7.
 #   4. hf9: every one of the eight source tables is populated before the
-#      edge (legs 5 and 6 only with storage), and at the cell read BEFORE the
+#      edge (leg 6, the segments, only in the short run; leg 5, the four
+#      registered storage members, in BOTH runs), and at the cell read BEFORE the
 #      edge (tip ≤ A−2: v2_trie_state.capture = 0, no v2_trie_roots row, no
 #      v2_trie_dirty row, no v2_storage_assign_state row) and at the cells
 #      read AFTER it (tip ≥ A−1: capture = 1, eight v2_trie_roots rows,
@@ -154,12 +157,35 @@
 #      runtime fetches the newly assigned segments and stops holding dropped
 #      ones only after the overlap epoch"): every node that is a current
 #      holder of segment 1 at every event boundary has the completeness
-#      marker segments/seg-1.ok before the next boundary; node 5, taken out
-#      by its exit, and the member dropped by the copies decrease still have
-#      it at the boundary and delete it only from the epoch boundary + E on
-#      (the holder runtime's "segment k deleted … (H=…)" line, H >= boundary
-#      + E — not "the file at tip X", a pump overshoots a height). The candidate is the non-serving
-#      case: it has no node, hence no file.
+#      marker segments/seg-1.ok at a tip below the next boundary (the tip is
+#      read BEFORE the file test, round-4 row 16); node 5, taken out by its
+#      exit, and the member dropped by the copies decrease: (i) RETENTION is
+#      asserted from the FILE ITSELF — seg-1.ok exists at a tip read before
+#      and after the file test, both inside the overlap epoch [B, B + E − 1]
+#      (round-4 row 11; nothing deletes it before the sweep of epoch B + E);
+#      (ii) the DELETION HEIGHT from the holder runtime's own line "segment k
+#      deleted … (H=…)" with H >= B + E (nodus_witness_storage_holder.c:283-288,
+#      not "the file at tip X": a pump overshoots a height); that line is
+#      logged AFTER the files went (segment.c:1193-1205), so it is WAITED for,
+#      bounded by block distance and progress, and its absence FAILs (round-4
+#      row 12). The deletion line alone proves WHEN, never that the file
+#      existed before. The candidate is the non-serving case: it has no node,
+#      hence no file.
+#      THE FETCH PATH (round-4 row 5; holder.c:682-690 JOB_EXPORT when
+#      nodus_seg_store_has, else JOB_FETCH): the joiner (node 2) is restarted
+#      before B1 with nodus.json retain_blocks = evidence window + 2 (needs
+#      STAGEF_EVIDENCE_MAX_AGE_BLOCKS / _DURATION_NS at the bring-up, the
+#      knobs of test_cmt_prune.sh; absent → SKIP), so by its join its block
+#      store starts above segment 1's last height (asserted from its
+#      cmt_blockstore before it registers), and after its join the scenario
+#      asserts the holder runtime's line "segment 1: fetching over 0x73 (the
+#      block store no longer has the range)" (and NO "exporting" line for
+#      segment 1) and its seg-1.ok. Its OK bit in its first eligible epoch is
+#      then the segment FILE answering: the reporter answers from the block
+#      store first and from the file only when the store lacks the sample
+#      (nodus_witness_storage_reporter.c:280-286). Every other holder EXPORTS
+#      from its (archive) store; for them a bit says "answers its probes",
+#      not that a file was served.
 #      The probe-report BITS (T-16 "the probe reports carry bits for the new
 #      holders"). What a bit means, from source: v2_storage_reports.bitmap is
 #      LSB-first, bit i = member i of the frozen set S(H) in node_fp ASC
@@ -183,12 +209,19 @@
 #      end); the dropped holder carries no bit and held_union 0 one epoch
 #      after its drop. The verdict is the SOURCE rule (nodus_witness_v2_
 #      storage.c:1359-1397: seats counted by power, the owner-or-key
-#      exclusion, 2·I ≤ P_total → NO_EVIDENCE, 3·Y > 2·I → OK); with equal seat
-#      power (asserted by the generation-4 owner check and by nothing
-#      delegating here — an ASSUMPTION, as in test_storage_archive.sh) and no
-#      member owned by the validators' owner, I is N or N − 1, so OK is
-#      certain when 2·(N−1) > P_total and 3·Y > 2·N, NOT OK when 2·(N−1) >
-#      P_total and Y = 0; anything else FAILs as "undetermined".
+#      exclusion, 2·I ≤ P_total → NO_EVIDENCE, 3·Y > 2·I → OK). The seat-count
+#      bound is used ONLY after its prerequisites are READ from the chain at
+#      every epoch read (round-4 row 2, check_verdict_prereqs): all N
+#      validators hold the same total stake and nothing is delegated (equal
+#      seat power), no seat's owner is a storage member's owner (payee_fp);
+#      the member's own seat never sets its own bit (reporter.c:468 "F2: never
+#      itself" — a source fact, the bitmap seat is not mapped to a node). Then
+#      I is N or N − 1 and OK is certain when 2·(N−1) > P_total and 3·Y > 2·N,
+#      NOT OK when 2·(N−1) > P_total and Y = 0; anything else FAILs as
+#      "undetermined". The candidate's NOT OK is tied to the reporter's own
+#      line "storage member <fp16>.. was never reachable on 0x72 in epoch
+#      H=<H> — NOT OK" (reporter.c:579-580), at least one per reporting seat,
+#      so "probed and unreachable" is told from "not probed" (both give bit 0).
 #   8b. Short epoch only — SETTLEMENT (plan §12 T-13 "settlement / grace
 #      effects"; §8.5 "Settlement at B for H = B − 2E: weight(m) = P × held_
 #      union(m, H) unless m is in grace at H"). Pool 1 is FUNDED (the export
@@ -202,12 +235,30 @@
 #      weight counts); an OK member is paid floor(budget × held_union / W) to
 #      its owner (here its own key: the accrual row of its fp), a NOT OK
 #      member and a member in grace nothing; every owner's accrual rose by
-#      exactly that and pool 1 fell by exactly the sum. A settlement boundary
-#      that is a PAYDAY (every payout_interval_epochs-th, read from the
-#      genesis document) empties the accrual: not asserted, said so. Not
-#      covered: the epochs H2−E and H2 settled at B1 and B1 + E (their
-#      union counts are the edge's E-s1 values — T-7's), and epochs whose
-#      settlement lies beyond the end of the run.
+#      exactly that and pool 1 fell by exactly the sum. Pool 1 is READ FROM
+#      THE CHAIN (v2_treasury, above 2^17) before the storage part, and in
+#      every paying epoch at least one paid member has a POSITIVE expected
+#      share (an all-zero settlement FAILs; round-4 row 7). A settlement
+#      boundary that is a PAYDAY (every payout_interval_epochs-th, read from
+#      the genesis document) empties the accrual: not asserted, said so.
+#      held_union and n_new are not their own oracle (round-4 row 8): for
+#      every boundary after B1 they are DERIVED from the stored assignment
+#      relation (current and ended rows, segments published <= B − E, members
+#      of the set; plan :299-302) and must equal v2_storage_member_epoch, and
+#      the settled epoch's held_union must equal that derivation. grace_until
+#      is asserted as the exact recurrence max(previous boundary's value, B +
+#      n_new × E), unchanged for n_new 0 (round-4 row 9), and fail_streak of
+#      EVERY registry row as the exact source recurrence over the settled
+#      epoch H = B − 2E (grace / verdict / weight read in its window; +0 or
+#      +1 is no longer accepted; round-4 row 3). The two E-s1 epochs H2−E and
+#      H2, settled at B1 and B1 + E, are read in their windows and checked
+#      with the same formula (round-4 row 10), from the union counts the edge
+#      STORED. NOT covered: those E-s1 union counts derived independently —
+#      the previous relation is XOR (plan :306, dna_v2_segment_holders over the
+#      segment root), which no table holds and this script does not
+#      reimplement (and the same for held_union / n_new AT B1, which count
+#      against XOR(set(H2))) — and epochs whose settlement lies beyond the end
+#      of the run (none: the queued windows are drained, FAIL if pending).
 #   9. A fresh node replaying from genesis (T-13): node 3 is stopped, its
 #      databases are wiped (its identity kept), it is restarted with the
 #      genesis pin only; its log (truncated first, so every line is of THIS
@@ -244,7 +295,15 @@
 #       STAGEF_V2_CANDIDATES=1 (the candidate cand1: a genesis document
 #       field — a different chain id; no cand1 → SKIP)
 #       STAGEF_TREASURY_POOL1_RAW=1000000000000000 (pool 1 funded — the
-#       settlement amounts are asserted; unset or below 2^17 → SKIP)
+#       settlement amounts are asserted; the script reads pool 1 FROM THE
+#       CHAIN and FAILs below 2^17, it no longer reads this variable)
+#       STAGEF_EVIDENCE_MAX_AGE_BLOCKS=10 STAGEF_EVIDENCE_MAX_AGE_DURATION_NS=
+#       1000000 (NEW, round-4 row 5: the evidence window of test_cmt_prune.sh,
+#       hashed into the genesis document — a different chain id; the joiner
+#       node 2 is restarted with retain_blocks = 12 so that its block store
+#       lacks segment 1's range and the FETCH path runs; the script reads the
+#       two values from the genesis document and SKIPs if the window is not
+#       lowered (num_blocks < 100, duration < (blocks + 2) ms))
 #     production-constant run: STAGEF_EPOCH_LENGTH and STAGEF_BLOCKS_PER_YEAR
 #       unset (720 / 6307200); STAGEF_V2_CANDIDATES and
 #       STAGEF_TREASURY_POOL1_RAW not needed
@@ -267,6 +326,7 @@
 #     export STAGEF_NODUSCLI_BIN=<TREE>/nodus/build-hf9/nodus-cli
 #     export STAGEF_EPOCH_LENGTH=15 STAGEF_BLOCKS_PER_YEAR=20 STAGEF_V2_CANDIDATES=1
 #     export STAGEF_TREASURY_POOL1_RAW=1000000000000000
+#     export STAGEF_EVIDENCE_MAX_AGE_BLOCKS=10 STAGEF_EVIDENCE_MAX_AGE_DURATION_NS=1000000
 #     export STAGEF_CC_GRACE_SAFETY=15 STAGEF_CC_GRACE_ERGONOMIC=15
 #     export STAGEF_HF6_OWNER_FP_HEX=<fp> STAGEF_HF6_OWNER_KEYS=/tmp/hf9-owner/identity
 #     bash $S/stagef_up_v2.sh
@@ -285,13 +345,15 @@
 #   genesis epoch_length differing, the graces not 15 / 15 (E 15) or 15 / 720
 #   (E 720), the genesis blocks_per_year not 20 (E 15) or 6307200 (E 720), the
 #   short run without the candidate identity cand1 (STAGEF_V2_CANDIDATES=1) or
-#   without pool 1 funded (STAGEF_TREASURY_POOL1_RAW >= 2^17), a payout
+#   without the lowered evidence window in the genesis document, a payout
 #   interval of 1, a tool
 #   missing, STAGEF_HF6_OWNER_KEYS set but unusable is a FAIL (not a skip),
-#   not a Comet cluster, no $BASE_DIR/v2_genesis.conf, no pump, any split
+#   not a Comet cluster, no $BASE_DIR/v2_genesis.conf, any split
 #   STAGEF_MODE. A skip is not a pass.
 #   FAIL (rc 1) on the capability gate (above), on a chain that already holds
-#   any of the rows of item 1, on a leaf already claimed.
+#   any of the rows of item 1, on a leaf already claimed, and when there is no
+#   pump (the script `die`s: round-4 row 23 — it was listed as a SKIP here),
+#   and on pool 1 below 2^17 on the chain.
 #
 # WHAT IT LEAVES BEHIND
 #   HF-2, HF-3, rule-set generations 2, 3 (+ the EVM domain), 4, 5 and 6 —
@@ -318,31 +380,32 @@
 #     15, ERGONOMIC 720 — test parameters of the orchestrator) proves the
 #     edge at E = 720 and says in its PASS line what it leaves out; the
 #     17 280 SAFETY wait is not exercised.
-#   - **Leg roots cannot be read at a height.** v2_trie_roots keeps the LATEST
-#     root of each leg only; there is no per-height leg-root history (plan §16
-#     DF-3: proofs at historical heights are not built). "Leg roots at A−1, A,
-#     A+1, B1, B1+E, B1+2E" is carried as: (1) the FULL global_root and
-#     block_id at each of those heights, 7/7 (stagef_diff.sh --full —
-#     historical rows exist). The global root of height H is the composition
-#     of the domain roots, which are the composition of the eight leg roots at
-#     H (plan §10.3, docs/plans/approved/2026-11-04-hf9.md:396-397: leg → its
-#     composition → STOR v3 → SYS v7 → DomainHead v2 → domains_root → GLOBAL v2
-#     = the AppHash), so seven nodes agreeing on the full global root at H is
-#     agreement on all eight leg roots at H — the comparison the plan names;
-#     (2) as ADDITIONAL content evidence the eight leg roots and every
-#     relation of one snapshot per node at a common tip T ≥ H. A boundary
-#     cell pumps TO the boundary (no spend after it) and prints the envelope
-#     count over (B, T]: with none, the snapshot is of the boundary state
-#     (claims are counted by no tx_count — README rule 4 — and none is
-#     submitted in that window); otherwise it is SAID to be of a later state
-#     (the STORAGE_REPORT envelopes of the report window land there). For
-#     A−1 / A the read is at T ≥ A with tx_count over A … T equal to 0 and T
-#     before the next boundary (asserted); at A−1 itself the window is, by
-#     inference from README "DELTA 1" (a block whose global root differs
-#     from its predecessor's is followed by a proof block at the 4 s
-#     timeout_commit pace; NOT measured), one such interval — too short to
-#     read reliably, so it is not read there. A leg root that changed and
-#     changed back between H and T would not be seen by (2) — (1) sees it.
+#   - **PER-HEIGHT LEG ROOTS ARE NOT COVERED AT B1, B1+E AND B1+2E** (round-4
+#     row 1). The plan (docs/plans/approved/2026-11-04-hf9.md :453) lists "leg
+#     roots at A−1, A, A+1, B1, B1+E, B1+2E"; v2_trie_roots keeps the LATEST root
+#     of each leg only, there is no per-height history (plan §16 DF-3, :614:
+#     proofs at historical heights are not built) and no node logs a leg root.
+#     What this scenario does, exactly:
+#       * A−1, A, A+1: the eight leg roots are read at a tip T from a window with
+#         NO envelope and NO boundary (tx_count over A … T is 0, T before the
+#         next boundary — asserted), so they are the roots of those heights; and
+#         the FULL 64-byte global_root and block_id of each of those heights are
+#         compared 7/7 (stagef_diff.sh --full, historical rows exist).
+#       * B1, B1+E, B1+2E (and every later boundary): ONLY the full global_root
+#         and block_id AT the height are compared 7/7 (--full), plus the eight
+#         leg roots and every storage relation of one snapshot at a LATER tip T
+#         (the boundary cell prints the envelope count over (B, T]; with
+#         envelopes it says the snapshot is of a later state). The per-height
+#         comparison of the leg roots AT B1, B1+E, B1+2E is NOT covered. The
+#         global root of a height is bound to its leg roots through the
+#         composition chain (plan §10.3, :396-397: leg → its composition → STOR v3
+#         → SYS v7 → DomainHead v2 → domains_root → GLOBAL v2 = the AppHash), so
+#         seven nodes agreeing on it is agreement on the composition, but no leg
+#         root of that height is read or named.
+#     At A−1 itself the window is, by inference from README "DELTA 1" (a block
+#     whose global root differs from its predecessor's is followed by a proof
+#     block at the 4 s timeout_commit pace; NOT measured), one such interval —
+#     too short to read reliably, so it is not read there.
 #   - The "cell" read is a bounded re-read of an expected asynchronous
 #     condition (all live nodes report the same tip), bounded by BLOCK
 #     DISTANCE (the highest tip may not pass MIN_TIP + E) and by PROGRESS (the
@@ -368,30 +431,59 @@
 #     half the power's reports every epoch (F1); a run where reports miss
 #     their window only takes longer (the loops are bounded at 9 / 20
 #     boundaries) and FAILs if the bound is exceeded — a false RED.
-#     Also not asserted: K9 grace beyond "n_new > 0 ⇒ grace_until ≥ boundary
-#     + n_new × E" (exactly BD0 + E, CUR + E and REV + count × E in the cases
-#     where the order makes n_new known), a kind-3 owner. A second segment IS
-#     published during the run (due at 2P + 2E = 750) and the generic
-#     invariants cover it.
+#     **NOT COVERED (round-4 row 4, stopped with evidence): a RUNNING member's
+#     holder runtime changing at the eligibility crossing.** The departure
+#     ends only the candidate's row (the three others already hold) and the
+#     revival inserts only the candidate's rows, so no node's holder runtime
+#     changes at either crossing: the plan's "holder runtime side across the
+#     crossing" (:456) is not exercised. A running member would have to FAIL
+#     its probes for three settled epochs: the tree has no fault knob for the
+#     0x72 serving side (grep getenv in nodus_witness_storage_*.c finds none),
+#     a member answers from its block store first (reporter.c:280-286) so
+#     deleting its file changes nothing for an archive node, the holder
+#     re-fetches a missing file at the next epoch (holder.c:263-285, :682-690)
+#     so a deleted file is not a stable fault, and SIGSTOP of a validator is
+#     Rule N's AUTO_RETIRE (README:916). What IS asserted: the candidate's
+#     NOT OK is the reporter's "never reachable on 0x72 in epoch H=<H>" line
+#     (probed and unreachable), told from NOPROBE (not probed).
+#     Also not asserted: a kind-3 owner. A second segment IS published during
+#     the run (due at 2P + 2E = 750) and the generic invariants cover it; the
+#     event-boundary row counts (rows inserted / ended, Σ n_new) of the exit,
+#     arrival, join and copies cases assume NO publication at their boundary
+#     (a coincidence FAILs closed, a false RED, never a false pass; the
+#     revival boundary counts publication and revival inserts apart).
 #   - Which member a case changes (the gainer of the copies increase, the
 #     dropped holder of the decrease) depends on the node identities of the
 #     run (the rendezvous scores); the scenario READS it from the rows and
 #     asserts that exactly one changed. Only the join of node 1 (setup) is
 #     not deterministic and no case is claimed for it.
-#   - The verdict / payment assertions assume equal seat power (stated at
-#     item 8) and that pool 1 and the owners' accrual change only at
-#     boundaries (the read between boundaries is the settlement's start
-#     value); a payday boundary is skipped, said so.
+#   - The verdict / payment assertions rest on the prerequisites READ at every
+#     epoch read (equal stake, no delegation, no owner overlap — item 8; the
+#     equal POWER follows from equal stake through the snapshot's symmetric
+#     cap, which is not recomputed) and on pool 1 and the owners' accrual
+#     changing only at boundaries (the read between boundaries is the
+#     settlement's start value); a payday boundary is skipped, said so.
+#   - The E-s1 union counts (epochs H2−E and H2) and held_union / n_new AT B1
+#     are the stored values: deriving them needs the XOR relation of
+#     set(H2), which no table holds (round-4 rows 8 and 10, stopped).
 #   - Node 3 is the pump's funder: the pump reads node 1's database and
 #     submits to node 1, using only node 3's identity FILES, never its
 #     process (stagef_cmt_pump_to) — test_cmt_blocksync.sh keeps its victim
 #     off the funder out of caution; here node 3 is the only node that is
 #     neither a storage member, the proposer (node 1) nor the joiner
 #     (node 2).
-#   - The restart victim is down for 5 blocks; a longer gap risks Rule N
-#     (README). Its leg roots are compared only after it is back; while it is
-#     down the cells compare the six live nodes (the 7/7 full-mode diff at
-#     A−1 / A / A+1 is made after it caught up).
+#   - The restart victim is stopped at the fleet tip A−3 and restarted when the
+#     fleet reaches A+2; its OWN last applied height after the stop is read and
+#     must be below A−1 (a restart across the edge), the fleet tip at the
+#     restart is read, and the measured number of blocks behind is printed — no
+#     fixed number is claimed; a longer gap risks Rule N (README), which would
+#     show as a refused catch-up. Its leg roots are compared only after it is
+#     back; while it is down the cells compare the six live nodes (the 7/7
+#     full-mode diff at A−1 / A / A+1 is made after it caught up).
+#   - A (the param-24 effective height) is moved to the next epoch's start + 2
+#     when it would fall in the last two heights of an epoch (short run), so
+#     the epoch H2−E settled at B1 can be read inside its window after the
+#     restart cell; this shifts every later height by up to E.
 #   - Duration ≈ 770 blocks short epoch (JUDGMENT, not measured: the six
 #     votes ≈ 330, segment 1 at 390, A ≈ 429, B1 = 435, B_rel 450, candidate
 #     arrival 465 / departure ≈ 540 / return ≈ 720 (3 NOT OK settlements, then
@@ -499,14 +591,22 @@ if [ "$WITH_STORAGE" = 1 ]; then
         echo "       export STAGEF_V2_CANDIDATES=1 BEFORE stagef_up_v2.sh (a genesis-document field: a different chain id)"
         exit 99
     fi
-    # settlement amounts are asserted: pool 1 must be funded (stagef_up_v2.sh:668 — without it
-    # "no storage settlement can pay anything"); below 2^17 two shares round to 0 (README env row)
-    case "${STAGEF_TREASURY_POOL1_RAW:-}" in ''|*[!0-9]*) POOL1_ENV=0 ;; *) POOL1_ENV="$STAGEF_TREASURY_POOL1_RAW" ;; esac
-    if [ "$POOL1_ENV" -lt 131072 ]; then
-        echo "[SKIP] STAGEF_TREASURY_POOL1_RAW='${STAGEF_TREASURY_POOL1_RAW:-}' — the settlement amounts are asserted and need pool 1 funded"
-        echo "       (export STAGEF_TREASURY_POOL1_RAW=1000000000000000 BEFORE stagef_up_v2.sh)"
+    # settlement amounts are asserted and pool 1 must be funded (stagef_up_v2.sh:668 — without it "no storage
+    # settlement can pay anything"; below 2^17 two shares round to 0). The environment variable is NOT read here
+    # (round-4 row 7): pool 1 is read from the chain, from v2_treasury, before the storage part (section 3), and
+    # an unfunded pool FAILs there.
+    # round-4 row 5 (the fetch path): the joiner (node $JOINER) runs with `retain_blocks` so that its block
+    # store no longer has segment 1's range when it becomes a holder, which needs a LOWERED evidence window in
+    # the hashed genesis document (nodus_cmt_node_check_retain_blocks: retain_blocks must exceed it) — the
+    # knobs of test_cmt_prune.sh, exported BEFORE stagef_up_v2.sh.
+    CONF_EVB=$(sed -n 's/^evidence_max_age_num_blocks *= *\([0-9][0-9]*\) *$/\1/p' "$CONF")
+    CONF_EVD=$(sed -n 's/^evidence_max_age_duration_ns *= *\([0-9][0-9]*\) *$/\1/p' "$CONF")
+    if [ -z "$CONF_EVB" ] || [ -z "$CONF_EVD" ] || [ "$CONF_EVB" -ge 100 ] || [ "$CONF_EVD" -ge $(( (CONF_EVB + 2) * 1000000 )) ]; then
+        echo "[SKIP] the genesis document names no lowered evidence window (evidence_max_age_num_blocks='${CONF_EVB:-}' evidence_max_age_duration_ns='${CONF_EVD:-}') —"
+        echo "       the fetch path needs node $JOINER to prune: export STAGEF_EVIDENCE_MAX_AGE_BLOCKS=10 STAGEF_EVIDENCE_MAX_AGE_DURATION_NS=1000000 BEFORE stagef_up_v2.sh"
         exit 99
     fi
+    RETAIN_J=$(( CONF_EVB + 2 ))
 fi
 for t in sqlite3 xxd ss openssl; do
     if ! command -v "$t" >/dev/null 2>&1; then
@@ -828,7 +928,8 @@ claim_leaf() {
         "SELECT COUNT(*) FROM utxo_set WHERE owner = '$fp'
            AND token_id = zeroblob(64) AND amount > $STAGEF_PUMP_FEE_RAW;") && wrc=0 || wrc=$?
     [ "$wrc" = 0 ] || die "the claimed coin for $keys never appeared (wait rc=$wrc, tip $h)"
-    echo "[ok] claimed the genesis leaf of node$node (tip $h)"
+    # the identity that CLAIMED (its keys' directory and fingerprint) and the node the CLI dialled are two things (round-4 row 24)
+    echo "[ok] claimed the genesis leaf of identity $(basename "$(dirname "$keys")") (fp ${fp:0:16}…) through node$node (tip $h)"
 }
 
 # ── hf9: the cell — ONE read snapshot per node, compared across the live nodes ─
@@ -884,11 +985,13 @@ cell_one()   { cell_lines "$1" | sed -n '1p'; }
 cell_read() {
     local label="$1" hl="$2" a="$3" min="$4" n d ref="" ref_n="" tips agree
     local lo last_lo=-1 hi since=0 stall=30 t_n
+    local -A tip_dump=() tip_node=()
     wait_all "$min"
     # bounded by block distance (the live nodes' highest tip may not pass MIN_TIP + E — a boundary
     # away, where the layout is gone) and by progress (the lowest tip must rise within 30 rounds of 1 s)
     while :; do
         ref=""; agree=1; tips=""; lo=-1; hi=-1
+        tip_dump=(); tip_node=()
         for n in "${ALIVE[@]}"; do
             if ! d=$(cell_dump "$n" "$hl" "$a"); then die "$label: node$n's snapshot read failed: $d"; fi
             case "$d" in tip\|*) ;; *) die "$label: node$n's snapshot read failed: $d" ;; esac
@@ -896,13 +999,16 @@ cell_read() {
             tips="$tips node$n=$t_n"
             if [ "$lo" -lt 0 ] || [ "$t_n" -lt "$lo" ]; then lo="$t_n"; fi
             if [ "$t_n" -gt "$hi" ]; then hi="$t_n"; fi
-            if [ -z "$ref" ]; then ref="$d"; ref_n="$n"
-            elif [ "$(sed -n '1p' <<< "$d")" != "$(sed -n '1p' <<< "$ref")" ]; then agree=0
-            elif [ "$d" != "$ref" ]; then
-                diff <(printf '%s\n' "$ref") <(printf '%s\n' "$d") >&2 || true
-                die "$label: node$n's snapshot DIFFERS from node$ref_n's at the SAME tip (diff above) — consensus state diverged"
+            # every snapshot is compared with the first snapshot OF ITS OWN TIP (round-4 row 14): two nodes
+            # at the same tip that differ FAIL at once, whichever node was listed first
+            if [ -z "${tip_dump[$t_n]+x}" ]; then tip_dump[$t_n]="$d"; tip_node[$t_n]="$n"
+            elif [ "$d" != "${tip_dump[$t_n]}" ]; then
+                diff <(printf '%s\n' "${tip_dump[$t_n]}") <(printf '%s\n' "$d") >&2 || true
+                die "$label: node$n's snapshot DIFFERS from node${tip_node[$t_n]}'s at the SAME tip $t_n (diff above) — consensus state diverged"
             fi
+            if [ -z "$ref" ]; then ref="$d"; ref_n="$n"; fi
         done
+        [ "${#tip_dump[@]}" = 1 ] || agree=0
         if [ "$agree" = 1 ]; then
             CELL="$ref"
             CELL_TIP=$(sed -n '1p' <<< "$ref" | sed 's/^tip|//')
@@ -935,11 +1041,11 @@ check_legs() {
     [ "$dirty" = 0 ] || die "$label: v2_trie_dirty holds $dirty row(s) at a block's end, expected 0 (plan §5.3 end-of-block assertion)"
     [ "$nleg" = 8 ] || die "$label: v2_trie_roots holds $nleg row(s), expected 8"
     if [ "$WITH_STORAGE" = 0 ]; then
-        # the production-constant run has no storage: legs 5 and 6 are asserted EMPTY, explicitly
-        for i in 5 6; do
-            [ "$(cell_one "src|$i")" = 0 ] || die "$label: leg $i's source table holds $(cell_one "src|$i") row(s) in the run without storage"
-            [ "$(cell_one "leg|$i")" = "$EMPTY_ROOT" ] || die "$label: leg $i's root is not the empty-leg root in the run without storage"
-        done
+        # the production-constant run registers the four storage members but publishes no segment: leg 5 (the
+        # registry) holds exactly those four rows, leg 6 (the segments) is asserted EMPTY with the empty-leg root
+        [ "$(cell_one "src|5")" = 4 ] || die "$label: leg 5's source table (v2_storage_nodes) holds $(cell_one "src|5") row(s) in the production-constant run, expected the four registered members"
+        [ "$(cell_one "src|6")" = 0 ] || die "$label: leg 6's source table holds $(cell_one "src|6") row(s) in the production-constant run (no segment is reachable)"
+        [ "$(cell_one "leg|6")" = "$EMPTY_ROOT" ] || die "$label: leg 6's root is not the empty-leg root in the production-constant run"
     fi
     for i in 1 2 3 4 5 6 7 8; do
         root=$(cell_one "leg|$i"); cnt=$(cell_one "src|$i")
@@ -960,11 +1066,11 @@ require_populated() {
         cnt=$(cell_one "src|$i")
         [ "$cnt" -gt 0 ] || die "$label: leg $i's source table is EMPTY — it must be populated before the edge (the leg would prove nothing)"
     done
+    cnt=$(cell_one "src|5")
+    [ "$cnt" -gt 0 ] || die "$label: leg 5's source table is EMPTY — the registered storage members are required in both runs"
     if [ "$WITH_STORAGE" = 1 ]; then
-        for i in 5 6; do
-            cnt=$(cell_one "src|$i")
-            [ "$cnt" -gt 0 ] || die "$label: leg $i's source table is EMPTY — the registry and a published segment are required in the short run"
-        done
+        cnt=$(cell_one "src|6")
+        [ "$cnt" -gt 0 ] || die "$label: leg 6's source table is EMPTY — a published segment is required in the short run"
     fi
 }
 
@@ -1013,6 +1119,102 @@ check_storage_state() {
     done < <(cell_lines mepoch | awk -F'|' -v b="$b" '$1 == b')
     echo "[ok] $label: boundary $b, R = $want_r, |basis| = $nb, every segment has $want current rows, held = rows, member_epoch rows = $nact, grace >= boundary + n_new x E"
 }
+# ── hf9: the EXACT recurrences (round-4 rows 3, 8, 9) ──────────────────────────────────────────────
+# derive_union B — held_union and n_new of every member_epoch row at B, derived from the stored ASSIGNMENT
+# relation alone (rows current AND ended, the segments' publication heights, the members), by the plan's
+# own definition (docs/plans/approved/2026-11-04-hf9.md :299-302 §8.5 step 5): for the members m of set(B)
+# and the segments k published <= B - E (K9a cutoff), prev(k) = the rows current at B - E (from_h <= B - E
+# and not ended at or before it), new(k) = the rows current after B;
+#   ended(m) = |{k : m in prev(k) \ new(k)}|    n_new(m) = |{k : m in new(k) \ prev(k)}|
+#   held(m) = the current rows of m (every k, the ones published at B included)
+#   held_union(m, B) = held(m) + ended(m)
+# Valid for B > B1 only: at B1 prev(k) is the XOR relation of set(H2), which no table holds (it is not
+# recomputed here — see HOW IT CAN LIE). Output: "fp|held_union|n_new", sorted.
+derive_union() {           # B
+    { cell_lines assign | sed 's/^/A|/'; cell_lines seg | sed 's/^/S|/'; cell_lines mepoch | sed 's/^/M|/'; } |
+    awk -F'|' -v b="$1" -v e="$E" '
+        $1 == "S" { pub[$2] = $3 + 0; next }
+        $1 == "A" {
+            from = $5 + 0; to = $6
+            if (from <= b - e && (to == "-" || to + 0 > b - e)) prev[$2 SUBSEP $3] = 1
+            if (from <= b && (to == "-" || to + 0 > b)) { cur[$2 SUBSEP $3] = 1; held[$3]++ }
+            next
+        }
+        $1 == "M" && $2 + 0 == b { mem[$3] = 1; next }
+        END {
+            for (key in prev) {
+                split(key, a, SUBSEP); k = a[1]; f = a[2]
+                if (!(f in mem) || pub[k] > b - e) continue
+                if (!(key in cur)) ended[f]++
+            }
+            for (key in cur) {
+                split(key, a, SUBSEP); k = a[1]; f = a[2]
+                if (!(f in mem) || pub[k] > b - e) continue
+                if (!(key in prev)) nn[f]++
+            }
+            for (f in mem) print f "|" (held[f] + ended[f]) "|" (nn[f] + 0)
+        }' | LC_ALL=C sort
+}
+declare -A GR_PREV FS_PREV     # the registry values read at the previous boundary cell (absent = 0, the registration value)
+# fs_next OLD HAD_ELIGIBLE OK -> the new counter — nodus_storage_fail_streak_next (nodus_witness_v2_storage.c:1330-1339)
+fs_next() {
+    local old="$1" had="$2" ok="$3"
+    if [ "$had" = 1 ] && [ "$ok" = 1 ]; then echo 0; return; fi          # K5a: even at >= 3
+    if [ "$old" -ge 3 ]; then                                            # skipped (K5)
+        if [ "$old" -ge 14 ]; then echo 0; else echo $(( old + 1 )); fi
+        return
+    fi
+    if [ "$had" = 0 ]; then echo "$old"; else echo $(( old + 1 )); fi
+}
+# check_transition_exact B LABEL — at boundary B, from the previous cell's registry values:
+#  (1) B > B1: held_union / n_new of every member_epoch row = derive_union (stored values are not their own oracle)
+#  (2) grace_until of every member_epoch row = max(previous, B + n_new x E) when n_new > 0, UNCHANGED when 0
+#      (nodus_storage_grace_next, nodus_witness_v2_storage.c:892-901)
+#  (3) fail_streak of EVERY registry row = the source recurrence over the settled epoch H = B - 2E, whose
+#      grace / verdict / weight were READ in its report window (epoch_service_read): a member of set(H) in
+#      grace or NO_EVIDENCE is unchanged, else fail_streak_next(old, weight > 0, verdict = OK); a registry
+#      row that was not in set(H) is unchanged (nodus_witness_v2_storage.c:1704-1713)
+check_transition_exact() {
+    local b="$1" label="$2" fp hu nn exp have want h ev hh had ok old
+    if [ "$b" -gt "$B1" ]; then
+        exp=$(derive_union "$b")
+        have=$(cell_lines mepoch | awk -F'|' -v b="$b" '$1 == b { print $2 "|" $3 "|" $4 }' | LC_ALL=C sort)
+        [ "$exp" = "$have" ] || { diff <(printf '%s\n' "$exp") <(printf '%s\n' "$have") >&2 || true
+            die "$label: v2_storage_member_epoch at $b (right) differs from held_union / n_new derived from the assignment relation (left)"; }
+        while IFS='|' read -r fp hu nn; do [ -z "$fp" ] || DER_HU["$b|$fp"]="$hu|$nn"; done <<< "$exp"
+    fi
+    while IFS='|' read -r _ fp hu nn; do
+        [ -n "$fp" ] || continue
+        old="${GR_PREV[$fp]:-0}"
+        if [ "$nn" -gt 0 ]; then want=$(( b + nn * E )); [ "$want" -ge "$old" ] || want="$old"; else want="$old"; fi
+        [ "$(reg_grace "$fp")" = "$want" ] || die "$label: ${fp:0:16}… grace_until is $(reg_grace "$fp"), the recurrence max(previous $old, $b + $nn x $E) (unchanged for n_new 0) gives $want (K9)"
+    done < <(cell_lines mepoch | awk -F'|' -v b="$b" '$1 == b { print $1 "|" $2 "|" $3 "|" $4 }')
+    h=$(( b - 2 * E ))
+    if [ "$h" -ge "$E" ]; then
+        [ -n "${EPM[$h]+x}" ] || die "$label: internal — the report window of epoch $h (settled at $b) was never read — $MSG_LAYOUT"
+        for fp in $(cell_lines reg | awk -F'|' '{ print $1 }'); do
+            old="${FS_PREV[$fp]:-0}"
+            want="$old"
+            case " ${EPM[$h]} " in
+                *" $fp "*)
+                    ev="${EPV["$h|$fp"]}"
+                    case "$ev" in
+                        grace) want="$old" ;;
+                        ok)    want=$(fs_next "$old" 1 1) ;;
+                        dead)  want=$(fs_next "$old" 1 0) ;;
+                        none)  want=$(fs_next "$old" 0 0) ;;
+                        *)     die "$label: internal — epoch $h verdict of ${fp:0:16}… is '$ev'" ;;
+                    esac ;;
+            esac
+            [ "$(reg_fs "$fp")" = "$want" ] || die "$label: ${fp:0:16}… fail_streak is $(reg_fs "$fp"), the settlement of epoch $h (verdict '${EPV["$h|$fp"]:-not in set($h)}', previous $old) gives exactly $want"
+        done
+    fi
+    while IFS='|' read -r fp _ _ fs g _; do
+        [ -n "$fp" ] || continue
+        GR_PREV[$fp]="$g"; FS_PREV[$fp]="$fs"
+    done < <(cell_lines reg)
+    echo "[ok] $label: grace_until and fail_streak equal the source recurrences exactly$([ "$b" -gt "$B1" ] && echo ", held_union / n_new equal the values derived from the assignment relation")"
+}
 n_new_sum()  { cell_lines mepoch | awk -F'|' -v b="$1" '$1 == b { s += $4 } END { print s + 0 }'; }
 rows_from()  { cell_lines assign | awk -F'|' -v b="$1" '$4 == b && $5 == "-"' | wc -l; }
 rows_ended() { cell_lines assign | awk -F'|' -v b="$1" '$5 == b' | wc -l; }
@@ -1030,12 +1232,18 @@ seg_file() { echo "$(stagef_node_dir "$1")/data/segments/seg-$2.ok"; }
 # (no tip increase for 3 CreateEmptyBlocks intervals = a stall, stagef_cmt_wait_height's rule);
 # rc 0 condition reached, 1 deadline height reached, 2 stalled.
 file_wait_polls() { echo $(( 3 * STAGEF_CMT_EMPTY_INTERVAL_MS / 1000 / 2 )); }   # 2 s polls
+#   The tip is read BEFORE the file test and a file is accepted only when that tip is below the deadline
+#   (UNTIL_TIP is exclusive): a file that appears while the chain passes the deadline during the 2 s sleep
+#   is a late file (round-4 row 16), never an accepted one.
 wait_seg_file() {          # NODE K UNTIL_TIP
     local f t last=-1 since=0 stall
     f=$(seg_file "$1" "$2"); stall=$(file_wait_polls)
     while :; do
-        if [ -f "$f" ]; then return 0; fi
         t=$(tip_of 1)
+        if [ -f "$f" ]; then
+            if [ "$t" -lt "$3" ]; then return 0; fi
+            return 1
+        fi
         if [ "$t" -ge "$3" ]; then return 1; fi
         if [ "$t" -gt "$last" ]; then last="$t"; since=0; else since=$(( since + 1 )); fi
         if [ "$since" -ge "$stall" ]; then echo "[FAIL] the chain stalled at tip $t while waiting for $f" >&2; return 2; fi
@@ -1054,21 +1262,49 @@ del_count() { grep -c "segment $2 deleted: no longer a holder" "$(node_log "$1")
 del_h() {                  # NODE K INDEX(1-based) -> the H of that deletion line
     grep "segment $2 deleted: no longer a holder" "$(node_log "$1")" | sed -n "${3}p" | sed 's/.*(H=\([0-9]*\)).*/\1/'
 }
+#   The holder removes seg-<k>.ok FIRST and logs only after nodus_seg_delete returned (segment.c:1193-1205 unlinks
+#   the marker, five more files and syncs the directory; holder.c:283-285 logs afterwards), so a file seen gone
+#   does not yet mean the line is written: assert_deleted_at WAITS for it, bounded by block distance (the tip may
+#   not pass MIN_H + E) and by progress (no tip increase for 3 CreateEmptyBlocks intervals), and FAILs if it never
+#   comes (round-4 row 12).
 assert_deleted_at() {      # LABEL NODE K COUNT_BEFORE MIN_H — a NEW deletion line since COUNT_BEFORE, with H >= MIN_H
-    local label="$1" n="$2" k="$3" c0="$4" minh="$5" c1 h
-    c1=$(del_count "$n" "$k")
-    [ "$c1" -gt "$c0" ] || die "$label: node$n logged no new 'segment $k deleted' line (had $c0, has $c1)"
+    local label="$1" n="$2" k="$3" c0="$4" minh="$5" c1 h t last=-1 since=0 stall
+    stall=$(file_wait_polls)
+    while :; do
+        c1=$(del_count "$n" "$k")
+        [ "$c1" -le "$c0" ] || break
+        t=$(tip_of 1)
+        [ "$t" -lt $(( minh + E )) ] || die "$label: node$n logged no new 'segment $k deleted' line by tip $t (had $c0, has $c1; waited to MIN_H + E = $(( minh + E )))"
+        if [ "$t" -gt "$last" ]; then last="$t"; since=0; else since=$(( since + 1 )); fi
+        [ "$since" -lt "$stall" ] || die "$label: the chain stalled at tip $t while waiting for node$n's 'segment $k deleted' line"
+        sleep 2
+    done
     h=$(del_h "$n" "$k" $(( c0 + 1 )))
     [[ "$h" =~ ^[0-9]+$ ]] || die "$label: could not read the H of node$n's deletion line"
     [ "$h" -ge "$minh" ] || die "$label: node$n deleted segment $k at its epoch H=$h, before the overlap epoch ended (expected H >= $minh)"
-    echo "[ok] $label: node$n deleted segment $k at its epoch H=$h (>= $minh): the file was kept through the overlap epoch"
+    echo "[ok] $label: node$n logged the deletion of segment $k at its epoch H=$h (>= $minh): no sweep deleted it earlier (the deletion HEIGHT; that the file existed in the overlap epoch is asserted separately from the file itself)"
+}
+# The RETENTION evidence (round-4 row 11): seg-<k>.ok of a node that is no longer a holder, seen to EXIST at a
+# tip inside the overlap epoch. The tip is read before and after the file test and BOTH must lie in [B, B + E - 1]:
+# nothing deletes the file before the sweep of epoch H = B + E (holder.c:263-285), so the file seen at a tip in
+# that range was kept through the overlap. A tip outside the range is a layout failure (a false RED).
+assert_file_in_overlap() { # LABEL NODE K B
+    local label="$1" n="$2" k="$3" b="$4" t0 t1
+    t0=$(tip_of 1)
+    [ -f "$(seg_file "$n" "$k")" ] || die "$label: node$n's $(seg_file "$n" "$k") does not exist at tip $t0 inside the overlap epoch [$b, $(( b + E - 1 ))] — the file was not retained"
+    t1=$(tip_of 1)
+    { [ "$t0" -ge "$b" ] && [ "$t1" -le $(( b + E - 1 )) ]; } || die "$label: the overlap-epoch file check ran at tips $t0 .. $t1, outside [$b, $(( b + E - 1 ))] — $MSG_LAYOUT"
+    echo "[ok] $label: node$n still has seg-$k.ok at tips $t0 .. $t1, inside the overlap epoch [$b, $(( b + E - 1 ))] (retention evidence: the file itself)"
 }
 wait_seg_gone() {          # NODE K UNTIL_TIP
     local f t last=-1 since=0 stall
     f=$(seg_file "$1" "$2"); stall=$(file_wait_polls)
     while :; do
-        if [ ! -e "$f" ]; then return 0; fi
         t=$(tip_of 1)
+        if [ ! -e "$f" ]; then
+            if [ "$t" -lt "$3" ]; then return 0; fi
+            return 1
+        fi
         if [ "$t" -ge "$3" ]; then return 1; fi
         if [ "$t" -gt "$last" ]; then last="$t"; since=0; else since=$(( since + 1 )); fi
         if [ "$since" -ge "$stall" ]; then echo "[FAIL] the chain stalled at tip $t while waiting for $f to go" >&2; return 2; fi
@@ -1078,11 +1314,17 @@ wait_seg_gone() {          # NODE K UNTIL_TIP
 require_holder_files() {   # LABEL BOUNDARY — every current holder of segment 1 has seg-1.ok before the next boundary
     local label="$1" b="$2" n
     for n in $(cur_holders_of 1); do
-        wait_seg_file "$n" 1 $(( b + E - 1 )) || die "$label: node$n is a current holder of segment 1 at $b but $(seg_file "$n" 1) did not appear before the next boundary (the holder runtime did not export / fetch it)"
+        wait_seg_file "$n" 1 $(( b + E )) || die "$label: node$n is a current holder of segment 1 at $b but $(seg_file "$n" 1) did not appear before the next boundary (the holder runtime did not export / fetch it)"
     done
-    echo "[ok] $label: every current holder of segment 1 ($(cur_holders_of 1 | tr '\n' ' ')) has seg-1.ok"
+    echo "[ok] $label: every current holder of segment 1 ($(cur_holders_of 1 | tr '\n' ' ')) has seg-1.ok at a tip below the next boundary $(( b + E ))"
 }
 
+# bs_base NODE — the lowest height with a `P:` row in the node's block store (cmt_blockstore, the key shape
+# test_cmt_prune.sh reads); -1 when it holds none
+bs_base() {
+    sqlite3 -cmd '.timeout 10000' "$(db_of "$1")" \
+        "SELECT COALESCE(MIN(CAST(substr(CAST(key AS TEXT), 3) AS INTEGER)), -1) FROM cmt_blockstore WHERE substr(CAST(key AS TEXT), 1, 2) = 'P:';"
+}
 reg_fs()   { cell_lines reg | awk -F'|' -v f="$1" '$1 == f { print $4 }'; }
 in_basis() { [ -n "$(cell_lines basis | awk -v f="$1" '$0 == f')" ]; }
 cur_rows_of() { cell_lines assign | awk -F'|' -v f="$1" '$2 == f && $5 == "-"' | wc -l; }
@@ -1105,10 +1347,11 @@ boundary_cell() {          # LABEL BOUNDARY R
     if [ "$since" = 0 ]; then
         echo "[ok] $1: no envelope after the boundary block up to tip $CELL_TIP — the snapshot is of the boundary state (claims are counted by no tx_count; none was submitted)"
     else
-        echo "[info] $1: $since envelope(s) after the boundary block up to tip $CELL_TIP — the leg roots read are of a LATER state; the boundary's roots are carried by the full global_root at $2 (7/7), which binds the eight leg roots through the composition chain (plan §10.3, docs/plans/approved/2026-11-04-hf9.md:396-397)"
+        echo "[info] $1: $since envelope(s) after the boundary block up to tip $CELL_TIP — the leg roots read are of a LATER state (tip $CELL_TIP), NOT of height $2. At $2 only the full global_root is compared 7/7 (diff --full), which binds the eight leg roots through the composition chain (plan §10.3, docs/plans/approved/2026-11-04-hf9.md:396-397); a per-height leg-root comparison at this boundary is NOT covered (v2_trie_roots keeps the latest root of each leg only — plan §16 DF-3, :614)"
     fi
     check_legs post "$1"
     check_storage_state "$2" "$3" "$1"
+    check_transition_exact "$2" "$1"
     case " $PEND_READ $PEND_POST " in *" $2 "*) ;; *) PEND_READ="$PEND_READ $2" ;; esac
     service_posts
 }
@@ -1139,15 +1382,34 @@ boundary_cell() {          # LABEL BOUNDARY R
 # power = seat count and P_total = $N. Then I is N or N-1 (N = reports), and
 #   OK is certain when 2·(N-1) > $N  and  3·Y > 2·N;   NOT_OK is certain when 2·(N-1) > $N and Y = 0.
 # Any other combination is "undetermined" and FAILs the scenario (it never guesses a verdict).
+# The seat-count bound below is the source verdict ONLY under these prerequisites, read from the chain (round-4
+# row 2) — not assumed: (1) every validator holds the same total stake and nothing is delegated, so every seat
+# has the same power (the snapshot's power is total_stake / DECIMAL_UNIT, capped symmetrically); (2) no seat's
+# owner is a storage member's owner (the seats' owner is the validators' owner, asserted after generation 4;
+# the members' payee_fp is read here), so the owner clause excludes no seat; (3) the member's own seat never
+# sets its own bit (nodus_witness_storage_reporter.c:468 "F2: never itself" — NOPROBE; a source fact, the seat
+# of a bitmap is not mapped to a node here). The key clause excludes exactly the member's own seat.
+check_verdict_prereqs() {
+    local r
+    r=$(sqlite3 -separator '|' -cmd '.timeout 5000' "$(db_of 1)" \
+        "SELECT (SELECT COUNT(*) FROM validators v JOIN v2_validator_roles r ON v.pubkey_hash = r.validator_id),
+                (SELECT COUNT(DISTINCT v.self_stake + v.total_delegated) FROM validators v JOIN v2_validator_roles r ON v.pubkey_hash = r.validator_id),
+                (SELECT COUNT(*) FROM delegations),
+                (SELECT COUNT(*) FROM v2_validator_roles WHERE lower(hex(owner_fp)) <> '$OWNER'),
+                (SELECT COUNT(*) FROM v2_storage_nodes WHERE lower(hex(payee_fp)) = '$OWNER');" 2>&1) \
+        || die "the verdict prerequisites could not be read: $r"
+    [ "$r" = "$N|1|0|0|0" ] || die "the verdict prerequisites do not hold (validators|distinct total stake|delegations|seats not owned by the validators' owner|members owned by it = '$r', expected '$N|1|0|0|0'): the seat-count bound is not the source verdict here"
+}
 declare -A RB_Y RB_GRACE RB_HU
 RB_N=0; RB_MEMBERS=""; EP_H=0
 # epoch_reads H — the members of set(H), their grace and held_union, and the committed reports of
 # epoch H, from every live node (identical or FAIL); the live nodes are first waited (progress-
 # bounded) to the report window's close.
 epoch_reads() {            # H
-    local h="$1" n out ref="" body t idx i fp g hu seat hex byte
+    local h="$1" n out ref="" have_ref=0 body t idx i fp g hu seat hex byte
     local -a MEM=()
     wait_all $(( h + E + E / 2 ))
+    check_verdict_prereqs
     for n in "${ALIVE[@]}"; do
         if ! out=$(sqlite3 -cmd '.timeout 5000' "$(db_of "$n")" \
             "BEGIN; SELECT 'tip|' || COALESCE(MAX(global_height), -1) FROM v2_blocks;
@@ -1160,7 +1422,9 @@ epoch_reads() {            # H
         [ "$t" -ge $(( h + E + E / 2 )) ] || die "internal: the reports of epoch $h were read at tip $t, before the report window closed ($(( h + E + E / 2 ))) — $MSG_LAYOUT"
         [ "$t" -lt $(( h + 2 * E )) ] || die "the reports of epoch $h were read at tip $t, at or past their settlement boundary $(( h + 2 * E )) where they are pruned — $MSG_LAYOUT"
         body=$(grep -v '^tip|' <<< "$out" || true)
-        if [ -z "$ref" ]; then ref="$body"
+        # initialisation is tracked apart from the body: an EMPTY first body is a body too and every
+        # other node's body is compared with it (round-4 row 13)
+        if [ "$have_ref" = 0 ]; then ref="$body"; have_ref=1
         elif [ "$body" != "$ref" ]; then
             diff <(printf '%s\n' "$ref") <(printf '%s\n' "$body") >&2 || true
             die "node$n's set / member_epoch / reports of epoch $h DIFFER from node${ALIVE[0]}'s (diff above)"
@@ -1202,6 +1466,19 @@ fp_node() {                # FP -> the node index whose identity it is, '' if no
     local k
     for k in $(seq 1 "$N"); do if [ "${FP[$k]}" = "$1" ]; then echo "$k"; return 0; fi; done
 }
+# count_log_lines FIXED_STRING NODE… — the number of lines holding the string across those nodes' logs; an
+# unreadable log (grep rc other than 0 / 1) is a FAIL, never a count of 0 (round-4 row 19's rule, here too)
+count_log_lines() {
+    local pat="$1" n c total=0 grc
+    shift
+    for n in "$@"; do
+        [ -r "$(node_log "$n")" ] || die "node$n's log $(node_log "$n") is not readable"
+        grc=0; c=$(grep -cF -- "$pat" "$(node_log "$n")") || grc=$?
+        { [ "$grc" = 0 ] || [ "$grc" = 1 ]; } || die "grep of node$n's log failed (rc $grc)"
+        total=$(( total + c ))
+    done
+    echo "$total"
+}
 pool1_of() { sqlite3 -cmd '.timeout 5000' "$(db_of 1)" "SELECT balance FROM v2_treasury WHERE pool_id = 1;"; }
 acc_of()   { sqlite3 -cmd '.timeout 5000' "$(db_of 1)" "SELECT COALESCE(SUM(amount), 0) FROM v2_reward_accrual WHERE lower(hex(owner_fp)) = '$1';"; }
 
@@ -1219,24 +1496,46 @@ acc_of()   { sqlite3 -cmd '.timeout 5000' "$(db_of 1)" "SELECT COALESCE(SUM(amou
 #    floor(budget x held_union / Σ held_union). Pool 1 and the owners' accrual change only at
 #    boundaries, so the pre values read here (after boundary H + E, before H + 2E) are the values
 #    the settlement at H + 2E starts from.
+#  * the candidate's NOT OK is tied to the reporter's own line "storage member <fp16>.. was never
+#    reachable on 0x72 in epoch H=<H> — NOT OK" (nodus_witness_storage_reporter.c:579-580, expire() at the
+#    epoch's close), counted over the live nodes' logs: one per reporting seat at least. A target that
+#    was never PROBED (NOPROBE: itself, no eligible segment) logs no such line, so the line separates
+#    "probed and unreachable" from "not probed" (round-4 row 4, the assertable half).
+declare -A EPV EPM EPH DER_HU    # per epoch H: the verdict "h|fp", the member list, held_union "h|fp", the independently derived "b|fp" -> "hu|nn"
 epoch_service_read() {     # H
-    local h="$1" fp k kind sumw=0 hu pool budget share
+    local h="$1" fp k kind sumw=0 hu pool budget share anypos=0 nlines
     epoch_reads "$h"
+    EPM[$h]="$RB_MEMBERS"
     for fp in $RB_MEMBERS; do
         epoch_verdict "$fp"
+        EPV["$h|$fp"]="$EV"; EPH["$h|$fp"]="${RB_HU[$fp]}"
         k=$(fp_node "$fp")
+        # held_union as the settlement will use it must equal the value derived INDEPENDENTLY from the
+        # assignment relation at the boundary cell of this epoch (round-4 row 8) where one was derived
+        if [ -n "${DER_HU["$h|$fp"]+x}" ]; then
+            [ "${DER_HU["$h|$fp"]%%|*}" = "${RB_HU[$fp]}" ] || die "epoch $h: ${fp:0:16}… has held_union ${RB_HU[$fp]} in v2_storage_member_epoch, the assignment relation derives ${DER_HU["$h|$fp"]%%|*}"
+        fi
         if [ "$EV" = grace ] || [ "$EV" = none ]; then
             [ "${RB_Y[$fp]}" = 0 ] || die "epoch $h: ${fp:0:16}… is $EV (in grace / no assignment) but ${RB_Y[$fp]} seat(s) carry its bit"
         elif [ "$fp" = "$DEAD_FP" ]; then
             [ "$EV" = dead ] || die "epoch $h: the candidate (no node) is eligible but its verdict is '$EV' (${RB_Y[$fp]} of $RB_N seats carry its bit) — expected NOT OK with bit 0 in every seat"
+            nlines=$(count_log_lines "storage member ${fp:0:16}.. was never reachable on 0x72 in epoch H=$h — NOT OK" "${ALIVE[@]}")
+            [ "$nlines" -ge "$RB_N" ] || die "epoch $h: the candidate has bit 0 in all $RB_N reports but the live nodes' logs hold only $nlines 'never reachable on 0x72 in epoch H=$h — NOT OK' line(s): it was not probed-and-unreachable (a not-probed target has bit 0 too)"
+            echo "[ok] epoch $h: the candidate ${fp:0:16}… — $nlines reporter line(s) 'never reachable on 0x72 in epoch H=$h — NOT OK' (>= the $RB_N reports): probed and unreachable, not merely unprobed"
         else
-            [ "$EV" = ok ] || die "epoch $h: node$k (${fp:0:16}…) is eligible and serves its files but its verdict is '$EV' (${RB_Y[$fp]} of $RB_N seats carry its bit)"
+            [ "$EV" = ok ] || die "epoch $h: node$k (${fp:0:16}…) is eligible and answers its probes but its verdict is '$EV' (${RB_Y[$fp]} of $RB_N seats carry its bit)"
         fi
     done
     for fp in ${NEWH_AT[$h]:-}; do
         epoch_verdict "$fp"
         { [ "$EV" = ok ] || [ "$EV" = dead ]; } || die "epoch $h: the new holder ${fp:0:16}… is not eligible in its first eligible epoch (verdict '$EV')"
-        echo "[ok] epoch $h: the new holder ${fp:0:16}… $([ "$EV" = ok ] && echo "has its bit in ${RB_Y[$fp]} of $RB_N reports (it serves its file)" || echo "has bit 0 in all $RB_N reports (it runs no node)")"
+        echo "[ok] epoch $h: the new holder ${fp:0:16}… $([ "$EV" = ok ] && echo "has its bit in ${RB_Y[$fp]} of $RB_N reports (it answers its probes)" || echo "has bit 0 in all $RB_N reports (it runs no node)")"
+        if [ "$EV" = ok ] && [ "$fp" = "${FP[$JOINER]}" ] && [ -n "${J_BASE:-}" ]; then
+            # round-4 row 6: where file serving is claimed, the probe is answered FROM THE FILE — the reporter
+            # answers from the block store first and from seg-<k>.ok only when the store lacks the sample
+            # (nodus_witness_storage_reporter.c:280-286); this node's store starts above segment 1's last height
+            echo "[ok] epoch $h: node$JOINER's probes of segment 1 can only be answered from its segment FILE (its block store starts at $J_BASE, above the segment's last height $P)"
+        fi
     done
     for fp in ${ZERO_AT[$h]:-}; do
         { [ "${RB_Y[$fp]}" = 0 ] && [ "${RB_HU[$fp]}" = 0 ]; } || die "epoch $h: the dropped holder ${fp:0:16}… still has held_union ${RB_HU[$fp]} / ${RB_Y[$fp]} bit(s) after the overlap epoch"
@@ -1254,9 +1553,17 @@ epoch_service_read() {     # H
         epoch_verdict "$fp"
         share=0
         if [ "$EV" = ok ] && [ "$sumw" -gt 0 ]; then share=$(( budget * ${RB_HU[$fp]} / sumw )); fi
+        if [ "$share" -gt 0 ]; then anypos=1; fi
         SETTLE_EXP["$h|$fp"]="$share"
         SETTLE_ACC["$h|$fp"]=$(acc_of "$fp")
     done
+    # an all-zero settlement must not pass (round-4 row 7): pool 1 is read from the chain just above, and
+    # in every paying epoch (a payday boundary empties the accrual and is not asserted) at least one paid member
+    # must have a POSITIVE expected share
+    if ! is_payday $(( h + 2 * E )); then
+        [ "$budget" -gt 0 ] || die "epoch $h: the budget (pool 1 $pool >> $DIV_LOG2) is 0 — pool 1 is not funded on the chain; every share would be 0"
+        [ "$anypos" = 1 ] || die "epoch $h: no member has a positive expected share (Σ weight $sumw, budget $budget) — an all-zero settlement does not pass"
+    fi
     SETTLE_ACC["$h|members"]="$RB_MEMBERS"
     echo "[ok] epoch $h: bits and verdicts as expected (N=$RB_N reports); pool 1 $pool, budget $budget, Σ weight units $sumw — settlement due at $(( h + 2 * E ))"
     PEND_READ=$(printf '%s\n' $PEND_READ | awk -v h="$h" '$0 != h' | tr '\n' ' ')
@@ -1317,6 +1624,22 @@ advance_to() {
     done
 }
 
+# drain_pending — advance through EVERY queued epoch's report window and settlement boundary, then FAIL if
+# any queued read or settlement check is still pending (round-4 rows 18, 21). A read adds its settlement to the
+# queue, so the loop runs until both queues are empty; it never reads a window that has no queued boundary.
+drain_pending() {
+    local target h guard=0
+    while [ -n "${PEND_READ// /}" ] || [ -n "${PEND_POST// /}" ]; do
+        target=0
+        for h in $PEND_READ; do [ $(( h + E + E / 2 )) -le "$target" ] || target=$(( h + E + E / 2 )); done
+        for h in $PEND_POST; do [ $(( h + 2 * E )) -le "$target" ] || target=$(( h + 2 * E )); done
+        guard=$(( guard + 1 ))
+        [ "$guard" -le 8 ] || die "drain_pending: the queues did not empty after 8 passes (reads '${PEND_READ# }', settlements '${PEND_POST# }')"
+        advance_to "$target"
+    done
+    [ -z "${PEND_READ// /}" ] && [ -z "${PEND_POST// /}" ] || die "internal: queued checks are still pending (reads '${PEND_READ# }', settlements '${PEND_POST# }')"
+}
+
 # the next boundary: its cell, then (once the candidate is registered) its fail_streak transition
 D_TRACK=0; D_PHASE=pre; D_PREV=0; DEP=0; REV=0; CUR_B=0
 next_boundary() {          # LABEL R
@@ -1324,16 +1647,15 @@ next_boundary() {          # LABEL R
     boundary_cell "$1" "$CUR_B" "$2"
     if [ "$D_TRACK" = 1 ]; then track_d; fi
 }
-# the candidate's counter at every boundary (nodus_storage_fail_streak_next, nodus_witness_v2_storage.c:1330-1339):
-#   in the basis: +0 / +1 per settlement, leaves the basis exactly when it reaches 3;
-#   out: +0 / +1 per settlement (3 .. 14), and the ONLY way back is 14 -> 0 (14 + 1 is written as 0)
+# the candidate's PHASE at every boundary: it leaves the basis exactly at fail_streak 3, and the ONLY way back is
+# 14 -> 0 (14 + 1 is written as 0). The counter VALUE itself (+0 or +1 is NOT accepted any more) is asserted
+# EXACTLY at every boundary by check_transition_exact from the settled epoch H = B - 2E (round-4 row 3).
 track_d() {
     local fs
     fs=$(reg_fs "$D_FP")
     [[ "$fs" =~ ^[0-9]+$ ]] || die "boundary $CUR_B: the candidate's fail_streak is '$fs'"
     case "$D_PHASE" in
         pre)
-            [ "$fs" = "$D_PREV" ] || [ "$fs" = $(( D_PREV + 1 )) ] || die "boundary $CUR_B: the candidate's fail_streak went $D_PREV -> $fs (one settlement adds at most 1)"
             if in_basis "$D_FP"; then
                 [ "$fs" -lt 3 ] || die "boundary $CUR_B: fail_streak $fs >= 3 but the candidate is still in the basis"
             else
@@ -1347,14 +1669,13 @@ track_d() {
                 D_PHASE=back; REV="$CUR_B"
             else
                 [ "$fs" -ge 3 ] || die "boundary $CUR_B: fail_streak $fs below 3 while the candidate is out of the basis"
-                [ "$fs" = "$D_PREV" ] || [ "$fs" = $(( D_PREV + 1 )) ] || die "boundary $CUR_B: the candidate's fail_streak went $D_PREV -> $fs (skipped epochs add 1 per settlement)"
             fi
             D_PREV="$fs" ;;
         *) : ;;
     esac
 }
 # note_new_holders B — every member with n_new > 0 at boundary B: its first eligible epoch is its grace end;
-# epoch_service_read asserts, in that epoch's reports, the member's bit (it serves) or 0 (the candidate)
+# epoch_service_read asserts, in that epoch's reports, the member's bit (it answers its probes) or 0 (the candidate)
 note_new_holders() {       # B
     local fp g nn
     while IFS='|' read -r _ fp _ nn; do
@@ -1455,8 +1776,9 @@ floor_diff "pre-hf9"
 echo "[info] mode: $([ "$WITH_STORAGE" = 1 ] && echo "SHORT EPOCH (E=$E), storage included" || echo "PRODUCTION-CONSTANT edge run (E=$E), WITHOUT storage segments — registration, segment 1, B1, join, exit and param 25 are not run (header)")"
 
 # ── 1. leaves, a token and a name — the populated legs (hf9) ────────
-CLAIM_NODES="1 2"
-if [ "$WITH_STORAGE" = 1 ]; then CLAIM_NODES="1 2 $MEMBERS_PRE"; fi
+# (round-4 row 20: the production-constant run registers the four storage members too, so leg 5 is populated
+# there; its leg 6 stays empty — no segment is reachable at E 720)
+CLAIM_NODES="1 2 $MEMBERS_PRE"
 for k in $CLAIM_NODES; do claim_leaf "$(node_keys "$k")" "$k"; done
 # the token: node 1 creates it (test_cmt_token_create.sh's call), dialled through node 2
 tport=$(stagef_tcp_port "$(dial_for 1 "$(node_keys 1)")")
@@ -1562,7 +1884,19 @@ floor_diff "gen5"
 echo "[ok] generation $GEN_5 on 7/7 from A5=$A5 (HF-7)"
 
 # ── 3. hf9: four storage nodes, and segment 1 (short epoch only) ────
+if [ "$WITH_STORAGE" = 0 ]; then
+    # production-constant run (round-4 row 20): the four members register at generation 5 under their own keys,
+    # so the registry leg (5) is populated at the edge; segments stay out of reach, so leg 6 stays empty
+    for k in $MEMBERS_PRE; do register_member "$k"; done
+    [ "$(sqlite3 "$(db_of 1)" "SELECT COUNT(*) FROM v2_storage_nodes WHERE status = 1;")" = 4 ] || die "the production-constant run: the registry does not hold exactly the four ACTIVE members"
+fi
 if [ "$WITH_STORAGE" = 1 ]; then
+    # pool 1 READ FROM THE CHAIN (round-4 row 7), not from the environment the bring-up was given: below 2^17 two
+    # shares round to 0 and every settlement assertion would be an all-zero pass
+    POOL1_CHAIN=$(pool1_of)
+    [[ "$POOL1_CHAIN" =~ ^[0-9]+$ ]] || die "pool 1 could not be read from node 1's v2_treasury ('$POOL1_CHAIN')"
+    [ "$POOL1_CHAIN" -ge 131072 ] || die "pool 1 holds $POOL1_CHAIN on the chain — below 2^17 the shares round to 0 (export STAGEF_TREASURY_POOL1_RAW=1000000000000000 BEFORE stagef_up_v2.sh)"
+    echo "[ok] pool 1 holds $POOL1_CHAIN on the chain (read from v2_treasury; budget per settlement = pool 1 >> $DIV_LOG2)"
     P=$(( 24 * E ))                     # DNA_V2_SEGMENT_BLOCKS
     H_PUB=$(( P + 2 * E ))              # the first storage boundary >= P + 2E
     [ $(( H_PUB % E )) = 0 ] || die "the expected publication height $H_PUB is not a boundary"
@@ -1599,11 +1933,22 @@ fi
 cell_read "pre-vote" "" 0 "$(tip_of 1)"
 require_populated "pre-vote"
 check_legs pre "pre-vote"
-echo "[ok] every leg's source table is populated before the vote ($(for i in 1 2 3 4 5 6 7 8; do printf 'L%s=%s ' "$i" "$(cell_one "src|$i")"; done))"
+if [ "$WITH_STORAGE" = 1 ]; then
+    echo "[ok] every leg's source table is populated before the vote ($(for i in 1 2 3 4 5 6 7 8; do printf 'L%s=%s ' "$i" "$(cell_one "src|$i")"; done))"
+else
+    echo "[ok] legs 1, 2, 3, 4, 5, 7 and 8 are populated before the vote and leg 6 (segments) is empty, as the run allows ($(for i in 1 2 3 4 5 6 7 8; do printf 'L%s=%s ' "$i" "$(cell_one "src|$i")"; done))"
+fi
 
 cc_guard 1
 T_V24="$CCG_TIP"
 A=$(clear_of_boundary $(( T_V24 + 1 + GRACE_SAF + A_MARGIN )))
+if [ "$WITH_STORAGE" = 1 ] && [ $(( A - A / E * E )) -gt $(( E - 3 )) ]; then
+    # round-4 row 10: the report window of epoch H2 - E (the epoch settled AT B1) closes at H2 + E/2 and
+    # its settlement inputs must be read before B1 = H2 + E - 1; they are read after the restart cell
+    # (tip A + 2), so A + 2 has to be at most B1 - 1. A later A inside the next epoch is a layout choice (the
+    # vote's effective height only has to be late enough), taken here by moving A to H2' + 2.
+    A=$(( A / E * E + E + 2 ))
+fi
 H2_LAST=$(( A / E * E ))               # the last boundary < A (A % E >= 2 by clear_of_boundary)
 B1=$(( H2_LAST + E ))                  # the first boundary >= A
 [ $(( A - H2_LAST )) -ge 2 ] || die "internal: A=$A is within 1 of the boundary $H2_LAST"
@@ -1623,7 +1968,12 @@ wait_all $(( A - 3 ))
 src=0; stagef_stop_node "$VICTIM" TERM || src=$?
 [ "$src" != 1 ] || die "node$VICTIM is not running"
 [ "$src" = 0 ] || die "stopping node$VICTIM failed (stagef_stop_node rc=$src)"
-echo "[ok] node$VICTIM stopped at tip $(tip_of 1) (A-3 = $(( A - 3 ))) — it misses A-2 .. A+2"
+# the victim's own last applied height, read from ITS database after the stop (round-4 row 22): a restart ACROSS the
+# edge needs it below A-1; nothing about the outage length is assumed
+VICT_STOP_H=$(tip_of "$VICTIM")
+[[ "$VICT_STOP_H" =~ ^[0-9]+$ ]] || die "node$VICTIM's last applied height is unreadable ('$VICT_STOP_H')"
+[ "$VICT_STOP_H" -lt $(( A - 1 )) ] || die "node$VICTIM's last applied height after the stop is $VICT_STOP_H, not below A-1 = $(( A - 1 )) — it would not restart across the edge — $MSG_LAYOUT"
+echo "[ok] node$VICTIM stopped (fleet tip $(tip_of 1), A-3 = $(( A - 3 ))); its own last applied height is $VICT_STOP_H (< A-1 = $(( A - 1 )))"
 ALIVE=()
 for n in $(seq 1 "$N"); do [ "$n" = "$VICTIM" ] || ALIVE+=("$n"); done
 # the control: still generation 5, capture 0, no trie roots, no assignment state
@@ -1682,7 +2032,8 @@ check_legs post "edge-A+1 (tip $CELL_TIP)"
 wait_all $(( A + 2 ))
 stagef_spawn_node "$VICTIM" \
     || die "node$VICTIM did not come back after the restart (the [FAIL] line above names the process)"
-echo "[ok] node$VICTIM restarted at fleet tip $(tip_of 1) (pids $STAGEF_NODE_PIDS)"
+VICT_RESTART_TIP=$(tip_of 1)
+echo "[ok] node$VICTIM restarted at fleet tip $VICT_RESTART_TIP (pids $STAGEF_NODE_PIDS) — measured outage: its last applied height $VICT_STOP_H, fleet tip at the restart $VICT_RESTART_TIP, $(( VICT_RESTART_TIP - VICT_STOP_H )) block(s) behind"
 for lg in "$(stagef_node_dir "$VICTIM")/nodus.log" "$(node_log "$VICTIM")"; do
     if grep -q 'REFUSING START' "$lg"; then tail -20 "$lg" >&2; die "node$VICTIM logged REFUSING START ($lg)"; fi
 done
@@ -1697,6 +2048,32 @@ stagef_cmt_wait_height "$(db_of 1)" "$(( A + 2 ))" 3 >/dev/null || die "node1 st
 cell_read "post-restart" "$(( A - 1 )) $A $(( A + 1 ))" "$A" $(( A + 2 ))
 check_legs post "post-restart (tip $CELL_TIP, 7/7)"
 echo "[ok] 7/7 after the restart across A: the full 64-byte global_root and block_id at A-1, A, A+1; the eight leg roots at tip $CELL_TIP"
+if [ "$WITH_STORAGE" = 1 ]; then
+    # round-4 row 10: the epoch H2 - E is settled AT B1 (its union counts are the edge's E-s1 values). Its reports
+    # are committed in (H2, H2 + E/2]; read them now, in the window [H2 + E/2 + ..., B1 - 1], so the settlement at B1
+    # is checked with the same formula as every other. The E-s1 union counts themselves are the stored values.
+    if [ "$(tip_of 1)" -lt $(( H2_LAST + E / 2 )) ]; then pump_to $(( H2_LAST + E / 2 )); fi
+    [ "$(tip_of 1)" -lt $(( B1 - 1 )) ] || die "the E-s1 epoch $(( H2_LAST - E )) cannot be read before B1: tip $(tip_of 1) — $MSG_LAYOUT"
+    epoch_service_read $(( H2_LAST - E ))
+    # round-4 row 5 (the fetch path): the joiner (node $JOINER) is restarted with nodus.json `retain_blocks`
+    # (stagef_write_node_config; effective at its next start, stagef_env.sh) so that it PRUNES its block store from here
+    # on. By the time it becomes a holder (three or more epochs later) its store no longer has segment 1's range,
+    # nodus_seg_store_has (segment_export.c:48-55: base <= (k-1) x P + 1) is false, and the holder runtime takes
+    # JOB_FETCH ("fetching over 0x73 (the block store no longer has the range)", holder.c:682-690). Its base is
+    # asserted before it registers; the fetch line and the file after. It is not yet a storage member, so only the
+    # explicit retention applies to it (role_prune.h: EXPLICIT N, keep the last N blocks).
+    stagef_write_node_config "$JOINER" "$RETAIN_J" || die "could not write node$JOINER's nodus.json (retain_blocks $RETAIN_J)"
+    src=0; stagef_stop_node "$JOINER" TERM || src=$?
+    [ "$src" = 0 ] || die "stopping node$JOINER for its retention restart failed (stagef_stop_node rc=$src)"
+    ALIVE=()
+    for n in $(seq 1 "$N"); do [ "$n" = "$JOINER" ] || ALIVE+=("$n"); done
+    stagef_spawn_node "$JOINER" || die "node$JOINER did not come back with retain_blocks $RETAIN_J (the [FAIL] line above names the process)"
+    if grep -q 'REFUSING START' "$(node_log "$JOINER")"; then tail -20 "$(node_log "$JOINER")" >&2; die "node$JOINER refused to start with retain_blocks $RETAIN_J"; fi
+    jt=$(stagef_cmt_wait_height "$(db_of "$JOINER")" "$(tip_of 1)" 3) || die "node$JOINER did not catch up after its retention restart (stuck at $jt)"
+    ALIVE=()
+    for n in $(seq 1 "$N"); do ALIVE+=("$n"); done
+    echo "[ok] node$JOINER restarted with retain_blocks $RETAIN_J (evidence window $CONF_EVB blocks) and caught up to tip $jt"
+fi
 
 # ── 6. hf9: the storage assignment at B1 and its events (short epoch only) ─
 if [ "$WITH_STORAGE" = 1 ]; then
@@ -1722,6 +2099,8 @@ if [ "$WITH_STORAGE" = 1 ]; then
     # Every boundary from B1 on is a cell; the reports and the settlement of every one of those epochs
     # are checked (epoch_service_read / epoch_service_post).
     CUR_B="$B1"; DEAD_FP="$D_FP"
+    # round-4 row 10: the epoch H2 (the other E-s1 epoch, settled at B1 + E) joins the queue next to B1's own
+    PEND_READ="$PEND_READ $H2_LAST"
     boundary_cell "B1" "$B1" 4
     # (b) the transition at B1: Σ n_new = 1, held_union 1 for all, grace B1 + E for that member
     [ "$(n_new_sum "$B1")" = 1 ] || die "B1: Σ n_new = $(n_new_sum "$B1"), expected exactly 1 (rendezvous adds one member to the three XOR holders of four, plan §8.6)"
@@ -1755,7 +2134,7 @@ if [ "$WITH_STORAGE" = 1 ]; then
     [ -f "$(seg_file "$EXITER" 1)" ] || die "node$EXITER has no seg-1.ok before its exit boundary (it held segment 1 since B1)"
     EX_DEL0=$(del_count "$EXITER" 1)
     next_boundary "B_rel" 4
-    [ -f "$(seg_file "$EXITER" 1)" ] || die "B_rel: node$EXITER's seg-1.ok is gone at the exit boundary (tip $(tip_of 1)) — the overlap epoch has just begun"
+    assert_file_in_overlap "T-16 exit (retention)" "$EXITER" 1 "$B_REL"
     [ "$(reg_status "${FP[$EXITER]}")" = 3 ] || die "B_rel: node$EXITER's registry status is '$(reg_status "${FP[$EXITER]}")', expected 3 (RELEASED)"
     [ "$(cur_rows_of "${FP[$EXITER]}")" = 0 ] || die "B_rel: node$EXITER still has current assignment rows"
     [ "$(cell_lines assign | awk -F'|' -v f="${FP[$EXITER]}" -v b="$B_REL" '$2 == f && $5 == b' | wc -l)" = 1 ] || die "B_rel: node$EXITER's row of segment 1 was not ended at $B_REL"
@@ -1831,6 +2210,14 @@ if [ "$WITH_STORAGE" = 1 ]; then
     echo "[ok] D-departure: at the first freeze with fail_streak $D_PREV ($DEP) the candidate left the basis, its row ended at $DEP, the three live members keep theirs"
 
     # (c) join of node 2 while the candidate is out: {4,6,7} -> {2,4,6,7}, R 4 — fewer than R eligible, node 2 MUST hold
+    # the joiner's block store must NOT have segment 1's range before it becomes a holder: its lowest stored block
+    # is above the segment's last height P (round-4 row 5; the same fact makes its probe answers come from the file,
+    # row 6: the reporter answers from the block store first and from the segment file only when the store lacks the sample)
+    J_BASE=$(bs_base "$JOINER")
+    [[ "$J_BASE" =~ ^[0-9]+$ ]] && [ "$J_BASE" -gt "$P" ] || die "node$JOINER's block store starts at '$J_BASE', not above segment 1's last height $P — it did not prune, so the fetch path would not run"
+    echo "[ok] node$JOINER's block store starts at height $J_BASE (> $P, segment 1's last height): nodus_seg_store_has(1) is false"
+    J_FETCH0=$(count_log_lines "segment 1: fetching over 0x73" "$JOINER")
+    J_EXPORT0=$(count_log_lines "segment 1: exporting from this node's block store" "$JOINER")
     register_member "$JOINER"
     [ "$(tip_of 1)" -lt $(( CUR_B + E )) ] || die "the join landed at tip $(tip_of 1), at or past the boundary $(( CUR_B + E )) — $MSG_LAYOUT"
     next_boundary "join-node$JOINER" 4
@@ -1840,7 +2227,12 @@ if [ "$WITH_STORAGE" = 1 ]; then
     note_new_holders "$CUR_B"
     diff_full_at "$CUR_B" "join-node$JOINER-at-height-$CUR_B"
     require_holder_files "join-node$JOINER" "$CUR_B"
-    echo "[ok] join of node $JOINER at $CUR_B: it holds segment 1 whatever the scores (3 < R 4); one holder changed"
+    # the fetch path RAN on the joiner: its holder runtime logged the fetch line (and no export line) for
+    # segment 1 and the file is there (require_holder_files above waited for seg-1.ok to a tip below the next boundary)
+    [ "$(count_log_lines "segment 1: fetching over 0x73" "$JOINER")" -gt "$J_FETCH0" ] || die "join of node $JOINER: no 'segment 1: fetching over 0x73' line in its log — the fetch path did not run"
+    [ "$(count_log_lines "segment 1: exporting from this node's block store" "$JOINER")" = "$J_EXPORT0" ] || die "join of node $JOINER: it EXPORTED segment 1 from its block store although the store was pruned"
+    [ -f "$(seg_file "$JOINER" 1)" ] || die "join of node $JOINER: the fetch line is logged but $(seg_file "$JOINER" 1) does not exist"
+    echo "[ok] join of node $JOINER at $CUR_B: it holds segment 1 whatever the scores (3 < R 4); one holder changed; its holder runtime FETCHED segment 1 over 0x73 (block store from $J_BASE) and seg-1.ok exists"
 
     # setup: node 1 joins too (5 live eligible, R 4): whether it holds depends on the scores — only the
     # generic invariants and the identities rows inserted = rows ended = Σ n_new are asserted
@@ -1878,6 +2270,8 @@ if [ "$WITH_STORAGE" = 1 ]; then
     DROP_NODE=$(fp_node "$DROP_FP")
     [ -n "$DROP_NODE" ] || die "copies 5 -> 4: the dropped holder ${DROP_FP:0:16}… is no harness node"
     ZERO_AT[$(( DROP_B + E ))]="${ZERO_AT[$(( DROP_B + E ))]:-} $DROP_FP"
+    # retention of the DROPPED node's file, from the file itself at a tip inside the overlap epoch (round-4 row 11)
+    assert_file_in_overlap "T-16 drop (retention)" "$DROP_NODE" 1 "$DROP_B"
     diff_full_at "$DROP_B" "copies-down-4-at-height-$DROP_B"
     require_holder_files "copies-down-4" "$DROP_B"
     DROP_DEL0=$(del_count "$DROP_NODE" 1)
@@ -1906,22 +2300,41 @@ if [ "$WITH_STORAGE" = 1 ]; then
         next_boundary "D-b$(( CUR_B + E ))" 6
     done
     [ "$D_PHASE" = back ] || die "the candidate was still out of the basis after 20 more boundaries (fail_streak $D_PREV) — the K5 return (3 + 12 skipped epochs) did not complete"
+    # The inserts of this boundary are of TWO kinds (round-4 row 17): the PUBLICATION inserts of a segment
+    # published AT $REV (from_h = REV, one row per holder over the six eligible: min(R 6, |basis|) rows, no
+    # n_new — K9a: a segment published after REV - E gives no count) and the REVIVAL inserts of the candidate
+    # for every segment published <= REV - E (one row each, n_new 1 each). They are counted apart.
     NSEG=$(cell_lines seg | wc -l)
+    NOLD=$(cell_lines seg | awk -F'|' -v c="$(( REV - E ))" '$2 <= c' | wc -l)
+    NPUB=$(cell_lines seg | awk -F'|' -v r="$REV" '$2 == r' | wc -l)
+    [ $(( NOLD + NPUB )) = "$NSEG" ] || die "D-revival: $NSEG published segment(s), $NOLD published <= $(( REV - E )), $NPUB published at $REV — a segment lies strictly between (boundaries are multiples of E: the relation is corrupt)"
+    NBASIS=$(cell_lines basis | wc -l)
+    WANT_PUB=$(( NPUB * (6 < NBASIS ? 6 : NBASIS) ))
     [ "$(cur_rows_of "$D_FP")" = "$NSEG" ] || die "D-revival: the candidate has $(cur_rows_of "$D_FP") current rows, expected one per published segment = $NSEG (6 eligible, R 6: it MUST hold)"
-    [ "$(rows_from "$REV")" = "$NSEG" ] && [ "$(rows_ended "$REV")" = 0 ] && [ "$(n_new_sum "$REV")" = "$NSEG" ] \
-        || die "D-revival: rows inserted $(rows_from "$REV"), ended $(rows_ended "$REV"), Σ n_new $(n_new_sum "$REV") — expected $NSEG / 0 / $NSEG"
-    [ "$(reg_grace "$D_FP")" = $(( REV + NSEG * E )) ] || die "D-revival: the candidate's grace_until is $(reg_grace "$D_FP"), expected $(( REV + NSEG * E ))"
+    [ "$(rows_from "$REV")" = $(( NOLD + WANT_PUB )) ] && [ "$(rows_ended "$REV")" = 0 ] && [ "$(n_new_sum "$REV")" = "$NOLD" ] \
+        || die "D-revival: rows inserted $(rows_from "$REV"), ended $(rows_ended "$REV"), Σ n_new $(n_new_sum "$REV") — expected $(( NOLD + WANT_PUB )) ($NOLD revival + $WANT_PUB publication) / 0 / $NOLD"
+    [ "$(cell_lines mepoch | awk -F'|' -v b="$REV" -v f="$D_FP" '$1 == b && $2 == f { print $4 }')" = "$NOLD" ] \
+        || die "D-revival: the candidate's n_new is not the $NOLD segment(s) it did not hold that were published <= $(( REV - E )) (K9a)"
+    if [ "$NOLD" -gt 0 ]; then
+        [ "$(reg_grace "$D_FP")" = $(( REV + NOLD * E )) ] || die "D-revival: the candidate's grace_until is $(reg_grace "$D_FP"), expected $(( REV + NOLD * E ))"
+    fi
     note_new_holders "$REV"
     diff_full_at "$REV" "D-revival-at-height-$REV"
     require_holder_files "D-revival" "$REV"
-    echo "[ok] D-revival at $REV: fail_streak 14 -> 0, back in the basis (6 eligible, R 6), $NSEG row(s) inserted, 7/7"
+    echo "[ok] D-revival at $REV: fail_streak 14 -> 0, back in the basis (6 eligible, R 6), $NOLD revival row(s) + $WANT_PUB publication row(s) inserted, 7/7"
 
-    # the epochs of the return: the second segment is published two boundaries on (2P + 2E), the
-    # candidate's first eligible epoch REV + E is read at its window, the settlement of epoch REV is checked
-    next_boundary "after-revival" 6
-    next_boundary "after-revival+E" 6
-    advance_to $(( REV + E + E + E / 2 ))
-    echo "[ok] every report window and settlement up to tip $(tip_of 1) was served (reads still pending: '${PEND_READ# }'; settlements still pending: '${PEND_POST# }' — their windows lie beyond the end of the run)"
+    # the epochs of the return: boundary by boundary until the epoch of EVERY queued new-holder and
+    # dropped-holder check (NEWH_AT / ZERO_AT keys) has been a cell (round-4 row 18: with two or more
+    # segments the candidate's grace ends at REV + NSEG x E and its first eligible epoch lies later than
+    # the old fixed REV + E), then every queued report window and settlement is served
+    LAST_KEY="$CUR_B"
+    for key in "${!NEWH_AT[@]}" "${!ZERO_AT[@]}"; do
+        if [ "$key" -gt "$LAST_KEY" ]; then LAST_KEY="$key"; fi
+    done
+    while [ "$CUR_B" -lt "$LAST_KEY" ]; do next_boundary "after-revival" 6; done
+    next_boundary "after-revival-last" 6
+    drain_pending
+    echo "[ok] every queued report window and settlement was served up to tip $(tip_of 1) (reads pending: '${PEND_READ# }'; settlements pending: '${PEND_POST# }')"
 fi
 
 # ── 7. hf9: a fresh node replaying from genesis ─────────────────────
@@ -1951,13 +2364,19 @@ echo "[ok] node$VICTIM wiped (identity kept, databases and logs gone)"
 fleet_chain=$(basename "$(db_of 1)")
 stagef_spawn_node "$VICTIM" --v2-genesis-pin "$PIN" \
     || die "node$VICTIM did not come up after the wipe (the [FAIL] line above names the process)"
-# the adoption wait is bounded by BLOCK DISTANCE: the fleet's tip may rise by 3 blocks (3 idle
-# intervals) before node $VICTIM has created its chain database
-adopt_t0=$(tip_of 1)
+# the adoption wait is bounded by BLOCK DISTANCE (the fleet's tip may rise by 3 blocks, 3 idle intervals,
+# before node $VICTIM has created its chain database) AND by PROGRESS (round-4 row 15): a fleet tip that does not
+# rise for 3 CreateEmptyBlocks intervals is a stalled chain, a FAIL — never an endless wait
+adopt_t0=$(tip_of 1); adopt_last="$adopt_t0"; adopt_since=0; adopt_stall=$(( 3 * STAGEF_CMT_EMPTY_INTERVAL_MS / 1000 ))
 while :; do
     if ls "$vnd/data/"witness_*.db >/dev/null 2>&1 && [ -n "$(db_of "$VICTIM")" ]; then break; fi
-    if [ "$(tip_of 1)" -ge $(( adopt_t0 + 3 )) ]; then
-        tail -30 "$vlog" >&2; die "node$VICTIM never adopted a chain while the fleet moved from $adopt_t0 to $(tip_of 1)"
+    adopt_t=$(tip_of 1)
+    if [ "$adopt_t" -ge $(( adopt_t0 + 3 )) ]; then
+        tail -30 "$vlog" >&2; die "node$VICTIM never adopted a chain while the fleet moved from $adopt_t0 to $adopt_t"
+    fi
+    if [ "$adopt_t" -gt "$adopt_last" ]; then adopt_last="$adopt_t"; adopt_since=0; else adopt_since=$(( adopt_since + 1 )); fi
+    if [ "$adopt_since" -ge "$adopt_stall" ]; then
+        tail -30 "$vlog" >&2; die "node$VICTIM adopted no chain and the fleet's tip made no progress for $adopt_stall s (3 idle intervals) at $adopt_t — a stalled chain"
     fi
     sleep 1
 done
@@ -1989,15 +2408,18 @@ stagef_sentinel ASSERT_RUN
 floor_diff "post-hf9"
 
 # ── 8. no fault line anywhere ───────────────────────────────────────
+# grep's exit status is read: 0 = match (a FAIL), 1 = no match (the only passing answer), anything else = the
+# log could not be read, which is a FAIL and never "no match" (round-4 row 19)
 for lg in $(for n in $(seq 1 "$N"); do node_log "$n"; done) $PREWIPE_LOGS; do
-    if grep -q 'HF9-SHADOW FAULT' "$lg"; then
-        grep 'HF9-SHADOW FAULT' "$lg" | tail -3 >&2
-        die "$lg holds an HF9-SHADOW FAULT (plan §11)"
-    fi
-    if grep -q 'CMT_FAULT' "$lg"; then
-        grep 'CMT_FAULT' "$lg" | tail -3 >&2
-        die "$lg holds a CMT_FAULT"
-    fi
+    [ -f "$lg" ] && [ -r "$lg" ] || die "the log $lg cannot be read — the no-fault scan would prove nothing"
+    for fault in 'HF9-SHADOW FAULT' 'CMT_FAULT'; do
+        grc=0; grep -q -- "$fault" "$lg" || grc=$?
+        case "$grc" in
+            0) grep -- "$fault" "$lg" | tail -3 >&2; die "$lg holds a '$fault' line$([ "$fault" = 'HF9-SHADOW FAULT' ] && echo ' (plan §11)')" ;;
+            1) ;;
+            *) die "grep of '$fault' in $lg failed (rc $grc) — an unreadable log is not a clean log" ;;
+        esac
+    done
 done
 echo "[ok] no node log — node $VICTIM's pre-wipe copies included — holds an HF9-SHADOW FAULT or a CMT_FAULT"
 
@@ -2009,15 +2431,23 @@ if [ "$WITH_STORAGE" = 1 ]; then
     echo "[PASS] HF-9 generation 6 at E=$E, BPY $CONF_BPY, SAFETY grace $GRACE_SAF, ERGONOMIC grace $GRACE_ERG (7/7 at epoch length $E):"
     echo "       populated legs, D6 voted at A=$A, the edge at the end of A-1, eight leg roots and the storage assignment"
     echo "       byte-identical on 7/7 at every boundary from B1 to $CUR_B; every case changed a holder (B1 transition, exit,"
-    echo "       arrival, candidate out and back, join, copies up / down / up) with its report bits, overlap retention and"
-    echo "       file deletion, and every epoch's settlement amounts were checked against the source formula (pool 1 funded);"
-    echo "       node $VICTIM restarted across A and replayed from genesis. NOT asserted: the settlement of the payday-boundary"
-    echo "       epochs, the two epochs settled at B1 and B1+E (E-s1), any NOT OK by a wrong answer (unit tests)."
+    echo "       arrival, candidate out and back, join, copies up / down / up) with its report bits (answers its probes),"
+    echo "       overlap retention (the dropped files seen inside the overlap epoch) and the deletion heights; the joiner node $JOINER"
+    echo "       FETCHED segment 1 over 0x73 (block store from $J_BASE). Exact: grace_until, fail_streak and (after B1) held_union /"
+    echo "       n_new at every boundary; every epoch queued from B1 on, and the two epochs settled at B1 and B1+E, was read in"
+    echo "       its report window and its settlement amounts checked against the source formula (pool 1 read from the chain,"
+    echo "       a positive share in every paying epoch); no check is pending. node $VICTIM (last applied height $VICT_STOP_H, fleet"
+    echo "       tip $VICT_RESTART_TIP at its restart) restarted across A and replayed from genesis."
+    echo "       NOT COVERED: leg roots PER HEIGHT at B1, B1+E, B1+2E (only the full global root at the height, and the leg roots at a"
+    echo "       later tip); a running member's holder runtime across the eligibility crossing (the candidate runs no node); the"
+    echo "       E-s1 union counts and held_union / n_new at B1 derived independently (XOR relation); the settlement of payday"
+    echo "       boundaries; any NOT OK by a wrong answer (unit tests)."
 else
     echo "[PASS] HF-9 generation 6 at E=$E, BPY $CONF_BPY, SAFETY grace $GRACE_SAF, ERGONOMIC grace $GRACE_ERG WITHOUT storage"
     echo "       segments (production-constant edge run; test parameters chosen by the orchestrator — the production 17280"
-    echo "       safety grace is NOT exercised): populated legs 1, 2, 3, 4, 7, 8 and EMPTY legs 5 and 6 (source tables 0 rows,"
-    echo "       roots = the empty-leg root), D6 voted at A=$A, the edge at the end of A-1, eight leg roots byte-identical on"
-    echo "       7/7, node $VICTIM restarted across A and then replayed from genesis. LEFT OUT: storage registration,"
-    echo "       segment 1 (P = 24 x E is out of reach), B1, every storage event, param 25, the candidate, the settlements."
+    echo "       safety grace is NOT exercised): legs 1, 2, 3, 4, 5 (the four registered storage members), 7, 8 populated and leg 6"
+    echo "       (segments) EMPTY (source table 0 rows, root = the empty-leg root), D6 voted at A=$A, the edge at the end of A-1,"
+    echo "       eight leg roots byte-identical on 7/7, node $VICTIM (last applied height $VICT_STOP_H, fleet tip $VICT_RESTART_TIP at its"
+    echo "       restart) restarted across A and then replayed from genesis. LEFT OUT: segment 1 (P = 24 x E is out of reach), B1,"
+    echo "       every storage event, param 25, the candidate, the settlements."
 fi
