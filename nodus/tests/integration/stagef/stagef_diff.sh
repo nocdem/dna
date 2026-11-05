@@ -15,6 +15,31 @@
 #   bash stagef_diff.sh --expect-height N   # additionally require height==N
 #   bash stagef_diff.sh --at-height N       # compare the ROW AT height N,
 #                                            # never each node's current max
+#   bash stagef_diff.sh --full ...          # 64-byte mode (below); combines
+#                                            # with every flag above
+#
+# HF-9 WP7 (plan docs/plans/approved/2026-11-04-hf9.md §12 T-14) — THE
+# 64-BYTE MODE, `--full`
+#   The default mode compares only the first 8 bytes of global_root and of
+#   block_id (`substr(…,1,8)`): enough to see a split, NOT enough for the
+#   HF-9 gate, which must compare every byte of a root the new tries and
+#   compositions produce (plan §11: "stagef_diff.sh compares only 8 bytes and
+#   is not this gate"). `--full` reads `hex(global_root)` and `hex(block_id)`
+#   whole and
+#   (1) requires each to be EXACTLY 128 hex characters = 64 bytes (the
+#       engine stores both as 64-byte BLOBs, nodus_witness_v2_apply.c
+#       out_block_id / global_root); any other length is a [FAIL] on that
+#       node — a column that became shorter would otherwise compare "equal"
+#       on every node while hiding bytes;
+#   (2) compares the full strings across the nodes, exactly as the 8-byte
+#       mode compares its prefix.
+#   The mode is a flag, never a default: a scenario that must compare 64
+#   bytes passes `--full` itself (test_cmt_hf9.sh does, on EVERY call). The
+#   old default is byte-for-byte what it was, so no other scenario changes.
+#   How it can lie: it reads what is STORED; it does not recompute a root
+#   (that is the unit tests' and the oracle's); and a scenario that forgets
+#   the flag silently compares 8 bytes again — the HF-9 scenario carries one
+#   wrapper for every call so that cannot happen by omission.
 #
 # R3 W3 (C2d) — WHY --at-height EXISTS
 #   CreateEmptyBlocks means a Comet-lane chain keeps committing on its
@@ -43,10 +68,12 @@ set -euo pipefail
 LABEL=""
 EXPECT_HEIGHT=""
 AT_HEIGHT=""
+FULL=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --expect-height) EXPECT_HEIGHT="$2"; shift 2 ;;
         --at-height) AT_HEIGHT="$2"; shift 2 ;;
+        --full) FULL=1; shift ;;
         *) LABEL="$1"; shift ;;
     esac
 done
@@ -82,15 +109,19 @@ lane_query() {
     # principle agree on every domain root while committing a different
     # header (a different proposer, a different BFT-time) — global_root
     # alone would not catch that; block_id does.
+    # HF-9 WP7 (T-14): `--full` swaps the two 8-byte prefixes for the whole
+    # columns; the default text is exactly what it was.
+    local gr_expr="substr(global_root,1,8)" bid_expr="substr(block_id,1,8)"
+    if [ "$FULL" = 1 ]; then gr_expr="global_root"; bid_expr="block_id"; fi
     if [ -n "$at" ]; then
         sqlite3 "$db" \
-          "SELECT global_height || '|v2:' || hex(substr(global_root,1,8)) \
-           || '|bid:' || hex(substr(block_id,1,8)) \
+          "SELECT global_height || '|v2:' || hex($gr_expr) \
+           || '|bid:' || hex($bid_expr) \
            FROM v2_blocks WHERE global_height = $at"
     else
         sqlite3 "$db" \
-          "SELECT global_height || '|v2:' || hex(substr(global_root,1,8)) \
-           || '|bid:' || hex(substr(block_id,1,8)) \
+          "SELECT global_height || '|v2:' || hex($gr_expr) \
+           || '|bid:' || hex($bid_expr) \
            FROM v2_blocks ORDER BY global_height DESC LIMIT 1"
     fi
 }
@@ -117,6 +148,15 @@ for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
         continue
     fi
     ROWS+=("node$n  $row")
+    # HF-9 WP7 (T-14): in the 64-byte mode a row that is not exactly two
+    # 128-hex-character fields is never "equal" — it is a FAIL on its own
+    # (a shortened column would otherwise match on every node).
+    if [ "$FULL" = 1 ] && \
+       ! [[ "${row#*|}" =~ ^v2:[0-9A-F]{128}\|bid:[0-9A-F]{128}$ ]]; then
+        ROWS+=("node$n  ^^ not two 128-hex (64-byte) fields (--full)")
+        divergent=1
+        continue
+    fi
     # R3 W3 (C2d) — compare EVERYTHING after the height, not just field 2:
     # a Comet row has two fields there ('v2:<hex>|bid:<hex>') — cutting
     # only field 2 would silently drop block_id from the comparison and
@@ -148,6 +188,10 @@ if [ $divergent -eq 1 ]; then
 fi
 
 if [ -n "$LABEL" ]; then
-    echo "[ok] ${LABEL}: ${STAGEF_COMMITTEE_SIZE}/${STAGEF_COMMITTEE_SIZE} state_root identical ($first_height|$first_root)"
+    if [ "$FULL" = 1 ]; then
+        echo "[ok] ${LABEL}: ${STAGEF_COMMITTEE_SIZE}/${STAGEF_COMMITTEE_SIZE} state_root identical, all 64 bytes of global_root and block_id ($first_height|$first_root)"
+    else
+        echo "[ok] ${LABEL}: ${STAGEF_COMMITTEE_SIZE}/${STAGEF_COMMITTEE_SIZE} state_root identical ($first_height|$first_root)"
+    fi
 fi
 exit 0

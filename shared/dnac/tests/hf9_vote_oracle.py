@@ -54,10 +54,24 @@ HONEST LABEL
   A later change that adds a rule, a type or an op, or a different version
   number chosen by the registry code, makes the printed values wrong for it.
   D6 is a fixed activation identifier and drift check, not a security
-  commitment (plan AD-7). The owner is the compiled default (K8); a build
-  with another owner has a different D6.
+  commitment (plan AD-7). The owner is the compiled default (K8) unless
+  --owner is given; a build with another owner has a different D6.
 
-Run:  python3 -I -B shared/dnac/tests/hf9_vote_oracle.py
+OWNER OVERRIDE (HF-9 WP7, plan section 12 T-13 "an owner build with D6 like
+stagef_hf6_owner.sh"; the same form as the --owner of hf6_vote_oracle.py and
+hf7_vote_oracle.py)
+  --owner <128 hex> replaces the owner of the D6 derivation ONLY. The
+  controls C4 / C5 keep deriving D4 / D5 under the owner read from dnac.h
+  (K8) and still compare them with the dnac.h literals, so a control cannot
+  pass or fail because of the override; the printed D6 is the D6 of a TEST
+  build that compiles that owner (dnac.h: "D6 binds the compiled owner, so a
+  build that overrides the owner must pass that owner's D6 too"). The output
+  names the case on a line of its own ("owner: K8 (default, ...)" or "owner:
+  OVERRIDE (--owner)"), the line stagef_hf6_owner.sh requires before it
+  accepts the D6 line. With no --owner nothing changes: derive(check) and the
+  printed lines are those of the previous version.
+
+Run:  python3 -I -B shared/dnac/tests/hf9_vote_oracle.py [--owner <128 hex>]
       (importable by path: derive(check) returns the data that
       nodus/tests/vectors/hf9_kat_oracle.py puts in hf9_kat.json)
 
@@ -69,6 +83,7 @@ import sys
 
 sys.dont_write_bytecode = True
 
+import argparse  # noqa: E402
 import hashlib  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
@@ -177,9 +192,14 @@ def pins_bytes(text, macro):
     return bytes.fromhex("".join(vals))
 
 
-def derive(check):
+def derive(check, d6_owner=None):
     """check(name, ok, detail='') must abort on failure. Returns the dict
-    stored under vectors.votes in hf9_kat.json."""
+    stored under vectors.votes in hf9_kat.json.
+
+    d6_owner: None (the default, the owner of dnac.h, K8) or 64 bytes — the
+    owner of the D6 derivation only; the D4 / D5 controls always use the
+    dnac.h owner. With None the returned dict is byte-for-byte the previous
+    version's (the KAT file must not change)."""
     pins = open(PINS_H, "r", encoding="utf-8").read()
     dnac = open(DNAC_H, "r", encoding="utf-8").read()
     m = re.search(r"#define\s+DNAC_HF6_FOUNDATION_OWNER\s*\{(.*?)\}", dnac,
@@ -234,7 +254,10 @@ def derive(check):
     check("gen-6 SYSTEM descriptor differs from gen-5 only in ruleset_version "
           "bytes 60..63", len(a) == len(b) and diff and min(diff) >= 60 and
           max(diff) <= 63)
-    pre6, dig6, raw6, d6 = rolegen_preimage(6, 5, s6, c6, 1, owner,
+    if d6_owner is not None:
+        assert len(d6_owner) == 64
+    d6_own = owner if d6_owner is None else bytes(d6_owner)
+    pre6, dig6, raw6, d6 = rolegen_preimage(6, 5, s6, c6, 1, d6_own,
                                             HF9_VOTE_CONSTS)
     check("D6 preimage is 256 bytes (n = 4)", len(pre6) == 256)
     others = {"D2 (param 9)": 0x44dfbe7ad3c75adf,
@@ -258,7 +281,7 @@ def derive(check):
             "meter_policy_digest_ops_1_9": X(pol)},
         "D6": {
             "generation": 6, "base_generation": 5, "spec_version": 1,
-            "foundation_owner": X(owner),
+            "foundation_owner": X(d6_own),
             "consts": [D(c) for c in HF9_VOTE_CONSTS],
             "consts_meaning": "cap, copies default, copies min, copies max",
             "sys_gen6_ruleset_version": SYS_RV_G6,
@@ -271,6 +294,19 @@ def derive(check):
 
 
 def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
+    ap.add_argument("--owner", default=None,
+                    help="owner of the D6 derivation, 128 hex chars "
+                         "(default: the owner of dnac.h, K8)")
+    args = ap.parse_args()
+    override = None
+    if args.owner is not None:
+        owner_hex = args.owner.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{128}", owner_hex):
+            print("--owner must be exactly 128 hex chars (64 bytes)")
+            return 2
+        override = bytes.fromhex(owner_hex)
+
     def check(name, ok, detail=""):
         print("  %-4s %s%s" % ("OK" if ok else "FAIL", name,
                                (" -- " + detail) if detail else ""))
@@ -279,10 +315,12 @@ def main():
             sys.exit(1)
 
     print("-- CONTROLS: D4 and D5 re-derived before D6 (all must be OK)")
-    v = derive(check)
+    v = derive(check, override)
     d6 = v["D6"]
     print()
     print("-- D6 HF-9 generation-6 vote value (param 24)")
+    print("  owner: %s" % ("K8 (default, DNAC_HF6_FOUNDATION_OWNER)"
+                           if override is None else "OVERRIDE (--owner)"))
     print("  SYSTEM v%d ruleset hash = %s" % (d6["sys_gen6_ruleset_version"],
                                               d6["sys_gen6_ruleset_hash"]))
     print("  CORE   v%d ruleset hash = %s" % (d6["core_gen6_ruleset_version"],

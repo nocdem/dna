@@ -7,8 +7,8 @@
 # decision docs/plans/decisions/2026-10-13-kurultay-18-summary.md item 1).
 # Generates (or re-reads) ONE single-key nodus identity that a TEST build
 # compiles in as the HF-6 Foundation owner, and prints the exact cmake
-# flags (THREE: the owner, its D4 and — HF-7 P1d — its D5) and environment
-# that go with it.
+# flags (FOUR: the owner, its D4, — HF-7 P1d — its D5 and — HF-9 WP7 — its
+# D6) and environment that go with it.
 # ════════════════════════════════════════════════════════════════════
 #
 # WHY A PRE-BUILD STEP. After the HF-6 generation-4 edge every genesis
@@ -95,6 +95,19 @@
 # independent oracle shared/dnac/tests/hf7_vote_oracle.py run with
 # `--owner <fp>` — never computed here.
 #
+# THE FOURTH FLAG — D6 (HF-9 WP7). The generation-6 vote value D6 (dnac.h
+# DNAC_CFG_RULESET_GEN_TRIE_D; plan docs/plans/approved/2026-11-04-hf9.md
+# §7.1) binds the SAME compiled owner ("TEST-BUILD OVERRIDE ONLY, and only
+# TOGETHER with DNAC_HF6_FOUNDATION_OWNER (and the D4 / D5 literals)", dnac.h),
+# and nodus_witness_runtime_selfcheck re-derives it on every start of an
+# EVM-enabled build exactly like D4 and D5. So an owner-override build
+# without that owner's D6 refuses to start too; this script prints it as a
+# fourth flag, `-DDNAC_CFG_RULESET_GEN_TRIE_D=0x…ULL`, the `D6 =` line of the
+# independent oracle shared/dnac/tests/hf9_vote_oracle.py run with
+# `--owner <fp>` — never computed here. (That oracle re-derives D4 and D5
+# under the dnac.h owner as controls before it prints D6 and refuses
+# otherwise.)
+#
 # WHAT IT LEAVES BEHIND: DIR/identity and DIR/data (the spawn's scratch),
 # DIR/identity_gen.log. Nothing else; no process (the spawn is killed and
 # reaped; a port check failure exits before anything starts).
@@ -106,8 +119,8 @@
 # TEST-OWNER gate FAILs unless SHA3-512 of STAGEF_HF6_OWNER_KEYS's
 # nodus.pk equals it, its step-4 owner check unless the build carries
 # it). A build made
-# with the owner flag and a wrong or missing D4 or (HF-7 P1d) D5 flag
-# does not lie silently: every node refuses to start at the runtime
+# with the owner flag and a wrong or missing D4, (HF-7 P1d) D5 or (HF-9 WP7)
+# D6 flag does not lie silently: every node refuses to start at the runtime
 # selfcheck, so the bring-up fails visibly.
 #
 # Exit: 0 printed; 1 refused (reason on stderr). Not a scenario — no
@@ -128,6 +141,8 @@ ORACLE="$STAGEF_REPO_ROOT/shared/dnac/tests/hf6_vote_oracle.py"
 [ -f "$ORACLE" ] || die "no D4 oracle at $ORACLE"
 ORACLE7="$STAGEF_REPO_ROOT/shared/dnac/tests/hf7_vote_oracle.py"
 [ -f "$ORACLE7" ] || die "no D5 oracle at $ORACLE7"
+ORACLE9="$STAGEF_REPO_ROOT/shared/dnac/tests/hf9_vote_oracle.py"
+[ -f "$ORACLE9" ] || die "no D6 oracle at $ORACLE9"
 mkdir -p "$DIR/identity" "$DIR/data"
 DIR="$(cd "$DIR" && pwd)"
 ID="$DIR/identity"
@@ -207,20 +222,40 @@ done <<< "$ORACLE7_OUT"
 grep -Fq "owner: OVERRIDE (--owner)" <<< "$ORACLE7_OUT" || \
     die "the D5 oracle did not report the --owner override (did it use K8?)"
 
+# the D6 of this owner (HF-9 WP7) — hf9_vote_oracle.py's `D6 = 0x…ULL` line,
+# the same discipline (never computed here; exactly one line; the override
+# reported). The oracle's other value line reads `D6 (decimal) = …`, which the
+# pattern below does not match.
+ORACLE9_OUT=$(python3 -I -B "$ORACLE9" --owner "$FP") || {
+    printf '%s\n' "$ORACLE9_OUT" >&2; die "hf9_vote_oracle.py --owner refused (output above)"; }
+D6=""
+while IFS= read -r line; do
+    if [[ "$line" =~ ^[[:space:]]*D6[[:space:]]+=[[:space:]]+(0x[0-9a-f]{16}ULL)$ ]]; then
+        [ -z "$D6" ] || die "the D6 oracle printed more than one D6 line"
+        D6="${BASH_REMATCH[1]}"
+    fi
+done <<< "$ORACLE9_OUT"
+[ -n "$D6" ] || { printf '%s\n' "$ORACLE9_OUT" >&2; die "no 'D6 = 0x…ULL' line in the D6 oracle output"; }
+grep -Fq "owner: OVERRIDE (--owner)" <<< "$ORACLE9_OUT" || \
+    die "the D6 oracle did not report the --owner override (did it use K8?)"
+
 cat <<EOF
 
 [ok] owner_fp = SHA3-512(nodus.pk) = $FP
 [ok] D4 of this owner = $D4 (shared/dnac/tests/hf6_vote_oracle.py --owner)
 [ok] D5 of this owner = $D5 (shared/dnac/tests/hf7_vote_oracle.py --owner)
+[ok] D6 of this owner = $D6 (shared/dnac/tests/hf9_vote_oracle.py --owner)
 
 ── 1. build (ONE tree, nodus-server + nodus-cli from the SAME build dir;
       the short-epoch + short-grace set test_hf6_edge.sh needs, plus the owner
-      AND its D4 AND its D5 — all or none: a partial set refuses to start)
+      AND its D4 AND its D5 AND its D6 — all or none: a partial set refuses to
+      start)
 F='-DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20 -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15 -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15'
 O='-DDNAC_HF6_FOUNDATION_OWNER="$LIST"'
 D='-DDNAC_CFG_RULESET_GEN_ROLES_D=$D4'
 D5F='-DDNAC_CFG_RULESET_GEN_ROOTS_D=$D5'
-cmake -S <TREE>/nodus -B <TREE>/nodus/build-hf6rot -DCMAKE_C_FLAGS="\$F \$O \$D \$D5F"
+D6F='-DDNAC_CFG_RULESET_GEN_TRIE_D=$D6'
+cmake -S <TREE>/nodus -B <TREE>/nodus/build-hf6rot -DCMAKE_C_FLAGS="\$F \$O \$D \$D5F \$D6F"
 make -C <TREE>/nodus/build-hf6rot -j"\$(nproc)" nodus-server nodus-cli
 
 ── 2. environment (export BEFORE stagef_up_v2.sh)
@@ -238,6 +273,7 @@ bash <TREE>/nodus/tests/integration/stagef/tests/test_hf6_edge.sh; echo "rc=\$?"
 bash <TREE>/nodus/tests/integration/stagef/stagef_down.sh
 
 A build with this owner is a TEST build only: production never defines
-DNAC_HF6_FOUNDATION_OWNER, DNAC_CFG_RULESET_GEN_ROLES_D or
-DNAC_CFG_RULESET_GEN_ROOTS_D (dnac/include/dnac/dnac.h).
+DNAC_HF6_FOUNDATION_OWNER, DNAC_CFG_RULESET_GEN_ROLES_D,
+DNAC_CFG_RULESET_GEN_ROOTS_D or DNAC_CFG_RULESET_GEN_TRIE_D
+(dnac/include/dnac/dnac.h).
 EOF
