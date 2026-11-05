@@ -8692,7 +8692,7 @@ static int hyb_growth_chain(unsigned n_fill, hyb_sample_t s[3])
     CHECK(sqlite3_exec(H->g.w->db,
               "CREATE TEMP TABLE hyb_dlog(leg INTEGER, key BLOB);"
               "CREATE TEMP TRIGGER hyb_dlog_t AFTER INSERT ON "
-              "main.v2_trie_dirty BEGIN INSERT INTO temp.hyb_dlog "
+              "main.v2_trie_dirty BEGIN INSERT INTO hyb_dlog "
               "VALUES (NEW.leg, NEW.key); END;",
               NULL, NULL, NULL) == SQLITE_OK,
           "G0c the dirty-key counter is installed (connection-local)");
