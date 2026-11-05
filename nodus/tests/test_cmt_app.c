@@ -8266,6 +8266,59 @@ static int hyb_log_matches(nodus_witness_t *w, uint64_t height)
     return memcmp(row.glob, glob, 64) == 0 ? 0 : 33;
 }
 
+/* The row copy v2_trie_shadow_rows against the CURRENT rows (plan :424): for
+ * every leg each row the build's own scan selects (canonical key, 64-byte
+ * leaf hash) is in the copy with the same value and the copy holds no other
+ * row of the leg. The expected side is the scan, never the copy. 0 = equal */
+typedef struct {
+    sqlite3_stmt *q;
+    int           leg;
+    long          n, bad;
+} hyb_copy_t;
+
+static int hyb_copy_row(void *vctx, const uint8_t *key, size_t key_len,
+                        const uint8_t val[64])
+{
+    hyb_copy_t *c = (hyb_copy_t *)vctx;
+
+    c->n++;
+    if (sqlite3_reset(c->q) != SQLITE_OK ||
+        sqlite3_clear_bindings(c->q) != SQLITE_OK ||
+        sqlite3_bind_int(c->q, 1, c->leg) != SQLITE_OK ||
+        sqlite3_bind_blob(c->q, 2, key, (int)key_len, SQLITE_STATIC)
+            != SQLITE_OK) {
+        c->bad++;
+        return 0;
+    }
+    if (sqlite3_step(c->q) != SQLITE_ROW ||
+        sqlite3_column_bytes(c->q, 0) != 64 ||
+        memcmp(sqlite3_column_blob(c->q, 0), val, 64) != 0)
+        c->bad++;
+    return 0;
+}
+
+static int hyb_shadow_rows_match(nodus_witness_t *w)
+{
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++) {
+        hyb_copy_t c;
+        char       sql[96];
+        int        rc;
+
+        memset(&c, 0, sizeof(c));
+        c.leg = leg;
+        if (sqlite3_prepare_v2(w->db, "SELECT value FROM "
+                "v2_trie_shadow_rows WHERE leg = ?1 AND key = ?2", -1, &c.q,
+                NULL) != SQLITE_OK) return -1;
+        rc = nodus_witness_v2_trie_scan_leg(w, leg, hyb_copy_row, &c);
+        sqlite3_finalize(c.q);
+        if (rc != 0 || c.bad != 0) return leg;
+        snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM "
+                 "v2_trie_shadow_rows WHERE leg = %d", leg);
+        if (q1(w->db, sql) != c.n) return 100 + leg;
+    }
+    return 0;
+}
+
 static int t_hyb_crash_shadow(void)
 {
     hyb_t  *A = calloc(1, sizeof(*A)), *Bn = calloc(1, sizeof(*Bn));
@@ -8747,6 +8800,9 @@ static int t_hyb_crash_shadow_rows(void)
           memcmp(now5, seed5, 64) != 0 && memcmp(now5, full, 64) == 0,
           "S4 the registry shadow root moved to the full rebuild of the "
           "committed rows");
+    CHECK(hyb_shadow_rows_match(A->g.w) == 0,
+          "S4 the row copy v2_trie_shadow_rows equals the selected rows "
+          "(keys and leaf hashes, every leg), including the registry row");
     CHECK(hyb_digest(A->g.w->db, d3a) == 0, "S4 digest before the rebuild");
     CHECK(hyb_shadow_roots_equal_rebuild(A->g.w) == 0,
           "S4 every shadow leg equals the full rebuild");

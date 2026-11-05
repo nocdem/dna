@@ -954,6 +954,57 @@ static int log_row_matches(nodus_witness_t *w, uint64_t height) {
     return 0;
 }
 
+/* The row copy v2_trie_shadow_rows against the CURRENT rows (plan :424
+ * "v2_trie_shadow_rows is updated to the current rows"): for every leg, each
+ * row the build's own scan selects (nodus_witness_v2_trie_scan_leg: canonical
+ * key, 64-byte leaf hash) is in the copy with the same value, and the copy
+ * holds no other row of that leg. The expected side is the scan, never the
+ * copy. */
+typedef struct {
+    sqlite3_stmt *q;
+    int           leg;
+    long          n, bad;
+} copy_cmp_t;
+
+static int copy_cmp_row(void *vctx, const uint8_t *key, size_t key_len,
+                        const uint8_t val[64]) {
+    copy_cmp_t *c = (copy_cmp_t *)vctx;
+    c->n++;
+    if (sqlite3_reset(c->q) != SQLITE_OK ||
+        sqlite3_clear_bindings(c->q) != SQLITE_OK ||
+        sqlite3_bind_int(c->q, 1, c->leg) != SQLITE_OK ||
+        sqlite3_bind_blob(c->q, 2, key, (int)key_len, SQLITE_STATIC)
+            != SQLITE_OK) {
+        c->bad++;
+        return 0;
+    }
+    if (sqlite3_step(c->q) != SQLITE_ROW ||
+        sqlite3_column_bytes(c->q, 0) != 64 ||
+        memcmp(sqlite3_column_blob(c->q, 0), val, 64) != 0)
+        c->bad++;
+    return 0;
+}
+
+/* 0 = the copy equals the selected rows of all eight legs */
+static int shadow_rows_match(nodus_witness_t *w) {
+    for (int leg = 1; leg <= 8; leg++) {
+        copy_cmp_t c;
+        char sql[96];
+        memset(&c, 0, sizeof(c));
+        c.leg = leg;
+        if (sqlite3_prepare_v2(w->db, "SELECT value FROM v2_trie_shadow_rows "
+                "WHERE leg = ?1 AND key = ?2", -1, &c.q, NULL) != SQLITE_OK)
+            return -1;
+        int rc = nodus_witness_v2_trie_scan_leg(w, leg, copy_cmp_row, &c);
+        sqlite3_finalize(c.q);
+        if (rc != 0 || c.bad != 0) return leg;
+        snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM v2_trie_shadow_rows "
+                 "WHERE leg = %d", leg);
+        if (q1(w->db, sql) != c.n) return 100 + leg;
+    }
+    return 0;
+}
+
 static int add_token_row(nodus_witness_t *w, int nb) {
     return token_sql(w->db, nb, 8);
 }
@@ -1212,6 +1263,10 @@ static int t_chain_catch_up(void) {
         CHECK(nodus_witness_v2_shadow_log_read(fx.w, H5 + 1u, &row) == 1 &&
               nodus_witness_v2_shadow_log_read(fx.w, H5, &row) == 0,
               "F1: at the tip, none for the missed height");
+        CHECK(shadow_rows_match(fx.w) == 0,
+              "F1: the row copy v2_trie_shadow_rows equals the selected rows "
+              "(keys and leaf hashes, every leg) after the catch-up pass - "
+              "including the new token row");
         CHECK(log_row_matches(fx.w, H5 + 1u) == 0,
               "F1: the logged legs, CORE / STOR / SYS and GLOBAL v2' equal "
               "the expected values (all 64 bytes) after the committed change");
@@ -1385,6 +1440,9 @@ static int t_chain_failures(void) {
     CHECK(fx.w->hf9_shadow_latched == 1,
           "H5: an unreadable status invalidates the run (latched: the "
           "FAULTED write cannot succeed either)");
+    CHECK(shadow_status(fx.w) == NODUS_V2_SHADOW_FAULTED,
+          "H5: while the status table is STILL unreadable the shadow reports "
+          "FAULTED (the accessor consults the latch before reading)");
     CHECK(run_sql(fx.w->db, "ALTER TABLE v2_trie_shadow_state_away RENAME TO "
                             "v2_trie_shadow_state") == 0,
           "H5: the status table is readable again");
