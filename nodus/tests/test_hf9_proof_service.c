@@ -29,7 +29,14 @@
  *     unknown field declares an array or a map of 4,000,000 items is refused
  *     at the header (a raised decoder refuses a count above the bytes that
  *     remain; decoders with the default limit are unchanged) by
- *     nodus_t2_decode and by the proof request decoder.
+ *     nodus_t2_decode and by the proof request decoder. A raised decoder
+ *     also treats END as an error: 32 nested arrays (and maps) that each
+ *     declare 2,000,000 (1,000,000) items followed by one 2,000,000-byte
+ *     string are skipped in a handful of decoder steps (cbor_decoder_t.steps,
+ *     < 1000; an unfixed skip makes about 64 million END calls) and
+ *     refused by nodus_t2_decode and the proof decoder. A "keys" array above
+ *     128 is refused at its header in the first pass: 100,000 keys cost fewer
+ *     than 100 decoder steps (nodus_state_proof_request_decode_ex).
  *     The IPC delivery case (E2) waits for the answers to be PUBLISHED
  *     (JOB_DONE, via nodus_state_proof_service_published), a bounded wait on
  *     the state that fails if it never arrives, before its single production
@@ -971,6 +978,74 @@ static int test_request_limits(void) {
             CHECK(nodus_t2_decode(buf, len, &msg) == -1,
                   "another method with that many items is refused as before");
         }
+    }
+
+    /* Row 2: a "keys" array above 128 is refused at its HEADER in pass 1,
+     * before any element is read: 100,000 one-byte keys make the decoder call
+     * cbor_decode_next only a handful of times (an unfixed pass 1 skips every
+     * element first: >= 100,000 calls) */
+    {
+        uint64_t steps = 0;
+        len = mkreq(buf, cap, 1, 0, 100000, 1, 0, 0);
+        CHECK(len > 0, "a 100000-key request frame");
+        CHECK(nodus_state_proof_request_decode_ex(buf, len, req, &ec, em,
+                  sizeof(em), &steps) == -1 && ec == NODUS_ERR_PROTOCOL_ERROR,
+              "100000 keys: PROTOCOL_ERROR");
+        CHECK(steps < 100, "...refused at the keys header, the elements were "
+                           "not traversed (decoder steps)");
+    }
+
+    /* Row 1: nested containers that each DECLARE a large count followed by one
+     * large byte string. A raised decoder treats END as an error, so the
+     * enclosing skip loops stop at once; counted in decoder steps. The nested
+     * part sits in an unknown top-level field "zz" of a valid request. */
+    for (int maps = 0; maps < 2; maps++) {
+        cbor_encoder_t e;
+        uint8_t token[NODUS_SESSION_TOKEN_LEN], k[64];
+        uint8_t *zeros = calloc(2000000, 1);
+        CHECK(zeros != NULL, "allocation");
+        memset(token, 0, sizeof(token));
+        memset(k, 3, sizeof(k));
+        cbor_encoder_init(&e, buf, cap);
+        cbor_encode_map(&e, 6);
+        cbor_encode_cstr(&e, "t");   cbor_encode_uint(&e, 7);
+        cbor_encode_cstr(&e, "y");   cbor_encode_cstr(&e, "q");
+        cbor_encode_cstr(&e, "q");   cbor_encode_cstr(&e, "dnac_state_proof");
+        cbor_encode_cstr(&e, "tok"); cbor_encode_bstr(&e, token, sizeof(token));
+        cbor_encode_cstr(&e, "a");
+        cbor_encode_map(&e, 2);
+        cbor_encode_cstr(&e, "leg");  cbor_encode_uint(&e, 1);
+        cbor_encode_cstr(&e, "keys");
+        cbor_encode_array(&e, 1);
+        cbor_encode_bstr(&e, k, sizeof(k));
+        cbor_encode_cstr(&e, "zz");
+        size_t zz_off = cbor_encoder_len(&e);
+        for (int d = 0; d < 32; d++) {
+            if (maps) cbor_encode_map(&e, 1000000);
+            else      cbor_encode_array(&e, 2000000);
+        }
+        cbor_encode_bstr(&e, zeros, 2000000);
+        len = cbor_encoder_len(&e);
+        free(zeros);
+        CHECK(len > 0 && len < (size_t)NODUS_MAX_FRAME_TCP, "the nested frame");
+        {   /* the library's skip over the nested part, on a raised decoder */
+            cbor_decoder_t d;
+            cbor_decoder_init(&d, buf, len);
+            cbor_decoder_set_max_items(&d, NODUS_MAX_FRAME_TCP);
+            d.pos = zz_off;
+            d.steps = 0;
+            cbor_decode_skip(&d);
+            CHECK(d.error && d.steps < 1000,
+                  "the skip stops at the first missing child: a few steps, "
+                  "not 32 x the declared count");
+        }
+        memset(&msg, 0, sizeof(msg));
+        CHECK(nodus_t2_decode(buf, len, &msg) == -1,
+              "nodus_t2_decode refuses the nested frame");
+        CHECK(nodus_state_proof_request_decode(buf, len, req, &ec, em,
+                                               sizeof(em)) == -1 &&
+              ec == NODUS_ERR_PROTOCOL_ERROR,
+              "...and so does the proof request decoder");
     }
     free(buf);
     free(req);

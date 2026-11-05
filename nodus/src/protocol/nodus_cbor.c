@@ -187,6 +187,7 @@ void cbor_decoder_init(cbor_decoder_t *dec, const uint8_t *buf, size_t len) {
     dec->depth = 0;
     dec->error = false;
     dec->max_items = NODUS_CBOR_MAX_ITEMS;
+    dec->steps = 0;
 }
 
 void cbor_decoder_set_max_items(cbor_decoder_t *dec, size_t max_items) {
@@ -196,9 +197,17 @@ void cbor_decoder_set_max_items(cbor_decoder_t *dec, size_t max_items) {
 cbor_item_t cbor_decode_next(cbor_decoder_t *dec) {
     cbor_item_t item;
     memset(&item, 0, sizeof(item));
+    dec->steps++;
 
     if (!dec_has(dec, 1)) {
         item.type = (dec->pos >= dec->len) ? CBOR_ITEM_END : CBOR_ITEM_ERROR;
+        /* RAISED decoders only (cbor_decoder_set_max_items): END where a
+         * value is still owed is an error that stops every enclosing loop
+         * (cbor_decode_skip and the proof decoders' child loops check
+         * dec->error), so a declared count is never walked past the end of
+         * the input. A default decoder returns END as it always did. */
+        if (item.type == CBOR_ITEM_END && dec->max_items > NODUS_CBOR_MAX_ITEMS)
+            dec->error = true;
         return item;
     }
 

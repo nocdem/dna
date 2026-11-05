@@ -75,23 +75,49 @@ static int skip_value(cbor_decoder_t *d, int depth)
     return 0;
 }
 
-int nodus_state_proof_request_decode(const uint8_t *payload, size_t len,
-                                     nodus_state_proof_req_t *out,
-                                     int *ec, char *em, size_t cap)
+/* Pass 1 over the "a" value: the args map's keys must be text; a "keys" array
+ * above the 1..128 bound is refused at its HEADER, before any element is
+ * read; everything else is skipped to its end. 0; -1 malformed; -2 the keys
+ * bound. */
+static int skip_args(cbor_decoder_t *d)
 {
-    cbor_decoder_t dec;
+    cbor_item_t m = cbor_decode_next(d);
+    if (m.type != CBOR_ITEM_MAP || d->error) return -1;
+    for (size_t i = 0; i < m.count; i++) {
+        cbor_item_t k = cbor_decode_next(d);
+        if (k.type != CBOR_ITEM_TSTR) return -1;
+        if (tkey(&k, "keys")) {
+            cbor_item_t a = cbor_decode_next(d);
+            if (a.type == CBOR_ITEM_END || a.type == CBOR_ITEM_ERROR ||
+                d->error)
+                return -1;
+            if (a.type == CBOR_ITEM_ARRAY) {
+                if (a.count > NODUS_STATE_PROOF_MAX_KEYS) return -2;
+                for (size_t j = 0; j < a.count; j++)
+                    if (skip_value(d, 1) != 0) return -1;
+            } else if (a.type == CBOR_ITEM_MAP) {
+                for (size_t j = 0; j < a.count * 2; j++)
+                    if (skip_value(d, 1) != 0) return -1;
+            }
+        } else if (skip_value(d, 0) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int request_decode_core(const uint8_t *payload, size_t len,
+                               nodus_state_proof_req_t *out,
+                               int *ec, char *em, size_t cap,
+                               cbor_decoder_t *decp)
+{
+#define dec (*decp)
     cbor_item_t top, args;
     int have_leg = 0, have_keys = 0;
     const int pe = NODUS_ERR_PROTOCOL_ERROR;
 
     if (!payload || !out) return fail(ec, em, cap, pe, "no request");
     memset(out, 0, sizeof(*out));
-    cbor_decoder_init(&dec, payload, len);
-    /* this decoder reads a dnac_state_proof request: an oversize "keys" array
-     * must reach the explicit 1..128 bound below (PROTOCOL_ERROR), not be
-     * cut by the generic limit */
-    cbor_decoder_set_max_items(&dec, NODUS_MAX_FRAME_TCP);   /* no array in a
-                                  * frame can hold more items than bytes */
     top = cbor_decode_next(&dec);
     if (top.type != CBOR_ITEM_MAP) return fail(ec, em, cap, pe, "not a map");
     /* Pass 1: EVERY outer entry is read to its end (a truncated last
@@ -108,6 +134,12 @@ int nodus_state_proof_request_decode(const uint8_t *payload, size_t len,
             if (a_pos != (size_t)-1)
                 return fail(ec, em, cap, pe, "args twice");
             a_pos = dec.pos;
+            int sr = skip_args(&dec);
+            if (sr == -2)
+                return fail(ec, em, cap, pe, "keys is not one array of 1..128");
+            if (sr != 0)
+                return fail(ec, em, cap, pe, "malformed args map");
+            continue;
         }
         if (skip_value(&dec, 0) != 0)
             return fail(ec, em, cap, pe, "truncated request");
@@ -163,6 +195,36 @@ int nodus_state_proof_request_decode(const uint8_t *payload, size_t len,
                 return fail(ec, em, cap, pe, "a repeated key");
     }
     return 0;
+#undef dec
+}
+
+/* The decoder is created here: the request is read by a decoder whose item
+ * limit is the frame ceiling (no array in a frame holds more items than
+ * bytes, and a raised decoder refuses a count above the bytes that remain and
+ * treats END as an error, nodus_cbor.h), so an oversize "keys" array reaches
+ * the explicit 1..128 bound as PROTOCOL_ERROR. */
+int nodus_state_proof_request_decode_ex(const uint8_t *payload, size_t len,
+                                        nodus_state_proof_req_t *out,
+                                        int *ec, char *em, size_t cap,
+                                        uint64_t *steps_out)
+{
+    cbor_decoder_t d;
+    int rc;
+    if (!payload || !out) return fail(ec, em, cap, NODUS_ERR_PROTOCOL_ERROR,
+                                      "no request");
+    cbor_decoder_init(&d, payload, len);
+    cbor_decoder_set_max_items(&d, NODUS_MAX_FRAME_TCP);
+    rc = request_decode_core(payload, len, out, ec, em, cap, &d);
+    if (steps_out) *steps_out = d.steps;
+    return rc;
+}
+
+int nodus_state_proof_request_decode(const uint8_t *payload, size_t len,
+                                     nodus_state_proof_req_t *out,
+                                     int *ec, char *em, size_t cap)
+{
+    return nodus_state_proof_request_decode_ex(payload, len, out, ec, em, cap,
+                                               NULL);
 }
 
 /* ── the private context ───────────────────────────────────────────── */

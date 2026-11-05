@@ -94,6 +94,14 @@ int nodus_state_proof_request_decode(const uint8_t *payload, size_t len,
                                      int *err_code, char *err_msg,
                                      size_t err_cap);
 
+/** The same, and the number of cbor_decode_next calls the decoder made (an
+ *  observable for tests of bounded work: a refused request is refused
+ *  without walking its declared counts). `steps_out` may be NULL. */
+int nodus_state_proof_request_decode_ex(const uint8_t *payload, size_t len,
+                                        nodus_state_proof_req_t *out,
+                                        int *err_code, char *err_msg,
+                                        size_t err_cap, uint64_t *steps_out);
+
 /** Work done by one build (deterministic counts; no clock). */
 typedef struct {
     uint64_t height;          /* the snapshot's committed height          */
