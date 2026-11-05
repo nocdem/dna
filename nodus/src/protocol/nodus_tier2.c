@@ -1848,6 +1848,17 @@ static int t2_decode_body(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg
             nodus_map_keys_t aks;
             memset(&aks, 0, sizeof(aks));
 
+            /* HF-9 WP6 (plan §10.2: a request with more than 128 keys is
+             * refused with PROTOCOL_ERROR): the REQUEST of `dnac_state_proof`
+             * (the method "q" precedes "a") may carry a "keys" array above the
+             * generic 4,096-item limit, so it reaches the proof decoder and
+             * is answered; only this method, every other keeps
+             * NODUS_CBOR_MAX_ITEMS. */
+            if (msg->type == 'q' &&
+                strcmp(msg->method, "dnac_state_proof") == 0)
+                cbor_decoder_set_max_items(&dec,
+                                           NODUS_CBOR_MAX_ITEMS_STATE_PROOF);
+
             for (size_t j = 0; j < args.count; j++) {
                 cbor_item_t akey = cbor_decode_next(&dec);
                 if (akey.type != CBOR_ITEM_TSTR) {

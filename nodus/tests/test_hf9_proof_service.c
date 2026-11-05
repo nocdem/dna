@@ -15,7 +15,18 @@
  *     of a length its leg cannot hold (leg 1: 63; leg 4: 2 and 37; leg 6: 7)
  *     are NODUS_ERR_PROTOCOL_ERROR; leg 4 with 3 and 36 bytes, leg 6 with 8
  *     and an unknown key are accepted; a final unknown argument with no value
- *     or with a truncated array value is refused (PROTOCOL_ERROR).
+ *     or with a truncated array value is refused (PROTOCOL_ERROR); so is a
+ *     final top-level key with no value, and an args map whose KEY is an
+ *     array holding "leg" / "keys" or an integer (a non-text key). A request
+ *     of 4097 keys passes the Tier-2 receive decoder (nodus_t2_decode, limit
+ *     raised for the dnac_state_proof REQUEST only) and the proof decoder
+ *     answers PROTOCOL_ERROR; the same bytes under another method are refused
+ *     by the generic 4,096 limit as before. Residual (reported): a request
+ *     array above 16,768 items is still cut by the Tier-2 decoder.
+ *     The IPC delivery case (E2) waits for the answers to be PUBLISHED
+ *     (JOB_DONE, via nodus_state_proof_service_published), a bounded wait on
+ *     the state that fails if it never arrives, before its single production
+ *     poll; it no longer waits on the builds_done counter.
  *  B. On a real generation-6 chain (the edge ladder of test_hf9_edge.c, the
  *     fixture of test_hf9_shadow.c) with every one of the eight legs
  *     populated and flushed through the production flush
@@ -833,6 +844,85 @@ static int test_request_decode(void) {
     return 0;
 }
 
+/* A request whose args map has a NON-TEXT key: the contents of an array key
+ * ("leg", 1, "keys", [K]) must never become arguments. */
+static int nontext_case(const char *what, int array_key) {
+    uint8_t buf[4096], token[NODUS_SESSION_TOKEN_LEN], k[64];
+    cbor_encoder_t e;
+    nodus_state_proof_req_t *req = malloc(sizeof(*req));
+    int ec = 0;
+    char em[96];
+    CHECK(req != NULL, "allocation");
+    memset(token, 0, sizeof(token));
+    memset(k, 9, sizeof(k));
+    cbor_encoder_init(&e, buf, sizeof(buf));
+    cbor_encode_map(&e, 5);
+    cbor_encode_cstr(&e, "t");   cbor_encode_uint(&e, 7);
+    cbor_encode_cstr(&e, "y");   cbor_encode_cstr(&e, "q");
+    cbor_encode_cstr(&e, "q");   cbor_encode_cstr(&e, "dnac_state_proof");
+    cbor_encode_cstr(&e, "tok"); cbor_encode_bstr(&e, token, sizeof(token));
+    cbor_encode_cstr(&e, "a");
+    cbor_encode_map(&e, 3);
+    if (array_key) {
+        cbor_encode_array(&e, 5);              /* the key: an array ... */
+        cbor_encode_cstr(&e, "x");
+        cbor_encode_cstr(&e, "leg");           /* ... holding "leg" and "keys" */
+        cbor_encode_uint(&e, 1);
+        cbor_encode_cstr(&e, "keys");
+        cbor_encode_array(&e, 1);
+        cbor_encode_bstr(&e, k, sizeof(k));
+    } else {
+        cbor_encode_uint(&e, 5);               /* the key: an integer */
+    }
+    cbor_encode_uint(&e, 0);                   /* its value */
+    cbor_encode_cstr(&e, "u"); cbor_encode_uint(&e, 0);
+    cbor_encode_cstr(&e, "v"); cbor_encode_uint(&e, 0);
+    size_t len = cbor_encoder_len(&e);
+    CHECK(len > 0, "frame");
+    int rc = nodus_state_proof_request_decode(buf, len, req, &ec, em, sizeof(em));
+    free(req);
+    CHECK(rc == -1 && ec == NODUS_ERR_PROTOCOL_ERROR, what);
+    return 0;
+}
+
+/* More than 4,096 keys: the Tier-2 receive decoder (nodus_t2_decode) accepts
+ * the frame of a dnac_state_proof REQUEST, so the proof decoder answers
+ * PROTOCOL_ERROR (plan §10.2); every other method keeps the generic limit. */
+static int test_request_limits(void) {
+    const size_t cap = 600 * 1024;
+    uint8_t *buf = malloc(cap);
+    nodus_state_proof_req_t *req = malloc(sizeof(*req));
+    nodus_tier2_msg_t msg;
+    int ec = 0;
+    char em[96];
+    CHECK(buf && req, "allocation");
+    if (nontext_case("a non-text (array) argument key is refused", 1)) return 1;
+    if (nontext_case("a non-text (integer) argument key is refused", 0)) return 1;
+
+    size_t len = mkreq(buf, cap, 1, 0, 4097, 64, 0, 0);
+    CHECK(len > 0 && len < NODUS_MAX_FRAME_TCP, "a 4097-key request frame");
+    memset(&msg, 0, sizeof(msg));
+    CHECK(nodus_t2_decode(buf, len, &msg) == 0 &&
+          strcmp(msg.method, "dnac_state_proof") == 0 && msg.type == 'q',
+          "the receive decoder takes a 4097-key dnac_state_proof request");
+    nodus_t2_msg_free(&msg);
+    CHECK(nodus_state_proof_request_decode(buf, len, req, &ec, em,
+                                           sizeof(em)) == -1 &&
+          ec == NODUS_ERR_PROTOCOL_ERROR,
+          "...and the proof decoder answers PROTOCOL_ERROR");
+    {   /* the same bytes under another method: the generic limit refuses */
+        static const char M[] = "dnac_state_proof";
+        for (size_t i = 0; i + 16 <= len; i++)
+            if (memcmp(buf + i, M, 16) == 0) { buf[i + 15] = 'G'; break; }
+        memset(&msg, 0, sizeof(msg));
+        CHECK(nodus_t2_decode(buf, len, &msg) == -1,
+              "another method with 4097 items is refused as before");
+    }
+    free(buf);
+    free(req);
+    return 0;
+}
+
 /* ══ the delivery sink and the waits ═══════════════════════════════════ */
 
 typedef struct {
@@ -1425,10 +1515,14 @@ static void ipc_pump(nodus_witness_ipc_t *ipc, nodus_tcp_t *a, int rounds) {
     }
 }
 
-/* a bounded wait for the readers: builds_done reaches `want` */
-static int wait_builds(nodus_witness_t *w, uint64_t want) {
+/* A bounded wait for an expected asynchronous state: `want` answers are
+ * PUBLISHED (JOB_DONE, set under the service mutex after the answer is
+ * stored), so the next poll delivers exactly those. The wait fails (0) when
+ * that state never arrives; it is a wait on the state itself, not on the
+ * builds_done counter, which is incremented BEFORE the answer is published. */
+static int wait_published(nodus_witness_t *w, size_t want) {
     for (int i = 0; i < 4000; i++) {
-        if (nodus_state_proof_service_counters(w->state_proof).builds_done >= want)
+        if (nodus_state_proof_service_published(w->state_proof) >= want)
             return 1;
         usleep(5000);
     }
@@ -1498,7 +1592,7 @@ static int test_ipc_delivery(fixture_t *fx, const rows_t *rows) {
     ipc_pump(ipc, &cli1, 30);
     CHECK(ic.calls == 1 && ic.serial[0] != 0, "the request reached the "
           "dispatcher on an accepted connection with an accept serial");
-    CHECK(wait_builds(fx->w, 1), "the reader built the first answer");
+    CHECK(wait_published(fx->w, 1), "the first answer is published");
     nodus_tcp_close(&cli1);                       /* disconnect, NOT polled */
     ipc_pump(ipc, NULL, 40);                      /* the listener sees EOF  */
 
@@ -1519,11 +1613,13 @@ static int test_ipc_delivery(fixture_t *fx, const rows_t *rows) {
     CHECK(ic.serial[1] != 0 && ic.serial[1] != ic.serial[0],
           "the replacement carries another accept serial (generation is 0 "
           "on this transport)");
-    CHECK(wait_builds(fx->w, 2), "both answers are built");
+    CHECK(wait_published(fx->w, 2), "both answers are published");
 
     /* the production delivery: the old answer must NOT reach client 2 */
-    nodus_witness_state_proof_poll(fx->w);
-    ipc_pump(ipc, &cli2, 40);
+    nodus_witness_state_proof_poll(fx->w);          /* the ONE delivery */
+    for (int i = 0; i < 4000 && s2.frames < 1; i++)  /* bounded, then asserts */
+        ipc_pump(ipc, &cli2, 1);
+    ipc_pump(ipc, &cli2, 40);        /* anything sent by the same poll too */
     CHECK(s2.frames == 1 && s2.is_reply && s2.txn == 22,
           "client 2 received exactly its own answer (txn 22), not the answer "
           "of the connection that asked before it");
@@ -1941,6 +2037,7 @@ static int measure(const char *name, const uint32_t n[9], uint32_t extra_cc) {
 int main(void) {
     int rc = 0;
     if (test_request_decode() != 0) return 1;
+    if (test_request_limits() != 0) return 1;
     if (test_response_decode() != 0) return 1;
     if (test_receive_path() != 0) return 1;
     if (test_conn_identity() != 0) return 1;

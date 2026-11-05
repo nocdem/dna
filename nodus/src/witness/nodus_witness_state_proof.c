@@ -87,6 +87,10 @@ int nodus_state_proof_request_decode(const uint8_t *payload, size_t len,
     if (!payload || !out) return fail(ec, em, cap, pe, "no request");
     memset(out, 0, sizeof(*out));
     cbor_decoder_init(&dec, payload, len);
+    /* this decoder reads a dnac_state_proof request: an oversize "keys" array
+     * must reach the explicit 1..128 bound below (PROTOCOL_ERROR), not be
+     * cut by the generic limit */
+    cbor_decoder_set_max_items(&dec, NODUS_CBOR_MAX_ITEMS_STATE_PROOF);
     top = cbor_decode_next(&dec);
     if (top.type != CBOR_ITEM_MAP) return fail(ec, em, cap, pe, "not a map");
     /* Pass 1: EVERY outer entry is read to its end (a truncated last
@@ -115,8 +119,11 @@ int nodus_state_proof_request_decode(const uint8_t *payload, size_t len,
 
     for (size_t i = 0; i < args.count; i++) {
         cbor_item_t k = cbor_decode_next(&dec);
-        if (k.type == CBOR_ITEM_END || k.type == CBOR_ITEM_ERROR)
-            return fail(ec, em, cap, pe, "truncated args map");
+        /* "short text keys" (plan §10.2): a non-text key (a container's
+         * contents would otherwise be read as entries) is refused before its
+         * value is touched */
+        if (k.type != CBOR_ITEM_TSTR)
+            return fail(ec, em, cap, pe, "an argument key is not text");
         if (tkey(&k, "leg")) {
             cbor_item_t v = cbor_decode_next(&dec);
             if (v.type != CBOR_ITEM_UINT || have_leg || v.uint_val < 1 ||
@@ -677,6 +684,17 @@ size_t nodus_state_proof_poll(nodus_state_proof_service_t *svc,
         done(user, tag, frame, flen, ec, em, &st, 0);
         n++;
     }
+    return n;
+}
+
+size_t nodus_state_proof_service_published(nodus_state_proof_service_t *svc)
+{
+    size_t n = 0;
+    if (!svc) return 0;
+    pthread_mutex_lock(&svc->mu);
+    for (unsigned i = 0; i < svc->n; i++)
+        if (svc->jobs[i].state == JOB_DONE) n++;
+    pthread_mutex_unlock(&svc->mu);
     return n;
 }
 

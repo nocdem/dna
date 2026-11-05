@@ -184,6 +184,12 @@ typedef void (*nodus_state_proof_done_fn)(void *user, void *tag,
 size_t nodus_state_proof_poll(nodus_state_proof_service_t *svc,
                               nodus_state_proof_done_fn done, void *user);
 
+/** Read-only accessor (tests only): how many reader slots hold a PUBLISHED
+ *  answer, i.e. a finished job waiting for the next poll (JOB_DONE, set under
+ *  the service mutex after the answer fields are stored). A poll delivers
+ *  exactly these. */
+size_t nodus_state_proof_service_published(nodus_state_proof_service_t *svc);
+
 /** Test seam: the thread that ran the most recent build of reader slot 0..n,
  *  as recorded by that reader (compare with pthread_self() of the loop). */
 int nodus_state_proof_service_last_builder(nodus_state_proof_service_t *svc,
