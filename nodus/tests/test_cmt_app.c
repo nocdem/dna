@@ -232,6 +232,8 @@
 
 #ifdef NODUS_EVM_ENABLED
 #include "witness/nodus_witness_v2_trie.h"      /* HF-9 T-15: leg roots   */
+#include "witness/nodus_witness_v2_storage.h"   /* HF-9 T-9: work counters */
+#include "dnac/ledger_roots_v2.h"               /* storage exit id / nullifier */
 #include "witness/nodus_witness_cmt_node.h"     /* the Handshaker         */
 #endif
 #include "../tests/v2_genesis_fixture.h"
@@ -7598,12 +7600,24 @@ static void hyb_coin_nul(int c, uint8_t out[64])
     qgp_sha3_512(pre, sizeof(pre), out);
 }
 
+/* Coin 2 exists only on a chain opened with funded == 2: the FEE-only coin
+ * of key 1's STORAGE_EXIT envelope (test_storage_b2.c COINS CBX = FEE, owner
+ * = the exiting node's key); coins 0 and 1 belong to keys 0 and 1. */
+#define HYB_EXIT_COIN  2
+
+static int hyb_coin_key(int c)
+{
+    return c == HYB_EXIT_COIN ? 1 : c;
+}
+
 /* BOND + FEE exactly, as test_storage_b2.c COINS: the SYSFUND leg consumes
- * the whole coin - the bond is locked, the rest is the envelope fee */
+ * the whole coin - the bond is locked, the rest is the envelope fee. The
+ * exit coin is the fee alone (the exit's SYSFUND leg locks / releases
+ * nothing: nodus_witness_rt_native.c rtn_storage_exit_exec ":6470"). */
 static uint64_t hyb_coin_amount(int c)
 {
-    (void)c;
-    return HYB_COIN_BOND + (uint64_t)DNAC_MIN_FEE_RAW;
+    return c == HYB_EXIT_COIN ? (uint64_t)DNAC_MIN_FEE_RAW
+                              : HYB_COIN_BOND + (uint64_t)DNAC_MIN_FEE_RAW;
 }
 
 static int hyb_coin_owner_hex(int key, char hex[129])
@@ -7625,7 +7639,7 @@ static int hyb_seed_coin(nodus_witness_t *w, int c)
     int           rc;
 
     hyb_coin_nul(c, nul);
-    if (hyb_coin_owner_hex(c, hex) != 0) return -1;
+    if (hyb_coin_owner_hex(hyb_coin_key(c), hex) != 0) return -1;
     if (sqlite3_prepare_v2(w->db,
             "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
             "tx_hash, output_index, block_height, created_at, "
@@ -7641,6 +7655,54 @@ static int hyb_seed_coin(nodus_witness_t *w, int c)
     return rc == SQLITE_DONE ? 0 : -1;
 }
 
+/* History for the growth probe (T-9): `g_hyb_filler` extra ordinary UTXOs
+ * planted BEFORE the genesis next to the coins, read once by the next
+ * hyb_open (which resets it to 0). Each is a state production can produce -
+ * a one-unit UTXO with its own nullifier and owner - and joins the supply
+ * by construction exactly like the coins (v2x seeds genesis_supply = UTXOs
+ * + stakes + delegated); no supply, per-open or schema check is bypassed.
+ * Nullifier and owner are deterministic SHA3-512 of a counter. */
+static unsigned g_hyb_filler;
+
+static int hyb_seed_filler(nodus_witness_t *w, unsigned n)
+{
+    sqlite3_stmt *st = NULL;
+    int           rc = SQLITE_DONE;
+
+    if (sqlite3_exec(w->db, "BEGIN", NULL, NULL, NULL) != SQLITE_OK) return -1;
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
+            "tx_hash, output_index, block_height, created_at, "
+            "unlock_block, domain_id) VALUES "
+            "(?1, ?2, 1, zeroblob(64), zeroblob(64), 0, 0, 0, 0, 1)",
+            -1, &st, NULL) != SQLITE_OK) {
+        (void)sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
+        return -1;
+    }
+    for (unsigned i = 0; i < n && rc == SQLITE_DONE; i++) {
+        uint8_t pre[24], nul[64], fp[64];
+        char    hex[129];
+
+        memcpy(pre, "hf9-wp4-hyb-fill", 16);
+        for (int b = 0; b < 8; b++) pre[16 + b] = (uint8_t)((uint64_t)i >> (8 * (7 - b)));
+        if (qgp_sha3_512(pre, sizeof(pre), nul) != 0) { rc = SQLITE_ERROR; break; }
+        memcpy(pre, "hf9-wp4-hyb-fown", 16);
+        if (qgp_sha3_512(pre, sizeof(pre), fp) != 0) { rc = SQLITE_ERROR; break; }
+        for (int b = 0; b < 64; b++) snprintf(hex + 2 * b, 3, "%02x", fp[b]);
+        sqlite3_reset(st);
+        sqlite3_bind_blob(st, 1, nul, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st, 2, hex, 128, SQLITE_TRANSIENT);
+        rc = sqlite3_step(st);
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        (void)sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
+        return -1;
+    }
+    return sqlite3_exec(w->db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK ? 0 : -1;
+}
+
+/* funded: 0 unfunded; 1 coins 0 and 1; 2 also the exit coin (HYB_EXIT_COIN) */
 static int hyb_open(hyb_t *h, int funded)
 {
     v2x_cfgbox_t hb;
@@ -7677,8 +7739,15 @@ static int hyb_open(hyb_t *h, int funded)
         for (int c = 0; c < HYB_N_COINS; c++)
             CHECK(hyb_seed_coin(h->g.w, c) == 0, "hyb: a coin before the "
                   "genesis");
+        if (funded == 2)
+            CHECK(hyb_seed_coin(h->g.w, HYB_EXIT_COIN) == 0,
+                  "hyb: the exit coin before the genesis");
+        CHECK(hyb_seed_filler(h->g.w, g_hyb_filler) == 0,
+              "hyb: the history UTXOs before the genesis");
         v2x_seed_not_real(V2X_SEED_NOT_REAL_UTXOS);   /* one-shot */
     }
+    CHECK(funded || g_hyb_filler == 0, "hyb: history UTXOs need a funded chain");
+    g_hyb_filler = 0;
     CHECK(v2x_seed_genesis(h->g.w, file16, 0, NULL, 0, h->g.chain32) == 0,
           "hyb: the seeded genesis");
     g_v2x_cfg_hook = NULL;
@@ -8067,11 +8136,14 @@ static uint32_t hyb_streg_call(nodus_witness_t *w, uint8_t *dst, int key,
     return off == HYB_STREG_LEN ? HYB_STREG_LEN : 0;
 }
 
-/* @return 0 and a heap envelope in *out (free()), or -1 */
-static int hyb_register_env(nodus_witness_t *w, uint64_t height, int key,
-                            uint8_t **out, size_t *out_len)
+/* A 2-leg storage envelope: SYSTEM `op` with the call `call` (call_len
+ * bytes) + CORE SYSFUND over coin `coin`, both legs signed by node key
+ * `key` (the node is its own owner and the coin's owner; test_storage_b2.c
+ * st_env :1747). @return 0 and a heap envelope in *out (free()), or -1 */
+static int hyb_storage_env(nodus_witness_t *w, uint64_t height, uint32_t op,
+                           const uint8_t *call, uint32_t call_len, int coin,
+                           int key, uint8_t **out, size_t *out_len)
 {
-    static uint8_t call[HYB_STREG_LEN];
     static uint8_t fund[66];
     static uint8_t auth[2][HYB_AUTH_LEN];
     dna_domain_manifest_t sys, core;
@@ -8085,22 +8157,21 @@ static int hyb_register_env(nodus_witness_t *w, uint64_t height, int key,
     int                   ok = -1;
 
     *out = NULL;
-    if (hyb_streg_call(w, call, key, height) != HYB_STREG_LEN) return -1;
     if (nodus_witness_domreg_get(w, DNA_DOMAIN_SYSTEM, NULL, &sys, NULL) != 0 ||
         nodus_witness_domreg_get(w, DNA_DOMAIN_CORE, NULL, &core, NULL) != 0)
         return -1;
-    hyb_coin_nul(key, nul);
+    hyb_coin_nul(coin, nul);
     fund[0] = 1;
     memcpy(fund + 1, nul, 64);
     fund[65] = 0;
     memset(legs, 0, sizeof(legs));
     memset(auth, 0, sizeof(auth));
     legs[0].hdr.domain_id = DNA_DOMAIN_SYSTEM;
-    legs[0].hdr.runtime_op = DNA_SYSRULE_STORAGE_REGISTER;
+    legs[0].hdr.runtime_op = op;
     legs[0].hdr.ruleset_version = sys.ruleset_version;
     legs[0].hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
     legs[0].hdr.auth_kind = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
-    legs[0].hdr.call_len = HYB_STREG_LEN;
+    legs[0].hdr.call_len = call_len;
     legs[0].hdr.auth_len = HYB_AUTH_LEN;
     legs[0].hdr.res_max_effects = 8;
     legs[0].hdr.res_max_effect_bytes = 16384;
@@ -8119,6 +8190,10 @@ static int hyb_register_env(nodus_witness_t *w, uint64_t height, int key,
     legs[1].auth_data = auth[1];
     memset(&in, 0, sizeof(in));
     in.fee_amount = (uint64_t)DNAC_MIN_FEE_RAW;
+    /* inside the D2 window [height, height + 720] of the carrying block
+     * (phase 0d refuses 0); same choice as 4320043cd and test_hf7_edge.c
+     * :667 ("expiry A + 5") */
+    in.expiry_height = height + 5u;
     in.res_max_total_units = 400000;
     in.leg_count = 2;
     in.legs = legs;
@@ -8161,6 +8236,46 @@ static int hyb_register_env(nodus_witness_t *w, uint64_t height, int key,
     return 0;
 }
 
+/* @return 0 and a heap envelope in *out (free()), or -1: key `key`'s
+ * STORAGE_REGISTER (coin = the key's own coin) */
+static int hyb_register_env(nodus_witness_t *w, uint64_t height, int key,
+                            uint8_t **out, size_t *out_len)
+{
+    static uint8_t call[HYB_STREG_LEN];
+
+    *out = NULL;
+    if (hyb_streg_call(w, call, key, height) != HYB_STREG_LEN) return -1;
+    return hyb_storage_env(w, height, DNA_SYSRULE_STORAGE_REGISTER, call,
+                           HYB_STREG_LEN, key, key, out, out_len);
+}
+
+/* @return 0 and a heap envelope in *out (free()), or -1: key `key`'s
+ * STORAGE_EXIT, call node_fp ‖ owner_fp (128 B; the node is its own owner,
+ * test_storage_b2.c :3029-3033), funded by the exit coin */
+static int hyb_exit_env(nodus_witness_t *w, uint64_t height, int key,
+                        uint8_t **out, size_t *out_len)
+{
+    uint8_t xcall[128];
+
+    *out = NULL;
+    if (qgp_sha3_512(g_ks[key].pk, QGP_DSA87_PUBLICKEYBYTES, xcall) != 0)
+        return -1;
+    memcpy(xcall + 64, xcall, 64);
+    return hyb_storage_env(w, height, DNA_SYSRULE_STORAGE_EXIT, xcall, 128u,
+                           HYB_EXIT_COIN, key, out, out_len);
+}
+
+/* Put the envelope `env` (elen bytes) into the NEXT block of the pair at
+ * `height` and apply it (to B too when given). @return the apply rc */
+static int hyb_tx_step(hyb_t *A, hyb_t *B, int64_t height, uint8_t *env,
+                       size_t elen)
+{
+    A->x.txs[0].data = env;
+    A->x.txs[0].len  = elen;
+    A->ntx = 1;
+    return hyb_pair_step(A, B, height, 0);
+}
+
 /* Put one registration for node key `key` into the NEXT block of the pair
  * at `height` and apply it (to B too when given). @return the apply rc
  * (CMT_OK) or -1 on a build failure. The envelope buffer is leaked into
@@ -8172,10 +8287,18 @@ static int hyb_register_step(hyb_t *A, hyb_t *B, int64_t height, int key,
 
     if (hyb_register_env(A->g.w, (uint64_t)height, key, env, &elen) != 0)
         return -1;
-    A->x.txs[0].data = *env;
-    A->x.txs[0].len  = elen;
-    A->ntx = 1;
-    return hyb_pair_step(A, B, height, 0);
+    return hyb_tx_step(A, B, height, *env, elen);
+}
+
+/* the same for key `key`'s STORAGE_EXIT */
+static int hyb_exit_step(hyb_t *A, hyb_t *B, int64_t height, int key,
+                         uint8_t **env)
+{
+    size_t elen = 0;
+
+    if (hyb_exit_env(A->g.w, (uint64_t)height, key, env, &elen) != 0)
+        return -1;
+    return hyb_tx_step(A, B, height, *env, elen);
 }
 
 /* HF-9 WP4 — the FUNDED hybrid probe (step a of the registry-writer
@@ -8345,6 +8468,333 @@ static int t_hybrid_register_probe(void)
     free(H);
     return 0;
 }
+
+/* registry row of node key `key`: 0 and its status, exit_height and bond;
+ * -1 if the row is absent */
+static int hyb_node_row(nodus_witness_t *w, int key, int *status,
+                        uint64_t *exit_h, uint64_t *bond)
+{
+    sqlite3_stmt *st = NULL;
+    uint8_t       fp[64];
+    int           rc = -1;
+
+    if (qgp_sha3_512(g_ks[key].pk, QGP_DSA87_PUBLICKEYBYTES, fp) != 0)
+        return -1;
+    if (sqlite3_prepare_v2(w->db, "SELECT status, exit_height, bond FROM "
+                           "v2_storage_nodes WHERE node_fp = ?1", -1, &st,
+                           NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, fp, 64, SQLITE_STATIC);
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        *status = sqlite3_column_int(st, 0);
+        *exit_h = (uint64_t)sqlite3_column_int64(st, 1);
+        *bond   = (uint64_t)sqlite3_column_int64(st, 2);
+        rc = 0;
+    }
+    sqlite3_finalize(st);
+    return rc;
+}
+
+/* HF-9 WP4 — registry EXIT and boundary RELEASE by real blocks (plan :445
+ * "every writer path", T-5 for the registry writer's two remaining paths).
+ * The release is NOT 12 epochs after the exit: the next boundary after the
+ * exit releases the bond as ONE locked UTXO whose unlock height is
+ * B + 12 E (nodus_witness_v2_storage.c st_release :1757-1810,
+ * nodus_witness_rt_native.c :6474-6483); only the UNLOCK waits 12 epochs.
+ * (The round-9 report said the release lands 12 epochs after the exit;
+ * that was wrong, and this case needs 2E + 1 blocks, not 12E.)
+ * Timeline on the funded hybrid (exit coin planted: hyb_open(H, 2)): X1
+ * blocks 1-15; X2 key 1 registers in block 16 (ACTIVE, exit_height 0); X3
+ * blocks up to the boundary E (an arrival event) apply and the row is still
+ * ACTIVE; X4 STORAGE_EXIT in block E + 3 applies; X5 the row is EXITING
+ * with exit_height E + 3, the exit coin is consumed, the running bond total
+ * still counts the bond (EXITING counts), every leg root equals the
+ * incremental and the full rebuild; X6 blocks to 2E - 1, bond bucket and
+ * UTXO sum recorded; X7 the boundary 2E applies: the row is RELEASED, ONE
+ * UTXO with the exit identity (tx_hash = exit_id, output index 201, owner =
+ * the key's fingerprint hex, amount = the bond, block 2E, unlock 2E + 12 E)
+ * exists, the bond bucket fell by the bond and the UTXO sum rose by it, the
+ * UTXO leg (1) and the registry leg (5) moved, and every leg root equals
+ * the incremental and the full rebuild; X8 block 2E + 1 applies and the leg
+ * roots still equal the rebuild.
+ * Flags: NODUS_EVM_ENABLED; boundary arithmetic uses DNAC_EPOCH_LENGTH (E >
+ * 18, as hyb_crash_boundary_event). One node: twins are the T-15 cases'
+ * job. Leaves one /tmp/test_cmt_app_hyb_XXXXXX (removed). Can falsely pass:
+ * the settlement of the boundary pays nothing here (no signed reports, pool
+ * 1 unfunded: the F1 gate is not met), so the payout path is not run; the
+ * node is released from the first epoch it was a member of. */
+static int t_hybrid_exit_release_probe(void)
+{
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    hyb_t   *H = calloc(1, sizeof(*H));
+    uint8_t *renv = NULL, *xenv = NULL;
+    uint8_t  nul[64], fp[64], xid[64], xnul[64];
+    uint8_t  u0[8][64], u1[8][64];
+    uint64_t bonds0 = 0, bonds1 = 0, exit_h = 0, bond = 0;
+    int64_t  utxo0 = 0, utxo1 = 0;
+    int      st = 0, moved = 0;
+    char     hex[129];
+
+    CHECK(E > 18, "the boundary lies above the registration");
+    CHECK(H != NULL, "alloc");
+    CHECK(hyb_open(H, 2) == 0, "X0 the funded hybrid with the exit coin");
+    CHECK(hyb_pair_to(H, NULL, 0, 15) == 0, "X1 blocks 1-15 apply");
+    CHECK(hyb_register_step(H, NULL, 16, 1, &renv) == CMT_OK,
+          "X2a block 16 with the registration applies");
+    CHECK(hyb_node_row(H->g.w, 1, &st, &exit_h, &bond) == 0 &&
+          st == DNA_V2_STORAGE_ACTIVE && exit_h == 0 &&
+          bond == HYB_COIN_BOND,
+          "X2b the registry row is ACTIVE with exit_height 0");
+    CHECK(hyb_pair_to(H, NULL, 16, (int64_t)E) == 0,
+          "X3a blocks up to the boundary E apply (arrival event)");
+    CHECK(hyb_node_row(H->g.w, 1, &st, &exit_h, &bond) == 0 &&
+          st == DNA_V2_STORAGE_ACTIVE,
+          "X3b the row is still ACTIVE after the boundary E");
+    CHECK(hyb_legs_ok(H->g.w) == 0,
+          "X3c every leg root equals the rebuild after the boundary E");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)E, (int64_t)E + 2) == 0,
+          "X3d blocks E+1 and E+2 apply");
+    CHECK(hyb_exit_step(H, NULL, (int64_t)E + 3, 1, &xenv) == CMT_OK,
+          "X4 block E+3 carrying the STORAGE_EXIT applies through the real "
+          "blockexec");
+    CHECK(hyb_node_row(H->g.w, 1, &st, &exit_h, &bond) == 0 &&
+          st == DNA_V2_STORAGE_EXITING && exit_h == E + 3 &&
+          bond == HYB_COIN_BOND,
+          "X5a the row is EXITING with exit_height E+3, bond unchanged");
+    {
+        sqlite3_stmt *q = NULL;
+        int gone = 0;
+
+        hyb_coin_nul(HYB_EXIT_COIN, nul);
+        CHECK(sqlite3_prepare_v2(H->g.w->db, "SELECT COUNT(*) FROM utxo_set "
+              "WHERE nullifier = ?1", -1, &q, NULL) == SQLITE_OK, "prep");
+        sqlite3_bind_blob(q, 1, nul, 64, SQLITE_STATIC);
+        gone = sqlite3_step(q) == SQLITE_ROW && sqlite3_column_int(q, 0) == 0;
+        sqlite3_finalize(q);
+        CHECK(gone, "X5b the exit's SYSFUND leg consumed the exit coin");
+    }
+    CHECK(q1(H->g.w->db, "SELECT total FROM v2_bond_total WHERE id = 1") ==
+              (int64_t)HYB_COIN_BOND,
+          "X5c the bond bucket still counts the EXITING bond");
+    CHECK(hyb_legs_ok(H->g.w) == 0,
+          "X5d every leg root equals the rebuild after the exit block");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)E + 3, (int64_t)(2 * E) - 1) == 0,
+          "X6a blocks up to 2E-1 apply");
+    CHECK(nodus_witness_storage_bond_total(H->g.w, &bonds0) == 0 &&
+          (utxo0 = q1(H->g.w->db,
+                      "SELECT COALESCE(SUM(amount),0) FROM utxo_set")) > 0,
+          "X6b the bond bucket and the UTXO sum before the release");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, u0[leg - 1]) == 0,
+              "X6c leg roots read before the release");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(2 * E) - 1, (int64_t)(2 * E)) == 0,
+          "X7a the boundary 2E applies");
+    CHECK(hyb_node_row(H->g.w, 1, &st, &exit_h, &bond) == 0 &&
+          st == DNA_V2_STORAGE_RELEASED && bond == HYB_COIN_BOND,
+          "X7b the row is RELEASED");
+    CHECK(qgp_sha3_512(g_ks[1].pk, QGP_DSA87_PUBLICKEYBYTES, fp) == 0 &&
+          dna_v2_storage_exit_id(H->g.chain32, 2 * E, fp, xid) == 0 &&
+          dna_v2_storage_exit_nullifier(xid, xnul) == 0 &&
+          hyb_coin_owner_hex(1, hex) == 0, "X7c the exit identity");
+    {
+        sqlite3_stmt *q = NULL;
+        int good = 0;
+
+        CHECK(sqlite3_prepare_v2(H->g.w->db, "SELECT owner, amount, tx_hash, "
+              "output_index, block_height, unlock_block FROM utxo_set WHERE "
+              "nullifier = ?1", -1, &q, NULL) == SQLITE_OK, "prep");
+        sqlite3_bind_blob(q, 1, xnul, 64, SQLITE_STATIC);
+        if (sqlite3_step(q) == SQLITE_ROW)
+            good = sqlite3_column_bytes(q, 0) == 128 &&
+                   memcmp(sqlite3_column_text(q, 0), hex, 128) == 0 &&
+                   (uint64_t)sqlite3_column_int64(q, 1) == HYB_COIN_BOND &&
+                   sqlite3_column_bytes(q, 2) == 64 &&
+                   memcmp(sqlite3_column_blob(q, 2), xid, 64) == 0 &&
+                   sqlite3_column_int64(q, 3) == (int64_t)DNA_V2_STORAGE_EXIT_OUT_IDX &&
+                   (uint64_t)sqlite3_column_int64(q, 4) == 2 * E &&
+                   (uint64_t)sqlite3_column_int64(q, 5) ==
+                       2 * E + (uint64_t)DNAC_STORAGE_EXIT_LOCK_EPOCHS * E;
+        sqlite3_finalize(q);
+        CHECK(good, "X7d the bond is ONE locked UTXO: identity, owner, "
+                    "amount, index 201, block 2E, unlock 2E + 12E");
+    }
+    utxo1 = q1(H->g.w->db, "SELECT COALESCE(SUM(amount),0) FROM utxo_set");
+    CHECK(nodus_witness_storage_bond_total(H->g.w, &bonds1) == 0 &&
+          bonds1 == bonds0 - HYB_COIN_BOND &&
+          utxo1 == utxo0 + (int64_t)HYB_COIN_BOND,
+          "X7e the bond moved from the bond bucket to the UTXO sum");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, u1[leg - 1]) == 0,
+              "X7f leg roots read after the release");
+    for (int i = 0; i < 8; i++)
+        if (memcmp(u0[i], u1[i], 64) != 0) moved |= 1 << i;
+    CHECK((moved & 0x01) != 0 && (moved & 0x10) != 0,
+          "X7g the UTXO leg (1) and the registry leg (5) moved with the "
+          "release");
+    CHECK(hyb_legs_ok(H->g.w) == 0,
+          "X7h every leg root equals the incremental and the full rebuild "
+          "after the release block");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(2 * E), (int64_t)(2 * E) + 1) == 0,
+          "X8a block 2E+1 applies");
+    CHECK(hyb_legs_ok(H->g.w) == 0, "X8b and its leg roots equal the rebuild");
+    free(renv);
+    free(xenv);
+    hyb_close(H);
+    free(H);
+    return 0;
+}
+
+/* ── T-9 on the real block path (plan :449) ───────────────────────────── */
+typedef struct {
+    nodus_storage_work_t w;      /* g_nodus_storage_work around the block  */
+    int64_t              k;      /* distinct (leg, key) the block dirtied  */
+} hyb_sample_t;
+
+/* One block with the work counters read around it. `env` != NULL puts that
+ * envelope into the block. The dirty keys are counted by a TEMP trigger on
+ * main.v2_trie_dirty (a connection-local instrument: it adds nothing to the
+ * file and nothing to the schema the per-open check reads); k == 0 on a
+ * block that registered keys would mean the instrument is not wired, and
+ * the caller asserts k > 0 where keys must be dirty. */
+static int hyb_sample_block(hyb_t *H, int64_t height, uint8_t *env,
+                            size_t elen, hyb_sample_t *s)
+{
+    int rc;
+
+    if (sqlite3_exec(H->g.w->db, "DELETE FROM temp.hyb_dlog", NULL, NULL,
+                     NULL) != SQLITE_OK)
+        return -1;
+    memset(&g_nodus_storage_work, 0, sizeof(g_nodus_storage_work));
+    if (env) rc = hyb_tx_step(H, NULL, height, env, elen);
+    else     rc = hyb_pair_step(H, NULL, height, 0);
+    s->w = g_nodus_storage_work;
+    s->k = q1(H->g.w->db, "SELECT COUNT(*) FROM temp.hyb_dlog");
+    return rc == CMT_OK ? 0 : -1;
+}
+
+/* One funded hybrid with `n_fill` extra UTXOs of history, three measured
+ * blocks: s[0] block 16 carrying the registration (an ordinary generation-6
+ * block with a fixed number of changed records), s[1] block 17 (ordinary,
+ * no transaction), s[2] the boundary E (the event: an arrival). */
+static int hyb_growth_chain(unsigned n_fill, hyb_sample_t s[3])
+{
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    hyb_t   *H = calloc(1, sizeof(*H));
+    uint8_t *env = NULL;
+    size_t   elen = 0;
+
+    CHECK(H != NULL, "alloc");
+    g_hyb_filler = n_fill;
+    CHECK(hyb_open(H, 1) == 0, "G0 the funded hybrid with its history");
+    CHECK(q1(H->g.w->db, "SELECT COUNT(*) FROM utxo_set") ==
+              (int64_t)(HYB_N_COINS + n_fill),
+          "G0b the history rows are present after the genesis");
+    CHECK(sqlite3_exec(H->g.w->db,
+              "CREATE TEMP TABLE hyb_dlog(leg INTEGER, key BLOB);"
+              "CREATE TEMP TRIGGER hyb_dlog_t AFTER INSERT ON "
+              "main.v2_trie_dirty BEGIN INSERT INTO temp.hyb_dlog "
+              "VALUES (NEW.leg, NEW.key); END;",
+              NULL, NULL, NULL) == SQLITE_OK,
+          "G0c the dirty-key counter is installed (connection-local)");
+    CHECK(hyb_pair_to(H, NULL, 0, 15) == 0, "G1 blocks 1-15 apply");
+    CHECK(hyb_register_env(H->g.w, 16, 1, &env, &elen) == 0 && env,
+          "G2 the registration envelope builds");
+    CHECK(hyb_sample_block(H, 16, env, elen, &s[0]) == 0,
+          "G3 block 16 with the registration applies");
+    CHECK(hyb_sample_block(H, 17, NULL, 0, &s[1]) == 0, "G4 block 17 applies");
+    CHECK(hyb_pair_to(H, NULL, 17, (int64_t)E - 1) == 0,
+          "G5 blocks up to E-1 apply");
+    CHECK(hyb_sample_block(H, (int64_t)E, NULL, 0, &s[2]) == 0,
+          "G6 the boundary E applies");
+    CHECK(hyb_legs_ok(H->g.w) == 0,
+          "G7 every leg root equals the rebuild at the end");
+    free(env);
+    hyb_close(H);
+    free(H);
+    return 0;
+}
+
+/* HF-9 WP4 - T-9 (plan :449) through REAL block application: the work of
+ * an ordinary block and of the first boundary does not grow with the
+ * history. Two funded hybrids that differ ONLY in the number of ordinary
+ * UTXOs planted before the genesis (100 and 100 000: the plan's range
+ * 1e2 -> 1e5; production-producible rows, supply by construction, see
+ * g_hyb_filler) apply the SAME three blocks (16: one registration, 17:
+ * empty, E: the arrival event). For each block the counters of
+ * g_nodus_storage_work and the number of dirty (leg, key) pairs are read.
+ * Asserted: G-a the trie-node counter and the dirty-key counter are wired
+ * (non-zero on block 16); G-b nodes loaded <= 131 per dirty key (plan 5.6:
+ * path <= 129 + 1 sibling + 1 extension child) on every sample of both
+ * chains - not equality: path depth grows with log16(rows); G-c ordinary
+ * blocks (16, 17) do no assignment work (segments visited, scores computed,
+ * assignment rows written = 0); G-d the boundary E (the event) reads the
+ * registry (rows read > 0, VM steps > 0) and every storage counter is
+ * EQUAL on the two chains (the registry and the segment tables are the
+ * same; only the UTXO leg grew), registry VM steps within 64 steps (the
+ * bound of test_hf9_growth). Both chains' numbers go to stderr.
+ * NOT COVERED here: growth of the registry, assignment and segment tables
+ * with real blocks - at 10^5 each needs a signed envelope per row (a block
+ * holds TEST_APP_TXS_CAP of them) or a staked node per row; that growth is
+ * measured by test_hf9_growth on rows planted directly. The settlement
+ * path of the boundary (reports, pool 1) is not reached: no signed reports
+ * and unfunded pools on this chain, so the F1 gate is not met.
+ * Flags: NODUS_EVM_ENABLED; E > 18. Leaves /tmp/test_cmt_app_hyb_XXXXXX
+ * (removed). Can falsely pass: the history sits in the UTXO leg only, so
+ * the claim proven is "block work is independent of the UTXO leg's size";
+ * a counter not wired to the real path is caught by G-a and G-d's non-zero
+ * checks only for the counters asserted. */
+static int t_hybrid_growth_probe(void)
+{
+    static const char *const names[3] = {
+        "block 16 (registration)", "block 17 (empty)", "boundary E (event)"
+    };
+    hyb_sample_t small[3], big[3];
+
+    CHECK(DNAC_EPOCH_LENGTH > 18, "the boundary lies above the registration");
+    memset(small, 0, sizeof(small));
+    memset(big, 0, sizeof(big));
+    CHECK(hyb_growth_chain(100, small) == 0, "chain with 100 history rows");
+    CHECK(hyb_growth_chain(100000, big) == 0,
+          "chain with 100 000 history rows");
+    for (int i = 0; i < 3; i++)
+        fprintf(stderr, "T-9 %-24s | 1e2: nodes %" PRIu64 " keys %" PRId64
+                " regrows %" PRIu64 " vm %" PRIu64 " | 1e5: nodes %" PRIu64
+                " keys %" PRId64 " regrows %" PRIu64 " vm %" PRIu64 "\n",
+                names[i], small[i].w.trie_nodes_loaded, small[i].k,
+                small[i].w.registry_rows_read, small[i].w.registry_vm_steps,
+                big[i].w.trie_nodes_loaded, big[i].k,
+                big[i].w.registry_rows_read, big[i].w.registry_vm_steps);
+    CHECK(small[0].w.trie_nodes_loaded > 0 && big[0].w.trie_nodes_loaded > 0 &&
+          small[0].k > 0 && big[0].k > 0,
+          "G-a the trie-node counter and the dirty-key counter are wired "
+          "on block 16 of both chains");
+    for (int i = 0; i < 3; i++)
+        CHECK(small[i].w.trie_nodes_loaded <= 131u * (uint64_t)small[i].k &&
+              big[i].w.trie_nodes_loaded <= 131u * (uint64_t)big[i].k,
+              "G-b nodes loaded <= 131 per dirty key at both history sizes");
+    for (int i = 0; i < 2; i++)
+        CHECK(small[i].w.segments_visited == 0 &&
+              small[i].w.scores_computed == 0 &&
+              small[i].w.assign_rows_written == 0 &&
+              big[i].w.segments_visited == 0 &&
+              big[i].w.scores_computed == 0 &&
+              big[i].w.assign_rows_written == 0,
+              "G-c an ordinary block does no assignment work");
+    CHECK(small[2].w.registry_rows_read > 0 && big[2].w.registry_rows_read > 0 &&
+          small[2].w.registry_vm_steps > 0 && big[2].w.registry_vm_steps > 0,
+          "G-d1 the event boundary reads the registry (counters wired)");
+    CHECK(small[2].w.registry_rows_read == big[2].w.registry_rows_read &&
+          small[2].w.segments_visited == big[2].w.segments_visited &&
+          small[2].w.assign_rows_read == big[2].w.assign_rows_read &&
+          small[2].w.assign_rows_written == big[2].w.assign_rows_written &&
+          small[2].w.scores_computed == big[2].w.scores_computed,
+          "G-d2 every storage counter of the event boundary is equal at "
+          "both history sizes");
+    CHECK(big[2].w.registry_vm_steps <= small[2].w.registry_vm_steps + 64u &&
+          small[2].w.registry_vm_steps <= big[2].w.registry_vm_steps + 64u,
+          "G-d3 registry VM steps within 64 at both history sizes");
+    return 0;
+}
 #endif /* NODUS_EVM_ENABLED */
 
 int main(void)
@@ -8357,6 +8807,8 @@ int main(void)
 #ifdef NODUS_EVM_ENABLED
         { "hybrid_funded_probe",        t_hybrid_funded_probe },
         { "hybrid_register_probe",      t_hybrid_register_probe },
+        { "hybrid_exit_release_probe",  t_hybrid_exit_release_probe },
+        { "hybrid_growth_probe",        t_hybrid_growth_probe },
         { "hyb_crash_boundary_event",   t_hyb_crash_boundary_event },
         { "hyb_crash_edge",             t_hyb_crash_edge },
         { "hyb_crash_ordinary_gen6",    t_hyb_crash_ordinary },
