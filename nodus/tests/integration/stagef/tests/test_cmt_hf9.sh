@@ -598,13 +598,24 @@ BIN_CMAX=$(sed -n 's/^  STORAGE_COPIES  *\[\([0-9][0-9]*\), \([0-9][0-9]*\)\].*/
 [ "$BIN_SAF" = "$GRACE_SAF" ] || die "the CLI's RULESET_GEN_TRIE vote wait is $BIN_SAF blocks, STAGEF_CC_GRACE_SAFETY is $GRACE_SAF — the build and the environment disagree"
 [ "$BIN_ERG" = "$E" ] || die "the CLI's STORAGE_COPIES vote wait is one epoch = $BIN_ERG blocks, STAGEF_EPOCH_LENGTH is $E — the build and the environment disagree"
 [ "$BIN_CMIN" = 4 ] && [ "$BIN_CMAX" = 16 ] || die "the CLI's STORAGE_COPIES range is [$BIN_CMIN, $BIN_CMAX], plan D4 says [4, 16]"
+# The name-table probe. `chain-config propose` is an OWN-NODE tool since the 4001 change
+# (README "nodus-cli in the harness"): in nodus-cli.c the order is :2174-2186 the name table
+# ("Unknown param name", return 1), then :2211-2216 the witness-socket lookup ("cannot find this
+# node's witness socket", return 1), and only then :2229 "client_connect failed". A call on the
+# probe port with a config file that does not exist therefore stops at the socket lookup AFTER the
+# name was accepted; a name the table refuses never gets that far. So: the name passed the table
+# iff the output holds the socket-lookup line (or, on an older CLI, the connect line) and NOT
+# "Unknown param name". --config names a file that cannot exist, so the lookup never depends on
+# /etc/nodus.conf of the machine.
 for nmv in "RULESET_GEN_TRIE:$D6_DEC" "STORAGE_COPIES:4"; do
     nm="${nmv%%:*}"
     probe=$(timeout 60 "$CLI" -s 127.0.0.1 -p "$PROBE_PORT" chain-config propose \
-                --param "$nm" --value "${nmv##*:}" --effective 1 2>&1 || true)
-    [[ "$probe" != *"Unknown param name"* && "$probe" == *"client_connect failed"* ]] || {
+                --param "$nm" --value "${nmv##*:}" --effective 1 \
+                --config "$BASE_DIR/no-such-node-config.json" 2>&1 || true)
+    [[ "$probe" != *"Unknown param name"* && \
+       ( "$probe" == *"cannot find this node's witness socket"* || "$probe" == *"client_connect failed"* ) ]] || {
         printf '%s\n' "$probe" >&2
-        die "the CLI did not pass $nm through its name table to the connect step — not an HF-9 build"; }
+        die "the CLI did not pass $nm through its name table (expected the witness-socket lookup or the connect step after it) — not an HF-9 build"; }
 done
 # hf9: schema S20 on node 1 — the keyed-trie tables, the 24 triggers (names
 # v2_trie_l<leg>_<ins|del|upd>, nodus_witness_v2_schema.c), capture = 0
