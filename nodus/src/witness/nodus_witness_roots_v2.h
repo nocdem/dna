@@ -417,9 +417,10 @@ typedef struct {
     uint8_t global_root[64];
 } nodus_witness_proof_legs_t;
 
-/** @return 0 ok; 1 the SYSTEM runtime of the snapshot is below generation 6
- *  (or unresolvable): no keyed-trie composition exists, `p` is empty;
- *  -1 a read fault or a malformed head row (the whole load fails). */
+/** @return 0 ok; 1 the committed SYSTEM runtime was resolved and is below
+ *  generation 6: no keyed-trie composition exists, `p` is empty; -1 a read
+ *  fault, a SYSTEM runtime that cannot be resolved, or a malformed head row
+ *  (the whole load fails). */
 int nodus_witness_proof_legs_load(nodus_witness_t *w,
                                   nodus_witness_proof_legs_t *p);
 void nodus_witness_proof_legs_free(nodus_witness_proof_legs_t *p);

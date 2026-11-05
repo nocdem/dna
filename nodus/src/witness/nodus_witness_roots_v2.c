@@ -1706,11 +1706,15 @@ int nodus_witness_proof_legs_load(nodus_witness_t *w,
     if (!w || !w->db || !p) return -1;
     memset(p, 0, sizeof(*p));
     const nodus_domain_runtime_t *rt = NULL;
-    /* INFERENCE: nodus_witness_v2_runtime_for answers -1 both for an
-     * unresolvable domain and for a fault (the roots_generation_on rule);
-     * both are "no generation-6 composition" here */
-    if (nodus_witness_v2_runtime_for(w, DNA_DOMAIN_SYSTEM, 0, &rt) != 0 ||
-        !rt || rt->generation < NODUS_RT_GEN_TRIE)
+    /* "below generation 6" (answer 1) is returned ONLY after the committed
+     * SYSTEM runtime was resolved and is of an older generation. A failure to
+     * resolve it - a database fault or an unknown tuple, which
+     * nodus_witness_v2_runtime_for does not tell apart - is a fault (-1),
+     * never an older generation (plan §10.2: NOT_FOUND for the snapshot
+     * below generation 6, INTERNAL_ERROR for a read fault). */
+    if (nodus_witness_v2_runtime_for(w, DNA_DOMAIN_SYSTEM, 0, &rt) != 0 || !rt)
+        return -1;
+    if (rt->generation < NODUS_RT_GEN_TRIE)
         return 1;
 
     if (core_legs_impl(w, 1, 1, p->core) != 0) return -1;

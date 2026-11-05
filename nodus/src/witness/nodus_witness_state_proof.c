@@ -53,6 +53,28 @@ static int tkey(const cbor_item_t *k, const char *name)
            memcmp(k->tstr.ptr, name, n) == 0;
 }
 
+/* Skip ONE value and refuse truncation anywhere inside it (cbor_decode_skip
+ * returns quietly at the end of the input, which would accept a request whose
+ * last unknown argument has no value). */
+static int skip_value(cbor_decoder_t *d, int depth)
+{
+    cbor_item_t it = cbor_decode_next(d);
+    size_t left = d->pos < d->len ? d->len - d->pos : 0;
+    if (it.type == CBOR_ITEM_END || it.type == CBOR_ITEM_ERROR || d->error ||
+        depth > 8)
+        return -1;
+    if (it.type == CBOR_ITEM_ARRAY) {
+        if (it.count > left) return -1;
+        for (size_t j = 0; j < it.count; j++)
+            if (skip_value(d, depth + 1) != 0) return -1;
+    } else if (it.type == CBOR_ITEM_MAP) {
+        if (it.count > left / 2) return -1;
+        for (size_t j = 0; j < it.count * 2; j++)
+            if (skip_value(d, depth + 1) != 0) return -1;
+    }
+    return 0;
+}
+
 int nodus_state_proof_request_decode(const uint8_t *payload, size_t len,
                                      nodus_state_proof_req_t *out,
                                      int *ec, char *em, size_t cap)
@@ -76,7 +98,8 @@ int nodus_state_proof_request_decode(const uint8_t *payload, size_t len,
             args = cbor_decode_next(&dec);
             break;
         }
-        cbor_decode_skip(&dec);
+        if (skip_value(&dec, 0) != 0)
+            return fail(ec, em, cap, pe, "truncated request");
     }
     if (args.type != CBOR_ITEM_MAP) return fail(ec, em, cap, pe, "missing args map");
 
@@ -107,8 +130,8 @@ int nodus_state_proof_request_decode(const uint8_t *payload, size_t len,
             }
             out->n_keys = a.count;
             have_keys = 1;
-        } else {
-            cbor_decode_skip(&dec);
+        } else if (skip_value(&dec, 0) != 0) {
+            return fail(ec, em, cap, pe, "truncated argument value");
         }
     }
     if (dec.error || !have_leg || !have_keys)
@@ -170,8 +193,11 @@ static int ro_get(void *c, const uint8_t digest[64], uint8_t **rlp,
     if (rc == SQLITE_DONE) return 1;
     if (rc != SQLITE_ROW) return -2;
     int n = sqlite3_column_bytes(s->st, 0);
+    /* the node-size bound BEFORE anything is allocated or copied (plan
+     * §10.2: bounds are checked before allocation) */
+    if (n <= 0 || n > EVM_TRIE_NODE_MAX_BYTES) return -2;
     const void *b = sqlite3_column_blob(s->st, 0);
-    if (n <= 0 || !b) return -2;
+    if (!b) return -2;
     uint8_t *cpy = malloc((size_t)n);
     if (!cpy) return -2;
     memcpy(cpy, b, (size_t)n);
@@ -217,6 +243,17 @@ static void enc_cp(cbor_encoder_t *e, const dna_v2_proof_step_t *s)
     }
 }
 
+/* TEST SEAM (header): called inside the read transaction after the committed
+ * height was read. NULL in production; set only by tests, before any build. */
+static void (*g_stage_hook)(void *);
+static void *g_stage_hook_ctx;
+
+void nodus_state_proof_set_stage_hook(void (*fn)(void *), void *ctx)
+{
+    g_stage_hook = fn;
+    g_stage_hook_ctx = ctx;
+}
+
 /* the work inside the read transaction */
 static int build_snapshot(nodus_witness_t *w,
                           const nodus_state_proof_req_t *req, uint32_t txn,
@@ -244,6 +281,7 @@ static int build_snapshot(nodus_witness_t *w,
         fail(ec, em, cap, ie, "the committed height is unreadable");
         return -1;
     }
+    if (g_stage_hook) g_stage_hook(g_stage_hook_ctx);   /* test seam, NULL in production */
     int lrc = nodus_witness_proof_legs_load(w, &legs);
     if (lrc == 1) {                       /* below generation 6: no tries */
         fail(ec, em, cap, NODUS_ERR_NOT_FOUND,
@@ -361,7 +399,11 @@ static int build_snapshot(nodus_witness_t *w,
         for (size_t s = 0; s < ns; s++) enc_cp(&e, &steps[s]);
         size_t flen = cbor_encoder_len(&e);
         if (flen == 0 || flen > ceil_) {
-            fail(ec, em, cap, ie, "the response is above the frame ceiling");
+            /* a bound exceeded: plan §10.2 "NODUS_ERR_PROTOCOL_ERROR
+             * (malformed request or a bound exceeded)" - the client splits
+             * the request */
+            fail(ec, em, cap, NODUS_ERR_PROTOCOL_ERROR,
+                 "the response is above the frame ceiling, split the request");
             goto done;
         }
         *frame = buf;
@@ -417,7 +459,7 @@ typedef struct {
     int       state;                    /* under svc->mu                    */
     uint32_t  txn;
     void     *tag;
-    nodus_state_proof_req_t *req;
+    nodus_state_proof_req_t req;        /* embedded: no per-request allocation */
     uint8_t  *frame;
     size_t    frame_len;
     int       ec;
@@ -466,7 +508,7 @@ static void *reader_main(void *arg)
         int ec = 0;
         char em[96] = "";
         nodus_state_proof_stats_t st;
-        int rc = nodus_state_proof_build(j->ctx, j->req, j->txn, &frame, &flen,
+        int rc = nodus_state_proof_build(j->ctx, &j->req, j->txn, &frame, &flen,
                                          &st, &ec, em, sizeof(em));
         atomic_fetch_add(&svc->builds_done, 1);
 
@@ -557,18 +599,16 @@ int nodus_state_proof_submit(nodus_state_proof_service_t *svc, int64_t now_ns,
     if (!svc || !payload) return fail(ec, em, cap, NODUS_ERR_PROTOCOL_ERROR,
                                       "no request");
     svc->c.decoded++;
-    nodus_state_proof_req_t *req = malloc(sizeof(*req));
-    if (!req) return fail(ec, em, cap, NODUS_ERR_RATE_LIMITED,
-                          "state proof service busy, ask another node");
-    if (nodus_state_proof_request_decode(payload, len, req, ec, em, cap) != 0) {
+    /* the request is validated in bounded scratch storage (stack) BEFORE
+     * anything is allocated or handed off; the job slot holds its own copy */
+    nodus_state_proof_req_t req;
+    if (nodus_state_proof_request_decode(payload, len, &req, ec, em, cap) != 0) {
         svc->c.refused_protocol++;
-        free(req);
         return -1;
     }
     int64_t new_tat = 0;
     if (svc->n == 0 || !limiter_check(svc, now_ns, &new_tat)) {
         svc->c.refused_rate++;
-        free(req);
         return fail(ec, em, cap, NODUS_ERR_RATE_LIMITED,
                     "state proof rate limit reached, ask another node");
     }
@@ -580,7 +620,7 @@ int nodus_state_proof_submit(nodus_state_proof_service_t *svc, int64_t now_ns,
         job->state = JOB_BUSY;
         job->txn = txn_id;
         job->tag = tag;
-        job->req = req;
+        memcpy(&job->req, &req, sizeof(req));
         job->frame = NULL;
         job->frame_len = 0;
         job->ec = 0;
@@ -591,7 +631,6 @@ int nodus_state_proof_submit(nodus_state_proof_service_t *svc, int64_t now_ns,
     pthread_mutex_unlock(&svc->mu);
     if (!job) {
         svc->c.refused_busy++;
-        free(req);
         return fail(ec, em, cap, NODUS_ERR_RATE_LIMITED,
                     "every state proof reader is busy, ask another node");
     }
@@ -618,8 +657,7 @@ size_t nodus_state_proof_poll(nodus_state_proof_service_t *svc,
         tag = j->tag; frame = j->frame; flen = j->frame_len; ec = j->ec;
         memcpy(em, j->em, sizeof(em));
         st = j->stats;
-        free(j->req);
-        j->req = NULL; j->frame = NULL; j->tag = NULL;
+        j->frame = NULL; j->tag = NULL;
         j->state = JOB_IDLE;
         pthread_mutex_unlock(&svc->mu);
         done(user, tag, frame, flen, ec, em, &st, 0);
@@ -656,7 +694,6 @@ void nodus_state_proof_service_free(nodus_state_proof_service_t *svc,
         if (j->state != JOB_IDLE && done)
             done(user, j->tag, NULL, 0, 0, "", NULL, 1);
         free(j->frame);
-        free(j->req);
         nodus_state_proof_ctx_close(j->ctx);
     }
     free(svc->jobs);
@@ -669,11 +706,38 @@ void nodus_state_proof_service_free(nodus_state_proof_service_t *svc,
 /* ── the witness binding (the loop) ───────────────────────────────────── */
 
 typedef struct {
-    struct nodus_tcp *tcp;
-    int               slot;
-    uint64_t          generation;
-    uint32_t          txn;
+    nodus_state_proof_conn_id_t id;
+    uint32_t                    txn;
 } conn_tag_t;
+
+/* The identity of the asking connection: the transport's session generation
+ * (non-zero only in session mode, nodus_tcp.c:270) AND the serial the witness
+ * IPC listener stamps into conn->user_data at accept (nodus_witness_ipc.c).
+ * The IPC transport is never in session mode, so its generation stays 0; the
+ * serial is what tells a replacement connection in the same slot from the
+ * one that asked. A connection with neither has no identity. */
+int nodus_state_proof_conn_id_of(struct nodus_tcp_conn *conn,
+                                 nodus_state_proof_conn_id_t *id)
+{
+    if (!conn || !id || !conn->tcp_parent) return -1;
+    id->tcp = conn->tcp_parent;
+    id->slot = conn->slot;
+    id->generation = conn->generation;
+    id->serial = (uint64_t)(uintptr_t)conn->user_data;
+    return (id->generation == 0 && id->serial == 0) ? -1 : 0;
+}
+
+struct nodus_tcp_conn *
+nodus_state_proof_conn_alive(const nodus_state_proof_conn_id_t *id)
+{
+    if (!id || !id->tcp || id->slot < 0 || id->slot >= NODUS_TCP_MAX_CONNS)
+        return NULL;
+    nodus_tcp_conn_t *c = id->tcp->pool[id->slot];
+    if (!c || c->close_pending || c->generation != id->generation ||
+        (uint64_t)(uintptr_t)c->user_data != id->serial)
+        return NULL;
+    return c;
+}
 
 static void send_error_to(nodus_tcp_conn_t *c, uint32_t txn, int code,
                           const char *msg)
@@ -720,12 +784,15 @@ void nodus_witness_state_proof_handle(nodus_witness_t *w,
                       "state proof service busy, ask another node");
         return;
     }
-    t->tcp = conn->tcp_parent;
-    t->slot = conn->slot;
-    t->generation = conn->generation;
     t->txn = txn_id;
-    if (!t->tcp ||
-        nodus_state_proof_submit(w->state_proof, now_ns, payload, len, txn_id,
+    if (nodus_state_proof_conn_id_of(conn, &t->id) != 0) {
+        /* no way to tell this connection from a replacement: fail closed */
+        free(t);
+        send_error_to(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                      "internal error");
+        return;
+    }
+    if (nodus_state_proof_submit(w->state_proof, now_ns, payload, len, txn_id,
                                  t, &ec, em, sizeof(em)) != 0) {
         free(t);
         send_error_to(conn, txn_id, ec ? ec : NODUS_ERR_INTERNAL_ERROR,
@@ -739,11 +806,10 @@ static void deliver(void *user, void *tag, uint8_t *frame, size_t flen,
 {
     conn_tag_t *t = tag;
     (void)user; (void)st;
-    if (t && !dropped && t->tcp && t->slot >= 0 &&
-        t->slot < NODUS_TCP_MAX_CONNS) {
+    if (t && !dropped) {
         /* the connection that asked, if it is still the one in its slot */
-        nodus_tcp_conn_t *c = t->tcp->pool[t->slot];
-        if (c && !c->close_pending && c->generation == t->generation) {
+        nodus_tcp_conn_t *c = nodus_state_proof_conn_alive(&t->id);
+        if (c) {
             if (frame) nodus_tcp_send(c, frame, flen);
             else send_error_to(c, t->txn, ec ? ec : NODUS_ERR_INTERNAL_ERROR,
                                ec ? em : "internal error");

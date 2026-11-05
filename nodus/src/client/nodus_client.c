@@ -5895,6 +5895,36 @@ static int spd_step(cbor_decoder_t *d, nodus_dnac_state_proof_step_t *s)
     return -1;
 }
 
+/* An array header read with the count bound of THIS reply (the plan's
+ * 128 x 131 node ceiling), not with the generic decoder's
+ * NODUS_CBOR_MAX_ITEMS (4,096), which stays for every other decoder
+ * (nodus_cbor.c:238). The count can never exceed the bytes that remain (each
+ * element is at least one byte). */
+static int spd_array_header(cbor_decoder_t *d, size_t max, size_t *count)
+{
+    if (d->error || d->pos >= d->len) return -1;
+    const uint8_t ib = d->buf[d->pos];
+    const unsigned ai = ib & 0x1fu;
+    size_t   p = d->pos + 1, extra = 0;
+    uint64_t n = 0;
+    if ((ib >> 5) != 4) return -1;                  /* major type 4: array */
+    if (ai < 24) n = ai;
+    else if (ai == 24) extra = 1;
+    else if (ai == 25) extra = 2;
+    else if (ai == 26) extra = 4;
+    else if (ai == 27) extra = 8;
+    else return -1;
+    if (extra) {
+        if (extra > d->len - p) return -1;
+        for (size_t i = 0; i < extra; i++) n = (n << 8) | d->buf[p + i];
+        p += extra;
+    }
+    if (n > max || n > d->len - p) return -1;
+    d->pos = p;
+    *count = (size_t)n;
+    return 0;
+}
+
 void nodus_dnac_state_proof_free(nodus_dnac_state_proof_t *p)
 {
     if (!p) return;
@@ -5929,9 +5959,11 @@ int nodus_dnac_state_proof_decode(const uint8_t *raw, size_t raw_len,
             if (v3d_b64(&dec, out->lr) != 0) goto bad;
             have |= 2u;
         } else if (KEY_EQ(k, "nodes")) {
-            if (v3d_next(&dec, &it) != 0 || it.type != CBOR_ITEM_ARRAY ||
-                it.count > NODUS_DNAC_STATE_PROOF_MAX_NODES)
+            size_t nn = 0;
+            if (spd_array_header(&dec, NODUS_DNAC_STATE_PROOF_MAX_NODES,
+                                 &nn) != 0)
                 goto bad;
+            it.count = nn;
             out->nodes = calloc(it.count + 1, sizeof(*out->nodes));
             out->node_lens = calloc(it.count + 1, sizeof(*out->node_lens));
             if (!out->nodes || !out->node_lens) goto bad;

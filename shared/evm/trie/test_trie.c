@@ -1477,8 +1477,53 @@ static void test_proof_inline_and_extension(void)
         evm_trie_rlp_buf_free(&be);
         ms_free(&ms);
     }
+    /* The expected-branch flag after a MATCHING extension (A12): the extension
+     * (segment 1, 2) over a correctly sized (>= 64 bytes), otherwise valid
+     * LEAF. A walker that did not pass expect_branch to the child would
+     * accept the leaf and answer "found" for a path that matches it; both the
+     * prover and the verifier must refuse (-2). */
+    {
+        mstore ms = {0};
+        uint8_t seg[2] = { 1, 2 }, rest[128], dl[64], dr[64], hit[64];
+        uint8_t *leaf = NULL;
+        size_t leaf_len = 0;
+        evm_trie_rlp_buf b = {0};
+        memset(rest, 7, sizeof(rest));
+        memset(hit, 0x77, sizeof(hit));
+        hit[0] = 0x12;                          /* nibbles 1, 2, then 7 ...  */
+        int rc = mk_leaf(&ms, rest, 126, 0x78, dl);
+        if (rc == 0) rc = put_hp(&b, seg, 2, 0);
+        if (rc == 0) rc = evm_trie_rlp_put_bytes(&b, dl, 64);
+        if (rc == 0) rc = evm_trie_rlp_wrap_list(&b, 0);
+        if (rc == 0) rc = put_raw_node(&ms, b.p, b.len, dr);
+        if (rc == 0) rc = ms_get(&ms, dl, &leaf, &leaf_len);
+        CHECK(rc == 0 && leaf_len >= 64, "ext -> valid leaf fixture built");
+        if (rc == 0) {
+            evm_trie_store_t st = ms_iface(&ms);
+            evm_trie_proof_set_t s = {0};
+            CHECK(evm_trie_prove_path(&st, dr, hit, &s) == -2,
+                  "prover: a matching extension over a leaf child is refused "
+                  "(the child must be a branch)");
+            evm_trie_proof_set_free(&s);
+            const uint8_t *np[2] = { b.p, leaf };
+            size_t nl[2] = { b.len, leaf_len };
+            uint8_t dg_ext[64];
+            CHECK(qgp_sha3_512(b.p, b.len, dg_ext) == 0, "hash");
+            if (memcmp(dg_ext, dl, 64) > 0) {   /* ascending by digest */
+                np[0] = leaf; nl[0] = leaf_len;
+                np[1] = b.p;  nl[1] = b.len;
+            }
+            evm_trie_proof_result_t r[1];
+            CHECK(evm_trie_proof_verify_batch(dr, np, nl, 2,
+                      (const uint8_t (*)[64])hit, 1, r) == -2,
+                  "verifier: the same bundle is refused, not found");
+        }
+        free(leaf);
+        evm_trie_rlp_buf_free(&b);
+        ms_free(&ms);
+    }
     printf("ok   proofs: inline boundary, extension absence without the "
-           "child, size class by reference\n");
+           "child, size class by reference, expected-branch flag\n");
 }
 
 int main(void)

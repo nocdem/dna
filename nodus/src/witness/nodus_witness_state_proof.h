@@ -49,12 +49,13 @@
  * node answers now, and nothing it reads or keeps reaches a block, the state,
  * a vote or replication. The build itself reads no clock.
  *
- * ERRORS (§10.2): NODUS_ERR_PROTOCOL_ERROR (malformed request or a bound
- * exceeded), NODUS_ERR_NOT_FOUND (the snapshot is below generation 6: no
- * tries), NODUS_ERR_INTERNAL_ERROR (a read fault, a proof that fails its own
- * verification, a composition that disagrees with the committed AppHash, or a
- * response above NODUS_MAX_FRAME_TCP - the plan names the bound but not the
- * code for this last case), NODUS_ERR_RATE_LIMITED.
+ * ERRORS (§10.2): NODUS_ERR_PROTOCOL_ERROR (a malformed request or a bound
+ * exceeded - also a response that would exceed NODUS_MAX_FRAME_TCP: the
+ * client splits the request), NODUS_ERR_NOT_FOUND (ONLY after the committed
+ * generation was established as below 6: no tries), NODUS_ERR_INTERNAL_ERROR
+ * (a read or runtime-resolution fault, a proof that fails its own
+ * verification, a composition that disagrees with the committed AppHash),
+ * NODUS_ERR_RATE_LIMITED.
  */
 #ifndef NODUS_WITNESS_STATE_PROOF_H
 #define NODUS_WITNESS_STATE_PROOF_H
@@ -214,8 +215,33 @@ void nodus_witness_state_proof_handle(nodus_witness_t *w,
                                       const uint8_t *payload, size_t len,
                                       uint32_t txn_id, int64_t now_ns);
 
+/** Who asked: the transport, the slot, the session generation and the serial
+ *  the witness IPC listener stamps into conn->user_data at accept (the IPC
+ *  transport never runs in session mode, so its generation stays 0). */
+typedef struct {
+    struct nodus_tcp *tcp;
+    int               slot;
+    uint64_t          generation;
+    uint64_t          serial;
+} nodus_state_proof_conn_id_t;
+
+/** @return 0, or -1 when the connection has neither a generation nor a
+ *  serial (it cannot be told from a replacement: the request is refused). */
+int nodus_state_proof_conn_id_of(struct nodus_tcp_conn *conn,
+                                 nodus_state_proof_conn_id_t *id);
+
+/** The live connection of `id`, or NULL when its slot is empty, closing or
+ *  now holds another connection (different generation or serial). */
+struct nodus_tcp_conn *
+nodus_state_proof_conn_alive(const nodus_state_proof_conn_id_t *id);
+
+/** TEST SEAM: a function called inside the read transaction of every build,
+ *  after the committed height was read (NULL = none, the production state).
+ *  Set by tests only, before any build starts. */
+void nodus_state_proof_set_stage_hook(void (*fn)(void *), void *ctx);
+
 /** The loop: send every finished answer whose connection is still the one
- *  that asked (slot and generation), drop the others. NULL-safe. */
+ *  that asked (nodus_state_proof_conn_alive), drop the others. NULL-safe. */
 void nodus_witness_state_proof_poll(nodus_witness_t *w);
 
 /** Stop and free (nodus_witness_close). NULL-safe. */

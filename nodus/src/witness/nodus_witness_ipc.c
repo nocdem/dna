@@ -207,6 +207,12 @@ struct nodus_witness_ipc {
     bool                          tool_only;   /* the combined process's socket */
     /* Indexed by conn->slot of `tcp` (its pool index). */
     ipc_slot_t                    slots[NODUS_TCP_MAX_CONNS];
+    /* HF-9 WP6: a serial stamped into conn->user_data (unused by the
+     * transport) at accept, never reused. The IPC transport is not in
+     * session mode, so conn->generation stays 0 and cannot tell a connection
+     * from its replacement in the same slot; a completion that outlives its
+     * connection (nodus_witness_state_proof.h) compares this serial. */
+    uint64_t                      next_serial;
 };
 
 static ipc_slot_t *ipc_slot(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn) {
@@ -429,8 +435,10 @@ static void ipc_on_ctl_frame(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn,
 }
 
 static void ipc_on_accept(nodus_tcp_conn_t *conn, void *ctx) {
-    ipc_slot_t *s = ipc_slot((nodus_witness_ipc_t *)ctx, conn);
+    nodus_witness_ipc_t *ipc = (nodus_witness_ipc_t *)ctx;
+    ipc_slot_t *s = ipc_slot(ipc, conn);
     if (s) ipc_slot_reset(s);
+    if (ipc && conn) conn->user_data = (void *)(uintptr_t)(++ipc->next_serial);
 }
 
 static void ipc_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {

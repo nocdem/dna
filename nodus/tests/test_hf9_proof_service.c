@@ -14,7 +14,8 @@
  *     repeated "leg", missing keys, 0 keys, 129 keys, a repeated key, a key
  *     of a length its leg cannot hold (leg 1: 63; leg 4: 2 and 37; leg 6: 7)
  *     are NODUS_ERR_PROTOCOL_ERROR; leg 4 with 3 and 36 bytes, leg 6 with 8
- *     and an unknown key are accepted.
+ *     and an unknown key are accepted; a final unknown argument with no value
+ *     or with a truncated array value is refused (PROTOCOL_ERROR).
  *  B. On a real generation-6 chain (the edge ladder of test_hf9_edge.c, the
  *     fixture of test_hf9_shadow.c) with every one of the eight legs
  *     populated and flushed through the production flush
@@ -44,7 +45,35 @@
  *     requests starts no build; the limiter admits again one second later;
  *     freeing the service with an undelivered answer hands the tag back
  *     dropped.
- *  D. The worst-case cost per leg (printed, not asserted - see below).
+ *  E. Who asked (fake transport objects): a pending completion reaches the
+ *     connection that asked; after a disconnect it reaches nobody; after
+ *     slot reuse by a replacement with generation 0 (the witness IPC
+ *     transport, whose serial is stamped into conn->user_data at accept,
+ *     nodus_witness_ipc.c) it is NOT delivered to the replacement; a
+ *     connection being closed gets nothing; session-mode replacements differ
+ *     by generation; a connection with neither generation nor serial has no
+ *     identity. NOT covered: that the IPC listener really stamps the serial
+ *     (needs a live socket; mutation below) and the send itself.
+ *  F. Malformed RESPONSES through the production decoder
+ *     (nodus_dnac_state_proof_decode): f = false with a "v", f = true without
+ *     one or with two, a repeated "f" / "h", no "cp", fewer results than keys,
+ *     a 63-byte leg root, an empty and a 1,061-byte node, a COMPOSE step
+ *     without legs are refused; 5000 and 16768 nodes (above the generic CBOR
+ *     decoder's 4,096) are accepted and 16769 refused. NOT covered: the
+ *     client's receive path (nodus_client.c client_on_frame ->
+ *     nodus_t2_decode -> cbor_decode_next) still refuses a reply array above
+ *     4,096 items; that limit lives in nodus_cbor.c / nodus_tier2.c (outside
+ *     this package's whitelist) and is reported, not changed.
+ *  G. One snapshot per answer: between the committed-height read and the
+ *     legs a committed change (a token row deleted, flushed, the fixture
+ *     anchor rewritten) lands on the writer connection; the answer verifies
+ *     wholly to the OLD tip, legs and AppHash; a later build verifies to the
+ *     new AppHash and not to the old. The stored tip root: corrupted ->
+ *     refused INTERNAL (never trusted); restored. A chain with NO populated
+ *     rows whose tip root was produced by the real blocks of the ladder
+ *     (never rewritten): every leg 1..8 proves to that unmodified anchor. A
+ *     domain registry that cannot be read is INTERNAL, not NOT_FOUND.
+ *  H. The worst-case cost per leg (printed, not asserted - see below).
  *
  * ── THE COST MEASUREMENT (plan §10.4, §17) ─────────────────────────────
  *  For two table sizes, each on a fresh generation-6 chain:
@@ -55,11 +84,19 @@
  *           1000, segments 10000, snapshots 10000, attendance 10000, and 20000
  *           extra chain_config_history rows (a labelled fixture row of a
  *           parameter no rule reads; DF-5: the root scan reads every row).
- *  For each leg 1..8 one request of 128 keys (the worst case of D26), as many
- *  present rows as the table holds up to 128, spread evenly over the key
- *  order so the paths diverge, the rest absent. Printed per leg: rows in the
- *  leg, keys requested / present, the trie nodes loaded, nodes in the
- *  bundle, the frame bytes, and the wall time (CLOCK_MONOTONIC, in this TEST
+ *  For each leg 1..8 two requests of 128 keys (the ceiling of D26):
+ *   "deepest": EVERY row of the leg is proved once to count the nodes on its
+ *     path; the 128 rows with the most path nodes are requested (all rows if
+ *     the leg has fewer; the rest absent). The line "selection=deepest_paths"
+ *     prints the rows counted, the largest per-key path and the SUM of the
+ *     128 largest paths, which is an UPPER BOUND on the trie nodes any
+ *     128-present-key request can touch (shared nodes count once). The
+ *     measured request is the deepest-paths one; it is not proven to be the
+ *     slowest request, only the one whose path bound is largest.
+ *   "absent128": 128 absent keys of the leg's key shape, a fixed SAMPLE (the
+ *     depth of absent paths is not enumerated).
+ *  Printed per request: rows in the leg, keys requested / present, the trie
+ *  nodes loaded, nodes in the bundle, the frame bytes, and the wall time (CLOCK_MONOTONIC, in this TEST
  *  only; the service itself reads no clock for the build) of the build
  *  (three runs, the first one cold) and of the sibling-leg load alone
  *  (nodus_witness_proof_legs_load, which includes the chain_config_history
@@ -116,6 +153,7 @@
 #include "nodus/nodus.h"
 #include "nodus/nodus_types.h"
 #include "protocol/nodus_cbor.h"
+#include "transport/nodus_tcp.h"
 
 #include "evm/trie/evm_trie_proof.h"
 #include "dnac/dnac.h"
@@ -680,7 +718,15 @@ static size_t mkreq(uint8_t *buf, size_t cap, long leg, int dup_leg,
             cbor_encode_bstr(&e, k, klen);
         }
     }
-    if (unknown) { cbor_encode_cstr(&e, "zz"); cbor_encode_uint(&e, 7); }
+    /* unknown: 1 = "zz": 7; 2 = "zz" with NO value (the frame ends);
+     * 3 = "zz": an array that claims 3 elements and holds one */
+    if (unknown == 1) { cbor_encode_cstr(&e, "zz"); cbor_encode_uint(&e, 7); }
+    if (unknown == 2) { cbor_encode_cstr(&e, "zz"); }
+    if (unknown == 3) {
+        cbor_encode_cstr(&e, "zz");
+        cbor_encode_array(&e, 3);
+        cbor_encode_uint(&e, 1);
+    }
     return cbor_encoder_len(&e);
 }
 
@@ -735,6 +781,10 @@ static int test_request_decode(void) {
 
     if (dec_case("valid leg 1, 3 keys", 1, 0, 3, 64, 0, 0, 1)) return 1;
     if (dec_case("unknown key skipped", 1, 0, 2, 64, 0, 1, 1)) return 1;
+    if (dec_case("a final unknown argument with no value", 1, 0, 2, 64, 0, 2,
+                 0)) return 1;
+    if (dec_case("a final unknown argument with a truncated array", 1, 0, 2,
+                 64, 0, 3, 0)) return 1;
     if (dec_case("128 keys", 1, 0, 128, 64, 0, 0, 1)) return 1;
     if (dec_case("leg 4, 3 bytes", 4, 0, 2, 3, 0, 0, 1)) return 1;
     if (dec_case("leg 4, 36 bytes", 4, 0, 2, 36, 0, 0, 1)) return 1;
@@ -1045,7 +1095,485 @@ static int test_service(fixture_t *fx, const rows_t *rows) {
     return 0;
 }
 
+/* ══ E. who asked: the connection identity of a pending completion ═══════ */
+
+static nodus_tcp_conn_t *fake_conn(nodus_tcp_t *tcp, int slot, uint64_t gen,
+                                   uint64_t serial) {
+    nodus_tcp_conn_t *c = calloc(1, sizeof(*c));
+    if (!c) return NULL;
+    c->tcp_parent = tcp;
+    c->slot = slot;
+    c->generation = gen;
+    c->user_data = (void *)(uintptr_t)serial;
+    return c;
+}
+
+static int test_conn_identity(void) {
+    nodus_tcp_t *tcp = calloc(1, sizeof(*tcp));
+    nodus_state_proof_conn_id_t ida, idb, idd;
+    CHECK(tcp != NULL, "allocation");
+
+    /* the witness IPC transport: generation 0, only the accept serial differs */
+    nodus_tcp_conn_t *a = fake_conn(tcp, 3, 0, 1);
+    nodus_tcp_conn_t *b = fake_conn(tcp, 3, 0, 2);
+    CHECK(a && b, "allocation");
+    tcp->pool[3] = a;
+    CHECK(nodus_state_proof_conn_id_of(a, &ida) == 0, "A has an identity");
+    CHECK(nodus_state_proof_conn_alive(&ida) == a,
+          "a pending completion finds the connection that asked");
+    tcp->pool[3] = NULL;                                  /* disconnect */
+    CHECK(nodus_state_proof_conn_alive(&ida) == NULL,
+          "after the disconnect the completion finds nobody");
+    tcp->pool[3] = b;                                     /* slot reuse */
+    CHECK(nodus_state_proof_conn_alive(&ida) == NULL,
+          "slot reuse (same slot, generation 0): the old completion is NOT "
+          "delivered to the replacement");
+    CHECK(nodus_state_proof_conn_id_of(b, &idb) == 0 &&
+          nodus_state_proof_conn_alive(&idb) == b,
+          "the replacement's own completion reaches it");
+    b->close_pending = true;
+    CHECK(nodus_state_proof_conn_alive(&idb) == NULL,
+          "a connection being closed receives nothing");
+    b->close_pending = false;
+
+    /* session mode: the generation tells them apart */
+    nodus_tcp_conn_t *d1 = fake_conn(tcp, 5, 11, 0);
+    nodus_tcp_conn_t *d2 = fake_conn(tcp, 5, 12, 0);
+    CHECK(d1 && d2, "allocation");
+    tcp->pool[5] = d1;
+    CHECK(nodus_state_proof_conn_id_of(d1, &idd) == 0 &&
+          nodus_state_proof_conn_alive(&idd) == d1, "session connection");
+    tcp->pool[5] = d2;
+    CHECK(nodus_state_proof_conn_alive(&idd) == NULL,
+          "a session replacement has another generation");
+
+    /* a connection with neither is refused: it cannot be told from a
+     * replacement */
+    nodus_tcp_conn_t *n = fake_conn(tcp, 7, 0, 0);
+    CHECK(n != NULL, "allocation");
+    CHECK(nodus_state_proof_conn_id_of(n, &idd) == -1,
+          "no generation and no serial: no identity");
+    idb.slot = -1;
+    CHECK(nodus_state_proof_conn_alive(&idb) == NULL, "slot -1");
+    idb.slot = NODUS_TCP_MAX_CONNS;
+    CHECK(nodus_state_proof_conn_alive(&idb) == NULL, "slot beyond the pool");
+
+    free(a); free(b); free(d1); free(d2); free(n); free(tcp);
+    return 0;
+}
+
+/* ══ F. malformed RESPONSES through the production decoder ════════════ */
+
+enum { RV_OK = 0, RV_FALSE_WITH_V, RV_TRUE_NO_V, RV_DUP_V, RV_DUP_H, RV_NO_CP,
+       RV_RES_SHORT, RV_SHORT_LR, RV_EMPTY_NODE, RV_BIG_NODE, RV_BAD_STEP,
+       RV_DUP_F };
+
+static size_t mkresp(uint8_t *buf, size_t cap, int variant, size_t n_nodes) {
+    cbor_encoder_t e;
+    uint8_t v64[64], head[89], luh[64], big[1061];
+    memset(v64, 0x11, sizeof(v64)); memset(head, 0x22, sizeof(head));
+    memset(luh, 0x33, sizeof(luh)); memset(big, 0x44, sizeof(big));
+    size_t rcount = 5 + (variant == RV_DUP_H ? 1 : 0) - (variant == RV_NO_CP);
+    cbor_encoder_init(&e, buf, cap);
+    cbor_encode_map(&e, 4);
+    cbor_encode_cstr(&e, "t"); cbor_encode_uint(&e, 7);
+    cbor_encode_cstr(&e, "y"); cbor_encode_cstr(&e, "r");
+    cbor_encode_cstr(&e, "q"); cbor_encode_cstr(&e, "dnac_state_proof");
+    cbor_encode_cstr(&e, "r"); cbor_encode_map(&e, rcount);
+    cbor_encode_cstr(&e, "h"); cbor_encode_uint(&e, 1000);
+    if (variant == RV_DUP_H) { cbor_encode_cstr(&e, "h"); cbor_encode_uint(&e, 1001); }
+    cbor_encode_cstr(&e, "lr");
+    cbor_encode_bstr(&e, v64, variant == RV_SHORT_LR ? 63 : 64);
+    cbor_encode_cstr(&e, "nodes"); cbor_encode_array(&e, n_nodes);
+    for (size_t i = 0; i < n_nodes; i++) {
+        uint8_t one = (uint8_t)i;
+        if (i == 0 && variant == RV_EMPTY_NODE) cbor_encode_bstr(&e, &one, 0);
+        else if (i == 0 && variant == RV_BIG_NODE) cbor_encode_bstr(&e, big, 1061);
+        else cbor_encode_bstr(&e, &one, 1);
+    }
+    cbor_encode_cstr(&e, "res");
+    cbor_encode_array(&e, variant == RV_RES_SHORT ? 1 : 2);
+    if (variant == RV_FALSE_WITH_V) {
+        cbor_encode_map(&e, 2);
+        cbor_encode_cstr(&e, "f"); cbor_encode_bool(&e, false);
+        cbor_encode_cstr(&e, "v"); cbor_encode_bstr(&e, v64, 64);
+    } else if (variant == RV_DUP_F) {
+        cbor_encode_map(&e, 2);
+        cbor_encode_cstr(&e, "f"); cbor_encode_bool(&e, false);
+        cbor_encode_cstr(&e, "f"); cbor_encode_bool(&e, false);
+    } else {
+        cbor_encode_map(&e, 1);
+        cbor_encode_cstr(&e, "f"); cbor_encode_bool(&e, false);
+    }
+    if (variant != RV_RES_SHORT) {
+        if (variant == RV_TRUE_NO_V) {
+            cbor_encode_map(&e, 1);
+            cbor_encode_cstr(&e, "f"); cbor_encode_bool(&e, true);
+        } else if (variant == RV_DUP_V) {
+            cbor_encode_map(&e, 3);
+            cbor_encode_cstr(&e, "f"); cbor_encode_bool(&e, true);
+            cbor_encode_cstr(&e, "v"); cbor_encode_bstr(&e, v64, 64);
+            cbor_encode_cstr(&e, "v"); cbor_encode_bstr(&e, v64, 64);
+        } else {
+            cbor_encode_map(&e, 2);
+            cbor_encode_cstr(&e, "f"); cbor_encode_bool(&e, true);
+            cbor_encode_cstr(&e, "v"); cbor_encode_bstr(&e, v64, 64);
+        }
+    }
+    if (variant != RV_NO_CP) {
+        uint8_t tag[16];
+        memset(tag, 0x55, sizeof(tag));
+        cbor_encode_cstr(&e, "cp"); cbor_encode_array(&e, 1);
+        if (variant == RV_BAD_STEP) {      /* a COMPOSE step without "legs" */
+            cbor_encode_map(&e, 3);
+            cbor_encode_cstr(&e, "t"); cbor_encode_uint(&e, 1);
+            cbor_encode_cstr(&e, "tag"); cbor_encode_bstr(&e, tag, 16);
+            cbor_encode_cstr(&e, "i"); cbor_encode_uint(&e, 0);
+        } else {
+            cbor_encode_map(&e, 3);
+            cbor_encode_cstr(&e, "t"); cbor_encode_uint(&e, 2);
+            cbor_encode_cstr(&e, "head"); cbor_encode_bstr(&e, head, 89);
+            cbor_encode_cstr(&e, "luh"); cbor_encode_bstr(&e, luh, 64);
+        }
+    }
+    return cbor_encoder_len(&e);
+}
+
+static int resp_case(const char *what, int variant, size_t n_nodes,
+                     int want_ok) {
+    const size_t cap = 256 * 1024;
+    uint8_t *buf = malloc(cap);
+    nodus_dnac_state_proof_t *p = malloc(sizeof(*p));
+    CHECK(buf && p, "allocation");
+    size_t len = mkresp(buf, cap, variant, n_nodes);
+    CHECK(len > 0, "the response frame encodes");
+    int rc = nodus_dnac_state_proof_decode(buf, len, 2, p);
+    int good = want_ok ? rc == 0 && p->n_nodes == n_nodes && p->n_res == 2 &&
+                         p->found[0] == 0 && p->found[1] == 1
+                       : rc == -1 && p->nodes == NULL && p->n_nodes == 0;
+    if (rc == 0) nodus_dnac_state_proof_free(p);
+    free(buf);
+    free(p);
+    if (!good) fprintf(stderr, "response case failed: %s (rc %d)\n", what, rc);
+    CHECK(good, what);
+    return 0;
+}
+
+static int test_response_decode(void) {
+    if (resp_case("a well-formed response", RV_OK, 3, 1)) return 1;
+    if (resp_case("f = false with a v is refused", RV_FALSE_WITH_V, 3, 0)) return 1;
+    if (resp_case("f = true without a v is refused", RV_TRUE_NO_V, 3, 0)) return 1;
+    if (resp_case("f = true with a repeated v is refused", RV_DUP_V, 3, 0)) return 1;
+    if (resp_case("a repeated f is refused", RV_DUP_F, 3, 0)) return 1;
+    if (resp_case("a repeated h is refused", RV_DUP_H, 3, 0)) return 1;
+    if (resp_case("a missing cp is refused", RV_NO_CP, 3, 0)) return 1;
+    if (resp_case("fewer results than keys is refused", RV_RES_SHORT, 3, 0)) return 1;
+    if (resp_case("a 63-byte leg root is refused", RV_SHORT_LR, 3, 0)) return 1;
+    if (resp_case("an empty node is refused", RV_EMPTY_NODE, 3, 0)) return 1;
+    if (resp_case("a 1,061-byte node is refused", RV_BIG_NODE, 3, 0)) return 1;
+    if (resp_case("a COMPOSE step without legs is refused", RV_BAD_STEP, 3, 0)) return 1;
+    /* the plan's node ceiling 128 x 131 = 16,768 is above the generic CBOR
+     * decoder's 4,096 items: this reply's decoder takes the plan's bound */
+    if (resp_case("5000 nodes (above NODUS_CBOR_MAX_ITEMS)", RV_OK, 5000, 1))
+        return 1;
+    if (resp_case("16768 nodes (the plan's ceiling)", RV_OK, 16768, 1)) return 1;
+    if (resp_case("16769 nodes is refused", RV_OK, 16769, 0)) return 1;
+    return 0;
+}
+
+/* ══ G. one snapshot per answer; the stored anchor; resolution faults ═════ */
+
+typedef struct {
+    fixture_t *fx;
+    int        ran;
+    int        rc;
+} hook_t;
+
+/* between the committed-height read and the legs of the build, a COMMITTED
+ * change on the writer connection: a token row is deleted, flushed through
+ * the production flush, and the fixture anchor rewritten */
+static void snapshot_hook(void *p) {
+    hook_t *h = p;
+    h->ran = 1;
+    h->rc = run_sql(h->fx->w->db, "BEGIN") == 0 &&
+            run_sql(h->fx->w->db, "DELETE FROM tokens WHERE rowid = "
+                    "(SELECT MIN(rowid) FROM tokens)") == 0 &&
+            nodus_witness_v2_trie_flush(h->fx->w) == 0 &&
+            run_sql(h->fx->w->db, "COMMIT") == 0 &&
+            make_consistent(h->fx->w) == 0 ? 0 : -1;
+}
+
+static int test_snapshot_and_anchor(fixture_t *fx) {
+    uint64_t tip = 0, tip2 = 0;
+    uint8_t app_old[64], app_new[64];
+    rows_t old_rows, new_rows;
+    nodus_state_proof_req_t *req = malloc(sizeof(*req));
+    uint8_t *frame = NULL, *frame2 = NULL, *frame3 = NULL;
+    size_t flen = 0, flen2 = 0, flen3 = 0, np = 0;
+    int ec = 0;
+    char em[96];
+    memset(&old_rows, 0, sizeof(old_rows));
+    memset(&new_rows, 0, sizeof(new_rows));
+    CHECK(req != NULL, "allocation");
+    nodus_witness_t *ctx = nodus_state_proof_ctx_open(db_path(fx));
+    CHECK(ctx != NULL, "context");
+
+    /* the stored tip root is the anchor: a stored root that disagrees with
+     * the recomputation is refused, never trusted either way */
+    CHECK(tip_global(fx->w->db, &tip, app_old) == 0, "the tip");
+    CHECK(nodus_witness_v2_trie_scan_leg(fx->w, 2, rows_cb, &old_rows) == 0 &&
+          old_rows.n >= 30, "the token rows");
+    pick_keys(2, &old_rows, 6, 8, req, &np);
+    CHECK(run_sql(fx->w->db, "UPDATE v2_blocks SET global_root = "
+                  "CAST(zeroblob(64) AS BLOB) WHERE global_height = "
+                  "(SELECT MAX(global_height) FROM v2_blocks)") == 0,
+          "corrupt the stored tip root");
+    CHECK(nodus_state_proof_build(ctx, req, 5, &frame, &flen, NULL, &ec, em,
+                                  sizeof(em)) == -1 && frame == NULL &&
+          ec == NODUS_ERR_INTERNAL_ERROR,
+          "a stored tip root that disagrees with the recomputation: refused");
+    {
+        sqlite3_stmt *st = NULL;
+        CHECK(sqlite3_prepare_v2(fx->w->db, "UPDATE v2_blocks SET global_root "
+                  "= ?1 WHERE global_height = ?2", -1, &st, NULL) == SQLITE_OK &&
+              bind_blob(st, 1, app_old, 64) == SQLITE_OK &&
+              sqlite3_bind_int64(st, 2, (sqlite3_int64)tip) == SQLITE_OK &&
+              sqlite3_step(st) == SQLITE_DONE, "restore the stored tip root");
+        sqlite3_finalize(st);
+    }
+
+    /* one snapshot: the committed change lands after the height was read */
+    {
+        sqlite3_stmt *st = NULL;
+        sqlite3_int64 jm = -1;
+        CHECK(sqlite3_prepare_v2(fx->w->db, "PRAGMA journal_mode=WAL", -1, &st,
+                                 NULL) == SQLITE_OK &&
+              sqlite3_step(st) == SQLITE_ROW, "journal mode");
+        CHECK(strcmp((const char *)sqlite3_column_text(st, 0), "wal") == 0,
+              "the fixture database is in WAL mode (a writer commits while "
+              "a reader holds its snapshot)");
+        (void)jm;
+        sqlite3_finalize(st);
+    }
+    hook_t hk = { fx, 0, 0 };
+    nodus_state_proof_set_stage_hook(snapshot_hook, &hk);
+    int brc = nodus_state_proof_build(ctx, req, 5, &frame2, &flen2, NULL, &ec,
+                                      em, sizeof(em));
+    nodus_state_proof_set_stage_hook(NULL, NULL);
+    CHECK(hk.ran == 1 && hk.rc == 0, "the writer committed between the stages");
+    CHECK(brc == 0 && frame2, "the build in its snapshot succeeds");
+    CHECK(verify_frame(req, frame2, flen2, app_old, tip, &old_rows, np,
+                       DMG_NONE, 0) == 0,
+          "the answer is wholly the OLD snapshot: the old height, the old "
+          "legs, the old AppHash (a build without the read transaction "
+          "would mix the old height with the new legs)");
+
+    /* a build after the commit sees the new state */
+    CHECK(tip_global(fx->w->db, &tip2, app_new) == 0 && tip2 == tip &&
+          memcmp(app_new, app_old, 64) != 0, "the committed change moved the "
+          "anchor");
+    CHECK(nodus_witness_v2_trie_scan_leg(fx->w, 2, rows_cb, &new_rows) == 0 &&
+          new_rows.n + 1 == old_rows.n, "one token row less");
+    pick_keys(2, &new_rows, 6, 8, req, &np);
+    CHECK(nodus_state_proof_build(ctx, req, 5, &frame3, &flen3, NULL, &ec, em,
+                                  sizeof(em)) == 0 && frame3, "a new build");
+    CHECK(verify_frame(req, frame3, flen3, app_new, tip, &new_rows, np,
+                       DMG_NONE, 0) == 0, "...verifies to the new AppHash");
+    CHECK(verify_frame(req, frame3, flen3, app_old, tip, &new_rows, np,
+                       DMG_NONE, 0) == 1, "...and not to the old one");
+    free(frame); free(frame2); free(frame3);
+    rows_free(&old_rows); rows_free(&new_rows);
+    free(req);
+    nodus_state_proof_ctx_close(ctx);
+    return 0;
+}
+
+/* A chain with NO populated rows: its tip root was produced by the real
+ * blocks of the ladder (the edge block A - 1), never rewritten here. The
+ * service's recomputation from the legs must equal it. Also: a SYSTEM runtime
+ * that cannot be resolved is a fault (INTERNAL), not "below generation 6". */
+static int test_block_anchor(void) {
+    fixture_t fx;
+    uint64_t tip = 0;
+    uint8_t app[64];
+    CHECK(fx_open(&fx, "blk") == 0, "a ladder chain");
+    for (uint64_t h = 1; h <= HA - 1u; h++)
+        CHECK(apply_block(&fx, h) == 0, "block");
+    CHECK(committed_gen(fx.w) == NODUS_RT_GEN_TRIE, "generation 6 committed");
+    CHECK(tip_global(fx.w->db, &tip, app) == 0 && tip == HA - 1u,
+          "the tip row written by the edge block");
+    nodus_witness_t *ctx = nodus_state_proof_ctx_open(db_path(&fx));
+    nodus_state_proof_req_t *req = malloc(sizeof(*req));
+    CHECK(ctx && req, "context");
+    for (int leg = 1; leg <= 8; leg++) {
+        rows_t rows;
+        size_t np = 0;
+        uint8_t *frame = NULL;
+        size_t flen = 0;
+        int ec = 0;
+        char em[96];
+        memset(&rows, 0, sizeof(rows));
+        CHECK(nodus_witness_v2_trie_scan_leg(fx.w, leg, rows_cb, &rows) == 0,
+              "scan");
+        pick_keys(leg, &rows, 4, 6, req, &np);
+        if (nodus_state_proof_build(ctx, req, 3, &frame, &flen, NULL, &ec, em,
+                                    sizeof(em)) != 0) {
+            fprintf(stderr, "leg %d: the build on the block-produced anchor "
+                    "failed (%d: %s)\n", leg, ec, em);
+            return 1;
+        }
+        CHECK(verify_frame(req, frame, flen, app, tip, &rows, np, DMG_NONE,
+                           rows.n == 0) == 0,
+              "the proof verifies to the tip root the BLOCKS produced");
+        free(frame);
+        rows_free(&rows);
+    }
+    /* resolution fault: the domain registry cannot be read */
+    CHECK(run_sql(fx.w->db, "ALTER TABLE domain_registry RENAME TO "
+                  "domain_registry_x") == 0, "hide the registry");
+    {
+        uint8_t *frame = NULL;
+        size_t flen = 0, np = 0;
+        int ec = 0;
+        char em[96];
+        rows_t rows;
+        memset(&rows, 0, sizeof(rows));
+        pick_keys(1, &rows, 0, 1, req, &np);
+        CHECK(nodus_state_proof_build(ctx, req, 3, &frame, &flen, NULL, &ec,
+                                      em, sizeof(em)) == -1 &&
+              ec == NODUS_ERR_INTERNAL_ERROR,
+              "a SYSTEM runtime that cannot be resolved is INTERNAL_ERROR, "
+              "not NOT_FOUND");
+    }
+    CHECK(run_sql(fx.w->db, "ALTER TABLE domain_registry_x RENAME TO "
+                  "domain_registry") == 0, "restore the registry");
+    free(req);
+    nodus_state_proof_ctx_close(ctx);
+    fx_close(&fx);
+    return 0;
+}
+
 /* ══ D. the cost measurement ═══════════════════════════════════════════ */
+
+/* a read-only node store for counting path nodes (this test's own, over the
+ * reader context's connection) */
+typedef struct { sqlite3_stmt *st; } pstore_t;
+
+static int pstore_get(void *c, const uint8_t d[64], uint8_t **rlp, size_t *len) {
+    pstore_t *s = c;
+    sqlite3_reset(s->st);
+    if (sqlite3_bind_blob(s->st, 1, d, 64, SQLITE_TRANSIENT) != SQLITE_OK)
+        return -2;
+    int rc = sqlite3_step(s->st);
+    if (rc == SQLITE_DONE) return 1;
+    if (rc != SQLITE_ROW) return -2;
+    int n = sqlite3_column_bytes(s->st, 0);
+    if (n <= 0) return -2;
+    uint8_t *p = malloc((size_t)n);
+    if (!p) return -2;
+    memcpy(p, sqlite3_column_blob(s->st, 0), (size_t)n);
+    *rlp = p;
+    *len = (size_t)n;
+    return 0;
+}
+
+static int pstore_put(void *c, const uint8_t d[64], const uint8_t *r, size_t n) {
+    (void)c; (void)d; (void)r; (void)n;
+    return -2;
+}
+
+typedef struct { size_t depth, idx; } depth_t;
+
+static int depth_cmp(const void *a, const void *b) {
+    const depth_t *x = a, *y = b;
+    if (x->depth != y->depth) return x->depth < y->depth ? 1 : -1;  /* desc */
+    return x->idx < y->idx ? -1 : x->idx > y->idx;                  /* asc  */
+}
+
+/* The request of the 128 rows with the most nodes on their proof path; the
+ * count of path nodes of every row is measured by proving it. `*max_path` is
+ * the largest per-key path, `*sum_bound` the sum of the 128 largest (an upper
+ * bound on the nodes of any 128-present-key request). 0 / -1. */
+static int deepest_request(nodus_witness_t *ctx, int leg, const rows_t *r,
+                           nodus_state_proof_req_t *req, size_t *n_present,
+                           size_t *max_path, size_t *sum_bound) {
+    uint8_t lr[64];
+    pstore_t ps = { NULL };
+    depth_t *d = r->n ? malloc(r->n * sizeof(*d)) : NULL;
+    int rc = -1;
+    *max_path = *sum_bound = 0;
+    if ((r->n && !d) || nodus_witness_v2_trie_leg_root(ctx, leg, lr) != 0 ||
+        sqlite3_prepare_v2(ctx->db,
+            "SELECT rlp FROM v2_trie_nodes WHERE digest = ?1", -1, &ps.st,
+            NULL) != SQLITE_OK)
+        goto out;
+    {
+        evm_trie_store_t st = { &ps, pstore_get, pstore_put };
+        for (size_t i = 0; i < r->n; i++) {
+            uint8_t path[64];
+            evm_trie_proof_set_t s = {0};
+            if (evm_trie_proof_path_of_key(r->key[i], r->klen[i], path) != 0 ||
+                evm_trie_prove_path(&st, lr, path, &s) != 0) {
+                evm_trie_proof_set_free(&s);
+                goto out;
+            }
+            d[i].depth = s.n;
+            d[i].idx = i;
+            evm_trie_proof_set_free(&s);
+        }
+    }
+    if (r->n) qsort(d, r->n, sizeof(*d), depth_cmp);
+    memset(req, 0, sizeof(*req));
+    req->leg = leg;
+    size_t np = r->n < 128 ? r->n : 128;
+    for (size_t i = 0; i < np; i++) {
+        memcpy(req->keys[req->n_keys], r->key[d[i].idx], r->klen[d[i].idx]);
+        req->key_len[req->n_keys] = r->klen[d[i].idx];
+        req->n_keys++;
+        *sum_bound += d[i].depth;
+        if (d[i].depth > *max_path) *max_path = d[i].depth;
+    }
+    *n_present = np;
+    for (uint32_t j = 0; req->n_keys < 128; j++) {
+        req->key_len[req->n_keys] = absent_key(leg, j, req->keys[req->n_keys]);
+        req->n_keys++;
+    }
+    rc = 0;
+out:
+    if (ps.st) sqlite3_finalize(ps.st);
+    free(d);
+    return rc;
+}
+
+/* three timed builds of `req` and one COST line */
+static int time_request(const char *name, int leg, const char *label,
+                        nodus_witness_t *ctx,
+                        const nodus_state_proof_req_t *req, size_t np,
+                        size_t rows) {
+    double ts[3];
+    nodus_state_proof_stats_t st;
+    memset(&st, 0, sizeof(st));
+    for (int i = 0; i < 3; i++) {
+        uint8_t *frame = NULL;
+        size_t flen = 0;
+        int ec = 0;
+        char em[96];
+        double a = now_ms();
+        if (nodus_state_proof_build(ctx, req, 1, &frame, &flen, &st, &ec, em,
+                                    sizeof(em)) != 0) {
+            fprintf(stderr, "measure: leg %d %s build failed (%d: %s)\n", leg,
+                    label, ec, em);
+            return 1;
+        }
+        ts[i] = now_ms() - a;
+        free(frame);
+    }
+    printf("COST size=%s leg=%d request=%s rows=%zu keys=%zu present=%zu "
+           "nodes_loaded=%zu nodes=%zu frame_bytes=%zu "
+           "build_ms=[%.1f %.1f %.1f]\n", name, leg, label, rows, req->n_keys,
+           np, st.nodes_loaded, st.nodes, st.frame_bytes, ts[0], ts[1], ts[2]);
+    return 0;
+}
 
 static int measure(const char *name, const uint32_t n[9], uint32_t extra_cc) {
     fixture_t fx;
@@ -1088,32 +1616,38 @@ static int measure(const char *name, const uint32_t n[9], uint32_t extra_cc) {
             fx_close(&fx);
             return 1;
         }
-        pick_keys(leg, &rows, 128, 128, req, &np);
-        double ts[3];
-        nodus_state_proof_stats_t st;
-        memset(&st, 0, sizeof(st));
-        for (int i = 0; i < 3; i++) {
-            uint8_t *frame = NULL;
-            size_t flen = 0;
-            int ec = 0;
-            char em[96];
-            double a = now_ms();
-            if (nodus_state_proof_build(ctx, req, 1, &frame, &flen, &st, &ec,
-                                        em, sizeof(em)) != 0) {
-                fprintf(stderr, "measure: leg %d build failed (%d: %s)\n",
-                        leg, ec, em);
-                rows_free(&rows);
-                fx_close(&fx);
-                return 1;
-            }
-            ts[i] = now_ms() - a;
-            free(frame);
+        /* Two requests per leg. (1) "deepest": EVERY row of the leg is proved
+         * once to count the nodes on its path; the 128 rows with the most
+         * path nodes are requested (all rows if the leg has fewer, the rest
+         * absent). The sum of the 128 largest path lengths is an UPPER BOUND
+         * on the nodes any 128-present-key request can touch (shared nodes
+         * are counted once, so the request itself touches at most that
+         * many); the measured request is the deepest-paths request, NOT a
+         * proven maximum of the build time. (2) "absent128": 128 absent keys
+         * of the leg's key shape, a fixed sample: the depth of absent paths
+         * is not enumerated, so this line is a sample, not a bound. */
+        size_t max_path = 0, sum_bound = 0;
+        if (deepest_request(ctx, leg, &rows, req, &np, &max_path,
+                            &sum_bound) != 0) {
+            fprintf(stderr, "measure: leg %d path counting failed\n", leg);
+            rows_free(&rows);
+            fx_close(&fx);
+            return 1;
         }
-        printf("COST size=%s leg=%d rows=%zu keys=%zu present=%zu "
-               "nodes_loaded=%zu nodes=%zu frame_bytes=%zu "
-               "build_ms=[%.1f %.1f %.1f]\n", name, leg, rows.n, req->n_keys,
-               np, st.nodes_loaded, st.nodes, st.frame_bytes, ts[0], ts[1],
-               ts[2]);
+        printf("COST size=%s leg=%d selection=deepest_paths rows_counted=%zu "
+               "path_nodes_max=%zu path_nodes_sum_upper_bound=%zu\n", name,
+               leg, rows.n, max_path, sum_bound);
+        if (time_request(name, leg, "deepest", ctx, req, np, rows.n) != 0) {
+            rows_free(&rows);
+            fx_close(&fx);
+            return 1;
+        }
+        pick_keys(leg, &rows, 0, 128, req, &np);
+        if (time_request(name, leg, "absent128", ctx, req, np, rows.n) != 0) {
+            rows_free(&rows);
+            fx_close(&fx);
+            return 1;
+        }
         rows_free(&rows);
     }
     free(req);
@@ -1125,7 +1659,10 @@ static int measure(const char *name, const uint32_t n[9], uint32_t extra_cc) {
 int main(void) {
     int rc = 0;
     if (test_request_decode() != 0) return 1;
+    if (test_response_decode() != 0) return 1;
+    if (test_conn_identity() != 0) return 1;
     if (test_below_generation_6() != 0) return 1;
+    if (test_block_anchor() != 0) return 1;
 
     /* B and C on a small populated chain; claims left EMPTY (empty leg) */
     {
@@ -1144,6 +1681,7 @@ int main(void) {
               "the legs hold the populated rows");
         rc = test_proofs(&fx, rows);
         if (!rc) rc = test_service(&fx, rows);
+        if (!rc) rc = test_snapshot_and_anchor(&fx);   /* mutates the chain */
         for (int leg = 1; leg <= 8; leg++) rows_free(&rows[leg]);
         fx_close(&fx);
         if (rc) return 1;
