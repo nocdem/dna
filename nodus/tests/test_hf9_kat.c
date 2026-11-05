@@ -138,15 +138,21 @@
  *   checks lr = SHA3-512(0x80) (computed here), no nodes and every result
  *   absent without a value.
  *
- * GROUPS / PARTS NOT CHECKED HERE (named so that nothing reads this test as
- * covering them): the trie-NODE part of the proof - "nodes" (the bytes, the
- * digest order, the dedup) and the walk of the requested keys through them
- * with the proof module's prove / verify - and the two negative controls of
- * empty_leg_proofs that need the bundle verifier ("result f=true for the
- * empty leg", "non-empty nodes with lr = SHA3-512(0x80)"). They wait for
- * shared/evm/trie/evm_trie_proof (HF-9 WP6, blocked on exports from
- * evm_trie.c, see the handback). The vector_counts of the WP6 groups are not
- * asserted beyond the counts above.
+ *  The trie-NODE part of composition_chains (shared/evm/trie/evm_trie_proof):
+ *  the prover over an in-memory store of the entry's rows gives exactly the
+ *  oracle's "nodes" (the bytes, the ascending-digest order, the dedup of
+ *  nodes the three keys share); the production batch verifier accepts the
+ *  oracle's bundle against "lr" and returns the oracle's results and values;
+ *  every node of the bundle removed, and every node with a flipped byte, is
+ *  refused (-2). empty_leg_proofs: the verifier accepts the empty bundle
+ *  against SHA3-512(0x80) with every key absent, and refuses a non-empty
+ *  bundle against that root (the oracle's second negative control); its
+ *  first control ("result f=true for the empty leg") is the comparison of a
+ *  claimed result with the verifier's, which for the empty leg can only be
+ *  "absent" - checked as that comparison, nothing more.
+ *
+ * NOT CHECKED HERE: the vector_counts of the WP6 groups beyond the counts
+ * above; the wire (CBOR) form of the response - T-11 covers it.
  *
  * WP6 false-pass notes: the composition layouts are SELF-CONSISTENT (the
  * oracle's reading of plan §10.3), not an external reference; the only
@@ -221,6 +227,7 @@
 
 #include "evm/trie/evm_trie.h"
 #include "evm/trie/evm_trie_full.h"
+#include "evm/trie/evm_trie_proof.h"
 
 #include "dnac/dnac.h"
 #include "dnac/domain_wire.h"
@@ -1914,6 +1921,142 @@ static int check_builder(int leg, const dna_v2_proof_step_t *js, size_t n,
     return 0;
 }
 
+/* The request's keys of an entry as 64-byte paths: SHA3-512(key). Returns the
+ * count (0 on a decode failure); `paths` holds up to 16. */
+static size_t entry_paths(json_object *e, uint8_t (*paths)[64]) {
+    json_object *keys = jget(jget(e, "request"), "keys");
+    size_t nk = keys ? json_object_array_length(keys) : 0;
+    if (nk == 0 || nk > 16) return 0;
+    for (size_t k = 0; k < nk; k++) {
+        size_t l = 0;
+        uint8_t *q = unhex(json_object_get_string(
+            json_object_array_get_idx(keys, k)), &l);
+        if (!q || evm_trie_proof_path_of_key(q, l, paths[k]) != 0) {
+            free(q);
+            return 0;
+        }
+        free(q);
+    }
+    return nk;
+}
+
+/* HF-9 WP6 T-4 / T-1: the trie-NODE part of a composition_chains entry, by
+ * the production proof module. The prover run over an in-memory store of the
+ * entry's rows gives exactly the oracle's "nodes" (the bytes, the digest
+ * order, the dedup of the nodes the three keys share); the production batch
+ * verifier accepts the oracle's bundle against "lr" and gives the oracle's
+ * results (and the values); removing any node of the bundle, or flipping a
+ * byte of it, is refused (-2: a missing node is an error, never absence).
+ * 0 / 1. */
+static int check_trie_nodes(json_object *e, const item_t *items, size_t nr,
+                            const uint8_t lr[64]) {
+    json_object *resp = jget(e, "response");
+    json_object *nodes = jget(resp, "nodes"), *res = jget(resp, "res");
+    uint8_t paths[16][64], empty[64], root[64];
+    size_t nk = entry_paths(e, paths);
+    size_t nn = nodes ? json_object_array_length(nodes) : 0;
+    mstore_t ms;
+    memset(&ms, 0, sizeof(ms));
+    evm_trie_store_t st = { &ms, ms_get, ms_put };
+    evm_trie_t *t = NULL;
+    evm_trie_proof_set_t set = {0};
+    int bad = nk == 0 || nn == 0 || !res ||
+              json_object_array_length(res) != nk ||
+              evm_trie_empty_root(empty) != 0 ||
+              evm_trie_open(&st, empty, &t) != 0;
+    for (size_t i = 0; !bad && i < nr; i++)
+        bad = evm_trie_set(t, items[i].key, items[i].klen, items[i].val, 64) != 0;
+    bad = bad || evm_trie_commit(t, root) != 0 || memcmp(root, lr, 64) != 0;
+    evm_trie_close(t);
+    for (size_t k = 0; !bad && k < nk; k++)
+        bad = evm_trie_prove_path(&st, lr, paths[k], &set) != 0;
+    bad = bad || evm_trie_proof_set_finish(&set) != 0 || set.n != nn;
+    const uint8_t **np = calloc(nn + 1, sizeof(*np));
+    size_t *nl = calloc(nn + 1, sizeof(*nl));
+    uint8_t **own = calloc(nn + 1, sizeof(*own));
+    bad = bad || !np || !nl || !own;
+    for (size_t i = 0; !bad && i < nn; i++) {
+        size_t l = 0;
+        own[i] = unhex(json_object_get_string(
+            json_object_array_get_idx(nodes, i)), &l);
+        if (!own[i] || l != set.v[i].len ||
+            memcmp(own[i], set.v[i].rlp, l) != 0)
+            bad = 1;               /* the bytes and the order of the oracle */
+        np[i] = own[i];
+        nl[i] = l;
+    }
+    evm_trie_proof_result_t r[16];
+    if (!bad && evm_trie_proof_verify_batch(lr, np, nl, nn,
+            (const uint8_t (*)[64])paths, nk, r) != 0)
+        bad = 1;
+    for (size_t k = 0; !bad && k < nk; k++) {
+        json_object *jr = json_object_array_get_idx(res, k);
+        json_object *f = jget(jr, "f");
+        int want = f && json_object_get_boolean(f);
+        if ((r[k].found != 0) != want ||
+            (want && (r[k].val_len != 64 || !jeq(jr, "v", r[k].val, 64))))
+            bad = 1;
+    }
+    for (size_t i = 0; !bad && i < nn; i++) {
+        /* the node removed */
+        const uint8_t **np2 = calloc(nn, sizeof(*np2));
+        size_t *nl2 = calloc(nn, sizeof(*nl2));
+        size_t w = 0;
+        if (!np2 || !nl2) { bad = 1; free(np2); free(nl2); break; }
+        for (size_t j = 0; j < nn; j++)
+            if (j != i) { np2[w] = np[j]; nl2[w] = nl[j]; w++; }
+        if (evm_trie_proof_verify_batch(lr, np2, nl2, w,
+                (const uint8_t (*)[64])paths, nk, r) != -2)
+            bad = 1;
+        free(np2); free(nl2);
+        /* a byte flipped */
+        uint8_t *cp = malloc(nl[i]);
+        if (!cp) { bad = 1; break; }
+        memcpy(cp, own[i], nl[i]);
+        cp[nl[i] / 2] ^= 1;
+        const uint8_t *keep = np[i];
+        np[i] = cp;
+        if (evm_trie_proof_verify_batch(lr, np, nl, nn,
+                (const uint8_t (*)[64])paths, nk, r) != -2)
+            bad = 1;
+        np[i] = keep;
+        free(cp);
+    }
+    for (size_t i = 0; own && i < nn; i++) free(own[i]);
+    free(own); free(np); free(nl);
+    evm_trie_proof_set_free(&set);
+    ms_free(&ms);
+    return bad ? 1 : 0;
+}
+
+/* The empty-leg bundle through the production verifier, and the two negative
+ * controls of the oracle ("result f=true for the empty leg", "non-empty
+ * nodes with lr = SHA3-512(0x80)"). 0 / 1. */
+static int check_empty_leg_bundle(json_object *e, const uint8_t empty[64]) {
+    uint8_t paths[16][64];
+    size_t nk = entry_paths(e, paths);
+    evm_trie_proof_result_t r[16];
+    if (nk == 0) return 1;
+    if (evm_trie_proof_verify_batch(empty, NULL, NULL, 0,
+            (const uint8_t (*)[64])paths, nk, r) != 0)
+        return 1;
+    for (size_t k = 0; k < nk; k++)
+        if (r[k].found) return 1;        /* the verifier: every key absent */
+    /* control 1: a response that claims f = true is not what the verifier
+     * returns - the comparison of claimed results with the verifier's is
+     * exactly the check a client makes */
+    int claimed_true = 1;
+    if ((r[0].found != 0) == claimed_true) return 1;
+    /* control 2: a non-empty bundle against the empty root is refused */
+    uint8_t node[8] = { 0xc2, 0x20, 0x01, 0, 0, 0, 0, 0 };
+    const uint8_t *np[1] = { node };
+    size_t nl[1] = { 3 };
+    if (evm_trie_proof_verify_batch(empty, np, nl, 1,
+            (const uint8_t (*)[64])paths, nk, r) != -2)
+        return 1;
+    return 0;
+}
+
 /* composition_chains (is_empty = 0) and empty_leg_proofs (is_empty = 1) */
 static int check_chains(json_object *vec, const char *group, int is_empty) {
     json_object *g = jget(vec, group);
@@ -2005,6 +2148,9 @@ static int check_chains(json_object *vec, const char *group, int is_empty) {
                       !json_object_get_boolean(f) && !jget(r, "v"),
                       "empty leg: every result absent, no value");
             }
+            CHECK(check_empty_leg_bundle(e, empty) == 0,
+                  "empty leg: the production verifier (empty bundle, every "
+                  "key absent) and its two negative controls");
             continue;
         }
         /* lr is the root the production trie code gives for the rows */
@@ -2082,8 +2228,11 @@ static int check_chains(json_object *vec, const char *group, int is_empty) {
             if (found != 1) cl_ok = 0;
             free(pre);
         }
+        int nodes_rc = trc ? check_trie_nodes(e, items, nr, lr) : 1;
         for (size_t k = 0; k < nr; k++) { free(kb[k]); free(vb[k]); }
         free(kb); free(vb); free(items);
+        CHECK(nodes_rc == 0, "the trie-node part of the proof (bytes, order, "
+                             "dedup, the walk)");
         CHECK(trc, "the production trie computes the rows' root");
         CHECK(memcmp(rinc, lr, 64) == 0 && memcmp(rfull, lr, 64) == 0,
               "lr = the incremental root = the full-rebuild root of the rows");

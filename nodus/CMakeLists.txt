@@ -4263,6 +4263,17 @@ if(NODUS_EVM_ENABLED)
     register_witness_test(test_hf9_shadow)
 endif()
 
+# HF-9 WP6, plan row T-11 (docs/plans/approved/2026-11-04-hf9.md §10, §12,
+# §17): the `dnac_state_proof` service - request decoding, the batch and
+# composition proofs verified from the outside on a populated generation-6
+# chain, the reader threads and the node-wide admission, and the per-leg
+# worst-case cost measurement (the "COST " lines it prints are input for the
+# operator's limits; the grown fixture takes minutes). EVM-only (the trie
+# module and the service). No environment, no compile flag.
+if(NODUS_EVM_ENABLED)
+    register_witness_test(test_hf9_proof_service)
+endif()
+
 # HF-9 T-4, C side for WP2 (plan §12): this build's leaf functions, row
 # readers, build path and trie against the independent oracle's groups
 # "leg_vectors" and "leg_row_sets" of tests/vectors/hf9_kat.json (json-c at
