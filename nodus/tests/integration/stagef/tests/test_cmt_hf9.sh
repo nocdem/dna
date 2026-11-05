@@ -156,8 +156,9 @@
 #      holder of segment 1 at every event boundary has the completeness
 #      marker segments/seg-1.ok before the next boundary; node 5, taken out
 #      by its exit, and the member dropped by the copies decrease still have
-#      it at the boundary and at boundary + E − 1 (the overlap epoch) and
-#      have deleted it by boundary + E + 3. The candidate is the non-serving
+#      it at the boundary and delete it only from the epoch boundary + E on
+#      (the holder runtime's "segment k deleted … (H=…)" line, H >= boundary
+#      + E — not "the file at tip X", a pump overshoots a height). The candidate is the non-serving
 #      case: it has no node, hence no file.
 #      The probe-report BITS (T-16 "the probe reports carry bits for the new
 #      holders"). What a bit means, from source: v2_storage_reports.bitmap is
@@ -1041,6 +1042,27 @@ wait_seg_file() {          # NODE K UNTIL_TIP
         sleep 2
     done
 }
+# The OVERLAP rule is asserted from the holder runtime's own epoch-stamped line, never from "the file
+# at tip X" (a pump overshoots a height by a block, and the file is legitimately gone from the epoch
+# H = B + E on). nodus_witness_storage_holder.c:283-288 logs, per deletion,
+#   "segment <k> deleted: no longer a holder and the overlap epoch has passed (H=<H>)"
+# with H = floor(tip / E) x E of the node's own tip at the sweep; a segment is deleted iff this node is no
+# holder in the epoch H nor (for segments published <= H - E) in H - E. So the file is kept through the
+# epochs B .. B + E - 1 exactly when the deletion line's H is >= B + E. The node log is the witness log
+# (stagef_node_log) — appended, never truncated, for a node that is not wiped (node 3 is no holder).
+del_count() { grep -c "segment $2 deleted: no longer a holder" "$(node_log "$1")" || true; }   # NODE K
+del_h() {                  # NODE K INDEX(1-based) -> the H of that deletion line
+    grep "segment $2 deleted: no longer a holder" "$(node_log "$1")" | sed -n "${3}p" | sed 's/.*(H=\([0-9]*\)).*/\1/'
+}
+assert_deleted_at() {      # LABEL NODE K COUNT_BEFORE MIN_H — a NEW deletion line since COUNT_BEFORE, with H >= MIN_H
+    local label="$1" n="$2" k="$3" c0="$4" minh="$5" c1 h
+    c1=$(del_count "$n" "$k")
+    [ "$c1" -gt "$c0" ] || die "$label: node$n logged no new 'segment $k deleted' line (had $c0, has $c1)"
+    h=$(del_h "$n" "$k" $(( c0 + 1 )))
+    [[ "$h" =~ ^[0-9]+$ ]] || die "$label: could not read the H of node$n's deletion line"
+    [ "$h" -ge "$minh" ] || die "$label: node$n deleted segment $k at its epoch H=$h, before the overlap epoch ended (expected H >= $minh)"
+    echo "[ok] $label: node$n deleted segment $k at its epoch H=$h (>= $minh): the file was kept through the overlap epoch"
+}
 wait_seg_gone() {          # NODE K UNTIL_TIP
     local f t last=-1 since=0 stall
     f=$(seg_file "$1" "$2"); stall=$(file_wait_polls)
@@ -1731,7 +1753,9 @@ if [ "$WITH_STORAGE" = 1 ]; then
     [ "$B_REL" = $(( B1 + E )) ] || die "the exit landed at x=$XH, its release boundary $B_REL is not B1 + E = $(( B1 + E )) — $MSG_LAYOUT"
     echo "[ok] node$EXITER EXITING at x=$XH — release boundary B_rel=$B_REL"
     [ -f "$(seg_file "$EXITER" 1)" ] || die "node$EXITER has no seg-1.ok before its exit boundary (it held segment 1 since B1)"
+    EX_DEL0=$(del_count "$EXITER" 1)
     next_boundary "B_rel" 4
+    [ -f "$(seg_file "$EXITER" 1)" ] || die "B_rel: node$EXITER's seg-1.ok is gone at the exit boundary (tip $(tip_of 1)) — the overlap epoch has just begun"
     [ "$(reg_status "${FP[$EXITER]}")" = 3 ] || die "B_rel: node$EXITER's registry status is '$(reg_status "${FP[$EXITER]}")', expected 3 (RELEASED)"
     [ "$(cur_rows_of "${FP[$EXITER]}")" = 0 ] || die "B_rel: node$EXITER still has current assignment rows"
     [ "$(cell_lines assign | awk -F'|' -v f="${FP[$EXITER]}" -v b="$B_REL" '$2 == f && $5 == b' | wc -l)" = 1 ] || die "B_rel: node$EXITER's row of segment 1 was not ended at $B_REL"
@@ -1776,10 +1800,7 @@ if [ "$WITH_STORAGE" = 1 ]; then
     echo "[ok] the candidate ${D_FP:0:16}… (no node runs it) is a registered storage member (row seen at tip $h); its arrival boundary is $BD0"
     D_TRACK=1
 
-    # node 5 keeps its file through the overlap epoch (B_rel + E - 1), then deletes it
-    advance_to $(( B_REL + E - 1 ))
-    [ -f "$(seg_file "$EXITER" 1)" ] || die "node$EXITER's seg-1.ok was deleted at tip $(tip_of 1) < B_rel + E = $(( B_REL + E )) — before the overlap epoch ended"
-    echo "[ok] T-16: node$EXITER still has seg-1.ok at tip $(tip_of 1) (B_rel + E - 1) — the overlap epoch"
+    # node 5 keeps its file through the overlap epoch, then deletes it (asserted from its log below)
 
     # arrival: {4,6,7,D}, R 4 — three holders < R, so the candidate MUST hold: one row, n_new 1, grace B + E
     next_boundary "D-arrival" 4
@@ -1792,7 +1813,7 @@ if [ "$WITH_STORAGE" = 1 ]; then
     note_new_holders "$BD0"
     diff_full_at "$BD0" "D-arrival-at-height-$BD0"
     wait_seg_gone "$EXITER" 1 $(( B_REL + E + 4 )) || die "node$EXITER's seg-1.ok was not deleted by tip $(( B_REL + E + 4 )) although it is no holder in either epoch any more"
-    echo "[ok] T-16: node$EXITER deleted seg-1.ok once the overlap epoch had passed (tip $(tip_of 1))"
+    assert_deleted_at "T-16 exit" "$EXITER" 1 "$EX_DEL0" $(( B_REL + E ))
 
     # NOT OK epochs: boundary by boundary until the first freeze with fail_streak >= 3 (the DEPARTURE)
     for _ in 1 2 3 4 5 6 7 8 9; do
@@ -1859,13 +1880,11 @@ if [ "$WITH_STORAGE" = 1 ]; then
     ZERO_AT[$(( DROP_B + E ))]="${ZERO_AT[$(( DROP_B + E ))]:-} $DROP_FP"
     diff_full_at "$DROP_B" "copies-down-4-at-height-$DROP_B"
     require_holder_files "copies-down-4" "$DROP_B"
-    [ -f "$(seg_file "$DROP_NODE" 1)" ] || die "copies 5 -> 4: node $DROP_NODE's seg-1.ok is already gone at tip $(tip_of 1) — it must be kept through the overlap epoch"
-    advance_to $(( DROP_B + E - 1 ))
-    [ -f "$(seg_file "$DROP_NODE" 1)" ] || die "node $DROP_NODE's seg-1.ok was deleted at tip $(tip_of 1) < $(( DROP_B + E )) — before the overlap epoch ended"
-    echo "[ok] copies 5 -> 4 at $DROP_B: node $DROP_NODE dropped (the changed holder); it still has seg-1.ok at tip $(tip_of 1) (overlap epoch)"
+    DROP_DEL0=$(del_count "$DROP_NODE" 1)
+    echo "[ok] copies 5 -> 4 at $DROP_B: node $DROP_NODE dropped (the changed holder)"
     next_boundary "drop+E" 4
     wait_seg_gone "$DROP_NODE" 1 $(( DROP_B + E + 4 )) || die "node $DROP_NODE's seg-1.ok was not deleted by tip $(( DROP_B + E + 4 )) after the overlap epoch"
-    echo "[ok] node $DROP_NODE deleted seg-1.ok once the overlap epoch had passed (tip $(tip_of 1))"
+    assert_deleted_at "T-16 drop" "$DROP_NODE" 1 "$DROP_DEL0" $(( DROP_B + E ))
 
     # (f) copies UP 4 -> 6 with five eligible: the dropped member (or the other without a row) gains — so that when
     # the candidate returns, six are eligible with R 6 and the candidate MUST hold
