@@ -1003,6 +1003,20 @@ int nodus_witness_db_migrate_v2s19_ex(nodus_witness_t *w,
  *       three triggers on v2_storage_nodes (AFTER INSERT, AFTER DELETE,
  *       AFTER UPDATE OF bond, status).
  *
+ * HF-9 WP1a adds to the same rung (amendment 2026-11-05 A4.1, A6; the
+ * operator's "fihristekle."; consensus-inert: the guard's verdict is
+ * unchanged):
+ *
+ *   index idx_utxo_foreign ON utxo_set(domain_id) WHERE domain_id != 1
+ *       the partial index that holds only the rows of another domain
+ *       (normally empty); it serves the ownership guard of
+ *       nodus_rt_core_invariant, `SELECT COUNT(*) FROM utxo_set WHERE
+ *       domain_id != 1`, from an empty B-tree instead of a scan of every
+ *       coin. Created inside the rung and verified there with the whole
+ *       stored text; re-created IF NOT EXISTS at every open
+ *       (nodus_witness_db_s20_reseed); an index of the same name with
+ *       another definition is NOT refused at open (DF-11).
+ *
  * HF-9 WP2 adds to the same rung (plan §5.1, §5.2, §5.5; consensus-inert
  * until generation 6):
  *

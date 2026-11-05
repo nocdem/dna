@@ -1080,6 +1080,7 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
      * (when the domain column exists — a pre-S5 DB is all-CORE by the
      * legacy definition). A foreign row is unknown value: fail closed,
      * never sum it. */
+    /* The count is served by the S20 partial index idx_utxo_foreign. */
     {
         int has = utxo_has_domain_col(w);
         if (has < 0) return -1;

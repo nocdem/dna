@@ -38,14 +38,50 @@
  *     total cannot be stored (NOT NULL). A total pushed past INT64_MAX by
  *     a trigger becomes REAL in SQLite and the check refuses it. After a
  *     re-seed the check passes again.
+ *  E. THE OWNERSHIP GUARD (HF-9 amendment 2026-11-05, T-17a-d; the partial
+ *     index idx_utxo_foreign ON utxo_set(domain_id) WHERE domain_id != 1,
+ *     operator: "fihristekle."; the guard's SQL is unchanged).
+ *     T-17a verdict table: on the balanced chain, one existing row gets each
+ *     of 0, 2, -1, INT64_MAX, INT64_MIN, 1.5, 0.9999999999999999, 1e300,
+ *     'abc', '', X'01' (all foreign) and '1', ' 1', '1.0', 1.0 (converted to
+ *     1 by the column's INTEGER affinity: not foreign) as its domain_id;
+ *     the check must be -1 exactly when the full-scan oracle
+ *     `+domain_id != 1` counts > 0; every case is paired with a passing
+ *     baseline before and a passing restore after; then two conserving
+ *     (amount 0) foreign rows are inserted and deleted one by one. The
+ *     whole table runs twice: with the index and with it dropped.
+ *     T-17b plan pin: the guard statement is CAPTURED (sqlite3_trace_v2)
+ *     from one real nodus_witness_v2_supply_check on a 1 000-row table; its
+ *     EXPLAIN QUERY PLAN is exactly one row, `SCAN utxo_set USING COVERING
+ *     INDEX idx_utxo_foreign` (a scan of the empty partial index, not a
+ *     SEARCH); without the index it is `SCAN utxo_set`; the six production
+ *     statements that filter on domain_id (point read, DELETE, the two
+ *     owner lists, the balance query, the msig read) never use the index
+ *     and have the same plan with and without it.
+ *     T-17c growth: the guard's VM steps (sqlite3_stmt_status) are EQUAL at
+ *     100 and at 100 000 planted rows; the `+domain_id` form (the control)
+ *     steps at least 100 000 more than the guard at 100 000 rows; the
+ *     progress-handler instruction count of one whole supply check differs
+ *     by less than (100 000 - 100) / 10 between the two sizes (the rule of
+ *     test_cmt_app hybrid_growth_probe G-f).
+ *     T-17d schema: each S20 fault point (AFTER_BEGIN .. BEFORE_COMMIT) of
+ *     the rung leaves no idx_utxo_foreign and version 19; the rung creates
+ *     it with the exact stored text; the rung refuses a same-name index of
+ *     another definition; the at-open function re-creates a dropped one;
+ *     on the real derived chain a DROP followed by the production open path
+ *     (reopen) re-creates it; a same-name index of another definition is
+ *     neither refused nor replaced at open (DF-11) and the guard still
+ *     catches a foreign row with it.
  *
  * ── FLAGS ───────────────────────────────────────────────────────────────
  *  Compiled by register_witness_test (NODUS_WITNESS_INTERNAL_API); no
  *  fault injection, no -DDNAC_EPOCH_LENGTH, no environment.
  *
  * ── LEAVES BEHIND ───────────────────────────────────────────────────────
- *  Directories /tmp/v2x_supplytot_XXXXXX, removed by v2x_chain_close (a
- *  crash leaves one).
+ *  Directories /tmp/v2x_supplytot_XXXXXX, removed by v2x_chain_close, and
+ *  /tmp/v2x_s20idx_XXXXXX (the T-17d scratch databases), removed by
+ *  s19_close (a crash leaves either). Section E deletes the rows it plants
+ *  (owner 'plant' / 'f') and restores every domain_id and the index.
  *
  * ── HOW IT CAN FALSELY PASS OR SKIP ─────────────────────────────────────
  *  - Section D passes vacuously if the baseline supply_check is not 0 for
@@ -57,6 +93,24 @@
  *    would pass — the amounts are literal constants in this file.
  *  - Section B proves rollback of the totals only for SQLite's own
  *    transaction machinery, not for the engine's call sites.
+ *  - T-17a: an oracle that shared a wrong literal with production would
+ *    pass; the oracle's literal 1 is written in this file while production
+ *    formats rt->domain_id (DNA_DOMAIN_CORE). Vacuous if the baseline is
+ *    not 0: each case is paired with a baseline and a restore. A column
+ *    affinity that did not convert '1' would make the converted group
+ *    fail, not pass.
+ *  - T-17b: the statement is captured from the real call, not rebuilt; the
+ *    plan wording is that of the linked SQLite (3.40.1): a library change
+ *    fails the test (a false fail, not a false pass). The six other
+ *    statements are copies of the production texts and could drift from
+ *    them; their equality with and without the index is the check.
+ *  - T-17c: VM steps do not count B-tree page descents (O(log n)); the
+ *    planted amount-0 rows are a state no writer produces (the guard's
+ *    cost depends only on the row count). Skips nothing; a guard that
+ *    scanned would fail the equality and the control proves the counter
+ *    sees a scan.
+ *  - T-17d: a reopen that did not run the at-open function would leave the
+ *    index absent: absence is asserted before and presence after.
  *  - No test here exercises an engine writer of utxo_set (rtn_core_mutate
  *    and the others, plan §4.3); they are exercised by the existing block
  *    tests whose supply check now reads the totals.
@@ -450,6 +504,459 @@ static int test_invariant(v2x_chain_t *c) {
     return 0;
 }
 
+/* ── E. the ownership guard (HF-9 amendment 2026-11-05, T-17a-d) ───────── */
+
+/* the stored sqlite_master.sql SQLite keeps for the index of the amendment
+ * (A4.1, measured on 3.40.1: the IF NOT EXISTS is not stored) */
+#define FOREIGN_IDX_SQL \
+    "CREATE INDEX idx_utxo_foreign ON utxo_set(domain_id) WHERE " \
+    "domain_id != 1"
+
+/* the guard's statement text, the oracle with the index made unusable by
+ * the unary plus (a full scan: today's behaviour) */
+#define ORACLE_SQL \
+    "SELECT COUNT(*) FROM utxo_set WHERE +domain_id != 1"
+
+/* 1 = the index exists, its stored text copied to `out`; 0 = absent */
+static int foreign_idx_sql(sqlite3 *db, char *out, size_t cap) {
+    sqlite3_stmt *st = NULL;
+    int r = -1;
+    if (sqlite3_prepare_v2(db, "SELECT sql FROM sqlite_master WHERE "
+            "type='index' AND name='idx_utxo_foreign'", -1, &st, NULL)
+        != SQLITE_OK) return -1;
+    int s = sqlite3_step(st);
+    if (s == SQLITE_ROW) {
+        const char *t = (const char *)sqlite3_column_text(st, 0);
+        snprintf(out, cap, "%s", t ? t : "");
+        r = 1;
+    } else if (s == SQLITE_DONE) {
+        out[0] = 0;
+        r = 0;
+    }
+    sqlite3_finalize(st);
+    return r;
+}
+
+static int foreign_idx_exact(sqlite3 *db) {
+    char sql[256];
+    return foreign_idx_sql(db, sql, sizeof(sql)) == 1 &&
+           strcmp(sql, FOREIGN_IDX_SQL) == 0;
+}
+
+/* all `detail` lines of EXPLAIN QUERY PLAN <sql>, one per line, into out;
+ * *nrows = the number of plan rows; 0 / -1 */
+static int plan_text(sqlite3 *db, const char *sql, char *out, size_t cap,
+                     int *nrows) {
+    char eqp[1536];
+    sqlite3_stmt *st = NULL;
+    int n = snprintf(eqp, sizeof(eqp), "EXPLAIN QUERY PLAN %s", sql);
+    if (n <= 0 || (size_t)n >= sizeof(eqp)) return -1;
+    if (sqlite3_prepare_v2(db, eqp, -1, &st, NULL) != SQLITE_OK) return -1;
+    size_t len = 0;
+    int rows = 0, rc;
+    out[0] = 0;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const char *d = (const char *)sqlite3_column_text(st, 3);
+        int w = snprintf(out + len, cap - len, "%s\n", d ? d : "");
+        if (w < 0 || (size_t)w >= cap - len) { sqlite3_finalize(st); return -1; }
+        len += (size_t)w;
+        rows++;
+    }
+    sqlite3_finalize(st);
+    *nrows = rows;
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+/* VM steps of one full run of `sql` (no parameters), -1 on a fault */
+static sqlite3_int64 stmt_steps(sqlite3 *db, const char *sql) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return -1;
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) { }
+    sqlite3_int64 n = rc == SQLITE_DONE ?
+        (sqlite3_int64)sqlite3_stmt_status(st, SQLITE_STMTSTATUS_VM_STEP, 0)
+        : -1;
+    sqlite3_finalize(st);
+    return n;
+}
+
+/* the statement the production guard runs, captured from the real call */
+typedef struct { char sql[256]; int hits; } guard_trace_t;
+
+static int guard_trace_cb(unsigned mask, void *ctx, void *p, void *x) {
+    static const char prefix[] = "SELECT COUNT(*) FROM utxo_set WHERE domain_id";
+    guard_trace_t *g = ctx;
+    (void)p;
+    if (mask == SQLITE_TRACE_STMT && x &&
+        strncmp((const char *)x, prefix, sizeof(prefix) - 1) == 0) {
+        if (g->hits == 0) snprintf(g->sql, sizeof(g->sql), "%s", (const char *)x);
+        g->hits++;
+    }
+    return 0;
+}
+
+/* one real nodus_witness_v2_supply_check, its guard statement captured;
+ * returns the check's verdict, or -2 if the capture is not exactly one */
+static int capture_guard(nodus_witness_t *w, guard_trace_t *g) {
+    memset(g, 0, sizeof(*g));
+    if (sqlite3_trace_v2(w->db, SQLITE_TRACE_STMT, guard_trace_cb, g) != SQLITE_OK)
+        return -2;
+    int rc = nodus_witness_v2_supply_check(w);
+    sqlite3_trace_v2(w->db, 0, NULL, NULL);
+    return g->hits == 1 ? rc : -2;
+}
+
+/* a conserving (amount 0) row of `domain` with nullifier = 64 ASCII digits
+ * of `i` - a state no writer produces (outputs are >= 1); the guard's cost
+ * depends on the row count only */
+static int plant_rows(sqlite3 *db, int first, int last, int domain) {
+    char sql[900];
+    snprintf(sql, sizeof(sql),
+        "WITH RECURSIVE c(i) AS (SELECT %d UNION ALL SELECT i + 1 FROM c "
+        "WHERE i < %d) INSERT INTO utxo_set (nullifier, owner, amount, "
+        "token_id, tx_hash, output_index, block_height, created_at, "
+        "unlock_block, domain_id) SELECT CAST(printf('%%064d', i) AS BLOB), "
+        "'plant', 0, zeroblob(64), zeroblob(64), 0, 0, 0, 0, %d FROM c",
+        first, last, domain);
+    return run_sql(db, sql);
+}
+
+/* the verdict table, one value: baseline passes, one existing row gets
+ * `lit` as its domain_id (amount and token unchanged: the S20 totals do
+ * not move, the guard is the only term that can fail), the check must
+ * equal the full-scan oracle, the restore must pass again */
+static int verdict_case(nodus_witness_t *w, const char *lit,
+                        int expect_foreign) {
+    sqlite3 *db = w->db;
+    char sql[400];
+    static const char *const row =
+        "(SELECT nullifier FROM utxo_set ORDER BY nullifier LIMIT 1)";
+    CHECK(nodus_witness_v2_supply_check(w) == 0, "T-17a: baseline passes");
+    snprintf(sql, sizeof(sql), "UPDATE utxo_set SET domain_id = %s WHERE "
+             "nullifier = %s", lit, row);
+    CHECK(run_sql(db, sql) == 0, "T-17a: write the value");
+    sqlite3_int64 o = q1(db, ORACLE_SQL);
+    CHECK(o >= 0, "T-17a: the oracle runs");
+    CHECK((o > 0) == (expect_foreign != 0),
+          "T-17a: the value is foreign / converted as the table says");
+    int r = nodus_witness_v2_supply_check(w);
+    CHECK(o > 0 ? r == -1 : r == 0,
+          "T-17a: the check equals the full-scan oracle");
+    snprintf(sql, sizeof(sql), "UPDATE utxo_set SET domain_id = 1 WHERE "
+             "nullifier = %s", row);
+    CHECK(run_sql(db, sql) == 0, "T-17a: restore");
+    CHECK(q1(db, ORACLE_SQL) == 0 && nodus_witness_v2_supply_check(w) == 0,
+          "T-17a: after the restore the check passes again");
+    return 0;
+}
+
+static int verdict_table(nodus_witness_t *w) {
+    sqlite3 *db = w->db;
+    static const char *const foreign[] = {
+        "0", "2", "-1", "9223372036854775807", "-9223372036854775808",
+        "1.5", "0.9999999999999999", "1e300", "'abc'", "''", "X'01'"
+    };
+    static const char *const converts[] = { "'1'", "' 1'", "'1.0'", "1.0" };
+    CHECK(q1(db, "SELECT COUNT(*) FROM utxo_set") > 0,
+          "T-17a: the chain has a row to rewrite");
+    for (size_t i = 0; i < sizeof(foreign) / sizeof(foreign[0]); i++)
+        if (verdict_case(w, foreign[i], 1)) return 1;
+    for (size_t i = 0; i < sizeof(converts) / sizeof(converts[0]); i++)
+        if (verdict_case(w, converts[i], 0)) return 1;
+
+    /* conserving foreign rows (amount 0): inserted, deleted */
+    static const char *const ins =
+        "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
+        "tx_hash, output_index, block_height, created_at, unlock_block, "
+        "domain_id) VALUES (CAST(zeroblob(63)||x'%02x' AS BLOB), 'f', 0, "
+        "zeroblob(64), zeroblob(64), 0, 0, 0, 0, 2)";
+    char sql[400];
+    CHECK(nodus_witness_v2_supply_check(w) == 0, "T-17a: baseline");
+    snprintf(sql, sizeof(sql), ins, 0xF1);
+    CHECK(run_sql(db, sql) == 0, "T-17a: insert a foreign row");
+    CHECK(nodus_witness_v2_supply_check(w) == -1, "T-17a: one foreign row");
+    snprintf(sql, sizeof(sql), ins, 0xF2);
+    CHECK(run_sql(db, sql) == 0, "T-17a: insert a second foreign row");
+    CHECK(nodus_witness_v2_supply_check(w) == -1, "T-17a: two foreign rows");
+    CHECK(run_sql(db, "DELETE FROM utxo_set WHERE nullifier = "
+                      "CAST(zeroblob(63)||x'f1' AS BLOB)") == 0,
+          "T-17a: delete one");
+    CHECK(q1(db, ORACLE_SQL) == 1 && nodus_witness_v2_supply_check(w) == -1,
+          "T-17a: one foreign row is left");
+    CHECK(run_sql(db, "DELETE FROM utxo_set WHERE nullifier = "
+                      "CAST(zeroblob(63)||x'f2' AS BLOB)") == 0,
+          "T-17a: delete the other");
+    CHECK(q1(db, ORACLE_SQL) == 0 && nodus_witness_v2_supply_check(w) == 0,
+          "T-17a: no foreign row, the check passes");
+    return 0;
+}
+
+/* T-17a: with the index, then with the index dropped (a plain scan) */
+static int test_guard_verdicts(v2x_chain_t *c) {
+    sqlite3 *db = c->w->db;
+    CHECK(foreign_idx_exact(db), "T-17a: the index exists to start with");
+    fprintf(stderr, "T-17a: verdict table with idx_utxo_foreign\n");
+    if (verdict_table(c->w)) return 1;
+
+    CHECK(run_sql(db, "DROP INDEX idx_utxo_foreign") == 0,
+          "T-17a: drop the index");
+    char sql[256];
+    CHECK(foreign_idx_sql(db, sql, sizeof(sql)) == 0,
+          "T-17a: the index is gone (the second pass is a scan)");
+    fprintf(stderr, "T-17a: verdict table without idx_utxo_foreign\n");
+    if (verdict_table(c->w)) return 1;
+
+    CHECK(nodus_witness_db_s20_reseed(c->w) == 0 && foreign_idx_exact(db),
+          "T-17a: the re-seed makes the index again");
+    return 0;
+}
+
+/* T-17b: plan pin */
+static int test_guard_plan(v2x_chain_t *c) {
+    sqlite3 *db = c->w->db;
+    guard_trace_t g;
+    char plan[1024], with[6][1024], without[6][1024];
+    int nrows = -1;
+    static const char *const prod[6] = {
+        /* S1 rtn point read (nodus_witness_rt_native.c) */
+        "SELECT owner, amount, token_id, tx_hash, output_index, "
+        "block_height, unlock_block FROM utxo_set "
+        "WHERE nullifier = ?1 AND domain_id = ?2",
+        /* S2 rtn DELETE */
+        "DELETE FROM utxo_set WHERE nullifier = ?1 AND domain_id = ?2",
+        /* S3 utxo_by_owner_impl, no token */
+        "SELECT nullifier, owner, amount, token_id, tx_hash, output_index, "
+        "block_height, unlock_block FROM utxo_set WHERE owner = ? AND "
+        "domain_id = ? ORDER BY amount DESC, nullifier ASC LIMIT ?",
+        /* S4 utxo_by_owner_impl, with token */
+        "SELECT nullifier, owner, amount, token_id, tx_hash, output_index, "
+        "block_height, unlock_block FROM utxo_set WHERE owner = ? AND "
+        "domain_id = ? AND token_id = ? ORDER BY amount DESC, nullifier "
+        "ASC LIMIT ?",
+        /* S5 nodus_witness_utxo_balance_by_owner */
+        "SELECT token_id, amount, unlock_block FROM utxo_set "
+        "WHERE owner = ?1 AND domain_id = ?2 ORDER BY token_id, nullifier",
+        /* S6 msig_utxo_by_nuls */
+        "SELECT nullifier, owner, amount, token_id, tx_hash, output_index, "
+        "block_height, unlock_block FROM utxo_set "
+        "WHERE nullifier = ?1 AND owner = ?2 AND domain_id = ?3"
+    };
+
+    CHECK(plant_rows(db, 1, 1000, 1) == 0, "T-17b: plant 1000 rows");
+    CHECK(foreign_idx_exact(db), "T-17b: the index exists");
+
+    /* the real statement, from a real supply check */
+    CHECK(capture_guard(c->w, &g) == 0,
+          "T-17b: one real supply check ran exactly one guard statement");
+    CHECK(strcmp(g.sql, "SELECT COUNT(*) FROM utxo_set WHERE domain_id != 1")
+          == 0, "T-17b: the captured text is the CORE guard");
+    CHECK(plan_text(db, g.sql, plan, sizeof(plan), &nrows) == 0 && nrows == 1,
+          "T-17b: the guard plan has exactly one row");
+    CHECK(strcmp(plan, "SCAN utxo_set USING COVERING INDEX idx_utxo_foreign\n")
+          == 0, "T-17b: the guard is served by the partial index");
+
+    for (int i = 0; i < 6; i++)
+        CHECK(plan_text(db, prod[i], with[i], sizeof(with[i]), &nrows) == 0 &&
+              nrows >= 1 && strstr(with[i], "idx_utxo_foreign") == NULL,
+              "T-17b: no other statement uses the index");
+
+    CHECK(run_sql(db, "DROP INDEX idx_utxo_foreign") == 0,
+          "T-17b: drop the index");
+    CHECK(plan_text(db, g.sql, plan, sizeof(plan), &nrows) == 0 && nrows == 1 &&
+          strcmp(plan, "SCAN utxo_set\n") == 0,
+          "T-17b: without the index the guard is a scan of utxo_set");
+    for (int i = 0; i < 6; i++)
+        CHECK(plan_text(db, prod[i], without[i], sizeof(without[i]),
+                        &nrows) == 0 && strcmp(with[i], without[i]) == 0,
+              "T-17b: the plan of another statement is the same without "
+              "the index");
+    CHECK(nodus_witness_db_s20_reseed(c->w) == 0 && foreign_idx_exact(db),
+          "T-17b: the re-seed makes the index again");
+
+    CHECK(run_sql(db, "DELETE FROM utxo_set WHERE owner = 'plant'") == 0 &&
+          nodus_witness_v2_supply_check(c->w) == 0,
+          "T-17b: cleanup, the chain balances again");
+    return 0;
+}
+
+static int ops_cb(void *p) { (*(uint64_t *)p)++; return 0; }
+
+/* the progress handler counts EVERY VM instruction of one whole check */
+static int check_ops(nodus_witness_t *w, uint64_t *ops) {
+    *ops = 0;
+    sqlite3_progress_handler(w->db, 1, ops_cb, ops);
+    int rc = nodus_witness_v2_supply_check(w);
+    sqlite3_progress_handler(w->db, 0, NULL, NULL);
+    return rc;
+}
+
+/* T-17c: the guard does not grow with the row count */
+static int test_guard_growth(v2x_chain_t *c) {
+    sqlite3 *db = c->w->db;
+    guard_trace_t g;
+    uint64_t ops_small = 0, ops_big = 0;
+    CHECK(foreign_idx_exact(db), "T-17c: the index exists");
+    CHECK(capture_guard(c->w, &g) == 0, "T-17c: capture the real guard");
+
+    CHECK(plant_rows(db, 1, 100, 1) == 0, "T-17c: plant 100 rows");
+    sqlite3_int64 g_small = stmt_steps(db, g.sql);
+    sqlite3_int64 c_small = stmt_steps(db, ORACLE_SQL);
+    CHECK(check_ops(c->w, &ops_small) == 0 && ops_small > 0,
+          "T-17c: the whole check passes at 100 rows, counter wired");
+
+    CHECK(plant_rows(db, 101, 100000, 1) == 0, "T-17c: plant to 100 000");
+    CHECK(q1(db, "SELECT COUNT(*) FROM utxo_set WHERE owner = 'plant'") ==
+          100000, "T-17c: 100 000 planted rows");
+    sqlite3_int64 g_big = stmt_steps(db, g.sql);
+    sqlite3_int64 c_big = stmt_steps(db, ORACLE_SQL);
+    CHECK(check_ops(c->w, &ops_big) == 0 && ops_big > 0,
+          "T-17c: the whole check passes at 100 000 rows");
+
+    fprintf(stderr, "T-17c: guard VM steps 1e2: %lld, 1e5: %lld; "
+            "+domain_id control 1e2: %lld, 1e5: %lld; whole-check "
+            "instructions 1e2: %llu, 1e5: %llu\n",
+            (long long)g_small, (long long)g_big, (long long)c_small,
+            (long long)c_big, (unsigned long long)ops_small,
+            (unsigned long long)ops_big);
+    CHECK(g_small > 0 && g_big > 0, "T-17c: the guard steps are counted");
+    CHECK(g_small == g_big,
+          "T-17c: the guard takes equal VM steps at 100 and 100 000 rows");
+    CHECK(c_big >= g_big + 100000,
+          "T-17c control: the +domain_id form steps at least one per row "
+          "more");
+    const uint64_t d = ops_big > ops_small ? ops_big - ops_small
+                                           : ops_small - ops_big;
+    CHECK(d < (100000u - 100u) / 10u,
+          "T-17c: one whole supply check differs by less than a tenth of "
+          "one instruction per added row (the G-f rule)");
+
+    CHECK(run_sql(db, "DELETE FROM utxo_set WHERE owner = 'plant'") == 0 &&
+          nodus_witness_v2_supply_check(c->w) == 0,
+          "T-17c: cleanup, the chain balances again");
+    return 0;
+}
+
+/* a scratch database at S19 (the rung is not yet run), no genesis */
+typedef struct { nodus_witness_t *w; char dir[64]; } s19_scratch_t;
+
+static void s19_close(s19_scratch_t *s) {
+    if (!s->w) return;
+    if (s->w->db) sqlite3_close(s->w->db);
+    free(s->w);
+    s->w = NULL;
+    if (s->dir[0]) {
+        char cmd[128];
+        snprintf(cmd, sizeof(cmd), "rm -rf '%s'", s->dir);
+        if (system(cmd) != 0) { /* best effort */ }
+        s->dir[0] = 0;
+    }
+}
+
+static int s19_open(s19_scratch_t *s) {
+    uint8_t chain16[16];
+    memset(s, 0, sizeof(*s));
+    s->w = calloc(1, sizeof(*s->w));           /* multi-MB: heap */
+    if (!s->w) return -1;
+    snprintf(s->dir, sizeof(s->dir), "/tmp/v2x_s20idx_XXXXXX");
+    if (!mkdtemp(s->dir)) { s->dir[0] = 0; s19_close(s); return -1; }
+    snprintf(s->w->data_path, sizeof(s->w->data_path), "%s", s->dir);
+    memset(chain16, 0x23, sizeof(chain16));
+    if (nodus_witness_create_chain_db(s->w, chain16) != 0 ||
+        nodus_witness_db_migrate_v2s19(s->w) != 0) {
+        s19_close(s);
+        return -1;
+    }
+    return 0;
+}
+
+/* T-17d: the schema */
+static int test_guard_schema(v2x_chain_t *c) {
+    char sql[256];
+    uint32_t ver = 0;
+
+    /* the rung, on a scratch database at S19 */
+    {
+        s19_scratch_t s;
+        CHECK(s19_open(&s) == 0, "T-17d: scratch database at S19");
+        CHECK(foreign_idx_sql(s.w->db, sql, sizeof(sql)) == 0,
+              "T-17d: no index before the rung");
+        for (int stage = V2S20MIG_FAIL_AFTER_BEGIN;
+             stage <= V2S20MIG_FAIL_BEFORE_COMMIT; stage++) {
+            CHECK(nodus_witness_db_migrate_v2s20_ex(s.w,
+                      (nodus_v2s20_mig_fail_t)stage) == -1,
+                  "T-17d: the staged S20 failure fails");
+            CHECK(foreign_idx_sql(s.w->db, sql, sizeof(sql)) == 0,
+                  "T-17d: a failed S20 stage leaves no idx_utxo_foreign");
+            CHECK(nodus_witness_db_schema_version(s.w, &ver) == 0 &&
+                  ver == NODUS_V2_SCHEMA_VERSION_S19,
+                  "T-17d: a failed S20 stage keeps version 19");
+        }
+        CHECK(nodus_witness_db_migrate_v2s20(s.w) == 0,
+              "T-17d: the rung runs");
+        CHECK(foreign_idx_sql(s.w->db, sql, sizeof(sql)) == 1 &&
+              strcmp(sql, FOREIGN_IDX_SQL) == 0,
+              "T-17d: the rung created the index, stored text exact");
+        /* the at-open function re-creates a dropped index */
+        CHECK(run_sql(s.w->db, "DROP INDEX idx_utxo_foreign") == 0 &&
+              foreign_idx_sql(s.w->db, sql, sizeof(sql)) == 0,
+              "T-17d: dropped");
+        CHECK(nodus_witness_db_s20_reseed(s.w) == 0 &&
+              foreign_idx_exact(s.w->db),
+              "T-17d: the at-open function creates it again");
+        s19_close(&s);
+    }
+    /* the rung refuses a same-name index of another definition (the
+     * rung's own exact check; the at-open path does not, DF-11) */
+    {
+        s19_scratch_t s;
+        CHECK(s19_open(&s) == 0, "T-17d: second scratch database at S19");
+        CHECK(run_sql(s.w->db, "CREATE INDEX idx_utxo_foreign ON "
+                               "utxo_set(domain_id)") == 0,
+              "T-17d: a same-name index with another definition");
+        CHECK(nodus_witness_db_migrate_v2s20(s.w) == -1,
+              "T-17d: the rung refuses it");
+        CHECK(nodus_witness_db_schema_version(s.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S19,
+              "T-17d: the refused rung keeps version 19");
+        s19_close(&s);
+    }
+
+    /* the production open path, on the real derived chain */
+    CHECK(foreign_idx_exact(c->w->db), "T-17d: present on the chain");
+    CHECK(run_sql(c->w->db, "DROP INDEX idx_utxo_foreign") == 0 &&
+          foreign_idx_sql(c->w->db, sql, sizeof(sql)) == 0,
+          "T-17d: dropped on the chain (absent before the reopen)");
+    CHECK(reopen(c) == 0, "T-17d: reopen through the production open path");
+    CHECK(foreign_idx_exact(c->w->db),
+          "T-17d: the open path created the index again");
+
+    /* a same-name index of another definition opens (DF-11) and the guard
+     * stays exact with it */
+    CHECK(run_sql(c->w->db, "DROP INDEX idx_utxo_foreign; "
+                            "CREATE INDEX idx_utxo_foreign ON "
+                            "utxo_set(domain_id)") == 0,
+          "T-17d: replace it with a plain index");
+    CHECK(reopen(c) == 0, "T-17d: a same-name other index opens");
+    CHECK(foreign_idx_sql(c->w->db, sql, sizeof(sql)) == 1 &&
+          strcmp(sql, "CREATE INDEX idx_utxo_foreign ON utxo_set(domain_id)")
+          == 0, "T-17d: the open neither refused nor replaced it");
+    CHECK(nodus_witness_v2_supply_check(c->w) == 0 &&
+          run_sql(c->w->db, "UPDATE utxo_set SET domain_id = 2 WHERE "
+                  "nullifier = (SELECT nullifier FROM utxo_set ORDER BY "
+                  "nullifier LIMIT 1)") == 0 &&
+          nodus_witness_v2_supply_check(c->w) == -1,
+          "T-17d: with the other index the guard still catches a foreign row");
+    CHECK(run_sql(c->w->db, "UPDATE utxo_set SET domain_id = 1 WHERE "
+                  "domain_id = 2") == 0 &&
+          run_sql(c->w->db, "DROP INDEX idx_utxo_foreign") == 0,
+          "T-17d: undo");
+    CHECK(reopen(c) == 0 && foreign_idx_exact(c->w->db),
+          "T-17d: the exact index is back");
+    CHECK(nodus_witness_v2_supply_check(c->w) == 0,
+          "T-17d: the chain balances");
+    return 0;
+}
+
 int main(void) {
     v2x_chain_t c;
     if (v2x_chain_open(&c, "supplytot", 0x5B) != 0) {
@@ -461,6 +968,10 @@ int main(void) {
     if (!rc) rc = test_rollback(&c);
     if (!rc) rc = test_reseed(&c);
     if (!rc) rc = test_invariant(&c);
+    if (!rc) rc = test_guard_verdicts(&c);
+    if (!rc) rc = test_guard_plan(&c);
+    if (!rc) rc = test_guard_growth(&c);
+    if (!rc) rc = test_guard_schema(&c);
     v2x_chain_close(&c);
     if (rc) {
         fprintf(stderr, "test_supply_totals: FAILED\n");

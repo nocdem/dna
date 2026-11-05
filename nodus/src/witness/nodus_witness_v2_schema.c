@@ -2526,6 +2526,20 @@ static const char *V2_S20_BOND_TOTAL_DDL =
     "  total INTEGER NOT NULL"
     ") WITHOUT ROWID";
 
+/* HF-9 ownership guard (amendment 2026-11-05 A4.1; operator: "fihristekle."):
+ * the partial index that holds ONLY the utxo_set rows of another domain.
+ * nodus_rt_core_invariant counts `WHERE domain_id != 1` (the CORE runtime's
+ * id, formatted into the statement); SQLite serves a query term that is
+ * identical to an index's WHERE from that index, so the guard reads an
+ * empty B-tree instead of every coin. The index changes the plan, never
+ * the rows found. The literal 1 is DNA_DOMAIN_CORE. */
+_Static_assert(DNA_DOMAIN_CORE == 1u,
+               "idx_utxo_foreign names domain 1 literally; the guard's "
+               "statement formats DNA_DOMAIN_CORE and must match it");
+static const char *V2_S20_UTXO_FOREIGN_INDEX_DDL =
+    "CREATE INDEX IF NOT EXISTS idx_utxo_foreign "
+    "ON utxo_set(domain_id) WHERE domain_id != 1";
+
 /* The six supply triggers. A deleted or updated row leaves its token's
  * total with an UPDATE (the row exists: the insert created it); an insert
  * and the new side of an update UPSERT. An INSERT OR IGNORE that inserts
@@ -2863,6 +2877,18 @@ static int index_ddl_exact(nodus_witness_t *w, const char *name,
     return out;
 }
 
+/* 1 = idx_utxo_foreign is exactly this build's (the whole stored text,
+ * the WHERE predicate included - index_cols_exact cannot see a predicate),
+ * 0 = absent or another definition, -1 = fault. Run by the S20 rung only:
+ * at open the index is re-created IF NOT EXISTS and a differently defined
+ * one is NOT refused (amendment 2026-11-05 A4.1, DF-11: with any index the
+ * guard's count stays exact; only that node's speed differs). */
+static int s20_foreign_index_ok(nodus_witness_t *w) {
+    static const char *const stub = "CREATE TABLE utxo_set (domain_id)";
+    return index_ddl_exact(w, "idx_utxo_foreign", stub,
+                           V2_S20_UTXO_FOREIGN_INDEX_DDL);
+}
+
 /* 1 = the six §8.4 tables, their two indexes and the capacity-rebuilt
  * v2_storage_sets / v2_storage_reports are exactly this build's, 0 = drift,
  * -1 = fault. */
@@ -3176,6 +3202,8 @@ int nodus_witness_db_migrate_v2s20_ex(nodus_witness_t *w,
         if (exec_sql(w, V2_S20_BOND_TOTAL_DDL) != 0) break;
         if (exec_sql(w, V2_S20_SUPPLY_TRIGGERS_DDL) != 0) break;
         if (exec_sql(w, V2_S20_SUPPLY_RESEED_SQL) != 0) break;
+        /* HF-9 ownership guard: the partial index of foreign-domain rows */
+        if (exec_sql(w, V2_S20_UTXO_FOREIGN_INDEX_DDL) != 0) break;
         /* HF-9 WP2: the keyed-trie tables, the registry index, the 24
          * dirty-capture triggers and the capture row at 0 */
         if (s20_trie_create(w) != 0) break;
@@ -3188,9 +3216,10 @@ int nodus_witness_db_migrate_v2s20_ex(nodus_witness_t *w,
          * exact key columns and every trigger's stored SQL — a DDL that
          * silently did nothing, or a pre-existing object of another
          * shape, is not a migrated schema. */
-        if (s20_supply_shape_ok(w) != 1 || s20_trie_shape_ok(w) != 1 ||
-            s20_storage_shape_ok(w) != 1) {
-            QGP_LOG_ERROR(LOG_TAG, "%s", "S20 supply-totals / keyed-trie / "
+        if (s20_supply_shape_ok(w) != 1 || s20_foreign_index_ok(w) != 1 ||
+            s20_trie_shape_ok(w) != 1 || s20_storage_shape_ok(w) != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "S20 supply-totals / foreign-row "
+                          "index / keyed-trie / "
                           "storage-assignment schema shape drift — "
                           "refusing");
             break;
@@ -3237,6 +3266,11 @@ int nodus_witness_db_s20_reseed(nodus_witness_t *w) {
         if (exec_sql(w, V2_S20_BOND_TOTAL_DDL) != 0) break;
         if (exec_sql(w, V2_S20_SUPPLY_TRIGGERS_DDL) != 0) break;
         if (exec_sql(w, V2_S20_SUPPLY_RESEED_SQL) != 0) break;
+        /* the ownership-guard index: re-created when dropped, and the only
+         * path to it for a database that reached S20 without it (the rung
+         * returns at once at version 20). A same-name index of another
+         * definition is not refused (DF-11). */
+        if (exec_sql(w, V2_S20_UTXO_FOREIGN_INDEX_DDL) != 0) break;
         if (s20_supply_shape_ok(w) != 1) {
             QGP_LOG_ERROR(LOG_TAG, "%s", "S20 supply-totals schema shape "
                           "drift at open — refusing");
