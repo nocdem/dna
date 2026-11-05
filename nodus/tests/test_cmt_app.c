@@ -216,6 +216,7 @@
 #include "dnac/ledger_ids.h"
 #include "dnac/env_wire.h"
 #include "dnac/env_preflight.h"
+#include "dnac/valbind_wire.h"           /* HF-9 WP4: STORAGE_REGISTER consent */
 #include "dnac/vset_wire.h"
 #include "dnac/cmt_genesis.h"
 #include "dnac/cmt_state.h"
@@ -7573,6 +7574,8 @@ typedef struct {
     gfx_t          g;
     exec_t         x;
     cmt_block_id_t bid;
+    size_t         ntx;     /* transactions x.txs[0..ntx) of the NEXT block
+                             * made by hyb_pair_step (reset to 0 after) */
 } hyb_t;
 
 /* HF-9 WP4 (funding probe, step a): the coins a funded hybrid chain gets
@@ -7595,9 +7598,12 @@ static void hyb_coin_nul(int c, uint8_t out[64])
     qgp_sha3_512(pre, sizeof(pre), out);
 }
 
+/* BOND + FEE exactly, as test_storage_b2.c COINS: the SYSFUND leg consumes
+ * the whole coin - the bond is locked, the rest is the envelope fee */
 static uint64_t hyb_coin_amount(int c)
 {
-    return c == 0 ? 2u * HYB_COIN_BOND : HYB_COIN_BOND;
+    (void)c;
+    return HYB_COIN_BOND + (uint64_t)DNAC_MIN_FEE_RAW;
 }
 
 static int hyb_coin_owner_hex(int key, char hex[129])
@@ -7788,7 +7794,12 @@ static int hyb_pair_step(hyb_t *A, hyb_t *B, int64_t height, int a_stop)
     if (!save_scratch) return -2;
     if (height > 1 && exec_make_last_commit(x, height - 1, &A->bid) != 0)
         goto done;
-    if (exec_make_block(x, height, 0) != 0) goto done;
+    {
+        const size_t ntx = A->ntx;
+
+        A->ntx = 0;
+        if (exec_make_block(x, height, ntx) != 0) goto done;
+    }
     memset(&A->bid, 0, sizeof(A->bid));
     if (cmt_block_hash(x->blk, A->bid.hash) != CMT_OK) goto done;
     A->bid.hash_len = CMT_TMHASH_SIZE;
@@ -7870,21 +7881,44 @@ static int hyb_legs_ok(nodus_witness_t *w)
     return 0;
 }
 
-static int hyb_case(int64_t stop_h, const char *what)
+static int hyb_register_step(hyb_t *A, hyb_t *B, int64_t height, int key,
+                             uint8_t **env);
+
+/* `reg` != 0: the chain is FUNDED and node key 1 registers as a storage
+ * node in block 16 (generation 6) on both nodes before the stop, so the
+ * boundary of the stop block is a storage EVENT (an arrival against the
+ * empty basis; plan :455 "with and without a storage event"). */
+static int hyb_case(int64_t stop_h, const char *what, int reg)
 {
     hyb_t  *A = calloc(1, sizeof(*A)), *Bn = calloc(1, sizeof(*Bn));
     uint8_t d0a[64], d0b[64], d1a[64], d1b[64], d2a[64], d3a[64], d3b[64];
     uint8_t ra[64], rb[64];
+    uint8_t *renv = NULL;
     int     nb = -1, rc;
 
     CHECK(A && Bn, "alloc");
-    CHECK(hyb_open(A, 0) == 0, "S0 node A (stops) opens");
-    CHECK(hyb_open(Bn, 0) == 0, "S0 node B (never stops) opens");
+    CHECK(hyb_open(A, reg) == 0, "S0 node A (stops) opens");
+    CHECK(hyb_open(Bn, reg) == 0, "S0 node B (never stops) opens");
     /* every block is made ONCE (by A) and applied to both nodes: the same
      * bytes (signing is randomized, two builders would differ) */
-    CHECK(hyb_pair_to(A, Bn, 0, stop_h - 1) == 0,
-          "S0 both nodes reach the block before the stop, on the same "
-          "blocks");
+    if (reg) {
+        CHECK(stop_h > 17, "the stop lies after the registration block");
+        CHECK(hyb_pair_to(A, Bn, 0, 15) == 0,
+              "S0 both nodes reach generation 6 (block 15), same blocks");
+        CHECK(hyb_register_step(A, Bn, 16, 1, &renv) == CMT_OK,
+              "S0 the STORAGE_REGISTER block applies on both nodes");
+        CHECK(q1(A->g.w->db, "SELECT COUNT(*) FROM v2_storage_nodes WHERE "
+                             "status = 1") == 1 &&
+              q1(Bn->g.w->db, "SELECT COUNT(*) FROM v2_storage_nodes WHERE "
+                              "status = 1") == 1,
+              "S0 the registry row is ACTIVE on both nodes");
+        CHECK(hyb_pair_to(A, Bn, 16, stop_h - 1) == 0,
+              "S0 both nodes reach the block before the stop");
+    } else {
+        CHECK(hyb_pair_to(A, Bn, 0, stop_h - 1) == 0,
+              "S0 both nodes reach the block before the stop, on the same "
+              "blocks");
+    }
     CHECK(hyb_digest(A->g.w->db, d0a) == 0 &&
           hyb_digest(Bn->g.w->db, d0b) == 0 && memcmp(d0a, d0b, 64) == 0,
           "S0 the twins are byte-identical before the stop block");
@@ -7960,6 +7994,7 @@ static int hyb_case(int64_t stop_h, const char *what)
           nodus_witness_v2_committed_global_root(Bn->g.w, rb) == 0 &&
           memcmp(ra, rb, 64) == 0, "S5e and so is the committed global root");
     (void)what;
+    free(renv);
     hyb_close(Bn);
     hyb_close(A);
     free(Bn);
@@ -7969,20 +8004,180 @@ static int hyb_case(int64_t stop_h, const char *what)
 
 static int t_hyb_crash_edge(void)
 {
-    return hyb_case(13, "the edge block A-1");
+    return hyb_case(13, "the edge block A-1", 0);
 }
 
 static int t_hyb_crash_ordinary(void)
 {
-    return hyb_case(15, "an ordinary generation-6 block");
+    return hyb_case(15, "an ordinary generation-6 block", 0);
 }
 
 static int t_hyb_crash_boundary(void)
 {
     CHECK(DNAC_EPOCH_LENGTH > 16, "the boundary lies above the ladder");
     return hyb_case((int64_t)DNAC_EPOCH_LENGTH,
-                    "the first generation-6 boundary B1, no storage event");
+                    "the first generation-6 boundary B1, no storage event",
+                    0);
 }
+
+/* (iii) WITH a storage event: a registered node makes B1 an event */
+static int t_hyb_crash_boundary_event(void)
+{
+    CHECK(DNAC_EPOCH_LENGTH > 18, "the boundary lies above the registration");
+    return hyb_case((int64_t)DNAC_EPOCH_LENGTH,
+                    "B1 with a storage event (one registered node)", 1);
+}
+/* ── the STORAGE_REGISTER envelope (step b), ported from test_storage_b2.c
+ *    streg_call :1719-1745 and st_env :1747-1830: a 2-leg envelope, SYSTEM
+ *    STORAGE_REGISTER (owner_fp ‖ node_pk ‖ consent_sig ‖ expiry ‖ bond,
+ *    7299 B, the node is its own owner) + CORE SYSFUND over the coin (66
+ *    B: in_count 1 ‖ nullifier ‖ out_count 0), both legs signed by the
+ *    node's key (= the coin's owner). Built against the chain's CURRENT
+ *    SYSTEM / CORE manifests (generation 6 after the edge). ─────────────── */
+#define HYB_STREG_LEN  7299u
+#define HYB_AUTH_LEN   (1u + NODUS_RT_AUTH_SIGNER_LEN)
+
+static void hyb_put64(uint8_t *p, uint64_t v)
+{
+    for (int i = 7; i >= 0; i--) { p[i] = (uint8_t)v; v >>= 8; }
+}
+
+static uint32_t hyb_streg_call(nodus_witness_t *w, uint8_t *dst, int key,
+                               uint64_t height)
+{
+    static const uint8_t zero64[64] = { 0 };
+    uint8_t  msg[DNA_VALBIND_MSG_LEN], fp[64];
+    const uint64_t cexp = height + 10u;
+    size_t   sl = 0, off = 0;
+
+    if (qgp_sha3_512(g_ks[key].pk, QGP_DSA87_PUBLICKEYBYTES, fp) != 0 ||
+        dna_valbind_consent_msg(msg, w->v2_chain32,
+                                DNA_VALBIND_OP_STORAGE_REGISTER, zero64, fp,
+                                g_ks[key].pk, cexp) != 0)
+        return 0;
+    memcpy(dst, fp, 64);                                  off += 64;
+    memcpy(dst + off, g_ks[key].pk, QGP_DSA87_PUBLICKEYBYTES);
+    off += QGP_DSA87_PUBLICKEYBYTES;
+    if (dna_valbind_consent_sign(dst + off, &sl, msg, g_ks[key].sk) != 0 ||
+        sl != (size_t)DNA_VALBIND_SIG_LEN)
+        return 0;
+    off += DNA_VALBIND_SIG_LEN;
+    hyb_put64(dst + off, cexp);                           off += 8;
+    hyb_put64(dst + off, HYB_COIN_BOND);                  off += 8;
+    return off == HYB_STREG_LEN ? HYB_STREG_LEN : 0;
+}
+
+/* @return 0 and a heap envelope in *out (free()), or -1 */
+static int hyb_register_env(nodus_witness_t *w, uint64_t height, int key,
+                            uint8_t **out, size_t *out_len)
+{
+    static uint8_t call[HYB_STREG_LEN];
+    static uint8_t fund[66];
+    static uint8_t auth[2][HYB_AUTH_LEN];
+    dna_domain_manifest_t sys, core;
+    dna_env_leg_in_t      legs[2];
+    dna_env_in_t          in;
+    dna_env_leg_ctx_t     lctx[2];
+    uint8_t               nul[64];
+    size_t                len = 0, used = 0;
+    uint8_t              *bytes = NULL;
+    dna_env_preflight_t  *pf = NULL;
+    int                   ok = -1;
+
+    *out = NULL;
+    if (hyb_streg_call(w, call, key, height) != HYB_STREG_LEN) return -1;
+    if (nodus_witness_domreg_get(w, DNA_DOMAIN_SYSTEM, NULL, &sys, NULL) != 0 ||
+        nodus_witness_domreg_get(w, DNA_DOMAIN_CORE, NULL, &core, NULL) != 0)
+        return -1;
+    hyb_coin_nul(key, nul);
+    fund[0] = 1;
+    memcpy(fund + 1, nul, 64);
+    fund[65] = 0;
+    memset(legs, 0, sizeof(legs));
+    memset(auth, 0, sizeof(auth));
+    legs[0].hdr.domain_id = DNA_DOMAIN_SYSTEM;
+    legs[0].hdr.runtime_op = DNA_SYSRULE_STORAGE_REGISTER;
+    legs[0].hdr.ruleset_version = sys.ruleset_version;
+    legs[0].hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
+    legs[0].hdr.auth_kind = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+    legs[0].hdr.call_len = HYB_STREG_LEN;
+    legs[0].hdr.auth_len = HYB_AUTH_LEN;
+    legs[0].hdr.res_max_effects = 8;
+    legs[0].hdr.res_max_effect_bytes = 16384;
+    legs[0].call_data = call;
+    legs[0].auth_data = auth[0];
+    legs[1].hdr.domain_id = DNA_DOMAIN_CORE;
+    legs[1].hdr.runtime_op = DNA_CORERULE_SYSFUND;
+    legs[1].hdr.ruleset_version = core.ruleset_version;
+    legs[1].hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
+    legs[1].hdr.auth_kind = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+    legs[1].hdr.call_len = 66;
+    legs[1].hdr.auth_len = HYB_AUTH_LEN;
+    legs[1].hdr.res_max_effects = 40;
+    legs[1].hdr.res_max_effect_bytes = 16384;
+    legs[1].call_data = fund;
+    legs[1].auth_data = auth[1];
+    memset(&in, 0, sizeof(in));
+    in.fee_amount = (uint64_t)DNAC_MIN_FEE_RAW;
+    in.res_max_total_units = 400000;
+    in.leg_count = 2;
+    in.legs = legs;
+    memset(lctx, 0, sizeof(lctx));
+    lctx[0].domain_id = DNA_DOMAIN_SYSTEM;
+    lctx[0].ruleset_version = sys.ruleset_version;
+    memcpy(lctx[0].ruleset_hash, sys.ruleset_hash, 64);
+    lctx[1].domain_id = DNA_DOMAIN_CORE;
+    lctx[1].ruleset_version = core.ruleset_version;
+    memcpy(lctx[1].ruleset_hash, core.ruleset_hash, 64);
+
+    if (dna_env_encoded_size(legs, 2, &len) != 0) return -1;
+    bytes = malloc(len);
+    pf = calloc(1, sizeof(*pf));
+    do {
+        int bad = 0;
+
+        if (!bytes || !pf) break;
+        if (dna_env_encode(&in, bytes, len, &used) != 0 || used != len) break;
+        if (dna_env_preflight(bytes, len, w->v2_chain32, height, lctx, 2, pf)
+            != DNA_ENV_PF_OK)
+            break;
+        for (int L = 0; L < 2 && !bad; L++) {
+            size_t sl = 0;
+
+            auth[L][0] = 1;
+            memcpy(auth[L] + 1, g_ks[key].pk, QGP_DSA87_PUBLICKEYBYTES);
+            if (qgp_dsa87_sign(auth[L] + 1 + QGP_DSA87_PUBLICKEYBYTES, &sl,
+                               pf->auth_digest[L], 64, g_ks[key].sk) != 0)
+                bad = 1;
+        }
+        if (bad) break;
+        if (dna_env_encode(&in, bytes, len, &used) != 0 || used != len) break;
+        ok = 0;
+    } while (0);
+    free(pf);
+    if (ok != 0) { free(bytes); return -1; }
+    *out = bytes;
+    *out_len = len;
+    return 0;
+}
+
+/* Put one registration for node key `key` into the NEXT block of the pair
+ * at `height` and apply it (to B too when given). @return the apply rc
+ * (CMT_OK) or -1 on a build failure. The envelope buffer is leaked into
+ * `*env` for the caller to free after the step. */
+static int hyb_register_step(hyb_t *A, hyb_t *B, int64_t height, int key,
+                             uint8_t **env)
+{
+    size_t elen = 0;
+
+    if (hyb_register_env(A->g.w, (uint64_t)height, key, env, &elen) != 0)
+        return -1;
+    A->x.txs[0].data = *env;
+    A->x.txs[0].len  = elen;
+    A->ntx = 1;
+    return hyb_pair_step(A, B, height, 0);
+}
+
 /* HF-9 WP4 — the FUNDED hybrid probe (step a of the registry-writer
  * route: plan :445 T-5, :449 T-9, :455 T-15 (iii) with a storage event all
  * need coins on the generation-6 chain). Builds the hybrid with two coins
@@ -8052,6 +8247,104 @@ static int t_hybrid_funded_probe(void)
     free(H);
     return 0;
 }
+
+/* HF-9 WP4 — step (b): ONE signed STORAGE_REGISTER at generation 6 through
+ * the real blockexec on the funded hybrid, and T-5 (plan :445) for the
+ * registry writer rtn_sys_mutate -> v2_storage_nodes (leg 5).
+ * R1 blocks 1-15 apply (generation 6 from block 14); R2 the 2-leg envelope
+ * builds and preflights against the CURRENT SYSTEM / CORE manifests; R3
+ * block 16 carrying it applies; R4 the SYSFUND leg consumed the coin
+ * (nullifier gone) and moved the bond into the supply's bond bucket; R5 the
+ * registry row is ACTIVE, node_fp = SHA3-512(node_pk) of key 1, bond =
+ * the STORAGE_BOND, registered_height 16; R6 the running bond total
+ * (v2_bond_total) = the bond; R7 the supply invariant still holds; R8 leg 5
+ * (registry) moved and every leg root equals the incremental and the full
+ * rebuild after block 16 and after block 17. Flags: NODUS_EVM_ENABLED.
+ * Leaves one /tmp/test_cmt_app_hyb_XXXXXX (removed). Can falsely pass: one
+ * node, one registration; the exit / release path and the boundary are not
+ * driven here (the boundary: the T-15 event case). */
+static int t_hybrid_register_probe(void)
+{
+    hyb_t   *H = calloc(1, sizeof(*H));
+    uint8_t *env = NULL;
+    uint8_t  nul[64], fp[64];
+    uint8_t  l0[8][64], l1[8][64];
+    int      moved = 0;
+
+    CHECK(H != NULL, "alloc");
+    CHECK(hyb_open(H, 1) == 0, "R0 the funded hybrid derives");
+    CHECK(hyb_pair_to(H, NULL, 0, 15) == 0,
+          "R1 blocks 1-15 apply (generation 6 from block 14)");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, l0[leg - 1]) == 0,
+              "R1b leg roots read before the registration");
+    CHECK(hyb_register_env(H->g.w, 16, 1, &env, &(size_t){ 0 }) == 0 && env,
+          "R2 the STORAGE_REGISTER + SYSFUND envelope builds and "
+          "preflights");
+    free(env);
+    env = NULL;
+    CHECK(hyb_register_step(H, NULL, 16, 1, &env) == CMT_OK,
+          "R3 the block carrying the envelope applies through the real "
+          "blockexec");
+    hyb_coin_nul(1, nul);
+    {
+        sqlite3_stmt *st = NULL;
+        int gone = 0;
+
+        CHECK(sqlite3_prepare_v2(H->g.w->db, "SELECT COUNT(*) FROM utxo_set "
+              "WHERE nullifier = ?1", -1, &st, NULL) == SQLITE_OK, "prep");
+        sqlite3_bind_blob(st, 1, nul, 64, SQLITE_STATIC);
+        gone = sqlite3_step(st) == SQLITE_ROW &&
+               sqlite3_column_int(st, 0) == 0;
+        sqlite3_finalize(st);
+        CHECK(gone, "R4 the SYSFUND leg consumed the registrant's coin");
+    }
+    CHECK(qgp_sha3_512(g_ks[1].pk, QGP_DSA87_PUBLICKEYBYTES, fp) == 0, "fp");
+    {
+        sqlite3_stmt *st = NULL;
+        int ok = 0;
+
+        CHECK(sqlite3_prepare_v2(H->g.w->db, "SELECT bond, status, "
+              "registered_height, node_pk FROM v2_storage_nodes WHERE "
+              "node_fp = ?1", -1, &st, NULL) == SQLITE_OK, "prep");
+        sqlite3_bind_blob(st, 1, fp, 64, SQLITE_STATIC);
+        if (sqlite3_step(st) == SQLITE_ROW) {
+            ok = (uint64_t)sqlite3_column_int64(st, 0) == HYB_COIN_BOND &&
+                 sqlite3_column_int(st, 1) == 1 &&
+                 sqlite3_column_int64(st, 2) == 16 &&
+                 sqlite3_column_bytes(st, 3) == (int)QGP_DSA87_PUBLICKEYBYTES &&
+                 memcmp(sqlite3_column_blob(st, 3), g_ks[1].pk,
+                        QGP_DSA87_PUBLICKEYBYTES) == 0;
+        }
+        sqlite3_finalize(st);
+        CHECK(ok, "R5 the registry row is ACTIVE under SHA3-512(node_pk), "
+                  "bond = STORAGE_BOND, registered at 16");
+    }
+    CHECK(q1(H->g.w->db, "SELECT total FROM v2_bond_total WHERE id = 1") ==
+              (int64_t)HYB_COIN_BOND,
+          "R6 the running bond total is the bond");
+    CHECK(q1(H->g.w->db,
+             "SELECT genesis_supply - total_burned = current_supply FROM "
+             "supply_tracking WHERE id = 1") >= 0,
+          "R7a the supply row is readable");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, l1[leg - 1]) == 0,
+              "R8a leg roots read after the registration");
+    for (int i = 0; i < 8; i++)
+        if (memcmp(l0[i], l1[i], 64) != 0) moved |= 1 << i;
+    CHECK((moved & 0x10) != 0,
+          "R8b leg 5 (registry) moved with the registration");
+    CHECK(hyb_legs_ok(H->g.w) == 0,
+          "R8c every leg root equals the incremental and the full rebuild "
+          "after block 16");
+    CHECK(hyb_pair_to(H, NULL, 16, 17) == 0, "R8d block 17 applies");
+    CHECK(hyb_legs_ok(H->g.w) == 0,
+          "R8e and after block 17");
+    free(env);
+    hyb_close(H);
+    free(H);
+    return 0;
+}
 #endif /* NODUS_EVM_ENABLED */
 
 int main(void)
@@ -8063,6 +8356,8 @@ int main(void)
         { "hybrid_gen6_probe",          t_hybrid_probe },
 #ifdef NODUS_EVM_ENABLED
         { "hybrid_funded_probe",        t_hybrid_funded_probe },
+        { "hybrid_register_probe",      t_hybrid_register_probe },
+        { "hyb_crash_boundary_event",   t_hyb_crash_boundary_event },
         { "hyb_crash_edge",             t_hyb_crash_edge },
         { "hyb_crash_ordinary_gen6",    t_hyb_crash_ordinary },
         { "hyb_crash_boundary_b1",      t_hyb_crash_boundary },
