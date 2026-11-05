@@ -211,9 +211,12 @@
 #      storage.c:1359-1397: seats counted by power, the owner-or-key
 #      exclusion, 2·I ≤ P_total → NO_EVIDENCE, 3·Y > 2·I → OK). The seat-count
 #      bound is used ONLY after its prerequisites are READ from the chain at
-#      every epoch read (round-4 row 2, check_verdict_prereqs): all N
-#      validators hold the same total stake and nothing is delegated (equal
-#      seat power), no seat's owner is a storage member's owner (payee_fp);
+#      every epoch read (round-4 row 2, round 5, check_verdict_prereqs): the
+#      epoch's snapshot(H) (validator_set_snapshots.snapshot_blob, the source
+#      the settlement reads) holds N entries whose total_stake values are all
+#      equal and identical on every live node (equal seat power; the
+#      generation-4 edge's self-delegations exist and are part of total_stake),
+#      no seat's owner is a storage member's owner (payee_fp);
 #      the member's own seat never sets its own bit (reporter.c:468 "F2: never
 #      itself" — a source fact, the bitmap seat is not mapped to a node). Then
 #      I is N or N − 1 and OK is certain when 2·(N−1) > P_total and 3·Y > 2·N,
@@ -458,9 +461,10 @@
 #     asserts that exactly one changed. Only the join of node 1 (setup) is
 #     not deterministic and no case is claimed for it.
 #   - The verdict / payment assertions rest on the prerequisites READ at every
-#     epoch read (equal stake, no delegation, no owner overlap — item 8; the
-#     equal POWER follows from equal stake through the snapshot's symmetric
-#     cap, which is not recomputed) and on pool 1 and the owners' accrual
+#     epoch read (equal total_stake of the N entries of snapshot(H), no owner
+#     overlap — item 8; the generation-4 self-delegations exist and are part of
+#     total_stake; the equal POWER follows from equal total_stake through
+#     power_cap.c:87 (min(p, one cap)), which is not recomputed) and on pool 1 and the owners' accrual
 #     changing only at boundaries (the read between boundaries is the
 #     settlement's start value); a payday boundary is skipped, said so.
 #   - The E-s1 union counts (epochs H2−E and H2) and held_union / n_new AT B1
@@ -1377,28 +1381,74 @@ boundary_cell() {          # LABEL BOUNDARY R
 # 2·I <= P_total -> NO_EVIDENCE, else 3·Y > 2·I -> OK, else NOT_OK. In this scenario every seat's
 # owner is the validators' owner (asserted after generation 4) and no storage member is owned by it,
 # so only the key clause can exclude a seat, and only the member's OWN seat (if it is a node); all
-# seats have equal power after the generation-4 edge (every validator holds the same bond and
-# self-delegation, nothing here delegates — an ASSUMPTION stated, as in test_storage_archive.sh) so
+# seats have equal power (READ from snapshot(H), below — not assumed) so
 # power = seat count and P_total = $N. Then I is N or N-1 (N = reports), and
 #   OK is certain when 2·(N-1) > $N  and  3·Y > 2·N;   NOT_OK is certain when 2·(N-1) > $N and Y = 0.
 # Any other combination is "undetermined" and FAILs the scenario (it never guesses a verdict).
 # The seat-count bound below is the source verdict ONLY under these prerequisites, read from the chain (round-4
-# row 2) — not assumed: (1) every validator holds the same total stake and nothing is delegated, so every seat
-# has the same power (the snapshot's power is total_stake / DECIMAL_UNIT, capped symmetrically); (2) no seat's
-# owner is a storage member's owner (the seats' owner is the validators' owner, asserted after generation 4;
-# the members' payee_fp is read here), so the owner clause excludes no seat; (3) the member's own seat never
-# sets its own bit (nodus_witness_storage_reporter.c:468 "F2: never itself" — NOPROBE; a source fact, the seat
-# of a bitmap is not mapped to a node here). The key clause excludes exactly the member's own seat.
-check_verdict_prereqs() {
-    local r
+# row 2, corrected in round 5) — not assumed:
+#  (1) EQUAL SEAT POWER, read from what the source reads: snapshot(H) = validator_set_snapshots.snapshot_blob of
+#      epoch_start H (nodus_witness_v2_epoch_authority_for_epoch, nodus_witness_v2_epoch.c:2421-2465, "the ONLY
+#      source … nothing in this function reads the `validators` table"), whose entries nodus_witness_vset_powers
+#      turns into power (nodus_witness_vset.c:952-1011; used by nodus_witness_v2_storage.c:1519-1551). The count
+#      must be N and every entry's total_stake equal and non-zero, identical on every live node. Equal total_stake
+#      gives equal power in both rulesets: ruleset 1 = total_stake / DNAC_DECIMAL_UNIT per entry; ruleset 2 =
+#      dna_power_cap_counted over those whole-coin powers, whose output is min(p_i, cap) with ONE cap for all
+#      entries (shared/dnac/power_cap.c:87; power_cap.h "equal p always yield equal counted"). The
+#      generation-4 edge's self-delegations (nodus_witness_v2_migrate.c:681-708) are in the `delegations`
+#      table and in total_stake; they are NOT assumed absent, and the `validators` table and the `delegations`
+#      count are not read for this.
+#      Layout (shared/dnac/vset_wire.h:31-39, :78-84, :141-143): header 78 bytes = epoch u64 + active_count u16 +
+#      selection_ruleset u32 BE + 64 seed; ruleset 1 entry 2642 bytes with total_stake at entry offset 32 + 2592 =
+#      2624; ruleset 2 entry 2770 bytes with total_stake at 32 + 64 + 64 + 2592 = 2752 (u64 BE).
+#  (2) no seat's owner differs from the validators' owner, and no storage member is owned by it (the members'
+#      payee_fp is read here), so the owner clause excludes no seat;
+#  (3) the member's own seat never sets its own bit (nodus_witness_storage_reporter.c:468 "F2: never itself" —
+#      NOPROBE; a source fact, the seat of a bitmap is not mapped to a node here). The key clause excludes
+#      exactly the member's own seat.
+VSET_HDR=78                # shared/dnac/vset_wire.h:141 DNA_VSET_HDR_LEN
+# snap_totals NODE H -> "active_count|ruleset|total_stake,total_stake,…" of snapshot(H), decoded from the blob
+snap_totals() {
+    local db meta n rs ent tot totals
+    db=$(db_of "$1")
+    meta=$(sqlite3 -separator '|' -cmd '.timeout 5000' "$db" \
+        "SELECT active_count, hex(substr(snapshot_blob, 11, 4)) FROM validator_set_snapshots WHERE epoch_start = $2;") \
+        || die "snapshot($2) on node$1 could not be read"
+    [ -n "$meta" ] || die "snapshot($2) is absent on node$1 — the settlement reads it (nodus_witness_v2_storage.c:1519)"
+    n="${meta%%|*}"; rs=$(( 16#${meta#*|} ))
+    case "$rs" in
+        1) ent=2642; tot=2624 ;;     # vset_wire.h:142 DNA_VSET_ENTRY_LEN; 32 + 2592
+        2) ent=2770; tot=2752 ;;     # vset_wire.h:143 DNA_VSET_ENTRY_LEN_V2; 32 + 64 + 64 + 2592
+        *) die "snapshot($2) on node$1 carries selection_ruleset $rs — no layout is known for it" ;;
+    esac
+    totals=$(sqlite3 -cmd '.timeout 5000' "$db" \
+        "WITH RECURSIVE i(k) AS (SELECT 0 UNION ALL SELECT k + 1 FROM i WHERE k + 1 < $n)
+         SELECT hex(substr(snapshot_blob, $(( VSET_HDR + tot + 1 )) + k * $ent, 8))
+           FROM validator_set_snapshots, i WHERE epoch_start = $2 ORDER BY k;") \
+        || die "snapshot($2)'s entries on node$1 could not be read"
+    echo "$n|$rs|$(printf '%s' "$totals" | tr '\n' ',')"
+}
+check_verdict_prereqs() {  # H — the epoch whose snapshot(H) the settlement of H reads
+    local h="$1" r n first="" first_n="" s cnt rs tots t t0 first_tot
+    for n in "${ALIVE[@]}"; do
+        s=$(snap_totals "$n" "$h")
+        if [ -z "$first" ]; then first="$s"; first_n="$n"
+        elif [ "$s" != "$first" ]; then die "snapshot($h) differs between node$first_n ($first) and node$n ($s)"; fi
+    done
+    cnt="${first%%|*}"; rs="${first#*|}"; rs="${rs%%|*}"; tots="${first##*|}"
+    [ "$cnt" = "$N" ] || die "snapshot($h) holds $cnt seat(s), expected $N"
+    first_tot=""
+    for t in ${tots//,/ }; do
+        [[ "$t" =~ ^[0-9A-F]{16}$ ]] && [ "$t" != 0000000000000000 ] || die "snapshot($h): an entry's total_stake is '$t' (zero or unreadable)"
+        if [ -z "$first_tot" ]; then first_tot="$t"
+        elif [ "$t" != "$first_tot" ]; then die "snapshot($h) (ruleset $rs): seat powers are NOT equal (total_stake values $tots) — the seat-count bound is not the source verdict here"; fi
+    done
     r=$(sqlite3 -separator '|' -cmd '.timeout 5000' "$(db_of 1)" \
-        "SELECT (SELECT COUNT(*) FROM validators v JOIN v2_validator_roles r ON v.pubkey_hash = r.validator_id),
-                (SELECT COUNT(DISTINCT v.self_stake + v.total_delegated) FROM validators v JOIN v2_validator_roles r ON v.pubkey_hash = r.validator_id),
-                (SELECT COUNT(*) FROM delegations),
+        "SELECT (SELECT COUNT(*) FROM v2_validator_roles),
                 (SELECT COUNT(*) FROM v2_validator_roles WHERE lower(hex(owner_fp)) <> '$OWNER'),
                 (SELECT COUNT(*) FROM v2_storage_nodes WHERE lower(hex(payee_fp)) = '$OWNER');" 2>&1) \
         || die "the verdict prerequisites could not be read: $r"
-    [ "$r" = "$N|1|0|0|0" ] || die "the verdict prerequisites do not hold (validators|distinct total stake|delegations|seats not owned by the validators' owner|members owned by it = '$r', expected '$N|1|0|0|0'): the seat-count bound is not the source verdict here"
+    [ "$r" = "$N|0|0" ] || die "the verdict prerequisites do not hold (validator roles|seats not owned by the validators' owner|members owned by it = '$r', expected '$N|0|0'): the seat-count bound is not the source verdict here"
 }
 declare -A RB_Y RB_GRACE RB_HU
 RB_N=0; RB_MEMBERS=""; EP_H=0
@@ -1409,7 +1459,7 @@ epoch_reads() {            # H
     local h="$1" n out ref="" have_ref=0 body t idx i fp g hu seat hex byte
     local -a MEM=()
     wait_all $(( h + E + E / 2 ))
-    check_verdict_prereqs
+    check_verdict_prereqs "$h"
     for n in "${ALIVE[@]}"; do
         if ! out=$(sqlite3 -cmd '.timeout 5000' "$(db_of "$n")" \
             "BEGIN; SELECT 'tip|' || COALESCE(MAX(global_height), -1) FROM v2_blocks;
