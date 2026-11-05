@@ -229,6 +229,10 @@
 
 #include "dnac/manifest_wire.h"          /* dna_claim_t, the dist helpers */
 
+#ifdef NODUS_EVM_ENABLED
+#include "witness/nodus_witness_v2_trie.h"      /* HF-9 T-15: leg roots   */
+#include "witness/nodus_witness_cmt_node.h"     /* the Handshaker         */
+#endif
 #include "../tests/v2_genesis_fixture.h"
 #include "../tests/v2_exec_fixture.h"    /* the SCRIPTED runtime table:
                                           * envelopes with a free
@@ -7514,6 +7518,360 @@ static int t_hybrid_probe(void)
     return 0;
 }
 
+/* ══ HF-9 WP4 — T-15: recovery after commit, before the consensus-state
+ *    save, on the HYBRID generation-6 chain (plan :455) ══════════════════
+ *
+ * Proves, for a stop at (i) the edge block A-1 = 13, (ii) an ordinary
+ * generation-6 block (15) and (iii) the first generation-6 boundary B1 (the
+ * block DNAC_EPOCH_LENGTH; no storage member exists on this chain, so the
+ * boundary has NO storage event - the "with an event" variant needs a
+ * registered node and is not built here, T-5 registry writer):
+ *   S1  nodus_cmt_blockexec_t.test_fail_after_commit stops
+ *       nodus_cmt_host_apply_verified_block with CMT_FAULT AFTER the ledger
+ *       COMMIT and BEFORE store.Save(state) (nodus_witness_cmt_host.c:1764)
+ *       - the false-pass guard: the stop is at the intended height (the
+ *       ledger tip = the stop height), the COMMIT ran (autocommit on), the
+ *       saved State still names height-1 and the block store holds it;
+ *   S2  the stopped node's ledger digest equals a twin node that applied
+ *       the same block without stopping (the block IS committed);
+ *   S3  the handshake (replay.go:437-453) replays ONE block; the ledger
+ *       digest is unchanged by it (not applied twice) - the digest covers
+ *       v2_trie_roots, v2_trie_nodes, the six section-8.4 tables, the
+ *       supply totals, v2_blocks and the domain heads;
+ *   S4  the State caught up; every leg root (v2_trie_roots) equals the
+ *       incremental AND the full rebuild of the rows;
+ *   S5  the NEXT block applies on both nodes and their ledger digests and
+ *       committed roots are equal (the replayed node = a node that never
+ *       stopped).
+ * Block counts: 13, 15 and DNAC_EPOCH_LENGTH (720 at production, 15 at the
+ * short-epoch build) real signed blocks per node, two nodes per case; the
+ * run time is main's to measure. Flags: NODUS_EVM_ENABLED only (the tries).
+ * Leaves: two /tmp/test_cmt_app_hyb_XXXXXX directories per case (removed).
+ * Can falsely pass: the digest hashes the listed tables, not the whole
+ * database; the committee tiebreak seed, mempool and consensus tables are
+ * not compared. The block-store save precedes the apply here (consensus
+ * order), unlike vu_host_drive_to which saves after.
+ */
+#ifdef NODUS_EVM_ENABLED
+typedef struct {
+    gfx_t          g;
+    exec_t         x;
+    cmt_block_id_t bid;
+} hyb_t;
+
+static int hyb_open(hyb_t *h)
+{
+    v2x_cfgbox_t hb;
+    uint8_t      file16[16];
+
+    memset(h, 0, sizeof(*h));
+    memset(&hb, 0, sizeof(hb));
+    snprintf(h->g.dir, sizeof(h->g.dir), "/tmp/test_cmt_app_hyb_XXXXXX");
+    CHECK(mkdtemp(h->g.dir) != NULL, "hyb: a temp directory");
+    g_v2x_cfg_hook = hyb_cfg_hook;
+    CHECK(v2x_cfg_make(&hb, 0) == 0, "hyb: the config builds");
+    h->g.box.cfg    = hb.cfg;
+    h->g.box.allocs = hb.allocs;
+    h->g.w   = calloc(1, sizeof(*h->g.w));
+    h->g.srv = calloc(1, sizeof(*h->g.srv));
+    CHECK(h->g.w && h->g.srv, "hyb: heap");
+    snprintf(h->g.w->data_path, sizeof(h->g.w->data_path), "%s", h->g.dir);
+    memset(file16, 0x5A, sizeof(file16));
+    CHECK(v2x_seed_prepare(h->g.w, file16, 0) == 0, "hyb: seed_prepare");
+    CHECK(hyb_cc_row(h->g.w, DNAC_CFG_HF2_ACTIVE, DNAC_CFG_HF2_ACTIVE_ON, 1,
+                     11) == 0 &&
+          hyb_cc_row(h->g.w, DNAC_CFG_RULESET_GEN2,
+                     (uint64_t)DNAC_CFG_RULESET_GEN2_D2, 3, 12) == 0 &&
+          hyb_cc_row(h->g.w, DNAC_CFG_EVM_ACTIVE,
+                     (uint64_t)DNAC_CFG_EVM_ACTIVE_D, 5, 14) == 0 &&
+          hyb_cc_row(h->g.w, DNAC_CFG_RULESET_GEN_ROLES,
+                     (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D, 8, 13) == 0 &&
+          hyb_cc_row(h->g.w, DNAC_CFG_RULESET_GEN_ROOTS,
+                     (uint64_t)DNAC_CFG_RULESET_GEN_ROOTS_D, 11, 15) == 0 &&
+          hyb_cc_row(h->g.w, DNAC_CFG_RULESET_GEN_TRIE,
+                     (uint64_t)DNAC_CFG_RULESET_GEN_TRIE_D, 14, 16) == 0,
+          "hyb: the ladder rows before the genesis");
+    CHECK(v2x_seed_genesis(h->g.w, file16, 0, NULL, 0, h->g.chain32) == 0,
+          "hyb: the seeded genesis");
+    g_v2x_cfg_hook = NULL;
+    h->g.w->cached_committee_epoch_start = UINT64_MAX;
+    h->g.w->v2_ingress_armed = true;
+    memcpy(h->g.w->v2_chain32, h->g.chain32, 32);
+    memcpy(h->g.srv->identity.pk.bytes, g_ks[0].pk, NODUS_PK_BYTES);
+    memcpy(h->g.srv->identity.sk.bytes, g_ks[0].sk, QGP_DSA87_SECRETKEYBYTES);
+    memcpy(h->g.srv->identity.node_id.bytes, g_ks[0].voter, 32);
+    nodus_server_witness_host(h->g.srv, &h->g.host);
+    h->g.w->host = &h->g.host;
+    memcpy(h->g.w->my_id, g_ks[0].voter, 32);
+    CHECK(exec_init(&h->x, &h->g) == 0, "hyb: exec_init");
+    return 0;
+}
+
+static void hyb_close(hyb_t *h)
+{
+    exec_free(&h->x);
+    gfx_close(&h->g);
+}
+
+/* digest of the tables the replay must leave byte-identical */
+static int hyb_digest(sqlite3 *db, uint8_t out[64])
+{
+    static const char *const tabs[] = {
+        "v2_trie_roots", "v2_trie_nodes", "v2_storage_assign",
+        "v2_storage_assign_basis", "v2_storage_assign_state",
+        "v2_storage_held", "v2_storage_member_epoch",
+        "v2_storage_xfer_diff", "v2_supply_totals", "v2_bond_total",
+        "v2_blocks", "v2_domain_heads"
+    };
+    size_t   cap = 1u << 16, n = 0;
+    uint8_t *buf = malloc(cap);
+    int      bad = buf == NULL;
+
+    for (size_t t = 0; t < sizeof(tabs) / sizeof(tabs[0]) && !bad; t++) {
+        sqlite3_stmt *st = NULL;
+        char          sql[400];
+        int           cols, rc;
+
+        snprintf(sql, sizeof(sql), "SELECT * FROM %s LIMIT 0", tabs[t]);
+        if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
+            continue;              /* the table is absent (xfer_diff after B1) */
+        }
+        cols = sqlite3_column_count(st);
+        sqlite3_finalize(st);
+        {
+            size_t off = (size_t)snprintf(sql, sizeof(sql),
+                                          "SELECT * FROM %s ORDER BY ",
+                                          tabs[t]);
+            for (int c = 1; c <= cols && off < sizeof(sql) - 8; c++) {
+                off += (size_t)snprintf(sql + off, sizeof(sql) - off,
+                                        c > 1 ? ",%d" : "%d", c);
+            }
+        }
+        if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
+            bad = 1;
+            break;
+        }
+        if (n + strlen(tabs[t]) + 2 > cap) { cap *= 2; buf = realloc(buf, cap); }
+        memcpy(buf + n, tabs[t], strlen(tabs[t]) + 1);
+        n += strlen(tabs[t]) + 1;
+        while (!bad && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+            for (int c = 0; c < cols && !bad; c++) {
+                int ty = sqlite3_column_type(st, c);
+                int len = ty == SQLITE_NULL ? 0 : sqlite3_column_bytes(st, c);
+                const void *p = ty == SQLITE_BLOB ? sqlite3_column_blob(st, c)
+                    : ty == SQLITE_NULL ? NULL
+                    : (const void *)sqlite3_column_text(st, c);
+                while (n + 5 + (size_t)len > cap) {
+                    cap *= 2;
+                    buf = realloc(buf, cap);
+                    if (!buf) { bad = 1; break; }
+                }
+                if (bad) break;
+                buf[n++] = (uint8_t)ty;
+                for (int i = 0; i < 4; i++) buf[n++] = (uint8_t)(len >> (8 * i));
+                if (p && len > 0) { memcpy(buf + n, p, (size_t)len); n += (size_t)len; }
+            }
+            if (!bad) buf[n++] = 0xFF;
+        }
+        sqlite3_finalize(st);
+    }
+    if (bad) { free(buf); return -1; }
+    {
+        int r = qgp_sha3_512(buf, n, out) == 0 ? 0 : -1;
+        free(buf);
+        return r;
+    }
+}
+
+/* one block at `height` the CONSENSUS way: last commit, block, BlockID with
+ * its part set, SAVE to the block store, then APPLY. @return the apply's rc
+ * (CMT_OK / CMT_FAULT), or -2 on a setup failure */
+static int hyb_step_save_first(hyb_t *h, int64_t height)
+{
+    exec_t        *x = &h->x;
+    const size_t   save_cap = 1u << 20;
+    uint8_t       *save_scratch = malloc(save_cap);
+    cmt_part_set_t ps;
+    cmt_commit_t   seen;
+    int            rc = -2;
+
+    if (!save_scratch) return -2;
+    if (height > 1 && exec_make_last_commit(x, height - 1, &h->bid) != 0)
+        goto done;
+    if (exec_make_block(x, height, 0) != 0) goto done;
+    memset(&h->bid, 0, sizeof(h->bid));
+    if (cmt_block_hash(x->blk, h->bid.hash) != CMT_OK) goto done;
+    h->bid.hash_len = CMT_TMHASH_SIZE;
+    if (cmt_block_make_part_set(x->blk, CMT_BLOCK_PART_SIZE_BYTES,
+                                x->part_scratch, x->part_scratch_cap,
+                                x->parts, x->parts_cap, &ps) != CMT_OK ||
+        cmt_part_set_header(&ps, &h->bid.part_set_header) != CMT_OK ||
+        !block_id_is_complete(&h->bid))
+        goto done;
+    memset(&seen, 0, sizeof(seen));
+    seen.height   = height;
+    seen.round    = 0;
+    seen.block_id = h->bid;
+    if (nodus_cmt_bs_save_block(x->store, x->blk, &ps, &seen, save_scratch,
+                                save_cap) != CMT_OK)
+        goto done;
+    rc = nodus_cmt_host_apply_verified_block(x->be, &h->bid, x->blk, x->state);
+done:
+    free(save_scratch);
+    return rc;
+}
+
+static int hyb_handshake(hyb_t *h, int *nblocks)
+{
+    nodus_cmt_handshaker_t *hs = calloc(1, sizeof(*hs));
+    nodus_cmt_host_limits_t lim;
+    int                     rc;
+
+    if (!hs) return CMT_FAULT;
+    memset(&lim, 0, sizeof(lim));
+    lim.max_txs      = TEST_APP_TXS_CAP;
+    lim.tx_arena_cap = 2u * 1024u * 1024u;
+    lim.max_evidence = 4;
+    rc = nodus_cmt_handshaker_init(hs, h->x.store, h->x.state, &h->x.doc,
+                                   h->g.w, t_now, NULL, t_mono, NULL, &lim);
+    if (rc == CMT_OK) {
+        rc = nodus_cmt_handshaker_handshake(hs, &h->x.app_if);
+        if (nblocks) *nblocks = hs->nblocks;
+    }
+    nodus_cmt_handshaker_release(hs);
+    free(hs);
+    return rc;
+}
+
+/* every leg root: stored == incremental == full rebuild of the rows */
+static int hyb_legs_ok(nodus_witness_t *w)
+{
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++) {
+        uint8_t inc[64], full[64], stored[64];
+
+        if (nodus_witness_v2_trie_build_leg(w, leg, inc, full) != 0 ||
+            nodus_witness_v2_trie_leg_root(w, leg, stored) != 0 ||
+            memcmp(inc, full, 64) != 0 || memcmp(inc, stored, 64) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+static int hyb_case(int64_t stop_h, const char *what)
+{
+    hyb_t  *A = calloc(1, sizeof(*A)), *Bn = calloc(1, sizeof(*Bn));
+    uint8_t d0a[64], d0b[64], d1a[64], d1b[64], d2a[64], d3a[64], d3b[64];
+    uint8_t ra[64], rb[64];
+    int     nb = -1, rc;
+
+    CHECK(A && Bn, "alloc");
+    CHECK(hyb_open(A) == 0, "S0 node A (stops) opens");
+    CHECK(hyb_open(Bn) == 0, "S0 node B (never stops) opens");
+    CHECK(vu_host_drive_to(&A->x, &A->bid, 0, stop_h - 1) == 0,
+          "S0 node A reaches the block before the stop");
+    CHECK(vu_host_drive_to(&Bn->x, &Bn->bid, 0, stop_h - 1) == 0,
+          "S0 node B reaches the block before the stop");
+    CHECK(hyb_digest(A->g.w->db, d0a) == 0 &&
+          hyb_digest(Bn->g.w->db, d0b) == 0 && memcmp(d0a, d0b, 64) == 0,
+          "S0 the twins are byte-identical before the stop block");
+
+    /* S1 — the stop */
+    A->x.be->test_fail_after_commit = true;
+    rc = hyb_step_save_first(A, stop_h);
+    A->x.be->test_fail_after_commit = false;
+    CHECK(rc == CMT_FAULT,
+          "S1a the apply stops with CMT_FAULT in the post-commit window");
+    CHECK(sqlite3_get_autocommit(A->g.w->db) != 0,
+          "S1b the COMMIT had run");
+    CHECK(q1(A->g.w->db, "SELECT MAX(global_height) FROM v2_blocks") ==
+              stop_h,
+          "S1c the ledger tip is the intended stop height");
+    CHECK(nodus_cmt_bs_height(A->x.store) == stop_h,
+          "S1d the block store holds the stopped block");
+    {
+        cmt_state_storage_t *stor = calloc(1, sizeof(*stor));
+        cmt_state_t         *st = calloc(1, sizeof(*st));
+
+        CHECK(stor && st && cmt_state_init(st, stor) == CMT_OK &&
+              nodus_cmt_ss_load(A->x.store, st) == CMT_OK,
+              "S1e the saved State loads");
+        CHECK(st->last_block_height == stop_h - 1,
+              "S1f the saved State still names the previous height");
+        free(st);
+        free(stor);
+    }
+    CHECK(hyb_digest(A->g.w->db, d1a) == 0, "S1g digest of A after the stop");
+
+    /* S2 — the twin applies the same block without stopping */
+    CHECK(vu_host_drive_to(&Bn->x, &Bn->bid, stop_h - 1, stop_h) == 0,
+          "S2a node B applies the stop height normally");
+    CHECK(hyb_digest(Bn->g.w->db, d1b) == 0 && memcmp(d1a, d1b, 64) == 0,
+          "S2b the stopped node's ledger = the node that never stopped");
+
+    /* S3 — the replay */
+    CHECK(hyb_handshake(A, &nb) == CMT_OK, "S3a the handshake heals");
+    CHECK(nb == 1, "S3b exactly one block replayed");
+    CHECK(hyb_digest(A->g.w->db, d2a) == 0 && memcmp(d1a, d2a, 64) == 0,
+          "S3c the ledger tables are byte-identical after the replay "
+          "(v2_trie_roots, v2_trie_nodes, the assignment tables, the supply "
+          "totals): not applied twice");
+    {
+        cmt_state_storage_t *stor = calloc(1, sizeof(*stor));
+        cmt_state_t         *st = calloc(1, sizeof(*st));
+
+        CHECK(stor && st && cmt_state_init(st, stor) == CMT_OK &&
+              nodus_cmt_ss_load(A->x.store, st) == CMT_OK &&
+              st->last_block_height == stop_h,
+              "S3d the State caught up to the stop height");
+        free(st);
+        free(stor);
+    }
+    /* S4 — roots against the full rebuild */
+    CHECK(q1(A->g.w->db, "SELECT capture FROM v2_trie_state") == 1,
+          "S4a the dirty capture is on");
+    CHECK(hyb_legs_ok(A->g.w) == 0,
+          "S4b every leg root equals the incremental and the full rebuild");
+
+    /* S5 — the next block */
+    CHECK(nodus_cmt_ss_load(A->x.store, A->x.state) == CMT_OK,
+          "S5a the executor's State is the caught-up one");
+    CHECK(vu_host_drive_to(&A->x, &A->bid, stop_h, stop_h + 1) == 0,
+          "S5b node A applies the next block");
+    CHECK(vu_host_drive_to(&Bn->x, &Bn->bid, stop_h, stop_h + 1) == 0,
+          "S5c node B applies the next block");
+    CHECK(hyb_digest(A->g.w->db, d3a) == 0 &&
+          hyb_digest(Bn->g.w->db, d3b) == 0 && memcmp(d3a, d3b, 64) == 0,
+          "S5d the next block: the replayed node's tables = the node that "
+          "never stopped");
+    CHECK(nodus_witness_v2_committed_global_root(A->g.w, ra) == 0 &&
+          nodus_witness_v2_committed_global_root(Bn->g.w, rb) == 0 &&
+          memcmp(ra, rb, 64) == 0, "S5e and so is the committed global root");
+    (void)what;
+    hyb_close(Bn);
+    hyb_close(A);
+    free(Bn);
+    free(A);
+    return 0;
+}
+
+static int t_hyb_crash_edge(void)
+{
+    return hyb_case(13, "the edge block A-1");
+}
+
+static int t_hyb_crash_ordinary(void)
+{
+    return hyb_case(15, "an ordinary generation-6 block");
+}
+
+static int t_hyb_crash_boundary(void)
+{
+    CHECK(DNAC_EPOCH_LENGTH > 16, "the boundary lies above the ladder");
+    return hyb_case((int64_t)DNAC_EPOCH_LENGTH,
+                    "the first generation-6 boundary B1, no storage event");
+}
+#endif /* NODUS_EVM_ENABLED */
+
 int main(void)
 {
     static const struct {
@@ -7521,6 +7879,11 @@ int main(void)
         int (*fn)(void);
     } cases[] = {
         { "hybrid_gen6_probe",          t_hybrid_probe },
+#ifdef NODUS_EVM_ENABLED
+        { "hyb_crash_edge",             t_hyb_crash_edge },
+        { "hyb_crash_ordinary_gen6",    t_hyb_crash_ordinary },
+        { "hyb_crash_boundary_b1",      t_hyb_crash_boundary },
+#endif
         { "bind_refuses_legacy",        t_bind_refuses_legacy },
         { "init_chain_match",           t_init_chain_match },
         { "init_chain_mismatches",      t_init_chain_mismatches },
