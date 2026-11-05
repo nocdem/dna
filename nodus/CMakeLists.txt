@@ -3488,6 +3488,10 @@ endif()
 # over the filled STORAGE-ORACLE pins (the test_storage_reg note above).
 if(NODUS_EVM_ENABLED)
 register_witness_test(test_storage_b2)
+# HF-9 WP4 (plan :447): the generation <= 5 settlement replay vector, written
+# once at the parent commit (HF9_GEN5_WRITE, see tests/hf9_gen5_replay.h)
+target_compile_definitions(test_storage_b2 PRIVATE
+    HF9_GEN5_SETTLEMENT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/hf9_gen5_settlement.json")
 if(JSONC_FOUND)
     target_compile_definitions(test_storage_b2 PRIVATE
         ARCHIVE_REWARD_KAT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/archive_reward_kat.json")

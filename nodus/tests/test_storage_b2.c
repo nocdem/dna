@@ -298,6 +298,9 @@
 #include "crypto/sign/qgp_dilithium.h"
 
 #include "v2_genesis_fixture.h"
+#include "hf9_gen5_replay.h"     /* HF-9 WP4: generation <= 5 settlement
+                                  * replay recorder (header documents the
+                                  * HF9_GEN5_WRITE environment variable) */
 
 #ifdef ARCHIVE_REWARD_KAT_PATH
 #include <json-c/json.h>
@@ -1688,6 +1691,8 @@ static int apply_both(fixture_t *a, fixture_t *b, uint64_t h,
      * so fixture A speaks for both) */
     if (g_model_on && h % E_LEN == 0 && model_boundary(a->w, h) != 0)
         return -1;
+    if (g_model_on && h % E_LEN == 0 && hf9r_record(a->w, h) != 0)
+        return -1;                    /* HF-9 generation <= 5 replay record */
     return 0;
 }
 
@@ -3566,6 +3571,12 @@ int main(void) {
         int rc = cases[i].fn();
         fprintf(stderr, "%-22s %s\n", cases[i].name, rc == 0 ? "ok" : "FAIL");
         if (rc != 0) failed++;
+    }
+    /* HF-9 WP4 (plan :447): the generation-<=5 settlement replay - write
+     * (HF9_GEN5_WRITE) or compare with the parent's vector file */
+    if (hf9r_finish() != 0) {
+        fprintf(stderr, "hf9_gen5_replay      FAIL\n");
+        failed++;
     }
     fprintf(stderr, "test_storage_b2: %zu/%zu cases passed, %d checks\n",
             n - failed, n, g_checks);
