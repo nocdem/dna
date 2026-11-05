@@ -71,7 +71,11 @@
  *     the first. Kills: removing the accept stamp (no identity -> client 2 is
  *     refused), comparing only the generation in nodus_state_proof_conn_alive
  *     (client 2 gets both answers). NOT covered: the exhaustion branch of the
- *     serial (the counter is private to the listener).
+ *     serial (the counter is private to the listener). The handler table also
+ *     carries two do-nothing stubs, cc_collect and status, only because
+ *     nodus_witness_ipc_new returns NULL without them; this test never
+ *     reaches them (tool connections, dnac_state_proof only); dispatch_dnac
+ *     is a recorder that hands the request to the production handler.
  *  F2. The client RECEIVE path: nodus_t2_decode (the first call of
  *     client_on_frame, nodus_client.c:419) takes 5000 and 16768 nodes for the
  *     dnac_state_proof reply, refuses 16769, and keeps the generic 4,096-item
@@ -1358,6 +1362,24 @@ static int test_receive_path(void) {
 static nodus_pubkey_t g_ipc_own;
 static const nodus_pubkey_t *ipc_own_pk(void *c) { (void)c; return &g_ipc_own; }
 
+/* Test stubs: nodus_witness_ipc_new refuses a handler table without
+ * cc_collect and status (nodus_witness_ipc.c:511). This test sends only
+ * `ipc_tool` connections with dnac_state_proof requests, so neither is ever
+ * called: cc_collect would serve dnac_cc_collect, status the control
+ * connection's ipc_status. They do nothing. */
+static void ipc_cc_collect_stub(void *ctx, struct nodus_tcp_conn *conn,
+                                const uint8_t client_pk[NODUS_PK_BYTES],
+                                const uint8_t token[NODUS_SESSION_TOKEN_LEN],
+                                const uint8_t *payload, size_t len,
+                                uint32_t txn_id) {
+    (void)ctx; (void)conn; (void)client_pk; (void)token; (void)payload;
+    (void)len; (void)txn_id;
+}
+
+static void ipc_status_stub(void *ctx, nodus_witness_ipc_status_t *out) {
+    (void)ctx; (void)out;
+}
+
 typedef struct {
     nodus_witness_t *w;
     int64_t          now;
@@ -1456,6 +1478,8 @@ static int test_ipc_delivery(fixture_t *fx, const rows_t *rows) {
     nodus_witness_ipc_handlers_t h;
     memset(&h, 0, sizeof(h));
     h.dispatch_dnac = ipc_dispatch;
+    h.cc_collect = ipc_cc_collect_stub;
+    h.status = ipc_status_stub;
     h.own_pk = ipc_own_pk;
     h.ctx = &ic;
     nodus_witness_ipc_t *ipc = nodus_witness_ipc_new_tools(&h);
