@@ -40,8 +40,10 @@
  *  (compared within a 64-step BOUND: the indexed query drifted by 1 step,
  *  288 -> 289, when 10 000 RELEASED rows followed the ACTIVE range, while a
  *  scan adds 10 000+; see the check)
- *  (a positive control in main() shows a NOT INDEXED scan steps >= 10 000
- *  more than the indexed query on the grown registry).
+ *  (a positive control in main() shows a real scan - WHERE +status = 1,
+ *  which disables the index - steps >= 10 000 more than the indexed query
+ *  on the grown registry; NOT INDEXED is not honoured on this WITHOUT ROWID
+ *  table).
  *
  * ── FLAGS ───────────────────────────────────────────────────────────────
  *  register_witness_test; EVM runtime only. No fault injection, no
@@ -398,14 +400,19 @@ int main(void) {
           "steps) before and after the history grew - a scan would add "
           "one step per RELEASED row (10 000+)");
     /* positive control: the measure DOES see scan work. The same query
-     * with NOT INDEXED steps at least once per RELEASED row more than the
-     * indexed one. */
+     * with the index disabled steps at least once per RELEASED row more
+     * than the indexed one. */
     {
         long long steps[2] = { -1, -1 };
         static const char *const q[2] = {
             "SELECT node_fp FROM v2_storage_nodes WHERE status = 1",
-            "SELECT node_fp FROM v2_storage_nodes NOT INDEXED "
-            "WHERE status = 1" };
+            /* NOT INDEXED is not honoured on this WITHOUT ROWID table
+             * (SQLite 3.40.1: still "SEARCH ... USING COVERING INDEX"),
+             * so the unary plus on the column disables the index instead:
+             * "SCAN v2_storage_nodes" (main measured 30 144 steps on
+             * 16 + 10 000 rows) */
+            "SELECT node_fp FROM v2_storage_nodes WHERE +status = 1 "
+            "ORDER BY node_fp ASC" };
         for (int i = 0; i < 2; i++) {
             sqlite3_stmt *st = NULL;
             CHECK(sqlite3_prepare_v2(g_w->db, q[i], -1, &st, NULL)
@@ -415,7 +422,7 @@ int main(void) {
             sqlite3_finalize(st);
         }
         CHECK(steps[0] > 0 && steps[1] >= steps[0] + 10000,
-              "control: the NOT INDEXED scan steps at least 10 000 more "
+              "control: the real scan (+status) steps at least 10 000 more "
               "than the indexed query - the counter can see the difference");
     }
 
