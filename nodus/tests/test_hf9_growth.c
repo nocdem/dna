@@ -37,6 +37,9 @@
  *  reads at settlement are not run here (no snapshots / reports): the
  *  counters cover the freeze and the flush only. registry_vm_steps is
  *  SQLite's own virtual-machine step count of the registry status query
+ *  (compared within a 64-step BOUND: the indexed query drifted by 1 step,
+ *  288 -> 289, when 10 000 RELEASED rows followed the ACTIVE range, while a
+ *  scan adds 10 000+; see the check)
  *  (a positive control in main() shows a NOT INDEXED scan steps >= 10 000
  *  more than the indexed query on the grown registry).
  *
@@ -382,10 +385,18 @@ int main(void) {
      * 10 000 RELEASED rows were added: the status index serves it. */
     CHECK(w1.registry_vm_steps > 0 && w2.registry_vm_steps > 0,
           "the registry work counter is wired (non-zero)");
-    CHECK(w1.registry_vm_steps == w2.registry_vm_steps,
-          "the registry status query examines the same work before and "
-          "after the history grew (a scan would step once per RELEASED "
-          "row)");
+    /* A BOUND, not equality: main measured the indexed status query at 288
+     * VM steps before and 289 after 10 000 RELEASED rows (EXPLAIN QUERY
+     * PLAN: SEARCH ... USING INDEX v2_storage_nodes_by_status (status=?)
+     * both times) - the index range ends one entry later when rows follow
+     * the ACTIVE range. A scan steps once per registry row, i.e. at least
+     * 10 000 more; the bound of 64 is far above the index's one-step
+     * drift and far below a scan. */
+    CHECK(w2.registry_vm_steps <= w1.registry_vm_steps + 64 &&
+          w1.registry_vm_steps <= w2.registry_vm_steps + 64,
+          "the registry status query examines the same work (within 64 VM "
+          "steps) before and after the history grew - a scan would add "
+          "one step per RELEASED row (10 000+)");
     /* positive control: the measure DOES see scan work. The same query
      * with NOT INDEXED steps at least once per RELEASED row more than the
      * indexed one. */
