@@ -232,6 +232,7 @@
 
 #ifdef NODUS_EVM_ENABLED
 #include "witness/nodus_witness_v2_trie.h"      /* HF-9 T-15: leg roots   */
+#include "witness/nodus_witness_v2_shadow.h"    /* HF-9 T-15 (iv): shadow */
 #include "witness/nodus_witness_v2_storage.h"   /* HF-9 T-9: work counters */
 #include "witness/nodus_witness_v2_epoch.h"     /* snapshot(H): report seats */
 #include "dnac/ledger_roots_v2.h"               /* storage exit id / nullifier */
@@ -8130,6 +8131,153 @@ static int t_hyb_crash_boundary_event(void)
     return hyb_case((int64_t)DNAC_EPOCH_LENGTH,
                     "B1 with a storage event (one registered node)", 1);
 }
+
+/* ══ HF-9 WP5 - T-15 (iv): a block during the SHADOW RUN (plan :455; the
+ *    shadow run is plan §11, capture = 0, shadow running) ═════════════════
+ *
+ * Proves, on the hybrid chain (the ladder of hyb_open: generation 5 is
+ * committed from block 10, the edge is block 13), node A with hf9_shadow on
+ * and the shadow hook bound on ITS executor (the node binds it the same way,
+ * nodus_witness_cmt_node.c), twin node B without a shadow:
+ *   P1  the hook is reached through the real host path: after blocks 1..10
+ *       the shadow is seeded (status running, one log row at 10); capture
+ *       is 0 (the shadow never switches it);
+ *   P2  stop at block 11 with test_fail_after_commit (the fault point
+ *       between COMMIT and store.Save): the stop is at the intended height
+ *       (ledger tip 11, COMMIT ran, State names 10), the HOOK DID NOT RUN
+ *       (no log row at 11), and A's ledger tables equal B's (digest of
+ *       hyb_digest);
+ *   P3  the handshake replays ONE block; the ledger digest (v2_trie_roots,
+ *       v2_trie_nodes, the assignment tables, the supply totals, blocks,
+ *       heads) is byte-identical before and after the replay - not applied
+ *       twice - and the replay called no hook: shadow roots, row copy and
+ *       log are untouched;
+ *   P4  the next block (12) applies on both nodes; A's hook runs: ONE new
+ *       log row at 12 and NONE at 11 (the next pass covered the missed
+ *       height in one step); every shadow leg root equals the full rebuild
+ *       of the rows; A's ledger digest and committed global root equal B's
+ *       (a node that never stopped); capture is still 0.
+ * Flags: NODUS_EVM_ENABLED only. Leaves: two /tmp/test_cmt_app_hyb_XXXXXX
+ * directories (removed). Can falsely pass: the blocks carry no row change
+ * (idle blocks), so the catch-up is proven here as "the pass after the
+ * replay runs, covers both heights and equals the rebuild", while a pass
+ * that applies changes is test_hf9_shadow.c A / F; the hook's wiring on the
+ * node's executor (not the test's) is test_cmt_node.c.
+ */
+static int hyb_shadow_roots_equal_rebuild(nodus_witness_t *w)
+{
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++) {
+        uint8_t sh[64], inc[64], full[64];
+
+        if (nodus_witness_v2_trie_shadow_leg_root(w, leg, sh) != 0 ||
+            nodus_witness_v2_trie_build_leg(w, leg, inc, full) != 0 ||
+            memcmp(sh, full, 64) != 0 || memcmp(inc, full, 64) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+static int t_hyb_crash_shadow(void)
+{
+    hyb_t  *A = calloc(1, sizeof(*A)), *Bn = calloc(1, sizeof(*Bn));
+    uint8_t d1a[64], d1b[64], d2a[64], d3a[64], d3b[64], ra[64], rb[64];
+    uint8_t sh0[NODUS_V2_TRIE_LEGS][64], sh1[NODUS_V2_TRIE_LEGS][64];
+    sqlite3_int64 rows0;
+    nodus_v2_shadow_log_t row;
+    int     nb = -1, rc;
+    const int64_t stop_h = 11;
+
+    CHECK(A && Bn, "alloc");
+    CHECK(hyb_open(A, 0) == 0, "P0 node A (shadow, stops) opens");
+    CHECK(hyb_open(Bn, 0) == 0, "P0 node B (no shadow, never stops) opens");
+    A->g.w->config.hf9_shadow = NODUS_HF9_SHADOW_ON;
+    CHECK(nodus_cmt_blockexec_set_block_saved_hook(
+              A->x.be, nodus_witness_v2_shadow_after_commit, A->g.w)
+              == CMT_OK, "P0 the hook is bound on A's executor");
+
+    /* P1 - through the real host path */
+    CHECK(hyb_pair_to(A, Bn, 0, 10) == 0, "P1 blocks 1..10 on both nodes");
+    {
+        int st = -2;
+
+        CHECK(nodus_witness_v2_shadow_status(A->g.w, &st) == 0 &&
+              st == NODUS_V2_SHADOW_RUNNING,
+              "P1 the hook seeded the shadow: status running");
+    }
+    CHECK(nodus_witness_v2_shadow_log_read(A->g.w, 10, &row) == 1 &&
+          q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_log") == 1,
+          "P1 one log row, at the first generation-5 height (10)");
+    CHECK(q1(A->g.w->db, "SELECT capture FROM v2_trie_state") == 0,
+          "P1 capture is 0 during the shadow run");
+    CHECK(q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_dirty") == 0,
+          "P1 nothing shadow-related in the block transaction: no dirty key");
+
+    /* P2 - the stop between COMMIT and the state save */
+    rc = hyb_pair_step(A, Bn, stop_h, 1);   /* B applies it, A stops */
+    CHECK(rc != -3, "P2 node B applied the stop block");
+    CHECK(rc == CMT_FAULT,
+          "P2a the apply stops with CMT_FAULT in the post-commit window");
+    CHECK(sqlite3_get_autocommit(A->g.w->db) != 0, "P2b the COMMIT had run");
+    CHECK(q1(A->g.w->db, "SELECT MAX(global_height) FROM v2_blocks") ==
+              stop_h, "P2c the ledger tip is the intended stop height");
+    CHECK(nodus_witness_v2_shadow_log_read(A->g.w, (uint64_t)stop_h, &row)
+              == 0 &&
+          q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_log") == 1,
+          "P2d the hook did NOT run at the stop (no log row at 11)");
+    CHECK(hyb_digest(A->g.w->db, d1a) == 0 &&
+          hyb_digest(Bn->g.w->db, d1b) == 0 && memcmp(d1a, d1b, 64) == 0,
+          "P2e the stopped node's ledger = the node that never stopped");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_shadow_leg_root(A->g.w, leg,
+                                                    sh0[leg - 1]) == 0,
+              "P2f shadow roots before the replay");
+    rows0 = q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_rows");
+
+    /* P3 - the replay */
+    CHECK(hyb_handshake(A, &nb) == CMT_OK && nb == 1,
+          "P3a the handshake replays exactly one block");
+    CHECK(hyb_digest(A->g.w->db, d2a) == 0 && memcmp(d1a, d2a, 64) == 0,
+          "P3b the ledger tables are byte-identical after the replay: not "
+          "applied twice");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_shadow_leg_root(A->g.w, leg,
+                                                    sh1[leg - 1]) == 0,
+              "P3c shadow roots after the replay");
+    CHECK(memcmp(sh0, sh1, sizeof(sh0)) == 0 &&
+          q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_rows") == rows0 &&
+          q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_log") == 1,
+          "P3d the replay called no hook: shadow roots, row copy and log "
+          "untouched");
+
+    /* P4 - the next block; the pass catches up */
+    CHECK(nodus_cmt_ss_load(A->x.store, A->x.state) == CMT_OK,
+          "P4a the executor's State is the caught-up one");
+    CHECK(hyb_pair_to(A, Bn, stop_h, stop_h + 1) == 0,
+          "P4b the next block, made once, applies on both nodes");
+    CHECK(nodus_witness_v2_shadow_log_read(A->g.w, (uint64_t)stop_h + 1, &row)
+              == 1 &&
+          nodus_witness_v2_shadow_log_read(A->g.w, (uint64_t)stop_h, &row)
+              == 0 &&
+          q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_log") == 2,
+          "P4c ONE new log row, at 12, none at 11: the pass covered the "
+          "missed height in one step");
+    CHECK(hyb_shadow_roots_equal_rebuild(A->g.w) == 0,
+          "P4d every shadow leg root equals the full rebuild of the rows");
+    CHECK(hyb_digest(A->g.w->db, d3a) == 0 &&
+          hyb_digest(Bn->g.w->db, d3b) == 0 && memcmp(d3a, d3b, 64) == 0,
+          "P4e the replayed node's ledger tables = the node that never "
+          "stopped");
+    CHECK(nodus_witness_v2_committed_global_root(A->g.w, ra) == 0 &&
+          nodus_witness_v2_committed_global_root(Bn->g.w, rb) == 0 &&
+          memcmp(ra, rb, 64) == 0, "P4f and so is the committed global root");
+    CHECK(q1(A->g.w->db, "SELECT capture FROM v2_trie_state") == 0,
+          "P4g capture is still 0");
+    hyb_close(Bn);
+    hyb_close(A);
+    free(Bn);
+    free(A);
+    return 0;
+}
 /* ── the STORAGE_REGISTER envelope (step b), ported from test_storage_b2.c
  *    streg_call :1719-1745 and st_env :1747-1830: a 2-leg envelope, SYSTEM
  *    STORAGE_REGISTER (owner_fp ‖ node_pk ‖ consent_sig ‖ expiry ‖ bond,
@@ -9337,6 +9485,7 @@ int main(int argc, char **argv)
         { "hybrid_growth_probe",        t_hybrid_growth_probe },
         { "hybrid_storage_writers_probe", t_hybrid_storage_writers_probe, 1 },
         { "hyb_crash_boundary_event",   t_hyb_crash_boundary_event },
+        { "hyb_crash_shadow",           t_hyb_crash_shadow },
         { "hyb_crash_edge",             t_hyb_crash_edge },
         { "hyb_crash_ordinary_gen6",    t_hyb_crash_ordinary },
         { "hyb_crash_boundary_b1",      t_hyb_crash_boundary },

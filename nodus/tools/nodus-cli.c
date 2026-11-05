@@ -7157,6 +7157,58 @@ static int cmd_ruleset_info(const char *server_ip, uint16_t server_port) {
     return carried ? 0 : 1;
 }
 
+/* `hf9-shadow [height]`: one row of the node's HF-9 shadow log (plan
+ * docs/plans/approved/2026-11-04-hf9.md §11; dnac_hf9_shadow). Height 0 or
+ * none = the newest logged row. Output is one `key=value` per line for
+ * nodus/tools/hf9_shadow_diff.sh: status (0 stopped, 1 running, 2 faulted,
+ * 255 never seeded), found (0/1) and, when found, height, leg1..leg8, core,
+ * stor, sys, glob (128 lowercase hex characters each). Exit 0 = the node
+ * answered (found or not); 1 = no answer. */
+static void hf9_print_hex(const char *key, const uint8_t b[64]) {
+    printf("%s=", key);
+    for (int i = 0; i < 64; i++) printf("%02x", b[i]);
+    printf("\n");
+}
+
+static int cmd_hf9_shadow(const char *server_ip, uint16_t server_port,
+                          int argc, char **argv, int optind_) {
+    uint64_t height = 0;
+    if (optind_ + 1 < argc) {
+        char *end = NULL;
+        unsigned long long v = strtoull(argv[optind_ + 1], &end, 10);
+        if (!argv[optind_ + 1][0] || !end || *end) {
+            fprintf(stderr, "Usage: hf9-shadow [height]\n");
+            return 1;
+        }
+        height = (uint64_t)v;
+    }
+    nodus_client_t client;
+    if (t8_session(&client, server_ip, server_port) != 0) return 1;
+    nodus_dnac_hf9_shadow_t r;
+    int qrc = nodus_client_dnac_hf9_shadow(&client, height, &r);
+    nodus_client_close(&client);
+    if (qrc != 0) {
+        fprintf(stderr, "dnac_hf9_shadow failed (rc=%d) - an older node does "
+                "not know the method\n", qrc);
+        return 1;
+    }
+    printf("status=%llu\nfound=%d\n", (unsigned long long)r.status,
+           r.found ? 1 : 0);
+    if (r.found) {
+        printf("height=%llu\n", (unsigned long long)r.height);
+        for (int i = 0; i < 8; i++) {
+            char key[8];
+            snprintf(key, sizeof(key), "leg%d", i + 1);
+            hf9_print_hex(key, r.leg[i]);
+        }
+        hf9_print_hex("core", r.core);
+        hf9_print_hex("stor", r.stor);
+        hf9_print_hex("sys", r.sys);
+        hf9_print_hex("glob", r.glob);
+    }
+    return 0;
+}
+
 /* ── `validator consent` — HF-6 6f-1 ──────────────────────────────────
  * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
  * §2 (the consent re-construction contract), §6.1 (bytes, ctx
@@ -12332,6 +12384,7 @@ static void usage(const char *prog) {
     fprintf(stderr, "  ruleset-info     The rule-set generation the node runs (and if this CLI carries it),\n");
     fprintf(stderr, "                   its next switch and whether this CLI needs an update\n");
     fprintf(stderr, "                   (every session command warns once on stderr: \"WARNING: Update ...\")\n");
+    fprintf(stderr, "  hf9-shadow [h]   One row of the node's HF-9 shadow log (key=value lines; h 0/none = newest)\n");
     fprintf(stderr, "  name register <name> --keys <dir> (--dry-run | --submit ip:port) [--fee <raw>]\n");
     fprintf(stderr, "  name lookup <name> | name of <fp128>   On-chain names (one node's answer)\n");
     fprintf(stderr, "  evm (address | balance | deploy | send | call | encode | attest |\n");
@@ -12765,6 +12818,11 @@ int main(int argc, char **argv) {
     /* HF-4 — the rule-set generation the node runs, and on-chain names */
     if (strcmp(command, "ruleset-info") == 0) {
         int rc = cmd_ruleset_info(server_ip, server_port);
+        nodus_identity_clear(&identity);
+        return rc;
+    }
+    if (strcmp(command, "hf9-shadow") == 0) {
+        int rc = cmd_hf9_shadow(server_ip, server_port, argc, argv, optind);
         nodus_identity_clear(&identity);
         return rc;
     }

@@ -111,7 +111,18 @@ typedef struct {
      * path component (no '/', not "." or ".."); "" (the default) =
      * NODUS_SEG_DIR_DEFAULT. Node-local; never a consensus input. */
     char     segment_dir[NODUS_SEG_DIR_NAME_MAX];
+    /* HF-9 WP5 (plan docs/plans/approved/2026-11-04-hf9.md §11) - the
+     * shadow run, nodus.json "hf9_shadow": "on" | "full" | "off". NODE-LOCAL
+     * and never consensus (nodus_witness_v2_shadow.h). Like retain_blocks_auto
+     * the loader (tools/nodus_node_config.c) sets the plan's default, ON; a
+     * zero-initialised config is OFF, so nothing but the node binary runs the
+     * shadow. */
+    int      hf9_shadow;
 } nodus_witness_config_t;
+
+#define NODUS_HF9_SHADOW_OFF   0
+#define NODUS_HF9_SHADOW_ON    1
+#define NODUS_HF9_SHADOW_FULL  2
 
 /* P2P-PORT F5 — nodus_witness_roster_entry_t / nodus_witness_roster_t (the
  * transport roster built from the DHT `nodus:pk` registry, ROST_R gossip

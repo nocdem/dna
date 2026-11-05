@@ -165,6 +165,9 @@
 #include "witness/nodus_witness_cmt_host.h"
 #include "witness/nodus_witness_cmt_node.h"
 #include "witness/nodus_witness_cmt_store.h"
+#ifdef NODUS_EVM_ENABLED
+#include "witness/nodus_witness_v2_shadow.h"      /* HF-9 WP5: the hook      */
+#endif
 #include "server/nodus_server.h"
 
 #include "dnac/dnac.h"
@@ -2959,6 +2962,40 @@ static int t_retain_blocks_node_init(void)
     return 0;
 }
 
+#ifdef NODUS_EVM_ENABLED
+/**
+ * HF-9 WP5 (plan §11): the node's OWN executor carries the shadow run's
+ * after-block hook. Proves: after `nodus_cmt_node_init` the node's block
+ * executor (`n->be`) has `on_block_saved` = nodus_witness_v2_shadow_after_
+ * commit with the witness as its argument, so a live block reaches the
+ * shadow job (the hook's gating by `hf9_shadow` is inside the job; a
+ * zero-initialised config is off, test_hf9_shadow.c D1). Flags: the EVM
+ * build only (the shadow run is EVM-only). Leaves: the fixture's temp
+ * directory (removed by gfx_close). Can falsely pass: it proves the
+ * binding, not that apply_block calls it (test_cmt_app.c, T-15 iv, does).
+ */
+static int t_block_saved_hook_bound(void)
+{
+    gfx_t                  g;
+    nodus_cmt_node_opts_t  o;
+    nodus_cmt_node_t      *n;
+
+    CHECK(gfx_open(&g, "shadowhook") == 0, "version-3 fixture");
+    n = (nodus_cmt_node_t *)calloc(1, sizeof(*n));
+    CHECK(n != NULL, "alloc");
+    opts_default(&g, &o);
+    CHECK(nodus_cmt_node_init(n, g.w, &o) == CMT_OK, "the node starts");
+    CHECK(n->be != NULL &&
+          n->be->on_block_saved == nodus_witness_v2_shadow_after_commit &&
+          n->be->on_block_saved_arg == g.w,
+          "the node's executor carries the shadow hook, bound to the witness");
+    nodus_cmt_node_release(n);
+    free(n);
+    gfx_close(&g);
+    return 0;
+}
+#endif
+
 /* 1 when `table` holds `<prefix><h>`, 0 when not, -1 on error. */
 static int store_row_present(nodus_cmt_store_t *s, bool state_table,
                              const char *prefix, int64_t h)
@@ -3077,6 +3114,9 @@ int main(void)
         { "retain_height_arith",      t_retain_height_arith      },
         { "retain_blocks_check",      t_retain_blocks_check      },
         { "retain_blocks_node_init",  t_retain_blocks_node_init  },
+#ifdef NODUS_EVM_ENABLED
+        { "block_saved_hook_bound",   t_block_saved_hook_bound   },
+#endif
         { "retain_blocks_prunes",     t_retain_blocks_prunes     },
     };
     size_t i;

@@ -5651,6 +5651,147 @@ int nodus_client_dnac_light_block(nodus_client_t *client, uint64_t height,
     return 0;
 }
 
+/* ── dnac_hf9_shadow (HF-9 WP5; wire: nodus.h) - the v3d_* hostile-reply
+ *    discipline: every read checks END / ERROR, a duplicate key refuses the
+ *    reply, each root is exactly 64 bytes, unknown keys are skipped by a
+ *    walker that refuses truncation ──────────────────────────────────── */
+
+int nodus_dnac_hf9_shadow_request_encode(uint32_t txn,
+                                         const uint8_t token[NODUS_SESSION_TOKEN_LEN],
+                                         uint64_t height,
+                                         uint8_t *buf, size_t cap,
+                                         size_t *len_out)
+{
+    cbor_encoder_t enc;
+    size_t         len;
+
+    if (len_out) *len_out = 0;
+    if (!token || !buf || cap == 0 || !len_out) return -1;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_dnac_query(&enc, txn, token, "dnac_hf9_shadow", 1);
+    cbor_encode_cstr(&enc, "h");
+    cbor_encode_uint(&enc, height);
+    len = cbor_encoder_len(&enc);
+    if (len == 0) return -1;
+    *len_out = len;
+    return 0;
+}
+
+int nodus_dnac_hf9_shadow_decode(const uint8_t *raw, size_t raw_len,
+                                 nodus_dnac_hf9_shadow_t *out)
+{
+    static const char *const LEG_KEY[8] = {
+        "l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8"
+    };
+    cbor_decoder_t dec;
+    size_t         mc;
+    v3d_keys_t     ks;
+    cbor_item_t    k, it;
+    unsigned       have = 0;
+
+    if (!raw || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    memset(&ks, 0, sizeof(ks));
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0) return -1;
+    if (mc > V3D_MAX_KEYS || mc > v3d_left(&dec) / 2) goto bad;
+    for (size_t i = 0; i < mc; i++) {
+        int matched = 0;
+        if (v3d_key(&dec, &ks, &k) != 0) goto bad;
+        if (KEY_EQ(k, "st")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->status) != 0) goto bad;
+            have |= 1u;
+            continue;
+        }
+        if (KEY_EQ(k, "found")) {
+            if (v3d_next(&dec, &it) != 0 || it.type != CBOR_ITEM_BOOL)
+                goto bad;
+            out->found = it.bool_val;
+            have |= 2u;
+            continue;
+        }
+        if (KEY_EQ(k, "h")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->height) != 0 ||
+                out->height == 0) goto bad;
+            have |= 4u;
+            continue;
+        }
+        for (int l = 0; l < 8 && !matched; l++) {
+            if (k.tstr.len == 2 && memcmp(k.tstr.ptr, LEG_KEY[l], 2) == 0) {
+                if (v3d_b64(&dec, out->leg[l]) != 0) goto bad;
+                have |= 8u << l;                       /* bits 3..10 */
+                matched = 1;
+            }
+        }
+        if (matched) continue;
+        if (KEY_EQ(k, "core")) {
+            if (v3d_b64(&dec, out->core) != 0) goto bad;
+            have |= 1u << 11;
+        } else if (KEY_EQ(k, "stor")) {
+            if (v3d_b64(&dec, out->stor) != 0) goto bad;
+            have |= 1u << 12;
+        } else if (KEY_EQ(k, "sys")) {
+            if (v3d_b64(&dec, out->sys) != 0) goto bad;
+            have |= 1u << 13;
+        } else if (KEY_EQ(k, "glob")) {
+            if (v3d_b64(&dec, out->glob) != 0) goto bad;
+            have |= 1u << 14;
+        } else if (v3d_skip(&dec, 0) != 0) {
+            goto bad;
+        }
+    }
+    if (dec.error || (have & 3u) != 3u) goto bad;
+    /* found: all fifteen keys; not found: only st and found */
+    if (out->found ? have != 0x7FFFu : have != 3u) goto bad;
+    return 0;
+bad:
+    memset(out, 0, sizeof(*out));
+    return -1;
+}
+
+int nodus_client_dnac_hf9_shadow(nodus_client_t *client, uint64_t height,
+                                 nodus_dnac_hf9_shadow_t *out)
+{
+    if (!nodus_client_is_ready(client) || !out) return -1;
+    memset(out, 0, sizeof(*out));
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    size_t len = 0;
+    if (nodus_dnac_hf9_shadow_request_encode(txn, client->token, height,
+                                             buf, CLIENT_BUF_SIZE,
+                                             &len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    if (send_request(client, buf, len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+        free_pending(client, req); return NODUS_ERR_TIMEOUT;
+    }
+    if (resp->type == 'e') {
+        int rc = client_error_rc(resp);
+        free_pending(client, req);
+        return rc;
+    }
+    int drc = nodus_dnac_hf9_shadow_decode(req->raw_response,
+                                           req->raw_response_len, out);
+    free_pending(client, req);
+    if (drc != 0) return NODUS_ERR_PROTOCOL_ERROR;
+    /* a found row is the height asked for (0 = the newest: any) */
+    if (out->found && height != 0 && out->height != height) {
+        memset(out, 0, sizeof(*out));
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+    return 0;
+}
+
 /* ── HF-4 queries (wire: nodus.h) — the v3d_* hostile-reply discipline:
  *    duplicate keys, truncation and wrong types refuse the reply ─────── */
 

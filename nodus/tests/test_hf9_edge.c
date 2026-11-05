@@ -71,11 +71,13 @@
  *  F. A MISSING TRIGGER at the edge (one of the 24 dropped before A-1) is a
  *     node FAULT ("24 dirty-capture triggers"), the database byte-identical,
  *     capture 0.
- *  G. SHADOW STATUS NEVER SELECTS COMMITMENT: four fresh chains, each with
- *     a v2_trie_shadow_state row of another status (0, 1, 2, 3) written
- *     before the edge, produce the same committed roots as the chain with no
- *     such row — SYSTEM / CORE head roots, every v2_trie_roots row and the
- *     global root at A-1 — and capture is 1 in all of them.
+ *  G. SHADOW STATUS NEVER SELECTS COMMITMENT: one fresh chain per REAL
+ *     shadow status (HF-9 WP5, nodus_witness_v2_shadow.h: stopped 0,
+ *     running 1, faulted 2), each with a v2_trie_shadow_state row of that
+ *     status written before the edge, produce the same committed roots as
+ *     the chain with no such row ("off") — SYSTEM / CORE head roots, every
+ *     v2_trie_roots row and the global root at A-1 — and capture is 1 in
+ *     all of them.
  *  H. REPLAY FROM GENESIS: a second chain built from scratch through the
  *     same blocks reaches the same leg roots, the same SYSTEM / CORE roots
  *     and the same global roots at A-1 and A as the first (determinism of
@@ -163,9 +165,12 @@
  *  - Case E depends on the injection hook being reached: the test asserts
  *    the FAULT reason names the build, and that the same block commits
  *    once the hook is disarmed.
- *  - Case G's statuses are arbitrary integers (the shadow package, WP5,
- *    defines the real values); the property is that NO value of the row
- *    changes a committed byte.
+ *  - Case G writes the three status values the shadow package defines
+ *    (NODUS_V2_SHADOW_STOPPED / _RUNNING / _FAULTED) as a bare row, with
+ *    no shadow table behind it and no shadow job running (the job itself
+ *    is test_hf9_shadow.c); the property is that none of the real values
+ *    changes a committed byte, so a status outside them is not covered.
+ *    "Off" is the control chain with no row at all.
  *  - The storage step of the edge (§7.2 step 6, E-s1..E-s3) is a named
  *    inert seam until HF-9 WP4: nothing here covers it.
  *
@@ -181,6 +186,7 @@
 #include "witness/nodus_witness_v2_apply.h"
 #include "witness/nodus_witness_v2_claims.h"
 #include "witness/nodus_witness_v2_trie.h"
+#include "witness/nodus_witness_v2_shadow.h"    /* the real shadow statuses */
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_roots_v2.h"
 #include "witness/nodus_witness_runtime.h"
@@ -864,7 +870,13 @@ static int t_shadow_and_replay(void) {
           "CORE roots and global roots at A-1 and A");
     fx_close(&fx);
     /* G: whatever the shadow row says, nothing committed moves */
-    for (int status = 0; status <= 3; status++) {
+    static const int shadow_statuses[] = {
+        NODUS_V2_SHADOW_STOPPED, NODUS_V2_SHADOW_RUNNING,
+        NODUS_V2_SHADOW_FAULTED
+    };
+    for (size_t si = 0; si < sizeof(shadow_statuses) /
+                             sizeof(shadow_statuses[0]); si++) {
+        const int status = shadow_statuses[si];
         char tag[24];
         snprintf(tag, sizeof(tag), "shadow%d", status);
         CHECK(ladder(&fx, tag, status,
@@ -877,7 +889,7 @@ static int t_shadow_and_replay(void) {
               memcmp(o.global_a, base.global_a, 64) == 0 &&
               o.capture == 1,
               "G: the edge's result is identical whatever the shadow "
-              "status (stopped / running / faulted / other)");
+              "status (stopped / running / faulted)");
         CHECK(q1(fx.w->db, "SELECT status FROM v2_trie_shadow_state") ==
               status, "the shadow row itself was never written by the edge");
         fx_close(&fx);

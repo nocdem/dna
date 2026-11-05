@@ -415,6 +415,28 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg,
         memcpy(cfg->witness.segment_dir, sd, strlen(sd) + 1);
     }
 
+    /* HF-9 WP5 (plan docs/plans/approved/2026-11-04-hf9.md §11) - the
+     * node-local shadow run (nodus_witness_v2_shadow.h): "on" (the default,
+     * set by nodus_node_config_parse), "full" (on, plus the full-rebuild
+     * comparison after every block) or "off". Anything else refuses the
+     * start. Never a consensus input - nodes may differ. */
+    if (json_object_object_get_ex(root, "hf9_shadow", &val)) {
+        const char *hs = json_object_is_type(val, json_type_string)
+                             ? json_object_get_string(val) : NULL;
+        if (hs && strcmp(hs, "on") == 0) {
+            cfg->witness.hf9_shadow = NODUS_HF9_SHADOW_ON;
+        } else if (hs && strcmp(hs, "full") == 0) {
+            cfg->witness.hf9_shadow = NODUS_HF9_SHADOW_FULL;
+        } else if (hs && strcmp(hs, "off") == 0) {
+            cfg->witness.hf9_shadow = NODUS_HF9_SHADOW_OFF;
+        } else {
+            QGP_LOG_ERROR(LOG_TAG_CFG, "hf9_shadow must be \"on\", \"full\" "
+                          "or \"off\"");
+            json_object_put(root);
+            return -1;
+        }
+    }
+
     /* Component split S3 (nodus_server.h witness_external). Default
      * false = the in-process witness; a non-boolean value refuses the
      * start, like addr_history_index. nodus-witness requires it to be
@@ -483,6 +505,9 @@ int nodus_node_config_parse(int argc, char **argv, const char *title,
     /* Block retention: AUTO unless the JSON sets "retain_blocks"
      * (decision 2026-10-14-role-based-pruning.md). */
     config.witness.retain_blocks_auto = true;
+    /* HF-9 WP5: the shadow run is ON unless the JSON says otherwise (plan
+     * §11 "default on in the candidate binary"). */
+    config.witness.hf9_shadow = NODUS_HF9_SHADOW_ON;
 
     const char *config_file = NULL;
     /* O16A / D1 — held as a LOCAL, exactly like config_file, and for the
@@ -555,6 +580,7 @@ int nodus_node_config_parse(int argc, char **argv, const char *title,
         file_cfg.require_peer_auth = true;   /* default; the JSON may set false */
         file_cfg.witness.retain_blocks_auto = true;  /* AUTO unless the JSON
                                                       * sets retain_blocks */
+        file_cfg.witness.hf9_shadow = NODUS_HF9_SHADOW_ON;   /* plan §11 */
 
         if (load_config_json(config_file, &file_cfg, w) != 0)
             return 1;

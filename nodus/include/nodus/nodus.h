@@ -2047,6 +2047,59 @@ int nodus_client_dnac_light_block(nodus_client_t *client, uint64_t height,
                                   uint8_t **lb_out, size_t *lb_len_out,
                                   int *server_err_out);
 
+/* ── dnac_hf9_shadow — one row of the node's HF-9 shadow log ────────────
+ * (plan docs/plans/approved/2026-11-04-hf9.md §11; nodus/tools/
+ * hf9_shadow_diff.sh compares it across the nodes. NODE-LOCAL data: it is
+ * never consensus and a node without a shadow run answers "not found".)
+ *
+ * Request  "a": {"h": u64 - the height; 0 = the newest logged row}
+ * Response "r": {"st": u64 - the shadow status: 0 stopped, 1 running,
+ *                       2 faulted, 255 never seeded,
+ *                "found": bool,
+ *                and ONLY when found: "h": u64 the row's height,
+ *                "l1".."l8": bstr 64 the eight shadow leg roots,
+ *                "core","stor","sys","glob": bstr 64 the shadow
+ *                CORE v4', STOR v3', SYS v7', GLOBAL v2'}
+ * Errors:  NODUS_ERR_NOT_FOUND       a build without the shadow run
+ *          NODUS_ERR_INTERNAL_ERROR  a read fault
+ *          NODUS_ERR_PROTOCOL_ERROR  a malformed request
+ */
+#define NODUS_DNAC_HF9_SHADOW_NONE  255u
+
+typedef struct {
+    uint64_t status;          /* "st"; NODUS_DNAC_HF9_SHADOW_NONE = never seeded */
+    bool     found;
+    uint64_t height;          /* only when found */
+    uint8_t  leg[8][64];
+    uint8_t  core[64];
+    uint8_t  stor[64];
+    uint8_t  sys[64];
+    uint8_t  glob[64];
+} nodus_dnac_hf9_shadow_t;
+
+/** Encode the `dnac_hf9_shadow` request frame. @return 0 and `*len_out`;
+ *  -1 on NULL arguments or a buffer too small. */
+int nodus_dnac_hf9_shadow_request_encode(uint32_t txn,
+                                         const uint8_t token[NODUS_SESSION_TOKEN_LEN],
+                                         uint64_t height,
+                                         uint8_t *buf, size_t cap,
+                                         size_t *len_out);
+
+/** Decode a raw `dnac_hf9_shadow` response. STRICT: "st" and "found" are
+ *  required; when found every other key is required (each bstr exactly 64
+ *  bytes, "h" non-zero), when not found none may be present; a duplicate
+ *  key, a wrong type or a truncated message is refused; unknown keys are
+ *  skipped. @return 0; -1 malformed (`out` zeroed). */
+int nodus_dnac_hf9_shadow_decode(const uint8_t *raw, size_t raw_len,
+                                 nodus_dnac_hf9_shadow_t *out);
+
+/** Ask a node for its shadow log row at `height` (0 = newest).
+ *  @return 0; the node's NODUS_ERR_*; NODUS_ERR_TIMEOUT;
+ *  NODUS_ERR_PROTOCOL_ERROR for a reply refused here (or a found row at
+ *  another height than asked); -1 invalid arguments / not ready / send. */
+int nodus_client_dnac_hf9_shadow(nodus_client_t *client, uint64_t height,
+                                 nodus_dnac_hf9_shadow_t *out);
+
 /**
  * Read the node's committed version-3 tip through the dnac_supply RPC
  * (scan-v3 — the ADDITIVE "tip" key; the nodus_client_dnac_chain_id32

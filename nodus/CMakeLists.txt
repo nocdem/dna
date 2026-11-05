@@ -921,6 +921,9 @@ if(NODUS_STANDALONE AND NOT WIN32)
     # build; the generic engine reaches nothing of this file before
     # generation 6.
     list(APPEND NODUS_SOURCES src/witness/nodus_witness_v2_trie.c)
+    # HF-9 WP5 (plan §11): the node-local shadow run over the same tries
+    # (nodus_witness_v2_shadow.c); EVM-only for the same reason.
+    list(APPEND NODUS_SOURCES src/witness/nodus_witness_v2_shadow.c)
     # The EVM contract-ABI text layer (types, signatures, selectors, the
     # argument encoder) and the ML-DSA-87 companion library's attested
     # message + signature — `nodus-cli evm encode|send|call|deploy|attest`'s
@@ -4244,6 +4247,15 @@ register_witness_test(test_supply_totals)
 # compile flag; the generation >= 6 rows are deferred to WP3 (test header).
 if(NODUS_EVM_ENABLED)
     register_witness_test(test_hf9_trie_legs)
+endif()
+
+# HF-9 WP5, plan row T-10 (docs/plans/approved/2026-11-04-hf9.md §11, §12):
+# the shadow run - the leg roots of the row comparison against the roots of
+# the trigger capture, isolation, the stop at activation, catch-up, restart,
+# the injected faults (compiled only with -DQGP_FAULT_INJECT=ON, absent
+# otherwise = missing coverage). EVM-only like the trie module it exercises.
+if(NODUS_EVM_ENABLED)
+    register_witness_test(test_hf9_shadow)
 endif()
 
 # HF-9 T-4, C side for WP2 (plan §12): this build's leaf functions, row

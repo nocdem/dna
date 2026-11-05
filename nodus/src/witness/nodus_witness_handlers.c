@@ -78,6 +78,7 @@
 #include "evm/evm_gas.h"                     /* the rows/bytes → gas pins */
 #include "crypto/hash/keccak256.h"
 #include "witness/nodus_witness_v2_schema.h" /* the evm_logs cursor scan  */
+#include "witness/nodus_witness_v2_shadow.h" /* HF-9 WP5: dnac_hf9_shadow */
 #endif
 
 #include <stdio.h>
@@ -5841,6 +5842,123 @@ static void handle_dnac_light_block(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * dnac_hf9_shadow - the shadow run's log row (HF-9 WP5, plan
+ * docs/plans/approved/2026-11-04-hf9.md §11; hf9_shadow_diff.sh compares
+ * it across the nodes)
+ *
+ * Request:  "a": {"h": u64}   the height; 0 = the newest logged row
+ * Response: "r": {"st": u64   the shadow status (nodus_witness_v2_shadow.h:
+ *                              0 stopped, 1 running, 2 faulted, 255 never
+ *                              seeded),
+ *                 "found": bool,
+ *                 and, only when found: "h": u64 the row's height,
+ *                 "l1".."l8": bstr 64 the eight shadow leg roots,
+ *                 "core","stor","sys","glob": bstr 64 CORE v4', STOR v3',
+ *                 SYS v7', GLOBAL v2'}
+ * A node-local read of node-local rows: no root, verdict, vote or block
+ * reads them. One primary-key read, so no limiter (the light block's
+ * limiter guards a multi-megabyte read). Without the EVM build the node has
+ * no shadow run: NODUS_ERR_NOT_FOUND.
+ * ════════════════════════════════════════════════════════════════════ */
+
+#define NODUS_HF9_SHADOW_NONE_WIRE  255u
+
+static void handle_dnac_hf9_shadow(nodus_witness_t *w,
+                                   struct nodus_tcp_conn *conn,
+                                   const uint8_t *payload, size_t len,
+                                   uint32_t txn_id)
+{
+#ifdef NODUS_EVM_ENABLED
+    cbor_decoder_t dec;
+    size_t         args_count = 0;
+    uint64_t       h = 0;
+    bool           have_h = false;
+    if (decode_args(payload, len, &dec, &args_count) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR, "missing args map");
+        return;
+    }
+    for (size_t k = 0; k < args_count; k++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key.type == CBOR_ITEM_END || key.type == CBOR_ITEM_ERROR) {
+            send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                       "truncated args map");
+            return;
+        }
+        if (key_match(&key, "h")) {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (val.type != CBOR_ITEM_UINT || have_h) {
+                send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                           "height is not one unsigned integer");
+                return;
+            }
+            h = val.uint_val;
+            have_h = true;
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+    if (dec.error || !have_h) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "missing or invalid height");
+        return;
+    }
+    if (!w->db || sqlite3_get_autocommit(w->db) == 0) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "a ledger transaction is in progress");
+        return;
+    }
+    int st = NODUS_V2_SHADOW_NONE;
+    if (nodus_witness_v2_shadow_status(w, &st) != 0) {
+        /* the table is created by the schema; a fault is the node's */
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "the shadow status is unreadable");
+        return;
+    }
+    nodus_v2_shadow_log_t row;
+    int found = nodus_witness_v2_shadow_log_read(w, h, &row);
+    if (found < 0) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "the shadow log is unreadable");
+        return;
+    }
+    /* header ~40 + st/found ~14 + h ~12 + 12 x (key <= 6 + 66) = ~930; the
+     * buffer leaves headroom and an overflow still fails closed (rlen 0) */
+    uint8_t buf[1536];
+    cbor_encoder_t enc;
+    static const char *const LEG_KEYS[8] = {
+        "l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8"
+    };
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+    enc_dnac_response(&enc, txn_id, "dnac_hf9_shadow", found ? 15 : 2);
+    cbor_encode_cstr(&enc, "st");
+    cbor_encode_uint(&enc, st == NODUS_V2_SHADOW_NONE
+                               ? NODUS_HF9_SHADOW_NONE_WIRE : (uint64_t)st);
+    cbor_encode_cstr(&enc, "found");
+    cbor_encode_bool(&enc, found == 1);
+    if (found == 1) {
+        cbor_encode_cstr(&enc, "h");
+        cbor_encode_uint(&enc, row.height);
+        for (int i = 0; i < 8; i++) {
+            cbor_encode_cstr(&enc, LEG_KEYS[i]);
+            cbor_encode_bstr(&enc, row.leg[i], 64);
+        }
+        cbor_encode_cstr(&enc, "core"); cbor_encode_bstr(&enc, row.core, 64);
+        cbor_encode_cstr(&enc, "stor"); cbor_encode_bstr(&enc, row.stor, 64);
+        cbor_encode_cstr(&enc, "sys");  cbor_encode_bstr(&enc, row.sys, 64);
+        cbor_encode_cstr(&enc, "glob"); cbor_encode_bstr(&enc, row.glob, 64);
+    }
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen > 0) nodus_tcp_send(conn, buf, rlen);
+    else send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+#else
+    (void)w; (void)payload; (void)len;
+    send_error(conn, txn_id, NODUS_ERR_NOT_FOUND,
+               "this build has no shadow run");
+#endif
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * dnac_cc_collect — the node-side governance approval collection
  * (decision docs/plans/decisions/2026-09-26-cc-approval-via-own-node.md)
  *
@@ -7009,6 +7127,8 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_v3_block(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_light_block") == 0) {
         handle_dnac_light_block(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_hf9_shadow") == 0) {
+        handle_dnac_hf9_shadow(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_addr_history") == 0) {
         handle_dnac_addr_history(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_msig_addr_history") == 0) {
