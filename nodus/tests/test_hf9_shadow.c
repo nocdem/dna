@@ -89,7 +89,12 @@
  *     row read or log row follows. D7 (generation 6, NO status row): seeding
  *     is refused and the hook does not seed, nothing written; D5 now also
  *     closes and reopens the database (a real restart) and F reopens inside
- *     the window.
+ *     the window. H5: the status table unreadable while a run exists (the
+ *     run is invalidated, FAULTED reported even while unreadable). H6: the
+ *     generation (runtime-table override) AND the status table unreadable in
+ *     the same call while a run exists: the run is invalidated (latched) and
+ *     does not resume once both are readable again - a code path that
+ *     faults only when the status reads RUNNING fails H6.
  *  G. THE dnac_hf9_shadow REPLY DECODER (nodus_dnac_hf9_shadow_decode, no
  *     network): hand-encoded replies - a found reply with all fifteen keys
  *     and a not-found reply with st / found only decode; a 63-byte root, a
@@ -1456,6 +1461,47 @@ static int t_chain_failures(void) {
         nodus_witness_v2_shadow_after_commit(fx.w);
         CHECK(log_rows(fx.w) == rows,
               "H5: the run does not resume once reads recover");
+    }
+    fx_close(&fx);
+
+    /* H6: BOTH unreadable in the same call - the committed generation (H1's
+     * runtime-table override) and the status (H5's renamed table) - while a
+     * run exists: the status cannot be read as RUNNING, but a run may exist,
+     * so it is invalidated (latched, since the FAULTED write fails too) and
+     * does not resume once both are readable again */
+    CHECK(fx_open(&fx, "bothunread", 0) == 0, "H: chain");
+    fx.w->config.hf9_shadow = NODUS_HF9_SHADOW_ON;
+    for (uint64_t h = 1; h <= H5 - 1u; h++)
+        CHECK(apply_block(&fx, h) == 0, "block");
+    nodus_witness_v2_shadow_after_commit(fx.w);
+    CHECK(shadow_status(fx.w) == NODUS_V2_SHADOW_RUNNING, "H6: seeded");
+    CHECK(apply_block(&fx, H5) == 0, "block");
+    fx.w->v2_runtime_table = &g_no_runtime;
+    fx.w->v2_runtime_table_n = 1;
+    CHECK(run_sql(fx.w->db, "ALTER TABLE v2_trie_shadow_state RENAME TO "
+                            "v2_trie_shadow_state_away") == 0,
+          "H6: the status table becomes unreadable");
+    CHECK(committed_gen(fx.w) == 0, "H6: control - the generation is "
+          "unreadable too");
+    nodus_witness_v2_shadow_after_commit(fx.w);
+    CHECK(fx.w->hf9_shadow_latched == 1,
+          "H6: generation AND status unreadable while a run exists "
+          "invalidates it (latched)");
+    fx.w->v2_runtime_table = NULL;
+    fx.w->v2_runtime_table_n = 0;
+    CHECK(run_sql(fx.w->db, "ALTER TABLE v2_trie_shadow_state_away RENAME TO "
+                            "v2_trie_shadow_state") == 0,
+          "H6: the status table is readable again");
+    CHECK(q1(fx.w->db, "SELECT status FROM v2_trie_shadow_state") ==
+              NODUS_V2_SHADOW_RUNNING &&
+          shadow_status(fx.w) == NODUS_V2_SHADOW_FAULTED,
+          "H6: the stored row still says RUNNING, the shadow reports FAULTED");
+    {
+        const int rows = log_rows(fx.w);
+        CHECK(apply_block(&fx, H5 + 1u) == 0, "block");
+        nodus_witness_v2_shadow_after_commit(fx.w);
+        CHECK(log_rows(fx.w) == rows,
+              "H6: the run does not resume once both reads recover");
     }
     fx_close(&fx);
     return 0;
