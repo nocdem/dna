@@ -33,13 +33,32 @@
  * (HF-9 review row Z-51): a discarded bind leaves the parameter NULL and
  * the step then runs with the wrong key or value. */
 
+/* HF-9 WP5 (plan §5.3, §11): the shadow run updates its tries with THIS
+ * code against the node-local shadow node table. The store context says
+ * which table; the SQL text of the consensus store is unchanged. */
+typedef struct {
+    sqlite3 *db;
+    int      shadow;       /* 0 = v2_trie_nodes, 1 = v2_trie_shadow_nodes */
+} ts_ctx_t;
+
+static const char *const TS_SQL_SELECT[2] = {
+    "SELECT rlp FROM v2_trie_nodes WHERE digest = ?1",
+    "SELECT rlp FROM v2_trie_shadow_nodes WHERE digest = ?1"
+};
+static const char *const TS_SQL_INSERT[2] = {
+    "INSERT INTO v2_trie_nodes (digest, rlp) VALUES (?1, ?2)",
+    "INSERT INTO v2_trie_shadow_nodes (digest, rlp) VALUES (?1, ?2)"
+};
+
 static int ts_get(void *ctx, const uint8_t digest[64], uint8_t **rlp,
                   size_t *len) {
-    sqlite3 *db = (sqlite3 *)ctx;
+    const ts_ctx_t *c = (const ts_ctx_t *)ctx;
+    sqlite3 *db = c->db;
     sqlite3_stmt *st = NULL;
-    g_nodus_storage_work.trie_nodes_loaded++;     /* T-9: nodes loaded */
-    if (sqlite3_prepare_v2(db,
-            "SELECT rlp FROM v2_trie_nodes WHERE digest = ?1",
+    /* T-9: nodes loaded by the CONSENSUS path only; the shadow's loads
+     * are node-local work outside block processing */
+    if (!c->shadow) g_nodus_storage_work.trie_nodes_loaded++;
+    if (sqlite3_prepare_v2(db, TS_SQL_SELECT[c->shadow ? 1 : 0],
             -1, &st, NULL) != SQLITE_OK)
         return -2;
     if (sqlite3_bind_blob(st, 1, digest, 64, SQLITE_TRANSIENT) != SQLITE_OK) {
@@ -71,11 +90,11 @@ static int ts_get(void *ctx, const uint8_t digest[64], uint8_t **rlp,
  * different node under one digest is this node's corruption (FAULT). */
 static int ts_put(void *ctx, const uint8_t digest[64], const uint8_t *rlp,
                   size_t len) {
-    sqlite3 *db = (sqlite3 *)ctx;
+    const ts_ctx_t *c = (const ts_ctx_t *)ctx;
+    sqlite3 *db = c->db;
     sqlite3_stmt *st = NULL;
     if (len == 0 || len > INT32_MAX) return -2;
-    if (sqlite3_prepare_v2(db,
-            "SELECT rlp FROM v2_trie_nodes WHERE digest = ?1",
+    if (sqlite3_prepare_v2(db, TS_SQL_SELECT[c->shadow ? 1 : 0],
             -1, &st, NULL) != SQLITE_OK)
         return -2;
     if (sqlite3_bind_blob(st, 1, digest, 64, SQLITE_TRANSIENT) != SQLITE_OK) {
@@ -96,8 +115,7 @@ static int ts_put(void *ctx, const uint8_t digest[64], const uint8_t *rlp,
     }
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) return -2;
-    if (sqlite3_prepare_v2(db,
-            "INSERT INTO v2_trie_nodes (digest, rlp) VALUES (?1, ?2)",
+    if (sqlite3_prepare_v2(db, TS_SQL_INSERT[c->shadow ? 1 : 0],
             -1, &st, NULL) != SQLITE_OK)
         return -2;
     if (sqlite3_bind_blob(st, 1, digest, 64, SQLITE_TRANSIENT) != SQLITE_OK ||
@@ -111,8 +129,12 @@ static int ts_put(void *ctx, const uint8_t digest[64], const uint8_t *rlp,
     return rc == SQLITE_DONE ? 0 : -2;
 }
 
-static void store_of(nodus_witness_t *w, evm_trie_store_t *s) {
-    s->ctx = w->db;
+/* `c` must outlive the store (the trie handle keeps the pointer). */
+static void store_of(nodus_witness_t *w, int shadow, ts_ctx_t *c,
+                     evm_trie_store_t *s) {
+    c->db = w->db;
+    c->shadow = shadow ? 1 : 0;
+    s->ctx = c;
     s->get = ts_get;
     s->put = ts_put;
 }
@@ -474,10 +496,13 @@ static int leg_read(int leg, sqlite3_stmt *st, v2t_item_t *it) {
 
 /* The committed root of `leg`. A missing row, a root that is not a
  * 64-byte BLOB or a read fault is -1. */
-static int roots_read(nodus_witness_t *w, int leg, uint8_t root[64]) {
+static int roots_read(nodus_witness_t *w, int shadow, int leg,
+                      uint8_t root[64]) {
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "SELECT root, typeof(root) FROM v2_trie_roots WHERE leg = ?1",
+    if (sqlite3_prepare_v2(w->db, shadow
+            ? "SELECT root, typeof(root) FROM v2_trie_shadow_roots "
+              "WHERE leg = ?1"
+            : "SELECT root, typeof(root) FROM v2_trie_roots WHERE leg = ?1",
             -1, &st, NULL) != SQLITE_OK)
         return -1;
     if (sqlite3_bind_int(st, 1, leg) != SQLITE_OK) {
@@ -556,7 +581,13 @@ int nodus_witness_v2_trie_leg_root(nodus_witness_t *w, int leg,
                       "pending", leg, (long long)pending);
         return -1;
     }
-    return roots_read(w, leg, root);
+    return roots_read(w, 0, leg, root);
+}
+
+int nodus_witness_v2_trie_shadow_leg_root(nodus_witness_t *w, int leg,
+                                          uint8_t root[64]) {
+    if (!w || !w->db || !root || !leg_valid(leg)) return -1;
+    return roots_read(w, 1, leg, root);
 }
 
 int nodus_witness_v2_trie_set_capture(nodus_witness_t *w, int capture) {
@@ -585,31 +616,24 @@ typedef struct {
     uint8_t val[64];
 } kv_t;
 
-int nodus_witness_v2_trie_build_leg(nodus_witness_t *w, int leg,
-                                    uint8_t root_inc[64],
-                                    uint8_t root_full[64]) {
-    if (!w || !w->db || !root_inc || !root_full || !leg_valid(leg))
-        return -1;
-    evm_trie_store_t store;
-    store_of(w, &store);
-    uint8_t empty[64];
-    if (evm_trie_empty_root(empty) != 0) return -1;
-    evm_trie_t *t = NULL;
-    if (evm_trie_open(&store, empty, &t) != 0) return -1;
-
+/* The per-leg scan (plan §7.2 step 4): every row ORDER BY primary key with
+ * the reader's row checks and the post-loop SQLITE_DONE check; the rows
+ * the leg selects go to `fn` in that order. Used by the build (consensus
+ * and shadow) and by the shadow's row comparison (plan §11), so both read
+ * the rows through the one set of readers. */
+int nodus_witness_v2_trie_scan_leg(nodus_witness_t *w, int leg,
+                                   nodus_v2_trie_row_fn fn, void *fn_ctx) {
+    if (!w || !w->db || !fn || !leg_valid(leg)) return -1;
     char sql[1100];
     int nw = snprintf(sql, sizeof(sql), "%s ORDER BY %s ASC",
                       LEG_SQL[leg].select, LEG_SQL[leg].pk);
-    if (nw <= 0 || (size_t)nw >= sizeof(sql)) { evm_trie_close(t); return -1; }
+    if (nw <= 0 || (size_t)nw >= sizeof(sql)) return -1;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "leg %d scan prepare failed: %s", leg,
                       sqlite3_errmsg(w->db));
-        evm_trie_close(t);
         return -1;
     }
-    kv_t *kv = NULL;
-    size_t n = 0, cap = 0;
     int rc, fail = 0;
     uint64_t expect_k = 1;                    /* L6: k must be exactly 1..n */
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
@@ -627,21 +651,7 @@ int nodus_witness_v2_trie_build_leg(nodus_witness_t *w, int leg,
             }
             expect_k++;
         }
-        if (n == cap) {
-            size_t nc = cap ? cap * 2 : 64;
-            kv_t *nk = realloc(kv, nc * sizeof(*kv));
-            if (!nk) { fail = 1; break; }
-            kv = nk;
-            cap = nc;
-        }
-        memcpy(kv[n].key, it.key, it.key_len);
-        kv[n].key_len = it.key_len;
-        memcpy(kv[n].val, it.val, 64);
-        if (evm_trie_set(t, it.key, it.key_len, it.val, 64) != 0) {
-            fail = 1;
-            break;
-        }
-        n++;
+        if (fn(fn_ctx, it.key, it.key_len, it.val) != 0) { fail = 1; break; }
     }
     /* an interrupted scan is never a shorter tree */
     if (!fail && rc != SQLITE_DONE) {
@@ -650,6 +660,63 @@ int nodus_witness_v2_trie_build_leg(nodus_witness_t *w, int leg,
         fail = 1;
     }
     sqlite3_finalize(st);
+    return fail ? -1 : 0;
+}
+
+typedef struct {
+    evm_trie_t *t;
+    kv_t       *kv;
+    size_t      n, cap;
+    nodus_v2_trie_row_fn sink;      /* the shadow seeding's row copy      */
+    void                *sink_ctx;
+} build_ctx_t;
+
+static int build_row(void *vctx, const uint8_t *key, size_t key_len,
+                     const uint8_t val[64]) {
+    build_ctx_t *b = (build_ctx_t *)vctx;
+    if (b->n == b->cap) {
+        size_t nc = b->cap ? b->cap * 2 : 64;
+        kv_t *nk = realloc(b->kv, nc * sizeof(*b->kv));
+        if (!nk) return -1;
+        b->kv = nk;
+        b->cap = nc;
+    }
+    memcpy(b->kv[b->n].key, key, key_len);
+    b->kv[b->n].key_len = key_len;
+    memcpy(b->kv[b->n].val, val, 64);
+    if (evm_trie_set(b->t, key, key_len, val, 64) != 0) return -1;
+    if (b->sink && b->sink(b->sink_ctx, key, key_len, val) != 0) return -1;
+    b->n++;
+    return 0;
+}
+
+/* The build of one leg into the consensus store (shadow = 0) or the
+ * shadow node table (shadow = 1) - the one code path of the edge's build
+ * and the shadow seeding (plan §11: "the same build function as the
+ * edge"). `sink` (shadow seeding only) sees each selected row. */
+static int build_leg_impl(nodus_witness_t *w, int leg, int shadow,
+                          nodus_v2_trie_row_fn sink, void *sink_ctx,
+                          uint8_t root_inc[64], uint8_t root_full[64]) {
+    if (!w || !w->db || !root_inc || !root_full || !leg_valid(leg))
+        return -1;
+    ts_ctx_t tctx;
+    evm_trie_store_t store;
+    store_of(w, shadow, &tctx, &store);
+    uint8_t empty[64];
+    if (evm_trie_empty_root(empty) != 0) return -1;
+    evm_trie_t *t = NULL;
+    if (evm_trie_open(&store, empty, &t) != 0) return -1;
+
+    build_ctx_t b;
+    memset(&b, 0, sizeof(b));
+    b.t = t;
+    b.sink = sink;
+    b.sink_ctx = sink_ctx;
+    kv_t *kv = NULL;
+    size_t n = 0;
+    int fail = nodus_witness_v2_trie_scan_leg(w, leg, build_row, &b) != 0;
+    kv = b.kv;
+    n = b.n;
 
     int ret = -1;
     evm_trie_full_kv *fk = NULL;
@@ -671,6 +738,20 @@ int nodus_witness_v2_trie_build_leg(nodus_witness_t *w, int leg,
     free(kv);
     evm_trie_close(t);
     return ret;
+}
+
+int nodus_witness_v2_trie_build_leg(nodus_witness_t *w, int leg,
+                                    uint8_t root_inc[64],
+                                    uint8_t root_full[64]) {
+    return build_leg_impl(w, leg, 0, NULL, NULL, root_inc, root_full);
+}
+
+int nodus_witness_v2_trie_shadow_build_leg(nodus_witness_t *w, int leg,
+                                           nodus_v2_trie_row_fn sink,
+                                           void *sink_ctx,
+                                           uint8_t root_inc[64],
+                                           uint8_t root_full[64]) {
+    return build_leg_impl(w, leg, 1, sink, sink_ctx, root_inc, root_full);
 }
 
 #ifdef QGP_FAULT_INJECT
@@ -728,19 +809,105 @@ int nodus_witness_v2_trie_build_all(nodus_witness_t *w) {
 
 /* ── the flush (plan §5.3) ───────────────────────────────────────────── */
 
+/* The update of one key against an open trie (plan §5.3: "read row, set
+ * or delete") - THE code the consensus flush and the shadow run share.
+ * `rq` is the leg's point-lookup statement (the leg's SELECT WHERE pk = ?1),
+ * `kb`/`kl` the canonical key bytes and `ikey` the integer primary key of
+ * an integer-keyed leg. The row is re-read with the reader's row checks:
+ * present and selected -> evm_trie_set, absent or not selected ->
+ * evm_trie_delete. @return 0 / -1. */
+static int apply_key(int leg, sqlite3_stmt *rq, evm_trie_t *t,
+                     const uint8_t *kb, size_t kl, sqlite3_int64 ikey) {
+    if (sqlite3_reset(rq) != SQLITE_OK ||
+        sqlite3_clear_bindings(rq) != SQLITE_OK) return -1;
+    int bind_ok = leg_int_keyed(leg)
+        ? sqlite3_bind_int64(rq, 1, ikey) == SQLITE_OK
+        : sqlite3_bind_blob(rq, 1, kb, (int)kl, SQLITE_STATIC) == SQLITE_OK;
+    if (!bind_ok) return -1;
+
+    v2t_item_t it;
+    int rr = sqlite3_step(rq);
+    if (rr == SQLITE_ROW) {
+        if (leg_read(leg, rq, &it) != 0) return -1;
+        /* a second row would be a table without its key */
+        if (sqlite3_step(rq) != SQLITE_DONE) return -1;
+        if (it.selected) {
+            if (it.key_len != kl || memcmp(it.key, kb, kl) != 0)
+                return -1;         /* the row's key is not the dirty key */
+            return evm_trie_set(t, kb, kl, it.val, 64) == 0 ? 0 : -1;
+        }
+    } else if (rr != SQLITE_DONE) {
+        return -1;
+    }
+    /* row absent, or present but not part of the leg */
+    return evm_trie_delete(t, kb, kl) == 0 ? 0 : -1;
+}
+
+/* HF-9 WP5 (plan §11): the shadow's trie update. The sorted changed-key
+ * list comes from the post-commit row comparison; every key then goes
+ * through apply_key, exactly as the consensus flush does, against the
+ * SHADOW node table, starting at `root_in` and ending at `root_out`
+ * (committed to v2_trie_shadow_nodes; the caller stores the root). */
+int nodus_witness_v2_trie_shadow_update_leg(nodus_witness_t *w, int leg,
+                                            const nodus_v2_trie_key_t *keys,
+                                            size_t n,
+                                            const uint8_t root_in[64],
+                                            uint8_t root_out[64]) {
+    if (!w || !w->db || !root_in || !root_out || !leg_valid(leg) ||
+        (n && !keys))
+        return -1;
+    ts_ctx_t tctx;
+    evm_trie_store_t store;
+    store_of(w, 1, &tctx, &store);
+    evm_trie_t *t = NULL;
+    if (evm_trie_open(&store, root_in, &t) != 0) return -1;
+
+    char sql[1200];
+    int nw = snprintf(sql, sizeof(sql), "%s WHERE %s = ?1",
+                      LEG_SQL[leg].select, LEG_SQL[leg].pk);
+    sqlite3_stmt *rq = NULL;
+    int ret = -1;
+    do {
+        if (nw <= 0 || (size_t)nw >= sizeof(sql)) break;
+        if (sqlite3_prepare_v2(w->db, sql, -1, &rq, NULL) != SQLITE_OK) break;
+        size_t i;
+        for (i = 0; i < n; i++) {
+            sqlite3_int64 ik = 0;
+            if (leg_int_keyed(leg)) {
+                if (keys[i].len != 8) break;
+                uint64_t u = 0;
+                for (int b = 0; b < 8; b++) u = (u << 8) | keys[i].b[b];
+                ik = (sqlite3_int64)u;
+            } else if (keys[i].len < 1 || keys[i].len > 64) {
+                break;
+            }
+            if (apply_key(leg, rq, t, keys[i].b, keys[i].len, ik) != 0) break;
+        }
+        if (i != n) break;
+        if (evm_trie_commit(t, root_out) != 0) break;
+        ret = 0;
+    } while (0);
+    sqlite3_finalize(rq);
+    evm_trie_close(t);
+    if (ret != 0)
+        QGP_LOG_ERROR(LOG_TAG, "leg %d shadow update FAULT", leg);
+    return ret;
+}
+
 static int flush_leg(nodus_witness_t *w, int leg) {
     int64_t pending = 0;
     if (count_leg_dirty(w, leg, &pending) != 0) return -1;
     if (pending == 0) return 0;               /* nothing to change          */
 
     uint8_t root[64];
-    if (roots_read(w, leg, root) != 0) {
+    if (roots_read(w, 0, leg, root) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "leg %d has dirty keys but no committed "
                       "root row", leg);
         return -1;
     }
+    ts_ctx_t tctx;
     evm_trie_store_t store;
-    store_of(w, &store);
+    store_of(w, 0, &tctx, &store);
     evm_trie_t *t = NULL;
     if (evm_trie_open(&store, root, &t) != 0) return -1;
 
@@ -763,15 +930,12 @@ static int flush_leg(nodus_witness_t *w, int leg) {
             const char *ty = (const char *)sqlite3_column_text(dq, 1);
             uint8_t kb[64];
             size_t kl = 0;
-            int bind_ok;
-            if (sqlite3_reset(rq) != SQLITE_OK ||
-                sqlite3_clear_bindings(rq) != SQLITE_OK) { bad = 1; break; }
+            sqlite3_int64 ikey = 0;
             if (is_int) {
                 if (!ty || strcmp(ty, "integer") != 0) { bad = 1; break; }
-                sqlite3_int64 kv = sqlite3_column_int64(dq, 0);
-                put_be64((uint64_t)kv, kb);
+                ikey = sqlite3_column_int64(dq, 0);
+                put_be64((uint64_t)ikey, kb);
                 kl = 8;
-                bind_ok = sqlite3_bind_int64(rq, 1, kv) == SQLITE_OK;
             } else {
                 if (!ty || strcmp(ty, "blob") != 0) { bad = 1; break; }
                 int bl = sqlite3_column_bytes(dq, 0);
@@ -779,34 +943,8 @@ static int flush_leg(nodus_witness_t *w, int leg) {
                 if (bl < 1 || bl > 64 || !bp) { bad = 1; break; }
                 memcpy(kb, bp, (size_t)bl);
                 kl = (size_t)bl;
-                bind_ok = sqlite3_bind_blob(rq, 1, kb, (int)kl,
-                                            SQLITE_STATIC) == SQLITE_OK;
             }
-            if (!bind_ok) { bad = 1; break; }
-
-            v2t_item_t it;
-            int rr = sqlite3_step(rq);
-            if (rr == SQLITE_ROW) {
-                if (leg_read(leg, rq, &it) != 0) { bad = 1; break; }
-                /* a second row would be a table without its key */
-                if (sqlite3_step(rq) != SQLITE_DONE) { bad = 1; break; }
-                if (it.selected) {
-                    if (it.key_len != kl || memcmp(it.key, kb, kl) != 0) {
-                        bad = 1;       /* the row's key is not the dirty key */
-                        break;
-                    }
-                    if (evm_trie_set(t, kb, kl, it.val, 64) != 0) {
-                        bad = 1;
-                        break;
-                    }
-                    continue;
-                }
-            } else if (rr != SQLITE_DONE) {
-                bad = 1;
-                break;
-            }
-            /* row absent, or present but not part of the leg */
-            if (evm_trie_delete(t, kb, kl) != 0) { bad = 1; break; }
+            if (apply_key(leg, rq, t, kb, kl, ikey) != 0) { bad = 1; break; }
         }
         if (bad || rc != SQLITE_DONE) break;
         /* T-9 "rows read": the work EXAMINED by the source queries (the

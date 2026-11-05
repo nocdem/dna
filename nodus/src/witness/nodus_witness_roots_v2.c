@@ -53,6 +53,19 @@ static int trie_leg_root(nodus_witness_t *w, int leg, uint8_t out[64]) {
 #endif
 }
 
+/* HF-9 WP5 (plan §11): the leg source of the SHADOW compositions. `mode`
+ * 1 = the committed v2_trie_roots (trie_leg_root above), 2 = the shadow
+ * run's v2_trie_shadow_roots. The mode is a per-call argument, never state,
+ * so no consensus read can pick up a shadow root: only the *_shadow entry
+ * points below pass 2. */
+static int trie_leg_root_m(nodus_witness_t *w, int mode, int leg,
+                           uint8_t out[64]) {
+#ifdef NODUS_EVM_ENABLED
+    if (mode == 2) return nodus_witness_v2_trie_shadow_leg_root(w, leg, out);
+#endif
+    return trie_leg_root(w, leg, out);
+}
+
 /* ── token_root ─────────────────────────────────────────────────────── */
 
 int nodus_witness_token_root_v2(nodus_witness_t *w, uint8_t out[64]) {
@@ -684,14 +697,25 @@ int nodus_witness_storage_root_segv2(nodus_witness_t *w, uint8_t out[64]) {
 /* HF-9 WP3 — contract: nodus_witness_roots_v2.h. "NDS.STOR.v3": the four
  * legs in the "NDS.STOR.v2" order; registry (L5) and segments (L6) are the
  * committed keyed-trie roots, sets and reports are read as before. */
-int nodus_witness_storage_root_v3(nodus_witness_t *w, uint8_t out[64]) {
+static int storage_root_v3_impl(nodus_witness_t *w, int mode,
+                                uint8_t out[64]) {
     if (!w || !w->db || !out) return -1;
     uint8_t reg[64], sets[64], reps[64], segs[64];
-    if (trie_leg_root(w, 5, reg) != 0) return -1;
+    if (trie_leg_root_m(w, mode, 5, reg) != 0) return -1;
     if (nodus_witness_storage_sets_root(w, sets) != 0) return -1;
     if (nodus_witness_storage_reports_root(w, reps) != 0) return -1;
-    if (trie_leg_root(w, 6, segs) != 0) return -1;
+    if (trie_leg_root_m(w, mode, 6, segs) != 0) return -1;
     return dna_v2_storage_root_v3(reg, sets, reps, segs, out);
+}
+
+int nodus_witness_storage_root_v3(nodus_witness_t *w, uint8_t out[64]) {
+    return storage_root_v3_impl(w, 1, out);
+}
+
+/* HF-9 WP5 - contract: nodus_witness_roots_v2.h. */
+int nodus_witness_storage_root_v3_shadow(nodus_witness_t *w,
+                                         uint8_t out[64]) {
+    return storage_root_v3_impl(w, 2, out);
 }
 
 /* ── attendance_root (tokenomics-v3 P1, D-4 / S-2) ─────────────────────
@@ -868,7 +892,7 @@ static int system_legs_v4(nodus_witness_t *w, sys_legs_v4_t *l,
      * so a pre-snapshot chain's system_state_root is byte-unchanged.
      * HF-9: under the trie composition this leg is trie L7. */
     if (trie_legs) {
-        if (trie_leg_root(w, 7, vset) != 0) return -1;
+        if (trie_leg_root_m(w, trie_legs, 7, vset) != 0) return -1;
     } else if (nodus_witness_vset_root(w, vset) != 0) {
         return -1;
     }
@@ -899,7 +923,7 @@ static int system_legs_v4(nodus_witness_t *w, sys_legs_v4_t *l,
      * F12 ve F13-b" class). HF-9: under the trie composition this leg
      * is trie L8. */
     if (trie_legs) {
-        if (trie_leg_root(w, 8, attendance) != 0) return -1;
+        if (trie_leg_root_m(w, trie_legs, 8, attendance) != 0) return -1;
     } else if (nodus_witness_attendance_root(w, attendance) != 0) {
         return -1;
     }
@@ -1278,13 +1302,14 @@ int nodus_witness_system_root_v6(nodus_witness_t *w, uint8_t out[64]) {
  * (L7) and attendance_root (L8) through system_legs_v4's trie mode, and
  * storage_root as "NDS.STOR.v3" (registry L5, segments L6;
  * nodus_witness_storage_root_v3). */
-int nodus_witness_system_root_v7(nodus_witness_t *w, uint8_t out[64]) {
+static int system_root_v7_impl(nodus_witness_t *w, int mode,
+                               uint8_t out[64]) {
     if (!w || !out) return -1;
     sys_legs_v4_t l;
     uint8_t storage[64], bcopy[64], vstat[64], stmem[64];
-    if (system_legs_v4(w, &l, /*v2_leaves=*/1, /*trie_legs=*/1) != 0)
+    if (system_legs_v4(w, &l, /*v2_leaves=*/1, /*trie_legs=*/mode) != 0)
         return -1;
-    if (nodus_witness_storage_root_v3(w, storage) != 0) return -1;
+    if (storage_root_v3_impl(w, mode, storage) != 0) return -1;
     if (nodus_witness_bcopy_root(w, bcopy) != 0) return -1;
     if (nodus_witness_vstat_hash(w, vstat) != 0) return -1;
     if (nodus_witness_stmem_root(w, stmem) != 0) return -1;
@@ -1292,6 +1317,15 @@ int nodus_witness_system_root_v7(nodus_witness_t *w, uint8_t out[64]) {
                                  l.chain_config_root, l.vset, l.domreg,
                                  l.manifest, l.attendance, l.treasury,
                                  storage, bcopy, vstat, stmem, out);
+}
+
+int nodus_witness_system_root_v7(nodus_witness_t *w, uint8_t out[64]) {
+    return system_root_v7_impl(w, 1, out);
+}
+
+/* HF-9 WP5 - contract: nodus_witness_roots_v2.h. */
+int nodus_witness_system_root_v7_shadow(nodus_witness_t *w, uint8_t out[64]) {
+    return system_root_v7_impl(w, 2, out);
 }
 
 /* The body of both CORE root variants: `with_evm_reserve` 0 = every
@@ -1311,8 +1345,8 @@ static int core_root_impl(nodus_witness_t *w, int with_evm_reserve,
     uint8_t supply[64], accrual[64];
     if (trie) {
         if (!with_evm_reserve) return -1;
-        if (trie_leg_root(w, 1, utxo_root) != 0) return -1;
-        if (trie_leg_root(w, 2, token_root) != 0) return -1;
+        if (trie_leg_root_m(w, trie, 1, utxo_root) != 0) return -1;
+        if (trie_leg_root_m(w, trie, 2, token_root) != 0) return -1;
     } else {
         if (nodus_witness_merkle_compute_utxo_root(w, utxo_root) != 0)
             return -1;
@@ -1335,7 +1369,7 @@ static int core_root_impl(nodus_witness_t *w, int with_evm_reserve,
      * composition this leg is trie L3 — the CORE-targeted rows only, the
      * one trie of the one caller (plan §4.2 row L3). */
     if (trie) {
-        if (trie_leg_root(w, 3, claims) != 0) return -1;
+        if (trie_leg_root_m(w, trie, 3, claims) != 0) return -1;
     } else if (nodus_witness_claims_root_v2(w, DNA_DOMAIN_CORE, claims)
                != 0) {
         return -1;
@@ -1346,7 +1380,7 @@ static int core_root_impl(nodus_witness_t *w, int with_evm_reserve,
      * and the composition tag stays "NDS.CORE.v2". HF-9: under the trie
      * composition this leg is trie L4. */
     if (trie) {
-        if (trie_leg_root(w, 4, names) != 0) return -1;
+        if (trie_leg_root_m(w, trie, 4, names) != 0) return -1;
     } else if (names_root_v2(w, names) != 0) {
         return -1;
     }
@@ -1394,6 +1428,11 @@ int nodus_witness_core_root_v2_evm(nodus_witness_t *w, uint8_t out[64]) {
 /* HF-9 WP3 — contract: nodus_witness_roots_v2.h. */
 int nodus_witness_core_root_v4(nodus_witness_t *w, uint8_t out[64]) {
     return core_root_impl(w, 1, 1, out);
+}
+
+/* HF-9 WP5 - contract: nodus_witness_roots_v2.h. */
+int nodus_witness_core_root_v4_shadow(nodus_witness_t *w, uint8_t out[64]) {
+    return core_root_impl(w, 1, 2, out);
 }
 
 /* Decode the 89-byte canonical head blob (layout: ledger_roots_v2.h). */
@@ -1453,15 +1492,29 @@ static int roots_generation_on(nodus_witness_t *w) {
     return rt->generation >= NODUS_RT_GEN_ROOTS;
 }
 
-int nodus_witness_global_root_v2(nodus_witness_t *w,
-                                 uint8_t out_global[64],
-                                 uint8_t out_domains[64],
-                                 uint8_t out_system[64],
-                                 uint8_t out_core[64]) {
+/* `shadow` (HF-9 WP5, plan §11) 0 = the committed compositions exactly as
+ * before; 1 = the shadow run's GLOBAL v2' recipe: the SYSTEM and CORE
+ * roots are the shadow compositions (SYS v7' and CORE v4' over the shadow
+ * legs) and replace the domain_state_root of the SYSTEM and CORE heads;
+ * every other byte (the other domains' heads, every head's ruleset
+ * version, status and heights, the head-authoritative last_upd_hash
+ * column, the replay root) is the COMMITTED one. Only the head-bearing
+ * ROOTS-generation composition is a shadow subject (a chain without
+ * heads, or below the ROOTS generation, answers -1). */
+static int global_root_v2_impl(nodus_witness_t *w, int shadow,
+                               uint8_t out_global[64],
+                               uint8_t out_domains[64],
+                               uint8_t out_system[64],
+                               uint8_t out_core[64]) {
     if (!w || !out_global) return -1;
     uint8_t sys[64], core[64], domains[64];
-    if (nodus_witness_system_root_v2(w, sys) != 0) return -1;
-    if (nodus_witness_core_root_v2(w, core) != 0) return -1;
+    if (shadow) {
+        if (nodus_witness_system_root_v7_shadow(w, sys) != 0) return -1;
+        if (nodus_witness_core_root_v4_shadow(w, core) != 0) return -1;
+    } else {
+        if (nodus_witness_system_root_v2(w, sys) != 0) return -1;
+        if (nodus_witness_core_root_v2(w, core) != 0) return -1;
+    }
 
     /* When S5 head persistence exists (v2_domain_heads with rows), the
      * COMMITTED heads are the authority — ANY registered domain count,
@@ -1498,6 +1551,7 @@ int nodus_witness_global_root_v2(nodus_witness_t *w,
          * is v2 (+ the replay leg) — the same composer phase 13 uses.
          * Below it the SELECT and the bytes are exactly the old ones. */
         const int roots_v2 = roots_generation_on(w);
+        if (shadow && !roots_v2) return -1;
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(w->db, roots_v2
                 ? "SELECT head, last_upd_hash, typeof(last_upd_hash) "
@@ -1533,6 +1587,10 @@ int nodus_witness_global_root_v2(nodus_witness_t *w,
                 break;
             }
             head_blob_decode(sqlite3_column_blob(st, 0), &heads[n]);
+            if (shadow && heads[n].domain_id == DNA_DOMAIN_SYSTEM)
+                memcpy(heads[n].domain_state_root, sys, 64);
+            else if (shadow && heads[n].domain_id == DNA_DOMAIN_CORE)
+                memcpy(heads[n].domain_state_root, core, 64);
             if (roots_v2) {
                 /* the column is mandatory under the ROOTS generation: NULL
                  * means the edge never seeded it — a fault, never a
@@ -1559,6 +1617,7 @@ int nodus_witness_global_root_v2(nodus_witness_t *w,
         free(luh);
         if (ret != 0) return -1;
     } else {
+        if (shadow) return -1;      /* a head-less chain is no shadow subject */
         /* Pre-S5 fixture composition (frozen S2 KAT behavior). */
         dna_v2_domain_head_t heads[2];
         memset(heads, 0, sizeof(heads));
@@ -1576,4 +1635,23 @@ int nodus_witness_global_root_v2(nodus_witness_t *w,
     if (out_system)  memcpy(out_system, sys, 64);
     if (out_core)    memcpy(out_core, core, 64);
     return 0;
+}
+
+int nodus_witness_global_root_v2(nodus_witness_t *w,
+                                 uint8_t out_global[64],
+                                 uint8_t out_domains[64],
+                                 uint8_t out_system[64],
+                                 uint8_t out_core[64]) {
+    return global_root_v2_impl(w, 0, out_global, out_domains, out_system,
+                               out_core);
+}
+
+/* HF-9 WP5 - contract: nodus_witness_roots_v2.h. */
+int nodus_witness_global_root_v2_shadow(nodus_witness_t *w,
+                                        uint8_t out_global[64],
+                                        uint8_t out_domains[64],
+                                        uint8_t out_system[64],
+                                        uint8_t out_core[64]) {
+    return global_root_v2_impl(w, 1, out_global, out_domains, out_system,
+                               out_core);
 }

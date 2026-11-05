@@ -357,6 +357,45 @@ int nodus_witness_global_root_v2(nodus_witness_t *w,
                                  uint8_t out_system[64],
                                  uint8_t out_core[64]);
 
+/* ── HF-9 WP5 (plan docs/plans/approved/2026-11-04-hf9.md §11): the SHADOW
+ *    compositions. NODE-LOCAL and never consensus: the shadow run logs
+ *    them after each commit, and `hf9_shadow_diff.sh` compares them across
+ *    the eight nodes, so the ONLY value of these numbers is that every node
+ *    computes the same bytes from the same committed state. They read the
+ *    keyed-trie legs from v2_trie_shadow_roots (never v2_trie_roots), and
+ *    every other input exactly as the committed composition reads it.
+ *    No consensus path calls them; a build without NODUS_EVM_ENABLED
+ *    answers -1. ──────────────────────────────────────────────────────── */
+
+/** CORE v4' = nodus_witness_core_root_v4 with legs L1-L4 from the shadow
+ *  roots. @return 0 / -1. */
+int nodus_witness_core_root_v4_shadow(nodus_witness_t *w, uint8_t out[64]);
+
+/** STOR v3' = nodus_witness_storage_root_v3 with legs L5 / L6 from the
+ *  shadow roots. @return 0 / -1. */
+int nodus_witness_storage_root_v3_shadow(nodus_witness_t *w,
+                                         uint8_t out[64]);
+
+/** SYS v7' = nodus_witness_system_root_v7 with legs L7 / L8 and the
+ *  storage leg (STOR v3') from the shadow roots. @return 0 / -1. */
+int nodus_witness_system_root_v7_shadow(nodus_witness_t *w, uint8_t out[64]);
+
+/** GLOBAL v2' - THE recipe (the same on every node): the COMMITTED
+ *  v2_domain_heads rows as stored (head blob and head-authoritative
+ *  last_upd_hash column), the domain_state_root of the SYSTEM head
+ *  replaced by SYS v7' and that of the CORE head by CORE v4' (every other
+ *  head field, the ruleset versions included, as committed), composed by
+ *  nodus_witness_global_compose(roots_v2 = 1) with the replay root as
+ *  committed. Only the head-bearing composition of a chain at or past the
+ *  ROOTS generation is a shadow subject: a head-less chain or an older
+ *  generation answers -1. The optional outputs are the domains root and
+ *  the two shadow roots. @return 0 / -1. */
+int nodus_witness_global_root_v2_shadow(nodus_witness_t *w,
+                                        uint8_t out_global[64],
+                                        uint8_t out_domains[64],
+                                        uint8_t out_system[64],
+                                        uint8_t out_core[64]);
+
 #ifdef __cplusplus
 }
 #endif

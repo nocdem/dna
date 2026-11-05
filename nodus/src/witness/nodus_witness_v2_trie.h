@@ -86,6 +86,60 @@ int nodus_witness_v2_trie_build_leg(nodus_witness_t *w, int leg,
                                     uint8_t root_inc[64],
                                     uint8_t root_full[64]);
 
+/* ── HF-9 WP5 (plan §11): what the node-local shadow run shares with the
+ *    consensus code. The shadow keeps its own tries in v2_trie_shadow_nodes
+ *    / v2_trie_shadow_roots (created by nodus_witness_v2_shadow.c) and
+ *    NEVER touches v2_trie_nodes, v2_trie_roots, v2_trie_dirty or
+ *    v2_trie_state. */
+
+/** One selected row of a leg: canonical key bytes (key_len 3..64) and the
+ *  64-byte leaf value. Return nonzero to abort the scan (the scan is then
+ *  -1). */
+typedef int (*nodus_v2_trie_row_fn)(void *ctx, const uint8_t *key,
+                                    size_t key_len, const uint8_t val[64]);
+
+/** The sorted-list element of the shadow update: canonical key bytes. */
+typedef struct {
+    uint8_t b[64];
+    size_t  len;
+} nodus_v2_trie_key_t;
+
+/** Scan one leg's table ORDER BY primary key with the reader's row checks
+ *  and the post-loop SQLITE_DONE check (a malformed row, a mid-scan error
+ *  or an interrupted scan is -1, never a shorter list; the segments'
+ *  k = 1..n contiguity is checked here too), calling `fn` for every row
+ *  the leg selects, in that order. This is the scan of the build
+ *  (build_leg) itself. @return 0 / -1. */
+int nodus_witness_v2_trie_scan_leg(nodus_witness_t *w, int leg,
+                                   nodus_v2_trie_row_fn fn, void *fn_ctx);
+
+/** build_leg (same code, same row readers, same full-rebuild check) into
+ *  the SHADOW node table v2_trie_shadow_nodes. `sink` (may be NULL) sees
+ *  every selected row, in order - the shadow seeding copies the rows with
+ *  it. Writes no root row. @return 0 / -1. */
+int nodus_witness_v2_trie_shadow_build_leg(nodus_witness_t *w, int leg,
+                                           nodus_v2_trie_row_fn sink,
+                                           void *sink_ctx,
+                                           uint8_t root_inc[64],
+                                           uint8_t root_full[64]);
+
+/** The step-by-step update of the consensus flush (open at `root_in`, for
+ *  each key in the given ascending order: read the row by primary key with
+ *  the reader's checks, set or delete; commit) against the SHADOW node
+ *  table. The caller stores `root_out`. Any fault is -1 (nothing is
+ *  returned as a root). @return 0 / -1. */
+int nodus_witness_v2_trie_shadow_update_leg(nodus_witness_t *w, int leg,
+                                            const nodus_v2_trie_key_t *keys,
+                                            size_t n,
+                                            const uint8_t root_in[64],
+                                            uint8_t root_out[64]);
+
+/** The shadow root of `leg` from v2_trie_shadow_roots (64 bytes): the
+ *  source the shadow compositions read (nodus_witness_roots_v2.h). A
+ *  missing or malformed row is -1. @return 0 / -1. */
+int nodus_witness_v2_trie_shadow_leg_root(nodus_witness_t *w, int leg,
+                                          uint8_t root[64]);
+
 /** Build all eight legs (build_leg for leg 1..8), require root_inc ==
  *  root_full for every leg, then write v2_trie_roots (INSERT OR REPLACE,
  *  one row per leg). Nothing is written to v2_trie_roots unless all eight
