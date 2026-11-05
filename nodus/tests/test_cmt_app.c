@@ -1140,6 +1140,16 @@ typedef struct {
      * never the frame `exec_t` lives on (the repo's own rule). */
     cmt_commit_sig_t       *last_sigs;
     uint8_t                 chain_id[32];   /* the vote sign bytes' */
+    /* HF-9 WP4 (hybrid T-15): nanoseconds ADDED to the last block time in
+     * every LastCommit vote stamp. 0 (every other case: unchanged) stamps
+     * the votes with the last block time itself, so block h+1's median
+     * time equals block h's; the ported validation requires block time >
+     * last block time (nodus_witness_cmt_host.c:1163-1169, the port of
+     * state/validation.go:132) and the replay path runs it. The hybrid
+     * nodes set 1, so the median of equal stamps (cmt_state.c:255-268, the
+     * port of MedianTime, state.go:250) is strictly greater than the last
+     * block time; the block header time IS that median (validation.go:139). */
+    int64_t                 vote_ts_step_ns;
     /* the block's PART SET, which is where a complete BlockID's
      * PartSetHeader comes from — heap, one 64 KiB part per slot */
     uint8_t                *part_scratch;
@@ -1360,6 +1370,12 @@ static int exec_make_last_commit(exec_t *x, int64_t height,
      * timestamp. The chain's own last block time is the honest choice
      * and is always a valid instant. */
     ts = x->state->last_block_time;
+    if (x->vote_ts_step_ns > 0) {
+        int64_t nn = (int64_t)ts.nanos + x->vote_ts_step_ns;
+
+        ts.seconds += nn / 1000000000;
+        ts.nanos    = (int32_t)(nn % 1000000000);
+    }
     if (cmt_validator_set_init(&vals, storage, CMT_VALSET_MAX) != CMT_OK ||
         nodus_cmt_ss_load_validators(x->store, height, &vals) != CMT_OK) {
         goto done;
@@ -7559,7 +7575,67 @@ typedef struct {
     cmt_block_id_t bid;
 } hyb_t;
 
-static int hyb_open(hyb_t *h)
+/* HF-9 WP4 (funding probe, step a): the coins a funded hybrid chain gets
+ * BEFORE the genesis, as test_storage_b2.c fx_open :1540-1590 plants them
+ * (utxo_set rows, owner = the key's SHA3-512 fingerprint in lower-case hex,
+ * native token, domain 1). Nothing else is planted: v2x_seed_rows
+ * (v2_genesis_fixture.h ~700-840) itself seeds the committee (the hook's
+ * g_ks keys), the supply_tracking row ("absent: created with
+ * genesis_supply = UTXOs + bonds + delegated") and the nine v2_treasury
+ * rows, so the coins join the supply by construction. */
+#define HYB_COIN_BOND  (1000000ULL * 100000000ULL)   /* DNAC_HF6_STORAGE_
+                                                      * BOND_DEFAULT      */
+#define HYB_N_COINS    2
+
+static void hyb_coin_nul(int c, uint8_t out[64])
+{
+    uint8_t pre[16] = "hf9-wp4-hyb-coin";
+
+    pre[15] = (uint8_t)c;
+    qgp_sha3_512(pre, sizeof(pre), out);
+}
+
+static uint64_t hyb_coin_amount(int c)
+{
+    return c == 0 ? 2u * HYB_COIN_BOND : HYB_COIN_BOND;
+}
+
+static int hyb_coin_owner_hex(int key, char hex[129])
+{
+    uint8_t fp[64];
+
+    if (qgp_sha3_512(g_ks[key].pk, QGP_DSA87_PUBLICKEYBYTES, fp) != 0)
+        return -1;
+    for (int i = 0; i < 64; i++)
+        snprintf(hex + 2 * i, 3, "%02x", fp[i]);
+    return 0;
+}
+
+static int hyb_seed_coin(nodus_witness_t *w, int c)
+{
+    sqlite3_stmt *st = NULL;
+    uint8_t       nul[64];
+    char          hex[129];
+    int           rc;
+
+    hyb_coin_nul(c, nul);
+    if (hyb_coin_owner_hex(c, hex) != 0) return -1;
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
+            "tx_hash, output_index, block_height, created_at, "
+            "unlock_block, domain_id) VALUES "
+            "(?1, ?2, ?3, zeroblob(64), zeroblob(64), 0, 0, 0, 0, 1)",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, nul, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, hex, 128, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)hyb_coin_amount(c));
+    rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+static int hyb_open(hyb_t *h, int funded)
 {
     v2x_cfgbox_t hb;
     uint8_t      file16[16];
@@ -7591,6 +7667,12 @@ static int hyb_open(hyb_t *h)
           hyb_cc_row(h->g.w, DNAC_CFG_RULESET_GEN_TRIE,
                      (uint64_t)DNAC_CFG_RULESET_GEN_TRIE_D, 14, 16) == 0,
           "hyb: the ladder rows before the genesis");
+    if (funded) {
+        for (int c = 0; c < HYB_N_COINS; c++)
+            CHECK(hyb_seed_coin(h->g.w, c) == 0, "hyb: a coin before the "
+                  "genesis");
+        v2x_seed_not_real(V2X_SEED_NOT_REAL_UTXOS);   /* one-shot */
+    }
     CHECK(v2x_seed_genesis(h->g.w, file16, 0, NULL, 0, h->g.chain32) == 0,
           "hyb: the seeded genesis");
     g_v2x_cfg_hook = NULL;
@@ -7604,6 +7686,7 @@ static int hyb_open(hyb_t *h)
     h->g.w->host = &h->g.host;
     memcpy(h->g.w->my_id, g_ks[0].voter, 32);
     CHECK(exec_init(&h->x, &h->g) == 0, "hyb: exec_init");
+    h->x.vote_ts_step_ns = 1;   /* strictly increasing block times */
     return 0;
 }
 
@@ -7795,8 +7878,8 @@ static int hyb_case(int64_t stop_h, const char *what)
     int     nb = -1, rc;
 
     CHECK(A && Bn, "alloc");
-    CHECK(hyb_open(A) == 0, "S0 node A (stops) opens");
-    CHECK(hyb_open(Bn) == 0, "S0 node B (never stops) opens");
+    CHECK(hyb_open(A, 0) == 0, "S0 node A (stops) opens");
+    CHECK(hyb_open(Bn, 0) == 0, "S0 node B (never stops) opens");
     /* every block is made ONCE (by A) and applied to both nodes: the same
      * bytes (signing is randomized, two builders would differ) */
     CHECK(hyb_pair_to(A, Bn, 0, stop_h - 1) == 0,
@@ -7900,6 +7983,75 @@ static int t_hyb_crash_boundary(void)
     return hyb_case((int64_t)DNAC_EPOCH_LENGTH,
                     "the first generation-6 boundary B1, no storage event");
 }
+/* HF-9 WP4 — the FUNDED hybrid probe (step a of the registry-writer
+ * route: plan :445 T-5, :449 T-9, :455 T-15 (iii) with a storage event all
+ * need coins on the generation-6 chain). Builds the hybrid with two coins
+ * planted before the genesis and asserts, one labelled CHECK each: F1 the
+ * genesis still derives (hyb_open), F2 the coins are present and nothing
+ * else is a UTXO, F3 the supply invariant (genesis_supply = current_supply
+ * = UTXOs + validator stakes + delegated) and the committee / treasury rows
+ * v2x seeded itself, F4 one empty block applies through the real blockexec
+ * (the supply check runs inside the apply), F5 two more blocks with the
+ * strictly increasing block times. Flags: NODUS_EVM_ENABLED. Leaves one
+ * /tmp/test_cmt_app_hyb_XXXXXX (removed). Can falsely pass: it proves the
+ * coins and the supply row survive genesis and three empty blocks, not
+ * that a spend or a registration is accepted (steps b and c). */
+static int t_hybrid_funded_probe(void)
+{
+    hyb_t *H = calloc(1, sizeof(*H));
+    char   hex[129], sql[512];
+
+    CHECK(H != NULL, "alloc");
+    CHECK(hyb_open(H, 1) == 0,
+          "F1 the funded hybrid derives (coins before the genesis, "
+          "V2X_SEED_NOT_REAL_UTXOS)");
+    for (int c = 0; c < HYB_N_COINS; c++) {
+        uint8_t nul[64];
+        sqlite3_stmt *st = NULL;
+        int found = 0;
+
+        hyb_coin_nul(c, nul);
+        CHECK(hyb_coin_owner_hex(c, hex) == 0, "F2a owner hex");
+        CHECK(sqlite3_prepare_v2(H->g.w->db,
+                "SELECT amount, owner FROM utxo_set WHERE nullifier = ?1",
+                -1, &st, NULL) == SQLITE_OK, "F2b prepare");
+        sqlite3_bind_blob(st, 1, nul, 64, SQLITE_STATIC);
+        if (sqlite3_step(st) == SQLITE_ROW) {
+            found = (uint64_t)sqlite3_column_int64(st, 0) ==
+                        hyb_coin_amount(c) &&
+                    strcmp((const char *)sqlite3_column_text(st, 1), hex) == 0;
+        }
+        sqlite3_finalize(st);
+        CHECK(found, "F2c the coin is present with its amount and owner "
+                     "after the genesis");
+    }
+    CHECK(q1(H->g.w->db, "SELECT COUNT(*) FROM utxo_set") == HYB_N_COINS,
+          "F2d the coins are the only UTXOs (the genesis wrote none)");
+    snprintf(sql, sizeof(sql),
+             "SELECT genesis_supply = current_supply AND genesis_supply = "
+             "(SELECT COALESCE(SUM(amount),0) FROM utxo_set) + "
+             "(SELECT COALESCE(SUM(self_stake),0) FROM validators) + "
+             "(SELECT COALESCE(SUM(total_delegated),0) FROM validators) "
+             "FROM supply_tracking WHERE id = 1");
+    CHECK(q1(H->g.w->db, sql) == 1,
+          "F3a the supply row = UTXOs + stakes + delegated (v2x seeded it)");
+    CHECK(q1(H->g.w->db, "SELECT COUNT(*) FROM v2_treasury") ==
+              (int64_t)NODUS_V2_GEN_TREASURY_POOLS &&
+          q1(H->g.w->db, "SELECT COUNT(*) FROM validators") == N_KEYS,
+          "F3b the nine treasury pools and the g_ks committee were seeded "
+          "once, by v2x");
+    CHECK(hyb_pair_to(H, NULL, 0, 1) == 0,
+          "F4 one empty block applies through the real blockexec (supply "
+          "check inside)");
+    CHECK(q1(H->g.w->db, "SELECT COUNT(*) FROM v2_blocks") == 1 &&
+          q1(H->g.w->db, "SELECT COUNT(*) FROM utxo_set") == HYB_N_COINS,
+          "F4b block 1 committed, the coins untouched");
+    CHECK(hyb_pair_to(H, NULL, 1, 3) == 0,
+          "F5 blocks 2 and 3 apply (strictly increasing block times)");
+    hyb_close(H);
+    free(H);
+    return 0;
+}
 #endif /* NODUS_EVM_ENABLED */
 
 int main(void)
@@ -7910,6 +8062,7 @@ int main(void)
     } cases[] = {
         { "hybrid_gen6_probe",          t_hybrid_probe },
 #ifdef NODUS_EVM_ENABLED
+        { "hybrid_funded_probe",        t_hybrid_funded_probe },
         { "hyb_crash_edge",             t_hyb_crash_edge },
         { "hyb_crash_ordinary_gen6",    t_hyb_crash_ordinary },
         { "hyb_crash_boundary_b1",      t_hyb_crash_boundary },
