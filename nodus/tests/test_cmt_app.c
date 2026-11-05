@@ -8568,6 +8568,128 @@ static int hyb_exit_step(hyb_t *A, hyb_t *B, int64_t height, int key,
     return hyb_tx_step(A, B, height, *env, elen);
 }
 
+/* ══ HF-9 WP5 - T-15 (iv) WITH A COMMITTED ROW CHANGE (Sol verify row 12) ═
+ *
+ * The same stop as t_hyb_crash_shadow, but the stop block CARRIES a signed
+ * STORAGE_REGISTER (op 7, a generation-4 op, valid under generation 5) on
+ * the funded hybrid: the block that commits and then stops moves the
+ * registry leg (leg 5), so the missed height has a real change in the
+ * migrated rows.
+ *   S1  after blocks 1..10 the shadow is seeded (log row at 10), the hook is
+ *       bound on node A only, capture 0;
+ *   S2  block 11 carries the registration; A stops after the COMMIT
+ *       (test_fail_after_commit): the registry row exists on A and on B (the
+ *       change IS committed), the hook did not run (no log row at 11), the
+ *       shadow's registry root is STALE - it differs from the full rebuild
+ *       of the rows (the control the missing change would otherwise hide);
+ *   S3  the handshake replays one block; the ledger digest is unchanged and
+ *       the shadow roots are still the stale ones;
+ *   S4  block 12 (idle) applies on both nodes; A's pass catches up from the
+ *       committed rows: ONE new log row at 12, none at 11; the registry
+ *       shadow root MOVED and every leg equals the full rebuild; A's ledger
+ *       and committed global root equal the node that never stopped.
+ * Flags: NODUS_EVM_ENABLED. Leaves two /tmp/test_cmt_app_hyb_XXXXXX
+ * directories (removed). Can falsely pass: if the registration is refused
+ * under generation 5 the stop block carries no change - S2's registry-count
+ * check and the stale-root control fail then (the case cannot pass without
+ * a committed change). The hook is bound by the test (the node's own
+ * binding is test_cmt_node.c t_block_saved_hook_bound). */
+static int t_hyb_crash_shadow_rows(void)
+{
+    hyb_t   *A = calloc(1, sizeof(*A)), *Bn = calloc(1, sizeof(*Bn));
+    uint8_t *env = NULL;
+    size_t   elen = 0;
+    uint8_t  d1a[64], d1b[64], d2a[64], d3a[64], d3b[64], ra[64], rb[64];
+    uint8_t  seed5[64], stale5[64], now5[64], inc[64], full[64];
+    nodus_v2_shadow_log_t row;
+    int      nb = -1, rc;
+
+    CHECK(A && Bn, "alloc");
+    CHECK(hyb_open(A, 1) == 0 && hyb_open(Bn, 1) == 0,
+          "S0 both funded nodes open");
+    A->g.w->config.hf9_shadow = NODUS_HF9_SHADOW_ON;
+    CHECK(nodus_cmt_blockexec_set_block_saved_hook(
+              A->x.be, nodus_witness_v2_shadow_after_commit, A->g.w)
+              == CMT_OK, "S0 the hook is bound on A's executor");
+    CHECK(hyb_pair_to(A, Bn, 0, 10) == 0, "S1 blocks 1..10");
+    CHECK(nodus_witness_v2_shadow_log_read(A->g.w, 10, &row) == 1 &&
+          q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_log") == 1 &&
+          q1(A->g.w->db, "SELECT capture FROM v2_trie_state") == 0,
+          "S1 seeded at 10, capture 0");
+    CHECK(nodus_witness_v2_trie_shadow_leg_root(A->g.w, 5, seed5) == 0,
+          "S1 the seeded registry root");
+
+    /* S2 - the registration block, A stops after the COMMIT */
+    CHECK(hyb_register_env(A->g.w, 11, 1, &env, &elen) == 0 && env,
+          "S2 the envelope builds against the generation-5 manifests");
+    A->x.txs[0].data = env;
+    A->x.txs[0].len  = elen;
+    A->ntx = 1;
+    rc = hyb_pair_step(A, Bn, 11, 1);
+    CHECK(rc != -3, "S2 node B applied the registration block");
+    CHECK(rc == CMT_FAULT && sqlite3_get_autocommit(A->g.w->db) != 0 &&
+          q1(A->g.w->db, "SELECT MAX(global_height) FROM v2_blocks") == 11,
+          "S2 A stopped after the COMMIT at the intended height");
+    CHECK(q1(A->g.w->db, "SELECT COUNT(*) FROM v2_storage_nodes") == 1 &&
+          q1(Bn->g.w->db, "SELECT COUNT(*) FROM v2_storage_nodes") == 1,
+          "S2 the registry row is committed on both nodes (a real change "
+          "in the migrated rows)");
+    CHECK(nodus_witness_v2_shadow_log_read(A->g.w, 11, &row) == 0 &&
+          q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_log") == 1,
+          "S2 the hook did not run at the stop");
+    CHECK(nodus_witness_v2_trie_shadow_leg_root(A->g.w, 5, stale5) == 0 &&
+          memcmp(seed5, stale5, 64) == 0,
+          "S2 the shadow registry root is still the seeded one");
+    CHECK(sqlite3_exec(A->g.w->db, "BEGIN", NULL, NULL, NULL) == SQLITE_OK &&
+          nodus_witness_v2_trie_build_leg(A->g.w, 5, inc, full) == 0 &&
+          sqlite3_exec(A->g.w->db, "ROLLBACK", NULL, NULL, NULL) == SQLITE_OK,
+          "S2 the full rebuild of leg 5 (rolled back)");
+    CHECK(memcmp(stale5, full, 64) != 0,
+          "S2 control: the shadow root is STALE against the committed rows");
+    CHECK(hyb_digest(A->g.w->db, d1a) == 0 && hyb_digest(Bn->g.w->db, d1b) == 0 &&
+          memcmp(d1a, d1b, 64) == 0,
+          "S2 the stopped node's ledger = the node that never stopped");
+
+    /* S3 - the replay */
+    CHECK(hyb_handshake(A, &nb) == CMT_OK && nb == 1, "S3 one block replayed");
+    CHECK(hyb_digest(A->g.w->db, d2a) == 0 && memcmp(d1a, d2a, 64) == 0,
+          "S3 the ledger tables are byte-identical after the replay");
+    CHECK(nodus_witness_v2_trie_shadow_leg_root(A->g.w, 5, now5) == 0 &&
+          memcmp(now5, seed5, 64) == 0 &&
+          q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_log") == 1,
+          "S3 the replay called no hook: the shadow is untouched");
+
+    /* S4 - the next block; the pass catches up from the committed rows */
+    CHECK(nodus_cmt_ss_load(A->x.store, A->x.state) == CMT_OK, "S4 State");
+    CHECK(hyb_pair_to(A, Bn, 11, 12) == 0, "S4 block 12 applies on both");
+    CHECK(nodus_witness_v2_shadow_log_read(A->g.w, 12, &row) == 1 &&
+          nodus_witness_v2_shadow_log_read(A->g.w, 11, &row) == 0 &&
+          q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_log") == 2,
+          "S4 ONE new log row, at 12, none at 11");
+    CHECK(nodus_witness_v2_trie_shadow_leg_root(A->g.w, 5, now5) == 0 &&
+          memcmp(now5, seed5, 64) != 0 && memcmp(now5, full, 64) == 0,
+          "S4 the registry shadow root moved to the full rebuild of the "
+          "committed rows");
+    CHECK(hyb_digest(A->g.w->db, d3a) == 0, "S4 digest before the rebuild");
+    CHECK(hyb_shadow_roots_equal_rebuild(A->g.w) == 0,
+          "S4 every shadow leg equals the full rebuild");
+    CHECK(hyb_digest(A->g.w->db, d2a) == 0 && memcmp(d2a, d3a, 64) == 0,
+          "S4 the rolled-back rebuild left the ledger untouched");
+    CHECK(hyb_digest(Bn->g.w->db, d3b) == 0 && memcmp(d3a, d3b, 64) == 0,
+          "S4 A's ledger = the node that never stopped");
+    CHECK(nodus_witness_v2_committed_global_root(A->g.w, ra) == 0 &&
+          nodus_witness_v2_committed_global_root(Bn->g.w, rb) == 0 &&
+          memcmp(ra, rb, 64) == 0, "S4 and so is the committed global root");
+    CHECK(q1(A->g.w->db, "SELECT capture FROM v2_trie_state") == 0,
+          "S4 capture is still 0");
+    free(env);
+    hyb_close(Bn);
+    hyb_close(A);
+    free(Bn);
+    free(A);
+    return 0;
+}
+
 /* HF-9 WP4 — the FUNDED hybrid probe (step a of the registry-writer
  * route: plan :445 T-5, :449 T-9, :455 T-15 (iii) with a storage event all
  * need coins on the generation-6 chain). Builds the hybrid with two coins
@@ -9568,6 +9690,7 @@ int main(int argc, char **argv)
         { "hybrid_storage_writers_probe", t_hybrid_storage_writers_probe, 1 },
         { "hyb_crash_boundary_event",   t_hyb_crash_boundary_event },
         { "hyb_crash_shadow",           t_hyb_crash_shadow },
+        { "hyb_crash_shadow_rows",      t_hyb_crash_shadow_rows },
 #ifdef QGP_FAULT_INJECT
         { "hyb_shadow_fault_host",      t_hyb_shadow_fault_host },
 #endif

@@ -126,7 +126,9 @@ int nodus_witness_v2_trie_shadow_build_leg(nodus_witness_t *w, int leg,
 /** The step-by-step update of the consensus flush (open at `root_in`, for
  *  each key in the given ascending order: read the row by primary key with
  *  the reader's checks, set or delete; commit) against the SHADOW node
- *  table. The caller stores `root_out`. Any fault is -1 (nothing is
+ *  table, commits, and stores the new root in v2_trie_shadow_roots (the row
+ *  must exist) - the same update_leg_core the consensus flush runs, only the
+ *  key source and the store differ. Any fault is -1 (nothing is
  *  returned as a root). @return 0 / -1. */
 int nodus_witness_v2_trie_shadow_update_leg(nodus_witness_t *w, int leg,
                                             const nodus_v2_trie_key_t *keys,

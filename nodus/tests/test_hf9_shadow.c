@@ -78,6 +78,18 @@
  *     missed height), and its legs equal the full rebuild of the rows (the
  *     rebuild inside a rolled-back transaction: the consensus node table
  *     stays empty on the pre-edge chain).
+ *  H. REAL FAILURES (Sol verify rows 4-6, no flag needed): an unreadable
+ *     committed generation (the runtime table overridden so the registry
+ *     tuple resolves to nothing) writes nothing while never seeded and
+ *     FAULTS a running shadow (stored FAULTED); a seeding and a pass that
+ *     cannot begin their transaction (a second connection holds the write
+ *     lock, busy timeout 0) are faults, and because the same lock refuses
+ *     the FAULTED write the witness-local latch holds: the status reads
+ *     FAULTED while the stored row still says RUNNING, and no further step,
+ *     row read or log row follows. D7 (generation 6, NO status row): seeding
+ *     is refused and the hook does not seed, nothing written; D5 now also
+ *     closes and reopens the database (a real restart) and F reopens inside
+ *     the window.
  *  G. THE dnac_hf9_shadow REPLY DECODER (nodus_dnac_hf9_shadow_decode, no
  *     network): hand-encoded replies - a found reply with all fifteen keys
  *     and a not-found reply with st / found only decode; a 63-byte root, a
@@ -781,6 +793,25 @@ static int fx_open(fixture_t *fx, const char *tag, uint64_t ha) {
     return v2x_seed_genesis(fx->w, fx->chain16, 0, NULL, 0, NULL);
 }
 
+/* a restart for everything this module holds: the SQLite handle closed and
+ * the same file opened again */
+static int fx_reopen(fixture_t *fx) {
+    const char *fn = sqlite3_db_filename(fx->w->db, "main");
+    char path[512];
+    if (!fn || strlen(fn) >= sizeof(path)) return -1;
+    snprintf(path, sizeof(path), "%s", fn);
+    sqlite3_close(fx->w->db);
+    fx->w->db = NULL;
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return -1;
+    }
+    fx->w->db = db;
+    fx->w->chain_config_cache_warm = false;
+    return 0;
+}
+
 static int apply_block(fixture_t *fx, uint64_t h) {
     nodus_v2_block_t b;
     memset(&b, 0, sizeof(b));
@@ -962,13 +993,27 @@ static int t_chain_window(void) {
           "D5: a re-seed attempt at generation 6 is refused, status and "
           "capture unchanged");
     CHECK(apply_block(&fx, HA) == 0, "block A");
-    nodus_witness_v2_shadow_after_commit(fx.w);   /* a restart, on again */
+    nodus_witness_v2_shadow_after_commit(fx.w);   /* another call, on again */
     CHECK(shadow_status(fx.w) == NODUS_V2_SHADOW_STOPPED &&
           nodus_witness_v2_shadow_rows_scanned() == scanned_before &&
           log_rows(fx.w) == rows_before &&
           q1(fx.w->db, "SELECT capture FROM v2_trie_state") == 1,
           "D5: after A, with hf9_shadow = on again: never starts again, "
           "no row read, capture 1");
+    /* a REAL restart: the SQLite file closed and opened again, the config
+     * still on: the stored status (STOPPED) survives and decides */
+    CHECK(fx_reopen(&fx) == 0, "D5: the database is reopened");
+    fx.w->config.hf9_shadow = NODUS_HF9_SHADOW_ON;
+    nodus_witness_v2_shadow_after_commit(fx.w);
+    CHECK(shadow_status(fx.w) == NODUS_V2_SHADOW_STOPPED &&
+          nodus_witness_v2_shadow_rows_scanned() == scanned_before &&
+          log_rows(fx.w) == rows_before &&
+          q1(fx.w->db, "SELECT capture FROM v2_trie_state") == 1,
+          "D5: after a restart with hf9_shadow = on: still STOPPED, no row "
+          "read, no log row, capture 1");
+    CHECK(nodus_witness_v2_shadow_seed(fx.w) == -1 &&
+          q1(fx.w->db, "SELECT capture FROM v2_trie_state") == 1,
+          "D5: a re-seed after the restart is refused, capture unchanged");
     (void)seed_h;
 
     /* D6: a node that never ran the shadow reaches the same roots */
@@ -987,6 +1032,22 @@ static int t_chain_window(void) {
               block_global(twin.w, HA, gb) == 0 &&
               memcmp(ga1, gb1, 64) == 0 && memcmp(ga, gb, 64) == 0,
               "D6: ... and the global roots at A-1 and A");
+        /* seeding at generation 6 with NO status row (the existing-row
+         * refusal cannot mask the generation refusal here) */
+        twin.w->config.hf9_shadow = NODUS_HF9_SHADOW_ON;
+        CHECK(committed_gen(twin.w) == NODUS_RT_GEN_TRIE &&
+              shadow_status(twin.w) == NODUS_V2_SHADOW_NONE,
+              "D7: the twin is at generation 6 and has no shadow status row");
+        CHECK(nodus_witness_v2_shadow_seed(twin.w) == -1,
+              "D7: seeding at generation 6 is refused");
+        nodus_witness_v2_shadow_after_commit(twin.w);
+        CHECK(shadow_status(twin.w) == NODUS_V2_SHADOW_NONE &&
+              table_exists(twin.w->db, "v2_trie_shadow_log") == 0 &&
+              table_exists(twin.w->db, "v2_trie_shadow_rows") == 0 &&
+              q1(twin.w->db, "SELECT capture FROM v2_trie_state") == 1,
+              "D7: ... nothing was written (no status row, no shadow table), "
+              "and the hook does not seed at generation 6 either; capture "
+              "unchanged");
         fx_close(&twin);
     }
     fx_close(&fx);
@@ -1012,6 +1073,9 @@ static int t_chain_catch_up(void) {
     CHECK(apply_block(&fx, H5) == 0 && apply_block(&fx, H5 + 1u) == 0,
           "F1: two blocks without the hook");
     CHECK(add_token_row(fx.w, 0xA7) == 0, "F1: a row change");
+    /* a REAL restart inside the window: the file closed and opened again;
+     * the shadow continues from the stored shadow tables */
+    CHECK(fx_reopen(&fx) == 0, "F1: restart inside the window");
     nodus_witness_v2_shadow_after_commit(fx.w);
     CHECK(log_rows(fx.w) == 2, "F1: ONE new log row");
     {
@@ -1038,6 +1102,126 @@ static int t_chain_catch_up(void) {
           "F1: control - the tokens leg moved (the change was caught up)");
     CHECK(memcmp(before[0], after[0], 64) == 0,
           "F1: ... a leg without a change did not");
+    fx_close(&fx);
+    return 0;
+}
+
+/* H. real failures of the job: an UNREADABLE generation and a transaction
+ * that cannot begin are faults (never "inactive" or "skipped"), and a
+ * FAULTED status that cannot be written is latched (no flag needed). */
+
+/* an all-zero runtime entry: used as the witness's table override it
+ * matches no registered tuple, so nodus_witness_v2_runtime_for fails */
+static nodus_domain_runtime_t g_no_runtime;
+
+static int open_second(const char *path, sqlite3 **db2) {
+    if (sqlite3_open_v2(path, db2, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK)
+        return -1;
+    return run_sql(*db2, "BEGIN IMMEDIATE");   /* holds the write lock */
+}
+
+static int t_chain_failures(void) {
+    fixture_t fx;
+    char path[512];
+    sqlite3 *db2 = NULL;
+
+    /* H1 / H2: the generation cannot be read */
+    CHECK(fx_open(&fx, "unread", 0) == 0, "H: chain");
+    fx.w->config.hf9_shadow = NODUS_HF9_SHADOW_ON;
+    for (uint64_t h = 1; h <= H5 - 1u; h++)
+        CHECK(apply_block(&fx, h) == 0, "block");
+    fx.w->v2_runtime_table = &g_no_runtime;
+    fx.w->v2_runtime_table_n = 1;
+    CHECK(committed_gen(fx.w) == 0, "H1: control - the generation reads as "
+          "unresolvable with the override");
+    nodus_witness_v2_shadow_after_commit(fx.w);
+    CHECK(shadow_status(fx.w) == NODUS_V2_SHADOW_NONE &&
+          table_exists(fx.w->db, "v2_trie_shadow_log") == 0 &&
+          fx.w->hf9_shadow_latched == 0,
+          "H1: never seeded and unreadable: logged, nothing written");
+    fx.w->v2_runtime_table = NULL;
+    fx.w->v2_runtime_table_n = 0;
+    nodus_witness_v2_shadow_after_commit(fx.w);
+    CHECK(shadow_status(fx.w) == NODUS_V2_SHADOW_RUNNING,
+          "H2: readable again - seeded");
+    CHECK(apply_block(&fx, H5) == 0, "block");
+    fx.w->v2_runtime_table = &g_no_runtime;
+    fx.w->v2_runtime_table_n = 1;
+    nodus_witness_v2_shadow_after_commit(fx.w);
+    fx.w->v2_runtime_table = NULL;
+    fx.w->v2_runtime_table_n = 0;
+    CHECK(q1(fx.w->db, "SELECT status FROM v2_trie_shadow_state") ==
+              NODUS_V2_SHADOW_FAULTED && log_rows(fx.w) == 1,
+          "H2: a RUNNING shadow whose generation is unreadable is FAULTED "
+          "(stored), not idle");
+    fx_close(&fx);
+
+    /* H3: seeding cannot begin its transaction (another connection holds
+     * the write lock) */
+    CHECK(fx_open(&fx, "lockseed", 0) == 0, "H: chain");
+    fx.w->config.hf9_shadow = NODUS_HF9_SHADOW_ON;
+    for (uint64_t h = 1; h <= H5 - 1u; h++)
+        CHECK(apply_block(&fx, h) == 0, "block");
+    {
+        const char *fn = sqlite3_db_filename(fx.w->db, "main");
+        CHECK(fn && strlen(fn) < sizeof(path), "path");
+        snprintf(path, sizeof(path), "%s", fn);
+    }
+    sqlite3_busy_timeout(fx.w->db, 0);
+    CHECK(open_second(path, &db2) == 0, "H3: a second connection holds the "
+          "write lock");
+    nodus_witness_v2_shadow_after_commit(fx.w);
+    CHECK(fx.w->hf9_shadow_latched == 1 &&
+          shadow_status(fx.w) == NODUS_V2_SHADOW_FAULTED,
+          "H3: the seeding that cannot begin is a FAULT, and since the lock "
+          "also refuses the FAULTED write it is latched and reported "
+          "FAULTED");
+    CHECK(run_sql(db2, "ROLLBACK") == 0, "H3: release");
+    sqlite3_close(db2);
+    nodus_witness_v2_shadow_after_commit(fx.w);
+    CHECK(shadow_status(fx.w) == NODUS_V2_SHADOW_FAULTED &&
+          table_exists(fx.w->db, "v2_trie_shadow_log") == 0 &&
+          q1(fx.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_state") == 0,
+          "H3: the latch holds after the lock is gone: no step, no seeding, "
+          "no stored row");
+    fx_close(&fx);
+
+    /* H4: a pass cannot begin; the stored RUNNING row cannot be replaced */
+    CHECK(fx_open(&fx, "lockpass", 0) == 0, "H: chain");
+    fx.w->config.hf9_shadow = NODUS_HF9_SHADOW_ON;
+    for (uint64_t h = 1; h <= H5 - 1u; h++)
+        CHECK(apply_block(&fx, h) == 0, "block");
+    nodus_witness_v2_shadow_after_commit(fx.w);
+    CHECK(shadow_status(fx.w) == NODUS_V2_SHADOW_RUNNING, "H4: seeded");
+    {
+        const char *fn = sqlite3_db_filename(fx.w->db, "main");
+        CHECK(fn && strlen(fn) < sizeof(path), "path");
+        snprintf(path, sizeof(path), "%s", fn);
+    }
+    CHECK(apply_block(&fx, H5) == 0, "block");
+    sqlite3_busy_timeout(fx.w->db, 0);
+    CHECK(open_second(path, &db2) == 0, "H4: a second connection holds the "
+          "write lock");
+    nodus_witness_v2_shadow_after_commit(fx.w);
+    CHECK(run_sql(db2, "ROLLBACK") == 0, "H4: release");
+    sqlite3_close(db2);
+    CHECK(q1(fx.w->db, "SELECT status FROM v2_trie_shadow_state") ==
+              NODUS_V2_SHADOW_RUNNING,
+          "H4: control - the stored row still says RUNNING (the FAULTED "
+          "write was refused)");
+    CHECK(fx.w->hf9_shadow_latched == 1 &&
+          shadow_status(fx.w) == NODUS_V2_SHADOW_FAULTED,
+          "H4: ... but the shadow reports FAULTED (the latch)");
+    {
+        const int rows = log_rows(fx.w);
+        const uint64_t scanned = nodus_witness_v2_shadow_rows_scanned();
+        CHECK(apply_block(&fx, H5 + 1u) == 0, "block");
+        nodus_witness_v2_shadow_after_commit(fx.w);
+        CHECK(log_rows(fx.w) == rows &&
+              nodus_witness_v2_shadow_rows_scanned() == scanned,
+              "H4: the invalidated evidence does not resume: no pass, no "
+              "row read, no log row");
+    }
     fx_close(&fx);
     return 0;
 }
@@ -1149,6 +1333,11 @@ static int t_chain_faults(void) {
 
 /* ══ G. the dnac_hf9_shadow reply decoder (client side) ═════════════════ */
 
+static void fill_root(uint8_t r[64], int idx) {
+    for (int i = 0; i < 64; i++)
+        r[i] = (uint8_t)(idx * 37 + i * 11 + (i >> 3) * 5 + 1);
+}
+
 /* A hand-encoded reply {"t","y":"r","q","r": {...}} (no network). `skip`
  * drops one key, `dup` emits that key a second time, `short_leg` makes "l1"
  * a 63-byte string, `extra` adds "l1" to a not-found reply. */
@@ -1161,8 +1350,6 @@ static size_t build_reply(uint8_t *buf, size_t cap, int found,
     };
     const char *emit[20];
     size_t n = 0;
-    uint8_t root[64];
-    memset(root, 0x5A, sizeof(root));
     for (size_t i = 0; i < (found ? 15u : 2u); i++)
         if (!skip || strcmp(skip, names[i]) != 0) emit[n++] = names[i];
     if (!found && extra) emit[n++] = "l1";
@@ -1181,11 +1368,26 @@ static size_t build_reply(uint8_t *buf, size_t cap, int found,
         if (strcmp(emit[i], "st") == 0) cbor_encode_uint(&enc, 1);
         else if (strcmp(emit[i], "found") == 0) cbor_encode_bool(&enc, found);
         else if (strcmp(emit[i], "h") == 0) cbor_encode_uint(&enc, 7);
-        else cbor_encode_bstr(&enc, root,
-                              short_leg && strcmp(emit[i], "l1") == 0 ? 63u
-                                                                      : 64u);
+        else {
+            uint8_t root[64];
+            int idx = 0;
+            for (int k = 0; k < 15; k++)
+                if (strcmp(emit[i], names[k]) == 0) idx = k;
+            fill_root(root, idx);
+            cbor_encode_bstr(&enc, root,
+                             short_leg && strcmp(emit[i], "l1") == 0 ? 63u
+                                                                     : 64u);
+        }
     }
     return cbor_encoder_len(&enc);
+}
+
+/* every field of a reply gets its OWN 64 distinct, non-uniform bytes, so a
+ * swapped or shifted field decodes to a different value */
+static int root_is(const uint8_t got[64], int idx) {
+    uint8_t want[64];
+    fill_root(want, idx);
+    return memcmp(got, want, 64) == 0;
 }
 
 static int t_decoder(void) {
@@ -1198,11 +1400,15 @@ static int t_decoder(void) {
 
     len = build_reply(buf, sizeof(buf), 1, NULL, NULL, 0, 0);
     CHECK(len > 0 && nodus_dnac_hf9_shadow_decode(buf, len, &r) == 0 &&
-          r.found && r.status == 1 && r.height == 7 &&
-          r.leg[0][0] == 0x5A && r.leg[7][63] == 0x5A &&
-          r.core[0] == 0x5A && r.stor[0] == 0x5A && r.sys[0] == 0x5A &&
-          r.glob[63] == 0x5A, "G1: a found reply with all fifteen keys "
-          "decodes");
+          r.found && r.status == 1 && r.height == 7,
+          "G1: a found reply with all fifteen keys decodes");
+    for (int l = 0; l < 8; l++)
+        CHECK(root_is(r.leg[l], 3 + l), "G1: leg l1..l8 each carries its own "
+              "64 bytes (indices 3..10)");
+    CHECK(root_is(r.core, 11) && root_is(r.stor, 12) && root_is(r.sys, 13) &&
+          root_is(r.glob, 14),
+          "G1: core / stor / sys / glob each carry their own 64 bytes - a "
+          "swapped destination would fail");
     len = build_reply(buf, sizeof(buf), 0, NULL, NULL, 0, 0);
     CHECK(len > 0 && nodus_dnac_hf9_shadow_decode(buf, len, &r) == 0 &&
           !r.found && r.status == 1 && r.height == 0,
@@ -1242,6 +1448,7 @@ int main(void) {
 #endif
     if (!rc) rc = t_chain_window();
     if (!rc) rc = t_chain_catch_up();
+    if (!rc) rc = t_chain_failures();
 #ifdef QGP_FAULT_INJECT
     if (!rc) rc = t_chain_faults();
 #endif

@@ -23,7 +23,11 @@
  *  - a failure of any step rolls the shadow's own transaction back, logs
  *    `HF9-SHADOW FAULT <height> <reason>`, sets the status to FAULTED and
  *    returns; it never returns a fault to the host and never touches
- *    AppHash, ProcessProposal or a vote.
+ *    AppHash, ProcessProposal or a vote. Every failure counts, a
+ *    transaction that cannot begin and an unreadable committed generation
+ *    included. If the FAULTED status itself cannot be written, the
+ *    witness-local latch w->hf9_shadow_latched stops all further steps and
+ *    the status reads FAULTED whatever the stored row says.
  *
  * STATUS (v2_trie_shadow_state.status; the physical values are this
  * package's - plan §5.1 names only "stopped / running / faulted"; no row

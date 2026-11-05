@@ -120,6 +120,9 @@ typedef struct {
     int      hf9_shadow;
 } nodus_witness_config_t;
 
+/* (HF-9 WP5: the shadow run's failure latch, `hf9_shadow_latched`, is a field
+ * of nodus_witness_t below - node-local memory, never stored.) */
+
 #define NODUS_HF9_SHADOW_OFF   0
 #define NODUS_HF9_SHADOW_ON    1
 #define NODUS_HF9_SHADOW_FULL  2
@@ -592,6 +595,10 @@ typedef struct nodus_witness {
     }           chain_config_cache[DNAC_CFG_PARAM_MAX_ID + 1][64];
     int         chain_config_cache_count[DNAC_CFG_PARAM_MAX_ID + 1]; /* rows per param */
     bool        chain_config_cache_warm;
+    /** HF-9 WP5 (nodus_witness_v2_shadow.h): the shadow run's failure
+     *  latch - 1 once the FAULTED status could not be written. Node-local
+     *  memory only; never read by any consensus path. */
+    int         hf9_shadow_latched;
 
     /* P2P-PORT F5 — the startup chain-id quorum quarantine (Fix 3:
      * activated_at_sec, quarantined, chain_dissent_* / chain_agree_*) is

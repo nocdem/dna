@@ -17,8 +17,17 @@
 # no node given the script refuses to run.
 #
 # Usage:
-#   hf9_shadow_diff.sh [--from H] [--to H] <host:port> <host:port> ...
+#   hf9_shadow_diff.sh [--from H] [--to H] [--expect-nodes N] <host:port> ...
 #   HF9_NODES="host:port host:port ..." hf9_shadow_diff.sh [--from H] [--to H]
+#
+#   At least two nodes, each listed once (a single node or a repeated
+#   endpoint compares nothing and is refused, exit 2). --expect-nodes N makes
+#   the script refuse a roster that is not exactly N nodes (the operator
+#   passes the size read from the chain, 8 in the plan); the script cannot
+#   know the roster itself.
+#   --from / --to are plain numbers of at most 15 digits; success needs the
+#   whole requested range compared, identical, on every node, with every
+#   node reporting status running in every answer AND in a final re-query.
 #
 #   --from H / --to H   the inclusive height range to compare. Default: the
 #                       newest height every node has logged, alone (--to
@@ -49,6 +58,7 @@ NODUS_CLI="${NODUS_CLI:-nodus-cli}"
 HF9_CLI_OPTS="${HF9_CLI_OPTS:-}"
 FROM=""
 TO=""
+EXPECT_NODES=""
 NODES=()
 
 usage() {
@@ -59,6 +69,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --from) FROM="${2:-}"; shift 2 || { usage; exit 2; } ;;
         --to)   TO="${2:-}";   shift 2 || { usage; exit 2; } ;;
+        --expect-nodes) EXPECT_NODES="${2:-}"; shift 2 || { usage; exit 2; } ;;
         -h|--help) usage; exit 2 ;;
         --*) echo "unknown option: $1" >&2; usage; exit 2 ;;
         *) NODES+=("$1"); shift ;;
@@ -78,9 +89,28 @@ for n in "${NODES[@]}"; do
         *) echo "node '$n' is not host:port" >&2; exit 2 ;;
     esac
 done
+# A comparison needs two nodes at least, each listed once: one node (or the
+# same endpoint twice) compares nothing and must never read as success.
+if [ "${#NODES[@]}" -lt 2 ]; then
+    echo "at least two nodes are needed to compare anything (the plan names all eight)" >&2
+    exit 2
+fi
+if [ -n "$(printf '%s\n' "${NODES[@]}" | sort | uniq -d)" ]; then
+    echo "a node is listed twice: $(printf '%s\n' "${NODES[@]}" | sort | uniq -d | tr '\n' ' ')" >&2
+    exit 2
+fi
+if [ -n "$EXPECT_NODES" ]; then
+    if ! [[ "$EXPECT_NODES" =~ ^[0-9]{1,3}$ ]] || [ "$EXPECT_NODES" -ne "${#NODES[@]}" ]; then
+        echo "--expect-nodes $EXPECT_NODES but ${#NODES[@]} node(s) were given" >&2
+        exit 2
+    fi
+fi
+# bounds: plain digit strings of at most 15 digits, so every shell integer
+# test below is a real numeric test (a longer value would raise an
+# arithmetic error in [ -gt ] and skip the loop)
 for v in "$FROM" "$TO"; do
-    if [ -n "$v" ] && ! [[ "$v" =~ ^[0-9]+$ ]]; then
-        echo "--from / --to need a non-negative integer, got '$v'" >&2
+    if [ -n "$v" ] && ! [[ "$v" =~ ^[0-9]{1,15}$ ]]; then
+        echo "--from / --to need a non-negative integer of at most 15 digits, got '$v'" >&2
         exit 2
     fi
 done
@@ -111,6 +141,11 @@ for n in "${NODES[@]}"; do
     STATUS_OF[$n]="$st"
     if [ "$(field "$out" found)" = "1" ]; then
         h=$(field "$out" height)
+        if ! [[ "$h" =~ ^[0-9]{1,15}$ ]]; then
+            echo "FAIL node $n answered a height that is not a number: '$h'"
+            fail=1
+            continue
+        fi
         NEWEST_OF[$n]="$h"
         if [ -z "$min_newest" ] || [ "$h" -lt "$min_newest" ]; then
             min_newest="$h"
@@ -148,6 +183,12 @@ while [ "$h" -le "$TO" ]; do
             have_all=0
             continue
         fi
+        # the status is checked in EVERY answer: a node that reports faulted
+        # (or anything but running) while we compare invalidates the run
+        if [ "$(field "$out" status)" != "1" ]; then
+            echo "FAIL height $h node $n reports shadow status '$(field "$out" status)', not running (1)"
+            fail=1
+        fi
         ROW[$n]="$out"
     done
     if [ "$have_all" = "1" ]; then
@@ -174,6 +215,20 @@ while [ "$h" -le "$TO" ]; do
     unset ROW
     h=$((h + 1))
 done
+
+# the status is read AGAIN after the comparison (newest row of every node):
+# a node that faulted while we compared must not pass on its first answer
+for n in "${NODES[@]}"; do
+    out=$(query "$n" 0) || { echo "FAIL node $n did not answer the final status query"; fail=1; continue; }
+    STATUS_OF[$n]="$(field "$out" status)"
+done
+
+# success needs the WHOLE requested range compared on every node
+expected=$((TO - FROM + 1))
+if [ "$compared_all" -ne "$expected" ]; then
+    echo "FAIL compared $compared_all of the $expected requested height(s)"
+    fail=1
+fi
 
 echo "---- HF-9 shadow comparison ----"
 echo "nodes (${#NODES[@]}): ${NODES[*]}"

@@ -44,6 +44,13 @@ uint64_t nodus_witness_v2_shadow_rows_scanned(void) {
     return g_rows_scanned;
 }
 
+/* The failure latch (plan §11: a failure "sets the shadow status to faulted
+ * and invalidates the evidence"): w->hf9_shadow_latched is set when the
+ * FAULTED status could not be written. While set, this witness runs no
+ * shadow step and reports FAULTED whatever the stored row says, so evidence
+ * that was invalidated can never resume as valid in this process. It lives
+ * in the witness (node-local memory, zero at start), not on disk. */
+
 #ifdef QGP_FAULT_INJECT
 static int g_fault_armed;
 static int g_fault_hits;
@@ -116,7 +123,10 @@ int nodus_witness_v2_shadow_status(nodus_witness_t *w, int *status) {
         return -1;
     int rc = sqlite3_step(st);
     int ret = -1;
-    if (rc == SQLITE_DONE) {
+    if (w->hf9_shadow_latched) {       /* the FAULTED write failed earlier   */
+        *status = NODUS_V2_SHADOW_FAULTED;
+        ret = 0;
+    } else if (rc == SQLITE_DONE) {
         *status = NODUS_V2_SHADOW_NONE;
         ret = 0;
     } else if (rc == SQLITE_ROW) {
@@ -157,16 +167,21 @@ static int shadow_fail(nodus_witness_t *w, int began, uint64_t height,
     if (began && !sqlite3_get_autocommit(w->db))
         (void)exec_sql(w->db, "ROLLBACK");
     QGP_LOG_ERROR(LOG_TAG, "HF9-SHADOW FAULT %" PRIu64 " %s", height, reason);
-    if (sqlite3_get_autocommit(w->db) &&
-        status_write(w, NODUS_V2_SHADOW_FAULTED) != 0)
+    if (!sqlite3_get_autocommit(w->db) ||
+        status_write(w, NODUS_V2_SHADOW_FAULTED) != 0) {
+        w->hf9_shadow_latched = 1;
         QGP_LOG_ERROR(LOG_TAG, "%s", "HF9-SHADOW FAULT the faulted status "
-                      "could not be written");
+                      "could not be written - latched in this process, no "
+                      "further shadow step");
+    }
     return -1;
 }
 
-/* 0 = the shadow is idle here (not S20, no resolvable SYSTEM runtime, or
- * below the ROOTS generation), 1 = inside the shadow window (>= ROOTS and
- * < TRIE), 2 = the committed generation is >= TRIE, -1 = fault. */
+/* 0 = the shadow is idle here (the schema is not S20, or the committed
+ * SYSTEM runtime is of a generation below ROOTS), 1 = inside the shadow
+ * window (>= ROOTS and < TRIE), 2 = the committed generation is >= TRIE,
+ * -1 = the schema version or the registry's runtime is UNREADABLE (never
+ * read as "inactive"). */
 static int generation_window(nodus_witness_t *w) {
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
@@ -174,7 +189,7 @@ static int generation_window(nodus_witness_t *w) {
     const nodus_domain_runtime_t *rt = NULL;
     if (nodus_witness_v2_runtime_for(w, DNA_DOMAIN_SYSTEM, 0, &rt) != 0 ||
         !rt)
-        return 0;
+        return -1;
     if (rt->generation >= NODUS_RT_GEN_TRIE) return 2;
     if (rt->generation >= NODUS_RT_GEN_ROOTS) return 1;
     return 0;
@@ -355,10 +370,20 @@ int nodus_witness_v2_shadow_seed(nodus_witness_t *w) {
         QGP_LOG_WARN(LOG_TAG, "%s", "seeding refused: a transaction is open");
         return -1;
     }
-    if (generation_window(w) != 1) {
-        QGP_LOG_WARN(LOG_TAG, "%s", "seeding refused: the committed "
-                     "generation is not in the shadow window (>= 5, < 6)");
-        return -1;
+    {
+        const int win = generation_window(w);
+        if (win < 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "HF9-SHADOW FAULT seeding: the "
+                          "schema version or the committed generation is "
+                          "unreadable");
+            return -1;
+        }
+        if (win != 1) {
+            QGP_LOG_WARN(LOG_TAG, "%s", "seeding refused: the committed "
+                         "generation is not in the shadow window "
+                         "(>= 5, < 6)");
+            return -1;
+        }
     }
     int st = 0;
     if (nodus_witness_v2_shadow_status(w, &st) != 0 ||
@@ -370,13 +395,12 @@ int nodus_witness_v2_shadow_seed(nodus_witness_t *w) {
     uint64_t tip = 0;
     if (nodus_witness_v2_tip_height(w, &tip) != 0)
         return shadow_fail(w, 0, 0, "seeding: the tip height is unreadable");
-    if (exec_sql(w->db, "BEGIN IMMEDIATE") != 0) {
-        /* plan §11 names no failure for it: a transaction that cannot begin
-         * (the file is busy) is a refusal; the next block's call seeds */
-        QGP_LOG_WARN(LOG_TAG, "%s", "seeding skipped: the shadow "
-                     "transaction could not begin");
-        return -1;
-    }
+    /* every failure of the job is a FAULT (plan §11); no error code is
+     * excused here - a retry exception for a busy file has no basis in the
+     * plan (reported) */
+    if (exec_sql(w->db, "BEGIN IMMEDIATE") != 0)
+        return shadow_fail(w, 0, tip, "seeding: the shadow transaction "
+                           "could not begin");
 
     if (nodus_witness_v2_shadow_build(w) != 0)
         return shadow_fail(w, 1, tip, "seeding: shadow tables and legs");
@@ -601,8 +625,9 @@ static int pass_leg(nodus_witness_t *w, int leg, int full_mode,
                 nodus_witness_v2_trie_shadow_update_leg(w, leg, keys, c.nchg,
                                                         root, nroot) != 0)
                 break;
+            /* update_leg stored nroot in v2_trie_shadow_roots (the shared
+             * update_leg_core) */
             if (rows_apply(w, leg, c.chg, c.nchg) != 0) break;
-            if (roots_put(w, leg, nroot) != 0) break;
             memcpy(root, nroot, 64);
         }
         if (full_mode && full_check(&c, root) != 0) {
@@ -637,14 +662,9 @@ static int run_pass(nodus_witness_t *w) {
     uint64_t tip = 0, last = 0;
     if (nodus_witness_v2_tip_height(w, &tip) != 0)
         return shadow_fail(w, 0, 0, "the tip height is unreadable");
-    if (exec_sql(w->db, "BEGIN IMMEDIATE") != 0) {
-        /* plan §11 names no failure for it: a transaction that cannot begin
-         * (the file is busy) skips this pass; the next pass is state based
-         * and covers the height (§11 catch-up) */
-        QGP_LOG_WARN(LOG_TAG, "%s", "shadow pass skipped: the shadow "
-                     "transaction could not begin");
-        return 0;
-    }
+    if (exec_sql(w->db, "BEGIN IMMEDIATE") != 0)
+        return shadow_fail(w, 0, tip, "the shadow transaction could not "
+                           "begin");
     if (log_last_height(w, &last) != 0)
         return shadow_fail(w, 1, tip, "the last logged height");
     if (tip <= last) {                         /* nothing is due             */
@@ -669,11 +689,19 @@ static int step(nodus_witness_t *w, int allow_seed) {
         QGP_LOG_WARN(LOG_TAG, "%s", "shadow skipped: a transaction is open");
         return 0;
     }
+    if (w->hf9_shadow_latched) return 0;   /* FAULTED not stored: no steps  */
     int win = generation_window(w);
     if (win < 0) {
-        QGP_LOG_WARN(LOG_TAG, "%s", "shadow skipped: the committed "
-                     "generation is unreadable");
-        return 0;
+        /* an unreadable generation is NOT "inactive": a running shadow's
+         * evidence is invalidated (never the host's block) */
+        int cur = NODUS_V2_SHADOW_NONE;
+        if (nodus_witness_v2_shadow_status(w, &cur) == 0 &&
+            cur == NODUS_V2_SHADOW_RUNNING)
+            return shadow_fail(w, 0, 0, "the schema version or the "
+                               "committed generation is unreadable");
+        QGP_LOG_ERROR(LOG_TAG, "%s", "HF9-SHADOW FAULT the schema version "
+                      "or the committed generation is unreadable");
+        return -1;
     }
     if (win == 0) return 0;                       /* idle                    */
     int st = 0;
