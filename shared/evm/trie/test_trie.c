@@ -62,6 +62,32 @@
  *      alone, its child neither loaded (n_get = 1) nor emitted, verifies
  *      without it and is refused with the node removed; a matching path
  *      needs all three nodes; a hashed non-root node below 64 bytes refused.
+ *  11. bundle order rule (test_proof_order): the verifier finds nodes by
+ *      binary search, so a wrong order can still be served. Every adjacent
+ *      DUPLICATE of every node of a ~50-node sorted bundle, and every swap of
+ *      two nodes (all pairs), is refused (-2) for a key whose needed nodes
+ *      the search still finds; the test counts the swapped bundles the
+ *      binary search alone serves and asserts there is at least one (the
+ *      false-pass guard: without such a bundle the order rule would be
+ *      untested). Kills: replacing the "strictly ascending" check in
+ *      evm_trie_proof_verify_batch by `else if (0)`.
+ *  NOT testable (no input exists): the re-encode-and-compare in
+ *  evm_trie_node_check. evm_trie_rlp_decode_item accepts canonical RLP only
+ *  (evm_trie_rlp.c: read_long_len rejects a leading zero and a length <= 55,
+ *  :90-100; a single byte < 0x80 must be itself, :130; a header longer than
+ *  the data is refused); decode_node (evm_trie.c:283-345) takes exactly 2 or
+ *  17 items that fill the list (split_list :214, `top.total != len`), a hex
+ *  prefix with flag 0..3 and a zero pad nibble when even (read_compact
+ *  :232-252), a 64-byte string or an embedded list < 64 bytes as a child
+ *  (decode_child :260-281), an empty branch value; node_encode (:181-208)
+ *  rebuilds each of those from the decoded fields by the same rules
+ *  (put_compact :124-138, put_child_ref :148-178: an embedded child
+ *  re-encodes to its own < 64 bytes, a reference to its digest unchanged,
+ *  put_bytes/wrap_list canonical). Every accepted input therefore re-encodes
+ *  to itself: the compare is a defence-in-depth check that cannot fail on any
+ *  input decode_node accepts, so a mutant that removes it is equivalent and
+ *  no test can kill it. The tested non-canonical forms (length form, trailing
+ *  byte) are refused earlier by decode_item / the length check.
  *  Flags: none. Environment: none. Leaves behind: nothing (in-memory).
  *  False pass: the assertions on node counts (set.n, n_get) fail if the
  *  prover loads an extension's child eagerly; the "removed" and "flipped"
@@ -1526,6 +1552,137 @@ static void test_proof_inline_and_extension(void)
            "child, size class by reference, expected-branch flag\n");
 }
 
+/* The bundle ORDER rule (plan §10.2: "strictly ascending by SHA3-512(node
+ * bytes), unique"), isolated from the lookup. The verifier finds nodes by
+ * binary search; a bundle whose order is wrong can still be served by that
+ * search, so only the explicit rule refuses it. */
+
+/* does a binary search over `dig[0..n)` (the verifier's own) find `want`? */
+static int bsearch_serves(const uint8_t (*dig)[64], size_t n,
+                          const uint8_t want[64])
+{
+    size_t lo = 0, hi = n;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        int c = memcmp(dig[mid], want, 64);
+        if (c == 0) return 1;
+        if (c < 0) lo = mid + 1; else hi = mid;
+    }
+    return 0;
+}
+
+/* verify the single key `path` against the bundle u->v[ord[0..n)] */
+static int verify_in_order(const uint8_t root[64],
+                           const evm_trie_proof_set_t *u, const size_t *ord,
+                           size_t n, const uint8_t path[64])
+{
+    const uint8_t **np = calloc(n + 1, sizeof(*np));
+    size_t *nl = calloc(n + 1, sizeof(*nl));
+    evm_trie_proof_result_t r[1];
+    int rc = -100;
+    if (np && nl) {
+        for (size_t i = 0; i < n; i++) {
+            np[i] = u->v[ord[i]].rlp;
+            nl[i] = u->v[ord[i]].len;
+        }
+        rc = evm_trie_proof_verify_batch(root, np, nl, n,
+                                         (const uint8_t (*)[64])path, 1, r);
+    }
+    free(np); free(nl);
+    return rc;
+}
+
+static void test_proof_order(void)
+{
+    enum { N = 300, NU = 20 };
+    mstore ms = {0};
+    evm_trie_store_t st = ms_iface(&ms);
+    evm_trie_t *t = NULL;
+    uint8_t root[64], path0[64];
+    int rc = evm_trie_open(&st, tv_empty_root, &t);
+    for (uint32_t i = 0; rc == 0 && i < N; i++) {
+        uint8_t k[8], v[64];
+        fx_key8('K', i, k);
+        rc = qgp_sha3_512(k, 8, v);
+        if (rc == 0) rc = evm_trie_set(t, k, 8, v, 64);
+    }
+    if (rc == 0) rc = evm_trie_commit(t, root);
+    evm_trie_close(t);
+    CHECK(rc == 0, "order fixture trie built");
+    if (rc != 0) { ms_free(&ms); return; }
+
+    evm_trie_proof_set_t a = {0}, u = {0};
+    uint8_t k0[8];
+    fx_key8('K', 0, k0);
+    CHECK(evm_trie_proof_path_of_key(k0, 8, path0) == 0 &&
+          evm_trie_prove_path(&st, root, path0, &a) == 0 &&
+          evm_trie_proof_set_finish(&a) == 0, "the needed nodes of key 0");
+    for (uint32_t i = 0; i < NU; i++) {          /* the union: key 0 + others */
+        uint8_t k[8], p[64];
+        fx_key8('K', i * 15, k);
+        CHECK(evm_trie_proof_path_of_key(k, 8, p) == 0 &&
+              evm_trie_prove_path(&st, root, p, &u) == 0, "prove");
+    }
+    CHECK(evm_trie_proof_set_finish(&u) == 0 && u.n > a.n + 10,
+          "the bundle holds nodes key 0 does not need");
+    size_t n = u.n;
+    size_t *ord = malloc((n + 1) * sizeof(*ord));
+    uint8_t (*dig)[64] = malloc((n + 1) * sizeof(*dig));
+    CHECK(ord && dig, "allocation");
+    if (!ord || !dig) {
+        free(ord); free(dig);
+        evm_trie_proof_set_free(&a);
+        evm_trie_proof_set_free(&u);
+        ms_free(&ms);
+        return;
+    }
+    for (size_t i = 0; i < n; i++) ord[i] = i;
+    CHECK(verify_in_order(root, &u, ord, n, path0) == 0,
+          "control: the sorted unique bundle verifies");
+
+    /* an adjacent DUPLICATE of any node (sorted otherwise): the binary
+     * search still serves it, the strictness rule refuses it */
+    for (size_t d = 0; d < n; d++) {
+        size_t m = 0;
+        for (size_t i = 0; i < n; i++) {
+            ord[m++] = i;
+            if (i == d) ord[m++] = i;
+        }
+        CHECK(verify_in_order(root, &u, ord, m, path0) == -2,
+              "an adjacent duplicate node: refused (-2)");
+    }
+
+    /* every swap of two nodes: out of order; count the swaps whose lookups
+     * of ALL needed nodes the binary search still serves - the cases only
+     * the order rule can refuse */
+    size_t served_unsorted = 0;
+    for (size_t i = 0; i < n; i++) {
+        for (size_t j = i + 1; j < n; j++) {
+            for (size_t x = 0; x < n; x++) ord[x] = x;
+            ord[i] = j; ord[j] = i;
+            for (size_t x = 0; x < n; x++)
+                memcpy(dig[x], u.v[ord[x]].digest, 64);
+            int all = 1;
+            for (size_t x = 0; x < a.n && all; x++)
+                all = bsearch_serves((const uint8_t (*)[64])dig, n,
+                                     a.v[x].digest);
+            if (all) served_unsorted++;
+            CHECK(verify_in_order(root, &u, ord, n, path0) == -2,
+                  "a bundle out of digest order: refused (-2)");
+        }
+    }
+    CHECK(served_unsorted > 0,
+          "false-pass guard: some out-of-order bundles are served by the "
+          "binary search alone (so only the order rule refuses them)");
+    printf("ok   proofs: bundle order rule (%zu out-of-order bundles served "
+           "by the lookup alone, all refused; adjacent duplicates refused)\n",
+           served_unsorted);
+    free(ord); free(dig);
+    evm_trie_proof_set_free(&a);
+    evm_trie_proof_set_free(&u);
+    ms_free(&ms);
+}
+
 int main(void)
 {
     test_noop_and_empty();
@@ -1536,6 +1693,7 @@ int main(void)
     test_proof_batch();
     test_proof_nodes();
     test_proof_inline_and_extension();
+    test_proof_order();
     test_full_only();
     test_keccak_fixture_roots();
     printf("%s: %d failure(s)\n", g_fail ? "FAILED" : "PASSED", g_fail);
