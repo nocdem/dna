@@ -142,7 +142,10 @@ int nodus_witness_v2_shadow_pass(nodus_witness_t *w);
  *  and its consensus state saved (nodus_cmt_blockexec_t.on_block_saved,
  *  bound in nodus_witness_cmt_node.c). Configuration-gated by
  *  w->config.hf9_shadow (off = nothing): decides stopped / seed / pass as
- *  described above. NEVER fails the caller. */
+ *  described above. It does nothing while the node's consensus reactor still
+ *  waits for block sync (w->cmt_conr, cmt_conr_wait_sync; operator 2026-11-05
+ *  "canli zincir"): the first call after the switch to consensus covers every
+ *  missed change in one step. NEVER fails the caller. */
 void nodus_witness_v2_shadow_after_commit(void *w);
 
 /** Read a log row: `height` 0 = the newest. @return 1 found, 0 no such

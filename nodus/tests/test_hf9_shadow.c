@@ -152,6 +152,7 @@
 #include "witness/nodus_witness_runtime.h"
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus.h"                      /* the dnac_hf9_shadow codec */
+#include "dnac/cmt_conr.h"                    /* the reactor's wait_sync */
 #include "protocol/nodus_cbor.h"
 
 #include "dnac/dnac.h"
@@ -793,22 +794,36 @@ static int fx_open(fixture_t *fx, const char *tag, uint64_t ha) {
     return v2x_seed_genesis(fx->w, fx->chain16, 0, NULL, 0, NULL);
 }
 
-/* a restart for everything this module holds: the SQLite handle closed and
- * the same file opened again */
+/* A RESTART: the SQLite handle is closed (its result checked) and the same
+ * file opened again in a FRESH, zero-initialised witness context - what the
+ * production init does (nodus_witness_init memsets the witness,
+ * nodus_witness.c:2814) - so every in-memory state (the failure latch, the
+ * caches, the config) is gone; only the data path and the `hf9_shadow`
+ * setting (re-read from nodus.json at a real start) are re-applied. */
 static int fx_reopen(fixture_t *fx) {
-    const char *fn = sqlite3_db_filename(fx->w->db, "main");
+    nodus_witness_t *old = fx->w;
+    const char *fn = sqlite3_db_filename(old->db, "main");
     char path[512];
     if (!fn || strlen(fn) >= sizeof(path)) return -1;
     snprintf(path, sizeof(path), "%s", fn);
-    sqlite3_close(fx->w->db);
-    fx->w->db = NULL;
+    const int cfg = old->config.hf9_shadow;
+    if (sqlite3_close(old->db) != SQLITE_OK) return -1;
+    old->db = NULL;
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) {
         if (db) sqlite3_close(db);
         return -1;
     }
-    fx->w->db = db;
-    fx->w->chain_config_cache_warm = false;
+    nodus_witness_t *nw = calloc(1, sizeof(*nw));     /* multi-MB - heap */
+    if (!nw) {
+        sqlite3_close(db);
+        return -1;
+    }
+    snprintf(nw->data_path, sizeof(nw->data_path), "%s", old->data_path);
+    nw->db = db;
+    nw->config.hf9_shadow = cfg;
+    free(old);
+    fx->w = nw;
     return 0;
 }
 
@@ -855,6 +870,87 @@ static int stored_roots(nodus_witness_t *w, uint8_t roots[8][64]) {
     for (int leg = 1; leg <= 8; leg++)
         if (nodus_witness_v2_trie_leg_root(w, leg, roots[leg - 1]) != 0)
             return -1;
+    return 0;
+}
+
+/* The expected GLOBAL v2' (plan §6 :217 "DomainHead v2, domains_root,
+ * GLOBAL v2 (replay leg) - unchanged", §11 :424 "the compositions computed
+ * post-commit from the committed state with the shadow legs"): the
+ * COMMITTED v2_domain_heads rows (head blob decoded here from the layout of
+ * ledger_roots_v2.h, last_upd_hash column as stored), the SYSTEM and CORE
+ * domain_state_root replaced by `sys` / `core`, the committed replay root,
+ * composed by the shared dnac primitives dna_v2_domains_root_v2 and
+ * dna_v2_global_root_v2 - NOT by global_root_v2_impl / global_compose. */
+static int expected_glob(nodus_witness_t *w, const uint8_t core[64],
+                         const uint8_t sys[64], uint8_t out[64]) {
+    dna_v2_domain_head_t heads[8];
+    uint8_t luh[8][64];
+    size_t n = 0;
+    sqlite3_stmt *st = NULL;
+    int rc, ok = 1;
+    if (sqlite3_prepare_v2(w->db, "SELECT head, last_upd_hash, "
+            "typeof(last_upd_hash) FROM v2_domain_heads ORDER BY domain_id "
+            "ASC", -1, &st, NULL) != SQLITE_OK) return -1;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const uint8_t *b = sqlite3_column_blob(st, 0);
+        const char *ty = (const char *)sqlite3_column_text(st, 2);
+        if (n >= 8 || !b || sqlite3_column_bytes(st, 0) != DNA_V2_DOMHEAD_ENC_LEN ||
+            !ty || strcmp(ty, "blob") != 0 ||
+            sqlite3_column_bytes(st, 1) != 64) { ok = 0; break; }
+        dna_v2_domain_head_t *h = &heads[n];
+        memset(h, 0, sizeof(*h));
+        h->domain_id = ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+                       ((uint32_t)b[2] << 8) | b[3];
+        memcpy(h->domain_state_root, b + 4, 64);
+        for (int i = 0; i < 8; i++)
+            h->domain_height = (h->domain_height << 8) | b[68 + i];
+        for (int i = 0; i < 8; i++)
+            h->last_updated_global_height =
+                (h->last_updated_global_height << 8) | b[76 + i];
+        h->ruleset_version = ((uint32_t)b[84] << 24) | ((uint32_t)b[85] << 16) |
+                             ((uint32_t)b[86] << 8) | b[87];
+        h->status = b[88];
+        if (h->domain_id == DNA_DOMAIN_SYSTEM)
+            memcpy(h->domain_state_root, sys, 64);
+        else if (h->domain_id == DNA_DOMAIN_CORE)
+            memcpy(h->domain_state_root, core, 64);
+        memcpy(luh[n], sqlite3_column_blob(st, 1), 64);
+        n++;
+    }
+    if (rc != SQLITE_DONE) ok = 0;
+    sqlite3_finalize(st);
+    if (!ok || n == 0) return -1;
+    uint8_t domains[64], replay[64];
+    if (dna_v2_domains_root_v2(heads, (const uint8_t (*)[64])luh, n, domains)
+            != 0 || nodus_witness_replay_root(w, replay) != 0)
+        return -1;
+    return dna_v2_global_root_v2(domains, replay, out) == 0 ? 0 : -1;
+}
+
+/* The log row of `height` against the expected values, all 64 bytes of each:
+ * the eight legs and CORE v4' / STOR v3' / SYS v7' as the CONSENSUS code
+ * computes them after a simulated activation of the same rows (build_all +
+ * the consensus compositions inside a transaction that is rolled back), and
+ * GLOBAL v2' from expected_glob. 0 = all equal, else a code. */
+static int log_row_matches(nodus_witness_t *w, uint64_t height) {
+    nodus_v2_shadow_log_t row;
+    uint8_t core[64], stor[64], sys[64], glob[64], stored[8][64];
+    if (nodus_witness_v2_shadow_log_read(w, height, &row) != 1) return 1;
+    if (run_sql(w->db, "BEGIN") != 0) return 2;
+    int ok = nodus_witness_v2_trie_build_all(w) == 0 &&
+             stored_roots(w, stored) == 0 &&
+             nodus_witness_core_root_v4(w, core) == 0 &&
+             nodus_witness_storage_root_v3(w, stor) == 0 &&
+             nodus_witness_system_root_v7(w, sys) == 0;
+    if (run_sql(w->db, "ROLLBACK") != 0) return 3;
+    if (!ok) return 4;
+    for (int leg = 0; leg < 8; leg++)
+        if (memcmp(row.leg[leg], stored[leg], 64) != 0) return 10 + leg;
+    if (memcmp(row.core, core, 64) != 0) return 20;
+    if (memcmp(row.stor, stor, 64) != 0) return 21;
+    if (memcmp(row.sys, sys, 64) != 0) return 22;
+    if (expected_glob(w, core, sys, glob) != 0) return 23;
+    if (memcmp(row.glob, glob, 64) != 0) return 24;
     return 0;
 }
 
@@ -964,6 +1060,10 @@ static int t_chain_window(void) {
               memcmp(row.glob, glob_c, 64) != 0,
               "D4: GLOBAL v2' differs from the committed global root "
               "(control: other compositions)");
+        CHECK(log_row_matches(fx.w, HA - 2u) == 0,
+              "D4: the logged legs, CORE / STOR / SYS and the GLOBAL v2' "
+              "(independently composed) equal the expected values, all 64 "
+              "bytes");
         CHECK(tabs_digest(fx.w->db, CONSENSUS_TABS, N_CONSENSUS_TABS,
                           d_consensus_after) == 0 &&
               memcmp(d_consensus_before, d_consensus_after, 64) == 0,
@@ -1062,27 +1162,59 @@ static int t_chain_catch_up(void) {
     fx.w->config.hf9_shadow = NODUS_HF9_SHADOW_ON;
     for (uint64_t h = 1; h <= H5 - 1u; h++)
         CHECK(apply_block(&fx, h) == 0, "block");
+    /* the node's consensus reactor: live (wait_sync false) while it seeds */
+    cmt_conr_t *conr = calloc(1, sizeof(*conr));
+    CHECK(conr != NULL, "alloc");
+    conr->wait_sync = false;
+    fx.w->cmt_conr = conr;
     nodus_witness_v2_shadow_after_commit(fx.w);
     CHECK(shadow_status(fx.w) == NODUS_V2_SHADOW_RUNNING &&
           log_rows(fx.w) == 1, "F0: seeded at H5-1");
     for (int leg = 1; leg <= 8; leg++)
         CHECK(nodus_witness_v2_trie_shadow_leg_root(fx.w, leg, before[leg - 1])
               == 0, "F0: roots");
-    /* two blocks WITHOUT the hook (a stop between COMMIT and the save, or a
-     * missed call), then a change, then one call */
-    CHECK(apply_block(&fx, H5) == 0 && apply_block(&fx, H5 + 1u) == 0,
-          "F1: two blocks without the hook");
-    CHECK(add_token_row(fx.w, 0xA7) == 0, "F1: a row change");
-    /* a REAL restart inside the window: the file closed and opened again;
-     * the shadow continues from the stored shadow tables */
-    CHECK(fx_reopen(&fx) == 0, "F1: restart inside the window");
+    /* BLOCK SYNC (operator 2026-11-05, "canli zincir"): the reactor waits
+     * for block sync, two blocks apply and the hook is called after each,
+     * then a change - the shadow does NOTHING (no pass, no row read, no log
+     * row, no root moved) */
+    conr->wait_sync = true;
+    {
+        const uint64_t scanned = nodus_witness_v2_shadow_rows_scanned();
+        uint8_t mid[8][64];
+        CHECK(apply_block(&fx, H5) == 0, "F1: block sync block 1");
+        nodus_witness_v2_shadow_after_commit(fx.w);
+        CHECK(apply_block(&fx, H5 + 1u) == 0, "F1: block sync block 2");
+        CHECK(add_token_row(fx.w, 0xA7) == 0, "F1: a row change");
+        nodus_witness_v2_shadow_after_commit(fx.w);
+        CHECK(nodus_witness_v2_shadow_pass(fx.w) == 0, "F1: the pass call");
+        for (int leg = 1; leg <= 8; leg++)
+            CHECK(nodus_witness_v2_trie_shadow_leg_root(fx.w, leg, mid[leg - 1])
+                  == 0, "F1: roots");
+        CHECK(log_rows(fx.w) == 1 &&
+              nodus_witness_v2_shadow_rows_scanned() == scanned &&
+              memcmp(before, mid, sizeof(before)) == 0,
+              "F1: while block-syncing no pass ran: no log row, no row read, "
+              "no shadow root moved");
+    }
+    /* a REAL restart (fresh witness context, file closed and reopened)
+     * while still syncing: still nothing */
+    CHECK(fx_reopen(&fx) == 0, "F1: restart");
+    fx.w->cmt_conr = conr;
     nodus_witness_v2_shadow_after_commit(fx.w);
-    CHECK(log_rows(fx.w) == 2, "F1: ONE new log row");
+    CHECK(log_rows(fx.w) == 1, "F1: after the restart, still syncing: nothing");
+    /* the switch to consensus: the FIRST call covers every missed change in
+     * one step */
+    conr->wait_sync = false;
+    nodus_witness_v2_shadow_after_commit(fx.w);
+    CHECK(log_rows(fx.w) == 2, "F1: ONE new log row after the switch");
     {
         nodus_v2_shadow_log_t row;
         CHECK(nodus_witness_v2_shadow_log_read(fx.w, H5 + 1u, &row) == 1 &&
               nodus_witness_v2_shadow_log_read(fx.w, H5, &row) == 0,
               "F1: at the tip, none for the missed height");
+        CHECK(log_row_matches(fx.w, H5 + 1u) == 0,
+              "F1: the logged legs, CORE / STOR / SYS and GLOBAL v2' equal "
+              "the expected values (all 64 bytes) after the committed change");
     }
     /* the full rebuild writes nodes to the CONSENSUS v2_trie_nodes: inside a
      * transaction that is rolled back, so the pre-edge chain keeps it empty */
@@ -1102,6 +1234,8 @@ static int t_chain_catch_up(void) {
           "F1: control - the tokens leg moved (the change was caught up)");
     CHECK(memcmp(before[0], after[0], 64) == 0,
           "F1: ... a leg without a change did not");
+    fx.w->cmt_conr = NULL;
+    free(conr);
     fx_close(&fx);
     return 0;
 }
@@ -1135,10 +1269,20 @@ static int t_chain_failures(void) {
     CHECK(committed_gen(fx.w) == 0, "H1: control - the generation reads as "
           "unresolvable with the override");
     nodus_witness_v2_shadow_after_commit(fx.w);
+    CHECK(nodus_witness_v2_shadow_pass(fx.w) == -1,
+          "H1: the pass reports the unreadable generation as a failure (-1), "
+          "which idle (0) would not");
     CHECK(shadow_status(fx.w) == NODUS_V2_SHADOW_NONE &&
           table_exists(fx.w->db, "v2_trie_shadow_log") == 0 &&
           fx.w->hf9_shadow_latched == 0,
-          "H1: never seeded and unreadable: logged, nothing written");
+          "H1: never seeded and unreadable: nothing written, no status, no "
+          "latch (no run to invalidate)");
+    fx.w->v2_runtime_table = NULL;
+    fx.w->v2_runtime_table_n = 0;
+    CHECK(nodus_witness_v2_shadow_pass(fx.w) == 0,
+          "H1: control - readable and never seeded, the pass is idle (0)");
+    fx.w->v2_runtime_table = &g_no_runtime;
+    fx.w->v2_runtime_table_n = 1;
     fx.w->v2_runtime_table = NULL;
     fx.w->v2_runtime_table_n = 0;
     nodus_witness_v2_shadow_after_commit(fx.w);
@@ -1221,6 +1365,39 @@ static int t_chain_failures(void) {
               nodus_witness_v2_shadow_rows_scanned() == scanned,
               "H4: the invalidated evidence does not resume: no pass, no "
               "row read, no log row");
+    }
+    fx_close(&fx);
+
+    /* H5: the STATUS itself is unreadable (its table is renamed away) while
+     * a run exists: the run is invalidated - the FAULTED write fails too, so
+     * the latch holds and the status reads FAULTED once the table is back */
+    CHECK(fx_open(&fx, "statusread", 0) == 0, "H: chain");
+    fx.w->config.hf9_shadow = NODUS_HF9_SHADOW_ON;
+    for (uint64_t h = 1; h <= H5 - 1u; h++)
+        CHECK(apply_block(&fx, h) == 0, "block");
+    nodus_witness_v2_shadow_after_commit(fx.w);
+    CHECK(shadow_status(fx.w) == NODUS_V2_SHADOW_RUNNING, "H5: seeded");
+    CHECK(apply_block(&fx, H5) == 0, "block");
+    CHECK(run_sql(fx.w->db, "ALTER TABLE v2_trie_shadow_state RENAME TO "
+                            "v2_trie_shadow_state_away") == 0,
+          "H5: the status table becomes unreadable");
+    nodus_witness_v2_shadow_after_commit(fx.w);
+    CHECK(fx.w->hf9_shadow_latched == 1,
+          "H5: an unreadable status invalidates the run (latched: the "
+          "FAULTED write cannot succeed either)");
+    CHECK(run_sql(fx.w->db, "ALTER TABLE v2_trie_shadow_state_away RENAME TO "
+                            "v2_trie_shadow_state") == 0,
+          "H5: the status table is readable again");
+    CHECK(q1(fx.w->db, "SELECT status FROM v2_trie_shadow_state") ==
+              NODUS_V2_SHADOW_RUNNING &&
+          shadow_status(fx.w) == NODUS_V2_SHADOW_FAULTED,
+          "H5: the stored row still says RUNNING, the shadow reports FAULTED");
+    {
+        const int rows = log_rows(fx.w);
+        CHECK(apply_block(&fx, H5 + 1u) == 0, "block");
+        nodus_witness_v2_shadow_after_commit(fx.w);
+        CHECK(log_rows(fx.w) == rows,
+              "H5: the run does not resume once reads recover");
     }
     fx_close(&fx);
     return 0;

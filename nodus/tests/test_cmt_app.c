@@ -8189,6 +8189,83 @@ static int hyb_shadow_roots_equal_rebuild(nodus_witness_t *w)
     return ret;
 }
 
+/* The log row of `height` against the expected values, all 64 bytes of each
+ * (Sol re-verify row 14): the eight legs and CORE v4' / STOR v3' / SYS v7'
+ * as the CONSENSUS code computes them after a simulated activation of the
+ * same rows (build_all + the consensus compositions in a rolled-back
+ * transaction), and GLOBAL v2' composed here from the committed
+ * v2_domain_heads (SYSTEM / CORE roots replaced), the committed
+ * last_upd_hash column and the committed replay root through the shared
+ * dnac primitives (plan §6 :217, §11 :424) - not by the code under test.
+ * 0 = all equal. */
+static int hyb_log_matches(nodus_witness_t *w, uint64_t height)
+{
+    nodus_v2_shadow_log_t row;
+    uint8_t core[64], stor[64], sys[64], stored[NODUS_V2_TRIE_LEGS][64];
+    dna_v2_domain_head_t heads[8];
+    uint8_t luh[8][64], domains[64], replay[64], glob[64];
+    size_t n = 0;
+    sqlite3_stmt *st = NULL;
+    int rc, ok;
+
+    if (nodus_witness_v2_shadow_log_read(w, height, &row) != 1) return 1;
+    if (sqlite3_exec(w->db, "BEGIN", NULL, NULL, NULL) != SQLITE_OK) return 2;
+    ok = nodus_witness_v2_trie_build_all(w) == 0 &&
+         nodus_witness_core_root_v4(w, core) == 0 &&
+         nodus_witness_storage_root_v3(w, stor) == 0 &&
+         nodus_witness_system_root_v7(w, sys) == 0;
+    for (int leg = 1; ok && leg <= NODUS_V2_TRIE_LEGS; leg++)
+        ok = nodus_witness_v2_trie_leg_root(w, leg, stored[leg - 1]) == 0;
+    if (sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL) != SQLITE_OK) return 3;
+    if (!ok) return 4;
+    for (int leg = 0; leg < NODUS_V2_TRIE_LEGS; leg++)
+        if (memcmp(row.leg[leg], stored[leg], 64) != 0) return 10 + leg;
+    if (memcmp(row.core, core, 64) != 0) return 20;
+    if (memcmp(row.stor, stor, 64) != 0) return 21;
+    if (memcmp(row.sys, sys, 64) != 0) return 22;
+
+    if (sqlite3_prepare_v2(w->db, "SELECT head, last_upd_hash, "
+            "typeof(last_upd_hash) FROM v2_domain_heads ORDER BY domain_id "
+            "ASC", -1, &st, NULL) != SQLITE_OK) return 30;
+    ok = 1;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const uint8_t *b = sqlite3_column_blob(st, 0);
+        const char *ty = (const char *)sqlite3_column_text(st, 2);
+        dna_v2_domain_head_t *h = &heads[n < 8 ? n : 0];
+
+        if (n >= 8 || !b ||
+            sqlite3_column_bytes(st, 0) != DNA_V2_DOMHEAD_ENC_LEN ||
+            !ty || strcmp(ty, "blob") != 0 ||
+            sqlite3_column_bytes(st, 1) != 64) { ok = 0; break; }
+        memset(h, 0, sizeof(*h));
+        h->domain_id = ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+                       ((uint32_t)b[2] << 8) | b[3];
+        memcpy(h->domain_state_root, b + 4, 64);
+        for (int i = 0; i < 8; i++)
+            h->domain_height = (h->domain_height << 8) | b[68 + i];
+        for (int i = 0; i < 8; i++)
+            h->last_updated_global_height =
+                (h->last_updated_global_height << 8) | b[76 + i];
+        h->ruleset_version = ((uint32_t)b[84] << 24) | ((uint32_t)b[85] << 16) |
+                             ((uint32_t)b[86] << 8) | b[87];
+        h->status = b[88];
+        if (h->domain_id == DNA_DOMAIN_SYSTEM)
+            memcpy(h->domain_state_root, sys, 64);
+        else if (h->domain_id == DNA_DOMAIN_CORE)
+            memcpy(h->domain_state_root, core, 64);
+        memcpy(luh[n], sqlite3_column_blob(st, 1), 64);
+        n++;
+    }
+    if (rc != SQLITE_DONE) ok = 0;
+    sqlite3_finalize(st);
+    if (!ok || n == 0) return 31;
+    if (dna_v2_domains_root_v2(heads, (const uint8_t (*)[64])luh, n, domains)
+            != 0 ||
+        nodus_witness_replay_root(w, replay) != 0 ||
+        dna_v2_global_root_v2(domains, replay, glob) != 0) return 32;
+    return memcmp(row.glob, glob, 64) == 0 ? 0 : 33;
+}
+
 static int t_hyb_crash_shadow(void)
 {
     hyb_t  *A = calloc(1, sizeof(*A)), *Bn = calloc(1, sizeof(*Bn));
@@ -8673,6 +8750,10 @@ static int t_hyb_crash_shadow_rows(void)
     CHECK(hyb_digest(A->g.w->db, d3a) == 0, "S4 digest before the rebuild");
     CHECK(hyb_shadow_roots_equal_rebuild(A->g.w) == 0,
           "S4 every shadow leg equals the full rebuild");
+    CHECK(hyb_log_matches(A->g.w, 12) == 0,
+          "S4 the LOGGED legs, CORE / STOR / SYS and GLOBAL v2' of height 12 "
+          "equal the expected values, all 64 bytes, after the committed "
+          "registry change");
     CHECK(hyb_digest(A->g.w->db, d2a) == 0 && memcmp(d2a, d3a, 64) == 0,
           "S4 the rolled-back rebuild left the ledger untouched");
     CHECK(hyb_digest(Bn->g.w->db, d3b) == 0 && memcmp(d3a, d3b, 64) == 0,

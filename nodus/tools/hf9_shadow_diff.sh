@@ -17,14 +17,14 @@
 # no node given the script refuses to run.
 #
 # Usage:
-#   hf9_shadow_diff.sh [--from H] [--to H] [--expect-nodes N] <host:port> ...
-#   HF9_NODES="host:port host:port ..." hf9_shadow_diff.sh [--from H] [--to H]
+#   hf9_shadow_diff.sh --expect-nodes N [--from H] [--to H] <host:port> ...
+#   HF9_NODES="host:port ..." hf9_shadow_diff.sh --expect-nodes N [--from H] [--to H]
 #
-#   At least two nodes, each listed once (a single node or a repeated
-#   endpoint compares nothing and is refused, exit 2). --expect-nodes N makes
-#   the script refuse a roster that is not exactly N nodes (the operator
-#   passes the size read from the chain, 8 in the plan); the script cannot
-#   know the roster itself.
+#   --expect-nodes N is REQUIRED: the number of nodes the chain has, read from
+#   the chain by the operator (8 in the plan); the script cannot know the
+#   roster itself. Without it, or when the nodes given are not exactly N, or
+#   fewer than two, or one is listed twice, the script refuses to run (exit
+#   2) - a gate over an incomplete roster never reports success.
 #   --from / --to are plain numbers of at most 15 digits; success needs the
 #   whole requested range compared, identical, on every node, with every
 #   node reporting status running in every answer AND in a final re-query.
@@ -99,11 +99,18 @@ if [ -n "$(printf '%s\n' "${NODES[@]}" | sort | uniq -d)" ]; then
     echo "a node is listed twice: $(printf '%s\n' "${NODES[@]}" | sort | uniq -d | tr '\n' ' ')" >&2
     exit 2
 fi
-if [ -n "$EXPECT_NODES" ]; then
-    if ! [[ "$EXPECT_NODES" =~ ^[0-9]{1,3}$ ]] || [ "$EXPECT_NODES" -ne "${#NODES[@]}" ]; then
-        echo "--expect-nodes $EXPECT_NODES but ${#NODES[@]} node(s) were given" >&2
-        exit 2
-    fi
+# The roster size is REQUIRED: the operator reads the number of nodes from
+# the chain (the script cannot - no nodus-cli command maps the chain's
+# members to endpoints) and states it. Without it, or on a mismatch, the
+# script refuses to run, so a gate over an incomplete roster can never
+# report success (plan §11: all nodes; an exclusion goes to the operator).
+if [ -z "$EXPECT_NODES" ]; then
+    echo "--expect-nodes N is required: pass the number of nodes the chain has (read from the chain)" >&2
+    exit 2
+fi
+if ! [[ "$EXPECT_NODES" =~ ^[0-9]{1,3}$ ]] || [ "$EXPECT_NODES" -ne "${#NODES[@]}" ]; then
+    echo "--expect-nodes $EXPECT_NODES but ${#NODES[@]} node(s) were given" >&2
+    exit 2
 fi
 # bounds: plain digit strings of at most 15 digits, so every shell integer
 # test below is a real numeric test (a longer value would raise an
@@ -130,6 +137,7 @@ field() {
 }
 
 fail=0
+STATUS_BAD=0              # sticky: any status != running seen anywhere
 declare -A STATUS_OF      # node -> status
 declare -A NEWEST_OF      # node -> newest logged height
 
@@ -139,6 +147,11 @@ for n in "${NODES[@]}"; do
     out=$(query "$n" 0) || { echo "FAIL node $n did not answer" ; fail=1; continue; }
     st=$(field "$out" status)
     STATUS_OF[$n]="$st"
+    if [ "$st" != "1" ]; then
+        echo "FAIL node $n reports shadow status '$st', not running (1)"
+        fail=1
+        STATUS_BAD=1
+    fi
     if [ "$(field "$out" found)" = "1" ]; then
         h=$(field "$out" height)
         if ! [[ "$h" =~ ^[0-9]{1,15}$ ]]; then
@@ -188,6 +201,7 @@ while [ "$h" -le "$TO" ]; do
         if [ "$(field "$out" status)" != "1" ]; then
             echo "FAIL height $h node $n reports shadow status '$(field "$out" status)', not running (1)"
             fail=1
+            STATUS_BAD=1
         fi
         ROW[$n]="$out"
     done
@@ -221,7 +235,16 @@ done
 for n in "${NODES[@]}"; do
     out=$(query "$n" 0) || { echo "FAIL node $n did not answer the final status query"; fail=1; continue; }
     STATUS_OF[$n]="$(field "$out" status)"
+    if [ "${STATUS_OF[$n]}" != "1" ]; then
+        STATUS_BAD=1
+    fi
 done
+# any non-running status seen at ANY point (initial, per height, final)
+# fails the run, whatever later answers say
+if [ "$STATUS_BAD" = "1" ]; then
+    echo "FAIL a node reported a shadow status other than running during the run"
+    fail=1
+fi
 
 # success needs the WHOLE requested range compared on every node
 expected=$((TO - FROM + 1))

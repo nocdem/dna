@@ -27,6 +27,8 @@
 
 #include "evm/trie/evm_trie_full.h"
 
+#include "dnac/cmt_conr.h"                      /* cmt_conr_wait_sync */
+
 #include "dnac/ledger_ids.h"                    /* DNA_DOMAIN_SYSTEM            */
 #include "crypto/utils/qgp_log.h"
 
@@ -116,6 +118,10 @@ static int exec_sql(sqlite3 *db, const char *sql) {
 
 int nodus_witness_v2_shadow_status(nodus_witness_t *w, int *status) {
     if (!w || !w->db || !status) return -1;
+    if (w->hf9_shadow_latched) {       /* the FAULTED write failed earlier   */
+        *status = NODUS_V2_SHADOW_FAULTED;
+        return 0;
+    }
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
             "SELECT status, typeof(status) FROM v2_trie_shadow_state "
@@ -123,10 +129,7 @@ int nodus_witness_v2_shadow_status(nodus_witness_t *w, int *status) {
         return -1;
     int rc = sqlite3_step(st);
     int ret = -1;
-    if (w->hf9_shadow_latched) {       /* the FAULTED write failed earlier   */
-        *status = NODUS_V2_SHADOW_FAULTED;
-        ret = 0;
-    } else if (rc == SQLITE_DONE) {
+    if (rc == SQLITE_DONE) {
         *status = NODUS_V2_SHADOW_NONE;
         ret = 0;
     } else if (rc == SQLITE_ROW) {
@@ -690,26 +693,35 @@ static int step(nodus_witness_t *w, int allow_seed) {
         return 0;
     }
     if (w->hf9_shadow_latched) return 0;   /* FAULTED not stored: no steps  */
+    /* The shadow runs only while the node follows the LIVE chain (operator,
+     * 2026-11-05, "canli zincir", docs/plans/decisions/2026-11-04-hf9-
+     * scope.md): while the consensus reactor still waits for block sync
+     * (cmt_conr_wait_sync, the state the host's block-sync apply runs in,
+     * nodus_witness.c:2113-2119) no seeding and no pass happens; the first
+     * call after the switch to consensus covers every missed change in one
+     * step (plan §11 catch-up). No reactor (a test executor) = not
+     * syncing. */
+    if (w->cmt_conr && cmt_conr_wait_sync((const cmt_conr_t *)w->cmt_conr))
+        return 0;
     int win = generation_window(w);
+    int st = NODUS_V2_SHADOW_NONE;
+    const int st_rc = nodus_witness_v2_shadow_status(w, &st);
     if (win < 0) {
-        /* an unreadable generation is NOT "inactive": a running shadow's
-         * evidence is invalidated (never the host's block) */
-        int cur = NODUS_V2_SHADOW_NONE;
-        if (nodus_witness_v2_shadow_status(w, &cur) == 0 &&
-            cur == NODUS_V2_SHADOW_RUNNING)
+        /* an unreadable generation is NOT "inactive". A run that may exist
+         * (RUNNING, or a status that cannot be read) is invalidated -
+         * FAULTED, or the latch when that write fails; a status that reads
+         * NONE has no run: logged, nothing written. Never the host's block. */
+        if (st_rc != 0 || st == NODUS_V2_SHADOW_RUNNING)
             return shadow_fail(w, 0, 0, "the schema version or the "
                                "committed generation is unreadable");
         QGP_LOG_ERROR(LOG_TAG, "%s", "HF9-SHADOW FAULT the schema version "
-                      "or the committed generation is unreadable");
+                      "or the committed generation is unreadable (no run "
+                      "exists, nothing invalidated)");
         return -1;
     }
     if (win == 0) return 0;                       /* idle                    */
-    int st = 0;
-    if (nodus_witness_v2_shadow_status(w, &st) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "%s", "HF9-SHADOW FAULT the status is "
-                      "unreadable");
-        return -1;
-    }
+    if (st_rc != 0)                    /* a run may exist: invalidate it    */
+        return shadow_fail(w, 0, 0, "the shadow status is unreadable");
     if (win == 2) {                      /* generation >= 6: stop for good   */
         if (st == NODUS_V2_SHADOW_RUNNING &&
             status_write(w, NODUS_V2_SHADOW_STOPPED) != 0) {
