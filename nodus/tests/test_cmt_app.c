@@ -7605,10 +7605,14 @@ static void hyb_coin_nul(int c, uint8_t out[64])
  * of key 1's STORAGE_EXIT envelope (test_storage_b2.c COINS CBX = FEE, owner
  * = the exiting node's key); coins 0 and 1 belong to keys 0 and 1. */
 #define HYB_EXIT_COIN  2
+/* Coin 3 exists only on a chain opened with funded == 3: the registration
+ * coin of key 2, a SECOND storage node that arrives after the first
+ * publication (the K9a grace case of hybrid_storage_writers_probe). */
+#define HYB_ARRIVAL_COIN  3
 
 static int hyb_coin_key(int c)
 {
-    return c == HYB_EXIT_COIN ? 1 : c;
+    return c == HYB_EXIT_COIN ? 1 : c == HYB_ARRIVAL_COIN ? 2 : c;
 }
 
 /* BOND + FEE exactly, as test_storage_b2.c COINS: the SYSFUND leg consumes
@@ -7706,7 +7710,8 @@ static int hyb_seed_filler(nodus_witness_t *w, unsigned n)
     return sqlite3_exec(w->db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK ? 0 : -1;
 }
 
-/* funded: 0 unfunded; 1 coins 0 and 1; 2 also the exit coin (HYB_EXIT_COIN) */
+/* funded: 0 unfunded; 1 coins 0 and 1; 2 also the exit coin (HYB_EXIT_COIN);
+ * 3 also the arrival coin (HYB_ARRIVAL_COIN) */
 static int hyb_open(hyb_t *h, int funded)
 {
     v2x_cfgbox_t hb;
@@ -7746,6 +7751,9 @@ static int hyb_open(hyb_t *h, int funded)
         if (funded == 2)
             CHECK(hyb_seed_coin(h->g.w, HYB_EXIT_COIN) == 0,
                   "hyb: the exit coin before the genesis");
+        if (funded == 3)
+            CHECK(hyb_seed_coin(h->g.w, HYB_ARRIVAL_COIN) == 0,
+                  "hyb: the arrival coin before the genesis");
         CHECK(hyb_seed_filler(h->g.w, g_hyb_filler) == 0,
               "hyb: the history UTXOs before the genesis");
         CHECK(hyb_plant_released(h->g.w, g_hyb_released) == 0,
@@ -8271,8 +8279,11 @@ static int hyb_register_env(nodus_witness_t *w, uint64_t height, int key,
 
     *out = NULL;
     if (hyb_streg_call(w, call, key, height) != HYB_STREG_LEN) return -1;
+    /* key 2's coin is the arrival coin (coin 2 is the exit coin of key 1) */
     return hyb_storage_env(w, height, DNA_SYSRULE_STORAGE_REGISTER, call,
-                           HYB_STREG_LEN, key, key, out, out_len);
+                           HYB_STREG_LEN,
+                           key == 2 ? HYB_ARRIVAL_COIN : key, key, out,
+                           out_len);
 }
 
 /* @return 0 and a heap envelope in *out (free()), or -1: key `key`'s
@@ -9127,17 +9138,23 @@ static int hyb_report_env(nodus_witness_t *w, uint64_t height, int vkey,
  * Timeline on the funded hybrid: W1 blocks 1-15 apply; W2 key 1 registers
  * in block 16; W3 blocks to 26E - 1 apply with no segment, grace_until = 0
  * and fail_streak = 0; W4 block 26E (the first publication, segment 1 due
- * at 1 x 24 E + 2 E) applies: segment 1 exists and the freeze of the same
- * boundary gave the node its first segment, so grace_until > 26E (K9
- * writer), leg 5 (registry) and leg 6 (segments) moved and every leg root
- * equals the incremental and the full rebuild; W5 blocks to 28E apply
- * (boundary 27E: set(27E) has the node, outside grace, holding segment 1);
+ * at 1 x 24 E + 2 E) applies: segment 1 exists, leg 6 (segments) moved and
+ * every leg root equals the incremental and the full rebuild; by K9a (the
+ * decision record :82-86, plan :299) a segment published AT the boundary
+ * is not counted, so key 1, which holds it from publication, gets NO grace
+ * (grace_until stays 0); W4g-q key 2 (a second storage node, the arrival
+ * coin: hyb_open(H, 3)) registers in block 26E + 16, and the event
+ * boundary 27E gives it the K9a grace: it newly holds segment 1 (published
+ * <= B - E) that it did not hold, so grace_until = 27E + 1 x E = 28E (K9
+ * writer, st_grace_write), key 1's stays 0, leg 5 (registry) moved, every
+ * leg root equals the rebuild; W5 blocks to 28E apply (set(27E) = keys 1
+ * and 2; key 1 outside grace and holding segment 1, key 2 in grace);
  * W6 five STORAGE_REPORTs for H = 27E, each signed by one seat of the
- * committee (g_ks keys 0, 2, 3, 4, 5; key 1 is the member), every bit 0
- * (the member failed), in the window (28E, 28E + E/2] apply; W7 block 29E
- * (settlement of H = 27E) applies: fail_streak 0 -> 1 (the streak
- * writer), leg 5 moved, every leg root equals the rebuild; W8 block 29E + 1
- * applies and the legs still equal the rebuild.
+ * committee (g_ks keys 0, 2, 3, 4, 5), every bit 0 (the members failed), in
+ * the window (28E, 28E + E/2] apply; W7 block 29E (settlement of H = 27E)
+ * applies: key 1's fail_streak 0 -> 1 (the streak writer), key 2's (in
+ * grace at H) stays 0, leg 5 moved, every leg root equals the rebuild; W8
+ * block 29E + 1 applies and the legs still equal the rebuild.
  * Flags: NODUS_EVM_ENABLED; E > 40 (reports at 28E + 1 .. + 5 inside the
  * window). Leaves /tmp/test_cmt_app_hyb_XXXXXX (removed). Can falsely pass:
  * a single node and a single member; the payout is not run (pool 1 unfunded:
@@ -9149,7 +9166,7 @@ static int t_hybrid_storage_writers_probe(void)
     const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
     static const int seats[5] = { 0, 2, 3, 4, 5 };
     hyb_t   *H = calloc(1, sizeof(*H));
-    uint8_t *renv = NULL, *penv[5] = { NULL };
+    uint8_t *renv = NULL, *aenv = NULL, *penv[5] = { NULL };
     uint8_t  l0[8][64], l1[8][64];
     uint64_t grace = 1, g2 = 0;
     uint32_t streak = 1;
@@ -9157,7 +9174,8 @@ static int t_hybrid_storage_writers_probe(void)
 
     CHECK(E > 40, "W0 no epoch boundary among the heights of the setup");
     CHECK(H != NULL, "alloc");
-    CHECK(hyb_open(H, 1) == 0, "W0 the funded hybrid derives");
+    CHECK(hyb_open(H, 3) == 0,
+          "W0 the funded hybrid with the arrival coin derives");
     CHECK(hyb_pair_to(H, NULL, 0, 15) == 0, "W1 blocks 1-15 apply");
     CHECK(hyb_register_step(H, NULL, 16, 1, &renv) == CMT_OK,
           "W2 block 16 with the registration applies");
@@ -9174,20 +9192,57 @@ static int t_hybrid_storage_writers_probe(void)
           "W4a the first publication boundary 26E applies");
     CHECK(q1(H->g.w->db, "SELECT COUNT(*) FROM v2_storage_segments") == 1,
           "W4b segment 1 was published by the real boundary");
-    CHECK(hyb_node_gs(H->g.w, 1, &grace, &streak) == 0 && grace > 26 * E,
-          "W4c the freeze of the same boundary gave the node its first "
-          "segment: grace_until was written (K9 writer)");
+    /* K9a (docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md
+     * :82-86; plan :299 "only for k published <= B-E"): a segment published
+     * AT this boundary is not counted, so the node that holds it from its
+     * publication gets NO grace */
+    CHECK(hyb_node_gs(H->g.w, 1, &grace, &streak) == 0 && grace == 0,
+          "W4c K9a: a segment published at the boundary is not counted - "
+          "the holder from publication gets no grace (grace_until 0)");
     for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
         CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, l1[leg - 1]) == 0,
               "W4d leg roots read after 26E");
     for (int i = 0; i < 8; i++)
         if (memcmp(l0[i], l1[i], 64) != 0) moved |= 1 << i;
-    CHECK((moved & 0x10) != 0 && (moved & 0x20) != 0,
-          "W4e leg 5 (registry: grace_until) and leg 6 (segments) moved");
+    CHECK((moved & 0x20) != 0, "W4e leg 6 (segments) moved");
     CHECK(hyb_legs_ok(H->g.w) == 0,
           "W4f every leg root equals the incremental and the full rebuild "
           "after 26E");
-    CHECK(hyb_pair_to(H, NULL, (int64_t)(26 * E), (int64_t)(28 * E)) == 0,
+    /* the K9a grace case: key 2 ARRIVES after the first publication, so at
+     * the next boundary 27E (an event) it newly holds segment 1, which
+     * existed at 27E - E = 26E (published <= B - E) and which it did not
+     * hold at 26E: n = 1, grace_until = max(0, 27E + 1 x E) = 28E (K9
+     * decision :78-79). Key 1 held the segment already: no grace. */
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(26 * E), (int64_t)(26 * E) + 15) == 0,
+          "W4g blocks 26E+1 .. 26E+15 apply");
+    CHECK(hyb_register_step(H, NULL, (int64_t)(26 * E) + 16, 2, &aenv)
+              == CMT_OK, "W4h block 26E+16 with key 2's registration applies");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(26 * E) + 16, (int64_t)(27 * E) - 1)
+              == 0, "W4i blocks up to 27E-1 apply");
+    CHECK(hyb_node_gs(H->g.w, 2, &grace, &streak) == 0 && grace == 0,
+          "W4j key 2 has no grace before the boundary 27E");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, l0[leg - 1]) == 0,
+              "W4k leg roots read before 27E");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(27 * E) - 1, (int64_t)(27 * E)) == 0,
+          "W4l the event boundary 27E applies");
+    CHECK(hyb_node_gs(H->g.w, 2, &grace, &streak) == 0 && grace == 28 * E,
+          "W4m K9/K9a: key 2 newly holds segment 1 (existed at B-E): "
+          "grace_until = 27E + 1 x E (K9 writer)");
+    CHECK(hyb_node_gs(H->g.w, 1, &g2, &streak) == 0 && g2 == 0,
+          "W4n key 1 held the segment before: grace_until stays 0");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, l1[leg - 1]) == 0,
+              "W4o leg roots read after 27E");
+    moved = 0;
+    for (int i = 0; i < 8; i++)
+        if (memcmp(l0[i], l1[i], 64) != 0) moved |= 1 << i;
+    CHECK((moved & 0x10) != 0,
+          "W4p leg 5 (registry: key 2's grace_until) moved at 27E");
+    CHECK(hyb_legs_ok(H->g.w) == 0,
+          "W4q every leg root equals the incremental and the full rebuild "
+          "after 27E");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(27 * E), (int64_t)(28 * E)) == 0,
           "W5 blocks up to the boundary 28E apply");
     for (int r = 0; r < 5; r++) {
         size_t elen = 0;
@@ -9219,6 +9274,11 @@ static int t_hybrid_storage_writers_probe(void)
     CHECK(hyb_node_gs(H->g.w, 1, &g2, &streak) == 0 && streak == 1,
           "W7b the settlement of H = 27E wrote fail_streak 1 (streak "
           "writer)");
+    /* key 2 is in grace at H = 27E (27E < 28E): its fail_streak is left
+     * unchanged whatever the reports say (K9 decision :79-80 "fail_streak
+     * unchanged"; nodus_witness_v2_storage.c st_settle :1707) */
+    CHECK(hyb_node_gs(H->g.w, 2, &g2, &streak) == 0 && streak == 0,
+          "W7b2 key 2, in grace at H, keeps fail_streak 0");
     for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
         CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, l1[leg - 1]) == 0,
               "W7c leg roots read after 29E");
@@ -9232,6 +9292,7 @@ static int t_hybrid_storage_writers_probe(void)
           "W8a block 29E+1 applies");
     CHECK(hyb_legs_ok(H->g.w) == 0, "W8b and its leg roots equal the rebuild");
     free(renv);
+    free(aenv);
     for (int r = 0; r < 5; r++) free(penv[r]);
     hyb_close(H);
     free(H);
