@@ -191,7 +191,22 @@ static int reg_put(unsigned i) {
  * the node's own 2 592-byte key; keys distinct (counter in bytes 16..19);
  * all other columns inside the loader's ranges. Production produces such
  * rows (an exited node); the UTXO its release created is spent after the
- * 12-epoch lock, so none is planted. */
+ * 12-epoch lock, so none is planted.
+ * Sol re-verify (fix4) rows 2 and 3 - production-valid bond and lifetimes:
+ *  - bond = DNAC_HF6_STORAGE_BOND_MIN (100k x 10^8 raw, dnac.h:1401; the
+ *    exact STORAGE_BOND a registration must deposit lies in
+ *    [MIN, MAX], decision docs/plans/decisions/2026-10-09-kurultay-16-hf6-
+ *    storage-summary.md:97-100);
+ *  - cohorts of PLANT_COHORT = 1000 nodes: cohort c registers at height
+ *    c x E + 1, exits at c x E + 2 and is released by the next boundary
+ *    (c + 1) x E (st_release, nodus_witness_v2_storage.c :1757; the exit
+ *    rule, nodus_witness_rt_native.c :6474-6480). The next cohort registers
+ *    after that release, so at no height are more than PLANT_COHORT planted
+ *    nodes live (ACTIVE + EXITING); with the 11 members live at once that is
+ *    below the generation-6 cap 1024 that registration enforces
+ *    (nodus_witness_rt_native.c :6403-6410). The last release lies at
+ *    ceil(n / 1000) x E, which run_scale checks is before H2. */
+#define PLANT_COHORT 1000u
 static int plant_released(unsigned n) {
     sqlite3_stmt *st = NULL;
     uint8_t *pk = malloc(DNAC_PUBKEY_SIZE);
@@ -201,7 +216,7 @@ static int plant_released(unsigned n) {
         sqlite3_prepare_v2(g_w->db,
             "INSERT INTO v2_storage_nodes (node_fp, node_pk, payee_fp, "
             "bond, status, registered_height, exit_height, fail_streak, "
-            "grace_until) VALUES (?1, ?2, ?3, 1000, 3, 1, 2, 0, 0)", -1, &st,
+            "grace_until) VALUES (?1, ?2, ?3, ?4, 3, ?5, ?6, 0, 0)", -1, &st,
             NULL) != SQLITE_OK) {
         free(pk);
         return -1;
@@ -217,6 +232,11 @@ static int plant_released(unsigned n) {
         sqlite3_bind_blob(st, 1, fp, 64, SQLITE_TRANSIENT);
         sqlite3_bind_blob(st, 2, pk, DNAC_PUBKEY_SIZE, SQLITE_TRANSIENT);
         sqlite3_bind_blob(st, 3, py, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 4, (sqlite3_int64)DNAC_HF6_STORAGE_BOND_MIN);
+        sqlite3_bind_int64(st, 5, (sqlite3_int64)((i / PLANT_COHORT) * E_LEN
+                                                  + 1u));
+        sqlite3_bind_int64(st, 6, (sqlite3_int64)((i / PLANT_COHORT) * E_LEN
+                                                  + 2u));
         rc = sqlite3_step(st);
     }
     sqlite3_finalize(st);
@@ -391,6 +411,10 @@ static int run_scale(unsigned s_seg, unsigned n_rel, scale_t *r) {
      * at k x P + 2E (the last at H2), the RELEASED nodes */
     CHECK(plant_set(H2, 10) == 0, "set(H2)");
     for (unsigned i = 0; i < 10; i++) CHECK(reg_put(i) == 0, "registry");
+    CHECK(E_LEN > 2 &&
+          (uint64_t)((n_rel + PLANT_COHORT - 1u) / PLANT_COHORT) * E_LEN
+              <= H2,
+          "the planted nodes' last release boundary lies before H2");
     CHECK(plant_released(n_rel) == 0, "released registry history");
     CHECK(sqlx("BEGIN") == 0, "begin");
     for (unsigned k = 1; k <= s_seg; k++)

@@ -8904,6 +8904,24 @@ static int hyb_growth_chain(unsigned n_hist, hyb_sample_t s[HYB_NSAMPLES],
  * assignment rows of a valid contiguous segment list with the production
  * freeze instead. The settlement here runs with an unmet F1 gate (no
  * signed reports, pools at 0): its payout path is not measured.
+ * LIMIT of the registry history (Sol re-verify fix4 row 3): the 10^5
+ * RELEASED nodes are planted before the genesis (hyb_plant_released) and
+ * are a state NO GENESIS PRODUCES - a genesis starts with no storage node;
+ * production reaches such a registry only by 10^5 register -> exit ->
+ * release cycles. By real blocks that is not reachable in-process: at most
+ * 1024 nodes are live (ACTIVE + EXITING) at once (registration refuses
+ * above the generation-6 cap, nodus_witness_rt_native.c :6403-6410) and an
+ * exit is released only at the next boundary (:6474-6480,
+ * nodus_witness_v2_storage.c st_release :1757), so 10^5 cycles need at
+ * least 98 release boundaries = 98 E blocks, 10^5 funded coins, 10^5
+ * registration envelopes (a 7299-byte consent-signed call, two ML-DSA
+ * signatures each) and 10^5 exit envelopes, with a block holding at most
+ * TEST_APP_TXS_CAP = 48 transactions (:1074): about 4 200 full blocks of
+ * signing, on top of the 98 E blocks. The cohort-staggered, bond-valid
+ * version of this history is built by test_hf9_growth (plant_released) for
+ * the freeze and prune, which need no genesis. This probe's planted rows
+ * carry the STORAGE_BOND default and one registration height, not that
+ * lifetime; the checks below do not depend on either.
  * Flags: NODUS_EVM_ENABLED; E > 18. Leaves /tmp/test_cmt_app_hyb_XXXXXX
  * (removed). Can falsely pass: history in the UTXO leg and the released
  * registry only; the 10% rule would also pass a scan of a table that
