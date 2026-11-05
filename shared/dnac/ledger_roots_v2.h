@@ -1301,6 +1301,131 @@ int dna_v2_global_root_v2(const uint8_t domains_root[64],
                           const uint8_t replay_root[64],
                           uint8_t out[DNA_V2_ROOT_LEN]);
 
+/* ── HF-9 WP6 — the composition proof (plan docs/plans/approved/
+ *    2026-11-04-hf9.md §10.3, AD-10; Kurultay 55 A13 / F-26 .. F-29) ──────
+ *
+ * A proof for a trie leg root `lr` (leg L1..L8 of the plan §4.2) up to the
+ * AppHash: a list of steps, each a ProofOp-like element, the running value
+ * `x` of one step being the value verified by the next (CometBFT v0.38.26
+ * spec/abci/abci++_app_requirements.md:789-795: "the root hash for one
+ * ProofOp is the value being verified for the next ProofOp in the list. The
+ * root hash of the final ProofOp in the list should match the AppHash").
+ * x starts as `lr`; the last x must equal the AppHash of header h + 1.
+ *
+ * Step kinds (plan §10.3 table):
+ *   COMPOSE  tag, legs[n_legs], i      x := SHA3-512(tag ‖ legs[0] ‖ ... )
+ *                                      with legs[i] == x required;
+ *   HEAD     head[89], luh[64]         head[0..4) = the expected domain id
+ *                                      (CORE 1 for L1-L4, SYSTEM 0 for L5-L8),
+ *                                      head[4..68) == x;
+ *                                      x := SHA3-512("NDS.DOMHEAD.v2" ‖ head
+ *                                      ‖ luh);
+ *   MERKLE   tag, n, i, sib[]          x is leaf i of an n-leaf tagged
+ *                                      Merkle tree (inner tag "NDS.DOMNODE.v1"):
+ *                                      at each level, i even and i + 1 < n:
+ *                                      x := H(tag ‖ x ‖ sib); i odd:
+ *                                      x := H(tag ‖ sib ‖ x); i = n - 1 with
+ *                                      n odd: x unchanged (promoted); then
+ *                                      n := ceil(n / 2), i := floor(i / 2)
+ *                                      until n = 1; the number of sib entries
+ *                                      must equal the number of pairings.
+ *
+ * The verifier takes the step sequence, the tags, the leg counts and the
+ * positions from its COMPILED contract and refuses any step that differs
+ * (the transported "tag" is checked, never trusted):
+ *   L1-L4  COMPOSE CORE v4 (7 legs; i = 0 / 1 / 3 / 4), HEAD CORE, MERKLE,
+ *          COMPOSE GLOBAL v2 (2 legs, i = 0);
+ *   L5/L6  COMPOSE STOR v3 (4 legs; i = 0 / 3), COMPOSE SYS v7 (12 legs,
+ *          i = 8), HEAD SYSTEM, MERKLE, COMPOSE GLOBAL v2;
+ *   L7/L8  COMPOSE SYS v7 (12 legs; i = 3 / 6), HEAD SYSTEM, MERKLE,
+ *          COMPOSE GLOBAL v2.
+ * The positions are those of dna_v2_core_root_v4 (utxo, token, pools, claims,
+ * name, supply, accrual), dna_v2_storage_root_v3 (registry, sets, reports,
+ * segments) and dna_v2_system_root_v7 (validator, delegation, chain_config,
+ * validator_set, domain_registry, manifest, attendance, treasury, storage,
+ * bcopy, vstat, stmem). */
+#define DNA_V2_PROOF_STEP_COMPOSE   1
+#define DNA_V2_PROOF_STEP_HEAD      2
+#define DNA_V2_PROOF_STEP_MERKLE    3
+#define DNA_V2_PROOF_LEGS_MAX       12   /* the widest composition: SYS v7 */
+#define DNA_V2_PROOF_STEPS_MAX      5    /* the longest sequence: L5 / L6   */
+#define DNA_V2_PROOF_SIB_MAX        64   /* ceil(log2(2^64)): n is a u64    */
+
+typedef struct {
+    uint32_t t;                                  /* DNA_V2_PROOF_STEP_*     */
+    uint8_t  tag[16];                            /* COMPOSE, MERKLE         */
+    uint8_t  legs[DNA_V2_PROOF_LEGS_MAX][DNA_V2_ROOT_LEN]; /* COMPOSE       */
+    uint32_t n_legs;                             /* COMPOSE                 */
+    uint64_t i;                                  /* COMPOSE, MERKLE         */
+    uint8_t  head[DNA_V2_DOMHEAD_ENC_LEN];       /* HEAD                    */
+    uint8_t  luh[DNA_V2_ROOT_LEN];               /* HEAD                    */
+    uint64_t n;                                  /* MERKLE                  */
+    uint32_t n_sib;                              /* MERKLE                  */
+    uint8_t  sib[DNA_V2_PROOF_SIB_MAX][DNA_V2_ROOT_LEN]; /* MERKLE          */
+} dna_v2_proof_step_t;
+
+/** The sibling path of leaf `i` in the tagged Merkle tree over `leaves`
+ *  (`n` >= 1, `i` < n; inner tag `node_tag`, 16 bytes), the tree of
+ *  dna_v2_domains_root_v2 with the odd node promoted: the siblings in level
+ *  order (promoted levels contribute none) into `sib` (capacity `sib_cap`),
+ *  their count in `*n_sib`, and the tree root in `root_out` (may be NULL).
+ *  @return 0 / -1 (bad argument, `sib_cap` too small). */
+int dna_v2_merkle_path(const uint8_t node_tag[16],
+                       const uint8_t (*leaves)[DNA_V2_ROOT_LEN], size_t n,
+                       size_t i, uint8_t (*sib)[DNA_V2_ROOT_LEN],
+                       size_t sib_cap, size_t *n_sib,
+                       uint8_t root_out[DNA_V2_ROOT_LEN]);
+
+/** The MERKLE step rule above: from `leaf` at index `i` of an `n`-leaf tree
+ *  with the siblings `sib[0..n_sib)` to the root `out`. n == 0, i >= n, more
+ *  or fewer siblings than the pairings of (n, i), or `n_sib` above
+ *  DNA_V2_PROOF_SIB_MAX refuse. @return 0 / -1. */
+int dna_v2_merkle_apply(const uint8_t node_tag[16],
+                        const uint8_t leaf[DNA_V2_ROOT_LEN], uint64_t n,
+                        uint64_t i, const uint8_t (*sib)[DNA_V2_ROOT_LEN],
+                        size_t n_sib, uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** Everything the builder reads, caller-owned (the snapshot's legs, plan
+ *  §10.4): the seven CORE v4 legs, the four STOR v3 legs, the twelve SYS v7
+ *  legs (sys[8] is the STOR v3 composition), the committed DomainHead rows
+ *  in ascending domain_id with their last_upd_hash, and the replay root. */
+typedef struct {
+    const uint8_t (*core)[DNA_V2_ROOT_LEN];      /* 7                       */
+    const uint8_t (*stor)[DNA_V2_ROOT_LEN];      /* 4                       */
+    const uint8_t (*sys)[DNA_V2_ROOT_LEN];       /* 12                      */
+    const dna_v2_domain_head_t *heads;           /* n_heads, ascending id   */
+    const uint8_t (*luh)[DNA_V2_ROOT_LEN];       /* luh[j] belongs to heads[j] */
+    size_t  n_heads;
+    uint8_t replay[DNA_V2_ROOT_LEN];
+} dna_v2_proof_legs_t;
+
+/** Build the composition steps of leg `leg` (1..8) from `in`: the compiled
+ *  sequence above, each COMPOSE copying the full leg list and requiring the
+ *  running value to sit at its compiled position, the HEAD step the
+ *  committed head of the leg's domain (whose domain_state_root must equal
+ *  the running value), the MERKLE step the sibling path of that head's leaf
+ *  among all heads, the last COMPOSE the replay root. `steps` holds
+ *  DNA_V2_PROOF_STEPS_MAX entries; `*n_steps` is the count written. `lr_out`
+ *  (may be NULL) receives the leg root the chain starts from and
+ *  `app_hash_out` (may be NULL) the value the chain ends on, which the
+ *  caller compares with the committed GLOBAL root. Any disagreement between
+ *  the legs and the heads is -1 — never a proof of a different value.
+ *  @return 0 / -1. */
+int dna_v2_state_proof_cp_build(int leg, const dna_v2_proof_legs_t *in,
+                                dna_v2_proof_step_t *steps, size_t *n_steps,
+                                uint8_t lr_out[DNA_V2_ROOT_LEN],
+                                uint8_t app_hash_out[DNA_V2_ROOT_LEN]);
+
+/** Verify a composition chain: `steps` must be exactly the compiled
+ *  sequence of leg `leg`, every step as the rules above require, and the
+ *  last running value equal to `app_hash`. The caller has authenticated
+ *  `app_hash` against the intended chain (the light client, header h + 1);
+ *  nothing here trusts a value the response carries. @return 0 / -1. */
+int dna_v2_state_proof_cp_verify(int leg, const uint8_t lr[DNA_V2_ROOT_LEN],
+                                 const dna_v2_proof_step_t *steps,
+                                 size_t n_steps,
+                                 const uint8_t app_hash[DNA_V2_ROOT_LEN]);
+
 #ifdef __cplusplus
 }
 #endif

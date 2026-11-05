@@ -1539,3 +1539,294 @@ int dna_v2_global_root_v2(const uint8_t domains_root[64],
     memcpy(pre + TAG_LEN + DNA_V2_ROOT_LEN, replay_root, DNA_V2_ROOT_LEN);
     return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
 }
+
+/* ── HF-9 WP6 — the composition proof (contract: ledger_roots_v2.h) ──────
+ * Plan docs/plans/approved/2026-11-04-hf9.md §10.3 (AD-10), Kurultay 55
+ * A13 / F-26 / F-27 / F-28. Every preimage below is the one the composition
+ * functions above hash (dna_v2_core_root_v4, dna_v2_storage_root_v3,
+ * dna_v2_system_root_v7, dna_v2_domain_head_hash_v2, dna_v2_domains_root_v2,
+ * dna_v2_global_root_v2): the same tag, the same leg order. */
+
+/* The tagged Merkle sibling path (the tree of tagged_merkle above: pairs
+ * (0,1), (2,3) ...; the unpaired last node of an odd level is PROMOTED). */
+int dna_v2_merkle_path(const uint8_t node_tag[16],
+                       const uint8_t (*leaves)[DNA_V2_ROOT_LEN], size_t n,
+                       size_t i, uint8_t (*sib)[DNA_V2_ROOT_LEN],
+                       size_t sib_cap, size_t *n_sib,
+                       uint8_t root_out[DNA_V2_ROOT_LEN]) {
+    if (!node_tag || !leaves || !n_sib || n == 0 || i >= n ||
+        (sib_cap > 0 && !sib))
+        return -1;
+    *n_sib = 0;
+    if (n > SIZE_MAX / DNA_V2_ROOT_LEN) return -1;
+    uint8_t (*level)[DNA_V2_ROOT_LEN] = malloc(n * sizeof(*level));
+    if (!level) return -1;
+    memcpy(level, leaves, n * DNA_V2_ROOT_LEN);
+
+    size_t cnt = n, idx = i, used = 0;
+    int rc = -1;
+    while (cnt > 1) {
+        if ((idx & 1) == 0) {
+            if (idx + 1 < cnt) {                     /* right partner       */
+                if (used >= sib_cap) goto done;
+                memcpy(sib[used++], level[idx + 1], DNA_V2_ROOT_LEN);
+            }                                        /* else: promoted      */
+        } else {                                     /* left partner        */
+            if (used >= sib_cap) goto done;
+            memcpy(sib[used++], level[idx - 1], DNA_V2_ROOT_LEN);
+        }
+        size_t next = 0;
+        for (size_t j = 0; j + 1 < cnt; j += 2) {
+            uint8_t pre[TAG_LEN + 2 * DNA_V2_ROOT_LEN];
+            memcpy(pre, node_tag, TAG_LEN);
+            memcpy(pre + TAG_LEN, level[j], DNA_V2_ROOT_LEN);
+            memcpy(pre + TAG_LEN + DNA_V2_ROOT_LEN, level[j + 1],
+                   DNA_V2_ROOT_LEN);
+            if (qgp_sha3_512(pre, sizeof(pre), level[next]) != 0) goto done;
+            next++;
+        }
+        if (cnt & 1) {
+            memcpy(level[next], level[cnt - 1], DNA_V2_ROOT_LEN);
+            next++;
+        }
+        cnt = next;
+        idx >>= 1;
+    }
+    if (root_out) memcpy(root_out, level[0], DNA_V2_ROOT_LEN);
+    *n_sib = used;
+    rc = 0;
+done:
+    free(level);
+    return rc;
+}
+
+/* The MERKLE step rule (plan §10.3, F-27), written level by level. */
+int dna_v2_merkle_apply(const uint8_t node_tag[16],
+                        const uint8_t leaf[DNA_V2_ROOT_LEN], uint64_t n,
+                        uint64_t i, const uint8_t (*sib)[DNA_V2_ROOT_LEN],
+                        size_t n_sib, uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!node_tag || !leaf || !out || (n_sib > 0 && !sib) || n == 0 ||
+        i >= n || n_sib > DNA_V2_PROOF_SIB_MAX)
+        return -1;
+    uint8_t x[DNA_V2_ROOT_LEN];
+    memcpy(x, leaf, DNA_V2_ROOT_LEN);
+    uint64_t cn = n, ci = i;
+    size_t used = 0;
+    while (cn > 1) {
+        uint8_t pre[TAG_LEN + 2 * DNA_V2_ROOT_LEN];
+        memcpy(pre, node_tag, TAG_LEN);
+        if ((ci & 1) == 0) {
+            if (ci + 1 < cn) {                       /* i even, partner right */
+                if (used >= n_sib) return -1;
+                memcpy(pre + TAG_LEN, x, DNA_V2_ROOT_LEN);
+                memcpy(pre + TAG_LEN + DNA_V2_ROOT_LEN, sib[used++],
+                       DNA_V2_ROOT_LEN);
+                if (qgp_sha3_512(pre, sizeof(pre), x) != 0) return -1;
+            }                                        /* i = n - 1, n odd: x kept */
+        } else {                                     /* i odd, partner left   */
+            if (used >= n_sib) return -1;
+            memcpy(pre + TAG_LEN, sib[used++], DNA_V2_ROOT_LEN);
+            memcpy(pre + TAG_LEN + DNA_V2_ROOT_LEN, x, DNA_V2_ROOT_LEN);
+            if (qgp_sha3_512(pre, sizeof(pre), x) != 0) return -1;
+        }
+        cn = (cn >> 1) + (cn & 1);                   /* ceil(n / 2)           */
+        ci >>= 1;                                    /* floor(i / 2)          */
+    }
+    if (used != n_sib) return -1;                    /* exact sibling count   */
+    memcpy(out, x, DNA_V2_ROOT_LEN);
+    return 0;
+}
+
+/* The compiled contract: the step sequence of each leg (plan §10.3). */
+enum { CPSRC_CORE = 1, CPSRC_STOR, CPSRC_SYS, CPSRC_GLOBAL };
+
+typedef struct {
+    uint32_t       kind;     /* DNA_V2_PROOF_STEP_*                         */
+    const uint8_t *tag;      /* COMPOSE, MERKLE                             */
+    uint32_t       src;      /* COMPOSE: CPSRC_*                            */
+    uint32_t       n_legs;   /* COMPOSE                                     */
+    uint32_t       pos;      /* COMPOSE                                     */
+} cp_spec_t;
+
+#define CP_CORE(p) { DNA_V2_PROOF_STEP_COMPOSE, TAG_CORE_V4, CPSRC_CORE, 7,  p }
+#define CP_STOR(p) { DNA_V2_PROOF_STEP_COMPOSE, TAG_STOR_V3, CPSRC_STOR, 4,  p }
+#define CP_SYS(p)  { DNA_V2_PROOF_STEP_COMPOSE, TAG_SYS_V7,  CPSRC_SYS,  12, p }
+#define CP_HEAD    { DNA_V2_PROOF_STEP_HEAD,    NULL,        0,          0,  0 }
+#define CP_MERKLE  { DNA_V2_PROOF_STEP_MERKLE,  TAG_DOMNODE, 0,          0,  0 }
+#define CP_GLOBAL  { DNA_V2_PROOF_STEP_COMPOSE, TAG_GLOBAL2, CPSRC_GLOBAL, 2, 0 }
+
+static const struct {
+    size_t    n;
+    uint32_t  domain;        /* the HEAD step's domain id                   */
+    cp_spec_t s[DNA_V2_PROOF_STEPS_MAX];
+} CP_SEQ[9] = {
+    [1] = { 4, DNA_DOMAIN_CORE,   { CP_CORE(0), CP_HEAD, CP_MERKLE, CP_GLOBAL } },
+    [2] = { 4, DNA_DOMAIN_CORE,   { CP_CORE(1), CP_HEAD, CP_MERKLE, CP_GLOBAL } },
+    [3] = { 4, DNA_DOMAIN_CORE,   { CP_CORE(3), CP_HEAD, CP_MERKLE, CP_GLOBAL } },
+    [4] = { 4, DNA_DOMAIN_CORE,   { CP_CORE(4), CP_HEAD, CP_MERKLE, CP_GLOBAL } },
+    [5] = { 5, DNA_DOMAIN_SYSTEM, { CP_STOR(0), CP_SYS(8), CP_HEAD, CP_MERKLE,
+                                    CP_GLOBAL } },
+    [6] = { 5, DNA_DOMAIN_SYSTEM, { CP_STOR(3), CP_SYS(8), CP_HEAD, CP_MERKLE,
+                                    CP_GLOBAL } },
+    [7] = { 4, DNA_DOMAIN_SYSTEM, { CP_SYS(3), CP_HEAD, CP_MERKLE, CP_GLOBAL } },
+    [8] = { 4, DNA_DOMAIN_SYSTEM, { CP_SYS(6), CP_HEAD, CP_MERKLE, CP_GLOBAL } },
+};
+
+static int cp_compose_hash(const uint8_t *tag,
+                           const uint8_t (*legs)[DNA_V2_ROOT_LEN], size_t n,
+                           uint8_t out[DNA_V2_ROOT_LEN]) {
+    uint8_t pre[TAG_LEN + DNA_V2_PROOF_LEGS_MAX * DNA_V2_ROOT_LEN];
+    if (n == 0 || n > DNA_V2_PROOF_LEGS_MAX) return -1;
+    memcpy(pre, tag, TAG_LEN);
+    for (size_t k = 0; k < n; k++)
+        memcpy(pre + TAG_LEN + k * DNA_V2_ROOT_LEN, legs[k], DNA_V2_ROOT_LEN);
+    return qgp_sha3_512(pre, TAG_LEN + n * DNA_V2_ROOT_LEN, out) == 0 ? 0 : -1;
+}
+
+/* x := SHA3-512("NDS.DOMHEAD.v2" ‖ head ‖ luh), dna_v2_domain_head_hash_v2's
+ * preimage over the already-encoded head. */
+static int cp_head_hash(const uint8_t head[DNA_V2_DOMHEAD_ENC_LEN],
+                        const uint8_t luh[DNA_V2_ROOT_LEN],
+                        uint8_t out[DNA_V2_ROOT_LEN]) {
+    uint8_t pre[TAG_LEN + DNA_V2_DOMHEAD_ENC_LEN + DNA_V2_ROOT_LEN];
+    memcpy(pre, TAG_DOMHEAD2, TAG_LEN);
+    memcpy(pre + TAG_LEN, head, DNA_V2_DOMHEAD_ENC_LEN);
+    memcpy(pre + TAG_LEN + DNA_V2_DOMHEAD_ENC_LEN, luh, DNA_V2_ROOT_LEN);
+    return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
+}
+
+int dna_v2_state_proof_cp_build(int leg, const dna_v2_proof_legs_t *in,
+                                dna_v2_proof_step_t *steps, size_t *n_steps,
+                                uint8_t lr_out[DNA_V2_ROOT_LEN],
+                                uint8_t app_hash_out[DNA_V2_ROOT_LEN]) {
+    if (n_steps) *n_steps = 0;
+    if (leg < 1 || leg > 8 || !in || !steps || !n_steps || !in->core ||
+        !in->stor || !in->sys || !in->heads || !in->luh || in->n_heads == 0)
+        return -1;
+    const size_t ns = CP_SEQ[leg].n;
+    /* the heads are the committed ones: SYSTEM first, strictly ascending id
+     * (dna_v2_domains_root_v2's own preconditions) */
+    if (in->heads[0].domain_id != DNA_DOMAIN_SYSTEM) return -1;
+    for (size_t k = 1; k < in->n_heads; k++)
+        if (in->heads[k - 1].domain_id >= in->heads[k].domain_id) return -1;
+
+    uint8_t x[DNA_V2_ROOT_LEN];
+    int have_x = 0;
+    size_t head_idx = 0;
+    int rc = -1;
+    uint8_t (*leaves)[DNA_V2_ROOT_LEN] = NULL;
+    memset(steps, 0, ns * sizeof(*steps));
+
+    for (size_t s = 0; s < ns; s++) {
+        const cp_spec_t *sp = &CP_SEQ[leg].s[s];
+        dna_v2_proof_step_t *st = &steps[s];
+        st->t = sp->kind;
+        if (sp->kind == DNA_V2_PROOF_STEP_COMPOSE) {
+            memcpy(st->tag, sp->tag, TAG_LEN);
+            st->n_legs = sp->n_legs;
+            st->i = sp->pos;
+            if (sp->src == CPSRC_GLOBAL) {
+                if (!have_x) goto done;
+                memcpy(st->legs[0], x, DNA_V2_ROOT_LEN);     /* domains_root */
+                memcpy(st->legs[1], in->replay, DNA_V2_ROOT_LEN);
+            } else {
+                const uint8_t (*src)[DNA_V2_ROOT_LEN] =
+                    sp->src == CPSRC_CORE ? in->core
+                    : sp->src == CPSRC_STOR ? in->stor : in->sys;
+                for (uint32_t k = 0; k < sp->n_legs; k++)
+                    memcpy(st->legs[k], src[k], DNA_V2_ROOT_LEN);
+                if (!have_x) {                              /* the leg root  */
+                    memcpy(x, st->legs[sp->pos], DNA_V2_ROOT_LEN);
+                    if (lr_out) memcpy(lr_out, x, DNA_V2_ROOT_LEN);
+                    have_x = 1;
+                } else if (memcmp(st->legs[sp->pos], x, DNA_V2_ROOT_LEN) != 0) {
+                    goto done;      /* the legs disagree with the chain       */
+                }
+            }
+            if (cp_compose_hash(sp->tag,
+                                (const uint8_t (*)[DNA_V2_ROOT_LEN])st->legs,
+                                sp->n_legs, x) != 0)
+                goto done;
+        } else if (sp->kind == DNA_V2_PROOF_STEP_HEAD) {
+            if (!have_x) goto done;
+            size_t j = in->n_heads;
+            for (size_t k = 0; k < in->n_heads; k++)
+                if (in->heads[k].domain_id == CP_SEQ[leg].domain) { j = k; break; }
+            if (j == in->n_heads) goto done;                 /* no such head  */
+            if (memcmp(in->heads[j].domain_state_root, x, DNA_V2_ROOT_LEN) != 0)
+                goto done;          /* the head commits another state root    */
+            if (dna_v2_domain_head_encode(&in->heads[j], st->head) != 0)
+                goto done;
+            memcpy(st->luh, in->luh[j], DNA_V2_ROOT_LEN);
+            head_idx = j;
+            if (cp_head_hash(st->head, st->luh, x) != 0) goto done;
+        } else {                                              /* MERKLE        */
+            if (!have_x) goto done;
+            if (in->n_heads > SIZE_MAX / DNA_V2_ROOT_LEN) goto done;
+            leaves = malloc(in->n_heads * sizeof(*leaves));
+            if (!leaves) goto done;
+            for (size_t k = 0; k < in->n_heads; k++)
+                if (dna_v2_domain_head_hash_v2(&in->heads[k], in->luh[k],
+                                               leaves[k]) != 0)
+                    goto done;
+            if (memcmp(leaves[head_idx], x, DNA_V2_ROOT_LEN) != 0) goto done;
+            size_t nsib = 0;
+            if (dna_v2_merkle_path(sp->tag,
+                                   (const uint8_t (*)[DNA_V2_ROOT_LEN])leaves,
+                                   in->n_heads, head_idx, st->sib,
+                                   DNA_V2_PROOF_SIB_MAX, &nsib, x) != 0)
+                goto done;
+            memcpy(st->tag, sp->tag, TAG_LEN);
+            st->n = in->n_heads;
+            st->i = head_idx;
+            st->n_sib = (uint32_t)nsib;
+            free(leaves);
+            leaves = NULL;
+        }
+    }
+    if (app_hash_out) memcpy(app_hash_out, x, DNA_V2_ROOT_LEN);
+    *n_steps = ns;
+    rc = 0;
+done:
+    free(leaves);
+    return rc;
+}
+
+int dna_v2_state_proof_cp_verify(int leg, const uint8_t lr[DNA_V2_ROOT_LEN],
+                                 const dna_v2_proof_step_t *steps,
+                                 size_t n_steps,
+                                 const uint8_t app_hash[DNA_V2_ROOT_LEN]) {
+    if (leg < 1 || leg > 8 || !lr || !steps || !app_hash) return -1;
+    if (n_steps != CP_SEQ[leg].n) return -1;       /* the compiled sequence  */
+    uint8_t x[DNA_V2_ROOT_LEN];
+    memcpy(x, lr, DNA_V2_ROOT_LEN);
+
+    for (size_t s = 0; s < n_steps; s++) {
+        const cp_spec_t *sp = &CP_SEQ[leg].s[s];
+        const dna_v2_proof_step_t *st = &steps[s];
+        if (st->t != sp->kind) return -1;
+        if (sp->kind == DNA_V2_PROOF_STEP_COMPOSE) {
+            if (memcmp(st->tag, sp->tag, TAG_LEN) != 0) return -1;
+            if (st->n_legs != sp->n_legs || st->i != sp->pos) return -1;
+            if (memcmp(st->legs[sp->pos], x, DNA_V2_ROOT_LEN) != 0) return -1;
+            if (cp_compose_hash(sp->tag,
+                                (const uint8_t (*)[DNA_V2_ROOT_LEN])st->legs,
+                                sp->n_legs, x) != 0)
+                return -1;
+        } else if (sp->kind == DNA_V2_PROOF_STEP_HEAD) {
+            const uint32_t dom = ((uint32_t)st->head[0] << 24) |
+                                 ((uint32_t)st->head[1] << 16) |
+                                 ((uint32_t)st->head[2] << 8) | st->head[3];
+            if (dom != CP_SEQ[leg].domain) return -1;     /* the leg's domain */
+            if (memcmp(st->head + 4, x, DNA_V2_ROOT_LEN) != 0) return -1;
+            if (cp_head_hash(st->head, st->luh, x) != 0) return -1;
+        } else {
+            if (memcmp(st->tag, sp->tag, TAG_LEN) != 0) return -1;
+            if (dna_v2_merkle_apply(sp->tag, x, st->n, st->i,
+                                    (const uint8_t (*)[DNA_V2_ROOT_LEN])st->sib,
+                                    st->n_sib, x) != 0)
+                return -1;
+        }
+    }
+    return memcmp(x, app_hash, DNA_V2_ROOT_LEN) == 0 ? 0 : -1;
+}

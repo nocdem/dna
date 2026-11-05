@@ -1,6 +1,7 @@
 /**
  * @file nodus/tests/test_hf9_kat.c
- * @brief HF-9 T-4, C side, for what WP2 and WP3 implement: this build's code
+ * @brief HF-9 T-4, C side, for what WP2, WP3, WP4 (hrw) and the composition
+ *        part of WP6 implement: this build's code
  *        against the independent oracle's groups "leg_vectors" and
  *        "leg_row_sets" (WP2) and "new_tags", "compositions" and "votes"
  *        (WP3) of nodus/tests/vectors/hf9_kat.json.
@@ -106,10 +107,55 @@
  *   for R = 2 / 4 / 16-with-fewer, and that of two equal scores the higher
  *   node_fp ranks first.
  *
- * GROUPS NOT CHECKED HERE (they belong to later packages and are named so
- * that nothing reads this test as covering them):
- * composition_chains, empty_leg_proofs, merkle_steps (WP6, §10). The
- * vector_counts of those groups are not asserted.
+ *  WP6 groups (plan §10.3, AD-10, Kurultay 55 A13 / F-26 .. F-29), the
+ *  values produced by the PRODUCTION composition code of
+ *  shared/dnac/ledger_roots_v2.c (dna_v2_merkle_path / _apply,
+ *  dna_v2_state_proof_cp_build / _verify):
+ *  "merkle_steps" (7 groups n = 1..7, 28 proofs, 4 refusals): the sibling
+ *   path built from the leaves equals the oracle's siblings and root, the
+ *   MERKLE step rule reaches the root from every leaf, a wrong leaf, a
+ *   wrong sibling, one sibling too few and one too many do not reach it, and
+ *   the oracle's four refusals (n = 0, i = n, a sibling too many / too few)
+ *   are refused; at least one proof crosses a promoted (unpaired) node.
+ *  "composition_chains" (8, one per leg) and "empty_leg_proofs" (8): the
+ *   production verifier accepts the oracle's "cp" chain from "lr" to the
+ *   JSON app_hash; every one of 14 local mutations of every step (tag, i,
+ *   leg count, a leg at and off the position, head domain id / state root /
+ *   luh / a head field, a sibling, the sibling count up and down, the step
+ *   kind, n), a wrong app_hash, a wrong lr, a wrong step count, a wrong leg
+ *   id and swapped steps are refused; the production BUILDER over the legs
+ *   read from the JSON chain gives the oracle's steps up to the HEAD step
+ *   and a chain the verifier accepts (the other two heads of the three
+ *   fixture domains are SYNTHETIC here: the JSON carries only their
+ *   sibling hashes, so the steps after the HEAD step cannot be compared and
+ *   are a build -> verify round trip), and refuses a head that commits
+ *   another state root, heads out of order and a SYS leg 8 that is not the
+ *   STOR composition. composition_chains also checks that "lr" is the root
+ *   the production trie (incremental and full rebuild) gives for the rows,
+ *   that the results are the membership of the requested keys in the rows
+ *   with the row value, and the client's recomputation of the leaf values
+ *   (L1: SHA3-512(0x00 ‖ SHA3-512(preimage340)), D21). empty_leg_proofs
+ *   checks lr = SHA3-512(0x80) (computed here), no nodes and every result
+ *   absent without a value.
+ *
+ * GROUPS / PARTS NOT CHECKED HERE (named so that nothing reads this test as
+ * covering them): the trie-NODE part of the proof - "nodes" (the bytes, the
+ * digest order, the dedup) and the walk of the requested keys through them
+ * with the proof module's prove / verify - and the two negative controls of
+ * empty_leg_proofs that need the bundle verifier ("result f=true for the
+ * empty leg", "non-empty nodes with lr = SHA3-512(0x80)"). They wait for
+ * shared/evm/trie/evm_trie_proof (HF-9 WP6, blocked on exports from
+ * evm_trie.c, see the handback). The vector_counts of the WP6 groups are not
+ * asserted beyond the counts above.
+ *
+ * WP6 false-pass notes: the composition layouts are SELF-CONSISTENT (the
+ * oracle's reading of plan §10.3), not an external reference; the only
+ * ProofOp reference is the CometBFT chaining rule (spec/abci/
+ * abci++_app_requirements.md:789-795). A mutation that the verifier cannot
+ * see (the transported "n" of a MERKLE step is not committed by any hash: a
+ * larger n over the same siblings can reproduce the same root when the
+ * extra levels pair the same hashes) is deliberately NOT in the mutation
+ * list; the leaf's hash path to the AppHash is what binds the value.
  *
  * ── FLAGS ──────────────────────────────────────────────────────────────
  *  register_witness_test (NODUS_WITNESS_INTERNAL_API); only with
@@ -1531,6 +1577,524 @@ static int check_hrw(json_object *vec) {
     return hrw_check_tie(jget(h, "tie_comparator"));
 }
 
+/* ── WP6 groups: merkle_steps, composition_chains, empty_leg_proofs ───── */
+
+static int jint(json_object *o, const char *k, int64_t *out) {
+    json_object *v = jget(o, k);
+    if (!v || !json_object_is_type(v, json_type_int)) return -1;
+    *out = json_object_get_int64(v);
+    return 0;
+}
+
+/* a JSON array of 64-byte hex strings into out[0..n-1], at most `max`; the
+ * count in *n_out. 0 / -1. */
+static int read_hex_list(json_object *a, size_t max, size_t *n_out,
+                         uint8_t (*out)[64]) {
+    if (!a || !json_object_is_type(a, json_type_array)) return -1;
+    size_t n = json_object_array_length(a);
+    if (n > max) return -1;
+    for (size_t k = 0; k < n; k++) {
+        json_object *e = json_object_array_get_idx(a, k);
+        size_t l = 0;
+        uint8_t *b = json_object_is_type(e, json_type_string)
+                         ? unhex(json_object_get_string(e), &l) : NULL;
+        if (!b || l != 64) { free(b); return -1; }
+        memcpy(out[k], b, 64);
+        free(b);
+    }
+    *n_out = n;
+    return 0;
+}
+
+static int check_merkle_steps(json_object *vec) {
+    snprintf(g_ctx, sizeof(g_ctx), "merkle_steps");
+    json_object *ms = jget(vec, "merkle_steps");
+    json_object *vs = jget(ms, "vectors"), *rf = jget(ms, "refusals");
+    CHECK(vs && json_object_is_type(vs, json_type_array) &&
+          json_object_array_length(vs) == 7, "7 Merkle step groups (n = 1..7)");
+    CHECK(rf && json_object_is_type(rf, json_type_array) &&
+          json_object_array_length(rf) == 4, "4 Merkle step refusals");
+    int promoted = 0;
+    for (size_t vi = 0; vi < json_object_array_length(vs); vi++) {
+        json_object *v = json_object_array_get_idx(vs, vi);
+        uint8_t tag[16], root[64];
+        int64_t n64 = 0;
+        CHECK(jhex(v, "tag", tag, 16) == 0 && jhex(v, "root", root, 64) == 0 &&
+              jint(v, "n", &n64) == 0 && n64 >= 1 && n64 <= 16,
+              "group fields decode");
+        const size_t n = (size_t)n64;
+        snprintf(g_ctx, sizeof(g_ctx), "merkle_steps n=%zu", n);
+        uint8_t (*lv)[64] = calloc(n, 64);
+        CHECK(lv != NULL, "allocation");
+        size_t nl = 0;
+        if (read_hex_list(jget(v, "leaves"), n, &nl, lv) != 0 || nl != n) {
+            free(lv);
+            CHECK(0, "leaves decode");
+        }
+        json_object *pr = jget(v, "proofs");
+        if (!pr || json_object_array_length(pr) != n) {
+            free(lv);
+            CHECK(0, "one proof per leaf");
+        }
+        for (size_t i = 0; i < n; i++) {
+            json_object *p = json_object_array_get_idx(pr, i);
+            uint8_t sj[64][64], sc[64][64], rc_[64], out[64];
+            size_t nsj = 0, nsc = 0;
+            int64_t pi = -1;
+            json_object *pf = jget(p, "promoted_unchanged_at_some_level");
+            if (pf && json_object_get_boolean(pf)) promoted++;
+            if (jint(p, "i", &pi) != 0 || pi != (int64_t)i ||
+                read_hex_list(jget(p, "sib"), 63, &nsj, sj) != 0) {
+                free(lv);
+                CHECK(0, "proof fields decode");
+            }
+            /* the production path builder reproduces the oracle's siblings
+             * and root */
+            int prc = dna_v2_merkle_path(tag, (const uint8_t (*)[64])lv, n, i,
+                                         sc, 64, &nsc, rc_);
+            if (prc != 0 || nsc != nsj || memcmp(rc_, root, 64) != 0 ||
+                (nsj > 0 && memcmp(sc, sj, nsj * 64) != 0)) {
+                free(lv);
+                CHECK(0, "path = the oracle's siblings and root");
+            }
+            /* the production step rule reaches the root from the leaf */
+            int arc = dna_v2_merkle_apply(tag, lv[i], n, i,
+                                          (const uint8_t (*)[64])sj, nsj, out);
+            if (arc != 0 || memcmp(out, root, 64) != 0) {
+                free(lv);
+                CHECK(0, "apply(leaf, siblings) = root");
+            }
+            /* negative controls, derived here: each must NOT reach the root */
+            uint8_t bad[64], t2[64][64];
+            memcpy(bad, lv[i], 64);
+            bad[0] ^= 1;
+            if (n > 1) {
+                arc = dna_v2_merkle_apply(tag, bad, n, i,
+                                          (const uint8_t (*)[64])sj, nsj, out);
+                if (arc == 0 && memcmp(out, root, 64) == 0) {
+                    free(lv);
+                    CHECK(0, "a wrong leaf must not reach the root");
+                }
+            }
+            if (nsj > 0) {
+                memcpy(t2, sj, nsj * 64);
+                t2[0][0] ^= 1;
+                arc = dna_v2_merkle_apply(tag, lv[i], n, i,
+                                          (const uint8_t (*)[64])t2, nsj, out);
+                if (arc == 0 && memcmp(out, root, 64) == 0) {
+                    free(lv);
+                    CHECK(0, "a wrong sibling must not reach the root");
+                }
+                arc = dna_v2_merkle_apply(tag, lv[i], n, i,
+                                          (const uint8_t (*)[64])sj, nsj - 1,
+                                          out);
+                if (arc == 0) {
+                    free(lv);
+                    CHECK(0, "one sibling too few is refused");
+                }
+            }
+            memset(sj[nsj], 0, 64);
+            arc = dna_v2_merkle_apply(tag, lv[i], n, i,
+                                      (const uint8_t (*)[64])sj, nsj + 1, out);
+            if (arc == 0) {
+                free(lv);
+                CHECK(0, "one sibling too many is refused");
+            }
+        }
+        free(lv);
+    }
+    CHECK(promoted > 0, "the vectors cover the promoted (unpaired) node");
+    for (size_t ri = 0; ri < json_object_array_length(rf); ri++) {
+        json_object *r = json_object_array_get_idx(rf, ri);
+        uint8_t tag[16], leaf[64], out[64], sj[64][64];
+        size_t nsj = 0;
+        int64_t n = -1, i = -1;
+        snprintf(g_ctx, sizeof(g_ctx), "merkle_steps refusal %s",
+                 jstr(r, "name") ? jstr(r, "name") : "?");
+        CHECK(jint(r, "n", &n) == 0 && jint(r, "i", &i) == 0 && n >= 0 &&
+              i >= 0 && read_hex_list(jget(r, "sib"), 64, &nsj, sj) == 0,
+              "refusal fields decode");
+        memset(tag, 0, sizeof(tag));
+        memcpy(tag, "NDS.DOMNODE.v1", 14);
+        memset(leaf, 0x5a, sizeof(leaf));
+        CHECK(dna_v2_merkle_apply(tag, leaf, (uint64_t)n, (uint64_t)i,
+                                  (const uint8_t (*)[64])sj, nsj, out) != 0,
+              "the production step rule refuses it");
+    }
+    return 0;
+}
+
+/* one JSON "cp" element into a step; 0 / -1 */
+static int read_step(json_object *j, dna_v2_proof_step_t *st) {
+    int64_t t = 0, v = 0;
+    memset(st, 0, sizeof(*st));
+    if (jint(j, "t", &t) != 0 || t < 1 || t > 3) return -1;
+    st->t = (uint32_t)t;
+    if (t == DNA_V2_PROOF_STEP_COMPOSE) {
+        size_t n = 0;
+        if (jhex(j, "tag", st->tag, 16) != 0 || jint(j, "i", &v) != 0 ||
+            v < 0 ||
+            read_hex_list(jget(j, "legs"), DNA_V2_PROOF_LEGS_MAX, &n,
+                          st->legs) != 0)
+            return -1;
+        st->i = (uint64_t)v;
+        st->n_legs = (uint32_t)n;
+    } else if (t == DNA_V2_PROOF_STEP_HEAD) {
+        if (jhex(j, "head", st->head, DNA_V2_DOMHEAD_ENC_LEN) != 0 ||
+            jhex(j, "luh", st->luh, 64) != 0)
+            return -1;
+    } else {
+        size_t n = 0;
+        int64_t nn = 0;
+        if (jhex(j, "tag", st->tag, 16) != 0 || jint(j, "i", &v) != 0 ||
+            v < 0 || jint(j, "n", &nn) != 0 || nn < 0 ||
+            read_hex_list(jget(j, "sib"), DNA_V2_PROOF_SIB_MAX, &n,
+                          st->sib) != 0)
+            return -1;
+        st->i = (uint64_t)v;
+        st->n = (uint64_t)nn;
+        st->n_sib = (uint32_t)n;
+    }
+    return 0;
+}
+
+static int step_eq(const dna_v2_proof_step_t *a, const dna_v2_proof_step_t *b) {
+    if (a->t != b->t) return 0;
+    if (a->t == DNA_V2_PROOF_STEP_COMPOSE)
+        return memcmp(a->tag, b->tag, 16) == 0 && a->n_legs == b->n_legs &&
+               a->i == b->i && a->n_legs <= DNA_V2_PROOF_LEGS_MAX &&
+               memcmp(a->legs, b->legs, (size_t)a->n_legs * 64) == 0;
+    if (a->t == DNA_V2_PROOF_STEP_HEAD)
+        return memcmp(a->head, b->head, sizeof(a->head)) == 0 &&
+               memcmp(a->luh, b->luh, 64) == 0;
+    return memcmp(a->tag, b->tag, 16) == 0 && a->n == b->n && a->i == b->i &&
+           a->n_sib == b->n_sib && a->n_sib <= DNA_V2_PROOF_SIB_MAX &&
+           memcmp(a->sib, b->sib, (size_t)a->n_sib * 64) == 0;
+}
+
+/* a local mutation of one step (the negative controls); 0 = not applicable */
+static int mutate_step(dna_v2_proof_step_t *s, int m) {
+    const int comp = s->t == DNA_V2_PROOF_STEP_COMPOSE;
+    const int head = s->t == DNA_V2_PROOF_STEP_HEAD;
+    const int mk = s->t == DNA_V2_PROOF_STEP_MERKLE;
+    switch (m) {
+    case 0:  if (!comp && !mk) return 0; s->tag[0] ^= 1; return 1;
+    case 1:  if (!comp && !mk) return 0; s->i += 1; return 1;
+    case 2:  if (!comp) return 0; s->n_legs -= 1; return 1;
+    case 3:  if (!comp) return 0;
+             s->legs[(s->i + 1) % s->n_legs][0] ^= 1; return 1;
+    case 4:  if (!comp) return 0; s->legs[s->i][0] ^= 1; return 1;
+    case 5:  if (!head) return 0; s->head[3] ^= 1; return 1;
+    case 6:  if (!head) return 0; s->head[4] ^= 1; return 1;
+    case 7:  if (!head) return 0; s->luh[0] ^= 1; return 1;
+    case 8:  if (!head) return 0; s->head[70] ^= 1; return 1;
+    case 9:  if (!mk || !s->n_sib) return 0; s->sib[0][0] ^= 1; return 1;
+    case 10: if (!mk || !s->n_sib) return 0; s->n_sib -= 1; return 1;
+    case 11: if (!mk || s->n_sib >= DNA_V2_PROOF_SIB_MAX) return 0;
+             s->n_sib += 1; return 1;
+    case 12: s->t = (s->t % 3) + 1; return 1;
+    case 13: if (!mk || s->n < 2) return 0; s->n -= 1; return 1;
+    }
+    return 0;
+}
+#define N_MUTATIONS 14
+
+static uint64_t be_get(const uint8_t *p, int n) {
+    uint64_t v = 0;
+    for (int i = 0; i < n; i++) v = (v << 8) | p[i];
+    return v;
+}
+
+/* the production builder over legs read from the JSON chain and HEADS this
+ * test fills in: the JSON carries the leg's own head and the sibling HASHES
+ * of the other heads, never the other heads themselves, so those two are
+ * synthetic here (labelled) and only the steps before the MERKLE step can be
+ * compared with the JSON; the rest is a build -> verify round trip. */
+static int check_builder(int leg, const dna_v2_proof_step_t *js, size_t n,
+                         const uint8_t lr[64]) {
+    uint8_t core[7][64], stor[4][64], sys[12][64];
+    memset(core, 0, sizeof(core));
+    memset(stor, 0, sizeof(stor));
+    memset(sys, 0, sizeof(sys));
+    const dna_v2_proof_step_t *jh = NULL;
+    for (size_t s = 0; s < n; s++) {
+        if (js[s].t == DNA_V2_PROOF_STEP_COMPOSE) {
+            if (js[s].n_legs == 7) memcpy(core, js[s].legs, sizeof(core));
+            if (js[s].n_legs == 4) memcpy(stor, js[s].legs, sizeof(stor));
+            if (js[s].n_legs == 12) memcpy(sys, js[s].legs, sizeof(sys));
+        } else if (js[s].t == DNA_V2_PROOF_STEP_HEAD) {
+            jh = &js[s];
+        }
+    }
+    CHECK(jh && n >= 4 && js[n - 1].t == DNA_V2_PROOF_STEP_COMPOSE &&
+          js[n - 1].n_legs == 2, "the chain has a head and a GLOBAL step");
+    const uint32_t dom = (uint32_t)be_get(jh->head, 4);
+    CHECK(dom <= 2, "the head's domain is one of the three fixture domains");
+
+    dna_v2_domain_head_t heads[3];
+    uint8_t luh[3][64];
+    for (uint32_t k = 0; k < 3; k++) {
+        memset(&heads[k], 0, sizeof(heads[k]));
+        heads[k].domain_id = k;
+        if (k == dom) {
+            memcpy(heads[k].domain_state_root, jh->head + 4, 64);
+            heads[k].domain_height = be_get(jh->head + 68, 8);
+            heads[k].last_updated_global_height = be_get(jh->head + 76, 8);
+            heads[k].ruleset_version = (uint32_t)be_get(jh->head + 84, 4);
+            heads[k].status = jh->head[88];
+            memcpy(luh[k], jh->luh, 64);
+        } else {                                  /* synthetic, labelled */
+            uint8_t b = (uint8_t)(0xA0 + k);
+            CHECK(qgp_sha3_512(&b, 1, heads[k].domain_state_root) == 0,
+                  "synthetic state root");
+            heads[k].domain_height = 100 + k;
+            heads[k].last_updated_global_height = 200 + k;
+            heads[k].ruleset_version = k + 1;
+            b = (uint8_t)(0xB0 + k);
+            CHECK(qgp_sha3_512(&b, 1, luh[k]) == 0, "synthetic luh");
+        }
+    }
+    dna_v2_proof_legs_t in;
+    memset(&in, 0, sizeof(in));
+    in.core = (const uint8_t (*)[64])core;
+    in.stor = (const uint8_t (*)[64])stor;
+    in.sys = (const uint8_t (*)[64])sys;
+    in.heads = heads;
+    in.luh = (const uint8_t (*)[64])luh;
+    in.n_heads = 3;
+    memcpy(in.replay, js[n - 1].legs[1], 64);
+
+    dna_v2_proof_step_t *sb = calloc(DNA_V2_PROOF_STEPS_MAX, sizeof(*sb));
+    CHECK(sb != NULL, "allocation");
+    size_t nb = 0;
+    uint8_t lrb[64], app[64];
+    int rc = dna_v2_state_proof_cp_build(leg, &in, sb, &nb, lrb, app);
+    if (rc != 0 || nb != n || memcmp(lrb, lr, 64) != 0) {
+        free(sb);
+        CHECK(0, "the builder runs and starts at the JSON's leg root");
+    }
+    for (size_t s = 0; s + 2 < n; s++) {          /* COMPOSE ... HEAD only  */
+        if (!step_eq(&sb[s], &js[s])) {
+            free(sb);
+            CHECK(0, "builder steps before MERKLE == the oracle's steps");
+        }
+    }
+    if (dna_v2_state_proof_cp_verify(leg, lrb, sb, nb, app) != 0) {
+        free(sb);
+        CHECK(0, "the verifier accepts what the builder built");
+    }
+    /* the builder refuses inputs that disagree: never a proof of another
+     * value */
+    dna_v2_domain_head_t hb[3];
+    memcpy(hb, heads, sizeof(hb));
+    hb[dom].domain_state_root[0] ^= 1;
+    in.heads = hb;
+    if (dna_v2_state_proof_cp_build(leg, &in, sb, &nb, NULL, NULL) == 0) {
+        free(sb);
+        CHECK(0, "a head committing another state root is refused");
+    }
+    memcpy(hb, heads, sizeof(hb));
+    { dna_v2_domain_head_t t = hb[1]; hb[1] = hb[2]; hb[2] = t; }
+    if (dna_v2_state_proof_cp_build(leg, &in, sb, &nb, NULL, NULL) == 0) {
+        free(sb);
+        CHECK(0, "heads not in ascending domain order are refused");
+    }
+    in.heads = heads;
+    if (leg == 5 || leg == 6) {                   /* STOR -> SYS link       */
+        uint8_t sysb[12][64];
+        memcpy(sysb, sys, sizeof(sysb));
+        sysb[8][0] ^= 1;
+        in.sys = (const uint8_t (*)[64])sysb;
+        if (dna_v2_state_proof_cp_build(leg, &in, sb, &nb, NULL, NULL) == 0) {
+            free(sb);
+            CHECK(0, "SYS leg 8 that is not the STOR composition is refused");
+        }
+    }
+    free(sb);
+    return 0;
+}
+
+/* composition_chains (is_empty = 0) and empty_leg_proofs (is_empty = 1) */
+static int check_chains(json_object *vec, const char *group, int is_empty) {
+    json_object *g = jget(vec, group);
+    CHECK(g && json_object_is_type(g, json_type_array) &&
+          json_object_array_length(g) == 8, "8 chains, one per leg");
+    uint8_t empty[64];
+    CHECK(empty_root_c(empty) == 0, "empty root");
+    int nmut = 0;
+    for (size_t ei = 0; ei < json_object_array_length(g); ei++) {
+        json_object *e = json_object_array_get_idx(g, ei);
+        int64_t leg = 0;
+        uint8_t lr[64], app[64];
+        json_object *resp = jget(e, "response");
+        json_object *cp = jget(resp, "cp");
+        CHECK(jint(e, "leg", &leg) == 0 && leg == (int64_t)ei + 1,
+              "chains are in leg order 1..8");
+        snprintf(g_ctx, sizeof(g_ctx), "%s leg %d", group, (int)leg);
+        CHECK(jhex(e, "app_hash", app, 64) == 0 && jhex(resp, "lr", lr, 64) == 0,
+              "app_hash and lr decode");
+        CHECK(cp && json_object_is_type(cp, json_type_array) &&
+              json_object_array_length(cp) >= 4 &&
+              json_object_array_length(cp) <= DNA_V2_PROOF_STEPS_MAX,
+              "cp has 4 or 5 steps");
+        const size_t n = json_object_array_length(cp);
+        dna_v2_proof_step_t *st = calloc(DNA_V2_PROOF_STEPS_MAX, sizeof(*st));
+        dna_v2_proof_step_t *mu = calloc(DNA_V2_PROOF_STEPS_MAX, sizeof(*mu));
+        CHECK(st && mu, "allocation");
+        int bad = 0;
+        for (size_t s = 0; s < n && !bad; s++)
+            bad = read_step(json_object_array_get_idx(cp, s), &st[s]) != 0;
+        if (bad) { free(st); free(mu); CHECK(0, "cp steps decode"); }
+
+        /* the production verifier accepts the oracle's chain */
+        if (dna_v2_state_proof_cp_verify((int)leg, lr, st, n, app) != 0) {
+            free(st); free(mu);
+            CHECK(0, "the production verifier: lr -> ... -> app_hash");
+        }
+        /* negative controls: every local mutation is refused */
+        uint8_t wrong[64];
+        memcpy(wrong, app, 64); wrong[0] ^= 1;
+        int ok = dna_v2_state_proof_cp_verify((int)leg, lr, st, n, wrong) != 0;
+        memcpy(wrong, lr, 64); wrong[0] ^= 1;
+        ok = ok && dna_v2_state_proof_cp_verify((int)leg, wrong, st, n, app) != 0;
+        ok = ok && dna_v2_state_proof_cp_verify((int)leg, lr, st, n - 1, app) != 0;
+        ok = ok && dna_v2_state_proof_cp_verify((int)leg, lr, st, n + 1, app) != 0;
+        ok = ok && dna_v2_state_proof_cp_verify((int)(leg % 8) + 1, lr, st, n,
+                                                app) != 0;
+        if (!ok) { free(st); free(mu); CHECK(0, "wrong app_hash / lr / step "
+                                              "count / leg are refused"); }
+        memcpy(mu, st, n * sizeof(*st));
+        { dna_v2_proof_step_t t = mu[0]; mu[0] = mu[1]; mu[1] = t; }
+        if (dna_v2_state_proof_cp_verify((int)leg, lr, mu, n, app) == 0) {
+            free(st); free(mu);
+            CHECK(0, "swapped steps are refused");
+        }
+        for (size_t s = 0; s < n; s++) {
+            for (int m = 0; m < N_MUTATIONS; m++) {
+                memcpy(mu, st, n * sizeof(*st));
+                if (!mutate_step(&mu[s], m)) continue;
+                nmut++;
+                if (dna_v2_state_proof_cp_verify((int)leg, lr, mu, n, app) == 0) {
+                    free(st); free(mu);
+                    snprintf(g_ctx, sizeof(g_ctx), "%s leg %d step %zu "
+                             "mutation %d", group, (int)leg, s, m);
+                    CHECK(0, "a mutated chain must be refused");
+                }
+            }
+        }
+        free(mu);
+
+        /* the production builder (labelled synthetic other heads) */
+        if (check_builder((int)leg, st, n, lr) != 0) { free(st); return 1; }
+        free(st);
+
+        /* the bundle around the chain */
+        json_object *res = jget(resp, "res"), *nodes = jget(resp, "nodes");
+        json_object *keys = jget(jget(e, "request"), "keys");
+        CHECK(res && nodes && keys &&
+              json_object_array_length(res) == json_object_array_length(keys),
+              "one result per requested key");
+        if (is_empty) {
+            CHECK(memcmp(lr, empty, 64) == 0,
+                  "empty leg: lr = SHA3-512(0x80), computed here");
+            CHECK(json_object_array_length(nodes) == 0, "empty leg: no nodes");
+            for (size_t k = 0; k < json_object_array_length(res); k++) {
+                json_object *r = json_object_array_get_idx(res, k);
+                json_object *f = jget(r, "f");
+                CHECK(f && json_object_is_type(f, json_type_boolean) &&
+                      !json_object_get_boolean(f) && !jget(r, "v"),
+                      "empty leg: every result absent, no value");
+            }
+            continue;
+        }
+        /* lr is the root the production trie code gives for the rows */
+        json_object *rows = jget(e, "leg_trie_rows_sorted_by_key");
+        size_t nr = rows ? json_object_array_length(rows) : 0;
+        item_t *items = nr ? calloc(nr, sizeof(*items)) : NULL;
+        uint8_t **kb = nr ? calloc(nr, sizeof(*kb)) : NULL;
+        uint8_t **vb = nr ? calloc(nr, sizeof(*vb)) : NULL;
+        CHECK(nr >= 1 && items && kb && vb, "rows decode");
+        int rok = 1;
+        for (size_t k = 0; k < nr; k++) {
+            size_t kl = 0, vl = 0;
+            json_object *r = json_object_array_get_idx(rows, k);
+            kb[k] = unhex(jstr(r, "key"), &kl);
+            vb[k] = unhex(jstr(r, "value"), &vl);
+            if (!kb[k] || !vb[k] || vl != 64 || kl == 0) { rok = 0; continue; }
+            items[k].key = kb[k];
+            items[k].klen = kl;
+            items[k].val = vb[k];
+        }
+        uint8_t rinc[64], rfull[64];
+        int trc = rok && mem_root(items, nr, 0, rinc, NULL, NULL) == 0 &&
+                  full_root(items, nr, rfull) == 0;
+        /* membership of each requested key in the rows; the value */
+        int mem_ok = 1;
+        for (size_t k = 0; trc && k < json_object_array_length(res); k++) {
+            size_t ql = 0;
+            uint8_t *q = unhex(json_object_get_string(
+                json_object_array_get_idx(keys, k)), &ql);
+            json_object *r = json_object_array_get_idx(res, k);
+            json_object *f = jget(r, "f");
+            int in_rows = 0;
+            for (size_t j = 0; q && j < nr; j++)
+                if (items[j].klen == ql && memcmp(items[j].key, q, ql) == 0) {
+                    in_rows = 1;
+                    if (!f || !json_object_get_boolean(f) ||
+                        !jeq(r, "v", items[j].val, 64))
+                        mem_ok = 0;
+                }
+            if (!q || !f || (!in_rows && (json_object_get_boolean(f) ||
+                                          jget(r, "v"))))
+                mem_ok = 0;
+            free(q);
+        }
+        /* the client's recomputation of the leaf values from the claimed
+         * records (JSON-internal control; the C leaf functions are the
+         * leg_vectors group): L1 = SHA3-512(0x00 ‖ SHA3-512(preimage340)),
+         * the others SHA3-512(preimage) */
+        json_object *pres = jget(e, "present_records");
+        json_object *cl = jget(e, "client_recomputed_leaf_hash");
+        int cl_ok = pres && cl && json_object_is_type(cl, json_type_object) &&
+                    json_object_object_length(cl) ==
+                        (int)json_object_array_length(pres);
+        for (size_t k = 0; cl_ok && k < json_object_array_length(pres); k++) {
+            json_object *r = json_object_array_get_idx(pres, k);
+            size_t pl = 0;
+            uint8_t *pre = unhex(jstr(r, leg == 1 ? "preimage340" : "preimage"),
+                                 &pl);
+            uint8_t d[64], v[64];
+            int found = 0;
+            if (!pre || qgp_sha3_512(pre, pl, d) != 0) cl_ok = 0;
+            else if (leg == 1) {
+                uint8_t buf[65];
+                buf[0] = 0x00;
+                memcpy(buf + 1, d, 64);
+                if (qgp_sha3_512(buf, sizeof(buf), v) != 0) cl_ok = 0;
+                if (cl_ok && !jeq(r, "inner_digest_D", d, 64)) cl_ok = 0;
+            } else {
+                memcpy(v, d, 64);
+            }
+            json_object_object_foreach(cl, ck, cv) {
+                if (cl_ok && jeq(cl, ck, v, 64)) found++;
+                (void)cv;
+            }
+            if (found != 1) cl_ok = 0;
+            free(pre);
+        }
+        for (size_t k = 0; k < nr; k++) { free(kb[k]); free(vb[k]); }
+        free(kb); free(vb); free(items);
+        CHECK(trc, "the production trie computes the rows' root");
+        CHECK(memcmp(rinc, lr, 64) == 0 && memcmp(rfull, lr, 64) == 0,
+              "lr = the incremental root = the full-rebuild root of the rows");
+        CHECK(mem_ok, "results = membership of the requested keys in the rows");
+        CHECK(cl_ok, "the client's recomputed leaf hashes are the claimed "
+                     "records' hashes");
+    }
+    CHECK(nmut > 0, "mutations were applied");
+    return 0;
+}
+
 int main(void) {
     char hex[65];
     if (file_sha256_hex(HF9_KAT_PATH, hex) != 0) {
@@ -1590,6 +2154,11 @@ int main(void) {
     if (!rc) rc = check_votes(vec);
     /* WP4 group: hrw */
     if (!rc) rc = check_hrw(vec);
+    /* WP6 groups: the composition proof (the trie-node part of the proof
+     * waits for the proof module, see the header) */
+    if (!rc) rc = check_merkle_steps(vec);
+    if (!rc) rc = check_chains(vec, "composition_chains", 0);
+    if (!rc) rc = check_chains(vec, "empty_leg_proofs", 1);
     json_object_put(root);
     if (rc) {
         fprintf(stderr, "test_hf9_kat: FAILED\n");
@@ -1598,7 +2167,10 @@ int main(void) {
     printf("test_hf9_kat: %d leg_vectors, %d leg_row_sets (%d rows), "
            "new_tags (4), compositions (3 + 3 + 3 + 8), votes (D6 and the "
            "D4 / D5 controls), hrw (22 selector vectors, 3 refusals, the "
-           "tie comparator), %d checks passed (hf9_kat.json sha256 %s)\n",
+           "tie comparator), merkle_steps (7 groups, 4 refusals), "
+           "composition_chains (8) and empty_leg_proofs (8) through the "
+           "composition verifier and builder, %d checks passed "
+           "(hf9_kat.json sha256 %s)\n",
            vectors, sets, rows, g_checks, KAT_SHA256);
     return 0;
 }
