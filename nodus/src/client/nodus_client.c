@@ -5792,6 +5792,265 @@ int nodus_client_dnac_hf9_shadow(nodus_client_t *client, uint64_t height,
     return 0;
 }
 
+/* ── dnac_state_proof (HF-9 WP6; wire: nodus.h) - the v3d_* hostile-reply
+ *    discipline: every read checks END / ERROR, a container never claims more
+ *    entries than bytes remain, every bound is checked BEFORE the value is
+ *    used, a duplicate key refuses the reply, unknown keys are skipped by a
+ *    walker that refuses truncation. Nothing here verifies the proof. ───── */
+
+int nodus_dnac_state_proof_request_encode(uint32_t txn,
+                                          const uint8_t token[NODUS_SESSION_TOKEN_LEN],
+                                          int leg, const uint8_t *const *keys,
+                                          const size_t *key_lens,
+                                          size_t n_keys, uint8_t *buf,
+                                          size_t cap, size_t *len_out)
+{
+    cbor_encoder_t enc;
+    size_t         len;
+
+    if (len_out) *len_out = 0;
+    if (!token || !keys || !key_lens || !buf || cap == 0 || !len_out ||
+        leg < 1 || leg > 8 || n_keys < 1 ||
+        n_keys > NODUS_DNAC_STATE_PROOF_MAX_KEYS)
+        return -1;
+    for (size_t i = 0; i < n_keys; i++)
+        if (!keys[i] || key_lens[i] == 0 || key_lens[i] > 64) return -1;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_dnac_query(&enc, txn, token, "dnac_state_proof", 2);
+    cbor_encode_cstr(&enc, "leg");
+    cbor_encode_uint(&enc, (uint64_t)leg);
+    cbor_encode_cstr(&enc, "keys");
+    cbor_encode_array(&enc, n_keys);
+    for (size_t i = 0; i < n_keys; i++)
+        cbor_encode_bstr(&enc, keys[i], key_lens[i]);
+    len = cbor_encoder_len(&enc);
+    if (len == 0) return -1;
+    *len_out = len;
+    return 0;
+}
+
+/* one "cp" step: the shape of its kind exactly (plan §10.3 table) */
+static int spd_step(cbor_decoder_t *d, nodus_dnac_state_proof_step_t *s)
+{
+    cbor_item_t it, k;
+    v3d_keys_t  ks;
+    unsigned    have = 0;
+    uint64_t    u = 0;
+
+    memset(s, 0, sizeof(*s));
+    memset(&ks, 0, sizeof(ks));
+    if (v3d_next(d, &it) != 0 || it.type != CBOR_ITEM_MAP || it.count == 0 ||
+        it.count > 8)
+        return -1;
+    for (size_t j = 0; j < it.count; j++) {
+        if (v3d_key(d, &ks, &k) != 0) return -1;
+        if (KEY_EQ(k, "t")) {
+            if (v3d_u64(d, 3, &u) != 0 || u < 1) return -1;
+            s->t = (uint32_t)u; have |= 1u;
+        } else if (KEY_EQ(k, "tag")) {
+            cbor_item_t b;
+            if (v3d_next(d, &b) != 0 || b.type != CBOR_ITEM_BSTR ||
+                b.bstr.len != 16)
+                return -1;
+            memcpy(s->tag, b.bstr.ptr, 16); have |= 2u;
+        } else if (KEY_EQ(k, "legs")) {
+            cbor_item_t a;
+            if (v3d_next(d, &a) != 0 || a.type != CBOR_ITEM_ARRAY ||
+                a.count < 1 || a.count > NODUS_DNAC_STATE_PROOF_MAX_LEGS)
+                return -1;
+            for (size_t m = 0; m < a.count; m++)
+                if (v3d_b64(d, s->legs[m]) != 0) return -1;
+            s->n_legs = (uint32_t)a.count; have |= 4u;
+        } else if (KEY_EQ(k, "i")) {
+            if (v3d_u64(d, UINT64_MAX, &s->i) != 0) return -1;
+            have |= 8u;
+        } else if (KEY_EQ(k, "head")) {
+            cbor_item_t b;
+            if (v3d_next(d, &b) != 0 || b.type != CBOR_ITEM_BSTR ||
+                b.bstr.len != 89)
+                return -1;
+            memcpy(s->head, b.bstr.ptr, 89); have |= 16u;
+        } else if (KEY_EQ(k, "luh")) {
+            if (v3d_b64(d, s->luh) != 0) return -1;
+            have |= 32u;
+        } else if (KEY_EQ(k, "n")) {
+            if (v3d_u64(d, UINT64_MAX, &s->n) != 0) return -1;
+            have |= 64u;
+        } else if (KEY_EQ(k, "sib")) {
+            cbor_item_t a;
+            if (v3d_next(d, &a) != 0 || a.type != CBOR_ITEM_ARRAY ||
+                a.count > NODUS_DNAC_STATE_PROOF_MAX_SIB)
+                return -1;
+            for (size_t m = 0; m < a.count; m++)
+                if (v3d_b64(d, s->sib[m]) != 0) return -1;
+            s->n_sib = (uint32_t)a.count; have |= 128u;
+        } else if (v3d_skip(d, 0) != 0) {
+            return -1;
+        }
+    }
+    if (d->error) return -1;
+    if (s->t == 1) return have == (1u | 2u | 4u | 8u) ? 0 : -1;
+    if (s->t == 2) return have == (1u | 16u | 32u) ? 0 : -1;
+    if (s->t == 3) return have == (1u | 2u | 8u | 64u | 128u) ? 0 : -1;
+    return -1;
+}
+
+void nodus_dnac_state_proof_free(nodus_dnac_state_proof_t *p)
+{
+    if (!p) return;
+    free(p->nodes);
+    free(p->node_lens);
+    memset(p, 0, sizeof(*p));
+}
+
+int nodus_dnac_state_proof_decode(const uint8_t *raw, size_t raw_len,
+                                  size_t expect_keys,
+                                  nodus_dnac_state_proof_t *out)
+{
+    cbor_decoder_t dec;
+    size_t         mc;
+    v3d_keys_t     ks;
+    cbor_item_t    k, it;
+    unsigned       have = 0;
+
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+    if (!raw || expect_keys < 1 || expect_keys > NODUS_DNAC_STATE_PROOF_MAX_KEYS)
+        return -1;
+    memset(&ks, 0, sizeof(ks));
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0) return -1;
+    if (mc > V3D_MAX_KEYS || mc > v3d_left(&dec) / 2) return -1;
+    for (size_t i = 0; i < mc; i++) {
+        if (v3d_key(&dec, &ks, &k) != 0) goto bad;
+        if (KEY_EQ(k, "h")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->height) != 0) goto bad;
+            have |= 1u;
+        } else if (KEY_EQ(k, "lr")) {
+            if (v3d_b64(&dec, out->lr) != 0) goto bad;
+            have |= 2u;
+        } else if (KEY_EQ(k, "nodes")) {
+            if (v3d_next(&dec, &it) != 0 || it.type != CBOR_ITEM_ARRAY ||
+                it.count > NODUS_DNAC_STATE_PROOF_MAX_NODES)
+                goto bad;
+            out->nodes = calloc(it.count + 1, sizeof(*out->nodes));
+            out->node_lens = calloc(it.count + 1, sizeof(*out->node_lens));
+            if (!out->nodes || !out->node_lens) goto bad;
+            for (size_t m = 0; m < it.count; m++) {
+                cbor_item_t b;
+                if (v3d_next(&dec, &b) != 0 || b.type != CBOR_ITEM_BSTR ||
+                    b.bstr.len == 0 ||
+                    b.bstr.len > NODUS_DNAC_STATE_PROOF_NODE_MAX)
+                    goto bad;
+                out->nodes[m] = b.bstr.ptr;
+                out->node_lens[m] = b.bstr.len;
+            }
+            out->n_nodes = it.count;
+            have |= 4u;
+        } else if (KEY_EQ(k, "res")) {
+            if (v3d_next(&dec, &it) != 0 || it.type != CBOR_ITEM_ARRAY ||
+                it.count != expect_keys)
+                goto bad;
+            for (size_t m = 0; m < it.count; m++) {
+                cbor_item_t mp, rk, fv;
+                v3d_keys_t  rks;
+                int have_f = 0, have_v = 0, f = 0;
+                memset(&rks, 0, sizeof(rks));
+                if (v3d_next(&dec, &mp) != 0 || mp.type != CBOR_ITEM_MAP ||
+                    mp.count < 1 || mp.count > 4)
+                    goto bad;
+                for (size_t q = 0; q < mp.count; q++) {
+                    if (v3d_key(&dec, &rks, &rk) != 0) goto bad;
+                    if (KEY_EQ(rk, "f")) {
+                        if (v3d_next(&dec, &fv) != 0 ||
+                            fv.type != CBOR_ITEM_BOOL)
+                            goto bad;
+                        f = fv.bool_val ? 1 : 0;
+                        have_f = 1;
+                    } else if (KEY_EQ(rk, "v")) {
+                        if (v3d_b64(&dec, out->val[m]) != 0) goto bad;
+                        have_v = 1;
+                    } else if (v3d_skip(&dec, 0) != 0) {
+                        goto bad;
+                    }
+                }
+                /* f = false with a "v" is refused; f = true needs exactly
+                 * one 64-byte "v" (A10 / F-22) */
+                if (!have_f || (f && !have_v) || (!f && have_v)) goto bad;
+                out->found[m] = (uint8_t)f;
+            }
+            out->n_res = it.count;
+            have |= 8u;
+        } else if (KEY_EQ(k, "cp")) {
+            if (v3d_next(&dec, &it) != 0 || it.type != CBOR_ITEM_ARRAY ||
+                it.count < 1 || it.count > NODUS_DNAC_STATE_PROOF_MAX_STEPS)
+                goto bad;
+            for (size_t m = 0; m < it.count; m++)
+                if (spd_step(&dec, &out->cp[m]) != 0) goto bad;
+            out->n_cp = it.count;
+            have |= 16u;
+        } else if (v3d_skip(&dec, 0) != 0) {
+            goto bad;
+        }
+    }
+    if (dec.error || have != 31u) goto bad;
+    return 0;
+bad:
+    nodus_dnac_state_proof_free(out);
+    return -1;
+}
+
+int nodus_client_dnac_state_proof(nodus_client_t *client, int leg,
+                                  const uint8_t *const *keys,
+                                  const size_t *key_lens, size_t n_keys,
+                                  nodus_dnac_state_proof_t *out,
+                                  uint8_t **raw_out, int *server_err_out)
+{
+    if (server_err_out) *server_err_out = 0;
+    if (raw_out) *raw_out = NULL;
+    if (out) memset(out, 0, sizeof(*out));
+    if (!nodus_client_is_ready(client) || !out || !raw_out) return -1;
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    size_t len = 0;
+    if (nodus_dnac_state_proof_request_encode(txn, client->token, leg, keys,
+                                              key_lens, n_keys, buf,
+                                              CLIENT_BUF_SIZE, &len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    if (send_request(client, buf, len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+        free_pending(client, req); return NODUS_ERR_TIMEOUT;
+    }
+    if (resp->type == 'e') {
+        int rc = client_error_rc(resp);
+        free_pending(client, req);
+        if (server_err_out) *server_err_out = rc;
+        return rc;
+    }
+    /* the decoded node pointers point into a private copy of the reply */
+    uint8_t *copy = malloc(req->raw_response_len ? req->raw_response_len : 1);
+    if (!copy) { free_pending(client, req); return -1; }
+    memcpy(copy, req->raw_response, req->raw_response_len);
+    size_t clen = req->raw_response_len;
+    free_pending(client, req);
+    if (nodus_dnac_state_proof_decode(copy, clen, n_keys, out) != 0) {
+        free(copy);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+    *raw_out = copy;
+    return 0;
+}
+
 /* ── HF-4 queries (wire: nodus.h) — the v3d_* hostile-reply discipline:
  *    duplicate keys, truncation and wrong types refuse the reply ─────── */
 

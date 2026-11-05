@@ -599,6 +599,12 @@ typedef struct nodus_witness {
      *  latch - 1 once the FAULTED status could not be written. Node-local
      *  memory only; never read by any consensus path. */
     int         hf9_shadow_latched;
+    /** HF-9 WP6 (nodus_witness_state_proof.h): the `dnac_state_proof`
+     *  service - NULL = not enabled (every request is answered
+     *  NODUS_ERR_RATE_LIMITED before any read; plan §17: no numeric limit is
+     *  set yet). Created only by nodus_witness_state_proof_enable, freed by
+     *  nodus_witness_close; node-local, never read by a consensus path. */
+    struct nodus_state_proof_service *state_proof;
 
     /* P2P-PORT F5 — the startup chain-id quorum quarantine (Fix 3:
      * activated_at_sec, quarantined, chain_dissent_* / chain_agree_*) is

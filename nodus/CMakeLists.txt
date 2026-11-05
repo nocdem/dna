@@ -924,6 +924,9 @@ if(NODUS_STANDALONE AND NOT WIN32)
     # HF-9 WP5 (plan §11): the node-local shadow run over the same tries
     # (nodus_witness_v2_shadow.c); EVM-only for the same reason.
     list(APPEND NODUS_SOURCES src/witness/nodus_witness_v2_shadow.c)
+    # HF-9 WP6 (plan §10.4): the `dnac_state_proof` service on reader
+    # threads; it calls evm_trie_proof_* (nodus_evm), so EVM-only too.
+    list(APPEND NODUS_SOURCES src/witness/nodus_witness_state_proof.c)
     # The EVM contract-ABI text layer (types, signatures, selectors, the
     # argument encoder) and the ML-DSA-87 companion library's attested
     # message + signature — `nodus-cli evm encode|send|call|deploy|attest`'s
@@ -1109,6 +1112,8 @@ if(NODUS_EVM_ENABLED)
         ${EVM_DIR}/evm_precompile.c
         ${EVM_DIR}/trie/evm_trie.c
         ${EVM_DIR}/trie/evm_trie_rlp.c
+        # HF-9 WP6: trie proofs (prove / verify), plan §10.1 / §10.2
+        ${EVM_DIR}/trie/evm_trie_proof.c
         # HF-9 WP2: the full-rebuild root (edge cross-check, per-leg
         # build-from-rows, plan §7.2 step 4) is linked into the node
         # library; its keccak mode needs the keccak object above, which is

@@ -47,6 +47,7 @@
 #include "evm/evm_precompile.h"                 /* Nodus EVM F2: start KAT */
 #include "evm/evm.h"                            /* EVM_MLDSA87_* (param 23) */
 #include "evm/evm_gas.h"                        /* EVM_G_PRECOMPILE_MLDSA87_* */
+#include "witness/nodus_witness_state_proof.h"  /* HF-9 WP6: dnac_state_proof */
 #endif
 #include "dnac/dnac.h"                          /* HF-4: D2 + switch spec */
 #include "witness/nodus_witness_emission.h"    /* DNAC_BLOCKS_PER_YEAR    */
@@ -3193,6 +3194,13 @@ int nodus_witness_init(nodus_witness_t *witness,
  * (nodus_witness_p2p.h). */
 
 void nodus_witness_tick(nodus_witness_t *witness) {
+#ifdef NODUS_EVM_ENABLED
+    /* HF-9 WP6 (plan §10.4): the proof readers' finished answers come back
+     * to THIS loop to be sent (the 4004 worker pattern). Delivered before
+     * the running check: an answer built before a stop is still sent. A
+     * witness without the service does nothing here. */
+    nodus_witness_state_proof_poll(witness);
+#endif
     if (!witness || !witness->running) return;
 
     /* ── ORCHESTRATOR delta 1, item C (D-23 rev 7 (19)) — THE POLL WAIT,
@@ -3298,6 +3306,12 @@ void nodus_witness_close(nodus_witness_t *witness) {
     if (!witness) return;
 
     witness->running = false;
+
+#ifdef NODUS_EVM_ENABLED
+    /* HF-9 WP6: the proof readers hold private connections to the database
+     * file; stop and join them before anything of the witness goes. */
+    nodus_witness_state_proof_disable(witness);
+#endif
 
     /* R3 W4 — the in-flight batch_entries sweep, the retained reproposal
      * batch, the parked next-view PROPOSE and the view-change records'

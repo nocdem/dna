@@ -79,6 +79,7 @@
 #include "crypto/hash/keccak256.h"
 #include "witness/nodus_witness_v2_schema.h" /* the evm_logs cursor scan  */
 #include "witness/nodus_witness_v2_shadow.h" /* HF-9 WP5: dnac_hf9_shadow */
+#include "witness/nodus_witness_state_proof.h" /* HF-9 WP6: dnac_state_proof */
 #endif
 
 #include <stdio.h>
@@ -5842,6 +5843,49 @@ static void handle_dnac_light_block(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * dnac_state_proof - the batch proof and the composition proof to the
+ * AppHash (HF-9 WP6, plan docs/plans/approved/2026-11-04-hf9.md §10)
+ *
+ * Wire: include/nodus/nodus.h (nodus_dnac_state_proof_*). The build runs on a
+ * READER THREAD with a private read-only connection (the operator's decision
+ * 1b, docs/plans/decisions/2026-10-14-kurultay-20-summary.md:92-108), never
+ * on this loop; the loop only decodes, admits (one node-wide limiter) and
+ * hands over, and the finished answer is sent from nodus_witness_tick
+ * (nodus_witness_state_proof.h). The numeric limits are the operator's
+ * decision after the WP6 measurement (plan §17): no production code enables
+ * the service, so every request here is answered NODUS_ERR_RATE_LIMITED at
+ * once, before any read. Without the EVM build there are no tries:
+ * NODUS_ERR_NOT_FOUND.
+ * ════════════════════════════════════════════════════════════════════ */
+
+static void handle_dnac_state_proof(nodus_witness_t *w,
+                                    struct nodus_tcp_conn *conn,
+                                    const uint8_t *payload, size_t len,
+                                    uint32_t txn_id)
+{
+#ifdef NODUS_EVM_ENABLED
+    int64_t now_ns = 0;
+    if (nodus_witness_state_proof_enabled(w)) {
+        /* the node's MONOTONIC wait clock, for the admission only (the light
+         * block's rule); a clock fault refuses without touching the limiter */
+        nodus_cmt_node_t *n = (nodus_cmt_node_t *)w->cmt_node;
+        if (!n || !n->mono || n->mono(n->mono_ctx, &now_ns) != CMT_OK) {
+            QGP_LOG_WARN(LOG_TAG, "%s", "dnac_state_proof: monotonic clock "
+                         "unreadable, request refused");
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                       "internal error");
+            return;
+        }
+    }
+    nodus_witness_state_proof_handle(w, conn, payload, len, txn_id, now_ns);
+#else
+    (void)w; (void)payload; (void)len;
+    send_error(conn, txn_id, NODUS_ERR_NOT_FOUND,
+               "this build has no state proofs");
+#endif
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * dnac_hf9_shadow - the shadow run's log row (HF-9 WP5, plan
  * docs/plans/approved/2026-11-04-hf9.md §11; hf9_shadow_diff.sh compares
  * it across the nodes)
@@ -7125,6 +7169,8 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_v3_block(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_light_block") == 0) {
         handle_dnac_light_block(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_state_proof") == 0) {
+        handle_dnac_state_proof(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_hf9_shadow") == 0) {
         handle_dnac_hf9_shadow(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_addr_history") == 0) {

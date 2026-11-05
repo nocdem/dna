@@ -239,6 +239,7 @@ ADDR32_SUPPORT := $(TBUILD)/evm_membackend.o $(TBUILD)/evm_mpt.o \
 TRIE_BUILD := $(BUILD)/trie
 TRIE_HDRS  := $(wildcard trie/*.h)
 TRIE_OBJS  := $(TRIE_BUILD)/evm_trie.o $(TRIE_BUILD)/evm_trie_rlp.o \
+              $(TRIE_BUILD)/evm_trie_proof.o \
               $(TRIE_BUILD)/evm_trie_full.o $(TRIE_BUILD)/test_trie.o \
               $(TRIE_BUILD)/qgp_sha3.o $(TBUILD)/keccak256.o \
               $(TBUILD)/evm_test_qgp_shim.o

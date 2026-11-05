@@ -396,6 +396,34 @@ int nodus_witness_global_root_v2_shadow(nodus_witness_t *w,
                                         uint8_t out_system[64],
                                         uint8_t out_core[64]);
 
+/* ── HF-9 WP6 (plan §10.4): the legs a state proof needs ───────────────────
+ * Everything the composition proof (dna_v2_state_proof_cp_build) is built
+ * from, read on ONE connection (the proof service's reader snapshot): the
+ * seven CORE v4 legs, the four STOR v3 legs, the twelve SYS v7 legs, the
+ * committed DomainHeads (ascending domain_id, with their head-authoritative
+ * last_upd_hash), the replay root, and the domains_root / GLOBAL v2 composed
+ * from them - the value the caller compares with the committed AppHash. The
+ * legs are read by the same readers as nodus_witness_core_root_v4 /
+ * _storage_root_v3 / _system_root_v7 (one body each), so they cannot drift. */
+typedef struct {
+    uint8_t core[7][64];
+    uint8_t stor[4][64];
+    uint8_t sys[12][64];
+    dna_v2_domain_head_t *heads;      /* malloc'd, n_heads entries */
+    uint8_t (*luh)[64];               /* malloc'd, luh[j] belongs to heads[j] */
+    size_t  n_heads;
+    uint8_t replay[64];
+    uint8_t domains_root[64];
+    uint8_t global_root[64];
+} nodus_witness_proof_legs_t;
+
+/** @return 0 ok; 1 the SYSTEM runtime of the snapshot is below generation 6
+ *  (or unresolvable): no keyed-trie composition exists, `p` is empty;
+ *  -1 a read fault or a malformed head row (the whole load fails). */
+int nodus_witness_proof_legs_load(nodus_witness_t *w,
+                                  nodus_witness_proof_legs_t *p);
+void nodus_witness_proof_legs_free(nodus_witness_proof_legs_t *p);
+
 #ifdef __cplusplus
 }
 #endif
