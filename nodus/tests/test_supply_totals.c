@@ -81,7 +81,12 @@
  *  Directories /tmp/v2x_supplytot_XXXXXX, removed by v2x_chain_close, and
  *  /tmp/v2x_s20idx_XXXXXX (the T-17d scratch databases), removed by
  *  s19_close (a crash leaves either). Section E deletes the rows it plants
- *  (owner 'plant' / 'f') and restores every domain_id and the index.
+ *  (owner 'plant' / 'f' / 'one') and restores every domain_id and the
+ *  index. The derived chain has NO utxo_set row (v2_genesis_fixture.h:820,
+ *  :945), so T-17a and T-17d plant one conserving CORE row (amount 0,
+ *  domain 1, owner 'one') to rewrite, with a baseline-still-passes check
+ *  after planting and a removal check at the end. T-17b and T-17c plant
+ *  their own rows and never rewrite an existing one.
  *
  * ── HOW IT CAN FALSELY PASS OR SKIP ─────────────────────────────────────
  *  - Section D passes vacuously if the baseline supply_check is not 0 for
@@ -621,6 +626,32 @@ static int plant_rows(sqlite3 *db, int first, int last, int domain) {
     return run_sql(db, sql);
 }
 
+/* The derived chain has NO utxo_set row (v2_genesis_fixture.h: "This seeded
+ * path writes NO genesis outputs", asserted by v2x_seed_genesis, :945), so a
+ * test that rewrites "an existing row" plants one first: a conserving CORE
+ * row (amount 0, domain 1), owner 'one', removed again by drop_one_row. */
+static int plant_one_row(nodus_witness_t *w) {
+    CHECK(nodus_witness_v2_supply_check(w) == 0,
+          "E: baseline passes before the row is planted");
+    CHECK(run_sql(w->db,
+        "INSERT INTO utxo_set (nullifier, owner, amount, token_id, tx_hash, "
+        "output_index, block_height, created_at, unlock_block, domain_id) "
+        "VALUES (CAST(zeroblob(63)||x'e0' AS BLOB), 'one', 0, zeroblob(64), "
+        "zeroblob(64), 0, 0, 0, 0, 1)") == 0, "E: plant one CORE row");
+    CHECK(q1(w->db, "SELECT COUNT(*) FROM utxo_set") == 1 &&
+          nodus_witness_v2_supply_check(w) == 0,
+          "E: the planted row is the only one and the baseline still passes");
+    return 0;
+}
+
+static int drop_one_row(nodus_witness_t *w) {
+    CHECK(run_sql(w->db, "DELETE FROM utxo_set WHERE owner = 'one'") == 0 &&
+          q1(w->db, "SELECT COUNT(*) FROM utxo_set") == 0 &&
+          nodus_witness_v2_supply_check(w) == 0,
+          "E: the planted row is removed, the chain balances");
+    return 0;
+}
+
 /* the verdict table, one value: baseline passes, one existing row gets
  * `lit` as its domain_id (amount and token unchanged: the S20 totals do
  * not move, the guard is the only term that can fail), the check must
@@ -695,6 +726,7 @@ static int verdict_table(nodus_witness_t *w) {
 static int test_guard_verdicts(v2x_chain_t *c) {
     sqlite3 *db = c->w->db;
     CHECK(foreign_idx_exact(db), "T-17a: the index exists to start with");
+    if (plant_one_row(c->w)) return 1;
     fprintf(stderr, "T-17a: verdict table with idx_utxo_foreign\n");
     if (verdict_table(c->w)) return 1;
 
@@ -708,7 +740,7 @@ static int test_guard_verdicts(v2x_chain_t *c) {
 
     CHECK(nodus_witness_db_s20_reseed(c->w) == 0 && foreign_idx_exact(db),
           "T-17a: the re-seed makes the index again");
-    return 0;
+    return drop_one_row(c->w);
 }
 
 /* T-17b: plan pin */
@@ -940,6 +972,7 @@ static int test_guard_schema(v2x_chain_t *c) {
     CHECK(foreign_idx_sql(c->w->db, sql, sizeof(sql)) == 1 &&
           strcmp(sql, "CREATE INDEX idx_utxo_foreign ON utxo_set(domain_id)")
           == 0, "T-17d: the open neither refused nor replaced it");
+    if (plant_one_row(c->w)) return 1;
     CHECK(nodus_witness_v2_supply_check(c->w) == 0 &&
           run_sql(c->w->db, "UPDATE utxo_set SET domain_id = 2 WHERE "
                   "nullifier = (SELECT nullifier FROM utxo_set ORDER BY "
@@ -950,6 +983,7 @@ static int test_guard_schema(v2x_chain_t *c) {
                   "domain_id = 2") == 0 &&
           run_sql(c->w->db, "DROP INDEX idx_utxo_foreign") == 0,
           "T-17d: undo");
+    if (drop_one_row(c->w)) return 1;
     CHECK(reopen(c) == 0 && foreign_idx_exact(c->w->db),
           "T-17d: the exact index is back");
     CHECK(nodus_witness_v2_supply_check(c->w) == 0,
