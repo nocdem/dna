@@ -161,13 +161,17 @@
  *     its ROWS are proven by test_storage_hrw (T-7, no flush runs there,
  *     so no leg root); the leg roots after a real generation-6 boundary
  *     with these writers are the harness's (T-13, WP7). They are NOT driven
- *     here: the J / K fixtures DO open the storage gate (param 18 is
- *     effective at height 8), but the engine writers run only at a storage
- *     BOUNDARY, a multiple of DNAC_EPOCH_LENGTH (production 720), far above
- *     this file's heights (<= 20); reaching one would need hundreds of
- *     blocks, a settled snapshot and reports. Plan T-5 "every writer path
- *     through the real functions" is therefore NOT met for the storage
- *     writers by this file (reported, not hidden). The SQL statement shapes of the writers
+ *     here for the REGISTRY and SEGMENT tables: the J / K fixtures open the
+ *     storage gate (param 18 effective at height 8) and K5 DOES reach the
+ *     first generation-6 storage boundary (block DNAC_EPOCH_LENGTH), where
+ *     the real freeze runs over an EMPTY registry - it writes an empty
+ *     set(E), the assignment state and the member-epoch rows, none of which
+ *     is a leg table (K5 asserts that legs 5 and 6 do not move and the
+ *     roots equal the oracle). A registry or segment write needs a
+ *     registered node (a funded STORAGE_REGISTER) and, for a segment, 24
+ *     epochs of blocks; neither is built here. Plan T-5 "every writer path
+ *     through the real functions" is therefore NOT met for v2_storage_nodes
+ *     / v2_storage_segments by this file (reported, not hidden). The SQL statement shapes of the writers
  *     (INSERT / UPDATE / DELETE of the plan §4.3 rows) ARE exercised above
  *     (groups A-J), so the triggers and the flush see every shape;
  *   - the storage boundary under generation 6, the head_activate guard's
@@ -1404,9 +1408,11 @@ static int j_open(jfx_t *f) {
     if (token_sql(f->w->db, 0xA1, 8) != 0 || token_sql(f->w->db, 0xA2, 8)
             != 0 ||
         name_sql(f->w->db, "alice", 0xB1) != 0 ||
-        name_sql(f->w->db, "bobby", 0xB2) != 0 ||
-        node_sql(f->w, 0x5E, 1000, 3) != 0)
+        name_sql(f->w->db, "bobby", 0xB2) != 0)
         return -1;
+    /* NO registry row either (Sol round 3 row 7): a RELEASED node exists
+     * only after a STORAGE_EXIT and the boundary that releases it, a
+     * registered one needs a funded bond; this fixture has neither. */
     for (uint64_t h = J_A - 1u; h <= J_A + 1u; h++)
         if (j_apply_ok(f, h) != 0) return -1;
     return 0;
@@ -2299,6 +2305,17 @@ static int test_gen6_writers(void) {
               k_read_legs(f.w, L2) == 0, "K5: dirty empty, roots read");
         CHECK((k_moved(L1, L2) & 0xC0u) == 0xC0u,
               "K5: legs 7 (vset) and 8 (attendance) moved");
+        /* the storage boundary of this block (first generation-6 one, over
+         * an empty registry): the real freeze ran and left the registry
+         * and segment legs alone */
+        CHECK((k_moved(L1, L2) & 0x30u) == 0,
+              "K5: legs 5 (registry) and 6 (segments) did not move");
+        CHECK(q1(f.w->db, "SELECT boundary FROM v2_storage_assign_state "
+                          "WHERE id = 1") == (sqlite3_int64)E &&
+              q1(f.w->db, "SELECT COUNT(*) FROM v2_storage_sets WHERE "
+                          "member_count = 0 AND epoch_start > 0") >= 1,
+              "K5: the storage freeze ran at the boundary (assignment state "
+              "at E, an empty frozen set)");
         CHECK(j_roots_ok(&f, "K5 epoch boundary") == 0,
               "K5: every leg root equals the oracle and the rows");
     }

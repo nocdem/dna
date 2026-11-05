@@ -1731,8 +1731,11 @@ done:
     return ret;
 }
 
-/* STEP 2 — prune what the settlement just consumed. @return 0 / -2. */
-static int st_prune(nodus_witness_t *w, uint64_t B, int gen6) {
+/* STEP 2 — prune what the settlement just consumed (exported so the
+ * pruning rule can be proven over synthetic rows, like publish_due and
+ * freeze_gen6; the boundary calls this same code). @return 0 / -2. */
+int nodus_witness_storage_prune(nodus_witness_t *w, uint64_t B, int gen6) {
+    if (!w || !w->db) return -2;
     const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
     if (B < 2 * E) return 0;
     const uint64_t H = B - 2 * E;
@@ -2326,8 +2329,12 @@ no_segments:
      * with the state's xfer flag (written 0 below, in this transaction).
      * The per-open shape check accepts its absence only while the state
      * row says xfer = 0 (nodus_witness_v2_schema.c s20_storage_shape_ok). */
-    if (is_b1 && sqlite3_exec(w->db, "DROP TABLE v2_storage_xfer_diff",
-                              NULL, NULL, NULL) != SQLITE_OK)
+    /* Dropped at the FIRST generation-6 boundary whichever way it was
+     * reached (xfer = 1 after E-s2, or xfer = 0 on a chain with no
+     * set(H2), where the table was created by the rung and never used):
+     * IF EXISTS, so later boundaries find nothing to do. */
+    if (sqlite3_exec(w->db, "DROP TABLE IF EXISTS v2_storage_xfer_diff",
+                     NULL, NULL, NULL) != SQLITE_OK)
         goto done;
     if (st_basis_store(w, event || is_b1 || !present,
                        (const uint8_t (*)[64])elig, n_elig, R, B, 0) != 0)
@@ -2652,7 +2659,7 @@ int nodus_witness_storage_boundary_apply(
                       (unsigned long long)B);
         return -2;
     }
-    if (st_prune(w, B, gen6) != 0 ||
+    if (nodus_witness_storage_prune(w, B, gen6) != 0 ||
         st_release(w, B, chain_id, gen6, out) != 0 ||
         st_publish(w, B, gen6, out) != 0 ||
         (gen6 ? nodus_witness_storage_freeze_gen6(w, B, copies, set_cap, out)

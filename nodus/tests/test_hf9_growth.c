@@ -35,8 +35,10 @@
  *  The flush is driven directly, not through a block; the other seven legs
  *  are empty. The settlement of a boundary, release and the registry point
  *  reads at settlement are not run here (no snapshots / reports): the
- *  counters cover the freeze and the flush only. registry_fullscan_steps is
- *  SQLite's own full-scan step count of the registry status query.
+ *  counters cover the freeze and the flush only. registry_vm_steps is
+ *  SQLite's own virtual-machine step count of the registry status query
+ *  (a positive control in main() shows a NOT INDEXED scan steps >= 10 000
+ *  more than the indexed query on the grown registry).
  *
  * ── FLAGS ───────────────────────────────────────────────────────────────
  *  register_witness_test; EVM runtime only. No fault injection, no
@@ -374,14 +376,37 @@ int main(void) {
           "assignment rows, 5 000 segments and 10^4 registry rows");
     CHECK(w2.segments_visited == 1 && w2.assign_rows_read == 0,
           "and it is the one new segment, no old assignment row read");
-    /* work EXAMINED, not rows returned (Sol row 12): SQLite's own count of
-     * full-scan steps of the registry status query. The status index
-     * serves it, so both are 0; a status query forced to scan the registry
-     * (NOT INDEXED) would examine the 10 000 RELEASED rows and fail the
-     * second equality and the zero. */
-    CHECK(w1.registry_fullscan_steps == 0 && w2.registry_fullscan_steps == 0,
-          "the registry status query is served by the index: no full-scan "
-          "step, before or after the history grew");
+    /* work EXAMINED, not rows returned (Sol row 12, round 3 row 5):
+     * SQLite's virtual-machine step count of the registry status query
+     * (registry_vm_steps). Non-zero (wired), and EQUAL before and after
+     * 10 000 RELEASED rows were added: the status index serves it. */
+    CHECK(w1.registry_vm_steps > 0 && w2.registry_vm_steps > 0,
+          "the registry work counter is wired (non-zero)");
+    CHECK(w1.registry_vm_steps == w2.registry_vm_steps,
+          "the registry status query examines the same work before and "
+          "after the history grew (a scan would step once per RELEASED "
+          "row)");
+    /* positive control: the measure DOES see scan work. The same query
+     * with NOT INDEXED steps at least once per RELEASED row more than the
+     * indexed one. */
+    {
+        long long steps[2] = { -1, -1 };
+        static const char *const q[2] = {
+            "SELECT node_fp FROM v2_storage_nodes WHERE status = 1",
+            "SELECT node_fp FROM v2_storage_nodes NOT INDEXED "
+            "WHERE status = 1" };
+        for (int i = 0; i < 2; i++) {
+            sqlite3_stmt *st = NULL;
+            CHECK(sqlite3_prepare_v2(g_w->db, q[i], -1, &st, NULL)
+                  == SQLITE_OK, "control query");
+            while (sqlite3_step(st) == SQLITE_ROW) { }
+            steps[i] = sqlite3_stmt_status(st, SQLITE_STMTSTATUS_VM_STEP, 0);
+            sqlite3_finalize(st);
+        }
+        CHECK(steps[0] > 0 && steps[1] >= steps[0] + 10000,
+              "control: the NOT INDEXED scan steps at least 10 000 more "
+              "than the indexed query - the counter can see the difference");
+    }
 
     sqlite3_close(g_w->db);
     free(g_w);

@@ -857,6 +857,38 @@ static int t_main_chain(void) {
     CHECK(boundary(w, B, 4, 0, prev, 0, cur, 1, "R 16 -> 4 (event)") == 0,
           "r 16 down");
 
+    /* PRUNE through the real step 2 (Sol round 3 row 6): member_epoch is
+     * pruned with the set members - rows of epochs below B - 2E go, the
+     * rest stay */
+    snprintf(g_ctx, sizeof(g_ctx), "prune");
+    {
+        char sql[200];
+        const long long H = (long long)(B - 2 * E_LEN);
+        snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM "
+                 "v2_storage_member_epoch WHERE epoch_start < %lld", H);
+        CHECK(q1(w, sql) > 0, "expired member_epoch rows exist before the "
+                              "prune (the case has something to remove)");
+        snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM "
+                 "v2_storage_set_members WHERE epoch_start < %lld", H);
+        CHECK(q1(w, sql) > 0, "expired set member rows exist before");
+        CHECK(sqlx(w, "BEGIN IMMEDIATE") == 0 &&
+              nodus_witness_storage_prune(w, B, 1) == 0 &&
+              sqlx(w, "COMMIT") == 0, "the prune step runs");
+        snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM "
+                 "v2_storage_member_epoch WHERE epoch_start < %lld", H);
+        CHECK(q1(w, sql) == 0, "member_epoch below B - 2E is pruned");
+        snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM "
+                 "v2_storage_set_members WHERE epoch_start < %lld", H);
+        CHECK(q1(w, sql) == 0, "set members below B - 2E are pruned (the "
+                               "same rule)");
+        snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM "
+                 "v2_storage_member_epoch WHERE epoch_start >= %lld", H);
+        CHECK(q1(w, sql) > 0, "member_epoch from B - 2E on survives");
+        snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM "
+                 "v2_storage_assign WHERE to_h IS NOT NULL");
+        CHECK(q1(w, sql) > 0, "ended assignment rows are never pruned (D6)");
+    }
+
     /* the state guards: a skipped boundary is stale derived data */
     snprintf(g_ctx, sizeof(g_ctx), "state guards");
     {
@@ -951,10 +983,42 @@ static int t_no_set_h2(void) {
           "xfer 0 (no XOR history), empty basis");
     rel_t *prev = calloc(1, sizeof(*prev)), *cur = calloc(1, sizeof(*cur));
     CHECK(prev && cur, "alloc");
-    CHECK(boundary(w, 6 * E_LEN, 4, 1, prev, 0, cur, 1,
+    CHECK(boundary(w, 6 * E_LEN, 4, 1, prev, 1, cur, 1,
                    "B1 as a first freeze (event path, empty basis)") == 0,
           "first freeze");
     free(cur); free(prev);
+    fx_close(&fx);
+    return 0;
+}
+
+/* The one-use table's absence is accepted ONLY when the state row says
+ * xfer = 0 (consumed / never pending): three negative cases and the
+ * accepted one (Sol round 3 row 2; the refusal rule of
+ * s20_storage_shape_ok). */
+static int t_xfer_absence(void) {
+    fx_t fx;
+    CHECK(fx_open(&fx) == 0, "fixture");
+    nodus_witness_t *w = fx.w;
+    snprintf(g_ctx, sizeof(g_ctx), "xfer absence");
+    /* no state row at all (before the edge): the table is required */
+    CHECK(sqlx(w, "DROP TABLE v2_storage_xfer_diff") == 0, "drop (no state)");
+    CHECK(nodus_witness_db_s20_reseed(w) == -1,
+          "absent table, NO state row: refused");
+    fx_close(&fx);
+
+    CHECK(fx_open(&fx) == 0, "fixture 2");
+    w = fx.w;
+    CHECK(plant_history(w, 1) == 0 && edge_step(w) == 0, "edge");
+    CHECK(q1(w, "SELECT xfer FROM v2_storage_assign_state") == 1,
+          "the transfer is pending");
+    CHECK(nodus_witness_db_s20_reseed(w) == 0, "table present, pending: ok");
+    CHECK(sqlx(w, "DROP TABLE v2_storage_xfer_diff") == 0, "drop (pending)");
+    CHECK(nodus_witness_db_s20_reseed(w) == -1,
+          "absent table, transfer PENDING (xfer = 1): refused");
+    CHECK(sqlx(w, "UPDATE v2_storage_assign_state SET xfer = 0") == 0,
+          "consume");
+    CHECK(nodus_witness_db_s20_reseed(w) == 0,
+          "absent table, xfer = 0: accepted");
     fx_close(&fx);
     return 0;
 }
@@ -972,7 +1036,7 @@ static int t_fewer_than_r(void) {
           edge_step(w) == 0, "edge");
     rel_t *prev = calloc(1, sizeof(*prev)), *cur = calloc(1, sizeof(*cur));
     CHECK(prev && cur, "alloc");
-    CHECK(boundary(w, 6 * E_LEN, 4, 2, prev, 0, cur, 1,
+    CHECK(boundary(w, 6 * E_LEN, 4, 2, prev, 1, cur, 1,
                    "3 eligible, R 4: all hold") == 0, "all hold");
     for (unsigned k = 1; k <= g_nseg; k++)
         CHECK(cur->n[k] == 3, "every segment has exactly 3 holders (< R)");
@@ -1067,6 +1131,7 @@ int main(void) {
     if (t_main_chain() != 0) return 1;
     if (t_b1_event() != 0) return 1;
     if (t_no_set_h2() != 0) return 1;
+    if (t_xfer_absence() != 0) return 1;
     if (t_fewer_than_r() != 0) return 1;
     if (t_cap_1024() != 0) return 1;
     printf("test_storage_hrw: ALL %d checks passed\n", g_checks);

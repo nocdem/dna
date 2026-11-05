@@ -265,10 +265,11 @@ typedef struct {
     uint64_t scores_computed;        /* dna_v2_segment_score calls         */
     uint64_t trie_nodes_loaded;      /* store gets of the keyed tries
                                       * (nodus_witness_v2_trie.c ts_get) */
-    uint64_t registry_fullscan_steps;/* forward steps of FULL table scans
-                                      * of the registry status / node_fp
-                                      * queries (SQLite's own count): 0
-                                      * while the index serves them      */
+    uint64_t registry_vm_steps;      /* SQLite virtual-machine steps of the
+                                      * registry status / node_fp queries:
+                                      * grows with the rows the plan
+                                      * visits (constant while the index
+                                      * serves them)                     */
 } nodus_storage_work_t;
 extern nodus_storage_work_t g_nodus_storage_work;
 
@@ -314,6 +315,15 @@ int nodus_witness_storage_boundary_apply(
 int nodus_witness_storage_freeze_gen6(nodus_witness_t *w, uint64_t B,
                                       uint32_t R, uint32_t set_cap,
                                       nodus_storage_boundary_t *out);
+
+/** Step 2 alone (header "THE STORAGE BOUNDARY"): at boundary B delete the
+ *  reports with epoch_start <= B - 2E and the frozen sets and their member
+ *  rows with epoch_start < B - 2E; from generation 6 (`gen6`) also the
+ *  v2_storage_member_epoch rows with epoch_start < B - 2E (plan §8.4: pruned
+ *  with v2_storage_set_members, the same rule). The assignment rows are
+ *  never pruned (D6). Exported so the rule is provable over synthetic rows.
+ *  Runs inside the caller's transaction. @return 0 / -2. */
+int nodus_witness_storage_prune(nodus_witness_t *w, uint64_t B, int gen6);
 
 /** Step 4 alone: publish every unpublished segment k (from the last
  *  published + 1, ascending) with k·P + 2E <= boundary_height, Root(k)
