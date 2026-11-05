@@ -25,7 +25,11 @@
  *     ceiling (no array in a frame holds more items than bytes): 16769
  *     64-byte keys and 2,000,000 one-byte keys (about 4 MB) both reach the
  *     proof decoder and get PROTOCOL_ERROR; under another method both are
- *     refused by the generic decoder.
+ *     refused by the generic decoder. A frame of a few hundred bytes whose
+ *     unknown field declares an array or a map of 4,000,000 items is refused
+ *     at the header (a raised decoder refuses a count above the bytes that
+ *     remain; decoders with the default limit are unchanged) by
+ *     nodus_t2_decode and by the proof request decoder.
  *     The IPC delivery case (E2) waits for the answers to be PUBLISHED
  *     (JOB_DONE, via nodus_state_proof_service_published), a bounded wait on
  *     the state that fails if it never arrives, before its single production
@@ -741,7 +745,8 @@ static size_t mkreq(uint8_t *buf, size_t cap, long leg, int dup_leg,
     cbor_encode_cstr(&e, "a");
     cbor_encode_map(&e, (size_t)((leg >= 0) + (dup_leg ? 1 : 0) +
                                  (n_keys >= 0) +
-                                 ((unknown >= 1 && unknown <= 3) ? 1 : 0)));
+                                 (((unknown >= 1 && unknown <= 3) ||
+                                   unknown == 5 || unknown == 6) ? 1 : 0)));
     if (leg >= 0) { cbor_encode_cstr(&e, "leg"); cbor_encode_uint(&e, (uint64_t)leg); }
     if (dup_leg) { cbor_encode_cstr(&e, "leg"); cbor_encode_uint(&e, 1); }
     if (n_keys >= 0) {
@@ -767,6 +772,10 @@ static size_t mkreq(uint8_t *buf, size_t cap, long leg, int dup_leg,
     /* 4 = a complete request followed by a final TOP-LEVEL key "zz" with no
      * value (the outer map claims 6 entries) */
     if (unknown == 4) cbor_encode_cstr(&e, "zz");
+    /* 5 / 6 = "zz": an array / map that DECLARES 4,000,000 items and holds
+     * none (a frame of a few hundred bytes) */
+    if (unknown == 5) { cbor_encode_cstr(&e, "zz"); cbor_encode_array(&e, 4000000); }
+    if (unknown == 6) { cbor_encode_cstr(&e, "zz"); cbor_encode_map(&e, 4000000); }
     return cbor_encoder_len(&e);
 }
 
@@ -920,6 +929,21 @@ static int test_request_limits(void) {
         memset(&msg, 0, sizeof(msg));
         CHECK(nodus_t2_decode(buf, len, &msg) == -1,
               "another method with 4097 items is refused as before");
+    }
+    /* CPU amplification: a SMALL frame whose unknown field declares an array
+     * or map of 4,000,000 items is refused at the header by the raised
+     * decoders (every item takes a byte), never skipped item by item */
+    for (int u = 5; u <= 6; u++) {
+        len = mkreq(buf, cap, 1, 0, 2, 64, 0, u);
+        CHECK(len > 0 && len < 1024, "a small frame");
+        memset(&msg, 0, sizeof(msg));
+        CHECK(nodus_t2_decode(buf, len, &msg) == -1,
+              "nodus_t2_decode refuses a declared 4,000,000-item field at "
+              "the header");
+        CHECK(nodus_state_proof_request_decode(buf, len, req, &ec, em,
+                                               sizeof(em)) == -1 &&
+              ec == NODUS_ERR_PROTOCOL_ERROR,
+              "...and so does the proof request decoder");
     }
     /* above the reply's 16,768 and up to the frame ceiling (every item takes
      * at least one byte, so no request array inside a frame is out of reach):
