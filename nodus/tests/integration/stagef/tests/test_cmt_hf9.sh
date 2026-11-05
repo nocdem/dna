@@ -1447,14 +1447,7 @@ tid=$(awk '/^  token_id=/{sub(/^  token_id=/,""); print}' "$tlog")
 th=$(stagef_cmt_wait_row "$(db_of 1)" "SELECT COUNT(*) FROM tokens WHERE lower(hex(token_id)) = '$tid';") && wrc=0 || wrc=$?
 [ "$wrc" = 0 ] || die "the tokens row did not appear (wait rc=$wrc, tip $th)"
 echo "[ok] token ${tid:0:16}… created by node1 (tip $th)"
-# the name: node 2 registers it (test_cmt_hf8_gen5.sh's call)
-nlog="$LOGD/register_${NAME_B}.log"; port1=$(stagef_tcp_port 1)
-"$CLI" -s 127.0.0.1 -p "$port1" name register "$NAME_B" --keys "$(node_keys 2)" \
-    --submit "127.0.0.1:$port1" > "$nlog" 2>&1 || { cat "$nlog" >&2; die "name register $NAME_B from node2 failed (see $nlog)"; }
-hn=$(stagef_cmt_wait_row "$(db_of 1)" \
-    "SELECT COUNT(*) FROM v2_names WHERE name = CAST('$NAME_B' AS BLOB) AND lower(hex(owner)) = '${FP[2]}';") && wrc=0 || wrc=$?
-[ "$wrc" = 0 ] || die "the v2_names row '$NAME_B' -> node2 did not land (wait rc=$wrc, tip $hn)"
-echo "[ok] '$NAME_B' registered to node2 (tip $hn)"
+# (the name is registered right after the generation-2 edge, step 2: names open only from there)
 
 # ── 2. the six votes to generation 5 (test_cmt_hf8_gen5.sh) ─────────
 cc_guard 1
@@ -1488,6 +1481,17 @@ wait_cc_row "$PARAM_GEN2" "$H4" "$D2_DEC" 20
 cross_edge gen2 "$H4"
 for n in $(seq 1 "$N"); do require_gen "$n" "$GEN_2" "$H4"; done
 echo "[ok] rule-set generation 2 on 7/7 from H4=$H4"
+# the name: node 2 registers it (test_cmt_hf8_gen5.sh's call). The CLI refuses below rule-set
+# generation 2 — nodus-cli.c:8539-8544 (`name register`): "the node still runs rule-set generation N
+# — names open at its RULESET_GEN2 height; nothing was built" (core_rt->generation < NODUS_RT_GEN_2)
+# — so this is the first point the chain can take it; the row still exists long before the param-24 vote.
+nlog="$LOGD/register_${NAME_B}.log"; port1=$(stagef_tcp_port 1)
+"$CLI" -s 127.0.0.1 -p "$port1" name register "$NAME_B" --keys "$(node_keys 2)" \
+    --submit "127.0.0.1:$port1" > "$nlog" 2>&1 || { cat "$nlog" >&2; die "name register $NAME_B from node2 failed (see $nlog)"; }
+hn=$(stagef_cmt_wait_row "$(db_of 1)" \
+    "SELECT COUNT(*) FROM v2_names WHERE name = CAST('$NAME_B' AS BLOB) AND lower(hex(owner)) = '${FP[2]}';") && wrc=0 || wrc=$?
+[ "$wrc" = 0 ] || die "the v2_names row '$NAME_B' -> node2 did not land (wait rc=$wrc, tip $hn)"
+echo "[ok] '$NAME_B' registered to node2 (tip $hn)"
 
 cc_guard 1
 HE=$(( CCG_TIP + 1 + GRACE_SAF + GRACE_MARGIN ))                 # param 14: SAFETY grace
