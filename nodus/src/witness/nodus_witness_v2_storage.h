@@ -270,6 +270,14 @@ typedef struct {
                                       * grows with the rows the plan
                                       * visits (constant while the index
                                       * serves them)                     */
+    uint64_t flush_source_vm_steps;  /* SQLite virtual-machine steps of the
+                                      * trie flush's source-row queries
+                                      * (the dirty-key list and the
+                                      * per-key row lookup,
+                                      * nodus_witness_v2_trie.c flush_leg):
+                                      * grows with the rows the lookup
+                                      * examines - a scan of the source
+                                      * table adds one step per row     */
 } nodus_storage_work_t;
 extern nodus_storage_work_t g_nodus_storage_work;
 

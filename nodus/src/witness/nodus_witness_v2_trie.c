@@ -809,6 +809,13 @@ static int flush_leg(nodus_witness_t *w, int leg) {
             if (evm_trie_delete(t, kb, kl) != 0) { bad = 1; break; }
         }
         if (bad || rc != SQLITE_DONE) break;
+        /* T-9 "rows read": the work EXAMINED by the source queries (the
+         * dirty-key list and the per-key row lookup), not only what they
+         * return - a lookup that scans the source table steps once per
+         * row */
+        g_nodus_storage_work.flush_source_vm_steps += (uint64_t)
+            sqlite3_stmt_status(dq, SQLITE_STMTSTATUS_VM_STEP, 0) +
+            (uint64_t)sqlite3_stmt_status(rq, SQLITE_STMTSTATUS_VM_STEP, 0);
         sqlite3_finalize(dq); dq = NULL;
         sqlite3_finalize(rq); rq = NULL;
 

@@ -233,6 +233,7 @@
 #ifdef NODUS_EVM_ENABLED
 #include "witness/nodus_witness_v2_trie.h"      /* HF-9 T-15: leg roots   */
 #include "witness/nodus_witness_v2_storage.h"   /* HF-9 T-9: work counters */
+#include "witness/nodus_witness_v2_epoch.h"     /* snapshot(H): report seats */
 #include "dnac/ledger_roots_v2.h"               /* storage exit id / nullifier */
 #include "witness/nodus_witness_cmt_node.h"     /* the Handshaker         */
 #endif
@@ -7663,6 +7664,9 @@ static int hyb_seed_coin(nodus_witness_t *w, int c)
  * + stakes + delegated); no supply, per-open or schema check is bypassed.
  * Nullifier and owner are deterministic SHA3-512 of a counter. */
 static unsigned g_hyb_filler;
+/* RELEASED registry nodes planted the same way (see hyb_plant_released) */
+static unsigned g_hyb_released;
+static int hyb_plant_released(nodus_witness_t *w, unsigned n);
 
 static int hyb_seed_filler(nodus_witness_t *w, unsigned n)
 {
@@ -7744,10 +7748,14 @@ static int hyb_open(hyb_t *h, int funded)
                   "hyb: the exit coin before the genesis");
         CHECK(hyb_seed_filler(h->g.w, g_hyb_filler) == 0,
               "hyb: the history UTXOs before the genesis");
+        CHECK(hyb_plant_released(h->g.w, g_hyb_released) == 0,
+              "hyb: the released registry history before the genesis");
         v2x_seed_not_real(V2X_SEED_NOT_REAL_UTXOS);   /* one-shot */
     }
-    CHECK(funded || g_hyb_filler == 0, "hyb: history UTXOs need a funded chain");
+    CHECK(funded || (g_hyb_filler == 0 && g_hyb_released == 0),
+          "hyb: history rows need a funded chain");
     g_hyb_filler = 0;
+    g_hyb_released = 0;
     CHECK(v2x_seed_genesis(h->g.w, file16, 0, NULL, 0, h->g.chain32) == 0,
           "hyb: the seeded genesis");
     g_v2x_cfg_hook = NULL;
@@ -7788,11 +7796,28 @@ static int hyb_digest(sqlite3 *db, uint8_t out[64])
     for (size_t t = 0; t < sizeof(tabs) / sizeof(tabs[0]) && !bad; t++) {
         sqlite3_stmt *st = NULL;
         char          sql[400];
-        int           cols, rc;
+        int           cols, rc = SQLITE_DONE;
 
         snprintf(sql, sizeof(sql), "SELECT * FROM %s LIMIT 0", tabs[t]);
         if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
-            continue;              /* the table is absent (xfer_diff after B1) */
+            /* Sol re-verify row 7: the ONLY table allowed to be absent is
+             * the one-use v2_storage_xfer_diff (dropped at the first
+             * generation-6 boundary), and only when sqlite_master really
+             * has no such table; any other failure fails the digest */
+            sqlite3_stmt *ms = NULL;
+            int           absent = 0;
+
+            if (strcmp(tabs[t], "v2_storage_xfer_diff") == 0 &&
+                sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM sqlite_master "
+                                   "WHERE type = 'table' AND name = "
+                                   "'v2_storage_xfer_diff'", -1, &ms, NULL)
+                    == SQLITE_OK) {
+                absent = sqlite3_step(ms) == SQLITE_ROW &&
+                         sqlite3_column_int(ms, 0) == 0;
+                sqlite3_finalize(ms);
+            }
+            if (!absent) bad = 1;
+            continue;
         }
         cols = sqlite3_column_count(st);
         sqlite3_finalize(st);
@@ -7832,6 +7857,7 @@ static int hyb_digest(sqlite3 *db, uint8_t out[64])
             if (!bad) buf[n++] = 0xFF;
         }
         sqlite3_finalize(st);
+        if (!bad && rc != SQLITE_DONE) bad = 1;   /* a truncated scan */
     }
     if (bad) { free(buf); return -1; }
     {
@@ -8648,7 +8674,75 @@ static int t_hybrid_exit_release_probe(void)
 typedef struct {
     nodus_storage_work_t w;      /* g_nodus_storage_work around the block  */
     int64_t              k;      /* distinct (leg, key) the block dirtied  */
+    uint64_t             ops;    /* SQLite virtual-machine instructions the
+                                  * WHOLE block ran on the ledger connection
+                                  * (progress handler, period 1)          */
 } hyb_sample_t;
+
+#define HYB_NSAMPLES 5   /* blocks 16, 17, E, 2E, 3E */
+
+static int hyb_prog_cb(void *p)
+{
+    (*(uint64_t *)p)++;
+    return 0;                    /* never interrupt */
+}
+
+/* Registry history for the growth probe (declared before hyb_open, which
+ * plants it before the genesis next to the coins and the filler UTXOs):
+ * RELEASED nodes, valid by the registry loader's own rule
+ * (nodus_witness_roots_v2.c "the key IS the hash of the key material it
+ * names"): node_fp = SHA3-512(node_pk), distinct 2592-byte keys derived
+ * from a counter, bond / heights / streak inside the loader's ranges,
+ * status RELEASED. A RELEASED node holds no bond, so the supply (the bond
+ * bucket counts ACTIVE and EXITING only) is untouched; the UTXO its release
+ * created is not planted because a production chain also spends it after
+ * the 12-epoch lock. */
+static int hyb_plant_released(nodus_witness_t *w, unsigned n)
+{
+    sqlite3_stmt *st = NULL;
+    uint8_t      *pk = malloc(QGP_DSA87_PUBLICKEYBYTES);
+    int           rc = SQLITE_DONE;
+
+    if (!pk) return -1;
+    if (sqlite3_exec(w->db, "BEGIN", NULL, NULL, NULL) != SQLITE_OK) {
+        free(pk);
+        return -1;
+    }
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO v2_storage_nodes (node_fp, node_pk, payee_fp, "
+            "bond, status, registered_height, exit_height, fail_streak, "
+            "grace_until) VALUES (?1, ?2, ?3, ?4, 3, 1, 2, 0, 0)",
+            -1, &st, NULL) != SQLITE_OK) {
+        (void)sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
+        free(pk);
+        return -1;
+    }
+    for (unsigned i = 0; i < n && rc == SQLITE_DONE; i++) {
+        uint8_t fp[64], py[64];
+
+        memset(pk, 0xA5, QGP_DSA87_PUBLICKEYBYTES);
+        memcpy(pk, "hf9-wp4-hyb-rel", 15);
+        for (int b = 0; b < 4; b++) pk[16 + b] = (uint8_t)(i >> (8 * (3 - b)));
+        if (qgp_sha3_512(pk, QGP_DSA87_PUBLICKEYBYTES, fp) != 0 ||
+            qgp_sha3_512(fp, 64, py) != 0) {
+            rc = SQLITE_ERROR;
+            break;
+        }
+        sqlite3_reset(st);
+        sqlite3_bind_blob(st, 1, fp, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 2, pk, QGP_DSA87_PUBLICKEYBYTES, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 3, py, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 4, (sqlite3_int64)HYB_COIN_BOND);
+        rc = sqlite3_step(st);
+    }
+    sqlite3_finalize(st);
+    free(pk);
+    if (rc != SQLITE_DONE) {
+        (void)sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
+        return -1;
+    }
+    return sqlite3_exec(w->db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK ? 0 : -1;
+}
 
 /* One block with the work counters read around it. `env` != NULL puts that
  * envelope into the block. The dirty keys are counted by a TEMP trigger on
@@ -8659,24 +8753,60 @@ typedef struct {
 static int hyb_sample_block(hyb_t *H, int64_t height, uint8_t *env,
                             size_t elen, hyb_sample_t *s)
 {
-    int rc;
+    uint64_t ops = 0;
+    int      rc;
 
     if (sqlite3_exec(H->g.w->db, "DELETE FROM temp.hyb_dlog", NULL, NULL,
                      NULL) != SQLITE_OK)
         return -1;
     memset(&g_nodus_storage_work, 0, sizeof(g_nodus_storage_work));
+    /* the progress handler (period 1) counts EVERY virtual-machine
+     * instruction of the ledger connection during the block - settlement,
+     * prune, release, publication, freeze, the flush and the block's own
+     * writes alike - so work that scans history shows up whichever
+     * statement does it; it is deterministic (a function of the SQL run) */
+    sqlite3_progress_handler(H->g.w->db, 1, hyb_prog_cb, &ops);
     if (env) rc = hyb_tx_step(H, NULL, height, env, elen);
     else     rc = hyb_pair_step(H, NULL, height, 0);
-    s->w = g_nodus_storage_work;
-    s->k = q1(H->g.w->db, "SELECT COUNT(*) FROM temp.hyb_dlog");
+    sqlite3_progress_handler(H->g.w->db, 0, NULL, NULL);
+    s->w   = g_nodus_storage_work;
+    s->ops = ops;
+    s->k   = q1(H->g.w->db, "SELECT COUNT(*) FROM temp.hyb_dlog");
     return rc == CMT_OK ? 0 : -1;
 }
 
-/* One funded hybrid with `n_fill` extra UTXOs of history, three measured
- * blocks: s[0] block 16 carrying the registration (an ordinary generation-6
- * block with a fixed number of changed records), s[1] block 17 (ordinary,
- * no transaction), s[2] the boundary E (the event: an arrival). */
-static int hyb_growth_chain(unsigned n_fill, hyb_sample_t s[3])
+/* the VM steps of one lookup of a UTXO by nullifier, indexed and with the
+ * index disabled (+nullifier): the positive control that a scan of the
+ * growing source table is visible to the step counter */
+static int hyb_lookup_steps(nodus_witness_t *w, int scan, long long *steps)
+{
+    sqlite3_stmt *st = NULL;
+    uint8_t       nul[64];
+
+    hyb_coin_nul(0, nul);                     /* coin 0 is never spent here */
+    if (sqlite3_prepare_v2(w->db, scan
+            ? "SELECT amount FROM utxo_set WHERE +nullifier = ?1"
+            : "SELECT amount FROM utxo_set WHERE nullifier = ?1",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, nul, 64, SQLITE_STATIC);
+    while (sqlite3_step(st) == SQLITE_ROW) { }
+    *steps = sqlite3_stmt_status(st, SQLITE_STMTSTATUS_VM_STEP, 0);
+    sqlite3_finalize(st);
+    return 0;
+}
+
+/* One funded hybrid with `n_hist` extra UTXOs AND `n_hist` RELEASED registry
+ * nodes of history, five measured blocks: s[0] block 16 carrying the
+ * registration (an ordinary generation-6 block with a fixed number of
+ * changed records), s[1] block 17 (ordinary, no transaction), s[2] the
+ * boundary E (the event: an arrival), s[3] the boundary 2E and s[4] the
+ * boundary 3E (ORDINARY boundaries through the complete real procedure:
+ * settlement - which starts at 3E: B < 3E returns at once, st_settle -,
+ * prune, release, publication, freeze). ctl[0] / ctl[1]: VM steps of a
+ * UTXO lookup by nullifier, indexed and scanning (the control). */
+static int hyb_growth_chain(unsigned n_hist, hyb_sample_t s[HYB_NSAMPLES],
+                            long long ctl[2])
 {
     const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
     hyb_t   *H = calloc(1, sizeof(*H));
@@ -8684,11 +8814,15 @@ static int hyb_growth_chain(unsigned n_fill, hyb_sample_t s[3])
     size_t   elen = 0;
 
     CHECK(H != NULL, "alloc");
-    g_hyb_filler = n_fill;
+    g_hyb_filler = n_hist;
+    g_hyb_released = n_hist;
     CHECK(hyb_open(H, 1) == 0, "G0 the funded hybrid with its history");
     CHECK(q1(H->g.w->db, "SELECT COUNT(*) FROM utxo_set") ==
-              (int64_t)(HYB_N_COINS + n_fill),
-          "G0b the history rows are present after the genesis");
+              (int64_t)(HYB_N_COINS + n_hist),
+          "G0b the history UTXOs are present after the genesis");
+    CHECK(q1(H->g.w->db, "SELECT COUNT(*) FROM v2_storage_nodes WHERE "
+                         "status = 3") == (int64_t)n_hist,
+          "G0d the released registry history is present after the genesis");
     CHECK(sqlite3_exec(H->g.w->db,
               "CREATE TEMP TABLE hyb_dlog(leg INTEGER, key BLOB);"
               "CREATE TEMP TRIGGER hyb_dlog_t AFTER INSERT ON "
@@ -8706,8 +8840,19 @@ static int hyb_growth_chain(unsigned n_fill, hyb_sample_t s[3])
           "G5 blocks up to E-1 apply");
     CHECK(hyb_sample_block(H, (int64_t)E, NULL, 0, &s[2]) == 0,
           "G6 the boundary E applies");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)E, (int64_t)(2 * E) - 1) == 0,
+          "G6b blocks up to 2E-1 apply");
+    CHECK(hyb_sample_block(H, (int64_t)(2 * E), NULL, 0, &s[3]) == 0,
+          "G6c the ordinary boundary 2E applies");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(2 * E), (int64_t)(3 * E) - 1) == 0,
+          "G6d blocks up to 3E-1 apply");
+    CHECK(hyb_sample_block(H, (int64_t)(3 * E), NULL, 0, &s[4]) == 0,
+          "G6e the ordinary boundary 3E (first settlement) applies");
     CHECK(hyb_legs_ok(H->g.w) == 0,
           "G7 every leg root equals the rebuild at the end");
+    CHECK(hyb_lookup_steps(H->g.w, 0, &ctl[0]) == 0 &&
+          hyb_lookup_steps(H->g.w, 1, &ctl[1]) == 0,
+          "G8 the control lookups run");
     free(env);
     hyb_close(H);
     free(H);
@@ -8715,93 +8860,395 @@ static int hyb_growth_chain(unsigned n_fill, hyb_sample_t s[3])
 }
 
 /* HF-9 WP4 - T-9 (plan :449) through REAL block application: the work of
- * an ordinary block and of the first boundary does not grow with the
- * history. Two funded hybrids that differ ONLY in the number of ordinary
- * UTXOs planted before the genesis (100 and 100 000: the plan's range
- * 1e2 -> 1e5; production-producible rows, supply by construction, see
- * g_hyb_filler) apply the SAME three blocks (16: one registration, 17:
- * empty, E: the arrival event). For each block the counters of
- * g_nodus_storage_work and the number of dirty (leg, key) pairs are read.
- * Asserted: G-a the trie-node counter and the dirty-key counter are wired
- * (non-zero on block 16); G-b nodes loaded <= 131 per dirty key (plan 5.6:
- * path <= 129 + 1 sibling + 1 extension child) on every sample of both
- * chains - not equality: path depth grows with log16(rows); G-c ordinary
- * blocks (16, 17) do no assignment work (segments visited, scores computed,
- * assignment rows written = 0); G-d the boundary E (the event) reads the
- * registry (rows read > 0, VM steps > 0) and every storage counter is
- * EQUAL on the two chains (the registry and the segment tables are the
- * same; only the UTXO leg grew), registry VM steps within 64 steps (the
- * bound of test_hf9_growth). Both chains' numbers go to stderr.
- * NOT COVERED here: growth of the registry, assignment and segment tables
- * with real blocks - at 10^5 each needs a signed envelope per row (a block
- * holds TEST_APP_TXS_CAP of them) or a staked node per row; that growth is
- * measured by test_hf9_growth on rows planted directly. The settlement
- * path of the boundary (reports, pool 1) is not reached: no signed reports
- * and unfunded pools on this chain, so the F1 gate is not met.
+ * an ordinary block, of the first (event) boundary and of the first two
+ * ORDINARY boundaries (2E, and 3E where the settlement runs) does not grow
+ * with the history. Two funded hybrids that differ ONLY in the history
+ * planted before the genesis - n ordinary UTXOs and n RELEASED registry
+ * nodes with valid key / fingerprint pairs (hyb_seed_filler,
+ * hyb_plant_released; n = 100 and 100 000, the plan's range 1e2 -> 1e5) -
+ * apply the SAME five blocks (16: one registration, 17: empty, E: the
+ * arrival event, 2E and 3E: ordinary boundaries through the complete real
+ * procedure - settlement, prune, release, publication, freeze). For each
+ * block the counters of g_nodus_storage_work, the number of dirty (leg,
+ * key) pairs and the TOTAL SQLite virtual-machine instructions the ledger
+ * connection ran (progress handler) are read.
+ * Asserted: G-a the trie-node counter, the dirty-key counter, the flush
+ * source-row step counter and the whole-block instruction count are wired
+ * (non-zero on block 16); G-b nodes loaded <= 131 per dirty key (plan 5.6)
+ * on every sample - a bound, not equality: path depth grows with log16;
+ * G-c ordinary blocks and boundaries (16, 17, 2E, 3E) do no assignment
+ * work; G-d the event boundary reads the registry and every storage
+ * counter of E, 2E, 3E is EQUAL on the two chains; G-e the flush's
+ * source-row steps are within 64 of each other for every block; G-f the
+ * whole-block instruction count differs between the two chains by less
+ * than a tenth of one instruction per planted history row (a scan of the
+ * history adds at least one instruction per row), with the control that a
+ * UTXO lookup with the index disabled steps at least n more than the
+ * indexed one. Both chains' numbers go to stderr.
+ * NOT COVERED: growth of the segment, assignment and set tables. A valid
+ * segment row exists only for a chain that has run 24 E blocks per segment
+ * (published at k x 24 E + 2 E from v2_blocks, nodus_witness_v2_storage.c
+ * st_publish :1812-1866, segment_root_compute :821-870), so 10^5 of them
+ * need 10^5 x 24 E real blocks; the fixture of test_hf9_growth derives
+ * assignment rows of a valid contiguous segment list with the production
+ * freeze instead. The settlement here runs with an unmet F1 gate (no
+ * signed reports, pools at 0): its payout path is not measured.
  * Flags: NODUS_EVM_ENABLED; E > 18. Leaves /tmp/test_cmt_app_hyb_XXXXXX
- * (removed). Can falsely pass: the history sits in the UTXO leg only, so
- * the claim proven is "block work is independent of the UTXO leg's size";
- * a counter not wired to the real path is caught by G-a and G-d's non-zero
- * checks only for the counters asserted. */
+ * (removed). Can falsely pass: history in the UTXO leg and the released
+ * registry only; the 10% rule would also pass a scan of a table that
+ * the history does not grow. */
 static int t_hybrid_growth_probe(void)
 {
-    static const char *const names[3] = {
-        "block 16 (registration)", "block 17 (empty)", "boundary E (event)"
+    static const char *const names[HYB_NSAMPLES] = {
+        "block 16 (registration)", "block 17 (empty)", "boundary E (event)",
+        "boundary 2E (ordinary)", "boundary 3E (settles)"
     };
-    hyb_sample_t small[3], big[3];
+    hyb_sample_t small[HYB_NSAMPLES], big[HYB_NSAMPLES];
+    long long    ctl_small[2] = { -1, -1 }, ctl_big[2] = { -1, -1 };
 
     CHECK(DNAC_EPOCH_LENGTH > 18, "the boundary lies above the registration");
     memset(small, 0, sizeof(small));
     memset(big, 0, sizeof(big));
-    CHECK(hyb_growth_chain(100, small) == 0, "chain with 100 history rows");
-    CHECK(hyb_growth_chain(100000, big) == 0,
+    CHECK(hyb_growth_chain(100, small, ctl_small) == 0,
+          "chain with 100 history rows");
+    CHECK(hyb_growth_chain(100000, big, ctl_big) == 0,
           "chain with 100 000 history rows");
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < HYB_NSAMPLES; i++)
         fprintf(stderr, "T-9 %-24s | 1e2: nodes %" PRIu64 " keys %" PRId64
-                " regrows %" PRIu64 " vm %" PRIu64 " | 1e5: nodes %" PRIu64
-                " keys %" PRId64 " regrows %" PRIu64 " vm %" PRIu64 "\n",
+                " regrows %" PRIu64 " vm %" PRIu64 " flush %" PRIu64
+                " ops %" PRIu64 " | 1e5: nodes %" PRIu64
+                " keys %" PRId64 " regrows %" PRIu64 " vm %" PRIu64
+                " flush %" PRIu64 " ops %" PRIu64 "\n",
                 names[i], small[i].w.trie_nodes_loaded, small[i].k,
                 small[i].w.registry_rows_read, small[i].w.registry_vm_steps,
+                small[i].w.flush_source_vm_steps, small[i].ops,
                 big[i].w.trie_nodes_loaded, big[i].k,
-                big[i].w.registry_rows_read, big[i].w.registry_vm_steps);
+                big[i].w.registry_rows_read, big[i].w.registry_vm_steps,
+                big[i].w.flush_source_vm_steps, big[i].ops);
+    fprintf(stderr, "T-9 control: UTXO lookup steps, 1e2 history: indexed %lld "
+            "scan %lld; 1e5 history: indexed %lld scan %lld\n",
+            ctl_small[0], ctl_small[1], ctl_big[0], ctl_big[1]);
+    CHECK(small[0].w.flush_source_vm_steps > 0 &&
+          big[0].w.flush_source_vm_steps > 0 &&
+          small[0].ops > 0 && big[0].ops > 0,
+          "G-a the flush source-row step counter and the whole-block "
+          "instruction count are wired on block 16 of both chains");
+    for (int i = 0; i < HYB_NSAMPLES; i++)
+        CHECK(big[i].w.flush_source_vm_steps <=
+                  small[i].w.flush_source_vm_steps + 64u &&
+              small[i].w.flush_source_vm_steps <=
+                  big[i].w.flush_source_vm_steps + 64u,
+              "G-e the flush's source-row steps are within 64 at both "
+              "history sizes");
+    for (int i = 0; i < HYB_NSAMPLES; i++) {
+        const uint64_t a = small[i].ops, b = big[i].ops;
+        const uint64_t d = a > b ? a - b : b - a;
+
+        CHECK(d < (100000u - 100u) / 10u,
+              "G-f the whole-block instruction count differs by less than "
+              "a tenth of one instruction per added history row");
+    }
+    CHECK(ctl_big[0] > 0 && ctl_big[1] >= ctl_big[0] + 100000,
+          "G-f control: a UTXO lookup with the index disabled steps at "
+          "least one per history row more than the indexed lookup");
     CHECK(small[0].w.trie_nodes_loaded > 0 && big[0].w.trie_nodes_loaded > 0 &&
           small[0].k > 0 && big[0].k > 0,
           "G-a the trie-node counter and the dirty-key counter are wired "
           "on block 16 of both chains");
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < HYB_NSAMPLES; i++)
         CHECK(small[i].w.trie_nodes_loaded <= 131u * (uint64_t)small[i].k &&
               big[i].w.trie_nodes_loaded <= 131u * (uint64_t)big[i].k,
               "G-b nodes loaded <= 131 per dirty key at both history sizes");
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < HYB_NSAMPLES; i++) {
+        if (i == 2) continue;                    /* the event boundary E */
         CHECK(small[i].w.segments_visited == 0 &&
               small[i].w.scores_computed == 0 &&
               small[i].w.assign_rows_written == 0 &&
               big[i].w.segments_visited == 0 &&
               big[i].w.scores_computed == 0 &&
               big[i].w.assign_rows_written == 0,
-              "G-c an ordinary block does no assignment work");
-    CHECK(small[2].w.registry_rows_read > 0 && big[2].w.registry_rows_read > 0 &&
-          small[2].w.registry_vm_steps > 0 && big[2].w.registry_vm_steps > 0,
-          "G-d1 the event boundary reads the registry (counters wired)");
-    CHECK(small[2].w.registry_rows_read == big[2].w.registry_rows_read &&
-          small[2].w.segments_visited == big[2].w.segments_visited &&
-          small[2].w.assign_rows_read == big[2].w.assign_rows_read &&
-          small[2].w.assign_rows_written == big[2].w.assign_rows_written &&
-          small[2].w.scores_computed == big[2].w.scores_computed,
-          "G-d2 every storage counter of the event boundary is equal at "
-          "both history sizes");
-    CHECK(big[2].w.registry_vm_steps <= small[2].w.registry_vm_steps + 64u &&
-          small[2].w.registry_vm_steps <= big[2].w.registry_vm_steps + 64u,
-          "G-d3 registry VM steps within 64 at both history sizes");
+              "G-c an ordinary block or boundary does no assignment work");
+    }
+    for (int i = 2; i < HYB_NSAMPLES; i++) {          /* E, 2E, 3E */
+        CHECK(small[i].w.registry_rows_read > 0 &&
+              big[i].w.registry_rows_read > 0 &&
+              small[i].w.registry_vm_steps > 0 &&
+              big[i].w.registry_vm_steps > 0,
+              "G-d1 a boundary reads the registry (counters wired)");
+        CHECK(small[i].w.registry_rows_read == big[i].w.registry_rows_read &&
+              small[i].w.segments_visited == big[i].w.segments_visited &&
+              small[i].w.assign_rows_read == big[i].w.assign_rows_read &&
+              small[i].w.assign_rows_written == big[i].w.assign_rows_written &&
+              small[i].w.scores_computed == big[i].w.scores_computed,
+              "G-d2 every storage counter of a boundary is equal at both "
+              "history sizes");
+        CHECK(big[i].w.registry_vm_steps <= small[i].w.registry_vm_steps + 64u &&
+              small[i].w.registry_vm_steps <= big[i].w.registry_vm_steps + 64u,
+              "G-d3 registry VM steps within 64 at both history sizes");
+    }
+    return 0;
+}
+
+/* ── the registry's fail_streak / grace_until writers by real blocks
+ *    (Sol re-verify row 1; plan :154 "UPDATE fail_streak ... grace_until",
+ *    :445 "every writer path through the real functions; after each block
+ *    incremental leg root = full rebuild") ──────────────────────────────── */
+
+/* grace_until and fail_streak of node key `key` */
+static int hyb_node_gs(nodus_witness_t *w, int key, uint64_t *grace,
+                       uint32_t *streak)
+{
+    sqlite3_stmt *st = NULL;
+    uint8_t       fp[64];
+    int           rc = -1;
+
+    if (qgp_sha3_512(g_ks[key].pk, QGP_DSA87_PUBLICKEYBYTES, fp) != 0)
+        return -1;
+    if (sqlite3_prepare_v2(w->db, "SELECT grace_until, fail_streak FROM "
+                           "v2_storage_nodes WHERE node_fp = ?1", -1, &st,
+                           NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, fp, 64, SQLITE_STATIC);
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        *grace  = (uint64_t)sqlite3_column_int64(st, 0);
+        *streak = (uint32_t)sqlite3_column_int64(st, 1);
+        rc = 0;
+    }
+    sqlite3_finalize(st);
+    return rc;
+}
+
+/* A 1-leg STORAGE_REPORT envelope, fee 0, signed by validator key `vkey`
+ * (a g_ks key = a seat of the hybrid's committee), for epoch H: every
+ * member of storage_set(H) is reported as FAILED (all bitmap bits 0).
+ * Ported from test_storage_b2.c rep_env :1835 / rep_call :1192 / reports_for
+ * :2077. @return 0 and a heap envelope in *out, or -1 */
+static int hyb_report_env(nodus_witness_t *w, uint64_t height, int vkey,
+                          uint64_t H, uint8_t **out, size_t *out_len)
+{
+    static uint8_t        call[78 + 1];
+    static uint8_t        auth[HYB_AUTH_LEN];
+    dna_domain_manifest_t sys;
+    dna_env_leg_in_t      leg;
+    dna_env_in_t          in;
+    dna_env_leg_ctx_t     lctx;
+    dna_vset_snapshot_t  *snap = NULL;
+    sqlite3_stmt         *st = NULL;
+    size_t                len = 0, used = 0;
+    uint8_t              *bytes = NULL;
+    dna_env_preflight_t  *pf = NULL;
+    uint32_t              seat = UINT32_MAX;
+    int                   count = -1, ok = -1;
+
+    *out = NULL;
+    if (nodus_witness_v2_epoch_authority_for_epoch(w, H, &snap, NULL, NULL)
+            != 0 || !snap)
+        return -1;
+    for (uint32_t x = 0; x < snap->active_count; x++)
+        if (memcmp(snap->entries[x].pubkey, g_ks[vkey].pk,
+                   QGP_DSA87_PUBLICKEYBYTES) == 0)
+            seat = x;
+    dna_vset_free(&snap);
+    if (seat == UINT32_MAX) return -1;
+    if (sqlite3_prepare_v2(w->db, "SELECT set_hash, member_count FROM "
+                           "v2_storage_sets WHERE epoch_start = ?1", -1, &st,
+                           NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)H);
+    memset(call, 0, sizeof(call));
+    if (sqlite3_step(st) == SQLITE_ROW &&
+        sqlite3_column_bytes(st, 0) == 64) {
+        memcpy(call + 12, sqlite3_column_blob(st, 0), 64);
+        count = sqlite3_column_int(st, 1);
+    }
+    sqlite3_finalize(st);
+    if (count < 1 || count > 8) return -1;        /* one bitmap byte */
+    hyb_put64(call, H);
+    for (int b = 0; b < 4; b++) call[8 + b] = (uint8_t)(seat >> (8 * (3 - b)));
+    call[76] = 0;
+    call[77] = 1;                                  /* bitmap_len = 1 */
+    call[78] = 0;                                  /* every member FAILED */
+    if (nodus_witness_domreg_get(w, DNA_DOMAIN_SYSTEM, NULL, &sys, NULL) != 0)
+        return -1;
+    memset(&leg, 0, sizeof(leg));
+    memset(auth, 0, sizeof(auth));
+    leg.hdr.domain_id = DNA_DOMAIN_SYSTEM;
+    leg.hdr.runtime_op = DNA_SYSRULE_STORAGE_REPORT;
+    leg.hdr.ruleset_version = sys.ruleset_version;
+    leg.hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
+    leg.hdr.auth_kind = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+    leg.hdr.call_len = 79;
+    leg.hdr.auth_len = HYB_AUTH_LEN;
+    leg.hdr.res_max_effects = 8;
+    leg.hdr.res_max_effect_bytes = 16384;
+    leg.call_data = call;
+    leg.auth_data = auth;
+    memset(&in, 0, sizeof(in));
+    in.fee_amount = 0;
+    in.expiry_height = height + 5u;           /* inside the D2 window */
+    in.res_max_total_units = 400000;
+    in.leg_count = 1;
+    in.legs = &leg;
+    memset(&lctx, 0, sizeof(lctx));
+    lctx.domain_id = DNA_DOMAIN_SYSTEM;
+    lctx.ruleset_version = sys.ruleset_version;
+    memcpy(lctx.ruleset_hash, sys.ruleset_hash, 64);
+    if (dna_env_encoded_size(&leg, 1, &len) != 0) return -1;
+    bytes = malloc(len);
+    pf = calloc(1, sizeof(*pf));
+    do {
+        size_t sl = 0;
+
+        if (!bytes || !pf) break;
+        if (dna_env_encode(&in, bytes, len, &used) != 0 || used != len) break;
+        if (dna_env_preflight(bytes, len, w->v2_chain32, height, &lctx, 1, pf)
+            != DNA_ENV_PF_OK)
+            break;
+        auth[0] = 1;
+        memcpy(auth + 1, g_ks[vkey].pk, QGP_DSA87_PUBLICKEYBYTES);
+        if (qgp_dsa87_sign(auth + 1 + QGP_DSA87_PUBLICKEYBYTES, &sl,
+                           pf->auth_digest[0], 64, g_ks[vkey].sk) != 0)
+            break;
+        if (dna_env_encode(&in, bytes, len, &used) != 0 || used != len) break;
+        ok = 0;
+    } while (0);
+    free(pf);
+    if (ok != 0) { free(bytes); return -1; }
+    *out = bytes;
+    *out_len = len;
+    return 0;
+}
+
+/* HF-9 WP4 - the registry's TWO remaining writers through generation-6
+ * blocks with the leg-root check (Sol re-verify row 1): st_grace_write
+ * (K9, nodus_witness_v2_storage.c :1884, called from the freeze) and
+ * st_streak_write (the settlement). LONG case (runs only when named; its
+ * own ctest entry, nodus/CMakeLists.txt): 29 E + 1 blocks on one node.
+ * Timeline on the funded hybrid: W1 blocks 1-15 apply; W2 key 1 registers
+ * in block 16; W3 blocks to 26E - 1 apply with no segment, grace_until = 0
+ * and fail_streak = 0; W4 block 26E (the first publication, segment 1 due
+ * at 1 x 24 E + 2 E) applies: segment 1 exists and the freeze of the same
+ * boundary gave the node its first segment, so grace_until > 26E (K9
+ * writer), leg 5 (registry) and leg 6 (segments) moved and every leg root
+ * equals the incremental and the full rebuild; W5 blocks to 28E apply
+ * (boundary 27E: set(27E) has the node, outside grace, holding segment 1);
+ * W6 five STORAGE_REPORTs for H = 27E, each signed by one seat of the
+ * committee (g_ks keys 0, 2, 3, 4, 5; key 1 is the member), every bit 0
+ * (the member failed), in the window (28E, 28E + E/2] apply; W7 block 29E
+ * (settlement of H = 27E) applies: fail_streak 0 -> 1 (the streak
+ * writer), leg 5 moved, every leg root equals the rebuild; W8 block 29E + 1
+ * applies and the legs still equal the rebuild.
+ * Flags: NODUS_EVM_ENABLED; E > 40 (reports at 28E + 1 .. + 5 inside the
+ * window). Leaves /tmp/test_cmt_app_hyb_XXXXXX (removed). Can falsely pass:
+ * a single node and a single member; the payout is not run (pool 1 unfunded:
+ * the streak writer is reached, the pay path is not). The five seats'
+ * independent power exceeding half of the total depends on the committee's
+ * power split - if it did not, W7 fails visibly (streak stays 0). */
+static int t_hybrid_storage_writers_probe(void)
+{
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    static const int seats[5] = { 0, 2, 3, 4, 5 };
+    hyb_t   *H = calloc(1, sizeof(*H));
+    uint8_t *renv = NULL, *penv[5] = { NULL };
+    uint8_t  l0[8][64], l1[8][64];
+    uint64_t grace = 1, g2 = 0;
+    uint32_t streak = 1;
+    int      moved = 0;
+
+    CHECK(E > 40, "W0 no epoch boundary among the heights of the setup");
+    CHECK(H != NULL, "alloc");
+    CHECK(hyb_open(H, 1) == 0, "W0 the funded hybrid derives");
+    CHECK(hyb_pair_to(H, NULL, 0, 15) == 0, "W1 blocks 1-15 apply");
+    CHECK(hyb_register_step(H, NULL, 16, 1, &renv) == CMT_OK,
+          "W2 block 16 with the registration applies");
+    CHECK(hyb_pair_to(H, NULL, 16, (int64_t)(26 * E) - 1) == 0,
+          "W3a blocks up to 26E-1 apply");
+    CHECK(hyb_node_gs(H->g.w, 1, &grace, &streak) == 0 && grace == 0 &&
+          streak == 0 &&
+          q1(H->g.w->db, "SELECT COUNT(*) FROM v2_storage_segments") == 0,
+          "W3b before 26E: no segment, grace_until 0, fail_streak 0");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, l0[leg - 1]) == 0,
+              "W3c leg roots read before 26E");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(26 * E) - 1, (int64_t)(26 * E)) == 0,
+          "W4a the first publication boundary 26E applies");
+    CHECK(q1(H->g.w->db, "SELECT COUNT(*) FROM v2_storage_segments") == 1,
+          "W4b segment 1 was published by the real boundary");
+    CHECK(hyb_node_gs(H->g.w, 1, &grace, &streak) == 0 && grace > 26 * E,
+          "W4c the freeze of the same boundary gave the node its first "
+          "segment: grace_until was written (K9 writer)");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, l1[leg - 1]) == 0,
+              "W4d leg roots read after 26E");
+    for (int i = 0; i < 8; i++)
+        if (memcmp(l0[i], l1[i], 64) != 0) moved |= 1 << i;
+    CHECK((moved & 0x10) != 0 && (moved & 0x20) != 0,
+          "W4e leg 5 (registry: grace_until) and leg 6 (segments) moved");
+    CHECK(hyb_legs_ok(H->g.w) == 0,
+          "W4f every leg root equals the incremental and the full rebuild "
+          "after 26E");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(26 * E), (int64_t)(28 * E)) == 0,
+          "W5 blocks up to the boundary 28E apply");
+    for (int r = 0; r < 5; r++) {
+        size_t elen = 0;
+        const int64_t h = (int64_t)(28 * E) + 1 + r;
+
+        CHECK(hyb_report_env(H->g.w, (uint64_t)h, seats[r], 27 * E,
+                             &penv[r], &elen) == 0 && penv[r],
+              "W6a the STORAGE_REPORT for H = 27E builds");
+        CHECK(hyb_tx_step(H, NULL, h, penv[r], elen) == CMT_OK,
+              "W6b the block carrying the report applies");
+    }
+    {
+        char sql[160];
+
+        snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM v2_storage_reports "
+                 "WHERE epoch_start = %" PRIu64, 27 * E);
+        CHECK(q1(H->g.w->db, sql) == 5,
+              "W6c the five reports for H = 27E are committed");
+    }
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(28 * E) + 5, (int64_t)(29 * E) - 1)
+              == 0, "W6d blocks up to 29E-1 apply");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, l0[leg - 1]) == 0,
+              "W6e leg roots read before 29E");
+    CHECK(hyb_node_gs(H->g.w, 1, &g2, &streak) == 0 && streak == 0,
+          "W6f before the settlement fail_streak is 0");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(29 * E) - 1, (int64_t)(29 * E)) == 0,
+          "W7a the settlement boundary 29E applies");
+    CHECK(hyb_node_gs(H->g.w, 1, &g2, &streak) == 0 && streak == 1,
+          "W7b the settlement of H = 27E wrote fail_streak 1 (streak "
+          "writer)");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, l1[leg - 1]) == 0,
+              "W7c leg roots read after 29E");
+    moved = 0;
+    for (int i = 0; i < 8; i++)
+        if (memcmp(l0[i], l1[i], 64) != 0) moved |= 1 << i;
+    CHECK((moved & 0x10) != 0, "W7d leg 5 (registry: fail_streak) moved");
+    CHECK(hyb_legs_ok(H->g.w) == 0,
+          "W7e every leg root equals the rebuild after the settlement");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(29 * E), (int64_t)(29 * E) + 1) == 0,
+          "W8a block 29E+1 applies");
+    CHECK(hyb_legs_ok(H->g.w) == 0, "W8b and its leg roots equal the rebuild");
+    free(renv);
+    for (int r = 0; r < 5; r++) free(penv[r]);
+    hyb_close(H);
+    free(H);
     return 0;
 }
 #endif /* NODUS_EVM_ENABLED */
 
-int main(void)
+/* usage: test_cmt_app            every case except the LONG ones (field 3)
+ *        test_cmt_app <name>...  exactly the named cases (a long case runs
+ *                                only so; ctest registers each one as its
+ *                                own test, nodus/CMakeLists.txt) */
+int main(int argc, char **argv)
 {
     static const struct {
         const char *name;
         int (*fn)(void);
+        int long_case;         /* 1: runs only when named on the command line */
     } cases[] = {
         { "hybrid_gen6_probe",          t_hybrid_probe },
 #ifdef NODUS_EVM_ENABLED
@@ -8809,6 +9256,7 @@ int main(void)
         { "hybrid_register_probe",      t_hybrid_register_probe },
         { "hybrid_exit_release_probe",  t_hybrid_exit_release_probe },
         { "hybrid_growth_probe",        t_hybrid_growth_probe },
+        { "hybrid_storage_writers_probe", t_hybrid_storage_writers_probe, 1 },
         { "hyb_crash_boundary_event",   t_hyb_crash_boundary_event },
         { "hyb_crash_edge",             t_hyb_crash_edge },
         { "hyb_crash_ordinary_gen6",    t_hyb_crash_ordinary },
@@ -8874,14 +9322,35 @@ int main(void)
         /* HF-3 (Comet-only block bounds + the proposal fee check) */
         { "hf3_bounds_and_fee",         t_hf3_bounds_and_fee },
     };
-    size_t i, failed = 0, ncases = sizeof(cases) / sizeof(cases[0]);
+    size_t i, failed = 0, ran = 0, ncases = sizeof(cases) / sizeof(cases[0]);
 
+    /* every name given must be a case: a typo is a failure, never a pass */
+    for (int a = 1; a < argc; a++) {
+        int found = 0;
+
+        for (i = 0; i < ncases; i++)
+            if (strcmp(argv[a], cases[i].name) == 0) found = 1;
+        if (!found) {
+            fprintf(stderr, "test_cmt_app: no case named %s\n", argv[a]);
+            return 1;
+        }
+    }
     if (make_keys() != 0) {
         fprintf(stderr, "test_cmt_app: key generation failed\n");
         return 1;
     }
     for (i = 0; i < ncases; i++) {
-        int rc = cases[i].fn();
+        int want = 0, rc;
+
+        if (argc > 1) {
+            for (int a = 1; a < argc; a++)
+                if (strcmp(argv[a], cases[i].name) == 0) want = 1;
+        } else {
+            want = !cases[i].long_case;
+        }
+        if (!want) continue;
+        ran++;
+        rc = cases[i].fn();
 
         /* No sweep here — see "FIXTURE LIFETIME" at the top. A case owns
          * its fixtures and frees them on the path that succeeds. */
@@ -8891,6 +9360,6 @@ int main(void)
         }
     }
     fprintf(stderr, "test_cmt_app: %zu/%zu cases passed, %d checks\n",
-            ncases - failed, ncases, g_checks);
+            ran - failed, ran, g_checks);
     return failed ? 1 : 0;
 }

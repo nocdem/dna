@@ -5,62 +5,80 @@
  *        changes, never with the history.
  *
  * ── WHAT IT PROVES ──────────────────────────────────────────────────────
- *  Deterministic work counters, incremented on the REAL path of the
- *  generation-6 freeze (g_nodus_storage_work in nodus_witness_v2_storage.c:
- *  registry rows read, segments visited, assignment rows read / written,
- *  scores computed) are read around two ORDINARY boundaries with the same
- *  membership and one new segment each:
- *   1. a boundary on a small history -> counters W1;
- *   2. an EVENT boundary (an arrival, operator exception D11): every
- *      published segment is visited once - segments_visited == the number
- *      of segments, counted SEPARATELY and not compared with the ordinary
- *      ones (plan T-9: "event boundaries counted separately");
- *   3. the history is grown (100 000 ended v2_storage_assign rows, 5 000
- *      published segments, 10 000 RELEASED registry rows - the registry row
- *      carries a 2 592-byte key, so 10^4 is 26 MB where 10^5 would be
- *      260 MB; the other two are the plan's 10^5 / the segment list at
- *      several thousand), then a second ordinary boundary -> counters W2;
- *   4. W2 == W1 in EVERY counter, and every counter of W1 that the path
- *      must touch is non-zero (the plan's false-pass guard: counters not
- *      wired to the real path).
+ *  Two chains are built from the same code and differ ONLY in the size of
+ *  their storage history: S = 25 contiguous segments / 100 RELEASED nodes,
+ *  and S = 25 000 contiguous segments / 100 000 RELEASED nodes (the plan's
+ *  1e2 -> 1e5 range; with R = 4 copies the production transition derives
+ *  S x 4 assignment rows: 100 and 100 000). The history is a state
+ *  production can produce (Sol re-verify rows 2 and 4):
+ *   - registry: ACTIVE members and RELEASED nodes whose node_fp is
+ *     SHA3-512 of their own 2 592-byte key (the registry loader's rule,
+ *     nodus_witness_roots_v2.c "the key IS the hash of the key material it
+ *     names");
+ *   - segments: k = 1..S contiguous, segment k published at the boundary
+ *     k x 24 E + 2 E (st_publish: due(k) = k x P + DNAC_STORAGE_SEGMENT_
+ *     DELAY_EPOCHS x E, never earlier; DNA_V2_SEGMENT_BLOCKS = P = 24 E),
+ *     the last at the last generation-5 boundary H2 = S x P + 2 E;
+ *   - assignments: NOT planted - the production generation-6 transition
+ *     (E-s2, nodus_witness_storage_gen6_transition) derives the rendezvous
+ *     rows of every published segment, so they match the segments by
+ *     construction.
+ *  Then the chain runs the real generation-6 boundary procedure's exported
+ *  steps - the prune (nodus_witness_storage_prune) and the freeze
+ *  (nodus_witness_storage_freeze_gen6) - in the real order, at consecutive
+ *  boundaries (a skipped boundary is a FAULT):
+ *   B1       the first generation-6 boundary (transition, not compared);
+ *   B1 + E   an EVENT boundary (an arrival, operator exception D11): every
+ *            published segment is visited once - segments_visited == S,
+ *            counted SEPARATELY and not compared across sizes;
+ *   B1 + 2E  an ORDINARY boundary (no membership change, no new segment);
+ *   H2 + 24E the boundary at which segment S + 1 falls due: one new segment.
+ *  Asserted: every counter of g_nodus_storage_work (registry rows read,
+ *  segments visited, assignment rows read / written, scores computed) is
+ *  EQUAL on the two chains for the ordinary and for the publication
+ *  boundary, and non-zero where the path must touch it (the false-pass
+ *  guard: counters not wired to the real path); the registry status query's
+ *  virtual-machine steps are within 64 (indexed: drifted 288 -> 289; a scan
+ *  adds one step per RELEASED row) with the positive control that the same
+ *  query with the index disabled (+status) steps at least 10 000 more; and
+ *  the TOTAL virtual-machine instructions of prune + freeze (progress
+ *  handler, period 1) differ between the chains by less than a tenth of
+ *  one instruction per row of added history - a scan of any history table
+ *  adds at least one per row.
  *  The mutation "visit every segment on an ordinary boundary" makes
- *  segments_visited of W2 grow with the history and fails step 4.
+ *  segments_visited and the instruction count grow with S and fails the
+ *  equality.
  *
  * ── WHAT IT DOES NOT COVER ──────────────────────────────────────────────
- *  The ordinary-block half (trie nodes loaded by the 8-pre flush of ONE
- *  changed key, counted in nodus_witness_v2_trie.c ts_get) is measured on
- *  a tokens leg of 100 and of 5 000 rows by trie_probe(): the path-depth
- *  BOUND (<= 131 nodes, plan 5.6) holds at both sizes and is far below the
- *  leg's size - not equality, because the depth grows with log16(rows).
- *  The flush is driven directly, not through a block; the other seven legs
- *  are empty. The settlement of a boundary, release and the registry point
- *  reads at settlement are not run here (no snapshots / reports): the
- *  counters cover the freeze and the flush only. registry_vm_steps is
- *  SQLite's own virtual-machine step count of the registry status query
- *  (compared within a 64-step BOUND: the indexed query drifted by 1 step,
- *  288 -> 289, when 10 000 RELEASED rows followed the ACTIVE range, while a
- *  scan adds 10 000+; see the check)
- *  (a positive control in main() shows a real scan - WHERE +status = 1,
- *  which disables the index - steps >= 10 000 more than the indexed query
- *  on the grown registry; NOT INDEXED is not honoured on this WITHOUT ROWID
- *  table).
+ *  The settlement, the release and the publication step of the boundary are
+ *  static functions of nodus_witness_v2_storage.c run only inside
+ *  nodus_witness_storage_boundary_apply, which needs a genesis-seeded SYSTEM
+ *  runtime: they are measured on real blocks by test_cmt_app's
+ *  hybrid_growth_probe (boundaries 2E and 3E, registry history to 1e5, a
+ *  whole-block instruction count) - there with no segment history, because
+ *  a valid segment needs 24 E real blocks. The settlement payout (signed
+ *  reports, pool 1) is not run. The ordinary-block half (trie nodes loaded
+ *  by the flush of ONE changed key, nodus_witness_v2_trie.c ts_get) is
+ *  measured on a tokens leg of 100 and of 5 000 rows by trie_probe(): the
+ *  path-depth BOUND (<= 131 nodes, plan 5.6), not equality, because the
+ *  depth grows with log16(rows); the flush is driven directly there; the
+ *  real-block version is in test_cmt_app.
  *
  * ── FLAGS ───────────────────────────────────────────────────────────────
  *  register_witness_test; EVM runtime only. No fault injection, no
- *  environment. Leaves /tmp/test_hf9_growth_XXXXXX (removed at exit).
+ *  environment; DNAC_EPOCH_LENGTH of the build (heights are computed from
+ *  it). Leaves /tmp/test_hf9_growth_XXXXXX (removed at exit); the large
+ *  chain writes about 300 MB (100 000 keys of 2 592 bytes) there.
  *
  * ── HOW IT CAN FALSELY PASS OR SKIP ─────────────────────────────────────
  *  Equal counters on a path that does no work are caught by the non-zero
- *  asserts. The planted history is deliberately NOT loader-well-formed
- *  (the RELEASED registry rows' fingerprints are not SHA3-512 of their
- *  key; the ended assignment rows and old segments have no matching
- *  relation): an ordinary generation-6 boundary never reads it, which IS
- *  the growth claim - a path that did read it would FAULT or move a
- *  counter, not pass silently. A counter that missed a read of the planted
- *  tables would pass: the counters sit on the freeze's queries against the
- *  assignment, segment and registry tables (the increments in
- *  nodus_witness_v2_storage.c), and the rows are deterministic functions
- *  of a counter (no randomblob).
+ *  asserts. Segment roots are SHA3-512 of a counter, not of blocks (no
+ *  v2_blocks exist), so nothing here proves root derivation - the freeze
+ *  never reads them. The growth claim covers the tables this fixture
+ *  grows: registry, segments, assignments (and sets / members not at all:
+ *  one frozen set per boundary is the production shape). An instruction
+ *  count differing by less than the tenth passes a scan of a table that did
+ *  not grow.
  */
 
 #include "witness/nodus_witness.h"
@@ -76,6 +94,7 @@
 #include "crypto/hash/qgp_sha3.h"
 
 #include <dirent.h>
+#include <inttypes.h>
 #include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -95,6 +114,7 @@
 static int g_checks = 0;
 
 #define E_LEN  ((uint64_t)DNAC_EPOCH_LENGTH)
+#define P_LEN  ((uint64_t)DNA_V2_SEGMENT_BLOCKS)       /* 24 E */
 #define NMEM   12u
 
 static nodus_witness_t *g_w;
@@ -167,6 +187,44 @@ static int reg_put(unsigned i) {
     return rc == SQLITE_DONE ? 0 : -1;
 }
 
+/* `n` RELEASED registry nodes with valid identities: node_fp = SHA3-512 of
+ * the node's own 2 592-byte key; keys distinct (counter in bytes 16..19);
+ * all other columns inside the loader's ranges. Production produces such
+ * rows (an exited node); the UTXO its release created is spent after the
+ * 12-epoch lock, so none is planted. */
+static int plant_released(unsigned n) {
+    sqlite3_stmt *st = NULL;
+    uint8_t *pk = malloc(DNAC_PUBKEY_SIZE);
+    int rc = SQLITE_DONE;
+    if (!pk) return -1;
+    if (sqlx("BEGIN") != 0 ||
+        sqlite3_prepare_v2(g_w->db,
+            "INSERT INTO v2_storage_nodes (node_fp, node_pk, payee_fp, "
+            "bond, status, registered_height, exit_height, fail_streak, "
+            "grace_until) VALUES (?1, ?2, ?3, 1000, 3, 1, 2, 0, 0)", -1, &st,
+            NULL) != SQLITE_OK) {
+        free(pk);
+        return -1;
+    }
+    for (unsigned i = 0; i < n && rc == SQLITE_DONE; i++) {
+        uint8_t fp[64], py[64];
+        memset(pk, 0xA5, DNAC_PUBKEY_SIZE);
+        memcpy(pk, "hf9-wp4-growth-r", 16);
+        for (int b = 0; b < 4; b++) pk[16 + b] = (uint8_t)(i >> (8 * (3 - b)));
+        if (qgp_sha3_512(pk, DNAC_PUBKEY_SIZE, fp) != 0 ||
+            qgp_sha3_512(fp, 64, py) != 0) { rc = SQLITE_ERROR; break; }
+        sqlite3_reset(st);
+        sqlite3_bind_blob(st, 1, fp, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 2, pk, DNAC_PUBKEY_SIZE, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 3, py, 64, SQLITE_TRANSIENT);
+        rc = sqlite3_step(st);
+    }
+    sqlite3_finalize(st);
+    free(pk);
+    if (rc != SQLITE_DONE) { (void)sqlx("ROLLBACK"); return -1; }
+    return sqlx("COMMIT");
+}
+
 static int seg_put(unsigned k, uint64_t pub) {
     uint8_t r[64];
     uint8_t pre[8] = { 'g', 'r', 'o', 'w', 0, 0, 0, 0 };
@@ -226,18 +284,32 @@ static int plant_set(uint64_t H, unsigned count) {
     return 0;
 }
 
-/* one generation-6 boundary; the counters of that freeze alone in *wk */
-static int freeze(uint64_t B, unsigned n_new_seg, nodus_storage_work_t *wk) {
+static int prog_cb(void *p) {
+    (*(uint64_t *)p)++;
+    return 0;                      /* never interrupt */
+}
+
+/* one generation-6 boundary in the real order (prune, then freeze); the
+ * counters of that prune + freeze alone in *wk and their TOTAL SQLite
+ * virtual-machine instructions in *ops (either may be NULL) */
+static int freeze(uint64_t B, unsigned n_new_seg, nodus_storage_work_t *wk,
+                  uint64_t *ops) {
     for (unsigned i = 0; i < n_new_seg; i++)
         if (seg_put(g_nseg + 1, B) != 0) return -1;
     nodus_storage_boundary_t out;
     memset(&out, 0, sizeof(out));
     out.n_published = n_new_seg;
+    uint64_t n = 0;
     if (sqlx("BEGIN IMMEDIATE") != 0) return -1;
     memset(&g_nodus_storage_work, 0, sizeof(g_nodus_storage_work));
-    int rc = nodus_witness_storage_freeze_gen6(
+    sqlite3_progress_handler(g_w->db, 1, prog_cb, &n);
+    int rc = nodus_witness_storage_prune(g_w, B, 1);
+    if (rc == 0)
+        rc = nodus_witness_storage_freeze_gen6(
                  g_w, B, 4, DNA_V2_STORAGE_SET_LIMIT_GEN6, &out);
-    *wk = g_nodus_storage_work;
+    sqlite3_progress_handler(g_w->db, 0, NULL, NULL);
+    if (wk) *wk = g_nodus_storage_work;
+    if (ops) *ops = n;
     if (rc != 0) { (void)sqlx("ROLLBACK"); return -1; }
     return sqlx("COMMIT");
 }
@@ -289,14 +361,22 @@ static int trie_probe(unsigned n_tokens, uint64_t *loaded) {
     return 0;
 }
 
-int main(void) {
-    for (unsigned i = 0; i < NMEM; i++) {
-        for (size_t j = 0; j < DNAC_PUBKEY_SIZE; j++)
-            g_pk[i][j] = (uint8_t)(i * 29u + j * 13u + 3u);
-        g_pk[i][0] = (uint8_t)i;
-        g_pk[i][1] = 0xB2;
-        if (qgp_sha3_512(g_pk[i], DNAC_PUBKEY_SIZE, g_fp[i]) != 0) return 1;
-    }
+typedef struct {
+    nodus_storage_work_t ev, ord, pub;     /* event / ordinary / publication */
+    uint64_t             ord_ops, pub_ops; /* prune + freeze instructions    */
+    long long            steps[2];         /* status query: indexed, scan    */
+    unsigned             nseg;             /* segments before the event      */
+} scale_t;
+
+/* One chain: `s_seg` valid contiguous segments, `n_rel` RELEASED nodes,
+ * 10 ACTIVE members at H2, the production transition at the edge, then the
+ * boundaries described in the header. 0 / 1 (a failed CHECK). */
+static int run_scale(unsigned s_seg, unsigned n_rel, scale_t *r) {
+    const uint64_t delay = (uint64_t)DNAC_STORAGE_SEGMENT_DELAY_EPOCHS * E_LEN;
+    const uint64_t H2 = (uint64_t)s_seg * P_LEN + delay;    /* last gen-5 B */
+    nodus_storage_work_t wk;
+    memset(r, 0, sizeof(*r));
+    g_nseg = 0;
     g_w = calloc(1, sizeof(*g_w));
     CHECK(g_w != NULL, "alloc");
     snprintf(g_dir, sizeof(g_dir), "/tmp/test_hf9_growth_XXXXXX");
@@ -307,110 +387,71 @@ int main(void) {
     CHECK(nodus_witness_create_chain_db(g_w, c16) == 0 &&
           nodus_witness_db_migrate_v2s20(g_w) == 0, "fixture");
 
-    /* history: set(H2) of 10 members, segments 1..4 published at H2 */
-    CHECK(plant_set(5 * E_LEN, 10) == 0, "set(H2)");
+    /* history: set(H2) of 10 members, S contiguous segments k published
+     * at k x P + 2E (the last at H2), the RELEASED nodes */
+    CHECK(plant_set(H2, 10) == 0, "set(H2)");
     for (unsigned i = 0; i < 10; i++) CHECK(reg_put(i) == 0, "registry");
-    for (unsigned k = 1; k <= 4; k++) CHECK(seg_put(k, 5 * E_LEN) == 0, "seg");
+    CHECK(plant_released(n_rel) == 0, "released registry history");
+    CHECK(sqlx("BEGIN") == 0, "begin");
+    for (unsigned k = 1; k <= s_seg; k++)
+        CHECK(seg_put(k, (uint64_t)k * P_LEN + delay) == 0, "segment");
+    CHECK(sqlx("COMMIT") == 0, "commit");
     CHECK(cc_row(DNAC_CFG_RULESET_GEN_ROLES, 1, 1, 1) == 0 &&
-          cc_row(DNAC_CFG_RULESET_GEN_TRIE, 1, 5 * E_LEN + 2, 2) == 0,
-          "params");
+          cc_row(DNAC_CFG_RULESET_GEN_TRIE, 1, H2 + 2, 2) == 0, "params");
+    /* the edge block A - 1 = H2 + 1 derives the assignment rows of every
+     * published segment (E-s2): the history the boundaries then ride on */
     CHECK(sqlx("BEGIN IMMEDIATE") == 0 &&
-          nodus_witness_storage_gen6_transition(g_w, 5 * E_LEN + 1) == 0 &&
+          nodus_witness_storage_gen6_transition(g_w, H2 + 1) == 0 &&
           sqlx("COMMIT") == 0, "edge");
+    r->nseg = g_nseg;
 
-    nodus_storage_work_t wk, w1, wev, w2;
-    uint64_t B = 6 * E_LEN;
-    CHECK(freeze(B, 1, &wk) == 0, "B1");
+    uint64_t B = H2 + E_LEN;
+    CHECK(freeze(B, 0, &wk, NULL) == 0, "B1");
 
-    /* 1. an event boundary (an arrival), counted SEPARATELY */
+    /* an EVENT boundary (an arrival), counted SEPARATELY */
     CHECK(reg_put(10) == 0, "an arrival");
     B += E_LEN;
-    CHECK(freeze(B, 0, &wev) == 0, "event boundary");
-    CHECK(wev.segments_visited == g_nseg,
+    CHECK(freeze(B, 0, &r->ev, NULL) == 0, "event boundary");
+    CHECK(r->ev.segments_visited == g_nseg,
           "an event boundary visits every published segment once (D11)");
-    CHECK(wev.assign_rows_read > 0 && wev.assign_rows_written > 0,
+    CHECK(r->ev.assign_rows_read > 0 && r->ev.assign_rows_written > 0,
           "the assignment-row counters are wired to the real path (they "
           "are 0 on an ordinary boundary, so the event boundary proves "
           "them non-zero)");
 
-    /* 2. an ordinary boundary on a small history (11 members, one new
-     * segment) */
+    /* an ordinary boundary: same membership, no new segment */
     B += E_LEN;
-    CHECK(freeze(B, 1, &w1) == 0, "ordinary boundary 1");
-    CHECK(w1.registry_rows_read >= 11 && w1.segments_visited == 1 &&
-          w1.assign_rows_written == 4 && w1.scores_computed >= 11,
-          "W1 is non-zero on every counter the path must touch (registry "
-          "rows >= members, exactly the 1 new segment visited, R = 4 rows "
-          "written, the eligible members scored)");
+    CHECK(freeze(B, 0, &r->ord, &r->ord_ops) == 0, "ordinary boundary");
+    CHECK(r->ord.registry_rows_read >= 11 && r->ord.registry_vm_steps > 0,
+          "the ordinary boundary reads the ACTIVE members through the "
+          "status index (wired)");
+    CHECK(r->ord.segments_visited == 0 && r->ord.scores_computed == 0 &&
+          r->ord.assign_rows_written == 0 && r->ord.assign_rows_read == 0,
+          "an ordinary boundary with no new segment does no assignment "
+          "work");
 
-    /* 3. grow the history, then a second ordinary boundary */
-    CHECK(sqlx("BEGIN") == 0, "begin");
-    CHECK(sqlx("WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 "
-               "FROM c WHERE i < 100000) INSERT INTO v2_storage_assign "
-               "(k, node_fp, score, from_h, to_h) SELECT 1000000 + i, "
-               "zeroblob(64), zeroblob(64), 1, 2 FROM c") == 0,
-          "100 000 ended assignment rows");
-    /* deterministic 64-byte blobs derived from the counter (no randomblob:
-     * a test's data is a function of its source) */
-    CHECK(sqlx("WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 "
-               "FROM c WHERE i < 5000) INSERT INTO v2_storage_segments "
-               "(k, root, published_height) SELECT 100 + i, "
-               "CAST(zeroblob(64 - length(CAST(i AS TEXT))) || "
-               "CAST(i AS BLOB) AS BLOB), 1 FROM c") == 0,
-          "5 000 old segments");
-    CHECK(sqlx("WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 "
-               "FROM c WHERE i < 10000) INSERT INTO v2_storage_nodes "
-               "(node_fp, node_pk, payee_fp, bond, status, "
-               "registered_height, exit_height, fail_streak, grace_until) "
-               "SELECT CAST(zeroblob(64 - length(CAST(i AS TEXT))) || "
-               "CAST(i AS BLOB) AS BLOB), zeroblob(2592), zeroblob(64), 0, "
-               "3, 1, 1, 0, 0 FROM c") == 0, "10 000 RELEASED registry rows");
-    CHECK(sqlx("COMMIT") == 0, "commit");
-    g_nseg = 5100;                    /* the planted k = 101 .. 5100 */
+    /* consecutive boundaries up to the one at which segment S + 1 is due:
+     * H2 + 24E = (S + 1) x P + 2E */
+    while (B + E_LEN < H2 + P_LEN) {
+        B += E_LEN;
+        CHECK(freeze(B, 0, NULL, NULL) == 0, "boundary");
+    }
     B += E_LEN;
-    CHECK(freeze(B, 1, &w2) == 0, "ordinary boundary 2 on the grown history");
+    CHECK(B == (uint64_t)(s_seg + 1) * P_LEN + delay,
+          "the publication boundary is when segment S + 1 falls due");
+    CHECK(freeze(B, 1, &r->pub, &r->pub_ops) == 0, "publication boundary");
+    CHECK(r->pub.segments_visited == 1 && r->pub.assign_rows_written == 4 &&
+          r->pub.scores_computed >= 11,
+          "the publication boundary visits exactly the 1 new segment, "
+          "writes R = 4 rows and scores the eligible members (wired)");
 
-    /* 4. equal in every counter */
-    CHECK(w2.registry_rows_read == w1.registry_rows_read &&
-          w2.segments_visited == w1.segments_visited &&
-          w2.assign_rows_read == w1.assign_rows_read &&
-          w2.assign_rows_written == w1.assign_rows_written &&
-          w2.scores_computed == w1.scores_computed,
-          "the work of an ordinary boundary does not depend on the "
-          "history: every counter equal after the history grew by 10^5 "
-          "assignment rows, 5 000 segments and 10^4 registry rows");
-    CHECK(w2.segments_visited == 1 && w2.assign_rows_read == 0,
-          "and it is the one new segment, no old assignment row read");
-    /* work EXAMINED, not rows returned (Sol row 12, round 3 row 5):
-     * SQLite's virtual-machine step count of the registry status query
-     * (registry_vm_steps). Non-zero (wired), and EQUAL before and after
-     * 10 000 RELEASED rows were added: the status index serves it. */
-    CHECK(w1.registry_vm_steps > 0 && w2.registry_vm_steps > 0,
-          "the registry work counter is wired (non-zero)");
-    /* A BOUND, not equality: main measured the indexed status query at 288
-     * VM steps before and 289 after 10 000 RELEASED rows (EXPLAIN QUERY
-     * PLAN: SEARCH ... USING INDEX v2_storage_nodes_by_status (status=?)
-     * both times) - the index range ends one entry later when rows follow
-     * the ACTIVE range. A scan steps once per registry row, i.e. at least
-     * 10 000 more; the bound of 64 is far above the index's one-step
-     * drift and far below a scan. */
-    CHECK(w2.registry_vm_steps <= w1.registry_vm_steps + 64 &&
-          w1.registry_vm_steps <= w2.registry_vm_steps + 64,
-          "the registry status query examines the same work (within 64 VM "
-          "steps) before and after the history grew - a scan would add "
-          "one step per RELEASED row (10 000+)");
-    /* positive control: the measure DOES see scan work. The same query
-     * with the index disabled steps at least once per RELEASED row more
-     * than the indexed one. */
+    /* the status query: indexed versus the control scan, on this registry */
     {
-        long long steps[2] = { -1, -1 };
         static const char *const q[2] = {
             "SELECT node_fp FROM v2_storage_nodes WHERE status = 1",
             /* NOT INDEXED is not honoured on this WITHOUT ROWID table
-             * (SQLite 3.40.1: still "SEARCH ... USING COVERING INDEX"),
-             * so the unary plus on the column disables the index instead:
-             * "SCAN v2_storage_nodes" (main measured 30 144 steps on
-             * 16 + 10 000 rows) */
+             * (SQLite 3.40.1); the unary plus on the column disables the
+             * index instead ("SCAN v2_storage_nodes") */
             "SELECT node_fp FROM v2_storage_nodes WHERE +status = 1 "
             "ORDER BY node_fp ASC" };
         for (int i = 0; i < 2; i++) {
@@ -418,19 +459,90 @@ int main(void) {
             CHECK(sqlite3_prepare_v2(g_w->db, q[i], -1, &st, NULL)
                   == SQLITE_OK, "control query");
             while (sqlite3_step(st) == SQLITE_ROW) { }
-            steps[i] = sqlite3_stmt_status(st, SQLITE_STMTSTATUS_VM_STEP, 0);
+            r->steps[i] = sqlite3_stmt_status(st, SQLITE_STMTSTATUS_VM_STEP, 0);
             sqlite3_finalize(st);
         }
-        CHECK(steps[0] > 0 && steps[1] >= steps[0] + 10000,
-              "control: the real scan (+status) steps at least 10 000 more "
-              "than the indexed query - the counter can see the difference");
     }
-
     sqlite3_close(g_w->db);
     free(g_w);
+    g_w = NULL;
     rmrf(g_dir);
+    return 0;
+}
 
-    /* 5. the ordinary-block half of T-9: trie nodes loaded by the flush of
+int main(void) {
+    for (unsigned i = 0; i < NMEM; i++) {
+        for (size_t j = 0; j < DNAC_PUBKEY_SIZE; j++)
+            g_pk[i][j] = (uint8_t)(i * 29u + j * 13u + 3u);
+        g_pk[i][0] = (uint8_t)i;
+        g_pk[i][1] = 0xB2;
+        if (qgp_sha3_512(g_pk[i], DNAC_PUBKEY_SIZE, g_fp[i]) != 0) return 1;
+    }
+
+    static scale_t small, big;
+    CHECK(run_scale(25, 100, &small) == 0, "chain with 25 segments");
+    CHECK(run_scale(25000, 100000, &big) == 0,
+          "chain with 25 000 segments");
+    CHECK(small.ev.segments_visited == 25 && big.ev.segments_visited == 25000,
+          "the event boundary's visit count follows the segment count "
+          "(counted separately)");
+    fprintf(stderr, "T-9 ord: 1e2 reg_rows %" PRIu64 " vm %" PRIu64
+            " ops %" PRIu64 " | 1e5 reg_rows %" PRIu64 " vm %" PRIu64
+            " ops %" PRIu64 "\n", small.ord.registry_rows_read,
+            small.ord.registry_vm_steps, small.ord_ops,
+            big.ord.registry_rows_read, big.ord.registry_vm_steps,
+            big.ord_ops);
+    fprintf(stderr, "T-9 pub: 1e2 ops %" PRIu64 " | 1e5 ops %" PRIu64 "\n",
+            small.pub_ops, big.pub_ops);
+
+    /* equal in every counter (ordinary and publication boundary) */
+    CHECK(small.ord.registry_rows_read == big.ord.registry_rows_read &&
+          small.ord.segments_visited == big.ord.segments_visited &&
+          small.ord.assign_rows_read == big.ord.assign_rows_read &&
+          small.ord.assign_rows_written == big.ord.assign_rows_written &&
+          small.ord.scores_computed == big.ord.scores_computed,
+          "the work of an ordinary boundary does not depend on the "
+          "history: every counter equal after the history grew from 25 to "
+          "25 000 segments, 100 to 100 000 assignment rows and 100 to "
+          "100 000 RELEASED nodes");
+    CHECK(small.pub.registry_rows_read == big.pub.registry_rows_read &&
+          small.pub.segments_visited == big.pub.segments_visited &&
+          small.pub.assign_rows_read == big.pub.assign_rows_read &&
+          small.pub.assign_rows_written == big.pub.assign_rows_written &&
+          small.pub.scores_computed == big.pub.scores_computed,
+          "the work of a publication boundary (one new segment) does not "
+          "depend on the history either");
+    /* work EXAMINED, not rows returned: SQLite's virtual-machine step count
+     * of the registry status query (registry_vm_steps) - a BOUND, not
+     * equality (288 -> 289 drift measured when rows follow the ACTIVE
+     * range); a scan steps once per registry row, 100 000 more here */
+    CHECK(big.ord.registry_vm_steps <= small.ord.registry_vm_steps + 64 &&
+          small.ord.registry_vm_steps <= big.ord.registry_vm_steps + 64 &&
+          big.pub.registry_vm_steps <= small.pub.registry_vm_steps + 64 &&
+          small.pub.registry_vm_steps <= big.pub.registry_vm_steps + 64,
+          "the registry status query examines the same work (within 64 VM "
+          "steps) at both history sizes");
+    CHECK(big.steps[0] > 0 && big.steps[1] >= big.steps[0] + 10000,
+          "control: the real scan (+status) steps at least 10 000 more "
+          "than the indexed query - the counter can see the difference");
+    /* the total work of prune + freeze, every statement counted */
+    {
+        const uint64_t added = (uint64_t)(25000 - 25) * 4u + (100000u - 100u);
+        const uint64_t d1 = small.ord_ops > big.ord_ops
+                                ? small.ord_ops - big.ord_ops
+                                : big.ord_ops - small.ord_ops;
+        const uint64_t d2 = small.pub_ops > big.pub_ops
+                                ? small.pub_ops - big.pub_ops
+                                : big.pub_ops - small.pub_ops;
+        CHECK(small.ord_ops > 0 && big.ord_ops > 0 &&
+              small.pub_ops > 0 && big.pub_ops > 0,
+              "the instruction counter is wired (non-zero)");
+        CHECK(d1 < added / 10 && d2 < added / 10,
+              "prune + freeze run the same number of VM instructions (to "
+              "within a tenth of one per added history row) at both sizes");
+    }
+
+    /* the ordinary-block half of T-9: trie nodes loaded by the flush of
      * ONE changed key, on a tokens leg of 100 and of 5 000 rows */
     {
         uint64_t l_small = 0, l_big = 0;

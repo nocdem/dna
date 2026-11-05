@@ -871,9 +871,44 @@ static int t_main_chain(void) {
         snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM "
                  "v2_storage_set_members WHERE epoch_start < %lld", H);
         CHECK(q1(w, sql) > 0, "expired set member rows exist before");
+        /* Sol re-verify row 5: the cutoff epoch H itself must SURVIVE
+         * (production `epoch_start < ?1`); a predicate `<= H` deletes the
+         * rows at H while newer rows keep ">= H" non-empty. The exact row
+         * counts at and above H are taken before and compared after. */
+        snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM "
+                 "v2_storage_member_epoch WHERE epoch_start = %lld", H);
+        const long long me_eq = q1(w, sql);
+        snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM "
+                 "v2_storage_member_epoch WHERE epoch_start >= %lld", H);
+        const long long me_ge = q1(w, sql);
+        snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM "
+                 "v2_storage_set_members WHERE epoch_start = %lld", H);
+        const long long sm_eq = q1(w, sql);
+        snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM "
+                 "v2_storage_set_members WHERE epoch_start >= %lld", H);
+        const long long sm_ge = q1(w, sql);
+        CHECK(me_eq > 0 && sm_eq > 0,
+              "rows exactly at the cutoff epoch B - 2E exist before the "
+              "prune (the boundary of the retention rule is exercised)");
         CHECK(sqlx(w, "BEGIN IMMEDIATE") == 0 &&
               nodus_witness_storage_prune(w, B, 1) == 0 &&
               sqlx(w, "COMMIT") == 0, "the prune step runs");
+        snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM "
+                 "v2_storage_member_epoch WHERE epoch_start = %lld", H);
+        CHECK(q1(w, sql) == me_eq,
+              "member_epoch rows at exactly B - 2E all survive");
+        snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM "
+                 "v2_storage_set_members WHERE epoch_start = %lld", H);
+        CHECK(q1(w, sql) == sm_eq,
+              "set member rows at exactly B - 2E all survive");
+        snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM "
+                 "v2_storage_member_epoch WHERE epoch_start >= %lld", H);
+        CHECK(q1(w, sql) == me_ge,
+              "member_epoch rows from B - 2E on: exactly the same count");
+        snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM "
+                 "v2_storage_set_members WHERE epoch_start >= %lld", H);
+        CHECK(q1(w, sql) == sm_ge,
+              "set member rows from B - 2E on: exactly the same count");
         snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM "
                  "v2_storage_member_epoch WHERE epoch_start < %lld", H);
         CHECK(q1(w, sql) == 0, "member_epoch below B - 2E is pruned");

@@ -29,10 +29,15 @@
  *                           comparing (main does this once, at the PARENT
  *                           commit, to make nodus/tests/vectors/
  *                           hf9_gen5_settlement.json);
- *   otherwise the sequence is compared with the file named by the compile
- *   definition HF9_GEN5_SETTLEMENT_PATH (nodus/CMakeLists.txt, target
- *   test_storage_b2): same count, and for each record the same height and
- *   digest. A MISSING or unreadable file, a different count or any
+ *   otherwise the sequence is compared with the file the build's epoch
+ *   setting selects (nodus/CMakeLists.txt, target test_storage_b2:
+ *   vectors/hf9_gen5_settlement.json for DNAC_EPOCH_LENGTH 720,
+ *   vectors/hf9_gen5_settlement_e15.json for DNAC_EPOCH_LENGTH 15 with the
+ *   short-epoch values of CLAUDE.md TESTS: -DDNAC_EPOCH_LENGTH=15
+ *   -DDNAC_BLOCKS_PER_YEAR=20 -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15; the
+ *   same flags at the parent when writing): same count, and for each record
+ *   the same height and digest. Any other epoch length has no file and
+ *   fails. A MISSING or unreadable file, a different count or any
  *   difference is a FAILURE (a missing vector file is missing coverage,
  *   never a pass).
  *  File format: one JSON object per record, in the order recorded:
@@ -59,6 +64,7 @@
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_v2_storage.h"
 #include "crypto/hash/qgp_sha3.h"
+#include "dnac/dnac.h"          /* DNAC_EPOCH_LENGTH (the vector selector) */
 
 #include <sqlite3.h>
 #include <stdint.h>
@@ -66,6 +72,19 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Sol re-verify row 6: the vector is selected by the build's epoch setting.
+ * The boundaries (heights) a fixture reaches depend on DNAC_EPOCH_LENGTH, so
+ * one file cannot serve two settings. Supported settings and their files
+ * (CMake defines both paths for test_storage_b2):
+ *   DNAC_EPOCH_LENGTH 720 (production)  HF9_GEN5_SETTLEMENT_PATH_E720
+ *   DNAC_EPOCH_LENGTH 15  (short epoch) HF9_GEN5_SETTLEMENT_PATH_E15
+ * any other epoch length has NO vector: the comparison refuses (failure,
+ * never a pass) - see hf9r_finish. */
+#if DNAC_EPOCH_LENGTH == 720 && defined(HF9_GEN5_SETTLEMENT_PATH_E720)
+#define HF9_GEN5_SETTLEMENT_PATH HF9_GEN5_SETTLEMENT_PATH_E720
+#elif DNAC_EPOCH_LENGTH == 15 && defined(HF9_GEN5_SETTLEMENT_PATH_E15)
+#define HF9_GEN5_SETTLEMENT_PATH HF9_GEN5_SETTLEMENT_PATH_E15
+#endif
 #ifndef HF9_GEN5_SETTLEMENT_PATH
 #define HF9_GEN5_SETTLEMENT_PATH NULL
 #endif
@@ -87,7 +106,7 @@ static int hf9r_hash_sql(nodus_witness_t *w, const char *sql,
     if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK) return -1;
     size_t cap = 4096, n = 0;
     uint8_t *buf = malloc(cap);
-    int rc, bad = buf == NULL;
+    int rc = SQLITE_DONE, bad = buf == NULL;
     while (!bad && (rc = sqlite3_step(st)) == SQLITE_ROW) {
         const int cols = sqlite3_column_count(st);
         for (int c = 0; c < cols && !bad; c++) {
@@ -127,7 +146,9 @@ static int hf9r_hash_sql(nodus_witness_t *w, const char *sql,
         }
     }
     sqlite3_finalize(st);
-    if (bad) { free(buf); return -1; }
+    /* Sol re-verify row 7: a scan that did not end in SQLITE_DONE (error,
+     * busy) is a truncated read, never a digest */
+    if (bad || rc != SQLITE_DONE) { free(buf); return -1; }
     int r = qgp_sha3_512(buf, n, out) == 0 ? 0 : -1;
     free(buf);
     return r;

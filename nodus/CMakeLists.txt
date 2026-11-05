@@ -2829,6 +2829,13 @@ add_executable(test_cmt_app tests/test_cmt_app.c)
 target_link_libraries(test_cmt_app nodus dsa nodus crypto)
 target_compile_definitions(test_cmt_app PRIVATE NODUS_WITNESS_INTERNAL_API)
 add_test(NAME test_cmt_app COMMAND test_cmt_app)
+if(NODUS_EVM_ENABLED)
+# HF-9 WP4 (Sol re-verify row 1): the registry's fail_streak / grace_until
+# writers by 29 E + 1 real blocks - a LONG case that test_cmt_app skips
+# unless named (tests/test_cmt_app.c main), so it is its own test
+add_test(NAME test_cmt_app_storage_writers
+         COMMAND test_cmt_app hybrid_storage_writers_probe)
+endif()
 
 # HF-7 P1c-2 — the rooted replay relation (v2_replay: a row per applied
 # item inside its savepoint, the phase-12d prune, the guard swap at all
@@ -3491,7 +3498,8 @@ register_witness_test(test_storage_b2)
 # HF-9 WP4 (plan :447): the generation <= 5 settlement replay vector, written
 # once at the parent commit (HF9_GEN5_WRITE, see tests/hf9_gen5_replay.h)
 target_compile_definitions(test_storage_b2 PRIVATE
-    HF9_GEN5_SETTLEMENT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/hf9_gen5_settlement.json")
+    HF9_GEN5_SETTLEMENT_PATH_E720="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/hf9_gen5_settlement.json"
+    HF9_GEN5_SETTLEMENT_PATH_E15="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/hf9_gen5_settlement_e15.json")
 if(JSONC_FOUND)
     target_compile_definitions(test_storage_b2 PRIVATE
         ARCHIVE_REWARD_KAT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/archive_reward_kat.json")
