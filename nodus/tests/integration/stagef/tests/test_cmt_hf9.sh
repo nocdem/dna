@@ -295,19 +295,22 @@
 #      epoch H = B − 2E (grace / verdict / weight read in its window; +0 or
 #      +1 is no longer accepted; round-4 row 3). The two E-s1 epochs H2−E and
 #      H2, settled at B1 and B1 + E, are read in their windows and checked
-#      with the same formula (round-4 row 10), from the union counts the edge
-#      STORED. NOT covered: those E-s1 union counts derived independently —
-#      the previous relation is XOR (plan :306, dna_v2_segment_holders over the
-#      segment root), which no table holds and this script does not
-#      reimplement (and the same for held_union / n_new AT B1, which count
-#      against XOR(set(H2))) — and epochs whose settlement lies beyond the end
-#      of the run (none: the queued windows are drained, FAIL if pending).
+#      with the same formula (round-4 row 10). ROUND 11 (row 3): the E-s1
+#      union counts the edge STORED, the E-s2 rows and held_union / n_new AT B1
+#      (hence the B1 gainer) are asserted EQUAL to tests/hf9_xor_oracle.py's
+#      derivation from the stored sets, fail_streaks and segment roots (XOR
+#      baseline of set(H2), plan :306/:309; HRW rows, plan §8.3); no table holds
+#      the XOR relation, the oracle computes it. Epochs whose settlement lies
+#      beyond the end of the run: none (the queued windows are drained, FAIL if
+#      pending).
 #   9. A fresh node replaying from genesis (T-13): node 3 is stopped, its
 #      databases are wiped (its identity kept), it is restarted with the
 #      genesis pin only; its log (truncated first, so every line is of THIS
-#      replay) carries the HF-7 edge line, the HF-9 edge line and a
-#      generation-6 boundary; it reaches the fleet tip and agrees 7/7 in the
-#      full 64-byte mode, leg roots and storage relations included.
+#      replay) carries the HF-7 edge line and the HF-9 edge line (those two
+#      greps are what is asserted; a generation-6 boundary line is NOT asserted
+#      — the production run can end before B1, round 11 row 12); it reaches the
+#      fleet tip and agrees 7/7 in the full 64-byte mode, leg roots and storage
+#      relations included.
 #  10. No node logged "HF9-SHADOW FAULT" or "CMT_FAULT" (plan §11) during the
 #      run; stagef_diff.sh is called ONLY with --full (T-14).
 #
@@ -358,7 +361,8 @@
 #   Leave STAGEF_MODE (combined) and STAGEF_PAYOUT_INTERVAL_EPOCHS unset (24:
 #   the settlement boundaries 360 and 720 are paydays, the script reads the
 #   interval from the genesis document and does not assert those amounts).
-#   Tools: sqlite3, xxd, ss, openssl (SHA3-512).
+#   Tools: sqlite3, xxd, ss, openssl (SHA3-512), python3 (tests/hf9_xor_oracle.py, hashlib.sha3_512 — the
+#   short run; a missing python3 is a FAIL at the first oracle call, not a skip).
 #   Exact command sequence (ORCHESTRATOR), short epoch, test-owner build:
 #     S=<TREE>/nodus/tests/integration/stagef
 #     bash $S/stagef_hf6_owner.sh /tmp/hf9-owner <TREE>/nodus/build/nodus-server
@@ -418,7 +422,8 @@
 #   asserted exactly at every boundary cell, not as a final value), pool 1
 #   debited by the settlements. Node 3 restarted once and then wiped and rejoined (its
 #   nodus.log truncated, a new pid in pids.txt, its databases rebuilt).
-#   $BASE_DIR/hf9/ (every CLI log, consent files). Tear down with
+#   $BASE_DIR/hf9/ (every CLI log, consent files; round 11: xor_inputs_h2_<H2>.txt and
+#   xor_inputs_b1_<B1>.txt, the oracle's stored inputs). Tear down with
 #   stagef_down.sh before re-running (every switch is one-way, every leaf and
 #   param row single-use).
 #
@@ -494,6 +499,28 @@
 #     Rule N's AUTO_RETIRE (README:916). What IS asserted: the candidate's
 #     NOT OK is the reporter's "never reachable on 0x72 in epoch H=<H>" line
 #     (probed and unreachable), told from NOPROBE (not probed).
+#     ROUND 11 re-examination with an 8th NON-validator storage node (Kurultay
+#     #22 decision 2; tests/test_cmt_nonval_forward.sh:25-40, :359-433 spawns
+#     one by the genesis pin with its own nodus-server line, no change to
+#     stagef_env.sh): Rule N does not apply to it, so a stop does not retire
+#     anything. STILL STOPPED, derivation: (1) a departure needs three settled
+#     NOT OK epochs, i.e. its probes must fail for three consecutive eligible
+#     epochs, and the only way to fail them is that no process answers 0x72 —
+#     the node is NOT running at the departure crossing, so no running holder
+#     runtime sees the crossing itself; there is no fault knob that makes a
+#     running node refuse 0x72 (no getenv in nodus_witness_storage_*.c). (2)
+#     The holder runtime reacts to ROWS only: its must-hold list is
+#     nodus_witness_storage_member_ks over v2_storage_assign rows at H and H−E
+#     from generation 6 (nodus_witness_storage_holder.c:192-205), it has no
+#     input from fail_streak or eligibility. Row-end (overlap retention, then
+#     deletion at exactly B+E) and row-insert (export / fetch) are therefore
+#     exercised on RUNNING nodes by the exit, the copies-down drop, the copies-up
+#     gains and the pruned joiner's fetch; an eligibility crossing reaches the
+#     runtime only as those same row events. A layout with the 8th node stopped
+#     for the three epochs and restarted inside the overlap epoch would show the
+#     retention and deletion after a crossing, but not the crossing on a
+#     running runtime, and costs a second spawn / ports / ALIVE bookkeeping the
+#     scenario cannot verify here; it was not built.
 #     Also not asserted: a kind-3 owner. A second segment IS published during
 #     the run (due at 2P + 2E = 750) and the generic invariants cover it; the
 #     event-boundary row counts (rows inserted / ended, Σ n_new) of the exit,
@@ -520,10 +547,13 @@
 #     it could be read", a false RED, never a pass); nothing is retried or
 #     lengthened.
 #   - **Tip windows against the pump's landing and the chain's own blocks** (round
-#     9). A pump to T returns as soon as tip >= T, lands at most 22 above T (a
-#     spend is included within 20 heights of the tip it was sent at,
-#     stagef_cmt_wait_row's budget, plus one block of poll granularity — inference),
-#     and after a block that changed the app hash the chain makes the next block
+#     9). A pump to T returns as soon as tip >= T and lands ABOVE T by an amount
+#     the helper does not bound: 22 (PUMP_LAND_MAX) is a LAYOUT ESTIMATE, an inference
+#     from stagef_cmt_wait_row's 20-height budget plus a block of poll granularity —
+#     stagef_env.sh:1176-1180 returns success before the budget test at :1186 and
+#     its baseline is read after the submit (round 11, row 5). What decides whether a
+#     read was in time are the fail-closed tip guards before and after it, not the
+#     number. After a block that changed the app hash the chain makes the next block
 #     on its own about 4 s later (proof block, cometbft v0.38.26
 #     consensus/state.go:1101, :1113-1127) and an empty block every 60 s when
 #     idle. Steps that needed one exact tip were widened or moved: the K9a
@@ -539,7 +569,8 @@
 #     relations change at the next boundary), the registration / join windows
 #     (the registration must land inside one epoch, a named FAIL; the join keeps
 #     JOIN_PRUNE_MARGIN), the victim's stop at A−3 (2 blocks to A−1, at least two
-#     idle intervals; its outage is the Rule-N-bounded one), cc_guard (4 blocks).
+#     idle intervals; its outage is MEASURED and printed, not bounded — no Rule-N
+#     cap is asserted, round 11 row 6), cc_guard (4 blocks).
 #   - **Every run asserts the same cases whatever keys it generates** (round 7).
 #     The B1 gainer (the member with n_new 1) and the exiter (the lowest-numbered
 #     member of nodes 4-7 with n_new 0 at B1, a current holder because R 4 = four
@@ -560,9 +591,27 @@
 #     power_cap.c:87 (min(p, one cap)), which is not recomputed) and on pool 1 and the owners' accrual
 #     changing only at boundaries (the read between boundaries is the
 #     settlement's start value); a payday boundary is skipped, said so.
-#   - The E-s1 union counts (epochs H2−E and H2) and held_union / n_new AT B1
-#     are the stored values: deriving them needs the XOR relation of
-#     set(H2), which no table holds (round-4 rows 8 and 10, stopped).
+#   - ROUND 11 (row 3): the E-s1 union counts (epochs H2−E and H2), the E-s2
+#     rows and held_union / n_new AT B1 are NO LONGER the node's own oracle:
+#     tests/hf9_xor_oracle.py derives them from the STORED frozen sets (with
+#     fail_streaks) and segment roots, following the source walk, and the
+#     script asserts equality (xor_edge_check at the edge, xor_b1_check at B1;
+#     the inputs of set(H2 − 2E) are read at the edge cell because B1 prunes
+#     them). What stays unverified there: that SHA3-512, the two 16-byte tags
+#     and the XOR / HRW rank rules are as written in ledger_roots_v2.c (read
+#     for this oracle, :108, :114, :811-940; they are not pinned by a KAT of this
+#     oracle — nodus/tests/vectors/hf9_kat_oracle.py pins the HRW part), and
+#     that B1 has no event (the oracle compares its HRW rows with the stored
+#     ones, so an event is a named FAIL).
+#   - ROUND 11 (row 4 and main's observation): the eight leg roots at A−1, A,
+#     A+1 are read on the SIX live nodes at the edge cells (the victim is down)
+#     and on ALL SEVEN at the post-restart cell, which must equal the six-node
+#     read; every one of these reads is accepted only by check_edge_window — no
+#     transaction of heights >= A except single-leg SYSTEM envelopes, those
+#     being storage reports by a row count (they write none of the eight leg
+#     tables: rt_native.c:6594, :9431-9452, :10013-10030), tip < B1 — not by
+#     "no transaction at all", which depended on when the reporters' envelopes
+#     reached the mempool (window (H2, H2 + E/2] of epoch H2 − E).
 #   - Node 3 is the pump's funder: the pump reads node 1's database and
 #     submits to node 1, using only node 3's identity FILES, never its
 #     process (stagef_cmt_pump_to) — test_cmt_blocksync.sh keeps its victim
@@ -578,9 +627,10 @@
 #     back; while it is down the cells compare the six live nodes (the 7/7
 #     full-mode diff at A−1 / A / A+1 is made after it caught up).
 #   - A (the param-24 effective height) is moved to the next epoch's start + 2
-#     when it would fall in the last two heights of an epoch (short run), so
-#     the epoch H2−E settled at B1 can be read inside its window after the
-#     restart cell; this shifts every later height by up to E.
+#     when A % E > E − A_ROOM (A_ROOM 8: A % E in E−7 .. E−1, i.e. fewer than 8
+#     blocks left before B1; both runs), as coded, so the edge cells, the
+#     victim's restart and (short run) the epoch H2−E settled at B1 fit before
+#     B1; this shifts every later height by up to E (round 11, row 7).
 #   - **The joiner's pruned store exists only because the evidence knob lowers
 #     the window to 10 blocks.** At production constants an explicit retain must
 #     exceed evidence max_age_num_blocks (default 100000, nodus_witness_cmt_node.c
@@ -1066,6 +1116,18 @@ cell_dump() {
         sql="$sql SELECT 'gr|$h|' || COALESCE((SELECT hex(global_root) || '|' || hex(block_id) || '|' || tx_count FROM v2_blocks WHERE global_height = $h), '-');"
     done
     sql="$sql SELECT 'txsum|' || COALESCE(SUM(tx_count), 0) FROM v2_blocks WHERE global_height >= $a;"
+    # round 11 (row 4 + main's observation): the transactions of heights >= A by what they can write. v2_tx_index keeps
+    # owner_domain = the domain of a single-leg envelope (DNA_DOMAIN_SYSTEM = 0, ledger_ids.h:52; nodus_witness_v2_apply.c:4729),
+    # DNA_TX_OWNER_NONE for a multi-leg one. txoth = every transaction that is NOT a single-leg SYSTEM envelope (a
+    # pump spend / claim / token / name / register / exit ...), txsys = the single-leg SYSTEM ones; rep_n = the stored
+    # storage-report rows newer than DUMP_REP_MIN (the prune boundary); txpre_sys = the single-leg SYSTEM
+    # transactions above the pre-edge tip DUMP_PRE (-1: not asked).
+    sql="$sql SELECT 'txoth|' || COUNT(*) FROM v2_tx_index WHERE global_height >= $a AND owner_domain <> 0;"
+    sql="$sql SELECT 'txsys|' || COUNT(*) FROM v2_tx_index WHERE global_height >= $a AND owner_domain = 0;"
+    sql="$sql SELECT 'rep_n|' || COUNT(*) FROM v2_storage_reports WHERE epoch_start > $DUMP_REP_MIN;"
+    if [ "$DUMP_PRE" -ge 0 ]; then
+        sql="$sql SELECT 'txpre_sys|' || COUNT(*) FROM v2_tx_index WHERE global_height > $DUMP_PRE AND owner_domain = 0;"
+    fi
     sql="$sql SELECT 'capture|' || COALESCE((SELECT capture FROM v2_trie_state WHERE id = 1), '-');"
     sql="$sql SELECT 'dirty|' || COUNT(*) FROM v2_trie_dirty;"
     sql="$sql SELECT 'leg|' || leg || '|' || hex(root) FROM v2_trie_roots ORDER BY leg;"
@@ -1091,6 +1153,7 @@ cell_dump() {
     sqlite3 -cmd '.timeout 5000' "$(db_of "$n")" "$sql" 2>&1
 }
 
+DUMP_PRE=-1; DUMP_REP_MIN=0      # see cell_dump: the pre-edge tip and the report-prune floor (set before the edge cells)
 CELL=""; CELL_TIP=-1
 cell_lines() { sed -n "s/^$1|//p" <<< "$CELL"; }
 cell_one()   { cell_lines "$1" | sed -n '1p'; }
@@ -1173,6 +1236,89 @@ check_legs() {
         fi
     done
     echo "[ok] $label: capture 1, dirty 0, eight leg roots; empty-leg root exactly for the empty source tables ($(for i in 1 2 3 4 5 6 7 8; do printf '%s ' "$(cell_one "src|$i")"; done)rows)"
+}
+
+# check_edge_window LABEL — ROUND 11 (row 4 and main's observation). The cell just read (tip CELL_TIP >= A) shows the
+# eight leg roots of the END OF A-1 only if nothing in [A, CELL_TIP] wrote one of the eight source tables and no
+# boundary lies in the span. The old test was `txsum = 0` (no transaction at all), which a storage report landing in the
+# report window of epoch H2 - E (heights H2 + 1 .. H2 + E/2, nodus_witness_storage_probe.c:604-620; submitted when the
+# reporter sees the boundary, nodus_witness_storage_reporter.c:704-719) turns into a timing-dependent failure. The
+# condition is now source-grounded instead of timing-dependent:
+#  (1) NO transaction of heights >= A that is not a single-leg SYSTEM envelope (txoth = 0): a pump spend, a claim, a token
+#      / name / register / exit (those are CORE or multi-leg) would write utxo_set / tokens / v2_claims_spent / v2_names /
+#      v2_storage_nodes;
+#  (2) every single-leg SYSTEM envelope in (PRE_TIP, CELL_TIP] is a STORAGE REPORT: the stored report rows grew by exactly
+#      as many as there are such envelopes (a report inserts exactly one row; any other SYSTEM op inserts none, so a
+#      difference is one);
+#  (3) a storage report writes none of the eight leg tables. Source, read to its end: it is a single-leg envelope with
+#      fee_amount 0 (nodus_witness_rt_native.c:6594 rejects any fee: "no SYSTEM fee sink", leg_count != 1 rejected), its only
+#      effect is the CREATE of one v2_storage_reports row (rt_native.c:9431-9452 `INSERT INTO v2_storage_reports`), its
+#      leg is described as REC_NONE (rt_native.c:10013-10030) - v2_storage_reports is not a leg source (the eight are
+#      listed in cell_dump 'src|'), the 24 trie triggers sit on those eight tables only, and the leg-7 / leg-8 writers
+#      (validator_set_snapshots, v2_attendance_epoch) are the boundary's (nodus_witness_vset.c:161,
+#      nodus_witness_v2_epoch.c:1856);
+#  (4) CELL_TIP < B1: no boundary in the span.
+# The script itself submits nothing in this window (the pump is idle across the edge); this is the dependency that makes
+# (1)+(2) mean "reports only".
+check_edge_window() {
+    local label="$1" oth sys dr
+    oth=$(cell_one txoth); sys=$(cell_one txpre_sys)
+    [[ "$oth" =~ ^[0-9]+$ ]] && [[ "$sys" =~ ^[0-9]+$ ]] || die "$label: the transaction counts are unreadable (txoth '$oth', txpre_sys '$sys')"
+    [ "$oth" = 0 ] || die "$label: $oth transaction(s) in heights $A .. $CELL_TIP are not single-leg SYSTEM envelopes — one of them can write a leg table, so the leg roots read at $CELL_TIP are not those of the end of A-1 — $MSG_LAYOUT"
+    dr=$(( $(cell_one rep_n) - PRE_REP ))
+    [ "$dr" = "$sys" ] || die "$label: $sys single-leg SYSTEM envelope(s) in ($PRE_TIP, $CELL_TIP] but the stored report rows grew by $dr — an envelope that is not a storage report is in the window — $MSG_LAYOUT"
+    [ "$CELL_TIP" -lt "$B1" ] || die "$label: the cell was read at tip $CELL_TIP, past the first boundary $B1 — $MSG_LAYOUT"
+    echo "[ok] $label: heights $A .. $CELL_TIP hold no transaction except $dr storage-report envelope(s) (single-leg SYSTEM, fee 0, one v2_storage_reports row each — none writes a leg table), no boundary: the leg roots read are those of the end of A-1"
+}
+
+# ── ROUND 11 (row 3): the XOR baseline and the B1 gainer, derived by hf9_xor_oracle.py ───────────────────────────────
+# The node writes the E-s1 union counts at the edge and the B1 held_union / n_new from the E-s3 table; plan :306 says
+# "compute with the existing XOR walk" and :309 compares against XOR(set(H2)). The oracle reads the STORED inputs only
+# - the frozen sets with their fail_streaks (v2_storage_set_members, written by st_set_write, nodus_witness_v2_storage.c)
+# and the segment roots (v2_storage_segments.root) - and follows the source walk (header of hf9_xor_oracle.py, with
+# file:line). The inputs are read at the EDGE cell: set(H2 - 2E) is pruned at B1 (nodus_witness_storage_prune keeps
+# epoch_start >= B - 2E), so it cannot be read later. XOR_IN is the file the B1 check reuses.
+XOR_IN=""
+xor_oracle() {             # [extra args…] — prints the oracle's lines, FAILs on its exit status
+    local out
+    out=$(python3 -I "$S_DIR/tests/hf9_xor_oracle.py" --h2 "$H2_LAST" --b1 "$B1" "$@") || die "hf9_xor_oracle.py failed (rc $?): $out"
+    printf '%s\n' "$out"
+}
+xor_edge_check() {         # LABEL — E-s1: the stored union counts of H2 - E and H2 equal the oracle's
+    local label="$1" f exp have
+    XOR_IN="$LOGD/xor_inputs_h2_${H2_LAST}.txt"; f="$XOR_IN"
+    { echo "E $E"
+      sqlite3 -separator ' ' -cmd '.timeout 5000' "$(db_of 1)" \
+          "SELECT 'S', epoch_start, lower(hex(node_fp)), fail_streak FROM v2_storage_set_members
+            WHERE epoch_start IN ($(( H2_LAST - 2 * E )), $(( H2_LAST - E )), $H2_LAST) ORDER BY epoch_start, node_fp;"
+      sqlite3 -separator ' ' -cmd '.timeout 5000' "$(db_of 1)" \
+          "SELECT 'K', k, lower(hex(root)), published_height FROM v2_storage_segments ORDER BY k;"
+    } > "$f" || die "$label: the oracle inputs could not be read"
+    [ "$(grep -c '^S ' "$f")" -ge 1 ] && [ "$(grep -c '^K ' "$f")" -ge 1 ] || die "$label: the oracle inputs hold no set member or no segment ($f)"
+    exp=$(xor_oracle "$f" | grep '^ES1|' | sed 's/^ES1|//')
+    have=$(cell_lines mepoch | awk -F'|' -v a="$(( H2_LAST - E ))" -v b="$H2_LAST" '$1 == a || $1 == b { print $1 "|" $2 "|" $3 }' | LC_ALL=C sort)
+    [ -n "$exp" ] || die "$label: the oracle derived no E-s1 count"
+    [ "$exp" = "$(LC_ALL=C sort <<< "$have")" ] || { diff <(printf '%s\n' "$exp") <(printf '%s\n' "$have") >&2 || true
+        die "$label: the stored E-s1 union counts (right) differ from the XOR-walk oracle's (left)"; }
+    [ "$(cell_lines mepoch | awk -F'|' -v a="$(( H2_LAST - E ))" -v b="$H2_LAST" '($1 == a || $1 == b) && $4 != 0' | wc -l)" = 0 ] \
+        || die "$label: an E-s1 row has n_new != 0 (the edge writes 0)"
+    echo "[ok] $label: the E-s1 union counts of epochs $(( H2_LAST - E )) and $H2_LAST (settled at B1 and B1+E) equal the independent XOR-walk oracle's ($(printf '%s\n' "$exp" | wc -l) rows, from the stored sets, fail_streaks and segment roots)"
+}
+xor_b1_check() {           # LABEL — B1: the E-s2 rows, held_union and n_new equal the oracle's (uses the CELL of the B1 boundary)
+    local label="$1" f exp_rws have_rws exp_b1 have_b1
+    f="$LOGD/xor_inputs_b1_${B1}.txt"
+    { cat "$XOR_IN"
+      cell_lines mepoch | awk -F'|' -v b="$B1" '$1 == b { print "M " $2 }'
+    } > "$f" || die "$label: the oracle inputs could not be written"
+    exp_rws=$(xor_oracle --copies 4 "$f" | grep '^RWS|' | sed 's/^RWS|//')
+    have_rws=$(cell_lines assign | awk -F'|' -v b="$B1" '$5 == "-" && $4 == b { print $1 "|" $2 }' | LC_ALL=C sort)
+    [ "$exp_rws" = "$have_rws" ] || { diff <(printf '%s\n' "$exp_rws") <(printf '%s\n' "$have_rws") >&2 || true
+        die "$label: the stored assignment rows (right) differ from the HRW rows the oracle derives (left) — B1 had an event, or the rendezvous differs"; }
+    exp_b1=$(xor_oracle --copies 4 "$f" | grep '^B1|' | sed 's/^B1|//')
+    have_b1=$(cell_lines mepoch | awk -F'|' -v b="$B1" '$1 == b { print $2 "|" $3 "|" $4 }' | LC_ALL=C sort)
+    [ "$exp_b1" = "$have_b1" ] || { diff <(printf '%s\n' "$exp_b1") <(printf '%s\n' "$have_b1") >&2 || true
+        die "$label: the stored held_union / n_new at B1 (right) differ from the oracle's (left)"; }
+    echo "[ok] $label: the E-s2 rows (HRW over the eligible members of set($H2_LAST), R 4) and held_union / n_new of the $(printf '%s\n' "$exp_b1" | wc -l) members at B1 equal the independent oracle's (XOR baseline of set($H2_LAST); the B1 gainer is derived, not read)"
 }
 
 # hf9: populated legs (plan T-13 "populated legs before the edge")
@@ -2335,9 +2481,13 @@ echo "[info] idle production from tip $(tip_of 1) — nothing in flight across t
 # tip of the idle approach (all seven nodes alive), and not after the victim's stop at A-3, where the accepted window
 # [A-3, A-2] was one block wide; here it is [A - PUMP_STOP_GAP, A - 2] (5 blocks at 7) and the cell is read
 # on seven nodes. The tip is asserted <= A-2 after the read (CELL_TIP is the one tip every node was read at).
+DUMP_REP_MIN=$(( H2_LAST > 2 * E ? H2_LAST - 2 * E : 0 ))   # the boundary H2 prunes the reports of epochs <= H2 - 2E (nodus_witness_v2_storage.c nodus_witness_storage_prune): count only the newer ones
 cell_read "pre-edge" "" "$A" "$(tip_of 1)"
 [ "$CELL_TIP" -le $(( A - 2 )) ] || die "the pre-edge cell was read at tip $CELL_TIP, past A-2 = $(( A - 2 )) — $MSG_LAYOUT"
 check_legs pre "pre-edge (tip $CELL_TIP <= A-2)"
+# the baseline of check_edge_window: the pre-edge tip and the stored report rows of THAT snapshot
+PRE_TIP="$CELL_TIP"; PRE_REP="$(cell_one rep_n)"; DUMP_PRE="$PRE_TIP"
+[[ "$PRE_REP" =~ ^[0-9]+$ ]] || die "pre-edge: the stored report row count is '$PRE_REP'"
 if [ "$WITH_STORAGE" = 1 ]; then
     [ -z "$(cell_one astate)" ] || die "pre-edge: v2_storage_assign_state already has a row ('$(cell_one astate)') — the edge writes it (plan §8.6 E-s2)"
     [ -z "$(cell_lines basis)" ] || die "pre-edge: v2_storage_assign_basis is not empty"
@@ -2362,9 +2512,8 @@ for n in $(seq 1 "$N"); do [ "$n" = "$VICTIM" ] || ALIVE+=("$n"); done
 wait_all "$A"
 cell_read "edge-A" "$(( A - 1 )) $A" "$A" "$A"
 [ "$CELL_TIP" -ge "$A" ] || die "internal: the edge cell tip $CELL_TIP < A"
-[ "$(cell_one txsum)" = 0 ] || die "edge-A: $(cell_one txsum) transaction(s) in heights $A .. $CELL_TIP — the leg roots read at $CELL_TIP would no longer be those of the end of A-1"
-[ "$CELL_TIP" -lt "$B1" ] || die "edge-A: the cell was read at tip $CELL_TIP, past the first boundary $B1 — $MSG_LAYOUT"
-check_legs post "edge-A (tip $CELL_TIP, no transaction since A-1)"
+check_edge_window "edge-A"
+check_legs post "edge-A (tip $CELL_TIP, only storage reports since A-1)"
 CELL_EDGE="$CELL"
 HF9_LINE="HF-9: rule-set generation $GEN_5 -> $GEN_6, the eight keyed tries built and the dirty capture on at the end of height $(( A - 1 )) (param $PARAM_TRIE RULESET_GEN_TRIE, D6 0x$D6_HEX); height $A is judged under generation $GEN_6"
 for n in "${ALIVE[@]}"; do
@@ -2388,16 +2537,15 @@ if [ "$WITH_STORAGE" = 1 ]; then
             || die "edge-A: v2_storage_member_epoch has no row for $hh (plan §8.6 E-s1)"
     done
     echo "[ok] the storage transition ran at the edge: state (4, $H2_LAST, xfer 1), four rows from_h = B1 = $B1, member_epoch rows for $(( H2_LAST - E )) and $H2_LAST"
+    xor_edge_check "edge-A E-s1"          # round 11 (row 3): the stored E-s1 counts against the XOR-walk oracle (inputs read NOW: set(H2 - 2E) is pruned at B1)
 fi
 
 wait_all $(( A + 1 ))
 cell_read "edge-A+1" "$A $(( A + 1 ))" "$A" $(( A + 1 ))
-[ "$CELL_TIP" -lt "$B1" ] || die "edge-A+1: the cell was read at tip $CELL_TIP, past the first boundary $B1"
-if [ "$(cell_one txsum)" = 0 ]; then
-    [ "$(cell_lines leg)" = "$(sed -n 's/^leg|//p' <<< "$CELL_EDGE")" ] \
-        || die "edge-A+1: the leg roots changed between the edge cell and tip $CELL_TIP although no transaction was applied and no boundary crossed"
-    echo "[ok] edge-A+1: no transaction and no boundary since A-1 — the eight leg roots are unchanged"
-fi
+check_edge_window "edge-A+1"      # round 11: no longer skipped when a transaction is in the window — a layout FAIL, as edge-A
+[ "$(cell_lines leg)" = "$(sed -n 's/^leg|//p' <<< "$CELL_EDGE")" ] \
+    || die "edge-A+1: the leg roots changed between the edge cell and tip $CELL_TIP although only storage reports were applied and no boundary crossed"
+echo "[ok] edge-A+1: only storage reports and no boundary since A-1 — the eight leg roots are unchanged (six live nodes)"
 check_legs post "edge-A+1 (tip $CELL_TIP)"
 
 wait_all $(( A + 2 ))
@@ -2418,7 +2566,12 @@ for x in $(( A - 1 )) "$A" $(( A + 1 )); do diff_full_at "$x" "edge-after-restar
 stagef_cmt_wait_height "$(db_of 1)" "$(( A + 2 ))" 3 >/dev/null || die "node1 stalled"
 cell_read "post-restart" "$(( A - 1 )) $A $(( A + 1 ))" "$A" $(( A + 2 ))
 check_legs post "post-restart (tip $CELL_TIP, 7/7)"
-echo "[ok] 7/7 after the restart across A: the full 64-byte global_root and block_id at A-1, A, A+1; the eight leg roots at tip $CELL_TIP"
+# round 11 (row 4): the SEVEN-node read gets the same guards as the six-node edge cells and must equal their leg roots,
+# or the final texts may not claim the leg roots at A-1, A, A+1 on seven nodes
+check_edge_window "post-restart"
+[ "$(cell_lines leg)" = "$(sed -n 's/^leg|//p' <<< "$CELL_EDGE")" ] \
+    || die "post-restart: the eight leg roots read on seven nodes at tip $CELL_TIP differ from the six-node edge cell's although only storage reports were applied and no boundary crossed"
+echo "[ok] 7/7 after the restart across A: the full 64-byte global_root and block_id at A-1, A, A+1; the eight leg roots on ALL SEVEN nodes at tip $CELL_TIP equal the six-node edge cell's (only storage reports, no boundary, since A-1)"
 if [ "$WITH_STORAGE" = 1 ]; then
     # round-4 row 10: the epoch H2 - E is settled AT B1 (its union counts are the edge's E-s1 values). Its reports
     # are committed in (H2, H2 + E/2]; read them now, in the window [H2 + E/2 + ..., B1 - 1], so the settlement at B1
@@ -2467,6 +2620,7 @@ if [ "$WITH_STORAGE" = 1 ]; then
     done < <(cell_lines mepoch | awk -F'|' -v b="$B1" '$1 == b')
     [ "$(cell_lines assign | awk -F'|' '$5 == "-"' | wc -l)" = 4 ] || die "B1: the current assignment rows are not exactly four"
     echo "[ok] B1=$B1: R 4 over four members, Σ n_new = 1 (XOR -> rendezvous), grace_until B1 + E for exactly that member"
+    xor_b1_check "B1"                     # round 11 (row 3): the E-s2 rows, held_union and n_new (hence the gainer) against the oracle
     note_new_holders "$B1"
     diff_full_at "$B1" "B1-at-height-$B1"
     require_holder_files "B1" "$B1"
@@ -2635,7 +2789,7 @@ if [ "$WITH_STORAGE" = 1 ]; then
         wait_all $(( jt + 1 ))
     done
     [ "$J_BASE" = $(( P + 1 )) ] || die "node$JOINER's block store starts at $J_BASE, expected exactly P + 1 = $(( P + 1 )) (the unpublished-period guard keeps segment 2's range; above it the K9a premise is broken, below it segment 1's range is still held)"
-    echo "[ok] node$JOINER's block store starts at height $J_BASE = P + 1: segment 1's range (1 .. $P) is gone (nodus_seg_store_has(1) is false) and segment 2's range ($(( P + 1 )) .. $(( 2 * P ))) is kept"
+    echo "[ok] node$JOINER's block store starts at height $J_BASE = P + 1: segment 1's range (1 .. $P) is gone (nodus_seg_store_has(1) is false) and the retained prefix starts at P + 1 = $(( P + 1 )) (the unpublished-period guard stops pruning there; at tip $(tip_of 1) the store does not yet hold all of segment 2's range $(( P + 1 )) .. $(( 2 * P )) — nodus_seg_store_has(2) also needs height >= 2P + 1, segment_export.c:51-55; the whole range is the K9a premise read's assertion)"
     J_FETCH0=$(count_log_lines "segment 1: fetching over 0x73" "$JOINER")
     J_EXPORT0=$(count_log_lines "segment 1: exporting from this node's block store" "$JOINER")
     [ "$(tip_of 1)" -lt $(( CUR_B + E )) ] || die "the joiner's retention restart ran to tip $(tip_of 1), at or past the boundary $(( CUR_B + E )) — $MSG_LAYOUT"
@@ -2845,10 +2999,13 @@ echo "[info] HEIGHTS: HF2 $H2 | HF3 $H3 | GEN2 $H4 | EVM $HE | ROLES $H6 | ROOTS
 if [ "$WITH_STORAGE" = 1 ]; then
     echo "       | segment 1 at $H_PUB | exit x=$XH released $B_REL | candidate arrival $BD0, departure $DEP, return $REV | last cell $CUR_B"
     echo "[PASS] HF-9 generation 6 at E=$E, BPY $CONF_BPY, SAFETY grace $GRACE_SAF, ERGONOMIC grace $GRACE_ERG (7/7 at epoch length $E):"
-    echo "       populated legs, D6 voted at A=$A, the edge at the end of A-1. Leg roots: at A-1, A, A+1 read from a window with no"
-    echo "       envelope and no boundary, byte-identical on 7/7; at B1, B1+E, B1+2E and every later boundary only the full global_root"
-    echo "       and block_id AT the height (7/7) plus the leg roots of one snapshot at a LATER tip (per-height comparison NOT covered)."
-    echo "       The storage relations are byte-identical on 7/7 at every boundary from B1 to $CUR_B; every case changed a holder (B1 transition, exit,"
+    echo "       populated legs, D6 voted at A=$A, the edge at the end of A-1. Full global_root and block_id AT A-1, A, A+1: 7/7 (diff --full)."
+    echo "       Leg roots at A-1, A, A+1: read on the SIX live nodes at the edge cells (node $VICTIM down) and on ALL SEVEN at the post-restart"
+    echo "       cell, equal to the six-node read; accepted only with no transaction in [A, tip] except storage reports, no boundary in"
+    echo "       the span (check_edge_window). At B1, B1+E, B1+2E and every later boundary: only the full global_root and block_id AT the"
+    echo "       height (7/7) plus the leg roots of one snapshot at a LATER tip (the per-height leg comparison there is NOT covered)."
+    echo "       The storage relations are byte-identical on the 7 nodes at every boundary from B1 to $CUR_B; the E-s1 union counts, the E-s2 rows"
+    echo "       and held_union / n_new at B1 equal the independent XOR/HRW oracle's (hf9_xor_oracle.py); every case changed a holder (B1 transition, exit,"
     echo "       arrival, candidate out and back, join, copies up / down / up) with its report bits (answers its probes),"
     echo "       overlap retention (the dropped files seen inside the overlap epoch) and the deletion heights; the joiner node $JOINER"
     echo "       FETCHED segment 1 over 0x73 (block store from $J_BASE). Exact: grace_until, fail_streak and (after B1) held_union /"
@@ -2857,15 +3014,17 @@ if [ "$WITH_STORAGE" = 1 ]; then
     echo "       a positive share in every paying epoch); no check is pending. node $VICTIM (last applied height $VICT_STOP_H, fleet"
     echo "       tip $VICT_RESTART_TIP at its restart) restarted across A and replayed from genesis."
     echo "       NOT COVERED: leg roots PER HEIGHT at B1, B1+E, B1+2E (only the full global root at the height, and the leg roots at a"
-    echo "       later tip); a running member's holder runtime across the eligibility crossing (the candidate runs no node); the"
-    echo "       E-s1 union counts and held_union / n_new at B1 derived independently (XOR relation); the settlement of payday"
-    echo "       boundaries; any NOT OK by a wrong answer (unit tests)."
+    echo "       later tip); a running member's holder runtime across the eligibility crossing (the candidate runs no node; the"
+    echo "       holder runtime reacts to assignment rows only, which the exit / drop / gain cases exercise on running nodes); the"
+    echo "       settlement of payday boundaries; any NOT OK by a wrong answer (unit tests); the generation-6 boundary line of the replay."
 else
     echo "[PASS] HF-9 generation 6 at E=$E, BPY $CONF_BPY, SAFETY grace $GRACE_SAF, ERGONOMIC grace $GRACE_ERG WITHOUT storage"
     echo "       segments (production-constant edge run; test parameters chosen by the orchestrator — the production 17280"
     echo "       safety grace is NOT exercised): legs 1, 2, 3, 4, 5 (the four registered storage members), 7, 8 populated and leg 6"
     echo "       (segments) EMPTY (source table 0 rows, root = the empty-leg root), D6 voted at A=$A, the edge at the end of A-1,"
-    echo "       eight leg roots at A-1, A, A+1 (a window with no envelope and no boundary) byte-identical on 7/7, node $VICTIM (last applied height $VICT_STOP_H, fleet tip $VICT_RESTART_TIP at its"
+    echo "       full global_root and block_id AT A-1, A, A+1 7/7; the eight leg roots at A-1, A, A+1 read on the SIX live nodes at the"
+    echo "       edge cells and on ALL SEVEN at the post-restart cell, equal, with no transaction in [A, tip] except storage reports and"
+    echo "       no boundary in the span (check_edge_window); node $VICTIM (last applied height $VICT_STOP_H, fleet tip $VICT_RESTART_TIP at its"
     echo "       restart) restarted across A and then replayed from genesis. LEFT OUT: segment 1 (P = 24 x E is out of reach), B1,"
     echo "       every storage event, param 25, the candidate, the settlements."
 fi
