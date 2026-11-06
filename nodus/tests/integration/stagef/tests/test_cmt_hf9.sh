@@ -172,12 +172,24 @@
 #      existed before. The candidate is the non-serving case: it has no node,
 #      hence no file.
 #      THE FETCH PATH (round-4 row 5; holder.c:682-690 JOB_EXPORT when
-#      nodus_seg_store_has, else JOB_FETCH): the joiner (node 2) is restarted
-#      before B1 with nodus.json retain_blocks = evidence window + 2 (needs
-#      STAGEF_EVIDENCE_MAX_AGE_BLOCKS / _DURATION_NS at the bring-up, the
-#      knobs of test_cmt_prune.sh; absent → SKIP), so by its join its block
-#      store starts above segment 1's last height (asserted from its
-#      cmt_blockstore before it registers), and after its join the scenario
+#      nodus_seg_store_has, else JOB_FETCH): the joiner (node 2) REGISTERS
+#      FIRST (it has no retain setting until then: AUTO keeps everything) and
+#      only THEN is restarted, before the join boundary, with nodus.json
+#      retain_blocks = evidence window + 2 (needs STAGEF_EVIDENCE_MAX_AGE_BLOCKS
+#      / _DURATION_NS at the bring-up, the knobs of test_cmt_prune.sh; absent →
+#      SKIP). As a storage member its retain height is min(tip − N + 1,
+#      keep_from_segment, keep_from_unpublished) (nodus_witness_role_prune.c:
+#      51-69): its must-hold list is empty until the join boundary and
+#      keep_from_unpublished = P + 1 while segment 1 is the highest published,
+#      so its block store is pruned to EXACTLY P + 1 — segment 1's range gone,
+#      segment 2's whole range kept (asserted: base = P + 1 before the join
+#      boundary, from its cmt_blockstore). An explicit retain set BEFORE the
+#      registration pruned segment 2's range too (run 7) and broke K9a. K9a
+#      premise (decision 2026-10-05-storage-reward-is-for-archive.md): before
+#      EVERY segment publication boundary the block stores of all registered
+#      storage members that run a node are read and must hold the segment's
+#      whole range (base <= (k−1)P + 1, height >= kP + 1, nodus_seg_store_has;
+#      assert_members_hold_range), else FAIL with a layout message. After its join the scenario
 #      asserts the holder runtime's line "segment 1: fetching over 0x73 (the
 #      block store no longer has the range)" (and NO "exporting" line for
 #      segment 1) and its seg-1.ok. Its OK bit in its first eligible epoch is
@@ -303,8 +315,9 @@
 #       STAGEF_EVIDENCE_MAX_AGE_BLOCKS=10 STAGEF_EVIDENCE_MAX_AGE_DURATION_NS=
 #       1000000 (NEW, round-4 row 5: the evidence window of test_cmt_prune.sh,
 #       hashed into the genesis document — a different chain id; the joiner
-#       node 2 is restarted with retain_blocks = 12 so that its block store
-#       lacks segment 1's range and the FETCH path runs; the script reads the
+#       node 2 is restarted, AFTER it registered, with retain_blocks = 12 so
+#       that its block store is pruned to P + 1 (segment 1's range gone,
+#       segment 2's kept) and the FETCH path runs; the script reads the
 #       two values from the genesis document and SKIPs if the window is not
 #       lowered (num_blocks < 100, duration < (blocks + 2) ms))
 #     production-constant run: STAGEF_EPOCH_LENGTH and STAGEF_BLOCKS_PER_YEAR
@@ -488,6 +501,19 @@
 #     when it would fall in the last two heights of an epoch (short run), so
 #     the epoch H2−E settled at B1 can be read inside its window after the
 #     restart cell; this shifts every later height by up to E.
+#   - **The joiner's pruned store exists only because the evidence knob lowers
+#     the window to 10 blocks.** At production constants an explicit retain must
+#     exceed evidence max_age_num_blocks (default 100000, nodus_witness_cmt_node.c
+#     :119-131), which is more than one segment (24 x 720 = 17280), and AUTO keeps
+#     7 segments for a role and everything for no role: no member lacks a
+#     published segment's range there. The harness reproduces a store without the
+#     segment-1 range with the small window, laid out so that the K9a premise
+#     (every member holds the range of a segment at its publication) still holds
+#     and is READ from the stores before each publication; a layout that cannot
+#     keep both FAILs as a layout failure (a false RED), it never weakens the
+#     verdict rule. The retention restart needs JOIN_PRUNE_MARGIN (3) blocks
+#     between the joiner's registration and the join boundary (a layout margin,
+#     not a plan value).
 #   - Duration ≈ 770 blocks short epoch (JUDGMENT, not measured: the six
 #     votes ≈ 330, segment 1 at 390, A ≈ 429, B1 = 435, B_rel 450, candidate
 #     arrival 465 / departure ≈ 540 / return ≈ 720 (3 NOT OK settlements, then
@@ -530,6 +556,7 @@ A_MARGIN=20                # hf9: room between the param-24 vote and A (layout, 
 E_SHORT=15                 # the one epoch length whose segment (P = 24 E) is reachable
 BOND=100000000000000       # DNAC_HF6_STORAGE_BOND_DEFAULT (test_storage_archive.sh)
 CONSENT_AHEAD=150          # consent expiry = tip + this (test_storage_archive.sh)
+JOIN_PRUNE_MARGIN=3        # hf9: layout, not a timeout — blocks that must remain before the join boundary for the joiner's retention restart
 K8_OWNER=8eff7f418ab7a4432118ff99e21f2c3d1baf186200c148a3bba7d274499386ac970e267a9c9b3bbc05bfff1c62a72d63f72a555db780feeaaad4fb49ba9f7b89
 OWNER=$(printf '%s' "${STAGEF_HF6_OWNER_FP_HEX:-$K8_OWNER}" | tr 'A-F' 'a-f')
 OWN_KEYS="${STAGEF_HF6_OWNER_KEYS:-}"
@@ -1329,6 +1356,32 @@ bs_base() {
     sqlite3 -cmd '.timeout 10000' "$(db_of "$1")" \
         "SELECT COALESCE(MIN(CAST(substr(CAST(key AS TEXT), 3) AS INTEGER)), -1) FROM cmt_blockstore WHERE substr(CAST(key AS TEXT), 1, 2) = 'P:';"
 }
+# bs_height NODE — the highest height with a `P:` row in the node's block store; -1 when it holds none
+bs_height() {
+    sqlite3 -cmd '.timeout 10000' "$(db_of "$1")" \
+        "SELECT COALESCE(MAX(CAST(substr(CAST(key AS TEXT), 3) AS INTEGER)), -1) FROM cmt_blockstore WHERE substr(CAST(key AS TEXT), 1, 2) = 'P:';"
+}
+# assert_members_hold_range LABEL K B — the K9a premise (decision 2026-10-05-storage-reward-is-for-archive.md: "A
+# segment published at boundary H is NOT counted (every node holds the last 7 paydays in its block store)"), read
+# from the stores BEFORE the publication boundary B of segment K (round 6): every registered storage member (ACTIVE or
+# EXITING, the statuses role_prune.c:92-113 reads) that runs a node has base <= (K-1) x P + 1 and height >= K x P + 1 —
+# nodus_seg_store_has (segment_export.c:48-55) — so none is probed at B on a segment it would still have to fetch. A
+# member that runs no node (the candidate) has no store and is not read. A tip already at or past B is a layout failure.
+assert_members_hold_range() {
+    local label="$1" k="$2" b="$3" fp n base hgt first last cnt=0
+    first=$(( (k - 1) * P + 1 )); last=$(( k * P + 1 ))
+    [ "$(tip_of 1)" -lt "$b" ] || die "$label: tip $(tip_of 1) is already at or past the publication boundary $b of segment $k — the K9a premise cannot be read before it — $MSG_LAYOUT"
+    for fp in $(sqlite3 -cmd '.timeout 5000' "$(db_of 1)" "SELECT lower(hex(node_fp)) FROM v2_storage_nodes WHERE status IN (1, 2) ORDER BY node_fp;"); do
+        n=$(fp_node "$fp"); [ -n "$n" ] || continue
+        case " ${ALIVE[*]} " in *" $n "*) ;; *) continue ;; esac
+        base=$(bs_base "$n"); hgt=$(bs_height "$n")
+        { [[ "$base" =~ ^[0-9]+$ ]] && [[ "$hgt" =~ ^[0-9]+$ ]]; } || die "$label: node$n's block-store base / height are unreadable ('$base' / '$hgt')"
+        { [ "$base" -le "$first" ] && [ "$hgt" -ge "$last" ]; } || die "$label: node$n is a storage member but its block store covers $base .. $hgt, not segment $k's whole range ($first .. $(( k * P ))) with height >= $last — it would be probed at $b on a segment it must still fetch (K9a premise broken) — $MSG_LAYOUT"
+        cnt=$(( cnt + 1 ))
+    done
+    [ "$cnt" -ge 1 ] || die "$label: no storage member's block store could be read"
+    echo "[ok] $label: before the publication of segment $k at $b, the block stores of all $cnt registered storage members that run a node hold its whole range ($first .. $(( k * P )), height >= $last)"
+}
 reg_fs()   { cell_lines reg | awk -F'|' -v f="$1" '$1 == f { print $4 }'; }
 in_basis() { [ -n "$(cell_lines basis | awk -v f="$1" '$0 == f')" ]; }
 cur_rows_of() { cell_lines assign | awk -F'|' -v f="$1" '$2 == f && $5 == "-"' | wc -l; }
@@ -1344,6 +1397,12 @@ DEAD_FP=""                 # the candidate (it runs no node): its bit must be 0 
 # snapshot is "of the boundary state" only to the extent that no envelope came after it: the tx
 # count over (B, T] is printed, and a snapshot with envelopes after B is said to be of a LATER state.
 boundary_cell() {          # LABEL BOUNDARY R
+    # a boundary at which segment k >= 2 is published (kP + 2E, nodus_witness_v2_storage.c st_publish; segment 1 is
+    # asserted in section 3): the K9a premise is read from the members' stores one block BEFORE it (round 6)
+    if [ "$WITH_STORAGE" = 1 ] && [ "$2" -gt $(( 2 * E )) ] && [ $(( ($2 - 2 * E) % P )) = 0 ] && [ $(( ($2 - 2 * E) / P )) -ge 2 ]; then
+        advance_to $(( $2 - 1 ))
+        assert_members_hold_range "$1" $(( ($2 - 2 * E) / P )) "$2"
+    fi
     advance_to "$2"
     cell_read "$1" "$2" "$(( $2 + 1 ))" "$2"
     local since
@@ -1954,6 +2013,9 @@ if [ "$WITH_STORAGE" = 1 ]; then
     members_set $MEMBERS_PRE
     wait_all "$(tip_of 1)"
     [ "$(tip_of 1)" -lt $(( H_PUB - E )) ] || die "the members registered after $(( H_PUB - E )) — $MSG_LAYOUT (K9a would give them grace)"
+    pump_to $(( H_PUB - 1 ))
+    wait_all $(( H_PUB - 1 ))
+    assert_members_hold_range "segment-1" 1 "$H_PUB"
     pump_to $(( H_PUB + 1 ))
     wait_all $(( H_PUB + 1 ))
     h=$(stagef_cmt_wait_row "$(db_of 1)" "SELECT COUNT(*) FROM v2_storage_segments WHERE k = 1;" 3 5) && wrc=0 || wrc=$?
@@ -2105,24 +2167,9 @@ if [ "$WITH_STORAGE" = 1 ]; then
     if [ "$(tip_of 1)" -lt $(( H2_LAST + E / 2 )) ]; then pump_to $(( H2_LAST + E / 2 )); fi
     [ "$(tip_of 1)" -lt $(( B1 - 1 )) ] || die "the E-s1 epoch $(( H2_LAST - E )) cannot be read before B1: tip $(tip_of 1) — $MSG_LAYOUT"
     epoch_service_read $(( H2_LAST - E ))
-    # round-4 row 5 (the fetch path): the joiner (node $JOINER) is restarted with nodus.json `retain_blocks`
-    # (stagef_write_node_config; effective at its next start, stagef_env.sh) so that it PRUNES its block store from here
-    # on. By the time it becomes a holder (three or more epochs later) its store no longer has segment 1's range,
-    # nodus_seg_store_has (segment_export.c:48-55: base <= (k-1) x P + 1) is false, and the holder runtime takes
-    # JOB_FETCH ("fetching over 0x73 (the block store no longer has the range)", holder.c:682-690). Its base is
-    # asserted before it registers; the fetch line and the file after. It is not yet a storage member, so only the
-    # explicit retention applies to it (role_prune.h: EXPLICIT N, keep the last N blocks).
-    stagef_write_node_config "$JOINER" "$RETAIN_J" || die "could not write node$JOINER's nodus.json (retain_blocks $RETAIN_J)"
-    src=0; stagef_stop_node "$JOINER" TERM || src=$?
-    [ "$src" = 0 ] || die "stopping node$JOINER for its retention restart failed (stagef_stop_node rc=$src)"
-    ALIVE=()
-    for n in $(seq 1 "$N"); do [ "$n" = "$JOINER" ] || ALIVE+=("$n"); done
-    stagef_spawn_node "$JOINER" || die "node$JOINER did not come back with retain_blocks $RETAIN_J (the [FAIL] line above names the process)"
-    if grep -q 'REFUSING START' "$(node_log "$JOINER")"; then tail -20 "$(node_log "$JOINER")" >&2; die "node$JOINER refused to start with retain_blocks $RETAIN_J"; fi
-    jt=$(stagef_cmt_wait_height "$(db_of "$JOINER")" "$(tip_of 1)" 3) || die "node$JOINER did not catch up after its retention restart (stuck at $jt)"
-    ALIVE=()
-    for n in $(seq 1 "$N"); do ALIVE+=("$n"); done
-    echo "[ok] node$JOINER restarted with retain_blocks $RETAIN_J (evidence window $CONF_EVB blocks) and caught up to tip $jt"
+    # (the joiner's retention restart is NOT here any more — round 6: it runs AFTER the joiner registered, see the
+    # join step in section 6; a restart with an explicit retain while the node has no storage role prunes every
+    # segment-2 block the guard would have kept, run 7)
 fi
 
 # ── 6. hf9: the storage assignment at B1 and its events (short epoch only) ─
@@ -2260,16 +2307,53 @@ if [ "$WITH_STORAGE" = 1 ]; then
     echo "[ok] D-departure: at the first freeze with fail_streak $D_PREV ($DEP) the candidate left the basis, its row ended at $DEP, the three live members keep theirs"
 
     # (c) join of node 2 while the candidate is out: {4,6,7} -> {2,4,6,7}, R 4 — fewer than R eligible, node 2 MUST hold
-    # the joiner's block store must NOT have segment 1's range before it becomes a holder: its lowest stored block
-    # is above the segment's last height P (round-4 row 5; the same fact makes its probe answers come from the file,
-    # row 6: the reporter answers from the block store first and from the segment file only when the store lacks the sample)
-    J_BASE=$(bs_base "$JOINER")
-    [[ "$J_BASE" =~ ^[0-9]+$ ]] && [ "$J_BASE" -gt "$P" ] || die "node$JOINER's block store starts at '$J_BASE', not above segment 1's last height $P — it did not prune, so the fetch path would not run"
-    echo "[ok] node$JOINER's block store starts at height $J_BASE (> $P, segment 1's last height): nodus_seg_store_has(1) is false"
+    # THE JOINER'S LAYOUT (round 6; derived from nodus_witness_role_prune.c, read to its end):
+    #  * the joiner has NO retain setting until it is a registered storage member (AUTO: a bonded validator keeps
+    #    everything here — nodus_witness_role_prune.c:37-49 nodus_role_prune_base, auto_blocks only when it exceeds the evidence window;
+    #    the other members are archives too), so no block of segment 2 (361 .. 720) is lost while it has no role (run 7:
+    #    a restart with an explicit retain BEFORE registering pruned them, role_prune.c:38-40 EXPLICIT = keep the last N);
+    #  * it registers (register_member below); the registry row is ACTIVE from then, read_is_storage (role_prune.c:92-113);
+    #  * THEN it is restarted with nodus.json retain_blocks N (> the evidence window). As a storage member the retain height
+    #    is min(tip - N + 1, keep_from_segment, keep_from_unpublished) (role_prune.c:51-69, :356): its must-hold list
+    #    is EMPTY until the next boundary (it has no assignment row at H or H - E — storage_member_ks over rows,
+    #    nodus_witness_v2_storage.c:1117-1163; nodus_witness_storage_holder.c:192-205), so keep_from_segment is 0 and the
+    #    guard is keep_from_unpublished = max_published_k x P + 1 = P + 1 (role_prune.c:320-326: segment 1 is the highest
+    #    published). The store is therefore pruned to EXACTLY P + 1 = 361: segment 1's range (1 .. 360) is gone — the
+    #    holder takes JOB_FETCH for segment 1 (holder.c:682-690, nodus_seg_store_has base <= 1 false) — while segment 2's
+    #    whole range (361 .. 720) is kept (base 361 <= (2-1) x P + 1) until segment 2 is published;
+    #  * this must happen BEFORE the join boundary, because the holder decides export / fetch when its job opens
+    #    after the boundary: the base is asserted = P + 1 here, with a bounded pump of single blocks.
+    # K9a premise (decision 2026-10-05-storage-reward-is-for-archive.md: "A segment published at boundary H is NOT
+    # counted (every node holds the last 7 paydays in its block store)"): at every publication boundary every member's
+    # block store holds the segment's whole range — asserted from the stores before each publication
+    # (assert_members_hold_range), not assumed.
+    register_member "$JOINER"
+    [ "$(tip_of 1)" -lt $(( CUR_B + E - JOIN_PRUNE_MARGIN )) ] || die "the join landed at tip $(tip_of 1), fewer than $JOIN_PRUNE_MARGIN blocks before the boundary $(( CUR_B + E )) — no room for the joiner's retention restart — $MSG_LAYOUT"
+    stagef_write_node_config "$JOINER" "$RETAIN_J" || die "could not write node$JOINER's nodus.json (retain_blocks $RETAIN_J)"
+    src=0; stagef_stop_node "$JOINER" TERM || src=$?
+    [ "$src" = 0 ] || die "stopping node$JOINER for its retention restart failed (stagef_stop_node rc=$src)"
+    ALIVE=()
+    for n in $(seq 1 "$N"); do [ "$n" = "$JOINER" ] || ALIVE+=("$n"); done
+    stagef_spawn_node "$JOINER" || die "node$JOINER did not come back with retain_blocks $RETAIN_J (the [FAIL] line above names the process)"
+    if grep -q 'REFUSING START' "$(node_log "$JOINER")"; then tail -20 "$(node_log "$JOINER")" >&2; die "node$JOINER refused to start with retain_blocks $RETAIN_J"; fi
+    jt=$(stagef_cmt_wait_height "$(db_of "$JOINER")" "$(tip_of 1)" 3) || die "node$JOINER did not catch up after its retention restart (stuck at $jt)"
+    ALIVE=()
+    for n in $(seq 1 "$N"); do ALIVE+=("$n"); done
+    echo "[ok] node$JOINER (a registered storage member) restarted with retain_blocks $RETAIN_J (evidence window $CONF_EVB blocks) and caught up to tip $jt"
+    while :; do
+        J_BASE=$(bs_base "$JOINER")
+        [[ "$J_BASE" =~ ^[0-9]+$ ]] || die "node$JOINER's block-store base is unreadable ('$J_BASE')"
+        [ "$J_BASE" -gt "$P" ] && break
+        jt=$(tip_of 1)
+        [ $(( jt + 1 )) -lt $(( CUR_B + E )) ] || die "node$JOINER's block store still starts at $J_BASE at tip $jt, one block before the boundary $(( CUR_B + E )) — it did not prune in time — $MSG_LAYOUT"
+        pump_to $(( jt + 1 ))
+        wait_all $(( jt + 1 ))
+    done
+    [ "$J_BASE" = $(( P + 1 )) ] || die "node$JOINER's block store starts at $J_BASE, expected exactly P + 1 = $(( P + 1 )) (the unpublished-period guard keeps segment 2's range; above it the K9a premise is broken, below it segment 1's range is still held)"
+    echo "[ok] node$JOINER's block store starts at height $J_BASE = P + 1: segment 1's range (1 .. $P) is gone (nodus_seg_store_has(1) is false) and segment 2's range ($(( P + 1 )) .. $(( 2 * P ))) is kept"
     J_FETCH0=$(count_log_lines "segment 1: fetching over 0x73" "$JOINER")
     J_EXPORT0=$(count_log_lines "segment 1: exporting from this node's block store" "$JOINER")
-    register_member "$JOINER"
-    [ "$(tip_of 1)" -lt $(( CUR_B + E )) ] || die "the join landed at tip $(tip_of 1), at or past the boundary $(( CUR_B + E )) — $MSG_LAYOUT"
+    [ "$(tip_of 1)" -lt $(( CUR_B + E )) ] || die "the joiner's retention restart ran to tip $(tip_of 1), at or past the boundary $(( CUR_B + E )) — $MSG_LAYOUT"
     next_boundary "join-node$JOINER" 4
     [ "$(cur_rows_of "${FP[$JOINER]}")" = 1 ] && [ "$(rows_from "$CUR_B")" = 1 ] && [ "$(rows_ended "$CUR_B")" = 0 ] && [ "$(n_new_sum "$CUR_B")" = 1 ] \
         || die "join of node $JOINER: node $JOINER holds $(cur_rows_of "${FP[$JOINER]}") row(s), rows inserted $(rows_from "$CUR_B"), ended $(rows_ended "$CUR_B"), Σ n_new $(n_new_sum "$CUR_B") — expected 1 / 1 / 0 / 1 (3 holders < R: the joiner holds)"
