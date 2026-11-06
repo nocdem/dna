@@ -567,8 +567,10 @@ int nodus_cmt_app_entry_identity(nodus_cmt_app_ledger_t *ctx,
  *
  * @return 1 `line` is filled; 0 there is no line (height 0, not a boundary
  *         `height % DNAC_EPOCH_LENGTH == 0`, the SYSTEM runtime below
- *         generation 6 or unresolved — doms_trie_on's own rule — or a build
- *         without NODUS_EVM_ENABLED); -1 a read failed (`line` empty).
+ *         generation 6 or unresolved — doms_trie_on's own rule, so an
+ *         unresolved SYSTEM runtime is 0 and gives no warning — or a build
+ *         without NODUS_EVM_ENABLED); -1 the global-root or a leg-root read
+ *         failed (`line` empty; the Commit logs one WARN).
  */
 #define NODUS_CMT_BOUNDARY_ROOT_LINE_MAX 1400
 int nodus_cmt_app_boundary_root_line(nodus_witness_t *w, uint64_t height,

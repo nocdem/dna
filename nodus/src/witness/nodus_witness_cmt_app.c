@@ -3118,7 +3118,10 @@ done:
  * `doms_trie_on` answers it (nodus_witness_v2_apply.c:570-576): the SYSTEM
  * domain's registered runtime (nodus_witness_v2_runtime_for, the call doms_load
  * makes at nodus_witness_v2_apply.c:659 with require_active 0) has
- * generation >= NODUS_RT_GEN_TRIE; an unresolved runtime answers 0. After the
+ * generation >= NODUS_RT_GEN_TRIE; an unresolved runtime (the call's rc is
+ * discarded, as doms_load discards it at :659) answers 0: no line and NO
+ * warn - only a failed global-root or leg-root read returns -1 (the caller's
+ * WARN). After the
  * COMMIT the committed registry is the working set's post-6c registry that
  * `doms_trie_on` judged. The tries are EVM-only, so a build without
  * NODUS_EVM_ENABLED never has a line (nodus_witness_roots_v2.c:33-54). */
@@ -3208,18 +3211,39 @@ int nodus_cmt_app_commit(void *vctx, nodus_abci_response_commit_t *resp)
      * `resp->retain_height` and every state byte are exactly as without it.
      * A read fault follows this function's node-local pattern (it never
      * fails the Commit, like the retention read below: "a read fault
-     * answers 0"): no line, and one WARN that says so. The host calls this
-     * row at two sites (nodus_witness_cmt_host.c:1525 blockexec_commit,
-     * :1918 the handshake replay), so a restarted node writes the line again
-     * for each boundary it replays. */
+     * answers 0"). WHICH faults warn: a failed global-root or leg-root read
+     * (lr < 0) gives no line and ONE WARN; an unresolved SYSTEM runtime
+     * (nodus_witness_v2_runtime_for failing, claims.c:248-249) gives no line
+     * and NO warn - the gate answers 0 exactly as `doms_trie_on` does, whose
+     * loader discards the same result (nodus_witness_v2_apply.c:570-576,
+     * :659). The host calls this row at two sites
+     * (nodus_witness_cmt_host.c:1525 blockexec_commit, :1918 the handshake
+     * replay), so a restarted node writes the line again for each boundary
+     * it replays.
+     * ONE UNBROKEN LINE: the standalone log shim (nodus_log_shim.c:31, :34,
+     * :36) writes a record as three stdio calls on stderr (prefix, message,
+     * newline), so another thread's log call could land between them and
+     * split the record. flockfile(stderr) is held across the one log call:
+     * every other stdio call on stderr - the shim's own, from any thread, and
+     * any other fprintf(stderr) - takes the same per-FILE lock and waits
+     * (POSIX flockfile, recursive for this thread). The node's log file
+     * receives stderr through the shell redirection `>> nodus.log 2>&1`, and
+     * the process has no write(2, ...) and no stdout writer in nodus/src (a
+     * grep of nodus/src outside the CLI: none), so the stderr lock covers every
+     * writer of that file. Not covered: another PROCESS writing the same file
+     * (none: one nodus-server per log) and the real qgp_log.c backend, which
+     * truncates at 256/1024 bytes (qgp_log.c:231, :677) and is not this
+     * build's. */
     {
         char line[NODUS_CMT_BOUNDARY_ROOT_LINE_MAX];
         int  lr = nodus_cmt_app_boundary_root_line(
                       ctx->w, (uint64_t)ctx->fb_height, line, sizeof(line));
 
-        if (lr == 1)
+        if (lr == 1) {
+            flockfile(stderr);
             QGP_LOG_INFO(LOG_TAG, "%s", line);
-        else if (lr < 0)
+            funlockfile(stderr);
+        } else if (lr < 0)
             QGP_LOG_WARN(LOG_TAG, "boundary leg-root line for height %" PRId64
                          " not written: a read failed", ctx->fb_height);
     }

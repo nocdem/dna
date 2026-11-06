@@ -8165,9 +8165,18 @@ static int t_hyb_crash_boundary_event(void)
  * shorter than the ~1250-byte line), so stderr is redirected into a temp file
  * around one block step (dup2) and scanned. L3 is the formatting function
  * itself, visible through nodus_witness_cmt_app.h.
- * Compile flags: NODUS_EVM_ENABLED (the tries; the short-epoch build also
- * has -DDNAC_EPOCH_LENGTH=15, a production-epoch build runs E blocks - 720 -
- * as hyb_crash_boundary_b1 does). Environment: none. Leaves: one
+ * Compile flags: NODUS_EVM_ENABLED (the tries). The case needs E > 16 (the
+ * boundary must lie above the generation ladder, which reaches generation 6
+ * at block 13-16): in a SHORT-EPOCH build (-DDNAC_EPOCH_LENGTH=15) it STOPS
+ * AT ITS GUARD (CHECK(E > 16)) and runs none of L1-L5, exactly as
+ * hyb_crash_boundary_b1 does; the short-epoch coverage of the boundary line is
+ * the Genesis Protocol harness scenario test_cmt_hf9.sh (check_boundary_leg_log,
+ * 7 logs per boundary), not this unit case. At production constants (E 720) it
+ * runs E real blocks. Environment: none. ONE-LINE PROPERTY (the node holds
+ * flockfile(stderr) across the log call): no deterministic unit test exists -
+ * the interleaving needs a second thread logging at the exact moment, so a test
+ * would pass or fail by scheduling; the lock is argued in the comment at the log
+ * site in nodus_cmt_app_commit and observed by the harness comparison. Leaves: one
  * /tmp/test_cmt_app_hyb_XXXXXX directory per chain (removed) and a tmpfile.
  * Can falsely pass: a log sink other than the shim (the real qgp_log.c with
  * file logging on) is not exercised, so L2 proves the standalone node's

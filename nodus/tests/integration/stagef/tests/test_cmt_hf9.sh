@@ -27,14 +27,15 @@
 #     sequence are below ("WHAT IT REQUIRES"). Parameters: E 15, BPY 20,
 #     SAFETY grace 15, ERGONOMIC grace 15. Length: the six votes ≈ 330, segment 1
 #     at 390, A ≈ 429, B1 = 435 (JUDGMENT from the layout); then the other
-#     storage events, the 8th node's cycle LAST. MEASURED (run 17, commit
-#     8af236e88, before the round-17 placement): BD0 = 615 (copies-up-6 cell
-#     at 600), REV = BD0 + 17E = 870, the last cell 915. The round-17 placement
-#     puts the restart gate after the segment-2 publication (750), so BD0 =
-#     660 (cells 615, 630, 645 are plain pad cells): INFERRED, not measured -
-#     REV = 915, first eligible epoch REV + n x E (n = the revived segments, 1
-#     or 2) and that epoch's settlement 2E later, the last cell 45 blocks after
-#     run 17's (960). The second segment is published at 750; then the replay.
+#     storage events, the 8th node's cycle LAST. MEASURED: run 17 (commit
+#     8af236e88, no placement): BD0 = 615 (copies-up-6 cell at 600), REV = BD0
+#     + 17E = 870, last cell 915; run 18 (commit defc54c53, with the placement:
+#     restart gate after the segment-2 publication 750, cells 615, 630, 645 plain
+#     pad cells): BD0 = 660, gate [750, 757), last cell 960. The valid BD0 at
+#     E 15 are 660, 675, 690 and 705 (derived at the cycle's start; any other
+#     landing is a named layout FAIL). First eligible epoch REV + n x E (n = the
+#     revived segments, 1 or 2) and that epoch's settlement 2E later. The second
+#     segment is published at 750; then the replay.
 #     The cell at a payday boundary (360, 720) is not asserted for amounts.
 #   PRODUCTION-CONSTANT EDGE RUN — test parameters chosen by the
 #     orchestrator (fix round 3, 2026-11-05, not a plan value): E = 720,
@@ -358,8 +359,10 @@
 #      databases are wiped (its identity kept), it is restarted with the
 #      genesis pin only; its log (truncated first, so every line is of THIS
 #      replay) carries the HF-7 edge line and the HF-9 edge line (those two
-#      greps are what is asserted; a generation-6 boundary line is NOT asserted
-#      — the production run can end before B1, round 11 row 12); it reaches the
+#      greps are what is asserted in the PRODUCTION-CONSTANT run, which can end
+#      before B1 (round 11 row 12) and so compares NO HF9-BOUNDARY-ROOTS line; in
+#      the SHORT run every boundary from B1 is compared on the replayed node's
+#      log as well, at least three: check_boundary_leg_log, post-replay); it reaches the
 #      fleet tip and agrees 7/7 in the full 64-byte mode, leg roots and storage
 #      relations included.
 #  10. No node logged "HF9-SHADOW FAULT" or "CMT_FAULT" (plan §11) during the
@@ -521,6 +524,16 @@
 #     (the oracle and the unit tests, not this check, establish correctness); it
 #     shows the nodes' own reports of the roots AT the height are equal. It does
 #     not run in the production-constant edge run (no generation-6 boundary).
+#     Round 18: a log is read only after THAT node's own tip is >= B + 1 (the
+#     node has then returned from Commit(B), which wrote the line; a node that
+#     does not reach B + 1 is a named FAIL); the node holds flockfile(stderr)
+#     across the one log call so no other thread's log call splits the record
+#     (the shim writes prefix, message and newline as three stdio calls); the
+#     line must show leg1 .. leg8 each once and in order. Missing line vs gate:
+#     an unresolved SYSTEM runtime gives NO line and NO warning (the node's
+#     gate answers 0 as doms_trie_on does, nodus_witness_v2_apply.c:570-576,
+#     :659) - it shows here as the named FAIL "holds NO line"; a failed
+#     global-root or leg-root read gives no line and one WARN in the node log.
 #     What this scenario does, exactly:
 #       * A−1, A, A+1: the eight leg roots are read at a tip T from a window with
 #         no claim (v2_claim_counts), no transaction except single-leg SYSTEM
@@ -601,8 +614,8 @@
 #     reporter.c:280-286, the joiner's argument), which is shown by the bit in
 #     the first eligible epoch, not by a line of the node; (iv) the K9a premise
 #     reads and the member check include the 8th node: running (base and height),
-#     or stopped (read from its database file, base only, then re-read with the
-#     height after its restart if the publication is still ahead); the stopped
+#     or stopped (read from its database file, base only); there is NO re-read:
+#     the cycle's placement keeps its restart after the publication; the stopped
 #     read does not show its tail height, only the range start; (v) the waits of the 8th node (listener, identity, adoption) are
 #     nv_wait_cond: the process must run, the fleet tip may rise by E blocks,
 #     and a fleet tip that stands still for 3 idle intervals is a stall; the
@@ -786,7 +799,7 @@
 #     between the joiner's registration and the join boundary (a layout margin,
 #     not a plan value).
 #   - Duration (short epoch): see the length paragraph at the top (one account): MEASURED in run 17 (BD0 = 615,
-#     last cell 915, before the placement), INFERRED after it (BD0 = 660, last cell 960); the cycle takes 17E
+#     last cell 915, before the placement) and run 18 (BD0 = 660, last cell 960, with it); the cycle takes 17E
 #     blocks from BD0 to the automatic return (departure BD0 + 5E, return B + 12E), then n x E to the first
 #     eligible epoch and 2E more to its settlement; ≈ 4 500 blocks production-constant run (no 8th node,
 #     JUDGMENT, not measured). rc 99 = coverage that did not happen.
@@ -1037,6 +1050,16 @@ echo "[ok] capability gate: one build v$SRV_VER; D = 0x$D_HEX, D4 = 0x$D4_HEX, D
 # 7-node comparisons (ALIVE, cell_read, wait_all, diff) never include it.
 db_of()  { if [ "$1" = 8 ]; then nv_db; else stagef_node_chain_db "$1"; fi; }
 tip_of() { stagef_cmt_tip "$(db_of "$1")"; }
+# tip_now [NODE] — round 18, row 6: sets TIPV to the node's tip (default node 1) and DIES in THIS shell unless it is a valid
+# non-negative height. stagef_cmt_tip answers -1 (or nothing) for an empty / unreadable table (stagef_env.sh:1058-1067) and
+# `-1 -lt LIMIT` is TRUE, so a bare `$(tip_of 1)` in a guard, a deadline or a settlement check would pass on a failed read. Every
+# guard / deadline / settlement check below that decides on the fleet tip reads it through tip_now (not in a command
+# substitution: die there would only leave the subshell).
+TIPV=-1
+tip_now() {
+    TIPV=$(tip_of "${1:-1}") || true
+    [[ "$TIPV" =~ ^[0-9]+$ ]] || die "node${1:-1}'s tip is unreadable ('$TIPV') — an unreadable height establishes no observation window, guard or deadline"
+}
 node_keys() { if [ "$1" = 8 ]; then echo "$NODE_DIR/identity"; else echo "$(stagef_node_dir "$1")/identity"; fi; }
 node_log()  { if [ "$1" = 8 ]; then echo "$NV_LOG"; else stagef_node_log "$1"; fi; }
 fp_of()  { tr 'A-F' 'a-f' < "$1/nodus.fp" | tr -d '[:space:]'; }   # $1 = identity dir
@@ -1130,7 +1153,8 @@ wait_height_s() {          # DB TARGET [STALL_INTERVALS] — rc 0 reached, 1 sta
         # BOUNDED by the FLEET tip: SERVE_LIMIT is the height at which the window being served closes (reports pruned at
         # H + 2E) or its settlement check is overtaken (H + 3E); passing it is a named FAIL, never a read of pruned reports.
         # The check holds on EVERY poll including the one that reaches the target (a successful exit cannot bypass it).
-        if [ "$SERVING" = 1 ] && [ "$SERVE_LIMIT" -gt 0 ] && [ "$(tip_of 1)" -ge "$SERVE_LIMIT" ]; then
+        if [ "$SERVING" = 1 ] && [ "$SERVE_LIMIT" -gt 0 ]; then tip_now 1; fi    # round 18, row 6: a valid height or a named FAIL
+        if [ "$SERVING" = 1 ] && [ "$SERVE_LIMIT" -gt 0 ] && [ "$TIPV" -ge "$SERVE_LIMIT" ]; then
             die "a wait for height $target on $db (at $h) inside the service of a report window / settlement saw the fleet tip pass $SERVE_LIMIT, where that evidence is gone — a lagging node during the 8 heights of a window (a false RED, never a pass)"
         fi
         if [ "$h" -ge "$target" ]; then return 0; fi
@@ -1497,7 +1521,9 @@ check_legs() {
     fi
     for i in 1 2 3 4 5 6 7 8; do
         root=$(cell_one "leg|$i"); cnt=$(cell_one "src|$i")
-        [[ "$root" =~ ^[0-9A-F]+$ ]] || die "$label: leg $i has no root ('$root')"
+        # round 18, row 8: EXACTLY 128 hex characters (the 64-byte BLOB trie.c:516-517 requires; plan :453 "full 64-byte"), in
+        # both branches (check_legs serves the short and the production-constant run)
+        [[ "$root" =~ ^[0-9A-F]{128}$ ]] || die "$label: leg $i has no full 64-byte root (128 hex characters expected; got '${root:0:140}')"
         if [ "$cnt" = 0 ]; then
             [ "$root" = "$EMPTY_ROOT" ] || die "$label: leg $i has no source row but its root is ${root:0:16}…, expected the empty-leg root SHA3-512(0x80) = ${EMPTY_ROOT:0:16}… (plan §4.1)"
         else
@@ -1814,7 +1840,7 @@ wait_seg_file() {          # NODE K UNTIL_TIP
         # round 10 (row 6): the observation first, THEN the tip — the tip is monotonic, so a tip read after the
         # observation bounds the observation's own tip; a file seen while the chain crossed the deadline is late
         seen=0; if [ -f "$f" ]; then seen=1; fi
-        t=$(tip_of 1)
+        tip_now 1; t="$TIPV"      # round 18, row 6: a valid height or a named FAIL
         if [ "$seen" = 1 ]; then
             if [ "$t" -lt "$3" ]; then return 0; fi
             return 1
@@ -1831,7 +1857,7 @@ wait_seg_file() {          # NODE K UNTIL_TIP
 #   "segment <k> deleted: no longer a holder and the overlap epoch has passed (H=<H>)"
 # with H = floor(tip / E) x E of the node's own tip at the sweep; a segment is deleted iff this node is no
 # holder in the epoch H nor (for segments published <= H - E) in H - E. So the file is kept through the
-# epochs B .. B + E - 1 exactly when the deletion line's H is = B + E (round 10: exactly, see assert_deleted_at). The node log is the witness log
+# epochs B .. B + E - 1 when the deletion line's H is >= B + E (round 18: not "exactly", see assert_deleted_at). The node log is the witness log
 # (stagef_node_log) — appended, never truncated, for a node that is not wiped (node 3 is no holder).
 del_count() { grep -c "segment $2 deleted: no longer a holder" "$(node_log "$1")" || true; }   # NODE K
 del_h() {                  # NODE K INDEX(1-based) -> the H of that deletion line
@@ -1842,29 +1868,30 @@ del_h() {                  # NODE K INDEX(1-based) -> the H of that deletion lin
 #   does not yet mean the line is written: assert_deleted_at WAITS for it, bounded by block distance (the tip may
 #   not pass MIN_H + E) and by progress (no tip increase for 3 CreateEmptyBlocks intervals), and FAILs if it never
 #   comes (round-4 row 12).
-assert_deleted_at() {      # LABEL NODE K COUNT_BEFORE MIN_H — a NEW deletion line since COUNT_BEFORE, with H = MIN_H (= B + E) exactly
+assert_deleted_at() {      # LABEL NODE K COUNT_BEFORE MIN_H — a NEW deletion line since COUNT_BEFORE, with H >= MIN_H (= B + E): none before B + E
     local label="$1" n="$2" k="$3" c0="$4" minh="$5" c1 h t last=-1 since=0 stall
     stall=$(file_wait_polls)
     while :; do
         service_reads; service_posts      # round 8: serve the queued windows while waiting
         c1=$(del_count "$n" "$k")
         [ "$c1" -le "$c0" ] || break
-        t=$(tip_of 1)
-        [ "$t" -lt $(( minh + E )) ] || die "$label: node$n logged no new 'segment $k deleted' line by tip $t (had $c0, has $c1; waited to MIN_H + E = $(( minh + E )))"
+        tip_now 1; t="$TIPV"              # round 18, row 6
+        # round 18, row 9: the wait is bounded in blocks by the LAYOUT: the line is waited for until the tip reaches MIN_H + 2E, the cell after
+        # the next one (a node that runs throughout and is caught up sweeps at its first tick of an epoch it is no holder in)
+        [ "$t" -lt $(( minh + 2 * E )) ] || die "$label: node$n logged no new 'segment $k deleted' line by tip $t (had $c0, has $c1; the layout bound is MIN_H + 2E = $(( minh + 2 * E )))"
         if [ "$t" -gt "$last" ]; then last="$t"; since=0; else since=$(( since + 1 )); fi
         [ "$since" -lt "$stall" ] || die "$label: the chain stalled at tip $t while waiting for node$n's 'segment $k deleted' line"
         sleep 2
     done
     h=$(del_h "$n" "$k" $(( c0 + 1 )))
     [[ "$h" =~ ^[0-9]+$ ]] || die "$label: could not read the H of node$n's deletion line"
-    # ROUND 10 (row 10): the deletion line's H is EXACTLY B + E. The holder ticks every 200 ms (holder.h:110
-    # NODUS_STHOLD_TICK_MS) and runs `assign` at an epoch change (holder.c:646-661), which calls the sweep
-    # nodus_witness_sthold_gc (holder.c:369) with the epoch H of the tick; a segment is deleted when this node is a holder
-    # in neither H nor H - E (holder.c:172-228 / :241-290), and the node's rows ended at B, so the first sweep that can
-    # delete runs in epoch B + E and logs H = B + E. An H below it is a deletion inside the overlap epoch, one above it
-    # a sweep that missed epoch B + E; both FAIL.
-    [ "$h" -eq "$minh" ] || die "$label: node$n deleted segment $k at its epoch H=$h, expected exactly H=$minh (the first sweep after the overlap epoch: holder.c:646-661, :369)"
-    echo "[ok] $label: node$n logged the deletion of segment $k at its epoch H=$h = B + E exactly: no sweep deleted it earlier and the first sweep of epoch $minh did (the deletion HEIGHT; that the file existed in the overlap epoch is asserted separately from the file itself)"
+    # ROUND 18 (row 9) - AS THE PLAN STATES (docs/plans/approved/2026-11-04-hf9.md :456 "stops holding dropped ones only after
+    # the overlap epoch"): the deletion line's H, the epoch the node's own tip names at the sweep, must be >= B + E - NO
+    # deletion before B + E. The holder runs `assign` at its own tick (holder.c:646-661) and returns while the node
+    # block-syncs (:640); nothing bounds that tick to fall inside epoch B + E, so a later sweep is correct and is not
+    # rejected (the round-10 "exactly B + E" claim is withdrawn). An H below B + E is a deletion inside the overlap epoch: FAIL.
+    [ "$h" -ge "$minh" ] || die "$label: node$n deleted segment $k at its epoch H=$h, BEFORE B + E = $minh (the overlap epoch must pass first: plan :456, holder.c:241-300)"
+    echo "[ok] $label: node$n logged the deletion of segment $k at its epoch H=$h (MEASURED) >= B + E = $minh: no deletion before the overlap epoch passed; the file existed in the overlap epoch is asserted separately from the file itself"
 }
 # The RETENTION evidence (round-4 row 11): seg-<k>.ok of a node that is no longer a holder, seen to EXIST at a
 # tip inside the overlap epoch. The tip is read before and after the file test and BOTH must lie in [B, B + E - 1]:
@@ -1872,9 +1899,9 @@ assert_deleted_at() {      # LABEL NODE K COUNT_BEFORE MIN_H — a NEW deletion 
 # that range was kept through the overlap. A tip outside the range is a layout failure (a false RED).
 assert_file_in_overlap() { # LABEL NODE K B
     local label="$1" n="$2" k="$3" b="$4" t0 t1
-    t0=$(tip_of 1)
+    tip_now 1; t0="$TIPV"
     [ -f "$(seg_file "$n" "$k")" ] || die "$label: node$n's $(seg_file "$n" "$k") does not exist at tip $t0 inside the overlap epoch [$b, $(( b + E - 1 ))] — the file was not retained"
-    t1=$(tip_of 1)
+    tip_now 1; t1="$TIPV"
     { [ "$t0" -ge "$b" ] && [ "$t1" -le $(( b + E - 1 )) ]; } || die "$label: the overlap-epoch file check ran at tips $t0 .. $t1, outside [$b, $(( b + E - 1 ))] — $MSG_LAYOUT"
     echo "[ok] $label: node$n still has seg-$k.ok at tips $t0 .. $t1, inside the overlap epoch [$b, $(( b + E - 1 ))] (retention evidence: the file itself)"
 }
@@ -1884,7 +1911,7 @@ wait_seg_gone() {          # NODE K UNTIL_TIP
     while :; do
         service_reads; service_posts      # round 8: serve the queued windows while waiting
         seen=0; if [ ! -e "$f" ]; then seen=1; fi      # round 10 (row 6): the observation first, then the tip
-        t=$(tip_of 1)
+        tip_now 1; t="$TIPV"      # round 18, row 6
         if [ "$seen" = 1 ]; then
             if [ "$t" -lt "$3" ]; then return 0; fi
             return 1
@@ -2048,7 +2075,9 @@ blr_text_of() {             # LOG HEIGHT -> prints the text after the prefix of 
 }
 blr_unique() {              # LABEL LOG HEIGHT -> sets BLR_ONE to the single text of that height in that log; named FAIL when none / malformed / differing
     local label="$1" log="$2" b="$3" t one="" cnt=0 re
-    re="^h=$b global=[0-9a-f]{128}( leg[1-8]=[0-9a-f]{128}){8}\$"
+    # round 18, row 3: leg1 .. leg8 each EXACTLY ONCE and IN ORDER (not eight repetitions of any leg[1-8] field)
+    local hx="[0-9a-f]{128}"
+    re="^h=$b global=$hx leg1=$hx leg2=$hx leg3=$hx leg4=$hx leg5=$hx leg6=$hx leg7=$hx leg8=$hx\$"
     while IFS= read -r t; do
         [ -n "$t" ] || continue
         [[ "$t" =~ $re ]] || die "$label: a 'HF9-BOUNDARY-ROOTS h=$b' line in $log is malformed (expected h, global and leg1..leg8, 128 lower-case hex each): ${t:0:200}"
@@ -2065,6 +2094,12 @@ check_boundary_leg_log() {  # B LABEL — uses the cell just read at B
     gcell=$(cell_lines gr | awk -F'|' -v h="$b" '$1 == h { print tolower($2) }')
     [[ "$gcell" =~ ^[0-9a-f]{128}$ ]] || die "$label: the cell holds no full global root at height $b ('${gcell:0:40}')"
     for n in "${ALIVE[@]}"; do
+        # round 18, row 2: the node's log is read only after THAT node's own tip is >= B + 1. nodus_cmt_app_commit writes the
+        # line AFTER the COMMIT and before it returns (the next block's row is written only after the return), so a node whose
+        # database holds block B + 1 has returned from Commit(B) and written the line. A node whose database is at B may still be
+        # between the COMMIT and the log call. Block distance with the script's own bound: wait_height_s (serving, 3 idle
+        # intervals without progress); a node that does not reach B + 1 is a named FAIL.
+        wait_height_s "$(db_of "$n")" $(( b + 1 )) 3 || die "$label: node$n did not reach height $(( b + 1 )) (stuck at $WH_TIP) - its HF9-BOUNDARY-ROOTS line of height $b cannot be read before it has returned from the Commit of $b"
         blr_unique "$label" "$(node_log "$n")" "$b"
         g="${BLR_ONE#h=$b global=}"; g="${g%% *}"
         [ "$g" = "$gcell" ] || die "$label: node$n logged the global root ${g:0:32}… at $b, the cell's full global_root at $b is ${gcell:0:32}…"
@@ -2086,7 +2121,7 @@ boundary_cell() {          # LABEL BOUNDARY R
     if [ "$since" = 0 ]; then
         echo "[ok] $1: no envelope after the boundary block up to tip $CELL_TIP — the snapshot is of the boundary state (claims are counted by no tx_count; none was submitted)"
     else
-        echo "[info] $1: $since envelope(s) after the boundary block up to tip $CELL_TIP — the leg roots read are of a LATER state (tip $CELL_TIP), NOT of height $2. At $2 only the full global_root is compared 7/7 (diff --full), which binds the eight leg roots through the composition chain (plan §10.3, docs/plans/approved/2026-11-04-hf9.md:396-397); a per-height leg-root comparison at this boundary is NOT covered (v2_trie_roots keeps the latest root of each leg only — plan §16 DF-3, :614)"
+        echo "[info] $1: $since envelope(s) after the boundary block up to tip $CELL_TIP — the leg roots read are of a LATER state (tip $CELL_TIP), NOT of height $2. The leg roots AT $2 are compared by check_boundary_leg_log through the HF9-BOUNDARY-ROOTS line on the validators' logs (the table keeps only the latest root of each leg — plan §16 DF-3, :614 — so this snapshot is not that comparison), besides the full global_root compared 7/7 (diff --full) that binds them through the composition chain (plan §10.3, docs/plans/approved/2026-11-04-hf9.md:396-397)"
     fi
     check_legs post "$1"
     check_storage_state "$2" "$3" "$1"
@@ -2359,7 +2394,7 @@ nv_wait_cond() {
         if "$@"; then return 0; fi
         service_reads; service_posts
         nv_running || { tail -30 "$NV_LOG" >&2; die "$label: the 8th node exited"; }
-        t=$(tip_of 1)
+        tip_now 1; t="$TIPV"             # round 18, row 6
         [ "$t" -lt $(( t0 + E )) ] || { tail -30 "$NV_LOG" >&2; die "$label: not reached while the fleet tip rose from $t0 to $t ($E blocks)"; }
         if [ "$t" -gt "$last" ]; then last="$t"; since=0; else since=$(( since + 1 )); fi
         [ "$since" -lt "$stall" ] || { tail -30 "$NV_LOG" >&2; die "$label: not reached and the fleet tip made no progress for $stall s (3 idle intervals) at $t — a stalled chain"; }
@@ -2521,7 +2556,8 @@ epoch_service_read() {     # H
     done
     # round 17, row 4: the pool and accrual values above are the settlement's STARTING values only if they were read before the
     # settlement at b = h + 2E: the fleet tip, read after the reads, must still be below b, else a named FAIL
-    [ "$(tip_of 1)" -lt $(( h + 2 * E )) ] || die "epoch $h: the fleet tip reached $(tip_of 1) (the settlement boundary $(( h + 2 * E ))) while the settlement inputs were read — they are not the starting values — $MSG_LAYOUT"
+    tip_now 1                            # round 18, row 6: a valid height or a named FAIL
+    [ "$TIPV" -lt $(( h + 2 * E )) ] || die "epoch $h: the fleet tip reached $TIPV (the settlement boundary $(( h + 2 * E ))) while the settlement inputs were read — they are not the starting values — $MSG_LAYOUT"
     # an all-zero settlement must not pass (round-4 row 7): pool 1 is read from the chain just above, and
     # in every paying epoch (a payday boundary empties the accrual and is not asserted) at least one paid member
     # must have a POSITIVE expected share
@@ -2544,7 +2580,7 @@ epoch_service_post() {     # H
     # round 17, row 4: the accrual and pool balances read below are the values AFTER the settlement at b and BEFORE the next
     # one at b + E (the settlement of epoch h + E): the fleet tip is read before and after the reads and both must lie in
     # [b, b + E - 1], else a named FAIL - a balance read after the next settlement cannot establish the payment at b
-    tpost0=$(tip_of 1)
+    tip_now 1; tpost0="$TIPV"            # round 18, row 6
     { [ "$tpost0" -ge "$b" ] && [ "$tpost0" -lt $(( b + E )) ]; } || die "settlement of epoch $h at $b: the balances would be read at tip $tpost0, outside [$b, $(( b + E - 1 ))] — a later settlement would be credited to $b — $MSG_LAYOUT"
     if is_payday "$b"; then
         echo "[info] epoch $h: the settlement boundary $b is a payday (it empties the accrual) — the amounts are NOT asserted for this epoch"
@@ -2557,7 +2593,7 @@ epoch_service_post() {     # H
             sum=$(( sum + d ))
         done
         pool=$(pool1_of) && [[ "$pool" =~ ^[0-9]+$ ]] || die "settlement of epoch $h at $b: pool 1 could not be read ('$pool')"
-        tpost1=$(tip_of 1)
+        tip_now 1; tpost1="$TIPV"        # round 18, row 6: a valid height or a named FAIL
         [ "$tpost1" -lt $(( b + E )) ] || die "settlement of epoch $h at $b: the fleet tip reached $tpost1 (the next settlement at $(( b + E ))) while the balances were read (started at tip $tpost0) — they cannot be attributed to $b — $MSG_LAYOUT"
         [ $(( ${SETTLE_POOL[$h]} - pool )) = "$sum" ] || die "settlement of epoch $h at $b: pool 1 fell by $(( ${SETTLE_POOL[$h]} - pool )), the shares paid sum to $sum"
         echo "[ok] settlement of epoch $h at $b: every member's owner was paid its exact share ($(for fp in ${SETTLE_ACC["$h|members"]}; do printf '%s ' "${SETTLE_EXP["$h|$fp"]}"; done)), pool 1 fell by $sum"
@@ -2567,7 +2603,7 @@ epoch_service_post() {     # H
 service_reads() {          # [TIP] — serve what is open at TIP (default: the tip read now)
     local h t wt was="$SERVING"
     SERVING=1
-    t="${1:-$(tip_of 1)}"
+    if [ -n "${1:-}" ]; then t="$1"; else tip_now 1; t="$TIPV"; fi     # round 18, row 6
     for h in $PEND_READ; do
         wt=$(( h + E + E / 2 ))
         if [ "$t" -ge $(( h + 2 * E )) ]; then die "the report window of epoch $h (tip $wt .. $(( h + 2 * E - 1 ))) closed before it could be read: the chain is at $t (it made blocks on its own while a step waited, and the reports are pruned at $(( h + 2 * E ))) — $MSG_LAYOUT"; fi
@@ -2578,7 +2614,7 @@ service_reads() {          # [TIP] — serve what is open at TIP (default: the t
 service_posts() {          # [TIP]
     local h t was="$SERVING"
     SERVING=1
-    t="${1:-$(tip_of 1)}"
+    if [ -n "${1:-}" ]; then t="$1"; else tip_now 1; t="$TIPV"; fi     # round 18, row 6
     for h in $PEND_POST; do
         if [ "$t" -ge $(( h + 3 * E )) ]; then die "internal: the settlement of epoch $h (boundary $(( h + 2 * E ))) was passed without its check (tip $t) — $MSG_LAYOUT"; fi
         if [ "$t" -ge $(( h + 2 * E )) ]; then SERVE_LIMIT=$(( h + 3 * E )); epoch_service_post "$h"; SERVE_LIMIT=0; fi
@@ -2601,7 +2637,7 @@ service_posts() {          # [TIP]
 advance_to() {
     local T="$1" nxt h wt t
     while :; do
-        t=$(tip_of 1)
+        tip_now 1; t="$TIPV"             # round 18, row 6: a valid height or a named FAIL
         service_reads "$t"
         service_posts "$t"
         nxt="$T"
@@ -2614,7 +2650,8 @@ advance_to() {
             if [ "$wt" -gt "$t" ] && [ "$wt" -lt "$nxt" ]; then nxt="$wt"; fi
         done
         pump_raw "$nxt"
-        if [ "$(tip_of 1)" -ge "$T" ]; then service_reads; service_posts; return 0; fi
+        tip_now 1
+        if [ "$TIPV" -ge "$T" ]; then service_reads; service_posts; return 0; fi
     done
 }
 # pump_to TARGET — the pump every step uses: with queued checks it goes through advance_to (served first, stops at
@@ -3286,7 +3323,7 @@ if [ "$WITH_STORAGE" = 1 ]; then
         J_BASE=$(bs_base "$JOINER")
         [[ "$J_BASE" =~ ^[0-9]+$ ]] || die "node$JOINER's block-store base is unreadable ('$J_BASE')"
         [ "$J_BASE" -gt "$P" ] && break
-        jt=$(tip_of 1)
+        tip_now 1; jt="$TIPV"            # round 18, row 6
         [ $(( jt + 1 )) -lt $(( CUR_B + E )) ] || die "node$JOINER's block store still starts at $J_BASE at tip $jt, one block before the boundary $(( CUR_B + E )) — it did not prune in time — $MSG_LAYOUT"
         pump_to $(( jt + 1 ))
         wait_all $(( jt + 1 ))
@@ -3303,12 +3340,11 @@ if [ "$WITH_STORAGE" = 1 ]; then
     [ "$(reg_grace "${FP[$JOINER]}")" = $(( CUR_B + E )) ] || die "join of node $JOINER: its grace_until is $(reg_grace "${FP[$JOINER]}"), expected $(( CUR_B + E ))"
     note_new_holders "$CUR_B"
     diff_full_at "$CUR_B" "join-node$JOINER-at-height-$CUR_B"
-    # the exiter's file is deleted by the sweep of epoch B_REL + E (this cell is its boundary): deadline B_REL + 2E = the end
-    # of that epoch (round 9 widened B_REL + E + 4; round 10 grounds it): the deleting sweep runs inside epoch B_REL + E
-    # (holder.h:110 tick 200 ms, holder.c:646-661 assign at the epoch change, :369 sthold_gc), and assert_deleted_at requires
-    # its logged H to be EXACTLY B_REL + E. A file still there at tip B_REL + 2E missed that sweep — a FAIL, the source's
-    # own bound, not a lengthened timeout
-    wait_seg_gone "$EXITER" 1 $(( B_REL + 2 * E )) || die "node$EXITER's seg-1.ok was not deleted by tip $(( B_REL + 2 * E )) although it is no holder in either epoch any more"
+    # the exiter's file is deleted by a sweep of an epoch H >= B_REL + E (plan :456: not before the overlap epoch passed;
+    # round 18, row 9 - no "exactly B_REL + E" claim: the holder's tick (holder.h:110 200 ms, holder.c:646-661) and its
+    # block-sync return (:640) put no upper bound on the epoch of the sweep). The wait is bounded in blocks by the LAYOUT:
+    # tip < B_REL + 3E = MIN_H + 2E, the cell after the next (a named FAIL); assert_deleted_at requires the line's H >= B_REL + E
+    wait_seg_gone "$EXITER" 1 $(( B_REL + 3 * E )) || die "node$EXITER's seg-1.ok was not deleted by tip $(( B_REL + 3 * E )) (the layout bound MIN_H + 2E) although it is no holder in either epoch any more"
     assert_deleted_at "T-16 exit" "$EXITER" 1 "$EX_DEL0" $(( B_REL + E ))
     require_holder_files "join-node$JOINER" "$CUR_B"
     # the fetch path RAN on the joiner: its holder runtime logged the fetch line (and no export line) for
@@ -3373,7 +3409,9 @@ if [ "$WITH_STORAGE" = 1 ]; then
     DROP_DEL0=$(del_count "$DROP_NODE" 1)
     echo "[ok] copies 5 -> 4 at $DROP_B: node $DROP_NODE dropped (the changed holder)"
     next_boundary "drop+E" 4
-    wait_seg_gone "$DROP_NODE" 1 $(( DROP_B + 2 * E )) || die "node $DROP_NODE's seg-1.ok was not deleted by tip $(( DROP_B + 2 * E )) after the overlap epoch (the sweep of epoch $(( DROP_B + E )), one epoch of liveness bound)"
+    # round 18, row 9: the sweep is of an epoch H >= DROP_B + E (not before the overlap epoch); the wait is bounded in blocks by the
+    # layout (tip < DROP_B + 3E = MIN_H + 2E, a named FAIL), no "exactly DROP_B + E" claim
+    wait_seg_gone "$DROP_NODE" 1 $(( DROP_B + 3 * E )) || die "node $DROP_NODE's seg-1.ok was not deleted by tip $(( DROP_B + 3 * E )) (the layout bound MIN_H + 2E) after the overlap epoch (a sweep of an epoch >= $(( DROP_B + E )))"
     assert_deleted_at "T-16 drop" "$DROP_NODE" 1 "$DROP_DEL0" $(( DROP_B + E ))
 
     # (f) copies UP 4 -> 6 with five eligible: the dropped member (or the other without a row) gains — so that when
@@ -3425,7 +3463,7 @@ if [ "$WITH_STORAGE" = 1 ]; then
     # B + E + E/2) after the reports of B | REV - E: running, caught up, base n x P + 1 | REV = B + 12E = BD0 + 17E
     # automatic return, n FETCHes | first eligible epoch REV + n x E. Every height is derived from BD0 (read from the chain), each is
     # asserted when the chain reaches it and a deviation is a named FAIL. The length is in the header's length paragraph
-    # (measured in run 17, inferred after the round-17 placement). The number n of revived segments is READ at the cell REV - E.
+    # (measured in runs 17 and 18). The number n of revived segments is READ at the cell REV - E.
     # ROUND 17, row 3 - THE LAYOUT BY CONSTRUCTION: THE RESTART GATE IS AFTER THE SEGMENT-2 PUBLICATION IN EVERY LAYOUT. The
     # 8th node is restarted in the gate (B + E, B + E + E/2) = (BD0 + 6E, BD0 + 6E + E/2). The K9a premise of segment 2 is read
     # at the cell of boundary 2P (tip >= 2P + 1) and the segment is published at 2P + 2E. The cycle starts at the first
@@ -3435,8 +3473,9 @@ if [ "$WITH_STORAGE" = 1 ]; then
     # catch-up is the named FAIL at the cell REV - E. (Round 16 also allowed a gate BEFORE the premise cell and waited for the
     # running node there; that made a latency bound other than REV - E and is removed.)
     # BD0 itself is PLACED: the registration must land inside the epoch of BD0c (a named layout FAIL below otherwise).
-    # Arithmetic at E 15, P 360 (publication 750): BD0c >= 660. Run 17 measured the copies-up-6 cell at 600, so BD0c = 615 is
-    # padded through the cells 615, 630, 645 to BD0 = 660 (INFERRED, not yet measured: 3 pad cells, 45 blocks).
+    # Arithmetic at E 15, P 360 (publication 750): 660 <= BD0c <= 705 (lower bound from the gate, upper bound from the stop before
+    # the premise cell, derived below). Run 18 MEASURED the copies-up-6 cell at 600, so BD0c = 615 was padded through the cells
+    # 615, 630, 645 to BD0 = 660 (gate [750, 757), last cell 960).
     PREM_CELL=$(( 2 * P )); SEG2_PUB=$(( 2 * P + 2 * E ))
     while :; do
         BD0C=$(( CUR_B + E )); GATE_LO=$(( BD0C + 6 * E )); GATE_HI=$(( GATE_LO + E / 2 ))
@@ -3444,7 +3483,19 @@ if [ "$WITH_STORAGE" = 1 ]; then
         echo "[info] the 8th node's restart gate for BD0 = $BD0C would be [$GATE_LO, $GATE_HI), before the segment-2 publication $SEG2_PUB — passing a cell first"
         next_boundary "pre-cycle-pad" 6
     done
-    echo "[ok] the 8th node's cycle starts at BD0 = $BD0C: restart gate [$GATE_LO, $GATE_HI) is at or after the publication $SEG2_PUB of segment 2 (the node is stopped at the premise read of cell $PREM_CELL)"
+    # ROUND 18, row 5 - THE UPPER BOUND, DERIVED. The padding gives only GATE_LO >= 2P + 2E (BD0c >= 660 at E 15). The node RUNS from
+    # its first start (before its registration, at the start of the cycle) until its stop before BD0 + E, and the segment-2 premise
+    # is read at the cell 2P (= 720; tip >= 2P + 1) by a node that must then be stopped (base only) or absent. The valid BD0c:
+    #  (b) the stop precedes the premise cell: BD0c + E <= 2P  ->  660 <= BD0c <= 705 (multiples of E: 660, 675, 690, 705);
+    #  (a) the first start follows the premise cell: CUR_B >= 2P, i.e. the node is registered only after the premise was read.
+    #      Then at the publication cell 2P + 2E check_premise_members finds a registered member whose store was not read (the
+    #      registration lies between the read and the publication, a named layout FAIL by the K9a premise rule), unless the
+    #      registration is after the publication, i.e. BD0c >= 2P + 2E + E = 765 - where the arrival precondition (exactly one
+    #      segment published <= BD0 - E) fails (segment 2 is published at 750). So (a) is EMPTY.
+    # BD0c = 720 (the arrival cell IS the premise cell, the node runs there) and BD0c >= 735 are therefore invalid: a named layout
+    # FAIL, not a layout the run can pass. (Sol's example B1 = 510 with three +3E vote landings: copies-up-6 at 705, BD0c = 720.)
+    [ $(( BD0C + E )) -le "$PREM_CELL" ] || die "the 8th node's placement leaves no valid BD0: BD0c = $BD0C (after the cell $CUR_B) is above the last valid value $(( PREM_CELL - E )) - the node would run at the segment-2 premise cell $PREM_CELL (it is stopped before BD0c + E only if BD0c + E <= $PREM_CELL) and a start after that cell is registered between the premise read and the publication $SEG2_PUB or fails the one-segment arrival precondition — $MSG_LAYOUT"
+    echo "[ok] the 8th node's cycle starts at BD0 = $BD0C (valid set at E $E: $(( SEG2_PUB - 6 * E )) .. $(( PREM_CELL - E ))): restart gate [$GATE_LO, $GATE_HI) is at or after the publication $SEG2_PUB of segment 2, the stop (before $(( BD0C + E ))) precedes the premise cell $PREM_CELL (the node is stopped at the premise read)"
     claim_leaf "$CAND" 1                    # cand1 (the OWNER) claims the genesis leaf that pays the bond
     trap nv_stop EXIT                       # round 14, row 5: installed BEFORE the 8th node exists
     nv_start pin
@@ -3538,7 +3589,7 @@ if [ "$WITH_STORAGE" = 1 ]; then
     while :; do
         rc_n=$(count_log_lines "report for H=$DEP submitted" "${ALIVE[@]}")
         [ "$rc_n" -ge "$N" ] && break
-        t=$(tip_of 1)
+        tip_now 1; t="$TIPV"             # round 18, row 6
         [ $(( t + 1 )) -lt $(( DEP + E + E / 2 )) ] || die "only $rc_n of $N validators submitted the report of epoch $DEP by tip $t (its window closes at $(( DEP + E + E / 2 ))) — the 8th node cannot be restarted without a mixed epoch — $MSG_LAYOUT"
         pump_to $(( t + 1 ))
         wait_all $(( t + 1 ))
@@ -3584,7 +3635,7 @@ if [ "$WITH_STORAGE" = 1 ]; then
         [[ "$NV_BASE" =~ ^[0-9]+$ ]] || die "the 8th node's block-store base is unreadable ('$NV_BASE')"
         [ "$NV_BASE" -le $(( NSEG_PRE * P + 1 )) ] || die "the 8th node's block store starts at $NV_BASE, above the guard maxk x P + 1 = $(( NSEG_PRE * P + 1 )) — the unpublished-period guard did not hold (role_prune.c:320-326)"
         [ "$NV_BASE" != $(( NSEG_PRE * P + 1 )) ] || break
-        t=$(tip_of 1)
+        tip_now 1; t="$TIPV"             # round 18, row 6
         [ $(( t + 2 )) -lt $(( DEP + 12 * E )) ] || die "the 8th node's block store still starts at $NV_BASE at tip $t, two blocks before the return at $(( DEP + 12 * E )) — it did not prune to $(( NSEG_PRE * P + 1 )) in time — $MSG_LAYOUT"
         pump_to $(( t + 1 ))
         wait_all $(( t + 1 ))
@@ -3801,8 +3852,8 @@ if [ "$WITH_STORAGE" = 1 ]; then
     echo "       EXERCISED by this run - the unit tests tests/test_storage_b2.c:2288-2296 and :2982-2988 cover the reset. NOT COVERED: an independent"
     echo "       computation of the leg roots at the boundaries (the HF9-BOUNDARY-ROOTS lines are the nodes' own node-local log text, compared"
     echo "       for equality, not recomputed); the departure boundary itself happens while that node is down; the validity of the fetched"
-    echo "       bytes (the marker file is checked present); the settlement of payday boundaries; any NOT OK by a wrong answer (unit tests);"
-    echo "       the generation-6 boundary line of the replay. Report counts: the fleet is N=$N validators; committed reports per epoch RB_N >= $EP_RBN_MIN;"
+    echo "       bytes (the marker file is checked present); the settlement of payday boundaries; any NOT OK by a wrong answer (unit tests)."
+    echo "       The PRODUCTION-CONSTANT run (E 720), reported separately by its own [PASS], compares no HF9-BOUNDARY-ROOTS line (no generation-6 boundary). Report counts: the fleet is N=$N validators; committed reports per epoch RB_N >= $EP_RBN_MIN;"
     echo "       report / set rows compared on at least $EP_NDB_MIN database(s) per epoch (7/7 only where that minimum is $N)."
 else
     echo "[PASS] HF-9 generation 6 at E=$E, BPY $CONF_BPY, SAFETY grace $GRACE_SAF, ERGONOMIC grace $GRACE_ERG WITHOUT storage"
@@ -3813,5 +3864,6 @@ else
     echo "       edge cells and on ALL SEVEN at the post-restart cell, equal, with no claim and no transaction in [A, tip] except storage reports and"
     echo "       no boundary in the span (check_edge_window); node $VICTIM (last applied height $VICT_STOP_H, fleet tip $VICT_RESTART_TIP at its"
     echo "       restart) restarted across A and then replayed from genesis. LEFT OUT: segment 1 (P = 24 x E is out of reach), B1,"
-    echo "       every storage event, param 25, the candidate, the settlements."
+    echo "       every storage event, param 25, the candidate, the settlements, and the HF9-BOUNDARY-ROOTS per-height leg-root comparison"
+    echo "       (this run reaches no generation-6 boundary; the short run compares it)."
 fi
