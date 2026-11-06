@@ -475,6 +475,20 @@
 #     run (the rendezvous scores); the scenario READS it from the rows and
 #     asserts that exactly one changed. Only the join of node 1 (setup) is
 #     not deterministic and no case is claimed for it.
+#   - **The chain makes blocks on its own** (create_empty_blocks every 60 s,
+#     timeout_commit 4 s, stagef_env.sh:1018-1056) while a step waits, so a
+#     queued report window (8 heights, [H + E + E/2, H + 2E − 1]) can be OPEN
+#     when a pump starts (round 8; run 9 passed epoch 525's window 547..554).
+#     Every queued window and settlement is therefore served BEFORE any pump:
+#     pump_to goes through advance_to whenever a check is queued, advance_to
+#     serves first, stops at every window ahead and at every settlement
+#     boundary, and the waits that do not pump (wait_seg_file, wait_seg_gone,
+#     assert_deleted_at) serve the queues on each poll. NOT covered: the
+#     waits that cannot serve (register_member, wait_cc_row, a node restart,
+#     diff_full_at, cell_read) — if the chain passes a whole window (the tip at
+#     or past H + 2E) during one of them, the run FAILs by name ("closed before
+#     it could be read", a false RED, never a pass); nothing is retried or
+#     lengthened.
 #   - **Every run asserts the same cases whatever keys it generates** (round 7).
 #     The B1 gainer (the member with n_new 1) and the exiter (the lowest-numbered
 #     member of nodes 4-7 with n_new 0 at B1, a current holder because R 4 = four
@@ -821,7 +835,11 @@ node_runs_srv() {
     return 1
 }
 
-pump_to() {
+# pump_raw TARGET — the bare pump (the checks below). Every OTHER caller uses pump_to, which serves the queued report
+# windows and settlement checks first (round 8, see advance_to): the chain also makes blocks on its own
+# (create_empty_blocks, interval 60 s, stagef_env.sh) while a script step waits, so a window can be open at the
+# moment a pump starts.
+pump_raw() {
     local target="$1" h prc
     h=$(stagef_cmt_pump_to "$(db_of 1)" "$target") && prc=0 || prc=$?
     case "$prc" in
@@ -1285,6 +1303,7 @@ wait_seg_file() {          # NODE K UNTIL_TIP
     local f t last=-1 since=0 stall
     f=$(seg_file "$1" "$2"); stall=$(file_wait_polls)
     while :; do
+        service_reads; service_posts      # round 8: a wait that does not pump still serves the queued windows (the chain moves on its own)
         t=$(tip_of 1)
         if [ -f "$f" ]; then
             if [ "$t" -lt "$3" ]; then return 0; fi
@@ -1317,6 +1336,7 @@ assert_deleted_at() {      # LABEL NODE K COUNT_BEFORE MIN_H — a NEW deletion 
     local label="$1" n="$2" k="$3" c0="$4" minh="$5" c1 h t last=-1 since=0 stall
     stall=$(file_wait_polls)
     while :; do
+        service_reads; service_posts      # round 8: serve the queued windows while waiting
         c1=$(del_count "$n" "$k")
         [ "$c1" -le "$c0" ] || break
         t=$(tip_of 1)
@@ -1346,6 +1366,7 @@ wait_seg_gone() {          # NODE K UNTIL_TIP
     local f t last=-1 since=0 stall
     f=$(seg_file "$1" "$2"); stall=$(file_wait_polls)
     while :; do
+        service_reads; service_posts      # round 8: serve the queued windows while waiting
         t=$(tip_of 1)
         if [ ! -e "$f" ]; then
             if [ "$t" -lt "$3" ]; then return 0; fi
@@ -1726,7 +1747,7 @@ service_reads() {
     t=$(tip_of 1)
     for h in $PEND_READ; do
         wt=$(( h + E + E / 2 ))
-        if [ "$t" -ge $(( h + 2 * E )) ]; then die "internal: the report window of epoch $h (tip $wt .. $(( h + 2 * E - 1 ))) was passed without a read (tip $t) — $MSG_LAYOUT"; fi
+        if [ "$t" -ge $(( h + 2 * E )) ]; then die "the report window of epoch $h (tip $wt .. $(( h + 2 * E - 1 ))) closed before it could be read: the chain is at $t (it made blocks on its own while a step waited, and the reports are pruned at $(( h + 2 * E ))) — $MSG_LAYOUT"; fi
         if [ "$t" -ge "$wt" ]; then epoch_service_read "$h"; fi
     done
 }
@@ -1738,9 +1759,17 @@ service_posts() {
         if [ "$t" -ge $(( h + 2 * E )) ]; then epoch_service_post "$h"; fi
     done
 }
-# advance_to T — pump to T, stopping on the way at every pending report window to read it
+# advance_to T — pump to T, serving every queued report window and settlement check on the way. ROUND 8: the queues
+# are served BEFORE the first pump too. The chain makes blocks on its own (create_empty_blocks every 60 s,
+# stagef_env.sh:1018-1056) while the script waits (a registration, a restart, a cell read), so a window can already be
+# OPEN when a pump starts; the old loop only stopped at windows still AHEAD and read after pumping, which passed run
+# 9's window of epoch 525 (tip 547 .. 554) from tip 547 to 555. A window that closed before it could be read (the
+# tip is at or past h + 2E) still FAILs by name in service_reads; nothing is retried. It also stops at the first
+# settlement boundary h + 2E of a queued read, so its check is served at that boundary and not after the next one.
 advance_to() {
     local T="$1" nxt h wt t
+    service_reads
+    service_posts
     while :; do
         t=$(tip_of 1)
         nxt="$T"
@@ -1748,11 +1777,28 @@ advance_to() {
             wt=$(( h + E + E / 2 ))
             if [ "$wt" -gt "$t" ] && [ "$wt" -lt "$nxt" ]; then nxt="$wt"; fi
         done
-        pump_to "$nxt"
+        for h in $PEND_POST; do
+            wt=$(( h + 2 * E ))
+            if [ "$wt" -gt "$t" ] && [ "$wt" -lt "$nxt" ]; then nxt="$wt"; fi
+        done
+        pump_raw "$nxt"
         service_reads
         service_posts
         if [ "$(tip_of 1)" -ge "$T" ]; then return 0; fi
     done
+}
+# pump_to TARGET — the pump every step uses: with queued checks it goes through advance_to (served first, stops at
+# every window and settlement boundary); with none, or from inside advance_to's own serving, the bare pump. The
+# serving code never pumps (epoch_reads / epoch_service_post only wait), so there is no recursion.
+PUMP_IN=0
+pump_to() {
+    if [ "$PUMP_IN" = 1 ] || { [ -z "${PEND_READ// /}" ] && [ -z "${PEND_POST// /}" ]; }; then
+        pump_raw "$1"
+        return 0
+    fi
+    PUMP_IN=1
+    advance_to "$1"
+    PUMP_IN=0
 }
 
 # drain_pending — advance through EVERY queued epoch's report window and settlement boundary, then FAIL if
