@@ -8135,6 +8135,175 @@ static int t_hyb_crash_boundary_event(void)
                     "B1 with a storage event (one registered node)", 1);
 }
 
+/* ══ HF-9 WP7 round 17 - the TEMPORARY boundary leg-root log line ═════════
+ *
+ * Operator decision 2026-11-06 (docs/plans/decisions/2026-11-06-hf9-boundary-
+ * leg-root-log.md): at each epoch boundary under generation 6 the node writes
+ *   HF9-BOUNDARY-ROOTS h=<H> global=<128 hex> leg1=<128 hex> ... leg8=<...>
+ * to its log (nodus_cmt_app_commit, after the COMMIT). The line is TEMPORARY;
+ * its removal is the operator's word, and this test goes with it.
+ *
+ * Proves, on the hybrid chain of hyb_open (generation 6 in force from block 13):
+ *   L1  the Commit of the ordinary generation-6 block E - 1 writes NO line;
+ *   L2  the Commit of the boundary block E (the first generation-6 boundary
+ *       B1; no storage event) writes EXACTLY ONE line, with h = E, a global
+ *       root equal to nodus_witness_v2_committed_global_root and the eight
+ *       leg roots equal to the v2_trie_roots rows read by SQL;
+ *   L3  nodus_cmt_app_boundary_root_line, called directly, returns that same
+ *       text at E, and returns 0 (no line) at the non-boundary heights E - 1
+ *       and E + 1 and at height 0;
+ *   L4  the Commit of block E + 1 writes no line;
+ *   L5  a boundary height under a generation BELOW 6 yields no line: a fresh
+ *       chain at its genesis (the SYSTEM runtime resolves and is below
+ *       NODUS_RT_GEN_TRIE - read, so the 0 is the generation rule and not an
+ *       unresolved runtime) answers 0 at height E.
+ * CAPTURE: the line is read from what the Commit really writes. The nodus
+ * standalone build links nodus_log_shim.c, whose qgp_log_ring_add prints
+ * every QGP_LOG_* line to stderr (there is no ring buffer in that build; the
+ * real qgp_log.c ring truncates a message at QGP_LOG_MSG_MAX_LEN = 256 bytes,
+ * shared/crypto/utils/qgp_log.c:231, and its file writer at 1024, :677 - both
+ * shorter than the ~1250-byte line), so stderr is redirected into a temp file
+ * around one block step (dup2) and scanned. L3 is the formatting function
+ * itself, visible through nodus_witness_cmt_app.h.
+ * Compile flags: NODUS_EVM_ENABLED (the tries; the short-epoch build also
+ * has -DDNAC_EPOCH_LENGTH=15, a production-epoch build runs E blocks - 720 -
+ * as hyb_crash_boundary_b1 does). Environment: none. Leaves: one
+ * /tmp/test_cmt_app_hyb_XXXXXX directory per chain (removed) and a tmpfile.
+ * Can falsely pass: a log sink other than the shim (the real qgp_log.c with
+ * file logging on) is not exercised, so L2 proves the standalone node's
+ * stderr line, not a truncated one; the line is node-local text, never a
+ * consensus byte; the below-generation-6 case is shown at a genesis chain,
+ * not at a boundary block of a generation-5 chain.
+ */
+static char *blr_capture_block(hyb_t *A, int64_t height)
+{
+    FILE  *f;
+    char  *buf = NULL;
+    long   n;
+    int    saved, rc;
+
+    fflush(stderr);
+    f = tmpfile();
+    saved = dup(2);
+    if (!f || saved < 0) { if (f) fclose(f); return NULL; }
+    dup2(fileno(f), 2);
+    rc = hyb_pair_step(A, NULL, height, 0);
+    fflush(stderr);
+    dup2(saved, 2);
+    close(saved);
+    fflush(f);
+    n = ftell(f);
+    if (rc == CMT_OK && n >= 0) {
+        buf = calloc((size_t)n + 1, 1);
+        if (buf) {
+            rewind(f);
+            if (fread(buf, 1, (size_t)n, f) != (size_t)n) { free(buf); buf = NULL; }
+        }
+    }
+    fclose(f);
+    return buf;
+}
+
+static int blr_count(const char *buf, const char *needle)
+{
+    int c = 0;
+
+    for (const char *p = buf; (p = strstr(p, needle)) != NULL; p += strlen(needle))
+        c++;
+    return c;
+}
+
+static int blr_leg_hex(sqlite3 *db, int leg, char out[129])
+{
+    sqlite3_stmt *st = NULL;
+    int ok = 0;
+
+    if (sqlite3_prepare_v2(db, "SELECT lower(hex(root)) FROM v2_trie_roots "
+                               "WHERE leg = ?1", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int(st, 1, leg);
+    if (sqlite3_step(st) == SQLITE_ROW && sqlite3_column_bytes(st, 0) == 128) {
+        memcpy(out, sqlite3_column_text(st, 0), 128);
+        out[128] = '\0';
+        ok = 1;
+    }
+    sqlite3_finalize(st);
+    return ok ? 0 : -1;
+}
+
+static int t_hyb_boundary_leg_root_log(void)
+{
+    const int64_t E = (int64_t)DNAC_EPOCH_LENGTH;
+    hyb_t   *A = calloc(1, sizeof(*A)), *C = calloc(1, sizeof(*C));
+    char    *cap_before, *cap_b, *cap_after, *at;
+    char     line[NODUS_CMT_BOUNDARY_ROOT_LINE_MAX], expect[NODUS_CMT_BOUNDARY_ROOT_LINE_MAX];
+    char     hx[129], gx[129];
+    uint8_t  gr[64];
+    size_t   n;
+    const nodus_domain_runtime_t *rt = NULL;
+
+    CHECK(A && C, "alloc");
+    CHECK(E > 16, "the boundary lies above the ladder");
+    CHECK(hyb_open(A, 0) == 0, "L0 node opens");
+    CHECK(hyb_pair_to(A, NULL, 0, E - 2) == 0, "L0 blocks 1 .. E - 2");
+
+    cap_before = blr_capture_block(A, E - 1);
+    CHECK(cap_before != NULL, "L1 block E - 1 applies");
+    CHECK(blr_count(cap_before, "HF9-BOUNDARY-ROOTS") == 0,
+          "L1 an ordinary generation-6 block writes NO boundary line");
+    free(cap_before);
+
+    cap_b = blr_capture_block(A, E);
+    CHECK(cap_b != NULL, "L2 the boundary block E applies");
+    CHECK(blr_count(cap_b, "HF9-BOUNDARY-ROOTS") == 1,
+          "L2 the generation-6 boundary Commit writes EXACTLY ONE line");
+    at = strstr(cap_b, "HF9-BOUNDARY-ROOTS");
+    CHECK(at != NULL, "L2 the line is there");
+    n = strcspn(at, "\n");
+    CHECK(n < sizeof(line), "L2 the line fits its bound");
+    memcpy(line, at, n);
+    line[n] = '\0';
+    free(cap_b);
+
+    CHECK(nodus_witness_v2_committed_global_root(A->g.w, gr) == 0, "L2 the committed global root reads");
+    {
+        static const char hexd[] = "0123456789abcdef";
+        for (int i = 0; i < 64; i++) { gx[2 * i] = hexd[gr[i] >> 4]; gx[2 * i + 1] = hexd[gr[i] & 15]; }
+        gx[128] = '\0';
+    }
+    n = (size_t)snprintf(expect, sizeof(expect), "HF9-BOUNDARY-ROOTS h=%" PRId64 " global=%s", E, gx);
+    for (int l = 1; l <= 8; l++) {
+        CHECK(blr_leg_hex(A->g.w->db, l, hx) == 0, "L2 the v2_trie_roots row reads");
+        n += (size_t)snprintf(expect + n, sizeof(expect) - n, " leg%d=%s", l, hx);
+    }
+    CHECK(strcmp(line, expect) == 0,
+          "L2 the line = h, the committed global root and the eight v2_trie_roots rows, full 128 hex each");
+
+    CHECK(nodus_cmt_app_boundary_root_line(A->g.w, (uint64_t)E, line, sizeof(line)) == 1 &&
+          strcmp(line, expect) == 0, "L3 the function returns the same text at E");
+    CHECK(nodus_cmt_app_boundary_root_line(A->g.w, (uint64_t)E - 1, line, sizeof(line)) == 0 &&
+          nodus_cmt_app_boundary_root_line(A->g.w, (uint64_t)E + 1, line, sizeof(line)) == 0 &&
+          nodus_cmt_app_boundary_root_line(A->g.w, 0, line, sizeof(line)) == 0,
+          "L3 no line at a non-boundary height or at 0");
+
+    cap_after = blr_capture_block(A, E + 1);
+    CHECK(cap_after != NULL, "L4 block E + 1 applies");
+    CHECK(blr_count(cap_after, "HF9-BOUNDARY-ROOTS") == 0, "L4 the block after the boundary writes no line");
+    free(cap_after);
+    hyb_close(A);
+    free(A);
+
+    CHECK(hyb_open(C, 0) == 0, "L5 a fresh chain at its genesis opens");
+    CHECK(nodus_witness_v2_runtime_for(C->g.w, DNA_DOMAIN_SYSTEM, 0, &rt) == 0 && rt &&
+          rt->generation < NODUS_RT_GEN_TRIE,
+          "L5 the SYSTEM runtime resolves and is below generation 6");
+    CHECK(nodus_cmt_app_boundary_root_line(C->g.w, (uint64_t)E, line, sizeof(line)) == 0,
+          "L5 a boundary height under a generation below 6 yields no line");
+    hyb_close(C);
+    free(C);
+    return 0;
+}
+
 /* ══ HF-9 WP5 - T-15 (iv): a block during the SHADOW RUN (plan :455; the
  *    shadow run is plan §11, capture = 0, shadow running) ═════════════════
  *
@@ -9834,6 +10003,7 @@ int main(int argc, char **argv)
         { "hyb_crash_edge",             t_hyb_crash_edge },
         { "hyb_crash_ordinary_gen6",    t_hyb_crash_ordinary },
         { "hyb_crash_boundary_b1",      t_hyb_crash_boundary },
+        { "hyb_boundary_leg_root_log",  t_hyb_boundary_leg_root_log },
 #endif
         { "bind_refuses_legacy",        t_bind_refuses_legacy },
         { "init_chain_match",           t_init_chain_match },

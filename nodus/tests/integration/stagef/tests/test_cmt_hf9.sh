@@ -25,14 +25,17 @@
 #   SHORT EPOCH — "7/7 state_root at epoch length 15" (CLAUDE.md TESTS):
 #     the whole scenario, storage included. Build, environment and command
 #     sequence are below ("WHAT IT REQUIRES"). Parameters: E 15, BPY 20,
-#     SAFETY grace 15, ERGONOMIC grace 15. Expected length: NOT measured. The six
-#     votes ≈ 330, segment 1 at 390, A ≈ 429, B1 = 435 (JUDGMENT from the layout);
-#     from there the other storage events, then the 8th node's cycle LAST: its
-#     arrival BD0 is read from the chain, its automatic return is at BD0 + 17E,
-#     its first eligible epoch BD0 + 17E + n x E (n = the revived segments, 1 or
-#     2) and that epoch's settlement 2E later; the second segment is published at
-#     750; then the replay. The cell at a payday boundary (360, 720) is not
-#     asserted for amounts.
+#     SAFETY grace 15, ERGONOMIC grace 15. Length: the six votes ≈ 330, segment 1
+#     at 390, A ≈ 429, B1 = 435 (JUDGMENT from the layout); then the other
+#     storage events, the 8th node's cycle LAST. MEASURED (run 17, commit
+#     8af236e88, before the round-17 placement): BD0 = 615 (copies-up-6 cell
+#     at 600), REV = BD0 + 17E = 870, the last cell 915. The round-17 placement
+#     puts the restart gate after the segment-2 publication (750), so BD0 =
+#     660 (cells 615, 630, 645 are plain pad cells): INFERRED, not measured -
+#     REV = 915, first eligible epoch REV + n x E (n = the revived segments, 1
+#     or 2) and that epoch's settlement 2E later, the last cell 45 blocks after
+#     run 17's (960). The second segment is published at 750; then the replay.
+#     The cell at a payday boundary (360, 720) is not asserted for amounts.
 #   PRODUCTION-CONSTANT EDGE RUN — test parameters chosen by the
 #     orchestrator (fix round 3, 2026-11-05, not a plan value): E = 720,
 #     BPY = 6 307 200 (the shipped values, no -DDNAC_EPOCH_LENGTH /
@@ -241,12 +244,12 @@
 #      nodus_seg_store_has; assert_members_hold_range), else FAIL with a layout
 #      message. The 8th node STOPPED at the read is read from its database file
 #      (base only: a stopped archive keeps its start, its height catches up when it
-#      runs). The cycle is PLACED so that the 8th node's restart gate lies wholly
-#      before the premise cell 2P (the node is then running and caught up at the
-#      read, read_k9a_premise waits for it) or wholly after the publication
-#      2P + 2E (it is stopped at the read and restarts after the publication):
-#      no restart falls between a premise read and its publication, and no
-#      re-read is needed (see the cycle's start). READ TIP (round 9): the EARLIEST tip kP + 1 (a pump to it lands
+#      runs). The cycle is PLACED so that the 8th node's restart gate lies
+#      AFTER the publication 2P + 2E in every layout (round 17): the node is
+#      stopped at the segment-2 premise read and restarts after the
+#      publication, so no restart falls between a premise read and its
+#      publication, no re-read is needed and nothing waits for the node's
+#      catch-up before the cell REV - E (see the cycle's start). READ TIP (round 9): the EARLIEST tip kP + 1 (a pump to it lands
 #      above it by an amount the helper does not bound — 22 is only a layout
 #      ESTIMATE, stagef_env.sh:1176-1186, the tip guards decide; read_k9a_premise; segment 1 in section 3, segment k >= 2
 #      right after the cell of the boundary kP), tip read before AND after the
@@ -281,7 +284,11 @@
 #      and pruned at H + 2E, so they are read at a tip in [H + E + ⌊E/2⌋,
 #      H + 2E − 1], after every compared node was waited to the window's
 #      close. For EVERY boundary epoch from B1 on: identical set / member_epoch
-#      / report rows on 7/7; more than half the seats reported (F1); every
+#      / report rows on the databases of ALIVE - seven, six while a node is
+#      restarting (the number compared is PRINTED per epoch, "N validators"
+#      is the fleet size, never the number of reports or databases);
+#      more than half the seats reported (F1: RB_N committed reports with
+#      2 x RB_N > N; not necessarily all N - RB_N is printed); every
 #      eligible member has a certain OK verdict, except the 8th node while
 #      it is stopped (epochs up to B: a certain NOT OK with bit 0 in every
 #      seat), a member in grace or without assignment no bit; the actual NEW holders of each event
@@ -487,11 +494,33 @@
 #     15, ERGONOMIC 720 — test parameters of the orchestrator) proves the
 #     edge at E = 720 and says in its PASS line what it leaves out; the
 #     17 280 SAFETY wait is not exercised.
-#   - **PER-HEIGHT LEG ROOTS ARE NOT COVERED AT B1, B1+E AND B1+2E** (round-4
-#     row 1). The plan (docs/plans/approved/2026-11-04-hf9.md :453) lists "leg
+#   - **PER-HEIGHT LEG ROOTS AT B1, B1+E, B1+2E AND EVERY LATER BOUNDARY: THE
+#     TEMPORARY NODE LOG LINE** (round 17; the round-4 gap, closed by an operator
+#     decision). The plan (docs/plans/approved/2026-11-04-hf9.md :453) lists "leg
 #     roots at A−1, A, A+1, B1, B1+E, B1+2E"; v2_trie_roots keeps the LATEST root
-#     of each leg only, there is no per-height history (plan §16 DF-3, :614:
-#     proofs at historical heights are not built) and no node logs a leg root.
+#     of each leg only and there is no per-height history (plan §16 DF-3, :614:
+#     proofs at historical heights are not built). Operator, 2026-11-06 ("Node'u
+#     değiştirip test et."; decision docs/plans/decisions/2026-11-06-hf9-boundary-
+#     leg-root-log.md): the node writes, right after the commit of each epoch-
+#     boundary block under generation 6, the line
+#       HF9-BOUNDARY-ROOTS h=<B> global=<128 hex> leg1=<128 hex> ... leg8=<128 hex>
+#     (nodus_cmt_app_commit; TEMPORARY - its removal is the operator's word, the
+#     code comment and BUGS.md section 13 say so). check_boundary_leg_log reads
+#     it from the logs of ALL N validators at every boundary cell from B1 (so at
+#     least B1, B1+E, B1+2E): FAILs when a log lacks the line, when the line is
+#     malformed, when two lines of one height in one log differ (a replay writes
+#     it again: never one picked), when the global root differs from the cell's
+#     full global_root, or when the eight leg roots differ between logs; after
+#     the replay the replayed node's own log is compared with the agreed value
+#     of every boundary. COMPILE FLAGS: the line needs a build with
+#     NODUS_EVM_ENABLED (the tries) - the short-epoch build of "WHAT IT
+#     REQUIRES"; ENVIRONMENT: none new; LEAVES BEHIND: only log lines in the
+#     nodes' own logs. HOW IT CAN FALSELY PASS: the line is node-local TEXT
+#     written by the node under test, not a consensus byte and not an
+#     independent computation - seven nodes that log the same wrong value pass
+#     (the oracle and the unit tests, not this check, establish correctness); it
+#     shows the nodes' own reports of the roots AT the height are equal. It does
+#     not run in the production-constant edge run (no generation-6 boundary).
 #     What this scenario does, exactly:
 #       * A−1, A, A+1: the eight leg roots are read at a tip T from a window with
 #         no claim (v2_claim_counts), no transaction except single-leg SYSTEM
@@ -501,17 +530,16 @@
 #         eight leg tables; round 12, row 6), so they are the roots of those heights; and
 #         the FULL 64-byte global_root and block_id of each of those heights are
 #         compared 7/7 (stagef_diff.sh --full, historical rows exist).
-#       * B1, B1+E, B1+2E (and every later boundary): ONLY the full global_root
-#         and block_id AT the height are compared 7/7 (--full), plus the eight
-#         leg roots and every storage relation of one snapshot at a LATER tip T
-#         (the boundary cell prints the envelope count over (B, T]; with
-#         envelopes it says the snapshot is of a later state). The per-height
-#         comparison of the leg roots AT B1, B1+E, B1+2E is NOT covered. The
-#         global root of a height is bound to its leg roots through the
-#         composition chain (plan §10.3, :396-397: leg → its composition → STOR v3
-#         → SYS v7 → DomainHead v2 → domains_root → GLOBAL v2 = the AppHash), so
-#         seven nodes agreeing on it is agreement on the composition, but no leg
-#         root of that height is read or named.
+#       * B1, B1+E, B1+2E (and every later boundary): the full global_root and
+#         block_id AT the height are compared 7/7 (--full) AND the eight leg
+#         roots AT the height are compared on the N validators' logs through the
+#         HF9-BOUNDARY-ROOTS line (above), besides the eight leg roots and every
+#         storage relation of one snapshot at a LATER tip T (the boundary cell
+#         prints the envelope count over (B, T]; with envelopes it says that
+#         snapshot is of a later state). The global root of a height is bound to
+#         its leg roots through the composition chain (plan §10.3, :396-397: leg
+#         → its composition → STOR v3 → SYS v7 → DomainHead v2 → domains_root →
+#         GLOBAL v2 = the AppHash).
 #     At A−1 itself the window is, by inference from README "DELTA 1" (a block
 #     whose global root differs from its predecessor's is followed by a proof
 #     block at the 4 s timeout_commit pace; NOT measured), one such interval —
@@ -641,7 +669,10 @@
 #       (c) RESIDUAL single calls that no block bound covers - one CLI call
 #           (consent, register, exit, chain-config propose, claim, the pump's
 #           spend), a diff (stagef_diff.sh), the XOR oracle (python3), the
-#           individual snapshot / store / report / balance reads, a stagef
+#           individual snapshot / store / report / balance reads, the per-seat
+#           sqlite3 + openssl (SHA3-512) pipeline of the verdict prerequisites
+#           (check_verdict_prereqs), the repeated log scans (count_log_lines,
+#           nv_log_count, the node-log reads of the leg-root comparison), a stagef
 #           helper's process stop or start (stagef_stop_node <= 30 s,
 #           stagef_spawn_node <= 30 s, stagef_env.sh:486-488, :618-633): each
 #           is preceded by serve_queues where the script calls it, but NONE is
@@ -754,14 +785,11 @@
 #     verdict rule. The retention restart needs JOIN_PRUNE_MARGIN (3) blocks
 #     between the joiner's registration and the join boundary (a layout margin,
 #     not a plan value).
-#   - Duration (short epoch, NOT measured): the candidate cycle runs LAST, so BD0 (read from
-#     the chain) is the first boundary after the other events; from it the cycle takes 17E
-#     blocks to the automatic return (departure BD0 + 5E, return B + 12E = BD0 + 17E; round 13
-#     returned at BD0 + 7E), then n x E to the first eligible epoch (n = the revived segments,
-#     1 or 2) and 2E more to its settlement; the replay follows. Round 14 therefore adds 10E =
-#     150 blocks to the run of round 13, 11E = 165 when the revival covers two segments where
-#     round 13's covered one (JUDGMENT from the formulas, not a measurement); ≈ 4 500 blocks
-#     production-constant run (no 8th node). rc 99 = coverage that did not happen.
+#   - Duration (short epoch): see the length paragraph at the top (one account): MEASURED in run 17 (BD0 = 615,
+#     last cell 915, before the placement), INFERRED after it (BD0 = 660, last cell 960); the cycle takes 17E
+#     blocks from BD0 to the automatic return (departure BD0 + 5E, return B + 12E), then n x E to the first
+#     eligible epoch and 2E more to its settlement; ≈ 4 500 blocks production-constant run (no 8th node,
+#     JUDGMENT, not measured). rc 99 = coverage that did not happen.
 #
 # ════════════════════════════════════════════════════════════════════
 set -euo pipefail
@@ -1058,7 +1086,8 @@ node_runs_srv() {
 # moment a pump starts.
 #   Round 16, row 6: the pump is pump_s below - a copy of stagef_cmt_pump_to (stagef_env.sh:1367-1425) whose spend-inclusion wait
 #   (stagef_env.sh:1415, a non-serving stagef_cmt_wait_row with its 20-height budget) is wait_row_s, and which serves the
-#   queued windows at the top of every step, so a window that opens while the pump runs is read inside its 8 heights.
+#   queued windows at the top of every step, so a window that opens while the pump runs is served at the pump's NEXT step; a
+#   residual single call (see "THE WAITS", item c) that straddles the window still fails closed with a named FAIL.
 pump_raw() {
     local target="$1" h prc
     pump_s "$(db_of 1)" "$target" && prc=0 || prc=$?
@@ -1097,13 +1126,14 @@ wait_height_s() {          # DB TARGET [STALL_INTERVALS] — rc 0 reached, 1 sta
     while :; do
         h=$(stagef_cmt_tip "$db"); [ -n "$h" ] || h=-1
         WH_TIP="$h"
-        if [ "$h" -ge "$target" ]; then return 0; fi
-        # round 16, row 7: inside service_reads / service_posts (SERVING = 1) the wait cannot serve, so it is BOUNDED by the FLEET tip:
-        # SERVE_LIMIT is the height at which the window being served closes (reports pruned at H + 2E) or its settlement
-        # check is overtaken (H + 3E); passing it is a named FAIL, never a read of pruned reports
+        # round 16, row 7 / round 17, row 4: inside service_reads / service_posts (SERVING = 1) the wait cannot serve, so it is
+        # BOUNDED by the FLEET tip: SERVE_LIMIT is the height at which the window being served closes (reports pruned at
+        # H + 2E) or its settlement check is overtaken (H + 3E); passing it is a named FAIL, never a read of pruned reports.
+        # The check holds on EVERY poll including the one that reaches the target (a successful exit cannot bypass it).
         if [ "$SERVING" = 1 ] && [ "$SERVE_LIMIT" -gt 0 ] && [ "$(tip_of 1)" -ge "$SERVE_LIMIT" ]; then
-            die "a wait for height $target on $db (at $h) inside the service of a report window / settlement ran until the fleet tip passed $SERVE_LIMIT, where that evidence is gone — a lagging node during the 8 heights of a window (a false RED, never a pass)"
+            die "a wait for height $target on $db (at $h) inside the service of a report window / settlement saw the fleet tip pass $SERVE_LIMIT, where that evidence is gone — a lagging node during the 8 heights of a window (a false RED, never a pass)"
         fi
+        if [ "$h" -ge "$target" ]; then return 0; fi
         serve_queues
         if [ "$h" -gt "$last" ]; then last="$h"; since=0; else since=$(( since + 1 )); fi
         if [ "$since" -ge "$stall_polls" ]; then return 1; fi
@@ -1940,9 +1970,8 @@ read_k9a_premise() {       # LABEL K B — pump to LO if the tip is below it, th
     [ $(( b - 1 - (lo + PUMP_LAND_MAX) )) -ge 1 ] || die "$label: the window [$lo, $(( b - 1 ))] is not wider than the pump's landing estimate $PUMP_LAND_MAX (an inference, not a bound) — $MSG_LAYOUT"
     if [ "$(tip_of 1)" -lt "$lo" ]; then pump_to "$lo"; fi
     wait_all "$lo"
-    # round 16: a RUNNING 8th node (restarted earlier by the placement of the cycle) must have caught up to the read tip before its
-    # store is read - the fleet's cells did not wait for it (row 3); progress-bounded and serving, a named FAIL if it never does
-    if member_alive 8; then wait_height_s "$(nv_db)" "$lo" 8 || die "$label: the running 8th node did not catch up to the premise tip $lo (stuck at $WH_TIP)"; fi
+    # round 17, row 3: no wait for the 8th node here. The cycle is placed so that its restart gate is after the segment-2
+    # publication: at every premise read it is STOPPED (read from its file, base only) or - before its registration - absent.
     assert_members_hold_range "$label" "$k" "$b"
 }
 assert_members_hold_range() {
@@ -1992,6 +2021,63 @@ DEAD_LAST=0                # the last epoch the 8th node is stopped through = B 
 # register the boundary's epoch for its reports and its settlement. Per plan T-13 the leg-root
 # snapshot is "of the boundary state" only to the extent that no envelope came after it: the tx
 # count over (B, T] is printed, and a snapshot with envelopes after B is said to be of a LATER state.
+# ── ROUND 17: the TEMPORARY boundary leg-root log line, compared node by node ──────────────────────────────────────
+# Operator decision 2026-11-06 (docs/plans/decisions/2026-11-06-hf9-boundary-leg-root-log.md): at each epoch boundary under
+# generation 6 every node writes, right after the commit of that block (nodus_cmt_app_commit, nodus_witness_cmt_app.c), one line
+#   HF9-BOUNDARY-ROOTS h=<B> global=<128 hex> leg1=<128 hex> ... leg8=<128 hex>
+# to its log. v2_trie_roots keeps only the LATEST root of each leg, so these lines are the only per-height record of the eight
+# leg roots AT the boundary. check_boundary_leg_log reads them from the log of every one of the N validators:
+#   * every log must hold the line for height B - none is a named FAIL (the node did not log, or its gate did not open);
+#   * all lines of one height in one log must be IDENTICAL (a restarted node replays and writes the line again) - never pick one;
+#   * the line must have the exact shape (h = B, 128-hex global root, leg1 .. leg8 of 128 hex each);
+#   * its global root must equal the full 64-byte global_root the cell read at height B (7/7 already compared by diff --full);
+#   * the eight leg roots - the whole text - must be equal on all N logs.
+# HOW IT CAN LIE: the line is node-local log TEXT written by the node under test right after the commit - not a consensus byte and
+# not an independent computation (a node that logged the wrong thing consistently on all seven would pass; the roots' correctness
+# is the oracle's / the unit tests' job); it proves that the seven nodes' leg roots AT B were equal as the nodes themselves
+# reported them, and that the node's own global root at B equals the one in v2_blocks. It does not run in the production-constant
+# edge run (no boundary under generation 6 is reached there).
+declare -A BLR              # the verified line text per boundary height (for the post-replay comparison of the replayed node)
+BLR_LINES=0                 # the number of log lines read and verified over the run
+blr_text_of() {             # LOG HEIGHT -> prints the text after the prefix of every line of that height, one per line; rc 0 even when none
+    local log="$1" b="$2" grc=0 out
+    [ -r "$log" ] || die "the log $log cannot be read — the boundary leg-root comparison would prove nothing"
+    out=$(grep -F -- "HF9-BOUNDARY-ROOTS h=$b " "$log") || grc=$?
+    { [ "$grc" = 0 ] || [ "$grc" = 1 ]; } || die "grep of $log failed (rc $grc) — an unreadable log is not a log without the line"
+    [ -z "$out" ] || printf '%s\n' "$out" | sed 's/.*HF9-BOUNDARY-ROOTS //'
+}
+blr_unique() {              # LABEL LOG HEIGHT -> sets BLR_ONE to the single text of that height in that log; named FAIL when none / malformed / differing
+    local label="$1" log="$2" b="$3" t one="" cnt=0 re
+    re="^h=$b global=[0-9a-f]{128}( leg[1-8]=[0-9a-f]{128}){8}\$"
+    while IFS= read -r t; do
+        [ -n "$t" ] || continue
+        [[ "$t" =~ $re ]] || die "$label: a 'HF9-BOUNDARY-ROOTS h=$b' line in $log is malformed (expected h, global and leg1..leg8, 128 lower-case hex each): ${t:0:200}"
+        if [ -z "$one" ]; then one="$t"
+        elif [ "$t" != "$one" ]; then die "$label: $log holds DIFFERENT 'HF9-BOUNDARY-ROOTS h=$b' lines (a replay wrote another value) — never one picked"; fi
+        cnt=$(( cnt + 1 ))
+    done < <(blr_text_of "$log" "$b")
+    [ "$cnt" -ge 1 ] || die "$label: $log holds NO 'HF9-BOUNDARY-ROOTS h=$b' line — the node did not log the boundary leg roots (or its generation-6 gate did not open)"
+    BLR_ONE="$one"; BLR_CNT="$cnt"
+}
+check_boundary_leg_log() {  # B LABEL — uses the cell just read at B
+    local b="$1" label="$2" n gcell g ref="" ref_n="" tot=0 mx=0
+    [ "${#ALIVE[@]}" = "$N" ] || die "$label: the boundary leg-root comparison needs the logs of all $N validators, ${#ALIVE[@]} are live"
+    gcell=$(cell_lines gr | awk -F'|' -v h="$b" '$1 == h { print tolower($2) }')
+    [[ "$gcell" =~ ^[0-9a-f]{128}$ ]] || die "$label: the cell holds no full global root at height $b ('${gcell:0:40}')"
+    for n in "${ALIVE[@]}"; do
+        blr_unique "$label" "$(node_log "$n")" "$b"
+        g="${BLR_ONE#h=$b global=}"; g="${g%% *}"
+        [ "$g" = "$gcell" ] || die "$label: node$n logged the global root ${g:0:32}… at $b, the cell's full global_root at $b is ${gcell:0:32}…"
+        if [ -z "$ref" ]; then ref="$BLR_ONE"; ref_n="$n"
+        elif [ "$BLR_ONE" != "$ref" ]; then
+            diff <(tr ' ' '\n' <<< "$ref") <(tr ' ' '\n' <<< "$BLR_ONE") >&2 || true
+            die "$label: node$n's leg roots at $b DIFFER from node${ref_n}'s (diff above, left node$ref_n, right node$n)"
+        fi
+        tot=$(( tot + BLR_CNT )); if [ "$BLR_CNT" -gt "$mx" ]; then mx="$BLR_CNT"; fi
+    done
+    BLR[$b]="$ref"; BLR_LINES=$(( BLR_LINES + tot ))
+    echo "[ok] $label: the HF9-BOUNDARY-ROOTS line of height $b read on ${#ALIVE[@]} of $N validators' logs ($tot line(s), at most $mx per log): global root = the cell's full global_root, the eight leg roots equal on every log (node-reported, per height)"
+}
 boundary_cell() {          # LABEL BOUNDARY R
     advance_to "$2"
     cell_read "$1" "$2" "$(( $2 + 1 ))" "$2"
@@ -2005,6 +2091,7 @@ boundary_cell() {          # LABEL BOUNDARY R
     check_legs post "$1"
     check_storage_state "$2" "$3" "$1"
     check_transition_exact "$2" "$1"
+    if [ "$WITH_STORAGE" = 1 ]; then check_boundary_leg_log "$2" "$1"; fi     # round 17: the per-height leg roots, node by node
     # the publication boundary of segment k = (b - 2E) / P (k >= 2 here; segment 1 is checked in section 3): the
     # members present now must be the ones whose stores were read at the premise tip (round 10, row 9)
     if [ "$2" -gt $(( 2 * E )) ] && [ $(( ($2 - 2 * E) % P )) = 0 ] && [ $(( ($2 - 2 * E) / P )) -ge 2 ]; then
@@ -2165,6 +2252,8 @@ epoch_reads() {            # H
         fi
     done
     EP_H="$h"; RB_Y=(); RB_GRACE=(); RB_HU=(); RB_N=0; RB_I=(); RB_YE=()
+    EP_NDB="${#ALIVE[@]}"     # round 17, row 8: the number of databases whose set / member_epoch / report rows were read AND compared (6 while the joiner restarts)
+    if [ "$EP_NDB" -lt "$EP_NDB_MIN" ]; then EP_NDB_MIN="$EP_NDB"; fi
     local so sf mo bit
     idx=0
     while IFS='|' read -r _ fp g _; do
@@ -2385,7 +2474,7 @@ epoch_service_read() {     # H
             # are back, the grace over): the 8th node has RUN since its restart in epoch B + E, holds the files it fetched, so
             # the verdict is OK with its bit in the reports
             [ "$EV" = ok ] || die "epoch $h: the candidate (8th node, running since its restart inside epoch $(( DEAD_LAST + E ))) is eligible but its verdict is '$EV' (${RB_Y[$fp]} of $RB_N seats carry its bit; I ${RB_I[$fp]}, Y ${RB_YE[$fp]})"
-            echo "[ok] epoch $h: the candidate ${fp:0:16}… (8th node, running) is OK: verdict OK from $RB_N reports (bit in ${RB_Y[$fp]} of them; I ${RB_I[$fp]}, Y ${RB_YE[$fp]}; $N validator reporters)"
+            echo "[ok] epoch $h: the candidate ${fp:0:16}… (8th node, running) is OK: verdict OK from RB_N=$RB_N committed report(s) (bit in ${RB_Y[$fp]} of them; I ${RB_I[$fp]}, Y ${RB_YE[$fp]}; N=$N fleet validators; $EP_NDB database(s) compared)"
             if [[ "$NV_BASE" =~ ^[0-9]+$ ]] && [ "$NV_BASE" -gt $(( NSEG_PRE * P )) ]; then
                 echo "[ok] epoch $h: the 8th node's probes of the revived segment(s) can only be answered from its segment FILES (its block store starts at $NV_BASE, above their last height $(( NSEG_PRE * P )))"
             fi
@@ -2405,6 +2494,10 @@ epoch_service_read() {     # H
         fi
     done
     for fp in ${ZERO_AT[$h]:-}; do
+        # round 17, row 6: the zero assertion holds for a member that held ONE segment: no segment may be published at or
+        # before this epoch's boundary beyond that one (segment count by published_height <= h, read from node 1)
+        nzs=$(sqlite3 -cmd '.timeout 5000' "$(db_of 1)" "SELECT COUNT(*) FROM v2_storage_segments WHERE published_height <= $h;") || die "epoch $h: the segment count could not be read"
+        [ "$nzs" = 1 ] || die "PRECONDITION of the dropped-holder case: $nzs segment(s) published at or before $h, expected exactly one — a segment published at $h could give ${fp:0:16}… a positive held_union — $MSG_LAYOUT"
         in_set_or_die "$fp"
         { [ "${RB_Y[$fp]}" = 0 ] && [ "${RB_HU[$fp]}" = 0 ]; } || die "epoch $h: the dropped holder ${fp:0:16}… still has held_union ${RB_HU[$fp]} / ${RB_Y[$fp]} bit(s) after the overlap epoch"
         echo "[ok] epoch $h: the dropped holder ${fp:0:16}… is no longer probed (held_union 0, bit 0 in every report)"
@@ -2426,6 +2519,9 @@ epoch_service_read() {     # H
         accv=$(acc_of "${MOWN[$fp]}") || die "epoch $h: the accrual of ${fp:0:16}…'s payee could not be read (query failed or not a number) — an unread balance proves no payment"
         SETTLE_ACC["$h|$fp"]="$accv"   # round 13: the PAYEE (owner) of the member, which is cand1's key for the 8th node, its own key for nodes 4-7 / 2 / 1
     done
+    # round 17, row 4: the pool and accrual values above are the settlement's STARTING values only if they were read before the
+    # settlement at b = h + 2E: the fleet tip, read after the reads, must still be below b, else a named FAIL
+    [ "$(tip_of 1)" -lt $(( h + 2 * E )) ] || die "epoch $h: the fleet tip reached $(tip_of 1) (the settlement boundary $(( h + 2 * E ))) while the settlement inputs were read — they are not the starting values — $MSG_LAYOUT"
     # an all-zero settlement must not pass (round-4 row 7): pool 1 is read from the chain just above, and
     # in every paying epoch (a payday boundary empties the accrual and is not asserted) at least one paid member
     # must have a POSITIVE expected share
@@ -2434,16 +2530,22 @@ epoch_service_read() {     # H
         [ "$anypos" = 1 ] || die "epoch $h: no member has a positive expected share (Σ weight $sumw, budget $budget) — an all-zero settlement does not pass"
     fi
     SETTLE_ACC["$h|members"]="$RB_MEMBERS"
-    echo "[ok] epoch $h: bits and verdicts as expected (N=$RB_N reports); pool 1 $pool, budget $budget, Σ weight units $sumw — settlement due at $(( h + 2 * E ))"
+    if [ "$RB_N" -lt "$EP_RBN_MIN" ]; then EP_RBN_MIN="$RB_N"; fi
+    echo "[ok] epoch $h: bits and verdicts as expected (RB_N=$RB_N committed report(s) of the N=$N fleet validators' seats, rows read and compared on $EP_NDB database(s)); pool 1 $pool, budget $budget, Σ weight units $sumw — settlement due at $(( h + 2 * E ))"
     PEND_READ=$(printf '%s\n' $PEND_READ | awk -v h="$h" '$0 != h' | tr '\n' ' ')
     PEND_POST="$PEND_POST $h"
 }
 # epoch_service_post H — at B = H + 2E: each member's owner's accrual rose by exactly the expected share
 # and pool 1 fell by exactly their sum (a payday boundary empties the accrual: skipped, said so)
 epoch_service_post() {     # H
-    local h="$1" b fp d sum=0 pool who
+    local h="$1" b fp d sum=0 pool who tpost0 tpost1
     b=$(( h + 2 * E ))
     wait_all "$b"
+    # round 17, row 4: the accrual and pool balances read below are the values AFTER the settlement at b and BEFORE the next
+    # one at b + E (the settlement of epoch h + E): the fleet tip is read before and after the reads and both must lie in
+    # [b, b + E - 1], else a named FAIL - a balance read after the next settlement cannot establish the payment at b
+    tpost0=$(tip_of 1)
+    { [ "$tpost0" -ge "$b" ] && [ "$tpost0" -lt $(( b + E )) ]; } || die "settlement of epoch $h at $b: the balances would be read at tip $tpost0, outside [$b, $(( b + E - 1 ))] — a later settlement would be credited to $b — $MSG_LAYOUT"
     if is_payday "$b"; then
         echo "[info] epoch $h: the settlement boundary $b is a payday (it empties the accrual) — the amounts are NOT asserted for this epoch"
     else
@@ -2455,6 +2557,8 @@ epoch_service_post() {     # H
             sum=$(( sum + d ))
         done
         pool=$(pool1_of) && [[ "$pool" =~ ^[0-9]+$ ]] || die "settlement of epoch $h at $b: pool 1 could not be read ('$pool')"
+        tpost1=$(tip_of 1)
+        [ "$tpost1" -lt $(( b + E )) ] || die "settlement of epoch $h at $b: the fleet tip reached $tpost1 (the next settlement at $(( b + E ))) while the balances were read (started at tip $tpost0) — they cannot be attributed to $b — $MSG_LAYOUT"
         [ $(( ${SETTLE_POOL[$h]} - pool )) = "$sum" ] || die "settlement of epoch $h at $b: pool 1 fell by $(( ${SETTLE_POOL[$h]} - pool )), the shares paid sum to $sum"
         echo "[ok] settlement of epoch $h at $b: every member's owner was paid its exact share ($(for fp in ${SETTLE_ACC["$h|members"]}; do printf '%s ' "${SETTLE_EXP["$h|$fp"]}"; done)), pool 1 fell by $sum"
     fi
@@ -2547,6 +2651,7 @@ drain_pending() {
 D_TRACK=0; D_PHASE=pre; D_PREV=0; DEP=0; REV=0; CUR_B=0
 declare -A NV_EXP_PRE NV_FET_PRE   # per segment k: the 8th node's 'exporting' / 'fetching over 0x73' line counts at the cell REV - E (round 14, row 6)
 NV_BASE=""                         # the 8th node's block-store base at the cell REV - E
+EP_NDB=0; EP_NDB_MIN=99; EP_RBN_MIN=99   # round 17, row 8: databases compared by the last epoch read / the smallest number over the run; the smallest RB_N (committed reports) over the run
 NV_X=""; NV_DH=""; NV_SWEEP_DONE=0; NV_HOLD0=0; NV_DEL0=0   # the 8th node's first sweep after its restart: epoch X, deletion H (measured, printed), seen yet, log baselines
 # nv_sweep_observe — NON-blocking (round 16, row 3): if the restarted 8th node has logged its first assign line and the deletion of
 # segment 1 since the restart, assert them and record the MEASURED epoch NV_X and deletion height NV_DH; otherwise return.
@@ -3059,7 +3164,7 @@ if [ "$WITH_STORAGE" = 1 ]; then
     #   +2E   down    R 5 -> 4                          exactly one holder dropped (overlap, then deletion)
     #   +2E   up      R 4 -> 6 with 5 eligible          exactly one new holder (R now >= 6 eligible to come)
     #   LAST (round 14) the 8th node: BD0 arrival (6 eligible <= R 6: it holds) | stopped before BD0+E | departure
-    #                 B = BD0+5E (rows end) | restart inside [B+E, B+E+E/2) | B+E deletion | B+12E AUTOMATIC return (rows inserted, FETCH)
+    #                 B = BD0+5E (rows end) | restart inside [B+E, B+E+E/2), after the publication 750 | first sweep X >= B+E, deletion H = X (measured) | B+12E AUTOMATIC return (rows inserted, FETCH)
     # Every boundary from B1 on is a cell; the reports and the settlement of every one of those epochs
     # are checked (epoch_service_read / epoch_service_post).
     CUR_B="$B1"; DEAD_FP=""      # DEAD_FP is the 8th node's member fp, set when it registers (round 13)
@@ -3247,6 +3352,11 @@ if [ "$WITH_STORAGE" = 1 ]; then
     # rows per segment and a member that loses one can keep another (held_union is its union over all segments, :1248), so
     # the case is not asserted for that layout.
     [ "$(cell_lines seg | wc -l)" = 1 ] || die "PRECONDITION of the copies-down case: exactly one segment published at the drop $CUR_B, found $(cell_lines seg | wc -l) — $MSG_LAYOUT"
+    # round 17, row 6: the precondition also covers the epoch of the zero assertion, DROP_B + E (a segment published AT a
+    # boundary gets holders over eligible(B), nodus_witness_v2_storage.c:2251, :2323, and could give the dropped member a
+    # positive held_union there). The next publication is segment 2 at 2P + 2E; it must lie after DROP_B + E; the segment
+    # count at the epoch read of DROP_B + E is checked again where ZERO_AT is served (epoch_service_read).
+    [ $(( CUR_B + E )) -lt $(( 2 * P + 2 * E )) ] || die "PRECONDITION of the copies-down case: the next publication (segment 2 at $(( 2 * P + 2 * E ))) is at or before DROP_B + E = $(( CUR_B + E )), the epoch of the zero assertion — $MSG_LAYOUT"
     SO=$(n_old "$CUR_B"); PR=$(pub_rows "$CUR_B" 4)
     [ "$(rows_ended "$CUR_B")" = "$SO" ] && [ "$(rows_from "$CUR_B")" = "$PR" ] && [ "$(n_new_sum "$CUR_B")" = 0 ] \
         || die "copies 5 -> 4: rows ended $(rows_ended "$CUR_B"), inserted $(rows_from "$CUR_B"), Σ n_new $(n_new_sum "$CUR_B") — expected $SO / $PR / 0 (one holder dropped per segment published <= $(( CUR_B - E )); $PR publication row(s))"
@@ -3314,29 +3424,27 @@ if [ "$WITH_STORAGE" = 1 ]; then
     # Heights: BD0 arrival | stop before BD0 + E | H1..H3, B - E, B down | B = BD0 + 5E departure | restart in [B + E,
     # B + E + E/2) after the reports of B | REV - E: running, caught up, base n x P + 1 | REV = B + 12E = BD0 + 17E
     # automatic return, n FETCHes | first eligible epoch REV + n x E. Every height is derived from BD0 (read from the chain), each is
-    # asserted when the chain reaches it and a deviation is a named FAIL. Added run length against round 13: 10E = 150
-    # blocks (the return at B + 12E instead of B + 2E), 11E = 165 when two segments are revived where round 13 revived one
-    # (the first eligible epoch is REV + n x E). The number of revived segments n is READ at the cell REV - E.
-    # ROUND 16, row 4 - THE LAYOUT BY CONSTRUCTION. The 8th node is restarted in the gate (B + E, B + E + E/2) = (BD0 + 6E,
-    # BD0 + 6E + E/2). The K9a premise of segment 2 is read at the cell of boundary 2P (tip >= 2P + 1) and the segment is
-    # published at 2P + 2E. A restart BETWEEN the read and the publication would leave a running member whose store was not read
-    # (and a stopped read cannot show its height). So the cycle is laid out so that the gate cannot touch that span: the cycle
-    # starts at the first boundary BD0c = CUR_B + E whose gate lies wholly BEFORE the premise cell (gate_hi < 2P: the node is
-    # restarted - and caught up, see read_k9a_premise - before the premise is read) or wholly AFTER the publication
-    # (gate_lo >= 2P + 2E: the node is stopped at the read, read from its file, and has restarted after the publication, which
-    # needs no read); between those the script passes a plain cell (pre-cycle-pad, R 6, nothing registered, D_TRACK 0).
+    # asserted when the chain reaches it and a deviation is a named FAIL. The length is in the header's length paragraph
+    # (measured in run 17, inferred after the round-17 placement). The number n of revived segments is READ at the cell REV - E.
+    # ROUND 17, row 3 - THE LAYOUT BY CONSTRUCTION: THE RESTART GATE IS AFTER THE SEGMENT-2 PUBLICATION IN EVERY LAYOUT. The
+    # 8th node is restarted in the gate (B + E, B + E + E/2) = (BD0 + 6E, BD0 + 6E + E/2). The K9a premise of segment 2 is read
+    # at the cell of boundary 2P (tip >= 2P + 1) and the segment is published at 2P + 2E. The cycle starts at the first
+    # boundary BD0c = CUR_B + E whose gate_lo = BD0c + 6E is >= 2P + 2E; until then the script passes a plain cell
+    # (pre-cycle-pad, R 6, nothing registered, D_TRACK 0). The 8th node is therefore STOPPED at the segment-2 premise read
+    # (read from its database file, base only) and no catch-up of it is awaited before REV - E: the only bound on its
+    # catch-up is the named FAIL at the cell REV - E. (Round 16 also allowed a gate BEFORE the premise cell and waited for the
+    # running node there; that made a latency bound other than REV - E and is removed.)
     # BD0 itself is PLACED: the registration must land inside the epoch of BD0c (a named layout FAIL below otherwise).
-    # Arithmetic at E 15, P 360 (premise cell 720, publication 750): the gate is [BD0c + 90, BD0c + 97); it is clear for
-    # BD0c <= 615 (gate_hi = 712 < 720) and for BD0c >= 660 (gate_lo = 750); BD0c = 630, 645 are padded to 660. Run 16 measured
-    # BD0 = 615 (copies-up-6 cell at 600): gate [705, 712), no pad, restart at 707.
+    # Arithmetic at E 15, P 360 (publication 750): BD0c >= 660. Run 17 measured the copies-up-6 cell at 600, so BD0c = 615 is
+    # padded through the cells 615, 630, 645 to BD0 = 660 (INFERRED, not yet measured: 3 pad cells, 45 blocks).
     PREM_CELL=$(( 2 * P )); SEG2_PUB=$(( 2 * P + 2 * E ))
     while :; do
         BD0C=$(( CUR_B + E )); GATE_LO=$(( BD0C + 6 * E )); GATE_HI=$(( GATE_LO + E / 2 ))
-        if [ "$GATE_HI" -lt "$PREM_CELL" ] || [ "$GATE_LO" -ge "$SEG2_PUB" ]; then break; fi
-        echo "[info] the 8th node's restart gate for BD0 = $BD0C would be [$GATE_LO, $GATE_HI), touching the segment-2 premise span ($PREM_CELL .. $SEG2_PUB) — passing a cell first"
+        if [ "$GATE_LO" -ge "$SEG2_PUB" ]; then break; fi
+        echo "[info] the 8th node's restart gate for BD0 = $BD0C would be [$GATE_LO, $GATE_HI), before the segment-2 publication $SEG2_PUB — passing a cell first"
         next_boundary "pre-cycle-pad" 6
     done
-    echo "[ok] the 8th node's cycle starts at BD0 = $BD0C: restart gate [$GATE_LO, $GATE_HI) is $([ "$GATE_HI" -lt "$PREM_CELL" ] && echo "before the premise cell $PREM_CELL" || echo "after the publication $SEG2_PUB")"
+    echo "[ok] the 8th node's cycle starts at BD0 = $BD0C: restart gate [$GATE_LO, $GATE_HI) is at or after the publication $SEG2_PUB of segment 2 (the node is stopped at the premise read of cell $PREM_CELL)"
     claim_leaf "$CAND" 1                    # cand1 (the OWNER) claims the genesis leaf that pays the bond
     trap nv_stop EXIT                       # round 14, row 5: installed BEFORE the 8th node exists
     nv_start pin
@@ -3618,6 +3726,17 @@ if [ "$WITH_STORAGE" = 1 ]; then
     in_basis "$D_FP" || die "post-replay: the revived candidate is not in the basis"
     [ "$(cur_rows_of "$D_FP")" = "$(cell_lines seg | wc -l)" ] || die "post-replay: the candidate does not hold one row per published segment"
     echo "[ok] post-replay: the replayed node holds the same storage relations (R 6, the revived candidate back, every table byte-identical to the six others)"
+    # round 17: the node that replayed from genesis wrote the boundary line AGAIN for every generation-6 boundary it replayed
+    # (the host calls the application's commit at the replay too); its log was truncated at the wipe, so these are lines of THIS
+    # replay, and each must equal the value the live nodes' logs agreed on at that boundary
+    nrep=0
+    for b in $(printf '%s\n' "${!BLR[@]}" | sort -n); do
+        blr_unique "post-replay (node$VICTIM, replayed from genesis)" "$(node_log "$VICTIM")" "$b"
+        [ "$BLR_ONE" = "${BLR[$b]}" ] || die "post-replay: node$VICTIM's replayed HF9-BOUNDARY-ROOTS line at $b differs from the value the $N live logs agreed on at that boundary"
+        nrep=$(( nrep + 1 ))
+    done
+    [ "$nrep" -ge 3 ] || die "post-replay: only $nrep boundary leg-root line(s) were compared on the replayed node, expected at least B1, B1+E and B1+2E"
+    echo "[ok] post-replay: node$VICTIM's own log (truncated at the wipe) holds the HF9-BOUNDARY-ROOTS line of each of the $nrep boundaries from B1 to $CUR_B, every one equal to the live nodes' agreed value"
 fi
 stagef_sentinel ASSERT_RUN
 floor_diff "post-hf9"
@@ -3656,8 +3775,11 @@ if [ "$WITH_STORAGE" = 1 ]; then
     echo "       populated legs, D6 voted at A=$A, the edge at the end of A-1. Full global_root and block_id AT A-1, A, A+1: 7/7 (diff --full)."
     echo "       Leg roots at A-1, A, A+1: read on the SIX live nodes at the edge cells (node $VICTIM down) and on ALL SEVEN at the post-restart"
     echo "       cell, equal to the six-node read; accepted only with no claim and no transaction in [A, tip] except storage reports, no boundary in"
-    echo "       the span (check_edge_window). At B1, B1+E, B1+2E and every later boundary: only the full global_root and block_id AT the"
-    echo "       height (7/7) plus the leg roots of one snapshot at a LATER tip (the per-height leg comparison there is NOT covered)."
+    echo "       the span (check_edge_window). At B1, B1+E, B1+2E and every later boundary from B1 to $CUR_B ($(( ${#BLR[@]} )) boundaries): the full global_root"
+    echo "       and block_id AT the height (7/7, --full) AND, from the temporary node log line HF9-BOUNDARY-ROOTS (operator decision 2026-11-06),"
+    echo "       the global root and the eight leg roots AT that height read on the logs of $N validators ($BLR_LINES line(s) in all, identical per height and per"
+    echo "       log, global root = the cell's, leg roots equal on every log, node-reported node-local text) and, after the replay, on the replayed"
+    echo "       node's log; the leg roots of one snapshot at a later tip are read besides."
     echo "       The storage relations are byte-identical on the 7 nodes at every boundary from B1 to $CUR_B; the E-s1 union counts, the E-s2 rows"
     echo "       and held_union / n_new at B1 equal the independent XOR/HRW oracle's (hf9_xor_oracle.py); every case changed a holder (B1 transition, exit,"
     echo "       join, copies up / down / up, the 8th node's arrival, departure and return) with its report bits (answers its probes),"
@@ -3670,17 +3792,18 @@ if [ "$WITH_STORAGE" = 1 ]; then
     echo "       THE ELIGIBILITY CROSSING BOTH WAYS (plan :456) with an 8TH, NON-validator node (not among the seven of any 7/7"
     echo "       comparison; owner cand1, data directory $CAND_DIR/data left behind, process stopped at the very end, after the"
     echo "       no-fault scan of every log including its own): stopped before the probing of epoch $(( BD0 + E )) and down through epochs"
-    echo "       $(( BD0 + E )), $(( BD0 + 2 * E )), $(( BD0 + 3 * E )), $(( BD0 + 4 * E )), $DEAD_LAST (NOT OK in the $N validators' reports, never reachable on 0x72); departure at $DEP"
+    echo "       $(( BD0 + E )), $(( BD0 + 2 * E )), $(( BD0 + 3 * E )), $(( BD0 + 4 * E )), $DEAD_LAST (NOT OK in the committed reports of those epochs - RB_N at least $EP_RBN_MIN over the run, of N=$N seats - never reachable on 0x72); departure at $DEP"
     echo "       (fail_streak 3); restarted with retain_blocks after all $N validators submitted the report of epoch $DEP; its first"
     echo "       sweep after its catch-up was of epoch X=$NV_X (>= $(( DEP + E ))) and deleted the segment file at H=$NV_DH (measured); fail_streak 4 .. 14 at $(( DEP + E )) .. $(( DEP + 11 * E )); the AUTOMATIC RETURN at"
     echo "       $REV = B + 12E (fail_streak 14 -> 0, NODUS_STORAGE_FAIL_RETURN 15); at the return the node FETCHED each of the"
     echo "       $NOLD revived segment(s) over 0x73 (block store from $NV_BASE; fetch lines grew, export lines did not), and its first eligible epoch"
     echo "       answered with an OK verdict. THE FAST K5a RETURN (an OK in an eligible epoch resets the counter at once) IS NOT"
-    echo "       EXERCISED by this run - the unit tests tests/test_storage_b2.c:2288-2296 and :2982-2988 cover the reset. NOT COVERED: leg roots PER"
-    echo "       HEIGHT at B1, B1+E, B1+2E (only the full global root at the height, and the leg roots at a later tip); the departure"
-    echo "       boundary itself happens while that node is down; the validity of the fetched bytes (the marker file is checked"
-    echo "       present); the settlement of payday boundaries; any NOT OK by a wrong answer (unit tests); the generation-6 boundary"
-    echo "       line of the replay."
+    echo "       EXERCISED by this run - the unit tests tests/test_storage_b2.c:2288-2296 and :2982-2988 cover the reset. NOT COVERED: an independent"
+    echo "       computation of the leg roots at the boundaries (the HF9-BOUNDARY-ROOTS lines are the nodes' own node-local log text, compared"
+    echo "       for equality, not recomputed); the departure boundary itself happens while that node is down; the validity of the fetched"
+    echo "       bytes (the marker file is checked present); the settlement of payday boundaries; any NOT OK by a wrong answer (unit tests);"
+    echo "       the generation-6 boundary line of the replay. Report counts: the fleet is N=$N validators; committed reports per epoch RB_N >= $EP_RBN_MIN;"
+    echo "       report / set rows compared on at least $EP_NDB_MIN database(s) per epoch (7/7 only where that minimum is $N)."
 else
     echo "[PASS] HF-9 generation 6 at E=$E, BPY $CONF_BPY, SAFETY grace $GRACE_SAF, ERGONOMIC grace $GRACE_ERG WITHOUT storage"
     echo "       segments (production-constant edge run; test parameters chosen by the orchestrator — the production 17280"

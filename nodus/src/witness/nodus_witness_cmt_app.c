@@ -49,6 +49,10 @@
 #include "witness/nodus_witness_v2_epoch.h"  /* round 2 §A:
                                               * nodus_witness_v2_epoch_
                                               * authority_for_epoch */
+#ifdef NODUS_EVM_ENABLED
+#include "witness/nodus_witness_v2_trie.h"   /* the temporary boundary
+                                              * leg-root line: the leg roots */
+#endif
 
 #define LOG_TAG "CMT-APP"
 
@@ -3102,6 +3106,71 @@ done:
  * Commit — the COMMIT of the host's ONE transaction, D-23 rev 5 (5)
  * ═══════════════════════════════════════════════════════════════════════ */
 
+/* TEMPORARY (operator decision 2026-11-06, docs/plans/decisions/2026-11-06-
+ * hf9-boundary-leg-root-log.md): the line the node writes at each epoch
+ * boundary under the keyed trie, so a harness can compare the eight leg roots
+ * node by node at that height (v2_trie_roots keeps only the latest root of
+ * each leg). The removal of this function and of its call in
+ * `nodus_cmt_app_commit` is the OPERATOR's word, not decided here.
+ *
+ * It reads committed state and returns text; it writes no state, reads no
+ * clock and reaches no consensus byte. "Generation 6 in force" is answered as
+ * `doms_trie_on` answers it (nodus_witness_v2_apply.c:570-576): the SYSTEM
+ * domain's registered runtime (nodus_witness_v2_runtime_for, the call doms_load
+ * makes at nodus_witness_v2_apply.c:659 with require_active 0) has
+ * generation >= NODUS_RT_GEN_TRIE; an unresolved runtime answers 0. After the
+ * COMMIT the committed registry is the working set's post-6c registry that
+ * `doms_trie_on` judged. The tries are EVM-only, so a build without
+ * NODUS_EVM_ENABLED never has a line (nodus_witness_roots_v2.c:33-54). */
+#ifdef NODUS_EVM_ENABLED
+static void boundary_hex128(const uint8_t b[64], char out[129])
+{
+    static const char hx[] = "0123456789abcdef";
+
+    for (int i = 0; i < 64; i++) {
+        out[2 * i]     = hx[b[i] >> 4];
+        out[2 * i + 1] = hx[b[i] & 15];
+    }
+    out[128] = '\0';
+}
+#endif
+
+int nodus_cmt_app_boundary_root_line(nodus_witness_t *w, uint64_t height,
+                                     char *line, size_t cap)
+{
+#ifdef NODUS_EVM_ENABLED
+    const nodus_domain_runtime_t *rt = NULL;
+    uint8_t  global[64], leg[8][64];
+    char     hx[129];
+    size_t   n;
+
+    if (!line || cap < NODUS_CMT_BOUNDARY_ROOT_LINE_MAX) return -1;
+    line[0] = '\0';
+    if (!w || !w->db) return -1;
+    if (height == 0 || (height % (uint64_t)DNAC_EPOCH_LENGTH) != 0)
+        return 0;                       /* this file's own boundary rule (finalize_block) */
+    (void)nodus_witness_v2_runtime_for(w, DNA_DOMAIN_SYSTEM, 0, &rt);
+    if (!rt || rt->generation < NODUS_RT_GEN_TRIE)
+        return 0;                       /* below generation 6, or no runtime */
+    if (nodus_witness_v2_committed_global_root(w, global) != 0)
+        return -1;
+    for (int l = 1; l <= 8; l++)
+        if (nodus_witness_v2_trie_leg_root(w, l, leg[l - 1]) != 0)
+            return -1;
+    n = (size_t)snprintf(line, cap, "HF9-BOUNDARY-ROOTS h=%" PRIu64, height);
+    boundary_hex128(global, hx);
+    n += (size_t)snprintf(line + n, cap - n, " global=%s", hx);
+    for (int l = 1; l <= 8; l++) {
+        boundary_hex128(leg[l - 1], hx);
+        n += (size_t)snprintf(line + n, cap - n, " leg%d=%s", l, hx);
+    }
+    return 1;
+#else
+    (void)w; (void)height; (void)line; (void)cap;
+    return 0;
+#endif
+}
+
 int nodus_cmt_app_commit(void *vctx, nodus_abci_response_commit_t *resp)
 {
     nodus_cmt_app_ledger_t *ctx = (nodus_cmt_app_ledger_t *)vctx;
@@ -3133,6 +3202,27 @@ int nodus_cmt_app_commit(void *vctx, nodus_abci_response_commit_t *resp)
      * `mem_recheck_txs`). The auth cache advances one generation. */
     pend_clear(ctx);
     acache_sweep(ctx);
+    /* TEMPORARY boundary leg-root log line (operator decision 2026-11-06,
+     * docs/plans/decisions/2026-11-06-hf9-boundary-leg-root-log.md; its
+     * REMOVAL IS THE OPERATOR'S WORD). A log line only: the return value,
+     * `resp->retain_height` and every state byte are exactly as without it.
+     * A read fault follows this function's node-local pattern (it never
+     * fails the Commit, like the retention read below: "a read fault
+     * answers 0"): no line, and one WARN that says so. The host calls this
+     * row at two sites (nodus_witness_cmt_host.c:1525 blockexec_commit,
+     * :1918 the handshake replay), so a restarted node writes the line again
+     * for each boundary it replays. */
+    {
+        char line[NODUS_CMT_BOUNDARY_ROOT_LINE_MAX];
+        int  lr = nodus_cmt_app_boundary_root_line(
+                      ctx->w, (uint64_t)ctx->fb_height, line, sizeof(line));
+
+        if (lr == 1)
+            QGP_LOG_INFO(LOG_TAG, "%s", line);
+        else if (lr < 0)
+            QGP_LOG_WARN(LOG_TAG, "boundary leg-root line for height %" PRId64
+                         " not written: a read failed", ctx->fb_height);
+    }
     /* Node-local block retention (decisions 2026-10-03-block-pruning-7-
      * paydays.md, 2026-10-14-role-based-pruning.md): the block executor's
      * `pruneBlocks` (execution.go:340-347; nodus_witness_cmt_host.c
