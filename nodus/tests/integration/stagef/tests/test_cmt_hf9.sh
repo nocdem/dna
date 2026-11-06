@@ -77,8 +77,12 @@
 #      and v2_attendance_epoch, legs 7 and 8, fill at the first boundaries).
 #   2. The six votes of test_cmt_hf8_gen5.sh to generation 5 (HF2, HF3,
 #      GEN2, EVM, ROLES, ROOTS), each row 7/7 and committed below its
-#      effective height, the blocks AT each edge's H−1 / H / H+1 identical
-#      7/7 in the FULL 64-byte mode, ruleset-info generation 5.
+#      effective height; the blocks AT H−1 / H / H+1 are compared 7/7 in the
+#      FULL 64-byte mode at the FOUR generation edges GEN2, EVM, ROLES and ROOTS
+#      (cross_edge). HF2 and HF3 (rows 7 and 8) only pump past their effective
+#      height and wait — no three-height comparison there (round 10, row 17:
+#      the header said "each of the six"; the comparisons were not added).
+#      ruleset-info generation 5 at the end.
 #   3. hf9 (short epoch only): nodes 4, 5, 6, 7 register as storage nodes
 #      under their own keys; segment 1 is published at exactly 26 E (= P +
 #      2E, the first storage boundary ≥ P + 2E), identical 7/7.
@@ -100,9 +104,13 @@
 #      every node; ruleset-info generation 6 with "this CLI carries it as
 #      compiled generation 6"; tip A−2 is still generation 5.
 #   6. Restart across A (hf9, T-13 "restart of one node across A"): node 3
-#      is stopped at tip A−3 and restarted when the fleet is at A+2 — the
-#      gap A−2 … A+2 is 5 blocks, test_cmt_blocksync.sh's Rule-N cap at E =
-#      15 (E/2 − 2). It catches up THROUGH the edge block and then agrees
+#      is stopped once the fleet is at A−3 and restarted when the fleet is at
+#      A+2. What is CHECKED (round 10, row 12): its OWN last applied height
+#      after the stop is read and must be below A−1 (a restart across the
+#      edge); the fleet tip at the restart is read and the number of blocks
+#      the victim is behind is PRINTED. No exact gap and no Rule-N cap is
+#      enforced (test_cmt_blocksync.sh's E/2 − 2 is only a reason for keeping
+#      the gap short). It catches up THROUGH the edge block and then agrees
 #      7/7: the full 64-byte global_root and block_id AT A−1, A and A+1, and
 #      the leg roots and every relation of the snapshot read.
 #   7. Short epoch only — the storage assignment (plan §8.4-8.6), read at the
@@ -159,8 +167,12 @@
 #      runtime fetches the newly assigned segments and stops holding dropped
 #      ones only after the overlap epoch"): every node that is a current
 #      holder of segment 1 at every event boundary has the completeness
-#      marker segments/seg-1.ok at a tip below the next boundary (the tip is
-#      read BEFORE the file test, round-4 row 16); the exiter (a non-gainer
+#      marker segments/seg-1.ok PRESENT at a tip below the next boundary (the
+#      tip is read AFTER the file observation, round 10, row 6; the marker's
+#      content, index and data are NOT validated by the harness — the segment
+#      code validates them when it serves, segment.c:1004-1015, and an archive
+#      holder's probes are answered from its block store first, reporter.c:281,
+#      so only the pruned joiner's probes exercise a file; round 10, row 4); the exiter (a non-gainer
 #      member of nodes 4-7, chosen at B1), taken out by its exit, and the member dropped by the copies decrease: (i) RETENTION is
 #      asserted from the FILE ITSELF — seg-1.ok exists at a tip read before
 #      and after the file test, both inside the overlap epoch [B, B + E − 1]
@@ -235,19 +247,21 @@
 #      end); the dropped holder carries no bit and held_union 0 one epoch
 #      after its drop. The verdict is the SOURCE rule (nodus_witness_v2_
 #      storage.c:1359-1397: seats counted by power, the owner-or-key
-#      exclusion, 2·I ≤ P_total → NO_EVIDENCE, 3·Y > 2·I → OK). The seat-count
-#      bound is used ONLY after its prerequisites are READ from the chain at
-#      every epoch read (round-4 row 2, round 5, check_verdict_prereqs): the
-#      epoch's snapshot(H) (validator_set_snapshots.snapshot_blob, the source
-#      the settlement reads) holds N entries whose total_stake values are all
-#      equal and identical on every live node (equal seat power; the
-#      generation-4 edge's self-delegations exist and are part of total_stake),
-#      no seat's owner is a storage member's owner (payee_fp);
-#      the member's own seat never sets its own bit (reporter.c:468 "F2: never
-#      itself" — a source fact, the bitmap seat is not mapped to a node). Then
-#      I is N or N − 1 and OK is certain when 2·(N−1) > P_total and 3·Y > 2·N,
-#      NOT OK when 2·(N−1) > P_total and Y = 0; anything else FAILs as
-#      "undetermined". The candidate's NOT OK is tied to the reporter's own
+#      exclusion, 2·I ≤ P_total → NO_EVIDENCE, 3·Y > 2·I → OK). ROUND 10 (row
+#      2): I and Y are COMPUTED with the source's exclusions, per member and
+#      per reporting seat — a seat whose owner equals the member's owner
+#      (registry payee_fp) or whose key equals the member's fp is skipped,
+#      whatever its stored bit — from snapshot(H) (load_seats: seat key =
+#      SHA3-512 of the entry's pubkey, owner = the entry's owner_fp, ruleset 2;
+#      a ruleset-1 snapshot FAILs by name, its owner comes from a validator row
+#      by migrated id the harness cannot derive). Equal seat power is READ at
+#      every epoch read (check_verdict_prereqs): snapshot(H)
+#      (validator_set_snapshots.snapshot_blob, the source the settlement reads)
+#      holds N entries whose total_stake values are all equal and whose
+#      snapshot hash is identical on every live node (the generation-4 edge's
+#      self-delegations exist and are part of total_stake), so the power sums
+#      are seat counts and P_total = N. NO_EVIDENCE FAILs as "undetermined";
+#      the candidate must be NOT OK with bit 0 in every seat. The candidate's NOT OK is tied to the reporter's own
 #      line "storage member <fp16>.. was never reachable on 0x72 in epoch
 #      H=<H> — NOT OK" (reporter.c:579-580), at least one per reporting seat,
 #      so "probed and unreachable" is told from "not probed" (both give bit 0).
@@ -397,8 +411,12 @@
 #   published plus a second (due at 750), segment files under
 #   node<N>/data/segments, three STORAGE_COPIES rows (5, 4, 6), the
 #   candidate cand1's leaf claimed and cand1 registered as a storage member
-#   that runs no node (ACTIVE at the end, fail_streak 0, in grace; its bond
-#   locked), pool 1 debited by the settlements. Node 3 restarted once and then wiped and rejoined (its
+#   that runs no node (ACTIVE and back in the basis after its return, its bond
+#   locked; round 10, row 13: NOT "fail_streak 0, in grace" — the drain keeps
+#   going through its first eligible epochs, which are NOT OK because it runs
+#   no node, and their settlements move its fail_streak again; the counter is
+#   asserted exactly at every boundary cell, not as a final value), pool 1
+#   debited by the settlements. Node 3 restarted once and then wiped and rejoined (its
 #   nodus.log truncated, a new pid in pids.txt, its databases rebuilt).
 #   $BASE_DIR/hf9/ (every CLI log, consent files). Tear down with
 #   stagef_down.sh before re-running (every switch is one-way, every leaf and
@@ -515,7 +533,7 @@
 #     deletion waits (liveness bound one epoch after the sweeping boundary, not
 #     4 blocks); the STORAGE_COPIES vote (the change may land at CUR_B + 2E or
 #     CUR_B + 3E, copies_boundaries reads one cell per boundary); A (A % E in
-#     [2, E/2], distance B1 − A >= 8). Left unchanged and why: the overlap-file
+#     [2, E − 8] in BOTH runs since round 10, distance B1 − A >= 8). Left unchanged and why: the overlap-file
 #     check [B, B+E−1] (the evidence needs a tip >= B and < B+E; it runs first
 #     after the cell, a named FAIL otherwise), cell_read's bound MIN_TIP + E (the
 #     relations change at the next boundary), the registration / join windows
@@ -618,6 +636,7 @@ A_MARGIN=20                # hf9: room between the param-24 vote and A (layout, 
 E_SHORT=15                 # the one epoch length whose segment (P = 24 E) is reachable
 BOND=100000000000000       # DNAC_HF6_STORAGE_BOND_DEFAULT (test_storage_archive.sh)
 CONSENT_AHEAD=150          # consent expiry = tip + this (test_storage_archive.sh)
+A_ROOM=8                   # hf9: layout, not a plan value — blocks B1 - A must leave for the steps between A and B1 (see the A rule)
 JOIN_PRUNE_MARGIN=3        # hf9: layout, not a timeout — blocks that must remain before the join boundary for the joiner's retention restart
 K8_OWNER=8eff7f418ab7a4432118ff99e21f2c3d1baf186200c148a3bba7d274499386ac970e267a9c9b3bbc05bfff1c62a72d63f72a555db780feeaaad4fb49ba9f7b89
 OWNER=$(printf '%s' "${STAGEF_HF6_OWNER_FP_HEX:-$K8_OWNER}" | tr 'A-F' 'a-f')
@@ -1329,16 +1348,20 @@ seg_file() { echo "$(stagef_node_dir "$1")/data/segments/seg-$2.ok"; }
 # (no tip increase for 3 CreateEmptyBlocks intervals = a stall, stagef_cmt_wait_height's rule);
 # rc 0 condition reached, 1 deadline height reached, 2 stalled.
 file_wait_polls() { echo $(( 3 * STAGEF_CMT_EMPTY_INTERVAL_MS / 1000 / 2 )); }   # 2 s polls
-#   The tip is read BEFORE the file test and a file is accepted only when that tip is below the deadline
-#   (UNTIL_TIP is exclusive): a file that appears while the chain passes the deadline during the 2 s sleep
-#   is a late file (round-4 row 16), never an accepted one.
+#   The tip is read AFTER the file observation (round 10, row 6; round 4 read it before) and the observation is
+#   accepted only when that tip is below the deadline (UNTIL_TIP is exclusive): the tip is monotonic, so a tip read
+#   after the observation bounds the observation's own tip; a file seen while the chain crossed the deadline is
+#   a late file, never an accepted one. wait_seg_gone is the same for a file that disappeared.
 wait_seg_file() {          # NODE K UNTIL_TIP
-    local f t last=-1 since=0 stall
+    local f t seen last=-1 since=0 stall
     f=$(seg_file "$1" "$2"); stall=$(file_wait_polls)
     while :; do
         service_reads; service_posts      # round 8: a wait that does not pump still serves the queued windows (the chain moves on its own)
+        # round 10 (row 6): the observation first, THEN the tip — the tip is monotonic, so a tip read after the
+        # observation bounds the observation's own tip; a file seen while the chain crossed the deadline is late
+        seen=0; if [ -f "$f" ]; then seen=1; fi
         t=$(tip_of 1)
-        if [ -f "$f" ]; then
+        if [ "$seen" = 1 ]; then
             if [ "$t" -lt "$3" ]; then return 0; fi
             return 1
         fi
@@ -1354,7 +1377,7 @@ wait_seg_file() {          # NODE K UNTIL_TIP
 #   "segment <k> deleted: no longer a holder and the overlap epoch has passed (H=<H>)"
 # with H = floor(tip / E) x E of the node's own tip at the sweep; a segment is deleted iff this node is no
 # holder in the epoch H nor (for segments published <= H - E) in H - E. So the file is kept through the
-# epochs B .. B + E - 1 exactly when the deletion line's H is >= B + E. The node log is the witness log
+# epochs B .. B + E - 1 exactly when the deletion line's H is = B + E (round 10: exactly, see assert_deleted_at). The node log is the witness log
 # (stagef_node_log) — appended, never truncated, for a node that is not wiped (node 3 is no holder).
 del_count() { grep -c "segment $2 deleted: no longer a holder" "$(node_log "$1")" || true; }   # NODE K
 del_h() {                  # NODE K INDEX(1-based) -> the H of that deletion line
@@ -1365,7 +1388,7 @@ del_h() {                  # NODE K INDEX(1-based) -> the H of that deletion lin
 #   does not yet mean the line is written: assert_deleted_at WAITS for it, bounded by block distance (the tip may
 #   not pass MIN_H + E) and by progress (no tip increase for 3 CreateEmptyBlocks intervals), and FAILs if it never
 #   comes (round-4 row 12).
-assert_deleted_at() {      # LABEL NODE K COUNT_BEFORE MIN_H — a NEW deletion line since COUNT_BEFORE, with H >= MIN_H
+assert_deleted_at() {      # LABEL NODE K COUNT_BEFORE MIN_H — a NEW deletion line since COUNT_BEFORE, with H = MIN_H (= B + E) exactly
     local label="$1" n="$2" k="$3" c0="$4" minh="$5" c1 h t last=-1 since=0 stall
     stall=$(file_wait_polls)
     while :; do
@@ -1380,8 +1403,14 @@ assert_deleted_at() {      # LABEL NODE K COUNT_BEFORE MIN_H — a NEW deletion 
     done
     h=$(del_h "$n" "$k" $(( c0 + 1 )))
     [[ "$h" =~ ^[0-9]+$ ]] || die "$label: could not read the H of node$n's deletion line"
-    [ "$h" -ge "$minh" ] || die "$label: node$n deleted segment $k at its epoch H=$h, before the overlap epoch ended (expected H >= $minh)"
-    echo "[ok] $label: node$n logged the deletion of segment $k at its epoch H=$h (>= $minh): no sweep deleted it earlier (the deletion HEIGHT; that the file existed in the overlap epoch is asserted separately from the file itself)"
+    # ROUND 10 (row 10): the deletion line's H is EXACTLY B + E. The holder ticks every 200 ms (holder.h:110
+    # NODUS_STHOLD_TICK_MS) and runs `assign` at an epoch change (holder.c:646-661), which calls the sweep
+    # nodus_witness_sthold_gc (holder.c:369) with the epoch H of the tick; a segment is deleted when this node is a holder
+    # in neither H nor H - E (holder.c:172-228 / :241-290), and the node's rows ended at B, so the first sweep that can
+    # delete runs in epoch B + E and logs H = B + E. An H below it is a deletion inside the overlap epoch, one above it
+    # a sweep that missed epoch B + E; both FAIL.
+    [ "$h" -eq "$minh" ] || die "$label: node$n deleted segment $k at its epoch H=$h, expected exactly H=$minh (the first sweep after the overlap epoch: holder.c:646-661, :369)"
+    echo "[ok] $label: node$n logged the deletion of segment $k at its epoch H=$h = B + E exactly: no sweep deleted it earlier and the first sweep of epoch $minh did (the deletion HEIGHT; that the file existed in the overlap epoch is asserted separately from the file itself)"
 }
 # The RETENTION evidence (round-4 row 11): seg-<k>.ok of a node that is no longer a holder, seen to EXIST at a
 # tip inside the overlap epoch. The tip is read before and after the file test and BOTH must lie in [B, B + E - 1]:
@@ -1396,12 +1425,13 @@ assert_file_in_overlap() { # LABEL NODE K B
     echo "[ok] $label: node$n still has seg-$k.ok at tips $t0 .. $t1, inside the overlap epoch [$b, $(( b + E - 1 ))] (retention evidence: the file itself)"
 }
 wait_seg_gone() {          # NODE K UNTIL_TIP
-    local f t last=-1 since=0 stall
+    local f t seen last=-1 since=0 stall
     f=$(seg_file "$1" "$2"); stall=$(file_wait_polls)
     while :; do
         service_reads; service_posts      # round 8: serve the queued windows while waiting
+        seen=0; if [ ! -e "$f" ]; then seen=1; fi      # round 10 (row 6): the observation first, then the tip
         t=$(tip_of 1)
-        if [ ! -e "$f" ]; then
+        if [ "$seen" = 1 ]; then
             if [ "$t" -lt "$3" ]; then return 0; fi
             return 1
         fi
@@ -1416,7 +1446,7 @@ require_holder_files() {   # LABEL BOUNDARY — every current holder of segment 
     for n in $(cur_holders_of 1); do
         wait_seg_file "$n" 1 $(( b + E )) || die "$label: node$n is a current holder of segment 1 at $b but $(seg_file "$n" 1) did not appear before the next boundary (the holder runtime did not export / fetch it)"
     done
-    echo "[ok] $label: every current holder of segment 1 ($(cur_holders_of 1 | tr '\n' ' ')) has seg-1.ok at a tip below the next boundary $(( b + E ))"
+    echo "[ok] $label: every current holder of segment 1 ($(cur_holders_of 1 | tr '\n' ' ')) has the marker file seg-1.ok at a tip below the next boundary $(( b + E )) (marker PRESENT only: its content, index and data are not validated here — the segment code validates them when it serves, segment.c:1004-1015, and the reporter answers from the block store first, reporter.c:281; the holder's job_finish / mark_held (holder.c:328-331, :488-499) prints no line of its own for a validated marker, so none is asserted — so for holders that export from an archive store the file is not exercised by their probes)"
 }
 
 # bs_base NODE — the lowest height with a `P:` row in the node's block store (cmt_blockstore, the key shape
@@ -1442,7 +1472,7 @@ bs_height() {
 # tip B - 1 (run 10 read from the tip 750 = B after a pump landed on B - 1 and the chain made B on its own: after a block
 # that changed the app hash the next block is proposed without waiting for transactions, cometbft v0.38.26
 # consensus/state.go:1101 and :1113-1127 / shared/dnac/cmt_cs.c:1957-2010, timeout_commit 4 s, stagef_env.sh:1027-1030).
-# read_k9a_premise therefore reads at the EARLIEST tip, LO: a pump to LO lands at most PUMP_LAND_MAX above LO — a spend
+# read_k9a_premise therefore reads at the EARLIEST tip, LO: a pump to LO is ESTIMATED to land at most PUMP_LAND_MAX above LO (an inference, see below) — a spend
 # submitted at a tip < LO is included within 20 heights (stagef_cmt_wait_row's budget, `-gt $max_heights`, default 20,
 # stagef_env.sh:1166, :1186; rc 2 otherwise) plus a poll of 5 s (:1167) that may see one more block (inference: one
 # block per timeout_commit 4 s) — and the chain's own blocks during the read are few (seconds against a 60 s idle
@@ -1455,17 +1485,39 @@ bs_height() {
 # until K is published; at B the cache is refilled for (H, maxk = K) and keep_from_segment keeps the first incomplete
 # must-hold segment's first height for a member that holds K. A member that does NOT hold K is not probed on it
 # (eligible segments = its own rows) and may prune it.
+# (Round 10, row 7: PUMP_LAND_MAX is an INFERENCE, not a bound. stagef_cmt_wait_row returns 0 as soon as the row is
+# seen, BEFORE the height budget test (stagef_env.sh:1176-1180 against :1186), and its start_h is read after the
+# CLI submit returned, so blocks made during the submit are not counted. 22 only sizes the window; what makes the
+# read sound are the fail-closed tip guards in assert_members_hold_range — the tip must be in [kP+1, B-1] before AND
+# after the store reads, else a named layout FAIL.)
+#
+# THE MEMBERS (round 10, row 9): the registered storage members that run a node and were read at the premise tip are
+# recorded (PREMISE_SET); at the publication boundary check_premise_members requires every such member present at
+# B to be one of them — a member that registered between the read and B (the guard role_prune.c:57 applies only
+# `if (in->is_storage)`, so its store was not protected) is a named layout FAIL, never an unread store.
+declare -A PREMISE_SET
+check_premise_members() {  # LABEL K — uses the cell just read at the publication boundary
+    local label="$1" k="$2" fp st n
+    [ -n "${PREMISE_SET[$k]+x}" ] || die "$label: the K9a premise of segment $k was never read — $MSG_LAYOUT"
+    while IFS='|' read -r fp st _; do
+        [ "$st" = 1 ] || [ "$st" = 2 ] || continue
+        n=$(fp_node "$fp"); [ -n "$n" ] || continue
+        case " ${ALIVE[*]} " in *" $n "*) ;; *) continue ;; esac
+        case "${PREMISE_SET[$k]}" in *" $fp "*) ;; *) die "$label: node$n (${fp:0:16}…) is a registered storage member at the publication boundary of segment $k but its block store was not read at the premise tip (${PREMISE_SET[$k]}) — it registered in between; its range before registration is not established (K9a premise) — $MSG_LAYOUT" ;; esac
+    done < <(cell_lines reg)
+    echo "[ok] $label: every registered storage member that runs a node at the publication of segment $k is one whose block store was read at the premise tip"
+}
 PUMP_LAND_MAX=22
 read_k9a_premise() {       # LABEL K B — pump to LO if the tip is below it, then assert_members_hold_range
     local label="$1" k="$2" b="$3" lo
     lo=$(( k * P + 1 ))
-    [ $(( b - 1 - (lo + PUMP_LAND_MAX) )) -ge 1 ] || die "$label: the window [$lo, $(( b - 1 ))] is not wider than the pump's landing bound $PUMP_LAND_MAX — $MSG_LAYOUT"
+    [ $(( b - 1 - (lo + PUMP_LAND_MAX) )) -ge 1 ] || die "$label: the window [$lo, $(( b - 1 ))] is not wider than the pump's landing estimate $PUMP_LAND_MAX (an inference, not a bound) — $MSG_LAYOUT"
     if [ "$(tip_of 1)" -lt "$lo" ]; then pump_to "$lo"; fi
     wait_all "$lo"
     assert_members_hold_range "$label" "$k" "$b"
 }
 assert_members_hold_range() {
-    local label="$1" k="$2" b="$3" fp n base hgt first last cnt=0 t0 t1
+    local label="$1" k="$2" b="$3" fp n base hgt first last cnt=0 t0 t1 set_read=""
     first=$(( (k - 1) * P + 1 )); last=$(( k * P + 1 ))
     t0=$(tip_of 1)
     { [ "$t0" -ge "$last" ] && [ "$t0" -lt "$b" ]; } || die "$label: the premise read starts at tip $t0, outside [$last, $(( b - 1 ))] (segment $k's last height + 1 .. one block before its publication boundary $b) — $MSG_LAYOUT"
@@ -1475,8 +1527,9 @@ assert_members_hold_range() {
         base=$(bs_base "$n"); hgt=$(bs_height "$n")
         { [[ "$base" =~ ^[0-9]+$ ]] && [[ "$hgt" =~ ^[0-9]+$ ]]; } || die "$label: node$n's block-store base / height are unreadable ('$base' / '$hgt')"
         { [ "$base" -le "$first" ] && [ "$hgt" -ge "$last" ]; } || die "$label: node$n is a storage member but its block store covers $base .. $hgt, not segment $k's whole range ($first .. $(( k * P ))) with height >= $last — it would be probed at $b on a segment it must still fetch (K9a premise broken) — $MSG_LAYOUT"
-        cnt=$(( cnt + 1 ))
+        cnt=$(( cnt + 1 )); set_read="$set_read $fp"
     done
+    PREMISE_SET[$k]="$set_read "
     [ "$cnt" -ge 1 ] || die "$label: no storage member's block store could be read"
     t1=$(tip_of 1)
     [ "$t1" -lt "$b" ] || die "$label: the chain reached tip $t1, the publication boundary $b of segment $k, while the stores were read (the read started at tip $t0) — the premise cannot be established before it — $MSG_LAYOUT"
@@ -1509,6 +1562,11 @@ boundary_cell() {          # LABEL BOUNDARY R
     check_legs post "$1"
     check_storage_state "$2" "$3" "$1"
     check_transition_exact "$2" "$1"
+    # the publication boundary of segment k = (b - 2E) / P (k >= 2 here; segment 1 is checked in section 3): the
+    # members present now must be the ones whose stores were read at the premise tip (round 10, row 9)
+    if [ "$2" -gt $(( 2 * E )) ] && [ $(( ($2 - 2 * E) % P )) = 0 ] && [ $(( ($2 - 2 * E) / P )) -ge 2 ]; then
+        check_premise_members "$1" $(( ($2 - 2 * E) / P ))
+    fi
     case " $PEND_READ $PEND_POST " in *" $2 "*) ;; *) PEND_READ="$PEND_READ $2" ;; esac
     service_posts
     # the boundary kP (k >= 2) is the first in which the premise of segment k's publication at kP + 2E can be read
@@ -1537,14 +1595,11 @@ boundary_cell() {          # LABEL BOUNDARY R
 # THE VERDICT (nodus_witness_v2_storage.c:1359-1397 nodus_storage_member_verdict): the seats that
 # reported count by POWER, except a seat whose owner equals the member's owner or whose key equals
 # the member's fp (F2); I = the counted reporting power, Y = the counted power with bit 1;
-# 2·I <= P_total -> NO_EVIDENCE, else 3·Y > 2·I -> OK, else NOT_OK. In this scenario every seat's
-# owner is the validators' owner (asserted after generation 4) and no storage member is owned by it,
-# so only the key clause can exclude a seat, and only the member's OWN seat (if it is a node); all
-# seats have equal power (READ from snapshot(H), below — not assumed) so
-# power = seat count and P_total = $N. Then I is N or N-1 (N = reports), and
-#   OK is certain when 2·(N-1) > $N  and  3·Y > 2·N;   NOT_OK is certain when 2·(N-1) > $N and Y = 0.
-# Any other combination is "undetermined" and FAILs the scenario (it never guesses a verdict).
-# The seat-count bound below is the source verdict ONLY under these prerequisites, read from the chain (round-4
+# 2·I <= P_total -> NO_EVIDENCE, else 3·Y > 2·I -> OK, else NOT_OK. Round 10: epoch_reads computes I and Y
+# EXACTLY with those exclusions from snapshot(H)'s seat keys and owners (see (2) below); all seats have equal
+# power (READ from snapshot(H) — not assumed) so power = seat count and P_total = $N. NO_EVIDENCE is
+# "undetermined" and FAILs the scenario (it never guesses a verdict).
+# The verdict below is the source verdict under these prerequisites, read from the chain (round-4
 # row 2, corrected in round 5) — not assumed:
 #  (1) EQUAL SEAT POWER, read from what the source reads: snapshot(H) = validator_set_snapshots.snapshot_blob of
 #      epoch_start H (nodus_witness_v2_epoch_authority_for_epoch, nodus_witness_v2_epoch.c:2421-2465, "the ONLY
@@ -1560,21 +1615,26 @@ boundary_cell() {          # LABEL BOUNDARY R
 #      Layout (shared/dnac/vset_wire.h:31-39, :78-84, :141-143): header 78 bytes = epoch u64 + active_count u16 +
 #      selection_ruleset u32 BE + 64 seed; ruleset 1 entry 2642 bytes with total_stake at entry offset 32 + 2592 =
 #      2624; ruleset 2 entry 2770 bytes with total_stake at 32 + 64 + 64 + 2592 = 2752 (u64 BE).
-#  (2) no seat's owner differs from the validators' owner, and no storage member is owned by it (the members'
-#      payee_fp is read here), so the owner clause excludes no seat;
-#  (3) the member's own seat never sets its own bit (nodus_witness_storage_reporter.c:468 "F2: never itself" —
-#      NOPROBE; a source fact, the seat of a bitmap is not mapped to a node here). The key clause excludes
-#      exactly the member's own seat.
+#  (2) ROUND 10: the exclusions are APPLIED, not assumed. For every member m and every reporting seat s the
+#      verdict skips the seat when its owner equals m's owner (the registry row's payee_fp) or its key equals m's
+#      fp (nodus_storage_member_verdict, nodus_witness_v2_storage.c:1373-1381), counts I = Σ power of the remaining
+#      reporting seats and Y = Σ power of those with bit 1, and decides 2·I <= P_total -> NO_EVIDENCE, 3·Y > 2·I -> OK,
+#      else NOT_OK (:1388-1393). load_seats reads each seat's key (SHA3-512 of the entry's pubkey, :1548-1551) and
+#      owner (ruleset 2: the entry's owner_fp, :1403-1407, vset_wire.h:78-84) from snapshot(H); with equal power
+#      (1) the power sums are seat counts and P_total = N. The stored self-bit is not assumed zero
+#      (reporter.c:468 never sets it, but it is not relied on): an excluded seat's bit is skipped, whatever it is.
 VSET_HDR=78                # shared/dnac/vset_wire.h:141 DNA_VSET_HDR_LEN
 # snap_totals NODE H -> "active_count|ruleset|total_stake,total_stake,…" of snapshot(H), decoded from the blob
 snap_totals() {
-    local db meta n rs ent tot totals
+    local db meta n rs ent tot totals shash
     db=$(db_of "$1")
     meta=$(sqlite3 -separator '|' -cmd '.timeout 5000' "$db" \
-        "SELECT active_count, hex(substr(snapshot_blob, 11, 4)) FROM validator_set_snapshots WHERE epoch_start = $2;") \
+        "SELECT active_count, hex(substr(snapshot_blob, 11, 4)), hex(snapshot_hash) FROM validator_set_snapshots WHERE epoch_start = $2;") \
         || die "snapshot($2) on node$1 could not be read"
     [ -n "$meta" ] || die "snapshot($2) is absent on node$1 — the settlement reads it (nodus_witness_v2_storage.c:1519)"
-    n="${meta%%|*}"; rs=$(( 16#${meta#*|} ))
+    # the snapshot HASH is part of the compared line: seat keys and owners (load_seats) are read from node 1 only, so
+    # every live node must hold the same snapshot bytes
+    n="${meta%%|*}"; rs=$(( 16#$(cut -d'|' -f2 <<< "$meta") )); shash=$(cut -d'|' -f3 <<< "$meta")
     case "$rs" in
         1) ent=2642; tot=2624 ;;     # vset_wire.h:142 DNA_VSET_ENTRY_LEN; 32 + 2592
         2) ent=2770; tot=2752 ;;     # vset_wire.h:143 DNA_VSET_ENTRY_LEN_V2; 32 + 64 + 64 + 2592
@@ -1585,7 +1645,7 @@ snap_totals() {
          SELECT hex(substr(snapshot_blob, $(( VSET_HDR + tot + 1 )) + k * $ent, 8))
            FROM validator_set_snapshots, i WHERE epoch_start = $2 ORDER BY k;") \
         || die "snapshot($2)'s entries on node$1 could not be read"
-    echo "$n|$rs|$(printf '%s' "$totals" | tr '\n' ',')"
+    echo "$n|$rs|$shash|$(printf '%s' "$totals" | tr '\n' ',')"
 }
 check_verdict_prereqs() {  # H — the epoch whose snapshot(H) the settlement of H reads
     local h="$1" r n first="" first_n="" s cnt rs tots t t0 first_tot
@@ -1602,14 +1662,36 @@ check_verdict_prereqs() {  # H — the epoch whose snapshot(H) the settlement of
         if [ -z "$first_tot" ]; then first_tot="$t"
         elif [ "$t" != "$first_tot" ]; then die "snapshot($h) (ruleset $rs): seat powers are NOT equal (total_stake values $tots) — the seat-count bound is not the source verdict here"; fi
     done
-    r=$(sqlite3 -separator '|' -cmd '.timeout 5000' "$(db_of 1)" \
-        "SELECT (SELECT COUNT(*) FROM v2_validator_roles),
-                (SELECT COUNT(*) FROM v2_validator_roles WHERE lower(hex(owner_fp)) <> '$OWNER'),
-                (SELECT COUNT(*) FROM v2_storage_nodes WHERE lower(hex(payee_fp)) = '$OWNER');" 2>&1) \
-        || die "the verdict prerequisites could not be read: $r"
-    [ "$r" = "$N|0|0" ] || die "the verdict prerequisites do not hold (validator roles|seats not owned by the validators' owner|members owned by it = '$r', expected '$N|0|0'): the seat-count bound is not the source verdict here"
+    load_seats "$h"
 }
-declare -A RB_Y RB_GRACE RB_HU
+# load_seats H — the seats of snapshot(H) as the SETTLEMENT reads them (round 10, row 2): per seat s, the seat KEY
+# seat_fp = SHA3-512(pubkey) (nodus_witness_v2_storage.c:1548-1551, qgp_sha3_512 over the entry's pubkey) and the seat
+# OWNER owner_fp. Ruleset 2 (every snapshot built at key generation >= 4, nodus_witness_vset.c:475-481, so every
+# epoch this scenario reads) takes the owner from the ENTRY (nodus_storage_seat_owners, v2_storage.c:1403-1407);
+# entry layout shared/dnac/vset_wire.h:78-84: voter_id 32, validator_id 64, owner_fp 64 (entry offset 96), consensus_pk
+# 2592 (offset 160), after the 78-byte header. Ruleset 1 takes the owner from the validator row keyed by the migrated
+# validator id (v2_storage.c:1414-1440, dna_validator_id_migrated), which this harness cannot derive: a ruleset-1
+# snapshot is a named FAIL (that part is stopped, never guessed).
+declare -A SEAT_FP SEAT_OWN
+load_seats() {             # H
+    local h="$1" meta n rs s off pk
+    [ -z "${SEAT_FP["$h|0"]+x}" ] || return 0
+    meta=$(sqlite3 -separator '|' -cmd '.timeout 5000' "$(db_of 1)" \
+        "SELECT active_count, hex(substr(snapshot_blob, 11, 4)) FROM validator_set_snapshots WHERE epoch_start = $h;") \
+        || die "snapshot($h) could not be read on node1"
+    [ -n "$meta" ] || die "snapshot($h) is absent on node1"
+    n="${meta%%|*}"; rs=$(( 16#${meta#*|} ))
+    [ "$rs" = 2 ] || die "snapshot($h) carries selection_ruleset $rs: the seat owners of a ruleset-1 snapshot come from the validator row by migrated id (nodus_witness_v2_storage.c:1414-1440), which the harness cannot derive — the verdict's owner exclusion cannot be applied here"
+    for (( s = 0; s < n; s++ )); do
+        off=$(( VSET_HDR + s * 2770 ))                      # vset_wire.h:143 DNA_VSET_ENTRY_LEN_V2
+        pk=$(sqlite3 -cmd '.timeout 5000' "$(db_of 1)" "SELECT hex(substr(snapshot_blob, $(( off + 160 + 1 )), 2592)) FROM validator_set_snapshots WHERE epoch_start = $h;")
+        [ "${#pk}" = 5184 ] || die "snapshot($h) seat $s: the consensus pubkey is ${#pk} hex characters, expected 5184"
+        SEAT_FP["$h|$s"]=$(printf '%s' "$pk" | xxd -r -p | openssl dgst -sha3-512 -binary | xxd -p -c 256 | tr -d '\n')
+        SEAT_OWN["$h|$s"]=$(sqlite3 -cmd '.timeout 5000' "$(db_of 1)" "SELECT lower(hex(substr(snapshot_blob, $(( off + 96 + 1 )), 64))) FROM validator_set_snapshots WHERE epoch_start = $h;")
+        [[ "${SEAT_FP["$h|$s"]}" =~ ^[0-9a-f]{128}$ ]] && [[ "${SEAT_OWN["$h|$s"]}" =~ ^[0-9a-f]{128}$ ]] || die "snapshot($h) seat $s: the key / owner could not be decoded"
+    done
+}
+declare -A RB_Y RB_GRACE RB_HU RB_I RB_YE MOWN    # RB_I / RB_YE: I and Y of the SOURCE verdict (exclusions applied), MOWN: a member's owner (payee_fp)
 RB_N=0; RB_MEMBERS=""; EP_H=0
 # epoch_reads H — the members of set(H), their grace and held_union, and the committed reports of
 # epoch H, from every live node (identical or FAIL); the live nodes are first waited (progress-
@@ -1639,7 +1721,8 @@ epoch_reads() {            # H
             die "node$n's set / member_epoch / reports of epoch $h DIFFER from node${ALIVE[0]}'s (diff above)"
         fi
     done
-    EP_H="$h"; RB_Y=(); RB_GRACE=(); RB_HU=(); RB_N=0
+    EP_H="$h"; RB_Y=(); RB_GRACE=(); RB_HU=(); RB_N=0; RB_I=(); RB_YE=()
+    local so sf mo bit
     idx=0
     while IFS='|' read -r _ fp g _; do
         [ -n "$fp" ] || continue
@@ -1649,13 +1732,26 @@ epoch_reads() {            # H
         [ -n "$fp" ] || continue
         RB_HU[$fp]="$hu"
     done < <(grep '^hu|' <<< "$ref" || true)
+    # the members' owners (the registry row's payee_fp — nodus_witness_v2_storage.c:1664 passes rows[].payee_fp)
+    while IFS='|' read -r fp mo; do [ -z "$fp" ] || MOWN[$fp]="$mo"; done < <(sqlite3 -cmd '.timeout 5000' "$(db_of 1)" \
+        "SELECT lower(hex(node_fp)) || '|' || lower(hex(payee_fp)) FROM v2_storage_nodes;")
+    for (( i = 0; i < ${#MEM[@]}; i++ )); do RB_I[${MEM[$i]}]=0; RB_YE[${MEM[$i]}]=0; done
     while IFS='|' read -r _ seat hex; do
         [ -n "$seat" ] || continue
         RB_N=$(( RB_N + 1 ))
+        [[ "$seat" =~ ^[0-9]+$ ]] && [ -n "${SEAT_FP["$h|$seat"]+x}" ] || die "epoch $h: a report names seat '$seat', which is not a seat of snapshot($h)"
         for (( i = 0; i < ${#MEM[@]}; i++ )); do
             byte="${hex:$(( 2 * (i / 8) )):2}"
             [ -n "$byte" ] || die "the bitmap of seat $seat in epoch $h is $(( ${#hex} / 2 )) byte(s), too short for member index $i"
-            RB_Y[${MEM[$i]}]=$(( ${RB_Y[${MEM[$i]}]} + ( (16#$byte >> (i % 8)) & 1 ) ))
+            fp="${MEM[$i]}"
+            bit=$(( (16#$byte >> (i % 8)) & 1 ))
+            RB_Y[$fp]=$(( ${RB_Y[$fp]} + bit ))
+            # the SOURCE's exclusion (nodus_storage_member_verdict, v2_storage.c:1373-1381): a seat whose owner equals the
+            # member's owner or whose key equals the member's fp does not count, for or against
+            sf="${SEAT_FP["$h|$seat"]}"; so="${SEAT_OWN["$h|$seat"]}"
+            [ -n "${MOWN[$fp]+x}" ] || die "epoch $h: member ${fp:0:16}… has no registry row (no owner)"
+            if [ "$so" = "${MOWN[$fp]}" ] || [ "$sf" = "$fp" ]; then continue; fi
+            RB_I[$fp]=$(( ${RB_I[$fp]} + 1 )); RB_YE[$fp]=$(( ${RB_YE[$fp]} + bit ))
         done
     done < <(grep '^rep|' <<< "$ref" || true)
     RB_MEMBERS="${MEM[*]}"
@@ -1670,12 +1766,15 @@ in_set_or_die() {          # FP — the member must be in set(EP_H) of the last 
 }
 epoch_verdict() {
     in_set_or_die "$1"
-    local fp="$1" y="${RB_Y[$1]}"
+    local fp="$1" i="${RB_I[$1]}" ye="${RB_YE[$1]}"
     if [ "${RB_GRACE[$fp]}" -gt "$EP_H" ]; then EV=grace; return 0; fi     # in grace: not probed, weight 0
     if [ "${RB_HU[$fp]}" = 0 ]; then EV=none; return 0; fi                # no assignment in either epoch: not probed
-    if [ $(( 2 * (RB_N - 1) )) -gt "$N" ] && [ $(( 3 * y )) -gt $(( 2 * RB_N )) ]; then EV=ok
-    elif [ $(( 2 * (RB_N - 1) )) -gt "$N" ] && [ "$y" = 0 ]; then EV=dead
-    else EV=undetermined; fi
+    # the SOURCE verdict (round 10): I / Y with the seat exclusions applied (epoch_reads), P_total = N seats of equal
+    # power; 2·I <= P_total is NO_EVIDENCE (the fail_streak would not move: not a case this scenario asserts, a FAIL),
+    # 3·Y > 2·I is OK, else NOT OK
+    if [ $(( 2 * i )) -le "$N" ]; then EV=undetermined
+    elif [ $(( 3 * ye )) -gt $(( 2 * i )) ]; then EV=ok
+    else EV=dead; fi
 }
 fp_node() {                # FP -> the node index whose identity it is, '' if none (the candidate)
     local k
@@ -1733,7 +1832,8 @@ epoch_service_read() {     # H
         if [ "$EV" = grace ] || [ "$EV" = none ]; then
             [ "${RB_Y[$fp]}" = 0 ] || die "epoch $h: ${fp:0:16}… is $EV (in grace / no assignment) but ${RB_Y[$fp]} seat(s) carry its bit"
         elif [ "$fp" = "$DEAD_FP" ]; then
-            [ "$EV" = dead ] || die "epoch $h: the candidate (no node) is eligible but its verdict is '$EV' (${RB_Y[$fp]} of $RB_N seats carry its bit) — expected NOT OK with bit 0 in every seat"
+            [ "$EV" = dead ] || die "epoch $h: the candidate (no node) is eligible but its verdict is '$EV' (${RB_Y[$fp]} of $RB_N seats carry its bit; I ${RB_I[$fp]}, Y ${RB_YE[$fp]}) — expected NOT OK with bit 0 in every seat"
+            [ "${RB_Y[$fp]}" = 0 ] || die "epoch $h: the candidate (no node) is NOT OK but ${RB_Y[$fp]} seat(s) carry its bit — a node that runs nothing cannot be OK in a probe"
             nlines=$(count_log_lines "storage member ${fp:0:16}.. was never reachable on 0x72 in epoch H=$h — NOT OK" "${ALIVE[@]}")
             [ "$nlines" -ge "$RB_N" ] || die "epoch $h: the candidate has bit 0 in all $RB_N reports but the live nodes' logs hold only $nlines 'never reachable on 0x72 in epoch H=$h — NOT OK' line(s): it was not probed-and-unreachable (a not-probed target has bit 0 too)"
             echo "[ok] epoch $h: the candidate ${fp:0:16}… — $nlines reporter line(s) 'never reachable on 0x72 in epoch H=$h — NOT OK' (>= the $RB_N reports): probed and unreachable, not merely unprobed"
@@ -1806,18 +1906,18 @@ epoch_service_post() {     # H
     fi
     PEND_POST=$(printf '%s\n' $PEND_POST | awk -v h="$h" '$0 != h' | tr '\n' ' ')
 }
-service_reads() {
+service_reads() {          # [TIP] — serve what is open at TIP (default: the tip read now)
     local h t wt
-    t=$(tip_of 1)
+    t="${1:-$(tip_of 1)}"
     for h in $PEND_READ; do
         wt=$(( h + E + E / 2 ))
         if [ "$t" -ge $(( h + 2 * E )) ]; then die "the report window of epoch $h (tip $wt .. $(( h + 2 * E - 1 ))) closed before it could be read: the chain is at $t (it made blocks on its own while a step waited, and the reports are pruned at $(( h + 2 * E ))) — $MSG_LAYOUT"; fi
         if [ "$t" -ge "$wt" ]; then epoch_service_read "$h"; fi
     done
 }
-service_posts() {
+service_posts() {          # [TIP]
     local h t
-    t=$(tip_of 1)
+    t="${1:-$(tip_of 1)}"
     for h in $PEND_POST; do
         if [ "$t" -ge $(( h + 3 * E )) ]; then die "internal: the settlement of epoch $h (boundary $(( h + 2 * E ))) was passed without its check (tip $t) — $MSG_LAYOUT"; fi
         if [ "$t" -ge $(( h + 2 * E )) ]; then epoch_service_post "$h"; fi
@@ -1830,12 +1930,18 @@ service_posts() {
 # 9's window of epoch 525 (tip 547 .. 554) from tip 547 to 555. A window that closed before it could be read (the
 # tip is at or past h + 2E) still FAILs by name in service_reads; nothing is retried. It also stops at the first
 # settlement boundary h + 2E of a queued read, so its check is served at that boundary and not after the next one.
+#
+# ROUND 10 (row 8): on EVERY pass the tip is read ONCE and both what is served and the pump target come from that same
+# tip. A window that opens after that read has its opening height above it, so it is a stop (`wt > t`) and the pump
+# cannot run past it (a stop at or below the real tip makes the pump a no-op and the next pass serves it); a window
+# at or below it was served before the target was chosen. The old loop served at one tip and chose the target from a
+# later one, so a window opening between the two was neither served nor a stop.
 advance_to() {
     local T="$1" nxt h wt t
-    service_reads
-    service_posts
     while :; do
         t=$(tip_of 1)
+        service_reads "$t"
+        service_posts "$t"
         nxt="$T"
         for h in $PEND_READ; do
             wt=$(( h + E + E / 2 ))
@@ -1846,9 +1952,7 @@ advance_to() {
             if [ "$wt" -gt "$t" ] && [ "$wt" -lt "$nxt" ]; then nxt="$wt"; fi
         done
         pump_raw "$nxt"
-        service_reads
-        service_posts
-        if [ "$(tip_of 1)" -ge "$T" ]; then return 0; fi
+        if [ "$(tip_of 1)" -ge "$T" ]; then service_reads; service_posts; return 0; fi
     done
 }
 # pump_to TARGET — the pump every step uses: with queued checks it goes through advance_to (served first, stops at
@@ -2026,7 +2130,7 @@ stagef_cmt_pump_ready "$(db_of 1)" || die "the CLI-SPEND pump is not usable on t
 [ "$VICTIM" != "$STAGEF_PUMP_SUBMIT_NODE" ] || die "the restart victim (node $VICTIM) is the pump's submit node — change STAGEF_PUMP_SUBMIT_NODE"
 stagef_sentinel SETUP_OK
 floor_diff "pre-hf9"
-echo "[info] mode: $([ "$WITH_STORAGE" = 1 ] && echo "SHORT EPOCH (E=$E), storage included" || echo "PRODUCTION-CONSTANT edge run (E=$E), WITHOUT storage segments — registration, segment 1, B1, join, exit and param 25 are not run (header)")"
+echo "[info] mode: $([ "$WITH_STORAGE" = 1 ] && echo "SHORT EPOCH (E=$E), storage included" || echo "PRODUCTION-CONSTANT edge run (E=$E), WITHOUT storage segments — the four storage members register at generation 5 (leg 5 populated); segment 1, B1, join, exit and param 25 are not run (header)")"
 
 # ── 1. leaves, a token and a name — the populated legs (hf9) ────────
 # (round-4 row 20: the production-constant run registers the four storage members too, so leg 5 is populated
@@ -2168,6 +2272,7 @@ if [ "$WITH_STORAGE" = 1 ]; then
     reg_ok=$(cell_lines reg | awk -F'|' '$2 == 1 && $3 == 0 && $4 == 0 && $5 == 0' | wc -l)
     [ "$reg_ok" = 4 ] || die "the registry is [$(cell_lines reg | tr '\n' ' ')], expected the four members ACTIVE with exit 0, fail_streak 0, grace_until 0"
     echo "[ok] segment 1 published at $H_PUB on 7/7; four storage members ACTIVE (fail_streak 0, grace_until 0)"
+    check_premise_members "segment-1" 1
     diff_full_at "$H_PUB" "segment-published-at-$H_PUB"
 fi
 
@@ -2196,10 +2301,15 @@ fi
 cc_guard 1
 T_V24="$CCG_TIP"
 A=$(clear_of_boundary $(( T_V24 + 1 + GRACE_SAF + A_MARGIN )))
-if [ "$WITH_STORAGE" = 1 ] && [ $(( A - A / E * E )) -gt $(( E / 2 )) ]; then
-    # round 9: the threshold is E/2 (A % E in [2, E/2]), not E-3: every step between A and B1 (the edge cell, the A+1
-    # cell, the victim's restart and catch-up, the E-s1 read) must fit before B1 with the pump's landing and the chain's
-    # own blocks in between, so the distance B1 - A is at least E - E/2 = 8 blocks at E 15 instead of 3.
+if [ $(( A - A / E * E )) -gt $(( E - A_ROOM )) ]; then
+    # round 9/10 — BOTH runs (round 10, row 11: the production branch had no rule, and clear_of_boundary excludes only
+    # A % E in {0, 1} (chain_config.c:1363, :1373 exclude the boundaries A-1 and A): A % E = E-1 makes the A+1 cell
+    # impossible (A+1 = B1), E-2 leaves one block). The steps between A and B1 are: the edge cell at tip >= A, the A+1
+    # cell (both need tip < B1), the victim's restart (spawn + catch-up to A+2) and, in the short run, the E-s1 read; no
+    # step pumps in the production run (idle blocks, 60 s each, against steps that take seconds to minutes), and the
+    # short run's pump lands a few blocks above its targets. A_ROOM = 8 blocks is the distance the short run has used
+    # since round 9 (E - E/2 at E 15), taken from the step count above and not from a source constant: B1 - A >= 8,
+    # i.e. A % E in [2, E - 8]. At E 720 the rule moves A only when A % E is 713 .. 719 (to the next epoch + 2).
     # round-4 row 10: the report window of epoch H2 - E (the epoch settled AT B1) closes at H2 + E/2 and
     # its settlement inputs must be read before B1 = H2 + E - 1; they are read after the restart cell
     # (tip A + 2), so A + 2 has to be at most B1 - 1. A later A inside the next epoch is a layout choice (the
@@ -2459,10 +2569,10 @@ if [ "$WITH_STORAGE" = 1 ]; then
     [ "$(reg_fs "$D_FP")" = 0 ] || die "D-arrival: the candidate's fail_streak is $(reg_fs "$D_FP"), expected 0"
     note_new_holders "$BD0"
     diff_full_at "$BD0" "D-arrival-at-height-$BD0"
-    # deadline = one epoch after the first sweep that may delete (round 9; was B_REL + E + 4, a 4-block window the
-    # pump's landing and the cell / diff reads before this line can pass): the holder sweeps once per epoch change at its
-    # next tick (holder.c:369 in assign, :661), so the file is gone shortly after tip B_REL + E; the upper bound is only
-    # liveness, the lower bound (H >= B_REL + E) is asserted from the deletion line below
+    # deadline B_REL + 2E = the end of epoch B_REL + E (round 9 widened B_REL + E + 4; round 10 grounds it): the deleting
+    # sweep runs inside epoch B_REL + E (holder.h:110 tick 200 ms, holder.c:646-661 assign at the epoch change, :369
+    # sthold_gc), and assert_deleted_at below requires its logged H to be EXACTLY B_REL + E. A file that is still there at
+    # tip B_REL + 2E missed that sweep — a FAIL; this is the source's own bound, not a lengthened timeout
     wait_seg_gone "$EXITER" 1 $(( B_REL + 2 * E )) || die "node$EXITER's seg-1.ok was not deleted by tip $(( B_REL + 2 * E )) although it is no holder in either epoch any more"
     assert_deleted_at "T-16 exit" "$EXITER" 1 "$EX_DEL0" $(( B_REL + E ))
 
@@ -2541,7 +2651,7 @@ if [ "$WITH_STORAGE" = 1 ]; then
     [ "$(count_log_lines "segment 1: fetching over 0x73" "$JOINER")" -gt "$J_FETCH0" ] || die "join of node $JOINER: no 'segment 1: fetching over 0x73' line in its log — the fetch path did not run"
     [ "$(count_log_lines "segment 1: exporting from this node's block store" "$JOINER")" = "$J_EXPORT0" ] || die "join of node $JOINER: it EXPORTED segment 1 from its block store although the store was pruned"
     [ -f "$(seg_file "$JOINER" 1)" ] || die "join of node $JOINER: the fetch line is logged but $(seg_file "$JOINER" 1) does not exist"
-    echo "[ok] join of node $JOINER at $CUR_B: it holds segment 1 whatever the scores (3 < R 4); one holder changed; its holder runtime FETCHED segment 1 over 0x73 (block store from $J_BASE) and seg-1.ok exists"
+    echo "[ok] join of node $JOINER at $CUR_B: it holds segment 1 whatever the scores (3 < R 4); one holder changed; its holder runtime FETCHED segment 1 over 0x73 (block store from $J_BASE) and its marker seg-1.ok is present (the pruned joiner's probes are answered from the file, which is what exercises it)"
 
     # setup: node 1 joins too (5 live eligible, R 4): whether it holds depends on the scores — only the
     # generic invariants and the identities rows inserted = rows ended = Σ n_new are asserted
@@ -2735,8 +2845,10 @@ echo "[info] HEIGHTS: HF2 $H2 | HF3 $H3 | GEN2 $H4 | EVM $HE | ROLES $H6 | ROOTS
 if [ "$WITH_STORAGE" = 1 ]; then
     echo "       | segment 1 at $H_PUB | exit x=$XH released $B_REL | candidate arrival $BD0, departure $DEP, return $REV | last cell $CUR_B"
     echo "[PASS] HF-9 generation 6 at E=$E, BPY $CONF_BPY, SAFETY grace $GRACE_SAF, ERGONOMIC grace $GRACE_ERG (7/7 at epoch length $E):"
-    echo "       populated legs, D6 voted at A=$A, the edge at the end of A-1, eight leg roots and the storage assignment"
-    echo "       byte-identical on 7/7 at every boundary from B1 to $CUR_B; every case changed a holder (B1 transition, exit,"
+    echo "       populated legs, D6 voted at A=$A, the edge at the end of A-1. Leg roots: at A-1, A, A+1 read from a window with no"
+    echo "       envelope and no boundary, byte-identical on 7/7; at B1, B1+E, B1+2E and every later boundary only the full global_root"
+    echo "       and block_id AT the height (7/7) plus the leg roots of one snapshot at a LATER tip (per-height comparison NOT covered)."
+    echo "       The storage relations are byte-identical on 7/7 at every boundary from B1 to $CUR_B; every case changed a holder (B1 transition, exit,"
     echo "       arrival, candidate out and back, join, copies up / down / up) with its report bits (answers its probes),"
     echo "       overlap retention (the dropped files seen inside the overlap epoch) and the deletion heights; the joiner node $JOINER"
     echo "       FETCHED segment 1 over 0x73 (block store from $J_BASE). Exact: grace_until, fail_streak and (after B1) held_union /"
@@ -2753,7 +2865,7 @@ else
     echo "       segments (production-constant edge run; test parameters chosen by the orchestrator — the production 17280"
     echo "       safety grace is NOT exercised): legs 1, 2, 3, 4, 5 (the four registered storage members), 7, 8 populated and leg 6"
     echo "       (segments) EMPTY (source table 0 rows, root = the empty-leg root), D6 voted at A=$A, the edge at the end of A-1,"
-    echo "       eight leg roots byte-identical on 7/7, node $VICTIM (last applied height $VICT_STOP_H, fleet tip $VICT_RESTART_TIP at its"
+    echo "       eight leg roots at A-1, A, A+1 (a window with no envelope and no boundary) byte-identical on 7/7, node $VICTIM (last applied height $VICT_STOP_H, fleet tip $VICT_RESTART_TIP at its"
     echo "       restart) restarted across A and then replayed from genesis. LEFT OUT: segment 1 (P = 24 x E is out of reach), B1,"
     echo "       every storage event, param 25, the candidate, the settlements."
 fi
