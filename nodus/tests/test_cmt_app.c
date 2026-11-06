@@ -7791,6 +7791,26 @@ static void hyb_close(hyb_t *h)
     gfx_close(&h->g);
 }
 
+/* ROUND 19 - the hybrid cases at the short-epoch setting (E = 15) as well as at production
+ * constants (E = 720). Several of them put "the boundary" at DNAC_EPOCH_LENGTH only because that
+ * is the FIRST boundary at production; they now take it from the fixture:
+ *   HYB_A_GEN6 = 14  the generation-6 activation of hyb_open's ladder: its last row is
+ *                    hyb_cc_row(w, DNAC_CFG_RULESET_GEN_TRIE, D, 14, 16), i.e. effective_block = 14
+ *                    (the param-24 row's effective height A; nonce 16) - read back by
+ *                    t_hybrid_probe P6 ("effective_block ... == 14") and the edge is the end of
+ *                    block A - 1 = 13 (test_hf9_edge.c HA);
+ *   HYB_REG_BLK  = 16 the block of the first registration (hyb_register_step(.., 16, ..)).
+ * hyb_boundary_above(h) is the first epoch boundary above h: DNAC_EPOCH_LENGTH (720) for both at
+ * production, 15 above 14 and 30 above 16 at E = 15. */
+#define HYB_A_GEN6  14u
+#define HYB_REG_BLK 16u
+static uint64_t hyb_boundary_above(uint64_t h)
+{
+    const uint64_t e = (uint64_t)DNAC_EPOCH_LENGTH;
+
+    return (h / e + 1u) * e;
+}
+
 /* digest of the tables the replay must leave byte-identical */
 static int hyb_digest(sqlite3 *db, uint8_t out[64])
 {
@@ -8116,22 +8136,30 @@ static int t_hyb_crash_edge(void)
 
 static int t_hyb_crash_ordinary(void)
 {
-    return hyb_case(15, "an ordinary generation-6 block", 0);
+    /* block 15 at production; at E = 15 block 15 IS the first boundary, so the ORDINARY block is 16
+     * (round 19: the case was labelled "ordinary" but ran the boundary there) */
+    const int64_t h = (15 % DNAC_EPOCH_LENGTH == 0) ? 16 : 15;
+
+    return hyb_case(h, "an ordinary generation-6 block", 0);
 }
 
+/* The first generation-6 boundary B1 of hyb_open's ladder: the first boundary above the
+ * generation-6 activation HYB_A_GEN6 (720 at production, 15 at E = 15). Round 19: the guard
+ * E > 16 is replaced by this derivation; at E = 720 the stop height is E, as before. */
 static int t_hyb_crash_boundary(void)
 {
-    CHECK(DNAC_EPOCH_LENGTH > 16, "the boundary lies above the ladder");
-    return hyb_case((int64_t)DNAC_EPOCH_LENGTH,
+    return hyb_case((int64_t)hyb_boundary_above(HYB_A_GEN6),
                     "the first generation-6 boundary B1, no storage event",
                     0);
 }
 
-/* (iii) WITH a storage event: a registered node makes B1 an event */
+/* (iii) WITH a storage event: a registered node makes B1 an event. The registration is block
+ * HYB_REG_BLK = 16 (hyb_case, reg = 1), so B1 is the first boundary above it: 720 at production,
+ * 30 at E = 15 (round 19: the guard E > 18 is replaced by this derivation; hyb_case itself needs
+ * the stop after the registration block, CHECKed there). */
 static int t_hyb_crash_boundary_event(void)
 {
-    CHECK(DNAC_EPOCH_LENGTH > 18, "the boundary lies above the registration");
-    return hyb_case((int64_t)DNAC_EPOCH_LENGTH,
+    return hyb_case((int64_t)hyb_boundary_above(HYB_REG_BLK),
                     "B1 with a storage event (one registered node)", 1);
 }
 
@@ -8165,14 +8193,16 @@ static int t_hyb_crash_boundary_event(void)
  * shorter than the ~1250-byte line), so stderr is redirected into a temp file
  * around one block step (dup2) and scanned. L3 is the formatting function
  * itself, visible through nodus_witness_cmt_app.h.
- * Compile flags: NODUS_EVM_ENABLED (the tries). The case needs E > 16 (the
- * boundary must lie above the generation ladder, which reaches generation 6
- * at block 13-16): in a SHORT-EPOCH build (-DDNAC_EPOCH_LENGTH=15) it STOPS
- * AT ITS GUARD (CHECK(E > 16)) and runs none of L1-L5, exactly as
- * hyb_crash_boundary_b1 does; the short-epoch coverage of the boundary line is
- * the Genesis Protocol harness scenario test_cmt_hf9.sh (check_boundary_leg_log,
- * 7 logs per boundary), not this unit case. At production constants (E 720) it
- * runs E real blocks. Environment: none. ONE-LINE PROPERTY (the node holds
+ * Compile flags: NODUS_EVM_ENABLED (the tries). Round 19: the boundary block is
+ * the first epoch boundary above the ladder's generation-6 activation
+ * (hyb_boundary_above(HYB_A_GEN6)): 720 at production constants and 15 at the
+ * short-epoch setting (-DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20
+ * -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15
+ * -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15), so L1-L5 run at both; the
+ * stepped blocks are B - 2 (setup), B - 1 (14 at E = 15: the first
+ * generation-6 block, ordinary), B and B + 1. At production it runs 721 real
+ * blocks; the harness scenario test_cmt_hf9.sh (check_boundary_leg_log, 7 logs
+ * per boundary) is the node-level comparison. Environment: none. ONE-LINE PROPERTY (the node holds
  * flockfile(stderr) across the log call): no deterministic unit test exists -
  * the interleaving needs a second thread logging at the exact moment, so a test
  * would pass or fail by scheduling; the lock is argued in the comment at the log
@@ -8242,7 +8272,9 @@ static int blr_leg_hex(sqlite3 *db, int leg, char out[129])
 
 static int t_hyb_boundary_leg_root_log(void)
 {
-    const int64_t E = (int64_t)DNAC_EPOCH_LENGTH;
+    /* the boundary block: the first epoch boundary above the ladder's generation-6 activation
+     * (HYB_A_GEN6): 720 at production, 15 at E = 15 (round 19; named E below as before) */
+    const int64_t E = (int64_t)hyb_boundary_above(HYB_A_GEN6);
     hyb_t   *A = calloc(1, sizeof(*A)), *C = calloc(1, sizeof(*C));
     char    *cap_before, *cap_b, *cap_after, *at;
     char     line[NODUS_CMT_BOUNDARY_ROOT_LINE_MAX], expect[NODUS_CMT_BOUNDARY_ROOT_LINE_MAX];
@@ -8252,7 +8284,8 @@ static int t_hyb_boundary_leg_root_log(void)
     const nodus_domain_runtime_t *rt = NULL;
 
     CHECK(A && C, "alloc");
-    CHECK(E > 16, "the boundary lies above the ladder");
+    CHECK(E > (int64_t)HYB_A_GEN6,
+          "the boundary lies above the ladder's generation-6 activation");
     CHECK(hyb_open(A, 0) == 0, "L0 node opens");
     CHECK(hyb_pair_to(A, NULL, 0, E - 2) == 0, "L0 blocks 1 .. E - 2");
 
@@ -9221,8 +9254,15 @@ static int hyb_node_row(nodus_witness_t *w, int key, int *status,
  * UTXO leg (1) and the registry leg (5) moved, and every leg root equals
  * the incremental and the full rebuild; X8 block 2E + 1 applies and the leg
  * roots still equal the rebuild.
- * Flags: NODUS_EVM_ENABLED; boundary arithmetic uses DNAC_EPOCH_LENGTH (E >
- * 18, as hyb_crash_boundary_event). One node: twins are the T-15 cases'
+ * ROUND 19: "E" and "2E" above are B1 and B2 = B1 + E: B1 is the first
+ * boundary above the registration block 16 (E = 720 at production, so B1 = E
+ * and B2 = 2E and every assertion is as written; 30 and 45 at E = 15, where
+ * the boundary 15 is applied inside X1 BEFORE the registration, an event-free
+ * generation-6 boundary like hyb_crash_boundary_b1's). The exit block B1 + 3
+ * needs E > 3. Flags: NODUS_EVM_ENABLED; compile constants of the two
+ * settings (-DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20
+ * -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15
+ * -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15, or none). One node: twins are the T-15 cases'
  * job. Leaves one /tmp/test_cmt_app_hyb_XXXXXX (removed). Can falsely pass:
  * the settlement of the boundary pays nothing here (no signed reports, pool
  * 1 unfunded: the F1 gate is not met), so the payout path is not run; the
@@ -9230,6 +9270,10 @@ static int hyb_node_row(nodus_witness_t *w, int key, int *status,
 static int t_hybrid_exit_release_probe(void)
 {
     const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    /* round 19: B1 = the arrival boundary = the first boundary above the registration block 16
+     * (720 at production, 30 at E = 15); the exit lands at B1 + 3 and the release at the NEXT
+     * boundary B2 = B1 + E (1440 = 2E at production). Was E and 2E. */
+    const uint64_t B1 = hyb_boundary_above(HYB_REG_BLK), B2 = B1 + E;
     hyb_t   *H = calloc(1, sizeof(*H));
     uint8_t *renv = NULL, *xenv = NULL;
     uint8_t  nul[64], fp[64], xid[64], xnul[64];
@@ -9239,7 +9283,7 @@ static int t_hybrid_exit_release_probe(void)
     int      st = 0, moved = 0;
     char     hex[129];
 
-    CHECK(E > 18, "the boundary lies above the registration");
+    CHECK(E > 3, "the exit block B1 + 3 lies before the release boundary B1 + E");
     CHECK(H != NULL, "alloc");
     CHECK(hyb_open(H, 2) == 0, "X0 the funded hybrid with the exit coin");
     CHECK(hyb_pair_to(H, NULL, 0, 15) == 0, "X1 blocks 1-15 apply");
@@ -9249,22 +9293,22 @@ static int t_hybrid_exit_release_probe(void)
           st == DNA_V2_STORAGE_ACTIVE && exit_h == 0 &&
           bond == HYB_COIN_BOND,
           "X2b the registry row is ACTIVE with exit_height 0");
-    CHECK(hyb_pair_to(H, NULL, 16, (int64_t)E) == 0,
-          "X3a blocks up to the boundary E apply (arrival event)");
+    CHECK(hyb_pair_to(H, NULL, 16, (int64_t)B1) == 0,
+          "X3a blocks up to the boundary B1 apply (arrival event)");
     CHECK(hyb_node_row(H->g.w, 1, &st, &exit_h, &bond) == 0 &&
           st == DNA_V2_STORAGE_ACTIVE,
           "X3b the row is still ACTIVE after the boundary E");
     CHECK(hyb_legs_ok(H->g.w) == 0,
           "X3c every leg root equals the rebuild after the boundary E");
-    CHECK(hyb_pair_to(H, NULL, (int64_t)E, (int64_t)E + 2) == 0,
-          "X3d blocks E+1 and E+2 apply");
-    CHECK(hyb_exit_step(H, NULL, (int64_t)E + 3, 1, &xenv) == CMT_OK,
-          "X4 block E+3 carrying the STORAGE_EXIT applies through the real "
+    CHECK(hyb_pair_to(H, NULL, (int64_t)B1, (int64_t)B1 + 2) == 0,
+          "X3d blocks B1+1 and B1+2 apply");
+    CHECK(hyb_exit_step(H, NULL, (int64_t)B1 + 3, 1, &xenv) == CMT_OK,
+          "X4 block B1+3 carrying the STORAGE_EXIT applies through the real "
           "blockexec");
     CHECK(hyb_node_row(H->g.w, 1, &st, &exit_h, &bond) == 0 &&
-          st == DNA_V2_STORAGE_EXITING && exit_h == E + 3 &&
+          st == DNA_V2_STORAGE_EXITING && exit_h == B1 + 3 &&
           bond == HYB_COIN_BOND,
-          "X5a the row is EXITING with exit_height E+3, bond unchanged");
+          "X5a the row is EXITING with exit_height B1+3, bond unchanged");
     {
         sqlite3_stmt *q = NULL;
         int gone = 0;
@@ -9282,8 +9326,8 @@ static int t_hybrid_exit_release_probe(void)
           "X5c the bond bucket still counts the EXITING bond");
     CHECK(hyb_legs_ok(H->g.w) == 0,
           "X5d every leg root equals the rebuild after the exit block");
-    CHECK(hyb_pair_to(H, NULL, (int64_t)E + 3, (int64_t)(2 * E) - 1) == 0,
-          "X6a blocks up to 2E-1 apply");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)B1 + 3, (int64_t)B2 - 1) == 0,
+          "X6a blocks up to B2-1 apply");
     CHECK(nodus_witness_storage_bond_total(H->g.w, &bonds0) == 0 &&
           (utxo0 = q1(H->g.w->db,
                       "SELECT COALESCE(SUM(amount),0) FROM utxo_set")) > 0,
@@ -9291,13 +9335,13 @@ static int t_hybrid_exit_release_probe(void)
     for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
         CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, u0[leg - 1]) == 0,
               "X6c leg roots read before the release");
-    CHECK(hyb_pair_to(H, NULL, (int64_t)(2 * E) - 1, (int64_t)(2 * E)) == 0,
-          "X7a the boundary 2E applies");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)B2 - 1, (int64_t)B2) == 0,
+          "X7a the boundary B2 applies");
     CHECK(hyb_node_row(H->g.w, 1, &st, &exit_h, &bond) == 0 &&
           st == DNA_V2_STORAGE_RELEASED && bond == HYB_COIN_BOND,
           "X7b the row is RELEASED");
     CHECK(qgp_sha3_512(g_ks[1].pk, QGP_DSA87_PUBLICKEYBYTES, fp) == 0 &&
-          dna_v2_storage_exit_id(H->g.chain32, 2 * E, fp, xid) == 0 &&
+          dna_v2_storage_exit_id(H->g.chain32, B2, fp, xid) == 0 &&
           dna_v2_storage_exit_nullifier(xid, xnul) == 0 &&
           hyb_coin_owner_hex(1, hex) == 0, "X7c the exit identity");
     {
@@ -9315,12 +9359,12 @@ static int t_hybrid_exit_release_probe(void)
                    sqlite3_column_bytes(q, 2) == 64 &&
                    memcmp(sqlite3_column_blob(q, 2), xid, 64) == 0 &&
                    sqlite3_column_int64(q, 3) == (int64_t)DNA_V2_STORAGE_EXIT_OUT_IDX &&
-                   (uint64_t)sqlite3_column_int64(q, 4) == 2 * E &&
+                   (uint64_t)sqlite3_column_int64(q, 4) == B2 &&
                    (uint64_t)sqlite3_column_int64(q, 5) ==
-                       2 * E + (uint64_t)DNAC_STORAGE_EXIT_LOCK_EPOCHS * E;
+                       B2 + (uint64_t)DNAC_STORAGE_EXIT_LOCK_EPOCHS * E;
         sqlite3_finalize(q);
         CHECK(good, "X7d the bond is ONE locked UTXO: identity, owner, "
-                    "amount, index 201, block 2E, unlock 2E + 12E");
+                    "amount, index 201, block B2, unlock B2 + 12E");
     }
     utxo1 = q1(H->g.w->db, "SELECT COALESCE(SUM(amount),0) FROM utxo_set");
     CHECK(nodus_witness_storage_bond_total(H->g.w, &bonds1) == 0 &&
@@ -9338,8 +9382,8 @@ static int t_hybrid_exit_release_probe(void)
     CHECK(hyb_legs_ok(H->g.w) == 0,
           "X7h every leg root equals the incremental and the full rebuild "
           "after the release block");
-    CHECK(hyb_pair_to(H, NULL, (int64_t)(2 * E), (int64_t)(2 * E) + 1) == 0,
-          "X8a block 2E+1 applies");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)B2, (int64_t)B2 + 1) == 0,
+          "X8a block B2+1 applies");
     CHECK(hyb_legs_ok(H->g.w) == 0, "X8b and its leg roots equal the rebuild");
     free(renv);
     free(xenv);
@@ -9487,6 +9531,10 @@ static int hyb_growth_chain(unsigned n_hist, hyb_sample_t s[HYB_NSAMPLES],
                             long long ctl[2])
 {
     const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    /* round 19: the samples "E, 2E, 3E" are B1, B1 + E, B1 + 2E with B1 the first boundary above
+     * the registration block 16 (720 at production: unchanged; 30 at E = 15, where the boundary 15
+     * is applied in G1 before the registration) */
+    const uint64_t B1 = hyb_boundary_above(HYB_REG_BLK);
     hyb_t   *H = calloc(1, sizeof(*H));
     uint8_t *env = NULL;
     size_t   elen = 0;
@@ -9514,18 +9562,18 @@ static int hyb_growth_chain(unsigned n_hist, hyb_sample_t s[HYB_NSAMPLES],
     CHECK(hyb_sample_block(H, 16, env, elen, &s[0]) == 0,
           "G3 block 16 with the registration applies");
     CHECK(hyb_sample_block(H, 17, NULL, 0, &s[1]) == 0, "G4 block 17 applies");
-    CHECK(hyb_pair_to(H, NULL, 17, (int64_t)E - 1) == 0,
-          "G5 blocks up to E-1 apply");
-    CHECK(hyb_sample_block(H, (int64_t)E, NULL, 0, &s[2]) == 0,
-          "G6 the boundary E applies");
-    CHECK(hyb_pair_to(H, NULL, (int64_t)E, (int64_t)(2 * E) - 1) == 0,
-          "G6b blocks up to 2E-1 apply");
-    CHECK(hyb_sample_block(H, (int64_t)(2 * E), NULL, 0, &s[3]) == 0,
-          "G6c the ordinary boundary 2E applies");
-    CHECK(hyb_pair_to(H, NULL, (int64_t)(2 * E), (int64_t)(3 * E) - 1) == 0,
-          "G6d blocks up to 3E-1 apply");
-    CHECK(hyb_sample_block(H, (int64_t)(3 * E), NULL, 0, &s[4]) == 0,
-          "G6e the ordinary boundary 3E (first settlement) applies");
+    CHECK(hyb_pair_to(H, NULL, 17, (int64_t)B1 - 1) == 0,
+          "G5 blocks up to B1-1 apply");
+    CHECK(hyb_sample_block(H, (int64_t)B1, NULL, 0, &s[2]) == 0,
+          "G6 the event boundary B1 applies");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)B1, (int64_t)(B1 + E) - 1) == 0,
+          "G6b blocks up to B1+E-1 apply");
+    CHECK(hyb_sample_block(H, (int64_t)(B1 + E), NULL, 0, &s[3]) == 0,
+          "G6c the ordinary boundary B1+E applies");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(B1 + E), (int64_t)(B1 + 2 * E) - 1) == 0,
+          "G6d blocks up to B1+2E-1 apply");
+    CHECK(hyb_sample_block(H, (int64_t)(B1 + 2 * E), NULL, 0, &s[4]) == 0,
+          "G6e the ordinary boundary B1+2E applies");
     CHECK(hyb_legs_ok(H->g.w) == 0,
           "G7 every leg root equals the rebuild at the end");
     CHECK(hyb_lookup_steps(H->g.w, 0, &ctl[0]) == 0 &&
@@ -9589,7 +9637,10 @@ static int hyb_growth_chain(unsigned n_hist, hyb_sample_t s[HYB_NSAMPLES],
  * the freeze and prune, which need no genesis. This probe's planted rows
  * carry the STORAGE_BOND default and one registration height, not that
  * lifetime; the checks below do not depend on either.
- * Flags: NODUS_EVM_ENABLED; E > 18. Leaves /tmp/test_cmt_app_hyb_XXXXXX
+ * ROUND 19: the samples named E, 2E, 3E are B1, B1 + E, B1 + 2E, B1 being the first boundary
+ * above the registration block 16 (E, 2E, 3E at production; 30, 45, 60 at E = 15). Flags:
+ * NODUS_EVM_ENABLED; both settings (E = 15 with its four constants, or production).
+ * Leaves /tmp/test_cmt_app_hyb_XXXXXX
  * (removed). Can falsely pass: history in the UTXO leg and the released
  * registry only; the 10% rule would also pass a scan of a table that
  * the history does not grow. */
@@ -9602,7 +9653,8 @@ static int t_hybrid_growth_probe(void)
     hyb_sample_t small[HYB_NSAMPLES], big[HYB_NSAMPLES];
     long long    ctl_small[2] = { -1, -1 }, ctl_big[2] = { -1, -1 };
 
-    CHECK(DNAC_EPOCH_LENGTH > 18, "the boundary lies above the registration");
+    CHECK(hyb_boundary_above(HYB_REG_BLK) > 17u,
+          "the event boundary B1 lies after block 17");
     memset(small, 0, sizeof(small));
     memset(big, 0, sizeof(big));
     CHECK(hyb_growth_chain(100, small, ctl_small) == 0,
@@ -9840,8 +9892,11 @@ static int hyb_report_env(nodus_witness_t *w, uint64_t height, int vkey,
  * applies: key 1's fail_streak 0 -> 1 (the streak writer), key 2's (in
  * grace at H) stays 0, leg 5 moved, every leg root equals the rebuild; W8
  * block 29E + 1 applies and the legs still equal the rebuild.
- * Flags: NODUS_EVM_ENABLED; E > 40 (reports at 28E + 1 .. + 5 inside the
- * window). Leaves /tmp/test_cmt_app_hyb_XXXXXX (removed). Can falsely pass:
+ * Flags: NODUS_EVM_ENABLED; both settings (production, or E = 15 with its four
+ * constants; the guard is E / 2 >= 5 and E > 2: reports at 28E + 1 .. + 5 inside
+ * the window; key 2 registers at R2 = 26E + 16, or 26E + 14 at E = 15). At
+ * E = 15 the case runs 436 blocks (29 E + 1); the registration of key 1 at
+ * block 16 follows the first boundary 15. Leaves /tmp/test_cmt_app_hyb_XXXXXX (removed). Can falsely pass:
  * a single node and a single member; the payout is not run (pool 1 unfunded:
  * the streak writer is reached, the pay path is not). The five seats'
  * independent power exceeding half of the total depends on the committee's
@@ -9857,7 +9912,16 @@ static int t_hybrid_storage_writers_probe(void)
     uint32_t streak = 1;
     int      moved = 0;
 
-    CHECK(E > 40, "W0 no epoch boundary among the heights of the setup");
+    /* round 19 (was E > 40): the case needs (a) the five report blocks 28E + 1 .. 28E + 5 inside the
+     * report window (28E, 28E + E/2] (nodus_witness_storage_probe.c:604-620), i.e. E / 2 >= 5, and
+     * (b) a block R2 strictly between 26E and 27E for key 2's registration. R2 = 26E + 16 as
+     * before when E > 16 (production), 26E + (E - 1) at E = 15 (the last block before 27E; the
+     * boundary 27E follows at once, which is all the K9a grace claim needs: key 2 registers AFTER the
+     * publication 26E and BEFORE the event boundary 27E). The setup blocks 1 .. 15, the registration
+     * of key 1 at 16 and the 25 boundaries before 26E are crossed at every E - at E = 15 the first
+     * boundary, 15, falls before key 1's registration (an event-free generation-6 boundary). */
+    const uint64_t R2 = 26 * E + (E > 16 ? 16 : E - 1);
+    CHECK(E / 2 >= 5 && E > 2, "W0 the report window holds five reports; a block lies between 26E and 27E");
     CHECK(H != NULL, "alloc");
     CHECK(hyb_open(H, 3) == 0,
           "W0 the funded hybrid with the arrival coin derives");
@@ -9898,11 +9962,11 @@ static int t_hybrid_storage_writers_probe(void)
      * existed at 27E - E = 26E (published <= B - E) and which it did not
      * hold at 26E: n = 1, grace_until = max(0, 27E + 1 x E) = 28E (K9
      * decision :78-79). Key 1 held the segment already: no grace. */
-    CHECK(hyb_pair_to(H, NULL, (int64_t)(26 * E), (int64_t)(26 * E) + 15) == 0,
-          "W4g blocks 26E+1 .. 26E+15 apply");
-    CHECK(hyb_register_step(H, NULL, (int64_t)(26 * E) + 16, 2, &aenv)
-              == CMT_OK, "W4h block 26E+16 with key 2's registration applies");
-    CHECK(hyb_pair_to(H, NULL, (int64_t)(26 * E) + 16, (int64_t)(27 * E) - 1)
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(26 * E), (int64_t)R2 - 1) == 0,
+          "W4g blocks 26E+1 .. R2-1 apply");
+    CHECK(hyb_register_step(H, NULL, (int64_t)R2, 2, &aenv)
+              == CMT_OK, "W4h block R2 with key 2's registration applies");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)R2, (int64_t)(27 * E) - 1)
               == 0, "W4i blocks up to 27E-1 apply");
     CHECK(hyb_node_gs(H->g.w, 2, &grace, &streak) == 0 && grace == 0,
           "W4j key 2 has no grace before the boundary 27E");

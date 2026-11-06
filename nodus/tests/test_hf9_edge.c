@@ -13,7 +13,9 @@
  * ── WHAT IT PROVES ──────────────────────────────────────────────────────
  *  A. THE EDGE (production runtimes, EVM-enabled build, an S20 database
  *     climbing 1 -> 2 -> 3 -> 4 -> 5 -> 6 by params 9 / 14 / 18 / 22 / 24 at
- *     heights 3 / 5 / 8 / 11 / 14, so the edge block is 13):
+ *     heights 3 / 5 / 8 / 11 / A with A = 14 (edge block 13) at production
+ *     constants and A = 13 (edge block 12) at the short-epoch setting, see
+ *     HA below):
  *     before the edge capture = 0, v2_trie_roots has no row and the dirty
  *     table is empty; the A-1 block commits; then
  *      (a) the registry is SYSTEM v12 / CORE v11 with the compiled
@@ -130,9 +132,21 @@
  * Section E is compiled only under -DQGP_FAULT_INJECT=ON (the hook
  * nodus_witness_v2_trie_test_corrupt_full) and is ABSENT otherwise: a build
  * without the flag has missing coverage for E, not a pass. No environment.
- * The heights assume no epoch boundary among 1..16 (DNAC_EPOCH_LENGTH 720);
- * the test CHECKs that, so a short-epoch build (E = 15) fails the guard
- * rather than running the wrong scenario (precedent test_hf7_edge.c).
+ * The heights assume no epoch boundary among 1..A+1: A = 14 when
+ * DNAC_EPOCH_LENGTH is above 16 (production 720), A = 13 at E = 15 (the first
+ * boundary 15 is then A + 2; the one case that applies A + 2 blocks, D, runs
+ * them under generation 5 on a chain whose param-24 row is far in the future).
+ * The test CHECKs the guard E > A + 1, so a build with a smaller E fails the
+ * guard rather than running the wrong scenario (precedent test_hf7_edge.c).
+ * Compile flags for the two settings: none besides the build's constants
+ * (-DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20
+ * -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15
+ * -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15 for the short-epoch run).
+ * HOW IT CAN FALSELY PASS at E = 15: the ladder is one block tighter (A = 13,
+ * gen-5 edge at the end of block 10, gen-6 edge at the end of block 12), so
+ * the claim that the tightened ladder behaves like the production one rests
+ * on the edges deciding only on their own parameter's rows (above), not on a
+ * second spacing run.
  *
  * ── WHAT IT LEAVES BEHIND ───────────────────────────────────────────────
  * /tmp/test_hf9_edge_<tag>_XXXXXX directories, removed at the end of every
@@ -230,7 +244,20 @@ static int g_checks = 0;
 #define HE    5u    /* param 14: the EVM generation from block 5            */
 #define HS    8u    /* param 18: generation 4 from block 8                  */
 #define H5   11u    /* param 22: generation 5 from block 11                 */
-#define HA   14u    /* param 24: generation 6 from block A = 14; edge = 13  */
+/* param 24: generation 6 from block A; the edge is the end of block A - 1.
+ * A = 14 (edge 13) at every epoch length above A + 1 (production 720); at the
+ * short-epoch setting (E = 15) A is 13 (edge 12): the blocks this file applies
+ * go up to A + 1 and an epoch boundary among them would change legs 7 / 8 and
+ * the storage relations (a boundary writes the validator snapshot and the
+ * attendance epoch), which the "A + 1 is an idle block" claims of case A
+ * (f) forbid. A = 13 keeps the first boundary 15 = A + 2. H5 = 11 is
+ * unchanged (A - 2 = 11: generation 5 is already in force when the idle
+ * prefix ends). The ladder rows are planted directly in chain_config_history
+ * (cc_row), so only the order of the edges matters to the engine
+ * (phase_6b_gen4_edge / gen5 / gen6 each decide on "absent at h + 1, present
+ * at h" of their own parameter, nodus_witness_v2_apply.c:5143-5200,
+ * :5340-5400, :5531). */
+#define HA   (E_LEN > 16u ? 14u : 13u)
 
 /* ══ fixture ══════════════════════════════════════════════════════════ */
 
@@ -504,12 +531,12 @@ static int t_edge(void) {
     const nodus_domain_runtime_t *ev =
         nodus_runtime_for_generation(NODUS_RT_GEN_EVM, DNA_DOMAIN_EVM);
     CHECK(s5 && c5 && s6 && c6 && ev, "compiled generations 3-6");
-    CHECK(E_LEN > HA + 2u, "no epoch boundary among heights 1..A+2");
+    CHECK(E_LEN > HA + 1u, "no epoch boundary among heights 1..A+1");
 
     CHECK(fx_open(&fx, "edge", H9, HE, HS, H5, HA,
                   (uint64_t)DNAC_CFG_RULESET_GEN_TRIE_D, -1) == 0,
           "seeded S20 chain (HF-2 on, params 9 / 14 / 18 / 22 / 24 at "
-          "3 / 5 / 8 / 11 / 14)");
+          "3 / 5 / 8 / 11 / A, A = 14 at production, 13 at E = 15)");
 
     /* ── A1. blocks 1..A-2: generation 5 from the end of block H5-1 ── */
     CHECK(run_idle(&fx, 1, HA - 2u) == 0, "idle blocks 1..A-2");
@@ -743,7 +770,7 @@ static int t_edge_wrong_value_faults(void) {
     nodus_v2_block_t b;
     CHECK(fx_open(&fx, "wrongd", H9, HE, HS, H5, HA,
                   (uint64_t)DNAC_CFG_RULESET_GEN_TRIE_D + 1u, -1) == 0,
-          "seeded chain (param 24 at 14 with D6 + 1)");
+          "seeded chain (param 24 at A with D6 + 1)");
     CHECK(run_idle(&fx, 1, HA - 2u) == 0, "idle blocks 1..A-2");
     mk_block(&b, HA - 1u);
     CHECK(v2x_cmt_fault_why(fx.w, &b, V2X_FAULT,
@@ -942,9 +969,12 @@ static int t_edge_rollback_after_capture(void) {
               head_root(fx.w, DNA_DOMAIN_CORE, core1) == 0 &&
               memcmp(sys0, sys1, 64) == 0 && memcmp(core0, core1, 64) == 0,
               "SYSTEM / CORE heads as at A-2");
-        CHECK(q1(fx.w->db, "SELECT COUNT(*) FROM v2_blocks WHERE "
-                           "global_height = 13") == 0,
-              "no block row for A-1");
+        {
+            char sql[96];
+            snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM v2_blocks WHERE "
+                     "global_height = %u", (unsigned)(HA - 1u));
+            CHECK(q1(fx.w->db, sql) == 0, "no block row for A-1");
+        }
     }
     /* control: the same block without the injection runs the edge and
      * leaves capture 1 - the injection above fired AFTER a real edge */
@@ -1272,7 +1302,7 @@ static int t_param24_single_use_block_path(void) {
     const uint64_t D6 = (uint64_t)DNAC_CFG_RULESET_GEN_TRIE_D;
     const uint64_t GRACE_S = (uint64_t)DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS;
     const uint64_t h = H5 + 2u;             /* 13: under generation 5       */
-    CHECK(E_LEN > h + 2u, "no epoch boundary among heights 1..h+1");
+    CHECK(E_LEN > h + 1u, "no epoch boundary among heights 1..h+1");
 
     /* params 9 / 14 / 18 / 22 at 3 / 5 / 8 / 11, NO param-24 row */
     CHECK(fx_open(&fx, "once24", H9, HE, HS, H5, 0, 0, -1) == 0,

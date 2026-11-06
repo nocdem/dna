@@ -110,9 +110,14 @@
  * and E need -DQGP_FAULT_INJECT=ON (the hooks nodus_witness_v2_shadow_test_
  * fault / _hits); they are ABSENT otherwise: a build without the flag has
  * missing coverage for them, not a pass. No environment. The heights assume
- * no epoch boundary among 1..16 (DNAC_EPOCH_LENGTH 720); the test CHECKs
- * that, so a short-epoch build fails the guard instead of running the
- * wrong scenario (precedent test_hf9_edge.c).
+ * no epoch boundary among 1..A (A = 14 at production constants, 13 at the
+ * short-epoch setting -DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20
+ * -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15
+ * -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15); the test CHECKs E > A, so a
+ * smaller E fails the guard instead of running the wrong scenario (precedent
+ * test_hf9_edge.c). HOW IT CAN FALSELY PASS at E = 15: the chain case's shadow
+ * window is one generation-5 pass (block 11) instead of two (11, 12), and the
+ * ladder is one block tighter than at production.
  *
  * ── WHAT IT LEAVES BEHIND ───────────────────────────────────────────────
  * /tmp/test_hf9_shadow_<tag>_XXXXXX directories, removed at the end of every
@@ -191,7 +196,16 @@ static int g_checks = 0;
 #define HE    5u
 #define HS    8u
 #define H5   11u    /* generation 5 from block 11; first committed at 10    */
-#define HA   14u    /* param 24: generation 6 from block A = 14; edge = 13  */
+/* param 24: generation 6 from block A; the edge is the end of block A - 1. A = 14
+ * (edge 13) above E = 16 (production 720); A = 13 (edge 12) at the short-epoch
+ * setting (E = 15), as in test_hf9_edge.c: the chain case applies blocks 1 .. A
+ * and then compares the leg roots / global roots with a twin, so no epoch
+ * boundary may lie among them, and 15 > 13. The shadow window of the case is
+ * the generation-5 blocks H5 .. A - 2 (11, 12 at production; 11 only at
+ * E = 15: one pass instead of two - the claims about the window (one log
+ * row per block, the consensus tables untouched, the log row = the simulated
+ * activation) are made per pass, the row count is computed from A). */
+#define HA   (E_LEN > 16u ? 14u : 13u)
 
 /* ══ common helpers ═══════════════════════════════════════════════════ */
 
@@ -1021,7 +1035,7 @@ static int t_chain_window(void) {
     uint8_t d_consensus_before[64], d_consensus_after[64];
     int seed_h = 0, rows_before;
     uint64_t scanned_before;
-    CHECK(E_LEN > HA + 2u, "no epoch boundary among heights 1..A+2");
+    CHECK(E_LEN > HA, "no epoch boundary among heights 1..A");
     CHECK(fx_open(&fx, "chain", HA) == 0, "the generation-6 ladder chain");
     CHECK(fx.w->config.hf9_shadow == NODUS_HF9_SHADOW_OFF,
           "a zero-initialised config is off");

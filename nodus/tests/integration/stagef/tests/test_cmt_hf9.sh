@@ -359,8 +359,9 @@
 #      databases are wiped (its identity kept), it is restarted with the
 #      genesis pin only; its log (truncated first, so every line is of THIS
 #      replay) carries the HF-7 edge line and the HF-9 edge line (those two
-#      greps are what is asserted in the PRODUCTION-CONSTANT run, which can end
-#      before B1 (round 11 row 12) and so compares NO HF9-BOUNDARY-ROOTS line; in
+#      greps are what is asserted in the PRODUCTION-CONSTANT run, which compares
+#      NO HF9-BOUNDARY-ROOTS line (it may end before B1, round 11 row 12; its [PASS] prints
+#      the measured final tip against the first boundary above A); in
 #      the SHORT run every boundary from B1 is compared on the replayed node's
 #      log as well, at least three: check_boundary_leg_log, post-replay); it reaches the
 #      fleet tip and agrees 7/7 in the full 64-byte mode, leg roots and storage
@@ -523,7 +524,9 @@
 #     independent computation - seven nodes that log the same wrong value pass
 #     (the oracle and the unit tests, not this check, establish correctness); it
 #     shows the nodes' own reports of the roots AT the height are equal. It does
-#     not run in the production-constant edge run (no generation-6 boundary).
+#     not run in the production-constant edge run (that branch compares no boundary line; whether
+#     it reached a generation-6 boundary is measured at its end - the final fleet tip against the first
+#     boundary above A - and printed, not assumed).
 #     Round 18: a log is read only after THAT node's own tip is >= B + 1 (the
 #     node has then returned from Commit(B), which wrote the line; a node that
 #     does not reach B + 1 is a named FAIL); the node holds flockfile(stderr)
@@ -699,6 +702,16 @@
 #     the name, the segment-1 wait, the victim's stop / restart / replay across
 #     A, the edge) nothing is queued, so no window exists; the replay at the end
 #     runs after drain_pending (the queues are empty by assertion).
+#   - **HOW IT CAN FALSELY FAIL (named FAILs on a correct chain; never a false pass)** - recorded for
+#     the operator, not retried (rounds 15-18 dispositions): (1) the VOTE LANDING: the copies votes land
+#     at CUR_B + 2E or + 3E, which fixes where the 8th node's cycle can start; the valid BD0 at E 15 are
+#     660, 675, 690 and 705 (derived at the cycle's start) and a landing that leaves BD0 >= 720 (e.g. B1 =
+#     510 with three +3E landings: copies-up-6 at 705, BD0c = 720) is a named layout FAIL; (2) a SINGLE
+#     CALL THAT SPANS A REPORT WINDOW: a CLI call, a diff, the oracle, a process start / stop or the
+#     per-seat hashing can take longer than the E/2 = 7 blocks of a window on a busy machine, and the
+#     window then closes unread - a named FAIL ("closed before it could be read"); (3) the shared
+#     stagef_spawn_node listener wait (60 x 0.5 s, stagef_env.sh:486-488); (4) the registration of the
+#     8th node must land inside the epoch of the placed BD0.
 #   - **Tip windows against the pump's landing and the chain's own blocks** (round
 #     9). A pump to T returns as soon as tip >= T and lands ABOVE T by an amount
 #     the helper does not bound: 22 (PUMP_LAND_MAX) is a LAYOUT ESTIMATE, an inference
@@ -1145,6 +1158,8 @@ serve_queues() { nv_assert_alive "while waiting"; if [ "$SERVING" != 1 ]; then s
 WH_TIP=-1; WR_TIP=-1
 wait_height_s() {          # DB TARGET [STALL_INTERVALS] — rc 0 reached, 1 stalled; WH_TIP = the DB's tip on exit
     local db="$1" target="$2" stall_intervals="${3:-3}" poll_s=5 stall_polls last=-1 since=0 h
+    # round 19, row 1: the TARGET is a valid non-negative height (a -1 target succeeds at once)
+    [[ "$target" =~ ^[0-9]+$ ]] || die "wait_height_s: the target height is invalid ('$target') for $db — a catch-up target must be a valid fleet tip"
     stall_polls=$(( (stall_intervals * (STAGEF_CMT_EMPTY_INTERVAL_MS / 1000) + poll_s - 1) / poll_s ))
     while :; do
         h=$(stagef_cmt_tip "$db"); [ -n "$h" ] || h=-1
@@ -1167,11 +1182,14 @@ wait_height_s() {          # DB TARGET [STALL_INTERVALS] — rc 0 reached, 1 sta
 wait_row_s() {             # DB SQL [STALL_INTERVALS] [MAX_HEIGHTS] — rc 0 row seen, 1 stalled, 2 height budget exceeded; WR_TIP = the tip on exit
     local db="$1" sql="$2" stall_intervals="${3:-3}" max_heights="${4:-20}" poll_s=5 stall_polls start_h last=-1 since=0 h cnt
     stall_polls=$(( (stall_intervals * (STAGEF_CMT_EMPTY_INTERVAL_MS / 1000) + poll_s - 1) / poll_s ))
-    start_h=$(stagef_cmt_tip "$db"); [ -n "$start_h" ] || start_h=-1
+    # round 19, row 1: an unreadable tip (stagef_cmt_tip answers -1 or nothing) is rc 3 - a valid non-negative height or no wait
+    start_h=$(stagef_cmt_tip "$db")
+    if ! [[ "$start_h" =~ ^[0-9]+$ ]]; then WR_TIP=-1; echo "[FAIL] wait_row_s: the tip of $db is unreadable ('$start_h')" >&2; return 3; fi
     while :; do
         cnt=$(sqlite3 "$db" "$sql" 2>/dev/null || echo 0)
         case "$cnt" in ''|*[!0-9]*) cnt=0 ;; esac
-        h=$(stagef_cmt_tip "$db"); [ -n "$h" ] || h=-1
+        h=$(stagef_cmt_tip "$db")
+        if ! [[ "$h" =~ ^[0-9]+$ ]]; then WR_TIP=-1; echo "[FAIL] wait_row_s: the tip of $db is unreadable ('$h')" >&2; return 3; fi
         WR_TIP="$h"
         if [ "$cnt" -gt 0 ]; then return 0; fi
         serve_queues
@@ -1293,7 +1311,7 @@ wait_cc_row() {
 cc_guard() {
     local n="$1" t nb try
     for try in 1 2; do
-        t=$(tip_of "$n")
+        tip_now "$n"; t="$TIPV"          # round 19, row 1: a valid height or a named FAIL
         nb=$(( (t / E + 1) * E ))
         if [ $(( t % E )) != 0 ] && [ $(( nb - t )) -ge "$CC_GUARD_GAP" ]; then
             CCG_TIP="$t"; CCG_NB="$nb"
@@ -1308,7 +1326,7 @@ cc_guard() {
 
 cc_guard_after() {
     local t
-    t=$(tip_of "$1")
+    tip_now "$1"; t="$TIPV"              # round 19, row 1
     [ $(( t + 1 )) -lt "$CCG_NB" ] || die \
         "the proposal from node$1 crossed into the epoch boundary $CCG_NB (tip $CCG_TIP -> $t): its approvals may straddle two epochs (the CLI committee/epoch edge, BUGS.md) — the layout broke, not the chain"
 }
@@ -1995,7 +2013,8 @@ read_k9a_premise() {       # LABEL K B — pump to LO if the tip is below it, th
     local label="$1" k="$2" b="$3" lo
     lo=$(( k * P + 1 ))
     [ $(( b - 1 - (lo + PUMP_LAND_MAX) )) -ge 1 ] || die "$label: the window [$lo, $(( b - 1 ))] is not wider than the pump's landing estimate $PUMP_LAND_MAX (an inference, not a bound) — $MSG_LAYOUT"
-    if [ "$(tip_of 1)" -lt "$lo" ]; then pump_to "$lo"; fi
+    tip_now 1                            # round 19, row 1
+    if [ "$TIPV" -lt "$lo" ]; then pump_to "$lo"; fi
     wait_all "$lo"
     # round 17, row 3: no wait for the 8th node here. The cycle is placed so that its restart gate is after the segment-2
     # publication: at every premise read it is STOPPED (read from its file, base only) or - before its registration - absent.
@@ -2004,7 +2023,7 @@ read_k9a_premise() {       # LABEL K B — pump to LO if the tip is below it, th
 assert_members_hold_range() {
     local label="$1" k="$2" b="$3" fp n base hgt first last cnt=0 t0 t1 set_read=""
     first=$(( (k - 1) * P + 1 )); last=$(( k * P + 1 ))
-    t0=$(tip_of 1)
+    tip_now 1; t0="$TIPV"                # round 19, row 1: a valid height or a named FAIL
     { [ "$t0" -ge "$last" ] && [ "$t0" -lt "$b" ]; } || die "$label: the premise read starts at tip $t0, outside [$last, $(( b - 1 ))] (segment $k's last height + 1 .. one block before its publication boundary $b) — $MSG_LAYOUT"
     for fp in $(sqlite3 -cmd '.timeout 5000' "$(db_of 1)" "SELECT lower(hex(node_fp)) FROM v2_storage_nodes WHERE status IN (1, 2) ORDER BY node_fp;"); do
         n=$(fp_node "$fp"); [ -n "$n" ] || continue
@@ -2029,7 +2048,7 @@ assert_members_hold_range() {
     done
     PREMISE_SET[$k]="$set_read "
     [ "$cnt" -ge 1 ] || die "$label: no storage member's block store could be read"
-    t1=$(tip_of 1)
+    tip_now 1; t1="$TIPV"                # round 19, row 1
     [ "$t1" -lt "$b" ] || die "$label: the chain reached tip $t1, the publication boundary $b of segment $k, while the stores were read (the read started at tip $t0) — the premise cannot be established before it — $MSG_LAYOUT"
     echo "[ok] $label: read at tips $t0 .. $t1 (before the publication of segment $k at $b, $(( b - 1 - t1 )) block(s) to spare): the block stores of the $cnt registered storage members read hold segment $k's range: every one that runs a node its whole range ($first .. $(( k * P )), height >= $last); a stopped 8th node, read from its database file, only the START of the range (base <= $first) - the cycle's placement guarantees it does not restart between this read and the publication"
 }
@@ -2213,7 +2232,7 @@ snap_totals() {
     echo "$n|$rs|$shash|$(printf '%s' "$totals" | tr '\n' ',')"
 }
 check_verdict_prereqs() {  # H — the epoch whose snapshot(H) the settlement of H reads
-    local h="$1" r n first="" first_n="" s cnt rs tots t t0 first_tot
+    local h="$1" r n first="" first_n="" s cnt rs tots t t0 first_tot nt
     for n in "${ALIVE[@]}"; do
         s=$(snap_totals "$n" "$h")
         if [ -z "$first" ]; then first="$s"; first_n="$n"
@@ -2221,12 +2240,18 @@ check_verdict_prereqs() {  # H — the epoch whose snapshot(H) the settlement of
     done
     cnt="${first%%|*}"; rs="${first#*|}"; rs="${rs%%|*}"; tots="${first##*|}"
     [ "$cnt" = "$N" ] || die "snapshot($h) holds $cnt seat(s), expected $N"
-    first_tot=""
+    first_tot=""; nt=0
+    # round 19, row 8: EXACTLY N total_stake fields must have been read - N - 1 separators and N readable, non-zero 8-byte
+    # (16 hex) values; shell word splitting drops an empty field, so an unreadable entry (a truncated blob) would otherwise vanish
+    # from the loop below (vset_wire.c:280 rejects truncation, but this read does not go through that decoder)
+    [ "$(tr -cd ',' <<< "$tots" | wc -c)" = $(( N - 1 )) ] || die "snapshot($h): the stake list '$tots' does not hold $N comma-separated fields"
     for t in ${tots//,/ }; do
         [[ "$t" =~ ^[0-9A-F]{16}$ ]] && [ "$t" != 0000000000000000 ] || die "snapshot($h): an entry's total_stake is '$t' (zero or unreadable)"
+        nt=$(( nt + 1 ))
         if [ -z "$first_tot" ]; then first_tot="$t"
         elif [ "$t" != "$first_tot" ]; then die "snapshot($h) (ruleset $rs): seat powers are NOT equal (total_stake values $tots) — the seat-count bound is not the source verdict here"; fi
     done
+    [ "$nt" = "$N" ] || die "snapshot($h): only $nt of the $N total_stake values were readable and non-zero (list '$tots')"
     load_seats "$h"
 }
 # load_seats H — the seats of snapshot(H) as the SETTLEMENT reads them (round 10, row 2): per seat s, the seat KEY
@@ -2388,10 +2413,17 @@ nv_has_db()    { [ -n "$(nv_db)" ]; }
 # most E blocks, (3) PROGRESS: a fleet tip that does not rise for 3 CreateEmptyBlocks intervals is a stalled chain.
 # The queued report windows and settlements are served while it waits (round 8: the chain moves on its own).
 nv_wait_cond() {
-    local label="$1" t0 t last since=0 stall; shift
-    t0=$(tip_of 1); last="$t0"; stall=$(( 3 * STAGEF_CMT_EMPTY_INTERVAL_MS / 1000 ))
+    local label="$1" t0 t last since=0 stall ok; shift
+    tip_now 1; t0="$TIPV"; last="$t0"; stall=$(( 3 * STAGEF_CMT_EMPTY_INTERVAL_MS / 1000 ))   # round 19, row 1: a valid baseline
     while :; do
-        if "$@"; then return 0; fi
+        # round 19, row 6 - wait_seg_file's order: the OBSERVATION first, then the tip; success only with a valid tip below
+        # the bound t0 + E, otherwise a named FAIL (a condition first seen at or past the bound is not a success)
+        ok=0; if "$@"; then ok=1; fi
+        tip_now 1; t="$TIPV"
+        if [ "$ok" = 1 ]; then
+            [ "$t" -lt $(( t0 + E )) ] && return 0
+            tail -30 "$NV_LOG" >&2; die "$label: reached only at fleet tip $t, at or past the bound $(( t0 + E )) (the tip was $t0 when the wait began, $E blocks allowed)"
+        fi
         service_reads; service_posts
         nv_running || { tail -30 "$NV_LOG" >&2; die "$label: the 8th node exited"; }
         tip_now 1; t="$TIPV"             # round 18, row 6
@@ -2438,7 +2470,7 @@ nv_stop() {                # [serve] — SIGTERM, wait up to 60 s, SIGKILL if it
 nv_catch_up() {            # LABEL — sets NVT; the adoption wait is nv_wait_cond's; the catch-up is progress-bounded (8 intervals of no progress, the grow scenarios' bound) to the fleet tip
     local d ft                # (no command substitution: the served queues of nv_wait_cond must stay in this shell)
     nv_wait_cond "$1: waiting for the 8th node to adopt a chain" nv_has_db
-    d=$(nv_db); ft=$(tip_of 1)
+    d=$(nv_db); tip_now 1; ft="$TIPV"    # round 19, row 1: a valid catch-up target
     wait_height_s "$d" "$ft" 8 || die "$1: the 8th node did not catch up to the fleet tip $ft (stuck at $WH_TIP)"
     NVT="$WH_TIP"
 }
@@ -2705,7 +2737,7 @@ nv_sweep_observe() {
     [ "$NV_DH" = "$NV_X" ] || die "the 8th node deleted segment 1 at H=$NV_DH but its first sweep is of epoch $NV_X"
     [ ! -e "$(nv_seg_file 1)" ] || die "the 8th node logged the deletion of segment 1 but $(nv_seg_file 1) exists"
     NV_SWEEP_DONE=1
-    echo "[ok] T-16 8th node (restarted holder): MEASURED first sweep of epoch H=$NV_X (>= B + E = $(( DEP + E ))), 0 segment(s) to hold, deletion of segment 1 at H=$NV_DH, the file is gone (the exact H = B + E is asserted only for the holders that run throughout)"
+    echo "[ok] T-16 8th node (restarted holder): MEASURED first sweep of epoch H=$NV_X (>= B + E = $(( DEP + E ))), 0 segment(s) to hold, deletion of segment 1 at H=$NV_DH, the file is gone (every deletion of this scenario is asserted H >= B + E, none exactly B + E; for this node the measured deletion H equals its measured sweep epoch X)"
 }
 next_boundary() {          # LABEL R
     CUR_B=$(( CUR_B + E ))
@@ -2789,7 +2821,7 @@ copies_boundaries() {
 consent_make() {           # NODE OWNER OUT LOG
     local n="$1" own="$2" out="$3" log="$4" crc=0 exp
     serve_queues                         # round 15, row 5: a CLI call (one RPC) follows
-    exp=$(( $(tip_of "$n") + CONSENT_AHEAD ))
+    tip_now "$n"; exp=$(( TIPV + CONSENT_AHEAD ))     # round 19, row 1: an expiry from a valid height
     "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$n")" -i "$(node_keys "$n")" \
         storage consent --owner "$own" --expiry "$exp" --out "$out" > "$log" 2>&1 || crc=$?
     cat "$log"
@@ -3003,8 +3035,9 @@ if [ "$WITH_STORAGE" = 1 ]; then
     [ $(( H_PUB % E )) = 0 ] || die "the expected publication height $H_PUB is not a boundary"
     for k in $MEMBERS_PRE; do register_member "$k"; done
     members_set $MEMBERS_PRE
-    wait_all "$(tip_of 1)"
-    [ "$(tip_of 1)" -lt $(( H_PUB - E )) ] || die "the members registered after $(( H_PUB - E )) — $MSG_LAYOUT (K9a would give them grace)"
+    tip_now 1; wait_all "$TIPV"          # round 19, row 1: a valid target
+    tip_now 1
+    [ "$TIPV" -lt $(( H_PUB - E )) ] || die "the members registered after $(( H_PUB - E )) — $MSG_LAYOUT (K9a would give them grace)"
     read_k9a_premise "segment-1" 1 "$H_PUB"      # at tip P + 1 (or the tip already past it), not one block before H_PUB (round 9)
     pump_to $(( H_PUB + 1 ))
     wait_all $(( H_PUB + 1 ))
@@ -3028,8 +3061,9 @@ fi
 # the attendance leg (v2_attendance_epoch) is written only by boundary processing and the first real
 # boundary is DNAC_EPOCH_LENGTH itself (nodus_witness_v2_epoch.c:2196-2198, :2310-2313): reach it
 # explicitly before any leg is required to be populated
-if [ "$(tip_of 1)" -le "$E" ]; then
-    echo "[info] tip $(tip_of 1) is before the first epoch boundary $E — pumping past it before the populated check"
+tip_now 1                                # round 19, row 1
+if [ "$TIPV" -le "$E" ]; then
+    echo "[info] tip $TIPV is before the first epoch boundary $E — pumping past it before the populated check"
     pump_to $(( E + 1 ))
     wait_all $(( E + 1 ))
 fi
@@ -3149,13 +3183,14 @@ check_legs post "edge-A+1 (tip $CELL_TIP)"
 wait_all $(( A + 2 ))
 stagef_spawn_node "$VICTIM" \
     || die "node$VICTIM did not come back after the restart (the [FAIL] line above names the process)"
-VICT_RESTART_TIP=$(tip_of 1)
+tip_now 1; VICT_RESTART_TIP="$TIPV"      # round 19, row 1
 echo "[ok] node$VICTIM restarted at fleet tip $VICT_RESTART_TIP (pids $STAGEF_NODE_PIDS) — measured outage: its last applied height $VICT_STOP_H, fleet tip at the restart $VICT_RESTART_TIP, $(( VICT_RESTART_TIP - VICT_STOP_H )) block(s) behind"
 for lg in "$(stagef_node_dir "$VICTIM")/nodus.log" "$(node_log "$VICTIM")"; do
     if grep -q 'REFUSING START' "$lg"; then tail -20 "$lg" >&2; die "node$VICTIM logged REFUSING START ($lg)"; fi
 done
-vt=$(stagef_cmt_wait_height "$(db_of "$VICTIM")" "$(( $(tip_of 1) ))" 3) \
-    || die "node$VICTIM did not catch up (stuck at $vt)"
+tip_now 1                                # round 19, row 1: a valid catch-up target (queues are empty here: no window exists before B1)
+wait_height_s "$(db_of "$VICTIM")" "$TIPV" 3 && vt="$WH_TIP" \
+    || die "node$VICTIM did not catch up (stuck at $WH_TIP)"
 echo "[ok] node$VICTIM caught up THROUGH the edge to tip $vt"
 ALIVE=()
 for n in $(seq 1 "$N"); do ALIVE+=("$n"); done
@@ -3174,8 +3209,10 @@ if [ "$WITH_STORAGE" = 1 ]; then
     # round-4 row 10: the epoch H2 - E is settled AT B1 (its union counts are the edge's E-s1 values). Its reports
     # are committed in (H2, H2 + E/2]; read them now, in the window [H2 + E/2 + ..., B1 - 1], so the settlement at B1
     # is checked with the same formula as every other. The E-s1 union counts themselves are the stored values.
-    if [ "$(tip_of 1)" -lt $(( H2_LAST + E / 2 )) ]; then pump_to $(( H2_LAST + E / 2 )); fi
-    [ "$(tip_of 1)" -lt $(( B1 - 1 )) ] || die "the E-s1 epoch $(( H2_LAST - E )) cannot be read before B1: tip $(tip_of 1) — $MSG_LAYOUT"
+    tip_now 1                            # round 19, row 1
+    if [ "$TIPV" -lt $(( H2_LAST + E / 2 )) ]; then pump_to $(( H2_LAST + E / 2 )); fi
+    tip_now 1
+    [ "$TIPV" -lt $(( B1 - 1 )) ] || die "the E-s1 epoch $(( H2_LAST - E )) cannot be read before B1: tip $TIPV — $MSG_LAYOUT"
     epoch_service_read $(( H2_LAST - E ))
     # (the joiner's retention restart is NOT here any more — round 6: it runs AFTER the joiner registered, see the
     # join step in section 6; a restart with an explicit retain while the node has no storage role prunes every
@@ -3279,8 +3316,8 @@ if [ "$WITH_STORAGE" = 1 ]; then
 
     # (the candidate cycle — arrival, departure, return of the 8th node — runs LAST, after the copies events: ROUND 14,
     # see the candidate cycle below; its return at B + 12E would otherwise collide with the joins and the copies votes)
-    # the exiter keeps its file through the overlap epoch B_REL; its deletion (H = B_REL + E exactly) is asserted after the
-    # next cell, the join of node 2
+    # the exiter keeps its file through the overlap epoch B_REL; its deletion (a sweep of an epoch H >= B_REL + E) is asserted
+    # after the node-1 join cell ("T-16 exit" below)
 
     # (c) join of node 2: {a,b,c} -> {2,a,b,c}, R 4 — fewer than R eligible, node 2 MUST hold
     # THE JOINER'S LAYOUT (round 6; derived from nodus_witness_role_prune.c, read to its end):
@@ -3305,7 +3342,8 @@ if [ "$WITH_STORAGE" = 1 ]; then
     # block store holds the segment's whole range — asserted from the stores before each publication
     # (assert_members_hold_range), not assumed.
     register_member "$JOINER"
-    [ "$(tip_of 1)" -lt $(( CUR_B + E - JOIN_PRUNE_MARGIN )) ] || die "the join landed at tip $(tip_of 1), fewer than $JOIN_PRUNE_MARGIN blocks before the boundary $(( CUR_B + E )) — no room for the joiner's retention restart — $MSG_LAYOUT"
+    tip_now 1                            # round 19, row 1
+    [ "$TIPV" -lt $(( CUR_B + E - JOIN_PRUNE_MARGIN )) ] || die "the join landed at tip $(tip_of 1), fewer than $JOIN_PRUNE_MARGIN blocks before the boundary $(( CUR_B + E )) — no room for the joiner's retention restart — $MSG_LAYOUT"
     stagef_write_node_config "$JOINER" "$RETAIN_J" || die "could not write node$JOINER's nodus.json (retain_blocks $RETAIN_J)"
     serve_queues          # round 15, row 5: stop (<= 30 s) + start (<= 30 s) follow; every window still queued opens above the tip
     src=0; stagef_stop_node "$JOINER" TERM || src=$?
@@ -3332,7 +3370,8 @@ if [ "$WITH_STORAGE" = 1 ]; then
     echo "[ok] node$JOINER's block store starts at height $J_BASE = P + 1: segment 1's range (1 .. $P) is gone (nodus_seg_store_has(1) is false) and the retained prefix starts at P + 1 = $(( P + 1 )) (the unpublished-period guard stops pruning there). This step reads the BASE only: it establishes that segment 1 is pruned and the prefix from P + 1 is kept; whether the store holds all of segment 2's range $(( P + 1 )) .. $(( 2 * P )) needs the height as well (nodus_seg_store_has, segment_export.c:51-55) and is the K9a premise read's assertion, not this step's"
     J_FETCH0=$(count_log_lines "segment 1: fetching over 0x73" "$JOINER")
     J_EXPORT0=$(count_log_lines "segment 1: exporting from this node's block store" "$JOINER")
-    [ "$(tip_of 1)" -lt $(( CUR_B + E )) ] || die "the joiner's retention restart ran to tip $(tip_of 1), at or past the boundary $(( CUR_B + E )) — $MSG_LAYOUT"
+    tip_now 1                            # round 19, row 1
+    [ "$TIPV" -lt $(( CUR_B + E )) ] || die "the joiner's retention restart ran to tip $(tip_of 1), at or past the boundary $(( CUR_B + E )) — $MSG_LAYOUT"
     next_boundary "join-node$JOINER" 4
     SO=$(n_old "$CUR_B"); PR=$(pub_rows "$CUR_B" 4)
     [ "$(cur_rows_of "${FP[$JOINER]}")" = "$(cell_lines seg | wc -l)" ] && [ "$(rows_from "$CUR_B")" = $(( SO + PR )) ] && [ "$(rows_ended "$CUR_B")" = 0 ] && [ "$(n_new_sum "$CUR_B")" = "$SO" ] \
@@ -3340,12 +3379,9 @@ if [ "$WITH_STORAGE" = 1 ]; then
     [ "$(reg_grace "${FP[$JOINER]}")" = $(( CUR_B + E )) ] || die "join of node $JOINER: its grace_until is $(reg_grace "${FP[$JOINER]}"), expected $(( CUR_B + E ))"
     note_new_holders "$CUR_B"
     diff_full_at "$CUR_B" "join-node$JOINER-at-height-$CUR_B"
-    # the exiter's file is deleted by a sweep of an epoch H >= B_REL + E (plan :456: not before the overlap epoch passed;
-    # round 18, row 9 - no "exactly B_REL + E" claim: the holder's tick (holder.h:110 200 ms, holder.c:646-661) and its
-    # block-sync return (:640) put no upper bound on the epoch of the sweep). The wait is bounded in blocks by the LAYOUT:
-    # tip < B_REL + 3E = MIN_H + 2E, the cell after the next (a named FAIL); assert_deleted_at requires the line's H >= B_REL + E
-    wait_seg_gone "$EXITER" 1 $(( B_REL + 3 * E )) || die "node$EXITER's seg-1.ok was not deleted by tip $(( B_REL + 3 * E )) (the layout bound MIN_H + 2E) although it is no holder in either epoch any more"
-    assert_deleted_at "T-16 exit" "$EXITER" 1 "$EX_DEL0" $(( B_REL + E ))
+    # the exiter's deletion is checked LATER, after the node-1 join cell (see "T-16 exit" below): its allowed wait reaches
+    # B_REL + 3E, and the steps that follow this cell have earlier deadlines (the holder files before CUR_B + E =
+    # B_REL + 2E, node 1's join landing before the same boundary), so waiting for it here could outlast them (round 19, row 5)
     require_holder_files "join-node$JOINER" "$CUR_B"
     # the fetch path RAN on the joiner: its holder runtime logged the fetch line (and no export line) for
     # segment 1 and the file is there (require_holder_files above waited for seg-1.ok to a tip below the next boundary)
@@ -3357,7 +3393,8 @@ if [ "$WITH_STORAGE" = 1 ]; then
     # setup: node 1 joins too (5 live eligible, R 4): whether it holds depends on the scores — only the
     # generic invariants and the identities rows inserted = rows ended = Σ n_new are asserted
     register_member 1
-    [ "$(tip_of 1)" -lt $(( CUR_B + E )) ] || die "node 1's join landed at tip $(tip_of 1), at or past the boundary $(( CUR_B + E )) — $MSG_LAYOUT"
+    tip_now 1                            # round 19, row 1
+    [ "$TIPV" -lt $(( CUR_B + E )) ] || die "node 1's join landed at tip $(tip_of 1), at or past the boundary $(( CUR_B + E )) — $MSG_LAYOUT"
     next_boundary "join-node1" 4
     PR=$(pub_rows "$CUR_B" 4)
     [ "$(n_new_sum "$CUR_B")" = $(( $(rows_from "$CUR_B") - PR )) ] && [ "$(rows_ended "$CUR_B")" = "$(n_new_sum "$CUR_B")" ] \
@@ -3365,6 +3402,13 @@ if [ "$WITH_STORAGE" = 1 ]; then
     note_new_holders "$CUR_B"
     diff_full_at "$CUR_B" "join-node1-at-height-$CUR_B"
     require_holder_files "join-node1" "$CUR_B"
+    # T-16 exit (moved here in round 19, row 5): the exiter's file is deleted by a sweep of an epoch H >= B_REL + E (plan :456:
+    # not before the overlap epoch passed; round 18, row 9 - no "exactly B_REL + E" claim: the holder's tick (holder.h:110 200 ms,
+    # holder.c:646-661) and its block-sync return (:640) put no upper bound on the epoch of the sweep). The wait is bounded in
+    # blocks by the LAYOUT: tip < B_REL + 3E = MIN_H + 2E (a named FAIL), and every step after this point is independent of the
+    # deadline (the pumps of the copies votes); assert_deleted_at requires the line's H >= B_REL + E
+    wait_seg_gone "$EXITER" 1 $(( B_REL + 3 * E )) || die "node$EXITER's seg-1.ok was not deleted by tip $(( B_REL + 3 * E )) (the layout bound MIN_H + 2E) although it is no holder in either epoch any more"
+    assert_deleted_at "T-16 exit" "$EXITER" 1 "$EX_DEL0" $(( B_REL + E ))
 
     # (d) copies UP 4 -> 5 with five eligible and four holders: EXACTLY ONE member gains
     vote_copies 5
@@ -3511,8 +3555,9 @@ if [ "$WITH_STORAGE" = 1 ]; then
     echo "[ok] the 8th node (non-validator, member fp ${D_FP:0:16}…, owner cand1 ${D_OWN:0:16}…) joined by the pin and caught up to tip $NVT (it is NOT one of the $N nodes of the 7/7 comparisons)"
     cfile="$LOGD/consent_8th.txt"; crc=0
     serve_queues                         # round 15, row 5: two CLI calls (one RPC each) follow
+    tip_now 1; CONSENT_EXP=$(( TIPV + CONSENT_AHEAD ))     # round 19, row 1: an expiry from a valid height
     "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port 1)" -i "$NODE_DIR/identity" \
-        storage consent --owner "$D_OWN" --expiry "$(( $(tip_of 1) + CONSENT_AHEAD ))" --out "$cfile" > "$LOGD/consent_8th.log" 2>&1 || crc=$?
+        storage consent --owner "$D_OWN" --expiry "$CONSENT_EXP" --out "$cfile" > "$LOGD/consent_8th.log" 2>&1 || crc=$?
     cat "$LOGD/consent_8th.log"
     [ "$crc" = 0 ] && [ -s "$cfile" ] || die "the storage consent of the 8th node (owner cand1) was refused (rc $crc, see $LOGD/consent_8th.log)"
     dport=$(stagef_tcp_port 1)
@@ -3558,7 +3603,8 @@ if [ "$WITH_STORAGE" = 1 ]; then
     NV_FET1_0=$(nv_log_count "segment 1: fetching over 0x73")
     { [ "$NV_EXP1_0" -ge 1 ] && [ "$NV_FET1_0" = 0 ]; } || die "the 8th node's arrival job for segment 1 is not an export: $NV_EXP1_0 'exporting' line(s), $NV_FET1_0 'fetching over 0x73' line(s) — an archive block store exports (holder.c:682-690)"
     nv_stop serve
-    [ "$(tip_of 1)" -lt $(( BD0 + E )) ] || die "the 8th node was stopped at tip $(tip_of 1), at or after the first failing epoch $(( BD0 + E )) began — $MSG_LAYOUT"
+    tip_now 1                            # round 19, row 1
+    [ "$TIPV" -lt $(( BD0 + E )) ] || die "the 8th node was stopped at tip $(tip_of 1), at or after the first failing epoch $(( BD0 + E )) began — $MSG_LAYOUT"
     echo "[ok] the 8th node exported segment 1 ($(nv_seg_file 1) present) and was STOPPED at tip $(tip_of 1) < $(( BD0 + E )), before the probing of its first failing epoch"
     # NOT OK epochs: boundary by boundary until the DEPARTURE (track_d requires exactly BD0 + 5E)
     for _ in 1 2 3 4 5 6 7 8; do
@@ -3603,7 +3649,8 @@ if [ "$WITH_STORAGE" = 1 ]; then
     NV_SWEEP_DONE=0
     # by construction (the placement above) the restart cannot fall between the segment-2 premise read and its publication;
     # fail closed if it does anyway (the guard of the layout, not a re-read)
-    if [ -n "${PREMISE_SET[2]+x}" ] && [ "$(tip_of 1)" -lt "$SEG2_PUB" ]; then
+    tip_now 1                            # round 19, row 1
+    if [ -n "${PREMISE_SET[2]+x}" ] && [ "$TIPV" -lt "$SEG2_PUB" ]; then
         die "the 8th node is about to restart at tip $(tip_of 1), after the segment-2 premise read and before its publication at $SEG2_PUB — the placement of BD0 did not hold — $MSG_LAYOUT"
     fi
     nv_start nopin
@@ -3625,7 +3672,7 @@ if [ "$WITH_STORAGE" = 1 ]; then
     # the cell REV - E: the node RUNS, is caught up, and its block store starts at maxk x P + 1 (so the return is a FETCH,
     # nodus_seg_store_has false for every published segment, holder.c:682-690)
     nv_running || { tail -30 "$NV_LOG" >&2; die "the 8th node is not running at the cell $CUR_B (REV - E)"; }
-    ft=$(tip_of 1)
+    tip_now 1; ft="$TIPV"                # round 19, row 1: a valid catch-up target
     wait_height_s "$(nv_db)" "$ft" 8 || die "the 8th node did not catch up to the fleet tip $ft at the cell $CUR_B (stuck at $WH_TIP)"
     NVT="$WH_TIP"
     NSEG_PRE=$(cell_lines seg | wc -l)
@@ -3640,7 +3687,8 @@ if [ "$WITH_STORAGE" = 1 ]; then
         pump_to $(( t + 1 ))
         wait_all $(( t + 1 ))
     done
-    [ "$(tip_of 1)" -lt $(( DEP + 12 * E )) ] || die "the 8th node's preparation ran to tip $(tip_of 1), at the return $(( DEP + 12 * E )) — $MSG_LAYOUT"
+    tip_now 1                            # round 19, row 1
+    [ "$TIPV" -lt $(( DEP + 12 * E )) ] || die "the 8th node's preparation ran to tip $(tip_of 1), at the return $(( DEP + 12 * E )) — $MSG_LAYOUT"
     for k in $(seq 1 "$NSEG_PRE"); do
         NV_EXP_PRE[$k]=$(nv_log_count "segment $k: exporting from this node's block store")
         NV_FET_PRE[$k]=$(nv_log_count "segment $k: fetching over 0x73")
@@ -3740,10 +3788,17 @@ stagef_spawn_node "$VICTIM" --v2-genesis-pin "$PIN" \
 # the adoption wait is bounded by BLOCK DISTANCE (the fleet's tip may rise by 3 blocks, 3 idle intervals,
 # before node $VICTIM has created its chain database) AND by PROGRESS (round-4 row 15): a fleet tip that does not
 # rise for 3 CreateEmptyBlocks intervals is a stalled chain, a FAIL — never an endless wait
-adopt_t0=$(tip_of 1); adopt_last="$adopt_t0"; adopt_since=0; adopt_stall=$(( 3 * STAGEF_CMT_EMPTY_INTERVAL_MS / 1000 ))
+tip_now 1; adopt_t0="$TIPV"; adopt_last="$adopt_t0"; adopt_since=0; adopt_stall=$(( 3 * STAGEF_CMT_EMPTY_INTERVAL_MS / 1000 ))
 while :; do
-    if ls "$vnd/data/"witness_*.db >/dev/null 2>&1 && [ -n "$(db_of "$VICTIM")" ]; then break; fi
-    adopt_t=$(tip_of 1)
+    # round 19, row 6 - wait_seg_file's order: the OBSERVATION first, then the tip; success only with a valid tip below the
+    # bound adopt_t0 + 3, otherwise a named FAIL (an adoption first seen at or past the bound is not a success)
+    adopt_seen=0
+    if ls "$vnd/data/"witness_*.db >/dev/null 2>&1 && [ -n "$(db_of "$VICTIM")" ]; then adopt_seen=1; fi
+    tip_now 1; adopt_t="$TIPV"
+    if [ "$adopt_seen" = 1 ]; then
+        [ "$adopt_t" -lt $(( adopt_t0 + 3 )) ] || { tail -30 "$vlog" >&2; die "node$VICTIM adopted a chain only at fleet tip $adopt_t, at or past the bound $(( adopt_t0 + 3 )) (the fleet was at $adopt_t0 when the wait began)"; }
+        break
+    fi
     if [ "$adopt_t" -ge $(( adopt_t0 + 3 )) ]; then
         tail -30 "$vlog" >&2; die "node$VICTIM never adopted a chain while the fleet moved from $adopt_t0 to $adopt_t"
     fi
@@ -3754,7 +3809,7 @@ while :; do
     sleep 1
 done
 [ "$(basename "$(db_of "$VICTIM")")" = "$fleet_chain" ] || die "node$VICTIM adopted a DIFFERENT chain than the fleet's"
-fleet_tip=$(tip_of 1)
+tip_now 1; fleet_tip="$TIPV"             # round 19, row 1: a valid replay target
 wait_height_s "$(db_of "$VICTIM")" "$fleet_tip" 3 && vt="$WH_TIP" \
     || die "node$VICTIM adopted the chain but did not replay to the fleet tip $fleet_tip (stuck at $WH_TIP)"
 echo "[ok] node$VICTIM replayed from genesis to tip $vt (fleet tip was $fleet_tip)"
@@ -3853,7 +3908,7 @@ if [ "$WITH_STORAGE" = 1 ]; then
     echo "       computation of the leg roots at the boundaries (the HF9-BOUNDARY-ROOTS lines are the nodes' own node-local log text, compared"
     echo "       for equality, not recomputed); the departure boundary itself happens while that node is down; the validity of the fetched"
     echo "       bytes (the marker file is checked present); the settlement of payday boundaries; any NOT OK by a wrong answer (unit tests)."
-    echo "       The PRODUCTION-CONSTANT run (E 720), reported separately by its own [PASS], compares no HF9-BOUNDARY-ROOTS line (no generation-6 boundary). Report counts: the fleet is N=$N validators; committed reports per epoch RB_N >= $EP_RBN_MIN;"
+    echo "       The PRODUCTION-CONSTANT run (E 720), reported separately by its own [PASS], compares no HF9-BOUNDARY-ROOTS line (whether it reached a boundary is measured and printed in its own [PASS]). Report counts: the fleet is N=$N validators; committed reports per epoch RB_N >= $EP_RBN_MIN;"
     echo "       report / set rows compared on at least $EP_NDB_MIN database(s) per epoch (7/7 only where that minimum is $N)."
 else
     echo "[PASS] HF-9 generation 6 at E=$E, BPY $CONF_BPY, SAFETY grace $GRACE_SAF, ERGONOMIC grace $GRACE_ERG WITHOUT storage"
@@ -3865,5 +3920,15 @@ else
     echo "       no boundary in the span (check_edge_window); node $VICTIM (last applied height $VICT_STOP_H, fleet tip $VICT_RESTART_TIP at its"
     echo "       restart) restarted across A and then replayed from genesis. LEFT OUT: segment 1 (P = 24 x E is out of reach), B1,"
     echo "       every storage event, param 25, the candidate, the settlements, and the HF9-BOUNDARY-ROOTS per-height leg-root comparison"
-    echo "       (this run reaches no generation-6 boundary; the short run compares it)."
+    # round 19, row 10: what is ESTABLISHED is that this branch compares no boundary line; whether it reached a generation-6
+    # boundary is MEASURED here (the final fleet tip against the first epoch boundary above A) and printed, not assumed
+    tip_now 1
+    FIRST_B_ABOVE_A=$(( (A / E + 1) * E ))
+    if [ "$TIPV" -lt "$FIRST_B_ABOVE_A" ]; then
+        echo "       (this run compares no HF9-BOUNDARY-ROOTS line; MEASURED: its final fleet tip $TIPV is below the first epoch boundary above A,"
+        echo "       $FIRST_B_ABOVE_A, so no generation-6 boundary was reached; the short run compares the lines)."
+    else
+        echo "       (this run compares no HF9-BOUNDARY-ROOTS line, although MEASURED: its final fleet tip $TIPV reached the first epoch boundary above A,"
+        echo "       $FIRST_B_ABOVE_A - the production branch does not read those lines; the short run compares them)."
+    fi
 fi

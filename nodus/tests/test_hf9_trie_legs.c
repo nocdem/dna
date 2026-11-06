@@ -188,10 +188,22 @@
  *  register_witness_test (NODUS_WITNESS_INTERNAL_API); only where
  *  NODUS_EVM_ENABLED (the trie is EVM-only). No fault injection (the
  *  injection points K4 / K6 use are the engine's own block fields, no
- *  compile flag), no environment. J and K assume no epoch boundary among
- *  the heights they drive before K5 and require DNAC_EPOCH_LENGTH > 40
- *  (CHECKed: a short-epoch build fails the guard instead of running the
- *  wrong scenario); K5 applies DNAC_EPOCH_LENGTH blocks, one at a time.
+ *  compile flag), no environment. Constants: the build's. The suite runs at
+ *  production constants (DNAC_EPOCH_LENGTH 720) and at the short-epoch
+ *  setting (-DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20
+ *  -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15
+ *  -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15) (round 19). J and K drive
+ *  blocks 16 .. 20 whose assertions are about the legs they move, so none of
+ *  those heights may be a boundary (CHECKed by k_no_boundary_in; the first
+ *  boundary, 15 at E = 15, is block A + 1 inside the open); K5 and K7 are the
+ *  boundary cases and apply the first boundary above 19 (K5) / above the
+ *  open's last block (K7, whose chain stops before the first boundary), one
+ *  block at a time: 720 at production, 30 / 15 at E = 15. HOW IT CAN FALSELY
+ *  PASS at E = 15: K1 - K6 and K8 run on a chain whose first boundary was
+ *  applied inside the open, so they do not show what the FIRST boundary does
+ *  (K5's boundary is the second one there; K7 keeps the first); the oracle of
+ *  legs 7 / 8 is exercised by a boundary before the J / K cases, not only at
+ *  K5.
  *
  * ── LEAVES BEHIND ───────────────────────────────────────────────────────
  *  /tmp/test_hf9_trie_XXXXXX, /tmp/test_hf9_trie_g6_XXXXXX,
@@ -1319,6 +1331,25 @@ static int test_vset_leaf(void) {
 
 #define J_A   14u        /* param 24: generation 6 from block 14; edge 13   */
 
+/* ROUND 19 - the short-epoch setting (E = 15): the first epoch boundary is 15 = A + 1.
+ * j_open / k_open commit blocks 1 .. A + 1, so at E = 15 block 15 is the first boundary under
+ * generation 6 and is applied inside the open; every J / K case that follows asserts about blocks
+ * 16 .. and none of them lies on a boundary (checked by k_no_boundary_in), except K5 / K7 which
+ * ARE boundary cases and take their boundary from these helpers (the first boundary above their
+ * start; at E = 720 that is 720, the value they had). A = 14 is the activation of the ladder's
+ * param-24 row (j_cc_row(..., GEN_TRIE_D, J_A, 16): effective_block = J_A, nonce 16) - the edge
+ * is the end of block 13 (test_hf9_edge.c HA). */
+/* the first epoch boundary above height h: the smallest multiple of the epoch length > h */
+static uint64_t k_first_boundary_above(uint64_t h) {
+    const uint64_t e = (uint64_t)DNAC_EPOCH_LENGTH;
+    return (h / e + 1u) * e;
+}
+/* 1 when no multiple of the epoch length lies in [lo, hi] (lo >= 1) */
+static int k_no_boundary_in(uint64_t lo, uint64_t hi) {
+    const uint64_t e = (uint64_t)DNAC_EPOCH_LENGTH;
+    return hi / e == (lo - 1u) / e;
+}
+
 static int j_cc_row(nodus_witness_t *w, unsigned param, uint64_t value,
                     uint64_t effective, uint64_t nonce) {
     sqlite3_stmt *st = NULL;
@@ -1433,8 +1464,11 @@ static int test_gen6(void) {
     jfx_t f;
     nodus_v2_block_t unused;
     (void)unused;
-    CHECK(DNAC_EPOCH_LENGTH > J_A + 8, "J0: no epoch boundary among the "
-          "probed heights");
+    /* the J cases fault / commit the blocks J_A + 2 .. J_A + 8 on top of the open (1 .. J_A + 1): none
+     * of them may be a boundary (the first boundary, 15 at E = 15, is block J_A + 1 inside the open;
+     * at E = 720 there is none) - round 19, was E > J_A + 8 */
+    CHECK(k_no_boundary_in(J_A + 2u, J_A + 8u),
+          "J0: no epoch boundary among the probed heights J_A + 2 .. J_A + 8");
     CHECK(j_open(&f) == 0, "J0: a chain at generation 6 (edge at block 13, "
           "blocks 14 and 15 committed)");
     uint32_t gen = 0;
@@ -1748,6 +1782,8 @@ static int k_claim(dna_claim_t *c, int leaf, const uint8_t chain[32],
  * claim distribution to the CORE runtime (window [2, 40]); blocks 1..15
  * committed, so the edge ran at block 13 and block 14 / 15 were judged under
  * generation 6. The next block to apply is 16. */
+static uint64_t g_k_last;        /* the last block k_open committed (see the end of k_open) */
+
 static int k_open(jfx_t *f, int dist, uint8_t chain32[32],
                   uint8_t mh[64]) {
     memset(f, 0, sizeof(*f));
@@ -1905,7 +1941,18 @@ static int k_open(jfx_t *f, int dist, uint8_t chain32[32],
         if (v2x_seed_genesis(f->w, id16, 0, mbytes, mlen, chain32) != 0)
             return -1;
     }
-    for (uint64_t h = 1; h <= J_A + 1u; h++)
+    /* The blocks committed: 1 .. A + 1 (A = J_A = 14, so 1 .. 15) - EXCEPT for the graduation chain
+     * (dist 2) when A + 1 is an epoch boundary (E = 15: 15 = A + 1): K7 asserts
+     * what the FIRST boundary under generation 6 does (the graduation's
+     * releases), so that chain stops at A = 14 and block 15 is K7's own
+     * boundary. At production constants (E = 720) A + 1 is no boundary and
+     * every chain commits 1 .. 15 as before. The other chains (K1-K6, K8)
+     * assert only about non-boundary blocks and about the legs they touch, so a
+     * boundary at A + 1 inside the open is harmless to them. */
+    g_k_last = J_A + 1u;
+    if (dist == 2 && (g_k_last % (uint64_t)DNAC_EPOCH_LENGTH) == 0)
+        g_k_last = J_A;
+    for (uint64_t h = 1; h <= g_k_last; h++)
         if (j_apply_ok(f, h) != 0) return -1;
     return 0;
 }
@@ -2126,8 +2173,12 @@ static int k_after_block(jfx_t *f, const uint8_t before[8][64],
 
 static int test_gen6_writers(void) {
     jfx_t f;
-    CHECK(DNAC_EPOCH_LENGTH > 40, "K: no epoch boundary among blocks "
-          "1..19 (the boundary case drives to DNAC_EPOCH_LENGTH itself)");
+    /* K1 - K4 apply the blocks 16 .. 19 and assert which legs moved: none of them may be a
+     * boundary (a boundary moves legs 7 and 8). Round 19 (was E > 40): the first boundary, 15 at
+     * E = 15, is block A + 1 inside k_open; K5 below drives to the first boundary above 19 (720 at
+     * production, 30 at E = 15) */
+    CHECK(k_no_boundary_in(16u, 19u),
+          "K: no epoch boundary among the blocks 16 .. 19 (K1 - K4)");
     CHECK(k_keys() == 0, "K: sender keys");
     CHECK(k_open(&f, 0, NULL, NULL) == 0, "K: a chain at generation 6 with "
           "four spendable coins (blocks 1..15 committed)");
@@ -2283,12 +2334,14 @@ static int test_gen6_writers(void) {
         memcpy(L1, L2, sizeof(L1));
     }
 
-    /* K5: the first EPOCH BOUNDARY under generation 6 (idle blocks to
-     * DNAC_EPOCH_LENGTH): nodus_witness_vset_insert (leg 7) and
+    /* K5: an EPOCH BOUNDARY under generation 6 (idle blocks to the first
+     * boundary above 19 - DNAC_EPOCH_LENGTH at production, where it is the
+     * first one; 30 at E = 15, where the first, 15, was applied inside
+     * k_open): nodus_witness_vset_insert (leg 7) and
      * v2ep_attendance_digest (leg 8) write inside the block, the flush
      * puts them into the tries */
     {
-        const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+        const uint64_t E = k_first_boundary_above(19u);   /* the boundary block */
         for (uint64_t h = 20; h < E; h++)
             CHECK(j_apply_ok(&f, h) == 0, "K5: an idle block before the "
                   "boundary");
@@ -2307,9 +2360,9 @@ static int test_gen6_writers(void) {
               k_read_legs(f.w, L2) == 0, "K5: dirty empty, roots read");
         CHECK((k_moved(L1, L2) & 0xC0u) == 0xC0u,
               "K5: legs 7 (vset) and 8 (attendance) moved");
-        /* the storage boundary of this block (first generation-6 one, over
-         * an empty registry): the real freeze ran and left the registry
-         * and segment legs alone */
+        /* the storage boundary of this block (the first generation-6 one at
+         * production; the second at E = 15, over an empty registry too): the
+         * real freeze ran and left the registry and segment legs alone */
         CHECK((k_moved(L1, L2) & 0x30u) == 0,
               "K5: legs 5 (registry) and 6 (segments) did not move");
         CHECK(q1(f.w->db, "SELECT boundary FROM v2_storage_assign_state "
@@ -2328,7 +2381,11 @@ static int test_gen6_writers(void) {
 static int test_gen6_claims(void) {
     jfx_t f;
     uint8_t chain[32], mh[64];
-    CHECK(DNAC_EPOCH_LENGTH > 40, "K6: no epoch boundary among the heights");
+    /* round 19 (was E > 40): the claim blocks are 16 and 17 and assert which legs moved, so neither
+     * may be a boundary; the first boundary (15 at E = 15) is block A + 1 inside k_open; the claim
+     * window is [2, 40] (manifest claim_start_height / claim_end_height), so 16 / 17 are inside it
+     * at every E */
+    CHECK(k_no_boundary_in(16u, 17u), "K6: no epoch boundary among the heights 16, 17");
     CHECK(k_leaves() == 0, "K6: the distribution leaves");
     CHECK(k_open(&f, 1, chain, mh) == 0, "K6: a chain at generation 6 whose "
           "genesis commits a three-leaf claim distribution (blocks 1..15 "
@@ -2401,11 +2458,13 @@ static int test_gen6_claims(void) {
  * driven (WP4). */
 static int test_gen6_releases(void) {
     jfx_t f;
-    CHECK(DNAC_EPOCH_LENGTH > 40, "K7: no epoch boundary among the heights");
+    /* round 19 (was E > 40): the case needs the FIRST generation-6 boundary to be its own, so
+     * k_open stops this chain before that boundary (at production blocks 1 .. 15 and the
+     * boundary 720; at E = 15 blocks 1 .. 14 = A and the boundary 15 = A + 1: g_k_last) */
     CHECK(k_keys() == 0, "K7: sender keys");
     CHECK(k_open(&f, 2, NULL, NULL) == 0, "K7: a chain at generation 6 "
           "holding one RETIRING validator outside the snapshots and one "
-          "delegation to it (blocks 1..15 committed)");
+          "delegation to it (blocks 1 .. g_k_last committed, no boundary yet)");
     CHECK(q1(f.w->db, "SELECT capture FROM v2_trie_state") == 1,
           "K7: capture is 1");
     /* After the HF-6 migration at the ladder's generation-4 edge
@@ -2421,8 +2480,10 @@ static int test_gen6_releases(void) {
           q1(f.w->db, "SELECT COUNT(*) FROM delegations") == 8,
           "K7: eight validator rows; eight delegation rows (seven "
           "self-delegations and the seeded delegation, re-keyed)");
-    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
-    for (uint64_t h = 16; h < E; h++)
+    const uint64_t E = k_first_boundary_above(g_k_last);   /* the boundary block: 720 / 15 */
+    CHECK(E > g_k_last && k_no_boundary_in(1u, g_k_last),
+          "K7: the chain committed no boundary before the case's own");
+    for (uint64_t h = g_k_last + 1u; h < E; h++)
         CHECK(j_apply_ok(&f, h) == 0, "K7: an idle block before the "
               "boundary");
     CHECK(q1(f.w->db, "SELECT COUNT(*) FROM utxo_set WHERE output_index = "
@@ -2489,7 +2550,10 @@ static int test_gen6_releases(void) {
  * measure. */
 static int test_gen6_publication(void) {
     jfx_t f;
-    CHECK(DNAC_EPOCH_LENGTH > 40, "K8: no epoch boundary among the heights");
+    /* round 19: the guard E > 40 is dropped. The case applies 26 E blocks, i.e. it crosses the
+     * boundaries E, 2E .. 25E at every epoch length (25 of them at production), and asserts only
+     * about the publication boundary B = 26 E (the segment row, leg 6 moved, leg 5 not): a boundary
+     * among the earlier blocks (15 at E = 15, inside k_open) changes neither claim. */
     CHECK(k_keys() == 0, "K8: sender keys");
     CHECK(k_open(&f, 0, NULL, NULL) == 0, "K8: a chain at generation 6");
     const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
