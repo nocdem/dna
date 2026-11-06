@@ -188,10 +188,22 @@
 #      boundary, from its cmt_blockstore). An explicit retain set BEFORE the
 #      registration pruned segment 2's range too (run 7) and broke K9a. K9a
 #      premise (decision 2026-10-05-storage-reward-is-for-archive.md): before
-#      EVERY segment publication boundary the block stores of all registered
-#      storage members that run a node are read and must hold the segment's
-#      whole range (base <= (k−1)P + 1, height >= kP + 1, nodus_seg_store_has;
-#      assert_members_hold_range), else FAIL with a layout message. After its join the scenario
+#      EVERY segment publication boundary B = kP + 2E the block stores of all
+#      registered storage members that run a node are read and must hold the
+#      segment's whole range (base <= (k−1)P + 1, height >= kP + 1,
+#      nodus_seg_store_has; assert_members_hold_range), else FAIL with a layout
+#      message. READ TIP (round 9): the EARLIEST tip kP + 1 (a pump to it lands
+#      at most 22 above; read_k9a_premise; segment 1 in section 3, segment k >= 2
+#      right after the cell of the boundary kP), tip read before AND after the
+#      store reads, both below B — the window [kP + 1, B − 1] is 2E − 1 heights
+#      wide, not the single tip B − 1 of rounds 6-8 (run 10). The result relies,
+#      between that tip and the holder's export / fetch decision after B, on the
+#      unpublished-period guard of the retain height: min(tip − N + 1,
+#      keep_from_segment, keep_from_unpublished), keep_from_unpublished =
+#      seg_first(maxk + 1) = (k−1)P + 1 while k − 1 is the highest published
+#      (nodus_witness_role_prune.c:51-69, :318-326) — no registered storage
+#      member's store is pruned above the first height of segment k before it is
+#      published. After its join the scenario
 #      asserts the holder runtime's line "segment 1: fetching over 0x73 (the
 #      block store no longer has the range)" (and NO "exporting" line for
 #      segment 1) and its seg-1.ok. Its OK bit in its first eligible epoch is
@@ -489,6 +501,27 @@
 #     or past H + 2E) during one of them, the run FAILs by name ("closed before
 #     it could be read", a false RED, never a pass); nothing is retried or
 #     lengthened.
+#   - **Tip windows against the pump's landing and the chain's own blocks** (round
+#     9). A pump to T returns as soon as tip >= T, lands at most 22 above T (a
+#     spend is included within 20 heights of the tip it was sent at,
+#     stagef_cmt_wait_row's budget, plus one block of poll granularity — inference),
+#     and after a block that changed the app hash the chain makes the next block
+#     on its own about 4 s later (proof block, cometbft v0.38.26
+#     consensus/state.go:1101, :1113-1127) and an empty block every 60 s when
+#     idle. Steps that needed one exact tip were widened or moved: the K9a
+#     premise reads (above; run 10 read from tip 750 after landing on 749); the
+#     pre-edge control (read at the lowest tip of the idle approach on seven
+#     nodes, window [A−7, A−2], not [A−3, A−2] after the victim's stop); the
+#     deletion waits (liveness bound one epoch after the sweeping boundary, not
+#     4 blocks); the STORAGE_COPIES vote (the change may land at CUR_B + 2E or
+#     CUR_B + 3E, copies_boundaries reads one cell per boundary); A (A % E in
+#     [2, E/2], distance B1 − A >= 8). Left unchanged and why: the overlap-file
+#     check [B, B+E−1] (the evidence needs a tip >= B and < B+E; it runs first
+#     after the cell, a named FAIL otherwise), cell_read's bound MIN_TIP + E (the
+#     relations change at the next boundary), the registration / join windows
+#     (the registration must land inside one epoch, a named FAIL; the join keeps
+#     JOIN_PRUNE_MARGIN), the victim's stop at A−3 (2 blocks to A−1, at least two
+#     idle intervals; its outage is the Rule-N-bounded one), cc_guard (4 blocks).
 #   - **Every run asserts the same cases whatever keys it generates** (round 7).
 #     The B1 gainer (the member with n_new 1) and the exiter (the lowest-numbered
 #     member of nodes 4-7 with n_new 0 at B1, a current holder because R 4 = four
@@ -1402,11 +1435,40 @@ bs_height() {
 # from the stores BEFORE the publication boundary B of segment K (round 6): every registered storage member (ACTIVE or
 # EXITING, the statuses role_prune.c:92-113 reads) that runs a node has base <= (K-1) x P + 1 and height >= K x P + 1 —
 # nodus_seg_store_has (segment_export.c:48-55) — so none is probed at B on a segment it would still have to fetch. A
-# member that runs no node (the candidate) has no store and is not read. A tip already at or past B is a layout failure.
+# member that runs no node (the candidate) has no store and is not read.
+#
+# THE READ TIP (round 9). The premise needs height >= K x P + 1, so the read cannot be earlier than the tip K x P + 1 =
+# LO; it must be before B = K x P + 2E, so the window is [LO, B - 1], 2E - 1 heights wide (29 at E 15) — NOT the single
+# tip B - 1 (run 10 read from the tip 750 = B after a pump landed on B - 1 and the chain made B on its own: after a block
+# that changed the app hash the next block is proposed without waiting for transactions, cometbft v0.38.26
+# consensus/state.go:1101 and :1113-1127 / shared/dnac/cmt_cs.c:1957-2010, timeout_commit 4 s, stagef_env.sh:1027-1030).
+# read_k9a_premise therefore reads at the EARLIEST tip, LO: a pump to LO lands at most PUMP_LAND_MAX above LO — a spend
+# submitted at a tip < LO is included within 20 heights (stagef_cmt_wait_row's budget, `-gt $max_heights`, default 20,
+# stagef_env.sh:1166, :1186; rc 2 otherwise) plus a poll of 5 s (:1167) that may see one more block (inference: one
+# block per timeout_commit 4 s) — and the chain's own blocks during the read are few (seconds against a 60 s idle
+# interval; a proof block after the last spend). Distance left to B - 1 = 2E - 1 - PUMP_LAND_MAX heights (7 at E 15), and the
+# tip is read BEFORE and AFTER the store reads: both must be below B, else a named layout FAIL. WHAT THE RESULT RELIES ON
+# between the read tip and the holder's export / fetch decision after B: the unpublished-period guard of the retain
+# height (nodus_witness_role_prune.c:51-69: r = min(tip - N + 1, keep_from_segment, keep_from_unpublished) for a storage
+# member; :318-326: keep_from_unpublished = seg_first(maxk + 1) = maxk x P + 1 = (K-1) x P + 1 = the first height of
+# segment K while K - 1 is the highest published) — no registered storage member's store is pruned above (K-1) x P + 1
+# until K is published; at B the cache is refilled for (H, maxk = K) and keep_from_segment keeps the first incomplete
+# must-hold segment's first height for a member that holds K. A member that does NOT hold K is not probed on it
+# (eligible segments = its own rows) and may prune it.
+PUMP_LAND_MAX=22
+read_k9a_premise() {       # LABEL K B — pump to LO if the tip is below it, then assert_members_hold_range
+    local label="$1" k="$2" b="$3" lo
+    lo=$(( k * P + 1 ))
+    [ $(( b - 1 - (lo + PUMP_LAND_MAX) )) -ge 1 ] || die "$label: the window [$lo, $(( b - 1 ))] is not wider than the pump's landing bound $PUMP_LAND_MAX — $MSG_LAYOUT"
+    if [ "$(tip_of 1)" -lt "$lo" ]; then pump_to "$lo"; fi
+    wait_all "$lo"
+    assert_members_hold_range "$label" "$k" "$b"
+}
 assert_members_hold_range() {
-    local label="$1" k="$2" b="$3" fp n base hgt first last cnt=0
+    local label="$1" k="$2" b="$3" fp n base hgt first last cnt=0 t0 t1
     first=$(( (k - 1) * P + 1 )); last=$(( k * P + 1 ))
-    [ "$(tip_of 1)" -lt "$b" ] || die "$label: tip $(tip_of 1) is already at or past the publication boundary $b of segment $k — the K9a premise cannot be read before it — $MSG_LAYOUT"
+    t0=$(tip_of 1)
+    { [ "$t0" -ge "$last" ] && [ "$t0" -lt "$b" ]; } || die "$label: the premise read starts at tip $t0, outside [$last, $(( b - 1 ))] (segment $k's last height + 1 .. one block before its publication boundary $b) — $MSG_LAYOUT"
     for fp in $(sqlite3 -cmd '.timeout 5000' "$(db_of 1)" "SELECT lower(hex(node_fp)) FROM v2_storage_nodes WHERE status IN (1, 2) ORDER BY node_fp;"); do
         n=$(fp_node "$fp"); [ -n "$n" ] || continue
         case " ${ALIVE[*]} " in *" $n "*) ;; *) continue ;; esac
@@ -1416,7 +1478,9 @@ assert_members_hold_range() {
         cnt=$(( cnt + 1 ))
     done
     [ "$cnt" -ge 1 ] || die "$label: no storage member's block store could be read"
-    echo "[ok] $label: before the publication of segment $k at $b, the block stores of all $cnt registered storage members that run a node hold its whole range ($first .. $(( k * P )), height >= $last)"
+    t1=$(tip_of 1)
+    [ "$t1" -lt "$b" ] || die "$label: the chain reached tip $t1, the publication boundary $b of segment $k, while the stores were read (the read started at tip $t0) — the premise cannot be established before it — $MSG_LAYOUT"
+    echo "[ok] $label: read at tips $t0 .. $t1 (before the publication of segment $k at $b, $(( b - 1 - t1 )) block(s) to spare): the block stores of all $cnt registered storage members that run a node hold its whole range ($first .. $(( k * P )), height >= $last)"
 }
 reg_fs()   { cell_lines reg | awk -F'|' -v f="$1" '$1 == f { print $4 }'; }
 in_basis() { [ -n "$(cell_lines basis | awk -v f="$1" '$0 == f')" ]; }
@@ -1433,12 +1497,6 @@ DEAD_FP=""                 # the candidate (it runs no node): its bit must be 0 
 # snapshot is "of the boundary state" only to the extent that no envelope came after it: the tx
 # count over (B, T] is printed, and a snapshot with envelopes after B is said to be of a LATER state.
 boundary_cell() {          # LABEL BOUNDARY R
-    # a boundary at which segment k >= 2 is published (kP + 2E, nodus_witness_v2_storage.c st_publish; segment 1 is
-    # asserted in section 3): the K9a premise is read from the members' stores one block BEFORE it (round 6)
-    if [ "$WITH_STORAGE" = 1 ] && [ "$2" -gt $(( 2 * E )) ] && [ $(( ($2 - 2 * E) % P )) = 0 ] && [ $(( ($2 - 2 * E) / P )) -ge 2 ]; then
-        advance_to $(( $2 - 1 ))
-        assert_members_hold_range "$1" $(( ($2 - 2 * E) / P )) "$2"
-    fi
     advance_to "$2"
     cell_read "$1" "$2" "$(( $2 + 1 ))" "$2"
     local since
@@ -1453,6 +1511,12 @@ boundary_cell() {          # LABEL BOUNDARY R
     check_transition_exact "$2" "$1"
     case " $PEND_READ $PEND_POST " in *" $2 "*) ;; *) PEND_READ="$PEND_READ $2" ;; esac
     service_posts
+    # the boundary kP (k >= 2) is the first in which the premise of segment k's publication at kP + 2E can be read
+    # (height >= kP + 1, round 9): read it now, at the earliest tip, two epochs before the publication, instead of one
+    # block before it (the single-block window of rounds 6-8). Segment 1 is read in section 3 the same way.
+    if [ "$WITH_STORAGE" = 1 ] && [ "$2" -gt 0 ] && [ $(( $2 % P )) = 0 ] && [ $(( $2 / P )) -ge 2 ]; then
+        read_k9a_premise "$1 (K9a premise of segment $(( $2 / P )))" $(( $2 / P )) $(( $2 + 2 * E ))
+    fi
 }
 
 # hf9 (T-16, the bits): what the stored reports say. Source: nodus_witness.h
@@ -1869,11 +1933,23 @@ vote_copies() {            # V
     cc_guard 1
     E25=$(( CCG_TIP + 1 + GRACE_ERG + GRACE_MARGIN ))
     VOTE_B=$(( (E25 + E - 1) / E * E ))
-    [ "$VOTE_B" = $(( CUR_B + 2 * E )) ] || die "the param-25 effective height $E25 puts the change at boundary $VOTE_B, expected $(( CUR_B + 2 * E )) — $MSG_LAYOUT"
+    # Round 9: the change lands at CUR_B + 2E when the proposal's tip is at most CUR_B + 9 (E25 = tip + 1 + ERGONOMIC grace
+    # + margin = tip + 21 <= CUR_B + 30), and at CUR_B + 3E when the chain made blocks on its own (or the pump landed) beyond
+    # that before the vote; the guard keeps the tip <= CUR_B + E - 4, so no other boundary is possible. The old single
+    # accepted value CUR_B + 2E was a 7-block tip window; both are accepted now and copies_boundaries reads one cell per
+    # boundary with the OLD R until the change lands.
+    { [ "$VOTE_B" = $(( CUR_B + 2 * E )) ] || [ "$VOTE_B" = $(( CUR_B + 3 * E )) ]; } || die "the param-25 effective height $E25 puts the change at boundary $VOTE_B, expected $(( CUR_B + 2 * E )) or $(( CUR_B + 3 * E )) — $MSG_LAYOUT"
     echo "[ok] tip $CCG_TIP — node1 proposes STORAGE_COPIES=$1 effective E25=$E25 (the change lands at the boundary $VOTE_B)"
     propose STORAGE_COPIES "$1" "$E25" "$LOGD/propose_copies_${1}_$CUR_B.log"
     wait_cc_row "$PARAM_COPIES" "$E25" "$1" 20
     [ "$CC_CB" -lt "$E25" ] || die "the STORAGE_COPIES row committed at $CC_CB, not before its effective height $E25"
+}
+
+# copies_boundaries OLD_R NEW_R LABEL — the cells after vote_copies: one with OLD_R per boundary before the change
+# (zero, one or... as VOTE_B says), then the boundary where the change lands, read with NEW_R
+copies_boundaries() {
+    while [ $(( CUR_B + E )) -lt "$VOTE_B" ]; do next_boundary "$3-pre" "$1"; done
+    next_boundary "$3" "$2"
 }
 
 # ── hf9: storage CLI (test_storage_archive.sh's) ────────────────────
@@ -2081,9 +2157,7 @@ if [ "$WITH_STORAGE" = 1 ]; then
     members_set $MEMBERS_PRE
     wait_all "$(tip_of 1)"
     [ "$(tip_of 1)" -lt $(( H_PUB - E )) ] || die "the members registered after $(( H_PUB - E )) — $MSG_LAYOUT (K9a would give them grace)"
-    pump_to $(( H_PUB - 1 ))
-    wait_all $(( H_PUB - 1 ))
-    assert_members_hold_range "segment-1" 1 "$H_PUB"
+    read_k9a_premise "segment-1" 1 "$H_PUB"      # at tip P + 1 (or the tip already past it), not one block before H_PUB (round 9)
     pump_to $(( H_PUB + 1 ))
     wait_all $(( H_PUB + 1 ))
     h=$(stagef_cmt_wait_row "$(db_of 1)" "SELECT COUNT(*) FROM v2_storage_segments WHERE k = 1;" 3 5) && wrc=0 || wrc=$?
@@ -2122,7 +2196,10 @@ fi
 cc_guard 1
 T_V24="$CCG_TIP"
 A=$(clear_of_boundary $(( T_V24 + 1 + GRACE_SAF + A_MARGIN )))
-if [ "$WITH_STORAGE" = 1 ] && [ $(( A - A / E * E )) -gt $(( E - 3 )) ]; then
+if [ "$WITH_STORAGE" = 1 ] && [ $(( A - A / E * E )) -gt $(( E / 2 )) ]; then
+    # round 9: the threshold is E/2 (A % E in [2, E/2]), not E-3: every step between A and B1 (the edge cell, the A+1
+    # cell, the victim's restart and catch-up, the E-s1 read) must fit before B1 with the pump's landing and the chain's
+    # own blocks in between, so the distance B1 - A is at least E - E/2 = 8 blocks at E 15 instead of 3.
     # round-4 row 10: the report window of epoch H2 - E (the epoch settled AT B1) closes at H2 + E/2 and
     # its settlement inputs must be read before B1 = H2 + E - 1; they are read after the restart cell
     # (tip A + 2), so A + 2 has to be at most B1 - 1. A later A inside the next epoch is a layout choice (the
@@ -2144,6 +2221,21 @@ echo "[ok] the param-24 row is on 7/7, still generation $GEN_5 before A"
 pump_to $(( A - PUMP_STOP_GAP ))
 wait_all $(( A - PUMP_STOP_GAP ))
 echo "[info] idle production from tip $(tip_of 1) — nothing in flight across the edge"
+# the control: still generation 5, capture 0, no trie roots, no assignment state. Round 9: read it HERE, at the lowest
+# tip of the idle approach (all seven nodes alive), and not after the victim's stop at A-3, where the accepted window
+# [A-3, A-2] was one block wide; here it is [A - PUMP_STOP_GAP, A - 2] (5 blocks at 7) and the cell is read
+# on seven nodes. The tip is asserted <= A-2 after the read (CELL_TIP is the one tip every node was read at).
+cell_read "pre-edge" "" "$A" "$(tip_of 1)"
+[ "$CELL_TIP" -le $(( A - 2 )) ] || die "the pre-edge cell was read at tip $CELL_TIP, past A-2 = $(( A - 2 )) — $MSG_LAYOUT"
+check_legs pre "pre-edge (tip $CELL_TIP <= A-2)"
+if [ "$WITH_STORAGE" = 1 ]; then
+    [ -z "$(cell_one astate)" ] || die "pre-edge: v2_storage_assign_state already has a row ('$(cell_one astate)') — the edge writes it (plan §8.6 E-s2)"
+    [ -z "$(cell_lines basis)" ] || die "pre-edge: v2_storage_assign_basis is not empty"
+fi
+ruleset_info 1
+[ "$RI_GEN" = "$GEN_5" ] || { printf '%s\n' "$RI_OUT" >&2; die "node1 reports generation '$RI_GEN' at tip $RI_TIP before the edge, expected $GEN_5"; }
+[ "$RI_TIP" -le $(( A - 2 )) ] || die "ruleset-info answered at tip $RI_TIP, past A-2 = $(( A - 2 )) — $MSG_LAYOUT"
+echo "[ok] before the edge (tip $CELL_TIP, ruleset-info at $RI_TIP): generation $GEN_5, capture 0, no leg roots, no assignment state, 7 live nodes"
 wait_all $(( A - 3 ))
 src=0; stagef_stop_node "$VICTIM" TERM || src=$?
 [ "$src" != 1 ] || die "node$VICTIM is not running"
@@ -2156,17 +2248,6 @@ VICT_STOP_H=$(tip_of "$VICTIM")
 echo "[ok] node$VICTIM stopped (fleet tip $(tip_of 1), A-3 = $(( A - 3 ))); its own last applied height is $VICT_STOP_H (< A-1 = $(( A - 1 )))"
 ALIVE=()
 for n in $(seq 1 "$N"); do [ "$n" = "$VICTIM" ] || ALIVE+=("$n"); done
-# the control: still generation 5, capture 0, no trie roots, no assignment state
-cell_read "pre-edge" "" "$A" "$(tip_of 1)"
-[ "$CELL_TIP" -le $(( A - 2 )) ] || die "the pre-edge cell was read at tip $CELL_TIP, past A-2 = $(( A - 2 )) — $MSG_LAYOUT"
-check_legs pre "pre-edge (tip $CELL_TIP <= A-2)"
-if [ "$WITH_STORAGE" = 1 ]; then
-    [ -z "$(cell_one astate)" ] || die "pre-edge: v2_storage_assign_state already has a row ('$(cell_one astate)') — the edge writes it (plan §8.6 E-s2)"
-    [ -z "$(cell_lines basis)" ] || die "pre-edge: v2_storage_assign_basis is not empty"
-fi
-ruleset_info 1
-[ "$RI_GEN" = "$GEN_5" ] || { printf '%s\n' "$RI_OUT" >&2; die "node1 reports generation '$RI_GEN' at tip $RI_TIP before the edge, expected $GEN_5"; }
-echo "[ok] before the edge (tip $CELL_TIP): generation $GEN_5, capture 0, no leg roots, no assignment state"
 
 wait_all "$A"
 cell_read "edge-A" "$(( A - 1 )) $A" "$A" "$A"
@@ -2378,7 +2459,11 @@ if [ "$WITH_STORAGE" = 1 ]; then
     [ "$(reg_fs "$D_FP")" = 0 ] || die "D-arrival: the candidate's fail_streak is $(reg_fs "$D_FP"), expected 0"
     note_new_holders "$BD0"
     diff_full_at "$BD0" "D-arrival-at-height-$BD0"
-    wait_seg_gone "$EXITER" 1 $(( B_REL + E + 4 )) || die "node$EXITER's seg-1.ok was not deleted by tip $(( B_REL + E + 4 )) although it is no holder in either epoch any more"
+    # deadline = one epoch after the first sweep that may delete (round 9; was B_REL + E + 4, a 4-block window the
+    # pump's landing and the cell / diff reads before this line can pass): the holder sweeps once per epoch change at its
+    # next tick (holder.c:369 in assign, :661), so the file is gone shortly after tip B_REL + E; the upper bound is only
+    # liveness, the lower bound (H >= B_REL + E) is asserted from the deletion line below
+    wait_seg_gone "$EXITER" 1 $(( B_REL + 2 * E )) || die "node$EXITER's seg-1.ok was not deleted by tip $(( B_REL + 2 * E )) although it is no holder in either epoch any more"
     assert_deleted_at "T-16 exit" "$EXITER" 1 "$EX_DEL0" $(( B_REL + E ))
 
     # NOT OK epochs: boundary by boundary until the first freeze with fail_streak >= 3 (the DEPARTURE)
@@ -2471,8 +2556,7 @@ if [ "$WITH_STORAGE" = 1 ]; then
 
     # (d) copies UP 4 -> 5 with five eligible and four holders: EXACTLY ONE member gains
     vote_copies 5
-    next_boundary "up5-pre" 4
-    next_boundary "copies-up-5" 5
+    copies_boundaries 4 5 "copies-up-5"
     [ "$(rows_from "$CUR_B")" = 1 ] && [ "$(rows_ended "$CUR_B")" = 0 ] && [ "$(n_new_sum "$CUR_B")" = 1 ] \
         || die "copies 4 -> 5: rows inserted $(rows_from "$CUR_B"), ended $(rows_ended "$CUR_B"), Σ n_new $(n_new_sum "$CUR_B") — expected 1 / 0 / 1 (the one eligible member without a row gains)"
     [ "$(cell_lines assign | awk -F'|' '$1 == 1 && $5 == "-"' | wc -l)" = 5 ] || die "copies 4 -> 5: segment 1 does not have five current rows"
@@ -2484,8 +2568,7 @@ if [ "$WITH_STORAGE" = 1 ]; then
     # (e) copies DOWN 5 -> 4: EXACTLY ONE holder is dropped; its file is kept through the overlap
     # epoch and deleted after it; it keeps its bit in the overlap epoch and has none after
     vote_copies 4
-    next_boundary "down4-pre" 5
-    next_boundary "copies-down-4" 4
+    copies_boundaries 5 4 "copies-down-4"
     [ "$(rows_ended "$CUR_B")" = 1 ] && [ "$(rows_from "$CUR_B")" = 0 ] && [ "$(n_new_sum "$CUR_B")" = 0 ] \
         || die "copies 5 -> 4: rows ended $(rows_ended "$CUR_B"), inserted $(rows_from "$CUR_B"), Σ n_new $(n_new_sum "$CUR_B") — expected 1 / 0 / 0 (one holder dropped)"
     [ "$(cell_lines assign | awk -F'|' '$1 == 1 && $5 == "-"' | wc -l)" = 4 ] || die "copies 5 -> 4: segment 1 does not have four current rows"
@@ -2501,14 +2584,13 @@ if [ "$WITH_STORAGE" = 1 ]; then
     DROP_DEL0=$(del_count "$DROP_NODE" 1)
     echo "[ok] copies 5 -> 4 at $DROP_B: node $DROP_NODE dropped (the changed holder)"
     next_boundary "drop+E" 4
-    wait_seg_gone "$DROP_NODE" 1 $(( DROP_B + E + 4 )) || die "node $DROP_NODE's seg-1.ok was not deleted by tip $(( DROP_B + E + 4 )) after the overlap epoch"
+    wait_seg_gone "$DROP_NODE" 1 $(( DROP_B + 2 * E )) || die "node $DROP_NODE's seg-1.ok was not deleted by tip $(( DROP_B + 2 * E )) after the overlap epoch (the sweep of epoch $(( DROP_B + E )), one epoch of liveness bound)"
     assert_deleted_at "T-16 drop" "$DROP_NODE" 1 "$DROP_DEL0" $(( DROP_B + E ))
 
     # (f) copies UP 4 -> 6 with five eligible: the dropped member (or the other without a row) gains — so that when
     # the candidate returns, six are eligible with R 6 and the candidate MUST hold
     vote_copies 6
-    next_boundary "up6-pre" 4
-    next_boundary "copies-up-6" 6
+    copies_boundaries 4 6 "copies-up-6"
     [ "$(rows_from "$CUR_B")" = 1 ] && [ "$(rows_ended "$CUR_B")" = 0 ] && [ "$(n_new_sum "$CUR_B")" = 1 ] \
         || die "copies 4 -> 6: rows inserted $(rows_from "$CUR_B"), ended $(rows_ended "$CUR_B"), Σ n_new $(n_new_sum "$CUR_B") — expected 1 / 0 / 1"
     [ "$(cell_lines assign | awk -F'|' '$1 == 1 && $5 == "-"' | wc -l)" = 5 ] || die "copies 4 -> 6: segment 1 does not have five current rows"
