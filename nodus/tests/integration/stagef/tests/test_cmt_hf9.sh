@@ -122,7 +122,9 @@
 #        rendezvous scores are; the order is arranged for that, see the
 #        comment at the start of section 6): B1 (4 members, R 4: XOR →
 #        rendezvous, exactly one member gains, n_new 1, grace B1 + E); exit of
-#        node 5 (a holder leaves: its rows end; R 4, three left hold); arrival
+#        the exiter (a holder leaves: its rows end; R 4, three left hold; the
+#        exiter is CHOSEN from the chain at B1 as a member with n_new 0, never
+#        the B1 gainer — identities are fresh in every run); arrival
 #        of the candidate (3 < R: it holds, n_new 1); the candidate's
 #        DEPARTURE at the first freeze with fail_streak 3 (its row ends); join
 #        of node 2 (3 < R: it holds); join of node 1 (setup: with five
@@ -158,8 +160,8 @@
 #      ones only after the overlap epoch"): every node that is a current
 #      holder of segment 1 at every event boundary has the completeness
 #      marker segments/seg-1.ok at a tip below the next boundary (the tip is
-#      read BEFORE the file test, round-4 row 16); node 5, taken out by its
-#      exit, and the member dropped by the copies decrease: (i) RETENTION is
+#      read BEFORE the file test, round-4 row 16); the exiter (a non-gainer
+#      member of nodes 4-7, chosen at B1), taken out by its exit, and the member dropped by the copies decrease: (i) RETENTION is
 #      asserted from the FILE ITSELF — seg-1.ok exists at a tip read before
 #      and after the file test, both inside the overlap epoch [B, B + E − 1]
 #      (round-4 row 11; nothing deletes it before the sweep of epoch B + E);
@@ -378,8 +380,8 @@
 #   the eight keyed tries (v2_trie_nodes / v2_trie_roots) with capture = 1.
 #   One v2_names row, one tokens row, the leaves of nodes 1, 2, 3 (the
 #   pump), 4, 5, 6, 7 claimed. Short run: four storage nodes registered at
-#   generation 5 (nodes 4, 5, 6, 7), nodes 2 and 1 registered later, node 5
-#   RELEASED (its bond back as one locked coin, output_index 201), segment 1
+#   generation 5 (nodes 4, 5, 6, 7), nodes 2 and 1 registered later, the exiter
+#   (one of nodes 4-7, chosen at B1) RELEASED (its bond back as one locked coin, output_index 201), segment 1
 #   published plus a second (due at 750), segment files under
 #   node<N>/data/segments, three STORAGE_COPIES rows (5, 4, 6), the
 #   candidate cand1's leaf claimed and cand1 registered as a storage member
@@ -473,6 +475,19 @@
 #     run (the rendezvous scores); the scenario READS it from the rows and
 #     asserts that exactly one changed. Only the join of node 1 (setup) is
 #     not deterministic and no case is claimed for it.
+#   - **Every run asserts the same cases whatever keys it generates** (round 7).
+#     The B1 gainer (the member with n_new 1) and the exiter (the lowest-numbered
+#     member of nodes 4-7 with n_new 0 at B1, a current holder because R 4 = four
+#     members) are READ from v2_storage_member_epoch at B1, so the gainer's bit
+#     at epoch B1 + E and the exit (rows end, overlap retention, deletion line)
+#     are both asserted in every run; the exiter is never the gainer, so the
+#     gainer is still in set(B1 + E). Per later event: arrival and revival of the
+#     candidate, the node 2 join (3 holders < R: it must hold) and the copies
+#     events (exactly one member without a row gains / is dropped) do not
+#     depend on which member the rendezvous picks; the node 1 join asserts only
+#     the identity rows inserted = ended = Σ n_new; the dropped holder is read
+#     from the rows (any holder, node 2 included). A member listed for a
+#     check in an epoch whose frozen set it is not in FAILs by name.
 #   - The verdict / payment assertions rest on the prerequisites READ at every
 #     epoch read (equal total_stake of the N entries of snapshot(H), no owner
 #     overlap — item 8; the generation-4 self-delegations exist and are part of
@@ -568,7 +583,7 @@ GRACE_ERG="$STAGEF_CC_GRACE_ERGONOMIC"
 GRACE_SAF="$STAGEF_CC_GRACE_SAFETY"
 VICTIM=3                   # hf9: restart across A and fresh replay (header, HOW IT CAN LIE)
 JOINER=2                   # hf9: registers as a storage node after B1
-EXITER=5                   # hf9: the storage node its owner takes out
+EXITER=""                  # hf9: the storage node its owner takes out — CHOSEN at B1 from the chain: the lowest-numbered member of MEMBERS_PRE with n_new 0 (never the B1 gainer; node identities are generated fresh every run)
 MEMBERS_PRE="4 5 6 7"      # hf9: registered at generation 5, before A
 CAND="$BASE_DIR/cand1/identity"   # hf9: the storage member that runs no node (STAGEF_V2_CANDIDATES=1)
 DIV_LOG2=16                # NODUS_V2_GEN_REWARD_DIVISOR_LOG2 (nodus_witness_v2_gen.h:316): budget = pool 1 >> 16
@@ -1563,7 +1578,13 @@ epoch_reads() {            # H
     [ $(( 2 * RB_N )) -gt "$N" ] || die "only $RB_N of $N seats committed a report for epoch $h — F1 (more than half the power) cannot hold, nothing settles"
 }
 # epoch_verdict FP -> EV = grace | none | ok | dead | undetermined (for the epoch of the last epoch_reads)
+in_set_or_die() {          # FP — the member must be in set(EP_H) of the last epoch_reads (round 7: a named FAIL, not an unbound variable)
+    local who
+    who=$(fp_node "$1"); if [ -n "$who" ]; then who="node$who"; else who="the candidate"; fi
+    [ -n "${RB_GRACE[$1]+x}" ] || die "epoch $EP_H: ${1:0:16}… ($who) is listed for a check but is not in the frozen storage set of epoch $EP_H (members: ${RB_MEMBERS})"
+}
 epoch_verdict() {
+    in_set_or_die "$1"
     local fp="$1" y="${RB_Y[$1]}"
     if [ "${RB_GRACE[$fp]}" -gt "$EP_H" ]; then EV=grace; return 0; fi     # in grace: not probed, weight 0
     if [ "${RB_HU[$fp]}" = 0 ]; then EV=none; return 0; fi                # no assignment in either epoch: not probed
@@ -1647,6 +1668,7 @@ epoch_service_read() {     # H
         fi
     done
     for fp in ${ZERO_AT[$h]:-}; do
+        in_set_or_die "$fp"
         { [ "${RB_Y[$fp]}" = 0 ] && [ "${RB_HU[$fp]}" = 0 ]; } || die "epoch $h: the dropped holder ${fp:0:16}… still has held_union ${RB_HU[$fp]} / ${RB_Y[$fp]} bit(s) after the overlap epoch"
         echo "[ok] epoch $h: the dropped holder ${fp:0:16}… is no longer probed (held_union 0, bit 0 in every report)"
     done
@@ -2183,7 +2205,7 @@ if [ "$WITH_STORAGE" = 1 ]; then
     # without one (exactly one gains), (e) R falls below the holders (exactly one is dropped), (f) the
     # candidate crosses out (its rows end) and back (rows inserted while eligible <= R):
     #   B1            4 members {4,5,6,7}, R 4        XOR -> rendezvous: ONE member gains (n_new 1)
-    #   B1+E  exit    node 5 leaves -> {4,6,7}         its rows end; overlap retention of its file
+    #   B1+E  exit    a non-gainer of {4,5,6,7} leaves -> 3 left   its rows end; overlap retention of its file
     #   +E    arrive  the candidate -> {4,6,7,D}, R 4  D holds (3 < R)
     #   ...   D crosses OUT at its first freeze with fail_streak 3 (eligible {4,6,7})
     #   +E    join    node 2 -> {2,4,6,7}, R 4         node 2 holds (3 < R)
@@ -2211,6 +2233,28 @@ if [ "$WITH_STORAGE" = 1 ]; then
     note_new_holders "$B1"
     diff_full_at "$B1" "B1-at-height-$B1"
     require_holder_files "B1" "$B1"
+
+    # KEY-INDEPENDENT CASES (round 7). Node identities are generated fresh in every run (key-generation randomness is
+    # allowed), so WHICH of the four members the rendezvous adds at B1 changes from run to run (run 8: node 5, the
+    # old fixed exiter). The two cases the plan needs (T-16: "bits for the new holders", "at least one changed holder
+    # per case") must therefore be chosen FROM THE CHAIN, not by node number:
+    #  * the B1 gainer = the member whose v2_storage_member_epoch row at B1 has n_new 1 (note_new_holders above put it in
+    #    NEWH_AT[B1 + E]); its bit is asserted in its first eligible epoch, B1 + E, in every run;
+    #  * the exiter = the lowest-numbered member of MEMBERS_PRE whose n_new at B1 is 0. At B1 all four members hold
+    #    segment 1 (R 4 = four members; the current rows are asserted to be exactly four above), so every non-gainer is a
+    #    current holder whose rows end at its release — the exit case holds for every key set, and the exiter is never
+    #    the gainer, so the gainer is still in set(B1 + E) when its bit is read. Σ n_new = 1 (asserted at B1) leaves three
+    #    candidates for the exiter; the exiter's row count is asserted below.
+    GAINER=""
+    for k in $MEMBERS_PRE; do
+        nn=$(cell_lines mepoch | awk -F'|' -v b="$B1" -v f="${FP[$k]}" '$1 == b && $2 == f { print $4 }')
+        [[ "$nn" =~ ^[0-9]+$ ]] || die "B1: node$k (${FP[$k]:0:16}…) has no v2_storage_member_epoch row at $B1"
+        if [ "$nn" = 1 ]; then GAINER="$k"; elif [ "$nn" = 0 ] && [ -z "$EXITER" ]; then EXITER="$k"; fi
+    done
+    [ -n "$GAINER" ] && [ -n "$EXITER" ] || die "B1: could not pick a gainer (n_new 1) and an exiter (n_new 0) among the members $MEMBERS_PRE"
+    [ "$(cur_rows_of "${FP[$EXITER]}")" = 1 ] || die "B1: the exiter node$EXITER does not hold segment 1 (current rows $(cur_rows_of "${FP[$EXITER]}")) — the exit case would change no holder"
+    case " ${NEWH_AT[$(( B1 + E ))]:-} " in *" ${FP[$GAINER]} "*) ;; *) die "B1: the gainer node$GAINER is not queued for its bit check at epoch $(( B1 + E ))" ;; esac
+    echo "[ok] B1: the rendezvous added node$GAINER (n_new 1, its bit is asserted at epoch $(( B1 + E ))); node$EXITER (n_new 0, a current holder) is the member taken out"
 
     # (b) the exit of node $EXITER by its owner (its own key): a holder LEAVES (rows end), release at B1 + E
     xlog="$LOGD/exit_node$EXITER.log"; xrc=0
@@ -2276,7 +2320,7 @@ if [ "$WITH_STORAGE" = 1 ]; then
     echo "[ok] the candidate ${D_FP:0:16}… (no node runs it) is a registered storage member (row seen at tip $h); its arrival boundary is $BD0"
     D_TRACK=1
 
-    # node 5 keeps its file through the overlap epoch, then deletes it (asserted from its log below)
+    # the exiter keeps its file through the overlap epoch, then deletes it (asserted from its log below)
 
     # arrival: {4,6,7,D}, R 4 — three holders < R, so the candidate MUST hold: one row, n_new 1, grace B + E
     next_boundary "D-arrival" 4
