@@ -11775,8 +11775,8 @@ for members of set(B), then the K9 grace update runs from them (`nodus_witness_v
 rendezvous rows (`from_h = B1`), basis and state; E-s3 the one-use XOR-versus-rendezvous table; a repeated edge (assignment tables not empty) is a FAULT. The
 holder runtime's must-hold list and the probe's eligible list read the member's own rows (`nodus_witness_storage_member_ks`: rows active at H union rows active
 at H − E; at H = B1 the previous relation is XOR(set(H − E)) computed node-locally); `nodus_witness_storage_holders_at` answers for either generation.
-Registry growth items (status index for the release, freeze and registration-cap queries, point reads in settlement, `MAX(k)` in publish) are in
-`nodus_witness_v2_storage.c`; the work counters `g_nodus_storage_work` exist for the growth test only. Missing or unusable derived data is a node FAULT,
+The plan's registry growth items (§8.8: the status index for the release, freeze and registration-cap queries, point reads in settlement) are
+specified there; read in source here: publish asks `MAX(k)` only under generation 6 (`nodus_witness_v2_storage.c:1822-1834`). The work counters `g_nodus_storage_work` exist for the growth test only. Missing or unusable derived data is a node FAULT,
 never an empty assignment. The previous binary's behaviour below B1 is unchanged.
 
 **The shadow run (WP5; node-local, never consensus).** A candidate binary can compute the generation-6 roots on a live generation-5 node after each commit,
@@ -11817,7 +11817,7 @@ node-wide rate) are not set anywhere and no production code calls `nodus_witness
 operator). Client wire: `nodus_client_dnac_state_proof` / `nodus_dnac_state_proof_decode` (`nodus.h`, `nodus_client.c:5795-6085`). No consensus path reads this service.
 
 **The TEMPORARY boundary leg-root log line** (decision `docs/plans/decisions/2026-11-06-hf9-boundary-leg-root-log.md`). At each epoch boundary
-(`height % DNAC_EPOCH_LENGTH == 0`) under generation 6, `nodus_cmt_app_commit` writes one INFO line (tag `WITNESS`) after the COMMIT:
+(`height % DNAC_EPOCH_LENGTH == 0`) under generation 6, `nodus_cmt_app_commit` writes one INFO line (tag `CMT-APP`, `nodus_witness_cmt_app.c:57`) after the COMMIT:
 `HF9-BOUNDARY-ROOTS h=<height> global=<128 hex> leg1=<128 hex> … leg8=<128 hex>` — the committed global root and the eight leg roots from `v2_trie_roots`, lower-case
 hex, leg order 1..8 (`nodus_cmt_app_boundary_root_line`, `nodus_witness_cmt_app.c:3129-3170`, the call in `nodus_cmt_app_commit` at `:3239`, `nodus_witness_cmt_app.h:558-577`; buffer
 `NODUS_CMT_BOUNDARY_ROOT_LINE_MAX` 1400). Purpose: `v2_trie_roots` keeps only the latest root of each leg, so the harness (`test_cmt_hf9.sh`) compares these lines node by
@@ -11858,7 +11858,7 @@ SQLite tables managed by the witness module (`nodus_witness_db.c`):
 | `addr_history` | Node-local address history index (decision 2026-10-01): one row per owner effect (h, i, seq, raw owner, kind, amount, token, fee, peer, wire, ts), written in the block transaction only while `addr_history_index` is on; out of every root; read by `dnac_addr_history`. Created rung-free by `nodus_witness_addr_index_migrate` |
 | `addr_history_mark` | Its one marker row: `from_height` (first height of the current gap-free indexed run) and `last_height` |
 | `v2_supply_totals` / `v2_bond_total` | HF-9 WP1 (schema S20, the live rung): the supply running totals kept by six SQLite triggers — `v2_supply_totals(token_id BLOB PK, utxo_total INTEGER)` = Σ `utxo_set.amount` per token (native = 64 zero bytes), `v2_bond_total(id = 1, total)` = Σ bond over ACTIVE + EXITING `v2_storage_nodes`; seeded in the rung and re-seeded at every open; read by `nodus_rt_core_invariant`; in no root; the ownership guard's partial index `idx_utxo_foreign` |
-| `v2_trie_nodes` / `v2_trie_roots` / `v2_trie_dirty` / `v2_trie_state` | HF-9 WP2 (S20): the keyed-trie node store (`digest` PK, `rlp`), the committed root of each of the eight legs (`leg` PK 1..8, `root`), the primary keys written in the block (`(leg, key)` PK), the consensus capture flag (`id = 1`, `capture` 0 / 1; row (1, 0) from the rung). Empty / unread until the generation-6 edge; 24 dirty-capture triggers `v2_trie_l<leg>_<ins\|del\|upd>`; index `v2_storage_nodes_by_status`. See "HF-9" |
+| `v2_trie_nodes` / `v2_trie_roots` / `v2_trie_dirty` / `v2_trie_state` | HF-9 WP2 (S20): the keyed-trie node store (`digest` PK, `rlp`), the committed root of each of the eight legs (`leg` PK 1..8, `root`), the primary keys written in the block (`(leg, key)` PK), the consensus capture flag (`id = 1`, `capture` 0 / 1; row (1, 0) from the rung). `v2_trie_nodes`, `v2_trie_roots` and `v2_trie_dirty` stay empty until the generation-6 edge; `v2_trie_state` is read at every block start of an S20 database (it must be 0 below generation 6, 1 from it); 24 dirty-capture triggers `v2_trie_l<leg>_<ins\|del\|upd>`; index `v2_storage_nodes_by_status`. See "HF-9" |
 | `v2_trie_shadow_state` and the `v2_trie_shadow_*` tables | HF-9 WP5, node-local: `v2_trie_shadow_state(id = 1, status)` is in the S20 rung (no row); `v2_trie_shadow_nodes`, `_roots`, `_rows`, `_log` are created by the shadow seeding (`CREATE TABLE IF NOT EXISTS`), not part of the S20 shape check; never read by any consensus path |
 | `v2_storage_assign`, `_assign_basis`, `_assign_state`, `v2_storage_held`, `v2_storage_member_epoch`, `v2_storage_xfer_diff` | HF-9 WP4 (S20): the retained rendezvous assignment and its bookkeeping — derived node state written inside the block transaction, in no root, empty until the generation-6 edge writes them; rows are ended, never deleted. See "HF-9" |
 

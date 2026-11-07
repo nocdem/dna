@@ -1261,7 +1261,7 @@ state what the source does and what the plan requires before the vote.
    open (`witness_open_migrate_s20`, `nodus_witness.c:1030-1073`; a version-3 chain at S16-S19 is taken to S20 in place, inside one
    transaction, and the log carries `schema S<n> -> S20 (empty tables and the seeded supply totals; no root moves) for <db path>`;
    a failed migration rolls back and refuses the database). The previous binary does not accept version 20, so for each node:
-   stop it, copy its data directory (archive name `pre-s20-$TS`, otherwise exactly §4.1 step 1), and only then start the new
+   stop it, copy its data directory (archive name for example `pre-s20-$TS`, otherwise exactly §4.1 step 1), and only then start the new
    binary. One node at a time; after each: back at the tip, the chain advancing, all nodes agreeing (§3). The member list
    (how many nodes) is read from the chain; the plan names the operator's node 62.171.136.77 as part of the shadow run (D12).
    Before the param-24 vote the binary decides every block as the previous one (no param-24 row: capture 0, the triggers write
@@ -1305,7 +1305,7 @@ state what the source does and what the plan requires before the vote.
    `HF-9: rule-set generation 5 -> 6, the eight keyed tries built and the dirty capture on at the end of height <H-1> (param 24 RULESET_GEN_TRIE, D6 0x1f12a7f0b824ae45); height <H> is judged under generation 6`
    (`nodus_witness_v2_apply.c:5641-5650`, tag `W_V2APPLY` as the HF-4 / HF-7 edge lines). The edge builds the eight tries from the rows and requires the
    incremental root to equal a full rebuild for every leg; a mismatch, a malformed row, an interrupted scan or a missing trigger is a node FAULT at
-   block `H−1` (the node stops and does not vote). At each epoch boundary from then on, every node writes a **TEMPORARY** log line
+   block `H−1` (the node stops and does not vote). At each epoch boundary from then on, every node writes a **TEMPORARY** log line (tag `CMT-APP`)
    `HF9-BOUNDARY-ROOTS h=<height> global=<128 hex> leg1=<128 hex> … leg8=<128 hex>` (decision `docs/plans/decisions/2026-11-06-hf9-boundary-leg-root-log.md`;
    the harness compares it node by node; the operator removes it later, when is his word; whether it ships to live nodes is not decided). Compare it, and the
    global root, on every node at the boundaries after `H`.
@@ -2239,8 +2239,7 @@ live databases away — it is for wipe deploys) is the wrong procedure. Instead:
 
 **The same procedure covers every later schema-migrating build.** The HF-9 build migrates the witness database to schema **S20** at
 its first open (`witness_open_migrate_s20`, S16-S19 → S20 in place, one transaction; `nodus_witness_v2_schema.h`): the previous binary's
-gates take 16..19 and its ladder fails closed above 19, so it cannot open an S20 database. Steps 1-3 above apply unchanged, with `pre-s20-$TS`
-as the archive name. Additional facts for S20: the supply running totals are re-seeded from their source tables at EVERY open of an S20
+gates take 16..19 and its ladder fails closed above 19, so it cannot open an S20 database. Steps 1-3 above apply unchanged (archive name for example `pre-s20-$TS`). Additional facts for S20: the supply running totals are re-seeded from their source tables at EVERY open of an S20
 database (a no-op below S20); the open refuses a database whose five keyed-trie tables, `v2_storage_nodes_by_status` index or 24 dirty-capture
 triggers are absent or altered (fail closed); the migration also rebuilds `v2_storage_sets` and `v2_storage_reports` to the generation-6
 capacity inside its transaction (rows copied aside, DROP, create, copy back). A restore to the previous binary is valid only while that binary
