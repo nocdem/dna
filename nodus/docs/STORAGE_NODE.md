@@ -39,7 +39,12 @@ it wherever a detail matters.
    later receives the rewards. The node itself only signs a *consent*: "I agree to be
    registered under this wallet".
 3. The archive is cut into **segments** of 17 280 blocks (one payday period). Every segment
-   is held by 3 storage nodes, chosen by the chain.
+   is held by 3 storage nodes, chosen by the chain (the nearest three by XOR distance — the rule of rule-set generations 1-5).
+   HF-9's rule-set generation 6 changes this once the chain has voted it: from the first epoch boundary at or after its effective
+   height each segment is held by R nodes (chain-config param 25 `STORAGE_COPIES`, default 4, range 4-16; changing it takes one epoch),
+   chosen by rendezvous hashing (the highest SHA3-512 score of the segment and the node), and the storage set may hold up to 1024
+   nodes instead of 256. Existing assignments are kept and updated only when a node joins, leaves or crosses the failure limit, or
+   R changes (`ARCHITECTURE.md` "HF-9"). This is source behaviour; this page records no chain as having voted it.
 4. Every epoch (720 blocks) the witnesses ask each storage node for a few random pieces of
    its segments. A node that answers is OK for that epoch.
 5. You are paid in proportion to the blocks you hold, from the Storage pool. Rewards accrue to

@@ -61,6 +61,7 @@ One node at a time for a rolling deploy; all nodes at once for a stop-all.
 | HF-5 Nodus EVM (nodus 0.24.1 — 0.24.0 was never deployed and votes a different D; param 14 `EVM_ACTIVE`, rule-set generation 3) — a release that also migrates the witness DB to schema **S17** at its first open | **Rolling**, one node at a time, but every node through **§4.1** (stop it, copy its data directory, only then start the new binary — the previous binary cannot open an S17 database). The `EVM_ACTIVE` vote is a §2.2 procedure, ONLY after 7/7 run the new binary |
 | HF-6 validator owner/node roles + storage (nodus 0.26.0; param 18 `RULESET_GEN_ROLES`, rule-set generation 4 — in force since 176100) — a binary that carries witness schema **S18** (the `v2_validator_roles` table the generation-4 edge requires) | **Rolling**, one node at a time, every node through **§4.1** as for HF-5 (S18 is a schema migration). The `RULESET_GEN_ROLES` vote is a §2.2 procedure, ONLY after 7/7 run the new binary, their startup D4 lines are identical and `chain_config_history` on 7/7 holds no param-16 row; **param 16 is never proposed** (an old binary accepts it, a new one refuses it — a split; a committed one blocks HF-6 for good) |
 | HF-7 the roots generation (nodus 0.26.17; param 22 `RULESET_GEN_ROOTS`, rule-set generation 5 — **in force since 282684**, voted in 281957) — a binary that carries witness schema **S19** (`v2_replay` + `v2_domain_heads.last_upd_hash`; the generation-5 edge refuses any other schema) | Expected: **Rolling**, one node at a time, every node through **§4.1** as for HF-5 / HF-6 (S19 is a schema migration). The `RULESET_GEN_ROOTS` vote is a §2.2 procedure, ONLY after 7/7 run the new binary and their D5 startup lines are identical: `HF-7 rule-set generation 5 vote D5 0x6f4c60640dd57094 (param 22 RULESET_GEN_ROOTS, switch spec v1), built from git commit …` (printed after the HF-6 D4 line by `nodus_witness.c`; an EVM-enabled build re-derives D5 at start and refuses to start on a mismatch) |
+| HF-9 the keyed-trie generation (rule-set generation 6; param 24 `RULESET_GEN_TRIE`, param 25 `STORAGE_COPIES`) — **not voted; version, vote block and activation height not decided** — a binary that carries witness schema **S20** (supply running totals, the keyed-trie tables, the 24 dirty-capture triggers, the retained-assignment tables; `nodus_witness_v2_schema.h`) | Expected: **Rolling**, one node at a time, every node through **§4.1** as for HF-5 / HF-6 / HF-7 (S20 is a schema migration: the previous binary does not open an S20 database, so each node needs its pre-S20 data-directory copy before the new binary starts). The `RULESET_GEN_TRIE` vote is a §2.2 procedure ("HF-9" below), ONLY after every node runs the new binary and their D6 startup lines are identical: `HF-9 rule-set generation 6 vote D6 0x1f12a7f0b824ae45 (param 24 RULESET_GEN_TRIE, switch spec v1), built from git commit …` (printed after the HF-7 D5 line by `nodus_witness.c`; an EVM-enabled build re-derives D6 at start and refuses to start on a mismatch), and after the shadow window below |
 | Logging, metrics, non-consensus tooling | Rolling, one node at a time |
 
 **Why stop-all for validity changes:** during a rolling window the cluster runs mixed
@@ -820,6 +821,7 @@ time; text names the vote block and the effective block), plus the Wiki fork lis
 | HF-8 delegation (and, rev 3, STAKE) requires an on-chain name; a vault may register one (**ACTIVE since block 300722** — voted 2026-10-21 in block 299994; 8/8 on nodus 0.26.19 before the vote; 300721/300722/300723 identical on 8/8) | a DELEGATE whose delegator is not exempt is refused unless the delegator's fingerprint owns a `v2_names` row (new delegations AND top-ups; UNDELEGATE, existing rows and payouts untouched). Under rule-set generation 4 and later (the testnet: generation 5) the rule is the SYSTEM DELEGATE leg's (decision D3, `2026-10-09-kurultay-16-hf6-storage-summary.md`; op 16 NAMEOWN2) and the exempt delegator is the validator row's OWNER (`delegator_fp == owner_fp`) — a node key is not the owner; the funding leg keeps 15 inputs. Under generations 1-3 it was the CORE SYSFUND leg's (exempt = same pubkey, funding leg ≤ 14 inputs). Rev 3 (decision amendment 2026-10-21; branch `hf8-stake-msig`): the same flag also refuses a generation-4/5 STAKE whose STAKER (`owner_fp`) owns no name (no exemption), and admits a NAME_REGISTER by a satisfied multisig (owner = the vault address, every input the vault's). No rule-set generation, no ruleset hash, no D moves | 17 `DELEGATE_NAME_REQUIRED` (number assigned in main merge order after storage's 16) | 1 | 299994 | 300722 | 0.26.19 (rev 3; the DELEGATE rule inert since 0.25.3) | — |
 | HF-7 the roots generation (**ACTIVE since block 282684** — nodus 0.26.17, voted in 281957; snapshot design `docs/plans/2026-09-11-nodus-ledger-snapshot-design.md` §10) | rule-set generation 5 (SYSTEM v11 / CORE v10 — generation 4's descriptors with only the version moved, so every pre-A SYSTEM / CORE leg and every pre-A EVM envelope (its CORE EVMFUND leg) fails preflight at A; EVM v2 unchanged), from generation 4 only: at the end of A−1 the registry switches 4 → 5 and every head's `last_upd_hash` is seeded; A−1's own roots are SYSTEM `NDS.SYS.v6` / DomainHead v2 / GLOBAL v2 over the EMPTY replay root; from A: the `v2_replay` relation is the only replay guard and an envelope with expiry 0 or outside [H, H + 720] makes the block INVALID (never a failed item). Grace ERGONOMIC 720 blocks (khan decision B, 2026-10-20). Requires witness schema **S19** at the edge. Harness: `nodus/tests/integration/stagef/tests/test_cmt_hf7.sh` (standalone, ONE short-epoch build — no OLD/NEW rolling upgrade; **PASS 2026-10-20** at E15 on `18d6892fe`; its README row lists what it does not cover) | 22 `RULESET_GEN_ROOTS` | 8019891019285098644 (D5 = 0x6f4c60640dd57094, `DNAC_CFG_RULESET_GEN_ROOTS_D`, from `shared/dnac/tests/hf7_vote_oracle.py`; binds the 720 window only — khan decision C) | 281957 | 282684 | 0.26.17 | — |
 | **HF EVM-ML-DSA** — the ML-DSA hard fork (**VOTED in 306182, effective 306911**, row identical 8/8; named by the operator 2026-10-22, "bunun adı da hf evm-ms-dsa olsun" — a name, not a number, so "HF-9" stays the keyed-tree fork; decision `docs/plans/decisions/2026-10-21-mldsa87-evm-precompile.md`) | from H a call to the tag address `0x66e24906…9cce` runs the ML-DSA-87 verification precompile (fixed context `nodus.evm.attest.v1`, 25 000 + 12 gas per 32-byte message word, message ≤ 65 536 B, output = the signer's 32-byte address or empty); below H the address is an ordinary account. Route B: the EVM rule-set tuple stays v2, no generation switch, no edge procedure. Grace ERGONOMIC 720 blocks (operator, 2026-10-21). Binaries on every node BEFORE the vote; the activation height is put to the operator first. Stateful vote rules (`nodus_witness_chain_config.c`, `CC_PARAM_MLDSA_ACTIVE`): (a) single use — any committed param-23 row refuses every further vote; (b) generation 3 (EVM) or later in force; (c) H − 1 not an epoch boundary. Every node logs `ML-DSA-87 precompile vote D 0x6994c9b548381d5c (param 23 MLDSA_ACTIVE)` at start-up after re-deriving D from its compiled precompile constants (it refuses to start on a mismatch) — compare that line 8/8 before the vote. Harness: `nodus/tests/integration/stagef/tests/test_cmt_mldsa.sh` (standalone, ONE short-epoch build; **PASS 2026-10-22** at E15; its README row lists what it does not cover — generation 3 only, no OLD/NEW rolling upgrade) | 23 `MLDSA_ACTIVE` | 7607927450973511004 (0x6994c9b548381d5c, `DNAC_CFG_MLDSA_ACTIVE_D`; tag `NDS.MLDSAACT.v1` and the 115-byte preimage DECIDED by the operator 2026-10-22; the oracle `shared/dnac/tests/nodus_mldsa_activation_oracle.py` is SELF-DERIVED, re-derived independently from the decision text 2026-10-22 — MATCH) | 306182 | 306911 | 0.26.22 | `884DAC93662229BE` |
+| **HF-9** — the keyed-trie generation (**NOT VOTED — no row exists; the fields below that are "not decided" are the operator's**; plan `docs/plans/approved/2026-11-04-hf9.md`; mechanism `ARCHITECTURE.md` "HF-9"; procedure "HF-9" below) | rule-set generation 6 (SYSTEM v12 / CORE v11 — generation 5's descriptors with only the version moved), from generation 5 only: at the end of A−1 the registry switches 5 → 6, the eight keyed Patricia tries (utxo, tokens, claims, names, registry, segments, validator-set snapshots, attendance) are built from the rows and the dirty capture is switched on; compositions `NDS.CORE.v4` / `NDS.SYS.v7` / `NDS.STOR.v3`; from the first storage boundary at or after A segment holders are chosen by rendezvous (highest SHA3-512 score), R copies from param 25 (default 4, range 4..16), member cap 1024 (256 before). Grace SAFETY (`DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS`, 17 280 in a production build). Requires witness schema **S20** at the edge. Harness: `nodus/tests/integration/stagef/tests/test_cmt_hf9.sh` (stagef README row states what it ran and what it does not cover). The vote is judged under generation EXACTLY 5, once, with HF-2 active, and neither `H−1` nor `H` an epoch boundary | 24 `RULESET_GEN_TRIE` (then 25 `STORAGE_COPIES`, votable only under generation 6, wait one epoch) | 2239036617079959109 (D6 = 0x1f12a7f0b824ae45, `DNAC_CFG_RULESET_GEN_TRIE_D` in `dnac.h`, from `shared/dnac/tests/hf9_vote_oracle.py`; binds the generation-6 pins, the 5 → 6 spec version 1, the compiled Foundation owner and the constants [1024, 4, 4, 16]) | not decided | not decided | not decided (no version number assigned) | not decided |
 Read 2026-10-20: HF-7 ACTIVE on 8/8 (the 7 Foundation nodes + the operator's node 62.171.136.77,
 all on nodus 0.26.17 `540b9238a`, rolled one at a time before the vote, schema S19 at open, no backups
 by the operator's choice) — before the vote the four newly rooted tables were compared read-only on
@@ -1248,6 +1250,74 @@ the nodus component split (item 13).
    range `[DNAC_CFG_MIN_EVM_BLOCK_GAS, DNAC_CFG_MAX_EVM_BLOCK_GAS]`; no stateful rule. With no
    row the compiled `DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT` applies (`nodus_witness_v2_apply.c`
    `env_evm_block_gas_limit`).
+
+**HF-9 — the same procedure for chain-config param 24 `RULESET_GEN_TRIE`** (plan
+`docs/plans/approved/2026-11-04-hf9.md` §5-§7, §11; amendment `docs/plans/approved/2026-11-05-hf9-amendment-ownership-guard.md`;
+scope decisions `docs/plans/decisions/2026-11-04-hf9-scope.md`; mechanism `ARCHITECTURE.md` "HF-9"; the table row above).
+**Nothing here is voted, scheduled or live. The version number, the vote block, the activation height `<H>` and any
+"VOTED" / "effective" value are the operator's and are not decided in any document read for this section.** The steps
+state what the source does and what the plan requires before the vote.
+1. **Binary first, every node through §4.1.** The HF-9 binary migrates the witness database to schema **S20** at its first
+   open (`witness_open_migrate_s20`, `nodus_witness.c:1030-1073`; a version-3 chain at S16-S19 is taken to S20 in place, inside one
+   transaction, and the log carries `schema S<n> -> S20 (empty tables and the seeded supply totals; no root moves) for <db path>`;
+   a failed migration rolls back and refuses the database). The previous binary does not accept version 20, so for each node:
+   stop it, copy its data directory (archive name `pre-s20-$TS`, otherwise exactly §4.1 step 1), and only then start the new
+   binary. One node at a time; after each: back at the tip, the chain advancing, all nodes agreeing (§3). The member list
+   (how many nodes) is read from the chain; the plan names the operator's node 62.171.136.77 as part of the shadow run (D12).
+   Before the param-24 vote the binary decides every block as the previous one (no param-24 row: capture 0, the triggers write
+   nothing, generations 1-5 keep their composition functions) — the supply check does change how it counts (it reads the
+   trigger-kept totals), the verdict it gives does not (plan §9.1).
+2. **Compare the D6 startup line on every node BEFORE the vote.** `journalctl -u nodus | grep 'HF-9 rule-set generation'` (three-process
+   host: the `nodus-witness` unit) — the LAST such line, tag `WITNESS`, must be identical on every node:
+   `HF-9 rule-set generation 6 vote D6 0x1f12a7f0b824ae45 (param 24 RULESET_GEN_TRIE, switch spec v1), built from git commit <sha>`
+   (`nodus_witness.c:2945-2952`), together with the `consensus build constants:` line printed after it (as for HF-4). A different D6
+   means a different generation 6; a different commit, or `-dirty` / `-status-unknown` / `unknown`, means the nodes are not provably the
+   same source — settle it before the vote. An EVM-enabled build re-derives D6 at start from the compiled pins, owner and constants and
+   refuses to start on a mismatch; a harness build that overrides the owner needs that owner's D6 as well
+   (`-DDNAC_CFG_RULESET_GEN_TRIE_D`, `stagef_hf6_owner.sh` prints all four flags). Any short-epoch or fault-injection constants line must
+   never reach a validator.
+3. **The shadow window (plan D9, D12, §11) — before the vote.** With the node-local configuration key `"hf9_shadow"` in the node's JSON
+   configuration (`"on"`, `"full"` or `"off"`; `nodus_node_config.c:423-435`; the parser's default is ON, `:510`; anything else refuses the
+   start) the candidate binary seeds its own keyed tries from the rows after the node has caught up with the live chain, then after every
+   committed block recomputes the eight leg roots and the four compositions into node-local tables (`v2_trie_shadow_*`), never inside a
+   block transaction and never into a consensus table. Plan: about 1-2 days (the operator's example), on all nodes including the
+   operator's, at least one node in `"full"` (an additional full-rebuild comparison after every block). Compare with
+   `nodus/tools/hf9_shadow_diff.sh --expect-nodes N [--from H] [--to H] <host:port> ...` (N = the number of nodes the chain has, read from the
+   chain; the script compares all 64 bytes of every leg and composition per height through `nodus-cli hf9-shadow`, and succeeds only if
+   the range is identical on every node and every node reports status running; `stagef_diff.sh` compares 8 bytes and is not this gate).
+   A node's `HF9-SHADOW FAULT <height> <reason>` log line (status faulted) invalidates its evidence. The plan's acceptance record: candidate
+   binary hash, the nodes, first / last compared height, heights compared on all nodes, boundaries crossed, segment publications seen,
+   storage events seen, restarts, the full-check node, every fault; missing coverage or an excluded node goes to the operator before the
+   gate is called complete. **What the shadow does not cover:** the trigger capture used after activation, the storage assignment
+   (HRW effects are unit- and harness-tested), and the proof service. The shadow stops itself when the committed generation reaches 6
+   (it never starts again on that database). Whether `hf9_shadow` stays default ON in the release binary is not decided.
+4. **Vote** (only after steps 1-3, `<H>` asked of the operator, never chosen by whoever runs the vote):
+   `nodus-cli chain-config propose --param RULESET_GEN_TRIE --value 2239036617079959109 --effective <H>` (decimal, as for HF-4; the hex
+   `0x1f12a7f0b824ae45` is what the log prints; the CLI usage text prints the accepted literal). Rules each seat and the block apply
+   (`nodus_witness_chain_config.c`, scalar rule and `nodus_chain_config_stateful_rules_ex`): the value is exactly D6; (a) single use — any
+   committed param-24 row refuses every further vote, a far-future `<H>` retires the parameter for good; (b) HF-2 active; (c) the vote is
+   judged under rule-set generation EXACTLY 5 (HF-7 in force); (d) `H−1` is not an epoch boundary and (e) `H` is not an epoch boundary
+   either — choose `<H>` with `H % 720 ∉ {0, 1}` (720 = `DNAC_EPOCH_LENGTH` in a production build). Grace is SAFETY (`nodus_chain_config_grace_for_param`,
+   `DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS`; 17 280 blocks in a production build, operator "4.24."): the check is `effective >= (the vote's block
+   height) + grace` (`nodus_witness_chain_config.c:1700-1708`, `nodus_witness_rt_native.c:7885-7891`). The row must appear identically on
+   every node (`chain_config_history`: param_id 24). Then add the row to "Live hard forks" above in the same push, read back from every node.
+5. **At the edge** every node logs once, at the end of block `H−1`:
+   `HF-9: rule-set generation 5 -> 6, the eight keyed tries built and the dirty capture on at the end of height <H-1> (param 24 RULESET_GEN_TRIE, D6 0x1f12a7f0b824ae45); height <H> is judged under generation 6`
+   (`nodus_witness_v2_apply.c:5641-5650`, tag `W_V2APPLY` as the HF-4 / HF-7 edge lines). The edge builds the eight tries from the rows and requires the
+   incremental root to equal a full rebuild for every leg; a mismatch, a malformed row, an interrupted scan or a missing trigger is a node FAULT at
+   block `H−1` (the node stops and does not vote). At each epoch boundary from then on, every node writes a **TEMPORARY** log line
+   `HF9-BOUNDARY-ROOTS h=<height> global=<128 hex> leg1=<128 hex> … leg8=<128 hex>` (decision `docs/plans/decisions/2026-11-06-hf9-boundary-leg-root-log.md`;
+   the harness compares it node by node; the operator removes it later, when is his word; whether it ships to live nodes is not decided). Compare it, and the
+   global root, on every node at the boundaries after `H`.
+6. **Param 25 `STORAGE_COPIES`** (R, holders per storage segment) is votable only while generation 6 judges the vote, value in [4, 16] (no row = 4),
+   wait ONE EPOCH (`DNAC_EPOCH_LENGTH`, 720 in a production build), no single-use rule: `nodus-cli chain-config propose --param STORAGE_COPIES --value <R> --effective <H2>`.
+   It is read at a storage freeze boundary; a value effective mid-epoch changes assignments at the next boundary.
+7. **Recovery.** A node that is not on the HF-9 binary when the param-24 vote commits does not know id 24: a binary that carries the "update required" line logs `UPDATE REQUIRED: a chain_config proposal names
+   param 24 …`; it refuses the item, commits the block anyway and diverges there — the lagging-node case below (wipe + genesis-pin rejoin on the new binary). By the
+   §4.1 step 2 reasoning (inference, not a recorded HF-9 decision), a restore of the pre-S20 copy to the previous binary is usable only while that binary can
+   replay every block committed since; the vote's block carries a row it refuses, so after the vote commits recovery is forward (a fixed new binary), never a rewind.
+8. **Not in this procedure:** the proof service `dnac_state_proof` is in the source but no production code enables it (every request is answered
+   `NODUS_ERR_RATE_LIMITED`); its limits are the operator's decision after the plan's measurement (§17), so no node-side step enables it.
 
 **A node that missed the vote (still on the old binary when R committed):**
 - **How it shows in the log.** When the vote names a param id beyond the old build's id space
@@ -2166,6 +2236,16 @@ live databases away — it is for wipe deploys) is the wrong procedure. Instead:
    lower height (`shared/dnac/cmt_privval.c:117-118`) — leave that file as it is,
    so the node catches up and never signs a height twice. Restoring an old copy of
    `priv_validator_state.json` would let a validator double-sign.
+
+**The same procedure covers every later schema-migrating build.** The HF-9 build migrates the witness database to schema **S20** at
+its first open (`witness_open_migrate_s20`, S16-S19 → S20 in place, one transaction; `nodus_witness_v2_schema.h`): the previous binary's
+gates take 16..19 and its ladder fails closed above 19, so it cannot open an S20 database. Steps 1-3 above apply unchanged, with `pre-s20-$TS`
+as the archive name. Additional facts for S20: the supply running totals are re-seeded from their source tables at EVERY open of an S20
+database (a no-op below S20); the open refuses a database whose five keyed-trie tables, `v2_storage_nodes_by_status` index or 24 dirty-capture
+triggers are absent or altered (fail closed); the migration also rebuilds `v2_storage_sets` and `v2_storage_reports` to the generation-6
+capacity inside its transaction (rows copied aside, DROP, create, copy back). A restore to the previous binary is valid only while that binary
+can replay every block committed since (step 2); whether a chain that has committed the param-24 vote can still go back is the HF-9 procedure's
+step 7 in §2.2.
 
 If a step fails, stop and diagnose. Do not improvise a partial cluster.
 
