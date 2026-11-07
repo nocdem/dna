@@ -1191,7 +1191,11 @@ wait_row_s() {             # DB SQL [STALL_INTERVALS] [MAX_HEIGHTS] — rc 0 row
         h=$(stagef_cmt_tip "$db")
         if ! [[ "$h" =~ ^[0-9]+$ ]]; then WR_TIP=-1; echo "[FAIL] wait_row_s: the tip of $db is unreadable ('$h')" >&2; return 3; fi
         WR_TIP="$h"
-        if [ "$cnt" -gt 0 ]; then return 0; fi
+        # round 20, row 3: the height budget holds on a success too - a row first seen past start + max_heights is rc 2, not 0
+        if [ "$cnt" -gt 0 ]; then
+            if [ "$(( h - start_h ))" -gt "$max_heights" ]; then return 2; fi
+            return 0
+        fi
         serve_queues
         if [ "$h" -gt "$last" ]; then last="$h"; since=0; else since=$(( since + 1 )); fi
         if [ "$since" -ge "$stall_polls" ]; then return 1; fi
@@ -1891,12 +1895,13 @@ assert_deleted_at() {      # LABEL NODE K COUNT_BEFORE MIN_H — a NEW deletion 
     stall=$(file_wait_polls)
     while :; do
         service_reads; service_posts      # round 8: serve the queued windows while waiting
-        c1=$(del_count "$n" "$k")
-        [ "$c1" -le "$c0" ] || break
+        c1=$(del_count "$n" "$k")         # round 20, row 2: the observation first, then a valid tip (wait_seg_file's order)
         tip_now 1; t="$TIPV"              # round 18, row 6
         # round 18, row 9: the wait is bounded in blocks by the LAYOUT: the line is waited for until the tip reaches MIN_H + 2E, the cell after
-        # the next one (a node that runs throughout and is caught up sweeps at its first tick of an epoch it is no holder in)
-        [ "$t" -lt $(( minh + 2 * E )) ] || die "$label: node$n logged no new 'segment $k deleted' line by tip $t (had $c0, has $c1; the layout bound is MIN_H + 2E = $(( minh + 2 * E )))"
+        # the next one (a node that runs throughout and is caught up sweeps at its first tick of an epoch it is no holder in).
+        # Round 20, row 2: a line first seen when that tip is already at or past the bound is a FAIL as well, never a success.
+        [ "$t" -lt $(( minh + 2 * E )) ] || die "$label: node$n's 'segment $k deleted' line count is $c1 (had $c0) at tip $t, not below the layout bound MIN_H + 2E = $(( minh + 2 * E )): no new line by the bound, or the line was first seen past it"
+        [ "$c1" -le "$c0" ] || break
         if [ "$t" -gt "$last" ]; then last="$t"; since=0; else since=$(( since + 1 )); fi
         [ "$since" -lt "$stall" ] || die "$label: the chain stalled at tip $t while waiting for node$n's 'segment $k deleted' line"
         sleep 2

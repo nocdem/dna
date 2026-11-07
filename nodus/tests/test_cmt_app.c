@@ -8012,10 +8012,12 @@ static int hyb_register_step(hyb_t *A, hyb_t *B, int64_t height, int key,
                              uint8_t **env);
 
 /* `reg` != 0: the chain is FUNDED and node key 1 registers as a storage
- * node in block 16 (generation 6) on both nodes before the stop, so the
+ * node in block `reg` (generation 6) on both nodes before the stop, so the
  * boundary of the stop block is a storage EVENT (an arrival against the
- * empty basis; plan :455 "with and without a storage event"). */
-static int hyb_case(int64_t stop_h, const char *what, int reg)
+ * empty basis; plan :455 "with and without a storage event"). `reg` is a
+ * block number >= HYB_A_GEN6 (generation 6 is in force from block 14), 0 =
+ * no registration. */
+static int hyb_case(int64_t stop_h, const char *what, int64_t reg)
 {
     hyb_t  *A = calloc(1, sizeof(*A)), *Bn = calloc(1, sizeof(*Bn));
     uint8_t d0a[64], d0b[64], d1a[64], d1b[64], d2a[64], d3a[64], d3b[64];
@@ -8024,22 +8026,25 @@ static int hyb_case(int64_t stop_h, const char *what, int reg)
     int     nb = -1, rc;
 
     CHECK(A && Bn, "alloc");
-    CHECK(hyb_open(A, reg) == 0, "S0 node A (stops) opens");
-    CHECK(hyb_open(Bn, reg) == 0, "S0 node B (never stops) opens");
+    CHECK(hyb_open(A, reg != 0) == 0, "S0 node A (stops) opens");
+    CHECK(hyb_open(Bn, reg != 0) == 0, "S0 node B (never stops) opens");
     /* every block is made ONCE (by A) and applied to both nodes: the same
      * bytes (signing is randomized, two builders would differ) */
     if (reg) {
-        CHECK(stop_h > 17, "the stop lies after the registration block");
-        CHECK(hyb_pair_to(A, Bn, 0, 15) == 0,
-              "S0 both nodes reach generation 6 (block 15), same blocks");
-        CHECK(hyb_register_step(A, Bn, 16, 1, &renv) == CMT_OK,
+        CHECK(reg >= (int64_t)HYB_A_GEN6,
+              "the registration block is a generation-6 block");
+        CHECK(stop_h > reg, "the stop lies after the registration block");
+        CHECK(hyb_pair_to(A, Bn, 0, reg - 1) == 0,
+              "S0 both nodes reach the block before the registration, same "
+              "blocks");
+        CHECK(hyb_register_step(A, Bn, reg, 1, &renv) == CMT_OK,
               "S0 the STORAGE_REGISTER block applies on both nodes");
         CHECK(q1(A->g.w->db, "SELECT COUNT(*) FROM v2_storage_nodes WHERE "
                              "status = 1") == 1 &&
               q1(Bn->g.w->db, "SELECT COUNT(*) FROM v2_storage_nodes WHERE "
                               "status = 1") == 1,
               "S0 the registry row is ACTIVE on both nodes");
-        CHECK(hyb_pair_to(A, Bn, 16, stop_h - 1) == 0,
+        CHECK(hyb_pair_to(A, Bn, reg, stop_h - 1) == 0,
               "S0 both nodes reach the block before the stop");
     } else {
         CHECK(hyb_pair_to(A, Bn, 0, stop_h - 1) == 0,
@@ -8153,14 +8158,22 @@ static int t_hyb_crash_boundary(void)
                     0);
 }
 
-/* (iii) WITH a storage event: a registered node makes B1 an event. The registration is block
- * HYB_REG_BLK = 16 (hyb_case, reg = 1), so B1 is the first boundary above it: 720 at production,
- * 30 at E = 15 (round 19: the guard E > 18 is replaced by this derivation; hyb_case itself needs
- * the stop after the registration block, CHECKed there). */
+/* (iii) WITH a storage event: a registered node makes B1 an event, and the stop is B1 itself, the
+ * first generation-6 boundary hyb_boundary_above(HYB_A_GEN6): 720 at production, 15 at E = 15
+ * (round 20: round 19 stopped at the SECOND boundary, 30, at E = 15). The registration block
+ * must lie in (A, B1): HYB_REG_BLK = 16 when E > 16 (as before); at E = 15 B1 = 15 = A + 1, so the
+ * registration is block A = 14, the first generation-6 block (the registry is generation 6 from
+ * the end of block A - 1 = 13; the STORAGE_REGISTER rule, rtn_storage_register_exec
+ * nodus_witness_rt_native.c:6313, tests no height other than the bond and the consent expiry at
+ * h, and hyb_register_env builds both at the block's own height). hyb_case CHECKs reg >= A and
+ * stop > reg. */
 static int t_hyb_crash_boundary_event(void)
 {
-    return hyb_case((int64_t)hyb_boundary_above(HYB_REG_BLK),
-                    "B1 with a storage event (one registered node)", 1);
+    const int64_t b1  = (int64_t)hyb_boundary_above(HYB_A_GEN6);
+    const int64_t reg = ((int64_t)HYB_REG_BLK < b1) ? (int64_t)HYB_REG_BLK
+                                                    : (int64_t)HYB_A_GEN6;
+
+    return hyb_case(b1, "B1 with a storage event (one registered node)", reg);
 }
 
 /* ══ HF-9 WP7 round 17 - the TEMPORARY boundary leg-root log line ═════════

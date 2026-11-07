@@ -254,9 +254,11 @@ static int g_checks = 0;
  * unchanged (A - 2 = 11: generation 5 is already in force when the idle
  * prefix ends). The ladder rows are planted directly in chain_config_history
  * (cc_row), so only the order of the edges matters to the engine
- * (phase_6b_gen4_edge / gen5 / gen6 each decide on "absent at h + 1, present
- * at h" of their own parameter, nodus_witness_v2_apply.c:5143-5200,
- * :5340-5400, :5531). */
+ * (phase_6b_gen4_edge / gen5 / gen6 each decide on "present at h + 1, absent
+ * at h" of their own parameter - plan :236 "param 24 present at A = h+1 and
+ * absent at h"; nodus_witness_v2_apply.c:5557 requires `at_next == 0 &&
+ * at_h == 1`, where 0 is present and 1 absent, nodus_witness_chain_config.c
+ * :504, :508 - nodus_witness_v2_apply.c:5143-5200, :5340-5400, :5531). */
 #define HA   (E_LEN > 16u ? 14u : 13u)
 
 /* ══ fixture ══════════════════════════════════════════════════════════ */
