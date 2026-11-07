@@ -28,7 +28,9 @@
 #      banners agree (printed, not ordered); OLD and NEW servers differ
 #      byte-wise (SKIP otherwise, as in the HF-4 scenario).
 #   1. A chain started on OLD commits and 7/7 agree; the pump (node 3) and
-#      the two EVM users (nodes 1 and 2) claim their leaves on OLD.
+#      the two EVM users (nodes 1 and 2) claim their leaves on OLD (a node
+#      refuses its own key, so node 1's claim is dialled to node 2, node 2's
+#      to node 3; the coin is read in the claimed node's own database).
 #   2. The live testnet's state is reached FIRST, on the OLD fleet with the
 #      OLD CLI: HF2_ACTIVE, HF3_ACTIVE and RULESET_GEN2 (D2 read from
 #      `ruleset-info`) are voted and crossed, each row identical 7/7 and
@@ -384,12 +386,19 @@
 #   build rolled onto before H (nodus 0.25.0, main) — BOTH Nodus EVM builds
 #   (NODUS_EVM_ENABLED), both carrying the SAME DNAC_CFG_EVM_ACTIVE_D
 #   (0x029f47596864d407 in both trees today; the gate compares what the
-#   CLIs print, never this literal) and the same witness schema (NEW must
-#   open OLD's S17 database — a refusal shows as REFUSING START / a
-#   different chain file in upgrade_node). Exact sequence (ORCHESTRATOR):
+#   CLIs print, never this literal). History of the 0.24.1 / 0.25.0 pair:
+#   both trees had the same witness schema (NEW opened OLD's S17 database).
+#   For the RUNNABLE pair (below) the schemas differ: OLD at 57942442e opens
+#   its database at S19 (nodus/src/witness/nodus_witness.c@57942442e:1032,
+#   nodus_witness_db_migrate_v2s19) and NEW opens it and migrates it to S20
+#   (this branch nodus_witness.c:1058, nodus_witness_db_migrate_v2s20;
+#   nodus_witness_v2_schema.c:3229 "PRAGMA user_version = 20"). A refusal
+#   shows as REFUSING START / a different chain file in upgrade_node.
+#   Exact sequence (ORCHESTRATOR) for the runnable pair — OLD = main
+#   57942442e (0.26.34), NEW = the HF-9 branch:
 #     F='-DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20 -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15 -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15'
-#     git -C /opt/dna worktree add <OLD_TREE> f7aa7984          # 0.24.1
-#     git -C /opt/dna worktree add <NEW_TREE> main              # 0.25.0
+#     git -C /opt/dna worktree add <OLD_TREE> 57942442e         # 0.26.34
+#     # <NEW_TREE> = a worktree of the HF-9 branch (e.g. main-hf9-wp12-r17)
 #     cmake -S <OLD_TREE>/nodus -B <OLD_TREE>/nodus/build-se -DCMAKE_C_FLAGS="$F"
 #     make -C <OLD_TREE>/nodus/build-se -j"$(nproc)" nodus-server nodus-cli
 #     cmake -S <NEW_TREE>/nodus -B <NEW_TREE>/nodus/build-se -DCMAKE_C_FLAGS="$F"
@@ -411,7 +420,8 @@
 #   THE PAIR ABOVE CANNOT RUN ANY MORE: f7aa7984 (0.24.1) and 0.25.0 are both
 #   before nodus 0.26.33 (commit ba3d90060), the 4001 / 4002 change, which is
 #   all at once by design (docs/plans/approved/2026-10-28-encrypted-sessions.md
-#   :100, :178; README "Cannot cross the change"). The pair that can run is
+#   :100, :178; README "Cannot cross the change"). (Its sequence is rewritten
+#   below for the runnable pair; the S17 text is that pair's history.) The pair that can run is
 #   two builds AFTER it, both EVM builds with the same
 #   DNAC_CFG_EVM_ACTIVE_D 0x029f47596864d407 (dnac/include/dnac/dnac.h:1704
 #   in the HF-9 branch, :1567 at 57942442e):
@@ -461,9 +471,14 @@
 #     that prints the socket-lookup line for a name its table refused — the
 #     "Unknown param name" check is the other half. A SKIP (99), not a
 #     FAIL, is the outcome when a binary is missing or OLD == NEW.
-#   - **The OLD wrapper is the same wrapper as NEW's**: if the OLD CLI is a
-#     build from before the 4001 change, its calls to a harness node fail on
-#     the removed handshake (a FAIL in step 1, never a pass).
+#   - **The OLD wrapper is the same wrapper as NEW's**, and a pre-4001 OLD CLI
+#     never gets that far: the probe passes --config, and f7aa7984's
+#     `chain-config propose` has no --config branch (nodus-cli.c@f7aa7984:
+#     1578-1595 prints "Unknown arg: --config", return 1), so such an OLD
+#     FAILS the capability gate, before the switch and before step 1 — never
+#     a pass.
+#   - **The probe's "cannot exist" is checked**: the script FAILs before the
+#     probes if $BASE_DIR/no-such-node-config.json exists.
 #
 # ════════════════════════════════════════════════════════════════════
 set -euo pipefail
@@ -632,6 +647,7 @@ done
 # connect line) and NOT "Unknown param name". --config names a file that cannot exist, so the
 # lookup never depends on /etc/nodus.conf of the machine (the same probe as test_cmt_hf9.sh).
 PROBE_CONF="${BASE_DIR:-/nonexistent}/no-such-node-config.json"
+[ ! -e "$PROBE_CONF" ] || die "$PROBE_CONF exists — the name-table probe needs a --config that cannot exist"
 probe() {                  # CLI PARAM VALUE -> the CLI's combined output (rc ignored: 1 either way)
     timeout 60 "$1" -s 127.0.0.1 -p "$PROBE_PORT" chain-config propose \
         --param "$2" --value "$3" --effective 1 --config "$PROBE_CONF" 2>&1 || true
@@ -765,8 +781,12 @@ floor_of() {               # NODE... -> the minimum tip
 spend_intent() { awk -F= '/^  intent_id=/{print $2; exit}' "$1"; }
 
 claim_leaf() {
-    local cli="$1" keys="$2" node="$3" port db fp log h wrc
-    port=$(stagef_tcp_port "$node"); db=$(db_of "$node"); fp=$(fp_of "$keys")
+    local cli="$1" keys="$2" node="$3" port db fp log h wrc dial
+    # a node refuses its own key (4001 plan 4.4, docs/plans/approved/2026-10-28-
+    # encrypted-sessions.md:125): when the keys are node's own, dial the next node
+    # (as test_cmt_evm_lib.sh claim_leaf does); the coin is still read on node
+    dial="$node"; [ "$keys" = "$(node_keys "$node")" ] && dial=$(( node % STAGEF_COMMITTEE_SIZE + 1 ))
+    port=$(stagef_tcp_port "$dial"); db=$(db_of "$node"); fp=$(fp_of "$keys")
     log="$LOGD/claim_$(basename "$(dirname "$keys")").log"
     "$cli" -s 127.0.0.1 -p "$port" v2-claim --config "$CONF" --db "$db" \
         --keys "$keys" --submit "127.0.0.1:$port" > "$log" 2>&1 \
