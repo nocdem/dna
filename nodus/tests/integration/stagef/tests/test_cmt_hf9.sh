@@ -1887,9 +1887,10 @@ del_h() {                  # NODE K INDEX(1-based) -> the H of that deletion lin
 }
 #   The holder removes seg-<k>.ok FIRST and logs only after nodus_seg_delete returned (segment.c:1193-1205 unlinks
 #   the marker, five more files and syncs the directory; holder.c:283-285 logs afterwards), so a file seen gone
-#   does not yet mean the line is written: assert_deleted_at WAITS for it, bounded by block distance (the tip may
-#   not pass MIN_H + E) and by progress (no tip increase for 3 CreateEmptyBlocks intervals), and FAILs if it never
-#   comes (round-4 row 12).
+#   does not yet mean the line is written: assert_deleted_at WAITS for it, bounded by block distance (every
+#   observation, the successful one included, needs a valid tip below MIN_H + 2E, read after the observation) and by
+#   progress (no tip increase for 3 CreateEmptyBlocks intervals), and FAILs if it never comes (round-4 row 12;
+#   round 20, Sol r20 row 5).
 assert_deleted_at() {      # LABEL NODE K COUNT_BEFORE MIN_H — a NEW deletion line since COUNT_BEFORE, with H >= MIN_H (= B + E): none before B + E
     local label="$1" n="$2" k="$3" c0="$4" minh="$5" c1 h t last=-1 since=0 stall
     stall=$(file_wait_polls)

@@ -8161,7 +8161,7 @@ static int t_hyb_crash_boundary(void)
 /* (iii) WITH a storage event: a registered node makes B1 an event, and the stop is B1 itself, the
  * first generation-6 boundary hyb_boundary_above(HYB_A_GEN6): 720 at production, 15 at E = 15
  * (round 20: round 19 stopped at the SECOND boundary, 30, at E = 15). The registration block
- * must lie in (A, B1): HYB_REG_BLK = 16 when E > 16 (as before); at E = 15 B1 = 15 = A + 1, so the
+ * must lie in [A, B1): HYB_REG_BLK = 16 when E > 16 (as before); at E = 15 B1 = 15 = A + 1, so the
  * registration is block A = 14, the first generation-6 block (the registry is generation 6 from
  * the end of block A - 1 = 13; the STORAGE_REGISTER rule, rtn_storage_register_exec
  * nodus_witness_rt_native.c:6313, tests no height other than the bond and the consent expiry at
