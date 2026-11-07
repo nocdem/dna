@@ -28,9 +28,10 @@
 #      banners agree (printed, not ordered); OLD and NEW servers differ
 #      byte-wise (SKIP otherwise, as in the HF-4 scenario).
 #   1. A chain started on OLD commits and 7/7 agree; the pump (node 3) and
-#      the two EVM users (nodes 1 and 2) claim their leaves on OLD (a node
-#      refuses its own key, so node 1's claim is dialled to node 2, node 2's
-#      to node 3; the coin is read in the claimed node's own database).
+#      the two EVM users (nodes 1 and 2) claim their leaves on OLD, all three
+#      through node 1 (a node refuses its own key, so node 1's own claim is
+#      dialled to node 2; the pump's and node 2's go to node 1); every coin is
+#      read in node 1's database.
 #   2. The live testnet's state is reached FIRST, on the OLD fleet with the
 #      OLD CLI: HF2_ACTIVE, HF3_ACTIVE and RULESET_GEN2 (D2 read from
 #      `ruleset-info`) are voted and crossed, each row identical 7/7 and
