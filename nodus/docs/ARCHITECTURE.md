@@ -11823,8 +11823,8 @@ hex, leg order 1..8 (`nodus_cmt_app_boundary_root_line`, `nodus_witness_cmt_app.
 `NODUS_CMT_BOUNDARY_ROOT_LINE_MAX` 1400). Purpose: `v2_trie_roots` keeps only the latest root of each leg, so the harness (`test_cmt_hf9.sh`) compares these lines node by
 node. It writes no state, reads no clock and changes no return value; it is held under `flockfile(stderr)` so it is one unbroken record; no line below generation 6, none in
 a build without `NODUS_EVM_ENABLED`; a failed root read gives one WARN (`boundary leg-root line for height <h> not written: a read failed`). The host calls Commit at two
-sites, so a restarted node writes the line again for each boundary it replays. **It is temporary**: the operator decided to remove it after enough testing; when is the
-operator's word (no criterion given), and whether it ships to live nodes before then is not decided. The code comment at the log site points to the decision file.
+sites, so a restarted node writes the line again for each boundary it replays. **It is temporary**: it stays as long as the shadow run's code is in the node and is removed
+together with the shadow run (operator 2026-11-07); when the shadow run is removed is not decided. The code comment at the log site points to the decision file.
 
 **Tests written in this change** (named only; this section records no run): `test_hf9_kat`, `test_hf9_trie_legs`, `test_hf9_edge`, `test_hf9_activation`,
 `test_hf9_growth`, `test_hf9_shadow`, `test_hf9_proof_service`, `test_storage_hrw`, `test_storage_hrw_runtime`, `test_supply_totals`, `test_evm_trie_store_fault`
