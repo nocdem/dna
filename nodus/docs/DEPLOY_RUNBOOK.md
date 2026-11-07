@@ -1307,7 +1307,7 @@ state what the source does and what the plan requires before the vote.
    incremental root to equal a full rebuild for every leg; a mismatch, a malformed row, an interrupted scan or a missing trigger is a node FAULT at
    block `H−1` (the node stops and does not vote). At each epoch boundary from then on, every node writes a **TEMPORARY** log line (tag `CMT-APP`)
    `HF9-BOUNDARY-ROOTS h=<height> global=<128 hex> leg1=<128 hex> … leg8=<128 hex>` (decision `docs/plans/decisions/2026-11-06-hf9-boundary-leg-root-log.md`;
-   the harness compares it node by node; the operator removes it later, when is his word; whether it ships to live nodes is not decided). Compare it, and the
+   the harness compares it node by node; it is removed later, and when is the operator's word; whether it ships to live nodes is not decided). Compare it, and the
    global root, on every node at the boundaries after `H`.
 6. **Param 25 `STORAGE_COPIES`** (R, holders per storage segment) is votable only while generation 6 judges the vote, value in [4, 16] (no row = 4),
    wait ONE EPOCH (`DNAC_EPOCH_LENGTH`, 720 in a production build), no single-use rule: `nodus-cli chain-config propose --param STORAGE_COPIES --value <R> --effective <H2>`.
