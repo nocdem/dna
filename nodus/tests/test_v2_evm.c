@@ -713,7 +713,10 @@ static int drop_s20_objects(sqlite3 *db) {
     if (rc != SQLITE_DONE) return -1;
     for (size_t i = 0; i < n; i++) {
         char sql[96];
-        snprintf(sql, sizeof(sql), "DROP TRIGGER %s", names[i]);
+        /* names[i] holds at most 39 characters (:706); the precision says so
+         * to the compiler, whose bound for an array element is the whole
+         * array. */
+        snprintf(sql, sizeof(sql), "DROP TRIGGER %.39s", names[i]);
         if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) return -1;
     }
     /* HF-9 WP4: and the retained-assignment tables, and v2_storage_sets /
