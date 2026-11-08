@@ -203,16 +203,83 @@ extern "C" {
  *  epochs). The stored value never reaches it: 14 + 1 is written as 0. */
 #define NODUS_STORAGE_FAIL_RETURN      15u
 
-/** One frozen storage set, as committed. Heap-allocate it (19.5 KB). */
+/** One frozen storage set, as committed. Heap-allocate it (77 KB: the
+ *  buffers hold the generation-6 capacity, HF-9 plan §8.7; the member
+ *  limit that governs a set is its generation's - 256 up to generation 5,
+ *  1024 from 6 - and is enforced where the set is written and read). */
 typedef struct {
     uint64_t epoch_start;
     uint8_t  set_hash[64];                           /* S(H)              */
-    uint32_t count;                                  /* 0..256            */
-    uint8_t  fps[DNA_V2_STORAGE_SET_MAX][64];        /* node_fp ASC       */
-    uint32_t fail_streak[DNA_V2_STORAGE_SET_MAX];    /* frozen at H       */
-    uint64_t grace_until[DNA_V2_STORAGE_SET_MAX];    /* frozen at H, AFTER
+    uint32_t count;                                  /* 0..256 / 0..1024  */
+    uint8_t  fps[DNA_V2_STORAGE_SET_CAP][64];        /* node_fp ASC       */
+    uint32_t fail_streak[DNA_V2_STORAGE_SET_CAP];    /* frozen at H       */
+    uint64_t grace_until[DNA_V2_STORAGE_SET_CAP];    /* frozen at H, AFTER
                                                       * the K9 update     */
 } nodus_storage_set_t;
+
+/** HF-9 WP4 - THE generation-6 storage rule, stated once (plan §8.6: the
+ *  generation-6 storage regime is B >= B1, the first boundary at or after
+ *  the effective height A of param 24): 1 iff chain_config param 24
+ *  (RULESET_GEN_TRIE) is in effect at `height` (a committed row with
+ *  effective <= height), 0 if not, -1 on a read fault. Every reader of a
+ *  committed set / report row applies it to the row's epoch_start to pick
+ *  the generation's limits (256 / 32 or 1024 / 128); the boundary and the
+ *  item executors use the runtime's generation, which agrees with it
+ *  (A-1 and A are never boundaries, so no boundary falls between the edge
+ *  and A). */
+int nodus_witness_storage_gen6_at(nodus_witness_t *w, uint64_t height);
+
+/** The member cap and the bitmap length of a set frozen at `epoch_start`
+ *  (the rule above): 256 / 32 up to generation 5, 1024 / 128 from 6.
+ *  @return 0 / -1 (read fault, nothing written). */
+int nodus_witness_storage_limits_at(nodus_witness_t *w, uint64_t epoch_start,
+                                    uint32_t *set_cap_out,
+                                    uint32_t *bitmap_cap_out);
+
+/** R (copies per segment) in effect at boundary B: chain_config param 25
+ *  at B, default DNAC_STORAGE_COPIES_DEFAULT (4) when no row. A stored
+ *  value outside [DNAC_CFG_MIN_STORAGE_COPIES, DNAC_CFG_MAX_STORAGE_COPIES]
+ *  is corrupt state. @return 0 / -1 (read fault or a value out of range). */
+int nodus_witness_storage_copies_at(nodus_witness_t *w, uint64_t boundary,
+                                    uint32_t *copies_out);
+
+/** HF-9 plan §7.2 step 6 / §8.6 E-s1..E-s3, run by the generation-6 edge
+ *  inside the edge block `h` (= A-1, not a boundary), after the capture
+ *  switch: writes the union counts of the two epochs settled at B1 and
+ *  B1 + E (E-s1), the rendezvous rows of every published segment, the
+ *  basis and the state (E-s2), and the one-use XOR-vs-rendezvous table
+ *  (E-s3). Only if the storage gate is open (param 18 in effect at h);
+ *  gate closed -> nothing written, 0. Idempotent shape: it requires the
+ *  assignment tables to be empty (a repeated edge is a FAULT).
+ *  @return 0 / -2 FAULT (the reason is logged). */
+int nodus_witness_storage_gen6_transition(nodus_witness_t *w, uint64_t h);
+
+/** Deterministic work counters of the generation-6 storage path (plan
+ *  T-9): incremented on the REAL path, read by tests only. Not state, not
+ *  consensus; reset by the test. */
+typedef struct {
+    uint64_t registry_rows_read;     /* registry rows read at a boundary   */
+    uint64_t segments_visited;       /* segments visited by an event visit */
+    uint64_t assign_rows_read;       /* v2_storage_assign rows read        */
+    uint64_t assign_rows_written;    /* rows inserted or ended             */
+    uint64_t scores_computed;        /* dna_v2_segment_score calls         */
+    uint64_t trie_nodes_loaded;      /* store gets of the keyed tries
+                                      * (nodus_witness_v2_trie.c ts_get) */
+    uint64_t registry_vm_steps;      /* SQLite virtual-machine steps of the
+                                      * registry status / node_fp queries:
+                                      * grows with the rows the plan
+                                      * visits (constant while the index
+                                      * serves them)                     */
+    uint64_t flush_source_vm_steps;  /* SQLite virtual-machine steps of the
+                                      * trie flush's source-row queries
+                                      * (the dirty-key list and the
+                                      * per-key row lookup,
+                                      * nodus_witness_v2_trie.c flush_leg):
+                                      * grows with the rows the lookup
+                                      * examines - a scan of the source
+                                      * table adds one step per row     */
+} nodus_storage_work_t;
+extern nodus_storage_work_t g_nodus_storage_work;
 
 /** What the storage boundary did (the caller's touched input). */
 typedef struct {
@@ -242,6 +309,29 @@ int nodus_witness_storage_boundary_apply(
         nodus_witness_t *w, uint64_t boundary_height,
         const uint8_t chain_id[DNA_CHAIN_ID_LEN],
         nodus_storage_boundary_t *out);
+
+/** Step 5 from generation 6 (plan §8.5), exported so the assignment can be
+ *  proven over synthetic registry / segment rows without a whole boundary
+ *  (the nodus_witness_storage_publish_due precedent); the boundary calls
+ *  the same code. Freezes storage_set(B) from the ACTIVE rows (status
+ *  index) with the member cap `set_cap` (the generation-6 limit,
+ *  nodus_witness_storage_limits_at), assigns the segments (the top
+ *  out->n_published segments were published at THIS boundary), applies the
+ *  K9 grace from the assignment counts, writes the set rows and
+ *  v2_storage_member_epoch(B). `R` = param 25 at B. Runs inside the
+ *  caller's transaction. @return 0 / -2 FAULT. */
+int nodus_witness_storage_freeze_gen6(nodus_witness_t *w, uint64_t B,
+                                      uint32_t R, uint32_t set_cap,
+                                      nodus_storage_boundary_t *out);
+
+/** Step 2 alone (header "THE STORAGE BOUNDARY"): at boundary B delete the
+ *  reports with epoch_start <= B - 2E and the frozen sets and their member
+ *  rows with epoch_start < B - 2E; from generation 6 (`gen6`) also the
+ *  v2_storage_member_epoch rows with epoch_start < B - 2E (plan §8.4: pruned
+ *  with v2_storage_set_members, the same rule). The assignment rows are
+ *  never pruned (D6). Exported so the rule is provable over synthetic rows.
+ *  Runs inside the caller's transaction. @return 0 / -2. */
+int nodus_witness_storage_prune(nodus_witness_t *w, uint64_t B, int gen6);
 
 /** Step 4 alone: publish every unpublished segment k (from the last
  *  published + 1, ascending) with k·P + 2E <= boundary_height, Root(k)
@@ -304,6 +394,29 @@ int nodus_witness_storage_holders(const nodus_storage_set_t *set,
                                   const uint8_t seg_root[64],
                                   uint8_t out_fps[DNA_V2_STORAGE_HOLDERS][64],
                                   size_t *n_out);
+
+/** HF-9 WP4 (plan §8.4, §8.5, §8.8): the segments `fp` holds in epoch
+ *  (H, H+E] from generation 6 (H a boundary with param 24 in effect): the
+ *  rows of v2_storage_assign active at H (the current relation) UNION the
+ *  rows active at H - E (the previous one; at H = B1, where H - E < B1,
+ *  XOR(set(H - E)) over the segments published at or before H - E,
+ *  node-locally, §8.6); k ascending, no duplicates; no grace gate (the
+ *  holder's must-hold list; the probe's eligible list applies the grace on
+ *  top). O(own rows). *ks_out is malloc'd (NULL when none). @return 0 /
+ *  -1 (also: H is not a generation-6 boundary). */
+int nodus_witness_storage_member_ks(nodus_witness_t *w, uint64_t H,
+                                    const uint8_t fp[64], uint64_t **ks_out,
+                                    size_t *n_out);
+
+/** holders(k, X) of segment k (root `seg_root`) at boundary X, whichever
+ *  generation X belongs to: from generation 6 the rows of v2_storage_assign
+ *  active at X (node_fp ASC), else XOR over storage_set(X). out_fps holds
+ *  the capacity (16). @return 0 / -1 (no storage_set(X) below generation 6
+ *  is -1 too). */
+int nodus_witness_storage_holders_at(nodus_witness_t *w, uint64_t k,
+                                     const uint8_t seg_root[64], uint64_t X,
+                                     uint8_t out_fps[DNA_V2_STORAGE_HOLDERS_CAP][64],
+                                     size_t *n_out);
 
 /** The ELIGIBLE segments of `node_fp` in epoch (H, H+E] (header
  *  "ELIGIBILITY"), k ascending — the probe client's B = n × P blocks in

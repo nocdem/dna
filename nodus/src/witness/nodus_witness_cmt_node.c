@@ -40,6 +40,9 @@
 #include "witness/nodus_witness_host.h"        /* w->host->identity      */
 #include "witness/nodus_witness_v2_apply.h"    /* committed_global_root  */
 #include "witness/nodus_witness_v2_produce.h"  /* tip_height             */
+#ifdef NODUS_EVM_ENABLED
+#include "witness/nodus_witness_v2_shadow.h"   /* HF-9 WP5: the shadow job */
+#endif
 
 #define LOG_TAG "CMT_NODE"
 
@@ -2196,6 +2199,15 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
     n->be_ready = true;
     (void)nodus_cmt_blockexec_set_rollback_hook(n->be, node_ledger_rolled_back,
                                                 n->w);
+#ifdef NODUS_EVM_ENABLED
+    /* HF-9 WP5 (plan §11): the shadow run's job runs after each block is
+     * committed and saved - on THIS executor only, not the handshaker's
+     * replay executor (hs_exec_open): the job is state based, so the next
+     * live block covers a replayed height. Gated inside the hook by the
+     * node-local `hf9_shadow` setting; a zero-initialised config is off. */
+    (void)nodus_cmt_blockexec_set_block_saved_hook(
+        n->be, nodus_witness_v2_shadow_after_commit, n->w);
+#endif
     /* cometbft@v0.38.26 node/node.go:393 —
      * `sm.BlockExecutorWithBlockTimeTolerance(config.Consensus.BlockTimeTolerance)`
      * (state/execution.go:59-63). */

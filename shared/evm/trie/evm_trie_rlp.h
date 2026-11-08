@@ -9,6 +9,15 @@
  * accepted two spellings of one node would let two stores disagree on the
  * bytes behind a digest.
  *
+ * PINNED REFERENCE: ethereum-rlp 0.1.6 (PyPI sdist ethereum_rlp-0.1.6.tar.gz,
+ * sha256 ede36f53b53c8da21f19259a676eed8790950d47f0b42cb928ac8a3c562282f3,
+ * pinned by execution-specs @a87891f7 uv.lock:1190), src/ethereum_rlp/rlp.py:
+ * encode :66-130, decode :143-159, decode_to_bytes :387-425,
+ * decode_to_sequence :427-462, decode_joined_encodings :464-484,
+ * decode_item_length :487-543. Conformity of
+ * this file's code to it: test_rlp_conformity (vectors from
+ * rlp_conformity_oracle.py).
+ *
  * Encoding rules (the RLP execution-specs @a87891f7 uses through
  * `ethereum_rlp`; merkle_patricia_trie.py:245 `rlp.encode(unencoded)`):
  *   - string of 1 byte < 0x80          -> the byte itself

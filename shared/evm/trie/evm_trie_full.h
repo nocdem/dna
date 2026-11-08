@@ -1,8 +1,13 @@
 /**
  * @file evm_trie_full.h
- * @brief Full-rebuild MPT root — a straight port of the reference, used
- *        ONLY by trie/test_trie.c as an in-C cross-check of the incremental
- *        trie (evm_trie.c). Not production code; never linked into a node.
+ * @brief Full-rebuild MPT root — a straight port of the reference, the
+ *        in-C cross-check of the incremental trie (evm_trie.c): used by
+ *        trie/test_trie.c and, since HF-9 WP2, linked into the node library
+ *        (nodus_evm) for the per-leg build-from-rows cross-check of the
+ *        keyed tries (nodus_witness_v2_trie.c, plan docs/plans/approved/
+ *        2026-11-04-hf9.md §7.2 step 4: the node computes the incremental
+ *        root and this full root over the same list and faults on a
+ *        mismatch). It never decides a root itself.
  *
  * Port of execution-specs @a87891f7 src/ethereum/merkle_patricia_trie.py:
  * _prepare_data :407-448, patricialize :507-581, encode_internal_node

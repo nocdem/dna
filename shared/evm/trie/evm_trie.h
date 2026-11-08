@@ -81,9 +81,23 @@
  * may hold a half-applied update, so every later call on it returns -2.
  * Close it and reopen at the last committed root.
  *
+ *   An extension's hashed child is loaded and verified together with the
+ *   extension (same checks, and it must be a branch), not when a later
+ *   step reaches it: a stored extension over a leaf or another extension
+ *   faults at the extension's load, on every path that reaches the
+ *   extension, whether or not the path continues below it.
+ *
+ * RLP: the node RLP is the encoding of ethereum-rlp 0.1.6 (PyPI sdist,
+ * sha256 ede36f53b53c8da21f19259a676eed8790950d47f0b42cb928ac8a3c562282f3,
+ * the version execution-specs a87891f7 pins in uv.lock), src/ethereum_rlp/
+ * rlp.py encode :66-130, decode :143-159 and :387-543. Conformity of evm_trie_rlp.c to it is checked by test_rlp_conformity
+ * against vectors from rlp_conformity_oracle.py.
+ *
  * COST: set/delete/get touch only the nodes on one path (<= 129 nodes,
- * plus one sibling on a delete that collapses a branch); commit encodes and
- * hashes only nodes modified since the last commit. No full scan.
+ * plus one sibling on a delete that collapses a branch, plus one extension
+ * child: the child of an extension on the path is loaded with it); commit
+ * encodes and hashes only nodes modified since the last commit. No full
+ * scan.
  *
  * DETERMINISM: no hash map, no iteration over unordered data; commit writes
  * nodes in post-order, children in nibble order 0..15.
@@ -157,6 +171,54 @@ int evm_trie_get_path(evm_trie_t *t, const uint8_t path[EVM_TRIE_PATH_LEN],
  *  empty root. On success the handle stays open at the new root.
  *  @return 0, -1, -2. */
 int evm_trie_commit(evm_trie_t *t, uint8_t root[EVM_TRIE_DIGEST_LEN]);
+
+/* ── HF-9 WP6: the per-node check for proofs (plan §10.1, Kurultay 55 A12 /
+ *    F-24 / F-25) ─────────────────────────────────────────────────────────
+ * The node-level checks of LOAD VERIFICATION above, on ONE supplied node:
+ * decode at `depth` nibbles with the parent reference's expected-branch flag,
+ * re-encode and compare (canonical form), the structural checks and the size
+ * class. It performs NO store call and loads NO child (the Z-52 eager
+ * extension-child check belongs to the store's resolve only). The digest
+ * comparison (SHA3-512(rlp) == the digest it was reached under) is the
+ * caller's. The existing store paths are unchanged: this reuses the same
+ * decoder. */
+#define EVM_TRIE_NODE_LEAF     1
+#define EVM_TRIE_NODE_EXT      2
+#define EVM_TRIE_NODE_BRANCH   3
+
+#define EVM_TRIE_CHILD_NONE      0
+#define EVM_TRIE_CHILD_HASH      1   /* a 64-byte reference                 */
+#define EVM_TRIE_CHILD_EMBEDDED  2   /* an embedded node, encoding < 64 B   */
+
+/** Size class of the supplied node: the root (any size), a node reached
+ *  through a 64-byte reference (>= 64 bytes) or an embedded node (< 64). */
+#define EVM_TRIE_NODE_ROOT      1
+#define EVM_TRIE_NODE_HASHED    2
+#define EVM_TRIE_NODE_EMBEDDED  3
+
+#define EVM_TRIE_NODE_MAX_BYTES 1060 /* the largest canonical HF-9 node: a
+                                      * branch of sixteen 64-byte references
+                                      * (16 x 66) + the empty value (1) + the
+                                      * list prefix (3) */
+
+typedef struct {
+    int            kind;                 /* EVM_TRIE_NODE_*                  */
+    uint8_t        nib[EVM_TRIE_PATH_NIBBLES]; /* leaf rest / ext segment    */
+    size_t         nlen;
+    const uint8_t *val;                  /* leaf value, points into `rlp`    */
+    size_t         val_len;
+    struct {
+        int            kind;             /* EVM_TRIE_CHILD_*                 */
+        const uint8_t *p;                /* HASH: 64 digest bytes; EMBEDDED:
+                                          * the child's encoding (into rlp)  */
+        size_t         len;
+    } child[16];                         /* EXT uses child[0]                */
+} evm_trie_node_view_t;
+
+/** @return 0 ok; -1 invalid argument; -2 the node fails a check. */
+int evm_trie_node_check(const uint8_t *rlp, size_t len, size_t depth,
+                        int expect_branch, int size_class,
+                        evm_trie_node_view_t *out);
 
 #ifdef __cplusplus
 }

@@ -121,6 +121,13 @@ typedef struct {
 /** Maximum array/map element count (M-01: prevents CPU DoS from crafted counts) */
 #define NODUS_CBOR_MAX_ITEMS  4096
 
+/** HF-9 WP6 (plan docs/plans/approved/2026-11-04-hf9.md §10.2: "nodes <= 128
+ *  x 131"): the array/map element limit of ONE decoder that reads a
+ *  `dnac_state_proof` reply on the Tier-2 receive path (nodus_tier2.c). Every
+ *  other decoder keeps NODUS_CBOR_MAX_ITEMS. nodus_client.c asserts it equals
+ *  NODUS_DNAC_STATE_PROOF_MAX_NODES. */
+#define NODUS_CBOR_MAX_ITEMS_STATE_PROOF  (128u * 131u)
+
 /** CBOR decoder state */
 typedef struct {
     const uint8_t *buf;     /* Input buffer */
@@ -128,7 +135,22 @@ typedef struct {
     size_t         pos;     /* Current read position */
     bool           error;
     uint8_t        depth;   /* Current nesting depth (skip recursion) */
+    size_t         max_items; /* array/map element limit of THIS decoder;
+                               * 0 = NODUS_CBOR_MAX_ITEMS (set by init);
+                               * cbor_decoder_set_max_items raises it.
+                               * A RAISED decoder (above the default) also
+                               * (1) refuses a count above the remaining
+                               * bytes at the header and (2) treats reaching
+                               * END as an error (dec->error), so a skip loop
+                               * over a declared count stops at once; decoders
+                               * with the default limit do neither. */
+    uint64_t       steps;   /* cbor_decode_next calls made by THIS decoder
+                             * (an observable for tests of bounded work) */
 } cbor_decoder_t;
+
+/** Raise (or set) the element limit of one decoder. A decoder that never
+ *  calls this keeps NODUS_CBOR_MAX_ITEMS, byte-for-byte as before. */
+void cbor_decoder_set_max_items(cbor_decoder_t *dec, size_t max_items);
 
 /** Initialize decoder */
 void cbor_decoder_init(cbor_decoder_t *dec, const uint8_t *buf, size_t len);

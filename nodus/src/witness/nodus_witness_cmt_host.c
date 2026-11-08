@@ -361,6 +361,18 @@ int nodus_cmt_blockexec_set_rollback_hook(nodus_cmt_blockexec_t *ctx,
     return CMT_OK;
 }
 
+int nodus_cmt_blockexec_set_block_saved_hook(nodus_cmt_blockexec_t *ctx,
+                                             void (*fn)(void *arg),
+                                             void *arg)
+{
+    if (!ctx) {
+        return CMT_FAULT;
+    }
+    ctx->on_block_saved     = fn;
+    ctx->on_block_saved_arg = fn ? arg : NULL;
+    return CMT_OK;
+}
+
 /* cometbft@v0.38.26 state/execution.go:59-63
  * BlockExecutorWithBlockTimeTolerance — stored as given (:61). */
 int nodus_cmt_blockexec_set_block_time_tolerance(nodus_cmt_blockexec_t *ctx,
@@ -1790,6 +1802,12 @@ static int apply_block(nodus_cmt_blockexec_t *ctx, const cmt_block_id_t *block_i
     }
     /* :351 fireEvents — YOK */
     free(resp);
+    /* HF-9 WP5 (plan §11): the shadow run's job, after the COMMIT, the state
+     * save and the pruning - no transaction is open and the block is final.
+     * Not a reference row; returns nothing. */
+    if (ctx->on_block_saved) {
+        ctx->on_block_saved(ctx->on_block_saved_arg);
+    }
     /* :353 return state, nil — the reference's value; here the copy. */
     return cmt_state_copy(&ctx->state_scratch, in_out_state) == CMT_OK
                ? CMT_OK : CMT_FAULT;

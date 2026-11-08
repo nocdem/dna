@@ -434,8 +434,9 @@ static size_t first_frame(const char *q, bool with_pk, const uint8_t *tk,
 }
 
 /* Connect a raw peer to `sock` and send a first frame; poll `ipc` rounds. */
-static nodus_tcp_conn_t *raw_peer(nodus_witness_ipc_t *ipc, const char *sock,
-                                  const uint8_t *first, size_t first_len) {
+static nodus_tcp_conn_t *raw_peer2(nodus_witness_ipc_t *ipc, const char *sock,
+                                   const uint8_t *first, size_t first_len,
+                                   const uint8_t *second, size_t second_len) {
     raw_disconnects = 0;
     nodus_tcp_init(&g_raw, -1);
     g_raw.on_disconnect = raw_on_disconnect;
@@ -443,8 +444,18 @@ static nodus_tcp_conn_t *raw_peer(nodus_witness_ipc_t *ipc, const char *sock,
     nodus_tcp_conn_t *c = nodus_tcp_unix_connect(&g_raw, sock, NODUS_TCP_UNIX_UID_SELF);
     if (!c) { nodus_tcp_close(&g_raw); return NULL; }
     nodus_tcp_send(c, first, first_len);
+    /* a second frame goes out BEFORE any poll: after the polls below the
+     * client side may have seen the peer's close and freed `c`, and a
+     * freed connection is never used (BUGS.md B-13) */
+    if (second && second_len) nodus_tcp_send(c, second, second_len);
     for (int i = 0; i < 20; i++) { nodus_witness_ipc_poll(ipc, 5); nodus_tcp_poll(&g_raw, 5); }
-    return c;
+    return c;                       /* a handle to test for NULL ONLY: it
+                                     * may already be freed */
+}
+
+static nodus_tcp_conn_t *raw_peer(nodus_witness_ipc_t *ipc, const char *sock,
+                                  const uint8_t *first, size_t first_len) {
+    return raw_peer2(ipc, sock, first, first_len, NULL, 0);
 }
 
 static bool raw_closed_within(nodus_witness_ipc_t *ipc) {
@@ -652,11 +663,11 @@ static void test_tool_other_uid(void) {
     uint8_t first[NODUS_PK_BYTES + 128], frame[256];
     size_t fn = first_frame(NODUS_WITNESS_IPC_Q_TOOL, false, NULL, first, sizeof(first));
     int calls = h_dnac_calls;
-    nodus_tcp_conn_t *c = raw_peer(tool_ipc, sock, first, fn);
-    if (c) {                                     /* the request a served tool would answer */
-        size_t n = t2_query(51, "dnac_test", frame, sizeof(frame));
-        nodus_tcp_send(c, frame, n);
-    }
+    /* the request a served tool would answer goes out right after the
+     * first frame, before any poll; `c` is only tested for NULL afterwards
+     * (the client side frees it when it sees the close) */
+    size_t n = t2_query(51, "dnac_test", frame, sizeof(frame));
+    nodus_tcp_conn_t *c = raw_peer2(tool_ipc, sock, first, fn, frame, n);
     bool closed = c && raw_closed_within(tool_ipc);
     for (int i = 0; i < 20; i++) nodus_witness_ipc_poll(tool_ipc, 5);
     bool unserved = h_dnac_calls == calls;

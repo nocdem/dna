@@ -157,6 +157,43 @@
  *   the S6 inner node and the existing v5 / v1 tags are reused unchanged.
  *   (domains_root has NO empty tag: SYSTEM must always be present — an
  *    empty domain list is a hard error, not an empty tree.)
+ *   HF-9 trie   "NDS.CORE.v4"     core_state_root v4 (plan §6, D23: same 7
+ *   generation  "NDS.SYS.v7"      legs in the same order as "NDS.CORE.v2";
+ *   (plan docs/ "NDS.STOR.v3"     utxo / token / claims / name are the
+ *   plans/                        trie roots L1-L4) / system_state_root v7
+ *   approved/                     (same 12 legs as "NDS.SYS.v6"; vset =
+ *   2026-11-04-                   L7, attendance = L8) / storage_root v3
+ *   hf9.md §6,                    (same 4 legs as "NDS.STOR.v2"; registry
+ *   AD-4)                         = L5, segments = L6)
+ *                 "NDS.STHRW.v1"  rendezvous score tag (plan §8.3, AD-5;
+ *                                 defined by HF-9 package WP4 in this
+ *                                 file: dna_v2_segment_score; the scan
+ *                                 below covers it)
+ *   Every tag is exactly 16 bytes, zero-padded ASCII. "NDS.CORE.v3" is
+ *   NOT used: it is defined differently (8 legs with dist_root) in
+ *   docs/plans/2026-09-11-nodus-ledger-snapshot-design.md:137, was never
+ *   implemented and stays unused (operator "2 için Astra'nın cevabı ile
+ *   ilerleyelim.", docs/plans/decisions/2026-11-04-hf9-scope.md).
+ *   HF-9 collision scan (plan §6, Kurultay 55 A4 / F-8), two runs:
+ *     (1) main, 2026-11-04, tracked tree at 57942442e, `git grep -nF`:
+ *         0 lines for each of the four tags; local `grep -rnF` over
+ *         docs/plans: NDS.CORE.v4 26 lines, NDS.STOR.v3 15, NDS.SYS.v7
+ *         15, NDS.STHRW.v1 14, all in HF-9 records (docs/plans/
+ *         2026-11-04-hf9-tag-scan.md); C string literals starting with a
+ *         tag in shared/dnac and nodus/src: 0 each.
+ *     (2) HF-9 WP3, re-run on its base 005f3509c (`git grep -nF <tag>
+ *         HEAD`): NDS.CORE.v4 6 lines, NDS.STOR.v3 4, NDS.SYS.v7 6,
+ *         NDS.STHRW.v1 4 — every line in nodus/tests/vectors/hf9_kat.json
+ *         or nodus/tests/vectors/hf9_kat_oracle.py (the independent T-4
+ *         oracle and its vectors), none in C code; docs/plans `grep -rnF`:
+ *         27 / 16 / 16 / 15 lines, HF-9 records only.
+ *   Independent oracle: nodus/tests/vectors/hf9_kat_oracle.py (author !=
+ *   the C author; cross-check: the new tags are absent from the 73 tag
+ *   strings of ledger_roots_v2.c and manifest_wire.c) — the KAT groups
+ *   "new_tags" and "compositions" of hf9_kat.json, compared by
+ *   nodus/tests/test_hf9_kat.c. SELF-CONSISTENT, not externally
+ *   referenced (the compositions are this project's, like every tag
+ *   above). Precedent: the HF-7 block above.
  *
  * ── Composition preimages (exact) ─────────────────────────────────────
  *   system_state_root = SHA3-512("NDS.SYS.v4"  ‖ validator_root[64]
@@ -553,6 +590,20 @@ int dna_v2_vset_root(const uint64_t *epochs,
                      const uint8_t (*snapshot_hashes)[DNA_V2_ROOT_LEN],
                      size_t n, uint8_t out[DNA_V2_ROOT_LEN]);
 
+/**
+ * One validator_set_root leaf, the SAME bytes dna_v2_vset_root computes
+ * inline for every row (HF-9 WP2, plan §4.2 row L7 and §12 T-5):
+ *
+ *   leaf = SHA3-512("NDS.VSLEAF.v1" ‖ epoch(8 BE) ‖ snapshot_hash[64])
+ *
+ * dna_v2_vset_root calls this function, so the Merkle root of every
+ * generation up to 5 and the keyed-trie value of the HF-9 leg L7 cannot
+ * differ. @return 0 / -1 (NULL args, digest failure).
+ */
+int dna_v2_vset_leaf_hash(uint64_t epoch,
+                          const uint8_t snapshot_hash[DNA_V2_ROOT_LEN],
+                          uint8_t out[DNA_V2_ROOT_LEN]);
+
 /* ── attendance_root (tokenomics-v3 P1, D-4 / S-2) ─────────────────────
  *
  * Two layers, matching the vset leg's shape exactly:
@@ -618,6 +669,37 @@ int dna_v2_attendance_root(const uint64_t *epoch_starts,
 /** Longest report bitmap: ceil(DNA_V2_STORAGE_SET_MAX / 8). */
 #define DNA_V2_STORAGE_BITMAP_MAX  32u
 
+/* HF-9 (plan docs/plans/approved/2026-11-04-hf9.md §8.7, D17 report 2
+ * finding 3): the three constants above and DNA_V2_STORAGE_HOLDERS below
+ * are HISTORICAL — their names and values keep governing every generation
+ * <= 5 path (set cap, bitmap length, XOR selector count). The three
+ * CAPACITY constants below size buffers and bound readers of committed
+ * rows ONLY; the generation-6 rule values (member cap, bitmap length of
+ * the set, copies R) are passed to generation-6 code explicitly, never
+ * read from a compile maximum. Operator: "2 b - evet 1024 storage girsin"
+ * (cap 1024, docs/plans/decisions/2026-11-04-hf9-scope.md); copies 4..16
+ * (D4). */
+/** Largest storage set the buffers hold (generation-6 member cap 1024). */
+#define DNA_V2_STORAGE_SET_CAP      1024u
+/** Largest report bitmap the buffers hold: ceil(SET_CAP / 8). */
+#define DNA_V2_STORAGE_BITMAP_CAP   128u
+/** Largest holder list the buffers hold (param 25 maximum, 16). */
+#define DNA_V2_STORAGE_HOLDERS_CAP  16u
+
+/** The generation-6 RULE values (the vote constants of D6, plan §7.1:
+ *  cap 1024): the member cap and the report bitmap length a set / report
+ *  of generation 6 is held to. Named apart from the buffer capacities
+ *  above (equal today) so a rule never reads as "whatever the buffers
+ *  hold"; generation-6 code takes these (or the value limits_at returns)
+ *  as its limit. */
+#define DNA_V2_STORAGE_SET_LIMIT_GEN6     1024u
+#define DNA_V2_STORAGE_BITMAP_LIMIT_GEN6  128u
+_Static_assert(DNA_V2_STORAGE_SET_LIMIT_GEN6 <= DNA_V2_STORAGE_SET_CAP &&
+               DNA_V2_STORAGE_BITMAP_LIMIT_GEN6 <= DNA_V2_STORAGE_BITMAP_CAP &&
+               DNA_V2_STORAGE_BITMAP_LIMIT_GEN6 ==
+                   (DNA_V2_STORAGE_SET_LIMIT_GEN6 + 7u) / 8u,
+               "the generation-6 limits fit the buffers");
+
 /** Registry row status byte (bytes doc item 1; 0 is invalid). */
 #define DNA_V2_STORAGE_ACTIVE      ((uint8_t)1)
 #define DNA_V2_STORAGE_EXITING     ((uint8_t)2)
@@ -668,6 +750,16 @@ int dna_v2_storage_set_hash(uint64_t epoch_start,
                             const uint8_t (*node_fps)[DNA_V2_ROOT_LEN],
                             size_t count, uint8_t out[DNA_V2_ROOT_LEN]);
 
+/** The same S(H) with the member limit passed explicitly (HF-9 plan §8.7:
+ *  generation-6 code gets its limit as an argument): identical bytes and
+ *  identical checks; `max_count` (<= DNA_V2_STORAGE_SET_CAP) replaces the
+ *  compiled 256. dna_v2_storage_set_hash is this with 256. @return 0 / -1
+ *  (also max_count > DNA_V2_STORAGE_SET_CAP). */
+int dna_v2_storage_set_hash_lim(uint64_t epoch_start,
+                                const uint8_t (*node_fps)[DNA_V2_ROOT_LEN],
+                                size_t count, size_t max_count,
+                                uint8_t out[DNA_V2_ROOT_LEN]);
+
 /** sets leaf = SHA3-512("NDS.STSLEAF.v1" ‖ epoch_start(8 BE) ‖
  *  set_hash[64]). @return 0 / -1. */
 int dna_v2_storage_sets_leaf_hash(uint64_t epoch_start,
@@ -687,8 +779,10 @@ typedef struct {
     uint64_t epoch_start;
     uint32_t seat;
     uint8_t  set_hash[DNA_V2_ROOT_LEN];  /* S(H)                        */
-    uint16_t bitmap_len;                 /* 0..DNA_V2_STORAGE_BITMAP_MAX */
-    uint8_t  bitmap[DNA_V2_STORAGE_BITMAP_MAX];
+    uint16_t bitmap_len;                 /* 0..the generation's bitmap limit
+                                          * (32 up to generation 5, 128 from
+                                          * 6); the buffer holds the capacity */
+    uint8_t  bitmap[DNA_V2_STORAGE_BITMAP_CAP];
 } dna_v2_storage_report_t;
 
 /** leaf = SHA3-512("NDS.STREP.v1" ‖ epoch_start(8 BE) ‖ seat(4 BE) ‖
@@ -697,6 +791,20 @@ typedef struct {
  *  the CALLER's checks. @return 0 / -1 (NULL, bitmap_len >
  *  DNA_V2_STORAGE_BITMAP_MAX). */
 int dna_v2_storage_report_leaf_hash(const dna_v2_storage_report_t *rep,
+                                    uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** The same leaf with the bitmap limit passed explicitly (<=
+ *  DNA_V2_STORAGE_BITMAP_CAP); dna_v2_storage_report_leaf_hash is this
+ *  with 32. @return 0 / -1. */
+int dna_v2_storage_report_leaf_hash_lim(const dna_v2_storage_report_t *rep,
+                                        size_t max_bitmap,
+                                        uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** The same reports_root with the bitmap limit passed explicitly (<=
+ *  DNA_V2_STORAGE_BITMAP_CAP); dna_v2_storage_reports_root is this with 32.
+ *  @return 0 / -1. */
+int dna_v2_storage_reports_root_lim(const dna_v2_storage_report_t *reps,
+                                    size_t n, size_t max_bitmap,
                                     uint8_t out[DNA_V2_ROOT_LEN]);
 
 /** reports_root over reports STRICTLY ascending by (epoch_start, seat)
@@ -714,6 +822,18 @@ int dna_v2_storage_root(const uint8_t registry_root[DNA_V2_ROOT_LEN],
                         const uint8_t reports_root[DNA_V2_ROOT_LEN],
                         const uint8_t segments_root[DNA_V2_ROOT_LEN],
                         uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** HF-9 storage_root v3 = SHA3-512("NDS.STOR.v3" ‖ registry_root ‖
+ *  sets_root ‖ reports_root ‖ segments_root) — the "NDS.STOR.v2" layout
+ *  under the new tag (plan §6, AD-4). Under generation 6 registry_root is
+ *  the trie root of leg L5 and segments_root that of L6 (nodus_witness_
+ *  v2_trie.h); sets_root and reports_root are unchanged. A NEW function:
+ *  dna_v2_storage_root is unchanged. @return 0 / -1. */
+int dna_v2_storage_root_v3(const uint8_t registry_root[DNA_V2_ROOT_LEN],
+                           const uint8_t sets_root[DNA_V2_ROOT_LEN],
+                           const uint8_t reports_root[DNA_V2_ROOT_LEN],
+                           const uint8_t segments_root[DNA_V2_ROOT_LEN],
+                           uint8_t out[DNA_V2_ROOT_LEN]);
 
 /* ── archive reward (storage reward v1 rev 4) ──────────────────────────
  * Decision 2026-10-05-archive-reward-bytes-approved.md; design
@@ -783,6 +903,57 @@ int dna_v2_segment_holders(const uint8_t a_key[DNA_V2_ROOT_LEN],
                            const uint32_t *fail_streaks, size_t n,
                            size_t out_idx[DNA_V2_STORAGE_HOLDERS],
                            size_t *n_out);
+
+/* ── HF-9 rendezvous selector (plan §8.3, AD-5; Kurultay 55 A5 / F-9 /
+ *    F-10; HRW paper, Thaler & Ravishankar 1998, p. 6 eq. (9), p. 9) ───
+ *
+ *   score(k, m) = SHA3-512("NDS.STHRW.v1" zero-padded to 16 ‖ A(k)[64] ‖
+ *                          node_fp[64])           — 144-byte preimage;
+ *   object first, server second (the argument order of eq. (9)); the
+ *   score function is SHA3-512 by the operator's decision D2 ("3 a puan
+ *   sha3 ile hesaplansin"), replacing the paper's 31-bit LCG (16); the
+ *   paper's tie theorem is NOT transferred.
+ *   Order: DESCENDING score compared as 64-byte big-endian unsigned
+ *   integers (memcmp order, the form of seg_distance); equal scores ->
+ *   the HIGHER node_fp (memcmp) ranks first (paper p. 9: "the server with
+ *   the highest S_i"). The same total order serves the full recomputation
+ *   and every retained-assignment update. */
+
+/** score(k, m) of the preimage above. @return 0 / -1 (NULL). */
+int dna_v2_segment_score(const uint8_t a_key[DNA_V2_ROOT_LEN],
+                         const uint8_t node_fp[DNA_V2_ROOT_LEN],
+                         uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** The ONE rank comparator of the selector: > 0 when (score_a, fp_a)
+ *  ranks BEFORE (score_b, fp_b) (higher score; equal scores -> higher
+ *  fp), < 0 when after, 0 only when both pairs are byte-equal. Every
+ *  64-byte argument is compared in full with memcmp. */
+int dna_v2_hrw_rank_cmp(const uint8_t score_a[DNA_V2_ROOT_LEN],
+                        const uint8_t fp_a[DNA_V2_ROOT_LEN],
+                        const uint8_t score_b[DNA_V2_ROOT_LEN],
+                        const uint8_t fp_b[DNA_V2_ROOT_LEN]);
+
+/** holders_hrw(k, set, R): among the n members (node_fps STRICTLY
+ *  ascending — checked once, O(n), a duplicate or a descending neighbour
+ *  anywhere in the list, eligible or not, refuses; fail_streaks[i] its
+ *  frozen streak), the first `copies` eligible members (fail_streak <
+ *  DNA_V2_STORAGE_FAIL_LIMIT) in the rank order above. `copies` is an
+ *  EXPLICIT argument, 1..DNA_V2_STORAGE_HOLDERS_CAP; n <=
+ *  DNA_V2_STORAGE_SET_CAP. out_idx[0..*n_out) receives their indices into
+ *  node_fps, rank 0 first; *n_out = min(copies, eligible members), and
+ *  with fewer eligible than `copies` the available positions are filled
+ *  without reading a nonexistent R-th score. The result does not depend
+ *  on the input order beyond the strict-ascent requirement. This is the
+ *  full-recompute reference (tests, the edge's E-s2, the checker); the
+ *  retained-assignment updates use the same comparator.
+ *  @return 0 / -1 (NULL, copies or n out of range, duplicate /
+ *  non-ascending list, hash failure; *n_out is 0 then). */
+int dna_v2_segment_holders_hrw(const uint8_t a_key[DNA_V2_ROOT_LEN],
+                               const uint8_t (*node_fps)[DNA_V2_ROOT_LEN],
+                               const uint32_t *fail_streaks, size_t n,
+                               size_t copies,
+                               size_t out_idx[DNA_V2_STORAGE_HOLDERS_CAP],
+                               size_t *n_out);
 
 /** OFF-CHAIN probe sample (bytes §6): x_i = SHA3-512("NDS.STSAMP.v1" ‖
  *  nonce[32] ‖ target_fp[64] ‖ i(4 BE)). Never a consensus input — the
@@ -886,6 +1057,22 @@ int dna_v2_core_root(const uint8_t utxo_root[64],
                      const uint8_t supply_root[64],
                      const uint8_t accrual_root[64],
                      uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** HF-9 core_state_root v4 = SHA3-512("NDS.CORE.v4" ‖ utxo_root ‖
+ *  token_root ‖ pools_root ‖ claims_root ‖ name_root ‖ supply_root ‖
+ *  accrual_root) — the same seven legs in the same order as
+ *  "NDS.CORE.v2" under the new tag (plan §6, D23). Under generation 6
+ *  utxo_root, token_root, claims_root and name_root are the trie roots of
+ *  legs L1-L4; pools, supply and accrual are unchanged. A NEW function:
+ *  dna_v2_core_root is unchanged. @return 0 / -1. */
+int dna_v2_core_root_v4(const uint8_t utxo_root[64],
+                        const uint8_t token_root[64],
+                        const uint8_t pools_root[64],
+                        const uint8_t claims_root[64],
+                        const uint8_t name_root[64],
+                        const uint8_t supply_root[64],
+                        const uint8_t accrual_root[64],
+                        uint8_t out[DNA_V2_ROOT_LEN]);
 
 int dna_v2_global_root(const uint8_t domains_root[64],
                        uint8_t out[DNA_V2_ROOT_LEN]);
@@ -1028,6 +1215,27 @@ int dna_v2_system_root_v6(const uint8_t validator_root[64],
                           const uint8_t stmem_root[64],
                           uint8_t out[DNA_V2_ROOT_LEN]);
 
+/** HF-9 system_state_root v7 = SHA3-512("NDS.SYS.v7" ‖ the twelve
+ *  "NDS.SYS.v6" legs in v6 order) — 12 × 64 bytes after the tag, the same
+ *  legs and order as dna_v2_system_root_v6 under the new tag (plan §6,
+ *  AD-4). Under generation 6 validator_set_root is the trie root of leg
+ *  L7, attendance_root that of L8 and storage_root the "NDS.STOR.v3"
+ *  composition. A NEW function: dna_v2_system_root_v6 is unchanged. Each
+ *  leg is an opaque 64-byte input. @return 0 / -1. */
+int dna_v2_system_root_v7(const uint8_t validator_root[64],
+                          const uint8_t delegation_root[64],
+                          const uint8_t chain_config_root[64],
+                          const uint8_t validator_set_root[64],
+                          const uint8_t domain_registry_root[64],
+                          const uint8_t manifest_root[64],
+                          const uint8_t attendance_root[64],
+                          const uint8_t treasury_root[64],
+                          const uint8_t storage_root[64],
+                          const uint8_t bcopy_root[64],
+                          const uint8_t vstat[64],
+                          const uint8_t stmem_root[64],
+                          uint8_t out[DNA_V2_ROOT_LEN]);
+
 /** S5 segment leaf v2 = SHA3-512("NDS.STSGLEAF.v2" ‖ k(8 BE) ‖
  *  root[64] ‖ published_height(8 BE)) — 96-byte preimage. k and
  *  published_height each 1..2^63−1. dna_v2_segment_leaf_hash (v1) is
@@ -1092,6 +1300,131 @@ int dna_v2_replay_root(const dna_v2_replay_row_t *rows, size_t n,
 int dna_v2_global_root_v2(const uint8_t domains_root[64],
                           const uint8_t replay_root[64],
                           uint8_t out[DNA_V2_ROOT_LEN]);
+
+/* ── HF-9 WP6 — the composition proof (plan docs/plans/approved/
+ *    2026-11-04-hf9.md §10.3, AD-10; Kurultay 55 A13 / F-26 .. F-29) ──────
+ *
+ * A proof for a trie leg root `lr` (leg L1..L8 of the plan §4.2) up to the
+ * AppHash: a list of steps, each a ProofOp-like element, the running value
+ * `x` of one step being the value verified by the next (CometBFT v0.38.26
+ * spec/abci/abci++_app_requirements.md:789-795: "the root hash for one
+ * ProofOp is the value being verified for the next ProofOp in the list. The
+ * root hash of the final ProofOp in the list should match the AppHash").
+ * x starts as `lr`; the last x must equal the AppHash of header h + 1.
+ *
+ * Step kinds (plan §10.3 table):
+ *   COMPOSE  tag, legs[n_legs], i      x := SHA3-512(tag ‖ legs[0] ‖ ... )
+ *                                      with legs[i] == x required;
+ *   HEAD     head[89], luh[64]         head[0..4) = the expected domain id
+ *                                      (CORE 1 for L1-L4, SYSTEM 0 for L5-L8),
+ *                                      head[4..68) == x;
+ *                                      x := SHA3-512("NDS.DOMHEAD.v2" ‖ head
+ *                                      ‖ luh);
+ *   MERKLE   tag, n, i, sib[]          x is leaf i of an n-leaf tagged
+ *                                      Merkle tree (inner tag "NDS.DOMNODE.v1"):
+ *                                      at each level, i even and i + 1 < n:
+ *                                      x := H(tag ‖ x ‖ sib); i odd:
+ *                                      x := H(tag ‖ sib ‖ x); i = n - 1 with
+ *                                      n odd: x unchanged (promoted); then
+ *                                      n := ceil(n / 2), i := floor(i / 2)
+ *                                      until n = 1; the number of sib entries
+ *                                      must equal the number of pairings.
+ *
+ * The verifier takes the step sequence, the tags, the leg counts and the
+ * positions from its COMPILED contract and refuses any step that differs
+ * (the transported "tag" is checked, never trusted):
+ *   L1-L4  COMPOSE CORE v4 (7 legs; i = 0 / 1 / 3 / 4), HEAD CORE, MERKLE,
+ *          COMPOSE GLOBAL v2 (2 legs, i = 0);
+ *   L5/L6  COMPOSE STOR v3 (4 legs; i = 0 / 3), COMPOSE SYS v7 (12 legs,
+ *          i = 8), HEAD SYSTEM, MERKLE, COMPOSE GLOBAL v2;
+ *   L7/L8  COMPOSE SYS v7 (12 legs; i = 3 / 6), HEAD SYSTEM, MERKLE,
+ *          COMPOSE GLOBAL v2.
+ * The positions are those of dna_v2_core_root_v4 (utxo, token, pools, claims,
+ * name, supply, accrual), dna_v2_storage_root_v3 (registry, sets, reports,
+ * segments) and dna_v2_system_root_v7 (validator, delegation, chain_config,
+ * validator_set, domain_registry, manifest, attendance, treasury, storage,
+ * bcopy, vstat, stmem). */
+#define DNA_V2_PROOF_STEP_COMPOSE   1
+#define DNA_V2_PROOF_STEP_HEAD      2
+#define DNA_V2_PROOF_STEP_MERKLE    3
+#define DNA_V2_PROOF_LEGS_MAX       12   /* the widest composition: SYS v7 */
+#define DNA_V2_PROOF_STEPS_MAX      5    /* the longest sequence: L5 / L6   */
+#define DNA_V2_PROOF_SIB_MAX        64   /* ceil(log2(2^64)): n is a u64    */
+
+typedef struct {
+    uint32_t t;                                  /* DNA_V2_PROOF_STEP_*     */
+    uint8_t  tag[16];                            /* COMPOSE, MERKLE         */
+    uint8_t  legs[DNA_V2_PROOF_LEGS_MAX][DNA_V2_ROOT_LEN]; /* COMPOSE       */
+    uint32_t n_legs;                             /* COMPOSE                 */
+    uint64_t i;                                  /* COMPOSE, MERKLE         */
+    uint8_t  head[DNA_V2_DOMHEAD_ENC_LEN];       /* HEAD                    */
+    uint8_t  luh[DNA_V2_ROOT_LEN];               /* HEAD                    */
+    uint64_t n;                                  /* MERKLE                  */
+    uint32_t n_sib;                              /* MERKLE                  */
+    uint8_t  sib[DNA_V2_PROOF_SIB_MAX][DNA_V2_ROOT_LEN]; /* MERKLE          */
+} dna_v2_proof_step_t;
+
+/** The sibling path of leaf `i` in the tagged Merkle tree over `leaves`
+ *  (`n` >= 1, `i` < n; inner tag `node_tag`, 16 bytes), the tree of
+ *  dna_v2_domains_root_v2 with the odd node promoted: the siblings in level
+ *  order (promoted levels contribute none) into `sib` (capacity `sib_cap`),
+ *  their count in `*n_sib`, and the tree root in `root_out` (may be NULL).
+ *  @return 0 / -1 (bad argument, `sib_cap` too small). */
+int dna_v2_merkle_path(const uint8_t node_tag[16],
+                       const uint8_t (*leaves)[DNA_V2_ROOT_LEN], size_t n,
+                       size_t i, uint8_t (*sib)[DNA_V2_ROOT_LEN],
+                       size_t sib_cap, size_t *n_sib,
+                       uint8_t root_out[DNA_V2_ROOT_LEN]);
+
+/** The MERKLE step rule above: from `leaf` at index `i` of an `n`-leaf tree
+ *  with the siblings `sib[0..n_sib)` to the root `out`. n == 0, i >= n, more
+ *  or fewer siblings than the pairings of (n, i), or `n_sib` above
+ *  DNA_V2_PROOF_SIB_MAX refuse. @return 0 / -1. */
+int dna_v2_merkle_apply(const uint8_t node_tag[16],
+                        const uint8_t leaf[DNA_V2_ROOT_LEN], uint64_t n,
+                        uint64_t i, const uint8_t (*sib)[DNA_V2_ROOT_LEN],
+                        size_t n_sib, uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** Everything the builder reads, caller-owned (the snapshot's legs, plan
+ *  §10.4): the seven CORE v4 legs, the four STOR v3 legs, the twelve SYS v7
+ *  legs (sys[8] is the STOR v3 composition), the committed DomainHead rows
+ *  in ascending domain_id with their last_upd_hash, and the replay root. */
+typedef struct {
+    const uint8_t (*core)[DNA_V2_ROOT_LEN];      /* 7                       */
+    const uint8_t (*stor)[DNA_V2_ROOT_LEN];      /* 4                       */
+    const uint8_t (*sys)[DNA_V2_ROOT_LEN];       /* 12                      */
+    const dna_v2_domain_head_t *heads;           /* n_heads, ascending id   */
+    const uint8_t (*luh)[DNA_V2_ROOT_LEN];       /* luh[j] belongs to heads[j] */
+    size_t  n_heads;
+    uint8_t replay[DNA_V2_ROOT_LEN];
+} dna_v2_proof_legs_t;
+
+/** Build the composition steps of leg `leg` (1..8) from `in`: the compiled
+ *  sequence above, each COMPOSE copying the full leg list and requiring the
+ *  running value to sit at its compiled position, the HEAD step the
+ *  committed head of the leg's domain (whose domain_state_root must equal
+ *  the running value), the MERKLE step the sibling path of that head's leaf
+ *  among all heads, the last COMPOSE the replay root. `steps` holds
+ *  DNA_V2_PROOF_STEPS_MAX entries; `*n_steps` is the count written. `lr_out`
+ *  (may be NULL) receives the leg root the chain starts from and
+ *  `app_hash_out` (may be NULL) the value the chain ends on, which the
+ *  caller compares with the committed GLOBAL root. Any disagreement between
+ *  the legs and the heads is -1 — never a proof of a different value.
+ *  @return 0 / -1. */
+int dna_v2_state_proof_cp_build(int leg, const dna_v2_proof_legs_t *in,
+                                dna_v2_proof_step_t *steps, size_t *n_steps,
+                                uint8_t lr_out[DNA_V2_ROOT_LEN],
+                                uint8_t app_hash_out[DNA_V2_ROOT_LEN]);
+
+/** Verify a composition chain: `steps` must be exactly the compiled
+ *  sequence of leg `leg`, every step as the rules above require, and the
+ *  last running value equal to `app_hash`. The caller has authenticated
+ *  `app_hash` against the intended chain (the light client, header h + 1);
+ *  nothing here trusts a value the response carries. @return 0 / -1. */
+int dna_v2_state_proof_cp_verify(int leg, const uint8_t lr[DNA_V2_ROOT_LEN],
+                                 const dna_v2_proof_step_t *steps,
+                                 size_t n_steps,
+                                 const uint8_t app_hash[DNA_V2_ROOT_LEN]);
 
 #ifdef __cplusplus
 }

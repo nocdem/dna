@@ -135,6 +135,21 @@ int nodus_witness_storage_registry_load(nodus_witness_t *w,
                                         dna_v2_storage_node_row_t **rows,
                                         size_t *n_out);
 
+/** HF-9 WP4 (plan §8.8): the rows of ONE status, node_fp ASC, through the
+ *  same scan and row checks as the full load, served by the S20 status
+ *  index (status, node_fp). *rows is malloc'd (NULL when none).
+ *  @return 0 / -1 (also a status outside 1..3). */
+int nodus_witness_storage_registry_load_status(nodus_witness_t *w,
+                                               uint8_t status,
+                                               dna_v2_storage_node_row_t **rows,
+                                               size_t *n_out);
+
+/** HF-9 WP4: ONE row by node_fp (the primary key), the same row checks.
+ *  @return 0 found / 1 absent / -1 fault. */
+int nodus_witness_storage_registry_get(nodus_witness_t *w,
+                                       const uint8_t node_fp[64],
+                                       dna_v2_storage_node_row_t *out);
+
 /** Σ bond over the ACTIVE + EXITING rows of `v2_storage_nodes`, with the
  *  registry root's own row checks (ONE scan for both — the treasury
  *  pattern) and a checked add: the supply equation's storage-bond term
@@ -218,6 +233,23 @@ int nodus_witness_replay_root(nodus_witness_t *w, uint8_t out[64]);
  *  nodus_witness_v2_claims.c). @return 0 / -1. */
 int nodus_witness_system_root_v6(nodus_witness_t *w, uint8_t out[64]);
 
+/** HF-9 WP3 (plan docs/plans/approved/2026-11-04-hf9.md §6): system_state_
+ *  root v7 ("NDS.SYS.v7"): the twelve v6 legs in v6 order, read as
+ *  nodus_witness_system_root_v6 reads them except validator_set_root
+ *  (keyed-trie root L7), attendance_root (L8) and storage_root
+ *  (nodus_witness_storage_root_v3). The trie roots are the committed
+ *  v2_trie_roots rows — PURE reads, no trie work (§5.3); a leg with a
+ *  pending dirty key, a missing or malformed row is -1, never a stale
+ *  root. Selected ONLY by the SYSTEM state-root hook of a runtime of
+ *  generation >= NODUS_RT_GEN_TRIE (nodus_rt_system_state_root). A build
+ *  without NODUS_EVM_ENABLED answers -1. @return 0 / -1. */
+int nodus_witness_system_root_v7(nodus_witness_t *w, uint8_t out[64]);
+
+/** HF-9 WP3: storage_root v3 ("NDS.STOR.v3"): registry_root (trie L5),
+ *  sets_root, reports_root, segments_root (trie L6) — read by
+ *  nodus_witness_system_root_v7 only. -1 as above. @return 0 / -1. */
+int nodus_witness_storage_root_v3(nodus_witness_t *w, uint8_t out[64]);
+
 /** THE GLOBAL composition (HF-7 P1c-1, Kurultay #27 summary item 8 — every
  *  composition site calls this one function, so they move together):
  *    roots_v2 == 0: dna_v2_domains_root(heads) → dna_v2_global_root — the
@@ -274,6 +306,15 @@ int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]);
  *  @return 0 / -1. */
 int nodus_witness_core_root_v2_evm(nodus_witness_t *w, uint8_t out[64]);
 
+/** HF-9 WP3 (plan §6): core_state_root v4 ("NDS.CORE.v4", D23): the same
+ *  seven legs in the same order, the EVM generation's supply leaf, with
+ *  utxo / token / claims / name read from the committed keyed-trie roots
+ *  L1-L4 (pure reads, as nodus_witness_system_root_v7) and pools, supply,
+ *  accrual as before. Selected ONLY by a CORE runtime of generation >=
+ *  NODUS_RT_GEN_TRIE (nodus_rt_core_state_root). A build without
+ *  NODUS_EVM_ENABLED answers -1. @return 0 / -1. */
+int nodus_witness_core_root_v4(nodus_witness_t *w, uint8_t out[64]);
+
 /** S5 — SYSTEM runtime-owned genesis PAYLOAD root ("NDS.SYSPAYL.v3",
  *  W-A): the five runtime legs validator ‖ delegation ‖ chain_config ‖
  *  validator_set ‖ treasury, WITHOUT the container-lifetime legs
@@ -315,6 +356,74 @@ int nodus_witness_global_root_v2(nodus_witness_t *w,
                                  uint8_t out_domains[64],
                                  uint8_t out_system[64],
                                  uint8_t out_core[64]);
+
+/* ── HF-9 WP5 (plan docs/plans/approved/2026-11-04-hf9.md §11): the SHADOW
+ *    compositions. NODE-LOCAL and never consensus: the shadow run logs
+ *    them after each commit, and `hf9_shadow_diff.sh` compares them across
+ *    the eight nodes, so the ONLY value of these numbers is that every node
+ *    computes the same bytes from the same committed state. They read the
+ *    keyed-trie legs from v2_trie_shadow_roots (never v2_trie_roots), and
+ *    every other input exactly as the committed composition reads it.
+ *    No consensus path calls them; a build without NODUS_EVM_ENABLED
+ *    answers -1. ──────────────────────────────────────────────────────── */
+
+/** CORE v4' = nodus_witness_core_root_v4 with legs L1-L4 from the shadow
+ *  roots. @return 0 / -1. */
+int nodus_witness_core_root_v4_shadow(nodus_witness_t *w, uint8_t out[64]);
+
+/** STOR v3' = nodus_witness_storage_root_v3 with legs L5 / L6 from the
+ *  shadow roots. @return 0 / -1. */
+int nodus_witness_storage_root_v3_shadow(nodus_witness_t *w,
+                                         uint8_t out[64]);
+
+/** SYS v7' = nodus_witness_system_root_v7 with legs L7 / L8 and the
+ *  storage leg (STOR v3') from the shadow roots. @return 0 / -1. */
+int nodus_witness_system_root_v7_shadow(nodus_witness_t *w, uint8_t out[64]);
+
+/** GLOBAL v2' - THE recipe (the same on every node): the COMMITTED
+ *  v2_domain_heads rows as stored (head blob and head-authoritative
+ *  last_upd_hash column), the domain_state_root of the SYSTEM head
+ *  replaced by SYS v7' and that of the CORE head by CORE v4' (every other
+ *  head field, the ruleset versions included, as committed), composed by
+ *  nodus_witness_global_compose(roots_v2 = 1) with the replay root as
+ *  committed. Only the head-bearing composition of a chain at or past the
+ *  ROOTS generation is a shadow subject: a head-less chain or an older
+ *  generation answers -1. The optional outputs are the domains root and
+ *  the two shadow roots. @return 0 / -1. */
+int nodus_witness_global_root_v2_shadow(nodus_witness_t *w,
+                                        uint8_t out_global[64],
+                                        uint8_t out_domains[64],
+                                        uint8_t out_system[64],
+                                        uint8_t out_core[64]);
+
+/* ── HF-9 WP6 (plan §10.4): the legs a state proof needs ───────────────────
+ * Everything the composition proof (dna_v2_state_proof_cp_build) is built
+ * from, read on ONE connection (the proof service's reader snapshot): the
+ * seven CORE v4 legs, the four STOR v3 legs, the twelve SYS v7 legs, the
+ * committed DomainHeads (ascending domain_id, with their head-authoritative
+ * last_upd_hash), the replay root, and the domains_root / GLOBAL v2 composed
+ * from them - the value the caller compares with the committed AppHash. The
+ * legs are read by the same readers as nodus_witness_core_root_v4 /
+ * _storage_root_v3 / _system_root_v7 (one body each), so they cannot drift. */
+typedef struct {
+    uint8_t core[7][64];
+    uint8_t stor[4][64];
+    uint8_t sys[12][64];
+    dna_v2_domain_head_t *heads;      /* malloc'd, n_heads entries */
+    uint8_t (*luh)[64];               /* malloc'd, luh[j] belongs to heads[j] */
+    size_t  n_heads;
+    uint8_t replay[64];
+    uint8_t domains_root[64];
+    uint8_t global_root[64];
+} nodus_witness_proof_legs_t;
+
+/** @return 0 ok; 1 the committed SYSTEM runtime was resolved and is below
+ *  generation 6: no keyed-trie composition exists, `p` is empty; -1 a read
+ *  fault, a SYSTEM runtime that cannot be resolved, or a malformed head row
+ *  (the whole load fails). */
+int nodus_witness_proof_legs_load(nodus_witness_t *w,
+                                  nodus_witness_proof_legs_t *p);
+void nodus_witness_proof_legs_free(nodus_witness_proof_legs_t *p);
 
 #ifdef __cplusplus
 }

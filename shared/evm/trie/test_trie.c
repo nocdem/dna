@@ -26,9 +26,76 @@
  *      a correctly-hashed non-canonical node, a correctly-hashed node of a
  *      shape patricialize never builds -> -2, sticky;
  *   7. [O] unsecured variable-length-key cases through evm_trie_full;
- *   8. evm_trie_full in keccak mode reproduces two [F] roots.
+ *   8. evm_trie_full in keccak mode reproduces two [F] roots;
+ *   9. (HF-9 review Z-52) a stored extension whose hashed child is a leaf
+ *      faults when the extension is loaded, also for a path that does not
+ *      share its segment; a stored extension over a branch loads both
+ *      (n_get = 2) and still reads and answers absence correctly.
+ *
+ * HF-9 review T-1 (WP0 part, B-10 and Z-52): compile flags: none (plain
+ * `make test_trie`); environment: none. Leaves behind: nothing (in-memory
+ * stores, no files). How it can falsely pass: item 9 asserts the number
+ * of node fetches (n_get = 2), so a path that never reaches the extension's
+ * child cannot pass unnoticed; the B-10 reopen is now a CHECK, a failed
+ * reopen counts as a failure.
+ *
+ * HF-9 WP6 T-1 proof part (evm_trie_proof.{c,h}, evm_trie_node_check):
+ *  10. proofs: (a) a 300-key trie of 64-byte values, a 12-key batch (6
+ *      present, 6 absent): the union is deduplicated and ascending, the
+ *      verifier returns the trie's own answer and the leaf value for every
+ *      key; for a single-key proof every node removed, every node with a
+ *      flipped byte, the reversed order and a wrong root are refused (-2:
+ *      a missing node is an error, never absence); 0 keys, 129 keys, a
+ *      duplicate key, a 1,061-byte node and more than 128 x 131 nodes are
+ *      refused (-1) before traversal; the empty leg (empty bundle, every
+ *      key absent; a node refused); (b) hand-built malformed nodes at the
+ *      root (non-canonical length, trailing byte, wrong leaf rest length,
+ *      empty value, empty extension segment, branch with a value, branch
+ *      with one child) are refused; the 135-byte leaf and the 1,060-byte
+ *      branch (sixteen 64-byte references) pin the size constant; the
+ *      per-node function: a root < 64 bytes accepted (a leaf at depth 127),
+ *      the same node refused when reached by a 64-byte reference, wrong
+ *      depth / expected-branch flag / digest refused; (c) the inline
+ *      boundary through the path interface (a bundle of the root alone, the
+ *      branch and both leaves embedded), the Z-52 extension fixture: an
+ *      absence proof ending at a mismatching extension is the extension
+ *      alone, its child neither loaded (n_get = 1) nor emitted, verifies
+ *      without it and is refused with the node removed; a matching path
+ *      needs all three nodes; a hashed non-root node below 64 bytes refused.
+ *  11. bundle order rule (test_proof_order): the verifier finds nodes by
+ *      binary search, so a wrong order can still be served. Every adjacent
+ *      DUPLICATE of every node of a ~50-node sorted bundle, and every swap of
+ *      two nodes (all pairs), is refused (-2) for a key whose needed nodes
+ *      the search still finds; the test counts the swapped bundles the
+ *      binary search alone serves and asserts there is at least one (the
+ *      false-pass guard: without such a bundle the order rule would be
+ *      untested). Kills: replacing the "strictly ascending" check in
+ *      evm_trie_proof_verify_batch by `else if (0)`.
+ *  NOT testable (no input exists): the re-encode-and-compare in
+ *  evm_trie_node_check. evm_trie_rlp_decode_item accepts canonical RLP only
+ *  (evm_trie_rlp.c: read_long_len rejects a leading zero and a length <= 55,
+ *  :90-100; a single byte < 0x80 must be itself, :130; a header longer than
+ *  the data is refused); decode_node (evm_trie.c:283-345) takes exactly 2 or
+ *  17 items that fill the list (split_list :214, `top.total != len`), a hex
+ *  prefix with flag 0..3 and a zero pad nibble when even (read_compact
+ *  :232-252), a 64-byte string or an embedded list < 64 bytes as a child
+ *  (decode_child :260-281), an empty branch value; node_encode (:181-208)
+ *  rebuilds each of those from the decoded fields by the same rules
+ *  (put_compact :124-138, put_child_ref :148-178: an embedded child
+ *  re-encodes to its own < 64 bytes, a reference to its digest unchanged,
+ *  put_bytes/wrap_list canonical). Every accepted input therefore re-encodes
+ *  to itself: the compare is a defence-in-depth check that cannot fail on any
+ *  input decode_node accepts, so a mutant that removes it is equivalent and
+ *  no test can kill it. The tested non-canonical forms (length form, trailing
+ *  byte) are refused earlier by decode_item / the length check.
+ *  Flags: none. Environment: none. Leaves behind: nothing (in-memory).
+ *  False pass: the assertions on node counts (set.n, n_get) fail if the
+ *  prover loads an extension's child eagerly; the "removed" and "flipped"
+ *  checks assert -2, so a verifier that read a missing node as absence
+ *  fails them.
  */
 #include "evm_trie.h"
+#include "evm_trie_proof.h"
 #include "evm_trie_full.h"
 #include "evm_trie_rlp.h"
 #include "trie_vectors.h"
@@ -300,7 +367,12 @@ static void replay(const tv_scenario *sc, unsigned interval, int reopen,
     if (with_gets) {
         evm_trie_close(t);
         t = NULL;
-        if (evm_trie_open(&st, root, &t) == 0)
+        /* B-10: a failed reopen is a failure of this test, never a skipped
+         * lookup that still prints PASSED */
+        int orc = evm_trie_open(&st, root, &t);
+        CHECK(orc == 0, "%s/%u/%d: final reopen at the committed root, rc %d",
+              sc->name, interval, reopen, orc);
+        if (orc == 0)
             check_gets(t, sc->mode, &sh, sc->name);
     }
 out:
@@ -615,6 +687,136 @@ static void test_lying_store(void)
     printf("ok   lying store\n");
 }
 
+/* ── 9: an extension's hashed child is loaded and checked with it (Z-52) ─
+ * Hand-built stored nodes (hashed correctly, canonical RLP). The path in
+ * each get does NOT share the extension's segment, so the pre-fix code
+ * answered "absent" (1) after loading only the extension; the fixed code
+ * loads the child with the extension: n_get is 2 in both cases, and a
+ * child that is not a branch is -2 although the lookup never goes below. */
+
+/* Append a hex-prefix key to `b` as one RLP string. */
+static int put_hp(evm_trie_rlp_buf *b, const uint8_t *nib, size_t n,
+                  int leaf)
+{
+    uint8_t out[80];
+    size_t k = 0, i = 0;
+    unsigned flag = (unsigned)(leaf ? 2 : 0) | (unsigned)(n & 1);
+    if (n & 1) out[k++] = (uint8_t)((flag << 4) | nib[i++]);
+    else       out[k++] = (uint8_t)(flag << 4);
+    for (; i < n; i += 2) out[k++] = (uint8_t)((nib[i] << 4) | nib[i + 1]);
+    return evm_trie_rlp_put_bytes(b, out, k);
+}
+
+/* leaf [hp(rest), val]; the node is stored, its digest returned */
+static int mk_leaf(mstore *ms, const uint8_t *rest, size_t n, uint8_t val,
+                   uint8_t d[64])
+{
+    evm_trie_rlp_buf b = {0};
+    int rc = put_hp(&b, rest, n, 1);
+    if (rc == 0) rc = evm_trie_rlp_put_bytes(&b, &val, 1);
+    if (rc == 0) rc = evm_trie_rlp_wrap_list(&b, 0);
+    if (rc == 0) rc = put_raw_node(ms, b.p, b.len, d);
+    evm_trie_rlp_buf_free(&b);
+    return rc;
+}
+
+static void test_extension_child(void)
+{
+    uint8_t seg[2] = { 1, 2 };             /* the extension's segment      */
+    uint8_t miss[64];                      /* first byte 0xFF: no match    */
+    memset(miss, 0xFF, sizeof(miss));
+    uint8_t rest[128];
+    memset(rest, 7, sizeof(rest));
+    uint8_t *v = NULL;
+    size_t vl = 0;
+
+    /* (a) extension whose hashed child is a LEAF: -2 at the load, with
+     * exactly the extension and the child fetched, and sticky */
+    {
+        mstore ms = {0};
+        uint8_t dl[64], dr[64];
+        evm_trie_rlp_buf b = {0};
+        int rc = mk_leaf(&ms, rest, 126, 0x78, dl);   /* leaf at depth 2 */
+        if (rc == 0) rc = put_hp(&b, seg, 2, 0);
+        if (rc == 0) rc = evm_trie_rlp_put_bytes(&b, dl, 64);
+        if (rc == 0) rc = evm_trie_rlp_wrap_list(&b, 0);
+        if (rc == 0) rc = put_raw_node(&ms, b.p, b.len, dr);
+        CHECK(rc == 0, "ext->leaf fixture built");
+        evm_trie_store_t st = ms_iface(&ms);
+        evm_trie_t *t = NULL;
+        if (rc == 0) rc = evm_trie_open(&st, dr, &t);
+        CHECK(rc == 0, "ext->leaf open");
+        if (rc == 0) {
+            int grc = evm_trie_get_path(t, miss, &v, &vl);
+            CHECK(grc == -2, "ext with a leaf child, mismatching path: -2 "
+                  "at load (rc %d)", grc);
+            CHECK(ms.n_get == 2, "ext->leaf: extension and child fetched "
+                  "(n_get %zu)", ms.n_get);
+            CHECK(evm_trie_get_path(t, miss, &v, &vl) == -2,
+                  "ext->leaf: sticky");
+        }
+        free(v);
+        v = NULL;
+        evm_trie_close(t);
+        evm_trie_rlp_buf_free(&b);
+        ms_free(&ms);
+    }
+
+    /* (b) control: extension -> branch of two leaves, honest: the same
+     * mismatching path is absent (1) and the branch was fetched with the
+     * extension (n_get 2: the eager load is real, and costs one load) */
+    {
+        mstore ms = {0};
+        uint8_t l0[64], l1[64], db[64], dr[64];
+        uint8_t r0[128], r1[128];
+        memset(r0, 7, sizeof(r0));
+        memset(r1, 8, sizeof(r1));
+        evm_trie_rlp_buf bb = {0}, be = {0};
+        int rc = mk_leaf(&ms, r0, 125, 0x78, l0);     /* depth 3 */
+        if (rc == 0) rc = mk_leaf(&ms, r1, 125, 0x79, l1);
+        for (int k = 0; rc == 0 && k < 16; k++) {
+            if (k == 0)      rc = evm_trie_rlp_put_bytes(&bb, l0, 64);
+            else if (k == 1) rc = evm_trie_rlp_put_bytes(&bb, l1, 64);
+            else             rc = evm_trie_rlp_put_bytes(&bb, NULL, 0);
+        }
+        if (rc == 0) rc = evm_trie_rlp_put_bytes(&bb, NULL, 0);
+        if (rc == 0) rc = evm_trie_rlp_wrap_list(&bb, 0);
+        if (rc == 0) rc = put_raw_node(&ms, bb.p, bb.len, db);
+        if (rc == 0) rc = put_hp(&be, seg, 2, 0);
+        if (rc == 0) rc = evm_trie_rlp_put_bytes(&be, db, 64);
+        if (rc == 0) rc = evm_trie_rlp_wrap_list(&be, 0);
+        if (rc == 0) rc = put_raw_node(&ms, be.p, be.len, dr);
+        CHECK(rc == 0, "ext->branch fixture built");
+        evm_trie_store_t st = ms_iface(&ms);
+        evm_trie_t *t = NULL;
+        if (rc == 0) rc = evm_trie_open(&st, dr, &t);
+        CHECK(rc == 0, "ext->branch open");
+        if (rc == 0) {
+            int grc = evm_trie_get_path(t, miss, &v, &vl);
+            CHECK(grc == 1, "ext->branch, mismatching path: absent (rc %d)",
+                  grc);
+            CHECK(ms.n_get == 2, "ext->branch: extension and branch "
+                  "fetched (n_get %zu)", ms.n_get);
+            /* a matching path still reads the leaf: path nibbles 1,2,0 then
+             * seven-nibbles, i.e. byte 0 = 0x12, byte 1 = 0x07, rest 0x77 */
+            uint8_t hit[64];
+            memset(hit, 0x77, sizeof(hit));
+            hit[0] = 0x12;
+            hit[1] = 0x07;
+            grc = evm_trie_get_path(t, hit, &v, &vl);
+            CHECK(grc == 0 && vl == 1 && v && v[0] == 0x78,
+                  "ext->branch->leaf reads back (rc %d)", grc);
+        }
+        free(v);
+        v = NULL;
+        evm_trie_close(t);
+        evm_trie_rlp_buf_free(&bb);
+        evm_trie_rlp_buf_free(&be);
+        ms_free(&ms);
+    }
+    printf("ok   extension child loaded with the extension (Z-52)\n");
+}
+
 /* ── 7: unsecured variable-length keys through the full port ───────── */
 
 static void test_full_only(void)
@@ -801,12 +1003,697 @@ static void test_keccak_fixture_roots(void)
     printf("ok   keccak-mode fixture roots\n");
 }
 
+/* ── 10: proofs (HF-9 WP6, T-1 proof part; evm_trie_proof.{c,h}) ──────── */
+
+_Static_assert(EVM_TRIE_PROOF_MAX_NODES == 128u * 131u,
+               "the node ceiling is 128 keys x 131 nodes (plan 10.2)");
+_Static_assert(EVM_TRIE_NODE_MAX_BYTES == 1060,
+               "the largest canonical HF-9 node is 1,060 bytes (A11 / F-20)");
+
+/* verify a bundle built from `s` with one optional damage: skip node `skip`,
+ * flip the first byte of node `flip`, or reverse the order (-1 / SIZE_MAX =
+ * none). Returns the verifier's return code. */
+static int vbatch(const uint8_t root[64], const evm_trie_proof_set_t *s,
+                  size_t skip, size_t flip, int reverse,
+                  const uint8_t (*paths)[64], size_t nk,
+                  evm_trie_proof_result_t *res)
+{
+    size_t n = 0;
+    const uint8_t **np = calloc(s->n + 1, sizeof(*np));
+    size_t *nl = calloc(s->n + 1, sizeof(*nl));
+    uint8_t **cp = calloc(s->n + 1, sizeof(*cp));
+    int rc = -100;
+    if (np && nl && cp) {
+        for (size_t i = 0; i < s->n; i++) {
+            size_t j = reverse ? s->n - 1 - i : i;
+            if (j == skip) continue;
+            const uint8_t *p = s->v[j].rlp;
+            if (j == flip) {
+                cp[n] = malloc(s->v[j].len);
+                if (!cp[n]) goto out;
+                memcpy(cp[n], p, s->v[j].len);
+                cp[n][0] ^= 1;
+                p = cp[n];
+            }
+            np[n] = p;
+            nl[n] = s->v[j].len;
+            n++;
+        }
+        rc = evm_trie_proof_verify_batch(root, np, nl, n, paths, nk, res);
+    }
+out:
+    if (cp) for (size_t i = 0; i < s->n + 1; i++) free(cp[i]);
+    free(cp); free(np); free(nl);
+    return rc;
+}
+
+static void fx_key8(char tag, uint32_t i, uint8_t k[8])
+{
+    k[0] = (uint8_t)tag;
+    k[1] = k[2] = k[3] = 0;
+    k[4] = (uint8_t)(i >> 24); k[5] = (uint8_t)(i >> 16);
+    k[6] = (uint8_t)(i >> 8);  k[7] = (uint8_t)i;
+}
+
+static void test_proof_batch(void)
+{
+    enum { N = 300, NK = 12 };
+    static const uint32_t present[6] = { 0, 17, 101, 299, 150, 42 };
+    mstore ms = {0};
+    evm_trie_store_t st = ms_iface(&ms);
+    evm_trie_t *t = NULL;
+    uint8_t root[64], vals[N][64], rk[NK][8], paths[NK][64];
+    int rc = evm_trie_open(&st, tv_empty_root, &t);
+    for (uint32_t i = 0; rc == 0 && i < N; i++) {
+        uint8_t k[8], pre[9];
+        fx_key8('K', i, k);
+        memcpy(pre, k, 8);
+        pre[8] = 'v';
+        rc = qgp_sha3_512(pre, 9, vals[i]);
+        if (rc == 0) rc = evm_trie_set(t, k, 8, vals[i], 64);
+    }
+    if (rc == 0) rc = evm_trie_commit(t, root);
+    CHECK(rc == 0, "proof fixture trie built");
+    evm_trie_close(t);
+    if (rc != 0) { ms_free(&ms); return; }
+    for (int j = 0; j < 6; j++) fx_key8('K', present[j], rk[j]);
+    for (int j = 0; j < 6; j++) fx_key8('A', (uint32_t)j, rk[6 + j]);
+    for (int j = 0; j < NK; j++)
+        CHECK(evm_trie_proof_path_of_key(rk[j], 8, paths[j]) == 0, "path");
+
+    evm_trie_proof_set_t set = {0};
+    size_t per_key_total = 0;
+    for (int j = 0; j < NK; j++) {
+        size_t before = set.n;
+        CHECK(evm_trie_prove_path(&st, root, paths[j], &set) == 0, "prove");
+        per_key_total += set.n - before;
+    }
+    CHECK(evm_trie_proof_set_finish(&set) == 0, "finish");
+    CHECK(set.n < per_key_total, "nodes shared between keys are deduplicated "
+          "(%zu < %zu)", set.n, per_key_total);
+    CHECK(set.n <= EVM_TRIE_PROOF_MAX_NODES, "within the node ceiling");
+    for (size_t i = 1; i < set.n; i++)
+        CHECK(memcmp(set.v[i - 1].digest, set.v[i].digest, 64) < 0,
+              "ascending by digest, unique");
+
+    evm_trie_proof_result_t res[NK];
+    CHECK(vbatch(root, &set, SIZE_MAX, SIZE_MAX, 0, (const uint8_t (*)[64])paths,
+                 NK, res) == 0, "the batch verifies");
+    for (int j = 0; j < NK; j++) {
+        evm_trie_t *r = NULL;
+        uint8_t *v = NULL;
+        size_t vl = 0;
+        CHECK(evm_trie_open(&st, root, &r) == 0, "reopen");
+        int grc = evm_trie_get(r, rk[j], 8, &v, &vl);
+        CHECK((grc == 0) == res[j].found, "proof result = the trie's answer "
+              "(key %d)", j);
+        if (j < 6)
+            CHECK(res[j].found && res[j].val_len == 64 &&
+                  memcmp(res[j].val, vals[present[j]], 64) == 0,
+                  "present key %d: the returned value is the leaf value", j);
+        else
+            CHECK(!res[j].found && res[j].val == NULL, "absent key %d", j);
+        free(v);
+        evm_trie_close(r);
+    }
+
+    /* a single-key proof: every damage is refused */
+    evm_trie_proof_set_t one = {0};
+    CHECK(evm_trie_prove_path(&st, root, paths[0], &one) == 0 &&
+          evm_trie_proof_set_finish(&one) == 0 && one.n >= 2,
+          "single-key proof has the root and at least one more node");
+    evm_trie_proof_result_t r1[1];
+    CHECK(vbatch(root, &one, SIZE_MAX, SIZE_MAX, 0,
+                 (const uint8_t (*)[64])paths[0], 1, r1) == 0 &&
+          r1[0].found, "single-key proof verifies");
+    for (size_t i = 0; i < one.n; i++) {
+        CHECK(vbatch(root, &one, i, SIZE_MAX, 0,
+                     (const uint8_t (*)[64])paths[0], 1, r1) == -2,
+              "a node of the path removed: error, not absence (node %zu)", i);
+        CHECK(vbatch(root, &one, SIZE_MAX, i, 0,
+                     (const uint8_t (*)[64])paths[0], 1, r1) == -2,
+              "a node with a flipped byte: refused (node %zu)", i);
+    }
+    CHECK(vbatch(root, &one, SIZE_MAX, SIZE_MAX, 1,
+                 (const uint8_t (*)[64])paths[0], 1, r1) == -2,
+          "bundle not ascending by digest: refused");
+    uint8_t wrong[64];
+    memcpy(wrong, root, 64);
+    wrong[0] ^= 1;
+    CHECK(vbatch(wrong, &one, SIZE_MAX, SIZE_MAX, 0,
+                 (const uint8_t (*)[64])paths[0], 1, r1) == -2,
+          "wrong root: refused");
+
+    /* bounds, before any traversal */
+    CHECK(vbatch(root, &set, SIZE_MAX, SIZE_MAX, 0,
+                 (const uint8_t (*)[64])paths, 0, res) == -1,
+          "0 keys refused");
+    {
+        uint8_t (*many)[64] = calloc(EVM_TRIE_PROOF_MAX_KEYS + 1, 64);
+        evm_trie_proof_result_t *mr =
+            calloc(EVM_TRIE_PROOF_MAX_KEYS + 1, sizeof(*mr));
+        CHECK(many && mr, "allocation");
+        if (many && mr) {
+            for (size_t i = 0; i <= EVM_TRIE_PROOF_MAX_KEYS; i++)
+                many[i][0] = (uint8_t)i;
+            CHECK(vbatch(root, &set, SIZE_MAX, SIZE_MAX, 0,
+                         (const uint8_t (*)[64])many,
+                         EVM_TRIE_PROOF_MAX_KEYS + 1, mr) == -1,
+                  "129 keys refused");
+        }
+        free(many); free(mr);
+    }
+    {
+        uint8_t dup[2][64];
+        memcpy(dup[0], paths[0], 64);
+        memcpy(dup[1], paths[0], 64);
+        CHECK(vbatch(root, &set, SIZE_MAX, SIZE_MAX, 0,
+                     (const uint8_t (*)[64])dup, 2, res) == -1,
+              "a duplicate key refused");
+        uint8_t big[EVM_TRIE_PROOF_NODE_MAX_BYTES + 1];
+        memset(big, 0x80, sizeof(big));
+        const uint8_t *bp[1] = { big };
+        size_t bl[1] = { sizeof(big) };
+        CHECK(evm_trie_proof_verify_batch(root, bp, bl, 1,
+                  (const uint8_t (*)[64])paths[0], 1, r1) == -1,
+              "a node above 1,060 bytes refused before hashing");
+        size_t nbig = EVM_TRIE_PROOF_MAX_NODES + 1;
+        CHECK(evm_trie_proof_verify_batch(root, bp, bl, nbig,
+                  (const uint8_t (*)[64])paths[0], 1, r1) == -1,
+              "more nodes than the ceiling refused before any access");
+    }
+
+    /* the empty leg: empty bundle, every key absent; a node refused */
+    {
+        uint8_t er[64];
+        CHECK(evm_trie_empty_root(er) == 0, "empty root");
+        evm_trie_proof_result_t e3[3];
+        CHECK(evm_trie_proof_verify_batch(er, NULL, NULL, 0,
+                  (const uint8_t (*)[64])paths, 3, e3) == 0 &&
+              !e3[0].found && !e3[1].found && !e3[2].found,
+              "empty leg: empty bundle, every result absent");
+        CHECK(evm_trie_proof_verify_batch(er, (const uint8_t *const *)&one.v[0].rlp,
+                  &one.v[0].len, 1, (const uint8_t (*)[64])paths, 3, e3) == -2,
+              "empty leg with a node: refused");
+        evm_trie_proof_set_t es = {0};
+        CHECK(evm_trie_prove_path(&st, er, paths[0], &es) == 0 && es.n == 0,
+              "proving in an empty trie emits no node");
+    }
+    evm_trie_proof_set_free(&one);
+    evm_trie_proof_set_free(&set);
+    ms_free(&ms);
+    printf("ok   proofs: batch with shared nodes, absence, damage, bounds, "
+           "empty leg\n");
+}
+
+/* Hand-built node bytes ------------------------------------------------ */
+
+static int leaf_bytes(evm_trie_rlp_buf *b, const uint8_t *nib, size_t n,
+                      const uint8_t *val, size_t vl)
+{
+    int rc = put_hp(b, nib, n, 1);
+    if (rc == 0) rc = evm_trie_rlp_put_bytes(b, val, vl);
+    if (rc == 0) rc = evm_trie_rlp_wrap_list(b, 0);
+    return rc;
+}
+
+/* a single-node bundle {bytes} against root = SHA3-512(bytes): -2 expected */
+static void expect_node_bad(const char *what, const uint8_t *bytes,
+                            size_t len)
+{
+    uint8_t root[64], path[64];
+    memset(path, 0x77, sizeof(path));
+    CHECK(qgp_sha3_512(bytes, len, root) == 0, "hash");
+    const uint8_t *np[1] = { bytes };
+    size_t nl[1] = { len };
+    evm_trie_proof_result_t r[1];
+    int rc = evm_trie_proof_verify_batch(root, np, nl, 1,
+                                         (const uint8_t (*)[64])path, 1, r);
+    CHECK(rc == -2, "%s: refused (rc %d)", what, rc);
+}
+
+static void test_proof_nodes(void)
+{
+    uint8_t nib[128], val[64], fake[16][64];
+    memset(nib, 7, sizeof(nib));
+    memset(val, 0x55, sizeof(val));
+    for (int i = 0; i < 16; i++) memset(fake[i], 0x10 + i, 64);
+
+    /* malformed or structurally invalid single nodes at the root */
+    evm_trie_rlp_buf b = {0};
+    CHECK(leaf_bytes(&b, nib, 128, val, 64) == 0 && b.len == 135,
+          "a maximum-length leaf is 135 bytes (plan 10.2)");
+    {   /* control: the valid leaf verifies as a root (absent for the path
+         * 0x77.. only if it differs; here the rest is 7s = path 0x77..) */
+        uint8_t root[64], path[64];
+        memset(path, 0x77, 64);
+        CHECK(qgp_sha3_512(b.p, b.len, root) == 0, "hash");
+        const uint8_t *np[1] = { b.p };
+        size_t nl[1] = { b.len };
+        evm_trie_proof_result_t r[1];
+        CHECK(evm_trie_proof_verify_batch(root, np, nl, 1,
+                  (const uint8_t (*)[64])path, 1, r) == 0 && r[0].found &&
+              r[0].val_len == 64 && memcmp(r[0].val, val, 64) == 0,
+              "control: a single-leaf root proves its key");
+        path[63] = 0x78;
+        CHECK(evm_trie_proof_verify_batch(root, np, nl, 1,
+                  (const uint8_t (*)[64])path, 1, r) == 0 && !r[0].found,
+              "control: another path ends at the leaf as absent");
+    }
+    {   /* non-canonical length form: f9 00 85 instead of f8 85 */
+        uint8_t nc[3 + 133];
+        nc[0] = 0xf9; nc[1] = 0x00; nc[2] = 0x85;
+        memcpy(nc + 3, b.p + 2, 133);
+        expect_node_bad("non-canonical list length", nc, sizeof(nc));
+        uint8_t tr[136];
+        memcpy(tr, b.p, 135);
+        tr[135] = 0x00;
+        expect_node_bad("trailing byte after the node", tr, sizeof(tr));
+    }
+    evm_trie_rlp_buf_free(&b);
+    {
+        evm_trie_rlp_buf x = {0};
+        CHECK(leaf_bytes(&x, nib, 127, val, 64) == 0, "build");
+        expect_node_bad("leaf with 127 remaining nibbles at depth 0", x.p, x.len);
+        evm_trie_rlp_buf_free(&x);
+        evm_trie_rlp_buf y = {0};
+        CHECK(leaf_bytes(&y, nib, 128, val, 0) == 0, "build");
+        expect_node_bad("leaf with an empty value", y.p, y.len);
+        evm_trie_rlp_buf_free(&y);
+        evm_trie_rlp_buf e = {0};
+        CHECK(put_hp(&e, nib, 0, 0) == 0 &&
+              evm_trie_rlp_put_bytes(&e, fake[0], 64) == 0 &&
+              evm_trie_rlp_wrap_list(&e, 0) == 0, "build");
+        expect_node_bad("extension with an empty segment", e.p, e.len);
+        evm_trie_rlp_buf_free(&e);
+        evm_trie_rlp_buf bv = {0};
+        int rc = 0;
+        for (int k = 0; rc == 0 && k < 16; k++)
+            rc = k < 2 ? evm_trie_rlp_put_bytes(&bv, fake[k], 64)
+                       : evm_trie_rlp_put_bytes(&bv, NULL, 0);
+        if (rc == 0) rc = evm_trie_rlp_put_bytes(&bv, val, 1);   /* a value */
+        if (rc == 0) rc = evm_trie_rlp_wrap_list(&bv, 0);
+        CHECK(rc == 0, "build");
+        expect_node_bad("branch with a value", bv.p, bv.len);
+        evm_trie_rlp_buf_free(&bv);
+        evm_trie_rlp_buf b1 = {0};
+        rc = 0;
+        for (int k = 0; rc == 0 && k < 16; k++)
+            rc = k == 0 ? evm_trie_rlp_put_bytes(&b1, fake[0], 64)
+                        : evm_trie_rlp_put_bytes(&b1, NULL, 0);
+        if (rc == 0) rc = evm_trie_rlp_put_bytes(&b1, NULL, 0);
+        if (rc == 0) rc = evm_trie_rlp_wrap_list(&b1, 0);
+        CHECK(rc == 0, "build");
+        expect_node_bad("branch with one child", b1.p, b1.len);
+        evm_trie_rlp_buf_free(&b1);
+    }
+
+    /* the largest canonical node: a branch of sixteen references */
+    {
+        evm_trie_rlp_buf m = {0};
+        int rc = 0;
+        for (int k = 0; rc == 0 && k < 16; k++)
+            rc = evm_trie_rlp_put_bytes(&m, fake[k], 64);
+        if (rc == 0) rc = evm_trie_rlp_put_bytes(&m, NULL, 0);
+        if (rc == 0) rc = evm_trie_rlp_wrap_list(&m, 0);
+        CHECK(rc == 0 && m.len == 1060 && m.len == EVM_TRIE_NODE_MAX_BYTES,
+              "a branch of sixteen 64-byte references is 1,060 bytes");
+        uint8_t d[64];
+        evm_trie_node_view_t v;
+        CHECK(qgp_sha3_512(m.p, m.len, d) == 0 &&
+              evm_trie_proof_check_node(d, m.p, m.len, 0, 0,
+                                        EVM_TRIE_NODE_HASHED, &v) == 0 &&
+              v.kind == EVM_TRIE_NODE_BRANCH &&
+              v.child[15].kind == EVM_TRIE_CHILD_HASH,
+              "the 1,060-byte node passes the per-node check");
+        evm_trie_rlp_buf_free(&m);
+    }
+
+    /* F-25 per-node function: sizes, depth, digest */
+    {
+        uint8_t one_nib[1] = { 3 }, v1 = 0x78, d[64];
+        evm_trie_rlp_buf s = {0};
+        evm_trie_node_view_t v;
+        CHECK(leaf_bytes(&s, one_nib, 1, &v1, 1) == 0 && s.len < 64 &&
+              qgp_sha3_512(s.p, s.len, d) == 0, "small leaf built");
+        CHECK(evm_trie_proof_check_node(d, s.p, s.len, 127, 0,
+                  EVM_TRIE_NODE_ROOT, &v) == 0 && v.kind == EVM_TRIE_NODE_LEAF &&
+              v.nlen == 1 && v.val_len == 1 && v.val[0] == 0x78,
+              "a root shorter than 64 bytes is accepted (valid fixture for "
+              "the per-node interface: a leaf at depth 127)");
+        CHECK(evm_trie_proof_check_node(d, s.p, s.len, 127, 0,
+                  EVM_TRIE_NODE_EMBEDDED, &v) == 0,
+              "the same node is a valid embedded node");
+        CHECK(evm_trie_proof_check_node(d, s.p, s.len, 127, 0,
+                  EVM_TRIE_NODE_HASHED, &v) == -2,
+              "a non-root node reached by a 64-byte reference must be >= 64");
+        CHECK(evm_trie_proof_check_node(d, s.p, s.len, 126, 0,
+                  EVM_TRIE_NODE_ROOT, &v) == -2, "wrong depth refused");
+        CHECK(evm_trie_proof_check_node(d, s.p, s.len, 127, 1,
+                  EVM_TRIE_NODE_ROOT, &v) == -2,
+              "a leaf where a branch is expected refused");
+        d[0] ^= 1;
+        CHECK(evm_trie_proof_check_node(d, s.p, s.len, 127, 0,
+                  EVM_TRIE_NODE_ROOT, &v) == -2, "digest mismatch refused");
+        evm_trie_rlp_buf_free(&s);
+    }
+    printf("ok   proofs: malformed nodes, the 1,060-byte node, per-node "
+           "function\n");
+}
+
+static void test_proof_inline_and_extension(void)
+{
+    /* Inline boundary through the path interface: two paths sharing 127
+     * nibbles with 1-byte values: the root is an extension whose child
+     * branch (two embedded leaves) is EMBEDDED, so the bundle is the root
+     * alone. */
+    uint8_t pa[64], pb[64], pc[64], pd[64];
+    memset(pa, 0x77, 64); pa[63] = 0x71;
+    memset(pb, 0x77, 64); pb[63] = 0x72;
+    memset(pc, 0x77, 64); pc[63] = 0x73;       /* nil child of the branch   */
+    memset(pd, 0x77, 64); pd[0] = 0x00;        /* mismatches the extension  */
+    {
+        mstore ms = {0};
+        evm_trie_store_t st = ms_iface(&ms);
+        evm_trie_t *t = NULL;
+        uint8_t root[64], v78 = 0x78, v79 = 0x79;
+        int rc = evm_trie_open(&st, tv_empty_root, &t);
+        if (rc == 0) rc = evm_trie_set_path(t, pa, &v78, 1);
+        if (rc == 0) rc = evm_trie_set_path(t, pb, &v79, 1);
+        if (rc == 0) rc = evm_trie_commit(t, root);
+        CHECK(rc == 0, "inline fixture built");
+        evm_trie_close(t);
+        evm_trie_proof_set_t set = {0};
+        uint8_t paths[4][64];
+        memcpy(paths[0], pa, 64); memcpy(paths[1], pb, 64);
+        memcpy(paths[2], pc, 64); memcpy(paths[3], pd, 64);
+        for (int k = 0; k < 4; k++)
+            CHECK(evm_trie_prove_path(&st, root, paths[k], &set) == 0, "prove");
+        CHECK(evm_trie_proof_set_finish(&set) == 0 && set.n == 1 &&
+              set.v[0].len >= 64, "only the root node is emitted: the "
+              "branch and both leaves are embedded in it");
+        evm_trie_proof_result_t r[4];
+        CHECK(vbatch(root, &set, SIZE_MAX, SIZE_MAX, 0,
+                     (const uint8_t (*)[64])paths, 4, r) == 0,
+              "inline-boundary bundle verifies");
+        CHECK(r[0].found && r[0].val_len == 1 && r[0].val[0] == 0x78 &&
+              r[1].found && r[1].val[0] == 0x79 && !r[2].found && !r[3].found,
+              "values through embedded nodes; nil child and mismatching "
+              "extension are absence");
+        evm_trie_proof_set_free(&set);
+        ms_free(&ms);
+    }
+
+    /* Extension over a hashed branch (the Z-52 fixture): the proof of a path
+     * that mismatches the extension is the extension alone and loads no
+     * child; the same absence proof with the node removed is the root
+     * missing; a matching path needs all three nodes. */
+    {
+        mstore ms = {0};
+        uint8_t seg[2] = { 1, 2 }, miss[64], hit[64];
+        uint8_t l0[64], l1[64], db[64], dr[64], r0[128], r1[128];
+        memset(miss, 0xFF, 64);
+        memset(hit, 0x77, 64);
+        hit[0] = 0x12; hit[1] = 0x07;
+        memset(r0, 7, sizeof(r0)); memset(r1, 8, sizeof(r1));
+        evm_trie_rlp_buf bb = {0}, be = {0};
+        int rc = mk_leaf(&ms, r0, 125, 0x78, l0);
+        if (rc == 0) rc = mk_leaf(&ms, r1, 125, 0x79, l1);
+        for (int k = 0; rc == 0 && k < 16; k++) {
+            if (k == 0)      rc = evm_trie_rlp_put_bytes(&bb, l0, 64);
+            else if (k == 1) rc = evm_trie_rlp_put_bytes(&bb, l1, 64);
+            else             rc = evm_trie_rlp_put_bytes(&bb, NULL, 0);
+        }
+        if (rc == 0) rc = evm_trie_rlp_put_bytes(&bb, NULL, 0);
+        if (rc == 0) rc = evm_trie_rlp_wrap_list(&bb, 0);
+        if (rc == 0) rc = put_raw_node(&ms, bb.p, bb.len, db);
+        if (rc == 0) rc = put_hp(&be, seg, 2, 0);
+        if (rc == 0) rc = evm_trie_rlp_put_bytes(&be, db, 64);
+        if (rc == 0) rc = evm_trie_rlp_wrap_list(&be, 0);
+        if (rc == 0) rc = put_raw_node(&ms, be.p, be.len, dr);
+        CHECK(rc == 0, "extension fixture built");
+        evm_trie_store_t st = ms_iface(&ms);
+
+        evm_trie_proof_set_t sm = {0};
+        ms.n_get = 0;
+        CHECK(evm_trie_prove_path(&st, dr, miss, &sm) == 0 &&
+              evm_trie_proof_set_finish(&sm) == 0 && sm.n == 1 &&
+              ms.n_get == 1,
+              "absence at a mismatching extension: the extension only, its "
+              "child neither loaded nor emitted (n_get %zu)", ms.n_get);
+        evm_trie_proof_result_t r[1];
+        CHECK(vbatch(dr, &sm, SIZE_MAX, SIZE_MAX, 0,
+                     (const uint8_t (*)[64])miss, 1, r) == 0 && !r[0].found,
+              "...and verifies as absence without the child");
+        CHECK(vbatch(dr, &sm, 0, SIZE_MAX, 0, (const uint8_t (*)[64])miss, 1,
+                     r) == -2, "the same proof with the node removed refused");
+
+        evm_trie_proof_set_t sh = {0};
+        CHECK(evm_trie_prove_path(&st, dr, hit, &sh) == 0 &&
+              evm_trie_proof_set_finish(&sh) == 0 && sh.n == 3,
+              "a matching path: extension, branch, leaf");
+        CHECK(vbatch(dr, &sh, SIZE_MAX, SIZE_MAX, 0,
+                     (const uint8_t (*)[64])hit, 1, r) == 0 && r[0].found &&
+              r[0].val_len == 1 && r[0].val[0] == 0x78,
+              "...verifies to the leaf value");
+        for (size_t i = 0; i < 3; i++)
+            CHECK(vbatch(dr, &sh, i, SIZE_MAX, 0, (const uint8_t (*)[64])hit,
+                         1, r) == -2, "an on-path node removed: refused (%zu)", i);
+
+        /* a non-root node below 64 bytes reached by a 64-byte reference:
+         * root = extension(127 nibbles) -> hash(small branch) */
+        uint8_t nib127[127], dsm[64], droot[64];
+        memset(nib127, 7, sizeof(nib127));
+        evm_trie_rlp_buf sb = {0}, er = {0};
+        rc = 0;
+        for (int k = 0; rc == 0 && k < 16; k++) {
+            static const uint8_t l1_[3] = { 0xc2, 0x20, 0x78 };
+            static const uint8_t l2_[3] = { 0xc2, 0x20, 0x79 };
+            if (k == 1)      rc = evm_trie_rlp_put_raw(&sb, l1_, 3);
+            else if (k == 2) rc = evm_trie_rlp_put_raw(&sb, l2_, 3);
+            else             rc = evm_trie_rlp_put_bytes(&sb, NULL, 0);
+        }
+        if (rc == 0) rc = evm_trie_rlp_put_bytes(&sb, NULL, 0);
+        if (rc == 0) rc = evm_trie_rlp_wrap_list(&sb, 0);
+        CHECK(rc == 0 && sb.len < 64 && qgp_sha3_512(sb.p, sb.len, dsm) == 0,
+              "small branch built");
+        if (rc == 0) rc = put_hp(&er, nib127, 127, 0);
+        if (rc == 0) rc = evm_trie_rlp_put_bytes(&er, dsm, 64);
+        if (rc == 0) rc = evm_trie_rlp_wrap_list(&er, 0);
+        CHECK(rc == 0 && qgp_sha3_512(er.p, er.len, droot) == 0,
+              "root extension built");
+        uint8_t pth[64];
+        memset(pth, 0x77, 64);
+        pth[63] = 0x71;
+        const uint8_t *np[2] = { er.p, sb.p };
+        size_t nl[2] = { er.len, sb.len };
+        /* ascending by digest, as the bundle requires */
+        if (memcmp(droot, dsm, 64) > 0) {
+            np[0] = sb.p; nl[0] = sb.len; np[1] = er.p; nl[1] = er.len;
+        }
+        CHECK(evm_trie_proof_verify_batch(droot, np, nl, 2,
+                  (const uint8_t (*)[64])pth, 1, r) == -2,
+              "a non-root node shorter than 64 bytes reached by a "
+              "reference is refused");
+        evm_trie_rlp_buf_free(&sb);
+        evm_trie_rlp_buf_free(&er);
+        evm_trie_proof_set_free(&sm);
+        evm_trie_proof_set_free(&sh);
+        evm_trie_rlp_buf_free(&bb);
+        evm_trie_rlp_buf_free(&be);
+        ms_free(&ms);
+    }
+    /* The expected-branch flag after a MATCHING extension (A12): the extension
+     * (segment 1, 2) over a correctly sized (>= 64 bytes), otherwise valid
+     * LEAF. A walker that did not pass expect_branch to the child would
+     * accept the leaf and answer "found" for a path that matches it; both the
+     * prover and the verifier must refuse (-2). */
+    {
+        mstore ms = {0};
+        uint8_t seg[2] = { 1, 2 }, rest[128], dl[64], dr[64], hit[64];
+        uint8_t *leaf = NULL;
+        size_t leaf_len = 0;
+        evm_trie_rlp_buf b = {0};
+        memset(rest, 7, sizeof(rest));
+        memset(hit, 0x77, sizeof(hit));
+        hit[0] = 0x12;                          /* nibbles 1, 2, then 7 ...  */
+        int rc = mk_leaf(&ms, rest, 126, 0x78, dl);
+        if (rc == 0) rc = put_hp(&b, seg, 2, 0);
+        if (rc == 0) rc = evm_trie_rlp_put_bytes(&b, dl, 64);
+        if (rc == 0) rc = evm_trie_rlp_wrap_list(&b, 0);
+        if (rc == 0) rc = put_raw_node(&ms, b.p, b.len, dr);
+        if (rc == 0) rc = ms_get(&ms, dl, &leaf, &leaf_len);
+        CHECK(rc == 0 && leaf_len >= 64, "ext -> valid leaf fixture built");
+        if (rc == 0) {
+            evm_trie_store_t st = ms_iface(&ms);
+            evm_trie_proof_set_t s = {0};
+            CHECK(evm_trie_prove_path(&st, dr, hit, &s) == -2,
+                  "prover: a matching extension over a leaf child is refused "
+                  "(the child must be a branch)");
+            evm_trie_proof_set_free(&s);
+            const uint8_t *np[2] = { b.p, leaf };
+            size_t nl[2] = { b.len, leaf_len };
+            uint8_t dg_ext[64];
+            CHECK(qgp_sha3_512(b.p, b.len, dg_ext) == 0, "hash");
+            if (memcmp(dg_ext, dl, 64) > 0) {   /* ascending by digest */
+                np[0] = leaf; nl[0] = leaf_len;
+                np[1] = b.p;  nl[1] = b.len;
+            }
+            evm_trie_proof_result_t r[1];
+            CHECK(evm_trie_proof_verify_batch(dr, np, nl, 2,
+                      (const uint8_t (*)[64])hit, 1, r) == -2,
+                  "verifier: the same bundle is refused, not found");
+        }
+        free(leaf);
+        evm_trie_rlp_buf_free(&b);
+        ms_free(&ms);
+    }
+    printf("ok   proofs: inline boundary, extension absence without the "
+           "child, size class by reference, expected-branch flag\n");
+}
+
+/* The bundle ORDER rule (plan §10.2: "strictly ascending by SHA3-512(node
+ * bytes), unique"), isolated from the lookup. The verifier finds nodes by
+ * binary search; a bundle whose order is wrong can still be served by that
+ * search, so only the explicit rule refuses it. */
+
+/* does a binary search over `dig[0..n)` (the verifier's own) find `want`? */
+static int bsearch_serves(const uint8_t (*dig)[64], size_t n,
+                          const uint8_t want[64])
+{
+    size_t lo = 0, hi = n;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        int c = memcmp(dig[mid], want, 64);
+        if (c == 0) return 1;
+        if (c < 0) lo = mid + 1; else hi = mid;
+    }
+    return 0;
+}
+
+/* verify the single key `path` against the bundle u->v[ord[0..n)] */
+static int verify_in_order(const uint8_t root[64],
+                           const evm_trie_proof_set_t *u, const size_t *ord,
+                           size_t n, const uint8_t path[64])
+{
+    const uint8_t **np = calloc(n + 1, sizeof(*np));
+    size_t *nl = calloc(n + 1, sizeof(*nl));
+    evm_trie_proof_result_t r[1];
+    int rc = -100;
+    if (np && nl) {
+        for (size_t i = 0; i < n; i++) {
+            np[i] = u->v[ord[i]].rlp;
+            nl[i] = u->v[ord[i]].len;
+        }
+        rc = evm_trie_proof_verify_batch(root, np, nl, n,
+                                         (const uint8_t (*)[64])path, 1, r);
+    }
+    free(np); free(nl);
+    return rc;
+}
+
+static void test_proof_order(void)
+{
+    enum { N = 300, NU = 20 };
+    mstore ms = {0};
+    evm_trie_store_t st = ms_iface(&ms);
+    evm_trie_t *t = NULL;
+    uint8_t root[64], path0[64];
+    int rc = evm_trie_open(&st, tv_empty_root, &t);
+    for (uint32_t i = 0; rc == 0 && i < N; i++) {
+        uint8_t k[8], v[64];
+        fx_key8('K', i, k);
+        rc = qgp_sha3_512(k, 8, v);
+        if (rc == 0) rc = evm_trie_set(t, k, 8, v, 64);
+    }
+    if (rc == 0) rc = evm_trie_commit(t, root);
+    evm_trie_close(t);
+    CHECK(rc == 0, "order fixture trie built");
+    if (rc != 0) { ms_free(&ms); return; }
+
+    evm_trie_proof_set_t a = {0}, u = {0};
+    uint8_t k0[8];
+    fx_key8('K', 0, k0);
+    CHECK(evm_trie_proof_path_of_key(k0, 8, path0) == 0 &&
+          evm_trie_prove_path(&st, root, path0, &a) == 0 &&
+          evm_trie_proof_set_finish(&a) == 0, "the needed nodes of key 0");
+    for (uint32_t i = 0; i < NU; i++) {          /* the union: key 0 + others */
+        uint8_t k[8], p[64];
+        fx_key8('K', i * 15, k);
+        CHECK(evm_trie_proof_path_of_key(k, 8, p) == 0 &&
+              evm_trie_prove_path(&st, root, p, &u) == 0, "prove");
+    }
+    CHECK(evm_trie_proof_set_finish(&u) == 0 && u.n > a.n + 10,
+          "the bundle holds nodes key 0 does not need");
+    size_t n = u.n;
+    size_t *ord = calloc(n + 1, sizeof(*ord));
+    uint8_t (*dig)[64] = malloc((n + 1) * sizeof(*dig));
+    CHECK(ord && dig, "allocation");
+    if (!ord || !dig) {
+        free(ord); free(dig);
+        evm_trie_proof_set_free(&a);
+        evm_trie_proof_set_free(&u);
+        ms_free(&ms);
+        return;
+    }
+    for (size_t i = 0; i < n; i++) ord[i] = i;
+    CHECK(verify_in_order(root, &u, ord, n, path0) == 0,
+          "control: the sorted unique bundle verifies");
+
+    /* an adjacent DUPLICATE of any node (sorted otherwise): the binary
+     * search still serves it, the strictness rule refuses it */
+    for (size_t d = 0; d < n; d++) {
+        size_t m = 0;
+        for (size_t i = 0; i < n; i++) {
+            ord[m++] = i;
+            if (i == d) ord[m++] = i;
+        }
+        CHECK(verify_in_order(root, &u, ord, m, path0) == -2,
+              "an adjacent duplicate node: refused (-2)");
+    }
+
+    /* every swap of two nodes: out of order; count the swaps whose lookups
+     * of ALL needed nodes the binary search still serves - the cases only
+     * the order rule can refuse */
+    size_t served_unsorted = 0;
+    for (size_t i = 0; i < n; i++) {
+        for (size_t j = i + 1; j < n; j++) {
+            for (size_t x = 0; x < n; x++) ord[x] = x;
+            ord[i] = j; ord[j] = i;
+            for (size_t x = 0; x < n; x++)
+                memcpy(dig[x], u.v[ord[x]].digest, 64);
+            int all = 1;
+            for (size_t x = 0; x < a.n && all; x++)
+                all = bsearch_serves((const uint8_t (*)[64])dig, n,
+                                     a.v[x].digest);
+            if (all) served_unsorted++;
+            CHECK(verify_in_order(root, &u, ord, n, path0) == -2,
+                  "a bundle out of digest order: refused (-2)");
+        }
+    }
+    CHECK(served_unsorted > 0,
+          "false-pass guard: some out-of-order bundles are served by the "
+          "binary search alone (so only the order rule refuses them)");
+    printf("ok   proofs: bundle order rule (%zu out-of-order bundles served "
+           "by the lookup alone, all refused; adjacent duplicates refused)\n",
+           served_unsorted);
+    free(ord); free(dig);
+    evm_trie_proof_set_free(&a);
+    evm_trie_proof_set_free(&u);
+    ms_free(&ms);
+}
+
 int main(void)
 {
     test_noop_and_empty();
     test_scenarios();
     test_order_independence();
     test_lying_store();
+    test_extension_child();
+    test_proof_batch();
+    test_proof_nodes();
+    test_proof_inline_and_extension();
+    test_proof_order();
     test_full_only();
     test_keccak_fixture_roots();
     printf("%s: %d failure(s)\n", g_fail ? "FAILED" : "PASSED", g_fail);

@@ -1861,7 +1861,10 @@ static void cc_item(nodus_dnac_v3_item_t *it, uint32_t index, uint8_t tag,
  *             HF-7 RULESET_GEN_ROOTS (22) = D5 8019891019285098644 @ 4700
  *             (above 2^53: a string), item 8 applied chain_config
  *             HF EVM-ML-DSA MLDSA_ACTIVE (23) = 7607927450973511004 @ 4800
- *             (above 2^53: a string) */
+ *             (above 2^53: a string), item 9 applied chain_config
+ *             HF-9 RULESET_GEN_TRIE (24) = D6 2239036617079959109 @ 4900
+ *             (above 2^53: a string), item 10 applied chain_config HF-9
+ *             STORAGE_COPIES (25) = 4 @ 5100 (HF-9 WP3 names) */
 static int seed_governance(exp_db_t *db) {
     nodus_dnac_v3_block_result_t p;
     exp_block_batch_t b;
@@ -1894,9 +1897,9 @@ static int seed_governance(exp_db_t *db) {
     nodus_client_free_v3_block_result(&p);
     if (rc != 0) return rc;
 
-    page_header(&p, 2, 9, 9, 2);
-    p.count = 9;
-    p.items = calloc(9, sizeof(nodus_dnac_v3_item_t));
+    page_header(&p, 2, 11, 11, 2);
+    p.count = 11;
+    p.items = calloc(11, sizeof(nodus_dnac_v3_item_t));
     cc_item(&p.items[0], 0, 0x75, 9, 4962894749133920991ULL, 3151);
     cc_item(&p.items[1], 1, 0x77, 200, 5, 4000);
     cc_item(&p.items[2], 2, 0x79, 19, 10000000000000ULL, 5000);
@@ -1906,6 +1909,8 @@ static int seed_governance(exp_db_t *db) {
     cc_item(&p.items[6], 6, 0x83, 16, 7, 4600);
     cc_item(&p.items[7], 7, 0x85, 22, 8019891019285098644ULL, 4700);
     cc_item(&p.items[8], 8, 0x87, 23, 7607927450973511004ULL, 4800);
+    cc_item(&p.items[9], 9, 0x89, 24, 2239036617079959109ULL, 4900);
+    cc_item(&p.items[10], 10, 0x8B, 25, 4, 5100);
     exp_block_batch_init(&b);
     rc = exp_extract_page(&p, &b);
     if (rc == 0) rc = exp_db_write_height(db, &b);
@@ -1964,6 +1969,10 @@ static void test_route_governance(void) {
         "\"effective_height\":4700,",
         "\"param_id\":23,\"param_name\":\"MLDSA_ACTIVE\",\"new_value\":\"7607927450973511004\","
         "\"effective_height\":4800,",
+        "\"param_id\":24,\"param_name\":\"RULESET_GEN_TRIE\",\"new_value\":\"2239036617079959109\","
+        "\"effective_height\":4900,",
+        "\"param_id\":25,\"param_name\":\"STORAGE_COPIES\",\"new_value\":\"4\","
+        "\"effective_height\":5100,",
         "],\"truncated\":false}",
         NULL };
 
@@ -1976,8 +1985,8 @@ static void test_route_governance(void) {
     if (exp_http_route(&ctx, "GET", "/api/governance", &body, &status) != 0) { FAIL("route"); exp_db_close(db); return; }
     int ok = (status == 200);
     for (int i = 0; ok && needles[i]; i++) if (!strstr(body.buf, needles[i])) ok = 0;
-    /* exactly ten records (HF EVM-ML-DSA added param 23) — the delegate record and the refused item are not listed */
-    if (ok && count_substr(body.buf, "\"param_id\":") != 10) ok = 0;
+    /* exactly twelve records (HF EVM-ML-DSA added param 23, HF-9 params 24 and 25) — the delegate record and the refused item are not listed */
+    if (ok && count_substr(body.buf, "\"param_id\":") != 12) ok = 0;
     /* (height, index) ascending */
     if (ok) {
         const char *a = strstr(body.buf, "\"position\":\"1:1\"");

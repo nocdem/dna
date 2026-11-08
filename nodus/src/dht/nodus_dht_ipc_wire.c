@@ -271,7 +271,7 @@ int nodus_dht_ipc_decode(const uint8_t *p, size_t len, nodus_dht_ipc_msg_t *out,
         if (key_is(&k,"va") || key_is(&k,"st")) {
             bool va=key_is(&k,"va"); bit=va ? K_VA : K_ST;
             cbor_item_t arr=cbor_decode_next(&dec);
-            size_t max=va ? DNAC_MAX_VALIDATORS : DNA_V2_STORAGE_SET_MAX;
+            size_t max=va ? DNAC_MAX_VALIDATORS : DNA_V2_STORAGE_SET_CAP;
             if ((seen & bit) || arr.type!=CBOR_ITEM_ARRAY || arr.count>max) return -1;
             nodus_key_t *entries=va ? tmp.roles.validators : tmp.roles.storage;
             if (va) tmp.roles.validator_count=arr.count; else tmp.roles.storage_count=arr.count;

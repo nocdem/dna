@@ -111,7 +111,21 @@ typedef struct {
      * path component (no '/', not "." or ".."); "" (the default) =
      * NODUS_SEG_DIR_DEFAULT. Node-local; never a consensus input. */
     char     segment_dir[NODUS_SEG_DIR_NAME_MAX];
+    /* HF-9 WP5 (plan docs/plans/approved/2026-11-04-hf9.md §11) - the
+     * shadow run, nodus.json "hf9_shadow": "on" | "full" | "off". NODE-LOCAL
+     * and never consensus (nodus_witness_v2_shadow.h). Like retain_blocks_auto
+     * the loader (tools/nodus_node_config.c) sets the plan's default, ON; a
+     * zero-initialised config is OFF, so nothing but the node binary runs the
+     * shadow. */
+    int      hf9_shadow;
 } nodus_witness_config_t;
+
+/* (HF-9 WP5: the shadow run's failure latch, `hf9_shadow_latched`, is a field
+ * of nodus_witness_t below - node-local memory, never stored.) */
+
+#define NODUS_HF9_SHADOW_OFF   0
+#define NODUS_HF9_SHADOW_ON    1
+#define NODUS_HF9_SHADOW_FULL  2
 
 /* P2P-PORT F5 — nodus_witness_roster_entry_t / nodus_witness_roster_t (the
  * transport roster built from the DHT `nodus:pk` registry, ROST_R gossip
@@ -320,6 +334,23 @@ typedef struct {
 #define NODUS_V2_STSETS_DDL                                               \
     "CREATE TABLE IF NOT EXISTS " NODUS_V2_STSETS_DDL_BODY
 
+/* HF-9 WP4 (plan docs/plans/approved/2026-11-04-hf9.md §8.7, §5.5): from
+ * schema S20 the table is rebuilt with the CAPACITY bound (1024) in its
+ * CHECK — the only text that can hold a generation-6 set. The macros above
+ * (member_count 0..256) are the historical shape and stay what a database
+ * BELOW S20 holds; generation <= 5 limits stay enforced in code. The
+ * per-open shape check (nodus_witness.c) expects the historical text below
+ * S20 and this one from S20; the S20 rung (nodus_witness_v2_schema.c)
+ * performs the rebuild inside its transaction. */
+#define NODUS_V2_STSETS_DDL_S20_BODY                                      \
+    "v2_storage_sets(epoch_start INTEGER NOT NULL PRIMARY KEY CHECK("     \
+    "typeof(epoch_start)='integer' AND epoch_start >= 1), set_hash BLOB " \
+    "NOT NULL CHECK(typeof(set_hash)='blob' AND length(set_hash)=64), "   \
+    "member_count INTEGER NOT NULL CHECK(typeof(member_count)='integer' " \
+    "AND member_count BETWEEN 0 AND 1024)) WITHOUT ROWID"
+#define NODUS_V2_STSETS_DDL_S20                                           \
+    "CREATE TABLE IF NOT EXISTS " NODUS_V2_STSETS_DDL_S20_BODY
+
 /* v2_storage_set_members — the members of each frozen set, node_fp ASC
  * is the bitmap order (bit i = member i):
  *   epoch_start, node_fp  the key (node_fp = SHA3-512(node_pk))
@@ -365,6 +396,20 @@ typedef struct {
     "WITHOUT ROWID"
 #define NODUS_V2_STREPS_DDL                                               \
     "CREATE TABLE IF NOT EXISTS " NODUS_V2_STREPS_DDL_BODY
+
+/* HF-9 WP4: the S20 form of v2_storage_reports — bitmap up to 128 bytes
+ * (ceil(1024 / 8)); the historical text above is what a database below S20
+ * holds (see NODUS_V2_STSETS_DDL_S20_BODY). */
+#define NODUS_V2_STREPS_DDL_S20_BODY                                      \
+    "v2_storage_reports(epoch_start INTEGER NOT NULL CHECK(typeof("       \
+    "epoch_start)='integer' AND epoch_start >= 1), seat INTEGER NOT NULL "\
+    "CHECK(typeof(seat)='integer' AND seat BETWEEN 0 AND 4294967295), "   \
+    "set_hash BLOB NOT NULL CHECK(typeof(set_hash)='blob' AND "           \
+    "length(set_hash)=64), bitmap BLOB NOT NULL CHECK(typeof(bitmap)="    \
+    "'blob' AND length(bitmap) <= 128), PRIMARY KEY (epoch_start, seat)) "\
+    "WITHOUT ROWID"
+#define NODUS_V2_STREPS_DDL_S20                                           \
+    "CREATE TABLE IF NOT EXISTS " NODUS_V2_STREPS_DDL_S20_BODY
 
 /* v2_storage_segments — the published segment list (archive bytes items
  * 1-2), never pruned:
@@ -550,6 +595,16 @@ typedef struct nodus_witness {
     }           chain_config_cache[DNAC_CFG_PARAM_MAX_ID + 1][64];
     int         chain_config_cache_count[DNAC_CFG_PARAM_MAX_ID + 1]; /* rows per param */
     bool        chain_config_cache_warm;
+    /** HF-9 WP5 (nodus_witness_v2_shadow.h): the shadow run's failure
+     *  latch - 1 once the FAULTED status could not be written. Node-local
+     *  memory only; never read by any consensus path. */
+    int         hf9_shadow_latched;
+    /** HF-9 WP6 (nodus_witness_state_proof.h): the `dnac_state_proof`
+     *  service - NULL = not enabled (every request is answered
+     *  NODUS_ERR_RATE_LIMITED before any read; plan §17: no numeric limit is
+     *  set yet). Created only by nodus_witness_state_proof_enable, freed by
+     *  nodus_witness_close; node-local, never read by a consensus path. */
+    struct nodus_state_proof_service *state_proof;
 
     /* P2P-PORT F5 — the startup chain-id quorum quarantine (Fix 3:
      * activated_at_sec, quarantined, chain_dissent_* / chain_agree_*) is

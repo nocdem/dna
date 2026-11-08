@@ -2672,8 +2672,9 @@ static int test_v3_derive(void) {
 
     CHECK(memcmp(id16, chain32, 16) == 0,
           "the file name is the first 16 bytes of the chain id");
-    CHECK(q1(db, "PRAGMA user_version") == (int64_t)NODUS_V2_SCHEMA_VERSION_S19,
-          "the chain is at schema S19 — the Comet stores, the "
+    CHECK(q1(db, "PRAGMA user_version") == (int64_t)NODUS_V2_SCHEMA_VERSION_S20,
+          "the chain is at schema S20 (HF-9: + the supply running totals "
+          "v2_supply_totals / v2_bond_total, seeded) — the Comet stores, the "
           "out-of-root attendance tables (tokenomics-v3 P1), the "
           "reward tables (P2), the empty EVM tables + the CORE EVM "
           "reserve row (Nodus EVM), the empty v2_validator_roles "

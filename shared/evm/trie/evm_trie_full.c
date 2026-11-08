@@ -1,7 +1,8 @@
 /**
  * @file evm_trie_full.c
- * @brief Full-rebuild MPT root — TEST-ONLY straight port of the reference.
- *        See evm_trie_full.h.
+ * @brief Full-rebuild MPT root — straight port of the reference (the
+ *        cross-check of the incremental trie; linked into the node library
+ *        since HF-9 WP2). See evm_trie_full.h.
  *
  * Each function below mirrors one reference function (line numbers in
  * execution-specs @a87891f7 src/ethereum/merkle_patricia_trie.py). Where

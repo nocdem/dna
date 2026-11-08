@@ -162,15 +162,18 @@ static int desc_same_but_version(const dna_ruleset_desc_t *a,
 static void t_table(void) {
     CHECK(NODUS_RT_GEN_ROOTS == 5u &&
           NODUS_RT_GEN_ROOTS_BASE == NODUS_RT_GEN_STORAGE); OK();
-    CHECK(NODUS_RT_GEN_MAX == NODUS_RT_GEN_ROOTS); OK();
-    CHECK(nodus_runtime_generation_count() == 5u); OK();
+    /* HF-9 WP3 compiled generation 6 above this one: GEN_MAX moved on,
+     * generation 5's slice (index 9-10) did not (test_hf9_activation.c) */
+    CHECK(NODUS_RT_GEN_MAX == NODUS_RT_GEN_TRIE &&
+          NODUS_RT_GEN_TRIE == NODUS_RT_GEN_ROOTS + 1u); OK();
+    CHECK(nodus_runtime_generation_count() == 6u); OK();
     size_t n_all = 0, n5 = 0, n4 = 0;
     const nodus_domain_runtime_t *all = nodus_runtime_all_table(&n_all);
     const nodus_domain_runtime_t *g5 =
         nodus_runtime_generation_table(NODUS_RT_GEN_ROOTS, &n5);
     const nodus_domain_runtime_t *g4 =
         nodus_runtime_generation_table(NODUS_RT_GEN_STORAGE, &n4);
-    CHECK(all && n_all == 11u); OK();
+    CHECK(all && n_all == 13u); OK();
     CHECK(g4 && n4 == 2u && g4 == &all[7]); OK();
     CHECK(g5 && n5 == 2u && g5 == &all[9]); OK();
     CHECK(g5[0].domain_id == DNA_DOMAIN_SYSTEM &&
@@ -375,8 +378,9 @@ static uint64_t eff_ok(uint64_t floor_h) {
 
 static void t_vote_rules(void) {
     const uint8_t P = (uint8_t)DNAC_CFG_RULESET_GEN_ROOTS;
-    /* 22 is no longer the last id: the ML-DSA-87 precompile vote took 23 */
-    CHECK(P == 22u && DNAC_CFG_PARAM_MAX_ID == 23); OK();
+    /* 22 is no longer the last id: the ML-DSA-87 precompile vote took 23,
+     * HF-9 24 and 25 */
+    CHECK(P == 22u && DNAC_CFG_PARAM_MAX_ID == 25); OK();
     CHECK(dnac_cfg_param_read_by_consensus(P)); OK();
     /* scalar: exactly D5 */
     CHECK(nodus_chain_config_scalar_rules(

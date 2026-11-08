@@ -29,7 +29,10 @@
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * Compile flags: none beyond a default build (no QGP_FAULT_INJECT — the
  * post-commit window is the RUNTIME field
- * `nodus_cmt_blockexec_t.test_fail_after_commit`). Environment: none.
+ * `nodus_cmt_blockexec_t.test_fail_after_commit`), except the one HF-9 WP5
+ * case `hyb_shadow_fault_host`, built only with -DQGP_FAULT_INJECT=ON (the
+ * shadow job's injection point; absent otherwise = missing coverage).
+ * Environment: none.
  * SQLite >= 3.35.0, which the S14 rung enforces itself.
  *
  * ── WHAT IT LEAVES BEHIND ──────────────────────────────────────────────
@@ -216,6 +219,7 @@
 #include "dnac/ledger_ids.h"
 #include "dnac/env_wire.h"
 #include "dnac/env_preflight.h"
+#include "dnac/valbind_wire.h"           /* HF-9 WP4: STORAGE_REGISTER consent */
 #include "dnac/vset_wire.h"
 #include "dnac/cmt_genesis.h"
 #include "dnac/cmt_state.h"
@@ -229,6 +233,14 @@
 
 #include "dnac/manifest_wire.h"          /* dna_claim_t, the dist helpers */
 
+#ifdef NODUS_EVM_ENABLED
+#include "witness/nodus_witness_v2_trie.h"      /* HF-9 T-15: leg roots   */
+#include "witness/nodus_witness_v2_shadow.h"    /* HF-9 T-15 (iv): shadow */
+#include "witness/nodus_witness_v2_storage.h"   /* HF-9 T-9: work counters */
+#include "witness/nodus_witness_v2_epoch.h"     /* snapshot(H): report seats */
+#include "dnac/ledger_roots_v2.h"               /* storage exit id / nullifier */
+#include "witness/nodus_witness_cmt_node.h"     /* the Handshaker         */
+#endif
 #include "../tests/v2_genesis_fixture.h"
 #include "../tests/v2_exec_fixture.h"    /* the SCRIPTED runtime table:
                                           * envelopes with a free
@@ -1136,6 +1148,16 @@ typedef struct {
      * never the frame `exec_t` lives on (the repo's own rule). */
     cmt_commit_sig_t       *last_sigs;
     uint8_t                 chain_id[32];   /* the vote sign bytes' */
+    /* HF-9 WP4 (hybrid T-15): nanoseconds ADDED to the last block time in
+     * every LastCommit vote stamp. 0 (every other case: unchanged) stamps
+     * the votes with the last block time itself, so block h+1's median
+     * time equals block h's; the ported validation requires block time >
+     * last block time (nodus_witness_cmt_host.c:1163-1169, the port of
+     * state/validation.go:132) and the replay path runs it. The hybrid
+     * nodes set 1, so the median of equal stamps (cmt_state.c:255-268, the
+     * port of MedianTime, state.go:250) is strictly greater than the last
+     * block time; the block header time IS that median (validation.go:139). */
+    int64_t                 vote_ts_step_ns;
     /* the block's PART SET, which is where a complete BlockID's
      * PartSetHeader comes from — heap, one 64 KiB part per slot */
     uint8_t                *part_scratch;
@@ -1356,6 +1378,12 @@ static int exec_make_last_commit(exec_t *x, int64_t height,
      * timestamp. The chain's own last block time is the honest choice
      * and is always a valid instant. */
     ts = x->state->last_block_time;
+    if (x->vote_ts_step_ns > 0) {
+        int64_t nn = (int64_t)ts.nanos + x->vote_ts_step_ns;
+
+        ts.seconds += nn / 1000000000;
+        ts.nanos    = (int32_t)(nn % 1000000000);
+    }
     if (cmt_validator_set_init(&vals, storage, CMT_VALSET_MAX) != CMT_OK ||
         nodus_cmt_ss_load_validators(x->store, height, &vals) != CMT_OK) {
         goto done;
@@ -7351,12 +7379,2718 @@ static int t_hf3_bounds_and_fee(void)
 
 /* ══ main ════════════════════════════════════════════════════════════ */
 
-int main(void)
+/* ══ HF-9 WP4 — the HYBRID generation-6 blockexec probe ═════════════════
+ *
+ * What it is: a PROBE that only BUILDS the fixture plan :455 (T-15) needs
+ * and asserts each prerequisite on its own labelled CHECK, so a run shows
+ * exactly which step of the route breaks. No T-15 case yet.
+ *
+ * The route: the chain is seeded the way test_hf9_edge.c:340-371 seeds it
+ * (v2x_seed_prepare, the chain_config ladder rows BEFORE v2x_seed_genesis
+ * - rows written after the production genesis would move SYSTEM's
+ * chain_config_root and trip the untouched-domain guard), but with the
+ * committee's REAL g_ks public keys, installed through the config hook of
+ * v2_genesis_fixture.h (g_v2x_cfg_hook), so the REAL blockexec of
+ * exec_init can sign and apply blocks over it. The cometbft document is
+ * projected from the very config the ledger was seeded from (gfx_doc), and
+ * exec_init builds and saves the cometbft State itself.
+ *
+ * Proves, step by step: P1 the hook gives the committee the g_ks keys;
+ * P2 the database and the ladder rows exist before the genesis; P3 the
+ * seeded genesis (a version-3 chain with the g_ks committee in
+ * `validators`); P4 the node identity and the committed root; P5 exec_init
+ * (store, real application, blockexec, State saved: stateKey); P6 the
+ * ladder rows survived the genesis; P7 a block 1 made over the real State
+ * with a COMPLETE BlockID; P8 the block applies through
+ * nodus_cmt_host_apply_verified_block and the ledger holds block 1.
+ *
+ * Flags: none beyond the file's (NODUS_EVM_ENABLED for the generation
+ * constants). Leaves: a /tmp/test_cmt_app_hyb_XXXXXX directory (removed by
+ * gfx_close). Can falsely pass: a probe passing means the route holds for
+ * ONE empty block at height 1, not that generation 6 is reached - the
+ * ladder heights (3..14) are not crossed here; the T-15 cases will.
+ */
+static void hyb_cfg_hook(nodus_v2_gen_config_t *c)
+{
+    for (uint16_t i = 0; i < c->n_validators && i < (uint16_t)N_KEYS; i++) {
+        memcpy(c->validators[i].pubkey, g_ks[i].pk, DNAC_PUBKEY_SIZE);
+    }
+}
+
+static int hyb_cc_row(nodus_witness_t *w, unsigned param, uint64_t value,
+                      uint64_t effective, uint64_t nonce)
+{
+    sqlite3_stmt *st = NULL;
+    int rc;
+
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO chain_config_history (param_id, new_value, "
+            "effective_block, commit_block, tx_hash, proposal_nonce, "
+            "created_at_unix) VALUES (?1, ?2, ?3, 0, zeroblob(64), ?4, 0)",
+            -1, &st, NULL) != SQLITE_OK) {
+        return -1;
+    }
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)param);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)value);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)effective);
+    sqlite3_bind_int64(st, 4, (sqlite3_int64)nonce);
+    rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    w->chain_config_cache_warm = false;
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+static int t_hybrid_probe(void)
+{
+    gfx_t          g;
+    exec_t         x;
+    cmt_block_id_t bid;
+    v2x_cfgbox_t   hb;
+    uint8_t        file16[16];
+    uint8_t        root[64];
+
+    memset(&g, 0, sizeof(g));
+    memset(&hb, 0, sizeof(hb));
+    snprintf(g.dir, sizeof(g.dir), "/tmp/test_cmt_app_hyb_XXXXXX");
+    CHECK(mkdtemp(g.dir) != NULL, "P0 a temp directory");
+
+    /* P1 — the config hook: the committee is the g_ks keys */
+    g_v2x_cfg_hook = hyb_cfg_hook;
+    CHECK(v2x_cfg_make(&hb, 0) == 0, "P1a the v2x config builds");
+    CHECK(hb.cfg->n_validators == (uint16_t)N_KEYS &&
+          memcmp(hb.cfg->validators[0].pubkey, g_ks[0].pk,
+                 DNAC_PUBKEY_SIZE) == 0 &&
+          memcmp(hb.cfg->validators[N_KEYS - 1].pubkey, g_ks[N_KEYS - 1].pk,
+                 DNAC_PUBKEY_SIZE) == 0,
+          "P1b the hook gave the committee the real g_ks public keys");
+    g.box.cfg    = hb.cfg;        /* ownership moves to g.box (gfx_close) */
+    g.box.allocs = hb.allocs;
+
+    /* P2 — database + the ladder rows BEFORE the genesis (edge test) */
+    g.w = calloc(1, sizeof(*g.w));
+    g.srv = calloc(1, sizeof(*g.srv));
+    CHECK(g.w && g.srv, "P2a heap");
+    snprintf(g.w->data_path, sizeof(g.w->data_path), "%s", g.dir);
+    memset(file16, 0x5A, sizeof(file16));
+    CHECK(v2x_seed_prepare(g.w, file16, 0) == 0,
+          "P2b v2x_seed_prepare (an S20 version-3 database)");
+    CHECK(hyb_cc_row(g.w, DNAC_CFG_HF2_ACTIVE, DNAC_CFG_HF2_ACTIVE_ON, 1, 11)
+              == 0 &&
+          hyb_cc_row(g.w, DNAC_CFG_RULESET_GEN2,
+                     (uint64_t)DNAC_CFG_RULESET_GEN2_D2, 3, 12) == 0 &&
+          hyb_cc_row(g.w, DNAC_CFG_EVM_ACTIVE,
+                     (uint64_t)DNAC_CFG_EVM_ACTIVE_D, 5, 14) == 0 &&
+          hyb_cc_row(g.w, DNAC_CFG_RULESET_GEN_ROLES,
+                     (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D, 8, 13) == 0 &&
+          hyb_cc_row(g.w, DNAC_CFG_RULESET_GEN_ROOTS,
+                     (uint64_t)DNAC_CFG_RULESET_GEN_ROOTS_D, 11, 15) == 0 &&
+          hyb_cc_row(g.w, DNAC_CFG_RULESET_GEN_TRIE,
+                     (uint64_t)DNAC_CFG_RULESET_GEN_TRIE_D, 14, 16) == 0,
+          "P2c the generation ladder rows (params 9/14/18/22/24) before "
+          "the genesis");
+
+    /* P3 — the seeded genesis over the same config */
+    CHECK(v2x_seed_genesis(g.w, file16, 0, NULL, 0, g.chain32) == 0,
+          "P3a v2x_seed_genesis (the engine genesis over the g_ks config)");
+    g_v2x_cfg_hook = NULL;
+    CHECK(g.w->v2_successor, "P3b the chain is a version-3 chain");
+    CHECK(q1(g.w->db, "SELECT COUNT(*) FROM validators") == N_KEYS,
+          "P3c the committee rows are the config's validators");
+    CHECK(q1(g.w->db, "SELECT COUNT(*) FROM v2_blocks") == 0,
+          "P3d no block row yet");
+
+    /* P4 — the node identity the fixture gives every gfx chain, and the
+     * committed root the document's app_hash is made from */
+    g.w->cached_committee_epoch_start = UINT64_MAX;
+    g.w->v2_ingress_armed = true;
+    memcpy(g.w->v2_chain32, g.chain32, 32);
+    memcpy(g.srv->identity.pk.bytes, g_ks[0].pk, NODUS_PK_BYTES);
+    memcpy(g.srv->identity.sk.bytes, g_ks[0].sk, QGP_DSA87_SECRETKEYBYTES);
+    memcpy(g.srv->identity.node_id.bytes, g_ks[0].voter, 32);
+    nodus_server_witness_host(g.srv, &g.host);
+    g.w->host = &g.host;
+    memcpy(g.w->my_id, g_ks[0].voter, 32);
+    CHECK(nodus_witness_v2_committed_global_root(g.w, root) == 0,
+          "P4 the committed global root reads");
+
+    /* P5 — the real blockexec + application, State saved */
+    CHECK(exec_init(&x, &g) == 0,
+          "P5a exec_init: store, real application, blockexec, State made "
+          "from the projected genesis document");
+    CHECK(has_state_key(g.w->db, "stateKey") == 1,
+          "P5b the cometbft State at height 0 is saved (stateKey)");
+
+    /* P6 — the ladder rows survived the genesis */
+    CHECK(q1(g.w->db, "SELECT COUNT(*) FROM chain_config_history WHERE "
+                      "param_id = 24") == 1 &&
+          q1(g.w->db, "SELECT effective_block FROM chain_config_history "
+                      "WHERE param_id = 24") == 14,
+          "P6 the param-24 ladder row is still there");
+
+    /* P7 / P8 — one empty block through the real blockexec */
+    CHECK(exec_make_block(&x, 1, 0) == 0, "P7a block 1 over the real State");
+    CHECK(exec_block_id(&x, x.blk, &bid) == 0 && block_id_is_complete(&bid),
+          "P7b a COMPLETE BlockID");
+    CHECK(nodus_cmt_host_apply_verified_block(x.be, &bid, x.blk, x.state)
+              == CMT_OK,
+          "P8a the block applies through the real blockexec");
+    CHECK(q1(g.w->db, "SELECT COUNT(*) FROM v2_blocks") == 1,
+          "P8b the ledger holds block 1");
+
+    exec_free(&x);
+    gfx_close(&g);
+    return 0;
+}
+
+/* ══ HF-9 WP4 — T-15: recovery after commit, before the consensus-state
+ *    save, on the HYBRID generation-6 chain (plan :455) ══════════════════
+ *
+ * Proves, for a stop at (i) the edge block A-1 = 13, (ii) an ordinary
+ * generation-6 block (15) and (iii) the first generation-6 boundary B1 (the
+ * block DNAC_EPOCH_LENGTH; no storage member exists on this chain, so the
+ * boundary has NO storage event - the "with an event" variant needs a
+ * registered node and is not built here, T-5 registry writer):
+ *   S1  nodus_cmt_blockexec_t.test_fail_after_commit stops
+ *       nodus_cmt_host_apply_verified_block with CMT_FAULT AFTER the ledger
+ *       COMMIT and BEFORE store.Save(state) (nodus_witness_cmt_host.c:1764)
+ *       - the false-pass guard: the stop is at the intended height (the
+ *       ledger tip = the stop height), the COMMIT ran (autocommit on), the
+ *       saved State still names height-1 and the block store holds it;
+ *   S2  the stopped node's ledger digest equals a twin node that applied
+ *       the same block without stopping (the block IS committed);
+ *   S3  the handshake (replay.go:437-453) replays ONE block; the ledger
+ *       digest is unchanged by it (not applied twice) - the digest covers
+ *       v2_trie_roots, v2_trie_nodes, the six section-8.4 tables, the
+ *       supply totals, v2_blocks and the domain heads;
+ *   S4  the State caught up; every leg root (v2_trie_roots) equals the
+ *       incremental AND the full rebuild of the rows;
+ *   S5  the NEXT block applies on both nodes and their ledger digests and
+ *       committed roots are equal (the replayed node = a node that never
+ *       stopped).
+ * Block counts: 13, 15 and DNAC_EPOCH_LENGTH (720 at production, 15 at the
+ * short-epoch build) real signed blocks per node, two nodes per case; the
+ * run time is main's to measure. Flags: NODUS_EVM_ENABLED only (the tries).
+ * Leaves: two /tmp/test_cmt_app_hyb_XXXXXX directories per case (removed).
+ * Can falsely pass: the digest hashes the listed tables, not the whole
+ * database; the committee tiebreak seed, mempool and consensus tables are
+ * not compared. The block-store save precedes the apply here (consensus
+ * order), unlike vu_host_drive_to which saves after.
+ */
+#ifdef NODUS_EVM_ENABLED
+typedef struct {
+    gfx_t          g;
+    exec_t         x;
+    cmt_block_id_t bid;
+    size_t         ntx;     /* transactions x.txs[0..ntx) of the NEXT block
+                             * made by hyb_pair_step (reset to 0 after) */
+} hyb_t;
+
+/* HF-9 WP4 (funding probe, step a): the coins a funded hybrid chain gets
+ * BEFORE the genesis, as test_storage_b2.c fx_open :1540-1590 plants them
+ * (utxo_set rows, owner = the key's SHA3-512 fingerprint in lower-case hex,
+ * native token, domain 1). Nothing else is planted: v2x_seed_rows
+ * (v2_genesis_fixture.h ~700-840) itself seeds the committee (the hook's
+ * g_ks keys), the supply_tracking row ("absent: created with
+ * genesis_supply = UTXOs + bonds + delegated") and the nine v2_treasury
+ * rows, so the coins join the supply by construction. */
+#define HYB_COIN_BOND  (1000000ULL * 100000000ULL)   /* DNAC_HF6_STORAGE_
+                                                      * BOND_DEFAULT      */
+#define HYB_N_COINS    2
+
+static void hyb_coin_nul(int c, uint8_t out[64])
+{
+    uint8_t pre[16] = "hf9-wp4-hyb-coin";
+
+    pre[15] = (uint8_t)c;
+    qgp_sha3_512(pre, sizeof(pre), out);
+}
+
+/* Coin 2 exists only on a chain opened with funded == 2: the FEE-only coin
+ * of key 1's STORAGE_EXIT envelope (test_storage_b2.c COINS CBX = FEE, owner
+ * = the exiting node's key); coins 0 and 1 belong to keys 0 and 1. */
+#define HYB_EXIT_COIN  2
+/* Coin 3 exists only on a chain opened with funded == 3: the registration
+ * coin of key 2, a SECOND storage node that arrives after the first
+ * publication (the K9a grace case of hybrid_storage_writers_probe). */
+#define HYB_ARRIVAL_COIN  3
+
+static int hyb_coin_key(int c)
+{
+    return c == HYB_EXIT_COIN ? 1 : c == HYB_ARRIVAL_COIN ? 2 : c;
+}
+
+/* BOND + FEE exactly, as test_storage_b2.c COINS: the SYSFUND leg consumes
+ * the whole coin - the bond is locked, the rest is the envelope fee. The
+ * exit coin is the fee alone (the exit's SYSFUND leg locks / releases
+ * nothing: nodus_witness_rt_native.c rtn_storage_exit_exec ":6470"). */
+static uint64_t hyb_coin_amount(int c)
+{
+    return c == HYB_EXIT_COIN ? (uint64_t)DNAC_MIN_FEE_RAW
+                              : HYB_COIN_BOND + (uint64_t)DNAC_MIN_FEE_RAW;
+}
+
+static int hyb_coin_owner_hex(int key, char hex[129])
+{
+    uint8_t fp[64];
+
+    if (qgp_sha3_512(g_ks[key].pk, QGP_DSA87_PUBLICKEYBYTES, fp) != 0)
+        return -1;
+    for (int i = 0; i < 64; i++)
+        snprintf(hex + 2 * i, 3, "%02x", fp[i]);
+    return 0;
+}
+
+static int hyb_seed_coin(nodus_witness_t *w, int c)
+{
+    sqlite3_stmt *st = NULL;
+    uint8_t       nul[64];
+    char          hex[129];
+    int           rc;
+
+    hyb_coin_nul(c, nul);
+    if (hyb_coin_owner_hex(hyb_coin_key(c), hex) != 0) return -1;
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
+            "tx_hash, output_index, block_height, created_at, "
+            "unlock_block, domain_id) VALUES "
+            "(?1, ?2, ?3, zeroblob(64), zeroblob(64), 0, 0, 0, 0, 1)",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, nul, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, hex, 128, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)hyb_coin_amount(c));
+    rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+/* History for the growth probe (T-9): `g_hyb_filler` extra ordinary UTXOs
+ * planted BEFORE the genesis next to the coins, read once by the next
+ * hyb_open (which resets it to 0). Each is a state production can produce -
+ * a one-unit UTXO with its own nullifier and owner - and joins the supply
+ * by construction exactly like the coins (v2x seeds genesis_supply = UTXOs
+ * + stakes + delegated); no supply, per-open or schema check is bypassed.
+ * Nullifier and owner are deterministic SHA3-512 of a counter. */
+static unsigned g_hyb_filler;
+/* RELEASED registry nodes planted the same way (see hyb_plant_released) */
+static unsigned g_hyb_released;
+static int hyb_plant_released(nodus_witness_t *w, unsigned n);
+
+static int hyb_seed_filler(nodus_witness_t *w, unsigned n)
+{
+    sqlite3_stmt *st = NULL;
+    int           rc = SQLITE_DONE;
+
+    if (sqlite3_exec(w->db, "BEGIN", NULL, NULL, NULL) != SQLITE_OK) return -1;
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
+            "tx_hash, output_index, block_height, created_at, "
+            "unlock_block, domain_id) VALUES "
+            "(?1, ?2, 1, zeroblob(64), zeroblob(64), 0, 0, 0, 0, 1)",
+            -1, &st, NULL) != SQLITE_OK) {
+        (void)sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
+        return -1;
+    }
+    for (unsigned i = 0; i < n && rc == SQLITE_DONE; i++) {
+        uint8_t pre[24], nul[64], fp[64];
+        char    hex[129];
+
+        memcpy(pre, "hf9-wp4-hyb-fill", 16);
+        for (int b = 0; b < 8; b++) pre[16 + b] = (uint8_t)((uint64_t)i >> (8 * (7 - b)));
+        if (qgp_sha3_512(pre, sizeof(pre), nul) != 0) { rc = SQLITE_ERROR; break; }
+        memcpy(pre, "hf9-wp4-hyb-fown", 16);
+        if (qgp_sha3_512(pre, sizeof(pre), fp) != 0) { rc = SQLITE_ERROR; break; }
+        for (int b = 0; b < 64; b++) snprintf(hex + 2 * b, 3, "%02x", fp[b]);
+        sqlite3_reset(st);
+        sqlite3_bind_blob(st, 1, nul, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st, 2, hex, 128, SQLITE_TRANSIENT);
+        rc = sqlite3_step(st);
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        (void)sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
+        return -1;
+    }
+    return sqlite3_exec(w->db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK ? 0 : -1;
+}
+
+/* funded: 0 unfunded; 1 coins 0 and 1; 2 also the exit coin (HYB_EXIT_COIN);
+ * 3 also the arrival coin (HYB_ARRIVAL_COIN) */
+static int hyb_open(hyb_t *h, int funded)
+{
+    v2x_cfgbox_t hb;
+    uint8_t      file16[16];
+
+    memset(h, 0, sizeof(*h));
+    memset(&hb, 0, sizeof(hb));
+    snprintf(h->g.dir, sizeof(h->g.dir), "/tmp/test_cmt_app_hyb_XXXXXX");
+    CHECK(mkdtemp(h->g.dir) != NULL, "hyb: a temp directory");
+    g_v2x_cfg_hook = hyb_cfg_hook;
+    CHECK(v2x_cfg_make(&hb, 0) == 0, "hyb: the config builds");
+    h->g.box.cfg    = hb.cfg;
+    h->g.box.allocs = hb.allocs;
+    h->g.w   = calloc(1, sizeof(*h->g.w));
+    h->g.srv = calloc(1, sizeof(*h->g.srv));
+    CHECK(h->g.w && h->g.srv, "hyb: heap");
+    snprintf(h->g.w->data_path, sizeof(h->g.w->data_path), "%s", h->g.dir);
+    memset(file16, 0x5A, sizeof(file16));
+    CHECK(v2x_seed_prepare(h->g.w, file16, 0) == 0, "hyb: seed_prepare");
+    CHECK(hyb_cc_row(h->g.w, DNAC_CFG_HF2_ACTIVE, DNAC_CFG_HF2_ACTIVE_ON, 1,
+                     11) == 0 &&
+          hyb_cc_row(h->g.w, DNAC_CFG_RULESET_GEN2,
+                     (uint64_t)DNAC_CFG_RULESET_GEN2_D2, 3, 12) == 0 &&
+          hyb_cc_row(h->g.w, DNAC_CFG_EVM_ACTIVE,
+                     (uint64_t)DNAC_CFG_EVM_ACTIVE_D, 5, 14) == 0 &&
+          hyb_cc_row(h->g.w, DNAC_CFG_RULESET_GEN_ROLES,
+                     (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D, 8, 13) == 0 &&
+          hyb_cc_row(h->g.w, DNAC_CFG_RULESET_GEN_ROOTS,
+                     (uint64_t)DNAC_CFG_RULESET_GEN_ROOTS_D, 11, 15) == 0 &&
+          hyb_cc_row(h->g.w, DNAC_CFG_RULESET_GEN_TRIE,
+                     (uint64_t)DNAC_CFG_RULESET_GEN_TRIE_D, 14, 16) == 0,
+          "hyb: the ladder rows before the genesis");
+    if (funded) {
+        for (int c = 0; c < HYB_N_COINS; c++)
+            CHECK(hyb_seed_coin(h->g.w, c) == 0, "hyb: a coin before the "
+                  "genesis");
+        if (funded == 2)
+            CHECK(hyb_seed_coin(h->g.w, HYB_EXIT_COIN) == 0,
+                  "hyb: the exit coin before the genesis");
+        if (funded == 3)
+            CHECK(hyb_seed_coin(h->g.w, HYB_ARRIVAL_COIN) == 0,
+                  "hyb: the arrival coin before the genesis");
+        CHECK(hyb_seed_filler(h->g.w, g_hyb_filler) == 0,
+              "hyb: the history UTXOs before the genesis");
+        CHECK(hyb_plant_released(h->g.w, g_hyb_released) == 0,
+              "hyb: the released registry history before the genesis");
+        v2x_seed_not_real(V2X_SEED_NOT_REAL_UTXOS);   /* one-shot */
+    }
+    CHECK(funded || (g_hyb_filler == 0 && g_hyb_released == 0),
+          "hyb: history rows need a funded chain");
+    g_hyb_filler = 0;
+    g_hyb_released = 0;
+    CHECK(v2x_seed_genesis(h->g.w, file16, 0, NULL, 0, h->g.chain32) == 0,
+          "hyb: the seeded genesis");
+    g_v2x_cfg_hook = NULL;
+    h->g.w->cached_committee_epoch_start = UINT64_MAX;
+    h->g.w->v2_ingress_armed = true;
+    memcpy(h->g.w->v2_chain32, h->g.chain32, 32);
+    memcpy(h->g.srv->identity.pk.bytes, g_ks[0].pk, NODUS_PK_BYTES);
+    memcpy(h->g.srv->identity.sk.bytes, g_ks[0].sk, QGP_DSA87_SECRETKEYBYTES);
+    memcpy(h->g.srv->identity.node_id.bytes, g_ks[0].voter, 32);
+    nodus_server_witness_host(h->g.srv, &h->g.host);
+    h->g.w->host = &h->g.host;
+    memcpy(h->g.w->my_id, g_ks[0].voter, 32);
+    CHECK(exec_init(&h->x, &h->g) == 0, "hyb: exec_init");
+    h->x.vote_ts_step_ns = 1;   /* strictly increasing block times */
+    return 0;
+}
+
+static void hyb_close(hyb_t *h)
+{
+    exec_free(&h->x);
+    gfx_close(&h->g);
+}
+
+/* ROUND 19 - the hybrid cases at the short-epoch setting (E = 15) as well as at production
+ * constants (E = 720). Several of them put "the boundary" at DNAC_EPOCH_LENGTH only because that
+ * is the FIRST boundary at production; they now take it from the fixture:
+ *   HYB_A_GEN6 = 14  the generation-6 activation of hyb_open's ladder: its last row is
+ *                    hyb_cc_row(w, DNAC_CFG_RULESET_GEN_TRIE, D, 14, 16), i.e. effective_block = 14
+ *                    (the param-24 row's effective height A; nonce 16) - read back by
+ *                    t_hybrid_probe P6 ("effective_block ... == 14") and the edge is the end of
+ *                    block A - 1 = 13 (test_hf9_edge.c HA);
+ *   HYB_REG_BLK  = 16 the block of the first registration (hyb_register_step(.., 16, ..)).
+ * hyb_boundary_above(h) is the first epoch boundary above h: DNAC_EPOCH_LENGTH (720) for both at
+ * production, 15 above 14 and 30 above 16 at E = 15. */
+#define HYB_A_GEN6  14u
+#define HYB_REG_BLK 16u
+static uint64_t hyb_boundary_above(uint64_t h)
+{
+    const uint64_t e = (uint64_t)DNAC_EPOCH_LENGTH;
+
+    return (h / e + 1u) * e;
+}
+
+/* digest of the tables the replay must leave byte-identical */
+static int hyb_digest(sqlite3 *db, uint8_t out[64])
+{
+    static const char *const tabs[] = {
+        "v2_trie_roots", "v2_trie_nodes", "v2_storage_assign",
+        "v2_storage_assign_basis", "v2_storage_assign_state",
+        "v2_storage_held", "v2_storage_member_epoch",
+        "v2_storage_xfer_diff", "v2_supply_totals", "v2_bond_total",
+        "v2_blocks", "v2_domain_heads"
+    };
+    size_t   cap = 1u << 16, n = 0;
+    uint8_t *buf = malloc(cap);
+    int      bad = buf == NULL;
+
+    for (size_t t = 0; t < sizeof(tabs) / sizeof(tabs[0]) && !bad; t++) {
+        sqlite3_stmt *st = NULL;
+        char          sql[400];
+        int           cols, rc = SQLITE_DONE;
+
+        snprintf(sql, sizeof(sql), "SELECT * FROM %s LIMIT 0", tabs[t]);
+        if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
+            /* Sol re-verify row 7: the ONLY table allowed to be absent is
+             * the one-use v2_storage_xfer_diff (dropped at the first
+             * generation-6 boundary), and only when sqlite_master really
+             * has no such table; any other failure fails the digest */
+            sqlite3_stmt *ms = NULL;
+            int           absent = 0;
+
+            if (strcmp(tabs[t], "v2_storage_xfer_diff") == 0 &&
+                sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM sqlite_master "
+                                   "WHERE type = 'table' AND name = "
+                                   "'v2_storage_xfer_diff'", -1, &ms, NULL)
+                    == SQLITE_OK) {
+                absent = sqlite3_step(ms) == SQLITE_ROW &&
+                         sqlite3_column_int(ms, 0) == 0;
+                sqlite3_finalize(ms);
+            }
+            if (!absent) bad = 1;
+            continue;
+        }
+        cols = sqlite3_column_count(st);
+        sqlite3_finalize(st);
+        {
+            size_t off = (size_t)snprintf(sql, sizeof(sql),
+                                          "SELECT * FROM %s ORDER BY ",
+                                          tabs[t]);
+            for (int c = 1; c <= cols && off < sizeof(sql) - 8; c++) {
+                off += (size_t)snprintf(sql + off, sizeof(sql) - off,
+                                        c > 1 ? ",%d" : "%d", c);
+            }
+        }
+        if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
+            bad = 1;
+            break;
+        }
+        if (n + strlen(tabs[t]) + 2 > cap) { cap *= 2; buf = realloc(buf, cap); }
+        memcpy(buf + n, tabs[t], strlen(tabs[t]) + 1);
+        n += strlen(tabs[t]) + 1;
+        while (!bad && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+            for (int c = 0; c < cols && !bad; c++) {
+                int ty = sqlite3_column_type(st, c);
+                int len = ty == SQLITE_NULL ? 0 : sqlite3_column_bytes(st, c);
+                const void *p = ty == SQLITE_BLOB ? sqlite3_column_blob(st, c)
+                    : ty == SQLITE_NULL ? NULL
+                    : (const void *)sqlite3_column_text(st, c);
+                while (n + 5 + (size_t)len > cap) {
+                    cap *= 2;
+                    buf = realloc(buf, cap);
+                    if (!buf) { bad = 1; break; }
+                }
+                if (bad) break;
+                buf[n++] = (uint8_t)ty;
+                for (int i = 0; i < 4; i++) buf[n++] = (uint8_t)(len >> (8 * i));
+                if (p && len > 0) { memcpy(buf + n, p, (size_t)len); n += (size_t)len; }
+            }
+            if (!bad) buf[n++] = 0xFF;
+        }
+        sqlite3_finalize(st);
+        if (!bad && rc != SQLITE_DONE) bad = 1;   /* a truncated scan */
+    }
+    if (bad) { free(buf); return -1; }
+    {
+        int r = qgp_sha3_512(buf, n, out) == 0 ? 0 : -1;
+        free(buf);
+        return r;
+    }
+}
+
+/* one block at `height` the CONSENSUS way: last commit, block, BlockID with
+ * its part set, SAVE to the block store, then APPLY. @return the apply's rc
+ * (CMT_OK / CMT_FAULT), or -2 on a setup failure */
+/* ONE block at `height`, made ONCE (by node A: last commit, block, BlockID,
+ * part set - ML-DSA signing is randomized, so two nodes that each built
+ * their own block would build different bytes) and applied to BOTH nodes
+ * the consensus way (save to the block store, then apply): node B first,
+ * then node A, which stops after its COMMIT when `a_stop` is set.
+ * @return A's apply rc (CMT_OK / CMT_FAULT), -2 on a setup failure, -3
+ * when node B's save or apply failed. */
+static int hyb_pair_step(hyb_t *A, hyb_t *B, int64_t height, int a_stop)
+{
+    exec_t        *x = &A->x;
+    const size_t   save_cap = 1u << 20;
+    uint8_t       *save_scratch = malloc(save_cap);
+    cmt_part_set_t ps;
+    cmt_commit_t   seen;
+    int            rc = -2;
+
+    if (!save_scratch) return -2;
+    if (height > 1 && exec_make_last_commit(x, height - 1, &A->bid) != 0)
+        goto done;
+    {
+        const size_t ntx = A->ntx;
+
+        A->ntx = 0;
+        if (exec_make_block(x, height, ntx) != 0) goto done;
+    }
+    memset(&A->bid, 0, sizeof(A->bid));
+    if (cmt_block_hash(x->blk, A->bid.hash) != CMT_OK) goto done;
+    A->bid.hash_len = CMT_TMHASH_SIZE;
+    if (cmt_block_make_part_set(x->blk, CMT_BLOCK_PART_SIZE_BYTES,
+                                x->part_scratch, x->part_scratch_cap,
+                                x->parts, x->parts_cap, &ps) != CMT_OK ||
+        cmt_part_set_header(&ps, &A->bid.part_set_header) != CMT_OK ||
+        !block_id_is_complete(&A->bid))
+        goto done;
+    memset(&seen, 0, sizeof(seen));
+    seen.height   = height;
+    seen.round    = 0;
+    seen.block_id = A->bid;
+    if (B) {
+        if (nodus_cmt_bs_save_block(B->x.store, x->blk, &ps, &seen,
+                                    save_scratch, save_cap) != CMT_OK ||
+            nodus_cmt_host_apply_verified_block(B->x.be, &A->bid, x->blk,
+                                                B->x.state) != CMT_OK) {
+            rc = -3;
+            goto done;
+        }
+    }
+    if (nodus_cmt_bs_save_block(x->store, x->blk, &ps, &seen, save_scratch,
+                                save_cap) != CMT_OK)
+        goto done;
+    x->be->test_fail_after_commit = a_stop ? true : false;
+    rc = nodus_cmt_host_apply_verified_block(x->be, &A->bid, x->blk, x->state);
+    x->be->test_fail_after_commit = false;
+done:
+    free(save_scratch);
+    return rc;
+}
+
+/* blocks from+1 .. to on both nodes, no stop */
+static int hyb_pair_to(hyb_t *A, hyb_t *B, int64_t from, int64_t to)
+{
+    for (int64_t h = from + 1; h <= to; h++) {
+        if (hyb_pair_step(A, B, h, 0) != CMT_OK) {
+            fprintf(stderr, "hyb_pair_to: height %" PRId64 " failed\n", h);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int hyb_handshake(hyb_t *h, int *nblocks)
+{
+    nodus_cmt_handshaker_t *hs = calloc(1, sizeof(*hs));
+    nodus_cmt_host_limits_t lim;
+    int                     rc;
+
+    if (!hs) return CMT_FAULT;
+    memset(&lim, 0, sizeof(lim));
+    lim.max_txs      = TEST_APP_TXS_CAP;
+    lim.tx_arena_cap = 2u * 1024u * 1024u;
+    lim.max_evidence = 4;
+    rc = nodus_cmt_handshaker_init(hs, h->x.store, h->x.state, &h->x.doc,
+                                   h->g.w, t_now, NULL, t_mono, NULL, &lim);
+    if (rc == CMT_OK) {
+        rc = nodus_cmt_handshaker_handshake(hs, &h->x.app_if);
+        if (nblocks) *nblocks = hs->nblocks;
+    }
+    nodus_cmt_handshaker_release(hs);
+    free(hs);
+    return rc;
+}
+
+/* every leg root: stored == incremental == full rebuild of the rows */
+static int hyb_legs_ok(nodus_witness_t *w)
+{
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++) {
+        uint8_t inc[64], full[64], stored[64];
+
+        if (nodus_witness_v2_trie_build_leg(w, leg, inc, full) != 0 ||
+            nodus_witness_v2_trie_leg_root(w, leg, stored) != 0 ||
+            memcmp(inc, full, 64) != 0 || memcmp(inc, stored, 64) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+static int hyb_register_step(hyb_t *A, hyb_t *B, int64_t height, int key,
+                             uint8_t **env);
+
+/* `reg` != 0: the chain is FUNDED and node key 1 registers as a storage
+ * node in block `reg` (generation 6) on both nodes before the stop, so the
+ * boundary of the stop block is a storage EVENT (an arrival against the
+ * empty basis; plan :455 "with and without a storage event"). `reg` is a
+ * block number >= HYB_A_GEN6 (generation 6 is in force from block 14), 0 =
+ * no registration. */
+static int hyb_case(int64_t stop_h, const char *what, int64_t reg)
+{
+    hyb_t  *A = calloc(1, sizeof(*A)), *Bn = calloc(1, sizeof(*Bn));
+    uint8_t d0a[64], d0b[64], d1a[64], d1b[64], d2a[64], d3a[64], d3b[64];
+    uint8_t ra[64], rb[64];
+    uint8_t *renv = NULL;
+    int     nb = -1, rc;
+
+    CHECK(A && Bn, "alloc");
+    CHECK(hyb_open(A, reg != 0) == 0, "S0 node A (stops) opens");
+    CHECK(hyb_open(Bn, reg != 0) == 0, "S0 node B (never stops) opens");
+    /* every block is made ONCE (by A) and applied to both nodes: the same
+     * bytes (signing is randomized, two builders would differ) */
+    if (reg) {
+        CHECK(reg >= (int64_t)HYB_A_GEN6,
+              "the registration block is a generation-6 block");
+        CHECK(stop_h > reg, "the stop lies after the registration block");
+        CHECK(hyb_pair_to(A, Bn, 0, reg - 1) == 0,
+              "S0 both nodes reach the block before the registration, same "
+              "blocks");
+        CHECK(hyb_register_step(A, Bn, reg, 1, &renv) == CMT_OK,
+              "S0 the STORAGE_REGISTER block applies on both nodes");
+        CHECK(q1(A->g.w->db, "SELECT COUNT(*) FROM v2_storage_nodes WHERE "
+                             "status = 1") == 1 &&
+              q1(Bn->g.w->db, "SELECT COUNT(*) FROM v2_storage_nodes WHERE "
+                              "status = 1") == 1,
+              "S0 the registry row is ACTIVE on both nodes");
+        CHECK(hyb_pair_to(A, Bn, reg, stop_h - 1) == 0,
+              "S0 both nodes reach the block before the stop");
+    } else {
+        CHECK(hyb_pair_to(A, Bn, 0, stop_h - 1) == 0,
+              "S0 both nodes reach the block before the stop, on the same "
+              "blocks");
+    }
+    CHECK(hyb_digest(A->g.w->db, d0a) == 0 &&
+          hyb_digest(Bn->g.w->db, d0b) == 0 && memcmp(d0a, d0b, 64) == 0,
+          "S0 the twins are byte-identical before the stop block");
+
+    /* S1 — the stop */
+    rc = hyb_pair_step(A, Bn, stop_h, 1);   /* B applies it, A stops */
+    CHECK(rc != -3, "S1 node B applied the stop block");
+    CHECK(rc == CMT_FAULT,
+          "S1a the apply stops with CMT_FAULT in the post-commit window");
+    CHECK(sqlite3_get_autocommit(A->g.w->db) != 0,
+          "S1b the COMMIT had run");
+    CHECK(q1(A->g.w->db, "SELECT MAX(global_height) FROM v2_blocks") ==
+              stop_h,
+          "S1c the ledger tip is the intended stop height");
+    CHECK(nodus_cmt_bs_height(A->x.store) == stop_h,
+          "S1d the block store holds the stopped block");
+    {
+        cmt_state_storage_t *stor = calloc(1, sizeof(*stor));
+        cmt_state_t         *st = calloc(1, sizeof(*st));
+
+        CHECK(stor && st && cmt_state_init(st, stor) == CMT_OK &&
+              nodus_cmt_ss_load(A->x.store, st) == CMT_OK,
+              "S1e the saved State loads");
+        CHECK(st->last_block_height == stop_h - 1,
+              "S1f the saved State still names the previous height");
+        free(st);
+        free(stor);
+    }
+    CHECK(hyb_digest(A->g.w->db, d1a) == 0, "S1g digest of A after the stop");
+
+    /* S2 — the twin applied the SAME block without stopping */
+    CHECK(q1(Bn->g.w->db, "SELECT MAX(global_height) FROM v2_blocks") ==
+              stop_h && sqlite3_get_autocommit(Bn->g.w->db) != 0,
+          "S2a node B committed the stop height normally");
+    CHECK(hyb_digest(Bn->g.w->db, d1b) == 0 && memcmp(d1a, d1b, 64) == 0,
+          "S2b the stopped node's ledger = the node that never stopped");
+
+    /* S3 — the replay */
+    CHECK(hyb_handshake(A, &nb) == CMT_OK, "S3a the handshake heals");
+    CHECK(nb == 1, "S3b exactly one block replayed");
+    CHECK(hyb_digest(A->g.w->db, d2a) == 0 && memcmp(d1a, d2a, 64) == 0,
+          "S3c the ledger tables are byte-identical after the replay "
+          "(v2_trie_roots, v2_trie_nodes, the assignment tables, the supply "
+          "totals): not applied twice");
+    {
+        cmt_state_storage_t *stor = calloc(1, sizeof(*stor));
+        cmt_state_t         *st = calloc(1, sizeof(*st));
+
+        CHECK(stor && st && cmt_state_init(st, stor) == CMT_OK &&
+              nodus_cmt_ss_load(A->x.store, st) == CMT_OK &&
+              st->last_block_height == stop_h,
+              "S3d the State caught up to the stop height");
+        free(st);
+        free(stor);
+    }
+    /* S4 — roots against the full rebuild */
+    CHECK(q1(A->g.w->db, "SELECT capture FROM v2_trie_state") == 1,
+          "S4a the dirty capture is on");
+    CHECK(hyb_legs_ok(A->g.w) == 0,
+          "S4b every leg root equals the incremental and the full rebuild");
+
+    /* S5 — the next block */
+    CHECK(nodus_cmt_ss_load(A->x.store, A->x.state) == CMT_OK,
+          "S5a the executor's State is the caught-up one");
+    CHECK(hyb_pair_to(A, Bn, stop_h, stop_h + 1) == 0,
+          "S5b the next block, made once, applies on the replayed node A "
+          "and on node B");
+    CHECK(hyb_digest(A->g.w->db, d3a) == 0 &&
+          hyb_digest(Bn->g.w->db, d3b) == 0 && memcmp(d3a, d3b, 64) == 0,
+          "S5d the next block: the replayed node's tables = the node that "
+          "never stopped");
+    CHECK(nodus_witness_v2_committed_global_root(A->g.w, ra) == 0 &&
+          nodus_witness_v2_committed_global_root(Bn->g.w, rb) == 0 &&
+          memcmp(ra, rb, 64) == 0, "S5e and so is the committed global root");
+    (void)what;
+    free(renv);
+    hyb_close(Bn);
+    hyb_close(A);
+    free(Bn);
+    free(A);
+    return 0;
+}
+
+static int t_hyb_crash_edge(void)
+{
+    return hyb_case(13, "the edge block A-1", 0);
+}
+
+static int t_hyb_crash_ordinary(void)
+{
+    /* block 15 at production; at E = 15 block 15 IS the first boundary, so the ORDINARY block is 16
+     * (round 19: the case was labelled "ordinary" but ran the boundary there) */
+    const int64_t h = (15 % DNAC_EPOCH_LENGTH == 0) ? 16 : 15;
+
+    return hyb_case(h, "an ordinary generation-6 block", 0);
+}
+
+/* The first generation-6 boundary B1 of hyb_open's ladder: the first boundary above the
+ * generation-6 activation HYB_A_GEN6 (720 at production, 15 at E = 15). Round 19: the guard
+ * E > 16 is replaced by this derivation; at E = 720 the stop height is E, as before. */
+static int t_hyb_crash_boundary(void)
+{
+    return hyb_case((int64_t)hyb_boundary_above(HYB_A_GEN6),
+                    "the first generation-6 boundary B1, no storage event",
+                    0);
+}
+
+/* (iii) WITH a storage event: a registered node makes B1 an event, and the stop is B1 itself, the
+ * first generation-6 boundary hyb_boundary_above(HYB_A_GEN6): 720 at production, 15 at E = 15
+ * (round 20: round 19 stopped at the SECOND boundary, 30, at E = 15). The registration block
+ * must lie in [A, B1): HYB_REG_BLK = 16 when E > 16 (as before); at E = 15 B1 = 15 = A + 1, so the
+ * registration is block A = 14, the first generation-6 block (the registry is generation 6 from
+ * the end of block A - 1 = 13; the STORAGE_REGISTER rule, rtn_storage_register_exec
+ * nodus_witness_rt_native.c:6313, tests no height other than the bond and the consent expiry at
+ * h, and hyb_register_env builds both at the block's own height). hyb_case CHECKs reg >= A and
+ * stop > reg. */
+static int t_hyb_crash_boundary_event(void)
+{
+    const int64_t b1  = (int64_t)hyb_boundary_above(HYB_A_GEN6);
+    const int64_t reg = ((int64_t)HYB_REG_BLK < b1) ? (int64_t)HYB_REG_BLK
+                                                    : (int64_t)HYB_A_GEN6;
+
+    return hyb_case(b1, "B1 with a storage event (one registered node)", reg);
+}
+
+/* ══ HF-9 WP7 round 17 - the TEMPORARY boundary leg-root log line ═════════
+ *
+ * Operator decision 2026-11-06 (docs/plans/decisions/2026-11-06-hf9-boundary-
+ * leg-root-log.md): at each epoch boundary under generation 6 the node writes
+ *   HF9-BOUNDARY-ROOTS h=<H> global=<128 hex> leg1=<128 hex> ... leg8=<...>
+ * to its log (nodus_cmt_app_commit, after the COMMIT). The line is TEMPORARY;
+ * its removal is the operator's word, and this test goes with it.
+ *
+ * Proves, on the hybrid chain of hyb_open (generation 6 in force from block 13):
+ *   L1  the Commit of the ordinary generation-6 block E - 1 writes NO line;
+ *   L2  the Commit of the boundary block E (the first generation-6 boundary
+ *       B1; no storage event) writes EXACTLY ONE line, with h = E, a global
+ *       root equal to nodus_witness_v2_committed_global_root and the eight
+ *       leg roots equal to the v2_trie_roots rows read by SQL;
+ *   L3  nodus_cmt_app_boundary_root_line, called directly, returns that same
+ *       text at E, and returns 0 (no line) at the non-boundary heights E - 1
+ *       and E + 1 and at height 0;
+ *   L4  the Commit of block E + 1 writes no line;
+ *   L5  a boundary height under a generation BELOW 6 yields no line: a fresh
+ *       chain at its genesis (the SYSTEM runtime resolves and is below
+ *       NODUS_RT_GEN_TRIE - read, so the 0 is the generation rule and not an
+ *       unresolved runtime) answers 0 at height E.
+ * CAPTURE: the line is read from what the Commit really writes. The nodus
+ * standalone build links nodus_log_shim.c, whose qgp_log_ring_add prints
+ * every QGP_LOG_* line to stderr (there is no ring buffer in that build; the
+ * real qgp_log.c ring truncates a message at QGP_LOG_MSG_MAX_LEN = 256 bytes,
+ * shared/crypto/utils/qgp_log.c:231, and its file writer at 1024, :677 - both
+ * shorter than the ~1250-byte line), so stderr is redirected into a temp file
+ * around one block step (dup2) and scanned. L3 is the formatting function
+ * itself, visible through nodus_witness_cmt_app.h.
+ * Compile flags: NODUS_EVM_ENABLED (the tries). Round 19: the boundary block is
+ * the first epoch boundary above the ladder's generation-6 activation
+ * (hyb_boundary_above(HYB_A_GEN6)): 720 at production constants and 15 at the
+ * short-epoch setting (-DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20
+ * -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15
+ * -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15), so L1-L5 run at both; the
+ * stepped blocks are B - 2 (setup), B - 1 (14 at E = 15: the first
+ * generation-6 block, ordinary), B and B + 1. At production it runs 721 real
+ * blocks; the harness scenario test_cmt_hf9.sh (check_boundary_leg_log, 7 logs
+ * per boundary) is the node-level comparison. Environment: none. ONE-LINE PROPERTY (the node holds
+ * flockfile(stderr) across the log call): no deterministic unit test exists -
+ * the interleaving needs a second thread logging at the exact moment, so a test
+ * would pass or fail by scheduling; the lock is argued in the comment at the log
+ * site in nodus_cmt_app_commit and observed by the harness comparison. Leaves: one
+ * /tmp/test_cmt_app_hyb_XXXXXX directory per chain (removed) and a tmpfile.
+ * Can falsely pass: a log sink other than the shim (the real qgp_log.c with
+ * file logging on) is not exercised, so L2 proves the standalone node's
+ * stderr line, not a truncated one; the line is node-local text, never a
+ * consensus byte; the below-generation-6 case is shown at a genesis chain,
+ * not at a boundary block of a generation-5 chain.
+ */
+static char *blr_capture_block(hyb_t *A, int64_t height)
+{
+    FILE  *f;
+    char  *buf = NULL;
+    long   n;
+    int    saved, rc;
+
+    fflush(stderr);
+    f = tmpfile();
+    saved = dup(2);
+    if (!f || saved < 0) { if (f) fclose(f); return NULL; }
+    dup2(fileno(f), 2);
+    rc = hyb_pair_step(A, NULL, height, 0);
+    fflush(stderr);
+    dup2(saved, 2);
+    close(saved);
+    fflush(f);
+    n = ftell(f);
+    if (rc == CMT_OK && n >= 0) {
+        buf = calloc((size_t)n + 1, 1);
+        if (buf) {
+            rewind(f);
+            if (fread(buf, 1, (size_t)n, f) != (size_t)n) { free(buf); buf = NULL; }
+        }
+    }
+    fclose(f);
+    return buf;
+}
+
+static int blr_count(const char *buf, const char *needle)
+{
+    int c = 0;
+
+    for (const char *p = buf; (p = strstr(p, needle)) != NULL; p += strlen(needle))
+        c++;
+    return c;
+}
+
+static int blr_leg_hex(sqlite3 *db, int leg, char out[129])
+{
+    sqlite3_stmt *st = NULL;
+    int ok = 0;
+
+    if (sqlite3_prepare_v2(db, "SELECT lower(hex(root)) FROM v2_trie_roots "
+                               "WHERE leg = ?1", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int(st, 1, leg);
+    if (sqlite3_step(st) == SQLITE_ROW && sqlite3_column_bytes(st, 0) == 128) {
+        memcpy(out, sqlite3_column_text(st, 0), 128);
+        out[128] = '\0';
+        ok = 1;
+    }
+    sqlite3_finalize(st);
+    return ok ? 0 : -1;
+}
+
+static int t_hyb_boundary_leg_root_log(void)
+{
+    /* the boundary block: the first epoch boundary above the ladder's generation-6 activation
+     * (HYB_A_GEN6): 720 at production, 15 at E = 15 (round 19; named E below as before) */
+    const int64_t E = (int64_t)hyb_boundary_above(HYB_A_GEN6);
+    hyb_t   *A = calloc(1, sizeof(*A)), *C = calloc(1, sizeof(*C));
+    char    *cap_before, *cap_b, *cap_after, *at;
+    char     line[NODUS_CMT_BOUNDARY_ROOT_LINE_MAX], expect[NODUS_CMT_BOUNDARY_ROOT_LINE_MAX];
+    char     hx[129], gx[129];
+    uint8_t  gr[64];
+    size_t   n;
+    const nodus_domain_runtime_t *rt = NULL;
+
+    CHECK(A && C, "alloc");
+    CHECK(E > (int64_t)HYB_A_GEN6,
+          "the boundary lies above the ladder's generation-6 activation");
+    CHECK(hyb_open(A, 0) == 0, "L0 node opens");
+    CHECK(hyb_pair_to(A, NULL, 0, E - 2) == 0, "L0 blocks 1 .. E - 2");
+
+    cap_before = blr_capture_block(A, E - 1);
+    CHECK(cap_before != NULL, "L1 block E - 1 applies");
+    CHECK(blr_count(cap_before, "HF9-BOUNDARY-ROOTS") == 0,
+          "L1 an ordinary generation-6 block writes NO boundary line");
+    free(cap_before);
+
+    cap_b = blr_capture_block(A, E);
+    CHECK(cap_b != NULL, "L2 the boundary block E applies");
+    CHECK(blr_count(cap_b, "HF9-BOUNDARY-ROOTS") == 1,
+          "L2 the generation-6 boundary Commit writes EXACTLY ONE line");
+    at = strstr(cap_b, "HF9-BOUNDARY-ROOTS");
+    CHECK(at != NULL, "L2 the line is there");
+    n = strcspn(at, "\n");
+    CHECK(n < sizeof(line), "L2 the line fits its bound");
+    memcpy(line, at, n);
+    line[n] = '\0';
+    free(cap_b);
+
+    CHECK(nodus_witness_v2_committed_global_root(A->g.w, gr) == 0, "L2 the committed global root reads");
+    {
+        static const char hexd[] = "0123456789abcdef";
+        for (int i = 0; i < 64; i++) { gx[2 * i] = hexd[gr[i] >> 4]; gx[2 * i + 1] = hexd[gr[i] & 15]; }
+        gx[128] = '\0';
+    }
+    n = (size_t)snprintf(expect, sizeof(expect), "HF9-BOUNDARY-ROOTS h=%" PRId64 " global=%s", E, gx);
+    for (int l = 1; l <= 8; l++) {
+        CHECK(blr_leg_hex(A->g.w->db, l, hx) == 0, "L2 the v2_trie_roots row reads");
+        n += (size_t)snprintf(expect + n, sizeof(expect) - n, " leg%d=%s", l, hx);
+    }
+    CHECK(strcmp(line, expect) == 0,
+          "L2 the line = h, the committed global root and the eight v2_trie_roots rows, full 128 hex each");
+
+    CHECK(nodus_cmt_app_boundary_root_line(A->g.w, (uint64_t)E, line, sizeof(line)) == 1 &&
+          strcmp(line, expect) == 0, "L3 the function returns the same text at E");
+    CHECK(nodus_cmt_app_boundary_root_line(A->g.w, (uint64_t)E - 1, line, sizeof(line)) == 0 &&
+          nodus_cmt_app_boundary_root_line(A->g.w, (uint64_t)E + 1, line, sizeof(line)) == 0 &&
+          nodus_cmt_app_boundary_root_line(A->g.w, 0, line, sizeof(line)) == 0,
+          "L3 no line at a non-boundary height or at 0");
+
+    cap_after = blr_capture_block(A, E + 1);
+    CHECK(cap_after != NULL, "L4 block E + 1 applies");
+    CHECK(blr_count(cap_after, "HF9-BOUNDARY-ROOTS") == 0, "L4 the block after the boundary writes no line");
+    free(cap_after);
+    hyb_close(A);
+    free(A);
+
+    CHECK(hyb_open(C, 0) == 0, "L5 a fresh chain at its genesis opens");
+    CHECK(nodus_witness_v2_runtime_for(C->g.w, DNA_DOMAIN_SYSTEM, 0, &rt) == 0 && rt &&
+          rt->generation < NODUS_RT_GEN_TRIE,
+          "L5 the SYSTEM runtime resolves and is below generation 6");
+    CHECK(nodus_cmt_app_boundary_root_line(C->g.w, (uint64_t)E, line, sizeof(line)) == 0,
+          "L5 a boundary height under a generation below 6 yields no line");
+    hyb_close(C);
+    free(C);
+    return 0;
+}
+
+/* ══ HF-9 WP5 - T-15 (iv): a block during the SHADOW RUN (plan :455; the
+ *    shadow run is plan §11, capture = 0, shadow running) ═════════════════
+ *
+ * Proves, on the hybrid chain (the ladder of hyb_open: generation 5 is
+ * committed from block 10, the edge is block 13), node A with hf9_shadow on
+ * and the shadow hook bound on ITS executor (the node binds it the same way,
+ * nodus_witness_cmt_node.c), twin node B without a shadow:
+ *   P1  the hook is reached through the real host path: after blocks 1..10
+ *       the shadow is seeded (status running, one log row at 10); capture
+ *       is 0 (the shadow never switches it);
+ *   P2  stop at block 11 with test_fail_after_commit (the fault point
+ *       between COMMIT and store.Save): the stop is at the intended height
+ *       (ledger tip 11, COMMIT ran, State names 10), the HOOK DID NOT RUN
+ *       (no log row at 11), and A's ledger tables equal B's (digest of
+ *       hyb_digest);
+ *   P3  the handshake replays ONE block; the ledger digest (v2_trie_roots,
+ *       v2_trie_nodes, the assignment tables, the supply totals, blocks,
+ *       heads) is byte-identical before and after the replay - not applied
+ *       twice - and the replay called no hook: shadow roots, row copy and
+ *       log are untouched;
+ *   P4  the next block (12) applies on both nodes; A's hook runs: ONE new
+ *       log row at 12 and NONE at 11 (the next pass covered the missed
+ *       height in one step); every shadow leg root equals the full rebuild
+ *       of the rows; A's ledger digest and committed global root equal B's
+ *       (a node that never stopped); capture is still 0.
+ * Flags: NODUS_EVM_ENABLED only. Leaves: two /tmp/test_cmt_app_hyb_XXXXXX
+ * directories (removed). Can falsely pass: the blocks carry no row change
+ * (idle blocks), so the catch-up is proven here as "the pass after the
+ * replay runs, covers both heights and equals the rebuild", while a pass
+ * that applies changes is test_hf9_shadow.c A / F; the hook's wiring on the
+ * node's executor (not the test's) is test_cmt_node.c.
+ */
+/* The full rebuild writes nodes to the CONSENSUS v2_trie_nodes (the build is
+ * the edge's), which must stay empty on a pre-edge chain: it runs inside a
+ * transaction that is rolled back, and the caller digests the ledger around
+ * the call. */
+static int hyb_shadow_roots_equal_rebuild(nodus_witness_t *w)
+{
+    int ret = 0;
+
+    if (sqlite3_exec(w->db, "BEGIN", NULL, NULL, NULL) != SQLITE_OK) return -1;
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS && ret == 0; leg++) {
+        uint8_t sh[64], inc[64], full[64];
+
+        if (nodus_witness_v2_trie_shadow_leg_root(w, leg, sh) != 0 ||
+            nodus_witness_v2_trie_build_leg(w, leg, inc, full) != 0 ||
+            memcmp(sh, full, 64) != 0 || memcmp(inc, full, 64) != 0)
+            ret = -1;
+    }
+    if (sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL) != SQLITE_OK)
+        ret = -1;
+    return ret;
+}
+
+/* The log row of `height` against the expected values, all 64 bytes of each
+ * (Sol re-verify row 14): the eight legs and CORE v4' / STOR v3' / SYS v7'
+ * as the CONSENSUS code computes them after a simulated activation of the
+ * same rows (build_all + the consensus compositions in a rolled-back
+ * transaction), and GLOBAL v2' composed here from the committed
+ * v2_domain_heads (SYSTEM / CORE roots replaced), the committed
+ * last_upd_hash column and the committed replay root through the shared
+ * dnac primitives (plan §6 :217, §11 :424) - not by the code under test.
+ * 0 = all equal. */
+static int hyb_log_matches(nodus_witness_t *w, uint64_t height)
+{
+    nodus_v2_shadow_log_t row;
+    uint8_t core[64], stor[64], sys[64], stored[NODUS_V2_TRIE_LEGS][64];
+    dna_v2_domain_head_t heads[8];
+    uint8_t luh[8][64], domains[64], replay[64], glob[64];
+    size_t n = 0;
+    sqlite3_stmt *st = NULL;
+    int rc, ok;
+
+    if (nodus_witness_v2_shadow_log_read(w, height, &row) != 1) return 1;
+    if (sqlite3_exec(w->db, "BEGIN", NULL, NULL, NULL) != SQLITE_OK) return 2;
+    ok = nodus_witness_v2_trie_build_all(w) == 0 &&
+         nodus_witness_core_root_v4(w, core) == 0 &&
+         nodus_witness_storage_root_v3(w, stor) == 0 &&
+         nodus_witness_system_root_v7(w, sys) == 0;
+    for (int leg = 1; ok && leg <= NODUS_V2_TRIE_LEGS; leg++)
+        ok = nodus_witness_v2_trie_leg_root(w, leg, stored[leg - 1]) == 0;
+    if (sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL) != SQLITE_OK) return 3;
+    if (!ok) return 4;
+    for (int leg = 0; leg < NODUS_V2_TRIE_LEGS; leg++)
+        if (memcmp(row.leg[leg], stored[leg], 64) != 0) return 10 + leg;
+    if (memcmp(row.core, core, 64) != 0) return 20;
+    if (memcmp(row.stor, stor, 64) != 0) return 21;
+    if (memcmp(row.sys, sys, 64) != 0) return 22;
+
+    if (sqlite3_prepare_v2(w->db, "SELECT head, last_upd_hash, "
+            "typeof(last_upd_hash) FROM v2_domain_heads ORDER BY domain_id "
+            "ASC", -1, &st, NULL) != SQLITE_OK) return 30;
+    ok = 1;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const uint8_t *b = sqlite3_column_blob(st, 0);
+        const char *ty = (const char *)sqlite3_column_text(st, 2);
+        dna_v2_domain_head_t *h = &heads[n < 8 ? n : 0];
+
+        if (n >= 8 || !b ||
+            sqlite3_column_bytes(st, 0) != DNA_V2_DOMHEAD_ENC_LEN ||
+            !ty || strcmp(ty, "blob") != 0 ||
+            sqlite3_column_bytes(st, 1) != 64) { ok = 0; break; }
+        memset(h, 0, sizeof(*h));
+        h->domain_id = ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+                       ((uint32_t)b[2] << 8) | b[3];
+        memcpy(h->domain_state_root, b + 4, 64);
+        for (int i = 0; i < 8; i++)
+            h->domain_height = (h->domain_height << 8) | b[68 + i];
+        for (int i = 0; i < 8; i++)
+            h->last_updated_global_height =
+                (h->last_updated_global_height << 8) | b[76 + i];
+        h->ruleset_version = ((uint32_t)b[84] << 24) | ((uint32_t)b[85] << 16) |
+                             ((uint32_t)b[86] << 8) | b[87];
+        h->status = b[88];
+        if (h->domain_id == DNA_DOMAIN_SYSTEM)
+            memcpy(h->domain_state_root, sys, 64);
+        else if (h->domain_id == DNA_DOMAIN_CORE)
+            memcpy(h->domain_state_root, core, 64);
+        memcpy(luh[n], sqlite3_column_blob(st, 1), 64);
+        n++;
+    }
+    if (rc != SQLITE_DONE) ok = 0;
+    sqlite3_finalize(st);
+    if (!ok || n == 0) return 31;
+    if (dna_v2_domains_root_v2(heads, (const uint8_t (*)[64])luh, n, domains)
+            != 0 ||
+        nodus_witness_replay_root(w, replay) != 0 ||
+        dna_v2_global_root_v2(domains, replay, glob) != 0) return 32;
+    return memcmp(row.glob, glob, 64) == 0 ? 0 : 33;
+}
+
+/* The row copy v2_trie_shadow_rows against the CURRENT rows (plan :424): for
+ * every leg each row the build's own scan selects (canonical key, 64-byte
+ * leaf hash) is in the copy with the same value and the copy holds no other
+ * row of the leg. The expected side is the scan, never the copy. 0 = equal */
+typedef struct {
+    sqlite3_stmt *q;
+    int           leg;
+    long          n, bad;
+} hyb_copy_t;
+
+static int hyb_copy_row(void *vctx, const uint8_t *key, size_t key_len,
+                        const uint8_t val[64])
+{
+    hyb_copy_t *c = (hyb_copy_t *)vctx;
+
+    c->n++;
+    if (sqlite3_reset(c->q) != SQLITE_OK ||
+        sqlite3_clear_bindings(c->q) != SQLITE_OK ||
+        sqlite3_bind_int(c->q, 1, c->leg) != SQLITE_OK ||
+        sqlite3_bind_blob(c->q, 2, key, (int)key_len, SQLITE_STATIC)
+            != SQLITE_OK) {
+        c->bad++;
+        return 0;
+    }
+    if (sqlite3_step(c->q) != SQLITE_ROW ||
+        sqlite3_column_bytes(c->q, 0) != 64 ||
+        memcmp(sqlite3_column_blob(c->q, 0), val, 64) != 0)
+        c->bad++;
+    return 0;
+}
+
+static int hyb_shadow_rows_match(nodus_witness_t *w)
+{
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++) {
+        hyb_copy_t c;
+        char       sql[96];
+        int        rc;
+
+        memset(&c, 0, sizeof(c));
+        c.leg = leg;
+        if (sqlite3_prepare_v2(w->db, "SELECT value FROM "
+                "v2_trie_shadow_rows WHERE leg = ?1 AND key = ?2", -1, &c.q,
+                NULL) != SQLITE_OK) return -1;
+        rc = nodus_witness_v2_trie_scan_leg(w, leg, hyb_copy_row, &c);
+        sqlite3_finalize(c.q);
+        if (rc != 0 || c.bad != 0) return leg;
+        snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM "
+                 "v2_trie_shadow_rows WHERE leg = %d", leg);
+        if (q1(w->db, sql) != c.n) return 100 + leg;
+    }
+    return 0;
+}
+
+static int t_hyb_crash_shadow(void)
+{
+    hyb_t  *A = calloc(1, sizeof(*A)), *Bn = calloc(1, sizeof(*Bn));
+    uint8_t d1a[64], d1b[64], d2a[64], d3a[64], d3b[64], ra[64], rb[64];
+    uint8_t sh0[NODUS_V2_TRIE_LEGS][64], sh1[NODUS_V2_TRIE_LEGS][64];
+    sqlite3_int64 rows0;
+    nodus_v2_shadow_log_t row;
+    int     nb = -1, rc;
+    const int64_t stop_h = 11;
+
+    CHECK(A && Bn, "alloc");
+    CHECK(hyb_open(A, 0) == 0, "P0 node A (shadow, stops) opens");
+    CHECK(hyb_open(Bn, 0) == 0, "P0 node B (no shadow, never stops) opens");
+    A->g.w->config.hf9_shadow = NODUS_HF9_SHADOW_ON;
+    CHECK(nodus_cmt_blockexec_set_block_saved_hook(
+              A->x.be, nodus_witness_v2_shadow_after_commit, A->g.w)
+              == CMT_OK, "P0 the hook is bound on A's executor");
+
+    /* P1 - through the real host path */
+    CHECK(hyb_pair_to(A, Bn, 0, 10) == 0, "P1 blocks 1..10 on both nodes");
+    {
+        int st = -2;
+
+        CHECK(nodus_witness_v2_shadow_status(A->g.w, &st) == 0 &&
+              st == NODUS_V2_SHADOW_RUNNING,
+              "P1 the hook seeded the shadow: status running");
+    }
+    CHECK(nodus_witness_v2_shadow_log_read(A->g.w, 10, &row) == 1 &&
+          q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_log") == 1,
+          "P1 one log row, at the first generation-5 height (10)");
+    CHECK(q1(A->g.w->db, "SELECT capture FROM v2_trie_state") == 0,
+          "P1 capture is 0 during the shadow run");
+    CHECK(q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_dirty") == 0,
+          "P1 nothing shadow-related in the block transaction: no dirty key");
+
+    /* P2 - the stop between COMMIT and the state save */
+    rc = hyb_pair_step(A, Bn, stop_h, 1);   /* B applies it, A stops */
+    CHECK(rc != -3, "P2 node B applied the stop block");
+    CHECK(rc == CMT_FAULT,
+          "P2a the apply stops with CMT_FAULT in the post-commit window");
+    CHECK(sqlite3_get_autocommit(A->g.w->db) != 0, "P2b the COMMIT had run");
+    CHECK(q1(A->g.w->db, "SELECT MAX(global_height) FROM v2_blocks") ==
+              stop_h, "P2c the ledger tip is the intended stop height");
+    CHECK(nodus_witness_v2_shadow_log_read(A->g.w, (uint64_t)stop_h, &row)
+              == 0 &&
+          q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_log") == 1,
+          "P2d the hook did NOT run at the stop (no log row at 11)");
+    CHECK(hyb_digest(A->g.w->db, d1a) == 0 &&
+          hyb_digest(Bn->g.w->db, d1b) == 0 && memcmp(d1a, d1b, 64) == 0,
+          "P2e the stopped node's ledger = the node that never stopped");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_shadow_leg_root(A->g.w, leg,
+                                                    sh0[leg - 1]) == 0,
+              "P2f shadow roots before the replay");
+    rows0 = q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_rows");
+
+    /* P3 - the replay */
+    CHECK(hyb_handshake(A, &nb) == CMT_OK && nb == 1,
+          "P3a the handshake replays exactly one block");
+    CHECK(hyb_digest(A->g.w->db, d2a) == 0 && memcmp(d1a, d2a, 64) == 0,
+          "P3b the ledger tables are byte-identical after the replay: not "
+          "applied twice");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_shadow_leg_root(A->g.w, leg,
+                                                    sh1[leg - 1]) == 0,
+              "P3c shadow roots after the replay");
+    CHECK(memcmp(sh0, sh1, sizeof(sh0)) == 0 &&
+          q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_rows") == rows0 &&
+          q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_log") == 1,
+          "P3d the replay called no hook: shadow roots, row copy and log "
+          "untouched");
+
+    /* P4 - the next block; the pass catches up */
+    CHECK(nodus_cmt_ss_load(A->x.store, A->x.state) == CMT_OK,
+          "P4a the executor's State is the caught-up one");
+    CHECK(hyb_pair_to(A, Bn, stop_h, stop_h + 1) == 0,
+          "P4b the next block, made once, applies on both nodes");
+    CHECK(nodus_witness_v2_shadow_log_read(A->g.w, (uint64_t)stop_h + 1, &row)
+              == 1 &&
+          nodus_witness_v2_shadow_log_read(A->g.w, (uint64_t)stop_h, &row)
+              == 0 &&
+          q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_log") == 2,
+          "P4c ONE new log row, at 12, none at 11: the pass covered the "
+          "missed height in one step");
+    CHECK(hyb_digest(A->g.w->db, d3a) == 0, "P4d0 digest before the rebuild");
+    CHECK(hyb_shadow_roots_equal_rebuild(A->g.w) == 0,
+          "P4d every shadow leg root equals the full rebuild of the rows");
+    CHECK(hyb_digest(A->g.w->db, d2a) == 0 && memcmp(d2a, d3a, 64) == 0,
+          "P4d1 the rolled-back rebuild left the ledger tables untouched "
+          "(v2_trie_nodes stays empty before the edge)");
+    CHECK(hyb_digest(Bn->g.w->db, d3b) == 0 && memcmp(d3a, d3b, 64) == 0,
+          "P4e the replayed node's ledger tables = the node that never "
+          "stopped");
+    CHECK(nodus_witness_v2_committed_global_root(A->g.w, ra) == 0 &&
+          nodus_witness_v2_committed_global_root(Bn->g.w, rb) == 0 &&
+          memcmp(ra, rb, 64) == 0, "P4f and so is the committed global root");
+    CHECK(q1(A->g.w->db, "SELECT capture FROM v2_trie_state") == 0,
+          "P4g capture is still 0");
+    hyb_close(Bn);
+    hyb_close(A);
+    free(Bn);
+    free(A);
+    return 0;
+}
+
+#ifdef QGP_FAULT_INJECT
+/* HF-9 WP5, plan T-10 "injected shadow fault -> block still commits, node
+ * keeps running", THROUGH THE HOST: the shadow log write (injection point 3,
+ * which fires on every pass, idle blocks included) is armed before block 11
+ * of the hybrid chain on node A (hook bound, hf9_shadow on); the host's
+ * apply returns CMT_OK, the ledger tip advances, the saved State names 11,
+ * the shadow status is FAULTED, A's ledger tables equal the twin B's, and
+ * the next block applies on both and still equals. Flags:
+ * -DQGP_FAULT_INJECT=ON (absent otherwise = missing coverage). Leaves: two
+ * /tmp/test_cmt_app_hyb_XXXXXX directories (removed). Can falsely pass: if
+ * the injection point is never reached - asserted through the hit count. */
+static int t_hyb_shadow_fault_host(void)
+{
+    hyb_t  *A = calloc(1, sizeof(*A)), *Bn = calloc(1, sizeof(*Bn));
+    uint8_t da[64], db_[64];
+    int     hits0, st = -2, rc;
+
+    CHECK(A && Bn, "alloc");
+    CHECK(hyb_open(A, 0) == 0 && hyb_open(Bn, 0) == 0, "Q0 both nodes open");
+    A->g.w->config.hf9_shadow = NODUS_HF9_SHADOW_ON;
+    CHECK(nodus_cmt_blockexec_set_block_saved_hook(
+              A->x.be, nodus_witness_v2_shadow_after_commit, A->g.w)
+              == CMT_OK, "Q0 the hook is bound on A's executor");
+    CHECK(hyb_pair_to(A, Bn, 0, 10) == 0, "Q1 blocks 1..10 (seeded at 10)");
+    CHECK(nodus_witness_v2_shadow_status(A->g.w, &st) == 0 &&
+          st == NODUS_V2_SHADOW_RUNNING, "Q1 the shadow runs");
+
+    hits0 = nodus_witness_v2_shadow_test_hits();
+    CHECK(nodus_witness_v2_shadow_test_fault(3) == 0, "Q2 arm the log write");
+    rc = hyb_pair_step(A, Bn, 11, 0);
+    CHECK(rc == CMT_OK, "Q2a the host's apply of block 11 is CMT_OK although "
+          "the shadow faulted");
+    CHECK(nodus_witness_v2_shadow_test_hits() == hits0 + 1,
+          "Q2b the injection point was reached (false-pass guard)");
+    CHECK(q1(A->g.w->db, "SELECT MAX(global_height) FROM v2_blocks") == 11 &&
+          sqlite3_get_autocommit(A->g.w->db) != 0,
+          "Q2c the block is committed and no transaction is left open");
+    {
+        cmt_state_storage_t *stor = calloc(1, sizeof(*stor));
+        cmt_state_t         *cs = calloc(1, sizeof(*cs));
+
+        CHECK(stor && cs && cmt_state_init(cs, stor) == CMT_OK &&
+              nodus_cmt_ss_load(A->x.store, cs) == CMT_OK &&
+              cs->last_block_height == 11,
+              "Q2d the consensus state was saved at 11");
+        free(cs);
+        free(stor);
+    }
+    CHECK(nodus_witness_v2_shadow_status(A->g.w, &st) == 0 &&
+          st == NODUS_V2_SHADOW_FAULTED, "Q2e the shadow status is FAULTED");
+    CHECK(hyb_digest(A->g.w->db, da) == 0 && hyb_digest(Bn->g.w->db, db_) == 0 &&
+          memcmp(da, db_, 64) == 0,
+          "Q2f the faulted node's ledger = the node without a shadow");
+    CHECK(hyb_pair_to(A, Bn, 11, 12) == 0,
+          "Q3 the node keeps running: block 12 applies on both");
+    CHECK(hyb_digest(A->g.w->db, da) == 0 && hyb_digest(Bn->g.w->db, db_) == 0 &&
+          memcmp(da, db_, 64) == 0 &&
+          q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_log") == 1,
+          "Q3a ... equal again, and the faulted shadow logged nothing more");
+    hyb_close(Bn);
+    hyb_close(A);
+    free(Bn);
+    free(A);
+    return 0;
+}
+#endif
+/* ── the STORAGE_REGISTER envelope (step b), ported from test_storage_b2.c
+ *    streg_call :1719-1745 and st_env :1747-1830: a 2-leg envelope, SYSTEM
+ *    STORAGE_REGISTER (owner_fp ‖ node_pk ‖ consent_sig ‖ expiry ‖ bond,
+ *    7299 B, the node is its own owner) + CORE SYSFUND over the coin (66
+ *    B: in_count 1 ‖ nullifier ‖ out_count 0), both legs signed by the
+ *    node's key (= the coin's owner). Built against the chain's CURRENT
+ *    SYSTEM / CORE manifests (generation 6 after the edge). ─────────────── */
+#define HYB_STREG_LEN  7299u
+#define HYB_AUTH_LEN   (1u + NODUS_RT_AUTH_SIGNER_LEN)
+
+static void hyb_put64(uint8_t *p, uint64_t v)
+{
+    for (int i = 7; i >= 0; i--) { p[i] = (uint8_t)v; v >>= 8; }
+}
+
+static uint32_t hyb_streg_call(nodus_witness_t *w, uint8_t *dst, int key,
+                               uint64_t height)
+{
+    static const uint8_t zero64[64] = { 0 };
+    uint8_t  msg[DNA_VALBIND_MSG_LEN], fp[64];
+    const uint64_t cexp = height + 10u;
+    size_t   sl = 0, off = 0;
+
+    if (qgp_sha3_512(g_ks[key].pk, QGP_DSA87_PUBLICKEYBYTES, fp) != 0 ||
+        dna_valbind_consent_msg(msg, w->v2_chain32,
+                                DNA_VALBIND_OP_STORAGE_REGISTER, zero64, fp,
+                                g_ks[key].pk, cexp) != 0)
+        return 0;
+    memcpy(dst, fp, 64);                                  off += 64;
+    memcpy(dst + off, g_ks[key].pk, QGP_DSA87_PUBLICKEYBYTES);
+    off += QGP_DSA87_PUBLICKEYBYTES;
+    if (dna_valbind_consent_sign(dst + off, &sl, msg, g_ks[key].sk) != 0 ||
+        sl != (size_t)DNA_VALBIND_SIG_LEN)
+        return 0;
+    off += DNA_VALBIND_SIG_LEN;
+    hyb_put64(dst + off, cexp);                           off += 8;
+    hyb_put64(dst + off, HYB_COIN_BOND);                  off += 8;
+    return off == HYB_STREG_LEN ? HYB_STREG_LEN : 0;
+}
+
+/* A 2-leg storage envelope: SYSTEM `op` with the call `call` (call_len
+ * bytes) + CORE SYSFUND over coin `coin`, both legs signed by node key
+ * `key` (the node is its own owner and the coin's owner; test_storage_b2.c
+ * st_env :1747). @return 0 and a heap envelope in *out (free()), or -1 */
+static int hyb_storage_env(nodus_witness_t *w, uint64_t height, uint32_t op,
+                           const uint8_t *call, uint32_t call_len, int coin,
+                           int key, uint8_t **out, size_t *out_len)
+{
+    static uint8_t fund[66];
+    static uint8_t auth[2][HYB_AUTH_LEN];
+    dna_domain_manifest_t sys, core;
+    dna_env_leg_in_t      legs[2];
+    dna_env_in_t          in;
+    dna_env_leg_ctx_t     lctx[2];
+    uint8_t               nul[64];
+    size_t                len = 0, used = 0;
+    uint8_t              *bytes = NULL;
+    dna_env_preflight_t  *pf = NULL;
+    int                   ok = -1;
+
+    *out = NULL;
+    if (nodus_witness_domreg_get(w, DNA_DOMAIN_SYSTEM, NULL, &sys, NULL) != 0 ||
+        nodus_witness_domreg_get(w, DNA_DOMAIN_CORE, NULL, &core, NULL) != 0)
+        return -1;
+    hyb_coin_nul(coin, nul);
+    fund[0] = 1;
+    memcpy(fund + 1, nul, 64);
+    fund[65] = 0;
+    memset(legs, 0, sizeof(legs));
+    memset(auth, 0, sizeof(auth));
+    legs[0].hdr.domain_id = DNA_DOMAIN_SYSTEM;
+    legs[0].hdr.runtime_op = op;
+    legs[0].hdr.ruleset_version = sys.ruleset_version;
+    legs[0].hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
+    legs[0].hdr.auth_kind = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+    legs[0].hdr.call_len = call_len;
+    legs[0].hdr.auth_len = HYB_AUTH_LEN;
+    legs[0].hdr.res_max_effects = 8;
+    legs[0].hdr.res_max_effect_bytes = 16384;
+    legs[0].call_data = call;
+    legs[0].auth_data = auth[0];
+    legs[1].hdr.domain_id = DNA_DOMAIN_CORE;
+    legs[1].hdr.runtime_op = DNA_CORERULE_SYSFUND;
+    legs[1].hdr.ruleset_version = core.ruleset_version;
+    legs[1].hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
+    legs[1].hdr.auth_kind = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+    legs[1].hdr.call_len = 66;
+    legs[1].hdr.auth_len = HYB_AUTH_LEN;
+    legs[1].hdr.res_max_effects = 40;
+    legs[1].hdr.res_max_effect_bytes = 16384;
+    legs[1].call_data = fund;
+    legs[1].auth_data = auth[1];
+    memset(&in, 0, sizeof(in));
+    in.fee_amount = (uint64_t)DNAC_MIN_FEE_RAW;
+    /* inside the D2 window [height, height + 720] of the carrying block
+     * (phase 0d refuses 0); same choice as 4320043cd and test_hf7_edge.c
+     * :667 ("expiry A + 5") */
+    in.expiry_height = height + 5u;
+    in.res_max_total_units = 400000;
+    in.leg_count = 2;
+    in.legs = legs;
+    memset(lctx, 0, sizeof(lctx));
+    lctx[0].domain_id = DNA_DOMAIN_SYSTEM;
+    lctx[0].ruleset_version = sys.ruleset_version;
+    memcpy(lctx[0].ruleset_hash, sys.ruleset_hash, 64);
+    lctx[1].domain_id = DNA_DOMAIN_CORE;
+    lctx[1].ruleset_version = core.ruleset_version;
+    memcpy(lctx[1].ruleset_hash, core.ruleset_hash, 64);
+
+    if (dna_env_encoded_size(legs, 2, &len) != 0) return -1;
+    bytes = malloc(len);
+    pf = calloc(1, sizeof(*pf));
+    do {
+        int bad = 0;
+
+        if (!bytes || !pf) break;
+        if (dna_env_encode(&in, bytes, len, &used) != 0 || used != len) break;
+        if (dna_env_preflight(bytes, len, w->v2_chain32, height, lctx, 2, pf)
+            != DNA_ENV_PF_OK)
+            break;
+        for (int L = 0; L < 2 && !bad; L++) {
+            size_t sl = 0;
+
+            auth[L][0] = 1;
+            memcpy(auth[L] + 1, g_ks[key].pk, QGP_DSA87_PUBLICKEYBYTES);
+            if (qgp_dsa87_sign(auth[L] + 1 + QGP_DSA87_PUBLICKEYBYTES, &sl,
+                               pf->auth_digest[L], 64, g_ks[key].sk) != 0)
+                bad = 1;
+        }
+        if (bad) break;
+        if (dna_env_encode(&in, bytes, len, &used) != 0 || used != len) break;
+        ok = 0;
+    } while (0);
+    free(pf);
+    if (ok != 0) { free(bytes); return -1; }
+    *out = bytes;
+    *out_len = len;
+    return 0;
+}
+
+/* @return 0 and a heap envelope in *out (free()), or -1: key `key`'s
+ * STORAGE_REGISTER (coin = the key's own coin) */
+static int hyb_register_env(nodus_witness_t *w, uint64_t height, int key,
+                            uint8_t **out, size_t *out_len)
+{
+    static uint8_t call[HYB_STREG_LEN];
+
+    *out = NULL;
+    if (hyb_streg_call(w, call, key, height) != HYB_STREG_LEN) return -1;
+    /* key 2's coin is the arrival coin (coin 2 is the exit coin of key 1) */
+    return hyb_storage_env(w, height, DNA_SYSRULE_STORAGE_REGISTER, call,
+                           HYB_STREG_LEN,
+                           key == 2 ? HYB_ARRIVAL_COIN : key, key, out,
+                           out_len);
+}
+
+/* @return 0 and a heap envelope in *out (free()), or -1: key `key`'s
+ * STORAGE_EXIT, call node_fp ‖ owner_fp (128 B; the node is its own owner,
+ * test_storage_b2.c :3029-3033), funded by the exit coin */
+static int hyb_exit_env(nodus_witness_t *w, uint64_t height, int key,
+                        uint8_t **out, size_t *out_len)
+{
+    uint8_t xcall[128];
+
+    *out = NULL;
+    if (qgp_sha3_512(g_ks[key].pk, QGP_DSA87_PUBLICKEYBYTES, xcall) != 0)
+        return -1;
+    memcpy(xcall + 64, xcall, 64);
+    return hyb_storage_env(w, height, DNA_SYSRULE_STORAGE_EXIT, xcall, 128u,
+                           HYB_EXIT_COIN, key, out, out_len);
+}
+
+/* Put the envelope `env` (elen bytes) into the NEXT block of the pair at
+ * `height` and apply it (to B too when given). @return the apply rc */
+static int hyb_tx_step(hyb_t *A, hyb_t *B, int64_t height, uint8_t *env,
+                       size_t elen)
+{
+    A->x.txs[0].data = env;
+    A->x.txs[0].len  = elen;
+    A->ntx = 1;
+    return hyb_pair_step(A, B, height, 0);
+}
+
+/* Put one registration for node key `key` into the NEXT block of the pair
+ * at `height` and apply it (to B too when given). @return the apply rc
+ * (CMT_OK) or -1 on a build failure. The envelope buffer is leaked into
+ * `*env` for the caller to free after the step. */
+static int hyb_register_step(hyb_t *A, hyb_t *B, int64_t height, int key,
+                             uint8_t **env)
+{
+    size_t elen = 0;
+
+    if (hyb_register_env(A->g.w, (uint64_t)height, key, env, &elen) != 0)
+        return -1;
+    return hyb_tx_step(A, B, height, *env, elen);
+}
+
+/* the same for key `key`'s STORAGE_EXIT */
+static int hyb_exit_step(hyb_t *A, hyb_t *B, int64_t height, int key,
+                         uint8_t **env)
+{
+    size_t elen = 0;
+
+    if (hyb_exit_env(A->g.w, (uint64_t)height, key, env, &elen) != 0)
+        return -1;
+    return hyb_tx_step(A, B, height, *env, elen);
+}
+
+/* ══ HF-9 WP5 - T-15 (iv) WITH A COMMITTED ROW CHANGE (Sol verify row 12) ═
+ *
+ * The same stop as t_hyb_crash_shadow, but the stop block CARRIES a signed
+ * STORAGE_REGISTER (op 7, a generation-4 op, valid under generation 5) on
+ * the funded hybrid: the block that commits and then stops moves the
+ * registry leg (leg 5), so the missed height has a real change in the
+ * migrated rows.
+ *   S1  after blocks 1..10 the shadow is seeded (log row at 10), the hook is
+ *       bound on node A only, capture 0;
+ *   S2  block 11 carries the registration; A stops after the COMMIT
+ *       (test_fail_after_commit): the registry row exists on A and on B (the
+ *       change IS committed), the hook did not run (no log row at 11), the
+ *       shadow's registry root is STALE - it differs from the full rebuild
+ *       of the rows (the control the missing change would otherwise hide);
+ *   S3  the handshake replays one block; the ledger digest is unchanged and
+ *       the shadow roots are still the stale ones;
+ *   S4  block 12 (idle) applies on both nodes; A's pass catches up from the
+ *       committed rows: ONE new log row at 12, none at 11; the registry
+ *       shadow root MOVED and every leg equals the full rebuild; A's ledger
+ *       and committed global root equal the node that never stopped.
+ * Flags: NODUS_EVM_ENABLED. Leaves two /tmp/test_cmt_app_hyb_XXXXXX
+ * directories (removed). Can falsely pass: if the registration is refused
+ * under generation 5 the stop block carries no change - S2's registry-count
+ * check and the stale-root control fail then (the case cannot pass without
+ * a committed change). The hook is bound by the test (the node's own
+ * binding is test_cmt_node.c t_block_saved_hook_bound). */
+static int t_hyb_crash_shadow_rows(void)
+{
+    hyb_t   *A = calloc(1, sizeof(*A)), *Bn = calloc(1, sizeof(*Bn));
+    uint8_t *env = NULL;
+    size_t   elen = 0;
+    uint8_t  d1a[64], d1b[64], d2a[64], d3a[64], d3b[64], ra[64], rb[64];
+    uint8_t  seed5[64], stale5[64], now5[64], inc[64], full[64];
+    nodus_v2_shadow_log_t row;
+    int      nb = -1, rc;
+
+    CHECK(A && Bn, "alloc");
+    CHECK(hyb_open(A, 1) == 0 && hyb_open(Bn, 1) == 0,
+          "S0 both funded nodes open");
+    A->g.w->config.hf9_shadow = NODUS_HF9_SHADOW_ON;
+    CHECK(nodus_cmt_blockexec_set_block_saved_hook(
+              A->x.be, nodus_witness_v2_shadow_after_commit, A->g.w)
+              == CMT_OK, "S0 the hook is bound on A's executor");
+    CHECK(hyb_pair_to(A, Bn, 0, 10) == 0, "S1 blocks 1..10");
+    CHECK(nodus_witness_v2_shadow_log_read(A->g.w, 10, &row) == 1 &&
+          q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_log") == 1 &&
+          q1(A->g.w->db, "SELECT capture FROM v2_trie_state") == 0,
+          "S1 seeded at 10, capture 0");
+    CHECK(nodus_witness_v2_trie_shadow_leg_root(A->g.w, 5, seed5) == 0,
+          "S1 the seeded registry root");
+
+    /* S2 - the registration block, A stops after the COMMIT */
+    CHECK(hyb_register_env(A->g.w, 11, 1, &env, &elen) == 0 && env,
+          "S2 the envelope builds against the generation-5 manifests");
+    A->x.txs[0].data = env;
+    A->x.txs[0].len  = elen;
+    A->ntx = 1;
+    rc = hyb_pair_step(A, Bn, 11, 1);
+    CHECK(rc != -3, "S2 node B applied the registration block");
+    CHECK(rc == CMT_FAULT && sqlite3_get_autocommit(A->g.w->db) != 0 &&
+          q1(A->g.w->db, "SELECT MAX(global_height) FROM v2_blocks") == 11,
+          "S2 A stopped after the COMMIT at the intended height");
+    CHECK(q1(A->g.w->db, "SELECT COUNT(*) FROM v2_storage_nodes") == 1 &&
+          q1(Bn->g.w->db, "SELECT COUNT(*) FROM v2_storage_nodes") == 1,
+          "S2 the registry row is committed on both nodes (a real change "
+          "in the migrated rows)");
+    CHECK(nodus_witness_v2_shadow_log_read(A->g.w, 11, &row) == 0 &&
+          q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_log") == 1,
+          "S2 the hook did not run at the stop");
+    CHECK(nodus_witness_v2_trie_shadow_leg_root(A->g.w, 5, stale5) == 0 &&
+          memcmp(seed5, stale5, 64) == 0,
+          "S2 the shadow registry root is still the seeded one");
+    CHECK(sqlite3_exec(A->g.w->db, "BEGIN", NULL, NULL, NULL) == SQLITE_OK &&
+          nodus_witness_v2_trie_build_leg(A->g.w, 5, inc, full) == 0 &&
+          sqlite3_exec(A->g.w->db, "ROLLBACK", NULL, NULL, NULL) == SQLITE_OK,
+          "S2 the full rebuild of leg 5 (rolled back)");
+    CHECK(memcmp(stale5, full, 64) != 0,
+          "S2 control: the shadow root is STALE against the committed rows");
+    CHECK(hyb_digest(A->g.w->db, d1a) == 0 && hyb_digest(Bn->g.w->db, d1b) == 0 &&
+          memcmp(d1a, d1b, 64) == 0,
+          "S2 the stopped node's ledger = the node that never stopped");
+
+    /* S3 - the replay */
+    CHECK(hyb_handshake(A, &nb) == CMT_OK && nb == 1, "S3 one block replayed");
+    CHECK(hyb_digest(A->g.w->db, d2a) == 0 && memcmp(d1a, d2a, 64) == 0,
+          "S3 the ledger tables are byte-identical after the replay");
+    CHECK(nodus_witness_v2_trie_shadow_leg_root(A->g.w, 5, now5) == 0 &&
+          memcmp(now5, seed5, 64) == 0 &&
+          q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_log") == 1,
+          "S3 the replay called no hook: the shadow is untouched");
+
+    /* S4 - the next block; the pass catches up from the committed rows */
+    CHECK(nodus_cmt_ss_load(A->x.store, A->x.state) == CMT_OK, "S4 State");
+    CHECK(hyb_pair_to(A, Bn, 11, 12) == 0, "S4 block 12 applies on both");
+    CHECK(nodus_witness_v2_shadow_log_read(A->g.w, 12, &row) == 1 &&
+          nodus_witness_v2_shadow_log_read(A->g.w, 11, &row) == 0 &&
+          q1(A->g.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_log") == 2,
+          "S4 ONE new log row, at 12, none at 11");
+    CHECK(nodus_witness_v2_trie_shadow_leg_root(A->g.w, 5, now5) == 0 &&
+          memcmp(now5, seed5, 64) != 0 && memcmp(now5, full, 64) == 0,
+          "S4 the registry shadow root moved to the full rebuild of the "
+          "committed rows");
+    CHECK(hyb_shadow_rows_match(A->g.w) == 0,
+          "S4 the row copy v2_trie_shadow_rows equals the selected rows "
+          "(keys and leaf hashes, every leg), including the registry row");
+    CHECK(hyb_digest(A->g.w->db, d3a) == 0, "S4 digest before the rebuild");
+    CHECK(hyb_shadow_roots_equal_rebuild(A->g.w) == 0,
+          "S4 every shadow leg equals the full rebuild");
+    CHECK(hyb_log_matches(A->g.w, 12) == 0,
+          "S4 the LOGGED legs, CORE / STOR / SYS and GLOBAL v2' of height 12 "
+          "equal the expected values, all 64 bytes, after the committed "
+          "registry change");
+    CHECK(hyb_digest(A->g.w->db, d2a) == 0 && memcmp(d2a, d3a, 64) == 0,
+          "S4 the rolled-back rebuild left the ledger untouched");
+    CHECK(hyb_digest(Bn->g.w->db, d3b) == 0 && memcmp(d3a, d3b, 64) == 0,
+          "S4 A's ledger = the node that never stopped");
+    CHECK(nodus_witness_v2_committed_global_root(A->g.w, ra) == 0 &&
+          nodus_witness_v2_committed_global_root(Bn->g.w, rb) == 0 &&
+          memcmp(ra, rb, 64) == 0, "S4 and so is the committed global root");
+    CHECK(q1(A->g.w->db, "SELECT capture FROM v2_trie_state") == 0,
+          "S4 capture is still 0");
+    free(env);
+    hyb_close(Bn);
+    hyb_close(A);
+    free(Bn);
+    free(A);
+    return 0;
+}
+
+/* HF-9 WP4 — the FUNDED hybrid probe (step a of the registry-writer
+ * route: plan :445 T-5, :449 T-9, :455 T-15 (iii) with a storage event all
+ * need coins on the generation-6 chain). Builds the hybrid with two coins
+ * planted before the genesis and asserts, one labelled CHECK each: F1 the
+ * genesis still derives (hyb_open), F2 the coins are present and nothing
+ * else is a UTXO, F3 the supply invariant (genesis_supply = current_supply
+ * = UTXOs + validator stakes + delegated) and the committee / treasury rows
+ * v2x seeded itself, F4 one empty block applies through the real blockexec
+ * (the supply check runs inside the apply), F5 two more blocks with the
+ * strictly increasing block times. Flags: NODUS_EVM_ENABLED. Leaves one
+ * /tmp/test_cmt_app_hyb_XXXXXX (removed). Can falsely pass: it proves the
+ * coins and the supply row survive genesis and three empty blocks, not
+ * that a spend or a registration is accepted (steps b and c). */
+static int t_hybrid_funded_probe(void)
+{
+    hyb_t *H = calloc(1, sizeof(*H));
+    char   hex[129], sql[512];
+
+    CHECK(H != NULL, "alloc");
+    CHECK(hyb_open(H, 1) == 0,
+          "F1 the funded hybrid derives (coins before the genesis, "
+          "V2X_SEED_NOT_REAL_UTXOS)");
+    for (int c = 0; c < HYB_N_COINS; c++) {
+        uint8_t nul[64];
+        sqlite3_stmt *st = NULL;
+        int found = 0;
+
+        hyb_coin_nul(c, nul);
+        CHECK(hyb_coin_owner_hex(c, hex) == 0, "F2a owner hex");
+        CHECK(sqlite3_prepare_v2(H->g.w->db,
+                "SELECT amount, owner FROM utxo_set WHERE nullifier = ?1",
+                -1, &st, NULL) == SQLITE_OK, "F2b prepare");
+        sqlite3_bind_blob(st, 1, nul, 64, SQLITE_STATIC);
+        if (sqlite3_step(st) == SQLITE_ROW) {
+            found = (uint64_t)sqlite3_column_int64(st, 0) ==
+                        hyb_coin_amount(c) &&
+                    strcmp((const char *)sqlite3_column_text(st, 1), hex) == 0;
+        }
+        sqlite3_finalize(st);
+        CHECK(found, "F2c the coin is present with its amount and owner "
+                     "after the genesis");
+    }
+    CHECK(q1(H->g.w->db, "SELECT COUNT(*) FROM utxo_set") == HYB_N_COINS,
+          "F2d the coins are the only UTXOs (the genesis wrote none)");
+    snprintf(sql, sizeof(sql),
+             "SELECT genesis_supply = current_supply AND genesis_supply = "
+             "(SELECT COALESCE(SUM(amount),0) FROM utxo_set) + "
+             "(SELECT COALESCE(SUM(self_stake),0) FROM validators) + "
+             "(SELECT COALESCE(SUM(total_delegated),0) FROM validators) "
+             "FROM supply_tracking WHERE id = 1");
+    CHECK(q1(H->g.w->db, sql) == 1,
+          "F3a the supply row = UTXOs + stakes + delegated (v2x seeded it)");
+    CHECK(q1(H->g.w->db, "SELECT COUNT(*) FROM v2_treasury") ==
+              (int64_t)NODUS_V2_GEN_TREASURY_POOLS &&
+          q1(H->g.w->db, "SELECT COUNT(*) FROM validators") == N_KEYS,
+          "F3b the nine treasury pools and the g_ks committee were seeded "
+          "once, by v2x");
+    CHECK(hyb_pair_to(H, NULL, 0, 1) == 0,
+          "F4 one empty block applies through the real blockexec (supply "
+          "check inside)");
+    CHECK(q1(H->g.w->db, "SELECT COUNT(*) FROM v2_blocks") == 1 &&
+          q1(H->g.w->db, "SELECT COUNT(*) FROM utxo_set") == HYB_N_COINS,
+          "F4b block 1 committed, the coins untouched");
+    CHECK(hyb_pair_to(H, NULL, 1, 3) == 0,
+          "F5 blocks 2 and 3 apply (strictly increasing block times)");
+    hyb_close(H);
+    free(H);
+    return 0;
+}
+
+/* HF-9 WP4 — step (b): ONE signed STORAGE_REGISTER at generation 6 through
+ * the real blockexec on the funded hybrid, and T-5 (plan :445) for the
+ * registry writer rtn_sys_mutate -> v2_storage_nodes (leg 5).
+ * R1 blocks 1-15 apply (generation 6 from block 14); R2 the 2-leg envelope
+ * builds and preflights against the CURRENT SYSTEM / CORE manifests; R3
+ * block 16 carrying it applies; R4 the SYSFUND leg consumed the coin
+ * (nullifier gone) and moved the bond into the supply's bond bucket; R5 the
+ * registry row is ACTIVE, node_fp = SHA3-512(node_pk) of key 1, bond =
+ * the STORAGE_BOND, registered_height 16; R6 the running bond total
+ * (v2_bond_total) = the bond; R7 the supply invariant still holds; R8 leg 5
+ * (registry) moved and every leg root equals the incremental and the full
+ * rebuild after block 16 and after block 17. Flags: NODUS_EVM_ENABLED.
+ * Leaves one /tmp/test_cmt_app_hyb_XXXXXX (removed). Can falsely pass: one
+ * node, one registration; the exit / release path and the boundary are not
+ * driven here (the boundary: the T-15 event case). */
+static int t_hybrid_register_probe(void)
+{
+    hyb_t   *H = calloc(1, sizeof(*H));
+    uint8_t *env = NULL;
+    uint8_t  nul[64], fp[64];
+    uint8_t  l0[8][64], l1[8][64];
+    int      moved = 0;
+
+    CHECK(H != NULL, "alloc");
+    CHECK(hyb_open(H, 1) == 0, "R0 the funded hybrid derives");
+    CHECK(hyb_pair_to(H, NULL, 0, 15) == 0,
+          "R1 blocks 1-15 apply (generation 6 from block 14)");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, l0[leg - 1]) == 0,
+              "R1b leg roots read before the registration");
+    CHECK(hyb_register_env(H->g.w, 16, 1, &env, &(size_t){ 0 }) == 0 && env,
+          "R2 the STORAGE_REGISTER + SYSFUND envelope builds and "
+          "preflights");
+    free(env);
+    env = NULL;
+    CHECK(hyb_register_step(H, NULL, 16, 1, &env) == CMT_OK,
+          "R3 the block carrying the envelope applies through the real "
+          "blockexec");
+    hyb_coin_nul(1, nul);
+    {
+        sqlite3_stmt *st = NULL;
+        int gone = 0;
+
+        CHECK(sqlite3_prepare_v2(H->g.w->db, "SELECT COUNT(*) FROM utxo_set "
+              "WHERE nullifier = ?1", -1, &st, NULL) == SQLITE_OK, "prep");
+        sqlite3_bind_blob(st, 1, nul, 64, SQLITE_STATIC);
+        gone = sqlite3_step(st) == SQLITE_ROW &&
+               sqlite3_column_int(st, 0) == 0;
+        sqlite3_finalize(st);
+        CHECK(gone, "R4 the SYSFUND leg consumed the registrant's coin");
+    }
+    CHECK(qgp_sha3_512(g_ks[1].pk, QGP_DSA87_PUBLICKEYBYTES, fp) == 0, "fp");
+    {
+        sqlite3_stmt *st = NULL;
+        int ok = 0;
+
+        CHECK(sqlite3_prepare_v2(H->g.w->db, "SELECT bond, status, "
+              "registered_height, node_pk FROM v2_storage_nodes WHERE "
+              "node_fp = ?1", -1, &st, NULL) == SQLITE_OK, "prep");
+        sqlite3_bind_blob(st, 1, fp, 64, SQLITE_STATIC);
+        if (sqlite3_step(st) == SQLITE_ROW) {
+            ok = (uint64_t)sqlite3_column_int64(st, 0) == HYB_COIN_BOND &&
+                 sqlite3_column_int(st, 1) == 1 &&
+                 sqlite3_column_int64(st, 2) == 16 &&
+                 sqlite3_column_bytes(st, 3) == (int)QGP_DSA87_PUBLICKEYBYTES &&
+                 memcmp(sqlite3_column_blob(st, 3), g_ks[1].pk,
+                        QGP_DSA87_PUBLICKEYBYTES) == 0;
+        }
+        sqlite3_finalize(st);
+        CHECK(ok, "R5 the registry row is ACTIVE under SHA3-512(node_pk), "
+                  "bond = STORAGE_BOND, registered at 16");
+    }
+    CHECK(q1(H->g.w->db, "SELECT total FROM v2_bond_total WHERE id = 1") ==
+              (int64_t)HYB_COIN_BOND,
+          "R6 the running bond total is the bond");
+    CHECK(q1(H->g.w->db,
+             "SELECT genesis_supply - total_burned = current_supply FROM "
+             "supply_tracking WHERE id = 1") >= 0,
+          "R7a the supply row is readable");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, l1[leg - 1]) == 0,
+              "R8a leg roots read after the registration");
+    for (int i = 0; i < 8; i++)
+        if (memcmp(l0[i], l1[i], 64) != 0) moved |= 1 << i;
+    CHECK((moved & 0x10) != 0,
+          "R8b leg 5 (registry) moved with the registration");
+    CHECK(hyb_legs_ok(H->g.w) == 0,
+          "R8c every leg root equals the incremental and the full rebuild "
+          "after block 16");
+    CHECK(hyb_pair_to(H, NULL, 16, 17) == 0, "R8d block 17 applies");
+    CHECK(hyb_legs_ok(H->g.w) == 0,
+          "R8e and after block 17");
+    free(env);
+    hyb_close(H);
+    free(H);
+    return 0;
+}
+
+/* registry row of node key `key`: 0 and its status, exit_height and bond;
+ * -1 if the row is absent */
+static int hyb_node_row(nodus_witness_t *w, int key, int *status,
+                        uint64_t *exit_h, uint64_t *bond)
+{
+    sqlite3_stmt *st = NULL;
+    uint8_t       fp[64];
+    int           rc = -1;
+
+    if (qgp_sha3_512(g_ks[key].pk, QGP_DSA87_PUBLICKEYBYTES, fp) != 0)
+        return -1;
+    if (sqlite3_prepare_v2(w->db, "SELECT status, exit_height, bond FROM "
+                           "v2_storage_nodes WHERE node_fp = ?1", -1, &st,
+                           NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, fp, 64, SQLITE_STATIC);
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        *status = sqlite3_column_int(st, 0);
+        *exit_h = (uint64_t)sqlite3_column_int64(st, 1);
+        *bond   = (uint64_t)sqlite3_column_int64(st, 2);
+        rc = 0;
+    }
+    sqlite3_finalize(st);
+    return rc;
+}
+
+/* HF-9 WP4 — registry EXIT and boundary RELEASE by real blocks (plan :445
+ * "every writer path", T-5 for the registry writer's two remaining paths).
+ * The release is NOT 12 epochs after the exit: the next boundary after the
+ * exit releases the bond as ONE locked UTXO whose unlock height is
+ * B + 12 E (nodus_witness_v2_storage.c st_release :1757-1810,
+ * nodus_witness_rt_native.c :6474-6483); only the UNLOCK waits 12 epochs.
+ * (The round-9 report said the release lands 12 epochs after the exit;
+ * that was wrong, and this case needs 2E + 1 blocks, not 12E.)
+ * Timeline on the funded hybrid (exit coin planted: hyb_open(H, 2)): X1
+ * blocks 1-15; X2 key 1 registers in block 16 (ACTIVE, exit_height 0); X3
+ * blocks up to the boundary E (an arrival event) apply and the row is still
+ * ACTIVE; X4 STORAGE_EXIT in block E + 3 applies; X5 the row is EXITING
+ * with exit_height E + 3, the exit coin is consumed, the running bond total
+ * still counts the bond (EXITING counts), every leg root equals the
+ * incremental and the full rebuild; X6 blocks to 2E - 1, bond bucket and
+ * UTXO sum recorded; X7 the boundary 2E applies: the row is RELEASED, ONE
+ * UTXO with the exit identity (tx_hash = exit_id, output index 201, owner =
+ * the key's fingerprint hex, amount = the bond, block 2E, unlock 2E + 12 E)
+ * exists, the bond bucket fell by the bond and the UTXO sum rose by it, the
+ * UTXO leg (1) and the registry leg (5) moved, and every leg root equals
+ * the incremental and the full rebuild; X8 block 2E + 1 applies and the leg
+ * roots still equal the rebuild.
+ * ROUND 19: "E" and "2E" above are B1 and B2 = B1 + E: B1 is the first
+ * boundary above the registration block 16 (E = 720 at production, so B1 = E
+ * and B2 = 2E and every assertion is as written; 30 and 45 at E = 15, where
+ * the boundary 15 is applied inside X1 BEFORE the registration, an event-free
+ * generation-6 boundary like hyb_crash_boundary_b1's). The exit block B1 + 3
+ * needs E > 3. Flags: NODUS_EVM_ENABLED; compile constants of the two
+ * settings (-DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20
+ * -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15
+ * -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15, or none). One node: twins are the T-15 cases'
+ * job. Leaves one /tmp/test_cmt_app_hyb_XXXXXX (removed). Can falsely pass:
+ * the settlement of the boundary pays nothing here (no signed reports, pool
+ * 1 unfunded: the F1 gate is not met), so the payout path is not run; the
+ * node is released from the first epoch it was a member of. */
+static int t_hybrid_exit_release_probe(void)
+{
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    /* round 19: B1 = the arrival boundary = the first boundary above the registration block 16
+     * (720 at production, 30 at E = 15); the exit lands at B1 + 3 and the release at the NEXT
+     * boundary B2 = B1 + E (1440 = 2E at production). Was E and 2E. */
+    const uint64_t B1 = hyb_boundary_above(HYB_REG_BLK), B2 = B1 + E;
+    hyb_t   *H = calloc(1, sizeof(*H));
+    uint8_t *renv = NULL, *xenv = NULL;
+    uint8_t  nul[64], fp[64], xid[64], xnul[64];
+    uint8_t  u0[8][64], u1[8][64];
+    uint64_t bonds0 = 0, bonds1 = 0, exit_h = 0, bond = 0;
+    int64_t  utxo0 = 0, utxo1 = 0;
+    int      st = 0, moved = 0;
+    char     hex[129];
+
+    CHECK(E > 3, "the exit block B1 + 3 lies before the release boundary B1 + E");
+    CHECK(H != NULL, "alloc");
+    CHECK(hyb_open(H, 2) == 0, "X0 the funded hybrid with the exit coin");
+    CHECK(hyb_pair_to(H, NULL, 0, 15) == 0, "X1 blocks 1-15 apply");
+    CHECK(hyb_register_step(H, NULL, 16, 1, &renv) == CMT_OK,
+          "X2a block 16 with the registration applies");
+    CHECK(hyb_node_row(H->g.w, 1, &st, &exit_h, &bond) == 0 &&
+          st == DNA_V2_STORAGE_ACTIVE && exit_h == 0 &&
+          bond == HYB_COIN_BOND,
+          "X2b the registry row is ACTIVE with exit_height 0");
+    CHECK(hyb_pair_to(H, NULL, 16, (int64_t)B1) == 0,
+          "X3a blocks up to the boundary B1 apply (arrival event)");
+    CHECK(hyb_node_row(H->g.w, 1, &st, &exit_h, &bond) == 0 &&
+          st == DNA_V2_STORAGE_ACTIVE,
+          "X3b the row is still ACTIVE after the boundary E");
+    CHECK(hyb_legs_ok(H->g.w) == 0,
+          "X3c every leg root equals the rebuild after the boundary E");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)B1, (int64_t)B1 + 2) == 0,
+          "X3d blocks B1+1 and B1+2 apply");
+    CHECK(hyb_exit_step(H, NULL, (int64_t)B1 + 3, 1, &xenv) == CMT_OK,
+          "X4 block B1+3 carrying the STORAGE_EXIT applies through the real "
+          "blockexec");
+    CHECK(hyb_node_row(H->g.w, 1, &st, &exit_h, &bond) == 0 &&
+          st == DNA_V2_STORAGE_EXITING && exit_h == B1 + 3 &&
+          bond == HYB_COIN_BOND,
+          "X5a the row is EXITING with exit_height B1+3, bond unchanged");
+    {
+        sqlite3_stmt *q = NULL;
+        int gone = 0;
+
+        hyb_coin_nul(HYB_EXIT_COIN, nul);
+        CHECK(sqlite3_prepare_v2(H->g.w->db, "SELECT COUNT(*) FROM utxo_set "
+              "WHERE nullifier = ?1", -1, &q, NULL) == SQLITE_OK, "prep");
+        sqlite3_bind_blob(q, 1, nul, 64, SQLITE_STATIC);
+        gone = sqlite3_step(q) == SQLITE_ROW && sqlite3_column_int(q, 0) == 0;
+        sqlite3_finalize(q);
+        CHECK(gone, "X5b the exit's SYSFUND leg consumed the exit coin");
+    }
+    CHECK(q1(H->g.w->db, "SELECT total FROM v2_bond_total WHERE id = 1") ==
+              (int64_t)HYB_COIN_BOND,
+          "X5c the bond bucket still counts the EXITING bond");
+    CHECK(hyb_legs_ok(H->g.w) == 0,
+          "X5d every leg root equals the rebuild after the exit block");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)B1 + 3, (int64_t)B2 - 1) == 0,
+          "X6a blocks up to B2-1 apply");
+    CHECK(nodus_witness_storage_bond_total(H->g.w, &bonds0) == 0 &&
+          (utxo0 = q1(H->g.w->db,
+                      "SELECT COALESCE(SUM(amount),0) FROM utxo_set")) > 0,
+          "X6b the bond bucket and the UTXO sum before the release");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, u0[leg - 1]) == 0,
+              "X6c leg roots read before the release");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)B2 - 1, (int64_t)B2) == 0,
+          "X7a the boundary B2 applies");
+    CHECK(hyb_node_row(H->g.w, 1, &st, &exit_h, &bond) == 0 &&
+          st == DNA_V2_STORAGE_RELEASED && bond == HYB_COIN_BOND,
+          "X7b the row is RELEASED");
+    CHECK(qgp_sha3_512(g_ks[1].pk, QGP_DSA87_PUBLICKEYBYTES, fp) == 0 &&
+          dna_v2_storage_exit_id(H->g.chain32, B2, fp, xid) == 0 &&
+          dna_v2_storage_exit_nullifier(xid, xnul) == 0 &&
+          hyb_coin_owner_hex(1, hex) == 0, "X7c the exit identity");
+    {
+        sqlite3_stmt *q = NULL;
+        int good = 0;
+
+        CHECK(sqlite3_prepare_v2(H->g.w->db, "SELECT owner, amount, tx_hash, "
+              "output_index, block_height, unlock_block FROM utxo_set WHERE "
+              "nullifier = ?1", -1, &q, NULL) == SQLITE_OK, "prep");
+        sqlite3_bind_blob(q, 1, xnul, 64, SQLITE_STATIC);
+        if (sqlite3_step(q) == SQLITE_ROW)
+            good = sqlite3_column_bytes(q, 0) == 128 &&
+                   memcmp(sqlite3_column_text(q, 0), hex, 128) == 0 &&
+                   (uint64_t)sqlite3_column_int64(q, 1) == HYB_COIN_BOND &&
+                   sqlite3_column_bytes(q, 2) == 64 &&
+                   memcmp(sqlite3_column_blob(q, 2), xid, 64) == 0 &&
+                   sqlite3_column_int64(q, 3) == (int64_t)DNA_V2_STORAGE_EXIT_OUT_IDX &&
+                   (uint64_t)sqlite3_column_int64(q, 4) == B2 &&
+                   (uint64_t)sqlite3_column_int64(q, 5) ==
+                       B2 + (uint64_t)DNAC_STORAGE_EXIT_LOCK_EPOCHS * E;
+        sqlite3_finalize(q);
+        CHECK(good, "X7d the bond is ONE locked UTXO: identity, owner, "
+                    "amount, index 201, block B2, unlock B2 + 12E");
+    }
+    utxo1 = q1(H->g.w->db, "SELECT COALESCE(SUM(amount),0) FROM utxo_set");
+    CHECK(nodus_witness_storage_bond_total(H->g.w, &bonds1) == 0 &&
+          bonds1 == bonds0 - HYB_COIN_BOND &&
+          utxo1 == utxo0 + (int64_t)HYB_COIN_BOND,
+          "X7e the bond moved from the bond bucket to the UTXO sum");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, u1[leg - 1]) == 0,
+              "X7f leg roots read after the release");
+    for (int i = 0; i < 8; i++)
+        if (memcmp(u0[i], u1[i], 64) != 0) moved |= 1 << i;
+    CHECK((moved & 0x01) != 0 && (moved & 0x10) != 0,
+          "X7g the UTXO leg (1) and the registry leg (5) moved with the "
+          "release");
+    CHECK(hyb_legs_ok(H->g.w) == 0,
+          "X7h every leg root equals the incremental and the full rebuild "
+          "after the release block");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)B2, (int64_t)B2 + 1) == 0,
+          "X8a block B2+1 applies");
+    CHECK(hyb_legs_ok(H->g.w) == 0, "X8b and its leg roots equal the rebuild");
+    free(renv);
+    free(xenv);
+    hyb_close(H);
+    free(H);
+    return 0;
+}
+
+/* ── T-9 on the real block path (plan :449) ───────────────────────────── */
+typedef struct {
+    nodus_storage_work_t w;      /* g_nodus_storage_work around the block  */
+    int64_t              k;      /* distinct (leg, key) the block dirtied  */
+    uint64_t             ops;    /* SQLite virtual-machine instructions the
+                                  * WHOLE block ran on the ledger connection
+                                  * (progress handler, period 1)          */
+} hyb_sample_t;
+
+#define HYB_NSAMPLES 5   /* blocks 16, 17, E, 2E, 3E */
+
+static int hyb_prog_cb(void *p)
+{
+    (*(uint64_t *)p)++;
+    return 0;                    /* never interrupt */
+}
+
+/* Registry history for the growth probe (declared before hyb_open, which
+ * plants it before the genesis next to the coins and the filler UTXOs):
+ * RELEASED nodes, valid by the registry loader's own rule
+ * (nodus_witness_roots_v2.c "the key IS the hash of the key material it
+ * names"): node_fp = SHA3-512(node_pk), distinct 2592-byte keys derived
+ * from a counter, bond / heights / streak inside the loader's ranges,
+ * status RELEASED. A RELEASED node holds no bond, so the supply (the bond
+ * bucket counts ACTIVE and EXITING only) is untouched; the UTXO its release
+ * created is not planted because a production chain also spends it after
+ * the 12-epoch lock. */
+static int hyb_plant_released(nodus_witness_t *w, unsigned n)
+{
+    sqlite3_stmt *st = NULL;
+    uint8_t      *pk = malloc(QGP_DSA87_PUBLICKEYBYTES);
+    int           rc = SQLITE_DONE;
+
+    if (!pk) return -1;
+    if (sqlite3_exec(w->db, "BEGIN", NULL, NULL, NULL) != SQLITE_OK) {
+        free(pk);
+        return -1;
+    }
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO v2_storage_nodes (node_fp, node_pk, payee_fp, "
+            "bond, status, registered_height, exit_height, fail_streak, "
+            "grace_until) VALUES (?1, ?2, ?3, ?4, 3, 1, 2, 0, 0)",
+            -1, &st, NULL) != SQLITE_OK) {
+        (void)sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
+        free(pk);
+        return -1;
+    }
+    for (unsigned i = 0; i < n && rc == SQLITE_DONE; i++) {
+        uint8_t fp[64], py[64];
+
+        memset(pk, 0xA5, QGP_DSA87_PUBLICKEYBYTES);
+        memcpy(pk, "hf9-wp4-hyb-rel", 15);
+        for (int b = 0; b < 4; b++) pk[16 + b] = (uint8_t)(i >> (8 * (3 - b)));
+        if (qgp_sha3_512(pk, QGP_DSA87_PUBLICKEYBYTES, fp) != 0 ||
+            qgp_sha3_512(fp, 64, py) != 0) {
+            rc = SQLITE_ERROR;
+            break;
+        }
+        sqlite3_reset(st);
+        sqlite3_bind_blob(st, 1, fp, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 2, pk, QGP_DSA87_PUBLICKEYBYTES, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 3, py, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 4, (sqlite3_int64)HYB_COIN_BOND);
+        rc = sqlite3_step(st);
+    }
+    sqlite3_finalize(st);
+    free(pk);
+    if (rc != SQLITE_DONE) {
+        (void)sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
+        return -1;
+    }
+    return sqlite3_exec(w->db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK ? 0 : -1;
+}
+
+/* One block with the work counters read around it. `env` != NULL puts that
+ * envelope into the block. The dirty keys are counted by a TEMP trigger on
+ * main.v2_trie_dirty (a connection-local instrument: it adds nothing to the
+ * file and nothing to the schema the per-open check reads); k == 0 on a
+ * block that registered keys would mean the instrument is not wired, and
+ * the caller asserts k > 0 where keys must be dirty. */
+static int hyb_sample_block(hyb_t *H, int64_t height, uint8_t *env,
+                            size_t elen, hyb_sample_t *s)
+{
+    uint64_t ops = 0;
+    int      rc;
+
+    if (sqlite3_exec(H->g.w->db, "DELETE FROM temp.hyb_dlog", NULL, NULL,
+                     NULL) != SQLITE_OK)
+        return -1;
+    memset(&g_nodus_storage_work, 0, sizeof(g_nodus_storage_work));
+    /* the progress handler (period 1) counts EVERY virtual-machine
+     * instruction of the ledger connection during the block - settlement,
+     * prune, release, publication, freeze, the flush and the block's own
+     * writes alike - so work that scans history shows up whichever
+     * statement does it; it is deterministic (a function of the SQL run) */
+    sqlite3_progress_handler(H->g.w->db, 1, hyb_prog_cb, &ops);
+    if (env) rc = hyb_tx_step(H, NULL, height, env, elen);
+    else     rc = hyb_pair_step(H, NULL, height, 0);
+    sqlite3_progress_handler(H->g.w->db, 0, NULL, NULL);
+    s->w   = g_nodus_storage_work;
+    s->ops = ops;
+    s->k   = q1(H->g.w->db, "SELECT COUNT(*) FROM temp.hyb_dlog");
+    return rc == CMT_OK ? 0 : -1;
+}
+
+/* the VM steps of one lookup of a UTXO by nullifier, indexed and with the
+ * index disabled (+nullifier): the positive control that a scan of the
+ * growing source table is visible to the step counter */
+static int hyb_lookup_steps(nodus_witness_t *w, int scan, long long *steps)
+{
+    sqlite3_stmt *st = NULL;
+    uint8_t       nul[64];
+
+    hyb_coin_nul(0, nul);                     /* coin 0 is never spent here */
+    if (sqlite3_prepare_v2(w->db, scan
+            ? "SELECT amount FROM utxo_set WHERE +nullifier = ?1"
+            : "SELECT amount FROM utxo_set WHERE nullifier = ?1",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, nul, 64, SQLITE_STATIC);
+    while (sqlite3_step(st) == SQLITE_ROW) { }
+    *steps = sqlite3_stmt_status(st, SQLITE_STMTSTATUS_VM_STEP, 0);
+    sqlite3_finalize(st);
+    return 0;
+}
+
+/* One funded hybrid with `n_hist` extra UTXOs AND `n_hist` RELEASED registry
+ * nodes of history, five measured blocks: s[0] block 16 carrying the
+ * registration (an ordinary generation-6 block with a fixed number of
+ * changed records), s[1] block 17 (ordinary, no transaction), s[2] the
+ * boundary E (the event: an arrival), s[3] the boundary 2E and s[4] the
+ * boundary 3E (ORDINARY boundaries through the complete real procedure:
+ * settlement - which starts at 3E: B < 3E returns at once, st_settle -,
+ * prune, release, publication, freeze). ctl[0] / ctl[1]: VM steps of a
+ * UTXO lookup by nullifier, indexed and scanning (the control). */
+static int hyb_growth_chain(unsigned n_hist, hyb_sample_t s[HYB_NSAMPLES],
+                            long long ctl[2])
+{
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    /* round 19: the samples "E, 2E, 3E" are B1, B1 + E, B1 + 2E with B1 the first boundary above
+     * the registration block 16 (720 at production: unchanged; 30 at E = 15, where the boundary 15
+     * is applied in G1 before the registration) */
+    const uint64_t B1 = hyb_boundary_above(HYB_REG_BLK);
+    hyb_t   *H = calloc(1, sizeof(*H));
+    uint8_t *env = NULL;
+    size_t   elen = 0;
+
+    CHECK(H != NULL, "alloc");
+    g_hyb_filler = n_hist;
+    g_hyb_released = n_hist;
+    CHECK(hyb_open(H, 1) == 0, "G0 the funded hybrid with its history");
+    CHECK(q1(H->g.w->db, "SELECT COUNT(*) FROM utxo_set") ==
+              (int64_t)(HYB_N_COINS + n_hist),
+          "G0b the history UTXOs are present after the genesis");
+    CHECK(q1(H->g.w->db, "SELECT COUNT(*) FROM v2_storage_nodes WHERE "
+                         "status = 3") == (int64_t)n_hist,
+          "G0d the released registry history is present after the genesis");
+    CHECK(sqlite3_exec(H->g.w->db,
+              "CREATE TEMP TABLE hyb_dlog(leg INTEGER, key BLOB);"
+              "CREATE TEMP TRIGGER hyb_dlog_t AFTER INSERT ON "
+              "main.v2_trie_dirty BEGIN INSERT INTO hyb_dlog "
+              "VALUES (NEW.leg, NEW.key); END;",
+              NULL, NULL, NULL) == SQLITE_OK,
+          "G0c the dirty-key counter is installed (connection-local)");
+    CHECK(hyb_pair_to(H, NULL, 0, 15) == 0, "G1 blocks 1-15 apply");
+    CHECK(hyb_register_env(H->g.w, 16, 1, &env, &elen) == 0 && env,
+          "G2 the registration envelope builds");
+    CHECK(hyb_sample_block(H, 16, env, elen, &s[0]) == 0,
+          "G3 block 16 with the registration applies");
+    CHECK(hyb_sample_block(H, 17, NULL, 0, &s[1]) == 0, "G4 block 17 applies");
+    CHECK(hyb_pair_to(H, NULL, 17, (int64_t)B1 - 1) == 0,
+          "G5 blocks up to B1-1 apply");
+    CHECK(hyb_sample_block(H, (int64_t)B1, NULL, 0, &s[2]) == 0,
+          "G6 the event boundary B1 applies");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)B1, (int64_t)(B1 + E) - 1) == 0,
+          "G6b blocks up to B1+E-1 apply");
+    CHECK(hyb_sample_block(H, (int64_t)(B1 + E), NULL, 0, &s[3]) == 0,
+          "G6c the ordinary boundary B1+E applies");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(B1 + E), (int64_t)(B1 + 2 * E) - 1) == 0,
+          "G6d blocks up to B1+2E-1 apply");
+    CHECK(hyb_sample_block(H, (int64_t)(B1 + 2 * E), NULL, 0, &s[4]) == 0,
+          "G6e the ordinary boundary B1+2E applies");
+    CHECK(hyb_legs_ok(H->g.w) == 0,
+          "G7 every leg root equals the rebuild at the end");
+    CHECK(hyb_lookup_steps(H->g.w, 0, &ctl[0]) == 0 &&
+          hyb_lookup_steps(H->g.w, 1, &ctl[1]) == 0,
+          "G8 the control lookups run");
+    free(env);
+    hyb_close(H);
+    free(H);
+    return 0;
+}
+
+/* HF-9 WP4 - T-9 (plan :449) through REAL block application: the work of
+ * an ordinary block, of the first (event) boundary and of the first two
+ * ORDINARY boundaries (2E, and 3E where the settlement runs) does not grow
+ * with the history. Two funded hybrids that differ ONLY in the history
+ * planted before the genesis - n ordinary UTXOs and n RELEASED registry
+ * nodes with valid key / fingerprint pairs (hyb_seed_filler,
+ * hyb_plant_released; n = 100 and 100 000, the plan's range 1e2 -> 1e5) -
+ * apply the SAME five blocks (16: one registration, 17: empty, E: the
+ * arrival event, 2E and 3E: ordinary boundaries through the complete real
+ * procedure - settlement, prune, release, publication, freeze). For each
+ * block the counters of g_nodus_storage_work, the number of dirty (leg,
+ * key) pairs and the TOTAL SQLite virtual-machine instructions the ledger
+ * connection ran (progress handler) are read.
+ * Asserted: G-a the trie-node counter, the dirty-key counter, the flush
+ * source-row step counter and the whole-block instruction count are wired
+ * (non-zero on block 16); G-b nodes loaded <= 131 per dirty key (plan 5.6)
+ * on every sample - a bound, not equality: path depth grows with log16;
+ * G-c ordinary blocks and boundaries (16, 17, 2E, 3E) do no assignment
+ * work; G-d the event boundary reads the registry and every storage
+ * counter of E, 2E, 3E is EQUAL on the two chains; G-e the flush's
+ * source-row steps are within 64 of each other for every block; G-f the
+ * whole-block instruction count differs between the two chains by less
+ * than a tenth of one instruction per planted history row (a scan of the
+ * history adds at least one instruction per row), with the control that a
+ * UTXO lookup with the index disabled steps at least n more than the
+ * indexed one. Both chains' numbers go to stderr.
+ * NOT COVERED: growth of the segment, assignment and set tables. A valid
+ * segment row exists only for a chain that has run 24 E blocks per segment
+ * (published at k x 24 E + 2 E from v2_blocks, nodus_witness_v2_storage.c
+ * st_publish :1812-1866, segment_root_compute :821-870), so 10^5 of them
+ * need 10^5 x 24 E real blocks; the fixture of test_hf9_growth derives
+ * assignment rows of a valid contiguous segment list with the production
+ * freeze instead. The settlement here runs with an unmet F1 gate (no
+ * signed reports, pools at 0): its payout path is not measured.
+ * LIMIT of the registry history (Sol re-verify fix4 row 3): the 10^5
+ * RELEASED nodes are planted before the genesis (hyb_plant_released) and
+ * are a state NO GENESIS PRODUCES - a genesis starts with no storage node;
+ * production reaches such a registry only by 10^5 register -> exit ->
+ * release cycles. By real blocks that is not reachable in-process: at most
+ * 1024 nodes are live (ACTIVE + EXITING) at once (registration refuses
+ * above the generation-6 cap, nodus_witness_rt_native.c :6403-6410) and an
+ * exit is released only at the next boundary (:6474-6480,
+ * nodus_witness_v2_storage.c st_release :1757), so 10^5 cycles need at
+ * least 98 release boundaries = 98 E blocks, 10^5 funded coins, 10^5
+ * registration envelopes (a 7299-byte consent-signed call, two ML-DSA
+ * signatures each) and 10^5 exit envelopes, with a block holding at most
+ * TEST_APP_TXS_CAP = 48 transactions (:1074): about 4 200 full blocks of
+ * signing, on top of the 98 E blocks. The cohort-staggered, bond-valid
+ * version of this history is built by test_hf9_growth (plant_released) for
+ * the freeze and prune, which need no genesis. This probe's planted rows
+ * carry the STORAGE_BOND default and one registration height, not that
+ * lifetime; the checks below do not depend on either.
+ * ROUND 19: the samples named E, 2E, 3E are B1, B1 + E, B1 + 2E, B1 being the first boundary
+ * above the registration block 16 (E, 2E, 3E at production; 30, 45, 60 at E = 15). Flags:
+ * NODUS_EVM_ENABLED; both settings (E = 15 with its four constants, or production).
+ * Leaves /tmp/test_cmt_app_hyb_XXXXXX
+ * (removed). Can falsely pass: history in the UTXO leg and the released
+ * registry only; the 10% rule would also pass a scan of a table that
+ * the history does not grow. */
+static int t_hybrid_growth_probe(void)
+{
+    static const char *const names[HYB_NSAMPLES] = {
+        "block 16 (registration)", "block 17 (empty)", "boundary E (event)",
+        "boundary 2E (ordinary)", "boundary 3E (settles)"
+    };
+    hyb_sample_t small[HYB_NSAMPLES], big[HYB_NSAMPLES];
+    long long    ctl_small[2] = { -1, -1 }, ctl_big[2] = { -1, -1 };
+
+    CHECK(hyb_boundary_above(HYB_REG_BLK) > 17u,
+          "the event boundary B1 lies after block 17");
+    memset(small, 0, sizeof(small));
+    memset(big, 0, sizeof(big));
+    CHECK(hyb_growth_chain(100, small, ctl_small) == 0,
+          "chain with 100 history rows");
+    CHECK(hyb_growth_chain(100000, big, ctl_big) == 0,
+          "chain with 100 000 history rows");
+    for (int i = 0; i < HYB_NSAMPLES; i++)
+        fprintf(stderr, "T-9 %-24s | 1e2: nodes %" PRIu64 " keys %" PRId64
+                " regrows %" PRIu64 " vm %" PRIu64 " flush %" PRIu64
+                " ops %" PRIu64 " | 1e5: nodes %" PRIu64
+                " keys %" PRId64 " regrows %" PRIu64 " vm %" PRIu64
+                " flush %" PRIu64 " ops %" PRIu64 "\n",
+                names[i], small[i].w.trie_nodes_loaded, small[i].k,
+                small[i].w.registry_rows_read, small[i].w.registry_vm_steps,
+                small[i].w.flush_source_vm_steps, small[i].ops,
+                big[i].w.trie_nodes_loaded, big[i].k,
+                big[i].w.registry_rows_read, big[i].w.registry_vm_steps,
+                big[i].w.flush_source_vm_steps, big[i].ops);
+    fprintf(stderr, "T-9 control: UTXO lookup steps, 1e2 history: indexed %lld "
+            "scan %lld; 1e5 history: indexed %lld scan %lld\n",
+            ctl_small[0], ctl_small[1], ctl_big[0], ctl_big[1]);
+    CHECK(small[0].w.flush_source_vm_steps > 0 &&
+          big[0].w.flush_source_vm_steps > 0 &&
+          small[0].ops > 0 && big[0].ops > 0,
+          "G-a the flush source-row step counter and the whole-block "
+          "instruction count are wired on block 16 of both chains");
+    for (int i = 0; i < HYB_NSAMPLES; i++)
+        CHECK(big[i].w.flush_source_vm_steps <=
+                  small[i].w.flush_source_vm_steps + 64u &&
+              small[i].w.flush_source_vm_steps <=
+                  big[i].w.flush_source_vm_steps + 64u,
+              "G-e the flush's source-row steps are within 64 at both "
+              "history sizes");
+    for (int i = 0; i < HYB_NSAMPLES; i++) {
+        const uint64_t a = small[i].ops, b = big[i].ops;
+        const uint64_t d = a > b ? a - b : b - a;
+
+        CHECK(d < (100000u - 100u) / 10u,
+              "G-f the whole-block instruction count differs by less than "
+              "a tenth of one instruction per added history row");
+    }
+    CHECK(ctl_big[0] > 0 && ctl_big[1] >= ctl_big[0] + 100000,
+          "G-f control: a UTXO lookup with the index disabled steps at "
+          "least one per history row more than the indexed lookup");
+    CHECK(small[0].w.trie_nodes_loaded > 0 && big[0].w.trie_nodes_loaded > 0 &&
+          small[0].k > 0 && big[0].k > 0,
+          "G-a the trie-node counter and the dirty-key counter are wired "
+          "on block 16 of both chains");
+    for (int i = 0; i < HYB_NSAMPLES; i++)
+        CHECK(small[i].w.trie_nodes_loaded <= 131u * (uint64_t)small[i].k &&
+              big[i].w.trie_nodes_loaded <= 131u * (uint64_t)big[i].k,
+              "G-b nodes loaded <= 131 per dirty key at both history sizes");
+    for (int i = 0; i < HYB_NSAMPLES; i++) {
+        if (i == 2) continue;                    /* the event boundary E */
+        CHECK(small[i].w.segments_visited == 0 &&
+              small[i].w.scores_computed == 0 &&
+              small[i].w.assign_rows_written == 0 &&
+              big[i].w.segments_visited == 0 &&
+              big[i].w.scores_computed == 0 &&
+              big[i].w.assign_rows_written == 0,
+              "G-c an ordinary block or boundary does no assignment work");
+    }
+    for (int i = 2; i < HYB_NSAMPLES; i++) {          /* E, 2E, 3E */
+        CHECK(small[i].w.registry_rows_read > 0 &&
+              big[i].w.registry_rows_read > 0 &&
+              small[i].w.registry_vm_steps > 0 &&
+              big[i].w.registry_vm_steps > 0,
+              "G-d1 a boundary reads the registry (counters wired)");
+        CHECK(small[i].w.registry_rows_read == big[i].w.registry_rows_read &&
+              small[i].w.segments_visited == big[i].w.segments_visited &&
+              small[i].w.assign_rows_read == big[i].w.assign_rows_read &&
+              small[i].w.assign_rows_written == big[i].w.assign_rows_written &&
+              small[i].w.scores_computed == big[i].w.scores_computed,
+              "G-d2 every storage counter of a boundary is equal at both "
+              "history sizes");
+        CHECK(big[i].w.registry_vm_steps <= small[i].w.registry_vm_steps + 64u &&
+              small[i].w.registry_vm_steps <= big[i].w.registry_vm_steps + 64u,
+              "G-d3 registry VM steps within 64 at both history sizes");
+    }
+    return 0;
+}
+
+/* ── the registry's fail_streak / grace_until writers by real blocks
+ *    (Sol re-verify row 1; plan :154 "UPDATE fail_streak ... grace_until",
+ *    :445 "every writer path through the real functions; after each block
+ *    incremental leg root = full rebuild") ──────────────────────────────── */
+
+/* grace_until and fail_streak of node key `key` */
+static int hyb_node_gs(nodus_witness_t *w, int key, uint64_t *grace,
+                       uint32_t *streak)
+{
+    sqlite3_stmt *st = NULL;
+    uint8_t       fp[64];
+    int           rc = -1;
+
+    if (qgp_sha3_512(g_ks[key].pk, QGP_DSA87_PUBLICKEYBYTES, fp) != 0)
+        return -1;
+    if (sqlite3_prepare_v2(w->db, "SELECT grace_until, fail_streak FROM "
+                           "v2_storage_nodes WHERE node_fp = ?1", -1, &st,
+                           NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, fp, 64, SQLITE_STATIC);
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        *grace  = (uint64_t)sqlite3_column_int64(st, 0);
+        *streak = (uint32_t)sqlite3_column_int64(st, 1);
+        rc = 0;
+    }
+    sqlite3_finalize(st);
+    return rc;
+}
+
+/* A 1-leg STORAGE_REPORT envelope, fee 0, signed by validator key `vkey`
+ * (a g_ks key = a seat of the hybrid's committee), for epoch H: every
+ * member of storage_set(H) is reported as FAILED (all bitmap bits 0).
+ * Ported from test_storage_b2.c rep_env :1835 / rep_call :1192 / reports_for
+ * :2077. @return 0 and a heap envelope in *out, or -1 */
+static int hyb_report_env(nodus_witness_t *w, uint64_t height, int vkey,
+                          uint64_t H, uint8_t **out, size_t *out_len)
+{
+    static uint8_t        call[78 + 1];
+    static uint8_t        auth[HYB_AUTH_LEN];
+    dna_domain_manifest_t sys;
+    dna_env_leg_in_t      leg;
+    dna_env_in_t          in;
+    dna_env_leg_ctx_t     lctx;
+    dna_vset_snapshot_t  *snap = NULL;
+    sqlite3_stmt         *st = NULL;
+    size_t                len = 0, used = 0;
+    uint8_t              *bytes = NULL;
+    dna_env_preflight_t  *pf = NULL;
+    uint32_t              seat = UINT32_MAX;
+    int                   count = -1, ok = -1;
+
+    *out = NULL;
+    if (nodus_witness_v2_epoch_authority_for_epoch(w, H, &snap, NULL, NULL)
+            != 0 || !snap)
+        return -1;
+    for (uint32_t x = 0; x < snap->active_count; x++)
+        if (memcmp(snap->entries[x].pubkey, g_ks[vkey].pk,
+                   QGP_DSA87_PUBLICKEYBYTES) == 0)
+            seat = x;
+    dna_vset_free(&snap);
+    if (seat == UINT32_MAX) return -1;
+    if (sqlite3_prepare_v2(w->db, "SELECT set_hash, member_count FROM "
+                           "v2_storage_sets WHERE epoch_start = ?1", -1, &st,
+                           NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)H);
+    memset(call, 0, sizeof(call));
+    if (sqlite3_step(st) == SQLITE_ROW &&
+        sqlite3_column_bytes(st, 0) == 64) {
+        memcpy(call + 12, sqlite3_column_blob(st, 0), 64);
+        count = sqlite3_column_int(st, 1);
+    }
+    sqlite3_finalize(st);
+    if (count < 1 || count > 8) return -1;        /* one bitmap byte */
+    hyb_put64(call, H);
+    for (int b = 0; b < 4; b++) call[8 + b] = (uint8_t)(seat >> (8 * (3 - b)));
+    call[76] = 0;
+    call[77] = 1;                                  /* bitmap_len = 1 */
+    call[78] = 0;                                  /* every member FAILED */
+    if (nodus_witness_domreg_get(w, DNA_DOMAIN_SYSTEM, NULL, &sys, NULL) != 0)
+        return -1;
+    memset(&leg, 0, sizeof(leg));
+    memset(auth, 0, sizeof(auth));
+    leg.hdr.domain_id = DNA_DOMAIN_SYSTEM;
+    leg.hdr.runtime_op = DNA_SYSRULE_STORAGE_REPORT;
+    leg.hdr.ruleset_version = sys.ruleset_version;
+    leg.hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
+    leg.hdr.auth_kind = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+    leg.hdr.call_len = 79;
+    leg.hdr.auth_len = HYB_AUTH_LEN;
+    leg.hdr.res_max_effects = 8;
+    leg.hdr.res_max_effect_bytes = 16384;
+    leg.call_data = call;
+    leg.auth_data = auth;
+    memset(&in, 0, sizeof(in));
+    in.fee_amount = 0;
+    in.expiry_height = height + 5u;           /* inside the D2 window */
+    in.res_max_total_units = 400000;
+    in.leg_count = 1;
+    in.legs = &leg;
+    memset(&lctx, 0, sizeof(lctx));
+    lctx.domain_id = DNA_DOMAIN_SYSTEM;
+    lctx.ruleset_version = sys.ruleset_version;
+    memcpy(lctx.ruleset_hash, sys.ruleset_hash, 64);
+    if (dna_env_encoded_size(&leg, 1, &len) != 0) return -1;
+    bytes = malloc(len);
+    pf = calloc(1, sizeof(*pf));
+    do {
+        size_t sl = 0;
+
+        if (!bytes || !pf) break;
+        if (dna_env_encode(&in, bytes, len, &used) != 0 || used != len) break;
+        if (dna_env_preflight(bytes, len, w->v2_chain32, height, &lctx, 1, pf)
+            != DNA_ENV_PF_OK)
+            break;
+        auth[0] = 1;
+        memcpy(auth + 1, g_ks[vkey].pk, QGP_DSA87_PUBLICKEYBYTES);
+        if (qgp_dsa87_sign(auth + 1 + QGP_DSA87_PUBLICKEYBYTES, &sl,
+                           pf->auth_digest[0], 64, g_ks[vkey].sk) != 0)
+            break;
+        if (dna_env_encode(&in, bytes, len, &used) != 0 || used != len) break;
+        ok = 0;
+    } while (0);
+    free(pf);
+    if (ok != 0) { free(bytes); return -1; }
+    *out = bytes;
+    *out_len = len;
+    return 0;
+}
+
+/* HF-9 WP4 - the registry's TWO remaining writers through generation-6
+ * blocks with the leg-root check (Sol re-verify row 1): st_grace_write
+ * (K9, nodus_witness_v2_storage.c :1884, called from the freeze) and
+ * st_streak_write (the settlement). LONG case (runs only when named; its
+ * own ctest entry, nodus/CMakeLists.txt): 29 E + 1 blocks on one node.
+ * Timeline on the funded hybrid: W1 blocks 1-15 apply; W2 key 1 registers
+ * in block 16; W3 blocks to 26E - 1 apply with no segment, grace_until = 0
+ * and fail_streak = 0; W4 block 26E (the first publication, segment 1 due
+ * at 1 x 24 E + 2 E) applies: segment 1 exists, leg 6 (segments) moved and
+ * every leg root equals the incremental and the full rebuild; by K9a (the
+ * decision record :82-86, plan :299) a segment published AT the boundary
+ * is not counted, so key 1, which holds it from publication, gets NO grace
+ * (grace_until stays 0); W4g-q key 2 (a second storage node, the arrival
+ * coin: hyb_open(H, 3)) registers in block 26E + 16, and the event
+ * boundary 27E gives it the K9a grace: it newly holds segment 1 (published
+ * <= B - E) that it did not hold, so grace_until = 27E + 1 x E = 28E (K9
+ * writer, st_grace_write), key 1's stays 0, leg 5 (registry) moved, every
+ * leg root equals the rebuild; W5 blocks to 28E apply (set(27E) = keys 1
+ * and 2; key 1 outside grace and holding segment 1, key 2 in grace);
+ * W6 five STORAGE_REPORTs for H = 27E, each signed by one seat of the
+ * committee (g_ks keys 0, 2, 3, 4, 5), every bit 0 (the members failed), in
+ * the window (28E, 28E + E/2] apply; W7 block 29E (settlement of H = 27E)
+ * applies: key 1's fail_streak 0 -> 1 (the streak writer), key 2's (in
+ * grace at H) stays 0, leg 5 moved, every leg root equals the rebuild; W8
+ * block 29E + 1 applies and the legs still equal the rebuild.
+ * Flags: NODUS_EVM_ENABLED; both settings (production, or E = 15 with its four
+ * constants; the guard is E / 2 >= 5 and E > 2: reports at 28E + 1 .. + 5 inside
+ * the window; key 2 registers at R2 = 26E + 16, or 26E + 14 at E = 15). At
+ * E = 15 the case runs 436 blocks (29 E + 1); the registration of key 1 at
+ * block 16 follows the first boundary 15. Leaves /tmp/test_cmt_app_hyb_XXXXXX (removed). Can falsely pass:
+ * a single node and a single member; the payout is not run (pool 1 unfunded:
+ * the streak writer is reached, the pay path is not). The five seats'
+ * independent power exceeding half of the total depends on the committee's
+ * power split - if it did not, W7 fails visibly (streak stays 0). */
+static int t_hybrid_storage_writers_probe(void)
+{
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    static const int seats[5] = { 0, 2, 3, 4, 5 };
+    hyb_t   *H = calloc(1, sizeof(*H));
+    uint8_t *renv = NULL, *aenv = NULL, *penv[5] = { NULL };
+    uint8_t  l0[8][64], l1[8][64];
+    uint64_t grace = 1, g2 = 0;
+    uint32_t streak = 1;
+    int      moved = 0;
+
+    /* round 19 (was E > 40): the case needs (a) the five report blocks 28E + 1 .. 28E + 5 inside the
+     * report window (28E, 28E + E/2] (nodus_witness_storage_probe.c:604-620), i.e. E / 2 >= 5, and
+     * (b) a block R2 strictly between 26E and 27E for key 2's registration. R2 = 26E + 16 as
+     * before when E > 16 (production), 26E + (E - 1) at E = 15 (the last block before 27E; the
+     * boundary 27E follows at once, which is all the K9a grace claim needs: key 2 registers AFTER the
+     * publication 26E and BEFORE the event boundary 27E). The setup blocks 1 .. 15, the registration
+     * of key 1 at 16 and the 25 boundaries before 26E are crossed at every E - at E = 15 the first
+     * boundary, 15, falls before key 1's registration (an event-free generation-6 boundary). */
+    const uint64_t R2 = 26 * E + (E > 16 ? 16 : E - 1);
+    CHECK(E / 2 >= 5 && E > 2, "W0 the report window holds five reports; a block lies between 26E and 27E");
+    CHECK(H != NULL, "alloc");
+    CHECK(hyb_open(H, 3) == 0,
+          "W0 the funded hybrid with the arrival coin derives");
+    CHECK(hyb_pair_to(H, NULL, 0, 15) == 0, "W1 blocks 1-15 apply");
+    CHECK(hyb_register_step(H, NULL, 16, 1, &renv) == CMT_OK,
+          "W2 block 16 with the registration applies");
+    CHECK(hyb_pair_to(H, NULL, 16, (int64_t)(26 * E) - 1) == 0,
+          "W3a blocks up to 26E-1 apply");
+    CHECK(hyb_node_gs(H->g.w, 1, &grace, &streak) == 0 && grace == 0 &&
+          streak == 0 &&
+          q1(H->g.w->db, "SELECT COUNT(*) FROM v2_storage_segments") == 0,
+          "W3b before 26E: no segment, grace_until 0, fail_streak 0");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, l0[leg - 1]) == 0,
+              "W3c leg roots read before 26E");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(26 * E) - 1, (int64_t)(26 * E)) == 0,
+          "W4a the first publication boundary 26E applies");
+    CHECK(q1(H->g.w->db, "SELECT COUNT(*) FROM v2_storage_segments") == 1,
+          "W4b segment 1 was published by the real boundary");
+    /* K9a (docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md
+     * :82-86; plan :299 "only for k published <= B-E"): a segment published
+     * AT this boundary is not counted, so the node that holds it from its
+     * publication gets NO grace */
+    CHECK(hyb_node_gs(H->g.w, 1, &grace, &streak) == 0 && grace == 0,
+          "W4c K9a: a segment published at the boundary is not counted - "
+          "the holder from publication gets no grace (grace_until 0)");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, l1[leg - 1]) == 0,
+              "W4d leg roots read after 26E");
+    for (int i = 0; i < 8; i++)
+        if (memcmp(l0[i], l1[i], 64) != 0) moved |= 1 << i;
+    CHECK((moved & 0x20) != 0, "W4e leg 6 (segments) moved");
+    CHECK(hyb_legs_ok(H->g.w) == 0,
+          "W4f every leg root equals the incremental and the full rebuild "
+          "after 26E");
+    /* the K9a grace case: key 2 ARRIVES after the first publication, so at
+     * the next boundary 27E (an event) it newly holds segment 1, which
+     * existed at 27E - E = 26E (published <= B - E) and which it did not
+     * hold at 26E: n = 1, grace_until = max(0, 27E + 1 x E) = 28E (K9
+     * decision :78-79). Key 1 held the segment already: no grace. */
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(26 * E), (int64_t)R2 - 1) == 0,
+          "W4g blocks 26E+1 .. R2-1 apply");
+    CHECK(hyb_register_step(H, NULL, (int64_t)R2, 2, &aenv)
+              == CMT_OK, "W4h block R2 with key 2's registration applies");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)R2, (int64_t)(27 * E) - 1)
+              == 0, "W4i blocks up to 27E-1 apply");
+    CHECK(hyb_node_gs(H->g.w, 2, &grace, &streak) == 0 && grace == 0,
+          "W4j key 2 has no grace before the boundary 27E");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, l0[leg - 1]) == 0,
+              "W4k leg roots read before 27E");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(27 * E) - 1, (int64_t)(27 * E)) == 0,
+          "W4l the event boundary 27E applies");
+    CHECK(hyb_node_gs(H->g.w, 2, &grace, &streak) == 0 && grace == 28 * E,
+          "W4m K9/K9a: key 2 newly holds segment 1 (existed at B-E): "
+          "grace_until = 27E + 1 x E (K9 writer)");
+    CHECK(hyb_node_gs(H->g.w, 1, &g2, &streak) == 0 && g2 == 0,
+          "W4n key 1 held the segment before: grace_until stays 0");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, l1[leg - 1]) == 0,
+              "W4o leg roots read after 27E");
+    moved = 0;
+    for (int i = 0; i < 8; i++)
+        if (memcmp(l0[i], l1[i], 64) != 0) moved |= 1 << i;
+    CHECK((moved & 0x10) != 0,
+          "W4p leg 5 (registry: key 2's grace_until) moved at 27E");
+    CHECK(hyb_legs_ok(H->g.w) == 0,
+          "W4q every leg root equals the incremental and the full rebuild "
+          "after 27E");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(27 * E), (int64_t)(28 * E)) == 0,
+          "W5 blocks up to the boundary 28E apply");
+    for (int r = 0; r < 5; r++) {
+        size_t elen = 0;
+        const int64_t h = (int64_t)(28 * E) + 1 + r;
+
+        CHECK(hyb_report_env(H->g.w, (uint64_t)h, seats[r], 27 * E,
+                             &penv[r], &elen) == 0 && penv[r],
+              "W6a the STORAGE_REPORT for H = 27E builds");
+        CHECK(hyb_tx_step(H, NULL, h, penv[r], elen) == CMT_OK,
+              "W6b the block carrying the report applies");
+    }
+    {
+        char sql[160];
+
+        snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM v2_storage_reports "
+                 "WHERE epoch_start = %" PRIu64, 27 * E);
+        CHECK(q1(H->g.w->db, sql) == 5,
+              "W6c the five reports for H = 27E are committed");
+    }
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(28 * E) + 5, (int64_t)(29 * E) - 1)
+              == 0, "W6d blocks up to 29E-1 apply");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, l0[leg - 1]) == 0,
+              "W6e leg roots read before 29E");
+    CHECK(hyb_node_gs(H->g.w, 1, &g2, &streak) == 0 && streak == 0,
+          "W6f before the settlement fail_streak is 0");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(29 * E) - 1, (int64_t)(29 * E)) == 0,
+          "W7a the settlement boundary 29E applies");
+    CHECK(hyb_node_gs(H->g.w, 1, &g2, &streak) == 0 && streak == 1,
+          "W7b the settlement of H = 27E wrote fail_streak 1 (streak "
+          "writer)");
+    /* key 2 is in grace at H = 27E (27E < 28E): its fail_streak is left
+     * unchanged whatever the reports say (K9 decision :79-80 "fail_streak
+     * unchanged"; nodus_witness_v2_storage.c st_settle :1707) */
+    CHECK(hyb_node_gs(H->g.w, 2, &g2, &streak) == 0 && streak == 0,
+          "W7b2 key 2, in grace at H, keeps fail_streak 0");
+    for (int leg = 1; leg <= NODUS_V2_TRIE_LEGS; leg++)
+        CHECK(nodus_witness_v2_trie_leg_root(H->g.w, leg, l1[leg - 1]) == 0,
+              "W7c leg roots read after 29E");
+    moved = 0;
+    for (int i = 0; i < 8; i++)
+        if (memcmp(l0[i], l1[i], 64) != 0) moved |= 1 << i;
+    CHECK((moved & 0x10) != 0, "W7d leg 5 (registry: fail_streak) moved");
+    CHECK(hyb_legs_ok(H->g.w) == 0,
+          "W7e every leg root equals the rebuild after the settlement");
+    CHECK(hyb_pair_to(H, NULL, (int64_t)(29 * E), (int64_t)(29 * E) + 1) == 0,
+          "W8a block 29E+1 applies");
+    CHECK(hyb_legs_ok(H->g.w) == 0, "W8b and its leg roots equal the rebuild");
+    free(renv);
+    free(aenv);
+    for (int r = 0; r < 5; r++) free(penv[r]);
+    hyb_close(H);
+    free(H);
+    return 0;
+}
+#endif /* NODUS_EVM_ENABLED */
+
+/* usage: test_cmt_app            every case except the LONG ones (field 3)
+ *        test_cmt_app <name>...  exactly the named cases (a long case runs
+ *                                only so; ctest registers each one as its
+ *                                own test, nodus/CMakeLists.txt) */
+int main(int argc, char **argv)
 {
     static const struct {
         const char *name;
         int (*fn)(void);
+        int long_case;         /* 1: runs only when named on the command line */
     } cases[] = {
+        { "hybrid_gen6_probe",          t_hybrid_probe },
+#ifdef NODUS_EVM_ENABLED
+        { "hybrid_funded_probe",        t_hybrid_funded_probe },
+        { "hybrid_register_probe",      t_hybrid_register_probe },
+        { "hybrid_exit_release_probe",  t_hybrid_exit_release_probe },
+        { "hybrid_growth_probe",        t_hybrid_growth_probe },
+        { "hybrid_storage_writers_probe", t_hybrid_storage_writers_probe, 1 },
+        { "hyb_crash_boundary_event",   t_hyb_crash_boundary_event },
+        { "hyb_crash_shadow",           t_hyb_crash_shadow },
+        { "hyb_crash_shadow_rows",      t_hyb_crash_shadow_rows },
+#ifdef QGP_FAULT_INJECT
+        { "hyb_shadow_fault_host",      t_hyb_shadow_fault_host },
+#endif
+        { "hyb_crash_edge",             t_hyb_crash_edge },
+        { "hyb_crash_ordinary_gen6",    t_hyb_crash_ordinary },
+        { "hyb_crash_boundary_b1",      t_hyb_crash_boundary },
+        { "hyb_boundary_leg_root_log",  t_hyb_boundary_leg_root_log },
+#endif
         { "bind_refuses_legacy",        t_bind_refuses_legacy },
         { "init_chain_match",           t_init_chain_match },
         { "init_chain_mismatches",      t_init_chain_mismatches },
@@ -7417,14 +10151,35 @@ int main(void)
         /* HF-3 (Comet-only block bounds + the proposal fee check) */
         { "hf3_bounds_and_fee",         t_hf3_bounds_and_fee },
     };
-    size_t i, failed = 0, ncases = sizeof(cases) / sizeof(cases[0]);
+    size_t i, failed = 0, ran = 0, ncases = sizeof(cases) / sizeof(cases[0]);
 
+    /* every name given must be a case: a typo is a failure, never a pass */
+    for (int a = 1; a < argc; a++) {
+        int found = 0;
+
+        for (i = 0; i < ncases; i++)
+            if (strcmp(argv[a], cases[i].name) == 0) found = 1;
+        if (!found) {
+            fprintf(stderr, "test_cmt_app: no case named %s\n", argv[a]);
+            return 1;
+        }
+    }
     if (make_keys() != 0) {
         fprintf(stderr, "test_cmt_app: key generation failed\n");
         return 1;
     }
     for (i = 0; i < ncases; i++) {
-        int rc = cases[i].fn();
+        int want = 0, rc;
+
+        if (argc > 1) {
+            for (int a = 1; a < argc; a++)
+                if (strcmp(argv[a], cases[i].name) == 0) want = 1;
+        } else {
+            want = !cases[i].long_case;
+        }
+        if (!want) continue;
+        ran++;
+        rc = cases[i].fn();
 
         /* No sweep here — see "FIXTURE LIFETIME" at the top. A case owns
          * its fixtures and frees them on the path that succeeds. */
@@ -7434,6 +10189,6 @@ int main(void)
         }
     }
     fprintf(stderr, "test_cmt_app: %zu/%zu cases passed, %d checks\n",
-            ncases - failed, ncases, g_checks);
+            ran - failed, ran, g_checks);
     return failed ? 1 : 0;
 }

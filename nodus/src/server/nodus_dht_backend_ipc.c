@@ -501,7 +501,7 @@ static void ob_on_ctl_frame(ipc_be_t *ib, const uint8_t *payload, size_t len) {
         nodus_inter_role_list_t list={0};
         int rc=ib->core.roles ? ib->core.roles(ib->core.ctx,&list) : -1;
         bool ok=rc==1 && list.validator_count<=DNAC_MAX_VALIDATORS &&
-                        list.storage_count<=DNA_V2_STORAGE_SET_MAX;
+                        list.storage_count<=DNA_V2_STORAGE_SET_CAP;
         if (!ok) QGP_LOG_ERROR(LOG_TAG,"%s","ds_roles chain backend read failed or list exceeds bound");
         uint8_t buf[NODUS_WITNESS_IPC_ROLES_FRAME_MAX];
         size_t n=nodus_dht_ipc_encode_roles(&list,ok,buf,sizeof(buf));

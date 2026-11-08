@@ -126,12 +126,14 @@
 #   (params 7, 8, 9, 18, 22 are ERGONOMIC — 22 by khan decision B; param
 #   14 is SAFETY.)
 #   THE FOUNDATION OWNER: the default build compiles the K8 owner and its
-#   D4 / D5 literals. This scenario reads no owner. A build that overrides
-#   the owner with -DDNAC_HF6_FOUNDATION_OWNER='{…}' MUST also carry
-#   -DDNAC_CFG_RULESET_GEN_ROLES_D=<that owner's D4> AND
-#   -DDNAC_CFG_RULESET_GEN_ROOTS_D=<that owner's D5> (stagef_hf6_owner.sh
-#   prints all three) — otherwise every node REFUSES TO START (the runtime
-#   selfcheck re-derives both literals), the bring-up fails visibly.
+#   D4 / D5 / D6 literals. This scenario reads no owner. A build that
+#   overrides the owner with -DDNAC_HF6_FOUNDATION_OWNER='{…}' MUST also carry
+#   -DDNAC_CFG_RULESET_GEN_ROLES_D=<that owner's D4>,
+#   -DDNAC_CFG_RULESET_GEN_ROOTS_D=<that owner's D5> AND (since HF-9 WP3,
+#   dnac.h DNAC_CFG_RULESET_GEN_TRIE_D) -DDNAC_CFG_RULESET_GEN_TRIE_D=<that
+#   owner's D6> (stagef_hf6_owner.sh prints all four) — otherwise every node
+#   REFUSES TO START (the runtime selfcheck re-derives all the literals), the
+#   bring-up fails visibly.
 #   Environment, ALL exported BEFORE stagef_up_v2.sh unless noted:
 #     STAGEF_NODUS_BIN / STAGEF_NODUSCLI_BIN    that build
 #     STAGEF_EPOCH_LENGTH=15 STAGEF_BLOCKS_PER_YEAR=20

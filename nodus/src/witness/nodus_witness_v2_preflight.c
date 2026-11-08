@@ -140,7 +140,8 @@ int nodus_witness_v2_preflight(nodus_witness_t *w,
     if (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
         ver != NODUS_V2_SCHEMA_VERSION_S17 &&
         ver != NODUS_V2_SCHEMA_VERSION_S18 &&
-        ver != NODUS_V2_SCHEMA_VERSION_S19)
+        ver != NODUS_V2_SCHEMA_VERSION_S19 &&
+        ver != NODUS_V2_SCHEMA_VERSION_S20)      /* HF-9: the live rung */
         pf_add(out, NODUS_V2_PF_SCHEMA_UNSUPPORTED);
 
     /* ── 2. REQUIRED TABLES ───────────────────────────────────────── */

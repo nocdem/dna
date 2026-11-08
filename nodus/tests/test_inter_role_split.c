@@ -267,17 +267,22 @@ static void lookup(void) {
         CHECK(sqlite3_bind_blob(s,1,pk.bytes,NODUS_PK_BYTES,SQLITE_TRANSIENT)==SQLITE_OK);
         CHECK(sqlite3_step(s)==SQLITE_DONE); CHECK(sqlite3_finalize(s)==SQLITE_OK);
     }
-    for (unsigned i=0;i<DNA_V2_STORAGE_SET_MAX;++i) {
-        nodus_key_t fp={{0}}; fp.bytes[0]=(uint8_t)(255-i);
+    /* HF-9 WP4 (plan §8.7): the live storage rows reach the generation-6
+     * capacity 1024 - two distinguishing bytes, reverse-ordered */
+    for (unsigned i=0;i<DNA_V2_STORAGE_SET_CAP;++i) {
+        nodus_key_t fp={{0}};
+        fp.bytes[0]=(uint8_t)((DNA_V2_STORAGE_SET_CAP-1-i)>>8);
+        fp.bytes[1]=(uint8_t)((DNA_V2_STORAGE_SET_CAP-1-i)&255u);
         CHECK(sqlite3_prepare_v2(w->db,"INSERT INTO v2_storage_nodes VALUES(?,1)",-1,&s,NULL)==SQLITE_OK);
         CHECK(sqlite3_bind_blob(s,1,fp.bytes,NODUS_KEY_BYTES,SQLITE_TRANSIENT)==SQLITE_OK);
         CHECK(sqlite3_step(s)==SQLITE_DONE); CHECK(sqlite3_finalize(s)==SQLITE_OK);
     }
     CHECK(nodus_witness_roles_build(w,&list)==1);
-    CHECK(list.validator_count==DNAC_MAX_VALIDATORS && list.storage_count==DNA_V2_STORAGE_SET_MAX);
+    CHECK(list.validator_count==DNAC_MAX_VALIDATORS && list.storage_count==DNA_V2_STORAGE_SET_CAP);
     for (size_t i=1;i<list.validator_count;++i)
         CHECK(nodus_key_cmp(&list.validators[i-1],&list.validators[i])<0);
-    for (size_t i=0;i<list.storage_count;++i) CHECK(list.storage[i].bytes[0]==i);
+    for (size_t i=0;i<list.storage_count;++i)
+        CHECK(list.storage[i].bytes[0]==(uint8_t)(i>>8) && list.storage[i].bytes[1]==(uint8_t)(i&255u));
     uint8_t buf[NODUS_WITNESS_IPC_ROLES_FRAME_MAX];
     list.height=UINT64_MAX; /* exercise the largest encoded height too */
     size_t n=nodus_inter_roles_encode(NODUS_WITNESS_IPC_Q_ROLES,&list,true,buf,sizeof(buf));
@@ -391,7 +396,7 @@ static void array_refusals(void) {
         for (unsigned a=0;a<2;++a) {
             cbor_encode_cstr(&e,a ? "st" : "va");
             size_t count=a!=field ? 0 : fault==2 ?
-                (a ? DNA_V2_STORAGE_SET_MAX : DNAC_MAX_VALIDATORS)+1 : 1;
+                (a ? DNA_V2_STORAGE_SET_CAP : DNAC_MAX_VALIDATORS)+1 : 1;
             cbor_encode_array(&e,count);
             for (size_t i=0;i<count;++i) {
                 if (fault==0) cbor_encode_uint(&e,7);

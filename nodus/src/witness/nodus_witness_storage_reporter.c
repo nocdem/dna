@@ -589,8 +589,9 @@ static void report_submit(nodus_witness_t *w, stp_epoch_t *e, uint64_t tip,
     nodus_cmt_node_t *node = (nodus_cmt_node_t *)w->cmt_node;
     const uint32_t n = e->set->count;
     bool *ok = calloc(n, sizeof(*ok));
-    uint8_t call[NODUS_STPROBE_REPORT_CALL_MAX];
+    uint8_t call[NODUS_STPROBE_REPORT_CALL_CAP];
     size_t call_len = 0;
+    uint32_t set_lim = 0, bm_lim = 0;      /* the set's generation limits */
     uint8_t *env = NULL;
     size_t env_len = 0;
     dna_domain_manifest_t sys;
@@ -601,14 +602,16 @@ static void report_submit(nodus_witness_t *w, stp_epoch_t *e, uint64_t tip,
     e->last_ok = false;
     if (!ok || !node || !node->mem_ready) goto done;
     for (uint32_t i = 0; i < n; i++) ok[i] = e->t[i].status == STP_OK;
-    if (nodus_stprobe_report_call(e->H, e->seat, e->set->set_hash, ok, n,
-                                  call, &call_len) != 0 ||
+    if (nodus_witness_storage_limits_at(w, e->H, &set_lim, &bm_lim) != 0 ||
+        nodus_stprobe_report_call(e->H, e->seat, e->set->set_hash, ok, n,
+                                  set_lim, call, &call_len) != 0 ||
         nodus_witness_domreg_get(w, DNA_DOMAIN_SYSTEM, NULL, &sys, NULL)
             != 0 ||
         nodus_witness_v2_chain_id(w, chain) != 0 ||
         nodus_stprobe_report_env(chain, sys.ruleset_version,
                                  sys.ruleset_hash, tip + 1, expiry, call,
-                                 call_len, w->host->identity->pk.bytes,
+                                 call_len, 78u + bm_lim,
+                                 w->host->identity->pk.bytes,
                                  w->host->identity->sk.bytes, &env,
                                  &env_len) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "report for H=%llu could not be built",

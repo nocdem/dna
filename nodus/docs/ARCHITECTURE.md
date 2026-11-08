@@ -6162,7 +6162,8 @@ supplied by the caller (the account leaf adds `storage_root`(64), `code_digest_s
 update algorithm is OURS; its claim (I4: incremental root == independent full recomputation)
 is checked by `trie/test_trie.c` against `trie/trie_oracle.py` and the separate full-rebuild
 port `trie/evm_trie_full.c`. Every loaded node is verified against its digest key and must
-re-encode canonically (`evm_trie.c:364-372`). The EVM
+re-encode canonically (`resolve`, `evm_trie.c:346-348` and below; since HF-9 WP0 an extension's hashed child is loaded and verified
+with the extension, see "HF-9" below). The EVM
 domain root is `SHA3-512("NDS.EVMROOT.v1\0\0" ‖ account_trie_root ‖ tickets_root ‖
 SHA3-512("NDS.EVMMETA.v1\0\0" ‖ wei_live ‖ wei_tickets ‖ wei_lost))` (`evm_root_of`,
 `nodus_witness_rt_evm.c:2645-2661`). The node's code backend re-checks every code read against
@@ -6567,7 +6568,9 @@ selector 1 = ACTIVE + EXITING).
   yet), so the address index and `dnac_v3_block` stay byte-unchanged and never fail on them.
 
 **Supply (`nodus_rt_core_invariant`).** New term `storage_bonds` = Σ bond over ACTIVE + EXITING rows
-(`nodus_witness_storage_bond_total`, the registry loader's own checks); 0 before activation.
+(`nodus_witness_storage_bond_total`, the registry loader's own checks); 0 before activation. (Since HF-9 WP1 /
+schema S20 the invariant reads this term, and the native UTXO sum, from the trigger-kept rows `v2_bond_total` /
+`v2_supply_totals` instead of summing the tables — `nodus_witness_v2_claims.c:1261-1284`; plan §9.1, "HF-9" below.)
 
 **Pre-activation byte-identity.** Before the param-14 edge the registry names generation 1 or 2, so
 `rt->generation < GEN_STORAGE`: the SYSTEM root is the unchanged v4 function, the storage ops are
@@ -11586,6 +11589,249 @@ the not-generation-4 and wrong-value FAULTs; since P1d-FIX case D — two param-
 the first applies, the second is refused ERR_EXEC with the engine's fact 0 then 1, and a third vote a block later is
 refused too, one param-22 row). Written, NOT run by the builder.
 
+### HF-9 — the keyed Patricia tries, the generation-6 edge, rendezvous storage assignment, the shadow run and the proof service (branch `main-hf9-wp12-r17`, packages WP0-WP7; no version, not voted — this section records no activation height and no deployment)
+
+Plan `docs/plans/approved/2026-11-04-hf9.md` (operator 2026-11-04: "1 eveg 2 duzelt 3 evet"); amendment
+`docs/plans/approved/2026-11-05-hf9-amendment-ownership-guard.md` (operator: "fihristekle."); scope decisions
+`docs/plans/decisions/2026-11-04-hf9-scope.md`; the temporary log line `docs/plans/decisions/2026-11-06-hf9-boundary-leg-root-log.md`.
+Everything below is what the source at this branch does. The code is inert on a chain with no committed param-24 row:
+the S20 triggers write nothing (capture 0), the flush does not run, and generations 1-5 keep their composition
+functions and bytes (replay). Nothing in this section says the fork is voted, scheduled or live anywhere; the version
+number, the vote block and the activation height are the operator's and are not recorded here. The EVM-only
+condition of generations 3-5 holds: a build without `NODUS_EVM_ENABLED` carries no tries and no generation 6
+(`nodus_witness_runtime.h:312-336`; `nodus_witness_v2_apply.c:5568-5575`).
+
+**WP0 — the EVM trie review fixes** (`shared/evm/trie/`, `nodus_witness_rt_evm.c`). Z-51: every `sqlite3_bind_*`
+result of the EVM node store is checked before its statement is stepped (a failed bind returns -2); the HF-9 node
+store does the same (`nodus_witness_v2_trie.h:44-48`). Z-52: an extension's hashed child is loaded and verified
+together with the extension (same checks, and it must be a branch) — a stored extension over a leaf or another
+extension faults at the extension's load (`evm_trie.h`, load-verification paragraph); the cost bound is now
+"one extension child more" on a visited path. B-10: the reopen in `shared/evm/trie/test_trie.c` is a CHECK. The RLP is
+pinned to ethereum-rlp 0.1.6 (sdist sha256 `ede36f53b53c8da21f19259a676eed8790950d47f0b42cb928ac8a3c562282f3`, `evm_trie.h` header);
+conformity vectors: `shared/evm/trie/rlp_conformity_oracle.py`, `rlp_vectors_0_1_6.json`, `test_rlp_conformity.c`. No
+root changes for a store that holds the nodes the reference produces; a non-reference store faults earlier.
+
+**The supply check (WP1, WP1a; not generation-gated).** Schema S20 keeps two running totals by SQLite triggers:
+`v2_supply_totals(token_id BLOB PRIMARY KEY, utxo_total INTEGER NOT NULL)` (Σ `utxo_set.amount` per token; three triggers
+on `utxo_set`; the native token is the 64-zero-byte `token_id`) and `v2_bond_total(id = 1, total)` (Σ `bond` over status
+ACTIVE and EXITING of `v2_storage_nodes`; three triggers) — `nodus_witness_v2_schema.c:2518-2530` and the trigger
+text that follows. `nodus_rt_core_invariant` reads the native row and the bond row (O(1)) and type-checks the stored
+value (INTEGER, else -1) instead of summing every row at each of its three per-block calls
+(`nodus_witness_v2_claims.c:1261-1284`). Both tables are seeded inside the migration and RE-SEEDED on every open of
+an S20 database (`nodus_witness_db_s20_reseed`, `nodus_witness_v2_schema.h`). The once-per-epoch background recount
+of the earlier plan text was removed (plan §9.2, decision D27). The ownership guard of the same function
+(`SELECT COUNT(*) FROM utxo_set WHERE domain_id != 1`, `nodus_witness_v2_claims.c:1083-1090`) is served by the
+partial index `idx_utxo_foreign ON utxo_set(domain_id) WHERE domain_id != 1` (`nodus_witness_v2_schema.c:2540-2541`),
+created in the S20 rung and re-created `IF NOT EXISTS` at every open; the verdict is unchanged, only the query plan.
+
+**The eight legs (WP2, `nodus_witness_v2_trie.{c,h}`).** One SHA3-512 Patricia trie per leg, the root definition of
+`evm_trie.h` (execution-specs `merkle_patricia_trie.py` with its five substitutions: SHA3-512 node digest, inline
+threshold 64, secured key SHA3-512 → 128-nibble path, empty root SHA3-512(0x80), opaque values). Leg id = the plan's
+L-number (`nodus_witness_v2_trie.h:21-34`, `:66-74`):
+
+| Leg | Table | Key bytes | Value (64 B) |
+|---|---|---|---|
+| 1 `NODUS_V2_TRIE_LEG_UTXO` | `utxo_set` | nullifier, 64 raw | SHA3-512(0x00 ‖ D), D = `nodus_witness_merkle_leaf_hash` (plan D21) |
+| 2 `…_TOKENS` | `tokens` | `token_id`, 64 raw | `dna_v2_token_leaf_hash` |
+| 3 `…_CLAIMS` | `v2_claims_spent` (rows of the CORE domain only) | nullifier, 64 raw | `dna_claims_leaf_hash` |
+| 4 `…_NAMES` | `v2_names` | name bytes, raw | `dna_v2_name_leaf_hash` |
+| 5 `…_REGISTRY` | `v2_storage_nodes` | `node_fp`, 64 raw | `dna_v2_storage_node_leaf_hash` |
+| 6 `…_SEGMENTS` | `v2_storage_segments` | `k`, 8 B big-endian | `dna_v2_segment_leaf_hash_v2` |
+| 7 `…_VSET` | `validator_set_snapshots` | `epoch_start`, 8 B big-endian | `dna_v2_vset_leaf_hash` (factored out of `dna_v2_vset_root`, same bytes: `ledger_roots_v2.h`) |
+| 8 `…_ATTENDANCE` | `v2_attendance_epoch` | `epoch_start`, 8 B big-endian | `dna_v2_attendance_leaf_hash` |
+
+Every reader mirrors the generation ≤ 5 loader's row checks (the loaders stay byte-identical for replay); a malformed
+row, a mid-scan error or an interrupted scan is a FAULT, never a shorter trie (`nodus_witness_v2_trie.h:36-48`).
+Legs are processed in ascending leg id, dirty keys in ascending key order (`:50-52`).
+
+**Schema S20 — the live rung** (`nodus_witness_v2_schema.h`, `NODUS_V2_SCHEMA_VERSION_S20` = 20). One rung, S19 plus:
+the supply totals and triggers (above); `idx_utxo_foreign`; `v2_trie_nodes(digest BLOB NOT NULL PRIMARY KEY, rlp BLOB NOT NULL)`
+(digest-addressed, insert-only, one table for the eight legs); `v2_trie_roots(leg INTEGER PRIMARY KEY, root BLOB NOT NULL)`
+(the committed root of each leg — the DomainHead holds only the composed root); `v2_trie_dirty(leg, key, PRIMARY KEY(leg, key))`
+(the primary keys written in the block, as stored: BLOB or INTEGER; the 8-byte big-endian form is made in C at the flush);
+`v2_trie_state(id = 1, capture INTEGER NOT NULL CHECK(capture IN (0, 1)))` (the CONSENSUS capture flag, written (1, 0) by the
+rung); `v2_trie_shadow_state(id = 1, status INTEGER)` (node-local, created without a row); the index `v2_storage_nodes_by_status
+ON v2_storage_nodes(status, node_fp)`; and the 24 dirty-capture triggers `v2_trie_l<leg>_<ins|del|upd>` for legs 1..8 (DDL
+`nodus_witness_v2_schema.c:2695-2742`, trigger text `:3037-3057`). Each trigger is gated by
+`WHEN (SELECT capture FROM v2_trie_state WHERE id = 1) = 1` and runs `INSERT OR IGNORE INTO v2_trie_dirty(leg, key)` with the
+OLD key (delete), the NEW key (insert) or both (update). With capture 0 they write nothing. The retained-assignment tables
+of the storage regime (below) and the capacity rebuild of `v2_storage_sets` (`member_count` 0..1024) and `v2_storage_reports`
+(bitmap up to 128 bytes; generation ≤ 5 limits 256 / 32 stay enforced in code) are part of the same rung. The at-open
+rung `witness_open_migrate_s20` (`nodus_witness.c:1030-1073`) takes a version-3 chain at S16, S17, S18 or S19 to S20 in
+place, inside one transaction with in-transaction revalidation, and prints
+`schema S<n> -> S20 (empty tables and the seeded supply totals; no root moves) for <db path>`; failure rolls back and refuses
+the database. The open-time shape check `nodus_witness_db_s20_trie_shape_ok` refuses a database whose five trie tables,
+status index or 24 triggers are absent or altered, independent of any shadow setting. Every gate that accepted 19 accepts
+20; the previous binary does not accept version 20 (its ladder fails closed above 19), so a rollback past this rung needs the
+pre-S20 copy of the data directory (`nodus_witness_v2_schema.h`, REACHABILITY paragraph; runbook §4.1). Version 21+ fails closed.
+
+**Capture and the flush.** Capture consistency at EVERY block start, before any item runs (`nodus_witness_v2_apply.c:5744-5807`):
+generation ≥ 6 needs `capture = 1` and the shape check passing; generation ≤ 5 needs `capture = 0`; a missing or unreadable row,
+a value outside {0, 1}, a mismatch, a missing trigger, or generation ≥ 6 on a database below S20, is a node FAULT before the
+block's writes (never a skipped capture — a missing row would make the trigger condition NULL, i.e. silently off). The shadow
+status is not read there. Phase **8-pre** (after phase 7, before phase 8; `:7171-7200`, gate `doms_trie_on` `:563-576` = the
+SYSTEM runtime's generation ≥ `NODUS_RT_GEN_TRIE`, evaluated on the post-6c working set) calls `nodus_witness_v2_trie_flush`: per leg
+in ascending id that has dirty keys, open the trie at `v2_trie_roots(leg)`, read the dirty keys ascending, per key read the row by
+primary key with the leg's row checks (present and selected → `evm_trie_set`, else `evm_trie_delete`), commit, write the leg root,
+delete the leg's dirty rows (`nodus_witness_v2_trie.h:151-161`). Values are recomputed from the final row state, so repeated writes
+to one key in a block do not matter. Any trie fault, store fault or malformed row is a node FAULT (`goto fail_fault`), never a
+verdict and never a substituted root. Phase 8's root functions under generation ≥ 6 only READ the flushed roots
+(`nodus_witness_v2_trie_leg_root`, which refuses with -1 while `v2_trie_dirty` holds a key of that leg — the `head_activate`
+guard). Phase **13-bis** (before the phase-14 supply gate; `:7912-7937`) requires `v2_trie_dirty` to be empty: a key still there was
+written after phase 8 and the block cannot commit. Growth: per block O(changed keys × path), no scan of a migrated table.
+
+**Compositions under generation 6** (new functions, the old ones unchanged; tags 16 bytes, zero-padded;
+`shared/dnac/ledger_roots_v2.h`, `nodus_witness_roots_v2.c:715`, `:1340`, `:1446`): `core_state_root` v4 = SHA3-512(`"NDS.CORE.v4"` ‖ the
+seven "NDS.CORE.v2" legs in the same order: utxo, token, pools, claims, name, supply, accrual) with utxo / token / claims / name = the trie
+roots of legs 1-4 (`dna_v2_core_root_v4`); `system_state_root` v7 = SHA3-512(`"NDS.SYS.v7"` ‖ the twelve "NDS.SYS.v6" legs in the same order)
+with `validator_set_root` = leg 7, `attendance_root` = leg 8 and `storage_root` = the STOR v3 composition (`dna_v2_system_root_v7`);
+`storage_root` v3 = SHA3-512(`"NDS.STOR.v3"` ‖ registry ‖ sets ‖ reports ‖ segments) with registry = leg 5 and segments = leg 6
+(`dna_v2_storage_root_v3`); the sets and reports roots take the generation's limit explicitly (`dna_v2_storage_set_hash_lim`,
+`dna_v2_storage_report_leaf_hash_lim`, `dna_v2_storage_reports_root_lim`). DomainHead v2, `domains_root` and GLOBAL v2 are unchanged
+(their inputs change). The empty-leg root of every leg under these tags is the trie's own SHA3-512(0x80). The header records the tag
+collision scans (`ledger_roots_v2.h`, "HF-9 collision scan"): `NDS.CORE.v3` is NOT used (defined differently in an earlier design, never
+implemented); the compositions are this project's, SELF-CONSISTENT with the independent oracle `nodus/tests/vectors/hf9_kat_oracle.py`
+(vectors `hf9_kat.json`, compared by `test_hf9_kat.c`), not externally referenced.
+
+**Generation 6 compiled** (EVM-enabled builds only): `NODUS_RT_GEN_TRIE` = 6, `NODUS_RT_GEN_TRIE_BASE` = `NODUS_RT_GEN_ROOTS` (5),
+`NODUS_RT_GEN_MAX` = `NODUS_RT_GEN_TRIE` (`nodus_witness_runtime.h:329-336`). SYSTEM v12 / CORE v11 = generation 5's descriptors with ONLY
+`ruleset_version` bumped (no EVM slot; EVM v2 unchanged). Pins `SYS_RULESET_HASH_GTR` = `817ec157…c5494f`, `CORE_RULESET_HASH_GTR` =
+`2b841a28…156b26`, the oracle's values (`nodus_witness_runtime.c:734-775`; `nodus_ruleset_pins.h` regenerated; the oracle labels them
+SELF-CONSISTENT — they rest on the plan's rule "only ruleset_version bumped"). The client pins table (`nodus_v2_spend.c`), the
+ruleset switch list in the handlers and `nodus-light` follow generation 6 (commit `41ed2f152`).
+
+**The vote: param 24 `RULESET_GEN_TRIE`** (`dnac.h:975-1006`, id 24; `DNAC_CFG_PARAM_MAX_ID` = `DNAC_CFG_STORAGE_COPIES` = 25). Scalar rule
+(`nodus_witness_chain_config.c:891`): EXACTLY `DNAC_CFG_RULESET_GEN_TRIE_D` = **D6 = `0x1f12a7f0b824ae45`** (decimal 2239036617079959109,
+`dnac.h:1615`, owner K8). D6 = the first 8 bytes big-endian, top bit cleared, of the HF-6 ROLEGEN constructor `dna_rolegen_vote_digest`:
+SHA3-512(TAG16 `"NDS.ROLEGEN.v1"` ‖ u32 BE 6 ‖ u32 BE 5 ‖ generation-6 SYSTEM ruleset_hash[64] (v12) ‖ generation-6 CORE ruleset_hash[64] (v11) ‖
+u32 BE `DNAC_HF9_SWITCH_SPEC_VERSION` (1) ‖ `DNAC_HF6_FOUNDATION_OWNER`[64] ‖ u32 BE 4 ‖ 4 × u64 BE `DNAC_HF9_MEMBER_CAP` (1024),
+`DNAC_STORAGE_COPIES_DEFAULT` (4), `DNAC_CFG_MIN_STORAGE_COPIES` (4), `DNAC_CFG_MAX_STORAGE_COPIES` (16)) — a 256-byte preimage
+(`dnac.h:1552-1615`; layout approved by the operator, plan D24 "3, evet."). The value is the literal of the independent oracle
+`shared/dnac/tests/hf9_vote_oracle.py` (it re-derives D4 and D5 as controls first); the node does not hash on the vote path. D6 is a fixed
+activation identifier and drift check, not a security commitment. Its three comparers: the witness scalar rule, the client mirror
+(`dnac/src/transaction/verify.c`) and the edge. Stateful rules (`nodus_chain_config_stateful_rules_ex`, `nodus_witness_chain_config.c:1342-1375`):
+(a) single use — ANY committed param-24 row refuses every further vote (read at both application sites, as for param 22:
+`env_ruleset_gen_trie_voted`, `nodus_witness_v2_apply.c:1293-1309`); (b) HF-2 active; (c) judged under generation EXACTLY 5
+(`NODUS_RT_GEN_TRIE_BASE`); (d) effective − 1 is not an epoch boundary; (e) effective is not an epoch boundary. Grace: SAFETY,
+`DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS` (17 280 blocks in a production build; operator "4.24."), its own return in
+`nodus_chain_config_grace_for_param` (`nodus_witness_chain_config.c:1086`); enforced as `effective >= H + grace` at both sites that apply
+it (`nodus_witness_chain_config.c:1700-1708`, `nodus_witness_rt_native.c:7885-7891`). A self-check at every start of an EVM-enabled build
+re-derives D6 from the compiled pins, owner and constants (`GEN6_VOTE_CONSTS`, `nodus_witness_runtime.c:2368-2392`) and refuses to start on a
+mismatch; a test build that overrides `DNAC_HF6_FOUNDATION_OWNER` must also pass that owner's D6 as `-DDNAC_CFG_RULESET_GEN_TRIE_D`
+(`stagef_hf6_owner.sh` prints all four flags).
+
+**The startup line.** `nodus_witness.c:2945-2952` prints, right after the HF-7 D5 line and before the `consensus build constants` line:
+`HF-9 rule-set generation 6 vote D6 0x1f12a7f0b824ae45 (param 24 RULESET_GEN_TRIE, switch spec v1), built from git commit <sha>` (tag `WITNESS`;
+the values are the compiled constants expanded from the format) — the line the all-nodes pre-vote comparison reads (`DEPLOY_RUNBOOK.md` §2.2).
+Every build prints it; only an EVM-enabled build's self-check has re-derived the value before it is printed.
+
+**The edge — phase 6b''''' (`phase_6b_gen6_edge`, `nodus_witness_v2_apply.c:5474-5653`).** At the END of block A−1, after 6b'''' (the generation-5
+edge), before 6b'' and 6c (called at `:6858-6866`), when the param-24 row is present at A and absent at A−1 (a failed read is a FAULT, never
+"not the edge"): (1) the value must be this build's D6 and the build must carry generation 6; (2) the schema must be EXACTLY S20; (3)
+`nodus_witness_domreg_generation_switch(5, 6)` ("registry is not generation 5" FAULT); (4) `nodus_witness_v2_trie_build_all`: per leg scan the rows
+`ORDER BY` primary key with the loader's row checks, build incrementally and commit (`root_inc`), compute `evm_trie_full_root(kvs, secured = 1, SHA3-512)`
+over the same list (`root_full`), require `root_inc == root_full` for all eight legs — a mismatch, malformed row or interrupted scan is a FAULT
+(the node stops and does not vote; operator exception D12) — then write `v2_trie_roots` (`nodus_witness_v2_trie.h:145-149`); (5) re-verify the 24
+triggers, clear `v2_trie_dirty`, set `capture = 1`, all inside the block's transaction (a rolled-back A−1 leaves capture 0; shadow state is neither
+read nor written); (6) the storage transition E-s1..E-s3 (below), only if the storage gate is open (param 18 in effect); (7) SYSTEM and CORE declared
+touched. Transition: items of A−1 are judged by generation 5; A−1's own roots are already CORE v4 / SYS v7 / STOR v3 (phase 8 runs after 6b / 6c); from A
+every item is generation 6's. INFO line: `HF-9: rule-set generation 5 -> 6, the eight keyed tries built and the dirty capture on at the end of height <A−1>
+(param 24 RULESET_GEN_TRIE, D6 0x1f12a7f0b824ae45); height <A> is judged under generation 6` (`:5641-5650`). A replay from genesis on this binary
+reaches the same edge (the edge is a pure function of committed rows and the param row). A chain whose genesis generation is ≥ 6 is not built
+(plan DF-4: `nodus_witness_v2_trie_set_capture` documents it).
+
+**Param 25 `STORAGE_COPIES` (R)** (`dnac.h:1008-1033`): range [`DNAC_CFG_MIN_STORAGE_COPIES` 4, `DNAC_CFG_MAX_STORAGE_COPIES` 16] (scalar rule,
+`nodus_witness_chain_config.c:904`); no committed row = `DNAC_STORAGE_COPIES_DEFAULT` 4; votable only while generation ≥ 6 judges the vote (`:1376-1381`,
+no single-use rule); grace = ONE EPOCH, its own return of `DNAC_EPOCH_LENGTH` (`:1092`; operator "Oylamalarda bir epoxa bir epok olsun o zaman." /
+"diğer ayarları değiştirme."). Read at a boundary B by `nodus_witness_storage_copies_at` (param 25 at B, default 4; a stored value outside the range is
+corrupt state → -1). `nodus-cli chain-config propose` names both (`RULESET_GEN_TRIE`, `STORAGE_COPIES`; usage text in `nodus-cli.c`).
+
+**The storage assignment under generation 6 (WP4).** The storage regime is B ≥ B1, the first boundary at or after A (`nodus_witness_storage_gen6_at`,
+`nodus_witness_v2_storage.h`). Holders become rendezvous (highest random weight) instead of nearest-three-by-XOR:
+`score(k, m) = SHA3-512("NDS.STHRW.v1" zero-padded to 16 ‖ A(k)[64] ‖ node_fp[64])` (144-byte preimage; A(k) = the existing `NDS.STASGN.v1` segment
+identity; `dna_v2_segment_score`); order = descending score as 64-byte big-endian integers (memcmp), equal scores → the higher `node_fp`
+(`dna_v2_hrw_rank_cmp`, the one comparator for full recomputation and retained updates); `dna_v2_segment_holders_hrw(a_key, node_fps, fail_streaks, n,
+copies, out_idx, n_out)` takes R as an explicit argument (1..`DNA_V2_STORAGE_HOLDERS_CAP` 16), requires the member list strictly ascending (one O(n) check),
+selects min(R, eligible) members (eligible = `fail_streak < DNA_V2_STORAGE_FAIL_LIMIT`). The historical `dna_v2_segment_holders`, `DNA_V2_STORAGE_HOLDERS` 3,
+`DNA_V2_STORAGE_SET_MAX` 256 and `DNA_V2_STORAGE_BITMAP_MAX` 32 keep governing every generation ≤ 5 path. New capacity constants size buffers only
+(`DNA_V2_STORAGE_SET_CAP` 1024, `DNA_V2_STORAGE_BITMAP_CAP` 128, `DNA_V2_STORAGE_HOLDERS_CAP` 16); the generation-6 RULE values are named apart
+(`DNA_V2_STORAGE_SET_LIMIT_GEN6` 1024, `DNA_V2_STORAGE_BITMAP_LIMIT_GEN6` 128) and passed explicitly — `nodus_witness_storage_limits_at(epoch_start)` returns
+256 / 32 up to generation 5 and 1024 / 128 from 6. Sites that apply the generation's limit: the STORAGE_REGISTER cap (`nodus_witness_rt_native.c:6404-6410`),
+the STORAGE_REPORT call length (78..110 up to generation 5, 78..206 from 6, `:6597`) and set count (`:6663`), the freeze, the SDK / RPC list bound
+(`NODUS_DNAC_STORAGE_SET_MAX` 1024, `nodus.h:1572`), the IPC lists, the holder runtime and probe buffers. Assignments are RETAINED derived node state written inside
+the block transaction, in no root (tables created by S20): `v2_storage_assign(k, node_fp, score, from_h, to_h)` with indexes `v2_storage_assign_cur ON (k) WHERE
+to_h IS NULL` and `v2_storage_assign_by_node ON (node_fp, k)` — holders(k, H) = rows with `from_h <= H` and (`to_h IS NULL` or `to_h > H`); rows are ended
+(`to_h = B`), never deleted (no garbage collection, D6); `v2_storage_assign_basis(node_fp)`; `v2_storage_assign_state(id = 1, copies, boundary, xfer)`;
+`v2_storage_held(node_fp, held)`; `v2_storage_member_epoch(epoch_start, node_fp, held_union, n_new)` (pruned with the set members);
+`v2_storage_xfer_diff(node_fp, ended_x, new_x)` (the one-use transition table; its rows are cleared at B1, the table stays) (DDL
+`nodus_witness_v2_schema.c:2775-2830`). Boundary procedure from B1 (`nodus_witness_storage_freeze_gen6`, step 5 of the boundary): freeze set(B) from
+`WHERE status = ACTIVE ORDER BY node_fp` through `v2_storage_nodes_by_status` (member cap 1024); eligible(B) = members with frozen `fail_streak < 3`; R(B) from
+param 25. With no departure, arrival or R change against the basis (no EVENT), only the segments published at B are assigned (O(cap) each);
+`held_union = held`, `n_new = 0`. An EVENT (a departure from or an arrival in the eligible list, or an R change; operator exception D11) visits every
+published segment once: new holders by the join rule (arrivals' fresh scores against the stored R rows, same comparator) when no holder departed and R is
+unchanged, else by scoring every eligible member; the K9a counts (`held_union`, `n_new`) are made only over segments published at or before B − E and only
+for members of set(B), then the K9 grace update runs from them (`nodus_witness_v2_storage.c`, header of the generation-6 assignment). Transition E-s1..E-s3
+(`nodus_witness_storage_gen6_transition`, run by the edge in block A−1): E-s1 the XOR union counts of the two epochs settled at B1 and B1 + E; E-s2 the
+rendezvous rows (`from_h = B1`), basis and state; E-s3 the one-use XOR-versus-rendezvous table; a repeated edge (assignment tables not empty) is a FAULT. The
+holder runtime's must-hold list and the probe's eligible list read the member's own rows (`nodus_witness_storage_member_ks`: rows active at H union rows active
+at H − E; at H = B1 the previous relation is XOR(set(H − E)) computed node-locally); `nodus_witness_storage_holders_at` answers for either generation.
+The plan's registry growth items (§8.8: the status index for the release, freeze and registration-cap queries, point reads in settlement) are
+specified there; read in source here: publish asks `MAX(k)` only under generation 6 (`nodus_witness_v2_storage.c:1822-1834`). The work counters `g_nodus_storage_work` exist for the growth test only. Missing or unusable derived data is a node FAULT,
+never an empty assignment. The previous binary's behaviour below B1 is unchanged.
+
+**The shadow run (WP5; node-local, never consensus).** A candidate binary can compute the generation-6 roots on a live generation-5 node after each commit,
+for comparison across nodes BEFORE the vote. Contract: `nodus_witness_v2_shadow.h`. Config key in the node's JSON configuration: `"hf9_shadow"` = `"on"` |
+`"full"` | `"off"` (`nodus_node_config.c:423-435`; any other value refuses the start); the node-config default is ON (`:510`); `full` adds a
+`evm_trie_full_root` comparison over all rows of every leg after every pass. The hook `nodus_witness_v2_shadow_after_commit` is bound as the block executor's
+`on_block_saved` (`nodus_witness_cmt_node.c:2207-2209`, called after the COMMIT and the consensus-state save, `nodus_witness_cmt_host.c:1808`); it does
+nothing while the consensus reactor is still waiting for block sync (the shadow follows the live chain only), and acts only while the committed SYSTEM runtime
+is of a generation ≥ `NODUS_RT_GEN_ROOTS` and < `NODUS_RT_GEN_TRIE`. It seeds once (one transaction between blocks: the eight tries built from rows into the
+shadow tables with the edge's own build code, `root_inc == root_full` checked, first log row, status RUNNING; logs `shadow run seeded at height <h>`); it is
+refused when the committed generation is ≥ 6 or a status row already exists. Each pass reads every row of the eight tables with the legs' row checks, compares
+with its own copy `v2_trie_shadow_rows(leg, key, value)`, updates its tries with the consensus flush's update code against `v2_trie_shadow_nodes` /
+`v2_trie_shadow_roots`, and writes one `v2_trie_shadow_log(height, leg1..leg8, core, stor, sys, glob)` row (all 64 bytes of each; core / stor / sys / glob =
+CORE v4', STOR v3', SYS v7', GLOBAL v2' computed from the committed state with the shadow legs). Isolation: it writes nothing inside a block transaction, never
+`v2_trie_nodes`, `v2_trie_roots`, `v2_trie_dirty` or `v2_trie_state`; a failure rolls the shadow's own transaction back, logs
+`HF9-SHADOW FAULT <height> <reason>`, sets status FAULTED (0 stopped, 1 running, 2 faulted; none = never seeded) and never returns a fault to the host. Once the
+committed generation is ≥ 6 the pass sets STOPPED and never reads rows or starts again on that database. Coverage limit (operator's Option C): the live shadow
+exercises the row-to-leaf mapping and the step-by-step trie update, NOT the trigger capture used after activation. Read query: Tier-2 `dnac_hf9_shadow`
+(`nodus_witness_handlers.c:5886-5960`; request `"a": {"h": u64}`, 0 = the newest row; response `"r"`: `st`, `found`, and when found `h`, `l1`..`l8`, `core`, `stor`,
+`sys`, `glob`, each 64-byte bstr); client `nodus-cli hf9-shadow [height]` prints `key=value` lines (`status` 255 = never seeded, `found`, `height`, `leg1..leg8`,
+`core`, `stor`, `sys`, `glob`, 128 lowercase hex characters each; exit 0 = the node answered). Diff tool `nodus/tools/hf9_shadow_diff.sh --expect-nodes N [--from H]
+[--to H] <host:port> ...` (or `HF9_NODES`; env `NODUS_CLI`, `HF9_CLI_OPTS`) compares all 64 bytes of every leg and composition per height across the listed nodes; it
+refuses to run unless the number of nodes given is exactly N and at least two, and succeeds only if the whole range is identical on every node and every node
+reports status running (exit 0 identical; 1 a difference, a missing row, a node not running or silent; 2 usage). It is NOT `stagef_diff.sh` (8 bytes). The node
+list is an argument; nothing in the script knows the roster.
+
+**The proof service (WP6; present in source, NOT ENABLED by any production code).** Tier-2 query `dnac_state_proof`: for a leg 1..8 and 1..128 canonical keys
+(`NODUS_STATE_PROOF_MAX_KEYS` 128; key length 64 for legs 1 / 2 / 3 / 5, 3..36 for leg 4, 8 for legs 6 / 7 / 8; a repeated key or any other length is
+`NODUS_ERR_PROTOCOL_ERROR`) it returns the batch proof (`nodes` = the union of the per-key trie nodes, deduplicated, ascending by SHA3-512 of the node bytes;
+one result per key in request order) and the composition proof from the leg root up to the AppHash of header h + 1 (steps COMPOSE / HEAD / MERKLE per leg:
+`dna_v2_state_proof_cp_build` / `dna_v2_state_proof_cp_verify`, `ledger_roots_v2.h`). The per-node check is `evm_trie_node_check`; a node is at most
+`EVM_TRIE_NODE_MAX_BYTES` 1060 bytes; the bundle is bounded by `EVM_TRIE_PROOF_MAX_KEYS` 128 × `EVM_TRIE_PROOF_NODES_PER_KEY` 131 (`shared/evm/trie/evm_trie_proof.h:53-58`).
+The answer is built on a READER THREAD with a private read-only SQLite connection, in one read transaction (one committed snapshot); the witness loop only decodes,
+admits (one node-wide limiter) and hands off; the finished answer is sent from `nodus_witness_state_proof_poll`. Errors: `NODUS_ERR_PROTOCOL_ERROR`,
+`NODUS_ERR_NOT_FOUND` (only after the committed generation was established as below 6), `NODUS_ERR_INTERNAL_ERROR`, `NODUS_ERR_RATE_LIMITED`. **The numeric limits (readers,
+node-wide rate) are not set anywhere and no production code calls `nodus_witness_state_proof_enable`: every `dnac_state_proof` request is answered
+`NODUS_ERR_RATE_LIMITED` before any read** (`nodus_witness_state_proof.h:35-43`, `:216-220`; `nodus_witness_handlers.c:5846-5860`; plan §17 holds the limits for the
+operator). Client wire: `nodus_client_dnac_state_proof` / `nodus_dnac_state_proof_decode` (`nodus.h`, `nodus_client.c:5795-6085`). No consensus path reads this service.
+
+**The TEMPORARY boundary leg-root log line** (decision `docs/plans/decisions/2026-11-06-hf9-boundary-leg-root-log.md`). At each epoch boundary
+(`height % DNAC_EPOCH_LENGTH == 0`) under generation 6, `nodus_cmt_app_commit` writes one INFO line (tag `CMT-APP`, `nodus_witness_cmt_app.c:57`) after the COMMIT:
+`HF9-BOUNDARY-ROOTS h=<height> global=<128 hex> leg1=<128 hex> … leg8=<128 hex>` — the committed global root and the eight leg roots from `v2_trie_roots`, lower-case
+hex, leg order 1..8 (`nodus_cmt_app_boundary_root_line`, `nodus_witness_cmt_app.c:3129-3170`, the call in `nodus_cmt_app_commit` at `:3239`, `nodus_witness_cmt_app.h:558-577`; buffer
+`NODUS_CMT_BOUNDARY_ROOT_LINE_MAX` 1400). Purpose: `v2_trie_roots` keeps only the latest root of each leg, so the harness (`test_cmt_hf9.sh`) compares these lines node by
+node. It writes no state, reads no clock and changes no return value; it is held under `flockfile(stderr)` so it is one unbroken record; no line below generation 6, none in
+a build without `NODUS_EVM_ENABLED`; a failed root read gives one WARN (`boundary leg-root line for height <h> not written: a read failed`). The host calls Commit at two
+sites, so a restarted node writes the line again for each boundary it replays. **It is temporary**: it stays as long as the shadow run's code is in the node and is removed
+together with the shadow run (operator 2026-11-07); when the shadow run is removed is not decided. The code comment at the log site points to the decision file.
+
+**Tests written in this change** (named only; this section records no run): `test_hf9_kat`, `test_hf9_trie_legs`, `test_hf9_edge`, `test_hf9_activation`,
+`test_hf9_growth`, `test_hf9_shadow`, `test_hf9_proof_service`, `test_storage_hrw`, `test_storage_hrw_runtime`, `test_supply_totals`, `test_evm_trie_store_fault`
+(`nodus/tests/`), `shared/evm/trie/test_rlp_conformity.c` and the extended `test_trie.c`, `test_cmt_app` / `test_cmt_node` / `test_v2_schema` additions, and the
+harness scenario `nodus/tests/integration/stagef/tests/test_cmt_hf9.sh` (stagef README). Oracles: `nodus/tests/vectors/hf9_kat_oracle.py`, `shared/dnac/tests/hf9_vote_oracle.py`,
+`nodus/tests/integration/stagef/tests/hf9_xor_oracle.py`.
+
 ### Witness Database Schema
 
 SQLite tables managed by the witness module (`nodus_witness_db.c`):
@@ -11605,12 +11851,16 @@ SQLite tables managed by the witness module (`nodus_witness_db.c`):
 | `v2_replay` | HF-7 P1b (schema S19, branch `hf7-p1b` only): `tx_id` BLOB PK 64, `intent_id` BLOB UNIQUE 64, `expiry_height` INTEGER ≥ 1 (typed CHECKs), index `v2_replay_by_expiry`; created by the S19 rung only (NOT the base schema); EMPTY and unread below rule-set generation 5 — from it (HF-7 P1c-2, branch `hf7-p1c2`) one row per applied envelope item, written inside the item's savepoint, pruned at `expiry_height <= H` in phase 12d, and the ONLY replay guard ("HF-7 P1c-2" above). S19 also adds the nullable `v2_domain_heads.last_upd_hash` (NULL until P1c); NOT a genesis-bundle table |
 | `v2_names` | HF-4: the on-chain names (`name` BLOB PK 3..36, `owner` BLOB UNIQUE 64, `registered_height` INTEGER ≥ 1, `WITHOUT ROWID`); in the BASE schema, its DDL checked byte-for-byte on every open; written only by CORE op 8 NAME_REGISTER (generation 2); the 5th leg of `core_state_root` (`name_root`, empty = `NDS.E.NAMES.v1`) |
 | `v2_storage_nodes` | storage reward v1 (package B1, branch only): the storage-node registry (`node_fp` BLOB PK 64 = SHA3-512(node_pk), `node_pk` BLOB 2592, `payee_fp` BLOB 64, `bond`, `status` 1 ACTIVE / 2 EXITING / 3 RELEASED, `registered_height` ≥ 1, `exit_height`, `fail_streak` 0..2^32−1 (B2a); typed CHECKs, `WITHOUT ROWID`); in the BASE schema, its DDL checked on every open; written only by the GEN_STORAGE SYSTEM ops STORAGE_REGISTER / STORAGE_EXIT and the storage epoch boundary (B2a: exit release, fail_streak); its registry root (leaf `NDS.STLEAF.v2`) is part of `storage_root`, the 9th leg of `system_state_root` under `NDS.SYS.v5`; Σ bond over ACTIVE + EXITING is a term of the supply equation |
-| `v2_storage_sets` / `v2_storage_set_members` | archive reward (package B2a, branch only): the frozen storage sets S(H) — header (`epoch_start` PK, `set_hash`, `member_count` 0..256) and members (`epoch_start`, `node_fp`; `fail_streak` as frozen at H, not hashed by S(H)); written by the storage boundary (freeze at every storage boundary, prune below B−2E); `sets_root` leg of `storage_root` |
-| `v2_storage_reports` | archive reward (B2a): committed STORAGE_REPORTs (`epoch_start`, `seat` PK; `set_hash`; `bitmap` 0..32 B); written by the STORAGE_REPORT exec, pruned by the storage boundary after settlement; `reports_root` leg |
+| `v2_storage_sets` / `v2_storage_set_members` | archive reward (package B2a, branch only): the frozen storage sets S(H) — header (`epoch_start` PK, `set_hash`, `member_count` 0..256 up to S19; rebuilt at S20 to 0..1024, the limit of a set being its generation's — 256 up to generation 5, 1024 from 6, HF-9) and members (`epoch_start`, `node_fp`; `fail_streak` as frozen at H, not hashed by S(H)); written by the storage boundary (freeze at every storage boundary, prune below B−2E); `sets_root` leg of `storage_root` |
+| `v2_storage_reports` | archive reward (B2a): committed STORAGE_REPORTs (`epoch_start`, `seat` PK; `set_hash`; `bitmap` 0..32 B up to S19; rebuilt at S20 to up to 128 B, the limit being the generation's — 32 up to generation 5, 128 from 6, HF-9); written by the STORAGE_REPORT exec, pruned by the storage boundary after settlement; `reports_root` leg |
 | `v2_storage_segments` | archive reward (B2a): the published segment list (`k` PK, `root` = Root(k) from `v2_blocks.block_id`, `published_height`); written by the storage boundary, never pruned; `segments_root` leg |
 | `committed_transactions` | Full serialized TX data (hub/spoke queries) |
 | `addr_history` | Node-local address history index (decision 2026-10-01): one row per owner effect (h, i, seq, raw owner, kind, amount, token, fee, peer, wire, ts), written in the block transaction only while `addr_history_index` is on; out of every root; read by `dnac_addr_history`. Created rung-free by `nodus_witness_addr_index_migrate` |
 | `addr_history_mark` | Its one marker row: `from_height` (first height of the current gap-free indexed run) and `last_height` |
+| `v2_supply_totals` / `v2_bond_total` | HF-9 WP1 (schema S20, the live rung): the supply running totals kept by six SQLite triggers — `v2_supply_totals(token_id BLOB PK, utxo_total INTEGER)` = Σ `utxo_set.amount` per token (native = 64 zero bytes), `v2_bond_total(id = 1, total)` = Σ bond over ACTIVE + EXITING `v2_storage_nodes`; seeded in the rung and re-seeded at every open; read by `nodus_rt_core_invariant`; in no root; the ownership guard's partial index `idx_utxo_foreign` |
+| `v2_trie_nodes` / `v2_trie_roots` / `v2_trie_dirty` / `v2_trie_state` | HF-9 WP2 (S20): the keyed-trie node store (`digest` PK, `rlp`), the committed root of each of the eight legs (`leg` PK 1..8, `root`), the primary keys written in the block (`(leg, key)` PK), the consensus capture flag (`id = 1`, `capture` 0 / 1; row (1, 0) from the rung). `v2_trie_nodes`, `v2_trie_roots` and `v2_trie_dirty` stay empty until the generation-6 edge; `v2_trie_state` is read at every block start of an S20 database (it must be 0 below generation 6, 1 from it); 24 dirty-capture triggers `v2_trie_l<leg>_<ins\|del\|upd>`; index `v2_storage_nodes_by_status`. See "HF-9" |
+| `v2_trie_shadow_state` and the `v2_trie_shadow_*` tables | HF-9 WP5, node-local: `v2_trie_shadow_state(id = 1, status)` is in the S20 rung (no row); `v2_trie_shadow_nodes`, `_roots`, `_rows`, `_log` are created by the shadow seeding (`CREATE TABLE IF NOT EXISTS`), not part of the S20 shape check; never read by any consensus path |
+| `v2_storage_assign`, `_assign_basis`, `_assign_state`, `v2_storage_held`, `v2_storage_member_epoch`, `v2_storage_xfer_diff` | HF-9 WP4 (S20): the retained rendezvous assignment and its bookkeeping — derived node state written inside the block transaction, in no root, empty until the generation-6 edge writes them; rows are ended, never deleted. See "HF-9" |
 
 ### Witness startup and chain-database faults
 
@@ -11770,6 +12020,21 @@ nodus-cli -s <server_ip> -i <identity_dir> addr-history [--before H[:I:Q]] [--li
 
 One line per row (height, item, sequence, block time, kind, amount, fee, peer);
 when the page is full it prints the `--before H:I:Q` cursor of the next page.
+
+### `hf9-shadow`
+
+One row of the connected node's HF-9 shadow log (`dnac_hf9_shadow`, `nodus-cli.c` `cmd_hf9_shadow`; see "HF-9" in §15). Read-only, node-local.
+
+```bash
+nodus-cli -s <server_ip> hf9-shadow [height]
+```
+
+Height 0 or none = the newest logged row. Output is one `key=value` per line: `status` (0 stopped, 1 running, 2 faulted, 255 never seeded), `found` (0 / 1)
+and, when found, `height`, `leg1` … `leg8`, `core`, `stor`, `sys`, `glob` (128 lowercase hex characters each). Exit 0 = the node answered (found or not); 1 = no answer
+(an older node does not know the method). `nodus/tools/hf9_shadow_diff.sh` drives it across the nodes.
+
+`chain-config propose` also names the two HF-9 parameters, `RULESET_GEN_TRIE` (exactly D6) and `STORAGE_COPIES` ([4, 16]); `chain-config propose` run without `--value` prints the
+usage text with the accepted literal.
 
 ### Planned witness subcommands
 

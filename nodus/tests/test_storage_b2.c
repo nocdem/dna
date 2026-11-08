@@ -298,6 +298,9 @@
 #include "crypto/sign/qgp_dilithium.h"
 
 #include "v2_genesis_fixture.h"
+#include "hf9_gen5_replay.h"     /* HF-9 WP4: generation <= 5 settlement
+                                  * replay recorder (header documents the
+                                  * HF9_GEN5_WRITE environment variable) */
 
 #ifdef ARCHIVE_REWARD_KAT_PATH
 #include <json-c/json.h>
@@ -1178,7 +1181,8 @@ static int keys_make(void) {
 /* ══ C. hook level: STORAGE_REPORT ═════════════════════════════════════ */
 
 typedef struct {
-    uint8_t  call[REP_FIXED + DNA_V2_STORAGE_BITMAP_MAX + 2];
+    uint8_t  call[REP_FIXED + DNA_V2_STORAGE_BITMAP_CAP + 2];  /* HF-9: the
+                                                                * capacity */
     uint8_t  auth[2][AUTH_LEN];
     uint8_t  bytes[32768];
     size_t   len;
@@ -1415,6 +1419,53 @@ static int t_report_hooks(void) {
     CHECK(rh_build(&e, cl, 0, 1, 1) == 0, "env");
     rh_ctx(V3, 0, in_lo + 1);
     CHECK(rh_exec(s3, &e, NULL) == -1, "H not a boundary refused");
+
+    /* ── HF-9 WP4 (plan §8.7): the generation-6 report limits - the SET
+     *    size and the bitmap length of the hook are the runtime's
+     *    generation's (256 / 32 up to generation 5, 1024 / 128 from 6) ── */
+    {
+        const nodus_domain_runtime_t *s6 =
+            nodus_runtime_for_generation(NODUS_RT_GEN_TRIE, DNA_DOMAIN_SYSTEM);
+        CHECK(s6 != NULL, "the compiled generation-6 SYSTEM runtime");
+        uint8_t big[DNA_V2_STORAGE_BITMAP_CAP + 1];
+        memset(big, 0x55, sizeof(big));
+        /* count 1024 -> bitmap_len 128 (no unused high bits) */
+        cl = rep_call(e.call, H, seat, S, big, 128);
+        CHECK(rh_build(&e, cl, 0, 1, 1) == 0, "env 128");
+        rh_ctx(V3, 0, in_lo);
+        rh_reads(S, 1024, V3, 0);
+        memset(&ev, 0, sizeof(ev));
+        CHECK(rh_exec(s6, &e, &ev) == 0 && ev.effect_count == 1 &&
+              ev.eff[0].value_len == 66 + 128,
+              "generation 6: a 1024-member set, a 128-byte bitmap: applies");
+        CHECK(rh_exec(s3, &e, NULL) == -1,
+              "generation 4 refuses the same 206-byte call (bitmap_len 128 "
+              "> 32)");
+        /* count 1000 -> bitmap_len must be 125, 128 is refused */
+        rh_reads(S, 1000, V3, 0);
+        CHECK(rh_exec(s6, &e, NULL) == -1,
+              "generation 6: bitmap_len != ceil(count/8) refused");
+        /* count 1025 is above the generation-6 cap: out of contract */
+        rh_reads(S, 1025, V3, 0);
+        CHECK(rh_exec(s6, &e, NULL) == -2,
+              "generation 6: a set read of 1025 members is a node fault");
+        /* bitmap_len 129 refused by the generation-6 call framing */
+        cl = rep_call(e.call, H, seat, S, big, 129);
+        CHECK(rh_build(&e, cl, 0, 1, 1) == 0, "env 129");
+        rh_reads(S, 1024, V3, 0);
+        CHECK(rh_exec(s6, &e, NULL) == -1, "generation 6: bitmap_len 129");
+        /* the read plan accepts the long call under 6 and refuses it
+         * under 4 */
+        cl = rep_call(e.call, H, seat, S, big, 128);
+        CHECK(rh_build(&e, cl, 0, 1, 1) == 0, "env 128 again");
+        CHECK(nodus_rt_system_read_plan(s6, &e.view, 0, &g_ctx, rq,
+                                        NODUS_RT_MAX_READS, &nr) == 0 &&
+              nr == 3 &&
+              nodus_rt_system_read_plan(s3, &e.view, 0, &g_ctx, rq,
+                                        NODUS_RT_MAX_READS, &nr) == -1,
+              "read plan: 206 bytes planned under generation 6, refused "
+              "under 4");
+    }
     return 0;
 }
 
@@ -1640,6 +1691,8 @@ static int apply_both(fixture_t *a, fixture_t *b, uint64_t h,
      * so fixture A speaks for both) */
     if (g_model_on && h % E_LEN == 0 && model_boundary(a->w, h) != 0)
         return -1;
+    if (g_model_on && h % E_LEN == 0 && hf9r_record(a->w, h) != 0)
+        return -1;                    /* HF-9 generation <= 5 replay record */
     return 0;
 }
 
@@ -3518,6 +3571,12 @@ int main(void) {
         int rc = cases[i].fn();
         fprintf(stderr, "%-22s %s\n", cases[i].name, rc == 0 ? "ok" : "FAIL");
         if (rc != 0) failed++;
+    }
+    /* HF-9 WP4 (plan :447): the generation-<=5 settlement replay - write
+     * (HF9_GEN5_WRITE) or compare with the parent's vector file */
+    if (hf9r_finish() != 0) {
+        fprintf(stderr, "hf9_gen5_replay      FAIL\n");
+        failed++;
     }
     fprintf(stderr, "test_storage_b2: %zu/%zu cases passed, %d checks\n",
             n - failed, n, g_checks);

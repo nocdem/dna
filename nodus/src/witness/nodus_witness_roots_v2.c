@@ -30,7 +30,41 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef NODUS_EVM_ENABLED
+#include "witness/nodus_witness_v2_trie.h"      /* HF-9: the leg roots    */
+#endif
+
 #define LOG_TAG "ROOTS-V2"
+
+/* HF-9 WP3 (plan docs/plans/approved/2026-11-04-hf9.md §5.3): the committed
+ * root of keyed-trie leg `leg` (1..8) — the one reader every generation-6
+ * composition below uses. It refuses (-1) while a dirty key of the leg is
+ * pending (the head_activate guard), for a missing or malformed
+ * v2_trie_roots row and for any read fault: never a stale or substituted
+ * root. The tries are EVM-only (nodus_witness_v2_trie.c); a build without
+ * NODUS_EVM_ENABLED never reaches generation 6 (it never passes the EVM
+ * edge), so there the answer is -1. */
+static int trie_leg_root(nodus_witness_t *w, int leg, uint8_t out[64]) {
+#ifdef NODUS_EVM_ENABLED
+    return nodus_witness_v2_trie_leg_root(w, leg, out);
+#else
+    (void)w; (void)leg; (void)out;
+    return -1;
+#endif
+}
+
+/* HF-9 WP5 (plan §11): the leg source of the SHADOW compositions. `mode`
+ * 1 = the committed v2_trie_roots (trie_leg_root above), 2 = the shadow
+ * run's v2_trie_shadow_roots. The mode is a per-call argument, never state,
+ * so no consensus read can pick up a shadow root: only the *_shadow entry
+ * points below pass 2. */
+static int trie_leg_root_m(nodus_witness_t *w, int mode, int leg,
+                           uint8_t out[64]) {
+#ifdef NODUS_EVM_ENABLED
+    if (mode == 2) return nodus_witness_v2_trie_shadow_leg_root(w, leg, out);
+#endif
+    return trie_leg_root(w, leg, out);
+}
 
 /* ── token_root ─────────────────────────────────────────────────────── */
 
@@ -437,8 +471,14 @@ int nodus_witness_treasury_total(nodus_witness_t *w, uint64_t *out) {
  * INTEGER bound every u64 column here follows), read with the same
  * typed-column discipline. */
 #define STORAGE_SCAN_COLS 9
+/* HF-9 WP4 (plan §8.8): the same scan and row checks restricted to one
+ * status or one node_fp, so the generation-6 boundary reads only the rows
+ * it needs (the status index / the primary key). mode 0 = every row, 1 =
+ * `status == arg_status`, 2 = `node_fp == arg_fp`. */
+enum { STSCAN_ALL = 0, STSCAN_STATUS = 1, STSCAN_FP = 2 };
 static int storage_scan(nodus_witness_t *w, dna_v2_storage_node_row_t **rows,
-                        size_t *n_out) {
+                        size_t *n_out, int mode, int arg_status,
+                        const uint8_t *arg_fp) {
     static const char *const want_type[STORAGE_SCAN_COLS] = {
         "blob", "blob", "blob", "integer", "integer", "integer", "integer",
         "integer", "integer"
@@ -446,14 +486,28 @@ static int storage_scan(nodus_witness_t *w, dna_v2_storage_node_row_t **rows,
     *rows = NULL;
     *n_out = 0;
     sqlite3_stmt *st = NULL;
-    int rc = sqlite3_prepare_v2(w->db,
-        "SELECT node_fp, node_pk, payee_fp, bond, status, "
-        "registered_height, exit_height, fail_streak, grace_until, "
-        "typeof(node_fp), typeof(node_pk), typeof(payee_fp), typeof(bond), "
-        "typeof(status), typeof(registered_height), typeof(exit_height), "
-        "typeof(fail_streak), typeof(grace_until) "
-        "FROM v2_storage_nodes ORDER BY node_fp ASC", -1, &st, NULL);
+#define STSCAN_SELECT                                                      \
+        "SELECT node_fp, node_pk, payee_fp, bond, status, "                \
+        "registered_height, exit_height, fail_streak, grace_until, "       \
+        "typeof(node_fp), typeof(node_pk), typeof(payee_fp), typeof(bond), "\
+        "typeof(status), typeof(registered_height), typeof(exit_height), " \
+        "typeof(fail_streak), typeof(grace_until) FROM v2_storage_nodes "
+    /* one statement text per mode, so each is served by its own index
+     * (the status index / the primary key) - never a flag-controlled OR */
+    const char *sql =
+        mode == STSCAN_STATUS
+            ? STSCAN_SELECT "WHERE status = ?1 ORDER BY node_fp ASC"
+        : mode == STSCAN_FP
+            ? STSCAN_SELECT "WHERE node_fp = ?1 ORDER BY node_fp ASC"
+            : STSCAN_SELECT "ORDER BY node_fp ASC";
+    int rc = sqlite3_prepare_v2(w->db, sql, -1, &st, NULL);
+#undef STSCAN_SELECT
+    if (rc == SQLITE_OK && mode == STSCAN_STATUS)
+        rc = sqlite3_bind_int(st, 1, arg_status);
+    else if (rc == SQLITE_OK && mode == STSCAN_FP)
+        rc = sqlite3_bind_blob(st, 1, arg_fp, 64, SQLITE_STATIC);
     if (rc != SQLITE_OK) {
+        if (st) sqlite3_finalize(st);
         QGP_LOG_ERROR(LOG_TAG, "storage registry scan prepare failed: %s",
                       sqlite3_errmsg(w->db));
         return -1;
@@ -524,6 +578,18 @@ static int storage_scan(nodus_witness_t *w, dna_v2_storage_node_row_t **rows,
                       "(rc=%d) — failing root", rc);
         fail = 1;
     }
+    /* work actually EXAMINED, not rows returned (T-9, Sol rows 12 and
+     * round-3 5): SQLite's own virtual-machine step count of this
+     * statement. It is deterministic, non-zero for any query and grows
+     * with every row the plan visits, so a status query that scans the
+     * registry (instead of the status index) steps once per registry row.
+     * (The FULLSCAN_STEP statistic stayed 0 for an ordered primary-key
+     * scan of this WITHOUT ROWID table, so it cannot see that case.)
+     * Counted for the restricted variants only (the generation-6
+     * boundary's reads). */
+    if (mode != STSCAN_ALL)
+        g_nodus_storage_work.registry_vm_steps += (uint64_t)
+            sqlite3_stmt_status(st, SQLITE_STMTSTATUS_VM_STEP, 0);
     sqlite3_finalize(st);
     if (fail) { free(r); return -1; }
     if (n == 0) { free(r); r = NULL; }
@@ -536,7 +602,35 @@ int nodus_witness_storage_registry_load(nodus_witness_t *w,
                                         dna_v2_storage_node_row_t **rows,
                                         size_t *n_out) {
     if (!w || !w->db || !rows || !n_out) return -1;
-    return storage_scan(w, rows, n_out);
+    return storage_scan(w, rows, n_out, STSCAN_ALL, 0, NULL);
+}
+
+int nodus_witness_storage_registry_load_status(nodus_witness_t *w,
+                                               uint8_t status,
+                                               dna_v2_storage_node_row_t **rows,
+                                               size_t *n_out) {
+    if (!w || !w->db || !rows || !n_out) return -1;
+    if (status < DNA_V2_STORAGE_ACTIVE || status > DNA_V2_STORAGE_RELEASED)
+        return -1;
+    return storage_scan(w, rows, n_out, STSCAN_STATUS, (int)status, NULL);
+}
+
+int nodus_witness_storage_registry_get(nodus_witness_t *w,
+                                       const uint8_t node_fp[64],
+                                       dna_v2_storage_node_row_t *out) {
+    if (!w || !w->db || !node_fp || !out) return -1;
+    dna_v2_storage_node_row_t *rows = NULL;
+    size_t n = 0;
+    if (storage_scan(w, &rows, &n, STSCAN_FP, 0, node_fp) != 0) return -1;
+    int ret = 1;
+    if (n == 1) {
+        *out = rows[0];
+        ret = 0;
+    } else if (n > 1) {
+        ret = -1;                          /* the PRIMARY KEY forbids it  */
+    }
+    free(rows);
+    return ret;
 }
 
 int nodus_witness_storage_registry_root(nodus_witness_t *w,
@@ -544,7 +638,7 @@ int nodus_witness_storage_registry_root(nodus_witness_t *w,
     if (!w || !w->db || !out) return -1;
     dna_v2_storage_node_row_t *rows = NULL;
     size_t n = 0;
-    if (storage_scan(w, &rows, &n) != 0) return -1;
+    if (storage_scan(w, &rows, &n, STSCAN_ALL, 0, NULL) != 0) return -1;
     int ret = dna_v2_storage_registry_root(rows, n, out);
     free(rows);
     return ret;
@@ -554,7 +648,7 @@ int nodus_witness_storage_bond_total(nodus_witness_t *w, uint64_t *out) {
     if (!w || !w->db || !out) return -1;
     dna_v2_storage_node_row_t *rows = NULL;
     size_t n = 0;
-    if (storage_scan(w, &rows, &n) != 0) return -1;
+    if (storage_scan(w, &rows, &n, STSCAN_ALL, 0, NULL) != 0) return -1;
     uint64_t sum = 0;
     int ret = 0;
     for (size_t i = 0; i < n; i++) {
@@ -598,6 +692,37 @@ int nodus_witness_storage_root_v2(nodus_witness_t *w, uint8_t out[64]) {
 /* HF-7 P1c-1 — contract: nodus_witness_roots_v2.h. */
 int nodus_witness_storage_root_segv2(nodus_witness_t *w, uint8_t out[64]) {
     return storage_root_impl(w, 1, out);
+}
+
+/* HF-9 WP3 — contract: nodus_witness_roots_v2.h. "NDS.STOR.v3": the four
+ * legs in the "NDS.STOR.v2" order; registry (L5) and segments (L6) are the
+ * committed keyed-trie roots, sets and reports are read as before. */
+static int storage_legs_v3(nodus_witness_t *w, int mode, uint8_t legs[4][64]) {
+    if (!w || !w->db || !legs) return -1;
+    /* registry (trie L5), sets, reports, segments (trie L6) */
+    if (trie_leg_root_m(w, mode, 5, legs[0]) != 0) return -1;
+    if (nodus_witness_storage_sets_root(w, legs[1]) != 0) return -1;
+    if (nodus_witness_storage_reports_root(w, legs[2]) != 0) return -1;
+    if (trie_leg_root_m(w, mode, 6, legs[3]) != 0) return -1;
+    return 0;
+}
+
+static int storage_root_v3_impl(nodus_witness_t *w, int mode,
+                                uint8_t out[64]) {
+    if (!w || !w->db || !out) return -1;
+    uint8_t l[4][64];
+    if (storage_legs_v3(w, mode, l) != 0) return -1;
+    return dna_v2_storage_root_v3(l[0], l[1], l[2], l[3], out);
+}
+
+int nodus_witness_storage_root_v3(nodus_witness_t *w, uint8_t out[64]) {
+    return storage_root_v3_impl(w, 1, out);
+}
+
+/* HF-9 WP5 - contract: nodus_witness_roots_v2.h. */
+int nodus_witness_storage_root_v3_shadow(nodus_witness_t *w,
+                                         uint8_t out[64]) {
+    return storage_root_v3_impl(w, 2, out);
 }
 
 /* ── attendance_root (tokenomics-v3 P1, D-4 / S-2) ─────────────────────
@@ -734,8 +859,15 @@ typedef struct {
     uint8_t attendance[64], treasury[64];
 } sys_legs_v4_t;
 
+/* HF-9 WP3: `trie_legs` (generation >= NODUS_RT_GEN_TRIE, composition
+ * "NDS.SYS.v7") takes the validator-set leg (L7) and the attendance leg
+ * (L8) from the committed keyed-trie roots (nodus_witness_v2_trie_leg_root,
+ * which refuses while a dirty key of the leg is pending) instead of
+ * scanning the two tables — no scan of a migrated table (plan §5.6). It
+ * implies the v2 validator / delegation leaves (a generation-6 chain is
+ * past generation 4). Every other leg is read exactly as before. */
 static int system_legs_v4(nodus_witness_t *w, sys_legs_v4_t *l,
-                          int v2_leaves) {
+                          int v2_leaves, int trie_legs) {
     uint8_t *validator_root = l->validator_root;
     uint8_t *delegation_root = l->delegation_root;
     uint8_t *chain_config_root = l->chain_config_root;
@@ -764,9 +896,13 @@ static int system_legs_v4(nodus_witness_t *w, sys_legs_v4_t *l,
     /* S3: the real validator-set leg. An EMPTY validator_set_snapshots
      * table yields the SAME tagged empty root the S2 placeholder emitted
      * (nodus_witness_vset_root → dna_v2_vset_root n==0 → DNA_V2_EMPTY_VSET),
-     * so a pre-snapshot chain's system_state_root is byte-unchanged. */
-    if (nodus_witness_vset_root(w, vset) != 0)
+     * so a pre-snapshot chain's system_state_root is byte-unchanged.
+     * HF-9: under the trie composition this leg is trie L7. */
+    if (trie_legs) {
+        if (trie_leg_root_m(w, trie_legs, 7, vset) != 0) return -1;
+    } else if (nodus_witness_vset_root(w, vset) != 0) {
         return -1;
+    }
     /* S4: the domain-registry leg is REAL — nodus_witness_domreg_root
      * over the domain_registry table. An empty table (every pre-V2 chain)
      * returns exactly the DNA_V2_EMPTY_DOMREG tagged root the S2
@@ -791,9 +927,13 @@ static int system_legs_v4(nodus_witness_t *w, sys_legs_v4_t *l,
      * byte-unchanged for a pre-P1 chain the way the vset/domreg/manifest
      * legs were for THEIR predecessors: every state_root changes at this
      * package (devnet wipe + stop-all, decision file §2 "F1-F4, F8, F9,
-     * F12 ve F13-b" class). */
-    if (nodus_witness_attendance_root(w, attendance) != 0)
+     * F12 ve F13-b" class). HF-9: under the trie composition this leg
+     * is trie L8. */
+    if (trie_legs) {
+        if (trie_leg_root_m(w, trie_legs, 8, attendance) != 0) return -1;
+    } else if (nodus_witness_attendance_root(w, attendance) != 0) {
         return -1;
+    }
     /* Final pre-testnet wipe, W-A: the keyless treasury pools, the 8th
      * and LAST leg under "NDS.SYS.v4". A SYSTEM leg (not CORE) because
      * a future exit rule will be a SYSTEM leg with a CORE sibling
@@ -810,7 +950,8 @@ static int system_legs_v4(nodus_witness_t *w, sys_legs_v4_t *l,
 int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     if (!w || !out) return -1;
     sys_legs_v4_t l;
-    if (system_legs_v4(w, &l, /*v2_leaves=*/0) != 0) return -1;
+    if (system_legs_v4(w, &l, /*v2_leaves=*/0, /*trie_legs=*/0) != 0)
+        return -1;
     /* GENERICITY CORRECTION (locked): the native supply_root is NOT a
      * SYSTEM leg — issuance belongs to the DNA_CORE runtime and is
      * committed by ITS state root below. */
@@ -833,7 +974,8 @@ int nodus_witness_system_root_v5(nodus_witness_t *w, uint8_t out[64]) {
     if (!w || !out) return -1;
     sys_legs_v4_t l;
     uint8_t storage[64];
-    if (system_legs_v4(w, &l, /*v2_leaves=*/1) != 0) return -1;
+    if (system_legs_v4(w, &l, /*v2_leaves=*/1, /*trie_legs=*/0) != 0)
+        return -1;
     if (nodus_witness_storage_root_v2(w, storage) != 0) return -1;
     return dna_v2_system_root_v5(l.validator_root, l.delegation_root,
                                  l.chain_config_root, l.vset, l.domreg,
@@ -1149,7 +1291,8 @@ int nodus_witness_system_root_v6(nodus_witness_t *w, uint8_t out[64]) {
     if (!w || !out) return -1;
     sys_legs_v4_t l;
     uint8_t storage[64], bcopy[64], vstat[64], stmem[64];
-    if (system_legs_v4(w, &l, /*v2_leaves=*/1) != 0) return -1;
+    if (system_legs_v4(w, &l, /*v2_leaves=*/1, /*trie_legs=*/0) != 0)
+        return -1;
     if (nodus_witness_storage_root_segv2(w, storage) != 0) return -1;
     if (nodus_witness_bcopy_root(w, bcopy) != 0) return -1;
     if (nodus_witness_vstat_hash(w, vstat) != 0) return -1;
@@ -1160,20 +1303,81 @@ int nodus_witness_system_root_v6(nodus_witness_t *w, uint8_t out[64]) {
                                  storage, bcopy, vstat, stmem, out);
 }
 
+/* HF-9 WP3 — contract: nodus_witness_roots_v2.h. "NDS.SYS.v7": the twelve
+ * v6 legs in v6 order, read EXACTLY as nodus_witness_system_root_v6 reads
+ * them except the three that move to the keyed tries — validator_set_root
+ * (L7) and attendance_root (L8) through system_legs_v4's trie mode, and
+ * storage_root as "NDS.STOR.v3" (registry L5, segments L6;
+ * nodus_witness_storage_root_v3). */
+/* The twelve legs of "NDS.SYS.v7" in composition order (validator,
+ * delegation, chain_config, validator_set, domain_registry, manifest,
+ * attendance, treasury, storage, bcopy, vstat, stmem). */
+static int system_legs_v7(nodus_witness_t *w, int mode, uint8_t legs[12][64]) {
+    if (!w || !legs) return -1;
+    sys_legs_v4_t l;
+    if (system_legs_v4(w, &l, /*v2_leaves=*/1, /*trie_legs=*/mode) != 0)
+        return -1;
+    memcpy(legs[0], l.validator_root, 64);
+    memcpy(legs[1], l.delegation_root, 64);
+    memcpy(legs[2], l.chain_config_root, 64);
+    memcpy(legs[3], l.vset, 64);
+    memcpy(legs[4], l.domreg, 64);
+    memcpy(legs[5], l.manifest, 64);
+    memcpy(legs[6], l.attendance, 64);
+    memcpy(legs[7], l.treasury, 64);
+    if (storage_root_v3_impl(w, mode, legs[8]) != 0) return -1;
+    if (nodus_witness_bcopy_root(w, legs[9]) != 0) return -1;
+    if (nodus_witness_vstat_hash(w, legs[10]) != 0) return -1;
+    if (nodus_witness_stmem_root(w, legs[11]) != 0) return -1;
+    return 0;
+}
+
+static int system_root_v7_impl(nodus_witness_t *w, int mode,
+                               uint8_t out[64]) {
+    if (!w || !out) return -1;
+    uint8_t l[12][64];
+    if (system_legs_v7(w, mode, l) != 0) return -1;
+    return dna_v2_system_root_v7(l[0], l[1], l[2], l[3], l[4], l[5], l[6],
+                                 l[7], l[8], l[9], l[10], l[11], out);
+}
+
+int nodus_witness_system_root_v7(nodus_witness_t *w, uint8_t out[64]) {
+    return system_root_v7_impl(w, 1, out);
+}
+
+/* HF-9 WP5 - contract: nodus_witness_roots_v2.h. */
+int nodus_witness_system_root_v7_shadow(nodus_witness_t *w, uint8_t out[64]) {
+    return system_root_v7_impl(w, 2, out);
+}
+
 /* The body of both CORE root variants: `with_evm_reserve` 0 = every
  * generation before the EVM one (the supply leg exactly
  * nodus_witness_supply_root_v2 — byte-identical to before Nodus EVM), 1 = the
  * EVM generation (the supply leg gains the CORE EVM reserve under
- * "NDS.SUPPLY.v3"). Every other leg and the composition are shared. */
-static int core_root_impl(nodus_witness_t *w, int with_evm_reserve,
-                          uint8_t out[64]) {
-    if (!w || !out) return -1;
-    uint8_t utxo_root[64], token_root[64], pools[64], claims[64], names[64];
-    uint8_t supply[64], accrual[64];
-    if (nodus_witness_merkle_compute_utxo_root(w, utxo_root) != 0)
-        return -1;
-    if (nodus_witness_token_root_v2(w, token_root) != 0)
-        return -1;
+ * "NDS.SUPPLY.v3"). Every other leg and the composition are shared.
+ * HF-9 WP3: `trie` (generation >= NODUS_RT_GEN_TRIE, composition
+ * "NDS.CORE.v4"; always with the EVM supply leaf) takes the utxo, token,
+ * claims and name legs from the committed keyed-trie roots L1-L4
+ * (trie_leg_root) instead of scanning the four tables; pools, supply and
+ * accrual are read as before. */
+static int core_legs_impl(nodus_witness_t *w, int with_evm_reserve,
+                          int trie, uint8_t legs[7][64]) {
+    if (!w || !legs) return -1;
+    /* the seven legs in composition order (dna_v2_core_root_v4): utxo,
+     * token, pools, claims, name, supply, accrual */
+    uint8_t *utxo_root = legs[0], *token_root = legs[1], *pools = legs[2];
+    uint8_t *claims = legs[3], *names = legs[4], *supply = legs[5];
+    uint8_t *accrual = legs[6];
+    if (trie) {
+        if (!with_evm_reserve) return -1;
+        if (trie_leg_root_m(w, trie, 1, utxo_root) != 0) return -1;
+        if (trie_leg_root_m(w, trie, 2, token_root) != 0) return -1;
+    } else {
+        if (nodus_witness_merkle_compute_utxo_root(w, utxo_root) != 0)
+            return -1;
+        if (nodus_witness_token_root_v2(w, token_root) != 0)
+            return -1;
+    }
     /* S7: the pools leg is REAL — nodus_witness_pools_root_v2 over the
      * v2_pools rows OWNED BY THIS DOMAIN (each runtime commits the pool
      * state of its own domain; a foreign domain's pool can never enter
@@ -1186,15 +1390,25 @@ static int core_root_impl(nodus_witness_t *w, int with_evm_reserve,
      * the claims commitment of its own domain — this is the CORE
      * runtime's root, so it covers CORE-targeted claims only).
      * Absent/empty tables reproduce the S2 tagged-empty root
-     * byte-identically (pre-S6 chains unchanged). */
-    if (nodus_witness_claims_root_v2(w, DNA_DOMAIN_CORE, claims) != 0)
+     * byte-identically (pre-S6 chains unchanged). HF-9: under the trie
+     * composition this leg is trie L3 — the CORE-targeted rows only, the
+     * one trie of the one caller (plan §4.2 row L3). */
+    if (trie) {
+        if (trie_leg_root_m(w, trie, 3, claims) != 0) return -1;
+    } else if (nodus_witness_claims_root_v2(w, DNA_DOMAIN_CORE, claims)
+               != 0) {
         return -1;
+    }
     /* HF-4: the name leg is REAL — names_root_v2 over v2_names. An empty
      * table (every chain before its first registration) is exactly the
      * tagged-empty root this leg held since S2, so no pre-H root moves
-     * and the composition tag stays "NDS.CORE.v2". */
-    if (names_root_v2(w, names) != 0)
+     * and the composition tag stays "NDS.CORE.v2". HF-9: under the trie
+     * composition this leg is trie L4. */
+    if (trie) {
+        if (trie_leg_root_m(w, trie, 4, names) != 0) return -1;
+    } else if (names_root_v2(w, names) != 0) {
         return -1;
+    }
     /* Native issuance (genesis/minted/burned) is the CORE runtime's OWN
      * asset commitment — the supply leg lives HERE (locked ownership).
      * Nodus EVM: the EVM generation's leaf also commits the reserve bucket. */
@@ -1220,17 +1434,37 @@ static int core_root_impl(nodus_witness_t *w, int with_evm_reserve,
      * after every payday) is the tagged empty root. */
     if (nodus_witness_accrual_root_v2(w, accrual) != 0)
         return -1;
-    return dna_v2_core_root(utxo_root, token_root, pools, claims, names,
-                            supply, accrual, out);
+    return 0;
+}
+
+static int core_root_impl(nodus_witness_t *w, int with_evm_reserve,
+                          int trie, uint8_t out[64]) {
+    if (!w || !out) return -1;
+    uint8_t l[7][64];
+    if (core_legs_impl(w, with_evm_reserve, trie, l) != 0) return -1;
+    if (trie)
+        return dna_v2_core_root_v4(l[0], l[1], l[2], l[3], l[4], l[5], l[6],
+                                   out);
+    return dna_v2_core_root(l[0], l[1], l[2], l[3], l[4], l[5], l[6], out);
 }
 
 int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]) {
-    return core_root_impl(w, 0, out);
+    return core_root_impl(w, 0, 0, out);
 }
 
 /* Nodus EVM — contract: nodus_witness_roots_v2.h. */
 int nodus_witness_core_root_v2_evm(nodus_witness_t *w, uint8_t out[64]) {
-    return core_root_impl(w, 1, out);
+    return core_root_impl(w, 1, 0, out);
+}
+
+/* HF-9 WP3 — contract: nodus_witness_roots_v2.h. */
+int nodus_witness_core_root_v4(nodus_witness_t *w, uint8_t out[64]) {
+    return core_root_impl(w, 1, 1, out);
+}
+
+/* HF-9 WP5 - contract: nodus_witness_roots_v2.h. */
+int nodus_witness_core_root_v4_shadow(nodus_witness_t *w, uint8_t out[64]) {
+    return core_root_impl(w, 1, 2, out);
 }
 
 /* Decode the 89-byte canonical head blob (layout: ledger_roots_v2.h). */
@@ -1290,15 +1524,29 @@ static int roots_generation_on(nodus_witness_t *w) {
     return rt->generation >= NODUS_RT_GEN_ROOTS;
 }
 
-int nodus_witness_global_root_v2(nodus_witness_t *w,
-                                 uint8_t out_global[64],
-                                 uint8_t out_domains[64],
-                                 uint8_t out_system[64],
-                                 uint8_t out_core[64]) {
+/* `shadow` (HF-9 WP5, plan §11) 0 = the committed compositions exactly as
+ * before; 1 = the shadow run's GLOBAL v2' recipe: the SYSTEM and CORE
+ * roots are the shadow compositions (SYS v7' and CORE v4' over the shadow
+ * legs) and replace the domain_state_root of the SYSTEM and CORE heads;
+ * every other byte (the other domains' heads, every head's ruleset
+ * version, status and heights, the head-authoritative last_upd_hash
+ * column, the replay root) is the COMMITTED one. Only the head-bearing
+ * ROOTS-generation composition is a shadow subject (a chain without
+ * heads, or below the ROOTS generation, answers -1). */
+static int global_root_v2_impl(nodus_witness_t *w, int shadow,
+                               uint8_t out_global[64],
+                               uint8_t out_domains[64],
+                               uint8_t out_system[64],
+                               uint8_t out_core[64]) {
     if (!w || !out_global) return -1;
     uint8_t sys[64], core[64], domains[64];
-    if (nodus_witness_system_root_v2(w, sys) != 0) return -1;
-    if (nodus_witness_core_root_v2(w, core) != 0) return -1;
+    if (shadow) {
+        if (nodus_witness_system_root_v7_shadow(w, sys) != 0) return -1;
+        if (nodus_witness_core_root_v4_shadow(w, core) != 0) return -1;
+    } else {
+        if (nodus_witness_system_root_v2(w, sys) != 0) return -1;
+        if (nodus_witness_core_root_v2(w, core) != 0) return -1;
+    }
 
     /* When S5 head persistence exists (v2_domain_heads with rows), the
      * COMMITTED heads are the authority — ANY registered domain count,
@@ -1335,6 +1583,7 @@ int nodus_witness_global_root_v2(nodus_witness_t *w,
          * is v2 (+ the replay leg) — the same composer phase 13 uses.
          * Below it the SELECT and the bytes are exactly the old ones. */
         const int roots_v2 = roots_generation_on(w);
+        if (shadow && !roots_v2) return -1;
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(w->db, roots_v2
                 ? "SELECT head, last_upd_hash, typeof(last_upd_hash) "
@@ -1370,6 +1619,10 @@ int nodus_witness_global_root_v2(nodus_witness_t *w,
                 break;
             }
             head_blob_decode(sqlite3_column_blob(st, 0), &heads[n]);
+            if (shadow && heads[n].domain_id == DNA_DOMAIN_SYSTEM)
+                memcpy(heads[n].domain_state_root, sys, 64);
+            else if (shadow && heads[n].domain_id == DNA_DOMAIN_CORE)
+                memcpy(heads[n].domain_state_root, core, 64);
             if (roots_v2) {
                 /* the column is mandatory under the ROOTS generation: NULL
                  * means the edge never seeded it — a fault, never a
@@ -1396,6 +1649,7 @@ int nodus_witness_global_root_v2(nodus_witness_t *w,
         free(luh);
         if (ret != 0) return -1;
     } else {
+        if (shadow) return -1;      /* a head-less chain is no shadow subject */
         /* Pre-S5 fixture composition (frozen S2 KAT behavior). */
         dna_v2_domain_head_t heads[2];
         memset(heads, 0, sizeof(heads));
@@ -1412,5 +1666,106 @@ int nodus_witness_global_root_v2(nodus_witness_t *w,
     if (out_domains) memcpy(out_domains, domains, 64);
     if (out_system)  memcpy(out_system, sys, 64);
     if (out_core)    memcpy(out_core, core, 64);
+    return 0;
+}
+
+int nodus_witness_global_root_v2(nodus_witness_t *w,
+                                 uint8_t out_global[64],
+                                 uint8_t out_domains[64],
+                                 uint8_t out_system[64],
+                                 uint8_t out_core[64]) {
+    return global_root_v2_impl(w, 0, out_global, out_domains, out_system,
+                               out_core);
+}
+
+/* HF-9 WP5 - contract: nodus_witness_roots_v2.h. */
+int nodus_witness_global_root_v2_shadow(nodus_witness_t *w,
+                                        uint8_t out_global[64],
+                                        uint8_t out_domains[64],
+                                        uint8_t out_system[64],
+                                        uint8_t out_core[64]) {
+    return global_root_v2_impl(w, 1, out_global, out_domains, out_system,
+                               out_core);
+}
+
+/* HF-9 WP6 - contract: nodus_witness_roots_v2.h. The legs of the committed
+ * generation-6 compositions, read by the SAME leg readers the roots above use
+ * (core_legs_impl / storage_legs_v3 / system_legs_v7 are the bodies of
+ * nodus_witness_core_root_v4 / _storage_root_v3 / _system_root_v7), and the
+ * committed heads exactly as global_root_v2_impl reads them under the ROOTS
+ * generation. */
+void nodus_witness_proof_legs_free(nodus_witness_proof_legs_t *p) {
+    if (!p) return;
+    free(p->heads);
+    free(p->luh);
+    memset(p, 0, sizeof(*p));
+}
+
+int nodus_witness_proof_legs_load(nodus_witness_t *w,
+                                  nodus_witness_proof_legs_t *p) {
+    if (!w || !w->db || !p) return -1;
+    memset(p, 0, sizeof(*p));
+    const nodus_domain_runtime_t *rt = NULL;
+    /* "below generation 6" (answer 1) is returned ONLY after the committed
+     * SYSTEM runtime was resolved and is of an older generation. A failure to
+     * resolve it - a database fault or an unknown tuple, which
+     * nodus_witness_v2_runtime_for does not tell apart - is a fault (-1),
+     * never an older generation (plan §10.2: NOT_FOUND for the snapshot
+     * below generation 6, INTERNAL_ERROR for a read fault). */
+    if (nodus_witness_v2_runtime_for(w, DNA_DOMAIN_SYSTEM, 0, &rt) != 0 || !rt)
+        return -1;
+    if (rt->generation < NODUS_RT_GEN_TRIE)
+        return 1;
+
+    if (core_legs_impl(w, 1, 1, p->core) != 0) return -1;
+    if (storage_legs_v3(w, 1, p->stor) != 0) return -1;
+    if (system_legs_v7(w, 1, p->sys) != 0) return -1;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT head, last_upd_hash, typeof(last_upd_hash) "
+            "FROM v2_domain_heads ORDER BY domain_id ASC", -1, &st, NULL)
+        != SQLITE_OK)
+        return -1;
+    size_t cap = 4;
+    p->heads = malloc(cap * sizeof(*p->heads));
+    p->luh = malloc(cap * sizeof(*p->luh));
+    if (!p->heads || !p->luh) {
+        sqlite3_finalize(st);
+        nodus_witness_proof_legs_free(p);
+        return -1;
+    }
+    int rc, fail = 0;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        if (p->n_heads >= cap) {
+            size_t nc = cap * 2;
+            dna_v2_domain_head_t *nh = realloc(p->heads, nc * sizeof(*nh));
+            if (nh) p->heads = nh;
+            uint8_t (*nl)[64] = nh ? realloc(p->luh, nc * sizeof(*nl)) : NULL;
+            if (nl) p->luh = nl;
+            if (!nh || !nl) { fail = 1; break; }
+            cap = nc;
+        }
+        const char *t = (const char *)sqlite3_column_text(st, 2);
+        if (sqlite3_column_bytes(st, 0) != DNA_V2_DOMHEAD_ENC_LEN || !t ||
+            strcmp(t, "blob") != 0 || sqlite3_column_bytes(st, 1) != 64) {
+            fail = 1;
+            break;
+        }
+        head_blob_decode(sqlite3_column_blob(st, 0), &p->heads[p->n_heads]);
+        memcpy(p->luh[p->n_heads], sqlite3_column_blob(st, 1), 64);
+        p->n_heads++;
+    }
+    if (!fail && rc != SQLITE_DONE) fail = 1;
+    sqlite3_finalize(st);
+    if (fail || p->n_heads == 0 ||
+        nodus_witness_replay_root(w, p->replay) != 0 ||
+        dna_v2_domains_root_v2(p->heads, (const uint8_t (*)[64])p->luh,
+                               p->n_heads, p->domains_root) != 0 ||
+        dna_v2_global_root_v2(p->domains_root, p->replay, p->global_root)
+            != 0) {
+        nodus_witness_proof_legs_free(p);
+        return -1;
+    }
     return 0;
 }

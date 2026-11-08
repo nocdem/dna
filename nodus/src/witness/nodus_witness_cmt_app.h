@@ -554,6 +554,28 @@ int nodus_cmt_app_entry_identity(nodus_cmt_app_ledger_t *ctx,
                                  const uint8_t *bytes, size_t len,
                                  uint8_t out_id[64], uint8_t *out_class);
 
+/**
+ * TEMPORARY (decision docs/plans/decisions/2026-11-06-hf9-boundary-leg-root-log.md;
+ * its removal is the operator's word): the log line `nodus_cmt_app_commit`
+ * writes at an epoch boundary under the keyed trie (generation 6), exposed
+ * for direct test. Fills `line` (at least NODUS_CMT_BOUNDARY_ROOT_LINE_MAX
+ * bytes) with
+ *   HF9-BOUNDARY-ROOTS h=<height> global=<128 hex> leg1=<128 hex> ... leg8=<128 hex>
+ * (lower-case hex; the global root and the eight leg roots of the COMMITTED
+ * state, in leg order 1..8). Writes nothing to the database and reads no
+ * clock.
+ *
+ * @return 1 `line` is filled; 0 there is no line (height 0, not a boundary
+ *         `height % DNAC_EPOCH_LENGTH == 0`, the SYSTEM runtime below
+ *         generation 6 or unresolved — doms_trie_on's own rule, so an
+ *         unresolved SYSTEM runtime is 0 and gives no warning — or a build
+ *         without NODUS_EVM_ENABLED); -1 the global-root or a leg-root read
+ *         failed (`line` empty; the Commit logs one WARN).
+ */
+#define NODUS_CMT_BOUNDARY_ROOT_LINE_MAX 1400
+int nodus_cmt_app_boundary_root_line(nodus_witness_t *w, uint64_t height,
+                                     char *line, size_t cap);
+
 #ifdef __cplusplus
 }
 #endif

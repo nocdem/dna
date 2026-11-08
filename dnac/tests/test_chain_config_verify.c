@@ -16,6 +16,23 @@
  * Witness-side rules (committee membership, sig verify against pubkeys,
  * epoch grace, freshness, monotonicity, exclusive block) are Stage B and
  * NOT exercised here.
+ *
+ * HF-9 WP3 additions (plan docs/plans/approved/2026-11-04-hf9.md §12 T-12,
+ * client mirror only):
+ *   PROVES   ids 24 (RULESET_GEN_TRIE: exactly D6) and 25
+ *            (STORAGE_COPIES: [4, 16]) are accepted / refused by
+ *            dnac_tx_verify_chain_config_rules as the witness scalar rules
+ *            do; DNAC_CFG_PARAM_MAX_ID is 25; both ids are on the
+ *            read-by-consensus list (and 23, which this list's check had
+ *            not been updated for when MLDSA_ACTIVE landed).
+ *   FLAGS    none; the D6 value pin only where the K8 owner is compiled
+ *            (DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT).
+ *   LEAVES   nothing (no files, no DB).
+ *   FALSE PASS  the D6 literal is compared against a literal typed here
+ *            from the independent oracle's output, not derived; a build
+ *            with a test owner skips that pin. The witness-side stateful
+ *            rules (single use, generation, boundary) are NOT exercised
+ *            here — nodus/tests/test_hf9_activation.c does.
  */
 
 #include "dnac/dnac.h"
@@ -113,9 +130,9 @@ int main(void) {
      * case checks accepts a valid value. */
     build_valid_chain_config(&tx, 0, 5);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 24 (Nodus EVM 14-15, storage reward v1 16 (retired), HF-8 17, HF-6 18-21, HF-7 22, ML-DSA-87 precompile 23) */
+    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 26 (Nodus EVM 14-15, storage reward v1 16 (retired), HF-8 17, HF-6 18-21, HF-7 22, ML-DSA-87 precompile 23, HF-9 24-25) */
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    CHECK(DNAC_CFG_PARAM_MAX_ID + 1 == 24);
+    CHECK(DNAC_CFG_PARAM_MAX_ID + 1 == 26);
     build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
 
@@ -255,6 +272,64 @@ int main(void) {
           DNAC_CFG_RULESET_GEN_ROOTS_D != DNAC_CFG_EVM_ACTIVE_D);
     CHECK(DNAC_CFG_RULESET_GEN_ROOTS_D <= (uint64_t)INT64_MAX);
 
+    /* 5a'''''. HF-9 WP3 (plan docs/plans/approved/2026-11-04-hf9.md §7.1,
+     * §12 T-12). RULESET_GEN_TRIE (id 24) accepts EXACTLY the dnac.h
+     * literal D6 — the 5a'''' param-22 shape: D6 ± 1, 0, D2, the EVM D,
+     * D4, D5 and UINT64_MAX refuse; params 9 / 18 / 22 refuse D6. The
+     * literal is pinned to the INDEPENDENT oracle's value
+     * (shared/dnac/tests/hf9_vote_oracle.py: "D6 = 0x1f12a7f0b824ae45ULL",
+     * decimal 2239036617079959109, owner K8) — only where the build
+     * compiles the K8 owner. STORAGE_COPIES (id 25): [4, 16] inclusive,
+     * 3 and 17 refuse; 0 refuses. The witness's stateful rules are NOT
+     * mirrored. MUTANT KILLED: dropping the 24 / 25 case (default
+     * refuses), a re-typed literal, a range off by one, either id
+     * missing from the read list. */
+    CHECK(DNAC_CFG_RULESET_GEN_TRIE == 24 && DNAC_CFG_STORAGE_COPIES == 25);
+    CHECK(DNAC_HF9_SWITCH_SPEC_VERSION == 1u);
+#ifdef DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT
+    CHECK(DNAC_CFG_RULESET_GEN_TRIE_D == 0x1f12a7f0b824ae45ULL);
+    CHECK(DNAC_CFG_RULESET_GEN_TRIE_D == 2239036617079959109ULL);
+#endif
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_TRIE,
+                             DNAC_CFG_RULESET_GEN_TRIE_D);
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    {
+        const uint64_t bad24[] = { DNAC_CFG_RULESET_GEN_TRIE_D + 1u,
+                                   DNAC_CFG_RULESET_GEN_TRIE_D - 1u, 0,
+                                   DNAC_CFG_RULESET_GEN2_D2,
+                                   DNAC_CFG_EVM_ACTIVE_D,
+                                   DNAC_CFG_RULESET_GEN_ROLES_D,
+                                   DNAC_CFG_RULESET_GEN_ROOTS_D,
+                                   UINT64_MAX };
+        for (size_t k = 0; k < sizeof(bad24) / sizeof(bad24[0]); k++) {
+            build_valid_chain_config(&tx,
+                                     (uint8_t)DNAC_CFG_RULESET_GEN_TRIE,
+                                     bad24[k]);
+            CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+        }
+    }
+    {
+        const uint8_t others[] = { (uint8_t)DNAC_CFG_RULESET_GEN2,
+                                   (uint8_t)DNAC_CFG_RULESET_GEN_ROLES,
+                                   (uint8_t)DNAC_CFG_RULESET_GEN_ROOTS };
+        for (size_t k = 0; k < sizeof(others); k++) {
+            build_valid_chain_config(&tx, others[k],
+                                     DNAC_CFG_RULESET_GEN_TRIE_D);
+            CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+        }
+    }
+    {
+        const struct { uint64_t v; int ok; } c25[] = {
+            { 0, 0 }, { 3, 0 }, { 4, 1 }, { 5, 1 }, { 15, 1 }, { 16, 1 },
+            { 17, 0 }, { UINT64_MAX, 0 } };
+        for (size_t k = 0; k < sizeof(c25) / sizeof(c25[0]); k++) {
+            build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_STORAGE_COPIES,
+                                     c25[k].v);
+            if (c25[k].ok) CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+            else           CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+        }
+    }
+
     /* 5a''. NAME_PRICE_3P..6P (ids 10-13, HF-4): [10^8, 10^15] — both
      * ends inclusive, one past either end refuses; and the compiled
      * no-row defaults are 10^11 / 5*10^10 / 10^10 / 10^8 (decision
@@ -336,13 +411,27 @@ int main(void) {
                            /* HF-7 P1d: 22 read by phase 6b'''' (the
                             * generation-5 edge) and the approval
                             * responder's single-use read */
-                           id == DNAC_CFG_RULESET_GEN_ROOTS);
+                           id == DNAC_CFG_RULESET_GEN_ROOTS ||
+                           /* ML-DSA-87 precompile: 23 read by
+                            * env_evm_facts (the EVM VM switch and the
+                            * single-use read) — this list was not
+                            * updated when id 23 landed */
+                           id == DNAC_CFG_MLDSA_ACTIVE ||
+                           /* HF-9: 24 read by phase 6b''''' (the
+                            * generation-6 edge) and the single-use
+                            * read; 25 by the storage freeze boundary
+                            * (reader: HF-9 WP4) */
+                           id == DNAC_CFG_RULESET_GEN_TRIE ||
+                           id == DNAC_CFG_STORAGE_COPIES);
         CHECK(dnac_cfg_param_read_by_consensus((uint8_t)id) == want);
     }
     CHECK(!dnac_cfg_param_read_by_consensus(16));
     CHECK(dnac_cfg_param_read_by_consensus(18));
     CHECK(dnac_cfg_param_read_by_consensus(22));
-    CHECK(!dnac_cfg_param_read_by_consensus(23));
+    CHECK(dnac_cfg_param_read_by_consensus(23));
+    CHECK(dnac_cfg_param_read_by_consensus(24));
+    CHECK(dnac_cfg_param_read_by_consensus(25));
+    CHECK(!dnac_cfg_param_read_by_consensus(26));
 
     /* 5c. HF-6 slice 8a — params 19-21 on the client mirror (design
      * 2026-10-03-hf5-validator-owner-stake-design.md rev 6 §8; ranges

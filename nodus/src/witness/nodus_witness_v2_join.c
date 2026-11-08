@@ -262,8 +262,10 @@ static int join_adopt(nodus_witness_t *w) {
          * applies unchanged), cascading through S17. HF-7 P1b: the live
          * rung is S19 (S18 + the empty v2_replay, its index and the
          * nullable v2_domain_heads.last_upd_hash — neither is a bundle
-         * table), cascading through S18. */
-        if (nodus_witness_db_migrate_v2s19(w2) != 0) break;
+         * table), cascading through S18. HF-9: the live rung is S20 (S19
+         * + the supply running totals, which the bundle's rows then
+         * feed through the triggers), cascading through S19. */
+        if (nodus_witness_db_migrate_v2s20(w2) != 0) break;
         if (nodus_chain_config_db_migrate(w2) != 0) break;
 
         if (nodus_witness_v2_bundle_apply(w2, bytes, len,

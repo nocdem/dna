@@ -76,6 +76,24 @@ if(QGP_BENCH)
     add_compile_definitions(QGP_BENCH)
 endif()
 
+# HF-9 review T-3 (docs/plans/approved/2026-11-04-hf9.md §12): QGP_FAULT_INJECT
+# compiles the test-only fault hooks in: the six CMT_FAIL_POINT()s of
+# shared/dnac/cmt_cs.c (their existing meaning), the consensus-build log
+# line of nodus_witness.c, and the trie-store bind-failure hook of
+# nodus_witness_rt_evm.c (test_evm_trie_store_fault). Default OFF. The
+# option was removed with the closed PBFT lane (R3 W4, e72d8cb5c); this is
+# the same option, with the same Release guard, re-added for the hooks
+# above only.
+option(QGP_FAULT_INJECT "Enable test-only fault-injection hooks (test builds only)" OFF)
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND QGP_FAULT_INJECT)
+    message(FATAL_ERROR
+        "QGP_FAULT_INJECT must not be set in Release builds — "
+        "the fault hooks would be live in the shipped binary")
+endif()
+if(QGP_FAULT_INJECT)
+    add_compile_definitions(QGP_FAULT_INJECT)
+endif()
+
 # ── ML-KEM-1024 (Kyber) ────────────────────────────────────────────
 if(NOT TARGET kem)
     add_subdirectory(${SHARED_DIR}/crypto/enc/kem ${CMAKE_BINARY_DIR}/crypto/kem)
@@ -896,6 +914,19 @@ set(NODUS_EVM_ENABLED OFF)
 if(NODUS_STANDALONE AND NOT WIN32)
     set(NODUS_EVM_ENABLED ON)
     list(APPEND NODUS_SOURCES src/witness/nodus_witness_rt_evm.c)
+    # HF-9 WP2 (docs/plans/approved/2026-11-04-hf9.md §5): the eight keyed
+    # Patricia tries over SQLite. It calls evm_trie_* and evm_trie_full_root,
+    # which live in nodus_evm (below), so it is EVM-only like rt_evm.c. The
+    # schema, triggers and totals (nodus_witness_v2_schema.c) stay in every
+    # build; the generic engine reaches nothing of this file before
+    # generation 6.
+    list(APPEND NODUS_SOURCES src/witness/nodus_witness_v2_trie.c)
+    # HF-9 WP5 (plan §11): the node-local shadow run over the same tries
+    # (nodus_witness_v2_shadow.c); EVM-only for the same reason.
+    list(APPEND NODUS_SOURCES src/witness/nodus_witness_v2_shadow.c)
+    # HF-9 WP6 (plan §10.4): the `dnac_state_proof` service on reader
+    # threads; it calls evm_trie_proof_* (nodus_evm), so EVM-only too.
+    list(APPEND NODUS_SOURCES src/witness/nodus_witness_state_proof.c)
     # The EVM contract-ABI text layer (types, signatures, selectors, the
     # argument encoder) and the ML-DSA-87 companion library's attested
     # message + signature — `nodus-cli evm encode|send|call|deploy|attest`'s
@@ -1081,6 +1112,13 @@ if(NODUS_EVM_ENABLED)
         ${EVM_DIR}/evm_precompile.c
         ${EVM_DIR}/trie/evm_trie.c
         ${EVM_DIR}/trie/evm_trie_rlp.c
+        # HF-9 WP6: trie proofs (prove / verify), plan §10.1 / §10.2
+        ${EVM_DIR}/trie/evm_trie_proof.c
+        # HF-9 WP2: the full-rebuild root (edge cross-check, per-leg
+        # build-from-rows, plan §7.2 step 4) is linked into the node
+        # library; its keccak mode needs the keccak object above, which is
+        # why it lives here and not in the base library
+        ${EVM_DIR}/trie/evm_trie_full.c
         $<TARGET_OBJECTS:nodus_evm_keccak>)
     target_compile_options(nodus_evm PRIVATE -Wall -Wextra -Wpedantic -O2)
     set_target_properties(nodus_evm PROPERTIES
@@ -2643,6 +2681,43 @@ register_witness_test(test_hf7_activation)
 register_witness_test(test_hf7_edge)
 endif()
 
+# HF-9 WP3 (plan docs/plans/approved/2026-11-04-hf9.md §7.1, §7.2, §12 T-6 /
+# T-12) — the generation-6 activation. test_hf9_activation (pure): the
+# compiled generation 6 against the independent oracle's hashes and C1
+# (shared/dnac/tests/hf9_vote_oracle.py), the vote literal D6 and the
+# quantities its selfcheck row compares, the param-24 scalar / grace
+# (SAFETY) / stateful rules, the param-25 range / one-epoch grace /
+# generation-6 gate and its default-4 reader, a generation-5-signed EVM
+# envelope refused at A. test_hf9_edge (engine): the edge at the end of
+# block A-1 on a seeded S20 chain (registry 5 -> 6, the eight tries built
+# and checked against the full rebuild, capture on, SYSTEM + CORE touched,
+# NDS.SYS.v7 / NDS.CORE.v4), the wrong-registry / wrong-value / missing-
+# trigger FAULTs, the shadow-row and replay invariances; its mismatch case
+# is compiled only with -DQGP_FAULT_INJECT=ON (the hook nodus_witness_v2_
+# trie_test_corrupt_full). Generations 3-6 and the tries exist only with the
+# EVM runtime, so both are built only with NODUS_EVM_ENABLED. No
+# environment; the edge test assumes no epoch boundary among its heights.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_hf9_activation)
+register_witness_test(test_hf9_edge)
+endif()
+
+# HF-9 WP4 (plan §8, §12 T-7) - the rendezvous storage assignment over a
+# scratch S20 chain database: the edge's storage transition E-s1..E-s3 and
+# the generation-6 freeze boundary by boundary, every case against a model
+# computed from the relations (see the test header). No block is applied; no
+# environment; epoch-length agnostic.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_storage_hrw)
+# HF-9 WP4 (plan §12 T-16) - the probe's eligible list, the holder
+# runtime's must-hold list and the fetch client's candidate holders over the
+# same assignment (see the test header); same scratch-chain fixture.
+register_witness_test(test_storage_hrw_runtime)
+# HF-9 WP4 (plan §12 T-9, the storage-assignment part) - deterministic work
+# counters of the generation-6 freeze constant while the history grows.
+register_witness_test(test_hf9_growth)
+endif()
+
 # HF-6 sub-slice 3c — owner authority and the generation-4 call layouts of
 # the SYSTEM validator-record ops 2..5, STAKE refused under generation 4
 # (design 2026-10-03-hf5-validator-owner-stake rev 6 §1.3/§2; plan
@@ -2762,6 +2837,13 @@ add_executable(test_cmt_app tests/test_cmt_app.c)
 target_link_libraries(test_cmt_app nodus dsa nodus crypto)
 target_compile_definitions(test_cmt_app PRIVATE NODUS_WITNESS_INTERNAL_API)
 add_test(NAME test_cmt_app COMMAND test_cmt_app)
+if(NODUS_EVM_ENABLED)
+# HF-9 WP4 (Sol re-verify row 1): the registry's fail_streak / grace_until
+# writers by 29 E + 1 real blocks - a LONG case that test_cmt_app skips
+# unless named (tests/test_cmt_app.c main), so it is its own test
+add_test(NAME test_cmt_app_storage_writers
+         COMMAND test_cmt_app hybrid_storage_writers_probe)
+endif()
 
 # HF-7 P1c-2 — the rooted replay relation (v2_replay: a row per applied
 # item inside its savepoint, the phase-12d prune, the guard swap at all
@@ -2928,12 +3010,12 @@ register_witness_test(test_v2_pools)
 # Nodus EVM package 1 — the EVM domain (runtime ABI 2) through the cometbft lane:
 # deploy/call, applied failures (REVERT, OOG, over-ceiling, BUDGET), the
 # bridge ops and tickets, the storage trie against the independent full
-# rebuild (shared/evm/trie/evm_trie_full.c — test-only, never in a library),
+# rebuild (shared/evm/trie/evm_trie_full.c — since HF-9 WP2 part of the
+# nodus_evm library, so this target no longer compiles it itself),
 # restart, a determinism twin and the inertness twin. Built only where the
 # EVM runtime is (NODUS_EVM_ENABLED). Live invariant (no supply bypass).
 if(NODUS_EVM_ENABLED)
-    add_executable(test_v2_evm tests/test_v2_evm.c
-                   ${SHARED_DIR}/evm/trie/evm_trie_full.c)
+    add_executable(test_v2_evm tests/test_v2_evm.c)
     target_include_directories(test_v2_evm PRIVATE ${SHARED_DIR}/evm/trie)
     target_link_libraries(test_v2_evm nodus dsa nodus)
     target_compile_definitions(test_v2_evm PRIVATE NODUS_WITNESS_INTERNAL_API)
@@ -2942,6 +3024,20 @@ if(NODUS_EVM_ENABLED)
     target_compile_options(test_v2_evm PRIVATE -Wall -Wextra
                            -Wno-unused-function)
     add_test(NAME test_v2_evm COMMAND test_v2_evm)
+
+    # HF-9 review T-3 (Z-51): a failed bind in ts_put / ts_get is -2 before
+    # the statement is stepped. Needs the bind-failure hook, which exists
+    # only in a -DQGP_FAULT_INJECT=ON build, so the test is registered only
+    # there (the header of the test says what a build without it does).
+    if(QGP_FAULT_INJECT)
+        add_executable(test_evm_trie_store_fault
+                       tests/test_evm_trie_store_fault.c)
+        target_include_directories(test_evm_trie_store_fault PRIVATE
+                                   ${SHARED_DIR}/evm/trie)
+        target_link_libraries(test_evm_trie_store_fault nodus dsa nodus)
+        target_compile_options(test_evm_trie_store_fault PRIVATE -Wall -Wextra)
+        add_test(NAME test_evm_trie_store_fault COMMAND test_evm_trie_store_fault)
+    endif()
 
     # Keccak-256 known answers against the keccak object libnodus links
     # (nodus_evm_keccak, the XKCP Keccak-f[1600] of red-team 1): "", "abc"
@@ -3407,6 +3503,11 @@ endif()
 # over the filled STORAGE-ORACLE pins (the test_storage_reg note above).
 if(NODUS_EVM_ENABLED)
 register_witness_test(test_storage_b2)
+# HF-9 WP4 (plan :447): the generation <= 5 settlement replay vector, written
+# once at the parent commit (HF9_GEN5_WRITE, see tests/hf9_gen5_replay.h)
+target_compile_definitions(test_storage_b2 PRIVATE
+    HF9_GEN5_SETTLEMENT_PATH_E720="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/hf9_gen5_settlement.json"
+    HF9_GEN5_SETTLEMENT_PATH_E15="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/hf9_gen5_settlement_e15.json")
 if(JSONC_FOUND)
     target_compile_definitions(test_storage_b2 PRIVATE
         ARCHIVE_REWARD_KAT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/archive_reward_kat.json")
@@ -4137,6 +4238,54 @@ register_witness_test(test_wire_protocol_version_reject)
 add_executable(test_supply_invariant tests/test_supply_invariant.c)
 target_link_libraries(test_supply_invariant nodus dsa nodus)
 add_test(NAME test_supply_invariant COMMAND test_supply_invariant)
+
+# HF-9 T-8 (plan §9.1): the supply running totals kept by the S20
+# triggers, their re-seed on open and the CORE invariant reading them
+# (fail closed). A real derived chain (v2_genesis_fixture.h); no
+# environment, no compile flag.
+register_witness_test(test_supply_totals)
+
+# HF-9 T-5, WP2 part (plan §5, §12): the eight keyed Patricia tries — S20
+# triggers, node store, flush, build from rows, capture checks, the
+# factored vset leaf. The trie is EVM-only (nodus_witness_v2_trie.c), so
+# the target is built only with NODUS_EVM_ENABLED. No environment, no
+# compile flag; the generation >= 6 rows are deferred to WP3 (test header).
+if(NODUS_EVM_ENABLED)
+    register_witness_test(test_hf9_trie_legs)
+endif()
+
+# HF-9 WP5, plan row T-10 (docs/plans/approved/2026-11-04-hf9.md §11, §12):
+# the shadow run - the leg roots of the row comparison against the roots of
+# the trigger capture, isolation, the stop at activation, catch-up, restart,
+# the injected faults (compiled only with -DQGP_FAULT_INJECT=ON, absent
+# otherwise = missing coverage). EVM-only like the trie module it exercises.
+if(NODUS_EVM_ENABLED)
+    register_witness_test(test_hf9_shadow)
+endif()
+
+# HF-9 WP6, plan row T-11 (docs/plans/approved/2026-11-04-hf9.md §10, §12,
+# §17): the `dnac_state_proof` service - request decoding, the batch and
+# composition proofs verified from the outside on a populated generation-6
+# chain, the reader threads and the node-wide admission, and the per-leg
+# worst-case cost measurement (the "COST " lines it prints are input for the
+# operator's limits; the grown fixture takes minutes). EVM-only (the trie
+# module and the service). No environment, no compile flag.
+if(NODUS_EVM_ENABLED)
+    register_witness_test(test_hf9_proof_service)
+endif()
+
+# HF-9 T-4, C side for WP2 (plan §12): this build's leaf functions, row
+# readers, build path and trie against the independent oracle's groups
+# "leg_vectors" and "leg_row_sets" of tests/vectors/hf9_kat.json (json-c at
+# run time, the file's sha256 checked; the other groups belong to WP3 /
+# WP4 / WP6 and are named in the test header). EVM-only (the trie module)
+# and only with json-c: without either the target does not exist, which is
+# missing coverage, not a pass.
+if(NODUS_EVM_ENABLED AND JSONC_FOUND)
+    register_witness_test(test_hf9_kat)
+    target_compile_definitions(test_hf9_kat PRIVATE
+        HF9_KAT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/hf9_kat.json")
+endif()
 
 # Performance benchmark harness (Phase 1 — micro-benchmarks).
 # See nodus/docs/plans/2026-04-24-perf-harness-design.md.

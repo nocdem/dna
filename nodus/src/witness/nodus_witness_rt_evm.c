@@ -1850,6 +1850,37 @@ static int meta_store(sqlite3 *db, const rtevm_metarow_t *r, int insert) {
 
 /* ── the trie node store (evm_trie.h STORE CONTRACT) ─────────────────── */
 
+#ifdef QGP_FAULT_INJECT
+/* HF-9 review T-3 (Z-51): a bind-failure hook for ts_get / ts_put, compiled
+ * only under QGP_FAULT_INJECT. Every ts_bind_blob call counts as one hit;
+ * when `nth` (> 0) equals the hit number, that bind reports a failure
+ * instead of binding. Arming resets the hit count. Test-only: no consensus
+ * path calls these, and a build without the flag has neither. */
+static int g_ts_bind_hits;
+static int g_ts_bind_fail_nth;
+int nodus_rt_evm_test_ts_bind_arm(int nth);
+int nodus_rt_evm_test_ts_bind_hits(void);
+int nodus_rt_evm_test_ts_bind_arm(int nth) {
+    g_ts_bind_hits = 0;
+    g_ts_bind_fail_nth = nth;
+    return 0;
+}
+int nodus_rt_evm_test_ts_bind_hits(void) { return g_ts_bind_hits; }
+#endif
+
+/** One blob bind of the trie node store. A bind that does not report
+ *  SQLITE_OK must stop the statement before it is stepped (Z-51: a
+ *  discarded bind leaves the parameter NULL, and the step then runs with
+ *  the wrong key or value). @return SQLITE_OK or the sqlite error. */
+static int ts_bind_blob(sqlite3_stmt *st, int idx, const void *p, int n) {
+#ifdef QGP_FAULT_INJECT
+    g_ts_bind_hits++;
+    if (g_ts_bind_fail_nth > 0 && g_ts_bind_hits == g_ts_bind_fail_nth)
+        return SQLITE_NOMEM;
+#endif
+    return sqlite3_bind_blob(st, idx, p, n, SQLITE_TRANSIENT);
+}
+
 static int ts_get(void *ctx, const uint8_t digest[64], uint8_t **rlp,
                   size_t *len) {
     sqlite3 *db = (sqlite3 *)ctx;
@@ -1858,7 +1889,10 @@ static int ts_get(void *ctx, const uint8_t digest[64], uint8_t **rlp,
             "SELECT rlp FROM evm_trie_nodes WHERE digest = ?1",
             -1, &st, NULL) != SQLITE_OK)
         return -2;
-    sqlite3_bind_blob(st, 1, digest, 64, SQLITE_TRANSIENT);
+    if (ts_bind_blob(st, 1, digest, 64) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -2;
+    }
     int rc = sqlite3_step(st);
     int ret = -2;
     if (rc == SQLITE_DONE) {
@@ -1891,7 +1925,10 @@ static int ts_put(void *ctx, const uint8_t digest[64], const uint8_t *rlp,
             "SELECT rlp FROM evm_trie_nodes WHERE digest = ?1",
             -1, &st, NULL) != SQLITE_OK)
         return -2;
-    sqlite3_bind_blob(st, 1, digest, 64, SQLITE_TRANSIENT);
+    if (ts_bind_blob(st, 1, digest, 64) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -2;
+    }
     int rc = sqlite3_step(st);
     if (rc == SQLITE_ROW) {
         int same = (size_t)sqlite3_column_bytes(st, 0) == len &&
@@ -1909,12 +1946,28 @@ static int ts_put(void *ctx, const uint8_t digest[64], const uint8_t *rlp,
             "INSERT INTO evm_trie_nodes (digest, rlp) VALUES (?1, ?2)",
             -1, &st, NULL) != SQLITE_OK)
         return -2;
-    sqlite3_bind_blob(st, 1, digest, 64, SQLITE_TRANSIENT);
-    sqlite3_bind_blob(st, 2, rlp, (int)len, SQLITE_TRANSIENT);
+    if (ts_bind_blob(st, 1, digest, 64) != SQLITE_OK ||
+        ts_bind_blob(st, 2, rlp, (int)len) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -2;
+    }
     rc = sqlite3_step(st);
     sqlite3_finalize(st);
     return rc == SQLITE_DONE ? 0 : -2;
 }
+
+#ifdef QGP_FAULT_INJECT
+/* T-3: the production store callbacks over a caller's sqlite handle, so a
+ * test drives the real ts_get / ts_put (both static). Test-only. */
+int nodus_rt_evm_test_trie_store(sqlite3 *db, evm_trie_store_t *out);
+int nodus_rt_evm_test_trie_store(sqlite3 *db, evm_trie_store_t *out) {
+    if (!db || !out) return -1;
+    out->ctx = db;
+    out->get = ts_get;
+    out->put = ts_put;
+    return 0;
+}
+#endif
 
 /** RLP of a big-endian unsigned integer: minimal bytes, zero = b"". */
 static int rlp_put_uint(evm_trie_rlp_buf *b, const uint8_t *be, size_t n) {

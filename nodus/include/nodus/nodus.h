@@ -1566,8 +1566,10 @@ int nodus_ruleset_compat(const nodus_dnac_ruleset_info_t *ri,
  * node answers "unknown DNAC method". One node is trusted for the answer
  * (as every dnac_* query). */
 
-/** Members of one frozen storage set at most (DNA_V2_STORAGE_SET_MAX). */
-#define NODUS_DNAC_STORAGE_SET_MAX  256u
+/** Members of one frozen storage set at most (DNA_V2_STORAGE_SET_CAP, the
+ *  generation-6 member capacity; HF-9 plan §8.7 - 256 up to generation 5).
+ *  Also the most rows one dnac_storage_by_owner reply lists. */
+#define NODUS_DNAC_STORAGE_SET_MAX  1024u
 /** Eligible segment numbers one dnac_storage_status reply lists. */
 #define NODUS_DNAC_STORAGE_SEG_MAX  64u
 
@@ -2044,6 +2046,168 @@ int nodus_client_dnac_light_block(nodus_client_t *client, uint64_t height,
                                   uint64_t *height_out,
                                   uint8_t **lb_out, size_t *lb_len_out,
                                   int *server_err_out);
+
+/* ── dnac_hf9_shadow — one row of the node's HF-9 shadow log ────────────
+ * (plan docs/plans/approved/2026-11-04-hf9.md §11; nodus/tools/
+ * hf9_shadow_diff.sh compares it across the nodes. NODE-LOCAL data: it is
+ * never consensus and a node without a shadow run answers "not found".)
+ *
+ * Request  "a": {"h": u64 - the height; 0 = the newest logged row}
+ * Response "r": {"st": u64 - the shadow status: 0 stopped, 1 running,
+ *                       2 faulted, 255 never seeded,
+ *                "found": bool,
+ *                and ONLY when found: "h": u64 the row's height,
+ *                "l1".."l8": bstr 64 the eight shadow leg roots,
+ *                "core","stor","sys","glob": bstr 64 the shadow
+ *                CORE v4', STOR v3', SYS v7', GLOBAL v2'}
+ * Errors:  NODUS_ERR_NOT_FOUND       a build without the shadow run
+ *          NODUS_ERR_INTERNAL_ERROR  a read fault
+ *          NODUS_ERR_PROTOCOL_ERROR  a malformed request
+ */
+#define NODUS_DNAC_HF9_SHADOW_NONE  255u
+
+typedef struct {
+    uint64_t status;          /* "st"; NODUS_DNAC_HF9_SHADOW_NONE = never seeded */
+    bool     found;
+    uint64_t height;          /* only when found */
+    uint8_t  leg[8][64];
+    uint8_t  core[64];
+    uint8_t  stor[64];
+    uint8_t  sys[64];
+    uint8_t  glob[64];
+} nodus_dnac_hf9_shadow_t;
+
+/** Encode the `dnac_hf9_shadow` request frame. @return 0 and `*len_out`;
+ *  -1 on NULL arguments or a buffer too small. */
+int nodus_dnac_hf9_shadow_request_encode(uint32_t txn,
+                                         const uint8_t token[NODUS_SESSION_TOKEN_LEN],
+                                         uint64_t height,
+                                         uint8_t *buf, size_t cap,
+                                         size_t *len_out);
+
+/** Decode a raw `dnac_hf9_shadow` response. STRICT: "st" and "found" are
+ *  required; when found every other key is required (each bstr exactly 64
+ *  bytes, "h" non-zero), when not found none may be present; a duplicate
+ *  key, a wrong type or a truncated message is refused; unknown keys are
+ *  skipped. @return 0; -1 malformed (`out` zeroed). */
+int nodus_dnac_hf9_shadow_decode(const uint8_t *raw, size_t raw_len,
+                                 nodus_dnac_hf9_shadow_t *out);
+
+/** Ask a node for its shadow log row at `height` (0 = newest).
+ *  @return 0; the node's NODUS_ERR_*; NODUS_ERR_TIMEOUT;
+ *  NODUS_ERR_PROTOCOL_ERROR for a reply refused here (or a found row at
+ *  another height than asked); -1 invalid arguments / not ready / send. */
+int nodus_client_dnac_hf9_shadow(nodus_client_t *client, uint64_t height,
+                                 nodus_dnac_hf9_shadow_t *out);
+
+/* ── dnac_state_proof - batch proof + composition proof (HF-9 WP6) ──────
+ * Plan docs/plans/approved/2026-11-04-hf9.md §10.2 (AD-8) and §10.3 (AD-10);
+ * the tier-2 `dnac_*` conventions (request map "a", response map "r", short
+ * text keys, every key exactly once, an unknown key is skipped, integers CBOR
+ * unsigned, opaque bytes CBOR byte strings).
+ *
+ * Request  "a": {"leg":  uint 1..8 (plan §4.2, L1..L8),
+ *                "keys": array of 1..128 bstr, no repeat - the canonical key
+ *                        bytes of §4.2: 64 B for legs 1/2/3/5, 3..36 B for
+ *                        leg 4, 8 B big-endian for legs 6/7/8}
+ * Response "r": {"h":     uint  the latest committed height of the snapshot;
+ *                               the composition chain ends at the AppHash of
+ *                               header h + 1,
+ *                "lr":    bstr 64  the leg root,
+ *                "nodes": array of bstr  trie nodes, each <= 1,060 bytes,
+ *                               at most 128 x 131, strictly ascending by
+ *                               SHA3-512(node bytes); empty iff lr =
+ *                               SHA3-512(0x80),
+ *                "res":   array of map, one per key in request order:
+ *                               {"f": bool} and, iff f = true, exactly one
+ *                               "v": bstr 64 (the leaf hash); f = false with
+ *                               a "v" is refused,
+ *                "cp":    array of map  the composition steps:
+ *                         {"t":1,"tag":bstr16,"legs":[bstr64...],"i":uint}
+ *                         {"t":2,"head":bstr89,"luh":bstr64}
+ *                         {"t":3,"tag":bstr16,"n":uint,"i":uint,
+ *                          "sib":[bstr64...]}}
+ * Errors:  NODUS_ERR_PROTOCOL_ERROR  malformed request / a bound exceeded
+ *          NODUS_ERR_NOT_FOUND       the snapshot is below generation 6
+ *          NODUS_ERR_INTERNAL_ERROR  a read fault
+ *          NODUS_ERR_RATE_LIMITED    the node-wide limit (also: the service is
+ *                                    not enabled on this node)
+ * The answer is a peer's word: nothing here verifies it beyond the wire
+ * shape. The verifier is evm_trie_proof_verify_batch (the nodes and results
+ * against "lr") and dna_v2_state_proof_cp_verify ("lr" through "cp" to the
+ * AppHash of header h + 1, authenticated by the light client): neither the
+ * response's "h" nor its roots are trust anchors. */
+#define NODUS_DNAC_STATE_PROOF_MAX_KEYS    128u
+#define NODUS_DNAC_STATE_PROOF_MAX_NODES   (128u * 131u)
+#define NODUS_DNAC_STATE_PROOF_NODE_MAX    1060u
+#define NODUS_DNAC_STATE_PROOF_MAX_STEPS   5u
+#define NODUS_DNAC_STATE_PROOF_MAX_LEGS    12u
+#define NODUS_DNAC_STATE_PROOF_MAX_SIB     64u
+
+typedef struct {
+    uint32_t t;                                /* 1 COMPOSE, 2 HEAD, 3 MERKLE */
+    uint8_t  tag[16];
+    uint8_t  legs[NODUS_DNAC_STATE_PROOF_MAX_LEGS][64];
+    uint32_t n_legs;
+    uint64_t i;
+    uint8_t  head[89];
+    uint8_t  luh[64];
+    uint64_t n;
+    uint32_t n_sib;
+    uint8_t  sib[NODUS_DNAC_STATE_PROOF_MAX_SIB][64];
+} nodus_dnac_state_proof_step_t;
+
+typedef struct {
+    uint64_t height;
+    uint8_t  lr[64];
+    size_t         n_nodes;
+    const uint8_t **nodes;                     /* malloc'd array; the bytes
+                                                * point INTO the raw reply   */
+    size_t         *node_lens;                 /* malloc'd                   */
+    size_t   n_res;
+    uint8_t  found[NODUS_DNAC_STATE_PROOF_MAX_KEYS];
+    uint8_t  val[NODUS_DNAC_STATE_PROOF_MAX_KEYS][64];
+    size_t   n_cp;
+    nodus_dnac_state_proof_step_t cp[NODUS_DNAC_STATE_PROOF_MAX_STEPS];
+} nodus_dnac_state_proof_t;
+
+/** Encode the `dnac_state_proof` request frame (the T2 query map with the
+ *  session token): leg 1..8, `n_keys` 1..128 keys of `key_lens[i]` bytes.
+ *  @return 0 and `*len_out`; -1 on NULL, a bound or a buffer too small. */
+int nodus_dnac_state_proof_request_encode(uint32_t txn,
+                                          const uint8_t token[NODUS_SESSION_TOKEN_LEN],
+                                          int leg, const uint8_t *const *keys,
+                                          const size_t *key_lens,
+                                          size_t n_keys, uint8_t *buf,
+                                          size_t cap, size_t *len_out);
+
+/** Decode a raw `dnac_state_proof` response. STRICT: "h", "lr", "nodes",
+ *  "res" and "cp" are required, each exactly once; every bound above is
+ *  checked BEFORE it is used (a count never exceeds the bytes that remain);
+ *  `n_res` must equal `expect_keys` (the request's key count); an "f" false
+ *  with a "v" or an "f" true without exactly one 64-byte "v" is refused; a
+ *  node of 0 or more than 1,060 bytes is refused; the nodes' digest order is
+ *  the verifier's to check (it hashes them); unknown keys are skipped. The
+ *  node bytes point INTO `raw`. Free with nodus_dnac_state_proof_free.
+ *  @return 0; -1 malformed (`out` zeroed). */
+int nodus_dnac_state_proof_decode(const uint8_t *raw, size_t raw_len,
+                                  size_t expect_keys,
+                                  nodus_dnac_state_proof_t *out);
+
+void nodus_dnac_state_proof_free(nodus_dnac_state_proof_t *p);
+
+/** Ask a node for a state proof (the request of `keys`, the reply decoded
+ *  with `n_keys` expected results).
+ *  @return 0; the node's NODUS_ERR_* (also in *server_err_out); NODUS_ERR_
+ *  TIMEOUT; NODUS_ERR_PROTOCOL_ERROR for a reply refused here; -1 invalid
+ *  arguments / not ready / send. `*raw_out` receives a malloc'd copy of the
+ *  reply that `out->nodes` points into: the caller frees it with free()
+ *  AFTER it is done with `out`. */
+int nodus_client_dnac_state_proof(nodus_client_t *client, int leg,
+                                  const uint8_t *const *keys,
+                                  const size_t *key_lens, size_t n_keys,
+                                  nodus_dnac_state_proof_t *out,
+                                  uint8_t **raw_out, int *server_err_out);
 
 /**
  * Read the node's committed version-3 tip through the dnac_supply RPC

@@ -70,7 +70,7 @@ size_t nodus_inter_roles_encode(const char *q, const nodus_inter_role_list_t *li
                                 bool ok, uint8_t *buf, size_t cap) {
     if (!q || !buf || !list) return 0;
     if (list->validator_count>DNAC_MAX_VALIDATORS ||
-        list->storage_count>DNA_V2_STORAGE_SET_MAX) ok=false;
+        list->storage_count>DNA_V2_STORAGE_SET_CAP) ok=false;
     cbor_encoder_t e; cbor_encoder_init(&e,buf,cap);
     cbor_encode_map(&e,5);
     cbor_encode_cstr(&e,"q"); cbor_encode_cstr(&e,q);
@@ -106,7 +106,7 @@ int nodus_inter_roles_decode(const char *q, const uint8_t *buf, size_t len,
             bit=4; if (v.type!=CBOR_ITEM_UINT) return -1; list->height=v.uint_val;
         } else if (k.tstr.len==2 && (!memcmp(k.tstr.ptr,"va",2) || !memcmp(k.tstr.ptr,"st",2))) {
             bool va=!memcmp(k.tstr.ptr,"va",2); bit=va ? 8 : 16;
-            size_t max=va ? DNAC_MAX_VALIDATORS : DNA_V2_STORAGE_SET_MAX;
+            size_t max=va ? DNAC_MAX_VALIDATORS : DNA_V2_STORAGE_SET_CAP;
             if (v.type!=CBOR_ITEM_ARRAY || v.count>max) return -1;
             nodus_key_t *entries=va ? list->validators : list->storage;
             if (va) list->validator_count=v.count; else list->storage_count=v.count;

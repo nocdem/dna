@@ -309,8 +309,31 @@ extern "C" {
  *  nodus_witness_v2_apply.c pins the two equal with a _Static_assert, so
  *  a window change that skips this line does not compile. */
 #define NODUS_RT_GEN5_VOTE_EXPIRY_WINDOW ((uint64_t)720)
+/** HF-9 (plan docs/plans/approved/2026-11-04-hf9.md §7.1): the TRIE
+ *  generation — the eight legs utxo / tokens / claims / names / registry /
+ *  segments / vset / attendance committed by SHA3-512 Patricia tries
+ *  (nodus_witness_v2_trie.h) instead of a rebuilt tagged Merkle tree each
+ *  block; compositions "NDS.CORE.v4" / "NDS.SYS.v7" / "NDS.STOR.v3".
+ *  Code names it GEN_TRIE, never "6". Built ON the roots generation:
+ *  SYSTEM v12 / CORE v11 — the generation-5 descriptors with ONLY
+ *  ruleset_version bumped (rule lists, type lists and the SYSTEM policy
+ *  digest unchanged; no EVM slot, the EVM domain's tuple unchanged).
+ *  HF-9 WP3 compiled it (nodus_witness_runtime.c), the vote literal D6
+ *  (dnac.h DNAC_CFG_RULESET_GEN_TRIE_D, chain_config param 24) and its edge
+ *  (nodus_witness_v2_apply.c phase_6b_gen6_edge, end of block A-1). EVM-
+ *  ONLY like generations 3-5: a build without NODUS_EVM_ENABLED never
+ *  passes the EVM edge, so it never reaches this one. The number is
+ *  defined in every build (every `>= NODUS_RT_GEN_TRIE` test names it);
+ *  on a chain with no committed param-24 row no registry reaches it, so
+ *  each such test is false there. */
+#define NODUS_RT_GEN_TRIE            ((uint32_t)6)
+/** The generation the trie generation is built on and switches FROM.
+ *  ONE definition; committed by the vote literal (D6's base_generation
+ *  field); a param-24 vote is refused unless the registry is at this
+ *  generation (nodus_chain_config_stateful_rules_ex, param-24 rule (c)). */
+#define NODUS_RT_GEN_TRIE_BASE       NODUS_RT_GEN_ROOTS
 #ifdef NODUS_EVM_ENABLED
-#define NODUS_RT_GEN_MAX             NODUS_RT_GEN_ROOTS
+#define NODUS_RT_GEN_MAX             NODUS_RT_GEN_TRIE
 #else
 #define NODUS_RT_GEN_MAX             NODUS_RT_GEN_2
 #endif
@@ -687,6 +710,13 @@ typedef struct {
      * for the same reason. One consumer: the SYSTEM CHAIN_CONFIG exec,
      * the param-22 single-use rule (a). */
     uint8_t        ruleset_gen_roots_voted;
+    /* HF-9 (plan docs/plans/approved/2026-11-04-hf9.md §7.1): 1 when ANY
+     * chain_config param-24 (RULESET_GEN_TRIE) row exists, at any
+     * effective height, else 0 — the ruleset_gen2_voted contract above,
+     * verbatim (nodus_witness_v2_apply.c env_ruleset_gen_trie_voted).
+     * UNMETERED for the same reason. One consumer: the SYSTEM
+     * CHAIN_CONFIG exec, the param-24 single-use rule (a). */
+    uint8_t        ruleset_gen_trie_voted;
     /* HF-8 (design docs/plans/2026-10-07-delegate-name-required-design.md
      * rev 2 §1): 1 when the COMMITTED chain_config param 17
      * (DELEGATE_NAME_REQUIRED) is active at `global_height`, else 0. Read
@@ -1291,7 +1321,12 @@ nodus_runtime_for_generation(uint32_t generation, uint32_t domain_id);
  *     is covered only through the EVM pair rule (nodus_rt_evm_pair_check:
  *     every EVM envelope is exactly [CORE EVMFUND] + [EVM op], so its
  *     CORE leg carries the bumped CORE version); any other domain in the
- *     table without a bumped generation-5 entry refuses the start.
+ *     table without a bumped generation-5 entry refuses the start;
+ *   - HF-9 WP3 (EVM-enabled build): the compiled generation-6 vote literal
+ *     DNAC_CFG_RULESET_GEN_TRIE_D (D6) re-derives through
+ *     nodus_runtime_gen6_vote_digest (same owner coupling), and the
+ *     generation-5 bump rule above holds again for generation 6 (SYSTEM
+ *     v12 / CORE v11 above generation 5's, EVM through the pair rule).
  * @return 0 healthy, -1 on the first violation.
  */
 int nodus_witness_runtime_selfcheck(void);
@@ -1370,6 +1405,23 @@ int nodus_runtime_gen4_vote_digest(uint64_t *d_out);
  * @return 0 / -1 (NULL d_out, a generation-5 entry missing, digest failure).
  */
 int nodus_runtime_gen5_vote_digest(uint64_t *d_out);
+
+/**
+ * HF-9 (plan docs/plans/approved/2026-11-04-hf9.md §7.1, Kurultay 55 A9 /
+ * F-15 / F-17): the generation-6 vote value D6 — what the
+ * RULESET_GEN_TRIE vote must name (dnac.h DNAC_CFG_RULESET_GEN_TRIE_D) —
+ * re-derived through dna_rolegen_vote_digest from the compiled table:
+ * generation NODUS_RT_GEN_TRIE (6), base NODUS_RT_GEN_TRIE_BASE (5), that
+ * generation's SYSTEM and CORE ruleset hashes,
+ * DNAC_HF9_SWITCH_SPEC_VERSION, the compiled DNAC_HF6_FOUNDATION_OWNER and
+ * GEN6_VOTE_CONSTS (nodus_witness_runtime.c: [DNAC_HF9_MEMBER_CAP,
+ * DNAC_STORAGE_COPIES_DEFAULT, DNAC_CFG_MIN_STORAGE_COPIES,
+ * DNAC_CFG_MAX_STORAGE_COPIES] = [1024, 4, 4, 16]). Selfcheck compares it
+ * with the literal; nothing in the vote path calls it. The
+ * nodus_runtime_gen5_vote_digest shape.
+ * @return 0 / -1 (NULL d_out, a generation-6 entry missing, digest failure).
+ */
+int nodus_runtime_gen6_vote_digest(uint64_t *d_out);
 #endif
 
 /* ── Nodus EVM: the ONE call-head decoder and the ONE pairing rule ──────────

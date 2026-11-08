@@ -19,6 +19,8 @@
 #include "witness/nodus_witness_rt_native.h"   /* HF-4: the CheckTx OWNER
                                                 * conflict key           */
 #include "witness/nodus_witness_v2_schema.h"
+#include "witness/nodus_witness_v2_storage.h"  /* HF-9 WP4: the storage
+                                                * transition of the edge */
 #include "witness/nodus_witness_v2_claims.h"
 #include "witness/nodus_witness_v2_migrate.h"  /* HF-6 3b: the gen-4 edge's
                                                 * validator migration    */
@@ -61,6 +63,13 @@
  * (exec_evm_leg, red-team-1 F6) is still called under NODUS_EVM_ENABLED
  * only. The header needs no EVM type (runtime / chain-config / dnac). */
 #include "witness/nodus_witness_rt_evm.h"
+#ifdef NODUS_EVM_ENABLED
+/* HF-9 WP3: the keyed tries (nodus_witness_v2_trie.c is EVM-only, like
+ * nodus_witness_rt_evm.c): the generation-6 edge's build, the phase 8-pre
+ * flush, the dirty-empty assertion. A build without NODUS_EVM_ENABLED
+ * never passes the EVM edge, so it never reaches generation 6. */
+#include "witness/nodus_witness_v2_trie.h"
+#endif
 
 #include "dnac/dnac.h"                 /* DNAC_EPOCH_LENGTH (via apply.h,
                                         * kept explicit here too),
@@ -548,6 +557,21 @@ static int doms_roots_on(const dom_ctx_t *doms, size_t n) {
         if (doms[i].domain_id == DNA_DOMAIN_SYSTEM)
             return doms[i].rt != NULL &&
                    doms[i].rt->generation >= NODUS_RT_GEN_ROOTS;
+    return 0;
+}
+
+/* HF-9 WP3 (plan docs/plans/approved/2026-11-04-hf9.md §5.3, §7.3) — THE
+ * generation gate of the trie phases (8-pre flush, the end-of-block dirty
+ * assertion): 1 when the working set's SYSTEM domain resolved to a runtime
+ * of generation >= NODUS_RT_GEN_TRIE. Evaluated on the POST-6c working
+ * set, so block A-1 — whose registry the edge moved 5 -> 6 — already
+ * flushes the writes that follow the edge (§7.3 "Tries" row). A SYSTEM
+ * without a resolved runtime answers 0, doms_roots_on's own NULL rule. */
+static int doms_trie_on(const dom_ctx_t *doms, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        if (doms[i].domain_id == DNA_DOMAIN_SYSTEM)
+            return doms[i].rt != NULL &&
+                   doms[i].rt->generation >= NODUS_RT_GEN_TRIE;
     return 0;
 }
 
@@ -1258,6 +1282,31 @@ static int env_ruleset_gen_roots_voted(nodus_witness_t *w, uint8_t *voted,
 
     if (rc < 0) {
         V2AP_ENV_FAULT("%s", "HF-7: the RULESET_GEN_ROOTS history is "
+                       "unreadable on this node - refusing to judge a "
+                       "vote's single-use rule against a guess");
+        return -2;
+    }
+    *voted = (rc == 0) ? 1u : 0u;
+    return 0;
+}
+
+/* HF-9 (plan docs/plans/approved/2026-11-04-hf9.md §7.1, "rules copied
+ * from param 22"): has ANY chain_config param-24 (RULESET_GEN_TRIE) row
+ * been committed, at any effective height? env_ruleset_gen_roots_voted's
+ * contract verbatim — into ctx.ruleset_gen_trie_voted, the param-24
+ * single-use rule (a): a second row whose A'-1 edge found the registry
+ * already at generation 6 would FAULT every node there.
+ * @return 0 (*voted = 0/1) / -2. */
+static int env_ruleset_gen_trie_voted(nodus_witness_t *w, uint8_t *voted,
+                                      char *reason, size_t reason_size)
+{
+    uint64_t v = 0;
+    int rc = nodus_chain_config_get_u64(w,
+                                        (uint8_t)DNAC_CFG_RULESET_GEN_TRIE,
+                                        (uint64_t)INT64_MAX, 0ULL, &v);
+
+    if (rc < 0) {
+        V2AP_ENV_FAULT("%s", "HF-9: the RULESET_GEN_TRIE history is "
                        "unreadable on this node - refusing to judge a "
                        "vote's single-use rule against a guess");
         return -2;
@@ -2766,6 +2815,12 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
     if (env_ruleset_gen_roots_voted(w, &gen_roots_voted, reason,
                                     reason_size) != 0)
         return -2;
+    /* HF-9: "any param-24 row" (the param-24 vote's single use), the same
+     * discipline */
+    uint8_t gen_trie_voted = 0;
+    if (env_ruleset_gen_trie_voted(w, &gen_trie_voted, reason,
+                                   reason_size) != 0)
+        return -2;
     /* HF-4: the name price tiers at this block's height, once per item */
     uint64_t name_price[4];
     if (env_name_prices(w, blk->global_height, name_price, reason,
@@ -2835,6 +2890,7 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
         ctx.ruleset_gen_storage_voted = gen_storage_voted;
         ctx.ruleset_gen_roles_voted = gen_roles_voted;
         ctx.ruleset_gen_roots_voted = gen_roots_voted;
+        ctx.ruleset_gen_trie_voted = gen_trie_voted;
         ctx.delegate_name_required = dlg_name;
         memcpy(ctx.name_price, name_price, sizeof(ctx.name_price));
         ctx.stake_min           = stake_min;
@@ -3782,6 +3838,7 @@ static int env_authorize_legs(nodus_witness_t *w,
     uint8_t  gen_storage_voted = 0;
     uint8_t  gen_roles_voted = 0;
     uint8_t  gen_roots_voted = 0;
+    uint8_t  gen_trie_voted = 0;
     uint64_t name_price[4];
     uint64_t stake_min = 0, storage_bond = 0;
 
@@ -3812,6 +3869,9 @@ static int env_authorize_legs(nodus_witness_t *w,
         return -2;
     if (env_ruleset_gen_roots_voted(w, &gen_roots_voted, reason,
                                     reason_size) != 0)
+        return -2;
+    if (env_ruleset_gen_trie_voted(w, &gen_trie_voted, reason,
+                                   reason_size) != 0)
         return -2;
     if (env_name_prices(w, height, name_price, reason, reason_size) != 0)
         return -2;
@@ -3876,6 +3936,7 @@ static int env_authorize_legs(nodus_witness_t *w,
         actx.ruleset_gen_storage_voted = gen_storage_voted;
         actx.ruleset_gen_roles_voted = gen_roles_voted;
         actx.ruleset_gen_roots_voted = gen_roots_voted;
+        actx.ruleset_gen_trie_voted = gen_trie_voted;
         memcpy(actx.name_price, name_price, sizeof(actx.name_price));
         actx.stake_min           = stake_min;
         actx.storage_bond        = storage_bond;
@@ -4968,9 +5029,13 @@ static int phase_6b_evm_activation(nodus_witness_t *w, nodus_v2_block_t *blk,
         if (nodus_witness_db_schema_version(w, &ver) != 0 ||
             (ver != NODUS_V2_SCHEMA_VERSION_S17 &&
              ver != NODUS_V2_SCHEMA_VERSION_S18 &&
-             ver != NODUS_V2_SCHEMA_VERSION_S19)) {
-            V2AP_FAULT("phase 6b'': the EVM edge needs schema S17, S18 or "
-                       "S19; this node's database is at %u", (unsigned)ver);
+             ver != NODUS_V2_SCHEMA_VERSION_S19 &&
+             ver != NODUS_V2_SCHEMA_VERSION_S20)) {   /* HF-9: the live
+                                                       * rung (S19 + the
+                                                       * supply totals) */
+            V2AP_FAULT("phase 6b'': the EVM edge needs schema S17, S18, "
+                       "S19 or S20; this node's database is at %u",
+                       (unsigned)ver);
             return -2;
         }
     }
@@ -5126,9 +5191,11 @@ static int phase_6b_gen4_edge(nodus_witness_t *w, nodus_v2_block_t *blk,
          * v2_domain_heads.last_upd_hash — nothing this edge touches */
         if (nodus_witness_db_schema_version(w, &ver) != 0 ||
             (ver != NODUS_V2_SCHEMA_VERSION_S18 &&
-             ver != NODUS_V2_SCHEMA_VERSION_S19)) {
+             ver != NODUS_V2_SCHEMA_VERSION_S19 &&
+             ver != NODUS_V2_SCHEMA_VERSION_S20)) {   /* HF-9: the live
+                                                       * rung */
             V2AP_FAULT("phase 6b''': the generation-4 edge needs schema "
-                       "S18 or S19; this node's database is at %u",
+                       "S18, S19 or S20; this node's database is at %u",
                        (unsigned)ver);
             return -2;
         }
@@ -5317,12 +5384,17 @@ static int phase_6b_gen5_edge(nodus_witness_t *w, nodus_v2_block_t *blk,
 #else
     {
         uint32_t ver = 0;
-        /* EXACTLY S19: v2_replay (the generation-5 replay relation) and
-         * v2_domain_heads.last_upd_hash (the column step 4 seeds) */
+        /* S19 or S20: v2_replay (the generation-5 replay relation) and
+         * v2_domain_heads.last_upd_hash (the column step 4 seeds) exist
+         * from S19; HF-9's S20 = S19 + tables this edge never touches, and
+         * it is the live rung a replay from genesis reaches (plan §5.5:
+         * "Every gate that accepts 19 also accepts 20") */
         if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-            ver != NODUS_V2_SCHEMA_VERSION_S19) {
+            (ver != NODUS_V2_SCHEMA_VERSION_S19 &&
+             ver != NODUS_V2_SCHEMA_VERSION_S20)) {
             V2AP_FAULT("phase 6b'''': the generation-5 edge needs schema "
-                       "S19; this node's database is at %u", (unsigned)ver);
+                       "S19 or S20; this node's database is at %u",
+                       (unsigned)ver);
             return -2;
         }
     }
@@ -5372,6 +5444,210 @@ static int phase_6b_gen5_edge(nodus_witness_t *w, nodus_v2_block_t *blk,
                  (unsigned long long)DNAC_CFG_RULESET_GEN_ROOTS_D,
                  (unsigned long long)h_next,
                  (unsigned)NODUS_RT_GEN_ROOTS);
+    return 0;
+#endif
+}
+
+#ifdef NODUS_EVM_ENABLED
+/* HF-9 plan §7.2 step 6 / §8.6: the storage transition steps E-s1 (the XOR
+ * union counts of the two epochs settled at B1 and B1 + E), E-s2 (the
+ * rendezvous holders of every published segment, rows from_h = B1) and
+ * E-s3 (the one-use XOR-vs-rendezvous diff table), run only if the storage
+ * gate is open (param 18 in effect); the body is
+ * nodus_witness_storage_gen6_transition (nodus_witness_v2_storage.c). The
+ * edge's order (step 6 after the capture switch, before the touched
+ * declaration) is fixed here. @return 0 / -2 (node FAULT). */
+static int phase_6b_gen6_storage_transition(nodus_witness_t *w,
+                                            nodus_v2_block_t *blk) {
+    if (nodus_witness_storage_gen6_transition(w, blk->global_height) != 0) {
+        V2AP_FAULT("phase 6b''''': the storage transition (E-s1..E-s3) "
+                   "failed on this node at height %llu (reason in the log); "
+                   "this node does not vote",
+                   (unsigned long long)blk->global_height);
+        return -2;
+    }
+    return 0;
+}
+#endif
+
+/*
+ * PHASE 6b''''' — HF-9: THE GENERATION-6 EDGE (plan docs/plans/approved/
+ * 2026-11-04-hf9.md §7.2, §7.3, §5.2; decisions D12, D17 report 1 finding
+ * 1, D24, D25).
+ *
+ * TRIGGER: the param-24 (RULESET_GEN_TRIE) row with this build's
+ * DNAC_CFG_RULESET_GEN_TRIE_D (D6) literal, effective at A = h+1 and
+ * absent at h — the phase-6b'''' shape; absence, presence and a read
+ * failure are distinguished (a failed read is a FAULT, never "not the
+ * edge"). Then, in this order, inside the block's transaction:
+ *   1. the row's value must be this build's D6 and this build must carry
+ *      generation 6 (NODUS_EVM_ENABLED) — else FAULT;
+ *   2. the schema must be EXACTLY S20 (the keyed-trie tables and the 24
+ *      triggers exist) — a node-local shape, so FAULT, never a verdict;
+ *   3. SYSTEM and CORE switch from NODUS_RT_GEN_TRIE_BASE (5) to
+ *      NODUS_RT_GEN_TRIE (6) through nodus_witness_domreg_generation_
+ *      switch; "not at generation 5" is a FAULT (the vote's stateful rule
+ *      (c) refused every vote judged away from generation 5);
+ *   4. the one-time build of the eight tries (operator exception D12) from
+ *      the rows as they stand after A-1's items and phases up to 6b:
+ *      nodus_witness_v2_trie_build_all scans each table ORDER BY primary
+ *      key with the loader's row checks, builds incrementally, computes the
+ *      full rebuild over the same list and requires the two roots equal —
+ *      a mismatch, a malformed row or an interrupted scan is a FAULT (the
+ *      node stops and does not vote), then writes v2_trie_roots;
+ *   5. the 24 triggers are verified present and unaltered (FAULT
+ *      otherwise), v2_trie_dirty is cleared and v2_trie_state.capture is
+ *      set to 1 — inside THIS block's transaction, so a rolled-back A-1
+ *      leaves it 0. The shadow status is neither read nor written here:
+ *      local readiness never selects commitment rules (D17, report 1
+ *      finding 1);
+ *   6. the storage transition (WP4 seam, inert here);
+ *   7. SYSTEM and CORE are declared touched — their compositions change
+ *      (CORE v2/EVM -> "NDS.CORE.v4", SYSTEM v6 -> "NDS.SYS.v7"); phase 8's
+ *      untouched-domain guard would otherwise refuse A-1 on every node.
+ *
+ * TRANSITION TABLE (§7.3; the edge runs at the END of block A-1):
+ *   item                  | block A-1 (this edge)          | block A on
+ *   ----------------------+--------------------------------+---------------
+ *   items' judge          | generation 5 (block start)     | generation 6
+ *   registry generation   | 5 -> 6 here, step 3            | 6
+ *   SYSTEM / CORE version | v11 / v10 -> v12 / v11, step 3 | v12 / v11
+ *   tries                 | built at step 4; writes after  | incremental,
+ *                         | step 5 in A-1 flushed at 8-pre | flushed at 8-pre
+ *   dirty capture         | 0 until step 5, then 1         | 1
+ *   composition tags      | CORE.v4 / SYS.v7 / STOR.v3     | same
+ *                         | (phase 8 runs after 6b/6c)     |
+ *   first header carrying | —                              | header A
+ *                         |                                | (app_hash = the
+ *                         |                                | root A-1 made)
+ *
+ * Runs as 6b''''': after 6b'''' (phase_6b_gen5_edge — one edge timing for
+ * every HF) and BEFORE 6b'' and 6c. A faulted block is rolled back whole
+ * by the host, so the edge (switch + build + capture) is atomic and a
+ * replay of A-1 re-runs it exactly once. Not the edge -> nothing (two
+ * unmetered chain_config reads per block).
+ * @return 0 / -2 node FAULT (reason written).
+ */
+static int phase_6b_gen6_edge(nodus_witness_t *w, nodus_v2_block_t *blk,
+                              dom_ctx_t *doms, size_t n_dom) {
+    const uint64_t h = blk->global_height;
+    uint64_t h_next = 0, v_next = 0, v_h = 0;
+    int at_next, at_h;
+
+    if (dna_ck_add_u64(h, 1u, &h_next) != 0 ||
+        h_next > (uint64_t)INT64_MAX) {
+        V2AP_FAULT("phase 6b''''': height %llu + 1 leaves the int64 range "
+                   "of chain_config effective heights",
+                   (unsigned long long)h);
+        return -2;
+    }
+    at_next = nodus_chain_config_get_u64(w,
+                                         (uint8_t)DNAC_CFG_RULESET_GEN_TRIE,
+                                         h_next, 0ULL, &v_next);
+    at_h = nodus_chain_config_get_u64(w,
+                                      (uint8_t)DNAC_CFG_RULESET_GEN_TRIE,
+                                      h, 0ULL, &v_h);
+    if (at_next < 0 || at_h < 0) {
+        V2AP_FAULT("phase 6b''''': RULESET_GEN_TRIE at heights %llu/%llu "
+                   "is unreadable on this node - refusing to decide the "
+                   "generation-6 edge on a guess", (unsigned long long)h_next,
+                   (unsigned long long)h);
+        return -2;
+    }
+    if (!(at_next == 0 && at_h == 1))
+        return 0;                       /* not the A-1 edge: nothing     */
+    if (v_next != (uint64_t)DNAC_CFG_RULESET_GEN_TRIE_D) {
+        V2AP_FAULT("phase 6b''''': the RULESET_GEN_TRIE row effective at "
+                   "%llu reads 0x%016llx, not this build's generation-6 "
+                   "vote D6 0x%016llx - a value no committed row can hold "
+                   "here", (unsigned long long)h_next,
+                   (unsigned long long)v_next,
+                   (unsigned long long)DNAC_CFG_RULESET_GEN_TRIE_D);
+        return -2;
+    }
+#ifndef NODUS_EVM_ENABLED
+    (void)doms;
+    (void)n_dom;
+    V2AP_FAULT("phase 6b''''': the generation-6 edge is at height %llu but "
+               "this build does not carry generation 6 (built without "
+               "NODUS_EVM_ENABLED)", (unsigned long long)h);
+    return -2;
+#else
+    {
+        uint32_t ver = 0;
+        /* EXACTLY S20 (plan §7.2 step 2): the keyed-trie tables and the
+         * 24 triggers exist from S20; a later rung is not built yet */
+        if (nodus_witness_db_schema_version(w, &ver) != 0 ||
+            ver != NODUS_V2_SCHEMA_VERSION_S20) {
+            V2AP_FAULT("phase 6b''''': the generation-6 edge needs schema "
+                       "S20 exactly; this node's database is at %u",
+                       (unsigned)ver);
+            return -2;
+        }
+    }
+    int src = nodus_witness_domreg_generation_switch(
+        w, NODUS_RT_GEN_TRIE_BASE, NODUS_RT_GEN_TRIE);
+    if (src == 1) {
+        V2AP_FAULT("phase 6b''''': the generation-%u vote reaches its edge "
+                   "at height %llu but the registry is not generation %u",
+                   (unsigned)NODUS_RT_GEN_TRIE, (unsigned long long)h,
+                   (unsigned)NODUS_RT_GEN_TRIE_BASE);
+        return -2;
+    }
+    if (src != 0) {
+        V2AP_FAULT("phase 6b''''': the registry rewrite to generation %u "
+                   "failed on this node at height %llu (read, precondition "
+                   "or write)", (unsigned)NODUS_RT_GEN_TRIE,
+                   (unsigned long long)h);
+        return -2;
+    }
+    if (nodus_witness_v2_trie_build_all(w) != 0) {
+        V2AP_FAULT("phase 6b''''': the one-time build of the eight tries "
+                   "failed on this node at height %llu (an unreadable or "
+                   "malformed row, an interrupted scan, a store fault, or "
+                   "an incremental root that differs from the full "
+                   "rebuild - reason in the log); this node does not "
+                   "vote", (unsigned long long)h);
+        return -2;
+    }
+    if (nodus_witness_db_s20_trie_shape_ok(w) != 1) {
+        V2AP_FAULT("phase 6b''''': the 24 dirty-capture triggers, the five "
+                   "trie tables or the status index are missing, altered "
+                   "or unreadable on this node at height %llu - the "
+                   "capture cannot be turned on", (unsigned long long)h);
+        return -2;
+    }
+    if (nodus_witness_v2_trie_dirty_clear(w) != 0 ||
+        nodus_witness_v2_trie_set_capture(w, 1) != 0) {
+        V2AP_FAULT("phase 6b''''': clearing v2_trie_dirty or setting "
+                   "v2_trie_state.capture failed on this node at height "
+                   "%llu", (unsigned long long)h);
+        return -2;
+    }
+    if (phase_6b_gen6_storage_transition(w, blk) != 0)
+        return -2;                      /* the helper wrote the reason   */
+    {
+        dom_ctx_t *dsys = dom_for(doms, n_dom, DNA_DOMAIN_SYSTEM);
+        dom_ctx_t *dcore = dom_for(doms, n_dom, DNA_DOMAIN_CORE);
+        if (!dsys || !dcore) {
+            V2AP_FAULT("phase 6b''''': SYSTEM or CORE is absent from the "
+                       "block-start working set at height %llu",
+                       (unsigned long long)h);
+            return -2;
+        }
+        dsys->touched = 1;
+        dcore->touched = 1;
+    }
+    QGP_LOG_INFO(LOG_TAG, "HF-9: rule-set generation %u -> %u, the eight "
+                 "keyed tries built and the dirty capture on at the end of "
+                 "height %llu (param %u RULESET_GEN_TRIE, D6 0x%016llx); "
+                 "height %llu is judged under generation %u",
+                 (unsigned)NODUS_RT_GEN_TRIE_BASE,
+                 (unsigned)NODUS_RT_GEN_TRIE, (unsigned long long)h,
+                 (unsigned)DNAC_CFG_RULESET_GEN_TRIE,
+                 (unsigned long long)DNAC_CFG_RULESET_GEN_TRIE_D,
+                 (unsigned long long)h_next,
+                 (unsigned)NODUS_RT_GEN_TRIE);
     return 0;
 #endif
 }
@@ -5449,17 +5725,85 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
             (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
              ver != NODUS_V2_SCHEMA_VERSION_S17 &&
              ver != NODUS_V2_SCHEMA_VERSION_S18 &&
-             ver != NODUS_V2_SCHEMA_VERSION_S19)) {
+             ver != NODUS_V2_SCHEMA_VERSION_S19 &&
+             ver != NODUS_V2_SCHEMA_VERSION_S20)) {   /* HF-9: the live
+                                                       * rung (S19 + the
+                                                       * supply totals) */
             V2AP_FAULT("cometbft lane: this node's schema version is %u, "
-                       "not %u, %u, %u or %u - the Comet block row cannot "
-                       "be written here; nothing about the block was "
-                       "judged",
+                       "not %u, %u, %u, %u or %u - the Comet block row "
+                       "cannot be written here; nothing about the block "
+                       "was judged",
                        (unsigned)ver,
                        (unsigned)NODUS_V2_SCHEMA_VERSION_S16,
                        (unsigned)NODUS_V2_SCHEMA_VERSION_S17,
                        (unsigned)NODUS_V2_SCHEMA_VERSION_S18,
-                       (unsigned)NODUS_V2_SCHEMA_VERSION_S19);
+                       (unsigned)NODUS_V2_SCHEMA_VERSION_S19,
+                       (unsigned)NODUS_V2_SCHEMA_VERSION_S20);
             return -2;
+        }
+        /* HF-9 WP2, plan §5.2 "capture consistency at every block start,
+         * before any item runs": from S20 the consensus capture flag
+         * v2_trie_state.capture exists. Generation >= 6 (NODUS_RT_GEN_
+         * TRIE; the generation the committed SYSTEM registry row
+         * resolves — nodus_witness_v2_key_generation, the block-start
+         * generation) requires capture = 1 AND all 24 dirty-capture
+         * triggers present (HF-9 WP3, plan §5.2); generation <= 5
+         * requires capture = 0. A missing or unreadable row, a value
+         * outside {0, 1}, a mismatch with the generation or a missing /
+         * altered trigger is a node FAULT before any of the block's
+         * writes are processed — never a skipped capture: a missing row
+         * would make the triggers' WHEN condition NULL, i.e. silently off
+         * (nodus/CLAUDE.md "A DB failure is never a value"). Committed
+         * state selects consensus behaviour, node-local state stays
+         * node-local (nodus/CLAUDE.md): the shadow status is not read
+         * here.
+         *
+         * The committed generation is resolved at EVERY accepted schema
+         * (HF-9 WP3, Sol verifier row 1): the entry gate above accepts
+         * S16-S20, and a generation-6 registry on a database below S20
+         * has no capture flag and no triggers to check - that schema is
+         * incompatible with the generation, so it is a node FAULT here,
+         * never a block processed with the capture silently absent. */
+        uint32_t gen = 0;
+        if (nodus_witness_v2_key_generation(w, &gen) != 0) {
+            V2AP_FAULT("%s", "cometbft lane: the rule-set generation "
+                       "judging this block is unreadable on this node "
+                       "- the trie capture check cannot be made; "
+                       "nothing about the block was judged");
+            return -2;
+        }
+        if (ver < NODUS_V2_SCHEMA_VERSION_S20 && gen >= NODUS_RT_GEN_TRIE) {
+            V2AP_FAULT("cometbft lane: generation %u needs schema %u (the "
+                       "trie capture flag and the 24 dirty-capture "
+                       "triggers) and this node's database is at %u; "
+                       "nothing about the block was judged",
+                       (unsigned)gen,
+                       (unsigned)NODUS_V2_SCHEMA_VERSION_S20,
+                       (unsigned)ver);
+            return -2;
+        }
+        if (ver >= NODUS_V2_SCHEMA_VERSION_S20) {
+            int capture = -1;
+            const int want = (gen >= NODUS_RT_GEN_TRIE) ? 1 : 0;
+            if (nodus_witness_db_s20_trie_capture(w, &capture) != 0 ||
+                capture != want) {
+                V2AP_FAULT("cometbft lane: the trie capture flag "
+                           "v2_trie_state.capture is %s - generation %u "
+                           "needs it %d; nothing about the block was "
+                           "judged",
+                           capture < 0 ? "missing or unreadable"
+                                       : (capture ? "1" : "0"),
+                           (unsigned)gen, want);
+                return -2;
+            }
+            if (want && nodus_witness_db_s20_trie_shape_ok(w) != 1) {
+                V2AP_FAULT("cometbft lane: generation %u needs the five "
+                           "trie tables, the status index and all 24 "
+                           "dirty-capture triggers, and one is missing, "
+                           "altered or unreadable; nothing about the "
+                           "block was judged", (unsigned)gen);
+                return -2;
+            }
         }
         /* The HOST owns the transaction (D-23 rev 5 (5)): this entry
          * issues no BEGIN, no COMMIT and no ROLLBACK, so being called
@@ -6511,6 +6855,17 @@ cmt_claim_failed:
     if (phase_6b_gen5_edge(w, blk, doms, n_dom) != 0)
         goto fail_fault;               /* the helper wrote the reason     */
 
+    /* 6b'''''. HF-9 — the GENERATION-6 EDGE, at the end of block A-1 of the
+     * param-24 (RULESET_GEN_TRIE) vote only (phase_6b_gen6_edge above): the
+     * registry 5 -> 6, the one-time build of the eight keyed tries checked
+     * against the full rebuild, the dirty capture on, SYSTEM + CORE
+     * touched. After 6b'''' (one edge timing, after the HF-7 edge) and
+     * BEFORE 6b'' and 6c, so the re-scan reloads the generation-6 runtimes
+     * and phases 8-pre..13 commit A-1's roots under generation 6 (SYSTEM
+     * "NDS.SYS.v7", CORE "NDS.CORE.v4"). */
+    if (phase_6b_gen6_edge(w, blk, doms, n_dom) != 0)
+        goto fail_fault;               /* the helper wrote the reason     */
+
     /* 6b''. Nodus EVM — the EVM ACTIVATION EDGE, at the end of block H-1 of the
      * EVM_ACTIVE vote only (phase_6b_evm_activation above): SYSTEM / CORE
      * to the EVM generation, the EVM record ACTIVE with no head. After 6b'
@@ -6812,6 +7167,37 @@ cmt_claim_failed:
         goto fail;
     }
     FAIL_POINT(V2AP_FAIL_AFTER_SUPPLY_MUT);
+
+    /* 8-pre. HF-9 — THE FLUSH (plan §5.3, the only place the tries
+     * change): from the resolved generation >= NODUS_RT_GEN_TRIE (judged
+     * on the POST-6c working set, so block A-1 flushes the writes that
+     * follow its own edge), after phase 7 and before phase 8, every dirty
+     * key the S20 triggers captured in this transaction is applied to its
+     * leg's trie (legs ascending, keys ascending, values recomputed from
+     * the final row state), the leg roots are written to v2_trie_roots and
+     * the dirty rows are deleted. Capture = 1 was checked at the block
+     * start (or set by the edge in this very block). Any trie fault, store
+     * fault or malformed row is a node FAULT, never a verdict and never a
+     * substituted root; the host rolls the block back. Phase 8's root
+     * functions below then only READ the flushed roots. */
+    if (doms_trie_on(doms, n_dom)) {
+#ifdef NODUS_EVM_ENABLED
+        if (nodus_witness_v2_trie_flush(w) != 0) {
+            V2AP_FAULT("phase 8-pre: the keyed-trie flush failed on this "
+                       "node at height %llu (an unreadable or malformed "
+                       "row, a trie or store fault - reason in the log); "
+                       "nothing about the block was judged",
+                       (unsigned long long)blk->global_height);
+            goto fail_fault;
+        }
+#else
+        V2AP_FAULT("phase 8-pre: generation %u is in force at height %llu "
+                   "but this build does not carry it (built without "
+                   "NODUS_EVM_ENABLED)", (unsigned)NODUS_RT_GEN_TRIE,
+                   (unsigned long long)blk->global_height);
+        goto fail_fault;
+#endif
+    }
 
     /* 8. domain roots (runtime-dispatched) + untouched-domain guard. */
     for (size_t i = 0; i < n_dom; i++) {
@@ -7523,6 +7909,33 @@ cmt_claim_failed:
     }
     FAIL_POINT(V2AP_FAIL_AFTER_BLOCK_META);
 
+    /* 13-bis. HF-9 — THE DIRTY-EMPTY ASSERTION (plan §5.3): from
+     * generation >= NODUS_RT_GEN_TRIE the 8-pre flush emptied
+     * v2_trie_dirty, so any key still there was written AFTER phase 8 —
+     * a writer the roots did not see. That is a node FAULT before the
+     * block can commit, never a root that disagrees with its rows. */
+    if (doms_trie_on(doms, n_dom)) {
+#ifdef NODUS_EVM_ENABLED
+        int64_t pending = -1;
+        if (nodus_witness_v2_trie_dirty_count(w, &pending) != 0 ||
+            pending != 0) {
+            V2AP_FAULT("phase 13-bis: v2_trie_dirty holds %lld key(s) "
+                       "after phase 8 at height %llu (or cannot be "
+                       "read): a migrated table was written after the "
+                       "roots were composed - this block cannot commit",
+                       (long long)pending,
+                       (unsigned long long)blk->global_height);
+            goto fail_fault;
+        }
+#else
+        V2AP_FAULT("phase 13-bis: generation %u is in force at height "
+                   "%llu but this build does not carry it",
+                   (unsigned)NODUS_RT_GEN_TRIE,
+                   (unsigned long long)blk->global_height);
+        goto fail_fault;
+#endif
+    }
+
     /* 14. supply gate (pre-commit) */
     if (nodus_witness_v2_supply_check(w) != 0) {
         V2AP_VERDICT("phase 14: PRE-COMMIT supply gate failed - a "
@@ -7791,9 +8204,12 @@ int nodus_witness_v2_genesis_cmt(nodus_witness_t *w,
         (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
          ver != NODUS_V2_SCHEMA_VERSION_S17 &&
          ver != NODUS_V2_SCHEMA_VERSION_S18 &&
-         ver != NODUS_V2_SCHEMA_VERSION_S19)) {
+         ver != NODUS_V2_SCHEMA_VERSION_S19 &&
+         ver != NODUS_V2_SCHEMA_VERSION_S20)) {   /* HF-9: the live rung
+                                                   * (S19 + the supply
+                                                   * totals) */
         QGP_LOG_ERROR(LOG_TAG, "cometbft genesis needs schema S16, S17, "
-                      "S18 or S19, the database is at %u — refusing",
+                      "S18, S19 or S20, the database is at %u — refusing",
                       (unsigned)ver);
         return -1;
     }

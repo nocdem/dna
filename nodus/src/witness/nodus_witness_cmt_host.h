@@ -596,6 +596,22 @@ typedef struct {
      */
     void (*on_rollback)(void *arg);
     void  *on_rollback_arg;
+
+    /**
+     * HF-9 WP5 (plan §11, Option C): called at the very end of `applyBlock`'s
+     * success path - after the ledger COMMIT, `store.Save(state)` and the
+     * pruning - with `on_block_saved_arg`. NULL (the `nodus_cmt_blockexec_init`
+     * default - every test executor) = nothing. Not a reference hook: the
+     * node binds the shadow run's job to it (nodus_witness_v2_shadow.h). It
+     * returns nothing - a failure of the job is the job's own (logged, its
+     * status), never a fault of the block. It is NOT called on any failure
+     * exit of `applyBlock` (so not after `test_fail_after_commit`), nor from
+     * `ExecCommitBlock` (the handshake replay); the job is state based, so
+     * the next block's call covers a missed height. Must not write inside a
+     * block transaction (there is none open here).
+     */
+    void (*on_block_saved)(void *arg);
+    void  *on_block_saved_arg;
 } nodus_cmt_blockexec_t;
 
 /**
@@ -660,6 +676,15 @@ int nodus_cmt_blockexec_set_wal(nodus_cmt_blockexec_t *ctx,
  */
 int nodus_cmt_blockexec_set_rollback_hook(nodus_cmt_blockexec_t *ctx,
                                           void (*fn)(void *arg), void *arg);
+
+/**
+ * Bind (or, with fn NULL, unbind) the after-block-saved callback
+ * (`nodus_cmt_blockexec_t.on_block_saved`, HF-9 WP5). Node-local; no
+ * reference counterpart. @return CMT_OK, CMT_FAULT on a NULL `ctx`.
+ */
+int nodus_cmt_blockexec_set_block_saved_hook(nodus_cmt_blockexec_t *ctx,
+                                             void (*fn)(void *arg),
+                                             void *arg);
 
 /** Fills all 26 rows of `out` with this module's functions; `ctx` is the
  *  `host_ctx` for `cmt_cs_init`. @return CMT_OK, CMT_FAULT on NULL. */

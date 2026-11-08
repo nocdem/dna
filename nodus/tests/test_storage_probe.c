@@ -722,12 +722,13 @@ static int t_verify_chain(void) {
 /* ══ report_build ══════════════════════════════════════════════════════ */
 
 static int t_report_build(void) {
-    uint8_t sh[64], call[NODUS_STPROBE_REPORT_CALL_MAX];
+    uint8_t sh[64], call[NODUS_STPROBE_REPORT_CALL_CAP];
     size_t cl = 0;
     fill(sh, 64, 0x3C);
     bool ok[11] = { true, false, true, false, false, false, false, true,
                     false, true, false };
-    CHECK(nodus_stprobe_report_call(5 * E_LEN, 4, sh, ok, 11, call, &cl) == 0,
+    CHECK(nodus_stprobe_report_call(5 * E_LEN, 4, sh, ok, 11,
+                                    DNA_V2_STORAGE_SET_MAX, call, &cl) == 0,
           "call");
     CHECK(cl == 78u + 2u, "78 + ceil(11/8)");
     CHECK(be64(call) == 5 * E_LEN, "epoch_start BE");
@@ -737,22 +738,42 @@ static int t_report_build(void) {
     CHECK(call[76] == 0 && call[77] == 2, "bitmap_len BE");
     CHECK(call[78] == 0x85, "bits 0, 2, 7 (LSB-first)");
     CHECK(call[79] == 0x02, "bit 9; unused high bits zero");
-    CHECK(nodus_stprobe_report_call(5 * E_LEN, 4, sh, NULL, 0, call, &cl) ==
+    CHECK(nodus_stprobe_report_call(5 * E_LEN, 4, sh, NULL, 0,
+                                    DNA_V2_STORAGE_SET_MAX, call, &cl) ==
           0 && cl == 78u, "an empty set: no bitmap byte");
     {
-        bool *big = calloc(DNA_V2_STORAGE_SET_MAX + 1, sizeof(*big));
+        bool *big = calloc(DNA_V2_STORAGE_SET_CAP + 1, sizeof(*big));
         CHECK(big != NULL, "alloc");
+        /* generation <= 5: the limit is the caller's 256 */
         CHECK(nodus_stprobe_report_call(5 * E_LEN, 4, sh, big,
+                                        DNA_V2_STORAGE_SET_MAX,
                                         DNA_V2_STORAGE_SET_MAX, call, &cl) ==
               0 && cl == 78u + 32u, "256 members: 32 bytes");
         CHECK(nodus_stprobe_report_call(5 * E_LEN, 4, sh, big,
-                                        DNA_V2_STORAGE_SET_MAX + 1, call,
-                                        &cl) != 0, "257 refused");
+                                        DNA_V2_STORAGE_SET_MAX + 1,
+                                        DNA_V2_STORAGE_SET_MAX, call,
+                                        &cl) != 0,
+              "257 refused under the generation <= 5 limit");
+        /* HF-9 WP4, generation 6: the limit is the caller's 1024 */
+        CHECK(nodus_stprobe_report_call(5 * E_LEN, 4, sh, big,
+                                        DNA_V2_STORAGE_SET_CAP,
+                                        DNA_V2_STORAGE_SET_CAP, call, &cl) ==
+              0 && cl == 78u + 128u && cl == NODUS_STPROBE_REPORT_CALL_CAP,
+              "1024 members: a 128-byte bitmap, 206 bytes");
+        CHECK(nodus_stprobe_report_call(5 * E_LEN, 4, sh, big,
+                                        DNA_V2_STORAGE_SET_CAP + 1,
+                                        DNA_V2_STORAGE_SET_CAP, call,
+                                        &cl) != 0, "1025 refused");
+        CHECK(nodus_stprobe_report_call(5 * E_LEN, 4, sh, big, 3,
+                                        DNA_V2_STORAGE_SET_CAP + 1, call,
+                                        &cl) != 0,
+              "a limit above the buffer capacity is refused");
         free(big);
     }
 
     /* the envelope */
-    CHECK(nodus_stprobe_report_call(5 * E_LEN, 4, sh, ok, 11, call, &cl) == 0,
+    CHECK(nodus_stprobe_report_call(5 * E_LEN, 4, sh, ok, 11,
+                                    DNA_V2_STORAGE_SET_MAX, call, &cl) == 0,
           "call again");
     nodus_identity_t *id = calloc(1, sizeof(*id));
     uint8_t seed[32];
@@ -765,9 +786,19 @@ static int t_report_build(void) {
     uint8_t *env = NULL;
     size_t el = 0;
     CHECK(nodus_stprobe_report_env(CHAIN, ver, rsh, app, app - 1, call, cl,
+                                   NODUS_STPROBE_REPORT_CALL_MAX,
                                    id->pk.bytes, id->sk.bytes, &env, &el) !=
           0 && env == NULL, "expiry below the applying height refused");
     CHECK(nodus_stprobe_report_env(CHAIN, ver, rsh, app, expiry, call, cl,
+                                   cl - 1, id->pk.bytes, id->sk.bytes, &env,
+                                   &el) != 0 && env == NULL,
+          "a call longer than the caller's generation limit refused");
+    CHECK(nodus_stprobe_report_env(CHAIN, ver, rsh, app, expiry, call, cl,
+                                   NODUS_STPROBE_REPORT_CALL_CAP + 1,
+                                   id->pk.bytes, id->sk.bytes, &env, &el) !=
+          0 && env == NULL, "a limit above the buffer capacity refused");
+    CHECK(nodus_stprobe_report_env(CHAIN, ver, rsh, app, expiry, call, cl,
+                                   NODUS_STPROBE_REPORT_CALL_MAX,
                                    id->pk.bytes, id->sk.bytes, &env, &el) ==
           0 && env != NULL, "envelope");
     dna_env_view_t vw;

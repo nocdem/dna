@@ -120,7 +120,10 @@ static inline bool nodus_chain_method_routed(const char *method) {
  * + uint64 height 9 + array headers 2/3 = 39, plus 66 per fingerprint
  * (two-byte CBOR bstr header + 64 bytes). ds_roles is one byte shorter. */
 #define NODUS_WITNESS_IPC_ROLES_FRAME_MAX \
-    (39u + (DNAC_MAX_VALIDATORS + DNA_V2_STORAGE_SET_MAX) * (2u + NODUS_KEY_BYTES))
+    (39u + (DNAC_MAX_VALIDATORS + DNA_V2_STORAGE_SET_CAP) * (2u + NODUS_KEY_BYTES))
+/* HF-9 WP4 (plan §8.7): the role list holds the live storage rows up to
+ * the generation-6 member capacity (1024; 256 up to generation 5), so the
+ * frame is sized for the capacity: 39 + (128 + 1024) * 66 = 76,071 bytes. */
 
 /*
  * Per-connection queue bounds. "Queued" = the bytes one IPC connection

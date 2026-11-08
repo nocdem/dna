@@ -1430,7 +1430,13 @@ static int gen_seed_state(nodus_witness_t *w2,
     {
         static const char *const must_be_empty[] = {
             "delegations", "v2_reward_accrual", "v2_balance_copy",
-            "v2_validator_roles", "v2_replay"
+            "v2_validator_roles", "v2_replay",
+            /* HF-9 WP2 (plan §5.1): the keyed-trie node store, the leg
+             * roots and the dirty keys are written only by the trie
+             * build / flush (a generation >= 6 genesis builds them
+             * after this list); v2_trie_state holds its one row (0) and
+             * v2_trie_shadow_state none, so neither is listed */
+            "v2_trie_nodes", "v2_trie_roots", "v2_trie_dirty"
         };
         for (size_t i = 0; i < sizeof(must_be_empty) /
                                sizeof(must_be_empty[0]); i++) {
@@ -2967,8 +2973,11 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
          * v2_replay, its index and the NULL v2_domain_heads.last_upd_hash;
          * no genesis step writes or reads them — v2_replay is on the
          * must_be_empty list of gen_seed_state); the S19 rung cascades
-         * through S18. */
-        if (nodus_witness_db_migrate_v2s19(w2) != 0) break;
+         * through S18. HF-9 moves it S19 -> S20 (the supply running
+         * totals, seeded from the then-empty utxo_set and registry; the
+         * supply check this derivation runs reads them); the S20 rung
+         * cascades through S19. */
+        if (nodus_witness_db_migrate_v2s20(w2) != 0) break;
         if (nodus_chain_config_db_migrate(w2) != 0) break;
 
         /* ── 5. SYSTEM state, from the config — the SAME seeder. ────── */

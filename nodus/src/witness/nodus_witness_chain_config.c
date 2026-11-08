@@ -70,7 +70,7 @@
 #define CC_MAX_ACTIVE               DNA_MAX_ACTIVE_VALIDATORS
 
 #define CC_PURPOSE_TAG_LEN          16
-#define CC_PARAM_MAX_ID            23
+#define CC_PARAM_MAX_ID            25
 #define CC_PARAM_MAX_TXS            1
 #define CC_PARAM_BLOCK_INTERVAL     2
 #define CC_PARAM_INFLATION_START    3
@@ -99,6 +99,8 @@
 #define CC_PARAM_RULESET_GEN_ROOTS 22     /* HF-7 — DNAC_CFG_RULESET_GEN_ROOTS */
 #define CC_PARAM_MLDSA_ACTIVE      23     /* ML-DSA-87 precompile —
                                            * DNAC_CFG_MLDSA_ACTIVE */
+#define CC_PARAM_RULESET_GEN_TRIE  24     /* HF-9 — DNAC_CFG_RULESET_GEN_TRIE */
+#define CC_PARAM_STORAGE_COPIES    25     /* HF-9 — DNAC_CFG_STORAGE_COPIES */
 /* Number of per-param cache rows dimensions: param ids are 1..CC_PARAM_MAX_ID
  * and index 0 is unused, so the arrays are CC_PARAM_MAX_ID + 1 wide.
  * HF-4 grew it 9 -> 14 (design 2026-10-02-onchain-names-design.md rev 4
@@ -109,7 +111,8 @@
  * DELEGATE_NAME_REQUIRED) and HF-6 18 -> 22 (ids 18 RULESET_GEN_ROLES,
  * 19 STAKE_MIN, 20 POWER_CAP_BPS, 21 STORAGE_BOND) and HF-7 22 -> 23 (id
  * 22 RULESET_GEN_ROOTS) and the ML-DSA-87 precompile 23 -> 24 (id 23
- * MLDSA_ACTIVE) through the same derivation. Slot 16 stays:
+ * MLDSA_ACTIVE) and HF-9 24 -> 26 (ids 24 RULESET_GEN_TRIE, 25
+ * STORAGE_COPIES) through the same derivation. Slot 16 stays:
  * RETIRED id 16 is still READ (any committed row refuses the param-18
  * vote). */
 #define CC_PARAM_SLOTS              (CC_PARAM_MAX_ID + 1)
@@ -215,6 +218,14 @@ _Static_assert(CC_PARAM_RULESET_GEN_ROOTS == DNAC_CFG_RULESET_GEN_ROOTS,
                "CC_PARAM_RULESET_GEN_ROOTS drift vs dnac param id");
 _Static_assert(CC_PARAM_MLDSA_ACTIVE == DNAC_CFG_MLDSA_ACTIVE,
                "CC_PARAM_MLDSA_ACTIVE drift vs dnac param id");
+_Static_assert(CC_PARAM_RULESET_GEN_TRIE == DNAC_CFG_RULESET_GEN_TRIE,
+               "CC_PARAM_RULESET_GEN_TRIE drift vs dnac param id");
+_Static_assert(CC_PARAM_STORAGE_COPIES == DNAC_CFG_STORAGE_COPIES,
+               "CC_PARAM_STORAGE_COPIES drift vs dnac param id");
+/* HF-9 param 25: the vote range and default are dnac.h's, one definition */
+_Static_assert(DNAC_CFG_MIN_STORAGE_COPIES <= DNAC_STORAGE_COPIES_DEFAULT &&
+               DNAC_STORAGE_COPIES_DEFAULT <= DNAC_CFG_MAX_STORAGE_COPIES,
+               "the STORAGE_COPIES default lies inside its vote range");
 _Static_assert(CC_PARAM_DELEGATE_NAME_REQUIRED ==
                    DNAC_CFG_DELEGATE_NAME_REQUIRED,
                "CC_PARAM_DELEGATE_NAME_REQUIRED drift vs dnac param id");
@@ -877,6 +888,27 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
             if (new_value != (uint64_t)DNAC_CFG_RULESET_GEN_ROOTS_D)
                 return -1;
             break;
+        case CC_PARAM_RULESET_GEN_TRIE:
+            /* HF-9 (plan docs/plans/approved/2026-11-04-hf9.md §7.1, §15
+             * AD-12): EXACTLY the compiled generation-6 vote literal D6,
+             * the param-22 shape — the vote names its target (the
+             * generation-6 pins, the 5 -> 6 procedure, the Foundation
+             * owner and the four HF-9 constants). A binary whose
+             * generation 6 differs refuses here, at the vote block. Pure:
+             * the literal, never a hash. The single-use / HF-2 /
+             * generation-5 / boundary rules need chain state:
+             * nodus_chain_config_stateful_rules_ex. */
+            if (new_value != (uint64_t)DNAC_CFG_RULESET_GEN_TRIE_D)
+                return -1;
+            break;
+        case CC_PARAM_STORAGE_COPIES:
+            /* HF-9 (plan §7.1): [4, 16] inclusive — D4 "range 4..16".
+             * "Votable only while generation >= 6 judges the vote" needs
+             * chain state: nodus_chain_config_stateful_rules_ex. */
+            if (new_value < (uint64_t)DNAC_CFG_MIN_STORAGE_COPIES ||
+                new_value > (uint64_t)DNAC_CFG_MAX_STORAGE_COPIES)
+                return -1;
+            break;
         case CC_PARAM_NAME_PRICE_3P:
         case CC_PARAM_NAME_PRICE_4P:
         case CC_PARAM_NAME_PRICE_5P:
@@ -1051,6 +1083,21 @@ uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
              * dk) olarak kaydedeyim mi?" — "Evet."; param 18's class). Its
              * own return, never the default: branch. */
             return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
+        case CC_PARAM_RULESET_GEN_TRIE:
+            /* HF-9 — SAFETY, 17280 blocks: the operator's decision
+             * "4.24." (docs/plans/decisions/2026-11-04-hf9-scope.md; plan
+             * §1 D25) — NOT param 22's ERGONOMIC class. Its own return,
+             * never the default: branch. */
+            return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS;
+        case CC_PARAM_STORAGE_COPIES:
+            /* HF-9 — ONE EPOCH exactly: the operator's decision
+             * "Oylamalarda bir epoxa bir epok olsun o zaman." and "diğer
+             * ayarları değiştirme." (docs/plans/decisions/2026-11-04-hf9-
+             * scope.md; plan §1 D18, §7.1, Kurultay 55 F-33). Its OWN
+             * return of DNAC_EPOCH_LENGTH — not the ERGONOMIC constant,
+             * which only happens to equal it (the harness overrides the
+             * two separately) — so "one epoch" cannot drift. */
+            return (uint64_t)DNAC_EPOCH_LENGTH;
         case CC_PARAM_NAME_PRICE_3P:
         case CC_PARAM_NAME_PRICE_4P:
         case CC_PARAM_NAME_PRICE_5P:
@@ -1100,7 +1147,8 @@ uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
  * committed param-9 row" for a param-9 vote, "any committed param-18 row"
  * for a param-18 vote (HF-6 slice 8c), "any committed param-22 row" for a
  * param-22 vote (HF-7 P1d), "any committed param-23 row" for a param-23
- * vote (the ML-DSA-87 precompile) — so this form sets ALL FOUR of those
+ * vote (the ML-DSA-87 precompile), "any committed param-24 row" for a
+ * param-24 vote (HF-9) — so this form sets ALL FIVE of those
  * single-use facts from it (the _ex form reads only the one matching
  * param_id). It has no "any committed param-16 row" input: that fact is
  * 0 here (no param-16 row), and only the _ex form can set it. The
@@ -1118,6 +1166,7 @@ int nodus_chain_config_stateful_rules(uint8_t param_id,
     f.ruleset_gen_roles_voted = ruleset_gen2_voted;
     f.ruleset_gen_roots_voted = ruleset_gen2_voted;
     f.mldsa_active_voted = ruleset_gen2_voted;
+    f.ruleset_gen_trie_voted = ruleset_gen2_voted;
     f.judging_generation = judging_generation;
     return nodus_chain_config_stateful_rules_ex(param_id,
                                                 effective_block_height, &f);
@@ -1289,6 +1338,47 @@ int nodus_chain_config_stateful_rules_ex(uint8_t param_id,
              * effective != 0 here by (d). */
             if ((effective_block_height % (uint64_t)DNAC_EPOCH_LENGTH) == 0)
                 return -1;
+            return 0;
+        case CC_PARAM_RULESET_GEN_TRIE:
+            /* HF-9 (plan docs/plans/approved/2026-11-04-hf9.md §7.1, §15
+             * AD-12; "rules copied from param 22"): the param-22 rules
+             * over the generation-6 facts. */
+            /* (a) single use: any committed param-24 row, at any
+             * effective height, refuses every further vote — a second
+             * row whose A'-1 edge found the registry already at
+             * generation 6 would FAULT every node there */
+            if (facts->ruleset_gen_trie_voted) return -1;
+            /* (b) HF-2 active at the vote height (param 22's (b)) */
+            if (!hf2_active) return -1;
+            /* (c) judged under generation EXACTLY 5 (NODUS_RT_GEN_TRIE_
+             * BASE = GEN_ROOTS): phase 6b''''' switches SYSTEM / CORE
+             * FROM it, and nodus_witness_domreg_generation_switch FAULTs
+             * every node at A-1 if the registry is elsewhere — this rule
+             * keeps that FAULT unreachable. It also keeps the generation-6
+             * edge out of the generation-5 edge's block: a vote judged at
+             * generation 5 is committed at or after the generation-5
+             * edge's A, so its own A'-1 >= A > A-1 (the generation-5
+             * edge's block). A synthetic or unresolved runtime reads 0. */
+            if (judging_generation != NODUS_RT_GEN_TRIE_BASE) return -1;
+            /* (d) A-1 must not be an epoch boundary: A-1 is the edge block */
+            if (effective_block_height == 0) return -1;
+            {
+                uint64_t h1 = effective_block_height - 1u;
+                if (h1 != 0 && (h1 % (uint64_t)DNAC_EPOCH_LENGTH) == 0)
+                    return -1;
+            }
+            /* (e) A must not be an epoch boundary either: A is the first
+             * block under the generation-6 rules (param 22's (e)).
+             * effective != 0 here by (d). */
+            if ((effective_block_height % (uint64_t)DNAC_EPOCH_LENGTH) == 0)
+                return -1;
+            return 0;
+        case CC_PARAM_STORAGE_COPIES:
+            /* HF-9 (plan §7.1, §15 AD-12): votable only while generation
+             * >= 6 judges the vote — the param 19-21 shape (no single-use
+             * rule: an ordinary re-votable value; the range is the scalar
+             * rule). A synthetic or unresolved runtime reads 0 here. */
+            if (judging_generation < NODUS_RT_GEN_TRIE) return -1;
             return 0;
         case CC_PARAM_RULESET_GEN2: {
             /* (a) single use: any committed param-9 row — at any
@@ -1638,7 +1728,11 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
      * facts.ruleset_gen_roots_voted (the param-22 single-use rule (a)).
      * ML-DSA-87 precompile: "any param-23 row" is read the same way into
      * facts.mldsa_active_voted (the param-23 single-use rule (a); exec:
-     * ctx.mldsa_active_voted, nodus_witness_v2_apply.c env_evm_facts). */
+     * ctx.mldsa_active_voted, nodus_witness_v2_apply.c env_evm_facts).
+     * HF-9: "any param-24 row" is read the same way into
+     * facts.ruleset_gen_trie_voted (the param-24 single-use rule (a);
+     * exec: ctx.ruleset_gen_trie_voted, nodus_witness_v2_apply.c
+     * env_ruleset_gen_trie_voted). */
     {
         /* Nodus EVM: + HF-3 at h (param 8), a non-zero gas price at h
          * (param 5) and "any param-14 row" — the EVM_ACTIVE facts the
@@ -1646,8 +1740,8 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
          * evm_active_voted), derived here with the same discipline; and
          * (red-team 1 F5) the chain's initial height for param 14. */
         uint64_t v7 = 0, v9 = 0, v8 = 0, v5 = 0, v14 = 0, v16 = 0, v18 = 0,
-                 v22 = 0, v23 = 0;
-        int r7 = nodus_chain_config_get_u64(w, (uint8_t)CC_PARAM_HF2_ACTIVE,
+                 v22 = 0, v23 = 0, v24 = 0;
+        int r7 =nodus_chain_config_get_u64(w, (uint8_t)CC_PARAM_HF2_ACTIVE,
                                             h, 0ULL, &v7);
         int r9 = nodus_chain_config_get_u64(w, (uint8_t)CC_PARAM_RULESET_GEN2,
                                             (uint64_t)INT64_MAX, 0ULL, &v9);
@@ -1669,9 +1763,12 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
         int r23 = nodus_chain_config_get_u64(
                       w, (uint8_t)CC_PARAM_MLDSA_ACTIVE,
                       (uint64_t)INT64_MAX, 0ULL, &v23);
+        int r24 = nodus_chain_config_get_u64(
+                      w, (uint8_t)CC_PARAM_RULESET_GEN_TRIE,
+                      (uint64_t)INT64_MAX, 0ULL, &v24);
         const nodus_domain_runtime_t *sys_rt = NULL;
         if (r7 < 0 || r9 < 0 || r8 < 0 || r5 < 0 || r14 < 0 || r16 < 0 ||
-            r18 < 0 || r22 < 0 || r23 < 0 ||
+            r18 < 0 || r22 < 0 || r23 < 0 || r24 < 0 ||
             (v7 != 0ULL && v7 != CC_HF2_ACTIVE_ON) ||
             (v8 != 0ULL && v8 != CC_HF3_ACTIVE_ON)) {
             snprintf(reason, reason_size,
@@ -1695,6 +1792,7 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
         facts.ruleset_gen_roles_voted = (uint8_t)(r18 == 0 ? 1u : 0u);
         facts.ruleset_gen_roots_voted = (uint8_t)(r22 == 0 ? 1u : 0u);
         facts.mldsa_active_voted = (uint8_t)(r23 == 0 ? 1u : 0u);
+        facts.ruleset_gen_trie_voted = (uint8_t)(r24 == 0 ? 1u : 0u);
         facts.judging_generation = sys_rt->generation;
         /* red-team 1 F5: the chain's first block height, from the stored
          * genesis document (nodus_witness_v2_chain_initial_height — the

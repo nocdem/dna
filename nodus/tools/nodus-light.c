@@ -283,12 +283,14 @@
 
 /** The newest rule-set generation whose root composition this nodus-light
  *  knows — the maximum the update-required warning judges by. A macro
- *  from the header, independent of the EVM flag: a build without
+ *  from the header (generation 6, HF-9 plan §7.1, changes the application
+ *  root composition, not header verification, plan §7.3, and nodus-light
+ *  computes no root), independent of the EVM flag: a build without
  *  NODUS_EVM_ENABLED (every Windows build) compiles only generations 1-2
  *  of the runtime table (nodus_witness_runtime.c GEN_SLICES), and that
  *  table does not link into the Windows program, so its count is not
  *  used here. */
-#define NODUS_LIGHT_GEN_MAX             NODUS_RT_GEN_ROOTS
+#define NODUS_LIGHT_GEN_MAX             NODUS_RT_GEN_TRIE
 #ifdef NODUS_EVM_ENABLED
 /* The EVM build's newest compiled generation is NODUS_RT_GEN_MAX: a new
  * generation stops this build until the line above is decided again. */

@@ -184,6 +184,26 @@ int nodus_witness_sthold_must_hold(nodus_witness_t *w, uint64_t H,
     if (!cur || !prev) goto done;
     int rc = nodus_witness_storage_set_get(w, H, cur);
     if (rc != 0) { ret = rc == 1 ? 1 : -1; goto done; }
+    {
+        /* HF-9 WP4: from generation 6 (H >= B1) the must-hold list is the
+         * member's own assignment rows at H and H - E (O(own rows); at
+         * H = B1 the previous relation is XOR(set(H - E)), computed
+         * here node-locally) - the same two lines, no grace gate */
+        const int g6 = nodus_witness_storage_gen6_at(w, H);
+        if (g6 < 0) goto done;
+        if (g6) {
+            uint64_t *all = NULL;
+            size_t na = 0;
+            if (nodus_witness_storage_member_ks(w, H, me, &all, &na) != 0)
+                goto done;
+            if (na > cap) { free(all); goto done; }
+            for (size_t i = 0; i < na; i++) ks[i] = all[i];
+            free(all);
+            *n_out = na;
+            ret = 0;
+            goto done;
+        }
+    }
     rc = H > E ? nodus_witness_storage_set_get(w, H - E, prev) : 1;
     if (rc < 0) goto done;
     if (rc == 1) prev->count = 0;
@@ -364,23 +384,26 @@ static void assign(nodus_witness_t *w, struct nodus_sthold_rt *rt,
 static bool candidate(nodus_witness_t *w, uint64_t H, uint64_t k,
                       const uint8_t me[64], size_t i,
                       char out[CMT_P2P_ID_CAP]) {
-    char list[2 * DNA_V2_STORAGE_HOLDERS + 64][CMT_P2P_ID_CAP];
+    /* the holders of one segment at H and at H - E: the buffer holds two
+     * lists of the capacity (16) plus the connected-peer tail */
+    char list[2 * DNA_V2_STORAGE_HOLDERS_CAP + 64][CMT_P2P_ID_CAP];
     size_t n = 0;
-    nodus_storage_set_t *set = calloc(1, sizeof(*set));
     sh_seg_t *segs = NULL;
     size_t n_segs = 0;
     const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
-    if (set && segs_load(w, &segs, &n_segs) == 0) {
+    if (segs_load(w, &segs, &n_segs) == 0) {
         const uint8_t *root = NULL;
         for (size_t s = 0; s < n_segs; s++)
             if (segs[s].k == k) root = segs[s].root;
         for (int pass = 0; root && pass < 2; pass++) {
             if (pass == 1 && H <= E) break;
             const uint64_t X = pass == 0 ? H : H - E;
-            uint8_t hf[DNA_V2_STORAGE_HOLDERS][64];
+            uint8_t hf[DNA_V2_STORAGE_HOLDERS_CAP][64];
             size_t nh = 0;
-            if (nodus_witness_storage_set_get(w, X, set) != 0 ||
-                nodus_witness_storage_holders(set, root, hf, &nh) != 0)
+            /* whichever generation X belongs to: the assignment rows from
+             * 6, XOR over the frozen set below */
+            if (nodus_witness_storage_holders_at(w, k, root, X, hf, &nh)
+                != 0)
                 continue;
             for (size_t j = 0; j < nh; j++) {
                 if (memcmp(hf[j], me, 64) == 0) continue;
@@ -395,7 +418,6 @@ static bool candidate(nodus_witness_t *w, uint64_t H, uint64_t k,
         }
     }
     free(segs);
-    free(set);
     const int np = nodus_witness_p2p_peer_count(w->p2p);
     for (int p = 0; p < np && n < sizeof(list) / sizeof(list[0]); p++) {
         char id[CMT_P2P_ID_CAP];

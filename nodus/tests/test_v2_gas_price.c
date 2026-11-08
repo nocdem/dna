@@ -476,8 +476,18 @@ static int t_scalar_rule_matrix(void)
               dnac_cfg_param_read_by_consensus(
                   (uint8_t)DNAC_CFG_MLDSA_ACTIVE),
           "id 22 is followed by the ML-DSA-87 precompile vote id 23");
-    CHECK(DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_MLDSA_ACTIVE,
-          "23 is the last id");
+    CHECK(DNAC_CFG_MLDSA_ACTIVE + 1 == DNAC_CFG_RULESET_GEN_TRIE &&
+              DNAC_CFG_RULESET_GEN_TRIE == 24 &&
+              DNAC_CFG_RULESET_GEN_TRIE + 1 == DNAC_CFG_STORAGE_COPIES &&
+              DNAC_CFG_STORAGE_COPIES == 25 &&
+              dnac_cfg_param_read_by_consensus(
+                  (uint8_t)DNAC_CFG_RULESET_GEN_TRIE) &&
+              dnac_cfg_param_read_by_consensus(
+                  (uint8_t)DNAC_CFG_STORAGE_COPIES),
+          "id 23 is followed by HF-9's generation-6 vote id 24 and the "
+          "storage copies id 25");
+    CHECK(DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_STORAGE_COPIES,
+          "25 is the last id");
     return 0;
 }
 

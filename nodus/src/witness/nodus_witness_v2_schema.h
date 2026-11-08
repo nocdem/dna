@@ -984,6 +984,138 @@ int nodus_witness_db_migrate_v2s19(nodus_witness_t *w);
 int nodus_witness_db_migrate_v2s19_ex(nodus_witness_t *w,
                                       nodus_v2s19_mig_fail_t fail_at);
 
+/* ── S20 migration: HF-9 — the supply running totals (plan docs/plans/
+ *    approved/2026-11-04-hf9.md §9.1, §5.5; decisions D8, D27) ──────────
+ *
+ * ONE rung. This package (WP1) creates the supply tables and triggers;
+ * the later HF-9 packages add their tables to this same rung before any
+ * release (plan §5.5: "S20 = S19 + the tables of §5.1, §8.4, §9.1 +
+ * triggers + indexes"):
+ *
+ *   v2_supply_totals (token_id BLOB NOT NULL PRIMARY KEY,
+ *                     utxo_total INTEGER NOT NULL)
+ *       Σ utxo_set.amount per token_id, kept by three triggers on
+ *       utxo_set (AFTER INSERT, AFTER DELETE, AFTER UPDATE OF amount,
+ *       token_id). The native token is the 64-zero-byte token_id.
+ *   v2_bond_total    (id INTEGER PRIMARY KEY CHECK(id = 1),
+ *                     total INTEGER NOT NULL)
+ *       Σ v2_storage_nodes.bond over status ACTIVE and EXITING, kept by
+ *       three triggers on v2_storage_nodes (AFTER INSERT, AFTER DELETE,
+ *       AFTER UPDATE OF bond, status).
+ *
+ * HF-9 WP1a adds to the same rung (amendment 2026-11-05 A4.1, A6; the
+ * operator's "fihristekle."; consensus-inert: the guard's verdict is
+ * unchanged):
+ *
+ *   index idx_utxo_foreign ON utxo_set(domain_id) WHERE domain_id != 1
+ *       the partial index that holds only the rows of another domain
+ *       (normally empty); it serves the ownership guard of
+ *       nodus_rt_core_invariant, `SELECT COUNT(*) FROM utxo_set WHERE
+ *       domain_id != 1`, from an empty B-tree instead of a scan of every
+ *       coin. Created inside the rung and verified there with the whole
+ *       stored text; re-created IF NOT EXISTS at every open
+ *       (nodus_witness_db_s20_reseed); an index of the same name with
+ *       another definition is NOT refused at open (DF-11).
+ *
+ * HF-9 WP2 adds to the same rung (plan §5.1, §5.2, §5.5; consensus-inert
+ * until generation 6):
+ *
+ *   v2_trie_nodes (digest BLOB NOT NULL PRIMARY KEY, rlp BLOB NOT NULL)
+ *   v2_trie_roots (leg INTEGER PRIMARY KEY, root BLOB NOT NULL)
+ *   v2_trie_dirty (leg INTEGER NOT NULL, key NOT NULL, PRIMARY KEY(leg,
+ *                  key)) — the primary keys written in the block
+ *   v2_trie_state (id = 1, capture INTEGER NOT NULL CHECK(capture IN
+ *                  (0, 1))) — the consensus capture flag, row (1, 0)
+ *   v2_trie_shadow_state (id = 1, status INTEGER) — no row; the shadow
+ *                  package's
+ *   index v2_storage_nodes_by_status ON v2_storage_nodes(status, node_fp)
+ *   24 triggers v2_trie_l<leg>_<ins|del|upd> (legs 1..8: utxo_set,
+ *   tokens, v2_claims_spent, v2_names, v2_storage_nodes,
+ *   v2_storage_segments, validator_set_snapshots, v2_attendance_epoch),
+ *   each gated by WHEN (SELECT capture FROM v2_trie_state WHERE id = 1) =
+ *   1, recording the OLD / NEW primary key in v2_trie_dirty. With capture
+ *   0 (every generation this build has) they write nothing.
+ *
+ * HF-9 WP4 adds to the same rung (plan §8.4, §8.7, AD-6; inert until the
+ * generation-6 edge writes them):
+ *
+ *   the CAPACITY REBUILD of v2_storage_sets (member_count 0..1024) and
+ *   v2_storage_reports (bitmap <= 128 bytes): rows copied aside, DROP, the
+ *   S20 statement (NODUS_V2_STSETS_DDL_S20 / NODUS_V2_STREPS_DDL_S20),
+ *   rows copied back, all inside the rung's transaction (precedent: the S5
+ *   rebuild of utxo_set). The per-open byte-for-byte shape check
+ *   (nodus_witness.c) runs BEFORE the rung, so it expects the historical
+ *   text below S20 and the S20 text from S20; generation <= 5 limits
+ *   (256 / 32) stay enforced in code.
+ *   v2_storage_assign (k, node_fp, score, from_h, to_h) + indexes
+ *     v2_storage_assign_cur ON (k) WHERE to_h IS NULL and
+ *     v2_storage_assign_by_node ON (node_fp, k)
+ *   v2_storage_assign_basis (node_fp), v2_storage_assign_state (id = 1,
+ *   copies, boundary), v2_storage_held (node_fp, held),
+ *   v2_storage_member_epoch (epoch_start, node_fp, held_union, n_new),
+ *   v2_storage_xfer_diff (node_fp, ended_x, new_x) - the one-use table of
+ *   the §8.6 transition; its ROWS are cleared at B1, the table stays.
+ *   Derived node state written inside the block transaction, in no root.
+ *
+ * Both supply tables are SEEDED from their source tables inside the migration,
+ * and RE-SEEDED on every open (nodus_witness_db_s20_reseed; precedent
+ * nodus/src/core/nodus_storage.c dht_hint_totals): the native row and the
+ * bond row are always present after a seed, so an absent row is
+ * corruption (the invariant answers -1). No generation gates them: the
+ * supply check decides no proposal, root or vote.
+ *
+ * REACHABILITY: S20 is THE LIVE RUNG. Every builder migrates to it and an
+ * S16..S19 version-3 chain database is migrated in place at OPEN
+ * (nodus_witness.c). Every gate that accepted 19 also accepts 20. The
+ * previous binary does not accept version 20 (its gates take 16..19 and
+ * its ladder fails closed above 19), so a rollback needs the pre-S20 copy
+ * of the data directory. Version 21+ fails closed. */
+#define NODUS_V2_SCHEMA_VERSION_S20  20u
+
+typedef enum {
+    V2S20MIG_FAIL_NONE = 0,
+    V2S20MIG_FAIL_AFTER_BEGIN,      /* after BEGIN, before any DDL        */
+    V2S20MIG_FAIL_AFTER_REVALIDATE, /* in-txn version re-read passed      */
+    V2S20MIG_FAIL_AFTER_TABLES,     /* tables, triggers and seeds made    */
+    V2S20MIG_FAIL_AFTER_VERIFY,     /* schema-shape verification passed   */
+    V2S20MIG_FAIL_BEFORE_COMMIT     /* user_version written, pre-COMMIT   */
+} nodus_v2s20_mig_fail_t;
+
+/** Atomic S20 migration. Versions below 19 run the S9...S19 chain first,
+ *  then 19 -> 20 atomically with the in-transaction revalidation.
+ *  @return 0 migrated or already at 20 (idempotent); -1 failure (full
+ *  rollback of the running stage), including an UNKNOWN user_version
+ *  (21+): fail closed. */
+int nodus_witness_db_migrate_v2s20(nodus_witness_t *w);
+
+/** Test variant: deterministic abort inside the 19 -> 20 transaction. */
+int nodus_witness_db_migrate_v2s20_ex(nodus_witness_t *w,
+                                      nodus_v2s20_mig_fail_t fail_at);
+
+/** Open-time re-seed of the supply running totals from utxo_set and
+ *  v2_storage_nodes (S20 databases only; below S20 a no-op returning 0).
+ *  One transaction: the old rows are deleted and the sums written again,
+ *  the native row (64 zero bytes) and the bond row always included.
+ *  The six supply triggers are (re)created when absent. The keyed-trie
+ *  tables and the 24 dirty-capture triggers are only VERIFIED
+ *  (nodus_witness_db_s20_trie_shape_ok), never recreated: a missing or
+ *  altered one is -1. Must run outside any transaction.
+ *  @return 0 / -1 fault (the database must not be used). */
+int nodus_witness_db_s20_reseed(nodus_witness_t *w);
+
+/** 1 = the five keyed-trie tables, the v2_storage_nodes(status, node_fp)
+ *  index and all 24 dirty-capture triggers are present with the stored
+ *  SQL this build generates; 0 = something is absent or altered; -1 =
+ *  fault. The open-time re-seed refuses a database for a 0 (plan §5.2);
+ *  later packages call it again at the activation edge and at block
+ *  starts. Reads only. */
+int nodus_witness_db_s20_trie_shape_ok(nodus_witness_t *w);
+
+/** Read v2_trie_state.capture. @return 0 with *capture in {0, 1};
+ *  -1 for a missing row, a stored value that is not the INTEGER 0 or 1,
+ *  a second row or any read fault — never a default. */
+int nodus_witness_db_s20_trie_capture(nodus_witness_t *w, int *capture);
+
 /* ── the §18 evm_logs CURSOR SCAN (Nodus EVM red-team 1 F4) ─────────────────
  *
  * ORDER: (global_height, item_index, log_index) — the block's own order.

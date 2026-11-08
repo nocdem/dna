@@ -127,10 +127,12 @@
 #     -DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20
 #     -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15
 #     -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15
-#   PLUS the three owner flags stagef_hf6_owner.sh prints (all or none —
-#   a partial set refuses to start on every node):
+#   PLUS the four owner flags stagef_hf6_owner.sh prints (all or none —
+#   a partial set refuses to start on every node; the fourth, D6, since
+#   HF-9 WP3):
 #     -DDNAC_HF6_FOUNDATION_OWNER="{0x..,…}"   (the test owner)
 #     -DDNAC_CFG_RULESET_GEN_ROLES_D=<its D4>  -DDNAC_CFG_RULESET_GEN_ROOTS_D=<its D5>
+#     -DDNAC_CFG_RULESET_GEN_TRIE_D=<its D6>
 #   (params 7, 8, 9, 17, 18, 22 are ERGONOMIC; param 14 is SAFETY.)
 #   Environment, exported BEFORE stagef_up_v2.sh unless noted:
 #     STAGEF_NODUS_BIN / STAGEF_NODUSCLI_BIN    that build
@@ -149,9 +151,9 @@
 #   Exact command sequence (ORCHESTRATOR):
 #     S=<TREE>/nodus/tests/integration/stagef
 #     bash $S/stagef_hf6_owner.sh /tmp/hf8-owner <TREE>/nodus/build/nodus-server
-#       (prints the owner fp and the three flags O / D / D5F)
+#       (prints the owner fp and the four flags O / D / D5F / D6F)
 #     F='-DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20 -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15 -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15'
-#     cmake -S <TREE>/nodus -B <TREE>/nodus/build-hf8g5 -DCMAKE_C_FLAGS="$F $O $D $D5F"
+#     cmake -S <TREE>/nodus -B <TREE>/nodus/build-hf8g5 -DCMAKE_C_FLAGS="$F $O $D $D5F $D6F"
 #     make -C <TREE>/nodus/build-hf8g5 -j"$(nproc)" nodus-server nodus-cli
 #     export STAGEF_NODUS_BIN=<TREE>/nodus/build-hf8g5/nodus-server
 #     export STAGEF_NODUSCLI_BIN=<TREE>/nodus/build-hf8g5/nodus-cli

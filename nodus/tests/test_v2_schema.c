@@ -463,10 +463,11 @@ static int run_s12_apply_matrix(void) {
         /* Nodus EVM F3-C2 made S17 (empty EVM tables) the live rung;
          * HF-6 3a moved it to S18 (+ the empty v2_validator_roles); HF-7
          * P1b to S19 (+ the empty v2_replay and last_upd_hash). S19
-         * still carries the S12 claim tables this section checks. */
+         * still carries the S12 claim tables this section checks. HF-9:
+         * the live rung is S20 (+ the supply running totals). */
         CHECK(nodus_witness_db_schema_version(fx.w, &sv) == 0 &&
-              sv == NODUS_V2_SCHEMA_VERSION_S19,
-              "fixture DB at the live rung S19"); OK();
+              sv == NODUS_V2_SCHEMA_VERSION_S20,
+              "fixture DB at the live rung S20"); OK();
         CHECK(has_table(fx.w->db, "v2_claim_bytes") == 1 &&
               has_table(fx.w->db, "v2_claim_counts") == 1,
               "S12 claim tables present"); OK();
@@ -1547,6 +1548,388 @@ static int run_s19_rung(void) {
     return 0;
 }
 
+/* ── HF-9: the S20 rung (the supply running totals, plan §9.1, §5.5) ────
+ * Proves: a fresh 0 -> 20 and an S19 -> 20 climb create both tables, the
+ * six triggers (stored SQL equal to this build's), and SEED them from the
+ * rows already there; every staged failure rolls the whole stage back
+ * (version, tables, triggers, whole-DB digest unchanged); re-run is a
+ * no-op; version 21 fails closed; a pre-existing table of another shape
+ * is refused; the S19 rung refuses an S20 database; the re-seed rewrites
+ * a corrupted total. Flags: none. Leaves: a temp dir per fixture (removed).
+ * Can falsely pass: the seed check compares to literal amounts planted by
+ * this function; the digest check covers every table the oracle covers
+ * (v2x_db_digest). */
+static int run_s20_rung(void) {
+    uint32_t ver = 0;
+    int n = -1;
+
+    /* (a) fresh 0 -> 20 */
+    {
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s20 fresh fixture");
+        CHECK(has_table(fx.w->db, "v2_supply_totals") == 0 &&
+              has_table(fx.w->db, "v2_bond_total") == 0,
+              "the totals are not in the base schema"); OK();
+        CHECK(nodus_witness_db_migrate_v2s20(fx.w) == 0, "0->20"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S20, "climbed to 20"); OK();
+        CHECK(has_table(fx.w->db, "v2_supply_totals") == 1 &&
+              has_table(fx.w->db, "v2_bond_total") == 1 &&
+              has_table(fx.w->db, "v2_replay") == 1,
+              "the S20 tables and every rung below"); OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
+                      "type='trigger' AND name LIKE 'v2_supply_%'", &n) == 0
+              && n == 6, "six supply triggers"); OK();
+        /* HF-9 WP2: the keyed-trie tables, 24 triggers, the capture row */
+        CHECK(has_table(fx.w->db, "v2_trie_nodes") == 1 &&
+              has_table(fx.w->db, "v2_trie_roots") == 1 &&
+              has_table(fx.w->db, "v2_trie_dirty") == 1 &&
+              has_table(fx.w->db, "v2_trie_state") == 1 &&
+              has_table(fx.w->db, "v2_trie_shadow_state") == 1,
+              "the five keyed-trie tables"); OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
+                      "type='trigger' AND name LIKE 'v2_trie_l%'", &n) == 0
+              && n == 24, "24 dirty-capture triggers"); OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM v2_trie_state WHERE "
+                      "id = 1 AND capture = 0", &n) == 0 && n == 1 &&
+              count_q(fx.w->db, "SELECT COUNT(*) FROM v2_trie_shadow_state",
+                      &n) == 0 && n == 0 &&
+              count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
+                      "type='index' AND name = 'v2_storage_nodes_by_status'",
+                      &n) == 0 && n == 1,
+              "capture row 0, no shadow row, the status index"); OK();
+        CHECK(nodus_witness_db_s20_trie_shape_ok(fx.w) == 1,
+              "the stored DDL equals this build's"); OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM v2_supply_totals "
+                      "WHERE token_id = zeroblob(64) AND utxo_total = 0",
+                      &n) == 0 && n == 1,
+              "the native row exists, 0, on an empty utxo_set"); OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM v2_bond_total WHERE "
+                      "id = 1 AND total = 0", &n) == 0 && n == 1,
+              "the bond row exists, 0"); OK();
+        CHECK(nodus_witness_db_migrate_v2s20(fx.w) == 0 &&
+              nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S20, "re-run is a no-op"); OK();
+        CHECK(nodus_witness_db_migrate_v2s19(fx.w) == -1,
+              "the S19 rung refuses an S20 database"); OK();
+        CHECK(nodus_witness_db_ensure_v2s17_indexes(fx.w) == 0 &&
+              count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
+                      "type='index' AND name IN ('evm_receipts_by_pos', "
+                      "'evm_logs_by_addr')", &n) == 0 && n == 2,
+              "the scan indexes are ensured at S20 too"); OK();
+        fx_close(&fx);
+    }
+
+    /* (b) S19 with rows -> 20: seeded from them; staged failures */
+    {
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s20 seed fixture");
+        CHECK(nodus_witness_db_migrate_v2s19(fx.w) == 0, "0->19"); OK();
+        CHECK(run_sql(fx.w->db,
+            "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
+            " tx_hash, output_index, block_height, created_at, "
+            " unlock_block, domain_id) VALUES "
+            "(CAST(zeroblob(63)||x'01' AS BLOB), 'a', 100, zeroblob(64), "
+            " zeroblob(64), 0, 1, 0, 0, 1),"
+            "(CAST(zeroblob(63)||x'02' AS BLOB), 'b', 250, zeroblob(64), "
+            " zeroblob(64), 0, 1, 0, 0, 1),"
+            "(CAST(zeroblob(63)||x'03' AS BLOB), 'c', 9, "
+            " CAST(zeroblob(63)||x'77' AS BLOB), zeroblob(64), 0, 1, 0, "
+            " 0, 1);"
+            "INSERT INTO v2_storage_nodes (node_fp, node_pk, payee_fp, "
+            " bond, status, registered_height, exit_height, fail_streak, "
+            " grace_until) VALUES "
+            "(CAST(zeroblob(63)||x'01' AS BLOB), zeroblob(2592), "
+            " zeroblob(64), 5000, 1, 1, 0, 0, 0),"
+            "(CAST(zeroblob(63)||x'02' AS BLOB), zeroblob(2592), "
+            " zeroblob(64), 700, 2, 1, 0, 0, 0),"
+            "(CAST(zeroblob(63)||x'03' AS BLOB), zeroblob(2592), "
+            " zeroblob(64), 40, 3, 1, 0, 0, 0)") == 0, "rows at S19");
+        uint8_t d19[64];
+        CHECK(v2x_db_digest(fx.w, d19) == 0, "S19 digest"); OK();
+        for (int stage = V2S20MIG_FAIL_AFTER_BEGIN;
+             stage <= V2S20MIG_FAIL_BEFORE_COMMIT; stage++) {
+            CHECK(nodus_witness_db_migrate_v2s20_ex(fx.w,
+                      (nodus_v2s20_mig_fail_t)stage) == -1,
+                  "staged S20 failure did not fail");
+            CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+                  ver == NODUS_V2_SCHEMA_VERSION_S19,
+                  "failed S20 stage moved the version");
+            CHECK(has_table(fx.w->db, "v2_supply_totals") == 0 &&
+                  has_table(fx.w->db, "v2_bond_total") == 0 &&
+                  has_table(fx.w->db, "v2_trie_nodes") == 0 &&
+                  has_table(fx.w->db, "v2_trie_roots") == 0 &&
+                  has_table(fx.w->db, "v2_trie_dirty") == 0 &&
+                  has_table(fx.w->db, "v2_trie_state") == 0 &&
+                  has_table(fx.w->db, "v2_trie_shadow_state") == 0,
+                  "failed S20 stage left a table");
+            CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master "
+                          "WHERE (type='trigger' AND (name LIKE "
+                          "'v2_supply_%' OR name LIKE 'v2_trie_l%')) OR "
+                          "name = 'v2_storage_nodes_by_status'", &n) == 0
+                  && n == 0, "failed S20 stage left a trigger or the index");
+            uint8_t dnow[64];
+            CHECK(v2x_db_digest(fx.w, dnow) == 0, "post-stage digest");
+            CHECK(memcmp(d19, dnow, 64) == 0,
+                  "failed S20 stage mutated the DB");
+        }
+        OK();
+        CHECK(nodus_witness_db_migrate_v2s20(fx.w) == 0, "19->20"); OK();
+        CHECK(count_q(fx.w->db, "SELECT utxo_total FROM v2_supply_totals "
+                      "WHERE token_id = zeroblob(64)", &n) == 0 && n == 350,
+              "native total seeded from the existing rows"); OK();
+        CHECK(count_q(fx.w->db, "SELECT utxo_total FROM v2_supply_totals "
+                      "WHERE token_id = CAST(zeroblob(63)||x'77' AS BLOB)",
+                      &n) == 0 && n == 9,
+              "the second token's total seeded"); OK();
+        CHECK(count_q(fx.w->db, "SELECT total FROM v2_bond_total WHERE "
+                      "id = 1", &n) == 0 && n == 5700,
+              "bond total seeded: ACTIVE + EXITING, not RELEASED"); OK();
+        /* the re-seed rewrites a corrupted total (the production open path
+         * itself is exercised in test_supply_totals: this scratch chain
+         * has Comet stores but no genesis document, which the open path
+         * refuses) */
+        CHECK(run_sql(fx.w->db, "UPDATE v2_bond_total SET total = 1") == 0,
+              "corrupt");
+        CHECK(nodus_witness_db_s20_reseed(fx.w) == 0 &&
+              count_q(fx.w->db, "SELECT total FROM v2_bond_total", &n) == 0
+              && n == 5700, "the re-seed rewrote the bond total"); OK();
+        fx_close(&fx);
+    }
+
+    /* (c) unknown version 21 fails closed; a table of another shape */
+    {
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s20 v21 fixture");
+        CHECK(run_sql(fx.w->db, "PRAGMA user_version = 21") == 0, "set 21");
+        CHECK(nodus_witness_db_migrate_v2s20(fx.w) == -1,
+              "version 21 migrated"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 21,
+              "version 21 mutated");
+        CHECK(has_table(fx.w->db, "v2_supply_totals") == 0,
+              "version 21 got a table"); OK();
+        fx_close(&fx);
+    }
+    {
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s20 drift fixture");
+        CHECK(nodus_witness_db_migrate_v2s19(fx.w) == 0, "0->19");
+        CHECK(run_sql(fx.w->db, "CREATE TABLE v2_supply_totals (token_id "
+                                "BLOB, utxo_total TEXT)") == 0,
+              "a pre-existing table of another shape");
+        CHECK(nodus_witness_db_migrate_v2s20(fx.w) == -1,
+              "the shape drift is refused"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S19, "and rolled back"); OK();
+        fx_close(&fx);
+    }
+    return 0;
+}
+
+/* ── HF-9 WP4: the S20 storage part (plan §8.4, §8.7, §5.5) ─────────────
+ * Proves: (a) after the 0 -> 20 climb v2_storage_sets takes member_count
+ * 1024 and refuses 1025 (at an UNUSED primary key, so the refusal is the
+ * CHECK's and not a duplicate key), v2_storage_reports takes a 128-byte
+ * bitmap and refuses 129, the six retained-assignment tables and the two
+ * indexes (name, table, columns AND the partial predicate) exist and are
+ * empty, the per-open re-check (db_s20_reseed) passes; (b) a database at
+ * S19 holding a set, its members and a report: the rung rebuilds the two
+ * tables with the rows kept byte-identical, the stored definition of both
+ * carries 1024 / 128, every staged failure leaves the historical text;
+ * (c) a historical-text sets table put back at S20, a dropped assignment
+ * index and an assignment index with a wrong partial predicate are each
+ * refused by the per-open re-check; (d) on a SEEDED version-3 chain (stored
+ * genesis document, s12_open_dist) the PRODUCTION open path: the S20
+ * database reopens with the S20 text of the sets table, and a historical-text sets table at
+ * S20 is refused by the shape check (the only refusal reason on that chain,
+ * as it has a genesis document). The S19 -> S20 reopen of a live chain
+ * (historical text accepted below S20, rung rebuilds it) is test_v2_evm's
+ * S16 downgrade case (drop_s20_objects). Flags: none. Leaves: a temp dir
+ * per fixture (removed). Can falsely pass: a scratch chain WITHOUT a
+ * genesis document is refused by the open gate whatever its shape (that is
+ * why (d) uses the seeded chain); the reference text is built from the
+ * same macros the production code uses. */
+static int run_s20_storage(void) {
+    uint32_t ver = 0;
+    int n = -1;
+    static const char *const SET_INS =
+        "INSERT INTO v2_storage_sets (epoch_start, set_hash, member_count) "
+        "VALUES (%d, zeroblob(64), %d)";
+    char sql[256];
+
+    /* (a) fresh 0 -> 20 */
+    {
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s20 storage fixture");
+        CHECK(nodus_witness_db_migrate_v2s20(fx.w) == 0, "0->20"); OK();
+        for (int cnt = 1024; cnt <= 1025; cnt++) {
+            /* an UNUSED primary key per row: the 1025 refusal is the
+             * CHECK's, not a duplicate epoch_start */
+            snprintf(sql, sizeof(sql), SET_INS, cnt == 1024 ? 15 : 16, cnt);
+            CHECK((run_sql(fx.w->db, sql) == 0) == (cnt == 1024),
+                  "v2_storage_sets: member_count 1024 accepted, 1025 "
+                  "refused"); OK();
+        }
+        CHECK(run_sql(fx.w->db, "INSERT INTO v2_storage_reports "
+                      "(epoch_start, seat, set_hash, bitmap) VALUES "
+                      "(15, 0, zeroblob(64), zeroblob(128))") == 0,
+              "a 128-byte bitmap is accepted"); OK();
+        CHECK(run_sql(fx.w->db, "INSERT INTO v2_storage_reports "
+                      "(epoch_start, seat, set_hash, bitmap) VALUES "
+                      "(15, 1, zeroblob(64), zeroblob(129))") != 0,
+              "a 129-byte bitmap is refused"); OK();
+        static const char *const T[] = {
+            "v2_storage_assign", "v2_storage_assign_basis",
+            "v2_storage_assign_state", "v2_storage_held",
+            "v2_storage_member_epoch", "v2_storage_xfer_diff" };
+        for (size_t i = 0; i < sizeof(T) / sizeof(T[0]); i++) {
+            snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM %s", T[i]);
+            CHECK(has_table(fx.w->db, T[i]) == 1 &&
+                  count_q(fx.w->db, sql, &n) == 0 && n == 0,
+                  "a retained-assignment table exists and is empty"); OK();
+        }
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
+                      "type='index' AND name IN ('v2_storage_assign_cur', "
+                      "'v2_storage_assign_by_node')", &n) == 0 && n == 2,
+              "both assignment indexes exist"); OK();
+        CHECK(run_sql(fx.w->db, "DELETE FROM v2_storage_sets; "
+                      "DELETE FROM v2_storage_reports") == 0, "clear");
+        CHECK(nodus_witness_db_s20_reseed(fx.w) == 0,
+              "the per-open re-check passes on the migrated database"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S20, "still S20"); OK();
+        fx_close(&fx);
+    }
+
+    /* (b) S19 with a set and a report -> reopen at S19 -> rung */
+    {
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s20 storage S19 fixture");
+        CHECK(nodus_witness_db_migrate_v2s19(fx.w) == 0, "0->19"); OK();
+        CHECK(run_sql(fx.w->db,
+            "INSERT INTO v2_storage_sets (epoch_start, set_hash, "
+            " member_count) VALUES (30, CAST(zeroblob(63)||x'5a' AS BLOB), "
+            " 256);"
+            "INSERT INTO v2_storage_reports (epoch_start, seat, set_hash, "
+            " bitmap) VALUES (30, 2, CAST(zeroblob(63)||x'5a' AS BLOB), "
+            " CAST(zeroblob(31)||x'a5' AS BLOB))") == 0, "rows at S19");
+        CHECK(run_sql(fx.w->db, "INSERT INTO v2_storage_sets (epoch_start, "
+                      "set_hash, member_count) VALUES (45, zeroblob(64), "
+                      "257)") != 0,
+              "below S20 the historical bound 256 still holds"); OK();
+        uint8_t d19[64];
+        CHECK(v2x_db_digest(fx.w, d19) == 0, "S19 digest");
+        for (int stage = V2S20MIG_FAIL_AFTER_BEGIN;
+             stage <= V2S20MIG_FAIL_BEFORE_COMMIT; stage++) {
+            CHECK(nodus_witness_db_migrate_v2s20_ex(fx.w,
+                      (nodus_v2s20_mig_fail_t)stage) == -1,
+                  "staged S20 failure did not fail");
+            CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master "
+                          "WHERE name IN ('v2_storage_sets', "
+                          "'v2_storage_reports') AND (sql LIKE "
+                          "'%BETWEEN 0 AND 256%' OR sql LIKE "
+                          "'%length(bitmap) <= 32%')", &n) == 0 && n == 2,
+                  "a failed stage left the historical text of both tables");
+            CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master "
+                          "WHERE name = 'v2_s20_rebuild_tmp' OR name LIKE "
+                          "'v2_storage_assign%'", &n) == 0 && n == 0,
+                  "a failed stage left no scratch or assignment object");
+            uint8_t dn[64];
+            CHECK(v2x_db_digest(fx.w, dn) == 0 && memcmp(d19, dn, 64) == 0,
+                  "a failed stage mutated the database");
+        }
+        OK();
+        CHECK(nodus_witness_db_migrate_v2s20(fx.w) == 0, "19->20"); OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM v2_storage_sets WHERE "
+                      "epoch_start = 30 AND member_count = 256 AND "
+                      "set_hash = CAST(zeroblob(63)||x'5a' AS BLOB)", &n) == 0
+              && n == 1, "the set row survived the rebuild unchanged"); OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM v2_storage_reports "
+                      "WHERE epoch_start = 30 AND seat = 2 AND "
+                      "bitmap = CAST(zeroblob(31)||x'a5' AS BLOB)", &n) == 0
+              && n == 1, "the report row survived the rebuild unchanged");
+        OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
+                      "name = 'v2_storage_sets' AND sql LIKE '%BETWEEN 0 "
+                      "AND 1024%'", &n) == 0 && n == 1 &&
+              count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
+                      "name = 'v2_storage_reports' AND sql LIKE "
+                      "'%length(bitmap) <= 128%'", &n) == 0 && n == 1,
+              "the stored definitions carry 1024 / 128"); OK();
+        fx_close(&fx);
+    }
+
+    /* (c) drift at S20 */
+    {
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s20 storage drift fixture");
+        CHECK(nodus_witness_db_migrate_v2s20(fx.w) == 0, "0->20"); OK();
+        CHECK(run_sql(fx.w->db, "DROP INDEX v2_storage_assign_by_node") == 0,
+              "drop an index");
+        CHECK(nodus_witness_db_s20_reseed(fx.w) == -1,
+              "a missing assignment index is refused at open"); OK();
+        CHECK(run_sql(fx.w->db, "CREATE INDEX v2_storage_assign_by_node ON "
+                      "v2_storage_assign(node_fp, k)") == 0, "restore");
+        CHECK(nodus_witness_db_s20_reseed(fx.w) == 0, "restored passes");
+        CHECK(run_sql(fx.w->db, "DROP TABLE v2_storage_sets") == 0 &&
+              run_sql(fx.w->db, NODUS_V2_STSETS_DDL) == 0,
+              "put the historical sets table back at S20");
+        CHECK(nodus_witness_db_s20_reseed(fx.w) == -1,
+              "a missing rebuild (historical text at S20) is refused by the "
+              "per-open re-check"); OK();
+        fx_close(&fx);
+    }
+    {
+        /* an index of the right name, table and columns but WITHOUT the
+         * partial predicate (and one with another predicate) */
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s20 predicate fixture");
+        CHECK(nodus_witness_db_migrate_v2s20(fx.w) == 0, "0->20"); OK();
+        CHECK(run_sql(fx.w->db, "DROP INDEX v2_storage_assign_cur;"
+                      "CREATE INDEX v2_storage_assign_cur ON "
+                      "v2_storage_assign(k)") == 0, "index without WHERE");
+        CHECK(nodus_witness_db_s20_reseed(fx.w) == -1,
+              "an assignment index missing its partial predicate is "
+              "refused at open"); OK();
+        CHECK(run_sql(fx.w->db, "DROP INDEX v2_storage_assign_cur;"
+                      "CREATE INDEX v2_storage_assign_cur ON "
+                      "v2_storage_assign(k) WHERE to_h IS NOT NULL") == 0,
+              "index with another predicate");
+        CHECK(nodus_witness_db_s20_reseed(fx.w) == -1,
+              "an assignment index with another predicate is refused"); OK();
+        fx_close(&fx);
+    }
+
+    /* (d) the PRODUCTION open path on a SEEDED version-3 chain (a stored
+     * genesis document exists, so the open gate does not refuse the chain
+     * for any reason but a shape) */
+    {
+        fixture_t fx;
+        uint8_t chain[32], mh[64];
+        memset(&fx, 0, sizeof(fx));
+        CHECK(s12_open_dist(&fx, chain, mh) == 0, "a seeded chain");
+        /* no storage row is planted: a set row would move the storage
+         * root the open path re-derives against the committed head */
+        fx.w->chain_config_cache_warm = false;
+        CHECK(fx_reopen(&fx) == 0,
+              "the production open path accepts the seeded chain");
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S20, "at S20 after the open");
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
+                      "name = 'v2_storage_sets' AND sql LIKE '%BETWEEN 0 "
+                      "AND 1024%'", &n) == 0 && n == 1,
+              "the stored definition carries 1024"); OK();
+        CHECK(run_sql(fx.w->db, "DROP TABLE v2_storage_sets") == 0 &&
+              run_sql(fx.w->db, NODUS_V2_STSETS_DDL) == 0,
+              "the historical sets table back at S20");
+        CHECK(fx_reopen(&fx) != 0,
+              "the production open path refuses it (the S20 shape check)");
+        OK();
+        fx_close(&fx);
+    }
+    return 0;
+}
+
 int main(void) {
     /* ── 1+2. fresh / S4-shaped DB (current production schema) ──────── */
     fixture_t fx;
@@ -2045,6 +2428,12 @@ int main(void) {
 
     /* HF-7 P1b: the S19 rung (v2_replay + last_upd_hash). */
     if (run_s19_rung() != 0) return 1;
+
+    /* HF-9: the S20 rung (the supply running totals). */
+    if (run_s20_rung() != 0) return 1;
+
+    /* HF-9 WP4: the S20 storage part (capacity rebuild, assignment tables) */
+    if (run_s20_storage() != 0) return 1;
 
     printf("test_v2_schema: ALL %d checks passed\n", g_checks);
     return 0;

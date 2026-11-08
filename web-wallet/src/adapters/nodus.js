@@ -882,13 +882,19 @@ export function checkConsent({ client, from, kind, text, tip } = {}) {
   if (r.ok !== checks.every(line => line.ok) || (r.ok && r.nodeFp === '')) throw invalid();
   return { ok: r.ok, checks, nodeFp: r.nodeFp, expiry: r.expiry === '' ? null : rawUnits(r.expiry, 'consent expiry') };
 }
-// The module's storageByOwner() answer, checked: tip, total, at most 256
-// nodes (min(total, 256) of them), node fp strictly ascending, status 1..3.
+// The most storage nodes one answer lists: the chain's storage-member
+// capacity from rule-set generation 6 (HF-9 plan §8.7; 256 before) - the
+// one number of nodus.h NODUS_DNAC_STORAGE_SET_MAX, which the wasm module
+// (crypto/nodus-send-wasm.c nsw_sbo_json) checks with the same bound.
+const STORAGE_LIST_MAX = 1024;
+// The module's storageByOwner() answer, checked: tip, total, at most 1024
+// nodes (min(total, 1024) of them), node fp strictly ascending, status 1..3.
 export function parseStorageByOwner(result) {
   const invalid = () => new Error('The Nodus module returned an invalid storage node list.');
-  if (!result || !Array.isArray(result.nodes) || result.nodes.length > 256) throw invalid();
+  if (!result || !Array.isArray(result.nodes) || result.nodes.length > STORAGE_LIST_MAX) throw invalid();
   const tip = rawUnits(result.tip, 'block height'), total = rawUnits(result.total, 'storage node count');
-  if (BigInt(result.nodes.length) !== (total < 256n ? total : 256n)) throw invalid();
+  const listMax = BigInt(STORAGE_LIST_MAX);
+  if (BigInt(result.nodes.length) !== (total < listMax ? total : listMax)) throw invalid();
   let last = '';
   const nodes = result.nodes.map(n => {
     if (!n || typeof n.fp !== 'string' || !HEX128.test(n.fp) || n.fp <= last || !Object.hasOwn(STORAGE_STATUS, n.status) || typeof n.member !== 'boolean' || !Number.isSafeInteger(n.failStreak) || n.failStreak < 0) throw invalid();
@@ -987,7 +993,7 @@ export async function prepareHf6({ client, from, kind, consent = '', validatorId
     // the chain's own refusals (rtn_storage_exit_exec: the node's owner must
     // be the caller, the node ACTIVE), made here from a fresh read of this
     // wallet's storage nodes before anything is built (BUGS W-21) — a node
-    // not in the list (also one past the 256 the node lists) is refused
+    // not in the list (also one past the 1024 the node lists) is refused
     const { nodes } = await storageNodes({ client, from });
     const row = nodes.find(n => n.fp === nodeFp);
     if (!row) throw new Error('This storage node is not in this wallet\'s list of storage nodes. Nothing was sent.');

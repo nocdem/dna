@@ -1840,6 +1840,16 @@ static int cc_param_name_to_id(const char *name, uint8_t *out_id) {
          * 3 or later judges the vote */
         { "MLDSA_ACTIVE",         DNAC_CFG_MLDSA_ACTIVE },
         { "mldsa_active",         DNAC_CFG_MLDSA_ACTIVE },
+        /* HF-9 (plan docs/plans/approved/2026-11-04-hf9.md §7.1) — param
+         * id 24, the generation-6 vote, value exactly
+         * DNAC_CFG_RULESET_GEN_TRIE_D (D6); votable once, while
+         * generation 5 judges the vote; param id 25, the storage copies
+         * per segment [4, 16], votable while generation 6 judges the
+         * vote */
+        { "RULESET_GEN_TRIE",     DNAC_CFG_RULESET_GEN_TRIE },
+        { "ruleset_gen_trie",     DNAC_CFG_RULESET_GEN_TRIE },
+        { "STORAGE_COPIES",       DNAC_CFG_STORAGE_COPIES },
+        { "storage_copies",       DNAC_CFG_STORAGE_COPIES },
     };
     for (size_t i = 0; i < sizeof(map)/sizeof(map[0]); i++) {
         if (strcmp(name, map[i].n) == 0) { *out_id = map[i].id; return 0; }
@@ -2120,6 +2130,15 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             "ML-DSA-87 signatures from --effective on; once only; "
             "generation 3 or later must be in force; --effective - 1 not "
             "an epoch boundary)\n"
+            "  RULESET_GEN_TRIE       exactly %llu   "
+            "(HF-9: rule-set generation 6 (the trie generation: eight "
+            "legs in keyed Patricia tries) from --effective on; once "
+            "only; generation 5 must be in force; HF-2 must be active; "
+            "neither --effective nor --effective - 1 an epoch boundary; "
+            "vote wait %u blocks)\n"
+            "  STORAGE_COPIES         [%u, %u]   "
+            "(HF-9: holders per storage segment; generation 6 must be in "
+            "force; vote wait one epoch, %u blocks)\n"
             "BLOCK_INTERVAL_SEC is not read by the running consensus "
             "and is refused; RULESET_GEN_STORAGE (id 16) is retired.\n",
             (unsigned long long)DNAC_CFG_MIN_TARGET_ACTIVE,
@@ -2144,7 +2163,12 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             (unsigned long long)DNAC_HF6_STORAGE_BOND_MIN,
             (unsigned long long)DNAC_HF6_STORAGE_BOND_MAX,
             (unsigned long long)DNAC_CFG_RULESET_GEN_ROOTS_D,
-            (unsigned long long)DNAC_CFG_MLDSA_ACTIVE_D);
+            (unsigned long long)DNAC_CFG_MLDSA_ACTIVE_D,
+            (unsigned long long)DNAC_CFG_RULESET_GEN_TRIE_D,
+            (unsigned)DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS,
+            (unsigned)DNAC_CFG_MIN_STORAGE_COPIES,
+            (unsigned)DNAC_CFG_MAX_STORAGE_COPIES,
+            (unsigned)DNAC_EPOCH_LENGTH);
         return 1;
     }
     uint8_t param_id = 0;
@@ -2156,7 +2180,8 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
                 "NAME_PRICE_5P | NAME_PRICE_6P | EVM_ACTIVE | "
                 "EVM_BLOCK_GAS_LIMIT | DELEGATE_NAME_REQUIRED | "
                 "RULESET_GEN_ROLES | STAKE_MIN | POWER_CAP_BPS | "
-                "STORAGE_BOND | RULESET_GEN_ROOTS | MLDSA_ACTIVE "
+                "STORAGE_BOND | RULESET_GEN_ROOTS | MLDSA_ACTIVE | "
+                "RULESET_GEN_TRIE | STORAGE_COPIES "
                 "(the parameters the running consensus reads)\n",
                 param_name);
         return 1;
@@ -7130,6 +7155,58 @@ static int cmd_ruleset_info(const char *server_ip, uint16_t server_port) {
     else
         printf("  compatibility: %s\n", cmsg);
     return carried ? 0 : 1;
+}
+
+/* `hf9-shadow [height]`: one row of the node's HF-9 shadow log (plan
+ * docs/plans/approved/2026-11-04-hf9.md §11; dnac_hf9_shadow). Height 0 or
+ * none = the newest logged row. Output is one `key=value` per line for
+ * nodus/tools/hf9_shadow_diff.sh: status (0 stopped, 1 running, 2 faulted,
+ * 255 never seeded), found (0/1) and, when found, height, leg1..leg8, core,
+ * stor, sys, glob (128 lowercase hex characters each). Exit 0 = the node
+ * answered (found or not); 1 = no answer. */
+static void hf9_print_hex(const char *key, const uint8_t b[64]) {
+    printf("%s=", key);
+    for (int i = 0; i < 64; i++) printf("%02x", b[i]);
+    printf("\n");
+}
+
+static int cmd_hf9_shadow(const char *server_ip, uint16_t server_port,
+                          int argc, char **argv, int optind_) {
+    uint64_t height = 0;
+    if (optind_ + 1 < argc) {
+        char *end = NULL;
+        unsigned long long v = strtoull(argv[optind_ + 1], &end, 10);
+        if (!argv[optind_ + 1][0] || !end || *end) {
+            fprintf(stderr, "Usage: hf9-shadow [height]\n");
+            return 1;
+        }
+        height = (uint64_t)v;
+    }
+    nodus_client_t client;
+    if (t8_session(&client, server_ip, server_port) != 0) return 1;
+    nodus_dnac_hf9_shadow_t r;
+    int qrc = nodus_client_dnac_hf9_shadow(&client, height, &r);
+    nodus_client_close(&client);
+    if (qrc != 0) {
+        fprintf(stderr, "dnac_hf9_shadow failed (rc=%d) - an older node does "
+                "not know the method\n", qrc);
+        return 1;
+    }
+    printf("status=%llu\nfound=%d\n", (unsigned long long)r.status,
+           r.found ? 1 : 0);
+    if (r.found) {
+        printf("height=%llu\n", (unsigned long long)r.height);
+        for (int i = 0; i < 8; i++) {
+            char key[8];
+            snprintf(key, sizeof(key), "leg%d", i + 1);
+            hf9_print_hex(key, r.leg[i]);
+        }
+        hf9_print_hex("core", r.core);
+        hf9_print_hex("stor", r.stor);
+        hf9_print_hex("sys", r.sys);
+        hf9_print_hex("glob", r.glob);
+    }
+    return 0;
 }
 
 /* ── `validator consent` — HF-6 6f-1 ──────────────────────────────────
@@ -12307,6 +12384,7 @@ static void usage(const char *prog) {
     fprintf(stderr, "  ruleset-info     The rule-set generation the node runs (and if this CLI carries it),\n");
     fprintf(stderr, "                   its next switch and whether this CLI needs an update\n");
     fprintf(stderr, "                   (every session command warns once on stderr: \"WARNING: Update ...\")\n");
+    fprintf(stderr, "  hf9-shadow [h]   One row of the node's HF-9 shadow log (key=value lines; h 0/none = newest)\n");
     fprintf(stderr, "  name register <name> --keys <dir> (--dry-run | --submit ip:port) [--fee <raw>]\n");
     fprintf(stderr, "  name lookup <name> | name of <fp128>   On-chain names (one node's answer)\n");
     fprintf(stderr, "  evm (address | balance | deploy | send | call | encode | attest |\n");
@@ -12324,7 +12402,8 @@ static void usage(const char *prog) {
     fprintf(stderr, "                        EVM_ACTIVE | EVM_BLOCK_GAS_LIMIT |\n");
     fprintf(stderr, "                        DELEGATE_NAME_REQUIRED | RULESET_GEN_ROLES |\n");
     fprintf(stderr, "                        STAKE_MIN | POWER_CAP_BPS | STORAGE_BOND |\n");
-    fprintf(stderr, "                        RULESET_GEN_ROOTS | MLDSA_ACTIVE\n");
+    fprintf(stderr, "                        RULESET_GEN_ROOTS | MLDSA_ACTIVE |\n");
+    fprintf(stderr, "                        RULESET_GEN_TRIE | STORAGE_COPIES\n");
     fprintf(stderr, "                        (the parameters the running consensus reads)\n");
     fprintf(stderr, "                  run without --value for per-param ranges\n");
     fprintf(stderr, "  storage consent (--owner <hex128> | --msig <descriptor>) --expiry <h> [--out <f>]\n");
@@ -12739,6 +12818,11 @@ int main(int argc, char **argv) {
     /* HF-4 — the rule-set generation the node runs, and on-chain names */
     if (strcmp(command, "ruleset-info") == 0) {
         int rc = cmd_ruleset_info(server_ip, server_port);
+        nodus_identity_clear(&identity);
+        return rc;
+    }
+    if (strcmp(command, "hf9-shadow") == 0) {
+        int rc = cmd_hf9_shadow(server_ip, server_port, argc, argv, optind);
         nodus_identity_clear(&identity);
         return rc;
     }

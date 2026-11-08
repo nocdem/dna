@@ -186,14 +186,28 @@ void cbor_decoder_init(cbor_decoder_t *dec, const uint8_t *buf, size_t len) {
     dec->pos = 0;
     dec->depth = 0;
     dec->error = false;
+    dec->max_items = NODUS_CBOR_MAX_ITEMS;
+    dec->steps = 0;
+}
+
+void cbor_decoder_set_max_items(cbor_decoder_t *dec, size_t max_items) {
+    if (dec && max_items > 0) dec->max_items = max_items;
 }
 
 cbor_item_t cbor_decode_next(cbor_decoder_t *dec) {
     cbor_item_t item;
     memset(&item, 0, sizeof(item));
+    dec->steps++;
 
     if (!dec_has(dec, 1)) {
         item.type = (dec->pos >= dec->len) ? CBOR_ITEM_END : CBOR_ITEM_ERROR;
+        /* RAISED decoders only (cbor_decoder_set_max_items): END where a
+         * value is still owed is an error that stops every enclosing loop
+         * (cbor_decode_skip and the proof decoders' child loops check
+         * dec->error), so a declared count is never walked past the end of
+         * the input. A default decoder returns END as it always did. */
+        if (item.type == CBOR_ITEM_END && dec->max_items > NODUS_CBOR_MAX_ITEMS)
+            dec->error = true;
         return item;
     }
 
@@ -235,7 +249,14 @@ cbor_item_t cbor_decode_next(cbor_decoder_t *dec) {
     }
     case CBOR_ARRAY: {
         uint64_t n = dec_arg(dec, ai);
-        if (n > NODUS_CBOR_MAX_ITEMS) {
+        if (n > (dec->max_items ? dec->max_items : NODUS_CBOR_MAX_ITEMS) ||
+            /* ONLY a decoder whose limit was raised above the default
+             * (cbor_decoder_set_max_items): every item takes at least one
+             * byte, so a count above the bytes that remain is refused at the
+             * header (no skip loop over a count a small frame cannot hold).
+             * Default decoders skip this line and behave as before. */
+            (dec->max_items > NODUS_CBOR_MAX_ITEMS &&
+             n > (uint64_t)(dec->pos < dec->len ? dec->len - dec->pos : 0))) {
             dec->error = true;
             item.type = CBOR_ITEM_ERROR;
             break;
@@ -246,7 +267,11 @@ cbor_item_t cbor_decode_next(cbor_decoder_t *dec) {
     }
     case CBOR_MAP: {
         uint64_t n = dec_arg(dec, ai);
-        if (n > NODUS_CBOR_MAX_ITEMS) {
+        if (n > (dec->max_items ? dec->max_items : NODUS_CBOR_MAX_ITEMS) ||
+            /* raised decoders only: an entry takes at least two bytes */
+            (dec->max_items > NODUS_CBOR_MAX_ITEMS &&
+             n > (uint64_t)(dec->pos < dec->len ? (dec->len - dec->pos) / 2
+                                                : 0))) {
             dec->error = true;
             item.type = CBOR_ITEM_ERROR;
             break;

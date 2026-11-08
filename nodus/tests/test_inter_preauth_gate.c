@@ -117,15 +117,17 @@ int main(void) {
         CHECK(sqlite3_bind_blob(s,1,pk.bytes,NODUS_PK_BYTES,SQLITE_TRANSIENT)==SQLITE_OK);
         CHECK(sqlite3_step(s)==SQLITE_DONE && sqlite3_finalize(s)==SQLITE_OK);
     }
-    for (unsigned i=0;i<DNA_V2_STORAGE_SET_MAX;++i) {
-        nodus_key_t fp=id.node_id; fp.bytes[0]^=(uint8_t)i;
+    /* HF-9 WP4 (plan §8.7): the live storage rows reach the generation-6
+     * capacity 1024; one more row exceeds the bound (below) */
+    for (unsigned i=0;i<DNA_V2_STORAGE_SET_CAP;++i) {
+        nodus_key_t fp=id.node_id; fp.bytes[0]^=(uint8_t)i; fp.bytes[1]^=(uint8_t)(i>>8);
         sqlite3_stmt *s=NULL;
         CHECK(sqlite3_prepare_v2(w->db,"INSERT INTO v2_storage_nodes VALUES(?,1)",-1,&s,NULL)==SQLITE_OK);
         CHECK(sqlite3_bind_blob(s,1,fp.bytes,NODUS_KEY_BYTES,SQLITE_TRANSIENT)==SQLITE_OK);
         CHECK(sqlite3_step(s)==SQLITE_DONE && sqlite3_finalize(s)==SQLITE_OK);
     }
     query(ipc,&tcp,c,true,true,true);
-    CHECK(answer_list.validator_count==DNAC_MAX_VALIDATORS && answer_list.storage_count==DNA_V2_STORAGE_SET_MAX);
+    CHECK(answer_list.validator_count==DNAC_MAX_VALIDATORS && answer_list.storage_count==DNA_V2_STORAGE_SET_CAP);
     CHECK(sqlite3_exec(w->db,"INSERT INTO validators SELECT * FROM validators LIMIT 1",NULL,NULL,NULL)==SQLITE_OK);
     query(ipc,&tcp,c,false,false,false);
     CHECK(sqlite3_exec(w->db,"DELETE FROM validators; INSERT INTO v2_storage_nodes SELECT * FROM v2_storage_nodes LIMIT 1",NULL,NULL,NULL)==SQLITE_OK);

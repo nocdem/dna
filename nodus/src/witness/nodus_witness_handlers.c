@@ -78,6 +78,8 @@
 #include "evm/evm_gas.h"                     /* the rows/bytes → gas pins */
 #include "crypto/hash/keccak256.h"
 #include "witness/nodus_witness_v2_schema.h" /* the evm_logs cursor scan  */
+#include "witness/nodus_witness_v2_shadow.h" /* HF-9 WP5: dnac_hf9_shadow */
+#include "witness/nodus_witness_state_proof.h" /* HF-9 WP6: dnac_state_proof */
 #endif
 
 #include <stdio.h>
@@ -2405,9 +2407,10 @@ static int hf4_tip(nodus_witness_t *w, uint64_t *tip) {
  * generation its edge moves the registry TO (nodus_witness_v2_apply.c:
  * RULESET_EDGES param 9 -> NODUS_RT_GEN_2; phase_6b_evm_activation param
  * 14 -> NODUS_RT_GEN_EVM; phase_6b_gen4_edge param 18 ->
- * NODUS_RT_GEN_STORAGE; phase_6b_gen5_edge param 22 -> NODUS_RT_GEN_ROOTS).
+ * NODUS_RT_GEN_STORAGE; phase_6b_gen5_edge param 22 -> NODUS_RT_GEN_ROOTS;
+ * the generation-6 edge param 24 -> NODUS_RT_GEN_TRIE).
  * Every id and generation number is defined in every build; a build
- * without NODUS_EVM_ENABLED reports a 14/18/22 row it could not itself
+ * without NODUS_EVM_ENABLED reports a 14/18/22/24 row it could not itself
  * execute (it stops at that edge) — the report is still the chain's. */
 static const struct {
     uint8_t  param_id;
@@ -2417,11 +2420,12 @@ static const struct {
     { (uint8_t)DNAC_CFG_EVM_ACTIVE,        NODUS_RT_GEN_EVM     },
     { (uint8_t)DNAC_CFG_RULESET_GEN_ROLES, NODUS_RT_GEN_STORAGE },
     { (uint8_t)DNAC_CFG_RULESET_GEN_ROOTS, NODUS_RT_GEN_ROOTS   },
+    { (uint8_t)DNAC_CFG_RULESET_GEN_TRIE,  NODUS_RT_GEN_TRIE    },
 };
 #define RULESET_SWITCH_N \
     (sizeof(RULESET_SWITCH_PARAMS) / sizeof(RULESET_SWITCH_PARAMS[0]))
-_Static_assert(RULESET_SWITCH_N == 4,
-               "ruleset_next_switch binds exactly four switch params");
+_Static_assert(RULESET_SWITCH_N == 5,
+               "ruleset_next_switch binds exactly five switch params");
 
 /* The committed generation-switch row with the smallest effective_block
  * above `tip` (ties: the smaller param_id). 0 with *ng = *nh = 0 when
@@ -2436,7 +2440,7 @@ static int ruleset_next_switch(nodus_witness_t *w, uint64_t tip,
     if (tip > (uint64_t)INT64_MAX) return -1;
     if (sqlite3_prepare_v2(w->db,
             "SELECT param_id, effective_block FROM chain_config_history "
-            "WHERE param_id IN (?1, ?2, ?3, ?4) AND effective_block > ?5 "
+            "WHERE param_id IN (?1, ?2, ?3, ?4, ?5) AND effective_block > ?6 "
             "ORDER BY effective_block, param_id LIMIT 1",
             -1, &st, NULL) != SQLITE_OK) {
         sqlite3_finalize(st);
@@ -2445,7 +2449,7 @@ static int ruleset_next_switch(nodus_witness_t *w, uint64_t tip,
     for (size_t i = 0; i < RULESET_SWITCH_N; i++)
         sqlite3_bind_int(st, (int)i + 1,
                          (int)RULESET_SWITCH_PARAMS[i].param_id);
-    sqlite3_bind_int64(st, 5, (sqlite3_int64)tip);
+    sqlite3_bind_int64(st, (int)RULESET_SWITCH_N + 1, (sqlite3_int64)tip);
     int s = sqlite3_step(st);
     if (s == SQLITE_DONE) {
         rc = 0;
@@ -2748,8 +2752,9 @@ static void handle_dnac_name_of(nodus_witness_t *w,
  * A store fault is an error reply, never a partial answer.
  * ════════════════════════════════════════════════════════════════════ */
 
-_Static_assert(NODUS_DNAC_STORAGE_SET_MAX == DNA_V2_STORAGE_SET_MAX,
-               "the status wire's set bound is the chain's");
+_Static_assert(NODUS_DNAC_STORAGE_SET_MAX == DNA_V2_STORAGE_SET_CAP,
+               "the status wire's set bound is the chain's capacity "
+               "(HF-9 plan §8.7: 1024 from generation 6)");
 
 /* The registry row of `fp`. @return 1 found / 0 absent / -1 fault. */
 static int st_status_row(nodus_witness_t *w, const uint8_t fp[64],
@@ -5838,6 +5843,164 @@ static void handle_dnac_light_block(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * dnac_state_proof - the batch proof and the composition proof to the
+ * AppHash (HF-9 WP6, plan docs/plans/approved/2026-11-04-hf9.md §10)
+ *
+ * Wire: include/nodus/nodus.h (nodus_dnac_state_proof_*). The build runs on a
+ * READER THREAD with a private read-only connection (the operator's decision
+ * 1b, docs/plans/decisions/2026-10-14-kurultay-20-summary.md:92-108), never
+ * on this loop; the loop only decodes, admits (one node-wide limiter) and
+ * hands over, and the finished answer is sent from nodus_witness_tick
+ * (nodus_witness_state_proof.h). The numeric limits are the operator's
+ * decision after the WP6 measurement (plan §17): no production code enables
+ * the service, so every request here is answered NODUS_ERR_RATE_LIMITED at
+ * once, before any read. Without the EVM build there are no tries:
+ * NODUS_ERR_NOT_FOUND.
+ * ════════════════════════════════════════════════════════════════════ */
+
+static void handle_dnac_state_proof(nodus_witness_t *w,
+                                    struct nodus_tcp_conn *conn,
+                                    const uint8_t *payload, size_t len,
+                                    uint32_t txn_id)
+{
+#ifdef NODUS_EVM_ENABLED
+    int64_t now_ns = 0;
+    if (nodus_witness_state_proof_enabled(w)) {
+        /* the node's MONOTONIC wait clock, for the admission only (the light
+         * block's rule); a clock fault refuses without touching the limiter */
+        nodus_cmt_node_t *n = (nodus_cmt_node_t *)w->cmt_node;
+        if (!n || !n->mono || n->mono(n->mono_ctx, &now_ns) != CMT_OK) {
+            QGP_LOG_WARN(LOG_TAG, "%s", "dnac_state_proof: monotonic clock "
+                         "unreadable, request refused");
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                       "internal error");
+            return;
+        }
+    }
+    nodus_witness_state_proof_handle(w, conn, payload, len, txn_id, now_ns);
+#else
+    (void)w; (void)payload; (void)len;
+    send_error(conn, txn_id, NODUS_ERR_NOT_FOUND,
+               "this build has no state proofs");
+#endif
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * dnac_hf9_shadow - the shadow run's log row (HF-9 WP5, plan
+ * docs/plans/approved/2026-11-04-hf9.md §11; hf9_shadow_diff.sh compares
+ * it across the nodes)
+ *
+ * Request:  "a": {"h": u64}   the height; 0 = the newest logged row
+ * Response: "r": {"st": u64   the shadow status (nodus_witness_v2_shadow.h:
+ *                              0 stopped, 1 running, 2 faulted, 255 never
+ *                              seeded),
+ *                 "found": bool,
+ *                 and, only when found: "h": u64 the row's height,
+ *                 "l1".."l8": bstr 64 the eight shadow leg roots,
+ *                 "core","stor","sys","glob": bstr 64 CORE v4', STOR v3',
+ *                 SYS v7', GLOBAL v2'}
+ * A node-local read of node-local rows: no root, verdict, vote or block
+ * reads them. One primary-key read, so no limiter (the light block's
+ * limiter guards a multi-megabyte read). Without the EVM build the node has
+ * no shadow run: NODUS_ERR_NOT_FOUND.
+ * ════════════════════════════════════════════════════════════════════ */
+
+static void handle_dnac_hf9_shadow(nodus_witness_t *w,
+                                   struct nodus_tcp_conn *conn,
+                                   const uint8_t *payload, size_t len,
+                                   uint32_t txn_id)
+{
+#ifdef NODUS_EVM_ENABLED
+    cbor_decoder_t dec;
+    size_t         args_count = 0;
+    uint64_t       h = 0;
+    bool           have_h = false;
+    if (decode_args(payload, len, &dec, &args_count) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR, "missing args map");
+        return;
+    }
+    for (size_t k = 0; k < args_count; k++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key.type == CBOR_ITEM_END || key.type == CBOR_ITEM_ERROR) {
+            send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                       "truncated args map");
+            return;
+        }
+        if (key_match(&key, "h")) {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (val.type != CBOR_ITEM_UINT || have_h) {
+                send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                           "height is not one unsigned integer");
+                return;
+            }
+            h = val.uint_val;
+            have_h = true;
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+    if (dec.error || !have_h) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "missing or invalid height");
+        return;
+    }
+    if (!w->db || sqlite3_get_autocommit(w->db) == 0) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "a ledger transaction is in progress");
+        return;
+    }
+    int st = NODUS_V2_SHADOW_NONE;
+    if (nodus_witness_v2_shadow_status(w, &st) != 0) {
+        /* the table is created by the schema; a fault is the node's */
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "the shadow status is unreadable");
+        return;
+    }
+    nodus_v2_shadow_log_t row;
+    int found = nodus_witness_v2_shadow_log_read(w, h, &row);
+    if (found < 0) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "the shadow log is unreadable");
+        return;
+    }
+    /* header ~40 + st/found ~14 + h ~12 + 12 x (key <= 6 + 66) = ~930; the
+     * buffer leaves headroom and an overflow still fails closed (rlen 0) */
+    uint8_t buf[1536];
+    cbor_encoder_t enc;
+    static const char *const LEG_KEYS[8] = {
+        "l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8"
+    };
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+    enc_dnac_response(&enc, txn_id, "dnac_hf9_shadow", found ? 15 : 2);
+    cbor_encode_cstr(&enc, "st");
+    cbor_encode_uint(&enc, st == NODUS_V2_SHADOW_NONE
+                               ? NODUS_DNAC_HF9_SHADOW_NONE : (uint64_t)st);
+    cbor_encode_cstr(&enc, "found");
+    cbor_encode_bool(&enc, found == 1);
+    if (found == 1) {
+        cbor_encode_cstr(&enc, "h");
+        cbor_encode_uint(&enc, row.height);
+        for (int i = 0; i < 8; i++) {
+            cbor_encode_cstr(&enc, LEG_KEYS[i]);
+            cbor_encode_bstr(&enc, row.leg[i], 64);
+        }
+        cbor_encode_cstr(&enc, "core"); cbor_encode_bstr(&enc, row.core, 64);
+        cbor_encode_cstr(&enc, "stor"); cbor_encode_bstr(&enc, row.stor, 64);
+        cbor_encode_cstr(&enc, "sys");  cbor_encode_bstr(&enc, row.sys, 64);
+        cbor_encode_cstr(&enc, "glob"); cbor_encode_bstr(&enc, row.glob, 64);
+    }
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen > 0) nodus_tcp_send(conn, buf, rlen);
+    else send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+#else
+    (void)w; (void)payload; (void)len;
+    send_error(conn, txn_id, NODUS_ERR_NOT_FOUND,
+               "this build has no shadow run");
+#endif
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * dnac_cc_collect — the node-side governance approval collection
  * (decision docs/plans/decisions/2026-09-26-cc-approval-via-own-node.md)
  *
@@ -7006,6 +7169,10 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_v3_block(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_light_block") == 0) {
         handle_dnac_light_block(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_state_proof") == 0) {
+        handle_dnac_state_proof(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_hf9_shadow") == 0) {
+        handle_dnac_hf9_shadow(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_addr_history") == 0) {
         handle_dnac_addr_history(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_msig_addr_history") == 0) {

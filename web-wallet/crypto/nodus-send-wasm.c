@@ -7146,7 +7146,7 @@ int nsw_addr_history(const char *before_dec, const char *bi_dec,
  *   {"tip":"N","total":"N","epoch_start":"N","set":bool,"set_count":n,
  *    "nodes":[{"fp","status":1..3,"bond","fail_streak":n,"grace_until",
  *              "registered","exit","member":bool,"segments"}...]}
- * at most NODUS_DNAC_STORAGE_SET_MAX (256) nodes, node fp strictly
+ * at most NODUS_DNAC_STORAGE_SET_MAX (1024; 256 before HF-9) nodes, node fp strictly
  * ascending (the decoder's rule); total > the nodes listed = the list
  * stops at that cap (no paging). status: 1 ACTIVE, 2 EXITING, 3 RELEASED
  * (nodus.h dnac_storage_status "st"). An owner without rows: total "0",

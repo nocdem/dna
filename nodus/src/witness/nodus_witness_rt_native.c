@@ -378,6 +378,10 @@
 #include "witness/nodus_witness_v2_econ.h"
                             /* NODUS_V2_SETTLE_OUT_IDX_BASE — the payday
                              * base the storage exit index sits below */
+#include "witness/nodus_witness_v2_storage.h"
+                            /* HF-9 WP4: nodus_witness_storage_limits_at —
+                             * the generation's set / bitmap limit of a
+                             * committed row */
 #include "witness/nodus_witness_roots_v2.h"
                             /* storage reward v1: NODUS_STORAGE_SET_MAX,
                              * the DNA_V2_STORAGE_* status bytes and the
@@ -1393,6 +1397,13 @@ static int rtn_gen_storage(const nodus_domain_runtime_t *rt) {
  *  rtn_gen_storage convention). */
 static uint32_t rtn_gen_of(const nodus_domain_runtime_t *rt) {
     return rt ? rt->generation : 0u;
+}
+
+/** HF-9 WP4: does this runtime judge under the rendezvous-storage
+ *  generation (6) - member cap 1024, report bitmap 128 bytes (plan §8.7)?
+ *  A NULL or synthetic runtime reads as an earlier generation. */
+static int rtn_gen_trie(const nodus_domain_runtime_t *rt) {
+    return rt != NULL && rt->generation >= NODUS_RT_GEN_TRIE;
 }
 
 /* ── HF-6 slice 6b-1 — STORAGE_REGISTER (op 7) / STORAGE_EXIT (op 8) ──
@@ -5067,6 +5078,22 @@ _Static_assert(RTN_STREP_CALL_MAX == 110u, "report call bound drifted");
 _Static_assert(RTN_STREP_CALL_MAX < RTN_SYS_MAX_CALL_LEN,
                "the report call is no longer dominated by the generation-4 "
                "STAKE call — re-derive the worst-case envelope asserts");
+/* HF-9 WP4 (plan §8.7): RTN_STREP_CALL_MAX / _VAL_MAX above are the
+ * HISTORICAL bounds (bitmap 0..32, generations <= 5) and keep governing
+ * those generations; the CAPACITY bounds below (bitmap 0..128, from
+ * generation 6) size buffers and bound the generation-6 rules, which
+ * receive their limit through the `gen6` argument - never a compile
+ * maximum as the rule. */
+#define RTN_STREP_CALL_CAP    (RTN_STREP_FIXED_LEN + DNA_V2_STORAGE_BITMAP_CAP)
+#define RTN_STREP_VAL_CAP     (64u + 2u + DNA_V2_STORAGE_BITMAP_CAP)
+_Static_assert(RTN_STREP_CALL_CAP == 206u, "report call capacity drifted");
+_Static_assert(RTN_STREP_CALL_CAP < RTN_SYS_MAX_CALL_LEN,
+               "the generation-6 report call is no longer dominated by the "
+               "generation-4 STAKE call — re-derive the worst-case "
+               "envelope asserts");
+_Static_assert(RTN_STREP_VAL_CAP <= (uint32_t)DNA_EFFECT_MAX_VALUE_LEN,
+               "the generation-6 report row no longer fits one typed "
+               "effect value");
 
 /* CHAIN_CONFIG call v2 exact length: RTN_CC_CALL_LEN — defined with the
  * capacity-derivation asserts near the top of this file. */
@@ -6284,7 +6311,7 @@ static int rtn_storage_read_plan(const dna_env_view_t *env,
  * @return 0 / -1 verdict / -2 node fault.
  */
 static int rtn_storage_register_exec(const dna_env_view_t *env,
-                                     uint16_t leg_index,
+                                     uint16_t leg_index, int gen6,
                                      const nodus_rt_exec_ctx_t *ctx,
                                      const nodus_rt_read_res_t *reads,
                                      uint16_t n_reads,
@@ -6373,8 +6400,14 @@ static int rtn_storage_register_exec(const dna_env_view_t *env,
                                           * last settlement has not run  */
         revive = 1;
     }
-    if (rtn_get64(reads[1].value) >= (uint64_t)NODUS_STORAGE_SET_MAX)
-        return -1;                       /* cap: ACTIVE + EXITING == 256 */
+    /* cap: ACTIVE + EXITING == the generation's member cap - 256 up to
+     * generation 5 (the historical NODUS_STORAGE_SET_MAX), 1024 from
+     * generation 6 (HF-9 plan §8.7; the cap is passed in, not the compile
+     * maximum of the buffers) */
+    if (rtn_get64(reads[1].value) >=
+        (gen6 ? (uint64_t)DNA_V2_STORAGE_SET_LIMIT_GEN6
+              : (uint64_t)NODUS_STORAGE_SET_MAX))
+        return -1;
 
     /* ── the SIBLING funding leg must be a well-formed SYSFUND call ─── */
     {
@@ -6552,22 +6585,27 @@ typedef struct {
 
 /* Parse + every rule that needs no read. @return 0 / -1. */
 static int rtn_strep_static(const dna_env_view_t *env, uint16_t leg_index,
-                            const nodus_rt_exec_ctx_t *ctx,
+                            int gen6, const nodus_rt_exec_ctx_t *ctx,
                             rtn_strep_call_t *c) {
     const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
     if (env->leg_count != 1 || leg_index != 0) return -1;
     if (env->leg[leg_index].auth_kind != NODUS_RT_AUTHKIND_DSA87_MULTI_V1)
         return -1;
     if (env->fee_amount != 0) return -1;     /* no SYSTEM fee sink      */
+    /* the generation's report limits (HF-9 §8.7): bitmap 0..32, call
+     * 78..110 up to generation 5; bitmap 0..128, call 78..206 from 6 */
+    const uint32_t bm_lim = gen6 ? DNA_V2_STORAGE_BITMAP_LIMIT_GEN6
+                                 : DNA_V2_STORAGE_BITMAP_MAX;
     const uint32_t len = env->leg[leg_index].call_len;
-    if (len < RTN_STREP_FIXED_LEN || len > RTN_STREP_CALL_MAX) return -1;
+    if (len < RTN_STREP_FIXED_LEN || len > RTN_STREP_FIXED_LEN + bm_lim)
+        return -1;
     const uint8_t *p = env->buf + env->call_off[leg_index];
     c->h = rtn_get64(p);
     c->seat = rtn_get32(p + 8);
     c->set_hash = p + 12;
     c->bitmap_len = rtn_get16(p + 76);
     c->bitmap = p + RTN_STREP_FIXED_LEN;
-    if (c->bitmap_len > DNA_V2_STORAGE_BITMAP_MAX) return -1;
+    if (c->bitmap_len > bm_lim) return -1;
     if (len != RTN_STREP_FIXED_LEN + (uint32_t)c->bitmap_len) return -1;
     if (c->h == 0 || (c->h % E) != 0) return -1;   /* a boundary H      */
     uint64_t open = 0, close = 0;
@@ -6582,12 +6620,12 @@ static int rtn_strep_static(const dna_env_view_t *env, uint16_t leg_index,
 /* Reads (ascending (op_id, key)): [0] STSET(H) [1] SNAPSEAT(H, seat)
  * [2] STREP(H, seat). */
 static int rtn_strep_read_plan(const dna_env_view_t *env,
-                               uint16_t leg_index,
+                               uint16_t leg_index, int gen6,
                                const nodus_rt_exec_ctx_t *ctx,
                                nodus_rt_read_req_t *reqs_out,
                                uint16_t max_reqs, uint16_t *n_out) {
     rtn_strep_call_t c;
-    if (rtn_strep_static(env, leg_index, ctx, &c) != 0) return -1;
+    if (rtn_strep_static(env, leg_index, gen6, ctx, &c) != 0) return -1;
     if (max_reqs < 3) return -1;
     memset(reqs_out, 0, 3 * sizeof(reqs_out[0]));
     reqs_out[0].op_id = RTN_SYS_OP_STSET;
@@ -6605,13 +6643,13 @@ static int rtn_strep_read_plan(const dna_env_view_t *env,
 }
 
 static int rtn_strep_exec(const dna_env_view_t *env, uint16_t leg_index,
-                          const nodus_rt_exec_ctx_t *ctx,
+                          int gen6, const nodus_rt_exec_ctx_t *ctx,
                           const nodus_rt_read_res_t *reads,
                           uint16_t n_reads,
                           uint8_t *res_out, size_t res_cap,
                           size_t *res_len_out) {
     rtn_strep_call_t c;
-    if (rtn_strep_static(env, leg_index, ctx, &c) != 0) return -1;
+    if (rtn_strep_static(env, leg_index, gen6, ctx, &c) != 0) return -1;
     if (!ctx->auth || ctx->auth->n_signers != 1) return -1;
     if (n_reads != 3 || !reads) return -2;
 
@@ -6621,7 +6659,10 @@ static int rtn_strep_exec(const dna_env_view_t *env, uint16_t leg_index,
     if (sr->value_len != RTN_STSET_VAL_LEN) return -2;
     if (memcmp(sr->value, c.set_hash, 64) != 0) return -1;
     const uint32_t count = rtn_get32(sr->value + 64);
-    if (count > DNA_V2_STORAGE_SET_MAX) return -2;
+    /* the set's member limit is its generation's (256 / 1024) */
+    if (count > (gen6 ? DNA_V2_STORAGE_SET_LIMIT_GEN6
+                      : DNA_V2_STORAGE_SET_MAX))
+        return -2;
     if ((uint32_t)c.bitmap_len != (count + 7u) / 8u) return -1;
     if ((count % 8u) != 0 && c.bitmap_len > 0 &&
         (c.bitmap[c.bitmap_len - 1] >> (count % 8u)) != 0)
@@ -6640,7 +6681,7 @@ static int rtn_strep_exec(const dna_env_view_t *env, uint16_t leg_index,
     /* ── first applied (H, seat) wins ─────────────────────────────── */
     if (reads[2].present) return -1;
 
-    uint8_t key[RTN_STREP_KEY_LEN], val[RTN_STREP_VAL_MAX];
+    uint8_t key[RTN_STREP_KEY_LEN], val[RTN_STREP_VAL_CAP];
     rtn_put64(key, c.h);
     rtn_put32(key + 8, c.seat);
     memcpy(val, c.set_hash, 64);
@@ -6683,8 +6724,8 @@ int nodus_rt_system_read_plan(const nodus_domain_runtime_t *rt,
     case DNA_SYSRULE_STORAGE_REPORT:
         /* archive reward (package B2a): the report read plan */
         if (!rtn_gen_storage(rt)) return -1;
-        return rtn_strep_read_plan(env, leg_index, ctx, reqs_out, max_reqs,
-                                   n_out);
+        return rtn_strep_read_plan(env, leg_index, rtn_gen_trie(rt), ctx,
+                                   reqs_out, max_reqs, n_out);
     default:
         break;
     }
@@ -7691,9 +7732,9 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
     switch (env->leg[leg_index].runtime_op) {
     case DNA_SYSRULE_STORAGE_REGISTER:
         if (!rtn_gen_storage(rt)) return -1;
-        return rtn_storage_register_exec(env, leg_index, ctx, reads,
-                                         n_reads, res_out, res_cap,
-                                         res_len_out);
+        return rtn_storage_register_exec(env, leg_index, rtn_gen_trie(rt),
+                                         ctx, reads, n_reads, res_out,
+                                         res_cap, res_len_out);
     case DNA_SYSRULE_STORAGE_EXIT:
         if (!rtn_gen_storage(rt)) return -1;
         return rtn_storage_exit_exec(env, leg_index, ctx, reads, n_reads,
@@ -7703,8 +7744,8 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
          * §4 — window, seat in snapshot(H), S(H) match, bitmap shape,
          * first-wins). Contract above rtn_strep_static. */
         if (!rtn_gen_storage(rt)) return -1;
-        return rtn_strep_exec(env, leg_index, ctx, reads, n_reads,
-                              res_out, res_cap, res_len_out);
+        return rtn_strep_exec(env, leg_index, rtn_gen_trie(rt), ctx, reads,
+                              n_reads, res_out, res_cap, res_len_out);
     default:
         break;
     }
@@ -7864,7 +7905,10 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
      * param-18 rule reads either.
      * HF-7 (snapshot design §10.2 item 1): the param-22 vote reads its
      * single-use fact ctx->ruleset_gen_roots_voted (rule (a)) — the same
-     * UNMETERED engine class; only the param-22 rule reads it. */
+     * UNMETERED engine class; only the param-22 rule reads it.
+     * HF-9 (plan §7.1): the param-24 vote reads its single-use fact
+     * ctx->ruleset_gen_trie_voted (rule (a)) — the same UNMETERED engine
+     * class; only the param-24 rule reads it. */
     {
         /* Nodus EVM: + the EVM_ACTIVE facts (hf3_active / gas_price_on /
          * evm_active_voted — UNMETERED engine facts like the two above);
@@ -7880,6 +7924,7 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
         facts.ruleset_gen_roles_voted = ctx->ruleset_gen_roles_voted;
         facts.ruleset_gen_roots_voted = ctx->ruleset_gen_roots_voted;
         facts.mldsa_active_voted = ctx->mldsa_active_voted;
+        facts.ruleset_gen_trie_voted = ctx->ruleset_gen_trie_voted;
         facts.chain_initial_height = ctx->chain_initial_height; /* F5 */
         facts.judging_generation = rt ? rt->generation : 0u;
         if (nodus_chain_config_stateful_rules_ex(c.param_id, c.effective,
@@ -8719,6 +8764,11 @@ static int rtn_sys_stset_fetch(nodus_witness_t *w, const uint8_t *key,
     if (key_len != RTN_STSET_KEY_LEN) return -1;
     const uint64_t h = rtn_get64(key);
     if (h > (uint64_t)INT64_MAX) return 1;   /* no row can carry it      */
+    /* the member limit of the set's own epoch (256 / 1024, HF-9 §8.7) */
+    uint32_t set_lim = 0, bm_lim = 0;
+    if (nodus_witness_storage_limits_at(w, h, &set_lim, &bm_lim) != 0)
+        return -1;
+    (void)bm_lim;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
             "SELECT set_hash, member_count FROM v2_storage_sets "
@@ -8733,8 +8783,7 @@ static int rtn_sys_stset_fetch(nodus_witness_t *w, const uint8_t *key,
             sqlite3_column_blob(st, 0) &&
             sqlite3_column_type(st, 1) == SQLITE_INTEGER &&
             sqlite3_column_int64(st, 1) >= 0 &&
-            sqlite3_column_int64(st, 1) <=
-                (sqlite3_int64)DNA_V2_STORAGE_SET_MAX) {
+            sqlite3_column_int64(st, 1) <= (sqlite3_int64)set_lim) {
             memcpy(val, sqlite3_column_blob(st, 0), 64);
             rtn_put32(val + 64, (uint32_t)sqlite3_column_int64(st, 1));
             out = 0;
@@ -8776,11 +8825,15 @@ static int rtn_sys_snapseat_fetch(nodus_witness_t *w, const uint8_t *key,
  * 0 = found (*len set), 1 = absent, -1 = fault. */
 static int rtn_sys_strep_fetch(nodus_witness_t *w, const uint8_t *key,
                                uint16_t key_len,
-                               uint8_t val[RTN_STREP_VAL_MAX],
+                               uint8_t val[RTN_STREP_VAL_CAP],
                                uint32_t *len) {
     if (key_len != RTN_STREP_KEY_LEN) return -1;
     const uint64_t h = rtn_get64(key);
     if (h > (uint64_t)INT64_MAX) return 1;
+    /* the bitmap limit of the report's own epoch (32 / 128, HF-9 §8.7) */
+    uint32_t set_lim = 0, bm_lim = 0;
+    if (nodus_witness_storage_limits_at(w, h, &set_lim, &bm_lim) != 0)
+        return -1;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
             "SELECT set_hash, bitmap FROM v2_storage_reports "
@@ -8797,7 +8850,7 @@ static int rtn_sys_strep_fetch(nodus_witness_t *w, const uint8_t *key,
             sqlite3_column_bytes(st, 0) == 64 &&
             sqlite3_column_blob(st, 0) &&
             sqlite3_column_type(st, 1) == SQLITE_BLOB && bl >= 0 &&
-            bl <= (int)DNA_V2_STORAGE_BITMAP_MAX &&
+            bl <= (int)bm_lim &&
             (bl == 0 || sqlite3_column_blob(st, 1))) {
             memcpy(val, sqlite3_column_blob(st, 0), 64);
             val[64] = (uint8_t)(bl >> 8);
@@ -8837,7 +8890,7 @@ static nodus_adapter_status_t rtn_sys_probe(
     }
     if (op->op_id == RTN_SYS_OP_STREP) {
         /* archive reward: the ABSENT backstop of a report CREATE */
-        uint8_t val[RTN_STREP_VAL_MAX];
+        uint8_t val[RTN_STREP_VAL_CAP];
         uint32_t vl = 0;
         int rc = rtn_sys_strep_fetch(w, key, key_len, val, &vl);
         if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
@@ -9069,7 +9122,7 @@ static nodus_adapter_status_t rtn_sys_read(
         return NODUS_ADAPTER_OK;
     }
     if (op->op_id == RTN_SYS_OP_STREP) {
-        uint8_t val[RTN_STREP_VAL_MAX];
+        uint8_t val[RTN_STREP_VAL_CAP];
         uint32_t vl = 0;
         int rc = rtn_sys_strep_fetch(w, key, key_len, val, &vl);
         if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
@@ -9380,7 +9433,7 @@ static nodus_adapter_status_t rtn_sys_mutate(
          * insert (the ABSENT precondition already ruled). The value is
          * S(H) ‖ bitmap_len u16 BE ‖ bitmap, its length exact. */
         if (key_len != RTN_STREP_KEY_LEN || !value ||
-            value_len < RTN_STREP_VAL_MIN || value_len > RTN_STREP_VAL_MAX)
+            value_len < RTN_STREP_VAL_MIN || value_len > RTN_STREP_VAL_CAP)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         const uint64_t h = rtn_get64(key);
         const uint16_t bl = rtn_get16(value + 64);
@@ -9577,7 +9630,7 @@ static const nodus_adapter_op_t RTN_SYS_OPS[15] = {
       NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_CREATE),
       NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_ABSENT),
       (uint16_t)RTN_STREP_KEY_LEN, (uint16_t)RTN_STREP_KEY_LEN,
-      RTN_STREP_VAL_MIN, RTN_STREP_VAL_MAX },
+      RTN_STREP_VAL_MIN, RTN_STREP_VAL_CAP },
     /* HF-6 sub-slice 3c — the generation-4 validator-record rows (named
      * only by generation-4 hooks; ops 4/5/6 stay the generations 1-3
      * encodings). VAL2 allowed SET / EXISTS_VHASH only until slice 4;
@@ -9967,7 +10020,9 @@ static int rtn_desc_system(const dna_env_view_t *env, uint16_t leg,
      * applied). */
     case DNA_SYSRULE_STORAGE_REPORT: {
         if (env->leg_count != 1 || leg != 0) return -1;
-        if (len < RTN_STREP_FIXED_LEN || len > RTN_STREP_CALL_MAX)
+        /* an APPLIED leg was judged by its generation's limit already;
+         * the describer frames up to the capacity (HF-9 §8.7) */
+        if (len < RTN_STREP_FIXED_LEN || len > RTN_STREP_CALL_CAP)
             return -1;
         if (len != RTN_STREP_FIXED_LEN + (uint32_t)rtn_get16(p + 76))
             return -1;

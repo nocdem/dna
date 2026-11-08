@@ -47,6 +47,7 @@
 #include "evm/evm_precompile.h"                 /* Nodus EVM F2: start KAT */
 #include "evm/evm.h"                            /* EVM_MLDSA87_* (param 23) */
 #include "evm/evm_gas.h"                        /* EVM_G_PRECOMPILE_MLDSA87_* */
+#include "witness/nodus_witness_state_proof.h"  /* HF-9 WP6: dnac_state_proof */
 #endif
 #include "dnac/dnac.h"                          /* HF-4: D2 + switch spec */
 #include "witness/nodus_witness_emission.h"    /* DNAC_BLOCKS_PER_YEAR    */
@@ -803,10 +804,28 @@ static int witness_db_open_attempt(nodus_witness_t *witness,
     /* archive reward: the four storage-leg tables, the same check, in a
      * fixed order */
     {
-        static const struct { const char *t; const char *ddl; } ST[] = {
-            { "v2_storage_sets",        NODUS_V2_STSETS_DDL },
+        /* HF-9 WP4 (plan §8.7, §5.5): v2_storage_sets and v2_storage_reports
+         * carry the CAPACITY bounds (1024 / 128) from schema S20 — the S20
+         * rung rebuilds them inside its transaction — and the historical
+         * bounds (256 / 32) below it. This check runs BEFORE the rung, so
+         * the expected text follows the stored schema version: a database
+         * at S19 or below still holds the historical text and must open so
+         * that the rung can run; an unreadable version refuses. */
+        uint32_t sver = 0;
+        if (nodus_witness_db_schema_version(witness, &sver) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "schema version unreadable before "
+                          "the storage-table shape check - refusing to open "
+                          "this database");
+            witness_db_open_fail(witness);
+            return SQLITE_CORRUPT;
+        }
+        const int s20 = sver >= NODUS_V2_SCHEMA_VERSION_S20;
+        const struct { const char *t; const char *ddl; } ST[] = {
+            { "v2_storage_sets",        s20 ? NODUS_V2_STSETS_DDL_S20
+                                            : NODUS_V2_STSETS_DDL },
             { "v2_storage_set_members", NODUS_V2_STMEMB_DDL },
-            { "v2_storage_reports",     NODUS_V2_STREPS_DDL },
+            { "v2_storage_reports",     s20 ? NODUS_V2_STREPS_DDL_S20
+                                            : NODUS_V2_STREPS_DDL },
             { "v2_storage_segments",    NODUS_V2_STSEGS_DDL }
         };
         for (size_t i = 0; i < sizeof(ST) / sizeof(ST[0]); i++) {
@@ -1001,8 +1020,14 @@ static int witness_gate_table_has_rows(sqlite3 *db, const char *count_sql) {
  * S18 — the S19 rung cascades through S18 and S17. S19 is a no-op;
  * anything else is the gates' to refuse. No root moves (nothing reads or
  * writes the new objects before HF-7 P1c).
+ *
+ * HF-9 (plan docs/plans/approved/2026-11-04-hf9.md §5.5, §9.1): the
+ * at-open rung is now S20 (S19 + the supply running totals,
+ * nodus_witness_v2_schema.h) and runs on a version-3 chain at S16, S17,
+ * S18 OR S19 — the S20 rung cascades through the others. S20 is a no-op.
+ * No root moves (the totals are read only by the supply check).
  * @return 0 (migrated, or nothing to do) / -1 refuse the database. */
-static int witness_open_migrate_s19(nodus_witness_t *witness,
+static int witness_open_migrate_s20(nodus_witness_t *witness,
                                     const char *db_path) {
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(witness, &ver) != 0) {
@@ -1012,7 +1037,8 @@ static int witness_open_migrate_s19(nodus_witness_t *witness,
     }
     if (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
         ver != NODUS_V2_SCHEMA_VERSION_S17 &&
-        ver != NODUS_V2_SCHEMA_VERSION_S18) return 0;
+        ver != NODUS_V2_SCHEMA_VERSION_S18 &&
+        ver != NODUS_V2_SCHEMA_VERSION_S19) return 0;
     int st = witness_gate_table_exists(witness->db,
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cmt_state'");
     int bs = witness_gate_table_exists(witness->db,
@@ -1029,17 +1055,19 @@ static int witness_open_migrate_s19(nodus_witness_t *witness,
     if (nodus_witness_v2_gen_stored_chain_id(witness, id) != 0)
         return 0;                       /* no stored document: the role
                                          * gate below refuses it         */
-    if (nodus_witness_db_migrate_v2s19(witness) != 0) {
-        fprintf(stderr, "%s: the S%u -> S19 migration (Nodus EVM empty EVM "
+    if (nodus_witness_db_migrate_v2s20(witness) != 0) {
+        fprintf(stderr, "%s: the S%u -> S20 migration (Nodus EVM empty EVM "
                 "tables when below S17; HF-6 empty v2_validator_roles when "
                 "below S18; HF-7 empty v2_replay + nullable "
-                "v2_domain_heads.last_upd_hash) FAILED for %s — rolled "
+                "v2_domain_heads.last_upd_hash when below S19; HF-9 supply "
+                "running totals) FAILED for %s — rolled "
                 "back, refusing the database (fail closed)\n", LOG_TAG,
                 (unsigned)ver, db_path);
         return -1;
     }
-    fprintf(stderr, "%s: schema S%u -> S19 (empty tables only; no root "
-            "moves) for %s\n", LOG_TAG, (unsigned)ver, db_path);
+    fprintf(stderr, "%s: schema S%u -> S20 (empty tables and the seeded "
+            "supply totals; no root moves) for %s\n", LOG_TAG,
+            (unsigned)ver, db_path);
     return 0;
 }
 
@@ -1048,7 +1076,18 @@ static int witness_post_open_gate(nodus_witness_t *witness,
     /* The at-open rung (witness_open_migrate_s19 above; Nodus EVM added
      * it for S16 -> S17, HF-6 3a moved it to S18, HF-7 P1b to S19),
      * FIRST — the S7 check and every later gate see the live rung. */
-    if (witness_open_migrate_s19(witness, db_path) != 0) {
+    if (witness_open_migrate_s20(witness, db_path) != 0) {
+        sqlite3_close(witness->db);
+        witness->db = NULL;
+        return -1;
+    }
+    /* HF-9 §9.1: the supply running totals are re-seeded from their
+     * tables on every open of an S20 database (a no-op below S20). A
+     * failure refuses the database like the rung above. */
+    if (nodus_witness_db_s20_reseed(witness) != 0) {
+        fprintf(stderr, "%s: the S20 supply totals could not be seeded "
+                "for %s — refusing the database (fail closed)\n",
+                LOG_TAG, db_path);
         sqlite3_close(witness->db);
         witness->db = NULL;
         return -1;
@@ -2896,6 +2935,21 @@ int nodus_witness_init(nodus_witness_t *witness,
                  (unsigned)DNAC_CFG_RULESET_GEN_ROOTS,
                  (unsigned)DNAC_HF7_SWITCH_SPEC_VERSION,
                  NODUS_BUILD_GIT_COMMIT);
+    /* HF-9 WP3 (plan docs/plans/approved/2026-11-04-hf9.md §7.1): the
+     * generation-6 vote literal D6 (chain_config param 24
+     * RULESET_GEN_TRIE) — an EVM-enabled build's selfcheck just
+     * re-derived it from the generation-6 pins, the 5 -> 6 spec version,
+     * the compiled Foundation owner and the four HF-9 constants — for the
+     * same 8/8 comparison before THAT vote. Its own line, so the HF-6 and
+     * HF-7 lines above keep the exact text the scenarios grep. */
+    QGP_LOG_INFO(LOG_TAG, "HF-9 rule-set generation %u vote D6 0x%016llx "
+                 "(param %u RULESET_GEN_TRIE, switch spec v%u), built from "
+                 "git commit %s",
+                 (unsigned)NODUS_RT_GEN_TRIE,
+                 (unsigned long long)DNAC_CFG_RULESET_GEN_TRIE_D,
+                 (unsigned)DNAC_CFG_RULESET_GEN_TRIE,
+                 (unsigned)DNAC_HF9_SWITCH_SPEC_VERSION,
+                 NODUS_BUILD_GIT_COMMIT);
     /* HF-4 review (L1 F2): the compile-time constants consensus depends
      * on and that a harness build overrides (#ifndef in dnac.h /
      * nodus_witness_emission.h), plus whether the fault-injection hooks
@@ -3140,6 +3194,13 @@ int nodus_witness_init(nodus_witness_t *witness,
  * (nodus_witness_p2p.h). */
 
 void nodus_witness_tick(nodus_witness_t *witness) {
+#ifdef NODUS_EVM_ENABLED
+    /* HF-9 WP6 (plan §10.4): the proof readers' finished answers come back
+     * to THIS loop to be sent (the 4004 worker pattern). Delivered before
+     * the running check: an answer built before a stop is still sent. A
+     * witness without the service does nothing here. */
+    nodus_witness_state_proof_poll(witness);
+#endif
     if (!witness || !witness->running) return;
 
     /* ── ORCHESTRATOR delta 1, item C (D-23 rev 7 (19)) — THE POLL WAIT,
@@ -3245,6 +3306,12 @@ void nodus_witness_close(nodus_witness_t *witness) {
     if (!witness) return;
 
     witness->running = false;
+
+#ifdef NODUS_EVM_ENABLED
+    /* HF-9 WP6: the proof readers hold private connections to the database
+     * file; stop and join them before anything of the witness goes. */
+    nodus_witness_state_proof_disable(witness);
+#endif
 
     /* R3 W4 — the in-flight batch_entries sweep, the retained reproposal
      * batch, the parked next-view PROPOSE and the view-change records'

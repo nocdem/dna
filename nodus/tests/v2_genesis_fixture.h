@@ -300,6 +300,11 @@ static void v2x_cfg_free(v2x_cfgbox_t *b) {
     b->allocs = NULL;
 }
 
+/** HF-9 WP4: optional hook applied to the config v2x_cfg_make builds (see
+ *  the call site). Static to every including test, NULL unless a test
+ *  sets it. */
+static void (*g_v2x_cfg_hook)(nodus_v2_gen_config_t *c);
+
 /** A complete, derivable version-3 config (see the banner). 0 / -1. */
 static int v2x_cfg_make(v2x_cfgbox_t *b, uint8_t salt) {
     static const char hexd[] = "0123456789abcdef";
@@ -342,6 +347,12 @@ static int v2x_cfg_make(v2x_cfgbox_t *b, uint8_t salt) {
         v->self_stake     = DNAC_SELF_STAKE_AMOUNT;
         v->commission_bps = (uint16_t)(100 * (i + 1));
     }
+    /* HF-9 WP4: a test that needs REAL committee keys (it signs blocks with
+     * them - test_cmt_app.c's hybrid generation-6 probe) installs a hook
+     * that rewrites the validators' pubkeys; it runs HERE, before the
+     * comet rows are derived from the validators. NULL by default: no
+     * other test is affected. */
+    if (g_v2x_cfg_hook) g_v2x_cfg_hook(c);
     {
         nodus_v2_gen_alloc_t *a = &b->allocs[0];
         uint8_t owner[DNAC_PUBKEY_SIZE];
@@ -476,7 +487,7 @@ static int v2x_chain_open(v2x_chain_t *c, const char *tag, uint8_t salt) {
  * WHAT IT IS. The version-3 derivation's own steps
  * (nodus_witness_v2_gen_derive_v3, steps 4-10), run in the SAME order,
  * with ONE seam: between the database preparation (step 4 — create,
- * v2_successor before any validator row, the live rung S16, the
+ * v2_successor before any validator row, the live rung (S20), the
  * chain-config table, the economic band gen_seed_state commits) and the
  * authority + engine genesis (steps 6-7 — the epoch-0/E snapshots, the
  * registry, the manifest, nodus_witness_v2_genesis_cmt with its supply
@@ -586,7 +597,8 @@ static void v2x_seed_not_real(unsigned flags) {
  * caller) under the file id `file16`, which must be a PRE-GENESIS
  * database; mark it a Ledger V2 successor BEFORE any validator row
  * exists (the vset writer guard is gated on it); migrate to the live
- * rung S16; create the chain-config table; commit the economic band
+ * rung (S20 since HF-9: the supply totals the supply check reads; S16
+ * before); create the chain-config table; commit the economic band
  * exactly as gen_seed_state does (tx_hash = the document's source
  * commit). The test seeds its genesis rows after this and then calls
  * v2x_seed_genesis with the SAME salt. 0 / -1.
@@ -602,7 +614,12 @@ static int v2x_seed_prepare(nodus_witness_t *w, const uint8_t file16[16],
         return -1;
     }
     w->v2_successor = 1;
-    if (nodus_witness_db_migrate_v2s16(w) != 0) return -1;
+    /* HF-9: the live rung is S20 — the supply check reads the S20 running
+     * totals (v2_supply_totals / v2_bond_total), and several tests run it
+     * between this call and the genesis (the direct-SQL matrix of
+     * test_v2_apply); the real derivation (nodus_witness_v2_gen.c) climbs
+     * to S20 at the same point. The rung cascades through S16..S19. */
+    if (nodus_witness_db_migrate_v2s20(w) != 0) return -1;
     if (nodus_chain_config_db_migrate(w) != 0) return -1;
 
     v2x_cfgbox_t box;
@@ -1041,6 +1058,13 @@ static int v2x_seed_genesis(nodus_witness_t *w, const uint8_t file16[16],
     g_v2x_seed_not_real = 0;                  /* one-shot, every outcome */
     if (!w || !w->db || !file16) return -1;
     if (!w->v2_successor) return -1;          /* v2x_seed_prepare first */
+    /* HF-9: the engine genesis's supply gate reads the S20 running totals
+     * (v2_supply_totals / v2_bond_total), and the real derivation
+     * (nodus_witness_v2_gen.c) climbs to S20 before its genesis too. The
+     * rung cascades through whatever rungs the test already climbed, is a
+     * no-op at S20, and seeds the totals from the rows the test planted
+     * after v2x_seed_prepare. */
+    if (nodus_witness_db_migrate_v2s20(w) != 0) return -1;
 #ifdef NODUS_V2_TEST_SUPPLY
     /* P4 fix round: the engine genesis's own supply gate and the
      * post-conditions below run against the LIVE equation. An earlier

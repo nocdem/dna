@@ -44,7 +44,7 @@
 #define NODUS_WITNESS_IPC_READ_BUDGET_FRAMES  8
 
 _Static_assert(NODUS_WITNESS_IPC_ROLES_FRAME_MAX >=
-    39u + (128u + 256u) * 66u, "role-list frame must fit both full arrays");
+    39u + (128u + 1024u) * 66u, "role-list frame must fit both full arrays");
 _Static_assert(NODUS_WITNESS_IPC_ROLES_FRAME_MAX < NODUS_MAX_FRAME_TCP,
                "role-list frame must fit the Unix transport");
 
@@ -116,7 +116,7 @@ int nodus_witness_roles_build(nodus_witness_t *w, nodus_inter_role_list_t *out) 
         "SELECT node_fp FROM v2_storage_nodes WHERE status IN (1,2)",
         -1, &s, NULL) != SQLITE_OK) goto fail;
     while ((rc = sqlite3_step(s)) == SQLITE_ROW) {
-        if (out->storage_count>=DNA_V2_STORAGE_SET_MAX ||
+        if (out->storage_count>=DNA_V2_STORAGE_SET_CAP ||
             sqlite3_column_bytes(s,0)!=NODUS_KEY_BYTES || !sqlite3_column_blob(s,0)) goto fail;
         memcpy(out->storage[out->storage_count++].bytes,sqlite3_column_blob(s,0),NODUS_KEY_BYTES);
     }
@@ -207,6 +207,12 @@ struct nodus_witness_ipc {
     bool                          tool_only;   /* the combined process's socket */
     /* Indexed by conn->slot of `tcp` (its pool index). */
     ipc_slot_t                    slots[NODUS_TCP_MAX_CONNS];
+    /* HF-9 WP6: a serial stamped into conn->user_data (unused by the
+     * transport) at accept, never reused. The IPC transport is not in
+     * session mode, so conn->generation stays 0 and cannot tell a connection
+     * from its replacement in the same slot; a completion that outlives its
+     * connection (nodus_witness_state_proof.h) compares this serial. */
+    uint64_t                      next_serial;
 };
 
 static ipc_slot_t *ipc_slot(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn) {
@@ -390,7 +396,7 @@ static void ipc_on_ctl_frame(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn,
         nodus_inter_role_list_t list={0};
         int rc=ipc->h.roles ? ipc->h.roles(ipc->h.ctx,&list) : -1;
         bool ok=rc==1 && list.validator_count<=DNAC_MAX_VALIDATORS &&
-                        list.storage_count<=DNA_V2_STORAGE_SET_MAX;
+                        list.storage_count<=DNA_V2_STORAGE_SET_CAP;
         if (!ok) QGP_LOG_ERROR(LOG_TAG,"%s","ipc_roles database read failed or list exceeds bound");
         uint8_t buf[NODUS_WITNESS_IPC_ROLES_FRAME_MAX];
         size_t n=nodus_inter_roles_encode(q,&list,ok,buf,sizeof(buf));
@@ -429,8 +435,22 @@ static void ipc_on_ctl_frame(nodus_witness_ipc_t *ipc, nodus_tcp_conn_t *conn,
 }
 
 static void ipc_on_accept(nodus_tcp_conn_t *conn, void *ctx) {
-    ipc_slot_t *s = ipc_slot((nodus_witness_ipc_t *)ctx, conn);
+    nodus_witness_ipc_t *ipc = (nodus_witness_ipc_t *)ctx;
+    ipc_slot_t *s = ipc_slot(ipc, conn);
     if (s) ipc_slot_reset(s);
+    if (ipc && conn) {
+        /* The serial travels through a pointer-sized field: pin the width so
+         * it can never be truncated into a repeat. At the end of the 64-bit
+         * space NO serial is issued (0 = no identity: the state proof
+         * service refuses such a connection, nodus_witness_state_proof.c);
+         * the counter never wraps. */
+        _Static_assert(sizeof(uintptr_t) >= sizeof(uint64_t),
+                       "conn->user_data must hold a 64-bit serial untruncated");
+        if (ipc->next_serial < UINT64_MAX)
+            conn->user_data = (void *)(uintptr_t)(++ipc->next_serial);
+        else
+            conn->user_data = NULL;
+    }
 }
 
 static void ipc_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {

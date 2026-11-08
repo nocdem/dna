@@ -388,7 +388,83 @@ static int resolve(evm_trie_t *t, tnode *n, size_t depth)
     n->val_len = dec->val_len;
     memcpy(n->child, dec->child, sizeof(n->child));
     free(dec);                     /* shell only: its parts now belong to n */
+
+    /* Z-52: an extension's hashed child is loaded and verified now, with
+     * the same checks and must_branch = 1 (decode_child set it), so a
+     * stored extension whose child is not a branch faults at the load of
+     * the extension, on every path that reaches it. The child is a branch;
+     * its own children stay unresolved, so this recursion is one level. */
+    if (n->kind == N_EXT && n->child[0] && n->child[0]->kind == N_REF)
+        return resolve(t, n->child[0], depth + n->nlen);
     return 0;
+}
+
+/* HF-9 WP6 — contract: evm_trie.h. The decode + canonical re-encode of
+ * resolve(), on one supplied node, with no store and no child load. */
+int evm_trie_node_check(const uint8_t *rlp, size_t len, size_t depth,
+                        int expect_branch, int size_class,
+                        evm_trie_node_view_t *out)
+{
+    if (!rlp || len == 0 || !out || depth > EVM_TRIE_PATH_NIBBLES ||
+        size_class < EVM_TRIE_NODE_ROOT || size_class > EVM_TRIE_NODE_EMBEDDED)
+        return -1;
+    memset(out, 0, sizeof(*out));
+    if (size_class == EVM_TRIE_NODE_HASHED && len < TRIE_INLINE_LIMIT)
+        return -2;
+    if (size_class == EVM_TRIE_NODE_EMBEDDED && len >= TRIE_INLINE_LIMIT)
+        return -2;
+
+    tnode *dec = NULL;
+    evm_trie_rlp_buf re = {0};
+    int rc = -2;
+    if (decode_node(rlp, len, depth, expect_branch, &dec) != 0 || !dec)
+        goto done;
+    if (node_encode(NULL, dec, &re, 0) != 0 || re.len != len ||
+        memcmp(re.p, rlp, len) != 0)
+        goto done;
+
+    /* the item view of the same bytes: children as hash / embedded */
+    evm_trie_rlp_item top, it[17];
+    if (evm_trie_rlp_decode_item(rlp, len, &top) != 0) goto done;
+    int cnt = split_list(&top, it, 17);
+    if (dec->kind == N_BRANCH) {
+        if (cnt != 17) goto done;
+        out->kind = EVM_TRIE_NODE_BRANCH;
+    } else {
+        if (cnt != 2) goto done;
+        out->kind = dec->kind == N_LEAF ? EVM_TRIE_NODE_LEAF
+                                        : EVM_TRIE_NODE_EXT;
+        out->nlen = dec->nlen;
+        memcpy(out->nib, dec->nib, dec->nlen);
+        if (dec->kind == N_LEAF) {
+            out->val = it[1].payload;
+            out->val_len = it[1].len;
+        }
+    }
+    if (dec->kind != N_LEAF) {
+        int first = dec->kind == N_BRANCH ? 0 : 1;
+        int last = dec->kind == N_BRANCH ? 16 : 2;
+        for (int k = first; k < last; k++) {
+            int ci = dec->kind == N_BRANCH ? k : 0;
+            if (it[k].is_list) {
+                out->child[ci].kind = EVM_TRIE_CHILD_EMBEDDED;
+                out->child[ci].p = it[k].payload - (it[k].total - it[k].len);
+                out->child[ci].len = it[k].total;
+            } else if (it[k].len == EVM_TRIE_DIGEST_LEN) {
+                out->child[ci].kind = EVM_TRIE_CHILD_HASH;
+                out->child[ci].p = it[k].payload;
+                out->child[ci].len = EVM_TRIE_DIGEST_LEN;
+            } else {
+                out->child[ci].kind = EVM_TRIE_CHILD_NONE;
+            }
+        }
+    }
+    rc = 0;
+done:
+    evm_trie_rlp_buf_free(&re);
+    node_free(dec);
+    if (rc != 0) memset(out, 0, sizeof(*out));
+    return rc;
 }
 
 /* ── insert / delete / lookup ──────────────────────────────────────── */

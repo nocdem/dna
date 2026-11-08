@@ -917,8 +917,12 @@ int nodus_witness_v2_pools_startup_check(nodus_witness_t *w) {
         ver != NODUS_V2_SCHEMA_VERSION_S16 &&
         ver != NODUS_V2_SCHEMA_VERSION_S17 &&   /* Nodus EVM             */
         ver != NODUS_V2_SCHEMA_VERSION_S18 &&   /* HF-6 3a               */
-        ver != NODUS_V2_SCHEMA_VERSION_S19)     /* HF-7 P1b: the live rung
-                                                 * (S18 + the inert
+        ver != NODUS_V2_SCHEMA_VERSION_S20 &&   /* HF-9: the live rung
+                                                 * (S19 + the supply
+                                                 * totals) — absent
+                                                 * here, an S20 DB would
+                                                 * SKIP this check       */
+        ver != NODUS_V2_SCHEMA_VERSION_S19)     /* HF-7 P1b: (S18 + the inert
                                                  * v2_replay / its index /
                                                  * last_upd_hash) — absent
                                                  * here, an S19 DB would
@@ -1214,6 +1218,7 @@ int nodus_rt_core_state_init(const nodus_domain_runtime_t *rt,
          ver != NODUS_V2_SCHEMA_VERSION_S16 &&
          ver != NODUS_V2_SCHEMA_VERSION_S17 &&   /* Nodus EVM            */
          ver != NODUS_V2_SCHEMA_VERSION_S18 &&   /* HF-6 3a              */
+         ver != NODUS_V2_SCHEMA_VERSION_S20 &&   /* HF-9: the live rung */
          ver != NODUS_V2_SCHEMA_VERSION_S19))    /* HF-7 P1b: the live
                                                   * rung (S18 + the inert
                                                   * v2_replay / its index /

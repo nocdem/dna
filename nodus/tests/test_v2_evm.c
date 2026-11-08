@@ -686,6 +686,66 @@ static uint64_t q1(nodus_witness_t *w, const char *sql) {
     return v;
 }
 
+/* HF-9: a test that turns a live (S20) chain database back into a
+ * previous build's S16 / S17 one by dropping the later rungs' objects must
+ * also drop the S20 ones — the supply totals, the keyed-trie tables, the
+ * status index and every trigger of both (a real pre-S20 database has none
+ * of them; leaving the triggers would also make later writes use totals
+ * tables that are gone). 0 / -1. */
+static int drop_s20_objects(sqlite3 *db) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND "
+            "(name LIKE 'v2_supply_%' OR name LIKE 'v2_trie_l%') "
+            "ORDER BY name", -1, &st, NULL) != SQLITE_OK) return -1;
+    char names[40][40];
+    size_t n = 0;
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const char *nm = (const char *)sqlite3_column_text(st, 0);
+        if (!nm || n >= 40 || strlen(nm) >= sizeof(names[0])) {
+            sqlite3_finalize(st);
+            return -1;
+        }
+        snprintf(names[n++], sizeof(names[0]), "%s", nm);
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) return -1;
+    for (size_t i = 0; i < n; i++) {
+        char sql[96];
+        snprintf(sql, sizeof(sql), "DROP TRIGGER %s", names[i]);
+        if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) return -1;
+    }
+    /* HF-9 WP4: and the retained-assignment tables, and v2_storage_sets /
+     * v2_storage_reports back in the HISTORICAL shape (member_count 0..256,
+     * bitmap <= 32) a database below S20 holds - the per-open shape check
+     * expects that text below S20 (nodus_witness.c) and the S20 rung
+     * rebuilds it. Rows are carried over (the fixture holds none beyond
+     * the historical limits). */
+    return sqlite3_exec(db,
+        "DROP INDEX v2_storage_nodes_by_status;"
+        "DROP TABLE v2_supply_totals; DROP TABLE v2_bond_total;"
+        "DROP TABLE v2_trie_nodes; DROP TABLE v2_trie_roots;"
+        "DROP TABLE v2_trie_dirty; DROP TABLE v2_trie_state;"
+        "DROP TABLE v2_trie_shadow_state;"
+        "DROP INDEX v2_storage_assign_cur;"
+        "DROP INDEX v2_storage_assign_by_node;"
+        "DROP TABLE v2_storage_assign; DROP TABLE v2_storage_assign_basis;"
+        "DROP TABLE v2_storage_assign_state; DROP TABLE v2_storage_held;"
+        "DROP TABLE v2_storage_member_epoch; DROP TABLE v2_storage_xfer_diff;"
+        "CREATE TABLE v2_s20_tmp_sets AS SELECT * FROM v2_storage_sets;"
+        "DROP TABLE v2_storage_sets;"
+        NODUS_V2_STSETS_DDL ";"
+        "INSERT INTO v2_storage_sets SELECT * FROM v2_s20_tmp_sets;"
+        "DROP TABLE v2_s20_tmp_sets;"
+        "CREATE TABLE v2_s20_tmp_reps AS SELECT * FROM v2_storage_reports;"
+        "DROP TABLE v2_storage_reports;"
+        NODUS_V2_STREPS_DDL ";"
+        "INSERT INTO v2_storage_reports SELECT * FROM v2_s20_tmp_reps;"
+        "DROP TABLE v2_s20_tmp_reps", NULL, NULL, NULL) == SQLITE_OK
+        ? 0 : -1;
+}
+
 static const nodus_domain_runtime_t *gevm(uint32_t dom) {
     return nodus_runtime_for_generation(NODUS_RT_GEN_EVM, dom);
 }
@@ -1422,8 +1482,10 @@ static int test_shape(void) {
           "selfcheck (generations 1-3, the D literal)"); OK();
     /* storage reward v1 (main merge order, QEVM first): GEN_STORAGE (4)
      * is built on the EVM generation; HF-7 P1d: GEN_ROOTS (5), built on
-     * GEN_STORAGE, is the newest compiled one */
-    CHECK(nodus_runtime_generation_count() == NODUS_RT_GEN_ROOTS &&
+     * GEN_STORAGE; HF-9 WP3: GEN_TRIE (6), built on GEN_ROOTS, is the
+     * newest compiled one */
+    CHECK(nodus_runtime_generation_count() == NODUS_RT_GEN_TRIE &&
+          NODUS_RT_GEN_TRIE == NODUS_RT_GEN_ROOTS + 1u &&
           NODUS_RT_GEN_ROOTS == NODUS_RT_GEN_STORAGE + 1u &&
           NODUS_RT_GEN_STORAGE == NODUS_RT_GEN_EVM + 1u &&
           NODUS_RT_GEN_EVM == 3u && NODUS_RT_GEN_EVM_BASE == NODUS_RT_GEN_2,
@@ -1656,9 +1718,9 @@ static int test_edge(void) {
     {
         uint32_t ver = 0;
         CHECK(nodus_witness_db_schema_version(A.w, &ver) == 0 &&
-              ver == NODUS_V2_SCHEMA_VERSION_S19,
-              "the reopened seeded chain is S19 (the at-open rung since "
-              "HF-7 P1b)"); OK();
+              ver == NODUS_V2_SCHEMA_VERSION_S20,
+              "the reopened seeded chain is S20 (the at-open rung since "
+              "HF-9; S19 since HF-7 P1b)"); OK();
     }
 
     /* heights 1..3: the twins agree on everything the vote row is not */
@@ -3750,6 +3812,7 @@ static int test_upgrade(void) {
                            "ALTER TABLE v2_domain_heads DROP COLUMN "
                            "last_upd_hash", NULL, NULL, NULL) == SQLITE_OK,
               "drop the S19 table and column");
+        CHECK(drop_s20_objects(fx.w->db) == 0, "drop the S20 objects");
         CHECK(sqlite3_exec(fx.w->db, "PRAGMA user_version = 16", NULL, NULL,
                            NULL) == SQLITE_OK, "user_version 16");
         uint8_t g0[64], c0[64];
@@ -3758,8 +3821,8 @@ static int test_upgrade(void) {
         CHECK(fx_reopen(&fx) == 0, "the production open path"); OK();
         uint32_t ver = 0;
         CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
-              ver == NODUS_V2_SCHEMA_VERSION_S19,
-              "migrated through S17 and S18 to S19"); OK();
+              ver == NODUS_V2_SCHEMA_VERSION_S20,
+              "migrated through S17, S18 and S19 to S20"); OK();
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_validator_roles") == 0,
               "v2_validator_roles exists, empty"); OK();
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_replay") == 0 &&
@@ -3808,6 +3871,7 @@ static int test_upgrade(void) {
         fixture_t fx;
         CHECK(fx_open(&fx, "s17ix", 1, 0) == 0, "a generation-2 chain");
         CHECK(fx_to(&fx, 4) == 0, "three blocks");
+        CHECK(drop_s20_objects(fx.w->db) == 0, "drop the S20 objects");
         CHECK(sqlite3_exec(fx.w->db,
                   "DROP INDEX evm_receipts_by_pos; DROP INDEX evm_logs_by_addr;"
                   "DROP TABLE v2_validator_roles; DROP TABLE v2_replay;"
@@ -3824,7 +3888,7 @@ static int test_upgrade(void) {
         CHECK(fx_reopen(&fx) == 0, "the production open path"); OK();
         uint32_t ver = 0;
         CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
-              ver == NODUS_V2_SCHEMA_VERSION_S19, "climbed to S19"); OK();
+              ver == NODUS_V2_SCHEMA_VERSION_S20, "climbed to S20"); OK();
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM pragma_index_info("
                        "'evm_receipts_by_pos')") == 2 &&
               q1(fx.w, "SELECT COUNT(*) FROM pragma_index_info("
@@ -5127,10 +5191,11 @@ static int test_mldsa_activation(void) {
         while (ok_k * E_LEN + 5u < 257u) ok_k++;
         const uint64_t ok_eff = ok_k * E_LEN + 5u;
         CHECK(DNAC_CFG_MLDSA_ACTIVE == 23 &&
-              DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_MLDSA_ACTIVE &&
+              DNAC_CFG_PARAM_MAX_ID >= DNAC_CFG_MLDSA_ACTIVE &&
               dnac_cfg_param_read_by_consensus(
                   (uint8_t)DNAC_CFG_MLDSA_ACTIVE),
-              "id 23, the last id, read by the running consensus"); OK();
+              "id 23 (no longer the last id since HF-9), read by the "
+              "running consensus"); OK();
         CHECK(nodus_chain_config_scalar_rules(23, DMLDSA, 1, ok_eff + 10,
                                               ok_eff, 1) == 0,
               "MLDSA_ACTIVE: D accepted"); OK();
@@ -5156,11 +5221,12 @@ static int test_mldsa_activation(void) {
         memset(&f, 0, sizeof(f));
         const uint32_t legal_gens[] = { NODUS_RT_GEN_EVM,
                                         NODUS_RT_GEN_STORAGE,
-                                        NODUS_RT_GEN_ROOTS };
-        for (size_t i = 0; i < 3; i++) {
+                                        NODUS_RT_GEN_ROOTS,
+                                        NODUS_RT_GEN_TRIE };
+        for (size_t i = 0; i < 4; i++) {
             g = f; g.judging_generation = legal_gens[i];
             CHECK(nodus_chain_config_stateful_rules_ex(23, ok_eff, &g) == 0,
-                  "MLDSA_ACTIVE: legal under generations 3, 4 and 5 "
+                  "MLDSA_ACTIVE: legal under generations 3, 4, 5 and 6 "
                   "(nothing but the generation set)"); OK();
         }
         g = f; g.judging_generation = NODUS_RT_GEN_EVM;

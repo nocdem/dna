@@ -232,7 +232,9 @@ static size_t build_req(const char *method, const char *key,
 /* ── replies ────────────────────────────────────────────────────────── */
 
 typedef struct {
-    uint8_t  payload[1 << 20];
+    uint8_t  payload[4 << 20];   /* HF-9 WP4: a 1025-row reply (the list
+                                  * bound is 1024 now) needs more than the
+                                  * 1 MiB of the 256-row days */
     size_t   len;
     char     type;             /* 'r' / 'e' */
     int      code;
@@ -241,7 +243,7 @@ typedef struct {
 } reply_t;
 
 static reply_t g_rep;
-static uint8_t g_rx[1 << 20];
+static uint8_t g_rx[4 << 20];
 
 /* Dispatch one request and read its ONE framed reply off our end. Bytes
  * the node's socket did not take stay in conn->wbuf[wpos..wlen); they are
@@ -470,7 +472,7 @@ static void t_cap(void)
     CHECK(nodus_dnac_storage_by_owner_decode(rep->payload, rep->len, chex,
                                              &r) == 0, "cap: decodes");
     CHECK(r.total == (uint64_t)SET_MAX + 1u && r.count == SET_MAX,
-          "cap: total 257, exactly 256 listed");
+          "cap: total SET_MAX + 1 (1025), exactly SET_MAX (1024) listed");
     for (size_t i = 0; i < r.count; i++) {
         char want[129];
         memset(fp, 0x77, 64);
@@ -478,7 +480,7 @@ static void t_cap(void)
         fp[1] = (uint8_t)(i & 0xFF);
         hex64(fp, want);
         CHECK(strcmp(r.nodes[i].node_fp, want) == 0,
-              "cap: the 256 lowest fps, ascending (the highest absent)");
+              "cap: the SET_MAX lowest fps, ascending (the highest absent)");
     }
     nodus_dnac_storage_by_owner_free(&r);
     fx_close(&f);
@@ -563,7 +565,7 @@ static void t_db_fault(void)
 
 /* ── crafted replies for the decoder ────────────────────────────────── */
 
-static uint8_t g_frame[1 << 20];
+static uint8_t g_frame[4 << 20];
 
 enum { N_OK, N_NO_FP, N_FP127, N_NOT_FOUND };
 
@@ -659,7 +661,7 @@ static void t_client_refusals(void)
           "control: a well-formed crafted reply decodes");
     nodus_dnac_storage_by_owner_free(&r);
     len = craft(3, 300, 0, NONE, N_OK, NONE, false, phex);
-    refused(len, phex, "|nodes| 3 with total 300 (not min(total, 256)) refused");
+    refused(len, phex, "|nodes| 3 with total 300 (not min(total, SET_MAX)) refused");
     len = craft(3, 3, 0, 1, N_FP127, NONE, false, phex);
     refused(len, phex, "an entry fp of 127 chars refused");
     len = craft(3, 3, 0, 2, N_NO_FP, NONE, false, phex);
