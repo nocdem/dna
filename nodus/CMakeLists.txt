@@ -3942,6 +3942,33 @@ foreach(faucet_test test_faucet_cfg test_faucet_decision test_faucet_journal
     add_test(NAME ${faucet_test} COMMAND ${faucet_test})
 endforeach()
 
+# nodus-amm — the swap bot (USDT on Ethereum <-> NODUS). Plan:
+# docs/plans/2026-11-08-swap-bot-plan.nodus1.md (revision 4), sections 3, 4,
+# 19. FIRST PACKAGE, non-signing: ledger math, settings, journal, the Nodus
+# and Ethereum seam tables and the Ethereum watcher. No service executable
+# yet: amm_main needs amm_req / amm_eth_pay / amm_http / amm_engine, which
+# wait for the operator's agreement on the signed texts (plan section 22,
+# question 12). The faucet's pattern (FAUCET_CORE_SOURCES above): the core
+# sources are compiled into each test; nothing links a transport.
+set(AMM_CORE_SOURCES
+    tools/amm/amm_ledger.c
+    tools/amm/amm_cfg.c
+    tools/amm/amm_journal.c
+    tools/amm/amm_eth_watch.c)
+
+foreach(amm_test test_amm_ledger test_amm_cfg test_amm_journal
+                 test_amm_eth_watch)
+    add_executable(${amm_test} tests/${amm_test}.c ${AMM_CORE_SOURCES})
+    target_link_libraries(${amm_test} nodus dsa nodus Threads::Threads)
+    target_compile_options(${amm_test} PRIVATE -Wall -Wextra -Wno-unused-parameter)
+    target_include_directories(${amm_test} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/amm
+        ${MONOREPO_ROOT}/dnac/include
+        ${MONOREPO_ROOT}/messenger/include)
+    target_compile_definitions(${amm_test} PRIVATE DNAC_TX_BUILDER_ONLY=1)
+    add_test(NAME ${amm_test} COMMAND ${amm_test})
+endforeach()
+
 # stagef_rpc_flood — TEST-ONLY localhost load tool for the Genesis
 # Protocol harness (nodus/tests/integration/stagef). NOT installed, NOT a
 # ctest: a measurement driver the operator/ORCHESTRATOR runs by hand
