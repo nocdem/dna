@@ -3954,26 +3954,66 @@ endforeach()
 # (plan section 22, question 12). The faucet's pattern (FAUCET_CORE_SOURCES
 # above): the core sources are compiled into each test; nothing links a
 # transport.
+# THIRD PACKAGE (the Ethereum side's transport and payout): amm_eth_tx
+# (EIP-1559 encoding and signing: the in-tree RLP and Keccak-256 and the pinned
+# libsecp256k1 v0.8.0 through libnodus -> nodus_evm, whose include directory is
+# PRIVATE there, so the vendored header directory is added here),
+# amm_eth_pay (the USDT payout) and amm_eth_rpc (JSON-RPC over HTTPS). The
+# HTTPS library is system libcurl found with pkg-config (plan section 3,
+# givens item 40: the orchestrator's decision, tasks/orchestration.md); it is
+# linked ONLY into test_amm_eth_rpc (and, later, the service executable), so no
+# other target and no other part of the build needs it. Where libcurl's
+# development files are absent the transport test is skipped with a status
+# message, and nothing else in the build changes.
+set(AMM_SECP_INCLUDE ${SHARED_DIR}/evm/third_party/secp256k1/include)
 set(AMM_CORE_SOURCES
     tools/amm/amm_ledger.c
     tools/amm/amm_cfg.c
     tools/amm/amm_journal.c
     tools/amm/amm_eth_watch.c
+    tools/amm/amm_eth_tx.c
+    tools/amm/amm_eth_pay.c
     tools/amm/amm_nodus_watch.c
     tools/amm/amm_nodus_pay.c)
 
 foreach(amm_test test_amm_ledger test_amm_cfg test_amm_journal
-                 test_amm_eth_watch test_amm_nodus_watch test_amm_nodus_pay)
+                 test_amm_eth_watch test_amm_eth_tx test_amm_eth_pay
+                 test_amm_nodus_watch test_amm_nodus_pay)
     add_executable(${amm_test} tests/${amm_test}.c ${AMM_CORE_SOURCES})
     target_link_libraries(${amm_test} nodus dsa nodus Threads::Threads)
     target_compile_options(${amm_test} PRIVATE -Wall -Wextra -Wno-unused-parameter)
     target_include_directories(${amm_test} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/tools/amm
+        ${AMM_SECP_INCLUDE}
         ${MONOREPO_ROOT}/dnac/include
         ${MONOREPO_ROOT}/messenger/include)
     target_compile_definitions(${amm_test} PRIVATE DNAC_TX_BUILDER_ONLY=1)
     add_test(NAME ${amm_test} COMMAND ${amm_test})
 endforeach()
+
+# amm_eth_rpc — the real Ethereum provider (plan sections 3, 4, 9, 10):
+# test_amm_eth_rpc parses canned answers through the injected HTTP post and
+# needs no network. libcurl: pkg-config, one library, this block only.
+find_package(PkgConfig QUIET)
+if(PKG_CONFIG_FOUND)
+    pkg_check_modules(AMM_CURL QUIET IMPORTED_TARGET libcurl)
+endif()
+if(AMM_CURL_FOUND)
+    add_executable(test_amm_eth_rpc tests/test_amm_eth_rpc.c
+        tools/amm/amm_eth_rpc.c)
+    target_link_libraries(test_amm_eth_rpc PRIVATE nodus dsa nodus
+        Threads::Threads PkgConfig::AMM_CURL)
+    target_compile_options(test_amm_eth_rpc PRIVATE -Wall -Wextra -Wno-unused-parameter)
+    target_include_directories(test_amm_eth_rpc PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/amm
+        ${MONOREPO_ROOT}/dnac/include
+        ${MONOREPO_ROOT}/messenger/include)
+    target_compile_definitions(test_amm_eth_rpc PRIVATE DNAC_TX_BUILDER_ONLY=1)
+    add_test(NAME test_amm_eth_rpc COMMAND test_amm_eth_rpc)
+else()
+    message(STATUS "nodus-amm: libcurl (pkg-config) not found; "
+                   "test_amm_eth_rpc and amm_eth_rpc are not built")
+endif()
 
 # amm_node_real — the production adapter of the Nodus seam (amm_node_t) over
 # the pinned client session (faucet_node_real.c pattern). It needs a live node,

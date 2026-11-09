@@ -50,6 +50,9 @@
  *                 (package 2): counted by a swap, or held (givens item 32)
  *   nodus_attempts the signed NODUS payout envelopes, stored before they are
  *                 sent (plan section 17; package 2)
+ *   eth_attempts  the signed USDT payout transactions (hash, nonce, raw
+ *                 bytes), stored before they are broadcast, UNIQUE on hash
+ *                 and on (chain, nonce) (plan section 10; package 3)
  *
  * SWAP STATES (plan section 13 names approved, paid-waiting-depth, counted,
  * payout-pending, payout done, refund done, expired; section 9/16
@@ -82,6 +85,11 @@
  *                                        minimum or zero), 16 (paused)
  *   payout_pending -> paid               13
  *   payout_pending -> unknown            17
+ *   payout_pending -> held               plan l.264, 277: the USDT delivered
+ *                                        (Transfer log) differs from the USDT
+ *                                        sent (TetherToken fee, TetherToken.sol:
+ *                                        123-134); held for manual handling,
+ *                                        what follows is DEFERRED
  *   payout_pending -> refund_pending     7 step 7 / 8 step 7 (plan line 226:
  *                                        zero or below the minimum after the
  *                                        Nodus fee -> refund); ONLY while no
@@ -527,5 +535,93 @@ int amm_journal_attempt_scanned(amm_journal_t *j, int64_t swap_seq,
  *  outer transaction, amm_journal_tx_begin). 0 / AMM_J_ILLEGAL / -1. */
 int amm_journal_attempt_finish(amm_journal_t *j, int64_t swap_seq,
                                const char *state);
+
+/* ── USDT payout attempts (package 3; plan sections 10, 17: write-ahead) ─ */
+
+#define AMM_EA_SIGNED    "signed"     /* stored, never broadcast               */
+#define AMM_EA_SUBMITTED "submitted"  /* broadcast at least once               */
+#define AMM_EA_CONFIRMED "confirmed"  /* receipt status 1 at the final depth   */
+#define AMM_EA_FAILED    "failed"     /* receipt status != 1 at the final depth
+                                       * (plan line 268: "failed send")        */
+#define AMM_EA_ORPHANED  "orphaned"   /* no receipt and the nonce is below the
+                                       * confirmed nonce (plan line 268)       */
+#define AMM_EA_UNKNOWN   "unknown"    /* receipt status 1 at the final depth but
+                                       * no USDT Transfer log from the bot to
+                                       * the recipient (plan line 264)         */
+
+/** One signed USDT payout transaction of one swap, stored BEFORE it is
+ *  broadcast (plan section 10 line 265: "the signed transaction (hash,
+ *  nonce, raw bytes) written to the journal BEFORE broadcast"). UNIQUE on
+ *  the hash and on (chain_id, nonce) in the database (Boltz
+ *  PendingEthereumTransaction.ts:51-60). A swap has AT MOST ONE attempt: the
+ *  plan builds no replacement of a stuck or failed payout (fee raising is
+ *  DEFERRED, plan lines 270, 278). `gross` is the USDT the swap owes the
+ *  user, `fee` the Ethereum fee deducted from it (givens item 34), `net` =
+ *  gross - fee the amount the transfer carries. */
+typedef struct {
+    int64_t  swap_seq;
+    int      n;                       /* 1 (assigned)                        */
+    uint64_t chain_id;                /* 1 = Ethereum mainnet                */
+    uint64_t nonce;
+    uint8_t  hash[32];                /* keccak256(raw)                      */
+    uint8_t  recipient[20];           /* the user's Ethereum address         */
+    uint64_t gross, net, fee;         /* USDT raw                            */
+    uint64_t gas_limit;
+    uint64_t max_fee_per_gas;
+    uint64_t max_priority_fee_per_gas;
+    uint8_t *raw;                     /* heap; amm_eattempt_free             */
+    size_t   raw_len;
+    uint64_t last_submit_tip;         /* 0 = never submitted                 */
+    char     state[12];               /* AMM_EA_*                            */
+} amm_eattempt_t;
+
+void amm_eattempt_free(amm_eattempt_t *a);
+
+/** The swaps that owe a USDT payout, oldest first: a NODUS -> USDT swap in
+ *  payout_pending (the payout) or a USDT -> NODUS swap in refund_pending (the
+ *  refund); the other two combinations are NODUS payouts (the Nodus payer's,
+ *  amm_journal_swap_head_payout). Up to `cap`; *n = count; more than `cap` is
+ *  a fault (-1), never cut. */
+int amm_journal_swap_list_usdt_owed(amm_journal_t *j, amm_swap_t *out, int cap,
+                                    int *n);
+
+/** The next free nonce of `chain_id` from the stored attempts: the highest
+ *  stored nonce + 1. 0 found / 1 none stored (the caller's chain read is then
+ *  the only floor) / -1. The caller (amm_eth_pay) takes
+ *  max(this, the chain's pending count) under its one lock (plan line 265). */
+int amm_journal_eth_next_nonce(amm_journal_t *j, uint64_t chain_id,
+                               uint64_t *next);
+
+/** Store a NEW signed attempt in ONE transaction (a->swap_seq, chain_id,
+ *  nonce, hash, recipient, gross, net, fee, gas_limit, fees, raw filled by the
+ *  caller; a->n and a->state assigned). Legal only when the swap owes a USDT
+ *  payout (amm_journal_swap_list_usdt_owed's states), the recipient is the
+ *  swap's own Ethereum address (destination of a payout, sender of a refund),
+ *  `net` + `fee` == `gross` with net > 0 (givens item 52: nothing of zero is
+ *  ever stored for broadcast), keccak256(raw) == hash, gas_limit > 0, every
+ *  number within INT64_MAX, and the swap has no attempt yet. A duplicate hash or a duplicate
+ *  (chain_id, nonce) is refused by the database's UNIQUE constraints.
+ *  0 / AMM_J_ILLEGAL / AMM_J_RANGE / -1. */
+int amm_journal_eth_attempt_sign(amm_journal_t *j, amm_eattempt_t *a);
+/** The (only) attempt of a swap (raw heap; amm_eattempt_free). The stored
+ *  bytes are checked against the stored hash on every read: a mismatch is a
+ *  fault (-1). 0 / 1 none / -1. */
+int amm_journal_eth_attempt_latest(amm_journal_t *j, int64_t swap_seq,
+                                   amm_eattempt_t *out);
+int amm_journal_eth_attempt_by_hash(amm_journal_t *j, const uint8_t hash[32],
+                                    amm_eattempt_t *out);
+/** Record a broadcast: state submitted, last_submit_tip = tip (from signed or
+ *  submitted). 0 / AMM_J_ILLEGAL / -1. */
+int amm_journal_eth_attempt_submitted(amm_journal_t *j, int64_t swap_seq,
+                                      uint64_t tip);
+/** confirmed | failed | orphaned | unknown, from signed or submitted. The swap's own
+ *  state is NOT moved here (the caller does it in the same outer
+ *  transaction, amm_journal_tx_begin). 0 / AMM_J_ILLEGAL / -1. */
+int amm_journal_eth_attempt_finish(amm_journal_t *j, int64_t swap_seq,
+                                   const char *state);
+/** The USDT of the bot's own pending payouts: the sum of `net` over the
+ *  attempts in signed or submitted (plan line 266: "subtracts the USDT of its
+ *  own pending payouts from the journal rows"), checked addition. 0 / -1. */
+int amm_journal_eth_pending_usdt(amm_journal_t *j, uint64_t *out);
 
 #endif /* AMM_JOURNAL_H */

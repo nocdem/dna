@@ -118,6 +118,21 @@
  *       pool in the same transaction), refused while an attempt is signed or
  *       submitted, allowed after it expired, illegal from paid; the head
  *       payout is only a swap that owes a NODUS payout.
+ *   J24 the USDT payout attempts (package 3, plan section 10 line 265,
+ *       section 17 write-ahead): refused unless the swap owes a USDT payout
+ *       (the payout of a NODUS -> USDT swap to its Ethereum destination, the
+ *       refund of a USDT -> NODUS swap to its Ethereum sender), net + fee ==
+ *       gross and net > 0 (givens item 52), keccak256(raw) == hash, gas
+ *       limit > 0, fees within INT64_MAX; stored, read back byte for byte, kept
+ *       across a reopen; ONE attempt per swap; the database's UNIQUE(hash)
+ *       and UNIQUE(chain_id, nonce) refuse a duplicate hash and a duplicate
+ *       nonce on the same chain (another chain id is another key); the next
+ *       nonce is the highest stored + 1 and survives a reopen; the pending
+ *       USDT is the sum of net over signed / submitted attempts only;
+ *       submitted / confirmed / failed / orphaned are final in the order the
+ *       table allows; payout_pending -> refund_pending is refused while a USDT
+ *       attempt is signed or submitted and allowed for a swap with none; a
+ *       stored attempt whose bytes no longer hash to its hash fails the read;
  * WHAT IT REQUIRES: a default build; one mkdtemp directory under /tmp,
  *   removed at the end; no network.
  * LEAVES BEHIND: nothing.
@@ -140,6 +155,7 @@
 
 #include "amm_journal.h"
 #include "amm_node.h"
+#include "crypto/hash/keccak256.h"
 
 static int g_failures = 0;
 static int g_checks = 0;
@@ -1571,6 +1587,189 @@ static void j23_id_edge_head(void) {
           "a NODUS -> USDT refund_pending is the head, though older swaps wait in the other combinations");
 }
 
+/* ── J24: USDT payout attempts (package 3, write-ahead) ─────────────── */
+
+/* An attempt of `len` bytes whose bytes depend on `tag`; hash = keccak256. */
+static int mkeatt(amm_eattempt_t *a, int64_t swap_seq, uint8_t recip, uint64_t gross,
+                  uint64_t fee, uint64_t nonce, uint8_t tag) {
+    memset(a, 0, sizeof(*a));
+    a->swap_seq = swap_seq;
+    a->chain_id = 1;
+    a->nonce = nonce;
+    memset(a->recipient, recip, 20);
+    a->gross = gross; a->fee = fee; a->net = gross - fee;
+    a->gas_limit = 65000;
+    a->max_fee_per_gas = 30000000000ULL;
+    a->max_priority_fee_per_gas = 2000000000ULL;
+    a->raw_len = 200;
+    a->raw = malloc(a->raw_len);
+    if (!a->raw) return 0;
+    for (size_t i = 0; i < a->raw_len; i++) a->raw[i] = (uint8_t)(tag * 7 + i);
+    return keccak256(a->raw, a->raw_len, a->hash) == 0;
+}
+
+static void j24_eth_attempts(void) {
+    printf("J24 USDT payout attempts\n");
+    fresh();
+    amm_swap_t s, s2, s3, u, lst[8];
+    amm_eattempt_t at, got;
+    int n = 0;
+    /* a NODUS -> USDT swap pays USDT to its destination (40 x 'b' = 0xbb..) */
+    amm_approve_t a1 = mk_n2u('c', 1, 1, "nodus:e1"), a2 = mk_n2u('d', 2, 2, "nodus:e2"),
+                  a3 = mk_n2u('f', 3, 3, "nodus:e3");
+    CHECK(approve_ok(&a1, &s) && approve_ok(&a2, &s2) && approve_ok(&a3, &s3), "setup: three NODUS -> USDT swaps");
+    CHECK(mkeatt(&at, s.seq, 0xbb, 1000, 100, 5, 1) && amm_journal_eth_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "approved: no USDT attempt can be stored");
+    amm_eattempt_free(&at);
+    CHECK(drive(&s, "payout_pending", "nodus:e1") && drive(&s2, "payout_pending", "nodus:e2") &&
+          drive(&s3, "payout_pending", "nodus:e3"), "the swaps reach payout_pending");
+    CHECK(amm_journal_swap_list_usdt_owed(g_j, lst, 8, &n) == 0 && n == 3 && lst[0].seq == s.seq &&
+          lst[1].seq == s2.seq && lst[2].seq == s3.seq, "all three owe a USDT payout, oldest first");
+    CHECK(amm_journal_swap_list_usdt_owed(g_j, lst, 2, &n) == -1, "a list above the cap is a fault, never cut");
+
+    /* refusals write nothing */
+    CHECK(mkeatt(&at, s.seq, 0xaa, 1000, 100, 5, 1) && amm_journal_eth_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "a recipient that is not the swap's destination: ILLEGAL");
+    amm_eattempt_free(&at);
+    CHECK(mkeatt(&at, s.seq, 0xbb, 1000, 100, 5, 1) && (at.net = 899, 1) &&
+          amm_journal_eth_attempt_sign(g_j, &at) == AMM_J_RANGE, "net + fee != gross: RANGE");
+    amm_eattempt_free(&at);
+    CHECK(mkeatt(&at, s.seq, 0xbb, 1000, 1000, 5, 1) && amm_journal_eth_attempt_sign(g_j, &at) == AMM_J_RANGE,
+          "a zero net amount is never stored (givens item 52): RANGE");
+    amm_eattempt_free(&at);
+    CHECK(mkeatt(&at, s.seq, 0xbb, 1000, 100, 5, 1) && (at.raw[3] ^= 1, 1) &&
+          amm_journal_eth_attempt_sign(g_j, &at) == AMM_J_RANGE, "stored bytes that do not hash to the hash: RANGE");
+    amm_eattempt_free(&at);
+    CHECK(mkeatt(&at, s.seq, 0xbb, 1000, 100, 5, 1) && (at.max_fee_per_gas = (uint64_t)INT64_MAX + 1, 1) &&
+          amm_journal_eth_attempt_sign(g_j, &at) == AMM_J_RANGE, "a fee above INT64_MAX: RANGE");
+    amm_eattempt_free(&at);
+    CHECK(mkeatt(&at, s.seq, 0xbb, 1000, 100, 5, 1) && (at.gas_limit = 0, 1) &&
+          amm_journal_eth_attempt_sign(g_j, &at) == AMM_J_RANGE, "gas limit 0: RANGE");
+    amm_eattempt_free(&at);
+    CHECK(amm_journal_eth_attempt_latest(g_j, s.seq, &got) == 1, "refusals stored nothing");
+
+    /* the write-ahead record */
+    uint64_t nx = 99;
+    CHECK(amm_journal_eth_next_nonce(g_j, 1, &nx) == 1, "no attempt stored: no next nonce from the journal");
+    CHECK(mkeatt(&at, s.seq, 0xbb, 1000, 100, 5, 1) && amm_journal_eth_attempt_sign(g_j, &at) == 0 &&
+          at.n == 1 && !strcmp(at.state, "signed"), "an attempt is stored (state signed)");
+    CHECK(amm_journal_eth_attempt_latest(g_j, s.seq, &got) == 0 && got.nonce == 5 && got.chain_id == 1 &&
+          got.gross == 1000 && got.net == 900 && got.fee == 100 && got.gas_limit == 65000 &&
+          got.max_fee_per_gas == 30000000000ULL && got.max_priority_fee_per_gas == 2000000000ULL &&
+          got.raw_len == at.raw_len && !memcmp(got.raw, at.raw, at.raw_len) && !memcmp(got.hash, at.hash, 32) &&
+          !strcmp(got.state, "signed") && got.last_submit_tip == 0, "it reads back byte for byte");
+    amm_eattempt_free(&got);
+    CHECK(amm_journal_eth_next_nonce(g_j, 1, &nx) == 0 && nx == 6, "next nonce = highest stored + 1");
+    CHECK(amm_journal_eth_next_nonce(g_j, 2, &nx) == 1, "another chain has none");
+    reopen();
+    CHECK(amm_journal_eth_attempt_by_hash(g_j, at.hash, &got) == 0 && got.swap_seq == s.seq && got.nonce == 5 &&
+          !memcmp(got.raw, at.raw, at.raw_len), "the attempt survives a reopen, found by hash");
+    amm_eattempt_free(&got);
+    CHECK(amm_journal_eth_next_nonce(g_j, 1, &nx) == 0 && nx == 6, "nonce uniqueness state survives a reopen");
+
+    /* one attempt per swap; UNIQUE on the hash and on (chain, nonce) */
+    amm_eattempt_t dup;
+    CHECK(mkeatt(&dup, s.seq, 0xbb, 1000, 100, 6, 2) && amm_journal_eth_attempt_sign(g_j, &dup) == AMM_J_ILLEGAL,
+          "a second attempt of the same swap: ILLEGAL (no automatic replacement)");
+    amm_eattempt_free(&dup);
+    CHECK(mkeatt(&dup, s2.seq, 0xbb, 1000, 100, 6, 1) && amm_journal_eth_attempt_sign(g_j, &dup) == AMM_J_ILLEGAL,
+          "the same transaction hash on another swap: refused by UNIQUE(hash)");
+    amm_eattempt_free(&dup);
+    CHECK(mkeatt(&dup, s2.seq, 0xbb, 1000, 100, 5, 2) && amm_journal_eth_attempt_sign(g_j, &dup) == AMM_J_ILLEGAL,
+          "the same (chain, nonce) on another swap: refused by UNIQUE(chain, nonce)");
+    amm_eattempt_free(&dup);
+    CHECK(amm_journal_eth_attempt_latest(g_j, s2.seq, &got) == 1, "the refusals stored nothing");
+    CHECK(mkeatt(&dup, s2.seq, 0xbb, 2000, 100, 6, 2) && amm_journal_eth_attempt_sign(g_j, &dup) == 0,
+          "another hash and another nonce is accepted");
+    amm_eattempt_free(&dup);
+    CHECK(mkeatt(&dup, s3.seq, 0xbb, 500, 100, 5, 3) && (dup.chain_id = 2, 1) &&
+          amm_journal_eth_attempt_sign(g_j, &dup) == 0, "the same nonce on ANOTHER chain id is a different key");
+    amm_eattempt_free(&dup);
+
+    /* the bot's own pending USDT: sum of net over signed / submitted */
+    uint64_t pend = 0;
+    CHECK(amm_journal_eth_pending_usdt(g_j, &pend) == 0 && pend == 900 + 1900 + 400,
+          "pending USDT = the sum of net over the open attempts (900 + 1900 + 400)");
+
+    /* states */
+    CHECK(amm_journal_eth_attempt_submitted(g_j, s.seq, 1234) == 0 &&
+          amm_journal_eth_attempt_latest(g_j, s.seq, &got) == 0 && !strcmp(got.state, "submitted") &&
+          got.last_submit_tip == 1234, "submitted records the tip");
+    amm_eattempt_free(&got);
+    CHECK(amm_journal_eth_attempt_submitted(g_j, s.seq, 1240) == 0, "a re-broadcast of the same attempt is recorded");
+    CHECK(amm_journal_eth_attempt_finish(g_j, s.seq, "paid") == AMM_J_ILLEGAL, "an unknown final state is refused");
+    CHECK(amm_journal_eth_attempt_finish(g_j, s.seq, "confirmed") == 0 &&
+          amm_journal_eth_attempt_latest(g_j, s.seq, &got) == 0 && !strcmp(got.state, "confirmed"),
+          "confirmed");
+    amm_eattempt_free(&got);
+    CHECK(amm_journal_eth_attempt_finish(g_j, s.seq, "failed") == AMM_J_ILLEGAL &&
+          amm_journal_eth_attempt_submitted(g_j, s.seq, 1300) == AMM_J_ILLEGAL, "confirmed is final");
+    CHECK(amm_journal_eth_pending_usdt(g_j, &pend) == 0 && pend == 1900 + 400,
+          "a finished attempt is not pending any more");
+    CHECK(amm_journal_eth_attempt_finish(g_j, s2.seq, "failed") == 0 &&
+          amm_journal_eth_attempt_finish(g_j, s3.seq, "orphaned") == 0, "failed and orphaned are final states");
+    CHECK(amm_journal_eth_pending_usdt(g_j, &pend) == 0 && pend == 0, "nothing pending");
+    CHECK(amm_journal_eth_next_nonce(g_j, 1, &nx) == 0 && nx == 7, "a finished attempt's nonce stays used (6 + 1)");
+
+    /* payout_pending -> refund_pending is refused while a USDT attempt is open */
+    fresh();
+    amm_approve_t b1 = mk_n2u('c', 1, 1, "nodus:f1"), b2 = mk_n2u('d', 2, 2, "nodus:f2");
+    CHECK(approve_ok(&b1, &s) && approve_ok(&b2, &s2) && drive(&s, "payout_pending", "nodus:f1") &&
+          drive(&s2, "payout_pending", "nodus:f2"), "setup: two NODUS -> USDT swaps in payout_pending");
+    CHECK(mkeatt(&at, s.seq, 0xbb, 1000, 100, 0, 4) && amm_journal_eth_attempt_sign(g_j, &at) == 0,
+          "setup: an attempt is signed");
+    amm_eattempt_free(&at);
+    CHECK(tr(s.seq, "refund_pending", NULL) == AMM_J_ILLEGAL, "refused while the USDT attempt is signed");
+    CHECK(amm_journal_eth_attempt_submitted(g_j, s.seq, 10) == 0 && tr(s.seq, "refund_pending", NULL) == AMM_J_ILLEGAL,
+          "refused while the USDT attempt is submitted");
+    CHECK(tr(s2.seq, "refund_pending", NULL) == 0, "allowed for a swap with no attempt (zero USDT after the fee, plan line 241)");
+    CHECK(amm_journal_swap_list_usdt_owed(g_j, lst, 8, &n) == 0 && n == 1 && lst[0].seq == s.seq,
+          "the NODUS -> USDT refund_pending is a NODUS refund: not in the USDT list");
+    CHECK(amm_journal_eth_attempt_finish(g_j, s.seq, "confirmed") == 0 && tr(s.seq, "paid", NULL) == 0,
+          "the caller settles the swap after the attempt");
+
+    /* a USDT refund: USDT -> NODUS swap in refund_pending, recipient = its Ethereum sender */
+    fresh();
+    amm_approve_t r1 = mk('a', 1, 1);
+    CHECK(approve_ok(&r1, &u) && drive(&u, "refund_pending", "nodus:g1"), "setup: a USDT -> NODUS swap in refund_pending");
+    CHECK(amm_journal_swap_list_usdt_owed(g_j, lst, 8, &n) == 0 && n == 1 && lst[0].seq == u.seq,
+          "a USDT -> NODUS refund_pending owes a USDT refund");
+    CHECK(mkeatt(&at, u.seq, 0xbb, 1000, 100, 0, 5) && amm_journal_eth_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "the refund goes to the request's sender, not to the NODUS destination");
+    amm_eattempt_free(&at);
+    CHECK(mkeatt(&at, u.seq, 0xaa, 1000, 100, 0, 5) && amm_journal_eth_attempt_sign(g_j, &at) == 0,
+          "the refund to the sender (40 x 'a') is stored");
+    amm_eattempt_free(&at);
+    /* a USDT -> NODUS swap in payout_pending is a NODUS payout: no USDT attempt */
+    amm_approve_t r2 = mk('b', 2, 2);
+    amm_swap_t u2;
+    CHECK(approve_ok(&r2, &u2) && drive(&u2, "payout_pending", "nodus:g2") &&
+          mkeatt(&at, u2.seq, 0xbb, 1000, 100, 1, 6) && amm_journal_eth_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "a NODUS payout owes no USDT attempt");
+    amm_eattempt_free(&at);
+
+    /* the receipt's Transfer log (plan line 264): an attempt can end `unknown`,
+     * and a payout whose delivered USDT differs is held (payout_pending -> held) */
+    amm_approve_t hq = mk_n2u('9', 7, 7, "nodus:h1");
+    amm_swap_t hs, hg;
+    CHECK(approve_ok(&hq, &hs) && drive(&hs, "payout_pending", "nodus:h1") &&
+          mkeatt(&at, hs.seq, 0xbb, 1000, 100, 9, 7) && amm_journal_eth_attempt_sign(g_j, &at) == 0 &&
+          amm_journal_eth_attempt_finish(g_j, hs.seq, "unknown") == 0 &&
+          amm_journal_eth_attempt_latest(g_j, hs.seq, &got) == 0 && !strcmp(got.state, "unknown"),
+          "an attempt can be finished `unknown` (no Transfer log)");
+    amm_eattempt_free(&at);
+    amm_eattempt_free(&got);
+    CHECK(amm_journal_swap_transition(g_j, hs.seq, "held", NULL, NULL, "USDT delivered 5 differs") == 0 &&
+          amm_journal_swap_get(g_j, hs.id, &hg) == 0 && !strcmp(hg.state, "held") &&
+          !strcmp(hg.message, "USDT delivered 5 differs"),
+          "payout_pending -> held is legal and keeps the message");
+
+    /* damage: the stored bytes no longer hash to the stored hash */
+    CHECK(side_sql("UPDATE eth_attempts SET raw=x'00112233'"), "damage: the stored bytes are replaced");
+    CHECK(amm_journal_eth_attempt_latest(g_j, u.seq, &got) == -1, "a damaged attempt fails the read (-1), never a value");
+    CHECK(amm_journal_eth_pending_usdt(g_j, &pend) == 0, "the pending sum reads amounts only");
+}
+
 /* ── J15: the Nodus seam header ─────────────────────────────────────── */
 static int stub_chain_id(void *ctx, uint8_t out[32], uint64_t deadline_ms) {
     (void)deadline_ms;
@@ -1617,6 +1816,7 @@ int main(void) {
     j21_attempts();
     j22_open_nodus();
     j23_id_edge_head();
+    j24_eth_attempts();
     j13_damage();
     j14_wal();
     j15_node_seam();

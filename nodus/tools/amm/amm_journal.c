@@ -17,6 +17,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "crypto/hash/keccak256.h"
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "AMM_JNL"
@@ -24,8 +25,12 @@
 /* 2: package 2 adds nodus_rows and nodus_attempts (CREATE IF NOT EXISTS, so a
  * version 1 file only gains the two tables). */
 /* 3: swaps.approved_tip (the height bound of fix (a)). Nothing has shipped, so
- * a version 1 or 2 file is not migrated: it must be deleted. */
-#define SCHEMA_VERSION 3
+ * a version 1 or 2 file is not migrated: it must be deleted. Package 3 adds
+ * the table eth_attempts. */
+/* 4: eth_attempts.state gains 'unknown' (a receipt without the USDT Transfer
+ * log, plan line 264); the CHECK of an existing table cannot change, so a
+ * version 3 file (never shipped) is refused and must be deleted. */
+#define SCHEMA_VERSION 4
 #define BUSY_MS 5000
 
 struct amm_journal {
@@ -103,7 +108,24 @@ static const char *SCHEMA_SQL =
     " last_submit_tip INTEGER NOT NULL DEFAULT 0,"
     " state TEXT NOT NULL CHECK(state IN ('signed','submitted','expired',"
     "'confirmed')),"
-    " PRIMARY KEY(swap_seq, n));";
+    " PRIMARY KEY(swap_seq, n));"
+    /* package 3: the signed USDT payouts, stored before they are broadcast
+     * (plan section 10 line 265: "unique on hash and on (chain, nonce)",
+     * Boltz PendingEthereumTransaction.ts:51-60). Created with IF NOT EXISTS
+     * like the package 2 tables: a version 3 file gains it. */
+    "CREATE TABLE IF NOT EXISTS eth_attempts("
+    " swap_seq INTEGER NOT NULL, n INTEGER NOT NULL,"
+    " chain_id INTEGER NOT NULL, nonce INTEGER NOT NULL,"
+    " hash BLOB NOT NULL, raw BLOB NOT NULL, recipient BLOB NOT NULL,"
+    " gross INTEGER NOT NULL, net INTEGER NOT NULL, fee INTEGER NOT NULL,"
+    " gas_limit INTEGER NOT NULL, max_fee INTEGER NOT NULL,"
+    " max_priority INTEGER NOT NULL,"
+    " last_submit_tip INTEGER NOT NULL DEFAULT 0,"
+    " state TEXT NOT NULL CHECK(state IN ('signed','submitted','confirmed',"
+    "'failed','orphaned','unknown')),"
+    " PRIMARY KEY(swap_seq, n),"
+    " UNIQUE(hash),"
+    " UNIQUE(chain_id, nonce));";
 
 /* ── checked column access ──────────────────────────────────────────── */
 
@@ -368,6 +390,7 @@ static int legal_swap(const char *from, const char *to) {
         {AMM_S_COUNTED, AMM_S_REVERSED},
         {AMM_S_PAYOUT_PENDING, AMM_S_PAID}, {AMM_S_PAYOUT_PENDING, AMM_S_UNKNOWN},
         {AMM_S_PAYOUT_PENDING, AMM_S_REFUND_PENDING},
+        {AMM_S_PAYOUT_PENDING, AMM_S_HELD},      /* USDT delivered != sent (l.264, 277) */
         {AMM_S_PAYOUT_PENDING, AMM_S_REVERSED},
         {AMM_S_PAID, AMM_S_REVERSED},
         {AMM_S_REFUND_PENDING, AMM_S_REFUNDED}, {AMM_S_REFUND_PENDING, AMM_S_HELD},
@@ -779,11 +802,15 @@ int amm_journal_swap_transition(amm_journal_t *j, int64_t seq, const char *to,
      * swap is signed or submitted: an envelope that may still apply would pay
      * AND refund */
     if (!strcmp(s.state, AMM_S_PAYOUT_PENDING) && !strcmp(to, AMM_S_REFUND_PENDING)) {
-        int64_t open_att = 0;
+        int64_t open_att = 0, open_eth = 0;
         if (one_int(j, "SELECT COUNT(*) FROM nodus_attempts WHERE swap_seq=?1 AND "
                        "state IN ('signed','submitted')",
                     (arg_t[]){AI(seq)}, 1, &open_att) != 0) goto done;
-        if (open_att > 0) { rc = AMM_J_ILLEGAL; goto done; }
+        /* the same for the USDT payout of a NODUS -> USDT swap (package 3) */
+        if (one_int(j, "SELECT COUNT(*) FROM eth_attempts WHERE swap_seq=?1 AND "
+                       "state IN ('signed','submitted')",
+                    (arg_t[]){AI(seq)}, 1, &open_eth) != 0) goto done;
+        if (open_att > 0 || open_eth > 0) { rc = AMM_J_ILLEGAL; goto done; }
     }
     if (given) {
         /* the carrier check runs on EVERY transition that names an id, not
@@ -1472,6 +1499,302 @@ done:
     return op_end(j, rc);
 }
 
+/* ── USDT payout attempts (package 3; plan sections 10, 17) ────────────── */
+
+#define EATT_RAW_MAX 4096u            /* a payout is ~200 bytes             */
+#define EATT_COLS "swap_seq, n, chain_id, nonce, hash, raw, recipient, gross, " \
+                  "net, fee, gas_limit, max_fee, max_priority, " \
+                  "last_submit_tip, state"
+
+void amm_eattempt_free(amm_eattempt_t *a) {
+    if (!a) return;
+    free(a->raw);
+    a->raw = NULL;
+    a->raw_len = 0;
+}
+
+static int known_eattempt_state(const char *s) {
+    return !strcmp(s, AMM_EA_SIGNED) || !strcmp(s, AMM_EA_SUBMITTED) ||
+           !strcmp(s, AMM_EA_CONFIRMED) || !strcmp(s, AMM_EA_FAILED) ||
+           !strcmp(s, AMM_EA_ORPHANED) || !strcmp(s, AMM_EA_UNKNOWN);
+}
+
+static int load_eattempt(sqlite3_stmt *st, amm_eattempt_t *a) {
+    memset(a, 0, sizeof(*a));
+    int64_t n = 0;
+    uint8_t *raw = NULL;
+    int ok = 0;
+    if (col_i64(st, 0, &a->swap_seq) == 0 && col_i64(st, 1, &n) == 0 && n >= 1 &&
+        n <= INT32_MAX && col_u64(st, 2, &a->chain_id) == 0 && a->chain_id >= 1 &&
+        col_u64(st, 3, &a->nonce) == 0 &&
+        col_blob_n(st, 4, a->hash, 32) == 0 &&
+        sqlite3_column_type(st, 5) == SQLITE_BLOB &&
+        col_blob_n(st, 6, a->recipient, 20) == 0 &&
+        col_u64(st, 7, &a->gross) == 0 && col_u64(st, 8, &a->net) == 0 &&
+        col_u64(st, 9, &a->fee) == 0 && col_u64(st, 10, &a->gas_limit) == 0 &&
+        col_u64(st, 11, &a->max_fee_per_gas) == 0 &&
+        col_u64(st, 12, &a->max_priority_fee_per_gas) == 0 &&
+        col_u64(st, 13, &a->last_submit_tip) == 0 &&
+        col_text(st, 14, a->state, sizeof(a->state)) == 0 &&
+        known_eattempt_state(a->state)) {
+        int rl = sqlite3_column_bytes(st, 5);
+        const void *rp = sqlite3_column_blob(st, 5);
+        uint8_t h[32];
+        if (rl > 0 && (size_t)rl <= EATT_RAW_MAX && rp &&
+            (raw = malloc((size_t)rl)) != NULL) {
+            memcpy(raw, rp, (size_t)rl);
+            /* what was stored must still be what was signed */
+            if (keccak256(raw, (size_t)rl, h) == 0 && !memcmp(h, a->hash, 32)) {
+                a->raw = raw;
+                a->raw_len = (size_t)rl;
+                a->n = (int)n;
+                ok = 1;
+            }
+        }
+    }
+    if (!ok) {
+        QGP_LOG_ERROR(LOG_TAG, "a USDT attempt row does not read back as a "
+                      "valid attempt");
+        free(raw);
+        memset(a, 0, sizeof(*a));
+        return -1;
+    }
+    return 0;
+}
+
+static int eattempt_latest_locked(amm_journal_t *j, int64_t swap_seq,
+                                  amm_eattempt_t *out) {
+    sqlite3_stmt *st;
+    if (prep(j, "SELECT " EATT_COLS " FROM eth_attempts WHERE swap_seq=?1 "
+                "ORDER BY n DESC LIMIT 1", (arg_t[]){AI(swap_seq)}, 1, &st) != 0)
+        return -1;
+    int rc = sqlite3_step(st);
+    int ret;
+    if (rc == SQLITE_ROW) ret = load_eattempt(st, out) == 0 ? 0 : -1;
+    else if (rc == SQLITE_DONE) ret = 1;
+    else ret = -1;
+    sqlite3_finalize(st);
+    return ret;
+}
+
+/* 40 lowercase hex digits into 20 bytes. */
+static int unhex20(const char *s, uint8_t out[20]) {
+    if (!hex_lower_n(s, AMM_ADDR_ETH)) return -1;
+    for (int i = 0; i < 20; i++) {
+        int a = s[2 * i], b = s[2 * i + 1];
+        a = a <= '9' ? a - '0' : a - 'a' + 10;
+        b = b <= '9' ? b - '0' : b - 'a' + 10;
+        out[i] = (uint8_t)(a * 16 + b);
+    }
+    return 0;
+}
+
+int amm_journal_swap_list_usdt_owed(amm_journal_t *j, amm_swap_t *out, int cap,
+                                    int *n) {
+    if (!j || !out || !n || cap < 1) return -1;
+    lock(j);
+    sqlite3_stmt *st;
+    int ret = -1, cnt = 0;
+    if (prep(j, "SELECT " SWAP_COLS " FROM swaps WHERE (dir=1 AND "
+                "state='payout_pending') OR (dir=0 AND state='refund_pending') "
+                "ORDER BY seq", NULL, 0, &st) == 0) {
+        int rc;
+        ret = 0;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            if (cnt >= cap || load_swap_row(st, &out[cnt]) != 0) { ret = -1; break; }
+            cnt++;
+        }
+        if (ret == 0 && rc != SQLITE_DONE) ret = -1;
+        sqlite3_finalize(st);
+    }
+    unlock(j);
+    if (ret == 0) *n = cnt;
+    return ret;
+}
+
+int amm_journal_eth_next_nonce(amm_journal_t *j, uint64_t chain_id,
+                               uint64_t *next) {
+    if (!j || !next || chain_id < 1 || chain_id > (uint64_t)INT64_MAX) return -1;
+    lock(j);
+    sqlite3_stmt *st;
+    int ret = -1;
+    if (prep(j, "SELECT MAX(nonce) FROM eth_attempts WHERE chain_id=?1",
+             (arg_t[]){AI(chain_id)}, 1, &st) == 0) {
+        int rc = sqlite3_step(st);
+        if (rc == SQLITE_ROW) {
+            if (sqlite3_column_type(st, 0) == SQLITE_NULL) {
+                ret = 1;
+            } else {
+                uint64_t m;
+                if (col_u64(st, 0, &m) == 0 && m < (uint64_t)INT64_MAX) {
+                    *next = m + 1;
+                    ret = 0;
+                }
+            }
+        }
+        sqlite3_finalize(st);
+    }
+    unlock(j);
+    return ret;
+}
+
+int amm_journal_eth_attempt_latest(amm_journal_t *j, int64_t swap_seq,
+                                   amm_eattempt_t *out) {
+    if (!j || !out) return -1;
+    lock(j);
+    int r = eattempt_latest_locked(j, swap_seq, out);
+    unlock(j);
+    return r;
+}
+
+int amm_journal_eth_attempt_by_hash(amm_journal_t *j, const uint8_t hash[32],
+                                    amm_eattempt_t *out) {
+    if (!j || !hash || !out) return -1;
+    lock(j);
+    sqlite3_stmt *st;
+    int ret = -1;
+    if (prep(j, "SELECT " EATT_COLS " FROM eth_attempts WHERE hash=?1",
+             (arg_t[]){AB(hash, 32)}, 1, &st) == 0) {
+        int rc = sqlite3_step(st);
+        if (rc == SQLITE_ROW) ret = load_eattempt(st, out) == 0 ? 0 : -1;
+        else if (rc == SQLITE_DONE) ret = 1;
+        sqlite3_finalize(st);
+    }
+    unlock(j);
+    return ret;
+}
+
+int amm_journal_eth_attempt_sign(amm_journal_t *j, amm_eattempt_t *a) {
+    if (!j || !a || !a->raw) return -1;
+    uint8_t h[32];
+    if (a->raw_len == 0 || a->raw_len > EATT_RAW_MAX || a->net == 0 ||
+        a->fee > UINT64_MAX - a->net || a->net + a->fee != a->gross ||
+        a->gross > (uint64_t)INT64_MAX || a->chain_id < 1 ||
+        a->chain_id > (uint64_t)INT64_MAX || a->nonce > (uint64_t)INT64_MAX ||
+        a->gas_limit == 0 || a->gas_limit > (uint64_t)INT64_MAX ||
+        a->max_fee_per_gas > (uint64_t)INT64_MAX ||
+        a->max_priority_fee_per_gas > (uint64_t)INT64_MAX ||
+        a->last_submit_tip > (uint64_t)INT64_MAX) return AMM_J_RANGE;
+    /* the stored hash must be the hash of the stored bytes */
+    if (keccak256(a->raw, a->raw_len, h) != 0 || memcmp(h, a->hash, 32) != 0)
+        return AMM_J_RANGE;
+    if (op_begin(j) != 0) return -1;
+    int rc = -1;
+    amm_swap_t s;
+    int g = swap_query(j, "seq=?1", (arg_t[]){AI(a->swap_seq)}, 1, &s);
+    if (g < 0) goto done;
+    if (g == 1) { rc = AMM_J_ILLEGAL; goto done; }
+    /* the one place a USDT payout of this swap can be owed: the payout of a
+     * NODUS -> USDT swap to its destination, the refund of a USDT -> NODUS
+     * swap to its sender (the Ethereum address of the request) */
+    int owed = (s.dir == AMM_NODUS_TO_USDT && !strcmp(s.state, AMM_S_PAYOUT_PENDING)) ||
+               (s.dir == AMM_USDT_TO_NODUS && !strcmp(s.state, AMM_S_REFUND_PENDING));
+    if (!owed) { rc = AMM_J_ILLEGAL; goto done; }
+    uint8_t want[20];
+    if (unhex20(s.dir == AMM_NODUS_TO_USDT ? s.dest : s.sender, want) != 0 ||
+        memcmp(want, a->recipient, 20) != 0) { rc = AMM_J_ILLEGAL; goto done; }
+    amm_eattempt_t prev;
+    int p = eattempt_latest_locked(j, a->swap_seq, &prev);
+    if (p < 0) goto done;
+    if (p == 0) {                 /* one attempt per swap: no automatic retry */
+        amm_eattempt_free(&prev);
+        rc = AMM_J_ILLEGAL;
+        goto done;
+    }
+    /* UNIQUE(hash) and UNIQUE(chain_id, nonce) are the database's: a
+     * violation is a refusal, not a fault */
+    sqlite3_stmt *st;
+    if (prep(j, "INSERT INTO eth_attempts(swap_seq, n, chain_id, nonce, hash, "
+                "raw, recipient, gross, net, fee, gas_limit, max_fee, "
+                "max_priority, last_submit_tip, state) "
+                "VALUES(?1,1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,'signed')",
+             (arg_t[]){AI(a->swap_seq), AI(a->chain_id), AI(a->nonce),
+                       AB(a->hash, 32), AB(a->raw, (int)a->raw_len),
+                       AB(a->recipient, 20), AI(a->gross), AI(a->net),
+                       AI(a->fee), AI(a->gas_limit), AI(a->max_fee_per_gas),
+                       AI(a->max_priority_fee_per_gas), AI(a->last_submit_tip)},
+             13, &st) != 0) goto done;
+    int sr = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (sr == SQLITE_CONSTRAINT) { rc = AMM_J_ILLEGAL; goto done; }
+    if (sr != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "step failed (%d): %s", sr, sqlite3_errmsg(j->db));
+        goto done;
+    }
+    a->n = 1;
+    snprintf(a->state, sizeof(a->state), "%s", AMM_EA_SIGNED);
+    rc = AMM_J_OK;
+done:
+    return op_end(j, rc);
+}
+
+int amm_journal_eth_attempt_submitted(amm_journal_t *j, int64_t swap_seq,
+                                      uint64_t tip) {
+    if (!j || tip > (uint64_t)INT64_MAX) return -1;
+    if (op_begin(j) != 0) return -1;
+    int rc = -1;
+    amm_eattempt_t a;
+    int g = eattempt_latest_locked(j, swap_seq, &a);
+    if (g < 0) goto done;
+    if (g == 1) { rc = AMM_J_ILLEGAL; goto done; }
+    int ok = !strcmp(a.state, AMM_EA_SIGNED) || !strcmp(a.state, AMM_EA_SUBMITTED);
+    int n = a.n;
+    amm_eattempt_free(&a);
+    if (!ok) { rc = AMM_J_ILLEGAL; goto done; }
+    if (run(j, "UPDATE eth_attempts SET state='submitted', last_submit_tip=?1 "
+               "WHERE swap_seq=?2 AND n=?3",
+            (arg_t[]){AI(tip), AI(swap_seq), AI(n)}, 3, NULL) != 0) goto done;
+    rc = AMM_J_OK;
+done:
+    return op_end(j, rc);
+}
+
+int amm_journal_eth_attempt_finish(amm_journal_t *j, int64_t swap_seq,
+                                   const char *state) {
+    if (!j || !state) return -1;
+    if (strcmp(state, AMM_EA_CONFIRMED) && strcmp(state, AMM_EA_FAILED) &&
+        strcmp(state, AMM_EA_ORPHANED) && strcmp(state, AMM_EA_UNKNOWN))
+        return AMM_J_ILLEGAL;
+    if (op_begin(j) != 0) return -1;
+    int rc = -1;
+    amm_eattempt_t a;
+    int g = eattempt_latest_locked(j, swap_seq, &a);
+    if (g < 0) goto done;
+    if (g == 1) { rc = AMM_J_ILLEGAL; goto done; }
+    int n = a.n;
+    int ok = !strcmp(a.state, AMM_EA_SIGNED) || !strcmp(a.state, AMM_EA_SUBMITTED);
+    amm_eattempt_free(&a);
+    if (!ok) { rc = AMM_J_ILLEGAL; goto done; }
+    if (run(j, "UPDATE eth_attempts SET state=?1 WHERE swap_seq=?2 AND n=?3",
+            (arg_t[]){AT(state), AI(swap_seq), AI(n)}, 3, NULL) != 0) goto done;
+    rc = AMM_J_OK;
+done:
+    return op_end(j, rc);
+}
+
+int amm_journal_eth_pending_usdt(amm_journal_t *j, uint64_t *out) {
+    if (!j || !out) return -1;
+    lock(j);
+    sqlite3_stmt *st;
+    int ret = -1;
+    if (prep(j, "SELECT net FROM eth_attempts WHERE state IN "
+                "('signed','submitted') ORDER BY swap_seq, n", NULL, 0, &st) == 0) {
+        uint64_t sum = 0;
+        int rc;
+        ret = 0;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            uint64_t v;
+            if (col_u64(st, 0, &v) != 0 || sum > UINT64_MAX - v) { ret = -1; break; }
+            sum += v;
+        }
+        if (ret == 0 && rc != SQLITE_DONE) ret = -1;
+        sqlite3_finalize(st);
+        if (ret == 0) *out = sum;
+    }
+    unlock(j);
+    return ret;
+}
+
 /* ── open / close ───────────────────────────────────────────────────── */
 
 int amm_journal_open(const char *path, amm_journal_t **out) {
@@ -1520,7 +1843,7 @@ int amm_journal_open(const char *path, amm_journal_t **out) {
         }
     }
     if (exec_sql(j->db, SCHEMA_SQL) != 0) goto fail;
-    if (exec_sql(j->db, "PRAGMA user_version=3") != 0) goto fail;   /* = SCHEMA_VERSION */
+    if (exec_sql(j->db, "PRAGMA user_version=4") != 0) goto fail;   /* = SCHEMA_VERSION */
     chmod(path, 0600);
     *out = j;
     return 0;
