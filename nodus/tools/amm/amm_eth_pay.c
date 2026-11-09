@@ -155,24 +155,26 @@ static int min_balance(amm_eth_pay_t *p, const rd_t *rd, int erc, evm_u256 *out)
     return 0;
 }
 
-/* The gas estimate of a call: the LARGEST answer, needing Q answers. An
- * error object ("execution reverted") is an unanswered provider. @return 0 /
- * 1 (not enough answers: the payout stays unsent). */
+/* The gas estimate of a call: the Q-th largest answer, as qth() takes every
+ * other quorum read, so one provider alone can neither raise the estimate
+ * (and the fee deducted from the user) nor lower it below what Q providers
+ * report. An error object ("execution reverted") is an unanswered provider.
+ * @return 0 / 1 (not enough answers: the payout stays unsent). */
 static int max_estimate(amm_eth_pay_t *p, const rd_t *rd, const uint8_t *cd,
                         size_t cd_len, uint64_t *out) {
+    uint64_t v[AMM_ETH_MAX_PROVIDERS];
     int n = 0;
-    uint64_t hi = 0;
     for (int i = 0; i < p->cfg.n_providers; i++) {
         if (!rd->use[i]) continue;
         const amm_eth_provider_t *pr = &p->prov[i];
         uint64_t g = 0;
         if (pr->estimate_gas(pr->ctx, p->self, p->cfg.usdt, cd, cd_len, &g,
                              rd->dl) != AMM_ETH_OK || g == 0) continue;
-        if (g > hi) hi = g;
-        n++;
+        v[n++] = g;
     }
     if (n < p->cfg.quorum) return 1;
-    *out = hi;
+    qsort(v, (size_t)n, sizeof(v[0]), cmp_desc);
+    *out = v[p->cfg.quorum - 1];
     return 0;
 }
 

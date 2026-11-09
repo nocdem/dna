@@ -1248,6 +1248,38 @@ static void e16_gas_bump(void) {
     amm_eth_pay_free(p);
 }
 
+/* E17: the gas estimate is the Q-th largest answer (Q = 2 of 3), as every other
+ * quorum read: one provider can neither raise nor lower it alone. Honest 21000:
+ * bumped (21000 x 125 + 99) / 100 = 2,625,099 / 100 = 26,250; fee = 26,250 x 1;
+ * net = 1,000,000 - 26,250 = 973,750. A liar answering 10,000,000 (high) or 10
+ * (low) leaves the 2nd largest at 21000. Two providers at 40,000 move it: the
+ * 2nd largest is 40,000, bumped (40,000 x 125 + 99) / 100 = 5,000,099 / 100 = 50,000. */
+static void e17_estimate_quorum(void) {
+    printf("E17 the gas estimate: the Q-th largest answer\n");
+    amm_swap_t s;
+    amm_ep_step_t o;
+    amm_eattempt_t a;
+    static const uint64_t cases[3][3] = { { 21000, 21000, 10000000 }, { 10, 21000, 21000 },
+                                          { 21000, 40000, 40000 } };
+    static const uint64_t want[3] = { 26250, 26250, 50000 };
+    static const char *what[3] = {
+        "one provider estimates 10,000,000: the estimate stays 21000 (bumped 26250)",
+        "one provider estimates 10: the estimate stays 21000 (bumped 26250)",
+        "two providers estimate 40,000: the 2nd largest moves (bumped 50000)" };
+    for (int c = 0; c < 3; c++) {
+        fresh();
+        amm_eth_pay_t *p = new_pay_n(NP, 2, 3, 0);              /* 3 providers, Q = 2 */
+        g_price.mode = 1; g_price.mul = 1;
+        for (int i = 0; i < NP; i++) g_st[i].gas_base = cases[c][i];
+        int ok = p && new_swap(1, 'c', '1', 0, &s) && amm_eth_pay_sign(p, s.seq, 1000000, 0, &o) == AMM_EP_OK &&
+                 amm_journal_eth_attempt_latest(g_j, s.seq, &a) == 0;
+        CHECK(ok && a.gas_limit == want[c] && g_price.last_gas == want[c] &&
+              (c == 2 || (a.fee == 26250 && a.net == 973750)), what[c]);
+        if (ok) amm_eattempt_free(&a);
+        amm_eth_pay_free(p);
+    }
+}
+
 int main(void) {
     printf("test_amm_eth_pay\n");
     snprintf(g_dir, sizeof(g_dir), "/tmp/amm_ethpay_testXXXXXX");
@@ -1271,6 +1303,7 @@ int main(void) {
     e14_transfer_log();
     e15_joint_depth();
     e16_gas_bump();
+    e17_estimate_quorum();
 
     if (g_j) amm_journal_close(g_j);
     cleanup_dir();

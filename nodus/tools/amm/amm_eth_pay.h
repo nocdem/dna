@@ -79,7 +79,7 @@
  * answers (Q = the quorum setting, givens item 58):
  *   tip, transaction counts   the Q-th largest answer (at least Q providers
  *                             report that value or more)
- *   gas estimate, gas price   the Q-th largest / the largest answer
+ *   gas estimate, gas price   the Q-th largest answer
  *   balances                  the SMALLEST answer (a balance is never taken
  *                             higher than what a provider says)
  *   receipt                   at least Q providers return the IDENTICAL

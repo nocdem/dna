@@ -443,6 +443,7 @@ static void r6_block(void) {
     printf("R6 get_block\n");
     mk(65536);
     amm_eth_block_t b;
+    const char *good0 = BLOCK_OK("0x68b3", H1, H2, "0x5835c54d");
     result(BLOCK_OK("0x68b3", H1, H2, "0x5835c54d"));
     CHECK(g_p.get_block(g_p.ctx, 0x68b3, &b, 0) == AMM_ETH_OK && b.number == 0x68b3 && b.timestamp == 0x5835c54d &&
           b.hash[0] == 0xd5 && b.hash[31] == 0x9c && b.parent[0] == 0x1f && b.parent[31] == 0x6d,
@@ -458,6 +459,24 @@ static void r6_block(void) {
     CHECK(g_p.get_block(g_p.ctx, 0x68b3, &b, 0) == AMM_ETH_ERR, "a timestamp with a leading zero: ERR");
     result(BLOCK_OK("0x068b3", H1, H2, "0x1"));
     CHECK(g_p.get_block(g_p.ctx, 0x68b3, &b, 0) == AMM_ETH_ERR, "a number with a leading zero: ERR");
+    /* the member cap AMM_RPC_OBJ_MEMBERS = 64 per object (bounds the duplicate-key
+     * scan): the example block has 21 top-level keys; + 43 extra keys = 64 members is
+     * accepted, + 44 = 65 is ERR */
+    {
+        static char wide[8192];
+        for (int extra = 43; extra <= 44; extra++) {
+            size_t w = 0;
+            wide[w++] = '{';
+            for (int k = 0; k < extra; k++)
+                w += (size_t)snprintf(wide + w, sizeof(wide) - w, "\"x%d\":0,", k);
+            snprintf(wide + w, sizeof(wide) - w, "%s", good0 + 1);
+            result(wide);
+            if (extra == 43)
+                CHECK(g_p.get_block(g_p.ctx, 0x68b3, &b, 0) == AMM_ETH_OK, "a block object of exactly 64 members: OK");
+            else
+                CHECK(g_p.get_block(g_p.ctx, 0x68b3, &b, 0) == AMM_ETH_ERR, "a block object of 65 members: ERR (member cap)");
+        }
+    }
     /* every required field (block.yaml:1-23), removed: ERR */
     static const char *breq[] = { "hash", "parentHash", "sha3Uncles", "miner", "stateRoot", "transactionsRoot",
         "receiptsRoot", "logsBloom", "number", "gasLimit", "gasUsed", "timestamp", "extraData", "mixHash",

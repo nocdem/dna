@@ -17,6 +17,7 @@
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "AMM_RPC"
+#define AMM_RPC_OBJ_MEMBERS 64
 
 /* ═══ strict bounded JSON ═════════════════════════════════════════════ */
 
@@ -79,6 +80,10 @@ static int parse_value(jp_t *j, int depth);
 
 static int link_child(jp_t *j, int parent, int child) {
     jn_t *p = &j->nodes[parent];
+    /* At most AMM_RPC_OBJ_MEMBERS members per object: the duplicate-key scan
+     * below is linear per member, so the cap bounds it per object (the widest
+     * schema answer read here, a block, has fewer than 32 fields). */
+    if (p->t == J_OBJ && p->nchild >= AMM_RPC_OBJ_MEMBERS) return -1;
     if (p->t == J_OBJ) {                       /* no duplicate key           */
         for (int c = p->first; c >= 0; c = j->nodes[c].next)
             if (j->nodes[c].klen == j->nodes[child].klen &&
