@@ -20,8 +20,10 @@
  *       reversed directly) return AMM_J_ILLEGAL and change nothing;
  *   J4  the incoming-transfer marker is written when the payment counts and
  *       is permanent: a second swap naming the same incoming id is refused
- *       (AMM_J_DUP_TRANSFER) with its row, the marker count and the pool
- *       unchanged; marker and request-number markers survive a reopen;
+ *       (AMM_J_DUP_TRANSFER) already at paid_waiting_depth (review finding
+ *       (b), see J18); a marker that already exists refuses the count itself
+ *       with the row, the marker and the pool unchanged; marker and
+ *       request-number markers survive a reopen;
  *   J5  the in-flight sum is computed from rows: approved, paid_waiting_depth,
  *       counted, payout_pending and refund_pending hold room, paid, refunded,
  *       expired, unknown, reversed do not; `held` holds room only when the
@@ -73,8 +75,49 @@
  *       empty value;
  *   J14 the database is in WAL mode (read by a second connection);
  *   J15 the Nodus seam header amm_node.h compiles and a stub table is
- *       callable (a unit-level compile and call check of the seam; no
- *       consumer exists in this package).
+ *       callable (a unit-level compile and call check of the seam; the
+ *       behaviour of the seam is tested with the watcher and the payout
+ *       tests);
+ *   J16 (above) also: the candidate-exists query has a lower bound by chain
+ *       HEIGHT (the approval's approved_tip, the tip read at approval;
+ *       review finding (a)): a candidate in a block at or below it holds
+ *       nothing, one block above it does, an unknown block time (0) is still
+ *       kept on the time bound; J2 also: an approval with an unreadable tip
+ *       (0) is refused (AMM_J_RANGE), never stored as 0, and the tip reads
+ *       back from the row;
+ *   J18 ONE INCOMING TRANSFER, ONE SWAP (review finding (b)): a second swap
+ *       naming an incoming id that another swap carries in ANY state that has
+ *       taken the payment (paid_waiting_depth, counted, payout_pending, paid,
+ *       refund_pending, refunded, held, unknown, reversed) is refused with
+ *       AMM_J_DUP_TRANSFER at paid_waiting_depth and is left approved; swaps
+ *       that are only approved, or expired, do not block (READING of "live");
+ *   J19 amm_journal_payment_gone handles EVERY swap carrying the key: two
+ *       waiting swaps are both approved again; a counted swap is reversed
+ *       with the pause while a waiting swap on the same key is unpaid again
+ *       and an approved one is left; two counted-or-later swaps are both
+ *       reversed (the impossible-by-API states are set through a second
+ *       connection);
+ *   J20 the Nodus incoming rows: stored once per (height, item, seq), read
+ *       back exactly, listed in order, a cap overflow is a fault, a damaged
+ *       row fails the read, range refusals, survive a reopen;
+ *   J21 the NODUS payout attempts (write-ahead): refused unless the swap owes
+ *       a NODUS payout (the payout of a USDT -> NODUS swap to its
+ *       destination, the refund of a NODUS -> USDT swap to its sender),
+ *       net + fee == gross and net > 0 and 1..15 inputs; stored, read back
+ *       byte for byte and kept across a reopen; a second attempt only after
+ *       the first is expired; submit and scan cursor moves; confirmed or
+ *       expired is final; the head payout is the oldest by seq; ONE PAYOUT IN
+ *       FLIGHT: another swap's attempt is refused while one swap's attempt is
+ *       signed or submitted (the bot's coins are not reserved per swap);
+ *   J22 the open NODUS approval query: by transfer id, sender and amount,
+ *       only NODUS -> USDT swaps in state approved;
+ *   J23 an incoming id, once set, is never changed (B on Y naming X at
+ *       counted is refused and unchanged; the same id again is accepted) and
+ *       the carrier check runs at every transition that names an id;
+ *       payout_pending -> refund_pending is allowed with no attempt (with the
+ *       pool in the same transaction), refused while an attempt is signed or
+ *       submitted, allowed after it expired, illegal from paid; the head
+ *       payout is only a swap that owes a NODUS payout.
  * WHAT IT REQUIRES: a default build; one mkdtemp directory under /tmp,
  *   removed at the end; no network.
  * LEAVES BEHIND: nothing.
@@ -162,6 +205,7 @@ static amm_approve_t mk(char c, uint64_t amount, uint64_t v) {
     a.sender = s; a.dest = d;
     a.amount = amount; a.minimum = 1; a.value_usdt = v;
     a.approved_at = 1000; a.expiry = 2800;
+    a.approved_tip = 100;
     a.incoming_id = "";
     uint64_t n = g_ctr++;
     for (int i = 0; i < 8; i++) a.req_no[31 - i] = (uint8_t)(n >> (8 * i));
@@ -230,7 +274,7 @@ static void j1_approve(void) {
     CHECK(amm_journal_approve(g_j, &a, &s) == AMM_J_OK, "approved");
     CHECK(state_is(&s, "approved") && s.dir == AMM_USDT_TO_NODUS &&
           s.amount == 50000000ULL && s.minimum == 123 &&
-          s.value_usdt == 50000000ULL && s.approved_at == 1000 &&
+          s.value_usdt == 50000000ULL && s.approved_at == 1000 && s.approved_tip == 100 &&
           s.expiry == 2800 && !strcmp(s.incoming_id, "nodus:beef") &&
           strlen(s.id) == 32 && !strcmp(s.sender, a.sender) &&
           !strcmp(s.dest, a.dest), "fields written as given");
@@ -319,6 +363,20 @@ static void j2_refusals(void) {
     bad.sender = "ABCDEF";
     CHECK(amm_journal_approve(g_j, &bad, &o) == AMM_J_RANGE, "malformed sender: RANGE");
     bad = mk('a', 1, 1);
+    bad.approved_tip = 0;
+    CHECK(amm_journal_approve(g_j, &bad, &o) == AMM_J_RANGE,
+          "an unreadable tip (0) refuses the approval: it is never stored as 0");
+    CHECK(amm_journal_req_marker_exists(g_j, bad.sender, bad.req_no) == 1 && swap_count_rows() == 0,
+          "  nothing written, the request number is not consumed");
+    bad = mk('a', 1, 1);
+    bad.approved_tip = (uint64_t)INT64_MAX + 1;
+    CHECK(amm_journal_approve(g_j, &bad, &o) == AMM_J_RANGE, "a tip above INT64_MAX: RANGE");
+    bad = mk('a', 1, 1);
+    bad.approved_tip = 1;
+    CHECK(amm_journal_approve(g_j, &bad, &o) == AMM_J_OK && o.approved_tip == 1,
+          "tip 1 is a readable tip: stored as 1");
+    fresh();
+    bad = mk('a', 1, 1);
     bad.amount = (uint64_t)INT64_MAX + 1;
     CHECK(amm_journal_approve(g_j, &bad, &o) == AMM_J_RANGE, "amount above INT64_MAX: RANGE");
     bad = mk('a', 1, 1);
@@ -351,7 +409,7 @@ static void j3_graph(void) {
     CHECK(tr(s.seq, "paid", NULL) == AMM_J_ILLEGAL, "counted -> paid refused (no payout yet)");
     CHECK(tr(s.seq, "refunded", NULL) == AMM_J_ILLEGAL, "counted -> refunded refused");
     CHECK(tr(s.seq, "payout_pending", NULL) == 0, "counted -> payout_pending");
-    CHECK(tr(s.seq, "refund_pending", NULL) == AMM_J_ILLEGAL, "payout_pending -> refund_pending refused");
+    /* payout_pending -> refund_pending is legal only with no open attempt (J23) */
     CHECK(tr(s.seq, "paid", NULL) == 0, "payout_pending -> paid");
     CHECK(tr(s.seq, "payout_pending", NULL) == AMM_J_ILLEGAL, "paid -> payout_pending refused");
     CHECK(tr(s.seq, "expired", NULL) == AMM_J_ILLEGAL, "paid is terminal here");
@@ -402,23 +460,43 @@ static void j4_markers(void) {
     amm_swap_t s1, s2, g;
     amm_approve_t a = mk('a', 1, 1), b = mk('b', 2, 2);
     CHECK(approve_ok(&a, &s1) && approve_ok(&b, &s2), "two approvals");
-    CHECK(tr(s1.seq, "paid_waiting_depth", "nodus:same") == 0 &&
-          tr(s2.seq, "paid_waiting_depth", "nodus:same") == 0,
-          "both swaps name the same incoming transfer");
+    CHECK(tr(s1.seq, "paid_waiting_depth", "nodus:same") == 0,
+          "the first swap names an incoming transfer and waits on it");
+    /* review finding (b): the second swap naming the SAME transfer is refused
+     * at the transition, not only at counting */
+    CHECK(tr(s2.seq, "paid_waiting_depth", "nodus:same") == AMM_J_DUP_TRANSFER,
+          "the second swap naming the same incoming transfer is refused at paid_waiting_depth");
+    CHECK(amm_journal_swap_get(g_j, s2.id, &g) == 0 && state_is(&g, "approved") &&
+          g.incoming_id[0] == '\0', "  its row is unchanged (stays approved, no id stored)");
     CHECK(amm_journal_marker_exists(g_j, "nodus:same") == 1, "no marker before counting");
-    amm_pool_t p = { {{1,0,0,0}}, {{2,0,0,0}}, {{3,0,0,0}} };
     CHECK(amm_journal_swap_transition(g_j, s1.seq, "counted", NULL, NULL, NULL) == 0,
           "first swap counts");
     CHECK(amm_journal_marker_exists(g_j, "nodus:same") == 0, "marker written at counting");
-    CHECK(amm_journal_swap_transition(g_j, s2.seq, "counted", NULL, &p, NULL) == AMM_J_DUP_TRANSFER,
-          "second swap with the same incoming id: refused");
-    CHECK(amm_journal_swap_get(g_j, s2.id, &g) == 0 && state_is(&g, "paid_waiting_depth"),
-          "  its row is unchanged (stays unpaid)");
-    amm_pool_t q;
-    CHECK(amm_journal_pool_get(g_j, &q) == 1, "  its pool update was not written");
+    CHECK(tr(s2.seq, "paid_waiting_depth", "nodus:same") == AMM_J_DUP_TRANSFER,
+          "still refused once the first swap is counted");
     reopen();
     CHECK(amm_journal_marker_exists(g_j, "nodus:same") == 0, "marker survives a reopen");
     CHECK(amm_journal_req_marker_exists(g_j, a.sender, a.req_no) == 0, "request marker survives a reopen");
+    /* second line of defence: a marker that already exists (written through
+     * another connection, as a previous run would have left it) refuses the
+     * count itself, with the swap row and the pool unchanged */
+    fresh();
+    amm_approve_t d = mk('d', 1, 1);
+    amm_swap_t s4;
+    amm_pool_t p = { {{1,0,0,0}}, {{2,0,0,0}}, {{3,0,0,0}} };
+    CHECK(approve_ok(&d, &s4) && tr(s4.seq, "paid_waiting_depth", "nodus:pre") == 0,
+          "a swap waits on a transfer");
+    sqlite3 *mdb = NULL;
+    CHECK(sqlite3_open(g_path, &mdb) == SQLITE_OK &&
+          sqlite3_exec(mdb, "INSERT INTO paid_markers(transfer_id, swap_seq) VALUES('nodus:pre', 999)",
+                       NULL, NULL, NULL) == SQLITE_OK, "a marker of an earlier swap exists");
+    sqlite3_close(mdb);
+    CHECK(amm_journal_swap_transition(g_j, s4.seq, "counted", NULL, &p, NULL) == AMM_J_DUP_TRANSFER,
+          "counting is refused by the permanent marker");
+    CHECK(amm_journal_swap_get(g_j, s4.id, &g) == 0 && state_is(&g, "paid_waiting_depth"),
+          "  its row is unchanged (stays unpaid)");
+    amm_pool_t q;
+    CHECK(amm_journal_pool_get(g_j, &q) == 1, "  its pool update was not written");
     /* counted without any incoming id */
     fresh();
     amm_approve_t c = mk('c', 1, 1);
@@ -809,14 +887,14 @@ static void j12_records(void) {
     CHECK(amm_journal_rec_put(g_j, &r) == AMM_J_ILLEGAL, "a new record cannot start deep");
     r = mkrec(1, 0, 10, "candidate");
     CHECK(amm_journal_rec_put(g_j, &r) == 0, "new candidate");
-    CHECK(amm_journal_rec_candidate_exists(g_j, r.from, r.value, 1000) == 0, "candidate exists query");
+    CHECK(amm_journal_rec_candidate_exists(g_j, r.from, r.value, 0, 1000) == 0, "candidate exists query");
     r.state[0] = '\0'; strcpy(r.state, "deep");
     CHECK(amm_journal_rec_put(g_j, &r) == AMM_J_ILLEGAL, "candidate -> deep refused");
     strcpy(r.state, "seen");
     r.block_number = 11;
     CHECK(amm_journal_rec_put(g_j, &r) == 0, "candidate -> seen (block refreshed)");
     CHECK(amm_journal_rec_get(g_j, r.tx, 0, &g) == 0 && g.block_number == 11 && !strcmp(g.state, "seen"), "refreshed");
-    CHECK(amm_journal_rec_candidate_exists(g_j, r.from, r.value, 1000) == 1, "no candidate any more");
+    CHECK(amm_journal_rec_candidate_exists(g_j, r.from, r.value, 0, 1000) == 1, "no candidate any more");
     strcpy(r.state, "deep");
     CHECK(amm_journal_rec_put(g_j, &r) == 0, "seen -> deep");
     strcpy(r.state, "held");
@@ -902,16 +980,28 @@ static void j16_one_live(void) {
     memset(c96.from, 0x11, 20); memset(c108.from, 0x12, 20); memset(c0.from, 0x13, 20);
     CHECK(amm_journal_rec_put(g_j, &c96) == 0 && amm_journal_rec_put(g_j, &c108) == 0 &&
           amm_journal_rec_put(g_j, &c0) == 0, "three candidates, block times 96, 108, unknown");
-    CHECK(amm_journal_rec_candidate_exists(g_j, c96.from, c96.value, 100) == 0,
+    CHECK(amm_journal_rec_candidate_exists(g_j, c96.from, c96.value, 0, 100) == 0,
           "block time 96 <= expiry 100: blocks the approval");
-    CHECK(amm_journal_rec_candidate_exists(g_j, c96.from, c96.value, 95) == 1,
+    CHECK(amm_journal_rec_candidate_exists(g_j, c96.from, c96.value, 0, 95) == 1,
           "expiry 95 < block time 96: does not");
-    CHECK(amm_journal_rec_candidate_exists(g_j, c108.from, c108.value, 100) == 1,
+    CHECK(amm_journal_rec_candidate_exists(g_j, c108.from, c108.value, 0, 100) == 1,
           "block time 108 > expiry 100: outside the validity, does not block");
-    CHECK(amm_journal_rec_candidate_exists(g_j, c108.from, c108.value, 108) == 0,
+    CHECK(amm_journal_rec_candidate_exists(g_j, c108.from, c108.value, 0, 108) == 0,
           "expiry 108: block time 108 is within it");
-    CHECK(amm_journal_rec_candidate_exists(g_j, c0.from, c0.value, 1) == 0,
+    CHECK(amm_journal_rec_candidate_exists(g_j, c0.from, c0.value, 0, 1) == 0,
           "unknown block time (0) is kept conservatively: blocks");
+    /* review finding (a): the lower bound is a chain HEIGHT (the tip read at
+     * approval), exclusive; c96 sits in block 8, c0 in block 7 */
+    CHECK(amm_journal_rec_candidate_exists(g_j, c96.from, c96.value, 8, 100) == 1,
+          "block 8, approval tip 8: a payment in the tip block is not above it, does not block");
+    CHECK(amm_journal_rec_candidate_exists(g_j, c96.from, c96.value, 9, 100) == 1,
+          "approval tip 9 (above the block): does not block");
+    CHECK(amm_journal_rec_candidate_exists(g_j, c96.from, c96.value, 7, 100) == 0,
+          "approval tip 7, block 8 (one above): blocks");
+    CHECK(amm_journal_rec_candidate_exists(g_j, c0.from, c0.value, 6, 1) == 0,
+          "unknown block time (0) is kept conservatively on the time bound: blocks");
+    CHECK(amm_journal_rec_candidate_exists(g_j, c0.from, c0.value, 7, 1) == 1,
+          "unknown block time, but block 7 is not above tip 7: does not block");
 }
 
 /* J17: incoming transfer ids of full length; the Ethereum key is the hash. */
@@ -1000,6 +1090,487 @@ static void j14_wal(void) {
     CHECK(ok, "journal_mode is wal (persisted in the file)");
 }
 
+/* A NODUS -> USDT approval: sender = 128 x `c` (a Nodus address), dest = 40 x
+ * 'b' (an Ethereum address), naming the transfer `incoming`. */
+static amm_approve_t mk_n2u(char c, uint64_t amount, uint64_t v, const char *incoming) {
+    static char ring[64][129];
+    static unsigned ri = 0;
+    static char dest[41];
+    char *s = ring[ri++ % 64];
+    memset(s, c, 128); s[128] = '\0';
+    memset(dest, 'b', 40); dest[40] = '\0';
+    amm_approve_t a = mk('a', amount, v);
+    a.dir = AMM_NODUS_TO_USDT;
+    a.sender = s; a.dest = dest;
+    a.incoming_id = incoming;
+    return a;
+}
+
+/* Setup only: run `sql` on the journal file through a second connection. */
+static int side_sql(const char *sql) {
+    sqlite3 *db = NULL;
+    int ok = sqlite3_open(g_path, &db) == SQLITE_OK;
+    if (ok) sqlite3_busy_timeout(db, 5000);
+    ok = ok && sqlite3_exec(db, sql, NULL, NULL, NULL) == SQLITE_OK;
+    sqlite3_close(db);
+    return ok;
+}
+
+/* J18: one incoming transfer, one swap (orchestrator's review finding (b)). */
+static void j18_one_transfer_one_swap(void) {
+    printf("J18 one incoming transfer, one swap\n");
+    static const char *taken[] = {"paid_waiting_depth", "counted", "payout_pending",
+        "paid", "refund_pending", "refunded", "held", "unknown"};
+    for (size_t i = 0; i < sizeof(taken) / sizeof(taken[0]); i++) {
+        fresh();
+        amm_approve_t a = mk('a', 1, 1), b = mk('b', 2, 2);
+        amm_swap_t s1, s2, g;
+        char msg[120];
+        /* both approved first: a swap in unknown stops new approvals */
+        CHECK(approve_ok(&a, &s1) && approve_ok(&b, &s2) && drive(&s1, taken[i], "nodus:t"), "setup");
+        snprintf(msg, sizeof(msg), "swap 1 in %s carries the id: a second swap naming it is refused", taken[i]);
+        CHECK(tr(s2.seq, "paid_waiting_depth", "nodus:t") == AMM_J_DUP_TRANSFER, msg);
+        CHECK(amm_journal_swap_get(g_j, s2.id, &g) == 0 && state_is(&g, "approved") &&
+              g.incoming_id[0] == '\0', "  the second swap is unchanged (approved, no id)");
+    }
+    /* a reversed swap still carries its id */
+    fresh();
+    {
+        amm_approve_t a = mk('a', 1, 1), b = mk('b', 2, 2);
+        amm_swap_t s1, s2;
+        amm_rec_t r = mkrec(7, 0, 10, "seen");
+        char key[AMM_TID_MAX];
+        amm_journal_eth_key(r.tx, key, sizeof(key));
+        amm_gone_t out;
+        CHECK(approve_ok(&a, &s1) && approve_ok(&b, &s2) && drive(&s1, "counted", key) &&
+              amm_journal_rec_put(g_j, &r) == 0 &&
+              amm_journal_payment_gone(g_j, r.tx, 0, &out) == 0 && out == AMM_GONE_REVERSED,
+              "setup: swap 1 reversed");
+        CHECK(tr(s2.seq, "paid_waiting_depth", key) == AMM_J_DUP_TRANSFER,
+              "a reversed swap still carries the id: a second swap is refused");
+    }
+    /* approved swaps naming the same id do not block each other; an expired
+     * swap never took a payment */
+    fresh();
+    {
+        amm_approve_t a = mk('a', 1, 1), b = mk('b', 2, 2);
+        a.incoming_id = "nodus:x"; b.incoming_id = "nodus:x";
+        amm_swap_t s1, s2, g;
+        CHECK(approve_ok(&a, &s1) && approve_ok(&b, &s2), "two approvals naming the same transfer");
+        CHECK(tr(s1.seq, "paid_waiting_depth", "nodus:x") == 0,
+              "an approved swap carrying the same id does not block the first to take the payment");
+        CHECK(tr(s2.seq, "paid_waiting_depth", "nodus:x") == AMM_J_DUP_TRANSFER,
+              "the second is then refused");
+        CHECK(amm_journal_swap_get(g_j, s2.id, &g) == 0 && state_is(&g, "approved") &&
+              !strcmp(g.incoming_id, "nodus:x"), "  and keeps the id its approval named");
+    }
+    fresh();
+    {
+        amm_approve_t a = mk('a', 1, 1), b = mk('b', 2, 2);
+        a.incoming_id = "nodus:y"; b.incoming_id = "nodus:y";
+        amm_swap_t s1, s2;
+        CHECK(approve_ok(&a, &s1) && approve_ok(&b, &s2) && tr(s1.seq, "expired", NULL) == 0,
+              "swap 1 expired");
+        CHECK(tr(s2.seq, "paid_waiting_depth", "nodus:y") == 0,
+              "an expired swap carrying the id does not block");
+    }
+    /* the swap's own re-entry is not "another swap" */
+    fresh();
+    {
+        amm_approve_t a = mk('a', 1, 1);
+        amm_swap_t s1;
+        CHECK(approve_ok(&a, &s1) && tr(s1.seq, "paid_waiting_depth", "nodus:self") == 0 &&
+              tr(s1.seq, "paid_waiting_depth", "nodus:self") == AMM_J_ILLEGAL,
+              "a swap moving to the state it is in is illegal, not a duplicate");
+    }
+}
+
+/* J19: payment_gone handles EVERY swap that carries the key (review finding
+ * (b)). The states are set through a second connection: the transition table
+ * itself no longer lets two swaps wait on one payment. */
+static void j19_gone_every_swap(void) {
+    printf("J19 payment gone: every swap carrying the key\n");
+    uint8_t tx[32];
+    memset(tx, 0x44, 32);
+    char key[AMM_TID_MAX], sql[256];
+    amm_journal_eth_key(tx, key, sizeof(key));
+    amm_gone_t out;
+    amm_swap_t g;
+    amm_rec_t r = mkrec(0x44, 0, 10, "seen");
+
+    /* two swaps both waiting on the payment: both are unpaid again */
+    fresh();
+    amm_approve_t a = mk('a', 1, 1), b = mk('b', 2, 2);
+    amm_swap_t s1, s2;
+    CHECK(approve_ok(&a, &s1) && approve_ok(&b, &s2) && amm_journal_rec_put(g_j, &r) == 0, "setup");
+    snprintf(sql, sizeof(sql), "UPDATE swaps SET state='paid_waiting_depth', incoming_id='%s'", key);
+    CHECK(side_sql(sql), "both swaps set waiting on the key (second connection)");
+    CHECK(amm_journal_payment_gone(g_j, tx, 0, &out) == 0 && out == AMM_GONE_DROPPED,
+          "payment gone: dropped (no counted swap)");
+    CHECK(amm_journal_swap_get(g_j, s1.id, &g) == 0 && state_is(&g, "approved") && g.incoming_id[0] == '\0' &&
+          amm_journal_swap_get(g_j, s2.id, &g) == 0 && state_is(&g, "approved") && g.incoming_id[0] == '\0',
+          "BOTH swaps are approved again with the id cleared (not only the oldest)");
+
+    /* a counted swap and a waiting swap on one key: the counted one is
+     * reversed with the pause, the waiting one is unpaid again */
+    fresh();
+    amm_approve_t c = mk('c', 1, 1), d = mk('d', 2, 2), e = mk('e', 3, 3);
+    amm_swap_t s3, s4, s5;
+    CHECK(approve_ok(&c, &s3) && approve_ok(&d, &s4) && approve_ok(&e, &s5) &&
+          amm_journal_rec_put(g_j, &r) == 0, "setup");
+    snprintf(sql, sizeof(sql), "UPDATE swaps SET state='paid_waiting_depth', incoming_id='%s' WHERE seq=%lld",
+             key, (long long)s4.seq);
+    CHECK(drive(&s3, "counted", key) && side_sql(sql), "swap 1 counted, swap 2 waiting, swap 3 approved on one key");
+    snprintf(sql, sizeof(sql), "UPDATE swaps SET incoming_id='%s' WHERE seq=%lld", key, (long long)s5.seq);
+    CHECK(side_sql(sql), "swap 3 (approved) carries the key as well");
+    CHECK(amm_journal_payment_gone(g_j, tx, 0, &out) == 0 && out == AMM_GONE_REVERSED,
+          "payment gone: a reversal");
+    CHECK(amm_journal_swap_get(g_j, s3.id, &g) == 0 && state_is(&g, "reversed"), "the counted swap is reversed");
+    CHECK(amm_journal_swap_get(g_j, s4.id, &g) == 0 && state_is(&g, "approved") && g.incoming_id[0] == '\0',
+          "the waiting swap is approved again with the id cleared");
+    CHECK(amm_journal_swap_get(g_j, s5.id, &g) == 0 && state_is(&g, "approved") &&
+          !strcmp(g.incoming_id, key), "the approved swap is left as it is");
+    int p = 0;
+    CHECK(amm_journal_reversal_pause_get(g_j, &p) == 0 && p == 1, "the reversal pause is set");
+    CHECK(amm_journal_rec_get(g_j, tx, 0, &r) == 0 && !strcmp(r.state, "reversed"), "the record is reversed");
+
+    /* two counted-or-later swaps: both reversed */
+    fresh();
+    amm_approve_t f = mk('f', 1, 1), h = mk('1', 2, 2);
+    amm_swap_t s6, s7;
+    r = mkrec(0x44, 0, 10, "seen");
+    CHECK(approve_ok(&f, &s6) && approve_ok(&h, &s7) && drive(&s6, "paid", key) &&
+          amm_journal_rec_put(g_j, &r) == 0, "setup");
+    snprintf(sql, sizeof(sql), "UPDATE swaps SET state='refund_pending', incoming_id='%s' WHERE seq=%lld",
+             key, (long long)s7.seq);
+    CHECK(side_sql(sql), "a second swap in refund_pending carries the key");
+    CHECK(amm_journal_payment_gone(g_j, tx, 0, &out) == 0 && out == AMM_GONE_REVERSED &&
+          amm_journal_swap_get(g_j, s6.id, &g) == 0 && state_is(&g, "reversed") &&
+          amm_journal_swap_get(g_j, s7.id, &g) == 0 && state_is(&g, "reversed"),
+          "BOTH counted swaps are reversed");
+}
+
+/* J20: incoming Nodus rows. */
+static amm_nrow_t mknrow(uint64_t h, uint32_t i, uint32_t q, uint8_t w, const char *st) {
+    amm_nrow_t r;
+    memset(&r, 0, sizeof(r));
+    r.height = h; r.item = i; r.seq = q;
+    memset(r.wire, w, 64);
+    memset(r.peer, 'a', 128);
+    r.amount = 5; r.ts = 1000 + h;
+    snprintf(r.state, sizeof(r.state), "%s", st);
+    return r;
+}
+
+static void j20_nodus_rows(void) {
+    printf("J20 Nodus incoming rows\n");
+    fresh();
+    amm_nrow_t r = mknrow(10, 2, 0, 0x01, "held"), g;
+    snprintf(r.reason, sizeof(r.reason), "matches no approval");
+    CHECK(amm_journal_nrow_put(g_j, &r) == 0, "a held row is stored");
+    CHECK(amm_journal_nrow_put(g_j, &r) == AMM_J_ILLEGAL, "the same (height, item, seq) again: refused, nothing changed");
+    CHECK(amm_journal_nrow_get(g_j, 10, 2, 0, &g) == 0 && g.height == 10 && g.item == 2 && g.seq == 0 &&
+          g.amount == 5 && g.ts == 1010 && !strcmp(g.state, "held") && !strcmp(g.reason, "matches no approval") &&
+          g.swap_seq == 0 && g.wire[0] == 0x01 && g.wire[63] == 0x01 && !strcmp(g.peer, r.peer),
+          "it reads back exactly");
+    CHECK(amm_journal_nrow_get(g_j, 10, 2, 1, &g) == 1, "another seq: none");
+    amm_nrow_t r2 = mknrow(10, 2, 1, 0x01, "counted");
+    r2.swap_seq = 7;
+    CHECK(amm_journal_nrow_put(g_j, &r2) == 0, "a second row of the same wire id (another q) is a row of its own");
+    amm_nrow_t r3 = mknrow(9, 0, 0, 0x02, "held");
+    CHECK(amm_journal_nrow_put(g_j, &r3) == 0, "a row of a lower height");
+    CHECK(amm_journal_nrow_by_wire(g_j, r.wire, &g) == 0 && g.height == 10 && g.seq == 0,
+          "by wire id: the oldest row of that wire");
+    uint8_t other[64];
+    memset(other, 0x09, 64);
+    CHECK(amm_journal_nrow_by_wire(g_j, other, &g) == 1, "by wire id: none");
+    amm_nrow_t list[8];
+    int n = 0;
+    CHECK(amm_journal_nrow_list(g_j, NULL, list, 8, &n) == 0 && n == 3 && list[0].height == 9 &&
+          list[1].seq == 0 && list[2].seq == 1, "listed in (height, item, seq) order");
+    CHECK(amm_journal_nrow_list(g_j, "held", list, 8, &n) == 0 && n == 2, "held rows");
+    CHECK(amm_journal_nrow_list(g_j, "counted", list, 8, &n) == 0 && n == 1 && list[0].swap_seq == 7,
+          "counted rows carry their swap");
+    CHECK(amm_journal_nrow_list(g_j, NULL, list, 2, &n) == -1, "a result above the cap is a fault, never cut");
+    /* range */
+    amm_nrow_t bad = mknrow(11, 0, 0, 0x03, "held");
+    bad.amount = (uint64_t)INT64_MAX + 1;
+    CHECK(amm_journal_nrow_put(g_j, &bad) == AMM_J_RANGE, "an amount above INT64_MAX: RANGE");
+    bad = mknrow(11, 0, 0, 0x03, "held");
+    bad.peer[5] = 'Z';
+    CHECK(amm_journal_nrow_put(g_j, &bad) == AMM_J_RANGE, "a malformed peer: RANGE");
+    bad = mknrow(11, 0, 0, 0x03, "maybe");
+    CHECK(amm_journal_nrow_put(g_j, &bad) == AMM_J_RANGE, "an unknown state: RANGE");
+    reopen();
+    CHECK(amm_journal_nrow_get(g_j, 10, 2, 1, &g) == 0 && g.swap_seq == 7, "rows survive a reopen");
+    CHECK(side_sql("UPDATE nodus_rows SET peer='xyz' WHERE height=9"), "damage: a malformed peer");
+    CHECK(amm_journal_nrow_get(g_j, 9, 0, 0, &g) == -1, "a damaged row read fails (-1), never a value");
+}
+
+/* J21: NODUS payout attempts (write-ahead). */
+static int mkenv(amm_attempt_t *a, int64_t swap_seq, const char *dest, uint64_t gross,
+                 uint64_t fee, uint8_t tag) {
+    memset(a, 0, sizeof(*a));
+    a->swap_seq = swap_seq;
+    snprintf(a->dest, sizeof(a->dest), "%s", dest);
+    a->gross = gross; a->fee = fee; a->net = gross - fee;
+    a->env_len = 300;
+    a->env = malloc(a->env_len);
+    for (size_t i = 0; i < a->env_len; i++) a->env[i] = (uint8_t)(tag + i);
+    memset(a->wire_id, tag, 64);
+    memset(a->intent_id, (uint8_t)(tag ^ 0xff), 64);
+    a->n_in = 2;
+    memset(a->inputs[0], 0x10 + tag, 64);
+    memset(a->inputs[1], 0x20 + tag, 64);
+    a->build_tip = 1000; a->expiry = 1090; a->scan_next = 1001;
+    return a->env != NULL;
+}
+
+static void j21_attempts(void) {
+    printf("J21 NODUS payout attempts\n");
+    fresh();
+    amm_approve_t a = mk('a', 1, 1);
+    amm_swap_t s, hd;
+    amm_attempt_t at, got;
+    char destu[129];
+    memset(destu, 'e', 128); destu[128] = '\0';
+    CHECK(approve_ok(&a, &s), "setup: a USDT -> NODUS swap");
+    CHECK(amm_journal_swap_head_payout(g_j, &hd) == 1, "no swap owes a payout yet");
+    CHECK(mkenv(&at, s.seq, destu, 1000, 100, 1) && amm_journal_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "approved: no attempt can be stored");
+    amm_attempt_free(&at);
+    CHECK(drive(&s, "payout_pending", "nodus:p1"), "swap driven to payout_pending");
+    CHECK(amm_journal_swap_head_payout(g_j, &hd) == 0 && hd.seq == s.seq, "it is the head payout");
+
+    /* refusals write nothing */
+    char wrong[129];
+    memset(wrong, 'd', 128); wrong[128] = '\0';
+    CHECK(mkenv(&at, s.seq, wrong, 1000, 100, 1) && amm_journal_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "a destination other than the swap's: refused");
+    amm_attempt_free(&at);
+    mkenv(&at, s.seq, destu, 1000, 100, 1);
+    at.net = 800;
+    CHECK(amm_journal_attempt_sign(g_j, &at) == AMM_J_RANGE, "net + fee != gross: RANGE");
+    at.net = 0; at.fee = 1000;
+    CHECK(amm_journal_attempt_sign(g_j, &at) == AMM_J_RANGE, "a zero net amount is never stored: RANGE");
+    at.net = 900; at.fee = 100; at.n_in = 0;
+    CHECK(amm_journal_attempt_sign(g_j, &at) == AMM_J_RANGE, "no input: RANGE");
+    at.n_in = AMM_MAX_INPUTS + 1;
+    CHECK(amm_journal_attempt_sign(g_j, &at) == AMM_J_RANGE, "16 inputs: RANGE");
+    amm_attempt_free(&at);
+    CHECK(amm_journal_attempt_latest(g_j, s.seq, &got) == 1, "nothing was written by the refusals");
+
+    /* store, read back */
+    CHECK(mkenv(&at, s.seq, destu, 1000, 100, 1) && amm_journal_attempt_sign(g_j, &at) == 0 &&
+          at.n == 1 && !strcmp(at.state, "signed"), "the envelope is stored (attempt 1, signed)");
+    CHECK(amm_journal_attempt_latest(g_j, s.seq, &got) == 0 && got.n == 1 && got.env_len == 300 &&
+          !memcmp(got.env, at.env, 300) && !memcmp(got.wire_id, at.wire_id, 64) &&
+          !memcmp(got.intent_id, at.intent_id, 64) && got.n_in == 2 &&
+          !memcmp(got.inputs[0], at.inputs[0], 64) && !memcmp(got.inputs[1], at.inputs[1], 64) &&
+          got.gross == 1000 && got.fee == 100 && got.net == 900 && !strcmp(got.dest, destu) &&
+          got.build_tip == 1000 && got.expiry == 1090 && got.scan_next == 1001 &&
+          got.last_submit_tip == 0 && !strcmp(got.state, "signed"),
+          "it reads back byte for byte");
+    amm_attempt_free(&got);
+    CHECK(mkenv(&at, s.seq, destu, 1000, 100, 2) && amm_journal_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "a second attempt while the first is signed: refused (replacement only after expiry)");
+    amm_attempt_free(&at);
+
+    /* it survives a reopen: the restart between store and send */
+    reopen();
+    CHECK(amm_journal_attempt_latest(g_j, s.seq, &got) == 0 && got.n == 1 && got.env[0] == 1 &&
+          !strcmp(got.state, "signed"), "the stored envelope survives a reopen");
+    amm_attempt_free(&got);
+
+    /* submitted, scanned */
+    CHECK(amm_journal_attempt_submitted(g_j, s.seq, 1001) == 0 &&
+          amm_journal_attempt_latest(g_j, s.seq, &got) == 0 && !strcmp(got.state, "submitted") &&
+          got.last_submit_tip == 1001, "signed -> submitted, last submit tip stored");
+    amm_attempt_free(&got);
+    CHECK(amm_journal_attempt_submitted(g_j, s.seq, 1004) == 0 &&
+          amm_journal_attempt_latest(g_j, s.seq, &got) == 0 && got.last_submit_tip == 1004,
+          "a later submit moves the tip");
+    amm_attempt_free(&got);
+    CHECK(amm_journal_attempt_scanned(g_j, s.seq, 1002) == 0 &&
+          amm_journal_attempt_scanned(g_j, s.seq, 1002) == AMM_J_ILLEGAL &&
+          amm_journal_attempt_scanned(g_j, s.seq, 1001) == AMM_J_ILLEGAL,
+          "the scan cursor moves forward only");
+    CHECK(amm_journal_attempt_submitted(g_j, 9999, 1) == AMM_J_ILLEGAL &&
+          amm_journal_attempt_scanned(g_j, 9999, 5) == AMM_J_ILLEGAL &&
+          amm_journal_attempt_finish(g_j, 9999, "expired") == AMM_J_ILLEGAL, "no attempt: illegal");
+    CHECK(amm_journal_attempt_finish(g_j, s.seq, "signed") == AMM_J_ILLEGAL, "finish names expired or confirmed only");
+    CHECK(amm_journal_attempt_finish(g_j, s.seq, "expired") == 0 &&
+          amm_journal_attempt_submitted(g_j, s.seq, 1100) == AMM_J_ILLEGAL &&
+          amm_journal_attempt_finish(g_j, s.seq, "confirmed") == AMM_J_ILLEGAL, "an expired attempt is final");
+    /* the replacement */
+    CHECK(mkenv(&at, s.seq, destu, 1000, 100, 3) && amm_journal_attempt_sign(g_j, &at) == 0 && at.n == 2,
+          "after expiry a replacement is stored as attempt 2");
+    amm_attempt_free(&at);
+    CHECK(amm_journal_attempt_latest(g_j, s.seq, &got) == 0 && got.n == 2 && got.env[0] == 3 &&
+          !strcmp(got.state, "signed"), "the latest attempt is the replacement");
+    amm_attempt_free(&got);
+    CHECK(amm_journal_attempt_finish(g_j, s.seq, "confirmed") == 0 &&
+          amm_journal_attempt_latest(g_j, s.seq, &got) == 0 && !strcmp(got.state, "confirmed"),
+          "confirmed");
+    amm_attempt_free(&got);
+    CHECK(mkenv(&at, s.seq, destu, 1000, 100, 4) && amm_journal_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "no attempt after a confirmed one");
+    amm_attempt_free(&at);
+
+    /* NODUS -> USDT: only its refund is a NODUS payout, to its sender */
+    fresh();
+    amm_approve_t b = mk_n2u('c', 1, 1, "nodus:w1");
+    amm_swap_t t;
+    char sndr[129];
+    memset(sndr, 'c', 128); sndr[128] = '\0';
+    CHECK(approve_ok(&b, &t) && drive(&t, "payout_pending", "nodus:w1"), "a NODUS -> USDT swap in payout_pending (a USDT payout)");
+    CHECK(mkenv(&at, t.seq, sndr, 1000, 100, 5) && amm_journal_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "its payout is in USDT: no NODUS attempt");
+    amm_attempt_free(&at);
+    fresh();
+    amm_approve_t b2 = mk_n2u('c', 1, 1, "nodus:w2");
+    CHECK(approve_ok(&b2, &t) && drive(&t, "refund_pending", "nodus:w2"), "a NODUS -> USDT swap in refund_pending");
+    CHECK(amm_journal_swap_head_payout(g_j, &hd) == 0 && hd.seq == t.seq, "it is the head payout");
+    char eth[41];
+    memset(eth, 'b', 40); eth[40] = '\0';
+    CHECK(mkenv(&at, t.seq, destu, 1000, 100, 6) && amm_journal_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "the refund must go to the request's sender, not to another address");
+    amm_attempt_free(&at);
+    CHECK(mkenv(&at, t.seq, sndr, 1000, 100, 6) && amm_journal_attempt_sign(g_j, &at) == 0,
+          "the refund to the sender is stored");
+    amm_attempt_free(&at);
+    (void)eth;
+    /* the oldest of two payouts is the head */
+    fresh();
+    amm_approve_t o1 = mk('a', 1, 1), o2 = mk('b', 2, 2);
+    amm_swap_t so1, so2;
+    CHECK(approve_ok(&o1, &so1) && approve_ok(&o2, &so2) && drive(&so2, "payout_pending", "nodus:o2") &&
+          drive(&so1, "payout_pending", "nodus:o1"), "two swaps in payout_pending (the younger first)");
+    CHECK(amm_journal_swap_head_payout(g_j, &hd) == 0 && hd.seq == so1.seq, "the head is the oldest by seq");
+    /* ONE PAYOUT IN FLIGHT: no coin is reserved per swap, so a second swap's
+     * attempt is refused while another swap's attempt is open */
+    CHECK(mkenv(&at, so1.seq, destu, 1000, 100, 7) && amm_journal_attempt_sign(g_j, &at) == 0,
+          "swap 1: an attempt is stored");
+    amm_attempt_free(&at);
+    CHECK(mkenv(&at, so2.seq, destu, 1000, 100, 8) && amm_journal_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "swap 2: refused while swap 1's attempt is signed");
+    amm_attempt_free(&at);
+    CHECK(amm_journal_attempt_submitted(g_j, so1.seq, 1001) == 0 &&
+          mkenv(&at, so2.seq, destu, 1000, 100, 8) && amm_journal_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "swap 2: refused while swap 1's attempt is submitted");
+    amm_attempt_free(&at);
+    CHECK(amm_journal_attempt_latest(g_j, so2.seq, &got) == 1, "  nothing was stored for swap 2");
+    CHECK(amm_journal_attempt_finish(g_j, so1.seq, "expired") == 0 &&
+          mkenv(&at, so2.seq, destu, 1000, 100, 8) && amm_journal_attempt_sign(g_j, &at) == 0 && at.n == 1,
+          "swap 2: allowed once swap 1's attempt is no longer open (expired)");
+    amm_attempt_free(&at);
+    CHECK(mkenv(&at, so1.seq, destu, 1000, 100, 9) && amm_journal_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "swap 1's replacement is refused while swap 2's attempt is open");
+    amm_attempt_free(&at);
+}
+
+/* J22: the open NODUS approval query. */
+static void j22_open_nodus(void) {
+    printf("J22 open NODUS approval by transfer id, sender and amount\n");
+    fresh();
+    amm_approve_t a = mk_n2u('c', 50, 5, "nodus:id1"), b = mk_n2u('d', 50, 5, "nodus:id1");
+    amm_swap_t s1, s2, g;
+    char sndr[129];
+    memset(sndr, 'c', 128); sndr[128] = '\0';
+    CHECK(approve_ok(&a, &s1) && approve_ok(&b, &s2), "two approvals naming one transfer (different senders)");
+    CHECK(amm_journal_swap_open_nodus(g_j, "nodus:id1", sndr, 50, &g) == 0 && g.seq == s1.seq,
+          "found by id, sender and amount");
+    CHECK(amm_journal_swap_open_nodus(g_j, "nodus:id1", sndr, 51, &g) == 1, "another amount: none");
+    CHECK(amm_journal_swap_open_nodus(g_j, "nodus:id2", sndr, 50, &g) == 1, "another id: none");
+    char other[129];
+    memset(other, 'f', 128); other[128] = '\0';
+    CHECK(amm_journal_swap_open_nodus(g_j, "nodus:id1", other, 50, &g) == 1, "another sender: none");
+    CHECK(tr(s1.seq, "paid_waiting_depth", "nodus:id1") == 0 &&
+          amm_journal_swap_open_nodus(g_j, "nodus:id1", sndr, 50, &g) == 1,
+          "a swap no longer approved is not an open approval");
+    /* a USDT -> NODUS swap is not returned */
+    fresh();
+    amm_approve_t u = mk('a', 50, 5);
+    u.incoming_id = "nodus:id3";
+    amm_swap_t su;
+    char eth[41];
+    memset(eth, 'a', 40); eth[40] = '\0';
+    CHECK(approve_ok(&u, &su) && amm_journal_swap_open_nodus(g_j, "nodus:id3", eth, 50, &g) == 1,
+          "a USDT -> NODUS approval is not a NODUS payment approval");
+    CHECK(amm_journal_swap_open_nodus(g_j, "", sndr, 50, &g) == -1, "an empty id is a bad argument");
+}
+
+/* J23: an incoming id is never changed; payout_pending -> refund_pending only
+ * while no attempt is open; the head payout is only a NODUS payout. */
+static void j23_id_edge_head(void) {
+    printf("J23 id reassignment, the refund edge, the head payout\n");
+    /* reassignment: B waits on Y and tries to count on A's transfer X */
+    fresh();
+    amm_approve_t a = mk('a', 1, 1), b = mk('b', 2, 2), c = mk('c', 3, 3);
+    amm_swap_t sa, sb, sc, g;
+    CHECK(approve_ok(&a, &sa) && approve_ok(&b, &sb) && approve_ok(&c, &sc) &&
+          tr(sa.seq, "paid_waiting_depth", "nodus:X") == 0 &&
+          tr(sb.seq, "paid_waiting_depth", "nodus:Y") == 0, "setup: A waits on X, B waits on Y");
+    CHECK(tr(sb.seq, "counted", "nodus:X") == AMM_J_ILLEGAL,
+          "B naming X at counted: refused, its id is Y and is never changed");
+    CHECK(amm_journal_swap_get(g_j, sb.id, &g) == 0 && state_is(&g, "paid_waiting_depth") &&
+          !strcmp(g.incoming_id, "nodus:Y"), "  B is unchanged, still on Y");
+    CHECK(amm_journal_marker_exists(g_j, "nodus:X") == 1, "  no marker for X was written");
+    CHECK(tr(sb.seq, "counted", "nodus:Y") == 0 && amm_journal_marker_exists(g_j, "nodus:Y") == 0,
+          "naming the SAME id again is accepted; B counts on its own transfer");
+    /* the carrier check runs on every transition that names an id */
+    CHECK(tr(sc.seq, "expired", "nodus:X") == AMM_J_DUP_TRANSFER,
+          "C (no id yet) naming X at ANY transition: refused, A carries X");
+    CHECK(amm_journal_swap_get(g_j, sc.id, &g) == 0 && state_is(&g, "approved") && g.incoming_id[0] == '\0',
+          "  C is unchanged");
+
+    /* the refund edge */
+    fresh();
+    amm_approve_t p = mk('a', 1, 1);
+    amm_swap_t s, hd;
+    amm_attempt_t at;
+    char destu[129];
+    memset(destu, 'e', 128); destu[128] = '\0';
+    CHECK(approve_ok(&p, &s) && drive(&s, "payout_pending", "nodus:r1"), "setup: a USDT -> NODUS swap in payout_pending");
+    amm_pool_t pool = { {{1,0,0,0}}, {{2,0,0,0}}, {{3,0,0,0}} };
+    CHECK(amm_journal_swap_transition(g_j, s.seq, "refund_pending", NULL, &pool, "fee rose") == 0 &&
+          amm_journal_swap_get(g_j, s.id, &g) == 0 && state_is(&g, "refund_pending") && !strcmp(g.message, "fee rose"),
+          "payout_pending -> refund_pending is allowed with no attempt (with a pool update in the same transaction)");
+    amm_pool_t q;
+    CHECK(amm_journal_pool_get(g_j, &q) == 0, "  the pool was written");
+    fresh();
+    amm_approve_t p2 = mk('a', 1, 1);
+    CHECK(approve_ok(&p2, &s) && drive(&s, "payout_pending", "nodus:r2") &&
+          mkenv(&at, s.seq, destu, 1000, 100, 1) && amm_journal_attempt_sign(g_j, &at) == 0, "setup: an attempt is signed");
+    amm_attempt_free(&at);
+    CHECK(tr(s.seq, "refund_pending", NULL) == AMM_J_ILLEGAL, "refused while an attempt is signed");
+    CHECK(amm_journal_attempt_submitted(g_j, s.seq, 1001) == 0 && tr(s.seq, "refund_pending", NULL) == AMM_J_ILLEGAL,
+          "refused while an attempt is submitted");
+    CHECK(amm_journal_swap_get(g_j, s.id, &g) == 0 && state_is(&g, "payout_pending"), "  the swap is unchanged");
+    CHECK(amm_journal_attempt_finish(g_j, s.seq, "expired") == 0 && tr(s.seq, "refund_pending", NULL) == 0,
+          "allowed once the attempt is expired (it can never apply)");
+    /* confirmed: the payout happened; payout_pending is then moved only to paid */
+    fresh();
+    amm_approve_t p3 = mk('a', 1, 1);
+    CHECK(approve_ok(&p3, &s) && drive(&s, "payout_pending", "nodus:r3") &&
+          mkenv(&at, s.seq, destu, 1000, 100, 1) && amm_journal_attempt_sign(g_j, &at) == 0 &&
+          amm_journal_attempt_finish(g_j, s.seq, "confirmed") == 0, "setup: a confirmed attempt");
+    amm_attempt_free(&at);
+    /* the edge exists only from payout_pending */
+    CHECK(tr(s.seq, "paid", NULL) == 0 && tr(s.seq, "refund_pending", NULL) == AMM_J_ILLEGAL, "paid -> refund_pending stays illegal");
+
+    /* the head payout is only a NODUS payout */
+    fresh();
+    amm_approve_t n1 = mk_n2u('c', 1, 1, "nodus:h1"), u1 = mk('a', 2, 2), n2 = mk_n2u('d', 3, 3, "nodus:h2");
+    amm_swap_t sn1, su1, sn2;
+    CHECK(approve_ok(&n1, &sn1) && approve_ok(&u1, &su1) && approve_ok(&n2, &sn2), "setup: three swaps");
+    CHECK(drive(&sn1, "payout_pending", "nodus:h1") && drive(&su1, "refund_pending", "nodus:u1"),
+          "a NODUS -> USDT swap in payout_pending and a USDT -> NODUS swap in refund_pending (both USDT payouts)");
+    CHECK(amm_journal_swap_head_payout(g_j, &hd) == 1, "neither is a NODUS payout: no head");
+    CHECK(drive(&sn2, "refund_pending", "nodus:h2") && amm_journal_swap_head_payout(g_j, &hd) == 0 && hd.seq == sn2.seq,
+          "a NODUS -> USDT refund_pending is the head, though older swaps wait in the other combinations");
+}
+
 /* ── J15: the Nodus seam header ─────────────────────────────────────── */
 static int stub_chain_id(void *ctx, uint8_t out[32], uint64_t deadline_ms) {
     (void)deadline_ms;
@@ -1040,6 +1611,12 @@ int main(void) {
     j12_records();
     j16_one_live();
     j17_ids();
+    j18_one_transfer_one_swap();
+    j19_gone_every_swap();
+    j20_nodus_rows();
+    j21_attempts();
+    j22_open_nodus();
+    j23_id_edge_head();
     j13_damage();
     j14_wal();
     j15_node_seam();

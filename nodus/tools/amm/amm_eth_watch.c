@@ -931,15 +931,16 @@ int amm_eth_watch_depth_reached(amm_eth_watch_t *w, const amm_rec_t *rec,
 
 amm_match_t amm_eth_watch_match(const amm_rec_t *rec, const uint8_t sender[20],
                                 const uint8_t amount_be[32],
-                                uint64_t expiry_ts) {
+                                uint64_t approved_tip, uint64_t expiry_ts) {
     if (memcmp(rec->from, sender, 20) != 0) return AMM_M_NONE;
     if (memcmp(rec->value, amount_be, 32) != 0) return AMM_M_HELD_VALUE;
+    if (rec->block_number <= approved_tip) return AMM_M_HELD_EARLY;
     if (rec->block_ts > expiry_ts) return AMM_M_HELD_EXPIRED;
     return AMM_M_MATCH;
 }
 
-int amm_eth_watch_window_observed(amm_eth_watch_t *w, uint64_t expiry_ts,
-                                  const uint8_t sender[20],
+int amm_eth_watch_window_observed(amm_eth_watch_t *w, uint64_t approved_tip,
+                                  uint64_t expiry_ts, const uint8_t sender[20],
                                   const uint8_t amount_be[32]) {
     if (!w || !sender || !amount_be) return -1;
     amm_journal_t *j = w->cfg.journal;
@@ -957,7 +958,8 @@ int amm_eth_watch_window_observed(amm_eth_watch_t *w, uint64_t expiry_ts,
     if (f == 1) return 0;
     /* only a candidate whose block time is within the approval's validity (or
      * unknown) is "for that approval" (plan lines 314, 319) */
-    int c = amm_journal_rec_candidate_exists(j, sender, amount_be, expiry_ts);
+    int c = amm_journal_rec_candidate_exists(j, sender, amount_be, approved_tip,
+                                             expiry_ts);
     if (c < 0) return -1;
     return c == 0 ? 0 : 1;      /* a retained candidate: still unresolved   */
 }

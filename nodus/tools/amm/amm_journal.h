@@ -46,6 +46,10 @@
  *                 timestamp (plan section 9; timestamp for the window rule,
  *                 section 13)
  *   eth_records   payment records of the Ethereum watcher
+ *   nodus_rows    incoming native `spend_in` rows of the Nodus watcher
+ *                 (package 2): counted by a swap, or held (givens item 32)
+ *   nodus_attempts the signed NODUS payout envelopes, stored before they are
+ *                 sent (plan section 17; package 2)
  *
  * SWAP STATES (plan section 13 names approved, paid-waiting-depth, counted,
  * payout-pending, payout done, refund done, expired; section 9/16
@@ -78,6 +82,12 @@
  *                                        minimum or zero), 16 (paused)
  *   payout_pending -> paid               13
  *   payout_pending -> unknown            17
+ *   payout_pending -> refund_pending     7 step 7 / 8 step 7 (plan line 226:
+ *                                        zero or below the minimum after the
+ *                                        Nodus fee -> refund); ONLY while no
+ *                                        attempt of the swap is signed or
+ *                                        submitted (the ledger reversal is
+ *                                        the caller's, via `pool`)
  *   refund_pending -> refunded           13
  *   refund_pending -> held               items 52/53 (fee >= amount)
  *   refund_pending -> unknown            17
@@ -156,7 +166,10 @@ typedef enum {
     AMM_J_SWAP_LIMIT    = 6,   /* v above the per-swap limit                */
     AMM_J_INFLIGHT      = 7,   /* in-flight total would pass its limit      */
     AMM_J_DUP_TRANSFER  = 8,   /* the incoming transfer id already counted
-                                * (permanent marker); nothing changed       */
+                                * (permanent marker), or already carried by
+                                * another swap that has taken the payment
+                                * (see amm_journal_swap_transition); nothing
+                                * changed                                   */
     AMM_J_RANGE         = 9,   /* a field outside its format or bounds      */
     AMM_J_ILLEGAL       = -2,  /* illegal transition / unknown row          */
     AMM_J_ERR           = -1
@@ -176,6 +189,11 @@ typedef struct {
     uint64_t  value_usdt;             /* v of plan section 13, USDT raw     */
     uint64_t  approved_at;            /* unix seconds, caller-supplied      */
     uint64_t  expiry;                 /* unix seconds, written at approval  */
+    uint64_t  approved_tip;           /* the chain tip HEIGHT the bot read
+                                       * for the payment's chain at approval
+                                       * (Ethereum quorum tip / Nodus
+                                       * committed tip), > 0: a payment
+                                       * counts only in a block ABOVE it    */
     char      incoming_id[AMM_TID_MAX]; /* "" until known                   */
     char      message[AMM_MSG_MAX];
 } amm_swap_t;
@@ -189,6 +207,10 @@ typedef struct {
     const char *dest;                 /* the other kind                      */
     uint64_t amount, minimum, value_usdt;
     uint64_t approved_at, expiry;
+    uint64_t approved_tip;            /* the tip height the caller READ for the
+                                       * payment's chain; 0 = unreadable and
+                                       * the approval is refused (AMM_J_RANGE),
+                                       * never stored as 0                    */
     uint8_t  req_no[32];              /* big-endian request number           */
     const char *incoming_id;
     uint8_t  rand16[16];              /* the swap id's randomness            */
@@ -222,20 +244,43 @@ void amm_journal_test_precommit_hook(int (*fn)(void));
 int amm_journal_approve(amm_journal_t *j, const amm_approve_t *a,
                         amm_swap_t *out);
 
-/** 0 found / 1 none / -1. */
+/** 0 found / 1 none / -1. `swap_by_incoming` returns the OLDEST swap that
+ *  carries the id (several can: two approvals may name one Nodus transfer). */
 int amm_journal_swap_get(amm_journal_t *j, const char *id, amm_swap_t *out);
 int amm_journal_swap_by_seq(amm_journal_t *j, int64_t seq, amm_swap_t *out);
 int amm_journal_swap_by_incoming(amm_journal_t *j, const char *incoming_id,
                                  amm_swap_t *out);
+
+/** The OLDEST NODUS -> USDT swap in state `approved` that carries
+ *  `incoming_id` (the transfer id its request names, "nodus:<hex>"), whose
+ *  sender is `sender` (128 hex) and whose amount is `amount`. Item 57 lets at
+ *  most one such swap be open at a time; the oldest is returned if there are
+ *  several. Time rules are NOT applied here (amm_nodus_watch_match). 0 found /
+ *  1 none / -1. */
+int amm_journal_swap_open_nodus(amm_journal_t *j, const char *incoming_id,
+                                const char *sender, uint64_t amount,
+                                amm_swap_t *out);
 
 /** Move a swap to `to` (legal table above; `approved` as target and
  *  `reversed` are refused here). `incoming_id` (NULL = keep) is stored: it is
  *  required for paid_waiting_depth; for `counted` the swap must carry one and
  *  its PERMANENT marker is inserted in this same transaction -- an existing
  *  marker returns AMM_J_DUP_TRANSFER and nothing changes (plan section 17,
- *  givens item 59). `pool` (NULL = none) replaces the ledger reserves in the
- *  same transaction. `message` (NULL = keep) is stored. 0 / AMM_J_ILLEGAL /
- *  AMM_J_DUP_TRANSFER / -1. */
+ *  givens item 59). ONE INCOMING TRANSFER, ONE SWAP (orchestrator's review
+ *  finding on package 1; plan section 8 "a second approval naming the same
+ *  transfer is never paid"): a move to paid_waiting_depth is refused with
+ *  AMM_J_DUP_TRANSFER, nothing changed, when ANOTHER swap already carrying the
+ *  same incoming id is in a state that has taken the payment -- every state
+ *  except `approved` (a request may name a transfer before any payment exists,
+ *  so approved swaps naming one id do not block each other; READING of "live")
+ *  and `expired` (it never took a payment). That carrier check runs on EVERY
+ *  transition that names an id, and an id once set is never changed: naming
+ *  another id on a swap that already carries one is AMM_J_ILLEGAL (the same id
+ *  again is accepted). payout_pending -> refund_pending is refused
+ *  (AMM_J_ILLEGAL) while an attempt of the swap is signed or submitted.
+ *  `pool` (NULL = none) replaces the ledger reserves in the same
+ *  transaction. `message` (NULL = keep) is
+ *  stored. 0 / AMM_J_ILLEGAL / AMM_J_DUP_TRANSFER / -1. */
 int amm_journal_swap_transition(amm_journal_t *j, int64_t seq, const char *to,
                                 const char *incoming_id,
                                 const amm_pool_t *pool, const char *message);
@@ -341,12 +386,17 @@ int amm_journal_rec_list(amm_journal_t *j, uint64_t min_block,
 int amm_journal_rec_other_live(amm_journal_t *j, const uint8_t tx[32],
                                uint32_t log_index);
 /** 0 found / 1 none: a candidate record with this from and logged value
- *  whose block time is within the approval's validity (block_ts <=
- *  `max_block_ts`, plan lines 314, 319) or unknown (block_ts == 0, kept
- *  conservatively). Plan section 13: "no below-quorum record retained for
- *  that approval is still unresolved". */
+ *  that is FOR the approval: its block height is ABOVE `approved_tip` (the
+ *  tip the bot read at approval; a payment in or below that block is not a
+ *  payment for it -- the orchestrator's review finding, bound by chain
+ *  height, never by the wall clock) and its block time is within the
+ *  validity, block_ts <= `max_block_ts` (plan lines 314, 319), or unknown
+ *  (block_ts == 0, kept conservatively on the time bound). Plan section 13:
+ *  "no below-quorum record retained for that approval is still
+ *  unresolved". */
 int amm_journal_rec_candidate_exists(amm_journal_t *j, const uint8_t from[20],
                                      const uint8_t value[32],
+                                     uint64_t approved_tip,
                                      uint64_t max_block_ts);
 
 typedef enum {
@@ -357,18 +407,125 @@ typedef enum {
 } amm_gone_t;
 
 /** The payment of record (tx, log_index) is gone (block hash disappeared, or
- *  its transaction is no longer found at the quorum), ONE transaction:
- *  - no swap carries the record's key as incoming id, or the swap is in
- *    approved/paid_waiting_depth: record -> dropped; a swap in
- *    paid_waiting_depth -> approved with its incoming id cleared
- *    (AMM_GONE_DROPPED);
- *  - the swap is in counted/payout_pending/paid/refund_pending/refunded/held/
- *    unknown (a payment that was counted): record -> reversed, swap ->
- *    reversed, reversal_pause set (AMM_GONE_REVERSED, givens item 55);
- *  - any other swap state (expired, reversed): record -> dropped, the swap is
- *    left as it is (DROPPED).
+ *  its transaction is no longer found at the quorum), ONE transaction. EVERY
+ *  swap that carries the record's key as incoming id is handled (several can:
+ *  orchestrator's review finding), each by its own state:
+ *  - approved / expired / reversed: left as it is;
+ *  - paid_waiting_depth -> approved with its incoming id cleared;
+ *  - counted/payout_pending/paid/refund_pending/refunded/held/unknown (a
+ *    payment that was counted): swap -> reversed;
+ *  and the record: -> reversed and reversal_pause set (AMM_GONE_REVERSED,
+ *  givens item 55) when at least one swap was reversed, else -> dropped
+ *  (AMM_GONE_DROPPED).
  *  The record must be in candidate/seen/deep/held, else AMM_J_ILLEGAL. */
 int amm_journal_payment_gone(amm_journal_t *j, const uint8_t tx[32],
                              uint32_t log_index, amm_gone_t *outcome);
+
+/* ── Nodus incoming payments (plan sections 8, 11, 17) ────────────────── */
+
+#define AMM_NR_HELD     "held"        /* matches no approval (givens item 32) */
+#define AMM_NR_COUNTED  "counted"     /* taken by a swap (marker written)     */
+
+/** One `spend_in` row of the bot's own address history with the native
+ *  token, as the Nodus watcher recorded it. Key: (height, item, seq) = the
+ *  row's (h, i, q) of dnac_addr_history, unique per row. `wire` is the
+ *  item's 64-byte wire id. A recorded row is never processed twice. Kept
+ *  for the operator (held rows are the "held for manual handling" of givens
+ *  item 32) and for the liquidity depth (plan line 328). */
+typedef struct {
+    uint64_t height;
+    uint32_t item;
+    uint32_t seq;
+    uint8_t  wire[64];
+    char     peer[AMM_ADDR_NODUS + 1];
+    uint64_t amount;
+    uint64_t ts;                      /* block time, unix seconds           */
+    char     state[8];                /* AMM_NR_*                           */
+    int64_t  swap_seq;                /* the swap that took it, 0 = none    */
+    char     reason[AMM_MSG_MAX];     /* why it is held                     */
+} amm_nrow_t;
+
+/** Insert a row. An existing (height, item, seq) -> AMM_J_ILLEGAL, nothing
+ *  changed. 0 / AMM_J_ILLEGAL / AMM_J_RANGE (a value above INT64_MAX, a
+ *  malformed peer, an unknown state) / -1. */
+int amm_journal_nrow_put(amm_journal_t *j, const amm_nrow_t *r);
+/** 0 found / 1 none / -1. */
+int amm_journal_nrow_get(amm_journal_t *j, uint64_t height, uint32_t item,
+                         uint32_t seq, amm_nrow_t *out);
+/** The oldest row with this wire id. 0 found / 1 none / -1. */
+int amm_journal_nrow_by_wire(amm_journal_t *j, const uint8_t wire[64],
+                             amm_nrow_t *out);
+/** Rows in `state` (NULL = any), ordered by (height, item, seq). Up to
+ *  `cap`; a result that would exceed `cap` is a fault (-1), never cut. */
+int amm_journal_nrow_list(amm_journal_t *j, const char *state, amm_nrow_t *out,
+                          int cap, int *n);
+
+/* ── NODUS payout attempts (plan sections 11, 17: write-ahead) ────────── */
+
+#define AMM_MAX_INPUTS  15        /* one SPEND takes 1..15 inputs (s.11)  */
+#define AMM_A_SIGNED    "signed"
+#define AMM_A_SUBMITTED "submitted"
+#define AMM_A_EXPIRED   "expired"
+#define AMM_A_CONFIRMED "confirmed"
+
+/** One signed NODUS payout envelope of one swap, stored BEFORE it is sent
+ *  (plan section 17 write-ahead rule; faucet_journal.h attempts). The swap
+ *  must be in payout_pending or refund_pending. `gross` is the amount the
+ *  swap owes the user, `fee` the Nodus fee deducted from it (givens item
+ *  39), `net` = gross - fee the amount the recipient output carries. */
+typedef struct {
+    int64_t  swap_seq;
+    int      n;                       /* attempt number, 1-based (assigned)  */
+    uint64_t gross, net, fee;
+    char     dest[AMM_ADDR_NODUS + 1];
+    uint8_t *env;                     /* heap; amm_attempt_free              */
+    size_t   env_len;
+    uint8_t  wire_id[64];
+    uint8_t  intent_id[64];
+    uint8_t  inputs[AMM_MAX_INPUTS][64];
+    int      n_in;
+    uint64_t build_tip;
+    uint64_t expiry;                  /* expiry height of the envelope       */
+    uint64_t scan_next;               /* next height to scan                 */
+    uint64_t last_submit_tip;         /* 0 = never submitted                 */
+    char     state[12];               /* AMM_A_*                             */
+} amm_attempt_t;
+
+void amm_attempt_free(amm_attempt_t *a);
+
+/** The OLDEST swap that owes a NODUS payout: a USDT -> NODUS swap in
+ *  payout_pending or a NODUS -> USDT swap in refund_pending (the one payout in
+ *  flight, as the faucet's head claim; the other two combinations are USDT
+ *  payouts and are not the Nodus payer's). 0 found / 1 none / -1. */
+int amm_journal_swap_head_payout(amm_journal_t *j, amm_swap_t *out);
+
+/** Store a NEW signed attempt (a->swap_seq, gross, net, fee, dest, env,
+ *  ids, inputs, ticks filled by the caller; a->n and a->state assigned) in
+ *  ONE transaction. Legal only when the swap is in payout_pending or
+ *  refund_pending, `a->net` + `a->fee` == `a->gross` with net > 0, 1..15
+ *  inputs, and the swap has no attempt yet or its latest attempt is expired
+ *  (a replacement is made only after expiry, plan section 11), and NO OTHER
+ *  swap has an attempt in signed or submitted (one payout in flight: the
+ *  bot's coins are not reserved per swap, so two open envelopes would spend
+ *  the same coin; READING, the plan says nothing of concurrent payouts). 0 /
+ *  AMM_J_ILLEGAL / AMM_J_RANGE / -1. */
+int amm_journal_attempt_sign(amm_journal_t *j, amm_attempt_t *a);
+/** The latest attempt of a swap (env heap). 0 / 1 none / -1. */
+int amm_journal_attempt_latest(amm_journal_t *j, int64_t swap_seq,
+                               amm_attempt_t *out);
+/** Record a submit CALL on the latest attempt: last_submit_tip = tip and,
+ *  from signed, the attempt becomes submitted. The node's answer is not an
+ *  input. 0 / AMM_J_ILLEGAL (no attempt, or not signed/submitted) / -1. */
+int amm_journal_attempt_submitted(amm_journal_t *j, int64_t swap_seq,
+                                  uint64_t tip);
+/** Advance the scan cursor of the latest attempt. Never backwards: a value
+ *  not above the stored cursor is AMM_J_ILLEGAL. 0 / AMM_J_ILLEGAL / -1. */
+int amm_journal_attempt_scanned(amm_journal_t *j, int64_t swap_seq,
+                                uint64_t scan_next);
+/** confirmed | expired, on the latest attempt, from signed or submitted.
+ *  The swap's own state is NOT moved here (the caller does it in the same
+ *  outer transaction, amm_journal_tx_begin). 0 / AMM_J_ILLEGAL / -1. */
+int amm_journal_attempt_finish(amm_journal_t *j, int64_t swap_seq,
+                               const char *state);
 
 #endif /* AMM_JOURNAL_H */

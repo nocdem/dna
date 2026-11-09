@@ -21,7 +21,11 @@
 
 #define LOG_TAG "AMM_JNL"
 
-#define SCHEMA_VERSION 1
+/* 2: package 2 adds nodus_rows and nodus_attempts (CREATE IF NOT EXISTS, so a
+ * version 1 file only gains the two tables). */
+/* 3: swaps.approved_tip (the height bound of fix (a)). Nothing has shipped, so
+ * a version 1 or 2 file is not migrated: it must be deleted. */
+#define SCHEMA_VERSION 3
 #define BUSY_MS 5000
 
 struct amm_journal {
@@ -52,7 +56,8 @@ static const char *SCHEMA_SQL =
     " approved_at INTEGER NOT NULL,"
     " expiry INTEGER NOT NULL,"
     " incoming_id TEXT NOT NULL DEFAULT '',"
-    " message TEXT NOT NULL DEFAULT '');"
+    " message TEXT NOT NULL DEFAULT '',"
+    " approved_tip INTEGER NOT NULL DEFAULT 0);"
     "CREATE INDEX IF NOT EXISTS swaps_state ON swaps(state);"
     "CREATE INDEX IF NOT EXISTS swaps_sender ON swaps(sender, amount);"
     "CREATE INDEX IF NOT EXISTS swaps_incoming ON swaps(incoming_id);"
@@ -79,7 +84,26 @@ static const char *SCHEMA_SQL =
     " state TEXT NOT NULL CHECK(state IN ('candidate','seen','deep','held',"
     "'dropped','reversed')),"
     " PRIMARY KEY(tx, log_index));"
-    "CREATE INDEX IF NOT EXISTS rec_block ON eth_records(block_number);";
+    "CREATE INDEX IF NOT EXISTS rec_block ON eth_records(block_number);"
+    "CREATE TABLE IF NOT EXISTS nodus_rows("
+    " height INTEGER NOT NULL, item INTEGER NOT NULL, seq INTEGER NOT NULL,"
+    " wire BLOB NOT NULL, peer TEXT NOT NULL, amount INTEGER NOT NULL,"
+    " ts INTEGER NOT NULL,"
+    " state TEXT NOT NULL CHECK(state IN ('held','counted')),"
+    " swap_seq INTEGER NOT NULL DEFAULT 0, reason TEXT NOT NULL DEFAULT '',"
+    " PRIMARY KEY(height, item, seq));"
+    "CREATE INDEX IF NOT EXISTS nrow_wire ON nodus_rows(wire);"
+    "CREATE TABLE IF NOT EXISTS nodus_attempts("
+    " swap_seq INTEGER NOT NULL, n INTEGER NOT NULL,"
+    " gross INTEGER NOT NULL, net INTEGER NOT NULL, fee INTEGER NOT NULL,"
+    " dest TEXT NOT NULL, env BLOB NOT NULL,"
+    " wire_id BLOB NOT NULL, intent_id BLOB NOT NULL, inputs BLOB NOT NULL,"
+    " n_in INTEGER NOT NULL, build_tip INTEGER NOT NULL,"
+    " expiry INTEGER NOT NULL, scan_next INTEGER NOT NULL,"
+    " last_submit_tip INTEGER NOT NULL DEFAULT 0,"
+    " state TEXT NOT NULL CHECK(state IN ('signed','submitted','expired',"
+    "'confirmed')),"
+    " PRIMARY KEY(swap_seq, n));";
 
 /* ── checked column access ──────────────────────────────────────────── */
 
@@ -343,6 +367,7 @@ static int legal_swap(const char *from, const char *to) {
         {AMM_S_COUNTED, AMM_S_PAYOUT_PENDING}, {AMM_S_COUNTED, AMM_S_REFUND_PENDING},
         {AMM_S_COUNTED, AMM_S_REVERSED},
         {AMM_S_PAYOUT_PENDING, AMM_S_PAID}, {AMM_S_PAYOUT_PENDING, AMM_S_UNKNOWN},
+        {AMM_S_PAYOUT_PENDING, AMM_S_REFUND_PENDING},
         {AMM_S_PAYOUT_PENDING, AMM_S_REVERSED},
         {AMM_S_PAID, AMM_S_REVERSED},
         {AMM_S_REFUND_PENDING, AMM_S_REFUNDED}, {AMM_S_REFUND_PENDING, AMM_S_HELD},
@@ -358,7 +383,8 @@ static int legal_swap(const char *from, const char *to) {
 /* ── swap rows ──────────────────────────────────────────────────────── */
 
 #define SWAP_COLS "seq, id, dir, state, sender, dest, amount, minimum, " \
-                  "value_usdt, approved_at, expiry, incoming_id, message"
+                  "value_usdt, approved_at, expiry, incoming_id, message, " \
+                  "approved_tip"
 
 static int load_swap_row(sqlite3_stmt *st, amm_swap_t *s) {
     memset(s, 0, sizeof(*s));
@@ -374,6 +400,7 @@ static int load_swap_row(sqlite3_stmt *st, amm_swap_t *s) {
         col_u64(st, 9, &s->approved_at) != 0 || col_u64(st, 10, &s->expiry) != 0 ||
         col_text(st, 11, s->incoming_id, sizeof(s->incoming_id)) != 0 ||
         col_text(st, 12, s->message, sizeof(s->message)) != 0 ||
+        col_u64(st, 13, &s->approved_tip) != 0 || s->approved_tip == 0 ||
         (dir != 0 && dir != 1) || strlen(s->id) != 32 ||
         !known_swap_state(s->state)) {
         QGP_LOG_ERROR(LOG_TAG, "a swap row does not read back as a valid swap "
@@ -436,6 +463,19 @@ int amm_journal_swap_by_incoming(amm_journal_t *j, const char *incoming_id,
     if (!j || !incoming_id || !*incoming_id) return -1;
     lock(j);
     int r = swap_query(j, "incoming_id=?1", (arg_t[]){AT(incoming_id)}, 1, out);
+    unlock(j);
+    return r;
+}
+
+int amm_journal_swap_open_nodus(amm_journal_t *j, const char *incoming_id,
+                                const char *sender, uint64_t amount,
+                                amm_swap_t *out) {
+    if (!j || !incoming_id || !*incoming_id || !sender || !out ||
+        amount > (uint64_t)INT64_MAX) return -1;
+    lock(j);
+    int r = swap_query(j, "incoming_id=?1 AND sender=?2 AND amount=?3 AND "
+                          "dir=1 AND state='approved'",
+                       (arg_t[]){AT(incoming_id), AT(sender), AI(amount)}, 3, out);
     unlock(j);
     return r;
 }
@@ -645,6 +685,7 @@ int amm_journal_approve(amm_journal_t *j, const amm_approve_t *a,
         !tid_ok(incoming) || a->amount > (uint64_t)INT64_MAX ||
         a->minimum > (uint64_t)INT64_MAX || a->value_usdt > (uint64_t)INT64_MAX ||
         a->approved_at > (uint64_t)INT64_MAX || a->expiry > (uint64_t)INT64_MAX ||
+        a->approved_tip == 0 || a->approved_tip > (uint64_t)INT64_MAX ||
         a->swap_max > (uint64_t)INT64_MAX || a->inflight_max > (uint64_t)INT64_MAX)
         return AMM_J_RANGE;
 
@@ -682,12 +723,14 @@ int amm_journal_approve(amm_journal_t *j, const amm_approve_t *a,
     char id[33];
     hex_of(a->rand16, 16, id);
     if (run(j, "INSERT INTO swaps(id, dir, state, sender, dest, amount, "
-               "minimum, value_usdt, approved_at, expiry, incoming_id) "
-               "VALUES(?1, ?2, 'approved', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+               "minimum, value_usdt, approved_at, expiry, incoming_id, "
+               "approved_tip) "
+               "VALUES(?1, ?2, 'approved', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             (arg_t[]){AT(id), AI(a->dir), AT(a->sender), AT(a->dest),
                       AI(a->amount), AI(a->minimum), AI(a->value_usdt),
-                      AI(a->approved_at), AI(a->expiry), AT(incoming)},
-            10, NULL) != 0) goto done;
+                      AI(a->approved_at), AI(a->expiry), AT(incoming),
+                      AI(a->approved_tip)},
+            11, NULL) != 0) goto done;
     int64_t seq = sqlite3_last_insert_rowid(j->db);
     if (run(j, "INSERT INTO req_numbers(sender, req_no, swap_seq) "
                "VALUES(?1, ?2, ?3)",
@@ -718,10 +761,38 @@ int amm_journal_swap_transition(amm_journal_t *j, int64_t seq, const char *to,
     if (g < 0) goto done;
     if (g == 1 || !legal_swap(s.state, to)) { rc = AMM_J_ILLEGAL; goto done; }
 
-    const char *inc = (incoming_id && *incoming_id) ? incoming_id : s.incoming_id;
-    if (!strcmp(to, AMM_S_PAID_WAITING) && !(incoming_id && *incoming_id)) {
+    const int given = incoming_id && *incoming_id;
+    const char *inc = given ? incoming_id : s.incoming_id;
+    if (!strcmp(to, AMM_S_PAID_WAITING) && !given) {
         rc = AMM_J_ILLEGAL;                 /* seen payment must be named    */
         goto done;
+    }
+    /* an incoming id, once set, is never changed: a later transition cannot
+     * move a swap onto another swap's transfer (the carrier guard below
+     * would otherwise be skipped by naming the id after paid_waiting_depth) */
+    if (given && *s.incoming_id && strcmp(incoming_id, s.incoming_id) != 0) {
+        rc = AMM_J_ILLEGAL;
+        goto done;
+    }
+    /* payout_pending -> refund_pending (plan line 226: zero or below the
+     * minimum after the Nodus fee -> refund) only while no attempt of this
+     * swap is signed or submitted: an envelope that may still apply would pay
+     * AND refund */
+    if (!strcmp(s.state, AMM_S_PAYOUT_PENDING) && !strcmp(to, AMM_S_REFUND_PENDING)) {
+        int64_t open_att = 0;
+        if (one_int(j, "SELECT COUNT(*) FROM nodus_attempts WHERE swap_seq=?1 AND "
+                       "state IN ('signed','submitted')",
+                    (arg_t[]){AI(seq)}, 1, &open_att) != 0) goto done;
+        if (open_att > 0) { rc = AMM_J_ILLEGAL; goto done; }
+    }
+    if (given) {
+        /* the carrier check runs on EVERY transition that names an id, not
+         * only at paid_waiting_depth */
+        int64_t others = 0;
+        if (one_int(j, "SELECT COUNT(*) FROM swaps WHERE incoming_id=?1 AND "
+                       "seq<>?2 AND state NOT IN ('approved','expired')",
+                    (arg_t[]){AT(inc), AI(seq)}, 2, &others) != 0) goto done;
+        if (others > 0) { rc = AMM_J_DUP_TRANSFER; goto done; }
     }
     if (!strcmp(to, AMM_S_COUNTED)) {
         if (!*inc) { rc = AMM_J_ILLEGAL; goto done; }
@@ -1005,13 +1076,16 @@ int amm_journal_rec_other_live(amm_journal_t *j, const uint8_t tx[32],
 
 int amm_journal_rec_candidate_exists(amm_journal_t *j, const uint8_t from[20],
                                      const uint8_t value[32],
+                                     uint64_t approved_tip,
                                      uint64_t max_block_ts) {
-    if (!j || !from || !value || max_block_ts > (uint64_t)INT64_MAX) return -1;
+    if (!j || !from || !value || approved_tip > (uint64_t)INT64_MAX ||
+        max_block_ts > (uint64_t)INT64_MAX) return -1;
     lock(j);
     int r = exists_q(j, "SELECT 1 FROM eth_records WHERE state='candidate' AND "
-                        "from_addr=?1 AND value=?2 AND "
-                        "(block_ts=0 OR block_ts<=?3)",
-                     (arg_t[]){AB(from, 20), AB(value, 32), AI(max_block_ts)}, 3);
+                        "from_addr=?1 AND value=?2 AND block_number>?3 AND "
+                        "(block_ts=0 OR block_ts<=?4)",
+                     (arg_t[]){AB(from, 20), AB(value, 32), AI(approved_tip),
+                               AI(max_block_ts)}, 4);
     unlock(j);
     return r;
 }
@@ -1030,31 +1104,369 @@ int amm_journal_payment_gone(amm_journal_t *j, const uint8_t tx[32],
     }
     char key[AMM_TID_MAX];
     amm_journal_eth_key(tx, key, sizeof(key));
-    amm_swap_t s;
-    int sg = swap_query(j, "incoming_id=?1", (arg_t[]){AT(key)}, 1, &s);
-    if (sg < 0) goto done;
-
-    int reversed = 0;
-    if (sg == 0) {
-        if (!strcmp(s.state, AMM_S_COUNTED) || !strcmp(s.state, AMM_S_PAYOUT_PENDING) ||
-            !strcmp(s.state, AMM_S_PAID) || !strcmp(s.state, AMM_S_REFUND_PENDING) ||
-            !strcmp(s.state, AMM_S_REFUNDED) || !strcmp(s.state, AMM_S_HELD) ||
-            !strcmp(s.state, AMM_S_UNKNOWN)) {
-            reversed = 1;
-            if (run(j, "UPDATE swaps SET state='reversed' WHERE seq=?1",
-                    (arg_t[]){AI(s.seq)}, 1, NULL) != 0) goto done;
-            if (run(j, "INSERT INTO flags(name, value) VALUES('reversal_pause', 1) "
-                       "ON CONFLICT(name) DO UPDATE SET value=1", NULL, 0,
-                    NULL) != 0) goto done;
-        } else if (!strcmp(s.state, AMM_S_PAID_WAITING)) {
-            if (run(j, "UPDATE swaps SET state='approved', incoming_id='' "
-                       "WHERE seq=?1", (arg_t[]){AI(s.seq)}, 1, NULL) != 0) goto done;
-        }
+    /* EVERY swap carrying the key, each by its own state (one statement per
+     * outcome, so no swap is skipped and nothing is cut at a bound) */
+    int reversed = 0, ch = 0;
+    if (run(j, "UPDATE swaps SET state='reversed' WHERE incoming_id=?1 AND "
+               "state IN ('counted','payout_pending','paid','refund_pending',"
+               "'refunded','held','unknown')",
+            (arg_t[]){AT(key)}, 1, &ch) != 0) goto done;
+    if (ch > 0) {
+        reversed = 1;
+        if (run(j, "INSERT INTO flags(name, value) VALUES('reversal_pause', 1) "
+                   "ON CONFLICT(name) DO UPDATE SET value=1", NULL, 0,
+                NULL) != 0) goto done;
     }
+    if (run(j, "UPDATE swaps SET state='approved', incoming_id='' "
+               "WHERE incoming_id=?1 AND state='paid_waiting_depth'",
+            (arg_t[]){AT(key)}, 1, NULL) != 0) goto done;
     if (run(j, "UPDATE eth_records SET state=?1 WHERE tx=?2 AND log_index=?3",
             (arg_t[]){AT(reversed ? AMM_R_REVERSED : AMM_R_DROPPED), AB(tx, 32),
                       AI(log_index)}, 3, NULL) != 0) goto done;
     *outcome = reversed ? AMM_GONE_REVERSED : AMM_GONE_DROPPED;
+    rc = AMM_J_OK;
+done:
+    return op_end(j, rc);
+}
+
+/* ── Nodus incoming rows ────────────────────────────────────────────── */
+
+#define NROW_COLS "height, item, seq, wire, peer, amount, ts, state, swap_seq, reason"
+
+static int load_nrow(sqlite3_stmt *st, amm_nrow_t *r) {
+    memset(r, 0, sizeof(*r));
+    int64_t item = 0, seq = 0;
+    if (col_u64(st, 0, &r->height) != 0 || col_i64(st, 1, &item) != 0 ||
+        col_i64(st, 2, &seq) != 0 || item < 0 || item > (int64_t)UINT32_MAX ||
+        seq < 0 || seq > (int64_t)UINT32_MAX ||
+        col_blob_n(st, 3, r->wire, 64) != 0 ||
+        col_text(st, 4, r->peer, sizeof(r->peer)) != 0 ||
+        col_u64(st, 5, &r->amount) != 0 || col_u64(st, 6, &r->ts) != 0 ||
+        col_text(st, 7, r->state, sizeof(r->state)) != 0 ||
+        col_i64(st, 8, &r->swap_seq) != 0 || r->swap_seq < 0 ||
+        col_text(st, 9, r->reason, sizeof(r->reason)) != 0 ||
+        !hex_lower_n(r->peer, AMM_ADDR_NODUS) ||
+        (strcmp(r->state, AMM_NR_HELD) && strcmp(r->state, AMM_NR_COUNTED))) {
+        QGP_LOG_ERROR(LOG_TAG, "a Nodus row does not read back as a valid row");
+        memset(r, 0, sizeof(*r));
+        return -1;
+    }
+    r->item = (uint32_t)item;
+    r->seq = (uint32_t)seq;
+    return 0;
+}
+
+int amm_journal_nrow_put(amm_journal_t *j, const amm_nrow_t *r) {
+    if (!j || !r) return -1;
+    if (r->height > (uint64_t)INT64_MAX || r->amount > (uint64_t)INT64_MAX ||
+        r->ts > (uint64_t)INT64_MAX || r->swap_seq < 0 ||
+        !hex_lower_n(r->peer, AMM_ADDR_NODUS) ||
+        (strcmp(r->state, AMM_NR_HELD) && strcmp(r->state, AMM_NR_COUNTED)) ||
+        strlen(r->reason) >= AMM_MSG_MAX) return AMM_J_RANGE;
+    if (op_begin(j) != 0) return -1;
+    int rc = -1;
+    int e = exists_q(j, "SELECT 1 FROM nodus_rows WHERE height=?1 AND item=?2 "
+                        "AND seq=?3",
+                     (arg_t[]){AI(r->height), AI(r->item), AI(r->seq)}, 3);
+    if (e < 0) goto done;
+    if (e == 0) { rc = AMM_J_ILLEGAL; goto done; }
+    if (run(j, "INSERT INTO nodus_rows(height, item, seq, wire, peer, amount, "
+               "ts, state, swap_seq, reason) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            (arg_t[]){AI(r->height), AI(r->item), AI(r->seq), AB(r->wire, 64),
+                      AT(r->peer), AI(r->amount), AI(r->ts), AT(r->state),
+                      AI(r->swap_seq), AT(r->reason)}, 10, NULL) != 0) goto done;
+    rc = AMM_J_OK;
+done:
+    return op_end(j, rc);
+}
+
+static int nrow_one(amm_journal_t *j, const char *where, const arg_t *args,
+                    int nargs, amm_nrow_t *out) {
+    char sql[320];
+    snprintf(sql, sizeof(sql), "SELECT " NROW_COLS " FROM nodus_rows WHERE %s "
+             "ORDER BY height, item, seq LIMIT 1", where);
+    sqlite3_stmt *st;
+    if (prep(j, sql, args, nargs, &st) != 0) return -1;
+    int rc = sqlite3_step(st);
+    int ret;
+    if (rc == SQLITE_ROW) {
+        amm_nrow_t t;
+        if (load_nrow(st, &t) != 0) ret = -1;
+        else { if (out) *out = t; ret = 0; }
+    } else if (rc == SQLITE_DONE) {
+        ret = 1;
+    } else {
+        ret = -1;
+    }
+    sqlite3_finalize(st);
+    return ret;
+}
+
+int amm_journal_nrow_get(amm_journal_t *j, uint64_t height, uint32_t item,
+                         uint32_t seq, amm_nrow_t *out) {
+    if (!j || !out || height > (uint64_t)INT64_MAX) return -1;
+    lock(j);
+    int r = nrow_one(j, "height=?1 AND item=?2 AND seq=?3",
+                     (arg_t[]){AI(height), AI(item), AI(seq)}, 3, out);
+    unlock(j);
+    return r;
+}
+
+int amm_journal_nrow_by_wire(amm_journal_t *j, const uint8_t wire[64],
+                             amm_nrow_t *out) {
+    if (!j || !wire || !out) return -1;
+    lock(j);
+    int r = nrow_one(j, "wire=?1", (arg_t[]){AB(wire, 64)}, 1, out);
+    unlock(j);
+    return r;
+}
+
+int amm_journal_nrow_list(amm_journal_t *j, const char *state, amm_nrow_t *out,
+                          int cap, int *n) {
+    if (!j || !out || !n || cap < 0) return -1;
+    lock(j);
+    sqlite3_stmt *st;
+    int ret = -1;
+    int pr;
+    if (state)
+        pr = prep(j, "SELECT " NROW_COLS " FROM nodus_rows WHERE state=?1 "
+                     "ORDER BY height, item, seq", (arg_t[]){AT(state)}, 1, &st);
+    else
+        pr = prep(j, "SELECT " NROW_COLS " FROM nodus_rows "
+                     "ORDER BY height, item, seq", NULL, 0, &st);
+    if (pr == 0) {
+        int cnt = 0, rc;
+        ret = 0;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            if (cnt >= cap || load_nrow(st, &out[cnt]) != 0) { ret = -1; break; }
+            cnt++;
+        }
+        if (ret == 0 && rc != SQLITE_DONE) ret = -1;
+        sqlite3_finalize(st);
+        if (ret == 0) *n = cnt;
+    }
+    unlock(j);
+    return ret;
+}
+
+/* ── NODUS payout attempts ──────────────────────────────────────────── */
+
+#define ATT_ENV_MAX (256u * 1024u)    /* a built envelope is a few KiB      */
+
+void amm_attempt_free(amm_attempt_t *a) {
+    if (!a) return;
+    free(a->env);
+    a->env = NULL;
+    a->env_len = 0;
+}
+
+static int known_attempt_state(const char *s) {
+    return !strcmp(s, AMM_A_SIGNED) || !strcmp(s, AMM_A_SUBMITTED) ||
+           !strcmp(s, AMM_A_EXPIRED) || !strcmp(s, AMM_A_CONFIRMED);
+}
+
+#define ATT_COLS "swap_seq, n, gross, net, fee, dest, env, wire_id, intent_id, " \
+                 "inputs, n_in, build_tip, expiry, scan_next, last_submit_tip, state"
+
+static int load_attempt(sqlite3_stmt *st, amm_attempt_t *a) {
+    memset(a, 0, sizeof(*a));
+    int64_t n = 0, n_in = 0;
+    uint8_t *env = NULL;
+    int ok = 0;
+    if (col_i64(st, 0, &a->swap_seq) == 0 && col_i64(st, 1, &n) == 0 && n >= 1 &&
+        n <= INT32_MAX && col_u64(st, 2, &a->gross) == 0 &&
+        col_u64(st, 3, &a->net) == 0 && col_u64(st, 4, &a->fee) == 0 &&
+        col_text(st, 5, a->dest, sizeof(a->dest)) == 0 &&
+        sqlite3_column_type(st, 6) == SQLITE_BLOB &&
+        col_blob_n(st, 7, a->wire_id, 64) == 0 &&
+        col_blob_n(st, 8, a->intent_id, 64) == 0 &&
+        col_i64(st, 10, &n_in) == 0 && n_in >= 1 && n_in <= AMM_MAX_INPUTS &&
+        sqlite3_column_type(st, 9) == SQLITE_BLOB &&
+        sqlite3_column_bytes(st, 9) == (int)(n_in * 64) &&
+        col_u64(st, 11, &a->build_tip) == 0 && col_u64(st, 12, &a->expiry) == 0 &&
+        col_u64(st, 13, &a->scan_next) == 0 &&
+        col_u64(st, 14, &a->last_submit_tip) == 0 &&
+        col_text(st, 15, a->state, sizeof(a->state)) == 0 &&
+        known_attempt_state(a->state) && hex_lower_n(a->dest, AMM_ADDR_NODUS)) {
+        int el = sqlite3_column_bytes(st, 6);
+        const void *ep = sqlite3_column_blob(st, 6);
+        const void *ip = sqlite3_column_blob(st, 9);
+        if (el > 0 && (size_t)el <= ATT_ENV_MAX && ep && ip &&
+            (env = malloc((size_t)el)) != NULL) {
+            memcpy(env, ep, (size_t)el);
+            memcpy(a->inputs, ip, (size_t)n_in * 64);
+            a->env = env;
+            a->env_len = (size_t)el;
+            a->n = (int)n;
+            a->n_in = (int)n_in;
+            ok = 1;
+        }
+    }
+    if (!ok) {
+        QGP_LOG_ERROR(LOG_TAG, "an attempt row does not read back as a valid "
+                      "attempt");
+        free(env);
+        memset(a, 0, sizeof(*a));
+        return -1;
+    }
+    return 0;
+}
+
+static int attempt_latest_locked(amm_journal_t *j, int64_t swap_seq,
+                                 amm_attempt_t *out) {
+    sqlite3_stmt *st;
+    if (prep(j, "SELECT " ATT_COLS " FROM nodus_attempts WHERE swap_seq=?1 "
+                "ORDER BY n DESC LIMIT 1", (arg_t[]){AI(swap_seq)}, 1, &st) != 0)
+        return -1;
+    int rc = sqlite3_step(st);
+    int ret;
+    if (rc == SQLITE_ROW) ret = load_attempt(st, out) == 0 ? 0 : -1;
+    else if (rc == SQLITE_DONE) ret = 1;
+    else ret = -1;
+    sqlite3_finalize(st);
+    return ret;
+}
+
+int amm_journal_swap_head_payout(amm_journal_t *j, amm_swap_t *out) {
+    if (!j || !out) return -1;
+    lock(j);
+    /* only a swap that owes a NODUS payout: the payout of a USDT -> NODUS swap
+     * or the refund of a NODUS -> USDT swap (the other two are USDT payouts) */
+    int r = swap_query(j, "(dir=0 AND state='payout_pending') OR "
+                          "(dir=1 AND state='refund_pending')", NULL, 0, out);
+    unlock(j);
+    return r;
+}
+
+int amm_journal_attempt_latest(amm_journal_t *j, int64_t swap_seq,
+                               amm_attempt_t *out) {
+    if (!j || !out) return -1;
+    lock(j);
+    int r = attempt_latest_locked(j, swap_seq, out);
+    unlock(j);
+    return r;
+}
+
+int amm_journal_attempt_sign(amm_journal_t *j, amm_attempt_t *a) {
+    if (!j || !a || !a->env) return -1;
+    if (a->env_len == 0 || a->env_len > ATT_ENV_MAX || a->net == 0 ||
+        a->fee > UINT64_MAX - a->net || a->net + a->fee != a->gross ||
+        a->gross > (uint64_t)INT64_MAX || a->n_in < 1 || a->n_in > AMM_MAX_INPUTS ||
+        a->build_tip > (uint64_t)INT64_MAX || a->expiry > (uint64_t)INT64_MAX ||
+        a->scan_next > (uint64_t)INT64_MAX ||
+        a->last_submit_tip > (uint64_t)INT64_MAX ||
+        !hex_lower_n(a->dest, AMM_ADDR_NODUS)) return AMM_J_RANGE;
+    if (op_begin(j) != 0) return -1;
+    int rc = -1;
+    amm_swap_t s;
+    int g = swap_query(j, "seq=?1", (arg_t[]){AI(a->swap_seq)}, 1, &s);
+    if (g < 0) goto done;
+    /* the one place a NODUS payout of this swap can be owed: the payout of a
+     * USDT -> NODUS swap to its destination, the refund of a NODUS -> USDT
+     * swap to its sender (plan section 11, "the user's native address") */
+    if (g == 1) { rc = AMM_J_ILLEGAL; goto done; }
+    int owed = (s.dir == AMM_USDT_TO_NODUS && !strcmp(s.state, AMM_S_PAYOUT_PENDING)) ||
+               (s.dir == AMM_NODUS_TO_USDT && !strcmp(s.state, AMM_S_REFUND_PENDING));
+    if (!owed) { rc = AMM_J_ILLEGAL; goto done; }
+    if (strcmp(a->dest, s.dir == AMM_USDT_TO_NODUS ? s.dest : s.sender) != 0) {
+        rc = AMM_J_ILLEGAL;
+        goto done;
+    }
+    /* ONE PAYOUT IN FLIGHT (the faucet's head claim; there is no coin
+     * reservation table): another swap's open attempt would pick the same
+     * coins, and the two envelopes could not both apply */
+    int64_t others = 0;
+    if (one_int(j, "SELECT COUNT(*) FROM nodus_attempts WHERE swap_seq<>?1 AND "
+                   "state IN ('signed','submitted')",
+                (arg_t[]){AI(a->swap_seq)}, 1, &others) != 0) goto done;
+    if (others > 0) { rc = AMM_J_ILLEGAL; goto done; }
+    amm_attempt_t prev;
+    int p = attempt_latest_locked(j, a->swap_seq, &prev);
+    if (p < 0) goto done;
+    int next_n = 1;
+    if (p == 0) {
+        int expired = !strcmp(prev.state, AMM_A_EXPIRED);
+        next_n = prev.n + 1;
+        amm_attempt_free(&prev);
+        if (!expired) { rc = AMM_J_ILLEGAL; goto done; }
+    }
+    uint8_t inb[AMM_MAX_INPUTS * 64];
+    for (int i = 0; i < a->n_in; i++) memcpy(inb + (size_t)i * 64, a->inputs[i], 64);
+    if (run(j, "INSERT INTO nodus_attempts(swap_seq, n, gross, net, fee, dest, "
+               "env, wire_id, intent_id, inputs, n_in, build_tip, expiry, "
+               "scan_next, last_submit_tip, state) "
+               "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,'signed')",
+            (arg_t[]){AI(a->swap_seq), AI(next_n), AI(a->gross), AI(a->net),
+                      AI(a->fee), AT(a->dest), AB(a->env, (int)a->env_len),
+                      AB(a->wire_id, 64), AB(a->intent_id, 64),
+                      AB(inb, a->n_in * 64), AI(a->n_in), AI(a->build_tip),
+                      AI(a->expiry), AI(a->scan_next), AI(a->last_submit_tip)},
+            15, NULL) != 0) goto done;
+    a->n = next_n;
+    snprintf(a->state, sizeof(a->state), "%s", AMM_A_SIGNED);
+    rc = AMM_J_OK;
+done:
+    return op_end(j, rc);
+}
+
+int amm_journal_attempt_submitted(amm_journal_t *j, int64_t swap_seq,
+                                  uint64_t tip) {
+    if (!j || tip > (uint64_t)INT64_MAX) return -1;
+    if (op_begin(j) != 0) return -1;
+    int rc = -1;
+    amm_attempt_t a;
+    int g = attempt_latest_locked(j, swap_seq, &a);
+    if (g < 0) goto done;
+    if (g == 1) { rc = AMM_J_ILLEGAL; goto done; }
+    int ok = !strcmp(a.state, AMM_A_SIGNED) || !strcmp(a.state, AMM_A_SUBMITTED);
+    int n = a.n;
+    amm_attempt_free(&a);
+    if (!ok) { rc = AMM_J_ILLEGAL; goto done; }
+    if (run(j, "UPDATE nodus_attempts SET state='submitted', last_submit_tip=?1 "
+               "WHERE swap_seq=?2 AND n=?3",
+            (arg_t[]){AI(tip), AI(swap_seq), AI(n)}, 3, NULL) != 0) goto done;
+    rc = AMM_J_OK;
+done:
+    return op_end(j, rc);
+}
+
+int amm_journal_attempt_scanned(amm_journal_t *j, int64_t swap_seq,
+                                uint64_t scan_next) {
+    if (!j || scan_next > (uint64_t)INT64_MAX) return -1;
+    if (op_begin(j) != 0) return -1;
+    int rc = -1;
+    amm_attempt_t a;
+    int g = attempt_latest_locked(j, swap_seq, &a);
+    if (g < 0) goto done;
+    if (g == 1) { rc = AMM_J_ILLEGAL; goto done; }
+    int n = a.n;
+    int ok = scan_next > a.scan_next;
+    amm_attempt_free(&a);
+    if (!ok) { rc = AMM_J_ILLEGAL; goto done; }
+    if (run(j, "UPDATE nodus_attempts SET scan_next=?1 WHERE swap_seq=?2 AND n=?3",
+            (arg_t[]){AI(scan_next), AI(swap_seq), AI(n)}, 3, NULL) != 0) goto done;
+    rc = AMM_J_OK;
+done:
+    return op_end(j, rc);
+}
+
+int amm_journal_attempt_finish(amm_journal_t *j, int64_t swap_seq,
+                               const char *state) {
+    if (!j || !state) return -1;
+    if (strcmp(state, AMM_A_CONFIRMED) && strcmp(state, AMM_A_EXPIRED))
+        return AMM_J_ILLEGAL;
+    if (op_begin(j) != 0) return -1;
+    int rc = -1;
+    amm_attempt_t a;
+    int g = attempt_latest_locked(j, swap_seq, &a);
+    if (g < 0) goto done;
+    if (g == 1) { rc = AMM_J_ILLEGAL; goto done; }
+    int n = a.n;
+    int ok = !strcmp(a.state, AMM_A_SIGNED) || !strcmp(a.state, AMM_A_SUBMITTED);
+    amm_attempt_free(&a);
+    if (!ok) { rc = AMM_J_ILLEGAL; goto done; }
+    if (run(j, "UPDATE nodus_attempts SET state=?1 WHERE swap_seq=?2 AND n=?3",
+            (arg_t[]){AT(state), AI(swap_seq), AI(n)}, 3, NULL) != 0) goto done;
     rc = AMM_J_OK;
 done:
     return op_end(j, rc);
@@ -1095,6 +1507,12 @@ int amm_journal_open(const char *path, amm_journal_t **out) {
     {
         int64_t ver = 0;
         if (one_int(j, "PRAGMA user_version", NULL, 0, &ver) != 0) goto fail;
+        if (ver != 0 && ver < SCHEMA_VERSION) {
+            QGP_LOG_ERROR(LOG_TAG, "journal schema %lld is older than this "
+                          "binary (%d) and is not migrated", (long long)ver,
+                          SCHEMA_VERSION);
+            goto fail;
+        }
         if (ver > SCHEMA_VERSION) {
             QGP_LOG_ERROR(LOG_TAG, "journal schema %lld is newer than this "
                           "binary (%d)", (long long)ver, SCHEMA_VERSION);
@@ -1102,7 +1520,7 @@ int amm_journal_open(const char *path, amm_journal_t **out) {
         }
     }
     if (exec_sql(j->db, SCHEMA_SQL) != 0) goto fail;
-    if (exec_sql(j->db, "PRAGMA user_version=1") != 0) goto fail;
+    if (exec_sql(j->db, "PRAGMA user_version=3") != 0) goto fail;   /* = SCHEMA_VERSION */
     chmod(path, 0600);
     *out = j;
     return 0;

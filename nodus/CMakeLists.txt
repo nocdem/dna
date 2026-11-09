@@ -3945,19 +3945,25 @@ endforeach()
 # nodus-amm — the swap bot (USDT on Ethereum <-> NODUS). Plan:
 # docs/plans/2026-11-08-swap-bot-plan.nodus1.md (revision 4), sections 3, 4,
 # 19. FIRST PACKAGE, non-signing: ledger math, settings, journal, the Nodus
-# and Ethereum seam tables and the Ethereum watcher. No service executable
-# yet: amm_main needs amm_req / amm_eth_pay / amm_http / amm_engine, which
-# wait for the operator's agreement on the signed texts (plan section 22,
-# question 12). The faucet's pattern (FAUCET_CORE_SOURCES above): the core
-# sources are compiled into each test; nothing links a transport.
+# and Ethereum seam tables and the Ethereum watcher. SECOND PACKAGE (the
+# Nodus side): the Nodus observation (amm_nodus_watch) and the NODUS payout
+# (amm_nodus_pay, signs an ordinary CORE SPEND with the bot's own key through
+# nodus_v2_spend_build, as the faucet does), tested against stub seam tables.
+# No service executable yet: amm_main needs amm_req / amm_eth_pay / amm_http /
+# amm_engine, which wait for the operator's agreement on the signed texts
+# (plan section 22, question 12). The faucet's pattern (FAUCET_CORE_SOURCES
+# above): the core sources are compiled into each test; nothing links a
+# transport.
 set(AMM_CORE_SOURCES
     tools/amm/amm_ledger.c
     tools/amm/amm_cfg.c
     tools/amm/amm_journal.c
-    tools/amm/amm_eth_watch.c)
+    tools/amm/amm_eth_watch.c
+    tools/amm/amm_nodus_watch.c
+    tools/amm/amm_nodus_pay.c)
 
 foreach(amm_test test_amm_ledger test_amm_cfg test_amm_journal
-                 test_amm_eth_watch)
+                 test_amm_eth_watch test_amm_nodus_watch test_amm_nodus_pay)
     add_executable(${amm_test} tests/${amm_test}.c ${AMM_CORE_SOURCES})
     target_link_libraries(${amm_test} nodus dsa nodus Threads::Threads)
     target_compile_options(${amm_test} PRIVATE -Wall -Wextra -Wno-unused-parameter)
@@ -3968,6 +3974,20 @@ foreach(amm_test test_amm_ledger test_amm_cfg test_amm_journal
     target_compile_definitions(${amm_test} PRIVATE DNAC_TX_BUILDER_ONLY=1)
     add_test(NAME ${amm_test} COMMAND ${amm_test})
 endforeach()
+
+# amm_node_real — the production adapter of the Nodus seam (amm_node_t) over
+# the pinned client session (faucet_node_real.c pattern). It needs a live node,
+# so no test runs it; it is built as an OBJECT library so that it is compiled,
+# with the same warning flags as every AMM target, under `all`, and linked by
+# no executable (amm_main is a later package).
+add_library(amm_node_real OBJECT tools/amm/amm_node_real.c)
+target_link_libraries(amm_node_real PRIVATE nodus dsa)
+target_compile_options(amm_node_real PRIVATE -Wall -Wextra -Wno-unused-parameter)
+target_include_directories(amm_node_real PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools/amm
+    ${MONOREPO_ROOT}/dnac/include
+    ${MONOREPO_ROOT}/messenger/include)
+target_compile_definitions(amm_node_real PRIVATE DNAC_TX_BUILDER_ONLY=1)
 
 # stagef_rpc_flood — TEST-ONLY localhost load tool for the Genesis
 # Protocol harness (nodus/tests/integration/stagef). NOT installed, NOT a

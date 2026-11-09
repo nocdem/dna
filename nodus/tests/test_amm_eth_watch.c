@@ -28,10 +28,14 @@
  *   W6  ignored: transferFrom (another sender), a failed receipt, another
  *       token contract, another recipient, a zero amount, a log with the
  *       wrong topic: none is stored;
- *   W7  matching (pure): sender + exact logged value + block time within the
- *       expiry = MATCH; another value = held (mismatched value); another
- *       sender = none; block time after the expiry = held; a payment first
- *       read after the expiry time but within it by block time still MATCHes;
+ *   W7  matching (pure): sender + exact logged value + block height ABOVE the
+ *       tip read at approval + block time <= expiry = MATCH; another value =
+ *       held (mismatched value); another sender = none; block time after the
+ *       expiry = held; a block at or below the approval tip = held
+ *       (HELD_EARLY, orchestrator's review finding (a): approval first, then
+ *       payment, bound by chain height, no wall clock: height == tip is held,
+ *       one above counts); a payment first read after the expiry time but
+ *       within it by block time still MATCHes;
  *   W8  reorganisation: a parent-hash mismatch is detected, the changed
  *       heights are found, stored blocks above the common ancestor are
  *       replaced by a rescan; a transaction found again in ANOTHER block
@@ -79,9 +83,14 @@
  *       is reversed with the pause;
  *   W21 the permanent marker is the transaction hash: a transaction reversed
  *       and re-mined under log index 1 is a live record again but a second
- *       swap naming it cannot be counted (DUP_TRANSFER);
+ *       swap naming it is refused (DUP_TRANSFER) already when it tries to
+ *       wait on it, because the reversed swap still carries the id
+ *       (review finding (b)); the marker is still held;
  *   W22 a candidate holds an approval's window only when its block time is
- *       within the validity: block time 132 blocks expiry 132, not expiry 100;
+ *       within the validity (<= expiry) and its block is above the tip read at
+ *       approval: block time 132 blocks expiry 132, not expiry 100; a
+ *       candidate in block 11 holds nothing for an approval whose tip is 11 or
+ *       12, and holds it for tip 10 (review finding (a));
  *   W6 also covers a self-authorised transferFrom (log from == transaction
  *       sender, selector 23b872dd) and a call without call data: ignored
  *       because the call data must start with the transfer selector a9059cbb
@@ -403,6 +412,7 @@ static int make_swap_as(char sender_c, uint8_t txb, const char *target, amm_swap
     memset(dest, 'e', 128); dest[128] = '\0';
     a.dir = AMM_USDT_TO_NODUS; a.sender = sender; a.dest = dest;
     a.amount = 5; a.minimum = 1; a.value_usdt = 5; a.approved_at = 1; a.expiry = 100;
+    a.approved_tip = 1;
     a.incoming_id = ""; a.swap_max = 100000000ULL; a.inflight_max = 500000000ULL;
     a.req_no[31] = (uint8_t)ctr; a.req_no[30] = (uint8_t)(ctr >> 8);
     for (int i = 0; i < 16; i++) a.rand16[i] = (uint8_t)(ctr * 7 + i);
@@ -647,16 +657,27 @@ static void w7_match(void) {
     printf("W7 matching\n");
     amm_rec_t r;
     memset(&r, 0, sizeof(r));
-    memset(r.from, 0x11, 20); r.value[31] = 5; r.block_ts = 96;
+    memset(r.from, 0x11, 20); r.value[31] = 5; r.block_ts = 96; r.block_number = 8;
     uint8_t sender[20], other[20], amount[32], amount6[32];
     memset(sender, 0x11, 20); memset(other, 0x22, 20);
     memset(amount, 0, 32); amount[31] = 5;
     memset(amount6, 0, 32); amount6[31] = 6;
-    CHECK(amm_eth_watch_match(&r, sender, amount, 100) == AMM_M_MATCH, "sender + amount + block time within expiry: MATCH");
-    CHECK(amm_eth_watch_match(&r, sender, amount, 96) == AMM_M_MATCH, "block time == expiry: MATCH");
-    CHECK(amm_eth_watch_match(&r, sender, amount6, 100) == AMM_M_HELD_VALUE, "another logged value: held");
-    CHECK(amm_eth_watch_match(&r, other, amount, 100) == AMM_M_NONE, "another sender: none");
-    CHECK(amm_eth_watch_match(&r, sender, amount, 95) == AMM_M_HELD_EXPIRED, "block time after the expiry: held");
+    CHECK(amm_eth_watch_match(&r, sender, amount, 7, 100) == AMM_M_MATCH, "sender + amount + block above the approval tip + block time <= expiry: MATCH");
+    CHECK(amm_eth_watch_match(&r, sender, amount, 7, 96) == AMM_M_MATCH, "block time == expiry: MATCH");
+    CHECK(amm_eth_watch_match(&r, sender, amount6, 7, 100) == AMM_M_HELD_VALUE, "another logged value: held");
+    CHECK(amm_eth_watch_match(&r, other, amount, 7, 100) == AMM_M_NONE, "another sender: none");
+    CHECK(amm_eth_watch_match(&r, sender, amount, 7, 95) == AMM_M_HELD_EXPIRED, "block time after the expiry: held");
+    /* review finding (a): approval first, then payment, bound by chain HEIGHT
+     * (the tip read at approval), never by the wall clock; the payment is in block 8 */
+    CHECK(amm_eth_watch_match(&r, sender, amount, 8, 100) == AMM_M_HELD_EARLY,
+          "block 8, approval tip 8: the same block is not above it: held, it matches no approval");
+    CHECK(amm_eth_watch_match(&r, sender, amount, 7, 100) == AMM_M_MATCH,
+          "block 8, approval tip 7: one above: counted");
+    CHECK(amm_eth_watch_match(&r, sender, amount, 9, 100) == AMM_M_HELD_EARLY,
+          "approval tip 9 above the block: held");
+    CHECK(amm_eth_watch_match(&r, sender, amount6, 8, 100) == AMM_M_HELD_VALUE &&
+          amm_eth_watch_match(&r, other, amount, 8, 100) == AMM_M_NONE,
+          "sender and value are judged before the height: HELD_VALUE and NONE keep their meaning");
     /* a payment first read after the expiry time still follows its approval
      * by BLOCK time: the chain is read late (start at block 12), the payment
      * sits in block 8 (ts 96) and the approval expires at 100 */
@@ -667,7 +688,7 @@ static void w7_match(void) {
     step(&o);
     amm_rec_t got;
     CHECK(rec_load(0x31, 0, &got) == 0 && got.block_ts == 96, "record carries its block time");
-    CHECK(amm_eth_watch_match(&got, sender, amount, 100) == AMM_M_MATCH,
+    CHECK(amm_eth_watch_match(&got, sender, amount, 7, 100) == AMM_M_MATCH,
           "read after the expiry time (bot time 10^9, chain at 168) but in-window by block time: MATCH");
 }
 
@@ -761,6 +782,7 @@ static void w10_reversal(void) {
         memset(&a, 0, sizeof(a));
         a.dir = AMM_USDT_TO_NODUS; a.sender = sender; a.dest = dest; a.amount = 1;
         a.value_usdt = 1; a.incoming_id = ""; a.swap_max = 100; a.inflight_max = 1000;
+        a.approved_tip = 1;
         a.req_no[0] = 1; a.rand16[0] = 1;
         amm_swap_t n;
         CHECK(amm_journal_approve(g_j, &a, &n) == AMM_J_PAUSED, "  new approvals refused (settings flag off)");
@@ -824,20 +846,20 @@ static void w13_window_observation(void) {
     ch_build(&g_chain, 1, 11, 0, 0);
     amm_eth_step_t o;
     step(&o);
-    CHECK(amm_eth_watch_window_observed(g_w, 100, sender, amount) == 0,
+    CHECK(amm_eth_watch_window_observed(g_w, 1, 100, sender, amount) == 0,
           "tip 11: block 9 (first after the expiry) is at depth 2: not observed");
     ch_build(&g_chain, 1, 12, 0, 0);
     step(&o);
-    CHECK(amm_eth_watch_window_observed(g_w, 100, sender, amount) == 1,
+    CHECK(amm_eth_watch_window_observed(g_w, 1, 100, sender, amount) == 1,
           "tip 12: block 9 at depth 3, cursor past it: observed");
-    CHECK(amm_eth_watch_window_observed(g_w, 12 * 12, sender, amount) == 0,
+    CHECK(amm_eth_watch_window_observed(g_w, 1, 12 * 12, sender, amount) == 0,
           "an expiry later than every scanned block: not observed");
     /* reads failing: the cursor does not move, so a later window is not observed */
     fresh(20);
     ch_build(&g_chain, 1, 12, 0, 0);
     g_sp[0].fail_blocks = 1; g_sp[1].fail_blocks = 1;
     step(&o);
-    CHECK(amm_eth_watch_window_observed(g_w, 100, sender, amount) == 0,
+    CHECK(amm_eth_watch_window_observed(g_w, 1, 100, sender, amount) == 0,
           "headers unreadable (no cursor): not observed, the clock does not release room");
     g_sp[0].fail_blocks = 0; g_sp[1].fail_blocks = 0;
     /* a retained candidate for this sender and amount blocks it */
@@ -850,16 +872,16 @@ static void w13_window_observation(void) {
     step(&o);
     char st[16];
     CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "candidate"), "setup: a candidate for sender 0x11 amount 5");
-    CHECK(amm_eth_watch_window_observed(g_w, 100, sender, amount) == 0,
+    CHECK(amm_eth_watch_window_observed(g_w, 1, 100, sender, amount) == 0,
           "a below-quorum candidate for this approval is unresolved: not observed");
     uint8_t amount7[32];
     memset(amount7, 0, 32); amount7[31] = 7;
-    CHECK(amm_eth_watch_window_observed(g_w, 100, sender, amount7) == 1,
+    CHECK(amm_eth_watch_window_observed(g_w, 1, 100, sender, amount7) == 1,
           "another amount is not affected");
     g_sp[1].fail_logs = 0;                               /* it answers without: dropped */
     step(&o);
     CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "dropped") &&
-          amm_eth_watch_window_observed(g_w, 100, sender, amount) == 1,
+          amm_eth_watch_window_observed(g_w, 1, 100, sender, amount) == 1,
           "the candidate resolves (dropped): observed");
 }
 
@@ -1027,7 +1049,7 @@ static void w20_moved_value(void) {
             amm_rec_t r;
             CHECK(rec_load(0x31, 0, &r) == 0 && r.value[31] == 6 && r.block_number == 12,
                   "the record carries the new block's logged value 6, not the old 5");
-            CHECK(amm_eth_watch_match(&r, sender, amount5, 1000) == AMM_M_HELD_VALUE,
+            CHECK(amm_eth_watch_match(&r, sender, amount5, 1, 1000) == AMM_M_HELD_VALUE,
                   "against the approved amount 5 it is a mismatched value: held");
             CHECK(swap_is(&s, "approved"), "the swap that waited for a payment of 5 is unpaid again");
         } else {
@@ -1070,11 +1092,14 @@ static void w21_marker_by_hash(void) {
     amm_journal_eth_key(nr.tx, key2, sizeof(key2));
     CHECK(nr.log_index == 1 && !strcmp(key2, key),
           "its key, derived from the new record (log 1), is the same eth:<tx hash>");
-    CHECK(amm_journal_swap_transition(g_j, s2.seq, "paid_waiting_depth", key2, NULL, NULL) == 0,
-          "swap 2 names the re-mined payment by the new record's key");
-    CHECK(amm_journal_swap_transition(g_j, s2.seq, "counted", NULL, NULL, NULL) == AMM_J_DUP_TRANSFER,
-          "counting it again is refused: the marker is the transaction hash, not hash + log index");
-    CHECK(swap_is(&s2, "paid_waiting_depth"), "  swap 2 is not paid");
+    /* review finding (b): swap 1 (reversed) still carries the id, so swap 2 is
+     * refused already when it tries to wait on the same payment; the
+     * permanent marker (the transaction hash, not hash + log index) stays the
+     * second line of defence at `counted` */
+    CHECK(amm_journal_swap_transition(g_j, s2.seq, "paid_waiting_depth", key2, NULL, NULL) == AMM_J_DUP_TRANSFER,
+          "swap 2 naming the re-mined payment is refused: swap 1 already carries eth:<tx hash>");
+    CHECK(swap_is(&s2, "approved"), "  swap 2 is unchanged (not paid)");
+    CHECK(amm_journal_marker_exists(g_j, key2) == 0, "  the permanent marker still holds the transaction hash");
 }
 
 /* W22: a candidate holds an approval's window only when its block time is
@@ -1093,10 +1118,20 @@ static void w22_candidate_time(void) {
     step(&o);
     char st[16];
     CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "candidate"), "setup: a candidate with block time 132");
-    CHECK(amm_eth_watch_window_observed(g_w, 100, sender, amount) == 1,
+    CHECK(amm_eth_watch_window_observed(g_w, 1, 100, sender, amount) == 1,
           "expiry 100: the candidate (132) lies after the validity: the window is observed");
-    CHECK(amm_eth_watch_window_observed(g_w, 132, sender, amount) == 0,
+    CHECK(amm_eth_watch_window_observed(g_w, 1, 132, sender, amount) == 0,
           "expiry 132: the candidate (132) is within the validity: not observed");
+    /* review finding (a), the candidate check, by chain HEIGHT: a candidate in
+     * a block at or below the tip read at approval is not a payment for that
+     * approval and holds nothing (the candidate is in block 11; block 13, ts
+     * 156, is the first scanned block after expiry 150) */
+    CHECK(amm_eth_watch_window_observed(g_w, 10, 150, sender, amount) == 0,
+          "approval tip 10, expiry 150: the candidate (block 11) is one above: not observed");
+    CHECK(amm_eth_watch_window_observed(g_w, 11, 150, sender, amount) == 1,
+          "approval tip 11: the candidate is in the tip block, not above it: observed");
+    CHECK(amm_eth_watch_window_observed(g_w, 12, 150, sender, amount) == 1,
+          "approval tip 12: the candidate lies before the approval: observed");
 }
 
 /* W23: the liquidity depth helper uses the joint vote, not the global tip. */

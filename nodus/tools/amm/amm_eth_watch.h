@@ -175,18 +175,28 @@ typedef enum {
                               * givens item 54)                              */
     AMM_M_HELD_VALUE   = 2,  /* this sender, another logged value: a payment
                               * that matches no approval -> held (section 7) */
-    AMM_M_HELD_EXPIRED = 3   /* this sender and amount, block time after the
+    AMM_M_HELD_EXPIRED = 3,  /* this sender and amount, block time after the
                               * expiry: matches no approval -> held (item 54) */
+    AMM_M_HELD_EARLY   = 4   /* this sender and amount, in a block at or
+                              * BELOW the tip the bot read at approval: the
+                              * plan's order is approval first, then payment,
+                              * so it matches no approval -> held
+                              * (orchestrator's review finding on package 1) */
 } amm_match_t;
 
 /** PURE. Matching of one record to one approval by sender, exact logged
- *  amount (big-endian 32 bytes) and the BLOCK time against the approval's
- *  expiry (never the bot's clock: a payment whose block time is within the
- *  validity follows its approval even when the bot reads it after the expiry
- *  time, givens item 54). */
+ *  amount (big-endian 32 bytes), the BLOCK HEIGHT against the tip read at
+ *  approval and the BLOCK time against the approval's expiry (never the
+ *  bot's clock: a payment whose block time is within the validity follows its
+ *  approval even when the bot reads it after the expiry time, givens item
+ *  54). A record whose block number is not above `approved_tip` is
+ *  AMM_M_HELD_EARLY: the plan's order is approval first, then payment
+ *  (sections 1, 7, 8). The height bound rests on the orchestrator's finding,
+ *  not on a plan sentence (plan line 319 states the time upper bound only);
+ *  it is a chain fact, so no wall clock is compared with chain state. */
 amm_match_t amm_eth_watch_match(const amm_rec_t *rec, const uint8_t sender[20],
                                 const uint8_t amount_be[32],
-                                uint64_t expiry_ts);
+                                uint64_t approved_tip, uint64_t expiry_ts);
 
 /** The window rule of plan section 13 / givens item 54 for an Ethereum
  *  payment: 1 = the payment window of an approval (sender, amount, expiry
@@ -194,13 +204,14 @@ amm_match_t amm_eth_watch_match(const amm_rec_t *rec, const uint8_t sender[20],
  *  cursor has passed, on the quorum, a stored block whose header timestamp
  *  is later than the expiry, that block is at least `confirmations` below the
  *  stored tip, and no candidate (below-quorum) record with this sender and
- *  amount whose block time is within the validity (<= expiry) or unknown is
- *  still retained (plan lines 314, 319). Block timestamps strictly increase (execution-
+ *  amount in a block above `approved_tip` whose block time is within the
+ *  validity (ts <= expiry) or unknown is still retained (plan lines 314, 319;
+ *  the height bound as in amm_eth_watch_match). Block timestamps strictly increase (execution-
  *  specs fork.py:386-387), so no later block can carry an in-window time. The
  *  caller matches records first (a `seen`/`deep` record for the approval is a
  *  payment, not an unpaid window). No clock is read. */
-int amm_eth_watch_window_observed(amm_eth_watch_t *w, uint64_t expiry_ts,
-                                  const uint8_t sender[20],
+int amm_eth_watch_window_observed(amm_eth_watch_t *w, uint64_t approved_tip,
+                                  uint64_t expiry_ts, const uint8_t sender[20],
                                   const uint8_t amount_be[32]);
 
 #endif /* AMM_ETH_WATCH_H */
