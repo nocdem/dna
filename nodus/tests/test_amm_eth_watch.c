@@ -1305,15 +1305,19 @@ static void w25_window_by_value(void) {
     uint8_t sender[20];
     memset(sender, 0x11, 20);
     /* expiry 100: ts = h * 12, so block 9 (108) is the first after it */
-    static const struct { uint64_t raw; int need; const char *what; } t[] = {
-        {100000000ULL,  3,  "value 100 USDT (count 3)"},
-        {1000000000ULL, 5,  "value 1,000 USDT (count 5)"},
-        {1000000001ULL, 33, "value 1,000.000001 USDT (count 33)"},
+    /* hi = 1 sets bit 64 (byte 23), so the value no longer fits 64 bits */
+    static const struct { uint64_t raw; int hi; int need; const char *what; } t[] = {
+        {100000000ULL,  0, 3,  "value 100 USDT (count 3)"},
+        {100000001ULL,  0, 5,  "value 100.000001 USDT (count 5)"},
+        {1000000000ULL, 0, 5,  "value 1,000 USDT (count 5)"},
+        {1000000001ULL, 0, 33, "value 1,000.000001 USDT (count 33)"},
+        {5ULL,          1, 33, "value above 64 bits (count 33)"},
     };
     for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
         uint8_t amount[32];
         memset(amount, 0, 32);
         for (int k = 0; k < 8; k++) amount[31 - k] = (uint8_t)(t[i].raw >> (8 * k));
+        if (t[i].hi) amount[23] = 1;
         char msg[160];
         amm_eth_step_t o;
         fresh_prod();
