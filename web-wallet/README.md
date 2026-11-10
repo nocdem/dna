@@ -27,6 +27,11 @@ Synthetic/native/VM/regtest and mocked-controller tests are not live funded acce
 
 ## Nodus Connect browser extension
 
+**Running version in the corner (0.1.163, 2026-11-10).** Every extension page (toolbar popup, full page,
+approval window) shows the running manifest version, small, in the bottom-right corner
+(`extension/src/ui/running-version.js`; operator: "sayfanın en altına köşeye o anki çalışan versiyonu",
+"minnak olarak en alta sağ veya sol köşeye"). It sits above the bottom bar and takes no clicks.
+
 A bottom bar with three buttons, Connect, Wallet and Settings, switches the views in
 the same Nodus Connect extension window; the current view is marked, and Connect
 carries an unread-message count while another view is shown (UI pack 2026-11-03,

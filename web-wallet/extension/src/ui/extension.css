@@ -84,3 +84,5 @@ body.extension-page[data-page="popup"] { overflow: auto; }
   body.extension-page:has(#wallet-open:not([hidden])) #screen .wallet-card { border: 0; background: transparent; padding: 0; box-shadow: none; }
   body.extension-page:has(#wallet-open:not([hidden])) #assets-panel { padding: 14px; }
 }
+/* Running version, bottom corner of every extension page; above the fixed bottom bar (z-index 50). */
+.extension-page .extension-version { position: fixed; right: 10px; bottom: 4px; z-index: 51; font-size: 10px; line-height: 1; color: #7d8473; pointer-events: none; user-select: none; }

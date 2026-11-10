@@ -2,6 +2,7 @@ import { mountWalletPage } from './app.js';
 import { mountWalletAndConnect } from './connect.js';
 import { WALLET_MARKUP } from './wallet-markup.js';
 import { mountDeleteWallet } from './wallet-page.js';
+import { showRunningVersion } from './running-version.js';
 
 function renderEntry({ document, root, status, state, create, restore, unlock, ui, run }) {
   const template = document.createElement('template'); template.innerHTML = WALLET_MARKUP;
@@ -23,4 +24,7 @@ function renderEntry({ document, root, status, state, create, restore, unlock, u
 // and lock. Every unlocked wallet page uses the web wallet's screen.
 export const mountReferencePage = options => mountWalletPage({ ...options, renderOpenWallet: mountWalletAndConnect, renderEntry });
 
-if (globalThis.document && globalThis.chrome?.runtime) void mountReferencePage();
+if (globalThis.document && globalThis.chrome?.runtime) {
+  showRunningVersion(globalThis.document, globalThis.chrome.runtime);
+  void mountReferencePage();
+}
