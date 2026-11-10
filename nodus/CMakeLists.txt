@@ -3949,9 +3949,9 @@ endforeach()
 # Nodus side): the Nodus observation (amm_nodus_watch) and the NODUS payout
 # (amm_nodus_pay, signs an ordinary CORE SPEND with the bot's own key through
 # nodus_v2_spend_build, as the faucet does), tested against stub seam tables.
-# No service executable yet: amm_main needs amm_req / amm_eth_pay / amm_http /
-# amm_engine, which wait for the operator's agreement on the signed texts
-# (plan section 22, question 12). The faucet's pattern (FAUCET_CORE_SOURCES
+# No service executable yet: amm_main needs amm_http / amm_engine. amm_req
+# (parse and verify the user's signed requests, plan section 6) is built since
+# the operator agreed the signed texts (givens item 71, "1 ok"). The faucet's pattern (FAUCET_CORE_SOURCES
 # above): the core sources are compiled into each test; nothing links a
 # transport.
 # THIRD PACKAGE (the Ethereum side's transport and payout): amm_eth_tx
@@ -3974,11 +3974,12 @@ set(AMM_CORE_SOURCES
     tools/amm/amm_eth_tx.c
     tools/amm/amm_eth_pay.c
     tools/amm/amm_nodus_watch.c
-    tools/amm/amm_nodus_pay.c)
+    tools/amm/amm_nodus_pay.c
+    tools/amm/amm_req.c)
 
 foreach(amm_test test_amm_ledger test_amm_cfg test_amm_journal
                  test_amm_eth_watch test_amm_eth_tx test_amm_eth_pay
-                 test_amm_nodus_watch test_amm_nodus_pay)
+                 test_amm_nodus_watch test_amm_nodus_pay test_amm_req)
     add_executable(${amm_test} tests/${amm_test}.c ${AMM_CORE_SOURCES})
     target_link_libraries(${amm_test} nodus dsa nodus Threads::Threads)
     target_compile_options(${amm_test} PRIVATE -Wall -Wextra -Wno-unused-parameter)

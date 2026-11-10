@@ -38,7 +38,9 @@ static const u64_key_t U64_KEYS[] = {
     {"liquidity_wait_eth_blocks",  offsetof(amm_cfg_t, liquidity_wait_eth_blocks),  1, HI_MAX, 0},
     {"liquidity_wait_nodus_blocks",offsetof(amm_cfg_t, liquidity_wait_nodus_blocks),1, HI_MAX, 0},
     {"eth_reorg_window_blocks",    offsetof(amm_cfg_t, eth_reorg_window_blocks),    1, HI_MAX, 1},
-    {"approval_valid_seconds",     offsetof(amm_cfg_t, approval_valid_seconds),     1, HI_MAX, 1},
+    {"approval_valid_seconds",     offsetof(amm_cfg_t, approval_valid_seconds),     1, HI_MAX, 0},
+    {"eth_chain_id",               offsetof(amm_cfg_t, eth_chain_id),               1, HI_MAX, 0},
+    {"commission",                 offsetof(amm_cfg_t, commission),                 0, 0,      0},
     {"payout_final_depth_eth",     offsetof(amm_cfg_t, payout_final_depth_eth),     1, HI_MAX, 1},
     {"http_max_body",              offsetof(amm_cfg_t, http_max_body),              1, HI_MAX, 1},
     {"http_max_response",          offsetof(amm_cfg_t, http_max_response),          1, HI_MAX, 1},
@@ -68,6 +70,9 @@ void amm_cfg_defaults(amm_cfg_t *cfg) {
     cfg->pool_start_nodus            = 3000000000000000ULL;    /* item 20   */
     cfg->liquidity_wait_eth_blocks   = 300;          /* item 25             */
     cfg->liquidity_wait_nodus_blocks = 3;            /* item 49             */
+    cfg->approval_valid_seconds      = 300;          /* item 72: 5 minutes  */
+    cfg->eth_chain_id                = 1;            /* item 77; Ethereum   */
+    cfg->commission                  = 0;            /* item 73             */
     for (int i = 0; i < 20; i++) {                   /* plan section 5      */
         unsigned v = 0;
         sscanf(USDT_MAINNET_HEX + 2 * i, "%2x", &v);

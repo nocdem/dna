@@ -13,15 +13,14 @@
  *       addresses, providers and flags land in the right fields);
  *   C3  each DEFERRED setting is required: removing any one of them refuses
  *       the file (eth_providers, eth_quorum, eth_reorg_window_blocks,
- *       approval_valid_seconds, payout_final_depth_eth, http_max_body,
+ *       payout_final_depth_eth, http_max_body,
  *       http_max_response, eth_price_source, eip712_name, expected_origin,
  *       held_keeps_room (0 | 1, no default: the plan defers whether a held
  *       swap keeps its in-flight room, plan lines 312, 407; 0, 1, 2, text and
  *       a duplicate are tested),
  *       as does removing a deployment key (foundation_eth, foundation_nodus,
  *       node_*, journal_path);
- *   C4  strictness: unknown key (including "commission", which the plan does
- *       not build), duplicate key, a line without '=', a sign or a space or
+ *   C4  strictness: unknown key, duplicate key, a line without '=', a sign or a space or
  *       a hex digit inside a number, out-of-bounds values at both edges
  *       (each eth_conf_count_* 0 / 1 / 100 / 101), a swap limit above the
  *       in-flight total, a quorum above the number of providers or zero, a
@@ -34,7 +33,13 @@
  *       pause flags other than 0 / 1, uppercase hex addresses, a short
  *       address, a control byte in a name;
  *   C5  the loader: a missing file, a NUL byte, a file above 16 KiB are
- *       refused; a good file loads; a refusal reports a reason.
+ *       refused; a good file loads; a refusal reports a reason;
+ *   C6  the three settings of the operator's answers of 2026-11-10: the file
+ *       without approval_valid_seconds loads with 300 s (givens 72), without
+ *       eth_chain_id with 1 and with 11155111 as written (givens 77), without
+ *       commission with 0, 0 written accepted, 1 / 25 / -1 and a repeated
+ *       key refused (givens 73; shape DEFERRED, plan sections 12 and 15);
+ *       0 for approval_valid_seconds and eth_chain_id refused.
  * WHAT IT REQUIRES: a default build; one mkdtemp directory under /tmp for the
  *   loader cases, removed at the end; no network.
  * LEAVES BEHIND: nothing.
@@ -158,7 +163,7 @@ static void c3_required(void) {
     printf("C3 every deferred / deployment key is required\n");
     static const char *keys[] = {
         "eth_providers", "eth_quorum", "eth_reorg_window_blocks",
-        "approval_valid_seconds", "payout_final_depth_eth", "http_max_body",
+        "payout_final_depth_eth", "http_max_body",
         "http_max_response", "eth_price_source", "eip712_name",
         "expected_origin", "held_keeps_room", "foundation_eth", "foundation_nodus", "node_host",
         "node_port", "node_fp", "chain_id", "journal_path" };
@@ -182,7 +187,7 @@ static void expect_refused(const char *extra, const char *skip, const char *what
 
 static void c4_strict(void) {
     printf("C4 strictness and bounds\n");
-    expect_refused("commission = 5\n", NULL, "unknown key (commission is not built)");
+    expect_refused("commision = 0\n", NULL, "unknown key");
     expect_refused("eth_conf_count_1 = 3\neth_conf_count_1 = 4\n", NULL, "duplicate optional key");
     expect_refused("eth_confirmations = 3\n", NULL, "retired key eth_confirmations (unknown key)");
     expect_refused("eth_quorum = 1\n", NULL, "duplicate required key");
@@ -357,6 +362,47 @@ static void c5_loader(void) {
     rmdir(dir);
 }
 
+static void c6_operator_settings(void) {
+    printf("C6 approval_valid_seconds, eth_chain_id, commission\n");
+    amm_cfg_t c;
+    /* approval_valid_seconds: the base file writes 1800; leaving it out gives
+     * the default of givens item 72 */
+    CHECK(parses("approval_valid_seconds", NULL, &c) == 0 &&
+          c.approval_valid_seconds == 300,
+          "approval_valid_seconds absent: 300 seconds (givens item 72)");
+    CHECK(parses(NULL, NULL, &c) == 0 && c.approval_valid_seconds == 1800,
+          "approval_valid_seconds written: the written value");
+    expect_refused("approval_valid_seconds = 0\n", "approval_valid_seconds",
+                   "approval_valid_seconds 0");
+    expect_refused("approval_valid_seconds = 60\n", NULL,
+                   "approval_valid_seconds repeated");
+    CHECK(parses("approval_valid_seconds", "approval_valid_seconds = 1\n", &c) == 0 &&
+          c.approval_valid_seconds == 1, "approval_valid_seconds 1 (lower edge) accepted");
+
+    /* eth_chain_id */
+    CHECK(parses(NULL, NULL, &c) == 0 && c.eth_chain_id == 1,
+          "eth_chain_id absent: 1 (Ethereum mainnet)");
+    CHECK(parses(NULL, "eth_chain_id = 11155111\n", &c) == 0 &&
+          c.eth_chain_id == 11155111ULL,
+          "eth_chain_id 11155111 (Sepolia, givens item 77) as written");
+    expect_refused("eth_chain_id = 0\n", NULL, "eth_chain_id 0");
+    expect_refused("eth_chain_id = 1\neth_chain_id = 2\n", NULL, "eth_chain_id repeated");
+    expect_refused("eth_chain_id = 0x1\n", NULL, "eth_chain_id hex");
+    expect_refused("eth_chain_id = 4611686018427387904\n", NULL,
+                   "eth_chain_id implausibly large (> UINT64_MAX/4)");
+
+    /* commission: the plan's key (section 15), 0 only while its shape is
+     * DEFERRED (section 12) */
+    CHECK(parses(NULL, NULL, &c) == 0 && c.commission == 0,
+          "commission absent: 0 (givens item 73)");
+    CHECK(parses(NULL, "commission = 0\n", &c) == 0 && c.commission == 0,
+          "commission 0 written, accepted");
+    expect_refused("commission = 1\n", NULL, "commission 1 (no commission shape is built)");
+    expect_refused("commission = 25\n", NULL, "commission 25");
+    expect_refused("commission = -1\n", NULL, "commission negative");
+    expect_refused("commission = 0\ncommission = 0\n", NULL, "commission repeated");
+}
+
 int main(void) {
     printf("test_amm_cfg\n");
     init_hex();
@@ -365,6 +411,7 @@ int main(void) {
     c3_required();
     c4_strict();
     c5_loader();
+    c6_operator_settings();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

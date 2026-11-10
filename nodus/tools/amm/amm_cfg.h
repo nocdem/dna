@@ -34,7 +34,24 @@
  *   eth_providers              YES       (deferred, s.15)   1..AMM_MAX_PROVIDERS https URLs, comma separated
  *   eth_quorum                 YES       (deferred, s.15)   1..number of providers (see below)
  *   eth_reorg_window_blocks    YES       (deferred, s.9/15) >= eth_conf_count_3, the largest count (see below)
- *   approval_valid_seconds     YES       (deferred, s.15)   > 0
+ *   approval_valid_seconds     no        300                1.. (givens 72, operator 2026-11-10 "2 ok":
+ *                                                           the bot's approval is valid 5 minutes;
+ *                                                           was "deferred, > 0")
+ *   eth_chain_id               no        1                  1.. The domain chainId of the Ethereum-key
+ *                                                           typed requests (plan s.6.1, 6.4.3). Ethereum
+ *                                                           mainnet is 1; the test phase runs on Sepolia,
+ *                                                           11155111, written in the settings file
+ *                                                           (givens 77, operator 2026-11-10 "Tamam, o
+ *                                                           sekilde olsun. Test alaninda olsun.")
+ *   commission                 no        0                  0 only. The plan's key (s.15 table, givens 23).
+ *                                                           A setting, value 0 now (givens 73, operator
+ *                                                           2026-11-10 "3 ok (bu settings te olmali)").
+ *                                                           Its shape and rate stay DEFERRED (plan s.12,
+ *                                                           s.15) and no commission code is built until
+ *                                                           the shape is decided (plan s.12), so a value
+ *                                                           other than 0 has no meaning and refuses the
+ *                                                           start (s.15: "a value out of bounds refuses
+ *                                                           the start"). Nothing reads it yet.
  *   payout_final_depth_eth     YES       (deferred, s.15)   >= 1
  *   http_max_body              YES       (deferred, s.15)   > 0
  *   http_max_response          YES       (deferred, s.15)   > 0
@@ -80,10 +97,8 @@
  *   every u64 setting <= UINT64_MAX/4 (the faucet's "implausibly large"
  *     rule) so sums of settings cannot wrap.
  *
- * NOT here: commission (DEFERRED, plan section 12: no commission code until
- * decided, so the key is an unknown key), bot_key_share (its representation
- * is not in the plan), listen port and key directory (amm_http and signing
- * are outside this package).
+ * NOT here: bot_key_share (its representation is not in the plan), listen port and key
+ * directory (amm_http and signing are outside this package).
  */
 #ifndef AMM_CFG_H
 #define AMM_CFG_H
@@ -122,7 +137,9 @@ typedef struct {
     uint64_t liquidity_wait_eth_blocks;
     uint64_t liquidity_wait_nodus_blocks;
     uint64_t eth_reorg_window_blocks;
-    uint64_t approval_valid_seconds;
+    uint64_t approval_valid_seconds;           /* default 300 (givens 72)   */
+    uint64_t eth_chain_id;                     /* default 1 (givens 77)     */
+    uint64_t commission;                       /* 0 only (givens 73, s.12)  */
     uint64_t payout_final_depth_eth;
     uint64_t http_max_body;
     uint64_t http_max_response;
