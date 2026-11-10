@@ -44,13 +44,13 @@
  *       own quote), arithmetic cross-checked with python3; a nonzero gas price
  *       CHANGES the fee; a coin EXACTLY equal to gross funds gross - fee plus
  *       the fee (one input, no change output);
- *   P8b a zero REPLACEMENT refund is held (not retried every step); a payout
+ *   P8b a zero REPLACEMENT refund is DROPPED (not retried every step); a payout
  *       whose net falls below its minimum after a fee rise takes the refund
  *       path (payout_pending -> refund_pending), nothing signed;
  *   P8  FEE AT, BELOW AND ABOVE THE AMOUNT (gas price 0 and a gas price that
  *       lifts the fee): fee < amount pays amount - fee; fee == amount and
- *       fee > amount are never signed or broadcast: a refund is HELD
- *       (givens items 52, 53), a payout returns AMM_NP_ZERO and moves to
+ *       fee > amount are never signed or broadcast: a refund is DROPPED
+ *       (givens items 89, 90), a payout returns AMM_NP_ZERO and moves to
  *       refund_pending;
  *   P9  the minimum after the fee on a real payout: net == minimum signs,
  *       net == minimum - 1 is AMM_NP_BELOW_MIN with nothing signed and the
@@ -671,7 +671,7 @@ int main(void) {
         env_close(&e);
     }
 
-    /* ── P8b a zero REPLACEMENT refund is held; a payout that falls below its minimum takes the refund path ── */
+    /* ── P8b a zero REPLACEMENT refund is dropped; a payout that falls below its minimum takes the refund path ── */
     env_open(&e);
     e.cfg.scan_blocks = 200;
     amm_nodus_pay_free(e.p);
@@ -682,10 +682,10 @@ int main(void) {
     e.st.ri.tip = 1091;
     CHECK(step(&e, &o) == AMM_NP_OK && o.expired == 1, "P8b the attempt expires");
     e.st.gas = 100000;                                      /* the fee now exceeds the amount */
-    CHECK(step(&e, &o) == AMM_NP_ZERO && swap_is(&e, &s, "held") && attempt(&e, &s, &at2) == 0 && at2.n == 1,
-          "P8b the zero replacement refund is HELD, like a first attempt; no attempt 2 is stored");
+    CHECK(step(&e, &o) == AMM_NP_ZERO && swap_is(&e, &s, "dropped") && attempt(&e, &s, &at2) == 0 && at2.n == 1,
+          "P8b the zero replacement refund is DROPPED (givens items 89, 90), like a first attempt; no attempt 2 is stored");
     amm_attempt_free(&at2);
-    CHECK(step(&e, &o) == AMM_NP_OK && o.worked == 0, "P8b it is not retried: the held swap is no longer the head");
+    CHECK(step(&e, &o) == AMM_NP_OK && o.worked == 0, "P8b it is not retried: the dropped swap is no longer the head");
     env_close(&e);
 
     env_open(&e);
@@ -724,15 +724,15 @@ int main(void) {
         CHECK(mk_refund(&e, &s2), "P8 setup: a second refund");
         /* the first swap's attempt is open: none of the signs below may STORE an
          * attempt (the journal allows one payout in flight, P13) -- each ends in
-         * zero, held or below the minimum, before anything is stored */
-        snprintf(lab, sizeof(lab), "P8 gas %llu: refund of exactly the fee: zero, HELD, nothing signed", (unsigned long long)gases[gi]);
+         * zero, dropped or below the minimum, before anything is stored */
+        snprintf(lab, sizeof(lab), "P8 gas %llu: refund of exactly the fee: zero, DROPPED, nothing signed", (unsigned long long)gases[gi]);
         calls_before = e.st.submit_calls;
-        CHECK(sign(&e, &s2, F, &o) == AMM_NP_ZERO && swap_is(&e, &s2, "held") && attempt(&e, &s2, &at) == 1, lab);
+        CHECK(sign(&e, &s2, F, &o) == AMM_NP_ZERO && swap_is(&e, &s2, "dropped") && attempt(&e, &s2, &at) == 1, lab);
         CHECK(mk_refund(&e, &s2), "P8 setup: a third refund");
-        snprintf(lab, sizeof(lab), "P8 gas %llu: refund of less than the fee: zero (no wrap), HELD", (unsigned long long)gases[gi]);
-        CHECK(sign(&e, &s2, F - 1, &o) == AMM_NP_ZERO && swap_is(&e, &s2, "held") && attempt(&e, &s2, &at) == 1, lab);
+        snprintf(lab, sizeof(lab), "P8 gas %llu: refund of less than the fee: zero (no wrap), DROPPED", (unsigned long long)gases[gi]);
+        CHECK(sign(&e, &s2, F - 1, &o) == AMM_NP_ZERO && swap_is(&e, &s2, "dropped") && attempt(&e, &s2, &at) == 1, lab);
         CHECK(mk_refund(&e, &s2), "P8 setup");
-        CHECK(sign(&e, &s2, 1, &o) == AMM_NP_ZERO && swap_is(&e, &s2, "held"), "P8 refund of 1 raw: held");
+        CHECK(sign(&e, &s2, 1, &o) == AMM_NP_ZERO && swap_is(&e, &s2, "dropped"), "P8 refund of 1 raw: dropped");
         CHECK(e.st.submit_calls == calls_before, "P8 nothing was broadcast");
         /* a payout: zero is never signed; the swap takes the refund path (plan line 226) */
         CHECK(mk_payout(&e, 0, &s2), "P8 setup: a payout with minimum 0");

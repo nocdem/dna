@@ -44,6 +44,22 @@ static const u64_key_t U64_KEYS[] = {
     {"payout_final_depth_eth",     offsetof(amm_cfg_t, payout_final_depth_eth),     1, HI_MAX, 1},
     {"http_max_body",              offsetof(amm_cfg_t, http_max_body),              1, HI_MAX, 1},
     {"http_max_response",          offsetof(amm_cfg_t, http_max_response),          1, HI_MAX, 1},
+    {"swap_min_usdt",              offsetof(amm_cfg_t, swap_min_usdt),              1, HI_MAX, 0},
+    {"eth_price_min_sources",      offsetof(amm_cfg_t, eth_price_min_sources),      1, 4,      0},
+    {"eth_price_max_age_seconds",  offsetof(amm_cfg_t, eth_price_max_age_seconds),  1, HI_MAX, 0},
+    {"http_port",                  offsetof(amm_cfg_t, http_port),                  1, 65535,  1},
+    {"http_conn_cap",              offsetof(amm_cfg_t, http_conn_cap),              1, 64,     1},
+    {"http_timeout_ms",            offsetof(amm_cfg_t, http_timeout_ms),            1, HI_MAX, 1},
+    {"worker_interval_ms",         offsetof(amm_cfg_t, worker_interval_ms),         1, HI_MAX, 1},
+    {"rpc_timeout_ms",             offsetof(amm_cfg_t, rpc_timeout_ms),             1, HI_MAX, 1},
+    {"eth_start_height",           offsetof(amm_cfg_t, eth_start_height),           1, HI_MAX, 1},
+    {"nodus_start_height",         offsetof(amm_cfg_t, nodus_start_height),         1, HI_MAX, 1},
+    {"eth_max_scan_blocks",        offsetof(amm_cfg_t, eth_max_scan_blocks),        1, HI_MAX, 1},
+    {"nodus_page_limit",           offsetof(amm_cfg_t, nodus_page_limit),           1, 100,    1},
+    {"nodus_max_pages",            offsetof(amm_cfg_t, nodus_max_pages),            1, HI_MAX, 1},
+    {"nodus_expiry_ahead",         offsetof(amm_cfg_t, nodus_expiry_ahead),         1, 100,    1},
+    {"nodus_resubmit_blocks",      offsetof(amm_cfg_t, nodus_resubmit_blocks),      1, HI_MAX, 1},
+    {"nodus_scan_blocks",          offsetof(amm_cfg_t, nodus_scan_blocks),          1, HI_MAX, 1},
 };
 #define N_U64 (sizeof(U64_KEYS) / sizeof(U64_KEYS[0]))
 
@@ -53,9 +69,38 @@ enum {
     REQ_NODE_HOST = 1u << 0, REQ_NODE_PORT = 1u << 1, REQ_NODE_FP  = 1u << 2,
     REQ_CHAIN_ID  = 1u << 3, REQ_JOURNAL   = 1u << 4, REQ_PROVIDERS = 1u << 5,
     REQ_QUORUM    = 1u << 6, REQ_FOUND_ETH = 1u << 7, REQ_FOUND_NODUS = 1u << 8,
-    REQ_PRICE_SRC = 1u << 9, REQ_EIP712    = 1u << 10, REQ_ORIGIN = 1u << 11,
-    REQ_HELD_ROOM = 1u << 12
+    REQ_EIP712    = 1u << 10, REQ_ORIGIN = 1u << 11,
+    REQ_HELD_ROOM = 1u << 12, REQ_ETH_KEY = 1u << 13, REQ_NODUS_KEY = 1u << 14,
+    REQ_LOCK      = 1u << 15
 };
+
+static char *trim(char *s);
+
+/* ETH price source names (plan section 10), by bit. */
+static const struct { const char *name; unsigned bit; } PRICE_NAMES[] = {
+    {"kraken", AMM_PRICE_KRAKEN}, {"binance", AMM_PRICE_BINANCE},
+    {"bitfinex", AMM_PRICE_BITFINEX}, {"coinbase", AMM_PRICE_COINBASE},
+};
+
+/* Comma separated source names, each at most once, no empty element. */
+static int parse_price_sources(char *val, unsigned *mask) {
+    unsigned m = 0;
+    char *save = NULL;
+    if (!*val || val[0] == ',' || val[strlen(val) - 1] == ',') return -1;
+    for (const char *p = val; p[0] && p[1]; p++)
+        if (p[0] == ',' && p[1] == ',') return -1;
+    for (char *tok = strtok_r(val, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+        tok = trim(tok);
+        unsigned bit = 0;
+        for (size_t i = 0; i < sizeof(PRICE_NAMES) / sizeof(PRICE_NAMES[0]); i++)
+            if (!strcmp(tok, PRICE_NAMES[i].name)) bit = PRICE_NAMES[i].bit;
+        if (!bit || (m & bit)) return -1;
+        m |= bit;
+    }
+    if (!m) return -1;
+    *mask = m;
+    return 0;
+}
 
 void amm_cfg_defaults(amm_cfg_t *cfg) {
     memset(cfg, 0, sizeof(*cfg));
@@ -73,6 +118,10 @@ void amm_cfg_defaults(amm_cfg_t *cfg) {
     cfg->approval_valid_seconds      = 300;          /* item 72: 5 minutes  */
     cfg->eth_chain_id                = 1;            /* item 77; Ethereum   */
     cfg->commission                  = 0;            /* item 73             */
+    cfg->swap_min_usdt               = 1000000ULL;   /* item 89: 1 USDT     */
+    cfg->eth_price_min_sources       = 3;            /* item 74             */
+    cfg->eth_price_max_age_seconds   = 180;          /* item 74             */
+    cfg->eth_price_sources           = AMM_PRICE_ALL; /* plan s.10, s.15    */
     for (int i = 0; i < 20; i++) {                   /* plan section 5      */
         unsigned v = 0;
         sscanf(USDT_MAINNET_HEX + 2 * i, "%2x", &v);
@@ -257,10 +306,21 @@ int amm_cfg_parse(const char *text, amm_cfg_t *cfg, char *err, size_t err_cap) {
             req = REQ_FOUND_NODUS;
             ok = hex_exact(val, tmp, 64) == 0;
             if (ok) memcpy(cfg->foundation_nodus, val, 129);
-        } else if (!strcmp(key, "eth_price_source")) {
-            req = REQ_PRICE_SRC;
-            ok = https_url(val);
-            if (ok) memcpy(cfg->eth_price_source, val, strlen(val) + 1);
+        } else if (!strcmp(key, "eth_price_sources")) {
+            opt = 1u << 4;
+            ok = parse_price_sources(val, &cfg->eth_price_sources) == 0;
+        } else if (!strcmp(key, "eth_key_path")) {
+            req = REQ_ETH_KEY;
+            ok = *val && strlen(val) < sizeof(cfg->eth_key_path);
+            if (ok) memcpy(cfg->eth_key_path, val, strlen(val) + 1);
+        } else if (!strcmp(key, "nodus_key_dir")) {
+            req = REQ_NODUS_KEY;
+            ok = *val && strlen(val) < sizeof(cfg->nodus_key_dir);
+            if (ok) memcpy(cfg->nodus_key_dir, val, strlen(val) + 1);
+        } else if (!strcmp(key, "lock_path")) {
+            req = REQ_LOCK;
+            ok = *val && strlen(val) < sizeof(cfg->lock_path);
+            if (ok) memcpy(cfg->lock_path, val, strlen(val) + 1);
         } else if (!strcmp(key, "eip712_name")) {
             req = REQ_EIP712;
             ok = printable(val, sizeof(cfg->eip712_name));
@@ -297,7 +357,8 @@ int amm_cfg_parse(const char *text, amm_cfg_t *cfg, char *err, size_t err_cap) {
         unsigned want = REQ_NODE_HOST | REQ_NODE_PORT | REQ_NODE_FP |
                         REQ_CHAIN_ID | REQ_JOURNAL | REQ_PROVIDERS |
                         REQ_QUORUM | REQ_FOUND_ETH | REQ_FOUND_NODUS |
-                        REQ_PRICE_SRC | REQ_EIP712 | REQ_ORIGIN | REQ_HELD_ROOM;
+                        REQ_EIP712 | REQ_ORIGIN | REQ_HELD_ROOM | REQ_ETH_KEY |
+                        REQ_NODUS_KEY | REQ_LOCK;
         for (size_t i = 0; i < N_U64; i++) {
             if (U64_KEYS[i].required && !(seen_u64 & (1ULL << i))) {
                 set_err(err, err_cap, "a required key is missing: %s",
@@ -309,8 +370,8 @@ int amm_cfg_parse(const char *text, amm_cfg_t *cfg, char *err, size_t err_cap) {
             set_err(err, err_cap, "%s", "a required key is missing (node_host, "
                     "node_port, node_fp, chain_id, journal_path, eth_providers, "
                     "eth_quorum, foundation_eth, foundation_nodus, "
-                    "eth_price_source, eip712_name, expected_origin, "
-                    "held_keeps_room)");
+                    "eip712_name, expected_origin, held_keeps_room, "
+                    "eth_key_path, nodus_key_dir, lock_path)");
             goto out;
         }
     }
@@ -322,6 +383,19 @@ int amm_cfg_parse(const char *text, amm_cfg_t *cfg, char *err, size_t err_cap) {
     if (cfg->swap_max_usdt > cfg->inflight_max_usdt) {
         set_err(err, err_cap, "%s", "swap_max_usdt is above inflight_max_usdt");
         goto out;
+    }
+    if (cfg->swap_min_usdt > cfg->swap_max_usdt) {
+        set_err(err, err_cap, "%s", "swap_min_usdt is above swap_max_usdt");
+        goto out;
+    }
+    {   /* plan section 15: not more than the number of listed sources */
+        unsigned n = 0;
+        for (unsigned m = cfg->eth_price_sources; m; m >>= 1) n += m & 1u;
+        if (cfg->eth_price_min_sources > n) {
+            set_err(err, err_cap, "%s",
+                    "eth_price_min_sources is above the number of listed sources");
+            goto out;
+        }
     }
     if (cfg->eth_conf_bound_1_usdt >= cfg->eth_conf_bound_2_usdt) {
         set_err(err, err_cap, "%s",

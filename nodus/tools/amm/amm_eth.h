@@ -29,9 +29,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/** Ethereum mainnet chain id (plan section 9: "each provider must report
- *  chain id 1"; ethereum-lists-chains eip155-1.json:45). */
-#define AMM_ETH_CHAIN_ID        1u
+/* The Ethereum chain id is the setting eth_chain_id (givens item 77: Sepolia
+ * 11155111 in the test phase, mainnet 1 later); amm_eth_watch and amm_eth_pay
+ * take it in their configuration. There is no constant. */
 #define AMM_ETH_MAX_PROVIDERS   16
 /** The most logs one provider may return for one block; more is AMM_ETH_ERR
  *  (a list is never cut). */
@@ -176,7 +176,9 @@ typedef struct {
  *  and the adapter answers the USDT raw amount (10^-6 USDT) the user pays.
  *  AMM_ETH_OK with `*usdt_raw` valid, or AMM_ETH_ERR: a price that cannot be
  *  read is UNKNOWN, never zero (plan section 4 boundary rule); the payer then
- *  signs nothing. The real adapter is NOT built in this package. What the
+ *  signs nothing. The real adapter is amm_price.{h,c} (plan section 10,
+ *  revision 10: at least 3 of the listed tickers, each answer at most 180 s
+ *  old, the median; the conversion and its rounding are stated there). What the
  *  quote stands for -- a ceiling (gas limit x max fee), an expected cost or
  *  another gas figure -- is part of the DEFERRED "gas figure converted and the
  *  integer conversion" (plan line 271) and is not decided here. */

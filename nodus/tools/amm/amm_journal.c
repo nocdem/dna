@@ -30,7 +30,14 @@
 /* 4: eth_attempts.state gains 'unknown' (a receipt without the USDT Transfer
  * log, plan line 264); the CHECK of an existing table cannot change, so a
  * version 3 file (never shipped) is refused and must be deleted. */
-#define SCHEMA_VERSION 4
+/* 5: the approval comes at the price question (givens items 66, 68, 82, 85-87):
+ * swaps gain quote_out (the bot's number), est_fee (the estimated network
+ * fee) and req_no_bot (the bot's 32-bit request number, unique among the
+ * approvals); the state `dropped` (givens items 89, 90: a refund that is
+ * nothing after its fee is not sent and not held); the table fee_book
+ * (givens items 80, 92: the USDT fee deducted from a USDT payout, kept by the
+ * Foundation as USDT). An older file is not migrated: it must be deleted. */
+#define SCHEMA_VERSION 5
 #define BUSY_MS 5000
 
 struct amm_journal {
@@ -52,7 +59,7 @@ static const char *SCHEMA_SQL =
     " dir INTEGER NOT NULL CHECK(dir IN (0,1)),"
     " state TEXT NOT NULL CHECK(state IN ('approved','paid_waiting_depth',"
     "'counted','payout_pending','paid','refund_pending','refunded','expired',"
-    "'held','reversed','unknown')),"
+    "'held','reversed','unknown','dropped')),"
     " sender TEXT NOT NULL,"
     " dest TEXT NOT NULL,"
     " amount INTEGER NOT NULL,"
@@ -62,7 +69,15 @@ static const char *SCHEMA_SQL =
     " expiry INTEGER NOT NULL,"
     " incoming_id TEXT NOT NULL DEFAULT '',"
     " message TEXT NOT NULL DEFAULT '',"
-    " approved_tip INTEGER NOT NULL DEFAULT 0);"
+    " approved_tip INTEGER NOT NULL DEFAULT 0,"
+    " quote_out INTEGER NOT NULL DEFAULT 0,"
+    " est_fee INTEGER NOT NULL DEFAULT 0,"
+    " req_no_bot INTEGER,"
+    " ledger_applied INTEGER NOT NULL DEFAULT 0 CHECK(ledger_applied IN (0,1)));"
+    "CREATE UNIQUE INDEX IF NOT EXISTS swaps_req_no_bot ON swaps(req_no_bot);"
+    "CREATE TABLE IF NOT EXISTS fee_book("
+    " swap_seq INTEGER PRIMARY KEY, asset TEXT NOT NULL CHECK(asset IN ('usdt')),"
+    " fee INTEGER NOT NULL);"
     "CREATE INDEX IF NOT EXISTS swaps_state ON swaps(state);"
     "CREATE INDEX IF NOT EXISTS swaps_sender ON swaps(sender, amount);"
     "CREATE INDEX IF NOT EXISTS swaps_incoming ON swaps(incoming_id);"
@@ -375,7 +390,7 @@ static int tid_ok(const char *s) {
 static int known_swap_state(const char *s) {
     static const char *all[] = {AMM_S_APPROVED, AMM_S_PAID_WAITING, AMM_S_COUNTED,
         AMM_S_PAYOUT_PENDING, AMM_S_PAID, AMM_S_REFUND_PENDING, AMM_S_REFUNDED,
-        AMM_S_EXPIRED, AMM_S_HELD, AMM_S_REVERSED, AMM_S_UNKNOWN};
+        AMM_S_EXPIRED, AMM_S_HELD, AMM_S_REVERSED, AMM_S_UNKNOWN, AMM_S_DROPPED};
     for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++)
         if (!strcmp(s, all[i])) return 1;
     return 0;
@@ -394,6 +409,8 @@ static int legal_swap(const char *from, const char *to) {
         {AMM_S_PAYOUT_PENDING, AMM_S_REVERSED},
         {AMM_S_PAID, AMM_S_REVERSED},
         {AMM_S_REFUND_PENDING, AMM_S_REFUNDED}, {AMM_S_REFUND_PENDING, AMM_S_HELD},
+        /* givens items 89, 90: a refund that is zero after its fee is dropped */
+        {AMM_S_REFUND_PENDING, AMM_S_DROPPED}, {AMM_S_DROPPED, AMM_S_REVERSED},
         {AMM_S_REFUND_PENDING, AMM_S_UNKNOWN}, {AMM_S_REFUND_PENDING, AMM_S_REVERSED},
         {AMM_S_REFUNDED, AMM_S_REVERSED},
         {AMM_S_HELD, AMM_S_REVERSED}, {AMM_S_UNKNOWN, AMM_S_REVERSED},
@@ -407,11 +424,12 @@ static int legal_swap(const char *from, const char *to) {
 
 #define SWAP_COLS "seq, id, dir, state, sender, dest, amount, minimum, " \
                   "value_usdt, approved_at, expiry, incoming_id, message, " \
-                  "approved_tip"
+                  "approved_tip, quote_out, est_fee, COALESCE(req_no_bot, 0), " \
+                  "ledger_applied"
 
 static int load_swap_row(sqlite3_stmt *st, amm_swap_t *s) {
     memset(s, 0, sizeof(*s));
-    int64_t dir = 0;
+    int64_t dir = 0, applied = 0;
     if (col_i64(st, 0, &s->seq) != 0 ||
         col_text(st, 1, s->id, sizeof(s->id)) != 0 ||
         col_i64(st, 2, &dir) != 0 ||
@@ -424,6 +442,9 @@ static int load_swap_row(sqlite3_stmt *st, amm_swap_t *s) {
         col_text(st, 11, s->incoming_id, sizeof(s->incoming_id)) != 0 ||
         col_text(st, 12, s->message, sizeof(s->message)) != 0 ||
         col_u64(st, 13, &s->approved_tip) != 0 || s->approved_tip == 0 ||
+        col_u64(st, 14, &s->quote_out) != 0 || col_u64(st, 15, &s->est_fee) != 0 ||
+        col_u64(st, 16, &s->req_no_bot) != 0 || s->req_no_bot > UINT32_MAX ||
+        col_i64(st, 17, &applied) != 0 || (applied != 0 && applied != 1) ||
         (dir != 0 && dir != 1) || strlen(s->id) != 32 ||
         !known_swap_state(s->state)) {
         QGP_LOG_ERROR(LOG_TAG, "a swap row does not read back as a valid swap "
@@ -432,7 +453,12 @@ static int load_swap_row(sqlite3_stmt *st, amm_swap_t *s) {
         return -1;
     }
     s->dir = (amm_dir_t)dir;
-    if (!addr_ok(s->sender, s->dir, 1) || !addr_ok(s->dest, s->dir, 0)) {
+    s->ledger_applied = (int)applied;
+    /* an approval given at the price question has no signed request yet:
+     * sender and destination are empty (and it carries the bot's number) */
+    const int unsigned_quote = s->req_no_bot != 0 && !*s->sender && !*s->dest;
+    if (!unsigned_quote &&
+        (!addr_ok(s->sender, s->dir, 1) || !addr_ok(s->dest, s->dir, 0))) {
         QGP_LOG_ERROR(LOG_TAG, "a swap row holds a malformed address "
                       "(seq %lld)", (long long)s->seq);
         memset(s, 0, sizeof(*s));
@@ -765,6 +791,255 @@ done:
     return op_end(j, rc);
 }
 
+/* ── approval at the price question, signed request (revision 10) ───── */
+
+int amm_journal_quote_approve(amm_journal_t *j, const amm_quote_t *q,
+                              amm_swap_t *out) {
+    if (!j || !q || !out) return -1;
+    if ((q->dir != AMM_USDT_TO_NODUS && q->dir != AMM_NODUS_TO_USDT) ||
+        q->bot_req == 0 || q->amount == 0 ||
+        q->amount > (uint64_t)INT64_MAX || q->quote_out > (uint64_t)INT64_MAX ||
+        q->est_fee > (uint64_t)INT64_MAX || q->value_usdt > (uint64_t)INT64_MAX ||
+        q->approved_at > (uint64_t)INT64_MAX || q->expiry > (uint64_t)INT64_MAX ||
+        q->approved_tip == 0 || q->approved_tip > (uint64_t)INT64_MAX ||
+        q->swap_max > (uint64_t)INT64_MAX || q->inflight_max > (uint64_t)INT64_MAX)
+        return AMM_J_RANGE;
+
+    if (op_begin(j) != 0) return -1;
+    int rc = -1;
+    int flag = 0;
+    int64_t n = 0;
+
+    if (flag_get_locked(j, "reversal_pause", &flag) != 0) goto done;
+    if (q->swaps_paused_cfg || flag) { rc = AMM_J_PAUSED; goto done; }
+    if (one_int(j, "SELECT COUNT(*) FROM swaps WHERE state='unknown'", NULL, 0,
+                &n) != 0) goto done;
+    if (n > 0) { rc = AMM_J_STOPPED; goto done; }
+
+    int e = exists_q(j, "SELECT 1 FROM swaps WHERE req_no_bot=?1",
+                     (arg_t[]){AI(q->bot_req)}, 1);
+    if (e < 0) goto done;
+    if (e == 0) { rc = AMM_J_NUMBER_TAKEN; goto done; }
+
+    uint64_t sum = 0;
+    if (inflight_sum_locked(j, q->held_keeps_room, &sum) != 0) goto done;
+    int ar = amm_inflight_admit(q->value_usdt, sum, q->swap_max, q->inflight_max);
+    if (ar == AMM_E_SWAP_LIMIT) { rc = AMM_J_SWAP_LIMIT; goto done; }
+    if (ar == AMM_E_INFLIGHT)   { rc = AMM_J_INFLIGHT; goto done; }
+    if (ar != AMM_OK) goto done;
+
+    char id[33];
+    hex_of(q->rand16, 16, id);
+    if (run(j, "INSERT INTO swaps(id, dir, state, sender, dest, amount, "
+               "minimum, value_usdt, approved_at, expiry, incoming_id, "
+               "approved_tip, quote_out, est_fee, req_no_bot) "
+               "VALUES(?1, ?2, 'approved', '', '', ?3, 0, ?4, ?5, ?6, '', ?7, "
+               "?8, ?9, ?10)",
+            (arg_t[]){AT(id), AI(q->dir), AI(q->amount), AI(q->value_usdt),
+                      AI(q->approved_at), AI(q->expiry), AI(q->approved_tip),
+                      AI(q->quote_out), AI(q->est_fee), AI(q->bot_req)},
+            10, NULL) != 0) goto done;
+    if (swap_query(j, "seq=?1", (arg_t[]){AI(sqlite3_last_insert_rowid(j->db))},
+                   1, out) != 0) goto done;
+    rc = AMM_J_OK;
+done:
+    return op_end(j, rc);
+}
+
+int amm_journal_swap_by_botreq(amm_journal_t *j, uint32_t bot_req,
+                               amm_swap_t *out) {
+    if (!j || bot_req == 0) return -1;
+    lock(j);
+    int r = swap_query(j, "req_no_bot=?1", (arg_t[]){AI(bot_req)}, 1, out);
+    unlock(j);
+    return r;
+}
+
+int amm_journal_accept_request(amm_journal_t *j, const amm_accept_t *a,
+                               amm_swap_t *out) {
+    if (!j || !a || !out) return -1;
+    const char *incoming = a->incoming_id ? a->incoming_id : "";
+    if ((a->dir != AMM_USDT_TO_NODUS && a->dir != AMM_NODUS_TO_USDT) ||
+        a->bot_req == 0 || !a->sender || !a->dest ||
+        !addr_ok(a->sender, a->dir, 1) || !addr_ok(a->dest, a->dir, 0) ||
+        !tid_ok(incoming) || a->amount > (uint64_t)INT64_MAX ||
+        a->minimum > (uint64_t)INT64_MAX)
+        return AMM_J_RANGE;
+
+    if (op_begin(j) != 0) return -1;
+    int rc = -1;
+    amm_swap_t s, dup;
+
+    int g = swap_query(j, "req_no_bot=?1", (arg_t[]){AI(a->bot_req)}, 1, &s);
+    if (g < 0) goto done;
+    if (g == 1) { rc = AMM_J_NO_APPROVAL; goto done; }
+    if (strcmp(s.state, AMM_S_APPROVED) != 0 || *s.sender) {
+        rc = AMM_J_ILLEGAL;                  /* a number is accepted once    */
+        goto done;
+    }
+    if (s.dir != a->dir || s.amount != a->amount) { rc = AMM_J_AMOUNT; goto done; }
+
+    int e = exists_q(j, "SELECT 1 FROM req_numbers WHERE sender=?1 AND req_no=?2",
+                     (arg_t[]){AT(a->sender), AB(a->req_no, 32)}, 2);
+    if (e < 0) goto done;
+    if (e == 0) { rc = AMM_J_REQ_REUSED; goto done; }
+
+    int d = swap_query(j, "sender=?1 AND amount=?2 AND seq<>?3 AND state IN "
+                          "('approved','paid_waiting_depth')",
+                       (arg_t[]){AT(a->sender), AI(a->amount), AI(s.seq)}, 3, &dup);
+    if (d < 0) goto done;
+    if (d == 0) { *out = dup; rc = AMM_J_OPEN_DUP; goto done; }
+
+    if (run(j, "UPDATE swaps SET sender=?1, dest=?2, minimum=?3, incoming_id=?4 "
+               "WHERE seq=?5",
+            (arg_t[]){AT(a->sender), AT(a->dest), AI(a->minimum), AT(incoming),
+                      AI(s.seq)}, 5, NULL) != 0) goto done;
+    if (run(j, "INSERT INTO req_numbers(sender, req_no, swap_seq) "
+               "VALUES(?1, ?2, ?3)",
+            (arg_t[]){AT(a->sender), AB(a->req_no, 32), AI(s.seq)}, 3,
+            NULL) != 0) goto done;
+    if (swap_query(j, "seq=?1", (arg_t[]){AI(s.seq)}, 1, out) != 0) goto done;
+    rc = AMM_J_OK;
+done:
+    return op_end(j, rc);
+}
+
+int amm_journal_ledger_reverse(amm_journal_t *j, int64_t swap_seq,
+                               const amm_pool_t *new_pool) {
+    if (!j || !new_pool) return -1;
+    if (op_begin(j) != 0) return -1;
+    int rc = -1;
+    amm_swap_t s;
+    int g = swap_query(j, "seq=?1", (arg_t[]){AI(swap_seq)}, 1, &s);
+    if (g < 0) goto done;
+    if (g == 1 || !s.ledger_applied || strcmp(s.state, AMM_S_REFUND_PENDING) != 0) {
+        rc = AMM_J_ILLEGAL;
+        goto done;
+    }
+    if (pool_put_locked(j, new_pool) != 0) goto done;
+    if (run(j, "UPDATE swaps SET ledger_applied=0 WHERE seq=?1",
+            (arg_t[]){AI(swap_seq)}, 1, NULL) != 0) goto done;
+    rc = AMM_J_OK;
+done:
+    return op_end(j, rc);
+}
+
+int amm_journal_swap_list_state(amm_journal_t *j, const char *state,
+                                amm_swap_t *out, int cap, int *n) {
+    if (!j || !state || !out || !n || cap < 1) return -1;
+    lock(j);
+    sqlite3_stmt *st;
+    int ret = -1;
+    *n = 0;
+    if (prep(j, "SELECT " SWAP_COLS " FROM swaps WHERE state=?1 ORDER BY seq",
+             (arg_t[]){AT(state)}, 1, &st) == 0) {
+        int rc, cnt = 0;
+        ret = 0;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            if (cnt >= cap || load_swap_row(st, &out[cnt]) != 0) { ret = -1; break; }
+            cnt++;
+        }
+        if (ret == 0 && rc != SQLITE_DONE) ret = -1;
+        if (ret == 0) *n = cnt;
+        sqlite3_finalize(st);
+    }
+    unlock(j);
+    return ret;
+}
+
+int amm_journal_swap_list_unbooked_paid(amm_journal_t *j, int64_t after_seq,
+                                        amm_swap_t *out, int cap, int *n) {
+    if (!j || !out || !n || cap < 1) return -1;
+    lock(j);
+    sqlite3_stmt *st;
+    int ret = -1;
+    *n = 0;
+    if (prep(j, "SELECT " SWAP_COLS " FROM swaps WHERE state='paid' AND dir=?1 "
+                "AND seq>?2 AND NOT EXISTS (SELECT 1 FROM fee_book f "
+                "WHERE f.swap_seq=swaps.seq) ORDER BY seq LIMIT ?3",
+             (arg_t[]){AI(AMM_NODUS_TO_USDT), AI(after_seq), AI(cap)}, 3, &st) == 0) {
+        int rc, cnt = 0;
+        ret = 0;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            if (cnt >= cap || load_swap_row(st, &out[cnt]) != 0) { ret = -1; break; }
+            cnt++;
+        }
+        if (ret == 0 && rc != SQLITE_DONE) ret = -1;
+        if (ret == 0) *n = cnt;
+        sqlite3_finalize(st);
+    }
+    unlock(j);
+    return ret;
+}
+
+int amm_journal_book_fee(amm_journal_t *j, int64_t swap_seq, uint64_t fee) {
+    if (!j || fee > (uint64_t)INT64_MAX) return AMM_J_RANGE;
+    if (op_begin(j) != 0) return -1;
+    int rc = -1;
+    amm_swap_t s;
+    int g = swap_query(j, "seq=?1", (arg_t[]){AI(swap_seq)}, 1, &s);
+    if (g < 0) goto done;
+    if (g == 1 || strcmp(s.state, AMM_S_PAID) != 0) { rc = AMM_J_ILLEGAL; goto done; }
+    int e = exists_q(j, "SELECT 1 FROM fee_book WHERE swap_seq=?1",
+                     (arg_t[]){AI(swap_seq)}, 1);
+    if (e < 0) goto done;
+    if (e == 0) { rc = AMM_J_ILLEGAL; goto done; }
+    /* the pool is NOT written: its USDT depth already fell by the full gross
+     * payout at the ledger update, and the fee is not added back (givens
+     * item 92) */
+    if (run(j, "INSERT INTO fee_book(swap_seq, asset, fee) VALUES(?1, 'usdt', ?2)",
+            (arg_t[]){AI(swap_seq), AI(fee)}, 2, NULL) != 0)
+        goto done;
+    rc = AMM_J_OK;
+done:
+    return op_end(j, rc);
+}
+
+int amm_journal_fee_booked(amm_journal_t *j, int64_t swap_seq, uint64_t *fee) {
+    if (!j) return -1;
+    lock(j);
+    sqlite3_stmt *st;
+    int ret = -1;
+    if (prep(j, "SELECT fee FROM fee_book WHERE swap_seq=?1",
+             (arg_t[]){AI(swap_seq)}, 1, &st) == 0) {
+        int rc = sqlite3_step(st);
+        if (rc == SQLITE_ROW) {
+            uint64_t f;
+            if (col_u64(st, 0, &f) == 0) {
+                if (fee) *fee = f;
+                ret = 0;
+            }
+        } else if (rc == SQLITE_DONE) {
+            ret = 1;
+        }
+        sqlite3_finalize(st);
+    }
+    unlock(j);
+    return ret;
+}
+
+int amm_journal_foundation_usdt(amm_journal_t *j, uint64_t *out) {
+    if (!j || !out) return -1;
+    lock(j);
+    sqlite3_stmt *st;
+    int ret = -1;
+    if (prep(j, "SELECT fee FROM fee_book", NULL, 0, &st) == 0) {
+        uint64_t sum = 0;
+        int rc;
+        ret = 0;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            uint64_t v;
+            if (col_u64(st, 0, &v) != 0 || sum > UINT64_MAX - v) { ret = -1; break; }
+            sum += v;
+        }
+        if (ret == 0 && rc != SQLITE_DONE) ret = -1;
+        if (ret == 0) *out = sum;
+        sqlite3_finalize(st);
+    }
+    unlock(j);
+    return ret;
+}
+
 /* ── transitions ────────────────────────────────────────────────────── */
 
 int amm_journal_swap_transition(amm_journal_t *j, int64_t seq, const char *to,
@@ -830,9 +1105,15 @@ int amm_journal_swap_transition(amm_journal_t *j, int64_t seq, const char *to,
         if (ch == 0) { rc = AMM_J_DUP_TRANSFER; goto done; }
     }
     if (pool && pool_put_locked(j, pool) != 0) goto done;
-    if (run(j, "UPDATE swaps SET state=?1, incoming_id=?2, message=?3 WHERE seq=?4",
-            (arg_t[]){AT(to), AT(inc), AT(message ? message : s.message), AI(seq)},
-            4, NULL) != 0) goto done;
+    /* the ledger update of a counted swap travels with the move to
+     * payout_pending; the flag says that it must be reversed if the swap
+     * turns into a refund (amm_journal_ledger_reverse) */
+    const int applied = (pool && !strcmp(to, AMM_S_PAYOUT_PENDING)) ? 1 : s.ledger_applied;
+    if (run(j, "UPDATE swaps SET state=?1, incoming_id=?2, message=?3, "
+               "ledger_applied=?5 WHERE seq=?4",
+            (arg_t[]){AT(to), AT(inc), AT(message ? message : s.message), AI(seq),
+                      AI(applied)},
+            5, NULL) != 0) goto done;
     rc = AMM_J_OK;
 done:
     return op_end(j, rc);
@@ -1101,6 +1382,66 @@ int amm_journal_rec_other_live(amm_journal_t *j, const uint8_t tx[32],
     return r;
 }
 
+int amm_journal_rec_list_unconsumed(amm_journal_t *j, const char *state,
+                                    const amm_rec_t *after,
+                                    amm_rec_t *out, int cap, int *n) {
+    if (!j || !state || !out || !n || cap <= 0 || !known_rec_state(state)) return -1;
+    /* keyset paging on the list order (block, tx, log index): the page starts
+     * after `after` (NULL: from the start); an empty key sorts first */
+    const int64_t ab = after ? (int64_t)after->block_number : -1;
+    static const uint8_t ZERO_TX[32];
+    const uint8_t *at = after ? after->tx : ZERO_TX;
+    const int64_t al = after ? (int64_t)after->log_index : -1;
+    lock(j);
+    sqlite3_stmt *st;
+    int ret = -1;
+    *n = 0;
+    /* the swap link key of a record is "eth:" + lowercase hex of its hash
+     * (amm_journal_eth_key); sqlite's hex() is upper case */
+    if (prep(j, "SELECT " REC_COLS " FROM eth_records r WHERE r.state=?1 AND ("
+                "NOT EXISTS (SELECT 1 FROM swaps s WHERE s.incoming_id="
+                "'eth:' || lower(hex(r.tx))) OR "
+                "EXISTS (SELECT 1 FROM swaps s WHERE s.incoming_id="
+                "'eth:' || lower(hex(r.tx)) AND s.state='paid_waiting_depth')) "
+                "AND (r.block_number > ?2 OR (r.block_number = ?2 AND "
+                "(r.tx > ?3 OR (r.tx = ?3 AND r.log_index > ?4)))) "
+                "ORDER BY r.block_number, r.tx, r.log_index LIMIT ?5",
+             (arg_t[]){AT(state), AI(ab), AB(at, 32), AI(al), AI(cap)}, 5, &st) == 0) {
+        int cnt = 0, rc;
+        ret = 0;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            if (cnt >= cap || load_rec_row(st, &out[cnt]) != 0) { ret = -1; break; }
+            cnt++;
+        }
+        if (ret == 0 && rc != SQLITE_DONE) ret = -1;
+        if (ret == 0) *n = cnt;
+        sqlite3_finalize(st);
+    }
+    unlock(j);
+    return ret;
+}
+
+int amm_journal_payment_unmatched(amm_journal_t *j, const uint8_t tx[32],
+                                  uint32_t log_index) {
+    if (!j || !tx) return -1;
+    if (op_begin(j) != 0) return -1;
+    int rc = -1;
+    amm_rec_t r;
+    int g = rec_get_locked(j, tx, log_index, &r);
+    if (g < 0) goto done;
+    if (g == 1 || strcmp(r.state, AMM_R_DEEP) != 0) { rc = AMM_J_ILLEGAL; goto done; }
+    char key[AMM_TID_MAX];
+    amm_journal_eth_key(tx, key, sizeof(key));
+    if (run(j, "UPDATE swaps SET state='approved', incoming_id='' "
+               "WHERE incoming_id=?1 AND state='paid_waiting_depth'",
+            (arg_t[]){AT(key)}, 1, NULL) != 0) goto done;
+    if (run(j, "UPDATE eth_records SET state='held' WHERE tx=?1 AND log_index=?2",
+            (arg_t[]){AB(tx, 32), AI(log_index)}, 2, NULL) != 0) goto done;
+    rc = AMM_J_OK;
+done:
+    return op_end(j, rc);
+}
+
 int amm_journal_rec_candidate_exists(amm_journal_t *j, const uint8_t from[20],
                                      const uint8_t value[32],
                                      uint64_t approved_tip,
@@ -1136,7 +1477,7 @@ int amm_journal_payment_gone(amm_journal_t *j, const uint8_t tx[32],
     int reversed = 0, ch = 0;
     if (run(j, "UPDATE swaps SET state='reversed' WHERE incoming_id=?1 AND "
                "state IN ('counted','payout_pending','paid','refund_pending',"
-               "'refunded','held','unknown')",
+               "'refunded','held','unknown','dropped')",
             (arg_t[]){AT(key)}, 1, &ch) != 0) goto done;
     if (ch > 0) {
         reversed = 1;
@@ -1843,7 +2184,7 @@ int amm_journal_open(const char *path, amm_journal_t **out) {
         }
     }
     if (exec_sql(j->db, SCHEMA_SQL) != 0) goto fail;
-    if (exec_sql(j->db, "PRAGMA user_version=4") != 0) goto fail;   /* = SCHEMA_VERSION */
+    if (exec_sql(j->db, "PRAGMA user_version=5") != 0) goto fail;   /* = SCHEMA_VERSION */
     chmod(path, 0600);
     *out = j;
     return 0;

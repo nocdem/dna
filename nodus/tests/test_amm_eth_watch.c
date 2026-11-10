@@ -343,6 +343,7 @@ static amm_eth_watch_cfg_t base_cfg(void) {
     c.conf_count[0] = 3; c.conf_count[1] = 4; c.conf_count[2] = 5;
     c.window_blocks = 20; c.start_height = 1;
     c.max_scan_blocks = 100; c.journal = g_j;
+    c.chain_id = 1;                      /* setting eth_chain_id (givens item 77) */
     return c;
 }
 
@@ -613,6 +614,22 @@ static void w4_chain_id(void) {
     CHECK(cursor("eth_scan") == before, "  nothing written");
     g_sp[1].chain_id = 1; g_sp[2].fail_all = 1;
     CHECK(step(&o) == AMM_W_OK && o.usable == 2, "a provider that does not answer chain id is not used");
+
+    /* the chain id is the SETTING (givens item 77: Sepolia 11155111): a watcher
+     * configured for it uses the providers that report it and refuses those
+     * that report mainnet. Fails without the setting wired in: the constant 1
+     * would leave all three Sepolia providers unusable (usable == 0). */
+    fresh(20);
+    ch_build(&g_chain, 1, 13, 0, 0);
+    amm_eth_watch_cfg_t sc = base_cfg();
+    sc.chain_id = 11155111ULL;
+    new_watch(&sc);
+    for (int i = 0; i < 3; i++) g_sp[i].chain_id = 11155111ULL;
+    CHECK(step(&o) == AMM_W_OK && o.usable == 3, "chain id setting 11155111: three Sepolia providers are used");
+    g_sp[2].chain_id = 1;
+    CHECK(step(&o) == AMM_W_OK && o.usable == 2, "a provider on mainnet is not used by a Sepolia watcher");
+    sc.chain_id = 0;
+    CHECK(amm_eth_watch_new(&sc) == NULL, "chain id 0 is refused");
 }
 
 static void w5_depth(void) {

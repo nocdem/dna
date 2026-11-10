@@ -1,6 +1,20 @@
 /**
  * test_amm_journal.c -- the nodus-amm journal (SQLite, WAL, FULL).
  *
+ * J25 (revision 10, schema 5): the approval written at the price question
+ * (the bot's number, estimated fee, 32-bit request number unique among the
+ * approvals, expiry, value, in-flight room: one transaction) and the signed
+ * request that names it by that number (amount match, once, item 57 and the
+ * per-sender reuse refusal at that step), the dropped state (givens items 89,
+ * 90: refund_pending -> dropped only, holds no room), the mark of a ledger
+ * update and its idempotent reversal, the network-fee book (givens items 80,
+ * 92: the USDT fee kept by the Foundation as USDT, the pool untouched; the
+ * unbooked-paid list pages without a lifetime row cap), list by state; J26:
+ * the unconsumed-record list (no block window; a counted swap's record is
+ * consumed) and payment_unmatched (a moved payment outside its approval's
+ * validity: the swap is approved again, the record held). How it can lie: the states are driven through the journal's
+ * own API; the engine's use of them is test_amm_engine.
+ *
  * WHAT IT PROVES (plan docs/plans/2026-11-08-swap-bot-plan.nodus1.md rev. 4,
  * section 19 "test_amm_journal": legal transitions only; restart from every
  * state; permanent markers survive; sections 7 step 4, 9, 13, 17; givens
@@ -1790,6 +1804,291 @@ static void j15_node_seam(void) {
     CHECK(amm_now_ms() > 0 && AMM_COINS_MAX == 100, "clock helper and the coin cap");
 }
 
+/* ── J25 (revision 10): the approval at the price question, the signed
+ *    request that names it by the bot's number, the dropped refund, the
+ *    network-fee booking (schema 5) ─────────────────────────────────── */
+
+static amm_quote_t mkq(uint32_t bot_req, uint64_t amount, uint64_t v) {
+    amm_quote_t q;
+    memset(&q, 0, sizeof(q));
+    q.dir = AMM_USDT_TO_NODUS;
+    q.amount = amount; q.quote_out = 400; q.est_fee = 7; q.value_usdt = v;
+    q.approved_at = 1000; q.expiry = 1300; q.approved_tip = 100;
+    q.bot_req = bot_req;
+    for (int i = 0; i < 16; i++) q.rand16[i] = (uint8_t)(bot_req * 7 + i);
+    q.swap_max = 100000000ULL; q.inflight_max = 500000000ULL;
+    return q;
+}
+
+static amm_accept_t mka(uint32_t bot_req, const char *sender, uint64_t amount) {
+    static char d[129];
+    memset(d, 'e', 128); d[128] = '\0';
+    amm_accept_t a;
+    memset(&a, 0, sizeof(a));
+    a.dir = AMM_USDT_TO_NODUS;
+    a.bot_req = bot_req; a.sender = sender; a.dest = d;
+    a.amount = amount; a.minimum = 5; a.incoming_id = "";
+    for (int i = 0; i < 4; i++) a.req_no[31 - i] = (uint8_t)(bot_req >> (8 * i));
+    return a;
+}
+
+static void j25_quote_accept(void) {
+    printf("J25 approval at the price question, signed request, dropped, fee book\n");
+    fresh();
+    char sa[41], sb[41];
+    memset(sa, 'a', 40); sa[40] = '\0';
+    memset(sb, 'b', 40); sb[40] = '\0';
+    amm_swap_t s, o, x;
+
+    amm_quote_t q = mkq(12345, 50000000ULL, 50000000ULL);
+    CHECK(amm_journal_quote_approve(g_j, &q, &s) == AMM_J_OK &&
+          state_is(&s, "approved") && s.req_no_bot == 12345 && !*s.sender &&
+          !*s.dest && s.quote_out == 400 && s.est_fee == 7 &&
+          s.amount == 50000000ULL && s.expiry == 1300 && s.value_usdt == 50000000ULL,
+          "approval written with the bot's number, estimated fee, request number, expiry, value");
+    uint64_t sum = 0;
+    CHECK(amm_journal_inflight_sum(g_j, 0, &sum) == 0 && sum == 50000000ULL,
+          "its room is reserved in the same transaction");
+    CHECK(amm_journal_quote_approve(g_j, &q, &x) == AMM_J_NUMBER_TAKEN, "the same number twice refused");
+    int cnt = 0;
+    CHECK(amm_journal_state_count(g_j, "approved", &cnt) == 0 && cnt == 1,
+          "  the refusal wrote nothing");
+    CHECK(amm_journal_swap_by_botreq(g_j, 12345, &o) == 0 && !strcmp(o.id, s.id) &&
+          amm_journal_swap_by_botreq(g_j, 99, &o) == 1, "lookup by the bot's number");
+
+    amm_accept_t a = mka(777, sa, 50000000ULL);
+    CHECK(amm_journal_accept_request(g_j, &a, &x) == AMM_J_NO_APPROVAL, "unknown number refused");
+    a = mka(12345, sa, 50000001ULL);
+    CHECK(amm_journal_accept_request(g_j, &a, &x) == AMM_J_AMOUNT,
+          "a signed amount that differs from the approval's refused (item 87)");
+    a = mka(12345, sa, 50000000ULL);
+    a.dir = AMM_NODUS_TO_USDT;
+    CHECK(amm_journal_accept_request(g_j, &a, &x) == AMM_J_RANGE, "wrong address form for the direction");
+    a = mka(12345, sa, 50000000ULL);
+    CHECK(amm_journal_accept_request(g_j, &a, &x) == AMM_J_OK && !strcmp(x.sender, sa) &&
+          x.minimum == 5 && x.req_no_bot == 12345 && state_is(&x, "approved"),
+          "the signed request written to the approval");
+    CHECK(amm_journal_req_marker_exists(g_j, sa, a.req_no) == 0, "the (sender, number) marker written");
+    CHECK(amm_journal_accept_request(g_j, &a, &x) == AMM_J_ILLEGAL, "a number is accepted once");
+
+    /* item 57 at the signed request: same sender and amount while the first is open */
+    q = mkq(2, 50000000ULL, 50000000ULL);
+    CHECK(amm_journal_quote_approve(g_j, &q, &s) == AMM_J_OK, "second approval, same amount");
+    a = mka(2, sa, 50000000ULL);
+    CHECK(amm_journal_accept_request(g_j, &a, &x) == AMM_J_OPEN_DUP && x.req_no_bot == 12345,
+          "same sender and amount refused, the open swap named (item 57)");
+    CHECK(amm_journal_req_marker_exists(g_j, sa, a.req_no) == 1, "  no marker consumed");
+    a = mka(2, sb, 50000000ULL);
+    CHECK(amm_journal_accept_request(g_j, &a, &x) == AMM_J_OK, "another sender accepted");
+
+    /* a number already used by the sender (old-style approval) */
+    amm_approve_t old = mk('c', 9, 9);
+    amm_swap_t os;
+    memcpy(old.req_no, (uint8_t[32]){0}, 32);
+    old.req_no[31] = 5;
+    old.sender = sb;
+    CHECK(approve_ok(&old, &os), "old-style approval of sender b with number 5");
+    q = mkq(5, 1234567ULL, 1234567ULL);
+    CHECK(amm_journal_quote_approve(g_j, &q, &s) == AMM_J_OK, "approval numbered 5");
+    a = mka(5, sb, 1234567ULL);
+    CHECK(amm_journal_accept_request(g_j, &a, &x) == AMM_J_REQ_REUSED,
+          "the existing per-sender reuse refusal stays");
+
+    /* quote refusals */
+    q = mkq(40, 200000000ULL, 200000000ULL);
+    CHECK(amm_journal_quote_approve(g_j, &q, &x) == AMM_J_SWAP_LIMIT, "above the per-swap limit");
+    q = mkq(41, 90000000ULL, 90000000ULL);
+    q.inflight_max = 100000000ULL;
+    CHECK(amm_journal_quote_approve(g_j, &q, &x) == AMM_J_INFLIGHT, "above the in-flight total");
+    q = mkq(42, 1000000ULL, 1000000ULL); q.swaps_paused_cfg = 1;
+    CHECK(amm_journal_quote_approve(g_j, &q, &x) == AMM_J_PAUSED, "swaps paused");
+    q = mkq(43, 1000000ULL, 1000000ULL); q.approved_tip = 0;
+    CHECK(amm_journal_quote_approve(g_j, &q, &x) == AMM_J_RANGE, "an unread tip refused");
+
+    /* every unsigned row survives a reopen and still reads back */
+    reopen();
+    CHECK(amm_journal_swap_by_botreq(g_j, 5, &o) == 0 && !*o.sender && o.quote_out == 400,
+          "an unsigned approval reads back after a reopen");
+    amm_swap_t list[16];
+    int n = 0;
+    CHECK(amm_journal_swap_list_state(g_j, "approved", list, 16, &n) == 0 && n >= 4 &&
+          list[0].seq < list[1].seq, "list by state, oldest first");
+    CHECK(amm_journal_swap_list_state(g_j, "approved", list, 2, &n) == -1,
+          "a list that would exceed the cap is a fault, never cut");
+
+    /* dropped (givens items 89, 90) */
+    fresh();
+    amm_approve_t da = mk('d', 1, 77);
+    amm_swap_t ds;
+    CHECK(approve_ok(&da, &ds) && drive(&ds, "refund_pending", "nodus:dd"), "a refund pending");
+    uint64_t before = 0, after = 0;
+    amm_journal_inflight_sum(g_j, 0, &before);
+    CHECK(tr(ds.seq, "dropped", NULL) == 0, "refund_pending -> dropped");
+    CHECK(amm_journal_inflight_sum(g_j, 0, &after) == 0 && before == 77 && after == 0,
+          "a dropped swap holds no room");
+    CHECK(tr(ds.seq, "refunded", NULL) == AMM_J_ILLEGAL && tr(ds.seq, "paid", NULL) == AMM_J_ILLEGAL,
+          "dropped is terminal");
+    amm_approve_t da2 = mk('d', 2, 1);
+    amm_swap_t ds2;
+    CHECK(approve_ok(&da2, &ds2) && drive(&ds2, "counted", "nodus:de") &&
+          tr(ds2.seq, "dropped", NULL) == AMM_J_ILLEGAL, "counted -> dropped refused");
+
+    /* the mark of the ledger update and its idempotent reversal */
+    amm_approve_t la = mk('9', 4, 4);
+    amm_swap_t ls, lg;
+    amm_pool_t lp, lq;
+    evm_u256_from_u64(&lp.depth_n, 500); evm_u256_from_u64(&lp.depth_u, 600);
+    evm_u256_from_u64(&lp.units, 1);
+    lq = lp;
+    evm_u256_from_u64(&lq.depth_n, 400);
+    CHECK(approve_ok(&la, &ls) && drive(&ls, "counted", "nodus:9a") &&
+          amm_journal_swap_transition(g_j, ls.seq, "payout_pending", NULL, &lq, NULL) == 0 &&
+          amm_journal_swap_get(g_j, ls.id, &lg) == 0 && lg.ledger_applied == 1,
+          "the move to payout_pending with a pool marks the ledger update");
+    CHECK(amm_journal_ledger_reverse(g_j, ls.seq, &lp) == AMM_J_ILLEGAL,
+          "no reversal while the swap is not a refund");
+    CHECK(tr(ls.seq, "refund_pending", NULL) == 0 &&
+          amm_journal_ledger_reverse(g_j, ls.seq, &lp) == AMM_J_OK &&
+          amm_journal_pool_get(g_j, &lq) == 0 && !memcmp(&lq, &lp, sizeof(lp)) &&
+          amm_journal_swap_get(g_j, ls.id, &lg) == 0 && lg.ledger_applied == 0,
+          "refund: the reserves are restored and the mark cleared in one transaction");
+    CHECK(amm_journal_ledger_reverse(g_j, ls.seq, &lq) == AMM_J_ILLEGAL,
+          "a second reversal refused (idempotent across a restart)");
+    amm_approve_t lb = mk('8', 5, 5);
+    amm_swap_t lbs;
+    CHECK(approve_ok(&lb, &lbs) && drive(&lbs, "refund_pending", "nodus:8a") &&
+          amm_journal_ledger_reverse(g_j, lbs.seq, &lp) == AMM_J_ILLEGAL,
+          "a swap whose ledger was never updated has nothing to reverse");
+
+    /* fee book (givens items 80, 92): the USDT fee is kept by the Foundation
+     * AS USDT; the pool is not written */
+    fresh();
+    amm_pool_t p, g;
+    evm_u256_from_u64(&p.depth_n, 2000); evm_u256_from_u64(&p.depth_u, 3000);
+    evm_u256_from_u64(&p.units, 10);
+    CHECK(amm_journal_pool_put(g_j, &p) == 0, "a pool is stored");
+    amm_approve_t fa = mk_n2u('f', 3, 3, "nodus:ff");
+    amm_swap_t fs;
+    CHECK(approve_ok(&fa, &fs) && drive(&fs, "payout_pending", "nodus:ff"), "a payout pending");
+    CHECK(amm_journal_book_fee(g_j, fs.seq, 100) == AMM_J_ILLEGAL,
+          "the fee of a swap that is not paid is not booked");
+    CHECK(tr(fs.seq, "paid", NULL) == 0 && amm_journal_fee_booked(g_j, fs.seq, NULL) == 1,
+          "paid, not yet booked");
+    CHECK(amm_journal_book_fee(g_j, fs.seq, 100) == AMM_J_OK, "fee booked");
+    uint64_t fee = 0;
+    CHECK(amm_journal_fee_booked(g_j, fs.seq, &fee) == 0 && fee == 100 &&
+          amm_journal_pool_get(g_j, &g) == 0 && !memcmp(&g, &p, sizeof(p)),
+          "the row is written and the pool is NOT: no USDT into the pool, no NODUS out");
+    CHECK(amm_journal_book_fee(g_j, fs.seq, 100) == AMM_J_ILLEGAL, "booked once");
+    uint64_t total = 0;
+    CHECK(amm_journal_foundation_usdt(g_j, &total) == 0 && total == 100,
+          "the Foundation's USDT summed from the rows");
+
+    /* the unbooked list pages with no lifetime row cap (the engine's fee
+     * booking read once stopped for good past 1,024 paid rows): five paid
+     * USDT payouts, pages of two. A USDT -> NODUS paid swap, a swap not yet
+     * paid and the booked swap above are never listed. */
+    int64_t seqs[5];
+    for (int i = 0; i < 5; i++) {
+        char inc[16];
+        snprintf(inc, sizeof(inc), "nodus:p%d", i);
+        amm_approve_t pa = mk_n2u((char)('1' + i), 3, 3, inc);
+        amm_swap_t ps;
+        CHECK(approve_ok(&pa, &ps) && drive(&ps, "paid", inc), "a paid USDT payout");
+        seqs[i] = ps.seq;
+    }
+    amm_approve_t ua = mk('d', 3, 3);
+    amm_swap_t us;
+    CHECK(approve_ok(&ua, &us) && drive(&us, "paid", "nodus:dd"), "a paid NODUS payout (other direction)");
+    amm_approve_t na = mk_n2u('e', 3, 3, "nodus:ee");
+    amm_swap_t ns;
+    CHECK(approve_ok(&na, &ns) && drive(&ns, "payout_pending", "nodus:ee"), "a payout still pending");
+    amm_swap_t pg[2];
+    cnt = 0;
+    CHECK(amm_journal_swap_list_unbooked_paid(g_j, 0, pg, 2, &cnt) == 0 && cnt == 2 &&
+          pg[0].seq == seqs[0] && pg[1].seq == seqs[1], "page 1: the two oldest unbooked");
+    CHECK(amm_journal_swap_list_unbooked_paid(g_j, pg[1].seq, pg, 2, &cnt) == 0 && cnt == 2 &&
+          pg[0].seq == seqs[2] && pg[1].seq == seqs[3], "page 2 continues after the last seq");
+    CHECK(amm_journal_swap_list_unbooked_paid(g_j, pg[1].seq, pg, 2, &cnt) == 0 && cnt == 1 &&
+          pg[0].seq == seqs[4], "page 3: the last one, fewer than the page ends the walk");
+    CHECK(amm_journal_book_fee(g_j, seqs[0], 7) == AMM_J_OK &&
+          amm_journal_swap_list_unbooked_paid(g_j, 0, pg, 2, &cnt) == 0 && cnt == 2 &&
+          pg[0].seq == seqs[1], "a booked swap leaves the list");
+}
+
+/* Put a record as `seen`, then walk it to `state` when it is deep. */
+static int put_rec_in(uint8_t t, uint64_t blk, const char *state) {
+    amm_rec_t r = mkrec(t, 0, blk, "seen");
+    if (amm_journal_rec_put(g_j, &r) != AMM_J_OK) return 0;
+    if (!strcmp(state, "seen")) return 1;
+    snprintf(r.state, sizeof(r.state), "%s", state);
+    return amm_journal_rec_put(g_j, &r) == AMM_J_OK;
+}
+
+/* J26: the engine reads every UNCONSUMED Ethereum record (no block window) and
+ * a moved payment outside its approval's validity is un-linked and held. */
+static void j26_unconsumed_and_unmatched(void) {
+    printf("J26 unconsumed records (no window), payment unmatched\n");
+    fresh();
+    amm_rec_t out[8];
+    int n = 0;
+    char key[AMM_TID_MAX];
+    amm_swap_t s;
+
+    /* A: seen, block 1, no swap; B: seen, block 20, carried by a waiting swap;
+     * C: deep, block 30, carried by a counted swap (consumed); D: deep, block
+     * 2, no swap. Blocks 1 and 2 are far below any tip-window a caller could
+     * pass: the query has no height bound. */
+    CHECK(put_rec_in(0xA1, 1, "seen") && put_rec_in(0xB1, 20, "seen") &&
+          put_rec_in(0xC1, 30, "deep") && put_rec_in(0xD1, 2, "deep"), "four records stored");
+    uint8_t tb[32], tc[32];
+    memset(tb, 0xB1, 32); memset(tc, 0xC1, 32);
+    amm_approve_t ab = mk('b', 1, 1), ac = mk('c', 1, 1);
+    amm_journal_eth_key(tb, key, sizeof(key));
+    CHECK(approve_ok(&ab, &s) && drive(&s, "paid_waiting_depth", key), "B carried by a waiting swap");
+    amm_journal_eth_key(tc, key, sizeof(key));
+    CHECK(approve_ok(&ac, &s) && drive(&s, "counted", key), "C carried by a counted swap");
+
+    CHECK(amm_journal_rec_list_unconsumed(g_j, "seen", NULL, out, 8, &n) == 0 && n == 2 &&
+          out[0].tx[0] == 0xA1 && out[1].tx[0] == 0xB1,
+          "seen: the unclaimed record (block 1) and the one whose swap still waits");
+    CHECK(amm_journal_rec_list_unconsumed(g_j, "deep", NULL, out, 8, &n) == 0 && n == 1 &&
+          out[0].tx[0] == 0xD1, "deep: only the unclaimed record; the counted swap's record is consumed");
+    /* paging (Sol verify 10, claim 6): a page of 1, then the page after it,
+     * then an empty page -- every record is reached, none twice */
+    {
+        amm_rec_t p1[1], p2[1], p3[1];
+        int n1 = -1, n2 = -1, n3 = -1;
+        CHECK(amm_journal_rec_list_unconsumed(g_j, "seen", NULL, p1, 1, &n1) == 0 && n1 == 1 &&
+              p1[0].tx[0] == 0xA1 &&
+              amm_journal_rec_list_unconsumed(g_j, "seen", &p1[0], p2, 1, &n2) == 0 && n2 == 1 &&
+              p2[0].tx[0] == 0xB1 &&
+              amm_journal_rec_list_unconsumed(g_j, "seen", &p2[0], p3, 1, &n3) == 0 && n3 == 0,
+              "pages of one: A, then B, then nothing (no record lost past the cap)");
+    }
+    CHECK(amm_journal_rec_list_unconsumed(g_j, "seen", NULL, out, 0, &n) == -1,
+          "a zero page size is refused");
+    CHECK(amm_journal_rec_list_unconsumed(g_j, "bogus", NULL, out, 8, &n) == -1, "an unknown state is refused");
+
+    /* payment_unmatched: B becomes deep while its swap waits; then it is moved
+     * outside the validity: un-link and hold */
+    amm_rec_t rb = mkrec(0xB1, 0, 20, "deep");
+    CHECK(amm_journal_payment_unmatched(g_j, tb, 0) == AMM_J_ILLEGAL,
+          "a record that is not deep is refused");
+    CHECK(amm_journal_rec_put(g_j, &rb) == AMM_J_OK &&
+          amm_journal_payment_unmatched(g_j, tb, 0) == AMM_J_OK, "a deep record is unmatched");
+    amm_rec_t got;
+    amm_swap_t sw;
+    CHECK(amm_journal_rec_get(g_j, tb, 0, &got) == 0 && !strcmp(got.state, "held"),
+          "the record is held");
+    amm_journal_eth_key(tb, key, sizeof(key));
+    CHECK(amm_journal_swap_by_incoming(g_j, key, &sw) == 1, "no swap carries the transaction any more");
+    amm_swap_t ap[4];
+    CHECK(amm_journal_swap_list_state(g_j, "approved", ap, 4, &n) == 0 && n == 1 &&
+          !*ap[0].incoming_id, "the swap is approved again with its link cleared");
+    CHECK(amm_journal_payment_unmatched(g_j, tb, 0) == AMM_J_ILLEGAL, "a second call is refused (held)");
+}
+
 int main(void) {
     printf("test_amm_journal\n");
     snprintf(g_dir, sizeof(g_dir), "/tmp/amm_jnl_testXXXXXX");
@@ -1820,6 +2119,8 @@ int main(void) {
     j13_damage();
     j14_wal();
     j15_node_seam();
+    j25_quote_accept();
+    j26_unconsumed_and_unmatched();
 
     if (g_j) amm_journal_close(g_j);
     cleanup_dir();

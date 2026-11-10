@@ -63,7 +63,7 @@
  *       ledger's saturating subtraction: fee < amount pays amount - fee;
  *       fee == amount - 1 pays 1; fee == amount and fee > amount sign and
  *       broadcast NOTHING: a payout moves to refund_pending (before any
- *       attempt), a refund to held; the minimum is compared after the fee
+ *       attempt), a refund is DROPPED (givens items 89, 90); the minimum is compared after the fee
  *       (net == minimum pays, net == minimum - 1 refunds, a minimum the gross
  *       would satisfy refunds); a pure table of amm_eth_pay_judge;
  *   E8  AN UNREADABLE PRICE IS NEVER ZERO: a price error leaves everything
@@ -224,6 +224,7 @@ static amm_journal_t *g_j;
 static stub_t g_st[NP];
 static amm_eth_provider_t g_prov[NP];
 static price_t g_price;
+static uint64_t g_pay_chain = 1;     /* the configured eth_chain_id (reset by fresh) */
 static uint8_t g_key[32];
 static uint8_t g_usdt[20];
 static uint8_t g_self[20];
@@ -330,6 +331,7 @@ static void fresh(void) {
     memset(&g_price, 0, sizeof(g_price));
     g_price.mode = 0; g_price.fixed = 100;
     g_on_send = NULL;
+    g_pay_chain = 1;
 }
 
 static void reopen(void) {
@@ -359,6 +361,7 @@ static amm_eth_pay_t *new_pay_n(int n, int q, uint64_t depth, int paused) {
     memset(&c, 0, sizeof(c));
     c.providers = g_prov; c.n_providers = n; c.quorum = q;
     c.price.ctx = &g_price; c.price.fee_usdt = s_price;
+    c.chain_id = g_pay_chain;
     c.journal = g_j; c.sk = g_key; c.blind = NULL;
     memcpy(c.usdt, g_usdt, 20);
     c.final_depth = depth; c.payouts_paused = paused;
@@ -781,14 +784,15 @@ static void e7_fee(void) {
         }
         amm_eth_pay_free(p);
     }
-    /* a USDT refund with fee >= amount is held (givens item 53) */
+    /* a USDT refund with fee >= amount is DROPPED, not held (givens items 89,
+     * 90); it holds no room afterwards */
     for (int k = 1; k < 3; k++) {
         fresh();
         amm_eth_pay_t *p = new_pay();
         g_price.fixed = fees[k];
         CHECK(p && new_swap(0, '2', 'e', 0, &s) && amm_eth_pay_sign(p, s.seq, 1000, 0, &o) == AMM_EP_ZERO &&
-              !has_attempt(s.seq) && swap_state_is(s.seq, "held"),
-              k == 1 ? "refund, fee == amount: held" : "refund, fee above the amount: held");
+              !has_attempt(s.seq) && swap_state_is(s.seq, "dropped"),
+              k == 1 ? "refund, fee == amount: dropped" : "refund, fee above the amount: dropped");
         amm_eth_pay_free(p);
     }
     /* the minimum after the fee (a payout; fee 100, gross 1000) */
@@ -946,6 +950,36 @@ static void e11_quorum(void) {
     amm_eth_pay_t *p = new_pay_n(3, 2, 3, 0);
     amm_swap_t s;
     amm_ep_step_t o;
+
+    /* the chain id is the SETTING (givens item 77): a payer configured for
+     * Sepolia uses providers that report 11155111, keys its nonce on it and
+     * signs with it. Fails with the constant 1: no provider would be usable
+     * (UNKNOWN, nothing stored). */
+    amm_eth_pay_free(p);
+    fresh();
+    g_pay_chain = 11155111ULL;
+    for (int i = 0; i < NP; i++) g_st[i].chain = 11155111ULL;
+    p = new_pay();
+    amm_eattempt_t sa;
+    dec_t sdec;
+    CHECK(p && new_swap(1, 'c', '1', 0, &s) && amm_eth_pay_sign(p, s.seq, 1000000, 0, &o) == AMM_EP_OK &&
+          amm_journal_eth_attempt_latest(g_j, s.seq, &sa) == 0 && sa.chain_id == 11155111ULL &&
+          decode(sa.raw, sa.raw_len, &sdec) == 0 && be_u64(sdec.f[0], sdec.l[0]) == 11155111ULL,
+          "chain id setting 11155111: signed with it, the attempt keyed on it");
+    amm_eattempt_free(&sa);
+    uint64_t nn = 0;
+    CHECK(amm_journal_eth_next_nonce(g_j, 11155111ULL, &nn) == 0 &&
+          amm_journal_eth_next_nonce(g_j, 1, &nn) == 1, "the nonce key is the configured chain id, not chain 1");
+    amm_eth_pay_free(p);
+    /* providers on mainnet under a Sepolia setting are not used */
+    fresh();
+    g_pay_chain = 11155111ULL;
+    p = new_pay();
+    CHECK(p && new_swap(1, 'c', '1', 0, &s) && amm_eth_pay_sign(p, s.seq, 1000000, 0, &o) == AMM_EP_UNKNOWN &&
+          !has_attempt(s.seq), "providers reporting chain 1 under a Sepolia setting: nothing signed");
+    amm_eth_pay_free(p);
+    fresh();
+    p = new_pay_n(3, 2, 3, 0);
     CHECK(p && new_swap(1, 'c', '1', 0, &s), "setup: three providers, Q = 2");
     g_st[0].chain = 5;
     CHECK(amm_eth_pay_sign(p, s.seq, 1000000, 0, &o) == AMM_EP_OK && g_st[0].est_calls == 0,
@@ -1057,11 +1091,13 @@ static void e13_guards(void) {
     memset(&c, 0, sizeof(c));
     c.providers = g_prov; c.n_providers = 1; c.quorum = 1;
     c.price.ctx = &g_price; c.price.fee_usdt = s_price;
+    c.chain_id = 1;
     c.journal = g_j; c.sk = g_key; memcpy(c.usdt, g_usdt, 20); c.final_depth = 3;
     amm_eth_pay_t *q = amm_eth_pay_new(&c);
     CHECK(q != NULL, "a good configuration builds");
     amm_eth_pay_free(q);
     amm_eth_pay_cfg_t b = c;
+    b.chain_id = 0;  CHECK(amm_eth_pay_new(&b) == NULL, "no chain id (the setting eth_chain_id): refused");
     b.final_depth = 0;  CHECK(amm_eth_pay_new(&b) == NULL, "no final depth (a required setting, no default): refused");
     b = c; b.quorum = 2; CHECK(amm_eth_pay_new(&b) == NULL, "a quorum above the providers: refused");
     b = c; b.quorum = 0; CHECK(amm_eth_pay_new(&b) == NULL, "a quorum of zero: refused");

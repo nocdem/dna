@@ -76,17 +76,6 @@ int amm_to_u64(uint64_t *out, const evm_u256 *a) {
         if (rc_ != AMM_OK) return rc_;                                       \
     } while (0)
 
-int amm_swap_output(evm_u256 *out, const evm_u256 *X, const evm_u256 *x,
-                    const evm_u256 *Y) {
-    evm_u256 num, den, q;
-    TRY(amm_add(&den, x, X));
-    TRY(amm_mul(&num, x, Y));
-    TRY(amm_div(&q, &num, &den));                   /* den == 0: refused    */
-    if (evm_u256_cmp(&q, Y) >= 0) return AMM_E_DEPTH;
-    *out = q;
-    return AMM_OK;
-}
-
 int amm_swap_emission_slip(evm_u256 *out, const evm_u256 *X,
                            const evm_u256 *x, const evm_u256 *Y) {
     evm_u256 t1, num, s, den, q;
@@ -112,6 +101,14 @@ int amm_swap_liquidity_fee(evm_u256 *fee, const evm_u256 *X,
     return AMM_OK;
 }
 
+int amm_swap_output(evm_u256 *out, const evm_u256 *X, const evm_u256 *x,
+                    const evm_u256 *Y) {
+    /* GetSwapCalc with the commission setting 0: minSlipBps (0) is never
+     * greater than slipBps, so the else branch (swap_current.go:644-648) is
+     * the only one: emission (x*X*Y)/(x+X)^2. */
+    return amm_swap_emission_slip(out, X, x, Y);
+}
+
 static void sides(const amm_pool_t *p, amm_dir_t dir, const evm_u256 **in_d,
                   const evm_u256 **out_d) {
     if (dir == AMM_USDT_TO_NODUS) { *in_d = &p->depth_u; *out_d = &p->depth_n; }
@@ -129,13 +126,15 @@ int amm_pool_quote(const amm_pool_t *p, amm_dir_t dir, const evm_u256 *x,
 int amm_pool_apply_swap(amm_pool_t *p, amm_dir_t dir, const evm_u256 *x,
                         const evm_u256 *paid) {
     if (dir != AMM_USDT_TO_NODUS && dir != AMM_NODUS_TO_USDT) return AMM_E_RANGE;
-    evm_u256 out, new_in, new_out;
-    TRY(amm_pool_quote(p, dir, x, &out));
-    if (evm_u256_cmp(&out, paid) != 0) return AMM_E_RANGE;
+    evm_u256 new_in, new_out;
     evm_u256 *in_d = (dir == AMM_USDT_TO_NODUS) ? &p->depth_u : &p->depth_n;
     evm_u256 *out_d = (dir == AMM_USDT_TO_NODUS) ? &p->depth_n : &p->depth_u;
+    /* The output is the number the bot gave at approval, not computed again
+     * (plan section 12, givens items 66, 68); it may differ from a quote of
+     * today's depths. Only the depth rule and the borrow rule are checked. */
+    if (evm_u256_cmp(paid, out_d) >= 0) return AMM_E_DEPTH;
     TRY(amm_add(&new_in, in_d, x));
-    TRY(amm_sub(&new_out, out_d, &out));
+    TRY(amm_sub(&new_out, out_d, paid));
     *in_d = new_in;
     *out_d = new_out;
     return AMM_OK;
@@ -330,6 +329,40 @@ int amm_safe_share(evm_u256 *out, const evm_u256 *part, const evm_u256 *total,
     TRY(amm_add(&num, &prod, &half));
     TRY(amm_div(&q, &num, total));
     *out = q;
+    return AMM_OK;
+}
+
+int amm_uncapped_share(evm_u256 *out, const evm_u256 *part, const evm_u256 *total,
+                       const evm_u256 *allocation) {
+    if (evm_u256_is_zero(part) || evm_u256_is_zero(total) ||
+        evm_u256_is_zero(allocation)) {
+        evm_u256_zero(out);
+        return AMM_OK;
+    }
+    if (evm_u256_cmp(part, total) == 0) {           /* part == total        */
+        *out = *allocation;
+        return AMM_OK;
+    }
+    evm_u256 prod, half, one, num, q;
+    evm_u256_from_u64(&one, 1);
+    evm_u256_shr(&half, &one, total);               /* floor(total / 2)     */
+    TRY(amm_mul(&prod, allocation, part));
+    TRY(amm_add(&num, &prod, &half));
+    TRY(amm_div(&q, &num, total));
+    *out = q;
+    return AMM_OK;
+}
+
+int amm_pool_unapply_swap(amm_pool_t *p, amm_dir_t dir, const evm_u256 *x,
+                          const evm_u256 *paid) {
+    if (dir != AMM_USDT_TO_NODUS && dir != AMM_NODUS_TO_USDT) return AMM_E_RANGE;
+    evm_u256 new_in, new_out;
+    evm_u256 *in_d = (dir == AMM_USDT_TO_NODUS) ? &p->depth_u : &p->depth_n;
+    evm_u256 *out_d = (dir == AMM_USDT_TO_NODUS) ? &p->depth_n : &p->depth_u;
+    TRY(amm_sub(&new_in, in_d, x));
+    TRY(amm_add(&new_out, out_d, paid));
+    *in_d = new_in;
+    *out_d = new_out;
     return AMM_OK;
 }
 

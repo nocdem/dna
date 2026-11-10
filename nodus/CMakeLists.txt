@@ -3949,7 +3949,8 @@ endforeach()
 # Nodus side): the Nodus observation (amm_nodus_watch) and the NODUS payout
 # (amm_nodus_pay, signs an ordinary CORE SPEND with the bot's own key through
 # nodus_v2_spend_build, as the faucet does), tested against stub seam tables.
-# No service executable yet: amm_main needs amm_http / amm_engine. amm_req
+# The service executable amm_main (nodus-amm) is built in the libcurl block
+# below with amm_engine, amm_http and amm_price. amm_req
 # (parse and verify the user's signed requests, plan section 6) is built since
 # the operator agreed the signed texts (givens item 71, "1 ok"). The faucet's pattern (FAUCET_CORE_SOURCES
 # above): the core sources are compiled into each test; nothing links a
@@ -3975,11 +3976,14 @@ set(AMM_CORE_SOURCES
     tools/amm/amm_eth_pay.c
     tools/amm/amm_nodus_watch.c
     tools/amm/amm_nodus_pay.c
-    tools/amm/amm_req.c)
+    tools/amm/amm_req.c
+    tools/amm/amm_engine.c
+    tools/amm/amm_http.c)
 
 foreach(amm_test test_amm_ledger test_amm_cfg test_amm_journal
                  test_amm_eth_watch test_amm_eth_tx test_amm_eth_pay
-                 test_amm_nodus_watch test_amm_nodus_pay test_amm_req)
+                 test_amm_nodus_watch test_amm_nodus_pay test_amm_req
+                 test_amm_engine test_amm_http)
     add_executable(${amm_test} tests/${amm_test}.c ${AMM_CORE_SOURCES})
     target_link_libraries(${amm_test} nodus dsa nodus Threads::Threads)
     target_compile_options(${amm_test} PRIVATE -Wall -Wextra -Wno-unused-parameter)
@@ -4011,9 +4015,38 @@ if(AMM_CURL_FOUND)
         ${MONOREPO_ROOT}/messenger/include)
     target_compile_definitions(test_amm_eth_rpc PRIVATE DNAC_TX_BUILDER_ONLY=1)
     add_test(NAME test_amm_eth_rpc COMMAND test_amm_eth_rpc)
+    # amm_price — the ETH price adapter (plan section 10): the HTTPS GET of
+    # the public tickers is libcurl, so the adapter and its test are built
+    # only where libcurl is. test_amm_price injects stub sources and needs no
+    # network.
+    add_executable(test_amm_price tests/test_amm_price.c tools/amm/amm_price.c)
+    target_link_libraries(test_amm_price PRIVATE Threads::Threads PkgConfig::AMM_CURL)
+    target_compile_options(test_amm_price PRIVATE -Wall -Wextra -Wno-unused-parameter)
+    target_include_directories(test_amm_price PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/amm)
+    add_test(NAME test_amm_price COMMAND test_amm_price)
+
+    # amm_main — the swap bot service executable (nodus-amm): every module of
+    # the bot with the REAL seams (the Nodus client session, Ethereum JSON-RPC
+    # and the ticker GET over libcurl). It needs a live node and keys, so no
+    # test runs it; it is built so that it is compiled with the same warning
+    # flags as every AMM target.
+    add_executable(amm_main tools/amm/amm_main.c ${AMM_CORE_SOURCES}
+        tools/amm/amm_price.c tools/amm/amm_eth_rpc.c tools/amm/amm_node_real.c)
+    set_target_properties(amm_main PROPERTIES OUTPUT_NAME nodus-amm)
+    target_link_libraries(amm_main PRIVATE nodus dsa nodus Threads::Threads
+        PkgConfig::AMM_CURL)
+    target_compile_options(amm_main PRIVATE -Wall -Wextra -Wno-unused-parameter)
+    target_include_directories(amm_main PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/amm
+        ${AMM_SECP_INCLUDE}
+        ${MONOREPO_ROOT}/dnac/include
+        ${MONOREPO_ROOT}/messenger/include)
+    target_compile_definitions(amm_main PRIVATE DNAC_TX_BUILDER_ONLY=1)
 else()
     message(STATUS "nodus-amm: libcurl (pkg-config) not found; "
-                   "test_amm_eth_rpc and amm_eth_rpc are not built")
+                   "test_amm_eth_rpc, amm_eth_rpc, amm_price and amm_main are "
+                   "not built")
 endif()
 
 # amm_node_real — the production adapter of the Nodus seam (amm_node_t) over

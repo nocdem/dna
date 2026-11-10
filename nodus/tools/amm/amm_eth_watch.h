@@ -12,7 +12,8 @@
  * WHAT A STEP DOES (amm_eth_watch_step; all reads through the seam table of
  * amm_eth.h, all state in the journal, no clock read, no randomness):
  *  1. Providers: a provider is USED in a step only when it reports chain id
- *     1 (plan section 9; a failed or different answer excludes it for the
+ *     the configured `chain_id` (setting eth_chain_id, givens item 77; plan
+ *     section 9; a failed or different answer excludes it for the
  *     step). Fewer usable providers than the quorum Q: nothing is read
  *     further, nothing changes (AMM_W_UNKNOWN).
  *  2. Tip: the tip is the largest value T such that at least Q providers
@@ -116,6 +117,9 @@ typedef struct {
     const amm_eth_provider_t *providers;   /* copied (the table, not ctx)   */
     int      n_providers;                  /* 1..AMM_ETH_MAX_PROVIDERS      */
     int      quorum;                       /* 1..n_providers (setting, s.9) */
+    uint64_t chain_id;                     /* eth_chain_id (givens item 77),
+                                            * >= 1: a provider is used only
+                                            * when it reports this id       */
     uint8_t  usdt[20];                     /* the USDT contract             */
     uint8_t  foundation[20];               /* the Foundation address        */
     uint64_t conf_bound_usdt[2];           /* USDT raw: amount <= [0] waits
@@ -141,7 +145,7 @@ typedef enum {
 } amm_w_rc_t;
 
 typedef struct {
-    int      usable;        /* providers on chain id 1 this step             */
+    int      usable;        /* providers on the configured chain this step   */
     uint64_t tip;           /* the quorum tip (0 when unknown)               */
     int      blocks;        /* blocks accepted and written                   */
     int      reorgs;        /* reorganisations written                       */
@@ -234,5 +238,11 @@ amm_match_t amm_eth_watch_match(const amm_rec_t *rec, const uint8_t sender[20],
 int amm_eth_watch_window_observed(amm_eth_watch_t *w, uint64_t approved_tip,
                                   uint64_t expiry_ts, const uint8_t sender[20],
                                   const uint8_t amount_be[32]);
+
+/** The same window rule for an approval that has NO signed request yet (no
+ *  sender, so no candidate record can be for it): only the cursor and depth
+ *  conditions apply. */
+int amm_eth_watch_window_observed_unsigned(amm_eth_watch_t *w, uint64_t expiry_ts,
+                                           const uint8_t amount_be[32]);
 
 #endif /* AMM_ETH_WATCH_H */

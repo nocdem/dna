@@ -42,9 +42,8 @@
  * at zero and never wraps (givens item 52, plan section 5).
  *   net == 0 (fee at or above the amount): nothing is signed or broadcast
  *     (givens item 52), on the first attempt and on a replacement alike. A
- *     REFUND (a NODUS -> USDT swap in refund_pending) is moved to `held`
- *     (item 53 "held for manual handling"; PLAN READING of plan line 241,
- *     which applies the same hold to the NODUS side). A PAYOUT (a USDT ->
+ *     REFUND (a NODUS -> USDT swap in refund_pending) is DROPPED (state
+ *     `dropped`, no room; givens items 89, 90). A PAYOUT (a USDT ->
  *     NODUS swap in payout_pending) is moved to refund_pending (plan line
  *     226: zero or below the minimum -> refund; the journal edge exists only
  *     while no attempt of the swap is signed or submitted) and AMM_NP_ZERO is
@@ -131,7 +130,7 @@ typedef enum {
                               * it would need more than 15 inputs, or the
                               * coin listing is incomplete); nothing signed  */
     AMM_NP_ZERO        = 3,  /* nothing is left after the Nodus fee; nothing
-                              * signed or broadcast (a refund moved to held,
+                              * signed or broadcast (a refund dropped,
                               * a payout moved to refund_pending)            */
     AMM_NP_BELOW_MIN   = 4,  /* a payout's amount after the fee is below the
                               * swap's minimum; nothing signed; the swap

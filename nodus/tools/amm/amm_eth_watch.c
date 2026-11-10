@@ -57,7 +57,7 @@ amm_eth_watch_t *amm_eth_watch_new(const amm_eth_watch_cfg_t *cfg) {
         cfg->conf_count[1] > cfg->conf_count[2] ||
         cfg->window_blocks < cfg->conf_count[2] ||   /* the largest count */
         cfg->window_blocks > (uint64_t)INT64_MAX / 2 ||
-        cfg->max_scan_blocks < 1)
+        cfg->max_scan_blocks < 1 || cfg->chain_id < 1)
         return NULL;
     for (int i = 0; i < cfg->n_providers; i++) {
         const amm_eth_provider_t *p = &cfg->providers[i];
@@ -104,15 +104,15 @@ static int cmp_u64_desc(const void *a, const void *b) {
     return (x < y) - (x > y);
 }
 
-/* Providers used this step: chain id 1 only (plan section 9). @return the
- * number used. */
+/* Providers used this step: the configured chain id only (setting
+ * eth_chain_id, givens item 77). @return the number used. */
 static int qualify(amm_eth_watch_t *w, step_t *st) {
     int n = 0;
     for (int i = 0; i < w->cfg.n_providers; i++) {
         uint64_t id = 0;
         const amm_eth_provider_t *p = &w->prov[i];
         st->use[i] = (p->chain_id(p->ctx, &id, st->deadline) == AMM_ETH_OK &&
-                      id == AMM_ETH_CHAIN_ID);
+                      id == w->cfg.chain_id);
         n += st->use[i];
     }
     return n;
@@ -960,10 +960,12 @@ amm_match_t amm_eth_watch_match(const amm_rec_t *rec, const uint8_t sender[20],
     return AMM_M_MATCH;
 }
 
-int amm_eth_watch_window_observed(amm_eth_watch_t *w, uint64_t approved_tip,
-                                  uint64_t expiry_ts, const uint8_t sender[20],
-                                  const uint8_t amount_be[32]) {
-    if (!w || !sender || !amount_be) return -1;
+/* The window rule; `sender` NULL = an approval with no signed request (no
+ * sender: no candidate record can be "for that approval", only the cursor and
+ * depth conditions apply). */
+static int window_observed_impl(amm_eth_watch_t *w, uint64_t approved_tip,
+                                uint64_t expiry_ts, const uint8_t *sender,
+                                const uint8_t amount_be[32]) {
     amm_journal_t *j = w->cfg.journal;
     uint64_t tip = 0, next = 0;
     int a = amm_journal_cursor_get(j, "eth_tip", &tip);
@@ -979,10 +981,24 @@ int amm_eth_watch_window_observed(amm_eth_watch_t *w, uint64_t approved_tip,
     int f = amm_journal_block_after_ts(j, expiry_ts, max_h, &found);
     if (f < 0) return -1;
     if (f == 1) return 0;
+    if (!sender) return 1;
     /* only a candidate whose block time is within the approval's validity (or
      * unknown) is "for that approval" (plan lines 314, 319) */
     int c = amm_journal_rec_candidate_exists(j, sender, amount_be, approved_tip,
                                              expiry_ts);
     if (c < 0) return -1;
     return c == 0 ? 0 : 1;      /* a retained candidate: still unresolved   */
+}
+
+int amm_eth_watch_window_observed(amm_eth_watch_t *w, uint64_t approved_tip,
+                                  uint64_t expiry_ts, const uint8_t sender[20],
+                                  const uint8_t amount_be[32]) {
+    if (!w || !sender || !amount_be) return -1;
+    return window_observed_impl(w, approved_tip, expiry_ts, sender, amount_be);
+}
+
+int amm_eth_watch_window_observed_unsigned(amm_eth_watch_t *w, uint64_t expiry_ts,
+                                           const uint8_t amount_be[32]) {
+    if (!w || !amount_be) return -1;
+    return window_observed_impl(w, 0, expiry_ts, NULL, amount_be);
 }

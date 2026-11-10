@@ -4,7 +4,7 @@
  *        units, withdraw shares, saturating fee subtraction, in-flight room.
  *        No I/O, no clock, no allocation.
  *
- * Governing text: docs/plans/2026-11-08-swap-bot-plan.nodus1.md (revision 4)
+ * Governing text: docs/plans/2026-11-08-swap-bot-plan.nodus1.md (revision 10)
  * sections 5 (units, width, subtraction, rounding), 12 (ledger and pricing),
  * 13 (in-flight room), 14 (units, withdraw shares); givens items 51, 52.
  *
@@ -80,22 +80,24 @@ void amm_sub_sat(evm_u256 *r, const evm_u256 *a, const evm_u256 *b);
 
 /* ── swap (plan section 12) ───────────────────────────────────────────── */
 
-/** The applied swap output: x*Y/(x+X) truncated (THORChain
- *  CalcMaxAssetEmission with fee 0, swap_current.go:582-591; plan line 301).
- *  X = input-side depth, Y = output-side depth, x = input.
- *  AMM_E_ZERO_DIV for x + X == 0, AMM_E_OVERFLOW, and AMM_E_DEPTH when the
- *  output would reach Y (swap_current.go:380-385). */
+/** The swap output: THORChain GetSwapCalc with the floor 0 (commission
+ *  setting 0, givens item 73): the slip branch, (x*X*Y)/(x+X)^2 truncated
+ *  (swap_current.go:570-579, :636-650). The slip fee (x^2*Y)/(x+X)^2
+ *  (:594-603) is NOT paid out: the ledger update takes only the output from
+ *  the output side, so the fee stays in the pool (givens item 79). X = input-side depth,
+ *  Y = output-side depth, x = input. AMM_E_ZERO_DIV for x + X == 0,
+ *  AMM_E_OVERFLOW, AMM_E_DEPTH when the output would reach Y
+ *  (swap_current.go:380-385). */
 int amm_swap_output(evm_u256 *out, const evm_u256 *X, const evm_u256 *x,
                     const evm_u256 *Y);
 
 /** THORChain's no-floor emission (x*X*Y)/(x+X)^2 truncated
- *  (swap_current.go:570-579). Reference formula, not used by the applied
- *  swap while the commission shape is open (plan line 301). */
+ *  (swap_current.go:570-579); amm_swap_output is this function. */
 int amm_swap_emission_slip(evm_u256 *out, const evm_u256 *X,
                            const evm_u256 *x, const evm_u256 *Y);
 
 /** THORChain's liquidity fee (x^2*Y)/(x+X)^2 truncated
- *  (swap_current.go:594-603). Same status as amm_swap_emission_slip. */
+ *  (swap_current.go:594-603): the slip fee, which stays in the pool. */
 int amm_swap_liquidity_fee(evm_u256 *fee, const evm_u256 *X,
                            const evm_u256 *x, const evm_u256 *Y);
 
@@ -104,12 +106,31 @@ int amm_pool_quote(const amm_pool_t *p, amm_dir_t dir, const evm_u256 *x,
                    evm_u256 *out);
 
 /** Ledger update after a counted swap: input side += x, output side -=
- *  paid output (plan line 296). `paid` is the output the caller computed
- *  with amm_pool_quote on the same pool state; the update recomputes it and
- *  refuses (AMM_E_RANGE) a different value, so a stale quote cannot be
- *  applied. All-or-nothing. */
+ *  `paid`. `paid` is THE NUMBER THE BOT GAVE AT APPROVAL (plan section 12,
+ *  givens items 66, 68), not a quote of today's depths: it is not computed
+ *  again. Refusals (nothing changes): AMM_E_DEPTH when `paid` reaches the
+ *  output-side depth, AMM_E_OVERFLOW on the input side, AMM_E_RANGE for a bad
+ *  direction. All-or-nothing. */
 int amm_pool_apply_swap(amm_pool_t *p, amm_dir_t dir, const evm_u256 *x,
                         const evm_u256 *paid);
+
+/** Reverse a counted swap's ledger update (a payout that turned into a
+ *  refund before anything was signed): input side -= x, output side += paid.
+ *  AMM_E_BORROW / AMM_E_OVERFLOW refuse, nothing changes. */
+int amm_pool_unapply_swap(amm_pool_t *p, amm_dir_t dir, const evm_u256 *x,
+                          const evm_u256 *paid);
+
+/** THORChain GetUncappedShare (type_convert.go): zero part, total or
+ *  allocation -> 0; part == total -> allocation; else (allocation*part +
+ *  floor(total/2)) / total, NOT capped at the total (GetSafeShare caps). */
+int amm_uncapped_share(evm_u256 *out, const evm_u256 *part, const evm_u256 *total,
+                       const evm_u256 *allocation);
+
+/* The network fee deducted from a USDT payout is NOT a pool operation: it is
+ * USDT kept by the Foundation (givens items 80, 92), booked in the journal
+ * (amm_journal_book_fee). The THORChain asset-fee form (USDT into the pool,
+ * NODUS out to the Foundation) was withdrawn by the operator's reading of item
+ * 80; amm_pool_book_usdt_fee is removed. */
 
 /* ── payout after the network fee (plan sections 7, 8 step 7; 10) ─────── */
 

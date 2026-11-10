@@ -31,7 +31,7 @@ amm_eth_pay_t *amm_eth_pay_new(const amm_eth_pay_cfg_t *cfg) {
         cfg->n_providers < 1 || cfg->n_providers > AMM_ETH_MAX_PROVIDERS ||
         cfg->quorum < 1 || cfg->quorum > cfg->n_providers ||
         cfg->final_depth < 1 || cfg->final_depth > (uint64_t)INT64_MAX / 2 ||
-        !cfg->price.fee_usdt)
+        !cfg->price.fee_usdt || cfg->chain_id < 1)
         return NULL;
     for (int i = 0; i < cfg->n_providers; i++) {
         const amm_eth_provider_t *p = &cfg->providers[i];
@@ -87,14 +87,15 @@ typedef struct {
     uint64_t dl;
 } rd_t;
 
-/* Providers used: chain id 1 only (plan section 9). @return the number. */
+/* Providers used: the configured chain id only (setting eth_chain_id, givens
+ * item 77). @return the number. */
 static int qualify(amm_eth_pay_t *p, rd_t *rd) {
     int n = 0;
     for (int i = 0; i < p->cfg.n_providers; i++) {
         uint64_t id = 0;
         const amm_eth_provider_t *pr = &p->prov[i];
         rd->use[i] = (pr->chain_id(pr->ctx, &id, rd->dl) == AMM_ETH_OK &&
-                      id == AMM_ETH_CHAIN_ID);
+                      id == p->cfg.chain_id);
         n += rd->use[i];
     }
     return n;
@@ -395,8 +396,8 @@ static int sign_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t gross,
         int mv = is_payout(&s)
             ? amm_journal_swap_transition(j, swap_seq, AMM_S_REFUND_PENDING, NULL, NULL,
                                           "zero USDT after the Ethereum fee: refund")
-            : amm_journal_swap_transition(j, swap_seq, AMM_S_HELD, NULL, NULL,
-                                          "Ethereum fee at or above the refund: held");
+            : amm_journal_swap_transition(j, swap_seq, AMM_S_DROPPED, NULL, NULL,
+                                          "Ethereum fee at or above the refund: dropped");
         if (mv != 0) return AMM_EP_ERR;
         if (out) out->worked = 1;
         return AMM_EP_ZERO;
@@ -437,7 +438,7 @@ static int sign_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t gross,
         say(out, "the nonce is not readable");
         return AMM_EP_UNKNOWN;
     }
-    int nr = amm_journal_eth_next_nonce(j, AMM_ETH_CHAIN_ID, &jn);
+    int nr = amm_journal_eth_next_nonce(j, p->cfg.chain_id, &jn);
     if (nr < 0) return AMM_EP_ERR;
     if (nr == 1) jn = 0;
     nonce = base > jn ? base : jn;
@@ -446,7 +447,7 @@ static int sign_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t gross,
     amm_tx_transfer_calldata(recipient, net, cd);
     amm_tx1559_t tx;
     memset(&tx, 0, sizeof(tx));
-    tx.chain_id = AMM_ETH_CHAIN_ID;
+    tx.chain_id = p->cfg.chain_id;
     tx.nonce = nonce;
     tx.max_priority_fee_per_gas = prio;
     tx.max_fee_per_gas = max_fee;
@@ -462,7 +463,7 @@ static int sign_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t gross,
         return AMM_EP_ERR;
     }
     at.swap_seq = swap_seq;
-    at.chain_id = AMM_ETH_CHAIN_ID;
+    at.chain_id = p->cfg.chain_id;
     at.nonce = nonce;
     memcpy(at.recipient, recipient, 20);
     at.gross = gross; at.net = net; at.fee = fee;

@@ -477,10 +477,9 @@ zero_or_out:
         snprintf(msg, sizeof(msg), "nothing is left after the Nodus fee %llu on %llu",
                  (unsigned long long)b->fee, (unsigned long long)gross);
         if (is_refund) {
-            /* a refund that is zero after the fee is HELD for manual handling,
-             * a replacement attempt included (givens items 52, 53; plan line
-             * 241 states no first-attempt restriction) */
-            if (amm_journal_swap_transition(j, seq, AMM_S_HELD, NULL, NULL, msg) != 0) {
+            /* a refund that is zero after the fee is DROPPED (not sent, not
+             * held), a replacement attempt included (givens items 89, 90) */
+            if (amm_journal_swap_transition(j, seq, AMM_S_DROPPED, NULL, NULL, msg) != 0) {
                 ret = AMM_NP_ERR;
             } else if (out) {
                 out->worked = 1;

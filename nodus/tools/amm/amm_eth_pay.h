@@ -33,8 +33,8 @@
  *   net == 0 (fee at or above the amount): nothing is signed or broadcast
  *     (givens item 52). A payout (NODUS -> USDT, payout_pending) is moved to
  *     refund_pending BEFORE any attempt is signed (plan line 241, as
- *     amm_nodus_pay); a refund (USDT -> NODUS, refund_pending) is moved to
- *     `held` (givens item 53). The LEDGER is not touched here: reversing the
+ *     amm_nodus_pay); a refund (USDT -> NODUS, refund_pending) is DROPPED
+ *     (state `dropped`, no room, nothing sent; givens items 89, 90). The LEDGER is not touched here: reversing the
  *     pool update of the payout is the engine's duty.
  *   net < the swap's signed minimum, for a payout: nothing is signed (the
  *     minimum is compared after the fee, plan line 241); the swap moves to
@@ -75,7 +75,7 @@
  * READS (plan section 10 names no quorum for the payer; givens item 17 "Ethereum
  * read through ready-made RPC providers, more than one checked" and the
  * watcher's section 9 rule are the reading): every provider is used only when
- * it reports chain id 1; every read that decides a money state needs Q usable
+ * it reports the configured chain id (eth_chain_id); every read that decides a money state needs Q usable
  * answers (Q = the quorum setting, givens item 58):
  *   tip, transaction counts   the Q-th largest answer (at least Q providers
  *                             report that value or more)
@@ -165,7 +165,10 @@ typedef struct {
     int quorum;                            /* 1..n_providers (givens item 58) */
     amm_eth_price_t price;                 /* copied; fee_usdt required      */
     amm_journal_t *journal;                /* not owned                      */
-    const uint8_t *sk;                     /* the bot's secp256k1 key, 32 B  */
+    uint64_t chain_id;                     /* eth_chain_id (givens item 77), >= 1:
+                                            * providers must report it; the nonce
+                                            * key and the signature carry it   */
+    const uint8_t *sk;                    /* the bot's secp256k1 key, 32 B  */
     const uint8_t *blind;                  /* NULL or 32 bytes (see amm_eth_tx.h) */
     uint8_t usdt[20];                      /* the USDT contract              */
     uint64_t final_depth;                  /* payout_final_depth_eth, >= 1   */
@@ -181,8 +184,8 @@ typedef enum {
     AMM_EP_FUNDS     = 2,  /* the bot's USDT or ether cannot cover it; nothing
                             * signed or stored                                */
     AMM_EP_ZERO      = 3,  /* nothing is left after the fee; nothing signed;
-                            * a payout moved to refund_pending, a refund to
-                            * held                                            */
+                            * a payout moved to refund_pending, a refund
+                            * dropped                                         */
     AMM_EP_BELOW_MIN = 4,  /* a payout's net is below the swap's minimum;
                             * nothing signed; moved to refund_pending         */
     AMM_EP_PAUSED    = 5,  /* payouts_paused                                  */

@@ -55,7 +55,23 @@
  *   payout_final_depth_eth     YES       (deferred, s.15)   >= 1
  *   http_max_body              YES       (deferred, s.15)   > 0
  *   http_max_response          YES       (deferred, s.15)   > 0
- *   eth_price_source           YES       (deferred, s.15)   an https URL
+ *   swap_min_usdt              no        1000000            1.., <= swap_max_usdt (givens 89: no swap below
+ *                                                           1 USDT on its USDT side; refused at the price question)
+ *   eth_price_sources          no        all four           comma separated names from kraken, binance,
+ *                                                           bitfinex, coinbase (plan s.10, s.15; Boltz
+ *                                                           DataAggregator.ts:10-15); each listed once
+ *   eth_price_min_sources      no        3                  1..number of listed sources (givens 74)
+ *   eth_price_max_age_seconds  no        180                1.. (givens 74)
+ *   (replaces the old single required key eth_price_source)
+ *   Service keys with no plan line, so REQUIRED and without a default
+ *   (nothing is invented): http_port 1..65535, http_conn_cap 1..64,
+ *   http_timeout_ms >= 1, worker_interval_ms >= 1, rpc_timeout_ms >= 1,
+ *   eth_start_height >= 1, nodus_start_height >= 1, eth_max_scan_blocks >= 1,
+ *   nodus_page_limit 1..100, nodus_max_pages >= 1,
+ *   nodus_expiry_ahead 1..NODUS_CMT_APP_MAX_EXPIRY_AHEAD (100),
+ *   nodus_resubmit_blocks >= 1, nodus_scan_blocks >= 1, eth_key_path (a
+ *   file of 64 hex digits, the bot's secp256k1 key), nodus_key_dir (the bot's
+ *   Nodus identity directory), lock_path (the single-instance lock file).
  *   eip712_name                YES       (deferred, s.15)   printable ASCII, 1..AMM_STR_MAX-1
  *   expected_origin            YES       (deferred, s.15)   printable ASCII, 1..AMM_STR_MAX-1
  *   held_keeps_room            YES       (deferred, plan    0 | 1: whether a swap in state held
@@ -111,6 +127,14 @@
 #define AMM_STR_MAX        128
 #define AMM_MAX_PROVIDERS  16     /* storage size of the provider list     */
 
+/* ETH price sources (plan section 10): the bit of each name in
+ * amm_cfg_t.eth_price_sources. */
+#define AMM_PRICE_KRAKEN   1u
+#define AMM_PRICE_BINANCE  2u
+#define AMM_PRICE_BITFINEX 4u
+#define AMM_PRICE_COINBASE 8u
+#define AMM_PRICE_ALL      15u
+
 typedef struct {
     char     node_host[64];
     uint16_t node_port;
@@ -143,8 +167,17 @@ typedef struct {
     uint64_t payout_final_depth_eth;
     uint64_t http_max_body;
     uint64_t http_max_response;
-
-    char     eth_price_source[AMM_URL_MAX];
+    uint64_t swap_min_usdt;                    /* default 1000000 (givens 89) */
+    uint64_t eth_price_min_sources;            /* default 3 (givens 74)     */
+    uint64_t eth_price_max_age_seconds;        /* default 180 (givens 74)   */
+    unsigned eth_price_sources;                /* AMM_PRICE_* bit mask      */
+    uint64_t http_port, http_conn_cap, http_timeout_ms, worker_interval_ms,
+             rpc_timeout_ms, eth_start_height, nodus_start_height,
+             eth_max_scan_blocks, nodus_page_limit, nodus_max_pages,
+             nodus_expiry_ahead, nodus_resubmit_blocks, nodus_scan_blocks;
+    char     eth_key_path[AMM_PATH_MAX];
+    char     nodus_key_dir[AMM_PATH_MAX];
+    char     lock_path[AMM_PATH_MAX];
     char     eip712_name[AMM_STR_MAX];
     char     expected_origin[AMM_STR_MAX];
 

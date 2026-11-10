@@ -9,18 +9,22 @@
  *       carry, sub refuses a borrow, div refuses a zero divisor; the
  *       saturating subtraction gives 0 (never a wrapped value) when the fee
  *       is greater than the amount (givens item 52);
- *   L2  swap output x*Y/(x+X) truncated, on hand-derived vectors (the
- *       arithmetic is written next to each vector), including the plan's
- *       own rounding example x=1, X=2, Y=3 (section 12) and the section 5
- *       width example whose numerator x*X*Y = 9*10^38 passes 2^128;
- *   L3  the reference no-floor emission and liquidity fee, and that their
- *       sum equals the plain output on the vector where truncation is
+ *   L2  swap output = THORChain GetSwapCalc's slip branch with floor 0,
+ *       x*X*Y/(x+X)^2 truncated (revision 10, givens items 73, 79), on
+ *       hand-derived vectors (the arithmetic is written next to each
+ *       vector), including the plan's own rounding example x=1, X=2, Y=3
+ *       (section 12) and the section 5 width example whose numerator
+ *       x*X*Y = 9*10^38 passes 2^128;
+ *   L3  the slip fee x^2*Y/(x+X)^2 (it stays in the pool), and that
+ *       emission + fee equals x*Y/(x+X) on the vector where truncation is
  *       harmless;
  *   L4  refusals: overflow near 2^256 (inputs 2^255), zero divisor
- *       (x + X == 0), output reaching the output-side depth (X == 0);
- *   L5  the ledger update: input side += x, output side -= paid; an
- *       all-or-nothing refusal leaves the pool untouched (stale paid value,
- *       carry on the input side, depth refusal);
+ *       (x + X == 0), an empty input side gives output 0;
+ *   L5  the ledger update: input side += x, output side -= the APPROVAL'S
+ *       number (not a recomputed quote: applied although the depths changed
+ *       since the quote, plan section 12, givens items 66, 68); an
+ *       all-or-nothing refusal leaves the pool untouched (carry on the input
+ *       side, a number reaching the output depth);
  *   L6  payout after the fee: net = output - fee saturating; verdict PAY
  *       when net > 0 and net >= minimum, BELOW_MIN otherwise (net == 0 also
  *       with a zero minimum, fee greater than the output also) -- givens
@@ -180,11 +184,12 @@ static void l2_l3_swap(void) {
     evm_u256 x, X, Y;
 
     /* Plan section 12 example: x=1, X=2, Y=3.
-     * plain = x*Y/(x+X) = 3/3 = 1. no-floor emission = x*X*Y/(x+X)^2
-     * = 6/9 -> 0; fee = x^2*Y/(x+X)^2 = 3/9 -> 0. */
+     * The swap output is GetSwapCalc's slip branch with floor 0 (givens item
+     * 73): x*X*Y/(x+X)^2 = 6/9 -> 0 (the old plain x*Y/(x+X) = 3/3 = 1 is
+     * gone); fee = x^2*Y/(x+X)^2 = 3/9 -> 0. */
     x = u64v(1); X = u64v(2); Y = u64v(3);
-    CHECK(amm_swap_output(&out, &X, &x, &Y) == AMM_OK && eq_u64(&out, 1),
-          "x=1,X=2,Y=3: plain output 1");
+    CHECK(amm_swap_output(&out, &X, &x, &Y) == AMM_OK && eq_u64(&out, 0),
+          "x=1,X=2,Y=3: swap output 0 (slip branch)");
     CHECK(amm_swap_emission_slip(&slip, &X, &x, &Y) == AMM_OK && eq_u64(&slip, 0),
           "x=1,X=2,Y=3: no-floor emission 0");
     CHECK(amm_swap_liquidity_fee(&fee, &X, &x, &Y) == AMM_OK && eq_u64(&fee, 0),
@@ -201,24 +206,34 @@ static void l2_l3_swap(void) {
      * fee      = x^2*Y/(x+X)^2 = 3*10^37 / 9.61*10^30 = 3121748.17.. -> 3121748
      * 93652445 + 3121748 = 96774193 = plain. */
     x = dec("100000000000000"); X = dec("3000000000000000"); Y = dec("3000000000");
-    CHECK(amm_swap_output(&out, &X, &x, &Y) == AMM_OK && eq_u64(&out, 96774193),
-          "100 USDT worth of NODUS: plain output 96774193");
+    CHECK(amm_swap_output(&out, &X, &x, &Y) == AMM_OK && eq_u64(&out, 93652445),
+          "100 USDT worth of NODUS: swap output 93652445 (slip branch)");
     CHECK(amm_swap_emission_slip(&slip, &X, &x, &Y) == AMM_OK &&
           eq_u64(&slip, 93652445), "no-floor emission 93652445 (numerator 9e38)");
     CHECK(amm_swap_liquidity_fee(&fee, &X, &x, &Y) == AMM_OK &&
           eq_u64(&fee, 3121748), "liquidity fee 3121748");
-    { evm_u256 sum; evm_u256_add(&sum, &slip, &fee);
-      CHECK(eq(&sum, &out), "emission + fee == plain on this vector"); }
+    { evm_u256 sum, plain = u64v(96774193);
+      evm_u256_add(&sum, &slip, &fee);
+      CHECK(eq(&sum, &plain), "emission + fee == x*Y/(x+X) = 96774193 on this vector"); }
     { evm_u256 w = dec("900000000000000000000000000000000000000");
       evm_u256 p; evm_u256_mul(&p, &x, &X); evm_u256_mul(&p, &p, &Y);
       CHECK(eq(&p, &w) && evm_u256_bitlen(&p) > 128,
             "numerator x*X*Y is 9e38 and wider than 128 bits"); }
 
     /* USDT -> NODUS, same pool: x = 10^8 (100 USDT), X = 3*10^9, Y = 3*10^15.
-     * x*Y = 3*10^23; x+X = 3.1*10^9; out = 96774193548387.09 -> 96774193548387 */
+     * x*X*Y = 9*10^32; (x+X)^2 = (3.1*10^9)^2 = 9.61*10^18;
+     * out = 9*10^32 / 9.61*10^18 = 9*10^16 / 961 (both sides / 10^14 *10^...):
+     *   961 * 93652445369406 = 89,999,999,999,999,166, remainder 834 < 961
+     *   (9*10^16 = 90,000,000,000,000,000), so out = 93652445369406.
+     * fee = x^2*Y/(x+X)^2 = 3*10^31 / 9.61*10^18 = 3*10^15 / 961:
+     *   961 * 3121748178980 = 2,999,999,999,999,780, remainder 220, fee =
+     *   3121748178980. out + fee = 96774193548386 (the plain x*Y/(x+X) is
+     *   96774193548387: one unit lost to the two truncations). */
     x = dec("100000000"); X = dec("3000000000"); Y = dec("3000000000000000");
     CHECK(amm_swap_output(&out, &X, &x, &Y) == AMM_OK &&
-          eq_dec(&out, "96774193548387"), "100 USDT -> 96774193548387 raw NODUS");
+          eq_dec(&out, "93652445369406"), "100 USDT -> 93652445369406 raw NODUS");
+    CHECK(amm_swap_liquidity_fee(&fee, &X, &x, &Y) == AMM_OK &&
+          eq_dec(&fee, "3121748178980"), "USDT -> NODUS slip fee 3121748178980");
 }
 
 static void l4_refusals(void) {
@@ -236,10 +251,11 @@ static void l4_refusals(void) {
     x = u64v(0); X = u64v(0); Y = u64v(10);
     CHECK(amm_swap_output(&out, &X, &x, &Y) == AMM_E_ZERO_DIV,
           "x+X == 0 refused (zero divisor)");
-    /* X == 0: out = x*Y/x = Y, reaches the depth: 5*7/5 = 7 >= 7 */
+    /* X == 0: the slip emission x*X*Y/(x+X)^2 = 0 (an empty input side gives
+     * nothing); it can never reach Y (it is at most Y/4). */
     x = u64v(5); X = u64v(0); Y = u64v(7);
-    CHECK(amm_swap_output(&out, &X, &x, &Y) == AMM_E_DEPTH,
-          "output reaching the output-side depth refused");
+    CHECK(amm_swap_output(&out, &X, &x, &Y) == AMM_OK && eq_u64(&out, 0),
+          "empty input side: slip output 0");
     /* the no-floor emission refuses the same way: x*X*Y with X=0 is 0 -> not
      * depth, so use a width case: three-factor product past 2^256 */
     x = pow2(100); X = pow2(100); Y = pow2(100);
@@ -254,29 +270,42 @@ static void l5_apply(void) {
     evm_u256 x = dec("100000000"), paid;
 
     CHECK(amm_pool_quote(&p, AMM_USDT_TO_NODUS, &x, &paid) == AMM_OK &&
-          eq_dec(&paid, "96774193548387"), "quote USDT -> NODUS");
-    /* stale paid value */
-    evm_u256 wrong = u64v(1);
+          eq_dec(&paid, "93652445369406"), "quote USDT -> NODUS");
     amm_pool_t before = p;
-    CHECK(amm_pool_apply_swap(&p, AMM_USDT_TO_NODUS, &x, &wrong) == AMM_E_RANGE &&
-          !memcmp(&p, &before, sizeof(p)), "a paid value that differs from the quote is refused, pool unchanged");
-    /* applied: depth_u += 10^8 -> 3.1*10^9; depth_n -= 96774193548387
-     * -> 3000000000000000 - 96774193548387 = 2903225806451613 */
+
+    /* THE NUMBER IS THE APPROVAL'S (plan section 12, givens items 66, 68):
+     * the depths change between the quote and the count (another swap took
+     * 10^15 NODUS out), and the quoted number is applied as it is, not
+     * computed again: depth_n = 2*10^15 - 93652445369406 =
+     * 1906347554630594; depth_u = 3*10^9 + 10^8 = 3.1*10^9. */
+    { amm_pool_t moved = p;
+      moved.depth_n = dec("2000000000000000");
+      CHECK(amm_pool_apply_swap(&moved, AMM_USDT_TO_NODUS, &x, &paid) == AMM_OK &&
+            eq_dec(&moved.depth_u, "3100000000") &&
+            eq_dec(&moved.depth_n, "1906347554630594"),
+            "approval's number applied although the depths changed since"); }
+
+    /* applied on the unchanged pool: depth_u += 10^8 -> 3.1*10^9;
+     * depth_n = 3*10^15 - 93652445369406 = 2906347554630594 */
     CHECK(amm_pool_apply_swap(&p, AMM_USDT_TO_NODUS, &x, &paid) == AMM_OK &&
           eq_dec(&p.depth_u, "3100000000") &&
-          eq_dec(&p.depth_n, "2903225806451613") && eq_u64(&p.units, 1000),
+          eq_dec(&p.depth_n, "2906347554630594") && eq_u64(&p.units, 1000),
           "USDT -> NODUS applied: input side += x, output side -= paid");
 
-    /* NODUS -> USDT on a fresh pool: x = 10^14, out 96774193;
-     * depth_n = 3.1*10^15, depth_u = 3*10^9 - 96774193 = 2903225807 */
+    /* NODUS -> USDT on a fresh pool: x = 10^14, out 93652445;
+     * depth_n = 3.1*10^15, depth_u = 3*10^9 - 93652445 = 2906347555 */
     amm_pool_t q = { dec("3000000000000000"), dec("3000000000"), u64v(1) };
     evm_u256 x2 = dec("100000000000000"), o2;
     CHECK(amm_pool_quote(&q, AMM_NODUS_TO_USDT, &x2, &o2) == AMM_OK &&
-          eq_u64(&o2, 96774193), "quote NODUS -> USDT");
+          eq_u64(&o2, 93652445), "quote NODUS -> USDT");
     CHECK(amm_pool_apply_swap(&q, AMM_NODUS_TO_USDT, &x2, &o2) == AMM_OK &&
           eq_dec(&q.depth_n, "3100000000000000") &&
-          eq_dec(&q.depth_u, "2903225807"),
+          eq_dec(&q.depth_u, "2906347555"),
           "NODUS -> USDT applied");
+    /* the slip fee stays in the pool (givens item 79): only the output left
+     * the output side, so the output side holds Y - out = 3*10^9 - 93652445
+     * (the fee 3121748 was never subtracted). */
+    CHECK(eq_dec(&q.depth_u, "2906347555"), "slip fee not taken out of the pool");
 
     /* carry on the input side refuses, nothing changes */
     amm_pool_t c = { u64v(10), max256(), u64v(1) };
@@ -291,8 +320,15 @@ static void l5_apply(void) {
     amm_pool_t d = { u64v(7), u64v(0), u64v(1) };      /* depth_u = 0       */
     evm_u256 five = u64v(5);
     before = d;
-    CHECK(amm_pool_apply_swap(&d, AMM_USDT_TO_NODUS, &five, &five) == AMM_E_DEPTH &&
-          !memcmp(&d, &before, sizeof(d)), "output reaching depth refused, pool unchanged");
+    /* depth_n = 7: a paid number of 7 reaches the depth, 8 passes it */
+    { evm_u256 seven = u64v(7), eight = u64v(8);
+      CHECK(amm_pool_apply_swap(&d, AMM_USDT_TO_NODUS, &five, &seven) == AMM_E_DEPTH &&
+            amm_pool_apply_swap(&d, AMM_USDT_TO_NODUS, &five, &eight) == AMM_E_DEPTH &&
+            !memcmp(&d, &before, sizeof(d)),
+            "a paid number reaching the output depth refused, pool unchanged"); }
+    /* depth_n = 7, paid 5 passes the depth rule: 7 - 5 = 2 */
+    CHECK(amm_pool_apply_swap(&d, AMM_USDT_TO_NODUS, &five, &five) == AMM_OK &&
+          eq_u64(&d.depth_n, 2) && eq_u64(&d.depth_u, 5), "paid below the depth applied");
     CHECK(amm_pool_quote(&d, (amm_dir_t)7, &five, &po) == AMM_E_RANGE,
           "an unknown direction is refused");
 }
@@ -576,8 +612,48 @@ static void l11_inflight(void) {
           "sum overflow refused, never wrapped into room");
 }
 
+static void l12_unapply_and_fee(void) {
+    printf("L12 reversal of a swap update, uncapped share, the network-fee booking\n");
+    /* the inverse of L5's apply: depth_n 2906347554630594, depth_u 3.1*10^9
+     * give back x = 10^8 and paid = 93652445369406 -> 3*10^15 and 3*10^9 */
+    amm_pool_t p = { dec("2906347554630594"), dec("3100000000"), u64v(5) };
+    evm_u256 x = dec("100000000"), paid = dec("93652445369406");
+    CHECK(amm_pool_unapply_swap(&p, AMM_USDT_TO_NODUS, &x, &paid) == AMM_OK &&
+          eq_dec(&p.depth_n, "3000000000000000") && eq_dec(&p.depth_u, "3000000000") &&
+          eq_u64(&p.units, 5), "reverse of USDT -> NODUS restores the depths");
+    amm_pool_t before = p;
+    evm_u256 big = dec("3000000001");
+    CHECK(amm_pool_unapply_swap(&p, AMM_USDT_TO_NODUS, &big, &paid) == AMM_E_BORROW &&
+          !memcmp(&p, &before, sizeof(p)), "a reversal below zero refused, pool unchanged");
+    amm_pool_t m = { max256(), u64v(10), u64v(1) };
+    evm_u256 one = u64v(1);
+    before = m;
+    CHECK(amm_pool_unapply_swap(&m, AMM_USDT_TO_NODUS, &one, &one) == AMM_E_OVERFLOW &&
+          !memcmp(&m, &before, sizeof(m)), "a reversal past 2^256 refused, pool unchanged");
+    CHECK(amm_pool_unapply_swap(&p, (amm_dir_t)9, &one, &one) == AMM_E_RANGE, "bad direction");
+
+    /* GetUncappedShare(part=10, total=4, alloc=3) = (3*10 + floor(4/2)) / 4
+     * = 32 / 4 = 8; GetSafeShare would cap part at 4 and give 3 */
+    evm_u256 o, ten = u64v(10), four = u64v(4), three = u64v(3), zero = u64v(0);
+    CHECK(amm_uncapped_share(&o, &ten, &four, &three) == AMM_OK && eq_u64(&o, 8),
+          "uncapped share (3*10 + 2) / 4 = 8");
+    CHECK(amm_safe_share(&o, &ten, &four, &three) == AMM_OK && eq_u64(&o, 3),
+          "  the capped share of the same inputs is 3");
+    CHECK(amm_uncapped_share(&o, &four, &four, &three) == AMM_OK && eq_u64(&o, 3),
+          "part == total gives the allocation");
+    CHECK(amm_uncapped_share(&o, &zero, &four, &three) == AMM_OK && eq_u64(&o, 0) &&
+          amm_uncapped_share(&o, &ten, &zero, &three) == AMM_OK && eq_u64(&o, 0) &&
+          amm_uncapped_share(&o, &ten, &four, &zero) == AMM_OK && eq_u64(&o, 0),
+          "a zero part, total or allocation gives 0");
+
+    /* The network-fee booking is no longer a pool operation (givens item 92:
+     * the deducted USDT fee is kept by the Foundation as USDT); its tests are
+     * the journal's (test_amm_journal J-fee) and the engine's (E8). */
+}
+
 int main(void) {
     printf("test_amm_ledger\n");
+    l12_unapply_and_fee();
     l1_primitives();
     l2_l3_swap();
     l4_refusals();

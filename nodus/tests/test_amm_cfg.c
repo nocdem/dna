@@ -40,6 +40,18 @@
  *       commission with 0, 0 written accepted, 1 / 25 / -1 and a repeated
  *       key refused (givens 73; shape DEFERRED, plan sections 12 and 15);
  *       0 for approval_valid_seconds and eth_chain_id refused.
+ *   C7  (revision 10) swap_min_usdt default 1,000,000 raw (givens 89), 0 and a
+ *       value above swap_max_usdt refused; the three ETH price keys
+ *       (eth_price_sources names, eth_price_min_sources 3, eth_price_max_age_
+ *       seconds 180; givens 74, plan s.10, s.15) with their defaults, a
+ *       minimum above the listed sources refused, duplicates, empty
+ *       elements, unknown names and URLs refused, the retired single key
+ *       eth_price_source refused; the service keys (http_*, scan bounds, key
+ *       paths, lock path) are required without a default (C3) and their
+ *       bounds refuse 0 / 65 / 101 at the edges.
+ *   NOTE C3 no longer lists eth_price_source: the key was replaced by the
+ *   optional eth_price_sources (a plan value exists), so the file without
+ *   them loads.
  * WHAT IT REQUIRES: a default build; one mkdtemp directory under /tmp for the
  *   loader cases, removed at the end; no network.
  * LEAVES BEHIND: nothing.
@@ -84,11 +96,19 @@ static void build(char *out, size_t cap, const char *skip, const char *extra) {
         {"eth_providers", "https://rpc-a.example/v1/k1, https://rpc-b.example/v1/k2,https://rpc-c.example/k3"},
         {"eth_quorum", "2"},
         {"foundation_eth", HEX40}, {"foundation_nodus", HEX128},
-        {"eth_price_source", "https://price.example/eth"},
         {"eip712_name", "Nodus Swap"}, {"expected_origin", "https://swap.example"},
         {"eth_reorg_window_blocks", "96"}, {"approval_valid_seconds", "1800"},
         {"payout_final_depth_eth", "12"}, {"http_max_body", "65536"},
         {"http_max_response", "65536"}, {"held_keeps_room", "0"},
+        {"http_port", "8480"}, {"http_conn_cap", "16"}, {"http_timeout_ms", "5000"},
+        {"worker_interval_ms", "1000"}, {"rpc_timeout_ms", "8000"},
+        {"eth_start_height", "100"}, {"nodus_start_height", "50"},
+        {"eth_max_scan_blocks", "20"}, {"nodus_page_limit", "50"},
+        {"nodus_max_pages", "4"}, {"nodus_expiry_ahead", "50"},
+        {"nodus_resubmit_blocks", "3"}, {"nodus_scan_blocks", "64"},
+        {"eth_key_path", "/var/lib/nodus-amm/eth.key"},
+        {"nodus_key_dir", "/var/lib/nodus-amm/id"},
+        {"lock_path", "/var/lib/nodus-amm/lock"},
     };
     size_t n = 0;
     out[0] = '\0';
@@ -142,7 +162,7 @@ static void c2_overrides(void) {
     CHECK(parses(NULL,
         "eth_conf_bound_1_usdt = 21\neth_conf_bound_2_usdt = 22\n"
         "eth_conf_count_1 = 2\neth_conf_count_2 = 4\neth_conf_count_3 = 6\n"
-        "swap_max_usdt = 7\ninflight_max_usdt = 9\n"
+        "swap_min_usdt = 5\nswap_max_usdt = 7\ninflight_max_usdt = 9\n"
         "pool_start_usdt = 11\npool_start_nodus = 13\n"
         "liquidity_wait_eth_blocks = 17\nliquidity_wait_nodus_blocks = 19\n"
         "swaps_paused = 1\nliquidity_paused = 1\npayouts_paused = 1\n"
@@ -164,9 +184,14 @@ static void c3_required(void) {
     static const char *keys[] = {
         "eth_providers", "eth_quorum", "eth_reorg_window_blocks",
         "payout_final_depth_eth", "http_max_body",
-        "http_max_response", "eth_price_source", "eip712_name",
+        "http_max_response", "eip712_name",
         "expected_origin", "held_keeps_room", "foundation_eth", "foundation_nodus", "node_host",
-        "node_port", "node_fp", "chain_id", "journal_path" };
+        "node_port", "node_fp", "chain_id", "journal_path",
+        "http_port", "http_conn_cap", "http_timeout_ms", "worker_interval_ms",
+        "rpc_timeout_ms", "eth_start_height", "nodus_start_height",
+        "eth_max_scan_blocks", "nodus_page_limit", "nodus_max_pages",
+        "nodus_expiry_ahead", "nodus_resubmit_blocks", "nodus_scan_blocks",
+        "eth_key_path", "nodus_key_dir", "lock_path" };
     for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
         amm_cfg_t c;
         char msg[96];
@@ -403,6 +428,40 @@ static void c6_operator_settings(void) {
     expect_refused("commission = 0\ncommission = 0\n", NULL, "commission repeated");
 }
 
+static void c7_price_and_min(void) {
+    printf("C7 swap_min_usdt and the ETH price settings (givens 74, 89)\n");
+    amm_cfg_t c;
+    CHECK(parses(NULL, NULL, &c) == 0 && c.swap_min_usdt == 1000000ULL &&
+          c.eth_price_min_sources == 3 && c.eth_price_max_age_seconds == 180 &&
+          c.eth_price_sources == AMM_PRICE_ALL,
+          "defaults: 1 USDT, 3 sources, 180 s, all four names");
+    CHECK(parses(NULL, "swap_min_usdt = 5\n", &c) == 0 && c.swap_min_usdt == 5,
+          "swap_min_usdt written");
+    expect_refused("swap_min_usdt = 0\n", NULL, "swap_min_usdt 0");
+    expect_refused("swap_min_usdt = 100000001\n", NULL, "swap_min_usdt above swap_max_usdt");
+    CHECK(parses(NULL, "eth_price_sources = kraken, binance,bitfinex\n", &c) == 0 &&
+          c.eth_price_sources == (AMM_PRICE_KRAKEN | AMM_PRICE_BINANCE | AMM_PRICE_BITFINEX),
+          "three names listed");
+    expect_refused("eth_price_sources = kraken,binance\n", NULL,
+                   "min sources 3 above the two listed (plan s.15 load check)");
+    CHECK(parses(NULL, "eth_price_sources = kraken,binance\neth_price_min_sources = 2\n", &c) == 0,
+          "two listed with minimum 2 accepted");
+    expect_refused("eth_price_sources = kraken,kraken,binance,coinbase\n", NULL, "a name listed twice");
+    expect_refused("eth_price_sources = kraken,,binance,coinbase\n", NULL, "an empty element");
+    expect_refused("eth_price_sources = kraken,gemini,binance,coinbase\n", NULL, "an unknown name");
+    expect_refused("eth_price_sources = https://api.kraken.com/0/public\n", NULL, "a URL instead of a name");
+    expect_refused("eth_price_source = https://price.example/eth\n", NULL, "the retired key eth_price_source");
+    expect_refused("eth_price_min_sources = 0\n", NULL, "min sources 0");
+    expect_refused("eth_price_min_sources = 5\n", NULL, "min sources above the four known sources");
+    expect_refused("eth_price_max_age_seconds = 0\n", NULL, "max age 0");
+    CHECK(parses(NULL, "eth_price_max_age_seconds = 60\n", &c) == 0 &&
+          c.eth_price_max_age_seconds == 60, "max age written");
+    expect_refused("http_port = 0\n", "http_port", "http_port 0");
+    expect_refused("http_conn_cap = 65\n", "http_conn_cap", "http_conn_cap 65");
+    expect_refused("nodus_expiry_ahead = 101\n", "nodus_expiry_ahead", "nodus_expiry_ahead 101");
+    expect_refused("nodus_page_limit = 101\n", "nodus_page_limit", "nodus_page_limit 101");
+}
+
 int main(void) {
     printf("test_amm_cfg\n");
     init_hex();
@@ -412,6 +471,7 @@ int main(void) {
     c4_strict();
     c5_loader();
     c6_operator_settings();
+    c7_price_and_min();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }
