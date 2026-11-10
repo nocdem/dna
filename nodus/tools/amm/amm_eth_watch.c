@@ -52,7 +52,10 @@ amm_eth_watch_t *amm_eth_watch_new(const amm_eth_watch_cfg_t *cfg) {
     if (!cfg || !cfg->providers || !cfg->journal ||
         cfg->n_providers < 1 || cfg->n_providers > AMM_ETH_MAX_PROVIDERS ||
         cfg->quorum < 1 || cfg->quorum > cfg->n_providers ||
-        cfg->confirmations < 1 || cfg->window_blocks < cfg->confirmations ||
+        cfg->conf_bound_usdt[0] >= cfg->conf_bound_usdt[1] ||
+        cfg->conf_count[0] < 1 || cfg->conf_count[0] > cfg->conf_count[1] ||
+        cfg->conf_count[1] > cfg->conf_count[2] ||
+        cfg->window_blocks < cfg->conf_count[2] ||   /* the largest count */
         cfg->window_blocks > (uint64_t)INT64_MAX / 2 ||
         cfg->max_scan_blocks < 1)
         return NULL;
@@ -76,6 +79,22 @@ void amm_eth_watch_free(amm_eth_watch_t *w) {
     if (!w) return;
     free(w->logbuf);
     free(w);
+}
+
+/* 1 when the 256-bit big-endian `v` is <= `bound`. */
+static int value_le(const uint8_t v[32], uint64_t bound) {
+    for (int i = 0; i < 24; i++)
+        if (v[i] != 0) return 0;
+    uint64_t x = 0;
+    for (int i = 24; i < 32; i++) x = (x << 8) | v[i];
+    return x <= bound;
+}
+
+uint64_t amm_eth_watch_confirmations(const amm_eth_watch_t *w,
+                                     const uint8_t value_be[32]) {
+    if (value_le(value_be, w->cfg.conf_bound_usdt[0])) return w->cfg.conf_count[0];
+    if (value_le(value_be, w->cfg.conf_bound_usdt[1])) return w->cfg.conf_count[1];
+    return w->cfg.conf_count[2];
 }
 
 /* ── quorum primitives ────────────────────────────────────────────────── */
@@ -566,7 +585,7 @@ static cls_t classify(amm_eth_watch_t *w, const step_t *st, const amm_rec_t *rec
             same++;
             /* depth (plan line 252): the SAME provider that reports the
              * payment's block hash must also report a tip at least
-             * `confirmations` above it */
+             * `min_gap` (the payment's count) above it */
             if (deep_ok) {
                 uint64_t tip = 0;
                 const amm_eth_provider_t *p = &w->prov[pidx[i]];
@@ -802,7 +821,7 @@ static int rescan_candidates(amm_eth_watch_t *w, const step_t *st, uint64_t tip,
     return rc;
 }
 
-/* seen -> deep for records `confirmations` below the tip, after a lookup
+/* seen -> deep for records at their count (by amount) below the tip, after a lookup
  * (amm_eth_watch.h step 9). */
 static int mark_deep(amm_eth_watch_t *w, const step_t *st, uint64_t tip,
                      amm_eth_step_t *out) {
@@ -818,12 +837,14 @@ static int mark_deep(amm_eth_watch_t *w, const step_t *st, uint64_t tip,
         return AMM_W_ERR;
     }
     for (int i = 0; i < n; i++) {
+        /* the count follows this payment's logged amount (givens item 60) */
+        uint64_t need = amm_eth_watch_confirmations(w, recs[i].value);
         if (tip < recs[i].block_number ||
-            tip - recs[i].block_number < w->cfg.confirmations) continue;
+            tip - recs[i].block_number < need) continue;
         dec_t d;
         d.rec = recs[i];
         int deep_votes = 0;
-        d.cls = classify(w, st, &recs[i], &d.mv, &deep_votes, w->cfg.confirmations);
+        d.cls = classify(w, st, &recs[i], &d.mv, &deep_votes, need);
         if (d.cls == C_UNKNOWN) {
             out->unknown++;
             if (rc == AMM_W_OK) rc = AMM_W_UNKNOWN;
@@ -949,9 +970,11 @@ int amm_eth_watch_window_observed(amm_eth_watch_t *w, uint64_t approved_tip,
     int b = amm_journal_cursor_get(j, "eth_scan", &next);
     if (a < 0 || b < 0) return -1;
     if (a == 1 || b == 1 || next == 0) return 0;
-    if (tip < w->cfg.confirmations) return 0;
+    /* the count of the approval's value v (plan section 13, givens item 60) */
+    uint64_t need = amm_eth_watch_confirmations(w, amount_be);
+    if (tip < need) return 0;
     uint64_t max_h = next - 1;
-    if (tip - w->cfg.confirmations < max_h) max_h = tip - w->cfg.confirmations;
+    if (tip - need < max_h) max_h = tip - need;
     uint64_t found = 0;
     int f = amm_journal_block_after_ts(j, expiry_ts, max_h, &found);
     if (f < 0) return -1;

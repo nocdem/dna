@@ -4,7 +4,8 @@
  * WHAT IT PROVES (plan docs/plans/2026-11-08-swap-bot-plan.nodus1.md rev. 4,
  * section 15 "Settings", section 19; amm_cfg.h for the key table):
  *   C1  a minimal file (only the required keys) parses and every optional
- *       setting takes the plan's value: eth_confirmations 3, swap_max 100
+ *       setting takes the plan's value: confirmation bounds 100 / 1,000
+ *       USDT and counts 3 / 5 / 33 (givens item 60), swap_max 100
  *       USDT, inflight_max 500 USDT, pool start 3000 USDT / 30,000,000 NODUS,
  *       liquidity waits 300 Ethereum blocks / 3 Nodus blocks, all pauses off,
  *       the USDT mainnet contract;
@@ -22,10 +23,14 @@
  *   C4  strictness: unknown key (including "commission", which the plan does
  *       not build), duplicate key, a line without '=', a sign or a space or
  *       a hex digit inside a number, out-of-bounds values at both edges
- *       (eth_confirmations 0 / 1 / 100 / 101), a swap limit above the
+ *       (each eth_conf_count_* 0 / 1 / 100 / 101), a swap limit above the
  *       in-flight total, a quorum above the number of providers or zero, a
  *       provider that is not https or is listed twice or empty element, more
- *       providers than the table holds, a window below the confirmations,
+ *       providers than the table holds, a window below the largest
+ *       confirmation count (33 by default; 32 refused, 33 accepted),
+ *       confirmation bounds equal or descending, counts decreasing from
+ *       row to row (givens item 60, plan section 15 load check),
+ *       the retired key eth_confirmations (an unknown key),
  *       pause flags other than 0 / 1, uppercase hex addresses, a short
  *       address, a control byte in a name;
  *   C5  the loader: a missing file, a NUL byte, a file above 16 KiB are
@@ -34,7 +39,8 @@
  *   loader cases, removed at the end; no network.
  * LEAVES BEHIND: nothing.
  * HOW IT CAN LIE: bounds the plan leaves open (the quorum lower bound, the
- *   window relation) are pinned here as THIS implementation's reading
+ *   window relation, equal confirmation bounds refused as "not ascending",
+ *   the key names eth_conf_*) are pinned here as THIS implementation's reading
  *   (amm_cfg.h); a later plan decision changes them. The test proves the
  *   parser matches its header, not that the values are operationally wise.
  */
@@ -98,7 +104,11 @@ static void c1_defaults(void) {
     printf("C1 minimal file: the plan's values\n");
     amm_cfg_t c;
     CHECK(parses(NULL, NULL, &c) == 0, "minimal file parses");
-    CHECK(c.eth_confirmations == 3, "eth_confirmations 3 (givens item 22)");
+    CHECK(c.eth_conf_bound_1_usdt == 100000000ULL &&
+          c.eth_conf_bound_2_usdt == 1000000000ULL,
+          "bounds 100 / 1,000 USDT raw (givens item 60)");
+    CHECK(c.eth_conf_count_1 == 3 && c.eth_conf_count_2 == 5 &&
+          c.eth_conf_count_3 == 33, "counts 3 / 5 / 33 (givens item 60)");
     CHECK(c.swap_max_usdt == 100000000ULL, "swap_max 100 USDT raw");
     CHECK(c.inflight_max_usdt == 500000000ULL, "inflight_max 500 USDT raw");
     CHECK(c.pool_start_usdt == 3000000000ULL, "start pool 3000 USDT raw");
@@ -125,13 +135,18 @@ static void c2_overrides(void) {
     printf("C2 overrides\n");
     amm_cfg_t c;
     CHECK(parses(NULL,
-        "eth_confirmations = 5\nswap_max_usdt = 7\ninflight_max_usdt = 9\n"
+        "eth_conf_bound_1_usdt = 21\neth_conf_bound_2_usdt = 22\n"
+        "eth_conf_count_1 = 2\neth_conf_count_2 = 4\neth_conf_count_3 = 6\n"
+        "swap_max_usdt = 7\ninflight_max_usdt = 9\n"
         "pool_start_usdt = 11\npool_start_nodus = 13\n"
         "liquidity_wait_eth_blocks = 17\nliquidity_wait_nodus_blocks = 19\n"
         "swaps_paused = 1\nliquidity_paused = 1\npayouts_paused = 1\n"
         "usdt_contract = 00112233445566778899aabbccddeeff00112233\n"
         "# a comment\n\n   \n", &c) == 0, "file with every optional key parses");
-    CHECK(c.eth_confirmations == 5 && c.swap_max_usdt == 7 &&
+    CHECK(c.eth_conf_bound_1_usdt == 21 && c.eth_conf_bound_2_usdt == 22 &&
+          c.eth_conf_count_1 == 2 && c.eth_conf_count_2 == 4 &&
+          c.eth_conf_count_3 == 6, "confirmation bounds and counts override");
+    CHECK(c.swap_max_usdt == 7 &&
           c.inflight_max_usdt == 9 && c.pool_start_usdt == 11 &&
           c.pool_start_nodus == 13 && c.liquidity_wait_eth_blocks == 17 &&
           c.liquidity_wait_nodus_blocks == 19, "numbers override");
@@ -168,7 +183,8 @@ static void expect_refused(const char *extra, const char *skip, const char *what
 static void c4_strict(void) {
     printf("C4 strictness and bounds\n");
     expect_refused("commission = 5\n", NULL, "unknown key (commission is not built)");
-    expect_refused("eth_confirmations = 3\neth_confirmations = 4\n", NULL, "duplicate optional key");
+    expect_refused("eth_conf_count_1 = 3\neth_conf_count_1 = 4\n", NULL, "duplicate optional key");
+    expect_refused("eth_confirmations = 3\n", NULL, "retired key eth_confirmations (unknown key)");
     expect_refused("eth_quorum = 1\n", NULL, "duplicate required key");
     expect_refused("garbage line\n", NULL, "line without '='");
     expect_refused("swap_max_usdt = -5\n", NULL, "negative number");
@@ -180,25 +196,65 @@ static void c4_strict(void) {
     expect_refused("swap_max_usdt = 0\n", NULL, "zero swap limit");
 
     amm_cfg_t c;
-    CHECK(parses(NULL, "eth_confirmations = 1\n", &c) == 0 && c.eth_confirmations == 1,
-          "eth_confirmations 1 (lower edge) accepted");
-    CHECK(parses(NULL, "eth_confirmations = 100\neth_reorg_window_blocks = 100\n", &c) != 0,
-          "duplicate eth_reorg_window_blocks refused (control)");
-    expect_refused("eth_confirmations = 0\n", NULL, "eth_confirmations 0");
-    expect_refused("eth_confirmations = 101\n", NULL, "eth_confirmations 101");
-    {   /* 100 passes the key bound; needs a window of at least 100 */
+    /* confirmation counts (givens item 60): each count 1..100 */
+    CHECK(parses(NULL, "eth_conf_count_1 = 1\n", &c) == 0 && c.eth_conf_count_1 == 1,
+          "eth_conf_count_1 1 (lower edge) accepted");
+    expect_refused("eth_conf_count_1 = 0\n", NULL, "eth_conf_count_1 0");
+    expect_refused("eth_conf_count_2 = 0\n", NULL, "eth_conf_count_2 0");
+    expect_refused("eth_conf_count_3 = 0\n", NULL, "eth_conf_count_3 0");
+    expect_refused("eth_conf_count_1 = 101\n", NULL, "eth_conf_count_1 101");
+    expect_refused("eth_conf_count_2 = 101\n", NULL, "eth_conf_count_2 101");
+    expect_refused("eth_conf_count_3 = 101\n", NULL, "eth_conf_count_3 101");
+    {   /* 100 passes the key bound; the window must then be at least 100 */
         char text[4096];
         build(text, sizeof(text), "eth_reorg_window_blocks",
-              "eth_confirmations = 100\neth_reorg_window_blocks = 100\n");
-        CHECK(amm_cfg_parse(text, &c, NULL, 0) == 0 && c.eth_confirmations == 100,
-              "eth_confirmations 100 (upper edge) accepted with window 100");
+              "eth_conf_count_3 = 100\neth_reorg_window_blocks = 100\n");
+        CHECK(amm_cfg_parse(text, &c, NULL, 0) == 0 && c.eth_conf_count_3 == 100,
+              "eth_conf_count_3 100 (upper edge) accepted with window 100");
+        build(text, sizeof(text), "eth_reorg_window_blocks",
+              "eth_conf_count_3 = 100\neth_reorg_window_blocks = 99\n");
+        CHECK(amm_cfg_parse(text, &c, NULL, 0) != 0,
+              "eth_conf_count_3 100 with window 99 refused");
+        build(text, sizeof(text), "eth_reorg_window_blocks",
+              "eth_conf_count_1 = 100\neth_conf_count_2 = 100\n"
+              "eth_conf_count_3 = 100\neth_reorg_window_blocks = 100\n");
+        CHECK(amm_cfg_parse(text, &c, NULL, 0) == 0,
+              "equal counts 100 / 100 / 100 accepted (counts may stay level)");
     }
+    /* counts must not decrease from row to row (plan section 15) */
+    expect_refused("eth_conf_count_1 = 6\n", NULL, "count 1 (6) above count 2 (5)");
+    expect_refused("eth_conf_count_2 = 2\n", NULL, "count 2 (2) below count 1 (3)");
+    expect_refused("eth_conf_count_3 = 4\n", NULL, "count 3 (4) below count 2 (5)");
+    expect_refused("eth_conf_count_2 = 34\n", NULL, "count 2 (34) above count 3 (33)");
+    CHECK(parses(NULL, "eth_conf_count_2 = 3\n", &c) == 0 && c.eth_conf_count_2 == 3,
+          "count 2 == count 1 accepted");
+    CHECK(parses(NULL, "eth_conf_count_2 = 33\n", &c) == 0 && c.eth_conf_count_2 == 33,
+          "count 2 == count 3 accepted");
+    /* bounds must be ascending (plan section 15); this reading is strict */
+    expect_refused("eth_conf_bound_1_usdt = 1000000000\n", NULL,
+                   "bounds equal (1,000 / 1,000)");
+    expect_refused("eth_conf_bound_1_usdt = 2000000000\n", NULL,
+                   "bounds descending (bound 1 above bound 2)");
+    expect_refused("eth_conf_bound_2_usdt = 100000000\n", NULL,
+                   "bounds equal (100 / 100)");
+    expect_refused("eth_conf_bound_2_usdt = 50000000\n", NULL,
+                   "bounds descending (bound 2 below bound 1)");
+    expect_refused("eth_conf_bound_1_usdt = 0\n", NULL, "bound 1 zero");
+    CHECK(parses(NULL, "eth_conf_bound_2_usdt = 100000001\n", &c) == 0 &&
+          c.eth_conf_bound_2_usdt == 100000001ULL,
+          "bound 2 one raw unit above bound 1 accepted");
     expect_refused("swap_max_usdt = 600000000\n", NULL, "swap limit above in-flight total");
+    /* the reorg window must hold against the LARGEST count (count 3, 33) */
     {   char text[4096];
         build(text, sizeof(text), "eth_reorg_window_blocks", "eth_reorg_window_blocks = 2\n");
-        CHECK(amm_cfg_parse(text, &c, NULL, 0) != 0, "window 2 below confirmations 3 refused");
-        build(text, sizeof(text), "eth_reorg_window_blocks", "eth_reorg_window_blocks = 3\n");
-        CHECK(amm_cfg_parse(text, &c, NULL, 0) == 0, "window == confirmations accepted"); }
+        CHECK(amm_cfg_parse(text, &c, NULL, 0) != 0, "window 2 below the largest count 33 refused");
+        build(text, sizeof(text), "eth_reorg_window_blocks", "eth_reorg_window_blocks = 5\n");
+        CHECK(amm_cfg_parse(text, &c, NULL, 0) != 0,
+              "window 5 (above count 2, below count 3) refused: the largest count rules");
+        build(text, sizeof(text), "eth_reorg_window_blocks", "eth_reorg_window_blocks = 32\n");
+        CHECK(amm_cfg_parse(text, &c, NULL, 0) != 0, "window 32 below the largest count 33 refused");
+        build(text, sizeof(text), "eth_reorg_window_blocks", "eth_reorg_window_blocks = 33\n");
+        CHECK(amm_cfg_parse(text, &c, NULL, 0) == 0, "window == largest count 33 accepted"); }
 
     /* quorum */
     {   char text[4096];

@@ -79,14 +79,17 @@
  *  8. Candidates are evaluated again: a candidate that reaches the quorum and
  *     verifies becomes seen; one that at least Q providers answer without is
  *     dropped; its block no longer the accepted one -> dropped.
- *  9. Depth: a `seen` record whose block is at least `confirmations` below
- *     the tip is looked up again (as in step 4) and, still in place, becomes
- *     `deep` only when at least Q providers report BOTH the payment's block
- *     hash (receipt in that block) AND, themselves, a latest block at least
- *     `confirmations` above it (plan line 252: the same Q providers; the Q-th
- *     largest tip of step 2 alone is not enough). Depth 3 for swaps --
- *     givens item 22; a liquidity deposit's 300 is asked with
- *     amm_eth_watch_depth_reached, the same joint vote with its own depth.
+ *  9. Depth: the count n of a payment is chosen by its logged USDT amount
+ *     (givens item 60, plan section 9 "Depth"): up to and including bound 1
+ *     n = count 1, up to and including bound 2 n = count 2, above bound 2
+ *     n = count 3 (amm_eth_watch_confirmations). A `seen` record whose block
+ *     is at least n below the tip is looked up again (as in step 4) and,
+ *     still in place, becomes `deep` only when at least Q providers report
+ *     BOTH the payment's block hash (receipt in that block) AND, themselves,
+ *     a latest block at least n above it (plan line 252: the same Q
+ *     providers; the Q-th largest tip of step 2 alone is not enough). A
+ *     liquidity deposit's 300 is asked with amm_eth_watch_depth_reached, the
+ *     same joint vote with its own depth.
  * 10. Blocks below tip - window are pruned; the tip is stored (`eth_tip`).
  *
  * DETERMINISM: the quorum result depends on the multiset of provider answers,
@@ -115,8 +118,15 @@ typedef struct {
     int      quorum;                       /* 1..n_providers (setting, s.9) */
     uint8_t  usdt[20];                     /* the USDT contract             */
     uint8_t  foundation[20];               /* the Foundation address        */
-    uint64_t confirmations;                /* depth of a swap payment (3)   */
-    uint64_t window_blocks;                /* eth_reorg_window_blocks       */
+    uint64_t conf_bound_usdt[2];           /* USDT raw: amount <= [0] waits
+                                            * conf_count[0], <= [1] waits
+                                            * conf_count[1], above [1] waits
+                                            * conf_count[2] (givens item 60);
+                                            * strictly ascending            */
+    uint64_t conf_count[3];                /* >= 1, never decreasing        */
+    uint64_t window_blocks;                /* eth_reorg_window_blocks, at
+                                            * least conf_count[2], the
+                                            * largest count                 */
     uint64_t start_height;                 /* first scan height, used only
                                             * while no cursor is stored     */
     uint32_t max_scan_blocks;              /* blocks per step (>= 1)        */
@@ -143,10 +153,20 @@ typedef struct {
 } amm_eth_step_t;
 
 /** Validate the configuration and build a watcher. NULL on a bad config
- *  (quorum or provider count out of range, window below confirmations, a
- *  zero scan bound, a missing journal or provider function). */
+ *  (quorum or provider count out of range, bounds not strictly ascending, a
+ *  count below 1 or a count that decreases, window below the largest count,
+ *  a zero scan bound, a missing journal or provider function). */
 amm_eth_watch_t *amm_eth_watch_new(const amm_eth_watch_cfg_t *cfg);
 void amm_eth_watch_free(amm_eth_watch_t *w);
+
+/** PURE. The confirmation count for a payment of `value_be` (the logged
+ *  USDT amount, 32 bytes big-endian, raw units): count 1 for an amount up to
+ *  and including bound 1, count 2 up to and including bound 2, count 3
+ *  above (an amount that does not fit 64 bits is above every bound).
+ *  Givens item 60; PLAN READING: "kadar" includes the bound (plan section 9;
+ *  Across takes the first threshold >= the amount, Relayer.ts:363-367). */
+uint64_t amm_eth_watch_confirmations(const amm_eth_watch_t *w,
+                                     const uint8_t value_be[32]);
 
 /** One observation step (see the list above). `out` may be NULL. */
 int amm_eth_watch_step(amm_eth_watch_t *w, uint64_t deadline_ms,
@@ -202,7 +222,8 @@ amm_match_t amm_eth_watch_match(const amm_rec_t *rec, const uint8_t sender[20],
  *  payment: 1 = the payment window of an approval (sender, amount, expiry
  *  time) is FULLY OBSERVED, 0 = not yet, -1 = fault. Observed means: the scan
  *  cursor has passed, on the quorum, a stored block whose header timestamp
- *  is later than the expiry, that block is at least `confirmations` below the
+ *  is later than the expiry, that block is at least the confirmation count of
+ *  the approval's amount (`amount_be`, amm_eth_watch_confirmations) below the
  *  stored tip, and no candidate (below-quorum) record with this sender and
  *  amount in a block above `approved_tip` whose block time is within the
  *  validity (ts <= expiry) or unknown is still retained (plan lines 314, 319;

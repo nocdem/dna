@@ -26,7 +26,11 @@ typedef struct {
 #define HI_MAX (UINT64_MAX / 4)
 
 static const u64_key_t U64_KEYS[] = {
-    {"eth_confirmations",          offsetof(amm_cfg_t, eth_confirmations),          1, 100,    0},
+    {"eth_conf_bound_1_usdt",      offsetof(amm_cfg_t, eth_conf_bound_1_usdt),      1, HI_MAX, 0},
+    {"eth_conf_bound_2_usdt",      offsetof(amm_cfg_t, eth_conf_bound_2_usdt),      1, HI_MAX, 0},
+    {"eth_conf_count_1",           offsetof(amm_cfg_t, eth_conf_count_1),           1, 100,    0},
+    {"eth_conf_count_2",           offsetof(amm_cfg_t, eth_conf_count_2),           1, 100,    0},
+    {"eth_conf_count_3",           offsetof(amm_cfg_t, eth_conf_count_3),           1, 100,    0},
     {"swap_max_usdt",              offsetof(amm_cfg_t, swap_max_usdt),              1, HI_MAX, 0},
     {"inflight_max_usdt",          offsetof(amm_cfg_t, inflight_max_usdt),          1, HI_MAX, 0},
     {"pool_start_usdt",            offsetof(amm_cfg_t, pool_start_usdt),            1, HI_MAX, 0},
@@ -53,7 +57,11 @@ enum {
 
 void amm_cfg_defaults(amm_cfg_t *cfg) {
     memset(cfg, 0, sizeof(*cfg));
-    cfg->eth_confirmations           = 3;            /* givens item 22      */
+    cfg->eth_conf_bound_1_usdt       = 100000000ULL;  /* 100 USDT, item 60  */
+    cfg->eth_conf_bound_2_usdt       = 1000000000ULL; /* 1,000 USDT, item 60 */
+    cfg->eth_conf_count_1            = 3;            /* item 60             */
+    cfg->eth_conf_count_2            = 5;            /* item 60             */
+    cfg->eth_conf_count_3            = 33;           /* item 60             */
     cfg->swap_max_usdt               = 100000000ULL; /* 100 USDT, item 19   */
     cfg->inflight_max_usdt           = 500000000ULL; /* 500 USDT, item 19   */
     cfg->pool_start_usdt             = 3000000000ULL;          /* item 20   */
@@ -310,9 +318,21 @@ int amm_cfg_parse(const char *text, amm_cfg_t *cfg, char *err, size_t err_cap) {
         set_err(err, err_cap, "%s", "swap_max_usdt is above inflight_max_usdt");
         goto out;
     }
-    if (cfg->eth_reorg_window_blocks < cfg->eth_confirmations) {
+    if (cfg->eth_conf_bound_1_usdt >= cfg->eth_conf_bound_2_usdt) {
         set_err(err, err_cap, "%s",
-                "eth_reorg_window_blocks is below eth_confirmations");
+                "eth_conf_bound_1_usdt is not below eth_conf_bound_2_usdt");
+        goto out;
+    }
+    if (cfg->eth_conf_count_1 > cfg->eth_conf_count_2 ||
+        cfg->eth_conf_count_2 > cfg->eth_conf_count_3) {
+        set_err(err, err_cap, "%s",
+                "eth_conf_count_1..3 must not decrease");
+        goto out;
+    }
+    /* counts never decrease, so count 3 is the largest */
+    if (cfg->eth_reorg_window_blocks < cfg->eth_conf_count_3) {
+        set_err(err, err_cap, "%s",
+                "eth_reorg_window_blocks is below the largest confirmation count");
         goto out;
     }
     rc = 0;

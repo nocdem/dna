@@ -104,7 +104,29 @@
  *   W21 also derives swap 2's marker from the re-mined record itself;
  *   W16 configuration: a quorum of 0 or above the provider count, a window
  *       below the confirmations, no provider function, a zero scan bound are
- *       refused (NULL).
+ *       refused (NULL); also (givens item 60) a window below the LARGEST
+ *       count (32 refused, 33 accepted at counts 3 / 5 / 33), a zero count,
+ *       a count that decreases, equal or descending bounds refused, equal
+ *       counts accepted;
+ *   W24 depth by amount (givens item 60, plan section 9; USDT raw units, 6
+ *       decimals; "kadar" includes the bound, PLAN READING): the pure count
+ *       is 3 for 1 raw unit, 99.999999 and exactly 100 USDT, 5 for 100.000001,
+ *       999.999999 and exactly 1,000 USDT, 33 for 1,000.000001, 1,000,000,
+ *       the largest u64 and an amount above 64 bits; and the watcher keeps a
+ *       payment `seen` one block short of its count and makes it `deep` at
+ *       the count (100 USDT 2 / 3, 100.000001 and 1,000 USDT 4 / 5,
+ *       1,000.000001 USDT and above-64-bit 32 / 33);
+ *   W25 the window rule (plan section 13) waits for the count of the
+ *       approval's value v: with the block after the expiry at depth 2 / 3
+ *       (v = 100 USDT), 4 / 5 (v = 1,000 USDT), 32 / 33 (v = 1,000.000001
+ *       USDT) the window is not observed, then observed.
+ * FLAGS: none (a default build; no fault injection, no epoch length).
+ * FALSE PASS (W24 / W25): the stub chain is rebuilt with the same hashes at
+ *   each step, so the rescan is a no-op and only depth moves; a payment value
+ *   is overwritten in the stub log after ch_pay (ch_set_value), so a stub
+ *   that ignored the log data would pass the pure count checks only; the
+ *   older tests use values of at most 255 raw units, so they prove count 1
+ *   (3) alone and say nothing about the other counts, which W24 / W25 prove.
  * WHAT IT REQUIRES: a default build; one mkdtemp directory under /tmp, removed
  *   at the end; no network, no clock reads by the code under test.
  * LEAVES BEHIND: nothing.
@@ -313,9 +335,35 @@ static amm_eth_watch_cfg_t base_cfg(void) {
     memset(&c, 0, sizeof(c));
     c.providers = g_prov; c.n_providers = 3; c.quorum = 2;
     memset(c.usdt, USDT_B, 20); memset(c.foundation, FOUND_B, 20);
-    c.confirmations = 3; c.window_blocks = 20; c.start_height = 1;
+    /* counts 3 / 4 / 5: every stub payment of the older tests carries a value
+     * of at most 255 raw units, so they all wait count 1 = 3 (unchanged);
+     * the small top count keeps the window 20 valid. W24 / W25 use the
+     * plan's 3 / 5 / 33 through prod_counts(). */
+    c.conf_bound_usdt[0] = 100000000ULL; c.conf_bound_usdt[1] = 1000000000ULL;
+    c.conf_count[0] = 3; c.conf_count[1] = 4; c.conf_count[2] = 5;
+    c.window_blocks = 20; c.start_height = 1;
     c.max_scan_blocks = 100; c.journal = g_j;
     return c;
+}
+
+/* The plan's counts (givens item 60): 3 up to 100 USDT, 5 up to 1,000 USDT,
+ * 33 above. */
+static void prod_counts(amm_eth_watch_cfg_t *c) {
+    c->conf_count[0] = 3; c->conf_count[1] = 5; c->conf_count[2] = 33;
+}
+
+/* Overwrite the logged value of the payment of transaction `txb` in chain
+ * `c`: `raw` in the low 8 bytes, big-endian; `high` (non-zero) also sets a
+ * byte above 64 bits (an amount that does not fit a u64). */
+static void ch_set_value(chain_t *c, uint8_t txb, uint64_t raw, uint8_t high) {
+    for (int i = 0; i < NL; i++) {
+        if (!c->g[i].used || c->g[i].l.tx[0] != txb) continue;
+        memset(c->g[i].l.data, 0, 32);
+        for (int k = 0; k < 8; k++)
+            c->g[i].l.data[31 - k] = (uint8_t)(raw >> (8 * k));
+        c->g[i].l.data[0] = high;
+        c->g[i].l.data_len = 32;
+    }
 }
 
 static void new_watch(const amm_eth_watch_cfg_t *c) {
@@ -945,8 +993,29 @@ static void w16_config(void) {
     CHECK(amm_eth_watch_new(&c) == NULL, "quorum above the provider count refused");
     c = base_cfg(); c.window_blocks = 2;
     CHECK(amm_eth_watch_new(&c) == NULL, "window below the confirmations refused");
-    c = base_cfg(); c.confirmations = 0;
-    CHECK(amm_eth_watch_new(&c) == NULL, "zero confirmations refused");
+    c = base_cfg(); c.window_blocks = 4;
+    CHECK(amm_eth_watch_new(&c) == NULL, "window 4 below the largest count 5 refused");
+    c = base_cfg(); c.window_blocks = 5;
+    CHECK((w = amm_eth_watch_new(&c)) != NULL, "window == the largest count 5 accepted");
+    amm_eth_watch_free(w);
+    c = base_cfg(); prod_counts(&c); c.window_blocks = 32;
+    CHECK(amm_eth_watch_new(&c) == NULL, "window 32 below the largest count 33 refused");
+    c = base_cfg(); prod_counts(&c); c.window_blocks = 33;
+    CHECK((w = amm_eth_watch_new(&c)) != NULL, "window 33 == the largest count 33 accepted");
+    amm_eth_watch_free(w);
+    c = base_cfg(); c.conf_count[0] = 0;
+    CHECK(amm_eth_watch_new(&c) == NULL, "zero count 1 refused");
+    c = base_cfg(); c.conf_count[0] = 4; c.conf_count[1] = 3;
+    CHECK(amm_eth_watch_new(&c) == NULL, "count 2 below count 1 refused");
+    c = base_cfg(); c.conf_count[1] = 6;
+    CHECK(amm_eth_watch_new(&c) == NULL, "count 2 above count 3 refused");
+    c = base_cfg(); c.conf_count[0] = c.conf_count[1] = c.conf_count[2] = 4;
+    CHECK((w = amm_eth_watch_new(&c)) != NULL, "equal counts accepted (not decreasing)");
+    amm_eth_watch_free(w);
+    c = base_cfg(); c.conf_bound_usdt[1] = c.conf_bound_usdt[0];
+    CHECK(amm_eth_watch_new(&c) == NULL, "equal bounds refused");
+    c = base_cfg(); c.conf_bound_usdt[0] = 2000000000ULL;
+    CHECK(amm_eth_watch_new(&c) == NULL, "descending bounds refused");
     c = base_cfg(); c.max_scan_blocks = 0;
     CHECK(amm_eth_watch_new(&c) == NULL, "zero scan bound refused");
     c = base_cfg(); c.n_providers = 0;
@@ -1168,6 +1237,97 @@ static void w23_liquidity_depth(void) {
           "fewer than Q usable providers: unknown, the answer is untouched");
 }
 
+/* A watcher with the plan's counts 3 / 5 / 33 and window 40 on a fresh world. */
+static void fresh_prod(void) {
+    fresh(40);
+    amm_eth_watch_cfg_t c = base_cfg();
+    prod_counts(&c);
+    c.window_blocks = 40;
+    new_watch(&c);
+}
+
+/* One depth case: a payment of `raw` (+ `high` byte) in block 10 is `seen`
+ * at tip 10 + need - 1 and `deep` at tip 10 + need. */
+static void depth_case(const char *name, uint64_t raw, uint8_t high, int need) {
+    char msg[160], st[16];
+    amm_eth_step_t o;
+    fresh_prod();
+    ch_build(&g_chain, 1, 10 + need - 1, 0, 0);
+    ch_pay(&g_chain, 0x31, 0, 10, 0x11, 5);
+    ch_set_value(&g_chain, 0x31, raw, high);
+    step(&o);
+    snprintf(msg, sizeof(msg), "%s: depth %d (tip %d): seen, not deep", name, need - 1, 10 + need - 1);
+    CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "seen") && o.deep == 0, msg);
+    ch_build(&g_chain, 1, 10 + need, 0, 0);
+    ch_pay(&g_chain, 0x31, 0, 10, 0x11, 5);
+    ch_set_value(&g_chain, 0x31, raw, high);
+    step(&o);
+    snprintf(msg, sizeof(msg), "%s: depth %d (tip %d): deep", name, need, 10 + need);
+    CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep") && o.deep == 1, msg);
+}
+
+static void w24_depth_by_amount(void) {
+    printf("W24 depth by the payment's USDT amount (givens item 60; 6 decimals)\n");
+    /* the pure rule, with every bound edge */
+    fresh_prod();
+    struct { uint64_t raw; uint8_t high; uint64_t want; const char *what; } t[] = {
+        {1,          0, 3,  "1 raw unit"},
+        {99999999,   0, 3,  "99.999999 USDT"},
+        {100000000,  0, 3,  "exactly 100 USDT (bound included)"},
+        {100000001,  0, 5,  "100.000001 USDT"},
+        {999999999,  0, 5,  "999.999999 USDT"},
+        {1000000000, 0, 5,  "exactly 1,000 USDT (bound included)"},
+        {1000000001, 0, 33, "1,000.000001 USDT"},
+        {1000000000000ULL, 0, 33, "1,000,000 USDT (no upper bound)"},
+        {UINT64_MAX, 0, 33, "the largest 64-bit amount"},
+        {5,          1, 33, "an amount above 64 bits is above every bound"},
+    };
+    for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
+        uint8_t v[32];
+        memset(v, 0, 32);
+        for (int k = 0; k < 8; k++) v[31 - k] = (uint8_t)(t[i].raw >> (8 * k));
+        v[0] = t[i].high;
+        char msg[120];
+        snprintf(msg, sizeof(msg), "count for %s is %llu", t[i].what,
+                 (unsigned long long)t[i].want);
+        CHECK(amm_eth_watch_confirmations(g_w, v) == t[i].want, msg);
+    }
+    /* the watcher honours it: seen one block short, deep at the count */
+    depth_case("100 USDT", 100000000ULL, 0, 3);
+    depth_case("100.000001 USDT", 100000001ULL, 0, 5);
+    depth_case("1,000 USDT", 1000000000ULL, 0, 5);
+    depth_case("1,000.000001 USDT", 1000000001ULL, 0, 33);
+    depth_case("above 64 bits", 5, 1, 33);
+}
+
+static void w25_window_by_value(void) {
+    printf("W25 window rule uses the count of the approval's value (givens item 60)\n");
+    uint8_t sender[20];
+    memset(sender, 0x11, 20);
+    /* expiry 100: ts = h * 12, so block 9 (108) is the first after it */
+    static const struct { uint64_t raw; int need; const char *what; } t[] = {
+        {100000000ULL,  3,  "value 100 USDT (count 3)"},
+        {1000000000ULL, 5,  "value 1,000 USDT (count 5)"},
+        {1000000001ULL, 33, "value 1,000.000001 USDT (count 33)"},
+    };
+    for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
+        uint8_t amount[32];
+        memset(amount, 0, 32);
+        for (int k = 0; k < 8; k++) amount[31 - k] = (uint8_t)(t[i].raw >> (8 * k));
+        char msg[160];
+        amm_eth_step_t o;
+        fresh_prod();
+        ch_build(&g_chain, 1, 9 + t[i].need - 1, 0, 0);
+        step(&o);
+        snprintf(msg, sizeof(msg), "%s: block 9 at depth %d: not observed", t[i].what, t[i].need - 1);
+        CHECK(amm_eth_watch_window_observed(g_w, 1, 100, sender, amount) == 0, msg);
+        ch_build(&g_chain, 1, 9 + t[i].need, 0, 0);
+        step(&o);
+        snprintf(msg, sizeof(msg), "%s: block 9 at depth %d: observed", t[i].what, t[i].need);
+        CHECK(amm_eth_watch_window_observed(g_w, 1, 100, sender, amount) == 1, msg);
+    }
+}
+
 int main(void) {
     printf("test_amm_eth_watch\n");
     snprintf(g_dir, sizeof(g_dir), "/tmp/amm_watch_testXXXXXX");
@@ -1196,6 +1356,8 @@ int main(void) {
     w21_marker_by_hash();
     w22_candidate_time();
     w23_liquidity_depth();
+    w24_depth_by_amount();
+    w25_window_by_value();
 
     if (g_w) amm_eth_watch_free(g_w);
     if (g_j) amm_journal_close(g_j);

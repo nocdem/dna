@@ -15,9 +15,13 @@
  * 5; amounts are written as raw integers):
  *
  *   key                        required  default            bounds / source
- *   eth_confirmations          no        3                  1..100 (givens item 22; OIF
+ *   eth_conf_bound_1_usdt      no        100000000          1.., < eth_conf_bound_2_usdt (givens 60)
+ *   eth_conf_bound_2_usdt      no        1000000000         1.., > eth_conf_bound_1_usdt (givens 60)
+ *   eth_conf_count_1           no        3                  1..100 (givens 60; OIF
  *                                                           min_confirmations 1..100, plan s.15)
- *   swap_max_usdt              no        100000000          > 0, <= inflight_max_usdt (givens 19)
+ *   eth_conf_count_2           no        5                  1..100, >= eth_conf_count_1
+ *   eth_conf_count_3           no        33                 1..100, >= eth_conf_count_2
+ *   swap_max_usdt             no        100000000          > 0, <= inflight_max_usdt (givens 19)
  *   inflight_max_usdt          no        500000000          > 0 (givens 19)
  *   pool_start_usdt            no        3000000000         > 0 (givens 20)
  *   pool_start_nodus           no        3000000000000000   > 0 (givens 20)
@@ -29,7 +33,7 @@
  *   usdt_contract              no        0xdAC17F95...1ec7  40 lowercase hex (plan s.5)
  *   eth_providers              YES       (deferred, s.15)   1..AMM_MAX_PROVIDERS https URLs, comma separated
  *   eth_quorum                 YES       (deferred, s.15)   1..number of providers (see below)
- *   eth_reorg_window_blocks    YES       (deferred, s.9/15) >= eth_confirmations (see below)
+ *   eth_reorg_window_blocks    YES       (deferred, s.9/15) >= eth_conf_count_3, the largest count (see below)
  *   approval_valid_seconds     YES       (deferred, s.15)   > 0
  *   payout_final_depth_eth     YES       (deferred, s.15)   >= 1
  *   http_max_body              YES       (deferred, s.15)   > 0
@@ -59,8 +63,20 @@
  *     Q = 0 (nothing agreed) or Q above N (never reached). The plan writes
  *     NO lower bound beyond this (section 9, "No lower bound on Q is
  *     written here"); the value stays the Foundation's.
- *   eth_reorg_window_blocks >= eth_confirmations: the depth rule (section
- *     9) needs the block hashes of the confirmation depth.
+ *   eth_reorg_window_blocks >= eth_conf_count_3: the depth rule (section
+ *     9) needs the block hashes of the confirmation depth; counts never
+ *     decrease, so the third is the largest.
+ *
+ * The Ethereum confirmation depth is chosen by the payment's USDT amount
+ * (givens item 60, operator 2026-11-10 "100 $ kadar 3 1000$ a kadar 5 +1000$
+ * = 33", plan section 9 "Depth", section 15 row eth_confirmations): an
+ * amount up to and including bound 1 waits count 1, up to and including
+ * bound 2 waits count 2, above bound 2 waits count 3 (PLAN READING: "kadar"
+ * includes the bound; Across takes the first threshold >= the amount,
+ * Relayer.ts:363-367). Load check (plan section 15): bounds strictly
+ * ascending (Across RelayerConfig.ts:340-346), counts not decreasing
+ * (:374-384), each count 1..100. The key names are this implementation's:
+ * the plan names the row "eth_confirmations" and gives no key names.
  *   every u64 setting <= UINT64_MAX/4 (the faucet's "implausibly large"
  *     rule) so sums of settings cannot wrap.
  *
@@ -94,7 +110,11 @@ typedef struct {
     char     foundation_nodus[129];
     uint8_t  usdt_contract[20];
 
-    uint64_t eth_confirmations;
+    uint64_t eth_conf_bound_1_usdt;            /* USDT raw, 10^-6           */
+    uint64_t eth_conf_bound_2_usdt;
+    uint64_t eth_conf_count_1;                 /* amount <= bound 1         */
+    uint64_t eth_conf_count_2;                 /* amount <= bound 2         */
+    uint64_t eth_conf_count_3;                 /* amount above bound 2      */
     uint64_t swap_max_usdt;
     uint64_t inflight_max_usdt;
     uint64_t pool_start_usdt;
