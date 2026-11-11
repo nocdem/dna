@@ -1,0 +1,193 @@
+# /etc/nodus-amm.conf — nodus-amm configuration (copy, edit, chmod 0640,
+# chown root:nodus-amm). One `key = value` per line; a '#' at the START of a
+# line makes a comment (never put a comment after a value: it would become part
+# of the value). The file is STRICT: an unknown key, a duplicate, a malformed
+# value, a value out of its bounds or a missing required key stops the service
+# from starting. The whole file is at most 16 KiB. The provider URLs below carry
+# secret keys: this file is never put in Git.
+#
+# Governing records (local, not in git): docs/plans/2026-11-08-swap-bot-plan.
+# nodus1.md section 15, the operator's givens docs/plans/2026-11-06-bridge-
+# givens.nodus1.md (item numbers below), nodus/tools/amm/amm_cfg.h and
+# nodus/docs/SWAP_BOT.md. Units: USDT raw = 10^-6 USDT, NODUS raw = 10^-8 NODUS;
+# every amount is a raw integer.
+#
+# A line that still says REPLACE_... is a value the operator has not decided or
+# the host must supply: the service refuses to start on it (by design).
+
+# ── required: the node, the chain, the files ──────────────────────────────
+
+# The bot talks to its OWN local node (plan section 11, the faucet's pattern).
+node_host = 127.0.0.1
+node_port = 4001
+
+# The node's identity pin: 128 lowercase hex characters (the content of
+# <node data dir>/nodus.fp). The bot connects ONLY to a server proving it.
+node_fp = REPLACE_WITH_THE_NODES_128_HEX_FINGERPRINT
+
+# The Nodus chain this bot serves: the 32-byte derived chain id, 64 hex
+# (the node's dnac_supply "chain_id32").
+chain_id = REPLACE_WITH_THE_TESTNET_CHAIN_ID_64_HEX
+
+# The journal (SQLite) and the single-instance lock file. Both under the
+# unit's StateDirectory.
+journal_path = /var/lib/nodus-amm/journal.db
+lock_path = /var/lib/nodus-amm/amm.lock
+
+# The bot's two keys. The bot never creates a key.
+#  - eth_key_path: a file of exactly 64 hex digits (the secp256k1 key), mode
+#    0600 (no group or other bit; the bot refuses to start otherwise).
+#  - nodus_key_dir: a directory with the six Nodus identity files (nodus.pk,
+#    nodus.sk, nodus.kyber_pk, nodus.kyber_sk, nodus.mlkem_pk, nodus.mlkem_sk),
+#    loaded read-only.
+eth_key_path = /var/lib/nodus-amm/keys/eth.key
+nodus_key_dir = /var/lib/nodus-amm/keys/nodus
+
+# The Foundation's addresses: the bot refuses to start unless each is the
+# address of the matching key above. NOT real values here.
+#  - foundation_eth: 40 lowercase hex (the Ethereum address of eth.key)
+#  - foundation_nodus: 128 lowercase hex (the Nodus address of the identity)
+foundation_eth = REPLACE_WITH_THE_FOUNDATION_ETHEREUM_ADDRESS_40_HEX
+foundation_nodus = REPLACE_WITH_THE_FOUNDATION_NODUS_ADDRESS_128_HEX
+
+# HTTP listen port on 127.0.0.1 (the address is not configurable). 1..65535.
+# No decision names the port (the faucet uses 4010).
+http_port = REPLACE_WITH_THE_LISTEN_PORT
+
+# ── required: Ethereum (test phase: Sepolia) ──────────────────────────────
+
+# The domain chain id of the Ethereum-key typed requests, and the chain every
+# provider must report. Test phase: Ethereum Sepolia, 11155111 (givens item
+# 77). Default 1 (Ethereum mainnet) when the line is absent: the test phase
+# MUST write it. 1.. .
+eth_chain_id = 11155111
+
+# The USDT contract: 40 lowercase hex, no 0x. Test phase: the test USDT
+# deployed on Sepolia (givens item 77); this line is filled AFTER the test
+# USDT is deployed. Default when the line is absent: the mainnet USDT
+# dac17f958d2ee523a2206206994597c13d831ec7 — wrong on Sepolia, so do not
+# leave the line out.
+usdt_contract = REPLACE_WITH_THE_TEST_USDT_CONTRACT_40_HEX
+
+# Ethereum JSON-RPC providers: 1..16 https URLs, comma separated, no space
+# inside a URL, no duplicate. Values not decided (plan section 15: DEFERRED).
+eth_providers = REPLACE_WITH_THE_COMMA_SEPARATED_HTTPS_PROVIDER_URLS
+
+# How many distinct providers must return an identical record: 1..number of
+# providers. Not decided (plan sections 9, 15; givens item 58).
+eth_quorum = REPLACE_WITH_THE_QUORUM
+
+# Ethereum blocks of block hashes kept for the reversal check: 1.., not below
+# eth_conf_count_3. Not decided (plan section 15: DEFERRED; THORChain 96).
+eth_reorg_window_blocks = REPLACE_WITH_THE_REORG_WINDOW
+
+# Ethereum confirmations a USDT payout needs before it counts as final: 1..
+# Not decided (plan sections 10, 15: DEFERRED).
+payout_final_depth_eth = REPLACE_WITH_THE_PAYOUT_FINAL_DEPTH
+
+# The first Ethereum block the watcher reads, and the most blocks one scan
+# reads: 1.. each. No plan line names a value.
+eth_start_height = REPLACE_WITH_THE_FIRST_ETHEREUM_BLOCK
+eth_max_scan_blocks = REPLACE_WITH_THE_MOST_BLOCKS_PER_SCAN
+
+# The EIP-712 domain name and the one origin of the swap site: printable
+# ASCII, 1..127 characters. Agreed 2026-11-10 (givens item 71, plan section
+# 15).
+eip712_name = Nodus Swap
+expected_origin = https://swap.nodusnetwork.io
+
+# ── required: Nodus watching and paying, HTTP, timing ─────────────────────
+
+# First Nodus block the watcher reads (1..). The bot refuses to start when the
+# node's address history is off or starts above it. No plan line names a value.
+nodus_start_height = REPLACE_WITH_THE_FIRST_NODUS_BLOCK
+
+# Nodus history paging: records per page 1..100, most pages per read 1.. .
+nodus_page_limit = REPLACE_WITH_THE_PAGE_LIMIT
+nodus_max_pages = REPLACE_WITH_THE_MAX_PAGES
+
+# Envelope lifetime in blocks after the tip, 1..100 (the mempool admits 100),
+# blocks between resubmissions (1..), blocks scanned per step (1..).
+nodus_expiry_ahead = REPLACE_WITH_THE_EXPIRY_AHEAD
+nodus_resubmit_blocks = REPLACE_WITH_THE_RESUBMIT_BLOCKS
+nodus_scan_blocks = REPLACE_WITH_THE_SCAN_BLOCKS
+
+# HTTP: body bound in bytes (1..; a signed Nodus-key request is up to 16,124
+# bytes, plan section 6.4.7, so not below that), answer bound in bytes (1..),
+# connection cap (1..64), per-request deadline in ms (1..).
+http_max_body = REPLACE_WITH_THE_MAX_BODY
+http_max_response = REPLACE_WITH_THE_MAX_RESPONSE
+http_conn_cap = REPLACE_WITH_THE_CONNECTION_CAP
+http_timeout_ms = REPLACE_WITH_THE_REQUEST_TIMEOUT_MS
+
+# Worker cycle in ms (1..) and the timeout of every Ethereum / price read in
+# ms (1..). No plan line names a value.
+worker_interval_ms = REPLACE_WITH_THE_WORKER_CYCLE_MS
+rpc_timeout_ms = REPLACE_WITH_THE_RPC_TIMEOUT_MS
+
+# Whether a swap in state "held" keeps its in-flight room: 0 or 1. The plan
+# decides nothing (plan lines 312, 407), so there is no default.
+held_keeps_room = REPLACE_WITH_0_OR_1
+
+# ── optional (defaults shown = the values of the operator / this build) ───
+# Every number is a setting (givens item 26). Delete the leading '#' only to
+# change a value. Every number is at most UINT64_MAX / 4.
+
+# Ethereum confirmations a USDT PAYMENT waits for, by its amount (givens item
+# 60): up to bound 1 waits count 1, up to bound 2 waits count 2, above bound 2
+# waits count 3. Bounds 1.., strictly ascending; counts 1..100, not
+# decreasing.
+# eth_conf_bound_1_usdt = 100000000
+# eth_conf_bound_2_usdt = 1000000000
+# eth_conf_count_1 = 3
+# eth_conf_count_2 = 5
+# eth_conf_count_3 = 33
+
+# Swap limits in USDT raw (givens item 19): at most 100 USDT per swap, 500 USDT
+# in flight; swap_max_usdt <= inflight_max_usdt. Smallest swap 1 USDT (givens
+# item 89), <= swap_max_usdt.
+# swap_max_usdt = 100000000
+# inflight_max_usdt = 500000000
+# swap_min_usdt = 1000000
+
+# Start pool ratio for the first liquidity add into an empty pool (givens item
+# 20): 3,000 USDT : 30,000,000 NODUS. The bot never writes it into the ledger.
+# pool_start_usdt = 3000000000
+# pool_start_nodus = 3000000000000000
+
+# Liquidity add: Ethereum blocks the USDT side waits (givens item 25), Nodus
+# blocks the NODUS side waits (givens item 49), smallest NODUS side of an add,
+# 100,000 NODUS (givens item 96). liquidity_wait_eth_blocks also delays a
+# withdrawal.
+# liquidity_wait_eth_blocks = 300
+# liquidity_wait_nodus_blocks = 3
+# liquidity_min_nodus = 10000000000000
+
+# An approval is valid this many seconds (givens item 72: 5 minutes).
+# approval_valid_seconds = 300
+
+# The price-question limit in the bot: the most open unpaid questions; at it a
+# new question is answered "busy" (givens item 98, operator "c"). 2000 is
+# main's proposal, the operator named no number. Milliseconds the provider and
+# balance reads of a question are reused: 3000 (this build's proposal).
+# Rows of one list examined per worker round: 1000 (this build's proposal).
+# quote_open_max = 2000
+# quote_read_fresh_ms = 3000
+# round_rows_max = 1000
+
+# Commission: 0 only (givens item 73); any other value refuses the start.
+# commission = 0
+
+# ETH price sources for converting the Ethereum fee into USDT (plan section
+# 10; givens item 74): names from kraken, binance, bitfinex, coinbase, each
+# once; at least 3 (<= the number listed) must answer within 180 seconds.
+# eth_price_sources = kraken,binance,bitfinex,coinbase
+# eth_price_min_sources = 3
+# eth_price_max_age_seconds = 180
+
+# Pauses (plan section 16), 0 or 1, default 0 (off). swaps_paused: no new swap
+# approvals. liquidity_paused: no new liquidity requests. payouts_paused:
+# nothing signed or broadcast, every payout stays queued.
+# swaps_paused = 0
+# liquidity_paused = 0
+# payouts_paused = 0

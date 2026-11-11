@@ -1,0 +1,60 @@
+# nodus-amm — the swap bot (USDT on Ethereum <-> NODUS). Governing record:
+# docs/plans/2026-11-08-swap-bot-plan.nodus1.md (sections 4, 15, 16, 17) and
+# the operator's givens (docs/plans/2026-11-06-bridge-givens.nodus1.md, items
+# 61, 75, 97, 98). Operation: nodus/docs/SWAP_BOT.md and
+# docs/DEPLOY_RUNBOOK.md section 2.9 "Swap bot".
+#
+# Host (test phase, givens item 75): the operator's node 62.171.136.77, next
+# to the faucet. The bot runs as its OWN user (not root, not the witness's, not
+# the faucet's), holds its OWN keys (never the witness key), listens on
+# 127.0.0.1 ONLY — the host opens no public port; the swap site's server (EU-6)
+# forwards /amm/ to it (givens item 61). It never creates a key: the Nodus key
+# directory is loaded read-only and the Ethereum key is a file the operator
+# places.
+#
+# StateDirectory= creates /var/lib/nodus-amm (mode 0700, owned by the service
+# user): the journal (journal.db + -wal/-shm), the single-instance lock file
+# and the key files (keys/) live there; it is the ONLY writable path. The user
+# is created by the runbook (useradd --system); DynamicUser is not used because
+# the key files must keep a stable owner across restarts.
+#
+# RestrictAddressFamilies is the faucet's (AF_INET AF_UNIX). The bot also
+# reaches Ethereum providers and the price sources over HTTPS (libcurl); that
+# works over IPv4 and the local resolver socket. A provider reachable over IPv6
+# only would need AF_INET6 added here (not read on a host; see SWAP_BOT.md).
+[Unit]
+Description=Nodus swap bot (USDT <-> NODUS), 127.0.0.1 only
+Documentation=https://github.com/nocdem/dna
+After=network-online.target nodus-core.service nodus-witness.service nodus.service
+Wants=network-online.target
+StartLimitBurst=10
+StartLimitIntervalSec=300
+
+[Service]
+Type=simple
+User=nodus-amm
+Group=nodus-amm
+StateDirectory=nodus-amm
+StateDirectoryMode=0700
+ExecStart=/usr/local/bin/nodus-amm --config /etc/nodus-amm.conf
+Restart=on-failure
+RestartSec=10
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/nodus-amm
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_UNIX
+CapabilityBoundingSet=
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nodus-amm
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target
