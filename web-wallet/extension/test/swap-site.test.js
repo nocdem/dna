@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Interface, Transaction, getAddress, verifyTypedData } from 'ethers';
 import { setup, account, token, otherToken, payTo, BOT, foundationNodus, wireId, nodusPublicKey, nodusSignature } from './swap-fixture.js';
 import { liquidityAddText, liquidityAddTyped, nodusToUsdtText, usdtToNodusTyped } from '../src/background/swap-texts.js';
-import { SWAP_METHODS } from '../src/constants/swap.js';
+import { SWAP_METHODS, SWAP_USDT_CONTRACTS, assertSwapUsdtToken } from '../src/constants/swap.js';
 import { NODUS_TOKEN_ID } from '../../src/nodus/network.js';
 
 // Extension tests of plan 2026-11-08-swap-bot-plan.nodus1.md section 18 change 1 and section 19 line 666 (givens items
@@ -153,20 +153,27 @@ test('swap payments accept only the pinned USDT contract: another token is refus
   await f.walk(swapping, ['eth_signTypedData', 'nodus_swapPayment']);
   assert.equal((await swapping).error, undefined); assert.equal(f.raw.length, 1);
 });
-test('swap payments are refused on Sepolia while its test USDT is not set', async t => {
+// Proves the Sepolia pin: on Sepolia the mainnet USDT and any other token are refused with -32602 before anything is
+// signed, posted or paid, in both methods; the pinned Sepolia test USDT (any letter case) passes the token check.
+// Environment: swap-fixture.js stubs. Leftovers: none. False pass: the accepted case checks only the token rule
+// (assertSwapUsdtToken), not a full Sepolia payment, which the fixture does not stub.
+test('swap payments on Sepolia accept only the pinned Sepolia test USDT', async t => {
   const f = await setup(t), remote = f.site(); await f.connectEthereum(remote, ['0x1', '0xaa36a7']);
   const nodusAccount = await f.connectNodus(remote);
   await f.background.evm.selectNetwork('sepolia');
   for (const candidate of [token, otherToken]) {
     const swap = await remote.request(SWAP_METHODS.sendUsdtToNodus, [usdtRequest({ token: candidate })]);
-    assert.equal(swap.error.code, -32602); assert.match(swap.error.message, /Sepolia test USDT is not set/);
+    assert.equal(swap.error.code, -32602); assert.match(swap.error.message, /not the USDT contract/);
     // A refused add drops its hold (the refusal is inside the flow that cancels it), so each attempt holds afresh.
     const { answer: held } = await hold(f, remote, nodusAccount);
     const add = await remote.request(SWAP_METHODS.sendLiquidityAdd, [addRequest(f, nodusAccount, held, { token: candidate })]);
-    assert.equal(add.error.code, -32602); assert.match(add.error.message, /Sepolia test USDT is not set/);
+    assert.equal(add.error.code, -32602); assert.match(add.error.message, /not the USDT contract/);
   }
   assert.deepEqual(f.background.approvals.controller.state.pendingApprovals, {});
   assert.equal(f.botCalls.length, 0); assert.equal(f.raw.length, 0);
+  assert.equal(SWAP_USDT_CONTRACTS.sepolia, '0x3fC95B2d6fb4EbD69dc1609B2Bfa700D2a7c4F51');
+  assert.doesNotThrow(() => assertSwapUsdtToken('sepolia', SWAP_USDT_CONTRACTS.sepolia.toLowerCase()));
+  assert.throws(() => assertSwapUsdtToken('sepolia', token), /not the USDT contract/);
 });
 
 // Proves the bot's answer is bounded in bytes while it is read: a stub that starts with {"received":true and streams

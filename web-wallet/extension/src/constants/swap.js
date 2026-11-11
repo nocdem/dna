@@ -22,9 +22,10 @@ export const SWAP_PAYMENT_APPROVAL = 'nodus_swapPayment';
 // Ethereum: the wallet's own USDT entry, src/config.js:12 (read from there, not copied).
 export const SWAP_USDT_CONTRACTS = Object.freeze({
   ethereum: CHAINS.ethereum.tokens.find(entry => entry.symbol === 'USDT').address,
-  // MAIN: FILL IN AFTER THE SEPOLIA TEST USDT IS DEPLOYED (plan line 248: "its address written into the setting after
-  // the deploy"). While this is null every Sepolia USDT payment is refused.
-  sepolia: null,
+  // The Sepolia test USDT (plan line 248: "its address written into the setting after the deploy"; givens item 77):
+  // the pinned TetherToken.sol deployed 2026-11-11, tx 0xac3e7c586cabbf977db487d8b347415fded14e54c59889bbac3569838f21bd50,
+  // block 12111946; its runtime code equals mainnet USDT's apart from the 32-byte metadata hash.
+  sepolia: '0x3fC95B2d6fb4EbD69dc1609B2Bfa700D2a7c4F51',
 });
 // Throws -32602 unless `token` is the pinned USDT contract of `chain`. Called before any signature, post or payment.
 export function assertSwapUsdtToken(chain, token) {
