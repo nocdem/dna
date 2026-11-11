@@ -83,7 +83,13 @@ When the bot refuses because an open approval with the same sender and amount ex
 number (a decimal string, 1 to 4294967295) for the site to show it; any other form is
 dropped. The data object also carries the `cause` field the JSON-RPC error library adds
 (`null` when absent). After a delivered request that was not paid the data is
-`{ delivered: true, paid: false | "unknown", cause: null }`.
+`{ delivered: true, paid: false | "unknown", cause: null }`. `paid` is `"unknown"` whenever the
+payment's broadcast step was reached (its pending record was saved) and then failed, whatever the
+error or the wallet state afterwards: the transaction may have been sent, so check the wallet's
+Activity before trying again. `paid: false` means the failure came before that step. For a
+liquidity add `nodusSent` is `"unknown"` in the same way. Only one `holdTransfer` can be in
+progress at a time; a second call is refused with "A hold is already being made". A new hold of a
+site replaces its earlier hold only when the new one is stored.
 
 - `holdTransfer({ account, to, amount })`: builds and signs a native NODUS
   transfer of `amount` NODUS units to `to` (128 hex) from the connected
@@ -100,6 +106,13 @@ dropped. The data object also carries the `cause` field the JSON-RPC error libra
 - `sendLiquidityAdd({ holdId, botUrl, ethereumAddress, token, payTo,
   usdtAmount, nodusAmount, requestNumber, text })`: signs both halves, posts the
   flat add body, then sends both payments.
+
+`token` must be the USDT contract the extension knows for the selected network
+(Ethereum: `0xdAC17F958D2ee523a2206206994597C13D831ec7`, compared as an address, so letter
+case does not matter). Any other token is refused with error -32602 before anything is
+signed, posted or paid, because the bot counts only its own USDT contract. On Ethereum
+Sepolia every token is refused until the test USDT address is set in the extension. The
+bot's answer is read with a 65,536-byte limit; a larger answer counts as not delivered.
 
 The Ethereum network is switched first with `wallet_switchEthereumChain`
 (`0xaa36a7` for Ethereum Sepolia), which is not part of this module.

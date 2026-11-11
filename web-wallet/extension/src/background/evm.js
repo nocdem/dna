@@ -11,6 +11,7 @@ import { prepareTransfer } from '../../../src/wallet.js';
 import { nameReviewRows, NAME_CHECK_ROW } from '../../../src/adapters/nodus.js';
 import { terminal, watchActivity } from '../../../src/activity.js';
 import { EVM_NETWORKS, EVM_CHAINS, WALLET_EVM_CHAINS, evmAddressKey } from '../constants/evm-networks.js';
+import { assertSwapUsdtToken } from '../constants/swap.js';
 
 // The USDT payment of a swap (plan section 7 step 5): the call data is encoded
 // here, in the extension (the plan leaves the place to this package). The same
@@ -313,6 +314,7 @@ export function createEvm({ messenger, store, approvals, permissions, lockCoordi
       // Prepares the USDT `transfer(to, amount)` of `token`, shows it for approval (exact amount and destinations)
       // and returns `send()`, which signs, records and broadcasts exactly that prepared transaction.
       async approveUsdtPayment({ token, to, amount, bot }) {
+        assertSwapUsdtToken(session.chain, token); // the screen says USDT: only the pinned USDT contract is paid
         assertSendable(session.chain);
         const data = erc20Transfer.encodeFunctionData('transfer', [to, amount]);
         const prepared = await prepareSiteTransaction({ ...session, fields: { from: account, to: token, value: '0x0', data, chainId: toQuantity(config.chainId) } });
@@ -323,7 +325,14 @@ export function createEvm({ messenger, store, approvals, permissions, lockCoordi
         assertFresh(prepared);
         const own = session.wallet.addresses[evmAddressKey(session.chain)];
         const transfer = { chain: session.chain, from: own, to: getAddress(to), amount: formatUnits(amount, 6), symbol: 'USDT', endpoint: session.endpoint };
-        return { send: () => sendRecorded(session.chain, transfer, record => prepared.send(record), session.assertCurrent) };
+        // Once the pending record is durable (the record callback returned) the transaction is about to be broadcast: any
+        // later failure, whatever the wallet state became, is marked `broadcastReached` so swap.js reports the payment as
+        // unknown. A failure before that point carries no mark (the payment was not sent).
+        let reached = false;
+        return { send: async () => {
+          try { return await sendRecorded(session.chain, transfer, record => prepared.send(async details => { await record(details); reached = true; }), session.assertCurrent); }
+          catch (error) { if (reached && error && typeof error === 'object') error.broadcastReached = true; throw error; }
+        } };
       },
     };
   }

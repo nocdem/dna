@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Interface, Transaction, getAddress, verifyTypedData } from 'ethers';
-import { setup, account, token, payTo, BOT, foundationNodus, wireId, nodusPublicKey, nodusSignature } from './swap-fixture.js';
+import { setup, account, token, otherToken, payTo, BOT, foundationNodus, wireId, nodusPublicKey, nodusSignature } from './swap-fixture.js';
 import { liquidityAddText, liquidityAddTyped, nodusToUsdtText, usdtToNodusTyped } from '../src/background/swap-texts.js';
 import { SWAP_METHODS } from '../src/constants/swap.js';
 
@@ -57,7 +57,7 @@ test('USDT -> NODUS: the typed request is signed and posted, then the USDT trans
   // The payment: one raw transaction after the post, a USDT transfer of the named token to the named address.
   assert.deepEqual(f.events, ['bot', 'eth_sendRawTransaction']);
   const transaction = Transaction.from(f.raw[0]);
-  assert.equal(transaction.to.toLowerCase(), token); assert.equal(transaction.chainId, 1n); assert.equal(transaction.value, 0n);
+  assert.equal(transaction.to.toLowerCase(), token.toLowerCase()); assert.equal(transaction.chainId, 1n); assert.equal(transaction.value, 0n);
   const decoded = erc20.decodeFunctionData('transfer', transaction.data);
   assert.equal(decoded[0].toLowerCase(), payTo); assert.equal(decoded[1], 25000000n);
   // The payment approval shows the exact amount and destinations.
@@ -133,6 +133,55 @@ for (const [number, kept] of [['123456', true], ['4294967295', true], ['0', fals
     assert.equal(f.raw.length, 0); assert.deepEqual(f.events, ['bot']);
   });
 }
+
+// Proves the payment can only be in the USDT contract the extension knows for the network (the bot counts only its own
+// usdt_contract, and the screen says USDT): another token on Ethereum is refused with -32602 BEFORE any signature
+// prompt, post or payment, in both methods; the pinned token in lower or upper case is accepted; on Sepolia every token
+// is refused while SWAP_USDT_CONTRACTS.sepolia is null. Environment: swap-fixture.js stubs. Leftovers: none. False pass:
+// the refusal of "another token" would also pass if every token were refused, which the accepted-case test excludes.
+test('swap payments accept only the pinned USDT contract: another token is refused before anything is signed or posted', async t => {
+  const f = await setup(t), remote = f.site(), nodusAccount = await connectBoth(f, remote), { answer: held } = await hold(f, remote, nodusAccount);
+  const swap = await remote.request(SWAP_METHODS.sendUsdtToNodus, [usdtRequest({ token: otherToken })]);
+  assert.equal(swap.error.code, -32602); assert.match(swap.error.message, /not the USDT contract/);
+  const add = await remote.request(SWAP_METHODS.sendLiquidityAdd, [addRequest(f, nodusAccount, held, { token: otherToken })]);
+  assert.equal(add.error.code, -32602); assert.match(add.error.message, /not the USDT contract/);
+  assert.deepEqual(f.background.approvals.controller.state.pendingApprovals, {});
+  assert.equal(f.botCalls.length, 0); assert.equal(f.raw.length, 0); assert.equal(f.nodusMock.state.submissions.length, 0);
+  // The pinned token in another letter case (all lower case) is accepted and paid.
+  const swapping = remote.request(SWAP_METHODS.sendUsdtToNodus, [usdtRequest({ token: token.toLowerCase() })]);
+  await f.walk(swapping, ['eth_signTypedData', 'nodus_swapPayment']);
+  assert.equal((await swapping).error, undefined); assert.equal(f.raw.length, 1);
+});
+test('swap payments are refused on Sepolia while its test USDT is not set', async t => {
+  const f = await setup(t), remote = f.site(); await f.connectEthereum(remote, ['0x1', '0xaa36a7']);
+  const nodusAccount = await f.connectNodus(remote);
+  await f.background.evm.selectNetwork('sepolia');
+  for (const candidate of [token, otherToken]) {
+    const swap = await remote.request(SWAP_METHODS.sendUsdtToNodus, [usdtRequest({ token: candidate })]);
+    assert.equal(swap.error.code, -32602); assert.match(swap.error.message, /Sepolia test USDT is not set/);
+    // A refused add drops its hold (the refusal is inside the flow that cancels it), so each attempt holds afresh.
+    const { answer: held } = await hold(f, remote, nodusAccount);
+    const add = await remote.request(SWAP_METHODS.sendLiquidityAdd, [addRequest(f, nodusAccount, held, { token: candidate })]);
+    assert.equal(add.error.code, -32602); assert.match(add.error.message, /Sepolia test USDT is not set/);
+  }
+  assert.deepEqual(f.background.approvals.controller.state.pendingApprovals, {});
+  assert.equal(f.botCalls.length, 0); assert.equal(f.raw.length, 0);
+});
+
+// Proves the bot's answer is bounded in bytes while it is read: a stub that starts with {"received":true and streams
+// far more than 65,536 bytes is NOT delivered (the cap makes it not JSON), nothing is paid, and the reader is cancelled
+// after about the cap (the stub is pulled only a few times, not to its end). Environment: swap-fixture.js mode 'flood'.
+// Leftovers: none. False pass: the pull count bound is loose (below the stub's 200 chunks), so a reader that stopped
+// late but still before the end would pass; the byte cap itself is checked by the not-delivered result.
+test('USDT -> NODUS: an oversized streamed answer is cut off, not delivered, and nothing is paid', async t => {
+  const f = await setup(t), remote = f.site(); await connectBoth(f, remote); f.state.bot = 'flood';
+  const swapping = remote.request(SWAP_METHODS.sendUsdtToNodus, [usdtRequest()]);
+  await f.walk(swapping, ['eth_signTypedData']);
+  const answer = await swapping;
+  assert.equal(answer.error.data.delivered, false); assert.equal(answer.error.data.paid, false); assert.equal(answer.error.data.reason, 'http_200');
+  assert.equal(f.state.floodCancelled, true, 'the reader was cancelled'); assert.ok(f.state.floodPulls < 30, `pulled ${f.state.floodPulls} times`);
+  assert.equal(f.raw.length, 0); assert.deepEqual(f.events, ['bot']);
+});
 
 // ---- NODUS -> USDT ----
 
@@ -301,6 +350,91 @@ test('liquidity add: a refused USDT payment sends nothing; mismatched halves are
     assert.equal(refused.error.code, -32602, JSON.stringify(overrides));
   }
   assert.equal(f.botCalls.length, 0); assert.equal(f.raw.length, 0);
+});
+
+// ---- holds, payment results, throttling ----
+
+// Proves hold creation is serialised per wallet session: while one hold waits for the user's approval a second call is
+// refused ("already being made", -32603) and no second transfer is built, so two transfers can never be planned on the
+// same coins; after the first finishes, one hold exists and a later hold replaces it only when it is stored.
+// Environment: swap-fixture.js stubs. Leftovers: none. False pass: the build counter is the mock module's
+// `state.builds`; a second build that bypassed the mock's buildAndSign would not be counted.
+test('two overlapping holds leave exactly one hold and build one transfer', async t => {
+  const f = await setup(t), remote = f.site(), nodusAccount = await connectBoth(f, remote);
+  const holdParams = { account: nodusAccount.address, to: foundationNodus, amount: '200000000' };
+  const first = remote.request(SWAP_METHODS.holdTransfer, [holdParams]), pending = await f.nextApproval(first);
+  const second = await remote.request(SWAP_METHODS.holdTransfer, [holdParams]);
+  assert.equal(second.error.code, -32603); assert.match(second.error.message, /already being made/);
+  assert.equal(f.nodusMock.state.builds, 1, 'only one transfer was built');
+  await f.background.approvals.controller.acceptRequest(pending.id, true);
+  const firstAnswer = await first; assert.equal(firstAnswer.error, undefined);
+  assert.equal(f.background.nodus.getHold(remote.origin, firstAnswer.result.holdId).wireId, wireId);
+  // A rejected hold frees the slot; the next hold replaces the stored one at the moment it is stored.
+  const rejecting = remote.request(SWAP_METHODS.holdTransfer, [holdParams]), refused = await f.nextApproval(rejecting);
+  assert.equal(f.background.nodus.getHold(remote.origin, firstAnswer.result.holdId).wireId, wireId, 'the old hold stays until the new one is stored');
+  f.background.approvals.reject(refused.id); assert.equal((await rejecting).error.code, 4001);
+  assert.equal(f.background.nodus.getHold(remote.origin, firstAnswer.result.holdId).wireId, wireId, 'a rejected new hold leaves the old one');
+  const { answer: replacement } = await hold(f, remote, nodusAccount);
+  assert.notEqual(replacement.holdId, firstAnswer.result.holdId);
+  assert.throws(() => f.background.nodus.getHold(remote.origin, firstAnswer.result.holdId), { code: -32602 });
+});
+
+// Proves a payment whose broadcast step was reached and then fails is reported as paid "unknown" (never paid:false),
+// whatever the error and whatever the wallet became: a broadcast that fails (the activity keeps its record) and a
+// wallet locked during the broadcast; a held NODUS transfer whose submission the node refused after its record was
+// durable is "unknown" too; while a failure BEFORE the broadcast step (the network check after the post) is paid:false.
+// Environment: swap-fixture.js (`failRaw`, `onRaw`, `wrongChain`, mock `accepted`). Leftovers: none. False pass: the
+// stub fails the broadcast call itself, so a real node that accepted the transaction and dropped the answer is the same
+// case by construction, not by observation.
+test('a payment whose broadcast step was reached and failed reports paid "unknown"', async t => {
+  let f = await setup(t), remote = f.site(); await connectBoth(f, remote); f.state.failRaw = true;
+  let swapping = remote.request(SWAP_METHODS.sendUsdtToNodus, [usdtRequest()]);
+  await f.walk(swapping, ['eth_signTypedData', 'nodus_swapPayment']);
+  let answer = await swapping;
+  assert.equal(answer.error.data.delivered, true); assert.equal(answer.error.data.paid, 'unknown');
+  const rows = f.background.nodus.chainActivity('ethereum').rows();
+  assert.equal(rows.length, 1); assert.equal(rows[0].status, 'unknown'); assert.equal(f.raw.length, 0);
+});
+test('a wallet locked during the broadcast reports paid "unknown"', async t => {
+  const f = await setup(t), remote = f.site(); await connectBoth(f, remote);
+  f.state.onRaw = () => f.background.lockCoordinator.lock();
+  const swapping = remote.request(SWAP_METHODS.sendUsdtToNodus, [usdtRequest()]);
+  await f.walk(swapping, ['eth_signTypedData', 'nodus_swapPayment']);
+  const answer = await swapping;
+  assert.equal(answer.error.data.delivered, true); assert.equal(answer.error.data.paid, 'unknown');
+});
+test('a failure before the broadcast step reports paid false', async t => {
+  const f = await setup(t), remote = f.site(); await connectBoth(f, remote);
+  f.state.onBot = () => { f.state.wrongChain = true; };
+  const swapping = remote.request(SWAP_METHODS.sendUsdtToNodus, [usdtRequest()]);
+  await f.walk(swapping, ['eth_signTypedData']);
+  const answer = await swapping;
+  assert.equal(answer.error.data.delivered, true); assert.equal(answer.error.data.paid, false); assert.match(answer.error.message, /wrong network/);
+  assert.equal(f.events.includes('eth_sendRawTransaction'), false);
+});
+test('a held NODUS transfer the node refused after its record was durable reports paid "unknown"', async t => {
+  const f = await setup(t), remote = f.site(), nodusAccount = await connectBoth(f, remote), { answer: held } = await hold(f, remote, nodusAccount);
+  f.nodusMock.state.accepted = false;
+  const sending = remote.request(SWAP_METHODS.sendNodusToUsdt, [{ holdId: held.holdId, botUrl: BOT, text: nodusText(f, nodusAccount, held) }]);
+  await f.walk(sending, ['nodus_signMessage']);
+  const answer = await sending;
+  assert.equal(answer.error.data.delivered, true); assert.equal(answer.error.data.paid, 'unknown');
+  assert.equal(f.nodusMock.state.submissions.length, 1);
+});
+
+// Proves the throttle works through the background engine, not only the middleware alone: after three rejected prompts
+// of one site a fourth swap call is refused (4100) without any prompt, post or payment. Environment: swap-fixture.js.
+// Leftovers: none. False pass: the three rejections must come from real prompts (4001), which the loop asserts.
+test('swap methods are throttled through the engine after three rejected prompts', async t => {
+  const f = await setup(t), remote = f.site(); await connectBoth(f, remote);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const swapping = remote.request(SWAP_METHODS.sendUsdtToNodus, [usdtRequest({ requestNumber: String(attempt + 1) })]);
+    await f.walk(swapping, ['eth_signTypedData'], { rejectAt: 0 });
+    assert.equal((await swapping).error.code, 4001);
+  }
+  const blocked = await remote.request(SWAP_METHODS.sendUsdtToNodus, [usdtRequest({ requestNumber: '9' })]);
+  assert.equal(blocked.error.code, 4100); assert.match(blocked.error.message, /spam filter/);
+  assert.deepEqual(f.background.approvals.controller.state.pendingApprovals, {}); assert.equal(f.botCalls.length, 0);
 });
 
 // ---- wiring ----

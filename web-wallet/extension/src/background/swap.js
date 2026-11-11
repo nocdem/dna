@@ -1,6 +1,6 @@
 import { rpcErrors, providerErrors } from '@metamask/rpc-errors';
 import { getAddress } from 'ethers';
-import { SWAP_METHODS, SWAP_PATHS } from '../constants/swap.js';
+import { SWAP_METHODS, SWAP_PATHS, assertSwapUsdtToken } from '../constants/swap.js';
 import { HEX128, botOrigin, liquidityAddTyped, lowerHex, parseLiquidityAddText, parseNodusToUsdtText, rawAmount, usdtToNodusTyped } from './swap-texts.js';
 
 // The swap and the liquidity add on the extension side (plan 2026-11-08-swap-bot-plan.nodus1.md section 18 change 1;
@@ -16,7 +16,7 @@ import { HEX128, botOrigin, liquidityAddTyped, lowerHex, parseLiquidityAddText, 
 // refusing the request with a reason) does NOT reach the bot, so nothing is paid.
 
 const DELIVERY_TIMEOUT_MS = 15000;
-const MAX_ANSWER_CHARACTERS = 65536;
+const MAX_ANSWER_BYTES = 65536;
 const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 const hexText = text => `0x${hex(new TextEncoder().encode(text))}`;
 
@@ -36,12 +36,38 @@ const mismatch = () => rpcErrors.invalidParams('The request text does not match 
 // One POST of the signed request. Never retried here (givens item 88: the user tries again).
 async function deliver(origin, path, body) {
   let response;
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), DELIVERY_TIMEOUT_MS);
   try {
-    response = await fetch(`${origin}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
-      signal: AbortSignal.timeout(DELIVERY_TIMEOUT_MS), redirect: 'error', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer' });
-  } catch { return { reached: false, answered: false, reason: 'unreachable' }; }
-  let answer = null;
-  try { const text = await response.text(); if (text.length <= MAX_ANSWER_CHARACTERS) answer = JSON.parse(text); } catch { /* an answer that is not JSON */ }
+    try {
+      response = await fetch(`${origin}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+        signal: controller.signal, redirect: 'error', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer' });
+    } catch { return { reached: false, answered: false, reason: 'unreachable' }; }
+    return await classify(response, await readAnswer(response, controller));
+  } finally { clearTimeout(timer); }
+}
+// The answer is read through a reader and counted in bytes: a host that streams more than MAX_ANSWER_BYTES (or announces
+// more in Content-Length) is cut off at once, the body cancelled and the request aborted, and the answer counts as
+// not JSON. The service worker never holds more than the cap.
+async function readAnswer(response, controller) {
+  const cut = async () => { try { await response.body?.cancel(); } catch { /* already closed */ } controller.abort(); return null; };
+  try {
+    const announced = response.headers.get('content-length');
+    if (announced !== null && !(/^\d+$/.test(announced) && Number(announced) <= MAX_ANSWER_BYTES)) return await cut();
+    if (!response.body) return null;
+    const reader = response.body.getReader(), chunks = []; let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_ANSWER_BYTES) { try { await reader.cancel(); } catch { /* already closed */ } controller.abort(); return null; }
+      chunks.push(value);
+    }
+    const joined = new Uint8Array(total); let at = 0;
+    for (const chunk of chunks) { joined.set(chunk, at); at += chunk.byteLength; }
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(joined));
+  } catch { return null; /* an answer that is not JSON, or a body that failed */ }
+}
+function classify(response, answer) {
   if (response.ok && answer?.received === true) return { reached: true, answered: true, answer };
   const word = typeof answer?.reason === 'string' && /^[a-z_]{1,40}$/.test(answer.reason) ? answer.reason : `http_${response.status}`;
   // The open-approval refusal names the open swap (givens item 57; amm_http.c:355-372); the bot's number is a u32
@@ -58,7 +84,8 @@ function notDelivered(result) {
 // and the site is told exactly what was and was not sent. A broadcast that failed after it was recorded may have
 // reached the network: `paid` is then 'unknown' (evm.js sendRecorded marks it activityTracked).
 function afterDelivery(error, sent = {}) {
-  const uncertain = error?.data?.activityTracked === true;
+  // `broadcastReached` is set by evm.js / nodus.js once the pending record was durable, whatever the error was afterwards.
+  const uncertain = error?.data?.activityTracked === true || error?.broadcastReached === true;
   const data = { delivered: true, paid: uncertain ? 'unknown' : false, ...sent };
   if (error?.code === 4001) return providerErrors.userRejectedRequest({ message: 'You rejected the payment. The bot has your request; it expires unpaid.', data });
   return rpcErrors.internal({ message: `The bot has your request but the payment was not completed: ${error?.message ?? 'unknown error'}`, data });
@@ -74,6 +101,7 @@ export function createSwap({ evm, nodus }) {
     const amount = rawAmount(request.amount, 'amount', { positive: true }), minimum = rawAmount(request.minimumToReceive, 'minimumToReceive'), number = rawAmount(request.requestNumber, 'requestNumber');
     const session = evm.swapSession(origin, from);
     if (getAddress(session.account) !== from) throw providerErrors.unauthorized();
+    assertSwapUsdtToken(session.chain, token); // before any signature, post or payment
     const sender = from.toLowerCase();
     const fields = { sender, destination, amount: amount.toString(), minimumToReceive: minimum.toString(), requestNumber: number.toString() };
     const signature = await session.signTyped(usdtToNodusTyped({ chainId: session.chainId, ...fields }));
@@ -136,6 +164,7 @@ export function createSwap({ evm, nodus }) {
     try {
       session = evm.swapSession(origin, ethereumAddress);
       if (getAddress(session.account) !== ethereumAddress) throw providerErrors.unauthorized();
+      assertSwapUsdtToken(session.chain, token); // before any signature, post or payment
       const ethSignature = await session.signTyped(liquidityAddTyped({ chainId: session.chainId, ethereumAddress: ethereumAddress.toLowerCase(), nodusAddress: hold.account,
         usdtAmount: usdt.toString(), nodusAmount: nodusAmount.toString(), requestNumber: number.toString() }));
       const signed = await signHeldText(origin, hold, request.text);
@@ -147,7 +176,7 @@ export function createSwap({ evm, nodus }) {
     try {
       payment = await session.approveUsdtPayment({ token, to: payTo, amount: usdt, bot });
       sent = await nodus.sendHeld(origin, request.holdId);
-    } catch (error) { nodus.cancelHold(origin, request.holdId); throw afterDelivery(error, { nodusSent: false }); }
+    } catch (error) { nodus.cancelHold(origin, request.holdId); throw afterDelivery(error, { nodusSent: error?.broadcastReached === true ? 'unknown' : false }); }
     try {
       return { delivered: true, nodusPaid: true, usdtPaid: true, hash: await payment.send(), intentId: sent.intentId, transferId: sent.transferId, answer: result.answer };
     } catch (error) { throw afterDelivery(error, { nodusSent: true, intentId: sent.intentId, transferId: sent.transferId }); }

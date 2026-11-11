@@ -246,12 +246,13 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
         ...(row.kind === 'evm' ? (() => { const text = evmActivityText(row); return { amountText: text.amount, detail: text.what }; })() : {}),
         createdAt: row.createdAt, canResubmit: canResubmit(row) }));
   }
-  function heldInputs(s) {
+  // `exceptOrigin`: the holds of that site are not counted (a new hold of the same site replaces them when it is stored).
+  function heldInputs(s, exceptOrigin) {
     const locked = adapter.lockedInputs(s.rows);
     for (const held of adapter.quarantineLockRows(s.quarantined, s.releasedQuarantine)) for (const input of held.inputs) locked.add(input);
     // A transfer held for a swap request is not an Activity row yet; its coins stay reserved so that no other send
     // is built from them before it is sent or dropped (plan section 18 change 1).
-    for (const review of s.reviews.values()) for (const input of review.heldInputs ?? []) locked.add(input);
+    for (const review of s.reviews.values()) if (review.held?.origin !== exceptOrigin || exceptOrigin === undefined) for (const input of review.heldInputs ?? []) locked.add(input);
     return locked;
   }
   function dropHolds(s, origin) {
@@ -545,7 +546,12 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       };
       assertCurrent();
       if (s.activityBlocked) throw new Error('Saved activity is unverified. Check the explorer and discard the unreadable history before sending.');
-      dropHolds(s, origin);
+      // At most one hold is being made per wallet session (my choice: a second call is refused, not queued, because
+      // the first waits for the user's approval and a queue would hang behind it). The earlier holds of this site are
+      // dropped only when the new one is stored, so two calls can never both be stored for one site.
+      if (s.holding) throw rpcErrors.internal('A hold is already being made. Finish or reject it first.');
+      s.holding = true;
+      try {
       // The builder's own answer carries the wire id and the chain id; prepare() keeps them inside, so the
       // client it builds with is wrapped to read that answer back unchanged.
       let built;
@@ -555,7 +561,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
         return typeof value === 'function' ? value.bind(target) : value;
       } });
       const prepared = await adapter.prepare({ client, from: s.addresses.nodus, to: request.to.toLowerCase(), amount: formatRaw(BigInt(request.amount)),
-        tokenId: NODUS_ASSET.tokenId, locked: heldInputs(s) });
+        tokenId: NODUS_ASSET.tokenId, locked: heldInputs(s, origin) });
       assertCurrent();
       const wireId = built?.wireId, chainId = built?.decoded?.chainId;
       if (typeof wireId !== 'string' || !/^[0-9a-f]{128}$/.test(wireId) || typeof chainId !== 'string' || !/^[0-9a-f]{64}$/.test(chainId) ||
@@ -566,11 +572,23 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
         rows: [...prepared.review, ['Transfer ID', wireId]],
         note: 'Signing this payment does not send it. It is sent only after the bot has received your signed request.' } });
       assertCurrent();
+      // Coins another hold or a send took while the user decided make this transfer unusable.
+      const takenMeanwhile = heldInputs(s, origin);
+      if (built.decoded.inputs.some(input => takenMeanwhile.has(input))) throw new Error('Your coins changed while the payment was being prepared. Nothing was held.');
+      dropHolds(s, origin);
       const id = String(++nextReview);
+      let reached = false;
       s.reviews.set(id, { chain: 'nodus', from: s.addresses.nodus, to: prepared.to, amount: prepared.amount, symbol: prepared.symbol, tokenId: prepared.tokenId,
         endpoint: undefined, fee: prepared.fee, expiresAt: prepared.expiresAt, held: { origin, account, to: prepared.to, amount: BigInt(request.amount), wireId, chainId, expiryHeight },
-        heldInputs: [...built.decoded.inputs], cancel() {}, confirm: onBroadcast => prepared.send(onBroadcast) });
+        heldInputs: [...built.decoded.inputs], cancel() {},
+        // Once the pending record is durable (onBroadcast returned) the envelope is about to leave: a later failure
+        // is marked `broadcastReached`, so swap.js reports the payment as unknown, whatever the wallet state became.
+        async confirm(onBroadcast) {
+          try { return await prepared.send(async details => { await onBroadcast(details); reached = true; }); }
+          catch (error) { if (reached && error && typeof error === 'object') error.broadcastReached = true; throw error; }
+        } });
       return { holdId: id, transferId: wireId, chainId, expiryHeight: expiryHeight.toString(), account };
+      } finally { s.holding = false; }
     },
     // What swap.js checks a request text against: the hold's own values, never the site's.
     getHold(origin, holdId) {

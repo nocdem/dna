@@ -14,7 +14,8 @@ import { deriveNodusAddress } from '../../src/nodus/derive.js';
 // permission `https://*/*` of manifest.json is what lets the real extension reach the bot; no test shows that).
 export const phrase = 'abandon '.repeat(23) + 'art', password = 'public-test-password-123';
 export const account = '0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb';
-export const token = '0x00000000000000000000000000000000000000aa', payTo = '0x00000000000000000000000000000000000000bb';
+// The pinned mainnet USDT contract (src/config.js:12); `otherToken` is any other contract.
+export const token = '0xdAC17F958D2ee523a2206206994597C13D831ec7', otherToken = '0x00000000000000000000000000000000000000aa', payTo = '0x00000000000000000000000000000000000000bb';
 export const BOT = 'https://swap.nodusnetwork.io';
 export const foundationNodus = 'cd'.repeat(64), wireId = 'ab'.repeat(64);
 export const nodusPublicKey = '12'.repeat(2592), nodusSignature = '34'.repeat(4627);
@@ -58,6 +59,16 @@ export async function setup(t) {
       case 'gateway': return new Response('<html>502 Bad Gateway</html>', { status: 502 });
       case 'reject': return new Response('{"received":false,"reason":"bad_signature"}', { status: 200 });
       case 'open': return new Response(JSON.stringify({ received: false, reason: 'open_approval', openRequestNumber: state.openRequestNumber }), { status: 200 });
+      case 'flood': {
+        // HTTP 200 whose body starts with {"received":true and then streams far more than the 65,536-byte cap, one 8 KiB chunk
+        // per pull; `floodPulls` counts the pulls and `floodCancelled` records that the reader was cancelled.
+        const head = new TextEncoder().encode('{"received":true,"pad":"'), filler = new Uint8Array(8192).fill(120);
+        state.floodPulls = 0; state.floodCancelled = false;
+        return new Response(new ReadableStream({
+          pull(controller) { state.floodPulls++; controller.enqueue(state.floodPulls === 1 ? head : filler); if (state.floodPulls > 200) controller.close(); },
+          cancel() { state.floodCancelled = true; },
+        }), { status: 200 });
+      }
       case 'plain': return new Response('ok', { status: 200 });
       default: return new Response('{"received":true,"requestNumber":"123456789"}', { status: 200 });
     }
@@ -70,7 +81,7 @@ export async function setup(t) {
     const chainId = sepolia ? '0xaa36a7' : String(url).includes('bsc') || String(url).includes('binance') ? '0x38' : '0x1';
     let result;
     switch (req.method) {
-      case 'eth_chainId': result = chainId; break;
+      case 'eth_chainId': result = state.wrongChain ? '0x2' : chainId; break;
       case 'net_version': result = String(parseInt(chainId, 16)); break;
       case 'eth_blockNumber': result = '0x10'; break;
       case 'eth_getBalance': result = state.balance; break;
@@ -82,7 +93,10 @@ export async function setup(t) {
       case 'eth_getBlockByNumber': result = { number: '0x10', hash: '0x' + '11'.repeat(32), parentHash: '0x' + '22'.repeat(32),
         timestamp: '0x1', nonce: '0x0000000000000000', difficulty: '0x0', gasLimit: '0x1c9c380', gasUsed: '0x0',
         miner: payTo, extraData: '0x', transactions: [] }; break;
-      case 'eth_sendRawTransaction': events.push('eth_sendRawTransaction'); raw.push(req.params[0]); result = keccak256(req.params[0]); break;
+      case 'eth_sendRawTransaction':
+        // `onRaw` runs when the broadcast call arrives (a test locks the wallet there); `failRaw` makes the call fail.
+        events.push('eth_sendRawTransaction'); state.onRaw?.(); if (state.failRaw) throw new TypeError('broadcast down');
+        raw.push(req.params[0]); result = keccak256(req.params[0]); break;
       default: assert.fail(`Unexpected fixture method ${req.method}`);
     }
     return new Response(JSON.stringify({ id: req.id, jsonrpc: '2.0', result }), { headers: { 'content-type': 'application/json' } });
