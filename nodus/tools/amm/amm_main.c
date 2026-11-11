@@ -346,9 +346,7 @@ int main(int argc, char **argv) {
         snprintf(nm, sizeof(nm), "provider-%d", i + 1);      /* the URL carries a key: never logged */
         memset(&rc_, 0, sizeof(rc_));
         rc_.url = cfg.eth_providers[i]; rc_.name = nm; rc_.post = amm_rpc_curl_post;
-        rc_.post_ctx = rpc_curl; rc_.max_response = (size_t)cfg.http_max_response;
-        if (rc_.max_response < AMM_RPC_RESP_MIN) rc_.max_response = AMM_RPC_RESP_MIN;
-        if (rc_.max_response > AMM_RPC_RESP_CEIL) rc_.max_response = AMM_RPC_RESP_CEIL;
+        rc_.post_ctx = rpc_curl; rc_.max_response = (size_t)cfg.eth_max_response;
         rpcs[n_rpc] = amm_eth_rpc_new(&rc_);
         if (!rpcs[n_rpc]) { QGP_LOG_ERROR(LOG_TAG, "provider %d refused", i + 1); goto done; }
         amm_eth_rpc_provider(rpcs[n_rpc], &provs[n_rpc]);

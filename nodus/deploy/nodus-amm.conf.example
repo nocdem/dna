@@ -113,8 +113,9 @@ nodus_resubmit_blocks = REPLACE_WITH_THE_RESUBMIT_BLOCKS
 nodus_scan_blocks = REPLACE_WITH_THE_SCAN_BLOCKS
 
 # HTTP: body bound in bytes (1..; a signed Nodus-key request is up to 16,124
-# bytes, plan section 6.4.7, so not below that), answer bound in bytes (1..),
-# connection cap (1..64), per-request deadline in ms (1..).
+# bytes, plan section 6.4.7, so not below that), answer bound in bytes (1..;
+# bounds the bot's OWN answers to the site only, not Ethereum provider
+# answers), connection cap (1..64), per-request deadline in ms (1..).
 http_max_body = REPLACE_WITH_THE_MAX_BODY
 http_max_response = REPLACE_WITH_THE_MAX_RESPONSE
 http_conn_cap = REPLACE_WITH_THE_CONNECTION_CAP
@@ -177,6 +178,11 @@ held_keeps_room = REPLACE_WITH_0_OR_1
 
 # Commission: 0 only (givens item 73); any other value refuses the start.
 # commission = 0
+
+# Bound of one Ethereum provider JSON-RPC answer in bytes, 1024..16777216,
+# default 4194304. Measured non-hydrated block answers: Sepolia 9,733 to 35,955
+# bytes, mainnet latest 35,772 bytes; the site's http_max_response does not fit.
+# eth_max_response = 4194304
 
 # ETH price sources for converting the Ethereum fee into USDT (plan section
 # 10; givens item 74): names from kraken, binance, bitfinex, coinbase, each

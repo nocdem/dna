@@ -164,7 +164,7 @@ is at most UINT64_MAX/4. Units: USDT raw = 10^-6, NODUS raw = 10^-8.
 | `eth_quorum` | yes | — | 1..number of providers | givens item 58 |
 | `eth_reorg_window_blocks` | yes | — | >= `eth_conf_count_3` | plan sections 9, 15 |
 | `payout_final_depth_eth` | yes | — | >= 1 | plan section 10 |
-| `http_max_body`, `http_max_response` | yes | — | >= 1 | plan section 6.4.7 |
+| `http_max_body`, `http_max_response` | yes | — | >= 1 (`http_max_response` bounds the bot's own answers only) | plan section 6.4.7 |
 | `http_port` | yes | — | 1..65535 | — |
 | `http_conn_cap` | yes | — | 1..64 | — |
 | `http_timeout_ms`, `worker_interval_ms`, `rpc_timeout_ms` | yes | — | >= 1 | — |
@@ -190,6 +190,7 @@ is at most UINT64_MAX/4. Units: USDT raw = 10^-6, NODUS raw = 10^-8.
 | `quote_read_fresh_ms` | no | 3000 | >= 1 | this build's proposal |
 | `round_rows_max` | no | 1000 | >= 1 | this build's proposal |
 | `commission` | no | 0 | 0 only | givens item 73 |
+| `eth_max_response` | no | 4194304 | 1024..16777216 (the provider client's limits) | givens item 26; the bound of one Ethereum provider answer, measured block answers up to 35,955 bytes; a proposal of this build |
 | `eth_price_sources` | no | all four | names from kraken, binance, bitfinex, coinbase, each once | plan section 10 |
 | `eth_price_min_sources` | no | 3 | 1..4, <= number listed | givens item 74 |
 | `eth_price_max_age_seconds` | no | 180 | >= 1 | givens item 74 |

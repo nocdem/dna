@@ -72,7 +72,14 @@
  *                                                           the start"). Nothing reads it yet.
  *   payout_final_depth_eth     YES       (deferred, s.15)   >= 1
  *   http_max_body              YES       (deferred, s.15)   > 0
- *   http_max_response          YES       (deferred, s.15)   > 0
+ *   http_max_response          YES       (deferred, s.15)   > 0 (bounds the bot's OWN HTTP answers only)
+ *   eth_max_response           no        4194304            1024..16777216 Bytes: the bound of one Ethereum
+ *                                                           provider JSON-RPC answer (the provider client's own
+ *                                                           limits AMM_RPC_RESP_MIN..AMM_RPC_RESP_CEIL). Measured
+ *                                                           non-hydrated block answers reach 35,955 bytes
+ *                                                           (Sepolia) and 35,772 (mainnet), so the HTTP answer
+ *                                                           bound does not fit. A proposal of this build; no
+ *                                                           decision names a value (givens 26).
  *   swap_min_usdt              no        1000000            1.., <= swap_max_usdt (givens 89: no swap below
  *                                                           1 USDT on its USDT side; refused at the price question)
  *   eth_price_sources          no        all four           comma separated names from kraken, binance,
@@ -189,6 +196,7 @@ typedef struct {
     uint64_t payout_final_depth_eth;
     uint64_t http_max_body;
     uint64_t http_max_response;
+    uint64_t eth_max_response;                 /* default 4194304           */
     uint64_t swap_min_usdt;                    /* default 1000000 (givens 89) */
     uint64_t eth_price_min_sources;            /* default 3 (givens 74)     */
     uint64_t eth_price_max_age_seconds;        /* default 180 (givens 74)   */

@@ -50,6 +50,9 @@ static const u64_key_t U64_KEYS[] = {
     {"payout_final_depth_eth",     offsetof(amm_cfg_t, payout_final_depth_eth),     1, HI_MAX, 1},
     {"http_max_body",              offsetof(amm_cfg_t, http_max_body),              1, HI_MAX, 1},
     {"http_max_response",          offsetof(amm_cfg_t, http_max_response),          1, HI_MAX, 1},
+    /* the provider client's own limits AMM_RPC_RESP_MIN .. AMM_RPC_RESP_CEIL
+     * (amm_eth_rpc.h: 1024 .. 16 MiB); item 26: every number is a setting */
+    {"eth_max_response",           offsetof(amm_cfg_t, eth_max_response),           1024, 16777216, 0},
     {"swap_min_usdt",              offsetof(amm_cfg_t, swap_min_usdt),              1, HI_MAX, 0},
     {"eth_price_min_sources",      offsetof(amm_cfg_t, eth_price_min_sources),      1, 4,      0},
     {"eth_price_max_age_seconds",  offsetof(amm_cfg_t, eth_price_max_age_seconds),  1, HI_MAX, 0},
@@ -128,6 +131,7 @@ void amm_cfg_defaults(amm_cfg_t *cfg) {
     cfg->quote_read_fresh_ms         = 3000;         /* 3 s: a question's provider reads are reused */
     cfg->round_rows_max              = 1000;         /* rows examined per walk per round */
     cfg->commission                  = 0;            /* item 73             */
+    cfg->eth_max_response            = 4194304;      /* 4 MiB: this build's proposal */
     cfg->swap_min_usdt               = 1000000ULL;   /* item 89: 1 USDT     */
     cfg->eth_price_min_sources       = 3;            /* item 74             */
     cfg->eth_price_max_age_seconds   = 180;          /* item 74             */
