@@ -960,7 +960,10 @@ static void r11_config_transport(void) {
  * non-string message adds nothing (the old text); a raw newline, a tab, an escape or
  * a non-ASCII byte in the message cannot reach the line: the strict parser refuses
  * the whole answer first, so the line is the "not strict JSON" one and has no
- * control byte.
+ * control byte. A message that holds the provider's configured URL, or only its
+ * path+query part (also a query-only tail), has each occurrence replaced by "[url]"
+ * before the 200-byte cut: a URL crossing byte 200 leaves no prefix; a message
+ * without the URL is unchanged. (Made-up URLs and keys only.)
  * BUILD FLAGS: default (the standalone nodus build, whose logger is the shim; the
  * test would not see the lines with another logger). LEAVES BEHIND: nothing (the
  * temporary file is anonymous).
@@ -968,7 +971,11 @@ static void r11_config_transport(void) {
  * depth behind the parser and cannot be reached through the public path (the parser
  * already refuses every byte outside 0x20-0x7E), so it is not exercised here, only
  * the end result "one line, no control byte" is; the checks read stderr, so a
- * logger that printed elsewhere would make them fail, not pass; the live answer's
+ * logger that printed elsewhere would make them fail, not pass; the redaction checks
+ * could falsely pass if the stub's message never reached the log at all, which the
+ * exact-line comparisons (marker present, rest of the line intact) rule out, and they
+ * cover only the URL forms configured here (no percent-encoded or case-changed echo
+ * of a URL is redacted); the live answer's
  * text is copied from main's measurement of 2026-11-11, not fetched. */
 static char g_cap[8192];       /* the captured line, without its final newline */
 static int  g_cap_lines;       /* newlines in the capture, the final one included */
@@ -1087,7 +1094,69 @@ static void r12_error_text(void) {
     (void)run_chain(&p, &u);
     w = g_cap;
     CHECK(strstr(w, "-32601") != NULL, "a code without a message: the code alone");
+
+    /* the provider echoes its own URL (or the key-bearing part of it) in the message */
+    /* (a) the full configured URL */
+    answer("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"bad request to "
+           "https://eth.example.test/v1/SECRET-KEY please retry\"}}");
+    (void)run_chain(&p, &u);
+    w = g_cap;
+    CHECK(strstr(w, "https://") == NULL && strstr(w, "eth.example.test") == NULL &&
+          strstr(w, "/v1/") == NULL && strstr(w, "SECRET-KEY") == NULL,
+          "the full URL in the message is not logged");
+    CHECK(!strcmp(w, "[WRN/AMM_RPC] p: eth_chainId: provider error -32000: bad request to [url] please retry"),
+          "the full URL becomes the marker, the rest of the line is unchanged");
+    /* (b) only the path and query part, twice */
+    answer("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"unknown key "
+           "/v1/SECRET-KEY and again /v1/SECRET-KEY\"}}");
+    (void)run_chain(&p, &u);
+    w = g_cap;
+    CHECK(strstr(w, "/v1/") == NULL && strstr(w, "SECRET-KEY") == NULL &&
+          !strcmp(w, "[WRN/AMM_RPC] p: eth_chainId: provider error -32000: unknown key [url] and again [url]"),
+          "the path-and-query part alone is replaced, every occurrence");
+    /* (c) the URL crossing the 200-byte boundary: 190 bytes then the URL (38 bytes) */
+    {
+        char pad[199];
+        memset(pad, 'Q', 190); pad[190] = '\0';
+        snprintf(b, sizeof(b), "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"%s"
+                 "https://eth.example.test/v1/SECRET-KEY\"}}", pad);
+        answer(b);
+        (void)run_chain(&p, &u);
+        w = g_cap;
+        CHECK(count_char(w, 'Q') == 190 && strstr(w, "[url]") != NULL && strstr(w, "http") == NULL &&
+              strstr(w, "eth.") == NULL && strstr(w, "SECRET") == NULL,
+              "a URL that crosses byte 200 leaves no prefix, the marker is shown");
+        /* 198 bytes then the URL: the marker itself is cut at 200, still no URL prefix */
+        memset(pad, 'Q', 198); pad[198] = '\0';
+        snprintf(b, sizeof(b), "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"%s"
+                 "https://eth.example.test/v1/SECRET-KEY\"}}", pad);
+        answer(b);
+        (void)run_chain(&p, &u);
+        w = g_cap; wl = strlen(w);
+        CHECK(count_char(w, 'Q') == 198 && strstr(w, "http") == NULL && strstr(w, "SECRET") == NULL &&
+              wl >= 3 && !strcmp(w + wl - 3, "..."), "a URL starting at byte 198: no prefix, cut marked");
+    }
+    /* a message without the URL is unchanged ("/v2" is not the configured path) */
+    answer("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":5,\"message\":\"plain text /v2 other\"}}");
+    (void)run_chain(&p, &u);
+    w = g_cap;
+    CHECK(!strcmp(w, "[WRN/AMM_RPC] p: eth_chainId: provider error 5: plain text /v2 other"),
+          "a message without the URL is logged unchanged");
     amm_eth_rpc_free(r);
+
+    /* a URL whose key sits in a query with no path: the part from '?' is the tail */
+    amm_eth_rpc_cfg_t c2 = { .url = "https://q.example.test?apikey=KEY123", .name = "q",
+                             .post = stub_post, .post_ctx = NULL, .max_response = 65536 };
+    amm_eth_rpc_t *r2 = amm_eth_rpc_new(&c2);
+    if (!r2) { printf("FATAL rpc_new 2\n"); exit(2); }
+    amm_eth_provider_t p2;
+    amm_eth_rpc_provider(r2, &p2);
+    answer("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1,\"message\":\"denied ?apikey=KEY123 end\"}}");
+    (void)run_chain(&p2, &u);
+    w = g_cap;
+    CHECK(strstr(w, "KEY123") == NULL && strstr(w, "apikey") == NULL &&
+          strstr(w, "denied [url] end") != NULL, "a query-only tail is replaced");
+    amm_eth_rpc_free(r2);
 }
 
 int main(void) {

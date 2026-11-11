@@ -153,8 +153,16 @@ void qgp_log_file_write(qgp_log_level_t level, const char *tag, const char *fmt,
         if (g_fd < 0) (void)open_current();                  /* a failed rotation: retry */
         if (g_fd >= 0 && g_size >= g_max_bytes) rotate();
         if (g_fd >= 0) {
-            ssize_t w = write(g_fd, line, len);
-            if (w > 0) g_size += (size_t)w;                  /* a failed write is dropped */
+            /* the whole line: EINTR is retried, a short write continues with the
+             * rest; any other error (or a write of 0 bytes) drops the rest of the
+             * line. g_size counts only the bytes that were written. */
+            size_t off = 0;
+            while (off < len) {
+                ssize_t w = write(g_fd, line + off, len - off);
+                if (w > 0) { off += (size_t)w; g_size += (size_t)w; continue; }
+                if (w < 0 && errno == EINTR) continue;
+                break;
+            }
         }
     }
     pthread_mutex_unlock(&g_file_mu);
