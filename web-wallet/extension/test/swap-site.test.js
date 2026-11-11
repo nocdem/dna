@@ -421,6 +421,19 @@ test('a held NODUS transfer the node refused after its record was durable report
   assert.equal(answer.error.data.delivered, true); assert.equal(answer.error.data.paid, 'unknown');
   assert.equal(f.nodusMock.state.submissions.length, 1);
 });
+// Proves the liquidity add reports its NODUS half as nodusSent:"unknown" (not false) when the node refuses the held
+// transfer after its record was durable, and sends no USDT. Environment: swap-fixture.js (nodusMock accepted=false).
+// Leftovers: none. False pass: the mock refuses every submission, so this does not separate a refusal before the
+// record from one after it; the before-record case keeps nodusSent:false through the same check.
+test('liquidity add: a held NODUS transfer refused after its record was durable reports nodusSent "unknown"', async t => {
+  const f = await setup(t), remote = f.site(), nodusAccount = await connectBoth(f, remote), { answer: held } = await hold(f, remote, nodusAccount);
+  f.nodusMock.state.accepted = false;
+  const adding = remote.request(SWAP_METHODS.sendLiquidityAdd, [addRequest(f, nodusAccount, held)]);
+  await f.walk(adding, ['eth_signTypedData', 'nodus_signMessage', 'nodus_swapPayment']);
+  const answer = await adding;
+  assert.equal(answer.error.data.delivered, true); assert.equal(answer.error.data.nodusSent, 'unknown');
+  assert.equal(f.nodusMock.state.submissions.length, 1); assert.equal(f.raw.length, 0);
+});
 
 // Proves the throttle works through the background engine, not only the middleware alone: after three rejected prompts
 // of one site a fourth swap call is refused (4100) without any prompt, post or payment. Environment: swap-fixture.js.

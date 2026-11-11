@@ -176,7 +176,13 @@ export function createSwap({ evm, nodus }) {
     try {
       payment = await session.approveUsdtPayment({ token, to: payTo, amount: usdt, bot });
       sent = await nodus.sendHeld(origin, request.holdId);
-    } catch (error) { nodus.cancelHold(origin, request.holdId); throw afterDelivery(error, { nodusSent: error?.broadcastReached === true ? 'unknown' : false }); }
+    } catch (error) {
+      nodus.cancelHold(origin, request.holdId);
+      // nodus.js wraps a failure after its record was durable as activityTracked (src/background/nodus.js:743), which
+      // replaces the error that carried broadcastReached: either mark means the NODUS transfer may have been sent.
+      const nodusUncertain = error?.broadcastReached === true || error?.data?.activityTracked === true;
+      throw afterDelivery(error, { nodusSent: nodusUncertain ? 'unknown' : false });
+    }
     try {
       return { delivered: true, nodusPaid: true, usdtPaid: true, hash: await payment.send(), intentId: sent.intentId, transferId: sent.transferId, answer: result.answer };
     } catch (error) { throw afterDelivery(error, { nodusSent: true, intentId: sent.intentId, transferId: sent.transferId }); }
