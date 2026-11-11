@@ -705,6 +705,28 @@ void amm_attempt_free(amm_attempt_t *a);
  *  payouts and are not the Nodus payer's). 0 found / 1 none / -1. */
 int amm_journal_swap_head_payout(amm_journal_t *j, amm_swap_t *out);
 
+/** As amm_journal_swap_head_payout, but a swap WITHOUT an open attempt is
+ *  chosen only when its seq is above `after_seq` (>= 0): the engine defers a
+ *  swap whose expired replacement was not stored and goes on to the next owed
+ *  swap in seq order, never selecting the deferred one again in the same round.
+ *  A swap whose attempt is signed or submitted is returned whatever `after_seq`
+ *  says. 0 found / 1 none / -1. */
+int amm_journal_swap_head_payout_after(amm_journal_t *j, int64_t after_seq,
+                                       amm_swap_t *out);
+
+/** The input coins (nullifiers, 64 bytes each) the payer must NOT plan a spend
+ *  over: the inputs of the LATEST attempt of every swap other than
+ *  `except_seq` (-1 = none) whose latest attempt is expired and which still
+ *  owes a NODUS payout (a USDT -> NODUS swap in payout_pending or a
+ *  NODUS -> USDT swap in refund_pending). Derived from nodus_attempts joined
+ *  with swaps: no table of its own, so it survives a restart and a swap that
+ *  leaves the owed states (paid, refunded, dropped, unknown) releases its coins.
+ *  Written to `nul[0..*n)`, at most `cap`; duplicates are possible. @return 0 /
+ *  1 = more than `cap` inputs (`nul` holds the first `cap`: the caller must not
+ *  plan) / -1. */
+int amm_journal_nodus_reserved(amm_journal_t *j, int64_t except_seq,
+                               uint8_t (*nul)[64], int cap, int *n);
+
 /** Store a NEW signed attempt (a->swap_seq, gross, net, fee, dest, env,
  *  ids, inputs, ticks filled by the caller; a->n and a->state assigned) in
  *  ONE transaction. Legal only when the swap is in payout_pending or

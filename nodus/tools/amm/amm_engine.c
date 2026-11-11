@@ -983,17 +983,29 @@ static int decisions(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
  * stored envelopes; the REFUND of a NODUS -> USDT swap is signed here. A
  * decided payout always has its envelope (stored in the decision). */
 static int nodus_payouts(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
+    /* A swap whose attempt is signed or submitted keeps priority (the single
+     * live attempt). With none live, a swap whose expired attempt cannot be
+     * replaced now (`waiting`: funds, an unreadable answer, the changed fee)
+     * is DEFERRED for this round: `after` moves past it, so the next owed swap
+     * in seq order is served (a refund is signed, another expired payout is
+     * replaced) and the deferred one is not selected again before the next
+     * round. The guard bounds the work per round. */
+    int64_t after = 0;
     for (int guard = 0; guard < 8; guard++) {
         amm_np_step_t st;
         memset(&st, 0, sizeof(st));
-        int r = amm_nodus_pay_step(e->c.nodus_pay, dl, &st);
+        int r = amm_nodus_pay_step_after(e->c.nodus_pay, dl, after, &st);
         if (r == AMM_NP_ERR) return -1;
         if (r != AMM_NP_NEED_SIGN) {
+            if (st.waiting) {
+                after = st.swap_seq;
+                continue;
+            }
             if (!st.worked) break;
             continue;
         }
         amm_swap_t head;
-        int h = amm_journal_swap_head_payout(e->c.journal, &head);
+        int h = amm_journal_swap_head_payout_after(e->c.journal, after, &head);
         if (h < 0) return -1;
         if (h == 1) break;
         if (strcmp(head.state, AMM_S_REFUND_PENDING) != 0) {

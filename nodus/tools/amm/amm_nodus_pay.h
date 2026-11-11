@@ -57,15 +57,28 @@
  *     waits (AMM_NP_UNKNOWN): the replacement at a higher fee is not built
  *     (givens item 97).
  *
- * ONE PAYOUT IN FLIGHT: the head swap (the oldest in payout_pending or
- * refund_pending, amm_journal_swap_head_payout) is driven, as the faucet's
- * head claim. Nothing else spends the bot's coins meanwhile, so no coin
- * reservation table exists. ENFORCED in the journal: amm_journal_attempt_sign
- * refuses an attempt while another swap's attempt is signed or submitted
- * (AMM_J_ILLEGAL, which amm_nodus_pay_sign reports as AMM_NP_ERR). The engine
- * contract: sign only the swap that amm_nodus_pay_step names with
- * AMM_NP_NEED_SIGN. READING of the plan, which says nothing of concurrent
- * payouts; a stuck head (funds short) holds the queue.
+ * ONE PAYOUT IN FLIGHT: the swap with a signed or submitted attempt is driven
+ * first; with none, the oldest swap in payout_pending or refund_pending
+ * (amm_journal_swap_head_payout), as the faucet's head claim. ENFORCED in the
+ * journal: amm_journal_attempt_sign refuses an attempt while another swap's
+ * attempt is signed or submitted (AMM_J_ILLEGAL, which amm_nodus_pay_sign
+ * reports as AMM_NP_BUSY). The engine contract: sign only the swap that
+ * amm_nodus_pay_step names with AMM_NP_NEED_SIGN. READING of the plan, which
+ * says nothing of concurrent payouts.
+ *
+ * RESERVED COINS (the faucet's pattern, faucet_core.c:556-568): the inputs of
+ * the latest attempt of a swap, when it is EXPIRED and the swap still owes its
+ * NODUS payout, are left out of every other plan (a payout planned in the
+ * decision, a refund's first attempt, a replacement of another swap, a quote)
+ * so a later spend cannot take the coins an expired payout's replacement
+ * needs. Derived from the journal (amm_journal_nodus_reserved): no table, no
+ * in-memory state; it survives a restart and ends when the swap leaves the
+ * owed states. A swap's own expired inputs stay available to its own
+ * replacement. A swap whose expired replacement cannot be stored (funds, an
+ * unreadable answer, the changed fee) WAITS and does not hold the queue: the
+ * step reports `waiting` and amm_nodus_pay_step_after goes on to the next
+ * owed swap; a refund's first attempt that cannot be stored still ends the
+ * engine's round for the NODUS payouts.
  *
  * WHERE THE AMOUNT COMES FROM: the swap row carries no output amount (the
  * engine computes it from the ledger when the payment counts). The engine
@@ -222,6 +235,9 @@ typedef struct {
     int     submitted;      /* 1 = a submit call was made                    */
     int     confirmed;      /* 1 = the swap moved to paid / refunded         */
     int     expired;        /* 1 = the attempt was found expired             */
+    int     waiting;        /* 1 = the swap's expired attempt could not be
+                             * replaced now (nothing stored, nothing moved):
+                             * the engine defers it for this round          */
     char    msg[AMM_MSG_MAX];
 } amm_np_step_t;
 
@@ -250,5 +266,13 @@ int amm_nodus_pay_sign(amm_nodus_pay_t *p, int64_t swap_seq, uint64_t gross,
  *  refusals of amm_nodus_pay_sign for a replacement / AMM_NP_UNKNOWN / ERR. */
 int amm_nodus_pay_step(amm_nodus_pay_t *p, uint64_t deadline_ms,
                        amm_np_step_t *out);
+
+/** As amm_nodus_pay_step, but a swap WITHOUT an open attempt is driven only
+ *  when its seq is above `after_seq` (amm_journal_swap_head_payout_after): the
+ *  engine passes the seq of a swap whose step returned `waiting`, so the next
+ *  owed swap is served and the waiting one is not selected again in the same
+ *  round. A swap with a signed or submitted attempt always keeps priority. */
+int amm_nodus_pay_step_after(amm_nodus_pay_t *p, uint64_t deadline_ms,
+                             int64_t after_seq, amm_np_step_t *out);
 
 #endif /* AMM_NODUS_PAY_H */

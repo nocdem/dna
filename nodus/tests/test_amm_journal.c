@@ -122,7 +122,12 @@
  *       the first is expired; submit and scan cursor moves; confirmed or
  *       expired is final; the head payout is the oldest by seq; ONE PAYOUT IN
  *       FLIGHT: another swap's attempt is refused while one swap's attempt is
- *       signed or submitted (the bot's coins are not reserved per swap);
+ *       signed or submitted;
+ *   J21b the inputs of the latest EXPIRED attempt of a swap that still owes its
+ *       NODUS payout are reported as reserved for every other swap (released
+ *       when its replacement is signed or it leaves the owed states; kept across
+ *       a reopen; a cap overflow is reported); the head payout after a deferred
+ *       swap, an open attempt always first;
  *   J22 the open NODUS approval query: by transfer id, sender and amount,
  *       only NODUS -> USDT swaps in state approved;
  *   J23 an incoming id, once set, is never changed (B on Y naming X at
@@ -1564,8 +1569,8 @@ static void j21_attempts(void) {
     CHECK(approve_ok(&o1, &so1) && approve_ok(&o2, &so2) && drive(&so2, "payout_pending", "nodus:o2") &&
           drive(&so1, "payout_pending", "nodus:o1"), "two swaps in payout_pending (the younger first)");
     CHECK(amm_journal_swap_head_payout(g_j, &hd) == 0 && hd.seq == so1.seq, "the head is the oldest by seq");
-    /* ONE PAYOUT IN FLIGHT: no coin is reserved per swap, so a second swap's
-     * attempt is refused while another swap's attempt is open */
+    /* ONE PAYOUT IN FLIGHT: a second swap's attempt is refused while another
+     * swap's attempt is open */
     CHECK(mkenv(&at, so1.seq, destu, 1000, 100, 7) && amm_journal_attempt_sign(g_j, &at) == 0,
           "swap 1: an attempt is stored");
     amm_attempt_free(&at);
@@ -1584,6 +1589,98 @@ static void j21_attempts(void) {
     CHECK(mkenv(&at, so1.seq, destu, 1000, 100, 9) && amm_journal_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
           "swap 1's replacement is refused while swap 2's attempt is open");
     amm_attempt_free(&at);
+}
+
+/* J21b: the reserved coins of expired attempts and the head selection after a
+ * deferred swap.
+ * PROVES: amm_journal_nodus_reserved returns the inputs of the LATEST attempt of
+ *   every swap other than `except_seq`, only when that attempt is expired and the
+ *   swap still owes a NODUS payout (a replacement that is signed, or a swap that
+ *   left the owed states, releases its coins); the answer comes from the stored
+ *   rows, so it survives a reopen; a result above `cap` is reported (1), never cut
+ *   silently. amm_journal_swap_head_payout_after skips swaps without an open
+ *   attempt up to `after_seq` and still returns a swap with an open attempt
+ *   whatever `after_seq` says.
+ * FLAGS/ENVIRONMENT: a default build; the journal file of this test's directory.
+ * LEAVES BEHIND: nothing (the directory is removed at the end of the run).
+ * FALSE PASS: the attempts are stored with fixed fake envelopes (mkenv), so this
+ *   proves the journal query, not that the payer plans around the coins (that is
+ *   test_amm_nodus_pay P15 and test_amm_engine E20). */
+static int has_in(uint8_t (*nul)[64], int n, uint8_t byte) {
+    for (int i = 0; i < n; i++) {
+        uint8_t w[64];
+        memset(w, byte, 64);
+        if (!memcmp(nul[i], w, 64)) return 1;
+    }
+    return 0;
+}
+
+static void j21b_reserved_and_after(void) {
+    printf("J21b reserved coins of expired attempts; head after a deferred swap\n");
+    fresh();
+    char destu[129], sndr[129];
+    memset(destu, 'e', 128); destu[128] = '\0';
+    memset(sndr, 'c', 128); sndr[128] = '\0';
+    amm_approve_t o1 = mk('a', 1, 1), o2 = mk('b', 2, 2), rf = mk_n2u('c', 5, 5, "nodus:w9");
+    amm_swap_t s1, s2, r, hd;
+    amm_attempt_t at;
+    uint8_t nul[64][64];
+    int n = 0;
+    CHECK(approve_ok(&o1, &s1) && approve_ok(&o2, &s2) && approve_ok(&rf, &r) &&
+          drive(&s1, "payout_pending", "nodus:o1") && drive(&s2, "payout_pending", "nodus:o2") &&
+          drive(&r, "refund_pending", "nodus:w9"),
+          "setup: two payouts (seq 1, 2) and a NODUS refund (seq 3), all owed");
+    CHECK(amm_journal_nodus_reserved(g_j, -1, nul, 64, &n) == 0 && n == 0, "no attempt: nothing is reserved");
+    /* attempt inputs of mkenv(tag): bytes 0x10+tag and 0x20+tag */
+    CHECK(mkenv(&at, s1.seq, destu, 1000, 100, 7) && amm_journal_attempt_sign(g_j, &at) == 0 &&
+          amm_journal_nodus_reserved(g_j, -1, nul, 64, &n) == 0 && n == 0,
+          "a signed (open) attempt reserves nothing");
+    amm_attempt_free(&at);
+    CHECK(amm_journal_attempt_finish(g_j, s1.seq, "expired") == 0 &&
+          mkenv(&at, s2.seq, destu, 1000, 100, 8) && amm_journal_attempt_sign(g_j, &at) == 0 &&
+          amm_journal_attempt_finish(g_j, s2.seq, "expired") == 0,
+          "both payouts' attempts are expired");
+    amm_attempt_free(&at);
+    CHECK(amm_journal_nodus_reserved(g_j, -1, nul, 64, &n) == 0 && n == 4 &&
+          has_in(nul, n, 0x17) && has_in(nul, n, 0x27) && has_in(nul, n, 0x18) && has_in(nul, n, 0x28),
+          "both expired attempts' inputs are reserved (4 coins)");
+    CHECK(amm_journal_nodus_reserved(g_j, s1.seq, nul, 64, &n) == 0 && n == 2 &&
+          has_in(nul, n, 0x18) && has_in(nul, n, 0x28) && !has_in(nul, n, 0x17),
+          "for swap 1 its OWN expired inputs are not reserved (its replacement may use them), swap 2's are");
+    CHECK(amm_journal_nodus_reserved(g_j, -1, nul, 3, &n) == 1,
+          "more inputs than the cap: reported (1), never cut silently");
+    reopen();
+    CHECK(amm_journal_nodus_reserved(g_j, -1, nul, 64, &n) == 0 && n == 4,
+          "after a reopen the same four coins are reserved (derived from the stored rows)");
+
+    /* head after a deferred swap */
+    CHECK(amm_journal_swap_head_payout_after(g_j, 0, &hd) == 0 && hd.seq == s1.seq,
+          "after 0: the oldest owed swap (swap 1)");
+    CHECK(amm_journal_swap_head_payout_after(g_j, s1.seq, &hd) == 0 && hd.seq == s2.seq,
+          "after swap 1: swap 2");
+    CHECK(amm_journal_swap_head_payout_after(g_j, s2.seq, &hd) == 0 && hd.seq == r.seq,
+          "after swap 2: the refund with no attempt");
+    CHECK(amm_journal_swap_head_payout_after(g_j, r.seq, &hd) == 1, "after the last owed swap: none");
+    CHECK(mkenv(&at, r.seq, sndr, 1000, 100, 9) && amm_journal_attempt_sign(g_j, &at) == 0,
+          "the refund's attempt is stored (no other attempt is open)");
+    amm_attempt_free(&at);
+    CHECK(amm_journal_swap_head_payout_after(g_j, r.seq + 5, &hd) == 0 && hd.seq == r.seq,
+          "a swap with an open attempt is returned whatever after_seq says");
+    CHECK(amm_journal_nodus_reserved(g_j, r.seq, nul, 64, &n) == 0 && n == 4,
+          "the open refund attempt reserves nothing; the two expired payouts still do");
+
+    /* a replacement that is signed releases the swap's reserved coins; leaving the owed states too */
+    CHECK(amm_journal_attempt_finish(g_j, r.seq, "expired") == 0 &&
+          mkenv(&at, s1.seq, destu, 1000, 100, 10) && amm_journal_attempt_sign(g_j, &at) == 0 && at.n == 2,
+          "swap 1's replacement is stored");
+    amm_attempt_free(&at);
+    CHECK(amm_journal_nodus_reserved(g_j, -1, nul, 64, &n) == 0 && n == 4 &&
+          !has_in(nul, n, 0x17) && has_in(nul, n, 0x18) && has_in(nul, n, 0x19),
+          "swap 1's latest attempt is open: its old inputs are released; swap 2's and the refund's stay");
+    CHECK(amm_journal_swap_transition(g_j, s2.seq, "unknown", NULL, NULL, NULL) == 0 &&
+          amm_journal_nodus_reserved(g_j, -1, nul, 64, &n) == 0 && n == 2 &&
+          !has_in(nul, n, 0x18) && has_in(nul, n, 0x19),
+          "swap 2 left the owed states (unknown): its coins are released");
 }
 
 /* J22: the open NODUS approval query. */
@@ -2389,6 +2486,7 @@ int main(void) {
     j19_gone_every_swap();
     j20_nodus_rows();
     j21_attempts();
+    j21b_reserved_and_after();
     j22_open_nodus();
     j23_id_edge_head();
     j24_eth_attempts();

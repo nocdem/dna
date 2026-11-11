@@ -1919,24 +1919,77 @@ static int attempt_latest_locked(amm_journal_t *j, int64_t swap_seq,
     return ret;
 }
 
-int amm_journal_swap_head_payout(amm_journal_t *j, amm_swap_t *out) {
-    if (!j || !out) return -1;
+int amm_journal_swap_head_payout_after(amm_journal_t *j, int64_t after_seq,
+                                       amm_swap_t *out) {
+    if (!j || !out || after_seq < 0) return -1;
     lock(j);
     /* only a swap that owes a NODUS payout: the payout of a USDT -> NODUS swap
      * or the refund of a NODUS -> USDT swap (the other two are USDT payouts) */
     /* the swap whose attempt is signed or submitted comes first, whatever its
-     * age: with decisions taken while an older refund still waits to be signed,
-     * the payer must settle the open attempt or the refund could never sign
-     * (one payout in flight, attempt_sign) */
+     * age and whatever `after_seq` says: with decisions taken while an older
+     * refund still waits to be signed, the payer must settle the open attempt
+     * or the refund could never sign (one payout in flight, attempt_sign) */
     int r = swap_query(j, "((dir=0 AND state='payout_pending') OR "
                           "(dir=1 AND state='refund_pending')) AND EXISTS "
                           "(SELECT 1 FROM nodus_attempts n WHERE n.swap_seq=swaps.seq "
                           "AND n.state IN ('signed','submitted'))", NULL, 0, out);
     if (r == 1)
-        r = swap_query(j, "(dir=0 AND state='payout_pending') OR "
-                          "(dir=1 AND state='refund_pending')", NULL, 0, out);
+        r = swap_query(j, "((dir=0 AND state='payout_pending') OR "
+                          "(dir=1 AND state='refund_pending')) AND seq>?1",
+                       (arg_t[]){AI(after_seq)}, 1, out);
     unlock(j);
     return r;
+}
+
+int amm_journal_swap_head_payout(amm_journal_t *j, amm_swap_t *out) {
+    return amm_journal_swap_head_payout_after(j, 0, out);
+}
+
+int amm_journal_nodus_reserved(amm_journal_t *j, int64_t except_seq,
+                               uint8_t (*nul)[64], int cap, int *n) {
+    if (!j || !n || cap < 0 || (cap > 0 && !nul)) return -1;
+    *n = 0;
+    lock(j);
+    /* the LATEST attempt of every other swap, when it is expired and the swap
+     * still owes the payout (faucet_journal_reserved_other: reservations are
+     * released only when the claim leaves its owed states) */
+    sqlite3_stmt *st;
+    int ret = -1;
+    if (prep(j, "SELECT a.inputs, a.n_in FROM nodus_attempts a "
+                "JOIN swaps s ON s.seq=a.swap_seq "
+                "WHERE a.swap_seq<>?1 AND a.state='expired' AND "
+                "a.n=(SELECT MAX(m.n) FROM nodus_attempts m WHERE m.swap_seq=a.swap_seq) "
+                "AND ((s.dir=0 AND s.state='payout_pending') OR "
+                "(s.dir=1 AND s.state='refund_pending')) ORDER BY a.swap_seq",
+            (arg_t[]){AI(except_seq)}, 1, &st) != 0) {
+        unlock(j);
+        return -1;
+    }
+    int rc;
+    ret = 0;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        int64_t n_in = 0;
+        if (col_i64(st, 1, &n_in) != 0 || n_in < 1 || n_in > AMM_MAX_INPUTS ||
+            sqlite3_column_type(st, 0) != SQLITE_BLOB ||
+            sqlite3_column_bytes(st, 0) != (int)(n_in * 64)) {
+            QGP_LOG_ERROR(LOG_TAG, "an attempt row does not read back as valid inputs");
+            ret = -1;
+            break;
+        }
+        const uint8_t *ip = sqlite3_column_blob(st, 0);
+        for (int i = 0; i < n_in; i++) {
+            if (*n >= cap) { ret = 1; break; }
+            memcpy(nul[(*n)++], ip + (size_t)i * 64, 64);
+        }
+        if (ret != 0) break;
+    }
+    if (ret == 0 && rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "step failed: %s", sqlite3_errmsg(j->db));
+        ret = -1;
+    }
+    sqlite3_finalize(st);
+    unlock(j);
+    return ret;
 }
 
 int amm_journal_attempt_latest(amm_journal_t *j, int64_t swap_seq,
@@ -1973,9 +2026,12 @@ int amm_journal_attempt_sign(amm_journal_t *j, amm_attempt_t *a) {
         rc = AMM_J_ILLEGAL;
         goto done;
     }
-    /* ONE PAYOUT IN FLIGHT (the faucet's head claim; there is no coin
-     * reservation table): another swap's open attempt would pick the same
-     * coins, and the two envelopes could not both apply */
+    /* ONE PAYOUT IN FLIGHT (the faucet's head claim): another swap's open
+     * attempt would pick the same coins, and the two envelopes could not both
+     * apply. The inputs of an EXPIRED attempt of a swap that still owes its
+     * payout are kept from every other plan by the payer
+     * (amm_journal_nodus_reserved), derived from this table: there is no
+     * separate reservation table */
     int64_t others = 0;
     if (one_int(j, "SELECT COUNT(*) FROM nodus_attempts WHERE swap_seq<>?1 AND "
                    "state IN ('signed','submitted')",

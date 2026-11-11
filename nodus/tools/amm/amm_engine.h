@@ -67,7 +67,10 @@
  *   g. NODUS payouts through amm_nodus_pay: settlement and resubmission of the
  *      stored envelopes; the REFUND of a NODUS -> USDT swap is signed here (a
  *      refund that is zero after the Nodus fee is DROPPED: givens items 89,
- *      90).
+ *      90). A signed or submitted attempt keeps priority; an expired payout
+ *      whose replacement cannot be stored this round is deferred to the next
+ *      round and the next owed swap is served (amm_nodus_pay.h, RESERVED
+ *      COINS).
  *   h. USDT payouts through amm_eth_pay: settlement and broadcast of the stored
  *      transactions; a USDT refund is signed here (dropped when its Ethereum
  *      fee is not below it).

@@ -69,6 +69,12 @@
  *       next waits; a second swap's envelope is NOT stored while the first
  *       attempt is open (the same coin would be spent twice), and after the
  *       first is settled the second needs its own sign;
+ *   P15 the input coins of an expired attempt of a swap that still owes its
+ *       payout are reserved: no payout decided meanwhile, no refund's first
+ *       attempt and no quote uses them; the swap's own replacement does and
+ *       shares an input; a replacement that cannot be stored is reported as
+ *       waiting; the reservation survives a restart and ends when the swap
+ *       leaves the owed states (see the comment of P15);
  *   P14 configuration: expiry_ahead outside 1..100, a zero resubmit or scan
  *       bound, a missing key / rand / seam function are refused (NULL).
  * WHAT IT REQUIRES: a default build (the newest pinned rule-set generation);
@@ -372,6 +378,11 @@ static int step(env_t *e, amm_np_step_t *o) { return amm_nodus_pay_step(e->p, 0,
 
 static int attempt(env_t *e, const amm_swap_t *s, amm_attempt_t *a) {
     return amm_journal_attempt_latest(e->j, s->seq, a);
+}
+
+/* The nullifier add_coin(seed) gives its coin. */
+static void coin_nul(int seed, uint8_t out[64]) {
+    for (int i = 0; i < 64; i++) out[i] = (uint8_t)(seed * 31 + i);
 }
 
 static int has_nul(const amm_attempt_t *a, const uint8_t *nul) {
@@ -943,6 +954,104 @@ int main(void) {
           "P13b then the older refund is the head and needs its sign");
     CHECK(sign(&e, &s, 1000ULL + 20000000ULL, &o) != AMM_NP_BUSY, "P13b and its sign is no longer refused as busy");
     env_close(&e);
+
+    /* ── P15 the coins of an expired payout are reserved ──────────────
+     * PROVES (faucet pattern, faucet_core.c:556-568; red team finding 1): while a
+     * swap that still owes a NODUS payout has an EXPIRED latest attempt, no other
+     * plan uses that attempt's input coins: not a payout planned in the decision
+     * (amm_nodus_pay_prepare), not a refund's first attempt (amm_nodus_pay_sign),
+     * and a quote (amm_nodus_pay_quote) answers the same as a decision would see.
+     * The expired swap's own replacement still uses them and shares an input with
+     * the expired attempt. The reservation is read from the journal: a fresh payer
+     * over a reopened journal file excludes the same coins; it ends when the swap
+     * leaves the owed states (here: unknown). A replacement that cannot be stored
+     * is reported (`waiting`), nothing stored.
+     * BUILD FLAGS / ENVIRONMENT: a default build; one mkdtemp directory under /tmp
+     * (removed); no network; the node is the scripted stub (coin 1 = 10^13 raw,
+     * coin 2 = 5*10^12 raw; the planner takes the LARGEST coin first, so the first
+     * payout of 5*10^9 spends coin 1).
+     * LEAVES BEHIND: nothing.
+     * FALSE PASS: the stub lists coins by script, not as a real node's unspent set;
+     * the "unreadable read" is a scripted error answer. The coin that a later plan
+     * would take is the planner's largest-first choice: if the planner's order
+     * changed, the "would have taken coin 1" premise would no longer hold (the
+     * negative control is the replacement, which MUST take coin 1 although coin 2
+     * exists: it shares an input only because it plans over the expired coins). */
+    {
+        uint8_t c1[64], c2[64];
+        coin_nul(1, c1);
+        coin_nul(2, c2);
+        amm_np_quote_t qq;
+        amm_np_prepared_t pre;
+        env_open(&e);
+        e.cfg.scan_blocks = 200;
+        amm_nodus_pay_free(e.p);
+        e.p = amm_nodus_pay_new(&e.cfg);
+        add_coin(&e.st.nat, 2, 5000000000000ULL);
+        CHECK(mk_payout(&e, 1, &s) && sign(&e, &s, 5000000000ULL, &o) == AMM_NP_OK, "P15 setup: swap P signs its payout");
+        attempt(&e, &s, &at);
+        CHECK(has_nul(&at, c1) && !has_nul(&at, c2), "P15 premise: the first payout spends the largest coin (coin 1)");
+        amm_attempt_free(&at);
+        step(&e, &o);
+        e.st.ri.tip = 1091;
+        CHECK(step(&e, &o) == AMM_NP_OK && o.expired == 1, "P15 P's attempt expires");
+        e.st.nat_rc = AMM_NODE_ERR;                         /* the replacement's read fails once */
+        CHECK(step(&e, &o) == AMM_NP_UNKNOWN && o.waiting == 1 && o.worked == 0 && o.signed_ == 0 &&
+              attempt(&e, &s, &at2) == 0 && at2.n == 1,
+              "P15 (b) the replacement cannot be stored (unreadable coins): reported as waiting, no attempt 2");
+        amm_attempt_free(&at2);
+        e.st.nat_rc = 0;
+
+        /* (b) a payout decided meanwhile does not take coin 1 */
+        CHECK(mk_payout(&e, 1, &s2), "P15 setup: a second USDT -> NODUS swap");
+        CHECK(amm_nodus_pay_prepare(e.p, dst, 5000000000ULL, 1, 0, &pre) == AMM_NP_OK &&
+              !has_nul(&pre.attempt, c1) && has_nul(&pre.attempt, c2),
+              "P15 (b) a new payout is planned over coin 2 only: the expired attempt's coin 1 is not used");
+        amm_np_prepared_free(&pre);
+        CHECK(amm_nodus_pay_quote(e.p, 7000000000000ULL, 0, &qq) == AMM_NP_FUNDS,
+              "P15 a quote of 7*10^12 raw is short (coin 1 is reserved, coin 2 holds 5*10^12), as a decision sees it");
+        CHECK(amm_nodus_pay_quote(e.p, 5000000000ULL, 0, &qq) == AMM_NP_OK && qq.n_in == 1,
+              "P15 a quote of 5*10^9 is funded from coin 2");
+
+        /* (c) restart: a fresh journal handle and payer over the same file */
+        env_reopen(&e);
+        CHECK(amm_nodus_pay_quote(e.p, 7000000000000ULL, 0, &qq) == AMM_NP_FUNDS,
+              "P15 (c) after a restart the quote still treats coin 1 as reserved");
+        CHECK(amm_nodus_pay_prepare(e.p, dst, 5000000000ULL, 1, 0, &pre) == AMM_NP_OK &&
+              !has_nul(&pre.attempt, c1) && has_nul(&pre.attempt, c2),
+              "P15 (c) after a restart a new payout still does not use coin 1");
+        amm_np_prepared_free(&pre);
+
+        /* (b) the read recovers: the replacement is stored and shares an input */
+        CHECK(step(&e, &o) == AMM_NP_OK && o.signed_ == 1 && o.waiting == 0,
+              "P15 (b) when the read recovers the replacement is stored");
+        CHECK(attempt(&e, &s, &at) == 0 && at.n == 2 && has_nul(&at, c1),
+              "P15 (b) attempt 2 spends coin 1: it shares an input with the expired attempt");
+        amm_attempt_free(&at);
+        env_close(&e);
+
+        /* a refund's first attempt avoids the reserved coin; the reservation ends when the swap leaves the owed states */
+        env_open(&e);
+        e.cfg.scan_blocks = 200;
+        amm_nodus_pay_free(e.p);
+        e.p = amm_nodus_pay_new(&e.cfg);
+        add_coin(&e.st.nat, 2, 5000000000000ULL);
+        CHECK(mk_payout(&e, 1, &s) && sign(&e, &s, 5000000000ULL, &o) == AMM_NP_OK, "P15 setup: swap P signs its payout");
+        step(&e, &o);
+        e.st.ri.tip = 1091;
+        CHECK(step(&e, &o) == AMM_NP_OK && o.expired == 1, "P15 P's attempt expires");
+        CHECK(mk_refund(&e, &s2) && sign(&e, &s2, 2000000000ULL, &o) == AMM_NP_OK, "P15 a refund of another swap signs");
+        attempt(&e, &s2, &at);
+        CHECK(!has_nul(&at, c1) && has_nul(&at, c2),
+              "P15 the refund's first attempt does not use the expired payout's coin 1");
+        amm_attempt_free(&at);
+        CHECK(amm_nodus_pay_quote(e.p, 7000000000000ULL, 0, &qq) == AMM_NP_FUNDS,
+              "P15 coin 1 is still reserved: a quote of 7*10^12 is short");
+        CHECK(amm_journal_swap_transition(e.j, s.seq, AMM_S_UNKNOWN, NULL, NULL, NULL) == 0 &&
+              amm_nodus_pay_quote(e.p, 7000000000000ULL, 0, &qq) == AMM_NP_OK && qq.n_in == 1,
+              "P15 P left the owed states (unknown): coin 1 is released, the quote is funded again");
+        env_close(&e);
+    }
 
     /* ── P14 configuration ───────────────────────────────────────── */
     env_open(&e);

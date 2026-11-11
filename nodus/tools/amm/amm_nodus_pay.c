@@ -19,6 +19,11 @@
 
 #define FEE_PASSES 8              /* the planner's own bound (nodus_v2_spend.c) */
 
+/* Input coins of other swaps' expired attempts that no plan may use (at most
+ * 15 per attempt). More than this and the plan is refused (UNKNOWN), never made
+ * over a partial list. */
+#define RESERVED_MAX 1024
+
 static const uint8_t NATIVE_TOKEN[64] = {0};
 
 struct amm_nodus_pay {
@@ -80,6 +85,8 @@ typedef struct {
     dna_meter_policy_t         policy;
     nodus_v2_coin_t            coins[AMM_COINS_MAX];   /* the spendable set   */
     nodus_v2_coin_t            work[AMM_COINS_MAX];    /* planner sorts here  */
+    uint8_t                    reserved[RESERVED_MAX][64];  /* kept from every plan */
+    int                        n_reserved;
     int                        n_coins;
     int                        truncated;
     uint64_t                   tip;
@@ -98,10 +105,15 @@ static int nul_in(const uint8_t *nul, uint8_t (*set)[64], int n) {
 }
 
 /* Read what a plan needs: the chain guard, the tip, the gas price, the
- * rule-set, the bot's own spendable coins. @return AMM_NP_OK / UNKNOWN /
- * UNSUPPORTED (`msg` says which). */
-static int prepare(amm_nodus_pay_t *p, pctx_t *b, uint64_t dl, char *msg,
-                   size_t cap) {
+ * rule-set, the bot's own spendable coins. The coins that are the inputs of
+ * the latest EXPIRED attempt of any swap other than `except_seq` (-1 = none)
+ * that still owes a NODUS payout are left out of the spendable set (the
+ * faucet's reserved coins of other claims, faucet_core.c:556-568): a later
+ * spend must not take what the expired payout's replacement needs. A swap's
+ * own expired inputs stay available to its own replacement (`except_seq`).
+ * @return AMM_NP_OK / UNKNOWN / UNSUPPORTED / ERR (`msg` says which). */
+static int prepare(amm_nodus_pay_t *p, pctx_t *b, int64_t except_seq, uint64_t dl,
+                   char *msg, size_t cap) {
     uint8_t got[32];
     if (p->node.chain_id32(p->node.ctx, got, dl) != AMM_NODE_OK ||
         memcmp(got, p->cfg.chain_id, 32) != 0) {
@@ -156,6 +168,16 @@ static int prepare(amm_nodus_pay_t *p, pctx_t *b, uint64_t dl, char *msg,
      * filter (the list holds other tokens): unusable. A listing that merely
      * filled the node's cap is OK + truncated: the node lists the LARGEST
      * coins first, so the plan runs over what it got. */
+    int rr = amm_journal_nodus_reserved(p->cfg.journal, except_seq, b->reserved,
+                                        RESERVED_MAX, &b->n_reserved);
+    if (rr < 0) {
+        snprintf(msg, cap, "the reserved coins cannot be read from the journal");
+        return AMM_NP_ERR;
+    }
+    if (rr == 1) {
+        snprintf(msg, cap, "too many coins are reserved by expired payouts; the operator must check");
+        return AMM_NP_UNKNOWN;
+    }
     amm_coin_list_t *nat = calloc(1, sizeof(*nat));
     if (!nat) { snprintf(msg, cap, "out of memory"); return AMM_NP_ERR; }
     int cr = p->node.coins(p->node.ctx, NATIVE_TOKEN, nat, dl);
@@ -170,6 +192,7 @@ static int prepare(amm_nodus_pay_t *p, pctx_t *b, uint64_t dl, char *msg,
     for (int i = 0; i < nat->n && b->n_coins < AMM_COINS_MAX; i++) {
         const amm_coin_t *k = &nat->c[i];
         if (k->amount == 0 || k->unlock_block > b->tip) continue;
+        if (nul_in(k->nul, b->reserved, b->n_reserved)) continue;
         nodus_v2_coin_t *o = &b->coins[b->n_coins++];
         memcpy(o->nul, k->nul, 64);
         o->amount = k->amount;
@@ -263,7 +286,7 @@ int amm_nodus_pay_quote(amm_nodus_pay_t *p, uint64_t gross, uint64_t deadline_ms
     q->gross = gross;
     pctx_t *b = calloc(1, sizeof(*b));
     if (!b) return AMM_NP_ERR;
-    int rc = prepare(p, b, deadline_ms, q->msg, sizeof(q->msg));
+    int rc = prepare(p, b, -1, deadline_ms, q->msg, sizeof(q->msg));
     if (rc == AMM_NP_OK) {
         q->tip = b->tip;
         rc = plan_fixed(b, gross, b->coins, b->n_coins, q->msg, sizeof(q->msg));
@@ -323,10 +346,12 @@ void amm_np_prepared_free(amm_np_prepared_t *pre) {
  * one input with it (faucet design 6.4: the original can then never also
  * apply). @return AMM_NP_OK (`pre` ready) / AMM_NP_ZERO (net 0: `pre->fee`,
  * `pre->net` set) / AMM_NP_BELOW_MIN (`pre->fee`, `pre->net` set) / FUNDS /
- * UNKNOWN / UNSUPPORTED / ERR; `msg` says why. */
+ * UNKNOWN / UNSUPPORTED / ERR; `msg` says why. `except_seq` is the swap this
+ * plan is for (-1 = a payout still to be decided, which has no attempt): the
+ * expired attempts of every OTHER owing swap keep their coins (see prepare). */
 static int build_core(amm_nodus_pay_t *p, const char *dest, uint64_t gross,
-                      uint64_t minimum, const amm_attempt_t *prior, uint64_t dl,
-                      amm_np_prepared_t *pre, char *msg, size_t msg_cap) {
+                      uint64_t minimum, const amm_attempt_t *prior, int64_t except_seq,
+                      uint64_t dl, amm_np_prepared_t *pre, char *msg, size_t msg_cap) {
     memset(pre, 0, sizeof(*pre));
     pre->gross = gross;
     if (gross == 0) return AMM_NP_ERR;
@@ -334,7 +359,7 @@ static int build_core(amm_nodus_pay_t *p, const char *dest, uint64_t gross,
     pctx_t *b = calloc(1, sizeof(*b));
     if (!b) return AMM_NP_ERR;
     int ret = AMM_NP_ERR;
-    int rc = prepare(p, b, dl, msg, msg_cap);
+    int rc = prepare(p, b, except_seq, dl, msg, msg_cap);
     if (rc != AMM_NP_OK) { ret = rc; goto out; }
 
     /* plan: a replacement tries the expired attempt's own coins first */
@@ -468,7 +493,7 @@ int amm_nodus_pay_prepare(amm_nodus_pay_t *p, const char *dest, uint64_t gross,
         snprintf(out->msg, sizeof(out->msg), "payouts are paused: nothing is signed or broadcast");
         return AMM_NP_PAUSED;
     }
-    return build_core(p, dest, gross, minimum, NULL, deadline_ms, out, out->msg,
+    return build_core(p, dest, gross, minimum, NULL, -1, deadline_ms, out, out->msg,
                       sizeof(out->msg));
 }
 
@@ -509,7 +534,7 @@ static int sign_impl(amm_nodus_pay_t *p, int64_t seq, uint64_t gross,
     amm_np_prepared_t pre;
     /* No minimum here: a decided payout's minimum was judged in its decision;
      * a refund has none. */
-    int ret = build_core(p, dest, gross, 0, prior, dl, &pre, msg, sizeof(msg));
+    int ret = build_core(p, dest, gross, 0, prior, seq, dl, &pre, msg, sizeof(msg));
     if (ret == AMM_NP_OK && is_payout && pre.fee != prior->fee) {
         /* The replacement at another fee would change what the user receives
          * from what was decided and shown; the replacement at a higher fee is
@@ -585,7 +610,8 @@ static int finish_confirmed(amm_nodus_pay_t *p, const amm_swap_t *head,
     return amm_journal_tx_commit(j) == 0 ? 0 : -1;
 }
 
-int amm_nodus_pay_step(amm_nodus_pay_t *p, uint64_t dl, amm_np_step_t *out) {
+int amm_nodus_pay_step_after(amm_nodus_pay_t *p, uint64_t dl, int64_t after_seq,
+                             amm_np_step_t *out) {
     amm_np_step_t local;
     amm_np_step_t *o = out ? out : &local;
     memset(o, 0, sizeof(*o));
@@ -593,7 +619,7 @@ int amm_nodus_pay_step(amm_nodus_pay_t *p, uint64_t dl, amm_np_step_t *out) {
     amm_journal_t *j = p->cfg.journal;
 
     amm_swap_t head;
-    int h = amm_journal_swap_head_payout(j, &head);
+    int h = amm_journal_swap_head_payout_after(j, after_seq, &head);
     if (h < 0) return AMM_NP_ERR;
     if (h == 1) return AMM_NP_OK;                  /* nothing is owed        */
     o->swap_seq = head.seq;
@@ -613,6 +639,9 @@ int amm_nodus_pay_step(amm_nodus_pay_t *p, uint64_t dl, amm_np_step_t *out) {
     if (!strcmp(a.state, AMM_A_EXPIRED)) {
         /* a replacement, built from the stored gross */
         ret = sign_impl(p, head.seq, a.gross, &a, dl, o);
+        /* nothing stored and nothing moved (funds, unknown, the changed fee,
+         * paused): the swap waits; the engine may go on to the next owed swap */
+        if (ret != AMM_NP_ERR && !o->signed_ && !o->worked) o->waiting = 1;
         goto out;
     }
 
@@ -716,4 +745,8 @@ int amm_nodus_pay_step(amm_nodus_pay_t *p, uint64_t dl, amm_np_step_t *out) {
 out:
     amm_attempt_free(&a);
     return ret;
+}
+
+int amm_nodus_pay_step(amm_nodus_pay_t *p, uint64_t dl, amm_np_step_t *out) {
+    return amm_nodus_pay_step_after(p, dl, 0, out);
 }

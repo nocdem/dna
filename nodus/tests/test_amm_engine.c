@@ -66,6 +66,11 @@
  *   E12 the setting eth_chain_id 11155111 reaches the watcher, the payer, the
  *       nonce key and the signature; providers on another chain than the
  *       setting are not used.
+ *   E20 an older NODUS payout whose attempt expired and cannot be replaced
+ *       (the Nodus fee changed) does not hold a younger NODUS refund: the
+ *       refund is signed in the same round over a coin the expired payout does
+ *       not hold; the payout's replacement follows once the fee is the decided
+ *       one again and spends its own expired coin (see the comment of E20).
  * HAND VECTORS: pool 3*10^15 raw NODUS / 3*10^9 raw USDT. USDT -> NODUS of
  * 10^8 gives 93652445369406 (test_amm_ledger L3: 9*10^32 / 9.61*10^18);
  * NODUS -> USDT of 10^14 gives 93652445 (9*10^38 / 9.61*10^30). After the
@@ -129,6 +134,10 @@ typedef struct {
     int      rcpt_ok;                /* 1: every provider answers a status-1 receipt */
     uint64_t rcpt_block;             /* ... in this block                      */
     uint8_t  rcpt_hash;              /* ... with this block hash (32 x byte)   */
+    uint64_t gas;                    /* the Nodus gas price the node reports (0 = rule off) */
+    int      ncoins;                 /* 0: the one default coin; else the scripted list     */
+    uint8_t  coin_seed[4];           /* coin k's nullifier bytes are coin_seed[k] + i       */
+    uint64_t coin_amt[4];
 } world_t;
 
 static world_t W;
@@ -169,7 +178,7 @@ static int n_ri(void *c, nodus_dnac_ruleset_info_t *out, uint64_t dl) {
     nodus_v2_pins_tuples(gen, &out->sys_version, out->sys_hash, &out->core_version, out->core_hash);
     return AMM_NODE_OK;
 }
-static int n_gas(void *c, uint64_t *out, uint64_t dl) { (void)c; (void)dl; *out = 0; return AMM_NODE_OK; }
+static int n_gas(void *c, uint64_t *out, uint64_t dl) { (void)c; (void)dl; *out = W.gas; return AMM_NODE_OK; }
 static int n_btime(void *c, uint64_t h, uint64_t *t, uint64_t dl) {
     (void)c; (void)dl; (void)h; *t = 5000; return AMM_NODE_OK;
 }
@@ -183,6 +192,15 @@ static int n_balance(void *c, const char *owner, const uint8_t token[64], uint64
 static int n_coins(void *c, const uint8_t token[64], amm_coin_list_t *out, uint64_t dl) {
     (void)c; (void)token; (void)dl;
     memset(out, 0, sizeof(*out));
+    if (W.ncoins > 0) {                           /* the scripted list (E20)  */
+        out->n = W.ncoins;
+        for (int k = 0; k < W.ncoins; k++) {
+            for (int i = 0; i < 64; i++) out->c[k].nul[i] = (uint8_t)(W.coin_seed[k] + i);
+            out->c[k].amount = W.coin_amt[k];
+        }
+        out->tip = W.nodus_tip;
+        return AMM_NODE_OK;
+    }
     out->n = 1;
     for (int i = 0; i < 64; i++) out->c[0].nul[i] = (uint8_t)(7 + i);
     out->c[0].amount = 1000000000000000ULL;      /* 10^15 raw                */
@@ -1734,6 +1752,84 @@ static void e19_swap_before_add(void) {
     env_close(&f);
 }
 
+/* ── E20 an expired payout that cannot be replaced does not hold the refunds ── */
+
+static int att_has_seed(const amm_attempt_t *a, uint8_t seed) {
+    for (int k = 0; k < a->n_in; k++)
+        if (a->inputs[k][0] == seed && a->inputs[k][63] == (uint8_t)(seed + 63)) return 1;
+    return 0;
+}
+
+/* PROVES (red team finding 1, fix 2): an older USDT -> NODUS payout whose attempt
+ *   expired and whose replacement cannot be stored (the Nodus fee changed: only
+ *   the decided fee is replaced, givens item 97) does not stop a younger
+ *   NODUS -> USDT refund: in the same round the refund is signed, over a coin the
+ *   expired payout does not hold (its input is reserved). While the refund's attempt
+ *   is live the payout waits (one live attempt); once the refund is settled and the
+ *   fee is the decided one again, the payout's replacement is stored and spends the
+ *   expired attempt's coin.
+ * FLAGS/ENVIRONMENT: a default build; scripted node (two coins: seed 7 = 10^15 raw,
+ *   seed 90 = 5*10^14 raw; the tip moves 1000 -> 1100, the expiry is 1090; gas price
+ *   0, then 100000 which lifts the fee above the floor). One mkdtemp directory.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: the node answers the scripted coins and tip; the refund and the payout
+ *   are walked by journal calls the way E6 does; settlement of the refund is done by
+ *   the journal (attempt_finish / transition), not by a scanned block. Without the
+ *   fix the first CHECK after the tip move fails (the refund has no attempt). */
+static void e20_expired_payout_does_not_hold_refunds(void) {
+    printf("E20 an expired payout that cannot be replaced does not hold a later refund\n");
+    env_t e;
+    env_open(&e);
+    W.ncoins = 2;
+    W.coin_seed[0] = 7;  W.coin_amt[0] = 1000000000000000ULL;
+    W.coin_seed[1] = 90; W.coin_amt[1] = 500000000000000ULL;
+    amm_quote_answer_t a, b;
+    amm_engine_step_t o;
+    amm_swap_t p, r;
+    amm_attempt_t at;
+    memset(&at, 0, sizeof(at));
+
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_OK, "approval of the USDT -> NODUS swap P");
+    amm_req_usdt_t ur = usdt_req(&a, 'a', 1);
+    CHECK(amm_engine_accept_usdt(e.eng, &ur, NULL) == AMM_ACC_RECEIVED, "signed request");
+    put_rec(&e, 0x12, 1001, 0xaa, 100000000ULL, "deep");
+    CHECK(step(&e, &o) == 0 && o.decided == 1 && swap_of(&e, a.request_number, &p) &&
+          !strcmp(p.state, "payout_pending"), "P is decided to a payout");
+    CHECK(amm_journal_attempt_latest(e.j, p.seq, &at) == 0 && att_has_seed(&at, 7) && !att_has_seed(&at, 90),
+          "its attempt spends the largest coin (seed 7)");
+    amm_attempt_free(&at);
+
+    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &b) == AMM_Q_OK, "approval of the NODUS -> USDT swap R");
+    amm_req_nodus_to_usdt_t nr = nodus_req(&b, 'f', 1);
+    CHECK(amm_engine_accept_nodus(e.eng, &nr, NULL) == AMM_ACC_RECEIVED && swap_of(&e, b.request_number, &r) &&
+          seen_counted(&e, &r, r.incoming_id) &&
+          amm_journal_swap_transition(e.j, r.seq, "refund_pending", NULL, NULL, NULL) == 0 && r.seq > p.seq,
+          "R (younger than P) is in refund_pending");
+    CHECK(step(&e, &o) == 0 && amm_journal_attempt_latest(e.j, r.seq, &at) == 1,
+          "P's attempt is live: R is not signed (one live attempt)");
+
+    W.nodus_tip = 1100;                                  /* past P's expiry 1090 */
+    W.gas = 100000;                                      /* the fee changes: P's replacement is refused */
+    CHECK(step(&e, &o) == 0 && amm_journal_attempt_latest(e.j, p.seq, &at) == 0 && at.n == 1 &&
+          !strcmp(at.state, "expired"), "P's attempt expired and no replacement was stored (changed fee)");
+    amm_attempt_free(&at);
+    CHECK(amm_journal_attempt_latest(e.j, r.seq, &at) == 0 &&
+          (!strcmp(at.state, "signed") || !strcmp(at.state, "submitted")),
+          "(a) R is signed in the SAME round although the older P cannot be replaced");
+    CHECK(att_has_seed(&at, 90) && !att_has_seed(&at, 7), "R is planned over the coin P does not hold (seed 90): seed 7 is reserved");
+    amm_attempt_free(&at);
+    CHECK(state_of(&e, a.request_number, "payout_pending"), "P waits, unchanged");
+
+    /* R settles; with the decided fee again P's replacement is stored over its own coin */
+    CHECK(amm_journal_attempt_finish(e.j, r.seq, "confirmed") == 0 &&
+          amm_journal_swap_transition(e.j, r.seq, "refunded", NULL, NULL, NULL) == 0, "R settled");
+    W.gas = 0;
+    CHECK(step(&e, &o) == 0 && amm_journal_attempt_latest(e.j, p.seq, &at) == 0 && at.n == 2 &&
+          att_has_seed(&at, 7), "next round: P's replacement is stored and spends the expired attempt's coin");
+    amm_attempt_free(&at);
+    env_close(&e);
+}
+
 int main(void) {
     printf("test_amm_engine\n");
     e1_quote();
@@ -1755,6 +1851,7 @@ int main(void) {
     e17_undecidable();
     e18_adds_paged_and_ordered();
     e19_swap_before_add();
+    e20_expired_payout_does_not_hold_refunds();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }
