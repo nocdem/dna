@@ -1,0 +1,30 @@
+# Installed as /etc/systemd/system/nodus-amm-cert.service; started by nodus-amm-cert.timer. Issues and renews the
+# Let's Encrypt certificate for the IP address 62.171.136.77 used by amm-https.conf (plan
+# docs/plans/2026-11-08-swap-bot-plan.nodus1.md section 4.1; renewal must work unattended, plan :287, :289).
+#
+# lego v5.6.0 has no `renew` command: `run` issues the certificate and renews it
+# (docs/content/migration/cli.md:44; cmd/cmd_root.go:35-44), and the command's flags follow `run`
+# (migration/cli.md:30-41). When the certificate is not yet due, `run` reads it, logs "Skip renewal" and returns without
+# contacting the CA for a new one and without calling the deploy hook (cmd/cmd_run_renew.go:77-87, isInRenewalPeriod
+# :281-297; the blue team quotes :76, the condition starts at :77). A due certificate is renewed; the deploy hook then
+# runs only after the new files are saved.
+#
+# ExecStartPost runs the same reload script after every successful lego run, due or not: if an earlier hook failed after
+# the files were written, the next run finds a fresh certificate, skips, and would never call the hook again; this step
+# makes nginx load the certificate on disk anyway (blue team reconciliation,
+# docs/plans/2026-11-11-swap-site-blueteam.md). No `-` prefix on it: a failed reload or failed `nginx -t` must make the
+# service fail, so `systemctl status` and `systemctl --failed` show it. ExecStartPost does not run if lego itself fails;
+# the next timer run then reconciles.
+#
+# TimeoutStartSec: lego sleeps a random time up to 8 minutes before a due renewal when it does not run on a terminal
+# (cmd_run_renew.go:360-372, jitter = 8 * time.Minute), so the default start timeout is too short.
+[Unit]
+Description=Issue or renew the Let's Encrypt certificate for the swap bot's IP address (lego)
+Wants=network-online.target
+After=network-online.target nginx.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=30min
+ExecStart=/usr/local/bin/lego run --path /etc/lego-amm --server https://acme-v02.api.letsencrypt.org/directory --accept-tos --domains 62.171.136.77 --profile shortlived --http --http.webroot /var/www/acme-amm --deploy-hook /usr/local/sbin/amm-cert-reload
+ExecStartPost=/usr/local/sbin/amm-cert-reload

@@ -200,22 +200,53 @@ It proxies only `/amm/` to the bot at 127.0.0.1:4011, answers the browser's OPTI
 `/amm/liquidity/quote` to one question every 2 seconds per address (429 with `{"approved":false,"reason":"busy"}`).
 It shares nginx with kayraninyeri.com: its other server blocks are not touched, but a broken file breaks both sites.
 
-Install (on 62.171.136.77, as root; the ACME client needs lego v5.6.0 installed outside Debian 12's archive):
+Files of this section: `amm-https.conf`, and in `amm-cert/` the reload script `amm-cert-reload.sh`, the service
+`nodus-amm-cert.service` and the timer `nodus-amm-cert.timer`.
+
+Install (on 62.171.136.77, as root; lego v5.6.0 is installed outside Debian 12's archive as `/usr/local/bin/lego`):
 
 1. Back up `/etc/nginx`; read `nginx -T` for a name clash with the zone `amm_quote` and for any other
-   `default_server` on `443`; `mkdir -p /var/www/acme-amm /etc/lego-amm`.
-2. First the port-80 block alone, so the challenge can be answered before a certificate exists: install the file
-   without the 443 server block (or with the certificate lines commented out), then
+   `default_server` on `443`; `mkdir -p /var/www/acme-amm`.
+2. Install the reload script and the units:
+   `install -m 755 amm-cert/amm-cert-reload.sh /usr/local/sbin/amm-cert-reload`,
+   `install -m 644 amm-cert/nodus-amm-cert.service amm-cert/nodus-amm-cert.timer /etc/systemd/system/`,
+   `systemctl daemon-reload`. The script is the lego deploy hook: lego v5.6.0 splits a hook string on whitespace and
+   runs it without a shell (`cmd/internal/hook/hook.go:23-25`), so `nginx -t && systemctl reload nginx` cannot be
+   given to it inline.
+3. First certificate. The standalone port-80 block `/etc/nginx/sites-enabled/amm-ip-acme` already answers the
+   challenge, so no nginx change is needed yet. lego v5.6.0 has no `renew` command: `lego run` issues and renews, and
+   its flags follow `run` (`docs/content/migration/cli.md:30-44`, `cmd/cmd_root.go:35-44`). The flags used exist in
+   `cmd/internal/flags/flags.go`: `--path` (:769), `--server` (:232), `--accept-tos` (:720), `--domains` (:729),
+   `--profile` (:641), `--http` (:327), `--http.webroot` (:354), `--deploy-hook` (:676). `--email` (:561) is optional:
+   without it the account is stored under the default account name (`cmd/internal/storage/account.go:89-98`); add
+   `--email <operator email>` only if the operator wants Let's Encrypt contact mail. A certificate for an IP address is
+   issued only under the `shortlived` profile (about 6 days; http-01 on port 80; plan section 4.1). Staging first, in its
+   own storage directory (Let's Encrypt staging directory `https://acme-staging-v02.api.letsencrypt.org/directory`,
+   `lego/zz_gen_ca.go:107`):
+   `lego run --path /etc/lego-amm-staging --server https://acme-staging-v02.api.letsencrypt.org/directory --accept-tos --domains 62.171.136.77 --profile shortlived --http --http.webroot /var/www/acme-amm --deploy-hook /usr/local/sbin/amm-cert-reload`
+   Then production, the same command with `--path /etc/lego-amm` and
+   `--server https://acme-v02.api.letsencrypt.org/directory` (`lego/zz_gen_ca.go:103`). The files appear as
+   `/etc/lego-amm/certificates/62.171.136.77.crt` and `.key`, the names `amm-https.conf` uses. (The hook reloads nginx
+   with the configuration that is installed at that moment; at this step that is the old one, which is harmless.)
+4. In ONE step, remove the standalone port-80 block and enable the complete file (both declare `server_name
+   62.171.136.77` on port 80, and nginx ignores the second one with a "conflicting server name" warning,
+   `ngx_http.c:1518`): `rm /etc/nginx/sites-enabled/amm-ip-acme`,
    `cp amm-https.conf /etc/nginx/sites-available/amm-62.171.136.77`,
-   `ln -s /etc/nginx/sites-available/amm-62.171.136.77 /etc/nginx/sites-enabled/`, `nginx -t && systemctl reload nginx`.
-3. First certificate against Let's Encrypt staging, then production (a certificate for an IP address is only issued
-   under the `shortlived` profile, about 6 days; http-01 on port 80; plan section 4.1):
-   `lego --path /etc/lego-amm --accept-tos --email <operator email> --server <staging directory URL> --domains 62.171.136.77 --profile shortlived --http --http.webroot /var/www/acme-amm run`
-   (drop `--server` for production). The files appear as `/etc/lego-amm/certificates/62.171.136.77.crt` and `.key`,
-   the names `amm-https.conf` uses.
-4. Install the complete file, then `nginx -t && systemctl reload nginx`. Check from outside: the certificate names the
-   IP address; `OPTIONS /amm/quote` answers 204 with the allow-origin header; two price questions inside 2 seconds
-   give 200 then 429 with the busy body; `https://62.171.136.77/` answers 404; kayraninyeri.com still answers 200.
-5. Renewal: a systemd timer runs `lego ... renew --deploy-hook "nginx -t && systemctl reload nginx"` (same flags
-   as step 3, with `--path /etc/lego-amm`); lego has no scheduler of its own. The hook is the shape of the swap site's
-   certificate. A failed renewal makes the bot unreachable for browsers within days: check the expiry after each deploy.
+   `ln -s /etc/nginx/sites-available/amm-62.171.136.77 /etc/nginx/sites-enabled/`, then `nginx -t && systemctl reload nginx`.
+5. Start the timer: `systemctl enable --now nodus-amm-cert.timer`. It runs the production `lego run` every 12 hours.
+   The service runs lego's own renewal rule: a certificate not yet due is left alone (`cmd/cmd_run_renew.go:77-87`),
+   and for a 160-hour certificate it is due 80 hours before expiry (`:299-312`), so 12 hours is well inside the
+   window. After every run the service also runs the reload script (`ExecStartPost`), so nginx serves the certificate on
+   disk even if an earlier hook failed. Rationale and citations are in the comments of the two unit files.
+6. Check after the install:
+   - the certificate actually served: `openssl s_client -connect 62.171.136.77:443 </dev/null 2>/dev/null | openssl x509 -noout -subject -dates`
+     (names the IP address, the dates match the files under `/etc/lego-amm/certificates/`);
+   - kayraninyeri.com still served with its own certificate:
+     `openssl s_client -connect 62.171.136.77:443 -servername kayraninyeri.com </dev/null 2>/dev/null | openssl x509 -noout -subject -dates`;
+   - `OPTIONS /amm/quote` answers 204 with the allow-origin header; two price questions inside 2 seconds give 200
+     then 429 with the busy body; `https://62.171.136.77/` answers 404; kayraninyeri.com answers 200;
+   - a staging renewal run: `lego run` with the staging command of step 3 and `--renew-force` (`flags.go` name
+     `renew-force`, `cmd/internal/flags/names.go:160`) must write new files and run the hook without error;
+     `systemctl start nodus-amm-cert.service` must end with `systemctl status nodus-amm-cert.service` showing success.
+   A failed renewal makes the bot unreachable for browsers within days: `systemctl list-timers nodus-amm-cert.timer`
+   and the served certificate's dates are the ones to read after each deploy.
