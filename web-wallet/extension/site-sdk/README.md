@@ -68,6 +68,55 @@ your page needs it. It connects on click and passes the account to `onConnect`.
 `createNodusConnector({ window })` creates an independent connector, for example
 for an explicitly supplied browser window.
 
+## Swap and liquidity add (swap.nodusnetwork.io)
+
+Four calls send one request object to the Nodus provider: `holdTransfer`,
+`sendNodusToUsdt`, `sendUsdtToNodus` and `sendLiquidityAdd`. The extension that
+pays signs the user's request, posts it to the bot itself at `botUrl` (an https
+address without a path; the site gives it with each request) and pays only if
+that request reached the bot (the bot answered over HTTP with `"received": true`).
+If it did not, nothing is paid and the call rejects with `error.data`
+`{ delivered: false, paid: false, answered, reason }` (`answered` is true when the bot
+replied over HTTP; `reason` is the bot's refusal word or `unreachable` / `http_<status>`).
+When the bot refuses because an open approval with the same sender and amount exists
+(`reason: "open_approval"`), `error.data.openRequestNumber` is that open swap's request
+number (a decimal string, 1 to 4294967295) for the site to show it; any other form is
+dropped. The data object also carries the `cause` field the JSON-RPC error library adds
+(`null` when absent). After a delivered request that was not paid the data is
+`{ delivered: true, paid: false | "unknown", cause: null }`. `paid` is `"unknown"` whenever the
+payment's broadcast step was reached (its pending record was saved) and then failed, whatever the
+error or the wallet state afterwards: the transaction may have been sent, so check the wallet's
+Activity before trying again. `paid: false` means the failure came before that step. For a
+liquidity add `nodusSent` is `"unknown"` in the same way. Only one `holdTransfer` can be in
+progress at a time; a second call is refused with "A hold is already being made". A new hold of a
+site replaces its earlier hold only when the new one is stored.
+
+- `holdTransfer({ account, to, amount })`: builds and signs a native NODUS
+  transfer of `amount` NODUS units to `to` (128 hex) from the connected
+  `account` and keeps it unsent. Resolves `{ holdId, transferId, chainId,
+  expiryHeight }`; `transferId` and `chainId` go into the request text.
+- `sendNodusToUsdt({ holdId, botUrl, text })`: signs `text` (the NODUS to USDT
+  request text of the swap plan, section 6.4.4, naming the held transfer),
+  posts it, then sends the held transfer. A held transfer past its expiry is
+  never sent.
+- `sendUsdtToNodus({ from, botUrl, token, payTo, destination, amount,
+  minimumToReceive, requestNumber })`: signs the typed request (domain chain id
+  = the extension's selected Ethereum network), posts it, then pays `amount`
+  USDT units of `token` to `payTo`.
+- `sendLiquidityAdd({ holdId, botUrl, ethereumAddress, token, payTo,
+  usdtAmount, nodusAmount, requestNumber, text })`: signs both halves, posts the
+  flat add body, then sends both payments.
+
+`token` must be the USDT contract the extension knows for the selected network
+(Ethereum: `0xdAC17F958D2ee523a2206206994597C13D831ec7`, compared as an address, so letter
+case does not matter). Any other token is refused with error -32602 before anything is
+signed, posted or paid, because the bot counts only its own USDT contract. On Ethereum
+Sepolia every token is refused until the test USDT address is set in the extension. The
+bot's answer is read with a 65,536-byte limit; a larger answer counts as not delivered.
+
+The Ethereum network is switched first with `wallet_switchEthereumChain`
+(`0xaa36a7` for Ethereum Sepolia), which is not part of this module.
+
 ## Verify on a Node server
 
 Use the same downloaded files, without the extension or a browser. For example,

@@ -22,6 +22,21 @@ export function renderNodusSiteApproval(document, container, pending, { approve,
   actions.append(actionButton(document, 'Reject', () => reject(pending)), actionButton(document, 'Approve', () => approve(pending), false)); container.append(actions);
 }
 
+// A payment of a swap or a liquidity add (plan section 18 change 1): the held NODUS transfer or the USDT transfer,
+// each with its exact amount, destination, token, fee and the bot that received the request. `rows` are built by the
+// background from the prepared (signed or estimated) transaction; every page-controlled string uses textContent.
+export function renderSwapPaymentApproval(document, container, pending, { approve, reject }) {
+  const heading = pageHeading(document, pending.requestData.title, 'sites'), origin = document.createElement('p');
+  origin.textContent = pending.origin; origin.className = 'extension-origin';
+  container.replaceChildren(heading, origin);
+  for (const [label, value] of pending.requestData.rows) detail(document, container, label, value);
+  if (pending.requestData.note) {
+    const note = document.createElement('p'); note.className = 'hint'; note.textContent = pending.requestData.note; container.append(note);
+  }
+  const actions = document.createElement('div'); actions.className = 'actions';
+  actions.append(actionButton(document, 'Reject', () => reject(pending)), actionButton(document, 'Approve', () => approve(pending), false)); container.append(actions);
+}
+
 // Same permission approval controls as views.js renderConnect; the decision
 // chooses one Nodus identity, so there is no EVM account/network selection.
 export function renderNodusConnect(document, container, state, pending, { approve, reject }) {

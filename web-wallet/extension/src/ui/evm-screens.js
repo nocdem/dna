@@ -1,4 +1,5 @@
 import { CHAINS } from '../../../src/config.js';
+import { EVM_NETWORKS } from '../constants/evm-networks.js';
 import { actionButton } from './views.js';
 import { pageHeading } from './presentation.js';
 
@@ -19,9 +20,9 @@ export function renderEvmApproval(document, container, pending, { approve, rejec
   container.replaceChildren(pageHeading(document, switching ? 'Switch network' : transaction ? 'Review transaction' : 'Signature request', 'sites'));
   container.append(element(document, 'p', pending.origin, 'extension-origin'));
   detail(document, container, 'Account', data.account);
-  detail(document, container, 'Network', CHAINS[data.chain].name);
+  detail(document, container, 'Network', EVM_NETWORKS[data.chain].name);
   if (switching) {
-    detail(document, container, 'Requested network', CHAINS[data.targetChain].name);
+    detail(document, container, 'Requested network', EVM_NETWORKS[data.targetChain].name);
     container.append(element(document, 'p', 'This changes the selected network for every connected site.', 'hint'));
   } else if (transaction) {
     detail(document, container, 'To', data.to ?? 'Contract creation');

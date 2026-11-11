@@ -7,6 +7,7 @@ import { Caip25CaveatType, Caip25EndowmentPermissionName, getEthAccounts } from 
 import { connectDetails, extensionAutoLockNote } from './wallet-ui.js';
 import { NODUS_PERMISSION, NODUS_ACCOUNT_CAVEAT } from '../background/permissions.js';
 import { CHAIN_NETWORKS, chainNetwork } from '../constants/networks.js';
+import { EVM_NETWORKS, WALLET_EVM_CHAINS } from '../constants/evm-networks.js';
 import { PQ_NETWORKS } from '../../../src/pq/networks.js';
 import { appIcon, pageHeading } from './presentation.js';
 import { displayAmount } from '../../../src/portfolio.js';
@@ -211,8 +212,10 @@ export function renderSettings(document, container, state, { setAutoLock, reveal
     const evm = element(document, 'div', 'page-block');
     const caption = element(document, 'label', '', 'Selected EVM network'), network = element(document, 'select');
     caption.htmlFor = network.id = 'evm-network';
-    for (const chain of ['ethereum', 'bsc']) {
-      const option = element(document, 'option', '', CHAINS[chain].name); option.value = chain; network.append(option);
+    // Sepolia is listed only while a website has switched the extension to it (givens item 81), so the selection is
+    // shown truthfully; the settings never offer it as a first choice.
+    for (const chain of [...WALLET_EVM_CHAINS, ...(state.evm.selectedChain === 'sepolia' ? ['sepolia'] : [])]) {
+      const option = element(document, 'option', '', EVM_NETWORKS[chain].name); option.value = chain; network.append(option);
     }
     network.value = state.evm.selectedChain; network.onchange = () => selectEvmNetwork(network.value);
     evm.append(caption, network, element(document, 'p', 'hint', 'Every connected site uses this network.'));

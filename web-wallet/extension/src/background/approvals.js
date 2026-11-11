@@ -1,12 +1,15 @@
 import { ApprovalController } from '@metamask/approval-controller';
 import { providerErrors } from '@metamask/rpc-errors';
 import { ApprovalType } from '@metamask/controller-utils';
+import { SWAP_METHOD_NAMES, SWAP_PAYMENT_APPROVAL } from '../constants/swap.js';
 
 // Port: MetaMask v13.54.0 app/scripts/lib/createOriginThrottlingMiddleware.ts:14-43.
+// The swap methods join the list (plan section 18 change 1 leaves the throttled-method list to this build): a site
+// that is refused three times in 30 s is blocked for 60 s on them, as on the signing methods above.
 const BLOCKABLE_METHODS = new Set([
   'wallet_addEthereumChain', 'eth_sendTransaction', 'eth_signTypedData', 'eth_signTypedData_v1',
   'eth_signTypedData_v3', 'eth_signTypedData_v4', 'personal_sign', 'wallet_switchEthereumChain',
-  'wallet_sendCalls', 'wallet_watchAsset', 'nodus_signMessage',
+  'wallet_sendCalls', 'wallet_watchAsset', 'nodus_signMessage', ...SWAP_METHOD_NAMES,
 ]);
 const TEST_ORIGINS = ['http://127.0.0.1:8080', 'http://127.0.0.1:8081', 'http://127.0.0.1:8082',
   'http://localhost:8080', 'http://localhost:8081', 'http://localhost:8082'];
@@ -66,7 +69,7 @@ export function createApprovals({ messenger, runtime, windows, tabs, platform, g
     messenger: messenger.buildChild({ namespace: 'ApprovalController' }),
     // Port: wallet-init/instance-options/approval-controller.ts:27-36.
     // Plan §3.4:318-319 removes snaps, including the reference's additional snap-dialog exclusion.
-    typesExcludedFromRateLimiting: [ApprovalType.PersonalSign, ApprovalType.EthSignTypedData, ApprovalType.Transaction, 'nodus_signMessage'],
+    typesExcludedFromRateLimiting: [ApprovalType.PersonalSign, ApprovalType.EthSignTypedData, ApprovalType.Transaction, 'nodus_signMessage', SWAP_PAYMENT_APPROVAL],
     showApprovalRequest: () => {
       // The pinned controller invokes this callback without awaiting its promise (:117).
       // background.ts:1088-1100 resets only the opening flag on failure, leaving pending approvals intact.
