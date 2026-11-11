@@ -169,8 +169,8 @@ test('waitText: follows the typed amount and the direction', () => {
   assert.equal(waitText('usdt_to_nodus', '100.000001'), '5 Ethereum blocks');
   assert.equal(waitText('usdt_to_nodus', '500'), '5 Ethereum blocks');
   assert.equal(waitText('usdt_to_nodus', '5000'), '33 Ethereum blocks');
-  assert.equal(waitText('nodus_to_usdt', '5000'), 'Its Nodus block being committed');
-  assert.equal(waitText('nodus_to_usdt', '0.5'), 'Its Nodus block being committed');
+  assert.equal(waitText('nodus_to_usdt', '5000'), 'its Nodus block is committed');
+  assert.equal(waitText('nodus_to_usdt', '0.5'), 'its Nodus block is committed');
   for (const bad of ['', '  ', 'abc', '0', '1.1234567', '99999999999999999999999']) assert.equal(waitText('usdt_to_nodus', bad), '—');
   assert.equal(waitText('nodus_to_usdt', ''), '—');
   // FALSE PASS: only the text is compared; the page wiring (every input, every flip) is checked in a browser.

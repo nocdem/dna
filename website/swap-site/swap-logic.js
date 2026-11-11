@@ -167,7 +167,7 @@ export function waitText(direction, amountText) {
   const decimals = direction === 'usdt_to_nodus' ? USDT_DECIMALS : NODUS_DECIMALS;
   const p = parseAmount(amountText, decimals);
   if (!p.ok) return '—';
-  if (direction !== 'usdt_to_nodus') return 'Its Nodus block being committed';
+  if (direction !== 'usdt_to_nodus') return 'its Nodus block is committed';
   return `${ethConfirmations(p.raw)} Ethereum blocks`;
 }
 
