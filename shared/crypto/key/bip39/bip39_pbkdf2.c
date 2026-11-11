@@ -29,8 +29,9 @@
  * @param data Data to authenticate
  * @param data_len Data length in bytes
  * @param output Output buffer (64 bytes)
+ * @return 0 on success, -1 on allocation failure (output is zeroed)
  */
-static void hmac_sha512(
+static int hmac_sha512(
     const uint8_t *key, size_t key_len,
     const uint8_t *data, size_t data_len,
     uint8_t output[64]
@@ -61,12 +62,13 @@ static void hmac_sha512(
         size_t inner_len = 128 + data_len;
         uint8_t *inner_data = malloc(inner_len);
         if (!inner_data) {
-            // Fallback: zero output and clean up sensitive data
-            memset(output, 0, 64);
+            // Report the failure: a zero MAC must never be mistaken for a result
+            qgp_secure_memzero(output, 64);
             qgp_secure_memzero(k, sizeof(k));
             qgp_secure_memzero(ipad, sizeof(ipad));
             qgp_secure_memzero(opad, sizeof(opad));
-            return;
+            qgp_secure_memzero(inner_hash, sizeof(inner_hash));
+            return -1;
         }
 
         memcpy(inner_data, ipad, 128);
@@ -90,6 +92,7 @@ static void hmac_sha512(
     qgp_secure_memzero(ipad, sizeof(ipad));
     qgp_secure_memzero(opad, sizeof(opad));
     qgp_secure_memzero(inner_hash, sizeof(inner_hash));
+    return 0;
 }
 
 /**
@@ -153,6 +156,7 @@ int bip39_pbkdf2_hmac_sha512(
              * so future modifications cannot leak partial seed-adjacent state. */
             qgp_secure_memzero(U, sizeof(U));
             qgp_secure_memzero(T, sizeof(T));
+            qgp_secure_memzero(output, output_len);
             return -1;
         }
 
@@ -160,12 +164,16 @@ int bip39_pbkdf2_hmac_sha512(
         uint32_to_be(salt_block + salt_len, block);
 
         // U1 = PRF(password, salt || INT(block))
-        hmac_sha512(password, password_len, salt_block, salt_len + 4, U);
+        if (hmac_sha512(password, password_len, salt_block, salt_len + 4, U) != 0) {
+            goto fail;
+        }
         memcpy(T, U, hLen);
 
         // U2 through Uc = PRF(password, U{c-1})
         for (uint32_t iter = 1; iter < iterations; iter++) {
-            hmac_sha512(password, password_len, U, hLen, U);
+            if (hmac_sha512(password, password_len, U, hLen, U) != 0) {
+                goto fail;
+            }
             xor_bytes(T, U, hLen);
         }
 
@@ -179,6 +187,17 @@ int bip39_pbkdf2_hmac_sha512(
         qgp_secure_memzero(T, sizeof(T));
         qgp_secure_memzero(salt_block, salt_len + 4);
         free(salt_block);
+        continue;
+
+fail:
+        /* Any block failure invalidates the whole output: wipe it, all
+         * intermediates and the salt copy, then report the error. */
+        qgp_secure_memzero(U, sizeof(U));
+        qgp_secure_memzero(T, sizeof(T));
+        qgp_secure_memzero(salt_block, salt_len + 4);
+        free(salt_block);
+        qgp_secure_memzero(output, output_len);
+        return -1;
     }
 
     return 0;
@@ -211,6 +230,7 @@ int bip39_mnemonic_to_seed(
     size_t salt_len = strlen(salt_prefix) + strlen(passphrase);
     uint8_t *salt = malloc(salt_len);
     if (!salt) {
+        qgp_secure_memzero(seed, BIP39_SEED_SIZE);
         return -1;
     }
 
@@ -229,5 +249,8 @@ int bip39_mnemonic_to_seed(
     // Zero salt before freeing (contains passphrase)
     qgp_secure_memzero(salt, salt_len);
     free(salt);
+    if (result != 0) {
+        qgp_secure_memzero(seed, BIP39_SEED_SIZE);
+    }
     return result;
 }

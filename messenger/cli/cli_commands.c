@@ -5552,7 +5552,12 @@ int dispatch_dex(dna_engine_t *engine, int argc, char **argv, int sub) {
             return -1;
         }
         uint8_t master_seed[64];
-        bip39_mnemonic_to_seed(mnemonic, "", master_seed);
+        if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) != 0) {
+            fprintf(stderr, "Error: Failed to derive master seed\n");
+            memset(mnemonic, 0, sizeof(mnemonic));
+            memset(master_seed, 0, sizeof(master_seed));
+            return -1;
+        }
         memset(mnemonic, 0, sizeof(mnemonic));
 
         eth_wallet_t wallet;
@@ -6194,7 +6199,12 @@ int dispatch_dex_repl(dna_engine_t *engine, const char *subcmd) {
             return -1;
         }
         uint8_t master_seed[64];
-        bip39_mnemonic_to_seed(mnemonic, "", master_seed);
+        if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) != 0) {
+            fprintf(stderr, "Error: Failed to derive master seed\n");
+            memset(mnemonic, 0, sizeof(mnemonic));
+            memset(master_seed, 0, sizeof(master_seed));
+            return -1;
+        }
         memset(mnemonic, 0, sizeof(mnemonic));
 
         eth_wallet_t wallet;
