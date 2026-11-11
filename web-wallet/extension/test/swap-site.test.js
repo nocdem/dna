@@ -4,6 +4,7 @@ import { Interface, Transaction, getAddress, verifyTypedData } from 'ethers';
 import { setup, account, token, otherToken, payTo, BOT, foundationNodus, wireId, nodusPublicKey, nodusSignature } from './swap-fixture.js';
 import { liquidityAddText, liquidityAddTyped, nodusToUsdtText, usdtToNodusTyped } from '../src/background/swap-texts.js';
 import { SWAP_METHODS } from '../src/constants/swap.js';
+import { NODUS_TOKEN_ID } from '../../src/nodus/network.js';
 
 // Extension tests of plan 2026-11-08-swap-bot-plan.nodus1.md section 18 change 1 and section 19 line 666 (givens items
 // 84, 88, 97): the extension that pays signs the user's request, posts it to the bot at the address the site gives, and
@@ -448,6 +449,64 @@ test('swap methods are throttled through the engine after three rejected prompts
   const blocked = await remote.request(SWAP_METHODS.sendUsdtToNodus, [usdtRequest({ requestNumber: '9' })]);
   assert.equal(blocked.error.code, 4100); assert.match(blocked.error.message, /spam filter/);
   assert.deepEqual(f.background.approvals.controller.state.pendingApprovals, {}); assert.equal(f.botCalls.length, 0);
+});
+
+// ---- hold reservation ends at the expiry height ----
+
+// Tests of the expiry of an unsent hold's reservation (plan section 18 change 1; send design
+// 2026-09-25-web-wallet-nodus-send-design.md:386: a reservation ends at the send's expiry). Environment: swap-fixture.js
+// stubs; the mock chain tip is `nodusMock.state.tip`, the mock's coins are 1.0, 3.0 and 0.5 NODUS, and a hold of 2 NODUS
+// takes the 3.0 coin, so a later send of 3 NODUS is possible only if that coin is free. Leftovers: none. False pass: a
+// send that fails for another reason would also reject, so each "stays reserved" test also checks the hold itself is
+// still usable, and the freed case checks the send succeeds and the hold is gone.
+const sendThree = f => f.background.nodus.prepareSend({ to: foundationNodus, amount: '3', tokenId: NODUS_TOKEN_ID });
+const listReads = f => f.nodusMock.log.filter(entry => entry === 'list:start').length;
+
+// Proves an abandoned hold whose expiry height has passed no longer blocks the next send preparation: before the
+// expiry the 3.0 coin is reserved (the send is refused); once the tip reaches the expiry the hold is removed and the send
+// is built from that coin.
+test('an expired unsent hold stops reserving its coins; an unexpired one keeps them', async t => {
+  const f = await setup(t), remote = f.site(), nodusAccount = await connectBoth(f, remote), { answer: held } = await hold(f, remote, nodusAccount);
+  await assert.rejects(sendThree(f), /Insufficient|held by a pending send/);
+  assert.equal(f.background.nodus.getHold(remote.origin, held.holdId).wireId, wireId, 'an unexpired hold stays');
+  f.nodusMock.state.tip = String(BigInt(held.expiryHeight) - 1n);
+  await assert.rejects(sendThree(f), /Insufficient|held by a pending send/);
+  assert.equal(f.background.nodus.getHold(remote.origin, held.holdId).wireId, wireId, 'one block below the expiry it still stays');
+  f.nodusMock.state.tip = held.expiryHeight;
+  const review = await sendThree(f); assert.ok(review.id);
+  assert.throws(() => f.background.nodus.getHold(remote.origin, held.holdId), { code: -32602 });
+});
+
+// Proves a failed tip read, or a tip of 0, keeps the reservation (the send preparation then continues or fails as it
+// does today, but the hold is not removed).
+test('a tip read that fails or answers 0 keeps the hold reserved', async t => {
+  const f = await setup(t), remote = f.site(), nodusAccount = await connectBoth(f, remote), { answer: held } = await hold(f, remote, nodusAccount);
+  f.nodusMock.state.tip = '0'; await assert.rejects(sendThree(f));
+  assert.equal(f.background.nodus.getHold(remote.origin, held.holdId).wireId, wireId, 'tip 0 keeps the hold');
+  f.nodusMock.state.tip = held.expiryHeight; f.nodusMock.state.busy.add('list'); await assert.rejects(sendThree(f));
+  assert.equal(f.background.nodus.getHold(remote.origin, held.holdId).wireId, wireId, 'a failed read keeps the hold');
+});
+
+// Proves checkHold treats a tip of 0 like an unreadable tip: the hold is dropped with the existing message and nothing is
+// sent.
+test('checkHold with tip 0 drops the hold and sends nothing', async t => {
+  const f = await setup(t), remote = f.site(), nodusAccount = await connectBoth(f, remote), { answer: held } = await hold(f, remote, nodusAccount);
+  f.nodusMock.state.tip = '0';
+  await assert.rejects(f.background.nodus.checkHold(remote.origin, held.holdId), /could not be read.*dropped; nothing was sent/);
+  assert.throws(() => f.background.nodus.getHold(remote.origin, held.holdId), { code: -32602 });
+  assert.equal(f.nodusMock.state.submissions.length, 0);
+});
+
+// Proves the expiry read is made only while a hold exists: a send preparation reads the node one time more with an unsent
+// hold than without. (The base count is measured, not assumed.) False pass: the difference would also be 1 if some other
+// path read once more; the hold-free count is measured on the same wallet before the hold exists.
+test('no extra tip read is made when no hold exists', async t => {
+  const f = await setup(t), remote = f.site(), nodusAccount = await connectBoth(f, remote);
+  let before = listReads(f); const plain = await f.background.nodus.prepareSend({ to: foundationNodus, amount: '1', tokenId: NODUS_TOKEN_ID });
+  const withoutHold = listReads(f) - before; f.background.nodus.cancelSend(plain.id);
+  await hold(f, remote, nodusAccount);
+  before = listReads(f); const second = await f.background.nodus.prepareSend({ to: foundationNodus, amount: '1', tokenId: NODUS_TOKEN_ID });
+  assert.equal(listReads(f) - before, withoutHold + 1); f.background.nodus.cancelSend(second.id);
 });
 
 // ---- wiring ----

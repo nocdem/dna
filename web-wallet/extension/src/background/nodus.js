@@ -255,6 +255,19 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     for (const review of s.reviews.values()) if (review.held?.origin !== exceptOrigin || exceptOrigin === undefined) for (const input of review.heldInputs ?? []) locked.add(input);
     return locked;
   }
+  // A hold's reservation ends at its expiry height (send design 2026-09-25-web-wallet-nodus-send-design.md:386; the chain
+  // accepts the envelope only while the tip is below `expiryHeight`, as checkHold uses it). Before a send preparation uses
+  // heldInputs, while at least one unsent hold exists, the tip is read once; with a successfully read POSITIVE tip every
+  // hold with tip >= expiryHeight is removed, so its coins are free again. A failed read or a tip of 0 changes nothing
+  // (the reservations stay); no wall-clock estimate is used; with no hold no read is made.
+  async function releaseExpiredHolds(s) {
+    if (![...s.reviews.values()].some(review => review.held)) return;
+    let tip;
+    try { tip = adapter.parseTip((await s.client.list({ signal: s.abort.signal })).tip); } catch { return; }
+    current(s);
+    if (tip <= 0n) return;
+    for (const [id, review] of s.reviews) if (review.held && tip >= review.held.expiryHeight) s.reviews.delete(id);
+  }
   function dropHolds(s, origin) {
     for (const [id, review] of s.reviews) if (review.held?.origin === origin) s.reviews.delete(id);
   }
@@ -409,12 +422,13 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     async prepareStake(kind, params) {
       const s = active(); assertActivity(s);
       if (!['delegate', 'undelegate', 'stake'].includes(kind)) throw new Error('Unknown staking action.');
+      await releaseExpiredHolds(s);
       return rememberReview(s, await adapter.prepareStake({ ...params, kind, client: s.client, from: s.addresses.nodus, locked: heldInputs(s) }));
     },
     async getOwnName() { const s = active(); const own = await adapter.ownChainName({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal }); current(s); return own; },
     async getNamePrices() { const s = active(); const value = adapter.parseNamePrices(await s.client.namePrices()); current(s); return { ...value, text: adapter.namePriceList(value.prices) }; },
     async quoteName(name) { const s = active(); const value = await adapter.nameQuote({ client: s.client, from: s.addresses.nodus, name, signal: s.abort.signal }); current(s); return value; },
-    async prepareName(name) { const s = active(); assertActivity(s); return rememberReview(s, await adapter.prepareName({ client: s.client, from: s.addresses.nodus, name, locked: heldInputs(s) })); },
+    async prepareName(name) { const s = active(); assertActivity(s); await releaseExpiredHolds(s); return rememberReview(s, await adapter.prepareName({ client: s.client, from: s.addresses.nodus, name, locked: heldInputs(s) })); },
     async getClaimStatus() {
       const s = active(), status = await adapter.claimStatus({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal }); current(s);
       const unresolved = s.rows.some(row => row.address === s.addresses.nodus && adapter.isClaimRow(row) && !terminal(row.status));
@@ -552,6 +566,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       if (s.holding) throw rpcErrors.internal('A hold is already being made. Finish or reject it first.');
       s.holding = true;
       try {
+      await releaseExpiredHolds(s);
       // The builder's own answer carries the wire id and the chain id; prepare() keeps them inside, so the
       // client it builds with is wrapped to read that answer back unchanged.
       let built;
@@ -614,7 +629,8 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       };
       assertCurrent();
       let tip;
-      try { tip = adapter.parseTip((await s.client.list({ signal: s.abort.signal })).tip); }
+      // A tip of 0 is handled like an unreadable tip (adapters/nodus.js:126 refuses height 0 when building).
+      try { tip = adapter.parseTip((await s.client.list({ signal: s.abort.signal })).tip); if (tip <= 0n) throw new Error('tip 0'); }
       catch { s.reviews.delete(holdId); throw new Error('The current Nodus block height could not be read. The held payment was dropped; nothing was sent.'); }
       assertCurrent();
       if (tip >= held.expiryHeight) { s.reviews.delete(holdId); throw new Error(`The held payment expired at block ${held.expiryHeight} (the chain is at block ${tip}). Nothing was sent.`); }
@@ -657,6 +673,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     async prepareSend({ to, amount, tokenId } = {}) {
       const s = active();
       if (s.activityBlocked) throw new Error('Saved activity is unverified. Check the explorer and discard the unreadable history before sending.');
+      await releaseExpiredHolds(s);
       const review = await prepareTransfer({ wallet: { addresses: s.addresses, nodusClient: s.client }, chain: 'nodus',
         asset: { chain: NODUS_ASSET.chain, tokenId }, to, amount, nodusLocked: heldInputs(s) });
       current(s);
@@ -683,6 +700,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       const s = active(), account = contract(s);
       requireSavedForEvm(Boolean(s.vault && s.key));
       if (s.activityBlocked) throw new Error('Saved activity is unverified. Check the explorer and discard the unreadable history before sending.');
+      await releaseExpiredHolds(s);
       let review;
       if (action === 'deposit') review = await account.deposit(parseRaw(amount));
       else if (action === 'withdraw') review = await account.withdraw(parseRaw(amount), dest || s.addresses.nodus);
@@ -698,7 +716,11 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     },
     cancelSend(id) { const s = active(); s.reviews.get(id)?.cancel(); s.reviews.delete(id); },
     async confirmSend(id) {
-      const s = active(), review = s.reviews.get(id);
+      const s = active();
+      // A held transfer was just checked by checkHold; any other confirm releases expired holds first, while the
+      // review is still in the map (its inputs stay reserved during the read).
+      if (s.reviews.get(id) && !s.reviews.get(id).held) await releaseExpiredHolds(s);
+      const review = s.reviews.get(id);
       if (!review) throw new Error('This review is already closed.');
       s.reviews.delete(id); let record;
       try {
