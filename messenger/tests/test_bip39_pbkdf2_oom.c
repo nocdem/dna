@@ -62,7 +62,7 @@ static void sweep_pbkdf2(size_t out_len) {
      * 7 and 2047 = later HMAC rounds (2049 mallocs per block in total) */
     int idx[] = {1, 2, 3, 7, 2047};
     for (size_t k = 0; k < sizeof(idx) / sizeof(idx[0]); k++) {
-        uint8_t out[128];
+        uint8_t out[192];   /* larger than the largest out_len so out[out_len] is in bounds */
         memset(out, 0xAA, sizeof(out));
         g_count = 0;
         g_fail_at = idx[k];
@@ -73,7 +73,7 @@ static void sweep_pbkdf2(size_t out_len) {
         CHECK(reached, "failure index was reached");
         CHECK(rc == -1, "pbkdf2 returns -1 on allocation failure");
         CHECK(all_zero(out, out_len), "pbkdf2 output wiped on allocation failure");
-        CHECK(out[out_len] == 0xAA || out_len == sizeof(out), "bytes past output untouched");
+        CHECK(out[out_len] == 0xAA,"bytes past output untouched");
     }
     if (out_len == 128) {
         /* failure inside block 2 (after block 1 wrote its half): the whole
