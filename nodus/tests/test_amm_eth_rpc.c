@@ -91,6 +91,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "amm_eth_rpc.h"
 #include "client/nodus_evm_abi.h"
@@ -947,6 +948,147 @@ static void r11_config_transport(void) {
     amm_rpc_curl_free(cu);
 }
 
+/* R12 the warning line of a provider's error answer (operator 2026-11-11, from the
+ * live measurement: blockreq answers the newest block's eth_getLogs with code -32014
+ * and a message; the log used to say only "the provider answered with an error").
+ * The nodus build's logger (src/nodus_log_shim.c) writes every logged line to stderr
+ * as "[WRN/TAG] text\n"; stderr is pointed at a temporary file around each call and
+ * read back, so the line is captured exactly as the bot would print it.
+ * PROVES: the line names the provider (NOT its URL, which may carry a key), shows an
+ * integer code and a string message; a message of 300 bytes is cut to exactly 200
+ * bytes plus "..."; an error that is not an object, a non-integer code or a
+ * non-string message adds nothing (the old text); a raw newline, a tab, an escape or
+ * a non-ASCII byte in the message cannot reach the line: the strict parser refuses
+ * the whole answer first, so the line is the "not strict JSON" one and has no
+ * control byte.
+ * BUILD FLAGS: default (the standalone nodus build, whose logger is the shim; the
+ * test would not see the lines with another logger). LEAVES BEHIND: nothing (the
+ * temporary file is anonymous).
+ * HOW IT CAN LIE: the control-byte replacement inside the line builder is defence in
+ * depth behind the parser and cannot be reached through the public path (the parser
+ * already refuses every byte outside 0x20-0x7E), so it is not exercised here, only
+ * the end result "one line, no control byte" is; the checks read stderr, so a
+ * logger that printed elsewhere would make them fail, not pass; the live answer's
+ * text is copied from main's measurement of 2026-11-11, not fetched. */
+static char g_cap[8192];       /* the captured line, without its final newline */
+static int  g_cap_lines;       /* newlines in the capture, the final one included */
+
+/* provider call of eth_chainId with stderr captured into g_cap */
+static int run_chain(amm_eth_provider_t *p, uint64_t *u) {
+    fflush(stderr);
+    int saved = dup(2);
+    FILE *tmp = tmpfile();
+    if (saved < 0 || !tmp) { printf("FATAL capture\n"); exit(2); }
+    dup2(fileno(tmp), 2);
+    int rc = p->chain_id(p->ctx, u, 0);
+    fflush(stderr);
+    dup2(saved, 2);
+    close(saved);
+    rewind(tmp);
+    size_t n = fread(g_cap, 1, sizeof(g_cap) - 1, tmp);
+    fclose(tmp);
+    g_cap[n] = '\0';
+    g_cap_lines = 0;
+    for (size_t i = 0; i < n; i++) g_cap_lines += (g_cap[i] == '\n');
+    if (n > 0 && g_cap[n - 1] == '\n') g_cap[n - 1] = '\0';
+    return rc;
+}
+
+static int count_char(const char *s, char c) {
+    int n = 0;
+    for (; *s; s++) n += (*s == c);
+    return n;
+}
+
+static int has_control(const char *s) {
+    for (; *s; s++)
+        if ((unsigned char)*s < 0x20 || (unsigned char)*s > 0x7e) return 1;
+    return 0;
+}
+
+static void r12_error_text(void) {
+    printf("R12 the log line of an error answer\n");
+    amm_eth_rpc_cfg_t c = { .url = "https://eth.example.test/v1/SECRET-KEY", .name = "p",
+                            .post = stub_post, .post_ctx = NULL, .max_response = 65536 };
+    amm_eth_rpc_t *r = amm_eth_rpc_new(&c);
+    if (!r) { printf("FATAL rpc_new\n"); exit(2); }
+    amm_eth_provider_t p;
+    amm_eth_rpc_provider(r, &p);
+    uint64_t u = 99;
+    char b[1024];
+    const char *w;
+
+    /* the live answer of 2026-11-11 */
+    answer("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32014,\"message\":\"block not available: "
+           "block not found for eth_getLogs, requested toBlock 12113421 is not yet available on the node "
+           "(latestBlock: 12113420, finalizedBlock: 12113343)\"}}");
+    CHECK(run_chain(&p, &u) == AMM_ETH_ERR && u == 99, "the live error answer is ERR");
+    w = g_cap;
+    CHECK(g_cap_lines == 1 && !strncmp(w, "[WRN/AMM_RPC] ", 14), "one warning line");
+    CHECK(strstr(w, "p: eth_chainId") != NULL, "the line names the provider and the method");
+    CHECK(strstr(w, "-32014") != NULL, "the line carries the integer code");
+    CHECK(strstr(w, "block not available: block not found for eth_getLogs") != NULL &&
+          strstr(w, "finalizedBlock: 12113343)") != NULL, "the line carries the whole message (163 bytes, under the bound)");
+    CHECK(strstr(w, "eth.example.test") == NULL && strstr(w, "SECRET-KEY") == NULL,
+          "the line never shows the provider URL");
+
+    /* a 300-byte message: exactly 200 bytes, then "..." */
+    char m300[301];
+    memset(m300, 'A', 300); m300[300] = '\0';
+    snprintf(b, sizeof(b), "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"%s\"}}", m300);
+    answer(b);
+    CHECK(run_chain(&p, &u) == AMM_ETH_ERR, "a 300-byte message: ERR");
+    w = g_cap;
+    CHECK(count_char(w, 'A') == 200, "a 300-byte message is cut to exactly 200 bytes");
+    size_t wl = strlen(w);
+    CHECK(wl >= 3 && !strcmp(w + wl - 3, "..."), "the cut is marked with \"...\" at the end of the line");
+    CHECK(strstr(w, "-32000") != NULL, "the code is still shown");
+    /* exactly 200 bytes: not cut, no marker */
+    memset(m300, 'B', 200); m300[200] = '\0';
+    snprintf(b, sizeof(b), "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-1,\"message\":\"%s\"}}", m300);
+    answer(b);
+    (void)run_chain(&p, &u);
+    w = g_cap; wl = strlen(w);
+    CHECK(count_char(w, 'B') == 200 && wl >= 3 && strcmp(w + wl - 3, "..."), "a 200-byte message is shown whole, no marker");
+
+    /* control and non-ASCII bytes cannot reach the line */
+    static const char *evil[] = {
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1,\"message\":\"x\nFAKE LINE\"}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1,\"message\":\"x\tFAKE\"}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1,\"message\":\"x\\nFAKE\"}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1,\"message\":\"x\xc3\xa9\x1b[31mFAKE\"}}",
+    };
+    for (size_t i = 0; i < sizeof(evil) / sizeof(evil[0]); i++) {
+        answer(evil[i]);
+        char msg[96];
+        snprintf(msg, sizeof(msg), "hostile message %zu: ERR, one line, no control byte, no provider text", i);
+        int rc = run_chain(&p, &u);
+        w = g_cap;
+        CHECK(rc == AMM_ETH_ERR && g_cap_lines == 1 && !has_control(w) && strstr(w, "FAKE") == NULL, msg);
+    }
+
+    /* what is not an integer code / a string message adds nothing */
+    answer("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":\"boom\"}");
+    (void)run_chain(&p, &u);
+    w = g_cap;
+    CHECK(!strcmp(w, "[WRN/AMM_RPC] p: eth_chainId: the provider answered with an error"),
+          "an error that is not an object: the old text, nothing added");
+    answer("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":\"-32000\",\"message\":7}}");
+    (void)run_chain(&p, &u);
+    w = g_cap;
+    CHECK(!strcmp(w, "[WRN/AMM_RPC] p: eth_chainId: the provider answered with an error"),
+          "a string code and a numeric message: the old text");
+    answer("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"message\":\"only text\"}}");
+    (void)run_chain(&p, &u);
+    w = g_cap;
+    CHECK(strstr(w, "only text") != NULL && strstr(w, "code") == NULL, "a message without a code: the message alone");
+    answer("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601}}");
+    (void)run_chain(&p, &u);
+    w = g_cap;
+    CHECK(strstr(w, "-32601") != NULL, "a code without a message: the code alone");
+    amm_eth_rpc_free(r);
+}
+
 int main(void) {
     printf("test_amm_eth_rpc\n");
     r1_requests();
@@ -960,6 +1102,7 @@ int main(void) {
     r8b_tx_lists();
     r10_scalars();
     r11_config_transport();
+    r12_error_text();
     if (g_r) amm_eth_rpc_free(g_r);
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
