@@ -730,7 +730,8 @@ test('a late swap answer after an edit or a flip is discarded; the newer answer 
   const waiting = [];
   const bot = { status: async () => ({ ok: true, status: 200, json: STATUS }), quote: (d, a) => { const x = deferred(); waiting.push({ d, a, ...x }); return x.promise; } };
   const flow = createSwapFlow({ bot, adapter: stubAdapter(), botUrl: BOT_ORIGIN, sleep: async () => {} });
-  const first = flow.press({ direction: 'usdt_to_nodus', amountText: '100' });
+  flow.setAccounts({ ...ACCOUNTS });   // connected first: this test is about the late-answer discard, not the connect rule
+  const first =flow.press({ direction: 'usdt_to_nodus', amountText: '100' });
   await flush();
   flow.clearQuote('swap');                                                      // the user edited the amount (swap.js resets on every edit)
   waiting[0].resolve({ ok: true, status: 200, json: QUOTE });
@@ -754,6 +755,7 @@ test('a late add answer after a side or amount change is discarded', async () =>
   const waiting = [];
   const bot = { liquidityQuote: () => { const x = deferred(); waiting.push(x); return x.promise; } };
   const flow = createSwapFlow({ bot, adapter: stubAdapter(), botUrl: BOT_ORIGIN, sleep: async () => {} });
+  flow.setAccounts({ ...ACCOUNTS });   // connected first: this test is about the late-answer discard, not the connect rule
   const p = flow.pressAdd({ side: 'nodus', amountText: '100000' });
   await flush();
   flow.clearQuote('add');
