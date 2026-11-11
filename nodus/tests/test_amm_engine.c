@@ -71,6 +71,13 @@
  *       refund is signed in the same round over a coin the expired payout does
  *       not hold; the payout's replacement follows once the fee is the decided
  *       one again and spends its own expired coin (see the comment of E20).
+ *   E32 the liquidity withdraw: its refusals, the 300-block wait, the shares computed
+ *       when it acts (a swap decided in between changes them), the reduced position and
+ *       depths, the two payouts to the stored pair only, what is owed counted, the shared
+ *       seen order, a restart; E33 the NODUS side nothing after the fee (refused whole),
+ *       the USDT side nothing after its fee (refused whole too), pause,
+ *       restart; E34 a withdrawal's NODUS payout in the queue behind a deferred expired
+ *       swap payout (each documented at its test).
  * HAND VECTORS: pool 3*10^15 raw NODUS / 3*10^9 raw USDT. USDT -> NODUS of
  * 10^8 gives 93652445369406 (test_amm_ledger L3: 9*10^32 / 9.61*10^18);
  * NODUS -> USDT of 10^14 gives 93652445 (9*10^38 / 9.61*10^30). After the
@@ -2498,6 +2505,392 @@ static void e31_maintenance_walks_wrap(void) {
     env_close(&e);
 }
 
+/* ── E32-E34 the liquidity withdraw (plan sections 6.4.6, 14) ────────── */
+
+/* The pool and the position (Ethereum address 40 x 'a', Nodus address 128 x 'c') the
+ * withdraw tests start from. The position is written through a second connection (the
+ * add's commit writes it: E16 proves that path). */
+static void wd_seed(env_t *e, uint64_t n, uint64_t u, uint64_t units, uint64_t pos) {
+    amm_pool_t p;
+    evm_u256_from_u64(&p.depth_n, n); evm_u256_from_u64(&p.depth_u, u); evm_u256_from_u64(&p.units, units);
+    amm_journal_pool_put(e->j, &p);
+    char eth[41], nod[129];
+    memset(eth, 'a', 40); eth[40] = '\0';
+    memset(nod, 'c', 128); nod[128] = '\0';
+    uint8_t b[32];
+    memset(b, 0, sizeof(b));
+    for (int i = 0; i < 8; i++) b[31 - i] = (uint8_t)(pos >> (8 * i));
+    sqlite3 *db = NULL;
+    sqlite3_stmt *st = NULL;
+    int ok = sqlite3_open(e->jpath, &db) == SQLITE_OK;
+    if (ok) sqlite3_busy_timeout(db, 5000);
+    ok = ok && sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO positions(eth_addr, nodus_addr, units) "
+                                      "VALUES(?1, ?2, ?3)", -1, &st, NULL) == SQLITE_OK &&
+         sqlite3_bind_text(st, 1, eth, -1, SQLITE_STATIC) == SQLITE_OK &&
+         sqlite3_bind_text(st, 2, nod, -1, SQLITE_STATIC) == SQLITE_OK &&
+         sqlite3_bind_blob(st, 3, b, 32, SQLITE_STATIC) == SQLITE_OK && sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    sqlite3_close(db);
+    if (!ok) { printf("FATAL: wd_seed\n"); exit(2); }
+}
+
+static uint64_t wd_units(env_t *e) {
+    char eth[41], nod[129];
+    memset(eth, 'a', 40); eth[40] = '\0';
+    memset(nod, 'c', 128); nod[128] = '\0';
+    evm_u256 u;
+    uint64_t v = UINT64_MAX;
+    if (amm_journal_position_get(e->j, eth, nod, &u) != 0 || amm_to_u64(&v, &u) != AMM_OK) return UINT64_MAX;
+    return v;
+}
+
+/* The signed request of the position ('a' / 'c'), the verifier's output form. */
+static amm_req_liq_withdraw_t wd_req(char eth_c, uint32_t bp, uint64_t req) {
+    amm_req_liq_withdraw_t r;
+    memset(&r, 0, sizeof(r));
+    memset(r.ethereum_address, eth_c, 40);
+    memset(r.nodus_address, 'c', 128);
+    r.basis_points = bp; r.request_number = req;
+    for (int i = 0; i < 8; i++) r.req_no[31 - i] = (uint8_t)(req >> (8 * i));
+    return r;
+}
+
+static int wd_row(env_t *e, int64_t seq, const char *state, amm_wd_t *w) {
+    return amm_journal_withdraw_get(e->j, seq, w) == 0 && !strcmp(w->state, state);
+}
+
+/* A counted NODUS -> USDT swap of 10^14 raw NODUS (the USDT payout of E3's vectors). */
+static int wd_counted_swap(env_t *e, char tid, amm_swap_t *s, amm_quote_answer_t *q) {
+    if (amm_engine_quote(e->eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, q) != AMM_Q_OK) return 0;
+    amm_req_nodus_to_usdt_t nr = nodus_req(q, tid, 1);
+    return amm_engine_accept_nodus(e->eng, &nr, NULL) == AMM_ACC_RECEIVED &&
+           amm_journal_swap_by_botreq(e->j, q->request_number, s) == 0 && seen_counted(e, s, s->incoming_id);
+}
+
+/* E32 PROVES (plan sections 6.4.6, 14; givens items 24, 25, 34, 80, 92, 96): the withdrawal
+ *   (a) is refused unless the two addresses are a stored position (an Ethereum address of
+ *       another pair: NO_POSITION), while liquidity is paused (PAUSED), for a reused request
+ *       number (REUSED) and when the Ethereum tip cannot be read (UNAVAILABLE); nothing is
+ *       written by a refusal;
+ *   (b) does nothing before the Ethereum tip is 300 blocks above the tip read at acceptance
+ *       (299: nothing; 300: it acts);
+ *   (c) computes its shares WHEN IT ACTS from the ledger of that moment: a swap decided
+ *       between acceptance and acting changed them. Hand derived: a NODUS -> USDT swap of
+ *       10^14 raw NODUS into the 3*10^15 / 3*10^9 pool gives 93,652,445 USDT raw (E3), the pool
+ *       is then 3.1*10^15 NODUS / 2,906,347,555 USDT with 3*10^15 units; 1000 basis points of
+ *       a 3*10^15-unit position claim 3*10^14 units: NODUS (3.1*10^15*3*10^14 + 1.5*10^15) /
+ *       3*10^15 = 3.1*10^14 and USDT (2,906,347,555*3*10^14 + 1.5*10^15) / 3*10^15 =
+ *       290,634,755.5 + 0.5 = 290,634,756 (round half up); on the pool before the swap the shares
+ *       would have been 3*10^14 and 3*10^8;
+ *   (d) reduces the position (2.7*10^15) and the depths (2.79*10^15 / 2,615,712,799 / 2.7*10^15
+ *       units) and stores two payout rows, to the position's addresses only, each with its signed
+ *       first attempt, the USDT fee deducted being the ceiling of the stub (500,000);
+ *   (e) counts what it owes in amm_journal_owed_sum: a NODUS -> USDT price question is refused
+ *       (CANNOT_PAY) when the bot's USDT does not cover what is owed to the withdrawal plus the
+ *       quoted number, and answered with exactly enough;
+ *   (f) takes its place in the shared seen order: accepted before a swap that is counted
+ *       later, with both due in one round, it acts first (shares 3*10^14 / 3*10^8 from the
+ *       unchanged pool) and the swap is then decided at the reduced pool (hand derived:
+ *       10^14 * 2.7*10^15 * 2.7*10^9 / (2.8*10^15)^2 = 92,984,693 against 93,652,445 unreduced);
+ *   (g) after a restart between acting and the payout acts no second time and keeps the stored
+ *       attempt bytes.
+ * FLAGS/ENVIRONMENT: a default build; the stub world; liquidity_wait_eth_blocks 300 (the
+ *   default); the tip moves 1000 -> 1299 -> 1300; one mkdtemp directory per scenario.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: the position is seeded by SQL; the Ethereum tip is the stub's; the payouts are proved
+ *   up to their stored attempts (the payers' settlement is test_amm_nodus_pay / test_amm_eth_pay).
+ *   With the shares computed at acceptance instead of at acting, (c) would give 3*10^14 / 3*10^8;
+ *   with a withdrawal acting out of the seen order, (f) would give the unreduced swap output. */
+static void e32_withdraw(void) {
+    printf("E32 the liquidity withdraw\n");
+    env_t e;
+    env_open(&e);
+    wd_seed(&e, 3000000000000000ULL, 3000000000ULL, 3000000000000000ULL, 3000000000000000ULL);
+    amm_wd_t w;
+    amm_req_liq_withdraw_t other = wd_req('b', 1000, 2);
+    CHECK(amm_engine_accept_withdraw(e.eng, &other) == AMM_ACC_NO_POSITION,
+          "(a) an Ethereum address that is not the stored pair's: NO_POSITION");
+    amm_req_liq_withdraw_t r = wd_req('a', 1000, 1);
+    e.cfg.liquidity_paused = 1;
+    env_restart(&e);
+    CHECK(amm_engine_accept_withdraw(e.eng, &r) == AMM_ACC_PAUSED, "(a) liquidity paused: PAUSED");
+    e.cfg.liquidity_paused = 0;
+    env_restart(&e);
+    {
+        sqlite3 *db = NULL;                       /* the tip cursor is unreadable */
+        if (sqlite3_open(e.jpath, &db) == SQLITE_OK) {
+            sqlite3_busy_timeout(db, 5000);
+            sqlite3_exec(db, "DELETE FROM cursors WHERE name='eth_tip'", NULL, NULL, NULL);
+            sqlite3_close(db);
+        }
+    }
+    CHECK(amm_engine_accept_withdraw(e.eng, &r) == AMM_ACC_UNAVAILABLE, "(a) no Ethereum tip: UNAVAILABLE");
+    CHECK(amm_journal_withdraw_get(e.j, 1, &w) == 1, "(a) the refusals wrote nothing");
+    amm_journal_cursor_reset(e.j, "eth_tip", 1000);
+    CHECK(amm_engine_accept_withdraw(e.eng, &r) == AMM_ACC_RECEIVED && wd_row(&e, 1, "accepted", &w) &&
+          w.eth_tip == 1000 && w.bp == 1000, "the request is accepted with the tip of that moment");
+    CHECK(amm_engine_accept_withdraw(e.eng, &r) == AMM_ACC_REUSED, "(a) the same request number again: REUSED");
+
+    /* (b) the wait */
+    amm_engine_step_t o;
+    W.eth_tip = 1299;
+    CHECK(step(&e, &o) == 0 && o.withdraws_done == 0 && wd_row(&e, 1, "accepted", &w) &&
+          pool_is(&e, 3000000000000000ULL, 3000000000ULL), "(b) at 299 blocks nothing happens");
+
+    /* (c) a swap decided in between */
+    amm_swap_t sw;
+    amm_quote_answer_t q;
+    CHECK(wd_counted_swap(&e, 'f', &sw, &q), "a NODUS -> USDT swap of 10^14 raw NODUS is counted");
+    CHECK(step(&e, &o) == 0 && o.decided == 1 && o.withdraws_done == 0 &&
+          pool_is(&e, 3100000000000000ULL, 2906347555ULL) && wd_row(&e, 1, "accepted", &w),
+          "(c) the swap is decided at tip 1299 (pool 3.1*10^15 / 2,906,347,555); the withdrawal is not due");
+    W.eth_tip = 1300;
+    CHECK(step(&e, &o) == 0 && o.withdraws_done == 1 && wd_row(&e, 1, "done", &w) &&
+          w.out_n == 310000000000000ULL && w.out_u == 290634756ULL,
+          "(b)(c) at 300 blocks it acts, with the shares of the pool then: 3.1*10^14 NODUS, 290,634,756 USDT");
+    CHECK(pool_is(&e, 2790000000000000ULL, 2615712799ULL) && wd_units(&e) == 2700000000000000ULL,
+          "(d) the depths and the position are reduced (2.79*10^15 / 2,615,712,799; 2.7*10^15 units)");
+    amm_swap_t nrow, urow;
+    CHECK(amm_journal_swap_by_seq(e.j, w.nodus_swap, &nrow) == 0 && amm_journal_swap_by_seq(e.j, w.usdt_swap, &urow) == 0 &&
+          !strcmp(nrow.state, "payout_pending") && !strcmp(urow.state, "payout_pending"),
+          "(d) two payout rows");
+    char nod[129], eth[41];
+    memset(nod, 'c', 128); nod[128] = '\0';
+    memset(eth, 'a', 40); eth[40] = '\0';
+    CHECK(!strcmp(nrow.dest, nod) && !strcmp(urow.dest, eth) && nrow.out_amount == 310000000000000ULL &&
+          nrow.out_fee > 0 && nrow.out_paid + nrow.out_fee == nrow.out_amount && urow.out_amount == 290634756ULL &&
+          urow.out_fee == 500000ULL && urow.out_paid == 290134756ULL,
+          "(d) the NODUS payout to the Nodus address (planner's fee), the USDT payout to the Ethereum address (fee 500,000)");
+    amm_attempt_t at;
+    amm_eattempt_t ea;
+    uint8_t want20[20];
+    memset(want20, 0xaa, 20);
+    CHECK(amm_journal_attempt_latest(e.j, nrow.seq, &at) == 0 && !strcmp(at.dest, nod) &&
+          (!strcmp(at.state, "signed") || !strcmp(at.state, "submitted")),
+          "(d) the NODUS first attempt is stored, to the stored Nodus address only");
+    const size_t env_len = at.env_len;
+    uint8_t *env_before = malloc(env_len);
+    if (!env_before) { printf("FATAL: malloc\n"); exit(2); }
+    memcpy(env_before, at.env, env_len);
+    amm_attempt_free(&at);
+    CHECK(amm_journal_eth_attempt_latest(e.j, urow.seq, &ea) == 0 && !memcmp(ea.recipient, want20, 20) &&
+          ea.gross == 290634756ULL, "(d) the USDT first attempt is stored, to the stored Ethereum address only");
+    amm_eattempt_free(&ea);
+
+    /* (e) owed to a withdrawal counts in the funding check */
+    uint64_t on = 0, ou = 0;
+    CHECK(amm_journal_owed_sum(e.j, 1, &ou) == 0 && ou == 93652445ULL + 290634756ULL &&
+          amm_journal_owed_sum(e.j, 0, &on) == 0 && on == 310000000000000ULL,
+          "(e) amm_journal_owed_sum counts the withdrawal's shares: USDT = the swap's payout 93,652,445 + 290,634,756, NODUS 3.1*10^14");
+    W.usdt_balance = 1000000000000ULL;
+    amm_quote_answer_t q2;
+    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &q2) == AMM_Q_OK, "a further price question at a rich key");
+    const uint64_t need = ou + q2.number;
+    W.usdt_balance = need - 1;
+    amm_quote_answer_t q3;
+    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &q3) == AMM_Q_CANNOT_PAY,
+          "(e) one raw USDT short of what is owed (withdrawal included) plus the number: CANNOT_PAY");
+    W.usdt_balance = need;
+    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &q3) == AMM_Q_OK,
+          "(e) exactly enough: answered");
+
+    /* (g) a restart between acting and the payout */
+    env_restart(&e);
+    CHECK(step(&e, &o) == 0 && o.withdraws_done == 0 && pool_is(&e, 2790000000000000ULL, 2615712799ULL) &&
+          wd_units(&e) == 2700000000000000ULL, "(g) after a restart the withdrawal is not acted on again");
+    CHECK(amm_journal_attempt_latest(e.j, nrow.seq, &at) == 0 && at.n == 1 && at.env_len == env_len &&
+          !memcmp(at.env, env_before, env_len), "(g) the stored attempt is the same bytes, still attempt 1");
+    amm_attempt_free(&at);
+    free(env_before);
+    env_close(&e);
+
+    /* (f) the seen order: accepted first, due together with a swap counted later */
+    env_t f;
+    env_open(&f);
+    wd_seed(&f, 3000000000000000ULL, 3000000000ULL, 3000000000000000ULL, 3000000000000000ULL);
+    amm_req_liq_withdraw_t r2 = wd_req('a', 1000, 1);
+    CHECK(amm_engine_accept_withdraw(f.eng, &r2) == AMM_ACC_RECEIVED, "(f) a withdrawal is accepted at tip 1000");
+    W.eth_tip = 1300;
+    amm_swap_t sw2;
+    amm_quote_answer_t q4;
+    CHECK(wd_counted_swap(&f, 'f', &sw2, &q4) && amm_journal_swap_by_seq(f.j, sw2.seq, &sw2) == 0 && sw2.seen_seq == 2,
+          "(f) a swap is counted afterwards: seen number 2, the withdrawal's is 1");
+    CHECK(step(&f, &o) == 0 && o.withdraws_done == 1 && o.decided == 1 && wd_row(&f, 1, "done", &w) &&
+          w.out_n == 300000000000000ULL && w.out_u == 300000000ULL,
+          "(f) both due in one round: the withdrawal acts first, with the shares of the unchanged pool (3*10^14, 3*10^8)");
+    amm_swap_t ds;
+    CHECK(amm_journal_swap_by_seq(f.j, sw2.seq, &ds) == 0 && !strcmp(ds.state, "payout_pending") &&
+          ds.out_amount == 92984693ULL && pool_is(&f, 2800000000000000ULL, 2607015307ULL),
+          "(f) the swap is decided after it, at the reduced pool: 92,984,693 USDT (not 93,652,445)");
+    env_close(&f);
+}
+
+/* E33 PROVES (plan section 14; THORChain manager_txout_current.go:1035-1060, givens items 52, 90, 96):
+ *   (a) the NODUS side that is nothing after the Nodus fee refuses the WHOLE withdrawal, before any
+ *       unit change: 1 basis point of a position of 10^9 units (about 10 NODUS) claims 10^5 units
+ *       and 10^5 raw NODUS (0.001 NODUS, below the 0.01 NODUS floor of the fee): state `refused`, the
+ *       position, the depths and the payout rows untouched, nothing stored, nothing paid;
+ *   (b) the USDT side that is nothing after its Ethereum fee (10 USDT against a 20 USDT fee) while the
+ *       NODUS side (10^13 raw) is payable refuses the WHOLE withdrawal as well (THORChain refuses a
+ *       withdrawal for a zero outbound of any asset, manager_txout_current.go:987-989, :1052-1058;
+ *       givens Errata on item 90): state `refused` with its reason, the position and the depths
+ *       unchanged, no payout row, no attempt, nothing paid on either side; a refused withdrawal is
+ *       not looked at again, a new request with the fee below the USDT side acts;
+ *   (c) payouts_paused: the due withdrawal waits (nothing signed, nothing written, counted in
+ *       withdraws_waiting) and acts when the pause ends;
+ *   (d) a restart between acceptance and acting: the accepted withdrawal is read from the journal and
+ *       acts once the tip is 300 blocks above the stored one.
+ * FLAGS/ENVIRONMENT: a default build; the stub world; the fee stub (price_fee) set to 20 USDT for (b).
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: (a) relies on the planner's floor fee (the stub node reports gas 0): a node whose fee rule
+ *   is off would give the same floor. (b) relies on the price stub: the fee is set by the test, not read from
+ *   a market; if the engine dropped the USDT payout and paid the NODUS side instead, the position and
+ *   payout-row checks fail. */
+static void e33_withdraw_cases(void) {
+    printf("E33 withdraw: a side nothing after its fee (NODUS, USDT) refuses the whole, pause, restart\n");
+    env_t e;
+    env_open(&e);
+    amm_wd_t w;
+    amm_engine_step_t o;
+    wd_seed(&e, 3000000000000000ULL, 3000000000ULL, 3000000000000000ULL, 1000000000ULL);
+    amm_req_liq_withdraw_t r = wd_req('a', 1, 1);
+    CHECK(amm_engine_accept_withdraw(e.eng, &r) == AMM_ACC_RECEIVED, "(a) 1 basis point of a 10 NODUS position is accepted");
+    W.eth_tip = 1300;
+    int payouts = 0;
+    CHECK(step(&e, &o) == 0 && o.withdraws_refused == 1 && wd_row(&e, 1, "refused", &w) &&
+          wd_units(&e) == 1000000000ULL && pool_is(&e, 3000000000000000ULL, 3000000000ULL) &&
+          amm_journal_state_count(e.j, "payout_pending", &payouts) == 0 && payouts == 0 && w.nodus_swap == 0 &&
+          strstr(w.message, "NODUS side"),
+          "(a) refused whole: units, depths and payout rows untouched, nothing paid on either side");
+    CHECK(step(&e, &o) == 0 && o.withdraws_refused == 0 && o.withdraws_done == 0, "(a) a refused withdrawal is not looked at again");
+    env_close(&e);
+
+    /* (b) the USDT side nothing after its fee, the NODUS side payable: refused whole */
+    env_t b;
+    env_open(&b);
+    wd_seed(&b, 3000000000000000ULL, 3000000000ULL, 3000000000000000ULL, 10000000000000ULL);
+    W.price_fee = 20000000ULL;                       /* 20 USDT */
+    amm_req_liq_withdraw_t rb = wd_req('a', 10000, 1);
+    CHECK(amm_engine_accept_withdraw(b.eng, &rb) == AMM_ACC_RECEIVED, "(b) 100 % of a 10^13-unit position is accepted");
+    W.eth_tip = 1300;
+    CHECK(step(&b, &o) == 0 && o.withdraws_refused == 1 && o.withdraws_done == 0 &&
+          wd_row(&b, 1, "refused", &w) && strstr(w.message, "USDT side") && w.nodus_swap == 0 && w.usdt_swap == 0 &&
+          wd_units(&b) == 10000000000000ULL && pool_is(&b, 3000000000000000ULL, 3000000000ULL),
+          "(b) USDT 10 against a fee of 20, NODUS 10^13 payable: refused whole, units and depths unchanged");
+    int pp = 0;
+    amm_attempt_t at;
+    amm_eattempt_t eat;
+    CHECK(amm_journal_state_count(b.j, "payout_pending", &pp) == 0 && pp == 0 &&
+          amm_journal_attempt_latest(b.j, 1, &at) == 1 && amm_journal_eth_attempt_latest(b.j, 1, &eat) == 1,
+          "(b) no payout row, no attempt on either side: nothing stored, nothing paid");
+    W.price_fee = 500000ULL;
+    CHECK(step(&b, &o) == 0 && o.withdraws_refused == 0 && o.withdraws_done == 0 && wd_row(&b, 1, "refused", &w) &&
+          wd_units(&b) == 10000000000000ULL, "(b) a refused withdrawal is not looked at again, even at a lower fee");
+    env_close(&b);
+
+    /* (c) payouts paused, (d) a restart between acceptance and acting */
+    env_t c;
+    env_open(&c);
+    wd_seed(&c, 3000000000000000ULL, 3000000000ULL, 3000000000000000ULL, 3000000000000000ULL);
+    amm_req_liq_withdraw_t rc = wd_req('a', 1000, 1);
+    CHECK(amm_engine_accept_withdraw(c.eng, &rc) == AMM_ACC_RECEIVED, "(c) accepted");
+    c.cfg.payouts_paused = 1;
+    env_restart(&c);                                  /* (d) the restart between acceptance and acting */
+    W.eth_tip = 1300;
+    CHECK(step(&c, &o) == 0 && o.withdraws_waiting == 1 && o.withdraws_done == 0 && wd_row(&c, 1, "accepted", &w) &&
+          wd_units(&c) == 3000000000000000ULL && pool_is(&c, 3000000000000000ULL, 3000000000ULL),
+          "(c)(d) payouts paused: the due withdrawal waits, nothing is signed or written");
+    c.cfg.payouts_paused = 0;
+    env_restart(&c);
+    CHECK(step(&c, &o) == 0 && o.withdraws_done == 1 && wd_row(&c, 1, "done", &w) && w.out_n == 300000000000000ULL &&
+          w.out_u == 300000000ULL, "(c)(d) after the pause and a restart it acts, once");
+    CHECK(step(&c, &o) == 0 && o.withdraws_done == 0, "and not a second time");
+    env_close(&c);
+}
+
+/* E34 PROVES (red team findings 1 and 2 with withdrawals in the queue; plan section 14): an older
+ *   USDT -> NODUS swap payout whose attempt expired and cannot be replaced (the Nodus fee changed:
+ *   givens item 97) does not hold the NODUS payout of a withdrawal that acts after it: the withdrawal's
+ *   NODUS row (younger than the swap's) is signed over the coin the expired payout does not hold
+ *   (seed 90; seed 7 is reserved) and submitted in the same round the withdrawal acts; the swap's payout
+ *   waits unchanged; one live attempt holds (the withdrawal does not act while the swap's attempt is
+ *   still live: the round that expires it only expires it); once the withdrawal's payout is settled and
+ *   the fee is the decided one again the swap's replacement is stored over its own coin (seed 7). The
+ *   withdrawal's USDT payout is in the paged USDT owed list with its transaction stored, and the
+ *   withdrawal's two rows never lead to a second act after a restart.
+ * FLAGS/ENVIRONMENT: a default build; scripted coins (seed 7 = 10^15 raw, seed 90 = 5*10^14 raw); the tip
+ *   1000 -> 1100 (the swap payout's expiry 1090); gas 0 then 100000; the Ethereum tip 1300; one mkdtemp
+ *   directory.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: the settlement of the withdrawal's payout is done by journal calls (as E20), not by a scanned
+ *   block; without the withdrawal rows being swap rows of the queue (head, reserved inputs, cursor) the second
+ *   check fails. */
+static void e34_withdraw_in_the_queue(void) {
+    printf("E34 a withdrawal's NODUS payout in the queue behind a deferred expired swap payout\n");
+    env_t e;
+    env_open(&e);
+    wd_seed(&e, 3000000000000000ULL, 3000000000ULL, 3000000000000000ULL, 3000000000000000ULL);
+    W.ncoins = 2;
+    W.coin_seed[0] = 7;  W.coin_amt[0] = 1000000000000000ULL;
+    W.coin_seed[1] = 90; W.coin_amt[1] = 500000000000000ULL;
+    amm_engine_step_t o;
+    amm_swap_t p;
+    amm_quote_answer_t a;
+    amm_attempt_t at;
+    memset(&at, 0, sizeof(at));
+    amm_req_liq_withdraw_t r = wd_req('a', 1000, 1);
+    CHECK(amm_engine_accept_withdraw(e.eng, &r) == AMM_ACC_RECEIVED, "the withdrawal is accepted at tip 1000");
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_OK, "approval of the USDT -> NODUS swap P");
+    amm_req_usdt_t ur = usdt_req(&a, 'b', 1);
+    CHECK(amm_engine_accept_usdt(e.eng, &ur, NULL) == AMM_ACC_RECEIVED, "signed request");
+    put_rec(&e, 0x12, 1001, 0xbb, 100000000ULL, "deep");
+    CHECK(step(&e, &o) == 0 && o.decided == 1 && swap_of(&e, a.request_number, &p) &&
+          !strcmp(p.state, "payout_pending") && amm_journal_attempt_latest(e.j, p.seq, &at) == 0 && att_has_seed(&at, 7),
+          "P is decided to a payout over the largest coin (seed 7)");
+    amm_attempt_free(&at);
+
+    W.eth_tip = 1300;                                    /* the withdrawal is due */
+    CHECK(step(&e, &o) == 0 && o.withdraws_done == 0 && o.withdraws_waiting == 1,
+          "the withdrawal is due but P's NODUS attempt is live: one live attempt, it waits");
+    W.nodus_tip = 1100;                                  /* past P's expiry 1090 */
+    W.gas = 100000;                                      /* the fee changes: P's replacement is refused */
+    CHECK(step(&e, &o) == 0 && amm_journal_attempt_latest(e.j, p.seq, &at) == 0 && at.n == 1 && !strcmp(at.state, "expired"),
+          "P's attempt expires and no replacement is stored (changed fee)");
+    amm_attempt_free(&at);
+    amm_wd_t w;
+    CHECK(step(&e, &o) == 0 && o.withdraws_done == 1 && wd_row(&e, 1, "done", &w),
+          "the next round: P's attempt is not live any more, the withdrawal acts");
+    amm_swap_t nrow, urow;
+    CHECK(amm_journal_swap_by_seq(e.j, w.nodus_swap, &nrow) == 0 && nrow.seq > p.seq &&
+          amm_journal_attempt_latest(e.j, nrow.seq, &at) == 0 &&
+          (!strcmp(at.state, "signed") || !strcmp(at.state, "submitted")),
+          "(a) the withdrawal's NODUS payout (younger than P) is signed and served in the round it acts");
+    CHECK(att_has_seed(&at, 90) && !att_has_seed(&at, 7),
+          "it is planned over the coin P does not hold (seed 90): seed 7 is reserved by P's expired attempt");
+    amm_attempt_free(&at);
+    CHECK(state_of(&e, a.request_number, "payout_pending") && amm_journal_attempt_latest(e.j, p.seq, &at) == 0 &&
+          at.n == 1 && !strcmp(at.state, "expired"), "P waits, unchanged");
+    amm_attempt_free(&at);
+    amm_swap_t page[4];
+    int n = 0;
+    CHECK(amm_journal_swap_by_seq(e.j, w.usdt_swap, &urow) == 0 &&
+          amm_journal_swap_page_usdt_owed(e.j, 0, page, 4, &n) == 0 && n == 1 && page[0].seq == urow.seq,
+          "the withdrawal's USDT payout is in the paged USDT owed list");
+    amm_eattempt_t ea;
+    CHECK(amm_journal_eth_attempt_latest(e.j, urow.seq, &ea) == 0 && !strcmp(ea.state, "signed"), "with its transaction stored");
+    amm_eattempt_free(&ea);
+
+    /* the withdrawal's NODUS payout settles; with the decided fee again P's replacement is stored */
+    CHECK(amm_journal_attempt_finish(e.j, nrow.seq, "confirmed") == 0 &&
+          amm_journal_swap_transition(e.j, nrow.seq, "paid", NULL, NULL, NULL) == 0, "the withdrawal's NODUS payout is settled");
+    W.gas = 0;
+    env_restart(&e);                                     /* and a restart in between */
+    CHECK(step(&e, &o) == 0 && o.withdraws_done == 0 && amm_journal_attempt_latest(e.j, p.seq, &at) == 0 && at.n == 2 &&
+          att_has_seed(&at, 7), "next round (after a restart): P's replacement is stored and spends its own coin (seed 7)");
+    amm_attempt_free(&at);
+    env_close(&e);
+}
+
 int main(void) {
     printf("test_amm_engine\n");
     e1_quote();
@@ -2531,6 +2924,9 @@ int main(void) {
     e29_paused_signs_nothing();
     e30_payout_walk_wraps();
     e31_maintenance_walks_wrap();
+    e32_withdraw();
+    e33_withdraw_cases();
+    e34_withdraw_in_the_queue();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

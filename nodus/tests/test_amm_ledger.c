@@ -556,6 +556,31 @@ static void l9_withdraw(void) {
           eq_u64(&w.units_claimed, 1000) && eq_u64(&w.units_after, 0) &&
           eq_u64(&w.out_n, 1000) && eq_u64(&w.out_u, 333),
           "bp 10000 of the whole pool: all units, both depths");
+    /* the vectors of the withdraw engine tests (test_amm_engine E32), at production
+     * magnitudes. Pool 3.1*10^15 NODUS / 2,906,347,555 USDT / 3*10^15 units, provider
+     * 3*10^15 units, bp 1000:
+     *   claimed = (3*10^15*1000 + 5000)/10000 = 3*10^14 (exact; the 5000 is below one unit)
+     *   out_n   = (3.1*10^15*3*10^14 + 1.5*10^15)/3*10^15 = 3.1*10^14 + 0.5 -> 3.1*10^14
+     *   out_u   = (2,906,347,555*3*10^14 + 1.5*10^15)/3*10^15 = 290,634,755.5 + 0.5 = 290,634,756
+     *             (the exact quotient 290,634,755.5 is a tie: round half UP, truncation gives ...755)
+     * and a provider of 10^13 + 3 units in a pool 3.01*10^15 / 3.01*10^9 / 3.01*10^15, bp 3333:
+     *   claimed = (3333*(10^13+3) + 5000)/10000 = 33330000000014999/10000 = 3,333,000,000,001
+     *             (the exact 3,333,000,000,000.9999 rounds up)
+     *   after   = 10^13 + 3 - 3,333,000,000,001 = 6,667,000,000,002
+     *   out_n   = claimed (depth = pool units): 3,333,000,000,001
+     *   out_u   = (3.01*10^9*3,333,000,000,001 + 1.505*10^15)/3.01*10^15 = 3,333,000.5 -> 3,333,000 */
+    { amm_pool_t hp = { u64v(3100000000000000ULL), u64v(2906347555ULL), u64v(3000000000000000ULL) };
+      evm_u256 hl = u64v(3000000000000000ULL);
+      CHECK(amm_withdraw_calc(&w, &hp, &hl, 1000) == AMM_OK &&
+            eq_u64(&w.units_claimed, 300000000000000ULL) && eq_u64(&w.units_after, 2700000000000000ULL) &&
+            eq_u64(&w.out_n, 310000000000000ULL) && eq_u64(&w.out_u, 290634756ULL),
+            "bp 1000 at production magnitudes: NODUS 3.1*10^14, USDT 290,634,756 (a tie rounds half up)");
+      amm_pool_t mp = { u64v(3010000000000000ULL), u64v(3010000000ULL), u64v(3010000000000000ULL) };
+      evm_u256 ml = u64v(10000000000003ULL);
+      CHECK(amm_withdraw_calc(&w, &mp, &ml, 3333) == AMM_OK &&
+            eq_u64(&w.units_claimed, 3333000000001ULL) && eq_u64(&w.units_after, 6667000000002ULL) &&
+            eq_u64(&w.out_n, 3333000000001ULL) && eq_u64(&w.out_u, 3333000ULL),
+            "bp 3333 of 10^13 + 3 units: 3,333,000,000,001 claimed (rounded up), USDT 3,333,000"); }
     /* refusals */
     CHECK(amm_withdraw_calc(&w, &p, &lp, 10001) == AMM_E_RANGE, "bp > 10000 refused");
     { evm_u256 z = u64v(0);

@@ -580,6 +580,42 @@ int amm_engine_accept_add(amm_engine_t *e, const amm_req_liq_add_t *r, uint32_t 
     }
 }
 
+/* ── 2c. the liquidity withdraw ──────────────────────────────────────── */
+
+int amm_engine_accept_withdraw(amm_engine_t *e, const amm_req_liq_withdraw_t *r) {
+    if (!e || !r) return AMM_ACC_ERR;
+    /* the refusals that need no read first (the journal repeats all of them
+     * inside the accept transaction) */
+    if (e->cfg.liquidity_paused) return AMM_ACC_PAUSED;
+    int mk = amm_journal_req_marker_exists(e->c.journal, r->nodus_address, r->req_no);
+    if (mk < 0) return AMM_ACC_ERR;
+    if (mk == 0) return AMM_ACC_REUSED;
+    evm_u256 units;
+    int pg = amm_journal_position_get(e->c.journal, r->ethereum_address, r->nodus_address, &units);
+    if (pg < 0) return AMM_ACC_ERR;
+    if (pg == 1 || evm_u256_is_zero(&units)) return AMM_ACC_NO_POSITION;
+    /* the wait is counted from the Ethereum tip of this moment (plan section 14:
+     * "300 Ethereum blocks after the request is accepted") */
+    uint64_t tip = 0;
+    if (read_eth_tip(e, &tip) != 0) return AMM_ACC_UNAVAILABLE;
+    amm_wd_accept_t a;
+    memset(&a, 0, sizeof(a));
+    a.eth_addr = r->ethereum_address;
+    a.nodus_addr = r->nodus_address;
+    a.bp = r->basis_points;
+    memcpy(a.req_no, r->req_no, 32);
+    a.eth_tip = tip;
+    a.liquidity_paused_cfg = e->cfg.liquidity_paused;
+    int jr = amm_journal_withdraw_accept(e->c.journal, &a, NULL);
+    switch (jr) {
+    case AMM_J_OK:          return AMM_ACC_RECEIVED;
+    case AMM_J_PAUSED:      return AMM_ACC_PAUSED;
+    case AMM_J_REQ_REUSED:  return AMM_ACC_REUSED;
+    case AMM_J_NO_POSITION: return AMM_ACC_NO_POSITION;
+    default:                return AMM_ACC_ERR;
+    }
+}
+
 /* ── 3. the worker ───────────────────────────────────────────────────── */
 
 static int swaps_paused_now(amm_engine_t *e, int *paused) {
@@ -1009,19 +1045,168 @@ static int commit_add(amm_engine_t *e, int64_t seq, amm_engine_step_t *o) {
     return 0;
 }
 
-/* f. The counted swaps and the ready liquidity adds, taken in ONE order: the
- * shared seen sequence (plan section 13; line 575: "a liquidity commit takes its
- * place in the same order"). The ready adds are read first (page by page into a
- * growing list: no cap), then merged with the swaps' pages: an add commits before
- * the swap whose seen number is above its own. */
+/* f'. A DUE LIQUIDITY WITHDRAWAL ACTS (plan section 14; see amm_engine.h). Every
+ * case is settled BEFORE any unit change; what the texts do not settle is not
+ * decided.
+ *   refuse whole   either side is nothing after its network fee: the NODUS side
+ *                  after the Nodus fee, the USDT side (or a zero share) after the
+ *                  Ethereum fee (manager_txout_current.go:987-989, :1035-1060,
+ *                  plan line 576; givens Errata on item 90);
+ *   wait           nothing written: payouts paused, another NODUS payout in
+ *                  flight, a read or the planner failed, an amount that does not
+ *                  fit 64 bits;
+ *   act            ONE journal transaction (amm_journal_withdraw_act).
+ * Returns 0 / -1 (a journal fault). */
+static int refuse_withdraw(amm_engine_t *e, const amm_wd_t *w, const char *why,
+                           amm_engine_step_t *o) {
+    amm_wd_act_t a;
+    memset(&a, 0, sizeof(a));
+    a.seq = w->seq;
+    a.refuse = 1;
+    a.message = why;
+    int jr = amm_journal_withdraw_act(e->c.journal, &a);
+    if (jr == AMM_J_OK) {
+        QGP_LOG_INFO(LOG_TAG, "withdrawal %lld refused whole: %s", (long long)w->seq, why);
+        o->withdraws_refused++;
+        return 0;
+    }
+    if (jr == -1) return -1;
+    QGP_LOG_ERROR(LOG_TAG, "withdrawal %lld: the refusal was not written (%d)", (long long)w->seq, jr);
+    o->withdraws_waiting++;
+    return 0;
+}
+
+static int act_withdraw(amm_engine_t *e, const amm_wd_t *w, uint64_t dl, amm_engine_step_t *o) {
+    if (e->cfg.payouts_paused) { o->withdraws_waiting++; return 0; }   /* nothing is signed */
+
+    amm_pool_t pool;
+    int g = amm_journal_pool_get(e->c.journal, &pool);
+    if (g < 0) return -1;
+    evm_u256 units;
+    int ug = amm_journal_position_get(e->c.journal, w->eth_addr, w->nodus_addr, &units);
+    if (ug < 0) return -1;
+    /* no ledger, no position or none of it left (an earlier withdrawal took it):
+     * no share on either side, the NODUS side is nothing */
+    if (g == 1 || ug == 1 || evm_u256_is_zero(&units))
+        return refuse_withdraw(e, w, "nothing is left of the position: the NODUS side is nothing", o);
+
+    /* the shares from the ledger of THIS moment (plan section 14) */
+    amm_withdraw_t sh;
+    int cr = amm_withdraw_calc(&sh, &pool, &units, w->bp);
+    if (cr == AMM_E_RANGE)
+        return refuse_withdraw(e, w, "an empty pool side: the NODUS side is nothing", o);
+    uint64_t n_gross = 0, u_gross = 0;
+    if (cr != AMM_OK || amm_to_u64(&n_gross, &sh.out_n) != AMM_OK ||
+        amm_to_u64(&u_gross, &sh.out_u) != AMM_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "withdrawal %lld: the shares cannot be computed (%d): not acted on",
+                      (long long)w->seq, cr);
+        o->withdraws_waiting++;
+        return 0;
+    }
+    if (n_gross == 0)
+        return refuse_withdraw(e, w, "the NODUS side is nothing after the Nodus fee", o);
+
+    /* ONE PAYOUT IN FLIGHT: the NODUS first attempt is stored only while no other
+     * NODUS payout is signed or submitted (as the decision of a USDT -> NODUS swap) */
+    int owed = amm_journal_nodus_payout_owed(e->c.journal);
+    if (owed < 0) return -1;
+    if (owed == 1) { o->withdraws_waiting++; return 0; }
+    amm_np_prepared_t npre;
+    int pr = amm_nodus_pay_prepare(e->c.nodus_pay, w->nodus_addr, n_gross, 0, dl, &npre);
+    if (pr == AMM_NP_ZERO) {
+        amm_np_prepared_free(&npre);
+        return refuse_withdraw(e, w, "the NODUS side is nothing after the Nodus fee", o);
+    }
+    if (pr != AMM_NP_OK) {
+        QGP_LOG_WARN(LOG_TAG, "withdrawal %lld: not acted on, the NODUS payout cannot be planned (%d: %s)",
+                     (long long)w->seq, pr, npre.msg);
+        amm_np_prepared_free(&npre);
+        o->withdraws_waiting++;
+        return 0;
+    }
+
+    /* the USDT side: a share of zero, or one that is not above the Ethereum fee,
+     * refuses the WHOLE withdrawal like the NODUS side (THORChain returns "tx out
+     * item has zero coin" for a withdrawal's outbound of ANY asset,
+     * manager_txout_current.go:987-989, :1052-1058): nothing is changed or paid. */
+    amm_ep_prepared_t epre;
+    memset(&epre, 0, sizeof(epre));
+    int er = u_gross == 0 ? AMM_EP_ZERO
+                          : amm_eth_pay_prepare(e->c.eth_pay, w->eth_addr, u_gross, 0, dl, &epre);
+    if (er == AMM_EP_ZERO) {
+        amm_np_prepared_free(&npre);
+        amm_ep_prepared_free(&epre);
+        return refuse_withdraw(e, w, "the USDT side is nothing after the Ethereum fee", o);
+    }
+    if (er != AMM_EP_OK) {
+        QGP_LOG_WARN(LOG_TAG, "withdrawal %lld: not acted on, the USDT payout cannot be planned (%d: %s)",
+                     (long long)w->seq, er, epre.msg);
+        amm_np_prepared_free(&npre);
+        amm_ep_prepared_free(&epre);
+        o->withdraws_waiting++;
+        return 0;
+    }
+
+    amm_wd_act_t a;
+    memset(&a, 0, sizeof(a));
+    a.seq = w->seq;
+    a.pool_before = &pool;
+    a.units_before = units;
+    a.w = sh;
+    a.n_gross = n_gross; a.n_fee = npre.fee; a.n_net = npre.net;
+    a.u_gross = u_gross; a.u_fee = epre.fee; a.u_net = epre.net;
+    a.nattempt = &npre.attempt;
+    a.eattempt = &epre.attempt;
+    int jr = amm_journal_withdraw_act(e->c.journal, &a);
+    amm_np_prepared_free(&npre);
+    amm_ep_prepared_free(&epre);
+    if (jr == AMM_J_OK) {
+        QGP_LOG_INFO(LOG_TAG, "withdrawal %lld acted on: NODUS %llu, USDT %llu", (long long)w->seq,
+                     (unsigned long long)n_gross, (unsigned long long)u_gross);
+        o->withdraws_done++;
+        return 0;
+    }
+    if (jr == -1) return -1;
+    QGP_LOG_WARN(LOG_TAG, "withdrawal %lld: the act wrote nothing (%d)", (long long)w->seq, jr);
+    o->withdraws_waiting++;
+    return 0;
+}
+
+/* One entry of the shared seen order that is READY to take effect: a liquidity
+ * add (kind 0) or a due liquidity withdrawal (kind 1). */
+typedef struct { int kind; int64_t seq, seen; } ready_t;
+
+static int ready_cmp(const void *x, const void *y) {
+    const ready_t *a = x, *b = y;
+    return a->seen < b->seen ? -1 : (a->seen > b->seen ? 1 : 0);   /* seen_seq is unique */
+}
+
+static int take_effect(amm_engine_t *e, const ready_t *r, uint64_t dl, amm_engine_step_t *o) {
+    if (r->kind == 0) return commit_add(e, r->seq, o);
+    amm_wd_t w;
+    int g = amm_journal_withdraw_get(e->c.journal, r->seq, &w);
+    if (g < 0) return -1;
+    if (g == 1 || strcmp(w.state, AMM_W_ACCEPTED) != 0) return 0;
+    return act_withdraw(e, &w, dl, o);
+}
+
+/* f. The counted swaps, the ready liquidity adds and the due liquidity
+ * withdrawals, taken in ONE order: the shared seen sequence (plan section 13;
+ * line 577: "a liquidity commit takes its place in the same order"). The ready
+ * adds and the due withdrawals are read first (page by page into a growing list:
+ * no cap) and sorted by their seen number, then merged with the swaps' pages: one
+ * commits or acts before the swap whose seen number is above its own. A swap
+ * decided in between changes a withdrawal's shares (they are computed when it
+ * acts, from the ledger then). */
 static int decisions(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
     const int pg = e->page;
     amm_swap_t *l = malloc(sizeof(*l) * (size_t)pg);
     amm_add_t *al = malloc(sizeof(*al) * (size_t)pg);
-    int64_t *rq = NULL;                    /* ready adds: seq, seen_seq pairs */
+    amm_wd_t *wl = malloc(sizeof(*wl) * (size_t)pg);
+    ready_t *rq = NULL;
     size_t rn = 0, rcap = 0, ri = 0;
     int rc = 0;
-    if (!l || !al) { free(l); free(al); return -1; }
+    if (!l || !al || !wl) { free(l); free(al); free(wl); return -1; }
     {
         int64_t a_after = 0;
         for (;;) {
@@ -1032,18 +1217,40 @@ static int decisions(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
                 int rd = add_ready(e, &al[i], dl);
                 if (rd < 0) { rc = -1; break; }
                 if (!rd) continue;
-                if (rn + 2 > rcap) {
+                if (rn + 1 > rcap) {
                     size_t nc = rcap ? rcap * 2 : 16;
-                    int64_t *t = realloc(rq, nc * sizeof(*t));
+                    ready_t *t = realloc(rq, nc * sizeof(*t));
                     if (!t) { rc = -1; break; }
                     rq = t; rcap = nc;
                 }
-                rq[rn++] = al[i].seq;
-                rq[rn++] = al[i].seen_seq;
+                rq[rn++] = (ready_t){ 0, al[i].seq, al[i].seen_seq };
             }
             if (rc != 0 || n < pg) break;
         }
     }
+    /* the due withdrawals: the Ethereum tip is at least liquidity_wait_eth_blocks
+     * above the tip read at acceptance (a tip that cannot be read: none is due) */
+    uint64_t tip = 0;
+    if (rc == 0 && read_eth_tip(e, &tip) == 0 && tip >= e->cfg.liquidity_wait_eth_blocks) {
+        const uint64_t max_tip = tip - e->cfg.liquidity_wait_eth_blocks;
+        int64_t w_after = 0;
+        for (;;) {
+            int n = 0;
+            if (amm_journal_withdraw_page_due(e->c.journal, max_tip, w_after, wl, pg, &n) != 0) { rc = -1; break; }
+            for (int i = 0; i < n && rc == 0; i++) {
+                w_after = wl[i].seen_seq;
+                if (rn + 1 > rcap) {
+                    size_t nc = rcap ? rcap * 2 : 16;
+                    ready_t *t = realloc(rq, nc * sizeof(*t));
+                    if (!t) { rc = -1; break; }
+                    rq = t; rcap = nc;
+                }
+                rq[rn++] = (ready_t){ 1, wl[i].seq, wl[i].seen_seq };
+            }
+            if (rc != 0 || n < pg) break;
+        }
+    }
+    if (rc == 0 && rn > 1) qsort(rq, rn, sizeof(*rq), ready_cmp);
     int paused = 0;
     if (rc == 0 && swaps_paused_now(e, &paused) != 0) rc = -1;
     int64_t after = 0;
@@ -1055,19 +1262,20 @@ static int decisions(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
         }
         for (int i = 0; i < n && rc == 0; i++) {
             after = l[i].seen_seq;
-            while (rc == 0 && ri < rn && rq[ri + 1] < l[i].seen_seq) {
-                if (commit_add(e, rq[ri], o) != 0) rc = -1;
-                ri += 2;
+            while (rc == 0 && ri < rn && rq[ri].seen < l[i].seen_seq) {
+                if (take_effect(e, &rq[ri], dl, o) != 0) rc = -1;
+                ri++;
             }
             if (rc == 0 && decide_one(e, &l[i], paused, dl, o) != 0) rc = -1;
         }
         if (rc != 0 || n < pg) break;
     }
-    while (rc == 0 && ri < rn) {           /* the adds behind every counted swap */
-        if (commit_add(e, rq[ri], o) != 0) rc = -1;
-        ri += 2;
+    while (rc == 0 && ri < rn) {           /* the adds and withdrawals behind every counted swap */
+        if (take_effect(e, &rq[ri], dl, o) != 0) rc = -1;
+        ri++;
     }
     free(rq);
+    free(wl);
     free(al);
     free(l);
     return rc;

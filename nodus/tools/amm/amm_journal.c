@@ -47,7 +47,10 @@
  * questions): the table bot_req_used keeps the bot request number of every
  * deleted question so it is never given out again. Nothing has shipped, so a
  * version 6 file is refused and must be deleted. */
-#define SCHEMA_VERSION 7
+/* 8: the liquidity withdraw (plan sections 6.4.6, 14): the table liq_withdraws.
+ * Nothing has shipped, so a version 7 file is refused and must be deleted, as
+ * every older one. */
+#define SCHEMA_VERSION 8
 #define BUSY_MS 5000
 
 struct amm_journal {
@@ -110,6 +113,20 @@ static const char *SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS positions("
     " eth_addr TEXT NOT NULL, nodus_addr TEXT NOT NULL, units BLOB NOT NULL,"
     " PRIMARY KEY(eth_addr, nodus_addr));"
+    /* the liquidity withdraw: seen_seq is the number of the ONE seen sequence
+     * shared with swaps.seen_seq and liq_adds.seen_seq (UNIQUE here; the other
+     * two tables take the next number over all three, NEXT_SEEN_SQL) */
+    "CREATE TABLE IF NOT EXISTS liq_withdraws("
+    " seq INTEGER PRIMARY KEY AUTOINCREMENT,"
+    " state TEXT NOT NULL CHECK(state IN ('accepted','done','refused')),"
+    " eth_addr TEXT NOT NULL, nodus_addr TEXT NOT NULL,"
+    " bp INTEGER NOT NULL CHECK(bp BETWEEN 1 AND 10000),"
+    " req_no BLOB NOT NULL, eth_tip INTEGER NOT NULL,"
+    " seen_seq INTEGER NOT NULL UNIQUE,"
+    " nodus_swap INTEGER NOT NULL DEFAULT 0, usdt_swap INTEGER NOT NULL DEFAULT 0,"
+    " units_claimed BLOB NOT NULL, out_n INTEGER NOT NULL DEFAULT 0,"
+    " out_u INTEGER NOT NULL DEFAULT 0, message TEXT NOT NULL DEFAULT '');"
+    "CREATE INDEX IF NOT EXISTS liq_withdraws_due ON liq_withdraws(state, eth_tip);"
     "CREATE TABLE IF NOT EXISTS fee_book("
     " swap_seq INTEGER PRIMARY KEY, asset TEXT NOT NULL CHECK(asset IN ('usdt')),"
     " fee INTEGER NOT NULL);"
@@ -179,6 +196,13 @@ static const char *SCHEMA_SQL =
     " PRIMARY KEY(swap_seq, n),"
     " UNIQUE(hash),"
     " UNIQUE(chain_id, nonce));";
+
+/* The next number of the ONE seen sequence (plan sections 13, 14): the highest
+ * seen_seq over swaps, liquidity adds and liquidity withdrawals, plus one. */
+#define NEXT_SEEN_SQL \
+    "MAX(COALESCE((SELECT MAX(seen_seq) FROM swaps), 0), " \
+    "COALESCE((SELECT MAX(seen_seq) FROM liq_adds), 0), " \
+    "COALESCE((SELECT MAX(seen_seq) FROM liq_withdraws), 0)) + 1"
 
 /* ── checked column access ──────────────────────────────────────────── */
 
@@ -1095,10 +1119,8 @@ int amm_journal_swap_seen(amm_journal_t *j, int64_t seq, const char *incoming_id
     if (mk == 0) { rc = AMM_J_DUP_TRANSFER; goto done; }
 
     int64_t next = 0;
-    /* one sequence for swaps and liquidity adds (plan sections 13, 14) */
-    if (one_int(j, "SELECT MAX(COALESCE((SELECT MAX(seen_seq) FROM swaps), 0), "
-                   "COALESCE((SELECT MAX(seen_seq) FROM liq_adds), 0)) + 1", NULL, 0,
-                &next) != 0) goto done;
+    /* one sequence for swaps, liquidity adds and withdrawals (plan sections 13, 14) */
+    if (one_int(j, "SELECT " NEXT_SEEN_SQL, NULL, 0, &next) != 0) goto done;
     uint64_t sum = 0;
     if (inflight_sum_locked(j, held_keeps_room, &sum) != 0) goto done;
     int wq = exists_q(j, "SELECT 1 FROM swaps WHERE state='paid_waiting_depth' AND "
@@ -2844,8 +2866,7 @@ int amm_journal_add_find_eth(amm_journal_t *j, const char *eth_addr,
  * seen sequence shared with the swaps (plan line 575: a liquidity commit takes
  * its place in the same order). Lock held. */
 static int add_take_seen_locked(amm_journal_t *j, int64_t seq) {
-    return run(j, "UPDATE liq_adds SET seen_seq = MAX(COALESCE((SELECT MAX(seen_seq) FROM swaps), 0), "
-                  "COALESCE((SELECT MAX(seen_seq) FROM liq_adds), 0)) + 1 "
+    return run(j, "UPDATE liq_adds SET seen_seq = " NEXT_SEEN_SQL " "
                   "WHERE seq=?1 AND eth_tx<>'' AND nodus_height<>0 AND seen_seq IS NULL",
                (arg_t[]){AI(seq)}, 1, NULL);
 }
@@ -3025,6 +3046,250 @@ int amm_journal_position_get(amm_journal_t *j, const char *eth_addr,
     return ret;
 }
 
+/* ── liquidity withdraw (schema 8; amm_journal.h) ───────────────────── */
+
+#define WD_COLS "seq, state, eth_addr, nodus_addr, bp, req_no, eth_tip, seen_seq, " \
+                "nodus_swap, usdt_swap, units_claimed, out_n, out_u, message"
+
+static int load_wd_row(sqlite3_stmt *st, amm_wd_t *w) {
+    memset(w, 0, sizeof(*w));
+    uint64_t bp = 0;
+    uint8_t ub[32];
+    if (col_i64(st, 0, &w->seq) != 0 || col_text(st, 1, w->state, sizeof(w->state)) != 0 ||
+        col_text(st, 2, w->eth_addr, sizeof(w->eth_addr)) != 0 ||
+        col_text(st, 3, w->nodus_addr, sizeof(w->nodus_addr)) != 0 ||
+        col_u64(st, 4, &bp) != 0 || bp < 1 || bp > 10000 ||
+        col_blob_n(st, 5, w->req_no, 32) != 0 || col_u64(st, 6, &w->eth_tip) != 0 ||
+        w->eth_tip == 0 || col_i64(st, 7, &w->seen_seq) != 0 || w->seen_seq < 1 ||
+        col_i64(st, 8, &w->nodus_swap) != 0 || col_i64(st, 9, &w->usdt_swap) != 0 ||
+        w->nodus_swap < 0 || w->usdt_swap < 0 || col_blob_n(st, 10, ub, 32) != 0 ||
+        col_u64(st, 11, &w->out_n) != 0 || col_u64(st, 12, &w->out_u) != 0 ||
+        col_text(st, 13, w->message, sizeof(w->message)) != 0 ||
+        !hex_lower_n(w->eth_addr, AMM_ADDR_ETH) || !hex_lower_n(w->nodus_addr, AMM_ADDR_NODUS) ||
+        (strcmp(w->state, AMM_W_ACCEPTED) && strcmp(w->state, AMM_W_DONE) &&
+         strcmp(w->state, AMM_W_REFUSED))) {
+        QGP_LOG_ERROR(LOG_TAG, "a liquidity withdrawal row does not read back as valid");
+        memset(w, 0, sizeof(*w));
+        return -1;
+    }
+    w->bp = (uint32_t)bp;
+    evm_u256_from_be(&w->units_claimed, ub);
+    return 0;
+}
+
+/* One withdrawal by a WHERE clause (oldest first). 0 found / 1 none / -1. Lock held. */
+static int wd_query(amm_journal_t *j, const char *where, const arg_t *args, int nargs,
+                    amm_wd_t *out) {
+    char sql[320];
+    snprintf(sql, sizeof(sql), "SELECT " WD_COLS " FROM liq_withdraws WHERE %s "
+             "ORDER BY seq LIMIT 1", where);
+    sqlite3_stmt *st;
+    if (prep(j, sql, args, nargs, &st) != 0) return -1;
+    int rc = sqlite3_step(st);
+    int ret;
+    if (rc == SQLITE_ROW) {
+        amm_wd_t tmp;
+        if (load_wd_row(st, &tmp) != 0) ret = -1;
+        else { if (out) *out = tmp; ret = 0; }
+    } else if (rc == SQLITE_DONE) {
+        ret = 1;
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "step failed: %s", sqlite3_errmsg(j->db));
+        ret = -1;
+    }
+    sqlite3_finalize(st);
+    return ret;
+}
+
+int amm_journal_withdraw_get(amm_journal_t *j, int64_t seq, amm_wd_t *out) {
+    if (!j || !out) return -1;
+    lock(j);
+    int r = wd_query(j, "seq=?1", (arg_t[]){AI(seq)}, 1, out);
+    unlock(j);
+    return r;
+}
+
+int amm_journal_withdraw_accept(amm_journal_t *j, const amm_wd_accept_t *a, amm_wd_t *out) {
+    if (!j || !a || !a->eth_addr || !a->nodus_addr) return -1;
+    if (!hex_lower_n(a->eth_addr, AMM_ADDR_ETH) || !hex_lower_n(a->nodus_addr, AMM_ADDR_NODUS) ||
+        a->bp < 1 || a->bp > 10000 || a->eth_tip == 0 || a->eth_tip > (uint64_t)INT64_MAX)
+        return AMM_J_RANGE;
+    if (op_begin(j) != 0) return -1;
+    int rc = -1;
+    if (a->liquidity_paused_cfg) { rc = AMM_J_PAUSED; goto done; }
+    /* the permanent (sender, request number) marker of the other signed
+     * requests, under the signer: the Nodus address (plan 6.4.6) */
+    int e = exists_q(j, "SELECT 1 FROM req_numbers WHERE sender=?1 AND req_no=?2",
+                     (arg_t[]){AT(a->nodus_addr), AB(a->req_no, 32)}, 2);
+    if (e < 0) goto done;
+    if (e == 0) { rc = AMM_J_REQ_REUSED; goto done; }
+    /* a stored position with units: the signer's address pair (plan 6.4.6) */
+    evm_u256 units;
+    int pg = amm_journal_position_get(j, a->eth_addr, a->nodus_addr, &units);
+    if (pg < 0) goto done;
+    if (pg == 1 || evm_u256_is_zero(&units)) { rc = AMM_J_NO_POSITION; goto done; }
+    int64_t next = 0;
+    if (one_int(j, "SELECT " NEXT_SEEN_SQL, NULL, 0, &next) != 0) goto done;
+    uint8_t zero[32];
+    memset(zero, 0, sizeof(zero));
+    if (run(j, "INSERT INTO liq_withdraws(state, eth_addr, nodus_addr, bp, req_no, "
+               "eth_tip, seen_seq, units_claimed) VALUES('accepted', ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (arg_t[]){AT(a->eth_addr), AT(a->nodus_addr), AI(a->bp), AB(a->req_no, 32),
+                      AI(a->eth_tip), AI(next), AB(zero, 32)}, 7, NULL) != 0) goto done;
+    const int64_t wseq = sqlite3_last_insert_rowid(j->db);
+    /* the marker's swap_seq column is 0 here: it names no swap and no add (a
+     * withdrawal's row is liq_withdraws.seq) */
+    if (run(j, "INSERT INTO req_numbers(sender, req_no, swap_seq) VALUES(?1, ?2, 0)",
+            (arg_t[]){AT(a->nodus_addr), AB(a->req_no, 32)}, 2, NULL) != 0) goto done;
+    if (out && wd_query(j, "seq=?1", (arg_t[]){AI(wseq)}, 1, out) != 0) goto done;
+    rc = AMM_J_OK;
+done:
+    return op_end(j, rc);
+}
+
+int amm_journal_withdraw_page_due(amm_journal_t *j, uint64_t max_eth_tip, int64_t after,
+                                  amm_wd_t *out, int cap, int *n) {
+    if (!j || !out || !n || cap < 1 || after < 0) return -1;
+    if (max_eth_tip > (uint64_t)INT64_MAX) max_eth_tip = (uint64_t)INT64_MAX;
+    lock(j);
+    sqlite3_stmt *st;
+    int ret = -1;
+    *n = 0;
+    if (prep(j, "SELECT " WD_COLS " FROM liq_withdraws WHERE state='accepted' AND "
+                "eth_tip <= ?1 AND seen_seq > ?2 ORDER BY seen_seq LIMIT ?3",
+             (arg_t[]){AI(max_eth_tip), AI(after), AI(cap)}, 3, &st) == 0) {
+        int rc, cnt = 0;
+        ret = 0;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            if (cnt >= cap || load_wd_row(st, &out[cnt]) != 0) { ret = -1; break; }
+            cnt++;
+        }
+        if (ret == 0 && rc != SQLITE_DONE) ret = -1;
+        if (ret == 0) *n = cnt;
+        sqlite3_finalize(st);
+    }
+    unlock(j);
+    return ret;
+}
+
+/* One payout row of a withdrawal in state payout_pending (see amm_journal.h:
+ * HOW A PAYOUT ENTERS THE QUEUES). `side` 0 = NODUS payout, 1 = USDT payout.
+ * Lock held. @return 0 / -1. */
+static int wd_insert_payout(amm_journal_t *j, const amm_wd_t *w, int side, uint64_t gross,
+                            uint64_t fee, uint64_t net, int64_t *seq_out) {
+    char id[33], msg[AMM_MSG_MAX];
+    snprintf(id, sizeof(id), "ffffffffffffffff%015llx%c", (unsigned long long)w->seq,
+             side == 0 ? '0' : '1');
+    snprintf(msg, sizeof(msg), "liquidity withdrawal %lld: the %s share", (long long)w->seq,
+             side == 0 ? "NODUS" : "USDT");
+    const int dir = side == 0 ? AMM_USDT_TO_NODUS : AMM_NODUS_TO_USDT;
+    /* the payer pays `dest`: the Nodus address for the NODUS payout, the
+     * Ethereum address for the USDT payout; `sender` is the other one of the
+     * position's pair (the row's address rules, load_swap_row) */
+    const char *sender = side == 0 ? w->eth_addr : w->nodus_addr;
+    const char *dest = side == 0 ? w->nodus_addr : w->eth_addr;
+    if (run(j, "INSERT INTO swaps(id, dir, state, sender, dest, amount, minimum, value_usdt, "
+               "approved_at, expiry, message, approved_tip, out_amount, out_fee, out_paid) "
+               "VALUES(?1, ?2, 'payout_pending', ?3, ?4, 0, 0, 0, 0, 0, ?5, ?6, ?7, ?8, ?9)",
+            (arg_t[]){AT(id), AI(dir), AT(sender), AT(dest), AT(msg), AI(w->eth_tip),
+                      AI(gross), AI(fee), AI(net)}, 9, NULL) != 0) return -1;
+    *seq_out = sqlite3_last_insert_rowid(j->db);
+    return 0;
+}
+
+int amm_journal_withdraw_act(amm_journal_t *j, const amm_wd_act_t *a) {
+    if (!j || !a || (a->message && strlen(a->message) >= AMM_MSG_MAX)) return AMM_J_RANGE;
+    if (!a->refuse &&
+        (!a->pool_before || !a->nattempt || !a->eattempt ||
+         a->n_gross > (uint64_t)INT64_MAX || a->u_gross > (uint64_t)INT64_MAX ||
+         a->n_fee > a->n_gross || a->u_fee > a->u_gross ||
+         a->n_net != a->n_gross - a->n_fee || a->u_net != a->u_gross - a->u_fee ||
+         a->n_net == 0 || a->u_net == 0 ||
+         a->nattempt->gross != a->n_gross || a->nattempt->net != a->n_net ||
+         a->nattempt->fee != a->n_fee || a->eattempt->gross != a->u_gross ||
+         a->eattempt->net != a->u_net || a->eattempt->fee != a->u_fee))
+        return AMM_J_RANGE;
+    if (amm_journal_tx_begin(j) != 0) return -1;
+    int rc = AMM_J_ILLEGAL;
+    amm_wd_t w;
+    int g = amm_journal_withdraw_get(j, a->seq, &w);
+    if (g < 0) { amm_journal_tx_rollback(j); return -1; }
+    if (g == 1 || strcmp(w.state, AMM_W_ACCEPTED) != 0) {
+        amm_journal_tx_rollback(j);
+        return AMM_J_ILLEGAL;
+    }
+    if (a->refuse) {
+        rc = run(j, "UPDATE liq_withdraws SET state='refused', message=?1 WHERE seq=?2",
+                 (arg_t[]){AT(a->message ? a->message : ""), AI(w.seq)}, 2, NULL) == 0
+                 ? AMM_J_OK : -1;
+        goto fin;
+    }
+    /* the numbers were computed from this pool and these units: if they are not
+     * the stored ones nothing is written (the withdrawal acts again at the
+     * ledger then) */
+    amm_pool_t cur;
+    evm_u256 units;
+    int pg = amm_journal_pool_get(j, &cur);
+    int ug = amm_journal_position_get(j, w.eth_addr, w.nodus_addr, &units);
+    if (pg < 0 || ug < 0) { amm_journal_tx_rollback(j); return -1; }
+    if (pg != 0 || ug != 0 ||
+        evm_u256_cmp(&cur.depth_n, &a->pool_before->depth_n) != 0 ||
+        evm_u256_cmp(&cur.depth_u, &a->pool_before->depth_u) != 0 ||
+        evm_u256_cmp(&cur.units, &a->pool_before->units) != 0 ||
+        evm_u256_cmp(&units, &a->units_before) != 0) {
+        amm_journal_tx_rollback(j);
+        return AMM_J_ILLEGAL;
+    }
+    evm_u256 left;
+    uint64_t chk_n = 0, chk_u = 0;
+    if (amm_sub(&left, &units, &a->w.units_claimed) != AMM_OK ||
+        evm_u256_cmp(&left, &a->w.units_after) != 0 ||
+        amm_to_u64(&chk_n, &a->w.out_n) != AMM_OK || chk_n != a->n_gross ||
+        amm_to_u64(&chk_u, &a->w.out_u) != AMM_OK || chk_u != a->u_gross) {
+        amm_journal_tx_rollback(j);
+        return AMM_J_RANGE;
+    }
+    amm_pool_t after = cur;
+    if (amm_pool_apply_withdraw(&after, &a->w) != AMM_OK) {
+        amm_journal_tx_rollback(j);
+        return AMM_J_RANGE;
+    }
+    uint8_t ub[32];
+    int64_t nseq = 0, useq = 0;
+    if (pool_put_locked(j, &after) != 0) { rc = -1; goto fin; }
+    u256_be(&a->w.units_after, ub);
+    int ch = 0;
+    if (run(j, "UPDATE positions SET units=?1 WHERE eth_addr=?2 AND nodus_addr=?3",
+            (arg_t[]){AB(ub, 32), AT(w.eth_addr), AT(w.nodus_addr)}, 3, &ch) != 0 || ch != 1) {
+        rc = -1;
+        goto fin;
+    }
+    /* WRITE-AHEAD (plan section 17): both signed first attempts are stored in
+     * this same transaction, before anything is sent */
+    if (wd_insert_payout(j, &w, 0, a->n_gross, a->n_fee, a->n_net, &nseq) != 0 ||
+        wd_insert_payout(j, &w, 1, a->u_gross, a->u_fee, a->u_net, &useq) != 0) {
+        rc = -1;
+        goto fin;
+    }
+    a->nattempt->swap_seq = nseq;
+    rc = amm_journal_attempt_sign(j, a->nattempt);
+    if (rc != AMM_J_OK) goto fin;
+    a->eattempt->swap_seq = useq;
+    rc = amm_journal_eth_attempt_sign(j, a->eattempt);
+    if (rc != AMM_J_OK) goto fin;
+    u256_be(&a->w.units_claimed, ub);
+    rc = run(j, "UPDATE liq_withdraws SET state='done', nodus_swap=?1, usdt_swap=?2, "
+                "units_claimed=?3, out_n=?4, out_u=?5 WHERE seq=?6",
+             (arg_t[]){AI(nseq), AI(useq), AB(ub, 32), AI(a->n_gross), AI(a->u_gross),
+                       AI(w.seq)}, 6, NULL) == 0 ? AMM_J_OK : -1;
+fin:
+    if (rc != AMM_J_OK) {
+        amm_journal_tx_rollback(j);
+        return rc == -1 ? -1 : rc;
+    }
+    return amm_journal_tx_commit(j) == 0 ? 0 : -1;
+}
+
 /* ── open / close ───────────────────────────────────────────────────── */
 
 int amm_journal_open(const char *path, amm_journal_t **out) {
@@ -3073,7 +3338,7 @@ int amm_journal_open(const char *path, amm_journal_t **out) {
         }
     }
     if (exec_sql(j->db, SCHEMA_SQL) != 0) goto fail;
-    if (exec_sql(j->db, "PRAGMA user_version=7") != 0) goto fail;   /* = SCHEMA_VERSION */
+    if (exec_sql(j->db, "PRAGMA user_version=8") != 0) goto fail;   /* = SCHEMA_VERSION */
     chmod(path, 0600);
     *out = j;
     return 0;

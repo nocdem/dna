@@ -30,8 +30,13 @@
  * LIQUIDITY ADD (revision 12): the add question, the add route and the add's
  * counting and commit are wired; the Foundation's start pool enters through the
  * first add (plan section 14, givens item 91): without a committed add every
- * price question answers `unavailable`. NOT BUILT (reported): liquidity
- * withdraw.
+ * price question answers `unavailable`.
+ *
+ * LIQUIDITY WITHDRAW (plan sections 6.4.6, 14): POST /amm/liquidity/withdraw is
+ * wired (be_withdraw); the engine acts on an accepted withdrawal after
+ * liquidity_wait_eth_blocks Ethereum blocks and its two payouts go through the
+ * NODUS and USDT payers like every other owed payout; a withdrawal with a side
+ * that is nothing after its network fee is refused whole (amm_engine.h).
  */
 #define _GNU_SOURCE
 #include <ctype.h>
@@ -177,6 +182,25 @@ static int be_add_accept(void *c, const amm_req_liq_eth_in_t *eth, const amm_req
     case AMM_ACC_EXPIRED:   return AMM_HS_EXPIRED;
     case AMM_ACC_DUP_TRANSFER: return AMM_HS_USED;
     default:                return AMM_HS_ERR;
+    }
+}
+
+static int be_withdraw(void *c, const amm_req_nodus_in_t *in, uint64_t *req_out) {
+    app_t *a = c;
+    amm_req_liq_withdraw_t r;
+    memset(&r, 0, sizeof(r));
+    int rc = amm_req_liquidity_withdraw_verify(a->cfg, a->j, in, &r);
+    if (rc != AMM_REQ_OK) return map_req(rc);
+    pthread_mutex_lock(&g_eng_mu);
+    int acc = amm_engine_accept_withdraw(a->eng, &r);
+    pthread_mutex_unlock(&g_eng_mu);
+    switch (acc) {
+    case AMM_ACC_RECEIVED:    *req_out = r.request_number; return AMM_HS_RECEIVED;
+    case AMM_ACC_REUSED:      return AMM_HS_REUSED;
+    case AMM_ACC_PAUSED:      return AMM_HS_PAUSED;
+    case AMM_ACC_NO_POSITION: return AMM_HS_NO_POSITION;
+    case AMM_ACC_UNAVAILABLE: return AMM_HS_UNAVAILABLE;
+    default:                  return AMM_HS_ERR;
     }
 }
 
@@ -424,6 +448,7 @@ int main(int argc, char **argv) {
     hctx.be.ctx = &app; hctx.be.quote = be_quote; hctx.be.swap_usdt = be_swap_usdt;
     hctx.be.swap_nodus = be_swap_nodus; hctx.be.get_swap = be_get_swap; hctx.be.status = be_status;
     hctx.be.add_question = be_add_question; hctx.be.add_accept = be_add_accept;
+    hctx.be.withdraw = be_withdraw;
 
     uint16_t bound = 0;
     if (amm_http_open((uint16_t)cfg.http_port, (int)cfg.http_conn_cap, (int)cfg.http_timeout_ms,

@@ -52,7 +52,8 @@
  *      validity is checked AGAIN when a linked payment becomes deep.
  *   d. waiting Nodus payments that hold room are counted.
  *   e. liquidity adds (plan section 14): see below.
- *   f. THE DECISION of every counted swap, in the seen order, ONE journal
+ *   f. THE DECISION of every counted swap, in the seen order (shared with the
+ *      ready adds' commits and the due withdrawals' acts, below), ONE journal
  *      transaction each (plan section 12, givens items 93-95): the output from
  *      the depths of that moment, the payout's network fee (USDT: the ceiling
  *      of the transaction signed; NODUS: the planner's fee), the minimum check,
@@ -97,9 +98,35 @@
  *      counted after liquidity_wait_nodus_blocks (3); when both are counted the
  *      add commits in one transaction: units by THORChain's formula (an empty
  *      pool: units = the NODUS side), pool, position (address pair -> units).
- *      Withdraw is NOT built here.
  *
- * NOT BUILT HERE (reported): liquidity withdraw; the replacement of an expired
+ * LIQUIDITY WITHDRAW (plan sections 6.4.6, 14; givens items 24, 25, 34, 52, 80,
+ * 90, 92, 96; THORChain withdraw.go:197-225, handler_withdraw.go:206-225,
+ * manager_txout_current.go:984-1060):
+ *   amm_engine_accept_withdraw  the provider's signed request (the Nodus key
+ *      only, verified by amm_req): refused while liquidity is paused, unless
+ *      the two addresses are a stored position with units, and for a reused
+ *      request number; accepted, it stores the Ethereum tip read at that moment
+ *      and a place in the shared seen order (amm_journal_withdraw_accept).
+ *   step f (decisions): a withdrawal whose acceptance tip is liquidity_wait_eth_blocks
+ *      (300) Ethereum blocks below the tip is ACTED ON in the shared seen order
+ *      with the swaps' decisions and the adds' commits. The shares are computed
+ *      THEN, from the ledger of that moment (amm_withdraw_calc: GetSafeShare, round
+ *      half up). Before any unit change: a side that is nothing after its network
+ *      fee -- the NODUS side after the Nodus fee, the USDT side (or a zero share)
+ *      after the Ethereum fee -- refuses the WHOLE withdrawal (state `refused` with
+ *      its reason, units and depths untouched, nothing paid on either side: THORChain
+ *      refuses a withdrawal for a zero outbound of any asset, manager_txout_current.go:
+ *      987-989, :1035-1060; givens item 90's "USDT withdrawal" words are withdrawn in
+ *      the givens Errata). A payout that cannot be planned for now (a read or the
+ *      planner failed, another NODUS payout in flight, payouts paused) only waits. Then, in ONE
+ *      journal transaction (amm_journal_withdraw_act, no reversal): the position's
+ *      units and the pool's depths are reduced and both payouts are stored with
+ *      their signed first attempts (write-ahead). Payouts go only to the stored
+ *      address pair. The two payouts are rows of the swaps table (amm_journal.h:
+ *      HOW A PAYOUT ENTERS THE QUEUES), so steps g and h pay them under the rules
+ *      of the swap payouts and refunds.
+ *
+ * NOT BUILT HERE (reported): the replacement of an expired
  * NODUS payout at another fee (givens item 97); fee raising of a stuck payout;
  * coin joining.
  */
@@ -215,6 +242,10 @@ typedef enum {
     AMM_ACC_USED      = 5,   /* the number was already accepted              */
     AMM_ACC_EXPIRED   = 6,   /* the approval is past its expiry              */
     AMM_ACC_DUP_TRANSFER = 7,/* the NODUS transfer id is already used        */
+    AMM_ACC_PAUSED    = 8,   /* liquidity paused: no new liquidity request   */
+    AMM_ACC_NO_POSITION = 9, /* withdraw: the two addresses are not a stored
+                              * position with units                          */
+    AMM_ACC_UNAVAILABLE = 10,/* withdraw: the Ethereum tip is not readable   */
     AMM_ACC_ERR       = -1
 } amm_acc_rc_t;
 
@@ -266,6 +297,14 @@ int amm_engine_add_question(amm_engine_t *e, amm_side_t side, uint64_t amount,
 int amm_engine_accept_add(amm_engine_t *e, const amm_req_liq_add_t *r,
                           uint32_t *open_req);
 
+/** The signed withdrawal (amm_req_liquidity_withdraw_verify: format, chain id,
+ *  signature, basis points 1..10000, the per-signer request-number reuse). Refused:
+ *  AMM_ACC_PAUSED (liquidity_paused), AMM_ACC_REUSED, AMM_ACC_NO_POSITION (the two
+ *  addresses are not a stored position with units), AMM_ACC_UNAVAILABLE (the
+ *  Ethereum tip cannot be read: the wait is counted from it). Nothing is paid or
+ *  changed here: the withdrawal acts after liquidity_wait_eth_blocks (step f). */
+int amm_engine_accept_withdraw(amm_engine_t *e, const amm_req_liq_withdraw_t *r);
+
 /* ── 3. the worker ───────────────────────────────────────────────────── */
 
 typedef struct {
@@ -287,6 +326,9 @@ typedef struct {
     int questions_deleted;     /* unused expired price and add questions deleted (givens item 98) */
     int rows_examined;         /* open approved swaps examined by this round's release walk (bounded by round_rows_max) */
     int adds_examined;         /* liquidity add rows examined by this round's three add walks (each bounded by round_rows_max) */
+    int withdraws_done;        /* withdrawals acted on: units and depths reduced, both payouts stored */
+    int withdraws_refused;     /* withdrawals refused whole when they acted (a side nothing after its network fee) */
+    int withdraws_waiting;     /* due withdrawals that could not act this round (payouts paused, another NODUS payout in flight, a read or the planner failed) */
 } amm_engine_step_t;
 
 /** One worker round (see the list above). @return 0 / -1 (a journal fault;

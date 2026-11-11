@@ -18,10 +18,15 @@
  * WHAT A PAYOUT IS. The USDT payouts are: the payout of a NODUS -> USDT swap
  * (state payout_pending, to its Ethereum destination) and the refund of a
  * USDT -> NODUS swap (state refund_pending, to its Ethereum sender)
- * (amm_journal_swap_list_usdt_owed). Liquidity withdrawals are the engine's
- * (a later package). The swap row carries no output amount (the engine
- * computes it from the ledger when the payment counts), so the engine hands
- * `gross` to amm_eth_pay_sign once, exactly as amm_nodus_pay does.
+ * (amm_journal_swap_list_usdt_owed). The USDT side of a liquidity withdrawal is
+ * ALSO one of these: when the withdrawal acts, the engine stores a row of
+ * `swaps` (dir NODUS -> USDT, payout_pending, `dest` = the position's Ethereum
+ * address) with its first transaction in the same journal transaction
+ * (amm_journal_withdraw_act; amm_journal.h: HOW A PAYOUT ENTERS THE QUEUES), so
+ * this module pays, settles and books its fee like any NODUS -> USDT payout. The
+ * engine computes the output of a swap from the ledger when its payment counts
+ * and stores it in the decision; this module hands nothing but `gross` to
+ * amm_eth_pay_sign, for a refund only, exactly as amm_nodus_pay does.
  *
  * THE FEE (plan line 271, givens items 34, 50). The user pays the Ethereum
  * gas: fee = the USDT the price seam (amm_eth.h amm_eth_price_t) quotes for

@@ -80,6 +80,13 @@
  * owed swap; a refund's first attempt that cannot be stored still ends the
  * engine's round for the NODUS payouts.
  *
+ * THE NODUS PAYOUT OF A LIQUIDITY WITHDRAW is one of these too: when the
+ * withdrawal acts, a row of `swaps` (dir USDT -> NODUS, payout_pending, `dest` =
+ * the position's Nodus address) is written with its first attempt in the same
+ * journal transaction (amm_journal_withdraw_act), so the queue rules above (one
+ * live attempt, reserved coins, the cursor, the replacement at the decided fee)
+ * apply to it unchanged.
+ *
  * WHERE THE AMOUNT COMES FROM: the swap row carries no output amount (the
  * engine computes it from the ledger when the payment counts). The engine
  * hands `gross` to amm_nodus_pay_sign once; every later attempt (a

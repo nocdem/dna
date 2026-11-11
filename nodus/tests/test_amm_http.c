@@ -27,6 +27,11 @@
  *   H5  the server on a real loopback socket: a quote answered end to end, a
  *       body above http_max_body gets 413, an unknown path 404, the
  *       connection cap answers 503, only 127.0.0.1 is bound.
+ *   H7  the liquidity withdraw route (plan 6.4.7): the three-key body reaches
+ *       the backend decoded, the answer carries the signed request number as a
+ *       u64, one word per backend verdict (paused, no_position, number_reused,
+ *       bad_chain, ...), a malformed body never reaches the backend, GET is 405
+ *       (the rest of H6 and H7 is documented at the tests);
  * FLAGS: a default build; H5 uses loopback sockets (a kernel-chosen port, no
  * fixed port); no files, no network beyond loopback.
  * LEAVES BEHIND: nothing.
@@ -154,6 +159,8 @@ typedef struct {
     size_t   text_len; uint8_t text0; uint8_t pk0, pk_last, sg0, sg_last;
     uint32_t open_req;
     int      swap_found;
+    int      wd_rc;                  /* the withdraw backend's verdict (H6)   */
+    uint64_t wd_req;                 /* ... and the request number it returns */
 } be_t;
 
 static be_t B;
@@ -189,6 +196,15 @@ static int b_nodus(void *c, const amm_req_nodus_in_t *in, uint32_t *r, uint32_t 
     *r = 99; *open = B.open_req;
     return B.swap_rc;
 }
+static int b_withdraw(void *c, const amm_req_nodus_in_t *in, uint64_t *r) {
+    (void)c;
+    B.calls++;
+    B.text_len = in->text_len; B.text0 = in->text[0];
+    B.pk0 = in->public_key->bytes[0]; B.pk_last = in->public_key->bytes[NODUS_PK_BYTES - 1];
+    B.sg0 = in->signature->bytes[0]; B.sg_last = in->signature->bytes[NODUS_SIG_BYTES - 1];
+    *r = B.wd_req;
+    return B.wd_rc;
+}
 static int b_get(void *c, uint32_t n, amm_swap_t *o) {
     (void)c;
     if (!B.swap_found) return 1;
@@ -222,6 +238,7 @@ static amm_http_ctx_t mkctx(void) {
     c.cfg = &g_cfg;
     c.be.quote = b_quote; c.be.swap_usdt = b_usdt; c.be.swap_nodus = b_nodus;
     c.be.get_swap = b_get; c.be.status = b_status;
+    c.be.withdraw = b_withdraw;
     return c;
 }
 
@@ -367,8 +384,9 @@ static void h4_routes(void) {
           strstr(out, "\"nodusChainId\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\""),
           "GET /amm/status: reserves, settings in force, room, flags, addresses, chain id");
     CHECK(route(&c, "GET", "/amm/nothing", NULL, out, sizeof(out)) == 404 &&
-          route(&c, "GET", "/amm/liquidity/withdraw", NULL, out, sizeof(out)) == 404,
-          "an unknown path is 404 (withdraw is not built; GET on the add route is 405)");
+          route(&c, "GET", "/amm/liquidity/other", NULL, out, sizeof(out)) == 404 &&
+          route(&c, "GET", "/amm/liquidity/withdraw", NULL, out, sizeof(out)) == 405,
+          "an unknown path is 404 (GET on the withdraw route is 405, as on the add route)");
     CHECK(route(&c, "GET", "/amm/quote", NULL, out, sizeof(out)) == 405 &&
           route(&c, "POST", "/amm/status", "{}", out, sizeof(out)) == 405, "a wrong method is 405");
     char tiny[40];
@@ -559,6 +577,74 @@ static void h6_liquidity(void) {
     free(shorte); free(big); free(body);
 }
 
+/* H7 the liquidity withdraw route (plan 6.4.7: {"text","publicKey","signature"}).
+ * PROVES: the three-key body reaches the backend decoded (text bytes, the 2592-byte
+ *   key, the 4627-byte signature) and the answer carries the SIGNED request number as
+ *   a decimal u64 (here 2^64 - 1: not cut to 32 bits like the swap answer); every
+ *   verdict of the backend has its word -- bad_format (also what the verifier says for
+ *   basis points 0 or 10001), bad_chain (a Chain ID other than the bot's), bad_address,
+ *   bad_signature, number_reused (the (sender, request number) reuse), paused (liquidity
+ *   paused), no_position (the two addresses are not a stored position with units),
+ *   unavailable -- and an internal fault is a 500; a body that is not exactly the three
+ *   keys, an odd-length text or a short key never reaches the backend (400); GET on the
+ *   path is 405. If the route answered the number as a u32, or mapped a code to the wrong
+ *   word, the first and the word checks fail.
+ * FLAGS/ENVIRONMENT: a default build; the stub backend of this file; no socket.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: the backend is a stub: the real verification (basis points, chain id,
+ *   signature, reuse) and the engine's position check are tested in test_amm_req and
+ *   test_amm_engine; this test proves only the route's decoding and the word of each
+ *   verdict. */
+static void h7_withdraw(void) {
+    printf("H7 the liquidity withdraw route\n");
+    amm_http_ctx_t c = mkctx();
+    char out[2048];
+    memset(&B, 0, sizeof(B));
+    static char pkh[2 + 2 * NODUS_PK_BYTES + 1], sgh[2 + 2 * NODUS_SIG_BYTES + 1];
+    pkh[0] = '0'; pkh[1] = 'x'; sgh[0] = '0'; sgh[1] = 'x';
+    memset(pkh + 2, '1', 2 * NODUS_PK_BYTES); pkh[2] = '0'; pkh[3] = 'a'; pkh[2 + 2 * NODUS_PK_BYTES] = 0;
+    memset(sgh + 2, '2', 2 * NODUS_SIG_BYTES); sgh[2] = '0'; sgh[3] = 'b'; sgh[2 + 2 * NODUS_SIG_BYTES] = 0;
+    static char body[2 * 5200 + 2 * 9300 + 400], big[16384];
+    snprintf(body, sizeof(body), "{\"text\":\"0x4e6f6475\",\"publicKey\":\"%s\",\"signature\":\"%s\"}", pkh, sgh);
+    B.wd_rc = AMM_HS_RECEIVED; B.wd_req = 18446744073709551615ULL;
+    CHECK(route(&c, "POST", "/amm/liquidity/withdraw", body, big, sizeof(big)) == 200 &&
+          !strcmp(big, "{\"received\":true,\"requestNumber\":\"18446744073709551615\"}") && B.calls == 1 &&
+          B.text_len == 4 && B.text0 == 0x4e && B.pk0 == 0x0a && B.pk_last == 0x11 && B.sg0 == 0x0b &&
+          B.sg_last == 0x22,
+          "the withdraw body reaches the backend decoded; the answer carries the signed number as a u64");
+    static const struct { int rc; const char *word; } W7[] = {
+        {AMM_HS_FORMAT, "bad_format"}, {AMM_HS_CHAIN, "bad_chain"}, {AMM_HS_ADDRESS, "bad_address"},
+        {AMM_HS_SIGNATURE, "bad_signature"}, {AMM_HS_REUSED, "number_reused"},
+        {AMM_HS_PAUSED, "paused"}, {AMM_HS_NO_POSITION, "no_position"},
+        {AMM_HS_UNAVAILABLE, "unavailable"},
+    };
+    for (size_t i = 0; i < sizeof(W7) / sizeof(W7[0]); i++) {
+        char want[96], msg[96];
+        B.wd_rc = W7[i].rc;
+        snprintf(want, sizeof(want), "{\"received\":false,\"reason\":\"%s\"}", W7[i].word);
+        snprintf(msg, sizeof(msg), "withdraw refusal word %s", W7[i].word);
+        CHECK(route(&c, "POST", "/amm/liquidity/withdraw", body, big, sizeof(big)) == 200 && !strcmp(big, want), msg);
+    }
+    B.wd_rc = AMM_HS_ERR;
+    CHECK(route(&c, "POST", "/amm/liquidity/withdraw", body, big, sizeof(big)) == 500, "an internal fault is a 500");
+    int before = B.calls;
+    int bad = 1;
+    snprintf(body, sizeof(body), "{\"text\":\"0x4e6f6\",\"publicKey\":\"%s\",\"signature\":\"%s\"}", pkh, sgh);
+    bad &= route(&c, "POST", "/amm/liquidity/withdraw", body, big, sizeof(big)) == 400;
+    snprintf(body, sizeof(body), "{\"text\":\"0x4e\",\"publicKey\":\"0x11\",\"signature\":\"%s\"}", sgh);
+    bad &= route(&c, "POST", "/amm/liquidity/withdraw", body, big, sizeof(big)) == 400;
+    snprintf(body, sizeof(body), "{\"text\":\"0x4e\",\"publicKey\":\"%s\",\"signature\":\"%s\",\"x\":\"y\"}", pkh, sgh);
+    bad &= route(&c, "POST", "/amm/liquidity/withdraw", body, big, sizeof(big)) == 400;
+    snprintf(body, sizeof(body), "{\"kind\":\"nodus_to_usdt\",\"text\":\"0x4e\",\"publicKey\":\"%s\",\"signature\":\"%s\"}", pkh, sgh);
+    bad &= route(&c, "POST", "/amm/liquidity/withdraw", body, big, sizeof(big)) == 400;
+    bad &= route(&c, "POST", "/amm/liquidity/withdraw", "{\"text\":\"0x4e\"}", big, sizeof(big)) == 400;
+    CHECK(bad && B.calls == before, "an odd-length text, a short key, an extra or a missing key: 400, never the backend");
+    CHECK(route(&c, "GET", "/amm/liquidity/withdraw", NULL, out, sizeof(out)) == 405, "GET on the withdraw route: 405");
+    c.be.withdraw = NULL;
+    snprintf(body, sizeof(body), "{\"text\":\"0x4e\",\"publicKey\":\"%s\",\"signature\":\"%s\"}", pkh, sgh);
+    CHECK(route(&c, "POST", "/amm/liquidity/withdraw", body, big, sizeof(big)) == 400, "no backend wired: 400, no crash");
+}
+
 int main(void) {
     printf("test_amm_http\n");
     h1_parser();
@@ -567,6 +653,7 @@ int main(void) {
     h4_routes();
     h5_server();
     h6_liquidity();
+    h7_withdraw();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

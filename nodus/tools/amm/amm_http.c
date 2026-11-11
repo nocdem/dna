@@ -304,6 +304,9 @@ static const char *s_word(int rc) {
     case AMM_HS_USED:       return "number_used";
     case AMM_HS_OPEN:       return "open_approval";
     case AMM_HS_EXPIRED:    return "approval_expired";
+    case AMM_HS_PAUSED:     return "paused";
+    case AMM_HS_NO_POSITION: return "no_position";
+    case AMM_HS_UNAVAILABLE: return "unavailable";
     default:                return "internal";
     }
 }
@@ -546,6 +549,51 @@ static void route_add(amm_http_ctx_t *c, const amm_http_req_t *req, int *status,
     swap_answer(rc, req_no, open_req, status, body, cap);
 }
 
+/* The signed withdrawal (plan 6.4.7: text, publicKey, signature; the Nodus key
+ * only). The answer carries the signed request number, a u64. */
+static void route_withdraw(amm_http_ctx_t *c, const amm_http_req_t *req, int *status, char *body,
+                           size_t cap) {
+    amm_json_t js;
+    const char *tv, *pv, *gv;
+    size_t tn, pn, gn;
+    if (!c->be.withdraw || amm_json_parse(req->body, req->body_len, &js) != 0 || js.n != 3 ||
+        !amm_json_get(&js, "text", &tv, &tn) || !amm_json_get(&js, "publicKey", &pv, &pn) ||
+        !amm_json_get(&js, "signature", &gv, &gn) ||
+        tn < 2 || tn % 2 != 0 || (tn - 2) / 2 > AMM_REQ_TEXT_MAX) {
+        refusal(status, body, cap, 400, "received", "bad_request");
+        return;
+    }
+    const size_t text_len = (tn - 2) / 2;
+    uint8_t text[AMM_REQ_TEXT_MAX];
+    nodus_pubkey_t *pk = calloc(1, sizeof(*pk));
+    nodus_sig_t *sg = calloc(1, sizeof(*sg));
+    if (!pk || !sg) { free(pk); free(sg); refusal(status, body, cap, 500, "received", "internal"); return; }
+    if (amm_http_hex0x(tv, tn, text, text_len) != 0 ||
+        amm_http_hex0x(pv, pn, pk->bytes, NODUS_PK_BYTES) != 0 ||
+        amm_http_hex0x(gv, gn, sg->bytes, NODUS_SIG_BYTES) != 0) {
+        free(pk); free(sg);
+        refusal(status, body, cap, 400, "received", "bad_request");
+        return;
+    }
+    amm_req_nodus_in_t in = { text, text_len, pk, sg };
+    uint64_t req_no = 0;
+    int rc = c->be.withdraw(c->be.ctx, &in, &req_no);
+    free(pk); free(sg);
+    jb_t j = { body, cap, 0, 0 };
+    if (cap) body[0] = '\0';
+    jraw(&j, "{");
+    jkey(&j, "received", 1);
+    if (rc == AMM_HS_RECEIVED) {
+        jraw(&j, "true");
+        jkey(&j, "requestNumber", 0); jnum_str(&j, req_no);
+    } else {
+        jraw(&j, "false");
+        jkey(&j, "reason", 0); jstr_out(&j, s_word(rc));
+    }
+    jraw(&j, "}");
+    finish(&j, status, rc == AMM_HS_ERR ? 500 : 200, body, cap);
+}
+
 static void route_get_swap(amm_http_ctx_t *c, const char *num, int *status, char *body, size_t cap) {
     uint64_t n = 0;
     if (dec_u64(num, strlen(num), &n) != 0 || n == 0 || n > UINT32_MAX) {
@@ -654,6 +702,9 @@ void amm_http_route(amm_http_ctx_t *c, const amm_http_req_t *req, uint64_t deadl
     } else if (!strcmp(req->path, "/amm/liquidity/add")) {
         if (get) { refusal(status, body, cap, 405, "received", "bad_request"); return; }
         route_add(c, req, status, body, cap);
+    } else if (!strcmp(req->path, "/amm/liquidity/withdraw")) {
+        if (get) { refusal(status, body, cap, 405, "received", "bad_request"); return; }
+        route_withdraw(c, req, status, body, cap);
     } else if (!strncmp(req->path, "/amm/swap/", 10)) {
         if (!get) { refusal(status, body, cap, 405, "found", "bad_request"); return; }
         route_get_swap(c, req->path + 10, status, body, cap);

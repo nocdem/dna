@@ -50,7 +50,14 @@
  *                         and "text" "publicKey" "nodusSignature" (the Nodus
  *                         half); same field forms as POST /amm/swap. Answer as
  *                         POST /amm/swap: {"received":true,...} / a refusal.
- * NOT BUILT (reported): liquidity withdraw. Any other path is 404.
+ *   POST /amm/liquidity/withdraw  the provider's signed withdrawal (plan 6.4.7:
+ *                         {"text":"0x<hex of the text bytes>","publicKey":
+ *                         "0x<5184 hex>","signature":"0x<9254 hex>"}, the Nodus
+ *                         key only). Answer: {"received":true,"requestNumber":
+ *                         "<decimal u64, the signed one>"} or {"received":false,
+ *                         "reason":"<word>"}; the withdrawal acts after
+ *                         liquidity_wait_eth_blocks (plan section 14), nothing is
+ *                         paid by this call. Any other path is 404.
  *
  * REFUSAL WORDS (the build's, plan 6.4.5 / 6.4.7 leave them to it; the site
  * only shows them):
@@ -62,7 +69,10 @@
  *           uses the same word. The site may offer "try again later".)
  *   swap:   bad_request, bad_format, bad_chain, bad_address, bad_signature,
  *           number_reused, unknown_number, amount_mismatch, number_used,
- *           open_approval, approval_expired, internal
+ *           open_approval, approval_expired, internal; the withdrawal adds
+ *           paused (liquidity paused), no_position (the two addresses are not
+ *           a stored position with units) and unavailable (the Ethereum tip
+ *           cannot be read)
  *
  * BOUNDS (every one a hard limit, pinned by test_amm_http): request line
  * <= 256 bytes, header block <= 4096, <= 32 header lines of <= 512, path <=
@@ -141,7 +151,10 @@ typedef enum {
     AMM_HS_USED,
     AMM_HS_OPEN,             /* item 57; `*open_req` = the open swap's number   */
     AMM_HS_EXPIRED,
-    AMM_HS_ERR
+    AMM_HS_ERR,
+    AMM_HS_PAUSED,           /* liquidity paused (withdraw)                     */
+    AMM_HS_NO_POSITION,      /* withdraw: not a stored position with units      */
+    AMM_HS_UNAVAILABLE       /* withdraw: the Ethereum tip cannot be read       */
 } amm_hs_t;
 
 typedef struct {
@@ -166,6 +179,9 @@ typedef struct {
     int (*add_accept)(void *ctx, const amm_req_liq_eth_in_t *eth,
                       const amm_req_nodus_in_t *nodus, uint32_t *req_out,
                       uint32_t *open_req);
+    /** verify + accept a withdrawal; returns an amm_hs_t; `*req_out` = the signed
+     *  request number (a u64) on AMM_HS_RECEIVED */
+    int (*withdraw)(void *ctx, const amm_req_nodus_in_t *in, uint64_t *req_out);
 } amm_http_backend_t;
 
 typedef struct {

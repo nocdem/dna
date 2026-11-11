@@ -37,6 +37,9 @@
  *   pool          the ledger reserves and total units (plan section 12;
  *                 INFERENCE: the bot prices from its own ledger, so the
  *                 ledger must survive a restart)
+ *   liq_withdraws the liquidity withdrawals (schema 8, see the end of this
+ *                 file): accepted, acted on after 300 Ethereum blocks, their
+ *                 two payouts written as rows of `swaps`
  *   flags         reversal_pause: set by a confirmed reversal (plan section
  *                 9, givens item 55); there is NO clear call, the clearing
  *                 action is DEFERRED (plan section 9). The effective
@@ -208,6 +211,8 @@ typedef enum {
     AMM_J_BUSY          = 15,  /* a price or liquidity question: the open
                                 * unpaid questions are at `open_max` (givens
                                 * item 98); nothing written                  */
+    AMM_J_NO_POSITION   = 16,  /* a withdrawal: the two addresses are not a
+                                * stored position with units (plan 6.4.6)    */
     AMM_J_ILLEGAL       = -2,  /* illegal transition / unknown row          */
     AMM_J_ERR           = -1
 } amm_jrc_t;
@@ -1031,5 +1036,115 @@ int amm_journal_add_expire(amm_journal_t *j, int64_t seq);
  *  0 found / 1 none / -1. */
 int amm_journal_position_get(amm_journal_t *j, const char *eth_addr,
                              const char *nodus_addr, evm_u256 *units);
+
+/* ── liquidity withdraw (schema 8; plan sections 6.4.6, 14; givens items 24,
+ *    25, 34, 52, 80, 90, 92, 96) ───────────────────────────────────────────
+ *
+ * A withdrawal is ACCEPTED when its signed request arrives (a row of
+ * liq_withdraws: the two addresses, the basis points, the Ethereum tip read at
+ * that moment, a place in the ONE seen sequence shared with the swaps and the
+ * adds), and ACTED ON once the Ethereum tip is liquidity_wait_eth_blocks above
+ * that tip (plan section 14: "The bot acts 300 Ethereum blocks after the
+ * request is accepted"; PLAN READING of "after the request is accepted": no
+ * Ethereum record exists for a withdrawal, so the tip stored at acceptance is
+ * the reference point, as the add stores `eth_tip`). The shares are computed
+ * when it acts, from the ledger of that moment (plan section 14).
+ *
+ * HOW A PAYOUT ENTERS THE QUEUES. When it acts, the withdrawal writes TWO rows
+ * of `swaps` in state payout_pending, each with its signed first attempt
+ * (write-ahead), so the existing payers, the NODUS owed queue (one live attempt,
+ * reserved inputs, the cursor and its wrap, at most 8 steps a round), the paged
+ * USDT owed list, the fee booking and amm_journal_owed_sum serve them with NO
+ * change of their own:
+ *   NODUS payout  dir = AMM_USDT_TO_NODUS, sender = the position's Ethereum
+ *                 address, dest = its Nodus address (the payer pays `dest`);
+ *   USDT payout   dir = AMM_NODUS_TO_USDT, sender = the Nodus address, dest =
+ *                 the Ethereum address (the payer pays `dest`).
+ * Such a row has no input side (amount 0), no minimum, no value and no room
+ * (value_usdt 0, room 0: the limits of givens item 19 do not apply to
+ * liquidity, item 25), no incoming id and no request number of the bot (it is
+ * no question). Its output (out_amount = the share, out_fee, out_paid) is what
+ * amm_journal_owed_sum counts, like any owed payout. Its id is fixed by the
+ * withdrawal (16 x 'f' + 15 hex digits of the withdrawal's seq + the side), so a
+ * restart cannot make a second one. */
+
+#define AMM_W_ACCEPTED "accepted"  /* the request is accepted, not yet acted on   */
+#define AMM_W_DONE     "done"      /* acted on: units and depths reduced, the
+                                    * payouts written                              */
+#define AMM_W_REFUSED  "refused"   /* refused whole when it acted: nothing changed
+                                    * (the NODUS side is nothing after the Nodus
+                                    * fee, plan section 14)                        */
+
+typedef struct {
+    int64_t  seq;
+    char     state[AMM_STATE_MAX];
+    char     eth_addr[AMM_ADDR_ETH + 1];
+    char     nodus_addr[AMM_ADDR_NODUS + 1];
+    uint32_t bp;                       /* 1..10000                                */
+    uint8_t  req_no[32];               /* the signed request number               */
+    uint64_t eth_tip;                  /* the Ethereum tip read at acceptance (>0) */
+    int64_t  seen_seq;                 /* its place in the shared seen order       */
+    int64_t  nodus_swap, usdt_swap;    /* the payout rows written when it acted
+                                        * (0 = none)                               */
+    evm_u256 units_claimed;            /* the units reduced (zero until done)      */
+    uint64_t out_n, out_u;             /* the shares, before the network fees      */
+    char     message[AMM_MSG_MAX];
+} amm_wd_t;
+
+typedef struct {
+    const char *eth_addr;              /* 40 lowercase hex                         */
+    const char *nodus_addr;            /* 128 lowercase hex: the signer            */
+    uint32_t    bp;                    /* 1..10000                                 */
+    uint8_t     req_no[32];            /* big-endian request number                */
+    uint64_t    eth_tip;               /* > 0: the tip the caller READ             */
+    int         liquidity_paused_cfg;  /* the settings flag                        */
+} amm_wd_accept_t;
+
+/** The accept transaction (plan 6.4.6, 6.4.7): refusals in this order, writing
+ *  nothing -- liquidity paused (AMM_J_PAUSED), the request number already used
+ *  under the signer's Nodus address (AMM_J_REQ_REUSED, the permanent marker of
+ *  the other signed requests), the two addresses not a stored position with
+ *  units (AMM_J_NO_POSITION), a field outside its format (AMM_J_RANGE) -- else
+ *  the row `accepted`, the next seen_seq and the (Nodus address, request number)
+ *  marker, in ONE transaction. `out` may be NULL. */
+int amm_journal_withdraw_accept(amm_journal_t *j, const amm_wd_accept_t *a,
+                                amm_wd_t *out);
+/** 0 found / 1 none / -1. */
+int amm_journal_withdraw_get(amm_journal_t *j, int64_t seq, amm_wd_t *out);
+/** Accepted withdrawals whose acceptance tip is at most `max_eth_tip` (the
+ *  Ethereum tip less the wait: the ones that are due), one page by seen_seq
+ *  (> after, at most cap >= 1). The shared order is merged with the swaps' and
+ *  the adds' by the engine. 0 / -1. */
+int amm_journal_withdraw_page_due(amm_journal_t *j, uint64_t max_eth_tip, int64_t after,
+                                  amm_wd_t *out, int cap, int *n);
+
+/** What the engine hands over when a withdrawal acts (everything computed from
+ *  the ledger of that moment; plan section 14, 12). `refuse` = 1: the whole
+ *  withdrawal is refused (state `refused` with `message`), nothing else is read
+ *  or written. Otherwise ONE transaction: the withdrawal must be `accepted`; the
+ *  stored pool must equal `pool_before` and the position's units `units_before`
+ *  byte for byte (the numbers were computed from them); `w` must be
+ *  consistent (units_before - units_claimed = units_after); then the pool is
+ *  reduced (amm_pool_apply_withdraw), the position set to `units_after`, the
+ *  NODUS payout row and its signed attempt (`nattempt`) and the USDT payout row
+ *  and its signed attempt (`eattempt`) are written (both: a side that comes out
+ *  zero is the engine's to refuse, plan section 14), and the withdrawal is
+ *  `done`. Anything refused writes nothing. @return 0 / AMM_J_ILLEGAL (state,
+ *  pool, position or an attempt refused) / AMM_J_RANGE / -1. */
+typedef struct {
+    int64_t seq;
+    int refuse;
+    const char *message;               /* the refusal's reason (may be NULL)       */
+    const amm_pool_t *pool_before;
+    evm_u256 units_before;
+    amm_withdraw_t w;
+    uint64_t n_gross, n_fee, n_net;    /* NODUS: share, Nodus fee, amount carried  */
+    uint64_t u_gross, u_fee, u_net;    /* USDT: share, Ethereum fee (the ceiling,
+                                        * givens item 95), amount carried          */
+    amm_attempt_t  *nattempt;
+    amm_eattempt_t *eattempt;
+} amm_wd_act_t;
+
+int amm_journal_withdraw_act(amm_journal_t *j, const amm_wd_act_t *a);
 
 #endif /* AMM_JOURNAL_H */

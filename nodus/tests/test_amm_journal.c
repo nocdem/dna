@@ -1694,7 +1694,8 @@ static void j21b_reserved_and_after(void) {
  *   signed request (swap: empty sender/destination/incoming id; add: no addresses), at most
  *   `cap` per call, writes their bot request numbers to bot_req_used first (kept across a
  *   reopen), and a later approval carrying such a number is refused AMM_J_NUMBER_TAKEN; a
- *   schema-6 file is refused at open (not migrated).
+ *   file of an older schema (here 6; J30 tries 7) is refused at open (not migrated; the
+ *   current schema is 8).
  * FLAGS/ENVIRONMENT: a default build; this test's journal file and one extra file in its directory.
  * LEAVES BEHIND: nothing (the directory is removed at the end of the run).
  * FALSE PASS: the swap with a payment is moved with amm_journal_swap_seen, the journal's own
@@ -1775,14 +1776,14 @@ static void j28_question_limit_and_purge(void) {
     CHECK(amm_journal_bot_req_used(g_j, 0, 101) == 0 && amm_journal_quote_approve(g_j, &q1, &sx) == AMM_J_NUMBER_TAKEN,
           "the markers survive a reopen");
 
-    /* a schema-6 file is refused */
+    /* an older (schema-6) file is refused; the current schema is 8 */
     char oldp[160];
     snprintf(oldp, sizeof(oldp), "%s/old6.db", g_dir);
     sqlite3 *db = NULL;
     int made = sqlite3_open(oldp, &db) == SQLITE_OK && sqlite3_exec(db, "PRAGMA user_version=6", NULL, NULL, NULL) == SQLITE_OK;
     sqlite3_close(db);
     amm_journal_t *jx = NULL;
-    CHECK(made && amm_journal_open(oldp, &jx) != 0 && jx == NULL, "a schema-6 file is refused, not migrated");
+    CHECK(made && amm_journal_open(oldp, &jx) != 0 && jx == NULL, "an older (schema-6) file is refused, not migrated");
     unlink(oldp);
 }
 
@@ -2614,6 +2615,311 @@ static void j27_revision12(void) {
           u64 == 3000000000000000ULL, "the position survives a reopen");
 }
 
+/* ── J30 the liquidity withdraw (schema 8) ──────────────────────────── */
+
+/* A position (eth address 40 x eth_c, Nodus address 128 x nodus_c) with `units`,
+ * written through a second connection: the journal has no setter (the add's
+ * commit writes it; test_amm_engine E16 proves that path). */
+static void seed_position(char eth_c, char nodus_c, uint64_t units) {
+    char eth[41], nod[129];
+    memset(eth, eth_c, 40); eth[40] = '\0';
+    memset(nod, nodus_c, 128); nod[128] = '\0';
+    uint8_t b[32];
+    memset(b, 0, sizeof(b));
+    for (int i = 0; i < 8; i++) b[31 - i] = (uint8_t)(units >> (8 * i));
+    sqlite3 *db = NULL;
+    sqlite3_stmt *st = NULL;
+    int ok = sqlite3_open(g_path, &db) == SQLITE_OK;
+    if (ok) sqlite3_busy_timeout(db, 5000);
+    ok = ok && sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO positions(eth_addr, nodus_addr, units) "
+                                      "VALUES(?1, ?2, ?3)", -1, &st, NULL) == SQLITE_OK &&
+         sqlite3_bind_text(st, 1, eth, -1, SQLITE_STATIC) == SQLITE_OK &&
+         sqlite3_bind_text(st, 2, nod, -1, SQLITE_STATIC) == SQLITE_OK &&
+         sqlite3_bind_blob(st, 3, b, 32, SQLITE_STATIC) == SQLITE_OK && sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    sqlite3_close(db);
+    if (!ok) { printf("FATAL seed_position\n"); exit(2); }
+}
+
+static uint64_t pos_units(char eth_c, char nodus_c) {
+    char eth[41], nod[129];
+    memset(eth, eth_c, 40); eth[40] = '\0';
+    memset(nod, nodus_c, 128); nod[128] = '\0';
+    evm_u256 u;
+    uint64_t v = UINT64_MAX;
+    if (amm_journal_position_get(g_j, eth, nod, &u) != 0 || amm_to_u64(&v, &u) != AMM_OK) return UINT64_MAX;
+    return v;
+}
+
+static amm_wd_accept_t mkw(char eth_c, char nodus_c, uint32_t bp, uint64_t req, uint64_t tip) {
+    static char eth[8][41], nod[8][129];
+    static unsigned k = 0;
+    unsigned i = k++ % 8;
+    memset(eth[i], eth_c, 40); eth[i][40] = '\0';
+    memset(nod[i], nodus_c, 128); nod[i][128] = '\0';
+    amm_wd_accept_t a;
+    memset(&a, 0, sizeof(a));
+    a.eth_addr = eth[i]; a.nodus_addr = nod[i]; a.bp = bp; a.eth_tip = tip;
+    for (int b = 0; b < 8; b++) a.req_no[31 - b] = (uint8_t)(req >> (8 * b));
+    return a;
+}
+
+static int pool_eq(uint64_t n, uint64_t u, uint64_t units) {
+    amm_pool_t g;
+    uint64_t a = 0, b = 0, c = 0;
+    return amm_journal_pool_get(g_j, &g) == 0 && amm_to_u64(&a, &g.depth_n) == AMM_OK &&
+           amm_to_u64(&b, &g.depth_u) == AMM_OK && amm_to_u64(&c, &g.units) == AMM_OK &&
+           a == n && b == u && c == units;
+}
+
+/* PROVES (plan 6.4.6, 14; the journal side of the withdraw):
+ *   (a) accept: refused writing nothing when liquidity is paused, when the two addresses
+ *       are no stored position or one with zero units (NO_POSITION), when the
+ *       (Nodus address, request number) was used (REQ_REUSED), and for a basis-point
+ *       value 0 or 10001, a zero tip or a malformed address (RANGE); accepted it stores the
+ *       tip and takes the next number of the ONE seen sequence shared with the swaps (a
+ *       swap seen afterwards gets the next one: swaps' MAX includes the withdrawals);
+ *       the page of due withdrawals lists only those whose tip is at most the bound, in seen
+ *       order;
+ *   (b) act: ONE transaction. Refused (ILLEGAL) and writing NOTHING -- pool, position, rows,
+ *       attempts, state all as before -- when the stored pool is not the one the shares were
+ *       computed from, when another NODUS payout is signed or submitted (one live attempt),
+ *       and when an attempt names another address than the position's; a failing commit (the
+ *       test hook) leaves all of it undone too. Accepted it reduces the pool by the shares
+ *       (hand derived: 25 % of 3*10^15 units of a 3*10^15 / 3*10^9 pool = 7.5*10^14 NODUS,
+ *       7.5*10^8 USDT), sets the position to 2.25*10^15 units, writes TWO payout_pending
+ *       rows (the NODUS one to the Nodus address, the USDT one to the Ethereum address of the
+ *       position, with no room, no value, no input side) each with its signed attempt, and the
+ *       withdrawal `done`; amm_journal_owed_sum counts both shares, the NODUS owed head and the
+ *       USDT owed page return the rows; a done withdrawal is not acted on twice; the refuse
+ *       path writes only the state and the reason;
+ *   (c) a schema-7 file is refused at open; everything survives a reopen.
+ * FLAGS/ENVIRONMENT: a default build; this test's journal file; a second connection for the
+ *   position and the schema-7 file.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: the shares are given by the test (the engine computes them: test_amm_engine
+ *   E32); the attempts are fake bytes with a valid hash (the payers' use of them is E32 and
+ *   the payer tests); without the pool check in the act (c)'s first refusal would be accepted. */
+static void j30_withdraw(void) {
+    printf("J30 liquidity withdraw (schema 8)\n");
+    fresh();
+    amm_pool_t p;
+    evm_u256_from_u64(&p.depth_n, 3000000000000000ULL);
+    evm_u256_from_u64(&p.depth_u, 3000000000ULL);
+    evm_u256_from_u64(&p.units, 3000000000000000ULL);
+    CHECK(amm_journal_pool_put(g_j, &p) == 0, "setup: the pool 3*10^15 NODUS / 3*10^9 USDT / 3*10^15 units");
+    amm_wd_t w, g;
+
+    /* (a) accept */
+    amm_wd_accept_t a = mkw('a', 'c', 2500, 1, 1000);
+    CHECK(amm_journal_withdraw_accept(g_j, &a, &w) == AMM_J_NO_POSITION, "no position: refused");
+    seed_position('a', 'c', 0);
+    CHECK(amm_journal_withdraw_accept(g_j, &a, &w) == AMM_J_NO_POSITION, "a position with zero units: refused");
+    seed_position('a', 'c', 3000000000000000ULL);
+    a.liquidity_paused_cfg = 1;
+    CHECK(amm_journal_withdraw_accept(g_j, &a, &w) == AMM_J_PAUSED, "liquidity paused: refused");
+    a.liquidity_paused_cfg = 0;
+    amm_wd_accept_t z = a;
+    z.bp = 0;
+    CHECK(amm_journal_withdraw_accept(g_j, &z, &w) == AMM_J_RANGE, "basis points 0: RANGE");
+    z.bp = 10001;
+    CHECK(amm_journal_withdraw_accept(g_j, &z, &w) == AMM_J_RANGE, "basis points 10001: RANGE");
+    z = a; z.eth_tip = 0;
+    CHECK(amm_journal_withdraw_accept(g_j, &z, &w) == AMM_J_RANGE, "a zero tip: RANGE");
+    z = a; z.eth_addr = "zz";
+    CHECK(amm_journal_withdraw_accept(g_j, &z, &w) == AMM_J_RANGE, "a malformed address: RANGE");
+    CHECK(amm_journal_withdraw_get(g_j, 1, &g) == 1, "every refusal wrote nothing (no row, no request-number marker)");
+    CHECK(amm_journal_withdraw_accept(g_j, &a, &w) == AMM_J_OK && w.seq == 1 && !strcmp(w.state, "accepted") &&
+          w.bp == 2500 && w.eth_tip == 1000 && w.seen_seq == 1 && w.nodus_swap == 0 && w.usdt_swap == 0,
+          "accepted: the tip and the first number of the seen sequence");
+    CHECK(amm_journal_withdraw_accept(g_j, &a, &w) == AMM_J_REQ_REUSED,
+          "the same (Nodus address, request number) again: refused");
+    amm_wd_accept_t a2 = mkw('a', 'c', 1000, 2, 1005);
+    CHECK(amm_journal_withdraw_accept(g_j, &a2, &w) == AMM_J_OK && w.seq == 2 && w.seen_seq == 2,
+          "another request number from the same position is accepted");
+    amm_approve_t sa = mk('b', 1, 1);
+    amm_swap_t ss;
+    CHECK(approve_ok(&sa, &ss) && tr(ss.seq, "paid_waiting_depth", "nodus:wd1") == 0 &&
+          amm_journal_swap_by_seq(g_j, ss.seq, &ss) == 0 && ss.seen_seq == 3,
+          "a swap seen afterwards takes number 3: the sequence is shared (the swaps' next number counts the withdrawals)");
+    amm_wd_accept_t a3 = mkw('a', 'c', 500, 3, 1010);
+    CHECK(amm_journal_withdraw_accept(g_j, &a3, &w) == AMM_J_OK && w.seen_seq == 4, "and the next withdrawal number 4");
+    amm_wd_t pg[4];
+    int n = 0;
+    CHECK(amm_journal_withdraw_page_due(g_j, 999, 0, pg, 4, &n) == 0 && n == 0, "tip bound 999: none is due");
+    CHECK(amm_journal_withdraw_page_due(g_j, 1005, 0, pg, 4, &n) == 0 && n == 2 && pg[0].seq == 1 &&
+          pg[1].seq == 2, "tip bound 1005: the first two, in seen order");
+    CHECK(amm_journal_withdraw_page_due(g_j, 1005, 1, pg, 4, &n) == 0 && n == 1 && pg[0].seq == 2,
+          "a page after seen number 1");
+
+    /* (b) act on withdrawal 1 */
+    amm_withdraw_t sh;
+    evm_u256 units;
+    evm_u256_from_u64(&units, 3000000000000000ULL);
+    uint64_t gn = 0, gu = 0;
+    CHECK(amm_withdraw_calc(&sh, &p, &units, 2500) == AMM_OK && amm_to_u64(&gn, &sh.out_n) == AMM_OK &&
+          amm_to_u64(&gu, &sh.out_u) == AMM_OK && gn == 750000000000000ULL && gu == 750000000ULL,
+          "the shares of 25 % (hand derived): 7.5*10^14 NODUS, 7.5*10^8 USDT");
+    char nodus_a[129], eth_a[41];
+    memset(nodus_a, 'c', 128); nodus_a[128] = '\0';
+    memset(eth_a, 'a', 40); eth_a[40] = '\0';
+    char other[129];
+    memset(other, 'd', 128); other[128] = '\0';
+    amm_wd_act_t act;
+    amm_attempt_t na;
+    amm_eattempt_t ea;
+    memset(&act, 0, sizeof(act));
+    act.seq = 1; act.pool_before = &p; act.units_before = units; act.w = sh;
+    act.n_gross = gn; act.n_fee = 1000000ULL; act.n_net = gn - 1000000ULL;
+    act.u_gross = gu; act.u_fee = 500000ULL; act.u_net = gu - 500000ULL;
+    int before = swap_count_rows();
+
+    /* the stored pool is not the one the shares came from */
+    amm_pool_t moved = p;
+    evm_u256_from_u64(&moved.depth_u, 3000000001ULL);
+    amm_pool_t stored = p;
+    CHECK(amm_journal_pool_put(g_j, &moved) == 0, "setup: the pool moved by one raw USDT");
+    CHECK(mkenv(&na, 0, nodus_a, gn, 1000000ULL, 1) && mkeatt(&ea, 0, 0xaa, gu, 500000ULL, 0, 2), "attempts");
+    act.nattempt = &na; act.eattempt = &ea;
+    CHECK(amm_journal_withdraw_act(g_j, &act) == AMM_J_ILLEGAL && pool_eq(3000000000000000ULL, 3000000001ULL, 3000000000000000ULL) &&
+          pos_units('a', 'c') == 3000000000000000ULL && swap_count_rows() == before &&
+          amm_journal_withdraw_get(g_j, 1, &g) == 0 && !strcmp(g.state, "accepted"),
+          "(1) the pool is not the one the shares came from: ILLEGAL, nothing written");
+    CHECK(amm_journal_pool_put(g_j, &stored) == 0, "setup: the pool is back");
+
+    /* another NODUS payout is live: one live attempt */
+    amm_approve_t sb = mk('f', 1, 1);
+    amm_swap_t live;
+    amm_attempt_t la;
+    char destu[129];
+    memset(destu, 'e', 128); destu[128] = '\0';
+    CHECK(approve_ok(&sb, &live) && drive(&live, "payout_pending", "nodus:wd2") &&
+          mkenv(&la, live.seq, destu, 1000, 100, 7) && amm_journal_attempt_sign(g_j, &la) == AMM_J_OK,
+          "setup: another swap's NODUS payout is signed (live)");
+    amm_attempt_free(&la);
+    before = swap_count_rows();
+    CHECK(amm_journal_withdraw_act(g_j, &act) == AMM_J_ILLEGAL && pool_eq(3000000000000000ULL, 3000000000ULL, 3000000000000000ULL) &&
+          pos_units('a', 'c') == 3000000000000000ULL && swap_count_rows() == before &&
+          amm_journal_withdraw_get(g_j, 1, &g) == 0 && !strcmp(g.state, "accepted"),
+          "(2) another NODUS payout in flight: ILLEGAL, pool, position, rows and state untouched");
+    CHECK(amm_journal_attempt_finish(g_j, live.seq, "confirmed") == 0 && tr(live.seq, "paid", NULL) == 0,
+          "setup: that payout is settled");
+    amm_attempt_free(&na);
+    amm_eattempt_free(&ea);
+
+    /* an attempt that names another address than the position's */
+    CHECK(mkenv(&na, 0, other, gn, 1000000ULL, 1) && mkeatt(&ea, 0, 0xaa, gu, 500000ULL, 0, 2), "attempts");
+    act.nattempt = &na; act.eattempt = &ea;
+    before = swap_count_rows();
+    CHECK(amm_journal_withdraw_act(g_j, &act) == AMM_J_ILLEGAL && pool_eq(3000000000000000ULL, 3000000000ULL, 3000000000000000ULL) &&
+          pos_units('a', 'c') == 3000000000000000ULL && swap_count_rows() == before,
+          "(3) a NODUS attempt to another address than the position's: ILLEGAL, everything rolled back");
+    amm_attempt_free(&na);
+    amm_eattempt_free(&ea);
+    CHECK(mkenv(&na, 0, nodus_a, gn, 1000000ULL, 1) && mkeatt(&ea, 0, 0xbb, gu, 500000ULL, 0, 2), "attempts");
+    act.nattempt = &na; act.eattempt = &ea;
+    CHECK(amm_journal_withdraw_act(g_j, &act) == AMM_J_ILLEGAL && pool_eq(3000000000000000ULL, 3000000000ULL, 3000000000000000ULL) &&
+          pos_units('a', 'c') == 3000000000000000ULL && swap_count_rows() == before,
+          "(3b) a USDT attempt to another recipient (the NODUS row is already written then): everything rolled back");
+    amm_attempt_free(&na);
+    amm_eattempt_free(&ea);
+
+    /* a failing commit */
+    CHECK(mkenv(&na, 0, nodus_a, gn, 1000000ULL, 1) && mkeatt(&ea, 0, 0xaa, gu, 500000ULL, 0, 2), "attempts");
+    act.nattempt = &na; act.eattempt = &ea;
+    amm_journal_test_precommit_hook(fail_hook);
+    int hr = amm_journal_withdraw_act(g_j, &act);
+    amm_journal_test_precommit_hook(NULL);
+    CHECK(hr == -1 && pool_eq(3000000000000000ULL, 3000000000ULL, 3000000000000000ULL) &&
+          pos_units('a', 'c') == 3000000000000000ULL && swap_count_rows() == before &&
+          amm_journal_withdraw_get(g_j, 1, &g) == 0 && !strcmp(g.state, "accepted"),
+          "(4) a failing commit: all of it undone");
+    amm_attempt_free(&na);
+    amm_eattempt_free(&ea);
+
+    /* the act */
+    CHECK(mkenv(&na, 0, nodus_a, gn, 1000000ULL, 1) && mkeatt(&ea, 0, 0xaa, gu, 500000ULL, 0, 2), "attempts");
+    act.nattempt = &na; act.eattempt = &ea;
+    CHECK(amm_journal_withdraw_act(g_j, &act) == 0, "the act is written");
+    amm_attempt_free(&na);
+    amm_eattempt_free(&ea);
+    CHECK(pool_eq(3000000000000000ULL - 750000000000000ULL, 3000000000ULL - 750000000ULL,
+                  3000000000000000ULL - 750000000000000ULL),
+          "the pool is reduced by the shares and the units claimed");
+    CHECK(pos_units('a', 'c') == 2250000000000000ULL, "the position holds 2.25*10^15 units");
+    CHECK(amm_journal_withdraw_get(g_j, 1, &g) == 0 && !strcmp(g.state, "done") && g.nodus_swap > 0 &&
+          g.usdt_swap > 0 && g.out_n == 750000000000000ULL && g.out_u == 750000000ULL,
+          "the withdrawal is done, with its two payout rows and its shares");
+    amm_swap_t nr, ur;
+    CHECK(amm_journal_swap_by_seq(g_j, g.nodus_swap, &nr) == 0 && state_is(&nr, "payout_pending") &&
+          nr.dir == AMM_USDT_TO_NODUS && !strcmp(nr.dest, nodus_a) && !strcmp(nr.sender, eth_a) &&
+          nr.out_amount == gn && nr.out_fee == 1000000ULL && nr.out_paid == gn - 1000000ULL &&
+          nr.room == 0 && nr.value_usdt == 0 && nr.amount == 0 && nr.seen_seq == 0 && nr.req_no_bot == 0 &&
+          !strncmp(nr.id, "ffffffffffffffff", 16),
+          "the NODUS payout row: to the position's Nodus address, no room, no value, no input side");
+    CHECK(amm_journal_swap_by_seq(g_j, g.usdt_swap, &ur) == 0 && state_is(&ur, "payout_pending") &&
+          ur.dir == AMM_NODUS_TO_USDT && !strcmp(ur.dest, eth_a) && !strcmp(ur.sender, nodus_a) &&
+          ur.out_amount == gu && ur.out_fee == 500000ULL && ur.out_paid == gu - 500000ULL && ur.room == 0,
+          "the USDT payout row: to the position's Ethereum address");
+    amm_attempt_t gna;
+    amm_eattempt_t gea;
+    CHECK(amm_journal_attempt_latest(g_j, nr.seq, &gna) == 0 && !strcmp(gna.state, "signed") &&
+          !strcmp(gna.dest, nodus_a) && gna.gross == gn && gna.fee == 1000000ULL,
+          "the NODUS first attempt is stored (write-ahead) to the Nodus address");
+    amm_attempt_free(&gna);
+    uint8_t want20[20];
+    memset(want20, 0xaa, 20);
+    CHECK(amm_journal_eth_attempt_latest(g_j, ur.seq, &gea) == 0 && !strcmp(gea.state, "signed") &&
+          !memcmp(gea.recipient, want20, 20) && gea.gross == gu && gea.fee == 500000ULL,
+          "the USDT first attempt is stored (write-ahead) to the Ethereum address");
+    amm_eattempt_free(&gea);
+    uint64_t on = 0, ou = 0, inf = 1;
+    int64_t oq = -1;
+    CHECK(amm_journal_owed_sum(g_j, 0, &on) == 0 && on == gn && amm_journal_owed_sum(g_j, 1, &ou) == 0 && ou == gu,
+          "amm_journal_owed_sum counts both owed shares, in their own asset");
+    CHECK(amm_journal_inflight_sum(g_j, 0, &inf) == 0 && inf == ss.value_usdt && amm_journal_open_questions(g_j, &oq) == 0 &&
+          oq == 0, "the in-flight value is only the seen swap's own 1 (setup); the withdrawal adds none and no open question");
+    amm_swap_t hd;
+    amm_swap_t up[4];
+    CHECK(amm_journal_swap_head_payout(g_j, &hd) == 0 && hd.seq == nr.seq &&
+          amm_journal_swap_page_usdt_owed(g_j, 0, up, 4, &n) == 0 && n == 1 && up[0].seq == ur.seq,
+          "the NODUS owed head and the USDT owed page return the rows");
+    CHECK(mkenv(&na, 0, nodus_a, gn, 1000000ULL, 3) && mkeatt(&ea, 0, 0xaa, gu, 500000ULL, 1, 4), "fresh attempts");
+    act.nattempt = &na; act.eattempt = &ea;
+    CHECK(amm_journal_withdraw_act(g_j, &act) == AMM_J_ILLEGAL, "a done withdrawal is not acted on again");
+    amm_attempt_free(&na);
+    amm_eattempt_free(&ea);
+    CHECK(swap_count_rows() == before + 2, "no row beyond the two payouts was written");
+
+    /* the refuse path (withdrawal 2): only state and reason */
+    amm_wd_act_t rf;
+    memset(&rf, 0, sizeof(rf));
+    rf.seq = 2; rf.refuse = 1; rf.message = "the NODUS side is nothing after the Nodus fee";
+    CHECK(amm_journal_withdraw_act(g_j, &rf) == 0 && amm_journal_withdraw_get(g_j, 2, &g) == 0 &&
+          !strcmp(g.state, "refused") && strstr(g.message, "nothing after the Nodus fee") &&
+          pos_units('a', 'c') == 2250000000000000ULL && swap_count_rows() == before + 2 &&
+          pool_eq(3000000000000000ULL - 750000000000000ULL, 3000000000ULL - 750000000ULL,
+                  3000000000000000ULL - 750000000000000ULL),
+          "refused whole: the state and the reason only, units and depths untouched");
+    CHECK(amm_journal_withdraw_act(g_j, &rf) == AMM_J_ILLEGAL, "a refused withdrawal is not acted on again");
+    CHECK(amm_journal_withdraw_page_due(g_j, 1100, 0, pg, 4, &n) == 0 && n == 1 && pg[0].seq == 3,
+          "done and refused withdrawals leave the due page: only the third (accepted) is left");
+
+    /* (c) restart, schema 7 */
+    reopen();
+    CHECK(amm_journal_withdraw_get(g_j, 1, &g) == 0 && !strcmp(g.state, "done") && g.nodus_swap == nr.seq &&
+          pos_units('a', 'c') == 2250000000000000ULL, "everything survives a reopen");
+    char oldp[160];
+    snprintf(oldp, sizeof(oldp), "%s/old7.db", g_dir);
+    sqlite3 *db = NULL;
+    int made = sqlite3_open(oldp, &db) == SQLITE_OK &&
+               sqlite3_exec(db, "PRAGMA user_version=7", NULL, NULL, NULL) == SQLITE_OK;
+    sqlite3_close(db);
+    amm_journal_t *jx = NULL;
+    CHECK(made && amm_journal_open(oldp, &jx) != 0 && jx == NULL, "a schema-7 file is refused, not migrated");
+    unlink(oldp);
+}
+
 int main(void) {
     printf("test_amm_journal\n");
     snprintf(g_dir, sizeof(g_dir), "/tmp/amm_jnl_testXXXXXX");
@@ -2650,6 +2956,7 @@ int main(void) {
     j25_quote_accept();
     j26_unconsumed_and_unmatched();
     j27_revision12();
+    j30_withdraw();
 
     if (g_j) amm_journal_close(g_j);
     cleanup_dir();
