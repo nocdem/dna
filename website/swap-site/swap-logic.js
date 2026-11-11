@@ -143,7 +143,7 @@ export function priceMovementPercent(reserves, direction, amountRaw, numberRaw) 
   let a, out;
   try { a = toBig(amountRaw); out = toBig(numberRaw); } catch { return null; }
   const u = BigInt(reserves.usdt), n = BigInt(reserves.nodus);
-  if (u === 0n || n === 0n || a === 0n) return null;
+  if (u === 0n || n === 0n || a <= 0n || out < 0n) return null;
   const [rIn, rOut] = direction === 'usdt_to_nodus' ? [u, n] : [n, u];
   const whole = a * rOut, lost = whole - out * rIn;
   const hundredths = lost > 0n ? lost * 10000n / whole : 0n;   // percent x 100, truncated
@@ -157,7 +157,7 @@ export function priceMovementPercent(reserves, direction, amountRaw, numberRaw) 
 export function ethConfirmations(usdtRaw) {
   let v;
   try { v = toBig(usdtRaw); } catch { return null; }
-  if (v === 0n) return null;
+  if (v <= 0n) return null;
   return v <= 100000000n ? 3n : v <= 1000000000n ? 5n : 33n;
 }
 

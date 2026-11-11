@@ -142,6 +142,8 @@ test('priceMovementPercent: how far the bot\'s rate for this amount is below the
   assert.equal(priceMovementPercent({ usdt: '0', nodus: '5' }, 'usdt_to_nodus', 1000000n, 1n), null);
   assert.equal(priceMovementPercent(reserves, 'sideways', 1000000n, 1n), null);
   assert.equal(priceMovementPercent(reserves, 'usdt_to_nodus', 0n, 1n), null);
+  assert.equal(priceMovementPercent(reserves, 'usdt_to_nodus', -1n, 1n), null);   // negative inputs are unusable
+  assert.equal(priceMovementPercent(reserves, 'usdt_to_nodus', 1000000n, -1n), null);
   // Strings of digits (the bot's form) work as well as BigInt.
   assert.equal(priceMovementPercent(reserves, 'usdt_to_nodus', '3000000000', (n / 2n).toString()), '50.00');
   // FALSE PASS: the expected values come from the constant-product shape used here; the bot's real pricing
@@ -159,6 +161,7 @@ test('ethConfirmations: the bot\'s default tiers by USDT amount, bounds inclusiv
   assert.equal(ethConfirmations(''), null);
   assert.equal(ethConfirmations('1.5'), null);
   assert.equal(ethConfirmations(undefined), null);
+  assert.equal(ethConfirmations(-1n), null);            // a negative BigInt is unusable (Sol verify claim 4)
   // FALSE PASS: the tiers are constants copied from the bot's defaults; a bot setting changed on the live bot
   // (eth_conf_*) is not visible here, and /amm/status does not carry it.
 });
