@@ -6,7 +6,7 @@ import { createExtension } from './extension.js';
 import { createAdapter } from './adapter.js';
 import { createSwapFlow } from './flow.js';
 import {
-  USDT_DECIMALS, NODUS_DECIMALS, outputUnit, displayAmount, percentToBps, priceFromReserves, refusalText, nodusWithCommas, STILL_PENDING_TEXT,
+  USDT_DECIMALS, NODUS_DECIMALS, outputUnit, displayAmount, percentToBps, priceFromReserves, poolText, priceMovementPercent, refusalText, nodusWithCommas, STILL_PENDING_TEXT,
 } from './swap-logic.js';
 
 const $ = id => document.getElementById(id);
@@ -47,7 +47,8 @@ function renderTokens() {
 function resetQuote() {
   flow.clearQuote('swap');
   $('get').value = '';
-  for (const id of ['d-fee', 'd-min', 'd-request', 'd-valid']) $(id).textContent = '—';
+  for (const id of ['d-fee', 'd-min', 'd-request', 'd-valid', 'd-movement']) $(id).textContent = '—';
+  $('move-hint').hidden = true;
   $('approve-btn').hidden = true; $('ask-btn').hidden = false;
 }
 function resetAddQuote() {
@@ -68,6 +69,7 @@ function renderMinimum() {
 
 function renderStatus(status) {
   const p = priceFromReserves(status.reserves);
+  $('d-pool').textContent = $('l-pool').textContent = poolText(status.reserves);
   $('d-price').textContent = p ? `1 USDT ≈ ${p.nodusPerUsdt} NODUS` : 'No price yet';
   const c = status.settings.commission;
   $('d-commission').textContent = c === '0' ? 'None' : `${c} (bot setting)`;
@@ -163,6 +165,10 @@ $('swap-form').addEventListener('submit', async event => {
     const q = r.quote, unit = outputUnit(q.direction);
     $('get').value = displayAmount(BigInt(q.number), unit.decimals);
     $('d-fee').textContent = amountOut(BigInt(q.estimatedFee), unit);
+    // The pool price is the one from the status read at page open (the same reserves the Pool line shows).
+    const moved = priceMovementPercent(flow.state.status?.reserves, q.direction, q.amount, q.number);
+    $('d-movement').textContent = moved === null ? '—' : `${moved} %`;
+    $('move-hint').hidden = false;
     $('d-request').textContent = q.requestNumber;
     $('d-valid').textContent = time(q.validUntil);
     $('step-approved').classList.add('done'); $('step-approved-t').textContent = time(Math.floor(Date.now() / 1000));

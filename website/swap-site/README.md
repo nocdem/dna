@@ -18,6 +18,7 @@ Plan: `docs/plans/2026-11-08-swap-bot-plan.nodus1.md` sections 5-8, 14, 18 (chan
 | `bot.js` | Fetch client of the bot's routes (`amm_http.h`). |
 | `extension.js` | The extension's EXISTING site methods (`nodus_requestAccounts`, `eth_requestAccounts`, `nodus_signMessage`). |
 | `adapter.js` | The ONE module that calls the extension's NEW site methods. Its method names and parameter shapes are constants (`EXTENSION_CALLS`) that main fills in; until then every call refuses with `not_configured` and sends nothing. |
+| `swap.js` page lines | "Pool" (both tabs) shows the status reserves as "<USDT> USDT · <NODUS> NODUS", "Empty: no liquidity yet" or "Too large to show", from the status read at page open (`poolText`). "Price movement" (swap tab, after the bot's answer) is how far the bot's rate for the asked amount is below the pool price from the same reserves (`priceMovementPercent`), "—" when the pool price is unknown; reset like the other answer fields. No new request. |
 | `package.json` | `{"type":"module"}` only, so `node --test` loads the `.js` files as modules. Not needed on the server. |
 | `test/` | `node --test website/swap-site/test/` (Node 20 or later): no browser, no network. |
 

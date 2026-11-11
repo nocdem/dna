@@ -14,7 +14,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  parseAmount, formatFixed, displayAmount, usdtText, nodusText, percentToBps, minimumToReceive, priceFromReserves,
+  parseAmount, formatFixed, displayAmount, usdtText, nodusText, percentToBps, minimumToReceive, priceFromReserves, poolText, priceMovementPercent,
   quoteBody, liquidityQuoteBody, withdrawBody, randomRequestNumber,
   buildNodusToUsdtText, buildLiquidityAddText, buildWithdrawText,
   buildUsdtToNodusTypedData, buildLiquidityAddTypedData,
@@ -105,6 +105,47 @@ test('priceFromReserves: the start pool 3000 USDT : 30,000,000 NODUS is 10,000 N
   assert.equal(priceFromReserves(null), null);
   assert.equal(priceFromReserves({ nodus: 'above_2_64', usdt: '1' }), null);
   assert.equal(priceFromReserves({ nodus: '0', usdt: '5' }), null);
+});
+
+test('poolText: both reserves in display units; empty pool and an oversized side say so in words', () => {
+  // 3000 USDT = 3 x 10^9 raw (6 decimals); 30,000,000 NODUS = 3 x 10^15 raw (8 decimals), shown with commas.
+  assert.equal(poolText({ usdt: '3000000000', nodus: '3000000000000000' }), '3000 USDT · 30,000,000 NODUS');
+  assert.equal(poolText({ usdt: '1500000', nodus: '123456789' }), '1.5 USDT · 1.23456789 NODUS');
+  assert.equal(poolText(null), 'Empty: no liquidity yet');
+  assert.equal(poolText({ usdt: 'above_2_64', nodus: '5' }), 'Too large to show');
+  assert.equal(poolText({ usdt: '5', nodus: 'above_2_64' }), 'Too large to show');
+  // FALSE PASS: only these strings are compared; how the page places the line is not exercised here.
+});
+
+test('priceMovementPercent: how far the bot\'s rate for this amount is below the pool price, two decimals', () => {
+  const reserves = { usdt: '3000000000', nodus: '3000000000000000' };   // 3000 USDT : 30,000,000 NODUS
+  const u = 3000000000n, n = 3000000000000000n;
+  // Constant-product output, floor: out = n x a / (u + a). Movement is then about a / (u + a).
+  const out = a => n * a / (u + a);
+  // 1 USDT: 1 / 3001 = 0.0333 % -> "0.03".
+  assert.equal(priceMovementPercent(reserves, 'usdt_to_nodus', 1000000n, out(1000000n)), '0.03');
+  // An amount equal to the pool's USDT side: out = n / 2, movement 50 %.
+  assert.equal(priceMovementPercent(reserves, 'usdt_to_nodus', u, out(u)), '50.00');
+  // The other direction against the same pool: sending all the NODUS side gives half the USDT side.
+  const outU = a => u * a / (n + a);
+  assert.equal(priceMovementPercent(reserves, 'nodus_to_usdt', n, outU(n)), '50.00');
+  // 9 times the pool size: 9 / 10 = 90 %.
+  assert.equal(priceMovementPercent(reserves, 'usdt_to_nodus', 9n * u, out(9n * u)), '90.00');
+  // A number at the pool price exactly is 0.00; a number above it (never negative) is "0.00", not "-0.00".
+  assert.equal(priceMovementPercent(reserves, 'usdt_to_nodus', 1000000n, 1000000n * n / u), '0.00');
+  assert.equal(priceMovementPercent(reserves, 'usdt_to_nodus', 1000000n, 2n * 1000000n * n / u), '0.00');
+  // Nothing received: the whole amount is lost to movement, 100.00.
+  assert.equal(priceMovementPercent(reserves, 'usdt_to_nodus', 1000000n, 0n), '100.00');
+  // No known pool price, or unusable inputs: null (the page shows a dash).
+  assert.equal(priceMovementPercent(null, 'usdt_to_nodus', 1000000n, 1n), null);
+  assert.equal(priceMovementPercent({ usdt: 'above_2_64', nodus: '5' }, 'usdt_to_nodus', 1000000n, 1n), null);
+  assert.equal(priceMovementPercent({ usdt: '0', nodus: '5' }, 'usdt_to_nodus', 1000000n, 1n), null);
+  assert.equal(priceMovementPercent(reserves, 'sideways', 1000000n, 1n), null);
+  assert.equal(priceMovementPercent(reserves, 'usdt_to_nodus', 0n, 1n), null);
+  // Strings of digits (the bot's form) work as well as BigInt.
+  assert.equal(priceMovementPercent(reserves, 'usdt_to_nodus', '3000000000', (n / 2n).toString()), '50.00');
+  // FALSE PASS: the expected values come from the constant-product shape used here; the bot's real pricing
+  // (commission, its own rounding) is not run, so the function is proven as a formula only, not against the bot.
 });
 
 test('request bodies: quote bodies are exactly two keys, both strings (amm_http.c route_quote)', () => {

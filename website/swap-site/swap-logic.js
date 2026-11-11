@@ -33,6 +33,7 @@ export function nodusWithCommas(raw) {
 // The USDT contract address the extension needs as `token`: only "0x" + 40 hex counts.
 export const isTokenAddress = v => typeof v === 'string' && /^0x[0-9a-fA-F]{40}$/.test(v);
 
+const DIGITS = /^\d+$/;
 const pow10 = n => 10n ** BigInt(n);
 
 // ── amounts ─────────────────────────────────────────────────────────────
@@ -120,6 +121,33 @@ export function priceFromReserves(reserves) {
     nodusPerUsdt: displayAmount(nodusPerUsdt, 4),
     usdtPerNodus: displayAmount(usdtPerNodus, 6),
   };
+}
+
+// What the pool holds, for the "Pool" line: "<USDT> USDT · <NODUS> NODUS". `reserves` is null when no pool exists yet;
+// a side that does not fit u64 arrives as "above_2_64" and is not shown as a number.
+export function poolText(reserves) {
+  if (!reserves) return 'Empty: no liquidity yet';
+  if (!DIGITS.test(reserves.usdt ?? '') || !DIGITS.test(reserves.nodus ?? '')) return 'Too large to show';
+  return `${displayAmount(BigInt(reserves.usdt), USDT_DECIMALS)} USDT · ${nodusWithCommas(BigInt(reserves.nodus))} NODUS`;
+}
+
+// How far the bot's rate for this amount (number / amount, raw units both) is below the pool price from the same
+// reserves, as a percentage with two decimals, truncated: "0.03", "50.00". With a the amount in, out the number the
+// bot gives, rIn and rOut the pool's reserves of the input and output side, the pool price is rOut / rIn and
+//   movement = 1 - (out / a) / (rOut / rIn) = (a x rOut - out x rIn) / (a x rOut).
+// A bot rate at or above the pool price gives "0.00" (never negative). null when the pool price is unknown (no
+// pool, "above_2_64", an empty side) or an input is unusable.
+export function priceMovementPercent(reserves, direction, amountRaw, numberRaw) {
+  if (direction !== 'usdt_to_nodus' && direction !== 'nodus_to_usdt') return null;
+  if (!reserves || !DIGITS.test(reserves.usdt ?? '') || !DIGITS.test(reserves.nodus ?? '')) return null;
+  let a, out;
+  try { a = toBig(amountRaw); out = toBig(numberRaw); } catch { return null; }
+  const u = BigInt(reserves.usdt), n = BigInt(reserves.nodus);
+  if (u === 0n || n === 0n || a === 0n) return null;
+  const [rIn, rOut] = direction === 'usdt_to_nodus' ? [u, n] : [n, u];
+  const whole = a * rOut, lost = whole - out * rIn;
+  const hundredths = lost > 0n ? lost * 10000n / whole : 0n;   // percent x 100, truncated
+  return formatFixed(hundredths, 2);
 }
 
 // ── request bodies the site itself posts (plan 6.4.7; amm_http.c) ───────
@@ -279,8 +307,6 @@ export function buildLiquidityAddTypedData({ domainName, chainId, ethereumAddres
 }
 
 // ── the bot's answers, read for display only ────────────────────────────
-
-const DIGITS = /^\d+$/;
 
 // POST /amm/quote answer (amm_http.c route_quote). Not checked or verified (givens items 65, 69): the fields are
 // only read so they can be shown and used; a shape that cannot be shown is reported as such.

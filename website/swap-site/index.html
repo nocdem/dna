@@ -34,7 +34,9 @@
           <div class="field-foot"><span>The bot's number for this amount</span></div>
         </div>
         <dl class="details">
+          <div><dt>Pool</dt><dd id="d-pool">—</dd></div>
           <div><dt>Pool price</dt><dd id="d-price">—</dd></div>
+          <div><dt>Price movement</dt><dd id="d-movement">—</dd></div>
           <div><dt>Estimated network fee</dt><dd id="d-fee">—</dd></div>
           <div><dt>Tolerance</dt><dd class="tolerance"><input id="tol" type="text" inputmode="decimal" autocomplete="off" placeholder="0.5" aria-label="Tolerance in percent"> %
             <button class="chip" type="button" data-pct="0.5">0.5</button><button class="chip" type="button" data-pct="1">1</button><button class="chip" type="button" data-pct="3">3</button></dd></div>
@@ -48,6 +50,7 @@
         </dl>
         <button class="button wide" id="ask-btn" type="submit" disabled>Ask the bot for a price</button>
         <button class="button wide gap" id="approve-btn" type="button" hidden>Approve in the extension</button>
+        <p class="note" id="move-hint" hidden>Larger amounts move the price more; the bot's number already includes it.</p>
         <p class="note" id="swap-limits">The extension shows the request in full before you sign.</p>
         <p class="note msg" id="swap-msg" role="status" hidden></p>
       </form>
@@ -60,8 +63,10 @@
           <div class="field-row"><input id="liq-amount" type="text" inputmode="decimal" autocomplete="off" placeholder="0">
             <select id="liq-side" class="side-select" aria-label="Side"><option value="nodus">NODUS</option><option value="usdt">USDT</option></select></div>
           <div class="field-foot"><span>At least 100,000 NODUS, with the USDT at the pool's current ratio.</span></div>
+          <div class="field-foot"><span>Type the amount of one side; the bot computes the other side at the pool's current ratio.</span></div>
         </div>
         <dl class="details">
+          <div><dt>Pool</dt><dd id="l-pool">—</dd></div>
           <div><dt>USDT to pay</dt><dd id="l-usdt">—</dd></div>
           <div><dt>NODUS to pay</dt><dd id="l-nodus">—</dd></div>
           <div><dt>Request number</dt><dd id="l-request">—</dd></div>
