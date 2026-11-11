@@ -1,0 +1,23 @@
+# Installed as /etc/systemd/system/nodus-amm-cert.timer; enable with `systemctl enable --now nodus-amm-cert.timer`.
+#
+# Interval: the certificate lasts 160 hours under the `shortlived` profile (plan section 4.1). lego's own rule for `run`
+# (cmd/cmd_run_renew.go:299-312, getDueDate, used by isInRenewalPeriod :281-297): a certificate whose lifetime rounds to
+# 10 days or less is due when half of its lifetime is left (divisor 2), that is 80 hours before expiry, and `run` renews
+# nothing earlier. (If the CA offers renewal information, lego follows that instead, :85, :237-271.) The timer must fire
+# well inside that 80-hour window, so it runs every 12 hours: at least six attempts before expiry, and a failed or
+# missed run is retried the same day. PROPOSAL: the 12-hour figure is chosen here under the 80-hour bound; no source
+# names it. A run that finds the certificate not due only logs and reloads nginx (see the service).
+#
+# Persistent=true: a run missed while the machine was off is made up at the next boot.
+# RandomizedDelaySec=300: a small spread so the run does not start at the exact minute; lego already adds its own random
+# delay of up to 8 minutes before a due renewal, so this is only a courtesy, not needed for correctness.
+[Unit]
+Description=Twice a day: issue or renew the swap bot's IP-address certificate
+
+[Timer]
+OnCalendar=*-*-* 00/12:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

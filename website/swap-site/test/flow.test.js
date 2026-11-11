@@ -22,7 +22,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createSwapFlow, POLL_MAX, describeAdapterError } from '../flow.js';
-import { createBotClient } from '../bot.js';
+import { createBotClient, BOT_ORIGIN } from '../bot.js';
 import { AdapterError } from '../adapter.js';
 
 const ETH = `0x${'4b'.repeat(20)}`;
@@ -42,12 +42,18 @@ const QUOTE = {
 };
 
 // A recording fetch. routes: { 'GET /amm/status': body | (body) => body, ... }; a body is [httpStatus, json].
+// A call to any URL that does not start with BOT_ORIGIN + '/amm/' throws (a fetch to the page's own origin or to a
+// relative path fails like an unreachable bot); routes are keyed by method and path without the origin.
 function stubFetch(routes) {
   const calls = [];
-  const fn = async (url, init = {}) => {
+  const fn = async (fullUrl, init = {}) => {
     const method = init.method ?? 'GET';
+    calls.push({ url: fullUrl, init });
+    if (typeof fullUrl !== 'string' || !fullUrl.startsWith(`${BOT_ORIGIN}/amm/`)) throw new TypeError(`wrong host: ${fullUrl}`);
+    const url = fullUrl.slice(BOT_ORIGIN.length);
     const key = `${method} ${url}`;
-    calls.push({ key, body: init.body });
+    calls[calls.length - 1].key = key;
+    calls[calls.length - 1].body = init.body;
     let hit = routes[key];
     if (hit === undefined) hit = routes[`${method} ${url.replace(/\/amm\/swap\/.*/, '/amm/swap/*')}`];
     if (hit === undefined) throw new Error(`no route for ${key}`);
@@ -76,7 +82,7 @@ function makeFlow({ routes, adapter = stubAdapter(), signText, pollMax, sleep, r
   const fetch = stubFetch({ 'GET /amm/status': [200, status], ...routes });
   const sleeps = [];
   const flow = createSwapFlow({
-    bot: createBotClient({ fetch, base: '/amm' }), adapter, signText, botUrl: 'https://swap.nodusnetwork.io', usdtToken: noToken ? undefined : TOKEN,
+    bot: createBotClient({ fetch }), adapter, signText, botUrl: BOT_ORIGIN, usdtToken: noToken ? undefined : TOKEN,
     sleep: sleep ?? (async ms => { sleeps.push(ms); }), pollMax, pollIntervalMs: 5000, random,
   });
   flow.setAccounts(ACCOUNTS);
@@ -144,7 +150,7 @@ test('the adapter is not called until the user\'s yes; then once, with the typed
   const { name, input } = adapter.calls[0];
   assert.equal(name, 'usdtToNodus');
   assert.deepEqual(input, {
-    botUrl: 'https://swap.nodusnetwork.io',    // origin, no path: the extension appends /amm/swap
+    botUrl: BOT_ORIGIN,    // origin, no path: the extension appends /amm/swap
     ethereumAddress: ETH, nodusAddress: NODUS_ADDR, token: TOKEN, payTo: QUOTE.payTo,
     amountUsdtRaw: 100000000n,                 // what the user typed, not the bot's echo
     minimumNodusRaw: 123610410000n,            // (124,860,000,000 - 1,000,000) x 9,900 / 10,000, hand-derived in logic.test.js
@@ -164,7 +170,7 @@ test('NODUS -> USDT yes: the adapter gets the NODUS amount and the USDT minimum'
   assert.equal(adapter.calls.length, 1);
   assert.equal(adapter.calls[0].name, 'nodusToUsdt');
   assert.deepEqual(adapter.calls[0].input, {
-    botUrl: 'https://swap.nodusnetwork.io', nodusAddress: NODUS_ADDR, ethereumAddress: ETH, payTo: 'fd'.repeat(64),
+    botUrl: BOT_ORIGIN, nodusAddress: NODUS_ADDR, ethereumAddress: ETH, payTo: 'fd'.repeat(64),
     amountNodusRaw: 50000000000000n,
     minimumUsdtRaw: 96515000n,                 // (100,000,000 - 3,000,000) x 9,950 / 10,000
     requestNumber: '4242',
@@ -348,7 +354,7 @@ test('liquidity add: the question carries one side; the exact pair is shown; the
   assert.equal(y.ok, true);
   assert.equal(adapter.calls.length, 1);
   assert.deepEqual(adapter.calls[0].input, {
-    botUrl: 'https://swap.nodusnetwork.io', ethereumAddress: ETH, nodusAddress: NODUS_ADDR, token: TOKEN,
+    botUrl: BOT_ORIGIN, ethereumAddress: ETH, nodusAddress: NODUS_ADDR, token: TOKEN,
     payEthereum: pair.payEthereum, payNodus: pair.payNodus, usdtAmountRaw: '10000000', nodusAmountRaw: '10000000000000',
     requestNumber: '88', ethChainId: '11155111',
   });
@@ -374,13 +380,44 @@ test('no part of the site checks a signature of the bot or loads the verifying s
   }
 });
 
-test('the bot is reached only on the site\'s own origin under /amm (plan section 18 change 5)', async () => {
+// PROVES (plan section 18 change 5): every page call to the bot goes to https://62.171.136.77/amm/..., with no
+//   credentials and no redirects; the page (swap.js) gives the extension the same constant as botUrl and builds its
+//   bot client without a base of its own; no site source reads the page's own address (location) for the bot.
+// FALSE PASS: the first part runs the real client against a stub fetch that rejects any other host, so it proves the
+//   URL the client builds, not what a browser does with it; the swap.js part is textual (swap.js needs a DOM and is not
+//   run), so a different way of reaching the page address (not named `location` or document.URL/documentURI/baseURI)
+//   would not be found. The exact statement `location.href = EXT_PAGE;` (navigation to the extension page) is allowed
+//   and removed before the check; if swap.js changes that statement, the test fails and must be updated.
+test('the bot is reached only at BOT_ORIGIN under /amm (plan section 18 change 5)', async () => {
+  assert.equal(BOT_ORIGIN, 'https://62.171.136.77');
   const { flow, fetch } = makeFlow({ routes: { 'POST /amm/quote': [200, QUOTE], 'GET /amm/swap/*': [200, { state: 'paid' }] } });
   await flow.loadStatus(); await flow.press({ direction: 'usdt_to_nodus', amountText: '1' }); await flow.follow('4242');
-  for (const c of fetch.calls) assert.match(c.key, /^(GET|POST) \/amm\//);   // relative to the origin: no other host
-  for (const file of ['bot.js', 'flow.js', 'swap.js']) {
+  assert.ok(fetch.calls.length >= 3);
+  for (const c of fetch.calls) {
+    assert.ok(c.url.startsWith('https://62.171.136.77/amm/'), c.url);          // the absolute bot origin, never a relative path
+    assert.equal(c.init.credentials, 'omit');
+    assert.equal(c.init.redirect, 'error');
+  }
+  const swapJs = readFileSync(new URL('../swap.js', import.meta.url), 'utf8');
+  assert.match(swapJs, /const botUrl = BOT_ORIGIN;/);                           // the extension gets the same constant
+  assert.match(swapJs, /createBotClient\(\{ fetch: \(\.\.\.a\) => fetch\(\.\.\.a\) \}\)/);   // client default base = BOT_ORIGIN/amm
+  // The one allowed use of `location` is the existing navigation to the extension page (an assignment, not a read);
+  // with that exact statement removed, no `location` and no other page-address property may remain in swap.js.
+  assert.ok(swapJs.includes('location.href = EXT_PAGE;'));
+  assert.doesNotMatch(swapJs.replace('location.href = EXT_PAGE;', ''), /\blocation\b|document\.(URL|documentURI|baseURI)\b/);
+  assert.doesNotMatch(swapJs, /originOf/);
+  for (const file of ['flow.js', 'swap.js', 'adapter.js']) {
     assert.doesNotMatch(readFileSync(new URL(`../${file}`, import.meta.url), 'utf8'), /https?:\/\/(?!nodusnetwork\.io\/extension)/, file);
   }
+  assert.match(readFileSync(new URL('../bot.js', import.meta.url), 'utf8'), /export const BOT_ORIGIN = 'https:\/\/62\.171\.136\.77';/);
+});
+
+test('a bot client with the default base asks the bot origin; a client given a relative base is not what the page builds', async () => {
+  const urls = [];
+  const bot = createBotClient({ fetch: async url => { urls.push(url); return { status: 200, json: async () => ({}) }; } });
+  await bot.status();
+  assert.deepEqual(urls, ['https://62.171.136.77/amm/status']);
+  assert.equal(bot.base, 'https://62.171.136.77/amm');
 });
 
 // ── the add minimum and the USDT contract come from /amm/status (givens item 96; plan line 609) ──
@@ -665,7 +702,7 @@ test('withdraw: a JSON refusal with a reason is definite and drops the kept body
 test('a late swap answer after an edit or a flip is discarded; the newer answer stands', async () => {
   const waiting = [];
   const bot = { status: async () => ({ ok: true, status: 200, json: STATUS }), quote: (d, a) => { const x = deferred(); waiting.push({ d, a, ...x }); return x.promise; } };
-  const flow = createSwapFlow({ bot, adapter: stubAdapter(), botUrl: 'https://swap.nodusnetwork.io', sleep: async () => {} });
+  const flow = createSwapFlow({ bot, adapter: stubAdapter(), botUrl: BOT_ORIGIN, sleep: async () => {} });
   const first = flow.press({ direction: 'usdt_to_nodus', amountText: '100' });
   await flush();
   flow.clearQuote('swap');                                                      // the user edited the amount (swap.js resets on every edit)
@@ -689,7 +726,7 @@ test('a late swap answer after an edit or a flip is discarded; the newer answer 
 test('a late add answer after a side or amount change is discarded', async () => {
   const waiting = [];
   const bot = { liquidityQuote: () => { const x = deferred(); waiting.push(x); return x.promise; } };
-  const flow = createSwapFlow({ bot, adapter: stubAdapter(), botUrl: 'https://swap.nodusnetwork.io', sleep: async () => {} });
+  const flow = createSwapFlow({ bot, adapter: stubAdapter(), botUrl: BOT_ORIGIN, sleep: async () => {} });
   const p = flow.pressAdd({ side: 'nodus', amountText: '100000' });
   await flush();
   flow.clearQuote('add');
@@ -706,7 +743,7 @@ test('a late add answer after a side or amount change is discarded', async () =>
 test('two interleaved follows: the older one stops and never reports, even when its read would exhaust it', async () => {
   const reads = [];
   const bot = { swapState: n => { const x = deferred(); reads.push({ n, ...x }); return x.promise; } };
-  const flow = createSwapFlow({ bot, adapter: stubAdapter(), botUrl: 'https://swap.nodusnetwork.io', sleep: async () => {}, pollMax: 1 });
+  const flow = createSwapFlow({ bot, adapter: stubAdapter(), botUrl: BOT_ORIGIN, sleep: async () => {}, pollMax: 1 });
   const seenA = [], seenB = [];
   const a = flow.follow('1', u => seenA.push(u));
   await flush();
@@ -727,7 +764,7 @@ test('stopFollow and the caller\'s shouldStop end a follow; a follow in a sleep 
   const slept = deferred();
   let reads = 0;
   const bot = { swapState: async () => { reads++; return { ok: true, status: 200, json: { state: 'counted' } }; } };
-  const flow = createSwapFlow({ bot, adapter: stubAdapter(), botUrl: 'https://swap.nodusnetwork.io', sleep: () => slept.promise, pollMax: 5 });
+  const flow = createSwapFlow({ bot, adapter: stubAdapter(), botUrl: BOT_ORIGIN, sleep: () => slept.promise, pollMax: 5 });
   const seen = [];
   const p = flow.follow('1', u => seen.push(u));
   await flush();
