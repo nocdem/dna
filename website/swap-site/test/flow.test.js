@@ -71,7 +71,7 @@ function stubAdapter(behaviour = {}) {
   const calls = [];
   const rec = name => async (input, options) => {
     calls.push({ name, input, options });
-    if (behaviour[name]) return behaviour[name](input);
+    if (behaviour[name]) return behaviour[name](input, options);
     return { delivered: true };
   };
   return { calls, usdtToNodus: rec('usdtToNodus'), nodusToUsdt: rec('nodusToUsdt'), liquidityAdd: rec('liquidityAdd') };
