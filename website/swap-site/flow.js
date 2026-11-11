@@ -44,6 +44,16 @@ export function describeAdapterError(err) {
       : 'The request did not reach the bot. Nothing was paid. You can try again.';
     return out;
   }
+  // The bot already holds this request number (the request was delivered): the same approval can only produce a bot
+  // refusal, so the site does not offer it again. Nothing is retried; the user asks for a new price.
+  if (err?.delivered === true) {
+    out.delivered = true;
+    out.paid = err.paid;
+    out.text = err.paid === 'unknown'
+      ? 'The payment may have been sent. Do not pay again; check the extension\'s activity.'
+      : 'The bot has your request but nothing was paid. Ask for a new price to try again.';
+    return out;
+  }
   if (err?.openRequestNumber != null) out.openRequestNumber = String(err.openRequestNumber);
   if (typeof err?.reason === 'string') out.text = refusalText(err.reason);
   else if ((err?.extensionCode ?? err?.code) === 4001) out.text = 'You rejected the request in the extension. Nothing was paid.';
@@ -139,7 +149,10 @@ export function createSwapFlow({
           });
         }
       } catch (err) {
-        return { ok: false, reason: err?.code ?? 'extension_error', ...describeAdapterError(err) };
+        const info = describeAdapterError(err);
+        // delivered: the price is spent (the bot holds the request number); the site follows the swap instead
+        if (info.delivered) { s.quote = null; return { ok: false, reason: 'delivered', requestNumber: q.requestNumber, ...info }; }
+        return { ok: false, reason: err?.code ?? 'extension_error', ...info };
       }
       return { ok: true, requestNumber: q.requestNumber, minimum: min };
     },
@@ -193,7 +206,9 @@ export function createSwapFlow({
           requestNumber: q.requestNumber, ethChainId: s.status.settings.ethChainId,
         });
       } catch (err) {
-        return { ok: false, reason: err?.code ?? 'extension_error', ...describeAdapterError(err) };
+        const info = describeAdapterError(err);
+        if (info.delivered) { s.addQuote = null; return { ok: false, reason: 'delivered', requestNumber: q.requestNumber, ...info }; }
+        return { ok: false, reason: err?.code ?? 'extension_error', ...info };
       }
       return { ok: true, requestNumber: q.requestNumber };
     },

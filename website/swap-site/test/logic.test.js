@@ -314,3 +314,21 @@ test('isTokenAddress: only 0x followed by 40 hex digits', () => {
   assert.equal(isTokenAddress(`0x${'aB'.repeat(20)}`), true);
   for (const bad of ['0x12', 'ab'.repeat(20), `0x${'g'.repeat(40)}`, `0x${'a'.repeat(41)}`, '', undefined, 5]) assert.equal(isTokenAddress(bad), false);
 });
+
+// originOf and STILL_PENDING_TEXT.
+// PROVES: the bot address given to the extension is the page's origin without path, query or fragment (so the
+//   extension's botOrigin accepts it and appends /amm/swap itself); the end-of-polling text never says "failed".
+// ENVIRONMENT: as above. LEAVES BEHIND: nothing. FALSE PASS: swap.js reads location.href, which is not exercised here.
+import { originOf, STILL_PENDING_TEXT } from '../swap-logic.js';
+
+test('originOf: scheme, host and port only', () => {
+  assert.equal(originOf('https://swap.nodusnetwork.io/'), 'https://swap.nodusnetwork.io');
+  assert.equal(originOf('https://swap.nodusnetwork.io/swap/page?x=1&y=2#frag'), 'https://swap.nodusnetwork.io');
+  assert.equal(originOf('https://swap.nodusnetwork.io:8443/a'), 'https://swap.nodusnetwork.io:8443');
+  assert.equal(originOf('https://swap.nodusnetwork.io/amm'), 'https://swap.nodusnetwork.io');   // never origin + /amm
+});
+
+test('STILL_PENDING_TEXT says pending and never "failed"', () => {
+  assert.match(STILL_PENDING_TEXT, /still pending/);
+  assert.doesNotMatch(STILL_PENDING_TEXT, /fail/i);
+});

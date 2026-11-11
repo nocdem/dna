@@ -6,7 +6,7 @@ import { createExtension } from './extension.js';
 import { createAdapter } from './adapter.js';
 import { createSwapFlow } from './flow.js';
 import {
-  USDT_DECIMALS, NODUS_DECIMALS, displayAmount, percentToBps, priceFromReserves, refusalText, nodusWithCommas,
+  USDT_DECIMALS, NODUS_DECIMALS, displayAmount, percentToBps, priceFromReserves, refusalText, nodusWithCommas, originOf, STILL_PENDING_TEXT,
 } from './swap-logic.js';
 
 const $ = id => document.getElementById(id);
@@ -16,7 +16,7 @@ const EXT_PAGE = 'https://nodusnetwork.io/extension.html';
 const extension = createExtension();
 // The bot address given to the extension: the site's own origin, no path; the extension appends /amm/swap itself
 // (givens item 97; the extension's botOrigin accepts an https origin only).
-const botUrl = location.origin;
+const botUrl = originOf(location.href);
 const bot = createBotClient({ fetch: (...a) => fetch(...a), base: '/amm' });
 const adapter = createAdapter({ getProvider: () => extension.provider() });
 const flow = createSwapFlow({
@@ -179,7 +179,7 @@ async function followSwap(requestNumber, unit) {
   $('check-again').hidden = true; say($('state-note'), '');
   const r = await flow.follow(requestNumber, update => renderState(update, unit));
   if (r.exhausted) {
-    say($('state-note'), 'The swap is still pending. It is not failed: the bot keeps working on it. Check again in a few minutes.');
+    say($('state-note'), STILL_PENDING_TEXT);
     $('check-again').hidden = false;
     $('check-again').onclick = () => followSwap(requestNumber, unit);
   }
@@ -193,6 +193,13 @@ $('approve-btn').addEventListener('click', async () => {
   $('approve-btn').disabled = true;
   const unit = getUnit();
   const r = await flow.confirm({ toleranceBps: t.bps });
+  if (!r.ok && r.delivered) {
+    // The bot holds this request number: the approval is not offered again (a new price is needed); the swap is followed.
+    say($('swap-msg'), r.text, true);
+    $('approve-btn').hidden = true; $('approve-btn').disabled = false; $('ask-btn').hidden = false;
+    await followSwap(r.requestNumber, unit);
+    return;
+  }
   if (!r.ok) {
     say($('swap-msg'), r.text, true);
     $('approve-btn').disabled = false;
@@ -228,6 +235,11 @@ $('liq-approve').addEventListener('click', async () => {
   $('liq-approve').disabled = true;
   const r = await flow.confirmAdd();
   $('liq-approve').disabled = false;
+  if (!r.ok && r.delivered) {   // the bot holds the request: no second approval, a new pair is needed
+    say($('liq-msg'), r.text, true);
+    $('liq-approve').hidden = true; $('liq-ask').hidden = false;
+    return;
+  }
   if (!r.ok) { say($('liq-msg'), r.text, true); return; }
   say($('liq-msg'), 'Both requests were sent and both payments made by the extension. The add counts after 300 Ethereum blocks (at least one hour) and 3 Nodus blocks.');
 });

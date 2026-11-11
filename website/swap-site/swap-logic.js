@@ -356,6 +356,13 @@ export function refusalText(reason, context, minNodusRaw = LIQUIDITY_MIN_NODUS_R
   return REFUSALS[reason] ?? `The bot refused: ${String(reason)}.`;
 }
 
+// The bot address given to the extension: this page's origin (scheme, host, port), no path, query or fragment; the
+// extension appends /amm/swap itself (givens item 97).
+export const originOf = href => new URL(href).origin;
+
+// Shown when the bounded polling ends without a final state (plan section 7 step 8: never "failed").
+export const STILL_PENDING_TEXT = 'The swap is still pending: the bot keeps working on it. Check again in a few minutes.';
+
 // ── swap states (plan section 7 step 8, GET /amm/swap/<id>; amm_journal.h AMM_S_*) ─
 
 const FINAL = {

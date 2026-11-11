@@ -457,3 +457,64 @@ test('an invalid or absent usdtContract refuses with no_token and sends nothing 
   assert.equal((await swap.flow.confirm({ toleranceBps: 100 })).reason, 'no_token');
   assert.deepEqual(provider.calls, []);
 });
+
+// ── a delivered request is not offered again (givens item 88 covers only the NOT delivered case) ──
+// PROVES: when the extension reports delivered:true the flow gives plain words (paid false: nothing paid, ask for a new
+//   price; paid "unknown": the payment may have been sent, do not pay again), spends the price (a second yes is not_ready,
+//   the adapter is called once) and hands back the request number so the page follows the swap; the swap can then be read
+//   with GET /amm/swap/<number>. With delivered:false the same price stays available for a new try (the agreed flow).
+//   The same for the liquidity add (no state route exists for it, so it is not followed).
+// ENVIRONMENT: as above. LEAVES BEHIND: nothing.
+// FALSE PASS: the error shapes follow the extension source as read; the button handling itself is in swap.js and is not run.
+test('delivered:true, paid false: plain words, the price is spent, the swap is followed', async () => {
+  const err = new AdapterError('extension_error', 'x', { delivered: true, paid: false });
+  const adapter = stubAdapter({ usdtToNodus: () => { throw err; } });
+  const { flow, fetch } = makeFlow({ adapter, pollMax: 2, routes: { 'POST /amm/quote': [200, QUOTE], 'GET /amm/swap/*': [200, { requestNumber: '4242', state: 'approved' }] } });
+  await flow.loadStatus(); await flow.press({ direction: 'usdt_to_nodus', amountText: '100' });
+  const r = await flow.confirm({ toleranceBps: 100 });
+  assert.equal(r.ok, false);
+  assert.equal(r.delivered, true);
+  assert.equal(r.requestNumber, '4242');
+  assert.equal(r.text, 'The bot has your request but nothing was paid. Ask for a new price to try again.');
+  assert.equal((await flow.confirm({ toleranceBps: 100 })).reason, 'not_ready');       // no second approval
+  assert.equal(adapter.calls.length, 1);                                                // the adapter was not called again
+  const f = await flow.follow(r.requestNumber, () => {});
+  assert.equal(f.info.kind, 'pending');
+  assert.ok(fetch.calls.some(c => c.key === 'GET /amm/swap/4242'));
+});
+
+test('delivered:true, paid "unknown": do not pay again, check the extension', async () => {
+  const adapter = stubAdapter({ nodusToUsdt: () => { throw new AdapterError('extension_error', 'x', { delivered: true, paid: 'unknown' }); } });
+  const quote = { ...QUOTE, direction: 'nodus_to_usdt', amount: '50000000000000', number: '100000000', estimatedFee: '0', payTo: 'fd'.repeat(64) };
+  const { flow } = makeFlow({ adapter, routes: { 'POST /amm/quote': [200, quote] } });
+  await flow.loadStatus(); await flow.press({ direction: 'nodus_to_usdt', amountText: '500000' });
+  const r = await flow.confirm({ toleranceBps: 0 });
+  assert.equal(r.delivered, true);
+  assert.equal(r.paid, 'unknown');
+  assert.equal(r.text, 'The payment may have been sent. Do not pay again; check the extension\'s activity.');
+  assert.equal((await flow.confirm({ toleranceBps: 0 })).reason, 'not_ready');
+  assert.equal(adapter.calls.length, 1);
+});
+
+test('delivered:false keeps the price: the user may try again (givens item 88)', async () => {
+  const adapter = stubAdapter({ usdtToNodus: () => { throw new AdapterError('extension_error', 'x', { delivered: false, paid: false, answered: false }); } });
+  const { flow } = makeFlow({ adapter, routes: { 'POST /amm/quote': [200, QUOTE] } });
+  await flow.loadStatus(); await flow.press({ direction: 'usdt_to_nodus', amountText: '100' });
+  const first = await flow.confirm({ toleranceBps: 100 });
+  assert.equal(first.delivered, undefined);
+  assert.match(first.text, /did not reach the bot/);
+  await flow.confirm({ toleranceBps: 100 });
+  assert.equal(adapter.calls.length, 2);                                                // the user's own second try reaches the adapter
+});
+
+test('liquidity add delivered:true: plain words and the pair is spent', async () => {
+  const pair = { approved: true, usdtAmount: '10000000', nodusAmount: '10000000000000', requestNumber: '88', validUntil: '1700000300', payEthereum: `0x${'fe'.repeat(20)}`, payNodus: 'fd'.repeat(64) };
+  const adapter = stubAdapter({ liquidityAdd: () => { throw new AdapterError('extension_error', 'x', { delivered: true, paid: 'unknown' }); } });
+  const { flow } = makeFlow({ adapter, routes: { 'POST /amm/liquidity/quote': [200, pair] } });
+  await flow.loadStatus(); await flow.pressAdd({ side: 'nodus', amountText: '100000' });
+  const r = await flow.confirmAdd();
+  assert.equal(r.delivered, true);
+  assert.match(r.text, /Do not pay again/);
+  assert.equal((await flow.confirmAdd()).reason, 'not_ready');
+  assert.equal(adapter.calls.length, 1);
+});
