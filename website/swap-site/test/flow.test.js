@@ -385,7 +385,9 @@ test('no part of the site checks a signature of the bot or loads the verifying s
 //   bot client without a base of its own; no site source reads the page's own address (location) for the bot.
 // FALSE PASS: the first part runs the real client against a stub fetch that rejects any other host, so it proves the
 //   URL the client builds, not what a browser does with it; the swap.js part is textual (swap.js needs a DOM and is not
-//   run), so a different way of reaching location would not be found.
+//   run), so a different way of reaching the page address (not named `location` or document.URL/documentURI/baseURI)
+//   would not be found. The exact statement `location.href = EXT_PAGE;` (navigation to the extension page) is allowed
+//   and removed before the check; if swap.js changes that statement, the test fails and must be updated.
 test('the bot is reached only at BOT_ORIGIN under /amm (plan section 18 change 5)', async () => {
   assert.equal(BOT_ORIGIN, 'https://62.171.136.77');
   const { flow, fetch } = makeFlow({ routes: { 'POST /amm/quote': [200, QUOTE], 'GET /amm/swap/*': [200, { state: 'paid' }] } });
@@ -399,7 +401,10 @@ test('the bot is reached only at BOT_ORIGIN under /amm (plan section 18 change 5
   const swapJs = readFileSync(new URL('../swap.js', import.meta.url), 'utf8');
   assert.match(swapJs, /const botUrl = BOT_ORIGIN;/);                           // the extension gets the same constant
   assert.match(swapJs, /createBotClient\(\{ fetch: \(\.\.\.a\) => fetch\(\.\.\.a\) \}\)/);   // client default base = BOT_ORIGIN/amm
-  assert.doesNotMatch(swapJs, /location\./);                                    // the page's own address is not read for the bot
+  // The one allowed use of `location` is the existing navigation to the extension page (an assignment, not a read);
+  // with that exact statement removed, no `location` and no other page-address property may remain in swap.js.
+  assert.ok(swapJs.includes('location.href = EXT_PAGE;'));
+  assert.doesNotMatch(swapJs.replace('location.href = EXT_PAGE;', ''), /\blocation\b|document\.(URL|documentURI|baseURI)\b/);
   assert.doesNotMatch(swapJs, /originOf/);
   for (const file of ['flow.js', 'swap.js', 'adapter.js']) {
     assert.doesNotMatch(readFileSync(new URL(`../${file}`, import.meta.url), 'utf8'), /https?:\/\/(?!nodusnetwork\.io\/extension)/, file);
