@@ -91,6 +91,17 @@ async function loadStatus() {
 }
 
 // ── connect (before or after arriving, givens item 68) ──
+// No price or pair question before the extension is connected (givens item 68): the two ask buttons stay disabled and
+// a hint stands in the message line until a connect succeeds. flow.press and flow.pressAdd refuse as well.
+const connected = () => Boolean(flow.state.accounts);
+const ASK_HINT = { 'swap-msg': 'Connect the extension to ask for a price.', 'liq-msg': 'Connect the extension to ask for the pair.' };
+// Clears a message line; while not connected the line shows the connect hint instead.
+function clearMsg(id) { say($(id), connected() ? '' : ASK_HINT[id]); }
+function renderAskButtons() {
+  $('ask-btn').disabled = !connected(); $('liq-ask').disabled = !connected();
+  clearMsg('swap-msg'); clearMsg('liq-msg');
+}
+renderAskButtons();
 const connectBtn = $('connect-btn');
 connectBtn.addEventListener('click', async () => {
   say($('connect-status'), '');
@@ -103,6 +114,7 @@ connectBtn.addEventListener('click', async () => {
     $('nodus-addr').textContent = short(accounts.nodus.address); $('nodus-addr').title = accounts.nodus.address;
     $('eth-addr').textContent = short(accounts.ethereum); $('eth-addr').title = accounts.ethereum;
     say($('connect-status'), 'Connected to Nodus Connect.');
+    renderAskButtons();
     renderMinimum();
     renderWithdrawButton();   // a different account drops a kept signed withdrawal (flow.setAccounts)
   } catch (error) {
@@ -127,10 +139,10 @@ $('tab-liq').addEventListener('click', () => showTab(false));
 // ── swap ──
 $('flip').addEventListener('click', () => {
   direction = direction === 'usdt_to_nodus' ? 'nodus_to_usdt' : 'usdt_to_nodus';
-  renderTokens(); resetQuote(); say($('swap-msg'), '');
+  renderTokens(); resetQuote(); clearMsg('swap-msg');
 });
 // Every edit resets, even when no quote is stored yet: an answer still on its way is discarded by the flow.
-$('pay').addEventListener('input', () => { resetQuote(); say($('swap-msg'), ''); });
+$('pay').addEventListener('input', () => { resetQuote(); clearMsg('swap-msg'); });
 $('tol').addEventListener('input', renderMinimum);
 // Enter in the tolerance field must not send a second price question.
 $('tol').addEventListener('keydown', event => { if (event.key === 'Enter') event.preventDefault(); });
@@ -157,7 +169,7 @@ $('swap-form').addEventListener('submit', async event => {
     button.hidden = true; $('approve-btn').hidden = false;
     renderMinimum();
     say($('swap-msg'), 'Choose your tolerance, then approve in the extension.');
-  } finally { button.disabled = false; }
+  } finally { button.disabled = !connected(); }
 });
 
 // `unit` is the output's unit of the swap being followed (NODUS for USDT -> NODUS, USDT for NODUS -> USDT), fixed
@@ -221,8 +233,8 @@ $('approve-btn').addEventListener('click', async () => {
 });
 
 // ── liquidity ──
-$('liq-amount').addEventListener('input', () => { resetAddQuote(); say($('liq-msg'), ''); });
-$('liq-side').addEventListener('change', () => { resetAddQuote(); say($('liq-msg'), ''); });
+$('liq-amount').addEventListener('input', () => { resetAddQuote(); clearMsg('liq-msg'); });
+$('liq-side').addEventListener('change', () => { resetAddQuote(); clearMsg('liq-msg'); });
 $('liq-form').addEventListener('submit', async event => {
   event.preventDefault();
   say($('liq-msg'), '');
@@ -238,7 +250,7 @@ $('liq-form').addEventListener('submit', async event => {
     $('l-valid').textContent = time(q.validUntil);
     $('liq-ask').hidden = true; $('liq-approve').hidden = false;
     say($('liq-msg'), 'These are the exact amounts. Approve in the extension to sign and pay both sides.');
-  } finally { $('liq-ask').disabled = false; }
+  } finally { $('liq-ask').disabled = !connected(); }
 });
 $('liq-approve').addEventListener('click', async () => {
   say($('liq-msg'), 'Approve the requests in the extension.');

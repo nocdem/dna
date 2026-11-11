@@ -4,6 +4,7 @@
 // PROVES:
 //   - the bot is asked for a price only on the user's press (nothing but GET /amm/status before it), and not at all
 //     for an amount that is not a valid number;
+//   - no price or pair question is sent while no account is connected (not_ready, zero bot calls);
 //   - the bot's number and estimated fee are kept and shown exactly as given (no recomputation, no check);
 //   - the extension (adapter) is asked to sign and pay only after the user's yes, once, with the user's typed amount,
 //     the minimum computed from number, fee and tolerance, and the bot's request number and pay-to address;
@@ -77,7 +78,8 @@ function stubAdapter(behaviour = {}) {
 }
 
 // settings: fields merged into STATUS.settings; noToken: do not give the usdtToken option.
-function makeFlow({ routes, adapter = stubAdapter(), signText, pollMax, sleep, random, settings, noToken } = {}) {
+// connected: false leaves the flow with no accounts (the extension not connected yet).
+function makeFlow({ routes, adapter = stubAdapter(), signText, pollMax, sleep, random, settings, noToken, connected = true } = {}) {
   const status = settings ? { ...STATUS, settings: { ...STATUS.settings, ...settings } } : STATUS;
   const fetch = stubFetch({ 'GET /amm/status': [200, status], ...routes });
   const sleeps = [];
@@ -85,9 +87,34 @@ function makeFlow({ routes, adapter = stubAdapter(), signText, pollMax, sleep, r
     bot: createBotClient({ fetch }), adapter, signText, botUrl: BOT_ORIGIN, usdtToken: noToken ? undefined : TOKEN,
     sleep: sleep ?? (async ms => { sleeps.push(ms); }), pollMax, pollIntervalMs: 5000, random,
   });
-  flow.setAccounts(ACCOUNTS);
+  if (connected) flow.setAccounts(ACCOUNTS);
   return { flow, fetch, adapter, sleeps };
 }
+
+// PROVES (givens item 68, "Connected durumda ... Bastığı zaman site bota soruyor"): with no accounts set, neither the
+// price question nor the pair question reaches the bot (zero POSTs), the answer is not_ready in plain words, and no
+// quote is kept; once accounts are set the same press asks the bot as before.
+// FALSE PASS: the bot double is the recording fetch stub, so a question sent by some other route than bot.quote /
+// bot.liquidityQuote is counted only if it uses fetch; the page's disabled buttons (swap.js) are not exercised here.
+test('no price or pair question before the extension is connected: not_ready, the bot is not called', async () => {
+  const { flow, fetch } = makeFlow({
+    connected: false,
+    routes: { 'POST /amm/quote': [200, QUOTE], 'POST /amm/liquidity/quote': [200, PAIR] },
+  });
+  await flow.loadStatus();   // reading the status is not a question: it stays allowed
+  const swap = await flow.press({ direction: 'usdt_to_nodus', amountText: '100' });
+  assert.deepEqual(swap, { ok: false, reason: 'not_ready', text: 'Connect the extension first.' });
+  const add = await flow.pressAdd({ side: 'nodus', amountText: '100000' });
+  assert.deepEqual(add, { ok: false, reason: 'not_ready', text: 'Connect the extension first.' });
+  assert.deepEqual(fetch.calls.map(c => c.key), ['GET /amm/status']);
+  assert.equal(flow.state.quote, null);
+  assert.equal(flow.state.addQuote, null);
+  // after the connect the same presses ask the bot and are answered
+  flow.setAccounts(ACCOUNTS);
+  assert.equal((await flow.press({ direction: 'usdt_to_nodus', amountText: '100' })).ok, true);
+  assert.equal((await flow.pressAdd({ side: 'nodus', amountText: '100000' })).ok, true);
+  assert.deepEqual(fetch.calls.map(c => c.key), ['GET /amm/status', 'POST /amm/quote', 'POST /amm/liquidity/quote']);
+});
 
 test('before the user presses: only GET /amm/status has been sent; the press sends the one question', async () => {
   const { flow, fetch } = makeFlow({ routes: { 'POST /amm/quote': [200, QUOTE] } });
@@ -703,7 +730,8 @@ test('a late swap answer after an edit or a flip is discarded; the newer answer 
   const waiting = [];
   const bot = { status: async () => ({ ok: true, status: 200, json: STATUS }), quote: (d, a) => { const x = deferred(); waiting.push({ d, a, ...x }); return x.promise; } };
   const flow = createSwapFlow({ bot, adapter: stubAdapter(), botUrl: BOT_ORIGIN, sleep: async () => {} });
-  const first = flow.press({ direction: 'usdt_to_nodus', amountText: '100' });
+  flow.setAccounts({ ...ACCOUNTS });   // connected first: this test is about the late-answer discard, not the connect rule
+  const first =flow.press({ direction: 'usdt_to_nodus', amountText: '100' });
   await flush();
   flow.clearQuote('swap');                                                      // the user edited the amount (swap.js resets on every edit)
   waiting[0].resolve({ ok: true, status: 200, json: QUOTE });
@@ -727,6 +755,7 @@ test('a late add answer after a side or amount change is discarded', async () =>
   const waiting = [];
   const bot = { liquidityQuote: () => { const x = deferred(); waiting.push(x); return x.promise; } };
   const flow = createSwapFlow({ bot, adapter: stubAdapter(), botUrl: BOT_ORIGIN, sleep: async () => {} });
+  flow.setAccounts({ ...ACCOUNTS });   // connected first: this test is about the late-answer discard, not the connect rule
   const p = flow.pressAdd({ side: 'nodus', amountText: '100000' });
   await flush();
   flow.clearQuote('add');
