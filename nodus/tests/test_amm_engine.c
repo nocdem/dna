@@ -111,6 +111,7 @@
 #include <unistd.h>
 
 #include "amm_engine.h"
+#include "crypto/hash/keccak256.h"
 #include "crypto/nodus_identity.h"
 #include "nodus/nodus_v2_spend.h"
 
@@ -151,6 +152,9 @@ typedef struct {
     int      prov_reads;             /* the question path's Ethereum reads: balance, gas estimate, gas price */
     int      nbal_reads;             /* the Nodus balance reads */
     int      erc20_fail;             /* 1: every provider's USDT balance read fails (E28) */
+    int      sends;                  /* every raw-transaction broadcast the providers were asked for (E38) */
+    int      send_ok;                /* 1: a provider takes a broadcast and answers its hash (E38) */
+    int      rcpt_none;              /* 1: every provider answers "no receipt" (E38) */
 } world_t;
 
 static world_t W;
@@ -262,6 +266,7 @@ static int e_tx(void *c, const uint8_t h[32], amm_eth_tx_t *o, uint64_t dl) {
 }
 static int e_rcpt(void *c, const uint8_t h[32], amm_eth_receipt_t *o, uint64_t dl) {
     (void)c; (void)h; (void)dl;
+    if (W.rcpt_none) return AMM_ETH_NOT_FOUND;   /* E38: no receipt at the quorum */
     if (!W.rcpt_ok) return AMM_ETH_ERR;      /* the default: receipts are unreadable */
     memset(o, 0, sizeof(*o));
     o->status = 1;
@@ -294,7 +299,10 @@ static int e_est(void *c, const uint8_t f[20], const uint8_t t[20], const uint8_
 static int e_gasp(void *c, uint64_t *o, uint64_t dl) { (void)c; (void)dl; W.reads++; W.prov_reads++; *o = 20000000000ULL; return AMM_ETH_OK; }
 static int e_prio(void *c, uint64_t *o, uint64_t dl) { (void)c; (void)dl; *o = 1000000000ULL; return AMM_ETH_OK; }
 static int e_send(void *c, const uint8_t *raw, size_t n, uint8_t h[32], uint64_t dl) {
-    (void)c; (void)raw; (void)n; (void)h; (void)dl; return AMM_ETH_ERR;
+    (void)c; (void)dl;
+    W.sends++;
+    if (!W.send_ok) return AMM_ETH_ERR;      /* the default: no provider takes a broadcast */
+    return keccak256(raw, n, h) == 0 ? AMM_ETH_OK : AMM_ETH_ERR;     /* E38: the node answers the hash */
 }
 
 static int price_fee(void *c, uint64_t gas, uint64_t maxfee, uint64_t *o, uint64_t dl) {
@@ -2994,27 +3002,29 @@ static void e36_order_across_batches(void) {
           "W1's NODUS payout is settled (journal calls)");
     CHECK(step(&e, &o) == 0 && o.decisions_examined == 2 && o.withdraws_done == 1 && o.decided == 1 &&
           wd_row(&e, 2, "done", &w2) && amm_journal_swap_by_seq(e.j, s2.seq, &g) == 0 && !strcmp(g.state, "payout_pending"),
-          "round 2 resumes after S1: W2 acts and S2 is decided");
+          "round 2 starts at the oldest row (S1 and W1 are gone): W2 acts and S2 is decided");
     env_close(&e);
 }
 
-/* E37 PROVES: refusals and waits inside a batch count against the bound and do not reorder anything.
- *   round_rows_max = 3, a position of 10^9 units, the ETH price unreadable (price_rc): W1 (1 basis
- *   point: nothing after the Nodus fee) is refused, W2 (10000 basis points: NODUS payable) WAITS because
- *   the Ethereum fee cannot be read, W3 is refused; round 1 examines exactly these three and W4 (also
- *   refusable) is not touched; round 2 resumes after W3, refuses W4 and reaches the end (the cursor
- *   wraps); round 3 looks at W2 again and it still waits; with the price readable again round 4 refuses
- *   W2 whole because its USDT side (1,000 raw) is nothing after the Ethereum fee.
- * FLAGS/ENVIRONMENT: a default build; round_rows_max 3; price_rc 1 then 0; the tip 1000 -> 1300; one
- *   mkdtemp directory.
+/* E37 PROVES: refusals and waits for a reason of the ROW'S OWN inside a batch count against the bound,
+ *   and every round starts at the oldest row. round_rows_max = 3, a position of 10^13 units, the bot's
+ *   USDT 5,000,000 raw: W1 (1 basis point: its USDT side, 1,000 raw, is nothing after the 500,000 fee)
+ *   is refused whole, W2 (10000 basis points: 10^13 NODUS, 10,000,000 USDT) WAITS because the bot's USDT
+ *   does not cover ITS amount (funds short for this amount: a row-specific wait, counted), W3 is refused;
+ *   round 1 examines exactly these three and W4 (also refusable) is not touched; round 2 starts again at
+ *   the oldest row: W2 waits again (counted) and W4 is refused (2 examined, the end is reached); round 3
+ *   looks at W2 alone; with the bot's USDT restored round 4 acts on W2 (the position is emptied).
+ * FLAGS/ENVIRONMENT: a default build; round_rows_max 3; usdt_balance 5,000,000 then 10^12; the tip
+ *   1000 -> 1300; one mkdtemp directory.
  * LEAVES BEHIND: nothing.
- * FALSE PASS: the unreadable price is the stub's; without the bound W4 is refused in round 1; without
- *   the wrap in the resume cursor W2 is never looked at again after round 2. */
+ * FALSE PASS: the short balance is the stub's; without the bound W4 is refused in round 1; if a row's own
+ *   wait were treated as a shared cause (not counted, the withdrawals switched off) W3 would not be
+ *   refused in round 1 and round 2 would not refuse W4 alongside W2. */
 static void e37_refusals_and_waits_in_a_batch(void) {
-    printf("E37 refusals and waits in a batch count against the bound\n");
+    printf("E37 refusals and own-reason waits in a batch count against the bound\n");
     env_t e;
     env_open(&e);
-    wd_seed(&e, 3000000000000000ULL, 3000000000ULL, 3000000000000000ULL, 1000000000ULL);
+    wd_seed(&e, 3000000000000000ULL, 3000000000ULL, 3000000000000000ULL, 10000000000000ULL);
     e.cfg.round_rows_max = 3;
     env_restart(&e);
     static const uint32_t bps[4] = {1, 10000, 1, 1};
@@ -3023,21 +3033,167 @@ static void e37_refusals_and_waits_in_a_batch(void) {
         CHECK(amm_engine_accept_withdraw(e.eng, &r) == AMM_ACC_RECEIVED, "a withdrawal is accepted");
     }
     W.eth_tip = 1300;
-    W.price_rc = 1;
+    W.usdt_balance = 5000000ULL;
     amm_engine_step_t o;
     amm_wd_t w;
     CHECK(step(&e, &o) == 0 && o.decisions_examined == 3 && o.withdraws_refused == 2 && o.withdraws_waiting == 1 &&
           wd_row(&e, 1, "refused", &w) && wd_row(&e, 2, "accepted", &w) && wd_row(&e, 3, "refused", &w) &&
           wd_row(&e, 4, "accepted", &w),
-          "round 1: W1 and W3 refused, W2 waits (price unreadable), W4 beyond the bound untouched");
-    CHECK(step(&e, &o) == 0 && o.decisions_examined == 1 && o.withdraws_refused == 1 && wd_row(&e, 4, "refused", &w),
-          "round 2 resumes after W3: W4 refused, the end is reached");
+          "round 1: W1 and W3 refused, W2 waits (the bot's USDT short for its amount), W4 beyond the bound untouched");
+    CHECK(step(&e, &o) == 0 && o.decisions_examined == 2 && o.withdraws_refused == 1 && o.withdraws_waiting == 1 &&
+          wd_row(&e, 4, "refused", &w) && wd_row(&e, 2, "accepted", &w),
+          "round 2 starts at the oldest row: W2 waits again, W4 is refused, the end is reached");
     CHECK(step(&e, &o) == 0 && o.decisions_examined == 1 && o.withdraws_waiting == 1 && wd_row(&e, 2, "accepted", &w),
-          "round 3: the cursor wrapped, W2 is looked at again and still waits");
+          "round 3: W2 alone, still waiting");
+    W.usdt_balance = 1000000000000ULL;
+    CHECK(step(&e, &o) == 0 && o.withdraws_done == 1 && wd_row(&e, 2, "done", &w) && w.out_n == 10000000000000ULL &&
+          w.out_u == 10000000ULL && wd_units(&e) == 0,
+          "round 4: the bot's USDT covers it: W2 acts (10^13 NODUS, 10 USDT, the position emptied)");
+    env_close(&e);
+}
+
+/* ── E38-E41 the contract of the bounded decision merge (plan line 577, givens item 98) ── */
+
+static int sw_is(env_t *e, int64_t seq, const char *state) {
+    amm_swap_t g;
+    return amm_journal_swap_by_seq(e->j, seq, &g) == 0 && !strcmp(g.state, state);
+}
+
+/* E38 PROVES (Sol verify 18 row 3, the counterexample): with round_rows_max = 3 and FOUR counted
+ *   NODUS -> USDT swaps (seen 1-4) while the ETH price is unreadable, round 1 decides nothing and
+ *   does not use the bound (the wait is a SHARED cause: the Ethereum side, found once by the first
+ *   swap; the other three are passed by without a payer call and not counted); with the price readable round 2
+ *   decides swaps 1, 2 and 3 -- the oldest first, the bound -- and swap 4 stays counted; round 3
+ *   decides swap 4. A later swap never passes an earlier one.
+ * FLAGS/ENVIRONMENT: a default build; round_rows_max 3; price_rc 1 for round 1 (the stub switch
+ *   of E37 in its earlier form); one mkdtemp directory.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: the swaps are counted by journal calls (seen_counted); on 876fb01ee (the resume cursor)
+ *   round 1 examines swaps 1-3 as waits and round 2 resumes after swap 3 and decides swap 4 first:
+ *   the checks of round 2 fail. */
+static void e38_order_after_a_shared_wait(void) {
+    printf("E38 a shared wait does not let a later swap pass the earlier ones\n");
+    env_t e;
+    env_open(&e);
+    e.cfg.round_rows_max = 3;
+    env_restart(&e);
+    amm_swap_t s[4];
+    amm_quote_answer_t q[4];
+    for (int i = 0; i < 4; i++)
+        CHECK(wd_counted_swap(&e, "abcd"[i], &s[i], &q[i]), "a counted NODUS -> USDT swap");
+    amm_engine_step_t o;
+    W.price_rc = 1;
+    CHECK(step(&e, &o) == 0 && o.decided == 0 && o.undecided == 4 && o.decisions_examined == 0 &&
+          sw_is(&e, s[0].seq, "counted") && sw_is(&e, s[3].seq, "counted"),
+          "round 1 (price unreadable): nothing decided, the four waits (found once, then passed by without a payer call) use none of the bound");
     W.price_rc = 0;
-    CHECK(step(&e, &o) == 0 && o.withdraws_refused == 1 && wd_row(&e, 2, "refused", &w) && strstr(w.message, "USDT side") &&
-          wd_units(&e) == 1000000000ULL,
-          "round 4: the price is readable: W2 is refused whole (its USDT side is nothing after the fee), units unchanged");
+    CHECK(step(&e, &o) == 0 && o.decided == 3 && o.decisions_examined == 3 && sw_is(&e, s[0].seq, "payout_pending") &&
+          sw_is(&e, s[1].seq, "payout_pending") && sw_is(&e, s[2].seq, "payout_pending") && sw_is(&e, s[3].seq, "counted"),
+          "round 2: swaps 1, 2 and 3 are decided; swap 4 (behind the bound) is not decided before them");
+    CHECK(step(&e, &o) == 0 && o.decided == 1 && sw_is(&e, s[3].seq, "payout_pending"), "round 3: swap 4");
+    env_close(&e);
+}
+
+/* E39 PROVES: a shared cause costs no bound. With round_rows_max = 2, one NODUS payout live (a decided
+ *   USDT -> NODUS swap) and FOUR due withdrawals, the first withdrawal meets the live payout, waits, and
+ *   the withdrawal class is skipped for the round without using the bound: a later (higher seen number)
+ *   counted NODUS -> USDT swap is decided in the SAME round (1 row examined, 1 wait found); the four
+ *   withdrawals are untouched.
+ * FLAGS/ENVIRONMENT: a default build; round_rows_max 2; position 3*10^15 units, 1000 basis points each;
+ *   the tip 1000 -> 1300; one mkdtemp directory.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: the live payout is the decided swap's own attempt; on 876fb01ee the first two withdrawals
+ *   use the bound as waits and the swap (seen 6) is never reached: `decided == 1` fails. */
+static void e39_shared_cause_costs_no_bound(void) {
+    printf("E39 a live NODUS payout holds the withdrawals without costing the bound\n");
+    env_t e;
+    env_open(&e);
+    wd_seed(&e, 3000000000000000ULL, 3000000000ULL, 3000000000000000ULL, 3000000000000000ULL);
+    e.cfg.round_rows_max = 2;
+    env_restart(&e);
+    for (uint64_t k = 1; k <= 4; k++) {
+        amm_req_liq_withdraw_t r = wd_req('a', 1000, k);
+        CHECK(amm_engine_accept_withdraw(e.eng, &r) == AMM_ACC_RECEIVED, "a withdrawal is accepted (not due yet)");
+    }
+    amm_quote_answer_t a;
+    amm_swap_t p, sw;
+    amm_quote_answer_t q;
+    amm_engine_step_t o;
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_OK, "approval of a USDT -> NODUS swap P");
+    amm_req_usdt_t ur = usdt_req(&a, 'b', 1);
+    CHECK(amm_engine_accept_usdt(e.eng, &ur, NULL) == AMM_ACC_RECEIVED, "signed request");
+    put_rec(&e, 0x12, 1001, 0xbb, 100000000ULL, "deep");
+    CHECK(step(&e, &o) == 0 && o.decided == 1 && swap_of(&e, a.request_number, &p) && !strcmp(p.state, "payout_pending"),
+          "P is decided: its NODUS payout is live");
+    CHECK(wd_counted_swap(&e, 'f', &sw, &q), "a NODUS -> USDT swap is counted after the withdrawals (a higher seen number)");
+    W.eth_tip = 1300;
+    amm_wd_t w;
+    CHECK(step(&e, &o) == 0 && o.withdraws_waiting == 1 && o.withdraws_done == 0 && o.decided == 1 &&
+          o.decisions_examined == 1 && sw_is(&e, sw.seq, "payout_pending") && wd_row(&e, 1, "accepted", &w) &&
+          wd_row(&e, 4, "accepted", &w),
+          "the withdrawals wait for the live payout (one wait found, no bound used); the later swap is decided in the same round");
+    env_close(&e);
+}
+
+/* E40 PROVES (Sol verify 18 row 6): reaching the bound with no further candidate is the end, not a stop.
+ *   round_rows_max = 1 and exactly ONE counted swap. (a) the ETH price unreadable in round 1 (a shared
+ *   wait), readable in round 2: round 2 decides it. (b) the bot's USDT short for its amount in round 1
+ *   (a wait of the row's OWN, counted: 1 examined = the bound), restored in round 2: round 2 decides it.
+ * FLAGS/ENVIRONMENT: a default build; round_rows_max 1; price_rc / usdt_balance as stated; one mkdtemp
+ *   directory per case.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: on 876fb01ee both cases fail: round 1 ends at the bound with the cursor behind the swap, and
+ *   round 2 reads nothing after it (the swap is decided only in round 3). */
+static void e40_the_bound_with_nothing_behind(void) {
+    printf("E40 reaching the bound with no further candidate is the end of the round\n");
+    for (int c = 0; c < 2; c++) {
+        env_t e;
+        env_open(&e);
+        e.cfg.round_rows_max = 1;
+        env_restart(&e);
+        amm_swap_t s;
+        amm_quote_answer_t q;
+        CHECK(wd_counted_swap(&e, 'f', &s, &q), "one counted NODUS -> USDT swap");
+        if (c == 0) W.price_rc = 1; else W.usdt_balance = 1000;
+        amm_engine_step_t o;
+        CHECK(step(&e, &o) == 0 && o.decided == 0 && o.undecided == 1 && sw_is(&e, s.seq, "counted"),
+              c == 0 ? "(a) round 1: the price is unreadable: the swap waits" : "(b) round 1: the bot's USDT is short: the swap waits");
+        CHECK(c == 0 ? o.decisions_examined == 0 : o.decisions_examined == 1,
+              c == 0 ? "(a) a shared wait is not counted" : "(b) a wait of the row's own is counted (the bound)");
+        W.price_rc = 0; W.usdt_balance = 1000000000000ULL;
+        CHECK(step(&e, &o) == 0 && o.decided == 1 && sw_is(&e, s.seq, "payout_pending"),
+              "round 2: the swap is decided (nothing behind the bound hid it)");
+        env_close(&e);
+    }
+}
+
+/* E41 PROVES: the USDT payout phase runs after a bounded decision round. round_rows_max = 1, two counted
+ *   NODUS -> USDT swaps, the stub Ethereum answers "no receipt" and takes a broadcast (send_ok): round 1
+ *   decides swap 1 (the bound is reached, swap 2 stays counted) AND, in the same round, the payer
+ *   broadcasts swap 1's stored transaction: its attempt is `submitted` and the providers were asked to
+ *   send. Without the USDT payout phase after decisions() the attempt stays `signed` and no send is made.
+ * FLAGS/ENVIRONMENT: a default build; round_rows_max 1; rcpt_none and send_ok set on the world; one
+ *   mkdtemp directory.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: the receipt and the send are the stub's; the payer's own broadcast rules are
+ *   test_amm_eth_pay. */
+static void e41_usdt_payouts_run_after_a_bounded_round(void) {
+    printf("E41 the USDT payout phase runs after a bounded decision round\n");
+    env_t e;
+    env_open(&e);
+    e.cfg.round_rows_max = 1;
+    env_restart(&e);
+    amm_swap_t s1, s2;
+    amm_quote_answer_t q1, q2;
+    CHECK(wd_counted_swap(&e, 'a', &s1, &q1) && wd_counted_swap(&e, 'b', &s2, &q2), "two counted NODUS -> USDT swaps");
+    W.rcpt_none = 1; W.send_ok = 1;
+    amm_engine_step_t o;
+    amm_eattempt_t ea;
+    CHECK(step(&e, &o) == 0 && o.decided == 1 && o.decisions_examined == 1 && sw_is(&e, s1.seq, "payout_pending") &&
+          sw_is(&e, s2.seq, "counted"), "round 1: the bound: swap 1 decided, swap 2 still counted");
+    CHECK(W.sends > 0 && amm_journal_eth_attempt_latest(e.j, s1.seq, &ea) == 0 && !strcmp(ea.state, "submitted"),
+          "round 1: the payout phase ran: swap 1's stored transaction was broadcast (submitted)");
+    amm_eattempt_free(&ea);
     env_close(&e);
 }
 
@@ -3080,6 +3236,10 @@ int main(void) {
     e35_bounded_decisions();
     e36_order_across_batches();
     e37_refusals_and_waits_in_a_batch();
+    e38_order_after_a_shared_wait();
+    e39_shared_cause_costs_no_bound();
+    e40_the_bound_with_nothing_behind();
+    e41_usdt_payouts_run_after_a_bounded_round();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

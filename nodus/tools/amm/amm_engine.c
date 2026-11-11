@@ -25,8 +25,10 @@ struct amm_engine {
      * restart begins at the oldest row, which keeps the guarantee that every
      * row is examined after a bounded number of rounds. */
     int64_t release_after;     /* release(): approved swaps                  */
-    int64_t decide_after;      /* decisions(): the seen number after which the next
-                                * round resumes (0 = from the oldest); in memory */
+    int blk;                   /* decisions(): the shared wait causes found in THIS
+                                * round (B_* below); reset at the start of every round */
+    int wait_shared;           /* set by decide_one / act_withdraw when a row waited
+                                * for a shared cause (B_*), 0 = a row-specific wait */
     int64_t adds_after[3];     /* liquidity_adds(): signed, approved, signed
                                 * with no deposit matched                    */
     /* the question path's shared reads (givens item 98) */
@@ -914,12 +916,58 @@ static int decide_refund(amm_engine_t *e, const amm_swap_t *s, const char *why,
     return 0;
 }
 
+/* SHARED WAIT CAUSES (the contract of the bounded decision merge, plan line 577,
+ * givens item 98): a cause that makes a whole class of rows wait in one round is
+ * detected ONCE by the first row that meets it; that row does not use the round's
+ * bound and the class is skipped for the rest of the round (decisions()).
+ *   B_PAUSED      payouts_paused: every swap decision and every withdrawal waits;
+ *   B_NODUS_LIVE  a NODUS payout is signed or submitted (one payout in flight):
+ *                 every USDT -> NODUS payout decision and every withdrawal waits;
+ *   B_ETH         the Ethereum side is unreadable (providers, gas, price, balance):
+ *                 every NODUS -> USDT payout decision and every withdrawal waits;
+ *   B_NODUS_NODE  the Nodus node is unreadable or the rule set is not carried:
+ *                 every USDT -> NODUS payout decision and every withdrawal waits.
+ * The split of the payers' codes (amm_eth_pay.h:179-206, amm_nodus_pay.h:142-165):
+ *   AMM_EP_PAUSED / AMM_NP_PAUSED              shared (B_PAUSED);
+ *   AMM_NP_UNSUPPORTED                         shared (B_NODUS_NODE);
+ *   AMM_EP_UNKNOWN / AMM_NP_UNKNOWN            shared only when the engine's own
+ *       probe of the same seams fails (eth_class_down / nodus_class_down), else the
+ *       row's own (a gas estimate that fails for THIS recipient, a build that fails);
+ *   AMM_EP_FUNDS / AMM_NP_FUNDS                row-specific (the amount does not fit);
+ *   every other code, a refused or empty transaction, an arithmetic that cannot be
+ *   computed                                   row-specific. */
+enum { B_PAUSED = 1, B_NODUS_LIVE = 2, B_ETH = 4, B_NODUS_NODE = 8 };
+
+static int eth_class_down(amm_engine_t *e, uint64_t dl) {
+    uint64_t f = 0, b = 0;
+    return estimate_eth_fee(e, dl, &f) != 0 || read_usdt_balance(e, dl, &b) != 0;
+}
+
+static int nodus_class_down(amm_engine_t *e, uint64_t dl) {
+    uint64_t t = 0;
+    return read_nodus_tip(e, dl, &t) != 0;
+}
+
+/* the shared cause of a payer's failure code, or 0 for a row's own wait */
+static int ep_shared(amm_engine_t *e, int pr, uint64_t dl) {
+    if (pr == AMM_EP_PAUSED) return B_PAUSED;
+    if (pr == AMM_EP_UNKNOWN && eth_class_down(e, dl)) return B_ETH;
+    return 0;
+}
+
+static int np_shared(amm_engine_t *e, int pr, uint64_t dl) {
+    if (pr == AMM_NP_PAUSED) return B_PAUSED;
+    if (pr == AMM_NP_UNSUPPORTED) return B_NODUS_NODE;
+    if (pr == AMM_NP_UNKNOWN && nodus_class_down(e, dl)) return B_NODUS_NODE;
+    return 0;
+}
+
 static int decide_one(amm_engine_t *e, const amm_swap_t *s, int paused, uint64_t dl,
                       amm_engine_step_t *o) {
     /* payouts_paused: nothing is signed and no swap is decided of any kind, the
      * trading-halt refund included (plan section 16): the swap waits counted
      * with its room */
-    if (e->cfg.payouts_paused) { o->undecided++; return 0; }
+    if (e->cfg.payouts_paused) { e->wait_shared = B_PAUSED; o->undecided++; return 0; }
     if (paused) return decide_refund(e, s, "trading halted", o);
 
     amm_pool_t pool;
@@ -962,7 +1010,8 @@ static int decide_one(amm_engine_t *e, const amm_swap_t *s, int paused, uint64_t
          * NODUS payout is signed or submitted */
         int owed = amm_journal_nodus_payout_owed(e->c.journal);
         if (owed < 0) return -1;
-        if (owed == 1) { o->undecided++; return 0; }
+        if (owed == 1) { e->wait_shared = B_NODUS_LIVE; o->undecided++; return 0; }
+        if (e->blk & B_NODUS_NODE) { e->wait_shared = B_NODUS_NODE; o->undecided++; return 0; }
         amm_np_prepared_t pre;
         int pr = amm_nodus_pay_prepare(e->c.nodus_pay, s->dest, output, s->minimum, dl, &pre);
         if (pr == AMM_NP_ZERO || pr == AMM_NP_BELOW_MIN) {
@@ -976,6 +1025,7 @@ static int decide_one(amm_engine_t *e, const amm_swap_t *s, int paused, uint64_t
             QGP_LOG_WARN(LOG_TAG, "swap %s: not decided, the NODUS payout cannot be planned (%d: %s)",
                          s->id, pr, pre.msg);
             amm_np_prepared_free(&pre);
+            e->wait_shared = np_shared(e, pr, dl);
             o->undecided++;
             return 0;
         }
@@ -991,6 +1041,7 @@ static int decide_one(amm_engine_t *e, const amm_swap_t *s, int paused, uint64_t
         return 0;
     }
 
+    if (e->blk & B_ETH) { e->wait_shared = B_ETH; o->undecided++; return 0; }   /* found earlier this round */
     amm_ep_prepared_t pre;
     int pr = amm_eth_pay_prepare(e->c.eth_pay, s->dest, output, s->minimum, dl, &pre);
     if (pr == AMM_EP_ZERO || pr == AMM_EP_BELOW_MIN) {
@@ -1004,6 +1055,7 @@ static int decide_one(amm_engine_t *e, const amm_swap_t *s, int paused, uint64_t
         QGP_LOG_WARN(LOG_TAG, "swap %s: not decided, the USDT payout cannot be planned (%d: %s)",
                      s->id, pr, pre.msg);
         amm_ep_prepared_free(&pre);
+        e->wait_shared = ep_shared(e, pr, dl);
         o->undecided++;
         return 0;
     }
@@ -1079,7 +1131,7 @@ static int refuse_withdraw(amm_engine_t *e, const amm_wd_t *w, const char *why,
 }
 
 static int act_withdraw(amm_engine_t *e, const amm_wd_t *w, uint64_t dl, amm_engine_step_t *o) {
-    if (e->cfg.payouts_paused) { o->withdraws_waiting++; return 0; }   /* nothing is signed */
+    if (e->cfg.payouts_paused) { e->wait_shared = B_PAUSED; o->withdraws_waiting++; return 0; }   /* nothing is signed */
 
     amm_pool_t pool;
     int g = amm_journal_pool_get(e->c.journal, &pool);
@@ -1112,7 +1164,7 @@ static int act_withdraw(amm_engine_t *e, const amm_wd_t *w, uint64_t dl, amm_eng
      * NODUS payout is signed or submitted (as the decision of a USDT -> NODUS swap) */
     int owed = amm_journal_nodus_payout_owed(e->c.journal);
     if (owed < 0) return -1;
-    if (owed == 1) { o->withdraws_waiting++; return 0; }
+    if (owed == 1) { e->wait_shared = B_NODUS_LIVE; o->withdraws_waiting++; return 0; }
     amm_np_prepared_t npre;
     int pr = amm_nodus_pay_prepare(e->c.nodus_pay, w->nodus_addr, n_gross, 0, dl, &npre);
     if (pr == AMM_NP_ZERO) {
@@ -1123,6 +1175,7 @@ static int act_withdraw(amm_engine_t *e, const amm_wd_t *w, uint64_t dl, amm_eng
         QGP_LOG_WARN(LOG_TAG, "withdrawal %lld: not acted on, the NODUS payout cannot be planned (%d: %s)",
                      (long long)w->seq, pr, npre.msg);
         amm_np_prepared_free(&npre);
+        e->wait_shared = np_shared(e, pr, dl);
         o->withdraws_waiting++;
         return 0;
     }
@@ -1145,6 +1198,7 @@ static int act_withdraw(amm_engine_t *e, const amm_wd_t *w, uint64_t dl, amm_eng
                      (long long)w->seq, er, epre.msg);
         amm_np_prepared_free(&npre);
         amm_ep_prepared_free(&epre);
+        e->wait_shared = ep_shared(e, er, dl);
         o->withdraws_waiting++;
         return 0;
     }
@@ -1218,17 +1272,22 @@ static int dnext(amm_engine_t *e, dstream_t *s, int pg, int64_t *seen) {
  * withdrawals, taken in ONE order: the shared seen sequence (plan section 13;
  * line 577: "a liquidity commit takes its place in the same order"). The three
  * streams are merged by seen number one row at a time, each read page by page,
- * so no backlog is held in memory, and AT MOST `round_rows_max` rows are examined
- * per round, a refusal, a wait and a not-yet-ready add included (givens item 98:
- * the per-round check work is bounded, the rest carried to the next round). The
- * round stops at the first row beyond the bound: nothing with a higher seen number
- * is decided or acted on in this round, so a later operation never passes an
- * earlier one; the next round resumes after the last row examined
- * (`decide_after`, in memory: a restart begins at the oldest row) and starts again
- * at the oldest row once a round has reached the end of all three streams, so a
- * row that could not be decided is looked at again. A swap decided in between
- * changes a withdrawal's shares (they are computed when it acts, from the ledger
- * then). */
+ * so no backlog is held in memory. EVERY ROUND STARTS AT THE OLDEST ROW (no cursor:
+ * a row that waited is looked at again before any row behind it), rows are taken
+ * in ascending seen number, and AT MOST `round_rows_max` rows are EXAMINED per
+ * round -- decided, refused, acted, committed, a not-yet-ready add, or waiting for
+ * a reason of its own (funds short for this amount, an arithmetic that cannot be
+ * computed, a transaction that wrote nothing) -- (givens item 98: the per-round
+ * check work is bounded, the rest carried to the next round). The round stops at the
+ * first row beyond the bound while a further candidate exists: nothing with a
+ * higher seen number is touched, so a later operation never passes an earlier one;
+ * with no further candidate the bound ends nothing.
+ * A wait whose cause is SHARED by a whole class of rows (B_* above: payouts paused,
+ * a live NODUS payout, the Ethereum or the Nodus side unreadable) is found once, by
+ * the first row that meets it: that row does not use the bound and the class is
+ * skipped for the rest of the round (a whole stream is switched off, not walked). A
+ * swap decided in between changes a withdrawal's shares (they are computed when it
+ * acts, from the ledger then). */
 static int decisions(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
     const int pg = e->page;
     amm_swap_t *sl = malloc(sizeof(*sl) * (size_t)pg);
@@ -1238,7 +1297,8 @@ static int decisions(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
     if (!sl || !al || !wl) { free(sl); free(al); free(wl); return -1; }
     dstream_t st[3];
     memset(st, 0, sizeof(st));
-    for (int k = 0; k < 3; k++) { st[k].kind = k; st[k].after = e->decide_after; }
+    for (int k = 0; k < 3; k++) st[k].kind = k;        /* every round starts at the oldest row */
+    e->blk = 0;
     st[0].sl = sl; st[1].al = al; st[2].wl = wl;
     /* the due withdrawals: the Ethereum tip is at least liquidity_wait_eth_blocks
      * above the tip read at acceptance (a tip that cannot be read: none is due) */
@@ -1251,10 +1311,12 @@ static int decisions(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
     if (swaps_paused_now(e, &paused) != 0) rc = -1;
 
     uint64_t examined = 0;
-    int64_t last_seen = e->decide_after;
-    int ended = 0;
     while (rc == 0) {
-        if (examined >= e->cfg.round_rows_max) break;     /* the round's bound: resume next round */
+        /* a class blocked by a shared cause is off for the rest of the round: the
+         * swaps when payouts are paused, the withdrawals for any shared cause
+         * (they need both payers) */
+        if (e->blk & B_PAUSED) st[0].off = 1;
+        if (e->blk) st[2].off = 1;
         int pick = -1;
         int64_t best = 0;
         for (int k = 0; k < 3 && rc == 0; k++) {
@@ -1264,10 +1326,12 @@ static int decisions(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
             if (r == 1 && (pick < 0 || sn < best)) { pick = k; best = sn; }
         }
         if (rc != 0) break;
-        if (pick < 0) { ended = 1; break; }
+        if (pick < 0) break;                              /* no candidate left in any stream: the end */
+        /* the bound is checked only once a further candidate exists, so reaching
+         * it with nothing behind is the end of the round's work, not a stop */
+        if (examined >= e->cfg.round_rows_max) break;
         dstream_t *s = &st[pick];
-        examined++;
-        last_seen = best;
+        e->wait_shared = 0;
         if (pick == 0) {
             rc = decide_one(e, &s->sl[s->i], paused, dl, o);
         } else if (pick == 1) {
@@ -1282,8 +1346,12 @@ static int decisions(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
             else if (g == 0 && !strcmp(w.state, AMM_W_ACCEPTED)) rc = act_withdraw(e, &w, dl, o);
         }
         s->i++;
+        /* a row that waited for a shared cause is not an examined row: it does not
+         * use the bound, and the class is skipped from here on; every other row
+         * (decided, refused, acted, committed, or waiting for its own reason) does */
+        if (e->wait_shared) e->blk |= e->wait_shared;
+        else examined++;
     }
-    if (rc == 0) e->decide_after = ended ? 0 : last_seen;
     o->decisions_examined += (int)examined;
     free(wl);
     free(al);

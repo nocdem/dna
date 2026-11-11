@@ -233,6 +233,8 @@ static amm_http_ctx_t mkctx(void) {
     snprintf(g_cfg.eip712_name, sizeof(g_cfg.eip712_name), "Nodus Swap");
     snprintf(g_cfg.expected_origin, sizeof(g_cfg.expected_origin), "https://swap.example");
     memset(g_cfg.chain_id, 0xdd, 32);
+    memset(g_cfg.usdt_contract, 0x12, 20);                 /* NOT the default contract (H4 status) */
+    g_cfg.liquidity_min_nodus = 12345678901234ULL;         /* NOT the default 10^13 */
     amm_http_ctx_t c;
     memset(&c, 0, sizeof(c));
     c.cfg = &g_cfg;
@@ -252,6 +254,18 @@ static int route(amm_http_ctx_t *c, const char *method, const char *path, const 
     int status = 0;
     amm_http_route(c, &r, 0, &status, out, cap);
     return status;
+}
+
+/* 1 when `field` (a whole `"key":"value"` text) occurs INSIDE the "settings" object of the status
+ * answer: between `"settings":{` and its closing brace (the object holds strings and numbers only,
+ * no nested object), not merely somewhere in the answer. */
+static int in_settings(const char *out, const char *field) {
+    const char *k = strstr(out, "\"settings\":{");
+    if (!k) return 0;
+    const char *b = k + strlen("\"settings\":{");
+    const char *e = strchr(b, '}');
+    const char *f = strstr(b, field);
+    return e && f && f + strlen(field) <= e;
 }
 
 static void h4_routes(void) {
@@ -380,8 +394,9 @@ static void h4_routes(void) {
           strstr(out, "\"swapsPaused\":true") && strstr(out, "\"roomUsdt\":\"400\"") &&
           strstr(out, "\"reserves\":{\"nodus\":\"3000000000000000\",\"usdt\":\"3000000000\"}") &&
           strstr(out, "\"swapMinUsdt\":\"1000000\"") && strstr(out, "\"commission\":\"0\"") &&
-          strstr(out, "\"usdtContract\":\"0xdac17f958d2ee523a2206206994597c13d831ec7\"") &&
-          strstr(out, "\"liquidityMinNodus\":\"10000000000000\"") &&
+          in_settings(out, "\"usdtContract\":\"0x1212121212121212121212121212121212121212\"") &&
+          in_settings(out, "\"liquidityMinNodus\":\"12345678901234\"") &&
+          in_settings(out, "\"commission\":\"0\"") && !in_settings(out, "\"foundationEthereum\"") &&
           strstr(out, "\"foundationEthereum\":\"0xcccccccccccccccccccccccccccccccccccccccc\"") &&
           strstr(out, "\"nodusChainId\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\""),
           "GET /amm/status: reserves, settings in force, room, flags, addresses, chain id");
@@ -391,6 +406,17 @@ static void h4_routes(void) {
           "an unknown path is 404 (GET on the withdraw route is 405, as on the add route)");
     CHECK(route(&c, "GET", "/amm/quote", NULL, out, sizeof(out)) == 405 &&
           route(&c, "POST", "/amm/status", "{}", out, sizeof(out)) == 405, "a wrong method is 405");
+    /* an answer that does not fit its buffer is a 500 with no partial body, at the exact boundary: the
+     * status answer of this config is L bytes; a buffer of L + 1 holds it, one of L does not */
+    {
+        char full[2048], snug[2048];
+        route(&c, "GET", "/amm/status", NULL, full, sizeof(full));
+        const size_t L = strlen(full);
+        CHECK(L > 100 && L < sizeof(snug) - 2 && route(&c, "GET", "/amm/status", NULL, snug, L + 1) == 200 &&
+              !strcmp(snug, full), "GET /amm/status fits a buffer of its length + 1 byte");
+        CHECK(route(&c, "GET", "/amm/status", NULL, snug, L) == 500 && !strcmp(snug, "{}"),
+              "GET /amm/status one byte short: 500 and no partial body");
+    }
     char tiny[40];
     CHECK(route(&c, "POST", "/amm/quote", "{\"direction\":\"usdt_to_nodus\",\"amount\":\"100\"}", tiny, sizeof(tiny)) == 500 &&
           !strcmp(tiny, "{}"), "an answer above the response bound is a 500, never cut");
