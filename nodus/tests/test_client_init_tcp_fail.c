@@ -1,26 +1,34 @@
 /**
  * Nodus — client init reports a failed transport open (BUGS.md C-14)
  *
- * What it proves: when nodus_tcp_init() cannot create its epoll descriptor
- * (descriptor table full, EMFILE), nodus_client_init() and nodus_channel_init()
- * return -1 instead of success with an unusable transport.
- *   F1  nodus_client_init returns -1 with the descriptor table full.
- *   F2  nodus_channel_init returns -1 with the descriptor table full.
- *   F3  control: after the descriptors are released, the same calls succeed
- *       (0) — so the -1 above is caused by the exhaustion, not by the config.
+ * What it proves: when nodus_tcp_init() cannot create its epoll descriptor,
+ * nodus_client_init() and nodus_channel_init() return -1 instead of success
+ * with an unusable transport, and the failed inits leave no secret key copy
+ * in the caller's struct.
+ *   F1  nodus_client_init returns -1 when epoll_create1 fails, and
+ *       client->identity secret keys are all zero afterwards (C-12 path).
+ *   F2  nodus_channel_init returns -1 when epoll_create1 fails, and
+ *       ch->identity secret keys are all zero afterwards.
+ *   F3  control: with epoll_create1 unarmed, both inits succeed (0), so the
+ *       -1 above is caused by the epoll failure, not by the config.
  *
- * The exhaustion runs in a forked child (the table is filled by dup() of
- * /dev/null until it fails; the parent's descriptors are untouched). The
- * child exits 0 when F1/F2 held, 1 otherwise; the parent runs F3 itself.
+ * Isolation: epoll_create1 is interposed at link time (-Wl,--wrap=epoll_create1,
+ * see CMakeLists.txt) and made to fail with EMFILE only while armed. Unlike a
+ * full descriptor table, this leaves eventfd() working, so the later
+ * nodus_inter_session_new() step (src/server/nodus_inter_session.c:292) would still
+ * succeed: a client that ignores the nodus_tcp_init result returns 0 here and
+ * F1 FAILS. Reverting only the client check therefore fails F1; reverting only
+ * the channel check fails F2.
  *
- * Compile flags: none. Environment: none. Opens no ports, no files kept;
- * leaves nothing behind.
+ * Compile flags: none; link option -Wl,--wrap=epoll_create1. Environment:
+ * none. Opens no ports and no files; leaves nothing behind.
  *
- * How it can lie: init refuses for other reasons first (config), which F3
- * rules out; if the child cannot open /dev/null at all, it still fills
- * nothing and F1 would then fail on the control rather than pass falsely
- * (the child checks that at least one descriptor was taken, and that
- * epoll_create1 itself fails before the calls). Native Linux epoll build only.
+ * How it can lie: --wrap only catches calls resolved to the symbol
+ * epoll_create1 from the linked objects (nodus_tcp.c is in the static nodus
+ * library, which the linker wraps too); if the transport ever creates its
+ * epoll another way, the F3 control still passes and F1/F2 would fail loudly
+ * (init returns 0), not pass silently. The zero check covers the sk fields of
+ * the identity, not copies elsewhere. Linux epoll native build only.
  */
 
 #define _DEFAULT_SOURCE 1
@@ -30,16 +38,36 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <fcntl.h>
-#include <unistd.h>
 #include <errno.h>
 #include <sys/epoll.h>
-#include <sys/wait.h>
 
 static int passed = 0, failed = 0;
 #define CHECK(cond, name) do { \
     if (cond) { printf("  PASS %s\n", name); passed++; } \
     else { printf("  FAIL %s\n", name); failed++; } } while (0)
+
+static int g_fail_epoll = 0;
+
+int __real_epoll_create1(int flags);
+int __wrap_epoll_create1(int flags) {
+    if (g_fail_epoll) {
+        errno = EMFILE;
+        return -1;
+    }
+    return __real_epoll_create1(flags);
+}
+
+static int all_zero(const uint8_t *p, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        if (p[i] != 0) return 0;
+    return 1;
+}
+
+static int secrets_wiped(const nodus_identity_t *id) {
+    return all_zero(id->sk.bytes, NODUS_SK_BYTES) &&
+           all_zero(id->kyber_sk, NODUS_KYBER_SK_BYTES) &&
+           all_zero(id->mlkem_sk, NODUS_MLKEM_SK_BYTES);
+}
 
 static void make_cfg(nodus_client_config_t *cfg, nodus_key_t *fps) {
     memset(cfg, 0, sizeof(*cfg));
@@ -52,49 +80,40 @@ static void make_cfg(nodus_client_config_t *cfg, nodus_key_t *fps) {
     cfg->has_chain_id = true;
 }
 
-static int run_calls(nodus_identity_t *id, int *client_rc, int *chan_rc) {
+int main(void) {
+    printf("=== client init transport failure (C-14) ===\n");
+    nodus_identity_t *id = calloc(1, sizeof(*id));
+    if (!id || nodus_identity_generate(id) != 0) return 1;
+    CHECK(!secrets_wiped(id), "precondition: generated identity has secret bytes");
+
     nodus_key_t fps[1];
     memset(fps, 0x22, sizeof(fps));
     nodus_client_config_t cfg;
     make_cfg(&cfg, fps);
     nodus_client_t *c = calloc(1, sizeof(*c));
     nodus_ch_conn_t *ch = calloc(1, sizeof(*ch));
-    if (!c || !ch) return -1;
-    *client_rc = nodus_client_init(c, &cfg, id);
-    *chan_rc = nodus_channel_init(ch, "127.0.0.1", 1, id, NULL, NULL);
-    if (*client_rc == 0) nodus_client_close(c);
-    if (*chan_rc == 0) nodus_channel_close(ch);
+    if (!c || !ch) return 1;
+
+    g_fail_epoll = 1;
+    int crc = nodus_client_init(c, &cfg, id);
+    int hrc = nodus_channel_init(ch, "127.0.0.1", 1, id, NULL, NULL);
+    g_fail_epoll = 0;
+    CHECK(crc == -1, "F1 client init returns -1 when the transport cannot open");
+    CHECK(secrets_wiped(&c->identity), "F1 client identity wiped after the failed init");
+    CHECK(hrc == -1, "F2 channel init returns -1 when the transport cannot open");
+    CHECK(secrets_wiped(&ch->identity), "F2 channel identity wiped after the failed init");
+
+    /* F3 control */
+    memset(c, 0, sizeof(*c));
+    memset(ch, 0, sizeof(*ch));
+    crc = nodus_client_init(c, &cfg, id);
+    hrc = nodus_channel_init(ch, "127.0.0.1", 1, id, NULL, NULL);
+    CHECK(crc == 0 && hrc == 0, "F3 control: both inits succeed with epoll available");
+    if (crc == 0) nodus_client_close(c);
+    if (hrc == 0) nodus_channel_close(ch);
+
     free(c);
     free(ch);
-    return 0;
-}
-
-int main(void) {
-    printf("=== client init transport failure (C-14) ===\n");
-    nodus_identity_t *id = calloc(1, sizeof(*id));
-    if (!id || nodus_identity_generate(id) != 0) return 1;
-
-    pid_t pid = fork();
-    if (pid < 0) return 1;
-    if (pid == 0) {
-        int taken = 0, fd;
-        while ((fd = open("/dev/null", O_RDONLY)) >= 0) taken++;
-        int ec = epoll_create1(EPOLL_CLOEXEC);
-        if (taken == 0 || ec >= 0) _exit(2);   /* exhaustion did not work */
-        int crc = 0, hrc = 0;
-        if (run_calls(id, &crc, &hrc) != 0) _exit(3);
-        _exit((crc == -1 && hrc == -1) ? 0 : 1);
-    }
-    int status = 0;
-    waitpid(pid, &status, 0);
-    int code = WIFEXITED(status) ? WEXITSTATUS(status) : 99;
-    CHECK(code != 2, "exhaustion setup worked in the child");
-    CHECK(code == 0, "F1/F2 client and channel init return -1 with no descriptor left");
-
-    int crc = -9, hrc = -9;
-    CHECK(run_calls(id, &crc, &hrc) == 0 && crc == 0 && hrc == 0,
-          "F3 control: both inits succeed with descriptors available");
-
     nodus_identity_clear(id);
     free(id);
     printf("%d passed, %d failed\n", passed, failed);

@@ -15,19 +15,30 @@
  *   S5  the Kyber-missing regeneration in nodus_identity_load(): the Kyber
  *       files are removed, load regenerates and re-saves, and nodus.sk and
  *       nodus.kyber_sk are 0600 afterwards (umask 0).
+ *   W1  AT WRITE TIME: every fwrite() of secret-key bytes (size 4896 =
+ *       NODUS_SK_BYTES, or 3168 = Kyber / ML-KEM secret key) in S1 and S2
+ *       sees a descriptor whose mode has no group/other bit. fwrite is
+ *       interposed at link time; the wrapper fstat()s fileno(stream) before
+ *       passing the call on. The test also requires that exactly 3 secret
+ *       writes were seen per save, so the seam cannot pass by seeing nothing.
+ *       Against the old nodus_identity.c (fopen("wb") under umask 0 -> the
+ *       file is created 0666, and in S2 is the existing 0666 file, with the
+ *       chmod only after fclose) every such fwrite sees 0666 and W1 fails.
+ *       On the new code the stream is fdopen() of a descriptor created with
+ *       open(.., 0600) and fchmod(0600) before the write, so it sees 0600.
  *
- * Compile flags: none. Environment: none. Directories: mkdtemp under /tmp,
- * removed at the end (files and the directory); the process umask is
- * restored. Leaves nothing behind unless a check aborts mid-way.
+ * Compile flags: none; link option -Wl,--wrap=fwrite (CMakeLists.txt).
+ * Environment: none. Directories: mkdtemp under /tmp, removed at the end
+ * (files and the directory); the process umask is restored. Leaves nothing
+ * behind unless a check aborts mid-way.
  *
- * How it can lie: it observes the final mode, not the instant between
- * creation and chmod (a race window cannot be observed deterministically).
- * The old code also ends at 0600 because of its trailing chmod, so S1 alone
- * would pass on the unfixed code; S2 and the umask-0 setting only prove the
- * end state. What pins the creation mode is the code path itself
- * (identity_write_file_atomic opens with 0600 and fchmods); the test is the
- * regression guard for the end state. Under root the mode bits are still
- * reported correctly (no SKIP needed).
+ * How it can lie: --wrap sees only calls the linker resolves to the symbol
+ * fwrite; if the library ever writes secrets with write(2) or a compiler
+ * rewrites the call, the secret-write count check (3 per save) fails rather
+ * than W1 passing silently, so that is a loud failure, not a false pass.
+ * The wrapper looks at the mode when fwrite is called (data is flushed
+ * later), which is the mode the file was created with. S1-S5 end-state
+ * checks alone also pass on the old code (trailing chmod).
  */
 
 #define _DEFAULT_SOURCE 1
@@ -40,6 +51,24 @@
 #include <unistd.h>
 
 static int passed = 0, failed = 0;
+
+/* W1 seam: see the header. */
+static int g_watch = 0;
+static int g_secret_writes = 0;
+static int g_wide_secret_writes = 0;
+
+size_t __real_fwrite(const void *ptr, size_t size, size_t n, FILE *stream);
+size_t __wrap_fwrite(const void *ptr, size_t size, size_t n, FILE *stream) {
+    size_t total = size * n;
+    if (g_watch && (total == NODUS_SK_BYTES || total == NODUS_KYBER_SK_BYTES ||
+                    total == NODUS_MLKEM_SK_BYTES)) {
+        struct stat st;
+        g_secret_writes++;
+        if (fstat(fileno(stream), &st) != 0 || (st.st_mode & 077) != 0)
+            g_wide_secret_writes++;
+    }
+    return __real_fwrite(ptr, size, n, stream);
+}
 #define CHECK(cond, name) do { \
     if (cond) { printf("  PASS %s\n", name); passed++; } \
     else { printf("  FAIL %s\n", name); failed++; } } while (0)
@@ -86,7 +115,11 @@ int main(void) {
     CHECK(id->has_kyber && id->has_mlkem, "generated identity has both KEM keypairs");
 
     /* S1 */
+    g_watch = 1;
     CHECK(nodus_identity_save(id, dir) == 0, "S1 save ok");
+    g_watch = 0;
+    CHECK(g_secret_writes == 3, "W1 S1 seam saw the 3 secret writes");
+    CHECK(g_wide_secret_writes == 0, "W1 S1 no secret write into a group/other-accessible file");
     secrets_are_0600(dir, "S1");
 
     /* S3 */
@@ -102,7 +135,12 @@ int main(void) {
         chmod(p, 0666);
     }
     CHECK(mode_of(dir, "nodus.sk") == 0666, "S2 precondition: widened to 0666");
+    g_secret_writes = 0;
+    g_watch = 1;
     CHECK(nodus_identity_save(id, dir) == 0, "S2 save over existing files ok");
+    g_watch = 0;
+    CHECK(g_secret_writes == 3, "W1 S2 seam saw the 3 secret writes");
+    CHECK(g_wide_secret_writes == 0, "W1 S2 no secret write into a group/other-accessible file");
     secrets_are_0600(dir, "S2");
 
     /* S4 */

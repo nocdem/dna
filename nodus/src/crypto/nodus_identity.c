@@ -61,10 +61,9 @@
  * either the OLD file completely intact (temp file never renamed) or the
  * NEW file complete (temp file renamed only after fsync succeeded) — it
  * can never leave a short file at the REAL path the way fopen("wb") can.
- * Used ONLY for the two ML-KEM files in nodus_identity_load()'s
- * auto-generate path (see there) — nodus_identity_save() itself, and its
- * other callers, are UNCHANGED (out of scope for this fix; see the
- * comment at nodus_identity_save()). No Windows equivalent is
+ * Used for the two ML-KEM files in nodus_identity_load()'s auto-generate
+ * path and, since N-01, for the three secret-key files written by
+ * nodus_identity_save() (see the comment there). No Windows equivalent is
  * implemented (no O_EXCL/fsync parity claim here) — falls back to the
  * pre-existing non-atomic write on that platform rather than invent an
  * uncited MoveFileEx-based scheme.
@@ -304,12 +303,13 @@ int nodus_identity_generate(nodus_identity_t *id_out) {
     return 0;
 }
 
-/* D3 (N1 delta 1): unchanged — still writes every file with fopen(path,
- * "wb") (truncate-then-write, non-atomic). Explicit callers of THIS
- * function (identity generation/rotation flows) are out of scope for the
- * D3 fix; see identity_write_file_atomic() above, which the
- * nodus_identity_load() auto-generate path now uses instead of calling
- * back into this function. */
+/* N-01: the three secret-key files (nodus.sk, nodus.kyber_sk,
+ * nodus.mlkem_sk) go through identity_write_file_atomic() with mode 0600
+ * (never readable by group/other, not even while being written). The public
+ * files (nodus.pk, nodus.fp, nodus.kyber_pk, nodus.mlkem_pk) are still
+ * written with fopen(path, "wb") (truncate-then-write, non-atomic, umask
+ * permissions) — unchanged. The nodus_identity_load() auto-generate path
+ * uses identity_write_file_atomic() directly for the ML-KEM files. */
 int nodus_identity_save(const nodus_identity_t *id, const char *path) {
     if (!id || !path)
         return -1;

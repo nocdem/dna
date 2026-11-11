@@ -1517,12 +1517,16 @@ add_test(NAME test_identity COMMAND test_identity)
 # test); mkdtemp dir under /tmp, removed at the end.
 add_executable(test_identity_secret_perms tests/test_identity_secret_perms.c)
 target_link_libraries(test_identity_secret_perms nodus dsa kem nodus)
+# fwrite is interposed at link time to see the descriptor mode at write time.
+target_link_options(test_identity_secret_perms PRIVATE -Wl,--wrap=fwrite)
 add_test(NAME test_identity_secret_perms COMMAND test_identity_secret_perms)
 
 # C-14: nodus_client_init / nodus_channel_init return -1 when the transport
-# cannot be opened (descriptor table full, exhausted in a forked child).
+# cannot be opened (epoll_create1 interposed to fail).
 add_executable(test_client_init_tcp_fail tests/test_client_init_tcp_fail.c)
 target_link_libraries(test_client_init_tcp_fail nodus dsa kem nodus pthread)
+# epoll_create1 is interposed at link time so only the transport's epoll fails.
+target_link_options(test_client_init_tcp_fail PRIVATE -Wl,--wrap=epoll_create1)
 add_test(NAME test_client_init_tcp_fail COMMAND test_client_init_tcp_fail)
 
 # Server identity start-up rule (nodus_server_identity_load_or_create;

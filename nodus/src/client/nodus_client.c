@@ -8966,6 +8966,7 @@ int nodus_channel_init(nodus_ch_conn_t *ch,
         pthread_mutex_destroy(&ch->pending_mutex);
         pthread_mutex_destroy(&ch->send_mutex);
         pthread_mutex_destroy(&ch->wbuf_mutex);
+        nodus_identity_clear(&ch->identity);   /* secret keys copied above */
         return -1;
     }
     /* C-14: same as nodus_client_init — a failed transport open is an
@@ -8976,6 +8977,7 @@ int nodus_channel_init(nodus_ch_conn_t *ch,
         pthread_mutex_destroy(&ch->pending_mutex);
         pthread_mutex_destroy(&ch->send_mutex);
         pthread_mutex_destroy(&ch->wbuf_mutex);
+        nodus_identity_clear(&ch->identity);   /* secret keys copied above */
         return -1;
     }
     tcp->on_frame = ch_conn_on_frame;
