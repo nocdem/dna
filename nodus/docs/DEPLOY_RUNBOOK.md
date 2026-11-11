@@ -2104,6 +2104,99 @@ deleting journal rows. The key sits on a witness host: a root compromise reaches
 
 ---
 
+## 2.9 Swap bot (`nodus-amm`) — TEST PHASE (Ethereum Sepolia), per host, no chain impact
+
+Governing records (local): `docs/plans/2026-11-08-swap-bot-plan.nodus1.md` (sections 4, 15, 16, 17) and the operator's
+answers `docs/plans/2026-11-06-bridge-givens.nodus1.md` (item 75: the bot runs on the operator's node machine
+62.171.136.77 next to the faucet; items 61 and 97: the swap site's server EU-6 forwards `/amm/` to it; item 77: Sepolia and a
+test USDT; item 98: the per-address question limit at the forwarding). What the service is and how it behaves:
+`nodus/docs/SWAP_BOT.md`. It is a plain service of its own; it changes no consensus rule and needs no rolling / stop-all
+procedure. **Install, key placement and the forwarding are the ORCHESTRATOR's steps on the operator's word (a node host and the
+EU-6 server are touched).** The binary exists only when the build found libcurl (`nodus/CMakeLists.txt:4046-4050`).
+
+**1. Binary, user, directories, files** (the build produces `nodus/build/nodus-amm`; how the file reaches the host is the
+ORCHESTRATOR's deploy step and is not chosen here):
+```
+install -m 0755 nodus-amm /usr/local/bin/nodus-amm
+useradd --system --home-dir /var/lib/nodus-amm --shell /usr/sbin/nologin nodus-amm
+install -d -m 0700 -o nodus-amm -g nodus-amm /var/lib/nodus-amm /var/lib/nodus-amm/keys /var/lib/nodus-amm/keys/nodus
+install -m 0640 -o root -g nodus-amm nodus-amm.conf.example /etc/nodus-amm.conf   # then edit it
+install -m 0644 nodus-amm.service /etc/systemd/system/nodus-amm.service
+```
+The directories are created before the first start so that the keys can be placed first; the unit's `StateDirectory=nodus-amm`
+keeps `/var/lib/nodus-amm` at 0700 and it is the only writable path.
+
+**2. Key placement (the operator's own step; the bot creates no key and no command prints an address).**
+- Ethereum key: a file with exactly 64 hex digits (an optional newline) at `/var/lib/nodus-amm/keys/eth.key`, owner `nodus-amm`,
+  mode **0600**. The bot refuses to start when the file is missing, not a regular file, or has any group or other permission bit
+  (`nodus/tools/amm/amm_main.c:253-257`).
+```
+chown nodus-amm:nodus-amm /var/lib/nodus-amm/keys/eth.key && chmod 0600 /var/lib/nodus-amm/keys/eth.key
+```
+- Nodus identity: the six files `nodus.pk`, `nodus.sk`, `nodus.kyber_pk`, `nodus.kyber_sk`, `nodus.mlkem_pk`, `nodus.mlkem_sk` in
+  `/var/lib/nodus-amm/keys/nodus/`, owner `nodus-amm`, mode 0600. They are loaded read-only: a missing, short or mismatched file
+  refuses the start and nothing is regenerated (`src/crypto/nodus_identity.c:582-636`). The loader itself does not test the mode;
+  0600 is this procedure's choice. Never the witness's identity.
+- The operator needs the two Foundation addresses (the Ethereum address of `eth.key`, 40 hex; the Nodus address of the identity,
+  128 hex) for the config. **Unknown from source: which command creates these keys or prints these addresses** — `nodus-amm` has
+  neither (`amm_main.c` accepts only `--config`), and the plan defers key file handling (plan section 20). The bot refuses to start
+  unless each configured address matches its key (`amm_main.c:380`, `:406`).
+- No key material goes into this runbook, the config example, Git or a message.
+
+**3. Config.** Edit `/etc/nodus-amm.conf`; every `REPLACE_…` line must be written or the service refuses to start. Test-phase values:
+`node_fp` = the local node's `identity/nodus.fp`; `chain_id` = the testnet chain id (the node's `dnac_supply` `chain_id32`, 64 hex);
+`eth_chain_id = 11155111` (Sepolia, givens item 77); `usdt_contract` = the test USDT address, **written after the test USDT is
+deployed**; `foundation_eth` and `foundation_nodus` from step 2; `eth_providers`, `eth_quorum`, `eth_reorg_window_blocks`,
+`payout_final_depth_eth`, the HTTP and timing numbers and `held_keeps_room` are values the plan leaves DEFERRED (plan section
+20) — each is set at the install as a stated proposal with its reason, shown to the operator and recorded with the install. Leave every optional key at its default unless the operator says otherwise
+(`SWAP_BOT.md` section 5 lists them). The file may hold provider URLs that carry keys: 0640 `root:nodus-amm`, never in Git.
+
+**4. Start.**
+```
+systemctl daemon-reload
+systemctl start nodus-amm
+journalctl -u nodus-amm -n 30             # "listening on 127.0.0.1:<port>"
+```
+A start that does not reach "listening on 127.0.0.1:<port>" has its reason in the journal: a config key refused (the line names
+the key), another instance holding `/var/lib/nodus-amm/amm.lock`, a key file missing or readable by others, an address that is not
+the key's, the node not answering or not the pinned one, or the node's address history off or starting above `nodus_start_height`.
+Enable at boot (`systemctl enable nodus-amm`) only on the operator's word.
+
+**5. Forwarding from EU-6, with the per-address limit (the operator's word; EU-6 is touched).** The swap site's server
+forwards `/amm/` to the bot's loopback port (givens items 61, 97); the bot opens no public port and has no TLS. **How EU-6 reaches
+a port that listens on 127.0.0.1 of 62.171.136.77 is not recorded in the sources read** (FAUCET.md says only that the wallet site
+forwards `/faucet/` to it); decide and record it as part of this step, not here.
+- Per-internet-address limit (givens item 98, the operator's answer "c": a limit in the bot AND a limit at the forwarding): the
+  forwarding allows at most **N price questions per minute per internet address** on `/amm/quote` and `/amm/liquidity/quote`.
+  **N: to be set by the operator. It is not decided and no number is proposed here.** The limit in the bot is `quote_open_max`
+  (default 2000, main's proposal; givens item 98 part (a)). Until N is set, this step is not complete.
+- Mechanism example only, as a labelled proposal for the server that serves the site (givens item 61 read `/etc/nginx/sites-enabled`
+  on EU-6; the existing site files were not re-read): an `nginx` `limit_req_zone` keyed on the client address with rate `<N>r/m`,
+  applied to the two question paths, and a `location /amm/ { proxy_pass <the bot's loopback port, reached as decided above>; }`.
+  Answers over the limit are the server's refusal (status 429 or 503), not a bot answer; the site must show it as "try again later".
+
+**6. Verify** (read-only): `curl -s http://127.0.0.1:<http_port>/amm/status` on the host answers JSON with `"swapsPaused":false`,
+`"stopped":false`, the `settings` (with `ethChainId` 11155111, `usdtContract` the test USDT, `liquidityMinNodus`), the two Foundation
+addresses and the Nodus chain id. Then the same through the site: `curl -s https://swap.nodusnetwork.io/amm/status` (route and
+forwarding verified end to end). Until the Foundation's first liquidity add has committed, `reserves` is `null` and every price
+question answers `{"approved":false,"reason":"unavailable"}` — by design (`amm_main.c:441`, givens item 91), not a fault. Do not
+send a real swap as a test.
+
+**7. Stop / rollback.** `systemctl stop nodus-amm` is always safe: every state is in the journal
+(`/var/lib/nodus-amm/journal.db`) and resumes at the next start (stored payouts are looked up and resent as the SAME bytes, never
+rebuilt). Never run two instances (the second refuses: `amm.lock`). To take the bot out of service at the site: remove or disable the
+`/amm/` forwarding first (nothing can then be approved), then stop the service. To pause without stopping: set `swaps_paused = 1`,
+`liquidity_paused = 1` and/or `payouts_paused = 1` in `/etc/nodus-amm.conf` and restart. Never delete the journal while
+approvals, payouts or liquidity positions exist — it is the only record of what the bot owes and of the pool ledger. Never delete
+or replace `eth.key` or the identity files while funds sit at those addresses.
+
+**8. Honest limits.** The key files sit on a node host: a root compromise reaches them and the witness key. A swap in state
+`unknown` stops new approvals (`/amm/status` `"stopped":true`) and there is no operator tool in this version to resolve it
+(plan section 20). Not built: stake for later pools, fee raising for a stuck payout, a higher-fee replacement for an expired NODUS
+payout, commission, key rotation (`SWAP_BOT.md` section 6).
+
+---
+
 ## 3. Post-deploy verification
 
 ```bash

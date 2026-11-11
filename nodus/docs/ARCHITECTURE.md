@@ -260,7 +260,8 @@ nodus/
 ├── tools/                     # (excerpt — the two node mains and their shared config only)
 │   ├── nodus-server.c         # nodus-server main (combined, or core with "witness_external")
 │   ├── nodus-witness.c        # nodus-witness main (split S3)
-│   └── nodus_node_config.c/h  # the shared command line + JSON config + --derive-v2-genesis (split S3)
+│   ├── nodus_node_config.c/h  # the shared command line + JSON config + --derive-v2-genesis (split S3)
+│   └── amm/                   # nodus-amm: the swap bot service (USDT <-> NODUS), 127.0.0.1 only — see docs/SWAP_BOT.md (the testnet faucet, tools/faucet/, is described in docs/FAUCET.md)
 ├── CMakeLists.txt             # Build system
 └── docs/
     └── ARCHITECTURE.md        # This file
