@@ -75,6 +75,8 @@
  *       shares an input; a replacement that cannot be stored is reported as
  *       waiting; the reservation survives a restart and ends when the swap
  *       leaves the owed states (see the comment of P15);
+ *   P17 a paused replacement returns PAUSED and is not `waiting` (the engine
+ *       stops its round on it); unpaused refusals are `waiting`;
  *   P16 the reserved set carries at most 1024 inputs: more refuses the plan
  *       (UNKNOWN), never a partial list; a journal read error of the reserved
  *       set returns ERR (see the comment of P16);
@@ -887,6 +889,40 @@ int main(void) {
     e.st.ri.tip = 1003;
     CHECK(step(&e, &o) == AMM_NP_OK && o.confirmed == 1 && swap_is(&e, &s, "paid"), "P11 ... and settles a payout found on chain");
     amm_attempt_free(&at);
+    env_close(&e);
+
+    /* ── P17 a paused replacement is not `waiting` ───────────────────
+     * PROVES (verify 15): with payouts_paused the step of a swap whose attempt expired returns
+     * AMM_NP_PAUSED with `waiting` 0, nothing stored and nothing broadcast, so the engine's
+     * walk (which defers only `waiting` swaps and stops on a step that moved nothing) stops
+     * the round instead of walking every owed swap; unpaused, the same swap (its replacement
+     * made impossible by an unreadable coin list) IS `waiting`. With the condition at the
+     * expired branch of amm_nodus_pay_step_after not excluding AMM_NP_PAUSED the first check fails.
+     * FLAGS/ENVIRONMENT: a default build; one mkdtemp directory; the scripted node.
+     * LEAVES BEHIND: nothing.
+     * FALSE PASS: the settlement scan while paused is P11; this block does not repeat it. */
+    env_open(&e);
+    e.cfg.scan_blocks = 200;
+    amm_nodus_pay_free(e.p);
+    e.p = amm_nodus_pay_new(&e.cfg);
+    mk_payout(&e, 1, &s);
+    sign(&e, &s, 5000000000ULL, &o);
+    step(&e, &o);
+    e.st.ri.tip = 1091;
+    CHECK(step(&e, &o) == AMM_NP_OK && o.expired == 1, "P17 the attempt expires");
+    e.cfg.payouts_paused = 1;
+    amm_nodus_pay_free(e.p);
+    e.p = amm_nodus_pay_new(&e.cfg);
+    int sc = e.st.submit_calls;
+    CHECK(step(&e, &o) == AMM_NP_PAUSED && o.waiting == 0 && o.worked == 0 && o.signed_ == 0 &&
+          e.st.submit_calls == sc && attempt(&e, &s, &at2) == 0 && at2.n == 1,
+          "P17 paused: the step returns PAUSED, the swap is not waiting, nothing is stored or broadcast");
+    amm_attempt_free(&at2);
+    e.cfg.payouts_paused = 0;
+    amm_nodus_pay_free(e.p);
+    e.p = amm_nodus_pay_new(&e.cfg);
+    e.st.nat_rc = AMM_NODE_ERR;
+    CHECK(step(&e, &o) == AMM_NP_UNKNOWN && o.waiting == 1, "P17 unpaused, an unreadable coin list: the swap IS waiting");
     env_close(&e);
 
     /* ── P12 the journal's guards ────────────────────────────────── */

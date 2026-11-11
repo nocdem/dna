@@ -377,6 +377,7 @@ static void build(env_t *e) {
     e->npc.node = &e->node; e->npc.journal = e->j; e->npc.pk = g_id->pk.bytes; e->npc.sk = g_id->sk.bytes;
     e->npc.rand = nrand; memcpy(e->npc.chain_id, W.chain, 32);
     e->npc.expiry_ahead = 90; e->npc.resubmit_blocks = 3; e->npc.scan_blocks = 64;
+    e->npc.payouts_paused = e->cfg.payouts_paused;     /* the payer is paused with the engine (E29) */
     e->np = amm_nodus_pay_new(&e->npc);
     if (!e->np) { printf("FATAL: nodus payer\n"); exit(2); }
     memcpy(e->cfg.foundation_nodus, amm_nodus_pay_self(e->np), 129);
@@ -2339,6 +2340,164 @@ static void e28_failed_read_not_reused(void) {
     env_close(&e);
 }
 
+/* A USDT -> NODUS swap in payout_pending with a fake expired attempt (as E21). */
+static int mk_expired_payout(env_t *e, int i, amm_swap_t *s) {
+    char key[24];
+    amm_quote_answer_t a;
+    snprintf(key, sizeof(key), "eth:p%d", i);
+    if (amm_engine_quote(e->eng, AMM_USDT_TO_NODUS, 1000000ULL, 0, &a) != AMM_Q_OK) return 0;
+    amm_req_usdt_t ur = usdt_req(&a, "abcdef012"[i], 1);
+    return amm_engine_accept_usdt(e->eng, &ur, s) == AMM_ACC_RECEIVED && seen_counted(e, s, key) &&
+           amm_journal_swap_transition(e->j, s->seq, "payout_pending", NULL, NULL, NULL) == 0 &&
+           amm_journal_swap_by_seq(e->j, s->seq, s) == 0 && fake_expired_attempt(e, s, (uint8_t)(0x40 + i));
+}
+
+/* ── E29 paused payouts: nothing is signed or broadcast ── */
+
+/* PROVES (verify 15): with payouts_paused a round over three owed payouts with expired
+ *   attempts and a NODUS refund with no attempt signs nothing and broadcasts nothing (no
+ *   attempt is stored for the refund, no payout gets an attempt 2, W.submits unchanged).
+ *   The "stops at the first paused step" half is test_amm_nodus_pay P17 (a paused replacement
+ *   is not `waiting`); the settlement scan of a live attempt while paused is the existing
+ *   P11 ("... but the settlement scan continues", "... and settles a payout found on chain").
+ * FLAGS/ENVIRONMENT: a default build; the payer is paused through the settings copy
+ *   (e->npc.payouts_paused follows cfg.payouts_paused); one mkdtemp directory.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: the engine round's own number of payer steps is not observable from outside;
+ *   P17 pins the flag the engine's stop depends on. */
+static void e29_paused_signs_nothing(void) {
+    printf("E29 payouts paused: nothing is signed or broadcast\n");
+    env_t e;
+    env_open(&e);
+    amm_swap_t s[3], r;
+    amm_quote_answer_t b;
+    amm_engine_step_t o;
+    int ok = 1;
+    for (int i = 0; i < 3 && ok; i++) ok = mk_expired_payout(&e, i, &s[i]);
+    CHECK(ok, "three payouts with expired attempts");
+    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &b) == AMM_Q_OK, "approval of a refund swap");
+    amm_req_nodus_to_usdt_t nr = nodus_req(&b, 'f', 1);
+    CHECK(amm_engine_accept_nodus(e.eng, &nr, NULL) == AMM_ACC_RECEIVED && swap_of(&e, b.request_number, &r) &&
+          seen_counted(&e, &r, r.incoming_id) &&
+          amm_journal_swap_transition(e.j, r.seq, "refund_pending", NULL, NULL, NULL) == 0, "R in refund_pending, no attempt");
+    e.cfg.payouts_paused = 1;
+    env_restart(&e);
+    const int submits = W.submits;
+    amm_attempt_t at;
+    memset(&at, 0, sizeof(at));
+    for (int k = 0; k < 2; k++) CHECK(step(&e, &o) == 0, "a paused round");
+    CHECK(W.submits == submits, "nothing was broadcast");
+    CHECK(amm_journal_attempt_latest(e.j, r.seq, &at) == 1, "no attempt was stored for the refund");
+    int same = 1;
+    for (int i = 0; i < 3; i++) {
+        same = same && amm_journal_attempt_latest(e.j, s[i].seq, &at) == 0 && at.n == 1 && !strcmp(at.state, "expired");
+        amm_attempt_free(&at);
+    }
+    CHECK(same, "no payout got a replacement");
+    env_close(&e);
+}
+
+/* ── E30 the payout walk wraps ── */
+
+/* PROVES (verify 15): a payout deferred in one round (its replacement is not possible:
+ *   its coin is not in the node's list) is served again in a LATER round after the cursor
+ *   has moved past it: the next round starts after it, finds nothing beyond, wraps to the
+ *   oldest owed swap and stores the replacement as soon as the coin is back (here in the
+ *   first round after the coin returns; the test allows three). With the wrap branch
+ *   (`if (st.swap_seq == 0 && after > 0 && !wrapped)`) removed, every later round starts at
+ *   the saved cursor, finds nothing and never revisits the swap: the check fails.
+ * FLAGS/ENVIRONMENT: a default build; scripted coin list (seed 7 = the payout's coin, seed 90
+ *   = another); tip 1000 -> 1100 (expiry 1090); gas 0; one mkdtemp directory.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: "the coin returns" is the scripted list; a real node's change of unspent set
+ *   is not exercised. */
+static void e30_payout_walk_wraps(void) {
+    printf("E30 a deferred payout is served again after the walk wraps\n");
+    env_t e;
+    env_open(&e);
+    W.ncoins = 1;
+    W.coin_seed[0] = 7; W.coin_amt[0] = 1000000000000000ULL;
+    amm_quote_answer_t a;
+    amm_engine_step_t o;
+    amm_swap_t p;
+    amm_attempt_t at;
+    memset(&at, 0, sizeof(at));
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_OK, "approval");
+    amm_req_usdt_t ur = usdt_req(&a, 'a', 1);
+    CHECK(amm_engine_accept_usdt(e.eng, &ur, NULL) == AMM_ACC_RECEIVED, "signed request");
+    put_rec(&e, 0x12, 1001, 0xaa, 100000000ULL, "deep");
+    CHECK(step(&e, &o) == 0 && o.decided == 1 && swap_of(&e, a.request_number, &p), "decided, signed over coin 7");
+    W.nodus_tip = 1100;
+    W.coin_seed[0] = 90;                                 /* coin 7 is gone from the node's list */
+    CHECK(step(&e, &o) == 0 && amm_journal_attempt_latest(e.j, p.seq, &at) == 0 && at.n == 1 &&
+          !strcmp(at.state, "expired"), "round 1: the attempt expires and its replacement cannot be stored (deferred)");
+    amm_attempt_free(&at);
+    W.coin_seed[0] = 7;                                  /* the coin is back */
+    int stored = 0;
+    for (int k = 0; k < 3 && !stored; k++) {
+        CHECK(step(&e, &o) == 0, "a later round");
+        if (amm_journal_attempt_latest(e.j, p.seq, &at) == 0) {
+            stored = at.n == 2 && att_has_seed(&at, 7);
+            amm_attempt_free(&at);
+        }
+    }
+    CHECK(stored, "the deferred payout is replaced after the wrap, over its own coin");
+    env_close(&e);
+}
+
+/* ── E31 the maintenance walks start again at the oldest row ── */
+
+/* PROVES (verify 15): with round_rows_max = 3 and FOUR open rows of each kind whose window
+ *   is not yet observed, round 1 examines rows 1-3 and round 2 row 4 (the end of the list:
+ *   the cursor goes back to 0); the window is then observed, and round 3 examines rows 1-3
+ *   AGAIN and expires them: 3 swaps (release walk), 3 unsigned adds (approved-add walk) and
+ *   3 signed adds (signed-add expiry walk, the third one) = 6 adds. With the end-of-list reset
+ *   (`if (n < lim) { after = 0; break; }`) removed from those walks the cursor stays behind row
+ *   4, round 3 examines nothing and the checks fail.
+ * FLAGS/ENVIRONMENT: a default build; round_rows_max 3; all rows asked at W.now 30000
+ *   (expiry 30300); the windows are observed only after round 2 (Nodus history to block time
+ *   40000, a stored Ethereum block of time 40000); one mkdtemp directory.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: the signed adds carry no deposit (none are matched), which is what makes the
+ *   third walk expire them; the signed-add LINKING walk shares the same reset code. */
+static void e31_maintenance_walks_wrap(void) {
+    printf("E31 rows behind the cursor are examined again after the end-of-list reset\n");
+    env_t e;
+    env_open(&e);
+    e.cfg.round_rows_max = 3;
+    env_restart(&e);
+    amm_quote_answer_t q[4];
+    amm_add_answer_t ua[4], sa[4];
+    int ok = 1;
+    W.now = 30000;
+    for (int i = 0; i < 4 && ok; i++)
+        ok = amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &q[i]) == AMM_Q_OK &&
+             amm_engine_add_question(e.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &ua[i]) == AMM_AQ_OK;
+    for (int i = 0; i < 4 && ok; i++) {
+        char c = "abcd"[i];
+        amm_req_liq_add_t lr;
+        ok = amm_engine_add_question(e.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &sa[i]) == AMM_AQ_OK;
+        lr = add_req(&sa[i], c, c, c);
+        ok = ok && amm_engine_accept_add(e.eng, &lr, NULL) == AMM_ACC_RECEIVED;
+    }
+    CHECK(ok, "four swaps, four unsigned adds and four signed adds, none expirable yet");
+    amm_engine_step_t o;
+    CHECK(step(&e, &o) == 0 && o.expired == 0 && o.adds_expired == 0 && o.rows_examined == 3, "round 1: rows 1-3 examined, nothing expirable");
+    CHECK(step(&e, &o) == 0 && o.expired == 0 && o.adds_expired == 0 && o.rows_examined == 1, "round 2: row 4 examined (the end: the cursors go back)");
+    amm_journal_cursor_reset(e.j, "nodus_scan", 1000);
+    amm_journal_cursor_reset(e.j, "nodus_scan_ts", 40000);
+    amm_blk_t blk;
+    memset(&blk, 0, sizeof(blk));
+    blk.height = 990; blk.ts = 40000; memset(blk.hash, 5, 32); memset(blk.parent, 4, 32);
+    amm_journal_block_put(e.j, &blk);
+    amm_journal_cursor_reset(e.j, "eth_scan", 995);
+    CHECK(step(&e, &o) == 0 && o.expired == 3 && o.adds_expired == 6,
+          "round 3: rows 1-3 of each walk are examined again and expire (3 swaps, 3 unsigned adds, 3 signed adds)");
+    CHECK(state_of(&e, q[0].request_number, "expired") && state_of(&e, q[2].request_number, "expired") &&
+          state_of(&e, q[3].request_number, "approved"), "swaps 1-3 expired, swap 4 not yet examined");
+    env_close(&e);
+}
+
 int main(void) {
     printf("test_amm_engine\n");
     e1_quote();
@@ -2369,6 +2528,9 @@ int main(void) {
     e26_unfunded_refund_is_deferred();
     e27_only_the_cursor_reaches_later_rows();
     e28_failed_read_not_reused();
+    e29_paused_signs_nothing();
+    e30_payout_walk_wraps();
+    e31_maintenance_walks_wrap();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

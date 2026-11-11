@@ -640,8 +640,10 @@ int amm_nodus_pay_step_after(amm_nodus_pay_t *p, uint64_t dl, int64_t after_seq,
         /* a replacement, built from the stored gross */
         ret = sign_impl(p, head.seq, a.gross, &a, dl, o);
         /* nothing stored and nothing moved (funds, unknown, the changed fee,
-         * paused): the swap waits; the engine may go on to the next owed swap */
-        if (ret != AMM_NP_ERR && !o->signed_ && !o->worked) o->waiting = 1;
+         * unsupported): the swap waits; the engine may go on to the next owed swap.
+         * A PAUSED payer is not a waiting swap: nothing can be signed for any swap, so
+         * the engine's walk stops the round (as for a refund's AMM_NP_PAUSED). */
+        if (ret != AMM_NP_ERR && ret != AMM_NP_PAUSED && !o->signed_ && !o->worked) o->waiting = 1;
         goto out;
     }
 
