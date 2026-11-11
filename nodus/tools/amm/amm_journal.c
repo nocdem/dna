@@ -43,7 +43,11 @@
  * seen_seq (the seen order) and room (holds room under the in-flight total);
  * the tables liq_adds and positions (liquidity add). An older file is not
  * migrated: it must be deleted. */
-#define SCHEMA_VERSION 6
+/* 7: givens item 98 (the open-question limit and the removal of unused expired
+ * questions): the table bot_req_used keeps the bot request number of every
+ * deleted question so it is never given out again. Nothing has shipped, so a
+ * version 6 file is refused and must be deleted. */
+#define SCHEMA_VERSION 7
 #define BUSY_MS 5000
 
 struct amm_journal {
@@ -112,6 +116,9 @@ static const char *SCHEMA_SQL =
     "CREATE INDEX IF NOT EXISTS swaps_state ON swaps(state);"
     "CREATE INDEX IF NOT EXISTS swaps_sender ON swaps(sender, amount);"
     "CREATE INDEX IF NOT EXISTS swaps_incoming ON swaps(incoming_id);"
+    "CREATE TABLE IF NOT EXISTS bot_req_used("
+    " kind INTEGER NOT NULL CHECK(kind IN (0,1)), req_no INTEGER NOT NULL,"
+    " PRIMARY KEY(kind, req_no)) WITHOUT ROWID;"   /* 0: swaps.req_no_bot, 1: liq_adds.bot_req */
     "CREATE TABLE IF NOT EXISTS req_numbers("
     " sender TEXT NOT NULL, req_no BLOB NOT NULL, swap_seq INTEGER NOT NULL,"
     " PRIMARY KEY(sender, req_no));"
@@ -827,6 +834,87 @@ done:
     return op_end(j, rc);
 }
 
+/* ── open questions, deleted questions (givens item 98) ──────────────── */
+
+/* The open unpaid questions: a swap in `approved` (amm_journal_swap_seen moves a
+ * swap out of `approved` and sets seen_seq in one UPDATE, so an approved swap
+ * has no payment seen; a swap whose seen payment waits for room is
+ * paid_waiting_depth, not a question) and a liquidity add in `approved`, or
+ * `signed` with no deposit matched. Lock held. @return 0 / -1. */
+static int open_questions_locked(amm_journal_t *j, int64_t *n) {
+    return one_int(j, "SELECT "
+                      "(SELECT COUNT(*) FROM swaps WHERE state='approved' AND "
+                      "seen_seq IS NULL AND room=0) + "
+                      "(SELECT COUNT(*) FROM liq_adds WHERE seen_seq IS NULL AND "
+                      "(state='approved' OR (state='signed' AND eth_tx='' AND "
+                      "nodus_height=0)))", NULL, 0, n);
+}
+
+int amm_journal_open_questions(amm_journal_t *j, int64_t *n) {
+    if (!j || !n) return -1;
+    lock(j);
+    int r = open_questions_locked(j, n);
+    unlock(j);
+    return r;
+}
+
+/* 0 = used by a deleted question, 1 = not, -1. Lock held. */
+static int bot_req_used_locked(amm_journal_t *j, int kind, uint32_t req_no) {
+    return exists_q(j, "SELECT 1 FROM bot_req_used WHERE kind=?1 AND req_no=?2",
+                    (arg_t[]){AI(kind), AI(req_no)}, 2);
+}
+
+int amm_journal_bot_req_used(amm_journal_t *j, int kind, uint32_t req_no) {
+    if (!j || (kind != 0 && kind != 1) || req_no == 0) return -1;
+    lock(j);
+    int r = bot_req_used_locked(j, kind, req_no);
+    unlock(j);
+    return r;
+}
+
+/* The rows of one purge, as one WHERE: an expired question that never received
+ * a signed request or a payment. A signed request writes sender, dest and
+ * incoming_id (amm_journal_accept_request) and a seen payment seen_seq and
+ * room (amm_journal_swap_seen); a signed add writes both addresses and the
+ * transfer id (amm_journal_add_accept), a deposit eth_tx / nodus_height. */
+#define PURGE_SWAPS_WHERE \
+    "state='expired' AND sender='' AND dest='' AND incoming_id='' AND " \
+    "seen_seq IS NULL AND room=0 AND req_no_bot IS NOT NULL"
+#define PURGE_ADDS_WHERE \
+    "state='expired' AND eth_addr='' AND nodus_addr='' AND transfer_id='' AND " \
+    "eth_tx='' AND nodus_height=0 AND seen_seq IS NULL"
+
+int amm_journal_purge_expired_questions(amm_journal_t *j, int cap, int *swaps,
+                                        int *adds) {
+    if (swaps) *swaps = 0;
+    if (adds) *adds = 0;
+    if (!j || cap < 1) return -1;
+    if (op_begin(j) != 0) return -1;
+    int rc = -1, ns = 0, na = 0;
+    /* the marker first, then the delete: both pick the same oldest `cap` rows
+     * inside this one transaction */
+    if (run(j, "INSERT OR IGNORE INTO bot_req_used(kind, req_no) "
+               "SELECT 0, req_no_bot FROM swaps WHERE seq IN "
+               "(SELECT seq FROM swaps WHERE " PURGE_SWAPS_WHERE " ORDER BY seq LIMIT ?1)",
+            (arg_t[]){AI(cap)}, 1, NULL) != 0) goto done;
+    if (run(j, "DELETE FROM swaps WHERE seq IN "
+               "(SELECT seq FROM swaps WHERE " PURGE_SWAPS_WHERE " ORDER BY seq LIMIT ?1)",
+            (arg_t[]){AI(cap)}, 1, &ns) != 0) goto done;
+    if (run(j, "INSERT OR IGNORE INTO bot_req_used(kind, req_no) "
+               "SELECT 1, bot_req FROM liq_adds WHERE seq IN "
+               "(SELECT seq FROM liq_adds WHERE " PURGE_ADDS_WHERE " ORDER BY seq LIMIT ?1)",
+            (arg_t[]){AI(cap)}, 1, NULL) != 0) goto done;
+    if (run(j, "DELETE FROM liq_adds WHERE seq IN "
+               "(SELECT seq FROM liq_adds WHERE " PURGE_ADDS_WHERE " ORDER BY seq LIMIT ?1)",
+            (arg_t[]){AI(cap)}, 1, &na) != 0) goto done;
+    rc = AMM_J_OK;
+done:
+    if (op_end(j, rc) != AMM_J_OK) return -1;
+    if (swaps) *swaps = ns;
+    if (adds) *adds = na;
+    return 0;
+}
+
 /* ── approval at the price question, signed request (revision 10) ───── */
 
 int amm_journal_quote_approve(amm_journal_t *j, const amm_quote_t *q,
@@ -852,8 +940,20 @@ int amm_journal_quote_approve(amm_journal_t *j, const amm_quote_t *q,
                 &n) != 0) goto done;
     if (n > 0) { rc = AMM_J_STOPPED; goto done; }
 
+    /* givens item 98: the limit on open unpaid questions, checked in the same
+     * transaction as the insert so it cannot be passed between check and insert */
+    if (q->open_max) {
+        int64_t open = 0;
+        if (open_questions_locked(j, &open) != 0) goto done;
+        if (open >= 0 && (uint64_t)open >= q->open_max) { rc = AMM_J_BUSY; goto done; }
+    }
+
     int e = exists_q(j, "SELECT 1 FROM swaps WHERE req_no_bot=?1",
                      (arg_t[]){AI(q->bot_req)}, 1);
+    if (e < 0) goto done;
+    if (e == 0) { rc = AMM_J_NUMBER_TAKEN; goto done; }
+    /* the number of a deleted question is never given out again */
+    e = bot_req_used_locked(j, 0, q->bot_req);
     if (e < 0) goto done;
     if (e == 0) { rc = AMM_J_NUMBER_TAKEN; goto done; }
 
@@ -2591,8 +2691,16 @@ int amm_journal_add_approve(amm_journal_t *j, const amm_add_q_t *q, amm_add_t *o
     if (one_int(j, "SELECT COUNT(*) FROM swaps WHERE state='unknown'", NULL, 0,
                 &n) != 0) goto done;
     if (n > 0) { rc = AMM_J_STOPPED; goto done; }
+    if (q->open_max) {                      /* givens item 98, inside the insert's transaction */
+        int64_t open = 0;
+        if (open_questions_locked(j, &open) != 0) goto done;
+        if (open >= 0 && (uint64_t)open >= q->open_max) { rc = AMM_J_BUSY; goto done; }
+    }
     int e = exists_q(j, "SELECT 1 FROM liq_adds WHERE bot_req=?1",
                      (arg_t[]){AI(q->bot_req)}, 1);
+    if (e < 0) goto done;
+    if (e == 0) { rc = AMM_J_NUMBER_TAKEN; goto done; }
+    e = bot_req_used_locked(j, 1, q->bot_req);
     if (e < 0) goto done;
     if (e == 0) { rc = AMM_J_NUMBER_TAKEN; goto done; }
     /* givens item 96: refused below the minimum, nothing written */
@@ -2965,7 +3073,7 @@ int amm_journal_open(const char *path, amm_journal_t **out) {
         }
     }
     if (exec_sql(j->db, SCHEMA_SQL) != 0) goto fail;
-    if (exec_sql(j->db, "PRAGMA user_version=6") != 0) goto fail;   /* = SCHEMA_VERSION */
+    if (exec_sql(j->db, "PRAGMA user_version=7") != 0) goto fail;   /* = SCHEMA_VERSION */
     chmod(path, 0600);
     *out = j;
     return 0;

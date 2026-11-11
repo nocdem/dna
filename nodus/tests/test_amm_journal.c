@@ -1683,6 +1683,109 @@ static void j21b_reserved_and_after(void) {
           "swap 2 left the owed states (unknown): its coins are released");
 }
 
+/* J28: givens item 98 -- the limit on open unpaid questions inside the insert, and the
+ * deletion of unused expired questions.
+ * PROVES: with `open_max` set the approval of a price question and of an add question is
+ *   refused AMM_J_BUSY when the open unpaid questions (approved swaps with no payment seen,
+ *   approved or signed adds with no deposit matched) are at it, in the approval's own
+ *   transaction, writing nothing; a swap that has a payment seen (paid_waiting_depth) is no
+ *   longer a question; swaps and adds share one count; open_max 0 means no limit;
+ *   amm_journal_purge_expired_questions deletes only expired rows that never received a
+ *   signed request (swap: empty sender/destination/incoming id; add: no addresses), at most
+ *   `cap` per call, writes their bot request numbers to bot_req_used first (kept across a
+ *   reopen), and a later approval carrying such a number is refused AMM_J_NUMBER_TAKEN; a
+ *   schema-6 file is refused at open (not migrated).
+ * FLAGS/ENVIRONMENT: a default build; this test's journal file and one extra file in its directory.
+ * LEAVES BEHIND: nothing (the directory is removed at the end of the run).
+ * FALSE PASS: the swap with a payment is moved with amm_journal_swap_seen, the journal's own
+ *   transition; the engine's pre-read check of the same limit is test_amm_engine E22. */
+static amm_quote_t mkq(uint32_t bot_req, uint64_t amount, uint64_t v);       /* J25's fixtures */
+static amm_accept_t mka(uint32_t bot_req, const char *sender, uint64_t amount);
+
+static void j28_question_limit_and_purge(void) {
+    printf("J28 open question limit; unused expired questions are deleted\n");
+    fresh();
+    char sa[41];
+    memset(sa, 'a', 40); sa[40] = '\0';
+    amm_swap_t s1, s2, s3, sx;
+    amm_quote_t q1 = mkq(101, 50000000ULL, 50000000ULL), q2 = mkq(102, 50000000ULL, 50000000ULL),
+                q3 = mkq(103, 50000000ULL, 50000000ULL), q4 = mkq(104, 50000000ULL, 50000000ULL);
+    q1.open_max = q2.open_max = q3.open_max = q4.open_max = 2;
+    int64_t open = 0;
+    CHECK(amm_journal_quote_approve(g_j, &q1, &s1) == AMM_J_OK && amm_journal_quote_approve(g_j, &q2, &s2) == AMM_J_OK &&
+          amm_journal_open_questions(g_j, &open) == 0 && open == 2, "two open questions at open_max 2");
+    CHECK(amm_journal_quote_approve(g_j, &q3, &sx) == AMM_J_BUSY, "the third is refused: busy, inside the insert");
+    int cnt = 0;
+    CHECK(amm_journal_state_count(g_j, "approved", &cnt) == 0 && cnt == 2 &&
+          amm_journal_swap_by_botreq(g_j, 103, &sx) == 1, "the refusal wrote nothing, the number 103 is free");
+    q3.open_max = 0;
+    CHECK(amm_journal_quote_approve(g_j, &q3, &s3) == AMM_J_OK, "open_max 0: no limit");
+    CHECK(tr(s3.seq, "paid_waiting_depth", "nodus:aa") == 0 &&
+          amm_journal_open_questions(g_j, &open) == 0 && open == 2,
+          "a swap with a payment seen (paid_waiting_depth) is no longer an open question");
+    CHECK(amm_journal_quote_approve(g_j, &q4, &sx) == AMM_J_BUSY, "back at the limit: busy again");
+
+    /* swaps and adds share one count */
+    fresh();
+    amm_add_q_t aq;
+    memset(&aq, 0, sizeof(aq));
+    aq.bot_req = 4001; aq.usdt_amount = 3000000000ULL; aq.nodus_amount = 3000000000000000ULL;
+    aq.approved_at = 1000; aq.expiry = 1300; aq.eth_tip = 100; aq.nodus_tip = 100;
+    aq.nodus_min = 10000000000000ULL; aq.open_max = 2;
+    amm_add_t ad;
+    q1.open_max = 2;
+    CHECK(amm_journal_add_approve(g_j, &aq, &ad) == AMM_J_OK && amm_journal_quote_approve(g_j, &q1, &s1) == AMM_J_OK &&
+          amm_journal_open_questions(g_j, &open) == 0 && open == 2, "one add and one swap are two open questions");
+    aq.bot_req = 4002;
+    CHECK(amm_journal_add_approve(g_j, &aq, &ad) == AMM_J_BUSY, "an add question is refused at the shared limit");
+    CHECK(amm_journal_quote_approve(g_j, &q2, &sx) == AMM_J_BUSY, "so is a price question");
+
+    /* the deletion */
+    fresh();
+    q1.open_max = q2.open_max = q3.open_max = 0;
+    amm_add_q_t au;
+    memset(&au, 0, sizeof(au));
+    au.bot_req = 4001; au.usdt_amount = 3000000000ULL; au.nodus_amount = 3000000000000000ULL;
+    au.approved_at = 1000; au.expiry = 1300; au.eth_tip = 100; au.nodus_tip = 100;
+    au.nodus_min = 10000000000000ULL;
+    amm_swap_t sg;
+    amm_accept_t ac = mka(102, sa, 50000000ULL);
+    CHECK(amm_journal_quote_approve(g_j, &q1, &s1) == AMM_J_OK && amm_journal_quote_approve(g_j, &q2, &s2) == AMM_J_OK &&
+          amm_journal_quote_approve(g_j, &q3, &s3) == AMM_J_OK && amm_journal_accept_request(g_j, &ac, &sg) == AMM_J_OK &&
+          amm_journal_add_approve(g_j, &au, &ad) == AMM_J_OK,
+          "setup: two unsigned questions (101, 103), one signed (102), one unsigned add (4001)");
+    CHECK(tr(s1.seq, "expired", NULL) == 0 && tr(s2.seq, "expired", NULL) == 0 && tr(s3.seq, "expired", NULL) == 0 &&
+          amm_journal_add_expire(g_j, ad.seq) == 0, "all expired");
+    int ns = 0, na = 0;
+    CHECK(amm_journal_purge_expired_questions(g_j, 1, &ns, &na) == 0 && ns == 1 && na == 1,
+          "a purge of cap 1 deletes one swap and one add: a bounded batch");
+    CHECK(amm_journal_swap_by_botreq(g_j, 101, &sx) == 1 && amm_journal_swap_by_botreq(g_j, 103, &sx) == 0,
+          "the oldest unsigned expired question went first, the next is still there");
+    CHECK(amm_journal_purge_expired_questions(g_j, 10, &ns, &na) == 0 && ns == 1 && na == 0,
+          "the next purge deletes the other unsigned swap");
+    CHECK(amm_journal_swap_by_botreq(g_j, 102, &sx) == 0 && !strcmp(sx.state, "expired"),
+          "the signed expired row is never deleted");
+    CHECK(amm_journal_purge_expired_questions(g_j, 10, &ns, &na) == 0 && ns == 0 && na == 0, "nothing more to delete");
+    CHECK(amm_journal_bot_req_used(g_j, 0, 101) == 0 && amm_journal_bot_req_used(g_j, 0, 103) == 0 &&
+          amm_journal_bot_req_used(g_j, 1, 4001) == 0 && amm_journal_bot_req_used(g_j, 0, 102) == 1 &&
+          amm_journal_bot_req_used(g_j, 1, 101) == 1, "the deleted rows' numbers are marked (per kind), the kept row's is not");
+    CHECK(amm_journal_quote_approve(g_j, &q1, &sx) == AMM_J_NUMBER_TAKEN && amm_journal_add_approve(g_j, &au, &ad) == AMM_J_NUMBER_TAKEN,
+          "a deleted question's number is never given out again");
+    reopen();
+    CHECK(amm_journal_bot_req_used(g_j, 0, 101) == 0 && amm_journal_quote_approve(g_j, &q1, &sx) == AMM_J_NUMBER_TAKEN,
+          "the markers survive a reopen");
+
+    /* a schema-6 file is refused */
+    char oldp[160];
+    snprintf(oldp, sizeof(oldp), "%s/old6.db", g_dir);
+    sqlite3 *db = NULL;
+    int made = sqlite3_open(oldp, &db) == SQLITE_OK && sqlite3_exec(db, "PRAGMA user_version=6", NULL, NULL, NULL) == SQLITE_OK;
+    sqlite3_close(db);
+    amm_journal_t *jx = NULL;
+    CHECK(made && amm_journal_open(oldp, &jx) != 0 && jx == NULL, "a schema-6 file is refused, not migrated");
+    unlink(oldp);
+}
+
 /* J22: the open NODUS approval query. */
 static void j22_open_nodus(void) {
     printf("J22 open NODUS approval by transfer id, sender and amount\n");
@@ -2487,6 +2590,7 @@ int main(void) {
     j20_nodus_rows();
     j21_attempts();
     j21b_reserved_and_after();
+    j28_question_limit_and_purge();
     j22_open_nodus();
     j23_id_edge_head();
     j24_eth_attempts();

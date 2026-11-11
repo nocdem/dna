@@ -55,7 +55,11 @@
  * REFUSAL WORDS (the build's, plan 6.4.5 / 6.4.7 leave them to it; the site
  * only shows them):
  *   quote:  paused, stopped, below_minimum, above_maximum, inflight_full,
- *           no_liquidity, cannot_pay, unavailable, bad_request, internal
+ *           no_liquidity, cannot_pay, unavailable, busy, bad_request, internal
+ *           ("busy" = the open unpaid questions are at the limit quote_open_max,
+ *           givens item 98: HTTP 200 {"approved":false,"reason":"busy"}, like
+ *           every other refusal; "unavailable" = a read failed. The add question
+ *           uses the same word. The site may offer "try again later".)
  *   swap:   bad_request, bad_format, bad_chain, bad_address, bad_signature,
  *           number_reused, unknown_number, amount_mismatch, number_used,
  *           open_approval, approval_expired, internal

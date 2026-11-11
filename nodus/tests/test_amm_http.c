@@ -254,6 +254,7 @@ static void h4_routes(void) {
         {AMM_Q_ABOVE_MAX, "above_maximum"}, {AMM_Q_INFLIGHT, "inflight_full"},
         {AMM_Q_NO_LIQUIDITY, "no_liquidity"}, {AMM_Q_CANNOT_PAY, "cannot_pay"},
         {AMM_Q_UNAVAILABLE, "unavailable"}, {AMM_Q_BAD, "bad_request"},
+        {AMM_Q_BUSY, "busy"},      /* givens item 98: the question limit, told apart from "unavailable" */
     };
     for (size_t i = 0; i < sizeof(Q) / sizeof(Q[0]); i++) {
         char want[96], msg[96];
@@ -503,6 +504,13 @@ static void h6_liquidity(void) {
     g_aq_rc = AMM_AQ_BELOW_MIN;
     CHECK(route(&c, "POST", "/amm/liquidity/quote", "{\"side\":\"usdt\",\"amount\":\"5\"}", out, sizeof(out)) == 200 &&
           !strcmp(out, "{\"approved\":false,\"reason\":\"below_minimum\"}"), "below 100,000 NODUS: below_minimum");
+    g_aq_rc = AMM_AQ_BUSY;
+    CHECK(route(&c, "POST", "/amm/liquidity/quote", "{\"side\":\"usdt\",\"amount\":\"5\"}", out, sizeof(out)) == 200 &&
+          !strcmp(out, "{\"approved\":false,\"reason\":\"busy\"}"),
+          "the open-question limit (givens item 98): busy, not unavailable");
+    g_aq_rc = AMM_AQ_UNAVAILABLE;
+    CHECK(route(&c, "POST", "/amm/liquidity/quote", "{\"side\":\"usdt\",\"amount\":\"5\"}", out, sizeof(out)) == 200 &&
+          !strcmp(out, "{\"approved\":false,\"reason\":\"unavailable\"}"), "a failed read stays unavailable");
     int before = B.calls;
     static const char *bad[] = {
         "{\"side\":\"both\",\"amount\":\"5\"}", "{\"side\":\"usdt\",\"amount\":\"0\"}", "{\"side\":\"usdt\"}",

@@ -46,6 +46,21 @@
  *                                                           11155111, written in the settings file
  *                                                           (givens 77, operator 2026-11-10 "Tamam, o
  *                                                           sekilde olsun. Test alaninda olsun.")
+ *   quote_open_max             no        2000               1.. (givens 98, operator "c"; item 26). The most
+ *                                                           open unpaid questions (approved swap rows with no
+ *                                                           payment seen, approved or signed liquidity adds
+ *                                                           with no deposit matched); at it a new price or
+ *                                                           liquidity question is answered "busy". 2000 is
+ *                                                           main's proposal; the operator did not name a number.
+ *   quote_read_fresh_ms        no        3000               1.. Milliseconds a question's provider reads (the
+ *                                                           bot's USDT balance, gas estimate and gas price) and
+ *                                                           Nodus balance read are reused by the next question
+ *                                                           (monotonic clock, question path only). A
+ *                                                           proposal of this build; no decision names a value.
+ *   round_rows_max             no        1000               1.. Rows of one list (open approved swaps, the
+ *                                                           liquidity adds) examined per worker round; the walk
+ *                                                           resumes after the last row in the next round. A
+ *                                                           proposal of this build; no decision names a value.
  *   commission                 no        0                  0 only. The plan's key (s.15 table, givens 23).
  *                                                           A setting, value 0 now (givens 73, operator
  *                                                           2026-11-10 "3 ok (bu settings te olmali)").
@@ -167,6 +182,9 @@ typedef struct {
     uint64_t eth_reorg_window_blocks;
     uint64_t approval_valid_seconds;           /* default 300 (givens 72)   */
     uint64_t eth_chain_id;                     /* default 1 (givens 77)     */
+    uint64_t quote_open_max;                   /* default 2000 (givens 98)  */
+    uint64_t quote_read_fresh_ms;              /* default 3000              */
+    uint64_t round_rows_max;                   /* default 1000              */
     uint64_t commission;                       /* 0 only (givens 73, s.12)  */
     uint64_t payout_final_depth_eth;
     uint64_t http_max_body;

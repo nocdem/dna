@@ -286,6 +286,7 @@ static const char *q_word(int rc) {
     case AMM_Q_NO_LIQUIDITY: return "no_liquidity";
     case AMM_Q_CANNOT_PAY:   return "cannot_pay";
     case AMM_Q_UNAVAILABLE:  return "unavailable";
+    case AMM_Q_BUSY:         return "busy";     /* givens item 98: try again later */
     case AMM_Q_BAD:          return "bad_request";
     default:                 return "internal";
     }
@@ -450,6 +451,7 @@ static const char *aq_word(int rc) {
     case AMM_AQ_BELOW_MIN:    return "below_minimum";
     case AMM_AQ_BAD:          return "bad_request";
     case AMM_AQ_UNAVAILABLE:  return "unavailable";
+    case AMM_AQ_BUSY:         return "busy";    /* givens item 98: try again later */
     default:                  return "internal";
     }
 }

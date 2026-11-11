@@ -138,12 +138,19 @@ typedef struct {
     int      ncoins;                 /* 0: the one default coin; else the scripted list     */
     uint8_t  coin_seed[4];           /* coin k's nullifier bytes are coin_seed[k] + i       */
     uint64_t coin_amt[4];
+    uint64_t mono;                   /* the monotonic clock the questions' shared reads use, ms */
+    uint64_t mono_step;              /* added to `mono` at every read of it (default 10000: no reuse) */
+    int      reads;                  /* every node and provider read of the engine's seams (E22) */
+    int      prov_reads;             /* the question path's Ethereum reads: balance, gas estimate, gas price */
+    int      nbal_reads;             /* the Nodus balance reads */
 } world_t;
 
 static world_t W;
 static int g_page;                   /* amm_engine_cfg_t.page of the next build (0 = default) */
 
 static uint64_t clock_fn(void *c) { (void)c; return W.now; }
+
+static uint64_t mono_fn(void *c) { (void)c; W.mono += W.mono_step; return W.mono; }
 
 static int rand_fn(void *c, uint8_t *buf, size_t len) {
     (void)c;
@@ -171,6 +178,7 @@ static int n_chain(void *c, uint8_t out[32], uint64_t dl) {
 }
 static int n_ri(void *c, nodus_dnac_ruleset_info_t *out, uint64_t dl) {
     (void)c; (void)dl;
+    W.reads++;
     memset(out, 0, sizeof(*out));
     uint32_t gen = nodus_v2_pins_generation_count();
     out->tip = W.nodus_tip;
@@ -178,13 +186,14 @@ static int n_ri(void *c, nodus_dnac_ruleset_info_t *out, uint64_t dl) {
     nodus_v2_pins_tuples(gen, &out->sys_version, out->sys_hash, &out->core_version, out->core_hash);
     return AMM_NODE_OK;
 }
-static int n_gas(void *c, uint64_t *out, uint64_t dl) { (void)c; (void)dl; *out = W.gas; return AMM_NODE_OK; }
+static int n_gas(void *c, uint64_t *out, uint64_t dl) { (void)c; (void)dl; W.reads++; *out = W.gas; return AMM_NODE_OK; }
 static int n_btime(void *c, uint64_t h, uint64_t *t, uint64_t dl) {
     (void)c; (void)dl; (void)h; *t = 5000; return AMM_NODE_OK;
 }
 static int n_balance(void *c, const char *owner, const uint8_t token[64], uint64_t *tip,
                      uint64_t *total, uint64_t dl) {
     (void)c; (void)owner; (void)token; (void)dl;
+    W.reads++; W.nbal_reads++;
     if (W.nodus_balance_rc) return W.nodus_balance_rc;
     *tip = W.nodus_tip; *total = W.nodus_balance;
     return AMM_NODE_OK;
@@ -261,6 +270,7 @@ static int e_bal(void *c, const uint8_t a[20], uint8_t out[32], uint64_t dl) {
 }
 static int e_erc20(void *c, const uint8_t t[20], const uint8_t o[20], uint8_t out[32], uint64_t dl) {
     (void)c; (void)t; (void)o; (void)dl;
+    W.reads++; W.prov_reads++;
     memset(out, 0, 32);
     for (int i = 0; i < 8; i++) out[31 - i] = (uint8_t)(W.usdt_balance >> (8 * i));
     return AMM_ETH_OK;
@@ -270,9 +280,9 @@ static int e_count(void *c, const uint8_t a[20], int pending, uint64_t *o, uint6
 }
 static int e_est(void *c, const uint8_t f[20], const uint8_t t[20], const uint8_t *in, size_t n,
                  uint64_t *o, uint64_t dl) {
-    (void)c; (void)f; (void)t; (void)in; (void)n; (void)dl; *o = 60000; return AMM_ETH_OK;
+    (void)c; (void)f; (void)t; (void)in; (void)n; (void)dl; W.reads++; W.prov_reads++; *o = 60000; return AMM_ETH_OK;
 }
-static int e_gasp(void *c, uint64_t *o, uint64_t dl) { (void)c; (void)dl; *o = 20000000000ULL; return AMM_ETH_OK; }
+static int e_gasp(void *c, uint64_t *o, uint64_t dl) { (void)c; (void)dl; W.reads++; W.prov_reads++; *o = 20000000000ULL; return AMM_ETH_OK; }
 static int e_prio(void *c, uint64_t *o, uint64_t dl) { (void)c; (void)dl; *o = 1000000000ULL; return AMM_ETH_OK; }
 static int e_send(void *c, const uint8_t *raw, size_t n, uint8_t h[32], uint64_t dl) {
     (void)c; (void)raw; (void)n; (void)h; (void)dl; return AMM_ETH_ERR;
@@ -280,6 +290,7 @@ static int e_send(void *c, const uint8_t *raw, size_t n, uint8_t h[32], uint64_t
 
 static int price_fee(void *c, uint64_t gas, uint64_t maxfee, uint64_t *o, uint64_t dl) {
     (void)c; (void)gas; (void)maxfee; (void)dl;
+    W.reads++;
     if (W.price_rc) return AMM_ETH_ERR;
     *o = W.price_fee;
     return AMM_ETH_OK;
@@ -375,6 +386,7 @@ static void build(env_t *e) {
     ec.providers = e->prov; ec.n_providers = 2; ec.quorum = 2; ec.price = price;
     ec.now_unix = clock_fn; ec.rand_fn = rand_fn;
     ec.page = g_page;
+    ec.mono_ms = mono_fn;
     e->eng = amm_engine_new(&ec);
     if (!e->eng) { printf("FATAL: engine\n"); exit(2); }
 }
@@ -400,6 +412,7 @@ static void env_open(env_t *e) {
     W.now = 10000; W.eth_tip = 1000; W.nodus_tip = 1000;
     W.nodus_balance = 1000000000000000ULL; W.usdt_balance = 1000000000000ULL;
     W.price_fee = 500000; W.rng = 0x9E3779B97F4A7C15ULL; W.eth_chain = 1;
+    W.mono_step = 10000;             /* every read of the clock is 10 s later: no shared reads (E24 sets it to 0) */
     for (int i = 0; i < 32; i++) W.chain[i] = (uint8_t)(0xC0 + i);
     memset(e->sk, 1, 32);
     snprintf(e->dir, sizeof(e->dir), "/tmp/amm_eng_test_XXXXXX");
@@ -1830,6 +1843,344 @@ static void e20_expired_payout_does_not_hold_refunds(void) {
     env_close(&e);
 }
 
+/* ── E21 more waiting expired payouts than one round's bound ── */
+
+/* A stored attempt with a fake envelope and one input (seed byte `tag`) that is
+ * in no coin list of the node: its replacement can never be funded. */
+static int fake_expired_attempt(env_t *e, const amm_swap_t *s, uint8_t tag) {
+    amm_attempt_t a;
+    memset(&a, 0, sizeof(a));
+    a.swap_seq = s->seq;
+    snprintf(a.dest, sizeof(a.dest), "%s", s->dest);
+    a.gross = 1000000; a.fee = 100; a.net = a.gross - a.fee;
+    a.env_len = 300;
+    a.env = malloc(a.env_len);
+    if (!a.env) return 0;
+    memset(a.env, tag, a.env_len);
+    memset(a.wire_id, tag, 64);
+    memset(a.intent_id, (uint8_t)(tag ^ 0xff), 64);
+    a.n_in = 1;
+    memset(a.inputs[0], tag, 64);
+    a.build_tip = 900; a.expiry = 990; a.scan_next = 901;
+    int ok = amm_journal_attempt_sign(e->j, &a) == AMM_J_OK &&
+             amm_journal_attempt_finish(e->j, s->seq, "expired") == 0;
+    amm_attempt_free(&a);
+    return ok;
+}
+
+/* PROVES (verify 13, claim 4): with MORE waiting expired payouts than one round's
+ *   work bound (8 steps), a younger NODUS refund with funds is still signed within a
+ *   bounded number of rounds (here <= 3): the walk resumes after the last deferred
+ *   swap and wraps, it does not restart at the oldest swap every round. Without the
+ *   cursor the refund is never reached (the same eight oldest swaps take every round).
+ * FLAGS/ENVIRONMENT: a default build; nine USDT -> NODUS swaps put into
+ *   payout_pending by journal calls with fake expired attempts (inputs in no coin
+ *   list: "no longer unspent", the replacement is refused and the swap waits); the
+ *   node lists one 10^15 coin. One mkdtemp directory.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: the attempts are fake (the payer never verifies the old envelope, only
+ *   its stored inputs, gross and expiry); a different cause of waiting (funds, a
+ *   changed fee) goes through the same `waiting` flag, proved in E20 and P15. */
+static void e21_many_waiting_do_not_starve(void) {
+    printf("E21 more waiting expired payouts than one round's bound do not starve a later refund\n");
+    env_t e;
+    env_open(&e);
+    amm_engine_step_t o;
+    amm_swap_t s[9], r;
+    amm_quote_answer_t a, b;
+    for (int i = 0; i < 9; i++) {
+        char key[24];
+        snprintf(key, sizeof(key), "eth:w%d", i);
+        CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 1000000ULL, 0, &a) == AMM_Q_OK, "approval");
+        /* the sender is 40 HEX characters: nine distinct hex digits (a letter past 'f' is not an address) */
+        amm_req_usdt_t ur = usdt_req(&a, "abcdef012"[i], 1);
+        CHECK(amm_engine_accept_usdt(e.eng, &ur, &s[i]) == AMM_ACC_RECEIVED &&
+              seen_counted(&e, &s[i], key) &&
+              amm_journal_swap_transition(e.j, s[i].seq, "payout_pending", NULL, NULL, NULL) == 0 &&
+              amm_journal_swap_by_seq(e.j, s[i].seq, &s[i]) == 0 &&
+              fake_expired_attempt(&e, &s[i], (uint8_t)(0x40 + i)),
+              "a payout in payout_pending with an expired attempt");
+    }
+    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &b) == AMM_Q_OK, "approval of the refund swap R");
+    amm_req_nodus_to_usdt_t nr = nodus_req(&b, 'f', 1);
+    CHECK(amm_engine_accept_nodus(e.eng, &nr, NULL) == AMM_ACC_RECEIVED && swap_of(&e, b.request_number, &r) &&
+          seen_counted(&e, &r, r.incoming_id) &&
+          amm_journal_swap_transition(e.j, r.seq, "refund_pending", NULL, NULL, NULL) == 0 && r.seq > s[8].seq,
+          "R (younger than all nine) is in refund_pending");
+    amm_attempt_t at;
+    memset(&at, 0, sizeof(at));
+    int rounds = 0, signed_r = 0;
+    for (int k = 0; k < 3 && !signed_r; k++) {
+        CHECK(step(&e, &o) == 0, "a round");
+        rounds++;
+        signed_r = amm_journal_attempt_latest(e.j, r.seq, &at) == 0;
+        if (signed_r) amm_attempt_free(&at);
+    }
+    CHECK(signed_r, "R is signed within three rounds");
+    printf("  info  R signed after %d round(s)\n", rounds);
+    CHECK(rounds >= 2, "R was NOT reached in the first round: nine waiting payouts exceed the 8 steps of one round (the cursor is what reaches it)");
+    for (int i = 0; i < 9; i++) {
+        amm_swap_t g;
+        CHECK(amm_journal_swap_by_seq(e.j, s[i].seq, &g) == 0 && !strcmp(g.state, "payout_pending") &&
+              amm_journal_attempt_latest(e.j, s[i].seq, &at) == 0 && at.n == 1, "a waiting payout is unchanged");
+        amm_attempt_free(&at);
+    }
+    env_close(&e);
+}
+
+/* ── E22 the limit on open unpaid questions (givens item 98) ── */
+
+/* PROVES: with quote_open_max = 3 and three open questions (two price questions and
+ *   one liquidity add question) the next price question, in either direction, and the
+ *   next liquidity question are answered BUSY and no node or provider seam was called
+ *   for them (W.reads unchanged) and nothing was written; a signed request for an open
+ *   question is still accepted at the limit, its payment is seen and decided to a
+ *   payout (the limit never refuses signed requests, payments, decisions or payouts);
+ *   once that swap holds a payment it is no longer an open question and a new question
+ *   is answered again.
+ * FLAGS/ENVIRONMENT: a default build; quote_open_max 3 through the settings copy; the
+ *   scripted world W; one mkdtemp directory.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: "no read" is counted at the stubs the engine is wired to (node ruleset,
+ *   balance, gas, Ethereum balance, gas estimate, gas price, price): a read through
+ *   another seam would not be counted; the check inside the journal's insert (the same
+ *   limit, repeated in the approval's transaction) is proved in test_amm_journal J28. */
+static void e22_open_question_limit(void) {
+    printf("E22 the limit on open unpaid questions\n");
+    env_t e;
+    env_open(&e);
+    e.cfg.quote_open_max = 3;
+    env_restart(&e);
+    amm_quote_answer_t a1, a2, qx;
+    amm_add_answer_t aa, ax;
+    amm_engine_step_t o;
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a1) == AMM_Q_OK &&
+          amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a2) == AMM_Q_OK &&
+          amm_engine_add_question(e.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &aa) == AMM_AQ_OK,
+          "three open questions: two price questions and one liquidity add question");
+    int64_t open = 0;
+    CHECK(amm_journal_open_questions(e.j, &open) == 0 && open == 3, "the journal counts three");
+    const int reads = W.reads;
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &qx) == AMM_Q_BUSY &&
+          amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &qx) == AMM_Q_BUSY,
+          "at the limit a price question, either direction, is answered busy");
+    CHECK(amm_engine_add_question(e.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &ax) == AMM_AQ_BUSY &&
+          amm_engine_add_question(e.eng, AMM_SIDE_USDT, 10000000ULL, 0, &ax) == AMM_AQ_BUSY,
+          "and so is a liquidity question");
+    CHECK(W.reads == reads, "no node or provider read was made for the refused questions");
+    CHECK(amm_journal_open_questions(e.j, &open) == 0 && open == 3, "nothing was written");
+
+    /* (b) a paid swap is still decided and paid while the questions are at the limit */
+    amm_req_usdt_t ur = usdt_req(&a1, 'a', 1);
+    CHECK(amm_engine_accept_usdt(e.eng, &ur, NULL) == AMM_ACC_RECEIVED,
+          "a signed request for an open question is accepted at the limit");
+    put_rec(&e, 0x12, 1001, 0xaa, 100000000ULL, "deep");
+    amm_swap_t s;
+    CHECK(step(&e, &o) == 0 && o.decided == 1 && swap_of(&e, a1.request_number, &s) &&
+          !strcmp(s.state, "payout_pending"), "its payment is decided to a payout at the limit");
+    amm_attempt_t at;
+    memset(&at, 0, sizeof(at));
+    CHECK(amm_journal_attempt_latest(e.j, s.seq, &at) == 0 && at.net > 0, "and its payout is signed");
+    amm_attempt_free(&at);
+    CHECK(amm_journal_open_questions(e.j, &open) == 0 && open == 2, "the swap with a payment is no longer an open question");
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &qx) == AMM_Q_OK,
+          "a question is answered again");
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &qx) == AMM_Q_BUSY, "and the limit holds again");
+    env_close(&e);
+}
+
+/* ── E23 unused expired questions are deleted ── */
+
+/* PROVES: an unused expired price question and an unused expired add question are
+ *   deleted by the round after the one that expired them (bounded by round_rows_max);
+ *   a signed row that expired stays; the deleted questions' bot request numbers are
+ *   marked: a redraw of the same number is refused (the next answer carries another
+ *   number), also after a restart; a signed request carrying a deleted question's
+ *   number is refused as expired (as for an expired one); the (sender, request
+ *   number) of a signed row still refuses reuse; a payment that arrives later is held
+ *   and matches nothing, for the retained expired row and the deleted question alike.
+ * FLAGS/ENVIRONMENT: a default build; the request-number draws are scripted through
+ *   the world's rq list (the test seam that already fixes the 32-bit draw); the
+ *   questions are expired through journal calls (the window rule that does it in a
+ *   round is E7 and E18); one mkdtemp directory.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: a payment for an unsigned question can never match it (there is no
+ *   sender to match), so the "payment later" check shows the record is held, as for
+ *   the retained signed row, not a new matching path. */
+static void e23_expired_questions_deleted(void) {
+    printf("E23 unused expired questions are deleted, their numbers stay used\n");
+    env_t e;
+    env_open(&e);
+    amm_engine_step_t o;
+    amm_quote_answer_t u, s;
+    amm_add_answer_t aa;
+    amm_swap_t su, ss;
+    W.rq[0] = 777; W.rq_n = 1; W.rq_i = 0;
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &u) == AMM_Q_OK && u.request_number == 777,
+          "an unsigned price question with the number 777");
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &s) == AMM_Q_OK, "a second price question");
+    amm_req_usdt_t sr = usdt_req(&s, 'b', 1);
+    CHECK(amm_engine_accept_usdt(e.eng, &sr, &ss) == AMM_ACC_RECEIVED, "signed (sender b): it carries a sender and a (sender, number) marker");
+    W.rq[0] = 4242; W.rq_n = 1; W.rq_i = 0;
+    CHECK(amm_engine_add_question(e.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &aa) == AMM_AQ_OK && aa.request_number == 4242,
+          "an unsigned add question with the number 4242");
+    amm_add_t ad;
+    CHECK(swap_of(&e, 777, &su) && amm_journal_add_by_botreq(e.j, 4242, &ad) == 0, "both rows exist");
+    CHECK(amm_journal_swap_transition(e.j, su.seq, "expired", NULL, NULL, NULL) == 0 &&
+          amm_journal_swap_transition(e.j, ss.seq, "expired", NULL, NULL, NULL) == 0 &&
+          amm_journal_add_expire(e.j, ad.seq) == 0, "the unsigned swap, the signed swap and the add are expired");
+
+    CHECK(step(&e, &o) == 0 && o.questions_deleted == 2, "the round deletes the two unused expired questions");
+    CHECK(!swap_of(&e, 777, &su) && amm_journal_add_by_botreq(e.j, 4242, &ad) == 1, "they are gone");
+    CHECK(state_of(&e, s.request_number, "expired"), "the signed expired row stays");
+    CHECK(amm_journal_bot_req_used(e.j, 0, 777) == 0 && amm_journal_bot_req_used(e.j, 1, 4242) == 0 &&
+          amm_journal_bot_req_used(e.j, 0, 4242) == 1, "their numbers are marked used (per kind)");
+
+    /* the numbers are not given out again: the redraw takes the next scripted number */
+    /* a scripted draw takes the swap id's randomness from W.rng without advancing it: bump
+     * W.rng before each scripted quote so two scripted quotes never share an id (swaps.id is unique) */
+    W.rng += 0x9E3779B97F4A7C15ULL;
+    W.rq[0] = 777; W.rq[1] = 5000; W.rq_n = 2; W.rq_i = 0;
+    amm_quote_answer_t n1;
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &n1) == AMM_Q_OK && n1.request_number == 5000,
+          "a draw of 777 again is refused and redrawn: the new question carries 5000");
+    W.rq[0] = 4242; W.rq[1] = 6000; W.rq_n = 2; W.rq_i = 0;
+    amm_add_answer_t n2;
+    CHECK(amm_engine_add_question(e.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &n2) == AMM_AQ_OK && n2.request_number == 6000,
+          "a draw of 4242 again is refused and redrawn: the new add question carries 6000");
+
+    /* a signed request for a deleted question, and the retained (sender, number) */
+    amm_quote_answer_t old_q;
+    memset(&old_q, 0, sizeof(old_q));
+    old_q.request_number = 777; old_q.amount = 100000000ULL;
+    amm_req_usdt_t old_r = usdt_req(&old_q, 'c', 1);
+    CHECK(amm_engine_accept_usdt(e.eng, &old_r, NULL) == AMM_ACC_EXPIRED,
+          "a signed request carrying the deleted question's number is refused as expired");
+    amm_req_liq_add_t old_add = add_req(&aa, 'a', 'c', 'a');
+    CHECK(amm_engine_accept_add(e.eng, &old_add, NULL) == AMM_ACC_EXPIRED,
+          "so is a signed pair for the deleted add question");
+    CHECK(amm_engine_accept_usdt(e.eng, &sr, NULL) != AMM_ACC_RECEIVED,
+          "the retained signed row's request is not accepted again (its sender and number are still used)");
+
+    /* a later payment is held, for the kept expired row and for the deleted question alike */
+    put_rec(&e, 0x31, 1001, 0xbb, 100000000ULL, "deep");     /* sender b, the kept row's amount */
+    put_rec(&e, 0x32, 1002, 0xaa, 100000000ULL, "deep");     /* the deleted question's amount   */
+    CHECK(step(&e, &o) == 0 && o.matched == 0 && o.held_records == 2,
+          "both payments match no approval and are held, exactly as for an expired question today");
+
+    /* a restart keeps the markers */
+    env_restart(&e);
+    W.rng += 0x9E3779B97F4A7C15ULL;                  /* see above: a distinct swap id */
+    W.rq[0] = 777; W.rq[1] = 7000; W.rq_n = 2; W.rq_i = 0;
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &n1) == AMM_Q_OK && n1.request_number == 7000,
+          "after a restart 777 is still not given out");
+    CHECK(amm_engine_accept_usdt(e.eng, &old_r, NULL) == AMM_ACC_EXPIRED,
+          "after a restart the signed request for the deleted question is still refused as expired");
+    env_close(&e);
+}
+
+/* ── E24 shared reads of the question path ── */
+
+/* PROVES: two price questions within quote_read_fresh_ms make ONE set of Ethereum
+ *   provider reads (balance, gas estimate, gas price) and two Nodus-side questions one
+ *   Nodus balance read; after the bound the reads are made again; a DECISION made while
+ *   the shared reads are fresh still reads the providers itself.
+ * FLAGS/ENVIRONMENT: a default build; the engine's monotonic clock is the world's
+ *   (W.mono, stepped by the test, mono_step 0); quote_read_fresh_ms is the default
+ *   3000; one mkdtemp directory.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: the reads are counted at the provider and node stubs; the decision
+ *   check proves the decision's reads happen, not that its numbers differ (a changed
+ *   balance in between is the refusal tests E1/E17). */
+static void e24_shared_reads(void) {
+    printf("E24 the question path reuses its provider reads for a short time\n");
+    env_t e;
+    env_open(&e);
+    W.mono_step = 0;
+    W.mono = 1000;
+    amm_quote_answer_t a, b;
+    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a) == AMM_Q_OK && W.prov_reads > 0,
+          "the first NODUS -> USDT question reads the providers");
+    const int r1 = W.prov_reads;
+    W.mono = 2000;
+    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &b) == AMM_Q_OK &&
+          W.prov_reads == r1 && b.est_fee == a.est_fee,
+          "a second one 1000 ms later makes no provider read and shows the same estimated fee");
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_OK && W.nbal_reads == 1,
+          "the first USDT -> NODUS question reads the Nodus balance once");
+    W.mono = 2500;
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_OK && W.nbal_reads == 1,
+          "the next one within the bound reads it no more");
+    W.mono = 5000;                                   /* 4000 ms after the first read: past the bound */
+    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a) == AMM_Q_OK && W.prov_reads == 2 * r1 &&
+          amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &b) == AMM_Q_OK && W.nbal_reads == 2,
+          "past the bound both are read again");
+
+    /* a decision reads the providers itself while the shared reads are fresh */
+    amm_quote_answer_t d;
+    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &d) == AMM_Q_OK, "a question (fresh reads)");
+    amm_req_nodus_to_usdt_t nr = nodus_req(&d, 'f', 1);
+    amm_swap_t s;
+    CHECK(amm_engine_accept_nodus(e.eng, &nr, &s) == AMM_ACC_RECEIVED && swap_of(&e, d.request_number, &s) &&
+          seen_counted(&e, &s, s.incoming_id), "signed and counted");
+    const int before = W.prov_reads;
+    amm_engine_step_t o;
+    CHECK(step(&e, &o) == 0 && o.decided == 1 && W.prov_reads > before,
+          "the decision made its own provider reads although the shared ones were fresh");
+    env_close(&e);
+}
+
+/* ── E25 bounded walks ── */
+
+/* PROVES: with round_rows_max = 3 the release walk examines at most 3 open approved
+ *   swaps per round and the add walks at most 3 add rows each, and ten approved swaps
+ *   and five approved adds are all examined (and expire) over successive rounds: the
+ *   walk resumes after the last row examined and begins again at the oldest at the end.
+ * FLAGS/ENVIRONMENT: a default build; round_rows_max 3 through the settings copy; the
+ *   window of both chains is made observed through the journal cursors and a stored
+ *   block (as E7, E18); one mkdtemp directory.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: `rows_examined` / `adds_examined` are the engine's own counters of the
+ *   rows it walked; the expiry of every row (checked through the journal, not the
+ *   counters) is what shows no row was skipped. */
+static void e25_bounded_walks(void) {
+    printf("E25 the per-round walks examine a bounded number of rows and resume\n");
+    env_t e;
+    env_open(&e);
+    e.cfg.round_rows_max = 3;
+    env_restart(&e);
+    amm_quote_answer_t q[10];
+    int ok = 1;
+    for (int i = 0; i < 10 && ok; i++)
+        ok = amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &q[i]) == AMM_Q_OK;
+    amm_add_answer_t aa;
+    for (int i = 0; i < 5 && ok; i++)
+        ok = amm_engine_add_question(e.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &aa) == AMM_AQ_OK;
+    CHECK(ok, "ten approved swaps and five approved adds");
+    W.now = 10301;
+    amm_journal_cursor_reset(e.j, "nodus_scan", 1000);
+    amm_journal_cursor_reset(e.j, "nodus_scan_ts", 10400);
+    amm_blk_t blk;
+    memset(&blk, 0, sizeof(blk));
+    blk.height = 990; blk.ts = 10400; memset(blk.hash, 5, 32); memset(blk.parent, 4, 32);
+    amm_journal_block_put(e.j, &blk);
+    amm_journal_cursor_reset(e.j, "eth_scan", 995);
+    amm_engine_step_t o;
+    int swaps_expired = 0, adds_expired = 0, bounded = 1, rounds = 0;
+    for (int r = 0; r < 8 && (swaps_expired < 10 || adds_expired < 5); r++) {
+        CHECK(step(&e, &o) == 0, "a round");
+        rounds++;
+        if (o.rows_examined > 3 || o.adds_examined > 3) bounded = 0;   /* only the approved-add walk has rows */
+        swaps_expired += o.expired;
+        adds_expired += o.adds_expired;
+    }
+    CHECK(bounded, "no round examined more than 3 swaps or 3 add rows");
+    CHECK(swaps_expired == 10 && adds_expired == 5, "every swap and every add was examined and expired");
+    printf("  info  all rows expired after %d rounds\n", rounds);
+    CHECK(rounds >= 4, "(ten swaps at three per round need at least four rounds: the bound is real)");
+    env_close(&e);
+}
+
 int main(void) {
     printf("test_amm_engine\n");
     e1_quote();
@@ -1852,6 +2203,11 @@ int main(void) {
     e18_adds_paged_and_ordered();
     e19_swap_before_add();
     e20_expired_payout_does_not_hold_refunds();
+    e21_many_waiting_do_not_starve();
+    e22_open_question_limit();
+    e23_expired_questions_deleted();
+    e24_shared_reads();
+    e25_bounded_walks();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

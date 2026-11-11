@@ -150,6 +150,13 @@ typedef struct {
      *  1..AMM_ENGINE_PAGE_MAX. A test sets a small value to prove that more
      *  rows than one page do not stop the step. */
     int page;
+    /** A MONOTONIC clock in milliseconds, used only by the price and liquidity
+     *  questions to reuse their provider and balance reads for
+     *  `quote_read_fresh_ms` (givens item 98: the reads of a question are
+     *  shared, never the decision's or a payout's). NULL = CLOCK_MONOTONIC.
+     *  A test sets its own to move time. */
+    uint64_t (*mono_ms)(void *ctx);
+    void *mono_ctx;
 } amm_engine_cfg_t;
 
 /** NULL on a bad configuration (a missing module or function, a quorum out of
@@ -170,6 +177,9 @@ typedef enum {
     AMM_Q_CANNOT_PAY  = 7,   /* the payout is larger than the bot's key holds   */
     AMM_Q_UNAVAILABLE = 8,   /* a read failed or no pool: never an approval     */
     AMM_Q_BAD         = 9,   /* direction or amount not valid                   */
+    AMM_Q_BUSY        = 10,  /* the open unpaid questions are at quote_open_max
+                              * (givens item 98); no read was made, nothing
+                              * written                                         */
     AMM_Q_ERR         = -1   /* a journal fault                                 */
 } amm_q_rc_t;
 
@@ -228,6 +238,9 @@ typedef enum {
     AMM_AQ_BAD        = 4,   /* side or amount not valid, or a side of the pair
                               * comes out zero or above 64 bits                 */
     AMM_AQ_UNAVAILABLE = 5,  /* a read failed                                   */
+    AMM_AQ_BUSY       = 6,   /* the open unpaid questions are at quote_open_max
+                              * (givens item 98); no read was made, nothing
+                              * written                                         */
     AMM_AQ_ERR        = -1
 } amm_aq_rc_t;
 
@@ -271,6 +284,9 @@ typedef struct {
     int adds_linked;           /* add deposits matched                          */
     int adds_committed;
     int adds_expired;
+    int questions_deleted;     /* unused expired price and add questions deleted (givens item 98) */
+    int rows_examined;         /* open approved swaps examined by this round's release walk (bounded by round_rows_max) */
+    int adds_examined;         /* liquidity add rows examined by this round's three add walks (each bounded by round_rows_max) */
 } amm_engine_step_t;
 
 /** One worker round (see the list above). @return 0 / -1 (a journal fault;

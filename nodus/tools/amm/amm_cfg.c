@@ -42,6 +42,10 @@ static const u64_key_t U64_KEYS[] = {
     {"eth_reorg_window_blocks",    offsetof(amm_cfg_t, eth_reorg_window_blocks),    1, HI_MAX, 1},
     {"approval_valid_seconds",     offsetof(amm_cfg_t, approval_valid_seconds),     1, HI_MAX, 0},
     {"eth_chain_id",               offsetof(amm_cfg_t, eth_chain_id),               1, HI_MAX, 0},
+    /* givens item 98 (operator "c", limit in the bot); item 26: every number is a setting */
+    {"quote_open_max",             offsetof(amm_cfg_t, quote_open_max),             1, HI_MAX, 0},
+    {"quote_read_fresh_ms",        offsetof(amm_cfg_t, quote_read_fresh_ms),        1, HI_MAX, 0},
+    {"round_rows_max",             offsetof(amm_cfg_t, round_rows_max),             1, HI_MAX, 0},
     {"commission",                 offsetof(amm_cfg_t, commission),                 0, 0,      0},
     {"payout_final_depth_eth",     offsetof(amm_cfg_t, payout_final_depth_eth),     1, HI_MAX, 1},
     {"http_max_body",              offsetof(amm_cfg_t, http_max_body),              1, HI_MAX, 1},
@@ -120,6 +124,9 @@ void amm_cfg_defaults(amm_cfg_t *cfg) {
     cfg->liquidity_min_nodus         = 10000000000000ULL; /* item 96: 100,000 NODUS */
     cfg->approval_valid_seconds      = 300;          /* item 72: 5 minutes  */
     cfg->eth_chain_id                = 1;            /* item 77; Ethereum   */
+    cfg->quote_open_max              = 2000;         /* item 98 (main's proposal, operator "c") */
+    cfg->quote_read_fresh_ms         = 3000;         /* 3 s: a question's provider reads are reused */
+    cfg->round_rows_max              = 1000;         /* rows examined per walk per round */
     cfg->commission                  = 0;            /* item 73             */
     cfg->swap_min_usdt               = 1000000ULL;   /* item 89: 1 USDT     */
     cfg->eth_price_min_sources       = 3;            /* item 74             */

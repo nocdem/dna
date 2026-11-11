@@ -17,7 +17,28 @@ struct amm_engine {
     amm_engine_cfg_t c;
     amm_cfg_t cfg;
     int page;                  /* rows per page of every list the step walks */
+    int64_t nodus_after;       /* NODUS payouts: the last swap deferred in the
+                                * previous round (0 = start from the oldest);
+                                * in memory, a restart starts from 0          */
+    /* the bounded walks (cfg.round_rows_max rows per list per round) resume
+     * after the last row examined; 0 = start from the oldest. In memory: a
+     * restart begins at the oldest row, which keeps the guarantee that every
+     * row is examined after a bounded number of rounds. */
+    int64_t release_after;     /* release(): approved swaps                  */
+    int64_t adds_after[3];     /* liquidity_adds(): signed, approved, signed
+                                * with no deposit matched                    */
+    /* the question path's shared reads (givens item 98) */
+    struct { int valid; uint64_t at_ms; uint64_t v; } rc_usdt, rc_nodus, rc_ethfee;
 };
+
+#include <time.h>
+
+static uint64_t mono_now_ms(const amm_engine_t *e) {
+    if (e->c.mono_ms) return e->c.mono_ms(e->c.mono_ctx);
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
+}
 
 amm_engine_t *amm_engine_new(const amm_engine_cfg_t *c) {
     if (!c || !c->cfg || !c->journal || !c->eth_watch || !c->eth_pay ||
@@ -188,7 +209,41 @@ static int estimate_nodus_fee(amm_engine_t *e, uint64_t gross, uint64_t dl, uint
     return 0;
 }
 
+/* Shared reads of the QUESTION path (givens item 98): the bot's USDT balance,
+ * the Ethereum fee estimate (gas estimate and gas price of every provider) and
+ * the bot's Nodus balance are reused by the next question for
+ * `quote_read_fresh_ms` of the monotonic clock instead of being read for every
+ * question. Only this path: the decision and the payouts read through
+ * amm_eth_pay_prepare / amm_nodus_pay_prepare and never through these, so nothing
+ * a payment receives is computed from a reused read. A failed read is not
+ * stored. */
+#define CACHED_READ(NAME, FIELD, CALL)                                          \
+    static int NAME(amm_engine_t *e, uint64_t dl, uint64_t *out) {              \
+        const uint64_t now = mono_now_ms(e);                                    \
+        if (e->FIELD.valid && now >= e->FIELD.at_ms &&                          \
+            now - e->FIELD.at_ms < e->cfg.quote_read_fresh_ms) {                \
+            *out = e->FIELD.v;                                                  \
+            return 0;                                                           \
+        }                                                                       \
+        uint64_t v = 0;                                                         \
+        if (CALL(e, dl, &v) != 0) return -1;                                    \
+        e->FIELD.valid = 1; e->FIELD.at_ms = now; e->FIELD.v = v;               \
+        *out = v;                                                               \
+        return 0;                                                               \
+    }
+CACHED_READ(q_usdt_balance, rc_usdt, read_usdt_balance)
+CACHED_READ(q_nodus_balance, rc_nodus, read_nodus_balance)
+CACHED_READ(q_eth_fee, rc_ethfee, estimate_eth_fee)
+
 static int swaps_paused_now(amm_engine_t *e, int *paused);
+
+/* the open-question limit (givens item 98) before any read; the journal repeats
+ * it inside the insert. @return 0 below the limit / 1 at it / -1. */
+static int questions_at_limit(amm_engine_t *e) {
+    int64_t open = 0;
+    if (amm_journal_open_questions(e->c.journal, &open) != 0) return -1;
+    return (uint64_t)open >= e->cfg.quote_open_max ? 1 : 0;
+}
 
 /* ── 1. the price question ───────────────────────────────────────────── */
 
@@ -208,6 +263,10 @@ int amm_engine_quote(amm_engine_t *e, amm_dir_t dir, uint64_t amount,
             return AMM_Q_ERR;
         if (paused) return AMM_Q_PAUSED;
         if (unknown > 0) return AMM_Q_STOPPED;
+        /* givens item 98: at the limit of open unpaid questions nothing is read */
+        int lim = questions_at_limit(e);
+        if (lim < 0) return AMM_Q_ERR;
+        if (lim == 1) return AMM_Q_BUSY;
     }
 
     amm_pool_t pool;
@@ -249,9 +308,9 @@ int amm_engine_quote(amm_engine_t *e, amm_dir_t dir, uint64_t amount,
      * is the decision's. */
     uint64_t held = 0, owed = 0;
     if (dir == AMM_USDT_TO_NODUS) {
-        if (read_nodus_balance(e, deadline_ms, &held) != 0) return AMM_Q_UNAVAILABLE;
+        if (q_nodus_balance(e, deadline_ms, &held) != 0) return AMM_Q_UNAVAILABLE;
     } else {
-        if (read_usdt_balance(e, deadline_ms, &held) != 0) return AMM_Q_UNAVAILABLE;
+        if (q_usdt_balance(e, deadline_ms, &held) != 0) return AMM_Q_UNAVAILABLE;
     }
     if (amm_journal_owed_sum(e->c.journal, dir == AMM_NODUS_TO_USDT, &owed) != 0)
         return AMM_Q_UNAVAILABLE;
@@ -261,7 +320,7 @@ int amm_engine_quote(amm_engine_t *e, amm_dir_t dir, uint64_t amount,
     if (dir == AMM_USDT_TO_NODUS) {
         if (estimate_nodus_fee(e, number, deadline_ms, &est) != 0) return AMM_Q_UNAVAILABLE;
     } else {
-        if (estimate_eth_fee(e, deadline_ms, &est) != 0) return AMM_Q_UNAVAILABLE;
+        if (q_eth_fee(e, deadline_ms, &est) != 0) return AMM_Q_UNAVAILABLE;
     }
 
     uint64_t tip = 0;
@@ -286,6 +345,7 @@ int amm_engine_quote(amm_engine_t *e, amm_dir_t dir, uint64_t amount,
     q.inflight_max = e->cfg.inflight_max_usdt;
     q.swaps_paused_cfg = e->cfg.swaps_paused;
     q.held_keeps_room = e->cfg.held_keeps_room;
+    q.open_max = e->cfg.quote_open_max;
 
     /* the number is drawn at random and is unique among the bot's approvals:
      * a collision is redrawn (the journal refuses it, writing nothing) */
@@ -304,6 +364,7 @@ int amm_engine_quote(amm_engine_t *e, amm_dir_t dir, uint64_t amount,
         if (jr == AMM_J_STOPPED) return AMM_Q_STOPPED;
         if (jr == AMM_J_SWAP_LIMIT) return AMM_Q_ABOVE_MAX;
         if (jr == AMM_J_INFLIGHT) return AMM_Q_INFLIGHT;
+        if (jr == AMM_J_BUSY) return AMM_Q_BUSY;
         if (jr != AMM_J_OK) return AMM_Q_ERR;
 
         memset(out, 0, sizeof(*out));
@@ -333,7 +394,13 @@ static int accept_common(amm_engine_t *e, amm_accept_t *a, uint64_t request_numb
     amm_swap_t cur;
     int g = amm_journal_swap_by_botreq(e->c.journal, a->bot_req, &cur);
     if (g < 0) return AMM_ACC_ERR;
-    if (g == 1) return AMM_ACC_NO_NUMBER;
+    if (g == 1) {
+        /* the row of an unused expired question may have been deleted: its
+         * number stays marked, and the request is answered as for an expired one */
+        int u = amm_journal_bot_req_used(e->c.journal, 0, a->bot_req);
+        if (u < 0) return AMM_ACC_ERR;
+        return u == 0 ? AMM_ACC_EXPIRED : AMM_ACC_NO_NUMBER;
+    }
     if (e->c.now_unix(e->c.now_ctx) > cur.expiry) return AMM_ACC_EXPIRED;
     amm_swap_t out;
     memset(&out, 0, sizeof(out));
@@ -394,6 +461,9 @@ int amm_engine_add_question(amm_engine_t *e, amm_side_t side, uint64_t amount,
         if (amm_journal_state_count(e->c.journal, AMM_S_UNKNOWN, &unknown) != 0)
             return AMM_AQ_ERR;
         if (unknown > 0) return AMM_AQ_STOPPED;
+        int lim = questions_at_limit(e);            /* givens item 98: before any read */
+        if (lim < 0) return AMM_AQ_ERR;
+        if (lim == 1) return AMM_AQ_BUSY;
     }
 
     /* the pool's ratio (givens item 35); an empty pool has none: the start
@@ -443,6 +513,7 @@ int amm_engine_add_question(amm_engine_t *e, amm_side_t side, uint64_t amount,
     q.nodus_tip = nodus_tip;
     q.nodus_min = e->cfg.liquidity_min_nodus;
     q.liquidity_paused_cfg = e->cfg.liquidity_paused;
+    q.open_max = e->cfg.quote_open_max;
 
     amm_add_t row;
     for (int attempt = 0; attempt < 16; attempt++) {
@@ -457,6 +528,7 @@ int amm_engine_add_question(amm_engine_t *e, amm_side_t side, uint64_t amount,
         if (jr == AMM_J_PAUSED) return AMM_AQ_PAUSED;
         if (jr == AMM_J_STOPPED) return AMM_AQ_STOPPED;
         if (jr == AMM_J_BELOW_MIN) return AMM_AQ_BELOW_MIN;
+        if (jr == AMM_J_BUSY) return AMM_AQ_BUSY;
         if (jr != AMM_J_OK) return AMM_AQ_ERR;
         memset(out, 0, sizeof(*out));
         out->usdt_amount = usdt;
@@ -477,7 +549,11 @@ int amm_engine_accept_add(amm_engine_t *e, const amm_req_liq_add_t *r, uint32_t 
     amm_add_t cur;
     int g = amm_journal_add_by_botreq(e->c.journal, (uint32_t)r->request_number, &cur);
     if (g < 0) return AMM_ACC_ERR;
-    if (g == 1) return AMM_ACC_NO_NUMBER;
+    if (g == 1) {                                  /* as in accept_common */
+        int u = amm_journal_bot_req_used(e->c.journal, 1, (uint32_t)r->request_number);
+        if (u < 0) return AMM_ACC_ERR;
+        return u == 0 ? AMM_ACC_EXPIRED : AMM_ACC_NO_NUMBER;
+    }
     if (e->c.now_unix(e->c.now_ctx) > cur.expiry) return AMM_ACC_EXPIRED;
     char tid[AMM_TID_MAX];
     snprintf(tid, sizeof(tid), "nodus:%s", r->transfer_id);
@@ -687,13 +763,20 @@ static int liquidity_adds(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
     int rc = 0;
     static const char *ST[] = {AMM_L_SIGNED, AMM_L_APPROVED};
     for (int sti = 0; sti < 2 && rc == 0; sti++) {
-        int64_t after = 0;
+        /* each walk examines at most `round_rows_max` rows per round and resumes
+         * after the last one (givens item 98) */
+        int64_t after = e->adds_after[sti];
+        uint64_t examined = 0;
         for (;;) {
             int n = 0;
-            if (amm_journal_add_page(e->c.journal, ST[sti], after, l, pg, &n) != 0) { rc = -1; break; }
+            const uint64_t room_left = e->cfg.round_rows_max - examined;
+            if (room_left == 0) break;
+            const int lim = room_left < (uint64_t)pg ? (int)room_left : pg;
+            if (amm_journal_add_page(e->c.journal, ST[sti], after, l, lim, &n) != 0) { rc = -1; break; }
             for (int i = 0; i < n && rc == 0; i++) {
                 amm_add_t a = l[i];
                 after = a.seq;
+                examined++;
                 if (sti == 0) {
                     /* the NODUS deposit: matched by its transfer id in the
                      * recorded history rows (wire id), peer, exact amount, block
@@ -731,21 +814,29 @@ static int liquidity_adds(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
                     }
                 }
             }
-            if (rc != 0 || n < pg) break;
+            if (rc != 0) break;
+            if (n < lim) { after = 0; break; }        /* the end of the rows: start again next round */
         }
+        if (rc == 0) e->adds_after[sti] = after;
+        o->adds_examined += (int)examined;
     }
     /* a signed add with no deposit matched whose windows are fully observed */
     {
-        int64_t after = 0;
+        int64_t after = e->adds_after[2];
+        uint64_t examined = 0;
         for (;;) {
             int n = 0;
-            if (rc != 0 || amm_journal_add_page(e->c.journal, AMM_L_SIGNED, after, l, pg, &n) != 0) {
+            const uint64_t room_left = e->cfg.round_rows_max - examined;
+            if (rc == 0 && room_left == 0) break;
+            const int lim = room_left < (uint64_t)pg ? (int)room_left : pg;
+            if (rc != 0 || amm_journal_add_page(e->c.journal, AMM_L_SIGNED, after, l, lim, &n) != 0) {
                 if (rc == 0) rc = -1;
                 break;
             }
             for (int i = 0; i < n && rc == 0; i++) {
                 const amm_add_t *a = &l[i];
                 after = a->seq;
+                examined++;
                 if (*a->eth_tx || a->nodus_height != 0) continue;
                 uint8_t sender[20], amt[32];
                 if (from_hex(a->eth_addr, sender, 20) != 0) continue;
@@ -759,8 +850,11 @@ static int liquidity_adds(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
                     else if (xr != AMM_J_ILLEGAL) rc = -1;
                 }
             }
-            if (rc != 0 || n < pg) break;
+            if (rc != 0) break;
+            if (n < lim) { after = 0; break; }
         }
+        if (rc == 0) e->adds_after[2] = after;
+        o->adds_examined += (int)examined;
     }
     free(l);
     return rc;
@@ -989,8 +1083,12 @@ static int nodus_payouts(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
      * is DEFERRED for this round: `after` moves past it, so the next owed swap
      * in seq order is served (a refund is signed, another expired payout is
      * replaced) and the deferred one is not selected again before the next
-     * round. The guard bounds the work per round. */
-    int64_t after = 0;
+     * round. The guard bounds the work per round, so the walk RESUMES in the
+     * next round after the last deferred swap (`e->nodus_after`) and wraps to
+     * the oldest owed swap when nothing is left beyond it: every owed swap is
+     * reached within ceil(owed / 8) + 1 rounds, however many wait. */
+    int64_t after = e->nodus_after;
+    int wrapped = after == 0;
     for (int guard = 0; guard < 8; guard++) {
         amm_np_step_t st;
         memset(&st, 0, sizeof(st));
@@ -1001,7 +1099,16 @@ static int nodus_payouts(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
                 after = st.swap_seq;
                 continue;
             }
-            if (!st.worked) break;
+            if (!st.worked) {
+                /* no swap named: nothing is owed beyond `after`; start again
+                 * from the oldest once per round */
+                if (st.swap_seq == 0 && after > 0 && !wrapped) {
+                    after = 0;
+                    wrapped = 1;
+                    continue;
+                }
+                break;
+            }
             continue;
         }
         amm_swap_t head;
@@ -1023,6 +1130,7 @@ static int nodus_payouts(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
         }
         if (sr != AMM_NP_OK) break;        /* funds, unknown, paused, busy: the swap stays */
     }
+    e->nodus_after = after;
     return 0;
 }
 
@@ -1116,22 +1224,31 @@ static int fee_booking(amm_engine_t *e, amm_engine_step_t *o) {
 /* k. an approval whose payment window is FULLY OBSERVED becomes expired. Since
  * givens item 94 an unpaid approval holds no room, so this only decides when it
  * stops matching payments (plan section 13 window rule); the bot's clock
- * passing the expiry does not do it. Read in pages by seq. */
+ * passing the expiry does not do it. Read in pages by seq; at most
+ * `round_rows_max` rows are examined per round (givens item 98): the walk
+ * resumes after the last row in the next round (`release_after`) and starts
+ * again at the oldest row once it has reached the end, so every approved row is
+ * examined within ceil(rows / round_rows_max) + 1 rounds. */
 static int release(amm_engine_t *e, amm_engine_step_t *o) {
     const int pg = e->page;
     amm_swap_t *l = malloc(sizeof(*l) * (size_t)pg);
     if (!l) return -1;
     int rc = 0;
-    int64_t after = 0;
+    int64_t after = e->release_after;
+    uint64_t examined = 0;
     for (;;) {
         int n = 0;
-        if (amm_journal_swap_page(e->c.journal, AMM_S_APPROVED, 0, after, l, pg, &n) != 0) {
+        const uint64_t room_left = e->cfg.round_rows_max - examined;
+        if (room_left == 0) break;                    /* the round's bound: resume next round */
+        const int lim = room_left < (uint64_t)pg ? (int)room_left : pg;
+        if (amm_journal_swap_page(e->c.journal, AMM_S_APPROVED, 0, after, l, lim, &n) != 0) {
             rc = -1;
             break;
         }
         for (int i = 0; i < n && rc == 0; i++) {
             const amm_swap_t *s = &l[i];
             after = s->seq;
+            examined++;
             int done = 0;
             if (s->dir == AMM_USDT_TO_NODUS) {
                 uint8_t sender[20], amt[32];
@@ -1155,10 +1272,24 @@ static int release(amm_engine_t *e, amm_engine_step_t *o) {
             if (r == AMM_J_OK) o->expired++;
             else if (r != AMM_J_ILLEGAL) rc = -1;
         }
-        if (rc != 0 || n < pg) break;
+        if (rc != 0) break;
+        if (n < lim) { after = 0; break; }            /* the end of the rows: start again next round */
     }
+    if (rc == 0) e->release_after = after;
+    o->rows_examined += (int)examined;
     free(l);
     return rc;
+}
+
+/* l. the unused expired questions are deleted, at most `round_rows_max` price
+ * questions and as many liquidity add questions per round, in one transaction
+ * (givens item 98). Their request numbers stay marked as used. */
+static int purge_questions(amm_engine_t *e, amm_engine_step_t *o) {
+    const int cap = e->cfg.round_rows_max > 100000 ? 100000 : (int)e->cfg.round_rows_max;
+    int ns = 0, na = 0;
+    if (amm_journal_purge_expired_questions(e->c.journal, cap, &ns, &na) != 0) return -1;
+    o->questions_deleted += ns + na;
+    return 0;
 }
 
 int amm_engine_step(amm_engine_t *e, uint64_t deadline_ms, amm_engine_step_t *out) {
@@ -1177,6 +1308,10 @@ int amm_engine_step(amm_engine_t *e, uint64_t deadline_ms, amm_engine_step_t *ou
     o->waiting += ns.waiting;
     if (o->eth_rc == AMM_W_ERR || o->nodus_rc == AMM_NW_ERR) return -1;
 
+    /* the questions that expired in an earlier round and were never used go
+     * first, so a row that expires in this round is still seen as expired by
+     * the end of it */
+    if (purge_questions(e, o) != 0) return -1;
     if (room_line(e, o) != 0) return -1;
     if (eth_records(e, o) != 0) return -1;
     if (nodus_waiting(e, o) != 0) return -1;

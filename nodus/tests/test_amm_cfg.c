@@ -479,6 +479,27 @@ static void c8_liquidity_min(void) {
                    "liquidity_min_nodus repeated");
 }
 
+/* C9 PROVES: the three question-load settings (givens item 98, item 26) default to
+ * 2000 / 3000 ms / 1000 rows, are read as written, and 0, a repeat and a hex value
+ * are refused like every other number setting. BUILD FLAGS: default; LEAVES BEHIND:
+ * nothing. FALSE PASS: the bounds are the table's (1..UINT64_MAX/4); an operationally
+ * silly value (1 ms) is accepted by design. */
+static void c9_question_load(void) {
+    printf("C9 quote_open_max, quote_read_fresh_ms, round_rows_max\n");
+    amm_cfg_t c;
+    CHECK(parses(NULL, NULL, &c) == 0 && c.quote_open_max == 2000 &&
+          c.quote_read_fresh_ms == 3000 && c.round_rows_max == 1000,
+          "defaults: 2000 open questions, 3000 ms, 1000 rows per round");
+    CHECK(parses(NULL, "quote_open_max = 5\nquote_read_fresh_ms = 7\nround_rows_max = 9\n", &c) == 0 &&
+          c.quote_open_max == 5 && c.quote_read_fresh_ms == 7 && c.round_rows_max == 9,
+          "the three values as written");
+    expect_refused("quote_open_max = 0\n", NULL, "quote_open_max 0");
+    expect_refused("quote_read_fresh_ms = 0\n", NULL, "quote_read_fresh_ms 0");
+    expect_refused("round_rows_max = 0\n", NULL, "round_rows_max 0");
+    expect_refused("quote_open_max = 1\nquote_open_max = 2\n", NULL, "quote_open_max repeated");
+    expect_refused("round_rows_max = 0x10\n", NULL, "round_rows_max hex");
+}
+
 int main(void) {
     printf("test_amm_cfg\n");
     init_hex();
@@ -490,6 +511,7 @@ int main(void) {
     c6_operator_settings();
     c7_price_and_min();
     c8_liquidity_min();
+    c9_question_load();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

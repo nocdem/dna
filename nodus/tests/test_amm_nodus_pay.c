@@ -75,6 +75,9 @@
  *       shares an input; a replacement that cannot be stored is reported as
  *       waiting; the reservation survives a restart and ends when the swap
  *       leaves the owed states (see the comment of P15);
+ *   P16 the reserved set carries at most 1024 inputs: more refuses the plan
+ *       (UNKNOWN), never a partial list; a journal read error of the reserved
+ *       set returns ERR (see the comment of P16);
  *   P14 configuration: expiry_ahead outside 1..100, a zero resubmit or scan
  *       bound, a missing key / rand / seam function are refused (NULL).
  * WHAT IT REQUIRES: a default build (the newest pinned rule-set generation);
@@ -89,6 +92,7 @@
  *   an independently computed one.
  */
 #include <dirent.h>
+#include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1050,6 +1054,99 @@ int main(void) {
         CHECK(amm_journal_swap_transition(e.j, s.seq, AMM_S_UNKNOWN, NULL, NULL, NULL) == 0 &&
               amm_nodus_pay_quote(e.p, 7000000000000ULL, 0, &qq) == AMM_NP_OK && qq.n_in == 1,
               "P15 P left the owed states (unknown): coin 1 is released, the quote is funded again");
+        env_close(&e);
+    }
+
+    /* ── P16 the reserved set: overflow and a journal read error refuse the plan ──
+     * PROVES (verify 13, claim 6): (ii) when the expired attempts of owed swaps
+     * hold more input coins than the payer can carry (1024), a plan is REFUSED with
+     * AMM_NP_UNKNOWN, never made over a partial list: 68 swaps x 15 inputs = 1020
+     * still plan, 69 x 15 = 1035 do not, although the node's coin is not among the
+     * reserved ones (a partial list would have planned over it); nothing is stored.
+     * (iii) a reserved-set read that fails in the journal (an attempt row whose input
+     * blob does not match its n_in, damaged through a second connection) returns
+     * AMM_NP_ERR from the quote and from the payout plan.
+     * BUILD FLAGS / ENVIRONMENT: a default build; one mkdtemp directory; no network;
+     * the attempts are fake rows (fake envelope, fake inputs) stored by journal calls.
+     * LEAVES BEHIND: nothing.
+     * FALSE PASS: the 1024 cap is the payer's constant RESERVED_MAX (this test
+     * hardcodes 68/69 x 15 against it: a changed cap makes the 69-swap check fail,
+     * which is the intent); the damage is one SQL update, other damage is not
+     * exercised. */
+    {
+        amm_np_quote_t qq;
+        amm_np_prepared_t pre;
+        env_open(&e);
+        int made = 0;
+        for (int i = 0; i < 69; i++) {
+            amm_swap_t sw;
+            amm_attempt_t fa;
+            memset(&fa, 0, sizeof(fa));
+            if (!mk_payout(&e, 1, &sw)) break;
+            fa.swap_seq = sw.seq;
+            snprintf(fa.dest, sizeof(fa.dest), "%s", sw.dest);
+            fa.gross = 1000000; fa.fee = 100; fa.net = fa.gross - fa.fee;
+            fa.env_len = 300;
+            fa.env = calloc(1, fa.env_len);
+            memset(fa.wire_id, i + 1, 64);
+            memset(fa.intent_id, i + 1, 64);
+            fa.n_in = 15;
+            for (int k = 0; k < 15; k++) memset(fa.inputs[k], 0x80 + k, 64), fa.inputs[k][0] = (uint8_t)(i + 1);
+            fa.build_tip = 900; fa.expiry = 990; fa.scan_next = 901;
+            int ok = fa.env && amm_journal_attempt_sign(e.j, &fa) == AMM_J_OK &&
+                     amm_journal_attempt_finish(e.j, sw.seq, "expired") == 0;
+            amm_attempt_free(&fa);
+            if (!ok) break;
+            made++;
+            if (made == 68) {
+                CHECK(amm_nodus_pay_quote(e.p, 5000000000ULL, 0, &qq) == AMM_NP_OK,
+                      "P16 68 swaps x 15 = 1020 reserved inputs: a quote still plans");
+            }
+        }
+        CHECK(made == 69, "P16 setup: 69 owed swaps with an expired 15-input attempt");
+        CHECK(amm_nodus_pay_quote(e.p, 5000000000ULL, 0, &qq) == AMM_NP_UNKNOWN &&
+              strstr(qq.msg, "too many coins") != NULL,
+              "P16 (ii) 1035 reserved inputs: the quote is refused (UNKNOWN), not planned over a partial list");
+        amm_swap_t nw;
+        CHECK(mk_payout(&e, 1, &nw) &&
+              amm_nodus_pay_prepare(e.p, dst, 5000000000ULL, 1, 0, &pre) == AMM_NP_UNKNOWN &&
+              attempt(&e, &nw, &at) == 1,
+              "P16 (ii) a payout plan is refused too and nothing is stored");
+        amm_np_prepared_free(&pre);
+        env_close(&e);
+
+        env_open(&e);
+        amm_swap_t sw;
+        amm_attempt_t fa;
+        memset(&fa, 0, sizeof(fa));
+        CHECK(mk_payout(&e, 1, &sw), "P16 setup: one owed swap");
+        fa.swap_seq = sw.seq;
+        snprintf(fa.dest, sizeof(fa.dest), "%s", sw.dest);
+        fa.gross = 1000000; fa.fee = 100; fa.net = fa.gross - fa.fee;
+        fa.env_len = 300;
+        fa.env = calloc(1, fa.env_len);
+        memset(fa.wire_id, 1, 64);
+        memset(fa.intent_id, 2, 64);
+        fa.n_in = 1;
+        memset(fa.inputs[0], 0x55, 64);
+        fa.build_tip = 900; fa.expiry = 990; fa.scan_next = 901;
+        CHECK(fa.env && amm_journal_attempt_sign(e.j, &fa) == AMM_J_OK &&
+              amm_journal_attempt_finish(e.j, sw.seq, "expired") == 0, "P16 it has an expired attempt");
+        amm_attempt_free(&fa);
+        CHECK(amm_nodus_pay_quote(e.p, 5000000000ULL, 0, &qq) == AMM_NP_OK, "P16 undamaged: the quote plans");
+        {
+            sqlite3 *db = NULL;
+            int dok = sqlite3_open(e.jpath, &db) == SQLITE_OK;
+            if (dok) sqlite3_busy_timeout(db, 5000);
+            dok = dok && sqlite3_exec(db, "UPDATE nodus_attempts SET n_in=3", NULL, NULL, NULL) == SQLITE_OK;
+            sqlite3_close(db);
+            CHECK(dok, "P16 damage: the attempt's n_in no longer matches its input blob (second connection)");
+        }
+        CHECK(amm_nodus_pay_quote(e.p, 5000000000ULL, 0, &qq) == AMM_NP_ERR,
+              "P16 (iii) the reserved set cannot be read: the quote returns ERR, never a plan");
+        CHECK(amm_nodus_pay_prepare(e.p, dst, 5000000000ULL, 1, 0, &pre) == AMM_NP_ERR,
+              "P16 (iii) the payout plan returns ERR");
+        amm_np_prepared_free(&pre);
         env_close(&e);
     }
 

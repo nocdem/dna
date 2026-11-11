@@ -205,6 +205,9 @@ typedef enum {
                                 * line, plan section 13)                    */
     AMM_J_BELOW_MIN     = 14,  /* liquidity add question: the NODUS side is
                                 * below liquidity_min_nodus (givens item 96) */
+    AMM_J_BUSY          = 15,  /* a price or liquidity question: the open
+                                * unpaid questions are at `open_max` (givens
+                                * item 98); nothing written                  */
     AMM_J_ILLEGAL       = -2,  /* illegal transition / unknown row          */
     AMM_J_ERR           = -1
 } amm_jrc_t;
@@ -319,6 +322,10 @@ typedef struct {
     uint64_t swap_max, inflight_max;
     int      swaps_paused_cfg;
     int      held_keeps_room;
+    uint64_t open_max;                /* quote_open_max (givens item 98): the
+                                       * approval is refused (AMM_J_BUSY) when
+                                       * the open unpaid questions are at it;
+                                       * 0 = no limit (tests)                 */
 } amm_quote_t;
 
 /** The approval transaction of the price question: refusals in this order --
@@ -939,7 +946,33 @@ typedef struct {
     uint64_t eth_tip, nodus_tip;       /* > 0 */
     uint64_t nodus_min;                /* liquidity_min_nodus */
     int      liquidity_paused_cfg;
+    uint64_t open_max;                 /* quote_open_max: AMM_J_BUSY at it; 0 = no limit */
 } amm_add_q_t;
+
+/** The open unpaid questions (givens item 98): swaps in `approved` with no
+ *  payment seen (seen_seq NULL, room 0 -- amm_journal_swap_seen sets both and
+ *  moves the swap out of `approved` in the same transaction) plus liquidity
+ *  adds in `approved`, or `signed` with no deposit matched (eth_tx empty,
+ *  nodus_height 0). *n = the count. 0 / -1. */
+int amm_journal_open_questions(amm_journal_t *j, int64_t *n);
+
+/** Delete the unused expired questions, at most `cap` swap rows and `cap`
+ *  liquidity adds per call, in ONE transaction: a swap in `expired` that never
+ *  received a signed request or a payment (empty sender, incoming id and
+ *  destination, no seen_seq, no room) and an add in `expired` that was never
+ *  signed (no addresses, transfer id, deposit). The bot request number of each
+ *  deleted row is first written to bot_req_used, so it is never given out again
+ *  (the quote and add approvals refuse it: AMM_J_NUMBER_TAKEN). *swaps / *adds
+ *  = the rows deleted (either may be NULL). 0 / -1. */
+int amm_journal_purge_expired_questions(amm_journal_t *j, int cap, int *swaps,
+                                        int *adds);
+
+/** 0 = the bot request number was used by a question that has been deleted
+ *  (kind 0: a price question, 1: a liquidity add question), 1 = not, -1. */
+int amm_journal_bot_req_used(amm_journal_t *j, int kind, uint32_t req_no);
+
+/** The add question's approval (input amm_add_q_t above). With `open_max` set,
+ *  AMM_J_BUSY is refused before the number check (givens item 98). */
 int amm_journal_add_approve(amm_journal_t *j, const amm_add_q_t *q, amm_add_t *out);
 
 typedef struct {
