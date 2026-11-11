@@ -122,14 +122,16 @@ test('a native send on Sepolia is built for chain id 11155111 and sent through t
   assert.equal(f.background.nodus.chainActivity('ethereum').rows().length, 0, 'no mainnet Activity row for a test-network send');
 });
 
-// Proves opening the wallet again returns every chain, and the sites' provider, to mainnet (plan 5.6 d; operator
-// 2026-11-03 "hersey varsa yeniden acista mainnet"). Can falsely pass if the lock step did nothing; the selection is
-// read before the lock.
-test('locking and opening the wallet again returns Ethereum and BNB Smart Chain and the provider to mainnet', async t => {
+// Proves opening the wallet again returns every selector, and the sites' provider, to mainnet (plan 5.6 d; operator
+// 2026-11-03 "hersey varsa yeniden acista mainnet"), while the chain the provider was on stays (a BNB Smart Chain
+// choice returns to 'bsc', not to 'ethereum': at ed11a7751 evm.js:153 and index.js:125-126 reset only the
+// networks.js selectors, never the Ethereum-versus-BNB choice). Can falsely pass if the lock step did nothing; the
+// selection is read before the lock.
+test('locking and opening the wallet again returns the test networks and the provider to their chain mainnet', async t => {
   const f = await evmSetup(t);
   await f.client.request('setChainNetwork', ['ethereum', 'sepolia']); await f.client.request('setChainNetwork', ['bsc', 'testnet']);
   assert.equal(f.background.evm.getState().selectedChain, 'bsctestnet'); assert.equal(f.background.networks.get('ethereum').id, 'sepolia');
   await f.background.lock(); await f.background.unlock(password, unlockOptions);
   assert.equal(f.background.networks.get('ethereum').id, 'mainnet'); assert.equal(f.background.networks.get('bsc').id, 'mainnet');
-  assert.equal(f.background.evm.getState().selectedChain, 'ethereum');
+  assert.equal(f.background.evm.getState().selectedChain, 'bsc');
 });

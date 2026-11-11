@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { CHAINS } from '../../src/config.js';
+import { SEPOLIA, BSC_TESTNET } from '../src/constants/evm-networks.js';
 
 function signal() {
   const listeners = new Set();
@@ -106,7 +107,8 @@ test('background entry starts locked with the real Nodus seed consumer attached'
   // The connected-sites controller is not in the plain state any more (sealed in nodus.sites.v1, plan section 2.6).
   const expectedWrites = [{ 'nodus.extension.state': {
     ApprovalController: {},
-    EvmController: { selectedChain: 'ethereum', endpoints: { ethereum: CHAINS.ethereum.endpoint, bsc: CHAINS.bsc.endpoint } },
+    EvmController: { selectedChain: 'ethereum', endpoints: { ethereum: CHAINS.ethereum.endpoint, bsc: CHAINS.bsc.endpoint,
+      sepolia: SEPOLIA.endpoint, bsctestnet: BSC_TESTNET.endpoint } },
     // PQ receive registry adds only listed choices; Nodus/Asentum are testnet-only.
     NetworksController: { selected: { bsc: 'mainnet', cellframe: 'mainnet', ixios: 'mainnet', ethereum: 'mainnet', nodus: 'testnet', solana: 'mainnet', tron: 'mainnet',
       algorand: 'mainnet', tidecoin: 'mainnet', ckb: 'mainnet', soqucoin: 'mainnet', qtc: 'mainnet', xion: 'mainnet', splendor: 'mainnet', asentum: 'testnet' } },
