@@ -675,6 +675,12 @@ static void route_status(amm_http_ctx_t *c, int *status, char *body, size_t cap)
     jkey(&j, "ethChainId", 0); jnum_str(&j, g->eth_chain_id);
     jkey(&j, "eip712Name", 0); jstr_out(&j, g->eip712_name);
     jkey(&j, "expectedOrigin", 0); jstr_out(&j, g->expected_origin);
+    /* the USDT contract the extension's USDT payment names as `token`, and the
+     * smallest liquidity add (givens item 96), written as foundationEthereum is */
+    jkey(&j, "usdtContract", 0);
+    hex_of(g->usdt_contract, 20, ea);
+    jraw(&j, "\"0x"); jraw(&j, ea); jraw(&j, "\"");
+    jkey(&j, "liquidityMinNodus", 0); jnum_str(&j, g->liquidity_min_nodus);
     jraw(&j, "}");
     jkey(&j, "foundationEthereum", 0);
     hex_of(g->foundation_eth, 20, ea);

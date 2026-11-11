@@ -380,6 +380,8 @@ static void h4_routes(void) {
           strstr(out, "\"swapsPaused\":true") && strstr(out, "\"roomUsdt\":\"400\"") &&
           strstr(out, "\"reserves\":{\"nodus\":\"3000000000000000\",\"usdt\":\"3000000000\"}") &&
           strstr(out, "\"swapMinUsdt\":\"1000000\"") && strstr(out, "\"commission\":\"0\"") &&
+          strstr(out, "\"usdtContract\":\"0xdac17f958d2ee523a2206206994597c13d831ec7\"") &&
+          strstr(out, "\"liquidityMinNodus\":\"10000000000000\"") &&
           strstr(out, "\"foundationEthereum\":\"0xcccccccccccccccccccccccccccccccccccccccc\"") &&
           strstr(out, "\"nodusChainId\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\""),
           "GET /amm/status: reserves, settings in force, room, flags, addresses, chain id");

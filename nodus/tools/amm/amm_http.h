@@ -29,8 +29,11 @@
  *   GET  /amm/swap/<request number>   the state of one swap: {"requestNumber":
  *                         "..","state":"..","direction":..,"amount":"..",
  *                         "number":"..","estimatedFee":"..","validUntil":".."}
- *   GET  /amm/status      reserves, settings in force, flags, room left,
- *                         the Foundation's addresses, the Nodus chain id
+ *   GET  /amm/status      reserves, settings in force (swap limits, validity,
+ *                         commission, chain id, signing name and origin, the
+ *                         USDT contract `usdtContract` and the smallest add
+ *                         `liquidityMinNodus`), flags, room left, the
+ *                         Foundation's addresses, the Nodus chain id
  *   POST /amm/liquidity/quote  the add question (unsigned; the PATH IS THE
  *                         BUILD'S CHOICE, plan 6.4.7 defers it): {"side":
  *                         "usdt"|"nodus","amount":"<raw>"} -- the amount of ONE

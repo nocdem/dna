@@ -53,7 +53,11 @@
  *   d. waiting Nodus payments that hold room are counted.
  *   e. liquidity adds (plan section 14): see below.
  *   f. THE DECISION of every counted swap, in the seen order (shared with the
- *      ready adds' commits and the due withdrawals' acts, below), ONE journal
+ *      ready adds' commits and the due withdrawals' acts, below; the three are
+ *      merged one row at a time and AT MOST round_rows_max rows are examined per
+ *      round, refusals and waits included: the round stops at the bound, nothing
+ *      above the last row examined is touched, steps g and h still run and the
+ *      next round resumes after that row -- givens item 98), ONE journal
  *      transaction each (plan section 12, givens items 93-95): the output from
  *      the depths of that moment, the payout's network fee (USDT: the ceiling
  *      of the transaction signed; NODUS: the planner's fee), the minimum check,
@@ -326,6 +330,7 @@ typedef struct {
     int questions_deleted;     /* unused expired price and add questions deleted (givens item 98) */
     int rows_examined;         /* open approved swaps examined by this round's release walk (bounded by round_rows_max) */
     int adds_examined;         /* liquidity add rows examined by this round's three add walks (each bounded by round_rows_max) */
+    int decisions_examined;    /* rows of the merged decision work (counted swaps, ready adds, due withdrawals) examined by this round: at most round_rows_max (givens item 98) */
     int withdraws_done;        /* withdrawals acted on: units and depths reduced, both payouts stored */
     int withdraws_refused;     /* withdrawals refused whole when they acted (a side nothing after its network fee) */
     int withdraws_waiting;     /* due withdrawals that could not act this round (payouts paused, another NODUS payout in flight, a read or the planner failed) */

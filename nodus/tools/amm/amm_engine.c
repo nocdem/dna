@@ -25,6 +25,8 @@ struct amm_engine {
      * restart begins at the oldest row, which keeps the guarantee that every
      * row is examined after a bounded number of rounds. */
     int64_t release_after;     /* release(): approved swaps                  */
+    int64_t decide_after;      /* decisions(): the seen number after which the next
+                                * round resumes (0 = from the oldest); in memory */
     int64_t adds_after[3];     /* liquidity_adds(): signed, approved, signed
                                 * with no deposit matched                    */
     /* the question path's shared reads (givens item 98) */
@@ -1172,112 +1174,120 @@ static int act_withdraw(amm_engine_t *e, const amm_wd_t *w, uint64_t dl, amm_eng
     return 0;
 }
 
-/* One entry of the shared seen order that is READY to take effect: a liquidity
- * add (kind 0) or a due liquidity withdrawal (kind 1). */
-typedef struct { int kind; int64_t seq, seen; } ready_t;
+/* One of the three streams of the shared seen order, read a page at a time:
+ * the counted swaps (kind 0), the signed adds with both deposits linked (kind 1:
+ * add_ready decides whether one commits now) and the due withdrawals (kind 2). */
+typedef struct {
+    int      kind;
+    int64_t  after;                /* the last seen number fetched                */
+    int      n, i;                 /* rows in the page, the next one to take      */
+    int      last;                 /* the page was short: nothing follows it      */
+    int      off;                  /* the stream is empty for this round          */
+    uint64_t max_tip;              /* kind 2: due = acceptance tip at most this   */
+    amm_swap_t *sl;
+    amm_add_t  *al;
+    amm_wd_t   *wl;
+} dstream_t;
 
-static int ready_cmp(const void *x, const void *y) {
-    const ready_t *a = x, *b = y;
-    return a->seen < b->seen ? -1 : (a->seen > b->seen ? 1 : 0);   /* seen_seq is unique */
-}
-
-static int take_effect(amm_engine_t *e, const ready_t *r, uint64_t dl, amm_engine_step_t *o) {
-    if (r->kind == 0) return commit_add(e, r->seq, o);
-    amm_wd_t w;
-    int g = amm_journal_withdraw_get(e->c.journal, r->seq, &w);
-    if (g < 0) return -1;
-    if (g == 1 || strcmp(w.state, AMM_W_ACCEPTED) != 0) return 0;
-    return act_withdraw(e, &w, dl, o);
+/* The seen number of the stream's next row, fetching the next page when the
+ * current one is used up. @return 1 a row / 0 the stream has ended / -1 fault. */
+static int dnext(amm_engine_t *e, dstream_t *s, int pg, int64_t *seen) {
+    if (s->off) return 0;
+    if (s->i >= s->n) {
+        if (s->last) return 0;
+        int n = 0, r = -1;
+        if (s->kind == 0)
+            r = amm_journal_swap_page(e->c.journal, AMM_S_COUNTED, 1, s->after, s->sl, pg, &n);
+        else if (s->kind == 1)
+            r = amm_journal_add_page_ready(e->c.journal, s->after, s->al, pg, &n);
+        else
+            r = amm_journal_withdraw_page_due(e->c.journal, s->max_tip, s->after, s->wl, pg, &n);
+        if (r != 0) return -1;
+        s->n = n; s->i = 0;
+        if (n < pg) s->last = 1;
+        if (n == 0) return 0;
+        s->after = s->kind == 0 ? s->sl[n - 1].seen_seq
+                 : s->kind == 1 ? s->al[n - 1].seen_seq : s->wl[n - 1].seen_seq;
+    }
+    *seen = s->kind == 0 ? s->sl[s->i].seen_seq
+          : s->kind == 1 ? s->al[s->i].seen_seq : s->wl[s->i].seen_seq;
+    return 1;
 }
 
 /* f. The counted swaps, the ready liquidity adds and the due liquidity
  * withdrawals, taken in ONE order: the shared seen sequence (plan section 13;
- * line 577: "a liquidity commit takes its place in the same order"). The ready
- * adds and the due withdrawals are read first (page by page into a growing list:
- * no cap) and sorted by their seen number, then merged with the swaps' pages: one
- * commits or acts before the swap whose seen number is above its own. A swap
- * decided in between changes a withdrawal's shares (they are computed when it
- * acts, from the ledger then). */
+ * line 577: "a liquidity commit takes its place in the same order"). The three
+ * streams are merged by seen number one row at a time, each read page by page,
+ * so no backlog is held in memory, and AT MOST `round_rows_max` rows are examined
+ * per round, a refusal, a wait and a not-yet-ready add included (givens item 98:
+ * the per-round check work is bounded, the rest carried to the next round). The
+ * round stops at the first row beyond the bound: nothing with a higher seen number
+ * is decided or acted on in this round, so a later operation never passes an
+ * earlier one; the next round resumes after the last row examined
+ * (`decide_after`, in memory: a restart begins at the oldest row) and starts again
+ * at the oldest row once a round has reached the end of all three streams, so a
+ * row that could not be decided is looked at again. A swap decided in between
+ * changes a withdrawal's shares (they are computed when it acts, from the ledger
+ * then). */
 static int decisions(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
     const int pg = e->page;
-    amm_swap_t *l = malloc(sizeof(*l) * (size_t)pg);
+    amm_swap_t *sl = malloc(sizeof(*sl) * (size_t)pg);
     amm_add_t *al = malloc(sizeof(*al) * (size_t)pg);
     amm_wd_t *wl = malloc(sizeof(*wl) * (size_t)pg);
-    ready_t *rq = NULL;
-    size_t rn = 0, rcap = 0, ri = 0;
     int rc = 0;
-    if (!l || !al || !wl) { free(l); free(al); free(wl); return -1; }
-    {
-        int64_t a_after = 0;
-        for (;;) {
-            int n = 0;
-            if (amm_journal_add_page_ready(e->c.journal, a_after, al, pg, &n) != 0) { rc = -1; break; }
-            for (int i = 0; i < n && rc == 0; i++) {
-                a_after = al[i].seen_seq;
-                int rd = add_ready(e, &al[i], dl);
-                if (rd < 0) { rc = -1; break; }
-                if (!rd) continue;
-                if (rn + 1 > rcap) {
-                    size_t nc = rcap ? rcap * 2 : 16;
-                    ready_t *t = realloc(rq, nc * sizeof(*t));
-                    if (!t) { rc = -1; break; }
-                    rq = t; rcap = nc;
-                }
-                rq[rn++] = (ready_t){ 0, al[i].seq, al[i].seen_seq };
-            }
-            if (rc != 0 || n < pg) break;
-        }
-    }
+    if (!sl || !al || !wl) { free(sl); free(al); free(wl); return -1; }
+    dstream_t st[3];
+    memset(st, 0, sizeof(st));
+    for (int k = 0; k < 3; k++) { st[k].kind = k; st[k].after = e->decide_after; }
+    st[0].sl = sl; st[1].al = al; st[2].wl = wl;
     /* the due withdrawals: the Ethereum tip is at least liquidity_wait_eth_blocks
      * above the tip read at acceptance (a tip that cannot be read: none is due) */
     uint64_t tip = 0;
-    if (rc == 0 && read_eth_tip(e, &tip) == 0 && tip >= e->cfg.liquidity_wait_eth_blocks) {
-        const uint64_t max_tip = tip - e->cfg.liquidity_wait_eth_blocks;
-        int64_t w_after = 0;
-        for (;;) {
-            int n = 0;
-            if (amm_journal_withdraw_page_due(e->c.journal, max_tip, w_after, wl, pg, &n) != 0) { rc = -1; break; }
-            for (int i = 0; i < n && rc == 0; i++) {
-                w_after = wl[i].seen_seq;
-                if (rn + 1 > rcap) {
-                    size_t nc = rcap ? rcap * 2 : 16;
-                    ready_t *t = realloc(rq, nc * sizeof(*t));
-                    if (!t) { rc = -1; break; }
-                    rq = t; rcap = nc;
-                }
-                rq[rn++] = (ready_t){ 1, wl[i].seq, wl[i].seen_seq };
-            }
-            if (rc != 0 || n < pg) break;
-        }
-    }
-    if (rc == 0 && rn > 1) qsort(rq, rn, sizeof(*rq), ready_cmp);
+    if (read_eth_tip(e, &tip) == 0 && tip >= e->cfg.liquidity_wait_eth_blocks)
+        st[2].max_tip = tip - e->cfg.liquidity_wait_eth_blocks;
+    else
+        st[2].off = 1;
     int paused = 0;
-    if (rc == 0 && swaps_paused_now(e, &paused) != 0) rc = -1;
-    int64_t after = 0;
+    if (swaps_paused_now(e, &paused) != 0) rc = -1;
+
+    uint64_t examined = 0;
+    int64_t last_seen = e->decide_after;
+    int ended = 0;
     while (rc == 0) {
-        int n = 0;
-        if (amm_journal_swap_page(e->c.journal, AMM_S_COUNTED, 1, after, l, pg, &n) != 0) {
-            rc = -1;
-            break;
+        if (examined >= e->cfg.round_rows_max) break;     /* the round's bound: resume next round */
+        int pick = -1;
+        int64_t best = 0;
+        for (int k = 0; k < 3 && rc == 0; k++) {
+            int64_t sn = 0;
+            int r = dnext(e, &st[k], pg, &sn);
+            if (r < 0) { rc = -1; break; }
+            if (r == 1 && (pick < 0 || sn < best)) { pick = k; best = sn; }
         }
-        for (int i = 0; i < n && rc == 0; i++) {
-            after = l[i].seen_seq;
-            while (rc == 0 && ri < rn && rq[ri].seen < l[i].seen_seq) {
-                if (take_effect(e, &rq[ri], dl, o) != 0) rc = -1;
-                ri++;
-            }
-            if (rc == 0 && decide_one(e, &l[i], paused, dl, o) != 0) rc = -1;
+        if (rc != 0) break;
+        if (pick < 0) { ended = 1; break; }
+        dstream_t *s = &st[pick];
+        examined++;
+        last_seen = best;
+        if (pick == 0) {
+            rc = decide_one(e, &s->sl[s->i], paused, dl, o);
+        } else if (pick == 1) {
+            const amm_add_t *a = &s->al[s->i];
+            int rd = add_ready(e, a, dl);
+            if (rd < 0) rc = -1;
+            else if (rd) rc = commit_add(e, a->seq, o);
+        } else {
+            amm_wd_t w;
+            int g = amm_journal_withdraw_get(e->c.journal, s->wl[s->i].seq, &w);
+            if (g < 0) rc = -1;
+            else if (g == 0 && !strcmp(w.state, AMM_W_ACCEPTED)) rc = act_withdraw(e, &w, dl, o);
         }
-        if (rc != 0 || n < pg) break;
+        s->i++;
     }
-    while (rc == 0 && ri < rn) {           /* the adds and withdrawals behind every counted swap */
-        if (take_effect(e, &rq[ri], dl, o) != 0) rc = -1;
-        ri++;
-    }
-    free(rq);
+    if (rc == 0) e->decide_after = ended ? 0 : last_seen;
+    o->decisions_examined += (int)examined;
     free(wl);
     free(al);
-    free(l);
+    free(sl);
     return rc;
 }
 

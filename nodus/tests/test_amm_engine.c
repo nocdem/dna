@@ -2891,6 +2891,156 @@ static void e34_withdraw_in_the_queue(void) {
     env_close(&e);
 }
 
+/* ── E35-E37 the bounded, resumable decision work (givens item 98) ───── */
+
+/* E35 PROVES (red team finding on the withdraw, Astra's fix): with round_rows_max = 3 and SEVEN due
+ *   withdrawals, each round examines AT MOST 3 rows of the merged decision work
+ *   (decisions_examined 3, 3, 1, then 0) and refuses 3, 3, 1 of them, the oldest first; the payout
+ *   phases still run in every round: a NODUS refund that is owed (refund_pending, no attempt) is
+ *   signed in the FIRST round although four withdrawals are still waiting behind the bound; a restart
+ *   between the rounds loses nothing and repeats nothing (the rows already refused are not examined
+ *   again); once every row is done a round examines nothing.
+ * FLAGS/ENVIRONMENT: a default build; round_rows_max 3 through the settings copy; a position of 10^9
+ *   units (1 basis point of it is nothing after the Nodus fee: each withdrawal is refused, so no ML-DSA
+ *   signing is needed for the seven); the tip 1000 -> 1300; one mkdtemp directory.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: the refund is settled by journal calls after round 1 (a live NODUS attempt would make every
+ *   later withdrawal wait: the one-payout-in-flight contract); refusals are the cheapest outcome of a row;
+ *   the acts of the bounded rows are E36. With the
+ *   bound removed (the old unbounded merge) the first round examines and refuses all seven and the
+ *   first check fails; if the decision work returned before the payout phases the refund would not be
+ *   signed in round 1. */
+static void e35_bounded_decisions(void) {
+    printf("E35 at most round_rows_max decision rows per round, payouts still run, a restart resumes\n");
+    env_t e;
+    env_open(&e);
+    wd_seed(&e, 3000000000000000ULL, 3000000000ULL, 3000000000000000ULL, 1000000000ULL);
+    e.cfg.round_rows_max = 3;
+    env_restart(&e);
+    for (uint64_t k = 1; k <= 7; k++) {
+        amm_req_liq_withdraw_t r = wd_req('a', 1, k);
+        CHECK(amm_engine_accept_withdraw(e.eng, &r) == AMM_ACC_RECEIVED, "a withdrawal is accepted");
+    }
+    amm_quote_answer_t q;
+    amm_swap_t rs;
+    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &q) == AMM_Q_OK, "a NODUS -> USDT approval");
+    amm_req_nodus_to_usdt_t nr = nodus_req(&q, 'f', 1);
+    CHECK(amm_engine_accept_nodus(e.eng, &nr, NULL) == AMM_ACC_RECEIVED &&
+          amm_journal_swap_by_botreq(e.j, q.request_number, &rs) == 0 && seen_counted(&e, &rs, rs.incoming_id) &&
+          amm_journal_swap_transition(e.j, rs.seq, "refund_pending", NULL, NULL, NULL) == 0,
+          "a NODUS refund is owed (refund_pending, no attempt)");
+    W.eth_tip = 1300;
+    amm_engine_step_t o;
+    amm_wd_t w;
+    amm_attempt_t at;
+    CHECK(step(&e, &o) == 0 && o.decisions_examined == 3 && o.withdraws_refused == 3 &&
+          wd_row(&e, 1, "refused", &w) && wd_row(&e, 3, "refused", &w) && wd_row(&e, 4, "accepted", &w),
+          "round 1: three rows examined and refused, the fourth untouched");
+    CHECK(amm_journal_attempt_latest(e.j, rs.seq, &at) == 0, "round 1: the payout phase ran: the owed refund is signed");
+    amm_attempt_free(&at);
+    /* the refund's attempt is a LIVE NODUS payout: while it is live a withdrawal stops at the
+     * one-payout-in-flight check before its refusal is reached (act_withdraw), so it is settled here
+     * (journal calls, as E34) and rounds 2-4 see no live attempt */
+    CHECK(amm_journal_attempt_finish(e.j, rs.seq, "confirmed") == 0 &&
+          amm_journal_swap_transition(e.j, rs.seq, "refunded", NULL, NULL, NULL) == 0, "the refund is settled");
+    env_restart(&e);
+    CHECK(step(&e, &o) == 0 && o.decisions_examined == 3 && o.withdraws_refused == 3 &&
+          wd_row(&e, 6, "refused", &w) && wd_row(&e, 7, "accepted", &w),
+          "round 2 (after a restart): rows 4-6, nothing repeated, the seventh untouched");
+    CHECK(step(&e, &o) == 0 && o.decisions_examined == 1 && o.withdraws_refused == 1 && wd_row(&e, 7, "refused", &w),
+          "round 3: the last row");
+    CHECK(step(&e, &o) == 0 && o.decisions_examined == 0 && o.withdraws_refused == 0, "round 4: nothing left to examine");
+    env_close(&e);
+}
+
+/* E36 PROVES: the seen order holds ACROSS batches. With round_rows_max = 2 and, in seen order, a
+ *   withdrawal W1, a counted swap S1, a withdrawal W2 and a counted swap S2 (all decidable), round 1
+ *   examines exactly W1 and S1: W1 acts, S1 is decided; S2 (which could be decided) stays `counted` and
+ *   W2 (which is due) stays `accepted` because they come after the batch; round 2 resumes after S1 and
+ *   handles W2 and S2 (W1's NODUS payout settled in between so W2 may sign). Nothing above the last row
+ *   examined is decided or acted on, so a later operation never passes an earlier one.
+ * FLAGS/ENVIRONMENT: a default build; round_rows_max 2; the pool 3*10^15 / 3*10^9 with a position of
+ *   3*10^15 units; both withdrawals 1000 basis points; the swaps are NODUS -> USDT of 10^14 raw NODUS;
+ *   the tip 1000 -> 1300; one mkdtemp directory.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: an add commit takes the same merge path (same stream reader) but is not interleaved here
+ *   (E18 and E19 prove the add's order without the bound). Without the bound the first round would act
+ *   on all four and the checks after round 1 fail. */
+static void e36_order_across_batches(void) {
+    printf("E36 the seen order holds across batches\n");
+    env_t e;
+    env_open(&e);
+    wd_seed(&e, 3000000000000000ULL, 3000000000ULL, 3000000000000000ULL, 3000000000000000ULL);
+    e.cfg.round_rows_max = 2;
+    env_restart(&e);
+    amm_wd_t w1, w2;
+    amm_swap_t s1, s2;
+    amm_quote_answer_t q1, q2;
+    amm_req_liq_withdraw_t r1 = wd_req('a', 1000, 1), r2 = wd_req('a', 1000, 2);
+    CHECK(amm_engine_accept_withdraw(e.eng, &r1) == AMM_ACC_RECEIVED, "W1 is accepted (seen 1)");
+    CHECK(wd_counted_swap(&e, 'f', &s1, &q1), "S1 is counted (seen 2)");
+    CHECK(amm_engine_accept_withdraw(e.eng, &r2) == AMM_ACC_RECEIVED, "W2 is accepted (seen 3)");
+    CHECK(wd_counted_swap(&e, 'g', &s2, &q2), "S2 is counted (seen 4)");
+    W.eth_tip = 1300;
+    amm_engine_step_t o;
+    CHECK(step(&e, &o) == 0 && o.decisions_examined == 2 && o.withdraws_done == 1 && o.decided == 1,
+          "round 1 examines two rows: W1 acts, S1 is decided");
+    amm_swap_t g;
+    CHECK(wd_row(&e, 1, "done", &w1) && amm_journal_swap_by_seq(e.j, s1.seq, &g) == 0 && !strcmp(g.state, "payout_pending") &&
+          amm_journal_swap_by_seq(e.j, s2.seq, &g) == 0 && !strcmp(g.state, "counted") && wd_row(&e, 2, "accepted", &w2),
+          "after round 1 the later S2 is still counted and W2 still accepted: nothing passed the batch");
+    CHECK(amm_journal_attempt_finish(e.j, w1.nodus_swap, "confirmed") == 0 &&
+          amm_journal_swap_transition(e.j, w1.nodus_swap, "paid", NULL, NULL, NULL) == 0,
+          "W1's NODUS payout is settled (journal calls)");
+    CHECK(step(&e, &o) == 0 && o.decisions_examined == 2 && o.withdraws_done == 1 && o.decided == 1 &&
+          wd_row(&e, 2, "done", &w2) && amm_journal_swap_by_seq(e.j, s2.seq, &g) == 0 && !strcmp(g.state, "payout_pending"),
+          "round 2 resumes after S1: W2 acts and S2 is decided");
+    env_close(&e);
+}
+
+/* E37 PROVES: refusals and waits inside a batch count against the bound and do not reorder anything.
+ *   round_rows_max = 3, a position of 10^9 units, the ETH price unreadable (price_rc): W1 (1 basis
+ *   point: nothing after the Nodus fee) is refused, W2 (10000 basis points: NODUS payable) WAITS because
+ *   the Ethereum fee cannot be read, W3 is refused; round 1 examines exactly these three and W4 (also
+ *   refusable) is not touched; round 2 resumes after W3, refuses W4 and reaches the end (the cursor
+ *   wraps); round 3 looks at W2 again and it still waits; with the price readable again round 4 refuses
+ *   W2 whole because its USDT side (1,000 raw) is nothing after the Ethereum fee.
+ * FLAGS/ENVIRONMENT: a default build; round_rows_max 3; price_rc 1 then 0; the tip 1000 -> 1300; one
+ *   mkdtemp directory.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: the unreadable price is the stub's; without the bound W4 is refused in round 1; without
+ *   the wrap in the resume cursor W2 is never looked at again after round 2. */
+static void e37_refusals_and_waits_in_a_batch(void) {
+    printf("E37 refusals and waits in a batch count against the bound\n");
+    env_t e;
+    env_open(&e);
+    wd_seed(&e, 3000000000000000ULL, 3000000000ULL, 3000000000000000ULL, 1000000000ULL);
+    e.cfg.round_rows_max = 3;
+    env_restart(&e);
+    static const uint32_t bps[4] = {1, 10000, 1, 1};
+    for (uint64_t k = 0; k < 4; k++) {
+        amm_req_liq_withdraw_t r = wd_req('a', bps[k], k + 1);
+        CHECK(amm_engine_accept_withdraw(e.eng, &r) == AMM_ACC_RECEIVED, "a withdrawal is accepted");
+    }
+    W.eth_tip = 1300;
+    W.price_rc = 1;
+    amm_engine_step_t o;
+    amm_wd_t w;
+    CHECK(step(&e, &o) == 0 && o.decisions_examined == 3 && o.withdraws_refused == 2 && o.withdraws_waiting == 1 &&
+          wd_row(&e, 1, "refused", &w) && wd_row(&e, 2, "accepted", &w) && wd_row(&e, 3, "refused", &w) &&
+          wd_row(&e, 4, "accepted", &w),
+          "round 1: W1 and W3 refused, W2 waits (price unreadable), W4 beyond the bound untouched");
+    CHECK(step(&e, &o) == 0 && o.decisions_examined == 1 && o.withdraws_refused == 1 && wd_row(&e, 4, "refused", &w),
+          "round 2 resumes after W3: W4 refused, the end is reached");
+    CHECK(step(&e, &o) == 0 && o.decisions_examined == 1 && o.withdraws_waiting == 1 && wd_row(&e, 2, "accepted", &w),
+          "round 3: the cursor wrapped, W2 is looked at again and still waits");
+    W.price_rc = 0;
+    CHECK(step(&e, &o) == 0 && o.withdraws_refused == 1 && wd_row(&e, 2, "refused", &w) && strstr(w.message, "USDT side") &&
+          wd_units(&e) == 1000000000ULL,
+          "round 4: the price is readable: W2 is refused whole (its USDT side is nothing after the fee), units unchanged");
+    env_close(&e);
+}
+
 int main(void) {
     printf("test_amm_engine\n");
     e1_quote();
@@ -2927,6 +3077,9 @@ int main(void) {
     e32_withdraw();
     e33_withdraw_cases();
     e34_withdraw_in_the_queue();
+    e35_bounded_decisions();
+    e36_order_across_batches();
+    e37_refusals_and_waits_in_a_batch();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }
