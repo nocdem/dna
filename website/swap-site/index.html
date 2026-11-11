@@ -44,7 +44,7 @@
           <div><dt>Request number</dt><dd id="d-request">—</dd></div>
           <div><dt>Price valid until</dt><dd id="d-valid">—</dd></div>
           <div><dt>Commission</dt><dd id="d-commission">—</dd></div>
-          <div><dt>Ethereum confirmations</dt><dd><b>3 blocks</b> (up to 100 USDT)</dd></div>
+          <div><dt>Your payment is counted after</dt><dd id="d-wait">—</dd></div>
           <div><dt>Your Nodus address</dt><dd class="addr" id="nodus-addr">—</dd></div>
           <div><dt>Your Ethereum address</dt><dd class="addr" id="eth-addr">—</dd></div>
         </dl>
@@ -62,8 +62,7 @@
           <label for="liq-amount">Add liquidity: amount of one side</label>
           <div class="field-row"><input id="liq-amount" type="text" inputmode="decimal" autocomplete="off" placeholder="0">
             <select id="liq-side" class="side-select" aria-label="Side"><option value="nodus">NODUS</option><option value="usdt">USDT</option></select></div>
-          <div class="field-foot"><span>At least 100,000 NODUS, with the USDT at the pool's current ratio.</span></div>
-          <div class="field-foot"><span>Type the amount of one side; the bot computes the other side at the pool's current ratio.</span></div>
+          <div class="field-foot"><span>Type one side; the bot computes the other side at the pool's current ratio. At least 100,000 NODUS.</span></div>
         </div>
         <dl class="details">
           <div><dt>Pool</dt><dd id="l-pool">—</dd></div>
@@ -111,10 +110,6 @@
       </dl>
       <p class="note" id="state-note" hidden></p>
       <button class="button ghost gap" id="check-again" type="button" hidden>Check again</button>
-    </section>
-    <section class="card limits" aria-labelledby="lt">
-      <h2 id="lt">Confirmations by amount</h2>
-      <div class="tiers"><div><b>3</b>blocks up to 100 USDT</div><div><b>5</b>blocks up to 1,000 USDT</div><div><b>33</b>blocks above 1,000 USDT</div></div>
     </section>
   </div>
 </main>

@@ -14,7 +14,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  parseAmount, formatFixed, displayAmount, usdtText, nodusText, percentToBps, minimumToReceive, priceFromReserves, poolText, priceMovementPercent,
+  parseAmount, formatFixed, displayAmount, usdtText, nodusText, percentToBps, minimumToReceive, priceFromReserves, poolText, priceMovementPercent, ethConfirmations, waitText,
   quoteBody, liquidityQuoteBody, withdrawBody, randomRequestNumber,
   buildNodusToUsdtText, buildLiquidityAddText, buildWithdrawText,
   buildUsdtToNodusTypedData, buildLiquidityAddTypedData,
@@ -146,6 +146,34 @@ test('priceMovementPercent: how far the bot\'s rate for this amount is below the
   assert.equal(priceMovementPercent(reserves, 'usdt_to_nodus', '3000000000', (n / 2n).toString()), '50.00');
   // FALSE PASS: the expected values come from the constant-product shape used here; the bot's real pricing
   // (commission, its own rounding) is not run, so the function is proven as a formula only, not against the bot.
+});
+
+test('ethConfirmations: the bot\'s default tiers by USDT amount, bounds inclusive (amm_cfg.c:116-120, amm_cfg.h:133-139)', () => {
+  assert.equal(ethConfirmations(1n), 3n);
+  assert.equal(ethConfirmations(100000000n), 3n);      // exactly 100 USDT: up to and including bound 1
+  assert.equal(ethConfirmations(100000001n), 5n);      // 100.000001 USDT
+  assert.equal(ethConfirmations(1000000000n), 5n);     // exactly 1,000 USDT: up to and including bound 2
+  assert.equal(ethConfirmations(1000000001n), 33n);    // 1,000.000001 USDT
+  assert.equal(ethConfirmations('5000000000'), 33n);   // digit string form
+  assert.equal(ethConfirmations(0n), null);
+  assert.equal(ethConfirmations(''), null);
+  assert.equal(ethConfirmations('1.5'), null);
+  assert.equal(ethConfirmations(undefined), null);
+  // FALSE PASS: the tiers are constants copied from the bot's defaults; a bot setting changed on the live bot
+  // (eth_conf_*) is not visible here, and /amm/status does not carry it.
+});
+
+test('waitText: follows the typed amount and the direction', () => {
+  assert.equal(waitText('usdt_to_nodus', '50'), '3 Ethereum blocks');
+  assert.equal(waitText('usdt_to_nodus', '100'), '3 Ethereum blocks');
+  assert.equal(waitText('usdt_to_nodus', '100.000001'), '5 Ethereum blocks');
+  assert.equal(waitText('usdt_to_nodus', '500'), '5 Ethereum blocks');
+  assert.equal(waitText('usdt_to_nodus', '5000'), '33 Ethereum blocks');
+  assert.equal(waitText('nodus_to_usdt', '5000'), 'Its Nodus block being committed');
+  assert.equal(waitText('nodus_to_usdt', '0.5'), 'Its Nodus block being committed');
+  for (const bad of ['', '  ', 'abc', '0', '1.1234567', '99999999999999999999999']) assert.equal(waitText('usdt_to_nodus', bad), '—');
+  assert.equal(waitText('nodus_to_usdt', ''), '—');
+  // FALSE PASS: only the text is compared; the page wiring (every input, every flip) is checked in a browser.
 });
 
 test('request bodies: quote bodies are exactly two keys, both strings (amm_http.c route_quote)', () => {

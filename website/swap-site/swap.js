@@ -6,7 +6,7 @@ import { createExtension } from './extension.js';
 import { createAdapter } from './adapter.js';
 import { createSwapFlow } from './flow.js';
 import {
-  USDT_DECIMALS, NODUS_DECIMALS, outputUnit, displayAmount, percentToBps, priceFromReserves, poolText, priceMovementPercent, refusalText, nodusWithCommas, STILL_PENDING_TEXT,
+  USDT_DECIMALS, NODUS_DECIMALS, outputUnit, displayAmount, percentToBps, priceFromReserves, poolText, priceMovementPercent, waitText, refusalText, nodusWithCommas, STILL_PENDING_TEXT,
 } from './swap-logic.js';
 
 const $ = id => document.getElementById(id);
@@ -77,7 +77,7 @@ function renderStatus(status) {
     `at most ${displayAmount(BigInt(status.settings.swapMaxUsdt), USDT_DECIMALS)}. The extension shows the request in full before you sign.`;
   // The add minimum shown on the liquidity screen follows the bot's status (givens item 96); the bot's refusal governs.
   const minNote = document.querySelector('#panel-liq .field-foot span');
-  if (minNote) minNote.textContent = `At least ${nodusWithCommas(flow.liquidityMin())} NODUS, with the USDT at the pool's current ratio.`;
+  if (minNote) minNote.textContent = `Type one side; the bot computes the other side at the pool's current ratio. At least ${nodusWithCommas(flow.liquidityMin())} NODUS.`;
   const notes = [];
   if (status.stopped) notes.push('The bot has stopped taking new swaps.');
   if (status.swapsPaused) notes.push('Swaps are paused.');
@@ -85,6 +85,19 @@ function renderStatus(status) {
   if (status.liquidityPaused) notes.push('Liquidity changes are paused.');
   say($('bot-status'), notes.join(' '), true);
 }
+
+// Re-reads /amm/status after an answer (the existing status GET). A failed re-read keeps what is shown and says nothing:
+// flow.loadStatus keeps the earlier status on failure.
+async function refreshStatus() {
+  const r = await flow.loadStatus();
+  if (!r.ok) return;
+  try { renderStatus(r.status); } catch { /* the page keeps what it shows */ }
+}
+function renderMovement(q) {
+  const moved = priceMovementPercent(flow.state.status?.reserves, q.direction, q.amount, q.number);
+  $('d-movement').textContent = moved === null ? '—' : `${moved} %`;
+}
+function renderWait() { $('d-wait').textContent = waitText(direction, $('pay').value); }
 
 async function loadStatus() {
   const r = await flow.loadStatus();
@@ -141,10 +154,10 @@ $('tab-liq').addEventListener('click', () => showTab(false));
 // ── swap ──
 $('flip').addEventListener('click', () => {
   direction = direction === 'usdt_to_nodus' ? 'nodus_to_usdt' : 'usdt_to_nodus';
-  renderTokens(); resetQuote(); clearMsg('swap-msg');
+  renderTokens(); resetQuote(); clearMsg('swap-msg'); renderWait();
 });
 // Every edit resets, even when no quote is stored yet: an answer still on its way is discarded by the flow.
-$('pay').addEventListener('input', () => { resetQuote(); clearMsg('swap-msg'); });
+$('pay').addEventListener('input', () => { resetQuote(); clearMsg('swap-msg'); renderWait(); });
 $('tol').addEventListener('input', renderMinimum);
 // Enter in the tolerance field must not send a second price question.
 $('tol').addEventListener('keydown', event => { if (event.key === 'Enter') event.preventDefault(); });
@@ -165,9 +178,7 @@ $('swap-form').addEventListener('submit', async event => {
     const q = r.quote, unit = outputUnit(q.direction);
     $('get').value = displayAmount(BigInt(q.number), unit.decimals);
     $('d-fee').textContent = amountOut(BigInt(q.estimatedFee), unit);
-    // The pool price is the one from the status read at page open (the same reserves the Pool line shows).
-    const moved = priceMovementPercent(flow.state.status?.reserves, q.direction, q.amount, q.number);
-    $('d-movement').textContent = moved === null ? '—' : `${moved} %`;
+    renderMovement(q);   // from the reserves already held; recomputed below from the re-read
     $('move-hint').hidden = false;
     $('d-request').textContent = q.requestNumber;
     $('d-valid').textContent = time(q.validUntil);
@@ -175,6 +186,8 @@ $('swap-form').addEventListener('submit', async event => {
     button.hidden = true; $('approve-btn').hidden = false;
     renderMinimum();
     say($('swap-msg'), 'Choose your tolerance, then approve in the extension.');
+    await refreshStatus();
+    if (flow.state.quote === q) renderMovement(q);   // only while this answer is still the one shown
   } finally { button.disabled = !connected(); }
 });
 
@@ -256,6 +269,7 @@ $('liq-form').addEventListener('submit', async event => {
     $('l-valid').textContent = time(q.validUntil);
     $('liq-ask').hidden = true; $('liq-approve').hidden = false;
     say($('liq-msg'), 'These are the exact amounts. Approve in the extension to sign and pay both sides.');
+    await refreshStatus();
   } finally { $('liq-ask').disabled = !connected(); }
 });
 $('liq-approve').addEventListener('click', async () => {
@@ -289,5 +303,5 @@ function renderWithdrawButton() {
   $('wd-btn').textContent = flow.pendingWithdrawNumber() ? 'Resend the same signed withdrawal' : 'Sign and send the withdrawal';
 }
 
-renderTokens();
+renderTokens(); renderWait();
 loadStatus(); // step 1: the price is read as soon as the page opens, connected or not

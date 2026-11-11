@@ -150,6 +150,27 @@ export function priceMovementPercent(reserves, direction, amountRaw, numberRaw) 
   return formatFixed(hundredths, 2);
 }
 
+// Ethereum blocks the bot waits before it counts a USDT payment, by amount (the bot's defaults, amm_cfg.c
+// amm_cfg_defaults eth_conf_*; amm_cfg.h: "up to and including bound 1 waits count 1, up to and including bound 2
+// waits count 2, above bound 2 waits count 3"). /amm/status does not carry these, so they are constants here.
+// `usdtRaw` is a BigInt or a string of digits; null for empty, zero or anything unusable.
+export function ethConfirmations(usdtRaw) {
+  let v;
+  try { v = toBig(usdtRaw); } catch { return null; }
+  if (v === 0n) return null;
+  return v <= 100000000n ? 3n : v <= 1000000000n ? 5n : 33n;
+}
+
+// The "Your payment is counted after" value for the typed amount (text) and the direction. NODUS -> USDT: a
+// committed Nodus block needs no extra depth (amm_nodus_watch.c). "—" for an empty or unusable amount.
+export function waitText(direction, amountText) {
+  const decimals = direction === 'usdt_to_nodus' ? USDT_DECIMALS : NODUS_DECIMALS;
+  const p = parseAmount(amountText, decimals);
+  if (!p.ok) return '—';
+  if (direction !== 'usdt_to_nodus') return 'Its Nodus block being committed';
+  return `${ethConfirmations(p.raw)} Ethereum blocks`;
+}
+
 // ── request bodies the site itself posts (plan 6.4.7; amm_http.c) ───────
 
 const hexOfText = text => Array.from(new TextEncoder().encode(text), b => b.toString(16).padStart(2, '0')).join('');
