@@ -1128,7 +1128,15 @@ static int nodus_payouts(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
             o->dropped++;
             continue;
         }
-        if (sr != AMM_NP_OK) break;        /* funds, unknown, paused, busy: the swap stays */
+        if (sr == AMM_NP_PAUSED || sr == AMM_NP_BUSY) break;   /* nothing can be signed now */
+        if (sr != AMM_NP_OK) {
+            /* funds, an unreadable answer, unsupported: this refund waits and is
+             * deferred like a waiting replacement (`after` moves past it), so a younger
+             * expired payout whose own reserved coins fund its replacement is reached;
+             * the refund is tried again after the wrap in a later round */
+            after = head.seq;
+            continue;
+        }
     }
     e->nodus_after = after;
     return 0;

@@ -1786,6 +1786,55 @@ static void j28_question_limit_and_purge(void) {
     unlink(oldp);
 }
 
+/* J29: a count that FAILS inside the insert refuses the question (verify 14).
+ * PROVES: when the count of open questions cannot be read inside the approval's
+ *   transaction (here: a column the count query uses is renamed through a second
+ *   connection) amm_journal_quote_approve and amm_journal_add_approve with open_max set
+ *   return an error (-1) and insert nothing; they are not admitted. With open_max 0 (the
+ *   count is not made) the same damaged journal still admits, so the refusal is the
+ *   count's failure and nothing else. If a failed count were read as 0 the first checks
+ *   would return AMM_J_OK (read: `if (open_questions_locked(j, &open) != 0) goto done;`).
+ * FLAGS/ENVIRONMENT: a default build; this test's journal file; SQLite RENAME COLUMN.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: the price question's insert never touches liq_adds, and the add question's
+ *   never touches swaps.seen_seq, so each damage breaks only the count; another damage
+ *   would need its own check. */
+static void j29_failed_count_refuses(void) {
+    printf("J29 a failed count inside the insert refuses the question\n");
+    fresh();
+    amm_swap_t s, sx;
+    amm_quote_t q1 = mkq(201, 50000000ULL, 50000000ULL), q2 = mkq(202, 50000000ULL, 50000000ULL),
+                q3 = mkq(203, 50000000ULL, 50000000ULL);
+    q1.open_max = q2.open_max = 5;
+    q3.open_max = 0;
+    int cnt = 0;
+    CHECK(amm_journal_quote_approve(g_j, &q1, &s) == AMM_J_OK, "undamaged: a price question is admitted");
+    CHECK(side_sql("ALTER TABLE liq_adds RENAME COLUMN nodus_height TO nodus_height_x"),
+          "damage: a column of liq_adds that the count reads is renamed");
+    CHECK(amm_journal_quote_approve(g_j, &q2, &sx) == -1 && amm_journal_state_count(g_j, "approved", &cnt) == 0 &&
+          cnt == 1 && amm_journal_swap_by_botreq(g_j, 202, &sx) == 1,
+          "the price question is refused with an error and nothing was inserted");
+    CHECK(amm_journal_quote_approve(g_j, &q3, &sx) == AMM_J_OK, "without a limit (no count) the same journal admits: the count was the cause");
+
+    fresh();
+    amm_add_q_t aq;
+    memset(&aq, 0, sizeof(aq));
+    aq.bot_req = 4101; aq.usdt_amount = 3000000000ULL; aq.nodus_amount = 3000000000000000ULL;
+    aq.approved_at = 1000; aq.expiry = 1300; aq.eth_tip = 100; aq.nodus_tip = 100;
+    aq.nodus_min = 10000000000000ULL; aq.open_max = 5;
+    amm_add_t ad, rows[4];
+    int n = 0;
+    CHECK(amm_journal_add_approve(g_j, &aq, &ad) == AMM_J_OK, "undamaged: an add question is admitted");
+    CHECK(side_sql("ALTER TABLE swaps RENAME COLUMN seen_seq TO seen_seq_x"),
+          "damage: a column of swaps that the count reads is renamed");
+    aq.bot_req = 4102;
+    CHECK(amm_journal_add_approve(g_j, &aq, &ad) == -1 &&
+          amm_journal_add_page(g_j, "approved", 0, rows, 4, &n) == 0 && n == 1,
+          "the add question is refused with an error and nothing was inserted");
+    aq.open_max = 0;
+    CHECK(amm_journal_add_approve(g_j, &aq, &ad) == AMM_J_OK, "without a limit the same journal admits: the count was the cause");
+}
+
 /* J22: the open NODUS approval query. */
 static void j22_open_nodus(void) {
     printf("J22 open NODUS approval by transfer id, sender and amount\n");
@@ -2591,6 +2640,7 @@ int main(void) {
     j21_attempts();
     j21b_reserved_and_after();
     j28_question_limit_and_purge();
+    j29_failed_count_refuses();
     j22_open_nodus();
     j23_id_edge_head();
     j24_eth_attempts();

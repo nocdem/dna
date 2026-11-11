@@ -143,6 +143,7 @@ typedef struct {
     int      reads;                  /* every node and provider read of the engine's seams (E22) */
     int      prov_reads;             /* the question path's Ethereum reads: balance, gas estimate, gas price */
     int      nbal_reads;             /* the Nodus balance reads */
+    int      erc20_fail;             /* 1: every provider's USDT balance read fails (E28) */
 } world_t;
 
 static world_t W;
@@ -271,6 +272,7 @@ static int e_bal(void *c, const uint8_t a[20], uint8_t out[32], uint64_t dl) {
 static int e_erc20(void *c, const uint8_t t[20], const uint8_t o[20], uint8_t out[32], uint64_t dl) {
     (void)c; (void)t; (void)o; (void)dl;
     W.reads++; W.prov_reads++;
+    if (W.erc20_fail) return AMM_ETH_ERR;
     memset(out, 0, 32);
     for (int i = 0; i < 8; i++) out[31 - i] = (uint8_t)(W.usdt_balance >> (8 * i));
     return AMM_ETH_OK;
@@ -2181,6 +2183,162 @@ static void e25_bounded_walks(void) {
     env_close(&e);
 }
 
+/* ── E26 a refund that cannot be stored does not hold a younger expired payout ── */
+
+/* PROVES (verify 14, claim 7): an OLDER NODUS refund R whose first attempt cannot be
+ *   stored (the bot's only coin is short of it, and that coin is also the reserved input
+ *   of the younger payout's expired attempt) is deferred, and the younger expired payout P,
+ *   whose replacement is funded from its own reserved coin, is replaced in the same round
+ *   (so within ONE round after the expiry); R stays refund_pending with no attempt.
+ *   With the old `if (sr != AMM_NP_OK) break;` the round ends at R and P is never replaced
+ *   (checked by reading: the check "P's replacement is stored" needs the loop to go on
+ *   past R's FUNDS refusal).
+ * FLAGS/ENVIRONMENT: a default build; one scripted coin of 9.9*10^13 raw (the payout's
+ *   gross 9.365*10^13 fits, the refund's 10^14 does not); tip 1000 -> 1100, expiry 1090,
+ *   gas 0 (the replacement's fee equals the decided one); one mkdtemp directory.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: the shortage of R is the scripted coin list, not a real node's; R is short
+ *   even without the reservation (10^14 > the coin), so the test proves the deferral, and
+ *   the reservation is proved in E20/P15. */
+static void e26_unfunded_refund_is_deferred(void) {
+    printf("E26 a refund that cannot be stored is deferred, a younger expired payout is replaced\n");
+    env_t e;
+    env_open(&e);
+    W.ncoins = 1;
+    W.coin_seed[0] = 7; W.coin_amt[0] = 99000000000000ULL;
+    amm_quote_answer_t b, a;
+    amm_engine_step_t o;
+    amm_swap_t r, p;
+    amm_attempt_t at;
+    memset(&at, 0, sizeof(at));
+    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &b) == AMM_Q_OK, "approval of the refund swap R");
+    amm_req_nodus_to_usdt_t nr = nodus_req(&b, 'f', 1);
+    CHECK(amm_engine_accept_nodus(e.eng, &nr, NULL) == AMM_ACC_RECEIVED && swap_of(&e, b.request_number, &r) &&
+          seen_counted(&e, &r, r.incoming_id) &&
+          amm_journal_swap_transition(e.j, r.seq, "refund_pending", NULL, NULL, NULL) == 0,
+          "R (older) is in refund_pending");
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_OK, "approval of the payout swap P");
+    amm_req_usdt_t ur = usdt_req(&a, 'a', 1);
+    CHECK(amm_engine_accept_usdt(e.eng, &ur, NULL) == AMM_ACC_RECEIVED, "signed request");
+    put_rec(&e, 0x12, 1001, 0xaa, 100000000ULL, "deep");
+    CHECK(step(&e, &o) == 0 && o.decided == 1 && swap_of(&e, a.request_number, &p) && p.seq > r.seq &&
+          amm_journal_attempt_latest(e.j, p.seq, &at) == 0 && at.n == 1, "P (younger) is decided and its payout signed over the coin");
+    amm_attempt_free(&at);
+    CHECK(amm_journal_attempt_latest(e.j, r.seq, &at) == 1, "P's attempt is live: R has none");
+    W.nodus_tip = 1100;                                  /* past P's expiry 1090 */
+    int stored = 0;
+    for (int k = 0; k < 3 && !stored; k++) {            /* bounded: expected in the first round */
+        CHECK(step(&e, &o) == 0, "a round");
+        if (amm_journal_attempt_latest(e.j, p.seq, &at) == 0) {
+            stored = at.n == 2;
+            amm_attempt_free(&at);
+        }
+    }
+    CHECK(stored, "P's replacement is stored within three rounds (past R's refusal)");
+    CHECK(amm_journal_attempt_latest(e.j, p.seq, &at) == 0 && at.n == 2 && att_has_seed(&at, 7),
+          "it spends P's own reserved coin");
+    amm_attempt_free(&at);
+    CHECK(state_of(&e, b.request_number, "refund_pending") && amm_journal_attempt_latest(e.j, r.seq, &at) == 1,
+          "R stays refund_pending with no attempt");
+    env_close(&e);
+}
+
+/* ── E27 only the stored cursor reaches the later rows ── */
+
+/* PROVES (verify 14, claim 8): with round_rows_max = 3 and SIX open rows of each kind
+ *   whose first three are NOT yet expirable (their window is not observed) and whose last
+ *   three are, the first round examines and expires nothing, and the second round expires
+ *   the last three: only the resumed cursor (release_after, adds_after) brings the walk to
+ *   them. If the cursor were reset to 0 every round (the property removed), rounds 1 and 2
+ *   would both examine the first three rows and the checks after round 2 fail (read: both
+ *   walks restart at `after = e->release_after` / `e->adds_after[sti]`, which would stay 0).
+ * FLAGS/ENVIRONMENT: a default build; round_rows_max 3; the first three rows of each kind
+ *   are asked at W.now 30000 (expiry 30300), the last three at 10000 (expiry 10300); the
+ *   Nodus history is processed to a block time 10400 and a stored Ethereum block of time
+ *   10400 closes the Ethereum window, so only the 10300 rows are expirable; one mkdtemp
+ *   directory.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: the order of the rows is the order of their questions (seq); a different
+ *   walk order would need other row times. */
+static void e27_only_the_cursor_reaches_later_rows(void) {
+    printf("E27 later open rows are reached only through the resumed cursor\n");
+    env_t e;
+    env_open(&e);
+    e.cfg.round_rows_max = 3;
+    env_restart(&e);
+    amm_quote_answer_t q[6];
+    amm_add_answer_t aa[6];
+    int ok = 1;
+    for (int i = 0; i < 6 && ok; i++) {
+        W.now = i < 3 ? 30000 : 10000;
+        ok = amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &q[i]) == AMM_Q_OK &&
+             amm_engine_add_question(e.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &aa[i]) == AMM_AQ_OK;
+    }
+    CHECK(ok, "six swaps and six adds, the first three of each far from expiry");
+    amm_journal_cursor_reset(e.j, "nodus_scan", 1000);
+    amm_journal_cursor_reset(e.j, "nodus_scan_ts", 10400);
+    amm_blk_t blk;
+    memset(&blk, 0, sizeof(blk));
+    blk.height = 990; blk.ts = 10400; memset(blk.hash, 5, 32); memset(blk.parent, 4, 32);
+    amm_journal_block_put(e.j, &blk);
+    amm_journal_cursor_reset(e.j, "eth_scan", 995);
+    amm_engine_step_t o;
+    CHECK(step(&e, &o) == 0 && o.expired == 0 && o.adds_expired == 0 && o.rows_examined == 3 && o.adds_examined == 3,
+          "round 1 examines the first three rows of each kind: nothing is expirable");
+    CHECK(step(&e, &o) == 0 && o.expired == 3 && o.adds_expired == 3 && o.rows_examined == 3 && o.adds_examined == 3,
+          "round 2 examines the next three: they expire (only the cursor got there)");
+    CHECK(state_of(&e, q[3].request_number, "expired") && state_of(&e, q[5].request_number, "expired") &&
+          state_of(&e, q[0].request_number, "approved") && state_of(&e, q[2].request_number, "approved"),
+          "the swaps 4-6 expired, 1-3 still open");
+    amm_add_t ad;
+    CHECK(amm_journal_add_by_botreq(e.j, aa[4].request_number, &ad) == 0 && !strcmp(ad.state, "expired") &&
+          amm_journal_add_by_botreq(e.j, aa[1].request_number, &ad) == 0 && !strcmp(ad.state, "approved"),
+          "the adds 4-6 expired, 1-3 still open");
+    env_close(&e);
+}
+
+/* ── E28 a failed question read is not reused ── */
+
+/* PROVES (verify 14): a question whose provider read (every provider's USDT balance) or
+ *   Nodus balance read FAILS is answered unavailable and the failure is not stored: a
+ *   second question inside quote_read_fresh_ms reads again (the seam call count grows);
+ *   once the read works it is stored and the next question inside the bound reads nothing.
+ * FLAGS/ENVIRONMENT: a default build; the monotonic clock is fixed (mono_step 0, 1000 ms);
+ *   the failure is W.erc20_fail / W.nodus_balance_rc; one mkdtemp directory.
+ * LEAVES BEHIND: nothing.
+ * FALSE PASS: if a failed read were stored as valid, the second question would answer from
+ *   the stored value and the counts would not grow: this is what the checks exclude. */
+static void e28_failed_read_not_reused(void) {
+    printf("E28 a failed question read is not reused\n");
+    env_t e;
+    env_open(&e);
+    W.mono_step = 0;
+    W.mono = 1000;
+    amm_quote_answer_t a;
+    W.erc20_fail = 1;
+    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a) == AMM_Q_UNAVAILABLE, "provider read fails: unavailable");
+    int r1 = W.prov_reads;
+    CHECK(r1 > 0 && amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a) == AMM_Q_UNAVAILABLE &&
+          W.prov_reads > r1, "a second question inside the bound reads the providers again");
+    W.erc20_fail = 0;
+    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a) == AMM_Q_OK && W.prov_reads > r1,
+          "the read works again: answered, read made");
+    const int r3 = W.prov_reads;
+    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a) == AMM_Q_OK && W.prov_reads == r3,
+          "and now it is reused inside the bound");
+
+    W.nodus_balance_rc = AMM_NODE_ERR;
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_UNAVAILABLE && W.nbal_reads == 1,
+          "the Nodus balance read fails: unavailable");
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_UNAVAILABLE && W.nbal_reads == 2,
+          "a second question inside the bound reads it again");
+    W.nodus_balance_rc = 0;
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_OK && W.nbal_reads == 3 &&
+          amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_OK && W.nbal_reads == 3,
+          "read once it works, then reused");
+    env_close(&e);
+}
+
 int main(void) {
     printf("test_amm_engine\n");
     e1_quote();
@@ -2208,6 +2366,9 @@ int main(void) {
     e23_expired_questions_deleted();
     e24_shared_reads();
     e25_bounded_walks();
+    e26_unfunded_refund_is_deferred();
+    e27_only_the_cursor_reaches_later_rows();
+    e28_failed_read_not_reused();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }
