@@ -13,6 +13,7 @@ import log from 'loglevel';
 import { CHAINS } from '../../../src/config.js';
 import { EIP_1193_PROVIDER, PROVIDER_METHODS } from '../constants/stream.js';
 import { NODUS_PERMISSION } from './permissions.js';
+import { SWAP_METHOD_NAMES } from '../constants/swap.js';
 
 // Port: MetaMask v13.54.0 app/scripts/lib/parse-port-info.ts:31-47, Chromium branch only (plan §3.2).
 export function parsePortInfo(port, runtime) {
@@ -40,7 +41,7 @@ function createDupeReqFilterStream() {
   });
 }
 
-export function createRequestEngine({ runtime, permissions, approvals, autoLockAlarm, trustedApi, getUiPorts, evm, nodus, privacyConsent, networkClient: initialNetworkClient }) {
+export function createRequestEngine({ runtime, permissions, approvals, autoLockAlarm, trustedApi, getUiPorts, evm, nodus, swap, privacyConsent, networkClient: initialNetworkClient }) {
   if (typeof privacyConsent?.isGiven !== 'function') throw new Error('A privacy consent reader is required.');
   const connections = new Map(), ports = new Set();
   let networkClient = null, networkVersion, getNetworkMetadata;
@@ -116,7 +117,8 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
     engine.push((req, _res, next, end) => unsupported.has(req.method) ? end(rpcErrors.methodNotSupported()) : next());
     // Decision 2026-10-28-extension-nodus-site-signing.md:20: refuse disk-page Nodus calls before permissions.
     engine.push((req, _res, next, end) => {
-      if ((isFile || origin === 'null') && (['nodus_requestAccounts', 'nodus_signMessage'].includes(req.method) ||
+      // The swap methods use the Nodus key (the held transfer and the request text), so a disk page is refused them too.
+      if ((isFile || origin === 'null') && (['nodus_requestAccounts', 'nodus_signMessage', ...SWAP_METHOD_NAMES].includes(req.method) ||
         (req.method === 'wallet_requestPermissions' && Object.hasOwn(req.params?.[0] ?? {}, NODUS_PERMISSION)))) return end(providerErrors.unauthorized());
       return next();
     });
@@ -127,6 +129,12 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
       if (req.method !== 'nodus_signMessage') return next();
       if (!nodus) return end(rpcErrors.methodNotSupported());
       nodus.signMessage(origin, req.params).then(result => { res.result = result; end(); }, end);
+    });
+    // Swap and liquidity add site methods (plan section 18 change 1): swap.js signs, posts to the bot and pays.
+    engine.push((req, res, next, end) => {
+      if (!SWAP_METHOD_NAMES.includes(req.method)) return next();
+      if (!swap) return end(rpcErrors.methodNotSupported());
+      Promise.resolve().then(() => swap.handle(req.method, origin, req.params)).then(result => { res.result = result; end(); }, end);
     });
     engine.push((req, res, next, end) => {
       if (req.method !== 'wallet_switchEthereumChain' || !evm) return next();

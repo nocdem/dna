@@ -6,7 +6,8 @@ import {
   Caip25CaveatType, Caip25EndowmentPermissionName, caip25CaveatBuilder, caip25EndowmentBuilder,
   getCaip25PermissionFromLegacyPermissions, getEthAccounts, getPermittedEthChainIds, requestPermittedChainsPermissionIncremental,
 } from '@metamask/chain-agnostic-permission';
-import { CHAINS } from '../../../src/config.js';
+import { EVM_NETWORKS, EVM_CHAINS } from '../constants/evm-networks.js';
+import { SWAP_METHOD_NAMES } from '../constants/swap.js';
 import { PROVIDER_METHODS } from '../constants/stream.js';
 
 // Decision 2026-10-28-extension-nodus-site-signing.md: separate Nodus
@@ -32,6 +33,9 @@ const unrestrictedMethods = [
   'net_listening', 'net_peerCount', 'net_version', 'personal_ecRecover', 'personal_sign', 'wallet_getPermissions',
   'wallet_requestPermissions', 'wallet_revokePermissions', 'wallet_switchEthereumChain',
   'web3_clientVersion', 'web3_sha3', 'nodus_requestAccounts', 'nodus_signMessage',
+  // Swap site methods (plan section 18 change 1): like eth_sendTransaction and nodus_signMessage above, each checks
+  // the site's granted account and network itself (evm.js capture, nodus.js) and asks the user per signature and payment.
+  ...SWAP_METHOD_NAMES,
 ];
 
 export function createPermissions({ messenger, approvals, runtime, getNetworkState, getNodusAccount, rememberRevocation }) {
@@ -63,7 +67,7 @@ export function createPermissions({ messenger, approvals, runtime, getNetworkSta
       [Caip25CaveatType]: caip25CaveatBuilder({
       listAccounts: () => accounts.map(address => ({ type: 'eip155:eoa', address })),
       findNetworkClientIdByChainId(chainId) {
-        const entry = ['ethereum', 'bsc'].find(name => `0x${CHAINS[name].chainId.toString(16)}` === chainId);
+        const entry = EVM_CHAINS.find(name => `0x${EVM_NETWORKS[name].chainId.toString(16)}` === chainId);
         if (!entry) throw new Error('Unsupported EVM chain.');
         return entry;
       },

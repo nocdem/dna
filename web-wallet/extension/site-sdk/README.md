@@ -68,6 +68,42 @@ your page needs it. It connects on click and passes the account to `onConnect`.
 `createNodusConnector({ window })` creates an independent connector, for example
 for an explicitly supplied browser window.
 
+## Swap and liquidity add (swap.nodusnetwork.io)
+
+Four calls send one request object to the Nodus provider: `holdTransfer`,
+`sendNodusToUsdt`, `sendUsdtToNodus` and `sendLiquidityAdd`. The extension that
+pays signs the user's request, posts it to the bot itself at `botUrl` (an https
+address without a path; the site gives it with each request) and pays only if
+that request reached the bot (the bot answered over HTTP with `"received": true`).
+If it did not, nothing is paid and the call rejects with `error.data`
+`{ delivered: false, paid: false, answered, reason }` (`answered` is true when the bot
+replied over HTTP; `reason` is the bot's refusal word or `unreachable` / `http_<status>`).
+When the bot refuses because an open approval with the same sender and amount exists
+(`reason: "open_approval"`), `error.data.openRequestNumber` is that open swap's request
+number (a decimal string, 1 to 4294967295) for the site to show it; any other form is
+dropped. The data object also carries the `cause` field the JSON-RPC error library adds
+(`null` when absent). After a delivered request that was not paid the data is
+`{ delivered: true, paid: false | "unknown", cause: null }`.
+
+- `holdTransfer({ account, to, amount })`: builds and signs a native NODUS
+  transfer of `amount` NODUS units to `to` (128 hex) from the connected
+  `account` and keeps it unsent. Resolves `{ holdId, transferId, chainId,
+  expiryHeight }`; `transferId` and `chainId` go into the request text.
+- `sendNodusToUsdt({ holdId, botUrl, text })`: signs `text` (the NODUS to USDT
+  request text of the swap plan, section 6.4.4, naming the held transfer),
+  posts it, then sends the held transfer. A held transfer past its expiry is
+  never sent.
+- `sendUsdtToNodus({ from, botUrl, token, payTo, destination, amount,
+  minimumToReceive, requestNumber })`: signs the typed request (domain chain id
+  = the extension's selected Ethereum network), posts it, then pays `amount`
+  USDT units of `token` to `payTo`.
+- `sendLiquidityAdd({ holdId, botUrl, ethereumAddress, token, payTo,
+  usdtAmount, nodusAmount, requestNumber, text })`: signs both halves, posts the
+  flat add body, then sends both payments.
+
+The Ethereum network is switched first with `wallet_switchEthereumChain`
+(`0xaa36a7` for Ethereum Sepolia), which is not part of this module.
+
 ## Verify on a Node server
 
 Use the same downloaded files, without the extension or a browser. For example,

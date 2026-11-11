@@ -25,6 +25,7 @@ import { rpcErrors, providerErrors } from '@metamask/rpc-errors';
 import { Buffer } from 'buffer';
 import { createNetworkActivity } from './network-activity.js';
 import { chainNetwork } from '../constants/networks.js';
+import { SWAP_PAYMENT_APPROVAL } from '../constants/swap.js';
 
 // Approved plan §3.5 holder 3 / §5.4–5.5: the web-wallet client and its one
 // module queue live in the background. No secret or signed envelope enters UI state.
@@ -248,7 +249,13 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
   function heldInputs(s) {
     const locked = adapter.lockedInputs(s.rows);
     for (const held of adapter.quarantineLockRows(s.quarantined, s.releasedQuarantine)) for (const input of held.inputs) locked.add(input);
+    // A transfer held for a swap request is not an Activity row yet; its coins stay reserved so that no other send
+    // is built from them before it is sent or dropped (plan section 18 change 1).
+    for (const review of s.reviews.values()) for (const input of review.heldInputs ?? []) locked.add(input);
     return locked;
+  }
+  function dropHolds(s, origin) {
+    for (const [id, review] of s.reviews) if (review.held?.origin === origin) s.reviews.delete(id);
   }
   // src/app.js:107-142, 587, 1173: reconcile on connection/tracker updates and
   // every 15000 ms while quarantine remains. Monotonic pacing; one read at a
@@ -510,6 +517,96 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
           return `0x${Buffer.from(signature).toString('hex')}`;
         } finally { if (signature instanceof Uint8Array) signature.fill(0); }
       } finally { message.fill(0); }
+    },
+    // ---- The NODUS side of a swap or a liquidity add (plan 2026-11-08-swap-bot-plan.nodus1.md section 18 change 1;
+    // givens items 30, 84, 88). A native NODUS transfer to the address the site names is built and signed with the
+    // existing builder (adapters/nodus.js prepare, which returns both ids, send-module.js:386-391) and KEPT UNSENT; the
+    // site gets its wire id and the builder's chain id for the request text (6.4.4). The held transfer is sent only
+    // by sendHeld(), which swap.js calls after the signed request reached the bot. One hold per site origin (a new
+    // hold of the same origin drops the earlier one); every hold is dropped with the session, so a lock or a
+    // reconnect leaves nothing to send. Choice of this build: the hold lives in `s.reviews`, which the lock and the
+    // reconnect already clear, and its coins join `heldInputs` while it waits.
+    async holdTransfer(origin, params) {
+      // The same refusals as nodus_signMessage: no granted Nodus account for this origin, or a locked wallet.
+      if (!getPermittedAccounts(origin).length) throw providerErrors.unauthorized();
+      const request = Array.isArray(params) && params.length === 1 ? params[0] : undefined;
+      if (!request || typeof request !== 'object' || Object.keys(request).some(key => !['account', 'to', 'amount'].includes(key))) {
+        throw rpcErrors.invalidParams('Expected one object with account, to and amount.');
+      }
+      const isAddress = value => typeof value === 'string' && /^[0-9a-f]{128}$/i.test(value);
+      if (!isAddress(request.account) || !isAddress(request.to)) throw rpcErrors.invalidParams('account and to must be Nodus addresses of 128 characters.');
+      if (typeof request.amount !== 'string' || !/^[1-9]\d{0,19}$/.test(request.amount) || BigInt(request.amount) > 2n ** 64n - 1n) {
+        throw rpcErrors.invalidParams('amount must be a decimal string of NODUS units, above zero.');
+      }
+      const account = request.account.toLowerCase(), s = active();
+      const assertCurrent = () => {
+        current(s); lockCoordinator.assertUnlocked(); s.assertReady?.();
+        if (account !== s.addresses.nodus || !getPermittedAccounts(origin).some(item => item.address === account && item.publicKey === `0x${s.client.publicKey}`)) throw providerErrors.unauthorized();
+      };
+      assertCurrent();
+      if (s.activityBlocked) throw new Error('Saved activity is unverified. Check the explorer and discard the unreadable history before sending.');
+      dropHolds(s, origin);
+      // The builder's own answer carries the wire id and the chain id; prepare() keeps them inside, so the
+      // client it builds with is wrapped to read that answer back unchanged.
+      let built;
+      const client = new Proxy(s.client, { get(target, property) {
+        const value = Reflect.get(target, property, target);
+        if (property === 'buildAndSign') return async (...args) => { built = await value.apply(target, args); return built; };
+        return typeof value === 'function' ? value.bind(target) : value;
+      } });
+      const prepared = await adapter.prepare({ client, from: s.addresses.nodus, to: request.to.toLowerCase(), amount: formatRaw(BigInt(request.amount)),
+        tokenId: NODUS_ASSET.tokenId, locked: heldInputs(s) });
+      assertCurrent();
+      const wireId = built?.wireId, chainId = built?.decoded?.chainId;
+      if (typeof wireId !== 'string' || !/^[0-9a-f]{128}$/.test(wireId) || typeof chainId !== 'string' || !/^[0-9a-f]{64}$/.test(chainId) ||
+        !Array.isArray(built.decoded.inputs)) throw new Error('The Nodus module gave no transfer id. Nothing was held.');
+      const expiryHeight = BigInt(prepared.expiryHeight);
+      // prepare() decoded the signed bytes and refused any difference from the request (recipient, amount, token).
+      await approvals.controller.addAndShowApprovalRequest({ origin, type: SWAP_PAYMENT_APPROVAL, requestData: { account, title: 'Hold a NODUS payment for a swap',
+        rows: [...prepared.review, ['Transfer ID', wireId]],
+        note: 'Signing this payment does not send it. It is sent only after the bot has received your signed request.' } });
+      assertCurrent();
+      const id = String(++nextReview);
+      s.reviews.set(id, { chain: 'nodus', from: s.addresses.nodus, to: prepared.to, amount: prepared.amount, symbol: prepared.symbol, tokenId: prepared.tokenId,
+        endpoint: undefined, fee: prepared.fee, expiresAt: prepared.expiresAt, held: { origin, account, to: prepared.to, amount: BigInt(request.amount), wireId, chainId, expiryHeight },
+        heldInputs: [...built.decoded.inputs], cancel() {}, confirm: onBroadcast => prepared.send(onBroadcast) });
+      return { holdId: id, transferId: wireId, chainId, expiryHeight: expiryHeight.toString(), account };
+    },
+    // What swap.js checks a request text against: the hold's own values, never the site's.
+    getHold(origin, holdId) {
+      const s = active(), review = typeof holdId === 'string' ? s.reviews.get(holdId) : undefined;
+      if (!review?.held || review.held.origin !== origin) throw rpcErrors.invalidParams('This payment is not held for this site. Hold it again.');
+      return { ...review.held };
+    },
+    cancelHold(origin, holdId) {
+      const s = session; if (!s) return;
+      const review = s.reviews.get(holdId);
+      if (review?.held?.origin === origin) s.reviews.delete(holdId);
+    },
+    // Whether the held transfer can still be sent: the wallet is unlocked, the site's account is the held one (the
+    // signMessage check) and the transfer is not past its expiry. The envelope expires at its signed height (the chain
+    // accepts it in blocks up to that height, nodus_v2_spend.h:413-416), so it is usable only while the node's tip is
+    // below it; a tip that cannot be read counts as not usable (the user tries again). An expired hold is dropped.
+    // Returns the hold's values.
+    async checkHold(origin, holdId) {
+      const held = this.getHold(origin, holdId), s = active();
+      const assertCurrent = () => {
+        current(s); lockCoordinator.assertUnlocked(); s.assertReady?.();
+        if (held.account !== s.addresses.nodus || !getPermittedAccounts(origin).some(item => item.address === held.account && item.publicKey === `0x${s.client.publicKey}`)) throw providerErrors.unauthorized();
+      };
+      assertCurrent();
+      let tip;
+      try { tip = adapter.parseTip((await s.client.list({ signal: s.abort.signal })).tip); }
+      catch { s.reviews.delete(holdId); throw new Error('The current Nodus block height could not be read. The held payment was dropped; nothing was sent.'); }
+      assertCurrent();
+      if (tip >= held.expiryHeight) { s.reviews.delete(holdId); throw new Error(`The held payment expired at block ${held.expiryHeight} (the chain is at block ${tip}). Nothing was sent.`); }
+      return held;
+    },
+    // Sends the held transfer, after the same check; used only once the signed request reached the bot.
+    async sendHeld(origin, holdId) {
+      const held = await this.checkHold(origin, holdId);
+      const hash = await this.confirmSend(holdId);
+      return { intentId: hash, transferId: held.wireId };
     },
     reconcileQuarantine() { return session ? reconcileQuarantine(session) : Promise.resolve(); },
     async discardActivity() {

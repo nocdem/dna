@@ -4,7 +4,8 @@ import { createWalletUi } from './wallet-ui.js';
 import { actionButton, renderHome, renderReceive, renderConnect, renderSites, renderSettings } from './views.js';
 import { renderEvmApproval, renderEvmSend } from './evm-screens.js';
 import { renderNodusSend, renderNodusHistory } from './nodus-screens.js';
-import { renderNodusConnect, renderNodusSiteApproval } from './nodus-site-screens.js';
+import { renderNodusConnect, renderNodusSiteApproval, renderSwapPaymentApproval } from './nodus-site-screens.js';
+import { SWAP_PAYMENT_APPROVAL } from '../constants/swap.js';
 import { renderSolanaTronSend, renderSolanaTronHistory } from './solana-tron-screens.js';
 import { NODUS_PERMISSION } from '../background/permissions.js';
 import { createPhraseFields } from '../../../src/phrase-fields.js';
@@ -330,6 +331,11 @@ export async function mountWalletPage({ document = globalThis.document, window =
       if (pending.type === 'nodus_signMessage') {
         renderNodusSiteApproval(document, root, pending, {
           approve: request => run(() => ui.approveNodusMessage(request)), reject: request => run(() => ui.rejectNodusMessage(request)),
+        });
+      } else if (pending.type === SWAP_PAYMENT_APPROVAL) {
+        // Resolve and reject are the same generic pending-approval calls as the signature screens use.
+        renderSwapPaymentApproval(document, root, pending, {
+          approve: request => run(() => ui.approveEvm(request)), reject: request => run(() => ui.rejectEvm(request)),
         });
       } else if (pending.requestData?.permissions?.[NODUS_PERMISSION] && Object.keys(pending.requestData.permissions).length === 1) {
         renderNodusConnect(document, root, state, pending, {

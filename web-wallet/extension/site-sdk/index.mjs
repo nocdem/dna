@@ -59,13 +59,23 @@ export function createNodusConnector({ window = globalThis.window } = {}) {
     };
     return button;
   }
-  return { connect, signMessage, createConnectButton };
+  // The swap and liquidity add methods (plan 2026-11-08-swap-bot-plan.nodus1.md section 18 change 1). Each sends its
+  // one request object to the discovered Nodus provider; the extension validates it, shows every signature and payment
+  // for approval, posts the signed request to the bot itself and pays only if that request reached the bot.
+  const swapCall = method => async request => (await provider()).request({ method, params: [request] });
+  return { connect, signMessage, createConnectButton,
+    holdTransfer: swapCall('nodus_swapHoldTransfer'), sendNodusToUsdt: swapCall('nodus_swapSendNodusToUsdt'),
+    sendUsdtToNodus: swapCall('nodus_swapSendUsdtToNodus'), sendLiquidityAdd: swapCall('nodus_swapSendLiquidityAdd') };
 }
 
 const connector = createNodusConnector();
 export const connect = connector.connect;
 export const signMessage = connector.signMessage;
 export const createConnectButton = connector.createConnectButton;
+export const holdTransfer = connector.holdTransfer;
+export const sendNodusToUsdt = connector.sendNodusToUsdt;
+export const sendUsdtToNodus = connector.sendUsdtToNodus;
+export const sendLiquidityAdd = connector.sendLiquidityAdd;
 
 let verifier;
 async function withVerifier(run) {

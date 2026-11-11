@@ -17,6 +17,7 @@ import { createPrivacyConsent } from './privacy-consent.js';
 import { createRequestEngine } from './engine.js';
 import { createEvm } from './evm.js';
 import { createNodus } from './nodus.js';
+import { createSwap } from './swap.js';
 import { createConnect } from './connect.js';
 import { createSplendor } from './splendor.js';
 import { createAsentum } from './asentum.js';
@@ -410,7 +411,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
       return unlock(password);
     },
   };
-  engine = createRequestEngine({ runtime, permissions, approvals, autoLockAlarm, trustedApi, getUiPorts: () => uiPorts, evm, nodus, privacyConsent });
+  engine = createRequestEngine({ runtime, permissions, approvals, autoLockAlarm, trustedApi, getUiPorts: () => uiPorts, evm, nodus, swap: createSwap({ evm, nodus }), privacyConsent });
   engine.attachNetworkClient(evm.client, () => evm.client.metadata);
   const onPermissionsChanged = () => { void engine.notifyAccountsChanged(); };
   messenger.subscribe('PermissionController:stateChange', onPermissionsChanged);

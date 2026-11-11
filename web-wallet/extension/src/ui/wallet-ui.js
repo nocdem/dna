@@ -6,6 +6,7 @@ import { CHAINS, CELLFRAME } from '../../../src/config.js';
 import { ASSETS, CPUNK_ASSET, chainBalances, portfolioSnapshot, usdText } from '../../../src/portfolio.js';
 import { NODUS_ASSET, nodusNetworkFor } from '../../../src/nodus/network.js';
 import { chainNetwork } from '../constants/networks.js';
+import { EVM_NETWORKS, EVM_CHAINS } from '../constants/evm-networks.js';
 import { NODUS_PERMISSION } from '../background/permissions.js';
 import { Caip25CaveatType, Caip25EndowmentPermissionName, getPermittedEthChainIds,
   setEthAccounts, setPermittedEthChainIds } from '@metamask/chain-agnostic-permission';
@@ -16,8 +17,11 @@ export function connectDetails(pending) {
   const caveat = permission?.caveats?.find(item => item.type === Caip25CaveatType);
   if (!caveat || Object.keys(request.permissions).some(key => key !== Caip25EndowmentPermissionName)) throw new Error('Unsupported connection permissions.');
   const requested = getPermittedEthChainIds(caveat.value);
-  const networks = ['ethereum', 'bsc'].map(key => ({ key, name: CHAINS[key].name, chainId: `0x${CHAINS[key].chainId.toString(16)}` }));
-  if (requested.some(id => !networks.some(network => network.chainId === id)) ||
+  // A switch to Sepolia asks the site's chain permission through this screen (givens item 81), so its permission
+  // request is understood; a first connection still offers Ethereum and BNB Smart Chain only.
+  const known = EVM_CHAINS.map(key => ({ key, name: EVM_NETWORKS[key].name, chainId: `0x${EVM_NETWORKS[key].chainId.toString(16)}` }));
+  const networks = known.filter(network => requested.includes(network.chainId) || network.key !== 'sepolia');
+  if (requested.some(id => !known.some(network => network.chainId === id)) ||
     [...Object.keys(caveat.value.requiredScopes), ...Object.keys(caveat.value.optionalScopes)].some(scope => scope !== 'wallet:eip155' && !scope.startsWith('eip155:'))) {
     throw new Error('Unsupported connection networks.');
   }
