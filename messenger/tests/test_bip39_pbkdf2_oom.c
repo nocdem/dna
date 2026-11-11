@@ -81,7 +81,7 @@ static void sweep_pbkdf2(size_t out_len) {
         uint8_t out[128];
         memset(out, 0xAA, sizeof(out));
         g_count = 0;
-        g_fail_at = 2049 + 3;   /* block 1 = 2049 mallocs; +3 = third HMAC of block 2 */
+        g_fail_at = 2049 + 3;   /* block 1 = 2049 mallocs; block 2: 2050 salt block, 2051 first HMAC, 2052 second HMAC */
         int rc = bip39_pbkdf2_hmac_sha512((const uint8_t *)MNEMONIC, strlen(MNEMONIC),
                                           salt, sizeof(salt) - 1, 2048, out, out_len);
         g_fail_at = 0;
