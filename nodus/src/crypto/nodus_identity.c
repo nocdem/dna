@@ -110,6 +110,15 @@ static int identity_write_file_atomic(const char *path, const uint8_t *bytes,
     int fd = open(tmp_path, O_WRONLY | O_CREAT | O_EXCL, (mode_t)mode);
     if (fd < 0) return -1;
 
+    /* N-01: open() applies the umask to `mode`; a restrictive umask would
+     * only ever narrow it further, so pin the exact mode before any byte
+     * is written. */
+    if (fchmod(fd, (mode_t)mode) != 0) {
+        close(fd);
+        unlink(tmp_path);
+        return -1;
+    }
+
     FILE *f = fdopen(fd, "wb");
     if (!f) {
         close(fd);
@@ -319,17 +328,11 @@ int nodus_identity_save(const nodus_identity_t *id, const char *path) {
     fclose(f);
 
     /* Write secret key */
+    /* N-01 (M-12): secret keys are created 0600 from the first byte (temp
+     * file + fchmod + rename), never written wider and chmod-ed afterwards. */
     snprintf(filepath, sizeof(filepath), "%s/nodus.sk", path);
-    f = fopen(filepath, "wb");
-    if (!f) return -1;
-    if (fwrite(id->sk.bytes, 1, NODUS_SK_BYTES, f) != NODUS_SK_BYTES) {
-        fclose(f);
+    if (identity_write_file_atomic(filepath, id->sk.bytes, NODUS_SK_BYTES, 0600) != 0)
         return -1;
-    }
-    fclose(f);
-#ifndef _WIN32
-    chmod(filepath, 0600);  /* M-12: restrict secret key to owner-only */
-#endif
 
     /* Write fingerprint */
     snprintf(filepath, sizeof(filepath), "%s/nodus.fp", path);
@@ -350,16 +353,9 @@ int nodus_identity_save(const nodus_identity_t *id, const char *path) {
         fclose(f);
 
         snprintf(filepath, sizeof(filepath), "%s/nodus.kyber_sk", path);
-        f = fopen(filepath, "wb");
-        if (!f) return -1;
-        if (fwrite(id->kyber_sk, 1, NODUS_KYBER_SK_BYTES, f) != NODUS_KYBER_SK_BYTES) {
-            fclose(f);
+        if (identity_write_file_atomic(filepath, id->kyber_sk,
+                                       NODUS_KYBER_SK_BYTES, 0600) != 0)
             return -1;
-        }
-        fclose(f);
-#ifndef _WIN32
-        chmod(filepath, 0600);
-#endif
     }
 
     /* Write ML-KEM-1024 keypair (Faz 1 KEM migration, if available) */
@@ -374,16 +370,9 @@ int nodus_identity_save(const nodus_identity_t *id, const char *path) {
         fclose(f);
 
         snprintf(filepath, sizeof(filepath), "%s/nodus.mlkem_sk", path);
-        f = fopen(filepath, "wb");
-        if (!f) return -1;
-        if (fwrite(id->mlkem_sk, 1, NODUS_MLKEM_SK_BYTES, f) != NODUS_MLKEM_SK_BYTES) {
-            fclose(f);
+        if (identity_write_file_atomic(filepath, id->mlkem_sk,
+                                       NODUS_MLKEM_SK_BYTES, 0600) != 0)
             return -1;
-        }
-        fclose(f);
-#ifndef _WIN32
-        chmod(filepath, 0600);
-#endif
     }
 
     return 0;

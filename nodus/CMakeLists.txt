@@ -1513,6 +1513,18 @@ add_executable(test_identity tests/test_identity.c)
 target_link_libraries(test_identity nodus dsa nodus)
 add_test(NAME test_identity COMMAND test_identity)
 
+# N-01: nodus_identity_save creates the secret key files 0600 (umask 0 in the
+# test); mkdtemp dir under /tmp, removed at the end.
+add_executable(test_identity_secret_perms tests/test_identity_secret_perms.c)
+target_link_libraries(test_identity_secret_perms nodus dsa kem nodus)
+add_test(NAME test_identity_secret_perms COMMAND test_identity_secret_perms)
+
+# C-14: nodus_client_init / nodus_channel_init return -1 when the transport
+# cannot be opened (descriptor table full, exhausted in a forked child).
+add_executable(test_client_init_tcp_fail tests/test_client_init_tcp_fail.c)
+target_link_libraries(test_client_init_tcp_fail nodus dsa kem nodus pthread)
+add_test(NAME test_client_init_tcp_fail COMMAND test_client_init_tcp_fail)
+
 # Server identity start-up rule (nodus_server_identity_load_or_create;
 # decision 2026-10-01-nodus-component-split item 10): create only when
 # neither nodus.pk nor nodus.sk exists; an unloadable existing identity or a
