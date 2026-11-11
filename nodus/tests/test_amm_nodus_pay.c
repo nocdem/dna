@@ -917,6 +917,33 @@ int main(void) {
     CHECK(sign(&e, &s2, 5000000000ULL, &o) == AMM_NP_OK, "P13 once the first is settled the second signs");
     env_close(&e);
 
+    /* ── P13b head selection (revision 12 correction, claim 2) ─────────
+     * PROVES: an OLDER NODUS refund_pending swap with no attempt does not hold the
+     * payer back while a YOUNGER USDT -> NODUS swap's decided attempt is open: the
+     * step drives the younger stored attempt (submit, then settlement) and only then
+     * asks for the refund's sign. With oldest-first head selection the step would
+     * return NEED_SIGN for the refund, the refund's sign would be refused (BUSY,
+     * another attempt open) and the younger attempt would never settle.
+     * FALSE PASS: the scripted node applies the intent at the height the test sets; the
+     * younger attempt is stored by the test's sign() helper (as the decision stores it),
+     * so the decision transaction itself is test_amm_journal J27. */
+    env_open(&e);
+    CHECK(mk_refund(&e, &s) && mk_payout(&e, 1, &s2), "P13b setup: an older refund, a younger payout");
+    CHECK(s.seq < s2.seq && sign(&e, &s2, 5000000000ULL, &o) == AMM_NP_OK && attempt(&e, &s, &at2) == 1,
+          "P13b the younger payout's decided attempt is stored; the older refund has none");
+    CHECK(step(&e, &o) == AMM_NP_OK && o.swap_seq == s2.seq && o.submitted == 1,
+          "P13b the step drives the YOUNGER swap's open attempt (not NEED_SIGN for the older refund)");
+    attempt(&e, &s2, &at);
+    e.st.applied_height = 1001;
+    memcpy(e.st.applied_intent, at.intent_id, 64);
+    e.st.ri.tip = 1002;
+    amm_attempt_free(&at);
+    CHECK(step(&e, &o) == AMM_NP_OK && swap_is(&e, &s2, "paid"), "P13b the younger payout settles: paid");
+    CHECK(step(&e, &o) == AMM_NP_NEED_SIGN && o.swap_seq == s.seq,
+          "P13b then the older refund is the head and needs its sign");
+    CHECK(sign(&e, &s, 1000ULL + 20000000ULL, &o) != AMM_NP_BUSY, "P13b and its sign is no longer refused as busy");
+    env_close(&e);
+
     /* ── P14 configuration ───────────────────────────────────────── */
     env_open(&e);
     amm_nodus_pay_cfg_t c = e.cfg;

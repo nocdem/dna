@@ -1679,6 +1679,61 @@ static void e18_adds_paged_and_ordered(void) {
     env_close(&f);
 }
 
+/* ── E19 the reverse order: the swap seen first is decided before the add ── */
+
+/* Proves (plan section 13, line 575; the reverse of E18): a swap whose payment was
+ * SEEN (seen number 1) before a liquidity add became ready (seen number 2) is decided
+ * FIRST, at the pool WITHOUT the add (93652445369406), and the add commits after it;
+ * the pool ends with both. If adds were always committed before the swaps, the swap
+ * would be priced from the pool the add changed (93672521996257, E18) and this test
+ * fails. FALSE PASS: the swap is held undecided in step 1 by payouts_paused (its
+ * seen number is read from the row to show it is below the add's); the pause is lifted
+ * by a restart, so the same step links the add, makes it ready and decides the swap. */
+static void e19_swap_before_add(void) {
+    printf("E19 a swap seen before an add is decided before it, priced without it\n");
+    env_t f;
+    env_open(&f);
+    {
+        amm_pool_t p0;
+        evm_u256_from_u64(&p0.depth_n, 3000000000000000ULL);
+        evm_u256_from_u64(&p0.depth_u, 3000000000ULL);
+        evm_u256_from_u64(&p0.units, 3000000000000000ULL);
+        amm_journal_pool_put(f.j, &p0);
+    }
+    amm_quote_answer_t q;
+    amm_add_answer_t aa;
+    CHECK(amm_engine_quote(f.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &q) == AMM_Q_OK, "a swap approval");
+    amm_req_usdt_t ur = usdt_req(&q, 'b', 1);
+    CHECK(amm_engine_accept_usdt(f.eng, &ur, NULL) == AMM_ACC_RECEIVED, "signed request");
+    CHECK(amm_engine_add_question(f.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &aa) == AMM_AQ_OK, "an add question");
+    amm_req_liq_add_t lr = add_req(&aa, 'a', 'c', 'a');
+    CHECK(amm_engine_accept_add(f.eng, &lr, NULL) == AMM_ACC_RECEIVED, "signed pair");
+    f.cfg.payouts_paused = 1;
+    env_restart(&f);
+    put_rec(&f, 0x95, 1001, 0xbb, 100000000ULL, "deep");
+    amm_engine_step_t o;
+    amm_swap_t s;
+    CHECK(step(&f, &o) == 0 && swap_of(&f, q.request_number, &s) && s.seen_seq == 1 &&
+          !strcmp(s.state, "counted") && o.decided == 0,
+          "step 1: the swap's payment is seen (number 1), counted, undecided (payouts paused)");
+    f.cfg.payouts_paused = 0;
+    env_restart(&f);
+    add_deposits(&f, &lr, 0x93, 0xaa, 1001, 1001);
+    W.eth_tip = 1400; W.nodus_tip = 1010;
+    W.rcpt_ok = 1; W.rcpt_block = 1001; W.rcpt_hash = 0x93;
+    CHECK(step(&f, &o) == 0 && o.adds_linked == 2 && o.adds_committed == 1 && o.decided == 1,
+          "step 2: the add is linked, ready and committed, the swap decided");
+    amm_add_t ad;
+    CHECK(amm_journal_add_by_botreq(f.j, aa.request_number, &ad) == 0 && ad.seen_seq == 2 &&
+          !strcmp(ad.state, "committed") && swap_of(&f, q.request_number, &s) && s.seen_seq == 1,
+          "the add took seen number 2, the swap holds 1");
+    CHECK(!strcmp(s.state, "payout_pending") && s.out_amount == OUT_UN,
+          "the swap was decided FIRST: priced at 93652445369406, without the add");
+    CHECK(pool_is(&f, 3000000000000000ULL - OUT_UN + 10000000000000ULL, 3000000000ULL + 100000000ULL + 10000000ULL),
+          "the pool holds the swap's update and then the add");
+    env_close(&f);
+}
+
 int main(void) {
     printf("test_amm_engine\n");
     e1_quote();
@@ -1699,6 +1754,7 @@ int main(void) {
     e16_liquidity_add();
     e17_undecidable();
     e18_adds_paged_and_ordered();
+    e19_swap_before_add();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }
