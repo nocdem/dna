@@ -202,8 +202,8 @@ It shares nginx with kayraninyeri.com: its other server blocks are not touched, 
 
 Install (on 62.171.136.77, as root; the ACME client needs lego v5.6.0 installed outside Debian 12's archive):
 
-1. Back up `/etc/nginx`; read `nginx -T` for a name clash with the zone `amm_quote`; check the address is on the
-   machine (`ip -4 addr`); `mkdir -p /var/www/acme-amm /etc/lego-amm`.
+1. Back up `/etc/nginx`; read `nginx -T` for a name clash with the zone `amm_quote` and for any other
+   `default_server` on `443`; `mkdir -p /var/www/acme-amm /etc/lego-amm`.
 2. First the port-80 block alone, so the challenge can be answered before a certificate exists: install the file
    without the 443 server block (or with the certificate lines commented out), then
    `cp amm-https.conf /etc/nginx/sites-available/amm-62.171.136.77`,
