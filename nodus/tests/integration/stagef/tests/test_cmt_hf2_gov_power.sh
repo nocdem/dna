@@ -161,7 +161,8 @@
 #   — OLD's name table has no HF2_ACTIVE (cc_param_name_to_id; zero "HF2"
 #   in a82a2544's nodus-cli.c) and prints "Unknown param name:
 #   HF2_ACTIVE" before any connect; NEW's table has it and gets as far as
-#   "client_connect failed". Both exit 1, so the TEXTS are asserted, not
+#   "cannot find this node's witness socket" (own-node tool since the 4001
+#   change) or "client_connect failed". Both exit 1, so the TEXTS are asserted, not
 #   the codes. (iv) Every node's log shows "Nodus v<OLD> running" at the
 #   start and a NEW "Nodus v<NEW> running" after its upgrade. The script
 #   RUNS each binary once with `-h`, and each CLI once for the probe
@@ -342,7 +343,8 @@ old_probe=$(probe "$OLD_CLI"); new_probe=$(probe "$NEW_CLI")
 [[ "$old_probe" == *"Unknown param name: HF2_ACTIVE"* ]] || {
     printf '%s\n' "$old_probe" >&2
     die "the OLD CLI's name table ACCEPTED HF2_ACTIVE — OLD is not a pre-HF-2 build"; }
-[[ "$new_probe" != *"Unknown param name"* && "$new_probe" == *"client_connect failed"* ]] || {
+[[ "$new_probe" != *"Unknown param name"* && \
+   ( "$new_probe" == *"cannot find this node's witness socket"* || "$new_probe" == *"client_connect failed"* ) ]] || {
     printf '%s\n' "$new_probe" >&2
     die "the NEW CLI did not pass HF2_ACTIVE through its name table to the connect step — NEW is not an HF-2 build"; }
 echo "[ok] version gate: OLD $OLD_VER refuses HF2_ACTIVE by name, NEW $NEW_VER knows it (probe port $PROBE_PORT, nothing reached)"

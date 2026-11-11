@@ -83,6 +83,73 @@ say()  { printf '%s: %s\n' "$PROG" "$*"; }
 warn() { printf '%s: WARNING: %s\n' "$PROG" "$*" >&2; }
 die()  { printf '%s: %s\n' "$PROG" "$*" >&2; exit 1; }
 
+# Host firewall check for the ports the node needs (read-only; used only when
+# ufw is not in use). fw_blockers prints one line per firewall that drops
+# incoming traffic by default and has no accepting TCP rule for the witness
+# port 4004; it prints nothing when the tools are missing, need more rights
+# than this run has, or find nothing. It always returns 0 (set -e safe) and
+# never changes a rule. The match is on the rule text only: a rule that
+# reaches 4004 through another chain or a set is not followed, so the warning
+# says "does not appear to allow".
+FW_PORT_AWK='
+function covers(s, p,   i, c, tok, n, a, lo, hi, k, toks) {
+    # s: the text after "dport": port numbers, ranges (4000-4004, 4000:4004),
+    # braces and commas; stops at the first other character.
+    tok = ""
+    for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c ~ /[0-9:\-]/) tok = tok c
+        else if (c ~ /[ \t,{}]/) tok = tok " "
+        else if (c == "s" && i == 1) continue
+        else break
+    }
+    n = split(tok, toks, " ")
+    for (k = 1; k <= n; k++) {
+        if (split(toks[k], a, /[:\-]/) == 2) { lo = a[1] + 0; hi = a[2] + 0 }
+        else { lo = toks[k] + 0; hi = lo }
+        if (toks[k] != "" && p + 0 >= lo && p + 0 <= hi) return 1
+    }
+    return 0
+}
+function accepts_port(line, p,   pos) {
+    if (line !~ /(accept|ACCEPT)/) return 0
+    if (line ~ /udp/ && line !~ /tcp/) return 0
+    pos = index(line, "dport")
+    if (pos == 0) return 0
+    return covers(substr(line, pos + 5), p)
+}
+'
+fw_blockers() {
+    local rules=""
+    if command -v nft >/dev/null 2>&1; then
+        rules=$(nft list ruleset 2>/dev/null || true)
+        if [ -n "$rules" ]; then
+            printf '%s\n' "$rules" | awk -v p=4004 "$FW_PORT_AWK"'
+                /^[ \t]*table / { tbl = $2 " " $3 }
+                /^[ \t]*chain / { inch = 1; hook = 0; drop = 0; open = 0; name = $2 }
+                inch && /hook input/ { hook = 1 }
+                inch && /policy drop/ { drop = 1 }
+                inch && accepts_port($0, p) { open = 1 }
+                inch && /^[ \t]*}/ {
+                    if (hook && drop && !open)
+                        print "nftables (table " tbl ", chain " name ": input policy drop, no accepting rule for TCP " p ")"
+                    inch = 0
+                }' || true
+        fi
+    fi
+    if command -v iptables >/dev/null 2>&1; then
+        rules=$(iptables -S INPUT 2>/dev/null || true)
+        if [ -n "$rules" ]; then
+            printf '%s\n' "$rules" | awk -v p=4004 "$FW_PORT_AWK"'
+                /^-P INPUT (DROP|REJECT)/ { drop = 1 }
+                /^-A INPUT -j (DROP|REJECT)/ { drop = 1 }
+                /^-A INPUT / && accepts_port($0, p) { open = 1 }
+                END { if (drop && !open) print "iptables (INPUT policy or final rule drops, no accepting rule for TCP " p ")" }' || true
+        fi
+    fi
+    return 0
+}
+
 usage() {
     cat <<'EOF'
 Install or update a Nodus node (testnet) on a Debian/Ubuntu x86-64 server.
@@ -562,6 +629,15 @@ EOF
             fi
         else
             say "Firewall: TCP 4004 must be reachable from the internet. If your provider has a firewall (a cloud security group, for example), open TCP 4004 there."
+            # ufw is not in use: look (read-only) for another host firewall on
+            # this machine that drops incoming traffic. Nothing is changed.
+            local fw_found
+            fw_found=$(fw_blockers)
+            if [ -n "$fw_found" ]; then
+                while IFS= read -r fw_line; do
+                    warn "host firewall found: $fw_line. It does not appear to allow TCP 4004, the port the witnesses use to reach this node; the node's other ports in its config (UDP 4000, TCP 4001 and 4002) were not checked and may need the same. This script does not change nftables or iptables rules. Add accepting rules yourself, for example for nftables: nft add rule inet filter input tcp dport 4004 accept (and make it permanent in /etc/nftables.conf), or for iptables: iptables -I INPUT -p tcp --dport 4004 -j ACCEPT."
+                done <<<"$fw_found"
+            fi
         fi
     fi
 

@@ -106,7 +106,9 @@
 #   must reach "client_connect failed" with --param HF2_ACTIVE (OLD is a
 #   post-HF-2 build, needed for step 2) and must print "Unknown param
 #   name: HF3_ACTIVE" with --param HF3_ACTIVE (OLD is pre-HF-3); NEW's CLI
-#   must reach "client_connect failed" with --param HF3_ACTIVE. All exit
+#   must reach "client_connect failed" with --param HF3_ACTIVE ("reach" =
+#   the output holds "cannot find this node's witness socket" or
+#   "client_connect failed": own-node tool since the 4001 change). All exit
 #   1, so the TEXTS are asserted, not the codes. (iv) every node's log
 #   shows "Nodus v<OLD> running" at the start and "Nodus v<NEW> running"
 #   after its upgrade. The script RUNS each binary once with `-h` and each
@@ -249,13 +251,15 @@ probe() {                  # CLI PARAM -> the CLI's combined output (rc ignored:
 old_hf2=$(probe "$OLD_CLI" HF2_ACTIVE)
 old_hf3=$(probe "$OLD_CLI" HF3_ACTIVE)
 new_hf3=$(probe "$NEW_CLI" HF3_ACTIVE)
-[[ "$old_hf2" != *"Unknown param name"* && "$old_hf2" == *"client_connect failed"* ]] || {
+[[ "$old_hf2" != *"Unknown param name"* && \
+   ( "$old_hf2" == *"cannot find this node's witness socket"* || "$old_hf2" == *"client_connect failed"* ) ]] || {
     printf '%s\n' "$old_hf2" >&2
     die "the OLD CLI does not know HF2_ACTIVE — OLD is not a post-HF-2 build (step 2 needs one)"; }
 [[ "$old_hf3" == *"Unknown param name: HF3_ACTIVE"* ]] || {
     printf '%s\n' "$old_hf3" >&2
     die "the OLD CLI's name table ACCEPTED HF3_ACTIVE — OLD is not a pre-HF-3 build"; }
-[[ "$new_hf3" != *"Unknown param name"* && "$new_hf3" == *"client_connect failed"* ]] || {
+[[ "$new_hf3" != *"Unknown param name"* && \
+   ( "$new_hf3" == *"cannot find this node's witness socket"* || "$new_hf3" == *"client_connect failed"* ) ]] || {
     printf '%s\n' "$new_hf3" >&2
     die "the NEW CLI did not pass HF3_ACTIVE through its name table to the connect step — NEW is not an HF-3 build"; }
 echo "[ok] version gate: OLD $OLD_VER knows HF2_ACTIVE and refuses HF3_ACTIVE by name, NEW $NEW_VER knows HF3_ACTIVE (probe port $PROBE_PORT, nothing reached)"

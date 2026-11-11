@@ -251,7 +251,8 @@ done
 [ -n "$PROBE_PORT" ] || die "no free port in 14991..14999 for the name-table probe"
 probe=$(timeout 60 "$CLI" -s 127.0.0.1 -p "$PROBE_PORT" chain-config propose \
             --param DELEGATE_NAME_REQUIRED --value 1 --effective 1 2>&1 || true)
-[[ "$probe" != *"Unknown param name"* && "$probe" == *"client_connect failed"* ]] || {
+[[ "$probe" != *"Unknown param name"* && \
+   ( "$probe" == *"cannot find this node's witness socket"* || "$probe" == *"client_connect failed"* ) ]] || {
     printf '%s\n' "$probe" >&2
     die "the CLI did not pass DELEGATE_NAME_REQUIRED through its name table to the connect step — not an HF-8 build"; }
 echo "[ok] CLI gate: $(readlink -f "$CLI") knows DELEGATE_NAME_REQUIRED (probe port $PROBE_PORT, nothing reached)"
