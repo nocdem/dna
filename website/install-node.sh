@@ -84,24 +84,30 @@ warn() { printf '%s: WARNING: %s\n' "$PROG" "$*" >&2; }
 die()  { printf '%s: %s\n' "$PROG" "$*" >&2; exit 1; }
 
 # Host firewall check for the ports the node needs (read-only; used only when
-# ufw is not in use). fw_blockers prints one line per firewall that drops
-# incoming traffic by default and has no accepting TCP rule for the witness
-# port 4004; it prints nothing when the tools are missing, need more rights
-# than this run has, or find nothing. It always returns 0 (set -e safe) and
-# never changes a rule. The match is on the rule text only: a rule that
-# reaches 4004 through another chain or a set is not followed, so the warning
-# says "does not appear to allow".
+# ufw is not in use). fw_blockers prints one line per firewall that, for a new
+# incoming TCP connection to the witness port 4004, drops it by a rule or by
+# the default policy; it prints nothing when the tools are missing, need more
+# rights than this run has, or find nothing. It always returns 0 (set -e safe)
+# and never changes a rule.
+# The rules of each input chain are read in order; the first rule that matches
+# every new TCP packet to 4004 decides: its verdict token (nft accept/drop/
+# reject, iptables -j ACCEPT/DROP/REJECT, never comment text) is the answer;
+# with no such rule the chain policy decides. A rule can match only with
+# "tcp" (or no protocol) and a dport that includes 4004 (or none). Rules the
+# parser cannot evaluate are skipped: a jump or goto, a named set, a negated
+# match (! or !=), and any interface, address, connection-state or other
+# condition (so a loopback-only accept never counts). A rule that reaches
+# 4004 in a way that is skipped is not followed, so the warning says "does not
+# appear to allow".
 FW_PORT_AWK='
 function covers(s, p,   i, c, tok, n, a, lo, hi, k, toks) {
-    # s: the text after "dport": port numbers, ranges (4000-4004, 4000:4004),
-    # braces and commas; stops at the first other character.
+    # s: port numbers, ranges (4000-4004, 4000:4004), braces and commas.
     tok = ""
     for (i = 1; i <= length(s); i++) {
         c = substr(s, i, 1)
         if (c ~ /[0-9:\-]/) tok = tok c
         else if (c ~ /[ \t,{}]/) tok = tok " "
-        else if (c == "s" && i == 1) continue
-        else break
+        else return 0
     }
     n = split(tok, toks, " ")
     for (k = 1; k <= n; k++) {
@@ -111,12 +117,55 @@ function covers(s, p,   i, c, tok, n, a, lo, hi, k, toks) {
     }
     return 0
 }
-function accepts_port(line, p,   pos) {
-    if (line !~ /(accept|ACCEPT)/) return 0
-    if (line ~ /udp/ && line !~ /tcp/) return 0
-    pos = index(line, "dport")
-    if (pos == 0) return 0
-    return covers(substr(line, pos + 5), p)
+# One nft rule line -> "accept", "block" or "" (does not decide / not evaluable).
+function nft_rule(line, p,   n, t, i, tk, proto, hasport, port, verdict) {
+    gsub(/"[^"]*"/, "\"\"", line)
+    sub(/^[ \t]+/, "", line)
+    n = split(line, t, /[ \t]+/)
+    proto = ""; hasport = 0; port = ""; verdict = ""
+    for (i = 1; i <= n; i++) {
+        tk = t[i]
+        if (tk == "") continue
+        if (tk == "tcp") { proto = "tcp"; continue }
+        if (tk == "meta" || tk == "l4proto" || tk == "ip" || tk == "protocol" || tk == "log" || tk == "prefix" || tk == "\"\"") continue
+        if (tk == "counter") { if (t[i+1] == "packets") i += 4; continue }
+        if (tk == "dport") {
+            hasport = 1
+            i++
+            if (t[i] ~ /^!/) return ""
+            if (t[i] ~ /^\{/) {
+                port = t[i]
+                while (t[i] !~ /\}/ && i < n) { i++; port = port " " t[i] }
+            } else port = t[i]
+            continue
+        }
+        if (tk == "accept" || tk == "drop" || tk == "reject") { verdict = tk; break }
+        return ""
+    }
+    if (verdict == "") return ""
+    if (hasport && !covers(port, p)) return ""
+    return (verdict == "accept") ? "accept" : "block"
+}
+# One iptables -S rule line -> "accept", "block" or "".
+function ipt_rule(line, p,   n, t, i, tk, proto, hasport, port, verdict) {
+    gsub(/"[^"]*"/, "\"\"", line)
+    n = split(line, t, /[ \t]+/)
+    proto = ""; hasport = 0; port = ""; verdict = ""
+    for (i = 3; i <= n; i++) {
+        tk = t[i]
+        if (tk == "") continue
+        if (tk == "-p") { proto = t[++i]; continue }
+        if (tk == "-m") { i++; if (t[i] == "tcp" || t[i] == "multiport" || t[i] == "comment") continue; return "" }
+        if (tk == "--comment") { i++; continue }
+        if (tk == "--dport" || tk == "--dports") { hasport = 1; port = t[++i]; continue }
+        if (tk == "--reject-with") { i++; continue }
+        if (tk == "-j") { verdict = t[++i]; continue }
+        return ""
+    }
+    if (verdict != "ACCEPT" && verdict != "DROP" && verdict != "REJECT") return ""
+    if (proto != "" && proto != "tcp" && proto != "all") return ""
+    if (hasport && !covers(port, p)) return ""
+    return (verdict == "ACCEPT") ? "accept" : "block"
 }
 '
 fw_blockers() {
@@ -126,25 +175,23 @@ fw_blockers() {
         if [ -n "$rules" ]; then
             printf '%s\n' "$rules" | awk -v p=4004 "$FW_PORT_AWK"'
                 /^[ \t]*table / { tbl = $2 " " $3 }
-                /^[ \t]*chain / { inch = 1; hook = 0; drop = 0; open = 0; name = $2 }
-                inch && /hook input/ { hook = 1 }
-                inch && /policy drop/ { drop = 1 }
-                inch && accepts_port($0, p) { open = 1 }
+                /^[ \t]*chain / { inch = 1; hook = 0; drop = 0; dec = ""; name = $2; next }
+                inch && /hook input/ { hook = 1; if ($0 ~ /policy drop/) drop = 1; next }
                 inch && /^[ \t]*}/ {
-                    if (hook && drop && !open)
-                        print "nftables (table " tbl ", chain " name ": input policy drop, no accepting rule for TCP " p ")"
-                    inch = 0
-                }' || true
+                    if (hook && (dec == "block" || (dec == "" && drop)))
+                        print "nftables (table " tbl ", chain " name ": incoming TCP " p " is dropped by a rule or by the input policy)"
+                    inch = 0; next
+                }
+                inch && hook && dec == "" { dec = nft_rule($0, p) }' || true
         fi
     fi
     if command -v iptables >/dev/null 2>&1; then
         rules=$(iptables -S INPUT 2>/dev/null || true)
         if [ -n "$rules" ]; then
             printf '%s\n' "$rules" | awk -v p=4004 "$FW_PORT_AWK"'
-                /^-P INPUT (DROP|REJECT)/ { drop = 1 }
-                /^-A INPUT -j (DROP|REJECT)/ { drop = 1 }
-                /^-A INPUT / && accepts_port($0, p) { open = 1 }
-                END { if (drop && !open) print "iptables (INPUT policy or final rule drops, no accepting rule for TCP " p ")" }' || true
+                /^-P INPUT / { pol = $3 }
+                /^-A INPUT / && dec == "" { dec = ipt_rule($0, p) }
+                END { if (dec == "block" || (dec == "" && pol == "DROP")) print "iptables (INPUT: incoming TCP " p " is dropped by a rule or by the policy)" }' || true
         fi
     fi
     return 0
