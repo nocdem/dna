@@ -4,7 +4,8 @@ import { Transaction, verifyTypedData } from 'ethers';
 import { Caip25EndowmentPermissionName, setEthAccounts } from '@metamask/chain-agnostic-permission';
 import { setup, account, payTo } from './swap-fixture.js';
 import { SEPOLIA } from '../src/constants/evm-networks.js';
-import { connectDetails } from '../src/ui/wallet-ui.js';
+import { connectDetails, createWalletUi } from '../src/ui/wallet-ui.js';
+import { NODUS_PERMISSION } from '../src/background/permissions.js';
 
 // Extension tests of plan 2026-11-08-swap-bot-plan.nodus1.md section 18 change 6 and section 19 line 666 (operator
 // 2026-11-10, givens item 81: "Her site eklentiyi Sepolia'ya geçirebilsin."): a website's wallet_switchEthereumChain to
@@ -136,5 +137,66 @@ test('the connection screen lists Sepolia only when the request names it', async
   const offered = connectDetails(permission).networks;
   assert.deepEqual(offered.find(network => network.key === 'sepolia'), { key: 'sepolia', name: 'Ethereum Sepolia', chainId: '0xaa36a7' });
   assert.equal(offered.some(network => network.key === 'bsc'), false);
+  f.background.approvals.reject(permission.id); assert.equal((await switching).error.code, 4001);
+});
+
+// Proves a site that already holds the Nodus permission and the Ethereum connection (the swap site, givens items 68 and
+// 81) can switch to 0xaa36a7: the permission request of the switch carries the site's existing Nodus permission next
+// to the new chain scope, the connection screen accepts it and lists the account and Sepolia, approving it through the
+// screen's own approveConnect grants Sepolia, the switch completes, and the Nodus permission and its account caveat
+// are as they were. How it could falsely pass: the fake client below only forwards approvePermissionsRequest to the
+// background, so a screen that renders wrongly is not seen here (ui-flows.test.js covers rendering); the account caveat
+// is compared with a snapshot taken before the switch, so a background that re-pinned the same value would also pass,
+// which is the intended behaviour.
+test('a site holding the Nodus permission can switch to Sepolia through the connection screen', async t => {
+  const f = await setup(t), remote = f.site(); await f.connectNodus(remote); await f.connectEthereum(remote, ['0x1']);
+  const nodusBefore = structuredClone(f.background.permissions.controller.getPermissions(remote.origin)[NODUS_PERMISSION]);
+  assert.equal(nodusBefore.caveats.length, 1);
+  const switching = switchTo(remote, '0xaa36a7'), permission = await f.nextApproval(switching);
+  assert.equal(permission.type, 'wallet_requestPermissions');
+  assert.deepEqual(Object.keys(permission.requestData.permissions).sort(), [Caip25EndowmentPermissionName, NODUS_PERMISSION].sort());
+  const details = connectDetails(permission);
+  assert.ok(details.networks.some(network => network.key === 'sepolia'));
+  const requests = [], ui = createWalletUi({ request: async (method, args) => {
+    requests.push(method);
+    return method === 'getState' ? { isUnlocked: false } : f.background.permissions.acceptPermissionsRequest(args[0]);
+  } });
+  await ui.approveConnect(permission, [account.toLowerCase()], details.networks.map(network => network.chainId));
+  assert.deepEqual(requests, ['approvePermissionsRequest', 'getState']);
+  const pending = await f.nextApproval(switching); assert.equal(pending.type, 'wallet_switchEthereumChain');
+  await f.background.approvals.controller.acceptRequest(pending.id, true);
+  assert.equal((await switching).result, null);
+  assert.ok(f.background.permissions.getChainIds(remote.origin).includes('0xaa36a7'));
+  assert.equal((await remote.request('eth_chainId')).result, '0xaa36a7');
+  assert.deepEqual(f.background.permissions.controller.getPermissions(remote.origin)[NODUS_PERMISSION].caveats, nodusBefore.caveats);
+  assert.deepEqual(f.background.permissions.getNodusAccounts(remote.origin).map(item => item.address), [f.nodusMock.state.fingerprint]);
+});
+
+// Proves the screen still refuses an incremental request whose extra permissions are not exactly the site's existing
+// ones, unchanged: a changed Nodus caveat, a permission the site does not hold, a permission listed as changed by the
+// diff, and the same Nodus permission without any diff (a non-incremental request keeps the old rule). Each case is a
+// copy of the real request of the Sepolia switch with one edit, and approveConnect must refuse it as well. How it
+// could falsely pass: a refusal for another reason would also match the message, so the unedited copy is checked to
+// pass first.
+test('the connection screen refuses an incremental request that changes or adds a non-Ethereum permission', async t => {
+  const f = await setup(t), remote = f.site(); await f.connectNodus(remote); await f.connectEthereum(remote, ['0x1']);
+  const switching = switchTo(remote, '0xaa36a7'), permission = await f.nextApproval(switching);
+  assert.doesNotThrow(() => connectDetails(permission));
+  const edited = change => { const copy = structuredClone(permission); change(copy.requestData); return copy; };
+  const cases = {
+    'changed Nodus caveat': edited(data => {
+      // The request shares the unchanged permission object with diff.currentPermissions, so replace it by a new object.
+      const held = data.permissions[NODUS_PERMISSION], [caveat] = held.caveats;
+      data.permissions[NODUS_PERMISSION] = { ...held, caveats: [{ ...caveat, value: { ...caveat.value, address: 'ef'.repeat(64) } }] };
+    }),
+    'extra permission the site does not hold': edited(data => { data.permissions.unexpected = {}; }),
+    'extra permission listed as changed': edited(data => { data.diff.permissionDiffMap[NODUS_PERMISSION] = {}; }),
+    'Nodus permission without a diff': edited(data => { delete data.diff; }),
+  };
+  const ui = createWalletUi({ request: async () => assert.fail('a refused request must not reach the background') });
+  for (const [name, request] of Object.entries(cases)) {
+    assert.throws(() => connectDetails(request), /Unsupported connection permissions/, name);
+    await assert.rejects(ui.approveConnect(request, [account.toLowerCase()], ['0xaa36a7']), /Unsupported connection permissions/, name);
+  }
   f.background.approvals.reject(permission.id); assert.equal((await switching).error.code, 4001);
 });

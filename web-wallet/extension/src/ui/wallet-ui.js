@@ -15,7 +15,12 @@ import { Caip25CaveatType, Caip25EndowmentPermissionName, getPermittedEthChainId
 export function connectDetails(pending) {
   const request = pending?.requestData, permission = request?.permissions?.[Caip25EndowmentPermissionName];
   const caveat = permission?.caveats?.find(item => item.type === Caip25CaveatType);
-  if (!caveat || Object.keys(request.permissions).some(key => key !== Caip25EndowmentPermissionName)) throw new Error('Unsupported connection permissions.');
+  // An incremental request (the chain permission of a site's network switch) carries all of the site's permissions;
+  // the ones it already holds, listed unchanged by the request's own diff, are not what this screen decides.
+  const held = key => Boolean(request.diff?.currentPermissions && Object.hasOwn(request.diff.currentPermissions, key)
+    && !Object.hasOwn(request.diff.permissionDiffMap ?? {}, key)
+    && JSON.stringify(request.diff.currentPermissions[key]) === JSON.stringify(request.permissions[key]));
+  if (!caveat || Object.keys(request.permissions).some(key => key !== Caip25EndowmentPermissionName && !held(key))) throw new Error('Unsupported connection permissions.');
   const requested = getPermittedEthChainIds(caveat.value);
   // A switch to Sepolia asks the site's chain permission through this screen (givens item 81), so its permission
   // request is understood; a first connection still offers Ethereum and BNB Smart Chain only.
