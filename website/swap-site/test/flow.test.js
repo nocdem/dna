@@ -518,3 +518,224 @@ test('liquidity add delivered:true: plain words and the pair is spent', async ()
   assert.equal((await flow.confirmAdd()).reason, 'not_ready');
   assert.equal(adapter.calls.length, 1);
 });
+
+// ── review corrections: one-sided add, open approval, uncertain withdrawal, late answers, interleaved follows ──
+// Each test below uses the real error shapes through adapter -> flow (a stub provider whose error carries the
+// extension's error.data) or a hand-controlled bot. FALSE PASS: the shapes follow the extension source as read
+// (swap.js:73-81, 179-188), not the running extension; swap.js (button wiring, panel) is not run.
+function failingProvider(method, data, answers = {}) {
+  const calls = [];
+  return {
+    calls,
+    request: async ({ method: m, params }) => {
+      calls.push({ method: m, params });
+      if (m === method) throw Object.assign(new Error('extension error'), { data });
+      return answers[m] ?? null;
+    },
+  };
+}
+const flush = () => new Promise(resolve => setImmediate(resolve));
+const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
+const PAIR = { approved: true, usdtAmount: '10000000', nodusAmount: '10000000000000', requestNumber: '88', validUntil: '1700000300', payEthereum: `0x${'fe'.repeat(20)}`, payNodus: 'fd'.repeat(64) };
+
+// PROVES (correction 1): a liquidity add whose NODUS half was sent (true) or may have been ('unknown') is NOT shown as
+//   "nothing was paid": the text names the NODUS and USDT halves, the request number and the transfer id, says not to pay
+//   again nor ask for a new pair, and sends the user to the Foundation (givens items 32, 35); nodusSent false with paid
+//   false keeps the plain "nothing was paid" text.
+test('liquidity add, NODUS sent: the text says so, no new pair is invited, the Foundation is named', async () => {
+  const transferId = 'ab'.repeat(64);
+  const provider = failingProvider('nodus_swapSendLiquidityAdd', { delivered: true, paid: false, nodusSent: true, intentId: 'intent-1', transferId }, { nodus_swapHoldTransfer: HOLD });
+  const { flow } = makeFlow({ adapter: createAdapter({ getProvider: async () => provider }), routes: { 'POST /amm/liquidity/quote': [200, PAIR] } });
+  await flow.loadStatus(); await flow.pressAdd({ side: 'nodus', amountText: '100000' });
+  const r = await flow.confirmAdd();
+  assert.equal(r.delivered, true);
+  assert.equal(r.oneSided, true);
+  assert.equal(r.nodusSent, true);
+  assert.equal(r.intentId, 'intent-1');
+  assert.equal(r.transferId, transferId);
+  assert.match(r.text, /request 88/);
+  assert.match(r.text, new RegExp(`Your NODUS payment was sent \\(transfer ${transferId}\\)`));
+  assert.match(r.text, /Your USDT payment was not sent/);
+  assert.match(r.text, /do not ask for a new pair/);
+  assert.match(r.text, /Foundation/);
+  assert.match(r.text, /activity/);
+  assert.doesNotMatch(r.text, /nothing was paid|Ask for a new price/i);
+});
+
+test('liquidity add, NODUS "unknown" and USDT "unknown": both may have been sent; nodusSent false keeps the plain text', async () => {
+  let provider = failingProvider('nodus_swapSendLiquidityAdd', { delivered: true, paid: 'unknown', nodusSent: 'unknown' }, { nodus_swapHoldTransfer: HOLD });
+  let t = makeFlow({ adapter: createAdapter({ getProvider: async () => provider }), routes: { 'POST /amm/liquidity/quote': [200, PAIR] } });
+  await t.flow.loadStatus(); await t.flow.pressAdd({ side: 'nodus', amountText: '100000' });
+  let r = await t.flow.confirmAdd();
+  assert.match(r.text, /Your NODUS payment may have been sent/);
+  assert.match(r.text, /Your USDT payment may have been sent/);
+  assert.match(r.text, /Do not pay again/);
+  provider = failingProvider('nodus_swapSendLiquidityAdd', { delivered: true, paid: false, nodusSent: false }, { nodus_swapHoldTransfer: HOLD });
+  t = makeFlow({ adapter: createAdapter({ getProvider: async () => provider }), routes: { 'POST /amm/liquidity/quote': [200, PAIR] } });
+  await t.flow.loadStatus(); await t.flow.pressAdd({ side: 'nodus', amountText: '100000' });
+  r = await t.flow.confirmAdd();
+  assert.equal(r.oneSided, undefined);
+  assert.equal(r.text, 'The bot has your request but nothing was paid. Ask for a new price to try again.');
+});
+
+// PROVES (correction 2): an open-approval refusal (delivered false, openRequestNumber) keeps the open swap's number so
+//   the page follows it, says this new request paid nothing, and does not say "you can try again" (givens item 57).
+test('open_approval refusal: the open request number is kept and the text points to the open swap', async () => {
+  const provider = failingProvider('nodus_swapSendUsdtToNodus', { delivered: false, paid: false, answered: true, reason: 'open_approval', openRequestNumber: '7' });
+  const { flow } = makeFlow({ adapter: createAdapter({ getProvider: async () => provider }), routes: { 'POST /amm/quote': [200, QUOTE] } });
+  await flow.loadStatus(); await flow.press({ direction: 'usdt_to_nodus', amountText: '100' });
+  const r = await flow.confirm({ toleranceBps: 100 });
+  assert.equal(r.ok, false);
+  assert.equal(r.openRequestNumber, '7');
+  assert.match(r.text, /new request paid nothing/);
+  assert.match(r.text, /request 7/);
+  assert.match(r.text, /shown below/);
+  assert.doesNotMatch(r.text, /try again/i);
+});
+
+// PROVES (correction 3): after signing, an unreachable post or an unreadable answer is "uncertain": the exact signed
+//   body is kept in memory, the next press resends the SAME body (one signature, one request number), number_reused is
+//   shown as "already has this withdrawal", a JSON refusal with a reason is definite and drops the body, and a different
+//   account drops it too.
+function withdrawFlow(seq) {
+  let n = 0;
+  const signed = [];
+  const t = makeFlow({
+    signText: async (text, address) => { signed.push(text); return `0x${'ee'.repeat(4627)}`; },
+    random: () => String(555 + n++),
+    routes: { 'POST /amm/liquidity/withdraw': () => seq.shift() },
+  });
+  return { ...t, signed };
+}
+test('withdraw: unreachable after signing, then the same body is resent and answered number_reused', async () => {
+  const { flow, fetch, signed } = withdrawFlow(['network-error', [200, { received: false, reason: 'number_reused' }]]);
+  await flow.loadStatus();
+  const first = await flow.withdraw({ basisPoints: 2500 });
+  assert.equal(first.ok, false);
+  assert.equal(first.uncertain, true);
+  assert.match(first.text, /may have been received \(request 555\)/);
+  assert.doesNotMatch(first.text, /Nothing was signed/i);
+  assert.equal(flow.pendingWithdrawNumber(), '555');
+  const second = await flow.withdraw({ basisPoints: 9999 });                   // a different share is ignored: the kept body is resent
+  assert.equal(second.ok, true);
+  assert.equal(second.alreadyReceived, true);
+  assert.equal(second.text, 'The bot already has this withdrawal (request 555).');
+  assert.equal(signed.length, 1);                                               // one signature in total
+  const posts = fetch.calls.filter(c => c.key === 'POST /amm/liquidity/withdraw');
+  assert.equal(posts.length, 2);
+  assert.equal(posts[0].body, posts[1].body);                                   // the exact same body
+  assert.equal(flow.pendingWithdrawNumber(), null);
+  await flow.withdraw({ basisPoints: 100 });                                    // the next withdrawal is a new one
+  assert.equal(signed.length, 2);
+});
+
+test('withdraw: an unreadable answer is uncertain too; a resend answered received is the normal result', async () => {
+  const { flow, signed } = withdrawFlow([[200, 'not-json'], [200, { received: true, requestNumber: '555' }]]);
+  await flow.loadStatus();
+  const first = await flow.withdraw({ basisPoints: 100 });
+  assert.equal(first.uncertain, true);
+  assert.equal(first.reason, 'bad_answer');
+  const second = await flow.withdraw({ basisPoints: 100 });
+  assert.deepEqual([second.ok, second.requestNumber], [true, '555']);
+  assert.equal(signed.length, 1);
+  assert.equal(flow.pendingWithdrawNumber(), null);
+});
+
+test('withdraw: a JSON refusal with a reason is definite and drops the kept body; a new account drops it', async () => {
+  const a = withdrawFlow(['network-error', [200, { received: false, reason: 'bad_signature' }]]);
+  await a.flow.loadStatus();
+  await a.flow.withdraw({ basisPoints: 100 });
+  const refused = await a.flow.withdraw({ basisPoints: 100 });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.reason, 'bad_signature');
+  assert.match(refused.text, /signature/);
+  assert.equal(a.flow.pendingWithdrawNumber(), null);
+  const b = withdrawFlow(['network-error']);
+  await b.flow.loadStatus();
+  await b.flow.withdraw({ basisPoints: 100 });
+  assert.equal(b.flow.pendingWithdrawNumber(), '555');
+  b.flow.setAccounts({ ...ACCOUNTS });                                          // the same account: kept
+  assert.equal(b.flow.pendingWithdrawNumber(), '555');
+  b.flow.setAccounts({ nodus: { address: 'cd'.repeat(64), publicKey: ACCOUNTS.nodus.publicKey }, ethereum: ETH });   // another account
+  assert.equal(b.flow.pendingWithdrawNumber(), null);
+});
+
+// PROVES (correction 4): a price answer that arrives after the amount, direction or side changed is discarded: nothing
+//   is stored and nothing is returned as ok; the newer question's answer stands; outputUnit follows the quote's own direction.
+test('a late swap answer after an edit or a flip is discarded; the newer answer stands', async () => {
+  const waiting = [];
+  const bot = { status: async () => ({ ok: true, status: 200, json: STATUS }), quote: (d, a) => { const x = deferred(); waiting.push({ d, a, ...x }); return x.promise; } };
+  const flow = createSwapFlow({ bot, adapter: stubAdapter(), botUrl: 'https://swap.nodusnetwork.io', sleep: async () => {} });
+  const first = flow.press({ direction: 'usdt_to_nodus', amountText: '100' });
+  await flush();
+  flow.clearQuote('swap');                                                      // the user edited the amount (swap.js resets on every edit)
+  waiting[0].resolve({ ok: true, status: 200, json: QUOTE });
+  const r1 = await first;
+  assert.deepEqual([r1.ok, r1.stale], [false, true]);
+  assert.equal(flow.state.quote, null);
+  // a flip: the old direction's answer arrives after the newer question was asked
+  const slow = flow.press({ direction: 'usdt_to_nodus', amountText: '100' });
+  await flush();
+  const flipped = flow.press({ direction: 'nodus_to_usdt', amountText: '500000' });
+  await flush();
+  waiting[2].resolve({ ok: true, status: 200, json: { ...QUOTE, direction: 'nodus_to_usdt', amount: '50000000000000', number: '100000000' } });
+  assert.equal((await flipped).ok, true);
+  waiting[1].resolve({ ok: true, status: 200, json: QUOTE });                  // late
+  assert.equal((await slow).stale, true);
+  assert.equal(flow.state.quote.direction, 'nodus_to_usdt');
+  assert.equal(flow.state.quote.number, '100000000');
+});
+
+test('a late add answer after a side or amount change is discarded', async () => {
+  const waiting = [];
+  const bot = { liquidityQuote: () => { const x = deferred(); waiting.push(x); return x.promise; } };
+  const flow = createSwapFlow({ bot, adapter: stubAdapter(), botUrl: 'https://swap.nodusnetwork.io', sleep: async () => {} });
+  const p = flow.pressAdd({ side: 'nodus', amountText: '100000' });
+  await flush();
+  flow.clearQuote('add');
+  waiting[0].resolve({ ok: true, status: 200, json: PAIR });
+  const r = await p;
+  assert.equal(r.stale, true);
+  assert.equal(r.ok, false);
+  assert.equal(flow.state.addQuote, null);
+  assert.equal(flow.state.swapGen, 0);                                          // clearing the add did not touch the swap question
+});
+
+// PROVES (correction 5): the newest follow ends the older one: the older one's late read, its onState calls and its
+//   exhaustion no longer count (it returns stopped), and the newer one finishes normally.
+test('two interleaved follows: the older one stops and never reports, even when its read would exhaust it', async () => {
+  const reads = [];
+  const bot = { swapState: n => { const x = deferred(); reads.push({ n, ...x }); return x.promise; } };
+  const flow = createSwapFlow({ bot, adapter: stubAdapter(), botUrl: 'https://swap.nodusnetwork.io', sleep: async () => {}, pollMax: 1 });
+  const seenA = [], seenB = [];
+  const a = flow.follow('1', u => seenA.push(u));
+  await flush();
+  const b = flow.follow('2', u => seenB.push(u));
+  await flush();
+  reads[1].resolve({ ok: true, status: 200, json: { state: 'paid', paid: '9' } });
+  const rb = await b;
+  assert.equal(rb.final, true);
+  assert.equal(seenB.length, 1);
+  reads[0].resolve({ ok: true, status: 200, json: { state: 'counted' } });      // A's late read, which with pollMax 1 would exhaust
+  const ra = await a;
+  assert.deepEqual([ra.stopped, ra.exhausted, ra.final], [true, undefined, false]);
+  assert.deepEqual(seenA, []);
+  assert.equal(reads.length, 2);
+});
+
+test('stopFollow and the caller\'s shouldStop end a follow; a follow in a sleep stops after it', async () => {
+  const slept = deferred();
+  let reads = 0;
+  const bot = { swapState: async () => { reads++; return { ok: true, status: 200, json: { state: 'counted' } }; } };
+  const flow = createSwapFlow({ bot, adapter: stubAdapter(), botUrl: 'https://swap.nodusnetwork.io', sleep: () => slept.promise, pollMax: 5 });
+  const seen = [];
+  const p = flow.follow('1', u => seen.push(u));
+  await flush();
+  flow.stopFollow();
+  slept.resolve();
+  assert.equal((await p).stopped, true);
+  assert.equal(reads, 1);
+  assert.equal(seen.length, 1);                                                  // only the read before the stop
+  const q = await createSwapFlow({ bot, adapter: stubAdapter(), botUrl: 'x', sleep: async () => {}, pollMax: 3 }).follow('1', () => {}, () => true);
+  assert.equal(q.stopped, true);
+});

@@ -6,7 +6,7 @@ import { createExtension } from './extension.js';
 import { createAdapter } from './adapter.js';
 import { createSwapFlow } from './flow.js';
 import {
-  USDT_DECIMALS, NODUS_DECIMALS, displayAmount, percentToBps, priceFromReserves, refusalText, nodusWithCommas, originOf, STILL_PENDING_TEXT,
+  USDT_DECIMALS, NODUS_DECIMALS, outputUnit, displayAmount, percentToBps, priceFromReserves, refusalText, nodusWithCommas, originOf, STILL_PENDING_TEXT,
 } from './swap-logic.js';
 
 const $ = id => document.getElementById(id);
@@ -26,7 +26,6 @@ const flow = createSwapFlow({
 
 let direction = 'usdt_to_nodus'; // what the user pays
 const unitOf = which => (which === 'usdt' ? { name: 'USDT', decimals: USDT_DECIMALS } : { name: 'NODUS', decimals: NODUS_DECIMALS });
-const getUnit = () => unitOf(direction === 'usdt_to_nodus' ? 'nodus' : 'usdt');
 const amountOut = (raw, unit) => `${displayAmount(raw, unit.decimals)} ${unit.name}`;
 
 function say(el, text, bad = false) {
@@ -62,7 +61,7 @@ function renderMinimum() {
   if (!q) return;
   const t = percentToBps($('tol').value);
   if (!t.ok) { $('d-min').textContent = '—'; $('approve-btn').disabled = true; return; }
-  $('d-min').textContent = amountOut(flow.minimumFor(t.bps), getUnit());
+  $('d-min').textContent = amountOut(flow.minimumFor(t.bps), outputUnit(q.direction));   // the quote's own direction
   $('approve-btn').disabled = !flow.state.accounts;
 }
 
@@ -104,6 +103,7 @@ connectBtn.addEventListener('click', async () => {
     $('eth-addr').textContent = short(accounts.ethereum); $('eth-addr').title = accounts.ethereum;
     say($('connect-status'), 'Connected to Nodus Connect.');
     renderMinimum();
+    renderWithdrawButton();   // a different account drops a kept signed withdrawal (flow.setAccounts)
   } catch (error) {
     connectBtn.disabled = false; connectBtn.textContent = 'Connect extension';
     if (error?.code === 'no_extension') {
@@ -128,7 +128,8 @@ $('flip').addEventListener('click', () => {
   direction = direction === 'usdt_to_nodus' ? 'nodus_to_usdt' : 'usdt_to_nodus';
   renderTokens(); resetQuote(); say($('swap-msg'), '');
 });
-$('pay').addEventListener('input', () => { if (flow.state.quote) { resetQuote(); say($('swap-msg'), ''); } });
+// Every edit resets, even when no quote is stored yet: an answer still on its way is discarded by the flow.
+$('pay').addEventListener('input', () => { resetQuote(); say($('swap-msg'), ''); });
 $('tol').addEventListener('input', renderMinimum);
 // Enter in the tolerance field must not send a second price question.
 $('tol').addEventListener('keydown', event => { if (event.key === 'Enter') event.preventDefault(); });
@@ -144,10 +145,11 @@ $('swap-form').addEventListener('submit', async event => {
   button.disabled = true;
   try {
     const r = await flow.press({ direction, amountText: $('pay').value });
+    if (r.stale) return;   // the inputs changed while the bot was answering: that answer is not shown
     if (!r.ok) { say($('swap-msg'), r.text, true); return; }
-    const q = r.quote;
-    $('get').value = displayAmount(BigInt(q.number), getUnit().decimals);
-    $('d-fee').textContent = amountOut(BigInt(q.estimatedFee), getUnit());
+    const q = r.quote, unit = outputUnit(q.direction);
+    $('get').value = displayAmount(BigInt(q.number), unit.decimals);
+    $('d-fee').textContent = amountOut(BigInt(q.estimatedFee), unit);
     $('d-request').textContent = q.requestNumber;
     $('d-valid').textContent = time(q.validUntil);
     $('step-approved').classList.add('done'); $('step-approved-t').textContent = time(Math.floor(Date.now() / 1000));
@@ -175,9 +177,15 @@ function renderState({ info, answer }, unit) {
   }
 }
 
+// A new follow ends the older one (flow.follow): the older one's reads, result, exhaustion message and "Check again"
+// handler no longer touch the panel, which always shows the request number being followed.
 async function followSwap(requestNumber, unit) {
-  $('check-again').hidden = true; say($('state-note'), '');
+  $('check-again').hidden = true; $('check-again').onclick = null; say($('state-note'), '');
+  $('follow-request').textContent = `Following request ${requestNumber}`; $('follow-request').hidden = false;
+  $('state-text').textContent = 'Reading the swap from the bot.'; $('state-word').textContent = '';
+  $('step-state').classList.remove('done'); $('step-state').classList.add('now'); $('result').hidden = true;
   const r = await flow.follow(requestNumber, update => renderState(update, unit));
+  if (r.stopped) return;
   if (r.exhausted) {
     say($('state-note'), STILL_PENDING_TEXT);
     $('check-again').hidden = false;
@@ -191,7 +199,7 @@ $('approve-btn').addEventListener('click', async () => {
   if (!t.ok) { say($('swap-msg'), 'Type a tolerance from 0 to 100 percent first.', true); return; }
   say($('swap-msg'), 'Approve the request in the extension.');
   $('approve-btn').disabled = true;
-  const unit = getUnit();
+  const unit = outputUnit(flow.state.quote?.direction ?? direction);   // the approved quote's own direction
   const r = await flow.confirm({ toleranceBps: t.bps });
   if (!r.ok && r.delivered) {
     // The bot holds this request number: the approval is not offered again (a new price is needed); the swap is followed.
@@ -212,7 +220,7 @@ $('approve-btn').addEventListener('click', async () => {
 });
 
 // ── liquidity ──
-$('liq-amount').addEventListener('input', () => { if (flow.state.addQuote) { resetAddQuote(); say($('liq-msg'), ''); } });
+$('liq-amount').addEventListener('input', () => { resetAddQuote(); say($('liq-msg'), ''); });
 $('liq-side').addEventListener('change', () => { resetAddQuote(); say($('liq-msg'), ''); });
 $('liq-form').addEventListener('submit', async event => {
   event.preventDefault();
@@ -220,6 +228,7 @@ $('liq-form').addEventListener('submit', async event => {
   $('liq-ask').disabled = true;
   try {
     const r = await flow.pressAdd({ side: $('liq-side').value, amountText: $('liq-amount').value });
+    if (r.stale) return;   // the amount or side changed while the bot was answering: that answer is not shown
     if (!r.ok) { say($('liq-msg'), r.text, true); return; }
     const q = r.quote;
     $('l-usdt').textContent = amountOut(BigInt(q.usdtAmount), unitOf('usdt'));
@@ -235,8 +244,8 @@ $('liq-approve').addEventListener('click', async () => {
   $('liq-approve').disabled = true;
   const r = await flow.confirmAdd();
   $('liq-approve').disabled = false;
-  if (!r.ok && r.delivered) {   // the bot holds the request: no second approval, a new pair is needed
-    say($('liq-msg'), r.text, true);
+  if (!r.ok && r.delivered) {   // the bot holds the request: no second approval of this pair
+    say($('liq-msg'), r.text, true);   // when NODUS was or may have been sent the text says not to ask for a new pair
     $('liq-approve').hidden = true; $('liq-ask').hidden = false;
     return;
   }
@@ -249,12 +258,17 @@ $('wd-form').addEventListener('submit', async event => {
   event.preventDefault();
   const bps = /^\d{1,5}$/.test($('wd-bps').value.trim()) ? Number($('wd-bps').value.trim()) : NaN;
   $('wd-btn').disabled = true;
-  say($('wd-msg'), 'Approve the signature in the extension.');
+  say($('wd-msg'), flow.pendingWithdrawNumber() ? 'Resending the same signed withdrawal; nothing new is signed.' : 'Approve the signature in the extension.');
   try {
     const r = await flow.withdraw({ basisPoints: bps });
-    say($('wd-msg'), r.ok ? `The bot received your withdrawal (request ${r.requestNumber}). It acts after the Ethereum wait; nothing is paid by this step.` : r.text, !r.ok);
-  } finally { $('wd-btn').disabled = false; }
+    const received = `The bot received your withdrawal (request ${r.requestNumber}). It acts after the Ethereum wait; nothing is paid by this step.`;
+    say($('wd-msg'), r.ok ? (r.text ?? received) : r.text, !r.ok);
+  } finally { $('wd-btn').disabled = false; renderWithdrawButton(); }
 });
+// A signed withdrawal whose answer did not arrive is resent unchanged by the same button; the label says so.
+function renderWithdrawButton() {
+  $('wd-btn').textContent = flow.pendingWithdrawNumber() ? 'Resend the same signed withdrawal' : 'Sign and send the withdrawal';
+}
 
 renderTokens();
 loadStatus(); // step 1: the price is read as soon as the page opens, connected or not

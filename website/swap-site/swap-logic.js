@@ -360,6 +360,12 @@ export function refusalText(reason, context, minNodusRaw = LIQUIDITY_MIN_NODUS_R
 // extension appends /amm/swap itself (givens item 97).
 export const originOf = href => new URL(href).origin;
 
+// The unit of what the bot gives (the output) for a swap direction: NODUS for USDT -> NODUS, USDT for NODUS -> USDT.
+// A shown quote is rendered with the unit of its OWN direction, whatever the screen's direction is now.
+export function outputUnit(direction) {
+  return direction === 'usdt_to_nodus' ? { name: 'NODUS', decimals: NODUS_DECIMALS } : { name: 'USDT', decimals: USDT_DECIMALS };
+}
+
 // Shown when the bounded polling ends without a final state (plan section 7 step 8: never "failed").
 export const STILL_PENDING_TEXT = 'The swap is still pending: the bot keeps working on it. Check again in a few minutes.';
 

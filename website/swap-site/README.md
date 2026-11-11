@@ -19,3 +19,5 @@ Plan: `docs/plans/2026-11-08-swap-bot-plan.nodus1.md` sections 5-8, 14, 18 (chan
 | `adapter.js` | The ONE module that calls the extension's NEW site methods. Its method names and parameter shapes are constants (`EXTENSION_CALLS`) that main fills in; until then every call refuses with `not_configured` and sends nothing. |
 | `package.json` | `{"type":"module"}` only, so `node --test` loads the `.js` files as modules. Not needed on the server. |
 | `test/` | `node --test website/swap-site/test/` (Node 20 or later): no browser, no network. |
+
+Recorded residual: a signed liquidity withdrawal whose answer did not arrive is kept in the page's memory only and resent unchanged by the same button. After a page reload it is no longer held by the page, and the bot has no withdrawal status route, so the page cannot look it up.

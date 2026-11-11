@@ -91,6 +91,9 @@ export function createAdapter({ getProvider, calls = EXTENSION_CALLS } = {}) {
       const d = cause?.data && typeof cause.data === 'object' ? cause.data : {};
       throw new AdapterError('extension_error', cause?.message || 'The extension did not complete the request.', {
         cause, extensionCode: cause?.code, delivered: d.delivered, paid: d.paid, answered: d.answered,
+        // liquidity add: `paid` is the USDT half only; the NODUS half is nodusSent (true, false or 'unknown'), with the
+        // held transfer's ids when it was sent (extension swap.js:179-188)
+        nodusSent: d.nodusSent, intentId: d.intentId, transferId: d.transferId,
         reason: cause?.reason ?? d.reason, openRequestNumber: cause?.openRequestNumber ?? d.openRequestNumber,
       });
     }

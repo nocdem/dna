@@ -332,3 +332,11 @@ test('STILL_PENDING_TEXT says pending and never "failed"', () => {
   assert.match(STILL_PENDING_TEXT, /still pending/);
   assert.doesNotMatch(STILL_PENDING_TEXT, /fail/i);
 });
+
+// outputUnit (correction 4c). PROVES: a quote's output unit comes from its own direction.
+// ENVIRONMENT: as above. LEAVES BEHIND: nothing. FALSE PASS: swap.js's use of it is not run.
+import { outputUnit } from '../swap-logic.js';
+test('outputUnit: NODUS for USDT -> NODUS, USDT for NODUS -> USDT', () => {
+  assert.deepEqual(outputUnit('usdt_to_nodus'), { name: 'NODUS', decimals: 8 });
+  assert.deepEqual(outputUnit('nodus_to_usdt'), { name: 'USDT', decimals: 6 });
+});
