@@ -13,12 +13,15 @@
  *       -1 above is caused by the epoll failure, not by the config.
  *
  * Isolation: epoll_create1 is interposed at link time (-Wl,--wrap=epoll_create1,
- * see CMakeLists.txt) and made to fail with EMFILE only while armed. Unlike a
- * full descriptor table, this leaves eventfd() working, so the later
- * nodus_inter_session_new() step (src/server/nodus_inter_session.c:292) would still
- * succeed: a client that ignores the nodus_tcp_init result returns 0 here and
- * F1 FAILS. Reverting only the client check therefore fails F1; reverting only
- * the channel check fails F2.
+ * see CMakeLists.txt) and made to fail with EMFILE only while armed.
+ *   F1t same as F1 in the local tool mode (config.local_tool_sock set).
+ * IMPORTANT: the normal-mode case F1 is MASKED by the session module: with
+ * the nodus_tcp_init check removed, nodus_inter_session_new() fails on the
+ * missing epoll fd and init still returns -1 (log "the secret-connection
+ * module could not start"). The check is the only guard in the local tool
+ * mode, which returns 0 before the module is created, so F1t is the case that
+ * fails when the client's nodus_tcp_init check is reverted. Reverting only
+ * the channel check fails F2. F3 also covers tool mode (control).
  *
  * Compile flags: none; link option -Wl,--wrap=epoll_create1. Environment:
  * none. Opens no ports and no files; leaves nothing behind.
