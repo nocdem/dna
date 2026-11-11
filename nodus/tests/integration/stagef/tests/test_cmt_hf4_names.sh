@@ -147,7 +147,9 @@
 #   needs it) and with --param HF3_ACTIVE (OLD is post-HF-3, the live
 #   binary), and must print "Unknown param name: RULESET_GEN2" (OLD is
 #   pre-HF-4); NEW's CLI must reach "client_connect failed" with --param
-#   RULESET_GEN2. All exit 1, so the TEXTS are asserted, not the codes.
+#   RULESET_GEN2 ("reach" = the output holds "cannot find this node's witness
+#   socket" or "client_connect failed": own-node tool since the 4001
+#   change). All exit 1, so the TEXTS are asserted, not the codes.
 #   (iv) every node's log shows "Nodus v<OLD> running" at the start and
 #   "Nodus v<NEW> running" after its upgrade. The script RUNS each binary
 #   once with `-h` and each CLI for the probes (random in-memory identity,
@@ -367,16 +369,19 @@ old_hf2=$(probe "$OLD_CLI" HF2_ACTIVE 1)
 old_hf3=$(probe "$OLD_CLI" HF3_ACTIVE 1)
 old_gen2=$(probe "$OLD_CLI" RULESET_GEN2 1)
 new_gen2=$(probe "$NEW_CLI" RULESET_GEN2 1)
-[[ "$old_hf2" != *"Unknown param name"* && "$old_hf2" == *"client_connect failed"* ]] || {
+[[ "$old_hf2" != *"Unknown param name"* && \
+   ( "$old_hf2" == *"cannot find this node's witness socket"* || "$old_hf2" == *"client_connect failed"* ) ]] || {
     printf '%s\n' "$old_hf2" >&2
     die "the OLD CLI does not know HF2_ACTIVE — OLD is not a post-HF-2 build (step 2 needs one)"; }
-[[ "$old_hf3" != *"Unknown param name"* && "$old_hf3" == *"client_connect failed"* ]] || {
+[[ "$old_hf3" != *"Unknown param name"* && \
+   ( "$old_hf3" == *"cannot find this node's witness socket"* || "$old_hf3" == *"client_connect failed"* ) ]] || {
     printf '%s\n' "$old_hf3" >&2
     die "the OLD CLI does not know HF3_ACTIVE — OLD is not the post-HF-3 live build"; }
 [[ "$old_gen2" == *"Unknown param name: RULESET_GEN2"* ]] || {
     printf '%s\n' "$old_gen2" >&2
     die "the OLD CLI's name table ACCEPTED RULESET_GEN2 — OLD is not a pre-HF-4 build"; }
-[[ "$new_gen2" != *"Unknown param name"* && "$new_gen2" == *"client_connect failed"* ]] || {
+[[ "$new_gen2" != *"Unknown param name"* && \
+   ( "$new_gen2" == *"cannot find this node's witness socket"* || "$new_gen2" == *"client_connect failed"* ) ]] || {
     printf '%s\n' "$new_gen2" >&2
     die "the NEW CLI did not pass RULESET_GEN2 through its name table to the connect step — NEW is not an HF-4 build"; }
 echo "[ok] version gate: OLD $OLD_VER knows HF2_ACTIVE/HF3_ACTIVE and refuses RULESET_GEN2 by name, NEW $NEW_VER knows RULESET_GEN2 (probe port $PROBE_PORT, nothing reached)"
