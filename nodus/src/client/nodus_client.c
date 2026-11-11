@@ -833,7 +833,21 @@ int nodus_client_init(nodus_client_t *client,
         nodus_identity_clear(&client->identity);
         return -1;
     }
-    nodus_tcp_init(tcp, -1);
+    /* C-14: nodus_tcp_init fails when the epoll descriptor cannot be
+     * created (descriptor table full). Reporting success here would leave
+     * the client with a transport that can never connect. On failure it
+     * has opened nothing (memset, then the one failing epoll_create1). */
+    if (nodus_tcp_init(tcp, -1) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "init: the transport could not be opened");
+        free(tcp);
+        pthread_mutex_destroy(&client->pending_mutex);
+        pthread_mutex_destroy(&client->send_mutex);
+        pthread_mutex_destroy(&client->poll_mutex);
+        pthread_mutex_destroy(&client->wbuf_mutex);
+        pthread_mutex_destroy(&client->circuits_mutex);
+        nodus_identity_clear(&client->identity);
+        return -1;
+    }
     tcp->on_frame = client_on_frame;
     tcp->on_disconnect = client_on_disconnect;
     tcp->on_connect = client_on_connect;
@@ -8952,9 +8966,20 @@ int nodus_channel_init(nodus_ch_conn_t *ch,
         pthread_mutex_destroy(&ch->pending_mutex);
         pthread_mutex_destroy(&ch->send_mutex);
         pthread_mutex_destroy(&ch->wbuf_mutex);
+        nodus_identity_clear(&ch->identity);   /* secret keys copied above */
         return -1;
     }
-    nodus_tcp_init(tcp, -1);
+    /* C-14: same as nodus_client_init — a failed transport open is an
+     * init failure, not a usable channel. */
+    if (nodus_tcp_init(tcp, -1) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_CH, "%s", "init: the transport could not be opened");
+        free(tcp);
+        pthread_mutex_destroy(&ch->pending_mutex);
+        pthread_mutex_destroy(&ch->send_mutex);
+        pthread_mutex_destroy(&ch->wbuf_mutex);
+        nodus_identity_clear(&ch->identity);   /* secret keys copied above */
+        return -1;
+    }
     tcp->on_frame = ch_conn_on_frame;
     tcp->on_disconnect = ch_conn_on_disconnect;
     tcp->on_connect = ch_conn_on_connect;

@@ -890,7 +890,7 @@ static int cluster_status_query_one(const char *host, uint16_t port,
     snprintf(out->target, sizeof(out->target), "%s:%u", host, port);
     out->reachable = false;
 
-    nodus_tcp_init(&transport, -1);
+    if (nodus_tcp_init(&transport, -1) != 0) return -1;   /* nothing opened */
     transport.on_frame = on_frame;
     transport.on_disconnect = on_disconnect;
     transport.on_connect = on_connect;
@@ -1145,7 +1145,11 @@ static int cmd_ch_listen(const char *server_ip, uint16_t ch_port,
     }
 
     /* Connect to TCP 4003 using global transport */
-    nodus_tcp_init(&transport, -1);
+    if (nodus_tcp_init(&transport, -1) != 0) {
+        fprintf(stderr, "Cannot open the transport\n");
+        if (logf) fclose(logf);
+        return 1;
+    }
     transport.on_frame = on_frame;
     transport.on_disconnect = on_disconnect;
     transport.on_connect = on_connect;
@@ -12889,7 +12893,11 @@ int main(int argc, char **argv) {
     int rc = 1;
 
     /* Connect */
-    nodus_tcp_init(&transport, -1);
+    if (nodus_tcp_init(&transport, -1) != 0) {
+        fprintf(stderr, "Cannot open the transport\n");
+        nodus_identity_clear(&identity);   /* nothing else is open yet */
+        return 1;
+    }
     transport.on_frame = on_frame;
     transport.on_disconnect = on_disconnect;
     transport.on_connect = on_connect;
