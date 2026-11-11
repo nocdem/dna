@@ -89,7 +89,7 @@ export function createAdapter({ getProvider, calls = EXTENSION_CALLS } = {}) {
       return await provider.request({ method, params });
     } catch (cause) {
       const d = cause?.data && typeof cause.data === 'object' ? cause.data : {};
-      throw new AdapterError('extension_error', cause?.message || 'The extension refused or failed.', {
+      throw new AdapterError('extension_error', cause?.message || 'The extension did not complete the request.', {
         cause, extensionCode: cause?.code, delivered: d.delivered, paid: d.paid, answered: d.answered,
         reason: cause?.reason ?? d.reason, openRequestNumber: cause?.openRequestNumber ?? d.openRequestNumber,
       });
