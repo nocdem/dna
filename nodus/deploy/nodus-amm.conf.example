@@ -184,6 +184,12 @@ held_keeps_room = REPLACE_WITH_0_OR_1
 # bytes, mainnet latest 35,772 bytes; the site's http_max_response does not fit.
 # eth_max_response = 4194304
 
+# Optional: a directory for the bot's log file, an absolute path of at most 200
+# bytes. With it the bot also writes timestamped lines (UTC, milliseconds) to
+# <log_dir>/nodus-amm.log (rotated at 10 MiB, 14 old files kept) and
+# refuses to start if the file cannot be opened; without it there is no log file.
+# log_dir = /var/log/nodus-amm
+
 # ETH price sources for converting the Ethereum fee into USDT (plan section
 # 10; givens item 74): names from kraken, binance, bitfinex, coinbase, each
 # once; at least 3 (<= the number listed) must answer within 180 seconds.

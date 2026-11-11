@@ -524,6 +524,37 @@ static void c9_question_load(void) {
     expect_refused("round_rows_max = 0x10\n", NULL, "round_rows_max hex");
 }
 
+/* C10 PROVES: the optional key log_dir (the bot's log file directory; operator
+ * 2026-11-11 "log DOSYASI!", givens item 106). Absent: empty (no file logging,
+ * today's behaviour). An absolute path is kept as written; a relative path, an
+ * empty value, a path of 201 bytes and a repeated key are refused; a path of
+ * exactly 200 bytes is accepted (the edge). BUILD FLAGS: default; LEAVES BEHIND:
+ * nothing. FALSE PASS: only the parser is tested; that amm_main.c hands the
+ * value to the logger is not (it needs the bot's start), and the directory is
+ * not looked at (it need not exist at parse time). */
+static void c10_log_dir(void) {
+    printf("C10 log_dir\n");
+    amm_cfg_t c;
+    char edge[256], over[256];
+    memset(edge, 'a', 200); edge[0] = '/'; edge[200] = '\0';
+    memset(over, 'a', 201); over[0] = '/'; over[201] = '\0';
+    char line[300];
+
+    CHECK(parses(NULL, NULL, &c) == 0 && c.log_dir[0] == '\0',
+          "log_dir absent: empty, no file logging");
+    CHECK(parses(NULL, "log_dir = /var/log/nodus-amm\n", &c) == 0 &&
+          !strcmp(c.log_dir, "/var/log/nodus-amm"), "an absolute path is accepted as written");
+    snprintf(line, sizeof(line), "log_dir = %s\n", edge);
+    CHECK(parses(NULL, line, &c) == 0 && strlen(c.log_dir) == 200,
+          "log_dir of exactly 200 bytes accepted");
+    snprintf(line, sizeof(line), "log_dir = %s\n", over);
+    expect_refused(line, NULL, "log_dir of 201 bytes");
+    expect_refused("log_dir = var/log/nodus-amm\n", NULL, "a relative log_dir");
+    expect_refused("log_dir = ./logs\n", NULL, "a log_dir starting with a dot");
+    expect_refused("log_dir =\n", NULL, "an empty log_dir");
+    expect_refused("log_dir = /a\nlog_dir = /b\n", NULL, "log_dir repeated");
+}
+
 int main(void) {
     printf("test_amm_cfg\n");
     init_hex();
@@ -536,6 +567,7 @@ int main(void) {
     c7_price_and_min();
     c8_liquidity_min();
     c9_question_load();
+    c10_log_dir();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

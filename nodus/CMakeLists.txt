@@ -3996,6 +3996,14 @@ foreach(amm_test test_amm_ledger test_amm_cfg test_amm_journal
     add_test(NAME ${amm_test} COMMAND ${amm_test})
 endforeach()
 
+# test_nodus_log_shim — the opt-in log file of src/nodus_log_shim.c (the swap
+# bot's log file). `ctest -R log_shim` or `ctest -R amm` (named test_amm_log_shim
+# in ctest) selects it. No network, one /tmp directory.
+add_executable(test_nodus_log_shim tests/test_nodus_log_shim.c)
+target_link_libraries(test_nodus_log_shim nodus dsa nodus Threads::Threads)
+target_compile_options(test_nodus_log_shim PRIVATE -Wall -Wextra -Wno-unused-parameter)
+add_test(NAME test_amm_log_shim COMMAND test_nodus_log_shim)
+
 # amm_eth_rpc — the real Ethereum provider (plan sections 3, 4, 9, 10):
 # test_amm_eth_rpc parses canned answers through the injected HTTP post and
 # needs no network. libcurl: pkg-config, one library, this block only.

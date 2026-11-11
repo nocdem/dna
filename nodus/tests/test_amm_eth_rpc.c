@@ -1034,22 +1034,23 @@ static void r12_error_text(void) {
 
     /* a 300-byte message: exactly 200 bytes, then "..." */
     char m300[301];
-    memset(m300, 'A', 300); m300[300] = '\0';
+    /* 'Q' and 'Z' do not occur in the prefix "[WRN/AMM_RPC] p: eth_chainId: provider error N: " */
+    memset(m300, 'Q', 300); m300[300] = '\0';
     snprintf(b, sizeof(b), "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"%s\"}}", m300);
     answer(b);
     CHECK(run_chain(&p, &u) == AMM_ETH_ERR, "a 300-byte message: ERR");
     w = g_cap;
-    CHECK(count_char(w, 'A') == 200, "a 300-byte message is cut to exactly 200 bytes");
+    CHECK(count_char(w, 'Q') == 200, "a 300-byte message is cut to exactly 200 bytes");
     size_t wl = strlen(w);
     CHECK(wl >= 3 && !strcmp(w + wl - 3, "..."), "the cut is marked with \"...\" at the end of the line");
     CHECK(strstr(w, "-32000") != NULL, "the code is still shown");
     /* exactly 200 bytes: not cut, no marker */
-    memset(m300, 'B', 200); m300[200] = '\0';
+    memset(m300, 'Z', 200); m300[200] = '\0';
     snprintf(b, sizeof(b), "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-1,\"message\":\"%s\"}}", m300);
     answer(b);
     (void)run_chain(&p, &u);
     w = g_cap; wl = strlen(w);
-    CHECK(count_char(w, 'B') == 200 && wl >= 3 && strcmp(w + wl - 3, "..."), "a 200-byte message is shown whole, no marker");
+    CHECK(count_char(w, 'Z') == 200 && wl >= 3 && strcmp(w + wl - 3, "..."), "a 200-byte message is shown whole, no marker");
 
     /* control and non-ASCII bytes cannot reach the line */
     static const char *evil[] = {

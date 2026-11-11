@@ -88,6 +88,11 @@
  *   eth_price_min_sources      no        3                  1..number of listed sources (givens 74)
  *   eth_price_max_age_seconds  no        180                1.. (givens 74)
  *   (replaces the old single required key eth_price_source)
+ *   log_dir                    no        (empty: no file)   absolute path (starts with '/'), at most 200
+ *                                                           bytes. The bot writes a timestamped log file,
+ *                                                           <log_dir>/nodus-amm.log, besides
+ *                                                           the console (operator 2026-11-11 "log DOSYASI!",
+ *                                                           givens item 106).
  *   Service keys with no plan line, so REQUIRED and without a default
  *   (nothing is invented): http_port 1..65535, http_conn_cap 1..64,
  *   http_timeout_ms >= 1, worker_interval_ms >= 1, rpc_timeout_ms >= 1,
@@ -150,6 +155,7 @@
 #define AMM_PATH_MAX       256
 #define AMM_URL_MAX        200
 #define AMM_STR_MAX        128
+#define AMM_LOG_DIR_MAX    200    /* longest log_dir value, in bytes       */
 #define AMM_MAX_PROVIDERS  16     /* storage size of the provider list     */
 
 /* ETH price sources (plan section 10): the bit of each name in
@@ -208,6 +214,7 @@ typedef struct {
     char     eth_key_path[AMM_PATH_MAX];
     char     nodus_key_dir[AMM_PATH_MAX];
     char     lock_path[AMM_PATH_MAX];
+    char     log_dir[AMM_PATH_MAX];            /* optional; "" = no log file */
     char     eip712_name[AMM_STR_MAX];
     char     expected_origin[AMM_STR_MAX];
 
