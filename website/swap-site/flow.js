@@ -28,6 +28,7 @@ const AMOUNT_WORDS = {
   zero: 'The amount must be more than zero.',
   too_large: 'That amount is too large.',
 };
+const NOT_CONNECTED_TEXT = 'Connect the extension first.';
 export const amountProblem = reason => AMOUNT_WORDS[reason] ?? 'The amount is not valid.';
 
 // An error from the adapter (adapter.js) in plain words.
@@ -163,8 +164,10 @@ export function createSwapFlow({
       return { ok: true, status: j };
     },
 
-    // Step 3: the ONLY place the swap question is sent. Nothing is sent when the amount is not a valid number.
+    // Step 3: the ONLY place the swap question is sent. Nothing is sent when the extension is not connected (givens
+    // item 68: the question follows the connect) or when the amount is not a valid number.
     async press({ direction, amountText }) {
+      if (!s.accounts) return { ok: false, reason: 'not_ready', text: NOT_CONNECTED_TEXT };
       const gen = ++s.swapGen;
       const decimals = direction === 'usdt_to_nodus' ? USDT_DECIMALS : NODUS_DECIMALS;
       const p = parseAmount(amountText, decimals);
@@ -246,6 +249,7 @@ export function createSwapFlow({
 
     // POST /amm/liquidity/quote: the amount of ONE side; the bot answers with the exact pair at its ratio.
     async pressAdd({ side, amountText }) {
+      if (!s.accounts) return { ok: false, reason: 'not_ready', text: NOT_CONNECTED_TEXT };
       const gen = ++s.addGen;
       const decimals = side === 'usdt' ? USDT_DECIMALS : NODUS_DECIMALS;
       const p = parseAmount(amountText, decimals);
