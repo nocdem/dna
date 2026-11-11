@@ -4,7 +4,7 @@
 import { createBotClient, BOT_ORIGIN } from './bot.js';
 import { createExtension } from './extension.js';
 import { createAdapter } from './adapter.js';
-import { createSwapFlow } from './flow.js';
+import { createSwapFlow, stepText } from './flow.js';
 import {
   USDT_DECIMALS, NODUS_DECIMALS, outputUnit, displayAmount, percentToBps, priceFromReserves, poolText, priceMovementPercent, waitText, refusalText, nodusWithCommas, STILL_PENDING_TEXT,
 } from './swap-logic.js';
@@ -58,13 +58,26 @@ function resetAddQuote() {
 }
 const time = unix => new Date(Number(unix) * 1000).toLocaleTimeString();
 
+// While an approval sequence runs (the extension windows are open or the request is on its way) the user must not start
+// another one: the approve buttons stay disabled, and so does everything that could bring one back or ask a new price
+// (the amount, the direction, the tolerance and its chips, the ask buttons). setBusy(false) re-enables those; the approve
+// buttons are left to the code that ends each outcome (a delivered or failed approval re-enables its own).
+let sequenceBusy = false;
+const LOCKED_WHILE_BUSY = ['pay', 'flip', 'tol', 'ask-btn', 'liq-ask', 'liq-amount', 'liq-side'];
+function setBusy(on) {
+  sequenceBusy = on;
+  for (const id of LOCKED_WHILE_BUSY) $(id).disabled = on;
+  for (const chip of document.querySelectorAll('.chip')) chip.disabled = on;
+  if (!on) { $('ask-btn').disabled = !connected(); $('liq-ask').disabled = !connected(); }
+}
+
 function renderMinimum() {
   const q = flow.state.quote;
   if (!q) return;
   const t = percentToBps($('tol').value);
   if (!t.ok) { $('d-min').textContent = '—'; $('approve-btn').disabled = true; return; }
   $('d-min').textContent = amountOut(flow.minimumFor(t.bps), outputUnit(q.direction));   // the quote's own direction
-  $('approve-btn').disabled = !flow.state.accounts;
+  $('approve-btn').disabled = sequenceBusy || !flow.state.accounts;
 }
 
 function renderStatus(status) {
@@ -113,7 +126,7 @@ const ASK_HINT = { 'swap-msg': 'Connect the extension to ask for a price.', 'liq
 // Clears a message line; while not connected the line shows the connect hint instead.
 function clearMsg(id) { say($(id), connected() ? '' : ASK_HINT[id]); }
 function renderAskButtons() {
-  $('ask-btn').disabled = !connected(); $('liq-ask').disabled = !connected();
+  $('ask-btn').disabled = !connected() || sequenceBusy; $('liq-ask').disabled = !connected() || sequenceBusy;
   clearMsg('swap-msg'); clearMsg('liq-msg');
 }
 renderAskButtons();
@@ -229,10 +242,13 @@ async function followSwap(requestNumber, unit) {
 $('approve-btn').addEventListener('click', async () => {
   const t = percentToBps($('tol').value);
   if (!t.ok) { say($('swap-msg'), 'Type a tolerance from 0 to 100 percent first.', true); return; }
-  say($('swap-msg'), 'Approve the request in the extension.');
+  say($('swap-msg'), stepText());
   $('approve-btn').disabled = true;
+  setBusy(true);
   const unit = outputUnit(flow.state.quote?.direction ?? direction);   // the approved quote's own direction
-  const r = await flow.confirm({ toleranceBps: t.bps });
+  let r;
+  try { r = await flow.confirm({ toleranceBps: t.bps, onStep: step => say($('swap-msg'), stepText(step)) }); }
+  finally { setBusy(false); }
   if (!r.ok && r.delivered) {
     // The bot holds this request number: the approval is not offered again (a new price is needed); the swap is followed.
     say($('swap-msg'), r.text, true);
@@ -273,10 +289,12 @@ $('liq-form').addEventListener('submit', async event => {
   } finally { $('liq-ask').disabled = !connected(); }
 });
 $('liq-approve').addEventListener('click', async () => {
-  say($('liq-msg'), 'Approve the requests in the extension.');
+  say($('liq-msg'), stepText());
   $('liq-approve').disabled = true;
-  const r = await flow.confirmAdd();
-  $('liq-approve').disabled = false;
+  setBusy(true);
+  let r;
+  try { r = await flow.confirmAdd({ onStep: step => say($('liq-msg'), stepText(step)) }); }
+  finally { setBusy(false); $('liq-approve').disabled = false; }
   if (!r.ok && r.delivered) {   // the bot holds the request: no second approval of this pair
     say($('liq-msg'), r.text, true);   // when NODUS was or may have been sent the text says not to ask for a new pair
     $('liq-approve').hidden = true; $('liq-ask').hidden = false;

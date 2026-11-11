@@ -22,7 +22,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createSwapFlow, POLL_MAX, describeAdapterError } from '../flow.js';
+import { createSwapFlow, POLL_MAX, POLL_INTERVAL_MS, describeAdapterError, stepText } from '../flow.js';
 import { createBotClient, BOT_ORIGIN } from '../bot.js';
 import { AdapterError } from '../adapter.js';
 
@@ -69,8 +69,8 @@ function stubFetch(routes) {
 
 function stubAdapter(behaviour = {}) {
   const calls = [];
-  const rec = name => async input => {
-    calls.push({ name, input });
+  const rec = name => async (input, options) => {
+    calls.push({ name, input, options });
     if (behaviour[name]) return behaviour[name](input);
     return { delivered: true };
   };
@@ -804,4 +804,79 @@ test('stopFollow and the caller\'s shouldStop end a follow; a follow in a sleep 
   assert.equal(seen.length, 1);                                                  // only the read before the stop
   const q = await createSwapFlow({ bot, adapter: stubAdapter(), botUrl: 'x', sleep: async () => {}, pollMax: 3 }).follow('1', () => {}, () => true);
   assert.equal(q.stopped, true);
+});
+
+// PROVES (operator 2026-11-12, givens item 111): confirm and confirmAdd hand the page's optional onStep to the adapter
+// as the SECOND argument (the first argument, the request input, is unchanged: the deepEqual tests above), the page
+// receives each step the adapter announces in order, and stepText names the window the user waits for: numbered where
+// the site sees the boundary ("Step 1 of 2"), and plainly "this page cannot see which is open" for a call that holds
+// several windows. Every text tells where to click when the window is hidden. Called without onStep, old callers work.
+// FALSE PASS: the stub adapter announces the steps itself, so this proves the pass-through and the texts, not that the
+// real adapter announces them (adapter.test.js) nor what the browser shows (swap.js is checked in the browser).
+const FLOW_STEPS = {
+  usdtToNodus: [{ id: 'switch' }, { id: 'usdt_windows' }],
+  nodusToUsdt: [{ id: 'hold', n: 1, of: 2 }, { id: 'sign_send', n: 2, of: 2 }],
+  liquidityAdd: [{ id: 'switch' }, { id: 'hold', n: 1, of: 2 }, { id: 'add_windows', n: 2, of: 2 }],
+};
+const announcing = name => async (_input, options) => { for (const st of FLOW_STEPS[name]) options?.onStep?.(st); return { delivered: true }; };
+
+test('confirm passes onStep to the adapter and the page sees the announced steps in order (both directions)', async () => {
+  for (const [direction, name, quote] of [
+    ['usdt_to_nodus', 'usdtToNodus', QUOTE],
+    ['nodus_to_usdt', 'nodusToUsdt', { ...QUOTE, direction: 'nodus_to_usdt', payTo: 'fd'.repeat(64) }],
+  ]) {
+    const adapter = stubAdapter({ [name]: announcing(name) });
+    const { flow } = makeFlow({ adapter, routes: { 'POST /amm/quote': [200, quote] } });
+    await flow.loadStatus();
+    await flow.press({ direction, amountText: '100' });
+    const seen = [];
+    const r = await flow.confirm({ toleranceBps: 100, onStep: st => seen.push(st) });
+    assert.equal(r.ok, true);
+    assert.equal(adapter.calls.length, 1);
+    assert.equal(typeof adapter.calls[0].options.onStep, 'function');
+    assert.deepEqual(seen, FLOW_STEPS[name]);
+  }
+});
+
+test('confirmAdd passes onStep to the adapter; without onStep the old call shape still works', async () => {
+  const ADD = { approved: true, usdtAmount: '10000000', nodusAmount: '10000000000000', requestNumber: '88', validUntil: '1700000300', payEthereum: `0x${'fe'.repeat(20)}`, payNodus: 'fd'.repeat(64) };
+  const adapter = stubAdapter({ liquidityAdd: announcing('liquidityAdd') });
+  const { flow } = makeFlow({ adapter, routes: { 'POST /amm/liquidity/quote': [200, ADD] } });
+  await flow.loadStatus();
+  const pressed = await flow.pressAdd({ side: 'usdt', amountText: '10' });
+  assert.equal(pressed.ok, true, JSON.stringify(pressed));
+  const seen = [];
+  assert.equal((await flow.confirmAdd({ onStep: st => seen.push(st) })).ok, true);
+  assert.deepEqual(seen, FLOW_STEPS.liquidityAdd);
+  assert.equal((await flow.confirmAdd()).ok, true);   // no argument at all: unchanged for old callers
+  assert.equal(adapter.calls.length, 2);
+});
+
+test('stepText: numbered where the site sees the boundary, honest where it does not, always says where to click', () => {
+  assert.match(stepText({ id: 'hold', n: 1, of: 2 }), /^Step 1 of 2: approve holding your NODUS payment in the extension window\./);
+  assert.match(stepText({ id: 'sign_send', n: 2, of: 2 }), /^Step 2 of 2: approve the Nodus signature in the extension window\./);
+  assert.match(stepText({ id: 'sign_send', n: 2, of: 2 }), /do not press again/i);
+  assert.match(stepText({ id: 'usdt_windows' }), /two extension windows.*signed request.*USDT payment/);
+  assert.match(stepText({ id: 'add_windows', n: 2, of: 2 }), /^Step 2 of 2: .*three extension windows.*Ethereum signature.*Nodus signature.*USDT payment/);
+  assert.match(stepText({ id: 'switch' }), /Ethereum network/);
+  for (const id of ['switch', 'hold', 'sign_send', 'usdt_windows', 'add_windows', 'something_new']) {
+    assert.match(stepText({ id, n: 1, of: 2 }), /click the Nodus extension icon/);
+    assert.match(stepText({ id, n: 1, of: 2 }), /behind/);
+  }
+});
+
+// PROVES (operator 2026-11-12, "Sending you payment'ta kaldi"): the follow lasts longer than the bot's USDT payout
+// finality wait (payout_final_depth_eth = 64 Ethereum blocks x 12 s = 768 s, read from the bot's config, not from
+// /amm/status), with margin: at least 20 minutes at an unchanged 5 s interval, and a follow that reaches the limit
+// still reports exhausted (so "Check again" is offered).
+// FALSE PASS: the 64 and the 12 s are copied constants; a bot configured with a deeper wait passes this test and
+// still outlasts the follow. The stub clock does not sleep, so no real time is measured.
+test('the follow outlasts the 64-block payout wait with margin and still ends as exhausted', async () => {
+  assert.equal(POLL_INTERVAL_MS, 5000);
+  assert.ok(POLL_MAX * POLL_INTERVAL_MS >= 20 * 60 * 1000);
+  assert.ok(POLL_MAX * POLL_INTERVAL_MS > 64 * 12 * 1000);
+  const { flow } = makeFlow({ routes: { 'GET /amm/swap/*': [200, { requestNumber: '1', state: 'payout_pending' }] } });
+  const r = await flow.follow('1');
+  assert.equal(r.exhausted, true);
+  assert.equal(r.poll, POLL_MAX);
 });

@@ -17,8 +17,9 @@ import {
 } from './swap-logic.js';
 
 // Bounded polling of GET /amm/swap/<id> (plan section 7 step 8). These are this build's values, not plan values:
-// 120 reads, 5 s apart = 10 minutes; after that the site says the swap is still pending and offers a new check.
-export const POLL_MAX = 120;
+// 240 reads, 5 s apart = 20 minutes (the bot's USDT payout is final only after payout_final_depth_eth = 64 Ethereum
+// blocks, about 13 minutes at 12 s per block; the setting is the bot's, /amm/status does not carry it); after that the site says the swap is still pending and offers a new check.
+export const POLL_MAX = 240;
 export const POLL_INTERVAL_MS = 5000;
 
 const AMOUNT_WORDS = {
@@ -29,6 +30,20 @@ const AMOUNT_WORDS = {
   too_large: 'That amount is too large.',
 };
 const NOT_CONNECTED_TEXT = 'Connect the extension first.';
+// The text of an extension step announced by the adapter (adapter.js, onStep). Numbered only where the site sees the
+// boundary; a call that holds several extension windows says so and does not claim which one is open.
+const WHERE = ' The window can open behind this browser window; if you do not see it, click the Nodus extension icon.';
+export function stepText(step) {
+  const head = step?.n ? `Step ${step.n} of ${step.of}: ` : '';
+  switch (step?.id) {
+    case 'switch': return `Switching the extension to the bot's Ethereum network. If it asks you to approve the switch, approve it.${WHERE}`;
+    case 'hold': return `${head}approve holding your NODUS payment in the extension window.${WHERE}`;
+    case 'sign_send': return `${head}approve the Nodus signature in the extension window. After that the extension sends your request to the bot and then your NODUS payment; this page cannot see those parts, so wait and do not press again.${WHERE}`;
+    case 'usdt_windows': return `Approve in the extension: two extension windows, one after the other, the signed request and then the USDT payment. This page cannot see which one is open; wait and do not press again.${WHERE}`;
+    case 'add_windows': return `${head}approve three extension windows, one after the other: the Ethereum signature, the Nodus signature, then the USDT payment. This page cannot see which one is open; wait and do not press again.${WHERE}`;
+    default: return `Approve the request in the extension.${WHERE}`;
+  }
+}
 export const amountProblem = reason => AMOUNT_WORDS[reason] ?? 'The amount is not valid.';
 
 // An error from the adapter (adapter.js) in plain words.
@@ -191,7 +206,7 @@ export function createSwapFlow({
 
     // Steps 4-5: the user's yes. The adapter is called once, here; the extension signs, sends the signed request
     // to the bot and pays only if the request reached the bot (givens items 84, 88).
-    async confirm({ toleranceBps }) {
+    async confirm({ toleranceBps, onStep }) {
       const q = s.quote;
       if (!q || !s.accounts || !s.status) return { ok: false, reason: 'not_ready', text: 'Connect the extension and ask for a price first.' };
       const min = minimumToReceive(q.number, q.estimatedFee, toleranceBps);
@@ -201,12 +216,12 @@ export function createSwapFlow({
             botUrl, ethereumAddress: s.accounts.ethereum, nodusAddress: s.accounts.nodus.address, token: tokenOf(), payTo: q.payTo,
             amountUsdtRaw: q.amountRaw, minimumNodusRaw: min, requestNumber: q.requestNumber,
             ethChainId: s.status.settings.ethChainId,
-          });
+          }, { onStep });
         } else {
           await adapter.nodusToUsdt({
             botUrl, nodusAddress: s.accounts.nodus.address, ethereumAddress: s.accounts.ethereum, payTo: q.payTo,
             amountNodusRaw: q.amountRaw, minimumUsdtRaw: min, requestNumber: q.requestNumber,
-          });
+          }, { onStep });
         }
       } catch (err) {
         const info = describeAdapterError(err);
@@ -267,7 +282,7 @@ export function createSwapFlow({
 
     // The user's yes on an add: the extension signs both halves, sends them to the bot and pays both sides only if
     // they reached the bot (plan 6.4.6 steps (3), (4)).
-    async confirmAdd() {
+    async confirmAdd({ onStep } = {}) {
       const q = s.addQuote;
       if (!q || !s.accounts || !s.status) return { ok: false, reason: 'not_ready', text: 'Connect the extension and ask for an amount first.' };
       try {
@@ -275,7 +290,7 @@ export function createSwapFlow({
           botUrl, ethereumAddress: s.accounts.ethereum, nodusAddress: s.accounts.nodus.address, token: tokenOf(),
           payEthereum: q.payEthereum, payNodus: q.payNodus, usdtAmountRaw: q.usdtAmount, nodusAmountRaw: q.nodusAmount,
           requestNumber: q.requestNumber, ethChainId: s.status.settings.ethChainId,
-        });
+        }, { onStep });
       } catch (err) {
         const info = describeAdapterError(err, { requestNumber: q.requestNumber });
         if (info.delivered) { s.addQuote = null; return { ok: false, reason: 'delivered', requestNumber: q.requestNumber, ...info }; }
