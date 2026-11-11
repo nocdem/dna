@@ -1,0 +1,6 @@
+{
+  "name": "nodus-swap-site",
+  "private": true,
+  "type": "module",
+  "description": "Static swap.nodusnetwork.io page. No dependency and no build step; this file only makes node treat the .js files as ES modules for node --test (browsers ignore it)."
+}
