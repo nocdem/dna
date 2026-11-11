@@ -335,6 +335,11 @@ int amm_cfg_parse(const char *text, amm_cfg_t *cfg, char *err, size_t err_cap) {
             req = REQ_LOCK;
             ok = *val && strlen(val) < sizeof(cfg->lock_path);
             if (ok) memcpy(cfg->lock_path, val, strlen(val) + 1);
+        } else if (!strcmp(key, "log_dir")) {
+            /* optional; an absolute path of at most AMM_LOG_DIR_MAX bytes */
+            opt = 1u << 5;
+            ok = *val == '/' && strlen(val) <= AMM_LOG_DIR_MAX;
+            if (ok) memcpy(cfg->log_dir, val, strlen(val) + 1);
         } else if (!strcmp(key, "eip712_name")) {
             req = REQ_EIP712;
             ok = printable(val, sizeof(cfg->eip712_name));

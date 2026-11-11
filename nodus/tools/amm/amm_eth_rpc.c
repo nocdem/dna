@@ -331,6 +331,89 @@ static void doc_free(doc_t *d) {
 
 #define REQ_ID 1
 
+/* The longest provider message the log line carries, in bytes (operator
+ * 2026-11-11); a longer one is cut and marked with "...". */
+#define ERR_MSG_MAX 200
+
+/* The provider's own words in the log line: at most ERR_MSG_MAX bytes of `s`,
+ * every byte outside printable ASCII 0x20-0x7E written as '?', so provider
+ * text cannot put a newline or another control byte into the log. `out` needs
+ * ERR_MSG_MAX + 4 bytes. (The strict parser already refuses such bytes; this
+ * keeps the line safe on its own.) */
+static void sanitize_err_msg(const char *s, size_t len, char *out) {
+    size_t n = len < ERR_MSG_MAX ? len : ERR_MSG_MAX;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        out[i] = (c >= 0x20 && c <= 0x7e) ? (char)c : '?';
+    }
+    if (len > ERR_MSG_MAX) { memcpy(out + n, "...", 3); n += 3; }
+    out[n] = '\0';
+}
+
+/* What replaces the provider's URL inside its message. */
+#define URL_MARKER     "[url]"
+#define URL_MARKER_LEN 5
+
+static int at_needle(const char *s, size_t rem, const char *nd, size_t nl) {
+    return nl > 0 && nl <= rem && memcmp(s, nd, nl) == 0;
+}
+
+/* The provider's message with its configured URL taken out, so a key that the
+ * provider echoes back never reaches the log. Every occurrence of the whole URL
+ * and of its path+query part (from the first '/' or '?' after the authority;
+ * only when longer than one byte) becomes URL_MARKER. The scan reads the WHOLE
+ * message, not just the first ERR_MSG_MAX bytes, so a URL that straddles the cut
+ * cannot leave its prefix; it stops once the result is past ERR_MSG_MAX (the
+ * caller cuts there). `out` needs ERR_MSG_MAX + 1 + URL_MARKER_LEN bytes;
+ * returns the result length. */
+static size_t redact_url(const char *s, size_t len, const char *url, char *out) {
+    size_t ul = url ? strlen(url) : 0;
+    const char *au = url ? strstr(url, "://") : NULL;
+    au = au ? au + 3 : url;
+    const char *tail = au ? au + strcspn(au, "/?") : NULL;
+    size_t tl = tail ? strlen(tail) : 0;
+    if (tl < 2) tl = 0;
+    size_t i = 0, o = 0;
+    while (i < len && o <= ERR_MSG_MAX) {
+        if (at_needle(s + i, len - i, url, ul)) {
+            memcpy(out + o, URL_MARKER, URL_MARKER_LEN); o += URL_MARKER_LEN; i += ul;
+        } else if (at_needle(s + i, len - i, tail, tl)) {
+            memcpy(out + o, URL_MARKER, URL_MARKER_LEN); o += URL_MARKER_LEN; i += tl;
+        } else {
+            out[o++] = s[i++];
+        }
+    }
+    return o;
+}
+
+/* Warn about an error answer: the provider's NAME (never its URL, which may
+ * carry a key, and never the URL or its path/query inside the provider's own
+ * message: redact_url), the error's integer `code` and string `message` when it
+ * has them. `er` is the index of the `error` value. */
+static void log_rpc_error(const char *name, const char *url, const char *method,
+                          const jn_t *nd, int er) {
+    int code = nd[er].t == J_OBJ ? obj_get(nd, er, "code") : -1;
+    int msg = nd[er].t == J_OBJ ? obj_get(nd, er, "message") : -1;
+    int has_code = code >= 0 && nd[code].t == J_INT;
+    int has_msg = msg >= 0 && nd[msg].t == J_STR;
+    char text[ERR_MSG_MAX + 4];
+    char red[ERR_MSG_MAX + 1 + URL_MARKER_LEN];
+    if (has_msg) {
+        size_t rl = redact_url(nd[msg].s, nd[msg].len, url, red);
+        sanitize_err_msg(red, rl, text);
+    }
+    if (has_code && has_msg)
+        QGP_LOG_WARN(LOG_TAG, "%s: %s: provider error %lld: %s", name, method,
+                     (long long)nd[code].i, text);
+    else if (has_code)
+        QGP_LOG_WARN(LOG_TAG, "%s: %s: provider error %lld", name, method,
+                     (long long)nd[code].i);
+    else if (has_msg)
+        QGP_LOG_WARN(LOG_TAG, "%s: %s: provider error: %s", name, method, text);
+    else
+        QGP_LOG_WARN(LOG_TAG, "%s: %s: the provider answered with an error", name, method);
+}
+
 /* One JSON-RPC call. `params` is the JSON text of the params array. 0 and
  * `d` filled, or -1 (every failure, including an error object). */
 static int rpc_call(amm_eth_rpc_t *r, const char *method, const char *params,
@@ -380,7 +463,7 @@ static int rpc_call(amm_eth_rpc_t *r, const char *method, const char *params,
         return -1;
     }
     if (er >= 0) {
-        QGP_LOG_WARN(LOG_TAG, "%s: %s: the provider answered with an error", r->name, method);
+        log_rpc_error(r->name, r->url, method, d->nodes, er);
         doc_free(d);
         return -1;
     }

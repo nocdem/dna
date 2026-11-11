@@ -191,6 +191,7 @@ is at most UINT64_MAX/4. Units: USDT raw = 10^-6, NODUS raw = 10^-8.
 | `round_rows_max` | no | 1000 | >= 1 | this build's proposal |
 | `commission` | no | 0 | 0 only | givens item 73 |
 | `eth_max_response` | no | 4194304 | 1024..16777216 (the provider client's limits) | givens item 26; the bound of one Ethereum provider answer, measured block answers up to 35,955 bytes; a proposal of this build |
+| `log_dir` | no | empty (no log file) | absolute path (starts with `/`), at most 200 bytes | operator 2026-11-11 "log DOSYASI!"; the bot also writes timestamped lines (`2026-11-11T18:12:40.123Z [WRN] AMM_RPC: text`, UTC) to `<log_dir>/nodus-amm.log`, rotated at 10 MiB to `nodus-amm.log.1` ... `.14` (oldest dropped; the sink is `nodus_log_file_open` in `src/nodus_log_shim.c`, opt-in, the stderr/journal lines stay); a file that cannot be opened refuses the start. The unit's `LogsDirectory=nodus-amm` gives `/var/log/nodus-amm` |
 | `eth_price_sources` | no | all four | names from kraken, binance, bitfinex, coinbase, each once | plan section 10 |
 | `eth_price_min_sources` | no | 3 | 1..4, <= number listed | givens item 74 |
 | `eth_price_max_age_seconds` | no | 180 | >= 1 | givens item 74 |

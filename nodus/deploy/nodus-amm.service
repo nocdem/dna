@@ -14,9 +14,14 @@
 #
 # StateDirectory= creates /var/lib/nodus-amm (mode 0700, owned by the service
 # user): the journal (journal.db + -wal/-shm), the single-instance lock file
-# and the key files (keys/) live there; it is the ONLY writable path. The user
-# is created by the runbook (useradd --system); DynamicUser is not used because
-# the key files must keep a stable owner across restarts.
+# and the key files (keys/) live there; it is the only writable path for state.
+# The user is created by the runbook (useradd --system); DynamicUser is not used
+# because the key files must keep a stable owner across restarts.
+#
+# LogsDirectory= creates /var/log/nodus-amm (mode 0750); with `log_dir =
+# /var/log/nodus-amm` in the settings file the bot writes its timestamped log
+# to /var/log/nodus-amm/nodus-amm.log (rotated; see SWAP_BOT.md). That path is
+# the second writable path.
 #
 # RestrictAddressFamilies is the faucet's (AF_INET AF_UNIX). The bot also
 # reaches Ethereum providers and the price sources over HTTPS (libcurl); that
@@ -36,6 +41,8 @@ User=nodus-amm
 Group=nodus-amm
 StateDirectory=nodus-amm
 StateDirectoryMode=0700
+LogsDirectory=nodus-amm
+LogsDirectoryMode=0750
 ExecStart=/usr/local/bin/nodus-amm --config /etc/nodus-amm.conf
 Restart=on-failure
 RestartSec=10
@@ -44,7 +51,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/var/lib/nodus-amm
+ReadWritePaths=/var/lib/nodus-amm /var/log/nodus-amm
 PrivateDevices=true
 ProtectKernelTunables=true
 ProtectControlGroups=true

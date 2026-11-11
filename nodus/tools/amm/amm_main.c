@@ -56,6 +56,7 @@
 #include "crypto/nodus_identity.h"
 #include "crypto/nodus_sign.h"
 #include "crypto/utils/qgp_log.h"
+#include "nodus_log_shim.h"
 #include "amm_cfg.h"
 #include "amm_engine.h"
 #include "amm_eth_rpc.h"
@@ -276,6 +277,19 @@ static int load_eth_key(const char *path, uint8_t sk[32]) {
     return ok ? 0 : -1;
 }
 
+/* The log file (config key log_dir; operator 2026-11-11 "log DOSYASI!"): the
+ * nodus build's logger shim (src/nodus_log_shim.c) appends every QGP_LOG_* line
+ * that passes its INFO filter to <dir>/nodus-amm.log, "<UTC date>T<time>.<ms>Z
+ * [LEVEL] TAG: text"; the stderr lines (journal) stay. Rotation: 10 MiB, 14 old
+ * files kept. 0 or -1 (the reason goes to stderr, the journal). */
+static int setup_log_file(const char *dir) {
+    if (nodus_log_file_open(dir, 10u * 1024 * 1024, 14) != 0) {
+        fprintf(stderr, "log_dir refused: cannot open %s/nodus-amm.log\n", dir);
+        return -1;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     const char *cfg_path = NULL;
     for (int i = 1; i < argc; i++) {
@@ -291,6 +305,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "config refused: %s\n", err);
         return 1;
     }
+    if (cfg.log_dir[0] != '\0' && setup_log_file(cfg.log_dir) != 0) return 1;
 
     int rc = 1, lock_fd = -1;
     uint8_t sk[32];
