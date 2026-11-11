@@ -162,3 +162,30 @@ Live Chromium checks passed at 390/1440px on all three sites, including language
 switch/reload; Wiki search/navigation and developers at 320px passed as well.
 There were no request, JavaScript or UI errors in these live checks. Review
 artifacts are in `/tmp/nodus-turkish-copy-aw9eXC/` in the operator workspace.
+
+## swap.nodusnetwork.io — 10 November 2026
+
+The operator added the Cloudflare record (proxied, like wiki and scan) and approved the install ("kur sen").
+On EU-6 (`nodus-eu-6`), same host as the other sites:
+
+- Document root `/var/www/swap.nodusnetwork.io/public`, root:root, 755/644. Content: the swap site
+  visual draft (`index.html`, `swap.css`, Inter fonts, `nodus-mark.svg`), marked "Design draft · sample numbers";
+  not connected to any service yet. CSS is in a file because the CSP allows only `style-src 'self'`.
+- `/etc/nginx/sites-available/swap.nodusnetwork.io` + enabled symlink: first `swap-http.conf`, then
+  `swap-https.conf` (the Wiki configuration with the name changed: same headers, CSP, GET-only).
+- Certificate `swap.nodusnetwork.io`: webroot, the existing ACME account, ECDSA, `renew_hook = nginx -t && systemctl reload nginx`,
+  issued with `--no-directory-hooks`; expires 2027-02-08. Targeted renewal dry run passed.
+- Backups and checks: `/var/backups/nodus-swap-site-20261110/` (nginx checksums before/after: only the two swap
+  entries are new; the HTTP-only config). Public files byte-identical (5/5); HTTP redirects to HTTPS; direct-origin
+  HTTPS with hostname validation 200; nodusnetwork.io, wiki, scan, wallet, connect and cpunk.io still 200.
+
+## Extension page corrections — 10 November 2026
+
+Operator: "düzelt", "deploy et sonra". `extension.html` brought in line with the 0.1.162 store texts
+(further networks, notifications, server choice, prices from DefiLlama, storage / timers / network-server
+permissions), "not on BNB Smart Chain" for history (`web-wallet/src/capabilities.js:7`), "Chrome 123 or later"
+(extension manifest), X card title/description matching Open Graph; Turkish keys in `app.js`; all 18 pages
+load `app.js?v=e9e8316bf2f0`. On EU-6 (`nodus-eu-6`): 19 files backed up to
+`/var/backups/nodus-site-20261110T181408Z-extfix/`, staged in `/var/tmp/nodus-site-20261110T181408Z-extfix/`,
+installed root:root 644 (app.js first). Server 19/19 and public 86/86 (robots.txt excluded) match the package;
+live Chromium 390/1440 × en/tr: no overflow, no errors.

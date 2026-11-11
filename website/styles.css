@@ -2894,3 +2894,10 @@ body { background: radial-gradient(ellipse 900px 580px at 78% 0, #273b191f, tran
   .nav-dropdown::before { display: none; }
   .nav-dropdown a { padding: 9px 12px; font-size: 15px; }
 }
+
+/* Extension page screenshots (2026-11-10). */
+.extension-shots .shots-grid{display:grid;grid-template-columns:minmax(0,0.6fr) minmax(0,1.4fr) minmax(0,1fr);gap:24px;align-items:start}
+.extension-shots .shot{margin:0;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--panel)}
+.extension-shots .shot img{display:block;width:100%;height:auto}
+.extension-shots figcaption{padding:12px 14px;font-size:12px;line-height:1.6;color:var(--muted)}
+@media(max-width:900px){.extension-shots .shots-grid{grid-template-columns:minmax(0,1fr)}.extension-shots .shot-tall{max-width:320px}}

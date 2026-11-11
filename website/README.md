@@ -171,9 +171,16 @@ files outside that allowlist. This server is for local previews.
 
 - `index.html`: a short introduction with routes to the products, resource
   network, manifesto, and roadmap.
-- `ecosystem.html`: the product directory and FAQ. Seven image-led product cards
+- `ecosystem.html`: the product directory and FAQ. Eight image-led product cards
   link to the individual pages. Connect and Scan have wider featured layouts.
   Each image represents its own product, and links work without JavaScript.
+- `extension.html` (added 2026-11-10): the Nodus Connect browser extension —
+  what it does, four steps to start, privacy and permissions, an "Add to Chrome"
+  button to its Chrome Web Store page and the privacy policy link. The text comes
+  from the store listing texts of 0.1.162 (features, privacy, permission justifications);
+  "not on BNB Smart Chain" comes from `web-wallet/src/capabilities.js:7` and
+  "Chrome 123 or later" from the extension manifest; the picture is the store screenshot
+  (`assets/artwork/extension-v3.webp` on the page, `extension-card-v3.webp` on the card).
 - `connect.html`, `wallet.html`, `identity.html`, `chain.html`, `evm.html`,
   `scan.html`: individual product pages; Connect also hosts features and
   downloads. `evm.html` (Nodus EVM, added 2026-10-07) waits for the EVM
@@ -184,6 +191,7 @@ files outside that allowlist. This server is for local previews.
   Products menu.
 - Header: the top navigation is grouped into four menus — Products (Web wallet
   at `https://wallet.nodusnetwork.io/`, Nodus Connect "preview" → `https://connect.nodusnetwork.io/`,
+  Browser extension "Chrome" → `extension.html`, Swap "preview" → `https://swap.nodusnetwork.io/`,
   Nodus EVM "testnet" → `evm.html`, All products → `ecosystem.html`), Network (`network.html`, `tokenomics.html`,
   `airdrop.html`, Scan), About (`manifesto.html`, `roadmap.html`) and Developers (`docs.html`,
   Wiki). Each menu is a button with `aria-expanded`; it opens on hover with a
@@ -192,7 +200,7 @@ files outside that allowlist. This server is for local previews.
   inline. Without JavaScript the desktop menus open on hover and keyboard focus.
   The header button is "Open Wallet" → the web wallet (hidden at 1100 px and
   below, where the Products menu carries the same link). Every footer also has
-  a Web wallet link. All 17 pages carry the same header; only the current
+  a Web wallet link and a Browser extension link. All 18 pages carry the same header; only the current
   page's link (`aria-current`) and group (`current-section`) differ.
 - `network.html`: Storage, Bandwidth, Compute, and shared architecture.
 - `manifesto.html`: privacy, identity ownership, and why Nodus is being built,
@@ -371,7 +379,7 @@ npm run check
 
 This checks JavaScript syntax only. Browser verification additionally covers:
 
-1. All 17 marketing pages at 320, 390, 768, 1024, and 1440 pixels, in both
+1. All 18 marketing pages at 320, 390, 768, 1024, and 1440 pixels, in both
    languages: no page overflow, missing assets, or browser errors.
 2. Product cards navigate to dedicated pages; browser Back returns to the
    directory. Every local page/fragment target resolves. Direct page loads work
@@ -389,8 +397,8 @@ This checks JavaScript syntax only. Browser verification additionally covers:
    tokenomics page (re-added 30 September) is reachable from the navigation,
    every footer and the Scan supply details, and its allocation table sums to
    1,000,000,000 NODUS / 100%.
-8. Artwork loads with correct MIME types; the directory contains seven distinct
-   pictures matched to the seven products. Pointer depth resets on
+8. Artwork loads with correct MIME types; the directory contains eight distinct
+   pictures matched to the eight products. Pointer depth resets on
    leave, scroll reveals remain keyboard accessible, and reduced motion disables
    decorative movement.
 9. Every translated text has a Turkish entry; local links and documentation
@@ -984,3 +992,14 @@ on 2026-10-23: 41 affected public files backed up and replaced. Fresh SSH readba
 and public HTTPS checks matched all 41 package hashes. Live mobile/desktop,
 TR/EN switching/reload and Turkish Wiki search/navigation checks passed without
 request or JavaScript errors. Deployment/rollback details are in deploy/README.md.
+
+**2026-11-10 — browser extension page and swap links.** Operator: "eklenti sayfasi", then
+"şu web sitesini yaptıysan swap'ınkini ve işte extension'ınkini ikisinde deploy et. Buna sayfaya
+linkler unutmaz. Ana sayfaya linkler unutma." Added `extension.html` (EN/TR), the Products menu
+entries "Browser extension" and "Swap" (preview, `https://swap.nodusnetwork.io/`) on all 18 pages,
+a footer link to the extension page, two home-page entries (04 / EXTENSION, 05 / SWAP) and an
+eighth product card on `ecosystem.html`. `app.js` gained the Turkish entries (every `data-i18n` key
+has one: 873 keys, 0 missing) and all pages now load `app.js?v=` with its current hash. Allowlist
+and sitemap carry the new page and the two images. Before the change all 44 published files were
+byte-identical with the live root. `npm run check` passed; headless Chromium over 18 pages × 5 widths ×
+2 languages (180 runs): no overflow, no browser or request errors, menu and footer links present.
