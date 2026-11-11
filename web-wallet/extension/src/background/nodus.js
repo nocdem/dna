@@ -79,6 +79,15 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     adapter.ownChainName({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal })
       .then(own => keepOwnName(s, own), () => { s.ownNameAsked = false; });
   }
+  // Re-reads the kept name from the network without making the caller wait; one read at a time, and a failed or
+  // not-found read leaves the kept name as it is.
+  function refreshOwnName(s) {
+    if (s.ownNameRefreshing || !s.client?.nameable) return;
+    s.ownNameRefreshing = true;
+    adapter.ownChainName({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal })
+      .then(own => keepOwnName(s, own), () => {})
+      .finally(() => { s.ownNameRefreshing = false; });
+  }
   function active() {
     lockCoordinator.assertUnlocked();
     if (!session) throw new Error('Wallet is locked.');
@@ -438,7 +447,13 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       await releaseExpiredHolds(s);
       return rememberReview(s, await adapter.prepareStake({ ...params, kind, client: s.client, from: s.addresses.nodus, locked: heldInputs(s) }));
     },
-    async getOwnName() { const s = active(); const own = await adapter.ownChainName({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal }); current(s); keepOwnName(s, own); return own; },
+    async getOwnName() {
+      // A name this session already confirmed for this address is answered at once; the network read runs in the
+      // background and refreshes the kept name. Without a kept name the read below waits for the network as before.
+      lockCoordinator.assertUnlocked();
+      if (session) { current(session); const kept = confirmedOwnName(session, session.addresses.nodus); if (kept) { refreshOwnName(session); return { found: true, name: kept }; } }
+      const s = active(); const own = await adapter.ownChainName({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal }); current(s); keepOwnName(s, own); return own;
+    },
     async getNamePrices() { const s = active(); const value = adapter.parseNamePrices(await s.client.namePrices()); current(s); return { ...value, text: adapter.namePriceList(value.prices) }; },
     async quoteName(name) { const s = active(); const value = await adapter.nameQuote({ client: s.client, from: s.addresses.nodus, name, signal: s.abort.signal }); current(s); return value; },
     async prepareName(name) { const s = active(); assertActivity(s); await releaseExpiredHolds(s); return rememberReview(s, await adapter.prepareName({ client: s.client, from: s.addresses.nodus, name, locked: heldInputs(s) })); },

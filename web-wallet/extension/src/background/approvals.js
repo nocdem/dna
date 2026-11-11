@@ -45,9 +45,17 @@ export function createApprovals({ messenger, runtime, windows, tabs, action, pla
       top = Math.max(screenY, 0);
       left = Math.max(screenX + (outerWidth - 400), 0);
     }
-    const popupWindow = await platform.openWindow({ url: 'notification.html', type: 'popup', width: 400, height: 620, left, top });
+    const size = { url: 'notification.html', type: 'popup', width: 400, height: 620 };
+    let popupWindow, placedByBrowser = false;
+    try { popupWindow = await platform.openWindow({ ...size, left, top }); }
+    catch {
+      // The browser refuses a position that is not within the visible screen space; without left and top it places
+      // the window itself, so the approval still gets a window. A second failure reaches the caller as before.
+      popupWindow = await platform.openWindow(size); placedByBrowser = true;
+    }
     // Port: notification-manager.ts:114-121; extension.ts:62-68 provides the platform operation.
-    if (typeof popupWindow.id === 'number' && popupWindow.left !== left && popupWindow.state !== 'fullscreen') {
+    // A window the browser placed keeps its place: asking for the refused position again would fail again.
+    if (!placedByBrowser && typeof popupWindow.id === 'number' && popupWindow.left !== left && popupWindow.state !== 'fullscreen') {
       await platform.updateWindowPosition(popupWindow.id, left, top);
     }
     popupId = popupWindow.id;

@@ -16,12 +16,12 @@ import { WALLET_MARKUP, PRIVACY_NOTICE, PRIVACY_POLICY_URL } from './wallet-mark
 import { sessionLog, logPageErrors } from '../../../src/session-log.js';
 
 // Approved plan §3.2/§3.6/§7: all three trusted pages use the same web-wallet UI modules.
-export async function mountWalletPage({ document = globalThis.document, window = globalThis.window, client = connectTrusted(), renderOpenWallet, renderEntry } = {}) {
+export async function mountWalletPage({ document = globalThis.document, window = globalThis.window, client = connectTrusted(), renderOpenWallet, renderEntry, closeWhenNothingPending } = {}) {
   const ui = createWalletUi(client), root = document.getElementById('screen');
   const navigation = document.getElementById('wallet-navigation'), status = document.getElementById('wallet-status');
   logPageErrors(window);
   if (renderEntry) { const boot = document.createElement('p'); boot.id = 'wallet-boot-status'; boot.className = 'hint'; boot.setAttribute('role', 'status'); boot.textContent = 'Loading wallet…'; root.replaceChildren(boot); }
-  let page = 'home', receiveNetwork, fields, revealed, busy = false, disposed = false, revision = 0;
+  let page = 'home', receiveNetwork, fields, revealed, busy = false, disposed = false, revision = 0, closeAsked = false;
   let sendChain, sendReview, stopSendReview;
   let portfolioText, openScreen;
   function updatePortfolio() {
@@ -251,6 +251,13 @@ export async function mountWalletPage({ document = globalThis.document, window =
     const state = ui.state;
     if (state.privacyConsent === false) { renderPrivacyConsent(); return; }
     const pending = Object.values(state.pendingApprovals || {})[0];
+    // The approval window (only that page passes closeWhenNothingPending) closes once no approval waits; the toolbar
+    // popup and the full page never do. A recovery phrase being written keeps the window open. Asked once per
+    // empty spell: a new approval arms it again.
+    if (pending) closeAsked = false;
+    else if (closeWhenNothingPending && !closeAsked && !(page === 'phrase' && ui.phraseStep)) {
+      closeAsked = true; void Promise.resolve().then(closeWhenNothingPending).catch(() => {});
+    }
     if (renderOpenWallet && state.isUnlocked && !pending && !(page === 'phrase' && ui.phraseStep)) {
       if (openScreen) { openScreen.update(); return; }
       fields?.clear(); fields = undefined; revealed?.replaceChildren(); revealed = undefined;

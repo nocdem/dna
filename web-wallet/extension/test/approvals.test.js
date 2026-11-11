@@ -81,6 +81,28 @@ test('notification creation corrects ignored bounds using updateWindowPosition',
   }
 });
 
+// Proves a refused position (the browser's "Bounds must be at least 50% within visible screen space") does not leave the approval
+// without a window: the create is retried once without left and top, the window is remembered and reused, and no position
+// correction is asked for the browser-placed window. A second refusal still reaches the caller, so the failure is not hidden.
+test('a refused window position is retried once without left and top', async t => {
+  const fixture = approvalFixture(), attempts = [];
+  t.mock.method(fixture.windows, 'create', async options => {
+    attempts.push(options);
+    if ('left' in options) throw new Error('Invalid value for bounds. Bounds must be at least 50% within visible screen space.');
+    const win = { ...options, id: 9, left: 5 }; fixture.windows.getAll = async () => [win]; return win;
+  });
+  const approvals = createApprovals({ ...fixture, messenger: new Messenger({ namespace: 'Background' }) });
+  await approvals.triggerUi();
+  assert.equal(attempts.length, 2); assert.ok('left' in attempts[0] && 'top' in attempts[0]);
+  assert.deepEqual(attempts[1], { url: 'chrome-extension://test-extension/notification.html', type: 'popup', width: 400, height: 620 });
+  assert.deepEqual(fixture.positioned, []);
+  await approvals.triggerUi(); assert.equal(attempts.length, 2); assert.equal(fixture.focused[0].id, 9);
+  approvals.destroy();
+  const failing = approvalFixture(); t.mock.method(failing.windows, 'create', async () => { throw new Error('no window possible'); });
+  const second = createApprovals({ ...failing, messenger: new Messenger({ namespace: 'Background' }) });
+  await assert.rejects(second.triggerUi(), /no window possible/u); second.destroy();
+});
+
 // Proves the pinned screen-coordinate fallback is retained when window lookup fails; successful lookup fixtures cannot detect an invented zero-position fallback.
 test('notification positioning uses the reference screen fallback on lookup failure', async t => {
   const fixture = approvalFixture(), saved = Object.getOwnPropertyDescriptor(globalThis, 'window');
