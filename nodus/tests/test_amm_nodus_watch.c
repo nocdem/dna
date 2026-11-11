@@ -249,6 +249,7 @@ static amm_nodus_watch_cfg_t mkcfg(amm_nw_id_kind_t kind) {
     c.liquidity_wait_blocks = 3;
     c.page_limit = 100;
     c.max_pages = 50;
+    c.inflight_max = 500000000ULL;     /* the room a seen payment takes (plan section 13, revision 12) */
     return c;
 }
 
@@ -878,6 +879,49 @@ static void n16_match(void) {
     CHECK(amm_nodus_watch_match(&e, &s) == AMM_NM_HELD_EARLY, "a tip at the payment's height never matches");
 }
 
+/* N17 (revision 12, plan section 13, givens item 94). PROVES: the transaction that
+ * records a matching Nodus payment as seen gives the swap room, or puts it in the
+ * line: with a 500 USDT total, a 300 USDT swap seen first is counted and holds its
+ * room; a second 300 USDT payment seen in the same step finds the room full, is
+ * NOT counted (paid_waiting_depth, room 0, seen number 2), its row is still taken by
+ * it and the step reports it as waiting. FALSE PASS: the swaps' v is written by the
+ * test, not by the engine; the engine's later grant of the freed room is
+ * test_amm_engine E14. */
+static void n17_room(void) {
+    printf("N17 a seen payment takes room or waits in line\n");
+    fresh(AMM_NW_ID_WIRE);
+    amm_swap_t a, b;
+    char snd[2][129], dst[41], idt[2][AMM_TID_MAX];
+    memset(dst, 'b', 40); dst[40] = '\0';
+    for (int i = 0; i < 2; i++) {
+        peer_of(i == 0 ? 'c' : 'd', snd[i]);
+        uint8_t id[64];
+        mkid((uint8_t)(0x11 + i), id);
+        amm_nodus_watch_id_text(id, idt[i], sizeof(idt[i]));
+        amm_approve_t ap;
+        memset(&ap, 0, sizeof(ap));
+        ap.dir = AMM_NODUS_TO_USDT; ap.sender = snd[i]; ap.dest = dst;
+        ap.amount = 500; ap.minimum = 1; ap.value_usdt = 300000000ULL;
+        ap.approved_at = 1000; ap.expiry = 2000; ap.approved_tip = g_atip;
+        ap.incoming_id = idt[i];
+        uint64_t n = g_ctr++;
+        for (int k = 0; k < 8; k++) ap.req_no[31 - k] = (uint8_t)(n >> (8 * k));
+        for (int k = 0; k < 16; k++) ap.rand16[k] = (uint8_t)(n * 29 + k);
+        ap.swap_max = 400000000ULL; ap.inflight_max = 500000000ULL;
+        CHECK(amm_journal_approve(g_j, &ap, i == 0 ? &a : &b) == AMM_J_OK, "setup: a 300 USDT approval");
+    }
+    pay(8, 'c', 500, 1100, 0x11);
+    pay(9, 'd', 500, 1100, 0x12);
+    amm_nodus_step_t o;
+    amm_swap_t ga, gb;
+    CHECK(step(&o) == AMM_NW_OK && o.counted == 1 && o.waiting == 1 &&
+          amm_journal_swap_by_seq(g_j, a.seq, &ga) == 0 && !strcmp(ga.state, "counted") && ga.room == 1 &&
+          ga.seen_seq == 1 &&
+          amm_journal_swap_by_seq(g_j, b.seq, &gb) == 0 && !strcmp(gb.state, "paid_waiting_depth") &&
+          gb.room == 0 && gb.seen_seq == 2 && nrows_state("counted") == 2,
+          "the first seen payment is counted with room; the second waits in line (not counted), its row taken");
+}
+
 int main(void) {
     printf("test_amm_nodus_watch\n");
     snprintf(g_dir, sizeof(g_dir), "/tmp/amm_nw_testXXXXXX");
@@ -901,6 +945,7 @@ int main(void) {
     n14_restart();
     n15_above_tip();
     n16_match();
+    n17_room();
 
     if (g_w) amm_nodus_watch_free(g_w);
     if (g_j) amm_journal_close(g_j);

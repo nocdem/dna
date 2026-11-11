@@ -88,6 +88,7 @@ amm_nodus_watch_t *amm_nodus_watch_new(const amm_nodus_watch_cfg_t *cfg) {
         !n->addr_history_free || !n->item_intent) return NULL;
     if (cfg->id_kind != AMM_NW_ID_WIRE && cfg->id_kind != AMM_NW_ID_INTENT)
         return NULL;                      /* question 12: no default           */
+    if (cfg->inflight_max == 0 || cfg->inflight_max > (uint64_t)INT64_MAX) return NULL;
     if (cfg->start_height == 0 || cfg->liquidity_wait_blocks == 0 ||
         cfg->page_limit == 0 || cfg->page_limit > NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT ||
         cfg->max_pages == 0) return NULL;
@@ -344,7 +345,7 @@ int amm_nodus_watch_step(amm_nodus_watch_t *w, uint64_t deadline_ms,
         char reason[AMM_MSG_MAX];
         reason[0] = '\0';
         amm_swap_t s;
-        int counted = 0;
+        int counted = 0, waits = 0;
         int q = have_id ? amm_journal_swap_open_nodus(j, id, e->peer, e->amount, &s) : 1;
         if (q < 0) { fatal = 1; break; }
         if (q == 1) {
@@ -371,18 +372,29 @@ int amm_nodus_watch_step(amm_nodus_watch_t *w, uint64_t deadline_ms,
                     held_reason(reason, sizeof(reason),
                                 "the incoming transfer id is already counted");
                 } else {
-                    int t1 = amm_journal_swap_transition(j, s.seq, AMM_S_PAID_WAITING,
-                                                         id, NULL, msg);
+                    /* the payment is SEEN: the swap takes room in this same
+                     * transaction, or waits in line (plan section 13, givens
+                     * item 94). A committed Nodus block needs no extra depth
+                     * (section 11), so it is counted at once when it holds
+                     * room; one that waits is counted by the engine when room
+                     * frees. */
+                    int took = 0;
+                    int t1 = amm_journal_swap_seen(j, s.seq, id, msg,
+                                                   w->cfg.inflight_max,
+                                                   w->cfg.held_keeps_room, &took);
                     if (t1 == AMM_J_DUP_TRANSFER) {
                         held_reason(reason, sizeof(reason),
                                     "another swap already carries the incoming transfer id");
                     } else if (t1 != 0) {
                         fatal = 1; break;
-                    } else if (amm_journal_swap_transition(j, s.seq, AMM_S_COUNTED, NULL,
-                                                           NULL, msg) != 0) {
-                        fatal = 1; break;
                     } else {
-                        counted = 1;
+                        if (took &&
+                            amm_journal_swap_transition(j, s.seq, AMM_S_COUNTED, NULL,
+                                                        NULL, msg) != 0) {
+                            fatal = 1; break;
+                        }
+                        counted = 1;         /* the row is taken by this swap */
+                        waits = !took;
                     }
                 }
             }
@@ -390,7 +402,8 @@ int amm_nodus_watch_step(amm_nodus_watch_t *w, uint64_t deadline_ms,
         if (counted) {
             snprintf(r.state, sizeof(r.state), "%s", AMM_NR_COUNTED);
             r.swap_seq = s.seq;
-            o->counted++;
+            if (waits) o->waiting++;
+            else o->counted++;
         } else {
             snprintf(r.state, sizeof(r.state), "%s", AMM_NR_HELD);
             snprintf(r.reason, sizeof(r.reason), "%s", reason);

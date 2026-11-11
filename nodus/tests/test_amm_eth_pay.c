@@ -375,6 +375,43 @@ static amm_eth_pay_t *new_pay(void) { return new_pay_n(1, 1, 3, 0); }
 
 static uint64_t g_ctr = 1;
 
+/* Signing a swap's USDT payment. A NODUS -> USDT PAYOUT is signed by the engine's
+ * decision since revision 12 (plan section 12): amm_eth_pay_prepare plans, estimates,
+ * checks the funds and SIGNS without touching the journal, and the attempt is stored
+ * by the caller -- here by this wrapper, as the decision does (the one transaction
+ * with the ledger update is tested in test_amm_journal J27 and test_amm_engine E3).
+ * The payer no longer moves a payout to refund_pending: ZERO and BELOW_MIN are only
+ * RETURNED and the swap stays payout_pending. A USDT REFUND is signed by
+ * amm_eth_pay_sign as before. Every amm_eth_pay_sign call of this file goes through
+ * the wrapper (the macro below), which calls the real function for refunds. */
+static int ep_sign_test(amm_eth_pay_t *p, int64_t swap_seq, uint64_t gross, uint64_t dl,
+                        amm_ep_step_t *out) {
+    amm_swap_t cur;
+    if (amm_journal_swap_by_seq(g_j, swap_seq, &cur) == 0 && cur.dir == AMM_NODUS_TO_USDT &&
+        !strcmp(cur.state, AMM_S_PAYOUT_PENDING)) {
+        if (out) { memset(out, 0, sizeof(*out)); out->swap_seq = swap_seq; }
+        if (gross == 0 || gross > (uint64_t)INT64_MAX) return AMM_EP_ERR;
+        amm_eattempt_t prev;
+        int ar = amm_journal_eth_attempt_latest(g_j, swap_seq, &prev);
+        if (ar == 0) { amm_eattempt_free(&prev); return AMM_EP_ERR; }      /* an attempt exists */
+        amm_ep_prepared_t pre;
+        int rc = amm_eth_pay_prepare(p, cur.dest, gross, cur.minimum, dl, &pre);
+        if (out) { out->fee = pre.fee; out->net = pre.net; snprintf(out->msg, sizeof(out->msg), "%s", pre.msg); }
+        if (rc == AMM_EP_OK) {
+            pre.attempt.swap_seq = swap_seq;
+            if (amm_journal_eth_attempt_sign(g_j, &pre.attempt) == AMM_J_OK) {
+                if (out) { out->worked = 1; out->signed_ = 1; }
+            } else {
+                rc = AMM_EP_ERR;
+            }
+        }
+        amm_ep_prepared_free(&pre);
+        return rc;
+    }
+    return (amm_eth_pay_sign)(p, swap_seq, gross, dl, out);
+}
+#define amm_eth_pay_sign ep_sign_test
+
 /* a NODUS -> USDT swap (dir 1): sender 128 x c, dest 40 x d; or a USDT -> NODUS
  * swap (dir 0): sender 40 x c, dest 128 x d. Driven to payout_pending (dir 1) /
  * refund_pending (dir 0). */
@@ -400,7 +437,7 @@ static int new_swap(int dir, char c, char d, uint64_t minimum, amm_swap_t *out) 
     char inc[80];
     snprintf(inc, sizeof(inc), "nodus:%016llx", (unsigned long long)n);
     if (!dir) snprintf(inc, sizeof(inc), "eth:%064llx", (unsigned long long)n);
-    if (amm_journal_swap_transition(g_j, out->seq, "paid_waiting_depth", inc, NULL, NULL) != 0 ||
+    if (amm_journal_swap_seen(g_j, out->seq, inc, NULL, 500000000ULL, 0, NULL) != 0 ||
         amm_journal_swap_transition(g_j, out->seq, "counted", NULL, NULL, NULL) != 0 ||
         amm_journal_swap_transition(g_j, out->seq, dir ? "payout_pending" : "refund_pending",
                                     NULL, NULL, NULL) != 0) return 0;
@@ -777,10 +814,10 @@ static void e7_fee(void) {
                   "fee 999 of 1000: pays 1");
             amm_eattempt_free(&a);
         } else {
-            CHECK(rc == AMM_EP_ZERO && !has_attempt(s.seq) && swap_state_is(s.seq, "refund_pending"),
-                  k == 1 ? "fee == amount: nothing signed, the payout moves to refund_pending"
-                         : "fee above the amount: nothing signed, the payout moves to refund_pending");
-            CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_ERR && sends() == 0, "and nothing is ever broadcast");
+            CHECK(rc == AMM_EP_ZERO && !has_attempt(s.seq) && swap_state_is(s.seq, "payout_pending"),
+                  k == 1 ? "fee == amount: nothing signed, the verdict is returned (the engine refunds)"
+                         : "fee above the amount: nothing signed, the verdict is returned (the engine refunds)");
+            CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_NEED_SIGN && sends() == 0, "and nothing is ever broadcast");
         }
         amm_eth_pay_free(p);
     }
@@ -802,9 +839,9 @@ static void e7_fee(void) {
     fresh();
     p = new_pay();
     CHECK(p && new_swap(1, 'c', '1', 901, &s) && amm_eth_pay_sign(p, s.seq, 1000, 0, &o) == AMM_EP_BELOW_MIN &&
-          !has_attempt(s.seq) && swap_state_is(s.seq, "refund_pending"),
-          "net 900 < minimum 901 (the gross 1000 would pass): nothing signed, refund_pending");
-    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_ERR && sends() == 0, "and nothing is broadcast");
+          !has_attempt(s.seq) && swap_state_is(s.seq, "payout_pending"),
+          "net 900 < minimum 901 (the gross 1000 would pass): nothing signed, the verdict is returned (the engine refunds)");
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_NEED_SIGN && sends() == 0, "and nothing is broadcast");
     amm_eth_pay_free(p);
 }
 
@@ -1080,7 +1117,7 @@ static void e13_guards(void) {
     a.approved_at = 1; a.expiry = 100; a.approved_tip = 5; a.incoming_id = ""; a.req_no[31] = 77; a.rand16[0] = 77;
     a.swap_max = 100; a.inflight_max = 100;
     CHECK(amm_journal_approve(g_j, &a, &u) == AMM_J_OK &&
-          amm_journal_swap_transition(g_j, u.seq, "paid_waiting_depth", "eth:77", NULL, NULL) == 0 &&
+          amm_journal_swap_seen(g_j, u.seq, "eth:77", NULL, 500000000ULL, 0, NULL) == 0 &&
           amm_journal_swap_transition(g_j, u.seq, "counted", NULL, NULL, NULL) == 0 &&
           amm_journal_swap_transition(g_j, u.seq, "payout_pending", NULL, NULL, NULL) == 0, "setup: a NODUS payout");
     CHECK(amm_eth_pay_sign(p, u.seq, 1000, 0, &o) == AMM_EP_ERR && amm_eth_pay_step(p, u.seq, 0, &o) == AMM_EP_ERR,

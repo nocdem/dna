@@ -90,12 +90,9 @@
  *                                        sent (TetherToken fee, TetherToken.sol:
  *                                        123-134); held for manual handling,
  *                                        what follows is DEFERRED
- *   payout_pending -> refund_pending     7 step 7 / 8 step 7 (plan line 226:
- *                                        zero or below the minimum after the
- *                                        Nodus fee -> refund); ONLY while no
- *                                        attempt of the swap is signed or
- *                                        submitted (the ledger reversal is
- *                                        the caller's, via `pool`)
+ *   (payout_pending -> refund_pending is REMOVED in revision 12: the decision
+ *   of plan section 12 is made once, in one transaction, so no payout turns
+ *   into a refund after it and nothing is reversed)
  *   refund_pending -> refunded           13
  *   refund_pending -> held               (edge kept; no payer uses it since
  *                                        givens items 89, 90: dropped)
@@ -110,13 +107,24 @@
  *                                        amm_journal_payment_gone.
  *   expired, held, unknown, reversed, paid, refunded: otherwise terminal here
  *   (the operator's resolution tools are DEFERRED, plan sections 17, 20).
- * IN-FLIGHT STATES (the sum of value_usdt, plan section 13): approved,
- * paid_waiting_depth, counted, payout_pending, refund_pending (13 lists the
- * first four at line 311 and releases at "payout done; refund done", so a
- * refund still pending holds its room: INFERENCE). `held` holds its room
- * only when the setting `held_keeps_room` is 1: the plan DEFERS the question
- * (plan lines 312, 407), so the journal takes the value as a parameter and
- * decides nothing. unknown and reversed do not hold room.
+ * ROOM (revision 12, plan section 13, givens item 94: "Yer, kullanicinin parasi
+ * goruldugunde tutulsun ... Fiyat sormak hicbir sey tutmaz."): an approval holds
+ * NOTHING. A swap takes room (`room` = 1) in the transaction that first records
+ * its matching payment as seen (amm_journal_swap_seen: approved ->
+ * paid_waiting_depth), and writes the next `seen_seq` on its row: the seen
+ * order, one strict line. It takes room when (sum of value_usdt over the swaps
+ * holding room) + its v <= the in-flight limit AND no payment seen before it
+ * still waits (room = 0); otherwise it waits in the line, not counted
+ * (`counted` needs room = 1: AMM_J_NO_ROOM). amm_journal_room_grant gives room
+ * to the head of the line, in seen order, while it fits, never passing a head
+ * that does not. Rows holding room: room = 1 in paid_waiting_depth, counted,
+ * payout_pending, refund_pending (and held when `held_keeps_room` is 1: the
+ * plan keeps the setting, it decides nothing here). Room is released when the
+ * swap leaves those states: paid, refunded, dropped (a refund that is zero
+ * after its fee), or its seen record is dropped before the count
+ * (payment_gone / payment_unmatched clear room and seen_seq). unknown and
+ * reversed do not hold room. The sums are computed from the rows, never kept
+ * as a counter.
  *
  * A DB failure is never a value: every function returns -1 on a database
  * fault and the caller must not treat the fact as "none" or "zero"; a column
@@ -193,6 +201,10 @@ typedef enum {
     AMM_J_NO_APPROVAL   = 11,  /* accept: no approval carries that number   */
     AMM_J_AMOUNT        = 12,  /* accept: the signed amount or direction
                                 * differs from the approval's (item 87)     */
+    AMM_J_NO_ROOM       = 13,  /* counted: the swap holds no room (it waits in
+                                * line, plan section 13)                    */
+    AMM_J_BELOW_MIN     = 14,  /* liquidity add question: the NODUS side is
+                                * below liquidity_min_nodus (givens item 96) */
     AMM_J_ILLEGAL       = -2,  /* illegal transition / unknown row          */
     AMM_J_ERR           = -1
 } amm_jrc_t;
@@ -219,17 +231,27 @@ typedef struct {
     char      incoming_id[AMM_TID_MAX]; /* "" until known                   */
     char      message[AMM_MSG_MAX];
     /* revision 10 (approval at the price question; schema 5): */
-    uint64_t  quote_out;              /* the number the bot gave: the output
-                                       * before the network fee (givens 82);
-                                       * 0 for a row written by amm_journal_
-                                       * approve                            */
-    int       ledger_applied;         /* the counted swap's ledger update is in
-                                       * the reserves (see ledger_reverse)   */
+    uint64_t  quote_out;              /* the INDICATIVE number the bot gave at
+                                       * the question: the output before the
+                                       * network fee (givens 82, 93); 0 for a
+                                       * row written by amm_journal_approve  */
     uint64_t  est_fee;               /* the estimated network fee it showed
                                        * apart (shown only, never charged)   */
     uint64_t  req_no_bot;             /* the bot's 32-bit request number, the
                                        * swap id of the API (givens 85-87);
                                        * 0 = none (an old-style row)         */
+    /* revision 12 (schema 6): the decision and the room */
+    uint64_t  out_amount;             /* the output computed in the decision from
+                                       * the depths then, before the network fee
+                                       * (givens 93); 0 until decided, 0 for a
+                                       * refund                              */
+    uint64_t  out_fee;                /* the network fee deducted in the decision
+                                       * (USDT: the ceiling, givens 95; NODUS: the
+                                       * planner's fee)                      */
+    uint64_t  out_paid;               /* out_amount - out_fee, what the payout
+                                       * carries                             */
+    int64_t   seen_seq;               /* the seen order, 0 = payment not seen  */
+    int       room;                   /* 1 = holds room under the in-flight total */
 } amm_swap_t;
 
 /** Input of one approval. All fields are caller values; the journal reads no
@@ -354,47 +376,84 @@ int amm_journal_swap_open_nodus(amm_journal_t *j, const char *incoming_id,
                                 const char *sender, uint64_t amount,
                                 amm_swap_t *out);
 
-/** Move a swap to `to` (legal table above; `approved` as target and
- *  `reversed` are refused here). `incoming_id` (NULL = keep) is stored: it is
- *  required for paid_waiting_depth; for `counted` the swap must carry one and
- *  its PERMANENT marker is inserted in this same transaction -- an existing
- *  marker returns AMM_J_DUP_TRANSFER and nothing changes (plan section 17,
- *  givens item 59). ONE INCOMING TRANSFER, ONE SWAP (orchestrator's review
- *  finding on package 1; plan section 8 "a second approval naming the same
- *  transfer is never paid"): a move to paid_waiting_depth is refused with
- *  AMM_J_DUP_TRANSFER, nothing changed, when ANOTHER swap already carrying the
- *  same incoming id is in a state that has taken the payment -- every state
- *  except `approved` (a request may name a transfer before any payment exists,
- *  so approved swaps naming one id do not block each other; READING of "live")
- *  and `expired` (it never took a payment). That carrier check runs on EVERY
- *  transition that names an id, and an id once set is never changed: naming
- *  another id on a swap that already carries one is AMM_J_ILLEGAL (the same id
- *  again is accepted). payout_pending -> refund_pending is refused
- *  (AMM_J_ILLEGAL) while an attempt of the swap is signed or submitted.
- *  `pool` (NULL = none) replaces the ledger reserves in the same
- *  transaction. `message` (NULL = keep) is
- *  stored. 0 / AMM_J_ILLEGAL / AMM_J_DUP_TRANSFER / -1. */
+/** Move a swap to `to` (legal table above; `approved`, `paid_waiting_depth`
+ *  and `reversed` are refused here: the first and the last only through
+ *  payment_gone / payment_unmatched, the middle one only through
+ *  amm_journal_swap_seen, which takes the room). `incoming_id` (NULL = keep)
+ *  is stored; for `counted` the swap must carry one AND hold room (else
+ *  AMM_J_NO_ROOM, nothing changed) and its PERMANENT marker is inserted in
+ *  this same transaction -- an existing marker returns AMM_J_DUP_TRANSFER and
+ *  nothing changes (plan section 17, givens item 59). An incoming id, once
+ *  set, is never changed: naming another id on a swap that already carries one
+ *  is AMM_J_ILLEGAL. `pool` MUST be NULL: a non-NULL pool is refused
+ *  (AMM_J_ILLEGAL, nothing written); the ledger changes only in
+ *  amm_journal_swap_decide and amm_journal_add_commit. `message` (NULL = keep) is stored. 0 / AMM_J_ILLEGAL /
+ *  AMM_J_NO_ROOM / AMM_J_DUP_TRANSFER / -1. */
 int amm_journal_swap_transition(amm_journal_t *j, int64_t seq, const char *to,
                                 const char *incoming_id,
                                 const amm_pool_t *pool, const char *message);
 
-/** The in-flight sum of value_usdt over the in-flight states (see above),
- *  computed from the rows with checked addition. 0 / -1 (an overflow of the
- *  sum is a fault). `held_keeps_room` = 1 adds the swaps in state held. */
+/** A matching payment is SEEN (plan section 13; givens item 94): ONE
+ *  transaction moves the `approved` swap to paid_waiting_depth with its
+ *  incoming id, writes the next seen_seq and takes room or joins the line (see
+ *  ROOM above). ONE INCOMING TRANSFER, ONE SWAP (orchestrator's review finding
+ *  on package 1; plan section 8): refused with AMM_J_DUP_TRANSFER, nothing
+ *  changed, when ANOTHER swap already carrying the same incoming id is in a
+ *  state that has taken the payment -- every state except `approved` (a
+ *  request may name a transfer before any payment exists) and `expired` -- or
+ *  when the permanent marker of the id exists. `took_room` (may be NULL) = 1
+ *  when the swap holds room afterwards, 0 when it waits. 0 / AMM_J_ILLEGAL /
+ *  AMM_J_DUP_TRANSFER / AMM_J_RANGE / -1. */
+int amm_journal_swap_seen(amm_journal_t *j, int64_t seq, const char *incoming_id,
+                          const char *message, uint64_t inflight_max,
+                          int held_keeps_room, int *took_room);
+
+/** Give room to the head of the line while it fits (ROOM above): in seen
+ *  order, the earliest paid_waiting_depth swap with room = 0 takes room when
+ *  (sum) + its v <= inflight_max; a head that does not fit stops the line, a
+ *  later smaller swap never passes it. ONE transaction. `granted` (may be
+ *  NULL) = the number of swaps that took room. 0 / -1. */
+int amm_journal_room_grant(amm_journal_t *j, uint64_t inflight_max,
+                           int held_keeps_room, int *granted);
+
+/** The sum of value_usdt over the swaps holding room (ROOM above), computed
+ *  from the rows with checked addition. 0 / -1 (an overflow of the sum is a
+ *  fault). `held_keeps_room` = 1 adds the swaps in state held that hold room. */
 int amm_journal_inflight_sum(amm_journal_t *j, int held_keeps_room,
                              uint64_t *out);
-/** A counted swap's ledger update (the `pool` of the transition to
- *  payout_pending) is marked in `ledger_applied`. When the swap turns into a
- *  refund before its payout was signed (the payers move payout_pending ->
- *  refund_pending), the engine reverses the update here: ONE transaction
- *  replaces the reserves with `new_pool` and clears the mark. Legal only for a
- *  swap in refund_pending with the mark set (else AMM_J_ILLEGAL), so it is
- *  idempotent across a restart. */
-int amm_journal_ledger_reverse(amm_journal_t *j, int64_t swap_seq,
-                               const amm_pool_t *new_pool);
+
+/** The sum the bot still owes in ONE payout asset (want_usdt = 1: USDT, 0:
+ *  NODUS) over the swaps whose payment is SEEN and not finished (plan section
+ *  12, "the bot-key balance estimate counts only swaps whose payment is seen";
+ *  an unpaid approval holds nothing): paid_waiting_depth and counted swaps owe
+ *  their indicative number `quote_out` in their payout asset, payout_pending
+ *  swaps their decided `out_amount`, refund_pending swaps their input `amount`
+ *  in the input asset. Streamed row by row (no cap), checked addition. 0 / -1. */
+int amm_journal_owed_sum(amm_journal_t *j, int want_usdt, uint64_t *out);
+
+/* amm_journal_swap_decide (the decision of a counted swap, one transaction) is
+ * declared at the end of this file, after the payout attempt types. */
+
+/** One page of swaps in `state`: the rows whose key is greater than `after`
+ *  (0 = from the start), ordered by that key, at most `cap` (>= 1); the caller
+ *  asks again with the last key it got until fewer than `cap` come back, so no
+ *  number of rows can stop a walk. by_seen = 0: key = seq; by_seen = 1: key =
+ *  seen_seq (the line and the decisions, plan sections 13, 14; rows without a
+ *  seen_seq are not listed). The key of the last row is its seq or seen_seq.
+ *  0 / -1. */
+int amm_journal_swap_page(amm_journal_t *j, const char *state, int by_seen,
+                          int64_t after, amm_swap_t *out, int cap, int *n);
+
+/** The signed, still unpaid USDT -> NODUS approval of `sender` (40 lowercase
+ *  hex) for exactly `amount` (state `approved`), if any: a keyed lookup (item
+ *  57 lets at most one signed open approval exist per sender and amount). 0
+ *  found / 1 none / -1. */
+int amm_journal_swap_find_open_usdt(amm_journal_t *j, const char *sender,
+                                    uint64_t amount, amm_swap_t *out);
 
 /** Swaps in `state`, oldest first, up to `cap`; a result that would exceed
- *  `cap` is a fault (-1), never cut. 0 / -1. */
+ *  `cap` is a fault (-1), never cut. KEPT for tests and bounded callers; the
+ *  engine pages with amm_journal_swap_page. 0 / -1. */
 int amm_journal_swap_list_state(amm_journal_t *j, const char *state,
                                 amm_swap_t *out, int cap, int *n);
 
@@ -762,5 +821,160 @@ int amm_journal_eth_attempt_finish(amm_journal_t *j, int64_t swap_seq,
  *  attempts in signed or submitted (plan line 266: "subtracts the USDT of its
  *  own pending payouts from the journal rows"), checked addition. 0 / -1. */
 int amm_journal_eth_pending_usdt(amm_journal_t *j, uint64_t *out);
+
+/* ── the decision of a counted swap (revision 12) ─────────────────────── */
+
+/** The decision of a counted swap, written in ONE transaction (plan section
+ *  12; givens items 93-95): the caller computed everything first (the output
+ *  from the depths of that moment, the payout's network fee, the minimum
+ *  check, the signed payout) and hands the result here; either all of it is
+ *  stored or none.
+ *    refund = 0: the swap must be `counted`, the stored pool must equal
+ *      `pool_before` byte for byte (the depths the output was computed from),
+ *      then in this transaction: the pool becomes `pool_after`, out_amount /
+ *      out_fee / out_paid are written, the swap moves to payout_pending and
+ *      the signed payout (`nattempt` for a USDT -> NODUS swap, `eattempt` for
+ *      a NODUS -> USDT swap; exactly one) is stored before anything is sent
+ *      (plan section 17). A refused attempt (a duplicate nonce, another NODUS
+ *      payout in flight) rolls everything back.
+ *    refund = 1: the swap must be `counted`; it moves to refund_pending with
+ *      `message`, the pool UNTOUCHED (pool arguments and attempts ignored).
+ *  Anything refused writes nothing. @return 0 / AMM_J_ILLEGAL (state, pool or
+ *  attempt refused) / AMM_J_RANGE / -1. */
+typedef struct {
+    int64_t seq;
+    int refund;
+    const char *message;               /* the refund's reason (may be NULL)    */
+    uint64_t out_amount, out_fee, out_paid;
+    const amm_pool_t *pool_before, *pool_after;
+    amm_attempt_t *nattempt;           /* USDT -> NODUS payout                 */
+    amm_eattempt_t *eattempt;          /* NODUS -> USDT payout                 */
+} amm_decision_t;
+
+int amm_journal_swap_decide(amm_journal_t *j, const amm_decision_t *d);
+
+/** 1 = a NODUS payout attempt is signed or submitted (in flight), 0 = none.
+ *  -1 fault. The decision of a USDT -> NODUS swap waits while one is (plan
+ *  section 7 step 7: another NODUS payout still signed or submitted).
+ *  amm_journal_swap_head_payout returns the swap with an open attempt first, so
+ *  the payer settles it even when an older refund still has to be signed. */
+int amm_journal_nodus_payout_owed(amm_journal_t *j);
+
+/** The swaps that owe a USDT payout (as amm_journal_swap_list_usdt_owed), one
+ *  page: seq > `after_seq`, oldest first, at most `cap` (>= 1). 0 / -1. */
+int amm_journal_swap_page_usdt_owed(amm_journal_t *j, int64_t after_seq,
+                                    amm_swap_t *out, int cap, int *n);
+
+/* ── liquidity add (revision 12; plan sections 6.4.6, 14; givens items 25,
+ *    35, 49, 91, 96) ─────────────────────────────────────────────────────── */
+
+#define AMM_L_APPROVED   "approved"   /* the add question answered, nothing signed */
+#define AMM_L_SIGNED     "signed"     /* both halves verified and accepted         */
+#define AMM_L_COMMITTED  "committed"  /* both sides counted: units added            */
+#define AMM_L_EXPIRED    "expired"    /* no side seen and both windows observed     */
+#define AMM_L_REVERSED   "reversed"   /* a payment of a committed add was reversed  */
+
+/** One liquidity add: the exact pair the bot answered at the add question
+ *  (usdt_amount, nodus_amount at the pool's ratio), the two addresses and the
+ *  NODUS transfer id once both signed halves arrived, and the two deposits as
+ *  they are matched. Holds NO in-flight room (givens item 25: no 100 / 500
+ *  limits on liquidity). */
+typedef struct {
+    int64_t  seq;
+    uint32_t bot_req;                  /* the bot's 32-bit request number        */
+    char     state[AMM_STATE_MAX];     /* AMM_L_*                                */
+    uint64_t usdt_amount, nodus_amount;/* raw                                    */
+    char     eth_addr[AMM_ADDR_ETH + 1];     /* "" until signed                  */
+    char     nodus_addr[AMM_ADDR_NODUS + 1]; /* "" until signed                  */
+    char     transfer_id[AMM_TID_MAX]; /* "nodus:<128 hex>", "" until signed     */
+    uint64_t approved_at, expiry;      /* unix seconds                           */
+    uint64_t eth_tip, nodus_tip;       /* the tips read at the question: a
+                                        * deposit counts only in a block above  */
+    char     eth_tx[AMM_TID_MAX];      /* "eth:<hash>" once the USDT deposit is
+                                        * matched, else ""                       */
+    uint32_t eth_log;
+    uint64_t nodus_height;             /* block of the NODUS deposit, 0 = none   */
+    int64_t  seen_seq;                 /* its place in the shared seen order, set
+                                        * when both deposits are linked; 0 = not
+                                        * yet (plan line 575)                    */
+} amm_add_t;
+
+/** Signed adds with both deposits linked, one page by seen_seq (> after, at most
+ *  cap >= 1), the order in which they are committed together with the swaps'
+ *  decisions. 0 / -1. */
+int amm_journal_add_page_ready(amm_journal_t *j, int64_t after, amm_add_t *out, int cap,
+                               int *n);
+
+/** Input of the add question's approval (the pair is the engine's, computed at
+ *  the pool's ratio). Refusals, in this order, writing nothing: liquidity
+ *  paused (AMM_J_PAUSED), a swap in `unknown` (AMM_J_STOPPED), the number taken
+ *  (AMM_J_NUMBER_TAKEN: redraw), NODUS side below `nodus_min`
+ *  (AMM_J_BELOW_MIN, givens item 96). Else row `approved`. */
+typedef struct {
+    uint32_t bot_req;
+    uint64_t usdt_amount, nodus_amount;
+    uint64_t approved_at, expiry;
+    uint64_t eth_tip, nodus_tip;       /* > 0 */
+    uint64_t nodus_min;                /* liquidity_min_nodus */
+    int      liquidity_paused_cfg;
+} amm_add_q_t;
+int amm_journal_add_approve(amm_journal_t *j, const amm_add_q_t *q, amm_add_t *out);
+
+typedef struct {
+    uint32_t bot_req;
+    const char *eth_addr;              /* 40 lowercase hex                       */
+    const char *nodus_addr;            /* 128 lowercase hex                      */
+    uint64_t usdt_amount, nodus_amount;
+    const char *transfer_id;           /* "nodus:<128 hex>"                      */
+    uint8_t  eth_req_no[32], nodus_req_no[32];
+} amm_add_accept_t;
+
+/** The signed pair of an add (after amm_req_liquidity_add_verify): the add
+ *  numbered `bot_req` must exist (AMM_J_NO_APPROVAL), be `approved` (else
+ *  AMM_J_ILLEGAL: a number is accepted once) and the two amounts must equal
+ *  the approved pair exactly (AMM_J_AMOUNT). Then the request number under BOTH
+ *  addresses must be unused (AMM_J_REQ_REUSED), the NODUS transfer id must have
+ *  no permanent marker (AMM_J_DUP_TRANSFER), and (plan 6.4.6) no open swap
+ *  approval or other open add may carry the same Ethereum address and USDT
+ *  amount (AMM_J_OPEN_DUP; `*open_req` = the request number of that open swap
+ *  or add). Else addresses and transfer id are written, the state becomes
+ *  `signed` and the markers are inserted under both addresses (swap_seq column
+ *  = minus the add's seq), in ONE transaction. `out` and `open_req` may be
+ *  NULL. */
+int amm_journal_add_accept(amm_journal_t *j, const amm_add_accept_t *a,
+                           amm_add_t *out, uint32_t *open_req);
+
+int amm_journal_add_by_botreq(amm_journal_t *j, uint32_t bot_req, amm_add_t *out);
+int amm_journal_add_by_seq(amm_journal_t *j, int64_t seq, amm_add_t *out);
+/** Signed adds, one page (seq > after, at most cap >= 1). 0 / -1. */
+int amm_journal_add_page(amm_journal_t *j, const char *state, int64_t after,
+                         amm_add_t *out, int cap, int *n);
+/** The signed add of (eth address, USDT amount) whose USDT deposit is not
+ *  matched yet. 0 found / 1 none / -1. */
+int amm_journal_add_find_eth(amm_journal_t *j, const char *eth_addr,
+                             uint64_t usdt_amount, amm_add_t *out);
+/** Link the USDT deposit record to the add (state signed, no deposit linked,
+ *  the key has no permanent marker). 0 / AMM_J_ILLEGAL / AMM_J_DUP_TRANSFER. */
+int amm_journal_add_link_eth(amm_journal_t *j, int64_t seq, const char *eth_key,
+                             uint32_t log_index);
+/** Link the NODUS deposit (block height) to the add. 0 / AMM_J_ILLEGAL. */
+int amm_journal_add_link_nodus(amm_journal_t *j, int64_t seq, uint64_t height);
+/** Commit the add (state signed, both deposits linked): ONE transaction
+ *  computes the units from the stored pool of that moment (THORChain's formula,
+ *  amm_units_for_add; an empty pool: the NODUS side, handler_add_liquidity.go:
+ *  444-448), replaces the pool, adds the units to the position (eth address,
+ *  nodus address), inserts the permanent markers of both deposits and moves the
+ *  add to `committed`. `units_out` (may be NULL) = the units of this add. The
+ *  caller has checked both waits (liquidity_wait_eth_blocks, _nodus_blocks).
+ *  0 / AMM_J_ILLEGAL / AMM_J_DUP_TRANSFER / AMM_J_RANGE (the units cannot be
+ *  computed) / -1. */
+int amm_journal_add_commit(amm_journal_t *j, int64_t seq, evm_u256 *units_out);
+/** The add moves to expired (no deposit linked, state approved or signed).
+ *  0 / AMM_J_ILLEGAL / -1. */
+int amm_journal_add_expire(amm_journal_t *j, int64_t seq);
+/** The units of the position (eth address 40 hex, nodus address 128 hex);
+ *  0 found / 1 none / -1. */
+int amm_journal_position_get(amm_journal_t *j, const char *eth_addr,
+                             const char *nodus_addr, evm_u256 *units);
 
 #endif /* AMM_JOURNAL_H */

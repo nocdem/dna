@@ -43,15 +43,19 @@
  *   net == 0 (fee at or above the amount): nothing is signed or broadcast
  *     (givens item 52), on the first attempt and on a replacement alike. A
  *     REFUND (a NODUS -> USDT swap in refund_pending) is DROPPED (state
- *     `dropped`, no room; givens items 89, 90). A PAYOUT (a USDT ->
- *     NODUS swap in payout_pending) is moved to refund_pending (plan line
- *     226: zero or below the minimum -> refund; the journal edge exists only
- *     while no attempt of the swap is signed or submitted) and AMM_NP_ZERO is
- *     returned. The LEDGER is not touched here: reversing the pool update of
- *     the payout is the engine's duty, as is the USDT refund itself.
- *   net < the swap's signed minimum, for a payout: nothing is signed
- *     (givens item 51: the minimum is compared after the Nodus fee); the swap
- *     moves to refund_pending as above; AMM_NP_BELOW_MIN.
+ *     `dropped`, no room; givens items 89, 90). A PAYOUT's verdict (AMM_NP_ZERO,
+ *     AMM_NP_BELOW_MIN) is only RETURNED by amm_nodus_pay_prepare: since
+ *     revision 12 (plan section 12) the engine decides a swap once, in one
+ *     journal transaction, so this module never moves a payout to
+ *     refund_pending and touches no ledger; a decided payout's first attempt is
+ *     stored by that decision (amm_journal_swap_decide).
+ *   net < the swap's signed minimum, for a payout: nothing is signed (givens
+ *     item 51: the minimum is compared after the Nodus fee); AMM_NP_BELOW_MIN
+ *     from amm_nodus_pay_prepare.
+ *   REPLACEMENT of an expired decided payout: only at the SAME Nodus fee as
+ *     the decided attempt; at another fee nothing is stored and the swap
+ *     waits (AMM_NP_UNKNOWN): the replacement at a higher fee is not built
+ *     (givens item 97).
  *
  * ONE PAYOUT IN FLIGHT: the head swap (the oldest in payout_pending or
  * refund_pending, amm_journal_swap_head_payout) is driven, as the faucet's
@@ -141,8 +145,35 @@ typedef enum {
     AMM_NP_PAUSED      = 6,  /* payouts_paused: nothing signed or broadcast  */
     AMM_NP_NEED_SIGN   = 7,  /* step: the head swap has no attempt yet: the
                               * engine calls amm_nodus_pay_sign with gross   */
+    AMM_NP_BUSY        = 8,  /* another swap's attempt is signed or submitted
+                              * (one payout in flight): nothing stored; the
+                              * swap waits (not a fault)                     */
     AMM_NP_ERR         = -1  /* a journal fault or a bad argument            */
 } amm_np_rc_t;
+
+/** A NODUS payout planned, built and SIGNED but not stored (plan section 12,
+ *  revision 12: the decision stores it together with the ledger update, in one
+ *  journal transaction). `attempt.env` is heap: amm_np_prepared_free. The
+ *  attempt's swap_seq, n and state are assigned by the journal at storage. */
+typedef struct {
+    uint64_t        gross;
+    uint64_t        fee;           /* the planner's fee (set for OK, ZERO, BELOW_MIN) */
+    uint64_t        net;           /* gross - fee, saturating                          */
+    amm_attempt_t   attempt;       /* ready to store when the call returned OK         */
+    char            msg[AMM_MSG_MAX];
+} amm_np_prepared_t;
+void amm_np_prepared_free(amm_np_prepared_t *pre);
+
+/** Plan, build and sign a NODUS payout of `gross` to the native address `dest`
+ *  (128 hex) WITHOUT touching the journal; the minimum (0 = none) is compared
+ *  with the amount after the Nodus fee (givens item 51). @return AMM_NP_OK
+ *  (`out->attempt` is ready) / AMM_NP_ZERO (nothing left after the fee) /
+ *  AMM_NP_BELOW_MIN (`out->fee`, `out->net` set) -- in both of the last two
+ *  nothing is signed -- / AMM_NP_FUNDS / UNKNOWN / UNSUPPORTED / PAUSED / ERR.
+ *  This module never moves a swap to a refund: the engine decides. */
+int amm_nodus_pay_prepare(amm_nodus_pay_t *p, const char *dest, uint64_t gross,
+                          uint64_t minimum, uint64_t deadline_ms,
+                          amm_np_prepared_t *out);
 
 /** Validate the configuration and build a payer. NULL on a bad config (a
  *  missing journal, key, rand or seam function, expiry_ahead outside
@@ -194,14 +225,16 @@ typedef struct {
     char    msg[AMM_MSG_MAX];
 } amm_np_step_t;
 
-/** Plan, build, sign and STORE the envelope for the swap `swap_seq` (in
- *  payout_pending: a USDT -> NODUS payout to its destination; in
- *  refund_pending: a NODUS -> USDT refund to its sender), owing `gross`.
- *  Refused (nothing signed) as described above. Nothing is submitted here.
- *  Legal only when the swap has no attempt (the first) -- a replacement is
- *  made by amm_nodus_pay_step after the attempt expired. `out` may be NULL.
- *  @return AMM_NP_OK (stored) / AMM_NP_ZERO / AMM_NP_BELOW_MIN / AMM_NP_FUNDS
- *  / AMM_NP_UNKNOWN / AMM_NP_UNSUPPORTED / AMM_NP_PAUSED / AMM_NP_ERR. */
+/** Plan, build, sign and STORE the envelope of the REFUND of a NODUS -> USDT
+ *  swap in refund_pending (to its sender), owing `gross`. A USDT -> NODUS
+ *  payout is NOT signed here (AMM_NP_ERR): its first attempt is stored by the
+ *  decision (amm_nodus_pay_prepare, amm_journal_swap_decide). Refused
+ *  (nothing signed) as described above; a refund that is zero after the fee is
+ *  dropped. Nothing is submitted here. Legal only when the swap has no attempt
+ *  (the first) -- a replacement is made by amm_nodus_pay_step after the
+ *  attempt expired. `out` may be NULL. @return AMM_NP_OK (stored) /
+ *  AMM_NP_ZERO (refund dropped) / AMM_NP_FUNDS / AMM_NP_UNKNOWN /
+ *  AMM_NP_UNSUPPORTED / AMM_NP_PAUSED / AMM_NP_BUSY / AMM_NP_ERR. */
 int amm_nodus_pay_sign(amm_nodus_pay_t *p, int64_t swap_seq, uint64_t gross,
                        uint64_t deadline_ms, amm_np_step_t *out);
 

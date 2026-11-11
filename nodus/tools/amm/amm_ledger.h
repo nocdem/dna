@@ -105,20 +105,17 @@ int amm_swap_liquidity_fee(evm_u256 *fee, const evm_u256 *X,
 int amm_pool_quote(const amm_pool_t *p, amm_dir_t dir, const evm_u256 *x,
                    evm_u256 *out);
 
-/** Ledger update after a counted swap: input side += x, output side -=
- *  `paid`. `paid` is THE NUMBER THE BOT GAVE AT APPROVAL (plan section 12,
- *  givens items 66, 68), not a quote of today's depths: it is not computed
- *  again. Refusals (nothing changes): AMM_E_DEPTH when `paid` reaches the
- *  output-side depth, AMM_E_OVERFLOW on the input side, AMM_E_RANGE for a bad
- *  direction. All-or-nothing. */
+/** Ledger update of a decided swap: input side += x, output side -= `paid`.
+ *  `paid` is THE OUTPUT COMPUTED IN THE DECISION from the depths of that
+ *  moment (plan section 12, givens item 93), before the network fee: the
+ *  caller takes it from amm_pool_quote of the same pool. It is written only in
+ *  the decision transaction of a swap that passes its minimum; a refunded swap
+ *  never reaches this function, so nothing is ever reversed (plan section 12:
+ *  the revision 11 reversal is withdrawn). Refusals (nothing changes):
+ *  AMM_E_DEPTH when `paid` reaches the output-side depth, AMM_E_OVERFLOW on
+ *  the input side, AMM_E_RANGE for a bad direction. All-or-nothing. */
 int amm_pool_apply_swap(amm_pool_t *p, amm_dir_t dir, const evm_u256 *x,
                         const evm_u256 *paid);
-
-/** Reverse a counted swap's ledger update (a payout that turned into a
- *  refund before anything was signed): input side -= x, output side += paid.
- *  AMM_E_BORROW / AMM_E_OVERFLOW refuse, nothing changes. */
-int amm_pool_unapply_swap(amm_pool_t *p, amm_dir_t dir, const evm_u256 *x,
-                          const evm_u256 *paid);
 
 /** THORChain GetUncappedShare (type_convert.go): zero part, total or
  *  allocation -> 0; part == total -> allocation; else (allocation*part +

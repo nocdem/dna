@@ -322,27 +322,18 @@ static int finish_and_move(amm_eth_pay_t *p, const amm_swap_t *s, const char *at
 
 /* ── sign ─────────────────────────────────────────────────────────────── */
 
-static int sign_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t gross,
-                       uint64_t deadline_ms, amm_ep_step_t *out) {
+/* Plan, estimate, check the funds and SIGN a payout of `gross` USDT to
+ * `recipient` WITHOUT touching the journal: `at` is filled (raw on the heap,
+ * the caller stores it or frees it) when the result is AMM_EP_OK. The minimum
+ * is compared with the amount after the Ethereum fee (0 = none). ZERO and
+ * BELOW_MIN are only returned; moving a swap is the engine's (plan section 12,
+ * revision 12: the decision is made once). `p->mu` is held by the caller. */
+static int prepare_locked(amm_eth_pay_t *p, const uint8_t recipient[20], uint64_t gross,
+                          uint64_t minimum, uint64_t deadline_ms, amm_eattempt_t *at,
+                          amm_ep_step_t *out) {
     amm_journal_t *j = p->cfg.journal;
-    amm_swap_t s;
-    if (amm_journal_swap_by_seq(j, swap_seq, &s) != 0) { say(out, "no such swap"); return AMM_EP_ERR; }
-    if (!owes_usdt(&s)) { say(out, "the swap owes no USDT payout"); return AMM_EP_ERR; }
-    amm_eattempt_t prev;
-    int pv = amm_journal_eth_attempt_latest(j, swap_seq, &prev);
-    if (pv == 0) {
-        amm_eattempt_free(&prev);
-        say(out, "the swap already has a payout transaction");
-        return AMM_EP_ERR;
-    }
-    if (pv < 0) return AMM_EP_ERR;
+    memset(at, 0, sizeof(*at));
     if (p->cfg.payouts_paused) { say(out, "payouts paused"); return AMM_EP_PAUSED; }
-    uint8_t recipient[20];
-    if (unhex20(is_payout(&s) ? s.dest : s.sender, recipient) != 0) {
-        say(out, "the swap holds no Ethereum address");
-        return AMM_EP_ERR;
-    }
-    const uint64_t minimum = is_payout(&s) ? s.minimum : 0;
 
     rd_t rd = { .dl = deadline_ms };
     if (qualify(p, &rd) < p->cfg.quorum) { say(out, "providers below the quorum"); return AMM_EP_UNKNOWN; }
@@ -393,22 +384,11 @@ static int sign_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t gross,
     if (out) { out->fee = fee; out->net = net; }
     if (v == AMM_EP_NOTHING) {
         say(out, "nothing is left after the Ethereum fee: nothing signed");
-        int mv = is_payout(&s)
-            ? amm_journal_swap_transition(j, swap_seq, AMM_S_REFUND_PENDING, NULL, NULL,
-                                          "zero USDT after the Ethereum fee: refund")
-            : amm_journal_swap_transition(j, swap_seq, AMM_S_DROPPED, NULL, NULL,
-                                          "Ethereum fee at or above the refund: dropped");
-        if (mv != 0) return AMM_EP_ERR;
-        if (out) out->worked = 1;
         return AMM_EP_ZERO;
     }
     if (!fixed) { say(out, "the gas estimate did not settle: payout left unsent"); return AMM_EP_UNKNOWN; }
     if (v == AMM_EP_BELOW) {
         say(out, "below the signed minimum after the Ethereum fee: nothing signed");
-        if (amm_journal_swap_transition(j, swap_seq, AMM_S_REFUND_PENDING, NULL, NULL,
-                                        "below the minimum after the Ethereum fee: refund") != 0)
-            return AMM_EP_ERR;
-        if (out) out->worked = 1;
         return AMM_EP_BELOW_MIN;
     }
 
@@ -456,20 +436,57 @@ static int sign_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t gross,
     memcpy(tx.to, p->cfg.usdt, 20);
     tx.data = cd;
     tx.data_len = sizeof(cd);
-    amm_eattempt_t at;
-    memset(&at, 0, sizeof(at));
-    if (amm_tx1559_sign(p->signer, &tx, &at.raw, &at.raw_len, at.hash) != 0) {
+    if (amm_tx1559_sign(p->signer, &tx, &at->raw, &at->raw_len, at->hash) != 0) {
         say(out, "signing failed");
         return AMM_EP_ERR;
     }
+    at->chain_id = p->cfg.chain_id;
+    at->nonce = nonce;
+    memcpy(at->recipient, recipient, 20);
+    at->gross = gross; at->net = net; at->fee = fee;
+    at->gas_limit = gas;
+    at->max_fee_per_gas = max_fee;
+    at->max_priority_fee_per_gas = prio;
+    return AMM_EP_OK;
+}
+
+/* Sign and STORE the USDT REFUND of a USDT -> NODUS swap in refund_pending. A
+ * NODUS -> USDT payout's first transaction is stored by the decision
+ * (amm_eth_pay_prepare, amm_journal_swap_decide), never here. */
+static int sign_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t gross,
+                       uint64_t deadline_ms, amm_ep_step_t *out) {
+    amm_journal_t *j = p->cfg.journal;
+    amm_swap_t s;
+    if (amm_journal_swap_by_seq(j, swap_seq, &s) != 0) { say(out, "no such swap"); return AMM_EP_ERR; }
+    if (!owes_usdt(&s)) { say(out, "the swap owes no USDT payout"); return AMM_EP_ERR; }
+    if (is_payout(&s)) { say(out, "a payout is signed in its decision, not here"); return AMM_EP_ERR; }
+    amm_eattempt_t prev;
+    int pv = amm_journal_eth_attempt_latest(j, swap_seq, &prev);
+    if (pv == 0) {
+        amm_eattempt_free(&prev);
+        say(out, "the swap already has a payout transaction");
+        return AMM_EP_ERR;
+    }
+    if (pv < 0) return AMM_EP_ERR;
+    if (p->cfg.payouts_paused) { say(out, "payouts paused"); return AMM_EP_PAUSED; }
+    uint8_t recipient[20];
+    if (unhex20(s.sender, recipient) != 0) {
+        say(out, "the swap holds no Ethereum address");
+        return AMM_EP_ERR;
+    }
+    amm_eattempt_t at;
+    int rc = prepare_locked(p, recipient, gross, 0, deadline_ms, &at, out);
+    if (rc == AMM_EP_ZERO) {
+        /* a refund whose Ethereum fee is at or above it is dropped (not sent,
+         * not held; givens items 89, 90) */
+        if (amm_journal_swap_transition(j, swap_seq, AMM_S_DROPPED, NULL, NULL,
+                                        "Ethereum fee at or above the refund: dropped") != 0)
+            return AMM_EP_ERR;
+        if (out) out->worked = 1;
+        return AMM_EP_ZERO;
+    }
+    if (rc != AMM_EP_OK) return rc;
     at.swap_seq = swap_seq;
-    at.chain_id = p->cfg.chain_id;
-    at.nonce = nonce;
-    memcpy(at.recipient, recipient, 20);
-    at.gross = gross; at.net = net; at.fee = fee;
-    at.gas_limit = gas;
-    at.max_fee_per_gas = max_fee;
-    at.max_priority_fee_per_gas = prio;
     /* WRITE-AHEAD: stored here, broadcast only by amm_eth_pay_step */
     int jr = amm_journal_eth_attempt_sign(j, &at);
     amm_eattempt_free(&at);
@@ -480,6 +497,32 @@ static int sign_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t gross,
     }
     if (out) { out->worked = 1; out->signed_ = 1; }
     return AMM_EP_OK;
+}
+
+void amm_ep_prepared_free(amm_ep_prepared_t *pre) {
+    if (!pre) return;
+    amm_eattempt_free(&pre->attempt);
+    memset(pre, 0, sizeof(*pre));
+}
+
+int amm_eth_pay_prepare(amm_eth_pay_t *p, const char *recipient_hex, uint64_t gross,
+                        uint64_t minimum, uint64_t deadline_ms,
+                        amm_ep_prepared_t *out) {
+    if (!p || !recipient_hex || !out) return AMM_EP_ERR;
+    memset(out, 0, sizeof(*out));
+    uint8_t recipient[20];
+    if (unhex20(recipient_hex, recipient) != 0 || gross == 0 ||
+        gross > (uint64_t)INT64_MAX) return AMM_EP_ERR;
+    amm_ep_step_t st;
+    memset(&st, 0, sizeof(st));
+    pthread_mutex_lock(&p->mu);
+    int rc = prepare_locked(p, recipient, gross, minimum, deadline_ms, &out->attempt, &st);
+    pthread_mutex_unlock(&p->mu);
+    out->fee = st.fee;
+    out->net = st.net;
+    snprintf(out->msg, sizeof(out->msg), "%s", st.msg);
+    if (rc != AMM_EP_OK) amm_eattempt_free(&out->attempt);
+    return rc;
 }
 
 int amm_eth_pay_sign(amm_eth_pay_t *p, int64_t swap_seq, uint64_t gross,

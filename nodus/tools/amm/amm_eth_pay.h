@@ -31,14 +31,15 @@
  * conversion is decided here (DEFERRED, plan section 10): an unreadable price
  * is AMM_ETH_ERR from the seam and nothing is signed (never zero).
  *   net == 0 (fee at or above the amount): nothing is signed or broadcast
- *     (givens item 52). A payout (NODUS -> USDT, payout_pending) is moved to
- *     refund_pending BEFORE any attempt is signed (plan line 241, as
- *     amm_nodus_pay); a refund (USDT -> NODUS, refund_pending) is DROPPED
- *     (state `dropped`, no room, nothing sent; givens items 89, 90). The LEDGER is not touched here: reversing the
- *     pool update of the payout is the engine's duty.
+ *     (givens item 52). For a payout (NODUS -> USDT) amm_eth_pay_prepare only
+ *     RETURNS AMM_EP_ZERO: since revision 12 (plan section 12) the engine
+ *     decides a swap once, in one journal transaction, and turns it into a
+ *     refund there; this module never moves a payout to refund_pending and
+ *     touches no ledger. A refund (USDT -> NODUS, refund_pending) is DROPPED
+ *     (state `dropped`, no room, nothing sent; givens items 89, 90).
  *   net < the swap's signed minimum, for a payout: nothing is signed (the
- *     minimum is compared after the fee, plan line 241); the swap moves to
- *     refund_pending; AMM_EP_BELOW_MIN.
+ *     minimum is compared after the fee, plan line 241); AMM_EP_BELOW_MIN is
+ *     returned by amm_eth_pay_prepare, the engine refunds.
  *
  * GAS AND NET ARE INTERDEPENDENT: eth_estimateGas needs the call data, the
  * call data carries net, net depends on the gas. The payer iterates (READING;
@@ -223,6 +224,32 @@ typedef enum {
 amm_ep_verdict_t amm_eth_pay_judge(uint64_t gross, uint64_t fee, uint64_t minimum,
                                    uint64_t *net_out);
 
+/** A USDT payout planned, estimated, balance-checked and SIGNED but not stored
+ *  (plan section 12, revision 12): the decision of a NODUS -> USDT swap stores
+ *  it together with the ledger update in one journal transaction
+ *  (amm_journal_swap_decide). `fee` is the Ethereum fee DEDUCTED: the ceiling
+ *  of the transaction signed (its gas limit -- the estimate raised by 25 %,
+ *  rounded up -- times its max fee per gas, converted into USDT with the price
+ *  seam and rounded up, givens item 95); `net` = gross - fee saturating. */
+typedef struct {
+    uint64_t       fee, net;
+    amm_eattempt_t attempt;     /* ready to store when the call returned OK;
+                                 * raw is heap: amm_ep_prepared_free            */
+    char           msg[AMM_MSG_MAX];
+} amm_ep_prepared_t;
+void amm_ep_prepared_free(amm_ep_prepared_t *pre);
+
+/** Plan and SIGN a USDT payout of `gross` (> 0) to `recipient_hex` (40 lowercase
+ *  hex) WITHOUT touching the journal; `minimum` (0 = none) is compared with the
+ *  amount after the fee. @return AMM_EP_OK (`out->attempt` ready) /
+ *  AMM_EP_ZERO / AMM_EP_BELOW_MIN (nothing signed; `fee`, `net` set) /
+ *  AMM_EP_FUNDS / AMM_EP_UNKNOWN / AMM_EP_PAUSED / AMM_EP_ERR. This module
+ *  never moves a swap: the engine decides. The payer's nonce lock is released
+ *  at return; the engine (one worker thread) stores the attempt right after. */
+int amm_eth_pay_prepare(amm_eth_pay_t *p, const char *recipient_hex, uint64_t gross,
+                        uint64_t minimum, uint64_t deadline_ms,
+                        amm_ep_prepared_t *out);
+
 typedef struct {
     int64_t  swap_seq;
     int      worked;        /* 1 = a state moved, a broadcast was recorded    */
@@ -233,9 +260,13 @@ typedef struct {
     char     msg[AMM_MSG_MAX];
 } amm_ep_step_t;
 
-/** Sign and STORE the payout transaction of swap `swap_seq`, owing `gross`
- *  USDT raw (> 0), as described above. Nothing is broadcast here. Legal only
- *  when the swap owes a USDT payout and has no attempt. `out` may be NULL.
+/** Sign and STORE the transaction of the USDT REFUND of swap `swap_seq` (a
+ *  USDT -> NODUS swap in refund_pending), owing `gross` USDT raw (> 0), as
+ *  described above. A NODUS -> USDT swap's PAYOUT is not signed here
+ *  (AMM_EP_ERR): its transaction is stored by the decision
+ *  (amm_eth_pay_prepare, amm_journal_swap_decide). A refund whose fee is not
+ *  below it is dropped (AMM_EP_ZERO). Nothing is broadcast here. Legal only
+ *  when the swap has no attempt. `out` may be NULL.
  *  @return AMM_EP_OK (stored) / AMM_EP_ZERO / AMM_EP_BELOW_MIN / AMM_EP_FUNDS /
  *  AMM_EP_UNKNOWN / AMM_EP_PAUSED / AMM_EP_ERR. */
 int amm_eth_pay_sign(amm_eth_pay_t *p, int64_t swap_seq, uint64_t gross,

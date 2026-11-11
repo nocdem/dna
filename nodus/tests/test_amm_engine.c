@@ -2,6 +2,15 @@
  * test_amm_engine.c -- the nodus-amm engine (amm_engine.c) with the REAL
  * journal, ledger, both watchers and both payers wired to STUB chains.
  *
+ * REVISION 12 (plan sections 12-14, givens items 93-97): E3-E5 now prove the
+ * DECISION (the output computed again from the depths of the moment, stored with
+ * the signed payout and the ledger update in one transaction; a swap below its
+ * minimum refunded with the depths unchanged and the next swap priced as if it
+ * never existed); E1/E1b/E10/E7 prove that a question holds no room and the
+ * balance estimate counts only seen payments; E14 the room from the seen payment
+ * and the strict line; E15 paging; E16 the liquidity add. Where an older entry
+ * below says "ledger updated at the count" or "reversed", read the decision.
+ *
  * WHAT IT PROVES (plan docs/plans/2026-11-08-swap-bot-plan.nodus1.md rev. 10,
  * section 19 "test_amm_engine" as corrected by givens items 82-90):
  *   E1  the price question (givens items 66, 68, 82, 85, 86, 89): the answer
@@ -117,9 +126,13 @@ typedef struct {
     int      submits;
     uint8_t  chain[32];
     uint64_t eth_chain;              /* the chain id the Ethereum providers report */
+    int      rcpt_ok;                /* 1: every provider answers a status-1 receipt */
+    uint64_t rcpt_block;             /* ... in this block                      */
+    uint8_t  rcpt_hash;              /* ... with this block hash (32 x byte)   */
 } world_t;
 
 static world_t W;
+static int g_page;                   /* amm_engine_cfg_t.page of the next build (0 = default) */
 
 static uint64_t clock_fn(void *c) { (void)c; return W.now; }
 
@@ -213,7 +226,13 @@ static int e_tx(void *c, const uint8_t h[32], amm_eth_tx_t *o, uint64_t dl) {
     (void)c; (void)h; (void)o; (void)dl; return AMM_ETH_ERR;
 }
 static int e_rcpt(void *c, const uint8_t h[32], amm_eth_receipt_t *o, uint64_t dl) {
-    (void)c; (void)h; (void)o; (void)dl; return AMM_ETH_ERR;
+    (void)c; (void)h; (void)dl;
+    if (!W.rcpt_ok) return AMM_ETH_ERR;      /* the default: receipts are unreadable */
+    memset(o, 0, sizeof(*o));
+    o->status = 1;
+    o->block_number = W.rcpt_block;
+    memset(o->block_hash, W.rcpt_hash, 32);
+    return AMM_ETH_OK;
 }
 static int e_bal(void *c, const uint8_t a[20], uint8_t out[32], uint64_t dl) {
     (void)c; (void)a; (void)dl;
@@ -319,6 +338,7 @@ static void build(env_t *e) {
     memset(&nc, 0, sizeof(nc));
     nc.node = &e->node; nc.journal = e->j; nc.id_kind = AMM_NW_ID_WIRE; nc.start_height = 1;
     nc.liquidity_wait_blocks = 3; nc.page_limit = 50; nc.max_pages = 4;
+    nc.inflight_max = e->cfg.inflight_max_usdt; nc.held_keeps_room = e->cfg.held_keeps_room;
     e->nw = amm_nodus_watch_new(&nc);
     if (!e->nw) { printf("FATAL: nodus watcher\n"); exit(2); }
 
@@ -336,6 +356,7 @@ static void build(env_t *e) {
     ec.nodus_watch = e->nw; ec.nodus_pay = e->np; ec.node = e->node;
     ec.providers = e->prov; ec.n_providers = 2; ec.quorum = 2; ec.price = price;
     ec.now_unix = clock_fn; ec.rand_fn = rand_fn;
+    ec.page = g_page;
     e->eng = amm_engine_new(&ec);
     if (!e->eng) { printf("FATAL: engine\n"); exit(2); }
 }
@@ -450,6 +471,31 @@ static int step(env_t *e, amm_engine_step_t *o) {
     return amm_engine_step(e->eng, 0, o ? o : &local);
 }
 
+/* The watcher's own transaction for a payment seen: the swap takes room (or
+ * waits) and is then counted: used where a test needs a counted swap without
+ * running a watcher. `took` = 1 when it holds room. */
+static int seen_swap(env_t *e, const amm_swap_t *s, const char *key, int *took) {
+    return amm_journal_swap_seen(e->j, s->seq, key, NULL, e->cfg.inflight_max_usdt,
+                                 e->cfg.held_keeps_room, took) == 0;
+}
+static int seen_counted(env_t *e, const amm_swap_t *s, const char *key) {
+    int took = 0;
+    return seen_swap(e, s, key, &took) && took &&
+           amm_journal_swap_transition(e->j, s->seq, "counted", NULL, NULL, NULL) == 0;
+}
+
+/* A deep Ethereum record of `value` from sender byte `from_c`. */
+static amm_rec_t put_rec(env_t *e, uint8_t t, uint64_t block, uint8_t from_c, uint64_t value,
+                         const char *state) {
+    amm_rec_t r = mkrec(t, block, 10100, from_c, value, e->foundation, "seen");
+    amm_journal_rec_put(e->j, &r);
+    if (strcmp(state, "seen") != 0) {
+        snprintf(r.state, sizeof(r.state), "%s", state);
+        amm_journal_rec_put(e->j, &r);
+    }
+    return r;
+}
+
 #define POOL_N 3000000000000000ULL
 #define POOL_U 3000000000ULL
 #define OUT_UN 93652445369406ULL    /* 10^8 raw USDT -> NODUS (hand derived)   */
@@ -478,8 +524,9 @@ static void e1_quote(void) {
     uint64_t sum = 0;
     CHECK(swap_of(&e, 0x01020304, &s) && !strcmp(s.state, "approved") && !*s.sender &&
           s.quote_out == OUT_UN && s.value_usdt == 100000000ULL && s.expiry == 10300 &&
-          s.approved_tip == 1000 && amm_journal_inflight_sum(e.j, 0, &sum) == 0 && sum == 100000000ULL,
-          "approval row, room and number written together");
+          s.approved_tip == 1000 && !s.room && s.seen_seq == 0 &&
+          amm_journal_inflight_sum(e.j, 0, &sum) == 0 && sum == 0,
+          "approval row and number written; the question holds NO room (givens item 94)");
 
     /* NODUS -> USDT: 10^14 raw NODUS gives 93652445 raw USDT; est = the price seam's fee */
     memset(&a, 0, sizeof(a));
@@ -522,10 +569,22 @@ static void e1_quote(void) {
     amm_journal_state_count(e.j, "approved", &cnt);
     CHECK(cnt == before, "  nothing was written");
 
-    /* the payout must be within what the key holds, less what it owes */
-    W.nodus_balance = OUT_UN + OUT_UN / 2;          /* the first quote (1e8) already owes OUT_UN */
-    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_CANNOT_PAY,
-          "the bot's NODUS (1.5 x number) cannot cover a second number on top of the owed one");
+    /* the payout must be within what the key holds, less what it owes to swaps
+     * whose payment is SEEN (an unpaid approval owes nothing, givens item 94) */
+    W.nodus_balance = OUT_UN + OUT_UN / 2;
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_OK,
+          "1.5 x number held: the unpaid approvals already given owe nothing, a new question is answered");
+    {
+        /* make one of them seen: it now owes its indicative number */
+        amm_swap_t o1;
+        CHECK(swap_of(&e, 0x01020304, &o1), "the first approval");
+        amm_req_usdt_t ro = usdt_req(&(amm_quote_answer_t){ .amount = 100000000ULL,
+                                      .request_number = 0x01020304 }, 'a', 1);
+        CHECK(amm_engine_accept_usdt(e.eng, &ro, &o1) == AMM_ACC_RECEIVED && seen_swap(&e, &o1, "eth:q1", &(int){0}),
+              "its payment is seen");
+        CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_CANNOT_PAY,
+              "1.5 x number held: the SEEN payment's number is owed, a second number cannot be covered");
+    }
     W.nodus_balance = 1000000000000000ULL;
 
     /* paused */
@@ -549,8 +608,7 @@ static void e1_quote(void) {
         ap.req_no[31] = 9; ap.swap_max = 100000000ULL; ap.inflight_max = 500000000ULL;
         amm_swap_t s2;
         int ok = amm_journal_approve(u.j, &ap, &s2) == AMM_J_OK &&
-                 amm_journal_swap_transition(u.j, s2.seq, "paid_waiting_depth", "nodus:zz", NULL, NULL) == 0 &&
-                 amm_journal_swap_transition(u.j, s2.seq, "counted", NULL, NULL, NULL) == 0 &&
+                 seen_counted(&u, &s2, "nodus:zz") &&
                  amm_journal_swap_transition(u.j, s2.seq, "payout_pending", NULL, NULL, NULL) == 0 &&
                  amm_journal_swap_transition(u.j, s2.seq, "unknown", NULL, NULL, NULL) == 0;
         CHECK(ok && amm_engine_quote(u.eng, AMM_USDT_TO_NODUS, 10000000ULL, 0, &a) == AMM_Q_STOPPED,
@@ -558,14 +616,25 @@ static void e1_quote(void) {
     }
     env_close(&u);
 
-    /* in-flight total */
+    /* in-flight total (givens item 94): questions hold nothing, so two 100 USDT
+     * questions are both answered under a 150 USDT total; once ONE payment is
+     * seen it holds its room and the next question is refused */
     env_t f;
     env_open(&f);
     f.cfg.inflight_max_usdt = 150000000ULL;
     env_restart(&f);
-    CHECK(amm_engine_quote(f.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_OK &&
-          amm_engine_quote(f.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_INFLIGHT,
-          "the second 100 USDT passes the 150 USDT in-flight total");
+    amm_quote_answer_t fa, fb, fc;
+    CHECK(amm_engine_quote(f.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &fa) == AMM_Q_OK &&
+          amm_engine_quote(f.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &fb) == AMM_Q_OK,
+          "two unpaid 100 USDT questions under a 150 USDT total: both answered");
+    {
+        amm_req_usdt_t fr = usdt_req(&fa, 'a', 1);
+        amm_swap_t fs;
+        CHECK(amm_engine_accept_usdt(f.eng, &fr, &fs) == AMM_ACC_RECEIVED && seen_swap(&f, &fs, "eth:f1", &(int){0}),
+              "the first payment is seen: it holds 100 USDT of room");
+        CHECK(amm_engine_quote(f.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &fc) == AMM_Q_INFLIGHT,
+              "the next 100 USDT question passes the 150 USDT total of the SEEN payments: refused");
+    }
     env_close(&f);
     env_close(&e);
 }
@@ -622,13 +691,25 @@ static void e2_accept(void) {
 
 /* ── E3 / E4 / E5: counting, ledger, payouts, refunds ────────────────── */
 
+#define OUT_UN_CH 62434963579604ULL /* 10^8 raw USDT -> NODUS at depths 2*10^15 / 3*10^9:
+                                     * 10^8*3*10^9*2*10^15 / (3.1*10^9)^2 = 6*10^32 /
+                                     * 9.61*10^18 truncated (hand derived, python3 integer
+                                     * division of the same formula) */
+
+/* Proves (givens items 93, 94; plan section 12): the payment seen takes room and
+ * a seen number, NOTHING is applied to the ledger before the decision, and the
+ * decision computes the output AGAIN from the depths of that moment (not the
+ * number of the question), stores the signed payout and the ledger update
+ * together. FALSE PASS: the stubs answer fixed fees; the expected output is the
+ * same formula as the ledger's, computed independently with integer division. */
 static void e3_count_and_payout(void) {
-    printf("E3 matching, counting, the approval's number, the NODUS payout\n");
+    printf("E3 seen, counted, the decision: the output computed again, payout and ledger together\n");
     env_t e;
     env_open(&e);
     amm_quote_answer_t a;
     amm_swap_t s;
-    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_OK, "approval");
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_OK && a.number == OUT_UN,
+          "approval: the indicative number at the depths of the question");
     amm_req_usdt_t r = usdt_req(&a, 'a', 1);
     CHECK(amm_engine_accept_usdt(e.eng, &r, NULL) == AMM_ACC_RECEIVED, "signed request");
     pool_set(&e, 2000000000000000ULL, POOL_U);     /* the depths change after the question */
@@ -638,27 +719,46 @@ static void e3_count_and_payout(void) {
     amm_engine_step_t o;
     CHECK(step(&e, &o) == 0 && o.matched == 1 && state_of(&e, a.request_number, "paid_waiting_depth"),
           "the record moves the approval to paid_waiting_depth");
+    CHECK(swap_of(&e, a.request_number, &s) && s.seen_seq == 1 && s.room == 1,
+          "recorded as seen: seen number 1 and the room taken");
+    uint64_t sum = 0;
+    CHECK(amm_journal_inflight_sum(e.j, 0, &sum) == 0 && sum == 100000000ULL,
+          "the seen payment holds its 100 USDT of room");
+    CHECK(pool_is(&e, 2000000000000000ULL, POOL_U), "nothing is applied to the ledger before the decision");
     snprintf(rec.state, sizeof(rec.state), "deep");
     CHECK(amm_journal_rec_put(e.j, &rec) == AMM_J_OK, "the record reaches its depth");
-    CHECK(step(&e, &o) == 0 && o.counted >= 1 && state_of(&e, a.request_number, "payout_pending"),
-          "counted and moved to payout_pending in the same step");
-    /* 2*10^15 - 93652445369406 = 1906347554630594; depth_u + 10^8 */
-    CHECK(pool_is(&e, 1906347554630594ULL, 3100000000ULL),
-          "the ledger took the APPROVAL'S number, not a quote of the changed depths");
-    CHECK(swap_of(&e, a.request_number, &s) && s.ledger_applied == 1, "the update is marked");
+    CHECK(step(&e, &o) == 0 && o.counted >= 1 && o.decided == 1 && state_of(&e, a.request_number, "payout_pending"),
+          "counted and decided to a payout in the same step");
+    /* 2*10^15 - 62434963579604 = 1937565036420396; depth_u + 10^8 */
+    CHECK(pool_is(&e, 1937565036420396ULL, 3100000000ULL),
+          "the ledger took the output computed AGAIN from the changed depths, not the question's number");
+    CHECK(swap_of(&e, a.request_number, &s) && s.out_amount == OUT_UN_CH && s.out_paid + s.out_fee == s.out_amount &&
+          s.out_paid > 0, "the decision's output, fee and amount paid are on the row");
     amm_attempt_t at;
     memset(&at, 0, sizeof(at));
-    CHECK(amm_journal_attempt_latest(e.j, s.seq, &at) == 0 && at.gross == OUT_UN &&
-          at.net + at.fee == at.gross && at.net > 0,
-          "the NODUS payout is signed: gross = the number, the real Nodus fee deducted");
+    CHECK(amm_journal_attempt_latest(e.j, s.seq, &at) == 0 && at.gross == OUT_UN_CH &&
+          at.net + at.fee == at.gross && at.net == s.out_paid && at.fee == s.out_fee && at.net > 0,
+          "the NODUS payout is signed in the decision: gross = the output, the Nodus fee deducted");
     amm_attempt_free(&at);
     CHECK(W.submits >= 1, "and submitted");
 
     /* a restart repeats nothing */
     env_restart(&e);
-    CHECK(step(&e, &o) == 0 && state_of(&e, a.request_number, "payout_pending") &&
-          pool_is(&e, 1906347554630594ULL, 3100000000ULL), "after a restart: nothing repeated");
+    CHECK(step(&e, &o) == 0 && o.decided == 0 && state_of(&e, a.request_number, "payout_pending") &&
+          pool_is(&e, 1937565036420396ULL, 3100000000ULL), "after a restart: nothing repeated");
     env_close(&e);
+
+    /* the depths unchanged: the output equals the number of the question */
+    env_t u;
+    env_open(&u);
+    CHECK(amm_engine_quote(u.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_OK, "approval");
+    r = usdt_req(&a, 'a', 1);
+    CHECK(amm_engine_accept_usdt(u.eng, &r, NULL) == AMM_ACC_RECEIVED, "signed request");
+    put_rec(&u, 0x12, 1001, 0xaa, 100000000ULL, "deep");
+    CHECK(step(&u, &o) == 0 && swap_of(&u, a.request_number, &s) && !strcmp(s.state, "payout_pending") &&
+          s.out_amount == OUT_UN && pool_is(&u, 2906347554630594ULL, 3100000000ULL),
+          "nothing changed the depths in between: the output equals the question's number");
+    env_close(&u);
 }
 
 static void e4_held_and_refunds(void) {
@@ -684,14 +784,17 @@ static void e4_held_and_refunds(void) {
     amm_rec_t g;
     CHECK(amm_journal_rec_get(e.j, other.tx, 0, &g) == 0 && !strcmp(g.state, "held"), "the record state is held");
 
-    /* a number that cannot be applied: the NODUS depth is below it */
+    /* the output side almost empty when the swap is decided: its output (31 raw
+     * NODUS: 10^8*3*10^9*1000/(3.1*10^9)^2 truncated) is nothing after the
+     * Nodus fee, so the swap is REFUNDED in the decision, the ledger untouched */
     amm_rec_t ok = mkrec(0x23, 1002, 10100, 0xaa, 100000000ULL, e.foundation, "seen");
     amm_journal_rec_put(e.j, &ok);
     snprintf(ok.state, sizeof(ok.state), "deep");
     amm_journal_rec_put(e.j, &ok);
     pool_set(&e, 1000, POOL_U);
-    CHECK(step(&e, &o) == 0 && state_of(&e, a.request_number, "refund_pending") && pool_is(&e, 1000, POOL_U),
-          "the number cannot be applied: refund, the ledger untouched");
+    CHECK(step(&e, &o) == 0 && o.to_refund == 1 && state_of(&e, a.request_number, "refund_pending") &&
+          pool_is(&e, 1000, POOL_U),
+          "an output that is nothing after the fee: refund, the ledger untouched");
     env_close(&e);
 
     /* paused: a payment for an approved swap is refunded */
@@ -712,11 +815,17 @@ static void e4_held_and_refunds(void) {
     env_close(&p);
 }
 
+/* Proves (givens items 93, 94; plan section 12): a swap below its signed minimum
+ * after the network fee is REFUNDED in the decision with the depths UNCHANGED,
+ * and a swap decided after it is priced as if the refunded one never existed (the
+ * THORChain cache context that is discarded). FALSE PASS: the second swap's
+ * expected output is derived from the untouched initial depths with the same
+ * formula; if the refunded swap had changed the depths the figure would differ. */
 static void e5_below_minimum(void) {
-    printf("E5 a payout below the minimum after the fee: a refund, the ledger reversed\n");
+    printf("E5 below the minimum after the fee: a refund in the decision, the depths unchanged\n");
     env_t e;
     env_open(&e);
-    amm_quote_answer_t a;
+    amm_quote_answer_t a, b;
     amm_engine_step_t o;
     CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_OK, "approval");
     amm_req_usdt_t r = usdt_req(&a, 'a', OUT_UN + 1);          /* no fee can leave this satisfied */
@@ -725,11 +834,20 @@ static void e5_below_minimum(void) {
     amm_journal_rec_put(e.j, &rec);
     snprintf(rec.state, sizeof(rec.state), "deep");
     amm_journal_rec_put(e.j, &rec);
-    CHECK(step(&e, &o) == 0 && state_of(&e, a.request_number, "refund_pending"),
+    CHECK(step(&e, &o) == 0 && o.to_refund == 1 && state_of(&e, a.request_number, "refund_pending"),
           "net below the minimum: refund_pending");
-    CHECK(pool_is(&e, POOL_N, POOL_U), "its ledger update is reversed: the reserves are the initial ones");
+    CHECK(pool_is(&e, POOL_N, POOL_U), "the depths are the initial ones: nothing was applied, nothing is reversed");
     amm_swap_t s;
-    CHECK(swap_of(&e, a.request_number, &s) && s.ledger_applied == 0, "the mark is cleared");
+    CHECK(swap_of(&e, a.request_number, &s) && s.out_amount == 0, "no output was decided for it");
+    /* a swap decided after the refunded one is priced as if it never existed */
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &b) == AMM_Q_OK, "a second approval");
+    amm_req_usdt_t rb = usdt_req(&b, 'b', 1);
+    CHECK(amm_engine_accept_usdt(e.eng, &rb, NULL) == AMM_ACC_RECEIVED, "second signed request");
+    put_rec(&e, 0x42, 1003, 0xbb, 100000000ULL, "deep");
+    amm_swap_t s2;
+    CHECK(step(&e, &o) == 0 && swap_of(&e, b.request_number, &s2) && !strcmp(s2.state, "payout_pending") &&
+          s2.out_amount == OUT_UN && pool_is(&e, 2906347554630594ULL, 3100000000ULL),
+          "the next swap is priced from the untouched depths: 93652445369406, as if the refunded one never existed");
     amm_eattempt_t at;
     memset(&at, 0, sizeof(at));
     CHECK(amm_journal_eth_attempt_latest(e.j, s.seq, &at) == 0 && at.gross == 100000000ULL &&
@@ -757,8 +875,7 @@ static void e6_drops(void) {
      * what the refund owes; the swap is walked to refund_pending as a counted payment */
     /* the seen payment is named by the transfer id the signed request stored
      * (amm_journal_swap_transition refuses paid_waiting_depth without it) */
-    CHECK(amm_journal_swap_transition(e.j, s.seq, "paid_waiting_depth", s.incoming_id, NULL, NULL) == 0 &&
-          amm_journal_swap_transition(e.j, s.seq, "counted", NULL, NULL, NULL) == 0 &&
+    CHECK(seen_counted(&e, &s, s.incoming_id) &&
           amm_journal_swap_transition(e.j, s.seq, "refund_pending", NULL, NULL, NULL) == 0,
           "a NODUS -> USDT swap in refund_pending");
     /* the refund owes s.amount = 10^14 raw NODUS: far above the fee, so it is SENT; prove
@@ -777,9 +894,7 @@ static void e6_drops(void) {
         tiny.request_number = 4242; tiny.amount = 1;
         amm_req_nodus_to_usdt_t tr = nodus_req(&tiny, '9', 1);
         CHECK(amm_engine_accept_nodus(e.eng, &tr, NULL) == AMM_ACC_RECEIVED, "its signed request");
-        CHECK(swap_of(&e, 4242, &ts) &&
-              amm_journal_swap_transition(e.j, ts.seq, "paid_waiting_depth", ts.incoming_id, NULL, NULL) == 0 &&
-              amm_journal_swap_transition(e.j, ts.seq, "counted", NULL, NULL, NULL) == 0 &&
+        CHECK(swap_of(&e, 4242, &ts) && seen_counted(&e, &ts, ts.incoming_id) &&
               amm_journal_swap_transition(e.j, ts.seq, "refund_pending", NULL, NULL, NULL) == 0,
               "walked to refund_pending");
     }
@@ -809,8 +924,7 @@ static void e6_drops(void) {
     CHECK(amm_engine_quote(u.eng, AMM_USDT_TO_NODUS, 1000000ULL, 0, &b) == AMM_Q_OK, "1 USDT approval");
     amm_req_usdt_t r = usdt_req(&b, 'a', 1);
     CHECK(amm_engine_accept_usdt(u.eng, &r, &s) == AMM_ACC_RECEIVED, "signed request");
-    CHECK(amm_journal_swap_transition(u.j, s.seq, "paid_waiting_depth", "eth:aa", NULL, NULL) == 0 &&
-          amm_journal_swap_transition(u.j, s.seq, "counted", NULL, NULL, NULL) == 0 &&
+    CHECK(seen_counted(&u, &s, "eth:aa") &&
           amm_journal_swap_transition(u.j, s.seq, "refund_pending", NULL, NULL, NULL) == 0,
           "a USDT refund pending");
     W.price_fee = 1000000;                                      /* fee 1 USDT = the whole amount */
@@ -878,12 +992,11 @@ static void e8_fee_booking(void) {
     amm_req_nodus_to_usdt_t nr = nodus_req(&a, 'f', 1);
     amm_swap_t s;
     CHECK(amm_engine_accept_nodus(e.eng, &nr, &s) == AMM_ACC_RECEIVED, "signed request");
-    CHECK(swap_of(&e, a.request_number, &s) &&
-          amm_journal_swap_transition(e.j, s.seq, "paid_waiting_depth", s.incoming_id, NULL, NULL) == 0 &&
-          amm_journal_swap_transition(e.j, s.seq, "counted", NULL, NULL, NULL) == 0, "payment counted (as the watcher does)");
+    CHECK(swap_of(&e, a.request_number, &s) && seen_counted(&e, &s, s.incoming_id),
+          "payment counted (as the watcher does)");
     CHECK(step(&e, &o) == 0 && state_of(&e, a.request_number, "payout_pending"), "payout_pending");
     /* 3*10^15 + 10^14 NODUS; 3*10^9 - 93652445 USDT */
-    CHECK(pool_is(&e, 3100000000000000ULL, 2906347555ULL), "the approval's number left the USDT depth");
+    CHECK(pool_is(&e, 3100000000000000ULL, 2906347555ULL), "the decision's output left the USDT depth");
     amm_eattempt_t at;
     memset(&at, 0, sizeof(at));
     CHECK(amm_journal_eth_attempt_latest(e.j, s.seq, &at) == 0 && at.gross == OUT_NU &&
@@ -938,9 +1051,7 @@ static void e8_fee_booking(void) {
     amm_req_nodus_to_usdt_t nr2 = nodus_req(&a2, 'f', 1);
     amm_swap_t s2;
     CHECK(amm_engine_accept_nodus(m.eng, &nr2, &s2) == AMM_ACC_RECEIVED &&
-          swap_of(&m, a2.request_number, &s2) &&
-          amm_journal_swap_transition(m.j, s2.seq, "paid_waiting_depth", s2.incoming_id, NULL, NULL) == 0 &&
-          amm_journal_swap_transition(m.j, s2.seq, "counted", NULL, NULL, NULL) == 0, "payment counted");
+          swap_of(&m, a2.request_number, &s2) && seen_counted(&m, &s2, s2.incoming_id), "payment counted");
     CHECK(step(&m, &o) == 0 && state_of(&m, a2.request_number, "payout_pending"), "payout_pending");
     CHECK(amm_journal_eth_attempt_finish(m.j, s2.seq, "confirmed") == 0 &&
           amm_journal_swap_transition(m.j, s2.seq, "paid", NULL, NULL, NULL) == 0, "payout confirmed");
@@ -965,8 +1076,7 @@ static void e1b_funding_refunds(void) {
     CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_OK, "100 USDT -> NODUS approval");
     amm_req_usdt_t r = usdt_req(&a, 'a', 1);
     CHECK(amm_engine_accept_usdt(e.eng, &r, &s) == AMM_ACC_RECEIVED &&
-          amm_journal_swap_transition(e.j, s.seq, "paid_waiting_depth", "eth:bb", NULL, NULL) == 0 &&
-          amm_journal_swap_transition(e.j, s.seq, "counted", NULL, NULL, NULL) == 0 &&
+          seen_counted(&e, &s, "eth:bb") &&
           amm_journal_swap_transition(e.j, s.seq, "refund_pending", NULL, NULL, NULL) == 0,
           "its payment is to be refunded (refund_pending)");
     W.usdt_balance = 150000000ULL;
@@ -985,8 +1095,7 @@ static void e1b_funding_refunds(void) {
     CHECK(amm_engine_quote(f.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a) == AMM_Q_OK, "NODUS -> USDT approval");
     amm_req_nodus_to_usdt_t nr = nodus_req(&a, 'f', 1);
     CHECK(amm_engine_accept_nodus(f.eng, &nr, &s) == AMM_ACC_RECEIVED && swap_of(&f, a.request_number, &s) &&
-          amm_journal_swap_transition(f.j, s.seq, "paid_waiting_depth", s.incoming_id, NULL, NULL) == 0 &&
-          amm_journal_swap_transition(f.j, s.seq, "counted", NULL, NULL, NULL) == 0 &&
+          seen_counted(&f, &s, s.incoming_id) &&
           amm_journal_swap_transition(f.j, s.seq, "refund_pending", NULL, NULL, NULL) == 0,
           "its NODUS payment is to be refunded");
     W.nodus_balance = 150000000000000ULL;
@@ -1032,9 +1141,10 @@ static void e10_counting_validity(void) {
     amm_journal_eth_key(pa.tx, key, sizeof(key));
     CHECK(amm_journal_rec_get(e.j, pa.tx, 0, &g) == 0 && !strcmp(g.state, "held") && o.held_records == 1,
           "its record is held (givens item 32)");
-    CHECK(swap_of(&e, a.request_number, &sa) && !*sa.incoming_id && sa.ledger_applied == 0 &&
-          amm_journal_swap_by_incoming(e.j, key, &sx) == 1,
-          "the approval no longer carries the payment; its ledger was not updated");
+    CHECK(swap_of(&e, a.request_number, &sa) && !*sa.incoming_id && sa.room == 0 && sa.seen_seq == 0 &&
+          amm_journal_swap_by_incoming(e.j, key, &sx) == 1 && pool_is(&e, 2906347554630594ULL, 3100000000ULL),
+          "the approval no longer carries the payment, holds no room and left the line; the ledger holds "
+          "only the counted swap's decision");
     env_close(&e);
 }
 
@@ -1113,8 +1223,7 @@ static void e12_chain_id_setting(void) {
     CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a) == AMM_Q_OK, "approval");
     amm_req_nodus_to_usdt_t nr = nodus_req(&a, 'f', 1);
     CHECK(amm_engine_accept_nodus(e.eng, &nr, &s) == AMM_ACC_RECEIVED && swap_of(&e, a.request_number, &s) &&
-          amm_journal_swap_transition(e.j, s.seq, "paid_waiting_depth", s.incoming_id, NULL, NULL) == 0 &&
-          amm_journal_swap_transition(e.j, s.seq, "counted", NULL, NULL, NULL) == 0, "payment counted");
+          seen_counted(&e, &s, s.incoming_id), "payment counted");
     CHECK(step(&e, &o) == 0 && state_of(&e, a.request_number, "payout_pending"), "payout_pending");
     amm_eattempt_t at;
     memset(&at, 0, sizeof(at));
@@ -1131,12 +1240,443 @@ static void e12_chain_id_setting(void) {
     CHECK(amm_engine_quote(m.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a) == AMM_Q_OK, "approval");
     nr = nodus_req(&a, 'f', 1);
     CHECK(amm_engine_accept_nodus(m.eng, &nr, &s) == AMM_ACC_RECEIVED && swap_of(&m, a.request_number, &s) &&
-          amm_journal_swap_transition(m.j, s.seq, "paid_waiting_depth", s.incoming_id, NULL, NULL) == 0 &&
-          amm_journal_swap_transition(m.j, s.seq, "counted", NULL, NULL, NULL) == 0, "payment counted");
-    CHECK(step(&m, &o) == 0 && state_of(&m, a.request_number, "payout_pending") &&
+          seen_counted(&m, &s, s.incoming_id), "payment counted");
+    CHECK(step(&m, &o) == 0 && state_of(&m, a.request_number, "counted") &&
           amm_journal_eth_attempt_latest(m.j, s.seq, &at) == 1,
-          "providers on another chain than the setting: no payout is signed");
+          "providers on another chain than the setting: no payout is signed, the swap stays counted undecided");
     env_close(&m);
+}
+
+/* ── E14 room from the seen payment (givens item 94, plan section 13) ───── */
+
+/* Proves: a price question holds nothing (six unpaid 100 USDT questions are
+ * answered and a sixth user's payment takes room); a payment that finds the room
+ * full waits in line, is not counted, keeps its match after its approval's
+ * expiry, takes room when a payout is done and is decided at the depths of THAT
+ * moment (not its question's number); the line is strict in the seen order (a
+ * later, smaller payment that would fit does not pass the head); the seen order
+ * and the line are the same after a restart.
+ * FALSE PASS: the NODUS payments are recorded as seen through the journal call the
+ * Nodus watcher makes (the stub history cannot deliver rows), so the watcher's own
+ * reading is test_amm_nodus_watch's; the sixth swap's output 69775761 is derived by
+ * integer arithmetic outside the code (five 10^14 NODUS swaps decided before it). */
+static void e14_room_line(void) {
+    printf("E14 room from the seen payment: the line, strict, in seen order, across a restart\n");
+    {
+        env_t e;
+        env_open(&e);
+        amm_quote_answer_t q[6];
+        amm_swap_t s;
+        int ok = 1;
+        for (int i = 0; i < 6 && ok; i++)
+            ok = amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &q[i]) == AMM_Q_OK;
+        CHECK(ok, "six unpaid 100 USDT questions are all answered: a question holds nothing");
+        amm_req_usdt_t r = usdt_req(&q[5], 'f', 1);
+        CHECK(amm_engine_accept_usdt(e.eng, &r, NULL) == AMM_ACC_RECEIVED, "the sixth user signs");
+        put_rec(&e, 0x71, 1001, 0xff, 100000000ULL, "deep");
+        amm_engine_step_t o;
+        CHECK(step(&e, &o) == 0 && swap_of(&e, q[5].request_number, &s) && s.room == 1 && s.seen_seq == 1 &&
+              !strcmp(s.state, "payout_pending"),
+              "the sixth user's payment takes room (seen number 1) and is decided");
+        int apr = 0;
+        CHECK(amm_journal_state_count(e.j, "approved", &apr) == 0 && apr == 5,
+              "the five unpaid approvals hold no room and are still open");
+        env_close(&e);
+    }
+
+    env_t e;
+    env_open(&e);
+    e.cfg.inflight_max_usdt = 518262225ULL;      /* 5 x 93652445 + 50,000,000 */
+    env_restart(&e);
+    static const char SND[] = "123456789abcdef", TID[] = "fedcba987654321";
+    const uint64_t amt[8] = {100000000000000ULL, 100000000000000ULL, 100000000000000ULL, 100000000000000ULL,
+                             100000000000000ULL, 100000000000000ULL, 2000000000000ULL, 100000000000000ULL};
+    amm_quote_answer_t q[8];
+    amm_swap_t s[8];
+    int ok = 1;
+    for (int i = 0; i < 8 && ok; i++) {
+        ok = amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, amt[i], 0, &q[i]) == AMM_Q_OK;
+        amm_req_nodus_to_usdt_t nr = nodus_req(&q[i], TID[i], 1);
+        memset(nr.sender, SND[i], 128);
+        ok = ok && amm_engine_accept_nodus(e.eng, &nr, NULL) == AMM_ACC_RECEIVED &&
+             swap_of(&e, q[i].request_number, &s[i]);
+    }
+    CHECK(ok && q[0].number == OUT_NU && q[6].number == 1997335ULL,
+          "eight NODUS -> USDT swaps approved and signed (v = 93.652445 USDT five times, 1.997335 USDT, 93.652445 USDT)");
+    int took[8] = {0};
+    ok = 1;
+    for (int i = 0; i < 8 && ok; i++) ok = seen_swap(&e, &s[i], s[i].incoming_id, &took[i]);
+    CHECK(ok && took[0] && took[1] && took[2] && took[3] && took[4],
+          "the first five payments seen take room: 468.262225 USDT of the 518.262225 USDT total");
+    CHECK(!took[5] && !took[6] && !took[7],
+          "the sixth (93.65) does not fit and waits; the seventh (1.997335) WOULD fit but does not pass the head of "
+          "the line; the eighth waits");
+    for (int i = 0; i < 5; i++)
+        CHECK(amm_journal_swap_transition(e.j, s[i].seq, "counted", NULL, NULL, NULL) == 0, "a payment holding room is counted");
+    CHECK(amm_journal_swap_transition(e.j, s[5].seq, "counted", NULL, NULL, NULL) == AMM_J_NO_ROOM,
+          "a payment waiting for room cannot be counted");
+    W.now = 10301;                                   /* past every approval's expiry */
+    amm_engine_step_t o;
+    CHECK(step(&e, &o) == 0 && o.decided == 5, "the five counted swaps are decided in the seen order");
+    for (int i = 5; i < 8; i++) {
+        amm_swap_t g;
+        CHECK(swap_of(&e, q[i].request_number, &g) && !strcmp(g.state, "paid_waiting_depth") && g.room == 0 &&
+              g.seen_seq == i + 1 && !strcmp(g.incoming_id, s[i].incoming_id),
+              "a waiting payment: not counted, in the line at its seen number, its match kept after the expiry");
+    }
+    env_restart(&e);                                  /* the order and the line are rows, not memory */
+    for (int i = 5; i < 8; i++) {
+        amm_swap_t g;
+        CHECK(swap_of(&e, q[i].request_number, &g) && g.room == 0 && g.seen_seq == i + 1,
+              "after a restart: the same seen number and the same place in the line");
+    }
+    /* a payout done releases its room: the head of the line takes it first */
+    amm_swap_t first;
+    CHECK(swap_of(&e, q[0].request_number, &first) && !strcmp(first.state, "payout_pending") &&
+          amm_journal_eth_attempt_finish(e.j, first.seq, "confirmed") == 0 &&
+          amm_journal_swap_transition(e.j, first.seq, "paid", NULL, NULL, NULL) == 0, "the first payout is done");
+    CHECK(step(&e, &o) == 0 && o.room_granted == 2, "the line takes the freed room: two payments");
+    amm_swap_t g6, g7, g8;
+    CHECK(swap_of(&e, q[5].request_number, &g6) && swap_of(&e, q[6].request_number, &g7) &&
+          swap_of(&e, q[7].request_number, &g8) &&
+          !strcmp(g6.state, "payout_pending") && !strcmp(g7.state, "payout_pending") &&
+          !strcmp(g8.state, "paid_waiting_depth") && g8.room == 0,
+          "the sixth then the seventh took room and were decided; the eighth, behind them, still waits");
+    CHECK(g6.out_amount == 69775761ULL && g6.out_amount != q[5].number,
+          "the sixth is decided at the depths of that moment (69775761 after five swaps), not its question's 93652445");
+    env_close(&e);
+}
+
+/* ── E15 more rows than one page ─────────────────────────────────────── */
+
+/* Proves: with the page set to 2, five approved rows are all walked (all five
+ * expire in one step) and five counted swaps are all decided in one step: no list
+ * the engine walks stops at a page. FALSE PASS: if the engine ignored the page
+ * setting both would still pass; the page value reaches amm_journal_swap_page,
+ * whose own test (test_amm_journal J-page) pins that a page returns at most `cap`
+ * rows. */
+static void e15_paging(void) {
+    printf("E15 more rows than one page do not stop the engine\n");
+    g_page = 2;
+    env_t e;
+    env_open(&e);
+    amm_quote_answer_t q[5];
+    int ok = 1;
+    for (int i = 0; i < 5 && ok; i++)
+        ok = amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &q[i]) == AMM_Q_OK;
+    CHECK(ok, "five approved rows, a page of two");
+    W.now = 10301;
+    amm_journal_cursor_reset(e.j, "nodus_scan", 1000);
+    amm_journal_cursor_reset(e.j, "nodus_scan_ts", 10400);
+    amm_engine_step_t o;
+    CHECK(step(&e, &o) == 0 && o.expired == 5, "all five approved rows expire in one step (three pages)");
+    env_close(&e);
+
+    env_t c;
+    env_open(&c);
+    static const char SND[] = "12345", TID[] = "54321";
+    amm_swap_t s[5];
+    ok = 1;
+    for (int i = 0; i < 5 && ok; i++) {
+        amm_quote_answer_t a;
+        ok = amm_engine_quote(c.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a) == AMM_Q_OK;
+        amm_req_nodus_to_usdt_t nr = nodus_req(&a, TID[i], 1);
+        memset(nr.sender, SND[i], 128);
+        ok = ok && amm_engine_accept_nodus(c.eng, &nr, NULL) == AMM_ACC_RECEIVED &&
+             swap_of(&c, a.request_number, &s[i]) && seen_counted(&c, &s[i], s[i].incoming_id);
+    }
+    CHECK(ok, "five counted swaps");
+    CHECK(step(&c, &o) == 0 && o.decided == 5, "all five are decided in one step (three pages)");
+    env_close(&c);
+    g_page = 0;
+}
+
+/* ── E16 the liquidity add ───────────────────────────────────────────── */
+
+static void drop_pool(env_t *e) {
+    sqlite3 *db = NULL;
+    if (sqlite3_open(e->jpath, &db) == SQLITE_OK) {
+        sqlite3_busy_timeout(db, 5000);
+        sqlite3_exec(db, "DELETE FROM pool", NULL, NULL, NULL);
+        sqlite3_close(db);
+    }
+}
+
+static amm_req_liq_add_t add_req(const amm_add_answer_t *a, char eth_c, char nodus_c, char tid_c) {
+    amm_req_liq_add_t r;
+    memset(&r, 0, sizeof(r));
+    memset(r.ethereum_address, eth_c, 40);
+    memset(r.nodus_address, nodus_c, 128);
+    memset(r.transfer_id, tid_c, 128);
+    r.usdt_amount = a->usdt_amount; r.nodus_amount = a->nodus_amount;
+    r.request_number = a->request_number;
+    for (int i = 0; i < 4; i++) r.req_no[31 - i] = (uint8_t)(a->request_number >> (8 * i));
+    return r;
+}
+
+/* Both deposits of one signed add: the USDT record (deep, from the add's Ethereum
+ * address) and the NODUS history row (peer = the add's Nodus address, wire id =
+ * the transfer id). */
+static void add_deposits(env_t *e, const amm_req_liq_add_t *r, uint8_t eth_byte, uint8_t wire_byte,
+                         uint64_t eth_block, uint64_t nodus_height) {
+    amm_rec_t rec = mkrec(eth_byte, eth_block, 10100, (uint8_t)0xaa, r->usdt_amount, e->foundation, "seen");
+    memset(rec.from, 0, 20);
+    for (int i = 0; i < 20; i++) {
+        char hx[3] = { r->ethereum_address[2 * i], r->ethereum_address[2 * i + 1], 0 };
+        rec.from[i] = (uint8_t)strtoul(hx, NULL, 16);
+    }
+    amm_journal_rec_put(e->j, &rec);
+    snprintf(rec.state, sizeof(rec.state), "deep");
+    amm_journal_rec_put(e->j, &rec);
+    amm_nrow_t nr;
+    memset(&nr, 0, sizeof(nr));
+    nr.height = nodus_height; nr.item = 0; nr.seq = 0;
+    memset(nr.wire, wire_byte, 64);
+    memcpy(nr.peer, r->nodus_address, 128);
+    nr.amount = r->nodus_amount; nr.ts = 10100;
+    snprintf(nr.state, sizeof(nr.state), "%s", AMM_NR_HELD);
+    snprintf(nr.reason, sizeof(nr.reason), "matches no approval");
+    amm_journal_nrow_put(e->j, &nr);
+}
+
+/* Proves (givens items 91, 96, 25, 49; plan sections 6.4.6, 14): the price question
+ * is refused until an add has committed; an add below 100,000 NODUS is refused at
+ * the question and writes nothing, exactly 100,000 NODUS (and its 10 USDT at the
+ * start ratio) is accepted; the Foundation's first add of 3,000 USDT + 30,000,000
+ * NODUS is accepted and gives units = the NODUS raw amount (THORChain
+ * handler_add_liquidity.go:444-448); the USDT side counts after 300 Ethereum
+ * blocks (not at 299) and the NODUS side after 3 Nodus blocks (not at 2); a second
+ * add into the non-empty pool gets units by THORChain's formula (hand derived:
+ * equal ratios give P*r/R = 3*10^15 * 10^13 / 3*10^15 = 10^13); an add whose
+ * Ethereum address and USDT amount equal an open swap approval is refused (6.4.6).
+ * FALSE PASS: the receipts, tips and Nodus rows are scripted; the depth rules are
+ * the watchers' (their tests) and are only asked here. */
+static void e16_liquidity_add(void) {
+    printf("E16 the liquidity add\n");
+    env_t e;
+    env_open(&e);
+    drop_pool(&e);
+    amm_quote_answer_t sq;
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 10000000ULL, 0, &sq) == AMM_Q_UNAVAILABLE,
+          "no committed add: the price question is refused (givens item 91)");
+
+    amm_add_answer_t aa;
+    CHECK(amm_engine_add_question(e.eng, AMM_SIDE_NODUS, 9999999999999ULL, 0, &aa) == AMM_AQ_BELOW_MIN,
+          "an add of 99,999.99999999 NODUS is refused below 100,000 NODUS (givens item 96)");
+    amm_add_t row;
+    int nrows = 0;
+    amm_add_t rows[4];
+    CHECK(amm_journal_add_page(e.j, "approved", 0, rows, 4, &nrows) == 0 && nrows == 0, "and nothing was written");
+    W.rq[0] = 0x0A0B0C0D; W.rq_n = 1; W.rq_i = 0;
+    CHECK(amm_engine_add_question(e.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &aa) == AMM_AQ_OK &&
+          aa.nodus_amount == 10000000000000ULL && aa.usdt_amount == 10000000ULL && aa.request_number == 0x0A0B0C0D,
+          "exactly 100,000 NODUS is accepted with its 10 USDT at the start ratio 3000 : 30,000,000");
+    CHECK(amm_journal_add_by_botreq(e.j, 0x0A0B0C0D, &row) == 0 && !strcmp(row.state, "approved") &&
+          row.eth_tip == 1000 && row.nodus_tip == 1000 && row.expiry == 10300,
+          "the add's approval row: the exact pair, both tips, the expiry");
+
+    /* the Foundation's first add */
+    CHECK(amm_engine_add_question(e.eng, AMM_SIDE_USDT, 3000000000ULL, 0, &aa) == AMM_AQ_OK &&
+          aa.usdt_amount == 3000000000ULL && aa.nodus_amount == 3000000000000000ULL &&
+          !strcmp(aa.pay_nodus, e.cfg.foundation_nodus),
+          "the Foundation's add question: 3,000 USDT -> 30,000,000 NODUS at the start ratio, pay to the Foundation");
+    amm_req_liq_add_t lr = add_req(&aa, 'a', 'c', 'a');
+    CHECK(amm_engine_accept_add(e.eng, &lr, NULL) == AMM_ACC_RECEIVED, "the signed pair is accepted");
+    CHECK(amm_engine_accept_add(e.eng, &lr, NULL) == AMM_ACC_USED, "a number is accepted once");
+    add_deposits(&e, &lr, 0x91, 0xaa, 1001, 1001);
+    amm_engine_step_t o;
+    W.eth_tip = 1400;
+    CHECK(step(&e, &o) == 0 && o.adds_linked == 2, "both deposits are matched to the add");
+    amm_pool_t pool;
+    CHECK(amm_journal_pool_get(e.j, &pool) == 1, "receipts unreadable: nothing is counted, still no ledger");
+    W.rcpt_ok = 1; W.rcpt_block = 1001; W.rcpt_hash = 0x91;
+    W.eth_tip = 1300; W.nodus_tip = 1010;
+    CHECK(step(&e, &o) == 0 && o.adds_committed == 0 && amm_journal_pool_get(e.j, &pool) == 1,
+          "the USDT side at 299 blocks is not counted (300 wait, givens item 25)");
+    W.eth_tip = 1301; W.nodus_tip = 1003;
+    CHECK(step(&e, &o) == 0 && o.adds_committed == 0 && amm_journal_pool_get(e.j, &pool) == 1,
+          "the NODUS side at 2 blocks is not counted (3 wait, givens item 49)");
+    W.nodus_tip = 1004;
+    CHECK(step(&e, &o) == 0 && o.adds_committed == 1, "both sides counted: the add commits");
+    uint64_t pn = 0, pu = 0, pq = 0;
+    CHECK(amm_journal_pool_get(e.j, &pool) == 0 && amm_to_u64(&pn, &pool.depth_n) == 0 &&
+          amm_to_u64(&pu, &pool.depth_u) == 0 && amm_to_u64(&pq, &pool.units) == 0 &&
+          pn == 3000000000000000ULL && pu == 3000000000ULL && pq == 3000000000000000ULL,
+          "the ledger: 30,000,000 NODUS, 3,000 USDT, units = the NODUS raw amount 3*10^15");
+    evm_u256 pos;
+    char eth_hex[41], nodus_hex[129];
+    memset(eth_hex, 'a', 40); eth_hex[40] = 0; memset(nodus_hex, 'c', 128); nodus_hex[128] = 0;
+    uint64_t pu64 = 0;
+    CHECK(amm_journal_position_get(e.j, eth_hex, nodus_hex, &pos) == 0 && amm_to_u64(&pu64, &pos) == 0 &&
+          pu64 == 3000000000000000ULL, "the position (address pair -> units) holds 3*10^15");
+    CHECK(amm_journal_add_by_botreq(e.j, aa.request_number, &row) == 0 && !strcmp(row.state, "committed"),
+          "the add is committed");
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 10000000ULL, 0, &sq) == AMM_Q_OK,
+          "after the first add has committed the price question is answered");
+
+    /* 6.4.6: one USDT payment must not fit an open swap approval and an add */
+    amm_quote_answer_t oq;
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 10000000ULL, 0, &oq) == AMM_Q_OK, "a 10 USDT swap approval");
+    amm_req_usdt_t ur = usdt_req(&oq, 'b', 1);
+    CHECK(amm_engine_accept_usdt(e.eng, &ur, NULL) == AMM_ACC_RECEIVED, "signed by sender bb..bb");
+    CHECK(amm_engine_add_question(e.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &aa) == AMM_AQ_OK &&
+          aa.usdt_amount == 10000000ULL, "an add of 10 USDT + 100,000 NODUS at the pool's ratio");
+    amm_req_liq_add_t lb = add_req(&aa, 'b', 'd', 'b');
+    uint32_t open_req = 0;
+    CHECK(amm_engine_accept_add(e.eng, &lb, &open_req) == AMM_ACC_OPEN && open_req == oq.request_number,
+          "the add of the same Ethereum address and USDT amount as an open swap approval is refused, the swap named");
+    env_close(&e);
+
+    /* the second add into the non-empty pool: units by THORChain's formula */
+    env_t f;
+    env_open(&f);
+    {
+        amm_pool_t p0;                               /* the pool after the first add: units = 3*10^15 */
+        evm_u256_from_u64(&p0.depth_n, 3000000000000000ULL);
+        evm_u256_from_u64(&p0.depth_u, 3000000000ULL);
+        evm_u256_from_u64(&p0.units, 3000000000000000ULL);
+        amm_journal_pool_put(f.j, &p0);
+    }
+    CHECK(amm_engine_add_question(f.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &aa) == AMM_AQ_OK &&
+          aa.usdt_amount == 10000000ULL, "the pool's ratio gives 10 USDT for 100,000 NODUS");
+    amm_req_liq_add_t l2 = add_req(&aa, 'e', 'f', 'e');
+    CHECK(amm_engine_accept_add(f.eng, &l2, NULL) == AMM_ACC_RECEIVED, "signed");
+    add_deposits(&f, &l2, 0x92, 0xee, 1001, 1001);
+    W.eth_tip = 1400; W.nodus_tip = 1010; W.rcpt_ok = 1; W.rcpt_block = 1001; W.rcpt_hash = 0x92;
+    CHECK(step(&f, &o) == 0 && o.adds_linked == 2 && o.adds_committed == 1, "linked and committed in the waits' order");
+    /* P=3*10^15 R=3*10^15 A=3*10^9 r=10^13 a=10^7: inner = rA + aR + 2ra = 6.02*10^22,
+     * den = rA + aR + 2RA = 1.806*10^25: P*inner/den = 10^13 (equal ratios) */
+    memset(eth_hex, 'e', 40); memset(nodus_hex, 'f', 128);
+    CHECK(amm_journal_position_get(f.j, eth_hex, nodus_hex, &pos) == 0 && amm_to_u64(&pu64, &pos) == 0 &&
+          pu64 == 10000000000000ULL, "units of the second add by THORChain's formula: 10^13");
+    CHECK(amm_journal_pool_get(f.j, &pool) == 0 && amm_to_u64(&pn, &pool.depth_n) == 0 &&
+          amm_to_u64(&pu, &pool.depth_u) == 0 && amm_to_u64(&pq, &pool.units) == 0 &&
+          pn == 3000000000000000ULL + 10000000000000ULL && pu == 3000000000ULL + 10000000ULL &&
+          pq == 3000000000000000ULL + 10000000000000ULL, "the pool grew by the pair and the units");
+    env_close(&f);
+}
+
+/* ── E17 a swap that cannot be decided writes nothing ───────────────── */
+
+/* Proves (plan section 12; section 16): a counted NODUS -> USDT swap whose decision
+ * cannot be completed -- the ETH price unreadable, the bot's USDT short, payouts
+ * paused (the trading-halt refund too) -- writes NOTHING: it stays counted with its
+ * room, no output, no attempt, the pool unchanged; once the fact is readable again
+ * it is decided at the depths of that round. FALSE PASS: the stubs fail the reads on
+ * demand; the same step decides the swap when the stub is restored, so a decision
+ * that merely never runs would fail the last check of each case. */
+static void e17_undecidable(void) {
+    printf("E17 an undecidable swap writes nothing and stays counted with its room\n");
+    env_t e;
+    env_open(&e);
+    amm_quote_answer_t a;
+    amm_swap_t s;
+    amm_engine_step_t o;
+    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a) == AMM_Q_OK, "approval");
+    amm_req_nodus_to_usdt_t nr = nodus_req(&a, 'f', 1);
+    CHECK(amm_engine_accept_nodus(e.eng, &nr, &s) == AMM_ACC_RECEIVED && swap_of(&e, a.request_number, &s) &&
+          seen_counted(&e, &s, s.incoming_id), "a counted swap");
+    amm_eattempt_t at;
+    amm_swap_t g;
+    W.price_rc = 1;
+    CHECK(step(&e, &o) == 0 && o.decided == 0 && o.undecided == 1 && swap_of(&e, a.request_number, &g) &&
+          !strcmp(g.state, "counted") && g.room == 1 && g.out_amount == 0 && pool_is(&e, POOL_N, POOL_U) &&
+          amm_journal_eth_attempt_latest(e.j, s.seq, &at) == 1,
+          "price unreadable: nothing written, still counted with its room");
+    W.price_rc = 0;
+    W.usdt_balance = 1000;
+    CHECK(step(&e, &o) == 0 && o.undecided == 1 && state_of(&e, a.request_number, "counted") &&
+          pool_is(&e, POOL_N, POOL_U) && amm_journal_eth_attempt_latest(e.j, s.seq, &at) == 1,
+          "the bot's USDT short: nothing written, still counted");
+    W.usdt_balance = 1000000000000ULL;
+    e.cfg.payouts_paused = 1;
+    e.cfg.swaps_paused = 1;                          /* a trading-halt refund would be due */
+    env_restart(&e);
+    CHECK(step(&e, &o) == 0 && o.undecided == 1 && o.to_refund == 0 && state_of(&e, a.request_number, "counted") &&
+          pool_is(&e, POOL_N, POOL_U), "payouts paused: no decision of any kind, the trading-halt refund included");
+    e.cfg.payouts_paused = 0;
+    env_restart(&e);
+    CHECK(step(&e, &o) == 0 && o.to_refund == 1 && state_of(&e, a.request_number, "refund_pending"),
+          "payouts running again: the swap is decided (swaps still paused: a refund)");
+    env_close(&e);
+
+    env_t f;
+    env_open(&f);
+    CHECK(amm_engine_quote(f.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a) == AMM_Q_OK, "approval");
+    nr = nodus_req(&a, 'f', 1);
+    CHECK(amm_engine_accept_nodus(f.eng, &nr, &s) == AMM_ACC_RECEIVED && swap_of(&f, a.request_number, &s) &&
+          seen_counted(&f, &s, s.incoming_id), "a counted swap");
+    W.price_rc = 1;
+    CHECK(step(&f, &o) == 0 && o.decided == 0, "price unreadable: undecided");
+    W.price_rc = 0;
+    CHECK(step(&f, &o) == 0 && o.decided == 1 && state_of(&f, a.request_number, "payout_pending"),
+          "the price readable again: decided in the round that completes it");
+    env_close(&f);
+}
+
+/* ── E18 liquidity adds beyond one page; E19 adds and swaps in one order ── */
+
+/* Proves: with a page of 2, five unsigned add approvals expire in one step (the add
+ * lists are walked by page); a ready add (seen number 1) commits BEFORE a swap seen
+ * after it (seen number 2) is decided, so the swap is priced from the pool the add
+ * changed (93672521996257, hand derived by integer arithmetic), not from the pool
+ * before it (93652445369406). FALSE PASS: the order would also hold if the add were
+ * always committed first; the seen numbers are read from the rows to show the add's
+ * number is lower. */
+static void e18_adds_paged_and_ordered(void) {
+    printf("E18 liquidity adds: paged walk, one order with the swaps\n");
+    g_page = 2;
+    env_t e;
+    env_open(&e);
+    amm_add_answer_t aa;
+    int ok = 1;
+    for (int i = 0; i < 5 && ok; i++)
+        ok = amm_engine_add_question(e.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &aa) == AMM_AQ_OK;
+    CHECK(ok, "five add approvals, a page of two");
+    W.now = 10301;
+    amm_journal_cursor_reset(e.j, "nodus_scan", 1000);
+    amm_journal_cursor_reset(e.j, "nodus_scan_ts", 10400);
+    amm_blk_t blk;
+    memset(&blk, 0, sizeof(blk));
+    blk.height = 990; blk.ts = 10400; memset(blk.hash, 5, 32); memset(blk.parent, 4, 32);
+    amm_journal_block_put(e.j, &blk);
+    amm_journal_cursor_reset(e.j, "eth_scan", 995);
+    amm_engine_step_t o;
+    CHECK(step(&e, &o) == 0 && o.adds_expired == 5, "all five expire in one step (three pages)");
+    env_close(&e);
+    g_page = 0;
+
+    env_t f;
+    env_open(&f);
+    {
+        amm_pool_t p0;
+        evm_u256_from_u64(&p0.depth_n, 3000000000000000ULL);
+        evm_u256_from_u64(&p0.depth_u, 3000000000ULL);
+        evm_u256_from_u64(&p0.units, 3000000000000000ULL);
+        amm_journal_pool_put(f.j, &p0);
+    }
+    amm_quote_answer_t q;
+    CHECK(amm_engine_add_question(f.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &aa) == AMM_AQ_OK, "add question");
+    amm_req_liq_add_t lr = add_req(&aa, 'a', 'c', 'a');
+    CHECK(amm_engine_accept_add(f.eng, &lr, NULL) == AMM_ACC_RECEIVED, "signed pair");
+    add_deposits(&f, &lr, 0x93, 0xaa, 1001, 1001);
+    W.eth_tip = 1400; W.nodus_tip = 1010;
+    CHECK(step(&f, &o) == 0 && o.adds_linked == 2 && o.adds_committed == 0, "both deposits linked, receipts unreadable");
+    amm_add_t ad;
+    CHECK(amm_journal_add_by_botreq(f.j, aa.request_number, &ad) == 0 && ad.seen_seq == 1,
+          "the add took seen number 1 when its second deposit was linked");
+    CHECK(amm_engine_quote(f.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &q) == AMM_Q_OK, "a swap approval");
+    amm_req_usdt_t ur = usdt_req(&q, 'b', 1);
+    CHECK(amm_engine_accept_usdt(f.eng, &ur, NULL) == AMM_ACC_RECEIVED, "signed request");
+    /* the approval read the Ethereum tip 1400 (the stored cursor moved with the
+     * first step), so its payment must be in a block above it */
+    put_rec(&f, 0x94, 1500, 0xbb, 100000000ULL, "deep");
+    W.rcpt_ok = 1; W.rcpt_block = 1001; W.rcpt_hash = 0x93;
+    amm_swap_t s;
+    CHECK(step(&f, &o) == 0 && o.adds_committed == 1 && o.decided == 1 && swap_of(&f, q.request_number, &s) &&
+          s.seen_seq == 2 && !strcmp(s.state, "payout_pending") && s.out_amount == 93672521996257ULL,
+          "the add (seen 1) commits before the swap (seen 2) is decided: the swap is priced from the changed pool");
+    env_close(&f);
 }
 
 int main(void) {
@@ -1154,6 +1694,11 @@ int main(void) {
     e6_drops();
     e7_release();
     e8_fee_booking();
+    e14_room_line();
+    e15_paging();
+    e16_liquidity_add();
+    e17_undecidable();
+    e18_adds_paged_and_ordered();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

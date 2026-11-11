@@ -281,7 +281,11 @@ static void env_close(env_t *e) {
 
 static uint64_t g_ctr = 1;
 
+/* paid_waiting_depth is the SEEN payment (revision 12): amm_journal_swap_seen with a
+ * 500 USDT total takes the room; every other target is the plain transition. */
 static int tr(env_t *e, int64_t seq, const char *to, const char *inc) {
+    if (!strcmp(to, "paid_waiting_depth"))
+        return amm_journal_swap_seen(e->j, seq, inc, NULL, 500000000ULL, 0, NULL);
     return amm_journal_swap_transition(e->j, seq, to, inc, NULL, NULL);
 }
 
@@ -331,7 +335,36 @@ static int swap_is(env_t *e, const amm_swap_t *s, const char *st) {
     return amm_journal_swap_by_seq(e->j, s->seq, &g) == 0 && !strcmp(g.state, st);
 }
 
+/* Sign a swap's payout. A USDT -> NODUS PAYOUT is signed by the engine's decision
+ * since revision 12 (plan section 12): amm_nodus_pay_prepare plans, builds and signs
+ * WITHOUT touching the journal and the attempt is stored by the caller -- here by
+ * this helper, as the decision does (amm_journal_swap_decide stores it in the same
+ * transaction as the ledger update; that transaction is tested in test_amm_journal
+ * J27 and test_amm_engine E3). The payer no longer moves a payout to refund_pending:
+ * ZERO and BELOW_MIN are only returned and the swap stays payout_pending. A REFUND
+ * is signed by amm_nodus_pay_sign as before. */
 static int sign(env_t *e, const amm_swap_t *s, uint64_t gross, amm_np_step_t *o) {
+    amm_swap_t cur;
+    if (amm_journal_swap_by_seq(e->j, s->seq, &cur) == 0 && cur.dir == AMM_USDT_TO_NODUS &&
+        !strcmp(cur.state, AMM_S_PAYOUT_PENDING)) {
+        amm_attempt_t prev;
+        memset(o, 0, sizeof(*o));
+        o->swap_seq = cur.seq;
+        if (gross == 0) return AMM_NP_ERR;
+        int ar = amm_journal_attempt_latest(e->j, cur.seq, &prev);
+        if (ar == 0) { amm_attempt_free(&prev); return AMM_NP_ERR; }     /* an attempt exists */
+        amm_np_prepared_t pre;
+        int r = amm_nodus_pay_prepare(e->p, cur.dest, gross, cur.minimum, 0, &pre);
+        snprintf(o->msg, sizeof(o->msg), "%s", pre.msg);
+        if (r == AMM_NP_OK) {
+            pre.attempt.swap_seq = cur.seq;
+            int jr = amm_journal_attempt_sign(e->j, &pre.attempt);
+            if (jr == AMM_J_OK) { o->worked = 1; o->signed_ = 1; }
+            else r = jr == AMM_J_ILLEGAL ? AMM_NP_BUSY : AMM_NP_ERR;
+        }
+        amm_np_prepared_free(&pre);
+        return r;
+    }
     return amm_nodus_pay_sign(e->p, s->seq, gross, 0, o);
 }
 
@@ -698,10 +731,12 @@ int main(void) {
     e.st.ri.tip = 1091;
     CHECK(step(&e, &o) == AMM_NP_OK && o.expired == 1, "P8b the attempt expires");
     e.st.gas = 100000;                                      /* the fee rose: net is now below the minimum */
-    CHECK(step(&e, &o) == AMM_NP_BELOW_MIN && swap_is(&e, &s, "refund_pending") && attempt(&e, &s, &at2) == 0 && at2.n == 1,
-          "P8b after the fee rise the replacement is below the minimum: the payout takes the refund path, nothing signed");
+    CHECK(step(&e, &o) == AMM_NP_UNKNOWN && swap_is(&e, &s, "payout_pending") && attempt(&e, &s, &at2) == 0 && at2.n == 1,
+          "P8b after the fee rise the replacement would need another fee than the decided one: NOT BUILT "
+          "(givens item 97), nothing signed, the decided payout stays payout_pending (no turn into a refund)");
     amm_attempt_free(&at2);
-    CHECK(step(&e, &o) == AMM_NP_OK && o.worked == 0, "P8b the USDT refund is not a NODUS payout: this payer has nothing to do");
+    CHECK(step(&e, &o) == AMM_NP_UNKNOWN && o.worked == 0 && swap_is(&e, &s, "payout_pending"),
+          "P8b it is retried each step and never replaced at another fee");
     env_close(&e);
 
     /* ── P8 fee at, below and above the amount ───────────────────── */
@@ -736,11 +771,11 @@ int main(void) {
         CHECK(e.st.submit_calls == calls_before, "P8 nothing was broadcast");
         /* a payout: zero is never signed; the swap takes the refund path (plan line 226) */
         CHECK(mk_payout(&e, 0, &s2), "P8 setup: a payout with minimum 0");
-        snprintf(lab, sizeof(lab), "P8 gas %llu: payout of exactly the fee: AMM_NP_ZERO, nothing signed, moved to refund_pending", (unsigned long long)gases[gi]);
-        CHECK(sign(&e, &s2, F, &o) == AMM_NP_ZERO && swap_is(&e, &s2, "refund_pending") && attempt(&e, &s2, &at) == 1, lab);
+        snprintf(lab, sizeof(lab), "P8 gas %llu: payout of exactly the fee: ZERO, nothing signed, swap not moved", (unsigned long long)gases[gi]);
+        CHECK(sign(&e, &s2, F, &o) == AMM_NP_ZERO && swap_is(&e, &s2, "payout_pending") && attempt(&e, &s2, &at) == 1, lab);
         CHECK(mk_payout(&e, 0, &s2), "P8 setup: another payout");
-        CHECK(sign(&e, &s2, F - 1, &o) == AMM_NP_ZERO && swap_is(&e, &s2, "refund_pending") && attempt(&e, &s2, &at) == 1,
-              "P8 payout of less than the fee: zero, nothing signed, moved to refund_pending");
+        CHECK(sign(&e, &s2, F - 1, &o) == AMM_NP_ZERO && swap_is(&e, &s2, "payout_pending") && attempt(&e, &s2, &at) == 1,
+              "P8 payout of less than the fee: zero, nothing signed, the swap not moved");
         CHECK(amm_nodus_pay_quote(e.p, F, 0, (amm_np_quote_t[1]){{0}}) == AMM_NP_ZERO, "P8 the quote says zero for fee == amount");
         amm_np_quote_t q;
         CHECK(amm_nodus_pay_quote(e.p, F + 5, 0, &q) == AMM_NP_OK && q.net == 5 && q.fee == F && q.n_in == 1, "P8 the quote for fee + 5: net 5");
@@ -760,9 +795,9 @@ int main(void) {
     env_close(&e);
     env_open(&e);
     CHECK(mk_payout(&e, G - F0 + 1, &s), "P9 setup: minimum = gross - fee + 1 (the gross G satisfies it)");
-    CHECK(sign(&e, &s, G, &o) == AMM_NP_BELOW_MIN && swap_is(&e, &s, "refund_pending") && attempt(&e, &s, &at) == 1 &&
+    CHECK(sign(&e, &s, G, &o) == AMM_NP_BELOW_MIN && swap_is(&e, &s, "payout_pending") && attempt(&e, &s, &at) == 1 &&
           strstr(o.msg, "below the minimum") != NULL,
-          "P9 net == minimum - 1: refused, nothing signed, the swap takes the refund path (minimum compared after the fee)");
+          "P9 net == minimum - 1: refused, nothing signed, the verdict is returned (minimum compared after the fee); the engine refunds");
     CHECK(e.st.submit_calls == 0, "P9 nothing broadcast");
     CHECK(mk_refund(&e, &s2), "P9 setup: a refund has no minimum");
     env_close(&e);
@@ -874,7 +909,7 @@ int main(void) {
     e.st.ri.tip = 1002;
     amm_attempt_free(&at);
     CHECK(attempt(&e, &s2, &at2) == 1, "P13 the second swap has no attempt while the first is open");
-    CHECK(sign(&e, &s2, 5000000000ULL, &o) == AMM_NP_ERR && attempt(&e, &s2, &at2) == 1,
+    CHECK(sign(&e, &s2, 5000000000ULL, &o) == AMM_NP_BUSY && attempt(&e, &s2, &at2) == 1,
           "P13 a second swap cannot be signed while the first attempt is open (the same coin would be spent twice)");
     step(&e, &o);
     CHECK(swap_is(&e, &s, "paid"), "P13 the first is paid");

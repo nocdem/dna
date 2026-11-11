@@ -27,9 +27,11 @@
  * chain id is the setting eth_chain_id (givens item 77: Sepolia 11155111 in
  * the test phase); the watcher and the payer take it in their configuration.
  *
- * NOT BUILT (reported): the liquidity routes and operations, and the
- * Foundation's start add that would seed the ledger (plan section 14 names no
- * seed rule): without a ledger every price question answers `unavailable`.
+ * LIQUIDITY ADD (revision 12): the add question, the add route and the add's
+ * counting and commit are wired; the Foundation's start pool enters through the
+ * first add (plan section 14, givens item 91): without a committed add every
+ * price question answers `unavailable`. NOT BUILT (reported): liquidity
+ * withdraw.
  */
 #define _GNU_SOURCE
 #include <ctype.h>
@@ -144,6 +146,38 @@ static int be_swap_nodus(void *c, const amm_req_nodus_in_t *in, uint32_t *req_ou
     int acc = amm_engine_accept_nodus(a->eng, &r, &s);
     pthread_mutex_unlock(&g_eng_mu);
     return map_acc(acc, &s, (uint32_t)r.request_number, req_out, open_req);
+}
+
+static int be_add_question(void *c, amm_side_t side, uint64_t amount, uint64_t dl,
+                           amm_add_answer_t *o) {
+    app_t *a = c;
+    pthread_mutex_lock(&g_eng_mu);
+    int rc = amm_engine_add_question(a->eng, side, amount, dl, o);
+    pthread_mutex_unlock(&g_eng_mu);
+    return rc;
+}
+
+static int be_add_accept(void *c, const amm_req_liq_eth_in_t *eth, const amm_req_nodus_in_t *nodus,
+                         uint32_t *req_out, uint32_t *open_req) {
+    app_t *a = c;
+    amm_req_liq_add_t r;
+    memset(&r, 0, sizeof(r));
+    int rc = amm_req_liquidity_add_verify(a->cfg, a->j, eth, nodus, &r);
+    if (rc != AMM_REQ_OK) return map_req(rc);
+    pthread_mutex_lock(&g_eng_mu);
+    int acc = amm_engine_accept_add(a->eng, &r, open_req);
+    pthread_mutex_unlock(&g_eng_mu);
+    switch (acc) {
+    case AMM_ACC_RECEIVED:  *req_out = (uint32_t)r.request_number; return AMM_HS_RECEIVED;
+    case AMM_ACC_NO_NUMBER: return AMM_HS_NO_NUMBER;
+    case AMM_ACC_AMOUNT:    return AMM_HS_AMOUNT;
+    case AMM_ACC_REUSED:    return AMM_HS_REUSED;
+    case AMM_ACC_OPEN:      return AMM_HS_OPEN;
+    case AMM_ACC_USED:      return AMM_HS_USED;
+    case AMM_ACC_EXPIRED:   return AMM_HS_EXPIRED;
+    case AMM_ACC_DUP_TRANSFER: return AMM_HS_USED;
+    default:                return AMM_HS_ERR;
+    }
 }
 
 static int be_get_swap(void *c, uint32_t n, amm_swap_t *o) {
@@ -355,6 +389,7 @@ int main(int argc, char **argv) {
     nwc.id_kind = AMM_NW_ID_WIRE;                /* plan 6.4.4: the wire id, agreed (givens 71) */
     nwc.start_height = cfg.nodus_start_height; nwc.liquidity_wait_blocks = cfg.liquidity_wait_nodus_blocks;
     nwc.page_limit = (uint32_t)cfg.nodus_page_limit; nwc.max_pages = (uint32_t)cfg.nodus_max_pages;
+    nwc.inflight_max = cfg.inflight_max_usdt; nwc.held_keeps_room = cfg.held_keeps_room;
     nw = amm_nodus_watch_new(&nwc);
     if (!nw) { QGP_LOG_ERROR(LOG_TAG, "the Nodus watcher refused its configuration"); goto done; }
     {
@@ -380,13 +415,15 @@ int main(int argc, char **argv) {
     if (pg < 0) goto done;
     if (pg == 1)
         QGP_LOG_WARN(LOG_TAG, "the journal holds no ledger: every price question answers "
-                     "unavailable (the Foundation's start add is not built)");
+                     "unavailable until the Foundation's first liquidity add has committed "
+                     "(plan section 14, givens item 91)");
 
     app.eng = eng; app.cfg = &cfg; app.j = journal;
     memset(&hctx, 0, sizeof(hctx));
     hctx.cfg = &cfg;
     hctx.be.ctx = &app; hctx.be.quote = be_quote; hctx.be.swap_usdt = be_swap_usdt;
     hctx.be.swap_nodus = be_swap_nodus; hctx.be.get_swap = be_get_swap; hctx.be.status = be_status;
+    hctx.be.add_question = be_add_question; hctx.be.add_accept = be_add_accept;
 
     uint16_t bound = 0;
     if (amm_http_open((uint16_t)cfg.http_port, (int)cfg.http_conn_cap, (int)cfg.http_timeout_ms,

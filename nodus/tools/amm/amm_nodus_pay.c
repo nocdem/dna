@@ -307,41 +307,34 @@ static void set_msg(amm_np_step_t *out, const char *m) {
     if (out) snprintf(out->msg, sizeof(out->msg), "%s", m);
 }
 
-/* Plan, build, sign and store for swap `seq`. `prior` (NULL = the first
- * attempt) is the EXPIRED attempt a replacement follows: it is planned over
- * the prior attempt's own coins first and must share at least one input with
- * it (faucet design 6.4: the original can then never also apply). */
-static int sign_impl(amm_nodus_pay_t *p, int64_t seq, uint64_t gross,
-                     const amm_attempt_t *prior, uint64_t dl, amm_np_step_t *out) {
-    char msg[AMM_MSG_MAX];
-    msg[0] = '\0';
-    if (out) { memset(out, 0, sizeof(*out)); out->swap_seq = seq; }
-    amm_journal_t *j = p->cfg.journal;
+void amm_np_prepared_free(amm_np_prepared_t *pre) {
+    if (!pre) return;
+    free(pre->attempt.env);
+    memset(pre, 0, sizeof(*pre));
+}
+
+/* Plan, build and sign a payout of `gross` to `dest` (128 hex) and hand back
+ * the signed attempt in `pre`: NOTHING is written to the journal, so the
+ * caller can store it together with other writes in one transaction (the
+ * decision of plan section 12) or alone (a refund). The minimum is compared
+ * with the amount AFTER the fee (givens item 51; 0 = no minimum). `prior`
+ * (NULL = the first attempt) is the EXPIRED attempt a replacement follows: it
+ * is planned over the prior attempt's own coins first and must share at least
+ * one input with it (faucet design 6.4: the original can then never also
+ * apply). @return AMM_NP_OK (`pre` ready) / AMM_NP_ZERO (net 0: `pre->fee`,
+ * `pre->net` set) / AMM_NP_BELOW_MIN (`pre->fee`, `pre->net` set) / FUNDS /
+ * UNKNOWN / UNSUPPORTED / ERR; `msg` says why. */
+static int build_core(amm_nodus_pay_t *p, const char *dest, uint64_t gross,
+                      uint64_t minimum, const amm_attempt_t *prior, uint64_t dl,
+                      amm_np_prepared_t *pre, char *msg, size_t msg_cap) {
+    memset(pre, 0, sizeof(*pre));
+    pre->gross = gross;
     if (gross == 0) return AMM_NP_ERR;
-
-    amm_swap_t s;
-    int g = amm_journal_swap_by_seq(j, seq, &s);
-    if (g != 0) return AMM_NP_ERR;
-    const int is_payout = (s.dir == AMM_USDT_TO_NODUS && !strcmp(s.state, AMM_S_PAYOUT_PENDING));
-    const int is_refund = (s.dir == AMM_NODUS_TO_USDT && !strcmp(s.state, AMM_S_REFUND_PENDING));
-    if (!is_payout && !is_refund) {
-        QGP_LOG_ERROR(LOG_TAG, "swap %s owes no NODUS payout (state %s)", s.id, s.state);
-        return AMM_NP_ERR;
-    }
-    /* the user's own native address (plan line 289): the payout goes to the
-     * swap's destination, a refund back to the request's sender */
-    const char *dest = is_payout ? s.dest : s.sender;
-    const uint64_t minimum = is_payout ? s.minimum : 0;
-
-    if (p->cfg.payouts_paused) {
-        set_msg(out, "payouts are paused: nothing is signed or broadcast");
-        return AMM_NP_PAUSED;
-    }
 
     pctx_t *b = calloc(1, sizeof(*b));
     if (!b) return AMM_NP_ERR;
     int ret = AMM_NP_ERR;
-    int rc = prepare(p, b, dl, msg, sizeof(msg));
+    int rc = prepare(p, b, dl, msg, msg_cap);
     if (rc != AMM_NP_OK) { ret = rc; goto out; }
 
     /* plan: a replacement tries the expired attempt's own coins first */
@@ -355,18 +348,18 @@ static int sign_impl(amm_nodus_pay_t *p, int64_t seq, uint64_t gross,
                 rest[nr++] = b->coins[i];
         if (nr == 0) {
             free(rest);
-            snprintf(msg, sizeof(msg), "the expired attempt's coins are no longer unspent; the operator must check");
+            snprintf(msg, msg_cap, "the expired attempt's coins are no longer unspent; the operator must check");
             ret = AMM_NP_FUNDS;
             goto out;
         }
-        rc = plan_fixed(b, gross, rest, nr, msg, sizeof(msg));
+        rc = plan_fixed(b, gross, rest, nr, msg, msg_cap);
         free(rest);
         if (rc == AMM_NP_OK) planned = 1;
-        else if (rc != AMM_NP_FUNDS) { ret = rc; goto zero_or_out; }
+        else if (rc != AMM_NP_FUNDS) { ret = rc; goto verdict; }
     }
     if (!planned) {
-        rc = plan_fixed(b, gross, b->coins, b->n_coins, msg, sizeof(msg));
-        if (rc != AMM_NP_OK) { ret = rc; goto zero_or_out; }
+        rc = plan_fixed(b, gross, b->coins, b->n_coins, msg, msg_cap);
+        if (rc != AMM_NP_OK) { ret = rc; goto verdict; }
     }
     if (prior) {
         int shared = 0;
@@ -374,31 +367,23 @@ static int sign_impl(amm_nodus_pay_t *p, int64_t seq, uint64_t gross,
             if (nul_in(b->work[b->plan.idx[i]].nul, (uint8_t (*)[64])prior->inputs, prior->n_in))
                 shared = 1;
         if (!shared) {
-            snprintf(msg, sizeof(msg), "a replacement would share no input with the expired attempt");
+            snprintf(msg, msg_cap, "a replacement would share no input with the expired attempt");
             ret = AMM_NP_FUNDS;
             goto out;
         }
     }
 
     /* the minimum is compared AFTER the Nodus fee (givens item 51), before
-     * anything is built or signed */
+     * anything is built or signed. The verdict is returned; moving the swap to
+     * a refund is the engine's, in the decision transaction (plan section 12):
+     * this module no longer moves a payout to refund_pending. */
     if (amm_nodus_pay_judge(gross, b->fee, minimum, NULL) == AMM_NP_BELOW) {
-        snprintf(msg, sizeof(msg), "after the Nodus fee %llu the amount %llu is below the minimum %llu",
+        snprintf(msg, msg_cap, "after the Nodus fee %llu the amount %llu is below the minimum %llu",
                  (unsigned long long)b->fee, (unsigned long long)b->net,
                  (unsigned long long)minimum);
+        pre->fee = b->fee;
+        pre->net = b->net;
         ret = AMM_NP_BELOW_MIN;
-        /* a payout whose amount fell below the signed minimum after a fee
-         * rise takes the REFUND path (plan line 226: "Output after the Nodus
-         * fee < minimum, or zero: refund"); the edge exists only while no
-         * attempt of the swap is signed or submitted, which holds here (none,
-         * or the latest expired). The ledger reversal is the engine's. */
-        if (is_payout) {
-            if (amm_journal_swap_transition(j, seq, AMM_S_REFUND_PENDING, NULL, NULL, msg) != 0) {
-                ret = AMM_NP_ERR;
-            } else if (out) {
-                out->worked = 1;
-            }
-        }
         goto out;
     }
 
@@ -427,76 +412,142 @@ static int sign_impl(amm_nodus_pay_t *p, int64_t seq, uint64_t gross,
         memset(&be, 0, sizeof(be));
         int brc = nodus_v2_spend_build(q, &b->built, &be);
         if (brc != NODUS_V2_SPEND_OK) {
-            QGP_LOG_ERROR(LOG_TAG, "swap %s: build refused (rc %d)", s.id, brc);
-            snprintf(msg, sizeof(msg), "the payout could not be built (rc %d); nothing was stored", brc);
+            QGP_LOG_ERROR(LOG_TAG, "build refused (rc %d)", brc);
+            snprintf(msg, msg_cap, "the payout could not be built (rc %d); nothing was stored", brc);
             ret = AMM_NP_UNKNOWN;
             goto out;
         }
         int vr = verify_built(p, b, dest, gross, expiry);
         if (vr != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "swap %s: read-back refused the built payout (%d)", s.id, vr);
-            snprintf(msg, sizeof(msg), "the built payout failed the read-back (%d); nothing was stored", vr);
+            QGP_LOG_ERROR(LOG_TAG, "read-back refused the built payout (%d)", vr);
+            snprintf(msg, msg_cap, "the built payout failed the read-back (%d); nothing was stored", vr);
             ret = AMM_NP_UNKNOWN;
             goto out;
         }
-        amm_attempt_t a;
-        memset(&a, 0, sizeof(a));
-        a.swap_seq = seq;
-        a.gross = gross; a.fee = b->fee; a.net = b->net;
-        snprintf(a.dest, sizeof(a.dest), "%s", dest);
-        a.env = b->built.env;                    /* borrowed, freed below */
-        a.env_len = b->built.env_len;
-        memcpy(a.wire_id, b->built.wire_id, 64);
-        memcpy(a.intent_id, b->built.intent_id, 64);
-        a.n_in = b->built.dec.n_in;
-        for (int i = 0; i < a.n_in; i++) memcpy(a.inputs[i], b->built.dec.in_nul[i], 64);
-        a.build_tip = b->tip;
-        a.expiry = expiry;
-        a.scan_next = b->tip + 1;
-        /* WRITE-AHEAD (plan section 17): the signed bytes are in the journal
-         * before anything is submitted; if this fails nothing is ever sent */
-        int sr = amm_journal_attempt_sign(j, &a);
-        if (sr != AMM_J_OK) {
-            QGP_LOG_ERROR(LOG_TAG, "swap %s: the signed attempt was not recorded (%d) -- never submitted",
-                          s.id, sr);
-            snprintf(msg, sizeof(msg), "the signed attempt could not be recorded (%d); nothing was submitted", sr);
-            ret = AMM_NP_ERR;
-            goto out;
-        }
-        QGP_LOG_INFO(LOG_TAG, "swap %s signed (attempt %d, gross %llu, fee %llu, net %llu, expiry %llu)",
-                     s.id, a.n, (unsigned long long)gross, (unsigned long long)b->fee,
-                     (unsigned long long)b->net, (unsigned long long)expiry);
-        if (out) { out->worked = 1; out->signed_ = 1; }
+        amm_attempt_t *a = &pre->attempt;
+        a->gross = gross; a->fee = b->fee; a->net = b->net;
+        snprintf(a->dest, sizeof(a->dest), "%s", dest);
+        /* the envelope's bytes are copied: the SDK's buffer is freed below */
+        a->env = malloc(b->built.env_len);
+        if (!a->env) goto out;
+        memcpy(a->env, b->built.env, b->built.env_len);
+        a->env_len = b->built.env_len;
+        memcpy(a->wire_id, b->built.wire_id, 64);
+        memcpy(a->intent_id, b->built.intent_id, 64);
+        a->n_in = b->built.dec.n_in;
+        for (int i = 0; i < a->n_in; i++) memcpy(a->inputs[i], b->built.dec.in_nul[i], 64);
+        a->build_tip = b->tip;
+        a->expiry = expiry;
+        a->scan_next = b->tip + 1;
+        pre->fee = b->fee;
+        pre->net = b->net;
         msg[0] = '\0';
         ret = AMM_NP_OK;
         goto out;
     }
 
-zero_or_out:
-    if (ret == AMM_NP_ZERO) {
-        snprintf(msg, sizeof(msg), "nothing is left after the Nodus fee %llu on %llu",
+verdict:
+    pre->fee = b->fee;
+    pre->net = b->net;
+    if (ret == AMM_NP_ZERO)
+        snprintf(msg, msg_cap, "nothing is left after the Nodus fee %llu on %llu",
                  (unsigned long long)b->fee, (unsigned long long)gross);
-        if (is_refund) {
-            /* a refund that is zero after the fee is DROPPED (not sent, not
-             * held), a replacement attempt included (givens items 89, 90) */
-            if (amm_journal_swap_transition(j, seq, AMM_S_DROPPED, NULL, NULL, msg) != 0) {
-                ret = AMM_NP_ERR;
-            } else if (out) {
-                out->worked = 1;
-            }
-        } else if (is_payout) {
-            /* a payout that is zero after the fee takes the refund path
-             * (plan line 226), as above */
-            if (amm_journal_swap_transition(j, seq, AMM_S_REFUND_PENDING, NULL, NULL, msg) != 0) {
-                ret = AMM_NP_ERR;
-            } else if (out) {
-                out->worked = 1;
-            }
-        }
-    }
 out:
     if (b) nodus_v2_spend_built_free(&b->built);
     free(b);
+    if (ret != AMM_NP_OK) { free(pre->attempt.env); pre->attempt.env = NULL; }
+    return ret;
+}
+
+int amm_nodus_pay_prepare(amm_nodus_pay_t *p, const char *dest, uint64_t gross,
+                          uint64_t minimum, uint64_t deadline_ms,
+                          amm_np_prepared_t *out) {
+    if (!p || !dest || !out) return AMM_NP_ERR;
+    memset(out, 0, sizeof(*out));
+    if (p->cfg.payouts_paused) {
+        snprintf(out->msg, sizeof(out->msg), "payouts are paused: nothing is signed or broadcast");
+        return AMM_NP_PAUSED;
+    }
+    return build_core(p, dest, gross, minimum, NULL, deadline_ms, out, out->msg,
+                      sizeof(out->msg));
+}
+
+/* Sign and STORE a NODUS payout of a swap that owes one and has no open
+ * attempt: the REFUND of a NODUS -> USDT swap (first attempt or replacement
+ * after expiry) or the replacement of an expired decided payout. A decided
+ * payout's FIRST attempt is stored by the decision, never here. */
+static int sign_impl(amm_nodus_pay_t *p, int64_t seq, uint64_t gross,
+                     const amm_attempt_t *prior, uint64_t dl, amm_np_step_t *out) {
+    char msg[AMM_MSG_MAX];
+    msg[0] = '\0';
+    if (out) { memset(out, 0, sizeof(*out)); out->swap_seq = seq; }
+    amm_journal_t *j = p->cfg.journal;
+    if (gross == 0) return AMM_NP_ERR;
+
+    amm_swap_t s;
+    int g = amm_journal_swap_by_seq(j, seq, &s);
+    if (g != 0) return AMM_NP_ERR;
+    const int is_payout = (s.dir == AMM_USDT_TO_NODUS && !strcmp(s.state, AMM_S_PAYOUT_PENDING));
+    const int is_refund = (s.dir == AMM_NODUS_TO_USDT && !strcmp(s.state, AMM_S_REFUND_PENDING));
+    if (!is_payout && !is_refund) {
+        QGP_LOG_ERROR(LOG_TAG, "swap %s owes no NODUS payout (state %s)", s.id, s.state);
+        return AMM_NP_ERR;
+    }
+    if (is_payout && !prior) {
+        QGP_LOG_ERROR(LOG_TAG, "swap %s: a payout is signed in its decision, not here", s.id);
+        return AMM_NP_ERR;
+    }
+    /* the user's own native address (plan line 289): the payout goes to the
+     * swap's destination, a refund back to the request's sender */
+    const char *dest = is_payout ? s.dest : s.sender;
+
+    if (p->cfg.payouts_paused) {
+        set_msg(out, "payouts are paused: nothing is signed or broadcast");
+        return AMM_NP_PAUSED;
+    }
+
+    amm_np_prepared_t pre;
+    /* No minimum here: a decided payout's minimum was judged in its decision;
+     * a refund has none. */
+    int ret = build_core(p, dest, gross, 0, prior, dl, &pre, msg, sizeof(msg));
+    if (ret == AMM_NP_OK && is_payout && pre.fee != prior->fee) {
+        /* The replacement at another fee would change what the user receives
+         * from what was decided and shown; the replacement at a higher fee is
+         * NOT BUILT (givens item 97: the operator rejected the question, plan
+         * section 12 "Built code"). Nothing is stored; the expired attempt
+         * stays and the swap waits. */
+        snprintf(msg, sizeof(msg), "a replacement would need the Nodus fee %llu, not the decided %llu: not built",
+                 (unsigned long long)pre.fee, (unsigned long long)prior->fee);
+        ret = AMM_NP_UNKNOWN;
+    }
+    if (ret == AMM_NP_OK) {
+        pre.attempt.swap_seq = seq;
+        /* WRITE-AHEAD (plan section 17): the signed bytes are in the journal
+         * before anything is submitted; if this fails nothing is ever sent */
+        int sr = amm_journal_attempt_sign(j, &pre.attempt);
+        if (sr != AMM_J_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "swap %s: the signed attempt was not recorded (%d) -- never submitted",
+                          s.id, sr);
+            snprintf(msg, sizeof(msg), "the signed attempt could not be recorded (%d); nothing was submitted", sr);
+            ret = sr == AMM_J_ILLEGAL ? AMM_NP_BUSY : AMM_NP_ERR;
+        } else {
+            QGP_LOG_INFO(LOG_TAG, "swap %s signed (attempt %d, gross %llu, fee %llu, net %llu, expiry %llu)",
+                         s.id, pre.attempt.n, (unsigned long long)gross,
+                         (unsigned long long)pre.fee, (unsigned long long)pre.net,
+                         (unsigned long long)pre.attempt.expiry);
+            if (out) { out->worked = 1; out->signed_ = 1; }
+            msg[0] = '\0';
+        }
+    } else if (ret == AMM_NP_ZERO && is_refund) {
+        /* a refund that is zero after the fee is DROPPED (not sent, not held),
+         * a replacement attempt included (givens items 89, 90) */
+        if (amm_journal_swap_transition(j, seq, AMM_S_DROPPED, NULL, NULL, msg) != 0) {
+            ret = AMM_NP_ERR;
+        } else if (out) {
+            out->worked = 1;
+        }
+    }
+    amm_np_prepared_free(&pre);
     set_msg(out, msg);
     return ret;
 }

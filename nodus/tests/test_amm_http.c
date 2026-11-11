@@ -121,12 +121,14 @@ static void h2_json(void) {
         snprintf(msg, sizeof(msg), "refused: %s", bad[i][0] ? bad[i] : "(empty)");
         CHECK(amm_json_parse(bad[i], strlen(bad[i]), &j) != 0, msg);
     }
-    const char *nine = "{\"a\":\"1\",\"b\":\"1\",\"c\":\"1\",\"d\":\"1\",\"e\":\"1\",\"f\":\"1\","
-                       "\"g\":\"1\",\"h\":\"1\",\"i\":\"1\"}";
-    CHECK(amm_json_parse(nine, strlen(nine), &j) != 0, "nine keys refused");
-    const char *eight = "{\"a\":\"1\",\"b\":\"1\",\"c\":\"1\",\"d\":\"1\",\"e\":\"1\",\"f\":\"1\","
-                        "\"g\":\"1\",\"h\":\"1\"}";
-    CHECK(amm_json_parse(eight, strlen(eight), &j) == 0 && j.n == 8, "eight keys accepted");
+    /* AMM_HTTP_MAX_KEYS is 12 since revision 12: the liquidity add body is flat and
+     * carries 9 keys */
+    const char *thirteen = "{\"a\":\"1\",\"b\":\"1\",\"c\":\"1\",\"d\":\"1\",\"e\":\"1\",\"f\":\"1\","
+                           "\"g\":\"1\",\"h\":\"1\",\"i\":\"1\",\"j\":\"1\",\"k\":\"1\",\"l\":\"1\",\"m\":\"1\"}";
+    CHECK(amm_json_parse(thirteen, strlen(thirteen), &j) != 0, "thirteen keys refused");
+    const char *twelve = "{\"a\":\"1\",\"b\":\"1\",\"c\":\"1\",\"d\":\"1\",\"e\":\"1\",\"f\":\"1\","
+                         "\"g\":\"1\",\"h\":\"1\",\"i\":\"1\",\"j\":\"1\",\"k\":\"1\",\"l\":\"1\"}";
+    CHECK(amm_json_parse(twelve, strlen(twelve), &j) == 0 && j.n == 12, "twelve keys accepted");
     CHECK(amm_json_parse("{}", 2, &j) == 0 && j.n == 0, "the empty object");
 }
 
@@ -348,7 +350,8 @@ static void h4_routes(void) {
     B.swap_found = 1;
     CHECK(route(&c, "GET", "/amm/swap/16909060", NULL, out, sizeof(out)) == 200 &&
           !strcmp(out, "{\"requestNumber\":\"16909060\",\"state\":\"approved\",\"direction\":\"nodus_to_usdt\","
-                       "\"amount\":\"5\",\"number\":\"6\",\"estimatedFee\":\"7\",\"validUntil\":\"10300\"}"),
+                       "\"amount\":\"5\",\"number\":\"6\",\"estimatedFee\":\"7\",\"validUntil\":\"10300\","
+                       "\"waitingForRoom\":false}"),
           "GET /amm/swap/<request number>");
     B.swap_found = 0;
     CHECK(route(&c, "GET", "/amm/swap/16909060", NULL, out, sizeof(out)) == 404 &&
@@ -363,7 +366,8 @@ static void h4_routes(void) {
           strstr(out, "\"nodusChainId\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\""),
           "GET /amm/status: reserves, settings in force, room, flags, addresses, chain id");
     CHECK(route(&c, "GET", "/amm/nothing", NULL, out, sizeof(out)) == 404 &&
-          route(&c, "GET", "/amm/liquidity/add", NULL, out, sizeof(out)) == 404, "an unknown path is 404");
+          route(&c, "GET", "/amm/liquidity/withdraw", NULL, out, sizeof(out)) == 404,
+          "an unknown path is 404 (withdraw is not built; GET on the add route is 405)");
     CHECK(route(&c, "GET", "/amm/quote", NULL, out, sizeof(out)) == 405 &&
           route(&c, "POST", "/amm/status", "{}", out, sizeof(out)) == 405, "a wrong method is 405");
     char tiny[40];
@@ -451,6 +455,102 @@ static void h5_server(void) {
           "a zero connection cap or body bound and a cap above 64 are refused");
 }
 
+/* H6 (revision 12): the liquidity add routes. PROVES: the add question route
+ * parses {"side","amount"} and answers the exact pair, the request number, the
+ * validity and where to pay each side, or a refusal word (below_minimum for an add
+ * under 100,000 NODUS); a malformed question never reaches the backend; the add route
+ * takes the flat nine-key body of the two signed halves (amm_http.h) and answers a
+ * delivery result; a body with a missing key is 400. FALSE PASS: the backend is a
+ * stub; the verification of the halves and the journal are test_amm_req, test_amm_engine
+ * E16 and test_amm_journal J27. */
+static int g_aq_rc, g_ac_rc, g_ac_calls;
+static int b_aq(void *c, amm_side_t side, uint64_t amount, uint64_t dl, amm_add_answer_t *o) {
+    (void)c; (void)dl;
+    B.calls++; B.amount = amount; B.dir = (amm_dir_t)side;
+    if (g_aq_rc != AMM_AQ_OK) return g_aq_rc;
+    memset(o, 0, sizeof(*o));
+    o->usdt_amount = 10000000ULL; o->nodus_amount = 10000000000000ULL;
+    o->request_number = 777; o->valid_until = 10300;
+    snprintf(o->pay_eth, sizeof(o->pay_eth), "0x%040x", 5);
+    snprintf(o->pay_nodus, sizeof(o->pay_nodus), "nodusaddr");
+    return AMM_AQ_OK;
+}
+static int b_ac(void *c, const amm_req_liq_eth_in_t *e, const amm_req_nodus_in_t *n, uint32_t *r,
+                uint32_t *open) {
+    (void)c;
+    g_ac_calls++;
+    B.text_len = n->text_len; B.sig0 = e->signature[0];
+    snprintf(B.amt, sizeof(B.amt), "%s", e->usdt_amount);
+    snprintf(B.mnm, sizeof(B.mnm), "%s", e->nodus_amount);
+    *r = 777; *open = 55;
+    return g_ac_rc;
+}
+
+static void h6_liquidity(void) {
+    printf("H6 the liquidity add routes\n");
+    amm_http_ctx_t c = mkctx();
+    c.be.add_question = b_aq; c.be.add_accept = b_ac;
+    char out[2048];
+    memset(&B, 0, sizeof(B));
+    g_aq_rc = AMM_AQ_OK;
+    CHECK(route(&c, "POST", "/amm/liquidity/quote", "{\"side\":\"nodus\",\"amount\":\"10000000000000\"}", out, sizeof(out)) == 200 &&
+          B.dir == (amm_dir_t)AMM_SIDE_NODUS && B.amount == 10000000000000ULL &&
+          strstr(out, "\"approved\":true") && strstr(out, "\"usdtAmount\":\"10000000\"") &&
+          strstr(out, "\"nodusAmount\":\"10000000000000\"") && strstr(out, "\"requestNumber\":\"777\"") &&
+          strstr(out, "\"validUntil\":\"10300\"") && strstr(out, "\"payEthereum\":\"0x0000000000000000000000000000000000000005\"") &&
+          strstr(out, "\"payNodus\":\"nodusaddr\""),
+          "the add question: the exact pair, the request number, the validity, where to pay");
+    g_aq_rc = AMM_AQ_BELOW_MIN;
+    CHECK(route(&c, "POST", "/amm/liquidity/quote", "{\"side\":\"usdt\",\"amount\":\"5\"}", out, sizeof(out)) == 200 &&
+          !strcmp(out, "{\"approved\":false,\"reason\":\"below_minimum\"}"), "below 100,000 NODUS: below_minimum");
+    int before = B.calls;
+    static const char *bad[] = {
+        "{\"side\":\"both\",\"amount\":\"5\"}", "{\"side\":\"usdt\",\"amount\":\"0\"}", "{\"side\":\"usdt\"}",
+        "{\"side\":\"usdt\",\"amount\":\"5\",\"x\":\"y\"}", "nonsense",
+    };
+    int allbad = 1;
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
+        if (route(&c, "POST", "/amm/liquidity/quote", bad[i], out, sizeof(out)) != 400) allbad = 0;
+    CHECK(allbad && B.calls == before, "a malformed add question is 400 and never reaches the backend");
+    CHECK(route(&c, "GET", "/amm/liquidity/quote", NULL, out, sizeof(out)) == 405, "GET on the question route: 405");
+
+    /* the add route: the flat nine-key body */
+    char eth[43], nod[129], sig65[2 + 130 + 1], text[8], pk[2 + 2 * NODUS_PK_BYTES + 1], sg[2 + 2 * NODUS_SIG_BYTES + 1];
+    snprintf(eth, sizeof(eth), "0x%040x", 7);
+    memset(nod, 'c', 128); nod[128] = 0;
+    snprintf(sig65, sizeof(sig65), "0x%0130x", 0);
+    sig65[2] = 'a'; sig65[3] = 'b';
+    snprintf(text, sizeof(text), "0x4e41");
+    pk[0] = '0'; pk[1] = 'x'; memset(pk + 2, '1', 2 * NODUS_PK_BYTES); pk[2 + 2 * NODUS_PK_BYTES] = 0;
+    sg[0] = '0'; sg[1] = 'x'; memset(sg + 2, '2', 2 * NODUS_SIG_BYTES); sg[2 + 2 * NODUS_SIG_BYTES] = 0;
+    char *body = malloc(2 * (2 * NODUS_PK_BYTES + 2 * NODUS_SIG_BYTES) + 1024);
+    snprintf(body, 2 * (2 * NODUS_PK_BYTES + 2 * NODUS_SIG_BYTES) + 1024,
+             "{\"ethereumAddress\":\"%s\",\"nodusAddress\":\"%s\",\"usdtAmount\":\"10000000\","
+             "\"nodusAmount\":\"10000000000000\",\"requestNumber\":\"777\",\"ethSignature\":\"%s\","
+             "\"text\":\"%s\",\"publicKey\":\"%s\",\"nodusSignature\":\"%s\"}", eth, nod, sig65, text, pk, sg);
+    char *big = malloc(16384);
+    g_ac_rc = AMM_HS_RECEIVED;
+    CHECK(route(&c, "POST", "/amm/liquidity/add", body, big, 16384) == 200 &&
+          !strcmp(big, "{\"received\":true,\"requestNumber\":\"777\"}") && g_ac_calls == 1 &&
+          B.text_len == 2 && B.sig0 == 0xab && !strcmp(B.amt, "10000000") && !strcmp(B.mnm, "10000000000000"),
+          "the add body reaches the backend field by field; the answer is a delivery result");
+    g_ac_rc = AMM_HS_OPEN;
+    CHECK(route(&c, "POST", "/amm/liquidity/add", body, big, 16384) == 200 &&
+          !strcmp(big, "{\"received\":false,\"reason\":\"open_approval\",\"openRequestNumber\":\"55\"}"),
+          "an open swap or add: open_approval with its request number");
+    /* a missing key and a short Ethereum address are 400 and never reach the backend */
+    g_ac_calls = 0;
+    char *shorte = malloc(2 * (2 * NODUS_PK_BYTES + 2 * NODUS_SIG_BYTES) + 1024);
+    snprintf(shorte, 2 * (2 * NODUS_PK_BYTES + 2 * NODUS_SIG_BYTES) + 1024,
+             "{\"ethereumAddress\":\"0x07\",\"nodusAddress\":\"%s\",\"usdtAmount\":\"10000000\","
+             "\"nodusAmount\":\"10000000000000\",\"requestNumber\":\"777\",\"ethSignature\":\"%s\","
+             "\"text\":\"%s\",\"publicKey\":\"%s\",\"nodusSignature\":\"%s\"}", nod, sig65, text, pk, sg);
+    CHECK(route(&c, "POST", "/amm/liquidity/add", "{\"ethereumAddress\":\"0x07\"}", big, 16384) == 400 &&
+          route(&c, "POST", "/amm/liquidity/add", shorte, big, 16384) == 400 && g_ac_calls == 0,
+          "a body without the nine keys, or one with a short Ethereum address, is 400 and never reaches the backend");
+    free(shorte); free(big); free(body);
+}
+
 int main(void) {
     printf("test_amm_http\n");
     h1_parser();
@@ -458,6 +558,7 @@ int main(void) {
     h3_hex();
     h4_routes();
     h5_server();
+    h6_liquidity();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

@@ -37,6 +37,8 @@ static const u64_key_t U64_KEYS[] = {
     {"pool_start_nodus",           offsetof(amm_cfg_t, pool_start_nodus),           1, HI_MAX, 0},
     {"liquidity_wait_eth_blocks",  offsetof(amm_cfg_t, liquidity_wait_eth_blocks),  1, HI_MAX, 0},
     {"liquidity_wait_nodus_blocks",offsetof(amm_cfg_t, liquidity_wait_nodus_blocks),1, HI_MAX, 0},
+    /* givens item 96; plan section 15: greater than 0 (a zero minimum is none) */
+    {"liquidity_min_nodus",        offsetof(amm_cfg_t, liquidity_min_nodus),        1, HI_MAX, 0},
     {"eth_reorg_window_blocks",    offsetof(amm_cfg_t, eth_reorg_window_blocks),    1, HI_MAX, 1},
     {"approval_valid_seconds",     offsetof(amm_cfg_t, approval_valid_seconds),     1, HI_MAX, 0},
     {"eth_chain_id",               offsetof(amm_cfg_t, eth_chain_id),               1, HI_MAX, 0},
@@ -115,6 +117,7 @@ void amm_cfg_defaults(amm_cfg_t *cfg) {
     cfg->pool_start_nodus            = 3000000000000000ULL;    /* item 20   */
     cfg->liquidity_wait_eth_blocks   = 300;          /* item 25             */
     cfg->liquidity_wait_nodus_blocks = 3;            /* item 49             */
+    cfg->liquidity_min_nodus         = 10000000000000ULL; /* item 96: 100,000 NODUS */
     cfg->approval_valid_seconds      = 300;          /* item 72: 5 minutes  */
     cfg->eth_chain_id                = 1;            /* item 77; Ethereum   */
     cfg->commission                  = 0;            /* item 73             */

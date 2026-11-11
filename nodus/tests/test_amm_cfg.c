@@ -462,6 +462,23 @@ static void c7_price_and_min(void) {
     expect_refused("nodus_page_limit = 101\n", "nodus_page_limit", "nodus_page_limit 101");
 }
 
+/* C8 (revision 12, givens item 96, plan section 15): liquidity_min_nodus.
+ * PROVES: default 100,000 NODUS = 10^13 raw; a written value overrides it;
+ * 0 and a repeated key are refused (load check: greater than 0).
+ * FALSE PASS: the default is compared with the same literal the loader holds;
+ * 10^13 = 100,000 x 10^8 is checked by hand in the comment, not derived. */
+static void c8_liquidity_min(void) {
+    printf("C8 liquidity_min_nodus\n");
+    amm_cfg_t c;
+    CHECK(parses(NULL, NULL, &c) == 0 && c.liquidity_min_nodus == 10000000000000ULL,
+          "default 100,000 NODUS = 10^13 raw (givens item 96)");
+    CHECK(parses(NULL, "liquidity_min_nodus = 777\n", &c) == 0 &&
+          c.liquidity_min_nodus == 777, "a written value overrides the default");
+    expect_refused("liquidity_min_nodus = 0\n", NULL, "liquidity_min_nodus 0");
+    expect_refused("liquidity_min_nodus = 5\nliquidity_min_nodus = 6\n", NULL,
+                   "liquidity_min_nodus repeated");
+}
+
 int main(void) {
     printf("test_amm_cfg\n");
     init_hex();
@@ -472,6 +489,7 @@ int main(void) {
     c5_loader();
     c6_operator_settings();
     c7_price_and_min();
+    c8_liquidity_min();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

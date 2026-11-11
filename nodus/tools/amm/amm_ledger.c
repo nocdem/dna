@@ -129,9 +129,9 @@ int amm_pool_apply_swap(amm_pool_t *p, amm_dir_t dir, const evm_u256 *x,
     evm_u256 new_in, new_out;
     evm_u256 *in_d = (dir == AMM_USDT_TO_NODUS) ? &p->depth_u : &p->depth_n;
     evm_u256 *out_d = (dir == AMM_USDT_TO_NODUS) ? &p->depth_n : &p->depth_u;
-    /* The output is the number the bot gave at approval, not computed again
-     * (plan section 12, givens items 66, 68); it may differ from a quote of
-     * today's depths. Only the depth rule and the borrow rule are checked. */
+    /* `paid` is the output computed in the decision from these depths (plan
+     * section 12, givens item 93), not the number given at the question. Only
+     * the depth rule and the borrow rule are checked here. */
     if (evm_u256_cmp(paid, out_d) >= 0) return AMM_E_DEPTH;
     TRY(amm_add(&new_in, in_d, x));
     TRY(amm_sub(&new_out, out_d, paid));
@@ -350,19 +350,6 @@ int amm_uncapped_share(evm_u256 *out, const evm_u256 *part, const evm_u256 *tota
     TRY(amm_add(&num, &prod, &half));
     TRY(amm_div(&q, &num, total));
     *out = q;
-    return AMM_OK;
-}
-
-int amm_pool_unapply_swap(amm_pool_t *p, amm_dir_t dir, const evm_u256 *x,
-                          const evm_u256 *paid) {
-    if (dir != AMM_USDT_TO_NODUS && dir != AMM_NODUS_TO_USDT) return AMM_E_RANGE;
-    evm_u256 new_in, new_out;
-    evm_u256 *in_d = (dir == AMM_USDT_TO_NODUS) ? &p->depth_u : &p->depth_n;
-    evm_u256 *out_d = (dir == AMM_USDT_TO_NODUS) ? &p->depth_n : &p->depth_u;
-    TRY(amm_sub(&new_in, in_d, x));
-    TRY(amm_add(&new_out, out_d, paid));
-    *in_d = new_in;
-    *out_d = new_out;
     return AMM_OK;
 }
 

@@ -613,24 +613,11 @@ static void l11_inflight(void) {
 }
 
 static void l12_unapply_and_fee(void) {
-    printf("L12 reversal of a swap update, uncapped share, the network-fee booking\n");
-    /* the inverse of L5's apply: depth_n 2906347554630594, depth_u 3.1*10^9
-     * give back x = 10^8 and paid = 93652445369406 -> 3*10^15 and 3*10^9 */
-    amm_pool_t p = { dec("2906347554630594"), dec("3100000000"), u64v(5) };
-    evm_u256 x = dec("100000000"), paid = dec("93652445369406");
-    CHECK(amm_pool_unapply_swap(&p, AMM_USDT_TO_NODUS, &x, &paid) == AMM_OK &&
-          eq_dec(&p.depth_n, "3000000000000000") && eq_dec(&p.depth_u, "3000000000") &&
-          eq_u64(&p.units, 5), "reverse of USDT -> NODUS restores the depths");
-    amm_pool_t before = p;
-    evm_u256 big = dec("3000000001");
-    CHECK(amm_pool_unapply_swap(&p, AMM_USDT_TO_NODUS, &big, &paid) == AMM_E_BORROW &&
-          !memcmp(&p, &before, sizeof(p)), "a reversal below zero refused, pool unchanged");
-    amm_pool_t m = { max256(), u64v(10), u64v(1) };
-    evm_u256 one = u64v(1);
-    before = m;
-    CHECK(amm_pool_unapply_swap(&m, AMM_USDT_TO_NODUS, &one, &one) == AMM_E_OVERFLOW &&
-          !memcmp(&m, &before, sizeof(m)), "a reversal past 2^256 refused, pool unchanged");
-    CHECK(amm_pool_unapply_swap(&p, (amm_dir_t)9, &one, &one) == AMM_E_RANGE, "bad direction");
+    printf("L12 uncapped share (the swap-update reversal is removed, plan section 12 revision 12)\n");
+    /* amm_pool_unapply_swap no longer exists: a refunded swap never updates
+     * the ledger, so nothing is reversed. PROVES (by compilation): no caller
+     * is left; the decision test of test_amm_engine proves the depths of a
+     * refunded swap are unchanged. */
 
     /* GetUncappedShare(part=10, total=4, alloc=3) = (3*10 + floor(4/2)) / 4
      * = 32 / 4 = 8; GetSafeShare would cap part at 4 and give 3 */

@@ -471,7 +471,7 @@ static int make_swap_as(char sender_c, uint8_t txb, const char *target, amm_swap
     char key[AMM_TID_MAX];
     amm_journal_eth_key(tx, key, sizeof(key));        /* the transaction hash alone */
     if (!strcmp(target, "approved")) return 1;
-    if (amm_journal_swap_transition(g_j, s->seq, "paid_waiting_depth", key, NULL, NULL) != 0) return 0;
+    if (amm_journal_swap_seen(g_j, s->seq, key, NULL, 500000000ULL, 0, NULL) != 0) return 0;   /* seen: takes room */
     if (!strcmp(target, "paid_waiting_depth")) return 1;
     if (amm_journal_swap_transition(g_j, s->seq, "counted", NULL, NULL, NULL) != 0) return 0;
     if (!strcmp(target, "counted")) return 1;
@@ -1182,7 +1182,7 @@ static void w21_marker_by_hash(void) {
      * refused already when it tries to wait on the same payment; the
      * permanent marker (the transaction hash, not hash + log index) stays the
      * second line of defence at `counted` */
-    CHECK(amm_journal_swap_transition(g_j, s2.seq, "paid_waiting_depth", key2, NULL, NULL) == AMM_J_DUP_TRANSFER,
+    CHECK(amm_journal_swap_seen(g_j, s2.seq, key2, NULL, 500000000ULL, 0, NULL) == AMM_J_DUP_TRANSFER,
           "swap 2 naming the re-mined payment is refused: swap 1 already carries eth:<tx hash>");
     CHECK(swap_is(&s2, "approved"), "  swap 2 is unchanged (not paid)");
     CHECK(amm_journal_marker_exists(g_j, key2) == 0, "  the permanent marker still holds the transaction hash");

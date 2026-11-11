@@ -31,7 +31,26 @@
  *                         "number":"..","estimatedFee":"..","validUntil":".."}
  *   GET  /amm/status      reserves, settings in force, flags, room left,
  *                         the Foundation's addresses, the Nodus chain id
- * NOT BUILT (reported): the liquidity routes. Any other path is 404.
+ *   POST /amm/liquidity/quote  the add question (unsigned; the PATH IS THE
+ *                         BUILD'S CHOICE, plan 6.4.7 defers it): {"side":
+ *                         "usdt"|"nodus","amount":"<raw>"} -- the amount of ONE
+ *                         side; answer {"approved":true,"usdtAmount":"..",
+ *                         "nodusAmount":"..","requestNumber":"<u32>",
+ *                         "validUntil":"<unix s>","payEthereum":"0x..",
+ *                         "payNodus":".."} (the exact pair at the pool's
+ *                         ratio, where to pay each side) or {"approved":false,
+ *                         "reason":"<word>"}; below liquidity_min_nodus:
+ *                         "below_minimum"
+ *   POST /amm/liquidity/add    the paying extension's two signed halves (plan
+ *                         6.4.7). THE BODY IS FLAT, the build's reading of the
+ *                         plan's two nested objects (the strict parser takes
+ *                         one flat object of string values): "ethereumAddress"
+ *                         "nodusAddress" "usdtAmount" "nodusAmount"
+ *                         "requestNumber" "ethSignature" (the Ethereum half)
+ *                         and "text" "publicKey" "nodusSignature" (the Nodus
+ *                         half); same field forms as POST /amm/swap. Answer as
+ *                         POST /amm/swap: {"received":true,...} / a refusal.
+ * NOT BUILT (reported): liquidity withdraw. Any other path is 404.
  *
  * REFUSAL WORDS (the build's, plan 6.4.5 / 6.4.7 leave them to it; the site
  * only shows them):
@@ -47,8 +66,8 @@
  * Transfer-Encoding is refused), a connection cap, one deadline per request,
  * Connection: close on every answer, no query strings; an answer above
  * `http_max_response` is a 500 (never cut). JSON bodies: ONE flat object of
- * string values (no escape, printable ASCII), at most 8 keys, no duplicate
- * key, nothing before or after.
+ * string values (no escape, printable ASCII), at most AMM_HTTP_MAX_KEYS (12)
+ * keys, no duplicate key, nothing before or after.
  *
  * No TLS here: the bot opens no public port; the swap site's web server
  * forwards /amm/ to this loopback port (plan section 4).
@@ -69,7 +88,7 @@
 #define AMM_HTTP_MAX_HEADERS       32
 #define AMM_HTTP_MAX_PATH          160
 #define AMM_HTTP_CONN_HARD_MAX     64
-#define AMM_HTTP_MAX_KEYS          8
+#define AMM_HTTP_MAX_KEYS          12   /* the liquidity add body carries 9 */
 
 typedef struct {
     char        method[8];            /* "GET" | "POST"                      */
@@ -135,6 +154,14 @@ typedef struct {
     /** 0 found / 1 none / -1 */
     int (*get_swap)(void *ctx, uint32_t request_number, amm_swap_t *out);
     int (*status)(void *ctx, amm_engine_status_t *out);
+    /** the add question: returns an amm_aq_rc_t */
+    int (*add_question)(void *ctx, amm_side_t side, uint64_t amount, uint64_t deadline_ms,
+                        amm_add_answer_t *out);
+    /** verify both halves + accept; returns an amm_hs_t; `*req_out` = the
+     *  request number on AMM_HS_RECEIVED, `*open_req` on AMM_HS_OPEN */
+    int (*add_accept)(void *ctx, const amm_req_liq_eth_in_t *eth,
+                      const amm_req_nodus_in_t *nodus, uint32_t *req_out,
+                      uint32_t *open_req);
 } amm_http_backend_t;
 
 typedef struct {

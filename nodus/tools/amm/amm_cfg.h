@@ -27,6 +27,9 @@
  *   pool_start_nodus           no        3000000000000000   > 0 (givens 20)
  *   liquidity_wait_eth_blocks  no        300                >= 1 (givens 25)
  *   liquidity_wait_nodus_blocks no       3                  >= 1 (givens 49)
+ *   liquidity_min_nodus        no        10000000000000     > 0 (givens 96, plan s.15: the smallest NODUS
+ *                                                           side of a liquidity add, 100,000 NODUS =
+ *                                                           10^13 raw; refused below it at the add question)
  *   swaps_paused               no        0                  0 | 1 (plan s.16, "off")
  *   liquidity_paused           no        0                  0 | 1
  *   payouts_paused             no        0                  0 | 1
@@ -160,6 +163,7 @@ typedef struct {
     uint64_t pool_start_nodus;
     uint64_t liquidity_wait_eth_blocks;
     uint64_t liquidity_wait_nodus_blocks;
+    uint64_t liquidity_min_nodus;              /* default 10^13 raw (givens 96) */
     uint64_t eth_reorg_window_blocks;
     uint64_t approval_valid_seconds;           /* default 300 (givens 72)   */
     uint64_t eth_chain_id;                     /* default 1 (givens 77)     */

@@ -129,6 +129,11 @@ typedef struct {
     uint64_t start_height;             /* the bot's start height (>= 1)      */
     uint64_t liquidity_wait_blocks;    /* liquidity_wait_nodus_blocks (>= 1) */
     uint32_t page_limit;               /* history rows per page, 1..100      */
+    uint64_t inflight_max;             /* inflight_max_usdt (>= 1): the room a
+                                        * payment takes in the transaction that
+                                        * first records it (plan section 13,
+                                        * givens item 94)                    */
+    int      held_keeps_room;          /* the setting (0 | 1)                */
     uint32_t max_pages;                /* history pages per step (>= 1): the
                                         * history is read newest first down to
                                         * the resume height, so a backlog of
@@ -152,7 +157,9 @@ typedef struct {
     uint64_t tip;         /* the committed tip read (0 when unread)          */
     uint64_t through;     /* the stored cursor after the step                */
     int      rows;        /* payment rows judged this step                   */
-    int      counted;     /* rows counted by a swap                          */
+    int      counted;     /* rows counted by a swap (it holds room)          */
+    int      waiting;     /* rows taken by a swap that waits in line for
+                           * room, not yet counted (plan section 13)         */
     int      held;        /* rows stored held                                */
     int      skipped;     /* rows already recorded                           */
     int      ignored;     /* history rows that are not native spend_in       */

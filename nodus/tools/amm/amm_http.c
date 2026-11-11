@@ -443,6 +443,107 @@ static void route_swap(amm_http_ctx_t *c, const amm_http_req_t *req, int *status
     refusal(status, body, cap, 400, "received", "bad_request");
 }
 
+static const char *aq_word(int rc) {
+    switch (rc) {
+    case AMM_AQ_PAUSED:       return "paused";
+    case AMM_AQ_STOPPED:      return "stopped";
+    case AMM_AQ_BELOW_MIN:    return "below_minimum";
+    case AMM_AQ_BAD:          return "bad_request";
+    case AMM_AQ_UNAVAILABLE:  return "unavailable";
+    default:                  return "internal";
+    }
+}
+
+/* The add question (the path is the build's choice, amm_http.h). */
+static void route_add_quote(amm_http_ctx_t *c, const amm_http_req_t *req, uint64_t dl, int *status,
+                            char *body, size_t cap) {
+    amm_json_t js;
+    const char *sv, *av;
+    size_t sn, an;
+    uint64_t amount = 0;
+    if (!c->be.add_question || amm_json_parse(req->body, req->body_len, &js) != 0 || js.n != 2 ||
+        !amm_json_get(&js, "side", &sv, &sn) || !amm_json_get(&js, "amount", &av, &an) ||
+        dec_u64(av, an, &amount) != 0 || amount == 0) {
+        refusal(status, body, cap, 400, "approved", "bad_request");
+        return;
+    }
+    amm_side_t side;
+    if (sn == 4 && !memcmp(sv, "usdt", 4)) side = AMM_SIDE_USDT;
+    else if (sn == 5 && !memcmp(sv, "nodus", 5)) side = AMM_SIDE_NODUS;
+    else { refusal(status, body, cap, 400, "approved", "bad_request"); return; }
+
+    amm_add_answer_t a;
+    memset(&a, 0, sizeof(a));
+    int rc = c->be.add_question(c->be.ctx, side, amount, dl, &a);
+    if (rc != AMM_AQ_OK) {
+        refusal(status, body, cap, rc == AMM_AQ_ERR ? 500 : 200, "approved", aq_word(rc));
+        return;
+    }
+    jb_t j = { body, cap, 0, 0 };
+    if (cap) body[0] = '\0';
+    jraw(&j, "{");
+    jkey(&j, "approved", 1); jraw(&j, "true");
+    jkey(&j, "usdtAmount", 0); jnum_str(&j, a.usdt_amount);
+    jkey(&j, "nodusAmount", 0); jnum_str(&j, a.nodus_amount);
+    jkey(&j, "requestNumber", 0); jnum_str(&j, a.request_number);
+    jkey(&j, "validUntil", 0); jnum_str(&j, a.valid_until);
+    jkey(&j, "payEthereum", 0); jstr_out(&j, a.pay_eth);
+    jkey(&j, "payNodus", 0); jstr_out(&j, a.pay_nodus);
+    jraw(&j, "}");
+    finish(&j, status, 200, body, cap);
+}
+
+/* The two signed halves of a liquidity add (flat body, amm_http.h). */
+static void route_add(amm_http_ctx_t *c, const amm_http_req_t *req, int *status, char *body,
+                      size_t cap) {
+    amm_json_t js;
+    const char *ev, *nv, *uv, *mv, *rv, *gv, *tv, *pv, *sv;
+    size_t en, nn, un, mn, rn, gn, tn, pn, sn;
+    if (!c->be.add_accept || amm_json_parse(req->body, req->body_len, &js) != 0 || js.n != 9 ||
+        !amm_json_get(&js, "ethereumAddress", &ev, &en) ||
+        !amm_json_get(&js, "nodusAddress", &nv, &nn) ||
+        !amm_json_get(&js, "usdtAmount", &uv, &un) ||
+        !amm_json_get(&js, "nodusAmount", &mv, &mn) ||
+        !amm_json_get(&js, "requestNumber", &rv, &rn) ||
+        !amm_json_get(&js, "ethSignature", &gv, &gn) ||
+        !amm_json_get(&js, "text", &tv, &tn) ||
+        !amm_json_get(&js, "publicKey", &pv, &pn) ||
+        !amm_json_get(&js, "nodusSignature", &sv, &sn) ||
+        en != 42 || nn != 128 || un > 20 || mn > 20 || rn > 20 ||
+        tn < 2 || tn % 2 != 0 || (tn - 2) / 2 > AMM_REQ_TEXT_MAX) {
+        refusal(status, body, cap, 400, "received", "bad_request");
+        return;
+    }
+    char eth[43], nod[129], usd[21], nds[21], rno[21];
+    memcpy(eth, ev, en); eth[en] = '\0';
+    memcpy(nod, nv, nn); nod[nn] = '\0';
+    memcpy(usd, uv, un); usd[un] = '\0';
+    memcpy(nds, mv, mn); nds[mn] = '\0';
+    memcpy(rno, rv, rn); rno[rn] = '\0';
+    amm_req_liq_eth_in_t ei;
+    memset(&ei, 0, sizeof(ei));
+    ei.ethereum_address = eth; ei.nodus_address = nod; ei.usdt_amount = usd;
+    ei.nodus_amount = nds; ei.request_number = rno;
+    const size_t text_len = (tn - 2) / 2;
+    uint8_t text[AMM_REQ_TEXT_MAX];
+    nodus_pubkey_t *pk = calloc(1, sizeof(*pk));
+    nodus_sig_t *sg = calloc(1, sizeof(*sg));
+    if (!pk || !sg) { free(pk); free(sg); refusal(status, body, cap, 500, "received", "internal"); return; }
+    if (amm_http_hex0x(gv, gn, ei.signature, 65) != 0 ||
+        amm_http_hex0x(tv, tn, text, text_len) != 0 ||
+        amm_http_hex0x(pv, pn, pk->bytes, NODUS_PK_BYTES) != 0 ||
+        amm_http_hex0x(sv, sn, sg->bytes, NODUS_SIG_BYTES) != 0) {
+        free(pk); free(sg);
+        refusal(status, body, cap, 400, "received", "bad_request");
+        return;
+    }
+    amm_req_nodus_in_t ni = { text, text_len, pk, sg };
+    uint32_t req_no = 0, open_req = 0;
+    int rc = c->be.add_accept(c->be.ctx, &ei, &ni, &req_no, &open_req);
+    free(pk); free(sg);
+    swap_answer(rc, req_no, open_req, status, body, cap);
+}
+
 static void route_get_swap(amm_http_ctx_t *c, const char *num, int *status, char *body, size_t cap) {
     uint64_t n = 0;
     if (dec_u64(num, strlen(num), &n) != 0 || n == 0 || n > UINT32_MAX) {
@@ -463,6 +564,21 @@ static void route_get_swap(amm_http_ctx_t *c, const char *num, int *status, char
     jkey(&j, "number", 0); jnum_str(&j, s.quote_out);
     jkey(&j, "estimatedFee", 0); jnum_str(&j, s.est_fee);
     jkey(&j, "validUntil", 0); jnum_str(&j, s.expiry);
+    /* plan 6.4.7: a payment waiting for room shows that it waits (givens item
+     * 94); once the swap is decided, the output computed then, the network fee
+     * deducted and the amount paid (givens items 93, 95) and, for a refund, its
+     * reason */
+    const int waiting = !strcmp(s.state, AMM_S_PAID_WAITING) && !s.room;
+    jkey(&j, "waitingForRoom", 0); jraw(&j, waiting ? "true" : "false");
+    if (!strcmp(s.state, AMM_S_PAYOUT_PENDING) || !strcmp(s.state, AMM_S_PAID)) {
+        jkey(&j, "output", 0); jnum_str(&j, s.out_amount);
+        jkey(&j, "networkFee", 0); jnum_str(&j, s.out_fee);
+        jkey(&j, "paid", 0); jnum_str(&j, s.out_paid);
+    }
+    if (!strcmp(s.state, AMM_S_REFUND_PENDING) || !strcmp(s.state, AMM_S_REFUNDED) ||
+        !strcmp(s.state, AMM_S_DROPPED)) {
+        jkey(&j, "reason", 0); jstr_out(&j, s.message);
+    }
     jraw(&j, "}");
     finish(&j, status, 200, body, cap);
 }
@@ -530,6 +646,12 @@ void amm_http_route(amm_http_ctx_t *c, const amm_http_req_t *req, uint64_t deadl
     } else if (!strcmp(req->path, "/amm/swap")) {
         if (get) { refusal(status, body, cap, 405, "received", "bad_request"); return; }
         route_swap(c, req, status, body, cap);
+    } else if (!strcmp(req->path, "/amm/liquidity/quote")) {
+        if (get) { refusal(status, body, cap, 405, "approved", "bad_request"); return; }
+        route_add_quote(c, req, deadline_ms, status, body, cap);
+    } else if (!strcmp(req->path, "/amm/liquidity/add")) {
+        if (get) { refusal(status, body, cap, 405, "received", "bad_request"); return; }
+        route_add(c, req, status, body, cap);
     } else if (!strncmp(req->path, "/amm/swap/", 10)) {
         if (!get) { refusal(status, body, cap, 405, "found", "bad_request"); return; }
         route_get_swap(c, req->path + 10, status, body, cap);
