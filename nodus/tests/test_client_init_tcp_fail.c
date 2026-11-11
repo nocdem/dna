@@ -103,7 +103,23 @@ int main(void) {
     CHECK(hrc == -1, "F2 channel init returns -1 when the transport cannot open");
     CHECK(secrets_wiped(&ch->identity), "F2 channel identity wiped after the failed init");
 
-    /* F3 control */
+    /* F1t: local tool mode returns before the session module is created, so
+     * the nodus_tcp_init check is the only thing that can refuse. */
+    nodus_client_config_t tcfg;
+    memset(&tcfg, 0, sizeof(tcfg));
+    tcfg.local_tool_sock = "/nonexistent/nodus-tool.sock";
+    memset(c, 0, sizeof(*c));
+    g_fail_epoll = 1;
+    crc = nodus_client_init(c, &tcfg, id);
+    g_fail_epoll = 0;
+    CHECK(crc == -1, "F1t tool-mode client init returns -1 when the transport cannot open");
+    CHECK(secrets_wiped(&c->identity), "F1t tool-mode client identity wiped after the failed init");
+
+    /* F3 control (normal mode and tool mode) */
+    memset(c, 0, sizeof(*c));
+    crc = nodus_client_init(c, &tcfg, id);
+    CHECK(crc == 0, "F3 control: tool-mode init succeeds with epoll available");
+    if (crc == 0) nodus_client_close(c);
     memset(c, 0, sizeof(*c));
     memset(ch, 0, sizeof(*ch));
     crc = nodus_client_init(c, &cfg, id);
