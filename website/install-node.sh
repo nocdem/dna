@@ -95,8 +95,11 @@ die()  { printf '%s: %s\n' "$PROG" "$*" >&2; exit 1; }
 # with no such rule the chain policy decides. A rule can match only with
 # "tcp" (or no protocol) and a dport that includes 4004 (or none). Rules the
 # parser cannot evaluate are skipped: a jump or goto, a named set, a negated
-# match (! or !=), and any interface, address, connection-state or other
-# condition (so a loopback-only accept never counts). A rule that reaches
+# match (! or !=), and any interface, address or other condition (so a
+# loopback-only accept never counts). A connection-state condition that
+# includes "new" (ct state new, --ctstate NEW) matches a new connection and is
+# evaluated; one without "new" (established,related) is skipped. Quoted text
+# (comments) is blanked before any match. A rule that reaches
 # 4004 in a way that is skipped is not followed, so the warning says "does not
 # appear to allow".
 FW_PORT_AWK='
@@ -118,7 +121,7 @@ function covers(s, p,   i, c, tok, n, a, lo, hi, k, toks) {
     return 0
 }
 # One nft rule line -> "accept", "block" or "" (does not decide / not evaluable).
-function nft_rule(line, p,   n, t, i, tk, proto, hasport, port, verdict) {
+function nft_rule(line, p,   n, t, i, tk, proto, hasport, port, verdict, st) {
     gsub(/"[^"]*"/, "\"\"", line)
     sub(/^[ \t]+/, "", line)
     n = split(line, t, /[ \t]+/)
@@ -129,6 +132,16 @@ function nft_rule(line, p,   n, t, i, tk, proto, hasport, port, verdict) {
         if (tk == "tcp") { proto = "tcp"; continue }
         if (tk == "meta" || tk == "l4proto" || tk == "ip" || tk == "protocol" || tk == "log" || tk == "prefix" || tk == "\"\"") continue
         if (tk == "counter") { if (t[i+1] == "packets") i += 4; continue }
+        if (tk == "ct" && t[i+1] == "state") {
+            # a state set matches a new connection only if it includes "new"
+            i += 2
+            if (t[i] ~ /^!/) return ""
+            st = t[i]
+            if (t[i] ~ /^\{/) { while (t[i] !~ /\}/ && i < n) { i++; st = st " " t[i] } }
+            gsub(/[{},]/, " ", st)
+            if (" " st " " !~ / new /) return ""
+            continue
+        }
         if (tk == "dport") {
             hasport = 1
             i++
@@ -155,8 +168,13 @@ function ipt_rule(line, p,   n, t, i, tk, proto, hasport, port, verdict) {
         tk = t[i]
         if (tk == "") continue
         if (tk == "-p") { proto = t[++i]; continue }
-        if (tk == "-m") { i++; if (t[i] == "tcp" || t[i] == "multiport" || t[i] == "comment") continue; return "" }
+        if (tk == "-m") { i++; if (t[i] == "tcp" || t[i] == "multiport" || t[i] == "comment" || t[i] == "conntrack" || t[i] == "state") continue; return "" }
         if (tk == "--comment") { i++; continue }
+        if (tk == "--ctstate" || tk == "--state") {
+            # a state list matches a new connection only if it includes NEW
+            if ("," t[++i] "," !~ /,NEW,/) return ""
+            continue
+        }
         if (tk == "--dport" || tk == "--dports") { hasport = 1; port = t[++i]; continue }
         if (tk == "--reject-with") { i++; continue }
         if (tk == "-j") { verdict = t[++i]; continue }
@@ -174,6 +192,7 @@ fw_blockers() {
         rules=$(nft list ruleset 2>/dev/null || true)
         if [ -n "$rules" ]; then
             printf '%s\n' "$rules" | awk -v p=4004 "$FW_PORT_AWK"'
+                { gsub(/"[^"]*"/, "\"\"") }
                 /^[ \t]*table / { tbl = $2 " " $3 }
                 /^[ \t]*chain / { inch = 1; hook = 0; drop = 0; dec = ""; name = $2; next }
                 inch && /hook input/ { hook = 1; if ($0 ~ /policy drop/) drop = 1; next }
@@ -189,6 +208,7 @@ fw_blockers() {
         rules=$(iptables -S INPUT 2>/dev/null || true)
         if [ -n "$rules" ]; then
             printf '%s\n' "$rules" | awk -v p=4004 "$FW_PORT_AWK"'
+                { gsub(/"[^"]*"/, "\"\"") }
                 /^-P INPUT / { pol = $3 }
                 /^-A INPUT / && dec == "" { dec = ipt_rule($0, p) }
                 END { if (dec == "block" || (dec == "" && pol == "DROP")) print "iptables (INPUT: incoming TCP " p " is dropped by a rule or by the policy)" }' || true
