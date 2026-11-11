@@ -305,10 +305,11 @@ int nodus_identity_generate(nodus_identity_t *id_out) {
 
 /* N-01: the three secret-key files (nodus.sk, nodus.kyber_sk,
  * nodus.mlkem_sk) go through identity_write_file_atomic() with mode 0600
- * (never readable by group/other, not even while being written). The public
- * files (nodus.pk, nodus.fp, nodus.kyber_pk, nodus.mlkem_pk) are still
- * written with fopen(path, "wb") (truncate-then-write, non-atomic, umask
- * permissions) — unchanged. The nodus_identity_load() auto-generate path
+ * (on POSIX never readable by group/other, not even while being written;
+ * the Windows fallback in that helper ignores the mode). The public files
+ * (nodus.pk, nodus.kyber_pk, nodus.mlkem_pk with fopen "wb", nodus.fp with
+ * fopen "w") are still truncate-then-write, non-atomic, umask
+ * permissions — unchanged. The nodus_identity_load() auto-generate path
  * uses identity_write_file_atomic() directly for the ML-KEM files. */
 int nodus_identity_save(const nodus_identity_t *id, const char *path) {
     if (!id || !path)
