@@ -163,12 +163,12 @@ export function ethConfirmations(usdtRaw) {
 
 // Ethereum blocks the bot waits after a USDT payout before it marks the swap "paid": payout_final_depth_eth (the bot's
 // setting, amm_cfg.c:50, meaning amm_cfg.h:73, enforced in amm_eth_pay.c:217: the Ethereum tip at least this many blocks
-// above the payout receipt's block). The live value is 64 (the bot's /etc/nodus-amm.conf, read 2026-11-11T22:06Z);
+// above the payout receipt's block). The live value is 3 (the bot's /etc/nodus-amm.conf `payout_final_depth_eth = 3`, set from 64 to 3 on the operator's word at 2026-11-11T23:47Z);
 // /amm/status does not carry it, so it is a constant here, like the confirmation tiers above. At Sepolia's 12 s per
-// block 64 blocks are about 13 minutes. A NODUS payout has no such wait: the bot marks it paid when its transaction is
+// block 3 blocks are about 36 seconds. A NODUS payout has no such wait: the bot marks it paid when its transaction is
 // confirmed in a Nodus block (amm_nodus_pay.c finish_confirmed), so no number is shown for it.
-export const PAYOUT_FINAL_DEPTH_ETH = 64;
-export const PAYOUT_FINAL_MINUTES_ETH = 13;
+export const PAYOUT_FINAL_DEPTH_ETH = 3;
+export const PAYOUT_FINAL_SECONDS_ETH = 36;
 
 // The "Your payment is counted after" value for the typed amount (text) and the direction. NODUS -> USDT: a
 // committed Nodus block needs no extra depth (amm_nodus_watch.c). "—" for an empty or unusable amount.
@@ -452,7 +452,7 @@ function payoutPendingText(answer) {
     const amount = typeof answer.paid === 'string' && /^[0-9]+$/.test(answer.paid)
       ? ` of ${displayAmount(BigInt(answer.paid), USDT_DECIMALS)} USDT` : '';
     return `Your payout${amount} is sent or being sent. The bot marks the swap finished after ${PAYOUT_FINAL_DEPTH_ETH} Ethereum blocks, ` +
-      `about ${PAYOUT_FINAL_MINUTES_ETH} minutes; the USDT can reach your wallet before that.`;
+      `about ${PAYOUT_FINAL_SECONDS_ETH} seconds; the USDT can reach your wallet before that.`;
   }
   if (answer?.direction === 'usdt_to_nodus') {
     return 'The bot is sending your NODUS payout. It marks the swap finished when that payment is confirmed in a Nodus block.';

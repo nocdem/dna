@@ -866,17 +866,35 @@ test('stepText: numbered where the site sees the boundary, honest where it does 
 });
 
 // PROVES (operator 2026-11-12, "Sending you payment'ta kaldi"): the follow lasts longer than the bot's USDT payout
-// finality wait (payout_final_depth_eth = 64 Ethereum blocks x 12 s = 768 s, read from the bot's config, not from
+// finality wait (payout_final_depth_eth = 3 Ethereum blocks x 12 s = 36 s, read from the bot's config on 2026-11-11T23:47Z, not from
 // /amm/status), with margin: at least 20 minutes at an unchanged 5 s interval, and a follow that reaches the limit
 // still reports exhausted (so "Check again" is offered).
-// FALSE PASS: the 64 and the 12 s are copied constants; a bot configured with a deeper wait passes this test and
+// FALSE PASS: the 3 and the 12 s are copied constants; a bot configured with a deeper wait passes this test and
 // still outlasts the follow. The stub clock does not sleep, so no real time is measured.
-test('the follow outlasts the 64-block payout wait with margin and still ends as exhausted', async () => {
+test('the follow outlasts the 3-block payout wait with margin and still ends as exhausted', async () => {
   assert.equal(POLL_INTERVAL_MS, 5000);
   assert.ok(POLL_MAX * POLL_INTERVAL_MS >= 20 * 60 * 1000);
-  assert.ok(POLL_MAX * POLL_INTERVAL_MS > 64 * 12 * 1000);
+  assert.ok(POLL_MAX * POLL_INTERVAL_MS > 3 * 12 * 1000);
   const { flow } = makeFlow({ routes: { 'GET /amm/swap/*': [200, { requestNumber: '1', state: 'payout_pending' }] } });
   const r = await flow.follow('1');
   assert.equal(r.exhausted, true);
   assert.equal(r.poll, POLL_MAX);
+});
+
+// PROVES (operator 2026-11-12; givens item 82 question 2 option c, "Kullanici sitede yuzdeyi kendisi secer."): the
+//   tolerance field carries no number as placeholder (a grey "0.5" looked like a value already set while the approve
+//   button was disabled), the page has a visible hint at the field and one at the approve button, and swap.js shows
+//   both only while percentToBps finds no usable value. The chips still carry 0.5, 1 and 3.
+// FALSE PASS: textual only (swap.js needs a DOM and is not run); it does not show the hint on screen.
+test('the empty tolerance field shows no number and names what to do; the approve button explains itself', () => {
+  const dir = new URL('../', import.meta.url);
+  const html = readFileSync(new URL('index.html', dir), 'utf8');
+  const tol = html.match(/<input id="tol"[^>]*>/)[0];
+  const placeholder = tol.match(/placeholder="([^"]*)"/)[1];
+  assert.doesNotMatch(placeholder, /\d/);
+  assert.match(html, /id="tol-hint"[^>]*>[^<]*choose|id="tol-hint"[^>]*>[^<]*Not chosen/i);
+  assert.match(html, /id="approve-hint"[^>]*>[^<]*disabled until you choose a tolerance/);
+  assert.deepEqual([...html.matchAll(/class="chip"[^>]*data-pct="([^"]+)"/g)].map(m => m[1]), ['0.5', '1', '3']);
+  const js = readFileSync(new URL('swap.js', dir), 'utf8');
+  assert.match(js, /const chosen = percentToBps\(\$\('tol'\)\.value\)\.ok;\s*\$\('tol-hint'\)\.hidden = chosen;\s*\$\('approve-hint'\)\.hidden = chosen \|\| \$\('approve-btn'\)\.hidden;/);
 });

@@ -50,6 +50,7 @@ function resetQuote() {
   for (const id of ['d-fee', 'd-min', 'd-request', 'd-valid', 'd-movement']) $(id).textContent = '—';
   $('move-hint').hidden = true;
   $('approve-btn').hidden = true; $('ask-btn').hidden = false;
+  renderToleranceHint();
 }
 function resetAddQuote() {
   flow.clearQuote('add');
@@ -71,7 +72,16 @@ function setBusy(on) {
   if (!on) { $('ask-btn').disabled = !connected(); $('liq-ask').disabled = !connected(); }
 }
 
+// While no usable tolerance is typed or chosen the field says so, and so does the approve button's note (the button is
+// disabled in that state). Presentation only: the tolerance is still read by percentToBps and sent as before.
+function renderToleranceHint() {
+  const chosen = percentToBps($('tol').value).ok;
+  $('tol-hint').hidden = chosen;
+  $('approve-hint').hidden = chosen || $('approve-btn').hidden;
+}
+
 function renderMinimum() {
+  renderToleranceHint();
   const q = flow.state.quote;
   if (!q) return;
   const t = percentToBps($('tol').value);
@@ -321,5 +331,5 @@ function renderWithdrawButton() {
   $('wd-btn').textContent = flow.pendingWithdrawNumber() ? 'Resend the same signed withdrawal' : 'Sign and send the withdrawal';
 }
 
-renderTokens(); renderWait();
+renderTokens(); renderWait(); renderToleranceHint();
 loadStatus(); // step 1: the price is read as soon as the page opens, connected or not

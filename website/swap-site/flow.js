@@ -17,8 +17,8 @@ import {
 } from './swap-logic.js';
 
 // Bounded polling of GET /amm/swap/<id> (plan section 7 step 8). These are this build's values, not plan values:
-// 240 reads, 5 s apart = 20 minutes (the bot's USDT payout is final only after payout_final_depth_eth = 64 Ethereum
-// blocks, about 13 minutes at 12 s per block; the setting is the bot's, /amm/status does not carry it); after that the site says the swap is still pending and offers a new check.
+// 240 reads, 5 s apart = 20 minutes (the bot's USDT payout is final only after payout_final_depth_eth = 3 Ethereum
+// blocks, about 36 seconds at 12 s per block; the setting is the bot's, /amm/status does not carry it); after that the site says the swap is still pending and offers a new check.
 export const POLL_MAX = 240;
 export const POLL_INTERVAL_MS = 5000;
 
