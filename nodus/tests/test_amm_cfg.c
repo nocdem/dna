@@ -40,6 +40,14 @@
  *       commission with 0, 0 written accepted, 1 / 25 / -1 and a repeated
  *       key refused (givens 73; shape DEFERRED, plan sections 12 and 15);
  *       0 for approval_valid_seconds and eth_chain_id refused.
+ *       Also in C6: eth_max_response (the bound of one Ethereum provider
+ *       answer; a proposal of this build, no decision names a value): absent
+ *       gives 4194304, 1024 and 16777216 accepted, 1023 and 16777217 refused,
+ *       a repeat refused (the duplicate check is table-driven, one case), and
+ *       http_max_response is not touched. These pin the load bounds only; that
+ *       amm_main.c hands the value to the providers is not tested (it needs a
+ *       live node), and the test would pass if amm_main.c still used another
+ *       field.
  *   C7  (revision 10) swap_min_usdt default 1,000,000 raw (givens 89), 0 and a
  *       value above swap_max_usdt refused; the three ETH price keys
  *       (eth_price_sources names, eth_price_min_sources 3, eth_price_max_age_
@@ -426,6 +434,22 @@ static void c6_operator_settings(void) {
     expect_refused("commission = 25\n", NULL, "commission 25");
     expect_refused("commission = -1\n", NULL, "commission negative");
     expect_refused("commission = 0\ncommission = 0\n", NULL, "commission repeated");
+
+    /* eth_max_response: the bound of one Ethereum provider answer; the load
+     * bounds are the provider client's own limits (1024 .. 16 MiB). The
+     * duplicate check is generic (table-driven), so one case covers it. */
+    CHECK(parses(NULL, NULL, &c) == 0 && c.eth_max_response == 4194304,
+          "eth_max_response absent: 4194304");
+    CHECK(parses(NULL, "eth_max_response = 1024\n", &c) == 0 && c.eth_max_response == 1024,
+          "eth_max_response 1024 (lower edge) accepted");
+    CHECK(parses(NULL, "eth_max_response = 16777216\n", &c) == 0 &&
+          c.eth_max_response == 16777216, "eth_max_response 16777216 (upper edge) accepted");
+    expect_refused("eth_max_response = 1023\n", NULL, "eth_max_response 1023");
+    expect_refused("eth_max_response = 16777217\n", NULL, "eth_max_response 16777217");
+    expect_refused("eth_max_response = 4096\neth_max_response = 4096\n", NULL,
+                   "eth_max_response repeated");
+    CHECK(parses(NULL, "eth_max_response = 4096\n", &c) == 0 && c.http_max_response == 65536,
+          "eth_max_response leaves http_max_response alone");
 }
 
 static void c7_price_and_min(void) {
