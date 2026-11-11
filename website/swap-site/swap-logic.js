@@ -161,6 +161,15 @@ export function ethConfirmations(usdtRaw) {
   return v <= 100000000n ? 3n : v <= 1000000000n ? 5n : 33n;
 }
 
+// Ethereum blocks the bot waits after a USDT payout before it marks the swap "paid": payout_final_depth_eth (the bot's
+// setting, amm_cfg.c:50, meaning amm_cfg.h:73, enforced in amm_eth_pay.c:217: the Ethereum tip at least this many blocks
+// above the payout receipt's block). The live value is 64 (the bot's /etc/nodus-amm.conf, read 2026-11-11T22:06Z);
+// /amm/status does not carry it, so it is a constant here, like the confirmation tiers above. At Sepolia's 12 s per
+// block 64 blocks are about 13 minutes. A NODUS payout has no such wait: the bot marks it paid when its transaction is
+// confirmed in a Nodus block (amm_nodus_pay.c finish_confirmed), so no number is shown for it.
+export const PAYOUT_FINAL_DEPTH_ETH = 64;
+export const PAYOUT_FINAL_MINUTES_ETH = 13;
+
 // The "Your payment is counted after" value for the typed amount (text) and the direction. NODUS -> USDT: a
 // committed Nodus block needs no extra depth (amm_nodus_watch.c). "—" for an empty or unusable amount.
 export function waitText(direction, amountText) {
@@ -435,12 +444,29 @@ const PENDING = {
   unknown: 'The bot is checking the state of this swap.',
 };
 
+// payout_pending, by the direction the answer names. NODUS -> USDT: the payout is USDT on Ethereum; the amount is the
+// answer's `paid` when it is a string of digits (USDT raw units). The answer says nothing about the transaction, so the
+// text does not claim it is mined. USDT -> NODUS: the payout is NODUS; no wait number (see PAYOUT_FINAL_DEPTH_ETH).
+function payoutPendingText(answer) {
+  if (answer?.direction === 'nodus_to_usdt') {
+    const amount = typeof answer.paid === 'string' && /^[0-9]+$/.test(answer.paid)
+      ? ` of ${displayAmount(BigInt(answer.paid), USDT_DECIMALS)} USDT` : '';
+    return `Your payout${amount} is sent or being sent. The bot marks the swap finished after ${PAYOUT_FINAL_DEPTH_ETH} Ethereum blocks, ` +
+      `about ${PAYOUT_FINAL_MINUTES_ETH} minutes; the USDT can reach your wallet before that.`;
+  }
+  if (answer?.direction === 'usdt_to_nodus') {
+    return 'The bot is sending your NODUS payout. It marks the swap finished when that payment is confirmed in a Nodus block.';
+  }
+  return PENDING.payout_pending;
+}
+
 // Final = the bot has decided and finished. Everything else is "pending": never "failed" for a non-final
 // state (plan section 7 step 8).
 export function describeSwapState(answer) {
   const state = typeof answer?.state === 'string' ? answer.state : '';
   if (FINAL[state]) return { final: true, kind: FINAL[state].kind, state, text: FINAL[state].text };
   let text = PENDING[state] ?? 'Pending.';
+  if (state === 'payout_pending') text = payoutPendingText(answer);
   if (state === 'paid_waiting_depth' && answer.waitingForRoom === true) {
     text = 'Payment seen. Waiting in line for room under the bot\'s in-flight limit.';
   }
