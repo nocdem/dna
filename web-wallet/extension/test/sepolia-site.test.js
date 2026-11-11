@@ -184,7 +184,11 @@ test('the connection screen refuses an incremental request that changes or adds 
   assert.doesNotThrow(() => connectDetails(permission));
   const edited = change => { const copy = structuredClone(permission); change(copy.requestData); return copy; };
   const cases = {
-    'changed Nodus caveat': edited(data => { data.permissions[NODUS_PERMISSION].caveats[0].value = { ...data.permissions[NODUS_PERMISSION].caveats[0].value, address: 'ef'.repeat(64) }; }),
+    'changed Nodus caveat': edited(data => {
+      // The request shares the unchanged permission object with diff.currentPermissions, so replace it by a new object.
+      const held = data.permissions[NODUS_PERMISSION], [caveat] = held.caveats;
+      data.permissions[NODUS_PERMISSION] = { ...held, caveats: [{ ...caveat, value: { ...caveat.value, address: 'ef'.repeat(64) } }] };
+    }),
     'extra permission the site does not hold': edited(data => { data.permissions.unexpected = {}; }),
     'extra permission listed as changed': edited(data => { data.diff.permissionDiffMap[NODUS_PERMISSION] = {}; }),
     'Nodus permission without a diff': edited(data => { delete data.diff; }),
