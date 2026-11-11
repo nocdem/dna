@@ -189,3 +189,33 @@ load `app.js?v=e9e8316bf2f0`. On EU-6 (`nodus-eu-6`): 19 files backed up to
 `/var/backups/nodus-site-20261110T181408Z-extfix/`, staged in `/var/tmp/nodus-site-20261110T181408Z-extfix/`,
 installed root:root 644 (app.js first). Server 19/19 and public 86/86 (robots.txt excluded) match the package;
 live Chromium 390/1440 × en/tr: no overflow, no errors.
+
+## Swap bot on 62.171.136.77 (amm-https.conf)
+
+`amm-https.conf` is the web server in front of the swap bot on the bot's machine (plan
+`docs/plans/2026-11-08-swap-bot-plan.nodus1.md` section 4.1). The page stays on EU-6 (`swap-https.conf`, whose
+`connect-src` is `'self' https:`); the browser and the extension call the bot directly at `https://62.171.136.77`.
+It proxies only `/amm/` to the bot at 127.0.0.1:4011, answers the browser's OPTIONS question itself, adds
+`Access-Control-Allow-Origin: https://swap.nodusnetwork.io` to every answer, and limits `/amm/quote` and
+`/amm/liquidity/quote` to one question every 2 seconds per address (429 with `{"approved":false,"reason":"busy"}`).
+It shares nginx with kayraninyeri.com: its other server blocks are not touched, but a broken file breaks both sites.
+
+Install (on 62.171.136.77, as root; the ACME client needs lego v5.6.0 installed outside Debian 12's archive):
+
+1. Back up `/etc/nginx`; read `nginx -T` for a name clash with the zone `amm_quote`; check the address is on the
+   machine (`ip -4 addr`); `mkdir -p /var/www/acme-amm /etc/lego-amm`.
+2. First the port-80 block alone, so the challenge can be answered before a certificate exists: install the file
+   without the 443 server block (or with the certificate lines commented out), then
+   `cp amm-https.conf /etc/nginx/sites-available/amm-62.171.136.77`,
+   `ln -s /etc/nginx/sites-available/amm-62.171.136.77 /etc/nginx/sites-enabled/`, `nginx -t && systemctl reload nginx`.
+3. First certificate against Let's Encrypt staging, then production (a certificate for an IP address is only issued
+   under the `shortlived` profile, about 6 days; http-01 on port 80; plan section 4.1):
+   `lego --path /etc/lego-amm --accept-tos --email <operator email> --server <staging directory URL> --domains 62.171.136.77 --profile shortlived --http --http.webroot /var/www/acme-amm run`
+   (drop `--server` for production). The files appear as `/etc/lego-amm/certificates/62.171.136.77.crt` and `.key`,
+   the names `amm-https.conf` uses.
+4. Install the complete file, then `nginx -t && systemctl reload nginx`. Check from outside: the certificate names the
+   IP address; `OPTIONS /amm/quote` answers 204 with the allow-origin header; two price questions inside 2 seconds
+   give 200 then 429 with the busy body; `https://62.171.136.77/` answers 404; kayraninyeri.com still answers 200.
+5. Renewal: a systemd timer runs `lego ... renew --deploy-hook "nginx -t && systemctl reload nginx"` (same flags
+   as step 3, with `--path /etc/lego-amm`); lego has no scheduler of its own. The hook is the shape of the swap site's
+   certificate. A failed renewal makes the bot unreachable for browsers within days: check the expiry after each deploy.

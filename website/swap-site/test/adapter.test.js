@@ -5,7 +5,7 @@
 //
 // PROVES:
 //   - each call goes out as provider.request({ method, params: [object] }) with exactly the extension's keys, raw
-//     amounts and the request number as decimal strings (no BigInt), botUrl the site origin without a path;
+//     amounts and the request number as decimal strings (no BigInt), botUrl the bot's origin (https://62.171.136.77) without a path;
 //   - the order: (Ethereum calls) wallet_switchEthereumChain first; (NODUS -> USDT, liquidity add) the hold first, then
 //     the sending call with the text built from the transferId and chainId the hold returned and the holdId;
 //   - a request that did not reach the bot (error.data { delivered: false, paid: false }) is passed on as such, the
@@ -20,13 +20,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createAdapter, AdapterError, EXTENSION_CALLS } from '../adapter.js';
+import { BOT_ORIGIN } from '../bot.js';
 
 const ETH = `0x${'4b'.repeat(20)}`;
 const NODUS_ADDR = 'ab'.repeat(64);
 const TRANSFER = '0d'.repeat(64);
 const CHAIN = '5c'.repeat(32);
 const TOKEN = `0x${'a7'.repeat(20)}`;
-const BOT = 'https://swap.nodusnetwork.io';
+const BOT = BOT_ORIGIN;   // the bot's own origin (https://62.171.136.77), not the page's: the extension posts there
 const HOLD = { holdId: 'hold-1', transferId: TRANSFER, chainId: CHAIN, expiryHeight: 12345 };
 
 function stubProvider(answers = {}) {
@@ -79,6 +80,27 @@ test('USDT -> NODUS: switch to the bot\'s chain, then one call with exactly the 
   });
   assert.deepEqual(Object.keys(params[0]).sort(), ['amount', 'botUrl', 'destination', 'from', 'minimumToReceive', 'payTo', 'requestNumber', 'token']);
   assert.doesNotMatch(params[0].botUrl, /\/amm/);
+});
+
+// PROVES: the botUrl each of the three extension calls carries is exactly https://62.171.136.77, an origin with no path
+//   (what `new URL(...).origin` returns for it), and not the page's own origin.
+// FALSE PASS: the input's botUrl is what the test passes in (BOT_ORIGIN); that swap.js hands the flow BOT_ORIGIN is
+//   checked textually in flow.test.js, and the extension's own acceptance of an IP origin is not run here.
+test('every extension call carries botUrl https://62.171.136.77 as a pure origin, never the page origin', async () => {
+  assert.equal(BOT, 'https://62.171.136.77');
+  assert.equal(new URL(BOT).origin, BOT);
+  const sent = [];
+  const provider = { request: async ({ method, params }) => { sent.push({ method, params }); return method === 'nodus_swapHoldTransfer' ? HOLD : { ok: true }; } };
+  const adapter = createAdapter({ getProvider: async () => provider });
+  await adapter.usdtToNodus(USDT_INPUT);
+  await adapter.nodusToUsdt(NODUS_INPUT);
+  await adapter.liquidityAdd(ADD_INPUT);
+  const withBot = sent.filter(s => s.params[0] && 'botUrl' in s.params[0]);
+  assert.equal(withBot.length, 3);
+  for (const s of withBot) {
+    assert.equal(s.params[0].botUrl, 'https://62.171.136.77');
+    assert.notEqual(s.params[0].botUrl, 'https://swap.nodusnetwork.io');
+  }
 });
 
 test('NODUS -> USDT: hold first; the text carries the hold\'s ids; the send call gets the holdId, botUrl and text', async () => {

@@ -87,7 +87,7 @@ export function describeAdapterError(err, ctx = {}) {
 
 export function createSwapFlow({
   bot, adapter, signText,
-  botUrl,     // the site's own origin, https, no path: the extension appends /amm/swap itself (givens item 97)
+  botUrl,     // the bot's own origin (BOT_ORIGIN, bot.js), https, no path: the extension appends /amm/swap itself (givens item 97)
   usdtToken,  // the USDT contract address, when /amm/status does not carry it (it does not today)
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
   pollMax = POLL_MAX, pollIntervalMs = POLL_INTERVAL_MS,

@@ -12,7 +12,7 @@
 //   web-wallet/extension/src/background/nodus.js:529-540  holdTransfer parameters
 // Each call is provider.request({ method, params: [object] }). The objects carry exactly the listed keys.
 //
-// botUrl is the site's own origin, an https address WITHOUT a path (the extension appends /amm/swap and
+// botUrl is the bot's own origin (BOT_ORIGIN in bot.js, not the page's origin), an https address WITHOUT a path (the extension appends /amm/swap and
 // /amm/liquidity/add itself; givens item 97, "Adresi site her istekte söylesin.").
 export const EXTENSION_CALLS = {
   // USDT -> NODUS: signs the typed request, posts it, then pays `amount` USDT of `token` to `payTo`.

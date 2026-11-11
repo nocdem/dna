@@ -356,8 +356,8 @@ export function refusalText(reason, context, minNodusRaw = LIQUIDITY_MIN_NODUS_R
   return REFUSALS[reason] ?? `The bot refused: ${String(reason)}.`;
 }
 
-// The bot address given to the extension: this page's origin (scheme, host, port), no path, query or fragment; the
-// extension appends /amm/swap itself (givens item 97).
+// The origin (scheme, host, port) of an address, no path, query or fragment. The page no longer uses it for the bot
+// address (that is BOT_ORIGIN in bot.js, not the page's own origin); kept as a tested helper.
 export const originOf = href => new URL(href).origin;
 
 // The unit of what the bot gives (the output) for a swap direction: NODUS for USDT -> NODUS, USDT for NODUS -> USDT.

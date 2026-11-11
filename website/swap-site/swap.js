@@ -1,12 +1,12 @@
 // swap.nodusnetwork.io: DOM wiring only. The logic is in swap-logic.js, the bot client in bot.js, the order of the
 // steps in flow.js, the extension's existing methods in extension.js and its new methods in adapter.js.
 // Every string that comes from the bot is written with textContent. No inline script or style (CSP, deploy/swap-https.conf).
-import { createBotClient } from './bot.js';
+import { createBotClient, BOT_ORIGIN } from './bot.js';
 import { createExtension } from './extension.js';
 import { createAdapter } from './adapter.js';
 import { createSwapFlow } from './flow.js';
 import {
-  USDT_DECIMALS, NODUS_DECIMALS, outputUnit, displayAmount, percentToBps, priceFromReserves, refusalText, nodusWithCommas, originOf, STILL_PENDING_TEXT,
+  USDT_DECIMALS, NODUS_DECIMALS, outputUnit, displayAmount, percentToBps, priceFromReserves, refusalText, nodusWithCommas, STILL_PENDING_TEXT,
 } from './swap-logic.js';
 
 const $ = id => document.getElementById(id);
@@ -14,10 +14,11 @@ const short = v => (v.length > 14 ? `${v.slice(0, 6)}…${v.slice(-4)}` : v);
 const EXT_PAGE = 'https://nodusnetwork.io/extension.html';
 
 const extension = createExtension();
-// The bot address given to the extension: the site's own origin, no path; the extension appends /amm/swap itself
-// (givens item 97; the extension's botOrigin accepts an https origin only).
-const botUrl = originOf(location.href);
-const bot = createBotClient({ fetch: (...a) => fetch(...a), base: '/amm' });
+// The bot address given to the extension is the bot's own https origin, no path (BOT_ORIGIN, bot.js); the extension
+// appends /amm/swap itself (givens item 97; the extension's botOrigin accepts an https origin only). The page's own
+// calls go to the same origin (the client's default base), so the two cannot differ. Never the page's own origin.
+const botUrl = BOT_ORIGIN;
+const bot = createBotClient({ fetch: (...a) => fetch(...a) });
 const adapter = createAdapter({ getProvider: () => extension.provider() });
 const flow = createSwapFlow({
   bot, adapter, botUrl,
