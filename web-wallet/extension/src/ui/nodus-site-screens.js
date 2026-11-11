@@ -10,14 +10,16 @@ function detail(document, container, title, value) {
 
 // MetaMask v13.54.0 personal-sign.tsx:139-164 under
 // ui/pages/confirmations/components/confirm/info/personal-sign: origin,
-// signing account and full message. All page-controlled strings use textContent.
+// signing account and the message text (no separate bytes row). All page-controlled strings use textContent.
 export function renderNodusSiteApproval(document, container, pending, { approve, reject }) {
   const heading = pageHeading(document, 'Nodus signature request', 'sites'), origin = document.createElement('p');
   origin.textContent = pending.origin; origin.className = 'extension-origin';
   container.replaceChildren(heading, origin);
-  detail(document, container, 'Account', pending.requestData.account);
+  // The chain name is shown only when the background holds one confirmed for this account; the address stays visible.
+  const { account, accountName } = pending.requestData;
+  if (accountName) { detail(document, container, 'Account', accountName); detail(document, container, 'Address', account); }
+  else detail(document, container, 'Account', account);
   detail(document, container, 'Message', pending.requestData.text);
-  if (pending.requestData.data !== pending.requestData.text) detail(document, container, 'Message bytes', pending.requestData.data);
   const actions = document.createElement('div'); actions.className = 'actions';
   actions.append(actionButton(document, 'Reject', () => reject(pending)), actionButton(document, 'Approve', () => approve(pending), false)); container.append(actions);
 }

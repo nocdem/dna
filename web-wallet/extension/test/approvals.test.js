@@ -112,3 +112,35 @@ test('three prompt rejections throttle the same origin for one minute', async t 
   assert.equal((await engine.handle({ id: 7, jsonrpc: '2.0', origin: 'https://site.example', method: 'personal_sign' })).error.code, 4001);
   engine.destroy(); approvals.destroy();
 });
+
+// Proves the toolbar badge follows the real controller's pending approvals: cleared at start and with none pending,
+// the count while approvals wait, "<max>+" past the maximum (9), always with the approval colour. Can falsely pass
+// if the fake action recorded calls but the assertions read a stale entry; each check reads the latest call.
+test('toolbar badge shows the number of pending approvals and clears with none', async () => {
+  const texts = [], colors = [], action = { setBadgeText: ({ text }) => texts.push(text), setBadgeBackgroundColor: ({ color }) => colors.push(color) };
+  const approvals = createApprovals({ ...approvalFixture(), action, messenger: new Messenger({ namespace: 'Background' }) });
+  assert.equal(texts.at(-1), '');
+  const waiting = [];
+  for (let n = 1; n <= 11; n++) {
+    const pending = approvals.controller.addAndShowApprovalRequest({ id: `a${n}`, origin: `https://site${n}.example`, type: 'personal_sign' });
+    pending.catch(() => {}); waiting.push(pending);
+    assert.equal(texts.at(-1), n > 9 ? '9+' : String(n));
+  }
+  assert.equal(colors.at(-1), '#0376C9');
+  approvals.reject('a11'); assert.equal(texts.at(-1), '9+');
+  for (let n = 10; n >= 1; n--) approvals.reject(`a${n}`);
+  assert.equal(texts.at(-1), '');
+  await Promise.allSettled(waiting); await approvals.whenUiSettled(); approvals.destroy();
+});
+
+// Proves a failing badge API cannot break an approval, and that destroy() clears the badge and stops updating.
+test('toolbar badge failures do not affect approvals and destroy clears the badge', async () => {
+  const texts = [];
+  const broken = createApprovals({ ...approvalFixture(), action: { setBadgeText() { throw new Error('no badge'); }, setBadgeBackgroundColor() {} }, messenger: new Messenger({ namespace: 'Background' }) });
+  const pending = broken.controller.addAndShowApprovalRequest({ id: 'b', origin: 'https://site.example', type: 'personal_sign' });
+  await broken.whenUiSettled(); broken.controller.acceptRequest('b', true); assert.equal(await pending, true); broken.destroy();
+  const approvals = createApprovals({ ...approvalFixture(), action: { setBadgeText: ({ text }) => texts.push(text), setBadgeBackgroundColor() {} }, messenger: new Messenger({ namespace: 'Background' }) });
+  const waiting = approvals.controller.addAndShowApprovalRequest({ id: 'c', origin: 'https://site.example', type: 'personal_sign' }); waiting.catch(() => {});
+  await approvals.whenUiSettled(); assert.equal(texts.at(-1), '1');
+  approvals.destroy(); assert.equal(texts.at(-1), '');
+});

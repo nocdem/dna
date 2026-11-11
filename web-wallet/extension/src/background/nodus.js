@@ -66,6 +66,19 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
   function current(s) {
     if (session !== s || s.abort.signal.aborted) throw new Error('Wallet is locked.');
   }
+  // The chain name of this wallet's own account, kept only when the reverse lookup (nameOf, adapter ownChainName)
+  // confirmed it for this exact address. It lives on the session, so a lock drops it. The signature window reads it
+  // without waiting for the network; warmOwnName asks in the background so a later window has it.
+  function keepOwnName(s, own) {
+    if (session === s && own?.found && typeof own.name === 'string') s.ownName = { address: s.addresses.nodus, name: own.name };
+  }
+  function confirmedOwnName(s, account) { return s.ownName?.address === account ? s.ownName.name : ''; }
+  function warmOwnName(s) {
+    if (s.ownName || s.ownNameAsked || !s.client?.nameable) return;
+    s.ownNameAsked = true;
+    adapter.ownChainName({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal })
+      .then(own => keepOwnName(s, own), () => { s.ownNameAsked = false; });
+  }
   function active() {
     lockCoordinator.assertUnlocked();
     if (!session) throw new Error('Wallet is locked.');
@@ -425,7 +438,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       await releaseExpiredHolds(s);
       return rememberReview(s, await adapter.prepareStake({ ...params, kind, client: s.client, from: s.addresses.nodus, locked: heldInputs(s) }));
     },
-    async getOwnName() { const s = active(); const own = await adapter.ownChainName({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal }); current(s); return own; },
+    async getOwnName() { const s = active(); const own = await adapter.ownChainName({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal }); current(s); keepOwnName(s, own); return own; },
     async getNamePrices() { const s = active(); const value = adapter.parseNamePrices(await s.client.namePrices()); current(s); return { ...value, text: adapter.namePriceList(value.prices) }; },
     async quoteName(name) { const s = active(); const value = await adapter.nameQuote({ client: s.client, from: s.addresses.nodus, name, signal: s.abort.signal }); current(s); return value; },
     async prepareName(name) { const s = active(); assertActivity(s); await releaseExpiredHolds(s); return rememberReview(s, await adapter.prepareName({ client: s.client, from: s.addresses.nodus, name, locked: heldInputs(s) })); },
@@ -517,13 +530,16 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       // personal-sign.tsx:45-50, 139-164 + ui/helpers/utils/util.js:707-719,
       // 825-836: textContent-equivalent text, format characters escaped,
       // 32-byte values shown as hex. Buffer replaces malformed UTF-8, as
-      // hexToText does in the reference. Full bytes remain visible too.
+      // hexToText does in the reference. The window shows this text only; the bytes
+      // that are signed stay in requestData.data and are not displayed.
       const text = message.length === 32 ? hex : Buffer.from(message).toString('utf8').replace(/\p{Cf}/gu,
         char => `\\u${char.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`);
+      const accountName = confirmedOwnName(s, account);
+      if (!accountName) warmOwnName(s);
       try {
         // Same locked refusal as evm.js capture()/approved(): assert before
         // approval and after each await; client.lock rejects queued/in-flight work.
-        await approvals.controller.addAndShowApprovalRequest({ origin, type: 'nodus_signMessage', requestData: { account, data: hex, text } });
+        await approvals.controller.addAndShowApprovalRequest({ origin, type: 'nodus_signMessage', requestData: { account, accountName, data: hex, text } });
         assertCurrent();
         const signature = await s.client.siteSignMessage({ origin, message }, { signal: s.abort.signal, assertCurrent });
         try {

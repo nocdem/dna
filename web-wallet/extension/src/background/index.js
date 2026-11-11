@@ -45,7 +45,7 @@ const publicResult = async value => JSON.parse(JSON.stringify(await value, (_key
 // Approved plan §3.5:388-435; packages 1-2 own the vault, key custody and shared lock.
 // Startup constructs fresh locked holders. Store composition receives only controller metadata, never key custody.
 export async function createBackground({ storage = chrome.storage.local, alarms = chrome.alarms,
-  runtime = chrome.runtime, windows = chrome.windows, tabs = globalThis.chrome?.tabs,
+  runtime = chrome.runtime, windows = chrome.windows, tabs = globalThis.chrome?.tabs, action = globalThis.chrome?.action,
   notifications = globalThis.chrome?.notifications, notificationStorage = globalThis.chrome?.storage?.session,
   sessionStorage = globalThis.chrome?.storage?.session,
   nodusOptions = {}, consumeNodusSeed, readPrices = readWalletPrices } = {}) {
@@ -89,7 +89,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   // Plan §3.5:407-421 retains package 1's one lock and package 2's guarded signing operations.
 
   const autoLockAlarm = await createAutoLockAlarm({ storage, lockCoordinator, alarms: backgroundAlarms });
-  const approvals = createApprovals({ messenger, runtime, windows, tabs, getUiState: () => ({
+  const approvals = createApprovals({ messenger, runtime, windows, tabs, action, getUiState: () => ({
     // Port: background.ts:857-861 counts only popup ports; :907-916 tracks fullscreen tabs separately.
     popupCount: [...uiPorts].filter(port => port.name === 'popup').length,
     tabIds: new Set([...uiPorts].filter(port => port.name === 'fullscreen').map(port => port.sender?.tab?.id).filter(id => id !== undefined)),

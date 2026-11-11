@@ -14,7 +14,11 @@ const BLOCKABLE_METHODS = new Set([
 const TEST_ORIGINS = ['http://127.0.0.1:8080', 'http://127.0.0.1:8081', 'http://127.0.0.1:8082',
   'http://localhost:8080', 'http://localhost:8081', 'http://localhost:8082'];
 
-export function createApprovals({ messenger, runtime, windows, tabs, platform, getUiState = () => ({ popupCount: 0, tabIds: new Set() }) }) {
+const BADGE_COLOR_APPROVAL = '#0376C9';
+const BADGE_MAX_COUNT = 9;
+export const badgeLabel = (count, maxCount = BADGE_MAX_COUNT) => (count > maxCount ? `${maxCount}+` : String(count));
+
+export function createApprovals({ messenger, runtime, windows, tabs, action, platform, getUiState = () => ({ popupCount: 0, tabIds: new Set() }) }) {
   // Port: app/scripts/platforms/extension.ts:52-59, 198-199; named platform boundary retained.
   platform ??= {
     openWindow: options => windows.create({ ...options, url: runtime.getURL(options.url) }),
@@ -77,6 +81,17 @@ export function createApprovals({ messenger, runtime, windows, tabs, platform, g
       void triggerUi().catch(() => {});
     },
   });
+  // The toolbar icon shows how many approvals wait; with none the badge is cleared. A failed badge call never
+  // affects an approval.
+  function updateBadge() {
+    const count = Object.keys(controller.state.pendingApprovals ?? {}).length;
+    try {
+      action?.setBadgeText({ text: count > 0 ? badgeLabel(count) : '' });
+      action?.setBadgeBackgroundColor({ color: BADGE_COLOR_APPROVAL });
+    } catch { /* the badge is only a hint */ }
+  }
+  messenger.subscribe('ApprovalController:stateChange', updateBadge);
+  updateBadge();
   const onRemoved = id => { if (id === popupId) popupId = undefined; };
   windows.onRemoved.addListener(onRemoved);
 
@@ -111,5 +126,5 @@ export function createApprovals({ messenger, runtime, windows, tabs, platform, g
 
   return { controller, triggerUi, reject, rejectOrigin, createOriginThrottlingMiddleware,
     whenUiSettled: () => uiOpening ?? Promise.resolve(),
-    destroy() { windows.onRemoved.removeListener(onRemoved); controller.clearRequests(providerErrors.userRejectedRequest()); controller.destroy(); } };
+    destroy() { windows.onRemoved.removeListener(onRemoved); controller.clearRequests(providerErrors.userRejectedRequest()); messenger.unsubscribe('ApprovalController:stateChange', updateBadge); controller.destroy(); } };
 }
