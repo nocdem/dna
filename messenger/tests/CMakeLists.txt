@@ -570,3 +570,15 @@ if(ENABLE_FUZZING)
 
     message(STATUS "Fuzzing targets enabled (libFuzzer)")
 endif()
+
+# =============================================================================
+# Test: K-01 — PBKDF2 / bip39_mnemonic_to_seed allocation failure is reported
+# bip39_pbkdf2.c is compiled into the test and malloc is wrapped by the linker
+# (test-only seam, no production hook); qgp_secure_memzero comes from libdna.
+# =============================================================================
+add_executable(test_bip39_pbkdf2_oom
+    test_bip39_pbkdf2_oom.c
+    ${SHARED_DIR}/crypto/key/bip39/bip39_pbkdf2.c)
+target_link_libraries(test_bip39_pbkdf2_oom ${TEST_LIBS})
+target_link_options(test_bip39_pbkdf2_oom PRIVATE -Wl,--wrap=malloc)
+add_test(NAME bip39_pbkdf2_oom COMMAND test_bip39_pbkdf2_oom)
