@@ -112,7 +112,8 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   connectedSites = createConnectedSites({ storage, sessionStorage, controller: permissions.controller, messenger });
   evm = createEvm({ messenger, store, approvals, permissions, lockCoordinator, getWallet, keyring,
     getActivity: chain => nodus.chainActivity(chain),
-    onNetworkChanged: (client, readMetadata) => engine.attachNetworkClient(client, readMetadata) });
+    onNetworkChanged: (client, readMetadata) => engine.attachNetworkClient(client, readMetadata),
+    getNetworkId: chain => networks.get(chain).id, selectWalletNetwork: (chain, id) => networks.select(chain, id) });
 
   // The real background consumer derives and checks the web-wallet identity.
   function attachWalletKeys(consumeNodusSeed) {
@@ -124,6 +125,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
         const result = await unlockKeys(password, options);
         // Opening the wallet again resets every network choice (networks.js resetToDefaults).
         await networks.resetToDefaults();
+        await evm.resetToMainnet();
         permissions.setAccounts(await keyring.getAccounts());
         // The sealed connected-sites list opens with a key from the unlocked wallet (plan section 2.6).
         await connectedSites.load({ id: result.id, key: await sitesKeyFor(walletKeys.getRecoveryPhrase(), result.id) });
@@ -152,6 +154,8 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   const { solana, tron } = chainHandlers = createSolanaTron({ lockCoordinator, getWalletKeys: () => walletKeys,
     getActivity: (chain, network) => nodus.chainActivity(chain, network), getNetwork: chain => networks.get(chain) });
   const algorand = createAlgorand({ lockCoordinator, getWalletKeys: () => walletKeys, getActivity: (chain, network) => nodus.chainActivity(chain, network), getNetwork: chain => networks.get(chain) });
+  // The Ethereum and BNB Smart Chain selectors: a change closes the wallet's reviews and reads on the old network.
+  chainHandlers.ethereum = chainHandlers.bsc = { networkChanged: () => evm.walletNetworkChanged() };
   chainHandlers.algorand = algorand;
   const soqucoin = createSoqucoin({ storage, lockCoordinator, getWalletKeys: () => walletKeys, getActivity: (chain, network) => nodus.chainActivity(chain, network), getNetwork: chain => networks.get(chain) });
   chainHandlers.soqucoin = soqucoin;
@@ -288,7 +292,11 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
       const quotes = await readPrices();
       return Object.fromEntries(Object.entries(quotes).map(([key, quote]) => [key, { units: quote.units.toString(), observedAt: quote.observedAt }]));
     },
-    setChainNetwork: (chain, network) => networks.select(chain, network),
+    async setChainNetwork(chain, network) {
+      await networks.select(chain, network);
+      // The sites' provider follows the Ethereum and BNB Smart Chain selectors.
+      if (chain === 'ethereum' || chain === 'bsc') await evm.followWalletNetwork(chain);
+    },
     // Package 7a: wallet-only methods on the authenticated controller stream
     // (engine.js setupTrustedCommunication); no Solana/Tron site routing.
     getQtcBalances: () => qtc.getBalances(),

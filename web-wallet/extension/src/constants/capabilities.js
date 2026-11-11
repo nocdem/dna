@@ -9,13 +9,18 @@ import { pqSendGate, PQ_PAGE_HISTORY_CHAINS } from '../../../src/pq/send-gates.j
 // the web wallet keeps its own override list for XION, Splendor and QTC).
 // The background still independently enforces mainnet + v42 + direct-account
 // identity and balance/fee checks before preparing and before signing.
+// Ethereum's and BNB Smart Chain's test networks (evm-networks.js) have balances, receive and native sends; the
+// account history reader reads mainnet only, so history is off there.
+const onEvmTestNetwork = (chain, networkId) => (chain === 'ethereum' || chain === 'bsc') && networkId !== undefined && networkId !== 'mainnet';
 export function extensionCapabilitiesFor(chain, networkId) {
   const shared = capabilitiesFor(chain);
+  if (onEvmTestNetwork(chain, networkId)) return { ...shared, history: false };
   if (chain === 'ixios') return { ...shared, send: networkId === 'mainnet', history: networkId === 'mainnet' }; // Trusted code candidate; live RPC availability remains qualified.
   const gate = pqSendGate(chain, networkId);
   return gate ? { ...shared, ...gate } : shared;
 }
 export function extensionPageSupported(chain, page, networkId) {
+  if (page === 'wallet-activity' && onEvmTestNetwork(chain, networkId)) return false;
   return page === 'send' ? extensionCapabilitiesFor(chain, networkId).send : page === 'wallet-activity' && [...PQ_PAGE_HISTORY_CHAINS, 'ixios'].includes(chain) ? extensionCapabilitiesFor(chain, networkId).history : pageSupported(chain, page);
 }
 export function extensionNetworkConfig(chain, config, networkId) {

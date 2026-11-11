@@ -3,14 +3,14 @@ import { ApprovalType } from '@metamask/controller-utils';
 import { rpcErrors, providerErrors } from '@metamask/rpc-errors';
 import { FetchRequest, Interface, JsonRpcProvider, getAddress, getBytes, formatUnits, keccak256, toQuantity, toUtf8String } from 'ethers';
 import { CHAINS } from '../../../src/config.js';
-import { rawInteger, rpc } from '../../../src/core.js';
+import { amountUnits, rawInteger, rpc } from '../../../src/core.js';
 import { assertWalletActive } from '../../../src/keys.js';
 import { ethersGetUrl, endpointUrl } from '../../../src/rpc-transport.js';
 import * as adapter from '../../../src/adapters/evm.js';
 import { prepareTransfer } from '../../../src/wallet.js';
 import { nameReviewRows, NAME_CHECK_ROW } from '../../../src/adapters/nodus.js';
 import { terminal, watchActivity } from '../../../src/activity.js';
-import { EVM_NETWORKS, EVM_CHAINS, WALLET_EVM_CHAINS, evmAddressKey } from '../constants/evm-networks.js';
+import { EVM_NETWORKS, EVM_CHAINS, EVM_FAMILIES, WALLET_EVM_CHAINS, evmAddressKey, evmKey, evmNetworkId, isEvmTestKey } from '../constants/evm-networks.js';
 import { assertSwapUsdtToken } from '../constants/swap.js';
 
 // The USDT payment of a swap (plan section 7 step 5): the call data is encoded
@@ -34,8 +34,7 @@ function chainConfig(chain) {
   if (!EVM_CHAINS.includes(chain)) throw rpcErrors.invalidParams('Unsupported EVM network.');
   return EVM_NETWORKS[chain];
 }
-// The wallet's own screens cover Ethereum and BNB Smart Chain only; Sepolia is
-// reached through a website's network switch (constants/evm-networks.js).
+// The wallet's own screens cover every network of constants/evm-networks.js.
 function walletChainConfig(chain) {
   if (!WALLET_EVM_CHAINS.includes(chain)) throw rpcErrors.invalidParams('Unsupported EVM network.');
   return EVM_NETWORKS[chain];
@@ -75,7 +74,7 @@ export async function prepareSiteTransaction({ chain, wallet, fields, endpoint, 
     const gasLimit = fields.gas === undefined ? gas * 120n / 100n : rawInteger(fields.gas), gasPrice = fees.gasPrice;
     if (!gasPrice || balance < gasLimit * gasPrice + tx.value) throw new Error('Insufficient native balance for amount and network fee.');
     const unsigned = { ...tx, chainId: config.chainId, nonce, gasLimit, gasPrice, type: 0 }; delete unsigned.from;
-    return { fee: `Up to ${formatUnits(gasLimit * gasPrice, 18)} ${config.symbol}`, expiresAt: Date.now() + 60000,
+    return { fee: `Up to ${formatUnits(gasLimit * gasPrice, 18)} ${config.symbol}`, expiresAt: Date.now() + 60000, nonce,
       async send(onBroadcast) {
         // Adapter :42-50: check immediately around every asynchronous key use.
         assertCurrent(); assertWalletActive(wallet); await checkNetwork(chain, endpoint);
@@ -145,20 +144,24 @@ function networkClient(chain, endpoint) {
     destroy() { destroyed = true; listeners.clear(); const previous = pollingProvider; pollingProvider = null; events = events.then(() => previous?.destroy()); } };
 }
 
-export function createEvm({ messenger, store, approvals, permissions, lockCoordinator, getWallet, keyring, onNetworkChanged, getActivity }) {
+export function createEvm({ messenger, store, approvals, permissions, lockCoordinator, getWallet, keyring, onNetworkChanged, getActivity,
+  // The wallet's per-chain network choice (networks.js): the chain's selector id ('mainnet', 'sepolia', 'testnet')
+  // and the way to write it, so the selector, the wallet screens and the sites' provider never disagree.
+  getNetworkId = () => 'mainnet', selectWalletNetwork = async () => {} }) {
   const metadata = Object.fromEntries(['selectedChain', 'endpoints'].map(key => [key, { persist: true }]));
   const saved = store.getInitialState('EvmController', metadata);
-  // A saved Sepolia choice is not restored: operator 2026-11-03, "hersey varsa yeniden acista mainnet" (the
-  // networks.js reset), so a worker or browser restart returns to Ethereum, never to a test network a site chose.
-  const selectedChain = WALLET_EVM_CHAINS.includes(saved.selectedChain) ? saved.selectedChain : 'ethereum';
-  // Saved endpoints cover the wallet's own networks only (Sepolia has its one provider in constants/evm-networks.js),
-  // which keeps the persisted state shape unchanged.
+  // A saved test-network choice is not restored: operator 2026-11-03, "hersey varsa yeniden acista mainnet" (the
+  // networks.js reset), so a worker or browser restart returns to Ethereum, never to a test network.
+  const selectedChain = EVM_FAMILIES.includes(saved.selectedChain) ? saved.selectedChain : 'ethereum';
+  // Saved endpoints cover every network, a test network's own RPC choice included.
   const endpoints = Object.fromEntries(WALLET_EVM_CHAINS.map(chain => {
     try { return [chain, validatedEndpoint(chain, saved.endpoints?.[chain])]; }
     catch { return [chain, EVM_NETWORKS[chain].endpoint]; }
   }));
   const controller = new BaseController({ name: 'EvmController', metadata, messenger: messenger.buildChild({ namespace: 'EvmController' }), state: { selectedChain, endpoints } });
-  const endpointOf = chain => (chain === 'sepolia' ? EVM_NETWORKS.sepolia.endpoint : controller.state.endpoints[chain]);
+  const endpointOf = chain => controller.state.endpoints[chain];
+  // The wallet's screens name a chain ('ethereum', 'bsc'); the network it is on follows the chain's selector.
+  const walletKey = chain => (EVM_FAMILIES.includes(chain) ? evmKey(chain, getNetworkId(chain)) : chain);
   let client = networkClient(selectedChain, endpoints[selectedChain]), revision = 0, reviewId = 0;
   let readAbort = new AbortController();
   const reviews = new Map();
@@ -177,11 +180,11 @@ export function createEvm({ messenger, store, approvals, permissions, lockCoordi
     return value;
   }
   // Wallet Activity is the mainnet ledger: its rows carry no network, are saved without their endpoint and are
-  // restored with the mainnet one (network-activity.js:13-14), so a Sepolia transaction recorded there would later
-  // be tracked on mainnet. A Sepolia site transaction therefore leaves no Activity row (my choice; the plan leaves
-  // "which activity record keeps a Sepolia site transaction" to this package); the site gets the hash.
+  // restored with the mainnet one (network-activity.js:13-14), so a test-network transaction recorded there would
+  // later be tracked on mainnet. A test-network transaction therefore leaves no Activity row (my choice; the plan
+  // leaves "which activity record keeps a Sepolia site transaction" to this package); the sender gets the hash.
   function assertSendable(chain) {
-    if (chain === 'sepolia') return undefined;
+    if (isEvmTestKey(chain)) return undefined;
     const value = activity(chain); value.assertSendable();
     const pending = value.rows().find(row => !terminal(row.status));
     if (pending) throw new Error(`A previous send on this network has no final result yet (tx ${pending.hash}). Wait for it to resolve.`);
@@ -235,13 +238,25 @@ export function createEvm({ messenger, store, approvals, permissions, lockCoordi
     onNetworkChanged(client, () => client.metadata);
     previous.destroy();
   }
-  async function selectNetwork(chain) {
+  async function selectProvider(chain) {
     chainConfig(chain);
     if (controller.state.selectedChain === chain) return;
     controller.update(state => { state.selectedChain = chain; }); changed(); await store.flush();
   }
+  // Selecting a network (a site's switch or the settings) also sets that chain's selector, so the wallet's balance,
+  // send and RPC choice are on the same network as the sites' provider.
+  async function selectNetwork(chain) {
+    await selectProvider(chain);
+    await selectWalletNetwork(evmAddressKey(chain), evmNetworkId(chain));
+  }
+  // A choice in a chain's selector (networks.js) makes that network the sites' provider too.
+  const followWalletNetwork = chain => selectProvider(walletKey(chain));
+  // Opening the wallet resets every selector to mainnet (networks.js resetToDefaults): the provider follows.
+  const resetToMainnet = () => (isEvmTestKey(controller.state.selectedChain) ? selectProvider(evmAddressKey(controller.state.selectedChain)) : undefined);
+  // The wallet-side selection changed: reviews and reads made for the old network are closed.
+  function walletNetworkChanged() { revision++; clearReviews(); readAbort.abort(); readAbort = new AbortController(); }
   async function setEndpoint(chain, endpoint) {
-    walletChainConfig(chain); endpoint = validatedEndpoint(chain, endpoint);
+    chain = walletKey(chain); walletChainConfig(chain); endpoint = validatedEndpoint(chain, endpoint);
     if (controller.state.endpoints[chain] === endpoint) return;
     controller.update(state => { state.endpoints[chain] = endpoint; });
     changed(); await store.flush();
@@ -336,19 +351,43 @@ export function createEvm({ messenger, store, approvals, permissions, lockCoordi
       },
     };
   }
-  return { controller, walletHooks, switchChain, selectNetwork, setEndpoint, swapSession, lock: close,
+  // A test network lists its native coin only: no pinned source names a token contract there.
+  async function testBalances(key, address, endpoint, signal) {
+    const config = chainConfig(key);
+    getAddress(address); await checkNetwork(key, endpoint, { signal });
+    const native = rawInteger(await rpc(endpoint, 'eth_getBalance', [address, 'latest'], { signal }));
+    return [{ symbol: config.symbol, balance: formatUnits(native, config.decimals) }];
+  }
+  // A native-coin send on a test network, prepared and confirmed like a site transaction on it (the shared wallet
+  // adapter reads the mainnet table only). The recipient is an address; no Activity row is kept (assertSendable).
+  async function prepareTestSend(key, fields) {
+    const config = chainConfig(key), session = capture(), endpoint = controller.state.endpoints[key];
+    if (fields.symbol !== config.symbol) throw new Error(`Only ${config.symbol} can be sent on ${config.name}.`);
+    let to; try { to = getAddress(String(fields.to ?? '').trim()); } catch { throw new Error(`Invalid ${config.name} address.`); }
+    const units = amountUnits(fields.amount, config.decimals), from = session.wallet.evm.address;
+    const prepared = await prepareSiteTransaction({ chain: key, wallet: session.wallet, fields: { from, to, value: toQuantity(units) }, endpoint, assertCurrent: session.assertCurrent });
+    session.assertCurrent();
+    const id = String(++reviewId), transfer = { chain: key, networkName: config.name, from, to, amount: fields.amount, symbol: config.symbol,
+      fee: prepared.fee, nonce: prepared.nonce, expiresAt: prepared.expiresAt, cancel() {}, confirm: record => prepared.send(record) };
+    clearReviews(); reviews.set(id, { prepared: transfer, assertCurrent: session.assertCurrent });
+    return { id, chain: fields.chain, to, named: undefined, amount: fields.amount, symbol: config.symbol, fee: prepared.fee, expiresAt: prepared.expiresAt, review: evmReviewRows(transfer) };
+  }
+  return { controller, walletHooks, switchChain, selectNetwork, setEndpoint, followWalletNetwork, resetToMainnet, walletNetworkChanged, swapSession, lock: close,
     get client() { return client; },
     getState: () => structuredClone(controller.state),
     async getBalances(chain) {
-      walletChainConfig(chain); const wallet = getWallet(), endpoint = controller.state.endpoints[chain], signal = readAbort.signal;
-      activity(chain);
-      const rows = await adapter.balances(chain, wallet.addresses[chain], endpoint, { signal });
+      const key = walletKey(chain); walletChainConfig(key);
+      const wallet = getWallet(), endpoint = controller.state.endpoints[key], signal = readAbort.signal;
+      let rows;
+      if (isEvmTestKey(key)) rows = await testBalances(key, wallet.addresses[evmAddressKey(key)], endpoint, signal);
+      else { activity(key); rows = await adapter.balances(key, wallet.addresses[key], endpoint, { signal }); }
       signal.throwIfAborted();
       assertWalletActive(wallet); if (getWallet() !== wallet) throw new Error('Wallet is locked.');
       return rows;
     },
     async prepareSend(fields) {
-      walletChainConfig(fields.chain);
+      const key = walletKey(fields.chain); walletChainConfig(key);
+      if (isEvmTestKey(key)) return prepareTestSend(key, fields);
       assertSendable(fields.chain);
       const session = capture(), endpoint = controller.state.endpoints[fields.chain];
       // Keep the imported adapter unchanged. Its wallet checks after network,
@@ -378,7 +417,7 @@ export function createEvm({ messenger, store, approvals, permissions, lockCoordi
 
 // src/app.js:2325-2339, unchanged row wording and order.
 export function evmReviewRows(transfer) {
-  const rows = [['Network', `${CHAINS[transfer.chain].name} mainnet`], ['From', transfer.from]];
+  const rows = [['Network', transfer.networkName ?? `${CHAINS[transfer.chain].name} mainnet`], ['From', transfer.from]];
   if (transfer.named) rows.push(...nameReviewRows(transfer.named, { via: 'the address published in the owner’s signed profile' }));
   rows.push(['To', getAddress(transfer.to)]);
   if (transfer.named) rows.push(NAME_CHECK_ROW);
