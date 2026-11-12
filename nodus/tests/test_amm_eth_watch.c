@@ -1492,7 +1492,6 @@ static void w29_no_early_stop(void) {
     g_sp[2].fail_blocks = 1;                          /* C's header read fails    */
     amm_eth_step_t o;
     step(&o);
-    char st[16];
     CHECK(g_sp[2].asked[10] > 0, "C is asked for block 10 although A and B answered");
     /* the parent's verdict (bf5a4bcb4): C's listing is below the quorum, so it
      * is stored as a candidate and, in the same step, rescan_candidates finds
