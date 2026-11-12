@@ -36,7 +36,7 @@ test('settings lists each chain separately and home names non-mainnet networks w
   renderSettings(document, root, { networks, preferences: { autoLockTimeLimit: 15 } }, {
     setChainNetwork: (chain, network) => selections.push([chain, network]),
   });
-  const options = { nodus: ['Testnet'], ethereum: ['Mainnet'], bsc: ['Mainnet'], solana: ['Mainnet', 'Testnet', 'Devnet'], tron: ['Mainnet', 'Nile'], cellframe: ['Mainnet'] };
+  const options = { nodus: ['Testnet'], ethereum: ['Mainnet', 'Sepolia'], bsc: ['Mainnet', 'Testnet'], solana: ['Mainnet', 'Testnet', 'Devnet'], tron: ['Mainnet', 'Nile'], cellframe: ['Mainnet'] };
   for (const [chain, labels] of Object.entries(options)) {
     const selector = find(root, n => n.id === `network-${chain}`)[0];
     assert.ok(selector, chain); assert.deepEqual(selector.children.map(n => n.textContent), labels);

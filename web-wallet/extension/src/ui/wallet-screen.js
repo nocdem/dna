@@ -23,6 +23,7 @@ import { mountVaultsPage } from './vaults-page.js';
 import { appIcon } from './presentation.js';
 import { renderQr } from '../../../src/qr.js';
 import { CHAIN_NETWORKS, chainNetwork } from '../constants/networks.js';
+import { EVM_NETWORKS, EVM_FAMILIES, evmKey } from '../constants/evm-networks.js';
 import { renderSites, renderSettings } from './views.js';
 import { renderNodusHistory } from './nodus-screens.js';
 import { renderSolanaTronHistory } from './solana-tron-screens.js';
@@ -92,6 +93,11 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   }
   const message = text => { status.textContent = text; status.className = 'result'; sessionLog.log('wallet', text); };
   const networkDefinitions = () => ({ nodus: nodusNetworkFor(ui.state.nodus?.state === 'ready', { module: true, tokens: ui.state.nodus?.tokens }), ...CHAINS, cellframe: CELLFRAME,
+    // Ethereum and BNB Smart Chain on a test network: that network's coin, chain id, endpoint and explorer, no tokens.
+    ...Object.fromEntries(EVM_FAMILIES.map(chain => {
+      const test = EVM_NETWORKS[evmKey(chain, selectedNetwork(chain).id)];
+      return [chain, test.testnet ? { ...CHAINS[chain], symbol: test.symbol, chainId: test.chainId, endpoint: test.endpoint, explorer: test.explorer, rpcOptions: test.rpcOptions, tokens: [] } : CHAINS[chain]];
+    })),
     // Background derivations have settled before unlock is published. Without
     // an Ixios or selected PQ address there is no balance source for this session; use the
     // shared portfolio's unavailable-source branch (portfolio-view.js:78-85).
@@ -126,7 +132,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   const initial = ui.request('getKeptBalances').catch(() => ({})).then(entries => {
     if (disposed) return;
     latestKept = Object.fromEntries(Object.entries(entries).filter(([key]) => !['algorand', 'ckb'].includes(key.split(':')[0]) && (!['solana', 'tron'].includes(key.split(':')[0]) || ui.state.networks?.[key.split(':')[0]] === 'mainnet')));
-    const kept = Object.fromEntries(Object.entries(latestKept).map(([key, value]) => [key, { ...value, units: BigInt(value.units) }]));
+    const kept = Object.fromEntries(Object.entries(latestKept).map(([key, value]) => [key, { ...value, units: BigInt(value.units), ...(value.price ? { price: { units: BigInt(value.price.units), observedAt: value.price.observedAt } } : {}) }]));
     portfolio.open(publicAddresses(), endpoints(), { kept, automatic: false }); opened = true;
     earn?.update(); void claim?.refresh();
     return portfolio.refresh();
@@ -148,7 +154,9 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
         : ui.state.pqErrors?.[selected] || 'Receive address unavailable. Lock and reopen your wallet to retry.';
     } else pqStatus.textContent = '';
   }
-  function endpoints() { return Object.fromEntries(Object.entries(networks).map(([chain, config]) => [chain, ui.state.evm?.endpoints?.[chain] || selectedNetwork(chain).endpoint || config.endpoint])); }
+  // The saved RPC choice is kept per EVM network (evm-networks.js): a chain's own key is its mainnet.
+  const evmEndpointKey = chain => (EVM_FAMILIES.includes(chain) ? evmKey(chain, selectedNetwork(chain).id) : chain);
+  function endpoints() { return Object.fromEntries(Object.entries(networks).map(([chain, config]) => [chain, ui.state.evm?.endpoints?.[evmEndpointKey(chain)] || selectedNetwork(chain).endpoint || config.endpoint])); }
   const ixiosStatus = element('p', '', 'hint'); ixiosStatus.id = 'ixios-address-status'; ixiosStatus.setAttribute('role', 'status'); ixiosStatus.setAttribute('aria-live', 'polite'); $('cellframe-address-status').after(ixiosStatus);
   const pqStatus = element('p', '', 'hint'); pqStatus.id = 'pq-address-status'; pqStatus.setAttribute('role', 'status'); pqStatus.setAttribute('aria-live', 'polite');
   const pqNote = element('p', 'Recover this address with your Nodus recovery phrase. Native chain wallets may derive different addresses.', 'hint'); pqNote.id = 'pq-recovery-note';
@@ -479,14 +487,14 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   const evmSelect = settings.querySelector('#evm-network');
   if (evmSelect) $('rpc-settings').append(settings.querySelector('label[for="evm-network"]'), evmSelect);
   function populateRpc() {
-    const chain = selected, choices = CHAINS[chain]?.rpcOptions || [];
+    const chain = selected, choices = networks[chain]?.rpcOptions || [];
     $('rpc-choice').replaceChildren(...choices.map(provider => { const option = element('option', provider.label); option.value = provider.url; return option; }));
     const enabled = ['ethereum', 'bsc'].includes(chain);
     $('rpc-settings').hidden = isPqChain(chain);
     for (const node of [$('rpc-choice'), $('save-rpc'), $('rpc-settings').querySelector('label[for="rpc-choice"]')]) node.hidden = !enabled;
     if (enabled) {
       const custom = element('option', 'Custom HTTPS endpoint…'); custom.value = 'custom'; $('rpc-choice').append(custom);
-      const endpoint = ui.state.evm?.endpoints?.[chain] || CHAINS[chain].endpoint;
+      const endpoint = ui.state.evm?.endpoints?.[evmEndpointKey(chain)] || networks[chain].endpoint;
       const provider = choices.find(choice => endpointUrl(choice.url) === endpointUrl(endpoint));
       $('rpc-choice').value = provider?.url ?? 'custom'; $('rpc-endpoint').value = provider?.url ?? endpoint;
     }
@@ -503,13 +511,14 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     const state = ui.state;
     networks = networkDefinitions();
     for (const [chain, config] of Object.entries(networks)) {
-      const testnet = (isPqChain(chain) || ['solana', 'tron'].includes(chain)) && selectedNetwork(chain).id !== 'mainnet';
+      const testnet = (isPqChain(chain) || ['solana', 'tron', ...EVM_FAMILIES].includes(chain)) && selectedNetwork(chain).id !== 'mainnet';
       const endpoint = endpoints()[chain], previousEndpoint = endpointVersions.get(chain);
-      const version = JSON.stringify([config, testnet, endpoint, publicAddresses()[chain]]);
+      const version = JSON.stringify([config, testnet, endpoint, publicAddresses()[chain], selectedNetwork(chain).id]);
       if (networkVersions.get(chain) !== version) {
         const before = networkVersions.get(chain); networkVersions.set(chain, version);
         endpointVersions.set(chain, endpoint);
-        portfolio.setNetwork(chain, { ...config, testnet }, { keepRead: !before || chain === 'nodus', forgetKept: ['algorand', 'ckb'].includes(chain) });
+        // `networkId`: the selected network's own id, so two test networks of one chain (Solana Testnet and Devnet) differ.
+        portfolio.setNetwork(chain, { ...config, testnet, networkId: selectedNetwork(chain).id }, { keepRead: !before || chain === 'nodus', forgetKept: ['algorand', 'ckb'].includes(chain) });
         if (opened && before && previousEndpoint !== endpoint) portfolio.changeEndpoint(chain, endpoint);
         if (opened) portfolio.setAddress(chain, publicAddresses()[chain]);
       }
@@ -532,7 +541,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
       if (previousNetwork && identity !== previousNetwork) { readGeneration++; cancelReview(); }
       previousNetwork = identity; previousTokens = tokens; previousAddress = address; selectChain();
     }
-    for (const chain of ['solana', 'tron']) $(`network-${chain}`).value = chainNetwork(chain, state.networks?.[chain]).id;
+    for (const chain of ['ethereum', 'bsc', 'solana', 'tron']) $(`network-${chain}`).value = chainNetwork(chain, state.networks?.[chain]).id;
     if (evmSelect) evmSelect.value = state.evm.selectedChain;
     updateContractAvailability();
     book.update(); earn.update(); names.update(); claim.update(); contracts.update(); vaults.update();

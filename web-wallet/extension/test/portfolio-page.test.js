@@ -97,3 +97,100 @@ test('portfolio and transfers open pages with Back to wallet and a home-only gre
     await back('vaults');
   });
 });
+
+// Wiring test through the real mounted wallet screen (portfolio-view, wallet-screen, the fixture's saved-record calls).
+// Proves: (1) Ethereum read on Sepolia (5 ETH, kept under the test network), then the switch to Ethereum mainnet with the
+// mainnet read HELD: no amount element of the Ethereum asset group reads 5 ETH (the group's own `.holding-value strong`
+// elements, so a row that is absent also passes), the total is exactly the kept same-network values (the dash, see below),
+// and no record saved after the switch holds the Sepolia units under a mainnet row; once released, the mainnet read (1 ETH)
+// is what is saved under mainnet. (2) With a saved MAINNET row (3 ETH and its price) and the reads held, the page shows the
+// kept total at once with its read label and counts it ($6.00).
+// Negative controls measured by the orchestrator: with `visible()` in src/portfolio.js changed to ignore the row's network
+// the Sepolia 5 ETH IS displayed on mainnet (and the old assertion on the concatenated #balances text did not see it, which
+// is why the amount element is read now); before network binding (1a4b75b32) the first wait for a record saved under a
+// `test:` network is never met, so the test times out. NOT a control: dceb7b6d3 already binds rows to the network, so this
+// test passes there (49dfadffa only added the selected network id).
+// How it can still falsely pass: the fixture is a fake background (no real storage or Sepolia RPC) and the Sepolia balance
+// is the fixture's own 5; an unpriced Sepolia row leaves the total at the dash, so the total assertion alone would not catch
+// a shown row (the amount-element assertion does); if the Ethereum group's markup changed (class or attribute names) the
+// amount list would be empty and the assertion vacuous, which is why the list's length is also reported in the message.
+// Not run by the builder.
+test('a Sepolia balance is not shown or saved as the mainnet balance, and a mainnet kept value shows at once', { timeout: 90_000 }, async () => {
+  const { withPortfolioPage } = await import('./fixtures/portfolio-page-checks.js');
+  await withPortfolioPage(async (page, origin) => {
+    await page.goto(`${origin}/test/fixtures/functions.html`);
+    await page.waitForFunction(() => window.fixture?.ready);
+    const savedAfter = marker => page.evaluate(from => window.fixture.calls.slice(from).filter(call => call[0] === 'keepBalances').map(call => call[1][0]), marker);
+    await page.evaluate(() => { window.fixture.state.networks.ethereum = 'sepolia'; window.fixture.screen.update(); });
+    await page.waitForFunction(() => window.fixture.calls.some(call => call[0] === 'keepBalances' && call[1][0]['ethereum:ETH']?.network?.startsWith('test:') && call[1][0]['ethereum:ETH'].units === '5000000000000000000'));
+    await page.evaluate(() => { window.fixture.holdEvm(true); window.fixture.state.networks.ethereum = 'mainnet'; window.fixture.screen.update(); });
+    const marker = await page.evaluate(() => window.fixture.calls.length);
+    await page.waitForFunction(from => window.fixture.calls.slice(from - 1).some(call => call[0] === 'getEvmBalances' && call[1][0] === 'ethereum'), marker);
+    // The label may legitimately read "Last read ... updating": the first mainnet read kept Ethereum's token rows (USDT, USDC, ...
+    // at 0 units, mainnet), which the Sepolia read (ETH only, no tokens) did not replace, and they are shown as kept mainnet
+    // values while the held mainnet read refreshes. What matters: the ETH row has no Sepolia value, and the total is exactly
+    // the kept same-network values. Those are zero-unit token rows valued at $0 with no fresh priced balance and the other
+    // priced rows unknown (BNB read failed), so the total is 0 and incomplete, which the page shows as the dash. The total
+    // assertion catches only a leak that is VALUED (a price attached to the test row under mainnet would give $10.00); a Sepolia
+    // row that is merely SHOWN keeps the dash, because a test-network row is kept without a price (measured with visible()
+    // ignoring the network: the page showed 5 ETH and the total stayed the dash). The amount-element assertion below catches
+    // the shown leak.
+    // The Ethereum group's own amount elements (`${amount} ${symbol}`), not the concatenated list text: the row's "Last read"
+    // small text follows the amount without a separator. A hidden or absent row gives no element, which also passes.
+    const ethereumAmounts = await page.locator('.asset-group[data-chain="ethereum"] .holding-value strong').allTextContents();
+    assert.ok(!ethereumAmounts.some(text => /^5(\.0+)? ETH$/.test(text.trim())), `a Sepolia balance is shown as the mainnet ETH balance (${ethereumAmounts.length} amounts: ${ethereumAmounts.join(' | ')})`);
+    assert.equal(await page.locator('#portfolio-total').textContent(), '—');
+    for (const saved of await savedAfter(marker)) assert.ok(!(saved['ethereum:ETH']?.network === 'main' && saved['ethereum:ETH'].units === '5000000000000000000'), 'a Sepolia value was saved under mainnet');
+    await page.evaluate(() => window.fixture.releaseEvm());
+    await page.waitForFunction(from => window.fixture.calls.slice(from).some(call => call[0] === 'keepBalances' && call[1][0]['ethereum:ETH']?.network === 'main' && call[1][0]['ethereum:ETH'].units === '1000000000000000000'), marker);
+    // Every record saved since the switch (at least the 1 ETH one above): none holds the Sepolia units under mainnet.
+    const savedAll = await savedAfter(marker);
+    assert.ok(savedAll.length > 0, 'no record was saved after the switch');
+    for (const saved of savedAll) assert.ok(!(saved['ethereum:ETH']?.network === 'main' && saved['ethereum:ETH'].units === '5000000000000000000'), 'a Sepolia value was saved under mainnet');
+    // Positive control for the amount selector: the same locator finds the mainnet amount as the page formats it (displayAmount
+    // of 1 ETH), so a markup change cannot make the assertions above vacuous.
+    await page.waitForFunction(() => [...document.querySelectorAll('.asset-group[data-chain="ethereum"] .holding-value strong')].some(node => node.textContent.trim() === '1 ETH'));
+    const releasedAmounts = await page.locator('.asset-group[data-chain="ethereum"] .holding-value strong').allTextContents();
+    assert.ok(releasedAmounts.some(text => text.trim() === '1 ETH'), `the selector does not find the mainnet ETH amount (${releasedAmounts.join(' | ')})`);
+  });
+  await withPortfolioPage(async (page, origin) => {
+    await page.goto(`${origin}/test/fixtures/functions.html?kept&holdevm`);
+    await page.waitForFunction(() => /^Last read .+ · updating$/.test(document.getElementById('portfolio-label')?.textContent ?? ''));
+    assert.equal(await page.locator('#portfolio-total').textContent(), '$6.00');
+    await page.evaluate(() => window.fixture.releaseEvm());
+  });
+});
+
+// Wiring test for two test networks of ONE chain through the real mounted screen (wallet-screen.js passes the selected
+// network's id with the definition, 49dfadffa). Solana Testnet answers 777 SOL, Devnet 1000. Proves: after a read on Testnet,
+// switching to Devnet with its read HELD shows no 777 SOL (the kept Testnet row is not shown as Devnet's), and after the
+// release the Devnet amount (1,000 SOL) is shown. Positive controls: the same selector finds 777 SOL while Testnet is
+// selected and 1,000 SOL after the release, so it matches real markup. The screen saves no Solana record off mainnet
+// (wallet-screen.js onKept filter), so no record is expected or waited for; the assertion that no record carries the Testnet
+// units is therefore guaranteed by that filter, not by the network identity, and only the amount assertions test the identity.
+// Negative control (by reasoning, not run): with equal identities for Testnet and Devnet (the code before 49dfadffa) the kept
+// 777 SOL row stays visible after the switch and the assertion fails. How it can falsely pass: the fake background answers
+// both networks without real RPC; if update() did not reach portfolio.setNetwork for the id change the first wait (777 SOL
+// shown) would not be met and the test would time out. Not run by the builder.
+test('a Solana Testnet balance is not shown as the Devnet balance while Devnet is read', { timeout: 90_000 }, async () => {
+  const { withPortfolioPage } = await import('./fixtures/portfolio-page-checks.js');
+  await withPortfolioPage(async (page, origin) => {
+    await page.goto(`${origin}/test/fixtures/functions.html`);
+    await page.waitForFunction(() => window.fixture?.ready);
+    const amounts = () => page.locator('.asset-group[data-chain="solana"] .holding-value strong').allTextContents();
+    await page.evaluate(() => { window.fixture.state.networks.solana = 'testnet'; window.fixture.screen.update(); });
+    await page.waitForFunction(() => [...document.querySelectorAll('.asset-group[data-chain="solana"] .holding-value strong')].some(node => node.textContent.trim() === '777 SOL'));
+    assert.ok((await amounts()).some(text => text.trim() === '777 SOL'), 'positive control: the Testnet amount is found by the selector');
+    await page.evaluate(() => { window.fixture.holdSolana(true); window.fixture.state.networks.solana = 'devnet'; window.fixture.screen.update(); });
+    const marker = await page.evaluate(() => window.fixture.calls.length);
+    await page.waitForFunction(from => window.fixture.calls.slice(from - 1).some(call => call[0] === 'getSolanaBalances'), marker);
+    const held = await amounts();
+    assert.ok(!held.some(text => text.trim() === '777 SOL'), `a Solana Testnet balance is shown as the Devnet balance (${held.join(' | ')})`);
+    for (const call of await page.evaluate(from => window.fixture.calls.slice(from).filter(call => call[0] === 'keepBalances'), marker)) {
+      assert.ok(call[1][0]['solana:SOL'] === undefined || call[1][0]['solana:SOL'].units !== '777000000000', 'the Testnet units were saved after the switch');
+    }
+    await page.evaluate(() => window.fixture.releaseSolana());
+    await page.waitForFunction(() => [...document.querySelectorAll('.asset-group[data-chain="solana"] .holding-value strong')].some(node => node.textContent.trim() === '1,000 SOL'));
+    assert.ok((await amounts()).some(text => text.trim() === '1,000 SOL'), 'positive control: the Devnet amount is found by the selector');
+  });
+});

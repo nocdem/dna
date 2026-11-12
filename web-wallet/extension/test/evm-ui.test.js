@@ -91,7 +91,7 @@ test('settings expose the shared EVM network and web-wallet RPC lists', async ()
     ethereum: CHAINS.ethereum.endpoint, bsc: CHAINS.bsc.endpoint,
   } } }, { setAutoLock() {}, reveal() {}, selectEvmNetwork: chain => changed.push(chain), setEvmEndpoint: (...args) => endpoints.push(args) });
   const selects = find(root, node => node.tagName === 'select'), network = selects.find(node => node.id === 'evm-network');
-  assert.deepEqual(network.children.map(node => node.value), ['ethereum', 'bsc']); network.value = 'bsc'; await network.onchange(); assert.deepEqual(changed, ['bsc']);
+  assert.deepEqual(network.children.map(node => node.value), ['ethereum', 'bsc', 'sepolia', 'bsctestnet']); network.value = 'bsc'; await network.onchange(); assert.deepEqual(changed, ['bsc']);
   const rpc = selects.find(node => node.id === 'evm-rpc-ethereum');
   assert.deepEqual(rpc.children.map(node => node.value), CHAINS.ethereum.rpcOptions.map(option => option.url));
   rpc.value = CHAINS.ethereum.rpcOptions[1].url; await rpc.onchange(); assert.deepEqual(endpoints, [['ethereum', rpc.value]]);

@@ -9,6 +9,7 @@ import { STATE_KEY } from '../src/background/store.js';
 import { SITES_KEY } from '../../src/activity-storage.js';
 import { createWalletUi } from '../src/ui/wallet-ui.js';
 import { mountWalletPage } from '../src/ui/app.js';
+import { renderNodusSiteApproval } from '../src/ui/nodus-site-screens.js';
 import log from 'loglevel';
 
 // Node >=22.14, installed pinned packages and committed derivation WASM.
@@ -23,7 +24,7 @@ const account = { address, publicKey: `0x${publicKey}` };
 function event() { const listeners = new Set(); return { addListener(fn) { listeners.add(fn); }, removeListener(fn) { listeners.delete(fn); } }; }
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
 let backgroundModule, nextId = 0;
-async function setup(t) {
+async function setup(t, { names } = {}) {
   const values = {}, calls = [], logs = [], windows = [], state = {};
   const fixture = {
     runtime: { id: 'nodus-site-test', onConnect: event(), getManifest: () => ({ version: '0.1.132' }), getURL: path => `chrome-extension://nodus-site-test/${path}` },
@@ -42,6 +43,8 @@ async function setup(t) {
       async buildAndSign() {}, async submit() {}, async scanConfirm() {}, async tick() {},
       async rulesetInfo() { return { generation: '1', tip: '1', gen2Height: '0' }; },
       cancel() {}, lock() {}, release() {}, memory: { buffer: new ArrayBuffer(64) },
+      // Chain-name reads exist only when a test passes `names` (nameOf), so every other test keeps a module without them.
+      ...(names ? { nameOf: names.nameOf, nameLookup: async () => ({ found: false, committedHeight: '1' }), profileAddress: async () => ({ found: false, committedHeight: '1' }) } : {}),
     }) },
   };
   t.mock.method(globalThis, 'fetch', async () => { throw new Error('Unexpected network request.'); });
@@ -413,4 +416,81 @@ test('notification shows the Nodus origin and full message with working approval
     await descendants(nodes.screen).find(node => node.tagName === 'button' && node.textContent === 'Approve').onclick();
     assert.ok(calls.some(([method, params]) => method === 'resolvePendingApproval' && params[0] === 'sign'));
   } finally { page.dispose(); }
+});
+
+// Proves: a name the reverse lookup (nameOf) confirmed for this account reaches the signature approval as
+// requestData.accountName, while the signed bytes (requestData.data) and text are untouched. Can falsely pass if
+// accountName were filled from anything but the lookup; the fallback tests below cover the opposite case.
+test('Nodus signature approval carries the confirmed own chain name and the unchanged signed data', async t => {
+  const f = await setup(t, { names: { nameOf: async () => ({ found: true, name: 'alice', committedHeight: '5' }) } }), remote = f.site();
+  await f.connect(remote);
+  assert.deepEqual(await f.background.nodus.getOwnName(), { found: true, name: 'alice' });
+  const request = remote.request('nodus_signMessage', ['hello', address]), pending = await f.nextApproval(request);
+  assert.equal(pending.requestData.accountName, 'alice');
+  assert.equal(pending.requestData.account, address);
+  assert.equal(pending.requestData.text, 'hello');
+  assert.equal(pending.requestData.data, `0x${Buffer.from('hello').toString('hex')}`);
+  f.background.approvals.reject(pending.id); assert.equal((await request).error.code, 4001);
+});
+
+// Proves: with no confirmed name held, the window opens at once (nameOf never answers during this test's approval)
+// with an empty accountName, so the screen shows the address; the background read is started, and a later window
+// gets the name once the answer arrived. Can falsely pass if nextApproval resolved only after nameOf answered: the
+// answer is released only after the first approval was seen.
+test('Nodus signature approval does not wait for a chain-name read and shows the name in the next window', async t => {
+  const answer = deferred(), asked = [];
+  const f = await setup(t, { names: { nameOf: async args => { asked.push(args); return answer.promise; } } }), remote = f.site();
+  await f.connect(remote);
+  const first = remote.request('nodus_signMessage', ['one', address]), pendingFirst = await f.nextApproval(first);
+  assert.equal(pendingFirst.requestData.accountName, '');
+  assert.equal(asked.length, 1); assert.deepEqual(asked[0], { owner: address });
+  f.background.approvals.reject(pendingFirst.id); assert.equal((await first).error.code, 4001);
+  answer.resolve({ found: true, name: 'alice', committedHeight: '5' });
+  for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+  const second = remote.request('nodus_signMessage', ['two', address]), pendingSecond = await f.nextApproval(second);
+  assert.equal(pendingSecond.requestData.accountName, 'alice'); assert.equal(asked.length, 1);
+  f.background.approvals.reject(pendingSecond.id); assert.equal((await second).error.code, 4001);
+});
+
+// Proves: an answer "no name" or a failed read never produces a name (empty accountName), and a failed read is asked
+// again at the next window. Can falsely pass if the test never reached the request; the asked counts check that.
+test('Nodus signature approval shows no name when none is confirmed', async t => {
+  let mode = 'none', asked = 0;
+  const f = await setup(t, { names: { nameOf: async () => { asked++; if (mode === 'fail') throw new Error('read failed'); return { found: false, committedHeight: '5' }; } } }), remote = f.site();
+  await f.connect(remote);
+  mode = 'fail';
+  const first = remote.request('nodus_signMessage', ['one', address]), pendingFirst = await f.nextApproval(first);
+  assert.equal(pendingFirst.requestData.accountName, ''); f.background.approvals.reject(pendingFirst.id); await first;
+  for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+  mode = 'none';
+  const second = remote.request('nodus_signMessage', ['two', address]), pendingSecond = await f.nextApproval(second);
+  assert.equal(pendingSecond.requestData.accountName, ''); assert.equal(asked, 2);
+  f.background.approvals.reject(pendingSecond.id); await second;
+});
+
+// Proves the signature window: confirmed name -> "Account" shows the name and "Address" the address; no name ->
+// "Account" shows the address; the "Message bytes" row is never drawn, even when the bytes differ from the text;
+// page-controlled text is set through textContent only. Can falsely pass if the fake document ignored what the
+// renderer appended; the exact label/value rows are compared.
+test('Nodus signature window shows name or address, the message text, and no bytes row', async () => {
+  class Node {
+    constructor(tag) { this.tagName = tag; this.children = []; this.text = ''; }
+    append(...nodes) { this.children.push(...nodes); }
+    replaceChildren(...nodes) { this.children = nodes; }
+    set textContent(value) { this.text = String(value); }
+    get textContent() { return this.text + this.children.map(node => node.textContent).join(''); }
+    setAttribute() {}
+  }
+  const document = { createElement: tag => new Node(tag), createElementNS: (_ns, tag) => new Node(tag) };
+  const rows = pending => {
+    const container = new Node('main'); renderNodusSiteApproval(document, container, pending, { approve() {}, reject() {} });
+    const out = []; const walk = node => { for (const child of node.children) { if (child.tagName === 'h2') out.push([child.text, undefined]); else if (child.tagName === 'pre') out.at(-1)[1] = child.text; walk(child); } };
+    walk(container); return { out, all: container.textContent };
+  };
+  const base = { origin: 'https://site.example', type: 'nodus_signMessage' };
+  const named = rows({ ...base, requestData: { account: address, accountName: 'alice', text: '<b>hi</b>', data: '0x3c623e68693c2f623e' } });
+  assert.deepEqual(named.out, [['Account', 'alice'], ['Address', address], ['Message', '<b>hi</b>']]);
+  const unnamed = rows({ ...base, requestData: { account: address, accountName: '', text: 'hi', data: '0x6869' } });
+  assert.deepEqual(unnamed.out, [['Account', address], ['Message', 'hi']]);
+  for (const view of [named, unnamed]) assert.doesNotMatch(view.all, /Message bytes|0x[0-9a-f]{4}/);
 });

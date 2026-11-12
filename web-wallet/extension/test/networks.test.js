@@ -27,7 +27,8 @@ test('listed mainnet defaults and testnet-only Nodus/Asentum choices persist', a
     qtc: 'mainnet', xion: 'mainnet', splendor: 'mainnet', asentum: 'testnet',
   });
   for (const chain of ['ethereum', 'bsc', 'solana', 'tron']) assert.equal(background.networks.get(chain).endpoint, CHAINS[chain].endpoint);
-  for (const chain of ['ethereum', 'bsc', 'cellframe', 'ixios']) await assert.rejects(client.request('setChainNetwork', [chain, 'testnet']), /network/i);
+  // Ethereum's test network is 'sepolia' and BNB Smart Chain's is 'testnet' (evm-networks.js); a name that chain does not list is refused.
+  for (const [chain, id] of [['ethereum', 'testnet'], ['bsc', 'sepolia'], ['cellframe', 'testnet'], ['ixios', 'testnet']]) await assert.rejects(client.request('setChainNetwork', [chain, id]), /network/i);
   await assert.rejects(client.request('setChainNetwork', ['nodus', 'mainnet']), /network/i);
   await client.request('setChainNetwork', ['solana', 'devnet']);
   const { createBackground } = await import('../src/background/index.js');

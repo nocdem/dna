@@ -44,15 +44,18 @@ test('the signature and switch screens name Ethereum Sepolia', () => {
   assert.ok(root.textContent.includes('Ethereum Sepolia'));
 });
 
-// Proves the settings list Sepolia only while a site has switched the extension to it, so the selection is shown
-// truthfully, and never offer it as a first choice or give it an RPC provider list.
-test('settings list Sepolia only while it is the selected network', () => {
-  const state = selectedChain => ({ preferences: { autoLockTimeLimit: 15 }, evm: { selectedChain, endpoints: { ethereum: CHAINS.ethereum.endpoint, bsc: CHAINS.bsc.endpoint } } });
+// Proves the settings always list every Ethereum and BNB Smart Chain network (the test networks included, plan 5.6),
+// whichever is selected, and show one RPC provider list per chain for the network its selector is on. Can falsely pass
+// if the list were fixed and the RPC lists ignored the selector; the second state moves both selectors to test networks.
+test('settings list every EVM network and one RPC list per chain for its selected network', () => {
+  const endpoints = { ethereum: CHAINS.ethereum.endpoint, bsc: CHAINS.bsc.endpoint, sepolia: 'https://ethereum-sepolia-rpc.publicnode.com', bsctestnet: 'https://bsc-testnet-rpc.publicnode.com' };
+  const state = (selectedChain, networks) => ({ preferences: { autoLockTimeLimit: 15 }, networks, evm: { selectedChain, endpoints } });
   const handlers = { setAutoLock() {}, reveal() {}, selectEvmNetwork() {}, setEvmEndpoint() {} };
-  for (const [selected, expected] of [['ethereum', ['ethereum', 'bsc']], ['bsc', ['ethereum', 'bsc']], ['sepolia', ['ethereum', 'bsc', 'sepolia']]]) {
-    const root = new Node('main'); renderSettings(document, root, state(selected), handlers);
+  for (const [selected, networks, rpcIds] of [['ethereum', undefined, ['evm-rpc-ethereum', 'evm-rpc-bsc']], ['sepolia', { ethereum: 'sepolia', bsc: 'testnet' }, ['evm-rpc-sepolia', 'evm-rpc-bsctestnet']]]) {
+    const root = new Node('main'); renderSettings(document, root, state(selected, networks), handlers);
     const selects = find(root, node => node.tagName === 'select');
-    assert.deepEqual(selects.find(node => node.id === 'evm-network').children.map(node => node.value), expected);
-    assert.deepEqual(selects.filter(node => node.id?.startsWith('evm-rpc-')).map(node => node.id), ['evm-rpc-ethereum', 'evm-rpc-bsc']);
+    assert.deepEqual(selects.find(node => node.id === 'evm-network').children.map(node => node.value), ['ethereum', 'bsc', 'sepolia', 'bsctestnet']);
+    assert.deepEqual(selects.filter(node => node.id?.startsWith('evm-rpc-')).map(node => node.id), rpcIds);
+    assert.deepEqual(selects.filter(node => node.id?.startsWith('network-') && ['network-ethereum', 'network-bsc'].includes(node.id)).map(node => node.children.map(option => option.value)), [['mainnet', 'sepolia'], ['mainnet', 'testnet']]);
   }
 });

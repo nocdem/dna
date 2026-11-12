@@ -1,4 +1,4 @@
-import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, parseVault, encryptVault, decryptVault } from '../../../src/vault.js';
+import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, IDENTITY_KEY, parseVault, encryptVault, decryptVault } from '../../../src/vault.js';
 import { SITES_KEY } from '../../../src/activity-storage.js';
 import { newPhrase } from '../../../src/keys.js';
 import { validateNodusPhrase } from '../../../src/recovery.js';
@@ -59,7 +59,7 @@ export function createVaultStore({ storage, lockCoordinator, deleteHistory }) {
       const saved = await storage.get(null);
       if (saved[VAULT_KEY] && deleteHistory) await deleteHistory(parseVault(saved[VAULT_KEY]).id);
       // The connected-sites record goes with the wallet; the data-notice consent key is not listed and stays.
-      const roots = [VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, SITES_KEY];
+      const roots = [VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, IDENTITY_KEY, SITES_KEY];
       const keys = Object.keys(saved).filter(key => roots.includes(key) ||
         [ACTIVITY_KEY, HISTORY_KEY].some(root => key.startsWith(`${root}.`)));
       await storage.remove(keys);

@@ -4,6 +4,7 @@ import { SOQU_MAINNET } from '../../../src/pq/soqu-preflight.js';
 import { ckbNetwork } from '../../../src/pq/ckb.js';
 import { algorandNetwork } from '../../../src/pq/algorand.js';
 import { PQ_NETWORKS } from '../../../src/pq/networks.js';
+import { SEPOLIA, BSC_TESTNET } from './evm-networks.js';
 
 const mainnet = chain => ({ id: 'mainnet', label: 'Mainnet', endpoint: CHAINS[chain].endpoint, explorer: CHAINS[chain].explorer });
 // Approved plan §5.6: list each chain's mainnet and runnable testnets.
@@ -22,8 +23,9 @@ const mainnet = chain => ({ id: 'mainnet', label: 'Mainnet', endpoint: CHAINS[ch
 export const CHAIN_NETWORKS = {
   // GAP-7: no Nodus mainnet values exist; keep its current module/testnet.
   nodus: [{ id: 'testnet', label: 'Testnet' }],
-  ethereum: [mainnet('ethereum')],
-  bsc: [mainnet('bsc')],
+  // The test networks have one definition each, in evm-networks.js (shared with the websites' switch).
+  ethereum: [mainnet('ethereum'), { id: 'sepolia', label: 'Sepolia', endpoint: SEPOLIA.endpoint, explorer: SEPOLIA.explorer }],
+  bsc: [mainnet('bsc'), { id: 'testnet', label: 'Testnet', endpoint: BSC_TESTNET.endpoint, explorer: BSC_TESTNET.explorer }],
   solana: [mainnet('solana'),
     { id: 'testnet', label: 'Testnet', endpoint: 'https://api.testnet.solana.com', genesisHash: '4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY', scope: 'solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z' },
     { id: 'devnet', label: 'Devnet', endpoint: 'https://api.devnet.solana.com', genesisHash: 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG', scope: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1' }],

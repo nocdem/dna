@@ -7,7 +7,7 @@ import { Caip25CaveatType, Caip25EndowmentPermissionName, getEthAccounts } from 
 import { connectDetails, extensionAutoLockNote } from './wallet-ui.js';
 import { NODUS_PERMISSION, NODUS_ACCOUNT_CAVEAT } from '../background/permissions.js';
 import { CHAIN_NETWORKS, chainNetwork } from '../constants/networks.js';
-import { EVM_NETWORKS, WALLET_EVM_CHAINS } from '../constants/evm-networks.js';
+import { EVM_NETWORKS, EVM_FAMILIES, WALLET_EVM_CHAINS, evmKey } from '../constants/evm-networks.js';
 import { PQ_NETWORKS } from '../../../src/pq/networks.js';
 import { appIcon, pageHeading } from './presentation.js';
 import { displayAmount } from '../../../src/portfolio.js';
@@ -212,17 +212,19 @@ export function renderSettings(document, container, state, { setAutoLock, reveal
     const evm = element(document, 'div', 'page-block');
     const caption = element(document, 'label', '', 'Selected EVM network'), network = element(document, 'select');
     caption.htmlFor = network.id = 'evm-network';
-    // Sepolia is listed only while a website has switched the extension to it (givens item 81), so the selection is
-    // shown truthfully; the settings never offer it as a first choice.
-    for (const chain of [...WALLET_EVM_CHAINS, ...(state.evm.selectedChain === 'sepolia' ? ['sepolia'] : [])]) {
+    // Every network of Ethereum and BNB Smart Chain, test networks included (approved plan section 5.6); a website's
+    // switch (givens item 81) and this list choose among the same networks.
+    for (const chain of WALLET_EVM_CHAINS) {
       const option = element(document, 'option', '', EVM_NETWORKS[chain].name); option.value = chain; network.append(option);
     }
     network.value = state.evm.selectedChain; network.onchange = () => selectEvmNetwork(network.value);
     evm.append(caption, network, element(document, 'p', 'hint', 'Every connected site uses this network.'));
-    for (const chain of ['ethereum', 'bsc']) {
-      const rpcLabel = element(document, 'label', '', `${CHAINS[chain].name} RPC provider`), rpc = element(document, 'select');
+    // One RPC choice per chain, for the network that chain's selector is on.
+    for (const family of EVM_FAMILIES) {
+      const chain = evmKey(family, state.networks?.[family]);
+      const rpcLabel = element(document, 'label', '', `${EVM_NETWORKS[chain].name} RPC provider`), rpc = element(document, 'select');
       rpcLabel.htmlFor = rpc.id = `evm-rpc-${chain}`;
-      for (const provider of CHAINS[chain].rpcOptions) {
+      for (const provider of EVM_NETWORKS[chain].rpcOptions) {
         const option = element(document, 'option', '', provider.note ? `${provider.label} — ${provider.note}` : provider.label); option.value = provider.url; rpc.append(option);
       }
       rpc.value = state.evm.endpoints[chain]; rpc.onchange = () => setEvmEndpoint(chain, rpc.value); evm.append(rpcLabel, rpc);

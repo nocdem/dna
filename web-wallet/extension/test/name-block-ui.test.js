@@ -36,6 +36,46 @@ test('wallet greeting is visible while the first name read is pending', async ()
   assert.equal(nodes['wallet-register-name'].hidden, true);
 });
 
+// Proves the kept (unconfirmed) name from the background's public state is on the screen before getOwnName answers,
+// that a found answer replaces it, and that a not-found answer takes it away and offers registration. Could falsely pass if
+// the text came from the answer: the reply is held, and the greeting is read before it is released.
+test('the kept name is shown before the lookup answers; the answer replaces or removes it', async () => {
+  let reply;
+  const { nodes, names, ui } = fixture(() => new Promise(resolve => { reply = resolve; }));
+  ui.state.nodus.keptOwnName = 'keptname';
+  const pending = names.refresh();
+  assert.equal(nodes['wallet-title'].textContent, 'Welcome back, keptname');
+  assert.match(nodes['own-name'].textContent, /"keptname" \(last known; confirming/);
+  reply({ found: true, name: 'newname' }); await pending;
+  assert.equal(nodes['wallet-title'].textContent, 'Welcome back, newname');
+  const second = names.refresh();
+  assert.equal(nodes['wallet-title'].textContent, 'Welcome back, keptname');
+  reply({ found: false }); await second;
+  assert.equal(nodes['wallet-title'].textContent, 'Welcome back'); assert.equal(nodes['wallet-register-name'].hidden, false);
+});
+
+// Proves the kept name is on the greeting while the Nodus connection is still opening or unavailable (not nameable), with
+// no lookup asked, and that a later nameable state starts the lookup that confirms it. Could falsely pass if update() were
+// never reached with that state; the first assertion reads the greeting after update() and the request list stays empty.
+test('the kept name is shown at once while the connection is not ready', async () => {
+  const { nodes, names, ui, calls } = fixture(() => ({ found: true, name: 'keptname' }));
+  ui.state.nodus = { state: 'connecting', connection: 1, nameable: false, registrable: false, keptOwnName: 'keptname' };
+  names.update();
+  assert.equal(nodes['wallet-title'].textContent, 'Welcome back, keptname');
+  assert.match(nodes['own-name'].textContent, /"keptname" \(last known/);
+  // The name line lives inside the name block: the block is shown, the registration fields stay hidden, no lookup yet.
+  assert.equal(nodes['name-block'].hidden, false); assert.equal(nodes['name-fields'].hidden, true);
+  assert.deepEqual(calls, []);
+  // With no kept name and not nameable the block stays hidden.
+  const bare = fixture(() => ({ found: false }));
+  bare.ui.state.nodus = { state: 'connecting', connection: 1, nameable: false, registrable: false, keptOwnName: '' };
+  bare.nodes['name-block'].hidden = false; bare.names.update();
+  assert.equal(bare.nodes['name-block'].hidden, true); assert.deepEqual(bare.calls, []);
+  ui.state.nodus = { ...ui.state.nodus, state: 'ready', nameable: true };
+  names.update(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ['getOwnName']);
+});
+
 test('wallet greeting uses the name returned by getOwnName', async () => {
   const { nodes, names, calls } = fixture(() => ({ found: true, name: 'publicname' }), false);
   await names.refresh();

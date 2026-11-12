@@ -1,8 +1,9 @@
 import { groupNetworkEntries } from './network-groups.js';
 import { capabilitiesFor } from './capabilities.js';
 import { CHAINS } from './config.js';
+import { debugLog } from './debug-log.js';
 import { PQ_NETWORKS } from './pq/networks.js';
-import { ASSETS, chainBalances, balanceErrorDetail, unavailableBalanceLabel, holdingActions, sameAssetKeys, readPrices as defaultReadPrices, portfolioSnapshot, groupNetworks, usdText, displayAmount } from './portfolio.js';
+import { ASSETS, chainBalances, balanceErrorDetail, unavailableBalanceLabel, holdingActions, sameAssetKeys, readPrices as defaultReadPrices, portfolioSnapshot, groupNetworks, usdText, displayAmount, createKeptBalances, networkIdOf } from './portfolio.js';
 
 const names = { ETH: 'Ethereum', BNB: 'BNB', SOL: 'Solana', TRX: 'TRON', USDT: 'Tether', USDC: 'USD Coin', DAI: 'Dai', USDD: 'USDD', CPUNK: 'CPUNK' };
 // Asset symbol -> its own icon file. Keyed by symbol, not guessed from it, so an
@@ -94,9 +95,11 @@ function groupedNetworkControls(entries, control, expanded) {
 // portfolioSnapshot() reports them 'unsupported', and its chain is left out of
 // `chains`, so readBalances is never called for it.
 // `onKept(entries)`: called after every successful read with the last balance
-// per asset — { assetKey: { units (decimal string), observedAt (ms), address } }
-// — so the app can save it with a saved wallet; open(…, { kept }) shows such
-// entries until a fresh read replaces them.
+// per asset of the CURRENT network — { assetKey: { units (decimal string),
+// observedAt (ms), address, network, price? } } (`network`: src/portfolio.js
+// networkIdOf) — so the app can save it with a saved wallet; open(…, { kept })
+// shows such entries, for the network they were read on, until a fresh read
+// replaces them. An entry without a `network` is dropped.
 export function createPortfolio({ readBalances, readPrices = defaultReadPrices, selectAsset, leadingNetworks = [], extraNetworks = [], onKept }) {
   const entries = (list) => Object.fromEntries(list.map(({ network, asset }) => [asset.chain, network]));
   const networks = { ...entries(leadingNetworks), ...CHAINS, ...entries(extraNetworks) };
@@ -133,12 +136,28 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
   // finished (those three cleared with the wallet). `autoMinutes` is kept
   // across open()/clear() (a device setting, like `selected`).
   let autoMinutes = 0, autoTimer, readAt = 0, pricesAt = 0, doneAt = 0;
-  // assetKey -> { units: bigint, observedAt, address }: the last balance read.
-  let kept = {};
+  // The last balance read per asset, bound to the network it was read on (src/portfolio.js createKeptBalances): a row is
+  // shown, valued and exported only while its own network is the chain's current one, so a test-network read (Sepolia ETH
+  // under `ethereum:ETH`) never stands in for the main network's balance. The network identity comes from `networks`.
+  const kept = createKeptBalances({ networkIdFor: chain => networkIdOf(networks[chain]),
+    pricedFor: key => assets.find(asset => asset.key === key)?.priceId !== undefined });
+  // The kept rows already replaced by a fresh read this session (for the debug line), and the kept-row count last shown.
+  const replaced = new Set(); let lastKeptCount = 0;
+  // The price of a row: the quote of this session when there is one, else the one that was kept (only for a priced asset on
+  // a main network), so the next open can value the kept balance at once.
+  function keepOut() { onKept?.(kept.out()); }
   function keepRead(chain, result) {
-    for (const [key, value] of Object.entries(result)) if (value.state === 'ready') kept[key] = { units: value.units, observedAt: value.observedAt, address: addresses[chain] };
-    onKept?.(Object.fromEntries(Object.entries(kept).map(([key, k]) => [key, { units: k.units.toString(), observedAt: k.observedAt, address: k.address }])));
+    for (const [key, value] of Object.entries(result)) {
+      if (value.state !== 'ready') continue;
+      if (kept.has(key) && !replaced.has(key)) debugLog('portfolio', 'kept-row-replaced', { asset: key, kept_age_ms: Date.now() - kept.ageOf(key) });
+      replaced.add(key);
+    }
+    kept.read(chain, result, addresses[chain], quotes);
+    keepOut();
   }
+  // A price read replaces the kept price of every kept balance of the current network whose asset it names, and the
+  // entries are kept again.
+  function keepPrices() { if (kept.prices(quotes)) keepOut(); }
   // One extra action per network, shown under that network's asset group
   // (today only NODUS: "Claim your allocation", src/app.js refreshClaim).
   // `{ label, note, run }`; cleared by clear() and setAction(chain, undefined).
@@ -162,19 +181,25 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
   const text = value => hidden ? '••••' : value;
   // The last balance read per asset of THIS wallet's addresses (kept below);
   // only an entry whose address is the one shown now is used.
-  function visibleKept() {
-    if (!addresses) return {};
-    return Object.fromEntries(Object.entries(kept).filter(([key, k]) => addresses[key.split(':')[0]] === k.address));
-  }
+  function visibleKept() { return kept.visible(addresses); }
   const readTime = ms => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   function render() {
     // Read again automatically: a balance counts until two minutes past its
     // next scheduled read, so a value is never crossed out between reads.
     const snap = portfolioSnapshot(balances, quotes, Date.now(), assets, visibleKept(), { balanceMaxAge: autoMinutes ? (autoMinutes + 2) * 60000 : 0 });
     $('portfolio-total').textContent = text(usdText(snap.total, snap.positive));
-    $('portfolio-label').textContent = snap.state === 'partial' ? 'Known value · incomplete' : snap.state === 'loading' ? 'Updating portfolio' : 'Estimated portfolio value';
+    // A total that still holds kept (last read) balances says so, with the oldest read time, until every row is read
+    // again; then the label is the ordinary one.
+    const updating = jobs.size > 0 || !!priceJob || snap.state === 'loading';
+    if (snap.keptCount !== lastKeptCount) {
+      if (snap.keptCount > 0) debugLog('portfolio', 'kept-total-shown', { rows: snap.keptCount, age_ms: Date.now() - snap.keptAt });
+      lastKeptCount = snap.keptCount;
+    }
+    $('portfolio-label').textContent = snap.keptCount > 0 ? `Last read ${readTime(snap.keptAt)}${updating ? ' · updating' : ''}`
+      : snap.state === 'partial' ? 'Known value · incomplete' : snap.state === 'loading' ? 'Updating portfolio' : 'Estimated portfolio value';
     $('portfolio-status').textContent = snap.state === 'idle' ? 'Refresh all to read your balances and prices.'
       : snap.state === 'loading' ? `${snap.known} of ${assets.filter(asset => asset.priceId).length} asset values available. Reading all networks…`
+      : snap.keptCount > 0 ? `${snap.keptCount} of the values are from the last read and are replaced as the new reads arrive.`
       : snap.complete ? 'All supported asset balances are included.'
       : `${snap.missingBalances} balances and ${snap.missingPrices} prices unavailable or out of date. Missing values are excluded.`;
     $('portfolio-refresh').disabled = jobs.size > 0 || !!priceJob;
@@ -290,7 +315,7 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
   // which still expire by their own age (PRICE_MAX_AGE).
   function readQuotes(current, controller) {
     return readPrices({ signal: controller.signal })
-      .then(value => { if (session === current && !controller.signal.aborted) { quotes = value; pricesAt = Date.now(); return true; } return false; })
+      .then(value => { if (session === current && !controller.signal.aborted) { quotes = value; pricesAt = Date.now(); keepPrices(); return true; } return false; })
       .catch(() => false);
   }
   function updatedText() {
@@ -376,7 +401,7 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
   document.addEventListener('visibilitychange', () => setTimeout(autoTick, 0));
   function clear() {
     session++; for (const job of jobs.values()) job.abort(); jobs.clear(); priceJob?.abort(); priceJob = undefined;
-    clearInterval(timer); addresses = undefined; endpoints = undefined; balances = {}; quotes = {}; filter = 'all'; hidden = false; rowActions = {}; earn = {}; kept = {};
+    clearInterval(timer); addresses = undefined; endpoints = undefined; balances = {}; quotes = {}; filter = 'all'; hidden = false; rowActions = {}; earn = {}; kept.clear(); replaced.clear(); lastKeptCount = 0;
     readAt = 0; pricesAt = 0; doneAt = 0; backgroundJobs.clear(); expandedNetworkGroups.clear();
     $('portfolio-updated').textContent = ''; render();
   }
@@ -384,13 +409,13 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
   // parseBalances), shown until a fresh read replaces them.
   function open(publicAddresses, publicEndpoints, { automatic = true, kept: initial = {} } = {}) {
     clear(); addresses = { ...publicAddresses }; endpoints = { ...publicEndpoints };
-    for (const [key, k] of Object.entries(initial)) kept[key] = { units: k.units, observedAt: k.observedAt, address: k.address };
+    kept.load(initial);                  // a row without a network (an older record) is dropped
     timer = setInterval(render, 30000); render(); if (automatic) void refresh();
   }
   function changeEndpoint(chain, endpoint) {
     if (!endpoints) return;
     // Cancel the old endpoint's reads so they cannot overwrite the new state.
-    const savedAddresses = addresses, savedEndpoints = { ...endpoints, [chain]: endpoint }, savedActions = rowActions, savedKept = kept, savedGroups = [...expandedNetworkGroups];
+    const savedAddresses = addresses, savedEndpoints = { ...endpoints, [chain]: endpoint }, savedActions = rowActions, savedKept = kept.raw(), savedGroups = [...expandedNetworkGroups];
     open(savedAddresses, savedEndpoints, { automatic: false, kept: savedKept });
     for (const group of savedGroups) expandedNetworkGroups.add(group);
     readAt = Date.now();                 // no automatic read right after: the line below asks for Refresh (0.1.96)
@@ -432,7 +457,7 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
     networks[chain] = network; flag();
     // Environment changes can share an address; address-only retained values
     // must be removed along with the active read.
-    if (forgetKept) for (const key of Object.keys(kept)) if (key.startsWith(`${chain}:`)) delete kept[key];
+    if (forgetKept) kept.forget(chain);
     if (keepRead && network.balanceUnavailable !== true) {
       const after = assets.filter(a => a.chain === chain);
       if (sameAssetKeys(before, after)) { render(); return; }

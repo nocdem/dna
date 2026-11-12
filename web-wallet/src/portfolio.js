@@ -82,12 +82,77 @@ export function parsePrices(data, now = Date.now()) {
 export async function readPrices({ signal, fetcher } = {}) {
   return parsePrices(await request(PRICE_URL, undefined, { signal, fetcher }));
 }
+// The identity of the network a balance was read on: 'main' for a main network, and for a test network its chain id and
+// the host of its endpoint (so Sepolia, a Solana devnet and another test network differ). It fits the saved record's
+// pattern. A kept balance is shown, valued and saved only for the network it was read on.
+// `networkId` (optional, given by the screen with the definition): the id of the selected network ('testnet', 'devnet',
+// 'sepolia'), needed where several test networks share one definition (Solana Testnet and Devnet).
+export function networkIdOf(network) {
+  if (!network?.testnet) return 'main';
+  let host = '';
+  try { host = new URL(network.endpoint).hostname.toLowerCase().replace(/[^a-z0-9.-]/g, ''); } catch { /* no endpoint: the chain id alone */ }
+  const selected = typeof network.networkId === 'string' ? network.networkId.replace(/[^A-Za-z0-9._-]/g, '').slice(0, 24) : '';
+  return `test:${selected ? `${selected}:` : ''}${network.chainId ?? ''}:${host}`.slice(0, 64);
+}
+// The kept balances of one wallet, one row per asset key: { units: bigint, observedAt, address, network, price? }. Pure
+// bookkeeping (portfolio-view.js drives it): `networkIdFor(chain)` is the chain's current network identity and
+// `pricedFor(assetKey)` says whether the asset has a price identity on its current network. A row is visible, exported and
+// priced only while its own network is the chain's current one; a test-network row never carries a price.
+export function createKeptBalances({ networkIdFor, pricedFor }) {
+  let rows = {};
+  const chainOf = key => key.split(':')[0];
+  const current = key => rows[key]?.network === networkIdFor(chainOf(key));
+  const copy = k => ({ units: k.units, observedAt: k.observedAt, address: k.address, network: k.network,
+    ...(k.price ? { price: { units: k.price.units, observedAt: k.price.observedAt } } : {}) });
+  return {
+    // Saved rows. A row without a network (written before rows carried one) is dropped: a fresh read replaces it.
+    load(initial = {}) { rows = {}; for (const [key, k] of Object.entries(initial)) if (typeof k?.network === 'string' && k.network) rows[key] = copy(k); },
+    clear() { rows = {}; },
+    has: key => Boolean(rows[key]),
+    ageOf: key => (rows[key] ? rows[key].observedAt : undefined),
+    // All rows, whatever their network (for a copy that survives an endpoint change).
+    raw() { return Object.fromEntries(Object.entries(rows).map(([key, k]) => [key, copy(k)])); },
+    // A successful read of `chain` replaces the rows of its assets, on the chain's current network. The price is the
+    // session's quote, else the row's own kept price of the same network, and only for a priced asset.
+    read(chain, result, address, quotes = {}) {
+      const network = networkIdFor(chain);
+      for (const [key, value] of Object.entries(result)) {
+        if (value.state !== 'ready') continue;
+        const price = pricedFor(key) ? (quotes[key] ?? (rows[key]?.network === network ? rows[key].price : undefined)) : undefined;
+        rows[key] = { units: value.units, observedAt: value.observedAt, address, network, ...(price ? { price: { units: price.units, observedAt: price.observedAt } } : {}) };
+      }
+    },
+    // A price read replaces the kept price of the rows of the current network whose asset is priced; true when one changed.
+    prices(quotes, now = Date.now()) {
+      let changed = false;
+      for (const [key, k] of Object.entries(rows)) {
+        const quote = quotes[key];
+        if (current(key) && pricedFor(key) && quote && quote.observedAt <= now + 60000 && (k.price?.units !== quote.units || k.price?.observedAt !== quote.observedAt)) {
+          k.price = { units: quote.units, observedAt: quote.observedAt }; changed = true;
+        }
+      }
+      return changed;
+    },
+    forget(chain) { for (const key of Object.keys(rows)) if (chainOf(key) === chain) delete rows[key]; },
+    // The rows shown and valued: current network and the address shown now.
+    visible(addresses) {
+      if (!addresses) return {};
+      return Object.fromEntries(Object.entries(rows).filter(([key, k]) => current(key) && addresses[chainOf(key)] === k.address).map(([key, k]) => [key, copy(k)]));
+    },
+    // The rows to save: current network only, units and price units as decimal strings.
+    out() {
+      return Object.fromEntries(Object.entries(rows).filter(([key]) => current(key)).map(([key, k]) => [key, { units: k.units.toString(), observedAt: k.observedAt, address: k.address, network: k.network,
+        ...(k.price ? { price: { units: k.price.units.toString(), observedAt: k.price.observedAt } } : {}) }]));
+    },
+  };
+}
 // `kept`: assetKey -> { units, observedAt } — the last balance read for this
-// wallet (this session, or saved encrypted with a saved wallet: decision
-// 2026-10-02-device-cache-only-when-saved). A row with no current balance
-// shows it with its read time (`keptAt`), like the app's wallet cache
-// (messenger/database/wallet_cache.h: stale-while-revalidate); it is never
-// priced, never part of the total and still counts as a missing balance.
+// wallet and network (this session, or saved encrypted with a saved wallet: decision
+// 2026-10-02-device-cache-only-when-saved; createKeptBalances above admits only rows of the network shown). A row with no
+// current balance shows it with its read time (`keptAt`), like the app's wallet cache
+// (messenger/database/wallet_cache.h: stale-while-revalidate). With a kept `price` (a priced asset on a main network)
+// it is valued at once and is part of the total while its fresh read is pending; without one it is not priced, stays out
+// of the total and counts as a missing balance. A failed read takes it out of the total.
 // `balanceMaxAge`: how old a read balance may be and still count (default
 // BALANCE_MAX_AGE; longer while the balances are read again automatically,
 // src/portfolio-view.js setAutoRefresh — never shorter than the default).
@@ -115,14 +180,26 @@ export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = A
     const usd = priced && freshBalance && (balance.units === 0n || freshPrice)
       ? balance.units * (quote?.units || 0n) / (10n ** BigInt(asset.decimals)) : null;
     const last = !freshBalance && typeof kept[asset.key]?.units === 'bigint' ? kept[asset.key] : undefined;
+    // A kept balance is valued at once when a price was kept with it (or the fresh price, which then replaces the kept
+    // one): the total shows the last read value while the fresh reads are made. A kept balance whose price was never
+    // kept stays out of the total.
+    // It counts only while that asset's fresh read is still to come (idle) or running (loading): once the read FAILED, or
+    // the read balance has aged out, the asset leaves the total as before (its row still shows the last read value and time).
+    const waiting = balance.state === 'idle' || balance.state === 'loading';
+    const keptPrice = last && priced && waiting && typeof last.price?.units === 'bigint' ? (freshPrice ? quote : last.price) : undefined;
+    const keptUsd = keptPrice ? last.units * keptPrice.units / (10n ** BigInt(asset.decimals)) : null;
     return { ...asset, ...balance, state: balance.state === 'ready' && !freshBalance ? 'stale' : balance.state,
       balance: freshBalance ? formatUnits(balance.units, asset.decimals) : last ? formatUnits(last.units, asset.decimals) : null,
-      ...(last ? { units: last.units, keptAt: last.observedAt } : {}), usd,
+      ...(last ? { units: last.units, keptAt: last.observedAt } : {}), usd: usd ?? keptUsd,
+      ...(keptUsd !== null && usd === null ? { keptUsd: true, keptPriceAt: keptPrice.observedAt } : {}),
       positive: freshBalance && balance.units > 0n, priceMissing: priced && freshBalance && balance.units > 0n && !freshPrice };
   });
   const priced = rows.filter(row => row.priceId !== undefined);
   const known = priced.filter(row => row.usd !== null), total = known.reduce((sum, row) => sum + row.usd, 0n);
   const complete = known.length === priced.length;
+  // The rows whose value comes from a kept balance: the total is then the last read value, as old as the oldest of
+  // their balance reads (the label says so until every row is read again).
+  const keptKnown = known.filter(row => row.keptUsd);
   // 'unsupported' rows are never read, so they take no part in the load state.
   const tracked = rows.filter(r => r.state !== 'unsupported');
   const state = tracked.every(r => r.state === 'idle') ? 'idle' : tracked.some(r => r.state === 'loading') ? 'loading' : complete ? 'complete' : 'partial';
@@ -131,7 +208,9 @@ export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = A
   // asset's own load state is already visible on its own row and never was
   // part of "the estimate covers only the 14 configured balances".
   return { rows, complete, state, known: known.length, total: complete || total > 0n ? total : null,
-    positive: known.some(row => row.positive), missingBalances: priced.filter(r => r.balance === null || r.keptAt !== undefined).length,
+    positive: known.some(row => row.positive || (row.keptUsd && row.units > 0n)),
+    keptCount: keptKnown.length, keptAt: keptKnown.length ? Math.min(...keptKnown.map(row => Math.min(row.keptAt, row.keptPriceAt))) : undefined,
+    missingBalances: priced.filter(r => r.balance === null || r.keptAt !== undefined).length,
     missingPrices: priced.filter(r => r.priceMissing).length };
 }
 // The listing order (0.1.102, operator 2026-10-12): NODUS first, then the

@@ -1,12 +1,14 @@
 import ObjectMultiplex from '@metamask/object-multiplex';
 import { ExtensionPortStream } from 'extension-port-stream';
 import { pipeline } from 'readable-stream';
+import { debugLog, errorFields, stopwatch } from '../../../src/debug-log.js';
 
 // Port: v13.54.0 app/scripts/metamask-controller.js:4601-4613 (trusted multiplexed controller channel).
 // Page names: app/scripts/background.ts:857-865, 907-916; approved plan §3.2.
 export function connectTrusted({ runtime = chrome.runtime, page = globalThis.location.pathname.split('/').pop() } = {}) {
   const name = { 'popup.html': 'popup', 'notification.html': 'notification', 'home.html': 'fullscreen' }[page];
   if (!name) throw new Error('Unknown wallet page.');
+  debugLog('ui', 'page-open', { page });
   const port = runtime.connect({ name }), stream = new ExtensionPortStream(port), mux = new ObjectMultiplex();
   const controller = mux.createStream('controller'), pending = new Map(), disconnectListeners = new Set(), notificationListeners = new Set();
   let id = 0, closed = false;
@@ -43,8 +45,15 @@ export function connectTrusted({ runtime = chrome.runtime, page = globalThis.loc
   return {
     request(method, params = []) {
       if (closed) return Promise.reject(new Error('Wallet background disconnected. Reopen this wallet page.'));
+      // Debug line per request to the background: the method name, request number, duration and outcome. Never the
+      // parameters (a password, words or signing data can be among them) and never the answer.
+      const elapsed = stopwatch();
       return new Promise((resolve, reject) => {
-        const requestId = ++id; pending.set(requestId, { resolve, reject });
+        const requestId = ++id;
+        pending.set(requestId, {
+          resolve: value => { debugLog('ui', 'request', { page, method, id: requestId, ms: elapsed(), outcome: 'ok' }); resolve(value); },
+          reject: error => { debugLog('ui', 'request', { page, method, id: requestId, ms: elapsed(), ...errorFields(error) }); reject(error); },
+        });
         const write = () => { try { if (!closed) controller.write({ jsonrpc: '2.0', id: requestId, method, params }); }
           catch (error) { pending.delete(requestId); reject(error); } };
         // After START_UI_SYNC a request is written at once, so a request made just before close() (dispose's unsubscribe) still goes out.

@@ -18,14 +18,16 @@ export async function createIncomingNotifications({ alarms, notifications, runti
       const network = networks.get(chain);
       return { chain, network: network.id, endpoint: network.endpoint, label: `${name} (${network.label})`, read, kind: 'history' };
     };
+    const bscMainnet = networks.get('bsc').id === 'mainnet';
     return [
       history('nodus', NODUS_NETWORK.name, () => nodus.getHistory()),
-      history('ethereum', CHAINS.ethereum.name, () => nodus.getChainHistory('ethereum', { manual: true })),
+      ...(networks.get('ethereum').id === 'mainnet' ? [history('ethereum', CHAINS.ethereum.name, () => nodus.getChainHistory('ethereum', { manual: true }))] : []),
       history('solana', CHAINS.solana.name, () => solana.getHistory({ manual: true })),
       history('tron', CHAINS.tron.name, () => tron.getHistory({ manual: true })),
       history('cellframe', CELLFRAME.name, () => nodus.getChainHistory('cellframe', { manual: true })),
-      { chain: 'bsc', network: 'mainnet', endpoint: evm.getState().endpoints.bsc,
-        label: `${CHAINS.bsc.name} (Mainnet)`, kind: 'balance', assets: [CHAINS.bsc, ...CHAINS.bsc.tokens], read: () => evm.getBalances('bsc') },
+      // Incoming-payment notices cover mainnet balances only: none while BNB Smart Chain is on its test network.
+      ...(bscMainnet ? [{ chain: 'bsc', network: 'mainnet', endpoint: evm.getState().endpoints.bsc,
+        label: `${CHAINS.bsc.name} (Mainnet)`, kind: 'balance', assets: [CHAINS.bsc, ...CHAINS.bsc.tokens], read: () => evm.getBalances('bsc') }] : []),
       { chain: 'ixios', network: 'mainnet', endpoint: IXIOS_NETWORK.endpoint,
         label: `${IXIOS_NETWORK.name} (Mainnet)`, kind: 'balance', assets: [IXIOS_NETWORK], read: () => nodus.getIxiosBalance() },
     ];
