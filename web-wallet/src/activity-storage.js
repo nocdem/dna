@@ -142,11 +142,13 @@ export async function parseSites(text, id, key) {
 export async function serializeBalances(id, entries, key) {
   // `price` (optional): the last price read for the asset, { units, observedAt } with units a decimal string, kept next
   // to the balance so the total can be shown at once on the next open (an older build ignores the field).
+  // `network`: the identity of the network the balance was read on (src/portfolio.js networkIdOf): a row is shown only for
+  // that network, and a row saved without one (an older build) is dropped on load.
   const selected = Object.entries(entries).slice(0, BALANCES_MAX).map(([asset, e]) => [asset, { units: e.units, observedAt: e.observedAt, address: e.address,
-    ...(e.price ? { price: { units: e.price.units, observedAt: e.price.observedAt } } : {}) }]);
+    ...(e.network !== undefined ? { network: e.network } : {}), ...(e.price ? { price: { units: e.price.units, observedAt: e.price.observedAt } } : {}) }]);
   return sealRecord(BALANCES_CONTEXT, id, Object.fromEntries(selected), key, BALANCES_MAX_PLAIN, 'balances');
 }
-// -> { assetKey: { units: bigint, observedAt, address } }; anything that does
+// -> { assetKey: { units: bigint, observedAt, address, network, price? } }; anything that does
 // not authenticate or check out throws (the caller then shows nothing kept).
 export async function parseBalances(text, id, key, now = Date.now()) {
   if (!text) return {};
@@ -159,7 +161,10 @@ export async function parseBalances(text, id, key, now = Date.now()) {
         typeof e.address !== 'string' || e.address.length === 0 || e.address.length > 128) throw new Error('Invalid saved balances.');
     const p = e.price;
     if (p !== undefined && (!p || typeof p.units !== 'string' || !/^(0|[1-9]\d{0,77})$/.test(p.units) || !Number.isSafeInteger(p.observedAt) || p.observedAt <= 0 || p.observedAt > now + 60000)) throw new Error('Invalid saved balances.');
-    out[asset] = { units: BigInt(e.units), observedAt: e.observedAt, address: e.address, ...(p ? { price: { units: BigInt(p.units), observedAt: p.observedAt } } : {}) };
+    // A legacy row (no network) is dropped, not assumed to be mainnet; a network that is present must be well formed.
+    if (e.network === undefined) continue;
+    if (typeof e.network !== 'string' || !/^[A-Za-z0-9:._-]{1,64}$/.test(e.network)) throw new Error('Invalid saved balances.');
+    out[asset] = { units: BigInt(e.units), observedAt: e.observedAt, address: e.address, network: e.network, ...(p ? { price: { units: BigInt(p.units), observedAt: p.observedAt } } : {}) };
   }
   return out;
 }
