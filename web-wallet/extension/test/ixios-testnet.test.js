@@ -34,6 +34,14 @@ test('the local-history route returns saved rows when it is the first call after
 const amounts = page => page.locator('.asset-group[data-chain="ixios"] .holding-value strong').allTextContents();
 const shown = (page, text) => page.waitForFunction(expected => [...document.querySelectorAll('.asset-group[data-chain="ixios"] .holding-value strong')].some(node => node.textContent.trim() === expected), text);
 const saved = (page, from) => page.evaluate(start => window.fixture.calls.slice(start).filter(call => call[0] === 'keepBalances').map(call => call[1][0]), from);
+// While the Ixios read is held and no kept Ixios value is admitted, the Ixios group is NOT rendered: with zero balances hidden
+// (the default) a network group is listed only if one of its rows is a displayed holding (a known, non-zero amount), and a row
+// that is still being read has no amount (src/portfolio.js:280 displayedHolding, :284-291 groupNetworks). That is the designed
+// behaviour, not a defect. So these helpers read what is rendered without waiting for the group: the text of every Ixios group
+// element that exists (empty if none) and the text of the whole page. The positive control that the page is not simply empty is
+// the wait for '8 IXIOS' after releaseIxios().
+const ixiosGroupText = page => page.evaluate(() => [...document.querySelectorAll('.asset-group[data-chain="ixios"]')].map(node => node.textContent).join(' | '));
+const pageText = page => page.evaluate(() => document.body.textContent);
 const asked = page => page.waitForFunction(() => window.fixture?.calls?.some(call => call[0] === 'getIxiosBalance'));
 const TEST_UNITS = '777000000000000000000';
 
@@ -81,7 +89,8 @@ test('a test-network Ixios read finishing between the state change and update() 
     await asked(page);
     const held = (await amounts(page)).map(text => text.trim());
     assert.ok(!held.includes('777 IXIOS'), `the saved test value is shown as the mainnet balance (${held.join(' | ')})`);
-    assert.doesNotMatch(await page.locator('.asset-group[data-chain="ixios"]').textContent(), /Last read/);
+    assert.doesNotMatch(await ixiosGroupText(page), /Last read/);
+    assert.doesNotMatch(await pageText(page), /777(\.0+)? IXIOS/, 'a 777 IXIOS amount is rendered somewhere');
     await page.evaluate(() => window.fixture.releaseIxios());
     await shown(page, '8 IXIOS');
   });
@@ -113,7 +122,8 @@ test('a saved mainnet Ixios value is shown at the first definition after unlock;
     await asked(page);
     const held = (await amounts(page)).map(text => text.trim());
     assert.ok(!held.includes('777 IXIOS'), `a saved test-network value is shown on mainnet (${held.join(' | ')})`);
-    assert.doesNotMatch(await page.locator('.asset-group[data-chain="ixios"]').textContent(), /Last read/);
+    assert.doesNotMatch(await ixiosGroupText(page), /Last read/);
+    assert.doesNotMatch(await pageText(page), /777(\.0+)? IXIOS/, 'a 777 IXIOS amount is rendered somewhere');
     await page.evaluate(() => window.fixture.releaseIxios());
     await shown(page, '8 IXIOS');
   });
