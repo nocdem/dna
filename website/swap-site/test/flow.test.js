@@ -79,12 +79,13 @@ function stubAdapter(behaviour = {}) {
 
 // settings: fields merged into STATUS.settings; noToken: do not give the usdtToken option.
 // connected: false leaves the flow with no accounts (the extension not connected yet).
-function makeFlow({ routes, adapter = stubAdapter(), signText, pollMax, sleep, random, settings, noToken, connected = true } = {}) {
+// log: a logger for the flow and the bot client (log.js); none by default.
+function makeFlow({ routes, adapter = stubAdapter(), signText, pollMax, sleep, random, settings, noToken, connected = true, log } = {}) {
   const status = settings ? { ...STATUS, settings: { ...STATUS.settings, ...settings } } : STATUS;
   const fetch = stubFetch({ 'GET /amm/status': [200, status], ...routes });
   const sleeps = [];
   const flow = createSwapFlow({
-    bot: createBotClient({ fetch }), adapter, signText, botUrl: BOT_ORIGIN, usdtToken: noToken ? undefined : TOKEN,
+    bot: createBotClient({ fetch, log }), adapter, signText, log, botUrl: BOT_ORIGIN, usdtToken: noToken ? undefined : TOKEN,
     sleep: sleep ?? (async ms => { sleeps.push(ms); }), pollMax, pollIntervalMs: 5000, random,
   });
   if (connected) flow.setAccounts(ACCOUNTS);
@@ -427,7 +428,7 @@ test('the bot is reached only at BOT_ORIGIN under /amm (plan section 18 change 5
   }
   const swapJs = readFileSync(new URL('../swap.js', import.meta.url), 'utf8');
   assert.match(swapJs, /const botUrl = BOT_ORIGIN;/);                           // the extension gets the same constant
-  assert.match(swapJs, /createBotClient\(\{ fetch: \(\.\.\.a\) => fetch\(\.\.\.a\) \}\)/);   // client default base = BOT_ORIGIN/amm
+  assert.match(swapJs, /createBotClient\(\{ fetch: \(\.\.\.a\) => fetch\(\.\.\.a\), log \}\)/);   // client default base = BOT_ORIGIN/amm
   // The one allowed use of `location` is the existing navigation to the extension page (an assignment, not a read);
   // with that exact statement removed, no `location` and no other page-address property may remain in swap.js.
   assert.ok(swapJs.includes('location.href = EXT_PAGE;'));
@@ -848,6 +849,8 @@ test('confirmAdd passes onStep to the adapter; without onStep the old call shape
   const seen = [];
   assert.equal((await flow.confirmAdd({ onStep: st => seen.push(st) })).ok, true);
   assert.deepEqual(seen, FLOW_STEPS.liquidityAdd);
+  // The first pair is spent by the successful add, so the second call needs a new pair (the stub route answers the same body).
+  assert.equal((await flow.pressAdd({ side: 'usdt', amountText: '10' })).ok, true);
   assert.equal((await flow.confirmAdd()).ok, true);   // no argument at all: unchanged for old callers
   assert.equal(adapter.calls.length, 2);
 });
@@ -897,4 +900,34 @@ test('the empty tolerance field shows no number and names what to do; the approv
   assert.deepEqual([...html.matchAll(/class="chip"[^>]*data-pct="([^"]+)"/g)].map(m => m[1]), ['0.5', '1', '3']);
   const js = readFileSync(new URL('swap.js', dir), 'utf8');
   assert.match(js, /const chosen = percentToBps\(\$\('tol'\)\.value\)\.ok;\s*\$\('tol-hint'\)\.hidden = chosen;\s*\$\('approve-hint'\)\.hidden = chosen \|\| \$\('approve-btn'\)\.hidden;/);
+});
+
+// ── a paid quote is spent ──
+// PROVES: after a SUCCESSFUL confirm / confirmAdd the quote is gone from the flow state (it was only cleared on the
+//   delivered failure), so the same price cannot be approved again (the bot would only answer number_reused after two
+//   needless extension windows), and a second confirm returns not_ready without reaching the adapter.
+// FALSE PASS: the stub adapter resolves at once; the real extension's windows and swap.js's button handling are not run.
+test('a successful confirm spends the quote: state.quote is null and a second confirm never reaches the adapter', async () => {
+  const adapter = stubAdapter();
+  const { flow } = makeFlow({ adapter, routes: { 'POST /amm/quote': [200, QUOTE] } });
+  await flow.loadStatus(); await flow.press({ direction: 'usdt_to_nodus', amountText: '100' });
+  const first = await flow.confirm({ toleranceBps: 100 });
+  assert.equal(first.ok, true);
+  assert.equal(first.requestNumber, '4242');
+  assert.equal(flow.state.quote, null);
+  assert.equal((await flow.confirm({ toleranceBps: 100 })).reason, 'not_ready');
+  assert.equal(adapter.calls.length, 1);
+});
+
+test('a successful confirmAdd spends the pair: state.addQuote is null and a second confirmAdd never reaches the adapter', async () => {
+  const pair = { approved: true, usdtAmount: '10000000', nodusAmount: '10000000000000', requestNumber: '88', validUntil: '1700000300', payEthereum: `0x${'fe'.repeat(20)}`, payNodus: 'fd'.repeat(64) };
+  const adapter = stubAdapter();
+  const { flow } = makeFlow({ adapter, routes: { 'POST /amm/liquidity/quote': [200, pair] } });
+  await flow.loadStatus(); await flow.pressAdd({ side: 'nodus', amountText: '100000' });
+  const first = await flow.confirmAdd();
+  assert.equal(first.ok, true);
+  assert.equal(first.requestNumber, '88');
+  assert.equal(flow.state.addQuote, null);
+  assert.equal((await flow.confirmAdd()).reason, 'not_ready');
+  assert.equal(adapter.calls.length, 1);
 });

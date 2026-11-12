@@ -15,6 +15,7 @@ import {
   readQuoteAnswer, readAddQuoteAnswer, refusalText, describeSwapState,
   buildWithdrawText, randomRequestNumber, liquidityMinNodusRaw, isTokenAddress,
 } from './swap-logic.js';
+import { guardLog, errorFields } from './log.js';
 
 // Bounded polling of GET /amm/swap/<id> (plan section 7 step 8). These are this build's values, not plan values:
 // 240 reads, 5 s apart = 20 minutes (the bot's USDT payout is final only after payout_final_depth_eth = 3 Ethereum
@@ -108,7 +109,9 @@ export function createSwapFlow({
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
   pollMax = POLL_MAX, pollIntervalMs = POLL_INTERVAL_MS,
   random,
+  log,       // the diagnostic logger (log.js); optional, never changes a result
 } = {}) {
+  const L = guardLog(log);
   // swapGen / addGen: bumped by every new question and by clearQuote, so an answer that arrives after the inputs changed
   // is discarded (givens item 68: the shown answer belongs to the amount the user chose). followGen: the newest follow
   // ends the older ones. pendingWithdraw: a signed withdrawal whose post outcome is uncertain, kept in memory only.
@@ -123,6 +126,22 @@ export function createSwapFlow({
   };
   const minNodus = () => liquidityMinNodusRaw(s.status);
 
+  // One adapter call with its log lines: start, every step the adapter announces (with the time since the start), the end or
+  // the failure with the error's named fields. The page's onStep is still called, and the error is rethrown unchanged.
+  async function loggedCall(name, requestNumber, run, onStep) {
+    const ms = L.timer();
+    L.info('adapter', 'call_start', { name, requestNumber });
+    const stepped = step => { L.info('adapter', 'step', { name, requestNumber, id: step?.id, n: step?.n, of: step?.of, ms: ms() }); onStep?.(step); };
+    try {
+      const r = await run(stepped);
+      L.info('adapter', 'call_end', { name, requestNumber, ms: ms() });
+      return r;
+    } catch (err) {
+      L.warn('adapter', 'call_failed', { name, requestNumber, ...errorFields(err), ms: ms() });
+      throw err;
+    }
+  }
+
   async function jsonOf(res) {
     if (!res.ok) return { reason: 'unreachable' };
     if (res.json === null || typeof res.json !== 'object') return { reason: 'bad_answer' };
@@ -136,6 +155,7 @@ export function createSwapFlow({
     if (!answered) {
       // unreachable or not readable: the bot may have received it. Keep the exact signed body for a resend.
       s.pendingWithdraw = w;
+      L.warn('withdraw', 'post_uncertain', { requestNumber: w.requestNumber, reason: r.reason ?? 'bad_answer' });
       return {
         ok: false, uncertain: true, reason: r.reason ?? 'bad_answer', requestNumber: w.requestNumber,
         text: `Your withdrawal was signed and sent, but the bot's answer did not arrive, so it may have been received (request ${w.requestNumber}). ` +
@@ -143,6 +163,7 @@ export function createSwapFlow({
       };
     }
     s.pendingWithdraw = null;   // a definite answer: nothing is kept
+    L[r.json.received === true || r.json.reason === 'number_reused' ? 'info' : 'warn']('withdraw', 'post_answered', { requestNumber: w.requestNumber, received: r.json.received, reason: r.json.reason });
     if (r.json.received === true) return { ok: true, requestNumber: String(r.json.requestNumber ?? w.requestNumber) };
     if (r.json.reason === 'number_reused') {
       return { ok: true, alreadyReceived: true, requestNumber: w.requestNumber, text: `The bot already has this withdrawal (request ${w.requestNumber}).` };
@@ -150,7 +171,7 @@ export function createSwapFlow({
     return { ok: false, reason: r.json.reason, text: refusalText(r.json.reason) };
   }
 
-  return {
+  const api = {
     state: s,
     // A change of the connected account drops a kept signed withdrawal (it is signed by the other account).
     setAccounts(accounts) {
@@ -170,12 +191,14 @@ export function createSwapFlow({
     // GET /amm/status (step 1). The answer is kept for the chain ids, addresses and settings the site needs.
     async loadStatus() {
       const r = await jsonOf(await bot.status());
-      if (r.reason) return { ok: false, reason: r.reason };
+      if (r.reason) { L.warn('status', 'failed', { reason: r.reason }); return { ok: false, reason: r.reason }; }
       const j = r.json;
       if (typeof j.foundationNodus !== 'string' || typeof j.nodusChainId !== 'string' || typeof j.settings !== 'object' || j.settings === null) {
+        L.warn('status', 'failed', { reason: 'bad_answer' });
         return { ok: false, reason: 'bad_answer' };
       }
       s.status = j;
+      L.info('status', 'loaded', { swapsPaused: j.swapsPaused, liquidityPaused: j.liquidityPaused, payoutsPaused: j.payoutsPaused, stopped: j.stopped, ethChainId: j.settings.ethChainId });
       return { ok: true, status: j };
     },
 
@@ -212,16 +235,16 @@ export function createSwapFlow({
       const min = minimumToReceive(q.number, q.estimatedFee, toleranceBps);
       try {
         if (q.direction === 'usdt_to_nodus') {
-          await adapter.usdtToNodus({
+          await loggedCall('usdtToNodus', q.requestNumber, stepped => adapter.usdtToNodus({
             botUrl, ethereumAddress: s.accounts.ethereum, nodusAddress: s.accounts.nodus.address, token: tokenOf(), payTo: q.payTo,
             amountUsdtRaw: q.amountRaw, minimumNodusRaw: min, requestNumber: q.requestNumber,
             ethChainId: s.status.settings.ethChainId,
-          }, { onStep });
+          }, { onStep: stepped }), onStep);
         } else {
-          await adapter.nodusToUsdt({
+          await loggedCall('nodusToUsdt', q.requestNumber, stepped => adapter.nodusToUsdt({
             botUrl, nodusAddress: s.accounts.nodus.address, ethereumAddress: s.accounts.ethereum, payTo: q.payTo,
             amountNodusRaw: q.amountRaw, minimumUsdtRaw: min, requestNumber: q.requestNumber,
-          }, { onStep });
+          }, { onStep: stepped }), onStep);
         }
       } catch (err) {
         const info = describeAdapterError(err);
@@ -229,6 +252,10 @@ export function createSwapFlow({
         if (info.delivered) { s.quote = null; return { ok: false, reason: 'delivered', requestNumber: q.requestNumber, ...info }; }
         return { ok: false, reason: err?.code ?? 'extension_error', ...info };
       }
+      // The request reached the bot and was paid: the price is spent exactly as in the delivered branch. A second
+      // approval could only end in the bot's number_reused after two needless extension windows. swapGen is bumped
+      // (as clearQuote does) so a late answer to this price is not shown.
+      s.quote = null; s.swapGen++;
       return { ok: true, requestNumber: q.requestNumber, minimum: min };
     },
 
@@ -241,9 +268,11 @@ export function createSwapFlow({
       const gen = ++s.followGen;
       const stale = () => gen !== s.followGen || shouldStop();
       let last = null;
+      L.info('follow', 'start', { requestNumber, pollMax, pollIntervalMs });
       for (let i = 1; i <= pollMax; i++) {
+        const ms = L.timer();
         const res = await bot.swapState(requestNumber);
-        if (stale()) return { final: false, stopped: true };
+        if (stale()) { L.info('follow', 'stopped', { requestNumber, poll: i }); return { final: false, stopped: true }; }
         let info, answer = null;
         if (res.ok && res.json && typeof res.json.state === 'string') {
           answer = res.json;
@@ -252,13 +281,15 @@ export function createSwapFlow({
           info = { final: false, kind: 'pending', state: '', text: 'Waiting for the bot\'s answer.' };
         }
         last = { info, answer, poll: i };
+        L.info('follow', 'read', { requestNumber, poll: i, readable: answer !== null, state: info.state, kind: info.kind, final: info.final, ms: ms() });
         onState(last);
-        if (info.final) return { final: true, ...last };
-        if (i < pollMax) { await sleep(pollIntervalMs); if (stale()) return { final: false, stopped: true }; }
+        if (info.final) { L.info('follow', 'final', { requestNumber, poll: i, state: info.state }); return { final: true, ...last }; }
+        if (i < pollMax) { await sleep(pollIntervalMs); if (stale()) { L.info('follow', 'stopped', { requestNumber, poll: i }); return { final: false, stopped: true }; } }
       }
+      L.warn('follow', 'exhausted', { requestNumber, polls: pollMax, state: last?.info?.state });
       return { final: false, exhausted: true, ...last };
     },
-    stopFollow() { s.followGen++; },
+    stopFollow() { s.followGen++; L.info('follow', 'stop_asked', {}); },
 
     // ── liquidity ──────────────────────────────────────────────────────
 
@@ -286,16 +317,17 @@ export function createSwapFlow({
       const q = s.addQuote;
       if (!q || !s.accounts || !s.status) return { ok: false, reason: 'not_ready', text: 'Connect the extension and ask for an amount first.' };
       try {
-        await adapter.liquidityAdd({
+        await loggedCall('liquidityAdd', q.requestNumber, stepped => adapter.liquidityAdd({
           botUrl, ethereumAddress: s.accounts.ethereum, nodusAddress: s.accounts.nodus.address, token: tokenOf(),
           payEthereum: q.payEthereum, payNodus: q.payNodus, usdtAmountRaw: q.usdtAmount, nodusAmountRaw: q.nodusAmount,
           requestNumber: q.requestNumber, ethChainId: s.status.settings.ethChainId,
-        }, { onStep });
+        }, { onStep: stepped }), onStep);
       } catch (err) {
         const info = describeAdapterError(err, { requestNumber: q.requestNumber });
         if (info.delivered) { s.addQuote = null; return { ok: false, reason: 'delivered', requestNumber: q.requestNumber, ...info }; }
         return { ok: false, reason: err?.code ?? 'extension_error', ...info };
       }
+      s.addQuote = null; s.addGen++;   // paid: the pair is spent, as in the delivered branch
       return { ok: true, requestNumber: q.requestNumber };
     },
 
@@ -321,10 +353,36 @@ export function createSwapFlow({
         return { ok: false, reason: 'bad_request', text: 'The share must be a whole number of basis points from 1 to 10000.' };
       }
       let signature;
-      try { signature = await signText(text, s.accounts.nodus.address); }
-      catch (err) { return { ok: false, reason: 'extension_error', ...describeAdapterError(err) }; }
+      const ms = L.timer();
+      L.info('withdraw', 'sign_start', { basisPoints });
+      try { signature = await signText(text, s.accounts.nodus.address); L.info('withdraw', 'sign_end', { ms: ms() }); }
+      catch (err) { L.warn('withdraw', 'sign_failed', { ...errorFields(err), ms: ms() }); return { ok: false, reason: 'extension_error', ...describeAdapterError(err) }; }
       const requestNumber = text.slice(text.lastIndexOf('Request Number: ') + 'Request Number: '.length);
       return postWithdraw({ account: s.accounts.nodus.address, requestNumber, body: { text, publicKey: s.accounts.nodus.publicKey, signature } });
     },
   };
+
+  // The five user-driven operations log their start and their result (named fields only; a withdrawal's signed body is
+  // never a field). The wrapper returns the operation's own result, or rethrows its own error, unchanged.
+  const RESULT_KEYS = ['ok', 'reason', 'stale', 'local', 'delivered', 'paid', 'nodusSent', 'oneSided', 'openRequestNumber', 'uncertain', 'alreadyReceived', 'minimum'];
+  const QUOTE_KEYS = ['requestNumber', 'direction', 'amountRaw', 'amount', 'number', 'estimatedFee', 'validUntil', 'usdtAmount', 'nodusAmount'];
+  const pick = (from, keys) => Object.fromEntries(keys.filter(k => from?.[k] !== undefined).map(k => [k, from[k]]));
+  const traced = (op, start) => {
+    const inner = api[op];
+    api[op] = async args => {
+      const ms = L.timer();
+      L.info('flow', `${op}_start`, start(args ?? {}));
+      let r;
+      try { r = await inner(args); }
+      catch (err) { L.warn('flow', `${op}_threw`, { ...errorFields(err), ms: ms() }); throw err; }
+      L[r.ok || r.stale ? 'info' : 'warn']('flow', `${op}_result`, { ...pick(r, RESULT_KEYS), ...pick(r.quote, QUOTE_KEYS), requestNumber: r.requestNumber ?? r.quote?.requestNumber, ms: ms() });
+      return r;
+    };
+  };
+  traced('press', a => ({ direction: a.direction, amountText: a.amountText }));
+  traced('pressAdd', a => ({ side: a.side, amountText: a.amountText }));
+  traced('confirm', a => ({ toleranceBps: a.toleranceBps, requestNumber: s.quote?.requestNumber, direction: s.quote?.direction }));
+  traced('confirmAdd', () => ({ requestNumber: s.addQuote?.requestNumber }));
+  traced('withdraw', a => ({ basisPoints: a.basisPoints, resend: s.pendingWithdraw !== null }));
+  return api;
 }

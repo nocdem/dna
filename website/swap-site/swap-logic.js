@@ -85,6 +85,10 @@ export function percentToBps(text) {
   return { ok: true, bps };
 }
 
+// Whether an approve button may be pressed: no approval sequence runs, a quote is held, the tolerance is usable (the
+// add has none: it passes true) and the extension accounts are connected. One rule for both approve buttons (swap.js).
+export const approveEnabled = ({ busy, quote, toleranceOk, accounts }) => !busy && Boolean(quote) && toleranceOk === true && Boolean(accounts);
+
 // ── the minimum to receive ──────────────────────────────────────────────
 
 // Plan section 7 step 4 (lines 444, repeated for the other direction in section 8 step 4, line 465; operator's

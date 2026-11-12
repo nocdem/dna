@@ -18,7 +18,7 @@ import {
   quoteBody, liquidityQuoteBody, withdrawBody, randomRequestNumber,
   buildNodusToUsdtText, buildLiquidityAddText, buildWithdrawText,
   buildUsdtToNodusTypedData, buildLiquidityAddTypedData,
-  readQuoteAnswer, readAddQuoteAnswer, refusalText, describeSwapState, PAYOUT_FINAL_DEPTH_ETH, PAYOUT_FINAL_SECONDS_ETH, U64_MAX,
+  readQuoteAnswer, readAddQuoteAnswer, refusalText, describeSwapState, PAYOUT_FINAL_DEPTH_ETH, PAYOUT_FINAL_SECONDS_ETH, U64_MAX, approveEnabled,
 } from '../swap-logic.js';
 
 const ETH = `0x${'4b'.repeat(20)}`;
@@ -437,4 +437,17 @@ test('payout_pending: NODUS -> USDT shows the paid amount and the 3-block wait; 
   assert.match(nodus, /NODUS payout/);
   assert.doesNotMatch(nodus, /\d|USDT|Ethereum|minutes/);
   assert.equal(describeSwapState({ state: 'payout_pending' }).text, 'The bot is sending your payout.');
+});
+
+// PROVES: the one readiness rule both approve buttons use (swap.js): enabled only when no approval sequence runs, a
+//   quote is held, the tolerance parses (the swap passes the result of percentToBps; the add has none and passes true)
+//   and accounts are connected. Each missing condition alone disables it.
+// FALSE PASS: the function is pure; that swap.js calls it at every place a button changes is not exercised here (no DOM).
+test('approveEnabled: only a held quote, a usable tolerance, connected accounts and no running sequence enable it', () => {
+  const ready = { busy: false, quote: { requestNumber: '1' }, toleranceOk: true, accounts: { ethereum: ETH } };
+  assert.equal(approveEnabled(ready), true);
+  assert.equal(approveEnabled({ ...ready, busy: true }), false);          // a sequence runs
+  assert.equal(approveEnabled({ ...ready, quote: null }), false);         // no quote (spent or never asked)
+  assert.equal(approveEnabled({ ...ready, toleranceOk: false }), false);  // swap: tolerance not usable
+  assert.equal(approveEnabled({ ...ready, accounts: null }), false);      // not connected
 });

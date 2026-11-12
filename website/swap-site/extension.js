@@ -5,24 +5,28 @@
 // Methods used: nodus_requestAccounts, eth_requestAccounts, nodus_signMessage (permissions.js:20-35).
 
 import { hexOfText } from './swap-logic.js';
+import { guardLog, errorFields } from './log.js';
 
 const RDNS = 'io.nodusnetwork.wallet';
 const NAME = 'Nodus Wallet';
 
-export function createExtension({ window = globalThis.window, waitMs = 800 } = {}) {
+export function createExtension({ window = globalThis.window, waitMs = 800, log } = {}) {
+  const L = guardLog(log);
   let found = null;
   function listen() {
     window.addEventListener('eip6963:announceProvider', event => {
       const d = event.detail;
-      if (d?.info?.rdns === RDNS && d.info.name === NAME && typeof d.provider?.request === 'function') found = d.provider;
+      if (d?.info?.rdns === RDNS && d.info.name === NAME && typeof d.provider?.request === 'function') { found = d.provider; L.info('extension', 'announced', { rdns: d.info.rdns, name: d.info.name }); }
     });
     window.dispatchEvent(new window.Event('eip6963:requestProvider'));
   }
   listen();
   async function provider() {
     if (found) return found;
+    const ms = L.timer();
     window.dispatchEvent(new window.Event('eip6963:requestProvider'));
     await new Promise(resolve => setTimeout(resolve, waitMs));
+    L[found ? 'info' : 'warn']('extension', found ? 'found' : 'not_found', { waitedMs: ms() });
     return found;
   }
   return {
@@ -30,13 +34,21 @@ export function createExtension({ window = globalThis.window, waitMs = 800 } = {
     // -> { nodus: { address (128 hex), publicKey ("0x" + 5184 hex) }, ethereum: "0x.." } or throws; the provider's
     // own error (code 4001 rejected, 4100 data notice not accepted) is passed on unchanged.
     async connect() {
-      const p = await provider();
-      if (!p) { const e = new Error('The Nodus Connect extension was not found.'); e.code = 'no_extension'; throw e; }
-      const nodus = await p.request({ method: 'nodus_requestAccounts' });
-      const eth = await p.request({ method: 'eth_requestAccounts' });
-      const n = Array.isArray(nodus) ? nodus[0] : null, e = Array.isArray(eth) ? eth[0] : null;
-      if (!n?.address || !n?.publicKey || typeof e !== 'string') throw new Error('The extension returned no account.');
-      return { nodus: { address: n.address, publicKey: n.publicKey }, ethereum: e.toLowerCase() };
+      const ms = L.timer();
+      L.info('connect', 'asked', {});
+      try {
+        const p = await provider();
+        if (!p) { const e = new Error('The Nodus Connect extension was not found.'); e.code = 'no_extension'; throw e; }
+        const nodus = await p.request({ method: 'nodus_requestAccounts' });
+        const eth = await p.request({ method: 'eth_requestAccounts' });
+        const n = Array.isArray(nodus) ? nodus[0] : null, e = Array.isArray(eth) ? eth[0] : null;
+        if (!n?.address || !n?.publicKey || typeof e !== 'string') throw new Error('The extension returned no account.');
+        L.info('connect', 'accounts', { nodus: n.address, ethereum: e.toLowerCase(), ms: ms() });
+        return { nodus: { address: n.address, publicKey: n.publicKey }, ethereum: e.toLowerCase() };
+      } catch (err) {
+        L.warn('connect', 'refused', { ...errorFields(err), ms: ms() });
+        throw err;
+      }
     },
     // nodus_signMessage as the site SDK sends it (index.mjs:43-51): params [0x + hex of the text bytes, the
     // account's address]; the answer is "0x" + 9254 hex (nodus.js:509-510).
