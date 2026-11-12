@@ -85,7 +85,10 @@ export async function prepareTransfer({ wallet, chain, symbol, asset: identity, 
     if (!identity || identity.chain !== NODUS_ASSET.chain || typeof identity.tokenId !== 'string' || !/^[0-9a-f]{128}$/.test(identity.tokenId)) throw new Error('Choose the asset to send.');
     // Recipient, amount, fee and expiry are decoded from the signed envelope by
     // the module, never taken from the form (design G1); `review` lists them.
-    const prepared = await implementations.nodus.prepare({ client: wallet.nodusClient, from: wallet.addresses.nodus, to, amount, tokenId: identity.tokenId, locked: nodusLocked });
+    // A user flow: the preparation's calls run one after another with no background call between them. A client
+    // without userFlow (none, or a test double) is used as it always was.
+    const prepareWith = client => implementations.nodus.prepare({ client, from: wallet.addresses.nodus, to, amount, tokenId: identity.tokenId, locked: nodusLocked });
+    const prepared = await (typeof wallet.nodusClient?.userFlow === 'function' ? wallet.nodusClient.userFlow(prepareWith) : prepareWith(wallet.nodusClient));
     // The prepared transfer must be for the asset that was asked for.
     if (prepared.tokenId !== identity.tokenId) throw new Error('The prepared transfer is not for the asset you chose. Nothing was sent.');
     return reviewed(prepared, { endpoint: undefined, chain, symbol: prepared.symbol, tokenId: prepared.tokenId, to: prepared.to, recipientName: prepared.recipientName, amount: prepared.amount, from: wallet.addresses.nodus, review: prepared.review });

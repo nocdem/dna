@@ -384,10 +384,11 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
   // heldInputs, while at least one unsent hold exists, the tip is read once; with a successfully read POSITIVE tip every
   // hold with tip >= expiryHeight is removed, so its coins are free again. A failed read or a tip of 0 changes nothing
   // (the reservations stay); no wall-clock estimate is used; with no hold no read is made.
-  async function releaseExpiredHolds(s) {
+  // `client` is the flow view a caller inside a user flow passes; the read is then part of that flow.
+  async function releaseExpiredHolds(s, client = s.client) {
     if (![...s.reviews.values()].some(review => review.held)) return;
     let tip;
-    try { tip = adapter.parseTip((await s.client.list({ signal: s.abort.signal })).tip); } catch { return; }
+    try { tip = adapter.parseTip((await client.list({ signal: s.abort.signal })).tip); } catch { return; }
     current(s);
     if (tip <= 0n) return;
     for (const [id, review] of s.reviews) if (review.held && tip >= review.held.expiryHeight) s.reviews.delete(id);
@@ -715,17 +716,21 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       const holdElapsed = stopwatch();
       debugLog('nodus-hold', 'started', { origin });
       try {
-      await releaseExpiredHolds(s);
       // The builder's own answer carries the wire id and the chain id; prepare() keeps them inside, so the
       // client it builds with is wrapped to read that answer back unchanged.
       let built;
-      const client = new Proxy(s.client, { get(target, property) {
-        const value = Reflect.get(target, property, target);
-        if (property === 'buildAndSign') return async (...args) => { built = await value.apply(target, args); return built; };
-        return typeof value === 'function' ? value.bind(target) : value;
-      } });
-      const prepared = await adapter.prepare({ client, from: s.addresses.nodus, to: request.to.toLowerCase(), amount: formatRaw(BigInt(request.amount)),
-        tokenId: NODUS_ASSET.tokenId, locked: heldInputs(s, origin) });
+      // One user flow for the tip read and the whole preparation: no background call starts between their steps.
+      // It ends before the approval window below, so background work runs while the user decides.
+      const prepared = await s.client.userFlow(async view => {
+        await releaseExpiredHolds(s, view);
+        const client = new Proxy(view, { get(target, property) {
+          const value = Reflect.get(target, property, target);
+          if (property === 'buildAndSign') return async (...args) => { built = await value.apply(target, args); return built; };
+          return typeof value === 'function' ? value.bind(target) : value;
+        } });
+        return adapter.prepare({ client, from: s.addresses.nodus, to: request.to.toLowerCase(), amount: formatRaw(BigInt(request.amount)),
+          tokenId: NODUS_ASSET.tokenId, locked: heldInputs(s, origin) });
+      });
       assertCurrent();
       const wireId = built?.wireId, chainId = built?.decoded?.chainId;
       if (typeof wireId !== 'string' || !/^[0-9a-f]{128}$/.test(wireId) || typeof chainId !== 'string' || !/^[0-9a-f]{64}$/.test(chainId) ||
@@ -786,7 +791,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       assertCurrent();
       let tip;
       // A tip of 0 is handled like an unreadable tip (adapters/nodus.js:126 refuses height 0 when building).
-      try { tip = adapter.parseTip((await s.client.list({ signal: s.abort.signal })).tip); if (tip <= 0n) throw new Error('tip 0'); }
+      try { tip = adapter.parseTip((await s.client.userFlow(view => view.list({ signal: s.abort.signal }))).tip); if (tip <= 0n) throw new Error('tip 0'); }
       catch { s.reviews.delete(holdId); throw new Error('The current Nodus block height could not be read. The held payment was dropped; nothing was sent.'); }
       assertCurrent();
       if (tip >= held.expiryHeight) { s.reviews.delete(holdId); throw new Error(`The held payment expired at block ${held.expiryHeight} (the chain is at block ${tip}). Nothing was sent.`); }
@@ -794,9 +799,13 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     },
     // Sends the held transfer, after the same check; used only once the signed request reached the bot.
     async sendHeld(origin, holdId) {
-      const held = await this.checkHold(origin, holdId);
-      const hash = await this.confirmSend(holdId);
-      return { intentId: hash, transferId: held.wireId };
+      const s = active();
+      // One user flow for the check, the record and the submission: no background call starts between them.
+      return s.client.userFlow(async () => {
+        const held = await this.checkHold(origin, holdId);
+        const hash = await this.confirmSend(holdId);
+        return { intentId: hash, transferId: held.wireId };
+      });
     },
     reconcileQuarantine() { return session ? reconcileQuarantine(session) : Promise.resolve(); },
     async discardActivity() {
@@ -834,9 +843,12 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     async prepareSend({ to, amount, tokenId } = {}) {
       const s = active();
       if (s.activityBlocked) throw new Error('Saved activity is unverified. Check the explorer and discard the unreadable history before sending.');
-      await releaseExpiredHolds(s);
-      const review = await prepareTransfer({ wallet: { addresses: s.addresses, nodusClient: s.client }, chain: 'nodus',
-        asset: { chain: NODUS_ASSET.chain, tokenId }, to, amount, nodusLocked: heldInputs(s) });
+      // One user flow for the tip read and the preparation (prepareTransfer opens its own on the view).
+      const review = await s.client.userFlow(async client => {
+        await releaseExpiredHolds(s, client);
+        return prepareTransfer({ wallet: { addresses: s.addresses, nodusClient: client }, chain: 'nodus',
+          asset: { chain: NODUS_ASSET.chain, tokenId }, to, amount, nodusLocked: heldInputs(s) });
+      });
       current(s);
       const id = String(++nextReview); s.reviews.set(id, review);
       return { id, to: review.to, amount: review.amount, symbol: review.symbol, tokenId: review.tokenId,
@@ -880,7 +892,9 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       const s = active();
       // A held transfer was just checked by checkHold; any other confirm releases expired holds first, while the
       // review is still in the map (its inputs stay reserved during the read).
-      if (s.reviews.get(id) && !s.reviews.get(id).held) await releaseExpiredHolds(s);
+      // The read is a user flow of its own, ended before the review's confirm: stake, name and contract reviews submit
+      // through the top-level client, whose calls would never start inside an open flow.
+      if (s.reviews.get(id) && !s.reviews.get(id).held) await s.client.userFlow(view => releaseExpiredHolds(s, view));
       const review = s.reviews.get(id);
       if (!review) throw new Error('This review is already closed.');
       s.reviews.delete(id); let record;
