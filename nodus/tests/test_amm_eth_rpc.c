@@ -12,8 +12,8 @@
  *   R1  the request of every call: exact JSON-RPC text, method and params as
  *       execution-apis 3284ee80 shapes them (the file:line of each is in
  *       amm_eth_rpc.h): eth_chainId, eth_blockNumber, eth_getBlockByNumber
- *       ["0x..", false], eth_getLogs (block range, address, topics [topic0,
- *       null, recipient]), eth_getTransactionByHash, eth_getTransactionReceipt,
+ *       ["0x..", false], eth_getLogs (the block-hash filter, filter.yaml:40-59:
+ *       blockHash, address, topics [topic0, null, recipient]; no fromBlock/toBlock), eth_getTransactionByHash, eth_getTransactionReceipt,
  *       eth_call (balanceOf, `input`), eth_estimateGas, eth_getBalance,
  *       eth_getTransactionCount (pending | latest), eth_sendRawTransaction,
  *       eth_gasPrice, eth_maxPriorityFeePerGas;
@@ -96,6 +96,12 @@
 #include "amm_eth_rpc.h"
 #include "client/nodus_evm_abi.h"
 #include "crypto/hash/keccak256.h"
+#include "nodus_log_shim.h"
+
+/* the blockHash of the filter.yaml:174-215 example logs (LOG1) */
+static const uint8_t H233[32] = {
+    0xfc, 0x13, 0x9f, 0x5e, 0x2e, 0xde, 0xe9, 0xe9, 0xc8, 0x88, 0xd8, 0xdf, 0x9a, 0x2d, 0x22, 0x26,
+    0x13, 0x3a, 0x9b, 0xd8, 0x7c, 0x88, 0xcc, 0xbd, 0x9c, 0x93, 0x0d, 0x3d, 0x4c, 0x9f, 0x9e, 0xf5};
 
 static int g_failures = 0;
 static int g_checks = 0;
@@ -189,14 +195,19 @@ static void r1_requests(void) {
     amm_eth_log_t lg[4];
     int n = 7;
     result("[]");
-    CHECK(g_p.get_logs(g_p.ctx, 0x137d3c2, tok, t0, addr, lg, 4, &n, 0) == AMM_ETH_OK && n == 0,
+    uint8_t bh9[32];
+    memset(bh9, 0x9a, 32);
+    CHECK(g_p.get_logs(g_p.ctx, 0x137d3c2, bh9, tok, t0, addr, lg, 4, &n, 0) == AMM_ETH_OK && n == 0,
           "eth_getLogs on an empty block");
     CHECK(!strcmp(g_body,
-          "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getLogs\",\"params\":[{\"fromBlock\":\"0x137d3c2\","
-          "\"toBlock\":\"0x137d3c2\",\"address\":\"0xdddddddddddddddddddddddddddddddddddddddd\","
+          "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getLogs\",\"params\":[{"
+          "\"blockHash\":\"0x9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a\","
+          "\"address\":\"0xdddddddddddddddddddddddddddddddddddddddd\","
           "\"topics\":[\"0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",null,"
           "\"0x0000000000000000000000001111111111111111111111111111111111111111\"]}]}"),
-          "  one-block range, contract, topics [topic0, null, recipient word]");
+          "  the block-hash filter (filter.yaml:40-59): blockHash, contract, topics [topic0, null, recipient word]; no fromBlock/toBlock");
+    CHECK(strstr(g_body, "fromBlock") == NULL && strstr(g_body, "toBlock") == NULL,
+          "  fromBlock and toBlock are absent");
     amm_eth_tx_t t;
     result("null");
     CHECK(g_p.get_tx(g_p.ctx, tx, &t, 0) == AMM_ETH_NOT_FOUND &&
@@ -364,7 +375,7 @@ static void r4_size(void) {
     result(arr);
     amm_eth_log_t lg[4]; int n = 0;
     uint8_t c[20] = {0}, t0[32] = {0}, to[20] = {0};
-    CHECK(g_p.get_logs(g_p.ctx, 1, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR, "a list of 6000 values above the cap of 4: ERR (never cut)");
+    CHECK(g_p.get_logs(g_p.ctx, 1, H233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR, "a list of 6000 values above the cap of 4: ERR (never cut)");
 }
 
 static void r5_null(void) {
@@ -380,7 +391,7 @@ static void r5_null(void) {
     CHECK(g_p.get_receipt(g_p.ctx, h, &r, 0) == AMM_ETH_NOT_FOUND, "get_receipt: null = NOT_FOUND");
     CHECK(chain(&u) == AMM_ETH_ERR && u == 99, "eth_chainId: null = ERR");
     CHECK(u64call(g_p.block_number, &u) == AMM_ETH_ERR, "eth_blockNumber: null = ERR");
-    CHECK(g_p.get_logs(g_p.ctx, 5, a20, h, a20, lg, 2, &n, 0) == AMM_ETH_ERR, "eth_getLogs: null = ERR (not an empty list)");
+    CHECK(g_p.get_logs(g_p.ctx, 5, h, a20, h, a20, lg, 2, &n, 0) == AMM_ETH_ERR, "eth_getLogs: null = ERR (not an empty list)");
     CHECK(g_p.get_balance(g_p.ctx, a20, w, 0) == AMM_ETH_ERR, "eth_getBalance: null = ERR (not zero)");
     CHECK(g_p.erc20_balance(g_p.ctx, a20, a20, w, 0) == AMM_ETH_ERR, "eth_call: null = ERR (not zero)");
     CHECK(g_p.tx_count(g_p.ctx, a20, 1, &u, 0) == AMM_ETH_ERR, "eth_getTransactionCount: null = ERR");
@@ -554,58 +565,69 @@ static void r7_logs(void) {
     uint8_t c[20] = {0}, t0[32] = {0}, to[20] = {0};
     char b[2000];
     result("[" LOG1("0x0", "0x233", D32, TOPIC) "]");
-    CHECK(g_p.get_logs(g_p.ctx, 0x233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_OK && n == 1, "the example log is read");
+    CHECK(g_p.get_logs(g_p.ctx, 0x233, H233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_OK && n == 1, "the example log is read");
     CHECK(lg[0].log_index == 0 && lg[0].block_number == 0x233 && lg[0].n_topics == 1 && lg[0].topics[0][0] == 0x04 &&
           lg[0].topics[0][31] == 0xe3 && lg[0].data_len == 32 && lg[0].data[31] == 4 && lg[0].address[0] == 0x42 &&
           lg[0].address[19] == 0x0b && lg[0].tx[0] == 0x66 && lg[0].block_hash[0] == 0xfc,
           "  every field is mapped");
     snprintf(b, sizeof(b), "[%s,%s]", LOG1("0x0", "0x233", D32, TOPIC), LOG1("0x5", "0x233", D32, TOPIC));
     result(b);
-    CHECK(g_p.get_logs(g_p.ctx, 0x233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_OK && n == 2 && lg[1].log_index == 5, "two logs, in order");
-    CHECK(g_p.get_logs(g_p.ctx, 0x233, c, t0, to, lg, 1, &n, 0) == AMM_ETH_ERR, "two logs above cap 1: ERR (never cut)");
+    CHECK(g_p.get_logs(g_p.ctx, 0x233, H233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_OK && n == 2 && lg[1].log_index == 5, "two logs, in order");
+    CHECK(g_p.get_logs(g_p.ctx, 0x233, H233, c, t0, to, lg, 1, &n, 0) == AMM_ETH_ERR, "two logs above cap 1: ERR (never cut)");
     result("[]");
     n = 9;
-    CHECK(g_p.get_logs(g_p.ctx, 0x233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_OK && n == 0, "an empty list is a valid answer: OK, n = 0");
+    CHECK(g_p.get_logs(g_p.ctx, 0x233, H233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_OK && n == 0, "an empty list is a valid answer: OK, n = 0");
     snprintf(b, sizeof(b), "[%s]", LOG1("0x0", "0x234", D32, TOPIC));
     result(b);
-    CHECK(g_p.get_logs(g_p.ctx, 0x233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR, "a log of another block: ERR");
+    CHECK(g_p.get_logs(g_p.ctx, 0x233, H233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR, "a log of another block: ERR");
+    {   /* a log of the right number but ANOTHER blockHash than the asked one */
+        uint8_t other[32];
+        memcpy(other, H233, 32);
+        other[31] ^= 1;
+        snprintf(b, sizeof(b), "[%s]", LOG1("0x0", "0x233", D32, TOPIC));
+        result(b);
+        CHECK(g_p.get_logs(g_p.ctx, 0x233, other, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR,
+              "a log whose blockHash is not the asked one: ERR");
+        CHECK(g_p.get_logs(g_p.ctx, 0x233, H233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_OK && n == 1,
+              "  control: the same log under the asked hash is read");
+    }
     snprintf(b, sizeof(b), "[%s]", LOG1("0x0", "0x233", "0x000", TOPIC));
     result(b);
-    CHECK(g_p.get_logs(g_p.ctx, 0x233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR, "odd-length data: ERR");
+    CHECK(g_p.get_logs(g_p.ctx, 0x233, H233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR, "odd-length data: ERR");
     snprintf(b, sizeof(b), "[%s]", LOG1("0x0", "0x233", "0x00000000000000000000000000000000000000000000000000000000000000000004", TOPIC));
     result(b);
-    CHECK(g_p.get_logs(g_p.ctx, 0x233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_OK && n == 1 && lg[0].data_len == 34,
+    CHECK(g_p.get_logs(g_p.ctx, 0x233, H233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_OK && n == 1 && lg[0].data_len == 34,
           "data of 34 bytes keeps its TRUE length (the watcher then refuses it)");
     snprintf(b, sizeof(b), "[%s]", LOG1("0x0", "0x233", D32, TOPIC "," TOPIC "," TOPIC "," TOPIC "," TOPIC));
     result(b);
-    CHECK(g_p.get_logs(g_p.ctx, 0x233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR, "five topics: ERR (the table holds four)");
+    CHECK(g_p.get_logs(g_p.ctx, 0x233, H233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR, "five topics: ERR (the table holds four)");
     snprintf(b, sizeof(b), "[%s]", LOG1("0x100000000", "0x233", D32, TOPIC));
     result(b);
-    CHECK(g_p.get_logs(g_p.ctx, 0x233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR, "a log index above 32 bits: ERR");
+    CHECK(g_p.get_logs(g_p.ctx, 0x233, H233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR, "a log index above 32 bits: ERR");
     snprintf(b, sizeof(b), "[%s]", LOG1("0xffffffff", "0x233", D32, TOPIC));
     result(b);
-    CHECK(g_p.get_logs(g_p.ctx, 0x233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_OK && lg[0].log_index == 0xffffffffu, "the largest 32-bit log index");
+    CHECK(g_p.get_logs(g_p.ctx, 0x233, H233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_OK && lg[0].log_index == 0xffffffffu, "the largest 32-bit log index");
     snprintf(b, sizeof(b), "[%s]", LOG1("0x0", "0x233", D32, TOPIC));
     char rem[2000];
     const char *p = strstr(b, "\"removed\":false");
     snprintf(rem, sizeof(rem), "%.*s\"removed\":true%s", (int)(p - b), b, p + strlen("\"removed\":false"));
     result(rem);
-    CHECK(g_p.get_logs(g_p.ctx, 0x233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR, "removed: true: ERR");
+    CHECK(g_p.get_logs(g_p.ctx, 0x233, H233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR, "removed: true: ERR");
     snprintf(rem, sizeof(rem), "%.*s\"removed\":0%s", (int)(p - b), b, p + strlen("\"removed\":false"));
     result(rem);
-    CHECK(g_p.get_logs(g_p.ctx, 0x233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR, "removed as a number: ERR");
+    CHECK(g_p.get_logs(g_p.ctx, 0x233, H233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR, "removed as a number: ERR");
     result("[" LOG1("0x0", "0x233", D32, "\"0x04474795f5b996ff80cb47c148d4c5ccdbe09ef27551820caa9c2f8ed149cc\"") "]");
-    CHECK(g_p.get_logs(g_p.ctx, 0x233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR, "a 31-byte topic: ERR");
+    CHECK(g_p.get_logs(g_p.ctx, 0x233, H233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR, "a 31-byte topic: ERR");
     result("[1]");
-    CHECK(g_p.get_logs(g_p.ctx, 0x233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR, "a non-object element: ERR");
+    CHECK(g_p.get_logs(g_p.ctx, 0x233, H233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR, "a non-object element: ERR");
     result("[{\"logIndex\":\"0x0\"}]");
-    CHECK(g_p.get_logs(g_p.ctx, 0x233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR, "a log with missing fields: ERR");
+    CHECK(g_p.get_logs(g_p.ctx, 0x233, H233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_ERR, "a log with missing fields: ERR");
     snprintf(b, sizeof(b), "[%s]", LOG1("0x0", "0x233", D32, TOPIC));
     char mixed[2000];
     const char *a = strstr(b, "0x42699a76");
     snprintf(mixed, sizeof(mixed), "%.*s0x42699A7612a82F1d9c36148af9c77354759b210B%s", (int)(a - b), b, a + 42);
     result(mixed);
-    CHECK(g_p.get_logs(g_p.ctx, 0x233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_OK && lg[0].address[0] == 0x42 && lg[0].address[19] == 0x0b,
+    CHECK(g_p.get_logs(g_p.ctx, 0x233, H233, c, t0, to, lg, 4, &n, 0) == AMM_ETH_OK && lg[0].address[0] == 0x42 && lg[0].address[19] == 0x0b,
           "an address in mixed case is accepted (the address pattern allows it)");
 }
 
@@ -1010,6 +1032,24 @@ static int run_chain(amm_eth_provider_t *p, uint64_t *u) {
     size_t n = fread(g_cap, 1, sizeof(g_cap) - 1, tmp);
     fclose(tmp);
     g_cap[n] = '\0';
+    /* The provider call also writes its INFO call line (operator order
+     * 2026-11-12: "[INF/AMM_RPC] <name>: <method>: answered in N ms ..."); this
+     * scenario is about the WARNING line, so the INFO lines are taken out of the
+     * capture. R13 checks the INFO line itself. */
+    {
+        size_t o = 0;
+        for (size_t i = 0; i < n;) {
+            const char *nl = memchr(g_cap + i, '\n', n - i);
+            size_t ll = nl ? (size_t)(nl - (g_cap + i)) + 1 : n - i;
+            if (strncmp(g_cap + i, "[INF/", 5) != 0) {
+                memmove(g_cap + o, g_cap + i, ll);
+                o += ll;
+            }
+            i += ll;
+        }
+        n = o;
+        g_cap[n] = '\0';
+    }
     g_cap_lines = 0;
     for (size_t i = 0; i < n; i++) g_cap_lines += (g_cap[i] == '\n');
     if (n > 0 && g_cap[n - 1] == '\n') g_cap[n - 1] = '\0';
@@ -1174,6 +1214,87 @@ static void r12_error_text(void) {
     amm_eth_rpc_free(r2);
 }
 
+/* R13  the call line in the log FILE (operator order 2026-11-12: full diagnostic
+ * log, and "never the provider URL: it may carry a key").
+ * PROVES: against a stub provider whose URL holds a secret-looking path and key
+ * ("https://eth.example.test/v1/SECRET-KEY-9f3a"), a successful call, a
+ * JSON-RPC error answer that ECHOES the URL, and a failed post each write a
+ * line to <dir>/nodus-amm.log that carries the provider name ("stub-1"), the
+ * method, the outcome (result / the error code / no usable answer) and a
+ * duration in ms; and neither the URL, its host-path nor the key appears
+ * anywhere in the file.
+ * FLAGS: default build. LEAVES BEHIND: nothing (the /tmp directory is removed).
+ * HOW IT CAN FALSELY PASS: the "no secret" checks pass vacuously if nothing was
+ * written; the positive checks on the same file rule that out. They cover the
+ * URL forms configured here only (no percent-encoded echo). */
+/* 1 when ONE line of `buf` holds every non-NULL needle, in the order given */
+static int rpc_line_has(const char *buf, const char *a, const char *b, const char *c) {
+    const char *p = buf;
+    while (*p) {
+        const char *e = strchr(p, '\n');
+        size_t l = e ? (size_t)(e - p) : strlen(p);
+        char one[1024];
+        if (l >= sizeof(one)) l = sizeof(one) - 1;
+        memcpy(one, p, l);
+        one[l] = '\0';
+        const char *x = strstr(one, a);
+        const char *y = x && b ? strstr(x + strlen(a), b) : x;
+        const char *z = y && c ? strstr(y, c) : y;
+        if (z) return 1;
+        if (!e) break;
+        p = e + 1;
+    }
+    return 0;
+}
+
+static void r13_log_file(void) {
+    printf("R13 the call line in the log file\n");
+    char dir[] = "/tmp/test_amm_rpc_log_XXXXXX";
+    if (!mkdtemp(dir)) { printf("FATAL mkdtemp\n"); exit(2); }
+    char path[128];
+    snprintf(path, sizeof(path), "%s/nodus-amm.log", dir);
+    CHECK(nodus_log_file_open(dir, 1 << 20, 1) == 0, "the log file opens");
+
+    amm_eth_rpc_cfg_t c = { .url = "https://eth.example.test/v1/SECRET-KEY-9f3a", .name = "stub-1",
+                            .post = stub_post, .post_ctx = NULL, .max_response = 65536 };
+    amm_eth_rpc_t *r = amm_eth_rpc_new(&c);
+    if (!r) { printf("FATAL rpc_new\n"); exit(2); }
+    amm_eth_provider_t p;
+    amm_eth_rpc_provider(r, &p);
+    uint64_t u = 0;
+
+    g_post_rc = AMM_ETH_OK;
+    result("\"0x1\"");
+    CHECK(p.chain_id(p.ctx, &u, 0) == AMM_ETH_OK && u == 1, "a result answer");
+    answer("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32014,\"message\":\"no block at "
+           "https://eth.example.test/v1/SECRET-KEY-9f3a\"}}");
+    CHECK(p.chain_id(p.ctx, &u, 0) == AMM_ETH_ERR, "an error answer that echoes the URL");
+    g_post_rc = AMM_ETH_ERR;
+    CHECK(p.chain_id(p.ctx, &u, 0) == AMM_ETH_ERR, "a failed post");
+    g_post_rc = AMM_ETH_OK;
+    nodus_log_file_close();
+    amm_eth_rpc_free(r);
+
+    char buf[16384];
+    FILE *f = fopen(path, "r");
+    size_t n = f ? fread(buf, 1, sizeof(buf) - 1, f) : 0;
+    if (f) fclose(f);
+    buf[n] = '\0';
+    /* each call's OWN line must carry the name, the method, the duration and
+     * its outcome: every needle is looked for inside one line */
+    CHECK(rpc_line_has(buf, "AMM_RPC: stub-1: eth_chainId: answered in ", " ms with a result", NULL),
+          "the result call's line: name, method, ms, outcome result");
+    CHECK(rpc_line_has(buf, "AMM_RPC: stub-1: eth_chainId: answered in ",
+                       " ms with the JSON-RPC error -32014", NULL),
+          "the error call's line: name, method, ms, the error code");
+    CHECK(rpc_line_has(buf, "AMM_RPC: stub-1: eth_chainId: no usable answer (after ", " ms)", NULL),
+          "the failed-post call's line: name, method, outcome no usable answer, ms");
+    CHECK(strstr(buf, "SECRET-KEY") == NULL && strstr(buf, "eth.example.test") == NULL &&
+          strstr(buf, "9f3a") == NULL, "neither the URL nor its key is anywhere in the log file");
+    unlink(path);
+    rmdir(dir);
+}
+
 int main(void) {
     printf("test_amm_eth_rpc\n");
     r1_requests();
@@ -1188,6 +1309,7 @@ int main(void) {
     r10_scalars();
     r11_config_transport();
     r12_error_text();
+    r13_log_file();
     if (g_r) amm_eth_rpc_free(g_r);
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;

@@ -9,6 +9,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "AMM_CFG"
 #define CFG_FILE_MAX 16384u
 
 /* The plan's USDT contract (section 5), lowercase, no 0x. */
@@ -437,6 +440,49 @@ int amm_cfg_parse(const char *text, amm_cfg_t *cfg, char *err, size_t err_cap) {
 out:
     free(buf);
     return rc;
+}
+
+static void hex_text(const uint8_t *b, size_t n, char *out) {
+    for (size_t i = 0; i < n; i++) snprintf(out + 2 * i, 3, "%02x", b[i]);
+}
+
+void amm_cfg_log(const amm_cfg_t *cfg) {
+    if (!cfg) return;
+    char h[129];
+    QGP_LOG_INFO(LOG_TAG, "settings: node %s:%u", cfg->node_host, (unsigned)cfg->node_port);
+    hex_text(cfg->node_fp, 8, h);
+    QGP_LOG_INFO(LOG_TAG, "settings: node_fp (pinned) starts %s", h);
+    hex_text(cfg->chain_id, 32, h);
+    QGP_LOG_INFO(LOG_TAG, "settings: chain_id %s", h);
+    QGP_LOG_INFO(LOG_TAG, "settings: journal_path %s, lock_path %s, log_dir %s",
+                 cfg->journal_path, cfg->lock_path, cfg->log_dir[0] ? cfg->log_dir : "(none)");
+    /* the provider URLs may carry a key: only their number */
+    QGP_LOG_INFO(LOG_TAG, "settings: eth_providers set (%d providers, URLs not written), "
+                 "eth_quorum %d", cfg->n_providers, cfg->eth_quorum);
+    hex_text(cfg->foundation_eth, 20, h);
+    QGP_LOG_INFO(LOG_TAG, "settings: foundation_eth 0x%s", h);
+    QGP_LOG_INFO(LOG_TAG, "settings: foundation_nodus %.16s...", cfg->foundation_nodus);
+    hex_text(cfg->usdt_contract, 20, h);
+    QGP_LOG_INFO(LOG_TAG, "settings: usdt_contract 0x%s", h);
+    char src[64] = "";
+    for (size_t i = 0; i < sizeof(PRICE_NAMES) / sizeof(PRICE_NAMES[0]); i++)
+        if (cfg->eth_price_sources & PRICE_NAMES[i].bit) {
+            size_t l = strlen(src);
+            snprintf(src + l, sizeof(src) - l, "%s%s", l ? "," : "", PRICE_NAMES[i].name);
+        }
+    QGP_LOG_INFO(LOG_TAG, "settings: eth_price_sources %s", src);
+    QGP_LOG_INFO(LOG_TAG, "settings: eth_key_path set, nodus_key_dir set (the key files are "
+                 "never read into the log)");
+    QGP_LOG_INFO(LOG_TAG, "settings: eip712_name %s, expected_origin %s", cfg->eip712_name,
+                 cfg->expected_origin);
+    QGP_LOG_INFO(LOG_TAG, "settings: held_keeps_room %d, swaps_paused %d, liquidity_paused %d, "
+                 "payouts_paused %d", cfg->held_keeps_room, cfg->swaps_paused,
+                 cfg->liquidity_paused, cfg->payouts_paused);
+    for (size_t i = 0; i < N_U64; i++) {
+        uint64_t v;
+        memcpy(&v, (const char *)cfg + U64_KEYS[i].off, sizeof(v));
+        QGP_LOG_INFO(LOG_TAG, "settings: %s %llu", U64_KEYS[i].name, (unsigned long long)v);
+    }
 }
 
 int amm_cfg_load(const char *path, amm_cfg_t *cfg, char *err, size_t err_cap) {

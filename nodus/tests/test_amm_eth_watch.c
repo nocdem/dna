@@ -179,6 +179,10 @@ typedef struct {
     int fail_all, fail_logs, fail_tx, fail_receipts, fail_blocks;
     uint64_t tip_override;      /* 0 = the chain's tip                         */
     int calls;
+    int asked[64];              /* asked[n] != 0: get_logs was called for block n (W26) */
+    int has_also;               /* the provider also holds the block of height also_blk with  */
+    uint64_t also_blk;          /* the hash made of 32 bytes of also_byte (W31, W32)           */
+    uint8_t also_byte;
 } sp_t;
 
 static const uint8_t USDT_B = 0xAA, FOUND_B = 0xF0, OTHER_TOKEN_B = 0xBB,
@@ -260,11 +264,23 @@ static int sp_get_block(void *ctx, uint64_t n, amm_eth_block_t *o, uint64_t d) {
     memcpy(o->parent, s->ch->b[n].parent, 32); o->timestamp = s->ch->b[n].ts;
     return AMM_ETH_OK;
 }
-static int sp_get_logs(void *ctx, uint64_t blk, const uint8_t *contract,
+/* eth_getLogs by BLOCK HASH (filter.yaml:40-59, geth filter.go:83-97): a
+ * provider answers about the block of that hash if it holds it, else it is an
+ * error (an unknown block). It holds the block when its own chain has that hash
+ * at the height, or when the fixture says it also holds it (also_hash). */
+static int sp_get_logs(void *ctx, uint64_t blk, const uint8_t *bhash, const uint8_t *contract,
                        const uint8_t *topic0, const uint8_t *to,
                        amm_eth_log_t *out, int cap, int *n, uint64_t d) {
     (void)d; (void)contract; (void)topic0; (void)to; sp_t *s = ctx; s->calls++;
+    if (blk < 64) s->asked[blk]++;
     if (s->fail_all || s->fail_logs) return AMM_ETH_ERR;
+    int holds = blk < NB && s->ch->b[blk].exists && !memcmp(s->ch->b[blk].hash, bhash, 32);
+    if (!holds && s->has_also && blk == s->also_blk) {
+        uint8_t ah[32];
+        memset(ah, s->also_byte, 32);
+        holds = !memcmp(ah, bhash, 32);
+    }
+    if (!holds) return AMM_ETH_ERR;                    /* unknown block */
     int k = 0;
     /* the stub does NOT filter: the watcher must not trust a provider's filter */
     for (int i = 0; i < NL; i++)
@@ -1349,6 +1365,348 @@ static void w25_window_by_value(void) {
     }
 }
 
+/* W26  the evidence set of the block logs is the parent's: every usable provider
+ * is asked, whatever its header read returned (the first version of this test
+ * asserted a saving, no get_logs for a provider without the quorum header, which
+ * changed verdicts against bf5a4bcb4 and was removed in two steps, 2026-11-12:
+ * Sol recheck 2 for failed header reads, the code red team N2 for different
+ * headers).
+ * PROVES: with three providers and quorum 2, (a) a provider that has NO header
+ * at height 10 and (b) a provider that returns a DIFFERENT header at heights
+ * 10..13 ARE asked get_logs for those heights (counted per block in the stub),
+ * the two agreeing providers are asked, the control block 9 asks all three, and
+ * the payment at block 10 still counts (logs of another block hash are rejected
+ * by log_ok, as at the parent).
+ * FLAGS: default build. LEAVES BEHIND: the usual /tmp journal of this file.
+ * HOW IT CAN FALSELY PASS: the counter is the stub's own get_logs entry, so a
+ * watcher that fetched the logs through another call (get_tx, get_receipt)
+ * would not be seen; the heights checked are the ones where the stub's headers
+ * differ, so it proves nothing about a provider that disagrees only on a later
+ * header. The assertions require POSITIVE get_logs counters for the provider
+ * without the quorum header (variant a at block 10, variant b at blocks 10 to
+ * 13), for the two agreeing providers at block 10 and for all three at block
+ * 9: the test fails if any of them is not asked (a skipping watcher). */
+static void w26_logs_asked_of_every_usable_provider(void) {
+    printf("W26 get_logs is asked of every usable provider, whatever its header read returned\n");
+    for (int variant = 0; variant < 2; variant++) {
+        fresh(20);
+        ch_build(&g_chain, 1, 13, 0, 0);
+        g_alt[0] = g_chain; g_alt[1] = g_chain;
+        if (variant == 0) {                              /* no header at 10 */
+            g_alt[2] = g_chain;
+            g_alt[2].b[10].exists = 0;
+        } else {                                         /* another header from 10 */
+            ch_build(&g_alt[2], 1, 13, 10, 1);
+        }
+        ch_pay(&g_alt[0], 0x31, 0, 10, 0x11, 5);
+        ch_pay(&g_alt[1], 0x31, 0, 10, 0x11, 5);
+        for (int i = 0; i < 3; i++) g_sp[i].ch = &g_alt[i];
+        amm_eth_step_t o;
+        step_n(3, &o);
+        const int last = variant == 0 ? 10 : 13;
+        int asked_bad = 0;
+        for (int h = 10; h <= last; h++) asked_bad += g_sp[2].asked[h];
+        if (variant == 0)
+            CHECK(asked_bad > 0, "no header at 10: that provider IS asked for block 10 (the parent's evidence)");
+        else {
+            int all = 1;
+            for (int h = 10; h <= 13; h++) all &= g_sp[2].asked[h] > 0;
+            CHECK(all, "another header at 10..13: that provider IS asked for each of those blocks (the parent's evidence)");
+        }
+        CHECK(g_sp[0].asked[10] > 0 && g_sp[1].asked[10] > 0, "  the two agreeing providers are asked for block 10");
+        CHECK(g_sp[0].asked[9] > 0 && g_sp[1].asked[9] > 0 && g_sp[2].asked[9] > 0,
+              "  control: all three providers are asked for block 9, where all agree");
+        char st[16];
+        CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep"),
+              "  the payment counts (state deep) through the quorum of two");
+    }
+}
+
+/* W27  a provider whose header read FAILED at h is still asked for the logs of
+ * h: every usable provider except one with a different header is asked, in
+ * provider index order, as at the parent (Sol's case, 2026-11-12).
+ * PROVES: (a) A and B hold the header, B's get_logs fails, C's header read
+ * fails but its logs are those of the quorum block: C IS asked, two providers
+ * answer and the payment counts (the parent's behaviour); (b) CHANGED 2026-11-12
+ * (Sol recheck 2): C's header read fails but A and B answer: C is STILL asked
+ * (no early stop; the parent's evidence set) and the payment counts.
+ * HOW IT CAN FALSELY PASS: C's failure is a stub switch for every height
+ * (fail_blocks), so it does not prove a per-height mix; the counter is the
+ * stub's get_logs entry. On the unfixed b25d56738 watcher (a) fails: C is never
+ * asked, one answer, the block is unknown. */
+static void w27_failed_header_provider_is_fallback(void) {
+    printf("W27 a provider whose header read failed is the fallback for the logs\n");
+    fresh(20);
+    ch_build(&g_chain, 1, 13, 0, 0);
+    ch_pay(&g_chain, 0x31, 0, 10, 0x11, 5);
+    g_sp[1].fail_logs = 1;
+    g_sp[2].fail_blocks = 1;
+    amm_eth_step_t o;
+    step_n(3, &o);
+    char st[16];
+    CHECK(g_sp[2].asked[10] > 0, "(a) C, whose header read failed, is asked once B's logs fail");
+    CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep"),
+          "(a) the payment counts through A and C (the parent's behaviour)");
+
+    fresh(20);
+    ch_build(&g_chain, 1, 13, 0, 0);
+    ch_pay(&g_chain, 0x31, 0, 10, 0x11, 5);
+    g_sp[2].fail_blocks = 1;
+    step_n(3, &o);
+    int c_asked = 0;
+    for (int h = 1; h <= 13; h++) c_asked += g_sp[2].asked[h];
+    CHECK(c_asked > 0, "(b) A and B answer: C, whose header read failed, is still asked (no early stop)");
+    CHECK(g_sp[0].asked[10] > 0 && g_sp[1].asked[10] > 0, "(b) A and B are asked");
+    CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep"), "(b) the payment counts");
+}
+
+/* W28  disagreement among the quorum-header providers asks the failed-header
+ * provider too (Sol's scenario, 2026-11-12), as the parent's full set did.
+ * PROVES: quorum 2; A and B return the quorum header at height 10, C's header
+ * read fails; A and C list the same valid payment, B lists nothing. In ONE step
+ * the payment is stored as counted (state seen or deep, never candidate): C was
+ * asked (every usable provider without another header is asked, in index order).
+ * HOW IT CAN FALSELY PASS: C's header failure is the stub switch fail_blocks for
+ * every height; the check is on the record state after one step, so a later
+ * step that happens to reach C would not hide it (a single step is run). On
+ * e40c11e66 the first pass counts two answers and stops, the payment stays a
+ * candidate, and the check fails. */
+static void w28_disagreement_asks_failed_header_provider(void) {
+    printf("W28 a disagreement among the quorum-header providers asks the failed-header provider\n");
+    fresh(20);
+    ch_build(&g_chain, 1, 13, 0, 0);
+    g_alt[0] = g_chain; g_alt[1] = g_chain; g_alt[2] = g_chain;
+    ch_pay(&g_alt[0], 0x31, 0, 10, 0x11, 5);          /* A lists the payment   */
+    ch_pay(&g_alt[2], 0x31, 0, 10, 0x11, 5);          /* C lists the same one  */
+    for (int i = 0; i < 3; i++) g_sp[i].ch = &g_alt[i];   /* B (index 1): empty */
+    g_sp[2].fail_blocks = 1;                          /* C's header read fails */
+    amm_eth_step_t o;
+    step(&o);
+    char st[16];
+    CHECK(rec_state(0x31, 0, st) == 0 && (!strcmp(st, "seen") || !strcmp(st, "deep")),
+          "the payment is counted in that step (A and C agree), not left a candidate");
+    CHECK(g_sp[2].asked[10] > 0, "C was asked for block 10 because A and B disagreed");
+}
+
+/* W29  no early stop: a provider whose header read failed is asked even when
+ * the quorum-header providers all answered identically (Sol recheck 2,
+ * 2026-11-12: skipping it changed verdicts against the parent's evidence set).
+ * PROVES: quorum 2; A and B return the quorum header and EMPTY lists, C's header
+ * read fails but C lists a payment in block 10: C is asked, and its below-quorum
+ * listing is created as a candidate and dropped again in the same step (A and B
+ * answered without it), never counted, exactly as at the parent; with C skipped
+ * the payment is not recorded at all, and for a moved transaction the same skip
+ * turns find_tx_record's "unknown" into "gone". The asserted facts: C's
+ * get_logs counter for block 10, no seen/deep record, no candidate left.
+ * HOW IT CAN FALSELY PASS: this is the eval_block form of Sol's counterexample
+ * (a provider-only log), not the moved-transaction form through find_tx_record,
+ * which needs a reorganisation fixture; both depend on the same gather_logs rule.
+ * On f5a5f74b8 the first pass is unanimous (two empty lists), C is skipped, no
+ * candidate is stored and the checks fail. */
+static void w29_no_early_stop(void) {
+    printf("W29 no early stop: the failed-header provider is asked when A and B agree on empty\n");
+    fresh(20);
+    ch_build(&g_chain, 1, 13, 0, 0);
+    g_alt[0] = g_chain; g_alt[1] = g_chain; g_alt[2] = g_chain;
+    ch_pay(&g_alt[2], 0x31, 0, 10, 0x11, 5);          /* only C lists the payment */
+    for (int i = 0; i < 3; i++) g_sp[i].ch = &g_alt[i];
+    g_sp[2].fail_blocks = 1;                          /* C's header read fails    */
+    amm_eth_step_t o;
+    step(&o);
+    CHECK(g_sp[2].asked[10] > 0, "C is asked for block 10 although A and B answered");
+    /* the parent's verdict (bf5a4bcb4): C's listing is below the quorum, so it
+     * is stored as a candidate and, in the same step, rescan_candidates finds
+     * two providers (A, B) answering without it and drops it (the existing W1
+     * checks at the top of this file: a log listed by one provider alone is
+     * never counted and is dropped once two providers answer without it) */
+    CHECK(count_state("seen") + count_state("deep") == 0,
+          "C's listing alone is never counted (the parent's verdict)");
+    CHECK(count_state("candidate") == 0,
+          "and no candidate is left: two providers answered without it, it is dropped in the same step");
+}
+
+/* W30  the moved-transaction form of Sol's counterexample through
+ * find_tx_record (Sol recheck 2, 2026-11-12).
+ * PROVES: a deep payment (tx 0x31, block 10, value 5) is seen again after a
+ * reorganisation from block 10: in the new chain the transaction is mined in
+ * block 12. A and B hold the new quorum header and their RECEIPTS put the
+ * transaction in block 12, but their eth_getLogs for block 12 list nothing for
+ * it; C's header read fails, C's receipt agrees and its eth_getLogs lists the
+ * transaction with the quorum block's hash. The record must NOT be declared gone
+ * in that step: it stays deep and nothing is dropped (the parent asked C, saw a
+ * below-quorum listing and returned "unknown"; with C skipped find_tx_record
+ * answers "gone" and the disappearance is applied: record dropped).
+ * HOW IT CAN FALSELY PASS: the "receipt in 12 but no log in 12" fixture is a
+ * provider inconsistency built by hand (the stub keeps receipts and logs
+ * apart); any other reason the step leaves the record deep (for instance an
+ * unrelated unknown) would also pass the state check, which is why the
+ * dropped counter and C's get_logs counter for block 12 are checked too. On
+ * f5a5f74b8 C is skipped for the block, the record is dropped and both fail. */
+static void w30_moved_transaction_not_gone(void) {
+    printf("W30 a moved transaction listed only by the failed-header provider is not declared gone\n");
+    fresh(20);
+    ch_build(&g_chain, 1, 15, 0, 0);
+    ch_pay(&g_chain, 0x31, 0, 10, 0x11, 5);
+    amm_eth_step_t o;
+    step(&o);
+    char st[16];
+    CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep"), "setup: a deep payment of 5 at block 10");
+    for (int i = 0; i < 3; i++) {
+        ch_build(&g_alt[i], 1, 16, 10, 1);             /* fork at 10                    */
+        ch_pay(&g_alt[i], 0x31, 0, 12, 0x11, 5);       /* mined again in block 12       */
+        g_sp[i].ch = &g_alt[i];
+    }
+    for (int k = 0; k < NL; k++)                       /* A and B list no log for it    */
+        for (int i = 0; i < 2; i++)
+            if (g_alt[i].g[k].used && g_alt[i].g[k].l.tx[0] == 0x31) g_alt[i].g[k].used = 0;
+    g_sp[2].fail_blocks = 1;                           /* C's header read fails         */
+    memset(g_sp[2].asked, 0, sizeof(g_sp[2].asked));
+    step(&o);
+    CHECK(o.dropped == 0, "nothing is dropped in that step");
+    CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep"),
+          "the record is not declared gone: it stays deep");
+    CHECK(g_sp[2].asked[12] > 0, "C was asked for the logs of block 12");
+}
+
+/* W31  the code red team's N2 (2026-11-12): a provider that returned a
+ * DIFFERENT header at the moved transaction's new block still counts as
+ * evidence through its logs.
+ * PROVES: as W30, but C's header at block 12 is a DIFFERENT header (not a failed
+ * read) while its eth_getLogs lists the transaction stamped with the QUORUM
+ * block's hash. A and B list nothing for the transaction. The record is not
+ * declared gone: it stays deep, nothing is dropped, and C was asked for block 12
+ * (the parent counted C's listing: find_tx_record "unknown"; excluding C turns
+ * it into "gone").
+ * HOW IT CAN FALSELY PASS: the log stamped with the quorum hash from a provider
+ * that disagrees about the header is a hand-built inconsistency, and the
+ * receipt fixture is the one of W30; another reason for the record to stay deep
+ * is excluded by the dropped counter and C's get_logs counter for block 12.
+ * With C excluded (cae470fb7) the record is dropped and the checks fail. */
+static void w31_different_header_provider_listing(void) {
+    printf("W31 a moved transaction listed only by a different-header provider is not declared gone\n");
+    fresh(20);
+    ch_build(&g_chain, 1, 15, 0, 0);
+    ch_pay(&g_chain, 0x31, 0, 10, 0x11, 5);
+    amm_eth_step_t o;
+    step(&o);
+    char st[16];
+    CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep"), "setup: a deep payment of 5 at block 10");
+    for (int i = 0; i < 2; i++) {                      /* A and B: the quorum chain */
+        ch_build(&g_alt[i], 1, 16, 10, 1);
+        ch_pay(&g_alt[i], 0x31, 0, 12, 0x11, 5);
+        for (int k = 0; k < NL; k++)
+            if (g_alt[i].g[k].used && g_alt[i].g[k].l.tx[0] == 0x31) g_alt[i].g[k].used = 0;
+        g_sp[i].ch = &g_alt[i];
+    }
+    ch_build(&g_alt[2], 1, 16, 10, 2);                 /* C: another header from 10 */
+    ch_pay(&g_alt[2], 0x31, 0, 12, 0x11, 5);
+    for (int k = 0; k < NL; k++)                       /* C's log carries the QUORUM hash */
+        if (g_alt[2].g[k].used && g_alt[2].g[k].l.tx[0] == 0x31)
+            memset(g_alt[2].g[k].l.block_hash, hb(12, 1), 32);
+    g_sp[2].ch = &g_alt[2];
+    /* by block hash a provider answers about the block it HOLDS: C's own header
+     * at 12 is another one, so the fixture says it also holds the quorum block */
+    g_sp[2].has_also = 1; g_sp[2].also_blk = 12; g_sp[2].also_byte = hb(12, 1);
+    memset(g_sp[2].asked, 0, sizeof(g_sp[2].asked));
+    step(&o);
+    CHECK(o.dropped == 0, "nothing is dropped in that step");
+    CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep"),
+          "the record is not declared gone: it stays deep");
+    CHECK(g_sp[2].asked[12] > 0, "C, with another header at block 12, was asked for its logs");
+}
+
+/* W32  the block-hash read: an answer is about exactly the accepted block
+ * (the defect: get_logs asked by block NUMBER, so a provider holding another
+ * block at that height answered an empty list about that other block; log_ok
+ * dropped nothing, but answered counted it and its empty list was an "absent"
+ * vote that dropped a candidate or declared a moved payment gone).
+ * Across EventManager (EventUtils.ts:157-171) removes an event only on a report
+ * bound to that event's blockHash; filter.yaml:40-59 "Filter by block hash" and
+ * geth filter.go:83-97 (an unknown hash is an error) give the same binding here.
+ * PROVES, each for a control run (C also holds the quorum block and answers an
+ * empty list: the old verdict) and the defect run (C holds another block at the
+ * height: its answer to the quorum hash is an ERROR, not an empty list):
+ *  (1) candidate drop (eval_block): a candidate is retained (W2 setup); then A
+ *      holds the quorum block and lists nothing, B fails the log read, C is on
+ *      another block. Defect run: answered = 1 < Q, the block is unknown: the
+ *      candidate is still there, nothing is dropped, o.unknown > 0. Control run:
+ *      answered = 2 (A, C both without it): the candidate is dropped (this shows
+ *      the fixture reaches the drop).
+ *  (2) moved record (find_tx_record): W30's fixture with B failing its logs and
+ *      C on another block with no transaction. Defect run: answered = 1 < Q,
+ *      unknown: the record stays deep, o.dropped == 0. Control run: A and C
+ *      answer empty, find_tx_record says gone and the record is no longer deep.
+ * HOW IT CAN FALSELY PASS: the control runs are what tells the defect runs
+ * apart from a fixture that never reaches the verdict; the stub's hash rule
+ * (holds = its own header at the height has that hash, or also_hash) is the
+ * test's model of a provider, not a provider. On 32425b38e the new get_logs
+ * signature does not exist, so the file does not compile there; against the
+ * by-number behaviour the defect runs fail at: (1) "the candidate is kept"
+ * (count_state("candidate") == 1 sees 0) and (2) "the record stays deep". */
+static void w32_block_hash_answer(void) {
+    printf("W32 an answer about another block is an error, not an absent vote\n");
+    amm_eth_step_t o;
+    char st[16];
+    for (int control = 0; control < 2; control++) {
+        const char *run = control ? "control (C holds the quorum block)" : "defect run (C holds another block)";
+        char msg[160];
+        /* (1) candidate drop */
+        fresh(20);
+        ch_build(&g_chain, 1, 13, 0, 0);
+        g_alt[0] = g_chain; g_alt[1] = g_chain; g_alt[2] = g_chain;
+        ch_pay(&g_alt[0], 0x31, 0, 10, 0x11, 5);
+        ch_pay(&g_alt[1], 0x31, 0, 10, 0x11, 6);
+        for (int i = 0; i < 3; i++) g_sp[i].ch = &g_alt[i];
+        g_sp[2].fail_logs = 1;
+        step(&o);
+        snprintf(msg, sizeof(msg), "(1) %s: setup, one candidate is retained", run);
+        CHECK(count_state("candidate") == 1, msg);
+        for (int k = 0; k < NL; k++)                   /* A and B no longer list it */
+            for (int i = 0; i < 2; i++)
+                if (g_alt[i].g[k].used && g_alt[i].g[k].l.tx[0] == 0x31) g_alt[i].g[k].used = 0;
+        g_sp[2].fail_logs = 0;
+        g_sp[1].fail_logs = 1;                         /* B fails the log read      */
+        ch_build(&g_alt[2], 1, 13, 10, 2);             /* C: another block from 10  */
+        if (control) { g_sp[2].has_also = 1; g_sp[2].also_blk = 10; g_sp[2].also_byte = hb(10, 0); }
+        step(&o);
+        if (control) {
+            snprintf(msg, sizeof(msg), "(1) %s: A and C answer without it, the candidate is dropped", run);
+            CHECK(count_state("candidate") == 0, msg);
+        } else {
+            snprintf(msg, sizeof(msg), "(1) %s: the candidate is kept (answered 1 < Q)", run);
+            CHECK(count_state("candidate") == 1, msg);
+            CHECK(o.dropped == 0 && o.unknown > 0, "(1)   nothing dropped, the step reports unknown");
+        }
+
+        /* (2) moved record */
+        fresh(20);
+        ch_build(&g_chain, 1, 15, 0, 0);
+        ch_pay(&g_chain, 0x31, 0, 10, 0x11, 5);
+        step(&o);
+        snprintf(msg, sizeof(msg), "(2) %s: setup, a deep payment at block 10", run);
+        CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep"), msg);
+        for (int i = 0; i < 2; i++) {                  /* A and B: the quorum chain */
+            ch_build(&g_alt[i], 1, 16, 10, 1);
+            ch_pay(&g_alt[i], 0x31, 0, 12, 0x11, 5);
+            for (int k = 0; k < NL; k++)
+                if (g_alt[i].g[k].used && g_alt[i].g[k].l.tx[0] == 0x31) g_alt[i].g[k].used = 0;
+            g_sp[i].ch = &g_alt[i];
+        }
+        ch_build(&g_alt[2], 1, 16, 10, 2);             /* C: another block, no tx   */
+        g_sp[2].ch = &g_alt[2];
+        g_sp[1].fail_logs = 1;                         /* B fails the log read      */
+        if (control) { g_sp[2].has_also = 1; g_sp[2].also_blk = 12; g_sp[2].also_byte = hb(12, 1); }
+        step(&o);
+        if (control) {
+            snprintf(msg, sizeof(msg), "(2) %s: A and C answer empty, the record is declared gone (not deep)", run);
+            CHECK(rec_state(0x31, 0, st) == 0 && strcmp(st, "deep") != 0, msg);
+        } else {
+            snprintf(msg, sizeof(msg), "(2) %s: the record stays deep (answered 1 < Q, unknown)", run);
+            CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep") && o.dropped == 0, msg);
+        }
+    }
+}
+
 int main(void) {
     printf("test_amm_eth_watch\n");
     snprintf(g_dir, sizeof(g_dir), "/tmp/amm_watch_testXXXXXX");
@@ -1379,6 +1737,13 @@ int main(void) {
     w23_liquidity_depth();
     w24_depth_by_amount();
     w25_window_by_value();
+    w26_logs_asked_of_every_usable_provider();
+    w27_failed_header_provider_is_fallback();
+    w28_disagreement_asks_failed_header_provider();
+    w29_no_early_stop();
+    w30_moved_transaction_not_gone();
+    w31_different_header_provider_listing();
+    w32_block_hash_answer();
 
     if (g_w) amm_eth_watch_free(g_w);
     if (g_j) amm_journal_close(g_j);

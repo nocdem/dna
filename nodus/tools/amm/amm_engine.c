@@ -374,6 +374,11 @@ int amm_engine_quote(amm_engine_t *e, amm_dir_t dir, uint64_t amount,
         if (jr == AMM_J_INFLIGHT) return AMM_Q_INFLIGHT;
         if (jr == AMM_J_BUSY) return AMM_Q_BUSY;
         if (jr != AMM_J_OK) return AMM_Q_ERR;
+        QGP_LOG_INFO(LOG_TAG, "swap approval stored: request number %u, direction %s, amount "
+                     "%llu, number %llu, expires %llu", n,
+                     dir == AMM_USDT_TO_NODUS ? "usdt_to_nodus" : "nodus_to_usdt",
+                     (unsigned long long)amount, (unsigned long long)number,
+                     (unsigned long long)q.expiry);
 
         memset(out, 0, sizeof(*out));
         out->dir = dir;
@@ -413,6 +418,9 @@ static int accept_common(amm_engine_t *e, amm_accept_t *a, uint64_t request_numb
     amm_swap_t out;
     memset(&out, 0, sizeof(out));
     int r = amm_journal_accept_request(e->c.journal, a, &out);
+    QGP_LOG_INFO(LOG_TAG, "swap request number %u: journal answer %d (%s)", a->bot_req, r,
+                 r == AMM_J_OK ? "received" : r == AMM_J_OPEN_DUP ? "an open request exists"
+                 : "refused");
     switch (r) {
     case AMM_J_OK:          if (swap_out) *swap_out = out; return AMM_ACC_RECEIVED;
     case AMM_J_OPEN_DUP:    if (swap_out) *swap_out = out; return AMM_ACC_OPEN;
@@ -538,6 +546,9 @@ int amm_engine_add_question(amm_engine_t *e, amm_side_t side, uint64_t amount,
         if (jr == AMM_J_BELOW_MIN) return AMM_AQ_BELOW_MIN;
         if (jr == AMM_J_BUSY) return AMM_AQ_BUSY;
         if (jr != AMM_J_OK) return AMM_AQ_ERR;
+        QGP_LOG_INFO(LOG_TAG, "add approval stored: request number %u, USDT %llu, NODUS %llu, "
+                     "expires %llu", n, (unsigned long long)usdt, (unsigned long long)nodus,
+                     (unsigned long long)q.expiry);
         memset(out, 0, sizeof(*out));
         out->usdt_amount = usdt;
         out->nodus_amount = nodus;
@@ -576,6 +587,10 @@ int amm_engine_accept_add(amm_engine_t *e, const amm_req_liq_add_t *r, uint32_t 
     memcpy(a.eth_req_no, r->req_no, 32);
     memcpy(a.nodus_req_no, r->req_no, 32);
     int jr = amm_journal_add_accept(e->c.journal, &a, NULL, open_req);
+    QGP_LOG_INFO(LOG_TAG, "add request number %llu: journal answer %d (%s)",
+                 (unsigned long long)r->request_number, jr,
+                 jr == AMM_J_OK ? "received" : jr == AMM_J_OPEN_DUP ? "an open request exists"
+                 : "refused");
     switch (jr) {
     case AMM_J_OK:           return AMM_ACC_RECEIVED;
     case AMM_J_OPEN_DUP:     return AMM_ACC_OPEN;
@@ -615,6 +630,9 @@ int amm_engine_accept_withdraw(amm_engine_t *e, const amm_req_liq_withdraw_t *r)
     a.eth_tip = tip;
     a.liquidity_paused_cfg = e->cfg.liquidity_paused;
     int jr = amm_journal_withdraw_accept(e->c.journal, &a, NULL);
+    QGP_LOG_INFO(LOG_TAG, "withdrawal request number %llu (%u basis points): journal answer %d (%s)",
+                 (unsigned long long)r->request_number, (unsigned)a.bp, jr,
+                 jr == AMM_J_OK ? "received" : "refused");
     switch (jr) {
     case AMM_J_OK:          return AMM_ACC_RECEIVED;
     case AMM_J_PAUSED:      return AMM_ACC_PAUSED;
@@ -722,8 +740,12 @@ static int eth_records(amm_engine_t *e, amm_engine_step_t *o) {
                         if (amm_eth_watch_match(r, csender, camt, carrier.approved_tip,
                                                 carrier.expiry) != AMM_M_MATCH) {
                             int ur = amm_journal_payment_unmatched(e->c.journal, r->tx, r->log_index);
-                            if (ur == AMM_J_OK) o->held_records++;
-                            else if (ur != AMM_J_ILLEGAL) rc = -1;
+                            if (ur == AMM_J_OK) {
+                                o->held_records++;
+                                QGP_LOG_INFO(LOG_TAG, "swap %s: the payment %s/%u no longer "
+                                             "matches its approval: record held", carrier.id,
+                                             key, (unsigned)r->log_index);
+                            } else if (ur != AMM_J_ILLEGAL) rc = -1;
                             continue;
                         }
                         if (carrier.room && count_swap(e, &carrier, o) != 0) rc = -1;
@@ -779,7 +801,12 @@ static int eth_records(amm_engine_t *e, amm_engine_step_t *o) {
                                                 ad.expiry) == AMM_M_MATCH) {
                             int lr = amm_journal_add_link_eth(e->c.journal, ad.seq, key,
                                                               r->log_index);
-                            if (lr == AMM_J_OK) { taken = 1; o->adds_linked++; }
+                            if (lr == AMM_J_OK) {
+                                taken = 1; o->adds_linked++;
+                                QGP_LOG_INFO(LOG_TAG, "add %lld: the Ethereum payment %s/%u is "
+                                             "linked", (long long)ad.seq, key,
+                                             (unsigned)r->log_index);
+                            }
                             else if (lr == -1) { rc = -1; break; }
                         }
                     }
@@ -788,7 +815,11 @@ static int eth_records(amm_engine_t *e, amm_engine_step_t *o) {
                     /* a payment that matches no approval is held (plan section 7) */
                     amm_rec_t h = *r;
                     snprintf(h.state, sizeof(h.state), "%s", AMM_R_HELD);
-                    if (amm_journal_rec_put(e->c.journal, &h) == AMM_J_OK) o->held_records++;
+                    if (amm_journal_rec_put(e->c.journal, &h) == AMM_J_OK) {
+                        o->held_records++;
+                        QGP_LOG_INFO(LOG_TAG, "the Ethereum payment %s/%u matches no approval: "
+                                     "record held", key, (unsigned)r->log_index);
+                    }
                 }
             }
             if (rc != 0 || stop || nr < pg) break;
@@ -862,7 +893,12 @@ static int liquidity_adds(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
                                 nr.amount == a.nodus_amount && nr.ts <= a.expiry &&
                                 nr.height > a.nodus_tip) {
                                 int lr = amm_journal_add_link_nodus(e->c.journal, a.seq, nr.height);
-                                if (lr == AMM_J_OK) { a.nodus_height = nr.height; o->adds_linked++; }
+                                if (lr == AMM_J_OK) {
+                                    a.nodus_height = nr.height; o->adds_linked++;
+                                    QGP_LOG_INFO(LOG_TAG, "add %lld: the Nodus payment in block "
+                                                 "%llu is linked", (long long)a.seq,
+                                                 (unsigned long long)nr.height);
+                                }
                                 else if (lr == -1) { rc = -1; break; }
                             }
                         }
@@ -879,7 +915,11 @@ static int liquidity_adds(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
                     int wn = amm_nodus_watch_window_observed(e->c.nodus_watch, a.expiry);
                     if (we == 1 && wn == 1) {
                         int xr = amm_journal_add_expire(e->c.journal, a.seq);
-                        if (xr == AMM_J_OK) o->adds_expired++;
+                        if (xr == AMM_J_OK) {
+                            o->adds_expired++;
+                            QGP_LOG_INFO(LOG_TAG, "add %lld expired unsigned (both payment "
+                                         "windows observed)", (long long)a.seq);
+                        }
                         else if (xr != AMM_J_ILLEGAL) rc = -1;
                     }
                 }
@@ -916,7 +956,11 @@ static int liquidity_adds(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
                 int wn = amm_nodus_watch_window_observed(e->c.nodus_watch, a->expiry);
                 if (we == 1 && wn == 1) {
                     int xr = amm_journal_add_expire(e->c.journal, a->seq);
-                    if (xr == AMM_J_OK) o->adds_expired++;
+                    if (xr == AMM_J_OK) {
+                        o->adds_expired++;
+                        QGP_LOG_INFO(LOG_TAG, "add %lld expired (both payment windows observed)",
+                                     (long long)a->seq);
+                    }
                     else if (xr != AMM_J_ILLEGAL) rc = -1;
                 }
             }
@@ -1157,7 +1201,11 @@ static int add_ready(amm_engine_t *e, const amm_add_t *a, uint64_t dl) {
 static int commit_add(amm_engine_t *e, int64_t seq, amm_engine_step_t *o) {
     evm_u256 units;
     int cr = amm_journal_add_commit(e->c.journal, seq, &units);
-    if (cr == AMM_J_OK) { o->adds_committed++; return 0; }
+    if (cr == AMM_J_OK) {
+        o->adds_committed++;
+        QGP_LOG_INFO(LOG_TAG, "add %lld committed to the ledger", (long long)seq);
+        return 0;
+    }
     if (cr == -1) return -1;
     QGP_LOG_ERROR(LOG_TAG, "an add cannot be committed (%d)", cr);
     return 0;
@@ -1627,8 +1675,11 @@ static int release(amm_engine_t *e, amm_engine_step_t *o) {
             }
             if (!done) continue;
             int r = amm_journal_swap_transition(e->c.journal, s->seq, AMM_S_EXPIRED, NULL, NULL, NULL);
-            if (r == AMM_J_OK) o->expired++;
-            else if (r != AMM_J_ILLEGAL) rc = -1;
+            if (r == AMM_J_OK) {
+                o->expired++;
+                QGP_LOG_INFO(LOG_TAG, "swap %s expired (its payment window is fully observed "
+                             "and no payment came)", s->id);
+            } else if (r != AMM_J_ILLEGAL) rc = -1;
         }
         if (rc != 0) break;
         if (n < lim) { after = 0; break; }            /* the end of the rows: start again next round */

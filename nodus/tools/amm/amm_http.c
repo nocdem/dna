@@ -350,10 +350,28 @@ static void route_quote(amm_http_ctx_t *c, const amm_http_req_t *req, uint64_t d
     jkey(&j, "payTo", 0); jstr_out(&j, a.pay_to);
     jraw(&j, "}");
     finish(&j, status, 200, body, cap);
+    QGP_LOG_INFO(LOG_TAG, "quote approved: direction %s, amount %llu, number %llu, estimated "
+                 "fee %llu, request number %llu, valid until %llu", dir_word(a.dir),
+                 (unsigned long long)a.amount, (unsigned long long)a.number,
+                 (unsigned long long)a.est_fee, (unsigned long long)a.request_number,
+                 (unsigned long long)a.valid_until);
 }
 
-static void swap_answer(int rc, uint32_t req_no, uint32_t open_req, int *status, char *body,
-                        size_t cap) {
+/* The outcome line of a swap, liquidity add or withdrawal post: the kind, the
+ * request number the bot gave it (0 when none) and the outcome word. */
+static void log_post(const char *kind, int rc, uint32_t req_no, uint32_t open_req) {
+    if (rc == AMM_HS_RECEIVED)
+        QGP_LOG_INFO(LOG_TAG, "%s post: received, request number %u", kind, req_no);
+    else if (rc == AMM_HS_OPEN)
+        QGP_LOG_INFO(LOG_TAG, "%s post: refused (%s), the open request number is %u", kind,
+                     s_word(rc), open_req);
+    else
+        QGP_LOG_INFO(LOG_TAG, "%s post: refused (%s)", kind, s_word(rc));
+}
+
+static void swap_answer(const char *kind, int rc, uint32_t req_no, uint32_t open_req,
+                        int *status, char *body, size_t cap) {
+    log_post(kind, rc, req_no, open_req);
     if (rc == AMM_HS_RECEIVED) {
         jb_t j = { body, cap, 0, 0 };
         if (cap) body[0] = '\0';
@@ -413,7 +431,7 @@ static void route_swap(amm_http_ctx_t *c, const amm_http_req_t *req, int *status
             return;
         }
         int rc = c->be.swap_usdt(c->be.ctx, &in, &req_no, &open_req);
-        swap_answer(rc, req_no, open_req, status, body, cap);
+        swap_answer("swap usdt_to_nodus", rc, req_no, open_req, status, body, cap);
         return;
     }
     if (kn == 13 && !memcmp(kv, "nodus_to_usdt", 13)) {
@@ -441,7 +459,7 @@ static void route_swap(amm_http_ctx_t *c, const amm_http_req_t *req, int *status
         amm_req_nodus_in_t in = { text, text_len, pk, sg };
         int rc = c->be.swap_nodus(c->be.ctx, &in, &req_no, &open_req);
         free(pk); free(sg);
-        swap_answer(rc, req_no, open_req, status, body, cap);
+        swap_answer("swap nodus_to_usdt", rc, req_no, open_req, status, body, cap);
         return;
     }
     refusal(status, body, cap, 400, "received", "bad_request");
@@ -496,6 +514,11 @@ static void route_add_quote(amm_http_ctx_t *c, const amm_http_req_t *req, uint64
     jkey(&j, "payNodus", 0); jstr_out(&j, a.pay_nodus);
     jraw(&j, "}");
     finish(&j, status, 200, body, cap);
+    QGP_LOG_INFO(LOG_TAG, "liquidity quote approved: side %s, USDT amount %llu, Nodus amount "
+                 "%llu, request number %llu, valid until %llu",
+                 side == AMM_SIDE_USDT ? "usdt" : "nodus",
+                 (unsigned long long)a.usdt_amount, (unsigned long long)a.nodus_amount,
+                 (unsigned long long)a.request_number, (unsigned long long)a.valid_until);
 }
 
 /* The two signed halves of a liquidity add (flat body, amm_http.h). */
@@ -546,7 +569,7 @@ static void route_add(amm_http_ctx_t *c, const amm_http_req_t *req, int *status,
     uint32_t req_no = 0, open_req = 0;
     int rc = c->be.add_accept(c->be.ctx, &ei, &ni, &req_no, &open_req);
     free(pk); free(sg);
-    swap_answer(rc, req_no, open_req, status, body, cap);
+    swap_answer("liquidity add", rc, req_no, open_req, status, body, cap);
 }
 
 /* The signed withdrawal (plan 6.4.7: text, publicKey, signature; the Nodus key
@@ -579,6 +602,7 @@ static void route_withdraw(amm_http_ctx_t *c, const amm_http_req_t *req, int *st
     uint64_t req_no = 0;
     int rc = c->be.withdraw(c->be.ctx, &in, &req_no);
     free(pk); free(sg);
+    log_post("liquidity withdraw", rc, (uint32_t)req_no, 0);
     jb_t j = { body, cap, 0, 0 };
     if (cap) body[0] = '\0';
     jraw(&j, "{");
@@ -693,8 +717,8 @@ static void route_status(amm_http_ctx_t *c, int *status, char *body, size_t cap)
     finish(&j, status, 200, body, cap);
 }
 
-void amm_http_route(amm_http_ctx_t *c, const amm_http_req_t *req, uint64_t deadline_ms,
-                    int *status, char *body, size_t cap) {
+static void route_dispatch(amm_http_ctx_t *c, const amm_http_req_t *req, uint64_t deadline_ms,
+                           int *status, char *body, size_t cap) {
     const int get = !strcmp(req->method, "GET");
     if (!strcmp(req->path, "/amm/quote")) {
         if (get) { refusal(status, body, cap, 405, "approved", "bad_request"); return; }
@@ -720,6 +744,53 @@ void amm_http_route(amm_http_ctx_t *c, const amm_http_req_t *req, uint64_t deadl
     } else {
         refusal(status, body, cap, 404, "ok", "not_found");
     }
+}
+
+static uint64_t now_ms(void);
+
+/* The text of a flat string member of the answer (`"key":"<value>"`) into
+ * `out`; "" when the answer has none. The answers are built by this file, so
+ * the value never holds a quote or a backslash that jstr_out escaped away. */
+static void answer_member(const char *body, const char *key, char *out, size_t cap) {
+    char pat[40];
+    out[0] = '\0';
+    snprintf(pat, sizeof(pat), "\"%s\":\"", key);
+    const char *p = strstr(body, pat);
+    if (!p) return;
+    p += strlen(pat);
+    size_t n = strcspn(p, "\"");
+    if (n >= cap) n = cap - 1;
+    memcpy(out, p, n);
+    out[n] = '\0';
+}
+
+/* One line per request (operator order 2026-11-12: full diagnostic log): the
+ * request's number in this run, method, path, the answer's status, the outcome
+ * word (the reason of a refusal, "received" / "approved" of an accepted post or
+ * quote), the request number the answer carries and the time the route took.
+ * The body of the request is never written: it holds signatures. */
+void amm_http_route(amm_http_ctx_t *c, const amm_http_req_t *req, uint64_t deadline_ms,
+                    int *status, char *body, size_t cap) {
+    static unsigned http_no;
+    const unsigned no = ++http_no;
+    const uint64_t t0 = now_ms();
+    route_dispatch(c, req, deadline_ms, status, body, cap);
+    const unsigned long long ms = (unsigned long long)(now_ms() - t0);
+
+    /* a caller may pass no answer buffer (body NULL or cap 0: the builders write
+     * nothing then): the line carries the status only */
+    char reason_w[40] = "", reqno[24] = "";
+    const int have_body = body != NULL && cap > 0;
+    if (have_body) {
+        answer_member(body, "reason", reason_w, sizeof(reason_w));
+        answer_member(body, "requestNumber", reqno, sizeof(reqno));
+    }
+    const char *outcome = reason_w[0] ? reason_w
+                        : (have_body && strstr(body, "\"received\":true")) ? "received"
+                        : (have_body && strstr(body, "\"approved\":true")) ? "approved"
+                        : *status == 200 ? "ok" : "failed";
+    QGP_LOG_INFO(LOG_TAG, "request %u: %s %s answered %d (%s), request number %s, in %llu ms",
+                 no, req->method, req->path, *status, outcome, reqno[0] ? reqno : "none", ms);
 }
 
 /* ── the server ───────────────────────────────────────────────────────── */
@@ -852,6 +923,11 @@ int amm_http_open(uint16_t port, int conn_cap, int timeout_ms, size_t max_body,
     h->resp_cap = max_response + 256;
     h->handler = handler; h->ctx = ctx;
     *out = h;
+    QGP_LOG_INFO(LOG_TAG, "the HTTP server on 127.0.0.1:%u allows at most %d connections, "
+                 "%d ms per request, a request body of at most %zu bytes and an answer of "
+                 "at most %zu bytes",
+                 (unsigned)(bound ? *bound : port), conn_cap, timeout_ms, max_body,
+                 max_response);
     return 0;
 }
 
@@ -874,10 +950,16 @@ static void serve_conn(amm_http_t *h, int idx) {
     amm_http_req_t req;
     int pr = amm_http_parse(c->buf, c->len, h->max_body, &req);
     if (pr == 0) {
-        if (c->len >= h->buf_cap) answer_conn(h, idx, 413, "{\"reason\":\"bad_request\"}");
+        if (c->len >= h->buf_cap) {
+            QGP_LOG_WARN(LOG_TAG, "request refused: 413, %zu bytes received fill the buffer "
+                         "without a complete request", c->len);
+            answer_conn(h, idx, 413, "{\"reason\":\"bad_request\"}");
+        }
         return;
     }
     if (pr < 0) {
+        QGP_LOG_WARN(LOG_TAG, "request refused before routing: %d (%s), %zu bytes received",
+                     -pr, reason(-pr), c->len);
         answer_conn(h, idx, -pr, "{\"reason\":\"bad_request\"}");
         return;
     }
@@ -907,6 +989,8 @@ int amm_http_poll(amm_http_t *h, int wait_ms) {
             int cfd = accept4(h->lfd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
             if (cfd < 0) break;
             if (h->nconn >= h->conn_cap) {
+                QGP_LOG_WARN(LOG_TAG, "connection refused: 503, all %d connection slots are "
+                             "in use", h->conn_cap);
                 send_once(cfd, 503, "unavailable");
                 close(cfd);
                 continue;
@@ -931,7 +1015,11 @@ int amm_http_poll(amm_http_t *h, int wait_ms) {
     uint64_t now = now_ms();
     for (int i = h->nconn - 1; i >= 0; i--) {
         if (now >= h->conns[i]->deadline_ms) {
-            if (!h->conns[i]->writing) send_once(h->conns[i]->fd, 408, "request_timeout");
+            if (!h->conns[i]->writing) {
+                QGP_LOG_WARN(LOG_TAG, "request timed out: 408 after %d ms with %zu bytes "
+                             "received", h->timeout_ms, h->conns[i]->len);
+                send_once(h->conns[i]->fd, 408, "request_timeout");
+            }
             drop(h, i);
         }
     }

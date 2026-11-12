@@ -234,4 +234,10 @@ int amm_cfg_parse(const char *text, amm_cfg_t *cfg, char *err, size_t err_cap);
 /** Read and parse a file (size bounded to 16 KiB). @return 0 / -1. */
 int amm_cfg_load(const char *path, amm_cfg_t *cfg, char *err, size_t err_cap);
 
+/** Write every setting's value to the log, one line per setting (operator order
+ *  2026-11-12: full diagnostic log). Secrets and URLs are not written: the key
+ *  paths and the provider list print as "set" / a count, the pinned node
+ *  fingerprint as its first 16 hex digits. Call it once the log file is open. */
+void amm_cfg_log(const amm_cfg_t *cfg);
+
 #endif /* AMM_CFG_H */

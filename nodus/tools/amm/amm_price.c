@@ -10,19 +10,25 @@
 #include <string.h>
 #include <time.h>
 
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "AMM_PRICE"
 #define N_SOURCES 4
 
 typedef struct {
     unsigned    bit;
     const char *url;
+    const char *name;       /* what the log line calls the source */
 } src_def_t;
 
 static const src_def_t SRC[N_SOURCES] = {
-    {AMM_PRICE_KRAKEN,   "https://api.kraken.com/0/public/Ticker?pair=ETHUSDT"},
-    {AMM_PRICE_BINANCE,  "https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT"},
-    {AMM_PRICE_BITFINEX, "https://api.bitfinex.com/v2/ticker/tETHUST"},
-    {AMM_PRICE_COINBASE, "https://api.exchange.coinbase.com/products/ETH-USDT/ticker"},
+    {AMM_PRICE_KRAKEN,   "https://api.kraken.com/0/public/Ticker?pair=ETHUSDT", "kraken"},
+    {AMM_PRICE_BINANCE,  "https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT", "binance"},
+    {AMM_PRICE_BITFINEX, "https://api.bitfinex.com/v2/ticker/tETHUST", "bitfinex"},
+    {AMM_PRICE_COINBASE, "https://api.exchange.coinbase.com/products/ETH-USDT/ticker", "coinbase"},
 };
+
+static uint64_t mono_ms(void);
 
 const char *amm_price_source_url(unsigned bit) {
     for (int i = 0; i < N_SOURCES; i++)
@@ -205,14 +211,25 @@ int amm_price_poll(amm_price_t *p, uint64_t deadline_ms) {
             uint8_t buf[AMM_PRICE_RESP_MAX];
             size_t len = 0;
             uint64_t v = 0;
-            if (p->cfg.get(p->cfg.get_ctx, SRC[i].url, buf, sizeof(buf), &len,
-                           deadline_ms) == AMM_ETH_OK &&
-                amm_price_parse(SRC[i].bit, (const char *)buf, len, &v) == 0) {
+            const uint64_t t0 = mono_ms();
+            const int got = p->cfg.get(p->cfg.get_ctx, SRC[i].url, buf, sizeof(buf), &len,
+                                       deadline_ms) == AMM_ETH_OK;
+            const unsigned long long ms = (unsigned long long)(mono_ms() - t0);
+            if (got && amm_price_parse(SRC[i].bit, (const char *)buf, len, &v) == 0) {
                 pthread_mutex_lock(&p->mu);
                 p->have[i] = 1;
                 p->at[i] = now;
                 p->price[i] = v;
                 pthread_mutex_unlock(&p->mu);
+                QGP_LOG_INFO(LOG_TAG, "price source %s: ETH/USDT %llu.%06llu read in %llu ms",
+                             SRC[i].name, (unsigned long long)(v / 1000000ULL),
+                             (unsigned long long)(v % 1000000ULL), ms);
+            } else if (!got) {
+                QGP_LOG_WARN(LOG_TAG, "price source %s: the read failed after %llu ms "
+                             "(no answer or a status other than 200)", SRC[i].name, ms);
+            } else {
+                QGP_LOG_WARN(LOG_TAG, "price source %s: the answer of %zu bytes holds no "
+                             "usable price (read in %llu ms)", SRC[i].name, len, ms);
             }
         }
         pthread_mutex_lock(&p->mu);
@@ -231,10 +248,17 @@ int amm_price_get(amm_price_t *p, uint64_t *price_e6) {
     for (int i = 0; i < N_SOURCES; i++)
         if ((p->cfg.sources & SRC[i].bit) && fresh(p, i, now)) v[n++] = p->price[i];
     pthread_mutex_unlock(&p->mu);
-    if ((uint64_t)n < p->cfg.min_sources || n == 0) return AMM_ETH_ERR;
+    if ((uint64_t)n < p->cfg.min_sources || n == 0) {
+        QGP_LOG_WARN(LOG_TAG, "no price: %d fresh source(s), %llu required (a source is "
+                     "fresh for %llu s)", n, (unsigned long long)p->cfg.min_sources,
+                     (unsigned long long)p->cfg.max_age_seconds);
+        return AMM_ETH_ERR;
+    }
     uint64_t m = amm_price_median(v, n);
     if (m == 0) return AMM_ETH_ERR;
     *price_e6 = m;
+    QGP_LOG_INFO(LOG_TAG, "price: median ETH/USDT %llu.%06llu of %d fresh source(s)",
+                 (unsigned long long)(m / 1000000ULL), (unsigned long long)(m % 1000000ULL), n);
     return AMM_ETH_OK;
 }
 
@@ -250,6 +274,10 @@ int amm_price_convert(uint64_t gas_limit, uint64_t max_fee_per_gas,
     if (prod % E18) q += 1;                       /* round UP                  */
     if (q > UINT64_MAX) return AMM_ETH_ERR;
     *usdt_raw = (uint64_t)q;
+    QGP_LOG_INFO(LOG_TAG, "fee conversion: gas limit %llu x max fee per gas %llu wei at "
+                 "price %llu (e6) = %llu raw USDT (rounded up)", (unsigned long long)gas_limit,
+                 (unsigned long long)max_fee_per_gas, (unsigned long long)price_e6,
+                 (unsigned long long)*usdt_raw);
     return AMM_ETH_OK;
 }
 
@@ -333,6 +361,10 @@ int amm_price_curl_get(void *ctx, const char *url, uint8_t *resp, size_t resp_ca
         ok = pr == CURLE_OK &&
              curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &code) == CURLE_OK &&
              code == 200;
+        if (pr != CURLE_OK)
+            QGP_LOG_WARN(LOG_TAG, "price get: transfer failed: %s", curl_easy_strerror(pr));
+        else if (!ok)
+            QGP_LOG_WARN(LOG_TAG, "price get: HTTP status %ld", code);
     }
     curl_easy_cleanup(h);
     if (!ok) return AMM_ETH_ERR;

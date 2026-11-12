@@ -55,7 +55,11 @@
  *     "also across a restart between detection and the journal write").
  *     A reversal deeper than the retained window is not detected (the stated
  *     limit, section 9; window = eth_reorg_window_blocks).
- *  5. Logs of an accepted block (eth_getLogs, one block): a log is considered
+ *  5. Logs of an accepted block (eth_getLogs by the accepted block's HASH, the
+ *     "Filter by block hash" form, execution-apis filter.yaml:40-59; an unknown
+ *     hash is an error at the provider, go-ethereum v1.17.8
+ *     eth/filters/filter.go:83-97, so a provider holding another block at that
+ *     height gives no answer, never an empty one): a log is considered
  *     only when its emitter is the USDT contract, it has exactly three
  *     topics, topic0 is the ERC-20 Transfer topic (THORChain
  *     direct_erc20_transfer.go:18), the data is 32 bytes, the recipient topic

@@ -261,11 +261,20 @@ static void why_block(amm_eth_watch_t *w, const step_t *st, uint64_t h, const ch
     why_set(st, "block %llu: %s:%s", (unsigned long long)h, what, buf);
 }
 
+/* How a usable provider's header read at h compares with the quorum header
+ * (`agree[i]`, 0 for an unusable provider and for all when the result is 1):
+ * the classification is for the log line only: gather_logs asks every usable
+ * provider for the logs of the block, as the parent did (log_ok checks each
+ * log's block hash against the quorum header). */
+#define AGREE_QUORUM    1
+#define AGREE_NO_HEADER 2
+#define AGREE_OTHER     3
 static int quorum_block(amm_eth_watch_t *w, const step_t *st, uint64_t h,
-                        amm_eth_block_t *out) {
+                        amm_eth_block_t *out, int agree[AMM_ETH_MAX_PROVIDERS]) {
     amm_eth_block_t b[AMM_ETH_MAX_PROVIDERS];
     int bi[AMM_ETH_MAX_PROVIDERS];
     int n = 0;
+    memset(agree, 0, sizeof(int) * AMM_ETH_MAX_PROVIDERS);
     for (int i = 0; i < w->cfg.n_providers; i++) {
         if (!st->use[i]) continue;
         const amm_eth_provider_t *p = &w->prov[i];
@@ -290,6 +299,14 @@ static int quorum_block(amm_eth_watch_t *w, const step_t *st, uint64_t h,
         return 1;
     }
     *out = b[found];
+    /* every usable provider is classified: it returned the quorum header, it
+     * returned another one, or its header read failed */
+    for (int i = 0; i < w->cfg.n_providers; i++) {
+        if (!st->use[i]) continue;
+        agree[i] = AGREE_NO_HEADER;
+        for (int j = 0; j < n; j++)
+            if (bi[j] == i) agree[i] = blk_eq(&b[j], &b[found]) ? AGREE_QUORUM : AGREE_OTHER;
+    }
     return 0;
 }
 
@@ -418,18 +435,27 @@ static void rec_from_ent(amm_rec_t *r, const ent_t *e, const amm_eth_block_t *qb
  * @return the number of entries, -1 on memory failure (`*ents_out` heap, the
  * caller frees it). */
 static int gather_logs(amm_eth_watch_t *w, const step_t *st,
-                       const amm_eth_block_t *qb, ent_t **ents_out,
+                       const amm_eth_block_t *qb, const int *agree, ent_t **ents_out,
                        int ans[AMM_ETH_MAX_PROVIDERS], int *answered_out) {
     ent_t *ents = calloc((size_t)w->cfg.n_providers * AMM_ETH_LOGS_MAX, sizeof(ent_t));
     if (!ents) return -1;
     int n_ent = 0, answered = 0;
     memset(ans, 0, sizeof(int) * AMM_ETH_MAX_PROVIDERS);
-    for (int i = 0; i < w->cfg.n_providers; i++) {
+    /* The parent's provider set: a single loop in provider index order, no early
+     * stop, every usable provider is asked whatever its header read returned (a
+     * provider that failed, had none or returned another header may still hold
+     * the quorum block). The logs are read BY THE ACCEPTED BLOCK'S HASH
+     * (amm_eth_watch.h step 5), so an answer is about exactly that block: a
+     * provider that holds another block at this height answers with an error,
+     * which is "not answered", never an empty list counted as an absent vote;
+     * log_ok still checks each log's number and hash. */
+    {
+      for (int i = 0; i < w->cfg.n_providers; i++) {
         if (!st->use[i]) continue;
         const amm_eth_provider_t *p = &w->prov[i];
         amm_eth_log_t *buf = w->logbuf + (size_t)i * AMM_ETH_LOGS_MAX;
         int n = 0;
-        if (p->get_logs(p->ctx, qb->number, w->cfg.usdt, TRANSFER_TOPIC,
+        if (p->get_logs(p->ctx, qb->number, qb->hash, w->cfg.usdt, TRANSFER_TOPIC,
                         w->cfg.foundation, buf, AMM_ETH_LOGS_MAX, &n,
                         st->deadline) != AMM_ETH_OK ||
             n < 0 || n > AMM_ETH_LOGS_MAX) continue;
@@ -442,7 +468,22 @@ static int gather_logs(amm_eth_watch_t *w, const step_t *st,
             e.prov = i;
             ents[n_ent++] = e;
         }
+      }
     }
+    /* information only: the providers whose header read at this height did not
+     * return the quorum header (all of them were asked above); their failed log
+     * answers explain the provider errors in the log */
+    char odd[160] = "";
+    txt_t t = { odd, sizeof(odd), 0 };
+    for (int i = 0; i < w->cfg.n_providers; i++) {
+        if (!st->use[i] || agree[i] == AGREE_QUORUM) continue;
+        txt_add(&t, " provider-%d (%s);", i + 1,
+                agree[i] == AGREE_OTHER ? "another header" : "no header read");
+    }
+    if (t.len)
+        QGP_LOG_INFO(LOG_TAG, "block %llu: providers without the quorum header at that "
+                     "height:%s %d of the asked providers answered the logs",
+                     (unsigned long long)qb->number, odd, answered);
     qsort(ents, (size_t)n_ent, sizeof(ents[0]), ent_cmp);
     *ents_out = ents;
     *answered_out = answered;
@@ -450,11 +491,11 @@ static int gather_logs(amm_eth_watch_t *w, const step_t *st,
 }
 
 static int eval_block(amm_eth_watch_t *w, const step_t *st,
-                      const amm_eth_block_t *qb, const amm_rec_t *cands,
+                      const amm_eth_block_t *qb, const int *agree, const amm_rec_t *cands,
                       int n_cands, plan_t *plan) {
     ent_t *ents = NULL;
     int ans[AMM_ETH_MAX_PROVIDERS], answered = 0;
-    int n_ent = gather_logs(w, st, qb, &ents, ans, &answered);
+    int n_ent = gather_logs(w, st, qb, agree, &ents, ans, &answered);
     if (n_ent < 0) return -1;
     int ret = 1;
     if (answered < w->cfg.quorum) {               /* unknown                  */
@@ -517,12 +558,12 @@ typedef enum { F_FOUND, F_GONE, F_UNKNOWN } find_t;
  * no valid payment log there (or the quorum says it is not a valid direct
  * transfer); F_UNKNOWN: no decision. `*err` = 1 on memory failure. */
 static find_t find_tx_record(amm_eth_watch_t *w, const step_t *st,
-                             const amm_eth_block_t *qb, const uint8_t tx[32],
-                             amm_rec_t *out, int *err) {
+                             const amm_eth_block_t *qb, const int *agree,
+                             const uint8_t tx[32], amm_rec_t *out, int *err) {
     ent_t *ents = NULL;
     int ans[AMM_ETH_MAX_PROVIDERS], answered = 0;
     *err = 0;
-    int n_ent = gather_logs(w, st, qb, &ents, ans, &answered);
+    int n_ent = gather_logs(w, st, qb, agree, &ents, ans, &answered);
     if (n_ent < 0) { *err = 1; return F_UNKNOWN; }
     find_t res = F_UNKNOWN;
     if (answered < w->cfg.quorum) goto out;
@@ -769,13 +810,14 @@ static cls_t classify(amm_eth_watch_t *w, const step_t *st, const amm_rec_t *rec
     /* moved: its new block must be at the quorum with the same hash */
     int moved_idx = mg[0];
     amm_eth_block_t nb;
-    if (quorum_block(w, st, rc[moved_idx].block_number, &nb) != 0 ||
+    int nb_agree[AMM_ETH_MAX_PROVIDERS];
+    if (quorum_block(w, st, rc[moved_idx].block_number, &nb, nb_agree) != 0 ||
         memcmp(nb.hash, rc[moved_idx].block_hash, 32) != 0) return C_UNKNOWN;
     /* the quorum's ACTUAL log of the transaction in its new block (sender,
      * recipient, logged value, log index): a receipt location alone would
      * keep the old value */
     int err = 0;
-    find_t f = find_tx_record(w, st, &nb, rec->tx, &mv->nw, &err);
+    find_t f = find_tx_record(w, st, &nb, nb_agree, rec->tx, &mv->nw, &err);
     if (f == F_FOUND) return C_MOVED;
     if (f == F_GONE) return C_GONE;
     return C_UNKNOWN;
@@ -821,7 +863,8 @@ static int handle_reorg(amm_eth_watch_t *w, const step_t *st, uint64_t h,
         if (g < 0) return AMM_W_ERR;
         if (g == 1) break;                      /* no stored history below   */
         amm_eth_block_t fresh;
-        if (quorum_block(w, st, k, &fresh) != 0) return AMM_W_UNKNOWN;
+        int fresh_agree[AMM_ETH_MAX_PROVIDERS];
+        if (quorum_block(w, st, k, &fresh, fresh_agree) != 0) return AMM_W_UNKNOWN;
         if (!memcmp(sb.hash, fresh.hash, 32)) break;    /* common ancestor   */
         lowest = k;
         found = 1;
@@ -881,7 +924,8 @@ static int scan_block(amm_eth_watch_t *w, const step_t *st, uint64_t h,
     amm_journal_t *j = w->cfg.journal;
     *reorg = 0;
     amm_eth_block_t qb;
-    if (quorum_block(w, st, h, &qb) != 0) return AMM_W_UNKNOWN;
+    int qb_agree[AMM_ETH_MAX_PROVIDERS];
+    if (quorum_block(w, st, h, &qb, qb_agree) != 0) return AMM_W_UNKNOWN;
     if (h > 0) {
         amm_blk_t prev;
         int g = amm_journal_block_get(j, h - 1, &prev);
@@ -903,7 +947,7 @@ static int scan_block(amm_eth_watch_t *w, const step_t *st, uint64_t h,
         for (int i = 0; i < n; i++)
             if (cands[i].block_number == h) cands[ncand++] = cands[i];
     }
-    int e = eval_block(w, st, &qb, cands, ncand, &plan);
+    int e = eval_block(w, st, &qb, qb_agree, cands, ncand, &plan);
     if (e < 0) goto out;
     if (e == 1) { rc = AMM_W_UNKNOWN; goto out; }
 
@@ -958,7 +1002,8 @@ static int rescan_candidates(amm_eth_watch_t *w, const step_t *st, uint64_t tip,
         if (plan_alloc(&plan) != 0) { rc = AMM_W_ERR; break; }
         int e = 1;
         if (st->why) st->why[0] = '\0';
-        if (quorum_block(w, st, blk, &qb) == 0) {
+        int blk_agree[AMM_ETH_MAX_PROVIDERS];
+        if (quorum_block(w, st, blk, &qb, blk_agree) == 0) {
             if (memcmp(qb.hash, recs[a].block_hash, 32) != 0) {
                 /* the block is no longer the accepted one: its candidates
                  * are stale */
@@ -968,7 +1013,7 @@ static int rescan_candidates(amm_eth_watch_t *w, const step_t *st, uint64_t tip,
                     e = 0;
                 }
             } else {
-                e = eval_block(w, st, &qb, &recs[a], b - a, &plan);
+                e = eval_block(w, st, &qb, blk_agree, &recs[a], b - a, &plan);
             }
         }
         if (e < 0) { plan_free(&plan); rc = AMM_W_ERR; break; }

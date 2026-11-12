@@ -452,7 +452,8 @@ static int rpc_call(amm_eth_rpc_t *r, const char *method, const char *params,
     if (!d->nodes) { doc_free(d); return -1; }
     int root = json_parse((const char *)d->resp, rl, d->nodes, cap);
     if (root != 0 || d->nodes[0].t != J_OBJ) {
-        QGP_LOG_WARN(LOG_TAG, "%s: %s: the answer is not strict JSON", r->name, method);
+        QGP_LOG_WARN(LOG_TAG, "%s: %s: the answer is not strict JSON (after %llu ms)",
+                     r->name, method, (unsigned long long)took);
         doc_free(d);
         return -1;
     }
@@ -469,15 +470,29 @@ static int rpc_call(amm_eth_rpc_t *r, const char *method, const char *params,
     if (jr < 0 || id < 0 || d->nodes[jr].t != J_STR || d->nodes[jr].len != 3 ||
         memcmp(d->nodes[jr].s, "2.0", 3) != 0 || d->nodes[id].t != J_INT ||
         d->nodes[id].i != REQ_ID || (res >= 0) == (er >= 0)) {
-        QGP_LOG_WARN(LOG_TAG, "%s: %s: not a valid JSON-RPC answer", r->name, method);
+        QGP_LOG_WARN(LOG_TAG, "%s: %s: not a valid JSON-RPC answer (after %llu ms)",
+                     r->name, method, (unsigned long long)took);
         doc_free(d);
         return -1;
     }
     if (er >= 0) {
+        /* the call line (operator order 2026-11-12: full diagnostic log); the
+         * params are never written: eth_sendRawTransaction carries the signed
+         * transaction in them */
+        int ec = d->nodes[er].t == J_OBJ ? obj_get(d->nodes, er, "code") : -1;
+        if (ec >= 0 && d->nodes[ec].t == J_INT)
+            QGP_LOG_INFO(LOG_TAG, "%s: %s: answered in %llu ms with the JSON-RPC error %lld",
+                         r->name, method, (unsigned long long)took,
+                         (long long)d->nodes[ec].i);
+        else
+            QGP_LOG_INFO(LOG_TAG, "%s: %s: answered in %llu ms with a JSON-RPC error "
+                         "without a code", r->name, method, (unsigned long long)took);
         log_rpc_error(r->name, r->url, method, d->nodes, er);
         doc_free(d);
         return -1;
     }
+    QGP_LOG_INFO(LOG_TAG, "%s: %s: answered in %llu ms with a result", r->name, method,
+                 (unsigned long long)took);
     d->result = res;
     return 0;
 }
@@ -649,11 +664,13 @@ static int m_get_block(void *ctx, uint64_t number, amm_eth_block_t *out, uint64_
     return rc;
 }
 
-/* One Log object (receipt.yaml:1-40) of block `block`. The schema requires
- * only transactionHash; the seam needs more, so every field it reads is
- * required here (a stricter reading, ERR when absent). `removed` must be
- * false when present. @return 0 / -1. */
-static int parse_log(const jn_t *nd, int c, uint64_t block, amm_eth_log_t *l) {
+/* One Log object (receipt.yaml:1-40) of block `block` with hash `bhash`. The
+ * schema requires only transactionHash; the seam needs more, so every field it
+ * reads is required here (a stricter reading, ERR when absent). `removed` must
+ * be false when present; the log must carry exactly that block number AND
+ * that block hash. @return 0 / -1. */
+static int parse_log(const jn_t *nd, int c, uint64_t block, const uint8_t bhash[32],
+                     amm_eth_log_t *l) {
     if (nd[c].t != J_OBJ) return -1;
     int iL = obj_get(nd, c, "logIndex"), iT = obj_get(nd, c, "transactionHash"),
         iH = obj_get(nd, c, "blockHash"), iN = obj_get(nd, c, "blockNumber"),
@@ -668,6 +685,7 @@ static int parse_log(const jn_t *nd, int c, uint64_t block, amm_eth_log_t *l) {
         q_u64(&nd[iL], &li) != 0 || li > UINT32_MAX ||
         h_hash32(&nd[iT], l->tx) != 0 || h_hash32(&nd[iH], l->block_hash) != 0 ||
         q_u64(&nd[iN], &l->block_number) != 0 || l->block_number != block ||
+        memcmp(l->block_hash, bhash, 32) != 0 ||
         h_addr(&nd[iA], l->address) != 0 || nd[iP].t != J_ARR ||
         nd[iP].nchild > 4 || bytes_text(&nd[iD], &dh, &dn) != 0 ||
         dn > (size_t)INT32_MAX) return -1;
@@ -689,21 +707,27 @@ static int parse_log(const jn_t *nd, int c, uint64_t block, amm_eth_log_t *l) {
     return 0;
 }
 
-/* eth_getLogs: filter.yaml:151, "Filter by block range" (filter.yaml:13-39);
- * topics [topic0, null, recipient] (FilterTopics, filter.yaml:61-80) */
-static int m_get_logs(void *ctx, uint64_t block, const uint8_t contract[20],
+/* eth_getLogs: filter.yaml:151 with "Filter by block hash" (filter.yaml:40-59:
+ * blockHash, address, topics; no fromBlock/toBlock), so the answer is about
+ * exactly the asked block and a provider that does not hold it answers with an
+ * error (go-ethereum v1.17.8 eth/filters/filter.go:83-97, an unknown hash is
+ * errUnknownBlock); topics [topic0, null, recipient] (FilterTopics,
+ * filter.yaml:61-80) */
+static int m_get_logs(void *ctx, uint64_t block, const uint8_t block_hash[32],
+                      const uint8_t contract[20],
                       const uint8_t topic0[32], const uint8_t to[20],
                       amm_eth_log_t *out, int cap, int *n, uint64_t dl) {
-    if (!out || !n || cap < 1) return AMM_ETH_ERR;
-    char hc[41], ht[65], hr[41];
+    if (!out || !n || cap < 1 || !block_hash) return AMM_ETH_ERR;
+    char hb[65], hc[41], ht[65], hr[41];
+    to_hex(block_hash, 32, hb);
     to_hex(contract, 20, hc);
     to_hex(topic0, 32, ht);
     to_hex(to, 20, hr);
-    char params[400];
+    char params[480];
     snprintf(params, sizeof(params),
-             "[{\"fromBlock\":\"0x%llx\",\"toBlock\":\"0x%llx\",\"address\":\"0x%s\","
+             "[{\"blockHash\":\"0x%s\",\"address\":\"0x%s\","
              "\"topics\":[\"0x%s\",null,\"0x000000000000000000000000%s\"]}]",
-             (unsigned long long)block, (unsigned long long)block, hc, ht, hr);
+             hb, hc, ht, hr);
     doc_t d;
     if (rpc_call(ctx, "eth_getLogs", params, dl, &d) != 0) return AMM_ETH_ERR;
     const jn_t *nd = d.nodes;
@@ -711,7 +735,7 @@ static int m_get_logs(void *ctx, uint64_t block, const uint8_t contract[20],
     if (nd[d.result].t != J_ARR || nd[d.result].nchild > cap) goto done;
     int cnt = 0, ok = 1;
     for (int c = nd[d.result].first; c >= 0 && ok; c = nd[c].next) {
-        if (parse_log(nd, c, block, &out[cnt]) != 0) { ok = 0; break; }
+        if (parse_log(nd, c, block, block_hash, &out[cnt]) != 0) { ok = 0; break; }
         cnt++;
     }
     if (ok) { *n = cnt; rc = AMM_ETH_OK; }
@@ -855,8 +879,7 @@ static int m_get_receipt(void *ctx, const uint8_t hash[32], amm_eth_receipt_t *o
             int ok = 1, total = 0;
             for (int c = nd[il].first; c >= 0 && ok; c = nd[c].next) {
                 amm_eth_log_t lg;
-                if (parse_log(nd, c, r->block_number, &lg) != 0 ||
-                    memcmp(lg.block_hash, r->block_hash, 32) != 0 ||
+                if (parse_log(nd, c, r->block_number, r->block_hash, &lg) != 0 ||
                     memcmp(lg.tx, hash, 32) != 0) { ok = 0; break; }
                 if (total < AMM_ETH_RCPT_LOGS) r->logs[total] = lg;
                 total++;

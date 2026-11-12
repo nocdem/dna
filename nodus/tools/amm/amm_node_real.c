@@ -70,39 +70,80 @@ static nodus_client_t *session(amm_node_real_t *n, uint64_t deadline_ms) {
         n->client.config.request_timeout_ms = RPC_TIMEOUT_MS;
         return &n->client;
     }
+    const int was_up = n->inited;
     if (n->inited) {
+        QGP_LOG_INFO(LOG_TAG, "the node session is down: closing it and connecting again");
         nodus_client_close(&n->client);
         n->inited = 0;
     }
     memset(&n->client, 0, sizeof(n->client));
-    if (nodus_client_init(&n->client, &n->ccfg, n->id) != 0) return NULL;
+    if (nodus_client_init(&n->client, &n->ccfg, n->id) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "the node client cannot be initialised");
+        return NULL;
+    }
     n->inited = 1;
-    if (nodus_client_connect(&n->client) != 0) {
-        QGP_LOG_WARN(LOG_TAG, "cannot connect to the node (identity pin in force)");
+    const uint64_t t0 = amm_now_ms();
+    QGP_LOG_INFO(LOG_TAG, "%s the node %s:%u (identity pin of one node in force)",
+                 was_up ? "reconnecting to" : "connecting to", n->ccfg.servers[0].ip,
+                 (unsigned)n->ccfg.servers[0].port);
+    int crc = nodus_client_connect(&n->client);
+    if (crc != 0) {
+        QGP_LOG_WARN(LOG_TAG, "cannot connect to the node (identity pin in force): the "
+                     "client returned %d after %llu ms; a node whose fingerprint is not "
+                     "the pinned one is refused", crc,
+                     (unsigned long long)(amm_now_ms() - t0));
         nodus_client_close(&n->client);
         n->inited = 0;
         return NULL;
     }
+    QGP_LOG_INFO(LOG_TAG, "connected to the node in %llu ms (identity pin matched)",
+                 (unsigned long long)(amm_now_ms() - t0));
     return &n->client;
 }
 
-#define WITH_SESSION(n, cl, dl)                              \
+/* One line per node call (operator order 2026-11-12: full diagnostic log): what
+ * was asked, how long it took, how it ended. `have_session` 0 = no connected
+ * session was obtained (the lock timed out, the deadline had passed, or the
+ * session was down); otherwise `sdk` is the client SDK's own return code and
+ * `rc` the bot's AMM_NODE_* result. */
+static void log_call(const char *what, uint64_t t0, int rc, int have_session, int sdk) {
+    const unsigned long long ms = (unsigned long long)(amm_now_ms() - t0);
+    if (rc == AMM_NODE_OK)
+        QGP_LOG_INFO(LOG_TAG, "node call %s: answered in %llu ms (ok)", what, ms);
+    else if (!have_session)
+        QGP_LOG_WARN(LOG_TAG, "node call %s: no connected session after %llu ms "
+                     "(result %d)", what, ms, rc);
+    else
+        QGP_LOG_WARN(LOG_TAG, "node call %s: failed after %llu ms (the client returned "
+                     "%d, the bot result is %d)", what, ms, sdk, rc);
+}
+
+#define WITH_SESSION(n, cl, dl, what)                        \
     int rc_ = AMM_NODE_ERR;                                  \
-    if (lock_until((n), (dl)) != 0) return rc_;              \
+    int sdk_ = 0;                                            \
+    const char *what_ = (what);                              \
+    const uint64_t t0_ = amm_now_ms();                       \
+    if (lock_until((n), (dl)) != 0) {                        \
+        log_call(what_, t0_, rc_, 0, 0);                     \
+        return rc_;                                          \
+    }                                                        \
     nodus_client_t *cl = session((n), (dl));                 \
+    const int have_ = cl != NULL;                            \
     if (cl) {
 
 #define END_SESSION(n)                                       \
     }                                                        \
     pthread_mutex_unlock(&(n)->mu);                          \
+    log_call(what_, t0_, rc_, have_, sdk_);                  \
     return rc_;
 
 static int r_chain_id32(void *ctx, uint8_t out[32], uint64_t dl) {
     amm_node_real_t *n = ctx;
-    WITH_SESSION(n, cl, dl)
+    WITH_SESSION(n, cl, dl, "the chain id")
         bool has = false;
         uint8_t id[32];
-        if (nodus_client_dnac_chain_id32(cl, &has, id) == 0 && has) {
+        sdk_ = nodus_client_dnac_chain_id32(cl, &has, id);
+        if (sdk_ == 0 && has) {
             memcpy(out, id, 32);
             rc_ = AMM_NODE_OK;
         }
@@ -111,18 +152,20 @@ static int r_chain_id32(void *ctx, uint8_t out[32], uint64_t dl) {
 
 static int r_ruleset_info(void *ctx, nodus_dnac_ruleset_info_t *out, uint64_t dl) {
     amm_node_real_t *n = ctx;
-    WITH_SESSION(n, cl, dl)
-        if (nodus_client_dnac_ruleset_info(cl, out) == 0) rc_ = AMM_NODE_OK;
+    WITH_SESSION(n, cl, dl, "the ruleset information")
+        sdk_ = nodus_client_dnac_ruleset_info(cl, out);
+        if (sdk_ == 0) rc_ = AMM_NODE_OK;
     END_SESSION(n)
 }
 
 static int r_gas_price(void *ctx, uint64_t *out, uint64_t dl) {
     amm_node_real_t *n = ctx;
-    WITH_SESSION(n, cl, dl)
+    WITH_SESSION(n, cl, dl, "the gas price")
         nodus_dnac_fee_info_t fi;
         bool has = false;
         memset(&fi, 0, sizeof(fi));
-        if (nodus_client_dnac_fee_info_ex(cl, &fi, &has) == 0) {
+        sdk_ = nodus_client_dnac_fee_info_ex(cl, &fi, &has);
+        if (sdk_ == 0) {
             if (has) {                       /* a present 0 is a valid price */
                 *out = fi.gas_price;
                 rc_ = AMM_NODE_OK;
@@ -136,10 +179,11 @@ static int r_gas_price(void *ctx, uint64_t *out, uint64_t dl) {
 static int r_balance(void *ctx, const char *owner_hex, const uint8_t token[64],
                      uint64_t *tip_out, uint64_t *total_out, uint64_t dl) {
     amm_node_real_t *n = ctx;
-    WITH_SESSION(n, cl, dl)
+    WITH_SESSION(n, cl, dl, "the balance")
         nodus_dnac_balance_result_t br;
         memset(&br, 0, sizeof(br));
-        if (nodus_client_dnac_balance(cl, owner_hex, &br) == 0) {
+        sdk_ = nodus_client_dnac_balance(cl, owner_hex, &br);
+        if (sdk_ == 0) {
             uint64_t total = 0;                   /* a VALID answer with no
                                                    * row of the token is 0   */
             for (size_t i = 0; i < br.count; i++)
@@ -158,11 +202,12 @@ static int r_balance(void *ctx, const char *owner_hex, const uint8_t token[64],
 static int r_coins(void *ctx, const uint8_t token[64], amm_coin_list_t *out,
                    uint64_t dl) {
     amm_node_real_t *n = ctx;
-    WITH_SESSION(n, cl, dl)
+    WITH_SESSION(n, cl, dl, "the coin list")
         nodus_dnac_utxo_result_t ur;
         memset(&ur, 0, sizeof(ur));
         int rc = nodus_client_dnac_utxo_token(cl, n->self_hex, token,
                                               AMM_COINS_MAX, &ur);
+        sdk_ = rc;
         if (rc == NODUS_CLIENT_ERR_TOKEN_FILTER_IGNORED) {
             rc_ = AMM_NODE_INCOMPLETE;
         } else if (rc == 0) {
@@ -192,13 +237,12 @@ static int r_addr_history(void *ctx, unsigned limit,
                           const nodus_dnac_addr_history_cursor_t *before,
                           nodus_dnac_addr_history_result_t *out, uint64_t dl) {
     amm_node_real_t *n = ctx;
-    WITH_SESSION(n, cl, dl)
+    WITH_SESSION(n, cl, dl, "the address history")
         memset(out, 0, sizeof(*out));
         /* the session owner's OWN history (nodus.h:2370-2371): the owner is
          * the bot's address, never another one's */
-        if (nodus_client_dnac_addr_history(cl, n->self_hex, before, limit,
-                                           out) == 0)
-            rc_ = AMM_NODE_OK;
+        sdk_ = nodus_client_dnac_addr_history(cl, n->self_hex, before, limit, out);
+        if (sdk_ == 0) rc_ = AMM_NODE_OK;
     END_SESSION(n)
 }
 
@@ -212,15 +256,35 @@ static void r_addr_history_free(void *ctx, nodus_dnac_addr_history_result_t *r) 
 static int scan_page(amm_node_real_t *n, uint64_t height, uint32_t from,
                      uint32_t budget, uint64_t page_deadline,
                      nodus_dnac_v3_block_result_t *br) {
-    if (lock_until(n, page_deadline) != 0) return AMM_NODE_ERR;
+    const uint64_t t0 = amm_now_ms();
+    if (lock_until(n, page_deadline) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "node call block %llu from item %u: the session lock was not "
+                     "obtained after %llu ms", (unsigned long long)height, from,
+                     (unsigned long long)(amm_now_ms() - t0));
+        return AMM_NODE_ERR;
+    }
     int ret = AMM_NODE_ERR;
+    int rc = 0;
     nodus_client_t *cl = session(n, page_deadline);
     if (cl) {
-        int rc = nodus_client_dnac_v3_block(cl, height, from, budget, br);
+        rc = nodus_client_dnac_v3_block(cl, height, from, budget, br);
         if (rc == 0) ret = 0;
         else if (rc == NODUS_ERR_NOT_FOUND) ret = AMM_NODE_NOT_HELD;
     }
     pthread_mutex_unlock(&n->mu);
+    if (ret == 0)
+        QGP_LOG_INFO(LOG_TAG, "node call block %llu from item %u: answered in %llu ms (ok, "
+                     "%zu items)", (unsigned long long)height, from,
+                     (unsigned long long)(amm_now_ms() - t0), br->count);
+    else if (!cl)
+        QGP_LOG_WARN(LOG_TAG, "node call block %llu from item %u: no connected session "
+                     "after %llu ms", (unsigned long long)height, from,
+                     (unsigned long long)(amm_now_ms() - t0));
+    else
+        QGP_LOG_WARN(LOG_TAG, "node call block %llu from item %u: %s after %llu ms (the "
+                     "client returned %d)", (unsigned long long)height, from,
+                     ret == AMM_NODE_NOT_HELD ? "the node does not hold it" : "failed",
+                     (unsigned long long)(amm_now_ms() - t0), rc);
     return ret;
 }
 
@@ -322,9 +386,18 @@ static int r_item_intent(void *ctx, uint64_t height, const uint8_t wire_id[64],
 static int r_submit(void *ctx, const uint8_t wire_id[64], const uint8_t *env,
                     size_t len, char *msg, size_t msg_cap, uint64_t dl) {
     amm_node_real_t *n = ctx;
-    if (lock_until(n, dl) != 0) return -1;
+    const uint64_t t0 = amm_now_ms();
+    char wid[17];                       /* the first 8 bytes of the wire id, hex */
+    if (wire_id) for (int i = 0; i < 8; i++) snprintf(wid + 2 * i, 3, "%02x", wire_id[i]);
+    else snprintf(wid, sizeof(wid), "none");   /* no read of a NULL id: the parent's -1 path below */
+    if (lock_until(n, dl) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "node call submit %s...: the session lock was not obtained "
+                     "after %llu ms", wid, (unsigned long long)(amm_now_ms() - t0));
+        return -1;
+    }
     nodus_client_t *cl = session(n, dl);
     int ret = -1;
+    int sdk = 0;
     if (cl && len <= UINT32_MAX) {
         nodus_pubkey_t spk;
         nodus_sig_t ssig;
@@ -336,12 +409,28 @@ static int r_submit(void *ctx, const uint8_t wire_id[64], const uint8_t *env,
             em[0] = '\0';
             int rc = nodus_client_dnac_spend_ex(cl, wire_id, env, (uint32_t)len,
                                                 &spk, &ssig, 0, &sres, em, sizeof(em));
+            sdk = rc;
             if (rc == 0 && sres.status == NODUS_DNAC_APPROVED) ret = 0;
             else if (em[0] != '\0' || rc == 0) ret = 1;   /* the node answered */
             if (msg && msg_cap) snprintf(msg, msg_cap, "%s", em);
+            if (rc == 0 && ret != 0)
+                QGP_LOG_INFO(LOG_TAG, "node call submit %s...: the node's status was %d",
+                             wid, (int)sres.status);
+            if (em[0] != '\0')
+                QGP_LOG_INFO(LOG_TAG, "node call submit %s...: the node's message: %s", wid, em);
         }
     }
     pthread_mutex_unlock(&n->mu);
+    const unsigned long long ms = (unsigned long long)(amm_now_ms() - t0);
+    if (ret == 0)
+        QGP_LOG_INFO(LOG_TAG, "node call submit %s... (%zu bytes): approved in %llu ms", wid,
+                     len, ms);
+    else if (ret == 1)
+        QGP_LOG_WARN(LOG_TAG, "node call submit %s... (%zu bytes): refused after %llu ms "
+                     "(the client returned %d)", wid, len, ms, sdk);
+    else
+        QGP_LOG_WARN(LOG_TAG, "node call submit %s... (%zu bytes): no answer after %llu ms "
+                     "(%s)", wid, len, ms, cl ? "the request failed" : "no connected session");
     return ret;
 }
 
@@ -373,6 +462,10 @@ int amm_node_real_open(const amm_cfg_t *cfg, const nodus_identity_t *id,
         return -1;
     }
     qgp_fp_raw_to_hex(raw, n->self_hex);
+    QGP_LOG_INFO(LOG_TAG, "the node adapter is ready: node %s:%u, connect timeout %d ms, "
+                 "request timeout %d ms, the bot's own address %.16s...",
+                 n->ccfg.servers[0].ip, (unsigned)n->ccfg.servers[0].port,
+                 CONNECT_TIMEOUT_MS, RPC_TIMEOUT_MS, n->self_hex);
 
     memset(vt, 0, sizeof(*vt));
     vt->ctx = n;

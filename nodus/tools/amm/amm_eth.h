@@ -115,11 +115,18 @@ typedef struct {
     /** eth_getBlockByNumber: NOT_FOUND above the provider's tip. */
     int (*get_block)(void *ctx, uint64_t number, amm_eth_block_t *out,
                      uint64_t deadline_ms);
-    /** eth_getLogs for ONE block, filtered by contract, topic0 and the
-     *  recipient topic by the adapter; the watcher re-checks every field
-     *  (a provider's filter is not trusted). `cap` is AMM_ETH_LOGS_MAX; a
-     *  provider holding more must return AMM_ETH_ERR. */
-    int (*get_logs)(void *ctx, uint64_t block, const uint8_t contract[20],
+    /** eth_getLogs for ONE block, by the block's HASH (the "Filter by block
+     *  hash" form, execution-apis filter.yaml:40-59: blockHash, address,
+     *  topics), filtered by contract, topic0 and the recipient topic by the
+     *  adapter; a provider that does not hold the block of that hash answers
+     *  with an error (go-ethereum v1.17.8 eth/filters/filter.go:83-97), which
+     *  is AMM_ETH_ERR, never an empty list. `block` (the height) stays for the
+     *  per-log check: every log must carry that number AND that hash. The
+     *  watcher re-checks every field (a provider's filter is not trusted).
+     *  `cap` is AMM_ETH_LOGS_MAX; a provider holding more must return
+     *  AMM_ETH_ERR. */
+    int (*get_logs)(void *ctx, uint64_t block, const uint8_t block_hash[32],
+                    const uint8_t contract[20],
                     const uint8_t topic0[32], const uint8_t to[20],
                     amm_eth_log_t *out, int cap, int *n, uint64_t deadline_ms);
     /** eth_getTransactionByHash. */
