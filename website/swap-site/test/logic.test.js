@@ -439,6 +439,14 @@ test('payout_pending: NODUS -> USDT shows the paid amount and the 3-block wait; 
   assert.equal(describeSwapState({ state: 'payout_pending' }).text, 'The bot is sending your payout.');
 });
 
+// Proves the `approved` text does not imply a payment is coming: it says no payment is seen yet and when an unpaid
+// request ends. The text is a pure function of the state (the approval time is added by swap.js, not here).
+test('describeSwapState: approved says no payment is seen yet and when an unpaid request expires', () => {
+  const d = describeSwapState({ state: 'approved' });
+  assert.equal(d.text, 'No payment seen by the bot yet. If you paid, wait: it shows here once the bot sees it. If you did not pay, this request expires unpaid once its approval time has passed and the bot has checked that no payment came.');
+  assert.equal(d.final, false);
+});
+
 // PROVES: the one readiness rule both approve buttons use (swap.js): enabled only when no approval sequence runs, a
 //   quote is held, the tolerance parses (the swap passes the result of percentToBps; the add has none and passes true)
 //   and accounts are connected. Each missing condition alone disables it.

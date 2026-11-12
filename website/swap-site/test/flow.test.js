@@ -223,6 +223,19 @@ test('a changed amount clears the old price: its yes cannot be given', async () 
   assert.equal(adapter.calls.length, 0);
 });
 
+// What the bot does after a payment was rejected: the approval stays open until its payment window is fully observed,
+// and the bot refuses a new swap of the same sender and amount meanwhile (givens item 57). The text must say that and
+// must not tell the user to ask a new price for the same amount.
+const DELIVERED_UNPAID_TEXT = 'The bot has your request but nothing was paid. The request stays open until its approval time has passed and the bot has checked that no payment came; this page then shows it as expired. Until then the bot refuses a new swap of exactly this amount; a different amount can be swapped now.';
+
+// Proves the open_approval refusal text names the open request and says the same amount stays refused. Cannot prove the
+// bot's behaviour; only the wording of the page.
+test('the open_approval refusal names the open request and says the same amount stays refused', () => {
+  const out = describeAdapterError({ delivered: false, paid: false, answered: true, reason: 'open_approval', openRequestNumber: '77' });
+  assert.equal(out.openRequestNumber, '77');
+  assert.equal(out.text, 'This new request paid nothing. You already have an open swap with the same amount (request 77); it is shown below. The bot refuses a new swap of exactly this amount until that one is finished or has expired; a different amount can be swapped now.');
+});
+
 test('the adapter\'s failure ends the flow in plain words: not configured, no extension, rejected, passed-on refusal', async () => {
   const cases = [
     [new AdapterError('not_configured', 'x'), /not available yet/, undefined],
@@ -540,7 +553,7 @@ test('delivered:true, paid false: plain words, the price is spent, the swap is f
   assert.equal(r.ok, false);
   assert.equal(r.delivered, true);
   assert.equal(r.requestNumber, '4242');
-  assert.equal(r.text, 'The bot has your request but nothing was paid. Ask for a new price to try again.');
+  assert.equal(r.text, DELIVERED_UNPAID_TEXT);
   assert.equal((await flow.confirm({ toleranceBps: 100 })).reason, 'not_ready');       // no second approval
   assert.equal(adapter.calls.length, 1);                                                // the adapter was not called again
   const f = await flow.follow(r.requestNumber, () => {});
@@ -640,7 +653,7 @@ test('liquidity add, NODUS "unknown" and USDT "unknown": both may have been sent
   await t.flow.loadStatus(); await t.flow.pressAdd({ side: 'nodus', amountText: '100000' });
   r = await t.flow.confirmAdd();
   assert.equal(r.oneSided, undefined);
-  assert.equal(r.text, 'The bot has your request but nothing was paid. Ask for a new price to try again.');
+  assert.equal(r.text, DELIVERED_UNPAID_TEXT);
 });
 
 // PROVES (correction 2): an open-approval refusal (delivered false, openRequestNumber) keeps the open swap's number so
