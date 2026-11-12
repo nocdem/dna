@@ -63,7 +63,14 @@ test('the kept name is shown at once while the connection is not ready', async (
   names.update();
   assert.equal(nodes['wallet-title'].textContent, 'Welcome back, keptname');
   assert.match(nodes['own-name'].textContent, /"keptname" \(last known/);
+  // The name line lives inside the name block: the block is shown, the registration fields stay hidden, no lookup yet.
+  assert.equal(nodes['name-block'].hidden, false); assert.equal(nodes['name-fields'].hidden, true);
   assert.deepEqual(calls, []);
+  // With no kept name and not nameable the block stays hidden.
+  const bare = fixture(() => ({ found: false }));
+  bare.ui.state.nodus = { state: 'connecting', connection: 1, nameable: false, registrable: false, keptOwnName: '' };
+  bare.nodes['name-block'].hidden = false; bare.names.update();
+  assert.equal(bare.nodes['name-block'].hidden, true); assert.deepEqual(bare.calls, []);
   ui.state.nodus = { ...ui.state.nodus, state: 'ready', nameable: true };
   names.update(); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(calls, ['getOwnName']);

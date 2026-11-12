@@ -104,3 +104,17 @@ test('a page-chosen request id and method are written in a fixed form only', asy
   assert.ok(lines.some(line => / request done /.test(line) && line.includes('method=other') && line.includes('id=string')));
   assert.ok(lines.some(line => / request done /.test(line) && line.includes('method=eth_chainId') && line.includes('id=7')));
 });
+
+// Proves building the line (spreading the fields) cannot replace the outcome: a fields object with a throwing getter
+// still gives timed()'s own result on success and its own rejection on failure. Could falsely pass if the getter were not
+// reached; the read counter guards that.
+test('a throwing field getter does not change what timed returns or rethrows', async () => {
+  const restore = setDebugLogSink(() => {}); let reads = 0;
+  const fields = { get bad() { reads++; throw new Error('getter'); } };
+  try {
+    assert.equal(await timed('test', 'work', fields, async () => 'result'), 'result');
+    const error = new Error('own');
+    await assert.rejects(timed('test', 'work', fields, async () => { throw error; }), caught => caught === error);
+  } finally { restore(); }
+  assert.equal(reads, 2);
+});
