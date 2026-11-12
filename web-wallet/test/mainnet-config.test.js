@@ -77,3 +77,13 @@ test('connection settings are offered only for networks with a choice of provide
   assert.equal(rpcChoiceOffered({}), false);
   assert.equal(rpcChoiceOffered(undefined), false);
 });
+
+// The Ixios test network entry has one RPC option as well, so Ixios offers no connection settings on either network
+// (src/app.js shows the portfolio definition of the selected entry; the picker follows rpcOptions.length).
+// Falsely passes if the entry's rpcOptions were read from the code that builds the portfolio definition: it is read from
+// the table itself. Dynamic import so that a missing export fails this test only.
+test('the Ixios test network entry also has a single RPC option, so no connection settings are offered for Ixios', async () => {
+  const { IXIOS_NETWORKS } = await import('../src/pq/ixios/network.js');
+  assert.equal(IXIOS_NETWORKS.testnet.rpcOptions.length, 1);
+  assert.equal(rpcChoiceOffered({ ...IXIOS_NETWORK, endpoint: IXIOS_NETWORKS.testnet.endpoint, rpcOptions: IXIOS_NETWORKS.testnet.rpcOptions, stage: 'Testnet' }), false);
+});

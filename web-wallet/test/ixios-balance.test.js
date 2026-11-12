@@ -86,3 +86,68 @@ test('cancellation makes no request', async () => {
   finally { globalThis.fetch = original; }
   assert.equal(fetched, false);
 });
+
+// ---- Ixios test network: added with the test-network entry ----
+// What this proves: with {networkId:'testnet'} the balance read asks the test node (URL checked on every call) with
+// ixios_ method names only, after identity by the TEST genesis; each entry refuses the other's genesis and makes no
+// balance call afterwards; a main read, a test read and a main read in one process keep their own names (no cached entry);
+// an unknown id makes no request. The main sequence is today's: eth_getBlockByNumber, eth_getBalance.
+// Compile flags / environment: none (global fetch replaced for each call, restored in finally). Leaves nothing behind.
+// Falsely passes if: a mock answered by method name without the URL (every call's URL is asserted), or the genesis
+// literal came from the code (it is copied from docs/research-evidence/2026-11-12-ixios-testnet-rpc/probes.txt:52).
+const TEST_ENDPOINT = 'https://nx-rpc.ixoflow.io';
+const TEST_GENESIS = '0x33177fd0b2fb50907e5f6e17af05b3812881ab2d3effbf0a3493d9b665dfa5fe';
+const sameUrl = (call, url) => call.url === url || call.url === url + '/';
+test('test entry: identity by the test genesis first, then ixios_getBalance, both at the test URL', async () => {
+  const { value, calls } = await withFetch({
+    ixios_getBlockByNumber: { number: '0x1', parentHash: TEST_GENESIS },
+    ixios_getBalance: '0x' + (5n * 10n ** 18n).toString(16),
+  }, () => readIxiosBalance(address, TEST_ENDPOINT, { networkId: 'testnet' }));
+  assert.deepEqual(value, [{ symbol: 'IXIOS', balance: '5.0' }]);
+  assert.deepEqual(calls.map(c => c.method), ['ixios_getBlockByNumber', 'ixios_getBalance']);
+  assert.deepEqual(calls[0].params, ['0x1', false]);
+  assert.deepEqual(calls[1].params, [address, 'latest']);
+  assert.ok(calls.every(c => sameUrl(c, TEST_ENDPOINT)), calls.map(c => c.url).join());
+});
+test('each entry refuses the other entry\'s genesis and makes no balance call after it', async () => {
+  const wrongOnTest = await rejectsWithNet({ ixios_getBlockByNumber: { number: '0x1', parentHash: MAINNET_GENESIS }, ixios_getBalance: '0x1' }, TEST_ENDPOINT, 'testnet', /RPC is connected to the wrong network\./);
+  assert.deepEqual(wrongOnTest.map(c => c.method), ['ixios_getBlockByNumber']);
+  const wrongOnMain = await rejectsWithNet({ eth_getBlockByNumber: { number: '0x1', parentHash: TEST_GENESIS }, eth_getBalance: '0x1' }, endpoint, 'mainnet', /RPC is connected to the wrong network\./);
+  assert.deepEqual(wrongOnMain.map(c => c.method), ['eth_getBlockByNumber']);
+  const defaultIsMain = await rejectsWithNet({ eth_getBlockByNumber: { number: '0x1', parentHash: TEST_GENESIS }, eth_getBalance: '0x1' }, endpoint, undefined, /RPC is connected to the wrong network\./);
+  assert.deepEqual(defaultIsMain.map(c => c.method), ['eth_getBlockByNumber']);
+  for (const block of [{ number: '0x1', parentHash: TEST_GENESIS.toUpperCase() }, { number: '0x2', parentHash: TEST_GENESIS }, {}, null]) {
+    const calls = await rejectsWithNet({ ixios_getBlockByNumber: block, ixios_getBalance: '0x1' }, TEST_ENDPOINT, 'testnet', /RPC is connected to the wrong network\./);
+    assert.deepEqual(calls.map(c => c.method), ['ixios_getBlockByNumber']);
+  }
+});
+test('main, test, main in one process: every entry keeps its own URL, names and genesis', async () => {
+  const main = { eth_getBlockByNumber: { number: '0x1', parentHash: MAINNET_GENESIS }, eth_getBalance: '0x' + (1234567n * 10n ** 15n).toString(16) };
+  const test_ = { ixios_getBlockByNumber: { number: '0x1', parentHash: TEST_GENESIS }, ixios_getBalance: '0x' + (7n * 10n ** 18n).toString(16) };
+  const first = await withFetch(main, () => readIxiosBalance(address, endpoint, {}));
+  const second = await withFetch(test_, () => readIxiosBalance(address, TEST_ENDPOINT, { networkId: 'testnet' }));
+  const third = await withFetch(main, () => readIxiosBalance(address, endpoint, { networkId: 'mainnet' }));
+  assert.deepEqual(first.value, [{ symbol: 'IXIOS', balance: '1234.567' }]);
+  assert.deepEqual(second.value, [{ symbol: 'IXIOS', balance: '7.0' }]);
+  assert.deepEqual(third.value, first.value);
+  assert.deepEqual(first.calls.map(c => c.method), ['eth_getBlockByNumber', 'eth_getBalance']);
+  assert.deepEqual(second.calls.map(c => c.method), ['ixios_getBlockByNumber', 'ixios_getBalance']);
+  assert.deepEqual(third.calls.map(c => c.method), ['eth_getBlockByNumber', 'eth_getBalance']);
+  assert.ok(first.calls.every(c => sameUrl(c, endpoint)) && third.calls.every(c => sameUrl(c, endpoint)));
+  assert.ok(second.calls.every(c => sameUrl(c, TEST_ENDPOINT)));
+});
+test('an unknown network id throws before any request', async () => {
+  for (const networkId of ['regtest', '', null, 3]) {
+    let fetched = false;
+    const original = globalThis.fetch;
+    globalThis.fetch = async () => { fetched = true; throw new Error('Must not fetch'); };
+    try { await assert.rejects(readIxiosBalance(address, TEST_ENDPOINT, { networkId }), /^Error: Unknown Ixios network\.$/); }
+    finally { globalThis.fetch = original; }
+    assert.equal(fetched, false, String(networkId));
+  }
+});
+async function rejectsWithNet(results, url, networkId, pattern) {
+  let calls;
+  await assert.rejects(withFetch(results, () => readIxiosBalance(address, url, { networkId })).catch(error => { calls = error.calls; throw error; }), pattern);
+  return calls;
+}
