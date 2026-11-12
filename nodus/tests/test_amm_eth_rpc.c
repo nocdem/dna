@@ -735,10 +735,11 @@ static void r8_tx_receipt(void) {
     /* blockTimestamp is not read: two of the three live Sepolia providers
      * leave it out (rpc.sepolia.ethpandaops.io and
      * ethereum-sepolia-rpc.blockreq.com, eth_getTransactionByHash, types 0x0,
-     * 0x2 and 0x3, 2026-11-12), and go-ethereum's client takes only
-     * blockNumber, blockHash and from besides the transaction
-     * (go-ethereum v1.17.8 ethclient/ethclient.go:268-272, the client
-     * THORChain's bifrost calls, shared/evm/eth_rpc.go:134) */
+     * 0x2 and 0x3, 2026-11-12), and the client THORChain's bifrost reads
+     * transactions with (shared/evm/eth_rpc.go:134) takes only blockNumber,
+     * blockHash and from besides the transaction (op-geth v1.101503.1
+     * ethclient/ethclient.go:254-258, thornode go.mod:20; the same in
+     * go-ethereum v1.17.8 ethclient/ethclient.go:268-272) */
     result(drop_key(b, "blockTimestamp", b2, sizeof(b2)));
     CHECK(g_p.get_tx(g_p.ctx, want, &t, 0) == AMM_ETH_OK && t.has_to && t.from[0] == 0xfe &&
           t.input_len == 6 && t.input_head[0] == 0xa9,

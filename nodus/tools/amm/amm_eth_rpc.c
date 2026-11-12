@@ -729,9 +729,11 @@ done:
  * schema lets types 0-2 omit it, a stricter reading that is ERR). An unknown
  * type is ERR. The schema's contextual blockTimestamp is not read: the bot
  * never uses it, live providers leave it out (rpc.sepolia.ethpandaops.io and
- * ethereum-sepolia-rpc.blockreq.com, 2026-11-12), and go-ethereum's client
- * takes only blockNumber, blockHash and from besides the transaction
- * (go-ethereum v1.17.8 ethclient/ethclient.go:268-272). */
+ * ethereum-sepolia-rpc.blockreq.com, 2026-11-12), and the client THORChain's
+ * bifrost reads transactions with (shared/evm/eth_rpc.go:134) takes only
+ * blockNumber, blockHash and from besides the transaction: op-geth
+ * v1.101503.1 ethclient/ethclient.go:254-258 (the go-ethereum replacement of
+ * thornode go.mod:20), as go-ethereum v1.17.8 ethclient/ethclient.go:268-272. */
 static int tx_required_ok(const jn_t *nd, int o) {
     int it = obj_get(nd, o, "type");
     if (it < 0 || nd[it].t != J_STR) return 0;
