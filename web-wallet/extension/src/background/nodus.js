@@ -558,7 +558,9 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
         signal: s.abort.signal, assertCurrent: () => { lockCoordinator.assertUnlocked(); current(s); } });
       return s.chainHistory.getHistory(chain, options);
     },
-    getChainLocalHistory(chain) { return this.chainActivity(chain).rows().map(publicActivityRow); },
+    // A network bucket restores its saved rows asynchronously (`ready`); the main bucket has no such step. Wait for it so a
+    // first call after unlock returns the saved rows, not an empty list.
+    async getChainLocalHistory(chain, networkId = 'mainnet') { const activity = this.chainActivity(chain, networkId); await activity.ready; return activity.rows().map(publicActivityRow); },
     async abandonActivity(chain, hash, networkId = 'mainnet') {
       if (!['ethereum', 'bsc', 'solana', 'tron'].includes(chain)) throw new Error('This activity cannot be abandoned.');
       const activity = this.chainActivity(chain, networkId); await activity.ready;

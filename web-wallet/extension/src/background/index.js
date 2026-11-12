@@ -35,7 +35,6 @@ import { createNetworks } from './networks.js';
 import { PermissionsRequestNotFoundError } from '@metamask/permission-controller';
 import { VAULT_KEY, decryptVault, validateNewPassword } from '../../../src/vault.js';
 import { sitesKeyFor, SITES_KEY } from '../../../src/activity-storage.js';
-import { publicActivityRow } from '../../../src/activity.js';
 import { validateNodusPhrase } from '../../../src/recovery.js';
 import { readPrices as readWalletPrices } from '../../../src/portfolio.js';
 import { PQ_NETWORKS, pqNetwork } from '../../../src/pq/networks.js';
@@ -382,7 +381,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     abandonActivity: (chain, hash) => nodus.abandonActivity(chain, hash, networks.getState()[chain]),
     getChainHistory: (chain, options) => nodus.getChainHistory(chain, options),
     // Ixios keeps one saved list per network: the selected network's, not the mainnet one.
-    getChainLocalHistory: chain => chain === 'ixios' ? nodus.chainActivity('ixios', networks.get('ixios').id).rows().map(publicActivityRow) : nodus.getChainLocalHistory(chain),
+    getChainLocalHistory: chain => nodus.getChainLocalHistory(chain, chain === 'ixios' ? networks.get('ixios').id : undefined),
     getKeptBalances: () => nodus.getKeptBalances(),
     keepBalances: entries => nodus.keepBalances(entries),
     getSessionLog: () => nodus.getSessionLog(),
