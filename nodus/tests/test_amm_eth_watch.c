@@ -1382,10 +1382,12 @@ static void w25_window_by_value(void) {
  * watcher that fetched the logs through another call (get_tx, get_receipt)
  * would not be seen; the heights checked are the ones where the stub's headers
  * differ, so it proves nothing about a provider that disagrees only on a later
- * header. On the unfixed code both providers' counters at those heights are 1,
- * so the test fails there. */
-static void w26_logs_only_from_quorum_header_providers(void) {
-    printf("W26 get_logs only from the providers that hold the quorum header\n");
+ * header. The assertions require POSITIVE get_logs counters for the provider
+ * without the quorum header (variant a at block 10, variant b at blocks 10 to
+ * 13), for the two agreeing providers at block 10 and for all three at block
+ * 9: the test fails if any of them is not asked (a skipping watcher). */
+static void w26_logs_asked_of_every_usable_provider(void) {
+    printf("W26 get_logs is asked of every usable provider, whatever its header read returned\n");
     for (int variant = 0; variant < 2; variant++) {
         fresh(20);
         ch_build(&g_chain, 1, 13, 0, 0);
@@ -1735,7 +1737,7 @@ int main(void) {
     w23_liquidity_depth();
     w24_depth_by_amount();
     w25_window_by_value();
-    w26_logs_only_from_quorum_header_providers();
+    w26_logs_asked_of_every_usable_provider();
     w27_failed_header_provider_is_fallback();
     w28_disagreement_asks_failed_header_provider();
     w29_no_early_stop();

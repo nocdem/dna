@@ -12,8 +12,8 @@
  *   R1  the request of every call: exact JSON-RPC text, method and params as
  *       execution-apis 3284ee80 shapes them (the file:line of each is in
  *       amm_eth_rpc.h): eth_chainId, eth_blockNumber, eth_getBlockByNumber
- *       ["0x..", false], eth_getLogs (block range, address, topics [topic0,
- *       null, recipient]), eth_getTransactionByHash, eth_getTransactionReceipt,
+ *       ["0x..", false], eth_getLogs (the block-hash filter, filter.yaml:40-59:
+ *       blockHash, address, topics [topic0, null, recipient]; no fromBlock/toBlock), eth_getTransactionByHash, eth_getTransactionReceipt,
  *       eth_call (balanceOf, `input`), eth_estimateGas, eth_getBalance,
  *       eth_getTransactionCount (pending | latest), eth_sendRawTransaction,
  *       eth_gasPrice, eth_maxPriorityFeePerGas;
