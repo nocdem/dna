@@ -449,7 +449,34 @@ static int gather_logs(amm_eth_watch_t *w, const step_t *st,
      * fewer than `quorum` of them answered: the providers whose header read
      * failed (the old evidence set minus the providers with another header) */
     for (int pass = 0; pass < 2; pass++) {
-      if (pass == 1 && answered >= w->cfg.quorum) break;
+      if (pass == 1) {
+          /* the first pass alone gives the parent's verdict only when every
+           * provider of it answered and all returned the same entries; any
+           * disagreement (or a failed read) asks the failed-header providers
+           * too, as the parent's full set did */
+          int first = 0, same = answered >= w->cfg.quorum;
+          for (int i = 0; i < w->cfg.n_providers; i++) first += asked[i];
+          if (answered != first) same = 0;
+          for (int i = 0; same && i < w->cfg.n_providers; i++) {
+              if (!ans[i]) continue;
+              int ci = 0;
+              for (int a = 0; a < n_ent; a++) ci += ents[a].prov == i;
+              for (int j = 0; same && j < w->cfg.n_providers; j++) {
+                  if (!ans[j] || j == i) continue;
+                  int cj = 0;
+                  for (int a = 0; a < n_ent; a++) cj += ents[a].prov == j;
+                  if (ci != cj) { same = 0; break; }
+                  for (int a = 0; same && a < n_ent; a++) {
+                      if (ents[a].prov != i) continue;
+                      int found = 0;
+                      for (int b = 0; b < n_ent && !found; b++)
+                          found = ents[b].prov == j && ent_same_key(&ents[a], &ents[b]);
+                      if (!found) same = 0;
+                  }
+              }
+          }
+          if (same) break;
+      }
       for (int i = 0; i < w->cfg.n_providers; i++) {
         if (!st->use[i] || agree[i] != (pass == 0 ? AGREE_QUORUM : AGREE_NO_HEADER)) continue;
         asked[i] = 1;

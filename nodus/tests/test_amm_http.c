@@ -777,8 +777,8 @@ static void h8_log(void) {
           "the withdrawal post line: kind, outcome, request number");
     CHECK(line_with(buf, "POST /amm/liquidity/withdraw answered 400 (bad_request), request number none", " ms"),
           "the malformed withdrawal line is 400 bad_request");
-    CHECK(line_with(buf, "GET /amm/unknown-route answered 500", "request number none"),
-          "the buffer-less call is logged with its status");
+    CHECK(line_with(buf, "GET /amm/unknown-route answered 500 (failed), request number none, in ", " ms"),
+          "the buffer-less call is logged with its status, the outcome word failed and its duration");
     CHECK(strstr(buf, "SECRETKEYBYTES") == NULL, "the request body is never written to the log");
     unlink(path);
     rmdir(dir);

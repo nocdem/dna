@@ -178,8 +178,14 @@ amm_payout_t amm_payout_after_fee(const evm_u256 *output, const evm_u256 *fee,
     amm_sub_sat(&n, output, fee);
     if (net) *net = n;
     char a[24], b[24], c[24], d[24];
-    amm_payout_t res = (evm_u256_is_zero(&n) || evm_u256_cmp(&n, minimum) < 0)
-                           ? AMM_PAYOUT_BELOW_MIN : AMM_PAYOUT_PAY;
+    /* a zero net returns before `minimum` is read, as before the log line */
+    if (evm_u256_is_zero(&n)) {
+        QGP_LOG_INFO(LOG_TAG, "payout decision: output %s minus network fee %s leaves 0: "
+                     "below the minimum, refund", dec(a, sizeof(a), output),
+                     dec(b, sizeof(b), fee));
+        return AMM_PAYOUT_BELOW_MIN;
+    }
+    amm_payout_t res = evm_u256_cmp(&n, minimum) < 0 ? AMM_PAYOUT_BELOW_MIN : AMM_PAYOUT_PAY;
     QGP_LOG_INFO(LOG_TAG, "payout decision: output %s minus network fee %s leaves %s, minimum "
                  "%s: %s", dec(a, sizeof(a), output), dec(b, sizeof(b), fee),
                  dec(c, sizeof(c), &n), dec(d, sizeof(d), minimum),

@@ -1217,7 +1217,8 @@ static void q1_log_client_text(void) {
     CHECK(usdt_rc(&in) == AMM_REQ_FORMAT, "a non-decimal number is refused (format)");
     in = vec_usdt();
     in.request_number = "12345";
-    CHECK(usdt_rc(&in) != AMM_REQ_OK, "a decimal number with another text is refused");
+    CHECK(usdt_rc(&in) == AMM_REQ_SIGNATURE,
+          "a decimal number that is not the signed one is refused as a bad signature");
     nodus_log_file_close();
     char buf[16384];
     FILE *f = fopen(path, "r");
