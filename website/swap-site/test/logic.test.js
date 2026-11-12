@@ -18,7 +18,7 @@ import {
   quoteBody, liquidityQuoteBody, withdrawBody, randomRequestNumber,
   buildNodusToUsdtText, buildLiquidityAddText, buildWithdrawText,
   buildUsdtToNodusTypedData, buildLiquidityAddTypedData,
-  readQuoteAnswer, readAddQuoteAnswer, refusalText, describeSwapState, PAYOUT_FINAL_DEPTH_ETH, PAYOUT_FINAL_SECONDS_ETH, U64_MAX, approveEnabled,
+  readQuoteAnswer, readAddQuoteAnswer, refusalText, describeSwapState, stateLabel, PAYOUT_FINAL_DEPTH_ETH, PAYOUT_FINAL_SECONDS_ETH, U64_MAX, approveEnabled,
 } from '../swap-logic.js';
 
 const ETH = `0x${'4b'.repeat(20)}`;
@@ -111,7 +111,7 @@ test('poolText: both reserves in display units; empty pool and an oversized side
   // 3000 USDT = 3 x 10^9 raw (6 decimals); 30,000,000 NODUS = 3 x 10^15 raw (8 decimals), shown with commas.
   assert.equal(poolText({ usdt: '3000000000', nodus: '3000000000000000' }), '3000 USDT · 30,000,000 NODUS');
   assert.equal(poolText({ usdt: '1500000', nodus: '123456789' }), '1.5 USDT · 1.23456789 NODUS');
-  assert.equal(poolText(null), 'Empty: no liquidity yet');
+  assert.equal(poolText(null), 'Empty, no liquidity yet');
   assert.equal(poolText({ usdt: 'above_2_64', nodus: '5' }), 'Too large to show');
   assert.equal(poolText({ usdt: '5', nodus: 'above_2_64' }), 'Too large to show');
   // FALSE PASS: only these strings are compared; how the page places the line is not exercised here.
@@ -172,8 +172,8 @@ test('waitText: follows the typed amount and the direction', () => {
   assert.equal(waitText('usdt_to_nodus', '100.000001'), '5 Ethereum blocks');
   assert.equal(waitText('usdt_to_nodus', '500'), '5 Ethereum blocks');
   assert.equal(waitText('usdt_to_nodus', '5000'), '33 Ethereum blocks');
-  assert.equal(waitText('nodus_to_usdt', '5000'), 'its Nodus block is committed');
-  assert.equal(waitText('nodus_to_usdt', '0.5'), 'its Nodus block is committed');
+  assert.equal(waitText('nodus_to_usdt', '5000'), '1 Nodus block');
+  assert.equal(waitText('nodus_to_usdt', '0.5'), '1 Nodus block');
   for (const bad of ['', '  ', 'abc', '0', '1.1234567', '99999999999999999999999']) assert.equal(waitText('usdt_to_nodus', bad), '—');
   assert.equal(waitText('nodus_to_usdt', ''), '—');
   // FALSE PASS: only the text is compared; the page wiring (every input, every flip) is checked in a browser.
@@ -401,7 +401,7 @@ test('originOf: scheme, host and port only', () => {
 });
 
 test('STILL_PENDING_TEXT says pending and never "failed"', () => {
-  assert.match(STILL_PENDING_TEXT, /still pending/);
+  assert.match(STILL_PENDING_TEXT, /still in progress/);
   assert.doesNotMatch(STILL_PENDING_TEXT, /fail/i);
 });
 
@@ -427,11 +427,11 @@ test('payout_pending: NODUS -> USDT shows the paid amount and the 3-block wait; 
   assert.equal(PAYOUT_FINAL_DEPTH_ETH, 3);
   assert.equal(PAYOUT_FINAL_SECONDS_ETH, 36);
   assert.equal(PAYOUT_FINAL_SECONDS_ETH, PAYOUT_FINAL_DEPTH_ETH * 12);   // Sepolia: 12 s per block
-  assert.equal(d.text, 'Your payout of 93.531821 USDT is sent or being sent. The bot marks the swap finished after 3 Ethereum blocks, about 36 seconds; the USDT can reach your wallet before that.');
+  assert.equal(d.text, 'Your payout of 93.531821 USDT is on its way. The bot marks the swap complete after 3 Ethereum blocks (about 36 seconds); the USDT can reach your wallet before that.');
   assert.doesNotMatch(d.text, /mined|confirmed|fail/i);
   for (const paid of [undefined, '', '12.5', '-1', 93531821, '0x10']) {
     const t = describeSwapState({ ...live, paid }).text;
-    assert.match(t, /^Your payout is sent or being sent\. The bot marks the swap finished after 3 Ethereum blocks/, String(paid));
+    assert.match(t, /^Your payout is on its way\. The bot marks the swap complete after 3 Ethereum blocks/, String(paid));
   }
   const nodus = describeSwapState({ state: 'payout_pending', direction: 'usdt_to_nodus', paid: '123' }).text;
   assert.match(nodus, /NODUS payout/);
@@ -443,8 +443,30 @@ test('payout_pending: NODUS -> USDT shows the paid amount and the 3-block wait; 
 // request ends. The text is a pure function of the state (the approval time is added by swap.js, not here).
 test('describeSwapState: approved says no payment is seen yet and when an unpaid request expires', () => {
   const d = describeSwapState({ state: 'approved' });
-  assert.equal(d.text, 'No payment seen by the bot yet. If you paid, wait: it shows here once the bot sees it. If you did not pay, this request expires unpaid once its approval time has passed and the bot has checked that no payment came.');
+  assert.equal(d.text, 'The bot has not seen a payment yet. If you paid, it shows here as soon as the bot sees it. If you did not pay, this request expires unpaid once the approval time has passed and the bot has checked that no payment came.');
   assert.equal(d.final, false);
+});
+
+// PROVES: stateLabel gives the short title of the status panel's third step for every state word of the bot, and
+//   'Payout' for anything else (an empty word, a missing one, a non-string, a word the page does not know).
+// ENVIRONMENT: as above. LEAVES BEHIND: nothing. FALSE PASS: the table is the copy deck's; swap.js's use of it is not run (no DOM).
+test('stateLabel: one short title per state word; anything else is "Payout"', () => {
+  const titles = {
+    paid: 'Your payout has been sent',
+    refunded: 'Payment refunded',
+    dropped: 'Closed, nothing to refund',
+    expired: 'Request expired',
+    approved: 'Waiting for your payment',
+    paid_waiting_depth: 'Confirming your payment',
+    counted: 'Payment confirmed',
+    payout_pending: 'Sending your payout',
+    refund_pending: 'Sending your refund',
+    held: 'On hold',
+    reversed: 'Payment being reversed',
+    unknown: 'Checking',
+  };
+  for (const [state, title] of Object.entries(titles)) assert.equal(stateLabel(state), title, state);
+  for (const other of ['', undefined, null, 5, {}, ['paid'], 'something_new', 'PAID', 'constructor', 'toString', '__proto__']) assert.equal(stateLabel(other), 'Payout', String(other));
 });
 
 // PROVES: the one readiness rule both approve buttons use (swap.js): enabled only when no approval sequence runs, a
