@@ -118,8 +118,14 @@ test('a Sepolia balance is not shown or saved as the mainnet balance, and a main
     await page.evaluate(() => { window.fixture.holdEvm(true); window.fixture.state.networks.ethereum = 'mainnet'; window.fixture.screen.update(); });
     const marker = await page.evaluate(() => window.fixture.calls.length);
     await page.waitForFunction(from => window.fixture.calls.slice(from - 1).some(call => call[0] === 'getEvmBalances' && call[1][0] === 'ethereum'), marker);
-    assert.doesNotMatch(await page.locator('#portfolio-label').textContent(), /^Last read/);
-    assert.notEqual(await page.locator('#portfolio-total').textContent(), '$10.00');
+    // The label may legitimately read "Last read ... updating": the first mainnet read kept Ethereum's token rows (USDT, USDC, ...
+    // at 0 units, mainnet), which the Sepolia read (ETH only, no tokens) did not replace, and they are shown as kept mainnet
+    // values while the held mainnet read refreshes. What matters: the ETH row has no Sepolia value, and the total is exactly
+    // the kept same-network values. Those are zero-unit token rows valued at $0 with no fresh priced balance and the other
+    // priced rows unknown (BNB read failed), so the total is 0 and incomplete, which the page shows as the dash; with the
+    // Sepolia 5 ETH wrongly counted it would be $10.00 (5 ETH at the fixture's $2).
+    assert.doesNotMatch(await page.locator('#balances').textContent(), /(^|[^\d.])5(\.0+)? ETH\b/, 'a Sepolia balance is shown as the mainnet ETH balance');
+    assert.equal(await page.locator('#portfolio-total').textContent(), '—');
     for (const saved of await savedAfter(marker)) assert.ok(!(saved['ethereum:ETH']?.network === 'main' && saved['ethereum:ETH'].units === '5000000000000000000'), 'a Sepolia value was saved under mainnet');
     await page.evaluate(() => window.fixture.releaseEvm());
     await page.waitForFunction(from => window.fixture.calls.slice(from).some(call => call[0] === 'keepBalances' && call[1][0]['ethereum:ETH']?.network === 'main' && call[1][0]['ethereum:ETH'].units === '1000000000000000000'), marker);
