@@ -12,108 +12,130 @@
 </head>
 <body>
 <header class="site-header"><div class="header-inner">
-  <a class="wordmark" href="https://nodusnetwork.io/" aria-label="Nodus home"><img src="assets/nodus-mark.svg" width="32" height="32" alt="">nodus <small>Swap</small></a>
-  <nav class="header-links"><a class="text-link" href="https://nodusnetwork.io/extension.html">Get the extension ↗</a><button class="button" id="connect-btn" type="button">Connect extension</button></nav>
+  <a class="wordmark" href="https://nodusnetwork.io/" aria-label="Nodus home"><img src="assets/nodus-mark.svg" width="30" height="30" alt="">nodus <small>Swap</small></a>
+  <nav class="header-links"><a class="text-link" href="https://nodusnetwork.io/extension.html">Get the extension</a><button class="button" id="connect-btn" type="button">Connect extension</button></nav>
 </div></header>
 <main>
-  <section class="card" aria-labelledby="swap-title">
-    <h2 id="swap-title" class="mono card-title">USDT ⇄ NODUS</h2>
+  <div class="intro">
+    <h1>Swap USDT and NODUS from your own wallet.</h1>
+    <p>Connect the <a class="inline-link" href="https://nodusnetwork.io/extension.html">Nodus browser extension</a> to start. Your addresses come from the extension, so you never type them.</p>
+    <p class="note" id="connect-status" role="status" hidden></p>
+    <p class="note" id="bot-status" role="status" hidden></p>
+  </div>
+
+  <section class="card trade" aria-label="Swap and liquidity">
     <div class="tabs" role="tablist"><button role="tab" id="tab-swap" aria-selected="true" type="button">Swap</button><button role="tab" id="tab-liq" aria-selected="false" type="button">Liquidity</button></div>
 
     <div id="panel-swap">
       <form id="swap-form" autocomplete="off">
-        <div class="field">
-          <label for="pay">You pay</label>
-          <div class="field-row"><input id="pay" type="text" inputmode="decimal" autocomplete="off" placeholder="0"><span class="token" id="pay-token"></span></div>
-          <div class="field-foot"><span id="pay-hint">Type an amount, then ask the bot for its price.</span></div>
+        <div class="pair">
+          <div class="field">
+            <label for="pay">You pay</label>
+            <div class="field-row"><input id="pay" type="text" inputmode="decimal" autocomplete="off" placeholder="0"><span class="token" id="pay-token"></span></div>
+            <div class="field-foot"><span id="pay-hint">Enter an amount, then get a price.</span></div>
+          </div>
+          <button class="flip" id="flip" type="button" aria-label="Swap direction"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16M7 20l-4-4M7 20l4-4M17 20V4M17 4l-4 4M17 4l4 4"/></svg></button>
+          <div class="field">
+            <label for="get">You receive</label>
+            <div class="field-row"><input id="get" type="text" readonly placeholder="0"><span class="token" id="get-token"></span></div>
+            <div class="field-foot"><span>Before the network fee, as quoted by the bot</span></div>
+          </div>
         </div>
-        <button class="flip" id="flip" type="button" aria-label="Swap direction">↕</button>
-        <div class="field">
-          <label for="get">The bot gives (before the network fee)</label>
-          <div class="field-row"><input id="get" type="text" readonly placeholder="—"><span class="token" id="get-token"></span></div>
-          <div class="field-foot"><span>The bot's number for this amount</span></div>
+
+        <div class="tolerance">
+          <div class="tolerance-head"><label for="tol">Slippage tolerance</label><span class="tol-hint" id="tol-hint">Choose a tolerance to set your minimum to receive.</span></div>
+          <div class="tolerance-row">
+            <button class="chip" type="button" data-pct="0.5">0.5 %</button><button class="chip" type="button" data-pct="1">1 %</button><button class="chip" type="button" data-pct="3">3 %</button>
+            <span class="tol-input"><input id="tol" type="text" inputmode="decimal" autocomplete="off" placeholder="Custom" aria-describedby="tol-hint"><span aria-hidden="true">%</span></span>
+          </div>
         </div>
+
         <dl class="details">
-          <div><dt>Pool</dt><dd id="d-pool">—</dd></div>
-          <div><dt>Pool price</dt><dd id="d-price">—</dd></div>
-          <div><dt>Price movement</dt><dd id="d-movement">—</dd></div>
-          <div><dt>Estimated network fee</dt><dd id="d-fee">—</dd></div>
-          <div><dt>Tolerance</dt><dd class="tolerance"><input id="tol" type="text" inputmode="decimal" autocomplete="off" placeholder="choose" aria-label="Tolerance in percent" aria-describedby="tol-hint"> %
-            <button class="chip" type="button" data-pct="0.5">0.5</button><button class="chip" type="button" data-pct="1">1</button><button class="chip" type="button" data-pct="3">3</button>
-            <span class="tol-hint" id="tol-hint">Not chosen yet: type a percentage or click a chip.</span></dd></div>
-          <div><dt>Minimum you receive</dt><dd id="d-min">—</dd></div>
+          <div><dt>Price impact</dt><dd id="d-movement">—</dd></div>
+          <div><dt>Network fee (estimated)</dt><dd id="d-fee">—</dd></div>
+          <div class="key"><dt>Minimum to receive</dt><dd id="d-min">—</dd></div>
+          <div><dt>Payment counted after</dt><dd id="d-wait">—</dd></div>
           <div><dt>Request number</dt><dd id="d-request">—</dd></div>
           <div><dt>Price valid until</dt><dd id="d-valid">—</dd></div>
-          <div><dt>Commission</dt><dd id="d-commission">—</dd></div>
-          <div><dt>Your payment is counted after</dt><dd id="d-wait">—</dd></div>
-          <div><dt>Your Nodus address</dt><dd class="addr" id="nodus-addr">—</dd></div>
-          <div><dt>Your Ethereum address</dt><dd class="addr" id="eth-addr">—</dd></div>
         </dl>
-        <button class="button wide" id="ask-btn" type="submit" disabled>Ask the bot for a price</button>
-        <button class="button wide gap" id="approve-btn" type="button" hidden>Approve in the extension</button>
-        <p class="note msg bad" id="approve-hint" role="status" hidden>The approve button stays disabled until you choose a tolerance: type a percentage or click 0.5, 1 or 3.</p>
-        <p class="note" id="move-hint" hidden>Larger amounts move the price more; the bot's number already includes it.</p>
-        <p class="note" id="swap-limits">The extension shows the request in full before you sign.</p>
+        <button class="button wide" id="ask-btn" type="submit" disabled>Get a price</button>
+        <button class="button wide" id="approve-btn" type="button" hidden>Approve in the extension</button>
+        <p class="note" id="approve-hint" role="status" hidden>Choose a slippage tolerance to continue: type a percentage or pick 0.5 %, 1 % or 3 %.</p>
+        <p class="note" id="move-hint" hidden>Larger amounts move the price more. The amount you receive already includes this.</p>
         <p class="note msg" id="swap-msg" role="status" hidden></p>
+        <p class="note fine" id="swap-limits">The extension shows the full request before you sign.</p>
       </form>
     </div>
 
     <div id="panel-liq" hidden>
       <form id="liq-form" autocomplete="off">
+        <h2 class="form-title">Add liquidity</h2>
         <div class="field">
-          <label for="liq-amount">Add liquidity: amount of one side</label>
+          <label for="liq-amount">Amount of one side</label>
           <div class="field-row"><input id="liq-amount" type="text" inputmode="decimal" autocomplete="off" placeholder="0">
             <select id="liq-side" class="side-select" aria-label="Side"><option value="nodus">NODUS</option><option value="usdt">USDT</option></select></div>
-          <div class="field-foot"><span>Type one side; the bot computes the other side at the pool's current ratio. At least 100,000 NODUS.</span></div>
+          <div class="field-foot"><span>Enter one side; the bot works out the other side at the pool's current ratio. At least 100,000 NODUS.</span></div>
         </div>
         <dl class="details">
           <div><dt>Pool</dt><dd id="l-pool">—</dd></div>
-          <div><dt>USDT to pay</dt><dd id="l-usdt">—</dd></div>
-          <div><dt>NODUS to pay</dt><dd id="l-nodus">—</dd></div>
+          <div class="key"><dt>USDT to pay</dt><dd id="l-usdt">—</dd></div>
+          <div class="key"><dt>NODUS to pay</dt><dd id="l-nodus">—</dd></div>
           <div><dt>Request number</dt><dd id="l-request">—</dd></div>
           <div><dt>Price valid until</dt><dd id="l-valid">—</dd></div>
         </dl>
-        <button class="button wide" id="liq-ask" type="submit" disabled>Ask the bot for the pair</button>
-        <button class="button wide gap" id="liq-approve" type="button" hidden>Approve in the extension</button>
+        <button class="button wide" id="liq-ask" type="submit" disabled>Get the pair</button>
+        <button class="button wide" id="liq-approve" type="button" hidden>Approve in the extension</button>
         <p class="note msg" id="liq-msg" role="status" hidden></p>
       </form>
       <form id="wd-form" class="withdraw" autocomplete="off">
+        <h2 class="form-title">Withdraw liquidity</h2>
         <div class="field">
-          <label for="wd-bps">Withdraw: share of your position in basis points (1 to 10000; 10000 is all)</label>
+          <label for="wd-bps">Share of your position, in basis points</label>
           <div class="field-row"><input id="wd-bps" type="text" inputmode="numeric" autocomplete="off" placeholder="10000"></div>
-          <div class="field-foot"><span>Signed with your Nodus key. The bot pays the stored address pair after the Ethereum wait.</span></div>
+          <div class="field-foot"><span>1 to 10000; 10000 withdraws all of it. Signed with your Nodus key; the bot pays your stored address pair after the Ethereum wait.</span></div>
         </div>
-        <button class="button wide gap" id="wd-btn" type="submit">Sign and send the withdrawal</button>
+        <button class="button wide ghost" id="wd-btn" type="submit">Sign and withdraw</button>
         <p class="note msg" id="wd-msg" role="status" hidden></p>
       </form>
     </div>
   </section>
-  <div class="side">
-    <div class="intro">
-      <div class="mono">✳ swap.nodusnetwork.io</div>
-      <h1>Swap USDT and NODUS.<br><span>From your own wallet.</span></h1>
-      <p>Connect the <a class="inline-link" href="https://nodusnetwork.io/extension.html">Nodus browser extension</a>. Your addresses come from the extension; you never type them.</p>
-      <p class="note" id="connect-status" role="status" hidden></p>
-      <p class="note" id="bot-status" role="status" hidden></p>
-    </div>
+
+  <aside class="side">
     <section class="card status" aria-labelledby="st">
       <h2 id="st">Your swap</h2>
-      <p class="note" id="follow-request" hidden></p>
+      <p class="note follow" id="follow-request" hidden></p>
       <ol class="steps">
-        <li id="step-approved">The bot gave its number<span id="step-approved-t"></span></li>
-        <li id="step-paid">The extension signed and paid<span id="step-paid-t"></span></li>
-        <li id="step-state"><b id="state-text">Nothing started yet.</b><span id="state-word"></span></li>
+        <li id="step-approved"><span class="step-title">Price received</span><span class="step-time" id="step-approved-t"></span></li>
+        <li id="step-paid"><span class="step-title">Payment sent</span><span class="step-time" id="step-paid-t"></span></li>
+        <li id="step-state"><span class="step-title" id="state-word">Payout</span><p class="step-text" id="state-text">No swap started yet.</p></li>
       </ol>
-      <dl class="details" id="result" hidden>
-        <div><dt>Output before the fee</dt><dd id="r-output">—</dd></div>
+      <dl class="details compact" id="result" hidden>
+        <div><dt>You receive (before the fee)</dt><dd id="r-output">—</dd></div>
         <div><dt>Network fee</dt><dd id="r-fee">—</dd></div>
-        <div><dt>Paid to you</dt><dd id="r-paid">—</dd></div>
+        <div class="key"><dt>Paid to you</dt><dd id="r-paid">—</dd></div>
         <div><dt>Reason</dt><dd id="r-reason">—</dd></div>
       </dl>
       <p class="note" id="state-note" hidden></p>
-      <button class="button ghost gap" id="check-again" type="button" hidden>Check again</button>
+      <button class="button ghost wide" id="check-again" type="button" hidden>Check again</button>
     </section>
-  </div>
+
+    <section class="facts" aria-labelledby="pool-title">
+      <h2 id="pool-title">Pool</h2>
+      <dl class="details compact">
+        <div><dt>Liquidity</dt><dd id="d-pool">—</dd></div>
+        <div><dt>Price</dt><dd id="d-price">—</dd></div>
+        <div><dt>Commission</dt><dd id="d-commission">—</dd></div>
+      </dl>
+    </section>
+
+    <section class="facts" aria-labelledby="addr-title">
+      <h2 id="addr-title">Your addresses</h2>
+      <dl class="details compact">
+        <div><dt>Nodus</dt><dd class="addr" id="nodus-addr">—</dd></div>
+        <div><dt>Ethereum</dt><dd class="addr" id="eth-addr">—</dd></div>
+      </dl>
+    </section>
+  </aside>
 </main>
 </body>
 </html>
