@@ -256,9 +256,9 @@ static int e_bn(void *c, uint64_t *o, uint64_t dl) { (void)c; (void)dl; *o = W.e
 static int e_block(void *c, uint64_t n, amm_eth_block_t *o, uint64_t dl) {
     (void)c; (void)n; (void)o; (void)dl; return AMM_ETH_ERR;
 }
-static int e_logs(void *c, uint64_t b, const uint8_t k[20], const uint8_t t0[32], const uint8_t to[20],
-                  amm_eth_log_t *o, int cap, int *n, uint64_t dl) {
-    (void)c; (void)b; (void)k; (void)t0; (void)to; (void)o; (void)cap; (void)n; (void)dl;
+static int e_logs(void *c, uint64_t b, const uint8_t bh[32], const uint8_t k[20], const uint8_t t0[32],
+                  const uint8_t to[20], amm_eth_log_t *o, int cap, int *n, uint64_t dl) {
+    (void)c; (void)b; (void)bh; (void)k; (void)t0; (void)to; (void)o; (void)cap; (void)n; (void)dl;
     return AMM_ETH_ERR;
 }
 static int e_tx(void *c, const uint8_t h[32], amm_eth_tx_t *o, uint64_t dl) {

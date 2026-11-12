@@ -180,6 +180,9 @@ typedef struct {
     uint64_t tip_override;      /* 0 = the chain's tip                         */
     int calls;
     int asked[64];              /* asked[n] != 0: get_logs was called for block n (W26) */
+    int has_also;               /* the provider also holds the block of height also_blk with  */
+    uint64_t also_blk;          /* the hash made of 32 bytes of also_byte (W31, W32)           */
+    uint8_t also_byte;
 } sp_t;
 
 static const uint8_t USDT_B = 0xAA, FOUND_B = 0xF0, OTHER_TOKEN_B = 0xBB,
@@ -261,12 +264,23 @@ static int sp_get_block(void *ctx, uint64_t n, amm_eth_block_t *o, uint64_t d) {
     memcpy(o->parent, s->ch->b[n].parent, 32); o->timestamp = s->ch->b[n].ts;
     return AMM_ETH_OK;
 }
-static int sp_get_logs(void *ctx, uint64_t blk, const uint8_t *contract,
+/* eth_getLogs by BLOCK HASH (filter.yaml:40-59, geth filter.go:83-97): a
+ * provider answers about the block of that hash if it holds it, else it is an
+ * error (an unknown block). It holds the block when its own chain has that hash
+ * at the height, or when the fixture says it also holds it (also_hash). */
+static int sp_get_logs(void *ctx, uint64_t blk, const uint8_t *bhash, const uint8_t *contract,
                        const uint8_t *topic0, const uint8_t *to,
                        amm_eth_log_t *out, int cap, int *n, uint64_t d) {
     (void)d; (void)contract; (void)topic0; (void)to; sp_t *s = ctx; s->calls++;
     if (blk < 64) s->asked[blk]++;
     if (s->fail_all || s->fail_logs) return AMM_ETH_ERR;
+    int holds = blk < NB && s->ch->b[blk].exists && !memcmp(s->ch->b[blk].hash, bhash, 32);
+    if (!holds && s->has_also && blk == s->also_blk) {
+        uint8_t ah[32];
+        memset(ah, s->also_byte, 32);
+        holds = !memcmp(ah, bhash, 32);
+    }
+    if (!holds) return AMM_ETH_ERR;                    /* unknown block */
     int k = 0;
     /* the stub does NOT filter: the watcher must not trust a provider's filter */
     for (int i = 0; i < NL; i++)
@@ -1588,12 +1602,107 @@ static void w31_different_header_provider_listing(void) {
         if (g_alt[2].g[k].used && g_alt[2].g[k].l.tx[0] == 0x31)
             memset(g_alt[2].g[k].l.block_hash, hb(12, 1), 32);
     g_sp[2].ch = &g_alt[2];
+    /* by block hash a provider answers about the block it HOLDS: C's own header
+     * at 12 is another one, so the fixture says it also holds the quorum block */
+    g_sp[2].has_also = 1; g_sp[2].also_blk = 12; g_sp[2].also_byte = hb(12, 1);
     memset(g_sp[2].asked, 0, sizeof(g_sp[2].asked));
     step(&o);
     CHECK(o.dropped == 0, "nothing is dropped in that step");
     CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep"),
           "the record is not declared gone: it stays deep");
     CHECK(g_sp[2].asked[12] > 0, "C, with another header at block 12, was asked for its logs");
+}
+
+/* W32  the block-hash read: an answer is about exactly the accepted block
+ * (the defect: get_logs asked by block NUMBER, so a provider holding another
+ * block at that height answered an empty list about that other block; log_ok
+ * dropped nothing, but answered counted it and its empty list was an "absent"
+ * vote that dropped a candidate or declared a moved payment gone).
+ * Across EventManager (EventUtils.ts:157-171) removes an event only on a report
+ * bound to that event's blockHash; filter.yaml:40-59 "Filter by block hash" and
+ * geth filter.go:83-97 (an unknown hash is an error) give the same binding here.
+ * PROVES, each for a control run (C also holds the quorum block and answers an
+ * empty list: the old verdict) and the defect run (C holds another block at the
+ * height: its answer to the quorum hash is an ERROR, not an empty list):
+ *  (1) candidate drop (eval_block): a candidate is retained (W2 setup); then A
+ *      holds the quorum block and lists nothing, B fails the log read, C is on
+ *      another block. Defect run: answered = 1 < Q, the block is unknown: the
+ *      candidate is still there, nothing is dropped, o.unknown > 0. Control run:
+ *      answered = 2 (A, C both without it): the candidate is dropped (this shows
+ *      the fixture reaches the drop).
+ *  (2) moved record (find_tx_record): W30's fixture with B failing its logs and
+ *      C on another block with no transaction. Defect run: answered = 1 < Q,
+ *      unknown: the record stays deep, o.dropped == 0. Control run: A and C
+ *      answer empty, find_tx_record says gone and the record is no longer deep.
+ * HOW IT CAN FALSELY PASS: the control runs are what tells the defect runs
+ * apart from a fixture that never reaches the verdict; the stub's hash rule
+ * (holds = its own header at the height has that hash, or also_hash) is the
+ * test's model of a provider, not a provider. On 32425b38e the new get_logs
+ * signature does not exist, so the file does not compile there; against the
+ * by-number behaviour the defect runs fail at: (1) "the candidate is kept"
+ * (count_state("candidate") == 1 sees 0) and (2) "the record stays deep". */
+static void w32_block_hash_answer(void) {
+    printf("W32 an answer about another block is an error, not an absent vote\n");
+    amm_eth_step_t o;
+    char st[16];
+    for (int control = 0; control < 2; control++) {
+        const char *run = control ? "control (C holds the quorum block)" : "defect run (C holds another block)";
+        char msg[160];
+        /* (1) candidate drop */
+        fresh(20);
+        ch_build(&g_chain, 1, 13, 0, 0);
+        g_alt[0] = g_chain; g_alt[1] = g_chain; g_alt[2] = g_chain;
+        ch_pay(&g_alt[0], 0x31, 0, 10, 0x11, 5);
+        ch_pay(&g_alt[1], 0x31, 0, 10, 0x11, 6);
+        for (int i = 0; i < 3; i++) g_sp[i].ch = &g_alt[i];
+        g_sp[2].fail_logs = 1;
+        step(&o);
+        snprintf(msg, sizeof(msg), "(1) %s: setup, one candidate is retained", run);
+        CHECK(count_state("candidate") == 1, msg);
+        for (int k = 0; k < NL; k++)                   /* A and B no longer list it */
+            for (int i = 0; i < 2; i++)
+                if (g_alt[i].g[k].used && g_alt[i].g[k].l.tx[0] == 0x31) g_alt[i].g[k].used = 0;
+        g_sp[2].fail_logs = 0;
+        g_sp[1].fail_logs = 1;                         /* B fails the log read      */
+        ch_build(&g_alt[2], 1, 13, 10, 2);             /* C: another block from 10  */
+        if (control) { g_sp[2].has_also = 1; g_sp[2].also_blk = 10; g_sp[2].also_byte = hb(10, 0); }
+        step(&o);
+        if (control) {
+            snprintf(msg, sizeof(msg), "(1) %s: A and C answer without it, the candidate is dropped", run);
+            CHECK(count_state("candidate") == 0, msg);
+        } else {
+            snprintf(msg, sizeof(msg), "(1) %s: the candidate is kept (answered 1 < Q)", run);
+            CHECK(count_state("candidate") == 1, msg);
+            CHECK(o.dropped == 0 && o.unknown > 0, "(1)   nothing dropped, the step reports unknown");
+        }
+
+        /* (2) moved record */
+        fresh(20);
+        ch_build(&g_chain, 1, 15, 0, 0);
+        ch_pay(&g_chain, 0x31, 0, 10, 0x11, 5);
+        step(&o);
+        snprintf(msg, sizeof(msg), "(2) %s: setup, a deep payment at block 10", run);
+        CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep"), msg);
+        for (int i = 0; i < 2; i++) {                  /* A and B: the quorum chain */
+            ch_build(&g_alt[i], 1, 16, 10, 1);
+            ch_pay(&g_alt[i], 0x31, 0, 12, 0x11, 5);
+            for (int k = 0; k < NL; k++)
+                if (g_alt[i].g[k].used && g_alt[i].g[k].l.tx[0] == 0x31) g_alt[i].g[k].used = 0;
+            g_sp[i].ch = &g_alt[i];
+        }
+        ch_build(&g_alt[2], 1, 16, 10, 2);             /* C: another block, no tx   */
+        g_sp[2].ch = &g_alt[2];
+        g_sp[1].fail_logs = 1;                         /* B fails the log read      */
+        if (control) { g_sp[2].has_also = 1; g_sp[2].also_blk = 12; g_sp[2].also_byte = hb(12, 1); }
+        step(&o);
+        if (control) {
+            snprintf(msg, sizeof(msg), "(2) %s: A and C answer empty, the record is declared gone (not deep)", run);
+            CHECK(rec_state(0x31, 0, st) == 0 && strcmp(st, "deep") != 0, msg);
+        } else {
+            snprintf(msg, sizeof(msg), "(2) %s: the record stays deep (answered 1 < Q, unknown)", run);
+            CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep") && o.dropped == 0, msg);
+        }
+    }
 }
 
 int main(void) {
@@ -1632,6 +1741,7 @@ int main(void) {
     w29_no_early_stop();
     w30_moved_transaction_not_gone();
     w31_different_header_provider_listing();
+    w32_block_hash_answer();
 
     if (g_w) amm_eth_watch_free(g_w);
     if (g_j) amm_journal_close(g_j);
