@@ -82,8 +82,10 @@ for(const mode of (process.env.CAPABILITY_BROWSER_MODE||'web,connect,extension')
   await page.waitForFunction(a=>document.querySelector('#receive-address').textContent===a,publicFixture.addresses.algorand.mainnet);
   // Algorand mainnet send is enabled by the handoff on every surface; testnet stays receive-only.
   await assertPages('algorand','mainnet');
-  // The Hide zero balances box is on the home asset panel; it resets on each home opening (src/app.js:2338-2343).
-  run.state.failAlgorand=true;await nav('').click();await page.locator('#assets-panel').waitFor({state:'visible'});await page.locator('#show-zero-balances').uncheck();await environment('algorand','testnet');
+  // The Hide zero balances box is on the home asset panel; it resets on each home opening (src/app.js resetAssetView, extension
+  // wallet-screen.js showPage), and choosing the network goes through the Settings page and back. So: choose the network first,
+  // then open home, then uncheck the box, then wait for the failed row.
+  run.state.failAlgorand=true;await environment('algorand','testnet');await nav('').click();await page.locator('#assets-panel').waitFor({state:'visible'});await page.locator('#show-zero-balances').uncheck();
   // A failed read shows its error on the row (the fixture's HTTP 503), never an inferred zero.
   await page.waitForFunction(()=>(document.querySelector('.network-assets[data-chain="algorand"]')?.textContent??'').includes('HTTP 503'));
   assert.equal(await group('algorand').count(),1,'failed Algorand balance listed with zero balances shown');
