@@ -11,9 +11,10 @@
 // Also (last block): a failed balance read writes one "<Chain> <Network>: balance read failed: <label>" line to the session log
 // (Logs page), not a second one for the same failure, and, after lock and a reopen in the same page, again once in the new
 // session (portfolio clear() resets the remembered failure; without that call the reopened session would have no line and the
-// wait for it would time out). It leaves nothing behind but the page's own session log, cleared by the final lock. It could
-// falsely pass if the "Wrong network" answer for Ethereum (wrongNetwork) never reached the page's read (the line is then never found, so it fails, not passes), or
-// if the Logs page showed a line from another source with the same text (the text is the one portfolio-view.js writes).
+// wait for it would time out). It leaves nothing behind but the page's own session log, cleared by the final lock. If the
+// "Wrong network" answer for Ethereum (wrongNetwork) never reached the page's read, the line is never found and the check fails.
+// It could falsely pass only if the Logs page showed a line with the same text from another source (the text is the one
+// portfolio-view.js writes).
 // Needs the built page (dist, served by vite preview on 127.0.0.1 port 4192 with
 // --strictPort; run from web-wallet/) and Chromium (CHROMIUM_PATH, otherwise
 // Playwright's own). WALLET_URL replaces the server: nothing is started and
