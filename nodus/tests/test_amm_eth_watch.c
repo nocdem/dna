@@ -1494,8 +1494,58 @@ static void w29_no_early_stop(void) {
     step(&o);
     char st[16];
     CHECK(g_sp[2].asked[10] > 0, "C is asked for block 10 although A and B answered");
-    CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "candidate"),
-          "C's below-quorum listing is kept as a candidate (the parent's verdict)");
+    /* the parent's verdict (bf5a4bcb4): C's listing is below the quorum, so it
+     * is stored as a candidate and, in the same step, rescan_candidates finds
+     * two providers (A, B) answering without it and drops it (the existing W1
+     * checks at the top of this file: a log listed by one provider alone is
+     * never counted and is dropped once two providers answer without it) */
+    CHECK(count_state("seen") + count_state("deep") == 0,
+          "C's listing alone is never counted (the parent's verdict)");
+    CHECK(count_state("candidate") == 0,
+          "and no candidate is left: two providers answered without it, it is dropped in the same step");
+}
+
+/* W30  the moved-transaction form of Sol's counterexample through
+ * find_tx_record (Sol recheck 2, 2026-11-12).
+ * PROVES: a deep payment (tx 0x31, block 10, value 5) is seen again after a
+ * reorganisation from block 10: in the new chain the transaction is mined in
+ * block 12. A and B hold the new quorum header and their RECEIPTS put the
+ * transaction in block 12, but their eth_getLogs for block 12 list nothing for
+ * it; C's header read fails, C's receipt agrees and its eth_getLogs lists the
+ * transaction with the quorum block's hash. The record must NOT be declared gone
+ * in that step: it stays deep and nothing is dropped (the parent asked C, saw a
+ * below-quorum listing and returned "unknown"; with C skipped find_tx_record
+ * answers "gone" and the disappearance is applied: record dropped).
+ * HOW IT CAN FALSELY PASS: the "receipt in 12 but no log in 12" fixture is a
+ * provider inconsistency built by hand (the stub keeps receipts and logs
+ * apart); any other reason the step leaves the record deep (for instance an
+ * unrelated unknown) would also pass the state check, which is why the
+ * dropped counter and C's get_logs counter for block 12 are checked too. On
+ * f5a5f74b8 C is skipped for the block, the record is dropped and both fail. */
+static void w30_moved_transaction_not_gone(void) {
+    printf("W30 a moved transaction listed only by the failed-header provider is not declared gone\n");
+    fresh(20);
+    ch_build(&g_chain, 1, 15, 0, 0);
+    ch_pay(&g_chain, 0x31, 0, 10, 0x11, 5);
+    amm_eth_step_t o;
+    step(&o);
+    char st[16];
+    CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep"), "setup: a deep payment of 5 at block 10");
+    for (int i = 0; i < 3; i++) {
+        ch_build(&g_alt[i], 1, 16, 10, 1);             /* fork at 10                    */
+        ch_pay(&g_alt[i], 0x31, 0, 12, 0x11, 5);       /* mined again in block 12       */
+        g_sp[i].ch = &g_alt[i];
+    }
+    for (int k = 0; k < NL; k++)                       /* A and B list no log for it    */
+        for (int i = 0; i < 2; i++)
+            if (g_alt[i].g[k].used && g_alt[i].g[k].l.tx[0] == 0x31) g_alt[i].g[k].used = 0;
+    g_sp[2].fail_blocks = 1;                           /* C's header read fails         */
+    memset(g_sp[2].asked, 0, sizeof(g_sp[2].asked));
+    step(&o);
+    CHECK(o.dropped == 0, "nothing is dropped in that step");
+    CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep"),
+          "the record is not declared gone: it stays deep");
+    CHECK(g_sp[2].asked[12] > 0, "C was asked for the logs of block 12");
 }
 
 int main(void) {
@@ -1532,6 +1582,7 @@ int main(void) {
     w27_failed_header_provider_is_fallback();
     w28_disagreement_asks_failed_header_provider();
     w29_no_early_stop();
+    w30_moved_transaction_not_gone();
 
     if (g_w) amm_eth_watch_free(g_w);
     if (g_j) amm_journal_close(g_j);
