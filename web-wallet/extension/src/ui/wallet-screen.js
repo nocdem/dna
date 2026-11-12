@@ -149,7 +149,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
       node.textContent = publicAddresses()[chain] ? '' : chain === 'ixios' ? 'Ixios address unavailable. Lock and reopen your wallet to retry.' : '';
     }
     const pq = isPqChain(selected);
-    environmentDisclosure.hidden = !pq;
+    pqStatus.hidden = !pq;
     // Native-word chains derive the chain wallet's own address: the "may derive different addresses" note is untrue there.
     pqNote.hidden = !pq || PQ_NATIVE_WORD_CHAINS.includes(selected);
     if (pq) {
@@ -163,31 +163,19 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   const ixiosStatus = element('p', '', 'hint'); ixiosStatus.id = 'ixios-address-status'; ixiosStatus.setAttribute('role', 'status'); ixiosStatus.setAttribute('aria-live', 'polite'); $('cellframe-address-status').after(ixiosStatus);
   const pqStatus = element('p', '', 'hint'); pqStatus.id = 'pq-address-status'; pqStatus.setAttribute('role', 'status'); pqStatus.setAttribute('aria-live', 'polite');
   const pqNote = element('p', 'Recover this address with your Nodus recovery phrase. Native chain wallets may derive different addresses.', 'hint'); pqNote.id = 'pq-recovery-note';
-  const pqEnvironmentLabel = element('label', 'Network environment'), pqEnvironment = element('select');
-  pqEnvironmentLabel.htmlFor = pqEnvironment.id = 'pq-network-environment';
-  pqEnvironmentLabel.hidden = pqEnvironment.hidden = true; $('chain').after(pqEnvironmentLabel, pqEnvironment);
-  const environmentDisclosure = element('details', undefined, 'environment-disclosure'); environmentDisclosure.id = 'wallet-environment';
-  const environmentSummary = element('summary'), environmentChoices = element('div', undefined, 'environment-choices');
-  environmentDisclosure.append(environmentSummary, environmentChoices, pqStatus, pqNote); context.append(environmentDisclosure);
-  function renderEnvironment() {
-    environmentSummary.textContent = `Environment · ${pqEnvironment.selectedOptions[0]?.textContent || ''}`;
-    environmentChoices.replaceChildren(...[...pqEnvironment.options].map(option => {
-      const button = element('button', option.textContent); button.type = 'button'; button.dataset.environment = option.value; button.setAttribute('aria-pressed', String(option.selected));
-      button.onclick = () => { environmentDisclosure.open = false; if (pqEnvironment.value !== option.value) { pqEnvironment.value = option.value; void pqEnvironment.onchange(); } };
-      return button;
-    }));
-  }
-  pqEnvironment.onchange = () => {
-    if (disposed || !ui.state.isUnlocked || !isPqChain(selected)) return;
-    const chain = selected, id = chainNetwork(chain, pqEnvironment.value).id;
+  pqStatus.hidden = pqNote.hidden = true; context.append(pqStatus, pqNote);
+  // The network of a PQ chain is chosen in Device & settings (the list built below); this is what that choice does.
+  function choosePqNetwork(chain, value) {
+    if (disposed || !ui.state.isUnlocked || !isPqChain(chain)) return;
+    const id = chainNetwork(chain, value).id;
     if (id === selectedNetwork(chain).id) return;
     const pending = { id }; pendingPqNetworks.set(chain, pending);
-    historyController?.abort(); readGeneration++; cancelReview(); $('history').replaceChildren(); $('history-status').textContent = '';
+    // The displayed history, review and address belong to the selected chain; another chain's choice leaves them alone.
+    if (chain === selected) { historyController?.abort(); readGeneration++; cancelReview(); $('history').replaceChildren(); $('history-status').textContent = ''; }
     portfolio.setNetwork(chain, { ...networks[chain], testnet: id !== 'mainnet' }, { forgetKept: true });
     portfolio.setAddress(chain, undefined);
     // Clear the previous environment's address and QR before awaiting persistence.
-    $('receive-address').textContent = ''; $('receive-qr').replaceChildren();
-    $('copy-address').disabled = $('quick-receive').disabled = true;
+    if (chain === selected) { $('receive-address').textContent = ''; $('receive-qr').replaceChildren(); $('copy-address').disabled = $('quick-receive').disabled = true; }
     return run(async () => {
       let failure;
       try { await ui.request('setChainNetwork', [chain, id]); }
@@ -202,7 +190,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
       }
       if (failure) throw failure;
     });
-  };
+  }
   $('lock').onclick = lock;
 
   // Pages replace wallet-home. Keep the original panels and hash names so
@@ -244,8 +232,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   $('quick-receive').onclick = () => navigate('receive');
   $('nav-earn').onclick = event => { event.preventDefault(); if (capabilitiesFor(selected).earn) navigate('earn'); };
   function selectAsset(chain, symbol, action) {
-    const changed = selected !== chain; cancelReview(); selected = chain; $('chain').value = chain; selectChain(true);
-    if (changed) defaultEnvironment();
+    cancelReview(); selected = chain; $('chain').value = chain; selectChain(true);
     const option = [...$('asset').options].find(option => option.dataset.symbol === symbol);
     if (option) $('asset').value = option.value;
     applyAssetGate();
@@ -258,10 +245,6 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     $('review-button').disabled = !option || option.disabled || networks[selected].receiveOnly;
   }
   $('asset').onchange = applyAssetGate;
-  function defaultEnvironment() {
-    environmentDisclosure.open = false;
-    if (isPqChain(selected) && pqEnvironment.options.length > 1 && pqEnvironment.value !== 'mainnet') { pqEnvironment.value = 'mainnet'; void pqEnvironment.onchange(); }
-  }
   function selectChain(reset = false) {
     const config = networks[selected], state = ui.state;
     if (shownPage && !pageSupported(selected, shownPage)) navigate(null);
@@ -269,10 +252,6 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     $('vault-panel').hidden = !capabilitiesFor(selected).sharedVaults;
     $('stake-panel').hidden = !capabilitiesFor(selected).earn;
     const network = selectedNetwork(selected);
-    pqEnvironment.replaceChildren(...(isPqChain(selected) ? CHAIN_NETWORKS[selected] : []).map(choice => {
-      const option = element('option', choice.label); option.value = choice.id; return option;
-    }));
-    if (isPqChain(selected)) { pqEnvironment.value = network.id; renderEnvironment(); }
     if (reset) { historyController?.abort(); cancelReview(); contracts?.contextChanged?.(); vaults?.contextChanged?.(); earn?.contextChanged?.(); readGeneration++; $('history').replaceChildren(); $('history-status').textContent = '';  $('recipient').value = ''; $('amount').value = ''; }
     for (const name of root.querySelectorAll('.selected-network-name')) name.textContent = config.name;
     for (const stage of root.querySelectorAll('.selected-network-stage')) stage.textContent = network.label;
@@ -315,7 +294,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   }
   setNetworkSelectOptions($('chain'), Object.entries(networks));
   $('chain').value = selected;
-  $('chain').onchange = () => { const changed = selected !== $('chain').value; cancelReview(); selected = $('chain').value; selectChain(true); if (changed) defaultEnvironment(); };
+  $('chain').onchange = () => { cancelReview(); selected = $('chain').value; selectChain(true); };
   $('copy-address').onclick = () => run(async () => { await window.navigator.clipboard.writeText($('receive-address').textContent); message('Address copied.'); });
 
   // index.html:116 and src/app.js:1615-1627: the same dialog and decoded rows,
@@ -477,16 +456,21 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   const recoveryBlock = settings.querySelector('#reveal-password').closest('.page-block');
   recoveryBlock.querySelector('h2').replaceWith(element('h4', 'Reveal recovery phrase'));
   $('device-panel').append(recoveryBlock);
-  // Keep the existing selected EVM network and network selectors below the
-  // reference's connection disclosure (approved extension plan §5.6).
-  for (const [chain, choices] of Object.entries(CHAIN_NETWORKS)) {
-    if (isPqChain(chain)) continue;
-    if (choices.length < 2) continue;
-    const label = element('label', `${networks[chain].name} network`), select = element('select');
+  // The network of every chain that has more than one is chosen here and nowhere else (operator, 2026-11-12: "Hepsini settings'e
+  // taşı. Cüzdan ekranından seçim yapılmayacak."): one list per chain in CHAIN_NETWORKS, always shown, whichever chain the wallet
+  // screen has selected. The wallet screen only displays the choice.
+  const networkLists = element('div'); networkLists.id = 'network-settings';
+  const networkChoices = Object.entries(CHAIN_NETWORKS).filter(([, choices]) => choices.length > 1);
+  for (const [chain, choices] of networkChoices) {
+    const block = element('div', undefined, 'auto-lock'), label = element('label', `${networks[chain].name} network`), select = element('select');
     label.htmlFor = select.id = `network-${chain}`;
     for (const choice of choices) { const option = element('option', choice.label); option.value = choice.id; select.append(option); }
-    select.onchange = () => run(async () => { await ui.request('setChainNetwork', [chain, select.value]); await ui.refresh(); }); $('rpc-settings').append(label, select);
+    // A PQ chain redraws its address, history and balance for the new network (choosePqNetwork); the others persist the choice and refresh.
+    select.onchange = isPqChain(chain) ? () => choosePqNetwork(chain, select.value)
+      : () => run(async () => { await ui.request('setChainNetwork', [chain, select.value]); await ui.refresh(); });
+    block.append(label, select); networkLists.append(block);
   }
+  $('rpc-settings').before(networkLists);
   const evmSelect = settings.querySelector('#evm-network');
   if (evmSelect) $('rpc-settings').append(settings.querySelector('label[for="evm-network"]'), evmSelect);
   function populateRpc() {
@@ -544,7 +528,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
       if (previousNetwork && identity !== previousNetwork) { readGeneration++; cancelReview(); }
       previousNetwork = identity; previousTokens = tokens; previousAddress = address; selectChain();
     }
-    for (const chain of ['ethereum', 'bsc', 'solana', 'tron', 'ixios']) $(`network-${chain}`).value = chainNetwork(chain, state.networks?.[chain]).id;
+    for (const [chain] of networkChoices) $(`network-${chain}`).value = selectedNetwork(chain).id;
     if (evmSelect) evmSelect.value = state.evm.selectedChain;
     updateContractAvailability();
     book.update(); earn.update(); names.update(); claim.update(); contracts.update(); vaults.update();
@@ -562,7 +546,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     async loadBalances(force = false) { await initial; if (force && !disposed) await portfolio.refresh(); },
     dispose() {
       disposed = true; readGeneration++; cancelReview(); portfolio.setAutoRefresh(0); portfolio.clear();
-      historyController?.abort(); pendingPqNetworks.clear(); pqStatus.textContent = ''; pqEnvironment.replaceChildren();
+      historyController?.abort(); pendingPqNetworks.clear(); pqStatus.textContent = '';
       $('receive-address').textContent = ''; $('receive-qr').replaceChildren();
       $('copy-address').disabled = $('quick-receive').disabled = true;
       book.dispose(); earn.dispose(); names.dispose(); claim.dispose(); contracts.dispose(); vaults.dispose();

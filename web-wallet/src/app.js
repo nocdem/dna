@@ -124,6 +124,9 @@ let pqSource, pqOperation, pqGeneration = 0, pqAddresses = {}, pqErrors = {}, pq
 // (operator 2026-11-03: "hersey varsa yeniden acista mainnet"); a choice lasts
 // for this page only. The selected IDs always pass the registry allowlist.
 const pqSelections = Object.fromEntries(Object.entries(PQ_NETWORKS).map(([chain, config]) => [chain, config.defaultNetwork]));
+// The network lists of Device & settings (chain -> <select>), filled by the settings block below; every change of
+// pqSelections / ixiosSelection is mirrored into them by syncNetworkChoices.
+const networkChoices = new Map();
 // Receive-panel derivation status line per receive-only network, shown only
 // while that network is selected. The Ixios entry is added by its own block.
 const addressStatus = { nodus: $('nodus-address-status'), cellframe: $('cellframe-address-status') };
@@ -964,61 +967,42 @@ setNetworkSelectOptions($('chain'), [
   ...Object.entries(CHAINS),
   ...extraNetworks.map(({ network, asset }) => [asset.chain, network]),
 ]);
-const pqEnvironmentLabel = document.createElement('label'), pqEnvironment = document.createElement('select');
-pqEnvironmentLabel.textContent = 'Network environment'; pqEnvironmentLabel.htmlFor = pqEnvironment.id = 'pq-network-environment';
 const pqStatus = document.createElement('p'), pqRecoveryNote = document.createElement('p');
 pqStatus.id = 'pq-address-status'; pqStatus.className = pqRecoveryNote.className = 'hint';
 pqStatus.setAttribute('role', 'status'); pqStatus.setAttribute('aria-live', 'polite');
 pqRecoveryNote.id = 'pq-recovery-note';
 pqRecoveryNote.textContent = 'Recover this address with your Nodus recovery phrase. Native chain wallets may derive different addresses.';
-for (const node of [pqEnvironmentLabel, pqEnvironment, pqStatus, pqRecoveryNote]) node.hidden = true;
-$('chain').after(pqEnvironmentLabel, pqEnvironment);
-const environmentDisclosure = document.createElement('details'); environmentDisclosure.id = 'wallet-environment'; environmentDisclosure.className = 'environment-disclosure';
-const environmentSummary = document.createElement('summary');
-const environmentChoices = document.createElement('div'); environmentChoices.className = 'environment-choices';
-environmentDisclosure.append(environmentSummary, environmentChoices, pqStatus, pqRecoveryNote);
-function renderEnvironment() {
-  environmentSummary.textContent = `Environment · ${pqEnvironment.selectedOptions[0]?.textContent || ''}`;
-  environmentChoices.replaceChildren(...[...pqEnvironment.options].map(option => {
-    const button = document.createElement('button'); button.type = 'button'; button.textContent = option.textContent; button.dataset.environment = option.value;
-    button.setAttribute('aria-pressed', String(option.selected));
-    button.onclick = () => { environmentDisclosure.open = false; if (pqEnvironment.value !== option.value) { pqEnvironment.value = option.value; pqEnvironment.onchange(); } };
-    return button;
-  }));
-}
-pqEnvironment.onchange = () => {
-  const chain = $('chain').value;
-  // Ixios is not a PQ chain (it keeps its own module and address path) but offers the same environment choice.
-  if (chain === ixiosChain) { selectIxiosNetwork(ixiosNetwork(pqEnvironment.value).id); return; }
+for (const node of [pqStatus, pqRecoveryNote]) node.hidden = true;
+// The network of a chain with more than one (PQ chains, Ixios) is chosen in Device & settings only (the lists built by
+// buildNetworkSettings); this is what a choice does. Ixios is not a PQ chain (it keeps its own module and address path).
+function chooseNetwork(chain, id) {
+  if (chain === ixiosChain) { selectIxiosNetwork(ixiosNetwork(id).id); return; }
   if (!isPqChain(chain)) return;
   if (isPqChain(chain) && historySupported(chain)) {
     if (historyJob?.chain === chain) { historyJob.controller.abort(); historyJob = null; }
     delete historyByChain[chain]; delete historyNote[chain];
   }
-  pqSelections[chain] = pqNetwork(chain, pqEnvironment.value).id;
+  pqSelections[chain] = pqNetwork(chain, id).id;
   syncPqAddress(chain);
   if (wallet && !wallet.locked) selectChain();
-};
+}
+// Mirrors the chosen networks into the lists of Device & settings (an opening resets them without the user touching a list).
+function syncNetworkChoices() {
+  for (const [chain, select] of networkChoices) select.value = chain === ixiosChain ? ixiosSelection : pqSelections[chain];
+}
 function updatePqStatus(chain) {
-  const shown = isPqChain(chain), ixios = chain === ixiosChain;
-  environmentDisclosure.hidden = !shown && !ixios; pqStatus.hidden = !shown;
+  const shown = isPqChain(chain);
+  pqStatus.hidden = !shown;
   // Native-word chains derive the chain wallet's own address: the "may derive different addresses" note is untrue there.
   pqRecoveryNote.hidden = !shown || PQ_NATIVE_WORD_CHAINS.includes(chain);
-  if (!shown) {
-    pqStatus.textContent = '';
-    // Ixios: the environment choice only; its own address status line is separate and the PQ status and note stay hidden.
-    if (ixios) { pqEnvironment.replaceChildren(...Object.values(IXIOS_NETWORKS).map(network => new Option(network.label, network.id))); pqEnvironment.value = ixiosSelection; renderEnvironment(); }
-    return;
-  }
+  if (!shown) { pqStatus.textContent = ''; return; }
   const choice = pqNetwork(chain, pqSelections[chain]);
-  pqEnvironment.replaceChildren(...PQ_NETWORKS[chain].networks.map(network => new Option(network.label, network.id)));
-  pqEnvironment.value = choice.id;
-  renderEnvironment();
   // UI pack 2026-11-03 (operator "2"): no "derived locally" line once the address is shown; style.css hides the empty line.
   pqStatus.textContent = pqAddresses[chain]?.[choice.id] ? ''
     : pqErrors[chain] || (pqPending || pqSource !== wallet ? 'Deriving receive address locally…' : 'Receive address unavailable. Lock and reopen your wallet to retry.');
 }
 function syncPqAddress(chain) {
+  syncNetworkChoices();
   if (!wallet || wallet.locked) return;
   const choice = pqNetwork(chain, pqSelections[chain]);
   const address = pqAddresses[chain]?.[choice.id];
@@ -1039,7 +1023,7 @@ function syncPqAddress(chain) {
 function selectIxiosNetwork(id) {
   const entry = ixiosNetwork(id);
   if (ixiosSelection === entry.id) return;
-  ixiosSelection = entry.id; endpoints[ixiosChain] = entry.endpoint;
+  ixiosSelection = entry.id; endpoints[ixiosChain] = entry.endpoint; syncNetworkChoices();
   receiveOnlyNetworks[ixiosChain] = entry.id === 'mainnet' ? IXIOS_NETWORK : { ...IXIOS_NETWORK, endpoint: entry.endpoint, rpcOptions: entry.rpcOptions, stage: entry.label, testnet: true, networkId: entry.id };
   portfolio.setNetwork(ixiosChain, receiveOnlyNetworks[ixiosChain], { forgetKept: true });
   if (!wallet || wallet.locked) return;
@@ -1079,8 +1063,7 @@ function stopPqAddresses() {
   pqGeneration++; pqOperation?.abort(); pqOperation = undefined; pqSource = undefined;
   pqAddresses = {}; pqErrors = {}; pqPending = false;
   if (wallet) for (const chain of Object.keys(PQ_NETWORKS)) delete wallet.addresses[chain];
-  pqStatus.textContent = ''; pqEnvironment.replaceChildren();
-  environmentDisclosure.hidden = true;
+  pqStatus.textContent = ''; pqStatus.hidden = pqRecoveryNote.hidden = true;
 }
 // (The portfolio scope paragraph — which networks are listed and which count
 // toward the total — was removed in 0.1.108, operator: "bir dolu bilgi
@@ -2328,18 +2311,9 @@ function applyAssetGate() {
   if (blocked) message(unavailableAssetNote(option.dataset.symbol),{ category: 'send', error: true });
 }
 $('asset').addEventListener('change', applyAssetGate);
-let lastSelectedChain;
+// Selecting a chain keeps the network that Device & settings chose for it (operator, 2026-11-12: "Settings'ten yapıldığın şey
+// cüzdan ekranında gözükecek"); only a new opening starts every chain on its default (the unlock code below).
 function selectChain() {
-  const incoming = $('chain').value;
-  if (lastSelectedChain !== incoming) {
-    lastSelectedChain = incoming; environmentDisclosure.open = false;
-    if (isPqChain(incoming) && PQ_NETWORKS[incoming].networks.length > 1 && pqSelections[incoming] !== 'mainnet') {
-      pqEnvironment.replaceChildren(...PQ_NETWORKS[incoming].networks.map(network => new Option(network.label, network.id)));
-      pqEnvironment.value = 'mainnet'; pqEnvironment.onchange(); return;
-    }
-    // Ixios, like the PQ chains, starts on mainnet whenever it is selected: the reselection below runs this function again.
-    if (incoming === ixiosChain && ixiosSelection !== 'mainnet') { selectIxiosNetwork('mainnet'); return; }
-  }
   revision++; closeReview();
   if (historyJob) { historyJob.controller.abort(); historyJob = null; }
   const chain = $('chain').value; const c = networkFor(chain);
@@ -2381,6 +2355,27 @@ function selectChain() {
 }
 $('chain').onchange = selectChain;
 
+// Networks are chosen in Device & settings and nowhere else (operator, 2026-11-12: "Hepsini settings'e taşı. Cüzdan ekranından
+// seçim yapılmayacak. Settings'ten yapıldığın şey cüzdan ekranında gözükecek."): one list per chain that has more than one
+// network here (the PQ chains with several, and Ixios), always shown above the connection settings. The wallet screen only
+// shows the choice. Built from the same tables the wallet reads (PQ_NETWORKS, IXIOS_NETWORKS), so it cannot offer a network
+// the wallet does not know. The Connect build has its own index.html; the lists are created here so both pages get them.
+function buildNetworkSettings() {
+  const lists = document.createElement('div'); lists.id = 'network-settings';
+  const offers = [...Object.entries(PQ_NETWORKS).filter(([, config]) => config.networks.length > 1).map(([chain, config]) => [chain, config.networks]),
+    [ixiosChain, Object.values(IXIOS_NETWORKS)]];
+  for (const [chain, choices] of offers) {
+    const block = document.createElement('div'), label = document.createElement('label'), select = document.createElement('select');
+    block.className = 'auto-lock'; label.textContent = `${networkFor(chain).name} network`; label.htmlFor = select.id = `network-${chain}`;
+    select.replaceChildren(...choices.map(choice => new Option(choice.label, choice.id)));
+    select.onchange = () => chooseNetwork(chain, select.value);
+    networkChoices.set(chain, select); block.append(label, select); lists.append(block);
+  }
+  $('rpc-settings').before(lists);
+  syncNetworkChoices();
+}
+buildNetworkSettings();
+
 // ── wallet pages (0.1.75) ───────────────────────────────────────────────
 // The open wallet shows its own view (#wallet-home: Portfolio and Send /
 // Receive) OR one of its pages (operator, 2026-10-08: everything else is a
@@ -2404,7 +2399,7 @@ $('chain').onchange = selectChain;
 const walletHome = $('wallet-home'), walletContainer = walletHome.parentElement;
 walletContainer.classList.add('wallet-workspace');
 const rail = document.querySelector('.wallet-navigation');
-const context = document.querySelector('.transfer-actions'); context.append(environmentDisclosure);
+const context = document.querySelector('.transfer-actions'); context.append(pqStatus, pqRecoveryNote);
 const networkDisclosure = document.createElement('details'); networkDisclosure.id = 'wallet-network'; networkDisclosure.className = 'network-disclosure';
 const networkSummary = document.createElement('summary');
 networkSummary.innerHTML = 'Network<span class="network-summary-selection"><span class="selected-network-name"></span> · <span class="selected-network-stage"></span></span>';
@@ -2480,6 +2475,7 @@ function showWalletPage(name, { focus = true } = {}) {
   const previous = shownPage;
   if (!previous && walletViewShown()) walletScroll = scrollY;
   shownPage = next;
+  if (next === 'settings') syncNetworkChoices();
   // Leaving Device & settings removes the shown recovery words (the extension's rule).
   if (previous === 'settings' && next !== 'settings') clearReveal();
   if (next === 'send') $('send-title').parentElement.after(networkDisclosure);

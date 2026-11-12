@@ -28,12 +28,13 @@ import { BALANCES_KEY } from '../src/vault.js';
 // Second part (Ixios test network, plan docs/plans/approved/2026-11-12-ixios-testnet.md 9.4), run after the part
 // above on fresh browser contexts, once on this web build and once on a Connect build (vite.connect.config.js, built
 // into its own temporary directory and previewed with --outDir on port 4194, --strictPort, so a busy port fails):
-// the "Network environment" chooser offers Mainnet and Testnet for Ixios and starts on Mainnet; choosing Testnet
+// the Ixios list in Device & settings (#network-ixios; the wallet screen has no chooser and only shows the network) offers Mainnet and Testnet and starts on Mainnet; choosing Testnet
 // makes only ixios_ calls to nx-rpc.ixoflow.io (block 1's parentHash = the test genesis, then ixios_getBalance for
 // the same checksummed address), shows the stage "Testnet", keeps the Ixios note, keeps the send fields hidden and
 // makes no call to the main node; a wrong genesis (Ethereum's, and the main Ixios genesis) makes no balance call;
 // back to Mainnet gives today's eth_ calls and no test call; choosing Testnet, selecting another chain (Ethereum) and
-// then Ixios again shows Mainnet (chooser and stage) with only eth_ calls to the main node; a test read held in flight at
+// then Ixios again still shows Testnet (the settings list and the stage; selecting a chain no longer resets its network, only a new opening
+// starts on Mainnet) with no call to the main node; a test read held in flight at
 // the test node while the page switches back to Mainnet leaves no test value in the Ixios row once released (the page
 // aborts that request; the check cannot see a late write that never reaches the row); with a SAVED wallet (the password flow of
 // test/browser-smoke.js), a balance read on Testnet before locking is not shown after unlocking, not even as
@@ -594,7 +595,7 @@ try {
   const webUrl = servers[0].url;
   await siteChecks(webUrl, false);
   await siteChecks(await serveConnect(buildConnect(), 4194), true);
-  console.log('Ixios test network browser checks passed on the web build and on the Connect build: the Network environment chooser offers Mainnet and Testnet and starts on Mainnet; Testnet makes only ixios_ calls to nx-rpc.ixoflow.io after the test genesis check, shows the stage "Testnet" and the unchanged note with the send fields hidden, makes no balance call after a wrong genesis and no call to the main node; back to Mainnet gives the eth_ calls and none to the test node; a saved wallet locked after a Testnet read shows no Testnet balance (and no "Last read") when reopened, and reopens on Mainnet.');
+  console.log('Ixios test network browser checks passed on the web build and on the Connect build: the Ixios list in Device & settings offers Mainnet and Testnet and starts on Mainnet; Testnet makes only ixios_ calls to nx-rpc.ixoflow.io after the test genesis check, shows the stage "Testnet" and the unchanged note with the send fields hidden, makes no balance call after a wrong genesis and no call to the main node; back to Mainnet gives the eth_ calls and none to the test node; a saved wallet locked after a Testnet read shows no Testnet balance (and no "Last read") when reopened, and reopens on Mainnet.');
   console.log('Ixios browser checks passed: the build lists Ixios in the network selector, network badges and coin list (IXIOS row: no row buttons, receive only through the rail, balance read like CPUNK after a genesis-block identity check, outside the USD total; a wrong genesis makes no balance read and keeps only the amount read earlier from the right network, marked "Last read"); selecting it shows the checksummed receive address (its QR decodes to exactly that address; lock clears the QR), hides the send fields and shows the Ixios note while Cellframe keeps its own; Ixios requests go only to the configured RPC; lock clears it; loads only the keygen module (?ixios). The build ships neither mldsa87-sign.wasm nor Ixios markup; no unmocked external requests or storage.');
 } finally {
   await browser?.close();
