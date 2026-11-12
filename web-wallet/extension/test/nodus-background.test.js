@@ -756,3 +756,119 @@ test('Nodus connection rejection preserves locally unlocked PQ receive and recor
   assert.ok(background.walletKeys.getPqAddresses().soqucoin.mainnet.startsWith('sq1p'));
   assert.equal(background.nodus.getState().state,'connecting');
 });
+
+// ---- Confirmed sends the account history lists are marked listed and not kept (src/activity-storage.js
+// chainListsHistory / confirmedOnChainList / sentRowsToShow; web wallet src/app.js:559, 660-663) ----
+// Fixtures: in-memory module and storage, nothing is left behind. The tracker's first pass runs at unlock
+// (watchActivity starts with tick()), so no timer is advanced except where a test says so.
+const pageAt = height => ({ enabled: true, from_height: '1', entries: [{ h: height, i: '0', q: '0', kind: 'spend_in',
+  amount: '100000000', token: NODUS_TOKEN_ID, fee: '0', peer: recipient, wire: '', ts: '1' }] });
+const settle = async (rounds = 30) => { for (let i = 0; i < rounds; i++) await new Promise(resolve => setImmediate(resolve)); };
+async function until(condition, what) {
+  const deadline = performance.now() + 2000;
+  while (!(await condition())) { assert.ok(performance.now() < deadline, `never happened: ${what}`); await new Promise(resolve => setImmediate(resolve)); }
+}
+const savedHashes = async (values, id, key, addresses) => (await parseActivity(values[ACTIVITY_KEY], id, addresses, key)).map(row => row.hash).sort();
+
+// Proves: a send the tracker confirms, whose block the account history lists, causes exactly one account-history read,
+// the saved activity then no longer holds it, and after lock and unlock the tracker scans nothing for it.
+// Could falsely pass if the saved file were empty for another reason: the row is asserted present before the unlock.
+test('a confirmed send the account history lists is read once, dropped from the saved activity and not scanned after unlock', async t => {
+  let reads = 0;
+  const { background, values, calls } = await setup(t, {
+    async scanConfirm() { calls.push(['scanConfirm']); return { found: true, tip: '11', height: '11' }; },
+    async addrHistory() { reads++; return pageAt('11'); },
+  });
+  const { id, key } = await saveActivity(values, [savedRow()]);
+  await unlockConnected(background);
+  const addresses = { ...background.walletKeys.getAddresses() };
+  await until(async () => (await savedHashes(values, id, key, addresses)).length === 0, 'the listed row leaves the saved activity');
+  await settle();
+  assert.equal(reads, 1, 'one account-history read follows the confirmation');
+  assert.equal(background.nodus.getLocalHistory()[0].status, 'confirmed');
+  await background.lock();
+  const scans = calls.filter(([op]) => op === 'scanConfirm').length;
+  await unlockConnected(background); await settle();
+  assert.equal(calls.filter(([op]) => op === 'scanConfirm').length, scans, 'nothing left to scan after unlock');
+});
+
+// Proves: viewing the history (getHistory) marks a confirmed row the page lists and rewrites the saved activity without it.
+// The tracker's own read is made to fail first, so only getHistory can drop the row; could falsely pass if that first
+// read were not the failing one, which the call counter asserts.
+test('getHistory drops a confirmed row the page lists from the saved activity', async t => {
+  let reads = 0;
+  const { background, values } = await setup(t, {
+    async scanConfirm() { return { found: true, tip: '11', height: '11' }; },
+    async addrHistory() { if (++reads === 1) throw new Error('fixture history unavailable'); return pageAt('11'); },
+  });
+  const { id, key } = await saveActivity(values, [savedRow()]);
+  await unlockConnected(background);
+  const addresses = { ...background.walletKeys.getAddresses() };
+  await until(() => reads === 1, 'the tracker read failed once');
+  await settle();
+  assert.deepEqual(await savedHashes(values, id, key, addresses), [savedRow().hash], 'a failed read keeps the row');
+  const history = await background.nodus.getHistory();
+  assert.equal(history.local.length, 0);
+  assert.deepEqual(await savedHashes(values, id, key, addresses), []);
+});
+
+// Proves: a confirmed row the page does not list stays saved and is scanned again after lock and unlock.
+// Could falsely pass if the page did list it; the page here holds another block (9, the row is in 11).
+test('a confirmed row the page does not list stays saved and is scanned again after unlock', async t => {
+  const { background, values, calls } = await setup(t, {
+    async scanConfirm() { calls.push(['scanConfirm']); return { found: true, tip: '11', height: '11' }; },
+    async addrHistory() { return pageAt('9'); },
+  });
+  const { id, key } = await saveActivity(values, [savedRow()]);
+  await unlockConnected(background);
+  const addresses = { ...background.walletKeys.getAddresses() };
+  await until(() => calls.some(([op]) => op === 'history' || op === 'scanConfirm'), 'the tracker ran');
+  await settle();
+  assert.equal(background.nodus.getLocalHistory()[0].status, 'confirmed');
+  assert.deepEqual(await savedHashes(values, id, key, addresses), [savedRow().hash]);
+  await background.lock();
+  const scans = calls.filter(([op]) => op === 'scanConfirm').length;
+  await unlockConnected(background);
+  await until(() => calls.filter(([op]) => op === 'scanConfirm').length > scans, 'the row is verified again');
+});
+
+// Proves: three rows confirmed in one tracker pass cause one account-history read, not three, and all three leave the
+// saved activity. Could falsely pass if no row were confirmed; the saved file is asserted empty afterwards.
+test('several rows confirmed in one tracker pass cause one account-history read', async t => {
+  let reads = 0;
+  const { background, values } = await setup(t, {
+    async scanConfirm() { return { found: true, tip: '11', height: '11' }; },
+    async addrHistory() { reads++; return pageAt('11'); },
+  });
+  const rows = ['01', '02', '03'].map(prefix => savedRow({ hash: prefix.repeat(64) }));
+  const { id, key } = await saveActivity(values, rows);
+  await unlockConnected(background);
+  const addresses = { ...background.walletKeys.getAddresses() };
+  await until(async () => (await savedHashes(values, id, key, addresses)).length === 0, 'all three rows leave the saved activity');
+  await settle();
+  assert.equal(reads, 1);
+});
+
+// Proves: a rejected history read leaves the rows saved and the tracker running (the second row, still waiting in the
+// first pass, is confirmed by the next 12 s tick, which tries the read again). The 12 s timer is the existing mocked
+// one. Could falsely pass if the tracker had stopped and the second row never confirmed; that is asserted.
+test('a rejected account-history read keeps the rows saved and the tracker running', { timeout: 10000 }, async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let reads = 0, second = false;
+  const first = savedRow({ hash: '01'.repeat(64) }), later = savedRow({ hash: '02'.repeat(64) });
+  const { background, values } = await setup(t, {
+    async scanConfirm({ intentId }) { return intentId === later.hash && !second ? { found: false, tip: '10' } : { found: true, tip: '11', height: '11' }; },
+    async addrHistory() { reads++; throw new Error('fixture history unavailable'); },
+  });
+  const { id, key } = await saveActivity(values, [first, later]);
+  await unlockConnected(background);
+  const addresses = { ...background.walletKeys.getAddresses() };
+  await until(() => reads === 1, 'the first read was tried');
+  await settle();
+  assert.equal(background.nodus.getState().activityError, '', 'no error note for the unrequested read');
+  assert.deepEqual(await savedHashes(values, id, key, addresses), [first.hash, later.hash]);
+  second = true; t.mock.timers.tick(12000);
+  await until(() => reads === 2, 'the next confirmation tries again');
+  assert.deepEqual(background.nodus.getLocalHistory().map(row => row.status), ['confirmed', 'confirmed']);
+  assert.deepEqual(await savedHashes(values, id, key, addresses), [first.hash, later.hash]);
+});
