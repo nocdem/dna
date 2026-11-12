@@ -179,6 +179,7 @@ typedef struct {
     int fail_all, fail_logs, fail_tx, fail_receipts, fail_blocks;
     uint64_t tip_override;      /* 0 = the chain's tip                         */
     int calls;
+    int asked[64];              /* asked[n] != 0: get_logs was called for block n (W26) */
 } sp_t;
 
 static const uint8_t USDT_B = 0xAA, FOUND_B = 0xF0, OTHER_TOKEN_B = 0xBB,
@@ -264,6 +265,7 @@ static int sp_get_logs(void *ctx, uint64_t blk, const uint8_t *contract,
                        const uint8_t *topic0, const uint8_t *to,
                        amm_eth_log_t *out, int cap, int *n, uint64_t d) {
     (void)d; (void)contract; (void)topic0; (void)to; sp_t *s = ctx; s->calls++;
+    if (blk < 64) s->asked[blk]++;
     if (s->fail_all || s->fail_logs) return AMM_ETH_ERR;
     int k = 0;
     /* the stub does NOT filter: the watcher must not trust a provider's filter */
@@ -1349,6 +1351,50 @@ static void w25_window_by_value(void) {
     }
 }
 
+/* W26  only the providers that returned the quorum header of block h are asked
+ * for the logs of block h (live evidence 2026-11-12: a provider without block h
+ * answered every eth_getLogs with an error, one call in three wasted).
+ * PROVES: with three providers and quorum 2, (a) a provider that has NO header
+ * at height 10 and (b) a provider that returns a DIFFERENT header at heights
+ * 10..13 are never asked get_logs for those heights (counted per block in the
+ * stub), the two agreeing providers are asked, the control block 9 asks all
+ * three, and the payment at block 10 still counts (quorum unchanged).
+ * FLAGS: default build. LEAVES BEHIND: the usual /tmp journal of this file.
+ * HOW IT CAN FALSELY PASS: the counter is the stub's own get_logs entry, so a
+ * watcher that fetched the logs through another call (get_tx, get_receipt)
+ * would not be seen; the heights checked are the ones where the stub's headers
+ * differ, so it proves nothing about a provider that disagrees only on a later
+ * header. On the unfixed code both providers' counters at those heights are 1,
+ * so the test fails there. */
+static void w26_logs_only_from_quorum_header_providers(void) {
+    printf("W26 get_logs only from the providers that hold the quorum header\n");
+    for (int variant = 0; variant < 2; variant++) {
+        fresh(20);
+        ch_build(&g_chain, 1, 13, 0, 0);
+        g_alt[0] = g_chain; g_alt[1] = g_chain;
+        if (variant == 0) {                              /* no header at 10 */
+            g_alt[2] = g_chain;
+            g_alt[2].b[10].exists = 0;
+        } else {                                         /* another header from 10 */
+            ch_build(&g_alt[2], 1, 13, 10, 1);
+        }
+        ch_pay(&g_alt[0], 0x31, 0, 10, 0x11, 5);
+        ch_pay(&g_alt[1], 0x31, 0, 10, 0x11, 5);
+        for (int i = 0; i < 3; i++) g_sp[i].ch = &g_alt[i];
+        amm_eth_step_t o;
+        step_n(3, &o);
+        const int last = variant == 0 ? 10 : 13;
+        int asked_bad = 0;
+        for (int h = 10; h <= last; h++) asked_bad += g_sp[2].asked[h];
+        CHECK(asked_bad == 0, variant == 0 ? "no header at 10: that provider is not asked for block 10"
+                                           : "another header at 10..13: that provider is not asked for those blocks");
+        CHECK(g_sp[0].asked[10] > 0 && g_sp[1].asked[10] > 0, "  the two agreeing providers are asked for block 10");
+        CHECK(g_sp[2].asked[9] > 0, "  control: the same provider is asked for block 9, where it agrees");
+        char st[16];
+        CHECK(rec_state(0x31, 0, st) == 0, "  the payment still counts through the quorum of two");
+    }
+}
+
 int main(void) {
     printf("test_amm_eth_watch\n");
     snprintf(g_dir, sizeof(g_dir), "/tmp/amm_watch_testXXXXXX");
@@ -1379,6 +1425,7 @@ int main(void) {
     w23_liquidity_depth();
     w24_depth_by_amount();
     w25_window_by_value();
+    w26_logs_only_from_quorum_header_providers();
 
     if (g_w) amm_eth_watch_free(g_w);
     if (g_j) amm_journal_close(g_j);
