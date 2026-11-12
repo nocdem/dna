@@ -107,26 +107,96 @@ test('a non-empty output directory is refused', async () => {
   } finally { await cleanup(d); }
 });
 
-test('the stamped modules still load in Node', async () => {
+// PROVES: every written module except swap.js loads in Node, so every stamped specifier resolves to a written file.
+//   The module names come from the stamp's own output list, not from a fixed list here.
+// FALSE PASS: swap.js is not loaded (it touches the DOM on import), so its own imports are covered only by the
+//   textual check in the first test. Loading proves resolution in Node, not in a browser.
+test('every written module except swap.js loads in Node', async () => {
   const out = await freshOut();
   try {
-    await stamp(SRC, out);
+    const rows = await stamp(SRC, out);
     // package.json is not part of the output; the module type comes from a file placed by this test only.
     await writeFile(join(out, 'package.json'), '{"type":"module"}');
-    const logic = await import(pathToFileURL(join(out, 'swap-logic.js')).href);
-    assert.equal(typeof logic, 'object');
-    const flow = await import(pathToFileURL(join(out, 'flow.js')).href);
-    assert.equal(typeof flow.createSwapFlow, 'function');
+    const mods = rows.map((r) => r.name).filter((n) => n.endsWith('.js') && n !== 'swap.js');
+    assert.ok(mods.length >= 5, 'the page has at least 5 modules besides swap.js');
+    for (const n of mods) {
+      const m = await import(pathToFileURL(join(out, n)).href);
+      assert.equal(typeof m, 'object', n);
+    }
   } finally { await cleanup(dirname(out)); }
 });
 
-test('one changed byte in a leaf changes the leaf and every importer up to index.html', async () => {
+// PROVES: removing every `?v=<12 hex>` from a written file gives exactly the source file's bytes, for every
+//   written file (modules, swap.css, index.html): the stamp changes nothing else.
+// FALSE PASS: a source that itself contained `?v=<12 hex>` would be stripped on both sides only in the output; it
+//   would then differ and fail, not pass. A change that also happens to match the pattern is not possible here.
+test('removing the version queries gives exactly the source bytes of every written file', async () => {
+  const out = await freshOut();
+  try {
+    const rows = await stamp(SRC, out);
+    assert.ok(rows.length >= 9);
+    for (const r of rows) {
+      const written = (await readFile(join(out, r.name))).toString('latin1').replace(/\?v=[0-9a-f]{12}/g, '');
+      assert.ok(Buffer.from(written, 'latin1').equals(await readFile(join(SRC, r.name))), r.name);
+    }
+  } finally { await cleanup(dirname(out)); }
+});
+
+async function snapshot(dir) {
+  const snap = {};
+  for (const n of (await readdir(dir)).sort()) {
+    snap[n] = createHash('sha256').update(await readFile(join(dir, n)).catch(() => 'dir')).digest('hex');
+  }
+  return snap;
+}
+
+// PROVES: stamp() leaves the source directory as it was: every entry has the same sha256 and no entry appears.
+// FALSE PASS: only the top level of the source directory and file contents are compared (test/ is a directory and
+//   is listed by name only); a change to file modes or times is not seen.
+test('the source directory is unchanged by a stamp', async () => {
+  const srcDir = await copySource();
+  const out = await freshOut();
+  try {
+    const before = await snapshot(srcDir);
+    await stamp(srcDir, out);
+    assert.deepEqual(await snapshot(srcDir), before);
+  } finally { await cleanup(srcDir, dirname(out)); }
+});
+
+// PROVES: an output directory equal to the source directory, or inside it, is refused before anything is created,
+//   and the source is unchanged.
+// FALSE PASS: a path reaching the source through a symbolic link is covered by the stamp's realpath step but not
+//   exercised here.
+test('an output directory inside the source directory is refused', async () => {
+  const srcDir = await copySource();
+  try {
+    const before = await snapshot(srcDir);
+    await assert.rejects(() => stamp(srcDir, join(srcDir, 'out')), /inside|equal/i);
+    await assert.rejects(() => stamp(srcDir, srcDir), /inside|equal/i);
+    assert.deepEqual(await snapshot(srcDir), before);
+  } finally { await cleanup(srcDir); }
+});
+
+// PROVES: an output directory whose parent does not exist is refused and nothing is created.
+// FALSE PASS: only a missing parent is tried, not a parent that is a file.
+test('an output directory whose parent does not exist is refused', async () => {
+  const d = await tmp();
+  try {
+    await assert.rejects(() => stamp(SRC, join(d, 'missing', 'out')), /parent/i);
+    assert.deepEqual(await readdir(d), []);
+  } finally { await cleanup(d); }
+});
+
+// PROVES: appending exactly ONE byte (a space) to swap-logic.js changes the version of swap-logic.js and of every
+//   module that imports it, and the swap.js reference in index.html; modules that do not import it keep theirs.
+// FALSE PASS: only the importers of swap-logic.js as read today are listed; a new importer is not checked.
+test('one appended byte in a leaf changes the leaf and every importer up to index.html', async () => {
   const srcDir = await copySource();
   const outA = await freshOut();
   const outB = await freshOut();
   try {
     const a = Object.fromEntries((await stamp(srcDir, outA)).map((r) => [r.name, r.version]));
-    await writeFile(join(srcDir, 'swap-logic.js'), (await readFile(join(srcDir, 'swap-logic.js'))) + '\n// x');
+    await writeFile(join(srcDir, 'swap-logic.js'), Buffer.concat([await readFile(join(srcDir, 'swap-logic.js')), Buffer.from(' ')]));
     const b = Object.fromEntries((await stamp(srcDir, outB)).map((r) => [r.name, r.version]));
     // swap-logic.js is imported by flow.js, bot.js, adapter.js, extension.js and swap.js
     for (const n of ['swap-logic.js', 'flow.js', 'bot.js', 'adapter.js', 'extension.js', 'swap.js']) assert.notEqual(a[n], b[n], n);
