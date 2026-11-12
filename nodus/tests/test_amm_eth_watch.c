@@ -1354,11 +1354,15 @@ static void w25_window_by_value(void) {
 /* W26  only the providers that returned the quorum header of block h are asked
  * for the logs of block h (live evidence 2026-11-12: a provider without block h
  * answered every eth_getLogs with an error, one call in three wasted).
+ * CHANGED 2026-11-12 (Sol recheck 2): the saving for a provider whose header
+ * read FAILED was removed (it changed verdicts against the parent's evidence
+ * set); only a provider with a DIFFERENT header is excluded.
  * PROVES: with three providers and quorum 2, (a) a provider that has NO header
- * at height 10 and (b) a provider that returns a DIFFERENT header at heights
- * 10..13 are never asked get_logs for those heights (counted per block in the
- * stub), the two agreeing providers are asked, the control block 9 asks all
- * three, and the payment at block 10 still counts (quorum unchanged).
+ * at height 10 IS still asked get_logs for block 10 (the parent's evidence set)
+ * and (b) a provider that returns a DIFFERENT header at heights 10..13 is never
+ * asked get_logs for those heights (counted per block in the stub), the two
+ * agreeing providers are asked, the control block 9 asks all three, and the
+ * payment at block 10 still counts.
  * FLAGS: default build. LEAVES BEHIND: the usual /tmp journal of this file.
  * HOW IT CAN FALSELY PASS: the counter is the stub's own get_logs entry, so a
  * watcher that fetched the logs through another call (get_tx, get_receipt)
@@ -1386,8 +1390,10 @@ static void w26_logs_only_from_quorum_header_providers(void) {
         const int last = variant == 0 ? 10 : 13;
         int asked_bad = 0;
         for (int h = 10; h <= last; h++) asked_bad += g_sp[2].asked[h];
-        CHECK(asked_bad == 0, variant == 0 ? "no header at 10: that provider is not asked for block 10"
-                                           : "another header at 10..13: that provider is not asked for those blocks");
+        if (variant == 0)
+            CHECK(asked_bad > 0, "no header at 10: that provider IS asked for block 10 (the parent's evidence)");
+        else
+            CHECK(asked_bad == 0, "another header at 10..13: that provider is not asked for those blocks");
         CHECK(g_sp[0].asked[10] > 0 && g_sp[1].asked[10] > 0, "  the two agreeing providers are asked for block 10");
         CHECK(g_sp[0].asked[9] > 0 && g_sp[1].asked[9] > 0 && g_sp[2].asked[9] > 0,
               "  control: all three providers are asked for block 9, where all agree");
@@ -1402,8 +1408,9 @@ static void w26_logs_only_from_quorum_header_providers(void) {
  * hold the quorum header answered (Sol's case, 2026-11-12).
  * PROVES: (a) A and B hold the header, B's get_logs fails, C's header read
  * fails but its logs are those of the quorum block: C IS asked, two providers
- * answer and the payment counts (the parent's behaviour); (b) the common case,
- * C's header read fails but A and B answer: C is never asked for any block.
+ * answer and the payment counts (the parent's behaviour); (b) CHANGED 2026-11-12
+ * (Sol recheck 2): C's header read fails but A and B answer: C is STILL asked
+ * (no early stop; the parent's evidence set) and the payment counts.
  * HOW IT CAN FALSELY PASS: C's failure is a stub switch for every height
  * (fail_blocks), so it does not prove a per-height mix; the counter is the
  * stub's get_logs entry. On the unfixed b25d56738 watcher (a) fails: C is never
@@ -1429,7 +1436,7 @@ static void w27_failed_header_provider_is_fallback(void) {
     step_n(3, &o);
     int c_asked = 0;
     for (int h = 1; h <= 13; h++) c_asked += g_sp[2].asked[h];
-    CHECK(c_asked == 0, "(b) A and B answer: C, whose header read failed, is never asked");
+    CHECK(c_asked > 0, "(b) A and B answer: C, whose header read failed, is still asked (no early stop)");
     CHECK(g_sp[0].asked[10] > 0 && g_sp[1].asked[10] > 0, "(b) A and B are asked");
     CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep"), "(b) the payment counts");
 }
@@ -1460,6 +1467,35 @@ static void w28_disagreement_asks_failed_header_provider(void) {
     CHECK(rec_state(0x31, 0, st) == 0 && (!strcmp(st, "seen") || !strcmp(st, "deep")),
           "the payment is counted in that step (A and C agree), not left a candidate");
     CHECK(g_sp[2].asked[10] > 0, "C was asked for block 10 because A and B disagreed");
+}
+
+/* W29  no early stop: a provider whose header read failed is asked even when
+ * the quorum-header providers all answered identically (Sol recheck 2,
+ * 2026-11-12: skipping it changed verdicts against the parent's evidence set).
+ * PROVES: quorum 2; A and B return the quorum header and EMPTY lists, C's header
+ * read fails but C lists a payment in block 10: C is asked, and its below-quorum
+ * listing is kept as a candidate (the parent's verdict; with C skipped the
+ * payment is not recorded at all, and for a moved transaction the same skip
+ * turns find_tx_record's "unknown" into "gone").
+ * HOW IT CAN FALSELY PASS: this is the eval_block form of Sol's counterexample
+ * (a provider-only log), not the moved-transaction form through find_tx_record,
+ * which needs a reorganisation fixture; both depend on the same gather_logs rule.
+ * On f5a5f74b8 the first pass is unanimous (two empty lists), C is skipped, no
+ * candidate is stored and the checks fail. */
+static void w29_no_early_stop(void) {
+    printf("W29 no early stop: the failed-header provider is asked when A and B agree on empty\n");
+    fresh(20);
+    ch_build(&g_chain, 1, 13, 0, 0);
+    g_alt[0] = g_chain; g_alt[1] = g_chain; g_alt[2] = g_chain;
+    ch_pay(&g_alt[2], 0x31, 0, 10, 0x11, 5);          /* only C lists the payment */
+    for (int i = 0; i < 3; i++) g_sp[i].ch = &g_alt[i];
+    g_sp[2].fail_blocks = 1;                          /* C's header read fails    */
+    amm_eth_step_t o;
+    step(&o);
+    char st[16];
+    CHECK(g_sp[2].asked[10] > 0, "C is asked for block 10 although A and B answered");
+    CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "candidate"),
+          "C's below-quorum listing is kept as a candidate (the parent's verdict)");
 }
 
 int main(void) {
@@ -1495,6 +1531,7 @@ int main(void) {
     w26_logs_only_from_quorum_header_providers();
     w27_failed_header_provider_is_fallback();
     w28_disagreement_asks_failed_header_provider();
+    w29_no_early_stop();
 
     if (g_w) amm_eth_watch_free(g_w);
     if (g_j) amm_journal_close(g_j);
