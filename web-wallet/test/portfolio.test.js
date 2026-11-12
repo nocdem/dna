@@ -363,3 +363,32 @@ test('Solana Testnet and Devnet have different identities and do not share kept 
   networks.solana = devnet; // Devnet selected, its read held
   assert.deepEqual(store.visible({ solana: 'sol' }), {}); assert.deepEqual(store.out(), {});
 });
+
+// A failed balance read leaves one line in the session log (the log users send us), so a "connection error" on a row can be
+// traced. Proves, on the unit that decides it (createReadFailureNotes, driven by portfolio-view.js readChainBalances) with a real
+// session log (its scrubbing included): the first failure of a chain on a network writes exactly one 'wallet' error line with the
+// chain's name, the network's label and balanceErrorDetail's fixed label; the same failure again writes nothing (automatic
+// refreshes cannot fill the 500-line ring); a changed label, a changed network, or a success in between writes again; no line
+// holds the address or the endpoint (neither is passed in, and a network with a test endpoint still gives only its label).
+// Could falsely pass: the wiring in readChainBalances (one call in the catch, one after a successful read) is not run here,
+// because createPortfolio needs a browser DOM; test/browser-ixios.js and test/browser-portfolio.js drive the page.
+test('a failed balance read writes one session-log line per chain, network and label, and none twice', async () => {
+  const { createReadFailureNotes, networkLabelOf } = await import('../src/portfolio-view.js');
+  const { createSessionLog } = await import('../src/session-log.js');
+  const log = createSessionLog(), notes = createReadFailureNotes(log);
+  const address = '0x' + '11'.repeat(20), endpoint = 'https://nx-rpc.ixoflow.io';
+  const testnet = { name: 'Ixios', testnet: true, networkId: 'testnet', endpoint }, mainnet = { name: 'Ixios', endpoint: 'https://ixios-rpc.innova.limited' };
+  assert.equal(networkLabelOf(mainnet), 'Mainnet'); assert.equal(networkLabelOf(testnet), 'Testnet');
+  assert.equal(networkLabelOf({ testnet: true, networkId: 'devnet' }), 'Devnet'); assert.equal(networkLabelOf({ stage: 'Sepolia', testnet: true }), 'Sepolia');
+  const unavailable = balanceErrorDetail(new Error('RPC unavailable. Check the HTTPS endpoint, browser CORS access and connection.'));
+  assert.equal(unavailable, 'Connection unavailable');
+  const lines = () => log.entries().filter(line => line.category === 'wallet' && line.error);
+  notes.failed('ixios', testnet, unavailable);
+  assert.equal(lines().length, 1); assert.equal(lines()[0].text, 'Ixios Testnet: balance read failed: Connection unavailable');
+  notes.failed('ixios', testnet, unavailable); assert.equal(lines().length, 1, 'the same failure again writes nothing');
+  notes.failed('ixios', testnet, 'HTTP 403'); assert.equal(lines().length, 2, 'a changed label writes');
+  notes.failed('ixios', mainnet, 'HTTP 403'); assert.equal(lines().length, 3, 'the same label on another network writes');
+  notes.failed('ethereum', { name: 'Ethereum' }, 'HTTP 403'); assert.equal(lines().length, 4, 'another chain writes');
+  notes.succeeded('ixios'); notes.failed('ixios', mainnet, 'HTTP 403'); assert.equal(lines().length, 5, 'a failure after a success writes again');
+  for (const line of log.entries()) { assert.ok(!line.text.includes(address) && !line.text.includes('ixoflow') && !line.text.includes('innova') && !line.text.includes('https')); }
+});
