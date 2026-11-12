@@ -869,6 +869,35 @@ describe('mounted extension screens follow the web-wallet layout and preserve pr
   for (const [kind, width, height] of [['popup', 400, 600], ['fullscreen', 1100, 900], ['fullscreen', 360, 900], ['notification', 400, 620], ['notification', 360, 620]]) {
     test(`${kind} ${width}px: layout, price and approval state`, { timeout: 120_000 }, () => viewportPass(kind, width, height));
   }
+  // Proves a wallet page opened on `?view=connect` (what a message notification opens) starts on Connect: the Connect button of
+  // the bottom bar is current and the Connect screen visible, both for an unlocked page and, after the unlock form, for a
+  // locked one. The unlock form is asserted before unlocking, so a fixture that is already unlocked cannot pass the second
+  // half. A page without the query keeps the Wallet button current (the viewport passes above). The fixture is the real
+  // mounted page with a fake background; it does not prove the notification click itself.
+  test('a page opened with view=connect starts on Connect, also after the unlock', { timeout: 120_000 }, async () => {
+    assert.equal(ready, true, 'the setup hook (Vite server and browser) did not finish');
+    const page = await browser.newPage({ viewport: { width: 1100, height: 900 } });
+    try {
+      page.on('pageerror', error => errors.push(error.message));
+      await page.route('**/*', route => {
+        if (new URL(route.request().url()).origin === origin) return route.continue();
+        blocked.push(route.request().url()); return route.abort('blockedbyclient');
+      });
+      await page.goto(`${origin}/extension/test/fixtures/layout.html?page=fullscreen&stage=home&view=connect`);
+      await page.waitForFunction(() => Boolean(window.layout));
+      await page.locator('#extension-connect').waitFor({ state: 'visible' });
+      assert.equal(await bottomBar(page, 'Connect').getAttribute('aria-current'), 'page');
+      assert.equal(await bottomBar(page, 'Wallet').getAttribute('aria-current'), null);
+      await page.goto(`${origin}/extension/test/fixtures/layout.html?page=fullscreen&stage=unlock&view=connect`);
+      await page.waitForFunction(() => Boolean(window.layout));
+      await page.locator('#unlock-form:visible').waitFor();
+      assert.equal(await page.locator('#extension-bottom-bar').count(), 0, 'locked: no Connect screen yet');
+      await page.getByLabel('Local wallet password', { exact: true }).fill('public-fixture-password');
+      await page.locator('#unlock-wallet').click();
+      await page.locator('#extension-connect').waitFor({ state: 'visible' });
+      assert.equal(await bottomBar(page, 'Connect').getAttribute('aria-current'), 'page');
+    } finally { await page.close(); }
+  });
   test('a whole-chain failure does not strand the page on an approved request', { timeout: 120_000 }, async () => {
     assert.equal(ready, true, 'the setup hook (Vite server and browser) did not finish');
     // A whole-chain failure must not strand the page on an already approved

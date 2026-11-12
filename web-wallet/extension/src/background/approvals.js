@@ -15,15 +15,13 @@ const BLOCKABLE_METHODS = new Set([
 const TEST_ORIGINS = ['http://127.0.0.1:8080', 'http://127.0.0.1:8081', 'http://127.0.0.1:8082',
   'http://localhost:8080', 'http://localhost:8081', 'http://localhost:8082'];
 
-const BADGE_COLOR_APPROVAL = '#0376C9';
-const BADGE_MAX_COUNT = 9;
-export const badgeLabel = (count, maxCount = BADGE_MAX_COUNT) => (count > maxCount ? `${maxCount}+` : String(count));
-
-export function createApprovals({ messenger, runtime, windows, tabs, action, platform, getUiState = () => ({ popupCount: 0, tabIds: new Set() }) }) {
+export function createApprovals({ messenger, runtime, windows, tabs, platform, getUiState = () => ({ popupCount: 0, tabIds: new Set() }) }) {
   // Port: app/scripts/platforms/extension.ts:52-59, 198-199; named platform boundary retained.
   platform ??= {
     openWindow: options => windows.create({ ...options, url: runtime.getURL(options.url) }),
-    focusWindow: id => windows.update(id, { focused: true }),
+    // A minimised window is restored together with the focus (`focused: true` cannot be combined with `minimized`).
+    focusWindow: (id, minimized = false) => windows.update(id, minimized ? { state: 'normal', focused: true } : { focused: true }),
+    drawAttention: id => windows.update(id, { drawAttention: true }),
     updateWindowPosition: (id, left, top) => windows.update(id, { left, top }),
     getAllWindows: () => windows.getAll(),
     getLastFocusedWindow: () => windows.getLastFocused(),
@@ -34,21 +32,30 @@ export function createApprovals({ messenger, runtime, windows, tabs, action, pla
   // Port: app/scripts/lib/notification-manager.ts:70-125, 146-163.
   async function showPopup() {
     const popup = (await platform.getAllWindows()).find(win => win.type === 'popup' && win.id === popupId);
-    if (popup && typeof popup.id === 'number') { debugLog('approvals', 'window-focused', { window: popup.id }); return platform.focusWindow(popup.id); }
-    let left = 0, top = 0;
+    if (popup && typeof popup.id === 'number') {
+      debugLog('approvals', 'window-focused', { window: popup.id });
+      await platform.focusWindow(popup.id, popup.state === 'minimized');
+      await drawAttention(popup.id);
+      return;
+    }
+    let left, top, placedByBrowser = false;
     try {
       const lastFocused = await platform.getLastFocusedWindow();
       top = lastFocused.top ?? 0;
       left = Math.max((lastFocused.left ?? 0) + ((lastFocused.width ?? 0) - 400), 0);
     } catch {
-      // Port: notification-manager.ts:96-102, retaining its screen-coordinate fallback.
-      const { screenX, screenY, outerWidth } = window;
-      top = Math.max(screenY, 0);
-      left = Math.max(screenX + (outerWidth - 400), 0);
+      // Port: notification-manager.ts:96-102, retaining its screen-coordinate fallback where it can run. A worker
+      // has no `window`; then the window is opened without left and top and the browser places it.
+      if (globalThis.window) {
+        const { screenX, screenY, outerWidth } = globalThis.window;
+        top = Math.max(screenY, 0);
+        left = Math.max(screenX + (outerWidth - 400), 0);
+      } else placedByBrowser = true;
     }
-    const size = { url: 'notification.html', type: 'popup', width: 400, height: 620 };
-    let popupWindow, placedByBrowser = false;
-    try { popupWindow = await platform.openWindow({ ...size, left, top }); }
+    // The window is requested focused explicitly; the browser documents no default for it.
+    const size = { url: 'notification.html', type: 'popup', width: 400, height: 620, focused: true };
+    let popupWindow;
+    try { popupWindow = placedByBrowser ? await platform.openWindow(size) : await platform.openWindow({ ...size, left, top }); }
     catch (error) {
       // The browser refuses a position that is not within the visible screen space; without left and top it places
       // the window itself, so the approval still gets a window. A second failure reaches the caller as before.
@@ -61,7 +68,17 @@ export function createApprovals({ messenger, runtime, windows, tabs, action, pla
       await platform.updateWindowPosition(popupWindow.id, left, top);
     }
     popupId = popupWindow.id;
-    debugLog('approvals', 'window-opened', { window: popupId, placed_by_browser: placedByBrowser });
+    debugLog('approvals', 'window-opened', { window: popupId, placed_by_browser: placedByBrowser, focused: popupWindow.focused });
+    await drawAttention(popupId);
+  }
+
+  // Asks the system to draw attention to the approval window: no effect when it already has focus, otherwise the
+  // window is marked until the user focuses it. A refusal is logged and never fails the window opening, so the window
+  // id recorded above stays valid for the next approval and for its removal.
+  async function drawAttention(id) {
+    if (typeof id !== 'number') return;
+    try { await platform.drawAttention(id); }
+    catch (error) { debugLog('approvals', 'draw-attention-failed', errorFields(error)); }
   }
 
   // Port: app/scripts/background.ts:1050-1101; plan §3.2:204-212 removes side-panel/Vivaldi.
@@ -79,6 +96,15 @@ export function createApprovals({ messenger, runtime, windows, tabs, action, pla
     return uiOpening;
   }
 
+  // The user asked to see the approval (a notification click): the same single-flight opening as triggerUi, without its
+  // skips for an open toolbar popup or an active wallet tab. Nothing waiting: nothing opens.
+  function showWindow() {
+    if (pendingCount() === 0) return Promise.resolve();
+    if (uiOpening) return uiOpening;
+    uiOpening = showPopup().finally(() => { uiOpening = null; });
+    return uiOpening;
+  }
+
   // Port: approval-controller 10.0.0 dist/ApprovalController.js:82-115.
   const controller = new ApprovalController({
     messenger: messenger.buildChild({ namespace: 'ApprovalController' }),
@@ -92,17 +118,6 @@ export function createApprovals({ messenger, runtime, windows, tabs, action, pla
       void triggerUi().catch(error => { debugLog('approvals', 'window-open-failed', errorFields(error)); });
     },
   });
-  // The toolbar icon shows how many approvals wait; with none the badge is cleared. A failed badge call never
-  // affects an approval.
-  function updateBadge() {
-    const count = Object.keys(controller.state.pendingApprovals ?? {}).length;
-    try {
-      action?.setBadgeText({ text: count > 0 ? badgeLabel(count) : '' });
-      action?.setBadgeBackgroundColor({ color: BADGE_COLOR_APPROVAL });
-    } catch { /* the badge is only a hint */ }
-  }
-  messenger.subscribe('ApprovalController:stateChange', updateBadge);
-  updateBadge();
   // Debug line for each approval that appears: its id, type and origin only (never its request data, which carries
   // the text, typed fields or payment rows being approved).
   const seen = new Set();
@@ -172,8 +187,8 @@ export function createApprovals({ messenger, runtime, windows, tabs, action, pla
     };
   }
 
-  return { controller, triggerUi, reject, rejectOrigin, createOriginThrottlingMiddleware,
+  return { controller, triggerUi, showWindow, pendingCount, reject, rejectOrigin, createOriginThrottlingMiddleware,
     whenUiSettled: () => uiOpening ?? Promise.resolve(),
     markAutomaticClose: () => { automaticClose = true; },
-    destroy() { windows.onRemoved.removeListener(onRemoved); controller.clearRequests(providerErrors.userRejectedRequest()); messenger.unsubscribe('ApprovalController:stateChange', updateBadge); messenger.unsubscribe('ApprovalController:stateChange', logAdded); controller.destroy(); } };
+    destroy() { windows.onRemoved.removeListener(onRemoved); controller.clearRequests(providerErrors.userRejectedRequest()); messenger.unsubscribe('ApprovalController:stateChange', logAdded); controller.destroy(); } };
 }

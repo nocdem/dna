@@ -32,6 +32,36 @@ approval window) shows the running manifest version, small, in the bottom-right 
 (`extension/src/ui/running-version.js`; operator: "sayfanın en altına köşeye o anki çalışan versiyonu",
 "minnak olarak en alta sağ veya sol köşeye"). It sits above the bottom bar and takes no clicks.
 
+**Toolbar badge, system notifications and the approval window in front (2026-11-12).** Operator:
+"Ekrana pop-up veya yukarıdan uyarı vermek zorundasın", "extansionun usuntde rakam yazicak kac tane
+mesaj var ise. yada odeme var ise yada imiza var ise ona gore bir kirmizi unlem isareti gelicek",
+"Kırmızı ünlem öne geçsin". Approved plan `docs/plans/approved/2026-11-12-extension-notifications.md`.
+- Badge (`extension/src/background/attention.js`): a red "!" while any approval waits (connect,
+  signature, transaction, swap payment, network switch); otherwise the unread message total of the
+  open Connect session (contacts and groups, "99+" above 99) on blue; empty when there is neither.
+  The total is the same number Connect's Chats badge shows (`unreadTotal` in
+  `src/connect/ui/messages.js`); while the wallet is locked no count is shown.
+- System notifications: one "Approval requests are waiting / Open Nodus Connect to review them."
+  notification when an approval starts waiting while none was waiting before; further requests do
+  not show it again until every waiting approval is answered. It names no site, request type or
+  request data (the approval window shows them). A message notification "Nodus Connect — new
+  message / Open Nodus Connect to read it." when the unread total grows after the first message
+  check, at most one per 2 s, with no sender or text. No notification while the toolbar popup is
+  open.
+- Clicks: the approval notification opens or focuses the approval window; the message notification
+  switches an open full-page tab to Connect (controller notification `showConnect`) or opens
+  `home.html?view=connect`, which shows the unlock form first when the wallet is locked and then
+  Connect. A click that wakes a stopped extension worker is buffered by the worker's lazy listener
+  and delivered.
+- Approval window: created with `focused: true`; after it is recorded, and after an existing window
+  is focused (a minimised one is restored), the extension asks the browser for attention
+  (`drawAttention`); a failure there is logged as `approvals draw-attention-failed` and never stops
+  the window. When the last-focused-window lookup fails in the worker (no `window` global), the
+  window opens without a position instead of failing.
+- Known: a site can end its own waiting requests (`wallet_revokePermissions`) and ask again, which
+  starts a new notification each round; today the same loop opens and closes the approval window.
+  No limit is added (it would narrow the approved rule).
+
 A bottom bar with three buttons, Connect, Wallet and Settings, switches the views in
 the same Nodus Connect extension window; the current view is marked, and Connect
 carries an unread-message count while another view is shown (UI pack 2026-11-03,

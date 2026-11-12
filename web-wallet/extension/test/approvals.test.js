@@ -5,31 +5,66 @@ import { JsonRpcEngine } from '@metamask/json-rpc-engine';
 import { providerErrors } from '@metamask/rpc-errors';
 import { ApprovalType } from '@metamask/controller-utils';
 import { createApprovals } from '../src/background/approvals.js';
+import { onDebugLine } from '../../src/debug-log.js';
 
 // Node >=22.14; no flags/network/disk output. Window calls and time are explicit fakes.
 export function approvalFixture() {
-  const created = [], focused = [], positioned = [], removed = new Set(), open = [];
+  // Every window call is also written to `order` ('create', 'focus:<id>', 'state:<id>', 'draw:<id>', 'position:<id>').
+  // `update` records a drawAttention call, a state change (un-minimise) and a plain focus or position call separately,
+  // so the exact `positioned` assertions below stay exact when the attention calls are added.
+  const created = [], focused = [], positioned = [], attention = [], states = [], order = [], removed = new Set(), open = [];
   const windows = {
     onRemoved: { addListener(fn) { removed.add(fn); }, removeListener(fn) { removed.delete(fn); } },
     async getAll() { return open; }, async getLastFocused() { return { left: 20, top: 30, width: 1000 }; },
-    async create(options) { created.push(options); const win = { ...options, id: created.length }; open.push(win); return win; },
-    async update(id, options) { (options.focused ? focused : positioned).push({ id, ...options }); },
+    async create(options) { order.push('create'); created.push(options); const win = { ...options, id: created.length }; open.push(win); return win; },
+    async update(id, options) {
+      if (options.drawAttention) { order.push(`draw:${id}`); attention.push({ id, ...options }); }
+      else if ('state' in options) { order.push(`state:${id}`); states.push({ id, ...options }); }
+      else if (options.focused) { order.push(`focus:${id}`); focused.push({ id, ...options }); }
+      else { order.push(`position:${id}`); positioned.push({ id, ...options }); }
+    },
   };
-  return { windows, created, focused, positioned, removed, open, runtime: { id: 'test-extension', getURL: path => `chrome-extension://test-extension/${path}` } };
+  return { windows, created, focused, positioned, attention, states, order, removed, open, runtime: { id: 'test-extension', getURL: path => `chrome-extension://test-extension/${path}` } };
 }
 
-// Proves the real controller's pending request opens a 400x620 notification and reuses it; a mocked approval controller could hide a missing show hook.
+// Proves the real controller's pending request opens a 400x620 notification explicitly focused (`focused: true`),
+// asks the system to draw attention to it once the window id is recorded, and reuses it: a second approval focuses
+// the same window and asks for attention again, in that order. A mocked approval controller could hide a missing
+// show hook; the order log would falsely pass only if the fixture recorded calls in another order than they happened.
 test('addAndShowApprovalRequest calls triggerUi and focuses the existing window', async () => {
   const fixture = approvalFixture(), messenger = new Messenger({ namespace: 'Background' });
   const approvals = createApprovals({ ...fixture, messenger });
   const pending = approvals.controller.addAndShowApprovalRequest({ id: 'first', origin: 'https://site.example', type: 'wallet_requestPermissions' });
   await approvals.whenUiSettled();
-  assert.deepEqual(fixture.created, [{ url: 'chrome-extension://test-extension/notification.html', type: 'popup', width: 400, height: 620, left: 620, top: 30 }]);
+  assert.deepEqual(fixture.created, [{ url: 'chrome-extension://test-extension/notification.html', type: 'popup', width: 400, height: 620, left: 620, top: 30, focused: true }]);
+  assert.deepEqual(fixture.attention, [{ id: 1, drawAttention: true }]);
+  assert.deepEqual(fixture.order, ['create', 'draw:1']);
   assert.equal(approvals.controller.get('first').origin, 'https://site.example');
   approvals.controller.acceptRequest('first', { approved: true }); assert.deepEqual(await pending, { approved: true });
   const rejected = approvals.controller.addAndShowApprovalRequest({ id: 'second', origin: 'https://site.example', type: 'personal_sign' });
   const check = assert.rejects(rejected, { code: 4001 });
   await approvals.whenUiSettled(); assert.equal(fixture.created.length, 1); assert.equal(fixture.focused[0].id, 1);
+  assert.deepEqual(fixture.focused, [{ id: 1, focused: true }]);
+  assert.deepEqual(fixture.order, ['create', 'draw:1', 'focus:1', 'draw:1']);
+  approvals.reject('second'); await check; approvals.destroy();
+});
+
+// Proves an existing window that the user minimised is brought back (`state: 'normal'` together with `focused: true`,
+// never `focused` alone: Chrome refuses focus with the minimised state) and then asks for attention; a window that is
+// not minimised gets only `{ focused: true }`. A fixture window without a state would hide the minimised branch; the
+// test sets `state: 'minimized'` on the open window and asserts the plain focus call is absent.
+test('a minimised approval window is restored, focused and drawn to attention', async () => {
+  const fixture = approvalFixture(), approvals = createApprovals({ ...fixture, messenger: new Messenger({ namespace: 'Background' }) });
+  const first = approvals.controller.addAndShowApprovalRequest({ id: 'first', origin: 'https://site.example', type: 'wallet_requestPermissions' });
+  await approvals.whenUiSettled(); approvals.controller.acceptRequest('first', true); await first;
+  fixture.open[0].state = 'minimized';
+  const second = approvals.controller.addAndShowApprovalRequest({ id: 'second', origin: 'https://site.example', type: 'personal_sign' });
+  const check = assert.rejects(second, { code: 4001 });
+  await approvals.whenUiSettled();
+  assert.equal(fixture.created.length, 1);
+  assert.deepEqual(fixture.states, [{ id: 1, state: 'normal', focused: true }]);
+  assert.deepEqual(fixture.focused, [], 'the restore call carries the focus, no separate plain focus call');
+  assert.deepEqual(fixture.order, ['create', 'draw:1', 'state:1', 'draw:1']);
   approvals.reject('second'); await check; approvals.destroy();
 });
 
@@ -94,7 +129,7 @@ test('a refused window position is retried once without left and top', async t =
   const approvals = createApprovals({ ...fixture, messenger: new Messenger({ namespace: 'Background' }) });
   await approvals.triggerUi();
   assert.equal(attempts.length, 2); assert.ok('left' in attempts[0] && 'top' in attempts[0]);
-  assert.deepEqual(attempts[1], { url: 'chrome-extension://test-extension/notification.html', type: 'popup', width: 400, height: 620 });
+  assert.deepEqual(attempts[1], { url: 'chrome-extension://test-extension/notification.html', type: 'popup', width: 400, height: 620, focused: true });
   assert.deepEqual(fixture.positioned, []);
   await approvals.triggerUi(); assert.equal(attempts.length, 2); assert.equal(fixture.focused[0].id, 9);
   approvals.destroy();
@@ -118,6 +153,47 @@ test('notification positioning uses the reference screen fallback on lookup fail
   }
 });
 
+// Proves the lookup-failure branch runs in a worker, which has no `window`: with the last-focused lookup rejecting and
+// `globalThis.window` asserted absent, the window is still created, without left and top (the browser places it), and
+// nothing rejects. The test above defines `window` and so covers the retained reference fallback only where it can
+// run; a test that defined `window` here would falsely pass the defect (a ReferenceError in the catch block).
+test('lookup failure without a window global opens the window without left and top', async t => {
+  const fixture = approvalFixture(), approvals = createApprovals({ ...fixture, messenger: new Messenger({ namespace: 'Background' }) });
+  assert.equal(typeof globalThis.window, 'undefined', 'this test needs a worker-like global scope');
+  t.mock.method(fixture.windows, 'getLastFocused', async () => { throw new Error('fixture lookup failure'); });
+  await approvals.triggerUi();
+  assert.deepEqual(fixture.created, [{ url: 'chrome-extension://test-extension/notification.html', type: 'popup', width: 400, height: 620, focused: true }]);
+  assert.deepEqual(fixture.positioned, [], 'a browser-placed window is not moved');
+  approvals.destroy();
+});
+
+// Proves the attention request cannot undo the window record: `update` rejects only a call with `drawAttention` (a
+// reject-everything fake would also fail the position correction and prove less). showPopup still resolves, the window
+// id was recorded before the call so the next approval focuses window 1 instead of opening a second one, and a removal
+// of window 1 rejects the waiting approvals as before. The debug line `approvals draw-attention-failed` names the
+// failure. It could falsely pass if the id were recorded after the call: then the second approval would create window 2.
+test('a failing drawAttention call leaves the window recorded and never rejects showPopup', async () => {
+  const fixture = approvalFixture(), lines = [], stop = onDebugLine(line => lines.push(`${line.area} ${line.event}`));
+  const plainUpdate = fixture.windows.update;
+  fixture.windows.update = async (id, options) => { if (options.drawAttention) throw new Error('fixture attention refusal'); return plainUpdate(id, options); };
+  const approvals = createApprovals({ ...fixture, messenger: new Messenger({ namespace: 'Background' }) });
+  try {
+    const outcomes = [];
+    for (const [n, id] of ['first', 'second'].entries()) {
+      outcomes.push(approvals.controller.addAndShowApprovalRequest({ id, origin: `https://site${n}.example`, type: 'personal_sign' })
+        .then(() => 'accepted', error => error.code));
+      await approvals.whenUiSettled();
+    }
+    await idle();
+    assert.equal(fixture.created.length, 1, 'the second approval focused window 1 and did not open a second window');
+    assert.equal(fixture.focused[0]?.id, 1);
+    assert.ok(lines.includes('approvals draw-attention-failed'), lines.join(', '));
+    assert.equal(lines.includes('approvals window-open-failed'), false, 'showPopup did not reject');
+    closeWindow(fixture, 1);
+    assert.deepEqual(await Promise.all(outcomes), [4001, 4001]);
+  } finally { stop(); approvals.destroy(); }
+});
+
 // Proves reference rejection thresholds and origin/method isolation; testing only three rejections would miss whether the fourth request was actually blocked.
 test('three prompt rejections throttle the same origin for one minute', async t => {
   t.mock.method(Date, 'now', () => 1_000_000);
@@ -135,36 +211,24 @@ test('three prompt rejections throttle the same origin for one minute', async t 
   engine.destroy(); approvals.destroy();
 });
 
-// Proves the toolbar badge follows the real controller's pending approvals: cleared at start and with none pending,
-// the count while approvals wait, "<max>+" past the maximum (9), always with the approval colour. Can falsely pass
-// if the fake action recorded calls but the assertions read a stale entry; each check reads the latest call.
-test('toolbar badge shows the number of pending approvals and clears with none', async () => {
-  const texts = [], colors = [], action = { setBadgeText: ({ text }) => texts.push(text), setBadgeBackgroundColor: ({ color }) => colors.push(color) };
-  const approvals = createApprovals({ ...approvalFixture(), action, messenger: new Messenger({ namespace: 'Background' }) });
-  assert.equal(texts.at(-1), '');
-  const waiting = [];
-  for (let n = 1; n <= 11; n++) {
-    const pending = approvals.controller.addAndShowApprovalRequest({ id: `a${n}`, origin: `https://site${n}.example`, type: 'personal_sign' });
-    pending.catch(() => {}); waiting.push(pending);
-    assert.equal(texts.at(-1), n > 9 ? '9+' : String(n));
-  }
-  assert.equal(colors.at(-1), '#0376C9');
-  approvals.reject('a11'); assert.equal(texts.at(-1), '9+');
-  for (let n = 10; n >= 1; n--) approvals.reject(`a${n}`);
-  assert.equal(texts.at(-1), '');
-  await Promise.allSettled(waiting); await approvals.whenUiSettled(); approvals.destroy();
-});
-
-// Proves a failing badge API cannot break an approval, and that destroy() clears the badge and stops updating.
-test('toolbar badge failures do not affect approvals and destroy clears the badge', async () => {
-  const texts = [];
-  const broken = createApprovals({ ...approvalFixture(), action: { setBadgeText() { throw new Error('no badge'); }, setBadgeBackgroundColor() {} }, messenger: new Messenger({ namespace: 'Background' }) });
-  const pending = broken.controller.addAndShowApprovalRequest({ id: 'b', origin: 'https://site.example', type: 'personal_sign' });
-  await broken.whenUiSettled(); broken.controller.acceptRequest('b', true); assert.equal(await pending, true); broken.destroy();
-  const approvals = createApprovals({ ...approvalFixture(), action: { setBadgeText: ({ text }) => texts.push(text), setBadgeBackgroundColor() {} }, messenger: new Messenger({ namespace: 'Background' }) });
-  const waiting = approvals.controller.addAndShowApprovalRequest({ id: 'c', origin: 'https://site.example', type: 'personal_sign' }); waiting.catch(() => {});
-  await approvals.whenUiSettled(); assert.equal(texts.at(-1), '1');
-  approvals.destroy(); assert.equal(texts.at(-1), '');
+// The toolbar badge tests moved to attention.test.js: the badge is no longer written by this module.
+// Proves the module exposes what the attention module needs: the number of waiting approvals, and showWindow, which
+// opens (or focuses) the approval window for a waiting approval WITHOUT triggerUi's skips for an open toolbar popup
+// or an active wallet tab (the user asked to see it), and does nothing when no approval waits. Could falsely pass if
+// the skip fixture were not active; the same state is first shown to make triggerUi skip (no window), then showWindow
+// is shown to open one.
+test('pendingCount and showWindow serve the approval notification click', async () => {
+  const fixture = approvalFixture(), ui = { popupCount: 1, tabIds: new Set() };
+  const approvals = createApprovals({ ...fixture, messenger: new Messenger({ namespace: 'Background' }), getUiState: () => ui });
+  assert.equal(approvals.pendingCount(), 0);
+  await approvals.showWindow(); assert.equal(fixture.created.length, 0, 'nothing waits: no window');
+  const pending = approvals.controller.add({ id: 'first', origin: 'https://site.example', type: 'personal_sign' }); pending.catch(() => {});
+  assert.equal(approvals.pendingCount(), 1);
+  await approvals.triggerUi(); assert.equal(fixture.created.length, 0, 'triggerUi skips while a toolbar popup is open');
+  await approvals.showWindow(); assert.equal(fixture.created.length, 1, 'showWindow does not skip');
+  await approvals.showWindow(); assert.equal(fixture.created.length, 1, 'a second click focuses the same window');
+  assert.equal(fixture.focused.at(-1).id, 1);
+  approvals.reject('first'); await pending.catch(() => {}); approvals.destroy();
 });
 
 // Window removal as the browser reports it: the window leaves the list, then every onRemoved listener hears its id.

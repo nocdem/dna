@@ -1324,6 +1324,12 @@ function unreadCount(fp) {
   const seen = lastRead.get(fp) ?? -1n;
   return messages.filter(m => m.fp === fp && m.dir === 'in' && !isControl(m) && BigInt(m.seq) > seen).length;
 }
+// The unread total: contacts' unread messages plus the groups' unread. Used by render() and, through unread(), by the
+// extension worker, which has no page and therefore never reaches the sum in render().
+function unreadTotal() {
+  if (!isOpen()) return 0;
+  return state.contacts.reduce((sum, c) => sum + unreadCount(c.fp), 0) + (groups?.list() ?? []).reduce((sum, g) => sum + g.unread, 0);
+}
 // The newest chat record of a contact that is not hidden on this device;
 // `gone` when its sender deleted it (web 0.1.89, actions.js deletions).
 function lastMessage(fp) {
@@ -1990,7 +1996,7 @@ function render({ scroll = false } = {}) {
   // The group conversation is drawn first, so its read mark counts below.
   if (groupOpen) groupsView.renderView({ scroll });
   groupsView.view.hidden = !groupOpen;
-  const unread = open ? state.contacts.reduce((sum, c) => sum + unreadCount(c.fp), 0) + groupsView.unreadTotal() : 0;
+  const unread = unreadTotal();
   const waiting = open ? requests.length : 0;
   renderCounts(unread, waiting);
   renderEmpty(open);
@@ -3390,7 +3396,8 @@ async function action(name, input = {}) {
 }
 return {
   open: openMessages, ready: detail => walletExtension.nodusReady(detail), close: resetMessages,
-  snapshot, action, applySnapshot, mountMessages, closeMessages, resetMessages, openMessages,
+  snapshot, action, applySnapshot, mountMessages,
+  unread: () => ({ count: unreadTotal(), caughtUp: isOpen() && caughtUp }), closeMessages, resetMessages, openMessages,
   messagesNavigate, vaultHost, walletExtension, profileNeedsMlkem, initials, ownIdText,
   PAYLOAD_TEXT_MAX, OWN_ID_WAITING_TEXT, OWN_ID_CLOSED_TEXT,
   setVisible(value) { visible = !!value; if (visible && ui) render(); },

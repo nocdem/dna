@@ -14,6 +14,7 @@ import { walletHeading } from './presentation.js';
 import { autoLockBarText } from '../../../src/auto-lock.js';
 import { WALLET_MARKUP, PRIVACY_NOTICE, PRIVACY_POLICY_URL } from './wallet-markup.js';
 import { sessionLog, logPageErrors } from '../../../src/session-log.js';
+import { startView } from './start-view.js';
 
 // Approved plan §3.2/§3.6/§7: all three trusted pages use the same web-wallet UI modules.
 export async function mountWalletPage({ document = globalThis.document, window = globalThis.window, client = connectTrusted(), renderOpenWallet, renderEntry, closeWhenNothingPending } = {}) {
@@ -24,6 +25,9 @@ export async function mountWalletPage({ document = globalThis.document, window =
   let page = 'home', receiveNetwork, fields, revealed, busy = false, disposed = false, revision = 0, closeAsked = false;
   let sendChain, sendReview, stopSendReview;
   let portfolioText, openScreen;
+  // One-shot: the next open-wallet mount starts on Connect (the address asked for it, or a notification click did while
+  // the wallet was locked). A later lock and unlock mounts the wallet as before.
+  let startConnect = startView(window?.location?.search) === 'connect';
   function updatePortfolio() {
     if (openScreen) { openScreen.update(); return; }
     if (!portfolioText) return;
@@ -262,7 +266,8 @@ export async function mountWalletPage({ document = globalThis.document, window =
       if (openScreen) { openScreen.update(); return; }
       fields?.clear(); fields = undefined; revealed?.replaceChildren(); revealed = undefined;
       root.replaceChildren(); navigation.replaceChildren();
-      openScreen = renderOpenWallet({ document, window, root, status, ui, run, loadBalances,
+      const startOnConnect = startConnect; startConnect = false;
+      openScreen = renderOpenWallet({ document, window, root, status, ui, run, loadBalances, startConnect: startOnConnect,
         lock: () => run(async () => { clearSensitive(); sessionLog.clear(); page = 'home'; await ui.lock(); }),
         setAutoLock: minutes => run(async () => { await ui.setAutoLock(minutes); walletDeadline = 0; }),
         clearReveal: () => { revealed?.replaceChildren(); revealed = undefined; entryDeadline = 0; },
@@ -445,6 +450,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
   }, showError);
   const removeNotification = client.onNotification(message => {
     if (message.method === 'connectStateChanged') { openScreen?.refreshConnect?.(); return; }
+    if (message.method === 'showConnect') { if (openScreen) openScreen.showConnect?.(); else startConnect = true; return; }
     if (['messengerSubscription', 'walletStateChanged'].includes(message.method)) void refresh().catch(showError);
   });
   const removeDisconnect = client.onDisconnect(() => { dispose(); root.replaceChildren(); navigation.replaceChildren(); showError(new Error('Wallet background disconnected. Reopen this wallet page.')); });

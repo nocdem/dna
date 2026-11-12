@@ -119,6 +119,19 @@ test('headless session opens locally, syncs contacts/messages/requests, and expo
   noSecrets(state);
 });
 
+// Proves the worker's unread total (the toolbar badge input) from the real session: exactly 1 after the first check,
+// because the fixture day holds one chat message and one group-control message and control messages must not
+// count; a read mark on the peer takes it to 0; a closed session reports { count: 0, caughtUp: false }. The count is
+// asserted as exactly 1 (not "at least"), so a total that counted the control message would fail.
+test('headless session reports its unread total, drops it on read and reports closed after lock', async t => {
+  const { session } = await opened(t);
+  assert.deepEqual(session.unread(), { count: 1, caughtUp: true });
+  await session.action('markRead', { fp: PEER });
+  assert.deepEqual(session.unread(), { count: 0, caughtUp: true });
+  session.close();
+  assert.deepEqual(session.unread(), { count: 0, caughtUp: false });
+});
+
 test('headless actions reuse message/reaction/profile and contact operations without DOM', async t => {
   const { session, published, calls, unknown } = await opened(t);
   await session.action('messageSend', { fp: PEER, text: 'A new message' });

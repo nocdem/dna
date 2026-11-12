@@ -202,7 +202,9 @@ test('site connect opens notification, cannot call UI methods, and cancellation 
   const other = port(runtime, 'https://other.example/'), rejected = request(other, 'eth_requestAccounts');
   const denied = await until(() => Object.values(background.approvals.controller.state.pendingApprovals)[0]);
   await background.approvals.whenUiSettled();
-  assert.deepEqual(focused, [{ id: created[0].id, focused: true }]);
+  // Every window update, in order: attention is requested for the new window, then the second approval focuses the existing
+  // window and requests attention again (the fixture records all update calls here, not only focus calls).
+  assert.deepEqual(focused, [{ id: created[0].id, drawAttention: true }, { id: created[0].id, focused: true }, { id: created[0].id, drawAttention: true }]);
   await request(ui, 'rejectPermissionsRequest', [denied.id], 'controller'); assert.equal((await rejected).error.code, 4001);
   remote.disconnect(); other.disconnect(); ui.disconnect();
   await until(() => background.engine.connections.size === 0);

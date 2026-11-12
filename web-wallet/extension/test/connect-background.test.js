@@ -20,6 +20,7 @@ function fixture(options = {}) {
         async open(detail) { s.detail = detail; events.push(`open:${index}`); await options.open?.(s); },
         close() { s.closed = true; events.push(`close:${index}`); options.close?.(s); },
         ready({ client }) { s.readyClients.push(client); },
+        unread() { return options.unread ?? { count: 42, caughtUp: true }; },
         snapshot() { return { phase: 'open', ownFp: s.detail.client.fp, contacts: [], messages: [] }; },
         async action(name, fields) { s.calls.push({ name, fields }); return options.action ? options.action(s, name, fields) : { accepted: true }; },
         walletExtension: { nodusSent(detail) { events.push(detail); } },
@@ -45,6 +46,23 @@ test('one worker session survives UI reads; ready/open for the same client does 
   const before = f.changed;
   f.instances[0].config.onChange();
   assert.equal(f.changed, before, 'Closed session callbacks cannot invalidate the new UI');
+});
+
+// Proves the worker wrapper hands the toolbar badge the open session's own unread value, and the closed value
+// ({ count: 0, caughtUp: false }) before the first open and after a lock. A fake session without `unread` would
+// pass the closed half only; the fixture's session returns a distinctive value (42, then an injected 7), so a wrapper that
+// invented its own number or kept the value after close() fails.
+test('unread() returns the open session value and the closed value otherwise', async () => {
+  const closed = { count: 0, caughtUp: false }, f = fixture();
+  assert.deepEqual(f.connect.unread(), closed, 'before any session');
+  await f.connect.open({ client: { fp: 'first' } });
+  assert.deepEqual(f.connect.unread(), { count: 42, caughtUp: true });
+  f.connect.close();
+  assert.deepEqual(f.connect.unread(), closed, 'after the lock');
+  const g = fixture({ unread: { count: 7, caughtUp: false } });
+  await g.connect.open({ client: { fp: 'second' } });
+  assert.deepEqual(g.connect.unread(), { count: 7, caughtUp: false });
+  g.connect.close();
 });
 
 test('reconnect closes the prior core before opening the next; stale actions and callbacks cannot cross epochs', async () => {

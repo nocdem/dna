@@ -202,7 +202,7 @@ async function pageFixture(t, initialized = true, options = {}) {
   } };
   const page = await mountWalletPage({ document, window, client, ...options });
   t.after(() => { page.dispose(); if (saved) Object.defineProperty(globalThis, 'document', saved); else delete globalThis.document; });
-  return { root, navigation, status, calls, state, page, phrase, clipboardWrites, notify: () => notification?.({ method: 'messengerSubscription' }) };
+  return { root, navigation, status, calls, state, page, phrase, clipboardWrites, notify: (method = 'messengerSubscription') => notification?.({ method }) };
 }
 
 // Proves the data notice (plan docs/plans/2026-11-03-chrome-web-store-plan.md section 2.7) replaces every other screen
@@ -314,6 +314,59 @@ test('an approval arriving while the open-wallet screen is shown replaces it on 
   state.pendingApprovals.request = pending(); notify();
   await settle(() => button(root, 'Connect'));
   assert.ok(button(root, 'Reject')); assert.equal(disposed, 1); assert.match(root.textContent, /site\.example/);
+});
+
+// Fake open-wallet screen: records the options of every mount and the showConnect() calls it receives.
+function openWalletRecorder() {
+  const mounts = [], record = { mounts, shown: 0, disposed: 0 };
+  record.renderOpenWallet = options => {
+    mounts.push({ startConnect: options.startConnect });
+    options.root.replaceChildren(new Node('div'));
+    return { update() {}, dispose() { record.disposed++; }, showConnect() { record.shown++; } };
+  };
+  return record;
+}
+const lockAndUnlock = async (state, page) => {
+  state.isUnlocked = false; await page.refresh();
+  state.isUnlocked = true; await page.refresh();
+};
+
+// Proves the one-shot start-on-Connect flag of the page: a `showConnect` controller notification that arrives while the page is
+// LOCKED (the stopped-worker case: the tab shows the unlock form) makes the next open-wallet mount start on Connect
+// (`startConnect: true`, only after the unlock); a later lock and unlock mounts the wallet as before (`false`). The unlock
+// form is asserted before the notification, so a fixture that never locks cannot pass. A fake open-wallet screen: it does
+// not prove the real Connect screen (ui-layout.test.js does).
+test('showConnect while locked starts the next open-wallet mount on Connect, once', async t => {
+  const screen = openWalletRecorder(), { root, state, notify, page } = await pageFixture(t, true, { renderOpenWallet: screen.renderOpenWallet });
+  assert.deepEqual(screen.mounts, [{ startConnect: false }]);
+  state.isUnlocked = false; await page.refresh(); assert.match(root.textContent, /unlock your wallet/i);
+  notify('showConnect'); for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(screen.mounts.length, 1, 'nothing is mounted while locked');
+  state.isUnlocked = true; await page.refresh();
+  assert.deepEqual(screen.mounts, [{ startConnect: false }, { startConnect: true }]);
+  await lockAndUnlock(state, page);
+  assert.deepEqual(screen.mounts.at(-1), { startConnect: false }, 'the flag was consumed by the first mount');
+});
+
+// Proves a `showConnect` notification reaching a page whose wallet-and-Connect screen is mounted calls its showConnect()
+// once and does not mount it again.
+test('showConnect with the open-wallet screen mounted calls showConnect without a new mount', async t => {
+  const screen = openWalletRecorder(), { notify } = await pageFixture(t, true, { renderOpenWallet: screen.renderOpenWallet });
+  assert.equal(screen.mounts.length, 1); assert.equal(screen.shown, 0);
+  notify('showConnect'); await settle(() => screen.shown === 1);
+  assert.equal(screen.shown, 1); assert.equal(screen.mounts.length, 1); assert.equal(screen.disposed, 0);
+});
+
+// Proves the address query `?view=connect` makes the FIRST mount start on Connect (`window.location.search` is read by the
+// page), and that this is one-shot: after a lock and unlock the wallet mounts as before. A page without the query mounts
+// with `startConnect: false` (first test).
+test('the address query view=connect makes the first mount start on Connect, once', async t => {
+  const screen = openWalletRecorder();
+  const window = Object.assign(new EventTarget(), { location: { search: '?view=connect' }, navigator: {} });
+  const { state, page } = await pageFixture(t, true, { renderOpenWallet: screen.renderOpenWallet, window });
+  assert.deepEqual(screen.mounts, [{ startConnect: true }]);
+  await lockAndUnlock(state, page);
+  assert.deepEqual(screen.mounts.at(-1), { startConnect: false });
 });
 
 // Proves the approval window does not close while the recovery-phrase step is open, even with nothing pending, and

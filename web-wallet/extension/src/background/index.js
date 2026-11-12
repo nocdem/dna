@@ -11,6 +11,7 @@ import { Messenger } from '@metamask/messenger';
 import { rpcErrors } from '@metamask/rpc-errors';
 import { createPersistedStore } from './store.js';
 import { createApprovals } from './approvals.js';
+import { createAttention } from './attention.js';
 import { debugLog, onDebugLine } from '../../../src/debug-log.js';
 import { createPermissions } from './permissions.js';
 import { createConnectedSites } from './connected-sites.js';
@@ -56,7 +57,8 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     for (const port of uiPorts) try { port.postMessage({ name: 'controller', data: { jsonrpc: '2.0', method: 'connectStateChanged', params: [] } }); }
     catch { /* a closing interface cannot receive the invalidation */ }
   };
-  const connect = createConnect({ storage, onChange: () => invalidateWallet() });
+  let attention = null;
+  const connect = createConnect({ storage, onChange: () => { invalidateWallet(); attention?.messagesChanged(); } });
   const vaultStore = createVaultStore({ storage, lockCoordinator, deleteHistory: id => connect.deleteHistory(id) });
   const messenger = new Messenger({ namespace: 'Background' });
   const store = await createPersistedStore({ storage, messenger });
@@ -91,11 +93,21 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   // Plan §3.5:407-421 retains package 1's one lock and package 2's guarded signing operations.
 
   const autoLockAlarm = await createAutoLockAlarm({ storage, lockCoordinator, alarms: backgroundAlarms });
-  const approvals = createApprovals({ messenger, runtime, windows, tabs, action, getUiState: () => ({
+  const getUiState = () => ({
     // Port: background.ts:857-861 counts only popup ports; :907-916 tracks fullscreen tabs separately.
     popupCount: [...uiPorts].filter(port => port.name === 'popup').length,
     tabIds: new Set([...uiPorts].filter(port => port.name === 'fullscreen').map(port => port.sender?.tab?.id).filter(id => id !== undefined)),
-  }) });
+  });
+  const approvals = createApprovals({ messenger, runtime, windows, tabs, getUiState });
+  // Asks the wallet pages in one tab to show Connect (trusted ports only, as the other controller notifications).
+  const showConnectIn = tabId => {
+    for (const port of uiPorts) {
+      if (port.name !== 'fullscreen' || port.sender?.tab?.id !== tabId) continue;
+      try { port.postMessage({ name: 'controller', data: { jsonrpc: '2.0', method: 'showConnect', params: [] } }); }
+      catch { /* a closing interface cannot receive it */ }
+    }
+  };
+  attention = createAttention({ action, notifications, runtime, windows, tabs, messenger, approvals, getUnread: () => connect.unread(), getUiState, showConnectIn });
   const nodus = createNodus({ ...nodusOptions, storage, lockCoordinator, getAddresses: () => walletKeys.getAddresses(), getPqAddresses: () => walletKeys.getPqAddresses(),
     onActivityChanged: (rows, options) => { void transactionNotifications?.observe(rows, options).catch(() => {}); },
     onLock: () => { void incomingNotifications?.stop().catch(() => {}); evm?.lock(); connectedSites?.clear(); },
@@ -458,7 +470,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
       await transactionNotifications?.flush().catch(() => {});
       transactionNotifications?.destroy();
       await connectedSites.flush().catch(() => {}); connectedSites.destroy();
-      engine.destroy(); approvals.destroy(); store.destroy(); evm.destroy(); networks.controller.destroy(); permissions.controller.destroy();
+      engine.destroy(); attention.destroy(); approvals.destroy(); store.destroy(); evm.destroy(); networks.controller.destroy(); permissions.controller.destroy();
       messenger.unsubscribe('PermissionController:stateChange', onPermissionsChanged);
       alarms.onAlarm.removeListener(onAlarm);
       stopDebugLines();

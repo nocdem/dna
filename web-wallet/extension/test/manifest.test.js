@@ -12,20 +12,20 @@ function signal() {
   };
 }
 let workerFixtureId = 0;
-async function workerFixture(t) {
+async function workerFixture(t, { notifications = true } = {}) {
   const saved = new Map(['chrome', 'self', 'stateHooks'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   t.after(() => { for (const [key, descriptor] of saved) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key];
   } });
   t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
   const writes = [];
-  const runtime = { onConnect: signal() }, alarms = { onAlarm: signal() };
-  globalThis.chrome = { runtime, alarms, storage: { session: { set: value => writes.push(value) } } };
+  const runtime = { onConnect: signal() }, alarms = { onAlarm: signal() }, notificationEvents = { onClicked: signal() };
+  globalThis.chrome = { runtime, alarms, storage: { session: { set: value => writes.push(value) } }, ...(notifications ? { notifications: notificationEvents } : {}) };
   globalThis.self = new EventTarget();
   self.serviceWorker = { state: 'installing' };
   const hooks = globalThis.stateHooks = { retainedFixtureHook: true };
   await import(`../src/service-worker.js?fixture=${++workerFixtureId}`);
-  return { runtime, alarms, writes, hooks, lazyListener: stateHooks.lazyListener };
+  return { runtime, alarms, notifications: notificationEvents, writes, hooks, lazyListener: stateHooks.lazyListener };
 }
 
 // Node 22, no flags or browser; Chrome/storage/alarm fixtures stay in memory, no generated artifacts.
@@ -152,6 +152,27 @@ test('service worker buffers the waking transaction alarm until background attac
   assert.deepEqual(received, ['TRANSACTION_NOTIFICATIONS_ALARM', 'AUTO_LOCK_TIMEOUT_ALARM']);
 });
 
+// A click on a notification can be the event that wakes a stopped worker, so the lazy listener buffers it like the
+// waking alarm. The click is emitted BEFORE the background attaches (emitting after would not test the buffering): the
+// consumer receives it once at attach, and a later click goes straight to it.
+test('service worker buffers a waking notification click until background attaches', async t => {
+  const { notifications, lazyListener } = await workerFixture(t), received = [];
+  notifications.onClicked.emit('nodus-messages');
+  lazyListener.addListener('notifications', 'onClicked', id => received.push(id));
+  assert.deepEqual(received, ['nodus-messages']);
+  notifications.onClicked.emit('nodus-approval');
+  assert.deepEqual(received, ['nodus-messages', 'nodus-approval']);
+});
+
+// Proves the notifications entry is guarded: a worker whose chrome object has no notifications API still imports without
+// throwing, and keeps its other buffered events.
+test('service worker imports without a notifications API', async t => {
+  const { runtime, lazyListener } = await workerFixture(t, { notifications: false }), received = [];
+  runtime.onConnect.emit({ name: 'popup' });
+  lazyListener.addListener('runtime', 'onConnect', port => received.push(port.name));
+  assert.deepEqual(received, ['popup']);
+});
+
 // Proves the default twenty-second leak warning reports remaining buffered calls; draining every listener or asserting only on a timer would falsely pass.
 test('lazy listener warns about undrained events after twenty seconds', async t => {
   const { runtime } = await workerFixture(t);
@@ -159,8 +180,9 @@ test('lazy listener warns about undrained events after twenty seconds', async t 
   delete process.env.IN_TEST;
   t.after(() => { if (saved === undefined) delete process.env.IN_TEST; else process.env.IN_TEST = saved; });
   runtime.onConnect.emit({ name: 'popup' }); runtime.onConnect.emit({ name: 'notification' });
-  // The alarm consumer is attached; this test isolates the undrained ports.
+  // The alarm and notification-click consumers are attached; this test isolates the undrained ports.
   stateHooks.lazyListener.addListener('alarms', 'onAlarm', () => {});
+  stateHooks.lazyListener.addListener('notifications', 'onClicked', () => {});
   const warnings = [];
   t.mock.method(console, 'warn', message => warnings.push(message));
   t.mock.timers.tick(19999); assert.deepEqual(warnings, []);

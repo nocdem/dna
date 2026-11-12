@@ -71,11 +71,8 @@ export function mountWalletAndConnect(options) {
     else { session.setVisible(false); wallet.resetAssetView(); }
     updateBar();
   }
-  buttons.connect.onclick = () => {
-    if (showing) return;
-    // Shown recovery words go with the Settings page (approved rule: removed on leaving Settings).
-    wallet.leaveSettings(); show(true);
-  };
+  // Shown recovery words go with the Settings page (approved rule: removed on leaving Settings).
+  buttons.connect.onclick = () => showConnect();
   buttons.wallet.onclick = () => {
     if (showing) show(false);
     // Any other kept wallet page (for example a Send draft) stays, as the former switch kept it.
@@ -107,7 +104,11 @@ export function mountWalletAndConnect(options) {
     finally { reading = false; }
   }
   session.setVisible(false); void refresh();
+  // The same steps as pressing the Connect button; also the entry for a page asked to show Connect.
+  const showConnect = () => { if (disposed || showing) return; wallet.leaveSettings(); show(true); };
+  if (options.startConnect) showConnect();
   return {
+    showConnect,
     refreshConnect() { void refresh(); },
     update() { if (!disposed) { wallet.update(); syncSendNodus(); void refresh(); } },
     loadBalances: force => wallet.loadBalances(force),

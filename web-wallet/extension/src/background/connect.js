@@ -82,7 +82,8 @@ export function createConnect({ storage, sessionFactory = createMessagesSession,
     const result = await current.action(name, fields);
     assertCurrent(); onChange?.(); return result;
   }
-  return { open, ready, close, getState, action,
+  const unread = () => session?.unread?.() ?? { count: 0, caughtUp: false };
+  return { open, ready, close, getState, action, unread,
     sent: detail => session?.walletExtension.nodusSent(detail),
     async deleteHistory(vaultId) { close(); await deleteHistory(vaultId, undefined, counterStorage); }
   };
