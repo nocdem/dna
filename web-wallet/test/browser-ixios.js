@@ -32,7 +32,8 @@ import { BALANCES_KEY } from '../src/vault.js';
 // makes only ixios_ calls to nx-rpc.ixoflow.io (block 1's parentHash = the test genesis, then ixios_getBalance for
 // the same checksummed address), shows the stage "Testnet", keeps the Ixios note, keeps the send fields hidden and
 // makes no call to the main node; a wrong genesis (Ethereum's, and the main Ixios genesis) makes no balance call;
-// back to Mainnet gives today's eth_ calls and no test call; with a SAVED wallet (the password flow of
+// back to Mainnet gives today's eth_ calls and no test call; choosing Testnet, selecting another chain (Ethereum) and
+// then Ixios again shows Mainnet (chooser and stage) with only eth_ calls to the main node; with a SAVED wallet (the password flow of
 // test/browser-smoke.js), a balance read on Testnet before locking is not shown after unlocking, not even as
 // "Last read" while the main node fails its genesis check, and the reopened wallet is on Mainnet. Both nodes are
 // mocks answering by URL; the test node answers every other method (any eth_ name included) with -32601 as the real
@@ -356,6 +357,22 @@ async function siteChecks(url, connect) {
     fresh = site.ixiosRequests.slice(mark);
     assert.ok(fresh.length > 0 && fresh.every(requestUrl => new URL(requestUrl).origin === mainOrigin), fresh.join());
     assert.deepEqual(await stageLabels(page), ['Mainnet']);
+    // Choosing Testnet, leaving Ixios for another chain and coming back selects Ixios on Mainnet again, as for the PQ chains.
+    await chooseEnvironment(page, 'testnet');
+    await waitHolding(page, TEST_BALANCE_TEXT);
+    await selectNetwork(page, 'ethereum');
+    assert.equal(await page.locator('#chain').inputValue(), 'ethereum');
+    ixiosCalls.length = 0; testCalls.length = 0; mark = site.ixiosRequests.length;
+    await selectNetwork(page, 'ixios');
+    assert.equal(await page.locator('#chain').inputValue(), 'ixios');
+    await waitHolding(page, MAIN_BALANCE_TEXT);
+    assert.equal(await page.locator('#pq-network-environment').inputValue(), 'mainnet', `${label}: Ixios selected again is on Mainnet`);
+    assert.match(await page.locator('#wallet-environment summary').textContent(), /Environment · Mainnet/);
+    assert.deepEqual(await stageLabels(page), ['Mainnet']);
+    assert.deepEqual(ixiosCalls, [{ method: 'eth_getBlockByNumber', params: ['0x1', false] }, { method: 'eth_getBalance', params: [expected, 'latest'] }], `${label}: main node calls after selecting Ixios again`);
+    assert.deepEqual(testCalls, [], `${label}: no test node call after selecting Ixios again`);
+    fresh = site.ixiosRequests.slice(mark);
+    assert.ok(fresh.length > 0 && fresh.every(requestUrl => new URL(requestUrl).origin === mainOrigin), fresh.join());
     // Saved wallet: a test balance read before locking is neither kept nor shown after unlocking.
     await saveWallet(page);
     await page.waitForFunction(() => window.__balanceWrites > 0);
