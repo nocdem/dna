@@ -226,11 +226,11 @@ test('a changed amount clears the old price: its yes cannot be given', async () 
 // What the bot does after a payment was rejected: the approval stays open until its payment window is fully observed,
 // and the bot refuses a new swap of the same sender and amount meanwhile (givens item 57). The text must say that and
 // must not tell the user to ask a new price for the same amount.
-const DELIVERED_UNPAID_TEXT = 'The bot has your request but nothing was paid. The request stays open until its approval time has passed and the bot has checked that no payment came; this page then shows it as expired. Until then the bot refuses a new swap of exactly this amount; a different amount can be swapped now.';
+const DELIVERED_UNPAID_TEXT = 'The bot has your request, but nothing was paid. The request stays open until its approval time has passed and the bot has checked that no payment came; this page then shows it as expired. Until then the bot refuses a new swap of exactly this amount; you can swap a different amount now.';
 
 // The same for a liquidity add (flow 'add'): an unpaid add stays open and the bot refuses a new add or a USDT to NODUS
 // swap with the same Ethereum address and USDT amount (amm_journal.c:1055-1069, :2794-2812).
-const DELIVERED_UNPAID_ADD_TEXT = 'The bot has your liquidity add but nothing was paid. The add stays open until its approval time has passed and the bot has checked that no payment came. Until then the bot refuses a new liquidity add or a USDT to NODUS swap with exactly this USDT amount from your Ethereum address; a different amount can be used now.';
+const DELIVERED_UNPAID_ADD_TEXT = 'The bot has your liquidity add, but nothing was paid. The add stays open until its approval time has passed and the bot has checked that no payment came. Until then the bot refuses a new liquidity add or a USDT to NODUS swap with exactly this USDT amount from your Ethereum address; you can use a different amount now.';
 
 // Proves the open_approval refusal text names the open request and says the same amount stays refused, for the swap flow
 // and for the liquidity add flow (the open request can be a swap or an add). Cannot prove the bot's behaviour; only the
@@ -239,10 +239,10 @@ test('the open_approval refusal names the open request and says the same amount 
   const err = { delivered: false, paid: false, answered: true, reason: 'open_approval', openRequestNumber: '77' };
   const swap = describeAdapterError(err);
   assert.equal(swap.openRequestNumber, '77');
-  assert.equal(swap.text, 'This new request paid nothing. You already have an open request with the same amount (request 77). The bot refuses this exact amount again until that request has expired or the bot has taken in its payment: a liquidity add\'s once its USDT payment is seen, a swap\'s once its payment is confirmed and it is not waiting in line for room. A different amount can be used now. If request 77 is a swap, it is shown below.');
+  assert.equal(swap.text, 'Nothing was paid for this new request. You already have an open request with the same amount (request 77). The bot refuses this exact amount until that request has expired or the bot has taken in its payment: a liquidity add\'s once its USDT payment is seen, a swap\'s once its payment is confirmed and it is not waiting in line for room. You can use a different amount now. If request 77 is a swap, it is shown below.');
   const add = describeAdapterError(err, { flow: 'add' });
   assert.equal(add.openRequestNumber, '77');
-  assert.equal(add.text, 'This new request paid nothing. You already have an open request with the same USDT amount (request 77), a swap or a liquidity add. The bot refuses this exact USDT amount again until that request has expired or the bot has taken in its payment: a liquidity add\'s once its USDT payment is seen, a swap\'s once its payment is confirmed and it is not waiting in line for room. A different amount can be used now.');
+  assert.equal(add.text, 'Nothing was paid for this new request. You already have an open request with the same USDT amount (request 77), a swap or a liquidity add. The bot refuses this exact USDT amount until that request has expired or the bot has taken in its payment: a liquidity add\'s once its USDT payment is seen, a swap\'s once its payment is confirmed and it is not waiting in line for room. You can use a different amount now.');
 });
 
 // Proves the delivered/unpaid text of the add flow differs from the swap flow's and that the swap flow keeps its own.
@@ -255,7 +255,7 @@ test('delivered and unpaid: the add flow has its own text, the swap flow keeps i
 
 test('the adapter\'s failure ends the flow in plain words: not configured, no extension, rejected, passed-on refusal', async () => {
   const cases = [
-    [new AdapterError('not_configured', 'x'), /not available yet/, undefined],
+    [new AdapterError('not_configured', 'x'), /not available in the extension yet/, undefined],
     [new AdapterError('no_extension', 'x'), /not found/, undefined],
     [new AdapterError('extension_error', 'User rejected', { extensionCode: 4001 }), /rejected/, undefined],
     [new AdapterError('extension_error', 'x', { reason: 'busy' }), /busy/i, undefined],
@@ -263,7 +263,7 @@ test('the adapter\'s failure ends the flow in plain words: not configured, no ex
     [new AdapterError('extension_error', 'Network down'), /Network down/, undefined],
     // the extension's delivery result (givens item 88): the request did not reach the bot, nothing was paid
     [new AdapterError('extension_error', 'x', { delivered: false, paid: false, answered: false }), /did not reach the bot\. Nothing was paid/, undefined],
-    [new AdapterError('extension_error', 'x', { delivered: false, paid: false, answered: true, reason: 'number_reused' }), /did not take the request \(number_reused\)\. Nothing was paid/, undefined],
+    [new AdapterError('extension_error', 'x', { delivered: false, paid: false, answered: true, reason: 'number_reused' }), /did not accept the request \(number_reused\)\. Nothing was paid/, undefined],
     [new AdapterError('no_token', 'x'), /USDT contract/, undefined],
   ];
   for (const [err, re, open] of cases) {
@@ -355,7 +355,7 @@ test('follow: a 404 unknown_number answer ends the follow at once with the unkno
   assert.equal(fetch.calls.filter(c => c.key.startsWith('GET /amm/swap/')).length, 1);   // no further swapState call
   assert.equal(sleeps.length, 0);
   assert.equal(seen.length, 1);
-  assert.equal(seen[0].info.text, 'The bot has no swap with this request number. An open request with the same USDT amount can be a liquidity add, which this page does not follow.');
+  assert.equal(seen[0].info.text, 'The bot has no swap with this request number. Your open request with the same USDT amount may be a liquidity add, which this page does not follow.');
 });
 
 test('follow: a refund is final and carries the bot\'s reason; an unreachable bot is pending', async () => {
@@ -599,7 +599,7 @@ test('delivered:true, paid "unknown": do not pay again, check the extension', as
   const r = await flow.confirm({ toleranceBps: 0 });
   assert.equal(r.delivered, true);
   assert.equal(r.paid, 'unknown');
-  assert.equal(r.text, 'The payment may have been sent. Do not pay again; check the extension\'s activity.');
+  assert.equal(r.text, 'Your payment may have been sent. Do not pay again; check the extension\'s activity.');
   assert.equal((await flow.confirm({ toleranceBps: 0 })).reason, 'not_ready');
   assert.equal(adapter.calls.length, 1);
 });
@@ -695,7 +695,7 @@ test('open_approval refusal: the open request number is kept and the text points
   const r = await flow.confirm({ toleranceBps: 100 });
   assert.equal(r.ok, false);
   assert.equal(r.openRequestNumber, '7');
-  assert.match(r.text, /new request paid nothing/);
+  assert.match(r.text, /Nothing was paid for this new request/);
   assert.match(r.text, /request 7/);
   assert.match(r.text, /shown below/);
   assert.doesNotMatch(r.text, /try again/i);
@@ -721,7 +721,7 @@ test('withdraw: unreachable after signing, then the same body is resent and answ
   const first = await flow.withdraw({ basisPoints: 2500 });
   assert.equal(first.ok, false);
   assert.equal(first.uncertain, true);
-  assert.match(first.text, /may have been received \(request 555\)/);
+  assert.match(first.text, /the bot may have received it \(request 555\)/);
   assert.doesNotMatch(first.text, /Nothing was signed/i);
   assert.equal(flow.pendingWithdrawNumber(), '555');
   const second = await flow.withdraw({ basisPoints: 9999 });                   // a different share is ignored: the kept body is resent
@@ -899,8 +899,8 @@ test('confirmAdd passes onStep to the adapter; without onStep the old call shape
 });
 
 test('stepText: numbered where the site sees the boundary, honest where it does not, always says where to click', () => {
-  assert.match(stepText({ id: 'hold', n: 1, of: 2 }), /^Step 1 of 2: approve holding your NODUS payment in the extension window\./);
-  assert.match(stepText({ id: 'sign_send', n: 2, of: 2 }), /^Step 2 of 2: approve the Nodus signature in the extension window\./);
+  assert.match(stepText({ id: 'hold', n: 1, of: 2 }), /^Step 1 of 2: approve holding your NODUS payment in the extension\./);
+  assert.match(stepText({ id: 'sign_send', n: 2, of: 2 }), /^Step 2 of 2: approve the Nodus signature in the extension\./);
   assert.match(stepText({ id: 'sign_send', n: 2, of: 2 }), /do not press again/i);
   assert.match(stepText({ id: 'usdt_windows' }), /two extension windows.*signed request.*USDT payment/);
   assert.match(stepText({ id: 'add_windows', n: 2, of: 2 }), /^Step 2 of 2: .*three extension windows.*Ethereum signature.*Nodus signature.*USDT payment/);
@@ -939,7 +939,7 @@ test('the empty tolerance field shows no number and names what to do; the approv
   const placeholder = tol.match(/placeholder="([^"]*)"/)[1];
   assert.doesNotMatch(placeholder, /\d/);
   assert.match(html, /id="tol-hint"[^>]*>[^<]*choose|id="tol-hint"[^>]*>[^<]*Not chosen/i);
-  assert.match(html, /id="approve-hint"[^>]*>[^<]*disabled until you choose a tolerance/);
+  assert.match(html, /id="approve-hint"[^>]*>[^<]*Choose a slippage tolerance to continue/);
   assert.deepEqual([...html.matchAll(/class="chip"[^>]*data-pct="([^"]+)"/g)].map(m => m[1]), ['0.5', '1', '3']);
   const js = readFileSync(new URL('swap.js', dir), 'utf8');
   assert.match(js, /const chosen = percentToBps\(\$\('tol'\)\.value\)\.ok;\s*\$\('tol-hint'\)\.hidden = chosen;\s*\$\('approve-hint'\)\.hidden = chosen \|\| \$\('approve-btn'\)\.hidden;/);

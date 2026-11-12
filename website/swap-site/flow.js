@@ -24,37 +24,37 @@ export const POLL_MAX = 240;
 export const POLL_INTERVAL_MS = 5000;
 
 const AMOUNT_WORDS = {
-  empty: 'Type an amount first.',
-  format: 'The amount must be a number such as 100 or 12.5.',
+  empty: 'Enter an amount first.',
+  format: 'Enter a number, such as 100 or 12.5.',
   too_many_decimals: 'Too many decimal places for this token.',
   zero: 'The amount must be more than zero.',
-  too_large: 'That amount is too large.',
+  too_large: 'This amount is too large.',
 };
 const NOT_CONNECTED_TEXT = 'Connect the extension first.';
 // The text of an extension step announced by the adapter (adapter.js, onStep). Numbered only where the site sees the
 // boundary; a call that holds several extension windows says so and does not claim which one is open.
-const WHERE = ' The window can open behind this browser window; if you do not see it, click the Nodus extension icon.';
+const WHERE = ' The extension window can open behind this browser window. If you do not see it, click the Nodus extension icon.';
 export function stepText(step) {
   const head = step?.n ? `Step ${step.n} of ${step.of}: ` : '';
   switch (step?.id) {
-    case 'switch': return `Switching the extension to the bot's Ethereum network. If it asks you to approve the switch, approve it.${WHERE}`;
-    case 'hold': return `${head}approve holding your NODUS payment in the extension window.${WHERE}`;
-    case 'sign_send': return `${head}approve the Nodus signature in the extension window. After that the extension sends your request to the bot and then your NODUS payment; this page cannot see those parts, so wait and do not press again.${WHERE}`;
-    case 'usdt_windows': return `Approve in the extension: two extension windows, one after the other, the signed request and then the USDT payment. This page cannot see which one is open; wait and do not press again.${WHERE}`;
-    case 'add_windows': return `${head}approve three extension windows, one after the other: the Ethereum signature, the Nodus signature, then the USDT payment. This page cannot see which one is open; wait and do not press again.${WHERE}`;
+    case 'switch': return `Switching the extension to the bot's Ethereum network. If the extension asks you to approve the switch, approve it.${WHERE}`;
+    case 'hold': return `${head}approve holding your NODUS payment in the extension.${WHERE}`;
+    case 'sign_send': return `${head}approve the Nodus signature in the extension. The extension then sends your request to the bot, followed by your NODUS payment. This page cannot see that part, so wait and do not press again.${WHERE}`;
+    case 'usdt_windows': return `Approve two extension windows, one after the other: the signed request, then the USDT payment. This page cannot see which one is open, so wait and do not press again.${WHERE}`;
+    case 'add_windows': return `${head}approve three extension windows, one after the other: the Ethereum signature, the Nodus signature, then the USDT payment. This page cannot see which one is open, so wait and do not press again.${WHERE}`;
     default: return `Approve the request in the extension.${WHERE}`;
   }
 }
-export const amountProblem = reason => AMOUNT_WORDS[reason] ?? 'The amount is not valid.';
+export const amountProblem = reason => AMOUNT_WORDS[reason] ?? 'This amount is not valid.';
 
 // An error from the adapter (adapter.js) in plain words.
 // ctx.requestNumber: the request number of the price the user approved (named in a liquidity add's text).
 // ctx.flow: 'add' for the liquidity add; anything else is the swap flow. The bot's open-approval rule differs: an add
 // is refused against an open swap or add of the same Ethereum address and USDT amount (amm_journal.c:1055-1069, :2794-2812).
 export function describeAdapterError(err, ctx = {}) {
-  if (err?.code === 'not_configured') return { text: 'The extension part of this action is not available yet. Nothing was signed or paid.' };
+  if (err?.code === 'not_configured') return { text: 'This action is not available in the extension yet. Nothing was signed or paid.' };
   if (err?.code === 'no_extension') return { text: 'The Nodus Connect extension was not found. Nothing was signed or paid.' };
-  if (err?.code === 'no_token') return { text: 'The USDT contract address is not known to this page. Nothing was signed or paid.' };
+  if (err?.code === 'no_token') return { text: 'This page does not know the USDT contract address. Nothing was signed or paid.' };
   const out = {};
   // The extension's delivery result (givens item 88): the request did not reach the bot, so nothing was paid. Shown
   // plainly; never retried automatically, the user tries again.
@@ -65,15 +65,15 @@ export function describeAdapterError(err, ctx = {}) {
       out.openRequestNumber = String(err.openRequestNumber);
       const n = out.openRequestNumber;
       out.text = ctx.flow === 'add'
-        ? `This new request paid nothing. You already have an open request with the same USDT amount (request ${n}), a swap or a liquidity add. ` +
-          `The bot refuses this exact USDT amount again until that request has expired or the bot has taken in its payment: a liquidity add's once its USDT payment is seen, a swap's once its payment is confirmed and it is not waiting in line for room. A different amount can be used now.`
-        : `This new request paid nothing. You already have an open request with the same amount (request ${n}). ` +
-          `The bot refuses this exact amount again until that request has expired or the bot has taken in its payment: a liquidity add's once its USDT payment is seen, a swap's once its payment is confirmed and it is not waiting in line for room. A different amount can be used now. ` +
+        ? `Nothing was paid for this new request. You already have an open request with the same USDT amount (request ${n}), a swap or a liquidity add. ` +
+          `The bot refuses this exact USDT amount until that request has expired or the bot has taken in its payment: a liquidity add's once its USDT payment is seen, a swap's once its payment is confirmed and it is not waiting in line for room. You can use a different amount now.`
+        : `Nothing was paid for this new request. You already have an open request with the same amount (request ${n}). ` +
+          `The bot refuses this exact amount until that request has expired or the bot has taken in its payment: a liquidity add's once its USDT payment is seen, a swap's once its payment is confirmed and it is not waiting in line for room. You can use a different amount now. ` +
           `If request ${n} is a swap, it is shown below.`;
       return out;
     }
     out.text = typeof err.reason === 'string' && err.answered
-      ? `The bot did not take the request (${err.reason}). Nothing was paid. You can try again.`
+      ? `The bot did not accept the request (${err.reason}). Nothing was paid. You can try again.`
       : 'The request did not reach the bot. Nothing was paid. You can try again.';
     return out;
   }
@@ -95,23 +95,23 @@ export function describeAdapterError(err, ctx = {}) {
         : 'Your NODUS payment may have been sent.';
       const usdt = err.paid === 'unknown' ? 'Your USDT payment may have been sent.' : 'Your USDT payment was not sent.';
       out.text = `The bot has your liquidity add${number}. ${nodus} ${usdt} Do not pay again and do not ask for a new pair. ` +
-        `Check the extension's activity. An add with one payment missing is handled by the Foundation: contact the Foundation with the request number.`;
+        `Check the extension's activity. The Foundation handles an add with one payment missing: contact the Foundation with the request number.`;
       return out;
     }
     if (err.paid === 'unknown') {
-      out.text = 'The payment may have been sent. Do not pay again; check the extension\'s activity.';
+      out.text = 'Your payment may have been sent. Do not pay again; check the extension\'s activity.';
       return out;
     }
     out.text = ctx.flow === 'add'
-      ? 'The bot has your liquidity add but nothing was paid. The add stays open until its approval time has passed and the bot has checked that no payment came. ' +
-        'Until then the bot refuses a new liquidity add or a USDT to NODUS swap with exactly this USDT amount from your Ethereum address; a different amount can be used now.'
-      : 'The bot has your request but nothing was paid. The request stays open until its approval time has passed and the bot has checked that no payment came; this page then shows it as expired. Until then the bot refuses a new swap of exactly this amount; a different amount can be swapped now.';
+      ? 'The bot has your liquidity add, but nothing was paid. The add stays open until its approval time has passed and the bot has checked that no payment came. ' +
+        'Until then the bot refuses a new liquidity add or a USDT to NODUS swap with exactly this USDT amount from your Ethereum address; you can use a different amount now.'
+      : 'The bot has your request, but nothing was paid. The request stays open until its approval time has passed and the bot has checked that no payment came; this page then shows it as expired. Until then the bot refuses a new swap of exactly this amount; you can swap a different amount now.';
     return out;
   }
   if (err?.openRequestNumber != null) out.openRequestNumber = String(err.openRequestNumber);
   if (typeof err?.reason === 'string') out.text = refusalText(err.reason);
   else if ((err?.extensionCode ?? err?.code) === 4001) out.text = 'You rejected the request in the extension. Nothing was paid.';
-  else out.text = `The extension did not finish: ${err?.message || 'unknown error'}. Check the extension before trying again.`;
+  else out.text = `The extension did not finish: ${err?.message || 'unknown error'}. Check the extension before you try again.`;
   return out;
 }
 
@@ -171,7 +171,7 @@ export function createSwapFlow({
       L.warn('withdraw', 'post_uncertain', { requestNumber: w.requestNumber, reason: r.reason ?? 'bad_answer' });
       return {
         ok: false, uncertain: true, reason: r.reason ?? 'bad_answer', requestNumber: w.requestNumber,
-        text: `Your withdrawal was signed and sent, but the bot's answer did not arrive, so it may have been received (request ${w.requestNumber}). ` +
+        text: `Your withdrawal was signed and sent, but the bot's answer did not arrive, so the bot may have received it (request ${w.requestNumber}). ` +
           'Press the button again to resend the same signed withdrawal; nothing new is signed.',
       };
     }
@@ -244,7 +244,7 @@ export function createSwapFlow({
     // to the bot and pays only if the request reached the bot (givens items 84, 88).
     async confirm({ toleranceBps, onStep }) {
       const q = s.quote;
-      if (!q || !s.accounts || !s.status) return { ok: false, reason: 'not_ready', text: 'Connect the extension and ask for a price first.' };
+      if (!q || !s.accounts || !s.status) return { ok: false, reason: 'not_ready', text: 'Connect the extension and get a price first.' };
       const min = minimumToReceive(q.number, q.estimatedFee, toleranceBps);
       try {
         if (q.direction === 'usdt_to_nodus') {
@@ -289,7 +289,7 @@ export function createSwapFlow({
         // 404 unknown_number: the bot has no swap with this number (amm_http.c:621-629). An open request with the same
         // USDT amount can be a liquidity add, which has no swap answer: stop at once instead of waiting for every read.
         if (res.ok && res.status === 404 && res.json?.reason === 'unknown_number') {
-          const info = { final: false, kind: 'unknown', state: '', text: 'The bot has no swap with this request number. An open request with the same USDT amount can be a liquidity add, which this page does not follow.' };
+          const info = { final: false, kind: 'unknown', state: '', text: 'The bot has no swap with this request number. Your open request with the same USDT amount may be a liquidity add, which this page does not follow.' };
           last = { info, answer: null, poll: i };
           L.warn('follow', 'unknown', { requestNumber, poll: i });
           onState(last);
@@ -300,7 +300,7 @@ export function createSwapFlow({
           answer = res.json;
           info = describeSwapState(answer);
         } else {
-          info = { final: false, kind: 'pending', state: '', text: 'Waiting for the bot\'s answer.' };
+          info = { final: false, kind: 'pending', state: '', text: 'Waiting for the bot to answer.' };
         }
         last = { info, answer, poll: i };
         L.info('follow', 'read', { requestNumber, poll: i, readable: answer !== null, state: info.state, kind: info.kind, final: info.final, ms: ms() });
@@ -337,7 +337,7 @@ export function createSwapFlow({
     // they reached the bot (plan 6.4.6 steps (3), (4)).
     async confirmAdd({ onStep } = {}) {
       const q = s.addQuote;
-      if (!q || !s.accounts || !s.status) return { ok: false, reason: 'not_ready', text: 'Connect the extension and ask for an amount first.' };
+      if (!q || !s.accounts || !s.status) return { ok: false, reason: 'not_ready', text: 'Connect the extension and get a pair first.' };
       try {
         await loggedCall('liquidityAdd', q.requestNumber, stepped => adapter.liquidityAdd({
           botUrl, ethereumAddress: s.accounts.ethereum, nodusAddress: s.accounts.nodus.address, token: tokenOf(),

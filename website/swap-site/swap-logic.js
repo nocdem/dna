@@ -130,7 +130,7 @@ export function priceFromReserves(reserves) {
 // What the pool holds, for the "Pool" line: "<USDT> USDT · <NODUS> NODUS". `reserves` is null when no pool exists yet;
 // a side that does not fit u64 arrives as "above_2_64" and is not shown as a number.
 export function poolText(reserves) {
-  if (!reserves) return 'Empty: no liquidity yet';
+  if (!reserves) return 'Empty, no liquidity yet';
   if (!DIGITS.test(reserves.usdt ?? '') || !DIGITS.test(reserves.nodus ?? '')) return 'Too large to show';
   return `${displayAmount(BigInt(reserves.usdt), USDT_DECIMALS)} USDT · ${nodusWithCommas(BigInt(reserves.nodus))} NODUS`;
 }
@@ -174,13 +174,13 @@ export function ethConfirmations(usdtRaw) {
 export const PAYOUT_FINAL_DEPTH_ETH = 3;
 export const PAYOUT_FINAL_SECONDS_ETH = 36;
 
-// The "Your payment is counted after" value for the typed amount (text) and the direction. NODUS -> USDT: a
+// The "Payment counted after" value for the typed amount (text) and the direction. NODUS -> USDT: a
 // committed Nodus block needs no extra depth (amm_nodus_watch.c). "—" for an empty or unusable amount.
 export function waitText(direction, amountText) {
   const decimals = direction === 'usdt_to_nodus' ? USDT_DECIMALS : NODUS_DECIMALS;
   const p = parseAmount(amountText, decimals);
   if (!p.ok) return '—';
-  if (direction !== 'usdt_to_nodus') return 'its Nodus block is committed';
+  if (direction !== 'usdt_to_nodus') return '1 Nodus block';
   return `${ethConfirmations(p.raw)} Ethereum blocks`;
 }
 
@@ -381,29 +381,29 @@ export function readAddQuoteAnswer(json) {
 
 const REFUSALS = {
   paused: 'Swaps are paused right now. Try again later.',
-  stopped: 'The bot has stopped taking new swaps.',
-  below_minimum: 'That amount is below the smallest amount the bot accepts.',
-  above_maximum: 'That amount is above the largest amount the bot accepts for one swap.',
-  inflight_full: 'The bot already has the most money in flight it allows. Try again in a few minutes.',
-  no_liquidity: 'The pool cannot give anything for that amount.',
-  cannot_pay: 'The bot cannot pay out that amount right now.',
-  unavailable: 'The bot could not read a chain it needs. Try again later.',
-  busy: 'The bot is busy with many price questions. Try again later.',
+  stopped: 'The bot is not taking new swaps.',
+  below_minimum: 'This amount is below the smallest swap the bot accepts.',
+  above_maximum: 'This amount is above the largest single swap the bot accepts.',
+  inflight_full: 'The bot is at its limit for money in flight. Try again in a few minutes.',
+  no_liquidity: 'The pool cannot give anything for this amount.',
+  cannot_pay: 'The bot cannot pay out this amount right now.',
+  unavailable: 'The bot cannot read one of the chains it needs. Try again later.',
+  busy: 'The bot is busy with other price requests. Try again later.',
   bad_request: 'The bot did not accept the request.',
-  internal: 'The bot reported an internal error. Try again later.',
-  bad_answer: 'The bot\'s answer could not be shown.',
+  internal: 'The bot had an internal error. Try again later.',
+  bad_answer: 'The bot\'s answer could not be read.',
   unreachable: 'The bot could not be reached. Nothing was signed or paid.',
   // answers to a signed request (the extension delivers it; the withdraw is posted by this site)
-  bad_format: 'The bot refused the signed text: its form is wrong.',
-  bad_chain: 'The bot refused the signed text: it names another chain.',
-  bad_address: 'The bot refused the request: the address does not match the key.',
-  bad_signature: 'The bot refused the request: the signature is wrong.',
-  number_reused: 'That request number was already used. Ask for a new price.',
-  unknown_number: 'The bot does not know that request number. Ask for a new price.',
-  amount_mismatch: 'The amount differs from the price the bot gave. Ask for a new price.',
-  number_used: 'That request number was already used for a payment.',
-  open_approval: 'You already have an open swap with the same amount.',
-  approval_expired: 'The bot\'s price has expired. Ask for a new price.',
+  bad_format: 'The bot rejected the signed request: its format is wrong.',
+  bad_chain: 'The bot rejected the signed request: it names another chain.',
+  bad_address: 'The bot rejected the request: the address does not match the signing key.',
+  bad_signature: 'The bot rejected the request: the signature is not valid.',
+  number_reused: 'This request number was already used. Get a new price.',
+  unknown_number: 'The bot does not know this request number. Get a new price.',
+  amount_mismatch: 'The amount does not match the price the bot gave. Get a new price.',
+  number_used: 'This request number was already used for a payment.',
+  open_approval: 'You already have an open swap for the same amount.',
+  approval_expired: 'The price has expired. Get a new price.',
   no_position: 'There is no liquidity position for these two addresses.',
   not_found: 'The bot does not know that page.',
 };
@@ -411,7 +411,7 @@ const REFUSALS = {
 // `minNodusRaw`: the add minimum in force (from /amm/status); the fallback constant when not given.
 export function refusalText(reason, context, minNodusRaw = LIQUIDITY_MIN_NODUS_RAW) {
   if (context === 'add' && reason === 'below_minimum') {
-    return `A liquidity add needs at least ${nodusWithCommas(minNodusRaw)} NODUS together with the USDT at the pool's current ratio.`;
+    return `A liquidity add needs at least ${nodusWithCommas(minNodusRaw)} NODUS, plus the matching USDT at the pool's current ratio.`;
   }
   return REFUSALS[reason] ?? `The bot refused: ${String(reason)}.`;
 }
@@ -427,26 +427,33 @@ export function outputUnit(direction) {
 }
 
 // Shown when the bounded polling ends without a final state (plan section 7 step 8: never "failed").
-export const STILL_PENDING_TEXT = 'The swap is still pending: the bot keeps working on it. Check again in a few minutes.';
+export const STILL_PENDING_TEXT = 'Your swap is still in progress; the bot keeps working on it. Check again in a few minutes.';
 
 // ── swap states (plan section 7 step 8, GET /amm/swap/<id>; amm_journal.h AMM_S_*) ─
 
 const FINAL = {
-  paid: { kind: 'done', text: 'Paid. The bot has sent your payout.' },
-  refunded: { kind: 'refunded', text: 'Refunded. The result was below your minimum, so the bot returned your payment.' },
-  dropped: { kind: 'closed', text: 'Closed. The refund was nothing after the network fee, so nothing was sent.' },
-  expired: { kind: 'expired', text: 'Expired. No payment was seen within the approval time.' },
+  paid: { kind: 'done', text: 'The bot has sent your payout. The swap is complete.' },
+  refunded: { kind: 'refunded', text: 'The amount you would receive was below your minimum, so the bot returned your payment.' },
+  dropped: { kind: 'closed', text: 'Nothing was left to refund after the network fee, so nothing was sent back.' },
+  expired: { kind: 'expired', text: 'No payment was seen within the approval time.' },
 };
 const PENDING = {
-  approved: 'No payment seen by the bot yet. If you paid, wait: it shows here once the bot sees it. If you did not pay, this request expires unpaid once its approval time has passed and the bot has checked that no payment came.',
-  paid_waiting_depth: 'Payment seen. Waiting for confirmations.',
-  counted: 'Payment confirmed. The bot is deciding the swap.',
+  approved: 'The bot has not seen a payment yet. If you paid, it shows here as soon as the bot sees it. If you did not pay, this request expires unpaid once the approval time has passed and the bot has checked that no payment came.',
+  paid_waiting_depth: 'Payment seen. Waiting for network confirmations.',
+  counted: 'Payment confirmed. The bot is processing the swap.',
   payout_pending: 'The bot is sending your payout.',
-  refund_pending: 'The bot is sending a refund.',
-  held: 'The bot is holding this payment for manual handling.',
-  reversed: 'The bot is handling a reversal of the payment.',
+  refund_pending: 'The bot is sending your refund.',
+  held: 'This payment is on hold for manual handling.',
+  reversed: 'The bot is handling a reversal of this payment.',
   unknown: 'The bot is checking the state of this swap.',
 };
+// The short title of the status panel's third step, by the bot's state word; 'Payout' for anything else.
+const STATE_TITLES = new Map([
+  ['paid', 'Your payout has been sent'], ['refunded', 'Payment refunded'], ['dropped', 'Closed, nothing to refund'],
+  ['expired', 'Request expired'], ['approved', 'Waiting for your payment'], ['paid_waiting_depth', 'Confirming your payment'],
+  ['counted', 'Payment confirmed'], ['payout_pending', 'Sending your payout'], ['refund_pending', 'Sending your refund'],
+  ['held', 'On hold'], ['reversed', 'Payment being reversed'], ['unknown', 'Checking'],
+]);
 
 // payout_pending, by the direction the answer names. NODUS -> USDT: the payout is USDT on Ethereum; the amount is the
 // answer's `paid` when it is a string of digits (USDT raw units). The answer says nothing about the transaction, so the
@@ -455,24 +462,27 @@ function payoutPendingText(answer) {
   if (answer?.direction === 'nodus_to_usdt') {
     const amount = typeof answer.paid === 'string' && /^[0-9]+$/.test(answer.paid)
       ? ` of ${displayAmount(BigInt(answer.paid), USDT_DECIMALS)} USDT` : '';
-    return `Your payout${amount} is sent or being sent. The bot marks the swap finished after ${PAYOUT_FINAL_DEPTH_ETH} Ethereum blocks, ` +
-      `about ${PAYOUT_FINAL_SECONDS_ETH} seconds; the USDT can reach your wallet before that.`;
+    return `Your payout${amount} is on its way. The bot marks the swap complete after ${PAYOUT_FINAL_DEPTH_ETH} Ethereum blocks ` +
+      `(about ${PAYOUT_FINAL_SECONDS_ETH} seconds); the USDT can reach your wallet before that.`;
   }
   if (answer?.direction === 'usdt_to_nodus') {
-    return 'The bot is sending your NODUS payout. It marks the swap finished when that payment is confirmed in a Nodus block.';
+    return 'Your NODUS payout is on its way. The bot marks the swap complete once that payment is confirmed in a Nodus block.';
   }
   return PENDING.payout_pending;
 }
+
+// Display only: the third step's title for a state word, never read back as a state (describeSwapState stays the state).
+export const stateLabel =state => (typeof state === 'string' && STATE_TITLES.get(state)) || 'Payout';
 
 // Final = the bot has decided and finished. Everything else is "pending": never "failed" for a non-final
 // state (plan section 7 step 8).
 export function describeSwapState(answer) {
   const state = typeof answer?.state === 'string' ? answer.state : '';
   if (FINAL[state]) return { final: true, kind: FINAL[state].kind, state, text: FINAL[state].text };
-  let text = PENDING[state] ?? 'Pending.';
+  let text = PENDING[state] ?? 'In progress.';
   if (state === 'payout_pending') text = payoutPendingText(answer);
   if (state === 'paid_waiting_depth' && answer.waitingForRoom === true) {
-    text = 'Payment seen. Waiting in line for room under the bot\'s in-flight limit.';
+    text = 'Payment seen. It is waiting in line until the bot has room under its limit for money in flight.';
   }
   return { final: false, kind: 'pending', state, text };
 }
